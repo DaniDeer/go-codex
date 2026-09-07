@@ -517,6 +517,13 @@ type routeBuilder struct {
 	// in [Route.Register]. See [MergeFieldTypeError].
 	responseHeaderMergeFields []any
 	responseCookieMergeFields []any
+
+	// responseCookieAttrs holds type-erased cookieAttrsEntry[Resp] values
+	// registered via MergedResponseCookieParam.WithAttributes — resolved to
+	// map[string]func(Resp) CookieAttributes in [Route.Register]/[Route.ClientHandle]
+	// via [assertCookieAttrs].
+	responseCookieAttrs []any
+
 	// sseEventMergeFields holds type-erased codex.FieldCodec[Event] values
 	// registered via NewRequiredSSEEventParam/NewOptionalSSEEventParam.
 	// Resolved to []codex.FieldCodec[Event] in [SSERoute.Register].
@@ -564,6 +571,27 @@ type routeBuilder struct {
 	// via [Route.ClientMW], in attachment order — built internally by
 	// ClientMW.
 	clientImpls []middleware.ClientImplementation
+
+	// middlewareHandlers holds every [MiddlewareHandler] attached via
+	// [Transform], in attachment order — the codec-backed-middleware
+	// counterpart to impls, built internally by Transform.
+	middlewareHandlers []MiddlewareHandler
+
+	// clientMiddlewareHandlers holds every [ClientMiddlewareHandler]
+	// attached via [ClientTransform], in attachment order — built
+	// internally by ClientTransform.
+	clientMiddlewareHandlers []ClientMiddlewareHandler
+
+	// middlewareSpecContributions holds the spec-relevant param
+	// declarations (request header/cookie/query, response header/cookie)
+	// contributed by every codec-backed [Middleware] attached via
+	// [Transform]/[ClientTransform] (and, once route/channel-AGNOSTIC
+	// dispatch lands, plain .Use()) — converted to plain, Req/Resp-
+	// agnostic spec types at the GENERIC call site where In/Out are still
+	// concrete, then fed into the SAME conflict-detection/layering pass in
+	// applyParamDeclarations that legacy middleware.Middleware values
+	// already use (D4).
+	middlewareSpecContributions []middlewareSpecContribution
 }
 
 // RouteHandle is returned by [Route.Register]. It holds the spec descriptor
@@ -679,6 +707,14 @@ type RouteHandle[Req, Resp any] struct {
 	// QueryParams/HeaderParams/CookieParams maps.
 	responseHeaderMergeFields []codex.FieldCodec[Resp]
 	responseCookieMergeFields []codex.FieldCodec[Resp]
+
+	// responseCookieAttrs holds, per response cookie NAME, the declared
+	// func(Resp) CookieAttributes registered via
+	// MergedResponseCookieParam.WithAttributes — consulted by
+	// [RouteHandle.EncodeResponseCookieAttributes]. nil when no cookie on
+	// this route declared attributes (100% backward compatible).
+	responseCookieAttrs map[string]func(Resp) CookieAttributes
+
 	// errorStatusRules are per-route mappings declared via [ErrorStatus].
 	errorStatusRules []errorStatusRule
 	// errorPatternRules are per-route typed error response declarations from
@@ -714,6 +750,18 @@ type RouteHandle[Req, Resp any] struct {
 	// BOTH [Route.Register]/[Route.RegisterHandle] and
 	// [Route.ClientHandle].
 	ClientImplementations []middleware.ClientImplementation
+
+	// MiddlewareHandlers holds every [MiddlewareHandler] attached via
+	// [Transform], in attachment order — SERVER-side only (no
+	// [Route.ClientHandle] equivalent, mirroring Implementations).
+	// Populated by [Route.Register]/[Route.RegisterHandle].
+	MiddlewareHandlers []MiddlewareHandler
+
+	// ClientMiddlewareHandlers holds every [ClientMiddlewareHandler]
+	// attached via [ClientTransform], in attachment order — CLIENT-side,
+	// built internally by ClientTransform. Populated by BOTH
+	// [Route.Register]/[Route.RegisterHandle] and [Route.ClientHandle].
+	ClientMiddlewareHandlers []ClientMiddlewareHandler
 }
 
 // ErrorStatusFor returns the first declared per-route mapping status for err
@@ -980,6 +1028,23 @@ func (h *RouteHandle[Req, Resp]) EncodeResponseMergeFields(resp Resp) (headers, 
 		}
 	}
 	return headers, cookies, nil
+}
+
+// EncodeResponseCookieAttributes derives declared [CookieAttributes] for
+// every response cookie that called [MergedResponseCookieParam.WithAttributes],
+// keyed by cookie name — additive, alongside (never replacing)
+// [RouteHandle.EncodeResponseMergeFields]'s existing signature. Returns nil
+// when no cookie on this route declared attributes (the prior, unchanged
+// default behavior).
+func (h *RouteHandle[Req, Resp]) EncodeResponseCookieAttributes(resp Resp) map[string]CookieAttributes {
+	if len(h.responseCookieAttrs) == 0 {
+		return nil
+	}
+	out := make(map[string]CookieAttributes, len(h.responseCookieAttrs))
+	for name, fn := range h.responseCookieAttrs {
+		out[name] = fn(resp)
+	}
+	return out
 }
 
 // ResponseHeaderMergeFields returns the merge-capable fields registered via
@@ -2119,16 +2184,28 @@ func (p MergedResponseHeaderParam[Resp]) applyRoute(rb *routeBuilder) {
 // Set-Cookie equivalent.
 type MergedResponseCookieParam[Resp any] struct {
 	ResponseCookieParam
-	field codex.FieldCodec[Resp]
+	field   codex.FieldCodec[Resp]
+	attrsFn func(Resp) CookieAttributes
+}
+
+// WithAttributes declares this cookie's Set-Cookie ATTRIBUTES (MaxAge/
+// Secure/SameSite/Path/Domain/HttpOnly), derived from the SAME Resp value
+// [RouteHandle.EncodeResponseMergeFields] already derives the cookie's
+// VALUE from — one declaration, no new attachment point. nil (never
+// called) preserves the PRIOR default behavior exactly (zero-value
+// attributes — no Path/Secure/SameSite override).
+func (p MergedResponseCookieParam[Resp]) WithAttributes(fn func(Resp) CookieAttributes) MergedResponseCookieParam[Resp] {
+	p.attrsFn = fn
+	return p
 }
 
 // NewRequiredResponseCookieParam declares a REQUIRED response cookie that is
 // BOTH validated against codec AND automatically merged: encoded from Resp
 // on the server, merged into Resp on the client via
-// [RouteHandle.DecodeMergedResponse]. Merge-derived cookies get default
-// [PendingCookie.Opts] (no Path/Secure/SameSite override) — use
-// [ResponseHeadersFromContext]'s cookie helper directly for custom cookie
-// attributes.
+// [RouteHandle.DecodeMergedResponse]. Chain [MergedResponseCookieParam.WithAttributes]
+// to declare this cookie's Set-Cookie attributes (MaxAge/Secure/SameSite/
+// Path/Domain/HttpOnly) declaratively too — merge-derived cookies get
+// default (zero-value) [PendingCookie.Opts] otherwise.
 //
 // V need not be string — see [codex.NewParam] for merging a response
 // cookie value directly into an int/UUID/etc.
@@ -2174,6 +2251,39 @@ func (p MergedResponseCookieParam[Resp]) WithDescription(desc string) MergedResp
 func (p MergedResponseCookieParam[Resp]) applyRoute(rb *routeBuilder) {
 	rb.respCookies = append(rb.respCookies, p.ResponseCookieParam)
 	rb.responseCookieMergeFields = append(rb.responseCookieMergeFields, p.field)
+	if p.attrsFn != nil {
+		rb.responseCookieAttrs = append(rb.responseCookieAttrs, cookieAttrsEntry[Resp]{name: p.Name, fn: p.attrsFn})
+	}
+}
+
+// cookieAttrsEntry pairs a cookie name with its declared
+// func(Resp) CookieAttributes — type-erased into routeBuilder.responseCookieAttrs
+// (mirrors the existing type-erase-then-assert pattern used by
+// responseHeaderMergeFields/responseCookieMergeFields), recovered via
+// [assertCookieAttrs] once Resp is concrete again.
+type cookieAttrsEntry[Resp any] struct {
+	name string
+	fn   func(Resp) CookieAttributes
+}
+
+// assertCookieAttrs asserts each type-erased entry in raw back to
+// cookieAttrsEntry[Resp], building the map EncodeResponseCookieAttributes
+// consults. Mirrors [assertMergeFields]'s existing shape/error contract —
+// a caller-side entry that doesn't assert (should be structurally
+// impossible, since only applyRoute above ever appends to this slice) is
+// silently skipped rather than panicking, matching this codebase's
+// existing defensive convention for type-erased builder fields.
+func assertCookieAttrs[Resp any](raw []any) map[string]func(Resp) CookieAttributes {
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make(map[string]func(Resp) CookieAttributes, len(raw))
+	for _, r := range raw {
+		if e, ok := r.(cookieAttrsEntry[Resp]); ok {
+			out[e.name] = e.fn
+		}
+	}
+	return out
 }
 
 // SecurityScheme combines [route.SecurityScheme] spec metadata with optional
@@ -2953,27 +3063,29 @@ func (r Route[Req, Resp]) registerHandle(b *Server) (*RouteHandle[Req, Resp], er
 	jsonResp := format.JSON(r.respCodec)
 
 	h := &RouteHandle[Req, Resp]{
-		Descriptor:            frozen,
-		Decode:                func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
-		Encode:                func(resp Resp) ([]byte, error) { return jsonResp.Marshal(resp) },
-		EncodeRequest:         func(req Req) ([]byte, error) { return jsonReq.Marshal(req) },
-		DecodeResponse:        func(body []byte) (Resp, error) { return jsonResp.Unmarshal(body) },
-		pathParams:            rb.pathParams,
-		queryParams:           rb.queryParams,
-		cookieParams:          rb.cookieParams,
-		headerParams:          rb.headerParams,
-		responseHeaderParams:  rb.respHeaders,
-		responseCookieParams:  rb.respCookies,
-		pathCodec:             b.pathCodec,
-		SecuritySchemes:       rb.securitySchemes,
-		GlobalSecurity:        slices.Clone(b.globalSecurity),
-		errorStatusRules:      slices.Clone(rb.errorStatusRules),
-		errorPatternRules:     slices.Clone(rb.errorPatternRules),
-		Middlewares:           slices.Clone(rb.middlewares),
-		HandlerFn:             rb.handlerFn,
-		HandlerOpts:           rb.handlerOpts,
-		Implementations:       slices.Clone(rb.impls),
-		ClientImplementations: slices.Clone(rb.clientImpls),
+		Descriptor:               frozen,
+		Decode:                   func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
+		Encode:                   func(resp Resp) ([]byte, error) { return jsonResp.Marshal(resp) },
+		EncodeRequest:            func(req Req) ([]byte, error) { return jsonReq.Marshal(req) },
+		DecodeResponse:           func(body []byte) (Resp, error) { return jsonResp.Unmarshal(body) },
+		pathParams:               rb.pathParams,
+		queryParams:              rb.queryParams,
+		cookieParams:             rb.cookieParams,
+		headerParams:             rb.headerParams,
+		responseHeaderParams:     rb.respHeaders,
+		responseCookieParams:     rb.respCookies,
+		pathCodec:                b.pathCodec,
+		SecuritySchemes:          rb.securitySchemes,
+		GlobalSecurity:           slices.Clone(b.globalSecurity),
+		errorStatusRules:         slices.Clone(rb.errorStatusRules),
+		errorPatternRules:        slices.Clone(rb.errorPatternRules),
+		Middlewares:              slices.Clone(rb.middlewares),
+		HandlerFn:                rb.handlerFn,
+		HandlerOpts:              rb.handlerOpts,
+		Implementations:          slices.Clone(rb.impls),
+		ClientImplementations:    slices.Clone(rb.clientImpls),
+		MiddlewareHandlers:       slices.Clone(rb.middlewareHandlers),
+		ClientMiddlewareHandlers: slices.Clone(rb.clientMiddlewareHandlers),
 	}
 	if rb.requestFormats != nil {
 		fmts, ok := rb.requestFormats.([]format.Format[Req])
@@ -3016,6 +3128,7 @@ func (r Route[Req, Resp]) registerHandle(b *Server) (*RouteHandle[Req, Resp], er
 	if err != nil {
 		return nil, err
 	}
+	h.responseCookieAttrs = assertCookieAttrs[Resp](rb.responseCookieAttrs)
 
 	entry := &typedRouteEntry[Req, Resp]{handle: h}
 	b.mu.Lock()
@@ -3089,9 +3202,11 @@ func (r Route[Req, Resp]) ClientHandle() *RouteHandle[Req, Resp] {
 		cookieMergeFields:         mustAssertMergeFields[Req]("ClientHandle", rb.cookieMergeFields),
 		responseHeaderMergeFields: mustAssertMergeFields[Resp]("ClientHandle", rb.responseHeaderMergeFields),
 		responseCookieMergeFields: mustAssertMergeFields[Resp]("ClientHandle", rb.responseCookieMergeFields),
+		responseCookieAttrs:       assertCookieAttrs[Resp](rb.responseCookieAttrs),
 		SecuritySchemes:           rb.securitySchemes,
 		Middlewares:               slices.Clone(rb.middlewares),
 		ClientImplementations:     slices.Clone(rb.clientImpls),
+		ClientMiddlewareHandlers:  slices.Clone(rb.clientMiddlewareHandlers),
 	}
 	// Apply any inline Formats/RequestFormats RouteOpt declared on the
 	// Route -- the SAME rb.requestFormats/rb.respFormats fields
@@ -3272,6 +3387,38 @@ type SSERouteHandle[Req, Event any] struct {
 	// [Client.Consume]/[nethttp.CallSSEAdapter] the same way
 	// [Client.Call] consumes RouteHandle's field.
 	ClientImplementations []middleware.ClientImplementation
+
+	// responseHeaderMergeFields/responseCookieMergeFields hold the
+	// Event-side merge-capable fields registered via
+	// [NewRequiredResponseHeaderParam]/[NewRequiredResponseCookieParam]
+	// (and their Optional siblings) — mirrors [RouteHandle]'s identically
+	// named fields exactly, closing the gap identified in
+	// docs/design/d-0003-codec-declared-middlewares.md's SSE migration
+	// section: SSE previously had NO response header/cookie merge-field
+	// support at all (only the plain, non-merge responseHeaderParams/
+	// responseCookieParams). Populated by [SSERoute.registerHandle]/
+	// [SSERoute.ClientHandle] from the SAME rb.responseHeaderMergeFields/
+	// rb.responseCookieMergeFields routeBuilder fields [Route.registerHandle]
+	// already reads.
+	responseHeaderMergeFields []codex.FieldCodec[Event]
+	responseCookieMergeFields []codex.FieldCodec[Event]
+
+	// responseCookieAttrs holds, per response cookie NAME, the declared
+	// func(Event) CookieAttributes registered via
+	// MergedResponseCookieParam.WithAttributes — mirrors [RouteHandle]'s
+	// identically named field exactly.
+	responseCookieAttrs map[string]func(Event) CookieAttributes
+
+	// MiddlewareHandlers/ClientMiddlewareHandlers hold every
+	// [MiddlewareHandler]/[ClientMiddlewareHandler] attached via
+	// [TransformSSE]/[ClientTransformSSE], in attachment order — the SSE
+	// counterpart to [RouteHandle.MiddlewareHandlers]/
+	// [RouteHandle.ClientMiddlewareHandlers]. MiddlewareHandlers is
+	// server-only (mirrors Implementations); ClientMiddlewareHandlers
+	// populates on BOTH registerHandle and ClientHandle (mirrors
+	// ClientImplementations).
+	MiddlewareHandlers       []MiddlewareHandler
+	ClientMiddlewareHandlers []ClientMiddlewareHandler
 }
 
 // PathMergeFields returns the Req-side merge-capable fields registered via
@@ -3301,6 +3448,62 @@ func (h *SSERouteHandle[Req, Event]) HeaderMergeFields() []codex.FieldCodec[Req]
 // [RouteHandle.CookieMergeFields] exactly.
 func (h *SSERouteHandle[Req, Event]) CookieMergeFields() []codex.FieldCodec[Req] {
 	return h.cookieMergeFields
+}
+
+// ResponseHeaderMergeFields returns the Event-side merge-capable fields
+// registered via [NewRequiredResponseHeaderParam]/[NewOptionalResponseHeaderParam]
+// — mirrors [RouteHandle.ResponseHeaderMergeFields] exactly, for SSE's
+// Event type instead of a plain Route's Resp.
+func (h *SSERouteHandle[Req, Event]) ResponseHeaderMergeFields() []codex.FieldCodec[Event] {
+	return h.responseHeaderMergeFields
+}
+
+// ResponseCookieMergeFields returns the Event-side merge-capable fields
+// registered via [NewRequiredResponseCookieParam]/[NewOptionalResponseCookieParam]
+// — same as [SSERouteHandle.ResponseHeaderMergeFields], for Set-Cookie
+// instead of headers.
+func (h *SSERouteHandle[Req, Event]) ResponseCookieMergeFields() []codex.FieldCodec[Event] {
+	return h.responseCookieMergeFields
+}
+
+// EncodeResponseMergeFields derives response header/cookie values from one
+// Event value (via [SSERouteHandle.ResponseHeaderMergeFields]/
+// [ResponseCookieMergeFields] + [codex.EncodeVars]) — mirrors
+// [RouteHandle.EncodeResponseMergeFields] exactly. Returns nil maps when
+// the SSE route declares no response merge-capable params. Used by each
+// adapter's SSE dispatch (invoked via [nethttp.SSEHandler]/[chi.SSEHandler])
+// to set actual HTTP response headers/Set-Cookie BEFORE SSE's own headers
+// (Content-Type: text/event-stream, etc.) are committed — see
+// docs/design/d-0003-codec-declared-middlewares.md's "Out-side" SSE
+// migration note for the exact dispatch timing.
+func (h *SSERouteHandle[Req, Event]) EncodeResponseMergeFields(event Event) (headers, cookies map[string]string, err error) {
+	if fields := h.ResponseHeaderMergeFields(); len(fields) > 0 {
+		if headers, err = codex.EncodeVars(event, fields...); err != nil {
+			return nil, nil, err
+		}
+	}
+	if fields := h.ResponseCookieMergeFields(); len(fields) > 0 {
+		if cookies, err = codex.EncodeVars(event, fields...); err != nil {
+			return nil, nil, err
+		}
+	}
+	return headers, cookies, nil
+}
+
+// EncodeResponseCookieAttributes derives declared [CookieAttributes] for
+// every response cookie that called [MergedResponseCookieParam.WithAttributes],
+// keyed by cookie name — mirrors [RouteHandle.EncodeResponseCookieAttributes]
+// exactly, for SSE's Event type instead of a plain Route's Resp. Returns
+// nil when no cookie on this SSE route declared attributes.
+func (h *SSERouteHandle[Req, Event]) EncodeResponseCookieAttributes(event Event) map[string]CookieAttributes {
+	if len(h.responseCookieAttrs) == 0 {
+		return nil
+	}
+	out := make(map[string]CookieAttributes, len(h.responseCookieAttrs))
+	for name, fn := range h.responseCookieAttrs {
+		out[name] = fn(event)
+	}
+	return out
 }
 
 // EncodeVars derives the path-var map from req using
@@ -3726,22 +3929,27 @@ func (s SSERoute[Req, Event]) ClientHandle() *SSERouteHandle[Req, Event] {
 	jsonEvent := format.JSON(s.eventCodec)
 
 	h := &SSERouteHandle[Req, Event]{
-		Descriptor:            frozen,
-		Decode:                func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
-		EncodeEvent:           func(e Event) ([]byte, error) { return jsonEvent.Marshal(e) },
-		DecodeEvent:           func(data []byte) (Event, error) { return jsonEvent.Unmarshal(data) },
-		ValidateEvent:         func(e Event) error { return jsonEvent.Validate(e) },
-		pathParams:            rb.pathParams,
-		queryParams:           rb.queryParams,
-		cookieParams:          rb.cookieParams,
-		headerParams:          rb.headerParams,
-		SecuritySchemes:       rb.securitySchemes,
-		Middlewares:           slices.Clone(rb.middlewares),
-		ClientImplementations: slices.Clone(rb.clientImpls),
-		pathMergeFields:       mustAssertMergeFields[Req]("SSERoute.ClientHandle", rb.pathMergeFields),
-		queryMergeFields:      mustAssertMergeFields[Req]("SSERoute.ClientHandle", rb.queryMergeFields),
-		headerMergeFields:     mustAssertMergeFields[Req]("SSERoute.ClientHandle", rb.headerMergeFields),
-		cookieMergeFields:     mustAssertMergeFields[Req]("SSERoute.ClientHandle", rb.cookieMergeFields),
+		Descriptor:               frozen,
+		Decode:                   func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
+		EncodeEvent:              func(e Event) ([]byte, error) { return jsonEvent.Marshal(e) },
+		DecodeEvent:              func(data []byte) (Event, error) { return jsonEvent.Unmarshal(data) },
+		ValidateEvent:            func(e Event) error { return jsonEvent.Validate(e) },
+		pathParams:               rb.pathParams,
+		queryParams:              rb.queryParams,
+		cookieParams:             rb.cookieParams,
+		headerParams:             rb.headerParams,
+		SecuritySchemes:          rb.securitySchemes,
+		Middlewares:              slices.Clone(rb.middlewares),
+		ClientImplementations:    slices.Clone(rb.clientImpls),
+		ClientMiddlewareHandlers: slices.Clone(rb.clientMiddlewareHandlers),
+		pathMergeFields:          mustAssertMergeFields[Req]("SSERoute.ClientHandle", rb.pathMergeFields),
+		queryMergeFields:         mustAssertMergeFields[Req]("SSERoute.ClientHandle", rb.queryMergeFields),
+		headerMergeFields:        mustAssertMergeFields[Req]("SSERoute.ClientHandle", rb.headerMergeFields),
+		cookieMergeFields:        mustAssertMergeFields[Req]("SSERoute.ClientHandle", rb.cookieMergeFields),
+
+		responseHeaderMergeFields: mustAssertMergeFields[Event]("SSERoute.ClientHandle", rb.responseHeaderMergeFields),
+		responseCookieMergeFields: mustAssertMergeFields[Event]("SSERoute.ClientHandle", rb.responseCookieMergeFields),
+		responseCookieAttrs:       assertCookieAttrs[Event](rb.responseCookieAttrs),
 	}
 	// Apply any inline Formats RouteOpt declared on the SSERoute -- the
 	// SAME rb.respFormats field registerHandle applies server-side.
@@ -3794,26 +4002,28 @@ func (s SSERoute[Req, Event]) registerHandle(b *Server) (*SSERouteHandle[Req, Ev
 	jsonEvent := format.JSON(s.eventCodec)
 
 	h := &SSERouteHandle[Req, Event]{
-		Descriptor:            frozen,
-		Decode:                func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
-		EncodeEvent:           func(e Event) ([]byte, error) { return jsonEvent.Marshal(e) },
-		DecodeEvent:           func(data []byte) (Event, error) { return jsonEvent.Unmarshal(data) },
-		ValidateEvent:         func(e Event) error { return jsonEvent.Validate(e) },
-		pathParams:            rb.pathParams,
-		queryParams:           rb.queryParams,
-		cookieParams:          rb.cookieParams,
-		headerParams:          rb.headerParams,
-		pathCodec:             b.pathCodec,
-		SecuritySchemes:       rb.securitySchemes,
-		GlobalSecurity:        slices.Clone(b.globalSecurity),
-		Middlewares:           slices.Clone(rb.middlewares),
-		HandlerFn:             rb.handlerFn,
-		HandlerOpts:           rb.handlerOpts,
-		Implementations:       slices.Clone(rb.impls),
-		ClientImplementations: slices.Clone(rb.clientImpls),
-		responseHeaderParams:  rb.respHeaders,
-		responseCookieParams:  rb.respCookies,
-		mergeFields:           eventMergeFields,
+		Descriptor:               frozen,
+		Decode:                   func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
+		EncodeEvent:              func(e Event) ([]byte, error) { return jsonEvent.Marshal(e) },
+		DecodeEvent:              func(data []byte) (Event, error) { return jsonEvent.Unmarshal(data) },
+		ValidateEvent:            func(e Event) error { return jsonEvent.Validate(e) },
+		pathParams:               rb.pathParams,
+		queryParams:              rb.queryParams,
+		cookieParams:             rb.cookieParams,
+		headerParams:             rb.headerParams,
+		pathCodec:                b.pathCodec,
+		SecuritySchemes:          rb.securitySchemes,
+		GlobalSecurity:           slices.Clone(b.globalSecurity),
+		Middlewares:              slices.Clone(rb.middlewares),
+		HandlerFn:                rb.handlerFn,
+		HandlerOpts:              rb.handlerOpts,
+		Implementations:          slices.Clone(rb.impls),
+		ClientImplementations:    slices.Clone(rb.clientImpls),
+		MiddlewareHandlers:       slices.Clone(rb.middlewareHandlers),
+		ClientMiddlewareHandlers: slices.Clone(rb.clientMiddlewareHandlers),
+		responseHeaderParams:     rb.respHeaders,
+		responseCookieParams:     rb.respCookies,
+		mergeFields:              eventMergeFields,
 	}
 	h.pathMergeFields, err = assertMergeFields[Req](rb.pathMergeFields)
 	if err != nil {
@@ -3831,6 +4041,15 @@ func (s SSERoute[Req, Event]) registerHandle(b *Server) (*SSERouteHandle[Req, Ev
 	if err != nil {
 		return nil, err
 	}
+	h.responseHeaderMergeFields, err = assertMergeFields[Event](rb.responseHeaderMergeFields)
+	if err != nil {
+		return nil, err
+	}
+	h.responseCookieMergeFields, err = assertMergeFields[Event](rb.responseCookieMergeFields)
+	if err != nil {
+		return nil, err
+	}
+	h.responseCookieAttrs = assertCookieAttrs[Event](rb.responseCookieAttrs)
 	if rb.respFormats != nil {
 		fmts, ok := rb.respFormats.([]format.Format[Event])
 		if !ok {

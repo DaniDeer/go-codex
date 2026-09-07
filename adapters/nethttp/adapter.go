@@ -417,8 +417,9 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 				errFn(sw, r, http.StatusInternalServerError, encErr)
 				return
 			}
+			cookieAttrs := handle.EncodeResponseCookieAttributes(resp)
 			for k, v := range values {
-				pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v})
+				pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v, Opts: cookieOptionsFrom(cookieAttrs[k])})
 			}
 		}
 
@@ -939,8 +940,9 @@ func writeErrorPatternResponse[Req, Resp any](
 		for k, v := range headerValues {
 			respHeaders.Set(k, v)
 		}
+		cookieAttrs := handle.EncodeResponseCookieAttributes(respVal)
 		for k, v := range cookieValues {
-			pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v})
+			pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v, Opts: cookieOptionsFrom(cookieAttrs[k])})
 		}
 	}
 

@@ -208,6 +208,7 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 	secSchemes, _ := elem.FieldByName("SecuritySchemes").Interface().(map[string]rest.SecurityScheme)
 	globalSecurity, _ := elem.FieldByName("GlobalSecurity").Interface().([]route.SecurityRequirement)
 	impls, _ := elem.FieldByName("Implementations").Interface().([]middleware.ServerImplementation)
+	middlewareHandlers, _ := elem.FieldByName("MiddlewareHandlers").Interface().([]rest.MiddlewareHandler)
 	handlerOptsAny := elem.FieldByName("HandlerOpts").Interface()
 	handlerFnVal := elem.FieldByName("HandlerFn")
 	if handlerFnVal.IsNil() {
@@ -408,6 +409,43 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 			return
 		}
 
+		middlewareOuts, mwErr := runMiddlewareHandlersReflect(ctx, reqPtr, middlewareHandlers, headerVars, cookieVars, queryVars)
+		if mwErr != nil {
+			var dispatchErr middlewareDispatchError
+			errors.As(mwErr, &dispatchErr)
+			if !dispatchErr.isFnError {
+				// In-decode/validation failure — plain 400, mirrors other
+				// param-validation failures (no ErrorPattern consultation;
+				// no business error exists yet at this point).
+				errFn(sw, r, http.StatusBadRequest, dispatchErr.err)
+				return
+			}
+			// fn's own business error IS ErrorPattern-eligible (D2) — run
+			// through the SAME ErrorResponseFor mechanism a handler error
+			// uses, falling back to rest.MiddlewareError at status 400
+			// when unmatched.
+			err := dispatchErr.err
+			errResults := elem.Addr().MethodByName("ErrorResponseFor").Call([]reflect.Value{reflect.ValueOf(&err).Elem()})
+			patternResp, _ := errResults[0].Interface().(rest.ErrorPatternResponse)
+			matched, _ := errResults[1].Interface().(bool)
+			applyErr, _ := errResults[2].Interface().(error)
+			if matched {
+				if applyErr == nil {
+					if patternResp.Action == "" || patternResp.Action == rest.ErrorRespond {
+						if writeErr := writeErrorPatternResponseReflect(ctx, sw, elem, respType, patternResp, respHeaders, &pendingCookies); writeErr == nil {
+							return
+						} else {
+							err = writeErr
+						}
+					}
+				} else {
+					err = applyErr
+				}
+			}
+			errFn(sw, r, http.StatusBadRequest, rest.MiddlewareError{Name: dispatchErr.name, Err: err})
+			return
+		}
+
 		handlerResults := handlerFn.Call([]reflect.Value{reflect.ValueOf(ctx), reqPtr.Elem()})
 		respValue, handlerErrV := handlerResults[0], handlerResults[1]
 		if err, _ := handlerErrV.Interface().(error); err != nil {
@@ -451,8 +489,36 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 		for k, v := range mergedHeaders {
 			respHeaders.Set(k, v)
 		}
+		cookieAttrsResults := elem.Addr().MethodByName("EncodeResponseCookieAttributes").Call([]reflect.Value{respValue})
+		cookieAttrs, _ := cookieAttrsResults[0].Interface().(map[string]rest.CookieAttributes)
 		for k, v := range mergedCookies {
-			pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v})
+			pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v, Opts: cookieOptionsFrom(cookieAttrs[k])})
+		}
+
+		// Compose every middleware's OWN response header/cookie values
+		// (derived from its Out, already produced pre-handler above) —
+		// registration-order, last-applied-wins alongside the route's own
+		// values just merged above.
+		for i, h := range middlewareHandlers {
+			mwHeaders, mwCookies, encErr := h.EncodeOut(middlewareOuts[i])
+			if encErr != nil {
+				errFn(sw, r, http.StatusInternalServerError, encErr)
+				return
+			}
+			for k, v := range mwHeaders {
+				respHeaders.Set(k, v)
+			}
+			var mwCookieAttrs map[string]rest.CookieAttributes
+			if h.EncodeOutCookieAttrs != nil {
+				mwCookieAttrs, encErr = h.EncodeOutCookieAttrs(middlewareOuts[i])
+				if encErr != nil {
+					errFn(sw, r, http.StatusInternalServerError, encErr)
+					return
+				}
+			}
+			for k, v := range mwCookies {
+				pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v, Opts: cookieOptionsFrom(mwCookieAttrs[k])})
+			}
 		}
 
 		var outBytes []byte
@@ -651,8 +717,10 @@ func writeErrorPatternResponseReflect(
 		for k, v := range headerValues {
 			respHeaders.Set(k, v)
 		}
+		cookieAttrsResults := elem.Addr().MethodByName("EncodeResponseCookieAttributes").Call([]reflect.Value{respVal})
+		cookieAttrs, _ := cookieAttrsResults[0].Interface().(map[string]rest.CookieAttributes)
 		for k, v := range cookieValues {
-			*pendingCookies = append(*pendingCookies, PendingCookie{Name: k, Value: v})
+			*pendingCookies = append(*pendingCookies, PendingCookie{Name: k, Value: v, Opts: cookieOptionsFrom(cookieAttrs[k])})
 		}
 	}
 
@@ -745,4 +813,54 @@ func runSecurityMiddlewareReflect(ctx context.Context, r *http.Request, reqPtr r
 		}
 	}
 	return middleware.CheckScopes(secReqs, granted)
+}
+
+// middlewareDispatchError distinguishes [runMiddlewareHandlersReflect]'s two
+// failure kinds so the caller (serve()'s own request loop) knows how to
+// respond: a DecodeIn failure is a plain param-validation-style 400 (no
+// ErrorPattern consultation — no business error exists yet); a Fn failure
+// IS ErrorPattern-eligible (D2), needing Name for [rest.MiddlewareError]'s
+// fallback.
+type middlewareDispatchError struct {
+	err       error
+	isFnError bool
+	name      string
+}
+
+func (e middlewareDispatchError) Error() string { return e.err.Error() }
+func (e middlewareDispatchError) Unwrap() error { return e.err }
+
+// runMiddlewareHandlersReflect dispatches every [rest.MiddlewareHandler]
+// attached to this route (via Transform/ClientTransform OR a bundled
+// .Use(mw)) at the SAME pre-handler dispatch point [runSecurityMiddlewareReflect]
+// already runs at (D1) — reqPtr is the SAME already-decoded *Req the
+// handler will also receive, so a bound mw's fn may read/enrich it. Returns
+// each handler's decoded Out (boxed `any`, in attachment order) for later
+// [MiddlewareHandler.EncodeOut] composition into the response, once the
+// route's own handler has produced its Resp.
+func runMiddlewareHandlersReflect(ctx context.Context, reqPtr reflect.Value, handlers []rest.MiddlewareHandler, headerVars, cookieVars, queryVars map[string]string) ([]any, error) {
+	if len(handlers) == 0 {
+		return nil, nil
+	}
+	outs := make([]any, len(handlers))
+	for i, h := range handlers {
+		in, err := h.DecodeIn(headerVars, cookieVars, queryVars)
+		if err != nil {
+			stats.ReportErrors(diagnosticObserver{ctx}, "middleware:in", err)
+			return nil, middlewareDispatchError{err: err, name: h.Name}
+		}
+		fnVal := reflect.ValueOf(h.Fn)
+		var results []reflect.Value
+		if h.Agnostic {
+			results = fnVal.Call([]reflect.Value{reflect.ValueOf(ctx), reflect.ValueOf(in)})
+		} else {
+			results = fnVal.Call([]reflect.Value{reflect.ValueOf(ctx), reqPtr, reflect.ValueOf(in)})
+		}
+		if fnErr, _ := results[1].Interface().(error); fnErr != nil {
+			stats.ReportErrors(diagnosticObserver{ctx}, "middleware:fn", fnErr)
+			return nil, middlewareDispatchError{err: fnErr, isFnError: true, name: h.Name}
+		}
+		outs[i] = results[0].Interface()
+	}
+	return outs, nil
 }

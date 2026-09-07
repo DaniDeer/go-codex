@@ -32,7 +32,10 @@ var LoginRoute = rest.NewRoute[LoginReq, TokenResp]("POST", "/login",
 
 // CreateUserRoute — POST /users — requires the "admin" scope. Demonstrates
 // the full three-layer codec pipeline, multi-format request/response
-// bodies (JSON + YAML), and codec-validated response header + cookie.
+// bodies (JSON + YAML), and a FULLY DECLARATIVE response header + cookie
+// (value AND Set-Cookie attributes) — both derived straight from the
+// handler's returned User, no adapter-specific ResponseDepositor escape
+// hatch needed.
 var CreateUserRoute = rest.NewRoute[CreateUserReq, User]("POST", "/users",
 	CreateUserReqCodec, UserCodec,
 	rest.RouteMeta{
@@ -42,18 +45,17 @@ var CreateUserRoute = rest.NewRoute[CreateUserReq, User]("POST", "/users",
 		RespSchemaName: "User",
 		Tags:           []string{"user"},
 	},
-	rest.ResponseHeaderParam{
-		Name:        "Location",
-		Description: "URL of the newly created user resource",
-		Required:    true,
-		Codec:       &locationCodec,
-	},
-	rest.ResponseCookieParam{
-		Name:        "session",
-		Description: "Session token for the new user",
-		Required:    true,
-		Codec:       &sessionCodec,
-	},
+	rest.NewRequiredResponseHeaderParam("Location", locationCodec,
+		func(u User) string { return "/users/" + u.ID },
+		func(u *User, v string) {}, // no User field to decode Location back into
+	).WithDescription("URL of the newly created user resource"),
+	rest.NewRequiredResponseCookieParam("session", sessionCodec,
+		func(u User) string { return "sess-" + u.ID + "-token" },
+		func(u *User, v string) {}, // no User field to decode session back into
+	).WithDescription("Session token for the new user").
+		WithAttributes(func(u User) rest.CookieAttributes {
+			return rest.CookieAttributes{MaxAge: 3600, Insecure: true}
+		}),
 	rest.Formats(
 		format.JSON(UserCodec),
 		format.YAML(UserCodec),

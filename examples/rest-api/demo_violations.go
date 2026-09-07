@@ -13,7 +13,9 @@ import (
 	chiadapter "github.com/DaniDeer/go-codex/adapters/chi"
 	"github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/api/rest"
+	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/examples/rest-api/routes"
+	"github.com/DaniDeer/go-codex/validate"
 )
 
 // alwaysGrantAdmin is a trivial ServerImplementation Fn for the ISOLATED
@@ -25,16 +27,36 @@ func alwaysGrantAdmin(_ context.Context, _ *http.Request, _ *routes.CreateUserRe
 	return map[string][]string{"bearerAuth": {"admin"}}, nil
 }
 
+// violationLocationCodec/violationSessionCodec mirror routes.go's own
+// locationCodec/sessionCodec exactly — kept as a SEPARATE, standalone pair
+// here (not reused from routes/) since routes.CreateUserRoute's own
+// Location/session are now fully declarative/merge-derived and would OVERWRITE this
+// demo's deliberately-invalid manually-staged values with valid,
+// merge-derived ones AFTER the handler returns — this demo needs its OWN
+// route value with PLAIN, non-merge response params instead, so the
+// staged bad values genuinely reach validation unmodified.
+var (
+	violationLocationCodec = codex.String().Refine(validate.NonEmptyString)
+	violationSessionCodec  = codex.String().Refine(validate.MinLen(8))
+)
+
 // demoResponseHeaderCookieViolation proves the SAME codec that rejects an
 // invalid REQUEST body at 400 also rejects an invalid RESPONSE
 // header/cookie at 500 — server-side symmetric validation. Uses its OWN
-// scratch server (routes.CreateUserRoute reused unchanged, but with a
-// deliberately-broken handler) so this never touches the primary servers
-// built in main().
+// scratch server AND its OWN standalone route (same Req/Resp codecs and
+// security as routes.CreateUserRoute, but PLAIN, non-merge response
+// params) with a deliberately-broken handler, so this never touches the
+// primary servers OR routes.CreateUserRoute's own now-declarative
+// Location/session mechanism built in main().
 func demoResponseHeaderCookieViolation() {
 	fmt.Println("=== ResponseHeaderParam + ResponseCookieParam — contract violation (chi) ===")
 
-	violationRoute := routes.CreateUserRoute.WithHandler(
+	violationRoute := rest.NewRoute[routes.CreateUserReq, routes.User]("POST", "/users",
+		routes.CreateUserReqCodec, routes.UserCodec,
+		rest.RouteMeta{OperationID: "createUserViolation"},
+		rest.ResponseHeaderParam{Name: "Location", Required: true, Codec: &violationLocationCodec},
+		rest.ResponseCookieParam{Name: "session", Required: true, Codec: &violationSessionCodec},
+	).Use(routes.AdminScopeMw).WithHandler(
 		func(ctx context.Context, _ routes.CreateUserReq) (routes.User, error) {
 			h := make(http.Header)
 			h.Set("Location", "") // empty → fails NonEmptyString → 500

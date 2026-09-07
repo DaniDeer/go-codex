@@ -144,6 +144,13 @@ func (c *caller) ServeSubscribers(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		// Declared events.Subscribe.QoS is the FALLBACK default — an
+		// explicit SubscribeOptions.QoS override (attached via
+		// Subscriber.WithOptions) still wins when set to a non-zero
+		// value.
+		if opts.QoS == 0 {
+			opts.QoS = byte(info.subscribeQoS)
+		}
 		filter := opts.TopicFilter
 		if filter == "" {
 			filter = deriveWildcardFilter(info.topic)
@@ -223,6 +230,10 @@ type erasedSubscriberHandle struct {
 	decodeFn        reflect.Value
 	handlerFn       reflect.Value
 	msgType         reflect.Type
+	// subscribeQoS is the declared events.Subscribe.QoS — the FALLBACK
+	// default consulted when SubscribeOptions.QoS is left at its own zero
+	// value.
+	subscribeQoS events.MQTTQoS
 }
 
 // extractErasedSubscriberHandle recovers an [erasedSubscriberHandle] from
@@ -241,6 +252,7 @@ func extractErasedSubscriberHandle(handleAny any) (erasedSubscriberHandle, error
 	securitySchemes, _ := elem.FieldByName("SecuritySchemes").Interface().(map[string]events.SecurityScheme)
 	globalSecurity, _ := elem.FieldByName("GlobalSecurity").Interface().([]route.SecurityRequirement)
 	implementations, _ := elem.FieldByName("Implementations").Interface().([]middleware.ServerImplementation)
+	subscribeQoS, _ := elem.FieldByName("SubscribeQoS").Interface().(events.MQTTQoS)
 	return erasedSubscriberHandle{
 		topic:           elem.FieldByName("Topic").String(),
 		descriptor:      descriptor,
@@ -251,6 +263,7 @@ func extractErasedSubscriberHandle(handleAny any) (erasedSubscriberHandle, error
 		decodeFn:        elem.FieldByName("Decode"),
 		handlerFn:       handlerFn,
 		msgType:         handlerFn.Type().In(1),
+		subscribeQoS:    subscribeQoS,
 	}, nil
 }
 

@@ -22,24 +22,6 @@ import (
 	"github.com/DaniDeer/go-codex/stats"
 )
 
-// chiResponseDepositor implements handlers.ResponseDepositor using chi's
-// OWN WithResponseHeaders/WithResponseCookies/PendingCookie — the ONE
-// adapter-specific seam MakeCreateUserHandler needs (see
-// handlers.ResponseDepositor's doc comment).
-type chiResponseDepositor struct{}
-
-func (chiResponseDepositor) SetHeader(ctx context.Context, h http.Header) {
-	chiadapter.WithResponseHeaders(ctx, h)
-}
-
-func (chiResponseDepositor) SetCookie(ctx context.Context, name, value string, maxAgeSeconds int) {
-	chiadapter.WithResponseCookies(ctx, chiadapter.PendingCookie{
-		Name:  name,
-		Value: value,
-		Opts:  chiadapter.CookieOptions{MaxAge: maxAgeSeconds, Insecure: true},
-	})
-}
-
 // Built bundles everything main.go/demo files need to talk to this server.
 type Built struct {
 	Server           *rest.Server
@@ -79,8 +61,6 @@ func Build(store *handlers.UserStore, obs stats.Observer, logger *slog.Logger, a
 	}
 	opts := chiadapter.Options{ErrorHandler: errorHandler}
 
-	dep := chiResponseDepositor{}
-
 	loginRoute := routes.LoginRoute.WithHandler(
 		handlers.WithDomainLogging("user.login", handlers.MakeLoginHandler(), domainLogger,
 			func(_ routes.LoginReq, _ routes.TokenResp) []slog.Attr { return nil }),
@@ -95,7 +75,7 @@ func Build(store *handlers.UserStore, obs stats.Observer, logger *slog.Logger, a
 		},
 	)
 	createUserRoute := routes.CreateUserRoute.WithHandler(
-		handlers.WithDomainLogging("user.create", handlers.MakeCreateUserHandler(store, dep), domainLogger,
+		handlers.WithDomainLogging("user.create", handlers.MakeCreateUserHandler(store), domainLogger,
 			func(_ routes.CreateUserReq, u routes.User) []slog.Attr {
 				return []slog.Attr{slog.String("id", u.ID), slog.String("name", u.Name), slog.String("email", u.Email)}
 			}),

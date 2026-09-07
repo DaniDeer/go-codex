@@ -225,6 +225,15 @@ type Subscribe struct {
 	// Pass an empty slice to declare "no auth required" for this subscription.
 	// nil (default) inherits global security declared via [Client.AddGlobalSecurity].
 	Security []route.SecurityRequirement
+
+	// QoS declares this channel's MQTT subscription quality-of-service
+	// level. Zero value ([QoSAtMostOnce]) matches the prior, undeclared
+	// default exactly — fully backward compatible. Consumed by
+	// adapters/mqtt and adapters/mqtt5's own Subscribe/ServeSubscribers
+	// dispatch (as the FALLBACK default — an explicit per-call
+	// SubscribeOptions.QoS override still wins when set to a non-zero
+	// value); ignored by adapters/zeromq (no QoS concept there).
+	QoS MQTTQoS
 }
 
 func (s Subscribe) applyChannel(cb *channelBuilder) { cb.subscribe = &s }
@@ -625,6 +634,47 @@ type ChannelHandle[T any] struct {
 	// concrete type via a type assertion at dispatch time (see rest's
 	// resolveOptions pattern).
 	HandlerOpts any
+
+	// MiddlewareHandlers holds every [MiddlewareHandler] attached via
+	// [Transform] (or a bundled .Use(mw)), in attachment order —
+	// populated ONLY by [Subscriber.Handle] (never [Publisher.Handle]),
+	// mirroring [rest.RouteHandle.MiddlewareHandlers]'s server-only
+	// asymmetry.
+	MiddlewareHandlers []MiddlewareHandler
+
+	// ClientMiddlewareHandlers holds every [ClientMiddlewareHandler]
+	// attached via [ClientTransform] (or a bundled .Use(mw)), in
+	// attachment order — populated ONLY by [Publisher.Handle] (never
+	// [Subscriber.Handle]), mirroring [rest.RouteHandle.ClientMiddlewareHandlers].
+	ClientMiddlewareHandlers []ClientMiddlewareHandler
+
+	// publishAttrsFn holds the type-erased func(T) PublishAttributes
+	// declared via [Publisher.WithAttributes] — populated ONLY by
+	// [Publisher.Handle] (never [Subscriber.Handle]). Resolved via
+	// [ChannelHandle.ResolvePublishAttributes].
+	publishAttrsFn any
+
+	// SubscribeQoS holds the MQTT QoS level declared via [Subscribe.QoS]
+	// — populated ONLY by [Subscriber.Handle] (never [Publisher.Handle]).
+	// Consumed by adapters/mqtt's/adapters/mqtt5's own subscribe dispatch
+	// as the FALLBACK default (an explicit per-call SubscribeOptions.QoS
+	// override still wins when set to a non-zero value). Zero value
+	// ([QoSAtMostOnce]) when [Subscribe.QoS] was never declared.
+	SubscribeQoS MQTTQoS
+}
+
+// ResolvePublishAttributes derives [PublishAttributes] (QoS/Retained) for
+// msg, using the func(T) PublishAttributes declared via
+// [Publisher.WithAttributes] — returns the ZERO VALUE (QoS 0, Retained
+// false) when no attributes were ever declared, which is IDENTICAL to the
+// undeclared default this codebase used before this mechanism existed
+// (100% backward compatible).
+func (h *ChannelHandle[T]) ResolvePublishAttributes(msg T) PublishAttributes {
+	fn, ok := h.publishAttrsFn.(func(T) PublishAttributes)
+	if !ok {
+		return PublishAttributes{}
+	}
+	return fn(msg)
 }
 
 // MergeFields returns the merge-capable fields registered via
@@ -1659,6 +1709,11 @@ type Subscriber[T any] struct {
 	// [api/rest]'s routeBuilder.impls field, populated by
 	// [rest.Route.HandleMW].
 	impls []middleware.ServerImplementation
+	// middlewareHandlers holds every [MiddlewareHandler] attached via
+	// [Transform], in attachment order — the codec-backed-middleware
+	// counterpart to impls, built internally by Transform. Copied onto
+	// [ChannelHandle.MiddlewareHandlers] by [Subscriber.Handle].
+	middlewareHandlers []MiddlewareHandler
 }
 
 // Publisher is a role-scoped builder for a channel's publish side, returned
@@ -1681,6 +1736,30 @@ type Publisher[T any] struct {
 	// [api/rest]'s routeBuilder.clientImpls field, populated by
 	// [rest.Route.ClientMW].
 	clientImpls []middleware.ClientImplementation
+	// clientMiddlewareHandlers holds every [ClientMiddlewareHandler]
+	// attached via [ClientTransform], in attachment order — copied onto
+	// [ChannelHandle.ClientMiddlewareHandlers] by [Publisher.Handle].
+	clientMiddlewareHandlers []ClientMiddlewareHandler
+
+	// publishAttrsFn holds the func(T) PublishAttributes declared via
+	// [Publisher.WithAttributes] — copied onto [ChannelHandle]'s own
+	// type-erased field by [Publisher.Handle]. nil means "no declared
+	// attributes" (fully backward compatible — see
+	// [ChannelHandle.ResolvePublishAttributes]).
+	publishAttrsFn any
+}
+
+// WithAttributes declares fn, deriving [PublishAttributes] (QoS/Retained)
+// from the OUTGOING message T itself — the pub/sub-side mirror of
+// [rest.MergedResponseCookieParam.WithAttributes]'s "derive from the value
+// being sent" shape. nil (never called) preserves the PRIOR, undeclared
+// default behavior exactly (QoS 0, Retained false). Consumed by
+// adapters/mqtt's/adapters/mqtt5's own publish dispatch as the FALLBACK
+// default — an explicit per-call PublishAdapterOptions/HandleTransport
+// QoS/Retained override still wins when set to a non-default value.
+func (p Publisher[T]) WithAttributes(fn func(T) PublishAttributes) Publisher[T] {
+	p.publishAttrsFn = fn
+	return p
 }
 
 // WithSubscribe returns a [Subscriber] for this channel's subscribe side,
@@ -1710,8 +1789,25 @@ func (c Channel[T]) WithPublish(p Publish) Publisher[T] {
 // middleware declarations — completely separate from any [Publisher] built
 // from the SAME underlying channel. There is no channel-level Use(): a
 // requirement shared by both roles is declared once per role.
-func (s Subscriber[T]) Use(mws ...middleware.Middleware) Subscriber[T] {
-	s.mws = append(append([]middleware.Middleware{}, s.mws...), mws...)
+//
+// mws accepts [middleware.RouteMiddleware] — both the legacy
+// [middleware.Middleware] (spec-only, unchanged) AND the codec-backed
+// [Middleware] mechanism, when bundled via [Middleware.WithReceive] for
+// channel-AGNOSTIC reuse (see docs/design/d-0003-codec-declared-middlewares.md).
+// Every existing call site passing a [middleware.Middleware] value keeps
+// compiling unchanged — RouteMiddleware is a strict widening, not a
+// breaking change.
+func (s Subscriber[T]) Use(mws ...middleware.RouteMiddleware) Subscriber[T] {
+	for _, mw := range mws {
+		switch v := mw.(type) {
+		case middleware.Middleware:
+			s.mws = append(slices.Clone(s.mws), v)
+		case eventsMiddlewareContributor:
+			if h, ok := v.applyAgnosticSubscriber(); ok {
+				s.middlewareHandlers = append(slices.Clone(s.middlewareHandlers), h)
+			}
+		}
+	}
 	return s
 }
 
@@ -1789,9 +1885,18 @@ func (s Subscriber[T]) SubscribeMW(mw *middleware.Middleware, fn any) Subscriber
 
 // Use returns a copy of p with mws appended to its own, independent
 // middleware declarations. See [Subscriber.Use]'s doc comment for the
-// shared rationale.
-func (p Publisher[T]) Use(mws ...middleware.Middleware) Publisher[T] {
-	p.mws = append(append([]middleware.Middleware{}, p.mws...), mws...)
+// shared rationale, including the [middleware.RouteMiddleware] widening.
+func (p Publisher[T]) Use(mws ...middleware.RouteMiddleware) Publisher[T] {
+	for _, mw := range mws {
+		switch v := mw.(type) {
+		case middleware.Middleware:
+			p.mws = append(slices.Clone(p.mws), v)
+		case eventsMiddlewareContributor:
+			if h, ok := v.applyAgnosticPublisher(); ok {
+				p.clientMiddlewareHandlers = append(slices.Clone(p.clientMiddlewareHandlers), h)
+			}
+		}
+	}
 	return p
 }
 
@@ -1842,14 +1947,19 @@ func (p Publisher[T]) PublishMW(mw *middleware.Middleware, fn any) Publisher[T] 
 // Every call returns its OWN freshly-built handle — never a shared or
 // mutated pointer, even on a dedup hit.
 func (s Subscriber[T]) Handle(client *Client) (*ChannelHandle[T], error) {
-	return buildChannelHandle(s.channel, client, roleSubscribe, s.mws, s.handler, s.opts, s.impls, nil)
+	return buildChannelHandle(s.channel, client, roleSubscribe, s.mws, s.handler, s.opts, s.impls, nil, s.middlewareHandlers, nil)
 }
 
 // Handle builds a fresh, independent [ChannelHandle] for p's publish-side
 // declaration. See [Subscriber.Handle]'s doc comment for the shared
 // nil-client/dedup/unconditional-validation/fresh-handle contract.
 func (p Publisher[T]) Handle(client *Client) (*ChannelHandle[T], error) {
-	return buildChannelHandle(p.channel, client, rolePublish, p.mws, nil, nil, nil, p.clientImpls)
+	h, err := buildChannelHandle(p.channel, client, rolePublish, p.mws, nil, nil, nil, p.clientImpls, nil, p.clientMiddlewareHandlers)
+	if err != nil {
+		return nil, err
+	}
+	h.publishAttrsFn = p.publishAttrsFn
+	return h, nil
 }
 
 // specDedupEntry records the first-registered descriptor-level info for one
@@ -1878,10 +1988,18 @@ const (
 // declaration, running the full validation suite unconditionally, then —
 // only when client is non-nil — dedups the topic's spec entry against
 // client's registry.
-func buildChannelHandle[T any](ch Channel[T], client *Client, role channelRole, mws []middleware.Middleware, handler func(context.Context, T) error, opts any, impls []middleware.ServerImplementation, clientImpls []middleware.ClientImplementation) (*ChannelHandle[T], error) {
+func buildChannelHandle[T any](ch Channel[T], client *Client, role channelRole, mws []middleware.Middleware, handler func(context.Context, T) error, opts any, impls []middleware.ServerImplementation, clientImpls []middleware.ClientImplementation, middlewareHandlers []MiddlewareHandler, clientMiddlewareHandlers []ClientMiddlewareHandler) (*ChannelHandle[T], error) {
 	var cb channelBuilder
 	for _, opt := range ch.opts {
 		opt.applyChannel(&cb)
+	}
+
+	// D6(b)/D7: codec-backed Middleware[In,Out] name-uniqueness and
+	// ambiguous-dual-attachment checks — runs UNCONDITIONALLY, same
+	// resolution pass as the checks below. See
+	// docs/design/d-0003-codec-declared-middlewares.md's D6(b)/D7.
+	if err := checkEventsMiddlewareNameUniquenessAndAttachment(ch.topic, middlewareHandlers, clientMiddlewareHandlers); err != nil {
+		return nil, err
 	}
 
 	// Unconditional validation (Decision 1): runs regardless of client's
@@ -1940,19 +2058,24 @@ func buildChannelHandle[T any](ch Channel[T], client *Client, role channelRole, 
 	}
 
 	h := &ChannelHandle[T]{
-		Topic:                 ch.topic,
-		Descriptor:            frozen,
-		Decode:                func(payload []byte) (T, error) { return jsonFmt.Unmarshal(payload) },
-		Encode:                func(msg T) ([]byte, error) { return jsonFmt.Marshal(msg) },
-		topicParams:           cb.topicParams,
-		topicCodec:            topicCodec,
-		SecuritySchemes:       schemes,
-		GlobalSecurity:        globalSecurity,
-		errorChannelRules:     cb.errorChannelRules,
-		Handler:               handler,
-		HandlerOpts:           opts,
-		Implementations:       impls,
-		ClientImplementations: clientImpls,
+		Topic:                    ch.topic,
+		Descriptor:               frozen,
+		Decode:                   func(payload []byte) (T, error) { return jsonFmt.Unmarshal(payload) },
+		Encode:                   func(msg T) ([]byte, error) { return jsonFmt.Marshal(msg) },
+		topicParams:              cb.topicParams,
+		topicCodec:               topicCodec,
+		SecuritySchemes:          schemes,
+		GlobalSecurity:           globalSecurity,
+		errorChannelRules:        cb.errorChannelRules,
+		Handler:                  handler,
+		HandlerOpts:              opts,
+		Implementations:          impls,
+		ClientImplementations:    clientImpls,
+		MiddlewareHandlers:       middlewareHandlers,
+		ClientMiddlewareHandlers: clientMiddlewareHandlers,
+	}
+	if role == roleSubscribe && cb.subscribe != nil {
+		h.SubscribeQoS = cb.subscribe.QoS
 	}
 	if cb.formats != nil {
 		fmts, ok := cb.formats.([]format.Format[T])
@@ -2169,7 +2292,7 @@ func (s Subscriber[T]) Register(client *Client) error {
 		return MissingHandlerError{Topic: s.channel.topic}
 	}
 
-	h, err := buildChannelHandle(s.channel, client, roleSubscribe, s.mws, s.handler, s.opts, s.impls, nil)
+	h, err := buildChannelHandle(s.channel, client, roleSubscribe, s.mws, s.handler, s.opts, s.impls, nil, s.middlewareHandlers, nil)
 	if err != nil {
 		return err
 	}

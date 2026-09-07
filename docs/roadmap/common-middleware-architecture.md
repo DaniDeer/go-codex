@@ -1,7 +1,7 @@
 # Common-Base + Per-Pattern-Derived Middleware Types — `middleware`, `api/rest`, `api/reqreply`, `api/events`, future `ports`
 
 > **Status:** SUPERSEDED by
-> [Codec-Backed Policy Declarations](codec-backed-policy-declarations.md), which
+> [D-0003 — Codec-Declared Middlewares](../design/d-0003-codec-declared-middlewares.md), which
 > resolves this doc's core finding (a single shared `middleware.Middleware` struct
 > carrying REST-only fields unused by `api/events`/`api/reqreply`) via an ADDITIVE
 > `middleware.RouteMiddleware` marker interface + NEW per-pattern generic types

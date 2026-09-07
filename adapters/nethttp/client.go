@@ -888,6 +888,20 @@ func callWithVars[Req, Resp any](
 			}
 		}
 
+		// 13b. Decode every attached client-side middleware's OWN Out
+		// value from the SAME response headers/cookies — mechanical, no
+		// Fn, always attempted regardless of whether dispatchClientMiddlewareIn
+		// ran (composes; no precedence conflict since each middleware
+		// owns an independent Out). Retrievable afterward via
+		// [ClientMiddlewareOutFromContext] when ctx was decorated with
+		// [WithClientMiddlewareOut].
+		if len(handle.ClientMiddlewareHandlers) > 0 {
+			if err := dispatchClientMiddlewareOut(ctx, resp, handle.ClientMiddlewareHandlers); err != nil {
+				reportBodyErrors(ctx, err)
+				return zero, err
+			}
+		}
+
 		return result, nil
 	}
 
@@ -942,9 +956,32 @@ func CallWithHandle[Req, Resp any](
 		return zero, err
 	}
 
-	opts.QueryParams = overrideDerived(query, opts.QueryParams)
-	opts.HeaderParams = overrideDerived(headers, opts.HeaderParams)
-	opts.CookieParams = overrideDerived(cookies, opts.CookieParams)
+	// D3: explicit CallOptions > middleware-derived (ClientTransform's/
+	// bundled .Use()'s In) > route-own-derived — capture explicit BEFORE
+	// any merging below, so it survives being layered against the
+	// middleware tier.
+	explicitQuery, explicitHeaders, explicitCookies := opts.QueryParams, opts.HeaderParams, opts.CookieParams
+
+	if len(handle.ClientMiddlewareHandlers) > 0 {
+		start := time.Now()
+		mwHeaders, mwCookies, mwQuery, mwErr := dispatchClientMiddlewareIn(ctx, req, handle.ClientMiddlewareHandlers)
+		if mwErr != nil {
+			obs := opts.Observer
+			if obs == nil {
+				obs = stats.ObserverFromContext(ctx)
+			}
+			stats.ReportErrors(obs, "middleware:fn", mwErr)
+			obs.RecordRequest(strings.ToUpper(handle.Descriptor.Method), handle.Descriptor.Path, 0, time.Since(start))
+			return zero, mwErr
+		}
+		query = overrideDerived(query, mwQuery)
+		headers = overrideDerived(headers, mwHeaders)
+		cookies = overrideDerived(cookies, mwCookies)
+	}
+
+	opts.QueryParams = overrideDerived(query, explicitQuery)
+	opts.HeaderParams = overrideDerived(headers, explicitHeaders)
+	opts.CookieParams = overrideDerived(cookies, explicitCookies)
 
 	return callWithVars(ctx, client, baseURL, handle, req, vars, opts)
 }

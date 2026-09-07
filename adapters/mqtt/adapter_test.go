@@ -107,7 +107,10 @@ type mockClient struct {
 	mu                sync.Mutex
 	publishedTopic    string
 	publishedPayload  []byte
+	publishedQoS      byte
+	publishedRetained bool
 	subscribedTopic   string
+	subscribedQoS     byte
 	subscribedHandler pahomqtt.MessageHandler
 	token             pahomqtt.Token
 
@@ -122,9 +125,11 @@ func (c *mockClient) IsConnected() bool       { return true }
 func (c *mockClient) IsConnectionOpen() bool  { return true }
 func (c *mockClient) Connect() pahomqtt.Token { return newCompletedToken(nil) }
 func (c *mockClient) Disconnect(_ uint)       {}
-func (c *mockClient) Publish(topic string, _ byte, _ bool, payload interface{}) pahomqtt.Token {
+func (c *mockClient) Publish(topic string, qos byte, retained bool, payload interface{}) pahomqtt.Token {
 	c.mu.Lock()
 	c.publishedTopic = topic
+	c.publishedQoS = qos
+	c.publishedRetained = retained
 	c.publishedTopics = append(c.publishedTopics, topic)
 	if b, ok := payload.([]byte); ok {
 		c.publishedPayload = b
@@ -133,12 +138,28 @@ func (c *mockClient) Publish(topic string, _ byte, _ bool, payload interface{}) 
 	c.mu.Unlock()
 	return c.token
 }
-func (c *mockClient) Subscribe(topic string, _ byte, handler pahomqtt.MessageHandler) pahomqtt.Token {
+func (c *mockClient) Subscribe(topic string, qos byte, handler pahomqtt.MessageHandler) pahomqtt.Token {
 	c.mu.Lock()
 	c.subscribedTopic = topic
+	c.subscribedQoS = qos
 	c.subscribedHandler = handler
 	c.mu.Unlock()
 	return newCompletedToken(nil)
+}
+
+// subscribedQoSSnapshot returns the last subscribed QoS under c.mu.
+func (c *mockClient) subscribedQoSSnapshot() byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.subscribedQoS
+}
+
+// publishedQoSRetainedSnapshot returns the last published QoS/Retained
+// under c.mu.
+func (c *mockClient) publishedQoSRetainedSnapshot() (byte, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.publishedQoS, c.publishedRetained
 }
 
 // subscribedTopicSnapshot returns the last subscribed topic under c.mu —

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net/http"
 
 	"github.com/DaniDeer/go-codex/examples/rest-api/routes"
 )
@@ -29,19 +28,6 @@ func BuildUserResponse(record routes.UserRecord) routes.User {
 }
 
 // ── Layer 3: infrastructure (business logic, no adapter-specific IO) ────────
-
-// ResponseDepositor lets a handler stage a response header/cookie for the
-// adapter to commit AFTER the handler returns — the DEPOSIT mechanism
-// itself (WithResponseHeaders/WithResponseCookies + PendingCookie) is
-// adapter-specific (adapters/nethttp and adapters/chi each declare their
-// OWN PendingCookie type), so this small interface is the seam that keeps
-// MakeCreateUserHandler itself adapter-agnostic: chiserver/nethttpserver
-// each supply their OWN ResponseDepositor implementation wrapping their
-// adapter's real deposit calls.
-type ResponseDepositor interface {
-	SetHeader(ctx context.Context, h http.Header)
-	SetCookie(ctx context.Context, name, value string, maxAgeSeconds int)
-}
 
 // WithDomainLogging is a decorator that wraps a handler function, logging
 // success (Info) or failure (Error) after the handler returns — reused
@@ -72,21 +58,19 @@ func WithDomainLogging[Req, Resp any](
 //
 // decode (codec) → BuildUserRecord (L2) → Save (store IO) → BuildUserResponse (L2) → encode (codec)
 //
-// dep stages the Location response header and session response cookie —
-// both are VALIDATED by the adapter against their declared codecs (see
-// routes.CreateUserRoute) after this function returns.
-func MakeCreateUserHandler(store *UserStore, dep ResponseDepositor) func(context.Context, routes.CreateUserReq) (routes.User, error) {
+// The Location response header and session response cookie (VALUE and
+// Set-Cookie ATTRIBUTES) are now 100% declarative on routes.CreateUserRoute
+// itself — derived
+// directly from the returned User by the adapter, AFTER this handler
+// returns. No adapter-specific escape hatch (the former ResponseDepositor)
+// is needed here at all.
+func MakeCreateUserHandler(store *UserStore) func(context.Context, routes.CreateUserReq) (routes.User, error) {
 	return func(ctx context.Context, req routes.CreateUserReq) (routes.User, error) {
 		record := BuildUserRecord(req)
 		if err := store.Save(record); err != nil {
 			return routes.User{}, err
 		}
-		user := BuildUserResponse(record)
-		h := make(http.Header)
-		h.Set("Location", "/users/"+user.ID)
-		dep.SetHeader(ctx, h)
-		dep.SetCookie(ctx, "session", "sess-"+user.ID+"-token", 3600)
-		return user, nil
+		return BuildUserResponse(record), nil
 	}
 }
 

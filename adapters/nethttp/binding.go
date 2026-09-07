@@ -680,6 +680,21 @@ func consumeSSEOnce[Req, Event any](
 		obs.RecordRequest(method, path, 0, time.Since(start))
 		return false, err
 	}
+	// D3: explicit ConsumeOptions > middleware-derived (ClientTransformSSE's/
+	// bundled .Use()'s In) > route-own-derived — mirrors CallWithHandle's
+	// identical precedence for plain Route.
+	if len(handle.ClientMiddlewareHandlers) > 0 {
+		mwHeaders, mwCookies, mwQuery, mwErr := dispatchClientMiddlewareIn(ctx, req, handle.ClientMiddlewareHandlers)
+		if mwErr != nil {
+			stats.ReportErrors(diagnosticObserver{ctx}, "middleware:fn", mwErr)
+			obs.RecordRequest(method, path, 0, time.Since(start))
+			return false, mwErr
+		}
+		query = overrideDerived(query, mwQuery)
+		headers = overrideDerived(headers, mwHeaders)
+		cookies = overrideDerived(cookies, mwCookies)
+	}
+
 	queryParams := overrideDerived(query, opts.QueryParams)
 	headerParams := overrideDerived(headers, opts.HeaderParams)
 	cookieParams := overrideDerived(cookies, opts.CookieParams)
@@ -782,6 +797,18 @@ func consumeSSEOnce[Req, Event any](
 		body, _ := io.ReadAll(resp.Body)
 		return false, UnexpectedStatusError{
 			Method: method, Path: path, StatusCode: resp.StatusCode, Body: body, Header: resp.Header,
+		}
+	}
+
+	// 2b. Decode every attached client-side middleware's OWN Out value
+	// from the connection's response headers/cookies ONCE, at
+	// connection-open time — NOT re-decoded per event (see
+	// docs/design/d-0003-codec-declared-middlewares.md's SSE migration
+	// section). Retrievable afterward via [ClientMiddlewareOutFromContext]
+	// when ctx was decorated with [WithClientMiddlewareOut].
+	if len(handle.ClientMiddlewareHandlers) > 0 {
+		if err := dispatchClientMiddlewareOut(ctx, resp, handle.ClientMiddlewareHandlers); err != nil {
+			return false, err
 		}
 	}
 

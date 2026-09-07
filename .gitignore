@@ -1,3 +1,4 @@
 .env
 /agentkit
 examples/sensor-service/exports
+report.*

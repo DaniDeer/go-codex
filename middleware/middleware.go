@@ -50,6 +50,81 @@ import (
 	"github.com/DaniDeer/go-codex/route"
 )
 
+// RouteMiddleware is a marker interface any attach-time middleware value
+// can implement to become passable to a route/channel's own .Use(...)
+// method. [Middleware] implements it via [Middleware.RouteMiddlewareMarker]
+// below — EVERY existing .Use(someSecurityScheme)-style call site in this
+// codebase keeps compiling unchanged, since Go's structural typing already
+// satisfies the interface. [Declaration]-derived, per-pattern generic
+// types (such as api/rest's Middleware[In, Out]) implement it too — see
+// docs/design/d-0003-codec-declared-middlewares.md for the full design
+// this interface exists to support: a codec-backed, per-pattern middleware
+// declaration mechanism layered ADDITIVELY alongside this package's
+// existing, unchanged Middleware/SecurityScheme machinery.
+//
+// The marker method is EXPORTED, unlike [ports.Pattern]'s own
+// unexported-method sealing technique — deliberately so, since Go's
+// unexported-method interface satisfaction is scoped PER PACKAGE: a type
+// declared in api/rest (or api/events) can NEVER satisfy an interface
+// whose unexported method is declared in package middleware, regardless
+// of the method's name matching textually (confirmed the hard way — an
+// earlier revision of this design used an unexported isRouteMiddleware(),
+// which compiled right up until an actual cross-package value was passed
+// to .Use(), at which point Go correctly rejected it as a distinct,
+// package-scoped identifier). RouteMiddleware therefore trades strict
+// sealing for the ability to be implemented from ANY package — an
+// acceptable trade since this is an additive attachment marker, not a
+// closed value space that needs exhaustive-switch safety.
+type RouteMiddleware interface{ RouteMiddlewareMarker() }
+
+// RouteMiddlewareMarker makes Middleware satisfy [RouteMiddleware] — added
+// purely so a route/channel's .Use(...) parameter type can widen from
+// ...Middleware to ...RouteMiddleware without breaking any existing call
+// site. Carries no behavior.
+func (Middleware) RouteMiddlewareMarker() {}
+
+// Declaration is a minimal, pattern-agnostic DECLARE-TIME-ONLY core for a
+// codec-backed middleware: a name plus an Input and Output codec, exactly
+// mirroring how a route/channel itself declares its Req/Resp (or Item)
+// shape via a codec — giving a middleware declaration the SAME
+// self-documenting/schema-able/validated status every other Layer 2
+// declaration already has.
+//
+// Declaration is deliberately NOT itself attachable via .Use(...) — it
+// carries no per-pattern merge-field vocabulary (REST's header/cookie/
+// query extraction, say) and no Fn. Each API pattern embeds Declaration
+// inside its OWN generic type (e.g. api/rest's Middleware[In, Out]) that
+// adds exactly the merge machinery relevant to that pattern's boundary —
+// see docs/design/d-0003-codec-declared-middlewares.md for the full
+// design and docs/roadmap/common-middleware-architecture.md (superseded
+// by that doc) for the problem this was designed to resolve: a single
+// shared middleware type carrying pattern-specific fields unused by every
+// OTHER pattern importing it.
+//
+// [SecurityDeclaration] is intentionally NOT retrofitted onto Declaration
+// — security's shape (a raw credential string, a route.SecurityScheme,
+// scopes) is protocol-driven and already shipped/stable; Declaration is
+// reserved for NEW, non-security cross-cutting concerns (the first being
+// REST response-cookie policy attributes).
+type Declaration[In, Out any] struct {
+	// Name identifies this middleware in errors and observability.
+	Name string
+
+	// InCodec validates/schemas the middleware's own input value —
+	// independent of any route/channel's own Req codec.
+	InCodec codex.Codec[In]
+
+	// OutCodec validates/schemas the middleware's own output value —
+	// independent of any route/channel's own Resp codec.
+	OutCodec codex.Codec[Out]
+}
+
+// NewDeclaration builds a [Declaration] from a name and its Input/Output
+// codecs.
+func NewDeclaration[In, Out any](name string, inCodec codex.Codec[In], outCodec codex.Codec[Out]) Declaration[In, Out] {
+	return Declaration[In, Out]{Name: name, InCodec: inCodec, OutCodec: outCodec}
+}
+
 // Middleware is a named, composable DECLARE-TIME-ONLY value, attached at
 // route-declaration time (e.g. via rest.WithMiddleware/Route.Use). It is
 // the ONLY type in this package that can contribute to a route's spec —

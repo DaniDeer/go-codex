@@ -2,18 +2,10 @@ package handlers
 
 import (
 	"context"
-	"net/http"
 	"testing"
 
 	"github.com/DaniDeer/go-codex/examples/rest-api/routes"
 )
-
-// noopDepositor discards staged headers/cookies — sufficient for tests that
-// only care about the returned domain value.
-type noopDepositor struct{}
-
-func (noopDepositor) SetHeader(context.Context, http.Header)         {}
-func (noopDepositor) SetCookie(context.Context, string, string, int) {}
 
 // TestBuildUserRecord tests the pure business logic for user creation —
 // no HTTP server, no store, no codec decoding required.
@@ -79,7 +71,7 @@ func TestUserStoreNotFound(t *testing.T) {
 // the pure functions (L2) + store IO (L3), without an HTTP server.
 func TestCreateUserPipeline(t *testing.T) {
 	store := NewUserStore()
-	handler := MakeCreateUserHandler(store, noopDepositor{})
+	handler := MakeCreateUserHandler(store)
 
 	req := routes.CreateUserReq{Name: "Alice", Email: "alice@example.com"}
 	user, err := handler(context.Background(), req)

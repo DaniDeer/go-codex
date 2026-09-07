@@ -73,6 +73,7 @@ repo_name = "DaniDeer/go-codex"
 "Overview" = "design/index.md"
 "— D-0001: REST Middleware Workflow Simplification" = "design/d-0001-rest-middleware-workflow-simplification.md"
 "— D-0002: Pub/Sub Workflow Simplification" = "design/d-0002-pubsub-workflow-simplification.md"
+"— D-0003: Codec-Declared Middlewares" = "design/d-0003-codec-declared-middlewares.md"
 
 [nav.Roadmap]
 "Overview" = "roadmap/index.md"
@@ -103,4 +104,3 @@ repo_name = "DaniDeer/go-codex"
 "— RefreshingCacheable[T]" = "roadmap/refreshing-cacheable.md"
 "— Streaming Walk Adapter (Files/Dirs)" = "roadmap/dir-walk-adapter.md"
 "— OpenAPI/AsyncAPI Spec Endpoint" = "roadmap/openapi-spec-endpoint.md"
-"— Codec-Backed Policy Declarations" = "roadmap/codec-backed-policy-declarations.md"

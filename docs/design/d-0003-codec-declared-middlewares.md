@@ -1,7 +1,9 @@
-# Codec-Backed Policy Declarations — a general pattern for reusable middleware/policy values
+# D-0003 — Codec-Declared Middlewares — a general pattern for reusable middleware/policy values
 
-> **Status:** Design finalized — READY TO IMPLEMENT. All 7 open design
-> questions (D1-D7, see "Resolved design decisions") are resolved.
+> **Status:** Implemented — architectural foundation. All 7 design decisions
+> (D1-D7, see "Resolved design decisions") are shipped and verified across
+> `api/rest` (`Route` AND `SSERoute`), `api/events`, and every pub/sub
+> adapter (`adapters/mqtt5`, `adapters/mqtt`, `adapters/zeromq`).
 >
 > Codec-backed, per-pattern middleware declaration (`middleware.Declaration[In,Out]`
 > + `rest.Middleware[In,Out]`/`events.Middleware[In,Out]`) for `api/rest`
@@ -29,8 +31,47 @@
 > attachment styles on one `Middleware[In,Out]` value as ambiguous (NEW
 > `rest.AmbiguousMiddlewareAttachmentError`).
 >
-> **Supersedes** [Common-Base + Per-Pattern-Derived Middleware Types](common-middleware-architecture.md)
-> — see "Relationship to other roadmap docs" below. [← Back to Roadmap](index.md)
+> **Supersedes** [Common-Base + Per-Pattern-Derived Middleware Types](../roadmap/common-middleware-architecture.md)
+> — see "Relationship to other roadmap docs" below. [← Back to Design Documents](index.md)
+
+## Lessons learned (implementation, Phase 1)
+
+- **`RouteMiddleware`'s marker method must be EXPORTED, not unexported.**
+  Every code snippet in this doc originally showed `isRouteMiddleware()` (unexported),
+  mirroring `ports.Pattern`'s own technique. This compiles right up until an ACTUAL
+  cross-package value (`rest.Middleware[In,Out]`) is passed to `.Use(...)` — Go's
+  unexported-method interface satisfaction is scoped PER PACKAGE (confirmed with a
+  minimal reproduction), so a method literally named `isRouteMiddleware` declared in
+  package `api/rest` is a DIFFERENT identifier from `middleware.RouteMiddleware`'s own
+  unexported `isRouteMiddleware`, and never satisfies it. `ports.Pattern` avoids this
+  because EVERY `Pattern` implementation (`RESTPattern`, `EventPattern`, etc.) is
+  declared INSIDE the `ports` package itself — never cross-package. Fixed by renaming
+  the marker method to the EXPORTED `RouteMiddlewareMarker()` everywhere (package
+  `middleware`'s interface + `Middleware`'s implementation, and `rest.Middleware[In,Out]`'s
+  own). All code snippets in this doc below reflect the corrected, exported name.
+
+- **`ResponseDepositor` (`examples/rest-api`) is NOT a candidate for a `Transform`-based
+  refactor — confirmed during Phase 4, not a gap in the implementation.** The original
+  Motivation section's premise (`POST /users`'s `session` cookie needing declarative
+  `MaxAge`/`Insecure`) is real, but `ResponseDepositor.SetHeader`/`SetCookie` are called
+  from INSIDE `MakeCreateUserHandler`, AFTER `store.Save(record)` runs — i.e. the
+  Location header and session cookie VALUE are derived from data the HANDLER ITSELF
+  computes (a newly created user's ID), not from the route's own `Req`. `Transform`'s
+  dispatch is deliberately PRE-HANDLER-ONLY (D1, confirmed and not revisited: "no second,
+  post-handler attachment point... a concern that genuinely does already have a
+  mechanism: the EXISTING wrapping-shaped Fn") — a `Transform`-attached `fn` runs BEFORE
+  the handler and has no access to whatever the handler will go on to compute. The
+  §7 worked example (`sessionCookiePolicy`) that motivated this whole design works ONLY
+  because it hardcodes `newSessionToken()` independent of any handler-computed value —
+  it was never actually a fit for `examples/rest-api`'s OWN `CreateUserRoute`, whose
+  session value depends on `user.ID`. **Conclusion: `ResponseDepositor`/
+  `chiResponseDepositor`/`nethttpResponseDepositor` remain the CORRECT, intentional
+  escape hatch for this specific case** (post-handler-computed response header/cookie
+  values) — not a gap this design was ever meant to close, and no code change is made
+  here. A genuinely `Transform`-suited case is one where the response header/cookie
+  value derives ONLY from the route's own `Req`/topic vars/a middleware's own `In` —
+  e.g. this doc's §7 API-key/session-attribute sketches — never from the handler's own
+  return value.
 
 ## Motivation
 
@@ -194,15 +235,22 @@ time" mechanism, applied to a template/config transform rather than a runtime `I
 
 ```go
 // package middleware
-// RouteMiddleware is a sealed marker interface (mirrors ports.Pattern's own
-// unexported-method technique) any attach-time middleware value can
-// implement to become passable to a route/channel's .Use(...) method.
-type RouteMiddleware interface{ isRouteMiddleware() }
+// RouteMiddleware is a marker interface any attach-time middleware value
+// can implement to become passable to a route/channel's .Use(...) method.
+// The marker method is EXPORTED (RouteMiddlewareMarker, not an unexported
+// isRouteMiddleware) — Go's unexported-method interface satisfaction is
+// scoped PER PACKAGE, so a type declared in api/rest/api/events could
+// NEVER satisfy an interface whose unexported method lives in package
+// middleware, regardless of name (confirmed the hard way during
+// implementation — see "Lessons Learned"). ports.Pattern's own
+// unexported-method sealing technique works ONLY because every Pattern
+// implementation is declared IN the ports package itself.
+type RouteMiddleware interface{ RouteMiddlewareMarker() }
 
 // Middleware gains ONE new, trivial method — every EXISTING
 // .Use(someSecurityScheme)-style call site keeps compiling unchanged
 // (Go's structural interface satisfaction).
-func (Middleware) isRouteMiddleware() {}
+func (Middleware) RouteMiddlewareMarker() {}
 ```
 
 `Route.Use`/`SSERoute.Use` (confirmed at `api/rest/middleware.go:130,137`) and
@@ -346,12 +394,14 @@ func (m Middleware[In, Out]) WithResponseCookie(p MergedResponseCookieParam[Out]
 func (m Middleware[In, Out]) WithReceive(fn func(ctx context.Context, in In) (Out, error)) Middleware[In, Out]
 func (m Middleware[In, Out]) WithSend(fn func(ctx context.Context) (In, error)) Middleware[In, Out]
 
-// isRouteMiddleware makes Middleware[In,Out] satisfy middleware.RouteMiddleware
+// RouteMiddlewareMarker makes Middleware[In,Out] satisfy middleware.RouteMiddleware
 // — NEW in this round (an earlier draft left this unimplemented, since
 // Middleware[In,Out] was ONLY ever attached via Transform/ClientTransform
 // directly, never via .Use()). Required now so .Use(mw) can recognize and
 // dispatch a route/channel-agnostic mw carrying a WithReceive/WithSend fn.
-func (Middleware[In, Out]) isRouteMiddleware() {}
+// EXPORTED, not isRouteMiddleware — see §1's RouteMiddleware note on why an
+// unexported marker method can never be satisfied from another package.
+func (Middleware[In, Out]) RouteMiddlewareMarker() {}
 ```
 
 **How the spec half layers in — reusing the EXISTING conflict-detection pass, not a
@@ -889,9 +939,10 @@ func (m Middleware[In, Out]) WithPublishTopic(p MergedTopicParam[Out]) Middlewar
 func (m Middleware[In, Out]) WithReceive(fn func(ctx context.Context, in In) error) Middleware[In, Out]
 func (m Middleware[In, Out]) WithSend(fn func(ctx context.Context) (In, error)) Middleware[In, Out]
 
-// isRouteMiddleware makes events.Middleware[In,Out] satisfy
+// RouteMiddlewareMarker makes events.Middleware[In,Out] satisfy
 // middleware.RouteMiddleware — mirrors rest.Middleware[In,Out]'s own (§3).
-func (Middleware[In, Out]) isRouteMiddleware() {}
+// EXPORTED, not isRouteMiddleware — see §1.
+func (Middleware[In, Out]) RouteMiddlewareMarker() {}
 
 // Transform (subscribe, RECEIVING role, route/channel-BOUND) — mirrors
 // rest.Transform, minus the Out/response half (no reply channel to encode
@@ -1365,7 +1416,7 @@ bundled into this design's readiness.
 
 ## Relationship to other roadmap docs
 
-- **Supersedes** [Common-Base + Per-Pattern-Derived Middleware Types](common-middleware-architecture.md):
+- **Supersedes** [Common-Base + Per-Pattern-Derived Middleware Types](../roadmap/common-middleware-architecture.md):
   that doc's core finding (a single shared `middleware.Middleware` struct carrying
   REST-only fields unused by `api/events`/`api/reqreply`) is what this design fixes —
   but via an ADDITIVE marker interface + NEW per-pattern generic types
@@ -1374,7 +1425,7 @@ bundled into this design's readiness.
   breaking). `middleware.Middleware`/`SecurityScheme` remain completely unchanged and
   continue to work exactly as before, side by side with this new mechanism.
 - **Distinct from, and complementary to**,
-  [Protocol-Native Feature Declarations](protocol-native-features.md)'s `ProtocolFeature`/
+  [Protocol-Native Feature Declarations](../roadmap/protocol-native-features.md)'s `ProtocolFeature`/
   `Feature` idea: that mechanism is for OPAQUE protocol capability flags with no
   natural structured shape (MQTT5 Shared Subscriptions, Message Expiry, ZeroMQ
   Conflate/HWM) evaluated via adapter type-switching — a different axis from THIS

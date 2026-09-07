@@ -19,24 +19,6 @@ import (
 	"github.com/DaniDeer/go-codex/stats"
 )
 
-// nethttpResponseDepositor implements handlers.ResponseDepositor using
-// adapters/nethttp's OWN WithResponseHeaders/WithResponseCookies/
-// PendingCookie — the ONE adapter-specific seam MakeCreateUserHandler
-// needs (see handlers.ResponseDepositor's doc comment).
-type nethttpResponseDepositor struct{}
-
-func (nethttpResponseDepositor) SetHeader(ctx context.Context, h http.Header) {
-	nethttp.WithResponseHeaders(ctx, h)
-}
-
-func (nethttpResponseDepositor) SetCookie(ctx context.Context, name, value string, maxAgeSeconds int) {
-	nethttp.WithResponseCookies(ctx, nethttp.PendingCookie{
-		Name:  name,
-		Value: value,
-		Opts:  nethttp.CookieOptions{MaxAge: maxAgeSeconds, Insecure: true},
-	})
-}
-
 // Built bundles everything main.go/demo files need to talk to this server.
 type Built struct {
 	Server           *rest.Server
@@ -76,8 +58,6 @@ func Build(store *handlers.UserStore, obs stats.Observer, logger *slog.Logger, a
 	}
 	opts := nethttp.Options{ErrorHandler: errorHandler}
 
-	dep := nethttpResponseDepositor{}
-
 	loginRoute := routes.LoginRoute.WithHandler(
 		handlers.WithDomainLogging("user.login", handlers.MakeLoginHandler(), domainLogger,
 			func(_ routes.LoginReq, _ routes.TokenResp) []slog.Attr { return nil }),
@@ -92,7 +72,7 @@ func Build(store *handlers.UserStore, obs stats.Observer, logger *slog.Logger, a
 		},
 	)
 	createUserRoute := routes.CreateUserRoute.WithHandler(
-		handlers.WithDomainLogging("user.create", handlers.MakeCreateUserHandler(store, dep), domainLogger,
+		handlers.WithDomainLogging("user.create", handlers.MakeCreateUserHandler(store), domainLogger,
 			func(_ routes.CreateUserReq, u routes.User) []slog.Attr {
 				return []slog.Attr{slog.String("id", u.ID), slog.String("name", u.Name), slog.String("email", u.Email)}
 			}),

@@ -127,16 +127,58 @@ func FromResponseCookieParam(p ResponseCookieParam) middleware.Middleware {
 // SAME, order-independent application pass documented on [WithMiddleware]
 // — Use is purely how the opts list is assembled beforehand; it introduces
 // no new runtime mechanism.
-func (r Route[Req, Resp]) Use(mws ...middleware.Middleware) Route[Req, Resp] {
-	r.opts = append(slices.Clone(r.opts), WithMiddleware(mws...))
+//
+// mws accepts [middleware.RouteMiddleware] — both the legacy
+// [middleware.Middleware] (spec-only, unchanged) AND the codec-backed
+// [Middleware] mechanism, when bundled via [Middleware.WithReceive]/
+// [Middleware.WithSend] for route/channel-AGNOSTIC reuse (see
+// docs/design/d-0003-codec-declared-middlewares.md). Every existing call
+// site passing a [middleware.Middleware] value keeps compiling unchanged
+// — RouteMiddleware is a strict widening, not a breaking change.
+func (r Route[Req, Resp]) Use(mws ...middleware.RouteMiddleware) Route[Req, Resp] {
+	r.opts = append(slices.Clone(r.opts), routeMiddlewareOpt{mws: mws})
 	return r
 }
 
 // Use is [SSERoute]'s equivalent of [Route.Use] — see its doc comment for
 // the full chaining/immutability contract, which applies identically here.
-func (s SSERoute[Req, Event]) Use(mws ...middleware.Middleware) SSERoute[Req, Event] {
-	s.opts = append(slices.Clone(s.opts), WithMiddleware(mws...))
+func (s SSERoute[Req, Event]) Use(mws ...middleware.RouteMiddleware) SSERoute[Req, Event] {
+	s.opts = append(slices.Clone(s.opts), routeMiddlewareOpt{mws: mws})
 	return s
+}
+
+// routeMiddlewareContributor is implemented by [Middleware][In, Out] (via
+// its unexported applyAgnosticRoute method) to let [routeMiddlewareOpt]
+// apply a route/channel-AGNOSTIC codec-backed middleware's spec
+// contribution + (when bundled) runtime dispatch handler WITHOUT
+// routeMiddlewareOpt itself needing to know In/Out — RouteMiddleware
+// carries no type parameters on its own interface method, so the generic
+// work happens inside applyAgnosticRoute, where In/Out are still concrete.
+type routeMiddlewareContributor interface {
+	middleware.RouteMiddleware
+	applyAgnosticRoute(rb *routeBuilder)
+}
+
+// routeMiddlewareOpt is the [RouteOpt] returned by the widened [Route.Use]/
+// [SSERoute.Use] — dispatches each attached [middleware.RouteMiddleware] by
+// its concrete dynamic type. Legacy [middleware.Middleware] values are
+// applied exactly as before (via [middlewareOpt]); a codec-backed
+// [Middleware] value is applied via [routeMiddlewareContributor] — its
+// spec contribution is ALWAYS layered, and its runtime dispatch handler is
+// registered ONLY when bundled via WithReceive/WithSend (a Transform/
+// ClientTransform-only mw attached via .Use() contributes spec but has no
+// Fn to dispatch here — D7 rejects it separately if ALSO bundled).
+type routeMiddlewareOpt struct{ mws []middleware.RouteMiddleware }
+
+func (o routeMiddlewareOpt) applyRoute(rb *routeBuilder) {
+	for _, mw := range o.mws {
+		switch v := mw.(type) {
+		case middleware.Middleware:
+			middlewareOpt{mws: []middleware.Middleware{v}}.applyRoute(rb)
+		case routeMiddlewareContributor:
+			v.applyAgnosticRoute(rb)
+		}
+	}
 }
 
 // NOTE: WithClientMiddleware/Route.UseClient (the client-side counterpart
@@ -375,7 +417,45 @@ func applyMiddlewareDeclarations(rb *routeBuilder, routeLabel string) error {
 	if err := applySecurityDeclarations(rb, routeLabel); err != nil {
 		return err
 	}
+	if err := checkMiddlewareNameUniquenessAndAttachment(rb, routeLabel); err != nil {
+		return err
+	}
 	return applyParamDeclarations(rb, routeLabel)
+}
+
+// checkMiddlewareNameUniquenessAndAttachment enforces D6(b) and D7 from
+// docs/design/d-0003-codec-declared-middlewares.md, in the SAME resolution
+// pass that collects rb.middlewareSpecContributions for spec-layering
+// (§3) — no separate pass.
+//
+//   - D6(b): every attached codec-backed [Middleware]'s Declaration.Name
+//     must be unique per route/channel (across ALL Transform/
+//     ClientTransform attachments) — returns [DuplicateMiddlewareNameError]
+//     on the first repeat encountered.
+//   - D7: a [Middleware] value that is ALSO bundled (carries a
+//     WithReceive/WithSend Fn, the route/channel-AGNOSTIC .Use()
+//     attachment shape) must NOT ALSO be attached via Transform/
+//     ClientTransform on the SAME route/channel — returns
+//     [AmbiguousMiddlewareAttachmentError] when both are detected for one
+//     mw value.
+//
+// Covers BOTH attachment paths — plain .Use() (via
+// [Middleware.applyAgnosticRoute]) and Transform/ClientTransform — since
+// both feed rb.middlewareSpecContributions with the SAME name uniqueness
+// requirement; only Transform/ClientTransform-built contributions ever set
+// dualAttached (see [middlewareSpecContribution]).
+func checkMiddlewareNameUniquenessAndAttachment(rb *routeBuilder, routeLabel string) error {
+	seen := make(map[string]bool, len(rb.middlewareSpecContributions))
+	for _, mw := range rb.middlewareSpecContributions {
+		if seen[mw.name] {
+			return DuplicateMiddlewareNameError{Route: routeLabel, Name: mw.name}
+		}
+		seen[mw.name] = true
+		if mw.dualAttached {
+			return AmbiguousMiddlewareAttachmentError{Name: mw.name}
+		}
+	}
+	return nil
 }
 
 func applySecurityDeclarations(rb *routeBuilder, routeLabel string) error {
@@ -627,6 +707,27 @@ func applyParamDeclarations(rb *routeBuilder, routeLabel string) error {
 		}
 	}
 
+	// codec-backed Middleware[In,Out] contributions (attached via
+	// Transform/ClientTransform) — collected into the SAME
+	// already-added-names guard as legacy middleware.Middleware above (D4).
+	for _, mw := range rb.middlewareSpecContributions {
+		for _, s := range mw.reqHeaderParams {
+			request[s.Name] = append(request[s.Name], paramContribution{source: mw.name, kind: "header", required: s.Required})
+		}
+		for _, s := range mw.reqCookieParams {
+			request[s.Name] = append(request[s.Name], paramContribution{source: mw.name, kind: "cookie", required: s.Required})
+		}
+		for _, s := range mw.reqQueryParams {
+			request[s.Name] = append(request[s.Name], paramContribution{source: mw.name, kind: "query", required: s.Required})
+		}
+		for _, s := range mw.respHeaderParams {
+			response[s.Name] = append(response[s.Name], paramContribution{source: mw.name, kind: "response-header"})
+		}
+		for _, s := range mw.respCookieParams {
+			response[s.Name] = append(response[s.Name], paramContribution{source: mw.name, kind: "response-cookie"})
+		}
+	}
+
 	if err := checkParamConflicts(routeLabel, request); err != nil {
 		return err
 	}
@@ -678,6 +779,39 @@ func applyParamDeclarations(rb *routeBuilder, routeLabel string) error {
 		for _, s := range mw.ResponseCookieParams {
 			if !manualResponseNames[s.Name] && !addedResponseNames[s.Name] {
 				toResponseCookieParam(s).applyRoute(rb)
+				addedResponseNames[s.Name] = true
+			}
+		}
+	}
+
+	for _, mw := range rb.middlewareSpecContributions {
+		for _, s := range mw.reqHeaderParams {
+			if !manualRequestNames[s.Name] && !addedRequestNames[s.Name] {
+				s.applyRoute(rb)
+				addedRequestNames[s.Name] = true
+			}
+		}
+		for _, s := range mw.reqCookieParams {
+			if !manualRequestNames[s.Name] && !addedRequestNames[s.Name] {
+				s.applyRoute(rb)
+				addedRequestNames[s.Name] = true
+			}
+		}
+		for _, s := range mw.reqQueryParams {
+			if !manualRequestNames[s.Name] && !addedRequestNames[s.Name] {
+				s.applyRoute(rb)
+				addedRequestNames[s.Name] = true
+			}
+		}
+		for _, s := range mw.respHeaderParams {
+			if !manualResponseNames[s.Name] && !addedResponseNames[s.Name] {
+				s.applyRoute(rb)
+				addedResponseNames[s.Name] = true
+			}
+		}
+		for _, s := range mw.respCookieParams {
+			if !manualResponseNames[s.Name] && !addedResponseNames[s.Name] {
+				s.applyRoute(rb)
 				addedResponseNames[s.Name] = true
 			}
 		}

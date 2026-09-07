@@ -111,3 +111,37 @@ func SetCookie(w http.ResponseWriter, name, value string, opts CookieOptions) er
 	})
 	return nil
 }
+
+// cookieOptionsFrom translates a codec-declared [rest.CookieAttributes]
+// (the transport-agnostic api/rest declaration, populated via
+// [rest.MergedResponseCookieParam.WithAttributes]) into this adapter's own
+// [CookieOptions] — the zero value of rest.CookieAttributes translates to
+// the zero value of CookieOptions, so a merge-derived cookie with no
+// declared attributes behaves EXACTLY as it did before this mechanism
+// existed.
+func cookieOptionsFrom(a rest.CookieAttributes) CookieOptions {
+	return CookieOptions{
+		Path:     a.Path,
+		Domain:   a.Domain,
+		MaxAge:   a.MaxAge,
+		SameSite: sameSiteFrom(a.SameSite),
+		Insecure: a.Insecure,
+		AllowJS:  a.AllowJS,
+	}
+}
+
+// sameSiteFrom translates [rest.CookieSameSite] to [http.SameSite].
+// rest.SameSiteDefault maps to the zero http.SameSite value, which
+// [SetCookie] itself already defaults to http.SameSiteStrictMode.
+func sameSiteFrom(s rest.CookieSameSite) http.SameSite {
+	switch s {
+	case rest.SameSiteLax:
+		return http.SameSiteLaxMode
+	case rest.SameSiteStrict:
+		return http.SameSiteStrictMode
+	case rest.SameSiteNone:
+		return http.SameSiteNoneMode
+	default:
+		return 0
+	}
+}

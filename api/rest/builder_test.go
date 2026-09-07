@@ -1289,6 +1289,85 @@ func TestSSERouteHandle_ValidateResponseHeaders_invalid(t *testing.T) {
 	}
 }
 
+// ── SSERouteHandle response header/cookie MERGE fields (closes the gap
+// identified in docs/design/d-0003-codec-declared-middlewares.md's SSE
+// migration section) ──
+
+func TestSSERouteHandle_EncodeResponseMergeFields_RegisterHandle(t *testing.T) {
+	b := rest.NewServer(testInfo)
+	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream3",
+		createReqCodec, sseEventCodec,
+		rest.NewRequiredResponseHeaderParam("X-Correlation-Id", codex.String(),
+			func(e sseEvent) string { return e.Message },
+			func(e *sseEvent, v string) { e.Message = v },
+		),
+	).RegisterHandle(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := h.ResponseHeaderMergeFields(); len(got) != 1 {
+		t.Fatalf("want 1 response header merge field, got %d", len(got))
+	}
+	headers, cookies, err := h.EncodeResponseMergeFields(sseEvent{Message: "corr-123"})
+	if err != nil {
+		t.Fatalf("EncodeResponseMergeFields: %v", err)
+	}
+	if headers["X-Correlation-Id"] != "corr-123" {
+		t.Errorf("want X-Correlation-Id=corr-123, got %+v", headers)
+	}
+	if len(cookies) != 0 {
+		t.Errorf("want no cookies, got %+v", cookies)
+	}
+}
+
+func TestSSERouteHandle_EncodeResponseMergeFields_ClientHandle(t *testing.T) {
+	h := rest.NewSSERoute[createReq, sseEvent]("/stream4",
+		createReqCodec, sseEventCodec,
+		rest.NewRequiredResponseCookieParam("session", codex.String(),
+			func(e sseEvent) string { return e.Message },
+			func(e *sseEvent, v string) { e.Message = v },
+		),
+	).ClientHandle()
+
+	if got := h.ResponseCookieMergeFields(); len(got) != 1 {
+		t.Fatalf("want 1 response cookie merge field, got %d", len(got))
+	}
+	_, cookies, err := h.EncodeResponseMergeFields(sseEvent{Message: "sess-456"})
+	if err != nil {
+		t.Fatalf("EncodeResponseMergeFields: %v", err)
+	}
+	if cookies["session"] != "sess-456" {
+		t.Errorf("want session=sess-456, got %+v", cookies)
+	}
+}
+
+// TestSSERouteHandle_EncodeResponseCookieAttributes exercises
+// the declarative cookie-attributes mechanism's SSE mirror of the
+// plain-Route mechanism.
+func TestSSERouteHandle_EncodeResponseCookieAttributes(t *testing.T) {
+	b := rest.NewServer(testInfo)
+	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream5",
+		createReqCodec, sseEventCodec,
+		rest.NewRequiredResponseCookieParam("session", codex.String(),
+			func(e sseEvent) string { return e.Message },
+			func(e *sseEvent, v string) { e.Message = v },
+		).WithAttributes(func(e sseEvent) rest.CookieAttributes {
+			return rest.CookieAttributes{MaxAge: 1800, Insecure: true}
+		}),
+	).RegisterHandle(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attrs := h.EncodeResponseCookieAttributes(sseEvent{Message: "sess-789"})
+	got, ok := attrs["session"]
+	if !ok {
+		t.Fatalf("want attrs for %q, got %+v", "session", attrs)
+	}
+	if got.MaxAge != 1800 || !got.Insecure {
+		t.Errorf("want MaxAge=1800 Insecure=true, got %+v", got)
+	}
+}
+
 func TestSSERouteHandle_responseHeaderParams_populated(t *testing.T) {
 	b := rest.NewServer(testInfo)
 	strCodec := codex.String()
@@ -2693,6 +2772,51 @@ func TestResponseCookieMergeParam_RegistersSpecAndMergeField(t *testing.T) {
 	}
 	if len(h.ResponseCookieMergeFields()) != 1 {
 		t.Fatalf("ResponseCookieMergeFields: want 1, got %d", len(h.ResponseCookieMergeFields()))
+	}
+}
+
+// TestMergedResponseCookieParam_WithAttributes_EncodesDeclaredAttributes
+// exercises the declarative cookie-attributes mechanism's core behavior:
+// a cookie's Set-Cookie ATTRIBUTES (not just its value) declared alongside
+// the value, derived from the SAME Resp.
+func TestMergedResponseCookieParam_WithAttributes_EncodesDeclaredAttributes(t *testing.T) {
+	b := rest.NewServer(testInfo)
+	h, err := rest.NewRoute[createReq, userRespWithMeta]("POST", "/users", createReqCodec, userRespWithMetaBodyCodec,
+		rest.NewRequiredResponseCookieParam("session", codex.String().Refine(validate.NonEmptyString),
+			func(u userRespWithMeta) string { return u.Session },
+			func(u *userRespWithMeta, v string) { u.Session = v },
+		).WithAttributes(func(u userRespWithMeta) rest.CookieAttributes {
+			return rest.CookieAttributes{MaxAge: 3600, Insecure: true}
+		}),
+	).RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	attrs := h.EncodeResponseCookieAttributes(userRespWithMeta{Session: "sess-abc"})
+	got, ok := attrs["session"]
+	if !ok {
+		t.Fatalf("want attrs for %q, got %+v", "session", attrs)
+	}
+	if got.MaxAge != 3600 || !got.Insecure {
+		t.Errorf("want MaxAge=3600 Insecure=true, got %+v", got)
+	}
+}
+
+// TestMergedResponseCookieParam_NoAttributes_ReturnsNil confirms the
+// no-WithAttributes-called path returns nil (100% backward compatible with
+// the prior, pre-cookie-attributes behavior).
+func TestMergedResponseCookieParam_NoAttributes_ReturnsNil(t *testing.T) {
+	b := rest.NewServer(testInfo)
+	h, err := rest.NewRoute[createReq, userRespWithMeta]("POST", "/users2", createReqCodec, userRespWithMetaBodyCodec,
+		rest.NewRequiredResponseCookieParam("session", codex.String().Refine(validate.NonEmptyString),
+			func(u userRespWithMeta) string { return u.Session },
+			func(u *userRespWithMeta, v string) { u.Session = v }),
+	).RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if attrs := h.EncodeResponseCookieAttributes(userRespWithMeta{Session: "sess-abc"}); attrs != nil {
+		t.Errorf("want nil attrs when WithAttributes never called, got %+v", attrs)
 	}
 }
 

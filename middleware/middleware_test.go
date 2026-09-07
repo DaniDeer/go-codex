@@ -21,6 +21,26 @@ func TestMiddleware_ZeroValue(t *testing.T) {
 	}
 }
 
+func TestMiddleware_SatisfiesRouteMiddleware(t *testing.T) {
+	var _ middleware.RouteMiddleware = middleware.Middleware{}
+	var _ middleware.RouteMiddleware = middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
+}
+
+func TestNewDeclaration_BuildsExpectedShape(t *testing.T) {
+	inCodec := codex.String()
+	outCodec := codex.Int()
+	decl := middleware.NewDeclaration("session-cookie-policy", inCodec, outCodec)
+	if decl.Name != "session-cookie-policy" {
+		t.Errorf("want Name %q, got %q", "session-cookie-policy", decl.Name)
+	}
+	if err := decl.InCodec.Validate("anything"); err != nil {
+		t.Errorf("want InCodec to validate a plain string, got error: %v", err)
+	}
+	if err := decl.OutCodec.Validate(42); err != nil {
+		t.Errorf("want OutCodec to validate a plain int, got error: %v", err)
+	}
+}
+
 func TestServerImplementation_ZeroValue(t *testing.T) {
 	var impl middleware.ServerImplementation
 	if impl.Name != "" || impl.Fn != nil || impl.Satisfies != nil {

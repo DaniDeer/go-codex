@@ -163,6 +163,88 @@ func TestMQTT5PublishAdapter_PublishesEachItem(t *testing.T) {
 	}
 }
 
+// TestMQTT5PublishAdapter_DeclaredAttributes_UsedAsFallback exercises
+// the declarative MQTT QoS/Retained mechanism: a declared
+// events.PublishAttributes (via Publisher.WithAttributes) is used as the
+// FALLBACK default when opts.QoS/Retained are both left at their zero
+// value.
+func TestMQTT5PublishAdapter_DeclaredAttributes_UsedAsFallback(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{}
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	handle, err := events.NewChannel[sensorReading]("sensors/data2", sensorCodec).
+		WithPublish(events.Publish{Summary: "Sensor reading"}).
+		WithAttributes(func(r sensorReading) events.PublishAttributes {
+			return events.PublishAttributes{QoS: events.QoSExactlyOnce, Retained: true}
+		}).
+		Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	ch := make(chan sensorReading, 1)
+	ch <- sensorReading{SensorID: "550e8400-e29b-41d4-a716-446655440000", Value: 1.0}
+	close(ch)
+
+	p, err := ports.NewSinkPort[sensorReading]("test2", sensorCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	p.Bind(ctx, PublishAdapter(client, handle, format.JSON(sensorCodec), MQTT5DrainPublishOptions{}))
+	p.Feed(ctx, gstream.From(ctx, ch))
+
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if len(client.published) != 1 {
+		t.Fatalf("want 1 published, got %d", len(client.published))
+	}
+	msg := client.published[0]
+	if msg.QoS != 2 {
+		t.Errorf("want declared QoS 2, got %d", msg.QoS)
+	}
+	if !msg.Retain {
+		t.Error("want declared Retained true")
+	}
+}
+
+// TestMQTT5PublishAdapter_ExplicitOptionsOverrideDeclared confirms an
+// explicit MQTT5DrainPublishOptions.QoS/.Retained still wins over declared
+// PublishAttributes.
+func TestMQTT5PublishAdapter_ExplicitOptionsOverrideDeclared(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{}
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	handle, err := events.NewChannel[sensorReading]("sensors/data3", sensorCodec).
+		WithPublish(events.Publish{Summary: "Sensor reading"}).
+		WithAttributes(func(r sensorReading) events.PublishAttributes {
+			return events.PublishAttributes{QoS: events.QoSExactlyOnce, Retained: true}
+		}).
+		Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	ch := make(chan sensorReading, 1)
+	ch <- sensorReading{SensorID: "550e8400-e29b-41d4-a716-446655440000", Value: 1.0}
+	close(ch)
+
+	p, err := ports.NewSinkPort[sensorReading]("test3", sensorCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	p.Bind(ctx, PublishAdapter(client, handle, format.JSON(sensorCodec), MQTT5DrainPublishOptions{QoS: 1}))
+	p.Feed(ctx, gstream.From(ctx, ch))
+
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if len(client.published) != 1 {
+		t.Fatalf("want 1 published, got %d", len(client.published))
+	}
+	if got := client.published[0].QoS; got != 1 {
+		t.Errorf("want explicit QoS 1 to win over declared QoS 2, got %d", got)
+	}
+}
+
 func TestMQTT5PublishAdapter_StreamErrorsForwardedToOnError(t *testing.T) {
 	ctx := context.Background()
 	client := &mockClient{}

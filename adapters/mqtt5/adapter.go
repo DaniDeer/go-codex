@@ -284,7 +284,13 @@ func makeSubscribeMessageHandler[T any](
 		// merge-capable topic params (backward compatible: identical
 		// behavior to today when none are declared). Mirrors REST's
 		// request-merge wiring (see [rest.RouteHandle.DecodeMerged]).
-		if mergeFields := handle.MergeFields(); len(mergeFields) > 0 {
+		//
+		// topicVars is ALSO needed by codec-backed middleware dispatch
+		// below (Transform/bundled .Use()) — computed once here, unioned
+		// with the mergeFields>0 gate so it's derived whenever EITHER
+		// needs it.
+		var topicVars map[string]string
+		if mergeFields := handle.MergeFields(); len(mergeFields) > 0 || len(handle.MiddlewareHandlers) > 0 {
 			vars, varErr := TopicVarsFromMessage(handle, msg)
 			if varErr != nil {
 				stats.ReportErrors(obs, "topic_var", varErr)
@@ -294,13 +300,16 @@ func makeSubscribeMessageHandler[T any](
 				}
 				return
 			}
-			if mergeErr := codex.DecodeVars(&value, vars, mergeFields...); mergeErr != nil {
-				stats.ReportErrors(obs, "topic_var", mergeErr)
-				obs.RecordSubscribe(msg.Topic, false, time.Since(start))
-				if opts.OnError != nil {
-					opts.OnError(SubscribeError{Kind: KindDecode, Topic: msg.Topic, Err: mergeErr})
+			topicVars = vars
+			if len(mergeFields) > 0 {
+				if mergeErr := codex.DecodeVars(&value, vars, mergeFields...); mergeErr != nil {
+					stats.ReportErrors(obs, "topic_var", mergeErr)
+					obs.RecordSubscribe(msg.Topic, false, time.Since(start))
+					if opts.OnError != nil {
+						opts.OnError(SubscribeError{Kind: KindDecode, Topic: msg.Topic, Err: mergeErr})
+					}
+					return
 				}
-				return
 			}
 		}
 
@@ -380,6 +389,39 @@ func makeSubscribeMessageHandler[T any](
 				obs.RecordSubscribe(msg.Topic, false, time.Since(start))
 				if opts.OnError != nil {
 					opts.OnError(SubscribeError{Kind: KindSecurity, Topic: msg.Topic, Err: events.SecurityError{Err: err}})
+				}
+				return
+			}
+		}
+
+		// Codec-backed middleware dispatch (Transform and bundled .Use())
+		// — SAME pre-handler dispatch point runSubscribeSecurityImpls just
+		// ran at (D1), reusing the SAME topicVars derived above. A fn
+		// error is ErrorPattern-eligible (D2), falling back to
+		// events.MiddlewareError when unmatched — mirrors REST's identical
+		// resolution.
+		if len(handle.MiddlewareHandlers) > 0 {
+			if err := dispatchSubscribeMiddlewareHandlers(msgCtx, &value, handle.MiddlewareHandlers, topicVars); err != nil {
+				obs.RecordSubscribe(msg.Topic, false, time.Since(start))
+				var dispatchErr middlewareDispatchError
+				errors.As(err, &dispatchErr)
+				if dispatchErr.isFnError {
+					if resp, matched, matchErr := handle.ErrorResponseFor(dispatchErr.err); matched && matchErr == nil && resp.Action == events.ErrorRespond {
+						if _, pubErr := client.Publish(ctx, &pahomqtt5.Publish{
+							Topic:   resp.Topic,
+							Payload: resp.Body,
+						}); pubErr != nil {
+							stats.ReportErrors(obs, "error_channel", pubErr)
+						}
+						return
+					}
+					if opts.OnError != nil {
+						opts.OnError(SubscribeError{Kind: KindHandler, Topic: msg.Topic, Err: events.MiddlewareError{Name: dispatchErr.name, Err: dispatchErr.err}})
+					}
+					return
+				}
+				if opts.OnError != nil {
+					opts.OnError(SubscribeError{Kind: KindDecode, Topic: msg.Topic, Err: dispatchErr.err})
 				}
 				return
 			}
@@ -713,6 +755,24 @@ func publish[T any](
 	if to, ok := obs.(stats.TraceObserver); ok {
 		ctx = to.StartSpan(ctx, "mqtt5.publish", handle.Topic)
 		defer func() { to.EndSpan(ctx, err) }()
+	}
+
+	// Codec-backed middleware dispatch (ClientTransform and bundled
+	// .Use()) — SAME pre-publish dispatch point runPublishSecurityImpls
+	// runs at below, but derived FIRST since a middleware's own Out may
+	// contribute ADDITIONAL topic vars BuildTopic needs. D3-equivalent
+	// precedence: explicit/channel-own vars (the vars param, already
+	// final by the time it reaches this function — see
+	// [publishHandle]'s own derivation) wins over middleware-derived vars
+	// on a key collision.
+	if len(handle.ClientMiddlewareHandlers) > 0 {
+		mwVars, mwErr := dispatchPublishMiddlewareHandlers(ctx, msg, handle.ClientMiddlewareHandlers)
+		if mwErr != nil {
+			obs.RecordPublish(handle.Topic, false, time.Since(start))
+			err = mwErr
+			return err
+		}
+		vars = overrideDerivedVars(mwVars, vars)
 	}
 
 	topic := handle.Topic

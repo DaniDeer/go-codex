@@ -100,6 +100,79 @@ func TestPublishAdapter_PublishesEachItem(t *testing.T) {
 	}
 }
 
+// TestPublishAdapter_DeclaredAttributes_UsedAsFallback exercises
+// the declarative MQTT QoS/Retained mechanism: a declared
+// events.PublishAttributes (via Publisher.WithAttributes) is used as the
+// FALLBACK default when opts.QoS/Retained are both left at their zero
+// value.
+func TestPublishAdapter_DeclaredAttributes_UsedAsFallback(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{token: newCompletedToken(nil)}
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	handle, err := events.NewChannel[userEvent]("user/created2", userEventCodec).
+		WithPublish(events.Publish{Summary: "User created"}).
+		WithAttributes(func(e userEvent) events.PublishAttributes {
+			return events.PublishAttributes{QoS: events.QoSExactlyOnce, Retained: true}
+		}).
+		Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	ch := make(chan userEvent, 1)
+	ch <- userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
+	close(ch)
+
+	p, err := ports.NewSinkPort[userEvent]("test2", userEventCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	p.Bind(ctx, PublishAdapter(client, handle, format.JSON(userEventCodec), MQTTDrainPublishOptions{}))
+	p.Feed(ctx, gstream.From(ctx, ch))
+
+	qos, retained := client.publishedQoSRetainedSnapshot()
+	if qos != 2 {
+		t.Errorf("want declared QoS 2, got %d", qos)
+	}
+	if !retained {
+		t.Error("want declared Retained true")
+	}
+}
+
+// TestPublishAdapter_ExplicitOptionsOverrideDeclared confirms an explicit
+// MQTTDrainPublishOptions.QoS/.Retained still wins over declared
+// PublishAttributes.
+func TestPublishAdapter_ExplicitOptionsOverrideDeclared(t *testing.T) {
+	ctx := context.Background()
+	client := &mockClient{token: newCompletedToken(nil)}
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	handle, err := events.NewChannel[userEvent]("user/created3", userEventCodec).
+		WithPublish(events.Publish{Summary: "User created"}).
+		WithAttributes(func(e userEvent) events.PublishAttributes {
+			return events.PublishAttributes{QoS: events.QoSExactlyOnce, Retained: true}
+		}).
+		Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	ch := make(chan userEvent, 1)
+	ch <- userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
+	close(ch)
+
+	p, err := ports.NewSinkPort[userEvent]("test3", userEventCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	p.Bind(ctx, PublishAdapter(client, handle, format.JSON(userEventCodec), MQTTDrainPublishOptions{QoS: 1}))
+	p.Feed(ctx, gstream.From(ctx, ch))
+
+	qos, _ := client.publishedQoSRetainedSnapshot()
+	if qos != 1 {
+		t.Errorf("want explicit QoS 1 to win over declared QoS 2, got %d", qos)
+	}
+}
+
 // R1B-adoption-1: an upstream stream error matching a declared
 // events.ErrorChannel pattern publishes the typed error payload to the
 // declared error topic instead of calling OnError.

@@ -3,6 +3,7 @@ package nethttp
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -96,6 +97,7 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 	secSchemes, _ := elem.FieldByName("SecuritySchemes").Interface().(map[string]rest.SecurityScheme)
 	globalSecurity, _ := elem.FieldByName("GlobalSecurity").Interface().([]route.SecurityRequirement)
 	impls, _ := elem.FieldByName("Implementations").Interface().([]middleware.ServerImplementation)
+	middlewareHandlers, _ := elem.FieldByName("MiddlewareHandlers").Interface().([]rest.MiddlewareHandler)
 	handlerOptsAny := elem.FieldByName("HandlerOpts").Interface()
 	handlerFnVal := elem.FieldByName("HandlerFn")
 	if handlerFnVal.IsNil() {
@@ -193,6 +195,51 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 			return
 		}
 
+		// Codec-backed middleware dispatch (TransformSSE/ClientTransformSSE
+		// and bundled .Use()) — SAME pre-handler dispatch point plain Route
+		// uses (D1), reusing runMiddlewareHandlersReflect/middlewareDispatchError
+		// verbatim from serve.go. SSE has no ErrorResponseFor (no declared
+		// ErrorPattern concept exists for SSE at all today — mirrors how
+		// SSE's own handler errors below have never consulted one either),
+		// so a fn error always falls back to rest.MiddlewareError directly.
+		middlewareOuts, mwErr := runMiddlewareHandlersReflect(ctx, reqPtr, middlewareHandlers, headerVars, cookieVars, queryVars)
+		if mwErr != nil {
+			var dispatchErr middlewareDispatchError
+			errors.As(mwErr, &dispatchErr)
+			if !dispatchErr.isFnError {
+				errFn(sw, r, http.StatusBadRequest, dispatchErr.err)
+				return
+			}
+			errFn(sw, r, http.StatusBadRequest, rest.MiddlewareError{Name: dispatchErr.name, Err: dispatchErr.err})
+			return
+		}
+		// Compose every middleware's OWN response header/cookie values
+		// (derived from its Out, already produced pre-handler above) —
+		// BEFORE SSE's own headers are committed below, per
+		// docs/design/d-0003-codec-declared-middlewares.md's "Out-side"
+		// SSE migration note.
+		for i, mh := range middlewareHandlers {
+			mwHeaders, mwCookies, encErr := mh.EncodeOut(middlewareOuts[i])
+			if encErr != nil {
+				errFn(sw, r, http.StatusInternalServerError, encErr)
+				return
+			}
+			for k, v := range mwHeaders {
+				responseHeaders.Set(k, v)
+			}
+			var mwCookieAttrs map[string]rest.CookieAttributes
+			if mh.EncodeOutCookieAttrs != nil {
+				mwCookieAttrs, encErr = mh.EncodeOutCookieAttrs(middlewareOuts[i])
+				if encErr != nil {
+					errFn(sw, r, http.StatusInternalServerError, encErr)
+					return
+				}
+			}
+			for k, v := range mwCookies {
+				pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v, Opts: cookieOptionsFrom(mwCookieAttrs[k])})
+			}
+		}
+
 		// SSE headers — must be set before WriteHeader.
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
@@ -273,6 +320,30 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 			}
 			if !headersCommitted {
 				headersCommitted = true
+				// Derive the SSE route's OWN response header/cookie
+				// merge-field values (NewRequiredResponseHeaderParam/
+				// NewRequiredResponseCookieParam declared directly on the
+				// route, not via TransformSSE) from the FIRST event sent —
+				// mirrors plain Route's EncodeResponseMergeFields dispatch,
+				// composing alongside (registration-order, before) the
+				// middleware-derived values already gathered above.
+				ownMergeResults := elem.Addr().MethodByName("EncodeResponseMergeFields").Call([]reflect.Value{e})
+				ownHeaders, _ := ownMergeResults[0].Interface().(map[string]string)
+				ownCookies, _ := ownMergeResults[1].Interface().(map[string]string)
+				if errI := ownMergeResults[2].Interface(); errI != nil {
+					err := errI.(error)
+					reportResponseHeaderErrors(ctx, err)
+					reportResponseCookieErrors(ctx, err)
+					return retErr(err)
+				}
+				for k, v := range ownHeaders {
+					responseHeaders.Set(k, v)
+				}
+				ownCookieAttrsResults := elem.Addr().MethodByName("EncodeResponseCookieAttributes").Call([]reflect.Value{e})
+				ownCookieAttrs, _ := ownCookieAttrsResults[0].Interface().(map[string]rest.CookieAttributes)
+				for k, v := range ownCookies {
+					pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v, Opts: cookieOptionsFrom(ownCookieAttrs[k])})
+				}
 				if errV := callErr(elem.Addr(), "ValidateResponseHeaders", reflect.ValueOf(responseHeaderValues(responseHeaders))); errV != nil {
 					reportResponseHeaderErrors(ctx, errV)
 					return retErr(errV)

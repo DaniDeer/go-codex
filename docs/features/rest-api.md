@@ -648,6 +648,31 @@ if err := nethttp.SetCookie(w, "session_token", newToken, nethttp.CookieOptions{
 }); err != nil { /* rest.CookieParamError */ }
 ```
 
+### Declarative response cookie ATTRIBUTES
+
+A merge-derived response cookie's NAME/VALUE has always been declarative
+(above) — its Set-Cookie ATTRIBUTES (`MaxAge`/`Secure`/`SameSite`/`Path`/
+`Domain`/`HttpOnly`) are too, via `MergedResponseCookieParam.WithAttributes`:
+
+```go
+sessionCodec := codex.String().Refine(validate.MinLen(8))
+createUser := rest.NewRoute[CreateUserReq, User]("POST", "/users", ...,
+    rest.NewRequiredResponseCookieParam("session", sessionCodec,
+        func(u User) string { return "sess-" + u.ID + "-token" },
+        func(u *User, v string) {},
+    ).WithAttributes(func(u User) rest.CookieAttributes {
+        return rest.CookieAttributes{MaxAge: 3600, Insecure: true}
+    }),
+)
+```
+
+No handler-side or adapter-specific `WithResponseCookies`/`PendingCookie.Opts`
+staging needed — both the cookie's value AND its attributes derive straight
+from the handler's returned `Resp`. `rest.Middleware[In,Out].WithResponseCookie(...).WithAttributes(...)`
+works identically when attached via `Transform`. See
+[Codec-Backed Middleware](#codec-backed-middleware-transformclienttransform)
+above.
+
 ## Builder options
 
 | Option | Effect |
@@ -674,10 +699,68 @@ yamlBytes, _ := openapi.MarshalYAML(map[string]schema.Schema{
 })
 ```
 
+## Codec-backed middleware (`Transform`/`ClientTransform`)
+
+A `Middleware[In, Out]` value declares a REUSABLE, codec-backed enrichment/
+enforcement concern independent of any one route's `Req`/`Resp` — its own
+`In`/`Out` types validate through their own codecs, and its own header/
+cookie/query merge fields (`WithRequestHeader`/`WithRequestCookie`/
+`WithRequestQuery`/`WithResponseHeader`/`WithResponseCookie`) reuse the SAME
+constructors a route's own `Req`/`Resp` already use — no new param
+vocabulary.
+
+Two attachment styles:
+
+- **Route-BOUND**, via `rest.Transform`/`rest.ClientTransform` (and their
+  SSE-route counterparts `rest.TransformSSE`/`rest.ClientTransformSSE`) — fn
+  additionally receives the route's own already-decoded `req *Req`
+  (server) / `req Req` (client), for concerns that need to read or enrich
+  it:
+
+  ```go
+  apiKeyPolicy := rest.NewMiddleware(
+      middleware.NewDeclaration("api-key-policy", apiKeyInCodec, apiKeyOutCodec),
+  ).WithRequestHeader(rest.NewRequiredHeaderParam("X-API-Key", codex.String(),
+      func(in APIKeyIn) string { return in.Key },
+      func(in *APIKeyIn, v string) { in.Key = v },
+  ))
+
+  route = rest.Transform(route, apiKeyPolicy,
+      func(ctx context.Context, req *GetProfileReq, in APIKeyIn) (APIKeyOut, error) {
+          return APIKeyOut{Validated: true}, nil
+      })
+  ```
+
+- **Route-AGNOSTIC**, via `Middleware.WithReceive`/`Middleware.WithSend`
+  bundling a `Req`-free fn directly onto the value, attached via plain
+  `.Use(mw)` — reusable verbatim across many routes with different `Req`
+  types:
+
+  ```go
+  reusablePolicy := apiKeyPolicy.WithReceive(func(ctx context.Context, in APIKeyIn) (APIKeyOut, error) {
+      return APIKeyOut{Validated: true}, nil
+  })
+  routeA = routeA.Use(reusablePolicy)
+  routeB = routeB.Use(reusablePolicy)
+  ```
+
+A middleware `fn`'s own business error is `ErrorPattern`-eligible (matched
+the SAME way a handler error is) before falling back to
+`rest.MiddlewareError{Name, Err}` (status 400). Attaching two
+`Middleware[In,Out]` values with the same `Declaration.Name` to one route
+returns `rest.DuplicateMiddlewareNameError`; combining BOTH attachment
+styles on one value returns `rest.AmbiguousMiddlewareAttachmentError`. See
+[D-0003 — Codec-Declared Middlewares](../design/d-0003-codec-declared-middlewares.md)
+for the full design.
+
 ## Error types
 
 | Error | When returned |
 |---|---|
+| `rest.MiddlewareInputError{Name, Err}` | A `Middleware`'s `In` fails to decode/validate |
+| `rest.MiddlewareError{Name, Err}` | A middleware `fn`'s own error, unmatched by any `ErrorPattern` |
+| `rest.DuplicateMiddlewareNameError{Route, Name}` | Two `Middleware` values share a `Declaration.Name` on one route |
+| `rest.AmbiguousMiddlewareAttachmentError{Name}` | One `Middleware` value combines bundled AND bound attachment |
 | `rest.InvalidPathError{Path, Err}` | Path fails builder-level validation |
 | `rest.PathParamError{Name, Value, Err}` | Path variable fails its codec |
 | `rest.MissingPathVarError{Name}` | Path variable absent from vars map |

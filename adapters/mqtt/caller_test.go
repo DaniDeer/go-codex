@@ -273,6 +273,59 @@ func TestServeSubscribers_SubscribesEveryEntryAndBlocks(t *testing.T) {
 	}
 }
 
+// TestServeSubscribers_DeclaredQoS_UsedAsFallback exercises
+// the declarative MQTT QoS/Retained mechanism: a declared
+// events.Subscribe.QoS is used as the FALLBACK default when no explicit
+// SubscribeOptions.QoS override is set.
+func TestServeSubscribers_DeclaredQoS_UsedAsFallback(t *testing.T) {
+	client := &mockClient{token: newCompletedToken(nil)}
+	ev := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	caller := newCaller(client, ev)
+
+	ch := events.NewChannel[sensorReading]("sensors/declared-qos", sensorCodec)
+	sub := ch.WithSubscribe(events.Subscribe{QoS: events.QoSExactlyOnce}).
+		WithHandler(func(context.Context, sensorReading) error { return nil })
+	if err := sub.Register(ev); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- caller.ServeSubscribers(ctx) }()
+	<-done
+
+	if got := client.subscribedQoSSnapshot(); got != 2 {
+		t.Errorf("want QoS 2 from declared Subscribe.QoS fallback, got %d", got)
+	}
+}
+
+// TestServeSubscribers_ExplicitQoSOverridesDeclared confirms an explicit
+// SubscribeOptions.QoS (non-zero) still wins over a declared Subscribe.QoS.
+func TestServeSubscribers_ExplicitQoSOverridesDeclared(t *testing.T) {
+	client := &mockClient{token: newCompletedToken(nil)}
+	ev := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	caller := newCaller(client, ev)
+
+	ch := events.NewChannel[sensorReading]("sensors/explicit-qos", sensorCodec)
+	sub := ch.WithSubscribe(events.Subscribe{QoS: events.QoSExactlyOnce}).
+		WithHandler(func(context.Context, sensorReading) error { return nil }).
+		WithOptions(SubscribeOptions{QoS: 1})
+	if err := sub.Register(ev); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- caller.ServeSubscribers(ctx) }()
+	<-done
+
+	if got := client.subscribedQoSSnapshot(); got != 1 {
+		t.Errorf("want explicit QoS 1 to win over declared QoS 2, got %d", got)
+	}
+}
+
 // TestServeSubscribers_SecurityRejection_CallsSecurityObserver is a
 // regression test for a finding from the pubsub-workflow-simplification
 // consistency review: ServeSubscribers's security-rejection path must

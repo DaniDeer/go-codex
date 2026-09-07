@@ -386,7 +386,13 @@ func subscribeWithHandle[T any](
 		// merge-capable topic params (backward compatible: identical
 		// behavior to today when none are declared). Mirrors mqtt5's
 		// makeSubscribeMessageHandler wiring.
-		if mergeFields := handle.MergeFields(); len(mergeFields) > 0 {
+		//
+		// topicVars is ALSO needed by codec-backed middleware dispatch
+		// below (Transform/bundled .Use()) — computed once here, unioned
+		// with the mergeFields>0 gate so it's derived whenever EITHER
+		// needs it.
+		var topicVars map[string]string
+		if mergeFields := handle.MergeFields(); len(mergeFields) > 0 || len(handle.MiddlewareHandlers) > 0 {
 			vars, varErr := TopicVarsFromMessage(handle, topic)
 			if varErr != nil {
 				stats.ReportErrors(obs, "topic_var", varErr)
@@ -396,6 +402,7 @@ func subscribeWithHandle[T any](
 				}
 				continue
 			}
+			topicVars = vars
 			if mergeErr := codex.DecodeVars(&value, vars, mergeFields...); mergeErr != nil {
 				stats.ReportErrors(obs, "topic_var", mergeErr)
 				obs.RecordSubscribe(topic, false, time.Since(start))
@@ -434,6 +441,36 @@ func subscribeWithHandle[T any](
 				obs.RecordSubscribe(topic, false, time.Since(start))
 				if opts.OnError != nil {
 					opts.OnError(SubscribeError{Kind: KindSecurity, Topic: topic, Err: events.SecurityError{Err: err}})
+				}
+				continue
+			}
+		}
+
+		// Codec-backed middleware dispatch (Transform and bundled .Use())
+		// — SAME pre-handler dispatch point runSubscribeSecurityImpls just
+		// ran at (D1), reusing the SAME topicVars derived above. A fn
+		// error is ErrorPattern-eligible (D2), falling back to
+		// events.MiddlewareError when unmatched — mirrors mqtt5's
+		// identical resolution.
+		if len(handle.MiddlewareHandlers) > 0 {
+			if mwErr := dispatchSubscribeMiddlewareHandlers(ctx, &value, handle.MiddlewareHandlers, topicVars); mwErr != nil {
+				obs.RecordSubscribe(topic, false, time.Since(start))
+				var dispatchErr middlewareDispatchError
+				errors.As(mwErr, &dispatchErr)
+				if dispatchErr.isFnError {
+					if resp, matched, matchErr := handle.ErrorResponseFor(dispatchErr.err); matched && matchErr == nil && resp.Action == events.ErrorRespond {
+						if pubErr := sock.SendFrames([][]byte{[]byte(resp.Topic), resp.Body}); pubErr != nil {
+							stats.ReportErrors(obs, "error_channel", pubErr)
+						}
+						continue
+					}
+					if opts.OnError != nil {
+						opts.OnError(SubscribeError{Kind: KindHandler, Topic: topic, Err: events.MiddlewareError{Name: dispatchErr.name, Err: dispatchErr.err}})
+					}
+					continue
+				}
+				if opts.OnError != nil {
+					opts.OnError(SubscribeError{Kind: KindDecode, Topic: topic, Err: dispatchErr.err})
 				}
 				continue
 			}
@@ -646,6 +683,22 @@ func publish[T any](
 	if to, ok := obs.(stats.TraceObserver); ok {
 		ctx = to.StartSpan(ctx, "zmq.publish", handle.Topic)
 		defer func() { to.EndSpan(ctx, err) }()
+	}
+
+	// Codec-backed middleware dispatch (ClientTransform and bundled
+	// .Use()) — derived FIRST since a middleware's own Out may contribute
+	// ADDITIONAL topic vars BuildTopic needs. D3-equivalent precedence:
+	// explicit/channel-own vars (the vars param) wins over
+	// middleware-derived vars on a key collision. Mirrors mqtt5's
+	// identical wiring.
+	if len(handle.ClientMiddlewareHandlers) > 0 {
+		mwVars, mwErr := dispatchPublishMiddlewareHandlers(ctx, msg, handle.ClientMiddlewareHandlers)
+		if mwErr != nil {
+			obs.RecordPublish(handle.Topic, false, time.Since(start))
+			err = mwErr
+			return err
+		}
+		vars = overrideDerivedVars(mwVars, vars)
 	}
 
 	topic := handle.Topic

@@ -307,6 +307,73 @@ yamlBytes, _ := doc.MarshalYAML()
 
 AsyncAPI 3.0: separate `channels` and `operations` top-level keys, `action: receive` / `action: send`. The `render/asyncapi/v2` package generates AsyncAPI 2.6 for existing users.
 
+## Codec-backed middleware (`Transform`/`ClientTransform`)
+
+`events.Middleware[In, Out]` mirrors `rest.Middleware[In, Out]` (see
+[Feature: REST API](rest-api.md)) for pub/sub's asymmetric shape: subscribe
+is the RECEIVING role (`In` decoded from incoming topic vars, `Out`
+unused — no reply channel to encode into), publish is the SENDING role
+(`Out` encoded into outgoing topic vars via `WithPublishTopic`, `In`
+unused). Reuses the SAME `events.NewTopicParam[T,V]` constructor a
+channel's own `Item` already uses.
+
+```go
+regionPolicy := events.NewMiddleware(
+    middleware.NewDeclaration("region-policy", regionInCodec, regionOutCodec),
+).WithSubscribeTopic(events.NewTopicParam("region", codex.String(),
+    func(in RegionIn) string { return in.Region },
+    func(in *RegionIn, v string) { in.Region = v },
+))
+
+subscriber = events.Transform(subscriber, regionPolicy,
+    func(ctx context.Context, msg *SensorReading, in RegionIn) error {
+        msg.Region = in.Region
+        return nil
+    })
+```
+
+Route/channel-AGNOSTIC reuse works the same way as REST, via
+`Middleware.WithReceive`/`Middleware.WithSend` + plain `.Use(mw)` on
+`Subscriber[T]`/`Publisher[T]`. D6(b)/D7 (name uniqueness, ambiguous dual
+attachment) and the `ErrorChannel`-eligible `fn`-error fallback
+(`events.MiddlewareError`) mirror REST exactly. Dispatch is wired into
+`adapters/mqtt`, `adapters/mqtt5`, and `adapters/zeromq` — subscribe
+dispatch shares the SAME pre-handler point security enforcement already
+runs at; publish dispatch derives middleware-contributed topic vars BEFORE
+`BuildTopic`, with explicit vars winning over middleware-derived ones on a
+key collision.
+
+## Declarative MQTT QoS and Retained flag
+
+`events.MQTTQoS` (`QoSAtMostOnce`/`QoSAtLeastOnce`/`QoSExactlyOnce`) declares
+a channel's subscribe-side quality-of-service level directly on
+`Subscribe.QoS` — no more smuggling it through a type-asserted `HandlerOpts`
+escape hatch:
+
+```go
+sub := channel.WithSubscribe(events.Subscribe{QoS: events.QoSExactlyOnce}).
+    WithHandler(func(ctx context.Context, r SensorReading) error { ... })
+```
+
+Publish-side QoS AND the Retained flag are often message-dependent (e.g.
+only a channel's "latest status" message should be retained) — declare them
+via `Publisher.WithAttributes`, mirroring `rest.CookieAttributes`'s
+"derive from the value being sent" shape:
+
+```go
+pub := channel.WithPublish(events.Publish{}).
+    WithAttributes(func(r SensorReading) events.PublishAttributes {
+        return events.PublishAttributes{QoS: events.QoSAtLeastOnce, Retained: r.IsLatestStatus}
+    })
+```
+
+Both `adapters/mqtt` (v3) and `adapters/mqtt5` consume these as the FALLBACK
+default — an explicit per-call `SubscribeOptions.QoS`/`PublishAdapterOptions.QoS`/
+`.Retained` override still wins when set to a non-default value. Zero
+declared attributes preserves the prior, undeclared behavior exactly (QoS 0,
+Retained false). `adapters/zeromq` has no equivalent concept (no
+broker-mediated QoS/retained-message semantics in ZeroMQ PUB/SUB).
+
 ## Error types
 
 | Error | When returned |
@@ -315,6 +382,10 @@ AsyncAPI 3.0: separate `channels` and `operations` top-level keys, `action: rece
 | `events.TopicParamError{Name, Value, Err}` | Topic variable fails its codec |
 | `events.MissingTopicVarError{Name}` | Template variable absent from vars map |
 | `amqtt.TopicMismatchError{Template, Topic}` | Concrete topic doesn't match template structure |
+| `events.MiddlewareInputError{Name, Err}` | A `Middleware`'s `In` fails to decode/validate |
+| `events.MiddlewareError{Name, Err}` | A middleware `fn`'s own error, unmatched by any `ErrorChannel` |
+| `events.DuplicateMiddlewareNameError{Topic, Name}` | Two `Middleware` values share a `Declaration.Name` on one channel |
+| `events.AmbiguousMiddlewareAttachmentError{Name}` | One `Middleware` value combines bundled AND bound attachment |
 
 ## Codec-as-contract pattern
 

@@ -414,6 +414,14 @@ func subscribeEntryReflect(ctx context.Context, client pahomqtt.Client, entry ev
 	if err != nil {
 		return err
 	}
+	// Declared events.Subscribe.QoS is the FALLBACK default — an explicit
+	// SubscribeOptions.QoS override (attached via Subscriber.WithOptions)
+	// still wins when set to a non-zero value.
+	if opts.QoS == 0 {
+		if subscribeQoS, ok := elem.FieldByName("SubscribeQoS").Interface().(events.MQTTQoS); ok {
+			opts.QoS = byte(subscribeQoS)
+		}
+	}
 	obs := opts.Observer
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)

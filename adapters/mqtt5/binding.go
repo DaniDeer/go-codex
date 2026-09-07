@@ -220,11 +220,20 @@ func (a *mqtt5PublishAdapter[T]) Activate(ctx context.Context, src gstream.Strea
 	}
 	gstream.Drain(ctx, src,
 		func(ctx context.Context, v T) error {
+			// Declared events.PublishAttributes (via Publisher.WithAttributes)
+			// is the FALLBACK default when neither QoS nor Retained is
+			// explicitly set on a.opts — an explicit opts.QoS/Retained
+			// override still wins when set to a non-default value.
+			qos, retained := a.opts.QoS, a.opts.Retained
+			if qos == 0 && !retained {
+				attrs := a.handle.ResolvePublishAttributes(v)
+				qos, retained = byte(attrs.QoS), attrs.Retained
+			}
 			var err error
 			if a.opts.Vars == nil {
-				err = publishHandle(ctx, a.client, a.handle, a.opts.QoS, a.opts.Retained, v, pubOpts, a.fmt)
+				err = publishHandle(ctx, a.client, a.handle, qos, retained, v, pubOpts, a.fmt)
 			} else {
-				err = publish(ctx, a.client, a.handle, a.opts.QoS, a.opts.Retained, v, a.opts.Vars, pubOpts, a.fmt)
+				err = publish(ctx, a.client, a.handle, qos, retained, v, a.opts.Vars, pubOpts, a.fmt)
 			}
 			if err != nil {
 				if onErr != nil {

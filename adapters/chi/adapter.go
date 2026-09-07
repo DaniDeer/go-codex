@@ -115,6 +115,40 @@ type PendingCookie struct {
 	Opts  CookieOptions
 }
 
+// cookieOptionsFrom translates a codec-declared [rest.CookieAttributes]
+// (the transport-agnostic api/rest declaration, populated via
+// [rest.MergedResponseCookieParam.WithAttributes]) into this adapter's own
+// [CookieOptions] — the zero value of rest.CookieAttributes translates to
+// the zero value of CookieOptions, so a merge-derived cookie with no
+// declared attributes behaves EXACTLY as it did before this mechanism
+// existed.
+func cookieOptionsFrom(a rest.CookieAttributes) CookieOptions {
+	return CookieOptions{
+		Path:     a.Path,
+		Domain:   a.Domain,
+		MaxAge:   a.MaxAge,
+		SameSite: sameSiteFrom(a.SameSite),
+		Insecure: a.Insecure,
+		AllowJS:  a.AllowJS,
+	}
+}
+
+// sameSiteFrom translates [rest.CookieSameSite] to [http.SameSite].
+// rest.SameSiteDefault maps to the zero http.SameSite value, which
+// [SetCookie] itself already defaults to http.SameSiteStrictMode.
+func sameSiteFrom(s rest.CookieSameSite) http.SameSite {
+	switch s {
+	case rest.SameSiteLax:
+		return http.SameSiteLaxMode
+	case rest.SameSiteStrict:
+		return http.SameSiteStrictMode
+	case rest.SameSiteNone:
+		return http.SameSiteNoneMode
+	default:
+		return 0
+	}
+}
+
 // HandlerFunc is the typed application handler called by [serve]/[serveOne]'s dispatched request pipeline.
 // ctx is the request context. req is the decoded request value; for body-less
 // methods it is the zero value of Req.
@@ -478,8 +512,9 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 				errFn(sw, r, http.StatusInternalServerError, encErr)
 				return
 			}
+			cookieAttrs := handle.EncodeResponseCookieAttributes(resp)
 			for k, v := range values {
-				pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v})
+				pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v, Opts: cookieOptionsFrom(cookieAttrs[k])})
 			}
 		}
 
@@ -914,8 +949,9 @@ func writeErrorPatternResponse[Req, Resp any](
 		for k, v := range headerValues {
 			respHeaders.Set(k, v)
 		}
+		cookieAttrs := handle.EncodeResponseCookieAttributes(respVal)
 		for k, v := range cookieValues {
-			pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v})
+			pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v, Opts: cookieOptionsFrom(cookieAttrs[k])})
 		}
 	}
 

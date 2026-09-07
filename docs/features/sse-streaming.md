@@ -58,6 +58,36 @@ _ = b.Serve(ctx) // blocks, owns its own http.Server
 - The stats observer receives `RecordValidationError("response", constraint, "event")` for each rejected event — use this to count codec validation failures per event type.
 - The stats observer receives `RecordValidationError("response", constraint, "event")` for each rejected event.
 
+## Codec-backed middleware — `TransformSSE`/`ClientTransformSSE`
+
+`rest.TransformSSE`/`rest.ClientTransformSSE` extend REST's codec-backed
+`Middleware[In, Out]` mechanism (see [Feature: REST API](rest-api.md)) onto
+`SSERoute` — Event plays `Transform`'s `Resp` role: a middleware's own
+response header/cookie merge fields (`WithResponseHeader`/
+`WithResponseCookie`) compose into the connection's headers BEFORE SSE's
+own `Content-Type: text/event-stream` etc. are committed, and
+`ClientTransformSSE`'s `Out` is decoded ONCE at connection-open time — NOT
+re-decoded per event.
+
+```go
+sessionCookiePolicy := rest.NewMiddleware(
+    middleware.NewDeclaration[struct{}, CookieValue]("session-cookie-policy", codex.Struct[struct{}](), cookieValueCodec),
+).WithResponseCookie(rest.NewRequiredResponseCookieParam("session", codex.String(),
+    func(v CookieValue) string { return v.Token },
+    func(v *CookieValue, s string) { v.Token = s },
+).WithAttributes(func(v CookieValue) rest.CookieAttributes {
+    return rest.CookieAttributes{MaxAge: 3600, Insecure: true} // declarative Set-Cookie attributes
+}))
+
+sseRoute = rest.TransformSSE(sseRoute, sessionCookiePolicy,
+    func(ctx context.Context, req *StreamReq, _ struct{}) (CookieValue, error) {
+        return CookieValue{Token: newSessionToken()}, nil
+    })
+```
+
+Route-AGNOSTIC reuse via `Middleware.WithReceive`/`WithSend` + plain
+`.Use(mw)` works identically to plain `Route`.
+
 ## One struct, one call for SSE events
 
 SSE now supports the same declare-once merge pattern as REST requests and

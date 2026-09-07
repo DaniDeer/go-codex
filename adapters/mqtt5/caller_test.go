@@ -226,6 +226,76 @@ func TestServeSubscribers_HandlerOpts_QoSDispatch(t *testing.T) {
 	}
 }
 
+// TestServeSubscribers_DeclaredQoS_UsedAsFallback exercises
+// the declarative MQTT QoS/Retained mechanism: a declared
+// events.Subscribe.QoS is used as the FALLBACK default when no explicit
+// SubscribeOptions.QoS override is set.
+func TestServeSubscribers_DeclaredQoS_UsedAsFallback(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+	evtClient := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+
+	ch := events.NewChannel[sensorReading]("sensors/declared-qos", sensorCodec)
+	sub := ch.WithSubscribe(events.Subscribe{QoS: events.QoSExactlyOnce}).
+		WithHandler(func(context.Context, sensorReading) error { return nil })
+
+	if err := sub.Register(evtClient); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	caller := newCaller(client, router, evtClient)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- caller.ServeSubscribers(ctx) }()
+
+	router.waitHandler("sensors/declared-qos")
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	<-done
+
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if len(client.subscribed) != 1 || len(client.subscribed[0].Subscriptions) != 1 {
+		t.Fatalf("expected exactly 1 subscription, got %+v", client.subscribed)
+	}
+	if got := client.subscribed[0].Subscriptions[0].QoS; got != 2 {
+		t.Errorf("want QoS 2 from declared Subscribe.QoS fallback, got %d", got)
+	}
+}
+
+// TestServeSubscribers_ExplicitQoSOverridesDeclared confirms an explicit
+// SubscribeOptions.QoS (non-zero) still wins over a declared Subscribe.QoS.
+func TestServeSubscribers_ExplicitQoSOverridesDeclared(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+	evtClient := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+
+	ch := events.NewChannel[sensorReading]("sensors/explicit-qos", sensorCodec)
+	sub := ch.WithSubscribe(events.Subscribe{QoS: events.QoSExactlyOnce}).
+		WithHandler(func(context.Context, sensorReading) error { return nil }).
+		WithOptions(SubscribeOptions{QoS: 1})
+
+	if err := sub.Register(evtClient); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	caller := newCaller(client, router, evtClient)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- caller.ServeSubscribers(ctx) }()
+
+	router.waitHandler("sensors/explicit-qos")
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	<-done
+
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if got := client.subscribed[0].Subscriptions[0].QoS; got != 1 {
+		t.Errorf("want explicit QoS 1 to win over declared QoS 2, got %d", got)
+	}
+}
+
 func TestServeSubscribers_WrongHandlerOptsType_ReturnsOptionsShapeError(t *testing.T) {
 	client := &mockClient{}
 	router := newMockRouter()
