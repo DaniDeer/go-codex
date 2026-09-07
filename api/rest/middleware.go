@@ -637,30 +637,48 @@ func applyParamDeclarations(rb *routeBuilder, routeLabel string) error {
 	manualRequestNames := paramNameSet(rb.headerParams, rb.cookieParams, rb.queryParams)
 	manualResponseNames := paramNameSetResponse(rb.respHeaders, rb.respCookies)
 
+	// addedRequestNames/addedResponseNames track names ALREADY layered in by
+	// an EARLIER-processed middleware in this same loop, in addition to
+	// manualRequestNames/manualResponseNames — checkParamConflicts above
+	// only rejects a name when its contributing sources DISAGREE (different
+	// kind/required); two (or more) middlewares agreeing on the SAME name
+	// pass that check cleanly, but must still only be layered into the
+	// route's spec ONCE, not once per contributing middleware. Without this
+	// guard, buildHeaderParams/buildCookieParams/buildQueryParams/response
+	// siblings (which perform no dedup by name) would emit the SAME param
+	// name multiple times in the final OpenAPI spec.
+	addedRequestNames := make(map[string]bool, len(manualRequestNames))
+	addedResponseNames := make(map[string]bool, len(manualResponseNames))
+
 	for _, mw := range rb.middlewares {
 		for _, s := range mw.RequestHeaderParams {
-			if !manualRequestNames[s.Name] {
+			if !manualRequestNames[s.Name] && !addedRequestNames[s.Name] {
 				toHeaderParam(s).applyRoute(rb)
+				addedRequestNames[s.Name] = true
 			}
 		}
 		for _, s := range mw.RequestCookieParams {
-			if !manualRequestNames[s.Name] {
+			if !manualRequestNames[s.Name] && !addedRequestNames[s.Name] {
 				toCookieParam(s).applyRoute(rb)
+				addedRequestNames[s.Name] = true
 			}
 		}
 		for _, s := range mw.RequestQueryParams {
-			if !manualRequestNames[s.Name] {
+			if !manualRequestNames[s.Name] && !addedRequestNames[s.Name] {
 				toQueryParam(s).applyRoute(rb)
+				addedRequestNames[s.Name] = true
 			}
 		}
 		for _, s := range mw.ResponseHeaderParams {
-			if !manualResponseNames[s.Name] {
+			if !manualResponseNames[s.Name] && !addedResponseNames[s.Name] {
 				toResponseHeaderParam(s).applyRoute(rb)
+				addedResponseNames[s.Name] = true
 			}
 		}
 		for _, s := range mw.ResponseCookieParams {
-			if !manualResponseNames[s.Name] {
+			if !manualResponseNames[s.Name] && !addedResponseNames[s.Name] {
 				toResponseCookieParam(s).applyRoute(rb)
+				addedResponseNames[s.Name] = true
 			}
 		}
 	}

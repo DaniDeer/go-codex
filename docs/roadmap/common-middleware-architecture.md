@@ -1,6 +1,16 @@
 # Common-Base + Per-Pattern-Derived Middleware Types — `middleware`, `api/rest`, `api/reqreply`, `api/events`, future `ports`
 
-> **Status:** Idea only — no driver yet. Spun out of
+> **Status:** SUPERSEDED by
+> [Codec-Backed Policy Declarations](codec-backed-policy-declarations.md), which
+> resolves this doc's core finding (a single shared `middleware.Middleware` struct
+> carrying REST-only fields unused by `api/events`/`api/reqreply`) via an ADDITIVE
+> `middleware.RouteMiddleware` marker interface + NEW per-pattern generic types
+> (`rest.Middleware[In,Out]`/`events.Middleware[In,Out]`) — not this doc's original
+> proposal to retrofit/split `middleware.Middleware` itself, which would have been a
+> breaking change to already-shipped code. Kept for historical context; see the
+> superseding doc for the finalized, ready-to-implement design.
+>
+> Original status was: Idea only — no driver yet. Spun out of
 > [Pub/Sub Workflow Simplification](../design/d-0002-pubsub-workflow-simplification.md)'s
 > critical-review finding (F6) that `middleware.Middleware` — a SINGLE,
 > FLAT struct carrying `Name`, `Security *SecurityDeclaration`, AND 5

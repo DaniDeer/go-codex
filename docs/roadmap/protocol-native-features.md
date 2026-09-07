@@ -190,9 +190,15 @@ shared type at all.
 a future investigation):**
 
 - [Common-Base + Per-Pattern-Derived Middleware Types](common-middleware-architecture.md) —
-  may be SUPERSEDED by the generalized `Feature`-slice idea above,
-  rather than pursued as originally scoped (struct-splitting). Not
-  decided — both remain open until a dedicated comparison session.
+  now SUPERSEDED, but NOT by this doc's `Feature`-slice idea as once
+  speculated here — see
+  [Codec-Backed Policy Declarations](codec-backed-policy-declarations.md),
+  which resolves it via per-pattern generic `Declaration[In,Out]`-backed
+  types instead. That doc's mechanism is COMPLEMENTARY to, not competing
+  with, THIS doc's `ProtocolFeature`/`Feature`: opaque protocol capability
+  flags (this doc) vs. structured codec-backed Input/Output data (that
+  doc) are a genuine two-axis split, not two solutions to the same
+  problem — a future declaration could carry both side by side.
 - REST's client-side general-purpose `ClientMW` hook (resolved via a
   dedicated Fn-shape mechanism mirroring pub/sub's `PublishMW` — see
   [d-0001's Addendum 3](../design/d-0001-rest-middleware-workflow-simplification.md#addendum-3-client-side-general-purpose-clientmw-hook-closes-the-last-known-restevents-middleware-asymmetry))

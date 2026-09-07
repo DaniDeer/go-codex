@@ -197,6 +197,34 @@ func TestWithMiddleware_RequestParamsContribution(t *testing.T) {
 	}
 }
 
+func TestWithMiddleware_AgreeingParamContributionNotDuplicated(t *testing.T) {
+	b := rest.NewServer(testInfo)
+	mwA := middleware.Middleware{
+		Name:                "mw-a",
+		RequestHeaderParams: []middleware.HeaderParamSpec{{Name: "X-API-Key", Required: true}},
+	}
+	mwB := middleware.Middleware{
+		Name:                "mw-b",
+		RequestHeaderParams: []middleware.HeaderParamSpec{{Name: "X-API-Key", Required: true}}, // SAME kind/name/required — agreeing, not conflicting
+	}
+	h, err := rest.NewRoute[mwTestReq, userResp]("GET", "/keyed-twice", mwTestReqCodec, userCodec,
+		rest.WithMiddleware(mwA),
+		rest.WithMiddleware(mwB),
+	).RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	count := 0
+	for _, p := range h.Descriptor.HeaderParams {
+		if p.Name == "X-API-Key" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("want X-API-Key header param listed exactly once in spec, got %d occurrences in %+v", count, h.Descriptor.HeaderParams)
+	}
+}
+
 func TestWithMiddleware_ConflictingParamContribution(t *testing.T) {
 	b := rest.NewServer(testInfo)
 	mwA := middleware.Middleware{
