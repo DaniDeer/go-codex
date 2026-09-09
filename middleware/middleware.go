@@ -334,8 +334,13 @@ func (e MiddlewareShapeError) LogValue() slog.Value {
 
 // CheckScopes reports an error unless granted satisfies reqs, via
 // [route.Satisfied]. Called ONCE by the consuming adapter after merging
-// every attached security Fn's extracted grants — never per-Fn (see "L4" in
-// docs/roadmap/declarative-middleware.md).
+// every attached security Fn's extracted grants — never per-Fn. Calling it
+// per-Fn instead (each Fn checking only its OWN grants) is INCORRECT for an
+// AND-combined security requirement spanning multiple schemes: no single
+// Fn's own grants would ever satisfy the combined requirement, even when
+// every Fn succeeds — see
+// docs/design/d-0001-rest-middleware-workflow-simplification.md for the
+// full resolution history of this exact bug.
 func CheckScopes(reqs []route.SecurityRequirement, granted map[string][]string) error {
 	if route.Satisfied(reqs, granted) {
 		return nil

@@ -327,10 +327,9 @@ func (e CallFormatOptError) LogValue() slog.Value {
 // ConflictingCredentialHeaderError is returned by [call] when TWO attached
 // credential-providing middlewares (Fn shape
 // func(context.Context, []route.SecurityRequirement) (http.Header, error))
-// return DIFFERENT values for the SAME outgoing header key — see "L9" in
-// docs/roadmap/declarative-middleware.md. Identical values from two
-// middlewares for the same key are merged silently; only DIFFERING values
-// conflict.
+// return DIFFERENT values for the SAME outgoing header key. Identical
+// values from two middlewares for the same key are merged silently; only
+// DIFFERING values conflict.
 type ConflictingCredentialHeaderError struct {
 	Header                    string
 	FirstSource, SecondSource string
@@ -670,8 +669,7 @@ func callWithVars[Req, Resp any](
 
 	// 6. Resolve security requirements and obtain credentials — runs EVERY
 	// attached credential-providing middleware and merges their returned
-	// headers into ONE combined set (see "L9" in
-	// docs/roadmap/declarative-middleware.md).
+	// headers into ONE combined set (see [ConflictingCredentialHeaderError]).
 	secReqs := handle.Descriptor.Security
 	if secReqs == nil {
 		secReqs = handle.GlobalSecurity

@@ -5,8 +5,8 @@
 > scoped content (that doc's pub/sub-scoped content is superseded by
 > [Pub/Sub Workflow Simplification](../design/d-0002-pubsub-workflow-simplification.md),
 > now fully implemented). Spun out of a dedicated thin-adapter review
-> (see [Protocol-Native Feature Declarations](protocol-native-features.md)'s
-> status banner) that confirmed REST and pub/sub already follow the
+> (see [Feature/Provider](protocol-native-features.md)'s
+> status banner, then titled "Protocol-Native Feature Declarations") that confirmed REST and pub/sub already follow the
 > codebase's guiding principle — adapters stay THIN (pure IO, attach-only,
 > adapter-specific config/options); ALL workflow (middleware/handler
 > attachment, calling client/server functions) lives in the `api/*`
@@ -20,9 +20,9 @@
 ## Why this exists
 
 A dedicated review (triggered while reviewing
-[Protocol-Native Feature Declarations](protocol-native-features.md)
-against the codebase's guiding principle) confirmed, via direct code
-inspection:
+[Feature/Provider](protocol-native-features.md) — then titled
+"Protocol-Native Feature Declarations" — against the codebase's guiding
+principle) confirmed, via direct code inspection:
 
 - **REST already fully follows the thin-adapter principle.**
   `rest.Client`/`rest.Server` own `Attach`/`Call`
@@ -56,8 +56,8 @@ inspection:
   `msg.Properties.ResponseTopic`/`CorrelationData` directly inside
   `Serve`/`Call`). Fixing `api/reqreply`'s architecture is a
   prerequisite for cleanly exposing that capability (and Shared
-  Subscriptions, for reply-topic fan-out) as real `ProtocolFeature`
-  declarations.
+  Subscriptions, for reply-topic fan-out) as real `Feature`
+  declarations under that doc's now-generalized model.
 
 ## The reference model — `rest.Client`/`rest.Server`
 
@@ -218,22 +218,22 @@ implementation time.
 The bottom two rows are what Decision 3 (above) closes, across all
 three transports, once implemented.
 
-## Relationship to `protocol-native-features.md`
+## Relationship to `protocol-native-features.md` (now [Feature](protocol-native-features.md))
 
 Once `reqreply.Server`/`Client`/`Attach` land, MQTT5's Response Topic +
 Correlation Data — currently hardwired inside `adapters/mqtt5/reqreply.go`
-— becomes expressible as a real `ProtocolFeature` (or simply remains an
-implicit, always-on capability of `mqtt5`'s `ServerTransport`/
+— becomes expressible as a real, sealed `mqtt5.Capability` (or simply
+remains an implicit, always-on capability of `mqtt5`'s `ServerTransport`/
 `ClientTransport` implementation, since EVERY mqtt5 reqreply route needs
 it — there may be nothing to "declare," since it is not optional the way
 Shared Subscriptions are). Shared Subscriptions (`$share/group/topic`)
 for reply-topic fan-out across multiple `Server` instances IS a genuine
-candidate for a declared `ProtocolFeature` on a `reqreply.Route`, mirroring
-the pub/sub use case in
-[Protocol-Native Feature Declarations](protocol-native-features.md)
+candidate for a declared, sealed capability on a `reqreply.Route`,
+mirroring the pub/sub use case in
+[Feature](protocol-native-features.md)
 directly. This determination is deferred to implementation time, once
 the `Client`/`Server` shape (this doc) actually exists to declare
-features against.
+capabilities against.
 
 ## Escape hatches (carried forward from the deleted doc, still accurate)
 
@@ -279,7 +279,7 @@ features against.
   own migration rounds (migrate every real example, not just tests,
   before deleting the old adapter-level entry points).
 - Whether Response Topic + Correlation Data should be a DECLARED
-  `ProtocolFeature` at all, or remain an implicit, always-on capability
+  `Feature` at all, or remain an implicit, always-on capability
   of `mqtt5`'s reqreply transport (see "Relationship to
   `protocol-native-features.md`" above) — not decided, deferred until
   the `Client`/`Server` shape exists to prototype against.

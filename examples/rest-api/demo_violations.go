@@ -54,8 +54,8 @@ func demoResponseHeaderCookieViolation() {
 	violationRoute := rest.NewRoute[routes.CreateUserReq, routes.User]("POST", "/users",
 		routes.CreateUserReqCodec, routes.UserCodec,
 		rest.RouteMeta{OperationID: "createUserViolation"},
-		rest.ResponseHeaderParam{Name: "Location", Required: true, Codec: &violationLocationCodec},
-		rest.ResponseCookieParam{Name: "session", Required: true, Codec: &violationSessionCodec},
+		rest.ResponseHeaderParam{Name: "Location", Required: true}.WithCodec(violationLocationCodec),
+		rest.ResponseCookieParam{Name: "session", Required: true}.WithCodec(violationSessionCodec),
 	).Use(routes.AdminScopeMw).WithHandler(
 		func(ctx context.Context, _ routes.CreateUserReq) (routes.User, error) {
 			h := make(http.Header)

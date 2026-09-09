@@ -4,12 +4,18 @@
 > [Declarative Middleware](declarative-middleware.md) (no sequencing
 > dependency either way — could ship before, after, or in parallel).
 > **This doc's own "registration surface... NOT resolved" open question
-> (below) may be answered by
-> [Protocol-Native Feature Declarations](protocol-native-features.md)**
-> — that doc proposes User Properties become a concrete
-> `ProtocolFeature` instance instead of a plain `ChannelOpt`, offering
-> an alternative registration path worth comparing before
-> implementation. Not resolved — both remain open.
+> (below) is now ANSWERED by
+> [Feature](protocol-native-features.md)** (formerly
+> "Protocol-Native Feature Declarations", then "Feature/Provider",
+> significantly grown in scope) — that doc's §5.2 works through User
+> Properties as a concrete, SEALED `mqtt5.Capability` instance (carrying
+> an embedded `middleware.Declaration[In,Out]` for its merge-capable
+> half, supplied at `mqtt5.Attach` time) instead of a plain `ChannelOpt`,
+> resolving this doc's own open question as part of that doc's broader
+> redesign. Still not IMPLEMENTED — this doc's own Scope/API sections
+> below remain the most concrete existing sketch until that broader
+> design is itself
+> implemented.
 > [← Back to Roadmap](index.md)
 
 ## Motivation

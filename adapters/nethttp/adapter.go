@@ -147,16 +147,19 @@ func applyGeneralMiddleware(h http.Handler, impls []middleware.ServerImplementat
 // runSecurityMiddleware runs every attached security-specific Fn IN
 // ATTACHMENT ORDER (fail-fast on the FIRST one whose OWN credential
 // extraction errors), merges their returned grants into ONE map, then
-// performs a SINGLE [middleware.CheckScopes] call — see "L4" in
-// docs/roadmap/declarative-middleware.md for why each Fn does NOT
-// independently decide pass/fail against the route's full requirement set.
+// performs a SINGLE [middleware.CheckScopes] call. Each Fn does NOT
+// independently decide pass/fail against the route's full requirement
+// set — doing so would incorrectly reject an AND-combined requirement
+// spanning multiple schemes even when every Fn succeeds (see
+// [middleware.CheckScopes]'s own doc comment).
 //
 // An implementation with an EMPTY Satisfies (a pure presence/format check,
 // e.g. an API-key format validator, contributing no scope grants) ALWAYS
 // runs, regardless of whether the route declares any Security — that is
-// its whole design point (see docs/roadmap/declarative-middleware.md's
-// "Header/cookie param auto-contribution" section). An implementation
-// with a NON-EMPTY Satisfies (e.g. a scope-checking implementation) only
+// its whole design point (a middleware may contribute a header/cookie/
+// query param spec entry without also requiring a security scheme). An
+// implementation with a NON-EMPTY Satisfies (e.g. a scope-checking
+// implementation) only
 // runs when the route actually declares a security requirement — an
 // unsecured route must not authenticate credentials it never asked for.
 func runSecurityMiddleware[Req any](ctx context.Context, r *http.Request, req *Req, impls []middleware.ServerImplementation, secReqs []route.SecurityRequirement) error {
@@ -346,8 +349,7 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 			}
 		}
 		// Run every attached security-specific Fn, merge grants, ONE
-		// middleware.CheckScopes call — see "L4" in
-		// docs/roadmap/declarative-middleware.md. Called even when secReqs
+		// middleware.CheckScopes call. Called even when secReqs
 		// is empty: a middleware with an EMPTY Satisfies (a pure
 		// presence/format check, e.g. RequireAPIKey) must still run — see
 		// runSecurityMiddleware's own doc comment.
@@ -539,8 +541,7 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 	})
 
 	// General-purpose middlewares (e.g. [Observability]) wrap the
-	// WHOLE call, outermost-in, in attachment order — see "Two attachment
-	// points" in docs/roadmap/declarative-middleware.md.
+	// WHOLE call, outermost-in, in attachment order.
 	return applyGeneralMiddleware(inner, impls)
 }
 
@@ -843,8 +844,9 @@ func headerValues(r *http.Request) map[string]string {
 // diagnosticObserver adapts ctx-based [stats.RecordDiagnostic] to the
 // [stats.ValidationObserver] interface, so [stats.ReportErrors]'s existing
 // per-field error-walking logic can be reused UNCHANGED — the SAME data,
-// just ferried out via ctx instead of a direct Observer call. See "Class B"
-// in docs/roadmap/declarative-middleware.md.
+// just ferried out via ctx instead of a direct Observer call (decode-time
+// validation events have no other home once [Options.Observer] is removed
+// in favor of [Observability]).
 type diagnosticObserver struct{ ctx context.Context }
 
 func (d diagnosticObserver) RecordValidationError(location, constraintName, field string) {

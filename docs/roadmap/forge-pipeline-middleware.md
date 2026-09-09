@@ -6,23 +6,31 @@
 > implementation status — no sequencing dependency either way.
 > [← Back to Roadmap](index.md)
 >
-> **Note:** Declarative Middleware's "Revision 2 — the declare/implement
-> split" has since SHIPPED (see that doc's "Revision 2 implementation
-> findings") — `middleware.Middleware`/`ServerImplementation`/
-> `ClientMiddleware` are final for Layer 2. This doc's open question
-> (whether/how forge's `Registry.WithObserver` should adopt the same
-> declare/implement discipline) is UNCHANGED by that — still deferred to
-> a future dedicated design pass, no new driver identified here.
+> **Note:** REST's/events' own declare/implement split (originally
+> designed in Declarative Middleware's "Revision 2") has since SHIPPED —
+> see
+> [Middleware Workflow Simplification](../design/d-0001-rest-middleware-workflow-simplification.md)
+> and
+> [D-0003 — Codec-Declared Middlewares](../design/d-0003-codec-declared-middlewares.md)
+> — `middleware.Middleware`/`ServerImplementation`/`ClientMiddleware` are
+> final for Layer 2 REST/events; Declarative Middleware itself has since
+> been trimmed to its remaining MCP/ports scope. This doc's open
+> question (whether/how forge's `Registry.WithObserver` should adopt the
+> same declare/implement discipline) is UNCHANGED by any of that — still
+> deferred to a future dedicated design pass, no new driver identified
+> here.
 
 ## Motivation
 
-[Declarative Middleware](declarative-middleware.md) reviewed and
-resolved coverage for every Layer 2 (request/response or
-per-call-invoked) boundary go-codex ships — REST, events, reqreply,
-MCP, and ports — but `forge.Registry`/pipeline functions (Layer 3 —
-`forge.NewFunction`, `Compose`, `Registry.Apply`) were never checked
-against that design at all. That doc's "coverage across every API/port
-boundary" claim was, until this spin-out, inaccurate by omission.
+[Declarative Middleware](declarative-middleware.md) originally reviewed
+and resolved coverage for every Layer 2 (request/response or
+per-call-invoked) boundary go-codex ships — REST, events, reqreply, MCP,
+and ports (REST/events have since shipped via d-0001/d-0003 and are no
+longer that doc's own scope; MCP/ports remain) — but `forge.Registry`/
+pipeline functions (Layer 3 — `forge.NewFunction`, `Compose`,
+`Registry.Apply`) were never checked against that design at all. That
+doc's "coverage across every API/port boundary" claim was, until this
+spin-out, inaccurate by omission.
 
 Forge already has its OWN parallel cross-cutting mechanism:
 `stats.PipelineObserver.RecordApply`, wired via `Registry.WithObserver`
@@ -78,8 +86,9 @@ shape as the template.
 
 - [Declarative Middleware](declarative-middleware.md) — "L14" in
   "Known limitations and open risks" is the finding this doc spins out
-  from; that doc's own status is now "L1-L14 ALL RESOLVED" (L14
-  resolved BY being spun out here, not by being decided).
+  from (L14 resolved BY being spun out here, not by being decided); that
+  doc has since been trimmed to its remaining MCP/ports scope, with L14
+  kept as a short pointer to this doc.
 - [Dynamic Port Rebinding](dynamic-port-rebinding.md) — "L11" in
   Declarative Middleware used the SAME "no concrete driver → don't
   build it yet, cross-reference instead" resolution style this doc

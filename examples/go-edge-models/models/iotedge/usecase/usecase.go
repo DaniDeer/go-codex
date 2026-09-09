@@ -57,7 +57,7 @@ func NewBaselineFile(basePath BasePath) ports.File[iothub.BaseDeployment] {
 // [ports.EntryPattern]'s own doc.
 var DirEntryPattern = ports.EntryPattern{
 	Template: useCaseEntryShape.String(),
-	Params:   []ports.EntryParam{{Name: useCaseEntryVar, Codec: &nameCodec}},
+	Params:   []ports.EntryParam{ports.EntryParam{Name: useCaseEntryVar}.WithCodec(nameCodec)},
 }
 
 // NewFile declares the templated file port for a USE CASE's deployment
@@ -77,7 +77,7 @@ var DirEntryPattern = ports.EntryPattern{
 // with device discovery.
 func NewFile(basePath BasePath) ports.File[iothub.LayeredDeployment] {
 	return ports.NewFile[iothub.LayeredDeployment](useCaseFilePathTemplate(basePath), FileFormat,
-		ports.FilePathParam{Name: useCaseNameVar, Codec: &nameCodec},
+		ports.FilePathParam{Name: useCaseNameVar}.WithCodec(nameCodec),
 	)
 }
 

@@ -57,8 +57,8 @@ var DeviceFileFormat = f.JSON(deviceconfig.PatchCodec)
 // one [DeviceConfig] value.
 func NewDeviceFile(basePath BasePath) ports.File[deviceconfig.Patch] {
 	return ports.NewFile[deviceconfig.Patch](deviceFilePathTemplate(basePath), DeviceFileFormat,
-		ports.FilePathParam{Name: useCaseNameVar, Codec: &nameCodec},
-		ports.FilePathParam{Name: deviceIDVar, Codec: &deviceIDCodec},
+		ports.FilePathParam{Name: useCaseNameVar}.WithCodec(nameCodec),
+		ports.FilePathParam{Name: deviceIDVar}.WithCodec(deviceIDCodec),
 	)
 }
 
@@ -71,7 +71,7 @@ func NewDeviceFile(basePath BasePath) ports.File[deviceconfig.Patch] {
 // [DirEntryPattern]'s role exactly, one level down.
 var DeviceDirEntryPattern = ports.EntryPattern{
 	Template: deviceEntryShape.String(),
-	Params:   []ports.EntryParam{{Name: deviceIDVar, Codec: &deviceIDCodec}},
+	Params:   []ports.EntryParam{ports.EntryParam{Name: deviceIDVar}.WithCodec(deviceIDCodec)},
 }
 
 // NewDeviceDir declares the directory-listing port for ONE use case's
@@ -88,7 +88,7 @@ var DeviceDirEntryPattern = ports.EntryPattern{
 // SPECIFIC discovered device's manifest; see [ListDeviceIDs].
 func NewDeviceDir(basePath BasePath) ports.Dir {
 	return ports.NewDir(deviceDirPathTemplate(basePath),
-		ports.DirPathParam{Name: useCaseNameVar, Codec: &nameCodec},
+		ports.DirPathParam{Name: useCaseNameVar}.WithCodec(nameCodec),
 		ports.WithEntryPattern(DeviceDirEntryPattern),
 	)
 }

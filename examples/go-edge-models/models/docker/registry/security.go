@@ -15,9 +15,10 @@ import (
 // ever calls AS A CLIENT. The scheme is still declared "from the server's
 // perspective" — it documents what THAT external system requires — via
 // [middleware.SecurityScheme] below, attached with [rest.Route.Use]
-// exactly like a real server route would (see
-// docs/roadmap/declarative-middleware.md's "server declares, client
-// fulfills" principle). [middleware.SecurityScheme] deliberately has NO
+// exactly like a real server route would — this mirrors HandleMW/ClientMW's
+// "server declares, client fulfills" split
+// (docs/design/d-0001-rest-middleware-workflow-simplification.md).
+// [middleware.SecurityScheme] deliberately has NO
 // Fn: nothing in THIS codebase verifies the credential — that is the
 // external registry's job. app/registry's own newAuthCredentialFunc supplies
 // the credential CLIENT-side, attached via [rest.Route.ClientMW]

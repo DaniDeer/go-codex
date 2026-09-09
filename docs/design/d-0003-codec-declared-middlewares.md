@@ -3,7 +3,24 @@
 > **Status:** Implemented — architectural foundation. All 7 design decisions
 > (D1-D7, see "Resolved design decisions") are shipped and verified across
 > `api/rest` (`Route` AND `SSERoute`), `api/events`, and every pub/sub
-> adapter (`adapters/mqtt5`, `adapters/mqtt`, `adapters/zeromq`).
+> adapter (`adapters/mqtt5`, `adapters/mqtt`, `adapters/zeromq`). **This
+> remains the accurate, current description of shipped code.**
+>
+> **Forward-looking note (not a status change):**
+> [Feature](../roadmap/protocol-native-features.md) (a broader
+> roadmap-stage redesign, idea only, no code written — formerly titled
+> "Feature/Provider") raises an explicitly OPEN, undecided question about
+> whether this doc's `Declaration[In,Out]`/`Middleware[In,Out]` mechanism
+> should ever fold into that doc's sealed, per-adapter `Capability`
+> mechanism (mirroring `ports.Pattern`'s own sealing technique) or stay
+> fully separate — NOT decided either way (an earlier sub-round of that
+> doc concluded "yes, subsume," reached against a since-superseded, open
+> string-ID-based primitive; that conclusion no longer holds now that the
+> primitive itself changed). Nothing in THIS doc or in shipped code
+> changes as a result of that roadmap doc alone; any actual migration
+> remains explicitly deferred to a separate, dedicated
+> implementation-planning round. Until that round ships, this doc's
+> design remains final and unchanged.
 >
 > Codec-backed, per-pattern middleware declaration (`middleware.Declaration[In,Out]`
 > + `rest.Middleware[In,Out]`/`events.Middleware[In,Out]`) for `api/rest`
@@ -1424,25 +1441,33 @@ bundled into this design's readiness.
   proposal to retrofit/split `middleware.Middleware` itself (which would have been
   breaking). `middleware.Middleware`/`SecurityScheme` remain completely unchanged and
   continue to work exactly as before, side by side with this new mechanism.
-- **Distinct from, and complementary to**,
-  [Protocol-Native Feature Declarations](../roadmap/protocol-native-features.md)'s `ProtocolFeature`/
-  `Feature` idea: that mechanism is for OPAQUE protocol capability flags with no
-  natural structured shape (MQTT5 Shared Subscriptions, Message Expiry, ZeroMQ
-  Conflate/HWM) evaluated via adapter type-switching — a different axis from THIS
-  doc's STRUCTURED, codec-backed Input/Output data (security-adjacent credentials,
-  cookie policy attributes). A future `rest.Middleware`/`events.Middleware` could
-  carry a `[]Feature`-style slot ALONGSIDE its codec-backed In/Out if a driver ever
-  needs both on the same declaration — not designed further here. That doc's own
-  "possibly superseded by" note (previously pointed at
-  `common-middleware-architecture.md`) should be read as resolved: THIS doc supersedes
-  `common-middleware-architecture.md`, and `protocol-native-features.md` remains its
-  own, separate, complementary mechanism.
-- Distinct from `docs/roadmap/declarative-middleware.md`, which covers the
-  ALREADY-SHIPPED REST/events `HandleMW`/`ClientMW`/`SubscribeMW`/`PublishMW`
-  security+observer+general-purpose split (folded into
-  `docs/design/d-0001-rest-middleware-workflow-simplification.md`/
+- **Update — relationship REOPENED, not decided either way.** An earlier
+  version of this section described
+  [Feature](../roadmap/protocol-native-features.md) (then titled
+  "Protocol-Native Feature Declarations," later "Feature/Provider") as a
+  separate, complementary axis — opaque protocol capability flags (MQTT5
+  Shared Subscriptions, Message Expiry, ZeroMQ Conflate/HWM) evaluated via
+  adapter type-switching, distinct from THIS doc's structured,
+  codec-backed Input/Output data. A LATER round of that doc explicitly
+  chose to subsume this doc's mechanism instead — but that decision was
+  reached against an open, string-ID-based primitive that doc has SINCE
+  REJECTED for compile-time-safety reasons; the current primitive (sealed,
+  per-adapter `Capability` interfaces) reopens the question rather than
+  carrying the subsumption decision forward. See that doc's §3 for the
+  full, currently-unresolved comparison. THIS doc remains the accurate,
+  unchanged description of SHIPPED code; the
+  roadmap doc's chosen direction is idea-only, not yet implemented, and
+  any actual migration is deferred to a separate implementation-planning
+  round.
+- Distinct from the ALREADY-SHIPPED REST/events `HandleMW`/`ClientMW`/
+  `SubscribeMW`/`PublishMW` security+observer+general-purpose split
+  (`docs/design/d-0001-rest-middleware-workflow-simplification.md`/
   `docs/design/d-0002-pubsub-workflow-simplification.md`) — a different,
   already-resolved topic, untouched by this design.
+  `docs/roadmap/declarative-middleware.md` (the doc that ORIGINALLY
+  proposed that split, before d-0001/d-0002 shipped it) has since been
+  trimmed to its own remaining MCP/ports scope, which THIS design's own
+  "Feasibility" section above builds directly on.
 
 ## Next steps
 

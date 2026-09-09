@@ -159,7 +159,7 @@ func main() {
 	// payload types, giving that shape exactly one source of truth.
 	deviceIDCodec := codex.String().Refine(validate.UUID)
 	deviceStatusTopic := events.NewTopic("devices/{deviceID}/status",
-		events.TopicParam{Name: "deviceID", Codec: &deviceIDCodec},
+		events.TopicParam{Name: "deviceID"}.WithCodec(deviceIDCodec),
 	)
 	deviceOnline, err := events.NewChannelFromTopic(deviceStatusTopic, deviceOnlineCodec).
 		WithSubscribe(events.Subscribe{Summary: "Receive device online event", SchemaName: "DeviceOnline"}).

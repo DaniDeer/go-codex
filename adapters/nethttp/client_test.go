@@ -626,11 +626,11 @@ func TestCall_GeneralShape_TraceObserver_SeesFinalError(t *testing.T) {
 	}
 }
 
-// TestCall_TwoCredentialMiddlewares_DifferingHeaderValuesConflict locks in
-// "L9" in docs/roadmap/declarative-middleware.md: two attached
-// credential-providing middlewares that return DIFFERENT values for the
-// SAME header key must fail with a typed ConflictingCredentialHeaderError —
-// the client never silently picks one over the other.
+// TestCall_TwoCredentialMiddlewares_DifferingHeaderValuesConflict locks in:
+// two attached credential-providing middlewares that return DIFFERENT
+// values for the SAME header key must fail with a typed
+// ConflictingCredentialHeaderError — the client never silently picks one
+// over the other.
 func TestCall_TwoCredentialMiddlewares_DifferingHeaderValuesConflict(t *testing.T) {
 	b := rest.NewServer(testInfo)
 	b.AddGlobalSecurity(route.Require("bearerAuth"))

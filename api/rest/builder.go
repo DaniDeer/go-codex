@@ -545,8 +545,9 @@ type routeBuilder struct {
 	// [WithMiddleware], in attachment order. Security/RequestParams/
 	// ResponseParams contributions are NOT applied here — they are applied
 	// ONCE, order-independently, by [applyMiddlewareDeclarations] at
-	// Register/ValidateRoute time (see "L1"/"L3" in
-	// docs/roadmap/declarative-middleware.md).
+	// Register/ValidateRoute time (order-independence and per-name
+	// conflict detection are what make this safe regardless of how many
+	// [middleware.Middleware] values are attached, in what order).
 	middlewares []middleware.Middleware
 
 	// handlerFn holds the type-erased business handler attached via

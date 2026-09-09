@@ -135,7 +135,7 @@ func main() {
 
 	sensorFilePattern := ports.EntryPattern{
 		Template: "{sensorID}.json",
-		Params:   []ports.EntryParam{{Name: "sensorID", Codec: &sensorIDCodec}},
+		Params:   []ports.EntryParam{ports.EntryParam{Name: "sensorID"}.WithCodec(sensorIDCodec)},
 	}
 	reportsListing := ports.NewDir(reportsDir, ports.WithEntryPattern(sensorFilePattern))
 
@@ -190,8 +190,8 @@ func main() {
 		ports.WithEntryPattern(ports.EntryPattern{
 			Template: "{year}/{sensorID}.json",
 			Params: []ports.EntryParam{
-				{Name: "year", Codec: &yearCodec},
-				{Name: "sensorID", Codec: &sensorIDCodec},
+				ports.EntryParam{Name: "year"}.WithCodec(yearCodec),
+				ports.EntryParam{Name: "sensorID"}.WithCodec(sensorIDCodec),
 			},
 		}),
 	)

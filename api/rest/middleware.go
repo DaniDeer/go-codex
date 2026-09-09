@@ -568,10 +568,10 @@ func sameScopeSet(a, b []string) bool {
 // nothing at runtime despite declaring a scheme in its spec. Returns
 // [MissingSecurityMiddlewareError] on the first uncovered scheme found.
 //
-// This is the RELOCATED coverage check (see docs/roadmap/declarative-middleware.md's
-// "Revision 2 — the declare/implement split") — it used to run automatically
+// This is the RELOCATED coverage check — it used to run automatically
 // inside [Route.Register], back when [middleware.Middleware] still carried
-// both the Security declaration AND the enforcing Fn together. Now that the
+// both the Security declaration AND the enforcing Fn together (the
+// declare/implement split, since shipped). Now that the
 // two are separate types (Middleware declares; ServerImplementation
 // implements), this check can only run once BOTH are known — which is
 // adapter Serve time, not builder time. Server adapters (nethttp.Serve/
@@ -969,10 +969,10 @@ func (e ConflictingParamContributionError) LogValue() slog.Value {
 // meta and opts are the SAME arguments [NewRoute] would receive (minus
 // method/path/codecs, which don't affect middleware/security validation).
 //
-// Does NOT catch a missing security implementation — since Revision 2 (see
-// docs/roadmap/declarative-middleware.md), that check ([CheckCoverage])
-// only runs once a [middleware.ServerImplementation] has actually been
-// supplied, which happens at adapter Register/Handler time, not here.
+// Does NOT catch a missing security implementation — that check
+// ([CheckCoverage]) only runs once a [middleware.ServerImplementation] has
+// actually been supplied, which happens at adapter Register/Handler time,
+// not here.
 func ValidateRoute[Req, Resp any](meta RouteMeta, opts ...RouteOpt) error {
 	var rb routeBuilder
 	meta.applyRoute(&rb)

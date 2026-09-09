@@ -1835,8 +1835,8 @@ func TestServeSSE_MissingSecurityCoverage_RejectedAtServeTime(t *testing.T) {
 // TestHandler_SecurityFunc_notCalledForUnsecuredRoute right above): a
 // scope-granting implementation only runs for a secured route, but a
 // presence-check-only implementation must run unconditionally, otherwise
-// it never actually enforces anything (a real bug found and fixed — see
-// docs/roadmap/declarative-middleware.md's "G2" self-review finding).
+// it never actually enforces anything (a real bug found and fixed during
+// this package's design review).
 func TestHandler_RequireAPIKey_RunsWithoutRouteSecurity(t *testing.T) {
 	verifyCalled := false
 	implMw := apiKeyImpl[createReq]("X-API-Key", func(_ context.Context, key string) error {
@@ -2587,7 +2587,8 @@ func TestSSEHandler_EventMerge_NestedGobFormat(t *testing.T) {
 // The typical integration is via server middleware: r.WithContext(stats.WithObserver(r.Context(), obs)).
 // T5: Handler with NO attached Observability does NOT call
 // RecordRequest at all, even when a context observer is present — an
-// intentional behavior change (see docs/roadmap/declarative-middleware.md):
+// intentional behavior change (see
+// docs/design/d-0001-rest-middleware-workflow-simplification.md):
 // RecordRequest/TraceObserver moved ENTIRELY into Observability,
 // the sole remaining stats.Observer call site in this package. A caller
 // wanting context-based observer resolution now attaches

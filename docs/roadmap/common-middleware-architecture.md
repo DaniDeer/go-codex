@@ -28,15 +28,19 @@
 > OWN doc ships a pragmatic, non-breaking INTERIM fix instead (eager
 > validation rejecting non-empty REST-only fields on pub/sub middleware
 > — see that doc's F6 resolution) while this doc investigates the
-> proper long-term fix. **Possibly SUPERSEDED by a later, more
-> general idea** — see
-> [Protocol-Native Feature Declarations](protocol-native-features.md)'s
-> "GENERALIZATION" section, which proposes modeling Security,
-> header/cookie/query params, AND protocol-native capabilities all as
-> `Feature` values in one open-ended slice, rather than splitting
-> `middleware.Middleware` into fixed per-pattern STRUCTS as THIS doc
-> proposes. Not resolved — both remain open until a dedicated
-> comparison session.
+> proper long-term fix. **Update, resolved in two steps since**: first
+> superseded by D-0003 (above); D-0003 itself is now the SUBJECT of an
+> explicitly OPEN, undecided question raised by
+> [Feature](protocol-native-features.md) (formerly "Protocol-Native
+> Feature Declarations," then "Feature/Provider") — whether D-0003 should
+> ever fold into that doc's sealed, per-adapter `Capability` mechanism, or
+> stay fully separate, is NOT decided (an earlier sub-round of that doc
+> concluded "yes, subsume," but that conclusion was reached against a
+> since-superseded primitive and is no longer this doc's current
+> position). This doc's ORIGINAL struct-splitting proposal remains
+> superseded by D-0003 either way — the further question about D-0003's
+> OWN future is a separate, later-stage matter, not a reopening of THIS
+> doc's finding.
 > [← Back to Roadmap](index.md)
 
 ## The idea
