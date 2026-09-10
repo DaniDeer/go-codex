@@ -14,29 +14,34 @@
 > redesign.** Read §2 for the current mechanism; §1 still holds as prior-art
 > analysis (why today's mechanisms are each partial); some of §5's worked
 > examples and §7's open questions have been updated to match the current
-> mechanism, others remain from earlier rounds where still accurate.
+> mechanism, others remain from earlier rounds where still accurate. **§8
+> adds a DISTINCT, complementary concept — Handler Disposition** —
+> resolving how a handler's PER-MESSAGE RUNTIME outcome (e.g. an AMQP
+> ack/nack/requeue decision) gets abstracted through the API layer,
+> separate from `Capability`'s declare-time configuration.
 >
 > **Relationship to already-SHIPPED designs — stated up front, not buried:**
-> whether this doc's mechanism should eventually SUBSUME
+> §3 RESOLVES (does not merely propose) the relationship to
 > [D-0003 — Codec-Declared Middlewares](../design/d-0003-codec-declared-middlewares.md)
 > (`middleware.Declaration[In,Out]`, `rest.Middleware[In,Out]`/
 > `events.Middleware[In,Out]`, `Transform`/`ClientTransform`/`.Use(mw)`) —
-> ALREADY IMPLEMENTED, tested, and documented as current — is an EXPLICITLY
-> OPEN QUESTION (§3), not decided either way. Nothing in `api/rest`/
-> `api/events`/`middleware` changes as a RESULT of this doc alone; d-0003
-> remains the accurate, current description of shipped code until a
-> SEPARATE implementation-planning round executes any migration. Breaking
-> changes are explicitly accepted as a possibility for that future round
-> (see the repo owner's own framing of this rethink: "we can make breaking
-> changes if we can achieve these goals more easily").
+> ALREADY IMPLEMENTED, tested, and documented as current: both mechanisms
+> occupy the SAME lifecycle stage (declare-time, spec-contributing),
+> confirmed via a 4-stage model, WITHOUT merging into one Go type. Nothing
+> in `api/rest`/`api/events`/`middleware` changes as a RESULT of this doc
+> alone; d-0003 remains the accurate, current description of shipped code
+> until a SEPARATE implementation-planning round executes any migration.
+> Breaking changes are explicitly accepted as a possibility for that
+> future round (see the repo owner's own framing of this rethink: "we can
+> make breaking changes if we can achieve these goals more easily").
 >
 > **Supersedes** the open question in
 > [Common-Base + Per-Pattern-Derived Middleware Types](common-middleware-architecture.md)
 > (already superseded once, by d-0003) for the specific finding it raised
 > (a single shared `middleware.Middleware` struct carrying REST-only
-> fields) — whether THIS doc's own mechanism is the long-term resolution,
-> or d-0003's `Declaration[In,Out]` split remains it, is the same open
-> question as above (§3).
+> fields) — §3's confirmed 4-stage model is now the long-term resolution
+> (both `Middleware[In,Out]` and `Capability` are stage-2 declarations,
+> not a single merged type).
 >
 > **Answers** [MQTT5 User Property Merge](mqtt5-user-property-merge.md)'s own
 > explicitly-flagged "registration surface... NOT resolved" open question — User
@@ -304,20 +309,16 @@ genuinely cross-protocol capability that clears BOTH bars is ever
 identified beyond Security, it would follow the SAME core-layer treatment
 — not designed further here.
 
-### 2.3 The addressing-model problem — related, but NOT fully solved by §2.1/§2.2's mechanism
+### 2.3 The addressing-model problem — RESOLVED this round via a second throwaway Go prototype
 
-**Correction made this round:** an earlier draft of this section claimed the
-`Address` sketch below already achieved the SAME compile-time guarantee as
-§2.1/§2.2's sealed `Capability` mechanism. On closer inspection (see §5.3),
-that is only PARTLY true: `Address` (below) is an OPEN interface (any
-package may implement `AddressID() string`), unlike `Capability`, which is
-SEALED per adapter. An address-shape mismatch (e.g. building a channel with
-an `amqp.Address` and later attaching it to `mqtt5.Attach`) is therefore
-still caught only at RUNTIME, inside the adapter's own logic — not at
-compile time the way a `Capability` mismatch now is. This is a genuinely
-open gap (§7), not resolved here; the sketch below is kept as the
-addressing-model design this doc still recommends, with this caveat stated
-plainly rather than glossed over:
+**History:** an earlier draft of this section claimed the `Address` sketch
+already achieved the SAME compile-time guarantee as §2.1/§2.2's sealed
+`Capability` mechanism; a later round corrected this (the sketch used a
+plain OPEN interface, `AddressID() string`, which does NOT reject a
+mismatch at compile time). That correction is now SUPERSEDED by an actual
+resolution, proven via a real, throwaway Go prototype (same discipline as
+§7's "Go generics feasibility" spike — compiled and run, not just reasoned
+about; deleted after the finding below was extracted):
 
 - **(a) `events.Address` becomes its own open interface type** —
   `TopicAddress{Topic string}` (what MQTT/ZeroMQ implicitly use today) and a NEW
@@ -346,22 +347,47 @@ differently-SHAPED (e.g. a genuinely stream/partition-consumer model like
 Kafka's own consumer-group semantics, which do not cleanly reduce to "subscribe
 to one destination, get individually-addressed messages").
 
-## 3. Relationship to D-0003 — an honest comparison, REOPENED as an explicitly undecided question
+**The compile-time-safety resolution for (a), confirmed via the prototype
+(full reasoning and evidence in §5.3):** `events.Channel[T]` gains a SECOND
+type parameter, `Addr`, constrained to an `Address` interface that requires
+ONE real method — `Template() string` — not a bare marker:
 
-**Status: NOT DECIDED — reopened.** The comparison below was written in an
-earlier round, when this doc's own primitive was the now-SUPERSEDED, OPEN
-`Feature`/`Provider` sketch (§2's historical note). That round concluded
-"Option B" (subsume D-0003). Since then, the primitive itself changed to
-the sealed, per-adapter `Capability` mechanism (§2) — and D-0003's
-`Middleware[In,Out]` was ALREADY compile-time-safe (generic, no string
-IDs) even before this pivot, so the original calculus (weighing an
-open/runtime-checked `Feature` against an already-safe `Declaration[In,Out]`)
-no longer describes the actual choice on the table. **Whether D-0003 should
-fold into the sealed-`Capability` mechanism, stay fully separate, or
-something in between is an explicitly OPEN QUESTION — not decided in this
-round.** The Option A/B analysis below is KEPT as the historical record of
-the PREVIOUS round's reasoning (useful context for a future round revisiting
-this question), not as this doc's current conclusion.
+```go
+// package events
+type Address interface{ Template() string }
+type TopicAddress struct{ Topic string }
+func (a TopicAddress) Template() string { return a.Topic }
+
+type Channel[Addr Address, T any] struct{ /* ... */ }
+func NewChannel[Addr Address, T any](addr Addr, codec codex.Codec[T], opts ...ChannelOpt) Channel[Addr, T]
+```
+
+Compile-time safety comes from ordinary Go type EQUALITY, not from sealing
+`Address` per adapter — `mqtt5.Attach[T any](client *Client, ch
+events.Channel[events.TopicAddress, T], caps ...Capability) error` simply
+requires the LITERAL concrete type `events.TopicAddress` in its own
+signature; `events.Channel[amqp.Address, T]` is a DIFFERENT Go type,
+rejected at compile time with zero marker-method boilerplate. This is
+SIMPLER than either candidate (a)/(b1) originally sketched in §7 (sealing
+`Address` per adapter was UNNECESSARY — requiring the exact concrete type
+in `Attach`'s own signature already achieves the identical guarantee).
+
+## 3. Relationship to D-0003 — RESOLVED via a 4-stage lifecycle model, confirmed via a fifth throwaway Go prototype
+
+**Status: RESOLVED**, via a fifth throwaway Go prototype and a proposed
+4-stage lifecycle model — see "This round's status" at the end of this
+section for the confirmed answer. This section's history, kept for
+context: the comparison below was originally written when this doc's own
+primitive was the now-SUPERSEDED, OPEN `Feature`/`Provider` sketch (§2's
+historical note); that round concluded "Option B" (subsume D-0003). A
+LATER round reopened the question (the primitive had changed to the
+sealed, per-adapter `Capability` mechanism, and D-0003's
+`Middleware[In,Out]` was ALREADY compile-time-safe even before that
+pivot, so the original 2-option calculus no longer described the actual
+choice). **THIS round resolves it** — not by choosing A or B, but by
+recognizing both options were framed around a too-coarse, 2-stage mental
+model. The Option A/B analysis below is KEPT as historical record of the
+reasoning that led here, not as this doc's current conclusion.
 
 D-0003's `middleware.Declaration[In,Out]` + `rest.Middleware[In,Out]`/
 `events.Middleware[In,Out]` (codec-backed, structured Input/Output;
@@ -423,14 +449,98 @@ func (Middleware[In, Out]) FeatureID() string { return "rest.middleware:" + m.Na
   called `Middleware[In,Out]` or `Feature`), just re-homed. This is real
   migration cost, not a free refactor.
 
-**This round's status: REOPENED, not decided.** The previous round's
-"Decision: Option B" conclusion was reached against the now-superseded
-`Feature`/`Provider` primitive and is NOT carried forward as this doc's
-current position. Whether D-0003 ever folds into the sealed-`Capability`
-mechanism — and if so, whether via the SAME "embed a `Declaration[In,Out]`
-inside a capability type" shape Option B sketched, or some other approach —
-is left for a future, dedicated round to decide, informed by (but not
-bound by) the reasoning above.
+**This round's status: RESOLVED, via a fifth throwaway Go prototype and a
+proposed 4-stage lifecycle model** (compiled and run, not merely reasoned
+about — deleted after this finding was extracted). Neither Option A nor
+Option B above is the final answer — both were framed around a
+2-stage mental model (declare, then attach) that turned out to be too
+coarse. The resolution comes from splitting the lifecycle into FOUR
+stages: (1) **declare** — route/channel/port, fully adapter-agnostic; (2)
+**capability-declare** — capabilities added, still adapter-agnostic, able
+to contribute to spec; (3) **handler-attach** — business logic attached;
+(4) **adapter-attach** — the concrete adapter supplied, checked against
+stage 2.
+
+**The reframed answer to "does D-0003 fold into `Capability`":** D-0003's
+`Middleware[In,Out]` ALREADY occupies stage 2 — declared before
+handler/adapter, contributing to spec. Under the 4-stage model, both
+`Middleware[In,Out]` (structured, codec-backed I/O data) and `Capability`
+(protocol-native toggles) are **stage-2, spec-contributing declarations**
+— the SAME kind of thing, differing only in PAYLOAD shape, not in WHEN or
+HOW they attach. **They do NOT need to merge into one Go type** — each
+keeps its own runtime-enforcement mechanism (`Middleware[In,Out]`:
+reflection-based `Transform`/`.Use(mw)` dispatch, unchanged; `Capability`:
+sealed, compile-time-checked `Attach`-time supply, unchanged) — but they
+are now understood as two INSTANCES of one shared lifecycle STAGE, not
+two competing mechanisms one must subsume the other.
+
+**Three candidate Go mechanisms were spiked to make stage 2 → stage 4
+concrete, with a clear winner:**
+
+1. **Threaded third type parameter** (`Channel[Addr, T, Caps]`, `Caps`
+   carried through `.Use`/`.WithHandler` to `Attach`) — CONFIRMED
+   compile-time-safe through all 4 stages, even after an intervening
+   handler-attach step (a real cross-adapter mismatch was rejected with
+   an actual compiler error). **But CONFIRMED to fail this doc's own
+   ergonomics bar**: Go infers `Caps` as the CONCRETE capability type
+   supplied (e.g. `mqtt5.QoS`), not the sealed INTERFACE `Attach`
+   requires (`mqtt5.Capability`) — so explicit type-parameter brackets
+   are REQUIRED at every `.Use(...)` call, even for a single capability,
+   confirmed via a failed build attempt before the fix. Heterogeneous
+   capability mixes (e.g. `QoS` + `UserProperty` together) need the SAME
+   explicit pin. Rejected as the primary mechanism — real ergonomic
+   regression from the zero-bracket bar the last four spikes established.
+2. **Type-erased storage** (`[]any`, runtime-reasserted at `Attach`) —
+   CONFIRMED to sacrifice compile-time safety entirely: a genuine
+   cross-adapter mismatch (a `zeromq`-only capability attached via
+   `mqtt5.Attach`) **compiled successfully**, caught only via a runtime
+   type-switch. Rejected outright — this is exactly the category of
+   regression this doc's "we do not compromise on compile-time safety"
+   bar exists to prevent.
+3. **CONFIRMED WINNER — a decoupled, spec-only sibling value + a
+   `CheckCoverage`-style drift-check:** stage 2 (`DeclareCapabilitySpec`)
+   returns a SEPARATE, plain value — NOT threaded through the channel's
+   own Go type at all. `Attach` (stage 4) is **completely UNCHANGED**
+   from the already-proven, zero-bracket mechanism (§2) — capabilities
+   still supplied directly, still sealed, still compile-time-checked on
+   the axis that matters most (adapter/protocol mismatch). The ONLY new
+   piece: an OPTIONAL drift-check —
+   `CheckCapabilityCoverage(specs, supplied)` — comparing the stage-2
+   spec-declarations against what was ACTUALLY supplied at stage 4 by
+   name, mirroring `rest.CheckCoverage`'s existing pattern for Security.
+   CONFIRMED via the prototype: a happy-path case (spec matches supplied
+   capability) passes; a genuine DRIFT case (a spec declared for
+   `mqtt5.user-property` with no matching capability actually supplied)
+   is correctly caught with a typed `MissingCapabilityError`. Zero
+   brackets needed anywhere in this design — `Channel[Addr,T]` stays
+   EXACTLY as simple as today's already-proven shape.
+
+**The honest trade-off, stated plainly:** Candidate 3 achieves DECOUPLING
+(stage 2 and stage 4 are independent calls, and stage 2 alone is enough
+to drive spec-rendering — resolving §7's "spec rendering plan" gap) but
+NOT full type-level LINKING between them — a caller could still forget
+the drift-check itself (it is an opt-in call, not automatic), unlike
+`Attach`'s own protocol-mismatch check, which the compiler enforces
+unconditionally. This is a DIFFERENT, weaker guarantee than what
+`Capability`/`Attach` alone already provides for protocol-mismatch — but
+it is the SAME class of guarantee `rest.CheckCoverage` already accepts
+for Security (a coverage check the caller must actually invoke, not a
+compiler-enforced one), so it is a precedented trade-off, not a novel
+compromise.
+
+**Resolved recommendation for a future implementation round:** adopt
+Candidate 3's shape — `Middleware[In,Out]` and a NEW, decoupled
+`CapabilitySpec`-style declaration BOTH live at stage 2, sharing NOTHING
+at the Go-type level (no forced common interface), but conceptually
+unified as "declare-time, spec-contributing" in this doc's/`docs/concepts/
+declaring-apis-and-ports.md`'s own vocabulary; `Capability`'s existing
+`Attach`-time mechanism (§2) is UNCHANGED and remains the sole
+compile-time enforcement point; a `CheckCapabilityCoverage`-style
+drift-check is ADDED as an opt-in safety net, not a compiler guarantee.
+Exact package placement/naming for `CapabilitySpec` and precise
+wiring into `rest`/`events`' existing spec-generation code is NOT
+designed further here — flagged for the dedicated implementation-planning
+round §7 already calls for.
 
 ## 4. What this is expected to simplify — validated against worked examples (§5), not merely asserted
 
@@ -619,72 +729,119 @@ not shared with `mqtt5.UserProperty`, for the SAME bar-2 reason, even
 though their underlying shapes are compatible enough that a shared type
 was tempting to consider.
 
-### 5.3 A hypothetical AMQP adapter — the reference case the general mechanism (§2) was built to match
+### 5.3 A hypothetical AMQP adapter — NOW fully compile-time-safe, address AND capability, confirmed via a real prototype
+
+**History:** this worked example went through THREE states across successive
+rounds — (1) an initial claim that address-shape mismatches were already
+compile-time-safe (incorrect); (2) a correction acknowledging they were NOT
+(the `Address` interface was OPEN, no type-level guarantee); (3) THIS
+round's actual resolution, proven via a real, throwaway Go prototype
+(compiled and run — the SAME discipline as §7's "Go generics feasibility"
+spike), not merely reasoned about. The design below is the CONFIRMED,
+tested shape:
 
 ```go
-// api/events — Address is an open interface type (§2.3's option (a)),
-// NOT a new top-level pattern; TopicAddress covers today's MQTT/ZeroMQ shape
-// unchanged.
-type Address interface{ AddressID() string }
+// api/events — Address requires ONE real method, Template() — not a bare
+// marker like an earlier draft's AddressID() string. Template() names
+// whichever field hosts {placeholder} vars, letting the EXISTING shared
+// TopicParam/BuildTopic mechanism generalize across address shapes without
+// per-Addr-type special-casing (confirmed via the prototype — see below).
+type Address interface{ Template() string }
 
 type TopicAddress struct{ Topic string }
-func (TopicAddress) AddressID() string { return "topic" }
+func (a TopicAddress) Template() string { return a.Topic }
 
-// adapters/amqp — a NEW address shape, living entirely in the adapter
-// package, never touching api/events' own code.
+// adapters/amqp — a NEW, COMPOUND address shape, living entirely in the
+// adapter package. Only RoutingKey hosts {placeholder} vars in practice;
+// Exchange/Queue are typically fixed and stay OUTSIDE the shared
+// var-substitution mechanism entirely — confirmed to work cleanly, not
+// merely assumed.
 type Address struct{ Exchange, RoutingKey, Queue string }
-func (Address) AddressID() string { return "amqp.address" }
+func (a Address) Template() string { return a.RoutingKey }
 
-// api/events — NewChannel's signature changes (a genuine breaking change,
-// accepted per this doc's own framing) from a bare topic string to an
-// Address value; NewChannelFromTopic's existing convenience (today wrapping
-// a pre-built Topic struct) becomes NewChannelFromAddress, generalized:
-func NewChannel[T any](addr Address, codec codex.Codec[T], opts ...ChannelOpt) Channel[T]
+// api/events — Channel gains a SECOND type parameter, Addr, constrained to
+// Address. NewChannel infers BOTH Addr (from addr's own concrete type) AND
+// T (from codec) — CONFIRMED zero explicit type-parameter brackets needed
+// at the call site, matching the ergonomics bar the generics spike
+// established.
+type Channel[Addr Address, T any] struct{ /* ... */ }
+func NewChannel[Addr Address, T any](addr Addr, codec codex.Codec[T], opts ...ChannelOpt) Channel[Addr, T]
 
-// adapters/amqp — ack-mode is a sealed Capability, supplied at Attach time,
-// exactly like mqtt.QoS/mqtt5.QoS in §5.1 — the SAME mechanism §2 formalizes
-// generally, applied here to AMQP's own concept.
-type Capability interface{ isAMQPCapability() }
+// NewChannelFromTopic preserves today's ergonomic bare-string call site —
+// CONFIRMED working, not just gestured at.
+func NewChannelFromTopic[T any](topic string, codec codex.Codec[T], opts ...ChannelOpt) Channel[TopicAddress, T]
 
+// adapters/amqp — capabilities stay sealed, supplied at Attach time,
+// exactly like mqtt.QoS/mqtt5.QoS in §5.1 — unaffected by the
+// address-parameterization change; both mechanisms compose cleanly.
+// UPDATE (§7's "AMQP compound ack+persistence" resolution, confirmed via
+// its own prototype): AMQP's delivery-guarantee capabilities split by
+// ROLE (unlike MQTT's symmetric QoS), so Attach itself splits too —
+// PublishAttach/SubscribeAttach, each accepting only its own role-scoped
+// sealed interface. A role-inappropriate capability (e.g. AckMode passed
+// to PublishAttach) is a COMPILE ERROR, not a runtime check.
+type PublishCapability interface{ isAMQPPublishCapability() }
+type SubscribeCapability interface{ isAMQPSubscribeCapability() }
+
+type Persistent bool
+func (Persistent) isAMQPPublishCapability() {}
+
+type PublisherConfirms bool
+func (PublisherConfirms) isAMQPPublishCapability() {}
+
+// NOTE: declaring AckMode alone does not make manual-ack actually usable —
+// see §8 "Handler Disposition" for the separate, dispatch-time mechanism
+// a handler needs to signal ack/nack/requeue outcomes; AckMode and
+// Disposition are two DISTINCT, complementary mechanisms, not one.
 type AckMode byte
-func (AckMode) isAMQPCapability() {}
+func (AckMode) isAMQPSubscribeCapability() {}
 
-func Attach[T any](client *Client, ch events.Channel[T], caps ...Capability) error
+// PublishAttach/SubscribeAttach both require the LITERAL concrete type
+// amqp.Address in their own signature — not a generic Addr — the SAME
+// mechanism §2.3 already established for adapter-correctness, now
+// combined with role-scoped capability interfaces for role-correctness.
+func PublishAttach[T any](client *Client, ch events.Channel[Address, T], caps ...PublishCapability) error
+func SubscribeAttach[T any](client *Client, ch events.Channel[Address, T], caps ...SubscribeCapability) error
 ```
 
 An AMQP-bound channel declares `events.NewChannel(amqp.Address{Exchange:
-"orders", RoutingKey: "created.#", Queue: "worker-1"}, codec, ...)`; an
-MQTT-bound channel keeps declaring `events.NewChannel(events.TopicAddress{Topic:
-"orders/created"}, codec, ...)` (or a thin `NewChannelFromTopic`-style helper
-preserving today's ergonomic bare-string call site for the common case — a
-DESIGN DETAIL for the implementation round, not resolved here).
+"orders", RoutingKey: "created.{region}", Queue: "worker-1"}, codec, ...)`;
+an MQTT-bound channel keeps declaring
+`events.NewChannel(events.TopicAddress{Topic: "orders/created"}, codec,
+...)`, or the CONFIRMED `NewChannelFromTopic("orders/created", codec, ...)`
+convenience for the common bare-string case.
 
-**Error timing — a correction made THIS round, not carried forward
-uncritically:** an earlier draft of this worked example claimed the
-address-shape mismatch itself (an MQTT-only channel built from an
-`amqp.Address`) fails at COMPILE time "via Go's own type system." On closer
-inspection, THAT SPECIFIC claim does not hold: `Address` (as sketched above)
-is an OPEN interface — any package can implement `AddressID() string` — so
-`events.NewChannel(amqp.Address{...}, codec, ...)` compiles successfully
-regardless of which adapter the resulting `Channel[T]` is LATER attached to,
-because `Channel[T]` does not carry the address's concrete type in its own
-Go type. The mismatch (attaching an AMQP-addressed channel to `mqtt5.Attach`)
-would only surface INSIDE `mqtt5.Attach`'s own runtime logic (extracting an
-MQTT topic from `ch`'s stored address, discovering it is actually an
-`amqp.Address`) — i.e. a RUNTIME failure, the SAME category of gap §2
-otherwise eliminates for capabilities. **`AckMode` (this example's OWN
-sealed capability, supplied at `Attach` time) IS fully compile-time-safe,
-exactly like §5.1/§5.2's `QoS`/`UserProperty`** — only the ADDRESS half of
-this worked example is not, and this doc does not currently resolve that gap
-(flagged as a new open item in §7, not decided here — e.g. parameterizing
-`Channel[Addr, T]` by the address type, so `mqtt5.Attach` could require
-`Channel[TopicAddress, T]` specifically, is one candidate direction, not
-designed further here). **This worked example's CAPABILITY half (`AckMode`)
-validates §2's general mechanism end to end; its ADDRESS half surfaces a
-genuinely NEW open question** (the address-shape gap above) that this
-round's correction discovered, rather than one this example had already
-solved — kept in this section because it is still the right worked example
-for AMQP, not because every part of it is resolved.
+**Error timing — CONFIRMED via the prototype, both directions, with actual
+compiler output captured:**
+
+```
+# amqp.Address passed to an mqtt5-shaped Attach (requires events.TopicAddress):
+./main.go:21:27: in call to mqtt5.Attach, type events.Channel[amqp.Address, OrderEvent]
+    of amqpCh does not match events.Channel[events.TopicAddress, T] (cannot infer T)
+
+# events.TopicAddress passed to an amqp-shaped Attach (requires amqp.Address):
+./main.go:19:26: in call to amqp.Attach, type events.Channel[events.TopicAddress, SensorReading]
+    of mqttCh does not match events.Channel[amqp.Address, T] (cannot infer T)
+```
+
+Both mismatches are rejected AT COMPILE TIME, symmetrically — the SAME bar
+`Capability` mismatches already met (§5.1/§5.2), now also met for
+addressing. **This worked example's capability half (`AckMode`) and address
+half are BOTH now fully compile-time-safe, confirmed via a real prototype,
+not asserted** — the gap this doc carried since an earlier round is closed.
+
+**The topic-var complication, confirmed resolved, not merely assumed away:**
+the prototype ran `ch.BuildAddr(vars)` against BOTH a `TopicAddress`-based
+channel AND an `amqp.Address`-based channel through the SAME shared
+mechanism (operating on `ch.Addr.Template()`), producing correct output for
+both: the MQTT case resolved `"sensors/{sensorID}/data"` →
+`"sensors/abc-123/data"`; the AMQP case resolved ONLY the `RoutingKey`
+segment (`"created.{region}"` → `"created.eu-west"`) while `Exchange`
+(`"orders"`) and `Queue` (`"worker-1"`) passed through untouched, exactly as
+intended — confirming `TopicParam`'s existing merge-field mechanism
+generalizes across address shapes via ONE new interface method
+(`Template()`), with no adapter needing its own bespoke var-extraction
+logic.
 
 ### 5.4 REST header/cookie/query param — confirming REST needs none of this
 
@@ -733,11 +890,14 @@ agnostically), or (b) keeping Security's declaration in the core layer while
 somehow ALSO satisfying a sealed, adapter-owned interface — a combination
 this doc does not attempt to design here.
 
-**This is exactly why §3 leaves the D-0003 relationship an explicitly OPEN
-QUESTION rather than deciding it in this round**: whether/how
-`middleware.Middleware`/D-0003's `Declaration[In,Out]` mechanism should ever
-interact with §2's sealed `Capability` mechanism turns on resolving this
-exact tension for Security specifically — not decided here.
+**§3's confirmed 4-stage model resolves this tension, rather than leaving
+it open**: `middleware.Middleware`/D-0003's `Declaration[In,Out]`
+mechanism does NOT need to interact with §2's sealed `Capability`
+mechanism at the Go-type level at all — Security stays a stage-2,
+spec-contributing declaration (exactly what it already is today,
+unchanged), while `Capability` occupies the SAME lifecycle stage for
+protocol-native toggles, via its own separate, sealed, `Attach`-time
+mechanism. See §3 for the full resolution.
 
 **Error timing:** unchanged — `rest.CheckCoverage`'s existing
 `Register`/adapter-time check remains the authoritative mechanism for "is
@@ -762,12 +922,19 @@ doesn't otherwise need, or attaching capabilities via `opts` instead
 (`Read(ctx, vars, opts, caps...)`) — structurally different from every
 other worked example in this section.
 
-**Left genuinely open, not resolved:** this doc does not attempt to force a
-fit here. Whether `ports.File`/`Cache`/`SQL`/`Dir` ever need their own
-capability-declaration mechanism, and if so whether it resembles §2's
-Attach-time model or something shaped differently around ports' own
-call-directly (no separate bind step) architecture, is deferred to a future
-round (see §7).
+**Left genuinely open here, not resolved — but no longer undriven.** This
+doc does not attempt to force a fit for §2's Attach-time `Capability`
+mechanism onto `ports.File`/`Cache`/`SQL`/`Dir`, since they structurally
+lack the separate bind/`Attach` step that mechanism requires. That
+conclusion stands. What HAS changed: whether these ports need SOME
+cross-cutting-concern mechanism at all is no longer an open question
+without a driver — the driver is the library's UX North Star
+(declarative/simple/consistent workflow), and it is already being
+pursued, as its own decorator-shaped design, in
+[Declarative Middleware](declarative-middleware.md)'s remaining `ports`
+scope. That doc, not this one, is where `ports.File`/`Cache`/`SQL`/`Dir`'s
+cross-cutting-concern story gets resolved (see §7's Review-7 bullet for
+the cross-reference).
 
 ## 6. Concrete feature survey (kept from this doc's original scope — still accurate, now framed as sealed-`Capability` candidates)
 
@@ -847,40 +1014,118 @@ for AMQP addressing (§2.3's option (a)) — the following remain explicitly
 open, to be resolved by a SEPARATE, dedicated implementation-planning round
 before any code is written:
 
-- **Go generics feasibility**: can a sealed `Capability` implementation carry
-  a TYPED `middleware.Declaration[In, Out]` payload (§5.2's `UserProperty[In]`
-  sketch) while the SURROUNDING `Attach[T any](..., caps ...Capability)`
-  function stays simple and ergonomic across REST's
-  `MergedHeaderParam[T]`-style generic constructors elsewhere in this
-  codebase? A prototype spike is needed before committing further, not
-  assumed here.
-- **Spec (OpenAPI/AsyncAPI) rendering plan for adapter-defined capabilities**:
-  today's `middleware.Middleware`/`rest.HeaderParam`/etc. render into the spec
-  via CORE-PACKAGE code that knows their exact shape. An adapter-defined
-  capability (e.g. `amqp.Address`, `mqtt5.QoS`) supplied only at `Attach`
-  time has no core-package renderer, and — unlike the earlier `Feature`
-  sketch — isn't even part of the channel/route's OWN declared value, making
-  spec visibility HARDER to achieve here, not just unresolved: does AsyncAPI
-  need a vendor-extension mechanism (`x-mqtt5-qos`) populated by a SEPARATE
-  spec-contribution call at `Attach` time, does the adapter supply its own
-  renderer callback, or do these capabilities deliberately stay spec-invisible
-  (mirroring how `ports.File` has no spec at all)? Not decided — and Shared
-  Subscriptions (§6) arguably SHOULD be spec-visible (it changes delivery
-  semantics a consumer needs to know about), sharpening why this question
-  matters, not just a checkbox to defer.
-- **Whether/how D-0003 relates to this mechanism** — see §3, REOPENED this
-  round, not decided either way (was previously "Option B: subsume," now
-  explicitly undecided given the primitive itself changed).
-- **Discovery**: how does a caller learn WHICH capabilities a given adapter
-  supports BEFORE attempting to bind, rather than discovering only via a
-  compile error when they actually try? A compile error IS strictly earlier
-  feedback than a runtime check, but still requires attempting the
-  combination in code first — no adapter package today exposes an
-  enumerable "list of capabilities I support" a caller could inspect ahead of
-  writing code. Worth deciding whether this is a real gap or an acceptable
-  tradeoff (IDE autocomplete on the adapter package's own exported symbols
-  already gives SOME discoverability, arguably better than either the old
-  string-ID approach or a hypothetical runtime introspection API would).
+- **Go generics feasibility — RESOLVED this round via a real, throwaway Go
+  prototype** (a standalone module outside this repo, compiled and run, not
+  merely reasoned about on paper; deleted after the finding below was
+  extracted). All four things that needed concrete proof, not assumption,
+  were tested:
+  1. **Sealing + generic payload coexist in one slice** — a non-generic
+     capability (`QoS`) and a generic one (`UserProperty[In]`, carrying an
+     embedded `middleware.Declaration[In, struct{}]`) both satisfied the
+     SAME sealed `Capability` interface and were passed together in one
+     `caps ...Capability` call, with `UserProperty` instantiated at TWO
+     different concrete `In` types in the same call. Compiled and ran
+     successfully.
+  2. **Cross-package sealing still rejects mismatches with a generic
+     capability in the mix** — passing an `mqtt5.QoS` value to a
+     `zeromq`-style `Attach` function (a SEPARATE sealed `Capability`
+     interface) produced an actual compiler rejection: `mqtt5.QoS does not
+     implement zeromq.Capability (missing method isZeroMQCapability)` —
+     captured verbatim, not assumed.
+  3. **`Attach` CAN dispatch on a generic capability without knowing its
+     `In` at `Attach`'s own type-parameter list** — the real subtlety this
+     item existed to test. Resolved via a SECOND, non-generic interface
+     (`mergeCapability{ Capability; mergeInto(vars map[string]string)
+     (string, error) }`) that `UserProperty[In]` ALSO implements — its
+     method body closes over its own already-bound `In` internally, so the
+     INTERFACE signature itself never mentions `In`. `Attach[T
+     any](...)` type-switches on this non-generic interface and successfully
+     invoked `mergeInto` against BOTH differently-instantiated
+     `UserProperty[In]` values, decoding each one's own vars correctly,
+     confirming Go's rule that a generic type's method set is fully concrete
+     per instantiation — this is not a special case requiring new language
+     features, just correct application of existing generics rules.
+  4. **Ergonomics — matches existing go-codex call-site style exactly, with
+     ONE real correction found along the way.** An initial constructor
+     shape (`NewUserProperty[In](name, inCodec Codec[In])`) FAILED to
+     compile when used without explicit type brackets — Go inferred `In`
+     from `inCodec` (a value that must already exist, chicken-and-egg for a
+     not-yet-built struct type) rather than from field getters/setters,
+     exposing a genuine design mistake, not a generics limitation. Corrected
+     to mirror `codex.RequiredField[T,F]`/`rest.NewRequiredHeaderParam[T,V]`'s
+     OWN proven pattern exactly — infer `In` from the FIRST field's
+     `get func(In) string`/`set func(*In, string) error` closures, fixed via
+     the constructor's return type, with later chained fields constrained to
+     the SAME already-fixed `In` automatically. Retested: compiles and reads
+     with **zero explicit type-parameter brackets**, directly comparable to
+     real call sites in `examples/rest-api/routes/routes.go`
+     (`rest.NewRequiredHeaderParam("X-Request-Id", codex.String(), func(r
+     ProfileReq) string {...}, func(r *ProfileReq, v string) {...})`).
+  **Conclusion: feasible, with no fundamental blocker — but the constructor
+  shape matters.** A future implementation round should design
+  capability constructors the SAME way `codex.RequiredField`/
+  `rest.NewRequiredHeaderParam` already do (infer the struct type from
+  field getters/setters, never from a pre-built struct-level codec argument)
+  — this is now a CONFIRMED constraint, not merely a stylistic preference.
+- **Spec (OpenAPI/AsyncAPI) rendering plan for adapter-defined
+  capabilities — ADVANCED (not fully resolved) by §3's 4-stage model.**
+  §3's CONFIRMED Candidate 3 (`DeclareCapabilitySpec`, a decoupled,
+  adapter-agnostic sibling value declared BEFORE `Attach`) gives spec
+  rendering a concrete HOOK POINT it didn't have before — spec generation
+  can consume the stage-2 `CapabilitySpec` list without needing to know
+  the adapter at all, resolving the "isn't even part of the channel's
+  own declared value" objection this bullet originally raised. STILL not
+  decided: the EXACT rendering mechanism once a `CapabilitySpec` exists
+  (a vendor-extension field, e.g. AsyncAPI's `x-mqtt5-qos`; a generic
+  "capabilities" array in the spec; or something else) — that wiring is
+  left for the dedicated implementation-planning round, not designed
+  here. Shared Subscriptions (§6) remains the sharpest example of why
+  spec-visibility matters (delivery-semantics-changing, not just
+  metadata).
+- **Whether/how D-0003 relates to this mechanism — RESOLVED this round,
+  see §3.** No longer "reopened, not decided" — §3 now gives a concrete
+  answer (both are stage-2 declarations, sharing a lifecycle stage, not
+  merged into one Go type) via the confirmed 4-stage model. Kept as a
+  bullet here only as a pointer, not a live open question anymore.
+- **[Review-11, Low] Discovery — RESOLVED this round: not a real gap,
+  confirmed via existing-precedent evidence, not a spike.** The original
+  worry: no adapter package exposes an enumerable "list of capabilities I
+  support" a caller could inspect ahead of writing code — a mismatch is
+  only caught at compile time, when the caller actually attempts the
+  combination.
+
+  **Confirmed via code search: this codebase has ZERO existing precedent
+  for a runtime "list what's supported" API on ANY sealed/closed
+  mechanism** — `Capability` would not be introducing a novel gap, it
+  would be the FIRST place asked to solve a problem nothing else here
+  solves either:
+  - `ports.Pattern` (confirmed `ports/doc.go:65`) — its own concrete
+    patterns (`RESTPattern`, `EventPattern`, `ReqReplyPattern`,
+    `MCPPattern`) are discoverable ONLY via godoc cross-links and the
+    package's own exported symbols, never a runtime `ListPatterns()`-style
+    call.
+  - `rest.SecurityScheme` (confirmed `api/rest/builder.go:2310`) — a
+    caller learns what a route requires by reading the exported struct
+    literal at the call site, not by querying an adapter for "which
+    schemes do you support."
+  - No `api/mcp`/`adapters/mcpgo` capability-listing precedent either —
+    the MCP protocol's own `ListTools` enumerates already-REGISTERED tool
+    instances (a runtime inventory of what a server exposes), which is a
+    different question from "which capability TYPES could this adapter
+    package ever accept," and has no bearing here.
+
+  **Resolved position:** IDE autocomplete + godoc on each adapter
+  package's own exported `Capability`-implementing types IS this
+  codebase's established discovery mechanism for every sealed interface,
+  not a weaker substitute invented for this design. A compile error on
+  mismatch remains strictly earlier feedback than a runtime check would
+  give, and no existing mechanism in this codebase pays for anything
+  more — so `Capability` introduces no regression by not inventing a
+  runtime introspection API either. Not designed further: an actual
+  `ListCapabilities()`-style API remains available as a FUTURE addition
+  if a concrete, driven need for it ever appears (mirroring this doc's
+  own "don't force an answer without a driver" discipline — see Review-7),
+  but nothing in the current survey drives it.
 - **Capabilities that clear the two-part test's shape bar but not the
   support bar (or vice versa)** (REVISED this round — corrects an earlier,
   overstated version of this bullet that claimed "no capability surveyed has
@@ -894,32 +1139,81 @@ before any code is written:
   `api/events` layer (Security's own treatment) or need some THIRD
   mechanism this doc hasn't designed. Not designed here, flagged as an edge
   case only.
-- **AMQP's compound ack+persistence configuration has no single-value
-  equivalent to MQTT's QoS enum** (NEW this round, surfaced by §5.1's
-  two-part-test analysis): AMQP's own version of "delivery guarantee" needs
-  AT LEAST two orthogonal sealed capabilities (`amqp.AckMode` for
-  auto-vs-manual acknowledgement, `amqp.Persistent` for the delivery-mode
-  bit) rather than one `mqtt.QoS`-shaped enum — and even together, they do
-  not reach MQTT's native "exactly-once" semantics (AMQP 0-9-1 has no
-  built-in equivalent; some broker extensions approximate it, out of scope
-  for the base protocol). The exact Go shape of `amqp.AckMode`/
-  `amqp.Persistent` — and whether AMQP needs a THIRD capability to fully
-  express delivery semantics — is NOT designed here, only the conceptual
-  gap is confirmed.
-- **The `Address` mismatch is NOT compile-time-safe** (NEW this round,
-  discovered while correcting §2.3/§5.3): unlike a sealed `Capability`
-  mismatch, an address-SHAPE mismatch (building a channel with an
-  `amqp.Address`, attaching it to `mqtt5.Attach`) is caught only at RUNTIME
-  today, because `Address` (§2.3) is deliberately an OPEN interface, not a
-  sealed one. Whether `Address` should ALSO become sealed per adapter
-  (losing the "any adapter can define a new address shape independently"
-  openness, mirroring `Capability`'s own trade-off), or whether
-  `events.Channel[T]` needs an additional type parameter carrying the
-  address's concrete type (so `Attach` functions can require a SPECIFIC
-  address type at their own signature), is NOT decided — flagged as a real
-  gap this doc's own "we do not compromise on compile-time safety" bar has
-  NOT yet met for addressing specifically, even though it has for
-  capabilities.
+- **AMQP's compound ack+persistence configuration — RESOLVED this round via
+  a third real, throwaway Go prototype** (same discipline as the two prior
+  spikes — compiled and run, not just reasoned about; deleted after the
+  finding was extracted). Confirmed: AMQP's delivery-guarantee story needs
+  THREE separate capabilities, not two — `amqp.Persistent` (per-message
+  delivery-mode bit), `amqp.PublisherConfirms` (channel-level broker-ack-of-
+  receipt), and `amqp.AckMode` (per-consumer auto/manual acknowledgement) —
+  settling the doc's own previously-open "does AMQP need a THIRD
+  capability" question: YES, `PublisherConfirms` is a genuinely separate
+  AMQP concept from `Persistent` (a message can be persistent without
+  publisher confirms and vice versa), and does NOT fold into `AckMode`
+  either. Even all three together do not reach MQTT's native
+  "exactly-once" semantics (AMQP 0-9-1 has no built-in equivalent; some
+  broker extensions approximate it, out of scope for the base protocol).
+
+  **The deeper design question this spike surfaced and resolved (not
+  previously identified in this bullet): unlike MQTT's `QoS` — meaningful
+  symmetrically on BOTH publish and subscribe — AMQP's three capabilities
+  split cleanly by ROLE**: `Persistent`/`PublisherConfirms` are
+  PUBLISH-only, `AckMode` is SUBSCRIBE-only. Two candidate mechanisms were
+  tested head-to-head: (A) one role-agnostic `Attach` accepting all three
+  together, sorting role-appropriateness out via a RUNTIME check inside
+  `Attach`'s own dispatch — confirmed working, but a role mismatch (e.g.
+  `AckMode` supplied while publishing) is caught only at runtime, the SAME
+  category of gap this doc's compile-time-safety bar exists to close. (B)
+  role-SPLIT `PublishAttach`/`SubscribeAttach`, each accepting only its OWN
+  role-scoped sealed interface (`PublishCapability`/`SubscribeCapability`)
+  — CONFIRMED via the prototype that a role-inappropriate capability is
+  REJECTED AT COMPILE TIME, both directions, with actual compiler output
+  captured:
+  ```
+  # AckMode (subscribe-only) passed to PublishAttach:
+  cannot use amqp.AckModeManual ... as amqp.PublishCapability value in
+  argument to amqp.PublishAttach: amqp.AckMode does not implement
+  amqp.PublishCapability (missing method isAMQPPublishCapability)
+
+  # Persistent (publish-only) passed to SubscribeAttach:
+  cannot use amqp.Persistent(true) ... as amqp.SubscribeCapability value in
+  argument to amqp.SubscribeAttach: amqp.Persistent does not implement
+  amqp.SubscribeCapability (missing method isAMQPSubscribeCapability)
+  ```
+  **Candidate (B) is the confirmed recommendation** — it extends this
+  doc's compile-time-safety bar from adapter-correctness (§2, §2.3) to
+  ROLE-correctness too, at the cost of two `Attach`-shaped functions
+  instead of one per adapter (a natural fit, since `events.Channel` itself
+  already splits `WithSubscribe`/`WithPublish` by role — role-split
+  `Attach` functions mirror an ALREADY-ESTABLISHED asymmetry, not a new
+  one). `Persistent`/`PublisherConfirms` implementing ONLY
+  `PublishCapability` (never `SubscribeCapability`) and `AckMode`
+  implementing ONLY `SubscribeCapability` is the confirmed, tested shape —
+  not designed further here (e.g. exact constructor ergonomics for these
+  three types were not spiked, only the role-split mechanism itself).
+- **The `Address` mismatch is NOT compile-time-safe — RESOLVED this round
+  via a second real, throwaway Go prototype** (same discipline as the "Go
+  generics feasibility" spike above — compiled and run, not just reasoned
+  about; deleted after the finding was extracted). `events.Channel[T]`
+  gains a SECOND type parameter, `Addr`, constrained to an `Address`
+  interface requiring one real method (`Template() string`, naming
+  whichever field hosts `{placeholder}` vars) — NOT a bare marker.
+  Adapter `Attach` functions require the LITERAL concrete address type in
+  their own signature (`events.Channel[events.TopicAddress, T]` for
+  `mqtt5`/`zeromq`, `events.Channel[amqp.Address, T]` for `amqp`) — ordinary
+  Go type equality then rejects any mismatch at COMPILE time, confirmed
+  bidirectionally with actual compiler output captured (see §5.3). This
+  turned out SIMPLER than either candidate this bullet originally posed:
+  sealing `Address` per adapter was UNNECESSARY — requiring the exact
+  concrete type in `Attach`'s own signature already achieves the identical
+  guarantee, with zero marker-method boilerplate. The prototype ALSO
+  confirmed (not merely assumed) that the EXISTING `TopicParam`/`BuildTopic`
+  var-substitution mechanism generalizes across address shapes via
+  `Address.Template()` — AMQP's compound `{Exchange, RoutingKey, Queue}`
+  resolves ONLY its `RoutingKey` segment through the shared mechanism,
+  leaving `Exchange`/`Queue` untouched, exactly as needed. This closes the
+  doc's own "we do not compromise on compile-time safety" bar for
+  addressing, matching what was already true for capabilities.
 
 **The following gaps were surfaced by a dedicated critical review of this doc
 (a `/review` pass) two rounds ago. Several are now RESOLVED by this round's
@@ -942,17 +1236,43 @@ one-at-a-time future-round policy as before:**
   AckMode values, would still need its OWN validation inside that
   capability's own construction — orthogonal to this finding, not
   reopened.)
-- **[Review-3, Medium] Security shows near-zero benefit — still open,
-  reframed.** §5.5 now explains WHY: Security is the one surveyed concept
-  that IS genuinely cross-protocol, which is exactly why it does NOT fit the
-  sealed-per-adapter mechanism the same way QoS/User Properties/AMQP
-  addressing do. This is no longer treated as an unexplained tension — it
-  directly motivates §3's reopened D-0003 question — but that question
-  itself remains undecided.
-- **[Review-4, Medium] `NewChannel`'s breaking change under-analyzed — still
-  open, unaffected by this round's pivot.** §2.3/§5.3's `Address`
-  breaking-change migration-cost gap is orthogonal to the capability-matching
-  mechanism change — unchanged from before.
+- **[Review-3, Medium] Security shows near-zero benefit — RESOLVED this
+  round via §3's 4-stage model.** §5.5 explains WHY Security doesn't fit
+  the sealed-per-adapter mechanism (it's genuinely cross-protocol, unlike
+  QoS/User Properties/AMQP addressing) — and §3's confirmed resolution
+  now explains WHERE Security actually fits instead: it stays a stage-2,
+  spec-contributing declaration in the protocol-agnostic core (exactly
+  like `Middleware[In,Out]`/D-0003 today), never needing to become a
+  sealed, adapter-specific `Capability` at all. The "near-zero benefit"
+  observation was correct; it is no longer an unexplained tension, since
+  §3 now gives Security's OWN stage a name and a confirmed neighbor
+  (`Middleware[In,Out]`), not just a footnote.
+- **[Review-4, Medium] `NewChannel`'s breaking change under-analyzed —
+  RESOLVED: migration blast radius counted, confirmed large.** The
+  address-parameterization prototype (§2.3/§5.3) already CONFIRMED
+  `NewChannelFromTopic`'s ergonomics (zero explicit type-parameter brackets
+  at the bare-string call site); this round enumerated every real call
+  site, via `grep`, not estimate:
+
+  | Category | Count |
+  | --- | --- |
+  | `examples/*` (real call sites, comment-only mentions excluded) | 21 |
+  | `api/events/*_test.go` (the package's OWN tests) | 141 |
+  | `adapters/*/*_test.go` (mqtt/mqtt5/zeromq/redis/sql/file conformance tests) | 110 |
+  | **Subtotal — real, compiled Go call sites** | **272** |
+  | Godoc comment examples (`adapters/mqtt/doc.go`, `topicvars.go`) | 2 |
+  | Documentation site snippets (`docs/**/*.md`) | 26 |
+  | **Grand total** | **300** |
+
+  This is a genuinely large blast radius, not a small one — any adoption
+  of `Channel[Addr, T]`'s two-type-parameter signature touches roughly 300
+  places across the repo. One mitigating, but NOT yet verified, factor:
+  the overwhelming majority of the 272 real call sites follow one
+  mechanical shape (`events.NewChannel[T](topic, codec, ...)` →
+  `events.NewChannelFromTopic(topic, codec, ...)`), suggesting a scripted
+  codemod is plausible — this has only been confirmed by visual pattern
+  inspection, not by actually running a migration tool, so it stays a
+  hypothesis, not a resolved sub-question.
 - **[Review-5, Medium] Transport lock-in — RESOLVED/reframed this round.**
   Supplying a capability at `Attach` time (not baked into the channel's own
   declared type) means the lock-in is now EXPLICIT and LOCAL to that one
@@ -968,24 +1288,304 @@ one-at-a-time future-round policy as before:**
   round.** `ports.Pattern` stays a separate, deliberately-closed mechanism,
   entirely UNAFFECTED by this pivot — it selects a port's fundamental shape;
   §2's sealed `Capability` mechanism is orthogonal, declaring capabilities
-  WITHIN whichever pattern was already chosen. Still open: whether
-  `ports.File`/`Cache`/`SQL`/`Dir` ever need their OWN capability mechanism
-  at all — linked to §5.6's genuinely-open case (ports has no separate
-  "Attach" binding step to hang capabilities off of the way REST/events do).
-- **[Review-8, Low-Medium] No `stats.Observer` integration — still open,
-  unaffected by this round's pivot.** If anything, LESS urgent now: a
-  capability mismatch is a COMPILE error (never reaches a running process at
-  all), so there is no runtime rejection EVENT left for an Observer to
-  record for THIS specific failure mode — but whether other aspects of
-  capability USE (e.g. a supplied `mqtt5.UserProperty`'s own merge-decode
-  failure) should report through Observer remains open and undecided.
-- **[Review-9, Low] No "Test plan" section — still open, unaffected by this
-  round's pivot.** Unlike [D-0003](../design/d-0003-codec-declared-middlewares.md)'s
-  own "## Test plan" section, this doc still has none.
+  WITHIN whichever pattern was already chosen. Whether `ports.File`/
+  `Cache`/`SQL`/`Dir` ever need their OWN capability-EQUIVALENT mechanism
+  is no longer "no driver at all" — **a driver now exists, but it is a
+  DIFFERENT driver pointing at a DIFFERENT doc, not this one's `Capability`
+  mechanism.** The driver is the library's own UX North Star (declarative/
+  simple/consistent workflow for the user), not adapter/protocol
+  capability mismatch — and it is already being pursued in
+  [Declarative Middleware](declarative-middleware.md)'s remaining
+  `ports.File`/`Cache`/`SQL`/`Dir` scope (decorator-shaped cross-cutting
+  concerns), NOT here. §5.6's structural observation stands unchanged:
+  ports has no separate "Attach" binding step to hang a `Capability` off
+  of the way REST/events do, so even with a real driver now identified,
+  the RIGHT mechanism for ports is that doc's decorator shape, not an
+  attempt to force this doc's `Capability` mechanism onto a boundary
+  that structurally can't host it.
+- **[Review-8, Low-Medium] `stats.Observer` integration — RESOLVED for
+  Handler Disposition (§8) via a sixth throwaway Go prototype** (compiled
+  and run, not merely reasoned about — deleted after this finding was
+  extracted). Capability MISMATCHES remain correctly out of scope for
+  Observer (a compile error never reaches a running process, confirmed
+  unchanged from the prior round's note) — but Handler Disposition's
+  runtime OUTCOME is a genuine, confirmed gap: `stats.Observer`'s core
+  `RecordSubscribe(topic, success bool, duration)` (confirmed
+  `stats/observer.go:52-61`) cannot distinguish `DispositionAck` from
+  `DispositionNackDiscard` from `DispositionNackRequeue` — just a
+  boolean.
+
+  **Confirmed mechanism: a NEW, OPTIONAL `DispositionObserver` interface,
+  mirroring `stats.SecurityObserver`'s EXACT existing pattern** (confirmed
+  `stats/observer.go:96-101` — type-asserted by the adapter, purely
+  additive, zero change required to any existing `Observer`
+  implementation):
+
+  ```go
+  // package stats
+  type DispositionObserver interface {
+      RecordDisposition(topic string, disposition Disposition)
+  }
+  ```
+
+  Called by the adapter's own dispatch loop AFTER `ResolveDisposition`
+  resolves the final outcome — the SAME ordering precedent
+  `RecordSecurityRejection`'s own call sites already establish (confirmed
+  `adapters/mqtt5/adapter.go:353-387`: resolve first, then record).
+
+  **The sharper, CONFIRMED finding — why this is necessary, not just
+  nice-to-have:** the prototype tested the critical case directly — a
+  handler returns `nil` (NO processing error) but explicitly signals
+  `DispositionNackDiscard` (e.g. "structurally valid, but business rules
+  reject this message, don't retry"). `RecordSubscribe`'s existing
+  `success bool`, left UNCHANGED (tied ONLY to the handler's own returned
+  error, per its current documented contract), correctly reports
+  `success=true` — but this means **without `RecordDisposition`, this
+  discarded message is OBSERVABLY INDISTINGUISHABLE from one that
+  succeeded normally** — a real blind spot for any dashboard/alerting
+  built only on `RecordSubscribe`.
+
+  **A second candidate — deriving `RecordSubscribe`'s `success` FROM the
+  disposition instead — was tested and REJECTED as a confirmed, silent
+  breaking change**: the prototype confirmed that for the SAME nil-error-
+  but-discarded case, this candidate reports `success=false`, contradicting
+  `RecordSubscribe`'s existing, shipped documentation ("success is false
+  when decode or the application handler failed" — confirmed
+  `stats/observer.go:56`) — any EXISTING `Observer` implementation relying
+  on that documented meaning would silently start seeing different
+  values with no code change on its own part.
+
+  **Resolved recommendation:** `RecordSubscribe` stays completely
+  UNCHANGED; `DispositionObserver.RecordDisposition` is ADDED as a
+  purely additive, optional extension — confirmed via the prototype to
+  compile, fire correctly (in the right order, with correct values) for
+  an observer implementing both, and to be silently skipped (no panic, no
+  behavior change) for one implementing only the base `Observer`.
+- **[Review-9, Low] No "Test plan" section — RESOLVED this round.** A
+  "## Test plan (once implementation begins)" section is now added
+  (mirroring [D-0003](../design/d-0003-codec-declared-middlewares.md)'s own
+  section), covering: sealed `Capability` compile-time positive/negative
+  pairs (including the AMQP role-split rejection), `Address`
+  parameterization/`NewChannelFromTopic` ergonomics, Handler Disposition's
+  ctx-sink round trip and default-fallback cases, `DispositionObserver`'s
+  additive behavior, and §3's 4-stage lifecycle spec-contribution/drift-
+  check cases — explicitly deferring shared `Middleware[In,Out]`
+  construction/dispatch test cases to D-0003's own Test plan, not
+  duplicating them.
 - **[Review-10, Trivial] Field-naming collision — RESOLVED/moot this
   round.** No `UnsupportedFeatureError` type is needed anymore — a
   capability mismatch is the Go compiler's own diagnostic, not a custom
   error type with fields to name.
+
+## 8. Handler Disposition — a DISTINCT concept from `Capability`, RESOLVED via a fourth throwaway Go prototype
+
+**The gap, confirmed via code, not assumed:** a subscribe handler's
+returned error (`func(ctx, T) error`, confirmed
+`adapters/mqtt5/adapter.go:239`) is used TODAY only for observability
+(`stats.ReportErrors`) and `ErrorPattern`/`ErrorChannel` response-publishing
+(confirmed `adapters/mqtt5/adapter.go:434-450`) — it is **never translated
+into any protocol-level acknowledgement action, anywhere in this
+codebase** (confirmed via repo-wide search: zero hits for
+requeue/nack/disposition outside unrelated comments, across `adapters/`,
+`api/`, `ports/`, `stream/`). This means `amqp.AckMode` (§5.3/§7's own
+recently-resolved capability) is currently **UNUSABLE in any principled
+way** — declaring manual-ack mode gives a handler NO abstracted way to
+signal "requeue this" vs. "discard this" vs. "acknowledge this," forcing a
+caller to bypass `api/events` and reach into `adapters/amqp`'s raw
+connection object directly — precisely the adapter-leak this entire
+roadmap doc exists to prevent.
+
+**Why this is a DISTINCT concept from `Capability` (§2), not a variant of
+it — stated explicitly so future readers don't conflate the two:**
+`Capability` declares STATIC, `Attach`-time CONFIGURATION (WHAT protocol
+features a channel/subscription uses — QoS level, ack MODE, User
+Properties). Handler Disposition is about a handler's PER-MESSAGE RUNTIME
+OUTCOME — a completely different axis (declare-time vs. dispatch-time),
+the SAME distinction this doc's own review history already insisted on
+keeping separate for `Security` vs. protocol-native capabilities (§5.5).
+Folding disposition into `Capability` would repeat that exact mistake.
+
+**Scope, per explicit confirmation: NOT AMQP-only.** `api/reqreply`'s own
+adapters (`adapters/mqtt5`, `adapters/zeromq`) have the SAME underlying
+need — a request/reply handler's outcome may need to map onto whatever
+acknowledgement concept ITS underlying transport has (or none, for
+transports without one). The mechanism below was tested for reuse across
+BOTH `api/events` and a `reqreply`-shaped consumer, not just pub/sub.
+
+### The confirmed mechanism — a ctx-mutable-sink, mirroring an ALREADY-PROVEN pattern in this codebase
+
+Three candidates were weighed; the prototype confirms the third:
+
+- **(A) Error-type matching** (mirrors `ErrorPattern`'s technique): couples
+  disposition to the handler's returned error TYPE — rejected as the
+  primary mechanism, since a handler may want DIFFERENT dispositions for
+  the SAME error type depending on context (e.g. retry budget already
+  exhausted vs. not).
+- **(B) Explicit second return value** (`func(ctx, T) (Disposition,
+  error)`): rejected — a genuine breaking change to every handler
+  signature across the codebase, and awkward for handlers that don't care
+  about disposition at all.
+- **(C) CONFIRMED — ctx-mutable-sink signal**, mirroring
+  `nethttp.WithResponseHeaders`/`ResponseHeadersFromContext`'s EXACT
+  pre-allocation pattern (confirmed at `adapters/nethttp/adapter.go:57-68`):
+  handler signature stays **completely unchanged**. A handler that wants a
+  non-default outcome calls `events.SetDisposition(ctx, ...)` inside its
+  own body; the adapter pre-allocates the box BEFORE calling the handler
+  and reads the result back AFTER:
+
+```go
+// package events (or a shared package — see "Package placement" below)
+type Disposition int
+
+const (
+    DispositionDefault Disposition = iota // no explicit signal — adapter falls back to its own default
+    DispositionAck
+    DispositionNackRequeue
+    DispositionNackDiscard
+)
+
+func EnsureDispositionBox(ctx context.Context) context.Context
+func SetDisposition(ctx context.Context, d Disposition)
+func DispositionFromContext(ctx context.Context) Disposition
+
+// ResolveDisposition is the shared helper any adapter calls to get the
+// FINAL disposition — folding in the "nil error -> Ack, non-nil error ->
+// NackRequeue" default when the handler never explicitly signaled.
+func ResolveDisposition(ctx context.Context, handlerErr error) Disposition
+```
+
+**Confirmed via the prototype (compiled and run, not merely reasoned
+about — deleted after this finding was extracted), all of the following:**
+
+1. **The ctx-signal mechanics work exactly like `WithResponseHeaders`** —
+   pre-allocate, mutate inside the handler, read back after.
+2. **A simulated AMQP dispatch correctly resolves all four cases**:
+   explicit `NackRequeue` (overriding a returned error), explicit
+   `NackDiscard`, default `Ack` (nil error, no signal), and default
+   `NackRequeue` (non-nil error, no signal) — each mapped to the
+   corresponding simulated `channel.Ack`/`channel.Nack(requeue=...)` call.
+3. **An adapter with NO acknowledgement concept (MQTT5) safely ignores the
+   mechanism entirely** — it never calls `EnsureDispositionBox`, so even a
+   handler that calls `SetDisposition` anyway (e.g. shared business logic
+   reused across adapters) hits `SetDisposition`'s own no-op-when-absent
+   safety — CONFIRMED zero leakage of the concept into adapters that don't
+   need it, not merely assumed.
+4. **Package placement — CONFIRMED genuinely shared, not `api/events`-
+   specific**: a `reqreply`-shaped stub package (deliberately NOT embedding
+   or extending the `events`-shaped stub, mirroring `api/reqreply`'s real
+   independence from `api/events`) called
+   `events.EnsureDispositionBox`/`events.ResolveDisposition` DIRECTLY and
+   got IDENTICAL, correct behavior — confirming the mechanism does NOT
+   need to be duplicated per-pattern. **Recommendation:** `Disposition`/
+   `EnsureDispositionBox`/`SetDisposition`/`DispositionFromContext`/
+   `ResolveDisposition` should live in a shared package (`middleware` is
+   the natural existing candidate — it already hosts other cross-cutting,
+   ctx-carried mechanisms like `ContextField[V]` — or a new small sibling
+   package), NOT inside `api/events` itself, so `api/reqreply` can import
+   it without an `api/events` dependency it otherwise wouldn't need.
+5. **Ergonomics — confirmed comparable to real, shipped call sites**:
+   `events.SetDisposition(ctx, events.DispositionNackRequeue)` reads
+   directly analogous to `chiadapter.WithResponseHeaders(ctx, h)`
+   (confirmed real call site, `examples/rest-api/demo_violations.go:63`) —
+   same shape (ctx + one value), same simplicity.
+
+**Relationship to `AckMode` (§5.3, §7):** declaring `amqp.AckMode` (a
+`Capability`) without ALSO having Handler Disposition available is an
+INCOMPLETE story — the capability declares that manual acknowledgement is
+IN USE, but gives a handler no way to control the outcome. Both mechanisms
+are needed together for AMQP's manual-ack mode to be genuinely usable
+through this codebase's declarative layer; they remain two SEPARATE
+mechanisms (declare-time vs. dispatch-time), attached/signaled at
+different points, not merged into one.
+
+**Not designed further here (flagged for a future round, consistent with
+this doc's own discipline):** the EXACT default-fallback policy (is
+"nil→Ack, error→NackRequeue" the right universal default, or should it be
+itself configurable per-channel?); whether `DispositionNackRequeue` needs a
+richer shape (e.g. a requeue delay, which real AMQP brokers support via
+dead-lettering/TTL patterns, not the base `Nack` call); and the exact final
+package name/location (this section recommends `middleware` or a new
+sibling package, but does not commit to one).
+
+**Scope explicitly limited to `events`/`reqreply` — `ports` NOT covered,
+NOT tested, flagged as an open question, not an oversight:** every pattern
+this section confirms (`api/events`, `api/reqreply`) shares a MESSAGE-
+DISPATCH shape — an adapter calls a handler, then resolves an outcome for
+that ONE message/call. `ports.File`/`Cache`/`SQL` have NO analogous
+dispatch loop — `Read`/`Write`/`Get`/`Set` are direct, synchronous method
+calls, with no separate "dispatch, then resolve a disposition" step to
+attach a signal to. The one plausible ports-side analogue — SQL
+transaction commit/rollback, where a handler's outcome could decide
+whether a `ports.SQL` write commits or rolls back, structurally similar to
+ack/nack — is **genuinely NEW territory, not an existing gap**: confirmed
+via code that `ports`/`adapters/sql` have ZERO transaction/commit/rollback
+concept today. Whether `Disposition` (or some ports-specific analogue)
+extends there, and what shape it would take given the missing dispatch
+loop, is NOT designed here — left for a dedicated future round if a
+concrete driver appears.
+
+## Test plan (once implementation begins)
+
+- Sealed per-adapter `Capability` interface — the compile-time contract is
+  the primary thing under test:
+  - Positive: a capability declared by adapter `mqtt5` compiles and is
+    accepted by `mqtt5.Attach`/`mqtt5.PublishAttach`/`SubscribeAttach`.
+  - Negative: attaching an `mqtt5`-only capability (e.g. a User Properties
+    capability) to an `mqtt` (v3) client — captured as a DOCUMENTED
+    compiler-error string (a `// want` comment or build-failure fixture),
+    not a runtime `error` value, since the whole point is the mismatch
+    never reaches a running process. Mirrors how `ports.Pattern` mismatches
+    are already tested today.
+  - Same positive/negative pair repeated for the AMQP role split:
+    `Persistent`/`PublisherConfirms` accepted by `PublishAttach`, rejected
+    (compile error) if passed to `SubscribeAttach`; `AckMode` accepted by
+    `SubscribeAttach`, rejected if passed to `PublishAttach`.
+- `Address` parameterization (`Channel[Addr,T]`, §2.3/§5.3):
+  - `NewChannelFromTopic(topic, codec, ...)` — confirms zero explicit
+    type-parameter brackets at the bare-string call site (the ergonomics
+    finding the addressing spike already confirmed).
+  - A hypothetical AMQP-shaped `Address` (exchange/routing-key/queue)
+    compiling against the SAME `Channel[Addr,T]` shape and dispatching
+    correctly through `PublishAttach`/`SubscribeAttach`.
+- Handler Disposition (§8) — the ctx-mutable-sink round trip:
+  - A handler that calls `SetDisposition(ctx, DispositionNackDiscard)`
+    (or `Ack`/`NackRequeue`) — confirm the adapter's own
+    `ResolveDisposition` call, made AFTER the handler returns, reads back
+    the SAME value the handler set.
+  - Default-when-unset case: a handler that returns `nil` and never calls
+    `SetDisposition` — confirm `ResolveDisposition` falls back to the
+    documented default (`Ack`), and a handler that returns a non-nil error
+    without calling `SetDisposition` falls back to `NackRequeue`.
+  - Confirm the SAME `Disposition` mechanism works unchanged across BOTH
+    `events` and `reqreply` (the reuse claim §8 makes, not just an
+    events-only test).
+- `DispositionObserver` (Review-8) — purely additive behavior:
+  - An `Observer` implementation that does NOT implement
+    `DispositionObserver` — confirm no panic, no behavior change, and
+    `RecordSubscribe`'s existing `success bool` is computed exactly as
+    before (tied only to the handler's own returned error).
+  - An `Observer` implementation that DOES implement
+    `DispositionObserver` — confirm `RecordDisposition(topic,
+    disposition)` fires AFTER `ResolveDisposition` resolves the final
+    outcome, with the correct resolved value, and that `RecordSubscribe`'s
+    `success bool` is UNCHANGED alongside it (the two calls answer
+    different questions, confirmed not to conflict).
+- §3's 4-stage lifecycle model (declare → capability-declare →
+  handler-attach → adapter-attach):
+  - A `Middleware[In,Out]` and a `Capability` both attached to the same
+    channel/route, both contributing to the SAME generated spec (AsyncAPI/
+    OpenAPI) entry, confirmed additive — neither overwrites the other's
+    spec contribution, and neither is silently dropped.
+  - A `CapabilitySpec`+drift-check test: confirm a capability's declared
+    spec contribution is checked against what the adapter actually attaches
+    at bind time, and a deliberately mismatched fixture is caught as a
+    drift failure, not silently accepted.
+- Shared ground with [D-0003](../design/d-0003-codec-declared-middlewares.md):
+  this doc does not duplicate D-0003's own "### Test plan" bullets for
+  `Middleware[In,Out]`/`Transform`/`ClientTransform` construction and
+  dispatch — those stay owned by D-0003's test plan; this section only
+  covers test cases specific to `Capability`/`Address`/`Disposition`, the
+  concepts this doc actually introduces.
 
 ## See also
 

@@ -38,6 +38,19 @@
 > shipped and remain open design work. `docs/roadmap/forge-pipeline-middleware.md`
 > tracks Layer 3 (`forge.Registry`/pipelines) separately — never in
 > scope here.
+> **Driver for the remaining `ports` scope, made explicit:** the reason
+> `ports.File`/`Cache`/`SQL`/`Dir` need SOME cross-cutting-concern
+> mechanism at all is the library's own North Star — a simple,
+> declarative, consistent workflow for the user across every boundary,
+> not "REST/events have one, so ports must too." This is a DIFFERENT
+> driver from, and a DIFFERENT mechanism than,
+> [Protocol-Native Features](protocol-native-features.md)'s sealed
+> `Capability`, supplied at `Attach`/bind time — `ports.File`/`Cache`/
+> `SQL` have no `Attach` step to hang a capability off of at all (see
+> that doc's §5.6/Review-7). Do not read the two docs as blocked on each
+> other or as needing to converge on one shared mechanism; they solve
+> structurally different problems (adapter/protocol capability mismatch
+> vs. cross-cutting-concern attachment) that happen to share a UX goal.
 > [← Back to Roadmap](index.md)
 
 ## Core thesis

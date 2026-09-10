@@ -28,19 +28,18 @@
 > OWN doc ships a pragmatic, non-breaking INTERIM fix instead (eager
 > validation rejecting non-empty REST-only fields on pub/sub middleware
 > — see that doc's F6 resolution) while this doc investigates the
-> proper long-term fix. **Update, resolved in two steps since**: first
-> superseded by D-0003 (above); D-0003 itself is now the SUBJECT of an
-> explicitly OPEN, undecided question raised by
+> proper long-term fix. **Update, resolved in three steps since**: first
+> superseded by D-0003 (above); D-0003's OWN relationship to
 > [Feature](protocol-native-features.md) (formerly "Protocol-Native
-> Feature Declarations," then "Feature/Provider") — whether D-0003 should
-> ever fold into that doc's sealed, per-adapter `Capability` mechanism, or
-> stay fully separate, is NOT decided (an earlier sub-round of that doc
-> concluded "yes, subsume," but that conclusion was reached against a
-> since-superseded primitive and is no longer this doc's current
-> position). This doc's ORIGINAL struct-splitting proposal remains
-> superseded by D-0003 either way — the further question about D-0003's
-> OWN future is a separate, later-stage matter, not a reopening of THIS
-> doc's finding.
+> Feature Declarations," then "Feature/Provider") was then reopened, and
+> has SINCE been RESOLVED there via a confirmed 4-stage lifecycle model
+> (§3 of that doc) — `middleware.Middleware`/D-0003's `Declaration[In,Out]`
+> and `Feature`'s sealed `Capability` mechanism turn out to occupy the
+> SAME declare-time, spec-contributing lifecycle stage, without merging
+> into one Go type. This doc's ORIGINAL struct-splitting proposal remains
+> superseded by D-0003 either way — the further, now-RESOLVED question
+> about D-0003's relationship to `Capability` was always a separate,
+> later-stage matter, not a reopening of THIS doc's finding.
 > [← Back to Roadmap](index.md)
 
 ## The idea

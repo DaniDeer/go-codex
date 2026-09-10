@@ -1,6 +1,10 @@
 # ReqReply Workflow Simplification — design decisions
 
-> **Status:** PLANNED — no implementation yet. Replaces the now-deleted
+> **Status:** PLANNED — no implementation yet, but the core
+> `Client`/`Server`+`Attach`+reflection-based `Call`/`Serve` mechanism
+> (Decision 1/2) is now CONFIRMED via a throwaway Go prototype (see
+> "Remaining open items" below) — locked, not merely sketched. Replaces
+> the now-deleted
 > "Events/ReqReply/Ports Workflow Simplification" doc's `api/reqreply`-
 > scoped content (that doc's pub/sub-scoped content is superseded by
 > [Pub/Sub Workflow Simplification](../design/d-0002-pubsub-workflow-simplification.md),
@@ -256,11 +260,28 @@ capabilities against.
 
 ## Remaining open items (deferred to implementation time)
 
-- Exact reflection-based `Call`/`Serve` signatures for `reqreply.Client`/
-  `Server` — sketched above, not locked. Should mirror
-  `rest.Client.Call`/`events.Client.Publish`'s exact `any`-typed shape
-  and error taxonomy (`NoTransportAttachedError`-equivalent,
-  `TransportTypeMismatchError`-equivalent) for consistency.
+- ~~Exact reflection-based `Call`/`Serve` signatures for `reqreply.Client`/
+  `Server`~~ **RESOLVED via a throwaway Go prototype** (compiled and run,
+  not merely sketched — deleted after this finding was extracted).
+  Built a standalone `reqreply.Client`/`Server`+`Attach` pair, a thin
+  `mqtt5`-style stub adapter, and confirmed via 5 concrete test cases:
+  (1) `Server.Serve` returns `NoServerTransportAttachedError` before
+  `Attach`; (2) `Client.Call` returns `NoClientTransportAttachedError`
+  before `Attach`; (3) a full round trip — `Client.Call(ctx, route, req)`
+  → adapter's `ClientTransport.Call` → **real `reflect.Value.Call`**
+  dispatch to the registered handler (mirroring
+  `adapters/nethttp/clienttransport.go`'s actual established reflection
+  idiom, not a simplified stand-in) → decoded response recovered via
+  `respVal.Interface().(Resp)` — works end-to-end; (4)
+  `TransportTypeMismatchError` fires correctly when a non-`RouteHandle`
+  value is passed as `route`; (5) a second `Attach` call correctly
+  returns `ClientTransportAlreadyAttachedError`. **Confirmed: this doc's
+  proposed shape needs NO adjustment** — `reqreply.Client.Call`/
+  `Server.Serve`'s `any`-typed signatures and `NoServerTransportAttachedError`/
+  `NoClientTransportAttachedError`/`ClientTransportAlreadyAttachedError`/
+  `TransportTypeMismatchError` error taxonomy are LOCKED as sketched
+  above, verified identical in shape to `rest.Client`/`Server`'s real,
+  shipped equivalents (`api/rest/builder.go:2592-2789`).
 - `mqtt`(v3) and `zeromq`'s per-adapter Fn shapes for `HandleMW`/
   `ClientMW` (Decision 3) remain unresolved — `zeromq` in particular may
   need a NEW wire-level credential convention (an additional frame)

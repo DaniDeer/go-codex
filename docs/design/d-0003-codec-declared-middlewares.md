@@ -9,17 +9,22 @@
 > **Forward-looking note (not a status change):**
 > [Feature](../roadmap/protocol-native-features.md) (a broader
 > roadmap-stage redesign, idea only, no code written — formerly titled
-> "Feature/Provider") raises an explicitly OPEN, undecided question about
-> whether this doc's `Declaration[In,Out]`/`Middleware[In,Out]` mechanism
-> should ever fold into that doc's sealed, per-adapter `Capability`
-> mechanism (mirroring `ports.Pattern`'s own sealing technique) or stay
-> fully separate — NOT decided either way (an earlier sub-round of that
-> doc concluded "yes, subsume," reached against a since-superseded, open
-> string-ID-based primitive; that conclusion no longer holds now that the
-> primitive itself changed). Nothing in THIS doc or in shipped code
-> changes as a result of that roadmap doc alone; any actual migration
-> remains explicitly deferred to a separate, dedicated
-> implementation-planning round. Until that round ships, this doc's
+> "Feature/Provider") has RESOLVED its relationship to this doc's
+> `Declaration[In,Out]`/`Middleware[In,Out]` mechanism (that doc's §3, via
+> a confirmed 4-stage lifecycle model, tested with a throwaway Go
+> prototype): both mechanisms occupy the SAME declare-time,
+> spec-contributing lifecycle stage as that doc's sealed, per-adapter
+> `Capability` mechanism, WITHOUT merging into one Go type — each keeps
+> its own runtime-enforcement path (`Middleware[In,Out]`: reflection-based
+> `Transform`/`.Use(mw)`, unchanged; `Capability`: sealed, compile-time
+> `Attach`-time supply). This is NOT the earlier sub-round's "yes,
+> subsume" conclusion (reached against a since-superseded, open
+> string-ID-based primitive) — that conclusion no longer applies; the
+> current resolution keeps the two mechanisms distinct. Nothing in THIS
+> doc or in shipped code changes as a result of that roadmap doc alone;
+> any actual migration remains explicitly deferred to a separate,
+> dedicated implementation-planning round. Until that round ships, this
+> doc's
 > design remains final and unchanged.
 >
 > Codec-backed, per-pattern middleware declaration (`middleware.Declaration[In,Out]`
@@ -1441,24 +1446,25 @@ bundled into this design's readiness.
   proposal to retrofit/split `middleware.Middleware` itself (which would have been
   breaking). `middleware.Middleware`/`SecurityScheme` remain completely unchanged and
   continue to work exactly as before, side by side with this new mechanism.
-- **Update — relationship REOPENED, not decided either way.** An earlier
-  version of this section described
+- **Update — relationship RESOLVED, via a confirmed 4-stage lifecycle
+  model.** An earlier version of this section described
   [Feature](../roadmap/protocol-native-features.md) (then titled
   "Protocol-Native Feature Declarations," later "Feature/Provider") as a
   separate, complementary axis — opaque protocol capability flags (MQTT5
   Shared Subscriptions, Message Expiry, ZeroMQ Conflate/HWM) evaluated via
   adapter type-switching, distinct from THIS doc's structured,
-  codec-backed Input/Output data. A LATER round of that doc explicitly
-  chose to subsume this doc's mechanism instead — but that decision was
-  reached against an open, string-ID-based primitive that doc has SINCE
-  REJECTED for compile-time-safety reasons; the current primitive (sealed,
-  per-adapter `Capability` interfaces) reopens the question rather than
-  carrying the subsumption decision forward. See that doc's §3 for the
-  full, currently-unresolved comparison. THIS doc remains the accurate,
-  unchanged description of SHIPPED code; the
-  roadmap doc's chosen direction is idea-only, not yet implemented, and
-  any actual migration is deferred to a separate implementation-planning
-  round.
+  codec-backed Input/Output data. That framing went through TWO further
+  rounds — a "subsume this doc's mechanism" conclusion (reached against an
+  open, string-ID-based primitive later REJECTED for compile-time-safety
+  reasons), then reopened — before landing on its CURRENT, confirmed
+  resolution: `Middleware[In,Out]` and the sealed, per-adapter `Capability`
+  mechanism both occupy the SAME declare-time, spec-contributing lifecycle
+  stage, WITHOUT merging into one Go type — each keeps its own distinct
+  runtime-enforcement path. See that doc's §3 for the full resolution and
+  its supporting prototype evidence. THIS doc remains the accurate,
+  unchanged description of SHIPPED code; the roadmap doc's chosen
+  direction is idea-only, not yet implemented, and any actual migration
+  is deferred to a separate implementation-planning round.
 - Distinct from the ALREADY-SHIPPED REST/events `HandleMW`/`ClientMW`/
   `SubscribeMW`/`PublishMW` security+observer+general-purpose split
   (`docs/design/d-0001-rest-middleware-workflow-simplification.md`/
