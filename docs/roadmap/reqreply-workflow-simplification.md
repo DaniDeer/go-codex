@@ -3,8 +3,22 @@
 > **Status:** PLANNED — no implementation yet, but the core
 > `Client`/`Server`+`Attach`+reflection-based `Call`/`Serve` mechanism
 > (Decision 1/2) is now CONFIRMED via a throwaway Go prototype (see
-> "Remaining open items" below) — locked, not merely sketched. Replaces
-> the now-deleted
+> "Remaining open items" below) — locked, not merely sketched. **An
+> additional, ADDITIVE async `CallAsync`/`Future[Resp]` (Decision 5) is
+> now also CONFIRMED** via a second throwaway prototype, alongside the
+> blocking `Call` — see Decision 5 for the confirmed design and its key
+> structural finding (a plain, non-generic `FutureFactory` interface lets
+> an adapter recover a correctly-typed `Future[Resp]` with zero
+> reflection). **A dedicated review pass against the REAL REST/events
+> code (not just this doc's own internal consistency) confirmed two
+> places where "mirrors REST exactly" needed correcting**: `route any`
+> in `Client.Call` means an ALREADY-REGISTERED `*RouteHandle`, NOT
+> REST's raw `Route` (a deliberate divergence — REST's convention would
+> silently drop `GlobalSecurity`-gated credential enforcement, confirmed
+> via a throwaway prototype), and server-side handler attachment resolves
+> to a free `reqreply.Handle(server, handle, fn)` function, called before
+> `Serve` runs. See Decision 1 and Decision 3 for the confirmed findings.
+> Replaces the now-deleted
 > "Events/ReqReply/Ports Workflow Simplification" doc's `api/reqreply`-
 > scoped content (that doc's pub/sub-scoped content is superseded by
 > [Pub/Sub Workflow Simplification](../design/d-0002-pubsub-workflow-simplification.md),
@@ -110,7 +124,8 @@ func (c *Client) Call(ctx context.Context, route any, req any) (any, error)
 caller uses — mirroring `rest.Server.Serve`/`rest.Client.Call` and
 `events.Client.ServeSubscribers`/`.Publish` exactly. The dispatch loop
 that today lives inside `adapters/mqtt5.Serve`/`adapters/zeromq.Serve`
-(reading `handle.Descriptor.Security`, decoding the request, running
+(reading `handle.Security` directly — confirmed
+`adapters/mqtt5/reqreply.go:266,516`, decoding the request, running
 the domain handler, encoding and publishing the reply, correlating
 requests to replies) moves into `api/reqreply` itself, operating
 generically against `ServerTransport`/`ClientTransport` — NOT against
@@ -124,6 +139,42 @@ a structural necessity, not a design choice, and mirrors
 `events.Transport`'s identical justification in
 [Pub/Sub Workflow Simplification](../design/d-0002-pubsub-workflow-simplification.md)'s
 Decision 5.
+
+**CONFIRMED, via a throwaway Go prototype: `route any` here means an
+ALREADY-REGISTERED `*RouteHandle`, NOT REST's raw `Route[Req,Resp]` —
+a DELIBERATE divergence from REST's literal mechanism, not an
+oversight.** A dedicated review pass caught that REST's real
+`Client.Call` (confirmed `adapters/nethttp/clienttransport.go:190`)
+takes the RAW, unregistered `Route[Req,Resp]` and calls `.ClientHandle()`
+internally, FRESH, on every single call — and `ClientHandle()` "sources
+no Builder" (confirmed via `rest.RouteHandle`'s own field doc comment),
+meaning **REST's `Client.Call` can NEVER see `GlobalSecurity`, only
+per-route `Security`.** reqreply's OWN CURRENT, real `mqtt5.Call`
+(`ctx, client, router, handle, req, opts`) takes an ALREADY-REGISTERED
+`*RouteHandle` instead — Builder-sourced, WITH `GlobalSecurity`.
+
+The prototype built both conventions side by side against a route with
+NO route-level `Security` (relying entirely on `GlobalSecurity`) and
+confirmed via a passing/failing assertion: REST's raw-`Route`+fresh-
+`ClientHandle()` convention **silently drops GlobalSecurity-gated
+credential enforcement** for such a route — `CredentialFunc` is never
+even invoked, because `handle.GlobalSecurity` is unreachable from
+`ClientHandle()`. Confirmed via `adapters/mqtt5/reqreply.go:516-519`
+that reqreply's `Call` ACTIVELY relies on
+`secReqs := handle.Security; if secReqs == nil { secReqs =
+handle.GlobalSecurity }` to decide whether to invoke `CredentialFunc`
+and validate credential format at all — this is load-bearing behavior
+today, not a hypothetical.
+
+**Resolved: `reqreply.Client.Call`'s `route any` KEEPS reqreply's own
+current convention — an already-registered `*RouteHandle` (obtained via
+`Route.Register(builder)`, mirroring today's real call sites), NOT
+REST's raw-`Route` convention.** Adopting REST's convention verbatim
+would be a silent regression for any reqreply route relying on
+`GlobalSecurity` with no per-route override. This is the first concrete
+case in this whole design effort where "mirror REST exactly" needed to
+be corrected by an explicit divergence, backed by evidence, not
+followed literally.
 
 ### Decision 2 — each adapter implements a THIN `ServerTransport`/`ClientTransport`
 
@@ -193,6 +244,39 @@ remain sound and are folded forward here, adjusted for the new
   `ports.PluginReqReplyPattern` gets this for free via the SAME
   `.Register(builder)` delegation it already performs for every other
   handle field — no `ports`-specific changes required.
+- **CONFIRMED: how the handler `fn` attaches server-side, resolved
+  against a real gap this doc's Decision 1 introduced.** Decision 1
+  locks `Server.Serve(ctx context.Context) error` with NO per-route
+  arguments at all (mirroring `rest.Server.Serve` exactly) — but
+  reqreply's OWN CURRENT `mqtt5.Serve(ctx, client, router, handle, fn,
+  opts)` passes `fn` TOGETHER with `handle` at Serve-CALL time, not at
+  a separate registration step. These are incompatible: if `Server.Serve`
+  takes no route/fn params, `fn` MUST already be attached to something
+  BEFORE `Serve` runs. A review pass surveyed the THREE existing,
+  different conventions across this codebase for this exact
+  problem — REST server-side uses `RouteHandle.WithHandler(fn)`
+  (fluent mutation of an already-registered pointer, confirmed
+  `api/rest/builder.go:1182`); events uses `Client.Subscribe(ctx, sub,
+  fn)` (an UNREGISTERED `Subscriber[T]`, from `Channel.WithSubscribe`,
+  with `fn` passed together, at call time, confirmed
+  `api/events/builder.go:1773,2459`); reqreply TODAY passes `handle`
+  and `fn` together at `Serve`-call time (closest to events' shape, but
+  with an ALREADY-registered handle). **Resolved: adopt a free function
+  — `reqreply.Handle[Req, Resp](server *Server, handle
+  *RouteHandle[Req, Resp], fn func(context.Context, Req) (Resp,
+  error))` — called once per route BEFORE `Server.Serve(ctx)` runs.**
+  This was ALREADY the exact shape the Decision-1 throwaway prototype
+  built and confirmed compiling/running correctly (see "Remaining open
+  items" below) — it satisfies Decision 1's no-args `Serve(ctx)`
+  signature (fn is attached at registration time, same requirement
+  `RouteHandle.WithHandler` solves for REST) while staying CLOSER to
+  reqreply's own existing "handle carries fn" spirit than inventing a
+  REST-style fluent-mutation method would. A fluent
+  `handle.WithHandler(fn)` method (mirroring REST literally) remains a
+  viable, equally-valid alternative NOT ruled out — this is a stylistic
+  choice with no functional difference from the free-function form, so
+  it is not treated as a load-bearing decision the way Client.Call's
+  route-vs-handle choice above is.
 
 ### Decision 4 — `mqtt` (v3)'s permanent protocol limitation stays permanent
 
@@ -207,6 +291,137 @@ implements a documented SUBSET using an application-level convention
 (e.g. a well-known reply-topic-per-request-topic naming scheme instead
 of a protocol-native Response Topic) — NOT decided here, flagged for
 implementation time.
+
+### Decision 5 — an ADDITIVE async `CallAsync`/`Future[Resp]`, alongside `Call` — CONFIRMED via a throwaway Go prototype
+
+**Motivation, grounded in existing code, not invented:**
+`adapters/mqtt5/reqreply.go`'s CURRENT `Call` (confirmed
+`adapters/mqtt5/reqreply.go:385-618`) already builds a promise
+internally and never exposes it — it generates a correlation ID,
+registers a reply handler that writes to `replyCh := make(chan
+*pahomqtt5.Publish, 1)`, publishes the request, then immediately blocks
+on `select { case <-ctx.Done(): ...; case <-timer.C: ...; case replyMsg
+:= <-replyCh: ... }`. `replyCh` **is** a future in Go's native form (a
+single-slot channel); `Call` just awaits it immediately instead of
+handing it back. Unlike REST — whose `Call` is blocking because HTTP
+itself is a synchronous, one-connection protocol with no natural async
+variant — reqreply's underlying transport (MQTT5/ZeroMQ correlation-based
+reply matching) is GENUINELY asynchronous; the blocking `Call` this doc
+already designed is a CHOSEN convenience shape over an inherently async
+mechanism, not the only possible one. This is a real, common pattern in
+async-messaging RPC clients (Akka's `ask`, gRPC async stubs,
+hand-rolled `Task<Response>`-correlation-map clients over RabbitMQ/Kafka
+all offer both a blocking and a future-based call) — confirmed via grep
+that this codebase has NO existing Future/Promise precedent anywhere, so
+this is genuinely new territory, not a mirror of prior art.
+
+**Proposed shape, confirmed via a throwaway prototype** (compiled and
+run, then deleted):
+
+```go
+// package reqreply
+type Future[T any] struct{ /* single-slot channel, unexported */ }
+
+// Wait blocks until the future resolves or ctx is cancelled.
+func (f *Future[T]) Wait(ctx context.Context) (T, error)
+
+// ClientTransport gains CallAsync alongside Call — any-typed, same
+// reflection-recovered shape as Call, for the same structural reason.
+type ClientTransport interface {
+    Call(ctx context.Context, route any, req any) (any, error)
+    CallAsync(ctx context.Context, route any, req any) (any, error) // returns *Future[Resp] as any
+}
+
+func (c *Client) CallAsync(ctx context.Context, route any, req any) (any, error)
+```
+
+**The sharper, CONFIRMED structural finding — how an adapter recovers a
+working `*Future[Resp]` without ever knowing `Resp` concretely:** the
+FIRST prototype attempt tried constructing `Future[Resp]` at the
+adapter's `CallAsync` dispatch time via `reflect` on `route any` alone —
+this does NOT work; Go's `reflect` package cannot instantiate a generic
+type for a type argument known only at runtime (the same category of
+limitation `protocol-native-features.md`'s own rejected "type-erased
+storage" candidate ran into). **The confirmed, working fix:** expose a
+PLAIN, non-generic `FutureFactory` interface —
+
+```go
+type FutureFactory interface {
+    NewFutureAny() (any, func(any, error)) // returns (*Future[Resp] as any, type-erased resolve fn)
+}
+
+// RouteHandle[Req,Resp] implements it — Resp is concretely known HERE
+// (this method body is compiled once per Req/Resp instantiation), even
+// though the interface method's OWN signature is fully any-typed.
+func (h RouteHandle[Req, Resp]) NewFutureAny() (any, func(any, error))
+```
+
+— confirmed via the prototype that a plain interface type assertion
+(`route.(FutureFactory)`) on the adapter's `route any` value recovers a
+correctly-typed `*Future[Resp]` and a matching resolve closure with ZERO
+reflection, because `RouteHandle[Req,Resp]` (for ANY Req/Resp pair)
+automatically satisfies the non-generic interface — the type-erasure
+boundary is crossed entirely at Go's own compile-time method dispatch,
+not at runtime.
+
+**Confirmed via 4 concrete test cases** (all passed): (1) `CallAsync`
+returns immediately without blocking, confirmed by doing other work
+before awaiting; (2) the returned future is awaited from a DIFFERENT
+call site/goroutine than the one that issued `CallAsync` — the actual
+"send here, resolve elsewhere" property this decision is about, not
+just a renamed blocking call; (3) 5 concurrent `CallAsync` calls resolve
+with their OWN correlated replies, zero cross-talk; (4) `Future.Wait`
+against an already-expired `context.Context` returns a timeout error,
+mirroring `Call`'s existing `CallError{Kind: KindTimeout}` semantics.
+`Call` itself is UNCHANGED — `CallAsync` is purely additive, same
+discipline as every other confirmed mechanism in this doc/
+`protocol-native-features.md`.
+
+**Confirmed: `CallAsync` preserves Decision 2's api-as-abstraction-layer/
+adapter-as-thin-IO-mapper split — not just Decision 1/2's `Call`/`Serve`
+path.** The prototype makes the boundary concrete, not just asserted:
+
+- **Lives in `api/reqreply` (the abstraction layer):** `Future[T]` itself
+  (the single-slot-channel primitive), `Wait`'s timeout/cancellation
+  semantics, and — the key piece — `FutureFactory`/`NewFutureAny`'s
+  type-erasure crossing (`RouteHandle[Req,Resp]` knows how to build its
+  OWN correctly-typed `Future[Resp]` and a matching resolve closure;
+  no adapter ever re-implements this). `Client.CallAsync` itself is a
+  thin, one-line delegation to `c.transport.CallAsync(...)` — identical
+  in shape to `Client.Call`.
+- **Stays adapter-specific (the thin IO mapper), by necessity, not
+  oversight:** the confirmed prototype's `ClientTransport.CallAsync`
+  implementation does exactly two adapter-owned things — (1) call
+  `route.(FutureFactory).NewFutureAny()` to obtain the future/resolve
+  pair (a one-line call INTO the API layer, not adapter-owned logic),
+  and (2) launch whatever async delivery mechanism is NATIVE to that
+  transport (subscribe to the MQTT5 reply topic, match the wire-level
+  `CorrelationData` when a message arrives, THEN call the provided
+  `resolve(decodedResp, err)`), calling `resolve` exactly once when the
+  correlated reply arrives. This is the SAME shape `mqtt5.Call`'s
+  existing `replyCh`-based wait already has today — `CallAsync` does not
+  introduce any NEW adapter-owned responsibility, it only stops the
+  adapter from being forced to block on it internally. No encode/decode,
+  no correlation-ID GENERATION policy, and no `Future` construction
+  logic live in the adapter — only the transport-native "detect the
+  matching reply arrived, then call resolve" step does, which has no
+  protocol-agnostic equivalent (mirrors Decision 2's own reasoning for
+  why `Call`/`Serve`'s adapter-side stays thin but not empty).
+
+**Not designed further here (flagged for implementation time):**
+whether `Future[Resp]`'s single-slot-channel implementation needs a
+richer API (e.g. a `Done() <-chan struct{}` for `select`-based
+composition alongside other channels, mirroring `context.Context`'s own
+shape); whether `Server`-side dispatch needs any equivalent concept
+(unlikely — a server handler already runs synchronously per request in
+this design, with no analogous "fire and check back later" need); and
+the exact relationship, if any, to
+[Protocol-Native Features](protocol-native-features.md)'s §8 Handler
+Disposition — these are LIKELY orthogonal (Disposition is
+server-side ack/nack/requeue outcome signaling; `Future`/`CallAsync` is
+client-side response awaiting), but that has not been separately
+verified and should not be assumed without a dedicated check if the two
+mechanisms are ever implemented together.
 
 ## Confirmed adapter capability matrix (carried forward, unchanged)
 
@@ -309,3 +524,55 @@ No implementation has started. A future session should pick the lowest-
 risk starting point first — likely `mqtt5` (closest existing analogue,
 clearest Fn-shape translation, and the transport with the concrete
 Response Topic/Correlation Data payoff) — before `mqtt`(v3)/`zeromq`.
+
+## Test plan (once implementation begins)
+
+Mirroring [D-0003](../design/d-0003-codec-declared-middlewares.md)'s
+and [Protocol-Native Features](protocol-native-features.md)'s own Test
+plan sections:
+
+- `Client`/`Server`+`Attach`+reflection dispatch (Decision 1/2, already
+  confirmed via prototype) — `NoServerTransportAttachedError`/
+  `NoClientTransportAttachedError` before `Attach`; a full round trip via
+  real `reflect.Value.Call` dispatch; `TransportTypeMismatchError` on a
+  malformed `route`/`handle` value; `ClientTransportAlreadyAttachedError`
+  on double-`Attach`.
+- `Client.Call`'s route-vs-handle convention (Decision 1, this round) —
+  a route with NO route-level `Security`, relying entirely on
+  `GlobalSecurity`, confirms `CredentialFunc` IS invoked when `Call`
+  receives an already-registered `*RouteHandle` (the LOCKED convention);
+  a regression test asserting the OPPOSITE (raw `Route` + fresh
+  `ClientHandle()`, REST's literal convention) would silently skip
+  `CredentialFunc` — kept as a NEGATIVE reference case, not something to
+  ship, documenting exactly why the divergence from REST is deliberate.
+- `reqreply.Handle(server, handle, fn)` registration (Decision 3, this
+  round) — confirms `fn` is dispatched correctly when `Server.Serve(ctx)`
+  runs with NO per-route arguments; multiple `Handle` calls for
+  different routes against the same `Server`, confirming `Serve` walks
+  ALL of them.
+- `CallAsync`/`Future[Resp]` (Decision 5, already confirmed via
+  prototype) — non-blocking return; await from a different call
+  site/goroutine; concurrent calls with zero correlation cross-talk;
+  timeout/cancellation parity with `Call`.
+- `FutureFactory`/`NewFutureAny`'s type-erasure crossing (Decision 5) —
+  confirms a plain interface type assertion recovers a correctly-typed
+  `*Future[Resp]` with zero `reflect` use.
+- Security/credential folding (Decision 3) — `.Use()`/`.HandleMW()`/
+  `.ClientMW()` registration mirroring `rest.Route`'s own existing
+  tests; `handle.Implementations`/`ClientImplementations` populated by
+  `Route.Register`/`Route.ClientHandle`, read automatically by
+  `Server.Serve`/`Client.Call` with NO per-call `Options.SecurityFunc`/
+  `CredentialFunc` field remaining.
+- `mqtt`(v3)'s absence from the reqreply transport interfaces (Decision
+  4) — confirms `mqtt` package does NOT implement
+  `ServerTransport`/`ClientTransport` (a compile-time absence, not a
+  runtime check) unless/until a documented subset is designed.
+- `ports.PluginReqReplyPattern` — confirms it continues to populate
+  `Implementations`/`ClientImplementations` for free via its existing
+  `.Register(builder)` delegation, with zero `ports`-specific changes.
+- Escape hatches (carried forward) — a regression test confirming
+  `adapters/zeromq`'s reqreply transport, once Decision 3 lands, DOES
+  read and enforce `Implementations`/`ClientImplementations` (closing
+  today's confirmed "never even read" gap) — this is the ONE existing
+  escape-hatch bullet this rework is expected to actually fix, not just
+  document.
