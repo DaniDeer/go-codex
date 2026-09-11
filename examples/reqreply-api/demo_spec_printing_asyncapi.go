@@ -13,7 +13,7 @@ import (
 // entirely from the route declarations already made — no separate spec
 // authoring step.
 func demoSpecPrintingAsyncAPI(server *reqreply.Server) {
-	fmt.Println("\n── Demo 6: AsyncAPI 3.0 spec, derived from route declarations ──")
+	fmt.Println("\n── Demo 7: AsyncAPI 3.0 spec, derived from route declarations ──")
 
 	doc, err := server.AsyncAPISpec()
 	if err != nil {

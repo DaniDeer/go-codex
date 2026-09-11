@@ -204,6 +204,7 @@ func buildTopicParameters(topic string, params []TopicParam) map[string]asyncapi
 func (b *Builder) registerRoute(
 	topic string,
 	reqSchema, respSchema schema.Schema,
+	reqHeaders, respHeaders schema.Schema,
 	meta RouteMeta,
 	errorReplies []ErrorReplyMeta,
 	topicParams []TopicParam,
@@ -239,6 +240,7 @@ func (b *Builder) registerRoute(
 			Message: asyncapi.Message{
 				Schema:     reqSchema,
 				SchemaName: meta.ReqSchemaName,
+				Headers:    reqHeaders,
 			},
 			Reply: &asyncapi.OperationReply{Channel: replyChannelKey},
 		},
@@ -253,6 +255,7 @@ func (b *Builder) registerRoute(
 			Message: asyncapi.Message{
 				Schema:     respSchema,
 				SchemaName: meta.RespSchemaName,
+				Headers:    respHeaders,
 			},
 		},
 	})

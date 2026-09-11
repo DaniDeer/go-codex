@@ -20,7 +20,7 @@ import (
 // [zeromq.MissingSocketError] when a registered route has no socket
 // wired for it — returned BEFORE reqreply.Server.Serve ever runs.
 func demoZeroMQDealerRouterVariant(ctx context.Context) {
-	fmt.Println("\n── Demo 7: zeromq ROUTER/DEALER variant + MissingSocketError ──")
+	fmt.Println("\n── Demo 8: zeromq ROUTER/DEALER variant + MissingSocketError ──")
 
 	built, err := zeromqrouterserver.Build()
 	if err != nil {

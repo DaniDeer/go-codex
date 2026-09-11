@@ -15,6 +15,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/validate"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
@@ -288,17 +289,54 @@ func newRouteHandle() *reqreply.RouteHandle[computeReq, computeResp] {
 	return h
 }
 
-// securedComputeRoute requires the "bearer" scheme declared below — used to
-// test reqreply's built-in codec check, SecurityFunc, and CredentialFunc.
+// bearerAuthTestCodec validates a raw bearer token string's FORMAT
+// (non-empty) — shared by every security declaration below.
+var bearerAuthTestCodec = codex.String().Refine(validate.NonEmptyString)
+
+// bearerAuthMw declares the "bearer" scheme via .Use() (Phase 1 of
+// docs/roadmap/reqreply-middleware.md) — REPLACES the OLD manual
+// RouteMeta.Security + reqreply.WithSecurityScheme declaration pattern,
+// which is incompatible with pairing a HandleMW/ClientMW implementation
+// against it (checkImplementationsDeclared only recognizes schemes
+// declared via .Use()).
+var bearerAuthMw = middleware.SecurityScheme("bearer", route.BearerScheme("JWT"), nil, &bearerAuthTestCodec)
+
+// acceptingSecurityImpl is a PAIRED server-side security Fn that always
+// grants — used by tests that need [reqreply.CheckCoverage] to pass
+// without exercising rejection behavior themselves (e.g. the built-in
+// codec-format-check test, which rejects BEFORE this Fn is ever
+// reached).
+func acceptingSecurityImpl(context.Context, *pahomqtt5.Publish, []route.SecurityRequirement) (map[string][]string, error) {
+	return map[string][]string{"bearer": nil}, nil
+}
+
+// securedComputeRoute requires the "bearer" scheme declared via .Use() —
+// used to test reqreply's built-in codec check, HandleMW, and ClientMW.
+// A NEW variant is built per test via .HandleMW/.ClientMW (Route is
+// immutable) where a test needs different Fn behavior.
 var securedComputeRoute = reqreply.NewRoute[computeReq, computeResp](
 	"compute/secured-add",
 	computeReqCodec, computeRespCodec,
-	reqreply.RouteMeta{OperationID: "securedCompute", Security: []route.SecurityRequirement{route.Require("bearer")}},
-	reqreply.WithSecurityScheme("bearer", reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.
-		WithCodec(codex.String().Refine(validate.NonEmptyString))),
-)
+	reqreply.RouteMeta{OperationID: "securedCompute"},
+).Use(bearerAuthMw)
 
 func newSecuredRouteHandle() *reqreply.RouteHandle[computeReq, computeResp] {
+	return newSecuredRouteHandleWithImpl(acceptingSecurityImpl)
+}
+
+func newSecuredRouteHandleWithImpl(fn func(context.Context, *pahomqtt5.Publish, []route.SecurityRequirement) (map[string][]string, error)) *reqreply.RouteHandle[computeReq, computeResp] {
+	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	h, err := securedComputeRoute.HandleMW(&bearerAuthMw, fn).Register(b)
+	if err != nil {
+		panic(err)
+	}
+	return h
+}
+
+// newSecuredRouteHandleNoImpl returns a handle for securedComputeRoute
+// with NO HandleMW attached — used to test
+// [reqreply.CheckCoverage]/[reqreply.MissingSecurityMiddlewareError].
+func newSecuredRouteHandleNoImpl() *reqreply.RouteHandle[computeReq, computeResp] {
 	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	h, err := securedComputeRoute.Register(b)
 	if err != nil {

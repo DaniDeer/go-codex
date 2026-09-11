@@ -71,10 +71,11 @@ func main() {
 
 	// ── Run every demo in narrative order ───────────────────────────────
 	demoBasicCallAndServe(ctx, mqtt5Client)
-	demoGlobalSecurityDualModeCall(ctx, mqtt5Built, mqtt5Client, mqtt5Built.GlobalHandle)
-	demoRouteLevelSecurityCredentialError(ctx, mqtt5Built, mqtt5Built.SecuredHandle)
+	demoGlobalSecurityDualModeCall(ctx, mqtt5Built, mqtt5Client)
+	demoRouteLevelSecurityCredentialError(ctx, mqtt5Built)
 	demoConcurrentMultiRouteDispatch(ctx, zeromqClient)
 	demoCallAsyncFuture(ctx, mqtt5Client)
+	demoUserPropertyParamMiddleware(ctx, mqtt5Built)
 	demoSpecPrintingAsyncAPI(mqtt5Built.Server)
 	demoZeroMQDealerRouterVariant(ctx)
 

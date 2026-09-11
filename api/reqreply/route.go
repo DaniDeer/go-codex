@@ -11,6 +11,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/internal"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/schema"
 )
@@ -328,15 +329,23 @@ func (o securitySchemeOpt) applyRoute(rb *routeBuilder) {
 }
 
 // WithSecurityScheme declares scheme's spec metadata and optional Codec for
-// THIS route. It is the ONLY way to declare a security scheme — there is no
-// builder-level equivalent. Both [Route.Register] and [Route.ClientHandle]
+// THIS route.
+//
+// Deprecated: superseded by [Route.Use] with [middleware.SecurityScheme]
+// (Phase 1 of docs/roadmap/reqreply-middleware.md) — the SAME declare-time
+// mechanism REST/events use, additionally letting [Route.HandleMW]/
+// [Route.ClientMW] pair an implementation against the declared scheme.
+// Kept, unremoved, for existing callers (zero breaking change) — mirrors
+// [events.WithSecurityScheme]'s identical deprecated-but-kept precedent
+// (REST's OWN identically-named mechanism was fully removed instead, a
+// choice this doc's own history discusses; reqreply follows events' softer
+// precedent here since `WithSecurityScheme` predates this session's
+// `.Use()`-based work by only one phase, making a hard removal
+// disproportionate). Both [Route.Register] and [Route.ClientHandle]
 // populate [RouteHandle.SecuritySchemes] from this declaration, so the SAME
 // route value — including its security scheme — builds a server-side handle
 // (Register) and a client-side handle (ClientHandle) with IDENTICAL
-// credential-format enforcement on both sides. Mirrored REST's OWN
-// identically-named, now-removed `rest.WithSecurityScheme` mechanism, and
-// still mirrors [events.WithSecurityScheme]'s equivalent, deprecated
-// declaration.
+// credential-format enforcement on both sides.
 //
 // Define a scheme once as a package-level value and reuse it across every
 // route that shares it:
@@ -644,6 +653,16 @@ type routeBuilder struct {
 	// (there is no builder-level equivalent; mirrors rest's/events'
 	// routeBuilder/channelBuilder.securitySchemes).
 	securitySchemes map[string]SecurityScheme
+	// middlewares holds [middleware.Middleware] values attached via
+	// [Route.Use] — merged into meta.Security/securitySchemes by
+	// [applySecurityDeclarations] at Register/ClientHandle time.
+	middlewares []middleware.Middleware
+	// impls/clientImpls hold [middleware.ServerImplementation]/
+	// [middleware.ClientImplementation] values attached via
+	// [Route.HandleMW]/[Route.ClientMW] — copied onto the returned
+	// [RouteHandle]'s Implementations/ClientImplementations fields.
+	impls       []middleware.ServerImplementation
+	clientImpls []middleware.ClientImplementation
 }
 
 // Topic is a reusable topic template + [TopicParam] shape, for the rare case
@@ -822,6 +841,12 @@ func (r Route[Req, Resp]) ClientHandle() *RouteHandle[Req, Resp] {
 	for _, opt := range r.opts {
 		opt.applyRoute(&rb)
 	}
+	// Merge Route.Use-attached middleware Security into rb.meta.Security/
+	// rb.securitySchemes — mirrors rest.Route.ClientHandle's identical
+	// call to applyMiddlewareSecurityForClient. No conflict detection, no
+	// checkImplementationsDeclared here — ClientHandle stays infallible,
+	// full validation only happens via Register (mirrors REST exactly).
+	applySecurityDeclarations(&rb)
 
 	jsonReq := format.JSON(r.reqCodec)
 	jsonResp := format.JSON(r.respCodec)
@@ -831,17 +856,23 @@ func (r Route[Req, Resp]) ClientHandle() *RouteHandle[Req, Resp] {
 		schemes[k] = v
 	}
 
+	reqHeaderParams, respHeaderParams, _, _ := applyParamDeclarations(&rb)
+
 	h := &RouteHandle[Req, Resp]{
-		Topic:             r.topic,
-		Decode:            func(p []byte) (Req, error) { return jsonReq.Unmarshal(p) },
-		Encode:            func(v Resp) ([]byte, error) { return jsonResp.Marshal(v) },
-		EncodeRequest:     func(v Req) ([]byte, error) { return jsonReq.Marshal(v) },
-		DecodeResponse:    func(p []byte) (Resp, error) { return jsonResp.Unmarshal(p) },
-		topicParams:       rb.topicParams,
-		mergeFields:       mustAssertMergeFields[Req]("ClientHandle", rb.mergeFields),
-		errorPatternRules: rb.errorPatternRules,
-		Security:          rb.meta.Security,
-		SecuritySchemes:   schemes,
+		Topic:                 r.topic,
+		Decode:                func(p []byte) (Req, error) { return jsonReq.Unmarshal(p) },
+		Encode:                func(v Resp) ([]byte, error) { return jsonResp.Marshal(v) },
+		EncodeRequest:         func(v Req) ([]byte, error) { return jsonReq.Marshal(v) },
+		DecodeResponse:        func(p []byte) (Resp, error) { return jsonResp.Unmarshal(p) },
+		topicParams:           rb.topicParams,
+		mergeFields:           mustAssertMergeFields[Req]("ClientHandle", rb.mergeFields),
+		errorPatternRules:     rb.errorPatternRules,
+		Security:              rb.meta.Security,
+		SecuritySchemes:       schemes,
+		Implementations:       rb.impls,
+		ClientImplementations: rb.clientImpls,
+		RequestHeaderParams:   reqHeaderParams,
+		ResponseHeaderParams:  respHeaderParams,
 	}
 	// Apply any inline RequestFormats/Formats RouteOpt declared on the
 	// Route -- the SAME rb.requestFormats/rb.formats fields Register
@@ -902,6 +933,16 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 		return nil, err
 	}
 
+	// Merge Route.Use-attached middleware Security into rb.meta.Security/
+	// rb.securitySchemes, THEN verify every HandleMW/ClientMW-attached
+	// implementation's Satisfies actually names a scheme declared on
+	// THIS route (UnknownMiddlewareImplementationError otherwise) —
+	// mirrors rest.Route.Register's identical two-step sequence exactly.
+	applySecurityDeclarations(&rb)
+	if err := checkImplementationsDeclared(r.topic, rb.middlewares, rb.impls, rb.clientImpls); err != nil {
+		return nil, err
+	}
+
 	jsonReq := format.JSON(r.reqCodec)
 	jsonResp := format.JSON(r.respCodec)
 
@@ -911,18 +952,23 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 	}
 
 	h := &RouteHandle[Req, Resp]{
-		Topic:             r.topic,
-		Decode:            func(p []byte) (Req, error) { return jsonReq.Unmarshal(p) },
-		Encode:            func(v Resp) ([]byte, error) { return jsonResp.Marshal(v) },
-		EncodeRequest:     func(v Req) ([]byte, error) { return jsonReq.Marshal(v) },
-		DecodeResponse:    func(p []byte) (Resp, error) { return jsonResp.Unmarshal(p) },
-		topicParams:       rb.topicParams,
-		topicCodec:        b.topicCodec,
-		errorPatternRules: rb.errorPatternRules,
-		Security:          rb.meta.Security,
-		SecuritySchemes:   schemes,
-		GlobalSecurity:    append([]route.SecurityRequirement(nil), b.globalSecurity...),
+		Topic:                 r.topic,
+		Decode:                func(p []byte) (Req, error) { return jsonReq.Unmarshal(p) },
+		Encode:                func(v Resp) ([]byte, error) { return jsonResp.Marshal(v) },
+		EncodeRequest:         func(v Req) ([]byte, error) { return jsonReq.Marshal(v) },
+		DecodeResponse:        func(p []byte) (Resp, error) { return jsonResp.Unmarshal(p) },
+		topicParams:           rb.topicParams,
+		topicCodec:            b.topicCodec,
+		errorPatternRules:     rb.errorPatternRules,
+		Implementations:       rb.impls,
+		ClientImplementations: rb.clientImpls,
+		Security:              rb.meta.Security,
+		SecuritySchemes:       schemes,
+		GlobalSecurity:        append([]route.SecurityRequirement(nil), b.globalSecurity...),
 	}
+	reqHeaderParams, respHeaderParams, reqHeadersSchema, respHeadersSchema := applyParamDeclarations(&rb)
+	h.RequestHeaderParams = reqHeaderParams
+	h.ResponseHeaderParams = respHeaderParams
 
 	if rb.requestFormats != nil {
 		fmts, ok := rb.requestFormats.([]format.Format[Req])
@@ -946,7 +992,7 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 		return nil, mergeErr
 	}
 
-	b.registerRoute(r.topic, r.reqCodec.Schema, r.respCodec.Schema, rb.meta, rb.errorReplies, rb.topicParams)
+	b.registerRoute(r.topic, r.reqCodec.Schema, r.respCodec.Schema, reqHeadersSchema, respHeadersSchema, rb.meta, rb.errorReplies, rb.topicParams)
 	// Merge this route's own WithSecurityScheme declarations into the
 	// builder's aggregate — last-registered-wins on name collision,
 	// matching rest's/events' documented policy. There is no per-route
@@ -1037,6 +1083,34 @@ type RouteHandle[Req, Resp any] struct {
 	// declared, or when the handle came from [Route.ClientHandle] (no
 	// Builder to source it from).
 	GlobalSecurity []route.SecurityRequirement
+
+	// Implementations are the server-side middleware implementations
+	// attached via [Route.HandleMW], consulted by the attached
+	// [ServerTransport] (e.g. mqtt5's `AttachServer`) instead of a
+	// per-call/per-Attach `SecurityFunc` option. Populated by
+	// [Route.Register]/[Route.ClientHandle]. Mirrors
+	// [rest.RouteHandle.Implementations].
+	Implementations []middleware.ServerImplementation
+
+	// ClientImplementations are the client-side middleware
+	// implementations attached via [Route.ClientMW], consulted by the
+	// attached [ClientTransport] (e.g. mqtt5's `AttachClient`) instead of
+	// a per-call/per-Attach `CredentialFunc` option. Populated by
+	// [Route.Register]/[Route.ClientHandle]. Mirrors
+	// [rest.RouteHandle.ClientImplementations].
+	ClientImplementations []middleware.ClientImplementation
+
+	// RequestHeaderParams/ResponseHeaderParams are the header-param-as-
+	// middleware declarations attached via [Route.Use] (e.g.
+	// [mqtt5.FromUserPropertyParam]/[mqtt5.FromResponseUserPropertyParam])
+	// — Phase 1b of docs/roadmap/reqreply-middleware.md. Consulted by the
+	// attached [ServerTransport]/[ClientTransport] to validate real
+	// message properties (e.g. MQTT5 User Properties) against the
+	// declared params, in ADDITION to being rendered into the AsyncAPI
+	// request/reply message "headers" schema by [Route.Register].
+	// Populated by [Route.Register]/[Route.ClientHandle].
+	RequestHeaderParams  []middleware.HeaderParamSpec
+	ResponseHeaderParams []middleware.ResponseHeaderParamSpec
 }
 
 // ErrorResponseFor returns the first declared [ErrorPattern] match for err

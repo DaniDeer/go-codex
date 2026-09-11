@@ -22,13 +22,23 @@ type Built struct {
 	Broker mqtt5adapter.MQTTClient
 	Router mqtt5adapter.MQTTRouter
 
-	// GlobalHandle/SecuredHandle are the *reqreply.RouteHandle values
-	// returned by Register — needed by callers (e.g. mqtt5adapter.Call)
-	// that dispatch directly against an already-registered route rather
-	// than through a *reqreply.Client.
-	GlobalHandle  *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]
-	SecuredHandle *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]
+	// GlobalHandle/SecuredHandle/HeaderParamHandle are the
+	// *reqreply.RouteHandle values returned by Register — needed by
+	// callers (e.g. mqtt5adapter.Call) that dispatch directly against an
+	// already-registered route rather than through a *reqreply.Client.
+	GlobalHandle      *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]
+	SecuredHandle     *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]
+	HeaderParamHandle *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]
 }
+
+// apiKeyUserProp/traceUserProp are Phase 1b's (docs/roadmap/
+// reqreply-middleware.md) mqtt5-specific User Property declarations —
+// bridged into a [reqreply.Route.Use]-attachable middleware via
+// [mqtt5adapter.FromUserPropertyParam]/[mqtt5adapter.
+// FromResponseUserPropertyParam]. mqtt5-specific, so declared here (not
+// in routes/middleware.go, which stays adapter-agnostic).
+var apiKeyUserProp = mqtt5adapter.UserPropertyParam{Name: "X-API-Key", Description: "API key for compute/header-param-add", Required: true}
+var traceUserProp = mqtt5adapter.UserPropertyParam{Name: "X-Trace-Id", Description: "Trace correlation id on the reply"}
 
 // Build registers routes.ComputeRoute, routes.SecuredComputeRoute, and
 // routes.GlobalOnlyComputeRoute (with GlobalSecurity attached at the
@@ -42,11 +52,41 @@ func Build() (*Built, error) {
 	if _, err := routes.ComputeRoute.WithHandler(handlers.Add).Register(server); err != nil {
 		return nil, err
 	}
-	securedHandle, err := routes.SecuredComputeRoute.WithHandler(handlers.Add).Register(server)
+	// SecuredComputeRoute/GlobalOnlyComputeRoute now declare+implement
+	// security via .Use()+.HandleMW() (Phase 1 of docs/roadmap/
+	// reqreply-middleware.md) — REPLACES the OLD imperative
+	// ServeOptions.SecurityFunc mechanism entirely (removed, breaking
+	// change). A paired implementation is now REQUIRED for every route
+	// with a non-empty effective security requirement — mqtt5.
+	// AttachServer's CheckCoverage enforces this at Serve time, closing a
+	// latent gap the old SecurityFunc-optional design silently allowed
+	// (a route could declare a security scheme with NO enforcing
+	// implementation attached anywhere and nothing would ever catch it).
+	securedHandle, err := routes.SecuredComputeRoute.
+		Use(routes.BearerAuthMw).
+		HandleMW(&routes.BearerAuthMw, handlers.VerifyBearer).
+		WithHandler(handlers.Add).
+		Register(server)
 	if err != nil {
 		return nil, err
 	}
-	globalHandle, err := routes.GlobalOnlyComputeRoute.WithHandler(handlers.Add).Register(server)
+	globalHandle, err := routes.GlobalOnlyComputeRoute.
+		Use(routes.BearerAuthMw).
+		HandleMW(&routes.BearerAuthMw, handlers.VerifyBearer).
+		WithHandler(handlers.Add).
+		Register(server)
+	if err != nil {
+		return nil, err
+	}
+	// HeaderParamComputeRoute demonstrates Phase 1b — NO .HandleMW()
+	// pairing needed (unlike security schemes): RequestHeaderParams/
+	// ResponseHeaderParams are validated automatically by
+	// mqtt5adapter.AttachServer/AttachClient, not gated behind
+	// [reqreply.CheckCoverage] (that check is security-scheme-specific).
+	headerParamHandle, err := routes.HeaderParamComputeRoute.
+		Use(mqtt5adapter.FromUserPropertyParam(apiKeyUserProp), mqtt5adapter.FromResponseUserPropertyParam(traceUserProp)).
+		WithHandler(handlers.Add).
+		Register(server)
 	if err != nil {
 		return nil, err
 	}
@@ -56,11 +96,12 @@ func Build() (*Built, error) {
 		return nil, err
 	}
 	return &Built{
-		Server:        server,
-		Broker:        broker,
-		Router:        router,
-		GlobalHandle:  globalHandle,
-		SecuredHandle: securedHandle,
+		Server:            server,
+		Broker:            broker,
+		Router:            router,
+		GlobalHandle:      globalHandle,
+		SecuredHandle:     securedHandle,
+		HeaderParamHandle: headerParamHandle,
 	}, nil
 }
 

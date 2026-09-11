@@ -46,6 +46,15 @@ type Message struct {
 	// SchemaName, when non-empty, emits a $ref and registers Schema in components/schemas.
 	SchemaName  string
 	ContentType string // defaults to "application/json"
+
+	// Headers, when non-zero, is rendered as the message's AsyncAPI 3.0
+	// "headers" field — a Schema Object describing application-level
+	// message headers (e.g. MQTT5 User Properties), independent of the
+	// payload. Per the AsyncAPI 3.0 spec, this MUST be a schema of type
+	// "object"; protocol-level headers (already covered by protocol
+	// bindings) are never expressed here. Always rendered inline — no
+	// $ref/component registration support, unlike Schema/SchemaName.
+	Headers schema.Schema
 }
 
 // Parameter describes a channel parameter in an AsyncAPI 3.0 document.
@@ -485,6 +494,9 @@ func buildMessage(m Message) map[string]any {
 	}
 	if m.ContentType != "" {
 		msg["contentType"] = m.ContentType
+	}
+	if !m.Headers.IsZero() {
+		msg["headers"] = schemaRef(m.Headers, "")
 	}
 	return msg
 }

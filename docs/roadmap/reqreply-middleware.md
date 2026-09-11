@@ -1,7 +1,9 @@
 # ReqReply Middleware — declare/implement split for `api/reqreply`
 
-> **Status:** Phase 0 + Phase 0b SHIPPED (mqtt5 AND zeromq) — Phase 1/1b
-> design finalized, ready for implementation next. Spun out of
+> **Status:** Phase 0 + Phase 0b SHIPPED (mqtt5 AND zeromq); **Phase 1
+> SHIPPED (mqtt5)**; **Phase 1b SHIPPED (mqtt5)** — closes the header/
+> cookie-as-middleware parity gap for MQTT5 User Properties, request AND
+> reply direction. Spun out of
 > `docs/design/d-0004-reqreply-workflow-simplification.md`'s own "Decision 3"
 > (which first proposed this, then explicitly deferred it — see that doc's
 > "Remaining open items"), now that Phases 0-5 of the reqreply `Server`/
@@ -221,18 +223,102 @@ still exist for genuinely un-declared, ad-hoc cases — but the PRIMARY,
 declared-scheme credential path should converge onto `Implementations`/
 `ClientImplementations`, the same way REST's did.)
 
-## Scope decisions (what's in Phase 1, what's deferred)
+## Scope decisions (what's in Phase 1, what's deferred) — SHIPPED (mqtt5)
 
 | In scope | Out of scope |
 |---|---|
-| `reqreply.Route.Use(mws ...middleware.RouteMiddleware) Route[Req,Resp]` — signature IDENTICAL to `rest.Route.Use` | Retrofitting the OLD `SecurityFunc`/`CredentialFunc` `Options` fields as a parallel, permanent mechanism — this roadmap's goal is convergence with REST's workflow, not a second escape hatch alongside the new one (see "Open design decisions" for the migration question) |
-| `reqreply.Route.HandleMW(mw *middleware.Middleware, fn any) Route[Req,Resp]` (server-side) — signature IDENTICAL to `rest.Route.HandleMW` | General-purpose request/response ENRICHMENT shapes beyond security (e.g. a "mutate the decoded Req before the handler runs" hook) — `rest.Route` doesn't have this either; not introducing new surface REST itself lacks |
-| `reqreply.Route.ClientMW(mw *middleware.Middleware, fn any) Route[Req,Resp]` (client-side) — signature IDENTICAL to `rest.Route.ClientMW` | `mqtt`(v3)'s Fn-shape design (permanently out of reqreply's scope per Decision 4 of d-0004 — publish-side has no credential mechanism by protocol limitation) |
-| `RouteHandle.Implementations []middleware.ServerImplementation` / `RouteHandle.ClientImplementations []middleware.ClientImplementation` fields, populated by `Route.Register`/`Route.ClientHandle` — mirrors `rest.RouteHandle`'s identical fields | `zeromq`'s Fn-shape design for Phase 1 (see "Toolchain / dependency decisions" — deferred to a follow-up, tracked as an explicit open item, not silently dropped) |
-| `mqtt5.AttachServer`/`AttachClient`'s reflection shim reading `handle.Implementations`/`ClientImplementations` automatically (mirrors `Server.Serve`/`Client.Call` already reading `handle.GlobalSecurity` today) | Retrofitting the OLD `Serve`/`Call`'s existing `Options.SecurityFunc`/`CredentialFunc` fields to ALSO consult `Implementations` — moot: those old functions are RETIRED by this doc's own Phase 0b, sequenced before this Phase 1 work even begins, so there is nothing left to retrofit by the time Phase 1 ships |
-| Register-time `checkImplementationsDeclared` equivalent (`UnknownMiddlewareImplementationError` when a `HandleMW`/`ClientMW` implementation names a scheme nobody `.Use()`'d) — reuses REST's exact check, not a reimplementation | Serve-time `CheckCoverage` equivalent for `Server.Serve`/`Client.Call`'s NEW Attach-based path specifically — IN SCOPE for mqtt5, but zeromq's version depends on the deferred Fn-shape work above |
-| **`reqreply.WithSecurityScheme`'s declare-time role is REPLACED** by `.Use(middleware.SecurityScheme(...))` — FINALIZED (see Open design decision #2): full parity with REST's CURRENT state, not two parallel declare-time styles. `reqreply.WithSecurityScheme`/`reqreply.SecurityScheme` (the OLD types) become DEPRECATED-but-kept aliases, mirroring `events.WithSecurityScheme`'s precedent | Deleting `reqreply.WithSecurityScheme`/`reqreply.SecurityScheme` outright — kept as deprecated aliases for existing callers, zero breaking changes, same treatment `Builder`/`NewBuilder` got in d-0004 |
-| **Phase 1b — User Property param-as-middleware** (request AND reply/response direction) — see its own dedicated section below | Extending Phase 1b to `mqtt`(v3)/`zeromq` — mqtt5-only, same reasoning as the rest of Phase 1 |
+| **SHIPPED.** `reqreply.Route.Use(mws ...middleware.RouteMiddleware) Route[Req,Resp]` — signature IDENTICAL to `rest.Route.Use` | `mqtt5.ServeOptions.SecurityFunc`/`CallOptions.CredentialFunc` retrofitted as a parallel, permanent mechanism — **REJECTED, and REMOVED ENTIRELY instead** (see Open design decision #4's reversal) — `Implementations`/`ClientImplementations` are now the ONLY mechanism, mirroring REST's own D-0001 precedent exactly, not a second escape hatch alongside the new one |
+| **SHIPPED.** `reqreply.Route.HandleMW(mw *middleware.Middleware, fn any) Route[Req,Resp]` (server-side) — signature IDENTICAL to `rest.Route.HandleMW` | General-purpose request/response ENRICHMENT shapes beyond security (e.g. a "mutate the decoded Req before the handler runs" hook) — `rest.Route` doesn't have this either; not introducing new surface REST itself lacks |
+| **SHIPPED.** `reqreply.Route.ClientMW(mw *middleware.Middleware, fn any) Route[Req,Resp]` (client-side) — signature IDENTICAL to `rest.Route.ClientMW` | `mqtt`(v3)'s Fn-shape design (permanently out of reqreply's scope per Decision 4 of d-0004 — publish-side has no credential mechanism by protocol limitation) |
+| **SHIPPED.** `RouteHandle.Implementations []middleware.ServerImplementation` / `RouteHandle.ClientImplementations []middleware.ClientImplementation` fields, populated by `Route.Register`/`Route.ClientHandle` — mirrors `rest.RouteHandle`'s identical fields | `zeromq`'s Fn-shape design for Phase 1 (see "Toolchain / dependency decisions" — deferred to a follow-up, tracked as an explicit open item, not silently dropped — see `docs/roadmap/zeromq-security.md`'s own new reminder section) |
+| **SHIPPED.** `mqtt5.AttachServer`/`AttachClient`'s reflection shim (`serverTransport.Serve`/`clientTransport.call`) reading `handle.Implementations`/`ClientImplementations` automatically | Retrofitting the OLD `Serve`/`Call`'s existing `Options.SecurityFunc`/`CredentialFunc` fields to ALSO consult `Implementations` — MOOT for a DIFFERENT reason than originally stated: those old functions were NOT retired (Phase 0b's actual outcome was delegation, not deletion) — but since they now DELEGATE to `serverTransport`/`clientTransport` directly, they automatically consult `Implementations`/`ClientImplementations` too, with zero additional wiring |
+| **SHIPPED.** Register-time `checkImplementationsDeclared` equivalent (`UnknownMiddlewareImplementationError` when a `HandleMW`/`ClientMW` implementation names a scheme nobody `.Use()`'d) — reuses REST's exact check, not a reimplementation | Serve-time `CheckCoverage` equivalent for `Server.Serve`/`Client.Call`'s NEW Attach-based path specifically — SHIPPED for mqtt5, but zeromq's version depends on the deferred Fn-shape work above |
+| **SHIPPED.** `reqreply.WithSecurityScheme`'s declare-time role is REPLACED by `.Use(middleware.SecurityScheme(...))` — full parity with REST's CURRENT state, not two parallel declare-time styles. `reqreply.WithSecurityScheme`/`reqreply.SecurityScheme` (the OLD types) are DEPRECATED-but-kept aliases, mirroring `events.WithSecurityScheme`'s precedent | Deleting `reqreply.WithSecurityScheme`/`reqreply.SecurityScheme` outright — kept as deprecated aliases for existing callers, zero breaking changes, same treatment `Builder`/`NewBuilder` got in d-0004 |
+| **SHIPPED. Phase 1b — User Property param-as-middleware** (request AND reply/response direction) — see its own dedicated section below | Extending Phase 1b to `mqtt`(v3)/`zeromq` — mqtt5-only, same reasoning as the rest of Phase 1 |
+
+### What actually shipped (mqtt5)
+
+1. `api/reqreply/middleware.go` (NEW) — `Route.Use`/`HandleMW`/`ClientMW`,
+   `applySecurityDeclarations`/`checkImplementationsDeclared`/
+   `CheckCoverage`, `MissingSecurityMiddlewareError`/
+   `UnknownMiddlewareImplementationError` — direct ports of
+   `api/rest/middleware.go`'s equivalent structure, scoped down (no
+   D-0003 codec-declared `Middleware[In,Out]` bundling, no param-spec
+   merging — reqreply's boundary is topic-only, no path/query/header/
+   cookie params to merge the way REST does).
+2. `api/reqreply/route.go` — `RouteHandle.Implementations`/
+   `ClientImplementations` fields, populated by `Route.Register`/
+   `Route.ClientHandle` (both call `applySecurityDeclarations`;
+   `Register` additionally calls `checkImplementationsDeclared`,
+   mirroring REST's identical two-step sequence).
+3. Fn-shape dispatch (folded into `adapters/mqtt5/reqreply_transport.go`
+   directly — NOT a separate `reqreply_middleware.go` file, a
+   short-lived organizational deviation caught and fixed the same
+   session: confirmed via code that `adapters/nethttp` has NO
+   equivalent dedicated file either — its Fn-shape dispatch lives
+   inline in `serve.go`/`client.go`): server-side PAIRED (`func(ctx,
+   msg *paho.Publish, reqs) (map[string][]string, error)`, scope-grant
+   model) + UNPAIRED (`func(func(*paho.Publish)) func(*paho.Publish)`,
+   general-purpose decorator); client-side PAIRED (`func(ctx, reqs)
+   ([]UserProperty, error)`, REPLACES the old `CredentialFunc`'s exact
+   shape/role) + UNPAIRED (`func(func(ctx,Req)(Resp,error))
+   func(ctx,Req)(Resp,error)`, general-purpose decorator,
+   reflection-only via `reflect.MakeFunc` since Req/Resp are erased at
+   this dispatcher's call site).
+4. `adapters/mqtt5/reqreply_transport.go` — `serverTransport.Serve`
+   validates implementation shapes + calls `reqreply.CheckCoverage`
+   ONCE at Serve construction time (not per-message), wraps the
+   per-message handler with general-purpose decorators, runs paired
+   security Fns via `runServerSecurityMiddleware` (replacing the OLD
+   `SecurityFunc` call). `clientTransport.call` validates client
+   implementation shapes, wraps the ENTIRE encode→publish→recv→decode
+   sequence (built via `reflect.MakeFunc` into a concretely-typed
+   closure) with general-purpose decorators, and merges paired
+   credential Fns via `mergeCredentialUserProperties` (replacing the OLD
+   `CredentialFunc` call) — applies identically through `CallAsync` too
+   (same underlying `t.call`).
+5. `adapters/mqtt5/reqreply.go` — `ServeOptions.SecurityFunc`/
+   `CallOptions.CredentialFunc` fields REMOVED ENTIRELY (breaking
+   change).
+6. `examples/reqreply-api` — Demo 2/3 migrated a SECOND time (having
+   just been migrated onto `CallOptions.CredentialFunc` in the previous
+   round) onto `.Use()`/`.ClientMW()`, since `CredentialFunc` no longer
+   exists; `routes/middleware.go` (NEW, `BearerAuthMw`), `handlers/
+   security.go` (NEW, `VerifyBearer`); `mqtt5server/server.go`'s
+   `SecuredComputeRoute`/`GlobalOnlyComputeRoute` registration updated
+   to `.Use(...).HandleMW(...)`. **A real, pre-existing design gap was
+   found and fixed along the way**: `ComputeRoute` (meant to be
+   unsecured) silently INHERITED `Server.AddGlobalSecurity`'s
+   requirement with ZERO enforcement, because the OLD credential-format
+   check only ran for schemes with a `WithSecurityScheme` registered on
+   THAT SPECIFIC route (which `ComputeRoute` never declared) — Phase 1's
+   mandatory `CheckCoverage` correctly surfaces this as a hard
+   `MissingSecurityMiddlewareError` instead of silently ignoring it;
+   fixed by having `ComputeRoute` explicitly opt out via an EMPTY
+   (non-nil) `RouteMeta.Security` slice, per `RouteHandle.Security`'s own
+   documented "nil inherits, empty opts out" contract.
+7. **9 new tests** in `api/reqreply/middleware_test.go` (the full
+   declare/implement mechanism, isolated from any adapter) — see "Unit
+   test plan" below for the complete list — PLUS **6 new tests** in
+   `adapters/mqtt5/reqreply_test.go`/`reqreply_transport_test.go`
+   replacing every SecurityFunc/CredentialFunc-based test, INCLUDING two
+   that directly exercise the `reflect.MakeFunc`-based general-purpose
+   client decorator wrapping (the single riskiest new code path this
+   phase introduced) — **a real bug was caught by these two tests**:
+   `validateClientImplementationShapes` was initially called with the
+   WRONG reflect.Type (the decorator's INNER shape instead of the
+   decorator shape itself), causing every general-purpose `ClientMW` to
+   be rejected with a `MiddlewareShapeError` — fixed immediately, both
+   tests then passed.
+
+### Verification
+
+`gofmt -l .` clean; `go build ./...` clean; `go vet ./...` clean;
+`go test ./... -race` — zero FAIL across the ENTIRE repo; `just check`
+(staticcheck + gosec) zero findings; `for d in examples/*/; do go run
+.; done` — zero failures across every example, including
+`examples/reqreply-api`'s full 7-demo narrative with its now-fully-
+declarative security middleware.
 
 ## Toolchain / dependency decisions
 
@@ -465,6 +551,43 @@ REST-specific concepts but instances of the ONE underlying `Use`/`HandleMW`/
 
 ## Phase 1b — User Property param-as-middleware (request AND reply/response)
 
+> **SHIPPED (mqtt5).** All 4 work items below landed exactly as planned,
+> with no design changes discovered during implementation:
+> `render/asyncapi/v3.Message` gained a `Headers schema.Schema` field
+> (rendered inline, no `$ref` support — matches the plan); `api/reqreply/
+> middleware.go` gained `applyParamDeclarations` (collects, dedups by
+> name, and renders `RequestHeaderParams`/`ResponseHeaderParams` from
+> `rb.middlewares` into both the AsyncAPI schema AND new
+> `RouteHandle.RequestHeaderParams`/`RouteHandle.ResponseHeaderParams`
+> fields — the latter needed so the ADAPTER can also consult them at
+> dispatch time, not just the spec renderer); `adapters/mqtt5.
+> FromUserPropertyParam`/`FromResponseUserPropertyParam` bridge functions
+> added, plus Attach-time validation wired into `serverTransport.Serve`
+> (request side) and `clientTransport.call` (reply side, inside the
+> `innerCall` closure, right after the existing error-reply check) —
+> BOTH reuse the EXISTING `validateUserProperties`/
+> `MissingUserPropertyError`/`UserPropertyError` machinery unchanged
+> (confirmed clean reuse, work item 4's own "confirm at implementation
+> time" resolved: no new error types needed). The OLD `ServeOptions.
+> UserPropertyParams`/`SubscribeOptions.UserPropertyParams` escape hatch
+> is untouched, exactly as planned. 6 new tests added (`api/reqreply/
+> middleware_test.go`: rendering, dedup, `RouteHandle` population, both
+> directions; `adapters/mqtt5/reqreply_test.go`: request-side reject/
+> accept and reply-side reject/accept, the reply-accept case constructed
+> via a hand-rolled reply publisher since Phase 1b has no server-side
+> mechanism to POPULATE a reply User Property from a handler yet — noted
+> as a real, currently-unfilled gap, not a test limitation). `examples/
+> reqreply-api` extended with a new Demo 6 (`demo_user_property_param_
+> middleware.go`, using `mqtt5adapter.Call` directly rather than
+> `reqreply.Client` — attaching a raw, non-security User Property on a
+> single call is exactly what `CallOptions.UserProperties` is for) and a
+> new pristine `routes.HeaderParamComputeRoute` (explicitly opts out of
+> `mqtt5server`'s `Server.AddGlobalSecurity("bearerAuth")` via an empty
+> `Security` slice — the SAME `ComputeRoute` gap Phase 1 found, caught
+> immediately this time since the pattern was already known). Full
+> verification battery (`gofmt`/`go build`/`go vet`/`go test -race`/
+> `just check`/all examples) — all clean.
+
 Closes the gap identified above: REST's header/cookie/query
 param-as-middleware pattern DOES have a real reqreply analog — MQTT5's
 User Properties — but it needs its own scoped sub-phase because, unlike
@@ -549,6 +672,32 @@ func FromResponseUserPropertyParam(p UserPropertyParam) middleware.Middleware
    the failure MODE is identical (a property missing or failing its
    codec) — only the ATTACHMENT surface changes. Confirm this reuse is
    accurate against the real error types at implementation time.
+
+## Relationship to `mqtt5-user-property-merge.md`
+
+Checked before implementing Phase 1b — a DIFFERENT, independent,
+still-undriven idea, confirmed via full read: `mqtt5-user-property-
+merge.md` proposes `MergedUserPropertyParam[T]`/
+`NewRequiredUserPropertyParam`/`NewOptionalUserPropertyParam` — a
+`UserPropertyParam` that is BOTH validated AND auto-**merged** into the
+decoded message struct via `codex.DecodeVars`, mirroring `rest.
+MergedHeaderParam`/`NewRequiredHeaderParam`. Applied as a direct
+`ChannelOpt`/`RouteOpt`-equivalent at declaration time — NOT through
+`.Use()`/`middleware.Middleware` at all. Phase 1b's `FromUserPropertyParam`/
+`FromResponseUserPropertyParam` bridge a plain `UserPropertyParam` into
+`middleware.Middleware` for `.Use()` attachment instead, giving AsyncAPI
+spec rendering + Attach-time presence/codec validation — it does NOT
+merge anything into the decoded struct. Confirmed via REST's own
+precedent (`api/rest/builder.go`): `MergedHeaderParam[T]` embeds a plain
+`HeaderParam` and applies itself DIRECTLY via its own `applyRoute` —
+completely separate from `FromHeaderParam`/`.Use()`. Both mechanisms
+coexist today for REST headers with ZERO conflict — a caller can even do
+`rest.FromHeaderParam(merged.HeaderParam)` to get BOTH validate+merge
+AND spec+middleware attachment for the SAME property, since `HeaderParam`
+is embedded. Phase 1b's `FromUserPropertyParam` supports the identical
+composition once `mqtt5-user-property-merge.md` ships (whenever that
+happens — it has no driver yet, unrelated timeline). No naming
+collision, no functional overlap, no sequencing dependency either way.
 
 ## Relationship to `protocol-native-features.md` and `request-correlation-id.md`
 
@@ -981,6 +1130,21 @@ ROUTER/DEALER) completely unchanged.
 
 ## Example mini-project extension — `examples/reqreply-api`
 
+> **Superseded by what actually shipped.** This table was written BEFORE
+> Phase 1/1b's real implementation — the ACTUAL demos ended up simpler
+> and split differently than planned here: Phase 1's security
+> declare/implement/call chain was demonstrated by REUSING/migrating
+> `demo_global_security_dual_mode_call.go`/`demo_route_level_security_
+> credential_error.go` (no new `demo_middleware_declare_implement.go`,
+> no `TimingServerMW`/`TimingClientMW` general-purpose demo functions
+> were built); Phase 1b's User-Property param work item (e) was
+> demonstrated by a NEW, focused `demo_user_property_param_middleware.go`
+> (Demo 6) instead of being folded into a single combined demo file.
+> Kept below UNCHANGED as the original plan's reasoning/rationale, per
+> this doc's own "keep in place, mark resolved, don't delete" discipline
+> — see the "Files to create" table's Phase 1/1b rows for what actually
+> shipped.
+
 Once implemented, `examples/reqreply-api` (the mini-project this session's
 Phase 2/4 work already shipped, see d-0004) should demonstrate the new
 mechanism the SAME way `examples/rest-api` demonstrates REST's — mirroring
@@ -1088,32 +1252,60 @@ including under `-race`):
 | `TestAttachClient_Call_ClientCallOptions_ResponseFormats_Overrides` | a per-call `ClientCallOptions.ResponseFormats` override successfully decodes a YAML reply the client's own route declares nothing for (item 2, client-side) |
 | `TestAttachClient_CallAsync_AppliesClientCallOptions` | the SAME override applies through `CallAsync` too, confirming signature/behavior symmetry (Phase 0, decision A) |
 
-## Unit test plan (Phase 1 — not yet implemented)
+## Unit test plan — SHIPPED (mqtt5)
 
-Mirror `api/rest/middleware_test.go`'s own test IDs (reqreply's PRIMARY
-reference, adjusted only for reqreply's mqtt5-only Phase 1 adapter scope —
+Mirrors `api/rest/middleware_test.go`'s own test IDs (reqreply's PRIMARY
+reference, adjusted for reqreply's mqtt5-only Phase 1 adapter scope —
 NOT `api/events/builder_test.go`'s `Subscriber`/`Publisher`-split naming,
-since reqreply has one `Route`, not two roles):
+since reqreply has one `Route`, not two roles). Actual test locations
+and any name deviations from the original plan are noted per row.
 
 | Test | Verifies |
 |---|---|
-| `TestRoute_Use_Chainable` | `.Use(mw1).Use(mw2)` and `.Use(mw1, mw2)` produce equivalent opts, in attachment order |
-| `TestRoute_Use_DoesNotMutateOriginal` | `Route` is immutable — `.Use` returns a distinct value |
-| `TestHandleMW_Paired_DerivesSatisfiesFromSecurity` | `mw.Security != nil` → `Satisfies == []string{mw.Security.SchemeName}` |
-| `TestHandleMW_Unpaired_GeneralPurpose_EmptySatisfies` | `mw == nil` → `Satisfies` empty, Fn always runs |
-| `TestClientMW_Paired_DerivesSatisfiesFromSecurity` | client-side mirror of the above |
-| `TestClientMW_MultipleCallsForSameScheme_DistinctNames` | mirrors REST's `#1`/`#2` attachment-order-index naming, needed for the SAME reason (conflict-check heuristics) |
-| `TestRoute_Register_PopulatesImplementations` | `Route.Register(server)` copies `HandleMW`/`ClientMW`-built implementations onto the returned `*RouteHandle` |
-| `TestRoute_ClientHandle_PopulatesImplementations` | same, for the no-`Server`-needed path |
-| `TestRoute_Register_UnknownMiddlewareImplementationError` | a `HandleMW`/`ClientMW` naming a scheme nobody `.Use()`'d fails at Register/ClientHandle time |
-| `TestAttachServer_CheckCoverage_MissingSecurityMiddlewareError` | a declared `Security` requirement with no matching `ServerImplementation` fails at `Server.Serve` (or `AttachServer`, per the open design decision below) |
-| `TestAttachServer_HandleMW_PairedSecurityFn_Verifies` | mqtt5's new Fn shape actually gets called and can reject |
-| `TestAttachClient_ClientMW_PairedCredentialFn_Supplies` | mqtt5's new client Fn shape actually gets called and supplies a credential |
-| `TestAttachServer_HandleMW_GeneralPurpose_AlwaysRuns` | unpaired Fn runs regardless of declared Security |
-| `TestAttachServer_MultipleGeneralPurposeHandleMW_ComposeOutermostIn` | direct regression test for this revision's Fn-shape bug: TWO `HandleMW(nil, ...)` decorators attached to the SAME route (e.g. observer + timing) both run, in the CORRECT outermost-in order — proves the corrected decorator shape actually composes, unlike the earlier wrong draft shape |
-| `TestAttachClient_MultipleGeneralPurposeClientMW_ComposeOutermostIn` | client-side mirror of the above |
-| `TestAttachClient_ClientMW_AppliesToCallAsyncToo` | a paired credential-supplying `ClientMW` AND a general-purpose decorator both run for a `CallAsync`-dispatched call, not just `Call` — see "Interaction with `CallAsync`/`Future`" |
-| `TestAttachServer_SecurityRejection_CallsSecurityObserver` | mirrors pub/sub G1's regression test — the NEW path must call `SecurityObserver` too |
+| `TestRoute_Use_Chainable` (`api/reqreply/middleware_test.go`) | `.Use(mw1).Use(mw2)` and `.Use(mw1, mw2)` produce equivalent opts, in attachment order |
+| `TestRoute_Use_DoesNotMutateOriginal` (same file) | `Route` is immutable — `.Use` returns a distinct value |
+| `TestHandleMW_Paired_DerivesSatisfiesFromSecurity` (same file) | `mw.Security != nil` → `Satisfies == []string{mw.Security.SchemeName}` |
+| `TestHandleMW_Unpaired_GeneralPurpose_EmptySatisfies` (same file) | `mw == nil` → `Satisfies` empty, Fn always runs |
+| `TestClientMW_Paired_DerivesSatisfiesFromSecurity` (same file) | client-side mirror of the above |
+| `TestClientMW_MultipleCallsForSameScheme_DistinctNames` (same file) | mirrors REST's `#1`/`#2` attachment-order-index naming, needed for the SAME reason (conflict-check heuristics) |
+| `TestRoute_Register_PopulatesImplementations` (same file) | `Route.Register(server)` copies `HandleMW`/`ClientMW`-built implementations onto the returned `*RouteHandle` |
+| `TestRoute_ClientHandle_PopulatesImplementations` (same file) | same, for the no-`Server`-needed path |
+| `TestRoute_Register_UnknownMiddlewareImplementationError` (same file) | a `HandleMW`/`ClientMW` naming a scheme nobody `.Use()`'d fails at Register time |
+| `TestAttachServer_CheckCoverage_MissingSecurityMiddlewareError` (renamed from `TestServe_NilSecurityFunc_NotAnError`, `adapters/mqtt5/reqreply_test.go`) | a declared `Security` requirement with no matching `ServerImplementation` fails `Serve`/`AttachServer` construction |
+| `TestServe_HandleMW_PairedSecurityFn_Verifies` (renamed from `TestServe_SecurityFunc_RejectsRequest`, same file) | mqtt5's new Fn shape actually gets called and can reject |
+| `TestCall_ClientMW_PairedCredentialFn_Supplies` (renamed from `TestCall_CredentialFunc_ValidFormat_Passes`, same file) | mqtt5's new client Fn shape actually gets called and supplies a credential |
+| `TestCall_ClientMW_MalformedCredentialFormat_ReturnsSecurityCredentialError` (renamed from `TestCall_CredentialFunc_MalformedFormat_...`, same file) | malformed credential still rejected client-side before publish |
+| `TestAttachServer_HandleMW_GeneralPurpose_AlwaysRuns` (`adapters/mqtt5/reqreply_transport_test.go`) | unpaired Fn runs regardless of declared Security |
+| `TestAttachServer_MultipleGeneralPurposeHandleMW_ComposeOutermostIn` (same file) | direct regression test for the CORRECT outermost-in composition order of TWO `HandleMW(nil, ...)` decorators attached to the SAME route |
+| `TestAttachClient_MultipleGeneralPurposeClientMW_ComposeOutermostIn` (same file) | client-side mirror of the above — **caught a REAL bug**: `validateClientImplementationShapes` was initially called with the decorator's INNER function type instead of the decorator type itself, rejecting every general-purpose `ClientMW` with a `MiddlewareShapeError`; fixed immediately, confirmed by this test passing afterward |
+| `TestAttachClient_ClientMW_AppliesToCallAsyncToo` (same file) | a general-purpose decorator runs for a `CallAsync`-dispatched call too, not just `Call` — see "Interaction with `CallAsync`/`Future`" |
+
+**Deliberately NOT ported**: `TestAttachServer_SecurityRejection_
+CallsSecurityObserver` — REDUNDANT with `TestServe_
+BuiltInCredentialCheck_RejectsMalformedCredential` (pre-existing,
+unchanged) and `TestCall_ClientMW_MalformedCredentialFormat_
+ReturnsSecurityCredentialError` (above), both of which already assert
+`SecurityObserver.RecordSecurityRejection` is called on the relevant
+rejection path — a separate test would duplicate coverage, not add any.
+`TestCall_CredentialFunc_ReturnsNilProperties_SkipsValidation` was also
+NOT ported (see the code comment left in its place, `adapters/mqtt5/
+reqreply_test.go`) — its premise doesn't generalize to `ClientMW`'s
+multi-implementation MERGE model.
+
+### Phase 1b additions — SHIPPED (mqtt5)
+
+| Test | Verifies |
+|---|---|
+| `TestRoute_Register_RendersRequestHeaderParamsIntoAsyncAPI` (`api/reqreply/middleware_test.go`) | a `.Use()`-attached `RequestHeaderParams` middleware renders a `headers` schema on the request message |
+| `TestRoute_Register_RendersResponseHeaderParamsIntoAsyncAPI` (same file) | reply-side mirror of the above |
+| `TestRoute_Register_PopulatesRequestResponseHeaderParams` (same file) | `Route.Register` populates `RouteHandle.RequestHeaderParams`/`ResponseHeaderParams` |
+| `TestRoute_Register_DedupsHeaderParamsByName` (same file) | two middlewares declaring the SAME header param name fold into ONE property/one `RouteHandle` entry, not two |
+| `TestRoute_ClientHandle_PopulatesHeaderParams` (same file) | same population, for the no-`Server`-needed path |
+| `TestRoute_Register_NoHeaderParams_OmitsHeadersFromSpec` (same file) | no header params declared → no `headers:` key rendered at all (zero-`Schema` omission) |
+| `TestServe_HandleMW_RequestHeaderParam_MissingRequired_Rejects` (`adapters/mqtt5/reqreply_test.go`) | a message missing a required declared User Property is rejected with `ServeError{Kind: KindSecurity}` wrapping `MissingUserPropertyError` |
+| `TestServe_HandleMW_RequestHeaderParam_Present_Succeeds` (same file) | the SAME route succeeds when the property is present |
+| `TestCall_ClientMW_ResponseHeaderParam_MissingRequired_Rejects` (same file) | a reply missing a required declared User Property is rejected client-side with `CallError{Kind: KindSecurity}` wrapping `MissingUserPropertyError` |
+| `TestCall_ClientMW_ResponseHeaderParam_Present_Succeeds` (same file) | reply-side success case — constructed via a hand-rolled reply publisher (bypassing `Serve`) since Phase 1b has no server-side mechanism yet for a handler to POPULATE a reply User Property |
 
 ## Files to create
 
@@ -1128,19 +1320,25 @@ since reqreply has one `Route`, not two roles):
 | `adapters/zeromq/reqreply_transport.go` (edit, SHIPPED) | Added zeromq-local `resolveCallFormatReflect`/`sendHandlerErrorReplyReflect`/`sendRouterHandlerErrorReplyReflect` helpers; wired `DecodeWithFormats`/`EncodeWithFormats`/`ErrorResponseFor`/`EncodeRequestWithFormats`/`DecodeResponseWithFormats` into all 4 transports; added `stats.TraceObserver` spans (`"zmq.serve"`/`"zmq.request"`) to all 4 — the SAME gap mqtt5 had, found proactively this time (not via a late regression). Merge-field DECODE support intentionally NOT added (zeromq REQ/REP wire format carries no topic frame — confirmed not applicable, matching the escape hatch's own scope). |
 | `examples/reqreply-api/demo_global_security_dual_mode_call.go`/`demo_route_level_security_credential_error.go` (edit, SHIPPED) | Migrated off `mqtt5adapter.Call(...)`/`CredentialFunc` onto `mqtt5adapter.AttachClient(...)` + `Client.Call(...)` — no capability loss (the migration was optional, not forced by any remaining gap, but done anyway to demonstrate the Attach-based workflow end-to-end for security too), see "Example mini-project extension" section for detail |
 | `docs/guides/mqtt5.md`, `docs/guides/zeromq.md` (untouched — still accurate) | No "escape hatch" section update needed — `Serve`/`Call`/`CallHandle` still exist, unchanged from the caller's perspective |
-| `api/reqreply/middleware.go` (NEW, Phase 1) | `Route.Use`/`HandleMW`/`ClientMW`, `routeMiddlewareOpt`/`handleMWOpt`/`clientMWOpt` internals — a direct port of `api/rest/middleware.go`'s structure, same names |
-| `api/reqreply/route.go` (edit, Phase 1) | Add `Implementations`/`ClientImplementations` fields to `RouteHandle`; populate them in `Route.Register`/`Route.ClientHandle` |
-| `adapters/mqtt5/reqreply_middleware.go` (NEW, Phase 1; or fold into `reqreply_transport.go`) | mqtt5's `HandleMW`/`ClientMW` Fn-shape recognition + dispatch, consulted by `AttachServer`'s `Serve`/`AttachClient`'s `Call`/`CallAsync` |
-| `api/reqreply/middleware_test.go` (NEW, Phase 1) | Unit test plan above (Route/RouteHandle-level tests) |
-| `adapters/mqtt5/reqreply_middleware_test.go` (NEW, Phase 1) | Unit test plan above (adapter-level tests) |
-| `render/asyncapi/v3/document.go` (edit, Phase 1b) | New `Headers` field on the Message type + rendering — confirmed absent today |
-| `adapters/mqtt5/reqreply_middleware.go` (edit, Phase 1b) | `FromUserPropertyParam`/`FromResponseUserPropertyParam` bridge functions |
-| `api/reqreply/middleware.go` (edit, Phase 1b) | Consult `RequestHeaderParams`/`ResponseHeaderParams` at Register time, render into request/reply message `headers` schema |
-| `examples/reqreply-api/routes/middleware.go` (NEW, Phase 1) | Example extension — see "Example mini-project extension" section |
-| `examples/reqreply-api/handlers/security.go` (NEW, Phase 1) | Example extension — `ScopesImpl`-equivalent |
-| `examples/reqreply-api/mqtt5server/server.go` (edit, Phase 1) | Example extension — wire `.Use`/`.HandleMW` chain onto a route |
-| `examples/reqreply-api/client/client.go` (edit, Phase 1) | Example extension — wire `.ClientMW` variants |
-| `examples/reqreply-api/demo_middleware_declare_implement.go` (NEW, Phase 1) | Example extension — new demo proving declare/implement/coverage-check/composition |
+| `api/reqreply/middleware.go` (NEW, Phase 1, SHIPPED) | `Route.Use`/`HandleMW`/`ClientMW`, `routeMiddlewareOpt`/`handleMWOpt`/`clientMWOpt` internals, `applySecurityDeclarations`/`checkImplementationsDeclared`/`CheckCoverage`, `MissingSecurityMiddlewareError`/`UnknownMiddlewareImplementationError` — a direct port of `api/rest/middleware.go`'s structure, same names, scoped down (no D-0003 codec-declared bundling, no param-spec merging) |
+| `api/reqreply/route.go` (edit, Phase 1, SHIPPED) | Added `Implementations`/`ClientImplementations` fields to `RouteHandle`; populated in `Route.Register`/`Route.ClientHandle` |
+| `adapters/mqtt5/reqreply_transport.go` (edit, Phase 1, SHIPPED — content originally landed in a separate `reqreply_middleware.go`, FOLDED IN the same session after confirming `adapters/nethttp` has no equivalent dedicated file either) | mqtt5's `HandleMW`/`ClientMW` Fn-shape recognition + dispatch helpers (`validateServerImplementationShapes`/`applyGeneralServerMiddleware`/`runServerSecurityMiddleware`/`validateClientImplementationShapes`/`mergeCredentialUserProperties`), consulted by `serverTransport.Serve`/`clientTransport.call` |
+| `adapters/mqtt5/reqreply.go` (edit, Phase 1, SHIPPED, BREAKING) | `ServeOptions.SecurityFunc`/`CallOptions.CredentialFunc` fields REMOVED ENTIRELY |
+| `api/reqreply/middleware_test.go` (NEW, Phase 1, SHIPPED) | 9 tests — Route/RouteHandle-level (see "Unit test plan") |
+| `adapters/mqtt5/reqreply_test.go`/`reqreply_transport_test.go` (edit, Phase 1, SHIPPED — no separate `reqreply_middleware_test.go` file created, folded into these two existing files instead) | 6 new/renamed tests replacing every SecurityFunc/CredentialFunc-based test (see "Unit test plan") |
+| `render/asyncapi/v3/document.go` (edit, Phase 1b, SHIPPED) | New `Headers schema.Schema` field on `Message`, rendered inline (no `$ref`) in `buildMessage` when non-zero |
+| `api/reqreply/middleware.go` (edit, Phase 1b, SHIPPED) | New `applyParamDeclarations` — collects/dedups `RequestHeaderParams`/`ResponseHeaderParams` from `rb.middlewares`, returns both the raw param specs (for `RouteHandle`) AND the rendered AsyncAPI schemas |
+| `api/reqreply/route.go` (edit, Phase 1b, SHIPPED) | New `RouteHandle.RequestHeaderParams`/`RouteHandle.ResponseHeaderParams` fields, populated by `Route.Register`/`Route.ClientHandle`; `Route.Register` threads the rendered schemas into `Builder.registerRoute`'s two new params |
+| `api/reqreply/builder.go` (edit, Phase 1b, SHIPPED) | `registerRoute` gained `reqHeaders, respHeaders schema.Schema` params, assigned into the Publish/Subscribe operation's `Message.Headers` |
+| `adapters/mqtt5/reqreply_transport.go` (edit, Phase 1b, SHIPPED) | `FromUserPropertyParam`/`FromResponseUserPropertyParam` bridge functions; `userPropertyParamsFromHeaderSpecs`/`userPropertyParamsFromResponseHeaderSpecs` conversion helpers (reuse `UserPropertyParam`'s identical shape); Attach-time validation wired into `serverTransport.Serve` (request) and `clientTransport.call`'s `innerCall` closure (reply) — both reuse the EXISTING `validateUserProperties`/`MissingUserPropertyError`/`UserPropertyError` machinery unchanged |
+| `examples/reqreply-api/routes/middleware.go` (NEW, Phase 1, SHIPPED) | `BearerAuthMw` — `middleware.SecurityScheme` declaration, mirrors `examples/rest-api/routes/middleware.go`'s `ProfileScopeMw`/`AdminScopeMw` |
+| `examples/reqreply-api/handlers/security.go` (NEW, Phase 1, SHIPPED) | `VerifyBearer` — the paired server-side security Fn (unconditional grant; this example has one scope-less scheme, no scope-matching logic to demonstrate) |
+| `examples/reqreply-api/mqtt5server/server.go` (edit, Phase 1, SHIPPED) | `SecuredComputeRoute`/`GlobalOnlyComputeRoute` registration updated to `.Use(routes.BearerAuthMw).HandleMW(&routes.BearerAuthMw, handlers.VerifyBearer)` |
+| `examples/reqreply-api/demo_global_security_dual_mode_call.go`/`demo_route_level_security_credential_error.go` (edit, Phase 1, SHIPPED — no separate `client/client.go` credential functions added; kept inline in the demo files instead) | `.ClientMW()`-attached Route variants built per-demo, replacing the just-removed `CallOptions.CredentialFunc` calls from the previous round |
+| `examples/reqreply-api/routes/routes.go` (edit, Phase 1b, SHIPPED) | New pristine `HeaderParamComputeRoute` — explicit `Security: []route.SecurityRequirement{}` opt-out from `mqtt5server`'s `Server.AddGlobalSecurity("bearerAuth")` (the SAME gap Phase 1 found for `ComputeRoute`, caught immediately this time) |
+| `examples/reqreply-api/mqtt5server/server.go` (edit, Phase 1b, SHIPPED) | `apiKeyUserProp`/`traceUserProp` (mqtt5-specific, so declared here not in `routes/middleware.go`); `HeaderParamComputeRoute.Use(mqtt5adapter.FromUserPropertyParam(...), mqtt5adapter.FromResponseUserPropertyParam(...))`; new `Built.HeaderParamHandle` field |
+| `examples/reqreply-api/demo_user_property_param_middleware.go` (NEW, Phase 1b, SHIPPED, Demo 6 — later demos renumbered 6→7→8) | Uses `mqtt5adapter.Call` directly (not `reqreply.Client`) — a raw, non-security User Property on a single call is exactly what `CallOptions.UserProperties` is for; demonstrates both the missing-required rejection and the present-success cases |
+| ~~`examples/reqreply-api/demo_middleware_declare_implement.go` (NEW, Phase 1)~~ **NOT CREATED — descoped.** Demo 2/3's migration already exercises the full declare→implement→call chain (including `UnknownMiddlewareImplementationError`-adjacent coverage via the `ComputeRoute` opt-out fix); a SEPARATE demo file proving the identical mechanism again was judged redundant, not descoped for lack of time | N/A |
 
 ## Out of scope entirely (not a future phase — permanently excluded)
 
@@ -1245,29 +1443,36 @@ resolved design questions visible rather than scrubbing them).
    package-local `{Route/Topic, Scheme}`-shaped copy (not a shared
    cross-package type); reqreply follows the same pattern — see
    "Structured errors" above.
-4. **RESOLVED — the new PAIRED server-side security Fn ADOPTS REST's
-   scope-GRANT model**: `func(ctx, msg, reqs) (map[string][]string,
-   error)`, combined via `middleware.CheckScopes`.
-   **Justification, strengthened after critical review**: this is NOT
-   "parity for parity's sake" — bearer-token-plus-scopes is standard,
-   widely-expected REST/OAuth2 practice, and a reqreply user arriving
-   from REST reasonably expects the SAME capability to be available;
-   that expectation IS the driver, not the mere fact that REST has it.
-   reqreply's OLD `SecurityFunc` (`func(ctx, msg, reqs) error`, no scopes,
-   confirmed via code — `adapters/mqtt5/reqreply.go`/`reqreply_transport.go`)
-   stays UNCHANGED as the permanent escape hatch (same treatment
+4. **RESOLVED, then REVERSED again, then SHIPPED (mqtt5) — the new
+   PAIRED server-side security Fn ADOPTS REST's scope-GRANT model**:
+   `func(ctx, msg, reqs) (map[string][]string, error)`, combined via
+   `middleware.CheckScopes`.
+   ~~reqreply's OLD `SecurityFunc` (`func(ctx, msg, reqs) error`, no
+   scopes) stays UNCHANGED as the permanent escape hatch (same treatment
    `WithSecurityScheme`/`CredentialFunc` get throughout this doc) — only
-   the NEW `HandleMW`-driven path adopts the scope-grant model. This
-   reverses the previous revision's "leaning toward (a), not locked in."
-   **Contingency, added after critical review**: this Fn shape is
-   intrinsic to `HandleMW`'s own signature — it cannot be safely
-   changed LATER once adapters implement against it, unlike Phase 1b
-   (a genuinely separable addition). If implementation reveals the
-   scope-grant integration (`middleware.CheckScopes` wiring, any new
-   observer/error plumbing it needs) is larger than expected, spin
-   THAT SPECIFIC piece into its own dedicated roadmap doc — decided
-   BEFORE Phase 1 ships, not after, to avoid a breaking Fn-shape change
-   down the line.
+   the NEW `HandleMW`-driven path adopts the scope-grant model.~~
+   **REVERSED — mirrors REST's OWN D-0001 precedent instead (confirmed
+   via code: `adapters/nethttp.Options`'s own `"BREAKING: Observer and
+   SecurityFunc are REMOVED"` doc comment) — a direct control question
+   asked and answered before Phase 1 began: "does REST still have a
+   `CredentialFunc`-as-Options-field escape hatch?" Confirmed NO — REST
+   fully unified onto ONE credential mechanism
+   (`Implementations`/`ClientImplementations`), consulted by BOTH its
+   escape hatch AND `Client.Call`.** `mqtt5.ServeOptions.SecurityFunc`/
+   `CallOptions.CredentialFunc` were REMOVED ENTIRELY (SHIPPED, breaking
+   change) — `Implementations`/`ClientImplementations` are now the ONLY
+   mechanism, for BOTH `Serve`/`Call`/`CallHandle` (which delegate to the
+   SAME `Attach`-based transports since Phase 0b) and `Attach`-based
+   dispatch directly. **zeromq's `SecurityFunc`/`CredentialFunc` (both
+   events pub/sub AND reqreply) are explicitly UNAFFECTED by this
+   removal** — zeromq has no `.Use`/`HandleMW`/`ClientMW` mechanism yet
+   (a separate, not-yet-started follow-up, see
+   `docs/roadmap/zeromq-security.md`'s own new reminder section) —
+   removing them now, with no replacement shipped, would leave zeromq
+   with ZERO security mechanism, a pure regression. When zeromq's own
+   Fn-shape phase eventually ships, it should ALSO remove
+   `SecurityFunc`/`CredentialFunc` at that point, mirroring mqtt5's
+   Phase 1 exactly.
 5. **RESOLVED — Phase 1b (User Property param-as-middleware) is IN
    SCOPE for this doc, as an explicit sub-phase, not deferred to a
    separate roadmap doc.** The confirmed `render/asyncapi/v3` "no message
@@ -1320,12 +1525,15 @@ end**:
    early, while the surface area is still small. (Ships AFTER Phase
    0/0b now, not before — the delivery ORDER changed, not Phase 1's own
    design.)
-2. **Phase 1b ships and is verified alone** next — its `render/asyncapi/v3`
-   change is a genuinely separate subsystem (spec rendering, not
-   dispatch) with its own failure mode (a malformed AsyncAPI document,
-   not a runtime panic) — verify the rendered spec against a real
-   AsyncAPI validator/schema if one is available in this repo's tooling,
-   not just "it doesn't error."
+2. **SHIPPED — Phase 1b shipped and verified alone next**, as planned:
+   its `render/asyncapi/v3` change is a genuinely separate subsystem
+   (spec rendering, not dispatch) — verified by printing the real
+   rendered spec in `examples/reqreply-api`'s Demo 7 and visually
+   confirming BOTH the request and reply channel's `headers` schema
+   (`X-API-Key`/`X-Trace-Id` properties, `required` list) match the
+   AsyncAPI 3.0 Message Object shape, not just "it doesn't error." Full
+   verification battery (`gofmt`/`go build`/`go vet`/`go test -race`/
+   `just check`/all examples) — all clean, same as every prior phase.
 3. ~~Migrate `examples/reqreply-api`'s Demo 2/3 off the escape hatch as
    PART OF Phase 0b~~ **MOOT — no migration needed.** Phase 0b's actual
    outcome (delegation, not deletion) means Demo 2/3 needed ZERO code

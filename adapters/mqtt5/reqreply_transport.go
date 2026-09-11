@@ -10,6 +10,7 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
@@ -262,7 +263,34 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 	// error) (ErrorPatternResponse, bool, error) — closes Phase 0 work item 3.
 	errorResponseForMethod := rv.MethodByName("ErrorResponseFor")
 
-	t.router.RegisterHandler(path, func(msg *pahomqtt5.Publish) {
+	// Phase 1: declarative middleware (docs/roadmap/reqreply-middleware.md).
+	// impls are the [reqreply.Route.HandleMW]-attached implementations —
+	// validated for shape EAGERLY (once, at Serve construction time, not
+	// per message) and coverage-checked against the route's declared
+	// security requirements, mirroring adapters/nethttp's identical
+	// build-time checks.
+	impls, _ := elem.FieldByName("Implementations").Interface().([]middleware.ServerImplementation)
+	if err := validateServerImplementationShapes(path, impls); err != nil {
+		return err
+	}
+	coverageReqs, _, _ := effectiveSecurity(elem)
+	if err := reqreply.CheckCoverage(path, coverageReqs, impls); err != nil {
+		return err
+	}
+
+	// Phase 1b: header-param-as-middleware (docs/roadmap/reqreply-
+	// middleware.md). requestHeaderParams are declared via [reqreply.
+	// Route.Use]/[FromUserPropertyParam] — validated against the real
+	// incoming message's User Properties, ADDITIVELY alongside the OLD
+	// [ServeOptions.UserPropertyParams] escape hatch (unchanged, checked
+	// separately inside baseHandler below). Reuses the SAME
+	// [validateUserProperties]/[MissingUserPropertyError]/
+	// [UserPropertyError] machinery the old mechanism already uses — the
+	// failure MODE is identical, only the attachment surface differs.
+	requestHeaderSpecs, _ := elem.FieldByName("RequestHeaderParams").Interface().([]middleware.HeaderParamSpec)
+	requestHeaderParams := userPropertyParamsFromHeaderSpecs(requestHeaderSpecs)
+
+	baseHandler := func(msg *pahomqtt5.Publish) {
 		start := time.Now()
 		msgCtx := context.WithValue(ctx, contextKey{}, msg)
 
@@ -290,6 +318,16 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 		}
 
 		if propErr := validateUserProperties(msg, t.opts.UserPropertyParams); propErr != nil {
+			obs.RecordValidationError("user_property", stats.ConstraintName(propErr), userPropertyName(propErr))
+			serveErr = propErr
+			obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
+			publishErrorReply(spanCtx, t.client, responseTopic, correlationData, propErr)
+			if t.opts.OnError != nil {
+				t.opts.OnError(ServeError{Kind: KindSecurity, Err: propErr})
+			}
+			return
+		}
+		if propErr := validateUserProperties(msg, requestHeaderParams); propErr != nil {
 			obs.RecordValidationError("user_property", stats.ConstraintName(propErr), userPropertyName(propErr))
 			serveErr = propErr
 			obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
@@ -367,21 +405,25 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 				}
 				return
 			}
-			if t.opts.SecurityFunc != nil {
-				if err := t.opts.SecurityFunc(msgCtx, msg, secReqs); err != nil {
-					if secObs, ok := obs.(stats.SecurityObserver); ok {
-						secObs.RecordSecurityRejection(path, firstScheme(secReqs))
-					}
-					wrapped := reqreply.SecurityError{Err: err}
-					serveErr = wrapped
-					obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-					publishErrorReply(spanCtx, t.client, responseTopic, correlationData, wrapped)
-					if t.opts.OnError != nil {
-						t.opts.OnError(ServeError{Kind: KindSecurity, Err: wrapped})
-					}
-					return
-				}
+		}
+		// runServerSecurityMiddleware runs UNCONDITIONALLY (not gated on
+		// len(secReqs)>0) — an implementation with an EMPTY Satisfies is a
+		// general-purpose presence/format check that always runs,
+		// mirrors adapters/nethttp's identical "runSecurityMiddlewareReflect
+		// runs regardless of secReqs" structure exactly. Replaces the OLD
+		// ServeOptions.SecurityFunc call (Phase 1, breaking removal).
+		if err := runServerSecurityMiddleware(msgCtx, msg, impls, secReqs); err != nil {
+			if secObs, ok := obs.(stats.SecurityObserver); ok {
+				secObs.RecordSecurityRejection(path, firstScheme(secReqs))
 			}
+			wrapped := reqreply.SecurityError{Err: err}
+			serveErr = wrapped
+			obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
+			publishErrorReply(spanCtx, t.client, responseTopic, correlationData, wrapped)
+			if t.opts.OnError != nil {
+				t.opts.OnError(ServeError{Kind: KindSecurity, Err: wrapped})
+			}
+			return
 		}
 
 		fnResults := fnVal.Call([]reflect.Value{reflect.ValueOf(spanCtx), reqVal})
@@ -431,7 +473,12 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 			}
 		}
 		obs.RecordRequest("MQTT5-REP", path, 200, time.Since(start))
-	})
+	}
+
+	// applyGeneralServerMiddleware wraps baseHandler with every
+	// general-purpose (unpaired) HandleMW implementation, OUTERMOST-in —
+	// mirrors adapters/nethttp's applyGeneralMiddleware exactly.
+	t.router.RegisterHandler(path, applyGeneralServerMiddleware(baseHandler, impls))
 
 	if _, err := t.client.Subscribe(ctx, &pahomqtt5.Subscribe{
 		Subscriptions: []pahomqtt5.SubscribeOptions{{Topic: path, QoS: 1}},
@@ -667,81 +714,154 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 	}
 	defer cleanup()
 
-	// EncodeRequestWithFormats honors the per-call override (falling back
-	// to route-declared RequestFormats, then plain EncodeRequest) — closes
-	// Phase 0 work item 2 (client-side).
-	encodeResults := rv.MethodByName("EncodeRequestWithFormats").CallSlice([]reflect.Value{reqVal, requestFormatsOverride})
-	if errI, _ := encodeResults[1].Interface().(error); errI != nil {
-		stats.ReportErrors(obs, "body", errI)
+	// Phase 1: declarative middleware (docs/roadmap/reqreply-middleware.md).
+	// clientImpls are the [reqreply.Route.ClientMW]-attached
+	// implementations — validated for shape EAGERLY, mirroring
+	// adapters/nethttp's validateCallImplementationShapes. respType/
+	// wantGeneralFnType let this reflection-only dispatcher recognize the
+	// SAME general-purpose decorator shape
+	// (func(next func(ctx,Req)(Resp,error)) func(ctx,Req)(Resp,error))
+	// used elsewhere in the codebase, without knowing Req/Resp at compile
+	// time.
+	clientImpls, _ := elem.FieldByName("ClientImplementations").Interface().([]middleware.ClientImplementation)
+	respType := elem.FieldByName("DecodeResponse").Type().Out(0)
+	wantGeneralFnType := reflect.FuncOf(
+		[]reflect.Type{reflect.TypeOf((*context.Context)(nil)).Elem(), reqType},
+		[]reflect.Type{respType, reflect.TypeOf((*error)(nil)).Elem()},
+		false,
+	)
+	// wantGeneralDecoratorFnType is the DECORATOR shape ClientMW's
+	// general-purpose Fn actually has — func(next func(ctx,Req)(Resp,error))
+	// func(ctx,Req)(Resp,error) — distinct from wantGeneralFnType (the
+	// INNER shape the decorator wraps/produces).
+	wantGeneralDecoratorFnType := reflect.FuncOf([]reflect.Type{wantGeneralFnType}, []reflect.Type{wantGeneralFnType}, false)
+	if err := validateClientImplementationShapes(clientImpls, wantGeneralDecoratorFnType); err != nil {
 		obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
-		return nil, CallError{Kind: KindEncode, Err: errI}
-	}
-	payload, _ := encodeResults[0].Interface().([]byte)
-
-	secReqs, schemeTypes, schemeCodecs := effectiveSecurity(elem)
-	userProps := append(pahomqtt5.UserProperties(nil), t.opts.UserProperties...)
-	var credProps []UserProperty
-	if len(secReqs) > 0 && t.opts.CredentialFunc != nil {
-		var credErr error
-		credProps, credErr = t.opts.CredentialFunc(ctx, secReqs)
-		if credErr != nil {
-			obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
-			return nil, credErr
-		}
-		userProps = append(userProps, credProps...)
-	}
-	if len(secReqs) > 0 && credProps != nil {
-		if name, credErr := validateSecurityCredentials(userProps, secReqs, schemeTypes, schemeCodecs); credErr != nil {
-			if secObs, ok := obs.(stats.SecurityObserver); ok {
-				secObs.RecordSecurityRejection(path, firstScheme(secReqs))
-			}
-			obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
-			return nil, reqreply.SecurityCredentialError{Scheme: name, Err: credErr}
-		}
+		return nil, err
 	}
 
-	reqProps := &pahomqtt5.PublishProperties{ResponseTopic: replyTopic, CorrelationData: corrData}
-	if len(userProps) > 0 {
-		reqProps.User = userProps
-	}
-	if _, err := t.client.Publish(ctx, &pahomqtt5.Publish{
-		Topic:      path,
-		QoS:        qos,
-		Payload:    payload,
-		Properties: reqProps,
-	}); err != nil {
-		obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
-		return nil, CallError{Kind: KindEncode, Err: fmt.Errorf("publish request: %w", err)}
-	}
+	// Phase 1b: header-param-as-middleware (docs/roadmap/reqreply-
+	// middleware.md) — reply/response-side. responseHeaderParams are
+	// declared via [reqreply.Route.Use]/[FromResponseUserPropertyParam],
+	// validated against the reply message's User Properties inside
+	// innerCall below, reusing the SAME [validateUserProperties]
+	// machinery the request side (and the OLD escape hatch) already use.
+	responseHeaderSpecs, _ := elem.FieldByName("ResponseHeaderParams").Interface().([]middleware.ResponseHeaderParamSpec)
+	responseHeaderParams := userPropertyParamsFromResponseHeaderSpecs(responseHeaderSpecs)
 
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
+	// innerCall is the "encode → security/credential → publish → await
+	// reply → decode" sequence, wrapped via [reflect.MakeFunc] into a
+	// concretely-typed func(context.Context, Req) (Resp, error) value so
+	// every attached general-purpose ClientMW decorator (itself a real,
+	// concretely-typed Go closure) can wrap it — mirrors
+	// adapters/nethttp's wrapCallGeneral, adapted to this
+	// reflection-based dispatcher's type-erased Req/Resp.
+	innerCall := reflect.MakeFunc(wantGeneralFnType, func(args []reflect.Value) []reflect.Value {
+		innerReqVal := args[1]
+		zeroResp := reflect.Zero(respType)
+		errType := reflect.TypeOf((*error)(nil)).Elem()
 
-	select {
-	case <-ctx.Done():
-		obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
-		return nil, CallError{Kind: KindTimeout, Err: ctx.Err()}
-	case <-timer.C:
-		obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
-		return nil, CallError{Kind: KindTimeout, Err: fmt.Errorf("no reply within %s", timeout)}
-	case replyMsg := <-replyCh:
-		if isErrorReply(replyMsg) {
-			obs.RecordRequest("MQTT5-REQ", path, 500, time.Since(start))
-			return nil, CallError{Kind: KindHandler, Err: fmt.Errorf("server error: %s", replyMsg.Payload)}
-		}
-		// DecodeResponseWithFormats honors the per-call override (falling
-		// back to route-declared Formats, then plain DecodeResponse) —
-		// closes the response-direction half of Phase 0 work item 2
-		// (client-side).
-		decodeResults := rv.MethodByName("DecodeResponseWithFormats").CallSlice([]reflect.Value{reflect.ValueOf(replyMsg.Payload), responseFormatsOverride})
-		if errI, _ := decodeResults[1].Interface().(error); errI != nil {
+		// EncodeRequestWithFormats honors the per-call override (falling
+		// back to route-declared RequestFormats, then plain
+		// EncodeRequest) — closes Phase 0 work item 2 (client-side).
+		encodeResults := rv.MethodByName("EncodeRequestWithFormats").CallSlice([]reflect.Value{innerReqVal, requestFormatsOverride})
+		if errI, _ := encodeResults[1].Interface().(error); errI != nil {
 			stats.ReportErrors(obs, "body", errI)
 			obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
-			return nil, CallError{Kind: KindDecode, Err: fmt.Errorf("decode response: %w", errI)}
+			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Kind: KindEncode, Err: errI}).Convert(errType)}
 		}
-		obs.RecordRequest("MQTT5-REQ", path, 200, time.Since(start))
-		return decodeResults[0].Interface(), nil
+		payload, _ := encodeResults[0].Interface().([]byte)
+
+		secReqs, schemeTypes, schemeCodecs := effectiveSecurity(elem)
+		userProps := append(pahomqtt5.UserProperties(nil), t.opts.UserProperties...)
+		// mergeCredentialUserProperties runs every attached PAIRED
+		// credential-supplying ClientMW implementation, merging their
+		// returned User Properties — replaces the OLD
+		// CallOptions.CredentialFunc call (Phase 1, breaking removal).
+		credProps, ran, credErr := mergeCredentialUserProperties(ctx, secReqs, clientImpls)
+		if credErr != nil {
+			obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
+			return []reflect.Value{zeroResp, reflect.ValueOf(credErr).Convert(errType)}
+		}
+		userProps = append(userProps, credProps...)
+		if len(secReqs) > 0 && ran {
+			if name, credErr := validateSecurityCredentials(userProps, secReqs, schemeTypes, schemeCodecs); credErr != nil {
+				if secObs, ok := obs.(stats.SecurityObserver); ok {
+					secObs.RecordSecurityRejection(path, firstScheme(secReqs))
+				}
+				wrapped := reqreply.SecurityCredentialError{Scheme: name, Err: credErr}
+				obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
+				return []reflect.Value{zeroResp, reflect.ValueOf(wrapped).Convert(errType)}
+			}
+		}
+
+		reqProps := &pahomqtt5.PublishProperties{ResponseTopic: replyTopic, CorrelationData: corrData}
+		if len(userProps) > 0 {
+			reqProps.User = userProps
+		}
+		if _, err := t.client.Publish(ctx, &pahomqtt5.Publish{
+			Topic:      path,
+			QoS:        qos,
+			Payload:    payload,
+			Properties: reqProps,
+		}); err != nil {
+			obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
+			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Kind: KindEncode, Err: fmt.Errorf("publish request: %w", err)}).Convert(errType)}
+		}
+
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+
+		select {
+		case <-ctx.Done():
+			obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
+			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Kind: KindTimeout, Err: ctx.Err()}).Convert(errType)}
+		case <-timer.C:
+			obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
+			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Kind: KindTimeout, Err: fmt.Errorf("no reply within %s", timeout)}).Convert(errType)}
+		case replyMsg := <-replyCh:
+			if isErrorReply(replyMsg) {
+				obs.RecordRequest("MQTT5-REQ", path, 500, time.Since(start))
+				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Kind: KindHandler, Err: fmt.Errorf("server error: %s", replyMsg.Payload)}).Convert(errType)}
+			}
+			if propErr := validateUserProperties(replyMsg, responseHeaderParams); propErr != nil {
+				obs.RecordValidationError("user_property", stats.ConstraintName(propErr), userPropertyName(propErr))
+				obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
+				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Kind: KindSecurity, Err: propErr}).Convert(errType)}
+			}
+			// DecodeResponseWithFormats honors the per-call override
+			// (falling back to route-declared Formats, then plain
+			// DecodeResponse) — closes the response-direction half of
+			// Phase 0 work item 2 (client-side).
+			decodeResults := rv.MethodByName("DecodeResponseWithFormats").CallSlice([]reflect.Value{reflect.ValueOf(replyMsg.Payload), responseFormatsOverride})
+			if errI, _ := decodeResults[1].Interface().(error); errI != nil {
+				stats.ReportErrors(obs, "body", errI)
+				obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
+				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Kind: KindDecode, Err: fmt.Errorf("decode response: %w", errI)}).Convert(errType)}
+			}
+			obs.RecordRequest("MQTT5-REQ", path, 200, time.Since(start))
+			return []reflect.Value{decodeResults[0], reflect.Zero(errType)}
+		}
+	})
+
+	// applyGeneralClientMiddleware wraps innerCall with every
+	// general-purpose ClientMW implementation, OUTERMOST-in — mirrors
+	// adapters/nethttp's wrapCallGeneral exactly, reflection-based since
+	// Req/Resp are erased at this dispatcher's call site.
+	wrappedCall := innerCall
+	for i := len(clientImpls) - 1; i >= 0; i-- {
+		fnVal := reflect.ValueOf(clientImpls[i].Fn)
+		if !fnVal.IsValid() || fnVal.Type() != wantGeneralDecoratorFnType {
+			continue
+		}
+		wrappedCall = fnVal.Call([]reflect.Value{wrappedCall})[0]
 	}
+
+	finalResults := wrappedCall.Call([]reflect.Value{reflect.ValueOf(ctx), reqVal})
+	if errI, _ := finalResults[1].Interface().(error); errI != nil {
+		return nil, errI
+	}
+	return finalResults[0].Interface(), nil
 }
 
 // CallAsync implements [reqreply.ClientTransport]. Non-blocking
@@ -774,3 +894,260 @@ func (t *clientTransport) CallAsync(ctx context.Context, routeAny any, reqAny an
 }
 
 var _ reqreply.ClientTransport = (*clientTransport)(nil)
+
+// ── Phase 1: declarative middleware (docs/roadmap/reqreply-middleware.md) ──
+//
+// Fn-shape dispatch for [reqreply.Route.HandleMW]/[reqreply.Route.ClientMW]
+// implementations, mirroring [adapters/nethttp]'s identical mechanism
+// (server-side scope-grant security + general-purpose decorators;
+// client-side credential-supply + general-purpose decorators) — folded
+// into this file (not a separate "reqreply_middleware.go") to match
+// [adapters/nethttp]'s own file-layout convention: its equivalent
+// dispatch code (`validateImplementationShapesReflect`/
+// `runSecurityMiddlewareReflect`/`applyGeneralMiddleware` server-side,
+// `validateCallImplementationShapes`/`wrapCallGeneral`/
+// `mergeCredentialHeaders` client-side) lives inline in `serve.go`/
+// `client.go`, not a dedicated middleware file.
+//
+// mqtt5's OLD `ServeOptions.SecurityFunc`/`CallOptions.CredentialFunc`
+// fields are REMOVED entirely (a breaking change, confirmed intentional —
+// mirrors REST's own D-0001 precedent, reversing this doc's earlier
+// Decision #4 which had followed events pub/sub's "keep both forever"
+// precedent instead). `handle.Implementations`/`ClientImplementations`
+// are now the ONLY mechanism, consulted by BOTH the escape hatch
+// (`Serve`/`Call`/`CallHandle`, which delegate to these same transports
+// since Phase 0b) and `Attach`-based dispatch — exactly one path, not two.
+
+// serverSecurityFnType is the PAIRED server-side security Fn shape:
+// verifies credentials (already codec-format-validated by
+// validateSecurityCredentials before this runs) and returns a scope-grant
+// map, combined across every attached paired implementation via
+// [middleware.CheckScopes] — mirrors [adapters/nethttp]'s identical
+// scope-grant model (Decision #4 of docs/roadmap/reqreply-middleware.md),
+// NOT zeromq's own in-payload *Req shape (each transport adapter mirrors
+// its OWN precedent, an intentional per-adapter difference, not an
+// inconsistency).
+var serverSecurityFnType = reflect.TypeOf((func(context.Context, *pahomqtt5.Publish, []route.SecurityRequirement) (map[string][]string, error))(nil))
+
+// serverGeneralFnType is the UNPAIRED, general-purpose server-side
+// decorator shape — wraps the per-message dispatch closure itself,
+// mirroring [adapters/nethttp]'s func(http.Handler) http.Handler
+// decorator exactly, adapted to mqtt5's per-message handler shape.
+var serverGeneralFnType = reflect.TypeOf((func(func(*pahomqtt5.Publish)) func(*pahomqtt5.Publish))(nil))
+
+// validateServerImplementationShapes checks every attached impl.Fn against
+// the two concrete shapes this package recognizes, EAGERLY at Serve
+// construction time (once per route, not per message) — a malformed Fn
+// fails loudly and immediately, mirroring
+// [adapters/nethttp]'s validateImplementationShapesReflect.
+func validateServerImplementationShapes(routeLabel string, impls []middleware.ServerImplementation) error {
+	for _, impl := range impls {
+		if impl.Fn == nil {
+			continue
+		}
+		fnType := reflect.TypeOf(impl.Fn)
+		if fnType == serverSecurityFnType || fnType == serverGeneralFnType {
+			continue
+		}
+		return middleware.MiddlewareShapeError{
+			Name:     impl.Name,
+			Expected: "func(context.Context, *pahomqtt5.Publish, []route.SecurityRequirement) (map[string][]string, error) or func(func(*pahomqtt5.Publish)) func(*pahomqtt5.Publish)",
+			Got:      fmt.Sprintf("%T", impl.Fn),
+		}
+	}
+	return nil
+}
+
+// applyGeneralServerMiddleware wraps h with every general-purpose Fn found
+// in impls, OUTERMOST-in, in attachment order — mirrors
+// [adapters/nethttp]'s applyGeneralMiddleware exactly, adapted to mqtt5's
+// per-message handler shape.
+func applyGeneralServerMiddleware(h func(*pahomqtt5.Publish), impls []middleware.ServerImplementation) func(*pahomqtt5.Publish) {
+	for i := len(impls) - 1; i >= 0; i-- {
+		fn, ok := impls[i].Fn.(func(func(*pahomqtt5.Publish)) func(*pahomqtt5.Publish))
+		if !ok {
+			continue
+		}
+		h = fn(h)
+	}
+	return h
+}
+
+// runServerSecurityMiddleware runs every attached paired security Fn IN
+// ATTACHMENT ORDER (fail-fast on the first one whose OWN verification
+// errors), merges their returned grants into ONE map, then performs a
+// SINGLE [middleware.CheckScopes] call — mirrors
+// [adapters/nethttp]'s runSecurityMiddleware exactly. An implementation
+// with an EMPTY Satisfies always runs; a NON-EMPTY Satisfies only runs
+// when secReqs is non-empty (mirrors REST's identical gating rationale:
+// an unsecured route must not authenticate credentials it never asked
+// for).
+func runServerSecurityMiddleware(ctx context.Context, msg *pahomqtt5.Publish, impls []middleware.ServerImplementation, secReqs []route.SecurityRequirement) error {
+	granted := make(map[string][]string)
+	for _, impl := range impls {
+		fn, ok := impl.Fn.(func(context.Context, *pahomqtt5.Publish, []route.SecurityRequirement) (map[string][]string, error))
+		if !ok {
+			continue
+		}
+		if len(impl.Satisfies) > 0 && len(secReqs) == 0 {
+			continue
+		}
+		g, err := fn(ctx, msg, secReqs)
+		if err != nil {
+			return err
+		}
+		for k, v := range g {
+			granted[k] = v
+		}
+	}
+	return middleware.CheckScopes(secReqs, granted)
+}
+
+// clientCredentialFnType is the PAIRED client-side credential-supplying Fn
+// shape — REPLACES the old `CallOptions.CredentialFunc`'s role and shape
+// exactly (same parameters, same return type: `[]UserProperty, error`),
+// now attached via [reqreply.Route.ClientMW] instead of a per-Attach
+// Options field.
+var clientCredentialFnType = reflect.TypeOf((func(context.Context, []route.SecurityRequirement) ([]UserProperty, error))(nil))
+
+// validateClientImplementationShapes checks every attached impl.Fn against
+// the two concrete shapes this package recognizes client-side, EAGERLY
+// before any network activity — mirrors
+// [adapters/nethttp]'s validateCallImplementationShapes. generalFnType is
+// built by the caller (reflect-only, since Req/Resp are erased at this
+// dispatcher's call site).
+func validateClientImplementationShapes(impls []middleware.ClientImplementation, generalFnType reflect.Type) error {
+	for _, impl := range impls {
+		if impl.Fn == nil {
+			continue
+		}
+		fnType := reflect.TypeOf(impl.Fn)
+		if fnType == clientCredentialFnType || fnType == generalFnType {
+			continue
+		}
+		return middleware.MiddlewareShapeError{
+			Name:     impl.Name,
+			Expected: fmt.Sprintf("func(context.Context, []route.SecurityRequirement) ([]mqtt5.UserProperty, error) or %s", generalFnType),
+			Got:      fmt.Sprintf("%T", impl.Fn),
+		}
+	}
+	return nil
+}
+
+// mergeCredentialUserProperties runs every attached credential-providing
+// Fn IN ATTACHMENT ORDER, merging their returned []UserProperty values
+// into ONE combined slice — mirrors [adapters/nethttp]'s
+// mergeCredentialHeaders exactly (a MERGE, not an authorization check;
+// the client never judges its own authorization, only the server does).
+// GATED by Satisfies vs secReqs, the SAME correctness rule
+// mergeCredentialHeaders applies.
+func mergeCredentialUserProperties(ctx context.Context, secReqs []route.SecurityRequirement, impls []middleware.ClientImplementation) (combined []UserProperty, ran bool, err error) {
+	reqSchemes := make(map[string]bool, len(secReqs))
+	for _, req := range secReqs {
+		for scheme := range req {
+			reqSchemes[scheme] = true
+		}
+	}
+	for _, impl := range impls {
+		fn, ok := impl.Fn.(func(context.Context, []route.SecurityRequirement) ([]UserProperty, error))
+		if !ok {
+			continue
+		}
+		if len(impl.Satisfies) > 0 {
+			matched := false
+			for _, s := range impl.Satisfies {
+				if reqSchemes[s] {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
+		}
+		ran = true
+		props, ferr := fn(ctx, secReqs)
+		if ferr != nil {
+			return nil, ran, ferr
+		}
+		combined = append(combined, props...)
+	}
+	return combined, ran, nil
+}
+
+// userPropertyParamsFromHeaderSpecs converts declared
+// [middleware.HeaderParamSpec] values (attached via [reqreply.Route.Use]/
+// [FromUserPropertyParam]) back into [UserPropertyParam] values —
+// field-for-field identical shapes (Name, Description, Required, Codec
+// *codex.Codec[string]) — so [validateUserProperties] can be reused
+// unchanged for Phase 1b's new request-side attachment surface.
+func userPropertyParamsFromHeaderSpecs(specs []middleware.HeaderParamSpec) []UserPropertyParam {
+	if len(specs) == 0 {
+		return nil
+	}
+	out := make([]UserPropertyParam, len(specs))
+	for i, s := range specs {
+		out[i] = UserPropertyParam{Name: s.Name, Description: s.Description, Required: s.Required, Codec: s.Codec}
+	}
+	return out
+}
+
+// userPropertyParamsFromResponseHeaderSpecs is
+// [userPropertyParamsFromHeaderSpecs]'s reply/response-side sibling —
+// converts [middleware.ResponseHeaderParamSpec] values (attached via
+// [FromResponseUserPropertyParam]) into [UserPropertyParam] values for
+// [AttachClient]'s reply-message validation.
+func userPropertyParamsFromResponseHeaderSpecs(specs []middleware.ResponseHeaderParamSpec) []UserPropertyParam {
+	if len(specs) == 0 {
+		return nil
+	}
+	out := make([]UserPropertyParam, len(specs))
+	for i, s := range specs {
+		out[i] = UserPropertyParam{Name: s.Name, Description: s.Description, Required: s.Required, Codec: s.Codec}
+	}
+	return out
+}
+
+// FromUserPropertyParam bridges an EXISTING [UserPropertyParam] value
+// into a real [middleware.Middleware], usable with [reqreply.Route.Use]
+// exactly like one built from scratch — Phase 1b of
+// docs/roadmap/reqreply-middleware.md, mirroring [rest.FromHeaderParam]'s
+// "wrap what you already have" pattern. Populates
+// [middleware.Middleware.RequestHeaderParams] — consulted by
+// [reqreply.Route.Register] (rendered into the request message's
+// AsyncAPI "headers" schema) AND by this package's own [AttachServer]
+// (validated against the real incoming *pahomqtt5.Publish's User
+// Properties, additively alongside [ServeOptions.UserPropertyParams],
+// which remains unchanged).
+//
+// Lives in adapters/mqtt5, NOT middleware/api/reqreply — the same
+// import-direction reason [rest.FromHeaderParam] lives in api/rest:
+// neither middleware nor api/reqreply may import an adapter package, and
+// [UserPropertyParam] is an mqtt5-adapter-specific type.
+//
+//	var authProp = mqtt5.UserPropertyParam{Name: "Authorization", Required: true}
+//
+//	route := reqreply.NewRoute[Req, Resp]("compute/add", reqCodec, respCodec,
+//	).Use(mqtt5.FromUserPropertyParam(authProp))
+func FromUserPropertyParam(p UserPropertyParam) middleware.Middleware {
+	return middleware.Middleware{
+		Name: "declare-user-property-param:" + p.Name,
+		RequestHeaderParams: []middleware.HeaderParamSpec{
+			{Name: p.Name, Description: p.Description, Required: p.Required, Codec: p.Codec},
+		},
+	}
+}
+
+// FromResponseUserPropertyParam is [FromUserPropertyParam]'s reply/
+// response-side sibling — populates
+// [middleware.Middleware.ResponseHeaderParams], rendered into the reply
+// message's AsyncAPI "headers" schema and validated by this package's
+// [AttachClient] against the reply message's User Properties.
+func FromResponseUserPropertyParam(p UserPropertyParam) middleware.Middleware {
+	return middleware.Middleware{
+		Name: "declare-response-user-property-param:" + p.Name,
+		ResponseHeaderParams: []middleware.ResponseHeaderParamSpec{
+			{Name: p.Name, Description: p.Description, Required: p.Required, Codec: p.Codec},
+		},
+	}
+}

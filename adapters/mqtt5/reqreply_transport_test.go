@@ -11,6 +11,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/validate"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
@@ -106,14 +107,31 @@ func TestAttachClient_DualMode_GlobalSecurity(t *testing.T) {
 	handler := func(ctx context.Context, req computeReq) (computeResp, error) {
 		return computeResp{Sum: req.X + req.Y}, nil
 	}
-	securedRoute := reqreply.NewRoute[computeReq, computeResp](
+	// bearerMw declares the "bearer" scheme via .Use() (Phase 1 of
+	// docs/roadmap/reqreply-middleware.md) — REPLACES the OLD manual
+	// WithSecurityScheme declaration, which cannot be paired against a
+	// HandleMW/ClientMW implementation.
+	bearerCodec := codex.String().Refine(validate.NonEmptyString)
+	bearerMw := middleware.SecurityScheme("bearer", route.BearerScheme("JWT"), nil, &bearerCodec)
+	acceptingImpl := func(context.Context, *pahomqtt5.Publish, []route.SecurityRequirement) (map[string][]string, error) {
+		return map[string][]string{"bearer": nil}, nil
+	}
+	// pristineRoute (never .Use()'d) is used for the raw-Route dual-mode
+	// call below — GlobalSecurity stays invisible to it, unaffected by
+	// the SEPARATE registeredVariant's own .Use() declaration (Route is
+	// immutable; .Use() returns a NEW value).
+	pristineRoute := reqreply.NewRoute[computeReq, computeResp](
 		"compute/add-secured-attach",
 		computeReqCodec, computeRespCodec,
 		reqreply.RouteMeta{OperationID: "computeSecuredAttach"},
-		reqreply.WithSecurityScheme("bearer", reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.
-			WithCodec(codex.String().Refine(validate.NonEmptyString))),
 	)
-	handle, err := securedRoute.WithHandler(handler).Register(server)
+	registeredVariant := pristineRoute.
+		Use(bearerMw).
+		HandleMW(&bearerMw, acceptingImpl).
+		ClientMW(&bearerMw, func(context.Context, []route.SecurityRequirement) ([]UserProperty, error) {
+			return []UserProperty{{Key: "Authorization", Value: "******"}}, nil
+		})
+	handle, err := registeredVariant.WithHandler(handler).Register(server)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -140,9 +158,10 @@ func TestAttachClient_DualMode_GlobalSecurity(t *testing.T) {
 	wireBrokers(t, serverClient, clientRouter)
 	wireBrokers(t, clientClient, serverRouter)
 
-	// Raw, unregistered Route — GlobalSecurity is invisible (ClientHandle()
-	// sources no Server) — no credential attached, server rejects.
-	_, err = client.Call(context.Background(), securedRoute, computeReq{X: 1, Y: 1})
+	// Raw, unregistered pristineRoute — GlobalSecurity is invisible
+	// (ClientHandle() sources no Server, and pristineRoute was never
+	// .Use()'d) — no credential attached, server rejects.
+	_, err = client.Call(context.Background(), pristineRoute, computeReq{X: 1, Y: 1})
 	if err == nil {
 		t.Fatalf("Call with raw Route (no credential) succeeded, want a security rejection")
 	}
@@ -152,16 +171,14 @@ func TestAttachClient_DualMode_GlobalSecurity(t *testing.T) {
 		t.Fatalf("Call error = %v (%T), want a security-related error", err, err)
 	}
 
-	// Already-registered *RouteHandle, WITH a credential — GlobalSecurity
-	// enforced and satisfied.
+	// Already-registered *RouteHandle — its ClientImplementations
+	// (populated by the SAME .ClientMW() call chained above, before
+	// Register) supplies the credential declaratively, no CallOptions
+	// needed at Attach time at all.
 	client2 := reqreply.NewClient()
 	clientClient2 := &mockClient{}
 	clientRouter2 := newMockRouter()
-	if err := AttachClient(client2, clientClient2, clientRouter2, CallOptions{
-		CredentialFunc: func(ctx context.Context, reqs []route.SecurityRequirement) ([]UserProperty, error) {
-			return []UserProperty{{Key: "Authorization", Value: "Bearer valid-token"}}, nil
-		},
-	}); err != nil {
+	if err := AttachClient(client2, clientClient2, clientRouter2); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 	wireBrokers(t, clientClient2, serverRouter)
@@ -607,5 +624,252 @@ func TestAttachClient_CallAsync_AppliesClientCallOptions(t *testing.T) {
 	}
 	if resp.Sum != 11 {
 		t.Fatalf("resp.Sum = %d, want 11 (decoded via ResponseFormats override, applied through CallAsync)", resp.Sum)
+	}
+}
+
+// ── Phase 1: declarative middleware (docs/roadmap/reqreply-middleware.md) ──
+
+// TestAttachServer_HandleMW_GeneralPurpose_AlwaysRuns confirms an
+// UNPAIRED (Satisfies-empty) HandleMW decorator runs unconditionally,
+// regardless of whether the route declares any security.
+func TestAttachServer_HandleMW_GeneralPurpose_AlwaysRuns(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	var ran bool
+	generalMw := func(next func(*pahomqtt5.Publish)) func(*pahomqtt5.Publish) {
+		return func(msg *pahomqtt5.Publish) {
+			ran = true
+			next(msg)
+		}
+	}
+	route := reqreply.NewRoute[computeReq, computeResp]("compute/general-mw", computeReqCodec, computeRespCodec).
+		HandleMW(nil, generalMw)
+	handler := func(_ context.Context, req computeReq) (computeResp, error) {
+		return computeResp{Sum: req.X + req.Y}, nil
+	}
+	if _, err := route.WithHandler(handler).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	serverClient := &mockClient{}
+	serverRouter := newMockRouter()
+	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	go func() { _ = server.Serve(ctx) }()
+	serverRouter.waitHandler("compute/general-mw")
+
+	serverRouter.dispatch("compute/general-mw", &pahomqtt5.Publish{
+		Topic:   "compute/general-mw",
+		Payload: []byte(validComputeJSON),
+		Properties: &pahomqtt5.PublishProperties{
+			ResponseTopic:   "replies/client-1",
+			CorrelationData: []byte("corr-general-mw"),
+		},
+	})
+	time.Sleep(50 * time.Millisecond)
+
+	if !ran {
+		t.Fatal("want general-purpose HandleMW(nil, ...) to run unconditionally")
+	}
+}
+
+// TestAttachServer_MultipleGeneralPurposeHandleMW_ComposeOutermostIn is a
+// direct regression test proving TWO general-purpose HandleMW
+// decorators attached to the SAME route compose in the CORRECT
+// outermost-in order (the first attached runs first and returns last).
+func TestAttachServer_MultipleGeneralPurposeHandleMW_ComposeOutermostIn(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	var order []string
+	outerMw := func(next func(*pahomqtt5.Publish)) func(*pahomqtt5.Publish) {
+		return func(msg *pahomqtt5.Publish) {
+			order = append(order, "outer-in")
+			next(msg)
+			order = append(order, "outer-out")
+		}
+	}
+	innerMw := func(next func(*pahomqtt5.Publish)) func(*pahomqtt5.Publish) {
+		return func(msg *pahomqtt5.Publish) {
+			order = append(order, "inner-in")
+			next(msg)
+			order = append(order, "inner-out")
+		}
+	}
+	route := reqreply.NewRoute[computeReq, computeResp]("compute/multi-general-mw", computeReqCodec, computeRespCodec).
+		HandleMW(nil, outerMw).
+		HandleMW(nil, innerMw)
+	handler := func(_ context.Context, req computeReq) (computeResp, error) {
+		return computeResp{Sum: req.X + req.Y}, nil
+	}
+	if _, err := route.WithHandler(handler).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	serverClient := &mockClient{}
+	serverRouter := newMockRouter()
+	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	go func() { _ = server.Serve(ctx) }()
+	serverRouter.waitHandler("compute/multi-general-mw")
+
+	serverRouter.dispatch("compute/multi-general-mw", &pahomqtt5.Publish{
+		Topic:   "compute/multi-general-mw",
+		Payload: []byte(validComputeJSON),
+		Properties: &pahomqtt5.PublishProperties{
+			ResponseTopic:   "replies/client-1",
+			CorrelationData: []byte("corr-multi-general-mw"),
+		},
+	})
+	time.Sleep(50 * time.Millisecond)
+
+	want := []string{"outer-in", "inner-in", "inner-out", "outer-out"}
+	if len(order) != len(want) {
+		t.Fatalf("order = %v, want %v", order, want)
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("order = %v, want %v", order, want)
+		}
+	}
+}
+
+// TestAttachClient_MultipleGeneralPurposeClientMW_ComposeOutermostIn is
+// the client-side mirror — proves TWO general-purpose ClientMW
+// decorators attached to the SAME route compose outermost-in, exercising
+// the reflect.MakeFunc-based wrapping in clientTransport.call directly
+// (the riskiest new code path Phase 1 introduced).
+func TestAttachClient_MultipleGeneralPurposeClientMW_ComposeOutermostIn(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	handler := func(_ context.Context, req computeReq) (computeResp, error) {
+		return computeResp{Sum: req.X + req.Y}, nil
+	}
+	baseRoute := reqreply.NewRoute[computeReq, computeResp]("compute/multi-general-clientmw", computeReqCodec, computeRespCodec)
+	if _, err := baseRoute.WithHandler(handler).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	serverClient := &mockClient{}
+	serverRouter := newMockRouter()
+	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	go func() { _ = server.Serve(ctx) }()
+	serverRouter.waitHandler("compute/multi-general-clientmw")
+
+	client := reqreply.NewClient()
+	clientClient := &mockClient{}
+	clientRouter := newMockRouter()
+	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+		t.Fatalf("AttachClient: %v", err)
+	}
+	wireBrokers(t, serverClient, clientRouter)
+	wireBrokers(t, clientClient, serverRouter)
+
+	var order []string
+	outerMw := func(next func(context.Context, computeReq) (computeResp, error)) func(context.Context, computeReq) (computeResp, error) {
+		return func(ctx context.Context, req computeReq) (computeResp, error) {
+			order = append(order, "outer-in")
+			resp, err := next(ctx, req)
+			order = append(order, "outer-out")
+			return resp, err
+		}
+	}
+	innerMw := func(next func(context.Context, computeReq) (computeResp, error)) func(context.Context, computeReq) (computeResp, error) {
+		return func(ctx context.Context, req computeReq) (computeResp, error) {
+			order = append(order, "inner-in")
+			resp, err := next(ctx, req)
+			order = append(order, "inner-out")
+			return resp, err
+		}
+	}
+	clientRoute := baseRoute.ClientMW(nil, outerMw).ClientMW(nil, innerMw)
+
+	respAny, err := client.Call(context.Background(), clientRoute, computeReq{X: 5, Y: 6})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	resp := respAny.(computeResp)
+	if resp.Sum != 11 {
+		t.Fatalf("resp.Sum = %d, want 11", resp.Sum)
+	}
+
+	want := []string{"outer-in", "inner-in", "inner-out", "outer-out"}
+	if len(order) != len(want) {
+		t.Fatalf("order = %v, want %v", order, want)
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("order = %v, want %v", order, want)
+		}
+	}
+}
+
+// TestAttachClient_ClientMW_AppliesToCallAsyncToo confirms a
+// general-purpose ClientMW decorator runs for a CallAsync-dispatched
+// call too, not just Call — see "Interaction with CallAsync/Future" in
+// docs/roadmap/reqreply-middleware.md.
+func TestAttachClient_ClientMW_AppliesToCallAsyncToo(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	handler := func(_ context.Context, req computeReq) (computeResp, error) {
+		return computeResp{Sum: req.X + req.Y}, nil
+	}
+	baseRoute := reqreply.NewRoute[computeReq, computeResp]("compute/clientmw-async", computeReqCodec, computeRespCodec)
+	if _, err := baseRoute.WithHandler(handler).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	serverClient := &mockClient{}
+	serverRouter := newMockRouter()
+	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	go func() { _ = server.Serve(ctx) }()
+	serverRouter.waitHandler("compute/clientmw-async")
+
+	client := reqreply.NewClient()
+	clientClient := &mockClient{}
+	clientRouter := newMockRouter()
+	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+		t.Fatalf("AttachClient: %v", err)
+	}
+	wireBrokers(t, serverClient, clientRouter)
+	wireBrokers(t, clientClient, serverRouter)
+
+	var ran bool
+	generalMw := func(next func(context.Context, computeReq) (computeResp, error)) func(context.Context, computeReq) (computeResp, error) {
+		return func(ctx context.Context, req computeReq) (computeResp, error) {
+			ran = true
+			return next(ctx, req)
+		}
+	}
+	clientRoute := baseRoute.ClientMW(nil, generalMw)
+
+	futureAny, err := client.CallAsync(context.Background(), clientRoute, computeReq{X: 1, Y: 2})
+	if err != nil {
+		t.Fatalf("CallAsync: %v", err)
+	}
+	future, ok := futureAny.(*reqreply.Future[computeResp])
+	if !ok {
+		t.Fatalf("future type = %T, want *reqreply.Future[computeResp]", futureAny)
+	}
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer waitCancel()
+	resp, err := future.Wait(waitCtx)
+	if err != nil {
+		t.Fatalf("future.Wait: %v", err)
+	}
+	if resp.Sum != 3 {
+		t.Fatalf("resp.Sum = %d, want 3", resp.Sum)
+	}
+	if !ran {
+		t.Fatal("want general-purpose ClientMW to run for a CallAsync-dispatched call too")
 	}
 }

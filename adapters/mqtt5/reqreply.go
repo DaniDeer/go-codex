@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/DaniDeer/go-codex/api/reqreply"
-	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 	"github.com/google/uuid"
@@ -31,14 +30,20 @@ type ServeOptions struct {
 	// Validation failure delivers [ServeError]{Kind: KindSecurity}
 	// and sends an error reply to the caller.
 	UserPropertyParams []UserPropertyParam
-
-	// SecurityFunc, when non-nil, is called for routes with non-empty
-	// security requirements, AFTER the built-in codec-based credential
-	// check (via [reqreply.SecurityScheme.Codec]) passes. Return a non-nil
-	// error to reject the request — mirrors [SubscribeOptions.SecurityFunc]
-	// exactly. MQTT 5 User Properties are available via msg.Properties.User.
-	SecurityFunc func(ctx context.Context, msg *pahomqtt5.Publish, reqs []route.SecurityRequirement) error
 }
+
+// REMOVED (Phase 1 of docs/roadmap/reqreply-middleware.md, BREAKING):
+// ServeOptions.SecurityFunc. Declare a paired security implementation via
+// [reqreply.Route.Use] + [reqreply.Route.HandleMW] instead — the SAME
+// codec-based credential check (via [reqreply.SecurityScheme.Codec])
+// still runs first, unconditionally; the attached implementation runs
+// after it, mirroring the OLD SecurityFunc's ordering exactly. Mirrors
+// REST's own D-0001 precedent (`adapters/nethttp.Options`'s "BREAKING:
+// ... SecurityFunc are REMOVED" — the SAME reasoning applies here: ONE
+// declarative security mechanism, not a permanent parallel imperative
+// escape hatch). `SubscribeOptions.SecurityFunc` (events pub/sub) is
+// UNAFFECTED by this — it stays, a distinct decision scoped to reqreply
+// only in this phase.
 
 // CallOptions configures [Call].
 type CallOptions struct {
@@ -83,17 +88,6 @@ type CallOptions struct {
 	// UserProperties, when non-nil, are attached to the outgoing request message.
 	UserProperties []UserProperty
 
-	// CredentialFunc, when non-nil, is called for routes that declare
-	// non-nil security requirements, mirroring
-	// [nethttp.CallOptions.CredentialFunc] and
-	// [PublishOptions.CredentialFunc] exactly. It must return the MQTT 5
-	// User Properties to attach as the outgoing credential — these are
-	// appended to [CallOptions.UserProperties] before publishing. A nil
-	// CredentialFunc on a secured route is not an error — the request is
-	// published without a credential, same as if the route declared no
-	// security at all.
-	CredentialFunc func(ctx context.Context, reqs []route.SecurityRequirement) ([]UserProperty, error)
-
 	// Vars, when non-nil, substitutes {varName} placeholders in the route topic
 	// template before publishing. Uses [reqreply.RouteHandle.BuildTopic] to
 	// resolve and codec-validate each variable.
@@ -124,6 +118,16 @@ type CallOptions struct {
 	// returns [CallError]{Kind: [KindDecode]}.
 	ResponseFormats any
 }
+
+// REMOVED (Phase 1 of docs/roadmap/reqreply-middleware.md, BREAKING):
+// CallOptions.CredentialFunc. Declare a paired credential-supplying
+// implementation via [reqreply.Route.Use] + [reqreply.Route.ClientMW]
+// instead — same shape (`func(ctx, reqs) ([]UserProperty, error)`), same
+// "nil/unmatched Satisfies is not an error" semantics, now attached to
+// the ROUTE rather than passed per-Attach. Mirrors REST's own D-0001
+// precedent exactly. `PublishOptions.CredentialFunc` (events pub/sub) is
+// UNAFFECTED — it stays, a distinct decision scoped to reqreply only in
+// this phase.
 
 // Serve subscribes to the route path as an MQTT 5 request topic and
 // replies to each request using the ResponseTopic and CorrelationData MQTT 5

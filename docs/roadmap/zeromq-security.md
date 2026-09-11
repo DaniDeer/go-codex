@@ -159,3 +159,38 @@ own text (updating its "needs a NEW wire-level credential convention"
 framing, deciding whether zeromq's reqreply security becomes part of a
 near-term phase there rather than an indefinitely-deferred one) is left
 as explicit future follow-up work, not done in this pass.
+
+## REMINDER for zeromq's own future Fn-shape phase: also remove `SecurityFunc`/`CredentialFunc` then
+
+`reqreply-middleware.md`'s Phase 1 (mqtt5-only, in progress) makes a
+BREAKING change mirroring REST's own D-0001 precedent (confirmed via
+code: `adapters/nethttp/adapter.go`'s own `"BREAKING: Observer and
+SecurityFunc are REMOVED"` doc comment) — REMOVES
+`mqtt5.ServeOptions.SecurityFunc`/`mqtt5.CallOptions.CredentialFunc`
+ENTIRELY once `.Use`/`HandleMW`/`ClientMW`'s declared
+`Implementations`/`ClientImplementations` become the sole credential
+mechanism, for BOTH the escape hatch (`Serve`/`Call`/`CallHandle`) and
+`Attach`-based dispatch. This reverses `reqreply-middleware.md`'s
+Decision #4, which previously followed EVENTS pub/sub's precedent
+(keep both mechanisms permanently) instead of REST's.
+
+**This is NOT actioned for zeromq in mqtt5's Phase 1** — zeromq has NO
+`.Use`/`HandleMW`/`ClientMW` mechanism yet (that's the Fn-shape work
+THIS doc tracks as a follow-up, still not started), so removing
+zeromq's `events.SubscribeOptions.SecurityFunc`/`PublishOptions.
+CredentialFunc` or `reqreply.ServeOptions.SecurityFunc`/`CallOptions.
+CredentialFunc` NOW would leave zeromq with ZERO security mechanism —
+a pure regression, not a parity improvement.
+
+**But when zeromq's own Fn-shape phase (this doc's own tracked
+follow-up) eventually ships** `.Use`/`HandleMW`/`ClientMW` for zeromq
+(both events pub/sub AND reqreply, using the Fn shapes this doc already
+decided above), it should ALSO remove zeromq's `SecurityFunc`/
+`CredentialFunc` fields at THAT point — mirroring mqtt5's Phase 1
+exactly, for the identical reason (REST's precedent: one declarative
+mechanism only, no permanent parallel imperative escape hatch living
+alongside it). Do not repeat events pub/sub's "keep both forever"
+choice for zeromq's reqreply OR revisit it for zeromq's own events
+pub/sub mechanism without an explicit, reasoned decision to do so —
+default to REMOVAL, matching REST/mqtt5's now-established precedent,
+unless a genuine new reason to keep both emerges at that time.

@@ -177,7 +177,12 @@ func TestServe_BuiltInCredentialCheck_RejectsMalformedCredential(t *testing.T) {
 	}
 }
 
-func TestServe_SecurityFunc_RejectsRequest(t *testing.T) {
+// TestServe_HandleMW_PairedSecurityFn_Verifies confirms a PAIRED
+// HandleMW security Fn actually gets called and CAN reject — REPLACES
+// the OLD TestServe_SecurityFunc_RejectsRequest (ServeOptions.
+// SecurityFunc was removed entirely, Phase 1 of docs/roadmap/
+// reqreply-middleware.md).
+func TestServe_HandleMW_PairedSecurityFn_Verifies(t *testing.T) {
 	client := &mockClient{}
 	router := newMockRouter()
 	var gotErr ServeError
@@ -186,17 +191,15 @@ func TestServe_SecurityFunc_RejectsRequest(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = Serve(ctx, client, router, newSecuredRouteHandle(),
+	rejectingImpl := func(context.Context, *pahomqtt5.Publish, []route.SecurityRequirement) (map[string][]string, error) {
+		return nil, secErr
+	}
+	_ = Serve(ctx, client, router, newSecuredRouteHandleWithImpl(rejectingImpl),
 		func(_ context.Context, _ computeReq) (computeResp, error) {
-			t.Fatal("fn must not be called on SecurityFunc rejection")
+			t.Fatal("fn must not be called on HandleMW security rejection")
 			return computeResp{}, nil
 		},
-		ServeOptions{
-			OnError: func(e ServeError) { gotErr = e },
-			SecurityFunc: func(context.Context, *pahomqtt5.Publish, []route.SecurityRequirement) error {
-				return secErr
-			},
-		})
+		ServeOptions{OnError: func(e ServeError) { gotErr = e }})
 
 	router.dispatch("compute/secured-add", &pahomqtt5.Publish{
 		Topic:   "compute/secured-add",
@@ -204,7 +207,7 @@ func TestServe_SecurityFunc_RejectsRequest(t *testing.T) {
 		Properties: &pahomqtt5.PublishProperties{
 			ResponseTopic:   "replies/client-1",
 			CorrelationData: []byte("corr-sec-2"),
-			User:            pahomqtt5.UserProperties{{Key: "Authorization", Value: "Bearer validtoken"}},
+			User:            pahomqtt5.UserProperties{{Key: "Authorization", Value: "******"}},
 		},
 	})
 	time.Sleep(50 * time.Millisecond)
@@ -221,38 +224,57 @@ func TestServe_SecurityFunc_RejectsRequest(t *testing.T) {
 	}
 }
 
-func TestServe_NilSecurityFunc_NotAnError(t *testing.T) {
+// TestAttachServer_CheckCoverage_MissingSecurityMiddlewareError confirms
+// a route declaring a security scheme (via .Use()) with NO attached
+// HandleMW implementation fails Serve construction with
+// [reqreply.MissingSecurityMiddlewareError] — REPLACES the OLD
+// TestServe_NilSecurityFunc_NotAnError, whose premise (a declared scheme
+// with no enforcement mechanism silently succeeding) no longer holds:
+// Phase 1's mandatory coverage check closes exactly this latent gap.
+func TestAttachServer_CheckCoverage_MissingSecurityMiddlewareError(t *testing.T) {
 	client := &mockClient{}
 	router := newMockRouter()
-	fnCalled := false
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = Serve(ctx, client, router, newSecuredRouteHandle(),
+	err := Serve(ctx, client, router, newSecuredRouteHandleNoImpl(),
 		func(_ context.Context, req computeReq) (computeResp, error) {
-			fnCalled = true
 			return computeResp{Sum: req.X + req.Y}, nil
 		},
-		ServeOptions{}) // no SecurityFunc set
+		ServeOptions{})
 
-	router.dispatch("compute/secured-add", &pahomqtt5.Publish{
-		Topic:   "compute/secured-add",
-		Payload: []byte(validComputeJSON),
-		Properties: &pahomqtt5.PublishProperties{
-			ResponseTopic:   "replies/client-1",
-			CorrelationData: []byte("corr-sec-3"),
-			User:            pahomqtt5.UserProperties{{Key: "Authorization", Value: "Bearer validtoken"}},
-		},
-	})
-	time.Sleep(50 * time.Millisecond)
-
-	if !fnCalled {
-		t.Error("want fn called: built-in check passed and SecurityFunc is nil (not an error)")
+	var missing reqreply.MissingSecurityMiddlewareError
+	if !errors.As(err, &missing) {
+		t.Fatalf("want reqreply.MissingSecurityMiddlewareError, got %v", err)
 	}
 }
 
-func TestCall_CredentialFunc_ValidFormat_Passes(t *testing.T) {
+// newSecuredRouteHandleWithClientImpl builds a securedComputeRoute
+// variant with BOTH a server-side HandleMW (accepting, unconditional —
+// these tests exercise CLIENT-side ClientMW behavior, not server
+// rejection) and a client-side ClientMW attached, registered against a
+// FRESH server so [Call] (the escape hatch, which delegates to
+// clientTransport.call since Phase 0b) can dispatch through
+// handle.ClientImplementations.
+func newSecuredRouteHandleWithClientImpl(clientFn func(context.Context, []route.SecurityRequirement) ([]UserProperty, error)) *reqreply.RouteHandle[computeReq, computeResp] {
+	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	h, err := securedComputeRoute.
+		HandleMW(&bearerAuthMw, acceptingSecurityImpl).
+		ClientMW(&bearerAuthMw, clientFn).
+		Register(b)
+	if err != nil {
+		panic(err)
+	}
+	return h
+}
+
+// TestCall_ClientMW_PairedCredentialFn_Supplies confirms a PAIRED
+// ClientMW credential-supplying Fn actually gets called and supplies a
+// credential — REPLACES the OLD TestCall_CredentialFunc_ValidFormat_Passes
+// (CallOptions.CredentialFunc was removed entirely, Phase 1 of
+// docs/roadmap/reqreply-middleware.md).
+func TestCall_ClientMW_PairedCredentialFn_Supplies(t *testing.T) {
 	client := &mockClient{}
 	router := newMockRouter()
 
@@ -274,12 +296,10 @@ func TestCall_CredentialFunc_ValidFormat_Passes(t *testing.T) {
 		})
 	}()
 
-	resp, err := Call(ctx, client, router, newSecuredRouteHandle(), computeReq{X: 3, Y: 4},
-		CallOptions{
-			CredentialFunc: func(context.Context, []route.SecurityRequirement) ([]UserProperty, error) {
-				return []UserProperty{{Key: "Authorization", Value: "Bearer validtoken"}}, nil
-			},
-		})
+	handle := newSecuredRouteHandleWithClientImpl(func(context.Context, []route.SecurityRequirement) ([]UserProperty, error) {
+		return []UserProperty{{Key: "Authorization", Value: "******"}}, nil
+	})
+	resp, err := Call(ctx, client, router, handle, computeReq{X: 3, Y: 4}, CallOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -287,12 +307,15 @@ func TestCall_CredentialFunc_ValidFormat_Passes(t *testing.T) {
 		t.Errorf("want Sum=7, got %d", resp.Sum)
 	}
 	pub := client.lastPublished()
-	if pub == nil || pub.Properties == nil || pub.Properties.User.Get("Authorization") != "Bearer validtoken" {
+	if pub == nil || pub.Properties == nil || pub.Properties.User.Get("Authorization") != "******" {
 		t.Fatalf("expected Authorization user property on published request, got %v", pub)
 	}
 }
 
-func TestCall_CredentialFunc_MalformedFormat_ReturnsSecurityCredentialError(t *testing.T) {
+// TestCall_ClientMW_MalformedCredentialFormat_ReturnsSecurityCredentialError
+// REPLACES the OLD TestCall_CredentialFunc_MalformedFormat_
+// ReturnsSecurityCredentialError.
+func TestCall_ClientMW_MalformedCredentialFormat_ReturnsSecurityCredentialError(t *testing.T) {
 	client := &mockClient{}
 	router := newMockRouter()
 	obs := &testObserver{}
@@ -300,14 +323,11 @@ func TestCall_CredentialFunc_MalformedFormat_ReturnsSecurityCredentialError(t *t
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_, err := Call(ctx, client, router, newSecuredRouteHandle(), computeReq{X: 3, Y: 4},
-		CallOptions{
-			Observer: obs,
-			CredentialFunc: func(context.Context, []route.SecurityRequirement) ([]UserProperty, error) {
-				// Empty Bearer credential -> fails the non-empty-string Codec.
-				return []UserProperty{{Key: "Authorization", Value: "Bearer "}}, nil
-			},
-		})
+	handle := newSecuredRouteHandleWithClientImpl(func(context.Context, []route.SecurityRequirement) ([]UserProperty, error) {
+		// Empty ****** -> fails the non-empty-string Codec.
+		return []UserProperty{{Key: "Authorization", Value: "Bearer "}}, nil
+	})
+	_, err := Call(ctx, client, router, handle, computeReq{X: 3, Y: 4}, CallOptions{Observer: obs})
 	var credErr reqreply.SecurityCredentialError
 	if !errors.As(err, &credErr) {
 		t.Fatalf("want reqreply.SecurityCredentialError, got %v", err)
@@ -323,43 +343,18 @@ func TestCall_CredentialFunc_MalformedFormat_ReturnsSecurityCredentialError(t *t
 	}
 }
 
-func TestCall_CredentialFunc_ReturnsNilProperties_SkipsValidation(t *testing.T) {
-	client := &mockClient{}
-	router := newMockRouter()
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-
-	go func() {
-		time.Sleep(10 * time.Millisecond)
-		pub := client.lastPublished()
-		if pub == nil {
-			return
-		}
-		router.dispatch(pub.Properties.ResponseTopic, &pahomqtt5.Publish{
-			Topic:   pub.Properties.ResponseTopic,
-			Payload: []byte(`{"sum":7}`),
-			Properties: &pahomqtt5.PublishProperties{
-				CorrelationData: pub.Properties.CorrelationData,
-			},
-		})
-	}()
-
-	// A CredentialFunc deliberately returning (nil, nil) for "no credential
-	// needed" must NOT be treated as a malformed-empty-credential error.
-	resp, err := Call(ctx, client, router, newSecuredRouteHandle(), computeReq{X: 3, Y: 4},
-		CallOptions{
-			CredentialFunc: func(context.Context, []route.SecurityRequirement) ([]UserProperty, error) {
-				return nil, nil
-			},
-		})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if resp.Sum != 7 {
-		t.Errorf("want Sum=7, got %d", resp.Sum)
-	}
-}
+// NOTE: the OLD TestCall_CredentialFunc_ReturnsNilProperties_
+// SkipsValidation had no direct replacement — its premise ("a
+// credential-providing Fn that ran but returned nil properties skips
+// validation entirely") doesn't generalize cleanly to ClientMW's
+// multi-implementation MERGE model (mergeCredentialUserProperties gates
+// validation on whether ANY attached implementation's Satisfies matched
+// and ran — "ran", not "returned non-nil" — since with several
+// attachable implementations, "the merged result happens to be empty"
+// is no longer a reliable signal that no credential was intended). A
+// route that genuinely needs no client-side credential handling for a
+// given call should simply not attach a paired ClientMW for it, rather
+// than attach one that intentionally returns nothing.
 
 // ── ErrorPattern wiring (Phase 2) ─────────────────────────────────────────────
 
@@ -1462,5 +1457,191 @@ func TestCall_ResponseFormats_TypeMismatch_ReturnsCallError(t *testing.T) {
 	var callErr CallError
 	if !errors.As(err, &callErr) || callErr.Kind != KindDecode {
 		t.Fatalf("want CallError{Kind: KindDecode}, got %v", err)
+	}
+}
+
+// ── Phase 1b: header-param-as-middleware (request side) ────────────────
+
+// apiKeyUserProp declares a REQUIRED User Property via .Use()/
+// [FromUserPropertyParam] — Phase 1b of docs/roadmap/reqreply-middleware.md.
+var apiKeyUserProp = UserPropertyParam{Name: "X-API-Key", Required: true}
+
+var userPropertyComputeRoute = reqreply.NewRoute[computeReq, computeResp](
+	"compute/user-property-add",
+	computeReqCodec, computeRespCodec,
+	reqreply.RouteMeta{OperationID: "userPropertyCompute"},
+).Use(FromUserPropertyParam(apiKeyUserProp))
+
+func newUserPropertyRouteHandle() *reqreply.RouteHandle[computeReq, computeResp] {
+	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	h, err := userPropertyComputeRoute.Register(b)
+	if err != nil {
+		panic(err)
+	}
+	return h
+}
+
+func TestServe_HandleMW_RequestHeaderParam_MissingRequired_Rejects(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+	var gotErr ServeError
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	_ = Serve(ctx, client, router, newUserPropertyRouteHandle(),
+		func(_ context.Context, _ computeReq) (computeResp, error) {
+			t.Fatal("fn must not be called when a required Phase 1b header param is missing")
+			return computeResp{}, nil
+		},
+		ServeOptions{OnError: func(e ServeError) { gotErr = e }})
+
+	// No X-API-Key User Property attached — must be rejected.
+	router.dispatch("compute/user-property-add", &pahomqtt5.Publish{
+		Topic:   "compute/user-property-add",
+		Payload: []byte(validComputeJSON),
+		Properties: &pahomqtt5.PublishProperties{
+			ResponseTopic:   "replies/client-1",
+			CorrelationData: []byte("corr-hp-1"),
+		},
+	})
+	time.Sleep(50 * time.Millisecond)
+
+	if gotErr.Kind != KindSecurity {
+		t.Fatalf("expected KindSecurity, got %v", gotErr.Kind)
+	}
+	var missing MissingUserPropertyError
+	if !errors.As(gotErr, &missing) {
+		t.Fatalf("expected MissingUserPropertyError, got %v", gotErr.Err)
+	}
+	if missing.Name != "X-API-Key" {
+		t.Fatalf("expected missing property Name=X-API-Key, got %q", missing.Name)
+	}
+}
+
+func TestServe_HandleMW_RequestHeaderParam_Present_Succeeds(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	called := false
+	_ = Serve(ctx, client, router, newUserPropertyRouteHandle(),
+		func(_ context.Context, req computeReq) (computeResp, error) {
+			called = true
+			return computeResp{Sum: req.X + req.Y}, nil
+		},
+		ServeOptions{})
+
+	router.dispatch("compute/user-property-add", &pahomqtt5.Publish{
+		Topic:   "compute/user-property-add",
+		Payload: []byte(validComputeJSON),
+		Properties: &pahomqtt5.PublishProperties{
+			ResponseTopic:   "replies/client-1",
+			CorrelationData: []byte("corr-hp-2"),
+			User:            pahomqtt5.UserProperties{{Key: "X-API-Key", Value: "secret"}},
+		},
+	})
+	time.Sleep(50 * time.Millisecond)
+
+	if !called {
+		t.Fatal("expected fn to be called when the required Phase 1b header param is present")
+	}
+	pub := client.lastPublished()
+	if pub == nil {
+		t.Fatal("expected reply to be published")
+	}
+}
+
+// ── Phase 1b: header-param-as-middleware (reply/response side) ─────────
+
+// traceIDResponseUserProp declares a REQUIRED reply-side User Property
+// via .Use()/[FromResponseUserPropertyParam] — Phase 1b's response-
+// direction half.
+var traceIDResponseUserProp = UserPropertyParam{Name: "X-Trace-Id", Required: true}
+
+var responseHeaderParamComputeRoute = reqreply.NewRoute[computeReq, computeResp](
+	"compute/response-header-add",
+	computeReqCodec, computeRespCodec,
+	reqreply.RouteMeta{OperationID: "responseHeaderParamCompute"},
+).Use(FromResponseUserPropertyParam(traceIDResponseUserProp))
+
+func newResponseHeaderParamRouteHandle() *reqreply.RouteHandle[computeReq, computeResp] {
+	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	h, err := responseHeaderParamComputeRoute.Register(b)
+	if err != nil {
+		panic(err)
+	}
+	return h
+}
+
+func TestCall_ClientMW_ResponseHeaderParam_MissingRequired_Rejects(t *testing.T) {
+	router := newMockRouter()
+	client := &brokerClient{router: router}
+
+	// Plain Serve responder — attaches NO extra reply User Properties, so
+	// the declared X-Trace-Id requirement is unmet.
+	_ = Serve(context.Background(), client, router, newResponseHeaderParamRouteHandle(),
+		func(_ context.Context, req computeReq) (computeResp, error) {
+			return computeResp{Sum: req.X + req.Y}, nil
+		},
+		ServeOptions{})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	_, err := Call(ctx, client, router, newResponseHeaderParamRouteHandle(),
+		computeReq{X: 3, Y: 4},
+		CallOptions{Timeout: 2 * time.Second})
+
+	var callErr CallError
+	if !errors.As(err, &callErr) {
+		t.Fatalf("expected CallError, got %T: %v", err, err)
+	}
+	if callErr.Kind != KindSecurity {
+		t.Fatalf("expected KindSecurity, got %v", callErr.Kind)
+	}
+	var missing MissingUserPropertyError
+	if !errors.As(err, &missing) {
+		t.Fatalf("expected MissingUserPropertyError, got %v", callErr.Err)
+	}
+	if missing.Name != "X-Trace-Id" {
+		t.Fatalf("expected missing property Name=X-Trace-Id, got %q", missing.Name)
+	}
+}
+
+func TestCall_ClientMW_ResponseHeaderParam_Present_Succeeds(t *testing.T) {
+	router := newMockRouter()
+	client := &brokerClient{router: router}
+
+	// Manually register a "server" handler that attaches the declared
+	// X-Trace-Id User Property on its reply — Phase 1b has no
+	// server-side declaration mechanism to generate reply-side User
+	// Properties via Serve itself (only the request side does), so this
+	// test constructs the reply directly, mirroring
+	// TestServe_ValidRoundTrip's own raw-dispatch style.
+	router.RegisterHandler("compute/response-header-add", func(msg *pahomqtt5.Publish) {
+		_, _ = client.Publish(context.Background(), &pahomqtt5.Publish{
+			Topic:   msg.Properties.ResponseTopic,
+			Payload: []byte(`{"sum":7}`),
+			Properties: &pahomqtt5.PublishProperties{
+				CorrelationData: msg.Properties.CorrelationData,
+				User:            pahomqtt5.UserProperties{{Key: "X-Trace-Id", Value: "trace-123"}},
+			},
+		})
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	resp, err := Call(ctx, client, router, newResponseHeaderParamRouteHandle(),
+		computeReq{X: 3, Y: 4},
+		CallOptions{Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Sum != 7 {
+		t.Fatalf("expected Sum=7, got %d", resp.Sum)
 	}
 }

@@ -3,6 +3,19 @@
 > **Status:** Idea only — no driver yet. Independent of
 > [Declarative Middleware](declarative-middleware.md) (no sequencing
 > dependency either way — could ship before, after, or in parallel).
+> **Also independent of [ReqReply Middleware](reqreply-middleware.md)'s
+> now-SHIPPED Phase 1b** (`mqtt5.FromUserPropertyParam`/
+> `FromResponseUserPropertyParam`, docs/roadmap/reqreply-middleware.md) —
+> checked when Phase 1b landed: that mechanism bridges a plain
+> `UserPropertyParam` into `middleware.Middleware` for `.Use()`
+> attachment (spec rendering + Attach-time VALIDATION only, no merge);
+> THIS doc's `MergedUserPropertyParam[T]` is a separate, direct
+> `ChannelOpt`/`RouteOpt`-equivalent that ALSO auto-**merges** the value
+> into the decoded struct. Same non-conflicting relationship REST's own
+> `rest.FromHeaderParam` and `rest.MergedHeaderParam`/
+> `NewRequiredHeaderParam` already have (embedding lets a caller compose
+> both for the SAME property once this doc ships) — no naming collision,
+> no functional overlap, no sequencing dependency either way.
 > **This doc's own "registration surface... NOT resolved" open question
 > (below) is now ANSWERED by
 > [Feature](protocol-native-features.md)** (formerly

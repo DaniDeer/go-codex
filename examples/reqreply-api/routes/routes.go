@@ -9,7 +9,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/route"
-	"github.com/DaniDeer/go-codex/validate"
 )
 
 // ComputeReq/ComputeResp are the shared request/response types for every
@@ -43,11 +42,24 @@ var ComputeRespCodec = codex.Struct[ComputeResp](
 
 // ComputeRoute is the baseline, unsecured request-reply contract used by
 // Demo 1 (basic call+serve), Demo 2 (dual-mode Call), and Demo 6 (spec
-// printing).
+// printing). Registered on mqtt5server's Server, which ALSO declares
+// Server.AddGlobalSecurity("bearerAuth") for GlobalOnlyComputeRoute's own
+// demo — ComputeRoute must explicitly OPT OUT via an EMPTY (non-nil)
+// Security slice, per [reqreply.RouteHandle.Security]'s own documented
+// contract ("nil means inherit GlobalSecurity, an empty non-nil slice
+// means explicitly no auth required"). Before Phase 1 (docs/roadmap/
+// reqreply-middleware.md) added a mandatory adapter-Serve-time
+// [reqreply.CheckCoverage] check, this route silently INHERITED
+// GlobalSecurity with NO enforcement at all (the old credential-FORMAT
+// check only ran for schemes with a registered [reqreply.
+// WithSecurityScheme] on THAT SPECIFIC route, which ComputeRoute never
+// declared) — a latent gap CheckCoverage's introduction correctly
+// surfaces as a hard MissingSecurityMiddlewareError instead of silently
+// ignoring it.
 var ComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 	"compute/add",
 	ComputeReqCodec, ComputeRespCodec,
-	reqreply.RouteMeta{OperationID: "computeAdd", Summary: "Add two integers."},
+	reqreply.RouteMeta{OperationID: "computeAdd", Summary: "Add two integers.", Security: []route.SecurityRequirement{}},
 )
 
 // DoubleRoute and TripleRoute exist ALONGSIDE ComputeRoute purely to give
@@ -65,41 +77,59 @@ var TripleRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 	reqreply.RouteMeta{OperationID: "computeTriple", Summary: "Triple the sum of two integers."},
 )
 
-// BearerAuth is declared ONCE and referenced by SecuredComputeRoute below —
-// the SAME declaration is consumed identically by server (Serve) and client
-// (Call), mirroring rest.WithSecurityScheme.
-var BearerAuth = reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.
-	WithCodec(codex.String().Refine(validate.NonEmptyString))
-
-// SecuredComputeRoute declares its OWN Security (not relying on
-// Server.AddGlobalSecurity) — used by Demo 3 (route-level security
-// credential error) and Demo 2 (global-security dual-mode contrast).
+// SecuredComputeRoute is declared PRISTINE — no Security, no scheme —
+// exactly like ComputeRoute above. Its OWN security requirement is
+// declared declaratively via .Use(BearerAuthMw) (see middleware.go),
+// applied by the SERVER at registration time (mqtt5server/server.go) and
+// by the CLIENT at call time (demo_route_level_security_credential_error.go),
+// each producing a SEPARATE Route variant sharing this same base value —
+// mirrors examples/rest-api's routes.CreateUserRoute (declared plain,
+// secured via .Use() at each call site) rather than baking Security into
+// the base declaration itself (Phase 1 of docs/roadmap/
+// reqreply-middleware.md — REPLACES the OLD manual RouteMeta.Security +
+// reqreply.WithSecurityScheme pattern, which cannot be paired against a
+// HandleMW/ClientMW implementation).
 var SecuredComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 	"compute/secured-add",
 	ComputeReqCodec, ComputeRespCodec,
-	reqreply.RouteMeta{
-		OperationID: "securedComputeAdd",
-		Summary:     "Add two integers — requires a bearer token.",
-		Security:    []route.SecurityRequirement{route.Require("bearerAuth")},
-	},
-	reqreply.WithSecurityScheme("bearerAuth", BearerAuth),
+	reqreply.RouteMeta{OperationID: "securedComputeAdd", Summary: "Add two integers — requires a bearer token."},
 )
 
-// GlobalOnlyComputeRoute declares NO route-level RouteMeta.Security (left
-// nil — "inherit global security") and only ever becomes secured via
-// Server.AddGlobalSecurity, letting Demo 2 show the confirmed dual-mode
-// Client.Call difference: a raw Route never sees the Server's global
-// security (identical to REST's own accepted limitation), while an
-// already-registered *RouteHandle does. It STILL declares WithSecurityScheme
-// (the ONLY source of RouteHandle.SecuritySchemes, per that option's own
-// doc comment) so the bearerAuth credential format is actually enforced
-// once GlobalSecurity kicks in — RouteMeta.Security and WithSecurityScheme
-// are deliberately independent declarations.
+// GlobalOnlyComputeRoute is ALSO declared PRISTINE (no Security, no
+// scheme) — it only ever becomes secured via Server.AddGlobalSecurity
+// (mqtt5server/server.go) PLUS a server-side .Use(BearerAuthMw) applied
+// at THAT SAME registration call (required for
+// [reqreply.CheckCoverage] to find a matching implementation — a
+// declared-but-unimplemented scheme now fails loudly, Phase 1's
+// intentional tightening). Demo 2 shows the confirmed dual-mode
+// Client.Call difference: THIS pristine var, called raw, never sees
+// GlobalSecurity (identical to REST's own accepted limitation, since
+// Security here is nil AND never declared via .Use() either) — while a
+// SEPARATE .Use()+.ClientMW()'d variant (built in the demo itself) does.
 var GlobalOnlyComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 	"compute/global-secured-add",
 	ComputeReqCodec, ComputeRespCodec,
 	reqreply.RouteMeta{OperationID: "globalSecuredComputeAdd", Summary: "Add two integers — secured only via Server.AddGlobalSecurity."},
-	reqreply.WithSecurityScheme("bearerAuth", BearerAuth),
+)
+
+// HeaderParamComputeRoute demonstrates Phase 1b of docs/roadmap/
+// reqreply-middleware.md — the User-Property param-as-middleware
+// mechanism. Declared PRISTINE here, exactly like SecuredComputeRoute
+// above: the request-side "X-API-Key" User Property (via
+// mqtt5adapter.FromUserPropertyParam) and the reply-side "X-Trace-Id"
+// User Property (via mqtt5adapter.FromResponseUserPropertyParam) are
+// BOTH mqtt5-specific, so attached in mqtt5server/server.go, not here —
+// mirrors SecuredComputeRoute's own "pristine base, secured at the
+// attachment site" separation. Like ComputeRoute above, it must
+// explicitly OPT OUT of mqtt5server's Server.AddGlobalSecurity("bearerAuth")
+// via an EMPTY (non-nil) Security slice — this demo is about the
+// User-Property mechanism specifically, independent of bearer-auth
+// security, and declares no HandleMW implementation for "bearerAuth" (it
+// would otherwise fail [reqreply.CheckCoverage] at Serve time).
+var HeaderParamComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
+	"compute/header-param-add",
+	ComputeReqCodec, ComputeRespCodec,
+	reqreply.RouteMeta{OperationID: "headerParamComputeAdd", Summary: "Add two integers — requires an X-API-Key User Property.", Security: []route.SecurityRequirement{}},
 )
 
 // RouterComputeRoute is dispatched over a ZMQ ROUTER/DEALER socket pair in
