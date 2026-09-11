@@ -1,6 +1,7 @@
 package reqreply
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -719,10 +720,10 @@ func (t Topic) ValidateTopicVars(vars map[string]string) error {
 //	    reqreply.RouteMeta{OperationID: "computeAdd", Summary: "Add two integers."},
 //	)
 //
-//	// Register with a builder to get an AsyncAPI spec + a RouteHandle:
-//	builder := reqreply.NewBuilder(reqreply.Info{Title: "API", Version: "1.0.0"})
-//	builder.AddServer("zmq", reqreply.Server{URL: "tcp://...", Protocol: "zmq"})
-//	handle, err := ComputeRoute.Register(builder)
+//	// Register with a server to get an AsyncAPI spec + a RouteHandle:
+//	server := reqreply.NewServer(reqreply.Info{Title: "API", Version: "1.0.0"})
+//	server.AddServer("zmq", reqreply.ServerEntry{URL: "tcp://...", Protocol: "zmq"})
+//	handle, err := ComputeRoute.Register(server)
 //
 //	// Adapters accept *reqreply.RouteHandle:
 //	zmqadapter.Serve(ctx, sock, handle, fn, zmqadapter.ServeOptions{Observer: obs})
@@ -732,6 +733,10 @@ type Route[Req, Resp any] struct {
 	reqCodec  codex.Codec[Req]
 	respCodec codex.Codec[Resp]
 	opts      []RouteOpt
+	// handler is the domain handler attached via [Route.WithHandler] (nil
+	// until called). [Route.Register] reads it and registers it into the
+	// [Server]'s dispatch registry — read later by [Server.Serve].
+	handler func(context.Context, Req) (Resp, error)
 }
 
 // NewRoute creates a [Route] spec from a topic, codecs, and variadic opts.
@@ -770,6 +775,24 @@ func NewRouteFromTopic[Req, Resp any](
 	}
 	allOpts = append(allOpts, opts...)
 	return NewRoute(topic.Template, reqCodec, respCodec, allOpts...)
+}
+
+// WithHandler attaches fn as this route's domain handler, returning an
+// updated Route value — a FLUENT, PRE-registration method, mirroring
+// [rest.Route.WithHandler] exactly (byte-for-byte the same idiom, see
+// docs/design/d-0004-reqreply-workflow-simplification.md's Decision 1). Chain
+// with [Route.Register] to commit both the spec AND the handler in ONE
+// call:
+//
+//	handle, err := ComputeRoute.WithHandler(computeHandler).Register(server)
+//
+// [Route.Register] reads the attached fn (if any) and records it into the
+// server's dispatch registry directly — no separate registration step,
+// no free reqreply.Handle(...) function (that earlier design is
+// superseded by this fluent method).
+func (r Route[Req, Resp]) WithHandler(fn func(context.Context, Req) (Resp, error)) Route[Req, Resp] {
+	r.handler = fn
+	return r
 }
 
 // ClientHandle returns a [RouteHandle] for client-side use without registering
@@ -931,6 +954,11 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 	// so schemes are accumulated directly here instead.
 	for name, s := range schemes {
 		b.securitySchemes[name] = s
+	}
+	// If a handler was attached via [Route.WithHandler], record it into
+	// the Server's dispatch registry — read later by [Server.Serve].
+	if r.handler != nil {
+		b.registerDispatch(r.topic, h, r.handler)
 	}
 	return h, nil
 }
@@ -1154,6 +1182,40 @@ func (h *RouteHandle[Req, Resp]) ValidateTopic(topic string) error {
 // Mirrors [events.ChannelHandle.ValidateTopicVars].
 func (h *RouteHandle[Req, Resp]) ValidateTopicVars(vars map[string]string) error {
 	return codex.ValidateParams(toCodexParams(h.topicParams), vars)
+}
+
+// TopicOf implements [Topical] — returns h's registered Topic. Backs
+// [Server.RegisteredTopics], used by adapters like [zeromq.Attach] to
+// validate topic/socket coverage at Attach time.
+func (h *RouteHandle[Req, Resp]) TopicOf() string { return h.Topic }
+
+// NewFutureAny implements [FutureFactory] — constructs a correctly-typed
+// *[Future][Resp] and a matching type-erased resolve closure, WITHOUT
+// reflection. This is the confirmed structural mechanism behind
+// [Client.CallAsync]: Go's reflect package cannot instantiate a generic
+// type ([Future][Resp]) for a type argument (Resp) known only at runtime,
+// but a plain, non-generic interface method — compiled once per Req/Resp
+// instantiation of RouteHandle itself, where Resp IS concretely known —
+// crosses that type-erasure boundary at compile time instead. An
+// adapter's ClientTransport.CallAsync recovers this via a plain interface
+// type assertion (route.(FutureFactory)), zero reflection needed. See
+// docs/design/d-0004-reqreply-workflow-simplification.md's Decision 5 for the
+// full confirmed evidence.
+func (h *RouteHandle[Req, Resp]) NewFutureAny() (any, func(any, error)) {
+	f := newFuture[Resp]()
+	resolve := func(v any, err error) {
+		if err != nil {
+			f.resolve(*new(Resp), err)
+			return
+		}
+		resp, ok := v.(Resp)
+		if !ok {
+			f.resolve(*new(Resp), fmt.Errorf("api/reqreply: NewFutureAny: want %T, got %T", *new(Resp), v))
+			return
+		}
+		f.resolve(resp, nil)
+	}
+	return f, resolve
 }
 
 // RouteParamError is returned by [RouteHandle.BuildTopic] and

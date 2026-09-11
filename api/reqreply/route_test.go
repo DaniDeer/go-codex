@@ -56,13 +56,13 @@ var computeRouteWithErrorReply = reqreply.NewRoute[computeReq, computeResp](
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-func newBuilder() *reqreply.Builder {
-	b := reqreply.NewBuilder(reqreply.Info{Title: "Compute API", Version: "1.0.0"})
-	b.AddServer("zmq", reqreply.Server{URL: "tcp://localhost:5556", Protocol: "zmq"})
+func newBuilder() *reqreply.Server {
+	b := reqreply.NewServer(reqreply.Info{Title: "Compute API", Version: "1.0.0"})
+	b.AddServer("zmq", reqreply.ServerEntry{URL: "tcp://localhost:5556", Protocol: "zmq"})
 	return b
 }
 
-func mustSpec(t *testing.T, b *reqreply.Builder) string {
+func mustSpec(t *testing.T, b *reqreply.Server) string {
 	t.Helper()
 	doc, err := b.AsyncAPISpec()
 	if err != nil {
@@ -352,7 +352,7 @@ func TestDuplicateRouteError_LogValue(t *testing.T) {
 // events already had the equivalent InvalidPathParamError/
 // InvalidTopicParamError checks; reqreply never did until now).
 func TestRoute_Register_UnknownTopicParamFails_returnsInvalidRouteParamError(t *testing.T) {
-	b := reqreply.NewBuilder(reqreply.Info{})
+	b := reqreply.NewServer(reqreply.Info{})
 	_, err := reqreply.NewRoute[computeReq, computeResp]("compute/add", reqCodec, respCodec,
 		reqreply.TopicParam{Name: "unknown"},
 	).Register(b)
@@ -615,7 +615,7 @@ var reqreplyPngCodec = codex.Bytes().Refine(validate.PNG)
 // inline in NewRoute's opts is equivalent to calling WithRequestFormats
 // after Register.
 func TestRequestFormats_AppliesInline(t *testing.T) {
-	b := reqreply.NewBuilder(reqreply.Info{})
+	b := reqreply.NewServer(reqreply.Info{})
 	route := reqreply.NewRoute[[]byte, computeResp]("images/upload", reqreplyPngCodec, respCodec,
 		reqreply.RequestFormats(format.Binary(reqreplyPngCodec).WithContentType("image/png")),
 	)
@@ -631,7 +631,7 @@ func TestRequestFormats_AppliesInline(t *testing.T) {
 // TestFormats_AppliesInline verifies reqreply.Formats declared inline is
 // equivalent to calling WithFormats after Register.
 func TestFormats_AppliesInline(t *testing.T) {
-	b := reqreply.NewBuilder(reqreply.Info{})
+	b := reqreply.NewServer(reqreply.Info{})
 	route := reqreply.NewRoute[computeReq, []byte]("images/download", reqCodec, reqreplyPngCodec,
 		reqreply.Formats(format.Binary(reqreplyPngCodec).WithContentType("image/png")),
 	)
@@ -648,7 +648,7 @@ func TestFormats_AppliesInline(t *testing.T) {
 // option returns FormatOptError, reachable via errors.As, with a
 // structured LogValue.
 func TestRequestFormats_TypeMismatch(t *testing.T) {
-	b := reqreply.NewBuilder(reqreply.Info{})
+	b := reqreply.NewServer(reqreply.Info{})
 	route := reqreply.NewRoute[computeReq, computeResp]("compute/add", reqCodec, respCodec,
 		reqreply.RequestFormats(format.Binary(reqreplyPngCodec)),
 	)
@@ -678,7 +678,7 @@ func TestRequestFormats_TypeMismatch(t *testing.T) {
 // TestFormats_TypeMismatch mirrors TestRequestFormats_TypeMismatch for the
 // response direction.
 func TestFormats_TypeMismatch(t *testing.T) {
-	b := reqreply.NewBuilder(reqreply.Info{})
+	b := reqreply.NewServer(reqreply.Info{})
 	route := reqreply.NewRoute[computeReq, computeResp]("compute/sub", reqCodec, respCodec,
 		reqreply.Formats(format.Binary(reqreplyPngCodec)),
 	)
@@ -747,7 +747,7 @@ var tenantComputeReqCodec = codex.Struct[tenantComputeReq](
 
 // RR1: reqreply.NewTopicParam registers both spec TopicParam and merge field.
 func TestNewTopicParam_RegistersSpecAndMergeField(t *testing.T) {
-	b := reqreply.NewBuilder(reqreply.Info{})
+	b := reqreply.NewServer(reqreply.Info{})
 	h, err := reqreply.NewRoute[tenantComputeReq, computeResp]("compute/{tenantID}/add",
 		tenantComputeReqCodec, respCodec,
 		reqreply.NewTopicParam("tenantID", codex.String().Refine(validate.NonEmptyString),
@@ -765,7 +765,7 @@ func TestNewTopicParam_RegistersSpecAndMergeField(t *testing.T) {
 // RR2: RouteHandle.DecodeMerged happy path — payload decoded AND topic var
 // merged into the SAME Req.
 func TestDecodeMerged_HappyPath(t *testing.T) {
-	b := reqreply.NewBuilder(reqreply.Info{})
+	b := reqreply.NewServer(reqreply.Info{})
 	h, err := reqreply.NewRoute[tenantComputeReq, computeResp]("compute/{tenantID}/add",
 		tenantComputeReqCodec, respCodec,
 		reqreply.NewTopicParam("tenantID", codex.String().Refine(validate.NonEmptyString),
@@ -789,7 +789,7 @@ func TestDecodeMerged_HappyPath(t *testing.T) {
 // "x" topic segment directly into tenantComputeReq.X (an int field) via
 // codex.IntString(), now that codex.NewParam is generic over V.
 func TestNewTopicParam_TypedIntValue_DecodeMergedRoundTrip(t *testing.T) {
-	b := reqreply.NewBuilder(reqreply.Info{})
+	b := reqreply.NewServer(reqreply.Info{})
 	h, err := reqreply.NewRoute[tenantComputeReq, computeResp]("compute/{x}/add",
 		tenantComputeReqCodec, respCodec,
 		reqreply.NewTopicParam("x", codex.IntString(),
@@ -818,7 +818,7 @@ func TestNewTopicParam_TypedIntValue_DecodeMergedRoundTrip(t *testing.T) {
 // RR3: RouteHandle.DecodeMerged with zero merge fields behaves like plain
 // Decode (regression guard).
 func TestDecodeMerged_NoMergeFieldsIsNoop(t *testing.T) {
-	b := reqreply.NewBuilder(reqreply.Info{})
+	b := reqreply.NewServer(reqreply.Info{})
 	h, err := reqreply.NewRoute[computeReq, computeResp]("compute/add", reqCodec, respCodec).Register(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
@@ -840,7 +840,7 @@ func TestDecodeMerged_NoMergeFieldsIsNoop(t *testing.T) {
 // ── Security (Phase 3) ────────────────────────────────────────────────────────
 
 func TestWithSecurityScheme_Register_PopulatesSecuritySchemes(t *testing.T) {
-	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	c := codex.String().Refine(validate.NonEmptyString)
 
 	handle, err := reqreply.NewRoute[computeReq, computeResp]("compute/secured", reqCodec, respCodec,
@@ -881,7 +881,7 @@ func TestWithSecurityScheme_ClientHandle_PopulatesSecuritySchemes(t *testing.T) 
 }
 
 func TestAsyncAPISpec_AggregatesSecuritySchemesFromRoutes_reqreply(t *testing.T) {
-	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 
 	_, err := reqreply.NewRoute[computeReq, computeResp]("compute/add", reqCodec, respCodec,
 		reqreply.WithSecurityScheme("bearer", reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}),
@@ -914,7 +914,7 @@ func TestAsyncAPISpec_AggregatesSecuritySchemesFromRoutes_reqreply(t *testing.T)
 }
 
 func TestAddGlobalSecurity_populatesRouteHandleGlobalSecurity(t *testing.T) {
-	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	b.AddGlobalSecurity(route.Require("bearer"))
 
 	handle, err := reqreply.NewRoute[computeReq, computeResp]("compute/add", reqCodec, respCodec).Register(b)
@@ -978,7 +978,7 @@ func TestNewRouteFromTopic_ProducesIdenticalHandleToNewRoute(t *testing.T) {
 		reqreply.TopicParam{Name: "deviceID", Codec: &idCodec},
 	)
 
-	b1 := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	b1 := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	viaTopic, err := reqreply.NewRouteFromTopic[computeReq, computeResp](topic, reqCodec, respCodec,
 		reqreply.RouteMeta{Summary: "Command"},
 	).Register(b1)
@@ -986,7 +986,7 @@ func TestNewRouteFromTopic_ProducesIdenticalHandleToNewRoute(t *testing.T) {
 		t.Fatalf("Register via Topic: %v", err)
 	}
 
-	b2 := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	b2 := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	viaPlain, err := reqreply.NewRoute[computeReq, computeResp]("device/{deviceID}/cmd", reqCodec, respCodec,
 		reqreply.TopicParam{Name: "deviceID", Codec: &idCodec},
 		reqreply.RouteMeta{Summary: "Command"},
@@ -1014,7 +1014,7 @@ func TestNewRouteFromTopic_ProducesIdenticalHandleToNewRoute(t *testing.T) {
 // ── WithTopicCodec / WithTopicConstraints ─────────────────────────────────────
 
 func TestBuilder_withTopicCodec_validTopicPasses(t *testing.T) {
-	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"},
+	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"},
 		reqreply.WithTopicCodec(codex.String().Refine(validate.MQTTPublishTopic)))
 	if _, err := reqreply.NewRoute[computeReq, computeResp]("compute/add", reqCodec, respCodec).Register(b); err != nil {
 		t.Fatalf("Register error: %v", err)
@@ -1025,7 +1025,7 @@ func TestBuilder_withTopicCodec_validTopicPasses(t *testing.T) {
 }
 
 func TestBuilder_withTopicCodec_invalidTopicSurfacesError(t *testing.T) {
-	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"},
+	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"},
 		reqreply.WithTopicCodec(codex.String().Refine(validate.MQTTPublishTopic)))
 	_, err := reqreply.NewRoute[computeReq, computeResp]("compute/+/add", reqCodec, respCodec).Register(b)
 	if err == nil {
@@ -1047,7 +1047,7 @@ func TestBuilder_withTopicCodec_invalidTopicSurfacesError(t *testing.T) {
 }
 
 func TestBuilder_withTopicConstraints_appliesSameValidation(t *testing.T) {
-	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"},
+	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"},
 		reqreply.WithTopicConstraints(validate.MQTTPublishTopic))
 	_, err := reqreply.NewRoute[computeReq, computeResp]("compute/+/add", reqCodec, respCodec).Register(b)
 	if err == nil {
@@ -1060,7 +1060,7 @@ func TestBuilder_withTopicConstraints_appliesSameValidation(t *testing.T) {
 }
 
 func TestRouteHandle_BuildTopic_InvalidTopicError(t *testing.T) {
-	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"},
+	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"},
 		reqreply.WithTopicConstraints(validate.MQTTPublishTopic))
 	handle, err := reqreply.NewRoute[computeReq, computeResp]("device/{id}/cmd", reqCodec, respCodec,
 		reqreply.TopicParam{Name: "id"},
@@ -1082,7 +1082,7 @@ func TestRouteHandle_BuildTopic_InvalidTopicError(t *testing.T) {
 }
 
 func TestRouteHandle_ValidateTopic(t *testing.T) {
-	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"},
+	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"},
 		reqreply.WithTopicConstraints(validate.MQTTPublishTopic))
 	handle, err := reqreply.NewRoute[computeReq, computeResp]("compute/add", reqCodec, respCodec).Register(b)
 	if err != nil {

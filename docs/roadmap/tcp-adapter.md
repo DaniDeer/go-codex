@@ -315,9 +315,9 @@ var ComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
     reqreply.RouteMeta{OperationID: "computeAdd"},
 )
 
-b := reqreply.NewBuilder(reqreply.Info{Title: "Compute API", Version: "1.0.0"})
-b.AddServer("tcp", reqreply.Server{URL: "tcp://localhost:5555", Protocol: "tcp"})
-handle, _ := ComputeRoute.Register(b)
+server := reqreply.NewServer(reqreply.Info{Title: "Compute API", Version: "1.0.0"})
+server.AddServer("tcp", reqreply.ServerEntry{URL: "tcp://localhost:5555", Protocol: "tcp"})
+handle, _ := ComputeRoute.Register(server)
 
 // Server
 ln, _ := net.Listen("tcp", ":5555")

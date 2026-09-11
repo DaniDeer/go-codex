@@ -633,7 +633,7 @@ func TestMQTT5CallAdapter_ErrorsForwardedFromSrc(t *testing.T) {
 	client := &mockClient{}
 	router := newMockRouter()
 
-	rb := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	rb := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	handle, err := computeRoute.Register(rb)
 	if err != nil {
 		t.Fatalf("register route: %v", err)
@@ -664,7 +664,7 @@ func TestMQTT5ServeAdapter_HandlesRequestViaToolPort(t *testing.T) {
 	client := &mockClient{}
 	router := newMockRouter()
 
-	rb := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	rb := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	handle, err := computeRoute.Register(rb)
 	if err != nil {
 		t.Fatalf("register route: %v", err)
@@ -720,7 +720,7 @@ func TestMQTT5ServeAdapter_HandlesRequestViaToolPort(t *testing.T) {
 func TestMQTT5ServeAdapter_NoPipelineError(t *testing.T) {
 	client := &mockClient{}
 	router := newMockRouter()
-	rb := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	rb := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	handle, err := computeRoute.Register(rb)
 	if err != nil {
 		t.Fatalf("register route: %v", err)

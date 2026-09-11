@@ -71,7 +71,7 @@ type IOPort[Req, Resp any] struct {
 	// shared builder every other Pattern-carrying declaration in the
 	// service uses.
 	restBuilder     *rest.Server
-	reqReplyBuilder *reqreply.Builder
+	reqReplyBuilder *reqreply.Server
 	mcpBuilder      *apimcp.Builder
 	llmBuilder      *llm.Builder
 

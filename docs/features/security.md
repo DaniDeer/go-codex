@@ -503,7 +503,7 @@ gaps, tracked in [ZeroMQ Security Mechanism](../roadmap/zeromq-security.md).
 no security mechanism today, confirmed: `Descriptor.Security`/
 `GlobalSecurity` are never even read, since ZeroMQ carries no per-message
 metadata; same class of gap as pub/sub above — see
-[ReqReply Workflow Simplification](../roadmap/reqreply-workflow-simplification.md))
+[D-0004 — ReqReply Workflow Simplification](../design/d-0004-reqreply-workflow-simplification.md))
 mirrors the exact same declare-once, enforce-symmetrically model:
 
 ```go

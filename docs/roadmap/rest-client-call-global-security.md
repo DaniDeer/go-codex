@@ -1,6 +1,7 @@
 # REST `Client.Call` — dual-mode dispatch for `GlobalSecurity` visibility
 
-> **Status:** Design draft — spun out of the `reqreply-workflow-simplification.md`
+> **Status:** Design draft — spun out of the [D-0004 — ReqReply Workflow
+> Simplification](../design/d-0004-reqreply-workflow-simplification.md)
 > ergonomics-parity review; no code written, no spike run yet (the gap this
 > doc describes is already fully confirmed via direct code citations, not
 > a hypothesis).
@@ -9,7 +10,7 @@
 ## Motivation
 
 Confirmed while reviewing REST's real `Client.Call` code as the reference
-model for [ReqReply Workflow Simplification](reqreply-workflow-simplification.md):
+model for [D-0004 — ReqReply Workflow Simplification](../design/d-0004-reqreply-workflow-simplification.md):
 REST's own `Client.Call` has a real, load-bearing limitation that reqreply's
 newly-designed `Client.Call` no longer has — REST's client can **never**
 see `GlobalSecurity`, only per-route `Security`.
@@ -43,7 +44,7 @@ protected only by `GlobalSecurity` gets no `CredentialFunc`
 invocation/credential-header injection at all, with no error or warning.
 
 reqreply's own `Client.Call` (this session's confirmed design, see
-[ReqReply Workflow Simplification](reqreply-workflow-simplification.md)'s
+[D-0004 — ReqReply Workflow Simplification](../design/d-0004-reqreply-workflow-simplification.md)'s
 Decision 1) already resolves the IDENTICAL problem via a dual-mode
 type-switch: accept EITHER a raw, unregistered `Route` (today's REST-style
 behavior, `GlobalSecurity` invisible — an accepted, documented limitation)

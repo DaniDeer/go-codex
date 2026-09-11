@@ -2,7 +2,7 @@
 
 > See also: [`adapters/mqtt5` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mqtt5) · [`api/reqreply`](../concepts/api-contracts.md) · [`api/events`](../concepts/api-contracts.md) · [Feature: Metrics Observer](../features/observer.md) · [MQTT 3.1.1 Examples](mqtt.md)
 >
-> **Runnable demo**: [`examples/adapters-mqtt5`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt5) — leads with the PREFERRED `Client.Attach` + `Client.Publish`/`.Subscribe` workflow (Demo 1, spec printed for free from the same client), then showcases the handle-based escape hatch for User Properties, UserPropertyParam validation, ContentType auto-format, and Request-Reply.
+> **Runnable demo**: [`examples/adapters-mqtt5`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt5) — leads with the PREFERRED `Client.Attach` + `Client.Publish`/`.Subscribe` workflow (Demo 1, spec printed for free from the same client), then showcases the handle-based escape hatch for User Properties, UserPropertyParam validation, and ContentType auto-format. Request-Reply now lives in its own dedicated project: [`examples/reqreply-api`](https://github.com/DaniDeer/go-codex/tree/main/examples/reqreply-api).
 
 `adapters/mqtt5` provides codec-backed adapters for **MQTT 5.0** using the [`paho.golang`](https://github.com/eclipse/paho.golang) library. It follows the same **declare → register → handle → adapt** pattern as `adapters/mqtt`, `adapters/nethttp`, and `adapters/zeromq`.
 
@@ -11,7 +11,7 @@
 | Feature | MQTT 3.1.1 (`adapters/mqtt`) | MQTT 5.0 (`adapters/mqtt5`) |
 |---|---|---|
 | PUB/SUB | ✅ | ✅ (unchanged API) |
-| Request-Reply | ❌ | ✅ `Serve` + `Call` |
+| Request-Reply | ❌ | ✅ `reqreply.Client`/`.Server` `Attach` workflow (see [`examples/reqreply-api`](https://github.com/DaniDeer/go-codex/tree/main/examples/reqreply-api)) |
 | User Properties | ❌ `validateSecurityCredentials` no-op | ✅ Per-message key-value metadata |
 | Content-Type | ❌ Format agreed out-of-band | ✅ Auto format selection from message property |
 | Message Expiry | ❌ | Phase 2 |
@@ -185,6 +185,16 @@ spec, _ := eventsClient.AsyncAPISpec()
 
 MQTT 5.0 introduces `ResponseTopic` and `CorrelationData` message properties, enabling typed request-reply over pub/sub infrastructure.
 
+> **Preferred workflow**: `reqreply.NewClient()` + `mqtt5.AttachClient`/`mqtt5.AttachServer`
+> mirror `events.Client`'s `Attach` + `.Publish`/`.Subscribe` workflow — one `Attach`
+> call, then plain `Client.Call`/`Client.CallAsync` and `Server.Serve`, no further
+> `mqtt5adapter.*` calls needed at the call site. The lower-level `Serve`/`Call`
+> functions below remain as the escape hatch for custom `SecurityFunc`,
+> per-call `Observer` overrides, or non-default `ReplyTopicPrefix`/`Timeout`. See
+> [`examples/reqreply-api`](https://github.com/DaniDeer/go-codex/tree/main/examples/reqreply-api)
+> for the full `Attach`-based workflow, dual-mode `Client.Call`, concurrent
+> multi-route dispatch, `CallAsync`/`Future`, and AsyncAPI spec printing.
+
 **How it works:**
 1. Requester generates a unique reply topic: `replies/<uuid>`
 2. Requester publishes to the service topic with `ResponseTopic=replies/<uuid>` and `CorrelationData`
@@ -214,6 +224,54 @@ var TenantComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 ```
 
 `reqreply.TopicParam` mirrors `events.TopicParam` for MQTT channel subscriptions — same field structure, same `.WithCodec(c)` method, same error types.
+
+### Preferred: `Server`/`Client` + `Attach`
+
+```go
+// Server side: WithHandler + Register is ONE fluent chain — the route is
+// dispatchable the moment it's registered, no separate Handle step.
+server := reqreply.NewServer(reqreply.Info{Title: "Compute API", Version: "1.0.0"})
+server.AddServer("mqtt5", reqreply.ServerEntry{URL: "mqtt://broker:1883", Protocol: "mqtt5"})
+handle, err := ComputeRoute.WithHandler(func(ctx context.Context, req ComputeReq) (ComputeResp, error) {
+    return ComputeResp{Sum: req.X + req.Y}, nil
+}).Register(server)
+if err != nil {
+    log.Fatal(err)
+}
+if err := mqtt5adapter.AttachServer(server, client, router); err != nil {
+    log.Fatal(err)
+}
+go server.Serve(ctx) // dispatches every registered route concurrently, blocks until ctx is cancelled
+
+// Client side: Attach once, then plain Call/CallAsync — no *RouteHandle needed
+// for a raw Route call (GlobalSecurity is invisible in that mode, same
+// accepted limitation as REST's own Route.ClientHandle()).
+reqreplyClient := reqreply.NewClient()
+if err := mqtt5adapter.AttachClient(reqreplyClient, client, router); err != nil {
+    log.Fatal(err)
+}
+respAny, err := reqreplyClient.Call(ctx, ComputeRoute, ComputeReq{X: 3, Y: 4})
+resp := respAny.(ComputeResp)
+
+// Async: CallAsync returns a *reqreply.Future[ComputeResp] immediately;
+// resolve it later, from a different call site if needed.
+futureAny, err := reqreplyClient.CallAsync(ctx, ComputeRoute, ComputeReq{X: 10, Y: 20})
+future := futureAny.(*reqreply.Future[ComputeResp])
+// ... do other independent work ...
+resp2, err := future.Wait(ctx)
+```
+
+Use an already-registered `*RouteHandle` (instead of the raw `Route`) with
+`Client.Call`/`CallAsync` when `GlobalSecurity` needs to be visible and
+enforced client-side — see [`examples/reqreply-api`](https://github.com/DaniDeer/go-codex/tree/main/examples/reqreply-api)'s
+dual-mode demo for the side-by-side contrast.
+
+### Escape hatch: `Serve`/`Call` directly
+
+Use these lower-level functions instead of `Attach` when you need a custom
+`SecurityFunc`, a per-call `Observer` override, or non-default
+`ReplyTopicPrefix`/`Timeout`/`ReplyTopicBuilder` — everything below still
+works against the SAME route declarations shown above.
 
 ### Responder (Serve)
 
@@ -302,14 +360,14 @@ resp, err = mqtt5adapter.Call(ctx, client, router, handle, req,
 
 ### AsyncAPI spec for request-reply
 
-Use `api/reqreply.Builder` (transport-agnostic — the same builder works for ZMQ):
+Use `api/reqreply.Server` (transport-agnostic — the same server works for ZMQ):
 
 ```go
-rrBuilder := reqreply.NewBuilder(reqreply.Info{Title: "Compute API", Version: "1.0.0"})
-rrBuilder.AddServer("mqtt5", reqreply.Server{URL: "mqtt://broker:1883", Protocol: "mqtt5"})
-handle, _ := ComputeRoute.Register(rrBuilder)
+server := reqreply.NewServer(reqreply.Info{Title: "Compute API", Version: "1.0.0"})
+server.AddServer("mqtt5", reqreply.ServerEntry{URL: "mqtt://broker:1883", Protocol: "mqtt5"})
+handle, _ := ComputeRoute.Register(server)
 
-doc, _ := rrBuilder.AsyncAPISpec()  // AsyncAPI 3.0 with reply: block
+doc, _ := server.AsyncAPISpec()  // AsyncAPI 3.0 with reply: block
 ```
 
 ---
@@ -490,7 +548,8 @@ if errors.As(err, &encErr) {
 
 - [`adapters/mqtt5` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mqtt5)
 - [`api/reqreply` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/reqreply)
-- [examples/adapters-mqtt5](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt5) — runnable demo: Client.Attach (preferred), User Properties, UserPropertyParam codec validation, ContentType auto-format, request-reply, AsyncAPI specs
+- [examples/adapters-mqtt5](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt5) — runnable demo: Client.Attach (preferred), User Properties, UserPropertyParam codec validation, ContentType auto-format, AsyncAPI specs
+- [examples/reqreply-api](https://github.com/DaniDeer/go-codex/tree/main/examples/reqreply-api) — request-reply over MQTT 5 AND ZeroMQ: `Client.Attach`/`Server.Attach` workflow, dual-mode `Client.Call`, concurrent multi-route dispatch, route-level + global security, `CallAsync`/`Future`, AsyncAPI spec printing
 - [MQTT 3.1.1 Examples](mqtt.md)
 - [Concept: Codec Layers as Observable Layers](../concepts/observable-layers.md)
 - [Feature: Metrics Observer](../features/observer.md)

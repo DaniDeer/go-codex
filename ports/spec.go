@@ -105,7 +105,7 @@ func RegisterEvent[T any](b *events.Client, port any) error {
 // declared and bound to an adapter.
 //
 // Returns [MissingPatternError] if the port declared no [ReqReplyPattern].
-func RegisterReqReply[Req, Resp any](b *reqreply.Builder, port any) error {
+func RegisterReqReply[Req, Resp any](b *reqreply.Server, port any) error {
 	ph, ok := port.(patternHolder)
 	if !ok {
 		return MissingPatternError{Port: portName(port), Kind: patternKindReqReply}

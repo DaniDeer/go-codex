@@ -1,13 +1,13 @@
 # ZeroMQ Examples
 
-> See also: [`adapters/zeromq` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/zeromq) · [`api/zeromq` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/zeromq) · [`api/events`](../concepts/api-contracts.md) · [`api/rest`](../concepts/api-contracts.md) · [Feature: Metrics Observer](../features/observer.md)
+> See also: [`adapters/zeromq` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/zeromq) · [`api/reqreply` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/reqreply) · [`api/events`](../concepts/api-contracts.md) · [`api/rest`](../concepts/api-contracts.md) · [Feature: Metrics Observer](../features/observer.md)
 
-go-codex provides two ZeroMQ packages:
+go-codex provides two packages behind ZeroMQ support:
 
 | Package | Purpose |
 |---|---|
-| `adapters/zeromq` | Codec-backed adapters: `NewPublishTransport`/`NewSubscribeTransport` (pub/sub, consumed via `events.PublishHandle`/`events.SubscribeHandle`), `Serve`, `Call`, `ServeRouter`, `CallDealer` |
-| `api/zeromq` | AsyncAPI 3.0 spec builder for REQ/REP contracts (`Register`, `Builder`, `AsyncAPISpec`) |
+| `adapters/zeromq` | Codec-backed adapters: `NewPublishTransport`/`NewSubscribeTransport` (pub/sub, consumed via `events.PublishHandle`/`events.SubscribeHandle`), `AttachServer`/`AttachClient`/`AttachRouterServer`/`AttachDealerClient` (request-reply, preferred), `Serve`/`Call`/`ServeRouter`/`CallDealer` (request-reply escape hatch) |
+| `api/reqreply` | Transport-agnostic AsyncAPI 3.0 spec builder for request-reply contracts (`NewRoute`, `Server`, `Client`, `AsyncAPISpec`) — shared with `adapters/mqtt5`, not ZMQ-specific despite the historical `api/zeromq` name |
 
 Both follow the same **declare → register → handle → adapt** pattern as the HTTP and MQTT adapters.
 
@@ -270,103 +270,116 @@ spec, _ := eventsClient.AsyncAPISpec()
 
 ## REQ/REP — typed RPC
 
-### Route declaration (shared contract)
+Request-reply lives in `api/reqreply` (a transport-agnostic AsyncAPI 3.0
+spec builder shared by `adapters/mqtt5` and `adapters/zeromq` — see
+[`examples/reqreply-api`](https://github.com/DaniDeer/go-codex/tree/main/examples/reqreply-api)
+for the full runnable workflow across both transports, REQ/REP AND
+ROUTER/DEALER).
+
+### Route declaration
 
 ```go
-// contract/contract.go
-var ComputeRoute = rest.NewRoute[ComputeReq, ComputeResp](
-    "POST", "/compute",
+var ComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
+    "compute/add",
     computeReqCodec, computeRespCodec,
-    rest.RouteMeta{OperationID: "compute"},
+    reqreply.RouteMeta{OperationID: "computeAdd", Summary: "Add two integers."},
 )
 ```
 
-### Register with ZMQ builder (AsyncAPI spec + handle)
+### Preferred: `Server`/`Client` + `Attach`
 
-Use `api/zeromq.Register` to get both the AsyncAPI spec and the route handle in one call:
+`zeromq.AttachServer`/`AttachClient` mirror `events.Client`'s
+`Attach`+`.Publish`/`.Subscribe` workflow: one `Attach` call (against a
+`topic → socket` map — REQ/REP sockets are point-to-point, unlike PUB/SUB's
+topic-multiplexed SUB socket), then plain `Server.Serve`/`Client.Call`/
+`Client.CallAsync`, no further `zeromq.*` calls needed at the call site.
 
 ```go
-import (
-    zmqadapter "github.com/DaniDeer/go-codex/adapters/zeromq"
-    zmqapi "github.com/DaniDeer/go-codex/api/zeromq"
-)
+server := reqreply.NewServer(reqreply.Info{Title: "Compute API", Version: "1.0.0"})
+server.AddServer("zmq", reqreply.ServerEntry{URL: "tcp://localhost:5556", Protocol: "zmq"})
+handle, err := ComputeRoute.WithHandler(func(ctx context.Context, req ComputeReq) (ComputeResp, error) {
+    return ComputeResp{Sum: req.X + req.Y}, nil
+}).Register(server)
+if err != nil {
+    log.Fatal(err)
+}
 
-zmqBuilder := zmqapi.NewBuilder(zmqapi.Info{Title: "Compute API", Version: "1.0.0"})
-zmqBuilder.AddServer("zmq", zmqapi.Server{URL: "tcp://localhost:5556", Protocol: "zmq"})
+rep, _ := zmq.NewSocket(zmq.REP)
+rep.Bind("tcp://*:5556")
+sockets := map[string]zeromq.FramedSocket{"compute/add": WrapSocket(rep)}
+if err := zeromq.AttachServer(server, sockets); err != nil {
+    log.Fatal(err) // e.g. zeromq.MissingSocketError if a registered route has no socket entry
+}
+go server.Serve(ctx) // dispatches every registered route concurrently, blocks until ctx cancelled
 
-// Register returns the same *rest.RouteHandle — no new types.
-handle, _ := zmqapi.Register(zmqBuilder, contract.ComputeRoute,
-    zmqapi.ContractMeta{OperationID: "compute", Summary: "Add two integers."})
+// Client
+req, _ := zmq.NewSocket(zmq.REQ)
+req.Connect("tcp://localhost:5556")
+client := reqreply.NewClient()
+if err := zeromq.AttachClient(client, map[string]zeromq.FramedSocket{"compute/add": WrapSocket(req)}); err != nil {
+    log.Fatal(err)
+}
+respAny, err := client.Call(ctx, ComputeRoute, ComputeReq{X: 3, Y: 4})
+resp := respAny.(ComputeResp)
 
-// Adapter calls are IDENTICAL to Phase 1 (Serve/Call signatures unchanged).
-zmqadapter.Serve(ctx, sock, handle, fn, zmqadapter.ServeOptions{Observer: obs})
+// Async: CallAsync returns a *reqreply.Future[ComputeResp] immediately.
+futureAny, err := client.CallAsync(ctx, ComputeRoute, ComputeReq{X: 10, Y: 20})
+future := futureAny.(*reqreply.Future[ComputeResp])
+resp2, err := future.Wait(ctx)
 
-// AsyncAPI 3.0 with request-reply
-doc, _ := zmqBuilder.AsyncAPISpec()
-yaml, _ := doc.MarshalYAML()
+// AsyncAPI 3.0 spec, derived from the route declarations already made.
+doc, _ := server.AsyncAPISpec()
+yamlBytes, _ := doc.MarshalYAML()
 ```
 
 The generated AsyncAPI spec includes `reply:` on the send operation, linking to a reply channel:
 
 ```yaml
 operations:
-  sendCompute:
+  sendComputeAdd:
     action: send
     channel:
-      $ref: '#/channels/compute'
+      $ref: '#/channels/computeAdd'
     reply:
       channel:
-        $ref: '#/channels/computeReply'
-  receiveComputeReply:
+        $ref: '#/channels/computeAddReply'
+  receiveComputeAddReply:
     action: receive
     channel:
-      $ref: '#/channels/computeReply'
+      $ref: '#/channels/computeAddReply'
 ```
 
-### Server (REP socket)
+### Escape hatch: `Serve`/`Call` directly
+
+Use these lower-level functions instead of `Attach` when you need a custom
+per-call `Observer` override or other fine-grained control — they work
+against the SAME route declarations shown above, and `Route.ClientHandle()`
+gets a handle with no `Server` needed at all:
 
 ```go
-func main() {
-    ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-    defer stop()
-
-    zmqBuilder := zmqapi.NewBuilder(zmqapi.Info{Title: "Compute", Version: "1.0.0"})
-    zmqBuilder.AddServer("zmq", zmqapi.Server{URL: "tcp://localhost:5556", Protocol: "zmq"})
-    handle, _ := zmqapi.Register(zmqBuilder, contract.ComputeRoute,
-        zmqapi.ContractMeta{OperationID: "compute"})
-
-    rep, _ := zmq.NewSocket(zmq.REP)
-    defer rep.Close()
-    rep.Bind("tcp://*:5556")
-
-    sock := WrapSocket(rep)
-    if err := zmqadapter.Serve(ctx, sock, handle, func(ctx context.Context, req ComputeReq) (ComputeResp, error) {
-        return ComputeResp{Sum: req.X + req.Y}, nil
-    }, zmqadapter.ServeOptions{Observer: obs}); err != nil {
-        log.Fatal(err)
-    }
+// Server (REP socket)
+handle := ComputeRoute.ClientHandle() // or Route.Register(server) if a spec is also needed
+rep, _ := zmq.NewSocket(zmq.REP)
+defer rep.Close()
+rep.Bind("tcp://*:5556")
+sock := WrapSocket(rep)
+if err := zeromq.Serve(ctx, sock, handle, func(ctx context.Context, req ComputeReq) (ComputeResp, error) {
+    return ComputeResp{Sum: req.X + req.Y}, nil
+}, zeromq.ServeOptions{Observer: obs}); err != nil {
+    log.Fatal(err)
 }
-```
 
-### Client (REQ socket)
-
-```go
-func main() {
-    // Use ClientHandle() for client-only scenario (no builder, no spec)
-    handle := contract.ComputeRoute.ClientHandle()
-
-    req, _ := zmq.NewSocket(zmq.REQ)
-    defer req.Close()
-    req.Connect("tcp://localhost:5556")
-
-    sock := WrapSocket(req)
-    result, err := zmqadapter.Call(ctx, sock, handle, ComputeReq{X: 3, Y: 4},
-        zmqadapter.CallOptions{Observer: obs})
-    if err != nil {
-        log.Fatal(err)
-    }
-    log.Printf("sum: %d", result.Sum)
+// Client (REQ socket)
+req, _ := zmq.NewSocket(zmq.REQ)
+defer req.Close()
+req.Connect("tcp://localhost:5556")
+sock = WrapSocket(req)
+result, err := zeromq.Call(ctx, sock, handle, ComputeReq{X: 3, Y: 4},
+    zeromq.CallOptions{Observer: obs})
+if err != nil {
+    log.Fatal(err)
 }
+log.Printf("sum: %d", result.Sum)
 ```
 
 ---
@@ -459,6 +472,37 @@ DEALER sends:    ["", payload]
 DEALER receives: ["", "ok", encoded_response]
 ```
 
+### Preferred: `Server`/`Client` + `Attach` (ROUTER/DEALER)
+
+`zeromq.AttachRouterServer`/`AttachDealerClient` are the ROUTER/DEALER
+counterparts of `AttachServer`/`AttachClient` above — same `topic → socket`
+map, same `MissingSocketError` upfront check, same `Server.Serve`/
+`Client.Call`/`Client.CallAsync` call sites once attached; the identity-
+frame envelope below is handled internally, transparent to the caller:
+
+```go
+server := reqreply.NewServer(reqreply.Info{Title: "Compute API", Version: "1.0.0"})
+server.AddServer("zmq", reqreply.ServerEntry{URL: "tcp://localhost:5557", Protocol: "zmq"})
+handle, _ := RouterComputeRoute.WithHandler(fn).Register(server)
+
+router, _ := zmq.NewSocket(zmq.ROUTER)
+router.Bind("tcp://*:5557")
+if err := zeromq.AttachRouterServer(server, map[string]zeromq.FramedSocket{"compute/router-add": WrapSocket(router)}); err != nil {
+    log.Fatal(err)
+}
+go server.Serve(ctx)
+
+dealer, _ := zmq.NewSocket(zmq.DEALER)
+dealer.Connect("tcp://localhost:5557")
+client := reqreply.NewClient()
+if err := zeromq.AttachDealerClient(client, map[string]zeromq.FramedSocket{"compute/router-add": WrapSocket(dealer)}); err != nil {
+    log.Fatal(err)
+}
+respAny, err := client.Call(ctx, RouterComputeRoute, ComputeReq{X: 3, Y: 4})
+```
+
+### Escape hatch: `ServeRouter`/`CallDealer` directly
+
 `ServeRouter` and `CallDealer` reuse the same `ServeOptions`/`CallOptions` and `ServeError`/`CallError` types:
 
 ```go
@@ -532,11 +576,10 @@ client.SetOption(zmq4.PLAIN_PASSWORD, "mypass")
 ## See also
 
 - [`adapters/zeromq` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/zeromq)
-- [`api/zeromq` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/zeromq)
+- [`api/reqreply` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/reqreply)
 - [Concept: Codec Layers as Observable Layers](../concepts/observable-layers.md)
 - [Concept: API Contracts](../concepts/api-contracts.md)
 - [Feature: Metrics Observer](../features/observer.md)
 - [examples/adapters-zeromq](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-zeromq) — PUB/SUB demo
-- [examples/adapters-zeromq-reqrep](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-zeromq-reqrep) — REQ/REP with AsyncAPI spec
-- [examples/adapters-zeromq-dealer-router](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-zeromq-dealer-router) — DEALER/ROUTER concurrent demo
+- [examples/reqreply-api](https://github.com/DaniDeer/go-codex/tree/main/examples/reqreply-api) — `api/reqreply`'s `Client.Attach`/`Server.Attach` workflow: REQ/REP AND ROUTER/DEALER, dual-mode `Client.Call`, concurrent multi-route dispatch, route-level + global security, `CallAsync`/`Future`, AsyncAPI spec printing
 - [pebbe/zmq4](https://github.com/pebbe/zmq4) — recommended ZMQ Go binding

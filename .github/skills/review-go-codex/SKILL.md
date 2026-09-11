@@ -82,9 +82,13 @@ Read all of these before opening any finding:
 | `adapters/mcpgo/stream.go`                      | MCP stream bridges: ToolLatestHandler, ToolPipelineHandler               |
 | `adapters/sql/stream.go`                        | SQL stream bridges: QueryStream, DrainInsert                             |
 | `adapters/file/stream.go`                       | File stream bridges: ScanStream, WatchStream, DrainWrite (new package)  |
+| `api/reqreply/{builder,client,future,route,types}.go` | Layer 2 reqreply: `Server`/`Client`/`ServerTransport`/`ClientTransport`, `Route.WithHandler`+`Register`, `Future`/`FutureFactory`, error taxonomy — see `docs/design/d-0004-reqreply-workflow-simplification.md` |
+| `adapters/mqtt5/reqreply_transport.go`          | mqtt5 reqreply: `AttachServer`/`AttachClient` reflection-shim transports |
+| `adapters/zeromq/reqreply_transport.go`         | zeromq reqreply: `AttachServer`/`AttachClient` (REQ/REP) + `AttachRouterServer`/`AttachDealerClient` (ROUTER/DEALER), `MissingSocketError` |
+| `examples/reqreply-api/`                        | Full `Client.Attach`/`Server.Attach` workflow example (mqtt5 + zeromq, REQ/REP + ROUTER/DEALER, 7 demos) — the reqreply-workflow-simplification reference project |
 | `.github/instructions/go-codex.instructions.md` | Design contract and prior decisions                                      |
 
-Also scan: `api/rest/*_test.go`, `api/events/*_test.go`, `api/mcp/*_test.go`, `adapters/mcpgo/*_test.go`, `forge/*_test.go`, `render/pipeline/*_test.go`, `adapters/mqtt/stream_test.go`, `adapters/zeromq/stream_test.go`
+Also scan: `api/rest/*_test.go`, `api/events/*_test.go`, `api/mcp/*_test.go`, `adapters/mcpgo/*_test.go`, `forge/*_test.go`, `render/pipeline/*_test.go`, `adapters/mqtt/stream_test.go`, `adapters/zeromq/stream_test.go`, `api/reqreply/*_test.go`, `adapters/mqtt5/reqreply_transport_test.go`, `adapters/zeromq/reqreply_transport_test.go`
 
 Then read `references/history.md` to see what was already fixed. **Do not re-report these.**
 

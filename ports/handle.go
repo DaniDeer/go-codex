@@ -417,7 +417,7 @@ func buildDualCodecPatternHandles[Req, Resp any](
 	reqCodec codex.Codec[Req],
 	respCodec codex.Codec[Resp],
 	restBuilder *rest.Server,
-	reqReplyBuilder *reqreply.Builder,
+	reqReplyBuilder *reqreply.Server,
 	mcpBuilder *apimcp.Builder,
 	cacheAllowed bool,
 	llmBuilder *llm.Builder,
@@ -443,7 +443,7 @@ func buildDualCodecPatternHandles[Req, Resp any](
 			route := reqreply.NewRoute[Req, Resp](pat.Topic, reqCodec, respCodec, pat.Opts...)
 			b := reqReplyBuilder
 			if b == nil {
-				b = reqreply.NewBuilder(reqreply.Info{})
+				b = reqreply.NewServer(reqreply.Info{})
 			}
 			handle, err := route.Register(b)
 			if err != nil {

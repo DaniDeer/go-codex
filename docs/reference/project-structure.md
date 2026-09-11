@@ -361,14 +361,25 @@ go-codex/
     ├── adapters-mqtt-security/ # Paho MQTT: security credentials, SecurityFunc, observer
     ├── adapters-mqtt-contract/ # codec-as-contract MQTT: shared contract/, producer + consumer
     │   └── contract/           #   shared Channel specs, codecs, types (importable by both sides)
-    ├── adapters-mqtt5/         # MQTT 5.0: PUB/SUB + request-reply (Serve/Call), User Properties, ContentType
+    ├── adapters-mqtt5/         # MQTT 5.0 PUB/SUB: User Properties, ContentType, UserPropertyParam
     └── gob-contract/           # Go library as contract: gob wire encoding, no code-gen
         └── contract/           #   shared Channel, codec, Gob format — compiler-enforced contract
     │
+    │   # ── Request-Reply (Layer 2) ─────────────────────────────────────────────
+    ├── reqreply-api/           # declare→build-server→build-client reqreply project: routes/,
+    │   │                       # handlers/, mqtt5server/, zeromqserver/, zeromqrouterserver/,
+    │   │                       # client/ packages; dual-mode Client.Call, concurrent multi-
+    │   │                       # route dispatch, route-level + global security, CallAsync/
+    │   │                       # Future, AsyncAPI spec printing, ZMQ REQ/REP + ROUTER/DEALER
+    │   ├── routes/             #   declare: domain codecs, security schemes, unattached Route values
+    │   ├── handlers/           #   implement: adapter-agnostic business logic
+    │   ├── mqtt5server/        #   assemble (mqtt5): AttachServer + mock broker/router
+    │   ├── zeromqserver/       #   assemble (zeromq REQ/REP): AttachServer + 3 socket pairs
+    │   ├── zeromqrouterserver/ #   assemble (zeromq ROUTER/DEALER): AttachRouterServer
+    │   └── client/             #   assemble (client): mqtt5/zeromq Attach* + per-mode variants
+    │
     │   # ── ZeroMQ (Layer 2) ─────────────────────────────────────────────────────
-    ├── adapters-zeromq/            # ZeroMQ PUB/SUB: three-layer pipeline, FramedSocket, observer
-    ├── adapters-zeromq-reqrep/     # ZeroMQ REQ/REP: Serve/Call blocking pattern
-    └── adapters-zeromq-dealer-router/ # ZeroMQ DEALER/ROUTER: concurrent request-reply
+    └── adapters-zeromq/            # ZeroMQ PUB/SUB: three-layer pipeline, FramedSocket, observer
     │
     │   # ── MCP (Layer 2) ────────────────────────────────────────────────────────
     ├── adapters-mcp/           # MCP server: Tools, Resources, Prompts, MCPSpec, observer

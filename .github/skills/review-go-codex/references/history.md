@@ -1,6 +1,55 @@
-# go-codex Review History (R1–R133, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2)
+# go-codex Review History (R1–R134, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 134 (reqreply-workflow-simplification — implementation audit + skill reference-material sync)
+
+Focused review of the freshly-shipped `docs/design/d-0004-reqreply-workflow-simplification.md`
+implementation (`api/reqreply`'s new `Server`/`Client`/`Attach`/`CallAsync`/`Future` mechanism,
+`adapters/mqtt5`/`adapters/zeromq`'s 6 new `Attach*` functions, `examples/reqreply-api`), per a
+direct user request. Ran 3 independent, parallel full-coverage audits (core API, adapters,
+examples+doc-sync claims, including live `go build`/`go run` x3) comparing the design doc's every
+concrete claim against the actual code — found the IMPLEMENTATION itself fully correct (no code
+bugs: Server/Client/Attach/Serve/Call/CallAsync/Future/error taxonomy, the 6 Attach functions,
+MissingSocketError's upfront/lazy asymmetry, ROUTER/DEALER identity-frame handling, and the
+documented v1-scope limitation all match the doc exactly). Found 4 stale, non-compiling doc code
+samples (pre-Phase-0-rename `reqreply.Server{URL:...}` literal / `reqreply.NewBuilder` instead of
+`reqreply.ServerEntry{...}` / `reqreply.NewServer`) across `docs/guides/mqtt5.md`,
+`docs/guides/asyncapi.md`, `docs/roadmap/tcp-adapter.md`, `docs/roadmap/amqp-adapter.md` — all
+fixed. Then applied THIS skill's own full checklist against the new implementation and found the
+skill's OWN reference material (not the library) had never been updated to cover it:
+
+- **G1 [small] — SKILL.md's Phase 1 file-reading table had no entry for any reqreply file**:
+  `api/reqreply/*.go`, `adapters/mqtt5/reqreply_transport.go`,
+  `adapters/zeromq/reqreply_transport.go`, `examples/reqreply-api/` were all absent — a default
+  (non-reqreply-focused) future review round would systematically never read these files. Fixed by
+  adding rows for all four, plus their test files to the "Also scan" line.
+- **G2 [small] — checklist.md §12's `api/reqreply` boundary-symmetry row only described the OLD
+  `mqtt5.Serve`+`CallHandle` escape hatch**, omitting the NEW `Client.Attach`+6 adapter `Attach*`
+  functions entirely — including a confirmed, code-verified gap: these reflection shims always use
+  plain JSON `handle.Decode`/`handle.Encode`, NEVER `DecodeMerged`/`MergeFields`, so merge-field
+  support, per-call format overrides, and `ErrorPattern`-typed replies only work through the escape
+  hatch, not the new preferred workflow. Per the checklist's own re-verification rule ("if a
+  boundary marked ❌/⚠️ is touched by the change under review, the known-gap exemption no longer
+  applies"), this needed recording since reqreply was extensively touched this round. Fixed by
+  splitting the single row into two — old escape hatch (full support, unchanged) vs. new
+  Attach-based workflow (documented gap, explicit ⚠️) — mirroring how mqtt5/zeromq's REQ/REP vs.
+  ROUTER/DEALER variants are already split elsewhere in the same table.
+- **G3 [trivial] — checklist.md §7's error-sentinel table had no row for reqreply's new error
+  taxonomy**: `NoServerTransportAttachedError`, `NoClientTransportAttachedError`,
+  `ServerTransportAlreadyAttachedError`, `ClientTransportAlreadyAttachedError`,
+  `TransportTypeMismatchError`, `FutureTimeoutError`, and `zeromq.MissingSocketError` were entirely
+  unlisted. Fixed by adding a dedicated `### reqreply package` subsection.
+- **G4 [trivial] — checklist.md §1 ("Builder naming"/`AddServer` rows) and §3 (rest.Server vs.
+  events.Client parity table) only ever compared two of go-codex's three builder-shaped types**:
+  `reqreply.Server` (which now mirrors `rest.Server`'s `AddServer`/`AddGlobalSecurity` shape AND
+  `events.Client`'s Attach-carries-dispatch unification, plus reqreply-specific
+  `RegisteredTopics`/`Topical`) had no entry anywhere. Fixed by adding `reqreply.Server` to both.
+
+Verification: `gofmt -l .`/`go build ./...` clean (all changes this round were doc-only — 4 guide/
+roadmap doc fixes plus this skill's own SKILL.md/checklist.md updates; no Go source touched).
 
 ---
 

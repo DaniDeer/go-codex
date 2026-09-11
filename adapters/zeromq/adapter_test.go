@@ -185,7 +185,7 @@ func newMergeChannelHandle() *events.ChannelHandle[sensorReading] {
 }
 
 func newRouteHandle() *reqreply.RouteHandle[computeReq, computeResp] {
-	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	h, err := reqreply.NewRoute[computeReq, computeResp](
 		"/compute",
 		computeReqCodec, computeRespCodec,
@@ -629,7 +629,7 @@ func newErrorPatternRouteHandle(t *testing.T) *reqreply.RouteHandle[computeReq, 
 			},
 		),
 	)
-	handle, err := route.Register(reqreply.NewBuilder(reqreply.Info{Title: "t", Version: "1.0.0"}))
+	handle, err := route.Register(reqreply.NewServer(reqreply.Info{Title: "t", Version: "1.0.0"}))
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}

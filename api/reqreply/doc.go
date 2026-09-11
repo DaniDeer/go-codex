@@ -23,11 +23,11 @@
 //	    ).WithCode("conflict").WithDescription("Business conflict.").WithSchemaName("ConflictError"),
 //	)
 //
-//	// Register with a Builder to get a RouteHandle and an AsyncAPI 3.0 spec.
-//	builder := reqreply.NewBuilder(reqreply.Info{Title: "Compute API", Version: "1.0.0"})
-//	builder.AddServer("zmq", reqreply.Server{URL: "tcp://localhost:5556", Protocol: "zmq"})
-//	// OR: builder.AddServer("mqtt5", reqreply.Server{URL: "mqtt://broker:1883", Protocol: "mqtt5"})
-//	handle, err := ComputeRoute.Register(builder)
+//	// Register with a Server to get a RouteHandle and an AsyncAPI 3.0 spec.
+//	server := reqreply.NewServer(reqreply.Info{Title: "Compute API", Version: "1.0.0"})
+//	server.AddServer("zmq", reqreply.ServerEntry{URL: "tcp://localhost:5556", Protocol: "zmq"})
+//	// OR: server.AddServer("mqtt5", reqreply.ServerEntry{URL: "mqtt://broker:1883", Protocol: "mqtt5"})
+//	handle, err := ComputeRoute.Register(server)
 //
 //	// Same handle — works with any request-reply adapter. Handler/encode
 //	// errors matching a declared ErrorPattern get the typed payload as the
@@ -37,7 +37,7 @@
 //
 //	// AsyncAPI 3.0 spec with request-reply reply: block, plus the
 //	// ErrorPattern-derived reply-error channel/operation:
-//	doc, _ := builder.AsyncAPISpec()
+//	doc, _ := server.AsyncAPISpec()
 //	yaml, _ := doc.MarshalYAML()
 //
 // # Reusing a topic across routes
@@ -63,4 +63,34 @@
 // [ErrorReplyMeta] previously required a separate declaration for — one
 // declaration now produces both. [ErrorReplyMeta] remains available
 // unchanged for spec-only declarations that need no runtime dispatch.
+//
+// # Server/Client + Attach (workflow simplification, in progress)
+//
+// [Server] absorbs [Builder]'s spec-accumulation role (AddServer,
+// AddGlobalSecurity, route registration) AND owns request-reply dispatch
+// once a [ServerTransport] is attached via [Server.Attach] — mirroring
+// [rest.Server]'s identical unification. [Builder]/[NewBuilder] remain
+// available as DEPRECATED aliases for [Server]/[NewServer] during the
+// migration described in
+// [docs/design/d-0004-reqreply-workflow-simplification.md]; existing code using
+// [Builder] keeps compiling and behaving identically.
+//
+// [Route.WithHandler] attaches a domain handler fluently, PRE-registration
+// — mirroring [rest.Route.WithHandler]'s real, dominant idiom exactly:
+//
+//	handle, err := ComputeRoute.WithHandler(computeHandler).Register(server)
+//	_ = mqtt5.Attach(server, client, router) // adapter-specific, lands per-adapter
+//	err = server.Serve(ctx)                  // dispatches every registered route
+//
+// [Client] offers a blocking [Client.Call] (accepting EITHER a raw,
+// unregistered [Route] — REST-style, [RouteHandle.GlobalSecurity]
+// invisible — OR an already-registered *[RouteHandle], with
+// [RouteHandle.GlobalSecurity] enforced) AND an additive, non-blocking
+// [Client.CallAsync] returning a *[Future][Resp] resolved later,
+// asynchronously — needed because reqreply's transport (unlike REST's
+// synchronous HTTP) is genuinely asynchronous underneath.
+//
+// Per-adapter [ServerTransport]/[ClientTransport] implementations (e.g.
+// mqtt5.Attach, zeromq.Attach) land incrementally — see the roadmap doc's
+// phased implementation plan for the current status of each transport.
 package reqreply

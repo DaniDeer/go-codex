@@ -13,7 +13,7 @@ For the full API reference and all code examples, see the feature page.
 
 ## Combining pub/sub and request-reply in one AsyncAPI spec
 
-By default, `api/events.Client` (PUB/SUB channels) and `api/reqreply.Builder`
+By default, `api/events.Client` (PUB/SUB channels) and `api/reqreply.Server`
 (request-reply channels) each produce their own `AsyncAPISpec()`. To publish a
 **single combined AsyncAPI 3.0 document** covering both patterns, use
 `AppendTo(*asyncapi.DocumentBuilder)` on each builder:
@@ -39,9 +39,9 @@ if err := eventsB.AppendTo(doc); err != nil {
 }
 
 // 3. Register request-reply routes and append them.
-reqreplyB := reqreply.NewBuilder(reqreply.Info{Title: "Sensor Service API", Version: "1.0.0"})
-computeHandle, _ := computeRoute.Register(reqreplyB)
-if err := reqreplyB.AppendTo(doc); err != nil {
+reqreplyServer := reqreply.NewServer(reqreply.Info{Title: "Sensor Service API", Version: "1.0.0"})
+computeHandle, _ := computeRoute.Register(reqreplyServer)
+if err := reqreplyServer.AppendTo(doc); err != nil {
     log.Fatal(err)
 }
 
@@ -65,7 +65,7 @@ channels:
   sensor/reading:            # ← pub/sub channel from events.Client
     address: sensor/reading
     ...
-  computeAdd:                # ← request channel from reqreply.Builder
+  computeAdd:                # ← request channel from reqreply.Server
     address: compute/add
     ...
   computeAddReply:           # ← auto-generated reply channel

@@ -256,9 +256,9 @@ var ComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
     reqreply.RouteMeta{OperationID: "computeAdd"},
 )
 
-b := reqreply.NewBuilder(reqreply.Info{Title: "Compute API", Version: "1.0.0"})
-b.AddServer("rabbitmq", reqreply.Server{URL: "amqp://localhost:5672", Protocol: "amqp"})
-handle, _ := ComputeRoute.Register(b)
+server := reqreply.NewServer(reqreply.Info{Title: "Compute API", Version: "1.0.0"})
+server.AddServer("rabbitmq", reqreply.ServerEntry{URL: "amqp://localhost:5672", Protocol: "amqp"})
+handle, _ := ComputeRoute.Register(server)
 
 // Responder — runs in a goroutine
 go amqpadapter.Serve(ctx, ch, handle,

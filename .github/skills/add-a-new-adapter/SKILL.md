@@ -259,7 +259,7 @@ confirmed currently true for REST (request/response AND SSE) and events
 pub/sub across `nethttp`/`chi`/`mqtt5`/`mqtt`/`zeromq` via a
 `review-go-codex`-style exported-symbol audit; `api/reqreply` has not yet
 received the `Client`/`ClientTransport` unification (tracked separately in
-`docs/roadmap/reqreply-workflow-simplification.md`) — a NEW req/reply-shaped
+`docs/design/d-0004-reqreply-workflow-simplification.md`) — a NEW req/reply-shaped
 adapter may still need a handle-based (not bare) entry point in the
 interim, but should still avoid a bare non-handle escape hatch.
 

@@ -68,7 +68,7 @@ type ToolPort[In, Out any] struct {
 	// shared builder every other Pattern-carrying declaration in the
 	// service uses.
 	restBuilder     *rest.Server
-	reqReplyBuilder *reqreply.Builder
+	reqReplyBuilder *reqreply.Server
 	mcpBuilder      *apimcp.Builder
 
 	handlesMu sync.Mutex

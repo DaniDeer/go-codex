@@ -396,7 +396,7 @@ func TestServe_ErrorPatternMatch_HandlerError_PublishesTypedPayload(t *testing.T
 			},
 		),
 	)
-	handle, err := route.Register(reqreply.NewBuilder(reqreply.Info{Title: "t", Version: "1.0.0"}))
+	handle, err := route.Register(reqreply.NewServer(reqreply.Info{Title: "t", Version: "1.0.0"}))
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -444,7 +444,7 @@ func TestServe_ErrorPatternNoMatch_HandlerError_FallsBackToPlainText(t *testing.
 			},
 		),
 	)
-	handle, err := route.Register(reqreply.NewBuilder(reqreply.Info{Title: "t", Version: "1.0.0"}))
+	handle, err := route.Register(reqreply.NewServer(reqreply.Info{Title: "t", Version: "1.0.0"}))
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -488,7 +488,7 @@ func TestServe_ErrorPatternMatch_EncodeError_PublishesTypedPayload(t *testing.T)
 			},
 		),
 	)
-	handle, err := route.Register(reqreply.NewBuilder(reqreply.Info{Title: "t", Version: "1.0.0"}))
+	handle, err := route.Register(reqreply.NewServer(reqreply.Info{Title: "t", Version: "1.0.0"}))
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -763,7 +763,7 @@ func TestCall_WithVars_PublishesToResolvedTopic(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	handle, _ := templateRoute.Register(b)
 
 	// Request will timeout (no responder), but we only care that it published
@@ -804,7 +804,7 @@ func TestCall_WithVars_MissingVar_ReturnsRequestError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	handle, _ := templateRoute.Register(b)
 
 	_, err := Call(ctx, client, router, handle,
@@ -838,7 +838,7 @@ func TestCall_WithVars_MissingVar_ReportsRequiredConstraintWithVarName(t *testin
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	handle, _ := templateRoute.Register(b)
 
 	_, _ = Call(ctx, client, router, handle,
@@ -956,7 +956,7 @@ func TestCall_ReplyTopicBuilder_UsesReturnedResponseTopic(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	b := reqreply.NewBuilder(reqreply.Info{Title: "T", Version: "1"})
+	b := reqreply.NewServer(reqreply.Info{Title: "T", Version: "1"})
 	handle, _ := computeRoute.Register(b)
 
 	customTopic := "custom/replies/abc"
@@ -994,7 +994,7 @@ func TestCall_ReplyTopicBuilder_UsesReturnedSubscribeFilter(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	b := reqreply.NewBuilder(reqreply.Info{Title: "T", Version: "1"})
+	b := reqreply.NewServer(reqreply.Info{Title: "T", Version: "1"})
 	handle, _ := computeRoute.Register(b)
 
 	responseTopic := "replies/abc"
@@ -1024,7 +1024,7 @@ func TestCall_ReplyTopicBuilder_EmptyResponseTopic_ReturnsRequestError(t *testin
 	router := newMockRouter()
 	ctx := context.Background()
 
-	b := reqreply.NewBuilder(reqreply.Info{Title: "T", Version: "1"})
+	b := reqreply.NewServer(reqreply.Info{Title: "T", Version: "1"})
 	handle, _ := computeRoute.Register(b)
 
 	_, err := Call(ctx, client, router, handle, computeReq{X: 1, Y: 2},
@@ -1048,7 +1048,7 @@ func TestCall_ReplyTopicBuilder_EmptyFilter_FallsBackToResponseTopic(t *testing.
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	b := reqreply.NewBuilder(reqreply.Info{Title: "T", Version: "1"})
+	b := reqreply.NewServer(reqreply.Info{Title: "T", Version: "1"})
 	handle, _ := computeRoute.Register(b)
 
 	responseTopic := "replies/fallback"
@@ -1077,7 +1077,7 @@ func TestCall_NilBuilder_UsesReplyTopicPrefix(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	b := reqreply.NewBuilder(reqreply.Info{Title: "T", Version: "1"})
+	b := reqreply.NewServer(reqreply.Info{Title: "T", Version: "1"})
 	handle, _ := computeRoute.Register(b)
 
 	_, _ = Call(ctx, client, router, handle, computeReq{X: 1, Y: 2},
@@ -1106,7 +1106,7 @@ func TestCall_NilBuilder_DefaultPrefix(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	b := reqreply.NewBuilder(reqreply.Info{Title: "T", Version: "1"})
+	b := reqreply.NewServer(reqreply.Info{Title: "T", Version: "1"})
 	handle, _ := computeRoute.Register(b)
 
 	_, _ = Call(ctx, client, router, handle, computeReq{X: 1, Y: 2},
@@ -1151,7 +1151,7 @@ var tenantRespCodec = codex.Struct[tenantResp](
 )
 
 func newTenantRouteHandle() *reqreply.RouteHandle[tenantReq, tenantResp] {
-	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	h, err := reqreply.NewRoute[tenantReq, tenantResp]("compute/{tenantID}/add",
 		tenantReqCodec, tenantRespCodec,
 		reqreply.NewTopicParam("tenantID", codex.String().Refine(validate.NonEmptyString),
@@ -1269,7 +1269,7 @@ func TestServeCallHandle_NestedReq_RoundTrip(t *testing.T) {
 			func(r *nestedReq, v int) { r.Y = v }),
 	)
 
-	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	handle, err := reqreply.NewRoute[nestedReq, tenantResp]("compute/{tenantID}/add",
 		nestedReqCodec, tenantRespCodec,
 		reqreply.NewTopicParam("tenantID", codex.String().Refine(validate.NonEmptyString),

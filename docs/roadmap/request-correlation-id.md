@@ -274,7 +274,7 @@ type RequestIDObserver interface {
   existing precedent for "add a new, additive Observer extension
   interface, don't change an existing method's signature." The same
   discipline applies to this doc's `RequestIDObserver` candidate.
-- [ReqReply Workflow Simplification](reqreply-workflow-simplification.md)
+- [D-0004 — ReqReply Workflow Simplification](../design/d-0004-reqreply-workflow-simplification.md)
   — `mqtt5.Call`'s existing `corrID`/`CorrelationData` is the concrete,
   already-shipped evidence motivating this doc, and Open design decision
   6 above is a direct cross-reference to it.

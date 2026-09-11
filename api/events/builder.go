@@ -2609,7 +2609,7 @@ func (b *Client) AsyncAPISpec() (asyncapi.Document, error) {
 // responsible for configuring those on db.
 //
 // Use AppendTo to combine pub/sub channels with request-reply channels from
-// [api/reqreply.Builder] in a single AsyncAPI 3.0 document:
+// [api/reqreply.Server] in a single AsyncAPI 3.0 document:
 //
 //	import asyncapi "github.com/DaniDeer/go-codex/render/asyncapi/v3"
 //

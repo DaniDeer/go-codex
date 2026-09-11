@@ -1,8 +1,11 @@
 package reqreply
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"strings"
+	"sync"
 	"unicode"
 
 	"github.com/DaniDeer/go-codex/api/internal"
@@ -12,21 +15,72 @@ import (
 	"github.com/DaniDeer/go-codex/schema"
 )
 
-// Builder accumulates [Route] registrations and produces an AsyncAPI 3.0
-// document with request-reply operations.
+// Server accumulates [Route] registrations, produces an AsyncAPI 3.0
+// document with request-reply operations, AND owns request-reply
+// dispatch/transport once a [ServerTransport] is attached via
+// [Server.Attach] — mirrors [rest.Server]'s exact unification of spec
+// accumulation and dispatch (there is no separate "Builder" type,
+// confirmed via docs/design/d-0004-reqreply-workflow-simplification.md's
+// Decision 1). [Builder]/[NewBuilder] are DEPRECATED aliases retained
+// for existing callers — Server is a strict superset, so no behavior
+// changes for pre-existing spec-only usage.
 //
-// Create a Builder with [NewBuilder], add servers via [AddServer], register
-// routes via [Route.Register], and call [AsyncAPISpec] to produce the document.
-type Builder struct {
+// Create a Server with [NewServer], add servers via [AddServer], register
+// routes via [Route.Register] (optionally with [Route.WithHandler] to
+// attach a dispatch handler), call [AsyncAPISpec] to produce the AsyncAPI
+// document, and [Server.Attach] + [Server.Serve] to actually dispatch
+// incoming requests.
+type Server struct {
 	docBuilder      *asyncapi.DocumentBuilder
 	topics          map[string]struct{} // guard against duplicate topic registration
 	securitySchemes map[string]SecurityScheme
 	globalSecurity  []route.SecurityRequirement
 	topicCodec      *codex.Codec[string]
+
+	// mu guards transport/dispatchEntries, the fields mutated after
+	// construction outside of Route.Register's own topic/schema
+	// bookkeeping above (which callers are expected to complete before
+	// calling Serve — mirrors [rest.Server]'s identical mu usage note).
+	mu sync.RWMutex
+	// transport is the optional, adapter-provided [ServerTransport]
+	// attached via [Server.Attach] (e.g. by mqtt5.Attach/zeromq.Attach) —
+	// nil until Attach is called.
+	transport ServerTransport
+	// dispatchEntries holds one entry per route registered via
+	// [Route.WithHandler]+[Route.Register] — read by [Server.Serve] to
+	// dispatch each route CONCURRENTLY (one goroutine per route; see
+	// [Server.Serve]'s doc comment for why this must be concurrent, not
+	// sequential).
+	dispatchEntries []dispatchEntry
 }
 
-// BuilderOption configures a [Builder] at construction time.
-type BuilderOption func(*Builder)
+// dispatchEntry pairs a registered route's type-erased handle/topic with
+// its type-erased handler function, read by [Server.Serve].
+type dispatchEntry struct {
+	topic string
+	// handle is the *RouteHandle[Req,Resp] value (any-typed, recovered
+	// via reflection by the adapter's ServerTransport.Serve, exactly like
+	// [Client.Call]'s route argument).
+	handle any
+	// fn is the func(context.Context, Req) (Resp, error) domain handler
+	// attached via [Route.WithHandler] (any-typed for the same reason).
+	fn any
+}
+
+// Builder is a DEPRECATED alias for [Server] — kept for existing callers
+// during the reqreply-workflow-simplification migration. New code should
+// use [Server]/[NewServer] directly.
+//
+// Deprecated: use [Server].
+type Builder = Server
+
+// ServerOption configures a [Server] at construction time.
+type ServerOption func(*Server)
+
+// BuilderOption is a DEPRECATED alias for [ServerOption].
+//
+// Deprecated: use [ServerOption].
+type BuilderOption = ServerOption
 
 // WithTopicCodec sets a codec used to validate every topic passed to
 // [Route.Register]. If the topic is invalid, [Route.Register] returns an
@@ -40,7 +94,7 @@ type BuilderOption func(*Builder)
 //
 //	import "github.com/DaniDeer/go-codex/validate"
 //
-//	b := reqreply.NewBuilder(info, reqreply.WithTopicConstraints(validate.MQTTPublishTopic))
+//	b := reqreply.NewServer(info, reqreply.WithTopicConstraints(validate.MQTTPublishTopic))
 func WithTopicCodec(c codex.Codec[string]) BuilderOption {
 	return func(b *Builder) { b.topicCodec = &c }
 }
@@ -57,23 +111,30 @@ func WithTopicCodec(c codex.Codec[string]) BuilderOption {
 //	    Check:   func(v string) bool { return strings.HasPrefix(v, "device/") },
 //	    Message: func(v string) string { return fmt.Sprintf("topic must start with device/, got %q", v) },
 //	}
-//	b := reqreply.NewBuilder(info, reqreply.WithTopicConstraints(deviceLevel))
+//	b := reqreply.NewServer(info, reqreply.WithTopicConstraints(deviceLevel))
 func WithTopicConstraints(cons ...codex.Constraint[string]) BuilderOption {
 	c := codex.String().Refine(cons...)
 	return WithTopicCodec(c)
 }
 
-// NewBuilder returns a Builder initialised with the given Info.
-func NewBuilder(info Info, opts ...BuilderOption) *Builder {
-	b := &Builder{
+// NewServer returns a Server initialised with the given Info.
+func NewServer(info Info, opts ...ServerOption) *Server {
+	s := &Server{
 		docBuilder:      asyncapi.NewDocumentBuilder(info),
 		topics:          make(map[string]struct{}),
 		securitySchemes: make(map[string]SecurityScheme),
 	}
 	for _, opt := range opts {
-		opt(b)
+		opt(s)
 	}
-	return b
+	return s
+}
+
+// NewBuilder is a DEPRECATED alias for [NewServer].
+//
+// Deprecated: use [NewServer].
+func NewBuilder(info Info, opts ...BuilderOption) *Builder {
+	return NewServer(info, opts...)
 }
 
 // AddGlobalSecurity appends security requirements that apply to all routes
@@ -92,11 +153,11 @@ func (b *Builder) AddGlobalSecurity(reqs ...route.SecurityRequirement) *Builder 
 	return b
 }
 
-// AddServer registers a named server in the AsyncAPI document. Servers appear
-// in output in registration order.
+// AddServer registers a named server entry in the AsyncAPI document.
+// Entries appear in output in registration order.
 //
 // Use Protocol: "zmq" for ZeroMQ servers, "mqtt5" for MQTT 5.0, etc.
-func (b *Builder) AddServer(name string, s Server) *Builder {
+func (b *Builder) AddServer(name string, s ServerEntry) *Builder {
 	b.docBuilder.AddServer(name, s)
 	return b
 }
@@ -263,6 +324,188 @@ func (b *Builder) AsyncAPISpec() (asyncapi.Document, error) {
 func (b *Builder) AppendTo(db *asyncapi.DocumentBuilder) error {
 	b.docBuilder.AppendChannelsTo(db)
 	return nil
+}
+
+// ServerTransport is implemented by each adapter's internal, unexported
+// binding attached to a [Server] via an adapter-specific Attach function
+// (e.g. [mqtt5.Attach], [zeromq.Attach]) — see [Server.Attach]. Mirrors
+// [rest.ServerTransport]/[events.Transport], with ONE confirmed
+// structural difference: Serve is called ONCE PER REGISTERED ROUTE (not
+// once for the whole Server the way [rest.ServerTransport.Serve](ctx)
+// does), because reqreply transports (mqtt5/zeromq/etc.) have no
+// built-in equivalent of an HTTP mux to pre-wire many routes into one
+// call — see [Server.Serve]'s doc comment for the confirmed concurrent-
+// dispatch requirement this implies.
+type ServerTransport interface {
+	// Serve dispatches route (dynamic type *[RouteHandle][Req,Resp]) via
+	// fn (dynamic type func(context.Context, Req) (Resp, error)). Blocks
+	// until ctx is cancelled or a fatal error occurs — the SAME per-call
+	// contract [rest.ServerTransport.Serve]/[events.Transport.Subscribe]
+	// document, just scoped to one route instead of every route.
+	Serve(ctx context.Context, route any, fn any) error
+}
+
+// Attach binds t to s as s's server transport — the "attach the adapter to
+// the server" step behind [Server.Serve]. Each adapter provides its own
+// entry point (e.g. [mqtt5.Attach](server, client, router)) that builds an
+// internal ServerTransport implementation and calls this method
+// internally; application code calls the ADAPTER's Attach function, not
+// this method directly, in the common case.
+//
+// Returns [ServerTransportAlreadyAttachedError] if s already has a
+// transport attached — Attach is exclusive, mirrors [rest.Server.Attach]/
+// [events.Client.Attach] exactly.
+func (s *Server) Attach(t ServerTransport) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.transport != nil {
+		return ServerTransportAlreadyAttachedError{}
+	}
+	s.transport = t
+	return nil
+}
+
+// Serve dispatches every route registered via [Route.WithHandler]+
+// [Route.Register], via s's attached [ServerTransport], CONCURRENTLY —
+// one goroutine per route, NOT a sequential loop. This is CONFIRMED
+// necessary (not merely a style choice): some transports' ServerTransport.
+// Serve call is non-blocking (registers + returns immediately, e.g.
+// mqtt5, where real dispatch happens via the client library's own
+// background goroutine), while others BLOCK FOREVER inside their own
+// receive loop until ctx is cancelled (e.g. zeromq, which has no
+// built-in mux to pre-wire many routes into one call). A sequential loop
+// would permanently starve every route after the first blocking-style
+// transport call — see docs/design/d-0004-reqreply-workflow-simplification.md's
+// Decision 1 "concurrent dispatch" finding for the full confirmed
+// evidence.
+//
+// Serve blocks until ctx is cancelled (waiting for every route's Serve
+// call to finish, mirroring [rest.Server.Serve]'s "blocks until ctx
+// cancelled" contract) OR one route's Serve call returns a real error
+// (which cancels every other still-running route and is returned
+// promptly, without waiting for ctx to be cancelled).
+//
+// Returns [NoServerTransportAttachedError] if [Server.Attach] was never
+// called.
+func (s *Server) Serve(ctx context.Context) error {
+	s.mu.RLock()
+	t := s.transport
+	entries := append([]dispatchEntry(nil), s.dispatchEntries...)
+	s.mu.RUnlock()
+	if t == nil {
+		return NoServerTransportAttachedError{}
+	}
+	if len(entries) == 0 {
+		<-ctx.Done()
+		return nil
+	}
+
+	innerCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	errCh := make(chan error, len(entries))
+	var wg sync.WaitGroup
+	wg.Add(len(entries))
+	for _, e := range entries {
+		go func(e dispatchEntry) {
+			defer wg.Done()
+			errCh <- t.Serve(innerCtx, e.handle, e.fn)
+		}(e)
+	}
+
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			cancel()
+			<-done
+			return err
+		}
+		// A route's Serve returned nil early (e.g. a non-blocking
+		// transport) — keep waiting for ctx/other routes, mirroring
+		// rest.Server.Serve's "blocks until ctx cancelled" contract.
+		for {
+			select {
+			case err := <-errCh:
+				if err != nil {
+					cancel()
+					<-done
+					return err
+				}
+			case <-ctx.Done():
+				<-done
+				return nil
+			}
+		}
+	case <-ctx.Done():
+		<-done
+		return nil
+	}
+}
+
+// Topical is implemented by *[RouteHandle][Req,Resp] (for any Req/Resp
+// pair) — a plain, non-generic interface exposing the route's Topic
+// without reflection, mirroring [FutureFactory]'s identical type-erasure-
+// via-compile-time-method-dispatch technique. Backs [Server.
+// RegisteredTopics], which some adapters (e.g. [zeromq.Attach]) use to
+// validate full topic/socket coverage at Attach time, before [Server.
+// Serve] ever runs.
+type Topical interface {
+	// TopicOf returns the route's registered topic/address.
+	TopicOf() string
+}
+
+// RegisteredTopics returns the topic of every route registered via
+// [Route.Register] so far (regardless of whether [Route.WithHandler] was
+// used) — used by adapters like [zeromq.Attach] to validate topic/socket
+// coverage at Attach time (before [Server.Serve] runs), since routes are
+// always registered BEFORE Attach is called.
+func (s *Server) RegisteredTopics() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	topics := make([]string, 0, len(s.topics))
+	for t := range s.topics {
+		topics = append(topics, t)
+	}
+	return topics
+}
+
+// registerDispatch records route's handle/fn pair for [Server.Serve] to
+// dispatch later — called by [Route.Register] when the route has a
+// handler attached via [Route.WithHandler].
+func (s *Server) registerDispatch(topic string, handle, fn any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dispatchEntries = append(s.dispatchEntries, dispatchEntry{topic: topic, handle: handle, fn: fn})
+}
+
+// ServerTransportAlreadyAttachedError is returned by [Server.Attach] when
+// s already has a [ServerTransport] attached — Attach is exclusive, see
+// its doc comment for the rationale.
+type ServerTransportAlreadyAttachedError struct{}
+
+func (e ServerTransportAlreadyAttachedError) Error() string {
+	return "api/reqreply: Server already has a ServerTransport attached (Attach is exclusive; build a fresh Server for a different transport)"
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e ServerTransportAlreadyAttachedError) LogValue() slog.Value {
+	return slog.GroupValue()
+}
+
+// NoServerTransportAttachedError is returned by [Server.Serve] when
+// [Server.Attach] was never called.
+type NoServerTransportAttachedError struct{}
+
+func (e NoServerTransportAttachedError) Error() string {
+	return "api/reqreply: Server has no ServerTransport attached (call an adapter's Attach function first, e.g. mqtt5.Attach(server, client, router))"
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e NoServerTransportAttachedError) LogValue() slog.Value {
+	return slog.GroupValue()
 }
 
 // topicToID converts a topic string like "compute/add" or "sensors/{id}/readings"

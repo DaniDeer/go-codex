@@ -221,7 +221,7 @@ multi-phase implementation rounds can avoid repeating them.
 > below). That doc's pub/sub-scoped content is now fully superseded by
 > this one (this doc, design-complete and shipped); its `reqreply`-scoped
 > content was carried forward into its own dedicated doc — see
-> [ReqReply Workflow Simplification](reqreply-workflow-simplification.md).
+> [D-0004 — ReqReply Workflow Simplification](d-0004-reqreply-workflow-simplification.md).
 > **Resolution (went through 3 drafts before landing
 > here — see Decision 1's own subsections for the full history):**
 > pub/sub has no "server" role — a broker is the intermediary, both
@@ -3190,7 +3190,7 @@ found and fixed:
 connection-ownership deferral (a real, intentional, CGO-driven
 tradeoff — not a gap); the REST-workflow-review reminder (genuinely
 still open, but already fully and concretely tracked via spun-out
-docs — `zeromq-security.md`, `reqreply-workflow-simplification.md`,
+docs — `zeromq-security.md`, `d-0004-reqreply-workflow-simplification.md`,
 `common-middleware-architecture.md`, `protocol-native-features.md` —
 all still "idea only"/"PLANNED", none blocking THIS doc's own
 completion; the fifth spun-out item, REST's client-side general-purpose

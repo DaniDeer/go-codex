@@ -1,8 +1,64 @@
-# ReqReply Workflow Simplification — design decisions
+# D-0004 — ReqReply Workflow Simplification — design decisions
 
-> **Status:** PLANNED — no implementation yet, but the core mechanism is
-> now CONFIRMED via 5 rounds of throwaway Go prototypes and considered
-> READY FOR IMPLEMENTATION. Final confirmed shape, in brief (see
+> **Status:** Implemented — architectural foundation. All 5 phases (0-4:
+> `api/reqreply` core types, `adapters/mqtt5` migration, the
+> `examples/reqreply-api` mini-project, `adapters/zeromq` migration) are
+> shipped and verified; Phase 5 (doc sync + doc promotion) is this
+> promotion itself — `Builder`/`NewBuilder`/`BuilderOption` and
+> `mqtt5`/`zeromq`'s lower-level `Serve`/`Call`/`ServeRouter`/`CallDealer`
+> are DELIBERATELY KEPT (not removed) as documented escape hatches, not
+> retired: `docs/guides/mqtt5.md`/`docs/guides/zeromq.md` now lead with
+> the `Server`/`Client`+`Attach` workflow and demote the lower-level
+> functions to an explicit "escape hatch" section, and
+> `.github/instructions/go-codex.instructions.md`'s `api/reqreply`/
+> `adapters/mqtt5`/`adapters/zeromq` rows were brought current (they had
+> fallen behind Phases 0/1/3, still describing the pre-`Server`/`Client`
+> API — a real doc-sync gap this promotion also closed). **This remains
+> the accurate, current description of shipped code.** Establishes the
+> pattern `d-0001` (REST) and `d-0002` (pub/sub) already established —
+> `Server`/`Client` + `Attach`, `route.WithHandler(fn).Register(server)` —
+> extended to request-reply's genuinely asynchronous transport via the
+> additive `CallAsync`/`Future[Resp]` mechanism.
+>
+> Below is the original phase-by-phase implementation record (`api/reqreply`
+> core types: `Server`/`Client`/`ServerTransport`/`ClientTransport`/`Future`/
+> `FutureFactory`, `Route.WithHandler`+`Register(*Server)`,
+> `RegisteredTopics`/`Topical`, `ServerEntry` rename to resolve the
+> `Server` naming collision between the asyncapi entry type and the new
+> dispatch-owning type — `Builder`/`NewBuilder`/`BuilderOption` kept as
+> DEPRECATED aliases for `Server`/`NewServer`/`ServerOption`, zero
+> breaking changes to existing callers, all pre-existing tests/examples
+> pass unchanged; `adapters/mqtt5`'s `AttachServer`/`AttachClient` AND
+> `adapters/zeromq`'s `AttachServer`/`AttachClient`/`AttachRouterServer`/
+> `AttachDealerClient` reflection-shim transports (covering REQ/REP AND
+> ROUTER/DEALER), plus a repo-wide mechanical migration of `ports` + all
+> example/test call sites off the deprecated `Builder` API to eliminate
+> the `staticcheck` SA1019 regression it caused; the consolidated
+> `examples/reqreply-api` mini-project — `routes/`, `handlers/`,
+> `mqtt5server/`, `zeromqserver/`, `zeromqrouterserver/`, `client/`
+> packages plus 7 demo files and `main.go` — replacing the deleted
+> `examples/adapters-zeromq-reqrep`/`examples/adapters-zeromq-dealer-
+> router` and `examples/adapters-mqtt5`'s stripped-out request-reply
+> demos).
+> Verified: `go build ./...`, `go test ./...` (incl. `-race`),
+> `staticcheck`, `gosec`, `gofmt` all clean; new unit test
+> suite (error taxonomy, dual-mode Call, Server/Builder unification,
+> WithHandler/Register fluent dispatch, concurrent Serve w/ both
+> blocking- and non-blocking-transport fakes, CallAsync/Future round
+> trip, FutureFactory type-erasure) plus a new package-level `Example()`;
+> mqtt5's 3 and zeromq's 7 new reflection-shim tests all pass under
+> `-race`; every one of `examples/reqreply-api`'s 7 demos runs correctly
+> via `go run ./examples/reqreply-api` (multiple repeat runs, no flakes,
+> after fixing one genuine mqtt5-Serve-registration startup race with a
+> 50ms sync sleep — mirrors `examples/adapters-mqtt5`'s own established
+> convention); `for d in examples/*/; do go run ./$d; done` re-verified
+> with zero failures across all examples, including the retired-and-
+> rebuilt `examples/adapters-mqtt5`. **Phase 5 (full doc sync + doc
+> promotion) is ALSO now shipped** — see this doc's top status header
+> above and its own Phase 5 entry in the phased implementation plan
+> below for the full record. Core mechanism CONFIRMED via 5
+> rounds of throwaway Go prototypes prior to this phase. Final confirmed
+> shape, in brief (see
 > Decisions 1-5 for full evidence): `reqreply.Server` UNIFIES what a
 > now-RETIRED, separate `Builder` type did (spec accumulation,
 > `AddGlobalSecurity`) with dispatch/transport — ONE type, mirroring
@@ -699,7 +755,251 @@ capabilities against.
    across routes sharing a builder — same policy as REST, silent (no
    error).
 
+## Phased implementation plan
+
+Once the design was confirmed ready (5+ prototype rounds, all Decisions
+1-5 locked), implementation is sequenced into 6 phases — each phase ends
+with its own build/test/lint pass, not deferred to the end, per this
+project's standard "verify before claiming success" discipline.
+
+- **Phase 0 — `api/reqreply` core types (isolated, no adapter changes).
+  SHIPPED.** `Server`/`Client`/`ServerTransport`/`ClientTransport`/
+  `Future`/`FutureFactory`, `Route.WithHandler`+`Register(*Server)`,
+  `Server.RegisteredTopics`/`Topical`. `Builder`/`NewBuilder`/
+  `BuilderOption` kept as DEPRECATED aliases for `Server`/`NewServer`/
+  `ServerOption` — zero breaking changes, every pre-existing test/example
+  passes unchanged. **A naming collision was found and fixed during this
+  phase**: the pre-existing `reqreply.Server` type alias (for
+  `asyncapi.Server`, an AsyncAPI server ENTRY like `{URL: ...,
+  Protocol: "mqtt5"}`) collided with the NEW dispatch-owning `Server`
+  type this phase introduces — resolved by renaming the entry alias to
+  `ServerEntry` (mirroring `rest.ServerEntry`/`rest.Server`'s own,
+  already-established naming split for the identical concept; `api/events`
+  never hit this because `events.Client` handles both roles without a
+  separate "Server" dispatch type). All 9 real call sites of the old
+  `reqreply.Server{...}` struct literal (7 in `api/reqreply`'s own
+  doc-comments/tests, 2 in examples) were migrated to `reqreply.
+  ServerEntry{...}`. New unit tests cover: the full error taxonomy
+  (`NoServerTransportAttachedError`/`NoClientTransportAttachedError`/
+  `ServerTransportAlreadyAttachedError`/`ClientTransportAlreadyAttachedError`/
+  `TransportTypeMismatchError`); dual-mode `Client.Call` (raw `Route` vs.
+  registered `*RouteHandle`, confirming `GlobalSecurity` visibility
+  differs correctly); `Server`/`Builder` unification (`AddGlobalSecurity`
+  visible on a registered handle with NO intermediate `Builder`);
+  `WithHandler`+`Register` fluent dispatch; `Server.Serve`'s concurrent
+  dispatch against BOTH a non-blocking-transport fake (mqtt5-style —
+  confirms `Serve` still blocks until `ctx` is cancelled) and a
+  blocking-transport fake (zeromq-style — confirms an active-route
+  high-water mark equal to the route count, the actual regression test
+  for Finding B); prompt error propagation + cancellation of other
+  routes; `RegisteredTopics`; `CallAsync`/`Future` round trip (including
+  "do other independent work, await from a different call site" and a
+  cancelled-context timeout case); `FutureFactory`'s type-erasure
+  crossing. All tests pass under `-race` (3 repeated runs). `staticcheck`/
+  `gosec`/`gofmt` all clean. A new package-level `Example()` demonstrates
+  the full `WithHandler`+`Register`+`Attach`+`Serve` / `Attach`+`Call`
+  workflow against a minimal in-process transport stub.
+- **Phase 1 — `adapters/mqtt5` migration. SHIPPED.** New
+  `adapters/mqtt5/reqreply_transport.go`: `AttachServer(*reqreply.Server,
+  MQTTClient, MQTTRouter, ...ServeOptions)` / `AttachClient(*reqreply.
+  Client, MQTTClient, MQTTRouter, ...CallOptions)` implement
+  `reqreply.ServerTransport`/`ClientTransport` via the SAME
+  reflection-shim idiom already established by `adapters/mqtt5/
+  transport.go`'s `events.Transport` implementation (and
+  `adapters/nethttp/clienttransport.go`'s `Call`) — not a new pattern.
+  Named `AttachServer`/`AttachClient` rather than `Attach` because
+  `mqtt5.Attach` (for `events.Client`/pub-sub) already exists and Go has
+  no function overloading. `CallAsync` recovers a `*Future[Resp]` via
+  `FutureFactory.NewFutureAny()`'s plain-interface type assertion
+  (crossing the generic/reflection erasure boundary without needing
+  `reflect` to instantiate a generic type). Documented v1-scope
+  limitation, mirroring the existing `events.Transport` shim's own
+  documented limitation: per-call `RequestFormats`/`Formats` overrides,
+  `NewTopicParam` merge-field topic-var merging, and `ErrorPattern`
+  typed replies are NOT honored by this shim (routes needing them use
+  `Serve`/`Call` directly, unchanged). 3 new tests (`TestAttachServer_
+  AttachClient_RoundTrip`, `TestAttachClient_DualMode_GlobalSecurity`,
+  `TestAttachClient_CallAsync_RoundTrip`) using a `wireBrokers` helper
+  simulating a shared broker across independent mock client/router
+  pairs; all pass under `-race` (2 repeated runs). Additionally,
+  migrated `ports` package's real `reqreply.Builder` dependency
+  (`PortOptions.ReqReplyBuilder`, `RegisterReqReply`,
+  `PluginReqReplyPattern` internals — confirmed via repo-wide grep as a
+  REAL dependency, not previously called out in this doc's migration
+  bullet before the phased-plan round) off the now-deprecated
+  `Builder`/`NewBuilder`/`BuilderOption` onto `Server`/`NewServer`/
+  `ServerOption`: a repo-wide mechanical rename across `ports/*.go` (7
+  files), the 3 example projects (`adapters-mqtt5`,
+  `adapters-zeromq-dealer-router`, `adapters-zeromq-reqrep`),
+  `adapters/zeromq/adapter_test.go`, 3 `adapters/mqtt5/*_test.go`
+  files, and `api/reqreply/route_test.go`, plus manual updates to the 6
+  remaining godoc-example-only mentions (`api/events/builder.go`,
+  `api/llm/builder.go`, `api/reqreply/{builder,doc,route}.go`) that
+  still showed `NewBuilder(...)` as the "primary" usage pattern in prose
+  — done to eliminate the `staticcheck` SA1019 deprecation-warning
+  regression this phase's `Builder` deprecation annotation caused
+  against 19 previously-untouched call sites (`just check` must stay
+  clean; no `//nolint`/suppression was added). Verified: `go build
+  ./...`, `go vet ./...`, `gofmt -l .` (clean), `go test ./...` (all
+  packages pass, zero FAIL), `staticcheck` (zero findings across every
+  touched package), `gosec` (zero NEW findings — the 5 pre-existing
+  `G304` findings in `ports/file.go` are unrelated), and all 3 migrated
+  example projects re-run via `go run` (all exit 0).
+- **Phase 2 — `examples/reqreply-api`, mqtt5 slice. SHIPPED** (built
+  together with Phase 4 in one continuous effort — see Phase 4 below for
+  the full mqtt5+zeromq mini-project writeup and verification evidence).
+- **Phase 3 — `adapters/zeromq` migration. SHIPPED.** New
+  `adapters/zeromq/reqreply_transport.go`: 4 Attach functions covering
+  BOTH zeromq socket-pattern families — `AttachServer`/`AttachClient`
+  (REQ/REP, mirrors [Serve]/[Call]) and `AttachRouterServer`/
+  `AttachDealerClient` (ROUTER/DEALER, mirrors [ServeRouter]/
+  [CallDealer], including the identity-frame envelope: dispatches each
+  request in its OWN goroutine, matching `ServeRouter`'s own concurrency)
+  — all 4 implement `reqreply.ServerTransport`/`ClientTransport` via the
+  SAME reflection-shim idiom as `adapters/mqtt5`'s (duplicated, not
+  shared — the two adapter packages don't import each other). A NEW
+  `MissingSocketError` (with `errors.As`/`LogValue`) is returned by
+  `AttachServer`/`AttachRouterServer` at Attach time when a route
+  registered on the `*reqreply.Server` has no corresponding entry in the
+  `topic → socket` map they take (ZMQ REQ/REP and ROUTER/DEALER sockets
+  are point-to-point, unlike MQTT5's single shared client — this is the
+  confirmed reason `Server.RegisteredTopics`/`Topical` were speced
+  ahead of time in Phase 0 specifically for this check), and by the
+  client-side transports at CALL time for a route with no socket entry
+  (no upfront client-side check — the client may only need a subset of
+  the server's routes). `CallAsync` on both client transports reuses
+  the SAME `FutureFactory`/`NewFutureAny` mechanism `adapters/mqtt5`'s
+  does, unchanged. Same documented v1-scope limitation as `adapters/
+  mqtt5`'s shim: route-declared `RequestFormats`/`Formats` overrides and
+  `ErrorPattern`-typed error replies are NOT honored — callers needing
+  those use `Serve`/`Call`/`ServeRouter`/`CallDealer` directly,
+  unaffected. 7 new tests (round trip + `MissingSocketError` coverage
+  for both socket-pattern families, plus a `CallAsync`/`Future` round
+  trip) using a channel-based in-memory `FramedSocket` pair
+  (`chanSocket` for REQ/REP; a `dealerSocket`/`routerSocket` pair that
+  correctly models ZMQ's automatic identity-frame prepend/strip
+  behavior for ROUTER/DEALER) — no real ZMQ library needed. All pass,
+  including under `-race` (2 repeated runs). Verified: `go build ./...`,
+  `gofmt -l .` (clean), full `go test ./...` (zero FAIL), `staticcheck`/
+  `gosec` (zero findings on the new file).
+- **Phase 4 — `examples/reqreply-api`, zeromq slice + delete old
+  examples. SHIPPED.** Built the full `examples/reqreply-api` mini-project
+  per the "Example mini-project" section below, covering BOTH mqtt5
+  (Phase 2) and zeromq (this phase) in one continuous effort: `routes/`
+  (`ComputeRoute`/`DoubleRoute`/`TripleRoute`, `SecuredComputeRoute` with
+  its OWN `RouteMeta.Security`, `GlobalOnlyComputeRoute` — declares
+  `WithSecurityScheme` but leaves `RouteMeta.Security` nil so it inherits
+  purely from `Server.AddGlobalSecurity`, confirming these two
+  declarations are genuinely orthogonal — `RouterComputeRoute`,
+  `MissingSocketRoute`), `handlers/` (`Add`/`Double`/`Triple`),
+  `mqtt5server/` (mock broker/router, `AddGlobalSecurity(route.
+  Require("bearerAuth"))`, exposes `GlobalHandle`/`SecuredHandle` for
+  callers dispatching directly against an already-registered
+  `*RouteHandle`), `zeromqserver/` (3 REQ/REP `chanSocket` pairs, one per
+  route — REQ/REP's point-to-point limitation confirmed in practice, not
+  just in the design doc), `zeromqrouterserver/` (`Build()`'s working
+  ROUTER/DEALER config plus `BuildWithMissingSocket()`'s deliberately
+  incomplete config triggering `zeromq.MissingSocketError` upfront,
+  before `Serve` ever runs), and `client/` (`BuildMQTT5`/`BuildZeroMQ`/
+  `BuildZeroMQDealer`). 7 demo files + `main.go` wire everything together
+  in narrative order: (1) basic call via a raw, unregistered `Route`; (2)
+  dual-mode `Client.Call` contrasting `GlobalSecurity`'s invisibility on
+  a raw `Route` call against a directly-dispatched, already-registered
+  `*RouteHandle` via `mqtt5adapter.Call` with a `CredentialFunc` — the
+  server-side rejection in the raw-Route case surfaces as a generic
+  wrapped error over the wire (NOT a re-hydrated typed
+  `SecurityCredentialError` — that only happens for a CLIENT-side
+  pre-check rejection, confirmed by running the demo, not just by
+  reading the code); (3) route-level security via `SecuredComputeRoute`,
+  demonstrating a CLIENT-side `SecurityCredentialError` for a malformed
+  credential (caught before publish); (4) concurrent multi-route
+  dispatch against zeromq's 3-route REQ/REP server, the real-world
+  demonstration of `Server.Serve`'s concurrent-dispatch fix a blocking
+  transport motivated (Decision 1); (5) `CallAsync`/`Future` — two
+  independent async calls issued back-to-back before either is awaited,
+  both awaited from a different call site, plus a `Future.Wait` against
+  an already-cancelled `ctx`; (6) `Server.AsyncAPISpec()` + `MarshalYAML`
+  printing, derived entirely from the route declarations already made;
+  (7) the zeromq ROUTER/DEALER variant plus `BuildWithMissingSocket`'s
+  `MissingSocketError`. Deleted `examples/adapters-zeromq-reqrep` and
+  `examples/adapters-zeromq-dealer-router` entirely; stripped
+  `examples/adapters-mqtt5/main.go`'s `runRequestReplyDemo`/
+  `runSecurityDemo` functions and their now-unused supporting
+  declarations (`ComputeReq`/`ComputeResp`/`ComputeRoute`/
+  `SecuredComputeRoute`/`bearerAuth`/`printSpecs`), renumbering the
+  remaining Connect-level-security demo from "Demo 4b" to "Demo 3" and
+  updating the package doc comment to point at `examples/reqreply-api`
+  for request-reply — its pub/sub, client-attach, error-channel, and
+  connect-security demos are otherwise UNCHANGED. Fixed one genuine
+  startup race discovered while verifying: `examples/reqreply-api`'s
+  `main.go` started `mqtt5Built.Server.Serve(ctx)` in a goroutine and
+  immediately issued the first `Client.Call` — since mqtt5's
+  `ServerTransport.Serve` registers its router handler synchronously
+  but only once ITS OWN dispatch goroutine (started by `Server.Serve`)
+  actually runs, this raced and intermittently hung (a lost publish, no
+  reply, no `ctx` deadline to time it out); fixed with the same
+  50ms-`time.Sleep` synchronization convention already established in
+  `examples/adapters-mqtt5`'s own demos — verified stable across
+  multiple repeated `go run` invocations after the fix. Also updated
+  `docs/reference/project-structure.md` (added `reqreply-api/` layout
+  entry, updated `adapters-mqtt5`'s description, removed the deleted
+  zeromq example entries) and `docs/guides/{zeromq,mqtt5}.md` (updated
+  "See also" links and added pointers to `examples/reqreply-api`).
+  Verified: `go build ./...`, `gofmt -l .`, `go vet ./...` all clean;
+  `go test ./...` zero FAIL; `just check` (staticcheck + gosec) zero
+  findings; all 7 `examples/reqreply-api` demos plus the retired-and-
+  rebuilt `examples/adapters-mqtt5` demo re-verified via repeated
+  `go run` invocations with zero flakes; `for d in examples/*/; do go
+  run ./$d; done` re-run across every example with zero failures.
+- **Phase 5 — full doc sync + doc promotion to `docs/design/`. SHIPPED.**
+  Decided AGAINST retiring `Builder`/`mqtt5.Serve`/`.Call`/`zeromq.Serve`/
+  `.Call`/`.ServeRouter` (see "Remaining open items" above for the full
+  reasoning — kept as documented escape hatches/deprecated aliases,
+  a genuine ongoing need, not a stale leftover). Full doc sync:
+  rewrote `docs/guides/mqtt5.md`'s "Request-Reply" section and
+  `docs/guides/zeromq.md`'s "REQ/REP"/"DEALER/ROUTER" sections to lead
+  with the `Server`/`Client`+`Attach` workflow (concrete, runnable code
+  samples, not just a pointer), demoting `Serve`/`Call`/`ServeRouter`/
+  `CallDealer` to an explicit "escape hatch" subsection each — also
+  discovered and fixed `docs/guides/zeromq.md`'s "REQ/REP" section had
+  gone FAR further stale than expected: it still documented a
+  non-existent `api/zeromq` package (`zmqapi.NewBuilder`/`Register`/
+  `ContractMeta`) using `rest.NewRoute` for a ZMQ route, predating
+  `api/reqreply`'s very existence (confirmed via `ls api/` — no
+  `api/zeromq` directory exists in the repo at all) — not merely behind
+  Phases 0-4, but describing an API surface that had ALREADY been
+  renamed away before this doc's own Decision 1 was ever written.
+  Brought `.github/instructions/go-codex.instructions.md`'s
+  `api/reqreply`/`adapters/mqtt5`/`adapters/zeromq` rows current too — a
+  real gap: they had NOT been updated during Phases 0/1/3 despite this
+  skill's "every code change" mandatory-update rule, still describing
+  `Route.Register(b *Builder)` and a stale `Server = asyncapi.Server`
+  alias (renamed to `ServerEntry` in Phase 0 — the instructions row
+  never caught up); added `Server`/`Client`/`Attach`/`CallAsync`/
+  `Future`/the 5 adapter `Attach*` functions/`MissingSocketError`
+  coverage to all 3 rows. Promoted this doc from `docs/roadmap/` to
+  `docs/design/d-0004-reqreply-workflow-simplification.md` (removed from
+  `docs/roadmap/index.md` + `zensical.toml`'s roadmap nav, added to
+  `docs/design/index.md` + `zensical.toml`'s `[nav."Design Documents"]`)
+  — qualifies under the "establishes a pattern multiple packages follow"
+  bar: extends `d-0001`/`d-0002`'s `Server`/`Client`+`Attach` pattern to
+  a third API boundary, confirming it generalizes to a genuinely
+  asynchronous transport via the additive `CallAsync`/`Future[Resp]`
+  mechanism neither REST nor pub/sub needed. Verified: `go build ./...`,
+  `gofmt -l .` clean (doc-only changes, no Go code touched).
+
+`mqtt`(v3) is explicitly OUT of this phased plan — Decision 4 confirms
+its publish-side credential limitation is permanent, and whether it
+implements ANY documented subset transport remains a separately-tracked
+open question (see "Remaining open items" below), not attempted in any
+phase here.
+
 ## Example mini-project — `examples/reqreply-api` (consolidates 3 existing examples)
+
+> **SHIPPED** (Phases 2 and 4) — this section's layout/demo proposal below
+> is the AS-BUILT shape (file names, package names, and demo numbering all
+> match exactly what's now in `examples/reqreply-api`); see the phased
+> implementation plan's Phase 4 entry above for the verification evidence.
 
 Mirroring `examples/rest-api`'s own layout (a `routes/` package for pure
 route declarations, a `handlers/` package for handler functions +
@@ -848,18 +1148,33 @@ examples/reqreply-api/
 - Whether `mqtt`(v3) implements a documented subset of the reqreply
   transport (application-level reply-topic convention) or does not
   implement it at all (Decision 4) — not decided.
-- Migration path for existing callers of `adapters/mqtt5.Serve`/`.Call`
-  and `adapters/zeromq.Serve`/`.Call`/`.ServeRouter` (breaking change) —
-  needs an explicit checklist before implementation, mirroring
-  [Pub/Sub Workflow Simplification](../design/d-0002-pubsub-workflow-simplification.md)'s
-  own migration rounds (migrate every real example, not just tests,
-  before deleting the old adapter-level entry points). The EXAMPLE side
-  of this migration is now planned — see "Example mini-project —
-  `examples/reqreply-api`" above: `examples/adapters-zeromq-reqrep` and
+- ~~Migration path for existing callers of `adapters/mqtt5.Serve`/`.Call`
+  and `adapters/zeromq.Serve`/`.Call`/`.ServeRouter` (breaking change)~~
+  **RESOLVED, decided AGAINST removal.** Unlike `d-0002`'s pub/sub
+  precedent (which DID delete its old call-time-competing primitives),
+  `Serve`/`Call`/`ServeRouter`/`CallDealer` are DELIBERATELY KEPT as
+  documented escape hatches, not retired — confirmed a genuine, ongoing
+  need during Phase 4: `examples/reqreply-api`'s own Demo 2/3 (dual-mode
+  `Client.Call`, route-level security) call `mqtt5adapter.Call` directly
+  against an already-registered `*RouteHandle` with a `CredentialFunc`,
+  a capability the `Attach`-based `Client.Call`/`CallAsync` v1 reflection
+  shim does not (yet) expose (same documented v1-scope limitation as
+  `events.Transport`'s own shim: no per-call `RequestFormats`/`Formats`
+  overrides, `NewTopicParam` merge-field topic-var merging, or
+  `ErrorPattern`-typed error replies). `Builder`/`NewBuilder`/
+  `BuilderOption` are likewise kept as DEPRECATED aliases indefinitely
+  (matching `d-0002`'s own precedent for aliases with zero real
+  migration cost, as opposed to primitives with a genuine call-time
+  behavioral difference). The EXAMPLE side of this migration is done —
+  see "Example mini-project — `examples/reqreply-api`" above:
+  `examples/adapters-zeromq-reqrep` and
   `examples/adapters-zeromq-dealer-router` are deleted entirely,
   `examples/adapters-mqtt5`'s request-reply demos are stripped out and
   rebuilt, all consolidated into ONE new `examples/reqreply-api`
-  mini-project mirroring `examples/rest-api`'s layout.
+  mini-project mirroring `examples/rest-api`'s layout — and both
+  `docs/guides/mqtt5.md`/`docs/guides/zeromq.md` now lead with the
+  `Attach`-based workflow, with `Serve`/`Call`/`ServeRouter`/`CallDealer`
+  demoted to an explicit "escape hatch" section in each.
 - Whether Response Topic + Correlation Data should be a DECLARED
   `Feature` at all, or remain an implicit, always-on capability
   of `mqtt5`'s reqreply transport (see "Relationship to

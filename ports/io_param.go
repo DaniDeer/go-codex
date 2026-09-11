@@ -164,8 +164,8 @@ type PortOptions struct {
 	// EventClient — same idea as RESTBuilder, for [EventPattern] / events.Client.
 	EventClient *events.Client
 
-	// ReqReplyBuilder — same idea as RESTBuilder, for [ReqReplyPattern] / reqreply.Builder.
-	ReqReplyBuilder *reqreply.Builder
+	// ReqReplyBuilder — same idea as RESTBuilder, for [ReqReplyPattern] / reqreply.Server.
+	ReqReplyBuilder *reqreply.Server
 
 	// MCPBuilder — same idea as RESTBuilder, for [MCPPattern] / apimcp.Builder.
 	MCPBuilder *apimcp.Builder

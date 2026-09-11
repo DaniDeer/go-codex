@@ -1339,7 +1339,7 @@ func TestRegisterReqReply_AddsRouteToBuilder(t *testing.T) {
 	if _, err := p.PluginReqReplyPattern(ports.ReqReplyPattern{Topic: "compute/add"}); err != nil {
 		t.Fatalf("PluginReqReplyPattern: %v", err)
 	}
-	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	if err := ports.RegisterReqReply[int, string](b, p); err != nil {
 		t.Fatalf("RegisterReqReply: %v", err)
 	}
@@ -1443,7 +1443,7 @@ func TestRESTPattern_NilBuilder_StillGoesThroughRegister(t *testing.T) {
 }
 
 func TestRegisterReqReply_SameBuilderAlreadyUsed_ReturnsDuplicateRouteError(t *testing.T) {
-	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	p, err := ports.NewToolPort[int, string]("compute-dup", intCodec, strCodec, ports.PortOptions{
 		ReqReplyBuilder: b,
 	})

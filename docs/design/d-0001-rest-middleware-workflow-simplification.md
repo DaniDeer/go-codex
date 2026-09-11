@@ -38,7 +38,7 @@
 > `api/events`'s own equivalent shipped separately (see
 > [Pub/Sub Workflow Simplification](d-0002-pubsub-workflow-simplification.md));
 > `api/reqreply`'s equivalent is designed in
-> [ReqReply Workflow Simplification](../roadmap/reqreply-workflow-simplification.md),
+> [D-0004 — ReqReply Workflow Simplification](d-0004-reqreply-workflow-simplification.md),
 > deliberately deferred until THIS doc's implementation ships.
 > The "Step 1–4"/"escape hatches" sections below describe the OLD, currently-
 > shipped workflow being replaced; the "## Decision: ..." sections
@@ -1514,7 +1514,7 @@ GENUINELY NEW capability. Deliberately NOT designed as part of this
 review pass; captured instead as its own roadmap doc, SSE Client
 Consumption — to be picked up AFTER this doc's implementation ships,
 same deferral pattern already established for
-[ReqReply Workflow Simplification](../roadmap/reqreply-workflow-simplification.md).
+[D-0004 — ReqReply Workflow Simplification](d-0004-reqreply-workflow-simplification.md).
 (`api/events`'s own equivalent has since shipped — see
 [Pub/Sub Workflow Simplification](d-0002-pubsub-workflow-simplification.md)
 — and this doc's own addendum below.)

@@ -64,7 +64,7 @@ type LatestPort[T any] struct {
 	obs    stats.Observer
 
 	restBuilder     *rest.Server
-	reqReplyBuilder *reqreply.Builder
+	reqReplyBuilder *reqreply.Server
 	mcpBuilder      *apimcp.Builder
 
 	handlesMu sync.Mutex

@@ -280,7 +280,7 @@ func newSecuredPublishChannelHandle() *events.ChannelHandle[sensorReading] {
 }
 
 func newRouteHandle() *reqreply.RouteHandle[computeReq, computeResp] {
-	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	h, err := computeRoute.Register(b)
 	if err != nil {
 		panic(err)
@@ -299,7 +299,7 @@ var securedComputeRoute = reqreply.NewRoute[computeReq, computeResp](
 )
 
 func newSecuredRouteHandle() *reqreply.RouteHandle[computeReq, computeResp] {
-	b := reqreply.NewBuilder(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	h, err := securedComputeRoute.Register(b)
 	if err != nil {
 		panic(err)

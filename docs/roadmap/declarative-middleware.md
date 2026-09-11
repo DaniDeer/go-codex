@@ -24,7 +24,7 @@
 >
 > **`api/reqreply`'s own workflow (separate from pub/sub) is tracked in
 > its own doc, not here**: see
-> [ReqReply Workflow Simplification](reqreply-workflow-simplification.md)
+> [D-0004 — ReqReply Workflow Simplification](../design/d-0004-reqreply-workflow-simplification.md)
 > for up-to-date findings — this doc's older reqreply-specific proposals
 > are superseded there, not maintained in parallel.
 >
@@ -289,8 +289,9 @@ Originally reviewed against EVERY Layer 2 (request/response or
 per-call-invoked) boundary go-codex ships — REST, events, reqreply, MCP,
 and ports. **REST and events are now OUT of this doc's scope — both
 shipped their own codec-backed Input/Output middleware mechanism (see
-the banner above)**; `reqreply` is tracked in its own doc
-(`reqreply-workflow-simplification.md`), not here. What remains open,
+the banner above)**; `reqreply` is tracked in its own doc, now shipped
+and promoted to [D-0004](../design/d-0004-reqreply-workflow-simplification.md),
+not here. What remains open,
 and is what this doc's coverage table below actually tracks:
 
 **This table does NOT cover Layer 3 (`forge.Registry`/pipelines)** — see
@@ -311,8 +312,8 @@ func(...) (T, error)) (T, error)`-style, the SAME shape `ports.File`'s
 sketch above uses. (REST's HTTP-shaped and events/reqreply's
 message-shaped variants — the other two of the three attachment shapes
 this doc originally identified — are no longer relevant here; see
-d-0001/d-0002/d-0003 and `reqreply-workflow-simplification.md` for their
-actual shipped/tracked shapes.)
+d-0001/d-0002/d-0003/[d-0004](../design/d-0004-reqreply-workflow-simplification.md)
+for their actual shipped/tracked shapes.)
 
 ### MCP (decorator-shaped, observability ONLY — no Security)
 

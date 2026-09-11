@@ -4,7 +4,6 @@
 //   - User Properties: per-message key-value metadata sent with each PUBLISH
 //   - UserPropertyParam: codec validation on User Properties (mirrors rest.HeaderParam)
 //   - ContentType: messages carry their own format identifier for auto-selection
-//   - Request-Reply: typed RPC over MQTT using ResponseTopic + CorrelationData
 //
 // The example uses an in-process mock broker to avoid requiring a real MQTT 5.0
 // broker. In production, either connect manually to Mosquitto ≥ 2.0 (MQTT 5.0
@@ -22,12 +21,14 @@
 //	    ClientID: "my-service", CleanStart: true,
 //	})
 //
+// See examples/reqreply-api for MQTT 5's request-reply workflow (typed RPC
+// using ResponseTopic + CorrelationData, via reqreply.Client.Attach) — this
+// example is PUB/SUB-only.
+//
 // # Layer structure
 //
-// Layer 1: Codec[SensorReading] + Codec[ComputeReq] + Codec[ComputeResp]
+// Layer 1: Codec[SensorReading]
 // Layer 2: events.NewChannel  (PUB/SUB → AsyncAPI with protocol: mqtt5)
-//
-//	rest.NewRoute       (REQ/REP → AsyncAPI request-reply via reqreply.Builder)
 //
 // Layer 3 (PUB/SUB) — TWO workflows, in order of preference:
 //
@@ -66,9 +67,6 @@
 //     ...
 //     return nil
 //     })
-//
-// Layer 3 (REQ/REP): mqtt5adapter.Serve / Call — reqreply has no Client/Attach
-// equivalent yet; see docs/roadmap/reqreply-workflow-simplification.md.
 package main
 
 import (
@@ -82,7 +80,6 @@ import (
 
 	mqtt5adapter "github.com/DaniDeer/go-codex/adapters/mqtt5"
 	"github.com/DaniDeer/go-codex/api/events"
-	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/ports"
@@ -113,28 +110,7 @@ var sensorCodec = codex.Struct[SensorReading](
 	),
 )
 
-type ComputeReq struct{ X, Y int }
-type ComputeResp struct{ Sum int }
-
-var computeReqCodec = codex.Struct[ComputeReq](
-	codex.RequiredField("x", codex.Int(),
-		func(r ComputeReq) int { return r.X },
-		func(r *ComputeReq, v int) { r.X = v },
-	),
-	codex.RequiredField("y", codex.Int(),
-		func(r ComputeReq) int { return r.Y },
-		func(r *ComputeReq, v int) { r.Y = v },
-	),
-)
-
-var computeRespCodec = codex.Struct[ComputeResp](
-	codex.RequiredField("sum", codex.Int(),
-		func(r ComputeResp) int { return r.Sum },
-		func(r *ComputeResp, v int) { r.Sum = v },
-	),
-)
-
-// ── Layer 2: channel and route declarations ───────────────────────────────────
+// ── Layer 2: channel declarations ─────────────────────────────────────────────
 
 var ReadingsChannel = events.NewChannel[SensorReading](
 	"sensors/{sensorID}/readings",
@@ -162,32 +138,6 @@ var ReadingsPublisher = ReadingsChannel.WithPublish(events.Publish{
 	OperationID: "publishSensorReading",
 	Summary:     "Publish a sensor reading.",
 })
-
-var ComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
-	"compute/add",
-	computeReqCodec, computeRespCodec,
-	reqreply.RouteMeta{OperationID: "computeAdd", Summary: "Add two integers via MQTT 5 request-reply."},
-)
-
-// ── Security demo: WithSecurityScheme + CredentialFunc/SecurityFunc ──────────
-//
-// bearerAuth is declared ONCE and referenced by both SecuredComputeRoute
-// (request-reply) below and SecuredReadingsChannel (in runSecurityDemo) —
-// the SAME declaration is consumed identically by server (Serve/Subscribe)
-// and client (Call/Publish), mirroring rest.WithSecurityScheme exactly.
-var bearerAuth = reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.
-	WithCodec(codex.String().Refine(validate.NonEmptyString))
-
-var SecuredComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
-	"compute/secured-add",
-	computeReqCodec, computeRespCodec,
-	reqreply.RouteMeta{
-		OperationID: "securedComputeAdd",
-		Summary:     "Add two integers via MQTT 5 request-reply — requires a bearer token.",
-		Security:    []route.SecurityRequirement{route.Require("bearerAuth")},
-	},
-	reqreply.WithSecurityScheme("bearerAuth", bearerAuth),
-)
 
 // ── Error-path ergonomics: events.ErrorChannel ────────────────────────────────
 //
@@ -462,10 +412,7 @@ func main() {
 	runClientAttachDemo(ctx, logger, counter)
 	runPubSubDemo(ctx, logger)
 	runErrorChannelDemo(ctx)
-	runRequestReplyDemo(ctx, logger)
-	runSecurityDemo(ctx, logger)
 	runConnectSecurityDemo(ctx)
-	printSpecs(logger)
 }
 
 // ── Demo 1: Client.Attach — the PREFERRED workflow ───────────────────────────
@@ -611,8 +558,8 @@ func runErrorChannelDemo(ctx context.Context) {
 // escape hatch: custom OnError, UserPropertyParam validation, and
 // ContentType/UserProperties on publish are ALL capabilities Client.Attach's
 // v1 reflection shim does not support (see the package doc comment above).
-// Building a spec from this workflow (see printSpecs below) needs its OWN
-// throwaway events.Client, unlike Demo 1's spec-for-free.
+// Building a spec from this workflow needs its OWN throwaway events.Client,
+// unlike Demo 1's spec-for-free.
 
 func runPubSubDemo(ctx context.Context, logger *slog.Logger) {
 	fmt.Println("\n── Demo 2: PUB/SUB escape hatch (User Properties + ContentType + UserPropertyParam) ──")
@@ -714,124 +661,14 @@ func runPubSubDemo(ctx context.Context, logger *slog.Logger) {
 	}
 }
 
-// ── Demo 3: Request-Reply (ResponseTopic + CorrelationData) ───────────────────
+// ── Demo 3: Connect-level security — mqtt5.NewSecuredClient ──────────────────
 //
-// reqreply has no Client/Attach equivalent yet — Serve/Call remain the sole
-// entry points; see docs/roadmap/reqreply-workflow-simplification.md for the
-// design that would bring reqreply the same Client.Attach workflow PUB/SUB
-// already has.
-
-func runRequestReplyDemo(ctx context.Context, logger *slog.Logger) {
-	fmt.Println("\n── Demo 3: Request-Reply (ResponseTopic + CorrelationData) ──")
-	fmt.Println("  (No equivalent in MQTT 3.1.1 — MQTT 5.0 only)")
-
-	broker, router := newMockBroker()
-
-	rrBuilder := reqreply.NewBuilder(reqreply.Info{Title: "Compute API", Version: "1.0.0"})
-	rrBuilder.AddServer("mqtt5", reqreply.Server{
-		URL:      "mqtt://broker:1883",
-		Protocol: "mqtt5",
-	})
-	handle, _ := ComputeRoute.Register(rrBuilder)
-
-	// Responder: subscribes to "compute/add", replies to ResponseTopic.
-	_ = mqtt5adapter.Serve(ctx, broker, router, handle,
-		func(_ context.Context, req ComputeReq) (ComputeResp, error) {
-			return ComputeResp{Sum: req.X + req.Y}, nil
-		},
-		mqtt5adapter.ServeOptions{}, // Observer resolved from ctx
-	)
-
-	// Requester: publishes with ResponseTopic + CorrelationData; waits for reply.
-	reqs := []ComputeReq{{X: 3, Y: 4}, {X: 10, Y: 20}, {X: -5, Y: 5}}
-	for _, req := range reqs {
-		resp, err := mqtt5adapter.Call(ctx, broker, router, handle, req,
-			mqtt5adapter.CallOptions{ // Observer resolved from ctx
-				ReplyTopicPrefix: "replies",
-				Timeout:          2 * time.Second,
-			})
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "request error: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Printf("  compute(%d + %d) = %d\n", req.X, req.Y, resp.Sum)
-	}
-	_ = logger
-}
-
-// ── Demo 4: Security — WithSecurityScheme + CredentialFunc/SecurityFunc ──────
-//
-// SecuredComputeRoute declares bearerAuth ONCE via reqreply.WithSecurityScheme.
-// The server (Serve) runs a BUILT-IN codec-based credential check — reading
-// the "Authorization" MQTT 5 User Property, stripping "Bearer " — BEFORE the
-// optional custom SecurityFunc. The client (Call) supplies the credential via
-// CredentialFunc; the SAME built-in check runs client-side before publishing,
-// so a malformed credential never reaches the wire.
-func runSecurityDemo(ctx context.Context, logger *slog.Logger) {
-	fmt.Println("\n── Demo 4: Security — WithSecurityScheme + CredentialFunc/SecurityFunc ──")
-
-	broker, router := newMockBroker()
-
-	rrBuilder := reqreply.NewBuilder(reqreply.Info{Title: "Secured Compute API", Version: "1.0.0"})
-	rrBuilder.AddServer("mqtt5", reqreply.Server{URL: "mqtt://broker:1883", Protocol: "mqtt5"})
-	handle, _ := SecuredComputeRoute.Register(rrBuilder)
-
-	_ = mqtt5adapter.Serve(ctx, broker, router, handle,
-		func(_ context.Context, req ComputeReq) (ComputeResp, error) {
-			return ComputeResp{Sum: req.X + req.Y}, nil
-		},
-		mqtt5adapter.ServeOptions{
-			// Runs AFTER the built-in Codec check passes — add extra
-			// business logic here (e.g. a token-revocation check).
-			SecurityFunc: func(_ context.Context, _ *pahomqtt5.Publish, _ []route.SecurityRequirement) error {
-				return nil
-			},
-		},
-	)
-
-	// Happy path: CredentialFunc supplies a well-formed bearer token.
-	fmt.Println("\n  → Call with a valid bearer token:")
-	resp, err := mqtt5adapter.Call(ctx, broker, router, handle, ComputeReq{X: 7, Y: 8},
-		mqtt5adapter.CallOptions{
-			Timeout: 2 * time.Second,
-			CredentialFunc: func(context.Context, []route.SecurityRequirement) ([]mqtt5adapter.UserProperty, error) {
-				return []mqtt5adapter.UserProperty{{Key: "Authorization", Value: "Bearer valid-token-123"}}, nil
-			},
-		})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "unexpected error: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Printf("  ✓ compute(7 + 8) = %d (credential accepted)\n", resp.Sum)
-
-	// Rejected path: CredentialFunc returns a malformed (empty) token — the
-	// client-side built-in check catches this BEFORE the request is ever
-	// published, returning reqreply.SecurityCredentialError.
-	fmt.Println("\n  → Call with a malformed (empty) bearer token:")
-	_, err = mqtt5adapter.Call(ctx, broker, router, handle, ComputeReq{X: 1, Y: 2},
-		mqtt5adapter.CallOptions{
-			Timeout: 2 * time.Second,
-			CredentialFunc: func(context.Context, []route.SecurityRequirement) ([]mqtt5adapter.UserProperty, error) {
-				return []mqtt5adapter.UserProperty{{Key: "Authorization", Value: "Bearer "}}, nil
-			},
-		})
-	var credErr reqreply.SecurityCredentialError
-	if errors.As(err, &credErr) {
-		fmt.Printf("  ✓ rejected client-side: scheme=%q (request never published)\n", credErr.Scheme)
-	} else {
-		fmt.Fprintf(os.Stderr, "expected SecurityCredentialError, got: %v\n", err)
-		os.Exit(1)
-	}
-	_ = logger
-}
-
-// ── Demo 4b: Connect-level security — mqtt5.NewSecuredClient ─────────────────
-//
-// Contrasts CONNECTION-level security against Demo 4's MESSAGE-level
-// security: the SAME connectBearerAuth scheme is declared ONCE, but
-// validated a single time at construction (via NewSecuredClient), right
-// after the caller's own client.Connect(...) — NOT per message. The
-// resulting *mqtt5adapter.SecuredClient is a drop-in replacement for the
+// CONNECTION-level security: the connectBearerAuth scheme is declared
+// ONCE, but validated a single time at construction (via NewSecuredClient),
+// right after the caller's own client.Connect(...) — NOT per message (see
+// examples/reqreply-api's own Demo 2/3 for MESSAGE-level security, now
+// that reqreply lives in its own dedicated example). The resulting
+// *mqtt5adapter.SecuredClient is a drop-in replacement for the
 // raw broker client: every Subscribe/Publish/Serve/Call call site below is
 // completely UNCHANGED from how it would look with the raw client.
 // MinLen(3) rejects the combined "username:password" string when either
@@ -841,7 +678,7 @@ var connectBearerAuth = mqtt5adapter.ConnectSecurityScheme{SecurityScheme: route
 	WithCodec(codex.String().Refine(validate.MinLen(3)))
 
 func runConnectSecurityDemo(ctx context.Context) {
-	fmt.Println("\n── Demo 4b: Connect-level security — mqtt5.NewSecuredClient ──")
+	fmt.Println("\n── Demo 3: Connect-level security — mqtt5.NewSecuredClient ──")
 
 	broker, router := newMockBroker()
 
@@ -878,27 +715,4 @@ func runConnectSecurityDemo(ctx context.Context) {
 		fmt.Fprintf(os.Stderr, "expected ConnectSecurityCredentialError, got: %v\n", err)
 		os.Exit(1)
 	}
-}
-
-// ── Remaining spec: Request-Reply ────────────────────────────────────────────
-//
-// The PUB/SUB spec was ALREADY printed in full back in Demo 1 — directly
-// from the SAME events.Client that Attach/Publish/Subscribe used, with zero
-// extra ceremony. reqreply has no Client/Attach equivalent (see Demo 3's own
-// comment), so ITS spec still needs a dedicated, throwaway reqreply.Builder
-// purely for .Register(builder) — this is the one spec print this example
-// still needs a separate builder for.
-
-func printSpecs(logger *slog.Logger) {
-	fmt.Println("\n── AsyncAPI spec: Request-Reply (protocol: mqtt5) ──")
-
-	rrBuilder := reqreply.NewBuilder(reqreply.Info{Title: "Compute API", Version: "1.0.0"})
-	rrBuilder.AddServer("mqtt5", reqreply.Server{URL: "mqtt://broker:1883", Protocol: "mqtt5"})
-	_, _ = ComputeRoute.Register(rrBuilder)
-
-	rrDoc, _ := rrBuilder.AsyncAPISpec()
-	rrYAML, _ := rrDoc.MarshalYAML()
-	fmt.Println(string(rrYAML))
-
-	_ = logger
 }

@@ -48,7 +48,7 @@
 > Properties become a concrete, sealed `mqtt5.Capability` instance under this
 > design (§5.2).
 >
-> **Prerequisite still applies**: [ReqReply Workflow Simplification](reqreply-workflow-simplification.md)'s
+> **Prerequisite still applies**: [D-0004 — ReqReply Workflow Simplification](../design/d-0004-reqreply-workflow-simplification.md)'s
 > `Client`/`Server`/`Attach` rework remains a prerequisite for cleanly exposing
 > Response Topic/Correlation Data as a capability (unchanged from this doc's
 > original finding — see §5's worked examples for why).
@@ -981,7 +981,7 @@ mechanism exists, not necessarily required to):**
   remains a real, already-shipped instance of the "declared capability, adapter
   either supports it or can't be bound" principle — simply never framed or
   generalized this way before this doc. Still blocked on
-  [ReqReply Workflow Simplification](reqreply-workflow-simplification.md)'s
+  [D-0004 — ReqReply Workflow Simplification](../design/d-0004-reqreply-workflow-simplification.md)'s
   `Client`/`Server`/`Attach` rework (see the banner above), unchanged from this
   doc's original finding.
 - **Shared Subscriptions** (`$share/group/topic`, MQTT5-only) —
@@ -1598,7 +1598,7 @@ concrete driver appears.
   code until a separate implementation round executes the migration.
 - [MQTT5 User Property Merge](mqtt5-user-property-merge.md) — its own
   "registration surface... NOT resolved" question is answered by §5.2 above.
-- [ReqReply Workflow Simplification](reqreply-workflow-simplification.md) — a
+- [D-0004 — ReqReply Workflow Simplification](../design/d-0004-reqreply-workflow-simplification.md) — a
   prerequisite for Response Topic/Correlation Data becoming a real `Feature`
   (§6), unchanged from this doc's original finding.
 - [Declarative Middleware](declarative-middleware.md) — its own unshipped
