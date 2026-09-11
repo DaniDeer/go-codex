@@ -1,23 +1,38 @@
 # ReqReply Workflow Simplification — design decisions
 
-> **Status:** PLANNED — no implementation yet, but the core
-> `Client`/`Server`+`Attach`+reflection-based `Call`/`Serve` mechanism
-> (Decision 1/2) is now CONFIRMED via a throwaway Go prototype (see
-> "Remaining open items" below) — locked, not merely sketched. **An
-> additional, ADDITIVE async `CallAsync`/`Future[Resp]` (Decision 5) is
-> now also CONFIRMED** via a second throwaway prototype, alongside the
-> blocking `Call` — see Decision 5 for the confirmed design and its key
-> structural finding (a plain, non-generic `FutureFactory` interface lets
-> an adapter recover a correctly-typed `Future[Resp]` with zero
-> reflection). **A dedicated review pass against the REAL REST/events
-> code (not just this doc's own internal consistency) confirmed two
-> places where "mirrors REST exactly" needed correcting**: `route any`
-> in `Client.Call` means an ALREADY-REGISTERED `*RouteHandle`, NOT
-> REST's raw `Route` (a deliberate divergence — REST's convention would
-> silently drop `GlobalSecurity`-gated credential enforcement, confirmed
-> via a throwaway prototype), and server-side handler attachment resolves
-> to a free `reqreply.Handle(server, handle, fn)` function, called before
-> `Serve` runs. See Decision 1 and Decision 3 for the confirmed findings.
+> **Status:** PLANNED — no implementation yet, but the core mechanism is
+> now CONFIRMED via 5 rounds of throwaway Go prototypes and considered
+> READY FOR IMPLEMENTATION. Final confirmed shape, in brief (see
+> Decisions 1-5 for full evidence): `reqreply.Server` UNIFIES what a
+> now-RETIRED, separate `Builder` type did (spec accumulation,
+> `AddGlobalSecurity`) with dispatch/transport — ONE type, mirroring
+> `rest.Server`'s own unification exactly. Server-side declaration is
+> ONE fluent chain — `route.WithHandler(fn).Register(server)` — matching
+> REST's REAL, dominant idiom byte-for-byte (an earlier round's separate
+> free `reqreply.Handle(server, handle, fn)` function is superseded).
+> `Server.Serve(ctx)` dispatches every registered route CONCURRENTLY
+> (one goroutine per route, confirmed necessary — a sequential loop
+> would starve every `zeromq` route after the first, since `zeromq.
+> Serve` blocks forever while `mqtt5.Serve` returns immediately).
+> `Client.Call` accepts EITHER a raw, unregistered `Route` (REST-style,
+> zero `Server` needed, `GlobalSecurity` invisible — the SAME accepted
+> limitation REST's own `ClientHandle()` has) OR an already-registered
+> `*RouteHandle` (with `GlobalSecurity` enforced) — strictly MORE
+> flexible than REST, not merely matching it. An ADDITIVE, reqreply-only
+> async `CallAsync`/`Future[Resp]` (Decision 5) exists alongside the
+> blocking `Call`, needed because reqreply's transport (unlike REST's
+> synchronous HTTP) is genuinely asynchronous underneath. `zeromq.Attach`
+> takes a topic→socket mapping (not a shared client value), validated at
+> Attach time. A NEW, consolidated `examples/reqreply-api` mini-project
+> (mirroring `examples/rest-api`'s layout) is now planned — see
+> "Example mini-project" below — replacing 3 existing examples
+> (`adapters-zeromq-reqrep`, `adapters-zeromq-dealer-router` deleted
+> entirely; `adapters-mqtt5`'s request-reply demos stripped out and
+> rebuilt there) with 7 focused demos, INCLUDING a dedicated
+> `CallAsync`/`Future` async-call-and-promise demo. Remaining open items
+> (below) are genuinely deferred design choices (mqtt v3/zeromq Fn
+> shapes, migration checklist, Feature-declaration status for Response
+> Topic/Correlation Data), not blocking gaps.
 > Replaces the now-deleted
 > "Events/ReqReply/Ports Workflow Simplification" doc's `api/reqreply`-
 > scoped content (that doc's pub/sub-scoped content is superseded by
@@ -108,12 +123,20 @@ lifecycle logic lives in `api/rest` itself, shared identically by
 
 ```go
 // api/reqreply (new)
-type ServerTransport interface{ /* adapter-implemented IO binding */ }
+// ServerTransport's shape is CONFIRMED (not a placeholder) — Serve is
+// called ONCE PER REGISTERED ROUTE, any-typed/reflection-recovered by
+// the adapter, exactly like ClientTransport.Call. See Decision 1's
+// "concurrent dispatch" finding below for why Server.Serve calls this
+// PER ROUTE, CONCURRENTLY — not once for the whole Server the way
+// rest.ServerTransport.Serve(ctx) (no args) does.
+type ServerTransport interface {
+    Serve(ctx context.Context, route any, fn any) error
+}
 type ClientTransport interface{ /* adapter-implemented IO binding */ }
 
 type Server struct { /* accumulates registered routes/spec, mirrors rest.Server */ }
 func (s *Server) Attach(t ServerTransport) error
-func (s *Server) Serve(ctx context.Context) error // runs the dispatch loop
+func (s *Server) Serve(ctx context.Context) error // runs ALL registered routes CONCURRENTLY — see below
 
 type Client struct { /* accumulates registered routes/spec, mirrors rest.Client */ }
 func (c *Client) Attach(t ClientTransport) error
@@ -166,15 +189,200 @@ handle.GlobalSecurity }` to decide whether to invoke `CredentialFunc`
 and validate credential format at all — this is load-bearing behavior
 today, not a hypothetical.
 
-**Resolved: `reqreply.Client.Call`'s `route any` KEEPS reqreply's own
-current convention — an already-registered `*RouteHandle` (obtained via
-`Route.Register(builder)`, mirroring today's real call sites), NOT
-REST's raw-`Route` convention.** Adopting REST's convention verbatim
-would be a silent regression for any reqreply route relying on
-`GlobalSecurity` with no per-route override. This is the first concrete
-case in this whole design effort where "mirror REST exactly" needed to
-be corrected by an explicit divergence, backed by evidence, not
-followed literally.
+**SUPERSEDED by a later round's refinement — see immediately below.**
+The original resolution here locked `Client.Call`'s `route any` to ONLY
+accept an already-registered `*RouteHandle`, rejecting REST's raw-`Route`
+convention outright. A follow-up round asked a sharper question: instead
+of choosing ONE of the two conventions, could `Client.Call` support
+BOTH, giving reqreply users a real choice rather than forcing a
+trade-off REST doesn't even offer its own users?
+
+**CONFIRMED via a further throwaway Go prototype: `Client.Call` accepts
+EITHER shape, dispatched via a type-switch inside the adapter — strictly
+MORE flexible than REST, not merely matching it.**
+
+```go
+// adapters/mqtt5 (confirmed dual-mode dispatch inside ClientTransport.Call)
+switch v := routeOrHandle.(type) {
+case reqreply.Route[Req, Resp]:
+    // RAW, unregistered — REST-style: derive ClientHandle() fresh,
+    // zero Builder/Server needed. GlobalSecurity intentionally
+    // INVISIBLE here, same accepted limitation REST's own
+    // Route.ClientHandle() has — this is NOT a reqreply-specific gap.
+case *reqreply.RouteHandle[Req, Resp]:
+    // Already-registered (via Route.Register(server), see below) —
+    // GlobalSecurity IS visible and enforced, same as reqreply's
+    // current, real Call behavior today.
+}
+```
+
+Confirmed via 2 concrete test cases (in addition to the 5 from the
+original Decision-1 prototype, all still passing unchanged): (1) a
+raw, unregistered `Route` passed to `Client.Call` — round-trips
+correctly, and `CredentialFunc` is confirmed NOT invoked (matching
+REST's own accepted limitation, not a new one); (2) an already-
+registered `*RouteHandle` passed to `Client.Call` — round-trips
+correctly, and `CredentialFunc` IS invoked (preserving the original
+finding above, unchanged).
+
+**Resolved: `reqreply.Client.Call` accepts BOTH conventions.** A
+reqreply CLIENT-ONLY application (no server, no `GlobalSecurity` need)
+gets the SAME zero-ceremony, zero-`Server`-needed experience REST
+offers via a raw `Route` value — closing what would otherwise have been
+a real ergonomic gap relative to REST. An application that DOES need
+`GlobalSecurity` registers via `Server` first (see below) and passes the
+resulting `*RouteHandle` instead. Neither path is a compromise on the
+other — this is a genuine capability REST's OWN `Client.Call` cannot
+offer its users at all (REST has no way to see `GlobalSecurity`
+client-side, full stop; reqreply now supports EITHER experience,
+caller's choice).
+
+**CONFIRMED via a throwaway Go prototype: `Server.Serve(ctx)` MUST
+dispatch every registered route's `ServerTransport.Serve` call
+CONCURRENTLY (one goroutine per route), NOT sequentially — a critical
+gap a critical pre-implementation review pass caught before any code
+was written.** REST's `ServerTransport.Serve(ctx context.Context) error`
+takes NO per-route argument at all — the adapter (`nethttp`) wires EVERY
+registered route into ONE shared `http.ServeMux` before `Serve` is ever
+called, then `Serve` is a SINGLE blocking call
+(`http.Server.ListenAndServe`). reqreply's `ServerTransport.Serve(ctx,
+route, fn) error` is fundamentally different: it is called ONCE PER
+ROUTE (confirmed necessary, since `mqtt5`/`zeromq`/`mqtt` have no
+built-in equivalent of an HTTP mux to pre-wire many routes into one
+call). This split behaves very differently depending on the transport,
+confirmed via code:
+
+- `adapters/mqtt5.Serve` (confirmed `adapters/mqtt5/reqreply.go:165-370`)
+  is **non-blocking** — it registers a router callback and subscribes,
+  then returns `nil` immediately; actual per-message dispatch happens
+  later, asynchronously, via the MQTT client library's own background
+  connection goroutine.
+- `adapters/zeromq.Serve`/`ServeRouter` (confirmed
+  `adapters/zeromq/adapter.go:817-849`, `:1200-1249`) **BLOCK forever**
+  in their own `for { select { case <-ctx.Done(): return nil; default:
+  }; sock.RecvFrames(); ... }` poll loop until `ctx` is cancelled or a
+  fatal socket error occurs.
+
+A SEQUENTIAL loop — `for _, r := range routes { t.Serve(ctx, r.route,
+r.fn) }`, which is what an earlier round's throwaway prototype for
+Decision 1 actually built and confirmed compiling/running (that
+prototype tested only ONE registered route, so this never surfaced) —
+works fine for `mqtt5` (each call returns fast) but **permanently
+starves every route after the first for `zeromq`**: the first route's
+`t.Serve` call never returns, so the loop never reaches the second
+route's registration at all. A dedicated critical-review pass caught
+this BEFORE implementation began, and a second throwaway prototype
+confirmed the fix:
+
+```go
+// api/reqreply — Server.Serve's confirmed, concurrent implementation
+func (s *Server) Serve(ctx context.Context) error {
+    // ... for each registered route, launch:
+    //   go func(r route) { errCh <- t.Serve(innerCtx, r.route, r.fn) }(r)
+    // then select between:
+    //   - an error arriving on errCh: cancel innerCtx (stopping every
+    //     OTHER still-running route), wait for all to unwind, return
+    //     that error.
+    //   - the caller's own ctx being Done(): wait for all routes'
+    //     t.Serve calls to actually finish (they must respect ctx
+    //     internally, same as they do today), then return nil.
+}
+```
+
+**Confirmed via 3 concrete test-scenario groups** (all passed): (1) an
+all-`mqtt5`-style registration (non-blocking transport, 3 routes) —
+`Server.Serve` correctly does NOT return early just because every
+route's `t.Serve` call finished instantly; it still blocks until the
+caller's `ctx` is cancelled, preserving the "blocks until ctx cancelled"
+contract REST/events both guarantee; (2) an all-`zeromq`-style
+registration (blocking transport, 5 routes) — confirmed via an
+active-route high-water-mark counter that **all 5 routes ran
+CONCURRENTLY** (the sequential-loop design would have shown a
+high-water mark of 1, proving starvation); (3) one route's `t.Serve`
+returning a real error — confirmed it propagates PROMPTLY as
+`Server.Serve`'s own return value (without waiting for the caller to
+cancel `ctx`), and correctly cancels every other still-running route
+rather than leaving them dangling.
+
+**A second, related finding confirmed by the same prototype: `zeromq`'s
+`Attach` needs a topic→socket MAPPING, not a single shared transport
+value, and this is possible because routes are registered BEFORE
+`Attach` is called.** Unlike pub/sub's `zeromq.Attach(client, sock)`
+(one socket naturally multiplexes many pub/sub topics via ZeroMQ's own
+SUB-socket topic filtering), `zeromq.Serve`/`ServeRouter` are each
+dedicated to ONE `sock FramedSocket` for ONE Req/Resp pair — there is no
+topic-based multiplexing on a single REQ/REP-style socket. Confirmed via
+the prototype: because route registrations (`route.WithHandler(fn).
+Register(server)` — see below) happen BEFORE `zeromq.Attach(server,
+...)` is called (mirroring REST's real
+`Route.RegisterHandle(server)`-before-`nethttp.AttachMux(server, mux,
+addr)` ordering), a new `Server.RegisteredTopics() []string` method
+(backed by a plain, non-generic `Topical` interface every
+`RouteHandle[Req,Resp]` satisfies, mirroring Decision 5's `FutureFactory`
+pattern) lets `zeromq.Attach(server *reqreply.Server, socketsByTopic
+map[string]FramedSocket) (*ServerTransport, error)` validate FULL
+topic/socket coverage at Attach time — confirmed via a passing case
+(complete coverage) and a failing case (one route's topic has no
+matching socket, correctly rejected with a typed `MissingSocketError`,
+not silently ignored).
+
+**CONFIRMED via the same prototype round: `reqreply.Server` UNIFIES
+what the existing, separate `reqreply.Builder` type does (spec
+accumulation: `AddGlobalSecurity`, route bookkeeping) — mirroring
+`rest.Server`'s own unification exactly.** A user-prompted re-comparison
+against REST's REAL code surfaced a foundational question this doc had
+never addressed in 4 prior rounds: REST has NO separate "Builder" type
+at all — `rest.Server` (confirmed `api/rest/builder.go:2473`) is ONE
+type handling BOTH spec accumulation AND dispatch/transport. reqreply,
+by contrast, has a PRE-EXISTING, separate `Builder` type (spec-only,
+AsyncAPI accumulation) alongside this doc's proposed NEW `Server` type
+(dispatch-focused) — leaving it unclear which type a route registers
+against, or whether both need to coexist.
+
+**Resolved: `Server` ABSORBS `Builder`'s role — `AddGlobalSecurity` and
+route bookkeeping move onto `Server` directly, and the standalone
+`Builder` type is retired.** Confirmed via the prototype: `Route.
+Register(s *Server) (*RouteHandle[Req, Resp], error)` reads `s`'s
+accumulated `GlobalSecurity` directly (no intermediate `Builder` value
+needed), exactly mirroring `rest.Route.Register(b *Server)`'s real
+signature. This is a genuine simplification, not just parity for its
+own sake — one type to construct, configure, register routes against,
+attach a transport to, and serve, matching REST's own single-type
+model exactly.
+
+**A further, related refinement — also confirmed via the same
+prototype — replaces the earlier round's separate free `reqreply.
+Handle(server, handle, fn)` function with a fluent `Route.WithHandler`
+method, mirroring REST's REAL, commonly-used idiom exactly (NOT the
+method this doc originally compared against).** A closer look at
+`examples/rest-api`'s actual usage (not just `RouteHandle.WithHandler`,
+the method an earlier round's comparison used) revealed REST's
+dominant, real pattern is `Route.WithHandler(fn) Route[Req, Resp]`
+(confirmed `api/rest/middleware.go:207`) — a FLUENT, PRE-registration
+method attaching `fn` to the UNREGISTERED `Route` value itself, chained
+with further options, THEN committed with ONE `.Register(server)` call:
+
+```go
+// api/reqreply — CONFIRMED replacement for the prior round's free
+// reqreply.Handle(server, handle, fn) function.
+func (r Route[Req, Resp]) WithHandler(fn func(context.Context, Req) (Resp, error)) Route[Req, Resp]
+
+// Route.Register reads the attached fn (if any) and records it into
+// s's dispatch registry directly — no separate registration call.
+func (r Route[Req, Resp]) Register(s *Server) (*RouteHandle[Req, Resp], error)
+```
+
+Confirmed via the prototype: `route.WithHandler(fn).Register(server)`
+— ONE fluent chain — correctly dispatches `fn` when `server.Serve(ctx)`
+runs, with ZERO separate registration step. **This makes reqreply's
+server-side declaration workflow IDENTICAL IN SHAPE to REST's real,
+common idiom** (`route.WithHandler(fn).HandleMW(...).Register(server)`),
+not merely similar — resolving the ergonomic gap a fresh side-by-side
+comparison surfaced: the earlier free-function design was reached by
+comparing against the WRONG REST method (`RouteHandle.WithHandler`,
+REST's less-common POST-registration variant), not REST's actual
+dominant idiom. The free `reqreply.Handle` function from the prior round
+is SUPERSEDED — `Route.WithHandler`+`Register` replaces it entirely.
 
 ### Decision 2 — each adapter implements a THIN `ServerTransport`/`ClientTransport`
 
@@ -200,6 +408,27 @@ Response Topic/Correlation Data — see Decision 4 below); `zeromq` via
 its own `Serve`/`Call`/`ServeRouter`'s existing socket-frame handling,
 relocated behind the transport interface instead of exposed as the
 public entry point.
+
+**`zeromq`'s `Attach` signature is NOT the same shape as `mqtt5`'s —
+confirmed via the prototype above, this is a genuine, necessary
+divergence, not an inconsistency.** Because `zeromq.Serve`/`ServeRouter`
+each need their OWN dedicated socket per route/topic (no topic-based
+multiplexing on one REQ/REP-style socket, unlike `mqtt5`'s single
+`MQTTClient` naturally handling many topics), `zeromq.Attach` takes a
+topic→socket MAPPING instead of a single client value:
+
+```go
+// adapters/zeromq (reworked) — DIFFERENT shape from mqtt5.Attach,
+// confirmed necessary by Decision 1's socket-per-route finding above.
+func Attach(server *reqreply.Server, socketsByTopic map[string]FramedSocket) error
+```
+
+Called AFTER every route is registered via `route.WithHandler(fn).
+Register(server)` (mirroring REST's real registration-before-Attach
+ordering), so `Attach` can validate full topic/socket coverage
+immediately, returning a typed `MissingSocketError` for any registered
+route with no matching socket, rather than discovering the gap later at
+`Serve` time.
 
 ### Decision 3 — fold forward the still-relevant middleware/security decisions
 
@@ -244,39 +473,24 @@ remain sound and are folded forward here, adjusted for the new
   `ports.PluginReqReplyPattern` gets this for free via the SAME
   `.Register(builder)` delegation it already performs for every other
   handle field — no `ports`-specific changes required.
-- **CONFIRMED: how the handler `fn` attaches server-side, resolved
-  against a real gap this doc's Decision 1 introduced.** Decision 1
-  locks `Server.Serve(ctx context.Context) error` with NO per-route
-  arguments at all (mirroring `rest.Server.Serve` exactly) — but
-  reqreply's OWN CURRENT `mqtt5.Serve(ctx, client, router, handle, fn,
-  opts)` passes `fn` TOGETHER with `handle` at Serve-CALL time, not at
-  a separate registration step. These are incompatible: if `Server.Serve`
-  takes no route/fn params, `fn` MUST already be attached to something
-  BEFORE `Serve` runs. A review pass surveyed the THREE existing,
-  different conventions across this codebase for this exact
-  problem — REST server-side uses `RouteHandle.WithHandler(fn)`
-  (fluent mutation of an already-registered pointer, confirmed
-  `api/rest/builder.go:1182`); events uses `Client.Subscribe(ctx, sub,
-  fn)` (an UNREGISTERED `Subscriber[T]`, from `Channel.WithSubscribe`,
-  with `fn` passed together, at call time, confirmed
-  `api/events/builder.go:1773,2459`); reqreply TODAY passes `handle`
-  and `fn` together at `Serve`-call time (closest to events' shape, but
-  with an ALREADY-registered handle). **Resolved: adopt a free function
-  — `reqreply.Handle[Req, Resp](server *Server, handle
-  *RouteHandle[Req, Resp], fn func(context.Context, Req) (Resp,
-  error))` — called once per route BEFORE `Server.Serve(ctx)` runs.**
-  This was ALREADY the exact shape the Decision-1 throwaway prototype
-  built and confirmed compiling/running correctly (see "Remaining open
-  items" below) — it satisfies Decision 1's no-args `Serve(ctx)`
-  signature (fn is attached at registration time, same requirement
-  `RouteHandle.WithHandler` solves for REST) while staying CLOSER to
-  reqreply's own existing "handle carries fn" spirit than inventing a
-  REST-style fluent-mutation method would. A fluent
-  `handle.WithHandler(fn)` method (mirroring REST literally) remains a
-  viable, equally-valid alternative NOT ruled out — this is a stylistic
-  choice with no functional difference from the free-function form, so
-  it is not treated as a load-bearing decision the way Client.Call's
-  route-vs-handle choice above is.
+- **SUPERSEDED by Decision 1's later `Route.WithHandler` finding — how
+  the handler `fn` attaches server-side is now `route.WithHandler(fn).
+  Register(server)`, NOT a free function.** An earlier round resolved
+  this gap (`Server.Serve(ctx)` takes no per-route arguments, so `fn`
+  must already be attached to something before `Serve` runs) by
+  proposing a free `reqreply.Handle(server, handle, fn)` function —
+  reached by comparing against `RouteHandle.WithHandler` (REST's
+  less-common, POST-registration variant, confirmed
+  `api/rest/builder.go:1182`). A later round's closer look at REST's
+  ACTUAL, dominant real-world usage (`examples/rest-api`) found REST's
+  common idiom is instead `Route.WithHandler(fn) Route[Req, Resp]`
+  (confirmed `api/rest/middleware.go:207`) — a FLUENT, PRE-registration
+  method. **Resolved: `reqreply.Route` gains the SAME fluent
+  `WithHandler` method, and the free `reqreply.Handle` function is
+  RETIRED** — see Decision 1's "Server/Builder unification" finding
+  above for the confirmed shape and prototype evidence. This is no
+  longer treated as a "stylistic choice with no functional difference"
+  — it is the confirmed, REST-matching design.
 
 ### Decision 4 — `mqtt` (v3)'s permanent protocol limitation stays permanent
 
@@ -363,6 +577,18 @@ reflection, because `RouteHandle[Req,Resp]` (for ANY Req/Resp pair)
 automatically satisfies the non-generic interface — the type-erasure
 boundary is crossed entirely at Go's own compile-time method dispatch,
 not at runtime.
+
+*(Note: this prototype used a VALUE receiver — `func (h
+RouteHandle[Req, Resp]) NewFutureAny()` — in a round PRIOR to Decision
+1's later-confirmed finding that `Client.Call`/`CallAsync`'s `route`
+argument is a POINTER, `*RouteHandle[Req, Resp]`. This is not a
+functional conflict — Go's method-set rules mean a value-receiver
+method is automatically included in the POINTER's method set too, so
+`(*RouteHandle[Req,Resp])`, passed as `any`, still satisfies
+`FutureFactory` via the same type assertion. The two prototypes were
+never re-run TOGETHER against the current, corrected convention,
+though — flagged for a quick smoke-test at implementation time, not a
+redesign.)*
 
 **Confirmed via 4 concrete test cases** (all passed): (1) `CallAsync`
 returns immediately without blocking, confirmed by doing other work
@@ -473,6 +699,120 @@ capabilities against.
    across routes sharing a builder — same policy as REST, silent (no
    error).
 
+## Example mini-project — `examples/reqreply-api` (consolidates 3 existing examples)
+
+Mirroring `examples/rest-api`'s own layout (a `routes/` package for pure
+route declarations, a `handlers/` package for handler functions +
+security, per-adapter server subpackages, and a `client/` subpackage —
+each doing ONLY the `route.WithHandler(fn).Register(server)` + `Attach` +
+`Serve`/`Call` wiring for its own transport), this doc proposes a NEW,
+consolidated `examples/reqreply-api` mini-project once `reqreply.Client`/
+`Server`+`Attach` ships, replacing 3 existing, separately-maintained
+examples that all demonstrate the SAME underlying request-reply
+mechanism today, each calling adapter functions directly (the exact
+anti-pattern this doc fixes):
+
+- `examples/adapters-zeromq-reqrep/main.go` — **deleted entirely**
+  (fully reqreply-scoped; REQ/REP socket variant).
+- `examples/adapters-zeromq-dealer-router/main.go` — **deleted
+  entirely** (fully reqreply-scoped; DEALER/ROUTER socket variant).
+- `examples/adapters-mqtt5/main.go` — **its `runRequestReplyDemo`/
+  `runSecurityDemo` functions are stripped out and rebuilt in the new
+  project**; its pub/sub, client-attach, error-channel, and
+  connect-security demos are UNRELATED to reqreply and stay in place,
+  untouched.
+
+### Proposed layout
+
+```
+examples/reqreply-api/
+├── routes/
+│   └── routes.go        // ComputeRoute, SecuredComputeRoute — reqreply.NewRoute declarations only
+├── handlers/
+│   └── handlers.go       // domain handler funcs + security (CredentialFunc, SecurityScheme wiring)
+├── mqtt5server/
+│   └── server.go         // reqreply.Server + route.WithHandler(fn).Register(server) + mqtt5.Attach
+├── zeromqserver/
+│   └── server.go         // same shape, zeromq.Attach (REQ/REP topic→socket mapping)
+├── zeromqrouterserver/
+│   └── server.go         // same shape, zeromq DEALER/ROUTER Attach variant
+├── client/
+│   └── client.go          // reqreply.Client + per-adapter ClientTransport Attach (mqtt5/zeromq)
+└── main.go                // wires demos together, mirrors rest-api's demo_*.go convention
+```
+
+### Demos (mirroring `rest-api`'s `demo_*.go` convention — one aspect each)
+
+1. **`demo_basic_call_and_serve.go`** — the baseline round trip:
+   `route.WithHandler(fn).Register(server)` → `server.Attach(transport)`
+   → `server.Serve(ctx)`, alongside `client.Attach(transport)` →
+   `client.Call(ctx, route, req)` with a RAW, unregistered `Route` (no
+   `Server` needed client-side) — the simplest possible shape.
+2. **`demo_global_security_dual_mode_call.go`** — demonstrates
+   `Client.Call`'s CONFIRMED dual-mode acceptance side by side: the SAME
+   route, relying ONLY on `Server.AddGlobalSecurity` (no per-route
+   `Security`), called once via a raw `Route` (confirms `CredentialFunc`
+   is NOT invoked — `GlobalSecurity` invisible, same accepted REST
+   limitation) and once via an already-registered `*RouteHandle`
+   (confirms `CredentialFunc` IS invoked — `GlobalSecurity` enforced) —
+   making the caller's choice and its consequence directly visible in
+   one demo, not just described in prose.
+3. **`demo_route_level_security_credential_error.go`** — a route WITH
+   its own `Security` (not relying on `GlobalSecurity`), called with a
+   deliberately malformed/missing credential — demonstrates
+   `reqreply.SecurityCredentialError` surfacing via `errors.As`, same
+   shape as `examples/adapters-mqtt5`'s existing `runSecurityDemo`.
+4. **`demo_concurrent_multi_route_dispatch.go`** — registers 3+ routes
+   against ONE `Server`, `Attach`es a `zeromq`-backed transport (the
+   BLOCKING transport whose starvation risk motivated Decision 1's
+   concurrent-dispatch fix), and demonstrates all routes actually
+   answering calls concurrently — the real-world demonstration of the
+   confirmed fix, not just its prototype's synthetic high-water-mark
+   assertion.
+5. **`demo_call_async_future.go`** — **the new async call + promise
+   demo**, directly demonstrating the "send here, resolve elsewhere"
+   mechanism Decision 5 confirms: `client.CallAsync(ctx, route, req)`
+   returns a `*reqreply.Future[ComputeResp]` IMMEDIATELY (the demo
+   explicitly does other work — e.g. issues a SECOND, independent
+   `CallAsync` for a different route — before awaiting the first), then
+   awaits BOTH futures from a call site distinct from the one that
+   issued them (mirroring the confirmed prototype's actual
+   "different call site/goroutine" test, not a same-line
+   call-then-immediately-await that would look identical to a blocking
+   `Call` renamed). A second scenario in the same demo shows
+   `Future.Wait(ctx)` against an already-cancelled `ctx` returning a
+   timeout error, matching `Call`'s own `CallError{Kind: KindTimeout}`
+   semantics — establishing that `CallAsync`/`Future` is a genuine
+   alternative shape over the SAME underlying mechanism `Call` uses, not
+   a different transport-level guarantee.
+6. **`demo_spec_printing_asyncapi.go`** — replaces the existing
+   examples' spec-only `reqreply.NewBuilder`+`.Register(builder)` usage;
+   demonstrates printing the AsyncAPI document straight off the SAME
+   `Server` value used for real dispatch (no separate throwaway builder
+   needed, since `Server` absorbs `Builder`'s role per Decision 1).
+7. **`demo_zeromq_dealer_router_variant.go`** — the DEALER/ROUTER
+   socket-topology variant carried over from
+   `examples/adapters-zeromq-dealer-router`, rebuilt against the new
+   `Server`/`Client`+`Attach` shape, demonstrating `zeromq.Attach`'s
+   topic→socket coverage validation (Decision 2) with a DELIBERATE
+   missing-socket case included, surfacing the typed `MissingSocketError`
+   at `Attach` time rather than a later, harder-to-diagnose failure.
+
+### Not yet decided
+
+- Whether `mqtt5server`/`zeromqserver`/`zeromqrouterserver` truly need
+  separate subpackages (mirroring `rest-api`'s `chiserver`/
+  `nethttpserver` split) or whether, since each demo is single-route and
+  much smaller than `rest-api`'s multi-route surface, a flatter
+  `main.go`-only layout reads better — a styling call for whoever
+  implements this, not a functional requirement either way.
+- This mini-project cannot be scaffolded with real, compiling code until
+  `reqreply.Client`/`Server`+`Attach` actually ships (this section is a
+  DESIGN proposal for the example layout, not yet-runnable code) — it is
+  recorded here now so the migration/example work is planned alongside
+  the core implementation, not bolted on afterward as an unplanned
+  extra step.
+
 ## Remaining open items (deferred to implementation time)
 
 - ~~Exact reflection-based `Call`/`Serve` signatures for `reqreply.Client`/
@@ -513,7 +853,13 @@ capabilities against.
   needs an explicit checklist before implementation, mirroring
   [Pub/Sub Workflow Simplification](../design/d-0002-pubsub-workflow-simplification.md)'s
   own migration rounds (migrate every real example, not just tests,
-  before deleting the old adapter-level entry points).
+  before deleting the old adapter-level entry points). The EXAMPLE side
+  of this migration is now planned — see "Example mini-project —
+  `examples/reqreply-api`" above: `examples/adapters-zeromq-reqrep` and
+  `examples/adapters-zeromq-dealer-router` are deleted entirely,
+  `examples/adapters-mqtt5`'s request-reply demos are stripped out and
+  rebuilt, all consolidated into ONE new `examples/reqreply-api`
+  mini-project mirroring `examples/rest-api`'s layout.
 - Whether Response Topic + Correlation Data should be a DECLARED
   `Feature` at all, or remain an implicit, always-on capability
   of `mqtt5`'s reqreply transport (see "Relationship to
@@ -537,19 +883,46 @@ plan sections:
   real `reflect.Value.Call` dispatch; `TransportTypeMismatchError` on a
   malformed `route`/`handle` value; `ClientTransportAlreadyAttachedError`
   on double-`Attach`.
-- `Client.Call`'s route-vs-handle convention (Decision 1, this round) —
-  a route with NO route-level `Security`, relying entirely on
-  `GlobalSecurity`, confirms `CredentialFunc` IS invoked when `Call`
-  receives an already-registered `*RouteHandle` (the LOCKED convention);
-  a regression test asserting the OPPOSITE (raw `Route` + fresh
-  `ClientHandle()`, REST's literal convention) would silently skip
-  `CredentialFunc` — kept as a NEGATIVE reference case, not something to
-  ship, documenting exactly why the divergence from REST is deliberate.
-- `reqreply.Handle(server, handle, fn)` registration (Decision 3, this
-  round) — confirms `fn` is dispatched correctly when `Server.Serve(ctx)`
-  runs with NO per-route arguments; multiple `Handle` calls for
-  different routes against the same `Server`, confirming `Serve` walks
-  ALL of them.
+- **`Client.Call`'s DUAL-MODE route-vs-handle acceptance (Decision 1,
+  CONFIRMED via prototype — supersedes an earlier round's single-mode
+  lock)**: a RAW, unregistered `Route` passed to `Call` round-trips
+  correctly and confirms `CredentialFunc` is NOT invoked (matching
+  REST's own accepted `GlobalSecurity`-invisible limitation, not a
+  reqreply-specific gap); an already-registered `*RouteHandle` passed to
+  `Call` round-trips correctly and confirms `CredentialFunc` IS invoked
+  (preserving `GlobalSecurity` enforcement) — both cases exercised
+  against the SAME route, confirming the caller's choice of value shape
+  determines the behavior, not a global toggle.
+- `route.WithHandler(fn).Register(server)` — ONE fluent chain (Decision
+  1's "Server/Builder unification" finding, CONFIRMED via prototype,
+  supersedes the retired `reqreply.Handle` free function) — confirms
+  `fn` is dispatched correctly when `Server.Serve(ctx)` runs with NO
+  separate registration call and NO per-route `Serve` arguments.
+- `Server.AddGlobalSecurity` + `Route.Register(server)` (the confirmed
+  `Server`/`Builder` unification) — confirms `GlobalSecurity` set
+  directly on `Server` is visible to a registered route's
+  `*RouteHandle.GlobalSecurity` with NO intermediate `Builder` value
+  needed.
+- **`Server.Serve`'s CONCURRENT per-route dispatch (Decision 1's
+  "concurrent dispatch" finding, CONFIRMED via prototype — the critical
+  case this Test plan must not skip)**: an all-non-blocking-transport
+  registration (3+ routes, mqtt5-style — each `t.Serve` call returns
+  instantly) confirms `Server.Serve` still blocks until the caller's
+  `ctx` is cancelled, NOT returning early; an all-blocking-transport
+  registration (5+ routes, zeromq-style — each `t.Serve` call blocks
+  internally) confirms ALL routes run CONCURRENTLY, via an
+  active-route high-water-mark assertion (a regression to the
+  sequential-loop design would show a high-water mark of 1, proving
+  starvation — this is the actual test that catches Finding B if it
+  regresses); one route's `t.Serve` returning a real error confirms it
+  propagates PROMPTLY as `Server.Serve`'s own return value (without
+  waiting for the caller's `ctx` to be cancelled) and cancels every
+  other still-running route.
+- `zeromq.Attach`'s topic→socket coverage validation (Decision 2's
+  divergent `Attach` shape, CONFIRMED via prototype) — routes registered
+  BEFORE `Attach` with FULL topic/socket coverage succeeds; a route with
+  NO matching socket is rejected with a typed `MissingSocketError` at
+  Attach time, not discovered later at `Serve` time.
 - `CallAsync`/`Future[Resp]` (Decision 5, already confirmed via
   prototype) — non-blocking return; await from a different call
   site/goroutine; concurrent calls with zero correlation cross-talk;
