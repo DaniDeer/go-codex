@@ -48,10 +48,19 @@
 > Properties become a concrete, sealed `mqtt5.Capability` instance under this
 > design (§5.2).
 >
-> **Prerequisite still applies**: [D-0004 — ReqReply Workflow Simplification](../design/d-0004-reqreply-workflow-simplification.md)'s
-> `Client`/`Server`/`Attach` rework remains a prerequisite for cleanly exposing
-> Response Topic/Correlation Data as a capability (unchanged from this doc's
-> original finding — see §5's worked examples for why).
+> **Response Topic/Correlation Data — DECIDED, closed**:
+> [D-0004 — ReqReply Workflow Simplification](../design/d-0004-reqreply-workflow-simplification.md)'s
+> `Client`/`Server`/`Attach` rework (the prerequisite this doc's original
+> finding was waiting on) has SHIPPED, and re-evaluating against the real
+> `Attach` shape settled the question: Response Topic/Correlation Data
+> stays an IMPLICIT, always-on characteristic of `mqtt5`'s reqreply
+> transport, NOT a declared `Capability` (see §5.2's own list and
+> d-0004's "Relationship to `protocol-native-features.md`" section for
+> the full reasoning) — every mqtt5 reqreply route needs it
+> unconditionally, with no opt-out scenario to gate. Shared
+> Subscriptions remain this doc's own genuine `Capability` candidate
+> from the same MQTT5 feature cluster, undecided and tracked
+> independently here.
 > [← Back to Roadmap](index.md)
 
 ## 0. Motivation — are we actually hitting unsolvable constraints, or just discomfort?
@@ -975,15 +984,21 @@ mechanism exists, not necessarily required to):**
 
 - **Message Expiry Interval** (MQTT5-only) — a publish-time TTL on a message; no
   `mqtt`(v3)/`zeromq` equivalent.
-- **Response Topic + Correlation Data** (MQTT5-only) — confirmed via code this
-  is EXACTLY what powers `reqreply` over mqtt5 (`adapters/mqtt5/reqreply.go`
-  reads/writes `msg.Properties.ResponseTopic`/`CorrelationData` directly). This
-  remains a real, already-shipped instance of the "declared capability, adapter
-  either supports it or can't be bound" principle — simply never framed or
-  generalized this way before this doc. Still blocked on
+- ~~**Response Topic + Correlation Data** (MQTT5-only)~~ **DECIDED —
+  NOT a `Capability` candidate, closed.** Confirmed via code this is
+  EXACTLY what powers `reqreply` over mqtt5 (`adapters/mqtt5/reqreply.go`
+  reads/writes `msg.Properties.ResponseTopic`/`CorrelationData`
+  directly) — was blocked on
   [D-0004 — ReqReply Workflow Simplification](../design/d-0004-reqreply-workflow-simplification.md)'s
-  `Client`/`Server`/`Attach` rework (see the banner above), unchanged from this
-  doc's original finding.
+  `Client`/`Server`/`Attach` rework, now SHIPPED, so this was
+  re-evaluated against a real `Attach` shape and DECIDED (in d-0004
+  itself, see its own "Relationship to `protocol-native-features.md`"
+  section): it stays an IMPLICIT, always-on characteristic of `mqtt5`'s
+  reqreply transport, not a declared `Capability` — EVERY mqtt5 reqreply
+  route needs it unconditionally, with no opt-out scenario to gate,
+  which fails the actual test that motivates `Capability` in the first
+  place (compile-time-safe OPT-IN gating for something not every binding
+  needs). Removed from this "genuine candidates" list accordingly.
 - **Shared Subscriptions** (`$share/group/topic`, MQTT5-only) —
   competing-consumers load-balancing: multiple subscriber instances register
   the SAME shared-group topic, and the broker delivers each message to exactly
@@ -1598,9 +1613,11 @@ concrete driver appears.
   code until a separate implementation round executes the migration.
 - [MQTT5 User Property Merge](mqtt5-user-property-merge.md) — its own
   "registration surface... NOT resolved" question is answered by §5.2 above.
-- [D-0004 — ReqReply Workflow Simplification](../design/d-0004-reqreply-workflow-simplification.md) — a
-  prerequisite for Response Topic/Correlation Data becoming a real `Feature`
-  (§6), unchanged from this doc's original finding.
+- [D-0004 — ReqReply Workflow Simplification](../design/d-0004-reqreply-workflow-simplification.md) — its
+  `Client`/`Server`/`Attach` rework was the prerequisite this doc's
+  original finding needed to re-evaluate Response Topic/Correlation Data
+  against; now shipped, and the re-evaluation DECIDED it stays implicit,
+  NOT a declared `Capability`/`Feature` (see §6's own updated entry).
 - [Declarative Middleware](declarative-middleware.md) — its own unshipped
   `ports.File[T]` sketch is the basis for §5.6's worked example.
 - `docs/concepts/api-contracts.md` — the "one struct, one call" principle every

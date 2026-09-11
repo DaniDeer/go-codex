@@ -266,6 +266,21 @@ type RequestIDObserver interface {
    and on the wire)? A genuine trade-off (convenience vs. overloading a
    pure protocol-matching mechanism with business semantics) — see the
    "Relationship to distributed tracing" section above. Not decided.
+   Cross-referenced from [ReqReply Middleware](reqreply-middleware.md)'s
+   own "Relationship to... `request-correlation-id.md`" section — that doc
+   defers entirely to THIS one for correlation ID design, noting its own
+   Phase 1b User-Property mechanism could eventually serve as the
+   attachment surface for a future auto-propagation phase (decision 7
+   below), without designing that integration itself.
+7. **If/when auto-propagation onto the wire is designed** (item still
+   "Phase 2 at best" per the scope table above), MQTT5's natural carrier
+   would be a User Property (e.g. `"X-Request-ID"`) — [ReqReply
+   Middleware](reqreply-middleware.md)'s Phase 1b (`mqtt5.
+   FromUserPropertyParam`/`FromResponseUserPropertyParam`, once shipped)
+   would be the natural DECLARATION mechanism for it, reusing the SAME
+   named-param-as-middleware pattern any other User Property gets — noted
+   here as a forward pointer only, not a commitment; this doc still owns
+   the actual design decision of whether/how to do this.
 
 ## See also
 

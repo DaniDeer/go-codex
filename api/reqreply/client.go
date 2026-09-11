@@ -14,16 +14,45 @@ type ClientTransport interface {
 	// Call performs a round trip against route (dynamic type
 	// [Route][Req,Resp] OR *[RouteHandle][Req,Resp] — see [Client.Call]'s
 	// doc comment for the confirmed dual-mode acceptance) with req
-	// (dynamic type Req), returning resp (dynamic type Resp).
-	Call(ctx context.Context, route any, req any) (any, error)
+	// (dynamic type Req), returning resp (dynamic type Resp). opts (0 or
+	// 1 value) carries a per-call format override — see
+	// [ClientCallOptions].
+	Call(ctx context.Context, route any, req any, opts ...ClientCallOptions) (any, error)
 
 	// CallAsync is the non-blocking counterpart to Call — returns
 	// (*[Future][Resp] as any, nil) immediately (or a non-nil error if
 	// dispatch itself fails before any future could be constructed); the
 	// future resolves later, asynchronously, when the correlated reply
 	// arrives. See [Client.CallAsync]'s doc comment for the confirmed
-	// "send here, resolve elsewhere" mechanism.
-	CallAsync(ctx context.Context, route any, req any) (any, error)
+	// "send here, resolve elsewhere" mechanism. opts is [Call]'s
+	// identical per-call override parameter — resolved inside the SAME
+	// underlying dispatch [Call] uses (see docs/roadmap/
+	// reqreply-middleware.md's "Interaction with CallAsync/Future").
+	CallAsync(ctx context.Context, route any, req any, opts ...ClientCallOptions) (any, error)
+}
+
+// ClientCallOptions configures a single [Client.Call]/[Client.CallAsync]
+// invocation — the reqreply mirror of [rest.ClientCallOptions] (identical
+// field names/shape; type-erased since [Client.Call]/[ClientTransport.
+// Call] have no Req/Resp type parameter to constrain a generic options
+// type here either). Closes Phase 0 of
+// docs/roadmap/reqreply-middleware.md's "capability parity" work: the
+// per-call format-override half of the gap between the [Attach]-based
+// workflow and the lower-level [Serve]/[Call] escape hatch (which already
+// supports this via each adapter's own `CallOptions.RequestFormats`/
+// `ResponseFormats`).
+type ClientCallOptions struct {
+	// RequestFormats, when non-nil, OVERRIDES the route's declared
+	// request-body encode format for THIS call only
+	// ([]format.Format[Req]) — resolved generically by the attached
+	// [ClientTransport], falling back to the route's declared
+	// [RouteHandle.RequestFormats] when nil.
+	RequestFormats any
+
+	// ResponseFormats is [RequestFormats]'s response-direction sibling
+	// ([]format.Format[Resp]), falling back to [RouteHandle.Formats]
+	// when nil.
+	ResponseFormats any
 }
 
 // Client accumulates NO spec state — it is purely a dispatch handle, one
@@ -71,16 +100,20 @@ func (c *Client) Attach(t ClientTransport) error {
 // raw form. See docs/design/d-0004-reqreply-workflow-simplification.md's
 // Decision 1 for the full confirmed evidence.
 //
+// opts (0 or 1 value) OVERRIDES the route's declared request/response
+// formats for THIS call only — see [ClientCallOptions]. Closes Phase 0 of
+// docs/roadmap/reqreply-middleware.md.
+//
 // Returns [NoClientTransportAttachedError] if [Client.Attach] was never
 // called.
-func (c *Client) Call(ctx context.Context, route any, req any) (any, error) {
+func (c *Client) Call(ctx context.Context, route any, req any, opts ...ClientCallOptions) (any, error) {
 	c.mu.RLock()
 	t := c.transport
 	c.mu.RUnlock()
 	if t == nil {
 		return nil, NoClientTransportAttachedError{}
 	}
-	return t.Call(ctx, route, req)
+	return t.Call(ctx, route, req, opts...)
 }
 
 // CallAsync is the non-blocking counterpart to [Client.Call] — returns a
@@ -92,20 +125,26 @@ func (c *Client) Call(ctx context.Context, route any, req any) (any, error) {
 // based reply matching) is genuinely asynchronous, unlike REST's
 // synchronous HTTP.
 //
-// route accepts the SAME dual-mode shape [Client.Call] does. Returns
+// route accepts the SAME dual-mode shape [Client.Call] does. opts is
+// [Client.Call]'s IDENTICAL trailing per-call format-override parameter —
+// resolved inside the SAME underlying dispatch [Client.Call] uses, so it
+// applies to CallAsync automatically (see docs/roadmap/
+// reqreply-middleware.md's "Interaction with CallAsync/Future" for the
+// confirmed async-timing nuance this implies for general-purpose
+// middleware, unrelated to format resolution itself). Returns
 // [NoClientTransportAttachedError] if [Client.Attach] was never called.
 //
 //	future, err := client.CallAsync(ctx, ComputeRoute, ComputeReq{X: 1, Y: 2})
 //	// ... do other independent work here ...
 //	resp, err := future.(*reqreply.Future[ComputeResp]).Wait(ctx)
-func (c *Client) CallAsync(ctx context.Context, route any, req any) (any, error) {
+func (c *Client) CallAsync(ctx context.Context, route any, req any, opts ...ClientCallOptions) (any, error) {
 	c.mu.RLock()
 	t := c.transport
 	c.mu.RUnlock()
 	if t == nil {
 		return nil, NoClientTransportAttachedError{}
 	}
-	return t.CallAsync(ctx, route, req)
+	return t.CallAsync(ctx, route, req, opts...)
 }
 
 // ClientTransportAlreadyAttachedError is returned by [Client.Attach] when

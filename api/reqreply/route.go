@@ -1065,10 +1065,24 @@ func (h *RouteHandle[Req, Resp]) ErrorResponseFor(err error) (ErrorPatternRespon
 
 // MergeFields returns the merge-capable fields registered via
 // [NewTopicParam] — feed them directly into [codex.DecodeVars]/
-// [codex.EncodeVars], or use [RouteHandle.DecodeMerged] for the
-// closed-loop convenience method.
+// [codex.EncodeVars], or use [RouteHandle.DecodeMerged]/
+// [RouteHandle.EncodeVars] for the closed-loop convenience methods.
 func (h *RouteHandle[Req, Resp]) MergeFields() []codex.FieldCodec[Req] {
 	return h.mergeFields
+}
+
+// EncodeVars derives topic variables FROM an already-built req, using the
+// route's [NewTopicParam]-registered merge fields — the client-side,
+// encode-direction complement of [RouteHandle.DecodeMerged]. Returns an
+// empty map (no error) when the route declares no merge fields. Reflection-
+// callable (Req fixed by the receiver) — a client-side [ClientTransport]
+// uses this to auto-derive [RouteHandle.BuildTopic]'s vars argument from
+// req directly, mirroring [rest.RouteHandle.EncodeVars] exactly.
+//
+//	vars, _ := computeRoute.EncodeVars(req)
+//	topic, _ := computeRoute.BuildTopic(vars)
+func (h *RouteHandle[Req, Resp]) EncodeVars(req Req) (map[string]string, error) {
+	return codex.EncodeVars(req, h.mergeFields...)
 }
 
 // DecodeMerged decodes the request payload (via the route's registered
@@ -1099,6 +1113,116 @@ func (h *RouteHandle[Req, Resp]) DecodeMerged(payload []byte, topicVars map[stri
 		return req, err
 	}
 	return req, nil
+}
+
+// EffectiveRequestFormats resolves the CANDIDATE format list for
+// request-payload decode/encode, in priority order: formats (a
+// call-time override) > [RouteHandle.RequestFormats]. Returns the FULL
+// candidate slice (not just the winning format) for callers that need
+// to scan every candidate themselves — mirrors
+// [events.ChannelHandle.EffectiveSubscribeFormats].
+func (h *RouteHandle[Req, Resp]) EffectiveRequestFormats(formats ...format.Format[Req]) []format.Format[Req] {
+	if len(formats) > 0 {
+		return formats
+	}
+	return h.RequestFormats
+}
+
+// DecodeWithFormats is the canonical "decode using whatever format THIS
+// route declares" method, WITHOUT the topic-var merge step — the
+// decode-only half of [RouteHandle.DecodeMergedWithFormats]. Resolves via
+// [RouteHandle.EffectiveRequestFormats] then decodes with the winning
+// format, falling back to plain [RouteHandle.Decode] when unresolved.
+// Reflection-callable (Req fixed by the receiver) — adapters' Attach
+// shims use this instead of duplicating the priority-chain inline.
+//
+// Mirrors [events.ChannelHandle.DecodeWithFormats].
+func (h *RouteHandle[Req, Resp]) DecodeWithFormats(payload []byte, formats ...format.Format[Req]) (Req, error) {
+	effectiveFmts := h.EffectiveRequestFormats(formats...)
+	if len(effectiveFmts) > 0 {
+		return effectiveFmts[0].Unmarshal(payload)
+	}
+	return h.Decode(payload)
+}
+
+// DecodeMergedWithFormats mirrors [RouteHandle.DecodeMerged], but decodes
+// via [RouteHandle.DecodeWithFormats] first (so the route's OWN declared
+// [RouteHandle.RequestFormats], or a call-time override, is honored)
+// before merging topic vars — the canonical "decode+merge using whatever
+// format THIS route declares" method adapters' Attach shims delegate to.
+//
+// Mirrors [events.ChannelHandle.DecodeMergedWithFormats].
+func (h *RouteHandle[Req, Resp]) DecodeMergedWithFormats(payload []byte, topicVars map[string]string, formats ...format.Format[Req]) (Req, error) {
+	var req Req
+	var err error
+	if len(payload) > 0 {
+		req, err = h.DecodeWithFormats(payload, formats...)
+		if err != nil {
+			return req, err
+		}
+	}
+	if len(h.mergeFields) == 0 {
+		return req, nil
+	}
+	if err := codex.DecodeVars(&req, topicVars, h.mergeFields...); err != nil {
+		return req, err
+	}
+	return req, nil
+}
+
+// EncodeRequestWithFormats is the canonical "encode a request using
+// whatever format THIS route declares" method — the client-side
+// complement of [RouteHandle.DecodeWithFormats]. Resolves via
+// [RouteHandle.EffectiveRequestFormats] then encodes with the winning
+// format, falling back to plain [RouteHandle.EncodeRequest] when
+// unresolved. Reflection-callable (Req fixed by the receiver).
+func (h *RouteHandle[Req, Resp]) EncodeRequestWithFormats(req Req, formats ...format.Format[Req]) ([]byte, error) {
+	effectiveFmts := h.EffectiveRequestFormats(formats...)
+	if len(effectiveFmts) > 0 {
+		return effectiveFmts[0].Marshal(req)
+	}
+	return h.EncodeRequest(req)
+}
+
+// EffectiveFormats resolves the CANDIDATE format list for
+// response-payload encode/decode, in priority order: formats (a
+// call-time override) > [RouteHandle.Formats]. The response-direction
+// mirror of [RouteHandle.EffectiveRequestFormats].
+func (h *RouteHandle[Req, Resp]) EffectiveFormats(formats ...format.Format[Resp]) []format.Format[Resp] {
+	if len(formats) > 0 {
+		return formats
+	}
+	return h.Formats
+}
+
+// EncodeWithFormats is the canonical "encode a reply using whatever
+// format THIS route declares" method. Resolves via
+// [RouteHandle.EffectiveFormats] then encodes with the winning format,
+// falling back to plain [RouteHandle.Encode] when unresolved.
+// Reflection-callable (Resp fixed by the receiver) — adapters' Attach
+// shims use this instead of duplicating the priority-chain inline.
+//
+// Mirrors [events.ChannelHandle.EncodeWithFormats].
+func (h *RouteHandle[Req, Resp]) EncodeWithFormats(resp Resp, formats ...format.Format[Resp]) ([]byte, error) {
+	effectiveFmts := h.EffectiveFormats(formats...)
+	if len(effectiveFmts) > 0 {
+		return effectiveFmts[0].Marshal(resp)
+	}
+	return h.Encode(resp)
+}
+
+// DecodeResponseWithFormats is the canonical "decode a reply using
+// whatever format THIS route declares" method — the client-side
+// complement of [RouteHandle.EncodeWithFormats]. Resolves via
+// [RouteHandle.EffectiveFormats] then decodes with the winning format,
+// falling back to plain [RouteHandle.DecodeResponse] when unresolved.
+// Reflection-callable (Resp fixed by the receiver).
+func (h *RouteHandle[Req, Resp]) DecodeResponseWithFormats(payload []byte, formats ...format.Format[Resp]) (Resp, error) {
+	effectiveFmts := h.EffectiveFormats(formats...)
+	if len(effectiveFmts) > 0 {
+		return effectiveFmts[0].Unmarshal(payload)
+	}
+	return h.DecodeResponse(payload)
 }
 
 // WithRequestFormats sets the formats the route accepts for request body decoding

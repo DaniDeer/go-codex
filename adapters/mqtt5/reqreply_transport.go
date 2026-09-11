@@ -59,6 +59,79 @@ func recoverRouteHandleValue(routeAny any) (reflect.Value, reflect.Value, error)
 	}
 }
 
+// resolveCallFormatReflect type-asserts overrideAny (a
+// [reqreply.ClientCallOptions.RequestFormats]/[reqreply.ClientCallOptions.
+// ResponseFormats] value) against declaredFieldType (the reflect.Type of
+// the route's own []format.Format[Req]/[]format.Format[Resp] field, e.g.
+// elem.FieldByName("RequestFormats").Type()) — the reflection-only
+// equivalent of [resolveCallFormat] (which can't be called here directly:
+// it's generic over T, and this dispatcher never knows T at compile
+// time). Returns reflect.Zero(declaredFieldType) (an empty slice of the
+// right type) when overrideAny is nil — passing it to
+// [reqreply.RouteHandle.EncodeRequestWithFormats]/
+// [reqreply.RouteHandle.DecodeResponseWithFormats]'s variadic `formats`
+// parameter then correctly falls through to THEIR OWN declared-field
+// fallback (`len(formats) == 0`), so this dispatcher never needs to read
+// the declared field itself for the fallback case. Returns an error on a
+// type mismatch — callers wrap it in [CallError] with the
+// direction-appropriate [ErrorKind], mirroring [resolveCallFormat]'s own
+// error shape.
+func resolveCallFormatReflect(overrideAny any, declaredFieldType reflect.Type) (reflect.Value, error) {
+	if overrideAny == nil {
+		return reflect.Zero(declaredFieldType), nil
+	}
+	v := reflect.ValueOf(overrideAny)
+	if v.Type() != declaredFieldType {
+		return reflect.Value{}, fmt.Errorf("format option: want %s, got %T", declaredFieldType, overrideAny)
+	}
+	return v, nil
+}
+
+// publishHandlerErrorReplyReflect is the reflection-based counterpart of
+// [publishHandlerErrorReply] — used by [serverTransport.Serve], which has
+// no concretely-typed *reqreply.RouteHandle[Req,Resp] to call the generic
+// function with. errorResponseForMethod is
+// rv.MethodByName("ErrorResponseFor") — see [serverTransport]'s doc
+// comment. Mirrors [publishHandlerErrorReply]'s logic exactly: consults
+// ErrorResponseFor(err) first; on a match, publishes the declared
+// codec-backed typed payload instead of plain text; on no match, or a
+// mapping/encoding failure within the matched pattern, falls back to
+// [publishErrorReply]'s plain-text behavior unchanged.
+func publishHandlerErrorReplyReflect(
+	ctx context.Context,
+	client MQTTClient,
+	errorResponseForMethod reflect.Value,
+	responseTopic string,
+	correlationData []byte,
+	err error,
+	obs stats.Observer,
+) {
+	if responseTopic == "" {
+		return
+	}
+	results := errorResponseForMethod.Call([]reflect.Value{reflect.ValueOf(err)})
+	resp, _ := results[0].Interface().(reqreply.ErrorPatternResponse)
+	matched, _ := results[1].Interface().(bool)
+	mapErr, _ := results[2].Interface().(error)
+	if matched && mapErr == nil {
+		props := &pahomqtt5.PublishProperties{
+			ContentType:     errorReplyContentType,
+			CorrelationData: correlationData,
+		}
+		_, _ = client.Publish(ctx, &pahomqtt5.Publish{
+			Topic:      responseTopic,
+			QoS:        1,
+			Payload:    resp.Body,
+			Properties: props,
+		})
+		return
+	}
+	if matched && mapErr != nil {
+		stats.ReportErrors(obs, "error_pattern", mapErr)
+	}
+	publishErrorReply(ctx, client, responseTopic, correlationData, err)
+}
+
 // effectiveSecurity resolves elem's effective security requirements
 // (Security falling back to GlobalSecurity) and its SecuritySchemes,
 // flattened into the two maps [validateSecurityCredentials] expects —
@@ -90,15 +163,16 @@ func effectiveSecurity(elem reflect.Value) (reqs []route.SecurityRequirement, sc
 // holding func values here, not methods — reflect.Value.Call works
 // identically either way).
 //
-// v1 scope (documented, matching [adapters/mqtt5]'s events.Transport shim's
-// own precedent): route-declared [reqreply.RouteHandle.RequestFormats]/
-// [reqreply.RouteHandle.Formats] overrides, [reqreply.NewTopicParam]
-// merge-field topic-var merging, and [reqreply.ErrorPattern]-typed error
-// replies are NOT honored by this shim — it always uses handle.Decode/
-// handle.Encode (JSON) and always sends plain-text error replies via
-// [publishErrorReply]. A caller needing any of these should use [Serve]
-// directly (fully featured, completely unaffected by this addition)
-// instead of the [reqreply.Server]/[AttachServer] workflow.
+// Capability parity with [Serve] (Phase 0 of
+// docs/roadmap/reqreply-middleware.md, SHIPPED): route-declared
+// [reqreply.RouteHandle.RequestFormats]/[reqreply.RouteHandle.Formats],
+// [reqreply.NewTopicParam] merge-field topic-var merging, and
+// [reqreply.ErrorPattern]-typed error replies (for handler/encode
+// failures) are all honored via [reqreply.RouteHandle.DecodeMergedWithFormats]/
+// [reqreply.RouteHandle.EncodeWithFormats]/[reqreply.RouteHandle.ErrorResponseFor],
+// reached via reflection against rv (the *RouteHandle[Req,Resp] pointer
+// Value) — the same technique already used for the Decode/Encode struct
+// fields, just applied to METHODS instead.
 type serverTransport struct {
 	client MQTTClient
 	router MQTTRouter
@@ -141,7 +215,7 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 		obs = stats.ObserverFromContext(ctx)
 	}
 
-	_, elem, err := recoverRouteHandleValue(routeAny)
+	rv, elem, err := recoverRouteHandleValue(routeAny)
 	if err != nil {
 		return err
 	}
@@ -160,9 +234,53 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 		return reqreply.TransportTypeMismatchError{Topic: path, Want: wantFnType.String(), Got: fmt.Sprintf("%T", fnAny)}
 	}
 
+	// decodeMergedWithFormatsMethod is *RouteHandle[Req,Resp].
+	// DecodeMergedWithFormats(payload []byte, topicVars map[string]string,
+	// formats ...format.Format[Req]) (Req, error) — reached via rv (the
+	// pointer Value recoverRouteHandleValue returns), not elem, since this
+	// is a METHOD, not a field. Honors handle.RequestFormats AND merges
+	// NewTopicParam topic vars in one call; behaves identically to a
+	// plain Decode when the route declares neither (confirmed via its own
+	// godoc) — closes Phase 0 work items 1 and half of 2 (server-side
+	// RequestFormats honoring + merge-field support).
+	decodeMergedWithFormatsMethod := rv.MethodByName("DecodeMergedWithFormats")
+	// encodeWithFormatsMethod is *RouteHandle[Req,Resp].EncodeWithFormats(
+	// resp Resp, formats ...format.Format[Resp]) ([]byte, error) — honors
+	// handle.Formats, falling back to plain Encode — closes the other
+	// half of Phase 0 work item 2 (server-side Formats honoring).
+	encodeWithFormatsMethod := rv.MethodByName("EncodeWithFormats")
+	// mergeFieldsMethod is *RouteHandle[Req,Resp].MergeFields() []codex.
+	// FieldCodec[Req] — used ONLY to decide whether topic-var extraction
+	// (matchTopicTemplate) is worth attempting at all, mirroring [Serve]'s
+	// own "if len(mergeFields) > 0" guard exactly (avoids a spurious
+	// topic-var-mismatch rejection for routes that declare no merge
+	// params and whose concrete topic doesn't cleanly "match" the
+	// template for unrelated reasons).
+	mergeFieldsMethod := rv.MethodByName("MergeFields")
+	hasMergeFields := mergeFieldsMethod.Call(nil)[0].Len() > 0
+	// errorResponseForMethod is *RouteHandle[Req,Resp].ErrorResponseFor(err
+	// error) (ErrorPatternResponse, bool, error) — closes Phase 0 work item 3.
+	errorResponseForMethod := rv.MethodByName("ErrorResponseFor")
+
 	t.router.RegisterHandler(path, func(msg *pahomqtt5.Publish) {
 		start := time.Now()
 		msgCtx := context.WithValue(ctx, contextKey{}, msg)
+
+		// TraceObserver span — mirrors the escape hatch's [Serve] exactly
+		// (span name "mqtt5.serve"): a capability that was silently absent
+		// from this reflection-based dispatcher before Serve/Call became
+		// thin wrappers delegating here (found and closed as part of that
+		// delegation, not originally part of Phase 0's 4 work items).
+		var spanCtx = msgCtx
+		var serveErr error
+		if to, ok := obs.(stats.TraceObserver); ok {
+			spanCtx = to.StartSpan(msgCtx, "mqtt5.serve", path)
+		}
+		defer func() {
+			if to, ok := obs.(stats.TraceObserver); ok {
+				to.EndSpan(spanCtx, serveErr)
+			}
+		}()
 
 		var responseTopic string
 		var correlationData []byte
@@ -173,36 +291,62 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 
 		if propErr := validateUserProperties(msg, t.opts.UserPropertyParams); propErr != nil {
 			obs.RecordValidationError("user_property", stats.ConstraintName(propErr), userPropertyName(propErr))
+			serveErr = propErr
 			obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-			publishErrorReply(msgCtx, t.client, responseTopic, correlationData, propErr)
+			publishErrorReply(spanCtx, t.client, responseTopic, correlationData, propErr)
 			if t.opts.OnError != nil {
 				t.opts.OnError(ServeError{Kind: KindSecurity, Err: propErr})
 			}
 			return
 		}
 
-		decodeResults := decodeField.Call([]reflect.Value{reflect.ValueOf(msg.Payload)})
+		// Topic-var extraction ONLY runs when the route declares
+		// NewTopicParam merge fields — mirrors [Serve]'s own "if
+		// len(mergeFields) > 0" guard exactly, avoiding a spurious
+		// topic-var-mismatch rejection for routes that declare no merge
+		// params (matchTopicTemplate is skipped entirely for them, same
+		// as before this change).
+		var topicVars map[string]string
+		if hasMergeFields {
+			var varErr error
+			topicVars, varErr = matchTopicTemplate(path, msg.Topic)
+			if varErr == nil {
+				validateResults := rv.MethodByName("ValidateTopicVars").Call([]reflect.Value{reflect.ValueOf(topicVars)})
+				if errI, _ := validateResults[0].Interface().(error); errI != nil {
+					varErr = errI
+				}
+			}
+			if varErr != nil {
+				stats.ReportErrors(obs, "topic_var", varErr)
+				serveErr = varErr
+				obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
+				publishErrorReply(spanCtx, t.client, responseTopic, correlationData, varErr)
+				if t.opts.OnError != nil {
+					t.opts.OnError(ServeError{Kind: KindDecode, Err: varErr})
+				}
+				return
+			}
+		}
+
+		// DecodeMergedWithFormats honors handle.RequestFormats (falling
+		// back to plain Decode) AND merges topicVars in one call — closes
+		// Phase 0 work items 1 and 2 (server-side).
+		decodeResults := decodeMergedWithFormatsMethod.CallSlice([]reflect.Value{
+			reflect.ValueOf(msg.Payload),
+			reflect.ValueOf(topicVars),
+			elem.FieldByName("RequestFormats"),
+		})
 		if errI, _ := decodeResults[1].Interface().(error); errI != nil {
 			stats.ReportErrors(obs, "body", errI)
+			serveErr = errI
 			obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-			publishErrorReply(msgCtx, t.client, responseTopic, correlationData, errI)
+			publishErrorReply(spanCtx, t.client, responseTopic, correlationData, errI)
 			if t.opts.OnError != nil {
 				t.opts.OnError(ServeError{Kind: KindDecode, Err: errI})
 			}
 			return
 		}
 		reqVal := decodeResults[0]
-
-		// NOTE — v1 scope: [reqreply.NewTopicParam] merge-field topic-var
-		// merging (the [Serve] function's own MergeFields+DecodeVars step)
-		// is NOT performed by this shim — codex.DecodeVars needs a
-		// concretely-typed *Req and []codex.FieldCodec[Req], neither of
-		// which this reflection-only dispatcher can safely reconstruct
-		// without knowing Req at compile time. A route relying on
-		// NewTopicParam merge should use [Serve] directly (fully
-		// featured, completely unaffected by this addition) — mirrors
-		// [adapters/mqtt5]'s events.Transport shim's own documented
-		// scope-down precedent.
 
 		secReqs, schemeTypes, schemeCodecs := effectiveSecurity(elem)
 		if len(secReqs) > 0 {
@@ -215,8 +359,9 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 					secObs.RecordSecurityRejection(path, firstScheme(secReqs))
 				}
 				wrapped := reqreply.SecurityCredentialError{Scheme: name, Err: credErr}
+				serveErr = wrapped
 				obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-				publishErrorReply(msgCtx, t.client, responseTopic, correlationData, wrapped)
+				publishErrorReply(spanCtx, t.client, responseTopic, correlationData, wrapped)
 				if t.opts.OnError != nil {
 					t.opts.OnError(ServeError{Kind: KindSecurity, Err: wrapped})
 				}
@@ -228,8 +373,9 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 						secObs.RecordSecurityRejection(path, firstScheme(secReqs))
 					}
 					wrapped := reqreply.SecurityError{Err: err}
+					serveErr = wrapped
 					obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-					publishErrorReply(msgCtx, t.client, responseTopic, correlationData, wrapped)
+					publishErrorReply(spanCtx, t.client, responseTopic, correlationData, wrapped)
 					if t.opts.OnError != nil {
 						t.opts.OnError(ServeError{Kind: KindSecurity, Err: wrapped})
 					}
@@ -238,10 +384,11 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 			}
 		}
 
-		fnResults := fnVal.Call([]reflect.Value{reflect.ValueOf(msgCtx), reqVal})
+		fnResults := fnVal.Call([]reflect.Value{reflect.ValueOf(spanCtx), reqVal})
 		if errI, _ := fnResults[1].Interface().(error); errI != nil {
+			serveErr = errI
 			obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-			publishErrorReply(msgCtx, t.client, responseTopic, correlationData, errI)
+			publishHandlerErrorReplyReflect(spanCtx, t.client, errorResponseForMethod, responseTopic, correlationData, errI, obs)
 			if t.opts.OnError != nil {
 				t.opts.OnError(ServeError{Kind: KindHandler, Err: errI})
 			}
@@ -249,10 +396,14 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 		}
 		respVal := fnResults[0]
 
-		encodeResults := encodeField.Call([]reflect.Value{respVal})
+		// EncodeWithFormats honors handle.Formats, falling back to plain
+		// Encode — closes the response-direction half of Phase 0 work
+		// item 2 (server-side).
+		encodeResults := encodeWithFormatsMethod.CallSlice([]reflect.Value{respVal, elem.FieldByName("Formats")})
 		if errI, _ := encodeResults[1].Interface().(error); errI != nil {
+			serveErr = errI
 			obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-			publishErrorReply(msgCtx, t.client, responseTopic, correlationData, errI)
+			publishHandlerErrorReplyReflect(spanCtx, t.client, errorResponseForMethod, responseTopic, correlationData, errI, obs)
 			if t.opts.OnError != nil {
 				t.opts.OnError(ServeError{Kind: KindEncode, Err: errI})
 			}
@@ -265,12 +416,13 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 			if correlationData != nil {
 				replyProps.CorrelationData = correlationData
 			}
-			if _, pubErr := t.client.Publish(msgCtx, &pahomqtt5.Publish{
+			if _, pubErr := t.client.Publish(spanCtx, &pahomqtt5.Publish{
 				Topic:      responseTopic,
 				QoS:        1,
 				Payload:    respPayload,
 				Properties: replyProps,
 			}); pubErr != nil {
+				serveErr = pubErr
 				obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
 				if t.opts.OnError != nil {
 					t.opts.OnError(ServeError{Kind: KindEncode, Err: pubErr})
@@ -295,10 +447,14 @@ var _ reqreply.ServerTransport = (*serverTransport)(nil)
 // ── Client side ──────────────────────────────────────────────────────────
 
 // clientTransport implements [reqreply.ClientTransport], wrapping client+
-// router+opts — built by [AttachClient]. See [serverTransport]'s doc
-// comment for this shim's identical reflection technique and documented
-// v1 scope (route-declared RequestFormats/Formats overrides not honored;
-// use [Call]/[CallHandle] directly for full control).
+// router+opts — built by [AttachClient]. Capability parity with [Call]/
+// [CallHandle] (Phase 0 of docs/roadmap/reqreply-middleware.md, SHIPPED):
+// route-declared [reqreply.RouteHandle.RequestFormats]/
+// [reqreply.RouteHandle.Formats], a per-call [reqreply.ClientCallOptions]
+// format override, AND [reqreply.NewTopicParam] merge-field topic-var
+// derivation (mirroring [CallHandle]'s auto-derive-from-req convenience)
+// are all honored — see [serverTransport]'s doc comment for the shared
+// reflection technique.
 type clientTransport struct {
 	client MQTTClient
 	router MQTTRouter
@@ -329,33 +485,128 @@ func AttachClient(client *reqreply.Client, mqttClient MQTTClient, router MQTTRou
 // Call implements [reqreply.ClientTransport]. Mirrors [Call]'s core logic
 // (resolve reply topic → encode request → security credential resolution
 // → publish → await reply → decode) via reflection against
-// routeAny/reqAny — see [clientTransport]'s doc comment for this shim's
-// documented v1 scope.
-func (t *clientTransport) Call(ctx context.Context, routeAny any, reqAny any) (any, error) {
-	return t.call(ctx, routeAny, reqAny)
+// routeAny/reqAny — see [clientTransport]'s doc comment.
+func (t *clientTransport) Call(ctx context.Context, routeAny any, reqAny any, opts ...reqreply.ClientCallOptions) (any, error) {
+	var o reqreply.ClientCallOptions
+	if len(opts) > 0 {
+		o = opts[0]
+	}
+	return t.call(ctx, routeAny, reqAny, o)
 }
 
-func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any) (any, error) {
+// call's named return values (result, err) let the deferred TraceObserver
+// span-end below observe the eventual error from EVERY return statement in
+// this function without needing to touch each one individually — Go
+// assigns to named return variables on any `return`, explicit or bare,
+// mirroring [Call]'s own `var callErr error` + assign-before-every-return
+// pattern with less repetition.
+func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, callOpts reqreply.ClientCallOptions) (result any, err error) {
 	obs := t.opts.Observer
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
 	}
 	start := time.Now()
 
-	_, elem, err := recoverRouteHandleValue(routeAny)
+	rv, elem, err := recoverRouteHandleValue(routeAny)
 	if err != nil {
 		return nil, err
 	}
 	path := elem.FieldByName("Topic").String()
 
-	encodeRequestField := elem.FieldByName("EncodeRequest")   // func(Req) ([]byte, error)
-	decodeResponseField := elem.FieldByName("DecodeResponse") // func([]byte) (Resp, error)
+	// TraceObserver span — mirrors the escape hatch's [Call] exactly (span
+	// name "mqtt5.request"): a capability that was silently absent from
+	// this reflection-based dispatcher before Serve/Call became thin
+	// wrappers delegating here (found and closed as part of that
+	// delegation, not originally part of Phase 0's 4 work items).
+	if to, ok := obs.(stats.TraceObserver); ok {
+		ctx = to.StartSpan(ctx, "mqtt5.request", path)
+		defer func() { to.EndSpan(ctx, err) }()
+	}
+
+	encodeRequestField := elem.FieldByName("EncodeRequest") // func(Req) ([]byte, error)
 	reqType := encodeRequestField.Type().In(0)
 
 	reqVal := reflect.ValueOf(reqAny)
 	if !reqVal.IsValid() || reqVal.Type() != reqType {
 		obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
 		return nil, reqreply.TransportTypeMismatchError{Topic: path, Want: reqType.String(), Got: fmt.Sprintf("%T", reqAny)}
+	}
+
+	// Resolve per-call format overrides, in priority order:
+	// callOpts.RequestFormats/ResponseFormats (the NEW, Attach-based
+	// reqreply.ClientCallOptions parameter, Phase 0) > t.opts.
+	// RequestFormats/ResponseFormats (the mqtt5.CallOptions fields the
+	// escape hatch's Call/CallHandle have always supported — a fresh
+	// clientTransport is built per Call invocation via Call[Req,Resp]'s
+	// thin-wrapper form, so this IS effectively per-call too) > nil
+	// (meaning "use the route's own declared RequestFormats/Formats, or
+	// plain EncodeRequest/DecodeResponse") — closes Phase 0 work item 2
+	// (client-side per-call override half) WITHOUT dropping the
+	// pre-existing t.opts.RequestFormats/ResponseFormats behavior.
+	requestOverrideAny := callOpts.RequestFormats
+	if requestOverrideAny == nil {
+		requestOverrideAny = t.opts.RequestFormats
+	}
+	requestFormatsOverride, fmtErr := resolveCallFormatReflect(requestOverrideAny, elem.FieldByName("RequestFormats").Type())
+	if fmtErr != nil {
+		obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
+		return nil, CallError{Kind: KindEncode, Err: fmtErr}
+	}
+	responseOverrideAny := callOpts.ResponseFormats
+	if responseOverrideAny == nil {
+		responseOverrideAny = t.opts.ResponseFormats
+	}
+	responseFormatsOverride, fmtErr := resolveCallFormatReflect(responseOverrideAny, elem.FieldByName("Formats").Type())
+	if fmtErr != nil {
+		obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
+		return nil, CallError{Kind: KindDecode, Err: fmtErr}
+	}
+
+	// Topic-var derivation — closes Phase 0 work item 4 (client-side
+	// merge-field parity): when the route declares NewTopicParam merge
+	// fields, derive vars from req via RouteHandle.EncodeVars (the
+	// reflection-callable wrapper around codex.EncodeVars). t.opts.Vars
+	// (the SAME CallOptions.Vars field the escape hatch's CallHandle/Call
+	// already expose) takes PRECEDENCE over the derived value for the
+	// same key — mirrors CallHandle's exact merge precedence. Either a
+	// non-empty derived map OR a non-nil t.opts.Vars triggers a
+	// RouteHandle.BuildTopic rebuild (mirrors Call's own "opts.Vars !=
+	// nil" check, generalized to ALSO cover the derived-only case
+	// CallHandle adds on top of it).
+	var vars map[string]string
+	hasMergeFields := rv.MethodByName("MergeFields").Call(nil)[0].Len() > 0
+	if hasMergeFields {
+		encodeVarsResults := rv.MethodByName("EncodeVars").Call([]reflect.Value{reqVal})
+		if errI, _ := encodeVarsResults[1].Interface().(error); errI != nil {
+			obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
+			return nil, CallError{Kind: KindEncode, Err: errI}
+		}
+		vars, _ = encodeVarsResults[0].Interface().(map[string]string)
+	}
+	// NOTE: t.opts.Vars != nil (not len(...) > 0) — an explicit, even
+	// EMPTY, Vars map must still trigger BuildTopic below, so a route
+	// with an unresolved template var (e.g. "{tenantID}") surfaces
+	// MissingRouteParamError instead of silently publishing the raw
+	// template string as a topic. Mirrors the escape hatch's own
+	// "opts.Vars != nil" check exactly (reqreply.go's original Call).
+	if t.opts.Vars != nil {
+		merged := make(map[string]string, len(vars)+len(t.opts.Vars))
+		for k, v := range vars {
+			merged[k] = v
+		}
+		for k, v := range t.opts.Vars {
+			merged[k] = v
+		}
+		vars = merged
+	}
+	if hasMergeFields || t.opts.Vars != nil {
+		buildTopicResults := rv.MethodByName("BuildTopic").Call([]reflect.Value{reflect.ValueOf(vars)})
+		if errI, _ := buildTopicResults[1].Interface().(error); errI != nil {
+			reportRouteParamErrors(errI, obs)
+			obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
+			return nil, CallError{Kind: KindEncode, Err: errI}
+		}
+		path = buildTopicResults[0].String()
 	}
 
 	timeout := t.opts.Timeout
@@ -416,7 +667,10 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any) (a
 	}
 	defer cleanup()
 
-	encodeResults := encodeRequestField.Call([]reflect.Value{reqVal})
+	// EncodeRequestWithFormats honors the per-call override (falling back
+	// to route-declared RequestFormats, then plain EncodeRequest) — closes
+	// Phase 0 work item 2 (client-side).
+	encodeResults := rv.MethodByName("EncodeRequestWithFormats").CallSlice([]reflect.Value{reqVal, requestFormatsOverride})
 	if errI, _ := encodeResults[1].Interface().(error); errI != nil {
 		stats.ReportErrors(obs, "body", errI)
 		obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
@@ -475,7 +729,11 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any) (a
 			obs.RecordRequest("MQTT5-REQ", path, 500, time.Since(start))
 			return nil, CallError{Kind: KindHandler, Err: fmt.Errorf("server error: %s", replyMsg.Payload)}
 		}
-		decodeResults := decodeResponseField.Call([]reflect.Value{reflect.ValueOf(replyMsg.Payload)})
+		// DecodeResponseWithFormats honors the per-call override (falling
+		// back to route-declared Formats, then plain DecodeResponse) —
+		// closes the response-direction half of Phase 0 work item 2
+		// (client-side).
+		decodeResults := rv.MethodByName("DecodeResponseWithFormats").CallSlice([]reflect.Value{reflect.ValueOf(replyMsg.Payload), responseFormatsOverride})
 		if errI, _ := decodeResults[1].Interface().(error); errI != nil {
 			stats.ReportErrors(obs, "body", errI)
 			obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
@@ -494,7 +752,11 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any) (a
 // goroutine, resolving the future exactly once when it completes — the
 // "send here, resolve elsewhere" mechanism [reqreply.Client.CallAsync]
 // documents.
-func (t *clientTransport) CallAsync(ctx context.Context, routeAny any, reqAny any) (any, error) {
+func (t *clientTransport) CallAsync(ctx context.Context, routeAny any, reqAny any, opts ...reqreply.ClientCallOptions) (any, error) {
+	var o reqreply.ClientCallOptions
+	if len(opts) > 0 {
+		o = opts[0]
+	}
 	handleVal, _, err := recoverRouteHandleValue(routeAny)
 	if err != nil {
 		return nil, err
@@ -505,7 +767,7 @@ func (t *clientTransport) CallAsync(ctx context.Context, routeAny any, reqAny an
 	}
 	future, resolve := ff.NewFutureAny()
 	go func() {
-		resp, err := t.call(ctx, routeAny, reqAny)
+		resp, err := t.call(ctx, routeAny, reqAny, o)
 		resolve(resp, err)
 	}()
 	return future, nil

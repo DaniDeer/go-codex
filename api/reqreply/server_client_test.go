@@ -73,7 +73,7 @@ type fakeClientTransport struct {
 	credInvoked   bool
 }
 
-func (t *fakeClientTransport) Call(ctx context.Context, routeAny any, reqAny any) (any, error) {
+func (t *fakeClientTransport) Call(ctx context.Context, routeAny any, reqAny any, opts ...reqreply.ClientCallOptions) (any, error) {
 	switch v := routeAny.(type) {
 	case reqreply.Route[computeReq, computeResp]:
 		t.lastRouteType = "Route"
@@ -92,7 +92,7 @@ func (t *fakeClientTransport) Call(ctx context.Context, routeAny any, reqAny any
 	}
 }
 
-func (t *fakeClientTransport) CallAsync(ctx context.Context, routeAny any, reqAny any) (any, error) {
+func (t *fakeClientTransport) CallAsync(ctx context.Context, routeAny any, reqAny any, opts ...reqreply.ClientCallOptions) (any, error) {
 	ff, ok := routeAny.(reqreply.FutureFactory)
 	if !ok {
 		return nil, reqreply.TransportTypeMismatchError{Want: "FutureFactory", Got: fmt.Sprintf("%T", routeAny)}

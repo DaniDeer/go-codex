@@ -4,17 +4,23 @@
 > `api/reqreply` core types, `adapters/mqtt5` migration, the
 > `examples/reqreply-api` mini-project, `adapters/zeromq` migration) are
 > shipped and verified; Phase 5 (doc sync + doc promotion) is this
-> promotion itself — `Builder`/`NewBuilder`/`BuilderOption` and
-> `mqtt5`/`zeromq`'s lower-level `Serve`/`Call`/`ServeRouter`/`CallDealer`
-> are DELIBERATELY KEPT (not removed) as documented escape hatches, not
-> retired: `docs/guides/mqtt5.md`/`docs/guides/zeromq.md` now lead with
+> promotion itself — `Builder`/`NewBuilder`/`BuilderOption` are kept as
+> DEPRECATED aliases (zero-cost, no behavioral duplication, matching
+> `d-0002`'s own precedent for aliases). **`mqtt5`/`zeromq`'s lower-level
+> `Serve`/`Call`/`ServeRouter`/`CallDealer` — REOPENED, decision
+> REVERSED, see "Remaining open items" below.** Phase 5 originally kept
+> these permanently as documented escape hatches (mirroring REST's
+> `ServeOne`/`CallWithHandle`); that analogy was found FLAWED during
+> `docs/roadmap/reqreply-middleware.md`'s review and the decision is now
+> to RETIRE them — tracked and sequenced there, not here.
+> `docs/guides/mqtt5.md`/`docs/guides/zeromq.md` currently lead with
 > the `Server`/`Client`+`Attach` workflow and demote the lower-level
-> functions to an explicit "escape hatch" section, and
+> functions to an explicit "escape hatch" section (still accurate today,
+> pending the retirement work above), and
 > `.github/instructions/go-codex.instructions.md`'s `api/reqreply`/
 > `adapters/mqtt5`/`adapters/zeromq` rows were brought current (they had
 > fallen behind Phases 0/1/3, still describing the pre-`Server`/`Client`
-> API — a real doc-sync gap this promotion also closed). **This remains
-> the accurate, current description of shipped code.** Establishes the
+> API — a real doc-sync gap this promotion also closed). Establishes the
 > pattern `d-0001` (REST) and `d-0002` (pub/sub) already established —
 > `Server`/`Client` + `Attach`, `route.WithHandler(fn).Register(server)` —
 > extended to request-reply's genuinely asynchronous transport via the
@@ -80,8 +86,8 @@
 > synchronous HTTP) is genuinely asynchronous underneath. `zeromq.Attach`
 > takes a topic→socket mapping (not a shared client value), validated at
 > Attach time. A NEW, consolidated `examples/reqreply-api` mini-project
-> (mirroring `examples/rest-api`'s layout) is now planned — see
-> "Example mini-project" below — replacing 3 existing examples
+> (mirroring `examples/rest-api`'s layout) was planned here and has
+> SINCE SHIPPED — see "Example mini-project" below — replacing 3 existing examples
 > (`adapters-zeromq-reqrep`, `adapters-zeromq-dealer-router` deleted
 > entirely; `adapters-mqtt5`'s request-reply demos stripped out and
 > rebuilt there) with 7 focused demos, INCLUDING a dedicated
@@ -94,7 +100,7 @@
 > scoped content (that doc's pub/sub-scoped content is superseded by
 > [Pub/Sub Workflow Simplification](../design/d-0002-pubsub-workflow-simplification.md),
 > now fully implemented). Spun out of a dedicated thin-adapter review
-> (see [Feature/Provider](protocol-native-features.md)'s
+> (see [Feature/Provider](../roadmap/protocol-native-features.md)'s
 > status banner, then titled "Protocol-Native Feature Declarations") that confirmed REST and pub/sub already follow the
 > codebase's guiding principle — adapters stay THIN (pure IO, attach-only,
 > adapter-specific config/options); ALL workflow (middleware/handler
@@ -109,7 +115,7 @@
 ## Why this exists
 
 A dedicated review (triggered while reviewing
-[Feature/Provider](protocol-native-features.md) — then titled
+[Feature/Provider](../roadmap/protocol-native-features.md) — then titled
 "Protocol-Native Feature Declarations" — against the codebase's guiding
 principle) confirmed, via direct code inspection:
 
@@ -698,7 +704,7 @@ shape); whether `Server`-side dispatch needs any equivalent concept
 (unlikely — a server handler already runs synchronously per request in
 this design, with no analogous "fire and check back later" need); and
 the exact relationship, if any, to
-[Protocol-Native Features](protocol-native-features.md)'s §8 Handler
+[Protocol-Native Features](../roadmap/protocol-native-features.md)'s §8 Handler
 Disposition — these are LIKELY orthogonal (Disposition is
 server-side ack/nack/requeue outcome signaling; `Future`/`CallAsync` is
 client-side response awaiting), but that has not been separately
@@ -709,7 +715,7 @@ mechanisms are ever implemented together.
 
 | Capability | `mqtt` (v3) | `mqtt5` | `zeromq` |
 |---|---|---|---|
-| Connection-level `SecuredClient`/`ConnectSecurityScheme` | ✅ | ✅ | ❌ (see [ZeroMQ Security Mechanism](zeromq-security.md)) |
+| Connection-level `SecuredClient`/`ConnectSecurityScheme` | ✅ | ✅ | ❌ (see [ZeroMQ Security Mechanism](../roadmap/zeromq-security.md)) |
 | Message-level subscribe-side `SecurityFunc` | ✅ | ✅ | ❌ |
 | Message-level publish-side `CredentialFunc` | ❌ (protocol limit — no per-message property channel) | ✅ | ❌ |
 | Native Response Topic + Correlation Data (reqreply viability) | ❌ (protocol limit) | ✅ | n/a (own correlation mechanism) |
@@ -719,22 +725,25 @@ mechanisms are ever implemented together.
 The bottom two rows are what Decision 3 (above) closes, across all
 three transports, once implemented.
 
-## Relationship to `protocol-native-features.md` (now [Feature](protocol-native-features.md))
+## Relationship to `protocol-native-features.md` (now [Feature](../roadmap/protocol-native-features.md))
 
-Once `reqreply.Server`/`Client`/`Attach` land, MQTT5's Response Topic +
-Correlation Data — currently hardwired inside `adapters/mqtt5/reqreply.go`
-— becomes expressible as a real, sealed `mqtt5.Capability` (or simply
-remains an implicit, always-on capability of `mqtt5`'s `ServerTransport`/
-`ClientTransport` implementation, since EVERY mqtt5 reqreply route needs
-it — there may be nothing to "declare," since it is not optional the way
-Shared Subscriptions are). Shared Subscriptions (`$share/group/topic`)
-for reply-topic fan-out across multiple `Server` instances IS a genuine
-candidate for a declared, sealed capability on a `reqreply.Route`,
-mirroring the pub/sub use case in
-[Feature](protocol-native-features.md)
-directly. This determination is deferred to implementation time, once
-the `Client`/`Server` shape (this doc) actually exists to declare
-capabilities against.
+MQTT5's Response Topic + Correlation Data — hardwired inside
+`adapters/mqtt5/reqreply.go`/`reqreply_transport.go` — was originally
+considered as a candidate for a real, sealed `mqtt5.Capability`.
+**DECIDED (now that `reqreply.Server`/`Client`/`Attach` have shipped and
+this could actually be evaluated against a real `Attach` shape): it
+stays an implicit, always-on characteristic of `mqtt5`'s
+`ServerTransport`/`ClientTransport` implementation, NOT a declared
+`Capability`.** EVERY mqtt5 reqreply route needs it, unconditionally —
+there is nothing to "declare," since it is not optional the way Shared
+Subscriptions are; a `Capability`'s whole point is compile-time-safe
+OPT-IN gating for something not every binding needs, which doesn't apply
+here. Shared Subscriptions (`$share/group/topic`) for reply-topic
+fan-out across multiple `Server` instances remain the genuine candidate
+for a declared, sealed capability on a `reqreply.Route` from this same
+feature cluster — mirroring the pub/sub use case in
+[Feature](../roadmap/protocol-native-features.md) directly — tracked
+independently THERE, not blocked by anything in this doc.
 
 ## Escape hatches (carried forward from the deleted doc, still accurate)
 
@@ -952,10 +961,24 @@ project's standard "verify before claiming success" discipline.
   `go run` invocations with zero flakes; `for d in examples/*/; do go
   run ./$d; done` re-run across every example with zero failures.
 - **Phase 5 — full doc sync + doc promotion to `docs/design/`. SHIPPED.**
-  Decided AGAINST retiring `Builder`/`mqtt5.Serve`/`.Call`/`zeromq.Serve`/
+  ~~Decided AGAINST retiring `Builder`/`mqtt5.Serve`/`.Call`/`zeromq.Serve`/
   `.Call`/`.ServeRouter` (see "Remaining open items" above for the full
   reasoning — kept as documented escape hatches/deprecated aliases,
-  a genuine ongoing need, not a stale leftover). Full doc sync:
+  a genuine ongoing need, not a stale leftover).~~ **REOPENED, REVERSED
+  (see "Remaining open items" below)** — `Builder`/`NewBuilder`/
+  `BuilderOption` stay kept, unaffected (zero-cost aliases, no
+  duplicate logic); `mqtt5.Serve`/`.Call` and `zeromq.Serve`/`.Call`/
+  `.CallHandle`/`.ServeRouter`/`.CallDealer` are now TARGETED for
+  retirement instead — the "mirrors REST's `ServeOne`/`CallWithHandle`"
+  justification below was found flawed: unlike REST's zero-duplication
+  thin wrappers around `Serve`/`Call` itself, these functions share NO
+  code with `AttachServer`/`AttachClient` — a genuine duplicate
+  dispatch implementation, not a thin convenience wrapper, conflicting
+  with the "adapter stays a thin IO wrapper, user only touches api/*"
+  principle. Retirement is tracked and sequenced in
+  `docs/roadmap/reqreply-middleware.md` (new Phase 0/0b), not here.
+  Full doc sync (still accurate as of THIS phase's shipping, pending
+  the reopened item above):
   rewrote `docs/guides/mqtt5.md`'s "Request-Reply" section and
   `docs/guides/zeromq.md`'s "REQ/REP"/"DEALER/ROUTER" sections to lead
   with the `Server`/`Client`+`Attach` workflow (concrete, runnable code
@@ -1137,20 +1160,44 @@ examples/reqreply-api/
   `TransportTypeMismatchError` error taxonomy are LOCKED as sketched
   above, verified identical in shape to `rest.Client`/`Server`'s real,
   shipped equivalents (`api/rest/builder.go:2592-2789`).
-- `mqtt`(v3) and `zeromq`'s per-adapter Fn shapes for `HandleMW`/
+- ~~`mqtt`(v3) and `zeromq`'s per-adapter Fn shapes for `HandleMW`/
   `ClientMW` (Decision 3) remain unresolved — `zeromq` in particular may
   need a NEW wire-level credential convention (an additional frame)
-  before any Fn shape can be finalized. This is genuinely new protocol
-  design, not a mirror of an existing mechanism — carried forward
-  unchanged from the deleted doc's own "Remaining open items".
-  (`mqtt`(v3)'s publish-side is a CONFIRMED permanent protocol
-  limitation, not an open question — see Decision 4.)
-- Whether `mqtt`(v3) implements a documented subset of the reqreply
+  before any Fn shape can be finalized~~ **RESOLVED** (updated
+  after `docs/roadmap/reqreply-middleware.md`/`docs/roadmap/
+  zeromq-security.md` were written, later in this same session — both
+  Fn-shape DECISIONS are made; only their IMPLEMENTATION remains, tracked
+  independently in those two roadmap docs, not a still-open DECISION of
+  this doc's own):
+  `mqtt`(v3) is N/A — permanently out of scope for reqreply entirely
+  (confirmed zero `reqreply` code exists anywhere in `adapters/mqtt`;
+  see Decision 4 below and the resolved bullet immediately below this
+  one). `zeromq`'s Fn-shape premise — that a NEW wire-level credential
+  convention would be needed — turned out to be FALSE once actually
+  investigated: `docs/roadmap/zeromq-security.md`'s own "Implication for
+  `reqreply-middleware.md`" section (added later, cross-checking this
+  exact bullet against that doc's own already-resolved pub/sub finding)
+  confirmed zeromq's REQ/REP frames have the EXACT SAME "no separate
+  credential slot" shape pub/sub's `[topic, payload]` frames do, so the
+  SAME in-payload `*Req` mechanism (no new wire-level frame) applies —
+  Fn shape DECIDED there (design-only, not yet implemented). mqtt5's own
+  `HandleMW`/`ClientMW` Fn shapes are DECIDED in
+  `docs/roadmap/reqreply-middleware.md`'s own "API surface" section
+  (also design-only, not yet implemented) — both are cross-referenced
+  design decisions living in their own roadmap docs now, not still-open
+  questions in this doc.
+- ~~Whether `mqtt`(v3) implements a documented subset of the reqreply
   transport (application-level reply-topic convention) or does not
-  implement it at all (Decision 4) — not decided.
+  implement it at all (Decision 4) — not decided~~ **RESOLVED**: `mqtt`(v3)
+  implements NO reqreply transport subset AT ALL — confirmed via code
+  (zero `reqreply` references anywhere in `adapters/mqtt`) during the
+  session work that produced `docs/roadmap/reqreply-middleware.md`'s own
+  status banner ("MQTT3 stays pub/sub-only, permanently excluded from
+  reqreply entirely... nothing left to do for MQTT3"). Not a partial/
+  documented-subset situation — a clean, total exclusion.
 - ~~Migration path for existing callers of `adapters/mqtt5.Serve`/`.Call`
   and `adapters/zeromq.Serve`/`.Call`/`.ServeRouter` (breaking change)~~
-  **RESOLVED, decided AGAINST removal.** Unlike `d-0002`'s pub/sub
+  ~~**RESOLVED, decided AGAINST removal.** Unlike `d-0002`'s pub/sub
   precedent (which DID delete its old call-time-competing primitives),
   `Serve`/`Call`/`ServeRouter`/`CallDealer` are DELIBERATELY KEPT as
   documented escape hatches, not retired — confirmed a genuine, ongoing
@@ -1161,35 +1208,133 @@ examples/reqreply-api/
   shim does not (yet) expose (same documented v1-scope limitation as
   `events.Transport`'s own shim: no per-call `RequestFormats`/`Formats`
   overrides, `NewTopicParam` merge-field topic-var merging, or
-  `ErrorPattern`-typed error replies). `Builder`/`NewBuilder`/
-  `BuilderOption` are likewise kept as DEPRECATED aliases indefinitely
-  (matching `d-0002`'s own precedent for aliases with zero real
-  migration cost, as opposed to primitives with a genuine call-time
-  behavioral difference). The EXAMPLE side of this migration is done —
-  see "Example mini-project — `examples/reqreply-api`" above:
+  `ErrorPattern`-typed error replies).~~ **REOPENED, DECISION REVERSED**
+  (found during `docs/roadmap/reqreply-middleware.md`'s final review
+  pass): the "mirrors REST's `ServeOne`/`CallWithHandle`" analogy above
+  does not hold up against the real code. REST's `ServeOne`/
+  `CallWithHandle` are confirmed (via `docs/design/
+  d-0001-rest-middleware-workflow-simplification.md`) to be LITERALLY
+  "build a scratch single-route `Server`, call `Serve`/`Call`" — the
+  identical dispatch path, zero duplicate logic, a true thin wrapper.
+  `adapters/mqtt5/reqreply.go`'s `Serve`/`Call` and `adapters/zeromq/
+  adapter.go`'s `Serve`/`Call`/`CallHandle`/`ServeRouter`/`CallDealer`
+  are confirmed (via code — no calls between them and `AttachServer`/
+  `AttachClient` in either direction, in either adapter package) to be a
+  fully SEPARATE, duplicate protocol-dispatch implementation — not a
+  thin wrapper at all. Keeping a second, independently-maintained
+  dispatch path "because REST does" was the flawed premise; it
+  conflicts with the "adapter stays a thin IO wrapper around
+  IO/protocol implementation, the user only touches `api/*`" principle.
+  **Decision (initial): RETIRE these functions**, mirroring `d-0002`'s
+  own precedent of fully deleting its old call-time-competing
+  primitives — sequenced as new Phase 0 (close the ONE remaining real
+  capability gap — merge-fields, per-call format overrides,
+  `ErrorPattern` — the gap that was this bullet's own original
+  justification) and Phase 0b (build genuine thin wrappers, migrate
+  callers, delete the old functions) in `docs/roadmap/
+  reqreply-middleware.md`.
+  **UPDATE — SHIPPED, outcome BETTER than this initial plan.** Phase 0
+  shipped as planned. Phase 0b, while implementing the planned
+  new-named thin wrappers, found `reqreply.ServerTransport.Serve`/
+  `ClientTransport.Call` are ALREADY single-route/single-call scoped
+  (confirmed via the interface definitions — `Server.Serve`'s own
+  multi-route CONCURRENCY happens ABOVE this, not inside
+  `ServerTransport.Serve`) — meaning `serverTransport`/`clientTransport`
+  (the concrete types `AttachServer`/`AttachClient` build) were ALREADY
+  single-route/single-call dispatch primitives, no `Server`/`Client`
+  scratch-registration wrapper needed. So `Serve`/`Call`/`CallHandle`
+  were rewritten to DELEGATE to `serverTransport`/`clientTransport`
+  directly — zero duplicate logic achieved WITHOUT deletion, WITHOUT a
+  breaking change, and WITHOUT any caller/example migration (superseding
+  the "retire"/"delete + rebuild + migrate" framing above entirely — the
+  functions are KEPT, unchanged signatures, now genuinely thin). A real,
+  additional gap (missing `stats.TraceObserver` span support in the
+  reflection-based dispatch) was found and closed along the way, via
+  re-running the full pre-existing test suite. `Builder`/`NewBuilder`/
+  `BuilderOption` were never affected either way (zero-cost aliases, no
+  duplicate logic). Full detail lives in `docs/roadmap/
+  reqreply-middleware.md`'s "Phase 0b" section, not duplicated here.
+  zeromq's OWN `Serve`/`Call`/`CallHandle`/`ServeRouter`/`CallDealer`
+  received the SAME delegation fix in a follow-up pass, same session —
+  ALSO SHIPPED (see `docs/roadmap/reqreply-middleware.md`'s "Phase 0b"
+  section for the full detail, including a zeromq-specific regression
+  found and fixed: `BuildTopic` failure during observability-path
+  derivation must be FATAL, not silently ignored). `docs/guides/mqtt5.md`/
+  `docs/guides/zeromq.md` need NO update (the functions still exist,
+  unchanged from the caller's perspective) — the EXAMPLE side of the
+  EARLIER consolidation (distinct from this item) remains accurate: see
+  "Example mini-project — `examples/reqreply-api`" above —
   `examples/adapters-zeromq-reqrep` and
   `examples/adapters-zeromq-dealer-router` are deleted entirely,
   `examples/adapters-mqtt5`'s request-reply demos are stripped out and
   rebuilt, all consolidated into ONE new `examples/reqreply-api`
-  mini-project mirroring `examples/rest-api`'s layout — and both
-  `docs/guides/mqtt5.md`/`docs/guides/zeromq.md` now lead with the
-  `Attach`-based workflow, with `Serve`/`Call`/`ServeRouter`/`CallDealer`
-  demoted to an explicit "escape hatch" section in each.
-- Whether Response Topic + Correlation Data should be a DECLARED
+  mini-project mirroring `examples/rest-api`'s layout.
+- ~~Whether Response Topic + Correlation Data should be a DECLARED
   `Feature` at all, or remain an implicit, always-on capability
   of `mqtt5`'s reqreply transport (see "Relationship to
   `protocol-native-features.md`" above) — not decided, deferred until
-  the `Client`/`Server` shape exists to prototype against.
+  the `Client`/`Server` shape exists to prototype against~~ **RESOLVED —
+  DECIDED: stays IMPLICIT, NOT a declared `Capability`.** A `Capability`
+  (per `docs/roadmap/protocol-native-features.md`'s own definition)
+  exists to give a route/binding a compile-time-safe way to OPT INTO
+  optional, protocol-specific behavior — sealed opt-in gating is the
+  entire point of the mechanism. Response Topic + Correlation Data is
+  NOT optional for `mqtt5` reqreply: EVERY route registered against
+  `mqtt5.AttachServer`/`AttachClient` needs it, unconditionally — it IS
+  the wire mechanism by which reqreply-over-mqtt5 works at all (there is
+  no way to route a reply back to the right caller without it). There is
+  no opt-out scenario to gate: a route either uses mqtt5 reqreply (and
+  gets Response Topic/Correlation Data automatically, with no choice
+  involved) or doesn't use mqtt5 reqreply at all. Declaring something
+  that is unconditionally present, with no real alternative, would be
+  pure ceremony — it fails the actual test that motivates `Capability`
+  in the first place, mirroring how REST doesn't make callers "declare"
+  that HTTP requests carry a `Content-Length` header. Shared
+  Subscriptions (`$share/group/topic`) remain the genuine `Capability`
+  candidate from this same MQTT5 feature cluster — a route CAN work with
+  or without shared-subscription reply fan-out, and getting it wrong
+  changes CORRECTNESS (competing vs. duplicating consumers), unlike
+  Response Topic/Correlation Data's all-or-nothing nature — tracked
+  independently in `docs/roadmap/protocol-native-features.md`, not
+  blocked by anything in this doc.
 
-No implementation has started. A future session should pick the lowest-
-risk starting point first — likely `mqtt5` (closest existing analogue,
-clearest Fn-shape translation, and the transport with the concrete
-Response Topic/Correlation Data payoff) — before `mqtt`(v3)/`zeromq`.
+~~No implementation has started. A future session should pick the
+lowest-risk starting point first — likely `mqtt5`... before
+`mqtt`(v3)/`zeromq`~~ **STALE, superseded by shipped work**: this
+sentence predates Phases 0-5, all of which have since shipped and been
+verified (`mqtt5` first, per this exact recommendation, then `zeromq`) —
+see this doc's own top status banner and Phase-by-phase implementation
+record above for the actual, completed history. Kept here only to show
+the original sequencing recommendation was followed, not as a live
+instruction.
 
-## Test plan (once implementation begins)
+**Update: one of the 6 items above was REOPENED and reversed** (the
+"migration path for `Serve`/`Call`/`ServeRouter`/`CallDealer`" bullet,
+above) — found flawed during `docs/roadmap/reqreply-middleware.md`'s
+final review pass (the "mirrors REST's `ServeOne`/`CallWithHandle`"
+premise doesn't hold against the real code: REST's versions are
+zero-duplication thin wrappers, reqreply's old functions are a fully
+separate duplicate dispatch path). Its resolution — RETIRE these
+functions — is now tracked and sequenced entirely in
+`docs/roadmap/reqreply-middleware.md`'s new Phase 0/0b, not here. This
+is the ONLY item reopened; the other items remain closed as below.
+
+**This doc (d-0004) otherwise has ZERO remaining open DECISIONS of its
+own.** What remains is IMPLEMENTATION work tracked independently in
+separate, active roadmap docs — mqtt5's and zeromq's `HandleMW`/
+`ClientMW` Fn shapes AND the escape-hatch retirement above
+(`docs/roadmap/reqreply-middleware.md`, `docs/roadmap/zeromq-security.md`),
+and Shared Subscriptions as a `Capability` candidate
+(`docs/roadmap/protocol-native-features.md`) — none of which are
+blocked on anything further from this doc, and none of which represent
+an unresolved question WITHIN d-0004's own scope (the `Server`/`Client`/
+`Attach` rework, which is fully shipped and verified).
+
+## Test plan (executed during implementation — see the Phased
+implementation plan above for the actual verification evidence per phase)
 
 Mirroring [D-0003](../design/d-0003-codec-declared-middlewares.md)'s
-and [Protocol-Native Features](protocol-native-features.md)'s own Test
+and [Protocol-Native Features](../roadmap/protocol-native-features.md)'s own Test
 plan sections:
 
 - `Client`/`Server`+`Attach`+reflection dispatch (Decision 1/2, already

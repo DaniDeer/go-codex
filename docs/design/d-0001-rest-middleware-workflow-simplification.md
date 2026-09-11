@@ -132,7 +132,7 @@
 > `Server` gains
 > an internal mutex for concurrent `Register` calls (an explicit first
 > step toward, not a solution to, the separately-tracked [Dynamic Port
-> Rebinding](dynamic-port-rebinding.md) gap); and `MultiRouteError`'s
+> Rebinding](../roadmap/dynamic-port-rebinding.md) gap); and `MultiRouteError`'s
 > exact shape finalized (`Unwrap() []error`, Go 1.20+ multi-error
 > support). Zero open items remain from this pass either.
 >
@@ -788,7 +788,7 @@ always did, just also handing back the handle.
   mux — that is a fundamentally different feature (dynamic route
   rebinding on a live server), already tracked separately and explicitly
   flagged as an acknowledged, not-yet-designed gap in
-  [Dynamic Port Rebinding](dynamic-port-rebinding.md) ("REST/events/
+  [Dynamic Port Rebinding](../roadmap/dynamic-port-rebinding.md) ("REST/events/
   reqreply's immutable `RouteHandle`/`ChannelHandle` middleware hot-swap
   remains an acknowledged gap in both docs, not yet designed"). This
   synchronized `Server` is a deliberate FIRST STEP toward that direction

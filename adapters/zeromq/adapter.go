@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/DaniDeer/go-codex/api/events"
@@ -168,21 +167,6 @@ type CallOptions struct {
 	// priority-chain contract as [CallOptions.RequestFormats], mirrored
 	// for the response direction ([]format.Format[Resp]).
 	ResponseFormats any
-}
-
-// resolveCallFormat type-asserts overrideAny (a [CallOptions.RequestFormats]/
-// [CallOptions.ResponseFormats] value) against []format.Format[T], falling
-// back to declared when overrideAny is nil. Returns an error on a type
-// mismatch — callers wrap it in [CallError].
-func resolveCallFormat[T any](declared []format.Format[T], overrideAny any) ([]format.Format[T], error) {
-	if overrideAny == nil {
-		return declared, nil
-	}
-	fmts, ok := overrideAny.([]format.Format[T])
-	if !ok {
-		return nil, fmt.Errorf("format option: want []format.Format[%T], got %T", *new(T), overrideAny)
-	}
-	return fmts, nil
 }
 
 // validateSubscribeImplementationShapes checks every attached impl.Fn
@@ -793,6 +777,17 @@ func publishHandle[T any](
 // Serve runs a blocking REP loop: receives requests, calls fn, sends replies.
 // It is the server side of a ZMQ REQ/REP contract.
 //
+// Serve is a thin, single-route wrapper around [reqreply.ServerTransport.
+// Serve] — builds a [serverTransport] directly from sock/opts (a
+// single-entry socket map keyed by handle.Topic) and delegates to it (the
+// SAME reflection-based dispatch [AttachServer]'s registered routes use),
+// rather than duplicating the decode/handler/encode/error-pattern
+// pipeline inline. Zero duplicate logic — full capability parity with
+// [AttachServer] is therefore automatic (see docs/roadmap/
+// reqreply-middleware.md's Phase 0/0b for the history — this used to be
+// a separate, hand-written implementation, mirroring the SAME
+// de-duplication mqtt5's [adapters/mqtt5.Serve] already shipped).
+//
 // Message framing:
 //   - Incoming request: [payload]
 //   - Reply on success: ["ok", encoded_response]
@@ -821,122 +816,28 @@ func Serve[Req, Resp any](
 	fn func(context.Context, Req) (Resp, error),
 	opts ServeOptions,
 ) error {
-	obs := opts.Observer
-	if obs == nil {
-		obs = stats.ObserverFromContext(ctx)
-	}
-	if err := sock.SetRecvTimeout(recvPollInterval); err != nil {
-		return SocketError{Op: "set_recv_timeout", Err: err}
-	}
-	path := handle.Topic
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		default:
-		}
-		frames, err := sock.RecvFrames()
-		if errors.Is(err, ErrTimeout) {
-			continue
-		}
-		if err != nil {
-			select {
-			case <-ctx.Done():
-				return nil
-			default:
-				return SocketError{Op: "recv", Err: err}
-			}
-		}
-		if len(frames) == 0 {
-			continue
-		}
-		start := time.Now()
-		serveRequest(ctx, sock, handle, fn, obs, opts, path, frames[0], start)
-	}
-}
-
-// serveRequest handles one REQ/REP exchange. Extracted from the Serve loop to
-// allow explicit (non-deferred) span management within a loop body.
-func serveRequest[Req, Resp any](
-	ctx context.Context,
-	sock FramedSocket,
-	handle *reqreply.RouteHandle[Req, Resp],
-	fn func(context.Context, Req) (Resp, error),
-	obs stats.Observer,
-	opts ServeOptions,
-	path string,
-	payload []byte,
-	start time.Time,
-) {
-	var spanCtx = ctx
-	var serveErr error
-	if to, ok := obs.(stats.TraceObserver); ok {
-		spanCtx = to.StartSpan(ctx, "zmq.serve", path)
-	}
-	defer func() {
-		if to, ok := obs.(stats.TraceObserver); ok {
-			to.EndSpan(spanCtx, serveErr)
-		}
-	}()
-
-	// decode request
-	var req Req
-	if len(handle.RequestFormats) > 0 {
-		req, serveErr = handle.RequestFormats[0].Unmarshal(payload)
-	} else {
-		req, serveErr = handle.Decode(payload)
-	}
-	if serveErr != nil {
-		stats.ReportErrors(obs, "body", serveErr)
-		obs.RecordRequest("ZMQ-REP", path, 0, time.Since(start))
-		sendErrorReply(sock, serveErr)
-		if opts.OnError != nil {
-			opts.OnError(ServeError{Kind: KindDecode, Err: serveErr})
-		}
-		return
-	}
-
-	// call handler
-	var resp Resp
-	resp, serveErr = fn(spanCtx, req)
-	if serveErr != nil {
-		obs.RecordRequest("ZMQ-REP", path, 0, time.Since(start))
-		sendHandlerErrorReply(sock, handle, serveErr, obs)
-		if opts.OnError != nil {
-			opts.OnError(ServeError{Kind: KindHandler, Err: serveErr})
-		}
-		return
-	}
-
-	// encode response
-	var respPayload []byte
-	if len(handle.Formats) > 0 {
-		respPayload, serveErr = handle.Formats[0].Marshal(resp)
-	} else {
-		respPayload, serveErr = handle.Encode(resp)
-	}
-	if serveErr != nil {
-		obs.RecordRequest("ZMQ-REP", path, 0, time.Since(start))
-		sendHandlerErrorReply(sock, handle, serveErr, obs)
-		if opts.OnError != nil {
-			opts.OnError(ServeError{Kind: KindEncode, Err: serveErr})
-		}
-		return
-	}
-
-	if sendErr := sock.SendFrames([][]byte{statusOK, respPayload}); sendErr != nil {
-		serveErr = sendErr
-		obs.RecordRequest("ZMQ-REP", path, 0, time.Since(start))
-		if opts.OnError != nil {
-			opts.OnError(ServeError{Kind: KindEncode, Err: sendErr})
-		}
-		return
-	}
-	obs.RecordRequest("ZMQ-REP", path, 200, time.Since(start))
+	t := &serverTransport{sockets: map[string]FramedSocket{handle.Topic: sock}, opts: opts}
+	return t.Serve(ctx, handle, fn)
 }
 
 // Call encodes req, sends it to a REQ socket, and decodes the reply.
 // It is the client side of a ZMQ REQ/REP contract.
+//
+// Call is a thin, single-call wrapper around [reqreply.ClientTransport.
+// Call] — builds a [clientTransport] directly from sock/opts (a
+// single-entry socket map keyed by handle.Topic) and delegates to it (the
+// SAME reflection-based dispatch [AttachClient] uses), rather than
+// duplicating the encode/send/recv/decode pipeline inline. Zero duplicate
+// logic — full capability parity with [AttachClient] is therefore
+// automatic, including [CallOptions.Vars] (explicit override, PRECEDENCE
+// over any [reqreply.NewTopicParam] merge-field-derived value — used
+// ONLY for observability path/span naming, never socket selection, since
+// zeromq REQ/REP routing is socket-based, not topic-based) and
+// [CallOptions.RequestFormats]/[ResponseFormats] (per-call format
+// overrides). See docs/roadmap/reqreply-middleware.md's Phase 0/0b for
+// the history — this used to be a separate, hand-written implementation,
+// mirroring the SAME de-duplication mqtt5's [adapters/mqtt5.Call]
+// already shipped.
 //
 // Message framing:
 //   - Outgoing request:  [payload]
@@ -960,144 +861,33 @@ func Call[Req, Resp any](
 	req Req,
 	opts CallOptions,
 ) (Resp, error) {
-	obs := opts.Observer
-	if obs == nil {
-		obs = stats.ObserverFromContext(ctx)
-	}
 	var zero Resp
-	start := time.Now()
-	path := handle.Topic
-	var callErr error
-
-	// Resolve template topic vars if provided.
-	if opts.Vars != nil {
-		var buildErr error
-		path, buildErr = handle.BuildTopic(opts.Vars)
-		if buildErr != nil {
-			stats.ReportErrors(obs, "topic_var", buildErr)
-			obs.RecordRequest("ZMQ-REQ", handle.Topic, 0, time.Since(start))
-			callErr = CallError{Err: buildErr}
-			return zero, callErr
-		}
+	t := &clientTransport{sockets: map[string]FramedSocket{handle.Topic: sock}, opts: opts}
+	respAny, err := t.Call(ctx, handle, req)
+	if err != nil {
+		return zero, err
 	}
-
-	if to, ok := obs.(stats.TraceObserver); ok {
-		ctx = to.StartSpan(ctx, "zmq.request", path)
-		defer func() { to.EndSpan(ctx, callErr) }()
+	resp, ok := respAny.(Resp)
+	if !ok {
+		return zero, reqreply.TransportTypeMismatchError{Topic: handle.Topic, Want: fmt.Sprintf("%T", zero), Got: fmt.Sprintf("%T", respAny)}
 	}
-
-	// Resolve per-call request format override.
-	reqFormats, fmtErr := resolveCallFormat[Req](handle.RequestFormats, opts.RequestFormats)
-	if fmtErr != nil {
-		obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
-		callErr = CallError{Err: fmtErr}
-		return zero, callErr
-	}
-
-	// encode request
-	var payload []byte
-	if len(reqFormats) > 0 {
-		payload, callErr = reqFormats[0].Marshal(req)
-	} else {
-		payload, callErr = handle.EncodeRequest(req)
-	}
-	if callErr != nil {
-		stats.ReportErrors(obs, "body", callErr)
-		obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
-		callErr = CallError{Err: callErr}
-		return zero, callErr
-	}
-
-	// send
-	if err := sock.SendFrames([][]byte{payload}); err != nil {
-		callErr = CallError{Err: fmt.Errorf("send: %w", err)}
-		obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
-		return zero, callErr
-	}
-
-	// configure recv timeout for ctx-cancellation polling
-	if err := sock.SetRecvTimeout(recvPollInterval); err != nil {
-		callErr = CallError{Err: fmt.Errorf("set recv timeout: %w", err)}
-		return zero, callErr
-	}
-
-	// receive reply
-	var frames [][]byte
-	for {
-		select {
-		case <-ctx.Done():
-			callErr = CallError{Err: ctx.Err()}
-			obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
-			return zero, callErr
-		default:
-		}
-		var recvErr error
-		frames, recvErr = sock.RecvFrames()
-		if errors.Is(recvErr, ErrTimeout) {
-			continue
-		}
-		if recvErr != nil {
-			callErr = CallError{Err: fmt.Errorf("recv: %w", recvErr)}
-			obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
-			return zero, callErr
-		}
-		break
-	}
-
-	// validate framing
-	if len(frames) < 2 {
-		callErr = CallError{Err: fmt.Errorf("malformed reply: expected [status, payload], got %d frame(s)", len(frames))}
-		obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
-		return zero, callErr
-	}
-
-	// check status
-	if string(frames[0]) == "error" {
-		callErr = CallError{Err: fmt.Errorf("server error: %s", frames[1])}
-		obs.RecordRequest("ZMQ-REQ", path, 500, time.Since(start))
-		return zero, callErr
-	}
-
-	// Resolve per-call response format override.
-	respFormats, fmtErr := resolveCallFormat[Resp](handle.Formats, opts.ResponseFormats)
-	if fmtErr != nil {
-		callErr = CallError{Err: fmtErr}
-		obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
-		return zero, callErr
-	}
-
-	// decode response
-	var resp Resp
-	if len(respFormats) > 0 {
-		resp, callErr = respFormats[0].Unmarshal(frames[1])
-	} else {
-		resp, callErr = handle.DecodeResponse(frames[1])
-	}
-	if callErr != nil {
-		stats.ReportErrors(obs, "body", callErr)
-		callErr = CallError{Err: fmt.Errorf("decode response: %w", callErr)}
-		obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
-		return zero, callErr
-	}
-	obs.RecordRequest("ZMQ-REQ", path, 200, time.Since(start))
 	return resp, nil
 }
 
-// CallHandle is the single-call convenience wrapper around [Call]: it
-// derives [CallOptions.Vars] from req automatically, using the route's
-// merge-capable topic params ([reqreply.RouteHandle.MergeFields] +
-// [codex.EncodeVars]) — mirrors [nethttp.CallWithHandle]/[mqtt5.CallHandle].
+// CallHandle is a deprecated-but-kept alias for [Call] — [Call] itself
+// now auto-derives [CallOptions.Vars] from req (via the route's
+// merge-capable topic params, [reqreply.RouteHandle.MergeFields] +
+// [reqreply.RouteHandle.EncodeVars]), the SAME auto-derivation this
+// function used to add on top of [Call] before [AttachClient]'s
+// underlying [clientTransport.call] gained it directly (Phase 0/0b of
+// docs/roadmap/reqreply-middleware.md, mirroring mqtt5's identical
+// outcome). An explicit [CallOptions.Vars] still takes PRECEDENCE over
+// the derived value for the same key. Kept for existing callers — prefer
+// [Call] directly in new code, since it is now identical.
 //
-// An explicit [CallOptions.Vars] takes PRECEDENCE over the derived value.
-// [Call] remains the lower-level escape hatch.
-//
-// Note: this convenience is CLIENT-SIDE only. ZMQ REQ/REP routing is
-// socket-based, not topic-based — [Serve]'s incoming messages carry no
-// per-message topic string to extract vars FROM (unlike MQTT's
-// broker-routed topics), so there is no server-side decode-merge
-// equivalent for zeromq. The resolved topic here is used only for codec
-// validation and observer reporting, matching [CallOptions.Vars]'s
-// existing documented behavior.
+// Note: this derivation is OBSERVABILITY-only (span/RecordRequest path
+// naming) — it never affects socket selection. ZMQ REQ/REP routing is
+// socket-based, not topic-based.
 //
 //	resp, err := zeromq.CallHandle(ctx, sock, computeRoute, req, zeromq.CallOptions{})
 func CallHandle[Req, Resp any](
@@ -1107,26 +897,6 @@ func CallHandle[Req, Resp any](
 	req Req,
 	opts CallOptions,
 ) (Resp, error) {
-	var zero Resp
-	derived, err := codex.EncodeVars(req, handle.MergeFields()...)
-	if err != nil {
-		return zero, err
-	}
-	if len(derived) == 0 {
-		derived = nil
-	}
-	if opts.Vars != nil {
-		merged := make(map[string]string, len(derived)+len(opts.Vars))
-		for k, v := range derived {
-			merged[k] = v
-		}
-		for k, v := range opts.Vars {
-			merged[k] = v
-		}
-		opts.Vars = merged
-	} else {
-		opts.Vars = derived
-	}
 	return Call(ctx, sock, handle, req, opts)
 }
 
@@ -1139,32 +909,6 @@ func sendErrorReply(sock FramedSocket, err error) {
 	_ = sock.SendFrames([][]byte{statusError, []byte(err.Error())})
 }
 
-// sendHandlerErrorReply is the [reqreply.ErrorPattern]-aware counterpart of
-// [sendErrorReply], used for handler/encode failures — errors that originate
-// from application business logic, where a declared ErrorPattern may apply.
-// It consults handle.ErrorResponseFor(err) first: on a match, the declared
-// codec-backed typed payload is sent instead of plain text. On no match, or
-// on a mapping/encoding failure within the matched pattern itself, it falls
-// back to [sendErrorReply]'s plain-text behavior unchanged (backward
-// compatible — existing ErrorReplyMeta-only or no-declaration routes see no
-// behavior change).
-func sendHandlerErrorReply[Req, Resp any](
-	sock FramedSocket,
-	handle *reqreply.RouteHandle[Req, Resp],
-	err error,
-	obs stats.Observer,
-) {
-	resp, matched, mapErr := handle.ErrorResponseFor(err)
-	if matched && mapErr == nil {
-		_ = sock.SendFrames([][]byte{statusError, resp.Body})
-		return
-	}
-	if matched && mapErr != nil {
-		stats.ReportErrors(obs, "error_pattern", mapErr)
-	}
-	sendErrorReply(sock, err)
-}
-
 // emptyDelimiter is the empty frame separating the identity stack from the
 // payload in DEALER/ROUTER ZMQ envelope format.
 var emptyDelimiter = []byte{}
@@ -1172,6 +916,17 @@ var emptyDelimiter = []byte{}
 // ServeRouter runs a blocking ROUTER loop. Each incoming request is dispatched
 // concurrently in its own goroutine. Identity frames are extracted automatically
 // and re-prepended to every reply so the DEALER peer can correlate responses.
+//
+// ServeRouter is a thin, single-route wrapper around
+// [reqreply.ServerTransport.Serve] — builds a [routerServerTransport]
+// directly from sock/opts (a single-entry socket map keyed by
+// handle.Topic) and delegates to it (the SAME reflection-based dispatch
+// [AttachRouterServer]'s registered routes use), rather than duplicating
+// the decode/handler/encode/error-pattern pipeline inline. Zero duplicate
+// logic — full capability parity with [AttachRouterServer] is therefore
+// automatic. See docs/roadmap/reqreply-middleware.md's Phase 0/0b for the
+// history — this used to be a separate, hand-written implementation,
+// mirroring the SAME de-duplication mqtt5's escape hatch already shipped.
 //
 // ROUTER message framing (server receives):
 //
@@ -1204,131 +959,8 @@ func ServeRouter[Req, Resp any](
 	fn func(context.Context, Req) (Resp, error),
 	opts ServeOptions,
 ) error {
-	obs := opts.Observer
-	if obs == nil {
-		obs = stats.ObserverFromContext(ctx)
-	}
-	if err := sock.SetRecvTimeout(recvPollInterval); err != nil {
-		return SocketError{Op: "set_recv_timeout", Err: err}
-	}
-	path := handle.Topic
-
-	var wg sync.WaitGroup
-	for {
-		select {
-		case <-ctx.Done():
-			wg.Wait()
-			return nil
-		default:
-		}
-		frames, err := sock.RecvFrames()
-		if errors.Is(err, ErrTimeout) {
-			continue
-		}
-		if err != nil {
-			select {
-			case <-ctx.Done():
-				wg.Wait()
-				return nil
-			default:
-				return SocketError{Op: "recv", Err: err}
-			}
-		}
-		// Expect at least [identity, delimiter, payload].
-		if len(frames) < 3 {
-			continue
-		}
-		identity := frames[0]
-		// frames[1] = empty delimiter
-		payload := frames[2]
-
-		wg.Add(1)
-		go func(id, pl []byte) {
-			defer wg.Done()
-			start := time.Now()
-			serveRouterRequest(ctx, sock, handle, fn, obs, opts, path, id, pl, start)
-		}(identity, payload)
-	}
-}
-
-// serveRouterRequest handles one ROUTER request in its own goroutine.
-func serveRouterRequest[Req, Resp any](
-	ctx context.Context,
-	sock FramedSocket,
-	handle *reqreply.RouteHandle[Req, Resp],
-	fn func(context.Context, Req) (Resp, error),
-	obs stats.Observer,
-	opts ServeOptions,
-	path string,
-	identity []byte,
-	payload []byte,
-	start time.Time,
-) {
-	var spanCtx = ctx
-	var serveErr error
-	if to, ok := obs.(stats.TraceObserver); ok {
-		spanCtx = to.StartSpan(ctx, "zmq.serve", path)
-	}
-	defer func() {
-		if to, ok := obs.(stats.TraceObserver); ok {
-			to.EndSpan(spanCtx, serveErr)
-		}
-	}()
-
-	// decode request
-	var req Req
-	if len(handle.RequestFormats) > 0 {
-		req, serveErr = handle.RequestFormats[0].Unmarshal(payload)
-	} else {
-		req, serveErr = handle.Decode(payload)
-	}
-	if serveErr != nil {
-		stats.ReportErrors(obs, "body", serveErr)
-		obs.RecordRequest("ZMQ-ROUTER", path, 0, time.Since(start))
-		sendRouterErrorReply(sock, identity, serveErr)
-		if opts.OnError != nil {
-			opts.OnError(ServeError{Kind: KindDecode, Err: serveErr})
-		}
-		return
-	}
-
-	// call handler
-	var resp Resp
-	resp, serveErr = fn(spanCtx, req)
-	if serveErr != nil {
-		obs.RecordRequest("ZMQ-ROUTER", path, 0, time.Since(start))
-		sendRouterHandlerErrorReply(sock, identity, handle, serveErr, obs)
-		if opts.OnError != nil {
-			opts.OnError(ServeError{Kind: KindHandler, Err: serveErr})
-		}
-		return
-	}
-
-	// encode response
-	var respPayload []byte
-	if len(handle.Formats) > 0 {
-		respPayload, serveErr = handle.Formats[0].Marshal(resp)
-	} else {
-		respPayload, serveErr = handle.Encode(resp)
-	}
-	if serveErr != nil {
-		obs.RecordRequest("ZMQ-ROUTER", path, 0, time.Since(start))
-		sendRouterHandlerErrorReply(sock, identity, handle, serveErr, obs)
-		if opts.OnError != nil {
-			opts.OnError(ServeError{Kind: KindEncode, Err: serveErr})
-		}
-		return
-	}
-
-	if sendErr := sock.SendFrames([][]byte{identity, emptyDelimiter, statusOK, respPayload}); sendErr != nil {
-		serveErr = sendErr
-		obs.RecordRequest("ZMQ-ROUTER", path, 0, time.Since(start))
-		if opts.OnError != nil {
-			opts.OnError(ServeError{Kind: KindEncode, Err: sendErr})
-		}
-		return
-	}
-	obs.RecordRequest("ZMQ-ROUTER", path, 200, time.Since(start))
+	t := &routerServerTransport{sockets: map[string]FramedSocket{handle.Topic: sock}, opts: opts}
+	return t.Serve(ctx, handle, fn)
 }
 
 // sendRouterErrorReply sends an error reply to a ROUTER peer, preserving
@@ -1338,29 +970,19 @@ func sendRouterErrorReply(sock FramedSocket, identity []byte, err error) {
 	_ = sock.SendFrames([][]byte{identity, emptyDelimiter, statusError, []byte(err.Error())})
 }
 
-// sendRouterHandlerErrorReply is the [reqreply.ErrorPattern]-aware
-// counterpart of [sendRouterErrorReply], used for handler/encode failures —
-// see [sendHandlerErrorReply] for the matching/fallback semantics.
-func sendRouterHandlerErrorReply[Req, Resp any](
-	sock FramedSocket,
-	identity []byte,
-	handle *reqreply.RouteHandle[Req, Resp],
-	err error,
-	obs stats.Observer,
-) {
-	resp, matched, mapErr := handle.ErrorResponseFor(err)
-	if matched && mapErr == nil {
-		_ = sock.SendFrames([][]byte{identity, emptyDelimiter, statusError, resp.Body})
-		return
-	}
-	if matched && mapErr != nil {
-		stats.ReportErrors(obs, "error_pattern", mapErr)
-	}
-	sendRouterErrorReply(sock, identity, err)
-}
-
 // CallDealer encodes req and sends it via a DEALER socket using the ZMQ envelope
 // format (empty delimiter + payload), then synchronously waits for one reply.
+//
+// CallDealer is a thin, single-call wrapper around
+// [reqreply.ClientTransport.Call] — builds a [dealerClientTransport]
+// directly from sock/opts (a single-entry socket map keyed by
+// handle.Topic) and delegates to it (the SAME reflection-based dispatch
+// [AttachDealerClient] uses), rather than duplicating the encode/send/
+// recv/decode pipeline inline. Zero duplicate logic — full capability
+// parity with [AttachDealerClient] is therefore automatic (same
+// [CallOptions.Vars]/[RequestFormats]/[ResponseFormats] handling as
+// [Call] — see its doc comment for the full rationale). See
+// docs/roadmap/reqreply-middleware.md's Phase 0/0b for the history.
 //
 // DEALER message framing (client sends):
 //
@@ -1389,126 +1011,15 @@ func CallDealer[Req, Resp any](
 	req Req,
 	opts CallOptions,
 ) (Resp, error) {
-	obs := opts.Observer
-	if obs == nil {
-		obs = stats.ObserverFromContext(ctx)
-	}
 	var zero Resp
-	start := time.Now()
-	path := handle.Topic
-	var callErr error
-
-	// Resolve template topic vars if provided.
-	if opts.Vars != nil {
-		var buildErr error
-		path, buildErr = handle.BuildTopic(opts.Vars)
-		if buildErr != nil {
-			stats.ReportErrors(obs, "topic_var", buildErr)
-			obs.RecordRequest("ZMQ-DEALER", handle.Topic, 0, time.Since(start))
-			callErr = CallError{Err: buildErr}
-			return zero, callErr
-		}
+	t := &dealerClientTransport{sockets: map[string]FramedSocket{handle.Topic: sock}, opts: opts}
+	respAny, err := t.Call(ctx, handle, req)
+	if err != nil {
+		return zero, err
 	}
-
-	if to, ok := obs.(stats.TraceObserver); ok {
-		ctx = to.StartSpan(ctx, "zmq.request", path)
-		defer func() { to.EndSpan(ctx, callErr) }()
+	resp, ok := respAny.(Resp)
+	if !ok {
+		return zero, reqreply.TransportTypeMismatchError{Topic: handle.Topic, Want: fmt.Sprintf("%T", zero), Got: fmt.Sprintf("%T", respAny)}
 	}
-
-	// Resolve per-call request format override.
-	reqFormats, fmtErr := resolveCallFormat[Req](handle.RequestFormats, opts.RequestFormats)
-	if fmtErr != nil {
-		obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
-		callErr = CallError{Err: fmtErr}
-		return zero, callErr
-	}
-
-	// encode request
-	var payload []byte
-	if len(reqFormats) > 0 {
-		payload, callErr = reqFormats[0].Marshal(req)
-	} else {
-		payload, callErr = handle.EncodeRequest(req)
-	}
-	if callErr != nil {
-		stats.ReportErrors(obs, "body", callErr)
-		obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
-		callErr = CallError{Err: callErr}
-		return zero, callErr
-	}
-
-	// send with empty delimiter (DEALER envelope)
-	if err := sock.SendFrames([][]byte{emptyDelimiter, payload}); err != nil {
-		callErr = CallError{Err: fmt.Errorf("send: %w", err)}
-		obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
-		return zero, callErr
-	}
-
-	// configure recv timeout for ctx-cancellation polling
-	if err := sock.SetRecvTimeout(recvPollInterval); err != nil {
-		callErr = CallError{Err: fmt.Errorf("set recv timeout: %w", err)}
-		return zero, callErr
-	}
-
-	// receive reply
-	var frames [][]byte
-	for {
-		select {
-		case <-ctx.Done():
-			callErr = CallError{Err: ctx.Err()}
-			obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
-			return zero, callErr
-		default:
-		}
-		var recvErr error
-		frames, recvErr = sock.RecvFrames()
-		if errors.Is(recvErr, ErrTimeout) {
-			continue
-		}
-		if recvErr != nil {
-			callErr = CallError{Err: fmt.Errorf("recv: %w", recvErr)}
-			obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
-			return zero, callErr
-		}
-		break
-	}
-
-	// validate framing: expect ["", status, payload]
-	if len(frames) < 3 {
-		callErr = CallError{Err: fmt.Errorf("malformed reply: expected [\"\", status, payload], got %d frame(s)", len(frames))}
-		obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
-		return zero, callErr
-	}
-	// frames[0] = empty delimiter
-
-	// check status
-	if string(frames[1]) == "error" {
-		callErr = CallError{Err: fmt.Errorf("server error: %s", frames[2])}
-		obs.RecordRequest("ZMQ-DEALER", path, 500, time.Since(start))
-		return zero, callErr
-	}
-
-	// Resolve per-call response format override.
-	respFormats, fmtErr := resolveCallFormat[Resp](handle.Formats, opts.ResponseFormats)
-	if fmtErr != nil {
-		callErr = CallError{Err: fmtErr}
-		obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
-		return zero, callErr
-	}
-
-	// decode response
-	var resp Resp
-	if len(respFormats) > 0 {
-		resp, callErr = respFormats[0].Unmarshal(frames[2])
-	} else {
-		resp, callErr = handle.DecodeResponse(frames[2])
-	}
-	if callErr != nil {
-		stats.ReportErrors(obs, "body", callErr)
-		callErr = CallError{Err: fmt.Errorf("decode response: %w", callErr)}
-		obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
-		return zero, callErr
-	}
-	obs.RecordRequest("ZMQ-DEALER", path, 200, time.Since(start))
 	return resp, nil
 }

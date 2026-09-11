@@ -3,12 +3,9 @@ package mqtt5
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/DaniDeer/go-codex/api/reqreply"
-	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
@@ -128,34 +125,30 @@ type CallOptions struct {
 	ResponseFormats any
 }
 
-// resolveCallFormat type-asserts overrideAny (a [CallOptions.RequestFormats]/
-// [CallOptions.ResponseFormats] value) against []format.Format[T], falling
-// back to declared when overrideAny is nil. Returns an error on a type
-// mismatch — callers wrap it in [CallError] with the direction-appropriate
-// [ErrorKind].
-func resolveCallFormat[T any](declared []format.Format[T], overrideAny any) ([]format.Format[T], error) {
-	if overrideAny == nil {
-		return declared, nil
-	}
-	fmts, ok := overrideAny.([]format.Format[T])
-	if !ok {
-		return nil, fmt.Errorf("format option: want []format.Format[%T], got %T", *new(T), overrideAny)
-	}
-	return fmts, nil
-}
-
 // Serve subscribes to the route path as an MQTT 5 request topic and
 // replies to each request using the ResponseTopic and CorrelationData MQTT 5
 // properties.
 //
-// For each incoming message, Serve:
-//  1. Decodes the payload using handle's codec.
-//  2. Calls fn with the decoded value.
-//  3. Encodes the response and publishes it to msg.Properties.ResponseTopic
-//     with the same CorrelationData.
+// Serve is a thin, single-route wrapper around [reqreply.ServerTransport.
+// Serve] — builds a [serverTransport] directly from client/router/opts and
+// delegates to it (the SAME reflection-based dispatch [AttachServer]'s
+// registered routes use), rather than duplicating the decode/merge/
+// security/encode/error-pattern pipeline inline. Zero duplicate logic —
+// full capability parity with [AttachServer] is therefore automatic (see
+// docs/roadmap/reqreply-middleware.md's Phase 0/0b for the history: this
+// used to be a separate, hand-written implementation; Phase 0 closed the
+// capability gap, Phase 0b collapsed the duplication).
 //
-// When fn or encoding fails, an error reply is published to ResponseTopic so the
-// requester receives a [CallError] rather than blocking indefinitely.
+// For each incoming message, the underlying dispatch:
+//  1. Decodes the payload using handle's codec (honoring RequestFormats
+//     and NewTopicParam merge fields).
+//  2. Calls fn with the decoded value.
+//  3. Encodes the response (honoring Formats) and publishes it to
+//     msg.Properties.ResponseTopic with the same CorrelationData.
+//
+// When fn or encoding fails, an error reply is published to ResponseTopic
+// (honoring a declared [reqreply.ErrorPattern]) so the requester receives
+// a [CallError] rather than blocking indefinitely.
 //
 // Errors per-request are delivered via [ServeOptions.OnError].
 //
@@ -170,212 +163,29 @@ func Serve[Req, Resp any](
 	fn func(context.Context, Req) (Resp, error),
 	opts ServeOptions,
 ) error {
-	obs := opts.Observer
-	if obs == nil {
-		obs = stats.ObserverFromContext(ctx)
-	}
-	path := handle.Topic
-
-	router.RegisterHandler(path, func(msg *pahomqtt5.Publish) {
-		start := time.Now()
-		msgCtx := context.WithValue(ctx, contextKey{}, msg)
-
-		var spanCtx = msgCtx
-		var serveErr error
-		if to, ok := obs.(stats.TraceObserver); ok {
-			spanCtx = to.StartSpan(msgCtx, "mqtt5.serve", path)
-		}
-		defer func() {
-			if to, ok := obs.(stats.TraceObserver); ok {
-				to.EndSpan(spanCtx, serveErr)
-			}
-		}()
-
-		// Extract response routing properties.
-		var responseTopic string
-		var correlationData []byte
-		if msg.Properties != nil {
-			responseTopic = msg.Properties.ResponseTopic
-			correlationData = msg.Properties.CorrelationData
-		}
-
-		// User Property param validation (before decode).
-		if propErr := validateUserProperties(msg, opts.UserPropertyParams); propErr != nil {
-			obs.RecordValidationError("user_property", stats.ConstraintName(propErr), userPropertyName(propErr))
-			serveErr = propErr
-			obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-			publishErrorReply(spanCtx, client, responseTopic, correlationData, propErr)
-			if opts.OnError != nil {
-				opts.OnError(ServeError{Kind: KindSecurity, Err: propErr})
-			}
-			return
-		}
-
-		// decode request
-		var req Req
-		if len(handle.RequestFormats) > 0 {
-			req, serveErr = handle.RequestFormats[0].Unmarshal(msg.Payload)
-		} else {
-			req, serveErr = handle.Decode(msg.Payload)
-		}
-		if serveErr != nil {
-			stats.ReportErrors(obs, "body", serveErr)
-			obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-			publishErrorReply(spanCtx, client, responseTopic, correlationData, serveErr)
-			if opts.OnError != nil {
-				opts.OnError(ServeError{Kind: KindDecode, Err: serveErr})
-			}
-			return
-		}
-
-		// Merge topic variables declared via reqreply.NewTopicParam into
-		// the SAME decoded req — additive, only runs when the route has
-		// merge-capable topic params (backward compatible: identical
-		// behavior to today when none are declared). Mirrors Subscribe's
-		// request-merge wiring in adapter.go.
-		if mergeFields := handle.MergeFields(); len(mergeFields) > 0 {
-			vars, varErr := matchTopicTemplate(path, msg.Topic)
-			if varErr == nil {
-				varErr = handle.ValidateTopicVars(vars)
-			}
-			if varErr != nil {
-				stats.ReportErrors(obs, "topic_var", varErr)
-				obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-				publishErrorReply(spanCtx, client, responseTopic, correlationData, varErr)
-				if opts.OnError != nil {
-					opts.OnError(ServeError{Kind: KindDecode, Err: varErr})
-				}
-				return
-			}
-			if mergeErr := codex.DecodeVars(&req, vars, mergeFields...); mergeErr != nil {
-				stats.ReportErrors(obs, "topic_var", mergeErr)
-				obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-				publishErrorReply(spanCtx, client, responseTopic, correlationData, mergeErr)
-				if opts.OnError != nil {
-					opts.OnError(ServeError{Kind: KindDecode, Err: mergeErr})
-				}
-				return
-			}
-		}
-
-		// Security enforcement: per-route requirements take precedence;
-		// nil falls back to global security declared via
-		// [Builder.AddGlobalSecurity]. Mirrors makeSubscribeMessageHandler's
-		// ordering exactly: built-in codec-based check first, THEN the
-		// optional custom SecurityFunc.
-		secReqs := handle.Security
-		if secReqs == nil {
-			secReqs = handle.GlobalSecurity
-		}
-		if len(secReqs) > 0 {
-			schemeTypes := make(map[string]route.SecurityScheme, len(handle.SecuritySchemes))
-			schemeCodecs := make(map[string]*codex.Codec[string], len(handle.SecuritySchemes))
-			for name, s := range handle.SecuritySchemes {
-				schemeTypes[name] = s.SecurityScheme
-				schemeCodecs[name] = s.Codec
-			}
-			var userProps pahomqtt5.UserProperties
-			if msg.Properties != nil {
-				userProps = msg.Properties.User
-			}
-			if name, credErr := validateSecurityCredentials(userProps, secReqs, schemeTypes, schemeCodecs); credErr != nil {
-				if secObs, ok := obs.(stats.SecurityObserver); ok {
-					secObs.RecordSecurityRejection(path, firstScheme(secReqs))
-				}
-				wrapped := reqreply.SecurityCredentialError{Scheme: name, Err: credErr}
-				serveErr = wrapped
-				obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-				publishErrorReply(spanCtx, client, responseTopic, correlationData, wrapped)
-				if opts.OnError != nil {
-					opts.OnError(ServeError{Kind: KindSecurity, Err: wrapped})
-				}
-				return
-			}
-			if opts.SecurityFunc != nil {
-				if err := opts.SecurityFunc(msgCtx, msg, secReqs); err != nil {
-					if secObs, ok := obs.(stats.SecurityObserver); ok {
-						secObs.RecordSecurityRejection(path, firstScheme(secReqs))
-					}
-					wrapped := reqreply.SecurityError{Err: err}
-					serveErr = wrapped
-					obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-					publishErrorReply(spanCtx, client, responseTopic, correlationData, wrapped)
-					if opts.OnError != nil {
-						opts.OnError(ServeError{Kind: KindSecurity, Err: wrapped})
-					}
-					return
-				}
-			}
-		}
-
-		// call handler
-		var resp Resp
-		resp, serveErr = fn(spanCtx, req)
-		if serveErr != nil {
-			obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-			publishHandlerErrorReply(spanCtx, client, handle, responseTopic, correlationData, serveErr, obs)
-			if opts.OnError != nil {
-				opts.OnError(ServeError{Kind: KindHandler, Err: serveErr})
-			}
-			return
-		}
-
-		// encode response
-		var respPayload []byte
-		if len(handle.Formats) > 0 {
-			respPayload, serveErr = handle.Formats[0].Marshal(resp)
-		} else {
-			respPayload, serveErr = handle.Encode(resp)
-		}
-		if serveErr != nil {
-			obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-			publishHandlerErrorReply(spanCtx, client, handle, responseTopic, correlationData, serveErr, obs)
-			if opts.OnError != nil {
-				opts.OnError(ServeError{Kind: KindEncode, Err: serveErr})
-			}
-			return
-		}
-
-		// publish reply to ResponseTopic
-		if responseTopic != "" {
-			replyProps := &pahomqtt5.PublishProperties{}
-			if correlationData != nil {
-				replyProps.CorrelationData = correlationData
-			}
-			if _, pubErr := client.Publish(spanCtx, &pahomqtt5.Publish{
-				Topic:      responseTopic,
-				QoS:        1,
-				Payload:    respPayload,
-				Properties: replyProps,
-			}); pubErr != nil {
-				serveErr = pubErr
-				obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-				if opts.OnError != nil {
-					opts.OnError(ServeError{Kind: KindEncode, Err: pubErr})
-				}
-				return
-			}
-		}
-		obs.RecordRequest("MQTT5-REP", path, 200, time.Since(start))
-	})
-
-	_, err := client.Subscribe(ctx, &pahomqtt5.Subscribe{
-		Subscriptions: []pahomqtt5.SubscribeOptions{
-			{Topic: path, QoS: 1},
-		},
-	})
-	if err != nil {
-		router.UnregisterHandler(path)
-		return BrokerError{Op: "subscribe", Err: err}
-	}
-	return nil
+	t := &serverTransport{client: client, router: router, opts: opts}
+	return t.Serve(ctx, handle, fn)
 }
 
 // Request encodes req, publishes it to the route path with MQTT 5 ResponseTopic
 // and CorrelationData properties, then waits for a matching reply.
 //
+// Call is a thin, single-call wrapper around [reqreply.ClientTransport.
+// Call] — builds a [clientTransport] directly from client/router/opts and
+// delegates to it (the SAME reflection-based dispatch [AttachClient]
+// uses), rather than duplicating the encode/merge/security/decode
+// pipeline inline. Zero duplicate logic — full capability parity with
+// [AttachClient] is therefore automatic, including [CallOptions.Vars]
+// (explicit override, takes PRECEDENCE over any [reqreply.NewTopicParam]
+// merge-field-derived value for the same key — mirrors [CallHandle]'s own
+// documented precedence) and [CallOptions.RequestFormats]/[ResponseFormats]
+// (per-call format overrides). See docs/roadmap/reqreply-middleware.md's
+// Phase 0/0b for the history: this used to be a separate, hand-written
+// implementation; Phase 0 closed the capability gap, Phase 0b collapsed
+// the duplication.
+//
 // Each call generates a unique reply topic: "<opts.ReplyTopicPrefix>/<uuid>".
-// Request subscribes to this topic before publishing (avoiding a race), waits
+// Call subscribes to this topic before publishing (avoiding a race), waits
 // for a message with matching CorrelationData, then unsubscribes.
 //
 // On success, returns the decoded response.
@@ -391,245 +201,28 @@ func Call[Req, Resp any](
 	opts CallOptions,
 ) (Resp, error) {
 	var zero Resp
-	obs := opts.Observer
-	if obs == nil {
-		obs = stats.ObserverFromContext(ctx)
+	t := &clientTransport{client: client, router: router, opts: opts}
+	respAny, err := t.Call(ctx, handle, req)
+	if err != nil {
+		return zero, err
 	}
-	start := time.Now()
-	var callErr error
-	// Resolve template topic vars if provided.
-	path := handle.Topic
-	if opts.Vars != nil {
-		var buildErr error
-		path, buildErr = handle.BuildTopic(opts.Vars)
-		if buildErr != nil {
-			reportRouteParamErrors(buildErr, obs)
-			callErr = CallError{Kind: KindEncode, Err: buildErr}
-			obs.RecordRequest("MQTT5-REQ", handle.Topic, 0, time.Since(start))
-			return zero, callErr
-		}
+	resp, ok := respAny.(Resp)
+	if !ok {
+		return zero, reqreply.TransportTypeMismatchError{Topic: handle.Topic, Want: fmt.Sprintf("%T", zero), Got: fmt.Sprintf("%T", respAny)}
 	}
-	if to, ok := obs.(stats.TraceObserver); ok {
-		ctx = to.StartSpan(ctx, "mqtt5.request", path)
-		defer func() { to.EndSpan(ctx, callErr) }()
-	}
-
-	timeout := opts.Timeout
-	if timeout == 0 {
-		timeout = 30 * time.Second
-	}
-	qos := opts.QoS
-	if qos == 0 {
-		qos = 1
-	}
-
-	// Resolve the reply topic pair.
-	var replyTopic, subscribeFilter string
-	if opts.ReplyTopicBuilder != nil {
-		replyTopic, subscribeFilter = opts.ReplyTopicBuilder()
-		if replyTopic == "" {
-			callErr = CallError{Kind: KindEncode, Err: fmt.Errorf("reply topic builder returned empty response topic")}
-			obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
-			return zero, callErr
-		}
-		if subscribeFilter == "" {
-			subscribeFilter = replyTopic
-		}
-	} else {
-		prefix := opts.ReplyTopicPrefix
-		if prefix == "" {
-			prefix = "replies"
-		}
-		replyTopic = prefix + "/" + uuid.New().String()
-		subscribeFilter = replyTopic
-	}
-
-	// Generate unique correlation data for this call.
-	corrID := uuid.New()
-	corrData := corrID[:]
-
-	// Channel to receive the reply message.
-	replyCh := make(chan *pahomqtt5.Publish, 1)
-
-	// Register reply handler before subscribing. The handler key is the plain
-	// replyTopic — the router dispatches on the actual message topic, not the
-	// $share-prefixed subscribe filter.
-	router.RegisterHandler(replyTopic, func(msg *pahomqtt5.Publish) {
-		if msg.Properties == nil || string(msg.Properties.CorrelationData) != string(corrData) {
-			return // not our reply
-		}
-		select {
-		case replyCh <- msg:
-		default:
-		}
-	})
-
-	// Subscribe using the filter (may carry a $share prefix).
-	if _, err := client.Subscribe(ctx, &pahomqtt5.Subscribe{
-		Subscriptions: []pahomqtt5.SubscribeOptions{
-			{Topic: subscribeFilter, QoS: qos},
-		},
-	}); err != nil {
-		router.UnregisterHandler(replyTopic)
-		callErr = CallError{Kind: KindEncode, Err: fmt.Errorf("subscribe reply topic: %w", err)}
-		obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
-		return zero, callErr
-	}
-
-	// Unsubscribe and deregister on function exit.
-	var once sync.Once
-	cleanup := func() {
-		once.Do(func() {
-			router.UnregisterHandler(replyTopic)
-			_, _ = client.Unsubscribe(ctx, &pahomqtt5.Unsubscribe{Topics: []string{subscribeFilter}})
-		})
-	}
-	defer cleanup()
-
-	// Resolve per-call request format override (opts.RequestFormats),
-	// falling back to the route-declared handle.RequestFormats when no
-	// override was given for this call.
-	reqFormats, fmtErr := resolveCallFormat[Req](handle.RequestFormats, opts.RequestFormats)
-	if fmtErr != nil {
-		callErr = CallError{Kind: KindEncode, Err: fmtErr}
-		obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
-		return zero, callErr
-	}
-
-	// Encode request payload.
-	var payload []byte
-	if len(reqFormats) > 0 {
-		payload, callErr = reqFormats[0].Marshal(req)
-	} else {
-		payload, callErr = handle.EncodeRequest(req)
-	}
-	if callErr != nil {
-		stats.ReportErrors(obs, "body", callErr)
-		callErr = CallError{Kind: KindEncode, Err: callErr}
-		obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
-		return zero, callErr
-	}
-
-	// Resolve security requirements and obtain credentials (client-side
-	// mirror of Serve's built-in check, and of [publish]'s CredentialFunc
-	// handling).
-	secReqs := handle.Security
-	if secReqs == nil {
-		secReqs = handle.GlobalSecurity
-	}
-	userProps := append(pahomqtt5.UserProperties(nil), opts.UserProperties...)
-	var credProps []UserProperty
-	if len(secReqs) > 0 && opts.CredentialFunc != nil {
-		var credErr error
-		credProps, credErr = opts.CredentialFunc(ctx, secReqs)
-		if credErr != nil {
-			obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
-			callErr = credErr
-			return zero, callErr
-		}
-		userProps = append(userProps, credProps...)
-	}
-	// Validate the outgoing credential FORMAT before publishing — gated on
-	// credProps != nil (CredentialFunc actually ran and returned
-	// something), NOT on len(secReqs) > 0 alone (Round-93 pattern,
-	// mirrored here from day one).
-	if len(secReqs) > 0 && credProps != nil {
-		schemeTypes := make(map[string]route.SecurityScheme, len(handle.SecuritySchemes))
-		schemeCodecs := make(map[string]*codex.Codec[string], len(handle.SecuritySchemes))
-		for name, s := range handle.SecuritySchemes {
-			schemeTypes[name] = s.SecurityScheme
-			schemeCodecs[name] = s.Codec
-		}
-		if name, credErr := validateSecurityCredentials(userProps, secReqs, schemeTypes, schemeCodecs); credErr != nil {
-			if secObs, ok := obs.(stats.SecurityObserver); ok {
-				secObs.RecordSecurityRejection(path, firstScheme(secReqs))
-			}
-			obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
-			callErr = reqreply.SecurityCredentialError{Scheme: name, Err: credErr}
-			return zero, callErr
-		}
-	}
-
-	// Publish request with ResponseTopic and CorrelationData.
-	reqProps := &pahomqtt5.PublishProperties{
-		ResponseTopic:   replyTopic,
-		CorrelationData: corrData,
-	}
-	if len(userProps) > 0 {
-		reqProps.User = userProps
-	}
-
-	if _, err := client.Publish(ctx, &pahomqtt5.Publish{
-		Topic:      path,
-		QoS:        qos,
-		Payload:    payload,
-		Properties: reqProps,
-	}); err != nil {
-		callErr = CallError{Kind: KindEncode, Err: fmt.Errorf("publish request: %w", err)}
-		obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
-		return zero, callErr
-	}
-
-	// Wait for reply.
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-
-	select {
-	case <-ctx.Done():
-		callErr = CallError{Kind: KindTimeout, Err: ctx.Err()}
-		obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
-		return zero, callErr
-	case <-timer.C:
-		callErr = CallError{Kind: KindTimeout, Err: fmt.Errorf("no reply within %s", timeout)}
-		obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
-		return zero, callErr
-	case replyMsg := <-replyCh:
-		// Check for server error reply.
-		if isErrorReply(replyMsg) {
-			callErr = CallError{Kind: KindHandler, Err: fmt.Errorf("server error: %s", replyMsg.Payload)}
-			obs.RecordRequest("MQTT5-REQ", path, 500, time.Since(start))
-			return zero, callErr
-		}
-
-		// Resolve per-call response format override (opts.ResponseFormats),
-		// falling back to the route-declared handle.Formats when no
-		// override was given for this call.
-		respFormats, fmtErr := resolveCallFormat[Resp](handle.Formats, opts.ResponseFormats)
-		if fmtErr != nil {
-			callErr = CallError{Kind: KindDecode, Err: fmtErr}
-			obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
-			return zero, callErr
-		}
-
-		// Decode response.
-		var resp Resp
-		if len(respFormats) > 0 {
-			resp, callErr = respFormats[0].Unmarshal(replyMsg.Payload)
-		} else {
-			resp, callErr = handle.DecodeResponse(replyMsg.Payload)
-		}
-		if callErr != nil {
-			stats.ReportErrors(obs, "body", callErr)
-			callErr = CallError{Kind: KindDecode, Err: fmt.Errorf("decode response: %w", callErr)}
-			obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
-			return zero, callErr
-		}
-		obs.RecordRequest("MQTT5-REQ", path, 200, time.Since(start))
-		return resp, nil
-	}
+	return resp, nil
 }
 
-// CallHandle is the single-call convenience wrapper around [Call]: it
-// derives [CallOptions.Vars] from req automatically, using the route's
-// merge-capable topic params ([reqreply.RouteHandle.MergeFields] +
-// [codex.EncodeVars]) — one struct in, no manual vars map, mirroring
-// [nethttp.CallWithHandle]'s client-side convenience for REST.
-//
-// An explicit [CallOptions.Vars] takes PRECEDENCE over the derived value —
-// this lets a caller override a struct field's value without losing the
-// one-line convenience for the common case. [Call] remains available as
-// the lower-level escape hatch for callers that build the vars map
-// themselves.
+// CallHandle is a deprecated-but-kept alias for [Call] — [Call] itself
+// now auto-derives [CallOptions.Vars] from req (via the route's
+// merge-capable topic params, [reqreply.RouteHandle.MergeFields] +
+// [reqreply.RouteHandle.EncodeVars]), the SAME auto-derivation this
+// function used to add on top of [Call] before [AttachClient]'s
+// underlying [clientTransport.call] gained it directly (Phase 0 of
+// docs/roadmap/reqreply-middleware.md). An explicit [CallOptions.Vars]
+// still takes PRECEDENCE over the derived value for the same key.
+// Kept for existing callers — prefer [Call] directly in new code, since
+// it is now identical.
 //
 //	resp, err := mqtt5.CallHandle(ctx, client, router, computeRoute, req, mqtt5.CallOptions{})
 func CallHandle[Req, Resp any](
@@ -640,26 +233,6 @@ func CallHandle[Req, Resp any](
 	req Req,
 	opts CallOptions,
 ) (Resp, error) {
-	var zero Resp
-	derived, err := codex.EncodeVars(req, handle.MergeFields()...)
-	if err != nil {
-		return zero, err
-	}
-	if len(derived) == 0 {
-		derived = nil
-	}
-	if opts.Vars != nil {
-		merged := make(map[string]string, len(derived)+len(opts.Vars))
-		for k, v := range derived {
-			merged[k] = v
-		}
-		for k, v := range opts.Vars {
-			merged[k] = v
-		}
-		opts.Vars = merged
-	} else {
-		opts.Vars = derived
-	}
 	return Call(ctx, client, router, handle, req, opts)
 }
 
@@ -691,48 +264,6 @@ func publishErrorReply(ctx context.Context, client MQTTClient, responseTopic str
 		Payload:    []byte(err.Error()),
 		Properties: props,
 	})
-}
-
-// publishHandlerErrorReply is the [reqreply.ErrorPattern]-aware counterpart
-// of [publishErrorReply], used for handler/encode failures — errors that
-// originate from application business logic, where a declared ErrorPattern
-// may apply. It consults handle.ErrorResponseFor(err) first: on a match, the
-// declared codec-backed typed payload is published (still on the same
-// ResponseTopic/CorrelationData/error content-type) instead of plain text.
-// On no match, or on a mapping/encoding failure within the matched pattern
-// itself, it falls back to [publishErrorReply]'s plain-text behavior
-// unchanged (backward compatible — existing ErrorReplyMeta-only or
-// no-declaration routes see no behavior change).
-func publishHandlerErrorReply[Req, Resp any](
-	ctx context.Context,
-	client MQTTClient,
-	handle *reqreply.RouteHandle[Req, Resp],
-	responseTopic string,
-	correlationData []byte,
-	err error,
-	obs stats.Observer,
-) {
-	if responseTopic == "" {
-		return
-	}
-	resp, matched, mapErr := handle.ErrorResponseFor(err)
-	if matched && mapErr == nil {
-		props := &pahomqtt5.PublishProperties{
-			ContentType:     errorReplyContentType,
-			CorrelationData: correlationData,
-		}
-		_, _ = client.Publish(ctx, &pahomqtt5.Publish{
-			Topic:      responseTopic,
-			QoS:        1,
-			Payload:    resp.Body,
-			Properties: props,
-		})
-		return
-	}
-	if matched && mapErr != nil {
-		stats.ReportErrors(obs, "error_pattern", mapErr)
-	}
-	publishErrorReply(ctx, client, responseTopic, correlationData, err)
 }
 
 // reportRouteParamErrors reports topic variable errors from [reqreply.RouteHandle.BuildTopic]

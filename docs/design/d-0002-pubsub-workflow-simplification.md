@@ -294,7 +294,7 @@ multi-phase implementation rounds can avoid repeating them.
 > `PublishMW` `*T`-write-access generalization, closing `mqtt`(v3)'s
 > publish-side gap via an in-payload credential mechanism that also
 > significantly de-risks zeromq (spun out to
-> [ZeroMQ Security Mechanism](zeromq-security.md)); the other 6 items
+> [ZeroMQ Security Mechanism](../roadmap/zeromq-security.md)); the other 6 items
 > were confirmed KEEP, matching REST's own precedent. The security
 > model is documented as exactly 2 mechanisms (connection-level
 > authentication; message-level authorization), not 3 — see "Security
@@ -335,7 +335,7 @@ multi-phase implementation rounds can avoid repeating them.
 > long-term fix (a common-base + per-pattern-derived middleware TYPE
 > hierarchy) is bigger than pub/sub — confirmed `api/reqreply` has the
 > SAME pre-existing issue already shipped — spun out to
-> [Common-Base + Per-Pattern-Derived Middleware Types](common-middleware-architecture.md).
+> [Common-Base + Per-Pattern-Derived Middleware Types](../roadmap/common-middleware-architecture.md).
 > F7 (resolved) — `ServeSubscribers` (unlike the already-minimal
 > `Subscribe(fn)`) genuinely needed a non-nil `*events.Client` with ≥1
 > registered `Subscriber[T]`, with no zero-ceremony shortcut; fixed by
@@ -566,9 +566,9 @@ at the SAME call). There is no single place a reader can look to know
 
 | Capability | `mqtt` (v3) | `mqtt5` | `zeromq` |
 |---|---|---|---|
-| Connection-level `SecuredClient`/`ConnectSecurityScheme` | ✅ | ✅ | ❌ (see [ZeroMQ Security Mechanism](zeromq-security.md)) |
-| Message-level subscribe-side `SecurityFunc` | ✅ `func(ctx, pahomqtt.Message, reqs) error` (confirmed, mirrors mqtt5 exactly) | ✅ `func(ctx, *pahomqtt5.Publish, reqs) error` | ❌ today; tractable via the in-payload mechanism below (see [ZeroMQ Security Mechanism](zeromq-security.md)) |
-| Message-level publish-side `CredentialFunc` | ⚠️ protocol-native (`UserProperty`) output impossible (no per-message property channel) — **BUT the in-payload mechanism below (Decision 3) works identically to mqtt5's**, closing the practical gap | ✅ `func(ctx, reqs) ([]UserProperty, error)` — **revised by Decision 3 to also accept `*T`** | ❌ today; tractable via the same in-payload mechanism (see [ZeroMQ Security Mechanism](zeromq-security.md)) |
+| Connection-level `SecuredClient`/`ConnectSecurityScheme` | ✅ | ✅ | ❌ (see [ZeroMQ Security Mechanism](../roadmap/zeromq-security.md)) |
+| Message-level subscribe-side `SecurityFunc` | ✅ `func(ctx, pahomqtt.Message, reqs) error` (confirmed, mirrors mqtt5 exactly) | ✅ `func(ctx, *pahomqtt5.Publish, reqs) error` | ❌ today; tractable via the in-payload mechanism below (see [ZeroMQ Security Mechanism](../roadmap/zeromq-security.md)) |
+| Message-level publish-side `CredentialFunc` | ⚠️ protocol-native (`UserProperty`) output impossible (no per-message property channel) — **BUT the in-payload mechanism below (Decision 3) works identically to mqtt5's**, closing the practical gap | ✅ `func(ctx, reqs) ([]UserProperty, error)` — **revised by Decision 3 to also accept `*T`** | ❌ today; tractable via the same in-payload mechanism (see [ZeroMQ Security Mechanism](../roadmap/zeromq-security.md)) |
 | Handle-attached implementation (vs. per-call `Options`) | ❌ | ❌ | ❌ |
 | Scope-grant / `middleware.CheckScopes` integration | ❌ | ❌ | ❌ |
 
@@ -581,7 +581,7 @@ security requires inventing a new wire-level convention before ANYTHING
 is possible** — Decision 3's in-payload mechanism (below) needs no wire
 change at all, since a credential embedded as an ordinary field in the
 codec-decoded payload works identically regardless of transport. See
-[ZeroMQ Security Mechanism](zeromq-security.md) for the narrower
+[ZeroMQ Security Mechanism](../roadmap/zeromq-security.md) for the narrower
 remaining question (an OPTIONAL out-of-band frame-based mechanism, plus
 connection-level/CURVE) — spun out to its own doc since it still has no
 concrete driver, unlike the in-payload mechanism which is folded
@@ -1079,7 +1079,7 @@ PRE-EXISTING, not pub/sub-specific, and the PROPER fix (a common-base +
 per-API-pattern-derived middleware TYPE hierarchy, making the mistake a
 Go COMPILE error instead of a runtime one) means retrofitting REST's
 and reqreply's already-shipped code — genuinely out of THIS doc's
-scope. See [Common-Base + Per-Pattern-Derived Middleware Types](common-middleware-architecture.md)
+scope. See [Common-Base + Per-Pattern-Derived Middleware Types](../roadmap/common-middleware-architecture.md)
 for that bigger investigation, spun out rather than folded in here.
 
 #### Why `Subscribe(fn)` itself never became declare-time-only (still true — refined, not reversed, by the next subsection)
@@ -2187,7 +2187,7 @@ previously stated).
   nothing beyond what's already decoded into `T`, so there is no
   raw-message-equivalent parameter to also pass, unlike mqtt/mqtt5's
   subscribe-side). **Not fully designed here** — spun out to
-  [ZeroMQ Security Mechanism](zeromq-security.md), which now scopes down
+  [ZeroMQ Security Mechanism](../roadmap/zeromq-security.md), which now scopes down
   to a much narrower remaining question (an OPTIONAL additional
   out-of-band frame-based mechanism, plus the separate connection-level/
   CURVE question) rather than "invent an entire wire convention from
@@ -2321,7 +2321,7 @@ DEEPER, unresolved question: how should PROTOCOL-NATIVE capabilities
 (MQTT5 User Properties, Shared Subscriptions, Message Expiry; ZeroMQ's
 Conflate/HWM) be declared, given pub/sub spans THREE incompatible
 transports within ONE pattern (unlike REST, always HTTP)? See
-[Protocol-Native Feature Declarations](protocol-native-features.md) —
+[Protocol-Native Feature Declarations](../roadmap/protocol-native-features.md) —
 spun out rather than resolved here, proposing a `ProtocolFeature` sealed-
 interface mechanism (mirrors `ports.Pattern`) for "declare a capability,
 let the binding adapter validate/fulfill it or reject," generalized
@@ -3379,7 +3379,7 @@ model (pub/sub), not to an unintentional drift between the two designs.
    `ConflictingSecurityDeclarationError`).
 5. ~~**`zeromq` has literally no security mechanism at any layer**~~ —
    **SIGNIFICANTLY DE-RISKED, spun out to
-   [ZeroMQ Security Mechanism](zeromq-security.md).** Every zeromq
+   [ZeroMQ Security Mechanism](../roadmap/zeromq-security.md).** Every zeromq
    pub/sub call remains unconditionally unenforced TODAY (confirmed via
    exhaustive grep this pass, see capability matrix above), but this no
    longer requires inventing a new wire-level convention before ANY
@@ -3589,7 +3589,7 @@ model (pub/sub), not to an unintentional drift between the two designs.
   `*T`-write-access mechanism gives zeromq a fully-tractable Fn shape
   with NO wire-level convention needed. What remains open (its own
   optional out-of-band frame mechanism, connection-level/CURVE) is spun
-  out to [ZeroMQ Security Mechanism](zeromq-security.md) — zeromq's
+  out to [ZeroMQ Security Mechanism](../roadmap/zeromq-security.md) — zeromq's
   `Caller`/`ServeSubscribers`/two-tier `Subscribe` mirroring SHIPPED (see
   the item above); only the spun-out doc's own narrower remaining
   question is still open.
@@ -3625,10 +3625,10 @@ model (pub/sub), not to an unintentional drift between the two designs.
   hook gap (found while reviewing pub/sub's OWN middleware concept,
   since resolved — see
   [d-0001's Addendum 3](d-0001-rest-middleware-workflow-simplification.md#addendum-3-client-side-general-purpose-clientmw-hook-closes-the-last-known-restevents-middleware-asymmetry)),
-  [Common-Base + Per-Pattern-Derived Middleware Types](common-middleware-architecture.md)
+  [Common-Base + Per-Pattern-Derived Middleware Types](../roadmap/common-middleware-architecture.md)
   (REST's `middleware.Middleware` struct carries fields only REST
   uses — found while reviewing pub/sub's OWN middleware params), and
-  [Protocol-Native Feature Declarations](protocol-native-features.md)
+  [Protocol-Native Feature Declarations](../roadmap/protocol-native-features.md)
   (a generalization that could also apply to REST's header/cookie/query
   params — found while reviewing pub/sub's OWN spec-adding middleware).
   None of these four docs was produced by actually SITTING DOWN and
@@ -3646,7 +3646,7 @@ folded into it), and every design gap raised during this doc's many
 review passes has been closed (see the list above, and Decisions 1-9's
 own status banners) — the only things left OUTSIDE this doc's own scope
 are `zeromq`'s remaining, much-narrower open questions (spun out to
-[ZeroMQ Security Mechanism](zeromq-security.md), still "idea only"), and
+[ZeroMQ Security Mechanism](../roadmap/zeromq-security.md), still "idea only"), and
 the REST-workflow-review reminder immediately above (already fully
 tracked via its own 4 spun-out docs, all still "idea only"/"PLANNED —
 no implementation yet" — none of these block THIS doc's own

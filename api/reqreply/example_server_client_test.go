@@ -32,7 +32,7 @@ func (t *exampleInProcessTransport) Serve(ctx context.Context, routeAny any, fnA
 	return nil
 }
 
-func (t *exampleInProcessTransport) Call(ctx context.Context, routeAny any, reqAny any) (any, error) {
+func (t *exampleInProcessTransport) Call(ctx context.Context, routeAny any, reqAny any, opts ...reqreply.ClientCallOptions) (any, error) {
 	var topic string
 	switch v := routeAny.(type) {
 	case reqreply.Route[computeReq, computeResp]:
@@ -47,7 +47,7 @@ func (t *exampleInProcessTransport) Call(ctx context.Context, routeAny any, reqA
 	return h(ctx, reqAny)
 }
 
-func (t *exampleInProcessTransport) CallAsync(ctx context.Context, routeAny any, reqAny any) (any, error) {
+func (t *exampleInProcessTransport) CallAsync(ctx context.Context, routeAny any, reqAny any, opts ...reqreply.ClientCallOptions) (any, error) {
 	resp, err := t.Call(ctx, routeAny, reqAny)
 	ff := routeAny.(reqreply.FutureFactory)
 	future, resolve := ff.NewFutureAny()

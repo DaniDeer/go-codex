@@ -16,6 +16,13 @@
 > CURVE question. No sequencing dependency on the pub/sub workflow
 > doc's own Decision 1/2/3 — those already specify the in-payload
 > mechanism directly; this doc only covers the OPTIONAL extras.
+>
+> **Scope extended beyond pub/sub**: this doc's in-payload finding ALSO
+> resolves the analogous open question
+> [ReqReply Middleware](reqreply-middleware.md) raised for zeromq's
+> `reqreply` security Fn-shape (see "Implication for
+> `reqreply-middleware.md`" section below) — same underlying reasoning,
+> same decision, a different `api/*` pattern.
 > [← Back to Roadmap](index.md)
 
 ## Confirmed current state
@@ -94,3 +101,61 @@ hold the NARROWED-DOWN open question and scope a future investigation,
 not to answer it. Item 3's answer may simply be "no further work
 needed," in which case this doc's eventual resolution could be "closed,
 no action" rather than a design.
+
+## Implication for `reqreply-middleware.md` — SAME decision as pub/sub
+
+[ReqReply Middleware](reqreply-middleware.md) — the design for
+`api/reqreply`'s own `.Use()`/`HandleMW`/`ClientMW` declare/implement
+split — currently defers zeromq's Fn-shape entirely, stating (carried
+forward from `docs/design/d-0004-reqreply-workflow-simplification.md`
+without re-checking against THIS doc's own, already-resolved finding)
+that it "needs a NEW wire-level credential convention before ANY Fn
+shape can be finalized." **This is stale/overly pessimistic** — found
+while cross-checking the two docs against each other:
+
+- zeromq's REQ/REP frames (`[payload]` request / `["ok"/"error",
+  payload]` reply, confirmed via `adapters/zeromq/reqreply_transport.go`)
+  have the EXACT SAME "no separate credential slot" shape as pub/sub's
+  `[topic, payload]` frames — the SAME in-payload mechanism this doc
+  already established for pub/sub (confirmed ALREADY SHIPPED:
+  `adapters/zeromq/adapter.go:82,110` — `SecurityFunc func(ctx, msg *T,
+  reqs) error` / `CredentialFunc func(ctx, msg *T, reqs) error`) applies
+  to reqreply identically — NO new wire-level frame is needed there
+  either.
+- **Decision (same as the pub/sub case, confirmed)**: reqreply's zeromq
+  paired security Fn shapes read/write the decoded `*Req` directly,
+  mirroring the pub/sub shapes above EXACTLY (same parameter shape, same
+  plain-`error` return — deliberately NOT REST's scope-grant model
+  `reqreply-middleware.md` has mqtt5 adopt for ITS OWN paired Fn shape;
+  each transport adapter mirrors its OWN precedent, an intentional,
+  already-established per-adapter difference in that doc, not an
+  inconsistency introduced here):
+
+  ```go
+  // Server-side (paired) — reads the decoded *Req before dispatch,
+  // mirrors zeromq pub/sub's Subscribe security shape (SecurityFunc)
+  // exactly:
+  func(ctx context.Context, req *Req, reqs []route.SecurityRequirement) error
+
+  // Client-side (paired) — writes a credential field INTO *Req before
+  // publish, mirrors zeromq pub/sub's Publish security shape
+  // (CredentialFunc) exactly:
+  func(ctx context.Context, req *Req, reqs []route.SecurityRequirement) error
+  ```
+
+- **Implication for callers**: the APPLICATION's own domain `Req`
+  struct must carry a credential field itself (e.g. `Req{..., Token
+  string}`) for this to work — mirrors pub/sub's IDENTICAL implication,
+  already accepted there; zeromq security remains "in-payload only," a
+  documented, accepted transport limitation, not a new one introduced by
+  reqreply.
+
+**Status of this finding: documented here for follow-up, NOT yet acted
+on.** `reqreply-middleware.md`'s own Phase 1 stays mqtt5-only as
+originally scoped; this finding means zeromq's reqreply Fn-shape is
+LIKELY tractable sooner than that doc currently assumes (no blocking
+wire-level invention needed), but reconciling `reqreply-middleware.md`'s
+own text (updating its "needs a NEW wire-level credential convention"
+framing, deciding whether zeromq's reqreply security becomes part of a
+near-term phase there rather than an indefinitely-deferred one) is left
+as explicit future follow-up work, not done in this pass.
