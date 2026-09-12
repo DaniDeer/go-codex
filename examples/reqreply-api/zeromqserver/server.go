@@ -22,6 +22,11 @@ import (
 type Built struct {
 	Server        *reqreply.Server
 	ClientSockets map[string]zeromq.FramedSocket
+	// OAuthHandle is the registered *reqreply.RouteHandle for
+	// routes.OAuthComputeRoute — needed by Demo 9's cross-API OAuth2
+	// sharing demo to print the route's own AsyncAPI-contributed
+	// security scheme entry.
+	OAuthHandle *reqreply.RouteHandle[routes.OAuthComputeReq, routes.OAuthComputeResp]
 }
 
 // Build registers ComputeRoute/DoubleRoute/TripleRoute against a fresh
@@ -41,26 +46,41 @@ func Build() (*Built, error) {
 	if _, err := routes.TripleRoute.WithHandler(handlers.Triple).Register(server); err != nil {
 		return nil, err
 	}
+	// OAuthComputeRoute demonstrates zeromq's reqreply security Fn-shape
+	// (docs/roadmap/zeromq-security.md, SHIPPED) AND the SAME OAuthMw
+	// declaration shared across REST/reqreply — see Demo 9
+	// (demo_cross_api_oauth2_sharing.go).
+	oauthHandle, err := routes.OAuthComputeRoute.
+		Use(routes.OAuthMw).
+		HandleMW(&routes.OAuthMw, handlers.VerifyOAuthComputeZeroMQ).
+		WithHandler(handlers.AddOAuth).
+		Register(server)
+	if err != nil {
+		return nil, err
+	}
 
 	addRep, addReq := newChanSocketPair()
 	doubleRep, doubleReq := newChanSocketPair()
 	tripleRep, tripleReq := newChanSocketPair()
+	oauthRep, oauthReq := newChanSocketPair()
 
 	serverSockets := map[string]zeromq.FramedSocket{
-		"compute/add":    addRep,
-		"compute/double": doubleRep,
-		"compute/triple": tripleRep,
+		"compute/add":       addRep,
+		"compute/double":    doubleRep,
+		"compute/triple":    tripleRep,
+		"compute/oauth-add": oauthRep,
 	}
 	if err := zeromq.AttachServer(server, serverSockets); err != nil {
 		return nil, err
 	}
 
 	clientSockets := map[string]zeromq.FramedSocket{
-		"compute/add":    addReq,
-		"compute/double": doubleReq,
-		"compute/triple": tripleReq,
+		"compute/add":       addReq,
+		"compute/double":    doubleReq,
+		"compute/triple":    tripleReq,
+		"compute/oauth-add": oauthReq,
 	}
-	return &Built{Server: server, ClientSockets: clientSockets}, nil
+	return &Built{Server: server, ClientSockets: clientSockets, OAuthHandle: oauthHandle}, nil
 }
 
 // ── in-process chanSocket pair (self-contained — no real ZMQ library needed) ─

@@ -7,6 +7,10 @@ import (
 	"time"
 
 	"github.com/DaniDeer/go-codex/api/reqreply"
+	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/middleware"
+	"github.com/DaniDeer/go-codex/route"
+	"github.com/DaniDeer/go-codex/validate"
 )
 
 // ── chanSocket: an in-memory FramedSocket pair for REQ/REP round-trip tests ──
@@ -344,5 +348,555 @@ func TestAttachRouterServer_MissingSocketError(t *testing.T) {
 	var missing MissingSocketError
 	if !errors.As(err, &missing) {
 		t.Fatalf("expected MissingSocketError, got %v (%T)", err, err)
+	}
+}
+
+// ── Security Fn-shape tests (docs/roadmap/zeromq-security.md) ─────────────
+
+// securedComputeReq carries an in-payload Token field — zeromq's paired
+// security/credential Fn reads/writes THIS field directly (no raw-message
+// side channel exists, unlike mqtt5's User Properties), mirroring zeromq
+// pub/sub's own SecurityFunc/CredentialFunc contract exactly.
+type securedComputeReq struct {
+	X, Y  int
+	Token string
+}
+type securedComputeResp struct{ Sum int }
+
+var securedComputeReqCodec = codex.Struct[securedComputeReq](
+	codex.RequiredField("x", codex.Int(),
+		func(r securedComputeReq) int { return r.X },
+		func(r *securedComputeReq, v int) { r.X = v }),
+	codex.RequiredField("y", codex.Int(),
+		func(r securedComputeReq) int { return r.Y },
+		func(r *securedComputeReq, v int) { r.Y = v }),
+	codex.OptionalField("token", codex.String(),
+		func(r securedComputeReq) string { return r.Token },
+		func(r *securedComputeReq, v string) { r.Token = v }),
+)
+
+var securedComputeRespCodec = codex.Struct[securedComputeResp](
+	codex.RequiredField("sum", codex.Int(),
+		func(r securedComputeResp) int { return r.Sum },
+		func(r *securedComputeResp, v int) { r.Sum = v }),
+)
+
+var zmqBearerAuthCodec = codex.String().Refine(validate.NonEmptyString)
+var zmqBearerAuthMw = middleware.SecurityScheme("zmqBearer", route.BearerScheme("JWT"), nil, &zmqBearerAuthCodec)
+
+func newSecuredComputeRoute() reqreply.Route[securedComputeReq, securedComputeResp] {
+	return reqreply.NewRoute[securedComputeReq, securedComputeResp](
+		"/secured-compute",
+		securedComputeReqCodec, securedComputeRespCodec,
+		reqreply.RouteMeta{OperationID: "securedCompute"},
+	)
+}
+
+// acceptingSecurityFn is a PAIRED server-side security Fn that always
+// grants (reads req.Token, accepts any non-empty value — format already
+// validated by declaring the scheme, so this Fn just simulates a
+// revocation check).
+func acceptingSecurityFn(_ context.Context, req *securedComputeReq, _ []route.SecurityRequirement) error {
+	if req.Token == "" {
+		return errors.New("token required")
+	}
+	return nil
+}
+
+func TestAttachServer_HandleMW_PairedSecurityFn_Verifies(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	fn := func(_ context.Context, r securedComputeReq) (securedComputeResp, error) {
+		return securedComputeResp{Sum: r.X + r.Y}, nil
+	}
+	if _, err := newSecuredComputeRoute().Use(zmqBearerAuthMw).
+		HandleMW(&zmqBearerAuthMw, acceptingSecurityFn).
+		WithHandler(fn).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	repSock, reqSock := newChanSocketPair()
+	if err := AttachServer(server, map[string]FramedSocket{"/secured-compute": repSock}); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveErrCh := make(chan error, 1)
+	go func() { serveErrCh <- server.Serve(ctx) }()
+
+	// Reject: missing token.
+	if err := reqSock.SendFrames([][]byte{[]byte(`{"x":3,"y":4}`)}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	frames, err := reqSock.RecvFrames()
+	if err != nil {
+		t.Fatalf("recv: %v", err)
+	}
+	if string(frames[0]) != "error" {
+		t.Fatalf("expected error status for missing token, got %q: %s", frames[0], frames[1])
+	}
+
+	// Accept: token present.
+	if err := reqSock.SendFrames([][]byte{[]byte(`{"x":3,"y":4,"token":"abc"}`)}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	frames, err = reqSock.RecvFrames()
+	if err != nil {
+		t.Fatalf("recv: %v", err)
+	}
+	if string(frames[0]) != "ok" {
+		t.Fatalf("expected ok status, got %q: %s", frames[0], frames[1])
+	}
+
+	cancel()
+	select {
+	case err := <-serveErrCh:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not return after ctx cancellation")
+	}
+}
+
+func TestAttachServer_HandleMW_PairedSecurityFn_MutatesReq(t *testing.T) {
+	// The security Fn WRITES an enrichment field (here: forces Y to a
+	// fixed value) — proving the WRITE half of *Req access, not just
+	// read/reject, mirrors pub/sub's identical read/write contract.
+	enrichFn := func(_ context.Context, req *securedComputeReq, _ []route.SecurityRequirement) error {
+		if req.Token == "" {
+			return errors.New("token required")
+		}
+		req.Y = 100 // enrichment — handler must observe THIS value, not the wire value
+		return nil
+	}
+
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	var gotY int
+	fn := func(_ context.Context, r securedComputeReq) (securedComputeResp, error) {
+		gotY = r.Y
+		return securedComputeResp{Sum: r.X + r.Y}, nil
+	}
+	if _, err := newSecuredComputeRoute().Use(zmqBearerAuthMw).
+		HandleMW(&zmqBearerAuthMw, enrichFn).
+		WithHandler(fn).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	repSock, reqSock := newChanSocketPair()
+	if err := AttachServer(server, map[string]FramedSocket{"/secured-compute": repSock}); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = server.Serve(ctx) }()
+
+	if err := reqSock.SendFrames([][]byte{[]byte(`{"x":3,"y":4,"token":"abc"}`)}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if _, err := reqSock.RecvFrames(); err != nil {
+		t.Fatalf("recv: %v", err)
+	}
+	if gotY != 100 {
+		t.Fatalf("expected handler to observe enriched Y=100, got %d", gotY)
+	}
+}
+
+func TestAttachRouterServer_HandleMW_PairedSecurityFn_Verifies(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	fn := func(_ context.Context, r securedComputeReq) (securedComputeResp, error) {
+		return securedComputeResp{Sum: r.X + r.Y}, nil
+	}
+	if _, err := newSecuredComputeRoute().Use(zmqBearerAuthMw).
+		HandleMW(&zmqBearerAuthMw, acceptingSecurityFn).
+		WithHandler(fn).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	dealerSock, routerSock := newDealerRouterPair([]byte("client-1"))
+	if err := AttachRouterServer(server, map[string]FramedSocket{"/secured-compute": routerSock}); err != nil {
+		t.Fatalf("AttachRouterServer: %v", err)
+	}
+	client := reqreply.NewClient()
+	if err := AttachDealerClient(client, map[string]FramedSocket{"/secured-compute": dealerSock}); err != nil {
+		t.Fatalf("AttachDealerClient: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = server.Serve(ctx) }()
+
+	// Reject: missing token.
+	_, err := client.Call(context.Background(), newSecuredComputeRoute(), securedComputeReq{X: 1, Y: 2})
+	if err == nil {
+		t.Fatal("expected rejection for missing token")
+	}
+
+	// Accept: token present.
+	callCtx, callCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer callCancel()
+	respAny, err := client.Call(callCtx, newSecuredComputeRoute(), securedComputeReq{X: 1, Y: 2, Token: "abc"})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	resp, ok := respAny.(securedComputeResp)
+	if !ok || resp.Sum != 3 {
+		t.Fatalf("expected securedComputeResp{Sum:3}, got %#v", respAny)
+	}
+}
+
+func TestAttachServer_CheckCoverage_MissingSecurityMiddlewareError(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	fn := func(_ context.Context, r securedComputeReq) (securedComputeResp, error) {
+		return securedComputeResp{Sum: r.X + r.Y}, nil
+	}
+	// Declares the scheme via .Use() but attaches NO HandleMW implementation.
+	if _, err := newSecuredComputeRoute().Use(zmqBearerAuthMw).
+		WithHandler(fn).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	repSock, _ := newChanSocketPair()
+	if err := AttachServer(server, map[string]FramedSocket{"/secured-compute": repSock}); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	err := server.Serve(context.Background())
+	var missing reqreply.MissingSecurityMiddlewareError
+	if !errors.As(err, &missing) {
+		t.Fatalf("expected reqreply.MissingSecurityMiddlewareError, got %v (%T)", err, err)
+	}
+}
+
+func TestAttachRouterServer_CheckCoverage_MissingSecurityMiddlewareError(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	fn := func(_ context.Context, r securedComputeReq) (securedComputeResp, error) {
+		return securedComputeResp{Sum: r.X + r.Y}, nil
+	}
+	if _, err := newSecuredComputeRoute().Use(zmqBearerAuthMw).
+		WithHandler(fn).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	_, routerSock := newDealerRouterPair([]byte("client-1"))
+	if err := AttachRouterServer(server, map[string]FramedSocket{"/secured-compute": routerSock}); err != nil {
+		t.Fatalf("AttachRouterServer: %v", err)
+	}
+	err := server.Serve(context.Background())
+	var missing reqreply.MissingSecurityMiddlewareError
+	if !errors.As(err, &missing) {
+		t.Fatalf("expected reqreply.MissingSecurityMiddlewareError, got %v (%T)", err, err)
+	}
+}
+
+// acceptingCredentialFn is a PAIRED client-side credential Fn that always
+// writes a valid token.
+func acceptingCredentialFn(_ context.Context, req *securedComputeReq, _ []route.SecurityRequirement) error {
+	req.Token = "valid-token"
+	return nil
+}
+
+// rejectingCredentialFn is a PAIRED client-side credential Fn that always
+// fails BEFORE anything is sent.
+func rejectingCredentialFn(_ context.Context, _ *securedComputeReq, _ []route.SecurityRequirement) error {
+	return errors.New("credential unavailable")
+}
+
+func TestAttachClient_ClientMW_PairedCredentialFn_WritesReq(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	fn := func(_ context.Context, r securedComputeReq) (securedComputeResp, error) {
+		if r.Token != "valid-token" {
+			return securedComputeResp{}, errors.New("missing/invalid token")
+		}
+		return securedComputeResp{Sum: r.X + r.Y}, nil
+	}
+	if _, err := newSecuredComputeRoute().Use(zmqBearerAuthMw).
+		HandleMW(&zmqBearerAuthMw, acceptingSecurityFn).
+		WithHandler(fn).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	repSock, reqSock := newChanSocketPair()
+	if err := AttachServer(server, map[string]FramedSocket{"/secured-compute": repSock}); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	client := reqreply.NewClient()
+	if err := AttachClient(client, map[string]FramedSocket{"/secured-compute": reqSock}); err != nil {
+		t.Fatalf("AttachClient: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = server.Serve(ctx) }()
+
+	callRoute := newSecuredComputeRoute().Use(zmqBearerAuthMw).ClientMW(&zmqBearerAuthMw, acceptingCredentialFn)
+	callCtx, callCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer callCancel()
+	respAny, err := client.Call(callCtx, callRoute, securedComputeReq{X: 2, Y: 3})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	resp, ok := respAny.(securedComputeResp)
+	if !ok || resp.Sum != 5 {
+		t.Fatalf("expected securedComputeResp{Sum:5}, got %#v", respAny)
+	}
+}
+
+func TestAttachClient_ClientMW_PairedCredentialFn_RejectsBeforeSend(t *testing.T) {
+	client := reqreply.NewClient()
+	reqSock, _ := newChanSocketPair()
+	if err := AttachClient(client, map[string]FramedSocket{"/secured-compute": reqSock}); err != nil {
+		t.Fatalf("AttachClient: %v", err)
+	}
+	callRoute := newSecuredComputeRoute().Use(zmqBearerAuthMw).ClientMW(&zmqBearerAuthMw, rejectingCredentialFn)
+	_, err := client.Call(context.Background(), callRoute, securedComputeReq{X: 1, Y: 1})
+	var credErr reqreply.SecurityCredentialError
+	if !errors.As(err, &credErr) {
+		t.Fatalf("expected reqreply.SecurityCredentialError, got %v (%T)", err, err)
+	}
+}
+
+func TestAttachDealerClient_ClientMW_PairedCredentialFn_WritesReq(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	fn := func(_ context.Context, r securedComputeReq) (securedComputeResp, error) {
+		if r.Token != "valid-token" {
+			return securedComputeResp{}, errors.New("missing/invalid token")
+		}
+		return securedComputeResp{Sum: r.X + r.Y}, nil
+	}
+	if _, err := newSecuredComputeRoute().Use(zmqBearerAuthMw).
+		HandleMW(&zmqBearerAuthMw, acceptingSecurityFn).
+		WithHandler(fn).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	dealerSock, routerSock := newDealerRouterPair([]byte("client-1"))
+	if err := AttachRouterServer(server, map[string]FramedSocket{"/secured-compute": routerSock}); err != nil {
+		t.Fatalf("AttachRouterServer: %v", err)
+	}
+	client := reqreply.NewClient()
+	if err := AttachDealerClient(client, map[string]FramedSocket{"/secured-compute": dealerSock}); err != nil {
+		t.Fatalf("AttachDealerClient: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = server.Serve(ctx) }()
+
+	callRoute := newSecuredComputeRoute().Use(zmqBearerAuthMw).ClientMW(&zmqBearerAuthMw, acceptingCredentialFn)
+	callCtx, callCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer callCancel()
+	respAny, err := client.Call(callCtx, callRoute, securedComputeReq{X: 2, Y: 3})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	resp, ok := respAny.(securedComputeResp)
+	if !ok || resp.Sum != 5 {
+		t.Fatalf("expected securedComputeResp{Sum:5}, got %#v", respAny)
+	}
+}
+
+// generalServerDecorator is an UNPAIRED, general-purpose HandleMW Fn —
+// runs regardless of declared Security.
+func generalServerDecorator(called *bool) func(next func(context.Context, computeReq) (computeResp, error)) func(context.Context, computeReq) (computeResp, error) {
+	return func(next func(context.Context, computeReq) (computeResp, error)) func(context.Context, computeReq) (computeResp, error) {
+		return func(ctx context.Context, req computeReq) (computeResp, error) {
+			*called = true
+			return next(ctx, req)
+		}
+	}
+}
+
+func TestAttachServer_HandleMW_GeneralPurpose_AlwaysRuns(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	fn := func(_ context.Context, r computeReq) (computeResp, error) {
+		return computeResp{Sum: r.X + r.Y}, nil
+	}
+	var called bool
+	route := reqreply.NewRoute[computeReq, computeResp](
+		"/compute", computeReqCodec, computeRespCodec,
+		reqreply.RouteMeta{OperationID: "compute"},
+	).HandleMW(nil, generalServerDecorator(&called))
+	if _, err := route.WithHandler(fn).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	repSock, reqSock := newChanSocketPair()
+	if err := AttachServer(server, map[string]FramedSocket{"/compute": repSock}); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = server.Serve(ctx) }()
+
+	if err := reqSock.SendFrames([][]byte{[]byte(`{"x":1,"y":2}`)}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if _, err := reqSock.RecvFrames(); err != nil {
+		t.Fatalf("recv: %v", err)
+	}
+	if !called {
+		t.Fatal("expected general-purpose HandleMW to run")
+	}
+}
+
+func TestAttachClient_MultipleGeneralPurposeClientMW_ComposeOutermostIn(t *testing.T) {
+	server, _ := newComputeServerAndHandler(t)
+	repSock, reqSock := newChanSocketPair()
+	if err := AttachServer(server, map[string]FramedSocket{"/compute": repSock}); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	client := reqreply.NewClient()
+	if err := AttachClient(client, map[string]FramedSocket{"/compute": reqSock}); err != nil {
+		t.Fatalf("AttachClient: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = server.Serve(ctx) }()
+
+	var order []string
+	dec := func(name string) func(next func(context.Context, computeReq) (computeResp, error)) func(context.Context, computeReq) (computeResp, error) {
+		return func(next func(context.Context, computeReq) (computeResp, error)) func(context.Context, computeReq) (computeResp, error) {
+			return func(ctx context.Context, req computeReq) (computeResp, error) {
+				order = append(order, name+":before")
+				resp, err := next(ctx, req)
+				order = append(order, name+":after")
+				return resp, err
+			}
+		}
+	}
+	callRoute := reqreply.NewRoute[computeReq, computeResp](
+		"/compute", computeReqCodec, computeRespCodec,
+		reqreply.RouteMeta{OperationID: "compute"},
+	).ClientMW(nil, dec("outer")).ClientMW(nil, dec("inner"))
+
+	callCtx, callCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer callCancel()
+	if _, err := client.Call(callCtx, callRoute, computeReq{X: 1, Y: 2}); err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	want := []string{"outer:before", "inner:before", "inner:after", "outer:after"}
+	if len(order) != len(want) {
+		t.Fatalf("expected order %v, got %v", want, order)
+	}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("expected order %v, got %v", want, order)
+		}
+	}
+}
+
+func TestAttachClient_ClientMW_AppliesToCallAsyncToo(t *testing.T) {
+	server, _ := newComputeServerAndHandler(t)
+	repSock, reqSock := newChanSocketPair()
+	if err := AttachServer(server, map[string]FramedSocket{"/compute": repSock}); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	client := reqreply.NewClient()
+	if err := AttachClient(client, map[string]FramedSocket{"/compute": reqSock}); err != nil {
+		t.Fatalf("AttachClient: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = server.Serve(ctx) }()
+
+	var called bool
+	dec := func(next func(context.Context, computeReq) (computeResp, error)) func(context.Context, computeReq) (computeResp, error) {
+		return func(ctx context.Context, req computeReq) (computeResp, error) {
+			called = true
+			return next(ctx, req)
+		}
+	}
+	callRoute := reqreply.NewRoute[computeReq, computeResp](
+		"/compute", computeReqCodec, computeRespCodec,
+		reqreply.RouteMeta{OperationID: "compute"},
+	).ClientMW(nil, dec)
+
+	futureAny, err := client.CallAsync(context.Background(), callRoute, computeReq{X: 4, Y: 5})
+	if err != nil {
+		t.Fatalf("CallAsync: %v", err)
+	}
+	future, ok := futureAny.(*reqreply.Future[computeResp])
+	if !ok {
+		t.Fatalf("expected *reqreply.Future[computeResp], got %T", futureAny)
+	}
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer waitCancel()
+	if _, err := future.Wait(waitCtx); err != nil {
+		t.Fatalf("Future.Wait: %v", err)
+	}
+	if !called {
+		t.Fatal("expected general-purpose ClientMW decorator to run through CallAsync too")
+	}
+}
+
+func TestAttachServer_HandleMW_SecurityRejection_CallsSecurityObserver(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	fn := func(_ context.Context, r securedComputeReq) (securedComputeResp, error) {
+		return securedComputeResp{Sum: r.X + r.Y}, nil
+	}
+	if _, err := newSecuredComputeRoute().Use(zmqBearerAuthMw).
+		HandleMW(&zmqBearerAuthMw, acceptingSecurityFn).
+		WithHandler(fn).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	repSock, reqSock := newChanSocketPair()
+	obs := &testObserver{}
+	if err := AttachServer(server, map[string]FramedSocket{"/secured-compute": repSock}, ServeOptions{Observer: obs}); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = server.Serve(ctx) }()
+
+	if err := reqSock.SendFrames([][]byte{[]byte(`{"x":1,"y":2}`)}); err != nil { // missing token → rejected
+		t.Fatalf("send: %v", err)
+	}
+	if _, err := reqSock.RecvFrames(); err != nil {
+		t.Fatalf("recv: %v", err)
+	}
+	if len(obs.securityRejections) != 1 || obs.securityRejections[0] != "zmqBearer" {
+		t.Fatalf("expected 1 RecordSecurityRejection call for scheme zmqBearer, got %v", obs.securityRejections)
+	}
+}
+
+// testCtxKeyType/testCtxKey is a private context key for
+// TestAttachClient_ClientMW_ContextMutationPropagatesIntoInnerCall below —
+// proves a general-purpose ClientMW decorator's context mutation reaches
+// the reflect.MakeFunc-built innerCall closure's OWN body (specifically
+// the paired credential Fn), not just the decorator chain itself. Mirrors
+// adapters/mqtt5's identical regression test — a prior revision's
+// innerCall ignored args[0] (the ctx actually passed by the decorator
+// calling next) and used the STALE, pre-decorator ctx captured from the
+// enclosing call — silently discarding any such mutation.
+type testCtxKeyType struct{}
+
+var testCtxKey = testCtxKeyType{}
+
+func TestAttachClient_ClientMW_ContextMutationPropagatesIntoInnerCall(t *testing.T) {
+	client := reqreply.NewClient()
+	reqSock, _ := newChanSocketPair()
+	if err := AttachClient(client, map[string]FramedSocket{"/ctx-propagation": reqSock}); err != nil {
+		t.Fatalf("AttachClient: %v", err)
+	}
+
+	var observedValue any
+	credFn := func(ctx context.Context, _ *securedComputeReq, _ []route.SecurityRequirement) error {
+		observedValue = ctx.Value(testCtxKey)
+		return nil
+	}
+	ctxInjectingMw := func(next func(context.Context, securedComputeReq) (securedComputeResp, error)) func(context.Context, securedComputeReq) (securedComputeResp, error) {
+		return func(ctx context.Context, req securedComputeReq) (securedComputeResp, error) {
+			ctx = context.WithValue(ctx, testCtxKey, "injected")
+			return next(ctx, req)
+		}
+	}
+
+	baseRoute := reqreply.NewRoute[securedComputeReq, securedComputeResp]("/ctx-propagation", securedComputeReqCodec, securedComputeRespCodec)
+	clientRoute := baseRoute.Use(zmqBearerAuthMw).
+		ClientMW(&zmqBearerAuthMw, credFn).
+		ClientMW(nil, ctxInjectingMw)
+
+	// No server wiring needed — the credential Fn runs and records
+	// observedValue BEFORE send is ever attempted; a timeout waiting for
+	// a reply (since no server answers) is expected and ignored, only
+	// observedValue is asserted.
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_, _ = client.Call(ctx, clientRoute, securedComputeReq{X: 1, Y: 2})
+
+	if observedValue != "injected" {
+		t.Fatalf("expected the ClientMW decorator's context mutation to propagate into the paired credential Fn, got %v", observedValue)
 	}
 }

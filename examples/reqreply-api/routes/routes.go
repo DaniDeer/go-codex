@@ -41,7 +41,7 @@ var ComputeRespCodec = codex.Struct[ComputeResp](
 )
 
 // ComputeRoute is the baseline, unsecured request-reply contract used by
-// Demo 1 (basic call+serve), Demo 2 (dual-mode Call), and Demo 6 (spec
+// Demo 1 (basic call+serve), Demo 2 (dual-mode Call), and Demo 7 (spec
 // printing). Registered on mqtt5server's Server, which ALSO declares
 // Server.AddGlobalSecurity("bearerAuth") for GlobalOnlyComputeRoute's own
 // demo — ComputeRoute must explicitly OPT OUT via an EMPTY (non-nil)
@@ -133,7 +133,7 @@ var HeaderParamComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 )
 
 // RouterComputeRoute is dispatched over a ZMQ ROUTER/DEALER socket pair in
-// Demo 7. MissingComputeRoute is registered on the SAME server but
+// Demo 8. MissingComputeRoute is registered on the SAME server but
 // DELIBERATELY has no corresponding socket wired in
 // zeromqrouterserver.Build, to surface the typed MissingSocketError.
 var RouterComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
@@ -143,10 +143,61 @@ var RouterComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 )
 
 // MissingSocketRoute is registered on the SAME router server as
-// RouterComputeRoute but Demo 7 deliberately never wires a matching socket
+// RouterComputeRoute but Demo 8 deliberately never wires a matching socket
 // for it — demonstrating AttachRouterServer's upfront MissingSocketError.
 var MissingSocketRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 	"compute/router-add-missing",
 	ComputeReqCodec, ComputeRespCodec,
 	reqreply.RouteMeta{OperationID: "routerComputeAddMissing", Summary: "Deliberately has no matching socket — demonstrates MissingSocketError."},
+)
+
+// OAuthComputeReq/OAuthComputeResp carry an in-payload Token field —
+// zeromq's reqreply security Fn-shape (docs/roadmap/zeromq-security.md,
+// SHIPPED) reads/writes this field directly, since zeromq has no
+// raw-message side channel equivalent to MQTT5's User Properties (unlike
+// ComputeReq/ComputeResp, used everywhere else in this example, which
+// carry no credential field at all).
+type OAuthComputeReq struct {
+	X, Y  int
+	Token string
+}
+
+type OAuthComputeResp struct {
+	Sum int
+}
+
+var OAuthComputeReqCodec = codex.Struct[OAuthComputeReq](
+	codex.RequiredField("x", codex.Int(),
+		func(r OAuthComputeReq) int { return r.X },
+		func(r *OAuthComputeReq, v int) { r.X = v },
+	),
+	codex.RequiredField("y", codex.Int(),
+		func(r OAuthComputeReq) int { return r.Y },
+		func(r *OAuthComputeReq, v int) { r.Y = v },
+	),
+	codex.OptionalField("token", codex.String(),
+		func(r OAuthComputeReq) string { return r.Token },
+		func(r *OAuthComputeReq, v string) { r.Token = v },
+	),
+)
+
+var OAuthComputeRespCodec = codex.Struct[OAuthComputeResp](
+	codex.RequiredField("sum", codex.Int(),
+		func(r OAuthComputeResp) int { return r.Sum },
+		func(r *OAuthComputeResp, v int) { r.Sum = v },
+	),
+)
+
+// OAuthComputeRoute demonstrates the SAME OAuthMw declaration (see
+// middleware.go) attached to a zeromq reqreply route, via .Use()+
+// HandleMW()/ClientMW() — Demo 9 (demo_cross_api_oauth2_sharing.go) also
+// attaches this EXACT Go value to a locally-declared REST route, proving
+// one declaration is shareable across BOTH APIs. Declared PRISTINE here
+// (no Security baked in, no GlobalSecurity to opt out of on the zeromq
+// server) — mirrors HeaderParamComputeRoute/SecuredComputeRoute's own
+// "pristine base, secured at the attachment site" separation.
+var OAuthComputeRoute = reqreply.NewRoute[OAuthComputeReq, OAuthComputeResp](
+	"compute/oauth-add",
+	OAuthComputeReqCodec, OAuthComputeRespCodec,
+	reqreply.RouteMeta{OperationID: "oauthComputeAdd", Summary: "Add two integers — requires an OAuth2 compute:write scope."},
 )

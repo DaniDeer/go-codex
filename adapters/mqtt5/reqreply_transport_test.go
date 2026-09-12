@@ -873,3 +873,54 @@ func TestAttachClient_ClientMW_AppliesToCallAsyncToo(t *testing.T) {
 		t.Fatal("want general-purpose ClientMW to run for a CallAsync-dispatched call too")
 	}
 }
+
+// testCtxKeyType/testCtxKey is a private context key for
+// TestAttachClient_ClientMW_ContextMutationPropagatesIntoInnerCall below —
+// proves a general-purpose ClientMW decorator's context mutation reaches
+// the reflect.MakeFunc-built innerCall closure's OWN body (specifically
+// the paired credential Fn), not just the decorator chain itself. A
+// prior revision's innerCall ignored args[0] (the ctx actually passed by
+// the decorator calling next) and used the STALE, pre-decorator ctx
+// captured from the enclosing call — silently discarding any such
+// mutation. Fixed by reading ctx from args[0] inside the closure.
+type testCtxKeyType struct{}
+
+var testCtxKey = testCtxKeyType{}
+
+func TestAttachClient_ClientMW_ContextMutationPropagatesIntoInnerCall(t *testing.T) {
+	client := reqreply.NewClient()
+	clientClient := &mockClient{}
+	clientRouter := newMockRouter()
+	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+		t.Fatalf("AttachClient: %v", err)
+	}
+
+	var observedValue any
+	credFn := func(ctx context.Context, _ []route.SecurityRequirement) ([]UserProperty, error) {
+		observedValue = ctx.Value(testCtxKey)
+		return nil, nil
+	}
+	ctxInjectingMw := func(next func(context.Context, computeReq) (computeResp, error)) func(context.Context, computeReq) (computeResp, error) {
+		return func(ctx context.Context, req computeReq) (computeResp, error) {
+			ctx = context.WithValue(ctx, testCtxKey, "injected")
+			return next(ctx, req)
+		}
+	}
+
+	baseRoute := reqreply.NewRoute[computeReq, computeResp]("compute/ctx-propagation", computeReqCodec, computeRespCodec)
+	clientRoute := baseRoute.Use(bearerAuthMw).
+		ClientMW(&bearerAuthMw, credFn).
+		ClientMW(nil, ctxInjectingMw)
+
+	// No server/broker wiring needed — the credential Fn runs and
+	// records observedValue BEFORE publish is ever attempted; a timeout
+	// waiting for a reply (since no server answers) is expected and
+	// ignored, only observedValue is asserted.
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_, _ = client.Call(ctx, clientRoute, computeReq{X: 1, Y: 2})
+
+	if observedValue != "injected" {
+		t.Fatalf("expected the ClientMW decorator's context mutation to propagate into the paired credential Fn, got %v", observedValue)
+	}
+}

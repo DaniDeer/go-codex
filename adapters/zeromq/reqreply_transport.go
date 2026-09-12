@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/DaniDeer/go-codex/api/reqreply"
+	"github.com/DaniDeer/go-codex/middleware"
+	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 )
 
@@ -129,6 +131,185 @@ func sendRouterHandlerErrorReplyReflect(sock FramedSocket, identity []byte, erro
 // topic/socket coverage at Attach time, before [reqreply.Server.Serve]
 // ever runs, rather than discovering a missing socket only when a
 // request for it actually arrives.
+// ── Security Fn-shape dispatch (docs/roadmap/zeromq-security.md) ─────────
+//
+// Adds the `.Use()`/`HandleMW`/`ClientMW` declare/implement split to
+// zeromq reqreply — mirrors `adapters/mqtt5/reqreply_transport.go`'s
+// Phase 1 mechanism structurally, but with a genuinely different paired
+// Fn shape: zeromq has no raw-message-equivalent type (unlike mqtt5's
+// *pahomqtt5.Publish) to operate on instead, so the paired Fn reads/
+// writes the DECODED *Req directly — mirroring zeromq's OWN pub/sub
+// SecurityFunc/CredentialFunc shape exactly (plain error return, no
+// scope-grant map, unlike mqtt5's `(map[string][]string, error)`).
+// Because Req/Resp are only known at Serve/Attach RUNTIME (erased,
+// reflection-only dispatch), converting a reflect.Value holding a
+// decoded Req BY VALUE into an addressable *Req the Fn can read/write
+// requires a `reflect.New(reqType)` + `.Elem().Set(reqVal)` round trip —
+// a technique this package has not needed before Phase 1's mqtt5
+// equivalent never required it either, since mqtt5's paired Fn takes the
+// ALREADY-concrete raw message type instead.
+
+// effectiveSecurity returns the route's own declared Security
+// requirements, falling back to GlobalSecurity when nil — the same
+// precedence every other adapter uses. Unlike mqtt5, zeromq has no
+// built-in credential-FORMAT check layer (no SecuritySchemes/Codec
+// consultation) — the paired Fn is the ONLY enforcement mechanism,
+// mirroring zeromq's OWN pub/sub SecurityFunc/CredentialFunc precedent
+// (custom Fn only, no built-in check to run first).
+func effectiveSecurity(elem reflect.Value) []route.SecurityRequirement {
+	reqs, _ := elem.FieldByName("Security").Interface().([]route.SecurityRequirement)
+	if reqs == nil {
+		reqs, _ = elem.FieldByName("GlobalSecurity").Interface().([]route.SecurityRequirement)
+	}
+	return reqs
+}
+
+// buildPairedSecurityFnType returns the expected paired security/
+// credential Fn shape for a route whose decoded request type is reqType:
+// func(context.Context, *Req, []route.SecurityRequirement) error — used
+// for BOTH the server-side security Fn (HandleMW) and the client-side
+// credential-supplying Fn (ClientMW); the shapes are IDENTICAL (mirrors
+// zeromq pub/sub's SecurityFunc/CredentialFunc, which also share one
+// shape both directions) — only the CALL SITE semantics differ (server:
+// read, optionally enrich, before dispatch; client: write a credential,
+// before encode).
+func buildPairedSecurityFnType(reqType reflect.Type) reflect.Type {
+	return reflect.FuncOf(
+		[]reflect.Type{
+			reflect.TypeOf((*context.Context)(nil)).Elem(),
+			reflect.PointerTo(reqType),
+			reflect.TypeOf([]route.SecurityRequirement(nil)),
+		},
+		[]reflect.Type{reflect.TypeOf((*error)(nil)).Elem()},
+		false,
+	)
+}
+
+// buildGeneralDecoratorFnType returns the expected general-purpose
+// (UNPAIRED) decorator Fn shape for a route with request type reqType
+// and response type respType: func(next func(context.Context, Req)
+// (Resp, error)) func(context.Context, Req) (Resp, error) — wraps the
+// FULL decoded request/response handler directly (zeromq has no raw
+// pre-decode form to wrap instead, unlike mqtt5's server-side raw
+// *pahomqtt5.Publish wrap) — the SAME shape applies on BOTH server and
+// client dispatch for this reason (mirrors mqtt5's CLIENT-side decorator
+// shape, which already has no raw form to wrap either).
+func buildGeneralDecoratorFnType(reqType, respType reflect.Type) reflect.Type {
+	inner := reflect.FuncOf(
+		[]reflect.Type{reflect.TypeOf((*context.Context)(nil)).Elem(), reqType},
+		[]reflect.Type{respType, reflect.TypeOf((*error)(nil)).Elem()},
+		false,
+	)
+	return reflect.FuncOf([]reflect.Type{inner}, []reflect.Type{inner}, false)
+}
+
+// validateServerImplementationShapes checks every attached
+// [middleware.ServerImplementation]'s Fn against the two shapes this
+// package recognizes for THIS route's concrete Req/Resp types, EAGERLY
+// at Serve construction time (once per route, not per message) —
+// mirrors [adapters/mqtt5]'s identical eager-validation discipline.
+func validateServerImplementationShapes(routeLabel string, impls []middleware.ServerImplementation, securityFnType, generalDecoratorFnType reflect.Type) error {
+	for _, impl := range impls {
+		if impl.Fn == nil {
+			continue
+		}
+		fnType := reflect.TypeOf(impl.Fn)
+		if fnType == securityFnType || fnType == generalDecoratorFnType {
+			continue
+		}
+		return middleware.MiddlewareShapeError{
+			Name:     impl.Name,
+			Expected: "func(context.Context, *Req, []route.SecurityRequirement) error or func(func(context.Context, Req) (Resp, error)) func(context.Context, Req) (Resp, error)",
+			Got:      fmt.Sprintf("%T", impl.Fn),
+		}
+	}
+	return nil
+}
+
+// validateClientImplementationShapes is
+// [validateServerImplementationShapes]'s client-side mirror, for
+// [middleware.ClientImplementation] values.
+func validateClientImplementationShapes(impls []middleware.ClientImplementation, credentialFnType, generalDecoratorFnType reflect.Type) error {
+	for _, impl := range impls {
+		if impl.Fn == nil {
+			continue
+		}
+		fnType := reflect.TypeOf(impl.Fn)
+		if fnType == credentialFnType || fnType == generalDecoratorFnType {
+			continue
+		}
+		return middleware.MiddlewareShapeError{
+			Name:     impl.Name,
+			Expected: "func(context.Context, *Req, []route.SecurityRequirement) error or func(func(context.Context, Req) (Resp, error)) func(context.Context, Req) (Resp, error)",
+			Got:      fmt.Sprintf("%T", impl.Fn),
+		}
+	}
+	return nil
+}
+
+// runPairedServerSecurity runs every attached PAIRED (Satisfies
+// non-empty) server-side security implementation in attachment order
+// against reqPtr (a fresh, addressable *Req copy of the just-decoded
+// request), returning the FIRST error encountered — mirrors zeromq
+// pub/sub's own SecurityFunc semantics (plain error, no scope-grant,
+// unlike mqtt5's reqreply Fn). reqPtr may be MUTATED by any
+// implementation (read/write access to *Req, matching pub/sub's
+// identical contract) — the caller re-reads reqPtr.Elem() afterward to
+// pick up any enrichment.
+func runPairedServerSecurity(ctx context.Context, reqPtr reflect.Value, impls []middleware.ServerImplementation, secReqs []route.SecurityRequirement) error {
+	ctxVal := reflect.ValueOf(ctx)
+	secReqsVal := reflect.ValueOf(secReqs)
+	for _, impl := range impls {
+		if len(impl.Satisfies) == 0 {
+			continue // unpaired (general-purpose) — handled separately
+		}
+		fnVal := reflect.ValueOf(impl.Fn)
+		results := fnVal.Call([]reflect.Value{ctxVal, reqPtr, secReqsVal})
+		if errI, _ := results[0].Interface().(error); errI != nil {
+			return errI
+		}
+	}
+	return nil
+}
+
+// runPairedClientCredential is [runPairedServerSecurity]'s client-side
+// mirror, for [middleware.ClientImplementation] values — writes a
+// credential field INTO reqPtr rather than merely reading it.
+func runPairedClientCredential(ctx context.Context, reqPtr reflect.Value, impls []middleware.ClientImplementation, secReqs []route.SecurityRequirement) error {
+	ctxVal := reflect.ValueOf(ctx)
+	secReqsVal := reflect.ValueOf(secReqs)
+	for _, impl := range impls {
+		if len(impl.Satisfies) == 0 {
+			continue
+		}
+		fnVal := reflect.ValueOf(impl.Fn)
+		results := fnVal.Call([]reflect.Value{ctxVal, reqPtr, secReqsVal})
+		if errI, _ := results[0].Interface().(error); errI != nil {
+			return errI
+		}
+	}
+	return nil
+}
+
+// applyGeneralServerMiddleware wraps fnVal (the concrete
+// func(context.Context, Req) (Resp, error) handler passed to Serve) with
+// every general-purpose (UNPAIRED, Satisfies-empty) implementation found
+// in impls, OUTERMOST-in, in attachment order — mirrors
+// [adapters/mqtt5]'s applyGeneralServerMiddleware, adapted to zeromq's
+// simpler dispatch: the decorator IS the same shape as fnVal itself, so
+// no reflect.MakeFunc bridging is needed server-side (unlike the client
+// side, which has no pre-existing single Fn value to wrap this way).
+func applyGeneralServerMiddleware(fnVal reflect.Value, impls []middleware.ServerImplementation) reflect.Value {
+	for i := len(impls) - 1; i >= 0; i-- {
+		if len(impls[i].Satisfies) > 0 {
+			continue
+		}
+		decoratorVal := reflect.ValueOf(impls[i].Fn)
+		fnVal = decoratorVal.Call([]reflect.Value{fnVal})[0]
+	}
+	return fnVal
+}
+
 type MissingSocketError struct {
 	// Topic is the route topic with no corresponding socket entry.
 	Topic string
@@ -256,6 +437,29 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 	// closes Phase 0 work item 2 (server-side).
 	errorResponseForMethod := rv.MethodByName("ErrorResponseFor")
 
+	// Security Fn-shape dispatch (docs/roadmap/zeromq-security.md):
+	// impls are the [reqreply.Route.HandleMW]-attached implementations —
+	// validated for shape EAGERLY (once, at Serve construction, not per
+	// message) and coverage-checked against the route's declared
+	// security requirements, mirroring adapters/mqtt5's identical
+	// build-time checks.
+	respType := encodeField.Type().In(0)
+	securityFnType := buildPairedSecurityFnType(reqType)
+	generalDecoratorFnType := buildGeneralDecoratorFnType(reqType, respType)
+	impls, _ := elem.FieldByName("Implementations").Interface().([]middleware.ServerImplementation)
+	if err := validateServerImplementationShapes(path, impls, securityFnType, generalDecoratorFnType); err != nil {
+		return err
+	}
+	secReqs := effectiveSecurity(elem)
+	if err := reqreply.CheckCoverage(path, secReqs, impls); err != nil {
+		return err
+	}
+	// dispatchFn is fnVal wrapped by every general-purpose (UNPAIRED)
+	// HandleMW implementation, OUTERMOST-in — the paired security Fns
+	// run SEPARATELY, between decode and this call, since they need
+	// pointer access to *Req (see the loop body below).
+	dispatchFn := applyGeneralServerMiddleware(fnVal, impls)
+
 	if err := sock.SetRecvTimeout(recvPollInterval); err != nil {
 		return SocketError{Op: "set_recv_timeout", Err: err}
 	}
@@ -316,7 +520,31 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 		}
 		reqVal := decodeResults[0]
 
-		fnResults := fnVal.Call([]reflect.Value{reflect.ValueOf(spanCtx), reqVal})
+		// Paired security Fns (docs/roadmap/zeromq-security.md) run
+		// BETWEEN decode and dispatch, reading/optionally enriching the
+		// decoded value via a fresh, addressable *Req copy — reqVal is
+		// re-read afterward to pick up any mutation.
+		if len(impls) > 0 {
+			reqPtr := reflect.New(reqType)
+			reqPtr.Elem().Set(reqVal)
+			if secErr := runPairedServerSecurity(spanCtx, reqPtr, impls, secReqs); secErr != nil {
+				wrapped := reqreply.SecurityError{Err: secErr}
+				if secObs, ok := obs.(stats.SecurityObserver); ok {
+					secObs.RecordSecurityRejection(path, firstSchemeName(secReqs))
+				}
+				serveErr = wrapped
+				obs.RecordRequest("ZMQ-REP", path, 0, time.Since(start))
+				sendErrorReply(sock, wrapped)
+				endSpan()
+				if t.opts.OnError != nil {
+					t.opts.OnError(ServeError{Kind: KindSecurity, Err: wrapped})
+				}
+				continue
+			}
+			reqVal = reqPtr.Elem()
+		}
+
+		fnResults := dispatchFn.Call([]reflect.Value{reflect.ValueOf(spanCtx), reqVal})
 		if errI, _ := fnResults[1].Interface().(error); errI != nil {
 			serveErr = errI
 			obs.RecordRequest("ZMQ-REP", path, 0, time.Since(start))
@@ -515,68 +743,150 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 		return nil, CallError{Err: fmtErr}
 	}
 
-	// EncodeRequestWithFormats honors the per-call/t.opts override
-	// (falling back to route-declared RequestFormats, then plain
-	// EncodeRequest) — closes Phase 0 work item 1 (client-side).
-	encodeResults := rv.MethodByName("EncodeRequestWithFormats").CallSlice([]reflect.Value{reqVal, requestFormatsOverride})
-	if errI, _ := encodeResults[1].Interface().(error); errI != nil {
-		stats.ReportErrors(obs, "body", errI)
+	// Security Fn-shape dispatch (docs/roadmap/zeromq-security.md).
+	// clientImpls are the [reqreply.Route.ClientMW]-attached
+	// implementations — validated for shape EAGERLY, mirroring
+	// adapters/mqtt5's identical build-time check. respType/innerType
+	// let this reflection-only dispatcher recognize the general-purpose
+	// decorator shape without knowing Req/Resp at compile time.
+	respType := elem.FieldByName("DecodeResponse").Type().Out(0)
+	clientImpls, _ := elem.FieldByName("ClientImplementations").Interface().([]middleware.ClientImplementation)
+	credentialFnType := buildPairedSecurityFnType(reqType)
+	generalDecoratorFnType := buildGeneralDecoratorFnType(reqType, respType)
+	if err := validateClientImplementationShapes(clientImpls, credentialFnType, generalDecoratorFnType); err != nil {
 		obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
-		return nil, CallError{Err: errI}
+		return nil, err
 	}
-	payload, _ := encodeResults[0].Interface().([]byte)
+	secReqs := effectiveSecurity(elem)
+	errType := reflect.TypeOf((*error)(nil)).Elem()
 
-	if err := sock.SendFrames([][]byte{payload}); err != nil {
-		obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
-		return nil, CallError{Err: fmt.Errorf("send: %w", err)}
-	}
+	// innerCall is the "credential → encode → send → recv → decode"
+	// sequence, wrapped via [reflect.MakeFunc] into a concretely-typed
+	// func(context.Context, Req) (Resp, error) value so every attached
+	// general-purpose ClientMW decorator (itself a real, concretely-typed
+	// Go closure) can wrap it — mirrors adapters/mqtt5's identical
+	// reflect.MakeFunc technique, adapted to zeromq's simpler (no
+	// User-Property side channel) in-payload credential model.
+	innerType := reflect.FuncOf(
+		[]reflect.Type{reflect.TypeOf((*context.Context)(nil)).Elem(), reqType},
+		[]reflect.Type{respType, errType},
+		false,
+	)
+	innerCall := reflect.MakeFunc(innerType, func(args []reflect.Value) []reflect.Value {
+		// ctx is read from args[0], NOT the outer captured ctx variable
+		// — a general-purpose ClientMW decorator wrapping this closure
+		// may call next(modifiedCtx, req) with a context it mutated
+		// (added a value, deadline, span, etc.); shadowing the outer
+		// name here means every subsequent use of ctx in this closure
+		// sees that decorator's context, not the original one captured
+		// before any decorator ran. Mirrors the identical fix applied
+		// to adapters/mqtt5's own innerCall (found via a later review
+		// pass — the bug was faithfully mirrored here from mqtt5's
+		// Phase 1, now fixed in both places).
+		ctx := args[0].Interface().(context.Context)
+		innerReqVal := args[1]
+		zeroResp := reflect.Zero(respType)
 
-	if err := sock.SetRecvTimeout(recvPollInterval); err != nil {
-		return nil, CallError{Err: fmt.Errorf("set recv timeout: %w", err)}
-	}
-
-	var frames [][]byte
-	for {
-		select {
-		case <-ctx.Done():
-			obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
-			return nil, CallError{Err: ctx.Err()}
-		default:
+		// Paired credential Fns write a credential field INTO a fresh
+		// *Req copy, BEFORE encode — mirrors [serverTransport.Serve]'s
+		// identical read/write mechanic, mirrored for the write
+		// direction.
+		if len(clientImpls) > 0 {
+			reqPtr := reflect.New(reqType)
+			reqPtr.Elem().Set(innerReqVal)
+			if credErr := runPairedClientCredential(ctx, reqPtr, clientImpls, secReqs); credErr != nil {
+				wrapped := reqreply.SecurityCredentialError{Scheme: firstSchemeName(secReqs), Err: credErr}
+				if secObs, ok := obs.(stats.SecurityObserver); ok {
+					secObs.RecordSecurityRejection(path, firstSchemeName(secReqs))
+				}
+				obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
+				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: wrapped}).Convert(errType)}
+			}
+			innerReqVal = reqPtr.Elem()
 		}
-		var recvErr error
-		frames, recvErr = sock.RecvFrames()
-		if errors.Is(recvErr, ErrTimeout) {
+
+		// EncodeRequestWithFormats honors the per-call/t.opts override
+		// (falling back to route-declared RequestFormats, then plain
+		// EncodeRequest) — closes Phase 0 work item 1 (client-side).
+		encodeResults := rv.MethodByName("EncodeRequestWithFormats").CallSlice([]reflect.Value{innerReqVal, requestFormatsOverride})
+		if errI, _ := encodeResults[1].Interface().(error); errI != nil {
+			stats.ReportErrors(obs, "body", errI)
+			obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
+			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: errI}).Convert(errType)}
+		}
+		payload, _ := encodeResults[0].Interface().([]byte)
+
+		if sendErr := sock.SendFrames([][]byte{payload}); sendErr != nil {
+			obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
+			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: fmt.Errorf("send: %w", sendErr)}).Convert(errType)}
+		}
+
+		if err := sock.SetRecvTimeout(recvPollInterval); err != nil {
+			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: fmt.Errorf("set recv timeout: %w", err)}).Convert(errType)}
+		}
+
+		var frames [][]byte
+		for {
+			select {
+			case <-ctx.Done():
+				obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
+				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: ctx.Err()}).Convert(errType)}
+			default:
+			}
+			var recvErr error
+			frames, recvErr = sock.RecvFrames()
+			if errors.Is(recvErr, ErrTimeout) {
+				continue
+			}
+			if recvErr != nil {
+				obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
+				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: fmt.Errorf("recv: %w", recvErr)}).Convert(errType)}
+			}
+			break
+		}
+
+		if len(frames) < 2 {
+			obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
+			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: fmt.Errorf("malformed reply: expected [status, payload], got %d frame(s)", len(frames))}).Convert(errType)}
+		}
+
+		if string(frames[0]) == "error" {
+			obs.RecordRequest("ZMQ-REQ", path, 500, time.Since(start))
+			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: fmt.Errorf("server error: %s", frames[1])}).Convert(errType)}
+		}
+
+		// DecodeResponseWithFormats honors the per-call/t.opts override
+		// (falling back to route-declared Formats, then plain
+		// DecodeResponse) — closes the response-direction half of Phase
+		// 0 work item 1 (client-side).
+		decodeResults := rv.MethodByName("DecodeResponseWithFormats").CallSlice([]reflect.Value{reflect.ValueOf(frames[1]), responseFormatsOverride})
+		if errI, _ := decodeResults[1].Interface().(error); errI != nil {
+			stats.ReportErrors(obs, "body", errI)
+			obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
+			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: fmt.Errorf("decode response: %w", errI)}).Convert(errType)}
+		}
+		obs.RecordRequest("ZMQ-REQ", path, 200, time.Since(start))
+		return []reflect.Value{decodeResults[0], reflect.Zero(errType)}
+	})
+
+	// applyGeneralClientMiddleware wraps innerCall with every
+	// general-purpose ClientMW implementation, OUTERMOST-in — mirrors
+	// adapters/mqtt5's identical composition, reflection-based since
+	// Req/Resp are erased at this dispatcher's call site.
+	wrappedCall := innerCall
+	for i := len(clientImpls) - 1; i >= 0; i-- {
+		if len(clientImpls[i].Satisfies) > 0 {
 			continue
 		}
-		if recvErr != nil {
-			obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
-			return nil, CallError{Err: fmt.Errorf("recv: %w", recvErr)}
-		}
-		break
+		decoratorVal := reflect.ValueOf(clientImpls[i].Fn)
+		wrappedCall = decoratorVal.Call([]reflect.Value{wrappedCall})[0]
 	}
 
-	if len(frames) < 2 {
-		obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
-		return nil, CallError{Err: fmt.Errorf("malformed reply: expected [status, payload], got %d frame(s)", len(frames))}
+	finalResults := wrappedCall.Call([]reflect.Value{reflect.ValueOf(ctx), reqVal})
+	if errI, _ := finalResults[1].Interface().(error); errI != nil {
+		return nil, errI
 	}
-
-	if string(frames[0]) == "error" {
-		obs.RecordRequest("ZMQ-REQ", path, 500, time.Since(start))
-		return nil, CallError{Err: fmt.Errorf("server error: %s", frames[1])}
-	}
-
-	// DecodeResponseWithFormats honors the per-call/t.opts override
-	// (falling back to route-declared Formats, then plain
-	// DecodeResponse) — closes the response-direction half of Phase 0
-	// work item 1 (client-side).
-	decodeResults := rv.MethodByName("DecodeResponseWithFormats").CallSlice([]reflect.Value{reflect.ValueOf(frames[1]), responseFormatsOverride})
-	if errI, _ := decodeResults[1].Interface().(error); errI != nil {
-		stats.ReportErrors(obs, "body", errI)
-		obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
-		return nil, CallError{Err: fmt.Errorf("decode response: %w", errI)}
-	}
-	obs.RecordRequest("ZMQ-REQ", path, 200, time.Since(start))
-	return decodeResults[0].Interface(), nil
+	return finalResults[0].Interface(), nil
 }
 
 // CallAsync implements [reqreply.ClientTransport]. Non-blocking
@@ -688,6 +998,23 @@ func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny a
 	encodeWithFormatsMethod := rv.MethodByName("EncodeWithFormats")
 	errorResponseForMethod := rv.MethodByName("ErrorResponseFor")
 
+	// Security Fn-shape dispatch (docs/roadmap/zeromq-security.md) — same
+	// mechanism as [serverTransport.Serve], duplicated for the ROUTER
+	// variant (mirrors how Phase 0's capability-parity work was ALSO
+	// duplicated, not shared, across these same 4 transports).
+	respType := encodeField.Type().In(0)
+	securityFnType := buildPairedSecurityFnType(reqType)
+	generalDecoratorFnType := buildGeneralDecoratorFnType(reqType, respType)
+	impls, _ := elem.FieldByName("Implementations").Interface().([]middleware.ServerImplementation)
+	if err := validateServerImplementationShapes(path, impls, securityFnType, generalDecoratorFnType); err != nil {
+		return err
+	}
+	secReqs := effectiveSecurity(elem)
+	if err := reqreply.CheckCoverage(path, secReqs, impls); err != nil {
+		return err
+	}
+	dispatchFn := applyGeneralServerMiddleware(fnVal, impls)
+
 	if err := sock.SetRecvTimeout(recvPollInterval); err != nil {
 		return SocketError{Op: "set_recv_timeout", Err: err}
 	}
@@ -751,7 +1078,28 @@ func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny a
 			}
 			reqVal := decodeResults[0]
 
-			fnResults := fnVal.Call([]reflect.Value{reflect.ValueOf(spanCtx), reqVal})
+			// Paired security Fns run BETWEEN decode and dispatch —
+			// mirrors [serverTransport.Serve]'s identical mechanism.
+			if len(impls) > 0 {
+				reqPtr := reflect.New(reqType)
+				reqPtr.Elem().Set(reqVal)
+				if secErr := runPairedServerSecurity(spanCtx, reqPtr, impls, secReqs); secErr != nil {
+					wrapped := reqreply.SecurityError{Err: secErr}
+					if secObs, ok := obs.(stats.SecurityObserver); ok {
+						secObs.RecordSecurityRejection(path, firstSchemeName(secReqs))
+					}
+					serveErr = wrapped
+					obs.RecordRequest("ZMQ-ROUTER", path, 0, time.Since(start))
+					sendRouterErrorReply(sock, id, wrapped)
+					if t.opts.OnError != nil {
+						t.opts.OnError(ServeError{Kind: KindSecurity, Err: wrapped})
+					}
+					return
+				}
+				reqVal = reqPtr.Elem()
+			}
+
+			fnResults := dispatchFn.Call([]reflect.Value{reflect.ValueOf(spanCtx), reqVal})
 			if errI, _ := fnResults[1].Interface().(error); errI != nil {
 				serveErr = errI
 				obs.RecordRequest("ZMQ-ROUTER", path, 0, time.Since(start))
@@ -914,62 +1262,120 @@ func (t *dealerClientTransport) call(ctx context.Context, routeAny any, reqAny a
 		return nil, CallError{Err: fmtErr}
 	}
 
-	encodeResults := rv.MethodByName("EncodeRequestWithFormats").CallSlice([]reflect.Value{reqVal, requestFormatsOverride})
-	if errI, _ := encodeResults[1].Interface().(error); errI != nil {
-		stats.ReportErrors(obs, "body", errI)
+	// Security Fn-shape dispatch (docs/roadmap/zeromq-security.md) — same
+	// mechanism as [clientTransport.call], duplicated for the DEALER
+	// variant (mirrors how Phase 0's capability-parity work was ALSO
+	// duplicated, not shared, across these same 4 transports).
+	respType := elem.FieldByName("DecodeResponse").Type().Out(0)
+	clientImpls, _ := elem.FieldByName("ClientImplementations").Interface().([]middleware.ClientImplementation)
+	credentialFnType := buildPairedSecurityFnType(reqType)
+	generalDecoratorFnType := buildGeneralDecoratorFnType(reqType, respType)
+	if err := validateClientImplementationShapes(clientImpls, credentialFnType, generalDecoratorFnType); err != nil {
 		obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
-		return nil, CallError{Err: errI}
+		return nil, err
 	}
-	payload, _ := encodeResults[0].Interface().([]byte)
+	secReqs := effectiveSecurity(elem)
+	errType := reflect.TypeOf((*error)(nil)).Elem()
 
-	if err := sock.SendFrames([][]byte{emptyDelimiter, payload}); err != nil {
-		obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
-		return nil, CallError{Err: fmt.Errorf("send: %w", err)}
-	}
+	innerType := reflect.FuncOf(
+		[]reflect.Type{reflect.TypeOf((*context.Context)(nil)).Elem(), reqType},
+		[]reflect.Type{respType, errType},
+		false,
+	)
+	innerCall := reflect.MakeFunc(innerType, func(args []reflect.Value) []reflect.Value {
+		// ctx read from args[0], NOT the outer captured ctx — see
+		// clientTransport.call's identical fix/comment for the full
+		// rationale (mirrors adapters/mqtt5's own fix too).
+		ctx := args[0].Interface().(context.Context)
+		innerReqVal := args[1]
+		zeroResp := reflect.Zero(respType)
 
-	if err := sock.SetRecvTimeout(recvPollInterval); err != nil {
-		return nil, CallError{Err: fmt.Errorf("set recv timeout: %w", err)}
-	}
-
-	var frames [][]byte
-	for {
-		select {
-		case <-ctx.Done():
-			obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
-			return nil, CallError{Err: ctx.Err()}
-		default:
+		if len(clientImpls) > 0 {
+			reqPtr := reflect.New(reqType)
+			reqPtr.Elem().Set(innerReqVal)
+			if credErr := runPairedClientCredential(ctx, reqPtr, clientImpls, secReqs); credErr != nil {
+				wrapped := reqreply.SecurityCredentialError{Scheme: firstSchemeName(secReqs), Err: credErr}
+				if secObs, ok := obs.(stats.SecurityObserver); ok {
+					secObs.RecordSecurityRejection(path, firstSchemeName(secReqs))
+				}
+				obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
+				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: wrapped}).Convert(errType)}
+			}
+			innerReqVal = reqPtr.Elem()
 		}
-		var recvErr error
-		frames, recvErr = sock.RecvFrames()
-		if errors.Is(recvErr, ErrTimeout) {
+
+		encodeResults := rv.MethodByName("EncodeRequestWithFormats").CallSlice([]reflect.Value{innerReqVal, requestFormatsOverride})
+		if errI, _ := encodeResults[1].Interface().(error); errI != nil {
+			stats.ReportErrors(obs, "body", errI)
+			obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
+			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: errI}).Convert(errType)}
+		}
+		payload, _ := encodeResults[0].Interface().([]byte)
+
+		if sendErr := sock.SendFrames([][]byte{emptyDelimiter, payload}); sendErr != nil {
+			obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
+			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: fmt.Errorf("send: %w", sendErr)}).Convert(errType)}
+		}
+
+		if err := sock.SetRecvTimeout(recvPollInterval); err != nil {
+			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: fmt.Errorf("set recv timeout: %w", err)}).Convert(errType)}
+		}
+
+		var frames [][]byte
+		for {
+			select {
+			case <-ctx.Done():
+				obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
+				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: ctx.Err()}).Convert(errType)}
+			default:
+			}
+			var recvErr error
+			frames, recvErr = sock.RecvFrames()
+			if errors.Is(recvErr, ErrTimeout) {
+				continue
+			}
+			if recvErr != nil {
+				obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
+				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: fmt.Errorf("recv: %w", recvErr)}).Convert(errType)}
+			}
+			break
+		}
+
+		// Expect [delimiter, status, payload].
+		if len(frames) < 3 {
+			obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
+			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: fmt.Errorf("malformed reply: expected [delimiter, status, payload], got %d frame(s)", len(frames))}).Convert(errType)}
+		}
+
+		if string(frames[1]) == "error" {
+			obs.RecordRequest("ZMQ-DEALER", path, 500, time.Since(start))
+			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: fmt.Errorf("server error: %s", frames[2])}).Convert(errType)}
+		}
+
+		decodeResults := rv.MethodByName("DecodeResponseWithFormats").CallSlice([]reflect.Value{reflect.ValueOf(frames[2]), responseFormatsOverride})
+		if errI, _ := decodeResults[1].Interface().(error); errI != nil {
+			stats.ReportErrors(obs, "body", errI)
+			obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
+			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: fmt.Errorf("decode response: %w", errI)}).Convert(errType)}
+		}
+		obs.RecordRequest("ZMQ-DEALER", path, 200, time.Since(start))
+		return []reflect.Value{decodeResults[0], reflect.Zero(errType)}
+	})
+
+	wrappedCall := innerCall
+	for i := len(clientImpls) - 1; i >= 0; i-- {
+		if len(clientImpls[i].Satisfies) > 0 {
 			continue
 		}
-		if recvErr != nil {
-			obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
-			return nil, CallError{Err: fmt.Errorf("recv: %w", recvErr)}
-		}
-		break
+		decoratorVal := reflect.ValueOf(clientImpls[i].Fn)
+		wrappedCall = decoratorVal.Call([]reflect.Value{wrappedCall})[0]
 	}
 
-	// Expect [delimiter, status, payload].
-	if len(frames) < 3 {
-		obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
-		return nil, CallError{Err: fmt.Errorf("malformed reply: expected [delimiter, status, payload], got %d frame(s)", len(frames))}
+	finalResults := wrappedCall.Call([]reflect.Value{reflect.ValueOf(ctx), reqVal})
+	if errI, _ := finalResults[1].Interface().(error); errI != nil {
+		return nil, errI
 	}
-
-	if string(frames[1]) == "error" {
-		obs.RecordRequest("ZMQ-DEALER", path, 500, time.Since(start))
-		return nil, CallError{Err: fmt.Errorf("server error: %s", frames[2])}
-	}
-
-	decodeResults := rv.MethodByName("DecodeResponseWithFormats").CallSlice([]reflect.Value{reflect.ValueOf(frames[2]), responseFormatsOverride})
-	if errI, _ := decodeResults[1].Interface().(error); errI != nil {
-		stats.ReportErrors(obs, "body", errI)
-		obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
-		return nil, CallError{Err: fmt.Errorf("decode response: %w", errI)}
-	}
-	obs.RecordRequest("ZMQ-DEALER", path, 200, time.Since(start))
-	return decodeResults[0].Interface(), nil
+	return finalResults[0].Interface(), nil
 }
 
 // CallAsync implements [reqreply.ClientTransport]. Non-blocking

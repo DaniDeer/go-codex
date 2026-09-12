@@ -310,6 +310,23 @@ declared-scheme credential path should converge onto `Implementations`/
    decorator shape itself), causing every general-purpose `ClientMW` to
    be rejected with a `MiddlewareShapeError` — fixed immediately, both
    tests then passed.
+8. **UPDATE — a SECOND real bug found in a LATER review pass** (during
+   [ZeroMQ Security Mechanism](zeromq-security.md)'s own implementation,
+   which mirrored this exact `reflect.MakeFunc`-based `innerCall`
+   technique and inherited the bug along with it): `clientTransport.
+   call`'s `innerCall` closure ignored `args[0]` (the `ctx` actually
+   passed by whichever general-purpose `ClientMW` decorator calls
+   `next(ctx, req)`) and used the STALE, pre-decorator `ctx` captured
+   from the enclosing `call` function instead — silently discarding any
+   context mutation (injected value, deadline, span) a decorator made
+   before dispatch. Fixed by reading `ctx := args[0].Interface().
+   (context.Context)` inside the closure, shadowing the outer name.
+   Confirmed via a new regression test,
+   `TestAttachClient_ClientMW_ContextMutationPropagatesIntoInnerCall`
+   (verified to fail without the fix, pass with it) — a gap the
+   original two `reflect.MakeFunc` tests above didn't cover (neither
+   mutated `ctx` inside a decorator and asserted the mutation was
+   observable downstream, only ordering/pass-through).
 
 ### Verification
 
@@ -1373,7 +1390,12 @@ multi-implementation MERGE model.
   mirroring mqtt5's Phase 0b outcome exactly — zero duplicate logic, no
   breaking change). Merge-field DECODE support was confirmed NOT
   APPLICABLE to zeromq (no topic frame at the wire level) rather than
-  ported. Only the security Fn-shape item above remains open.)
+  ported. **UPDATE — the security Fn-shape item itself has SINCE
+  SHIPPED too** (a later round, tracked entirely in
+  [ZeroMQ Security Mechanism](zeromq-security.md), not here) — zeromq
+  reqreply now has FULL `.Use()`/`HandleMW`/`ClientMW` parity with
+  mqtt5's own Phase 1, across all 4 transports. Nothing remains open for
+  zeromq in this doc's scope.)
 - ~~Deleting `Serve`/`Call`/`CallHandle`/`ServeRouter`/`CallDealer` — these
   stay, unconditionally, mirroring REST's own kept-but-unnecessary
   `CallWithHandle`/`ServeOne` — Phase 2 closes the CAPABILITY gap that
@@ -1463,16 +1485,23 @@ resolved design questions visible rather than scrubbing them).
    change) — `Implementations`/`ClientImplementations` are now the ONLY
    mechanism, for BOTH `Serve`/`Call`/`CallHandle` (which delegate to the
    SAME `Attach`-based transports since Phase 0b) and `Attach`-based
-   dispatch directly. **zeromq's `SecurityFunc`/`CredentialFunc` (both
-   events pub/sub AND reqreply) are explicitly UNAFFECTED by this
-   removal** — zeromq has no `.Use`/`HandleMW`/`ClientMW` mechanism yet
-   (a separate, not-yet-started follow-up, see
-   `docs/roadmap/zeromq-security.md`'s own new reminder section) —
-   removing them now, with no replacement shipped, would leave zeromq
-   with ZERO security mechanism, a pure regression. When zeromq's own
-   Fn-shape phase eventually ships, it should ALSO remove
-   `SecurityFunc`/`CredentialFunc` at that point, mirroring mqtt5's
-   Phase 1 exactly.
+   dispatch directly. **zeromq's events pub/sub `SecurityFunc`/
+   `CredentialFunc` are explicitly UNAFFECTED by this removal** —
+   zeromq has no `.Use`/`HandleMW`/`ClientMW` mechanism yet (a separate,
+   not-yet-started follow-up, see `docs/roadmap/zeromq-security.md`'s
+   own new reminder section) — removing them now, with no replacement
+   shipped, would leave zeromq pub/sub with ZERO security mechanism, a
+   pure regression. **Correction (confirmed via code, a later review
+   round)**: zeromq's REQREPLY side (`ServeOptions`/`CallOptions`) never
+   had `SecurityFunc`/`CredentialFunc` fields to begin with — there is
+   nothing to be "unaffected" there; zeromq reqreply already has zero
+   security mechanism today, unrelated to this removal. When zeromq's
+   own Fn-shape phase eventually ships, it should ALSO remove zeromq
+   pub/sub's `SecurityFunc`/`CredentialFunc` at that point, mirroring
+   mqtt5's Phase 1 exactly, AND add the new `.Use`/`HandleMW`/`ClientMW`
+   mechanism to zeromq reqreply as a pure addition (see
+   `docs/roadmap/zeromq-security.md`'s "Confirmed current state" section
+   for the reconciled, up-to-date picture).
 5. **RESOLVED — Phase 1b (User Property param-as-middleware) is IN
    SCOPE for this doc, as an explicit sub-phase, not deferred to a
    separate roadmap doc.** The confirmed `render/asyncapi/v3` "no message

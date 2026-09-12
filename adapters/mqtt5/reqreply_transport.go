@@ -757,6 +757,17 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 	// adapters/nethttp's wrapCallGeneral, adapted to this
 	// reflection-based dispatcher's type-erased Req/Resp.
 	innerCall := reflect.MakeFunc(wantGeneralFnType, func(args []reflect.Value) []reflect.Value {
+		// ctx is read from args[0], NOT the outer captured ctx variable
+		// — a general-purpose ClientMW decorator wrapping this closure
+		// may call next(modifiedCtx, req) with a context it mutated
+		// (added a value, deadline, span, etc.); shadowing the outer
+		// name here means every subsequent use of ctx in this closure
+		// (mergeCredentialUserProperties, Publish, ctx.Done/Err) sees
+		// that decorator's context, not the original one captured
+		// before any decorator ran. A prior revision used the outer
+		// ctx here, silently discarding any such decorator mutation —
+		// found via a later review pass, fixed here.
+		ctx := args[0].Interface().(context.Context)
 		innerReqVal := args[1]
 		zeroResp := reflect.Zero(respType)
 		errType := reflect.TypeOf((*error)(nil)).Elem()

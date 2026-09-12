@@ -711,7 +711,17 @@ client-side response awaiting), but that has not been separately
 verified and should not be assumed without a dedicated check if the two
 mechanisms are ever implemented together.
 
-## Confirmed adapter capability matrix (carried forward, unchanged)
+## Confirmed adapter capability matrix (carried forward, mostly unchanged)
+
+> **Update (re-verified in a later review round)**: the bottom two rows
+> are now STALE for `mqtt5` specifically — both shipped as ✅ via
+> `reqreply-middleware.md`'s Phase 1 (corrected below). The
+> `mqtt`(v3)/`zeromq` cells in this table were NOT re-verified this
+> pass (this table predates D-0002/D-0003's in-payload mechanism
+> shipping for pub/sub, which likely affects the `mqtt`(v3) publish-side
+> `CredentialFunc` cell too — flagged, not corrected here, since this
+> table's scope is reqreply-specific and those cells describe pub/sub's
+> OWN building-block capabilities, a separate audit).
 
 | Capability | `mqtt` (v3) | `mqtt5` | `zeromq` |
 |---|---|---|---|
@@ -719,11 +729,12 @@ mechanisms are ever implemented together.
 | Message-level subscribe-side `SecurityFunc` | ✅ | ✅ | ❌ |
 | Message-level publish-side `CredentialFunc` | ❌ (protocol limit — no per-message property channel) | ✅ | ❌ |
 | Native Response Topic + Correlation Data (reqreply viability) | ❌ (protocol limit) | ✅ | n/a (own correlation mechanism) |
-| Scope-grant / `middleware.CheckScopes` integration | ❌ | ❌ | ❌ |
-| Handle-attached implementation (vs. per-call `Options`) | ❌ today | ❌ today | ❌ today |
+| Scope-grant / `middleware.CheckScopes` integration (reqreply) | n/a (no reqreply support) | ✅ SHIPPED (Phase 1 of [ReqReply Middleware](../roadmap/reqreply-middleware.md)) | ❌ (Fn-shape designed, not yet implemented — see [ZeroMQ Security Mechanism](../roadmap/zeromq-security.md)) |
+| Handle-attached implementation (vs. per-call `Options`) (reqreply) | n/a (no reqreply support) | ✅ SHIPPED (`RouteHandle.Implementations`/`ClientImplementations`, Phase 1) | ❌ today (same follow-up as above) |
 
-The bottom two rows are what Decision 3 (above) closes, across all
-three transports, once implemented.
+The bottom two rows are what Decision 3 (above) closes — SHIPPED for
+`mqtt5`, designed but not yet implemented for `zeromq` (tracked in
+[ZeroMQ Security Mechanism](../roadmap/zeromq-security.md), not here).
 
 ## Relationship to `protocol-native-features.md` (now [Feature](../roadmap/protocol-native-features.md))
 
@@ -1320,15 +1331,26 @@ functions — is now tracked and sequenced entirely in
 is the ONLY item reopened; the other items remain closed as below.
 
 **This doc (d-0004) otherwise has ZERO remaining open DECISIONS of its
-own.** What remains is IMPLEMENTATION work tracked independently in
-separate, active roadmap docs — mqtt5's and zeromq's `HandleMW`/
-`ClientMW` Fn shapes AND the escape-hatch retirement above
-(`docs/roadmap/reqreply-middleware.md`, `docs/roadmap/zeromq-security.md`),
-and Shared Subscriptions as a `Capability` candidate
-(`docs/roadmap/protocol-native-features.md`) — none of which are
-blocked on anything further from this doc, and none of which represent
-an unresolved question WITHIN d-0004's own scope (the `Server`/`Client`/
-`Attach` rework, which is fully shipped and verified).
+own.** **Update (re-verified in a later review round): most of the
+tracked implementation work below has SINCE SHIPPED.**
+`docs/roadmap/reqreply-middleware.md`'s Phase 0/0b (escape-hatch
+delegation, for BOTH mqtt5 AND zeromq) and Phase 1/1b (mqtt5's
+`HandleMW`/`ClientMW` Fn shapes, the declare/implement split, plus the
+User-Property param-as-middleware sub-phase) are ALL SHIPPED and
+verified — see that doc's own status banner. The ONLY implementation
+item still genuinely open is **zeromq's own `.Use`/`HandleMW`/
+`ClientMW` Fn-shape work** (tracked in `docs/roadmap/zeromq-security.md`,
+itself still "idea only, no driver yet" as of this update) — until that
+ships, reqreply-middleware.md's declare/implement split remains a
+single-adapter (mqtt5-only) pattern, which is why it has NOT been
+promoted into this doc or any other `docs/design/` entry yet (per
+`docs/design/index.md`'s own graduation bar: shipped AND multi-adapter).
+Shared Subscriptions as a `Capability` candidate
+(`docs/roadmap/protocol-native-features.md`) remains separately tracked,
+unrelated to the above. None of this represents an unresolved question
+WITHIN d-0004's own scope (the `Server`/`Client`/`Attach` rework, which
+is fully shipped and verified) — it is downstream follow-on work this
+doc correctly deferred to its own dedicated roadmap docs.
 
 ## Test plan (executed during implementation — see the Phased
 implementation plan above for the actual verification evidence per phase)

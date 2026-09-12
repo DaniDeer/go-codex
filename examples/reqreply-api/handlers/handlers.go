@@ -28,3 +28,10 @@ func Double(_ context.Context, req routes.ComputeReq) (routes.ComputeResp, error
 func Triple(_ context.Context, req routes.ComputeReq) (routes.ComputeResp, error) {
 	return routes.ComputeResp{Sum: (req.X + req.Y) * 3}, nil
 }
+
+// AddOAuth is OAuthComputeRoute's handler — same domain logic as Add,
+// against the OAuthComputeReq/Resp pair (which carries an in-payload
+// Token field the zeromq security Fn already validated before this runs).
+func AddOAuth(_ context.Context, req routes.OAuthComputeReq) (routes.OAuthComputeResp, error) {
+	return routes.OAuthComputeResp{Sum: req.X + req.Y}, nil
+}

@@ -80,6 +80,40 @@ coarse-grained, per-connection authorization, and message-level
 `SecurityFunc`/`CredentialFunc` for fine-grained, per-message claims within
 a single shared connection. Neither requires the other.
 
+### TLS / transport encryption is always the caller's own concern
+
+TLS (transport encryption) is a DIFFERENT axis from everything above —
+it protects the wire, not the message/identity — and go-codex
+deliberately has NO opinion on it anywhere: it is never part of an
+OpenAPI/AsyncAPI spec (neither format has a "requires TLS" field; that's
+implied by the `servers` entry's own scheme, e.g. `https://`), and never
+touches go-codex's security-scheme model. Confirmed per transport:
+
+- **REST**: client-side, the caller supplies its own `*http.Client` to
+  `nethttp.Call`/`CallWithHandle` — TLS is entirely
+  `http.Transport.TLSClientConfig`'s concern (client certs, custom
+  `RootCAs`, etc.), go-codex never constructs an `http.Client` itself.
+  Server-side, `nethttp.AttachMux`/`chi.AttachRouter` just wire a `mux`;
+  the caller builds their own `*http.Server` (with or without
+  `TLSConfig`) around it — go-codex's own `Server.Serve` explicitly
+  documents this ("a caller needing full control over TLS/timeouts/etc.
+  builds their own `*http.Server`").
+- **mqtt5/mqtt**: the optional `Connect()` convenience wrapper
+  (`ConnectOptions.TLS *tls.Config`) is a PURE pass-through to Go's own
+  `tls.Dialer`/`pahomqtt.ClientOptions.SetTLSConfig` — not part of any
+  spec/security-scheme mechanism, purely a connection-dial convenience.
+  Callers needing more control bypass it entirely and construct their
+  own already-connected client, same as `SecuredClient` above.
+- **zeromq**: no TLS/CURVE surface exists at all — `adapters/zeromq` has
+  ZERO dependency on any concrete ZeroMQ library (not even in `go.mod`);
+  it is a pure `FramedSocket` interface the caller implements from
+  whatever binding they choose (e.g. `github.com/pebbe/zmq4`). CURVE
+  (libzmq's own transport-encryption/auth mechanism) would be configured
+  entirely on the caller's own concrete socket, before wrapping it as a
+  `FramedSocket` — tracked as an open question in
+  [ZeroMQ Security Mechanism](../roadmap/zeromq-security.md), not
+  something go-codex exposes today.
+
 ## Security schemes (REST)
 
 ```go
@@ -499,56 +533,201 @@ gaps, tracked in [ZeroMQ Security Mechanism](../roadmap/zeromq-security.md).
 
 ## Security for request-reply routes (reqreply)
 
-`api/reqreply` (MQTT5 only — `adapters/zeromq`'s reqreply `Call`/`Serve` have
-no security mechanism today, confirmed: `Descriptor.Security`/
-`GlobalSecurity` are never even read, since ZeroMQ carries no per-message
-metadata; same class of gap as pub/sub above — see
-[D-0004 — ReqReply Workflow Simplification](../design/d-0004-reqreply-workflow-simplification.md))
-mirrors the exact same declare-once, enforce-symmetrically model:
+`api/reqreply` now mirrors REST/events' exact declare-once,
+enforce-symmetrically model on BOTH transports it supports, via the SAME
+`.Use()`/`HandleMW`/`ClientMW` declare/implement split — shipped by
+[ReqReply Middleware](../roadmap/reqreply-middleware.md)'s Phase 1
+(mqtt5) and [ZeroMQ Security Mechanism](../roadmap/zeromq-security.md)
+(zeromq) — REPLACES the older `reqreply.WithSecurityScheme`-only
+mechanism, kept only as a deprecated-but-functional alias. The paired
+implementation Fn's SHAPE differs per adapter (mqtt5: scope-grant
+`(map[string][]string, error)`, reading the raw `*pahomqtt5.Publish`;
+zeromq: plain `error`, reading/writing the decoded `*Req` directly — no
+raw-message equivalent exists for zeromq) — each adapter mirrors its OWN
+established precedent, not a shared shape. See "Sharing a security
+scheme declaration across REST/events/reqreply" below for how the
+SAME scheme DECLARATION (not the Fn) can still be reused across all
+three APIs regardless of this per-adapter Fn-shape difference.
 
 ```go
-var bearerAuth = reqreply.SecurityScheme{
-    SecurityScheme: route.BearerScheme("JWT"),
-}.WithCodec(codex.String().Refine(validate.BearerToken))
+var bearerAuthCodec = codex.String().Refine(validate.BearerToken)
+var bearerAuth = middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, &bearerAuthCodec)
 
 var ComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
     "compute/add", computeReqCodec, computeRespCodec,
-    reqreply.RouteMeta{Security: []route.SecurityRequirement{route.Require("bearerAuth")}},
-    reqreply.WithSecurityScheme("bearerAuth", bearerAuth),
+    reqreply.RouteMeta{OperationID: "computeAdd"},
 )
 ```
 
-Server (`Serve`) — built-in codec check first, then the optional custom
-`SecurityFunc`:
+Server side — `.Use(bearerAuth)` declares the requirement; `HandleMW`
+attaches the PAIRED implementation Fn (`func(ctx, msg *paho.Publish, reqs)
+(map[string][]string, error)` — the SAME scope-grant shape REST's
+`HandleMW` uses), consulted by `mqtt5.AttachServer`'s dispatch. A route
+declaring a scheme with no attached implementation fails loudly at
+`Serve`/`AttachServer` construction time with `reqreply.
+MissingSecurityMiddlewareError` (`reqreply.CheckCoverage`, mirrors
+`rest.CheckCoverage` exactly) — never a silent no-op:
 
 ```go
-mqtt5.Serve(ctx, client, router, handle, fn, mqtt5.ServeOptions{
-    SecurityFunc: func(ctx context.Context, msg *paho.Publish, reqs []route.SecurityRequirement) error {
-        return checkNotRevoked(msg, reqs)
-    },
-})
+securedRoute := ComputeRoute.Use(bearerAuth).
+    HandleMW(&bearerAuth, func(ctx context.Context, msg *paho.Publish, reqs []route.SecurityRequirement) (map[string][]string, error) {
+        return map[string][]string{"bearerAuth": nil}, checkNotRevoked(msg, reqs)
+    })
+handle, err := securedRoute.Register(server)
 ```
 
-Client (`Call`) — `CredentialFunc` supplies the credential, validated
-client-side before the request is published:
+Client side — `ClientMW` attaches the PAIRED credential-supplying Fn
+(`func(ctx, reqs) ([]mqtt5.UserProperty, error)` — replaces the OLD
+`CallOptions.CredentialFunc`, removed entirely as a breaking change),
+consulted by `mqtt5.AttachClient`'s dispatch, validated client-side
+before the request is ever published:
 
 ```go
-resp, err := mqtt5.Call(ctx, client, router, handle, req, mqtt5.CallOptions{
-    CredentialFunc: func(ctx context.Context, reqs []route.SecurityRequirement) ([]mqtt5.UserProperty, error) {
+callRoute := ComputeRoute.Use(bearerAuth).
+    ClientMW(&bearerAuth, func(ctx context.Context, reqs []route.SecurityRequirement) ([]mqtt5.UserProperty, error) {
         token, err := fetchToken(ctx)
         if err != nil {
             return nil, err
         }
         return []mqtt5.UserProperty{{Key: "Authorization", Value: "Bearer " + token}}, nil
-    },
-})
+    })
+resp, err := client.Call(ctx, callRoute, req)
 ```
 
-`Builder.AddGlobalSecurity(reqs...)` and per-route `RouteMeta.Security`
+A `HandleMW`/`ClientMW` implementation naming a scheme never `.Use()`'d on
+the same route fails at `Route.Register`/`ClientHandle` time with
+`reqreply.UnknownMiddlewareImplementationError` — the reverse-direction
+sibling of `MissingSecurityMiddlewareError` above.
+
+`Server.AddGlobalSecurity(reqs...)` and per-route `RouteMeta.Security`
 (nil=inherit global, empty=no auth) work identically to REST/events.
 `reqreply.SecurityCredentialError`/`reqreply.SecurityError` are the
 request-reply analogues of REST's error types — same fields, same
 `errors.As`/`slog.LogValuer` shape.
+
+**Phase 1b — User Property param-as-middleware**: `mqtt5.
+FromUserPropertyParam(p)`/`mqtt5.FromResponseUserPropertyParam(p)` bridge
+an existing `mqtt5.UserPropertyParam` into a `.Use()`-attachable
+middleware — a header-like param declaration (mirrors REST's
+`FromHeaderParam`/`FromResponseHeaderParam`), for BOTH the request AND
+reply message. No `HandleMW`/`ClientMW` pairing needed (unlike security
+schemes, header params aren't gated behind `CheckCoverage`) — declaring
+`.Use(mqtt5.FromUserPropertyParam(apiKeyParam))` is enough for
+`mqtt5.AttachServer` to validate the real MQTT5 User Property
+automatically, and for the property to render into the request/reply
+message's AsyncAPI `headers` schema:
+
+```go
+var apiKeyParam = mqtt5.UserPropertyParam{Name: "X-API-Key", Required: true}
+
+route := ComputeRoute.Use(mqtt5.FromUserPropertyParam(apiKeyParam))
+```
+
+**zeromq** — same `.Use()`/`HandleMW`/`ClientMW` declare/implement split,
+but the paired Fn shape reads/writes the decoded `*Req` directly (no raw
+message exists to operate on instead, unlike mqtt5's `*pahomqtt5.
+Publish`) — mirrors zeromq's OWN pub/sub `SecurityFunc`/`CredentialFunc`
+shape exactly (plain `error`, no scope-grant map):
+
+```go
+type ComputeReq struct{ X, Y int; Token string }
+
+securedRoute := ComputeRoute.Use(bearerAuth).
+    HandleMW(&bearerAuth, func(ctx context.Context, req *ComputeReq, reqs []route.SecurityRequirement) error {
+        return checkNotRevoked(req.Token, reqs)
+    })
+
+callRoute := ComputeRoute.Use(bearerAuth).
+    ClientMW(&bearerAuth, func(ctx context.Context, req *ComputeReq, reqs []route.SecurityRequirement) error {
+        token, err := fetchToken(ctx)
+        if err != nil {
+            return err
+        }
+        req.Token = token // written directly into the request payload
+        return nil
+    })
+```
+
+The application's own domain `Req` struct must carry a credential field
+itself for zeromq's model to work (`Token string` above) — a documented,
+accepted transport limitation (zeromq has no property/header side
+channel), not a bug.
+
+## Sharing a security scheme declaration across REST/events/reqreply
+
+A `middleware.SecurityScheme(schemeName, scheme, scopes, codec)` value
+(built from a `route.SecurityScheme` — `BearerScheme`/`BasicScheme`/
+`APIKeyScheme`/`OAuth2Scheme`/`OpenIDConnectScheme`) is a **single,
+fully shared, transport-agnostic Go value** — the SAME `middleware.
+Middleware` returned by `middleware.SecurityScheme(...)` can be attached
+via `.Use()` to a `rest.Route`, an `events.Subscriber`/`Publisher`, AND a
+`reqreply.Route`, with zero duplication:
+
+```go
+var oauthMw = middleware.SecurityScheme("oauth2Compute",
+    route.OAuth2Scheme(route.OAuthFlows{
+        ClientCredentials: &route.OAuthFlow{
+            TokenURL: "https://auth.example.com/oauth2/token",
+            Scopes:   map[string]string{"compute:write": "Submit compute requests"},
+        },
+    }), []string{"compute:write"}, &oauthCodec)
+
+// The EXACT SAME value, attached to three different API boundaries:
+restRoute := rest.NewRoute[Req, Resp]("POST", "/compute", reqCodec, respCodec, meta).Use(oauthMw)
+channel := events.NewChannel[Msg]("compute/events", codec, meta).WithSubscribe(events.Subscribe{}).Use(oauthMw)
+reqreplyRoute := reqreply.NewRoute[Req, Resp]("compute/add", reqCodec, respCodec, meta).Use(oauthMw)
+```
+
+Each of the three specs (`Server.OpenAPISpec()`/`Client.AsyncAPISpec()`/
+`Server.AsyncAPISpec()`) renders an IDENTICAL `securitySchemes.
+oauth2Compute` entry (same type, flows, scopes) — because they all read
+the SAME `route.SecurityScheme` value out of the SAME `middleware.
+Middleware`. `examples/reqreply-api`'s Demo 9
+(`demo_cross_api_oauth2_sharing.go`) demonstrates this concretely:
+`routes.OAuthMw` is attached to a REAL, served, called zeromq reqreply
+route AND to a locally-declared REST route (registered just to print its
+`OpenAPISpec()` output), then prints both specs' `oauth2Compute` entries
+side by side to show they're byte-for-byte identical.
+
+**What is NOT shared: the paired implementation Fn.** `HandleMW`/
+`ClientMW`/`SubscribeMW`/`PublishMW`'s attached Fn is adapter-specific —
+each transport's paired security shape differs (REST: `func(ctx,
+*http.Request, *Req) (map[string][]string, error)`; mqtt5: `func(ctx,
+msg *pahomqtt5.Publish, ...) (map[string][]string, error)`; zeromq:
+`func(ctx, *Req, reqs) error`, no scope-grant). You cannot pass the
+literal same Go closure to `HandleMW` calls on two different transports.
+
+**The recommended pattern**: factor the REAL verification logic (token
+introspection, JWT validation, scope extraction) into ONE shared,
+transport-agnostic helper taking a plain credential string, then write a
+THIN, few-line wrapper Fn per transport that only differs in HOW it
+extracts the raw credential from its own transport shape (HTTP header /
+MQTT User Property / decoded request field) before calling the shared
+helper:
+
+```go
+// ONE shared helper — the actual verification logic, transport-agnostic.
+func VerifyOAuth2Scopes(token string) (map[string][]string, error) { /* ... */ }
+
+// THIN, zeromq-shaped wrapper — extracts the token from *Req, delegates.
+func zeromqOAuthFn(_ context.Context, req *ComputeReq, _ []route.SecurityRequirement) error {
+    scopes, err := VerifyOAuth2Scopes(req.Token)
+    if err != nil {
+        return err
+    }
+    return middleware.CheckScopes(reqs, scopes)
+}
+
+// THIN, REST-shaped wrapper — extracts the token from *http.Request, delegates.
+func restOAuthFn(_ context.Context, r *http.Request, _ *ComputeReq) (map[string][]string, error) {
+    token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+    return VerifyOAuth2Scopes(token)
+}
+```
+
+This is exactly `examples/reqreply-api/handlers/oauth.go`'s structure:
+`VerifyOAuth2Scopes` is the one shared helper; `VerifyOAuthComputeZeroMQ`
+is its zeromq-shaped wrapper.
 
 ## SecurityObserver — rejection metrics
 
@@ -568,7 +747,7 @@ func (o *TelemetryObserver) RecordSecurityRejection(location, scheme string) {
 
 ## OpenAPI / AsyncAPI output
 
-Security schemes appear in `components/securitySchemes`; global security at document root (REST only — AsyncAPI 3.0 has no document-level global security field); per-operation security overrides inline — all generated automatically from each route/channel's own security declaration (REST: `middleware.SecurityScheme`/`rest.FromSecurityScheme` attached via `Route.Use()`; events: `events.FromSecurityScheme` attached via `Subscriber.Use()`/`Publisher.Use()` — mirrors REST exactly (`events.WithSecurityScheme` is the older, deprecated, channel-level mechanism, kept only for backward compatibility); reqreply: `reqreply.WithSecurityScheme` — route-level, still the ONLY declaration mechanism there (no redesign has happened for `api/reqreply` yet); aggregated by `Server.OpenAPISpec`/`Client.AsyncAPISpec`, last-registered-wins on name collision) / `AddGlobalSecurity` / `RouteMeta.Security` / `Subscribe.Security` / `Publish.Security`. No manual YAML needed.
+Security schemes appear in `components/securitySchemes`; global security at document root (REST only — AsyncAPI 3.0 has no document-level global security field); per-operation security overrides inline — all generated automatically from each route/channel's own security declaration (REST: `middleware.SecurityScheme`/`rest.FromSecurityScheme` attached via `Route.Use()`; events: `events.FromSecurityScheme` attached via `Subscriber.Use()`/`Publisher.Use()` — mirrors REST exactly (`events.WithSecurityScheme` is the older, deprecated, channel-level mechanism, kept only for backward compatibility); reqreply: `middleware.SecurityScheme(...)` attached via `Route.Use()` — mirrors REST/events exactly (`reqreply.WithSecurityScheme` is the older, deprecated, route-level mechanism, kept only for backward compatibility, same treatment as `events.WithSecurityScheme`); aggregated by `Server.OpenAPISpec`/`Client.AsyncAPISpec`, last-registered-wins on name collision) / `AddGlobalSecurity` / `RouteMeta.Security` / `Subscribe.Security` / `Publish.Security`. No manual YAML needed.
 
 ## See also
 
@@ -576,3 +755,4 @@ Security schemes appear in `components/securitySchemes`; global security at docu
 - [Guide: HTTP Client](../guides/http-client.md) — `CredentialFunc` for client-side credentials
 - [Guide: Observer](../guides/observer.md) — `SecurityObserver` metrics
 - [examples/rest-api](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-api) — bearer JWT + scopes + observer, both chi and net/http adapters
+- [examples/reqreply-api](https://github.com/DaniDeer/go-codex/tree/main/examples/reqreply-api) — Demo 9 (`demo_cross_api_oauth2_sharing.go`) shows ONE `middleware.SecurityScheme` (OAuth2) declaration shared across a zeromq reqreply route AND a locally-declared REST route

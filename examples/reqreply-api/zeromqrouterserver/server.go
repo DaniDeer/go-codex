@@ -50,7 +50,7 @@ func BuildWithMissingSocket() (*reqreply.Server, error) {
 }
 
 // Build registers ONLY routes.RouterComputeRoute (the working, complete
-// configuration used by the rest of Demo 7) against a fresh reqreply.Server,
+// configuration used by the rest of Demo 8) against a fresh reqreply.Server,
 // then zeromq.AttachRouterServer's it to an in-process ROUTER/DEALER socket
 // pair.
 func Build() (*Built, error) {

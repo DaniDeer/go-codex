@@ -78,6 +78,7 @@ func main() {
 	demoUserPropertyParamMiddleware(ctx, mqtt5Built)
 	demoSpecPrintingAsyncAPI(mqtt5Built.Server)
 	demoZeroMQDealerRouterVariant(ctx)
+	demoCrossAPIOAuth2Sharing(ctx, zeromqBuilt)
 
 	fmt.Println("\n✓ all reqreply-api demos completed successfully")
 }

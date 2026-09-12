@@ -200,13 +200,14 @@ func newRouteHandle() *reqreply.RouteHandle[computeReq, computeResp] {
 // ── observer stub ─────────────────────────────────────────────────────────────
 
 type testObserver struct {
-	subscribes       []bool
-	publishes        []bool
-	requests         []int // status codes
-	paths            []string
-	validationErrors []string
-	startSpanOps     []string
-	endSpanErrs      []error
+	subscribes         []bool
+	publishes          []bool
+	requests           []int // status codes
+	paths              []string
+	validationErrors   []string
+	startSpanOps       []string
+	endSpanErrs        []error
+	securityRejections []string // scheme names, one per RecordSecurityRejection call
 }
 
 func (o *testObserver) RecordValidationError(_, constraint, _ string) {
@@ -228,6 +229,9 @@ func (o *testObserver) StartSpan(ctx context.Context, op, _ string) context.Cont
 }
 func (o *testObserver) EndSpan(_ context.Context, err error) {
 	o.endSpanErrs = append(o.endSpanErrs, err)
+}
+func (o *testObserver) RecordSecurityRejection(_, scheme string) {
+	o.securityRejections = append(o.securityRejections, scheme)
 }
 
 // ── Subscribe tests ───────────────────────────────────────────────────────────
