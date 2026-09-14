@@ -1,6 +1,110 @@
-# go-codex Review History (R1–R134, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2)
+# go-codex Review History (R1–R136, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 136 (reqreply/middleware focus — checklist staleness + doc-consolidation regressions)
+
+Focused review of `api/reqreply` and its codec-declared middleware, per a direct user request,
+following the prior round's large roadmap-doc→design-doc consolidation (3 fully-shipped roadmap
+docs — `reqreply-codec-declared-middleware.md`, `reqreply-middleware.md`, `zeromq-security.md` —
+folded into `docs/design/d-0003`/`d-0004` Addenda, then deleted). Traced the actual dispatch code
+(`serverTransport`/`clientTransport` in both `adapters/mqtt5` and `adapters/zeromq`) end to end and
+found the skill's OWN reference material had drifted, plus two small regressions self-introduced by
+the prior round's bulk find-and-replace.
+
+- **G1 [small] — checklist.md §12's reqreply boundary-symmetry table was STALE**: the "PREFERRED
+  `Server`/`Client`+`Attach`" row still claimed merge-fields, per-call format overrides, and
+  `ErrorPattern`-typed replies were "NOT SUPPORTED"/a "KNOWN, DOCUMENTED GAP." Confirmed via code
+  that this session's Phase 0b delegation fix (`AttachServer`/`AttachClient`/`AttachRouterServer`/
+  `AttachDealerClient` now construct the SAME `serverTransport`/`clientTransport` the escape hatch
+  delegates to) closed the gap entirely — `DecodeMergedWithFormats`/`EncodeWithFormats`/
+  `ErrorResponseFor`/`RequestFormats` overrides are all wired into the shared dispatch, and
+  `TestAttachServer_AttachClient_MergeFields_RoundTrip` already proves it. Fixed by merging the two
+  reqreply rows into one, marked ✅ SHIPPED for both workflows (zeromq server-side merge remains
+  architecturally unsupported — raw frames, no per-message topic string — unchanged from before).
+- **G2 [small] — 16 sites across 15 files had a dangling `docs/roadmap/` prefix**: the prior
+  round's bulk regex replace (folding the 3 deleted roadmap docs into design-doc Addenda) matched a
+  bare filename mid-comment when the `docs/roadmap/` prefix was on the PRECEDING line of a wrapped
+  Go comment, replacing only the filename and leaving the prefix orphaned (e.g. `// ... see
+  docs/roadmap/\n// D-0003's Addendum...`). One additional file
+  (`examples/reqreply-api/demo_user_property_param_middleware.go`) was missed by that round's
+  file list entirely and still cited the deleted `reqreply-middleware.md` directly. Fixed all 16
+  sites to read correctly, pointing at `docs/design/d-0003-codec-declared-middlewares.md`'s /
+  `d-0004-reqreply-workflow-simplification.md`'s Addenda.
+- **G3 [trivial] — pre-existing, unrelated bug in `adapters/mqtt5/caller.go:291`**: cited
+  `docs/roadmap/d-0002-pubsub-workflow-simplification.md` — wrong directory (that design doc lives
+  in `docs/design/`), not introduced by the prior round. Fixed the path.
+- **G4 [trivial] — skill's own reference material had zero coverage of the reqreply property
+  axis**: `PropertyParam`/`NewPropertyParam`/`NewOptionalPropertyParam`/`WithRequestProperty`/
+  `WithResponseProperty` and 4 of reqreply's newer error types
+  (`MissingSecurityMiddlewareError`, `UnknownMiddlewareImplementationError`,
+  `DuplicateMiddlewareNameError`, `AmbiguousMiddlewareAttachmentError`,
+  `ConflictingParamContributionError`) were absent from checklist.md's §2 (param types) and §7
+  (error sentinels) — mirrors Round 134's own G1-G4 pattern (skill material lagging a shipped
+  feature). Fixed by adding rows for both; also extended SKILL.md's Phase 1 file table with a row
+  for `api/reqreply/{middleware,middleware_declaration,property_param,transform}.go`.
+
+Verification: `gofmt -l .`/`go build ./...` clean; all changes this round were doc/comment-only
+(no exported symbol touched) — no test/build/lint impact expected, confirmed via a full
+`go build ./...` pass after G2/G3's comment edits.
+
+---
+
+## Round 135 (reqreply-codec-declared-middleware / reqreply-middleware / zeromq-security — shipped, then consolidated into design docs)
+
+The session's main body of work: brought `api/reqreply` (and `api/events`) up to full D-0003
+codec-declared-middleware parity via a "property" vocabulary axis (`PropertyParam`/
+`MergedPropertyParam[T]`/`NewPropertyParam`/`NewOptionalPropertyParam`, `WithRequestProperty`/
+`WithResponseProperty` for reqreply, `WithSubscribeProperty`/`WithPublishProperty` for events),
+shipped reqreply's own `.Use()`/`HandleMW`/`ClientMW` declare/implement split (mqtt5 first, then
+zeromq's Fn-shape work), then consolidated all 3 now-fully-shipped source roadmap docs into
+`docs/design/d-0003`/`d-0004` Addenda and deleted them, per the established graduation policy.
+Full detail lives in the Addenda themselves (`docs/design/d-0003-codec-declared-middlewares.md`,
+`docs/design/d-0004-reqreply-workflow-simplification.md`) — summarized here only for the skill's
+own historical trail:
+
+- Property axis shipped for BOTH `api/reqreply` and `api/events`, with a uniform, Round-18
+  conflict-detection algorithm across topic-var and property contributions (independent
+  namespaces), including a deliberate, accepted BREAKING CHANGE retiring Phase 1b's old
+  silent-first-seen-wins dedupe for mismatched declarations.
+- mqtt5's reply-side write path gained the ONE missing capability found while tracing to the wire:
+  `WithResponseProperty` values are now actually written onto the outgoing `PublishProperties.User`
+  (both success- and error-reply `.Publish` call sites) — previously validate-only.
+  `adapters/zeromq`'s ROUTER/DEALER reqreply transport variants were found to have ZERO middleware
+  dispatch wiring at all (not even security-adjacent) while the REQ/REP variants were correctly
+  wired — fixed identically across all 4 transports.
+- 2 pre-existing bugs in ALREADY-SHIPPED `api/events` D-0003 code were found and fixed while
+  scoping full events parity: publish-side value precedence was backwards (channel-own vars beat
+  middleware-derived vars, opposite of D3's real order), and `dispatchSubscribeMiddlewareHandlers`/
+  `dispatchPublishMiddlewareHandlers` never called `stats.ReportErrors`.
+- `zeromq-security.md`'s own work later shipped zeromq reqreply's Fn-shape (paired
+  security-verifying/credential-supplying + general-purpose decorator, across all 4 transports),
+  reusing `reqreply.SecurityError`/`SecurityCredentialError` unchanged, with a real
+  `reflect.MakeFunc`-built `innerCall` bug (ignoring the decorator-supplied `ctx`) found and fixed
+  in BOTH `zeromq` and (inherited) `mqtt5`.
+- Post-implementation gap review found and fixed 4 residual gaps (1 missing unit test, 1 missing
+  `docs/features/reqreply-middleware.md` page, 2 stale cross-references) — confirmed zero
+  functional gaps remained.
+- `examples/reqreply-api` was restructured to cleanly separate middleware DECLARATION
+  (`routes/middleware.go`) from IMPLEMENTATION (`handlers/middleware.go`) from adapter WIRING
+  (`{adapter}server/server.go`), and extended to demonstrate the SAME declared route/middleware/
+  handler triple working on BOTH mqtt5 (full property read/write) and zeromq (same route, graceful
+  degradation via `NewOptionalPropertyParam`).
+- All 3 source roadmap docs (`reqreply-codec-declared-middleware.md`, `reqreply-middleware.md`,
+  `zeromq-security.md`), confirmed fully SHIPPED with no lasting cross-cutting design value of
+  their own beyond what's now captured in the Addenda, were DELETED per the 3-way delete/keep/
+  promote graduation policy — their content folded into `docs/design/d-0003`/`d-0004` as new
+  "## Addendum" sections (mirroring `d-0001`'s existing 5-addendum precedent), correcting 3 stale
+  claims discovered during the fold-in (d-0004's own "REOPENED" status banner, `reqreply-
+  middleware.md`'s stale zeromq-`CheckCoverage`-unimplemented claim, and preserving zeromq
+  pub/sub's still-open `SecurityFunc`/`CredentialFunc` retirement question as an explicit
+  follow-up rather than silently dropping it). ~15 cross-referencing files and 25 Go source
+  doc-comments were updated to match.
+
+Verification: `go build ./...` clean, `gofmt -l .` clean, full repo `go test -count=1 ./...` green,
+`just check` (staticcheck+gosec) zero issues, all runnable examples exit 0.
 
 ---
 

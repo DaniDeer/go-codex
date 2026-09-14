@@ -47,8 +47,9 @@ var ComputeRespCodec = codex.Struct[ComputeResp](
 // demo — ComputeRoute must explicitly OPT OUT via an EMPTY (non-nil)
 // Security slice, per [reqreply.RouteHandle.Security]'s own documented
 // contract ("nil means inherit GlobalSecurity, an empty non-nil slice
-// means explicitly no auth required"). Before Phase 1 (docs/roadmap/
-// D-0004's Addendum) added a mandatory adapter-Serve-time
+// means explicitly no auth required"). Before Phase 1 (see
+// docs/design/d-0004-reqreply-workflow-simplification.md's Addendum)
+// added a mandatory adapter-Serve-time
 // [reqreply.CheckCoverage] check, this route silently INHERITED
 // GlobalSecurity with NO enforcement at all (the old credential-FORMAT
 // check only ran for schemes with a registered [reqreply.
@@ -85,8 +86,9 @@ var TripleRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 // each producing a SEPARATE Route variant sharing this same base value —
 // mirrors examples/rest-api's routes.CreateUserRoute (declared plain,
 // secured via .Use() at each call site) rather than baking Security into
-// the base declaration itself (Phase 1 of docs/roadmap/
-// D-0004's Addendum — REPLACES the OLD manual RouteMeta.Security +
+// the base declaration itself (Phase 1, see
+// docs/design/d-0004-reqreply-workflow-simplification.md's Addendum
+// — REPLACES the OLD manual RouteMeta.Security +
 // reqreply.WithSecurityScheme pattern, which cannot be paired against a
 // HandleMW/ClientMW implementation).
 var SecuredComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
@@ -112,8 +114,9 @@ var GlobalOnlyComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 	reqreply.RouteMeta{OperationID: "globalSecuredComputeAdd", Summary: "Add two integers — secured only via Server.AddGlobalSecurity."},
 )
 
-// HeaderParamComputeRoute demonstrates Phase 1b of docs/roadmap/
-// D-0004's Addendum — the User-Property param-as-middleware
+// HeaderParamComputeRoute demonstrates Phase 1b (see
+// docs/design/d-0004-reqreply-workflow-simplification.md's Addendum)
+// — the User-Property param-as-middleware
 // mechanism. Declared PRISTINE here, exactly like SecuredComputeRoute
 // above: the request-side "X-API-Key" User Property (via
 // mqtt5adapter.FromUserPropertyParam) and the reply-side "X-Trace-Id"

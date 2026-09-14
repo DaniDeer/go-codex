@@ -12,8 +12,9 @@ import (
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/routes"
 )
 
-// demoUserPropertyParamMiddleware exercises Phase 1b of docs/roadmap/
-// reqreply-middleware.md — the User-Property param-as-middleware
+// demoUserPropertyParamMiddleware exercises Phase 1b of
+// docs/design/d-0004-reqreply-workflow-simplification.md's Addendum —
+// the User-Property param-as-middleware
 // mechanism. Unlike security schemes (Demo 2/3), RequestHeaderParams
 // need no HandleMW pairing: mqtt5adapter.AttachServer validates the
 // declared "X-API-Key" User Property automatically, BEFORE the handler

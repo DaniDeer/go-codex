@@ -120,8 +120,9 @@ func publishHandlerErrorReplyReflect(
 			ContentType:     errorReplyContentType,
 			CorrelationData: correlationData,
 		}
-		// Case 3 write-side wiring (docs/roadmap/
-		// D-0003's Addendum's "Write-side wiring"):
+		// Case 3 write-side wiring (see
+		// docs/design/d-0003-codec-declared-middlewares.md's Addendum's
+		// "Write-side wiring"):
 		// a Middleware's WithResponseProperty-declared value is written
 		// onto the ERROR reply's User Properties too, not just the
 		// success reply — a route's declared response property is a
@@ -670,8 +671,9 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 			if correlationData != nil {
 				replyProps.CorrelationData = correlationData
 			}
-			// Case 3 write-side wiring (docs/roadmap/
-			// D-0003's Addendum's "Write-side
+			// Case 3 write-side wiring (see
+			// docs/design/d-0003-codec-declared-middlewares.md's Addendum's
+			// "Write-side
 			// wiring") — a Middleware's WithResponseProperty-declared
 			// value is written onto the SUCCESS reply's User Properties.
 			// BRAND NEW capability: no existing mechanism wrote outgoing
@@ -1035,8 +1037,9 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 
 		secReqs, schemeTypes, schemeCodecs := effectiveSecurity(elem)
 		userProps := append(pahomqtt5.UserProperties(nil), t.opts.UserProperties...)
-		// Case 1 write-side wiring (docs/roadmap/
-		// D-0003's Addendum's "Write-side wiring"):
+		// Case 1 write-side wiring (see
+		// docs/design/d-0003-codec-declared-middlewares.md's Addendum's
+		// "Write-side wiring"):
 		// a Middleware's WithRequestProperty-declared value merges into
 		// the SAME outgoing userProps mechanism the security-credential-
 		// derived properties below also use.

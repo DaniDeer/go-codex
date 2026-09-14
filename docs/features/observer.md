@@ -192,3 +192,66 @@ http.ListenAndServe(":8080", ObserverMiddleware(obs)(mux))
 For per-service (not per-request) wiring, pass `nethttp.Options{Observer: obs}` directly — this is simpler and slightly cheaper (no per-request context lookup).
 
 For per-adapter code examples, OpenTelemetry tracing, Prometheus wiring, location values, and a full end-to-end walk-through, see the [Guide: Using the Observer Pattern](../guides/observer.md).
+
+### `api/reqreply.Observability` — a shipped, declarative observer wrapper
+
+`api/reqreply` ships its own general-purpose observer wrapper —
+[`reqreply.Observability[Req, Resp]`](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/reqreply#Observability),
+mirroring `adapters/nethttp.Observability` (REST) and
+`adapters/zeromq.Observability`/`adapters/mqtt5.Observability` (pub/sub).
+It attaches via the existing general-purpose (unpaired)
+`.HandleMW(nil, fn)`/`.ClientMW(nil, fn)` middleware-implementation
+mechanism (see
+[Feature: ReqReply Codec-Declared Middleware](reqreply-middleware.md)) —
+no new attachment API, just an observability `fn` attached the same way a
+security implementation is:
+
+```go
+// Server-side (zeromq): HandleMW(nil, ...) — unpaired, runs
+// unconditionally, composes freely alongside a paired security HandleMW
+// on the same route.
+route.HandleMW(nil, reqreply.Observability[Req, Resp](obs)).WithHandler(fn).Register(server)
+
+// Client-side (zeromq or mqtt5): ClientMW(nil, ...) — the SAME
+// implementation, reused unchanged across both adapters.
+observedRoute := route.ClientMW(nil, reqreply.Observability[Req, Resp](obs))
+```
+
+`Observability` lives in the CORE `api/reqreply` package, not an
+adapter — unlike its REST/pub-sub siblings, ONE implementation covers
+every attachment point that has a `context.Context` to work with:
+zeromq's server-side AND client-side general decorators, plus mqtt5's
+client-side one, all share this exact generic shape. It injects `obs`
+into ctx via `stats.WithObserver` (so a paired security Fn, or any
+downstream code, can resolve the SAME observer via
+`stats.ObserverFromContext`) and drains `stats.DiagnosticsFromContext`
+into `RecordValidationError` after the wrapped handler returns. It
+deliberately does **not** call `RecordRequest` itself, nor start a
+`TraceObserver` span — every reqreply adapter transport
+(`adapters/mqtt5`'s and `adapters/zeromq`'s Serve/Call dispatch) already
+does both, unconditionally, on every code path; calling them again here
+would double-count.
+
+**mqtt5's server side has no equivalent attachment point**: its
+server-side general decorator wraps the raw, pre-decode
+`*pahomqtt5.Publish` handler, which has no `ctx` parameter to inject an
+Observer into. `mqtt5.Server.Serve(ctx, ...)` already resolves whichever
+Observer is present in the ctx it was called with (via
+`stats.ObserverFromContext`) for its own dispatch-time `RecordRequest`
+calls — injecting `obs` once into that ctx (e.g. before calling `Serve`)
+already covers the server side with zero additional wiring, so no
+mqtt5-specific server helper is shipped.
+
+See
+[`examples/reqreply-api`](https://github.com/DaniDeer/go-codex/tree/main/examples/reqreply-api)
+for the full runnable demonstration (Demo 11,
+`demo_observer_middleware.go`) — including composing `Observability`
+alongside a paired security implementation on the same route, and
+`examples/reqreply-api/observability`'s own `stats.Observer`
+implementation shared across every layer.
+
+Declarative routes/channels and middleware *declarations* themselves
+(`routes.Route`, `middleware.Declaration` values) stay pure metadata and
+need no Observer involvement at all — only the *implementation* Fn
+(`HandleMW`/`ClientMW`'s second argument) executes real code, so that is
+the only place an Observer call belongs.

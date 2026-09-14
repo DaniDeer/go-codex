@@ -970,8 +970,8 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 	}
 
 	// D6(b)/D7: attached codec-backed Middleware[In,Out] name uniqueness
-	// + ambiguous-attachment check — docs/roadmap/
-	// D-0003's Addendum.
+	// + ambiguous-attachment check — see
+	// docs/design/d-0003-codec-declared-middlewares.md's Addendum.
 	if err := checkMiddlewareNameUniquenessAndAttachment(&rb, r.topic); err != nil {
 		return nil, err
 	}

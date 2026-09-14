@@ -12,6 +12,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/handlers"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/routes"
+	"github.com/DaniDeer/go-codex/stats"
 )
 
 // Built bundles the assembled Server with the DEALER-side socket a caller's
@@ -52,12 +53,17 @@ func BuildWithMissingSocket() (*reqreply.Server, error) {
 // Build registers ONLY routes.RouterComputeRoute (the working, complete
 // configuration used by the rest of Demo 8) against a fresh reqreply.Server,
 // then zeromq.AttachRouterServer's it to an in-process ROUTER/DEALER socket
-// pair.
-func Build() (*Built, error) {
+// pair. Also attaches the shipped [reqreply.Observability] via
+// .HandleMW(nil, ...) — mirrors zeromqserver.Build's identical
+// declare-time Observer attachment (see its doc comment).
+func Build(obs stats.Observer) (*Built, error) {
 	server := reqreply.NewServer(reqreply.Info{Title: "Compute API (zeromq ROUTER/DEALER)", Version: "1.0.0"})
 	server.AddServer("zmq", reqreply.ServerEntry{URL: "tcp://localhost:5557", Protocol: "zmq"})
 
-	if _, err := routes.RouterComputeRoute.WithHandler(handlers.Add).Register(server); err != nil {
+	if _, err := routes.RouterComputeRoute.
+		HandleMW(nil, reqreply.Observability[routes.ComputeReq, routes.ComputeResp](obs)).
+		WithHandler(handlers.Add).
+		Register(server); err != nil {
 		return nil, err
 	}
 

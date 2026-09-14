@@ -288,9 +288,9 @@ func subscribeSecurityFnType(msgType reflect.Type) reflect.Type {
 // generalWrapFnType builds the reflect.Type for the general-purpose
 // wrapping shape (func(next func(context.Context, T) error) func(context.Context, T) error)
 // for the given erased msgType T. Shared by both SubscribeMW and
-// PublishMW dispatch (deliberate symmetry — see docs/roadmap/
-// d-0002-pubsub-workflow-simplification.md's "General-purpose (non-spec) Fn
-// shapes" subsection).
+// PublishMW dispatch (deliberate symmetry — see
+// docs/design/d-0002-pubsub-workflow-simplification.md's "General-purpose
+// (non-spec) Fn shapes" subsection).
 func generalWrapFnType(msgType reflect.Type) reflect.Type {
 	handlerType := reflect.FuncOf(
 		[]reflect.Type{reflect.TypeOf((*context.Context)(nil)).Elem(), msgType},

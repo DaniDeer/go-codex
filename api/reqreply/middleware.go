@@ -352,8 +352,9 @@ func checkMiddlewareNameUniquenessAndAttachment(rb *routeBuilder, routeLabel str
 // topic-var/property name, tracked for [checkReqReplyParamConflicts]'s
 // conflict detection — mirrors [rest.paramContribution], PLUS a Codec
 // field (Round 15's deliberate divergence from REST's real precedent,
-// which has no Codec field at all — see docs/roadmap/
-// D-0003's Addendum's decision #8).
+// which has no Codec field at all — see
+// docs/design/d-0003-codec-declared-middlewares.md's Addendum's
+// decision #8).
 type reqreplyParamContribution struct {
 	source   string
 	required bool

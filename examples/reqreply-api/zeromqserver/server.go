@@ -15,6 +15,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/handlers"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/routes"
+	"github.com/DaniDeer/go-codex/stats"
 )
 
 // Built bundles the assembled Server with the REQ-side sockets a caller's
@@ -39,26 +40,47 @@ type Built struct {
 // reqreply.Server, then zeromq.AttachServer's it to 3 independent
 // in-process REQ/REP socket pairs (one pair per route — REQ/REP is
 // point-to-point, unlike pub/sub's topic-multiplexed SUB socket).
-func Build() (*Built, error) {
+//
+// Every route additionally attaches the shipped
+// [reqreply.Observability] via .HandleMW(nil, ...) (UNPAIRED,
+// general-purpose — no [routes.middleware.Declaration] needed, see
+// routes/middleware.go's doc comment) — demonstrating the declare-time
+// attachment alternative to relying solely on the ctx-ambient Observer
+// main.go injects via [stats.WithObserver] before calling
+// [reqreply.Server.Serve].
+func Build(obs stats.Observer) (*Built, error) {
 	server := reqreply.NewServer(reqreply.Info{Title: "Compute API (zeromq REQ/REP)", Version: "1.0.0"})
 	server.AddServer("zmq", reqreply.ServerEntry{URL: "tcp://localhost:5556", Protocol: "zmq"})
 
-	if _, err := routes.ComputeRoute.WithHandler(handlers.Add).Register(server); err != nil {
+	if _, err := routes.ComputeRoute.
+		HandleMW(nil, reqreply.Observability[routes.ComputeReq, routes.ComputeResp](obs)).
+		WithHandler(handlers.Add).
+		Register(server); err != nil {
 		return nil, err
 	}
-	if _, err := routes.DoubleRoute.WithHandler(handlers.Double).Register(server); err != nil {
+	if _, err := routes.DoubleRoute.
+		HandleMW(nil, reqreply.Observability[routes.ComputeReq, routes.ComputeResp](obs)).
+		WithHandler(handlers.Double).
+		Register(server); err != nil {
 		return nil, err
 	}
-	if _, err := routes.TripleRoute.WithHandler(handlers.Triple).Register(server); err != nil {
+	if _, err := routes.TripleRoute.
+		HandleMW(nil, reqreply.Observability[routes.ComputeReq, routes.ComputeResp](obs)).
+		WithHandler(handlers.Triple).
+		Register(server); err != nil {
 		return nil, err
 	}
 	// OAuthComputeRoute demonstrates zeromq's reqreply security Fn-shape
 	// (docs/design/d-0004-reqreply-workflow-simplification.md's Addendum, SHIPPED) AND the SAME OAuthMw
 	// declaration shared across REST/reqreply — see Demo 9
-	// (demo_cross_api_oauth2_sharing.go).
+	// (demo_cross_api_oauth2_sharing.go). The general-purpose observer
+	// HandleMW(nil, ...) attaches ALONGSIDE the paired security
+	// HandleMW(&routes.OAuthMw, ...) below — proving the two mechanisms
+	// compose freely on the same route.
 	oauthHandle, err := routes.OAuthComputeRoute.
 		Use(routes.OAuthMw).
 		HandleMW(&routes.OAuthMw, handlers.VerifyOAuthComputeZeroMQ).
+		HandleMW(nil, reqreply.Observability[routes.OAuthComputeReq, routes.OAuthComputeResp](obs)).
 		WithHandler(handlers.AddOAuth).
 		Register(server)
 	if err != nil {
@@ -80,6 +102,7 @@ func Build() (*Built, error) {
 		routes.TenantPropertyMw,
 		handlers.ProcessTenant,
 	).
+		HandleMW(nil, reqreply.Observability[routes.ComputeReq, routes.ComputeResp](obs)).
 		WithHandler(handlers.Add).
 		Register(server)
 	if err != nil {

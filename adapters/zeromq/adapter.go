@@ -804,8 +804,9 @@ func publishHandle[T any](
 // SAME reflection-based dispatch [AttachServer]'s registered routes use),
 // rather than duplicating the decode/handler/encode/error-pattern
 // pipeline inline. Zero duplicate logic — full capability parity with
-// [AttachServer] is therefore automatic (see docs/roadmap/
-// D-0004's Addendum's Phase 0/0b for the history — this used to be
+// [AttachServer] is therefore automatic (see
+// docs/design/d-0004-reqreply-workflow-simplification.md's Addendum's
+// Phase 0/0b for the history — this used to be
 // a separate, hand-written implementation, mirroring the SAME
 // de-duplication mqtt5's [adapters/mqtt5.Serve] already shipped).
 //

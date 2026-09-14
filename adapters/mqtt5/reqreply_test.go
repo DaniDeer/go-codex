@@ -180,8 +180,8 @@ func TestServe_BuiltInCredentialCheck_RejectsMalformedCredential(t *testing.T) {
 // TestServe_HandleMW_PairedSecurityFn_Verifies confirms a PAIRED
 // HandleMW security Fn actually gets called and CAN reject — REPLACES
 // the OLD TestServe_SecurityFunc_RejectsRequest (ServeOptions.
-// SecurityFunc was removed entirely, Phase 1 of docs/roadmap/
-// D-0004's Addendum).
+// SecurityFunc was removed entirely, Phase 1 (see
+// docs/design/d-0004-reqreply-workflow-simplification.md's Addendum).
 func TestServe_HandleMW_PairedSecurityFn_Verifies(t *testing.T) {
 	client := &mockClient{}
 	router := newMockRouter()

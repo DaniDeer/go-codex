@@ -7,6 +7,14 @@
 //	                       security-only) — every reqreply.Route is an
 //	                       UNATTACHED spec value here, no handler yet.
 //	handlers/            — SERVER-side business logic, adapter-agnostic.
+//	observability/        — this example's [stats.Observer] implementation
+//	                       ([observability.DemoObserver]), kept out of
+//	                       routes/ (pure declaration) and handlers/
+//	                       (per-route business logic) — the shipped,
+//	                       library-owned [reqreply.Observability] general-
+//	                       purpose middleware is used directly at every
+//	                       .HandleMW/.ClientMW attachment point below (see
+//	                       docs/features/observer.md's reqreply section).
 //	mqtt5server/          — assembles routes/+handlers/ onto adapters/mqtt5
 //	                       (in-process mock broker, no real MQTT 5 broker
 //	                       needed).
@@ -30,17 +38,32 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"time"
 
 	reqreplyapiclient "github.com/DaniDeer/go-codex/examples/reqreply-api/client"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/mqtt5server"
+	"github.com/DaniDeer/go-codex/examples/reqreply-api/observability"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/zeromqserver"
+	"github.com/DaniDeer/go-codex/stats"
 )
 
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// obs is shared across every layer: the ADAPTER layer (adapters/
+	// mqtt5, adapters/zeromq's reqreply transports already call
+	// stats.Observer on every dispatch path) and any route that
+	// additionally attaches the shipped [reqreply.Observability](obs)
+	// via .HandleMW(nil, ...)/.ClientMW(nil, ...) BOTH read/write through
+	// this ONE value — stats.WithObserver injects it into ctx ONCE,
+	// here, before any server/demo runs; mqtt5server.Build in particular
+	// relies SOLELY on this ctx injection (see its own doc comment for
+	// why it attaches no per-route observer helper).
+	obs := observability.NewDemoObserver(slog.Default())
+	ctx = stats.WithObserver(ctx, obs)
 
 	// ── Build every server ──────────────────────────────────────────────
 	mqtt5Built, err := mqtt5server.Build()
@@ -56,7 +79,7 @@ func main() {
 	// registering a handler/subscription).
 	time.Sleep(50 * time.Millisecond)
 
-	zeromqBuilt, err := zeromqserver.Build()
+	zeromqBuilt, err := zeromqserver.Build(obs)
 	must(err, "build zeromq REQ/REP server")
 	go func() {
 		_ = zeromqBuilt.Server.Serve(ctx)
@@ -78,8 +101,9 @@ func main() {
 	demoUserPropertyParamMiddleware(ctx, mqtt5Built)
 	demoPropertyAxisMiddleware(ctx, mqtt5Built, zeromqBuilt)
 	demoSpecPrintingAsyncAPI(mqtt5Built.Server)
-	demoZeroMQDealerRouterVariant(ctx)
+	demoZeroMQDealerRouterVariant(ctx, obs)
 	demoCrossAPIOAuth2Sharing(ctx, zeromqBuilt)
+	demoObserverMiddleware(ctx, obs, mqtt5Built, mqtt5Client, zeromqClient)
 
 	fmt.Println("\n✓ all reqreply-api demos completed successfully")
 }

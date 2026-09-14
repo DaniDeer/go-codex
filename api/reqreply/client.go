@@ -26,8 +26,9 @@ type ClientTransport interface {
 	// arrives. See [Client.CallAsync]'s doc comment for the confirmed
 	// "send here, resolve elsewhere" mechanism. opts is [Call]'s
 	// identical per-call override parameter — resolved inside the SAME
-	// underlying dispatch [Call] uses (see docs/roadmap/
-	// D-0004's Addendum's "Interaction with CallAsync/Future").
+	// underlying dispatch [Call] uses (see
+	// docs/design/d-0004-reqreply-workflow-simplification.md's Addendum's
+	// "Interaction with CallAsync/Future").
 	CallAsync(ctx context.Context, route any, req any, opts ...ClientCallOptions) (any, error)
 }
 
@@ -128,8 +129,9 @@ func (c *Client) Call(ctx context.Context, route any, req any, opts ...ClientCal
 // route accepts the SAME dual-mode shape [Client.Call] does. opts is
 // [Client.Call]'s IDENTICAL trailing per-call format-override parameter —
 // resolved inside the SAME underlying dispatch [Client.Call] uses, so it
-// applies to CallAsync automatically (see docs/roadmap/
-// D-0004's Addendum's "Interaction with CallAsync/Future" for the
+// applies to CallAsync automatically (see
+// docs/design/d-0004-reqreply-workflow-simplification.md's Addendum's
+// "Interaction with CallAsync/Future" for the
 // confirmed async-timing nuance this implies for general-purpose
 // middleware, unrelated to format resolution itself). Returns
 // [NoClientTransportAttachedError] if [Client.Attach] was never called.

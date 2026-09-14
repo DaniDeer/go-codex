@@ -10,6 +10,7 @@ import (
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/client"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/routes"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/zeromqrouterserver"
+	"github.com/DaniDeer/go-codex/stats"
 )
 
 // demoZeroMQDealerRouterVariant shows the ROUTER/DEALER socket-topology
@@ -19,10 +20,10 @@ import (
 // 4. It also demonstrates zeromq.AttachRouterServer's upfront
 // [zeromq.MissingSocketError] when a registered route has no socket
 // wired for it — returned BEFORE reqreply.Server.Serve ever runs.
-func demoZeroMQDealerRouterVariant(ctx context.Context) {
+func demoZeroMQDealerRouterVariant(ctx context.Context, obs stats.Observer) {
 	fmt.Println("\n── Demo 8: zeromq ROUTER/DEALER variant + MissingSocketError ──")
 
-	built, err := zeromqrouterserver.Build()
+	built, err := zeromqrouterserver.Build(obs)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "zeromqrouterserver.Build error: %v\n", err)
 		os.Exit(1)
