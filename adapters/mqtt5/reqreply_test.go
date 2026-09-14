@@ -181,7 +181,7 @@ func TestServe_BuiltInCredentialCheck_RejectsMalformedCredential(t *testing.T) {
 // HandleMW security Fn actually gets called and CAN reject — REPLACES
 // the OLD TestServe_SecurityFunc_RejectsRequest (ServeOptions.
 // SecurityFunc was removed entirely, Phase 1 of docs/roadmap/
-// reqreply-middleware.md).
+// D-0004's Addendum).
 func TestServe_HandleMW_PairedSecurityFn_Verifies(t *testing.T) {
 	client := &mockClient{}
 	router := newMockRouter()
@@ -273,7 +273,7 @@ func newSecuredRouteHandleWithClientImpl(clientFn func(context.Context, []route.
 // ClientMW credential-supplying Fn actually gets called and supplies a
 // credential — REPLACES the OLD TestCall_CredentialFunc_ValidFormat_Passes
 // (CallOptions.CredentialFunc was removed entirely, Phase 1 of
-// docs/roadmap/reqreply-middleware.md).
+// docs/design/d-0004-reqreply-workflow-simplification.md's Addendum).
 func TestCall_ClientMW_PairedCredentialFn_Supplies(t *testing.T) {
 	client := &mockClient{}
 	router := newMockRouter()
@@ -1463,7 +1463,7 @@ func TestCall_ResponseFormats_TypeMismatch_ReturnsCallError(t *testing.T) {
 // ── Phase 1b: header-param-as-middleware (request side) ────────────────
 
 // apiKeyUserProp declares a REQUIRED User Property via .Use()/
-// [FromUserPropertyParam] — Phase 1b of docs/roadmap/reqreply-middleware.md.
+// [FromUserPropertyParam] — Phase 1b of docs/design/d-0004-reqreply-workflow-simplification.md's Addendum.
 var apiKeyUserProp = UserPropertyParam{Name: "X-API-Key", Required: true}
 
 var userPropertyComputeRoute = reqreply.NewRoute[computeReq, computeResp](

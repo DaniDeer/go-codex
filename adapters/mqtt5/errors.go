@@ -32,7 +32,7 @@ const (
 	// KindMiddleware indicates a codec-backed [reqreply.Middleware]
 	// (Transform/ClientTransform-attached, or bundled via .Use()) fn's
 	// own business error — [reqreply.MiddlewareError], D2's fallback for
-	// docs/roadmap/reqreply-codec-declared-middleware.md's declared-
+	// docs/design/d-0003-codec-declared-middlewares.md's Addendum's declared-
 	// middleware mechanism. Distinct from KindHandler (a real domain
 	// handler failure).
 	KindMiddleware

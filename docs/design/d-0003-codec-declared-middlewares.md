@@ -1477,6 +1477,14 @@ bundled into this design's readiness.
 
 ## Next steps
 
+> **Historical note**: items 1-4 below describe the ORIGINAL rollout plan
+> (REST → SSE → events) — all shipped, in this order, confirmed via the
+> "Addendum: `api/reqreply` and `api/events`' property axis..." section
+> below, which covers the LAST major follow-on round (bringing
+> `api/reqreply` up to this same parity, plus 2 bug fixes discovered in
+> events' already-shipped mechanism). Item 5 (`ports` middleware) remains
+> future work, unaffected by any of this.
+
 1. Implement in the order: `middleware.Declaration`/`RouteMiddleware` (package
    `middleware`) → `rest.Middleware[In,Out]` + BOTH `Transform` (server, bound) AND
    `ClientTransform` (client, bound) together, PLUS `WithReceive`/`WithSend` +
@@ -1517,3 +1525,131 @@ bundled into this design's readiness.
    `ports.Middleware[In,Out]`" above; UNAFFECTED by this round's REST/SSE/events
    naming and attachment-style resolution, since it was already scoped as future
    work, not blocked on any decision made this round.
+
+## Addendum: `api/reqreply` and `api/events`' "property" vocabulary axis, bringing both up to full parity with this design
+
+Added after `docs/roadmap/reqreply-codec-declared-middleware.md` shipped
+(19 review rounds, 8 numbered design decisions, implemented in a later
+session as a 13-phase, two-track parallel effort) — recorded here so the
+lineage is discoverable from this document, since the newer feature's own
+roadmap doc did not itself narrate where its core mechanism came from. That
+roadmap doc has SINCE BEEN DELETED (per its own 3-way delete/keep/promote
+graduation policy — a single-feature roadmap doc, fully shipped, with a
+confirmed zero-gap review, and no lasting cross-cutting design value of its
+own beyond what is captured here); this addendum is the durable record of
+the design lineage that remains after that deletion.
+
+### What shipped
+
+Before this round, `Middleware[In,Out]` (REST/events, per D1-D7 above) only
+had a "topic"/"path" vocabulary axis (`WithRequestTopic`/`WithResponseTopic`
+for reqreply, channel-var equivalents for events) — no way to declare a
+merge field against MQTT5 User Properties/AMQP-style headers, "named
+metadata separate from payload." This round added a SECOND, orthogonal
+vocabulary axis, applied identically to BOTH `api/reqreply` (new package,
+brought up to D-0003 parity for the first time in this round) and
+`api/events` (already D-0003-compliant for the topic axis; this round added
+property-axis parity):
+
+- `PropertyParam`/`MergedPropertyParam[T]` (per-package, duplicating
+  `TopicParam`'s existing shape exactly — same reasoning as `TopicParam`
+  itself: two independently-defined thin wrappers over the SAME shared
+  `codex.Param`/`MergedParam[T]`/`NewParam[T,V]` primitives, not one
+  cross-package type).
+- `NewPropertyParam[T,V]` (required) / `NewOptionalPropertyParam[T,V]`
+  (optional — a NEW capability added to the shared `codex` primitives'
+  surface, via `codex.OptionalField`, which already existed internally but
+  was never exposed through `NewParam`'s API before this round).
+  `Required bool` lives on `PropertyParam`/`MergedPropertyParam[T]`
+  themselves (mirrors `rest.HeaderParam.Required` — NOT added to shared
+  `codex.Param`, keeping `TopicParam`'s own no-Required-field design
+  untouched).
+- `WithRequestProperty`/`WithResponseProperty` (reqreply),
+  `WithSubscribeProperty`/`WithPublishProperty` (events) — new
+  `Middleware[In,Out]` attachment methods, alongside the existing topic-axis
+  ones.
+- `buildDecodeIn`/`buildEncodeOut` extended to take TWO SEPARATE map
+  parameters (topic vars, property vars) — never combined into one map,
+  mirroring REST's own real `buildDecodeIn(headerVars, cookieVars,
+  queryVars map[string]string)` multi-axis pattern exactly (confirmed
+  against REST's real code, not assumed).
+- AsyncAPI spec rendering: the property axis's contributions unify into
+  Phase 1b's existing `applyParamDeclarations` mechanism for reqreply
+  (events renders its own standalone contribution, since it had no
+  pre-existing flat mechanism to unify with); `Required` correctly
+  propagates into the rendered schema's `required` array, not just runtime
+  validation.
+- Conflict detection: a NEW, uniform algorithm applies to ALL contributions
+  (reqreply's flat Phase-1b mechanism AND the new axis; a brand-new
+  `events.ConflictingParamContributionError` + `checkEventsParamConflicts`
+  for events, which had zero pre-existing conflict machinery at all).
+  Topic-vars and properties are tracked in INDEPENDENT namespaces (never
+  cross-checked against each other — a stronger boundary than REST's own
+  looser header/cookie/query shared-namespace precedent, justified by the
+  two axes coming from genuinely different wire locations). Contributions
+  additionally compare `Schema` (via `reflect.DeepEqual`, nil-vs-non-nil
+  treated as a mismatch) — a deliberate DIVERGENCE beyond REST's own real
+  `checkParamConflicts`, which never compares codecs at all.
+
+### Accepted breaking change (deliberate, not silently introduced)
+
+Unifying conflict-detection onto ONE uniform algorithm retired reqreply's
+Phase 1b's OLD silent-first-seen-wins dedupe behavior for MISMATCHED
+declarations sharing a name — two contributions disagreeing on
+`Required`/codec now ALWAYS error, regardless of origin (Phase 1b's flat
+mechanism or the new axis). Scope of the break is narrow: only routes with
+two PRE-EXISTING Phase-1b-only declarations for the same property name with
+differing `Required`/codec (previously silently tolerated) would newly fail
+to `Register`. Chosen deliberately over preserving the old laxer behavior —
+"one algorithm, one mental model" was judged simpler and more maintainable
+than tracking contribution origin through the comparison, even at the cost
+of a breaking change to already-shipped behavior.
+
+### Write-side wiring — the most significant implementation finding
+
+Tracing property values all the way to the wire (not just the type-level
+API) surfaced a REAL, pre-existing capability gap: `adapters/mqtt5`'s
+reqreply server-reply path had ZERO mechanism to write ANY outgoing User
+Property onto its own reply message (`ServeOptions.UserPropertyParams` was
+validate-only, checked against the INCOMING request only). This round added
+the missing capability — both success-reply and error-reply `.Publish(...)`
+call sites in `adapters/mqtt5/reqreply_transport.go` now write
+`propertyVars` from `WithResponseProperty` into the outgoing
+`PublishProperties.User`. The client-request side and events' publish side
+both had existing write-targets already (`t.opts.UserProperties`/
+`PublishOptions.UserProperties`) and only needed wiring, not new capability.
+
+### 2 bugs found and fixed in events' ALREADY-SHIPPED D-0003 mechanism (pre-existing, not introduced by this round)
+
+Discovered while scoping full reqreply/events parity, both confirmed real
+via code tracing, fixed in the same round since it already touched the
+exact code paths:
+
+1. **Value-precedence bug** — events' publish-side
+   (`adapters/mqtt5/adapter.go`/`adapters/zeromq/adapter.go`, identical
+   pattern in both) had channel-own-derived vars winning over
+   middleware-derived vars — the OPPOSITE of this doc's own D3 (explicit >
+   middleware-derived > route/channel-own-derived, confirmed via REST's
+   real `overrideDerived` chain, and via this doc's own "Test plan" wording
+   verbatim). Fixed via a minimal `isExplicitVars bool` flag through
+   `publish()`'s call chain (simpler than an earlier 2-map-parameter sketch
+   — the explicit-vs-channel-own cases are already mutually exclusive at
+   the call site).
+2. **Missing Observer integration** — events' `dispatchSubscribeMiddlewareHandlers`/
+   `dispatchPublishMiddlewareHandlers` (`adapters/mqtt5/transform_dispatch.go`)
+   had ZERO `stats.ReportErrors` calls for middleware decode/business-error
+   failures, contradicting this doc's own D5 (which explicitly states
+   "Events mirror, confirmed NOT REST-specific"). Fixed: both now call
+   `stats.ReportErrors(obs, "middleware:in"/"middleware:fn", err)`,
+   matching REST's real call sites exactly.
+
+### Validation
+
+A dedicated post-implementation gap review (comparing the roadmap doc's
+"Files to create" table and all 54 planned unit tests against the real,
+shipped codebase) found and fixed 4 residual gaps (a missing unit test, a
+missing `docs/features/reqreply-middleware.md` page, 2 stale
+cross-references in companion roadmap docs) — confirmed CLOSED, zero
+functional gaps remained in shipped code. Full verification (`go build
+./...`, `go test -count=1 ./...` repo-wide, `just check`, `gofmt -l .`) —
+all clean.

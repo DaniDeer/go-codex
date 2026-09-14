@@ -14,7 +14,7 @@ import (
 
 // globalSecurityCredFn is the PAIRED client-side credential-supplying Fn
 // for routes.BearerAuthMw — REPLACES the OLD mqtt5adapter.CallOptions.
-// CredentialFunc entirely (Phase 1 of docs/roadmap/reqreply-middleware.md,
+// CredentialFunc entirely (Phase 1 of docs/design/d-0004-reqreply-workflow-simplification.md's Addendum,
 // BREAKING removal). Attached via .ClientMW(&routes.BearerAuthMw, ...).
 func globalSecurityCredFn(context.Context, []route.SecurityRequirement) ([]mqtt5adapter.UserProperty, error) {
 	return []mqtt5adapter.UserProperty{{Key: "Authorization", Value: "******"}}, nil

@@ -294,7 +294,7 @@ func newRouteHandle() *reqreply.RouteHandle[computeReq, computeResp] {
 var bearerAuthTestCodec = codex.String().Refine(validate.NonEmptyString)
 
 // bearerAuthMw declares the "bearer" scheme via .Use() (Phase 1 of
-// docs/roadmap/reqreply-middleware.md) — REPLACES the OLD manual
+// docs/design/d-0004-reqreply-workflow-simplification.md's Addendum) — REPLACES the OLD manual
 // RouteMeta.Security + reqreply.WithSecurityScheme declaration pattern,
 // which is incompatible with pairing a HandleMW/ClientMW implementation
 // against it (checkImplementationsDeclared only recognizes schemes
@@ -1646,7 +1646,7 @@ func TestSubscribe_Observer_ReportsMiddlewareInAndFnLocations(t *testing.T) {
 // returns a fn business error (no separate DecodeIn step exists on this
 // side) — mirrors REST's client dispatch, which ALSO only ever reports
 // "middleware:fn" on its own encode side; a faithfully-mirrored asymmetry
-// (see docs/roadmap/reqreply-codec-declared-middleware.md's "Observer
+// (see docs/design/d-0003-codec-declared-middlewares.md's Addendum's "Observer
 // integration"), not a gap.
 func TestPublish_Observer_ReportsMiddlewareInAndFnLocations(t *testing.T) {
 	mw := events.NewMiddleware(newMqttMdDeclaration("fn-error-policy"))

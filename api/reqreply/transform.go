@@ -25,7 +25,7 @@ type MiddlewareHandler struct {
 	// SAME raw topic-var map the route's own Req decode uses, AND a
 	// SEPARATE adapter-supplied property-var map (e.g. MQTT5 User
 	// Properties) — kept as TWO SEPARATE parameters, never combined into
-	// one map (see docs/roadmap/reqreply-codec-declared-middleware.md's
+	// one map (see docs/design/d-0003-codec-declared-middlewares.md's Addendum's
 	// "Round 2 correction"). Returns the decoded In boxed as `any`.
 	DecodeIn func(topicVars, propertyVars map[string]string) (any, error)
 

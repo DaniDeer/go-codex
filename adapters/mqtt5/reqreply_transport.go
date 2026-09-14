@@ -121,7 +121,7 @@ func publishHandlerErrorReplyReflect(
 			CorrelationData: correlationData,
 		}
 		// Case 3 write-side wiring (docs/roadmap/
-		// reqreply-codec-declared-middleware.md's "Write-side wiring"):
+		// D-0003's Addendum's "Write-side wiring"):
 		// a Middleware's WithResponseProperty-declared value is written
 		// onto the ERROR reply's User Properties too, not just the
 		// success reply — a route's declared response property is a
@@ -147,7 +147,7 @@ func publishHandlerErrorReplyReflect(
 // userPropertiesFromMap converts a plain map[string]string into
 // [pahomqtt5.UserProperties] — the wire shape MQTT5 User Properties
 // require — used by BOTH the property axis's write-side wiring (Case 1/
-// Case 3, see docs/roadmap/reqreply-codec-declared-middleware.md) and
+// Case 3, see docs/design/d-0003-codec-declared-middlewares.md's Addendum) and
 // (indirectly, via the same conversion) anywhere else a plain var map
 // needs to become actual User Properties.
 func userPropertiesFromMap(vars map[string]string) pahomqtt5.UserProperties {
@@ -167,7 +167,7 @@ func userPropertiesFromMap(vars map[string]string) pahomqtt5.UserProperties {
 // [reqreply.ClientMiddlewareHandler.DecodeOut] decode the property axis
 // from. Reuses the SAME wire shape [validateUserProperties] already
 // reads from, kept as a SEPARATE map from topicVars throughout (never
-// combined — see docs/roadmap/reqreply-codec-declared-middleware.md's
+// combined — see docs/design/d-0003-codec-declared-middlewares.md's Addendum's
 // "Round 2 correction").
 func propertyVarsFromUserProperties(msg *pahomqtt5.Publish) map[string]string {
 	if msg == nil || msg.Properties == nil || len(msg.Properties.User) == 0 {
@@ -278,7 +278,7 @@ func dispatchClientMiddlewareOut(
 
 // mergeVarsOverride merges src into dst, src's values WINNING on a key
 // conflict — mirrors D3's real, shipped precedence rule (see
-// docs/roadmap/reqreply-codec-declared-middleware.md's "Value
+// docs/design/d-0003-codec-declared-middlewares.md's Addendum's "Value
 // precedence" section: "middleware-derived ALWAYS wins over route-own-
 // derived").
 func mergeVarsOverride(dst, src map[string]string) map[string]string {
@@ -327,7 +327,7 @@ func effectiveSecurity(elem reflect.Value) (reqs []route.SecurityRequirement, sc
 // identically either way).
 //
 // Capability parity with [Serve] (Phase 0 of
-// docs/roadmap/reqreply-middleware.md, SHIPPED): route-declared
+// docs/design/d-0004-reqreply-workflow-simplification.md's Addendum, SHIPPED): route-declared
 // [reqreply.RouteHandle.RequestFormats]/[reqreply.RouteHandle.Formats],
 // [reqreply.NewTopicParam] merge-field topic-var merging, and
 // [reqreply.ErrorPattern]-typed error replies (for handler/encode
@@ -425,7 +425,7 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 	// error) (ErrorPatternResponse, bool, error) — closes Phase 0 work item 3.
 	errorResponseForMethod := rv.MethodByName("ErrorResponseFor")
 
-	// Phase 1: declarative middleware (docs/roadmap/reqreply-middleware.md).
+	// Phase 1: declarative middleware (docs/design/d-0004-reqreply-workflow-simplification.md's Addendum).
 	// impls are the [reqreply.Route.HandleMW]-attached implementations —
 	// validated for shape EAGERLY (once, at Serve construction time, not
 	// per message) and coverage-checked against the route's declared
@@ -452,7 +452,7 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 	requestHeaderSpecs, _ := elem.FieldByName("RequestHeaderParams").Interface().([]middleware.HeaderParamSpec)
 	requestHeaderParams := userPropertyParamsFromHeaderSpecs(requestHeaderSpecs)
 
-	// docs/roadmap/reqreply-codec-declared-middleware.md: codec-backed
+	// docs/design/d-0003-codec-declared-middlewares.md's Addendum: codec-backed
 	// Middleware[In,Out] dispatch (Transform-attached or bundled via
 	// plain .Use()) — dispatched AFTER the paired security Fn, mirroring
 	// D1's precedent exactly (see the dispatch call site inside
@@ -598,7 +598,7 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 			return
 		}
 
-		// docs/roadmap/reqreply-codec-declared-middleware.md: codec-backed
+		// docs/design/d-0003-codec-declared-middlewares.md's Addendum: codec-backed
 		// Middleware[In,Out] dispatch — runs AFTER the paired security Fn
 		// above (D1), reading (Transform-bound handlers) AND potentially
 		// enriching the route's own decoded *Req via a fresh, addressable
@@ -671,7 +671,7 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 				replyProps.CorrelationData = correlationData
 			}
 			// Case 3 write-side wiring (docs/roadmap/
-			// reqreply-codec-declared-middleware.md's "Write-side
+			// D-0003's Addendum's "Write-side
 			// wiring") — a Middleware's WithResponseProperty-declared
 			// value is written onto the SUCCESS reply's User Properties.
 			// BRAND NEW capability: no existing mechanism wrote outgoing
@@ -716,7 +716,7 @@ var _ reqreply.ServerTransport = (*serverTransport)(nil)
 
 // clientTransport implements [reqreply.ClientTransport], wrapping client+
 // router+opts — built by [AttachClient]. Capability parity with [Call]/
-// [CallHandle] (Phase 0 of docs/roadmap/reqreply-middleware.md, SHIPPED):
+// [CallHandle] (Phase 0 of docs/design/d-0004-reqreply-workflow-simplification.md's Addendum, SHIPPED):
 // route-declared [reqreply.RouteHandle.RequestFormats]/
 // [reqreply.RouteHandle.Formats], a per-call [reqreply.ClientCallOptions]
 // format override, AND [reqreply.NewTopicParam] merge-field topic-var
@@ -852,7 +852,7 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 		vars, _ = encodeVarsResults[0].Interface().(map[string]string)
 	}
 
-	// docs/roadmap/reqreply-codec-declared-middleware.md: codec-backed
+	// docs/design/d-0003-codec-declared-middlewares.md's Addendum: codec-backed
 	// ClientMiddlewareHandler dispatch (ClientTransform-attached or
 	// bundled via plain .Use()) — produces In (via Fn), encoded into
 	// topic/property vars. Middleware-derived values ALWAYS override
@@ -964,7 +964,7 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 	}
 	defer cleanup()
 
-	// Phase 1: declarative middleware (docs/roadmap/reqreply-middleware.md).
+	// Phase 1: declarative middleware (docs/design/d-0004-reqreply-workflow-simplification.md's Addendum).
 	// clientImpls are the [reqreply.Route.ClientMW]-attached
 	// implementations — validated for shape EAGERLY, mirroring
 	// adapters/nethttp's validateCallImplementationShapes. respType/
@@ -1036,7 +1036,7 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 		secReqs, schemeTypes, schemeCodecs := effectiveSecurity(elem)
 		userProps := append(pahomqtt5.UserProperties(nil), t.opts.UserProperties...)
 		// Case 1 write-side wiring (docs/roadmap/
-		// reqreply-codec-declared-middleware.md's "Write-side wiring"):
+		// D-0003's Addendum's "Write-side wiring"):
 		// a Middleware's WithRequestProperty-declared value merges into
 		// the SAME outgoing userProps mechanism the security-credential-
 		// derived properties below also use.
@@ -1172,7 +1172,7 @@ func (t *clientTransport) CallAsync(ctx context.Context, routeAny any, reqAny an
 
 var _ reqreply.ClientTransport = (*clientTransport)(nil)
 
-// ── Phase 1: declarative middleware (docs/roadmap/reqreply-middleware.md) ──
+// ── Phase 1: declarative middleware (docs/design/d-0004-reqreply-workflow-simplification.md's Addendum) ──
 //
 // Fn-shape dispatch for [reqreply.Route.HandleMW]/[reqreply.Route.ClientMW]
 // implementations, mirroring [adapters/nethttp]'s identical mechanism
@@ -1200,7 +1200,7 @@ var _ reqreply.ClientTransport = (*clientTransport)(nil)
 // validateSecurityCredentials before this runs) and returns a scope-grant
 // map, combined across every attached paired implementation via
 // [middleware.CheckScopes] — mirrors [adapters/nethttp]'s identical
-// scope-grant model (Decision #4 of docs/roadmap/reqreply-middleware.md),
+// scope-grant model (Decision #4 of docs/design/d-0004-reqreply-workflow-simplification.md's Addendum),
 // NOT zeromq's own in-payload *Req shape (each transport adapter mirrors
 // its OWN precedent, an intentional per-adapter difference, not an
 // inconsistency).
@@ -1388,7 +1388,7 @@ func userPropertyParamsFromResponseHeaderSpecs(specs []middleware.ResponseHeader
 // FromUserPropertyParam bridges an EXISTING [UserPropertyParam] value
 // into a real [middleware.Middleware], usable with [reqreply.Route.Use]
 // exactly like one built from scratch — Phase 1b of
-// docs/roadmap/reqreply-middleware.md, mirroring [rest.FromHeaderParam]'s
+// docs/design/d-0004-reqreply-workflow-simplification.md's Addendum, mirroring [rest.FromHeaderParam]'s
 // "wrap what you already have" pattern. Populates
 // [middleware.Middleware.RequestHeaderParams] — consulted by
 // [reqreply.Route.Register] (rendered into the request message's

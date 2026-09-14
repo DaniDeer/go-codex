@@ -48,7 +48,9 @@
 > Properties become a concrete, sealed `mqtt5.Capability` instance under this
 > design (§5.2). **A THIRD, ALREADY-SHIPPED answer to the SAME underlying
 > use case now also exists** —
-> [ReqReply Codec-Declared Middleware](reqreply-codec-declared-middleware.md)'s
+> [D-0003](../design/d-0003-codec-declared-middlewares.md)'s own Addendum
+> (folded in from the now-deleted `reqreply-codec-declared-middleware.md`
+> roadmap doc) —
 > new "property" vocabulary axis (`WithRequestProperty`/`WithResponseProperty`
 > for `api/reqreply`, `WithSubscribeProperty`/`WithPublishProperty` for
 > `api/events`), built directly on D-0003's ALREADY-SHIPPED
@@ -748,27 +750,28 @@ not shared with `mqtt5.UserProperty`, for the SAME bar-2 reason, even
 though their underlying shapes are compatible enough that a shared type
 was tempting to consider.
 
-#### 5.2.1 A THIRD, ALREADY-SHIPPED answer to this SAME use case — the "property" axis in [ReqReply Codec-Declared Middleware](reqreply-codec-declared-middleware.md)
+#### 5.2.1 A THIRD, ALREADY-SHIPPED answer to this SAME use case — the "property" axis in D-0003's own Addendum
 
 **Documented here as a related use case, NOT a competing design** —
-added after that doc's own 19 review rounds confirmed a genuinely
+added after the (now-deleted) `reqreply-codec-declared-middleware.md`
+roadmap doc's own 19 review rounds confirmed a genuinely
 distinct path to the SAME underlying problem this section analyzes
 (declaring MQTT5 User Properties / AMQP headers), and now SHIPPED (see
-that doc's own status banner). That doc adds a NEW vocabulary axis
+[D-0003](../design/d-0003-codec-declared-middlewares.md)'s own Addendum). That doc adds a NEW vocabulary axis
 DIRECTLY on `middleware.Middleware[In,Out]` (already SHIPPED via
 D-0003, not a hypothetical) — `WithRequestProperty`/`WithResponseProperty`
 for `api/reqreply`, `WithSubscribeProperty`/`WithPublishProperty` for
 `api/events` — via a NEW `PropertyParam`/`MergedPropertyParam[T]`/
 `NewPropertyParam[T,V]`/`NewOptionalPropertyParam[T,V]` triple, confirmed
-to mirror `TopicParam`'s existing wrapper pattern exactly (see that
-doc's "The 'property' vocabulary axis" section, and
+to mirror `TopicParam`'s existing wrapper pattern exactly (see
+D-0003's own Addendum, and
 [Feature: ReqReply Codec-Declared Middleware](../features/reqreply-middleware.md)
 for the user-facing docs).
 
 **Where this sits relative to THIS doc's `Capability` mechanism —
 distinct, not overlapping, by design:**
 
-| | `protocol-native-features.md`'s `Capability` (this doc) | `reqreply-codec-declared-middleware.md`'s property axis |
+| | `protocol-native-features.md`'s `Capability` (this doc) | D-0003's Addendum's property axis |
 |---|---|---|
 | Ownership | ADAPTER-owned (`mqtt5.Capability`, sealed) | API-LEVEL (`api/reqreply`/`api/events`, not adapter-owned) |
 | Supplied at | `Attach`/bind time | Declare time, on a `Middleware[In,Out]` value, via `.Use()`/`Transform`/`ClientTransform` |

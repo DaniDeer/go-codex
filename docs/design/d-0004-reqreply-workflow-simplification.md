@@ -7,12 +7,18 @@
 > promotion itself — `Builder`/`NewBuilder`/`BuilderOption` are kept as
 > DEPRECATED aliases (zero-cost, no behavioral duplication, matching
 > `d-0002`'s own precedent for aliases). **`mqtt5`/`zeromq`'s lower-level
-> `Serve`/`Call`/`ServeRouter`/`CallDealer` — REOPENED, decision
-> REVERSED, see "Remaining open items" below.** Phase 5 originally kept
-> these permanently as documented escape hatches (mirroring REST's
-> `ServeOne`/`CallWithHandle`); that analogy was found FLAWED during
-> `docs/roadmap/reqreply-middleware.md`'s review and the decision is now
-> to RETIRE them — tracked and sequenced there, not here.
+> `Serve`/`Call`/`ServeRouter`/`CallDealer` — RESOLVED (see "Addendum:
+> `reqreply-middleware.md` and `zeromq-security.md`" below for the final
+> outcome).** Phase 5 originally kept these permanently as documented
+> escape hatches (mirroring REST's `ServeOne`/`CallWithHandle`); that
+> analogy was found FLAWED during a later review (`reqreply-middleware.md`,
+> now folded into the Addendum below), reopening the question of whether
+> to retire them entirely. The FINAL resolution: NOT deleted — they kept
+> their exact existing signatures (zero breaking change), with their
+> bodies rewritten to construct a `serverTransport`/`clientTransport`
+> (etc.) directly and delegate to it, eliminating the duplicate dispatch
+> logic that motivated reopening the question in the first place, with
+> zero caller/example migration required.
 > `docs/guides/mqtt5.md`/`docs/guides/zeromq.md` currently lead with
 > the `Server`/`Client`+`Attach` workflow and demote the lower-level
 > functions to an explicit "escape hatch" section (still accurate today,
@@ -713,28 +719,24 @@ mechanisms are ever implemented together.
 
 ## Confirmed adapter capability matrix (carried forward, mostly unchanged)
 
-> **Update (re-verified in a later review round)**: the bottom two rows
-> are now STALE for `mqtt5` specifically — both shipped as ✅ via
-> `reqreply-middleware.md`'s Phase 1 (corrected below). The
-> `mqtt`(v3)/`zeromq` cells in this table were NOT re-verified this
-> pass (this table predates D-0002/D-0003's in-payload mechanism
-> shipping for pub/sub, which likely affects the `mqtt`(v3) publish-side
-> `CredentialFunc` cell too — flagged, not corrected here, since this
-> table's scope is reqreply-specific and those cells describe pub/sub's
-> OWN building-block capabilities, a separate audit).
+> **Final update**: all rows below are now SHIPPED/CLOSED for every
+> adapter — corrected here, superseding the "STALE"/"not yet
+> implemented" notes an earlier pass left in this table. See "Addendum:
+> `reqreply-middleware.md` and `zeromq-security.md`" below for the full
+> record (both source roadmap docs have since been deleted).
 
 | Capability | `mqtt` (v3) | `mqtt5` | `zeromq` |
 |---|---|---|---|
-| Connection-level `SecuredClient`/`ConnectSecurityScheme` | ✅ | ✅ | ❌ (see [ZeroMQ Security Mechanism](../roadmap/zeromq-security.md)) |
-| Message-level subscribe-side `SecurityFunc` | ✅ | ✅ | ❌ |
-| Message-level publish-side `CredentialFunc` | ❌ (protocol limit — no per-message property channel) | ✅ | ❌ |
+| Connection-level `SecuredClient`/`ConnectSecurityScheme` | ✅ | ✅ | ❌ permanently, by design (CURVE/ZAP is the caller's own concern — see the Addendum below's "Connection-level authentication — CLOSED" summary) |
+| Message-level subscribe-side `SecurityFunc` | ✅ | ✅ | ✅ (in-payload, via `SubscribeOptions.SecurityFunc`) |
+| Message-level publish-side `CredentialFunc` | ❌ (protocol limit — no per-message property channel) | ✅ | ✅ (in-payload, via `PublishOptions.CredentialFunc`) |
 | Native Response Topic + Correlation Data (reqreply viability) | ❌ (protocol limit) | ✅ | n/a (own correlation mechanism) |
-| Scope-grant / `middleware.CheckScopes` integration (reqreply) | n/a (no reqreply support) | ✅ SHIPPED (Phase 1 of [ReqReply Middleware](../roadmap/reqreply-middleware.md)) | ❌ (Fn-shape designed, not yet implemented — see [ZeroMQ Security Mechanism](../roadmap/zeromq-security.md)) |
-| Handle-attached implementation (vs. per-call `Options`) (reqreply) | n/a (no reqreply support) | ✅ SHIPPED (`RouteHandle.Implementations`/`ClientImplementations`, Phase 1) | ❌ today (same follow-up as above) |
+| Scope-grant / `middleware.CheckScopes` integration (reqreply) | n/a (no reqreply support) | ✅ SHIPPED (Phase 1) | n/a — zeromq reqreply's paired Fn shape uses a plain-`error`-returning shape instead (deliberately not REST's scope-grant model), SHIPPED across all 4 transports |
+| Handle-attached implementation (vs. per-call `Options`) (reqreply) | n/a (no reqreply support) | ✅ SHIPPED (`RouteHandle.Implementations`/`ClientImplementations`, Phase 1) | ✅ SHIPPED (same fields, all 4 transports) |
 
 The bottom two rows are what Decision 3 (above) closes — SHIPPED for
-`mqtt5`, designed but not yet implemented for `zeromq` (tracked in
-[ZeroMQ Security Mechanism](../roadmap/zeromq-security.md), not here).
+BOTH `mqtt5` and `zeromq` (see the Addendum below for the full,
+adapter-specific detail).
 
 ## Relationship to `protocol-native-features.md` (now [Feature](../roadmap/protocol-native-features.md))
 
@@ -1331,26 +1333,22 @@ functions — is now tracked and sequenced entirely in
 is the ONLY item reopened; the other items remain closed as below.
 
 **This doc (d-0004) otherwise has ZERO remaining open DECISIONS of its
-own.** **Update (re-verified in a later review round): most of the
-tracked implementation work below has SINCE SHIPPED.**
-`docs/roadmap/reqreply-middleware.md`'s Phase 0/0b (escape-hatch
-delegation, for BOTH mqtt5 AND zeromq) and Phase 1/1b (mqtt5's
+own.** **Final update: ALL tracked implementation work below has SINCE
+SHIPPED, for BOTH adapters.** `reqreply-middleware.md`'s Phase 0/0b
+(escape-hatch delegation, BOTH mqtt5 AND zeromq) and Phase 1/1b (mqtt5's
 `HandleMW`/`ClientMW` Fn shapes, the declare/implement split, plus the
-User-Property param-as-middleware sub-phase) are ALL SHIPPED and
-verified — see that doc's own status banner. The ONLY implementation
-item still genuinely open is **zeromq's own `.Use`/`HandleMW`/
-`ClientMW` Fn-shape work** (tracked in `docs/roadmap/zeromq-security.md`,
-itself still "idea only, no driver yet" as of this update) — until that
-ships, reqreply-middleware.md's declare/implement split remains a
-single-adapter (mqtt5-only) pattern, which is why it has NOT been
-promoted into this doc or any other `docs/design/` entry yet (per
-`docs/design/index.md`'s own graduation bar: shipped AND multi-adapter).
-Shared Subscriptions as a `Capability` candidate
-(`docs/roadmap/protocol-native-features.md`) remains separately tracked,
-unrelated to the above. None of this represents an unresolved question
-WITHIN d-0004's own scope (the `Server`/`Client`/`Attach` rework, which
-is fully shipped and verified) — it is downstream follow-on work this
-doc correctly deferred to its own dedicated roadmap docs.
+User-Property param-as-middleware sub-phase) shipped first; **zeromq's
+OWN `.Use`/`HandleMW`/`ClientMW` Fn-shape work (`zeromq-security.md`)
+has SINCE ALSO SHIPPED** — the declare/implement split is now a
+multi-adapter (mqtt5 AND zeromq) pattern. Both source roadmap docs have
+since been deleted, per their own graduation policy; see "Addendum:
+`reqreply-middleware.md` and `zeromq-security.md`" below for the full,
+consolidated, durable record — promoted into this doc now that the
+multi-adapter bar is met. Shared Subscriptions as a `Capability`
+candidate (`docs/roadmap/protocol-native-features.md`) remains
+separately tracked, unrelated to the above. None of this represents an
+unresolved question WITHIN d-0004's own scope (the
+`Server`/`Client`/`Attach` rework, which is fully shipped and verified).
 
 ## Test plan (executed during implementation — see the Phased
 implementation plan above for the actual verification evidence per phase)
@@ -1431,3 +1429,149 @@ plan sections:
   today's confirmed "never even read" gap) — this is the ONE existing
   escape-hatch bullet this rework is expected to actually fix, not just
   document.
+
+## Addendum: `reqreply-middleware.md` and `zeromq-security.md` — the declare/implement split, for BOTH mqtt5 AND zeromq
+
+Added after `docs/roadmap/reqreply-middleware.md` (mqtt5's declare/
+implement split, Phases 0/0b/1/1b) and `docs/roadmap/zeromq-security.md`
+(zeromq's own Fn-shape work, closing the last item the first doc
+deferred) both shipped — recorded here so the lineage is discoverable
+from this document, since the newer features' own roadmap docs did not
+themselves narrate where their core mechanism came from. Both roadmap
+docs have SINCE BEEN DELETED (per their own 3-way delete/keep/promote
+graduation policy — single-feature roadmap docs, fully shipped, with no
+lasting cross-cutting design value of their own beyond what is captured
+here); this addendum is the durable record of the design lineage that
+remains after that deletion.
+
+### Phase 0 / 0b — escape-hatch delegation (mqtt5 AND zeromq)
+
+- `RouteHandle` gained capability-parity methods mirroring
+  `rest`/`events`: `DecodeWithFormats`, `DecodeMergedWithFormats`,
+  `EncodeRequestWithFormats`, `EncodeWithFormats`,
+  `DecodeResponseWithFormats`, `EffectiveRequestFormats`,
+  `EffectiveFormats`, `EncodeVars`. `reqreply.ClientCallOptions` (mirrors
+  `rest.ClientCallOptions`) added as a variadic trailing parameter to
+  `Client.Call`/`CallAsync`/`ClientTransport.Call`/`CallAsync`.
+- **Final resolution for `Serve`/`Call`/`CallHandle`/`ServeRouter`/
+  `CallDealer`** (see the corrected status-banner note above for the
+  short version): these functions KEPT their exact existing signatures
+  (zero breaking change) — their bodies were rewritten to construct a
+  `serverTransport`/`clientTransport` (etc.) directly and delegate to
+  its `.Serve`/`.Call` method, achieving zero duplicate dispatch logic
+  with zero caller/example migration. `CallHandle` is now a pure alias
+  for `Call`. Applied identically to both mqtt5 and zeromq (all 4
+  zeromq transport functions: `Serve`/`Call`/`ServeRouter`/`CallDealer`).
+  A real, additional gap (missing `stats.TraceObserver` span support in
+  the reflection-based dispatch) was found and closed along the way.
+
+### Phase 1 / 1b — declare/implement split (mqtt5-only when shipped, now superseded by zeromq parity below)
+
+- `Route[Req,Resp].Use(mws ...middleware.RouteMiddleware)`/`HandleMW(mw
+  *middleware.Middleware, fn any)`/`ClientMW(mw *middleware.Middleware,
+  fn any)` — `RouteHandle` gains `Implementations
+  []middleware.ServerImplementation`/`ClientImplementations
+  []middleware.ClientImplementation`.
+- mqtt5 Fn shapes: server-side PAIRED (security-verifying, REST's
+  scope-grant model: `func(ctx, msg *pahomqtt5.Publish, reqs)
+  (map[string][]string, error)`), server-side UNPAIRED (general
+  decorator wrapping the raw `*pahomqtt5.Publish`), client-side PAIRED
+  (credential-supplying, returns `[]mqtt5.UserProperty`), client-side
+  UNPAIRED (general decorator wrapping the full `func(ctx, Req) (Resp,
+  error)` dispatch — no raw pre-decode form exists to wrap instead).
+- **Breaking change** (mirrors REST's own D-0001 precedent): mqtt5's OLD
+  `ServeOptions.SecurityFunc`/`CallOptions.CredentialFunc` fields were
+  REMOVED entirely once `.Use`/`HandleMW`/`ClientMW`'s
+  `Implementations`/`ClientImplementations` became the sole credential
+  mechanism — one declarative mechanism only, no permanent parallel
+  imperative escape hatch (this REVERSES an earlier decision in this
+  same doc that had followed events pub/sub's "keep both permanently"
+  precedent instead).
+- `reqreply.WithSecurityScheme`/`SecurityScheme` kept as deprecated
+  aliases; new package-local error types
+  `MissingSecurityMiddlewareError{Route, Scheme}`/
+  `UnknownMiddlewareImplementationError{Route, Scheme}` (mirror
+  `rest`/`events`' own equivalents).
+- `CheckCoverage`-equivalent runs at adapter-Serve-time inside
+  `mqtt5.AttachServer`'s `ServerTransport.Serve` (mirrors
+  `rest.CheckCoverage`'s own Serve-time-only-knowable-coverage
+  precedent), not inside `api/reqreply` itself.
+- **Phase 1b** (request AND reply direction, mqtt5-only): `FromUserPropertyParam`/
+  `FromResponseUserPropertyParam` (`adapters/mqtt5`) attach User-Property
+  params as spec-contributing `middleware.Middleware` values;
+  `render/asyncapi/v3.Message` gained a `Headers schema.Schema` field;
+  `RouteHandle` gained `RequestHeaderParams`/`ResponseHeaderParams`.
+  Reused `mqtt5.UserPropertyError`/`MissingUserPropertyError` unchanged —
+  no new error types needed.
+
+### zeromq's own Fn-shape work (`zeromq-security.md`) — CORRECTS a stale claim in the paragraphs above
+
+The "Remaining open items" narrative above (written mid-session, before
+`zeromq-security.md` shipped) still calls zeromq's `CheckCoverage`
+wiring and Fn-shape support "idea only, no driver yet" and "not yet
+implemented" — **this is now stale and superseded.** Confirmed via real
+code: `adapters/zeromq/reqreply_transport.go` calls
+`reqreply.CheckCoverage` at both `serverTransport.Serve` and
+`routerServerTransport.Serve` construction time (mirroring mqtt5's Phase
+1 exactly), and all 4 zeromq reqreply transports
+(`serverTransport`/`clientTransport`/`routerServerTransport`/
+`dealerClientTransport`) now dispatch `.Use()`/`HandleMW`/`ClientMW`
+paired-security and general-purpose Fn shapes — SHIPPED, not deferred.
+
+- **Paired Fn shapes differ from mqtt5's by necessity**: zeromq has no
+  raw-message-equivalent type to operate on (REQ/REP `[payload]` frames
+  decode immediately) — both server-side paired
+  (`func(ctx, req *Req, reqs) error`, verifying) and client-side paired
+  (`func(ctx, req *Req, reqs) error`, credential-writing) operate on the
+  DECODED `*Req` directly, using a NEW-to-this-package reflection
+  mechanic: build a fresh addressable `reflect.New(reqType)`, copy the
+  decoded value in, call the Fn against its pointer, read back whatever
+  it mutated. Deliberately NOT REST's scope-grant model — each transport
+  adapter mirrors its own established precedent, an intentional
+  per-adapter difference, not an inconsistency.
+- **General-purpose (unpaired) Fn shape**: one shape for both server AND
+  client (`func(next func(ctx, req Req) (Resp, error)) func(ctx, req
+  Req) (Resp, error)`) — zeromq has no raw pre-decode form on either
+  side, unlike mqtt5's server-side raw-`*Publish`-wrapping decorator.
+- **Implementation surface**: sized ×2 relative to mqtt5's Phase 1 (4
+  transports — REQ/REP pair PLUS ROUTER/DEALER pair — vs. mqtt5's 2),
+  duplicated rather than shared, consistent with how Phase 0's
+  capability-parity work was also duplicated ×2 across the same 4
+  transports.
+- **Reused error types, no new ones needed**: `reqreply.SecurityError`/
+  `SecurityCredentialError` (already transport-agnostic) wrap paired-Fn
+  rejections identically to mqtt5's Phase 1; surfaced via the existing
+  `ServeError`/`CallError{Kind: KindSecurity}` wrapping (`KindSecurity`
+  already existed, no new `ErrorKind` needed).
+- **A real bug found and fixed during this work, in BOTH adapters**:
+  `clientTransport.call`/`dealerClientTransport.call`'s
+  `reflect.MakeFunc`-built `innerCall` closures ignored `args[0]` (the
+  `ctx` actually passed by a general-purpose `ClientMW` decorator),
+  silently discarding any context mutation a decorator made before
+  dispatch. The SAME bug existed in mqtt5's own earlier Phase 1
+  `innerCall` (inherited when this work mirrored mqtt5's technique) —
+  fixed in both adapters together, verified via a dedicated regression
+  test per adapter.
+- `examples/reqreply-api`'s Demo 9 (`demo_cross_api_oauth2_sharing.go`)
+  demonstrates the SAME `middleware.SecurityScheme` declaration shared
+  across a zeromq reqreply route AND a locally-declared REST route,
+  proving byte-identical scheme sharing across `api/rest` and
+  `api/reqreply`.
+- Full verification (`gofmt`/`go build`/`go vet`/`go test -race`/`just
+  check`/all examples) — all clean; all 12 planned unit tests pass.
+
+### Still genuinely open (not resolved by either shipped doc, flagged so it is not silently lost)
+
+`adapters/zeromq`'s PUB/SUB side (`SubscribeOptions`/`PublishOptions`)
+already gained its OWN declarative `.Use`/`SubscribeMW`/`PublishMW`
+mechanism (per the D-0003 addendum in `docs/design/
+d-0003-codec-declared-middlewares.md`), but its OLD flat
+`SecurityFunc`/`CredentialFunc` fields were never removed —
+`adapters/zeromq/adapter.go` still declares both. Whether to now retire
+them, mirroring mqtt5 reqreply's own REST-precedent removal above, is a
+genuinely open question with no decision recorded anywhere — flagged
+here explicitly rather than silently dropped when the source roadmap
+docs were deleted. Not actioned by this addendum; a future round should
+make an explicit decision before either keeping both mechanisms
+permanently (events pub/sub's own precedent) or removing the old one
+(REST/mqtt5 reqreply's precedent) becomes accidental-by-default.

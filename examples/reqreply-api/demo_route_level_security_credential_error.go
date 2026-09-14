@@ -16,7 +16,7 @@ import (
 // validBearerCredFn/malformedBearerCredFn are PAIRED client-side
 // credential-supplying Fns for routes.BearerAuthMw — REPLACE the OLD
 // mqtt5adapter.CallOptions.CredentialFunc entirely (Phase 1 of
-// docs/roadmap/reqreply-middleware.md, BREAKING removal). Two distinct
+// docs/design/d-0004-reqreply-workflow-simplification.md's Addendum, BREAKING removal). Two distinct
 // Fns (rather than one parameterized function) mirror
 // examples/rest-api/client/client.go's AliceCredFn/AdminCredFn pattern —
 // each demonstrates a DIFFERENT credential outcome when attached via

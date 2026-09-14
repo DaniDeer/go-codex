@@ -252,7 +252,7 @@ func (e AmbiguousMiddlewareAttachmentError) LogValue() slog.Value {
 // mechanism declared them — Phase 1b's own historical silent-first-seen-
 // wins dedupe for MISMATCHED declarations is retired (a deliberate,
 // narrow, accepted breaking change — see
-// docs/roadmap/reqreply-codec-declared-middleware.md's decision #5,
+// docs/design/d-0003-codec-declared-middlewares.md's Addendum's decision #5,
 // Round 18).
 type ConflictingParamContributionError struct {
 	Route        string

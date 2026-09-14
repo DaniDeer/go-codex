@@ -12,7 +12,7 @@ import "github.com/DaniDeer/go-codex/codex"
 // TopicParam/HeaderParam/CookieParam/QueryParam already use.
 //
 // PropertyParam is the reqreply-specific realization of the "property"
-// vocabulary axis (see docs/roadmap/reqreply-codec-declared-middleware.md)
+// vocabulary axis (see docs/design/d-0003-codec-declared-middlewares.md's Addendum)
 // — protocol-neutral named metadata carried separately from the payload
 // (MQTT5 User Properties today; a future AMQP adapter's native message
 // headers would realize the SAME concept).

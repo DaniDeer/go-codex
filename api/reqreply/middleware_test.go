@@ -258,7 +258,7 @@ func TestRoute_Register_DedupsHeaderParamsByName(t *testing.T) {
 	// RouteHandle.RequestHeaderParams.
 	// Codec MUST agree with apiKeyHeaderMw's own declaration (same
 	// Required, same Codec/Schema) — docs/roadmap/
-	// reqreply-codec-declared-middleware.md's decision #5 (Round 18)
+	// D-0003's Addendum's decision #5 (Round 18)
 	// retired Phase 1b's OLD lax first-seen-wins dedupe for MISMATCHED
 	// declarations; only AGREEING declarations dedupe without error now
 	// (see TestRoute_Register_TwoPhase1bOnlyContributions_MismatchNowErrors

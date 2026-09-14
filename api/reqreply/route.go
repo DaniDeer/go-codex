@@ -332,7 +332,7 @@ func (o securitySchemeOpt) applyRoute(rb *routeBuilder) {
 // THIS route.
 //
 // Deprecated: superseded by [Route.Use] with [middleware.SecurityScheme]
-// (Phase 1 of docs/roadmap/reqreply-middleware.md) — the SAME declare-time
+// (Phase 1 of docs/design/d-0004-reqreply-workflow-simplification.md's Addendum) — the SAME declare-time
 // mechanism REST/events use, additionally letting [Route.HandleMW]/
 // [Route.ClientMW] pair an implementation against the declared scheme.
 // Kept, unremoved, for existing callers (zero breaking change) — mirrors
@@ -971,7 +971,7 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 
 	// D6(b)/D7: attached codec-backed Middleware[In,Out] name uniqueness
 	// + ambiguous-attachment check — docs/roadmap/
-	// reqreply-codec-declared-middleware.md.
+	// D-0003's Addendum.
 	if err := checkMiddlewareNameUniquenessAndAttachment(&rb, r.topic); err != nil {
 		return nil, err
 	}
@@ -1148,7 +1148,7 @@ type RouteHandle[Req, Resp any] struct {
 	// RequestHeaderParams/ResponseHeaderParams are the header-param-as-
 	// middleware declarations attached via [Route.Use] (e.g.
 	// [mqtt5.FromUserPropertyParam]/[mqtt5.FromResponseUserPropertyParam])
-	// — Phase 1b of docs/roadmap/reqreply-middleware.md. Consulted by the
+	// — Phase 1b of docs/design/d-0004-reqreply-workflow-simplification.md's Addendum. Consulted by the
 	// attached [ServerTransport]/[ClientTransport] to validate real
 	// message properties (e.g. MQTT5 User Properties) against the
 	// declared params, in ADDITION to being rendered into the AsyncAPI

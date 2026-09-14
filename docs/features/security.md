@@ -110,9 +110,10 @@ touches go-codex's security-scheme model. Confirmed per transport:
   whatever binding they choose (e.g. `github.com/pebbe/zmq4`). CURVE
   (libzmq's own transport-encryption/auth mechanism) would be configured
   entirely on the caller's own concrete socket, before wrapping it as a
-  `FramedSocket` — tracked as an open question in
-  [ZeroMQ Security Mechanism](../roadmap/zeromq-security.md), not
-  something go-codex exposes today.
+  `FramedSocket` — a deliberate, permanent, researched decision (CURVE/ZAP
+  is the caller's own concern; see
+  [D-0004](../design/d-0004-reqreply-workflow-simplification.md)'s
+  Addendum for the full rationale), not something go-codex exposes today.
 
 ## Security schemes (REST)
 
@@ -527,18 +528,24 @@ payload]` frames carry nothing beyond what's already decoded into `T`, so
 there's no separate raw-message parameter unlike `mqtt`/`mqtt5`'s subscribe
 side). There is still no connection-level `SecuredClient` equivalent for
 ZeroMQ (its base REQ/REP/PUB/SUB patterns have no CONNECT-time credential
-handshake to validate) — an optional additional out-of-band frame-based
-mechanism and the connection-level/CURVE question remain open, narrower
-gaps, tracked in [ZeroMQ Security Mechanism](../roadmap/zeromq-security.md).
+handshake to validate) — a permanent, deliberate, researched exclusion
+(CURVE/ZAP is the caller's own concern), plus a CLOSED optional
+out-of-band frame-based mechanism question (no driver ever surfaced); see
+[D-0004](../design/d-0004-reqreply-workflow-simplification.md)'s Addendum
+for the full rationale (the original tracking doc,
+`zeromq-security.md`, has since shipped and been deleted per its own
+graduation policy).
 
 ## Security for request-reply routes (reqreply)
 
 `api/reqreply` now mirrors REST/events' exact declare-once,
 enforce-symmetrically model on BOTH transports it supports, via the SAME
-`.Use()`/`HandleMW`/`ClientMW` declare/implement split — shipped by
-[ReqReply Middleware](../roadmap/reqreply-middleware.md)'s Phase 1
-(mqtt5) and [ZeroMQ Security Mechanism](../roadmap/zeromq-security.md)
-(zeromq) — REPLACES the older `reqreply.WithSecurityScheme`-only
+`.Use()`/`HandleMW`/`ClientMW` declare/implement split — shipped for
+mqtt5 first, then zeromq (see
+[D-0004](../design/d-0004-reqreply-workflow-simplification.md)'s own
+Addendum for the full record; both source roadmap docs,
+`reqreply-middleware.md` and `zeromq-security.md`, have since shipped and
+been deleted) — REPLACES the older `reqreply.WithSecurityScheme`-only
 mechanism, kept only as a deprecated-but-functional alias. The paired
 implementation Fn's SHAPE differs per adapter (mqtt5: scope-grant
 `(map[string][]string, error)`, reading the raw `*pahomqtt5.Publish`;

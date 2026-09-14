@@ -1376,7 +1376,7 @@ func sameScopeSet(a, b []string) bool {
 // to events' property axis only: events has NO pre-existing flat mechanism
 // to unify with (unlike reqreply's Phase 1b), so this renders its own,
 // simpler schema from scratch — see "AsyncAPI spec rendering" under
-// "Phase 0" in docs/roadmap/reqreply-codec-declared-middleware.md.
+// "Phase 0" in docs/design/d-0003-codec-declared-middlewares.md's Addendum.
 //
 // Topic vars are NEVER cross-checked here — independent namespaces (Round
 // 15 decision): a topic var and a property sharing the SAME name on one
@@ -2099,7 +2099,7 @@ func buildChannelHandle[T any](ch Channel[T], client *Client, role channelRole, 
 	// handler list — see [channelRole]). This is 100% NEW code for
 	// events (topic vars have no equivalent conflict-detection
 	// machinery to extend — Round 9's finding, see
-	// docs/roadmap/reqreply-codec-declared-middleware.md's "AsyncAPI
+	// docs/design/d-0003-codec-declared-middlewares.md's Addendum's "AsyncAPI
 	// spec rendering" under "Phase 0").
 	var mwPropertyParams [][]PropertyParam
 	var mwPropertyNames []string

@@ -351,7 +351,7 @@ func TestAttachRouterServer_MissingSocketError(t *testing.T) {
 	}
 }
 
-// ── Security Fn-shape tests (docs/roadmap/zeromq-security.md) ─────────────
+// ── Security Fn-shape tests (docs/design/d-0004-reqreply-workflow-simplification.md's Addendum) ─────────────
 
 // securedComputeReq carries an in-payload Token field — zeromq's paired
 // security/credential Fn reads/writes THIS field directly (no raw-message
@@ -901,7 +901,7 @@ func TestAttachClient_ClientMW_ContextMutationPropagatesIntoInnerCall(t *testing
 	}
 }
 
-// ── docs/roadmap/reqreply-codec-declared-middleware.md adapter wiring ──────
+// ── docs/design/d-0003-codec-declared-middlewares.md's Addendum adapter wiring ──────
 
 type zmwPropIn struct{ TenantID string }
 type zmwPropOut struct{ Ack string }

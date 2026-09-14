@@ -1,8 +1,10 @@
 # `api/events` codec-declared middleware — 2 pre-existing bugs in ALREADY-SHIPPED D-0003 code
 
 > **Status:** ✅ SHIPPED. Both bugs were fixed as part of
-> [ReqReply Codec-Declared Middleware](reqreply-codec-declared-middleware.md)'s
-> Phase 0 implementation (its "Side track" section) — that doc's own
+> the (now-deleted) ReqReply Codec-Declared Middleware roadmap doc's
+> Phase 0 implementation (its "Side track" section — folded into
+> [D-0003](../design/d-0003-codec-declared-middlewares.md)'s own
+> Addendum) — that doc's own
 > Phase 9/10 already touched these exact `adapters/mqtt5`/
 > `adapters/zeromq` code paths to add property-var support, and fixed
 > both bugs in the same pass. Confirmed shipped via direct code
@@ -18,8 +20,8 @@
 
 ## Motivation
 
-Found while designing
-[ReqReply Codec-Declared Middleware](reqreply-codec-declared-middleware.md)'s
+Found while designing the (now-deleted) ReqReply Codec-Declared
+Middleware roadmap doc's
 Phase 0 (bringing `api/events`' own codec-declared `Middleware[In,Out]`
 mechanism up to full parity with `api/reqreply`'s new property axis).
 Confirming what full events parity required meant tracing
@@ -172,15 +174,16 @@ signatures ALSO change to the property-axis's 2-map extension
 (`dispatchSubscribeMiddlewareHandlers` gains a `propertyVars
 map[string]string` parameter; `dispatchPublishMiddlewareHandlers`
 returns 2 SEPARATE maps instead of one merged map) — see
-[ReqReply Codec-Declared Middleware](reqreply-codec-declared-middleware.md)'s
-own "Phase 0"/"Side track" sections for that combined version. The 2
+[D-0003](../design/d-0003-codec-declared-middlewares.md)'s own Addendum
+(folded in from the now-deleted roadmap doc's own "Phase 0"/"Side
+track" sections) for that combined version. The 2
 `stats.ReportErrors` calls this doc adds are IDENTICAL either way — only
 the surrounding signature differs depending on which doc's version ships.
 
-## Relationship to `reqreply-codec-declared-middleware.md`
+## Relationship to the (now-deleted) ReqReply Codec-Declared Middleware roadmap doc
 
 **Not a competing plan — the SAME 2 bugs, extracted for independent
-tracking.** `reqreply-codec-declared-middleware.md`'s own "Side track:
+tracking.** That (now-deleted) roadmap doc's own "Side track:
 fixing 2 pre-existing bugs in events' ALREADY-SHIPPED D-0003 code"
 section already has BOTH bugs fully designed, WITH the property-axis
 signature extension folded in (since Phase 0 touches these exact files
@@ -213,8 +216,9 @@ support).
 
 - Anything related to `api/reqreply`'s own property axis, `PropertyParam`,
   or Phase 0 in general — see
-  [ReqReply Codec-Declared Middleware](reqreply-codec-declared-middleware.md)
-  for that entirely separate, larger design.
+  [D-0003](../design/d-0003-codec-declared-middlewares.md)'s own Addendum
+  for that entirely separate, larger design (folded in from the now-deleted
+  ReqReply Codec-Declared Middleware roadmap doc).
 - The 3 REST-specific candidates (namespace strictness, codec
   comparison, output-encode Observer gap) — see
   [REST Middleware Conflict-Detection Improvements](rest-middleware-conflict-detection-improvements.md)

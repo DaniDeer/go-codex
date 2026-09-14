@@ -15,7 +15,7 @@ var BearerCodec = codex.String().Refine(validate.NonEmptyString)
 
 // BearerAuthMw declares the "bearerAuth" scheme — attached via
 // .Use(BearerAuthMw) on every route that requires it (Phase 1 of
-// docs/roadmap/reqreply-middleware.md), REPLACING the older
+// docs/design/d-0004-reqreply-workflow-simplification.md's Addendum), REPLACING the older
 // reqreply.WithSecurityScheme + manual RouteMeta.Security declaration
 // pattern still shown on routes.SecuredComputeRoute's own (deprecated)
 // path — mirrors routes.ProfileScopeMw/AdminScopeMw's identical role in

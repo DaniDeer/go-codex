@@ -834,7 +834,7 @@ func publish[T any](
 	// Write-side wiring Case 2: a Middleware's WithPublishProperty-declared
 	// value merges into the SAME outgoing userProps mechanism, SEPARATE
 	// from vars/BuildTopic (topic vars stay topic-vars-only) — see
-	// docs/roadmap/reqreply-codec-declared-middleware.md's "Write-side
+	// docs/design/d-0003-codec-declared-middlewares.md's Addendum's "Write-side
 	// wiring" section.
 	for k, v := range mwPropertyVars {
 		userProps = append(userProps, UserProperty{Key: k, Value: v})

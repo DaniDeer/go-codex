@@ -27,7 +27,7 @@ type ClientTransport interface {
 	// "send here, resolve elsewhere" mechanism. opts is [Call]'s
 	// identical per-call override parameter — resolved inside the SAME
 	// underlying dispatch [Call] uses (see docs/roadmap/
-	// reqreply-middleware.md's "Interaction with CallAsync/Future").
+	// D-0004's Addendum's "Interaction with CallAsync/Future").
 	CallAsync(ctx context.Context, route any, req any, opts ...ClientCallOptions) (any, error)
 }
 
@@ -36,7 +36,7 @@ type ClientTransport interface {
 // field names/shape; type-erased since [Client.Call]/[ClientTransport.
 // Call] have no Req/Resp type parameter to constrain a generic options
 // type here either). Closes Phase 0 of
-// docs/roadmap/reqreply-middleware.md's "capability parity" work: the
+// docs/design/d-0004-reqreply-workflow-simplification.md's Addendum's "capability parity" work: the
 // per-call format-override half of the gap between the [Attach]-based
 // workflow and the lower-level [Serve]/[Call] escape hatch (which already
 // supports this via each adapter's own `CallOptions.RequestFormats`/
@@ -102,7 +102,7 @@ func (c *Client) Attach(t ClientTransport) error {
 //
 // opts (0 or 1 value) OVERRIDES the route's declared request/response
 // formats for THIS call only — see [ClientCallOptions]. Closes Phase 0 of
-// docs/roadmap/reqreply-middleware.md.
+// docs/design/d-0004-reqreply-workflow-simplification.md's Addendum.
 //
 // Returns [NoClientTransportAttachedError] if [Client.Attach] was never
 // called.
@@ -129,7 +129,7 @@ func (c *Client) Call(ctx context.Context, route any, req any, opts ...ClientCal
 // [Client.Call]'s IDENTICAL trailing per-call format-override parameter —
 // resolved inside the SAME underlying dispatch [Client.Call] uses, so it
 // applies to CallAsync automatically (see docs/roadmap/
-// reqreply-middleware.md's "Interaction with CallAsync/Future" for the
+// D-0004's Addendum's "Interaction with CallAsync/Future" for the
 // confirmed async-timing nuance this implies for general-purpose
 // middleware, unrelated to format resolution itself). Returns
 // [NoClientTransportAttachedError] if [Client.Attach] was never called.

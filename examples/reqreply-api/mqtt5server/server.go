@@ -41,7 +41,7 @@ func (b *Built) LastReplyUserProperties() pahomqtt5.UserProperties {
 }
 
 // apiKeyUserProp/traceUserProp are Phase 1b's (docs/roadmap/
-// reqreply-middleware.md) mqtt5-specific User Property declarations —
+// D-0004's Addendum) mqtt5-specific User Property declarations —
 // bridged into a [reqreply.Route.Use]-attachable middleware via
 // [mqtt5adapter.FromUserPropertyParam]/[mqtt5adapter.
 // FromResponseUserPropertyParam]. mqtt5-specific, so declared here (not
@@ -63,7 +63,7 @@ func Build() (*Built, error) {
 	}
 	// SecuredComputeRoute/GlobalOnlyComputeRoute now declare+implement
 	// security via .Use()+.HandleMW() (Phase 1 of docs/roadmap/
-	// reqreply-middleware.md) — REPLACES the OLD imperative
+	// D-0004's Addendum) — REPLACES the OLD imperative
 	// ServeOptions.SecurityFunc mechanism entirely (removed, breaking
 	// change). A paired implementation is now REQUIRED for every route
 	// with a non-empty effective security requirement — mqtt5.
@@ -100,7 +100,7 @@ func Build() (*Built, error) {
 		return nil, err
 	}
 	// PropertyAxisComputeRoute demonstrates the NEW property vocabulary
-	// axis (docs/roadmap/reqreply-codec-declared-middleware.md) —
+	// axis (docs/design/d-0003-codec-declared-middlewares.md's Addendum) —
 	// routes.TenantPropertyMw (the DECLARATION) + handlers.ProcessTenant
 	// (the IMPLEMENTATION) are both adapter-agnostic; THIS is the only
 	// mqtt5-specific step — attaching them to a route and registering on

@@ -4,7 +4,10 @@
 >
 > Runnable demo: [`examples/reqreply-api`](https://github.com/DaniDeer/go-codex/tree/main/examples/reqreply-api) (Demo 10 — property vocabulary axis)
 >
-> Design record: [ReqReply Codec-Declared Middleware](../roadmap/reqreply-codec-declared-middleware.md) (roadmap doc, now SHIPPED)
+> Design record: [D-0003 — Codec-Declared Middlewares](../design/d-0003-codec-declared-middlewares.md)'s
+> own "Addendum: `api/reqreply` and `api/events`' property vocabulary
+> axis" section (the original roadmap doc, `reqreply-codec-declared-middleware.md`,
+> has since shipped and been deleted per its own graduation policy)
 
 `api/reqreply.Middleware[In, Out]` brings `api/reqreply` up to the SAME
 codec-declared middleware parity `api/rest`/`api/events` already have (see

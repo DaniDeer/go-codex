@@ -48,7 +48,7 @@ var ComputeRespCodec = codex.Struct[ComputeResp](
 // Security slice, per [reqreply.RouteHandle.Security]'s own documented
 // contract ("nil means inherit GlobalSecurity, an empty non-nil slice
 // means explicitly no auth required"). Before Phase 1 (docs/roadmap/
-// reqreply-middleware.md) added a mandatory adapter-Serve-time
+// D-0004's Addendum) added a mandatory adapter-Serve-time
 // [reqreply.CheckCoverage] check, this route silently INHERITED
 // GlobalSecurity with NO enforcement at all (the old credential-FORMAT
 // check only ran for schemes with a registered [reqreply.
@@ -86,7 +86,7 @@ var TripleRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 // mirrors examples/rest-api's routes.CreateUserRoute (declared plain,
 // secured via .Use() at each call site) rather than baking Security into
 // the base declaration itself (Phase 1 of docs/roadmap/
-// reqreply-middleware.md — REPLACES the OLD manual RouteMeta.Security +
+// D-0004's Addendum — REPLACES the OLD manual RouteMeta.Security +
 // reqreply.WithSecurityScheme pattern, which cannot be paired against a
 // HandleMW/ClientMW implementation).
 var SecuredComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
@@ -113,7 +113,7 @@ var GlobalOnlyComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 )
 
 // HeaderParamComputeRoute demonstrates Phase 1b of docs/roadmap/
-// reqreply-middleware.md — the User-Property param-as-middleware
+// D-0004's Addendum — the User-Property param-as-middleware
 // mechanism. Declared PRISTINE here, exactly like SecuredComputeRoute
 // above: the request-side "X-API-Key" User Property (via
 // mqtt5adapter.FromUserPropertyParam) and the reply-side "X-Trace-Id"
@@ -133,7 +133,7 @@ var HeaderParamComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 )
 
 // TenantIn/TenantAck are the property-axis Middleware's own In/Out types
-// (docs/roadmap/reqreply-codec-declared-middleware.md) — INDEPENDENT of
+// (docs/design/d-0003-codec-declared-middlewares.md's Addendum) — INDEPENDENT of
 // ComputeReq/ComputeResp, mirroring how a declared Middleware[In,Out]
 // carries its OWN vocabulary alongside (not instead of) the route's own
 // request/response types.
@@ -196,7 +196,7 @@ var MissingSocketRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 )
 
 // OAuthComputeReq/OAuthComputeResp carry an in-payload Token field —
-// zeromq's reqreply security Fn-shape (docs/roadmap/zeromq-security.md,
+// zeromq's reqreply security Fn-shape (docs/design/d-0004-reqreply-workflow-simplification.md's Addendum,
 // SHIPPED) reads/writes this field directly, since zeromq has no
 // raw-message side channel equivalent to MQTT5's User Properties (unlike
 // ComputeReq/ComputeResp, used everywhere else in this example, which

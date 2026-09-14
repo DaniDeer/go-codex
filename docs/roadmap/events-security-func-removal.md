@@ -1,7 +1,10 @@
 # Events SecurityFunc/CredentialFunc removal — align `api/events` with REST D-0001 and reqreply Phase 1
 
 > **Status:** DRAFT — investigation only, no code changes yet. Written after
-> `docs/roadmap/reqreply-middleware.md`'s Phase 1 shipped (mqtt5), which
+> `reqreply-middleware.md`'s Phase 1 shipped (mqtt5) — that roadmap doc
+> has since shipped in full and been deleted per its own graduation
+> policy; see [D-0004](../design/d-0004-reqreply-workflow-simplification.md)'s
+> own Addendum for the durable record — which
 > removed reqreply's `ServeOptions.SecurityFunc`/`CallOptions.CredentialFunc`
 > as a breaking change, following `adapters/nethttp`'s own D-0001 precedent
 > (`docs/design/d-0001-rest-middleware-workflow-simplification.md`) of
@@ -93,7 +96,9 @@ part of any migration, not just the code.
    currently exercise `SecurityFunc`/`CredentialFunc` directly (not yet
    enumerated — next investigation step).
 2. **Per-adapter protocol-specific nuances?** zeromq's own Fn-shape design
-   (in-payload `*Req`-mutation, per `docs/roadmap/zeromq-security.md`)
+   (in-payload `*Req`-mutation, shipped via the now-deleted
+   `zeromq-security.md` — see [D-0004](../design/d-0004-reqreply-workflow-simplification.md)'s
+   own Addendum for the durable record)
    already differs from mqtt5's User-Property-based shape and mqtt v3's
    raw-message shape — removal must preserve each adapter's OWN existing
    paired shape (already shipped), not force convergence. Since zeromq has
@@ -197,7 +202,7 @@ scope.
 | `examples/adapters-mqtt-security/` | **delete** — superseded by `examples/events-api` |
 | `examples/events-api/` (new) | create mini-project — `routes/`, `handlers/`, `mqtt5server/`, `zeromqserver/`, `mqttserver/`, `client/`, `demo_*.go`, `main.go` — see layout above |
 | `adapters/mqtt5/*_test.go`, `adapters/zeromq/*_test.go`, `adapters/mqtt/*_test.go` | enumerate + migrate tests exercising `SecurityFunc`/`CredentialFunc` directly (not yet enumerated) |
-| `docs/roadmap/zeromq-security.md` | update/close its existing reminder section once zeromq's removal ships |
+| [D-0004](../design/d-0004-reqreply-workflow-simplification.md)'s Addendum | update/close its "still genuinely open" note once zeromq pub/sub's removal ships (the source doc, `zeromq-security.md`, has already shipped and been deleted) |
 | `.github/instructions/go-codex.instructions.md` | update `api/events`/adapter rows once shipped |
 
 ## Out of scope entirely

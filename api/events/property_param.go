@@ -10,7 +10,7 @@ import "github.com/DaniDeer/go-codex/codex"
 // optional metadata). Wraps [codex.Param] directly — the SAME shared
 // primitive [TopicParam]/rest's HeaderParam/CookieParam/QueryParam already
 // use. Mirrors reqreply.PropertyParam field-for-field — see
-// docs/roadmap/reqreply-codec-declared-middleware.md's "Phase 0" section.
+// docs/design/d-0003-codec-declared-middlewares.md's Addendum's "Phase 0" section.
 type PropertyParam struct {
 	codex.Param
 	// Required, when true, means the property MUST be present in the

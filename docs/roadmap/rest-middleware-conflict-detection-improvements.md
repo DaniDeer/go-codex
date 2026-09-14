@@ -1,8 +1,10 @@
 # REST codec-declared middleware — 3 improvement candidates found via reqreply/events design work
 
 > **Status:** Idea only — no code written, no spike run yet. Spun out of
-> the [ReqReply Codec-Declared Middleware](reqreply-codec-declared-middleware.md)
-> design's Round 15 review, while tracing REST's REAL
+> the ReqReply Codec-Declared Middleware design's Round 15 review
+> (that roadmap doc has since shipped and been deleted per its own
+> graduation policy; see [D-0003](../design/d-0003-codec-declared-middlewares.md)'s
+> own Addendum for the durable record), while tracing REST's REAL
 > `checkParamConflicts`/`applyParamDeclarations`/`runMiddlewareHandlersReflect`
 > code for the first time as the reference implementation for that
 > doc's own decisions. All 3 items below are gaps/asymmetries in
@@ -16,7 +18,7 @@
 
 While designing `api/reqreply`'s (and `api/events`') own NEW codec-declared
 middleware mechanism (see
-[ReqReply Codec-Declared Middleware](reqreply-codec-declared-middleware.md)),
+the D-0003 Addendum referenced above),
 several rounds of review required tracing REST's REAL, shipped D-0003
 implementation in detail — not just its public signatures — as the
 reference model those docs' own decisions are checked against. Doing so
@@ -63,7 +65,7 @@ and a query param are semantically unrelated values from genuinely
 different parts of an HTTP request. This is REST's real, shipped,
 CURRENT behavior today.
 
-**Why this surfaced now**: `reqreply-codec-declared-middleware.md`'s own
+**Why this surfaced now**: the (now-deleted) ReqReply Codec-Declared Middleware roadmap doc's own
 Round 15 faced an analogous question — should reqreply's NEW topic-var
 vs. property axes share ONE namespace (mirroring REST) or be
 INDEPENDENT? The user chose INDEPENDENT for reqreply/events, with a
@@ -124,7 +126,7 @@ NEVER compared. Two contributions for the SAME name with the SAME
 UUID, the other as a free-form string) currently pass silently, with
 NO error — REST's real, shipped, CURRENT behavior.
 
-**Why this surfaced now**: `reqreply-codec-declared-middleware.md`'s own
+**Why this surfaced now**: the (now-deleted) ReqReply Codec-Declared Middleware roadmap doc's own
 Round 15 found and corrected an OVERSTATEMENT in its own earlier prose,
 which incorrectly claimed REST's real precedent already compares
 "different codecs." Once corrected, the user chose to have reqreply's/
@@ -179,8 +181,8 @@ file's `runMiddlewareHandlersReflect` (the pre-handler dispatch path),
 which DOES call `stats.ReportErrors(diagnosticObserver{ctx},
 "middleware:in", err)` and `stats.ReportErrors(diagnosticObserver{ctx},
 "middleware:fn", fnErr)` for its own two failure classes (D5, confirmed
-in [ReqReply Codec-Declared Middleware](reqreply-codec-declared-middleware.md)'s
-own Round 7 review). The OUTPUT-encode failure path — a THIRD, distinct
+in the (now-deleted) ReqReply Codec-Declared Middleware roadmap doc's
+own Round 7 review (see D-0003's own Addendum). The OUTPUT-encode failure path — a THIRD, distinct
 failure class — has NO equivalent observability call at all.
 
 **Candidate change**: add `stats.ReportErrors(obs, "middleware:out", err)`
@@ -202,8 +204,8 @@ still not implemented here (this doc is investigation/planning only).
 - Auditing `api/events`' OWN equivalent conflict-detection code for the
   SAME 2 behavioral-change candidates — `api/events` has its OWN
   `checkEventsParamConflicts` (per
-  [ReqReply Codec-Declared Middleware](reqreply-codec-declared-middleware.md)'s
-  Phase 0), which will presumably launch with the STRICTER, reqreply-
+  the (now-deleted) ReqReply Codec-Declared Middleware roadmap doc's
+  Phase 0 (see D-0003's own Addendum), which will presumably launch with the STRICTER, reqreply-
   aligned behavior from day one (no existing callers yet) — but
   whether events' pre-Phase-0-shipped topic-only conflict detection
   (if any exists today) has the SAME cross-kind-strictness question is

@@ -108,7 +108,7 @@ func TestAttachClient_DualMode_GlobalSecurity(t *testing.T) {
 		return computeResp{Sum: req.X + req.Y}, nil
 	}
 	// bearerMw declares the "bearer" scheme via .Use() (Phase 1 of
-	// docs/roadmap/reqreply-middleware.md) — REPLACES the OLD manual
+	// docs/design/d-0004-reqreply-workflow-simplification.md's Addendum) — REPLACES the OLD manual
 	// WithSecurityScheme declaration, which cannot be paired against a
 	// HandleMW/ClientMW implementation.
 	bearerCodec := codex.String().Refine(validate.NonEmptyString)
@@ -572,7 +572,7 @@ func TestAttachClient_Call_ClientCallOptions_ResponseFormats_Overrides(t *testin
 // CallAsync's ClientCallOptions parameter applies too, since it shares
 // the SAME underlying dispatch clientTransport.Call uses — regression
 // test for "Interaction with CallAsync/Future" in
-// docs/roadmap/reqreply-middleware.md.
+// docs/design/d-0004-reqreply-workflow-simplification.md's Addendum.
 func TestAttachClient_CallAsync_AppliesClientCallOptions(t *testing.T) {
 	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	handler := func(_ context.Context, req computeReq) (computeResp, error) {
@@ -627,7 +627,7 @@ func TestAttachClient_CallAsync_AppliesClientCallOptions(t *testing.T) {
 	}
 }
 
-// ── Phase 1: declarative middleware (docs/roadmap/reqreply-middleware.md) ──
+// ── Phase 1: declarative middleware (docs/design/d-0004-reqreply-workflow-simplification.md's Addendum) ──
 
 // TestAttachServer_HandleMW_GeneralPurpose_AlwaysRuns confirms an
 // UNPAIRED (Satisfies-empty) HandleMW decorator runs unconditionally,
@@ -813,7 +813,7 @@ func TestAttachClient_MultipleGeneralPurposeClientMW_ComposeOutermostIn(t *testi
 // TestAttachClient_ClientMW_AppliesToCallAsyncToo confirms a
 // general-purpose ClientMW decorator runs for a CallAsync-dispatched
 // call too, not just Call — see "Interaction with CallAsync/Future" in
-// docs/roadmap/reqreply-middleware.md.
+// docs/design/d-0004-reqreply-workflow-simplification.md's Addendum.
 func TestAttachClient_ClientMW_AppliesToCallAsyncToo(t *testing.T) {
 	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	handler := func(_ context.Context, req computeReq) (computeResp, error) {
@@ -925,7 +925,7 @@ func TestAttachClient_ClientMW_ContextMutationPropagatesIntoInnerCall(t *testing
 	}
 }
 
-// ── docs/roadmap/reqreply-codec-declared-middleware.md adapter wiring ──────
+// ── docs/design/d-0003-codec-declared-middlewares.md's Addendum adapter wiring ──────
 
 type mwPropIn struct{ TenantID string }
 type mwPropOut struct{ Ack string }

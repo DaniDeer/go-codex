@@ -3,9 +3,11 @@
 > **Status:** Idea only — no driver yet. Independent of
 > [Declarative Middleware](declarative-middleware.md) (no sequencing
 > dependency either way — could ship before, after, or in parallel).
-> **Also independent of [ReqReply Middleware](reqreply-middleware.md)'s
-> now-SHIPPED Phase 1b** (`mqtt5.FromUserPropertyParam`/
-> `FromResponseUserPropertyParam`, docs/roadmap/reqreply-middleware.md) —
+> **Also independent of `reqreply-middleware.md`'s now-SHIPPED Phase 1b**
+> (`mqtt5.FromUserPropertyParam`/`FromResponseUserPropertyParam` — that
+> roadmap doc has since shipped and been deleted per its own graduation
+> policy; see [D-0004](../design/d-0004-reqreply-workflow-simplification.md)'s
+> own Addendum for the durable record) —
 > checked when Phase 1b landed: that mechanism bridges a plain
 > `UserPropertyParam` into `middleware.Middleware` for `.Use()`
 > attachment (spec rendering + Attach-time VALIDATION only, no merge);
@@ -30,7 +32,9 @@
 > design is itself
 > implemented.
 > **A THIRD point on this SAME spectrum now exists, ALREADY SHIPPED** —
-> [ReqReply Codec-Declared Middleware](reqreply-codec-declared-middleware.md)'s
+> [D-0003](../design/d-0003-codec-declared-middlewares.md)'s own Addendum
+> (folded in from the now-deleted `reqreply-codec-declared-middleware.md`
+> roadmap doc) covers the
 > new "property" vocabulary axis (`WithRequestProperty`/
 > `WithResponseProperty` for `api/reqreply`, `WithSubscribeProperty`/
 > `WithPublishProperty` for `api/events`) reuses D-0003's ALREADY-SHIPPED

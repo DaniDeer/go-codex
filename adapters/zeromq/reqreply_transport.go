@@ -131,7 +131,7 @@ func sendRouterHandlerErrorReplyReflect(sock FramedSocket, identity []byte, erro
 // topic/socket coverage at Attach time, before [reqreply.Server.Serve]
 // ever runs, rather than discovering a missing socket only when a
 // request for it actually arrives.
-// ── Security Fn-shape dispatch (docs/roadmap/zeromq-security.md) ─────────
+// ── Security Fn-shape dispatch (docs/design/d-0004-reqreply-workflow-simplification.md's Addendum) ─────────
 //
 // Adds the `.Use()`/`HandleMW`/`ClientMW` declare/implement split to
 // zeromq reqreply — mirrors `adapters/mqtt5/reqreply_transport.go`'s
@@ -310,7 +310,7 @@ func applyGeneralServerMiddleware(fnVal reflect.Value, impls []middleware.Server
 	return fnVal
 }
 
-// ── docs/roadmap/reqreply-codec-declared-middleware.md dispatch ─────────
+// ── docs/design/d-0003-codec-declared-middlewares.md's Addendum dispatch ─────────
 
 // dispatchServerMiddlewareHandlers runs every attached
 // [reqreply.MiddlewareHandler] in registration order — AFTER the paired
@@ -549,7 +549,7 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 	// closes Phase 0 work item 2 (server-side).
 	errorResponseForMethod := rv.MethodByName("ErrorResponseFor")
 
-	// Security Fn-shape dispatch (docs/roadmap/zeromq-security.md):
+	// Security Fn-shape dispatch (docs/design/d-0004-reqreply-workflow-simplification.md's Addendum):
 	// impls are the [reqreply.Route.HandleMW]-attached implementations —
 	// validated for shape EAGERLY (once, at Serve construction, not per
 	// message) and coverage-checked against the route's declared
@@ -572,7 +572,7 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 	// pointer access to *Req (see the loop body below).
 	dispatchFn := applyGeneralServerMiddleware(fnVal, impls)
 
-	// docs/roadmap/reqreply-codec-declared-middleware.md: codec-backed
+	// docs/design/d-0003-codec-declared-middlewares.md's Addendum: codec-backed
 	// Middleware[In,Out] dispatch — dispatched AFTER the paired security
 	// Fns above (D1), confirming the mechanism is genuinely transport-
 	// agnostic (zero adapter-specific work beyond consulting the SAME
@@ -643,7 +643,7 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 		}
 		reqVal := decodeResults[0]
 
-		// Paired security Fns (docs/roadmap/zeromq-security.md) run
+		// Paired security Fns (docs/design/d-0004-reqreply-workflow-simplification.md's Addendum) run
 		// BETWEEN decode and dispatch, reading/optionally enriching the
 		// decoded value via a fresh, addressable *Req copy — reqVal is
 		// re-read afterward to pick up any mutation.
@@ -667,7 +667,7 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 			reqVal = reqPtr.Elem()
 		}
 
-		// docs/roadmap/reqreply-codec-declared-middleware.md: codec-
+		// docs/design/d-0003-codec-declared-middlewares.md's Addendum: codec-
 		// backed Middleware[In,Out] dispatch — runs AFTER the paired
 		// security Fns above (D1), reading/enriching the SAME reqVal.
 		if len(middlewareHandlers) > 0 {
@@ -898,7 +898,7 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 		return nil, CallError{Err: fmtErr}
 	}
 
-	// Security Fn-shape dispatch (docs/roadmap/zeromq-security.md).
+	// Security Fn-shape dispatch (docs/design/d-0004-reqreply-workflow-simplification.md's Addendum).
 	// clientImpls are the [reqreply.Route.ClientMW]-attached
 	// implementations — validated for shape EAGERLY, mirroring
 	// adapters/mqtt5's identical build-time check. respType/innerType
@@ -915,7 +915,7 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 	secReqs := effectiveSecurity(elem)
 	errType := reflect.TypeOf((*error)(nil)).Elem()
 
-	// docs/roadmap/reqreply-codec-declared-middleware.md: codec-backed
+	// docs/design/d-0003-codec-declared-middlewares.md's Addendum: codec-backed
 	// ClientMiddlewareHandler dispatch — runs AFTER the paired
 	// credential Fns (D1 mirror), inside innerCall below. zeromq has no
 	// wire mechanism to carry the produced topic/property vars (no
@@ -970,7 +970,7 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 			innerReqVal = reqPtr.Elem()
 		}
 
-		// docs/roadmap/reqreply-codec-declared-middleware.md: codec-
+		// docs/design/d-0003-codec-declared-middlewares.md's Addendum: codec-
 		// backed ClientMiddlewareHandler dispatch — runs AFTER the
 		// paired credential Fns above (D1).
 		if len(clientMiddlewareHandlers) > 0 {
@@ -1194,7 +1194,7 @@ func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny a
 	encodeWithFormatsMethod := rv.MethodByName("EncodeWithFormats")
 	errorResponseForMethod := rv.MethodByName("ErrorResponseFor")
 
-	// Security Fn-shape dispatch (docs/roadmap/zeromq-security.md) — same
+	// Security Fn-shape dispatch (docs/design/d-0004-reqreply-workflow-simplification.md's Addendum) — same
 	// mechanism as [serverTransport.Serve], duplicated for the ROUTER
 	// variant (mirrors how Phase 0's capability-parity work was ALSO
 	// duplicated, not shared, across these same 4 transports).
@@ -1211,7 +1211,7 @@ func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny a
 	}
 	dispatchFn := applyGeneralServerMiddleware(fnVal, impls)
 
-	// docs/roadmap/reqreply-codec-declared-middleware.md: codec-backed
+	// docs/design/d-0003-codec-declared-middlewares.md's Addendum: codec-backed
 	// Middleware[In,Out] dispatch — dispatched AFTER the paired security
 	// Fns above (D1), mirrors [serverTransport.Serve]'s identical
 	// mechanism for the ROUTER variant (one of the 4 transports this
@@ -1305,7 +1305,7 @@ func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny a
 				reqVal = reqPtr.Elem()
 			}
 
-			// docs/roadmap/reqreply-codec-declared-middleware.md: codec-
+			// docs/design/d-0003-codec-declared-middlewares.md's Addendum: codec-
 			// backed Middleware[In,Out] dispatch — runs AFTER the paired
 			// security Fns above (D1), reading/enriching the SAME reqVal.
 			if len(middlewareHandlers) > 0 {
@@ -1499,7 +1499,7 @@ func (t *dealerClientTransport) call(ctx context.Context, routeAny any, reqAny a
 		return nil, CallError{Err: fmtErr}
 	}
 
-	// Security Fn-shape dispatch (docs/roadmap/zeromq-security.md) — same
+	// Security Fn-shape dispatch (docs/design/d-0004-reqreply-workflow-simplification.md's Addendum) — same
 	// mechanism as [clientTransport.call], duplicated for the DEALER
 	// variant (mirrors how Phase 0's capability-parity work was ALSO
 	// duplicated, not shared, across these same 4 transports).
@@ -1514,7 +1514,7 @@ func (t *dealerClientTransport) call(ctx context.Context, routeAny any, reqAny a
 	secReqs := effectiveSecurity(elem)
 	errType := reflect.TypeOf((*error)(nil)).Elem()
 
-	// docs/roadmap/reqreply-codec-declared-middleware.md: codec-backed
+	// docs/design/d-0003-codec-declared-middlewares.md's Addendum: codec-backed
 	// ClientMiddlewareHandler dispatch — mirrors [clientTransport.call]'s
 	// identical mechanism, duplicated for the DEALER variant (one of the
 	// 4 transports this mechanism must be transport-agnostic across).
@@ -1550,7 +1550,7 @@ func (t *dealerClientTransport) call(ctx context.Context, routeAny any, reqAny a
 			innerReqVal = reqPtr.Elem()
 		}
 
-		// docs/roadmap/reqreply-codec-declared-middleware.md: codec-
+		// docs/design/d-0003-codec-declared-middlewares.md's Addendum: codec-
 		// backed ClientMiddlewareHandler dispatch — runs AFTER the
 		// paired credential Fns above (D1).
 		if len(clientMiddlewareHandlers) > 0 {

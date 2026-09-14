@@ -53,7 +53,7 @@ func Build() (*Built, error) {
 		return nil, err
 	}
 	// OAuthComputeRoute demonstrates zeromq's reqreply security Fn-shape
-	// (docs/roadmap/zeromq-security.md, SHIPPED) AND the SAME OAuthMw
+	// (docs/design/d-0004-reqreply-workflow-simplification.md's Addendum, SHIPPED) AND the SAME OAuthMw
 	// declaration shared across REST/reqreply — see Demo 9
 	// (demo_cross_api_oauth2_sharing.go).
 	oauthHandle, err := routes.OAuthComputeRoute.

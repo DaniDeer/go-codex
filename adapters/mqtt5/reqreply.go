@@ -32,7 +32,7 @@ type ServeOptions struct {
 	UserPropertyParams []UserPropertyParam
 }
 
-// REMOVED (Phase 1 of docs/roadmap/reqreply-middleware.md, BREAKING):
+// REMOVED (Phase 1 of docs/design/d-0004-reqreply-workflow-simplification.md's Addendum, BREAKING):
 // ServeOptions.SecurityFunc. Declare a paired security implementation via
 // [reqreply.Route.Use] + [reqreply.Route.HandleMW] instead — the SAME
 // codec-based credential check (via [reqreply.SecurityScheme.Codec])
@@ -119,7 +119,7 @@ type CallOptions struct {
 	ResponseFormats any
 }
 
-// REMOVED (Phase 1 of docs/roadmap/reqreply-middleware.md, BREAKING):
+// REMOVED (Phase 1 of docs/design/d-0004-reqreply-workflow-simplification.md's Addendum, BREAKING):
 // CallOptions.CredentialFunc. Declare a paired credential-supplying
 // implementation via [reqreply.Route.Use] + [reqreply.Route.ClientMW]
 // instead — same shape (`func(ctx, reqs) ([]UserProperty, error)`), same
@@ -139,7 +139,7 @@ type CallOptions struct {
 // registered routes use), rather than duplicating the decode/merge/
 // security/encode/error-pattern pipeline inline. Zero duplicate logic —
 // full capability parity with [AttachServer] is therefore automatic (see
-// docs/roadmap/reqreply-middleware.md's Phase 0/0b for the history: this
+// docs/design/d-0004-reqreply-workflow-simplification.md's Addendum's Phase 0/0b for the history: this
 // used to be a separate, hand-written implementation; Phase 0 closed the
 // capability gap, Phase 0b collapsed the duplication).
 //
@@ -183,7 +183,7 @@ func Serve[Req, Resp any](
 // (explicit override, takes PRECEDENCE over any [reqreply.NewTopicParam]
 // merge-field-derived value for the same key — mirrors [CallHandle]'s own
 // documented precedence) and [CallOptions.RequestFormats]/[ResponseFormats]
-// (per-call format overrides). See docs/roadmap/reqreply-middleware.md's
+// (per-call format overrides). See docs/design/d-0004-reqreply-workflow-simplification.md's Addendum's
 // Phase 0/0b for the history: this used to be a separate, hand-written
 // implementation; Phase 0 closed the capability gap, Phase 0b collapsed
 // the duplication.
@@ -223,7 +223,7 @@ func Call[Req, Resp any](
 // [reqreply.RouteHandle.EncodeVars]), the SAME auto-derivation this
 // function used to add on top of [Call] before [AttachClient]'s
 // underlying [clientTransport.call] gained it directly (Phase 0 of
-// docs/roadmap/reqreply-middleware.md). An explicit [CallOptions.Vars]
+// docs/design/d-0004-reqreply-workflow-simplification.md's Addendum). An explicit [CallOptions.Vars]
 // still takes PRECEDENCE over the derived value for the same key.
 // Kept for existing callers — prefer [Call] directly in new code, since
 // it is now identical.

@@ -805,7 +805,7 @@ func publishHandle[T any](
 // rather than duplicating the decode/handler/encode/error-pattern
 // pipeline inline. Zero duplicate logic — full capability parity with
 // [AttachServer] is therefore automatic (see docs/roadmap/
-// reqreply-middleware.md's Phase 0/0b for the history — this used to be
+// D-0004's Addendum's Phase 0/0b for the history — this used to be
 // a separate, hand-written implementation, mirroring the SAME
 // de-duplication mqtt5's [adapters/mqtt5.Serve] already shipped).
 //
@@ -855,7 +855,7 @@ func Serve[Req, Resp any](
 // ONLY for observability path/span naming, never socket selection, since
 // zeromq REQ/REP routing is socket-based, not topic-based) and
 // [CallOptions.RequestFormats]/[ResponseFormats] (per-call format
-// overrides). See docs/roadmap/reqreply-middleware.md's Phase 0/0b for
+// overrides). See docs/design/d-0004-reqreply-workflow-simplification.md's Addendum's Phase 0/0b for
 // the history — this used to be a separate, hand-written implementation,
 // mirroring the SAME de-duplication mqtt5's [adapters/mqtt5.Call]
 // already shipped.
@@ -901,7 +901,7 @@ func Call[Req, Resp any](
 // [reqreply.RouteHandle.EncodeVars]), the SAME auto-derivation this
 // function used to add on top of [Call] before [AttachClient]'s
 // underlying [clientTransport.call] gained it directly (Phase 0/0b of
-// docs/roadmap/reqreply-middleware.md, mirroring mqtt5's identical
+// docs/design/d-0004-reqreply-workflow-simplification.md's Addendum, mirroring mqtt5's identical
 // outcome). An explicit [CallOptions.Vars] still takes PRECEDENCE over
 // the derived value for the same key. Kept for existing callers — prefer
 // [Call] directly in new code, since it is now identical.
@@ -945,7 +945,7 @@ var emptyDelimiter = []byte{}
 // [AttachRouterServer]'s registered routes use), rather than duplicating
 // the decode/handler/encode/error-pattern pipeline inline. Zero duplicate
 // logic — full capability parity with [AttachRouterServer] is therefore
-// automatic. See docs/roadmap/reqreply-middleware.md's Phase 0/0b for the
+// automatic. See docs/design/d-0004-reqreply-workflow-simplification.md's Addendum's Phase 0/0b for the
 // history — this used to be a separate, hand-written implementation,
 // mirroring the SAME de-duplication mqtt5's escape hatch already shipped.
 //
@@ -1003,7 +1003,7 @@ func sendRouterErrorReply(sock FramedSocket, identity []byte, err error) {
 // parity with [AttachDealerClient] is therefore automatic (same
 // [CallOptions.Vars]/[RequestFormats]/[ResponseFormats] handling as
 // [Call] — see its doc comment for the full rationale). See
-// docs/roadmap/reqreply-middleware.md's Phase 0/0b for the history.
+// docs/design/d-0004-reqreply-workflow-simplification.md's Addendum's Phase 0/0b for the history.
 //
 // DEALER message framing (client sends):
 //

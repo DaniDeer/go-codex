@@ -294,7 +294,7 @@ multi-phase implementation rounds can avoid repeating them.
 > `PublishMW` `*T`-write-access generalization, closing `mqtt`(v3)'s
 > publish-side gap via an in-payload credential mechanism that also
 > significantly de-risks zeromq (spun out to
-> [ZeroMQ Security Mechanism](../roadmap/zeromq-security.md)); the other 6 items
+> `zeromq-security.md` (SHIPPED, since deleted — see [D-0004](d-0004-reqreply-workflow-simplification.md)'s own Addendum)); the other 6 items
 > were confirmed KEEP, matching REST's own precedent. The security
 > model is documented as exactly 2 mechanisms (connection-level
 > authentication; message-level authorization), not 3 — see "Security
@@ -566,9 +566,9 @@ at the SAME call). There is no single place a reader can look to know
 
 | Capability | `mqtt` (v3) | `mqtt5` | `zeromq` |
 |---|---|---|---|
-| Connection-level `SecuredClient`/`ConnectSecurityScheme` | ✅ | ✅ | ❌ (see [ZeroMQ Security Mechanism](../roadmap/zeromq-security.md)) |
-| Message-level subscribe-side `SecurityFunc` | ✅ `func(ctx, pahomqtt.Message, reqs) error` (confirmed, mirrors mqtt5 exactly) | ✅ `func(ctx, *pahomqtt5.Publish, reqs) error` | ❌ today; tractable via the in-payload mechanism below (see [ZeroMQ Security Mechanism](../roadmap/zeromq-security.md)) |
-| Message-level publish-side `CredentialFunc` | ⚠️ protocol-native (`UserProperty`) output impossible (no per-message property channel) — **BUT the in-payload mechanism below (Decision 3) works identically to mqtt5's**, closing the practical gap | ✅ `func(ctx, reqs) ([]UserProperty, error)` — **revised by Decision 3 to also accept `*T`** | ❌ today; tractable via the same in-payload mechanism (see [ZeroMQ Security Mechanism](../roadmap/zeromq-security.md)) |
+| Connection-level `SecuredClient`/`ConnectSecurityScheme` | ✅ | ✅ | ❌ permanently, by design — CLOSED, not a gap (`zeromq-security.md`'s own research-backed rationale, now folded into [D-0004](d-0004-reqreply-workflow-simplification.md)'s Addendum; that doc has since been deleted) |
+| Message-level subscribe-side `SecurityFunc` | ✅ `func(ctx, pahomqtt.Message, reqs) error` (confirmed, mirrors mqtt5 exactly) | ✅ `func(ctx, *pahomqtt5.Publish, reqs) error` | ✅ SHIPPED, via the in-payload mechanism below (`SubscribeOptions.SecurityFunc`) |
+| Message-level publish-side `CredentialFunc` | ⚠️ protocol-native (`UserProperty`) output impossible (no per-message property channel) — **BUT the in-payload mechanism below (Decision 3) works identically to mqtt5's**, closing the practical gap | ✅ `func(ctx, reqs) ([]UserProperty, error)` — **revised by Decision 3 to also accept `*T`** | ✅ SHIPPED, via the same in-payload mechanism (`PublishOptions.CredentialFunc`) |
 | Handle-attached implementation (vs. per-call `Options`) | ❌ | ❌ | ❌ |
 | Scope-grant / `middleware.CheckScopes` integration | ❌ | ❌ | ❌ |
 
@@ -581,7 +581,7 @@ security requires inventing a new wire-level convention before ANYTHING
 is possible** — Decision 3's in-payload mechanism (below) needs no wire
 change at all, since a credential embedded as an ordinary field in the
 codec-decoded payload works identically regardless of transport. See
-[ZeroMQ Security Mechanism](../roadmap/zeromq-security.md) for the narrower
+`zeromq-security.md` (SHIPPED, since deleted — see [D-0004](d-0004-reqreply-workflow-simplification.md)'s own Addendum) for the narrower
 remaining question (an OPTIONAL out-of-band frame-based mechanism, plus
 connection-level/CURVE) — spun out to its own doc since it still has no
 concrete driver, unlike the in-payload mechanism which is folded
@@ -2187,7 +2187,7 @@ previously stated).
   nothing beyond what's already decoded into `T`, so there is no
   raw-message-equivalent parameter to also pass, unlike mqtt/mqtt5's
   subscribe-side). **Not fully designed here** — spun out to
-  [ZeroMQ Security Mechanism](../roadmap/zeromq-security.md), which now scopes down
+  `zeromq-security.md` (SHIPPED, since deleted — see [D-0004](d-0004-reqreply-workflow-simplification.md)'s own Addendum), which now scopes down
   to a much narrower remaining question (an OPTIONAL additional
   out-of-band frame-based mechanism, plus the separate connection-level/
   CURVE question) rather than "invent an entire wire convention from
@@ -3189,12 +3189,14 @@ found and fixed:
 **Confirmed accurate, no changes needed**: `adapters/zeromq`'s
 connection-ownership deferral (a real, intentional, CGO-driven
 tradeoff — not a gap); the REST-workflow-review reminder (genuinely
-still open, but already fully and concretely tracked via spun-out
-docs — `zeromq-security.md`, `d-0004-reqreply-workflow-simplification.md`,
+still open at the time this section was written, tracked via spun-out
+docs — `zeromq-security.md` (SHIPPED since, then deleted per its own
+graduation policy — folded into [D-0004](d-0004-reqreply-workflow-simplification.md)'s
+Addendum), `d-0004-reqreply-workflow-simplification.md`,
 `common-middleware-architecture.md`, `protocol-native-features.md` —
-all still "idea only"/"PLANNED", none blocking THIS doc's own
-completion; the fifth spun-out item, REST's client-side general-purpose
-`ClientMW` hook, has since been resolved and folded into
+none blocking THIS doc's own completion; the fifth spun-out item, REST's
+client-side general-purpose `ClientMW` hook, has since been resolved and
+folded into
 [d-0001's Addendum 3](d-0001-rest-middleware-workflow-simplification.md#addendum-3-client-side-general-purpose-clientmw-hook-closes-the-last-known-restevents-middleware-asymmetry)).
 
 **Verified**: `gofmt`/`go build`/`go vet`/`go test` all green repo-wide
@@ -3378,16 +3380,17 @@ model (pub/sub), not to an unintentional drift between the two designs.
    that fix (now resolved separately, via a ported
    `ConflictingSecurityDeclarationError`).
 5. ~~**`zeromq` has literally no security mechanism at any layer**~~ —
-   **SIGNIFICANTLY DE-RISKED, spun out to
-   [ZeroMQ Security Mechanism](../roadmap/zeromq-security.md).** Every zeromq
-   pub/sub call remains unconditionally unenforced TODAY (confirmed via
-   exhaustive grep this pass, see capability matrix above), but this no
-   longer requires inventing a new wire-level convention before ANY
-   progress is possible — Decision 3's in-payload `*T`-write mechanism
-   (discovered while resolving escape hatch 6) needs no wire change at
-   all and applies to zeromq identically. The spun-out doc's remaining
-   scope narrows to an OPTIONAL additional out-of-band frame-based
-   mechanism plus the separate connection-level/CURVE question — a much
+   **RESOLVED. SHIPPED, via `zeromq-security.md`'s work (that doc has
+   since been deleted per its own graduation policy — see
+   [D-0004](d-0004-reqreply-workflow-simplification.md)'s own Addendum
+   for the durable record).** zeromq pub/sub's message-level security
+   (`SubscribeOptions.SecurityFunc`/`PublishOptions.CredentialFunc`) is
+   now shipped (see capability matrix above), via Decision 3's in-payload
+   `*T`-write mechanism (discovered while resolving escape hatch 6),
+   needing no wire-level convention change at all — applies to zeromq
+   identically to mqtt5. `zeromq-security.md`'s own further-narrowed
+   scope (an OPTIONAL additional out-of-band frame-based mechanism plus
+   the separate connection-level/CURVE question) was CLOSED — a much
    smaller, more tractable investigation than originally scoped.
 6. ~~**`mqtt` (v3) publish-side has no credential mechanism, by protocol
    limitation**~~ — **RESOLVED, scope corrected.** The original framing
@@ -3585,14 +3588,21 @@ model (pub/sub), not to an unintentional drift between the two designs.
   `Subscribe`/`SubscribeWithHandle` split — no per-adapter
   implementation detail remains deferred.
 - ~~`zeromq`'s Fn shapes for both directions... needs a new wire-level
-  credential convention~~ — **RESOLVED, scope narrowed.** Decision 3's
+  credential convention~~ — **RESOLVED, then SHIPPED.** Decision 3's
   `*T`-write-access mechanism gives zeromq a fully-tractable Fn shape
-  with NO wire-level convention needed. What remains open (its own
-  optional out-of-band frame mechanism, connection-level/CURVE) is spun
-  out to [ZeroMQ Security Mechanism](../roadmap/zeromq-security.md) — zeromq's
+  with NO wire-level convention needed — `SubscribeOptions.SecurityFunc`/
+  `PublishOptions.CredentialFunc` are now shipped for zeromq pub/sub.
+  `zeromq-security.md` (which tracked this, plus its own further-narrowed
+  optional out-of-band frame mechanism and connection-level/CURVE
+  questions) has since shipped and been deleted per its own graduation
+  policy — see [D-0004](d-0004-reqreply-workflow-simplification.md)'s
+  own Addendum for the durable record. zeromq's
   `Caller`/`ServeSubscribers`/two-tier `Subscribe` mirroring SHIPPED (see
-  the item above); only the spun-out doc's own narrower remaining
-  question is still open.
+  the item above too). One item flagged there remains genuinely open:
+  whether to now RETIRE these flat `SecurityFunc`/`CredentialFunc`
+  fields now that zeromq pub/sub also has its own `.Use`/`SubscribeMW`/
+  `PublishMW` declarative mechanism (see D-0004's Addendum) — not yet
+  decided.
 - ~~Coverage-check enforcement semantics during Decision 3's adapter
   wiring~~ — **RESOLVED.** `CheckCoverage` is now wired unconditionally
   (escape hatch #2, "Security model: two mechanisms, not three"
@@ -3645,8 +3655,10 @@ here). **Decision 1 is RESOLVED** (the former separate "Decision 2" is
 folded into it), and every design gap raised during this doc's many
 review passes has been closed (see the list above, and Decisions 1-9's
 own status banners) — the only things left OUTSIDE this doc's own scope
-are `zeromq`'s remaining, much-narrower open questions (spun out to
-[ZeroMQ Security Mechanism](../roadmap/zeromq-security.md), still "idea only"), and
+were `zeromq`'s remaining, much-narrower open questions, spun out to
+`zeromq-security.md` — that doc has SINCE SHIPPED and been deleted per
+its own graduation policy (see [D-0004](d-0004-reqreply-workflow-simplification.md)'s
+own Addendum for the durable record), and
 the REST-workflow-review reminder immediately above (already fully
 tracked via its own 4 spun-out docs, all still "idea only"/"PLANNED —
 no implementation yet" — none of these block THIS doc's own
