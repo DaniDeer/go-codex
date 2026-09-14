@@ -391,7 +391,7 @@ func TestPublishMW_WrongShape_ReturnsMiddlewareShapeError(t *testing.T) {
 	}
 
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
-	err = publish(context.Background(), client, handle, 1, false, reading, nil, PublishOptions[sensorReading]{})
+	err = publish(context.Background(), client, handle, 1, false, reading, nil, true, PublishOptions[sensorReading]{})
 	var shapeErr middleware.MiddlewareShapeError
 	if !errors.As(err, &shapeErr) {
 		t.Fatalf("want middleware.MiddlewareShapeError, got %v", err)
@@ -474,7 +474,7 @@ func TestPublishMW_SecurityShape_WritesIntoPayload(t *testing.T) {
 	}
 
 	reading := sensorReading{SensorID: "00000000-0000-0000-0000-000000000000", Value: 1.0}
-	if err := publish(context.Background(), client, handle, 1, false, reading, nil, PublishOptions[sensorReading]{}); err != nil {
+	if err := publish(context.Background(), client, handle, 1, false, reading, nil, true, PublishOptions[sensorReading]{}); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	pub2 := client.lastPublished()

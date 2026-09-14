@@ -924,3 +924,492 @@ func TestAttachClient_ClientMW_ContextMutationPropagatesIntoInnerCall(t *testing
 		t.Fatalf("expected the ClientMW decorator's context mutation to propagate into the paired credential Fn, got %v", observedValue)
 	}
 }
+
+// ── docs/roadmap/reqreply-codec-declared-middleware.md adapter wiring ──────
+
+type mwPropIn struct{ TenantID string }
+type mwPropOut struct{ Ack string }
+
+var mwPropInCodec = codex.Struct[mwPropIn]()
+var mwPropOutCodec = codex.Struct[mwPropOut]()
+
+// TestAttachClient_WithRequestProperty_WritesOutgoingUserProperty verifies
+// Write-side wiring Case 1: a Middleware's WithRequestProperty-declared
+// value actually appears in the outgoing REQUEST's real MQTT5 User
+// Properties.
+func TestAttachClient_WithRequestProperty_WritesOutgoingUserProperty(t *testing.T) {
+	mw := reqreply.NewMiddleware(middleware.NewDeclaration("req-prop", mwPropInCodec, mwPropOutCodec)).
+		WithRequestProperty(reqreply.NewPropertyParam("X-Tenant", codex.String(),
+			func(v mwPropIn) string { return v.TenantID },
+			func(v *mwPropIn, s string) { v.TenantID = s }))
+
+	rt := reqreply.ClientTransform(
+		reqreply.NewRoute[computeReq, computeResp]("compute/req-prop-test", computeReqCodec, computeRespCodec),
+		mw,
+		func(ctx context.Context, req computeReq) (mwPropIn, error) {
+			return mwPropIn{TenantID: "acme"}, nil
+		},
+	)
+
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	handler := func(ctx context.Context, req computeReq) (computeResp, error) {
+		return computeResp{Sum: req.X + req.Y}, nil
+	}
+	if _, err := reqreply.NewRoute[computeReq, computeResp]("compute/req-prop-test", computeReqCodec, computeRespCodec).
+		WithHandler(handler).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	serverClient := &mockClient{}
+	serverRouter := newMockRouter()
+	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- server.Serve(ctx) }()
+	serverRouter.waitHandler("compute/req-prop-test")
+
+	client := reqreply.NewClient()
+	clientClient := &mockClient{}
+	clientRouter := newMockRouter()
+	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+		t.Fatalf("AttachClient: %v", err)
+	}
+	wireBrokers(t, serverClient, clientRouter)
+	wireBrokers(t, clientClient, serverRouter)
+
+	if _, err := client.Call(context.Background(), rt, computeReq{X: 1, Y: 2}); err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+
+	clientClient.mu.Lock()
+	defer clientClient.mu.Unlock()
+	var found bool
+	for _, p := range clientClient.published {
+		if p.Properties == nil {
+			continue
+		}
+		for _, up := range p.Properties.User {
+			if up.Key == "X-Tenant" && up.Value == "acme" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("want outgoing request's User Properties to carry X-Tenant=acme, got published: %+v", clientClient.published)
+	}
+	cancel()
+	<-errCh
+}
+
+// TestAttachServer_WithResponseProperty_WritesOutgoingUserProperty
+// verifies Write-side wiring Case 3 — the MAJOR finding: a Middleware's
+// WithResponseProperty-declared value actually appears in the outgoing
+// REPLY's real MQTT5 User Properties.
+func TestAttachServer_WithResponseProperty_WritesOutgoingUserProperty(t *testing.T) {
+	mw := reqreply.NewMiddleware(middleware.NewDeclaration("resp-prop", mwPropInCodec, mwPropOutCodec)).
+		WithResponseProperty(reqreply.NewPropertyParam("X-Ack", codex.String(),
+			func(v mwPropOut) string { return v.Ack },
+			func(v *mwPropOut, s string) { v.Ack = s }))
+
+	handler := func(ctx context.Context, req computeReq) (computeResp, error) {
+		return computeResp{Sum: req.X + req.Y}, nil
+	}
+	rt := reqreply.Transform(
+		reqreply.NewRoute[computeReq, computeResp]("compute/resp-prop-test", computeReqCodec, computeRespCodec),
+		mw,
+		func(ctx context.Context, req *computeReq, in mwPropIn) (mwPropOut, error) {
+			return mwPropOut{Ack: "confirmed"}, nil
+		},
+	)
+
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	if _, err := rt.WithHandler(handler).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	serverClient := &mockClient{}
+	serverRouter := newMockRouter()
+	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- server.Serve(ctx) }()
+	serverRouter.waitHandler("compute/resp-prop-test")
+
+	client := reqreply.NewClient()
+	clientClient := &mockClient{}
+	clientRouter := newMockRouter()
+	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+		t.Fatalf("AttachClient: %v", err)
+	}
+	wireBrokers(t, serverClient, clientRouter)
+	wireBrokers(t, clientClient, serverRouter)
+
+	if _, err := client.Call(context.Background(),
+		reqreply.NewRoute[computeReq, computeResp]("compute/resp-prop-test", computeReqCodec, computeRespCodec),
+		computeReq{X: 1, Y: 2}); err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+
+	serverClient.mu.Lock()
+	defer serverClient.mu.Unlock()
+	var found bool
+	for _, p := range serverClient.published {
+		if p.Properties == nil {
+			continue
+		}
+		for _, up := range p.Properties.User {
+			if up.Key == "X-Ack" && up.Value == "confirmed" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("want the SUCCESS reply's User Properties to carry X-Ack=confirmed, got published: %+v", serverClient.published)
+	}
+	cancel()
+	<-errCh
+}
+
+// TestAttachServer_WithResponseProperty_ErrorReplyAlsoWritesUserProperty
+// confirms the fix covers the ERROR-reply publish path too, not just the
+// success path.
+func TestAttachServer_WithResponseProperty_ErrorReplyAlsoWritesUserProperty(t *testing.T) {
+	mw := reqreply.NewMiddleware(middleware.NewDeclaration("resp-prop-err", mwPropInCodec, mwPropOutCodec)).
+		WithResponseProperty(reqreply.NewPropertyParam("X-Ack", codex.String(),
+			func(v mwPropOut) string { return v.Ack },
+			func(v *mwPropOut, s string) { v.Ack = s }))
+
+	handler := func(ctx context.Context, req computeReq) (computeResp, error) {
+		return computeResp{}, errBusinessFailure
+	}
+	baseRoute := reqreply.NewRoute[computeReq, computeResp]("compute/resp-prop-err-test", computeReqCodec, computeRespCodec,
+		reqreply.ErrorPattern[businessError, string](
+			codex.String(),
+			func(e businessError) (string, error) { return e.msg, nil },
+		),
+	)
+	rt := reqreply.Transform(baseRoute, mw,
+		func(ctx context.Context, req *computeReq, in mwPropIn) (mwPropOut, error) {
+			return mwPropOut{Ack: "err-ack"}, nil
+		})
+
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	if _, err := rt.WithHandler(handler).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	serverClient := &mockClient{}
+	serverRouter := newMockRouter()
+	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- server.Serve(ctx) }()
+	serverRouter.waitHandler("compute/resp-prop-err-test")
+
+	client := reqreply.NewClient()
+	clientClient := &mockClient{}
+	clientRouter := newMockRouter()
+	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+		t.Fatalf("AttachClient: %v", err)
+	}
+	wireBrokers(t, serverClient, clientRouter)
+	wireBrokers(t, clientClient, serverRouter)
+
+	_, _ = client.Call(context.Background(),
+		reqreply.NewRoute[computeReq, computeResp]("compute/resp-prop-err-test", computeReqCodec, computeRespCodec),
+		computeReq{X: 1, Y: 2})
+
+	time.Sleep(50 * time.Millisecond)
+	serverClient.mu.Lock()
+	defer serverClient.mu.Unlock()
+	var found bool
+	for _, p := range serverClient.published {
+		if p.Properties == nil {
+			continue
+		}
+		for _, up := range p.Properties.User {
+			if up.Key == "X-Ack" && up.Value == "err-ack" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("want the ERROR reply's User Properties to ALSO carry X-Ack=err-ack, got published: %+v", serverClient.published)
+	}
+	cancel()
+	<-errCh
+}
+
+type businessError struct{ msg string }
+
+func (e businessError) Error() string { return e.msg }
+
+var errBusinessFailure = businessError{msg: "business failure"}
+
+// TestAttachServer_Transform_RunsAfterPairedSecurity confirms D1:
+// Transform's declared middleware runs AFTER the paired security Fn.
+func TestAttachServer_Transform_RunsAfterPairedSecurity(t *testing.T) {
+	var order []string
+	secMw := middleware.SecurityScheme("bearer2", route.BearerScheme("JWT"), nil, &bearerAuthTestCodec)
+	mw := reqreply.NewMiddleware(middleware.NewDeclaration("order-check", mwPropInCodec, mwPropOutCodec))
+	handler := func(ctx context.Context, req computeReq) (computeResp, error) {
+		order = append(order, "handler")
+		return computeResp{Sum: req.X + req.Y}, nil
+	}
+	baseRoute := reqreply.NewRoute[computeReq, computeResp]("compute/order-test", computeReqCodec, computeRespCodec).
+		Use(secMw).
+		HandleMW(&secMw, func(context.Context, *pahomqtt5.Publish, []route.SecurityRequirement) (map[string][]string, error) {
+			order = append(order, "security")
+			return map[string][]string{"bearer2": nil}, nil
+		})
+	rt := reqreply.Transform(baseRoute, mw,
+		func(ctx context.Context, req *computeReq, in mwPropIn) (mwPropOut, error) {
+			order = append(order, "middleware")
+			return mwPropOut{}, nil
+		})
+
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	if _, err := rt.WithHandler(handler).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	serverClient := &mockClient{}
+	serverRouter := newMockRouter()
+	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- server.Serve(ctx) }()
+	serverRouter.waitHandler("compute/order-test")
+
+	client := reqreply.NewClient()
+	clientClient := &mockClient{}
+	clientRouter := newMockRouter()
+	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+		t.Fatalf("AttachClient: %v", err)
+	}
+	wireBrokers(t, serverClient, clientRouter)
+	wireBrokers(t, clientClient, serverRouter)
+
+	authedRoute := reqreply.NewRoute[computeReq, computeResp]("compute/order-test", computeReqCodec, computeRespCodec).
+		Use(secMw).
+		ClientMW(&secMw, func(ctx context.Context, _ []route.SecurityRequirement) ([]UserProperty, error) {
+			return []UserProperty{{Key: "Authorization", Value: "Bearer tok"}}, nil
+		})
+	if _, err := client.Call(context.Background(), authedRoute, computeReq{X: 1, Y: 2}); err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+
+	if len(order) != 3 || order[0] != "security" || order[1] != "middleware" || order[2] != "handler" {
+		t.Fatalf("want dispatch order [security middleware handler], got %v", order)
+	}
+	cancel()
+	<-errCh
+}
+
+// TestAttachServer_MiddlewareError_WrapsAsKindMiddleware confirms
+// decision #6: a Transform-attached fn's own business error surfaces
+// through ServeError{Kind: KindMiddleware}, NOT KindHandler.
+func TestAttachServer_MiddlewareError_WrapsAsKindMiddleware(t *testing.T) {
+	mw := reqreply.NewMiddleware(middleware.NewDeclaration("fn-error", mwPropInCodec, mwPropOutCodec))
+	handler := func(ctx context.Context, req computeReq) (computeResp, error) {
+		return computeResp{Sum: req.X + req.Y}, nil
+	}
+	rt := reqreply.Transform(
+		reqreply.NewRoute[computeReq, computeResp]("compute/mw-error-test", computeReqCodec, computeRespCodec),
+		mw,
+		func(ctx context.Context, req *computeReq, in mwPropIn) (mwPropOut, error) {
+			return mwPropOut{}, errBusinessFailure
+		},
+	)
+
+	var gotKind ErrorKind
+	var kindSet bool
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	if _, err := rt.WithHandler(handler).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	serverClient := &mockClient{}
+	serverRouter := newMockRouter()
+	if err := AttachServer(server, serverClient, serverRouter, ServeOptions{
+		OnError: func(e ServeError) {
+			if !kindSet {
+				gotKind = e.Kind
+				kindSet = true
+			}
+		},
+	}); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- server.Serve(ctx) }()
+	serverRouter.waitHandler("compute/mw-error-test")
+
+	client := reqreply.NewClient()
+	clientClient := &mockClient{}
+	clientRouter := newMockRouter()
+	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+		t.Fatalf("AttachClient: %v", err)
+	}
+	wireBrokers(t, serverClient, clientRouter)
+	wireBrokers(t, clientClient, serverRouter)
+
+	_, _ = client.Call(context.Background(),
+		reqreply.NewRoute[computeReq, computeResp]("compute/mw-error-test", computeReqCodec, computeRespCodec),
+		computeReq{X: 1, Y: 2})
+	time.Sleep(50 * time.Millisecond)
+
+	if !kindSet || gotKind != KindMiddleware {
+		t.Fatalf("want ServeError{Kind: KindMiddleware}, got kindSet=%v kind=%v", kindSet, gotKind)
+	}
+	cancel()
+	<-errCh
+}
+
+// TestTransform_MiddlewareError_FallsBackWhenNoErrorPatternMatch (D2):
+// a route DOES declare an ErrorPattern (for a DIFFERENT error type than
+// the middleware's own fn returns) — confirming the fn's business error,
+// which does NOT match that pattern, still falls back to a plain-text
+// reqreply.MiddlewareError response instead of being silently swallowed
+// or mismatched against the wrong pattern. Distinct from
+// TestAttachServer_MiddlewareError_WrapsAsKindMiddleware above (which
+// covers the simpler "no ErrorPattern declared at all" case) and mirrors
+// TestAttachServer_ErrorPattern_NoMatch_FallsBackToPlainText's identical
+// scenario, but for the middleware axis instead of the route's own
+// handler.
+func TestTransform_MiddlewareError_FallsBackWhenNoErrorPatternMatch(t *testing.T) {
+	mw := reqreply.NewMiddleware(middleware.NewDeclaration("fn-error-nomatch", mwPropInCodec, mwPropOutCodec))
+	handler := func(ctx context.Context, req computeReq) (computeResp, error) {
+		return computeResp{Sum: req.X + req.Y}, nil
+	}
+	rt := reqreply.Transform(
+		reqreply.NewRoute[computeReq, computeResp]("compute/mw-error-nomatch-test", computeReqCodec, computeRespCodec,
+			reqreply.ErrorPattern[serveConflictErr, serveErrPayload](serveErrPayloadCodec,
+				func(e serveConflictErr) (serveErrPayload, error) {
+					return serveErrPayload{Code: "conflict", Message: e.msg}, nil
+				},
+			),
+		),
+		mw,
+		func(ctx context.Context, req *computeReq, in mwPropIn) (mwPropOut, error) {
+			return mwPropOut{}, errBusinessFailure
+		},
+	)
+
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	if _, err := rt.WithHandler(handler).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	serverClient := &mockClient{}
+	serverRouter := newMockRouter()
+	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- server.Serve(ctx) }()
+	serverRouter.waitHandler("compute/mw-error-nomatch-test")
+
+	client := reqreply.NewClient()
+	clientClient := &mockClient{}
+	clientRouter := newMockRouter()
+	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+		t.Fatalf("AttachClient: %v", err)
+	}
+	wireBrokers(t, serverClient, clientRouter)
+	wireBrokers(t, clientClient, serverRouter)
+
+	_, _ = client.Call(context.Background(),
+		reqreply.NewRoute[computeReq, computeResp]("compute/mw-error-nomatch-test", computeReqCodec, computeRespCodec),
+		computeReq{X: 1, Y: 2})
+	time.Sleep(50 * time.Millisecond)
+
+	pub := serverClient.lastPublished()
+	if pub == nil {
+		t.Fatal("expected error reply to be published")
+	}
+	if !strings.Contains(string(pub.Payload), errBusinessFailure.Error()) {
+		t.Errorf("want plain-text MiddlewareError fallback containing %q, got: %s", errBusinessFailure.Error(), pub.Payload)
+	}
+	if strings.Contains(string(pub.Payload), "conflict") {
+		t.Errorf("declared ErrorPattern for an UNRELATED error type must NOT match — got: %s", pub.Payload)
+	}
+	cancel()
+	<-errCh
+}
+
+// TestAttachServer_Observer_ReportsMiddlewareInAndFnLocations (D5): a
+// DecodeIn failure calls stats.ReportErrors(obs, "middleware:in", err),
+// distinguishing it from the flat mechanism's existing "topic_var"
+// string.
+func TestAttachServer_Observer_ReportsMiddlewareInAndFnLocations(t *testing.T) {
+	mw := reqreply.NewMiddleware(middleware.NewDeclaration("obs-loc", mwPropInCodec, mwPropOutCodec)).
+		WithRequestProperty(reqreply.NewPropertyParam("X-Required", codex.String(),
+			func(v mwPropIn) string { return v.TenantID },
+			func(v *mwPropIn, s string) { v.TenantID = s }))
+	handler := func(ctx context.Context, req computeReq) (computeResp, error) {
+		return computeResp{Sum: req.X + req.Y}, nil
+	}
+	rt := reqreply.Transform(
+		reqreply.NewRoute[computeReq, computeResp]("compute/obs-loc-test", computeReqCodec, computeRespCodec),
+		mw,
+		func(ctx context.Context, req *computeReq, in mwPropIn) (mwPropOut, error) {
+			return mwPropOut{}, nil
+		},
+	)
+
+	obs := &testObserver{}
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	if _, err := rt.WithHandler(handler).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	serverClient := &mockClient{}
+	serverRouter := newMockRouter()
+	if err := AttachServer(server, serverClient, serverRouter, ServeOptions{Observer: obs}); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- server.Serve(ctx) }()
+	serverRouter.waitHandler("compute/obs-loc-test")
+
+	client := reqreply.NewClient()
+	clientClient := &mockClient{}
+	clientRouter := newMockRouter()
+	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+		t.Fatalf("AttachClient: %v", err)
+	}
+	wireBrokers(t, serverClient, clientRouter)
+	wireBrokers(t, clientClient, serverRouter)
+
+	// No X-Required property is sent — required property missing, a
+	// validation-shaped MiddlewareInputError, so RecordValidationError
+	// fires with location "middleware:in".
+	_, _ = client.Call(context.Background(),
+		reqreply.NewRoute[computeReq, computeResp]("compute/obs-loc-test", computeReqCodec, computeRespCodec),
+		computeReq{X: 1, Y: 2})
+	time.Sleep(50 * time.Millisecond)
+
+	var foundLoc bool
+	for _, e := range obs.validationFull {
+		if e.location == "middleware:in" {
+			foundLoc = true
+		}
+	}
+	if !foundLoc {
+		t.Fatalf("want a RecordValidationError call with location \"middleware:in\", got %+v", obs.validationFull)
+	}
+	cancel()
+	<-errCh
+}

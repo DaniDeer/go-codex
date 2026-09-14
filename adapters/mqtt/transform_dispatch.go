@@ -28,8 +28,14 @@ func (e middlewareDispatchError) Unwrap() error { return e.err }
 // receive, so a bound mw's fn may read/enrich it. Mirrors
 // adapters/mqtt5's identical function.
 func dispatchSubscribeMiddlewareHandlers[T any](ctx context.Context, msg *T, handlers []events.MiddlewareHandler, topicVars map[string]string) error {
+	// mqtt (v3) has no property mechanism at all (unlike mqtt5's User
+	// Properties) — supplies an empty property-value map, mirroring
+	// zeromq's identical "no property mechanism" carve-out. A channel
+	// declaring a REQUIRED property on this adapter fails naturally with
+	// the SAME MiddlewareInputError a missing topic var would, no
+	// special-casing needed.
 	for _, h := range handlers {
-		in, err := h.DecodeIn(topicVars)
+		in, err := h.DecodeIn(topicVars, nil)
 		if err != nil {
 			return middlewareDispatchError{err: err, name: h.Name}
 		}
@@ -69,7 +75,7 @@ func dispatchPublishMiddlewareHandlers[T any](ctx context.Context, msg T, handle
 			return nil, middlewareDispatchError{err: fnErr, isFnError: true, name: h.Name}
 		}
 		out := results[0].Interface()
-		mwVars, encErr := h.EncodeOut(out)
+		mwVars, _, encErr := h.EncodeOut(out)
 		if encErr != nil {
 			return nil, encErr
 		}

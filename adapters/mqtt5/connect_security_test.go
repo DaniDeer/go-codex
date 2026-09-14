@@ -99,7 +99,7 @@ func TestSecuredClient_TransparentDelegation(t *testing.T) {
 
 	// Publish through the wrapper — behaves identically to the raw client.
 	err = publish(context.Background(), secured, newChannelHandle(), 1, false,
-		sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}, nil,
+		sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}, nil, true,
 		PublishOptions[sensorReading]{})
 	if err != nil {
 		t.Fatalf("Publish via SecuredClient: %v", err)

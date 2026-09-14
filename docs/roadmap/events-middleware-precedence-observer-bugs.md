@@ -1,15 +1,19 @@
 # `api/events` codec-declared middleware — 2 pre-existing bugs in ALREADY-SHIPPED D-0003 code
 
-> **Status:** Design draft — both bugs fully designed (root-caused,
-> fix sketched, confirmed via direct code inspection), not yet
-> implemented. Independently actionable — do NOT need to wait for
+> **Status:** ✅ SHIPPED. Both bugs were fixed as part of
 > [ReqReply Codec-Declared Middleware](reqreply-codec-declared-middleware.md)'s
-> own Phase 0 (which ALSO plans to fix these same 2 bugs, since Phase 0
-> already touches these exact code paths to add property-var support).
-> If Phase 0 ships first, these fixes are already folded into its own
-> "Side track" section — implementing them from THIS doc instead only
-> makes sense if Phase 0 is delayed/deprioritized and these bugs are
-> worth fixing sooner, standalone.
+> Phase 0 implementation (its "Side track" section) — that doc's own
+> Phase 9/10 already touched these exact `adapters/mqtt5`/
+> `adapters/zeromq` code paths to add property-var support, and fixed
+> both bugs in the same pass. Confirmed shipped via direct code
+> inspection: `publish()` in both adapters now takes an
+> `isExplicitVars bool` parameter (the precedence fix); both adapters'
+> `dispatchSubscribeMiddlewareHandlers`/`dispatchPublishMiddlewareHandlers`
+> now call `stats.ReportErrors(obs, "middleware:in"/"middleware:fn",
+> err)` (the Observer fix). This doc's own Bug 1/Bug 2 sections below
+> remain accurate as the design record (root-cause analysis + fix
+> sketches), kept for historical reference — nothing further to
+> implement from this doc independently.
 > [← Back to Roadmap](index.md)
 
 ## Motivation

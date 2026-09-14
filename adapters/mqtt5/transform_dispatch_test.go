@@ -235,7 +235,7 @@ func TestPublish_ClientTransform_HappyPath_EncodesOutIntoTopicVars(t *testing.T)
 
 	client := &mockClient{}
 	reading := sensorReading{SensorID: "11111111-1111-1111-1111-111111111111", Value: 1.5}
-	if err := publish(context.Background(), client, handle, 1, false, reading, nil, PublishOptions[sensorReading]{}); err != nil {
+	if err := publish(context.Background(), client, handle, 1, false, reading, nil, false, PublishOptions[sensorReading]{}); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	if len(client.published) != 1 {
@@ -262,7 +262,7 @@ func TestPublish_ClientTransform_FnError_AbortsBeforePublish(t *testing.T) {
 
 	client := &mockClient{}
 	reading := sensorReading{SensorID: "11111111-1111-1111-1111-111111111111", Value: 1.5}
-	pubErr := publish(context.Background(), client, handle, 1, false, reading, nil, PublishOptions[sensorReading]{})
+	pubErr := publish(context.Background(), client, handle, 1, false, reading, nil, false, PublishOptions[sensorReading]{})
 	if pubErr == nil {
 		t.Fatal("want error from ClientTransform fn")
 	}
@@ -295,7 +295,7 @@ func TestPublish_ClientTransform_D3Precedence_ExplicitVarsWinOverMiddleware(t *t
 	// precedence) supplies its OWN "region" — must win over the
 	// middleware-derived value.
 	if err := publish(context.Background(), client, handle, 1, false, reading,
-		map[string]string{"region": "explicit-region"}, PublishOptions[sensorReading]{}); err != nil {
+		map[string]string{"region": "explicit-region"}, true, PublishOptions[sensorReading]{}); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	if got := client.published[0].Topic; got != "sensors/explicit-region/readings" {

@@ -227,7 +227,7 @@ func (a *zmqPublishAdapter[T]) Activate(ctx context.Context, src gstream.Stream[
 			if a.opts.Vars == nil {
 				err = publishHandle(ctx, a.sock, a.handle, v, pubOpts, a.fmt)
 			} else {
-				err = publish(ctx, a.sock, a.handle, v, a.opts.Vars, pubOpts, a.fmt)
+				err = publish(ctx, a.sock, a.handle, v, a.opts.Vars, true, pubOpts, a.fmt)
 			}
 			if err != nil {
 				if onErr != nil {

@@ -76,6 +76,7 @@ func main() {
 	demoConcurrentMultiRouteDispatch(ctx, zeromqClient)
 	demoCallAsyncFuture(ctx, mqtt5Client)
 	demoUserPropertyParamMiddleware(ctx, mqtt5Built)
+	demoPropertyAxisMiddleware(ctx, mqtt5Built, zeromqBuilt)
 	demoSpecPrintingAsyncAPI(mqtt5Built.Server)
 	demoZeroMQDealerRouterVariant(ctx)
 	demoCrossAPIOAuth2Sharing(ctx, zeromqBuilt)

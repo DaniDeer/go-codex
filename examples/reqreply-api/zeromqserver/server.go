@@ -27,6 +27,12 @@ type Built struct {
 	// sharing demo to print the route's own AsyncAPI-contributed
 	// security scheme entry.
 	OAuthHandle *reqreply.RouteHandle[routes.OAuthComputeReq, routes.OAuthComputeResp]
+	// PropertyAxisHandle is the registered *reqreply.RouteHandle for
+	// routes.PropertyAxisComputeRoute — the SAME route+
+	// routes.TenantPropertyMw+handlers.ProcessTenant triple
+	// mqtt5server.Build also registers, proving the declaration is
+	// genuinely transport-agnostic (see demo_property_axis_middleware.go).
+	PropertyAxisHandle *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]
 }
 
 // Build registers ComputeRoute/DoubleRoute/TripleRoute against a fresh
@@ -58,29 +64,58 @@ func Build() (*Built, error) {
 	if err != nil {
 		return nil, err
 	}
+	// PropertyAxisComputeRoute — the SAME routes.TenantPropertyMw
+	// (declaration) + handlers.ProcessTenant (implementation) attached
+	// via reqreply.Transform in mqtt5server.Build, registered here
+	// UNCHANGED against a transport with NO property mechanism at all.
+	// zeromq's REQ/REP frames carry only [status, payload] — there is
+	// no side channel to carry a User-Property-equivalent value, so
+	// TenantIn.TenantID is always absent here; TenantPropertyMw
+	// deliberately declares that property OPTIONAL (see
+	// routes/middleware.go) specifically so THIS registration succeeds
+	// rather than every zeromq call failing with
+	// reqreply.MiddlewareInputError.
+	propertyAxisHandle, err := reqreply.Transform(
+		routes.PropertyAxisComputeRoute,
+		routes.TenantPropertyMw,
+		handlers.ProcessTenant,
+	).
+		WithHandler(handlers.Add).
+		Register(server)
+	if err != nil {
+		return nil, err
+	}
 
 	addRep, addReq := newChanSocketPair()
 	doubleRep, doubleReq := newChanSocketPair()
 	tripleRep, tripleReq := newChanSocketPair()
 	oauthRep, oauthReq := newChanSocketPair()
+	propertyAxisRep, propertyAxisReq := newChanSocketPair()
 
 	serverSockets := map[string]zeromq.FramedSocket{
-		"compute/add":       addRep,
-		"compute/double":    doubleRep,
-		"compute/triple":    tripleRep,
-		"compute/oauth-add": oauthRep,
+		"compute/add":               addRep,
+		"compute/double":            doubleRep,
+		"compute/triple":            tripleRep,
+		"compute/oauth-add":         oauthRep,
+		"compute/property-axis-add": propertyAxisRep,
 	}
 	if err := zeromq.AttachServer(server, serverSockets); err != nil {
 		return nil, err
 	}
 
 	clientSockets := map[string]zeromq.FramedSocket{
-		"compute/add":       addReq,
-		"compute/double":    doubleReq,
-		"compute/triple":    tripleReq,
-		"compute/oauth-add": oauthReq,
+		"compute/add":               addReq,
+		"compute/double":            doubleReq,
+		"compute/triple":            tripleReq,
+		"compute/oauth-add":         oauthReq,
+		"compute/property-axis-add": propertyAxisReq,
 	}
-	return &Built{Server: server, ClientSockets: clientSockets, OAuthHandle: oauthHandle}, nil
+	return &Built{
+		Server:             server,
+		ClientSockets:      clientSockets,
+		OAuthHandle:        oauthHandle,
+		PropertyAxisHandle: propertyAxisHandle,
+	}, nil
 }
 
 // ── in-process chanSocket pair (self-contained — no real ZMQ library needed) ─

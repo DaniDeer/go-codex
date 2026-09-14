@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"reflect"
 
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/middleware"
@@ -45,6 +46,25 @@ type Middleware[In, Out any] struct {
 
 	topicMergeFieldsIn  []codex.FieldCodec[In]
 	topicMergeFieldsOut []codex.FieldCodec[Out]
+
+	// propertyMergeFieldsIn/Out mirror topicMergeFieldsIn/Out exactly, for
+	// the property vocabulary axis (MQTT5 User Properties/future AMQP
+	// message headers) — see [Middleware.WithSubscribeProperty]/
+	// [Middleware.WithPublishProperty]. Kept SEPARATE from the topic-var
+	// slices (different validation rules — property names are never
+	// checked against a topic template).
+	propertyMergeFieldsIn  []codex.FieldCodec[In]
+	propertyMergeFieldsOut []codex.FieldCodec[Out]
+
+	// propertyParamsIn/Out carry the SAME declarations as
+	// propertyMergeFieldsIn/Out in spec-level form (Name/Required/Codec)
+	// — needed because [codex.FieldCodec]'s schema-rendering method is
+	// package-codex-only (unexported), so conflict-detection/AsyncAPI
+	// rendering (both living in api/events) cannot introspect
+	// propertyMergeFieldsIn/Out directly. Populated 1:1 alongside the
+	// FieldCodec slices by WithSubscribeProperty/WithPublishProperty.
+	propertyParamsIn  []PropertyParam
+	propertyParamsOut []PropertyParam
 
 	// receiveFn/sendFn, when set (via WithReceive/WithSend below), carry a
 	// T-FREE runtime Fn directly on the value itself — enabling
@@ -97,6 +117,36 @@ func (m Middleware[In, Out]) WithSubscribeTopic(p MergedTopicParam[In]) Middlewa
 func (m Middleware[In, Out]) WithPublishTopic(p MergedTopicParam[Out]) Middleware[In, Out] {
 	m.topicMergeFieldsOut = append(cloneFieldCodecs(m.topicMergeFieldsOut), p.Field)
 	return m
+}
+
+// WithSubscribeProperty registers one property merge field into mw's OWN In
+// vocabulary — mirrors [Middleware.WithSubscribeTopic] exactly, using
+// [NewPropertyParam][In, V]/[NewOptionalPropertyParam][In, V] instead of
+// [NewTopicParam][In, V]. Meaningful ONLY for Subscribe attachment (mirrors
+// propertyMergeFieldsIn's own Subscribe-only use).
+func (m Middleware[In, Out]) WithSubscribeProperty(p MergedPropertyParam[In]) Middleware[In, Out] {
+	m.propertyMergeFieldsIn = append(cloneFieldCodecs(m.propertyMergeFieldsIn), p.Field)
+	m.propertyParamsIn = append(cloneParams(m.propertyParamsIn), PropertyParam{Param: p.Param, Required: p.Required})
+	return m
+}
+
+// WithPublishProperty is [Middleware.WithSubscribeProperty]'s publish-side
+// sibling — registers one property merge field into mw's OWN Out
+// vocabulary, encoded into the outgoing publish's property vars once
+// [ClientTransform]'s (or a bundled [Middleware.WithSend]'s) fn produces an
+// Out value. Meaningful ONLY for Publish attachment.
+func (m Middleware[In, Out]) WithPublishProperty(p MergedPropertyParam[Out]) Middleware[In, Out] {
+	m.propertyMergeFieldsOut = append(cloneFieldCodecs(m.propertyMergeFieldsOut), p.Field)
+	m.propertyParamsOut = append(cloneParams(m.propertyParamsOut), PropertyParam{Param: p.Param, Required: p.Required})
+	return m
+}
+
+// cloneParams is [cloneFieldCodecs]'s []PropertyParam sibling, avoiding the
+// SAME aliasing bug across chained With* calls.
+func cloneParams(ps []PropertyParam) []PropertyParam {
+	out := make([]PropertyParam, len(ps))
+	copy(out, ps)
+	return out
 }
 
 // cloneFieldCodecs is a tiny generic helper avoiding aliasing bugs across
@@ -254,6 +304,85 @@ func (e AmbiguousMiddlewareAttachmentError) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.String("name", e.Name),
 	)
+}
+
+// ConflictingParamContributionError is returned when two DIFFERENT sources
+// (a manual [PropertyParam] channel declaration or a specific [Middleware]'s
+// Name) declare the SAME property name with a DIFFERENT Required value or
+// codec schema. Identical redundant declarations dedupe silently — only a
+// genuine MISMATCH errors. This is 100% NEW code for events (confirmed via
+// grep: events shipped ZERO conflict-detection machinery before this) —
+// mirrors [rest.ConflictingParamContributionError] field-for-field, using
+// Topic (not Route) to match [DuplicateMiddlewareNameError]'s own
+// events-specific field-naming convention.
+type ConflictingParamContributionError struct {
+	Topic                     string
+	ParamName                 string
+	FirstSource, SecondSource string
+}
+
+func (e ConflictingParamContributionError) Error() string {
+	return fmt.Sprintf("api/events: channel %q: conflicting param contribution for %q: %q vs %q",
+		e.Topic, e.ParamName, e.FirstSource, e.SecondSource)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e ConflictingParamContributionError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("topic", e.Topic),
+		slog.String("param_name", e.ParamName),
+		slog.String("first_source", e.FirstSource),
+		slog.String("second_source", e.SecondSource),
+	)
+}
+
+// eventsParamContribution is one source's declaration for a single property
+// name, tracked for conflict detection — mirrors [rest]'s own
+// paramContribution, extended (Round 15) with a Codec field for the
+// property axis's DELIBERATELY stricter, Schema-based comparison (REST's
+// real paramContribution has no Codec field at all).
+type eventsParamContribution struct {
+	source   string
+	required bool
+	codec    *codex.Codec[string]
+}
+
+// checkEventsParamConflicts mirrors [rest]'s real checkParamConflicts
+// (api/rest/middleware.go), SCOPED to events' property axis — topic vars
+// have no pre-existing conflict-detection machinery to extend and are
+// therefore NEVER cross-checked here (independent namespaces, Round 15
+// decision: a topic var and a property sharing the same name is
+// explicitly fine). Two contributions for the SAME name conflict if
+// Required differs, OR exactly one has a nil Codec, OR both are non-nil
+// and their Schemas differ (reflect.DeepEqual) — DELIBERATELY stricter
+// than REST's real precedent, which never compares codecs at all.
+func checkEventsParamConflicts(topic string, contributions map[string][]eventsParamContribution) error {
+	for name, list := range contributions {
+		first := list[0]
+		for _, c := range list[1:] {
+			if c.required != first.required || codecSchemaMismatch(first.codec, c.codec) {
+				return ConflictingParamContributionError{
+					Topic: topic, ParamName: name,
+					FirstSource: first.source, SecondSource: c.source,
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// codecSchemaMismatch reports whether a and b conflict for
+// [checkEventsParamConflicts]'s purposes: nil-vs-non-nil is itself a
+// mismatch (differing validation strictness); both non-nil compares
+// Schema via reflect.DeepEqual.
+func codecSchemaMismatch(a, b *codex.Codec[string]) bool {
+	if (a == nil) != (b == nil) {
+		return true
+	}
+	if a == nil {
+		return false
+	}
+	return !reflect.DeepEqual(a.Schema, b.Schema)
 }
 
 // checkEventsMiddlewareNameUniquenessAndAttachment enforces D6(b) and D7

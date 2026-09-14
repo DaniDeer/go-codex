@@ -233,7 +233,7 @@ func (a *mqtt5PublishAdapter[T]) Activate(ctx context.Context, src gstream.Strea
 			if a.opts.Vars == nil {
 				err = publishHandle(ctx, a.client, a.handle, qos, retained, v, pubOpts, a.fmt)
 			} else {
-				err = publish(ctx, a.client, a.handle, qos, retained, v, a.opts.Vars, pubOpts, a.fmt)
+				err = publish(ctx, a.client, a.handle, qos, retained, v, a.opts.Vars, true, pubOpts, a.fmt)
 			}
 			if err != nil {
 				if onErr != nil {

@@ -313,6 +313,22 @@ func makeSubscribeMessageHandler[T any](
 			}
 		}
 
+		// Property vocabulary axis: extract the real MQTT5 User
+		// Properties into a plain map for codec-backed middleware dispatch
+		// below (Transform/bundled .Use()'s WithSubscribeProperty) — the
+		// SAME extraction [validateUserProperties] already does for the
+		// flat mechanism, kept SEPARATE from topicVars (independent
+		// namespace/consumer).
+		var propertyVars map[string]string
+		if len(handle.MiddlewareHandlers) > 0 {
+			propertyVars = make(map[string]string)
+			if msg.Properties != nil {
+				for _, p := range msg.Properties.User {
+					propertyVars[p.Key] = p.Value
+				}
+			}
+		}
+
 		// User Property param validation (runs before SecurityFunc).
 		if propErr := validateUserProperties(msg, opts.UserPropertyParams); propErr != nil {
 			obs.RecordValidationError("user_property", stats.ConstraintName(propErr), userPropertyName(propErr))
@@ -401,11 +417,12 @@ func makeSubscribeMessageHandler[T any](
 		// events.MiddlewareError when unmatched — mirrors REST's identical
 		// resolution.
 		if len(handle.MiddlewareHandlers) > 0 {
-			if err := dispatchSubscribeMiddlewareHandlers(msgCtx, &value, handle.MiddlewareHandlers, topicVars); err != nil {
+			if err := dispatchSubscribeMiddlewareHandlers(msgCtx, &value, handle.MiddlewareHandlers, topicVars, propertyVars); err != nil {
 				obs.RecordSubscribe(msg.Topic, false, time.Since(start))
 				var dispatchErr middlewareDispatchError
 				errors.As(err, &dispatchErr)
 				if dispatchErr.isFnError {
+					stats.ReportErrors(obs, "middleware:fn", dispatchErr.err)
 					if resp, matched, matchErr := handle.ErrorResponseFor(dispatchErr.err); matched && matchErr == nil && resp.Action == events.ErrorRespond {
 						if _, pubErr := client.Publish(ctx, &pahomqtt5.Publish{
 							Topic:   resp.Topic,
@@ -420,6 +437,7 @@ func makeSubscribeMessageHandler[T any](
 					}
 					return
 				}
+				stats.ReportErrors(obs, "middleware:in", dispatchErr.err)
 				if opts.OnError != nil {
 					opts.OnError(SubscribeError{Kind: KindDecode, Topic: msg.Topic, Err: dispatchErr.err})
 				}
@@ -738,6 +756,7 @@ func publish[T any](
 	retained bool,
 	msg T,
 	vars map[string]string,
+	isExplicitVars bool,
 	opts PublishOptions[T],
 	formats ...format.Format[T],
 ) error {
@@ -760,19 +779,30 @@ func publish[T any](
 	// Codec-backed middleware dispatch (ClientTransform and bundled
 	// .Use()) — SAME pre-publish dispatch point runPublishSecurityImpls
 	// runs at below, but derived FIRST since a middleware's own Out may
-	// contribute ADDITIONAL topic vars BuildTopic needs. D3-equivalent
-	// precedence: explicit/channel-own vars (the vars param, already
-	// final by the time it reaches this function — see
-	// [publishHandle]'s own derivation) wins over middleware-derived vars
-	// on a key collision.
+	// contribute ADDITIONAL topic vars BuildTopic needs, plus property
+	// vars this function merges into userProps below (Case 2, "Write-side
+	// wiring"). D3 precedence: isExplicitVars distinguishes vars' OWN
+	// provenance (explicit PublishOptions.Vars vs. channel-own-derived —
+	// see [PublishAdapter]/[publishHandle]'s own mutually-exclusive call
+	// sites) since that distinction is otherwise erased by the time vars
+	// reaches this function — explicit ALWAYS wins over middleware-
+	// derived; middleware-derived wins over channel-own-derived (the Bug
+	// 1 fix — previously ALWAYS backwards, channel-own beat middleware).
+	var mwPropertyVars map[string]string
 	if len(handle.ClientMiddlewareHandlers) > 0 {
-		mwVars, mwErr := dispatchPublishMiddlewareHandlers(ctx, msg, handle.ClientMiddlewareHandlers)
+		mwTopicVars, mwPropVars, mwErr := dispatchPublishMiddlewareHandlers(ctx, msg, handle.ClientMiddlewareHandlers)
 		if mwErr != nil {
+			stats.ReportErrors(obs, "middleware:fn", mwErr)
 			obs.RecordPublish(handle.Topic, false, time.Since(start))
 			err = mwErr
 			return err
 		}
-		vars = overrideDerivedVars(mwVars, vars)
+		if isExplicitVars {
+			vars = overrideDerivedVars(mwTopicVars, vars)
+		} else {
+			vars = overrideDerivedVars(vars, mwTopicVars)
+		}
+		mwPropertyVars = mwPropVars
 	}
 
 	topic := handle.Topic
@@ -801,6 +831,14 @@ func publish[T any](
 		secReqs = handle.GlobalSecurity
 	}
 	userProps := append(pahomqtt5.UserProperties(nil), opts.UserProperties...)
+	// Write-side wiring Case 2: a Middleware's WithPublishProperty-declared
+	// value merges into the SAME outgoing userProps mechanism, SEPARATE
+	// from vars/BuildTopic (topic vars stay topic-vars-only) — see
+	// docs/roadmap/reqreply-codec-declared-middleware.md's "Write-side
+	// wiring" section.
+	for k, v := range mwPropertyVars {
+		userProps = append(userProps, UserProperty{Key: k, Value: v})
+	}
 	var credentialRan bool
 	if len(secReqs) > 0 && opts.CredentialFunc != nil {
 		var credProps []UserProperty
@@ -916,7 +954,7 @@ func publishHandle[T any](
 	if len(vars) == 0 {
 		vars = nil
 	}
-	return publish(ctx, client, handle, qos, retained, msg, vars, opts, formats...)
+	return publish(ctx, client, handle, qos, retained, msg, vars, false, opts, formats...)
 }
 
 // firstScheme returns the first scheme name from the security requirements.

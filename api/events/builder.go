@@ -510,6 +510,14 @@ type channelBuilder struct {
 	subscribe   *Subscribe
 	publish     *Publish
 	topicParams []TopicParam
+	// propertyParams holds manual, channel-level PropertyParam
+	// declarations (via [PropertyParam]/[MergedPropertyParam]'s
+	// applyChannel, e.g. passed directly to [NewChannel]) — separate from
+	// any Middleware-contributed property params (see
+	// [Middleware.WithSubscribeProperty]/[Middleware.WithPublishProperty]),
+	// mirroring how [TopicParam] declarations are channel-level while a
+	// Middleware's own topic merge fields are per-attachment.
+	propertyParams []PropertyParam
 	// formats/subscribeFormats/publishFormats hold []format.Format[T]
 	// type-erased (any) — set by [Formats]/[SubscribeFormats]/[PublishFormats],
 	// resolved generically in [Subscriber.Handle]/[Publisher.Handle] where T
@@ -1359,6 +1367,85 @@ func sameScopeSet(a, b []string) bool {
 	return slices.Equal(as, bs)
 }
 
+// applyEventsPropertyDeclarations validates the property vocabulary axis's
+// declared contributions for topic — manual [PropertyParam] channel
+// declarations (source "manual") PLUS whichever role's own attached
+// Middleware property-param contributions (source: the middleware's Name)
+// — and renders them into a STANDALONE AsyncAPI headers schema for that
+// role's Message. Mirrors reqreply's/REST's applyParamDeclarations, SCOPED
+// to events' property axis only: events has NO pre-existing flat mechanism
+// to unify with (unlike reqreply's Phase 1b), so this renders its own,
+// simpler schema from scratch — see "AsyncAPI spec rendering" under
+// "Phase 0" in docs/roadmap/reqreply-codec-declared-middleware.md.
+//
+// Topic vars are NEVER cross-checked here — independent namespaces (Round
+// 15 decision): a topic var and a property sharing the SAME name on one
+// channel is explicitly fine, since events has no topic-var conflict-
+// detection machinery to extend either.
+//
+// Returns a zero [schema.Schema] when no property was declared —
+// [render/asyncapi/v3.Message.Headers] treats a zero Schema as "omit the
+// headers field entirely."
+func applyEventsPropertyDeclarations(topic string, manual []PropertyParam, mwParams [][]PropertyParam, mwNames []string) (schema.Schema, error) {
+	contributions := map[string][]eventsParamContribution{}
+	for _, p := range manual {
+		contributions[p.Name] = append(contributions[p.Name], eventsParamContribution{source: "manual", required: p.Required, codec: p.Codec})
+	}
+	for i, params := range mwParams {
+		name := mwNames[i]
+		for _, p := range params {
+			contributions[p.Name] = append(contributions[p.Name], eventsParamContribution{source: name, required: p.Required, codec: p.Codec})
+		}
+	}
+	if err := checkEventsParamConflicts(topic, contributions); err != nil {
+		return schema.Schema{}, err
+	}
+
+	seen := make(map[string]bool, len(contributions))
+	var props []schema.Property
+	var required []string
+	for _, p := range manual {
+		if seen[p.Name] {
+			continue
+		}
+		seen[p.Name] = true
+		props = append(props, propertyParamProperty(p))
+		if p.Required {
+			required = append(required, p.Name)
+		}
+	}
+	for _, params := range mwParams {
+		for _, p := range params {
+			if seen[p.Name] {
+				continue
+			}
+			seen[p.Name] = true
+			props = append(props, propertyParamProperty(p))
+			if p.Required {
+				required = append(required, p.Name)
+			}
+		}
+	}
+	if len(props) == 0 {
+		return schema.Schema{}, nil
+	}
+	return schema.Schema{Type: "object", Properties: props, Required: required}, nil
+}
+
+// propertyParamProperty renders one property param spec into an AsyncAPI
+// Property entry — mirrors reqreply's own headerParamProperty exactly
+// (api/reqreply/middleware.go).
+func propertyParamProperty(p PropertyParam) schema.Property {
+	propSchema := schema.Schema{Description: p.Description}
+	if p.Codec != nil {
+		propSchema = p.Codec.Schema
+		if p.Description != "" {
+			propSchema.Description = p.Description
+		}
+	}
+	return schema.Property{Name: p.Name, Schema: propSchema}
+}
+
 // applyEventsSecurityDeclarations merges every mws' [middleware.Middleware.Security]
 // contribution into *security (the role's own manual Subscribe.Security or
 // Publish.Security field, mutated in place) and schemes (this role's
@@ -2002,6 +2089,41 @@ func buildChannelHandle[T any](ch Channel[T], client *Client, role channelRole, 
 		return nil, err
 	}
 
+	// Phase 0 (property vocabulary axis): conflict-detection + standalone
+	// AsyncAPI headers-schema rendering for the property axis's
+	// declarations — manual [PropertyParam] channel opts PLUS whichever
+	// role's own attached Middleware contributions (Subscribe uses
+	// middlewareHandlers' In-side declarations, Publish uses
+	// clientMiddlewareHandlers' Out-side declarations; never both, since
+	// each buildChannelHandle call only ever populates ONE role's
+	// handler list — see [channelRole]). This is 100% NEW code for
+	// events (topic vars have no equivalent conflict-detection
+	// machinery to extend — Round 9's finding, see
+	// docs/roadmap/reqreply-codec-declared-middleware.md's "AsyncAPI
+	// spec rendering" under "Phase 0").
+	var mwPropertyParams [][]PropertyParam
+	var mwPropertyNames []string
+	switch role {
+	case roleSubscribe:
+		for _, h := range middlewareHandlers {
+			if len(h.propertyParams) > 0 {
+				mwPropertyParams = append(mwPropertyParams, h.propertyParams)
+				mwPropertyNames = append(mwPropertyNames, h.Name)
+			}
+		}
+	case rolePublish:
+		for _, h := range clientMiddlewareHandlers {
+			if len(h.propertyParams) > 0 {
+				mwPropertyParams = append(mwPropertyParams, h.propertyParams)
+				mwPropertyNames = append(mwPropertyNames, h.Name)
+			}
+		}
+	}
+	propertyHeaders, err := applyEventsPropertyDeclarations(ch.topic, cb.propertyParams, mwPropertyParams, mwPropertyNames)
+	if err != nil {
+		return nil, err
+	}
+
 	// Unconditional validation (Decision 1): runs regardless of client's
 	// nilness. Reuses the existing, shared codex.InvalidParamError — no new
 	// pub/sub-local error type is needed for this check.
@@ -2050,6 +2172,12 @@ func buildChannelHandle[T any](ch Channel[T], client *Client, role channelRole, 
 	}
 
 	frozen := buildChannelItem(ch.topic, ch.codec, cb)
+	if role == roleSubscribe && frozen.Subscribe != nil {
+		frozen.Subscribe.Message.Headers = propertyHeaders
+	}
+	if role == rolePublish && frozen.Publish != nil {
+		frozen.Publish.Message.Headers = propertyHeaders
+	}
 	jsonFmt := format.JSON(ch.codec)
 
 	schemes := make(map[string]SecurityScheme, len(cb.securitySchemes))

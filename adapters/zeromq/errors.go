@@ -31,6 +31,14 @@ const (
 	// [events.SecurityCredentialError] shapes rather than introducing a new
 	// zeromq-local error type — only this ErrorKind value is genuinely new.
 	KindSecurity
+
+	// KindMiddleware indicates a codec-backed [reqreply.Middleware]
+	// (Transform/ClientTransform-attached, or bundled via .Use()) fn's
+	// own business error — [reqreply.MiddlewareError], D2's fallback for
+	// docs/roadmap/reqreply-codec-declared-middleware.md's declared-
+	// middleware mechanism. Distinct from KindHandler (a real domain
+	// handler failure).
+	KindMiddleware
 )
 
 func (k ErrorKind) String() string {
@@ -43,6 +51,8 @@ func (k ErrorKind) String() string {
 		return "encode"
 	case KindSecurity:
 		return "security"
+	case KindMiddleware:
+		return "middleware"
 	default:
 		return "unknown"
 	}

@@ -256,10 +256,17 @@ func TestRoute_Register_DedupsHeaderParamsByName(t *testing.T) {
 	// Two middlewares contributing the SAME request header param name —
 	// must fold into ONE property in the spec, not two, and ONE entry in
 	// RouteHandle.RequestHeaderParams.
+	// Codec MUST agree with apiKeyHeaderMw's own declaration (same
+	// Required, same Codec/Schema) — docs/roadmap/
+	// reqreply-codec-declared-middleware.md's decision #5 (Round 18)
+	// retired Phase 1b's OLD lax first-seen-wins dedupe for MISMATCHED
+	// declarations; only AGREEING declarations dedupe without error now
+	// (see TestRoute_Register_TwoPhase1bOnlyContributions_MismatchNowErrors
+	// for the mismatched-declaration regression case).
 	dup := middleware.Middleware{
 		Name: "declare-user-property-param:X-API-Key-dup",
 		RequestHeaderParams: []middleware.HeaderParamSpec{
-			{Name: "X-API-Key", Required: true},
+			{Name: "X-API-Key", Required: true, Codec: &apiKeyHeaderCodec},
 		},
 	}
 	b := newBuilder()

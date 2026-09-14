@@ -106,6 +106,7 @@ func publishHandlerErrorReplyReflect(
 	correlationData []byte,
 	err error,
 	obs stats.Observer,
+	propertyVars map[string]string,
 ) {
 	if responseTopic == "" {
 		return
@@ -119,6 +120,16 @@ func publishHandlerErrorReplyReflect(
 			ContentType:     errorReplyContentType,
 			CorrelationData: correlationData,
 		}
+		// Case 3 write-side wiring (docs/roadmap/
+		// reqreply-codec-declared-middleware.md's "Write-side wiring"):
+		// a Middleware's WithResponseProperty-declared value is written
+		// onto the ERROR reply's User Properties too, not just the
+		// success reply — a route's declared response property is a
+		// property of the RESPONSE MESSAGE, regardless of whether that
+		// message carries a success or error-pattern body.
+		if len(propertyVars) > 0 {
+			props.User = userPropertiesFromMap(propertyVars)
+		}
 		_, _ = client.Publish(ctx, &pahomqtt5.Publish{
 			Topic:      responseTopic,
 			QoS:        1,
@@ -131,6 +142,157 @@ func publishHandlerErrorReplyReflect(
 		stats.ReportErrors(obs, "error_pattern", mapErr)
 	}
 	publishErrorReply(ctx, client, responseTopic, correlationData, err)
+}
+
+// userPropertiesFromMap converts a plain map[string]string into
+// [pahomqtt5.UserProperties] — the wire shape MQTT5 User Properties
+// require — used by BOTH the property axis's write-side wiring (Case 1/
+// Case 3, see docs/roadmap/reqreply-codec-declared-middleware.md) and
+// (indirectly, via the same conversion) anywhere else a plain var map
+// needs to become actual User Properties.
+func userPropertiesFromMap(vars map[string]string) pahomqtt5.UserProperties {
+	if len(vars) == 0 {
+		return nil
+	}
+	out := make(pahomqtt5.UserProperties, 0, len(vars))
+	for k, v := range vars {
+		out = append(out, UserProperty{Key: k, Value: v})
+	}
+	return out
+}
+
+// propertyVarsFromUserProperties extracts an incoming MQTT5 message's
+// User Properties into a plain map[string]string — the adapter-supplied
+// property-value map [reqreply.MiddlewareHandler.DecodeIn]/
+// [reqreply.ClientMiddlewareHandler.DecodeOut] decode the property axis
+// from. Reuses the SAME wire shape [validateUserProperties] already
+// reads from, kept as a SEPARATE map from topicVars throughout (never
+// combined — see docs/roadmap/reqreply-codec-declared-middleware.md's
+// "Round 2 correction").
+func propertyVarsFromUserProperties(msg *pahomqtt5.Publish) map[string]string {
+	if msg == nil || msg.Properties == nil || len(msg.Properties.User) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(msg.Properties.User))
+	for _, p := range msg.Properties.User {
+		out[p.Key] = p.Value
+	}
+	return out
+}
+
+// dispatchServerMiddlewareHandlers runs every attached
+// [reqreply.MiddlewareHandler] in registration order — AFTER the paired
+// security Fn, mirroring D1's dispatch order. reqPtr is the route's own
+// decoded *Req (addressable) — read AND potentially enriched by each
+// bound handler's fn (Transform-attached; an Agnostic/bundled handler's
+// fn never sees it). Returns the accumulated reply-side topic/property
+// vars every handler's EncodeOut produced (later handlers win on a name
+// conflict — D6(c), "last-applied-wins"). isFnErr distinguishes a
+// DecodeIn failure (false, wraps as [reqreply.MiddlewareInputError]) from
+// the fn's own business error (true, wraps as [reqreply.MiddlewareError],
+// D2's fallback).
+func dispatchServerMiddlewareHandlers(
+	ctx context.Context,
+	reqPtr reflect.Value,
+	handlers []reqreply.MiddlewareHandler,
+	topicVars, propertyVars map[string]string,
+) (outTopicVars, outPropertyVars map[string]string, name string, isFnErr bool, err error) {
+	for _, h := range handlers {
+		inAny, decErr := h.DecodeIn(topicVars, propertyVars)
+		if decErr != nil {
+			return nil, nil, h.Name, false, decErr
+		}
+		fnVal := reflect.ValueOf(h.Fn)
+		var results []reflect.Value
+		if h.Agnostic {
+			results = fnVal.Call([]reflect.Value{reflect.ValueOf(ctx), reflect.ValueOf(inAny)})
+		} else {
+			results = fnVal.Call([]reflect.Value{reflect.ValueOf(ctx), reqPtr, reflect.ValueOf(inAny)})
+		}
+		if errI, _ := results[1].Interface().(error); errI != nil {
+			return nil, nil, h.Name, true, reqreply.MiddlewareError{Name: h.Name, Err: errI}
+		}
+		outAny := results[0].Interface()
+		tVars, pVars, encErr := h.EncodeOut(outAny)
+		if encErr != nil {
+			return nil, nil, h.Name, false, encErr
+		}
+		outTopicVars = mergeVarsOverride(outTopicVars, tVars)
+		outPropertyVars = mergeVarsOverride(outPropertyVars, pVars)
+	}
+	return outTopicVars, outPropertyVars, "", false, nil
+}
+
+// dispatchClientMiddlewareIn is [dispatchServerMiddlewareHandlers]'s
+// CLIENT-side, request-encode-direction sibling — runs every attached
+// [reqreply.ClientMiddlewareHandler] in registration order, producing In
+// (via Fn) then encoding it into topic/property vars — accumulated with
+// later handlers winning on a name conflict, mirroring the server side.
+func dispatchClientMiddlewareIn(
+	ctx context.Context,
+	reqVal reflect.Value,
+	handlers []reqreply.ClientMiddlewareHandler,
+) (topicVars, propertyVars map[string]string, name string, err error) {
+	for _, h := range handlers {
+		fnVal := reflect.ValueOf(h.Fn)
+		var results []reflect.Value
+		if h.Agnostic {
+			results = fnVal.Call([]reflect.Value{reflect.ValueOf(ctx)})
+		} else {
+			results = fnVal.Call([]reflect.Value{reflect.ValueOf(ctx), reqVal})
+		}
+		if errI, _ := results[1].Interface().(error); errI != nil {
+			return nil, nil, h.Name, reqreply.MiddlewareError{Name: h.Name, Err: errI}
+		}
+		inAny := results[0].Interface()
+		tVars, pVars, encErr := h.EncodeIn(inAny)
+		if encErr != nil {
+			return nil, nil, h.Name, encErr
+		}
+		topicVars = mergeVarsOverride(topicVars, tVars)
+		propertyVars = mergeVarsOverride(propertyVars, pVars)
+	}
+	return topicVars, propertyVars, "", nil
+}
+
+// dispatchClientMiddlewareOut is [dispatchClientMiddlewareIn]'s reply-
+// decode-direction sibling — mechanically decodes every attached
+// [reqreply.ClientMiddlewareHandler]'s own Out value from the reply's
+// actual topic/property vars, no Fn involved (mirrors
+// [rest.dispatchClientMiddlewareOut]'s identical "no Fn, no reply-
+// inspection Fn needed" design). Only the first decode failure is
+// reported — a malformed reply fails the call; the decoded values
+// themselves are not currently surfaced further (no context-accessor API
+// is part of this doc's scope).
+func dispatchClientMiddlewareOut(
+	topicVars, propertyVars map[string]string,
+	handlers []reqreply.ClientMiddlewareHandler,
+) error {
+	for _, h := range handlers {
+		if _, err := h.DecodeOut(topicVars, propertyVars); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// mergeVarsOverride merges src into dst, src's values WINNING on a key
+// conflict — mirrors D3's real, shipped precedence rule (see
+// docs/roadmap/reqreply-codec-declared-middleware.md's "Value
+// precedence" section: "middleware-derived ALWAYS wins over route-own-
+// derived").
+func mergeVarsOverride(dst, src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return dst
+	}
+	out := make(map[string]string, len(dst)+len(src))
+	for k, v := range dst {
+		out[k] = v
+	}
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
 }
 
 // effectiveSecurity resolves elem's effective security requirements
@@ -290,6 +452,13 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 	requestHeaderSpecs, _ := elem.FieldByName("RequestHeaderParams").Interface().([]middleware.HeaderParamSpec)
 	requestHeaderParams := userPropertyParamsFromHeaderSpecs(requestHeaderSpecs)
 
+	// docs/roadmap/reqreply-codec-declared-middleware.md: codec-backed
+	// Middleware[In,Out] dispatch (Transform-attached or bundled via
+	// plain .Use()) — dispatched AFTER the paired security Fn, mirroring
+	// D1's precedent exactly (see the dispatch call site inside
+	// baseHandler below).
+	middlewareHandlers, _ := elem.FieldByName("MiddlewareHandlers").Interface().([]reqreply.MiddlewareHandler)
+
 	baseHandler := func(msg *pahomqtt5.Publish) {
 		start := time.Now()
 		msgCtx := context.WithValue(ctx, contextKey{}, msg)
@@ -345,7 +514,10 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 		// params (matchTopicTemplate is skipped entirely for them, same
 		// as before this change).
 		var topicVars map[string]string
-		if hasMergeFields {
+		// A Middleware's own WithRequestTopic/WithResponseTopic merge
+		// fields ALSO need topicVars extracted, even when the route's
+		// own Req declares no NewTopicParam merge fields itself.
+		if hasMergeFields || len(middlewareHandlers) > 0 {
 			var varErr error
 			topicVars, varErr = matchTopicTemplate(path, msg.Topic)
 			if varErr == nil {
@@ -426,11 +598,51 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 			return
 		}
 
+		// docs/roadmap/reqreply-codec-declared-middleware.md: codec-backed
+		// Middleware[In,Out] dispatch — runs AFTER the paired security Fn
+		// above (D1), reading (Transform-bound handlers) AND potentially
+		// enriching the route's own decoded *Req via a fresh, addressable
+		// pointer copy — reqVal is re-read afterward to pick up any
+		// mutation, mirroring zeromq's identical paired-security pattern.
+		// middlewarePropertyVars accumulates every handler's own
+		// WithResponseProperty-derived reply value (Case 3 write-side
+		// wiring — see below).
+		var middlewarePropertyVars map[string]string
+		if len(middlewareHandlers) > 0 {
+			reqPropVars := propertyVarsFromUserProperties(msg)
+			reqPtr := reflect.New(reqType)
+			reqPtr.Elem().Set(reqVal)
+			_, outPropVars, mwName, isFnErr, mwErr := dispatchServerMiddlewareHandlers(spanCtx, reqPtr, middlewareHandlers, topicVars, reqPropVars)
+			if mwErr != nil {
+				kind := KindDecode
+				loc := "middleware:in"
+				if isFnErr {
+					kind = KindMiddleware
+					loc = "middleware:fn"
+				}
+				stats.ReportErrors(obs, loc, mwErr)
+				serveErr = mwErr
+				obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
+				if isFnErr {
+					publishHandlerErrorReplyReflect(spanCtx, t.client, errorResponseForMethod, responseTopic, correlationData, mwErr, obs, nil)
+				} else {
+					publishErrorReply(spanCtx, t.client, responseTopic, correlationData, mwErr)
+				}
+				if t.opts.OnError != nil {
+					t.opts.OnError(ServeError{Kind: kind, Err: mwErr})
+				}
+				_ = mwName
+				return
+			}
+			reqVal = reqPtr.Elem()
+			middlewarePropertyVars = outPropVars
+		}
+
 		fnResults := fnVal.Call([]reflect.Value{reflect.ValueOf(spanCtx), reqVal})
 		if errI, _ := fnResults[1].Interface().(error); errI != nil {
 			serveErr = errI
 			obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-			publishHandlerErrorReplyReflect(spanCtx, t.client, errorResponseForMethod, responseTopic, correlationData, errI, obs)
+			publishHandlerErrorReplyReflect(spanCtx, t.client, errorResponseForMethod, responseTopic, correlationData, errI, obs, middlewarePropertyVars)
 			if t.opts.OnError != nil {
 				t.opts.OnError(ServeError{Kind: KindHandler, Err: errI})
 			}
@@ -445,7 +657,7 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 		if errI, _ := encodeResults[1].Interface().(error); errI != nil {
 			serveErr = errI
 			obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-			publishHandlerErrorReplyReflect(spanCtx, t.client, errorResponseForMethod, responseTopic, correlationData, errI, obs)
+			publishHandlerErrorReplyReflect(spanCtx, t.client, errorResponseForMethod, responseTopic, correlationData, errI, obs, middlewarePropertyVars)
 			if t.opts.OnError != nil {
 				t.opts.OnError(ServeError{Kind: KindEncode, Err: errI})
 			}
@@ -457,6 +669,15 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 			replyProps := &pahomqtt5.PublishProperties{}
 			if correlationData != nil {
 				replyProps.CorrelationData = correlationData
+			}
+			// Case 3 write-side wiring (docs/roadmap/
+			// reqreply-codec-declared-middleware.md's "Write-side
+			// wiring") — a Middleware's WithResponseProperty-declared
+			// value is written onto the SUCCESS reply's User Properties.
+			// BRAND NEW capability: no existing mechanism wrote outgoing
+			// reply User Properties before this.
+			if len(middlewarePropertyVars) > 0 {
+				replyProps.User = userPropertiesFromMap(middlewarePropertyVars)
 			}
 			if _, pubErr := t.client.Publish(spanCtx, &pahomqtt5.Publish{
 				Topic:      responseTopic,
@@ -630,6 +851,35 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 		}
 		vars, _ = encodeVarsResults[0].Interface().(map[string]string)
 	}
+
+	// docs/roadmap/reqreply-codec-declared-middleware.md: codec-backed
+	// ClientMiddlewareHandler dispatch (ClientTransform-attached or
+	// bundled via plain .Use()) — produces In (via Fn), encoded into
+	// topic/property vars. Middleware-derived values ALWAYS override
+	// route-own-derived ones for the SAME name (D3 mirror, "Value
+	// precedence") — sits BETWEEN route-own-derived (vars, above) and
+	// explicit t.opts.Vars (below), mirroring REST's real 3-tier
+	// precedence (explicit > middleware-derived > route-own-derived).
+	clientMiddlewareHandlers, _ := elem.FieldByName("ClientMiddlewareHandlers").Interface().([]reqreply.ClientMiddlewareHandler)
+	var middlewarePropertyVarsOut map[string]string
+	if len(clientMiddlewareHandlers) > 0 {
+		mwTopicVars, mwPropertyVars, mwName, mwErr := dispatchClientMiddlewareIn(ctx, reqVal, clientMiddlewareHandlers)
+		if mwErr != nil {
+			_, isFnErr := mwErr.(reqreply.MiddlewareError)
+			kind := KindEncode
+			loc := "middleware:in"
+			if isFnErr {
+				kind = KindMiddleware
+				loc = "middleware:fn"
+			}
+			stats.ReportErrors(obs, loc, mwErr)
+			obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
+			_ = mwName
+			return nil, CallError{Kind: kind, Err: mwErr}
+		}
+		vars = mergeVarsOverride(vars, mwTopicVars)
+		middlewarePropertyVarsOut = mwPropertyVars
+	}
 	// NOTE: t.opts.Vars != nil (not len(...) > 0) — an explicit, even
 	// EMPTY, Vars map must still trigger BuildTopic below, so a route
 	// with an unresolved template var (e.g. "{tenantID}") surfaces
@@ -785,6 +1035,14 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 
 		secReqs, schemeTypes, schemeCodecs := effectiveSecurity(elem)
 		userProps := append(pahomqtt5.UserProperties(nil), t.opts.UserProperties...)
+		// Case 1 write-side wiring (docs/roadmap/
+		// reqreply-codec-declared-middleware.md's "Write-side wiring"):
+		// a Middleware's WithRequestProperty-declared value merges into
+		// the SAME outgoing userProps mechanism the security-credential-
+		// derived properties below also use.
+		if len(middlewarePropertyVarsOut) > 0 {
+			userProps = append(userProps, userPropertiesFromMap(middlewarePropertyVarsOut)...)
+		}
 		// mergeCredentialUserProperties runs every attached PAIRED
 		// credential-supplying ClientMW implementation, merging their
 		// returned User Properties — replaces the OLD
@@ -839,6 +1097,14 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 				obs.RecordValidationError("user_property", stats.ConstraintName(propErr), userPropertyName(propErr))
 				obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
 				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Kind: KindSecurity, Err: propErr}).Convert(errType)}
+			}
+			if len(clientMiddlewareHandlers) > 0 {
+				replyPropertyVars := propertyVarsFromUserProperties(replyMsg)
+				if mwErr := dispatchClientMiddlewareOut(nil, replyPropertyVars, clientMiddlewareHandlers); mwErr != nil {
+					stats.ReportErrors(obs, "middleware:in", mwErr)
+					obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
+					return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Kind: KindDecode, Err: mwErr}).Convert(errType)}
+				}
 			}
 			// DecodeResponseWithFormats honors the per-call override
 			// (falling back to route-declared Formats, then plain

@@ -310,6 +310,118 @@ func applyGeneralServerMiddleware(fnVal reflect.Value, impls []middleware.Server
 	return fnVal
 }
 
+// ── docs/roadmap/reqreply-codec-declared-middleware.md dispatch ─────────
+
+// dispatchServerMiddlewareHandlers runs every attached
+// [reqreply.MiddlewareHandler] in registration order — AFTER the paired
+// security Fn, mirroring D1's dispatch order. reqPtr is the route's own
+// decoded *Req (addressable) — read AND potentially enriched by each
+// bound handler's fn (Transform-attached; an Agnostic/bundled handler's
+// fn never sees it). propertyVars is ALWAYS an empty map for zeromq (no
+// property mechanism exists at this transport) — a route declaring a
+// REQUIRED property naturally fails with [reqreply.MiddlewareInputError],
+// no special-casing needed. Returns the accumulated reply-side topic/
+// property vars every handler's EncodeOut produced (later handlers win
+// on a name conflict — D6(c)). isFnErr distinguishes a DecodeIn failure
+// (false, wraps as [reqreply.MiddlewareInputError]) from the fn's own
+// business error (true, wraps as [reqreply.MiddlewareError], D2's
+// fallback). Mirrors [adapters/mqtt5]'s identical dispatch function.
+func dispatchServerMiddlewareHandlers(
+	ctx context.Context,
+	reqPtr reflect.Value,
+	handlers []reqreply.MiddlewareHandler,
+	topicVars, propertyVars map[string]string,
+) (outTopicVars, outPropertyVars map[string]string, name string, isFnErr bool, err error) {
+	for _, h := range handlers {
+		inAny, decErr := h.DecodeIn(topicVars, propertyVars)
+		if decErr != nil {
+			return nil, nil, h.Name, false, decErr
+		}
+		fnVal := reflect.ValueOf(h.Fn)
+		var results []reflect.Value
+		if h.Agnostic {
+			results = fnVal.Call([]reflect.Value{reflect.ValueOf(ctx), reflect.ValueOf(inAny)})
+		} else {
+			results = fnVal.Call([]reflect.Value{reflect.ValueOf(ctx), reqPtr, reflect.ValueOf(inAny)})
+		}
+		if errI, _ := results[1].Interface().(error); errI != nil {
+			return nil, nil, h.Name, true, reqreply.MiddlewareError{Name: h.Name, Err: errI}
+		}
+		outAny := results[0].Interface()
+		tVars, pVars, encErr := h.EncodeOut(outAny)
+		if encErr != nil {
+			return nil, nil, h.Name, false, encErr
+		}
+		outTopicVars = mergeVarsOverride(outTopicVars, tVars)
+		outPropertyVars = mergeVarsOverride(outPropertyVars, pVars)
+	}
+	return outTopicVars, outPropertyVars, "", false, nil
+}
+
+// dispatchClientMiddlewareIn is [dispatchServerMiddlewareHandlers]'s
+// CLIENT-side, request-encode-direction sibling. Mirrors
+// [adapters/mqtt5]'s identical dispatch function.
+func dispatchClientMiddlewareIn(
+	ctx context.Context,
+	reqVal reflect.Value,
+	handlers []reqreply.ClientMiddlewareHandler,
+) (topicVars, propertyVars map[string]string, name string, err error) {
+	for _, h := range handlers {
+		fnVal := reflect.ValueOf(h.Fn)
+		var results []reflect.Value
+		if h.Agnostic {
+			results = fnVal.Call([]reflect.Value{reflect.ValueOf(ctx)})
+		} else {
+			results = fnVal.Call([]reflect.Value{reflect.ValueOf(ctx), reqVal})
+		}
+		if errI, _ := results[1].Interface().(error); errI != nil {
+			return nil, nil, h.Name, reqreply.MiddlewareError{Name: h.Name, Err: errI}
+		}
+		inAny := results[0].Interface()
+		tVars, pVars, encErr := h.EncodeIn(inAny)
+		if encErr != nil {
+			return nil, nil, h.Name, encErr
+		}
+		topicVars = mergeVarsOverride(topicVars, tVars)
+		propertyVars = mergeVarsOverride(propertyVars, pVars)
+	}
+	return topicVars, propertyVars, "", nil
+}
+
+// dispatchClientMiddlewareOut is [dispatchClientMiddlewareIn]'s reply-
+// decode-direction sibling — mechanically decodes every attached
+// [reqreply.ClientMiddlewareHandler]'s own Out value from the reply's
+// actual topic/property vars, no Fn involved. Mirrors [adapters/mqtt5]'s
+// identical dispatch function.
+func dispatchClientMiddlewareOut(
+	topicVars, propertyVars map[string]string,
+	handlers []reqreply.ClientMiddlewareHandler,
+) error {
+	for _, h := range handlers {
+		if _, err := h.DecodeOut(topicVars, propertyVars); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// mergeVarsOverride merges src into dst, src's values WINNING on a key
+// conflict — mirrors D3's real, shipped precedence rule ("middleware-
+// derived ALWAYS wins over route-own-derived").
+func mergeVarsOverride(dst, src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return dst
+	}
+	out := make(map[string]string, len(dst)+len(src))
+	for k, v := range dst {
+		out[k] = v
+	}
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
+}
+
 type MissingSocketError struct {
 	// Topic is the route topic with no corresponding socket entry.
 	Topic string
@@ -460,6 +572,17 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 	// pointer access to *Req (see the loop body below).
 	dispatchFn := applyGeneralServerMiddleware(fnVal, impls)
 
+	// docs/roadmap/reqreply-codec-declared-middleware.md: codec-backed
+	// Middleware[In,Out] dispatch — dispatched AFTER the paired security
+	// Fns above (D1), confirming the mechanism is genuinely transport-
+	// agnostic (zero adapter-specific work beyond consulting the SAME
+	// RouteHandle field mqtt5 does). zeromq supplies an ALWAYS-EMPTY
+	// property-value map (no property mechanism exists here) and an
+	// empty topic-var map (zeromq's REQ/REP wire carries no topic
+	// frame/template) — a route declaring a REQUIRED property fails
+	// naturally with [reqreply.MiddlewareInputError], no special-casing.
+	middlewareHandlers, _ := elem.FieldByName("MiddlewareHandlers").Interface().([]reqreply.MiddlewareHandler)
+
 	if err := sock.SetRecvTimeout(recvPollInterval); err != nil {
 		return SocketError{Op: "set_recv_timeout", Err: err}
 	}
@@ -539,6 +662,38 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 				if t.opts.OnError != nil {
 					t.opts.OnError(ServeError{Kind: KindSecurity, Err: wrapped})
 				}
+				continue
+			}
+			reqVal = reqPtr.Elem()
+		}
+
+		// docs/roadmap/reqreply-codec-declared-middleware.md: codec-
+		// backed Middleware[In,Out] dispatch — runs AFTER the paired
+		// security Fns above (D1), reading/enriching the SAME reqVal.
+		if len(middlewareHandlers) > 0 {
+			reqPtr := reflect.New(reqType)
+			reqPtr.Elem().Set(reqVal)
+			_, _, mwName, isFnErr, mwErr := dispatchServerMiddlewareHandlers(spanCtx, reqPtr, middlewareHandlers, nil, nil)
+			if mwErr != nil {
+				kind := KindDecode
+				loc := "middleware:in"
+				if isFnErr {
+					kind = KindMiddleware
+					loc = "middleware:fn"
+				}
+				stats.ReportErrors(obs, loc, mwErr)
+				serveErr = mwErr
+				obs.RecordRequest("ZMQ-REP", path, 0, time.Since(start))
+				if isFnErr {
+					sendHandlerErrorReplyReflect(sock, errorResponseForMethod, mwErr, obs)
+				} else {
+					sendErrorReply(sock, mwErr)
+				}
+				endSpan()
+				if t.opts.OnError != nil {
+					t.opts.OnError(ServeError{Kind: kind, Err: mwErr})
+				}
+				_ = mwName
 				continue
 			}
 			reqVal = reqPtr.Elem()
@@ -760,6 +915,16 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 	secReqs := effectiveSecurity(elem)
 	errType := reflect.TypeOf((*error)(nil)).Elem()
 
+	// docs/roadmap/reqreply-codec-declared-middleware.md: codec-backed
+	// ClientMiddlewareHandler dispatch — runs AFTER the paired
+	// credential Fns (D1 mirror), inside innerCall below. zeromq has no
+	// wire mechanism to carry the produced topic/property vars (no
+	// topic template, no property side channel) — dispatched purely for
+	// the Fn's own business logic/error semantics; the produced vars
+	// themselves are N/A here (see docs' "adapters/zeromq: N/A for all
+	// 3 cases").
+	clientMiddlewareHandlers, _ := elem.FieldByName("ClientMiddlewareHandlers").Interface().([]reqreply.ClientMiddlewareHandler)
+
 	// innerCall is the "credential → encode → send → recv → decode"
 	// sequence, wrapped via [reflect.MakeFunc] into a concretely-typed
 	// func(context.Context, Req) (Resp, error) value so every attached
@@ -803,6 +968,24 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: wrapped}).Convert(errType)}
 			}
 			innerReqVal = reqPtr.Elem()
+		}
+
+		// docs/roadmap/reqreply-codec-declared-middleware.md: codec-
+		// backed ClientMiddlewareHandler dispatch — runs AFTER the
+		// paired credential Fns above (D1).
+		if len(clientMiddlewareHandlers) > 0 {
+			_, _, mwName, mwErr := dispatchClientMiddlewareIn(ctx, innerReqVal, clientMiddlewareHandlers)
+			if mwErr != nil {
+				_, isFnErr := mwErr.(reqreply.MiddlewareError)
+				loc := "middleware:in"
+				if isFnErr {
+					loc = "middleware:fn"
+				}
+				stats.ReportErrors(obs, loc, mwErr)
+				obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
+				_ = mwName
+				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: mwErr}).Convert(errType)}
+			}
 		}
 
 		// EncodeRequestWithFormats honors the per-call/t.opts override
@@ -853,6 +1036,19 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 		if string(frames[0]) == "error" {
 			obs.RecordRequest("ZMQ-REQ", path, 500, time.Since(start))
 			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: fmt.Errorf("server error: %s", frames[1])}).Convert(errType)}
+		}
+
+		if len(clientMiddlewareHandlers) > 0 {
+			// zeromq has neither a reply-topic nor a property mechanism
+			// (confirmed: REQ/REP frames carry only [status, payload]) —
+			// both maps are always empty; a route declaring a REQUIRED
+			// WithResponseTopic/WithResponseProperty naturally fails here,
+			// no special-casing needed, mirrors mqtt5's identical call.
+			if mwErr := dispatchClientMiddlewareOut(nil, nil, clientMiddlewareHandlers); mwErr != nil {
+				stats.ReportErrors(obs, "middleware:in", mwErr)
+				obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
+				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: mwErr}).Convert(errType)}
+			}
 		}
 
 		// DecodeResponseWithFormats honors the per-call/t.opts override
@@ -1015,6 +1211,16 @@ func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny a
 	}
 	dispatchFn := applyGeneralServerMiddleware(fnVal, impls)
 
+	// docs/roadmap/reqreply-codec-declared-middleware.md: codec-backed
+	// Middleware[In,Out] dispatch — dispatched AFTER the paired security
+	// Fns above (D1), mirrors [serverTransport.Serve]'s identical
+	// mechanism for the ROUTER variant (one of the 4 transports this
+	// mechanism must be transport-agnostic across). zeromq supplies an
+	// ALWAYS-EMPTY property-value map and topic-var map (ROUTER frames
+	// carry no topic/property) — a route declaring a REQUIRED property
+	// fails naturally, no special-casing.
+	middlewareHandlers, _ := elem.FieldByName("MiddlewareHandlers").Interface().([]reqreply.MiddlewareHandler)
+
 	if err := sock.SetRecvTimeout(recvPollInterval); err != nil {
 		return SocketError{Op: "set_recv_timeout", Err: err}
 	}
@@ -1094,6 +1300,37 @@ func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny a
 					if t.opts.OnError != nil {
 						t.opts.OnError(ServeError{Kind: KindSecurity, Err: wrapped})
 					}
+					return
+				}
+				reqVal = reqPtr.Elem()
+			}
+
+			// docs/roadmap/reqreply-codec-declared-middleware.md: codec-
+			// backed Middleware[In,Out] dispatch — runs AFTER the paired
+			// security Fns above (D1), reading/enriching the SAME reqVal.
+			if len(middlewareHandlers) > 0 {
+				reqPtr := reflect.New(reqType)
+				reqPtr.Elem().Set(reqVal)
+				_, _, mwName, isFnErr, mwErr := dispatchServerMiddlewareHandlers(spanCtx, reqPtr, middlewareHandlers, nil, nil)
+				if mwErr != nil {
+					kind := KindDecode
+					loc := "middleware:in"
+					if isFnErr {
+						kind = KindMiddleware
+						loc = "middleware:fn"
+					}
+					stats.ReportErrors(obs, loc, mwErr)
+					serveErr = mwErr
+					obs.RecordRequest("ZMQ-ROUTER", path, 0, time.Since(start))
+					if isFnErr {
+						sendRouterHandlerErrorReplyReflect(sock, id, errorResponseForMethod, mwErr, obs)
+					} else {
+						sendRouterErrorReply(sock, id, mwErr)
+					}
+					if t.opts.OnError != nil {
+						t.opts.OnError(ServeError{Kind: kind, Err: mwErr})
+					}
+					_ = mwName
 					return
 				}
 				reqVal = reqPtr.Elem()
@@ -1277,6 +1514,15 @@ func (t *dealerClientTransport) call(ctx context.Context, routeAny any, reqAny a
 	secReqs := effectiveSecurity(elem)
 	errType := reflect.TypeOf((*error)(nil)).Elem()
 
+	// docs/roadmap/reqreply-codec-declared-middleware.md: codec-backed
+	// ClientMiddlewareHandler dispatch — mirrors [clientTransport.call]'s
+	// identical mechanism, duplicated for the DEALER variant (one of the
+	// 4 transports this mechanism must be transport-agnostic across).
+	// zeromq has no wire mechanism to carry produced topic/property vars
+	// (no topic template, no property side channel) — dispatched purely
+	// for the Fn's own business logic/error semantics.
+	clientMiddlewareHandlers, _ := elem.FieldByName("ClientMiddlewareHandlers").Interface().([]reqreply.ClientMiddlewareHandler)
+
 	innerType := reflect.FuncOf(
 		[]reflect.Type{reflect.TypeOf((*context.Context)(nil)).Elem(), reqType},
 		[]reflect.Type{respType, errType},
@@ -1302,6 +1548,24 @@ func (t *dealerClientTransport) call(ctx context.Context, routeAny any, reqAny a
 				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: wrapped}).Convert(errType)}
 			}
 			innerReqVal = reqPtr.Elem()
+		}
+
+		// docs/roadmap/reqreply-codec-declared-middleware.md: codec-
+		// backed ClientMiddlewareHandler dispatch — runs AFTER the
+		// paired credential Fns above (D1).
+		if len(clientMiddlewareHandlers) > 0 {
+			_, _, mwName, mwErr := dispatchClientMiddlewareIn(ctx, innerReqVal, clientMiddlewareHandlers)
+			if mwErr != nil {
+				_, isFnErr := mwErr.(reqreply.MiddlewareError)
+				loc := "middleware:in"
+				if isFnErr {
+					loc = "middleware:fn"
+				}
+				stats.ReportErrors(obs, loc, mwErr)
+				obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
+				_ = mwName
+				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: mwErr}).Convert(errType)}
+			}
 		}
 
 		encodeResults := rv.MethodByName("EncodeRequestWithFormats").CallSlice([]reflect.Value{innerReqVal, requestFormatsOverride})
@@ -1350,6 +1614,18 @@ func (t *dealerClientTransport) call(ctx context.Context, routeAny any, reqAny a
 		if string(frames[1]) == "error" {
 			obs.RecordRequest("ZMQ-DEALER", path, 500, time.Since(start))
 			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: fmt.Errorf("server error: %s", frames[2])}).Convert(errType)}
+		}
+
+		if len(clientMiddlewareHandlers) > 0 {
+			// zeromq has neither a reply-topic nor a property mechanism
+			// (ROUTER/DEALER frames carry only [delimiter, status,
+			// payload]) — both maps are always empty; mirrors the
+			// identical ZMQ-REQ variant's call.
+			if mwErr := dispatchClientMiddlewareOut(nil, nil, clientMiddlewareHandlers); mwErr != nil {
+				stats.ReportErrors(obs, "middleware:in", mwErr)
+				obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
+				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: mwErr}).Convert(errType)}
+			}
 		}
 
 		decodeResults := rv.MethodByName("DecodeResponseWithFormats").CallSlice([]reflect.Value{reflect.ValueOf(frames[2]), responseFormatsOverride})

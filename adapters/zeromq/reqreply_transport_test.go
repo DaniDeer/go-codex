@@ -900,3 +900,128 @@ func TestAttachClient_ClientMW_ContextMutationPropagatesIntoInnerCall(t *testing
 		t.Fatalf("expected the ClientMW decorator's context mutation to propagate into the paired credential Fn, got %v", observedValue)
 	}
 }
+
+// ── docs/roadmap/reqreply-codec-declared-middleware.md adapter wiring ──────
+
+type zmwPropIn struct{ TenantID string }
+type zmwPropOut struct{ Ack string }
+
+var zmwPropInCodec = codex.Struct[zmwPropIn]()
+var zmwPropOutCodec = codex.Struct[zmwPropOut]()
+
+// TestAttachServer_Transform_RunsAfterPairedSecurity confirms D1 for
+// zeromq: Transform's declared middleware runs AFTER the paired security
+// Fn — the mechanism is genuinely transport-agnostic, zero adapter-
+// specific work beyond consulting the same RouteHandle field mqtt5 does.
+func TestAttachServer_Transform_RunsAfterPairedSecurity(t *testing.T) {
+	var order []string
+	mw := reqreply.NewMiddleware(middleware.NewDeclaration("zmq-order-check", zmwPropInCodec, zmwPropOutCodec))
+	fn := func(_ context.Context, r securedComputeReq) (securedComputeResp, error) {
+		order = append(order, "handler")
+		return securedComputeResp{Sum: r.X + r.Y}, nil
+	}
+	secFn := func(_ context.Context, req *securedComputeReq, _ []route.SecurityRequirement) error {
+		order = append(order, "security")
+		return nil
+	}
+	baseRoute := newSecuredComputeRoute().Use(zmqBearerAuthMw).HandleMW(&zmqBearerAuthMw, secFn)
+	rt := reqreply.Transform(baseRoute, mw,
+		func(ctx context.Context, req *securedComputeReq, in zmwPropIn) (zmwPropOut, error) {
+			order = append(order, "middleware")
+			return zmwPropOut{}, nil
+		})
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	if _, err := rt.WithHandler(fn).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	repSock, reqSock := newChanSocketPair()
+	if err := AttachServer(server, map[string]FramedSocket{"/secured-compute": repSock}); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveErrCh := make(chan error, 1)
+	go func() { serveErrCh <- server.Serve(ctx) }()
+
+	if err := reqSock.SendFrames([][]byte{[]byte(`{"x":3,"y":4,"token":"abc"}`)}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if _, err := reqSock.RecvFrames(); err != nil {
+		t.Fatalf("recv: %v", err)
+	}
+
+	if len(order) != 3 || order[0] != "security" || order[1] != "middleware" || order[2] != "handler" {
+		t.Fatalf("want dispatch order [security middleware handler], got %v", order)
+	}
+
+	cancel()
+	select {
+	case err := <-serveErrCh:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not return after ctx cancellation")
+	}
+}
+
+// TestAttachServer_MiddlewareError_WrapsAsKindMiddleware (zeromq)
+// confirms decision #6: a Transform-attached fn's own business error
+// surfaces through ServeError{Kind: KindMiddleware}, NOT KindHandler.
+func TestAttachServer_MiddlewareError_WrapsAsKindMiddleware(t *testing.T) {
+	mw := reqreply.NewMiddleware(middleware.NewDeclaration("zmq-fn-error", zmwPropInCodec, zmwPropOutCodec))
+	fn := func(_ context.Context, r computeReq) (computeResp, error) {
+		return computeResp{Sum: r.X + r.Y}, nil
+	}
+	rt := reqreply.Transform(
+		reqreply.NewRoute[computeReq, computeResp]("/mw-error-compute", computeReqCodec, computeRespCodec),
+		mw,
+		func(ctx context.Context, req *computeReq, in zmwPropIn) (zmwPropOut, error) {
+			return zmwPropOut{}, errors.New("business failure")
+		},
+	)
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	if _, err := rt.WithHandler(fn).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	var gotKind ErrorKind
+	var kindSet bool
+	repSock, reqSock := newChanSocketPair()
+	if err := AttachServer(server, map[string]FramedSocket{"/mw-error-compute": repSock}, ServeOptions{
+		OnError: func(e ServeError) {
+			if !kindSet {
+				gotKind = e.Kind
+				kindSet = true
+			}
+		},
+	}); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveErrCh := make(chan error, 1)
+	go func() { serveErrCh <- server.Serve(ctx) }()
+
+	if err := reqSock.SendFrames([][]byte{[]byte(`{"x":1,"y":2}`)}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if _, err := reqSock.RecvFrames(); err != nil {
+		t.Fatalf("recv: %v", err)
+	}
+
+	if !kindSet || gotKind != KindMiddleware {
+		t.Fatalf("want ServeError{Kind: KindMiddleware}, got kindSet=%v kind=%v", kindSet, gotKind)
+	}
+
+	cancel()
+	select {
+	case err := <-serveErrCh:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not return after ctx cancellation")
+	}
+}

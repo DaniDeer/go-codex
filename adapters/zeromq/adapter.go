@@ -437,11 +437,18 @@ func subscribeWithHandle[T any](
 		// events.MiddlewareError when unmatched — mirrors mqtt5's
 		// identical resolution.
 		if len(handle.MiddlewareHandlers) > 0 {
-			if mwErr := dispatchSubscribeMiddlewareHandlers(ctx, &value, handle.MiddlewareHandlers, topicVars); mwErr != nil {
+			// zeromq has no property mechanism at all — supplies an
+			// empty property-value map (nil), mirroring mqtt5's
+			// identical extraction-then-supply pattern minus the
+			// extraction (nothing to extract from). A channel declaring
+			// a REQUIRED property fails naturally with the SAME
+			// MiddlewareInputError a missing topic var would.
+			if mwErr := dispatchSubscribeMiddlewareHandlers(ctx, &value, handle.MiddlewareHandlers, topicVars, nil); mwErr != nil {
 				obs.RecordSubscribe(topic, false, time.Since(start))
 				var dispatchErr middlewareDispatchError
 				errors.As(mwErr, &dispatchErr)
 				if dispatchErr.isFnError {
+					stats.ReportErrors(obs, "middleware:fn", dispatchErr.err)
 					if resp, matched, matchErr := handle.ErrorResponseFor(dispatchErr.err); matched && matchErr == nil && resp.Action == events.ErrorRespond {
 						if pubErr := sock.SendFrames([][]byte{[]byte(resp.Topic), resp.Body}); pubErr != nil {
 							stats.ReportErrors(obs, "error_channel", pubErr)
@@ -453,6 +460,7 @@ func subscribeWithHandle[T any](
 					}
 					continue
 				}
+				stats.ReportErrors(obs, "middleware:in", dispatchErr.err)
 				if opts.OnError != nil {
 					opts.OnError(SubscribeError{Kind: KindDecode, Topic: topic, Err: dispatchErr.err})
 				}
@@ -650,6 +658,7 @@ func publish[T any](
 	handle *events.ChannelHandle[T],
 	msg T,
 	vars map[string]string,
+	isExplicitVars bool,
 	opts PublishOptions[T],
 	formats ...format.Format[T],
 ) error {
@@ -671,18 +680,30 @@ func publish[T any](
 
 	// Codec-backed middleware dispatch (ClientTransform and bundled
 	// .Use()) — derived FIRST since a middleware's own Out may contribute
-	// ADDITIONAL topic vars BuildTopic needs. D3-equivalent precedence:
-	// explicit/channel-own vars (the vars param) wins over
-	// middleware-derived vars on a key collision. Mirrors mqtt5's
-	// identical wiring.
+	// ADDITIONAL topic vars BuildTopic needs. isExplicitVars distinguishes
+	// vars' OWN provenance (explicit PublishOptions.Vars vs. channel-own-
+	// derived — see [PublishAdapter]'s mutually-exclusive call sites)
+	// since that distinction is otherwise erased by the time vars reaches
+	// this function — explicit ALWAYS wins over middleware-derived;
+	// middleware-derived wins over channel-own-derived (the Bug 1 fix —
+	// previously ALWAYS backwards, channel-own beat middleware). Mirrors
+	// mqtt5's identical wiring. The property-vars return value is
+	// discarded — zeromq has no write-target for it (no property
+	// mechanism); a required property still fails naturally at DecodeIn
+	// time on the subscribe side.
 	if len(handle.ClientMiddlewareHandlers) > 0 {
-		mwVars, mwErr := dispatchPublishMiddlewareHandlers(ctx, msg, handle.ClientMiddlewareHandlers)
+		mwTopicVars, _, mwErr := dispatchPublishMiddlewareHandlers(ctx, msg, handle.ClientMiddlewareHandlers)
 		if mwErr != nil {
+			stats.ReportErrors(obs, "middleware:fn", mwErr)
 			obs.RecordPublish(handle.Topic, false, time.Since(start))
 			err = mwErr
 			return err
 		}
-		vars = overrideDerivedVars(mwVars, vars)
+		if isExplicitVars {
+			vars = overrideDerivedVars(mwTopicVars, vars)
+		} else {
+			vars = overrideDerivedVars(vars, mwTopicVars)
+		}
 	}
 
 	topic := handle.Topic
@@ -771,7 +792,7 @@ func publishHandle[T any](
 	if len(vars) == 0 {
 		vars = nil
 	}
-	return publish(ctx, sock, handle, msg, vars, opts, formats...)
+	return publish(ctx, sock, handle, msg, vars, false, opts, formats...)
 }
 
 // Serve runs a blocking REP loop: receives requests, calls fn, sends replies.

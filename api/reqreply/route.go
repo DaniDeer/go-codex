@@ -632,6 +632,27 @@ type routeBuilder struct {
 	meta         RouteMeta
 	topicParams  []TopicParam
 	errorReplies []ErrorReplyMeta
+	// propertyParams holds [PropertyParam] declarations routed via
+	// [PropertyParam.applyRoute]/[MergedPropertyParam.applyRoute] — the
+	// property-axis analogue of topicParams, populated by
+	// [Middleware.WithRequestProperty]/[Middleware.WithResponseProperty]
+	// contributions (see middleware_declaration.go/transform.go). Kept
+	// SEPARATE from topicParams — properties and topic vars are
+	// independent conflict-detection namespaces (Round 15).
+	propertyParams []PropertyParam
+	// middlewareSpecContributions holds one entry per attached codec-
+	// backed [Middleware][In,Out] (via [Transform]/[ClientTransform] or
+	// plain .Use()) — fed into [applyParamDeclarations]'s unified
+	// conflict-detection/layering pass alongside Phase 1b's flat
+	// middlewares. See transform.go's middlewareSpecContribution.
+	middlewareSpecContributions []middlewareSpecContribution
+	// middlewareHandlers/clientMiddlewareHandlers accumulate the runtime
+	// dispatch units built by [Transform]/[ClientTransform] (route-BOUND)
+	// and plain .Use() (route-AGNOSTIC, bundled WithReceive/WithSend) —
+	// copied onto [RouteHandle.MiddlewareHandlers]/
+	// [RouteHandle.ClientMiddlewareHandlers] at Register/ClientHandle time.
+	middlewareHandlers       []MiddlewareHandler
+	clientMiddlewareHandlers []ClientMiddlewareHandler
 	// errorPatternRules holds per-route typed error reply declarations from
 	// [ErrorPattern] — see [RouteHandle.ErrorResponseFor].
 	errorPatternRules []errorPatternRule
@@ -873,6 +894,11 @@ func (r Route[Req, Resp]) ClientHandle() *RouteHandle[Req, Resp] {
 		ClientImplementations: rb.clientImpls,
 		RequestHeaderParams:   reqHeaderParams,
 		ResponseHeaderParams:  respHeaderParams,
+		// MiddlewareHandlers/ClientMiddlewareHandlers copied WITHOUT the
+		// D6(b)/D7/conflict checks Register runs — ClientHandle stays
+		// infallible, mirroring rest.Route.ClientHandle exactly.
+		MiddlewareHandlers:       rb.middlewareHandlers,
+		ClientMiddlewareHandlers: rb.clientMiddlewareHandlers,
 	}
 	// Apply any inline RequestFormats/Formats RouteOpt declared on the
 	// Route -- the SAME rb.requestFormats/rb.formats fields Register
@@ -943,6 +969,13 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 		return nil, err
 	}
 
+	// D6(b)/D7: attached codec-backed Middleware[In,Out] name uniqueness
+	// + ambiguous-attachment check — docs/roadmap/
+	// reqreply-codec-declared-middleware.md.
+	if err := checkMiddlewareNameUniquenessAndAttachment(&rb, r.topic); err != nil {
+		return nil, err
+	}
+
 	jsonReq := format.JSON(r.reqCodec)
 	jsonResp := format.JSON(r.respCodec)
 
@@ -952,20 +985,32 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 	}
 
 	h := &RouteHandle[Req, Resp]{
-		Topic:                 r.topic,
-		Decode:                func(p []byte) (Req, error) { return jsonReq.Unmarshal(p) },
-		Encode:                func(v Resp) ([]byte, error) { return jsonResp.Marshal(v) },
-		EncodeRequest:         func(v Req) ([]byte, error) { return jsonReq.Marshal(v) },
-		DecodeResponse:        func(p []byte) (Resp, error) { return jsonResp.Unmarshal(p) },
-		topicParams:           rb.topicParams,
-		topicCodec:            b.topicCodec,
-		errorPatternRules:     rb.errorPatternRules,
-		Implementations:       rb.impls,
-		ClientImplementations: rb.clientImpls,
-		Security:              rb.meta.Security,
-		SecuritySchemes:       schemes,
-		GlobalSecurity:        append([]route.SecurityRequirement(nil), b.globalSecurity...),
+		Topic:                    r.topic,
+		Decode:                   func(p []byte) (Req, error) { return jsonReq.Unmarshal(p) },
+		Encode:                   func(v Resp) ([]byte, error) { return jsonResp.Marshal(v) },
+		EncodeRequest:            func(v Req) ([]byte, error) { return jsonReq.Marshal(v) },
+		DecodeResponse:           func(p []byte) (Resp, error) { return jsonResp.Unmarshal(p) },
+		topicParams:              rb.topicParams,
+		topicCodec:               b.topicCodec,
+		errorPatternRules:        rb.errorPatternRules,
+		Implementations:          rb.impls,
+		ClientImplementations:    rb.clientImpls,
+		Security:                 rb.meta.Security,
+		SecuritySchemes:          schemes,
+		GlobalSecurity:           append([]route.SecurityRequirement(nil), b.globalSecurity...),
+		MiddlewareHandlers:       rb.middlewareHandlers,
+		ClientMiddlewareHandlers: rb.clientMiddlewareHandlers,
 	}
+
+	// Decision #5 (Round 18, uniform algorithm): conflict-detect ALL
+	// topic-var/property contributions — Phase 1b's flat mechanism AND
+	// the codec-backed Middleware[In,Out] axis alike — BEFORE rendering
+	// the spec. Register-only (mirrors rest.applyMiddlewareDeclarations'
+	// conflict-detection scope; ClientHandle stays infallible).
+	if err := checkReqReplyParamConflicts(&rb, r.topic); err != nil {
+		return nil, err
+	}
+
 	reqHeaderParams, respHeaderParams, reqHeadersSchema, respHeadersSchema := applyParamDeclarations(&rb)
 	h.RequestHeaderParams = reqHeaderParams
 	h.ResponseHeaderParams = respHeaderParams
@@ -1111,6 +1156,16 @@ type RouteHandle[Req, Resp any] struct {
 	// Populated by [Route.Register]/[Route.ClientHandle].
 	RequestHeaderParams  []middleware.HeaderParamSpec
 	ResponseHeaderParams []middleware.ResponseHeaderParamSpec
+
+	// MiddlewareHandlers/ClientMiddlewareHandlers hold the codec-backed
+	// [Middleware][In,Out] runtime dispatch units attached via
+	// [Transform]/[ClientTransform] or plain [Route.Use] (bundled
+	// WithReceive/WithSend) — docs/roadmap/reqreply-codec-declared-
+	// middleware.md. Consulted by the attached [ServerTransport]/
+	// [ClientTransport] (mqtt5/zeromq), dispatched AFTER the paired
+	// security Fn. Populated by [Route.Register]/[Route.ClientHandle].
+	MiddlewareHandlers       []MiddlewareHandler
+	ClientMiddlewareHandlers []ClientMiddlewareHandler
 }
 
 // ErrorResponseFor returns the first declared [ErrorPattern] match for err

@@ -1,6 +1,7 @@
 package routes
 
 import (
+	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
@@ -65,3 +66,41 @@ var oauthComputeFlows = route.OAuthFlows{
 
 var OAuthMw = middleware.SecurityScheme("oauth2Compute", route.OAuth2Scheme(oauthComputeFlows),
 	[]string{OAuthComputeWriteScope}, &OAuthCodec)
+
+// ── Codec-declared enrichment middleware (docs/roadmap/reqreply-codec- ──
+// ── declared-middleware.md) — a DIFFERENT kind of declaration than the ──
+// ── security schemes above: non-security enrichment, not credential   ──
+// ── verification. Kept in this SAME file (not routes.go) because it's ──
+// ── STILL a pure, adapter-agnostic DECLARATION — its IMPLEMENTATION   ──
+// ── (the Transform fn body) lives in handlers/middleware.go, mirroring──
+// ── the SAME declare/implement split BearerAuthMw/VerifyBearer above  ──
+// ── already establishes for security middleware.                     ──
+
+// TenantPropertyMw declares the property vocabulary axis
+// (WithRequestProperty/WithResponseProperty) attached to
+// PropertyAxisComputeRoute via reqreply.Transform in BOTH
+// mqtt5server.Build AND zeromqserver.Build — the SAME Go value,
+// registered against two completely different transports, with ZERO
+// adapter-specific changes to the declaration itself (see
+// demo_property_axis_middleware.go for what actually differs at
+// runtime between the two).
+//
+// The request property ("X-Tenant-Id") is deliberately declared
+// OPTIONAL (NewOptionalPropertyParam, not NewPropertyParam) — a
+// required property would make Register/Serve succeed on mqtt5 (which
+// carries it as a real MQTT5 User Property) but every CALL over
+// zeromq would fail with reqreply.MiddlewareInputError, since zeromq
+// has no property mechanism at all and always supplies an empty
+// property map. Declaring it optional instead makes THIS SAME route
+// genuinely portable: mqtt5 callers who supply the property get full
+// enrichment; zeromq callers (who structurally CANNOT supply it) still
+// get a valid response, with TenantIn.TenantID left at its zero value.
+var TenantPropertyMw = reqreply.NewMiddleware(middleware.NewDeclaration("tenant-property-axis", TenantInCodec, TenantAckCodec)).
+	WithRequestProperty(reqreply.NewOptionalPropertyParam("X-Tenant-Id", codex.String(),
+		func(v TenantIn) string { return v.TenantID },
+		func(v *TenantIn, s string) { v.TenantID = s },
+	)).
+	WithResponseProperty(reqreply.NewPropertyParam("X-Ack", codex.String(),
+		func(v TenantAck) string { return v.Ack },
+		func(v *TenantAck, s string) { v.Ack = s },
+	))

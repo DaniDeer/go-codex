@@ -200,18 +200,20 @@ func newRouteHandle() *reqreply.RouteHandle[computeReq, computeResp] {
 // ── observer stub ─────────────────────────────────────────────────────────────
 
 type testObserver struct {
-	subscribes         []bool
-	publishes          []bool
-	requests           []int // status codes
-	paths              []string
-	validationErrors   []string
-	startSpanOps       []string
-	endSpanErrs        []error
-	securityRejections []string // scheme names, one per RecordSecurityRejection call
+	subscribes          []bool
+	publishes           []bool
+	requests            []int // status codes
+	paths               []string
+	validationErrors    []string
+	validationLocations []string // location arg, one per RecordValidationError call
+	startSpanOps        []string
+	endSpanErrs         []error
+	securityRejections  []string // scheme names, one per RecordSecurityRejection call
 }
 
-func (o *testObserver) RecordValidationError(_, constraint, _ string) {
+func (o *testObserver) RecordValidationError(location, constraint, _ string) {
 	o.validationErrors = append(o.validationErrors, constraint)
+	o.validationLocations = append(o.validationLocations, location)
 }
 func (o *testObserver) RecordRequest(_, path string, code int, _ time.Duration) {
 	o.requests = append(o.requests, code)
@@ -457,7 +459,7 @@ func TestPublish_ValidMessage(t *testing.T) {
 	sock := &mockSocket{}
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
 	handle := newPublishHandle()
-	err := publish(context.Background(), sock, handle, reading, nil, PublishOptions[sensorReading]{})
+	err := publish(context.Background(), sock, handle, reading, nil, true, PublishOptions[sensorReading]{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -474,7 +476,7 @@ func TestPublish_EncodeError_InvalidValue(t *testing.T) {
 	// value=0 fails NonZeroFloat constraint → encode error
 	invalid := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 0}
 	handle := newPublishHandle()
-	err := publish(context.Background(), sock, handle, invalid, nil, PublishOptions[sensorReading]{})
+	err := publish(context.Background(), sock, handle, invalid, nil, true, PublishOptions[sensorReading]{})
 
 	var encErr PublishEncodeError
 	if !errors.As(err, &encErr) {
@@ -492,7 +494,7 @@ func TestPublish_ObserverRecordPublishSuccess(t *testing.T) {
 	obs := &testObserver{}
 	sock := &mockSocket{}
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1.0}
-	_ = publish(context.Background(), sock, newPublishHandle(), reading, nil,
+	_ = publish(context.Background(), sock, newPublishHandle(), reading, nil, true,
 		PublishOptions[sensorReading]{Observer: obs})
 
 	if len(obs.publishes) != 1 || !obs.publishes[0] {
@@ -504,7 +506,7 @@ func TestPublish_ObserverRecordPublishFailure(t *testing.T) {
 	obs := &testObserver{}
 	sock := &mockSocket{}
 	invalid := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 0}
-	_ = publish(context.Background(), sock, newPublishHandle(), invalid, nil,
+	_ = publish(context.Background(), sock, newPublishHandle(), invalid, nil, true,
 		PublishOptions[sensorReading]{Observer: obs})
 
 	if len(obs.publishes) != 1 || obs.publishes[0] {
@@ -516,7 +518,7 @@ func TestPublish_TraceObserver(t *testing.T) {
 	obs := &testObserver{}
 	sock := &mockSocket{}
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1.0}
-	_ = publish(context.Background(), sock, newPublishHandle(), reading, nil,
+	_ = publish(context.Background(), sock, newPublishHandle(), reading, nil, true,
 		PublishOptions[sensorReading]{Observer: obs})
 
 	if len(obs.startSpanOps) != 1 || obs.startSpanOps[0] != "zmq.publish" {

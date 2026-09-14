@@ -26,10 +26,13 @@ func (e middlewareDispatchError) Unwrap() error { return e.err }
 // pre-handler dispatch point [runSubscribeSecurityImpls] already runs at
 // (D1) — msg is the SAME already-decoded *T the handler will also
 // receive, so a bound mw's fn may read/enrich it (subscribe has no Out to
-// encode — see [events.Middleware]'s doc comment).
-func dispatchSubscribeMiddlewareHandlers[T any](ctx context.Context, msg *T, handlers []events.MiddlewareHandler, topicVars map[string]string) error {
+// encode — see [events.Middleware]'s doc comment). propertyVars is the
+// property vocabulary axis's OWN, SEPARATE map (real MQTT5 User
+// Properties) — decoded independently from topicVars, never combined
+// (mirrors reqreply's/REST's own multi-map-never-combined pattern).
+func dispatchSubscribeMiddlewareHandlers[T any](ctx context.Context, msg *T, handlers []events.MiddlewareHandler, topicVars, propertyVars map[string]string) error {
 	for _, h := range handlers {
-		in, err := h.DecodeIn(topicVars)
+		in, err := h.DecodeIn(topicVars, propertyVars)
 		if err != nil {
 			return middlewareDispatchError{err: err, name: h.Name}
 		}
@@ -51,14 +54,19 @@ func dispatchSubscribeMiddlewareHandlers[T any](ctx context.Context, msg *T, han
 // attached to this channel (via ClientTransform or a bundled .Use()) at
 // the SAME pre-publish dispatch point [runPublishSecurityImpls] already
 // runs at — msg is the caller's OWN already-built value (VALUE, not
-// pointer — mirrors REST client's req Req). Returns the merged topic vars
-// derived from every middleware's own Out (registration-order,
-// last-applied-wins, D6(c)).
-func dispatchPublishMiddlewareHandlers[T any](ctx context.Context, msg T, handlers []events.ClientMiddlewareHandler) (map[string]string, error) {
+// pointer — mirrors REST client's req Req). Returns TWO SEPARATE merged
+// maps derived from every middleware's own Out (registration-order,
+// last-applied-wins, D6(c)): topicVars feeds [events.ChannelHandle.BuildTopic],
+// propertyVars merges into the OUTGOING message's real MQTT5 User
+// Properties (see [publish]'s Case 2 write-side wiring) — kept separate
+// since they have entirely different downstream consumers, never combined
+// into one map.
+func dispatchPublishMiddlewareHandlers[T any](ctx context.Context, msg T, handlers []events.ClientMiddlewareHandler) (topicVars, propertyVars map[string]string, err error) {
 	if len(handlers) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
-	vars := make(map[string]string)
+	topicVars = make(map[string]string)
+	propertyVars = make(map[string]string)
 	for _, h := range handlers {
 		fnVal := reflect.ValueOf(h.Fn)
 		var results []reflect.Value
@@ -68,18 +76,21 @@ func dispatchPublishMiddlewareHandlers[T any](ctx context.Context, msg T, handle
 			results = fnVal.Call([]reflect.Value{reflect.ValueOf(ctx), reflect.ValueOf(msg)})
 		}
 		if fnErr, _ := results[1].Interface().(error); fnErr != nil {
-			return nil, middlewareDispatchError{err: fnErr, isFnError: true, name: h.Name}
+			return nil, nil, middlewareDispatchError{err: fnErr, isFnError: true, name: h.Name}
 		}
 		out := results[0].Interface()
-		mwVars, encErr := h.EncodeOut(out)
+		mwTopicVars, mwPropertyVars, encErr := h.EncodeOut(out)
 		if encErr != nil {
-			return nil, encErr
+			return nil, nil, encErr
 		}
-		for k, v := range mwVars {
-			vars[k] = v
+		for k, v := range mwTopicVars {
+			topicVars[k] = v
+		}
+		for k, v := range mwPropertyVars {
+			propertyVars[k] = v
 		}
 	}
-	return vars, nil
+	return topicVars, propertyVars, nil
 }
 
 // overrideDerivedVars merges derived (middleware-produced) and explicit

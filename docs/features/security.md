@@ -623,6 +623,13 @@ var apiKeyParam = mqtt5.UserPropertyParam{Name: "X-API-Key", Required: true}
 route := ComputeRoute.Use(mqtt5.FromUserPropertyParam(apiKeyParam))
 ```
 
+A SECOND, newer mechanism now exists ALONGSIDE this one, unchanged:
+[Feature: ReqReply Codec-Declared Middleware](reqreply-middleware.md)'s
+`reqreply.Middleware[In,Out]`'s `WithRequestProperty`/`WithResponseProperty`
+axis — codec-backed, merge-capable (unlike this validate-only Phase 1b
+bridge), and required vs. optional properties are a first-class choice
+(`NewPropertyParam`/`NewOptionalPropertyParam`).
+
 **zeromq** — same `.Use()`/`HandleMW`/`ClientMW` declare/implement split,
 but the paired Fn shape reads/writes the decoded `*Req` directly (no raw
 message exists to operate on instead, unlike mqtt5's `*pahomqtt5.

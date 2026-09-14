@@ -317,6 +317,16 @@ unused — no reply channel to encode into), publish is the SENDING role
 unused). Reuses the SAME `events.NewTopicParam[T,V]` constructor a
 channel's own `Item` already uses.
 
+A SECOND, protocol-neutral **property** vocabulary axis exists alongside
+topic vars — `WithSubscribeProperty`/`WithPublishProperty`, via a NEW
+`events.NewPropertyParam[T,V]`/`NewOptionalPropertyParam[T,V]` pair
+(MQTT5 User Properties today; `adapters/zeromq` has no property
+mechanism, so a REQUIRED property there fails naturally, mirroring a
+missing topic var). See
+[Feature: ReqReply Codec-Declared Middleware](reqreply-middleware.md)
+for the identical mechanism shared with `api/reqreply` (same conflict-
+detection rules, same independent topic/property namespaces).
+
 ```go
 regionPolicy := events.NewMiddleware(
     middleware.NewDeclaration("region-policy", regionInCodec, regionOutCodec),
@@ -340,8 +350,9 @@ attachment) and the `ErrorChannel`-eligible `fn`-error fallback
 `adapters/mqtt`, `adapters/mqtt5`, and `adapters/zeromq` — subscribe
 dispatch shares the SAME pre-handler point security enforcement already
 runs at; publish dispatch derives middleware-contributed topic vars BEFORE
-`BuildTopic`, with explicit vars winning over middleware-derived ones on a
-key collision.
+`BuildTopic`, following the FULL 3-tier precedence: explicit (a per-call
+`Vars` override) wins over middleware-derived, which in turn wins over the
+channel's own derived vars, on a key collision.
 
 ## Declarative MQTT QoS and Retained flag
 

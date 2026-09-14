@@ -132,6 +132,50 @@ var HeaderParamComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 	reqreply.RouteMeta{OperationID: "headerParamComputeAdd", Summary: "Add two integers — requires an X-API-Key User Property.", Security: []route.SecurityRequirement{}},
 )
 
+// TenantIn/TenantAck are the property-axis Middleware's own In/Out types
+// (docs/roadmap/reqreply-codec-declared-middleware.md) — INDEPENDENT of
+// ComputeReq/ComputeResp, mirroring how a declared Middleware[In,Out]
+// carries its OWN vocabulary alongside (not instead of) the route's own
+// request/response types.
+type TenantIn struct {
+	TenantID string
+}
+
+type TenantAck struct {
+	Ack string
+}
+
+var TenantInCodec = codex.Struct[TenantIn](
+	codex.RequiredField("tenantId", codex.String(),
+		func(v TenantIn) string { return v.TenantID },
+		func(v *TenantIn, s string) { v.TenantID = s },
+	),
+)
+
+var TenantAckCodec = codex.Struct[TenantAck](
+	codex.RequiredField("ack", codex.String(),
+		func(v TenantAck) string { return v.Ack },
+		func(v *TenantAck, s string) { v.Ack = s },
+	),
+)
+
+// PropertyAxisComputeRoute demonstrates docs/roadmap/reqreply-codec-
+// declared-middleware.md's NEW property vocabulary axis
+// (WithRequestProperty/WithResponseProperty) — declared PRISTINE here,
+// exactly like HeaderParamComputeRoute above: `TenantPropertyMw`'s
+// attachment (via reqreply.Transform) happens separately, ONCE PER
+// ADAPTER (mqtt5server/server.go AND zeromqserver/server.go), from the
+// SAME declared Middleware value + handlers.ProcessTenant implementation
+// — this route is registered on BOTH transports to prove the
+// declaration is genuinely portable, not mqtt5-specific. Explicitly
+// opts OUT of mqtt5server's Server.AddGlobalSecurity ("bearerAuth") via
+// an empty Security slice, same rationale as HeaderParamComputeRoute.
+var PropertyAxisComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
+	"compute/property-axis-add",
+	ComputeReqCodec, ComputeRespCodec,
+	reqreply.RouteMeta{OperationID: "propertyAxisComputeAdd", Summary: "Add two integers — demonstrates the property vocabulary axis (WithRequestProperty/WithResponseProperty).", Security: []route.SecurityRequirement{}},
+)
+
 // RouterComputeRoute is dispatched over a ZMQ ROUTER/DEALER socket pair in
 // Demo 8. MissingComputeRoute is registered on the SAME server but
 // DELIBERATELY has no corresponding socket wired in

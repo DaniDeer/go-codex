@@ -29,8 +29,8 @@
 > below remain the most concrete existing sketch until that broader
 > design is itself
 > implemented.
-> **A THIRD point on this SAME spectrum now exists, sooner-to-ship than
-> either** — [ReqReply Codec-Declared Middleware](reqreply-codec-declared-middleware.md)'s
+> **A THIRD point on this SAME spectrum now exists, ALREADY SHIPPED** —
+> [ReqReply Codec-Declared Middleware](reqreply-codec-declared-middleware.md)'s
 > new "property" vocabulary axis (`WithRequestProperty`/
 > `WithResponseProperty` for `api/reqreply`, `WithSubscribeProperty`/
 > `WithPublishProperty` for `api/events`) reuses D-0003's ALREADY-SHIPPED
@@ -40,10 +40,12 @@
 > `api/reqreply`/`api/events` specifically (NOT a general `mqtt`(v3)-
 > agnostic `ChannelOpt`/`RouteOpt` the way THIS doc's own
 > `MergedUserPropertyParam[T]` is designed to be) — so it does NOT
-> replace this doc's own planned work, but IS a real, closer-to-shipping
+> replace this doc's own planned work, but IS a real, ALREADY-SHIPPED
 > alternative for callers who only need the reqreply/events cases
-> specifically. See that doc's "The 'property' vocabulary axis" section
-> for the full design (15+ review rounds deep as of this cross-reference).
+> specifically. See
+> [Feature: ReqReply Codec-Declared Middleware](../features/reqreply-middleware.md)
+> for the user-facing docs, or that doc's own "The 'property' vocabulary
+> axis" section for the full design record (19 review rounds).
 > [← Back to Roadmap](index.md)
 
 ## Motivation

@@ -26,9 +26,18 @@ type Built struct {
 	// *reqreply.RouteHandle values returned by Register — needed by
 	// callers (e.g. mqtt5adapter.Call) that dispatch directly against an
 	// already-registered route rather than through a *reqreply.Client.
-	GlobalHandle      *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]
-	SecuredHandle     *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]
-	HeaderParamHandle *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]
+	GlobalHandle       *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]
+	SecuredHandle      *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]
+	HeaderParamHandle  *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]
+	PropertyAxisHandle *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]
+}
+
+// LastReplyUserProperties returns the MQTT5 User Properties on the most
+// recently server-published message (see [recordingBroker]) — used by
+// demo_property_axis_middleware.go to visibly confirm the property
+// axis's reply-side "Write-side wiring" fix actually reaches the wire.
+func (b *Built) LastReplyUserProperties() pahomqtt5.UserProperties {
+	return b.Broker.(*recordingBroker).LastReplyUserProperties()
 }
 
 // apiKeyUserProp/traceUserProp are Phase 1b's (docs/roadmap/
@@ -90,19 +99,74 @@ func Build() (*Built, error) {
 	if err != nil {
 		return nil, err
 	}
+	// PropertyAxisComputeRoute demonstrates the NEW property vocabulary
+	// axis (docs/roadmap/reqreply-codec-declared-middleware.md) —
+	// routes.TenantPropertyMw (the DECLARATION) + handlers.ProcessTenant
+	// (the IMPLEMENTATION) are both adapter-agnostic; THIS is the only
+	// mqtt5-specific step — attaching them to a route and registering on
+	// THIS server. handlers.ProcessTenant reads the merged
+	// TenantIn.TenantID (from the request's "X-Tenant-Id" User Property,
+	// carried as a real MQTT5 User Property here) and produces a
+	// TenantAck merged into the reply's "X-Ack" User Property, ALONGSIDE
+	// the route's own normal ComputeReq/ComputeResp handling (unaffected).
+	// See zeromqserver/server.go for the SAME declaration+implementation
+	// pair attached to a transport with NO property mechanism at all.
+	propertyAxisHandle, err := reqreply.Transform(
+		routes.PropertyAxisComputeRoute,
+		routes.TenantPropertyMw,
+		handlers.ProcessTenant,
+	).
+		WithHandler(handlers.Add).
+		Register(server)
+	if err != nil {
+		return nil, err
+	}
 
-	broker, router := newMockBroker()
+	rawBroker, router := newMockBroker()
+	broker := &recordingBroker{MQTTClient: rawBroker}
 	if err := mqtt5adapter.AttachServer(server, broker, router); err != nil {
 		return nil, err
 	}
 	return &Built{
-		Server:            server,
-		Broker:            broker,
-		Router:            router,
-		GlobalHandle:      globalHandle,
-		SecuredHandle:     securedHandle,
-		HeaderParamHandle: headerParamHandle,
+		Server:             server,
+		Broker:             broker,
+		Router:             router,
+		GlobalHandle:       globalHandle,
+		SecuredHandle:      securedHandle,
+		HeaderParamHandle:  headerParamHandle,
+		PropertyAxisHandle: propertyAxisHandle,
 	}, nil
+}
+
+// recordingBroker wraps the mock broker's Publish to keep the LAST
+// published message's User Properties observable — used by
+// demo_property_axis_middleware.go to visibly confirm "Write-side
+// wiring"'s Case 3 fix (the server's reply genuinely carries the
+// Middleware-produced "X-Ack" User Property on the real wire, not just
+// asserted internally by a unit test).
+type recordingBroker struct {
+	mqtt5adapter.MQTTClient
+	mu   sync.Mutex
+	last *pahomqtt5.Publish
+}
+
+func (b *recordingBroker) Publish(ctx context.Context, p *pahomqtt5.Publish) (*pahomqtt5.PublishResponse, error) {
+	b.mu.Lock()
+	b.last = p
+	b.mu.Unlock()
+	return b.MQTTClient.Publish(ctx, p)
+}
+
+// LastReplyUserProperties returns the User Properties on the most
+// recently published message (server-side, including replies) — nil if
+// none were set.
+func (b *recordingBroker) LastReplyUserProperties() pahomqtt5.UserProperties {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.last == nil || b.last.Properties == nil {
+		return nil
+	}
+	return b.last.Properties.User
 }
 
 // ── in-process mock broker (self-contained — no real MQTT 5 broker needed) ──

@@ -731,7 +731,7 @@ func TestPublish_ValidMessage(t *testing.T) {
 	client := &mockClient{}
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
 
-	err := publish(context.Background(), client, newChannelHandle(), 1, false, reading, nil,
+	err := publish(context.Background(), client, newChannelHandle(), 1, false, reading, nil, true,
 		PublishOptions[sensorReading]{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -745,7 +745,7 @@ func TestPublish_ContentTypeProperty(t *testing.T) {
 	client := &mockClient{}
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
 
-	_ = publish(context.Background(), client, newChannelHandle(), 1, false, reading, nil,
+	_ = publish(context.Background(), client, newChannelHandle(), 1, false, reading, nil, true,
 		PublishOptions[sensorReading]{ContentType: "application/json"})
 
 	pub := client.lastPublished()
@@ -758,7 +758,7 @@ func TestPublish_UserProperties(t *testing.T) {
 	client := &mockClient{}
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
 
-	_ = publish(context.Background(), client, newChannelHandle(), 1, false, reading, nil,
+	_ = publish(context.Background(), client, newChannelHandle(), 1, false, reading, nil, true,
 		PublishOptions[sensorReading]{
 			UserProperties: []UserProperty{{Key: "TenantID", Value: "acme"}},
 		})
@@ -776,7 +776,7 @@ func TestPublish_CredentialFunc_ValidFormat_Passes(t *testing.T) {
 	client := &mockClient{}
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
 
-	err := publish(context.Background(), client, newSecuredPublishChannelHandle(), 1, false, reading, nil,
+	err := publish(context.Background(), client, newSecuredPublishChannelHandle(), 1, false, reading, nil, true,
 		PublishOptions[sensorReading]{
 			CredentialFunc: func(context.Context, *sensorReading, []route.SecurityRequirement) ([]UserProperty, error) {
 				return []UserProperty{{Key: "Authorization", Value: "Bearer validtoken"}}, nil
@@ -799,7 +799,7 @@ func TestPublish_CredentialFunc_MalformedFormat_ReturnsSecurityCredentialError(t
 	obs := &testObserver{}
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
 
-	err := publish(context.Background(), client, newSecuredPublishChannelHandle(), 1, false, reading, nil,
+	err := publish(context.Background(), client, newSecuredPublishChannelHandle(), 1, false, reading, nil, true,
 		PublishOptions[sensorReading]{
 			Observer: obs,
 			CredentialFunc: func(context.Context, *sensorReading, []route.SecurityRequirement) ([]UserProperty, error) {
@@ -829,7 +829,7 @@ func TestPublish_CredentialFunc_ReturnsNilProperties_SkipsValidation(t *testing.
 	// A CredentialFunc deliberately returning (nil, nil) for "no credential
 	// needed" must NOT be treated as a malformed-empty-credential error —
 	// the Round-93 regression class, mirrored here from day one.
-	err := publish(context.Background(), client, newSecuredPublishChannelHandle(), 1, false, reading, nil,
+	err := publish(context.Background(), client, newSecuredPublishChannelHandle(), 1, false, reading, nil, true,
 		PublishOptions[sensorReading]{
 			CredentialFunc: func(context.Context, *sensorReading, []route.SecurityRequirement) ([]UserProperty, error) {
 				return nil, nil
@@ -848,7 +848,7 @@ func TestPublish_EncodeError(t *testing.T) {
 	// Use empty UUID (invalid) to trigger codec validation error
 	invalid := sensorReading{SensorID: "not-a-uuid", Value: 1.0}
 
-	err := publish(context.Background(), client, newChannelHandle(), 1, false, invalid, nil,
+	err := publish(context.Background(), client, newChannelHandle(), 1, false, invalid, nil, true,
 		PublishOptions[sensorReading]{})
 
 	var encErr PublishEncodeError
@@ -862,7 +862,7 @@ func TestPublish_ObserverRecordPublishSuccess(t *testing.T) {
 	client := &mockClient{}
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1.0}
 
-	_ = publish(context.Background(), client, newChannelHandle(), 1, false, reading, nil,
+	_ = publish(context.Background(), client, newChannelHandle(), 1, false, reading, nil, true,
 		PublishOptions[sensorReading]{Observer: obs})
 
 	if len(obs.publishes) != 1 || !obs.publishes[0] {
@@ -875,7 +875,7 @@ func TestPublish_TraceSpan(t *testing.T) {
 	client := &mockClient{}
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1.0}
 
-	_ = publish(context.Background(), client, newChannelHandle(), 1, false, reading, nil,
+	_ = publish(context.Background(), client, newChannelHandle(), 1, false, reading, nil, true,
 		PublishOptions[sensorReading]{Observer: obs})
 
 	if len(obs.startSpanOps) != 1 || obs.startSpanOps[0] != "mqtt5.publish" {
@@ -1192,7 +1192,7 @@ func TestPublish_BrokerError_OnPublishFail(t *testing.T) {
 	client := &mockClient{publishErr: brokerErr}
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1.0}
 
-	err := publish(context.Background(), client, newChannelHandle(), 1, false, reading, nil,
+	err := publish(context.Background(), client, newChannelHandle(), 1, false, reading, nil, true,
 		PublishOptions[sensorReading]{})
 
 	var be BrokerError
@@ -1228,7 +1228,7 @@ func TestPublish_Vars_MissingVar_ReportsRequiredConstraintWithVarName(t *testing
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1.0}
 
 	err := publish(context.Background(), client, newTemplateChannelHandle(), 1, false,
-		reading, map[string]string{}, // sensorID missing
+		reading, map[string]string{}, true, // sensorID missing
 		PublishOptions[sensorReading]{Observer: obs})
 
 	var missingErr events.MissingTopicVarError
@@ -1259,7 +1259,7 @@ func TestPublish_Vars_CodecFailure_ReportsVarNameAsField(t *testing.T) {
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1.0}
 
 	err := publish(context.Background(), client, newTemplateChannelHandle(), 1, false,
-		reading, map[string]string{"sensorID": "not-a-uuid"},
+		reading, map[string]string{"sensorID": "not-a-uuid"}, true,
 		PublishOptions[sensorReading]{Observer: obs})
 
 	var paramErr events.TopicParamError
@@ -1455,5 +1455,275 @@ func TestPublishHandleSubscribe_NestedGobPayload_RoundTrip(t *testing.T) {
 	}
 	if received.Value != 42.5 {
 		t.Errorf("Value: want 42.5 (from Gob body), got %v", received.Value)
+	}
+}
+
+// ── Phase 9: events property vocabulary axis + Bug 1/Bug 2 side-track ───────
+
+// mqttMdIn/mqttMdOut are minimal In/Out shapes (NO required fields, so
+// mw.InCodec/OutCodec.Validate never fails on a zero value) — used across
+// the property axis/precedence/Observer tests below.
+type mqttMdIn struct{ TenantID string }
+
+var mqttMdInCodec = codex.Struct[mqttMdIn]()
+
+type mqttMdOut struct{ TenantID string }
+
+var mqttMdOutCodec = codex.Struct[mqttMdOut]()
+
+func newMqttMdDeclaration(name string) middleware.Declaration[mqttMdIn, mqttMdOut] {
+	return middleware.NewDeclaration(name, mqttMdInCodec, mqttMdOutCodec)
+}
+
+// D1: codec-backed middleware dispatch (Transform) runs AFTER the paired
+// security Fn, both pre-handler — confirms mqtt5's dispatch order matches
+// REST's/reqreply's established order.
+func TestSubscribe_MiddlewareDispatch_RunsAfterPairedSecurity(t *testing.T) {
+	var order []string
+	emw := events.NewMiddleware(newMqttMdDeclaration("order-policy"))
+
+	sub := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
+		WithSubscribe(events.Subscribe{Summary: "test"}).
+		SubscribeMW(nil, func(_ context.Context, _ *pahomqtt5.Publish, _ *sensorReading) (map[string][]string, error) {
+			order = append(order, "security")
+			return nil, nil
+		})
+	sub = events.Transform(sub, emw, func(ctx context.Context, msg *sensorReading, in mqttMdIn) error {
+		order = append(order, "middleware")
+		return nil
+	})
+
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	handle, err := sub.Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	client := &mockClient{}
+	router := newMockRouter()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := subscribeWithHandle(ctx, client, router, handle, 1,
+		func(_ context.Context, _ sensorReading) error { return nil },
+		SubscribeOptions{}); err != nil {
+		t.Fatalf("Subscribe setup failed: %v", err)
+	}
+	router.dispatch("sensors/readings", &pahomqtt5.Publish{Topic: "sensors/readings", Payload: []byte(validSensorJSON)})
+
+	if len(order) != 2 || order[0] != "security" || order[1] != "middleware" {
+		t.Errorf("want dispatch order [security, middleware], got %v", order)
+	}
+}
+
+// Bug 1 fix verification: with ALL THREE tiers present on the SAME var
+// name (explicit PublishOptions.Vars, a Middleware's WithPublishTopic, AND
+// the channel's own NewTopicParam-derived value), the final resolved
+// value follows explicit > middleware-derived > channel-own-derived — the
+// CORRECTED order (previously backwards: channel-own beat middleware).
+func TestPublish_MiddlewareDispatch_ValuePrecedence_ExplicitBeatsMiddlewareBeatsChannelOwn(t *testing.T) {
+	uuidCodec := codex.String().Refine(validate.UUID)
+	emw := events.NewMiddleware(newMqttMdDeclaration("sensor-override-policy")).
+		WithPublishTopic(events.NewTopicParam("sensorID", uuidCodec,
+			func(o mqttMdOut) string { return o.TenantID },
+			func(o *mqttMdOut, v string) { o.TenantID = v }))
+
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	pub := events.NewChannel[sensorReading](
+		"sensors/{sensorID}/readings", sensorCodec,
+		events.NewTopicParam("sensorID", uuidCodec,
+			func(r sensorReading) string { return r.SensorID },
+			func(r *sensorReading, v string) { r.SensorID = v }),
+	).WithPublish(events.Publish{})
+	pub = events.ClientTransform(pub, emw, func(ctx context.Context, msg sensorReading) (mqttMdOut, error) {
+		return mqttMdOut{TenantID: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"}, nil
+	})
+	handle, err := pub.Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	reading := sensorReading{SensorID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", Value: 1}
+	ctx := context.Background()
+
+	// (a) explicit ALWAYS wins over middleware-derived.
+	client := &mockClient{}
+	if err := publish(ctx, client, handle, 1, false, reading,
+		map[string]string{"sensorID": "cccccccc-cccc-cccc-cccc-cccccccccccc"}, true, PublishOptions[sensorReading]{}); err != nil {
+		t.Fatalf("publish (explicit): %v", err)
+	}
+	if !strings.Contains(client.lastPublished().Topic, "cccccccc-cccc-cccc-cccc-cccccccccccc") {
+		t.Errorf("want explicit value to win, got topic %q", client.lastPublished().Topic)
+	}
+
+	// (b) middleware-derived wins over channel-own-derived (the Bug 1 fix).
+	client2 := &mockClient{}
+	if err := publishHandle(ctx, client2, handle, 1, false, reading, PublishOptions[sensorReading]{}); err != nil {
+		t.Fatalf("publishHandle: %v", err)
+	}
+	if !strings.Contains(client2.lastPublished().Topic, "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb") {
+		t.Errorf("want middleware-derived value to beat channel-own, got topic %q", client2.lastPublished().Topic)
+	}
+}
+
+// Bug 2 fix verification: a DecodeIn failure calls
+// stats.ReportErrors(obs, "middleware:in", err), and the fn's own business
+// error calls stats.ReportErrors(obs, "middleware:fn", err) — NOT the flat
+// mechanism's existing "topic_var" string.
+func TestSubscribe_Observer_ReportsMiddlewareInAndFnLocations(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	// "middleware:in": a REQUIRED WithSubscribeProperty absent from the
+	// message's real User Properties fails at DecodeIn time.
+	inMW := events.NewMiddleware(newMqttMdDeclaration("tenant-required-policy")).
+		WithSubscribeProperty(events.NewPropertyParam("tenantID", codex.String().Refine(validate.NonEmptyString),
+			func(in mqttMdIn) string { return in.TenantID },
+			func(in *mqttMdIn, v string) { in.TenantID = v }))
+	subIn := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).WithSubscribe(events.Subscribe{Summary: "test"})
+	subIn = events.Transform(subIn, inMW, func(ctx context.Context, msg *sensorReading, in mqttMdIn) error { return nil })
+	bIn := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	handleIn, err := subIn.Handle(bIn)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	obsIn := &testObserver{}
+	clientIn := &mockClient{}
+	routerIn := newMockRouter()
+	if err := subscribeWithHandle(ctx, clientIn, routerIn, handleIn, 1,
+		func(_ context.Context, _ sensorReading) error { return nil },
+		SubscribeOptions{Observer: obsIn}); err != nil {
+		t.Fatalf("Subscribe setup failed: %v", err)
+	}
+	routerIn.dispatch("sensors/readings", &pahomqtt5.Publish{Topic: "sensors/readings", Payload: []byte(validSensorJSON)})
+
+	foundIn := false
+	for _, e := range obsIn.validationFull {
+		if e.location == "middleware:in" {
+			foundIn = true
+		}
+	}
+	if !foundIn {
+		t.Errorf("want a RecordValidationError call with location %q, got %v", "middleware:in", obsIn.validationFull)
+	}
+
+	// "middleware:fn": the fn's own business error, shaped as
+	// codex.ValidationErrors so it flows through stats.ReportErrors'
+	// walkErrors and is observable via RecordValidationError.
+	fnMW := events.NewMiddleware(newMqttMdDeclaration("fn-error-policy"))
+	subFn := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).WithSubscribe(events.Subscribe{Summary: "test"})
+	subFn = events.Transform(subFn, fnMW, func(ctx context.Context, msg *sensorReading, in mqttMdIn) error {
+		return codex.ValidationErrors{{Field: "tenantID", Err: errors.New("boom")}}
+	})
+	bFn := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	handleFn, err := subFn.Handle(bFn)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	obsFn := &testObserver{}
+	clientFn := &mockClient{}
+	routerFn := newMockRouter()
+	if err := subscribeWithHandle(ctx, clientFn, routerFn, handleFn, 1,
+		func(_ context.Context, _ sensorReading) error { return nil },
+		SubscribeOptions{Observer: obsFn}); err != nil {
+		t.Fatalf("Subscribe setup failed: %v", err)
+	}
+	routerFn.dispatch("sensors/readings", &pahomqtt5.Publish{Topic: "sensors/readings", Payload: []byte(validSensorJSON)})
+
+	foundFn := false
+	for _, e := range obsFn.validationFull {
+		if e.location == "middleware:fn" {
+			foundFn = true
+		}
+	}
+	if !foundFn {
+		t.Errorf("want a RecordValidationError call with location %q, got %v", "middleware:fn", obsFn.validationFull)
+	}
+}
+
+// Bug 2 fix verification, publish side. Publish-side dispatch only ever
+// returns a fn business error (no separate DecodeIn step exists on this
+// side) — mirrors REST's client dispatch, which ALSO only ever reports
+// "middleware:fn" on its own encode side; a faithfully-mirrored asymmetry
+// (see docs/roadmap/reqreply-codec-declared-middleware.md's "Observer
+// integration"), not a gap.
+func TestPublish_Observer_ReportsMiddlewareInAndFnLocations(t *testing.T) {
+	mw := events.NewMiddleware(newMqttMdDeclaration("fn-error-policy"))
+	pub := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).WithPublish(events.Publish{})
+	pub = events.ClientTransform(pub, mw, func(ctx context.Context, msg sensorReading) (mqttMdOut, error) {
+		return mqttMdOut{}, codex.ValidationErrors{{Field: "tenantID", Err: errors.New("boom")}}
+	})
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	handle, err := pub.Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	obs := &testObserver{}
+	client := &mockClient{}
+	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1}
+	_ = publishHandle(context.Background(), client, handle, 1, false, reading, PublishOptions[sensorReading]{Observer: obs})
+
+	found := false
+	for _, e := range obs.validationFull {
+		if e.location == "middleware:fn" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a RecordValidationError call with location %q, got %v", "middleware:fn", obs.validationFull)
+	}
+}
+
+// Write-side wiring Case 2: a Middleware's WithPublishProperty-declared
+// value appears in the outgoing message's real MQTT5 User Properties,
+// confirmed SEPARATE from a WithPublishTopic-declared value on the SAME
+// message (no cross-contamination between the two var kinds after
+// dispatchPublishMiddlewareHandlers' 2-map split).
+func TestPublish_WithPublishProperty_WritesOutgoingUserProperty_SeparateFromTopicVars(t *testing.T) {
+	uuidCodec := codex.String().Refine(validate.UUID)
+	mw := events.NewMiddleware(newMqttMdDeclaration("tenant-policy")).
+		WithPublishProperty(events.NewPropertyParam("tenantID", codex.String().Refine(validate.NonEmptyString),
+			func(o mqttMdOut) string { return o.TenantID },
+			func(o *mqttMdOut, v string) { o.TenantID = v }))
+
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	pub := events.NewChannel[sensorReading](
+		"sensors/{sensorID}/readings", sensorCodec,
+		events.NewTopicParam("sensorID", uuidCodec,
+			func(r sensorReading) string { return r.SensorID },
+			func(r *sensorReading, v string) { r.SensorID = v }),
+	).WithPublish(events.Publish{})
+	pub = events.ClientTransform(pub, mw, func(ctx context.Context, msg sensorReading) (mqttMdOut, error) {
+		return mqttMdOut{TenantID: "acme"}, nil
+	})
+	handle, err := pub.Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1}
+	client := &mockClient{}
+	if err := publishHandle(context.Background(), client, handle, 1, false, reading, PublishOptions[sensorReading]{}); err != nil {
+		t.Fatalf("publishHandle: %v", err)
+	}
+
+	published := client.lastPublished()
+	if !strings.Contains(published.Topic, "f47ac10b-58cc-4372-a567-0e02b2c3d479") {
+		t.Errorf("want topic to carry the topic var, got %q", published.Topic)
+	}
+	var gotTenant string
+	var userPropCount int
+	if published.Properties != nil {
+		userPropCount = len(published.Properties.User)
+		for _, p := range published.Properties.User {
+			if p.Key == "tenantID" {
+				gotTenant = p.Value
+			}
+		}
+	}
+	if gotTenant != "acme" {
+		t.Errorf("want tenantID User Property %q, got %q (all: %d props)", "acme", gotTenant, userPropCount)
 	}
 }

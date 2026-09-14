@@ -3,6 +3,7 @@ package reqreply
 import (
 	"fmt"
 	"log/slog"
+	"reflect"
 	"slices"
 
 	"github.com/DaniDeer/go-codex/codex"
@@ -25,10 +26,28 @@ type routeMiddlewareOpt struct{ mws []middleware.RouteMiddleware }
 
 func (o routeMiddlewareOpt) applyRoute(rb *routeBuilder) {
 	for _, mw := range o.mws {
-		if v, ok := mw.(middleware.Middleware); ok {
+		switch v := mw.(type) {
+		case middleware.Middleware:
 			rb.middlewares = append(rb.middlewares, v)
+		case routeMiddlewareContributor:
+			// A codec-backed Middleware[In,Out] (this doc's SECOND
+			// mechanism) attached via plain .Use() — mirrors
+			// rest.routeMiddlewareOpt's identical dispatch. Its spec
+			// contribution is ALWAYS layered; its runtime dispatch
+			// handler is registered ONLY when bundled via
+			// WithReceive/WithSend (see Middleware.applyAgnosticRoute).
+			v.applyAgnosticRoute(rb)
 		}
 	}
+}
+
+// routeMiddlewareContributor is implemented by [Middleware][In, Out]
+// (transform.go/middleware_declaration.go) — the unexported interface
+// [routeMiddlewareOpt.applyRoute] uses to recognize a codec-backed
+// Middleware value attached via plain .Use(), mirroring
+// [rest.routeMiddlewareContributor] exactly.
+type routeMiddlewareContributor interface {
+	applyAgnosticRoute(rb *routeBuilder)
 }
 
 // Use returns a NEW [Route] with mws chained onto it — declaration-time
@@ -221,6 +240,62 @@ func applyParamDeclarations(rb *routeBuilder) (reqParams []middleware.HeaderPara
 		}
 	}
 
+	// Unify the codec-backed Middleware[In,Out] axis's property
+	// contributions (WithRequestProperty/WithResponseProperty, attached
+	// via Transform/ClientTransform or plain .Use()) into the SAME
+	// reqHeaders/respHeaders schema Phase 1b's flat mechanism already
+	// builds above — Round 16: a property's Required propagates into
+	// reqRequired/respRequired exactly like an existing header-as-
+	// middleware declaration's Required already does.
+	//
+	// NOTE: unlike Phase 1b's flat mechanism above, these contributions
+	// are layered ONLY into the SCHEMA (reqProps/respProps/reqRequired/
+	// respRequired) — deliberately NOT appended to reqParams/respParams
+	// (RouteHandle.RequestHeaderParams/ResponseHeaderParams), which feed
+	// Phase 1b's OWN separate runtime validation
+	// (validateUserProperties/UserPropertyParam, adapter-side). The NEW
+	// property axis has its OWN separate runtime validation path
+	// (Middleware.DecodeIn, dispatched via RouteHandle.
+	// MiddlewareHandlers) — also feeding reqParams/respParams here would
+	// cause DOUBLE, differently-shaped validation and let Phase 1b's
+	// mechanism preempt the new axis's own dispatch/error semantics.
+	for _, c := range rb.middlewareSpecContributions {
+		for _, p := range c.propertyParamsIn {
+			if seenReq[p.Name] {
+				continue
+			}
+			seenReq[p.Name] = true
+			reqProps = append(reqProps, headerParamProperty(p.Name, p.Description, p.Codec))
+			if p.Required {
+				reqRequired = append(reqRequired, p.Name)
+			}
+		}
+		for _, p := range c.propertyParamsOut {
+			if seenResp[p.Name] {
+				continue
+			}
+			seenResp[p.Name] = true
+			respProps = append(respProps, headerParamProperty(p.Name, p.Description, p.Codec))
+			if p.Required {
+				respRequired = append(respRequired, p.Name)
+			}
+		}
+	}
+	// The route's own manually-declared PropertyParam entries (rb.
+	// propertyParams — a bare PropertyParam/MergedPropertyParam[Req]
+	// passed directly as a RouteOpt, mirroring TopicParam's own
+	// validate-only escape hatch) also render into the schema ONLY, for
+	// the same reason as above.
+	for _, p := range rb.propertyParams {
+		if !seenReq[p.Name] {
+			seenReq[p.Name] = true
+			reqProps = append(reqProps, headerParamProperty(p.Name, p.Description, p.Codec))
+			if p.Required {
+				reqRequired = append(reqRequired, p.Name)
+			}
+		}
+	}
+
 	if len(reqProps) > 0 {
 		reqHeaders = schema.Schema{Type: "object", Properties: reqProps, Required: reqRequired}
 	}
@@ -243,6 +318,123 @@ func headerParamProperty(name, description string, codec *codex.Codec[string]) s
 		}
 	}
 	return schema.Property{Name: name, Schema: propSchema}
+}
+
+// checkMiddlewareNameUniquenessAndAttachment enforces D6(b) and D7 from
+// docs/design/d-0003-codec-declared-middlewares.md, mirroring
+// [rest.checkMiddlewareNameUniquenessAndAttachment] exactly — reqreply's
+// own codec-backed [Middleware][In,Out] axis:
+//
+//   - D6(b): every attached Middleware's Declaration.Name must be unique
+//     per route (across ALL Transform/ClientTransform/.Use()
+//     attachments) — returns [DuplicateMiddlewareNameError] on the first
+//     repeat encountered.
+//   - D7: a Middleware value that is ALSO bundled (carries a
+//     WithReceive/WithSend Fn, the route-AGNOSTIC .Use() attachment
+//     shape) must NOT ALSO be attached via Transform/ClientTransform on
+//     the SAME route — returns [AmbiguousMiddlewareAttachmentError] when
+//     both are detected for one mw value.
+func checkMiddlewareNameUniquenessAndAttachment(rb *routeBuilder, routeLabel string) error {
+	seen := make(map[string]bool, len(rb.middlewareSpecContributions))
+	for _, mw := range rb.middlewareSpecContributions {
+		if seen[mw.name] {
+			return DuplicateMiddlewareNameError{Route: routeLabel, Name: mw.name}
+		}
+		seen[mw.name] = true
+		if mw.dualAttached {
+			return AmbiguousMiddlewareAttachmentError{Name: mw.name}
+		}
+	}
+	return nil
+}
+
+// reqreplyParamContribution is one source's declaration for a single
+// topic-var/property name, tracked for [checkReqReplyParamConflicts]'s
+// conflict detection — mirrors [rest.paramContribution], PLUS a Codec
+// field (Round 15's deliberate divergence from REST's real precedent,
+// which has no Codec field at all — see docs/roadmap/
+// reqreply-codec-declared-middleware.md's decision #8).
+type reqreplyParamContribution struct {
+	source   string
+	required bool
+	codec    *codex.Codec[string]
+}
+
+// checkReqReplyParamConflicts is decision #5's (Round 18-revised) UNIFORM
+// conflict-detection algorithm — applies to ALL topic-var/property
+// contributions alike, regardless of which mechanism declared them
+// (Phase 1b's flat .Use(mqtt5.FromUserPropertyParam(...)) mechanism AND
+// the codec-backed Middleware[In,Out] axis's WithRequestTopic/
+// WithRequestProperty/etc.). Phase 1b's OWN historical silent-first-seen-
+// wins dedupe for MISMATCHED declarations is RETIRED — a deliberate,
+// narrow, accepted breaking change (see the doc's decision #5, Round 18).
+//
+// Two INDEPENDENT namespaces (Round 15) — a topic var and a property
+// sharing the SAME name never conflict, since they come from genuinely
+// different wire locations (the topic template string vs. out-of-band
+// message metadata).
+func checkReqReplyParamConflicts(rb *routeBuilder, routeLabel string) error {
+	topicContributions := map[string][]reqreplyParamContribution{}
+	propertyContributions := map[string][]reqreplyParamContribution{}
+
+	for _, p := range rb.topicParams {
+		topicContributions[p.Name] = append(topicContributions[p.Name], reqreplyParamContribution{source: "manual", required: true, codec: p.Codec})
+	}
+	for _, p := range rb.propertyParams {
+		propertyContributions[p.Name] = append(propertyContributions[p.Name], reqreplyParamContribution{source: "manual", required: p.Required, codec: p.Codec})
+	}
+	for _, mw := range rb.middlewares {
+		for _, p := range mw.RequestHeaderParams {
+			propertyContributions[p.Name] = append(propertyContributions[p.Name], reqreplyParamContribution{source: mw.Name, required: p.Required, codec: p.Codec})
+		}
+		for _, p := range mw.ResponseHeaderParams {
+			propertyContributions[p.Name] = append(propertyContributions[p.Name], reqreplyParamContribution{source: mw.Name, required: p.Required, codec: p.Codec})
+		}
+	}
+	for _, c := range rb.middlewareSpecContributions {
+		for _, p := range c.topicParamsIn {
+			topicContributions[p.Name] = append(topicContributions[p.Name], reqreplyParamContribution{source: c.name, required: true, codec: p.Codec})
+		}
+		for _, p := range c.topicParamsOut {
+			topicContributions[p.Name] = append(topicContributions[p.Name], reqreplyParamContribution{source: c.name, required: true, codec: p.Codec})
+		}
+		for _, p := range c.propertyParamsIn {
+			propertyContributions[p.Name] = append(propertyContributions[p.Name], reqreplyParamContribution{source: c.name, required: p.Required, codec: p.Codec})
+		}
+		for _, p := range c.propertyParamsOut {
+			propertyContributions[p.Name] = append(propertyContributions[p.Name], reqreplyParamContribution{source: c.name, required: p.Required, codec: p.Codec})
+		}
+	}
+
+	if err := checkReqReplyContributionMap(routeLabel, topicContributions); err != nil {
+		return err
+	}
+	return checkReqReplyContributionMap(routeLabel, propertyContributions)
+}
+
+// checkReqReplyContributionMap is [checkReqReplyParamConflicts]'s
+// per-namespace comparison loop — two contributions for the SAME name
+// conflict if Required differs, OR exactly one has a nil Codec (nil vs
+// non-nil is itself a mismatch — differing validation strictness), OR
+// both are non-nil and their Schemas differ (via [reflect.DeepEqual]) —
+// Round 15's deliberate, explicitly-flagged divergence from REST's real
+// precedent (which never compares codecs at all).
+func checkReqReplyContributionMap(routeLabel string, contributions map[string][]reqreplyParamContribution) error {
+	for name, list := range contributions {
+		first := list[0]
+		for _, c := range list[1:] {
+			if c.required != first.required {
+				return ConflictingParamContributionError{Route: routeLabel, ParamName: name, FirstSource: first.source, SecondSource: c.source}
+			}
+			if (c.codec == nil) != (first.codec == nil) {
+				return ConflictingParamContributionError{Route: routeLabel, ParamName: name, FirstSource: first.source, SecondSource: c.source}
+			}
+			if c.codec != nil && first.codec != nil && !reflect.DeepEqual(c.codec.Schema, first.codec.Schema) {
+				return ConflictingParamContributionError{Route: routeLabel, ParamName: name, FirstSource: first.source, SecondSource: c.source}
+			}
+		}
+	}
+	return nil
 }
 
 // checkImplementationsDeclared is the REVERSE-direction sibling to

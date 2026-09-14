@@ -28,6 +28,14 @@ const (
 
 	// KindSecurity indicates the SecurityFunc rejected the message.
 	KindSecurity
+
+	// KindMiddleware indicates a codec-backed [reqreply.Middleware]
+	// (Transform/ClientTransform-attached, or bundled via .Use()) fn's
+	// own business error — [reqreply.MiddlewareError], D2's fallback for
+	// docs/roadmap/reqreply-codec-declared-middleware.md's declared-
+	// middleware mechanism. Distinct from KindHandler (a real domain
+	// handler failure).
+	KindMiddleware
 )
 
 func (k ErrorKind) String() string {
@@ -42,6 +50,8 @@ func (k ErrorKind) String() string {
 		return "timeout"
 	case KindSecurity:
 		return "security"
+	case KindMiddleware:
+		return "middleware"
 	default:
 		return "unknown"
 	}

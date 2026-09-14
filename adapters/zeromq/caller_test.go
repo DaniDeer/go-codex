@@ -437,7 +437,7 @@ func TestPublish_RejectsMalformedPublishMWShape(t *testing.T) {
 		t.Fatalf("Handle: %v", err)
 	}
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1.0}
-	err = publish(context.Background(), sock, handle, reading, nil, PublishOptions[sensorReading]{})
+	err = publish(context.Background(), sock, handle, reading, nil, true, PublishOptions[sensorReading]{})
 	var shapeErr middleware.MiddlewareShapeError
 	if !errors.As(err, &shapeErr) {
 		t.Fatalf("want MiddlewareShapeError, got %T: %v", err, err)
@@ -507,7 +507,7 @@ func TestObservability_PublishSide(t *testing.T) {
 		t.Fatalf("Handle: %v", err)
 	}
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 5.0}
-	if err := publish(context.Background(), sock, handle, reading, nil, PublishOptions[sensorReading]{}); err != nil {
+	if err := publish(context.Background(), sock, handle, reading, nil, true, PublishOptions[sensorReading]{}); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	if len(sock.sentSnapshot()) != 1 {

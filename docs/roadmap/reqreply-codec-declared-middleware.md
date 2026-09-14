@@ -1,6 +1,19 @@
 # ReqReply Codec-Declared Middleware — bringing `api/reqreply` (AND `api/events`) up to D-0003 parity
 
-> **Status:** Design draft — not yet implemented. Reverted from
+> **Status:** ✅ SHIPPED. Implemented across 13 phases (2 parallel
+> tracks — `api/reqreply` and `api/events` — converging at docs+demo)
+> following 19 rounds of design review. Full Definition of Done
+> verified: `go build ./...` clean, `go test ./...` all packages pass,
+> `just check` (staticcheck+gosec) zero issues, the new
+> `examples/reqreply-api` Demo 10
+> (`demo_property_axis_middleware.go`) runs and visibly confirms the
+> "Write-side wiring" Case 3 fix on the real wire, every other example
+> still builds/runs clean, `.github/instructions/go-codex.instructions.md`
+> updated for both packages. See "Implementation phasing"/"Definition
+> of Done" below for the full checklist this shipped against. The
+> history below (Rounds 1-19) is kept as the full design record.
+>
+> Previously: Design draft — not yet implemented. Reverted from
 > "Design complete" back to draft after Round 8's MAJOR scope
 > expansion (see below) — a substantial restructuring that needs its
 > own review depth before the "complete" label is honest again.
