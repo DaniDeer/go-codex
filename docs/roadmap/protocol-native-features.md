@@ -46,7 +46,17 @@
 > **Answers** [MQTT5 User Property Merge](mqtt5-user-property-merge.md)'s own
 > explicitly-flagged "registration surface... NOT resolved" open question — User
 > Properties become a concrete, sealed `mqtt5.Capability` instance under this
-> design (§5.2).
+> design (§5.2). **A THIRD, sooner-to-ship answer to the SAME underlying
+> use case now also exists** —
+> [ReqReply Codec-Declared Middleware](reqreply-codec-declared-middleware.md)'s
+> new "property" vocabulary axis (`WithRequestProperty`/`WithResponseProperty`
+> for `api/reqreply`, `WithSubscribeProperty`/`WithPublishProperty` for
+> `api/events`), built directly on D-0003's ALREADY-SHIPPED
+> `Middleware[In,Out]` mechanism — API-level, not adapter-owned, narrower
+> in scope than this doc's `Capability` primitive, and NOT competing with
+> it (see §5.2.1 for the full 3-way relationship: Phase 1b's validate-only
+> bridge, this doc's own planned `Capability`, and that doc's
+> already-designed property axis).
 >
 > **Response Topic/Correlation Data — DECIDED, closed**:
 > [D-0004 — ReqReply Workflow Simplification](../design/d-0004-reqreply-workflow-simplification.md)'s
@@ -737,6 +747,45 @@ plausible under this mechanism — sealed to `adapters/amqp` specifically,
 not shared with `mqtt5.UserProperty`, for the SAME bar-2 reason, even
 though their underlying shapes are compatible enough that a shared type
 was tempting to consider.
+
+#### 5.2.1 A THIRD, sooner-to-ship answer to this SAME use case — the "property" axis in [ReqReply Codec-Declared Middleware](reqreply-codec-declared-middleware.md)
+
+**Documented here as a related use case, NOT a competing design** —
+added after that doc's own 15+ review rounds confirmed a genuinely
+distinct path to the SAME underlying problem this section analyzes
+(declaring MQTT5 User Properties / AMQP headers). That doc adds a NEW
+vocabulary axis DIRECTLY on `middleware.Middleware[In,Out]` (already
+SHIPPED via D-0003, not a hypothetical) — `WithRequestProperty`/
+`WithResponseProperty` for `api/reqreply`, `WithSubscribeProperty`/
+`WithPublishProperty` for `api/events` — via a NEW `PropertyParam`/
+`MergedPropertyParam[T]`/`NewPropertyParam[T,V]`/`NewOptionalPropertyParam[T,V]`
+triple, confirmed to mirror `TopicParam`'s existing wrapper pattern
+exactly (see that doc's "The 'property' vocabulary axis" section).
+
+**Where this sits relative to THIS doc's `Capability` mechanism —
+distinct, not overlapping, by design:**
+
+| | `protocol-native-features.md`'s `Capability` (this doc) | `reqreply-codec-declared-middleware.md`'s property axis |
+|---|---|---|
+| Ownership | ADAPTER-owned (`mqtt5.Capability`, sealed) | API-LEVEL (`api/reqreply`/`api/events`, not adapter-owned) |
+| Supplied at | `Attach`/bind time | Declare time, on a `Middleware[In,Out]` value, via `.Use()`/`Transform`/`ClientTransform` |
+| Scope | GENERAL primitive — ANY protocol-native declaration (QoS, User Properties, Shared Subscriptions, Message Expiry, ...) | SCOPED specifically to "named metadata separate from payload" (the User-Property/AMQP-header use case only) |
+| Status | Idea only — no driver yet, no code written | Design draft — 15+ review rounds deep, ready for implementation planning |
+| Dependency | Needs this doc's OWN redesign implemented first | Reuses D-0003's ALREADY-SHIPPED `Middleware[In,Out]`/`Transform`/`ClientTransform` machinery directly — no new core mechanism needed |
+
+**Not mutually exclusive** — mirrors the SAME non-conflicting
+relationship [MQTT5 User Property Merge](mqtt5-user-property-merge.md)'s
+own banner already documents between Phase 1b's `FromUserPropertyParam`
+(validate+spec only) and that doc's own planned `MergedUserPropertyParam[T]`
+(adds merge, still a plain `ChannelOpt`/`RouteOpt`) — this is a THIRD
+point on the SAME spectrum: sooner-to-ship, narrower in scope than
+`Capability`, but NOT redundant with it. A future `mqtt5.Capability`
+could still additionally expose adapter-level concerns (Shared
+Subscriptions, Message Expiry, ContentType) the property axis was never
+scoped to touch — that doc's `UserProperty[In]` sketch (above, §5.2)
+remains a valid, DIFFERENT-ownership-model answer to the SAME narrow
+User-Property-merge slice, for whenever `Capability` itself gets
+implemented.
 
 ### 5.3 A hypothetical AMQP adapter — NOW fully compile-time-safe, address AND capability, confirmed via a real prototype
 
