@@ -3598,11 +3598,22 @@ model (pub/sub), not to an unintentional drift between the two designs.
   policy — see [D-0004](d-0004-reqreply-workflow-simplification.md)'s
   own Addendum for the durable record. zeromq's
   `Caller`/`ServeSubscribers`/two-tier `Subscribe` mirroring SHIPPED (see
-  the item above too). One item flagged there remains genuinely open:
+  the item above too). **The item flagged there as genuinely open —
   whether to now RETIRE these flat `SecurityFunc`/`CredentialFunc`
   fields now that zeromq pub/sub also has its own `.Use`/`SubscribeMW`/
-  `PublishMW` declarative mechanism (see D-0004's Addendum) — not yet
-  decided.
+  `PublishMW` declarative mechanism — is now RESOLVED: RETIRED.**
+  `SubscribeOptions[T].SecurityFunc`/`PublishOptions[T].CredentialFunc`
+  were removed entirely (BREAKING) from all 3 pub/sub adapters
+  (`adapters/zeromq`, `adapters/mqtt5`, `adapters/mqtt` v3) — see this
+  doc's own "Addendum: Observability Core Consolidation, `SecurityFunc`
+  Retirement, and `examples/events-api`" (below) for the full record. The
+  declarative mechanism was confirmed strictly more capable (same raw
+  message access, plus the decoded typed value, plus scope-grant
+  semantics `SecurityFunc`/`CredentialFunc` never had) — not blocked by
+  any missing capability. `examples/adapters-mqtt-security` was migrated,
+  then folded into `examples/events-api` (see the Addendum) to
+  demonstrate the same 3 patterns (closure, msg-extraction,
+  `MessageFromContext`) via `SubscribeMW`-paired implementations instead.
 - ~~Coverage-check enforcement semantics during Decision 3's adapter
   wiring~~ — **RESOLVED.** `CheckCoverage` is now wired unconditionally
   (escape hatch #2, "Security model: two mechanisms, not three"
@@ -3666,3 +3677,159 @@ completion). The per-adapter `Caller`/`ServeSubscribers` implementation
 detail for `mqtt`(v3)/`zeromq` this paragraph used to defer is DONE (see
 the corrected item above) — nothing adapter-shaped remains open for
 pub/sub itself.
+
+## Addendum: Observability Core Consolidation, `SecurityFunc` Retirement, and `examples/events-api`
+
+**Status: ✅ SHIPPED.** This addendum is the durable record for the
+"Events Pub/Sub Consolidation" roadmap plan (formerly
+`docs/roadmap/events-pubsub-consolidation.md`), which has since been
+deleted per this repo's graduation policy (a fully-shipped roadmap plan's
+design record lives on in the relevant `docs/design/` doc, not as a
+standing roadmap page) — mirroring `zeromq-security.md`'s own precedent,
+recorded in [D-0004](d-0004-reqreply-workflow-simplification.md)'s own
+Addendum.
+
+**Trigger**: two independent findings, both surfaced while designing
+`api/reqreply`'s own recent work (D-0004), converged on the same
+conclusion for `api/events` pub/sub:
+
+1. **Thin-adapter principle (Observability)**: `adapters/mqtt`,
+   `adapters/mqtt5`, and `adapters/zeromq` each shipped their OWN
+   `Observability[T](obs)` general-purpose pub/sub observer wrapper.
+   `adapters/zeromq.Observability[T]`'s implementation was confirmed
+   ALREADY 100% adapter-agnostic (ctx injection + Diagnostics drain only,
+   zero zeromq-specific code) — it belonged in `api/events`, not
+   duplicated per adapter, mirroring `api/reqreply.Observability`'s own
+   core-package placement.
+2. **One-declarative-mechanism principle (`SecurityFunc` removal)**: REST
+   (D-0001) and reqreply (D-0004) had both already removed their
+   imperative security escape hatch once a declarative mechanism could
+   fully replace it. Events pub/sub was the LAST place in go-codex where
+   the imperative `SubscribeOptions.SecurityFunc`/`PublishOptions.
+   CredentialFunc` still permanently coexisted with the declarative
+   `SubscribeMW`/`PublishMW` mechanism (shipped D-0002/D-0003) — the
+   declarative shape was confirmed STRICTLY MORE capable (same raw
+   message, PLUS the decoded typed value, PLUS scope-grant semantics),
+   so removal was a pure simplification, not blocked by any missing
+   capability.
+
+### Decision A — `api/events.Observability[T]` core consolidation (IMPLEMENTED)
+
+`api/events/observability.go` (NEW) now holds the general-purpose,
+declare-time-attachable `.SubscribeMW(nil, events.Observability[T](obs))`/
+`.PublishMW(nil, ...)` wrapper's SHARED core: ctx-injection of `obs` (via
+`stats.WithObserver`, so downstream code including a paired security Fn
+can resolve the SAME observer via `stats.ObserverFromContext`) plus a
+post-`next` `stats.DiagnosticsFromContext` drain into
+`RecordValidationError`. This is the reusable, adapter-agnostic part
+every one of the 3 adapters' own wrappers needed.
+
+- **`adapters/zeromq.Observability[T]` — REMOVED (breaking change).**
+  Callers switch to `events.Observability[T]` directly — a mechanical,
+  one-line call-site change. A deprecated-but-functional alias was
+  considered and rejected: permanent indirection for a trivial fix,
+  inconsistent with this codebase's established willingness to break for
+  simplicity (D-0001, D-0004 both did the same).
+- **`adapters/mqtt5.Observability[T]`/`adapters/mqtt.Observability[T]` —
+  KEPT, but THINNED** to delegate to `events.Observability[T](obs)`
+  internally for the shared part, then additionally calling
+  `stats.Observer.RecordSubscribe`/`RecordPublish` + driving a
+  `stats.TraceObserver` span + using each adapter's own
+  `MessageFromContext` for subscribe-vs-publish direction detection — the
+  genuinely adapter-specific remainder that cannot move into `api/events`
+  (mirrors `api/reqreply.Observability[Req, Resp]`'s own confirmed
+  design: reusable core in the API layer, transport-specific behavior
+  stays adapter-owned).
+- **Confirmed positive behavioral change**: TODAY's (pre-consolidation)
+  `mqtt5.Observability[T]`/`mqtt.Observability[T]` called `next` directly
+  — ZERO `stats.WithObserver`/`stats.WithDiagnostics` calls existed in
+  either implementation. After thinning, BOTH gain ctx-injection of the
+  Observer for the FIRST time, enabling any downstream code attached
+  alongside `Observability[T]` (e.g. a paired security Fn) to resolve the
+  SAME Observer via `stats.ObserverFromContext` — previously impossible.
+  Covered by a dedicated new test in each adapter
+  (`TestObservability_CtxCarriesObserver_AfterThinning`).
+
+### Decision B — `SecurityFunc`/`CredentialFunc` retirement (IMPLEMENTED)
+
+`SubscribeOptions[T].SecurityFunc`/`PublishOptions[T].CredentialFunc` were
+removed entirely (BREAKING) from all 3 pub/sub adapters (`adapters/mqtt5`,
+`adapters/zeromq`, `adapters/mqtt` v3) — see the "Remaining open items"
+list above for the full evidence trail (blast radius, confirmed zero real
+non-test callers on `mqtt5`/`zeromq`, `examples/adapters-mqtt-security`
+as the one real migration). Security enforcement now lives ONLY in
+`events.Subscriber.SubscribeMW`/`events.Publisher.PublishMW`-paired
+implementations, with `Channel.Handle()`'s unconditional `CheckCoverage`
+already enforcing that a declared security requirement has a real
+attached implementation. Two genuine PRE-EXISTING bugs in `adapters/mqtt`
+(v3) were found and fixed during this migration's test-porting work: a
+missing `RecordSecurityRejection` call on an `Implementations`-based
+rejection, and a wrong gating condition (`len(secReqs) > 0` instead of
+`len(handle.Implementations) > 0`) that silently skipped unpaired
+security implementations on unsecured channels — neither was related to
+the migration itself, both were latent bugs the migration's test
+rewrite happened to surface.
+
+### Decision C — `examples/events-api` mini-project (IMPLEMENTED)
+
+Replaces 5 retired adapter-focused examples (`adapters-mqtt`,
+`adapters-mqtt5`, `adapters-mqtt-contract`, `adapters-mqtt-security`,
+`adapters-zeromq`) with one comprehensive, multi-package project
+mirroring `examples/reqreply-api`'s own layout (`routes/`, `handlers/`,
+`observability/`, per-adapter `*broker/` packages, `client/`, one
+`demo_*.go` file per concern, `main.go`). `examples/api-events` (Layer-2-
+only builder demo) and `examples/events-nested-binary` (merge-field/
+non-JSON-format demo) were kept UNCHANGED — different purpose, no
+adapter/transport involved, mirrors the precedent that `rest-api`'s
+creation did not retire `rest-builder`.
+
+The project is structured so `routes/` EXPLICITLY plays the
+"shared contract" role project-wide: it is the ONE spec package every
+adapter-broker package, `client/`, and every demo imports — the Go
+compiler enforces the contract across mqtt v3, mqtt5, AND zeromq
+simultaneously, extending `adapters-mqtt-contract`'s original two-binary
+producer/consumer framing to an entire mini-project (demonstrated
+concretely by `demo_spec_printing_asyncapi.go`, which prints the AsyncAPI
+spec derived from each of the 3 adapters' own `events.Client`, showing
+the SAME channel/schema content regardless of which adapter registered
+it). Package names deliberately avoid implying `api/reqreply`'s
+asymmetric `Server`/`Client` split (`api/events.Client` is symmetric — one
+value handles both publish AND subscribe) — the per-adapter assembly
+packages are named `*broker/`, not `*server/`.
+
+### Lessons learned — a post-ship review found 2 real bugs the original verification missed
+
+A dedicated review round, run AFTER this addendum's own "SHIPPED and
+verified" declaration, found 2 real, 100%-reproducible bugs in
+`examples/events-api`'s demo files — both silently masked because the
+original verification pass only checked `exit code == 0` and the absence
+of a printed `"[error]"` line, never whether each demo's OWN internal
+claims were actually true against its own `stats.Observer` log output:
+
+1. A subscriber built via `.Handle()` instead of `.Register()` in
+   `demo_observability_middleware.go` never actually registered with
+   `ServeSubscribers`'s walked entry list — the SAME bug class already
+   found and fixed 3 times during the original implementation (in the 3
+   `*broker/` packages), but a 4th instance slipped through in a demo
+   file untouched by that earlier fix pass.
+2. `demo_security_subscribemw.go`'s mqtt5 leg published via
+   `Client.Attach`'s reflection-based `Publish` (confirmed: builds a bare
+   message with NO User Properties ever set — a documented v1 scope
+   limitation) while its OWN security implementation strictly REQUIRED a
+   User Property — a fundamental incompatibility between the "preferred"
+   workflow and a User-Property-gated check that only became visible by
+   inspecting the `stats.Observer` log line-by-line (a
+   `security_rejection` + `subscribe success=false` pair appeared on
+   EVERY run, yet the demo's own concluding print was unconditional and
+   claimed success regardless).
+
+**Takeaway for future example-heavy implementation rounds**: `go run`
+exiting 0 is NECESSARY but NOT SUFFICIENT verification for a demo file
+with more than one internal "success" path. Grep the `stats.Observer` log
+output (or add an explicit assertion against `DemoObserver.Summary()`'s
+counts) for the SPECIFIC signature each demo claims to prove, not just
+the absence of a printed error line — an unconditional "✓ ..." print with
+no corresponding check is exactly the pattern that let both bugs above
+ship undetected. Both are now fixed and `demo_security_subscribemw.go`
+now verifies its own claim against an observer rejection-count delta
+rather than printing unconditionally.

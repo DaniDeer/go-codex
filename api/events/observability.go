@@ -1,4 +1,4 @@
-package zeromq
+package events
 
 import (
 	"context"
@@ -8,28 +8,40 @@ import (
 
 // Observability builds a general-purpose
 // `func(next func(context.Context, T) error) func(context.Context, T) error`
-// closure — the pub/sub analogue of [nethttp.Observability] — for
+// closure — the pub/sub analogue of [adapters/nethttp.Observability]
+// (REST) and [api/reqreply.Observability] (reqreply) — for
 // declare-time, per-channel attachment via
-// `sub.SubscribeMW(nil, zeromq.Observability[T](obs))` or
-// `pub.PublishMW(nil, zeromq.Observability[T](obs))` (unpaired: mw is
+// `sub.SubscribeMW(nil, events.Observability[T](obs))` or
+// `pub.PublishMW(nil, events.Observability[T](obs))` (unpaired: mw is
 // nil, so it runs unconditionally, wrapping the actual
 // handler/transmit-step invocation — see
 // docs/design/d-0002-pubsub-workflow-simplification.md's "General-purpose
 // (non-spec) Fn shapes for SubscribeMW/PublishMW" subsection).
+//
+// This is the SHARED, adapter-agnostic core moved out of
+// `adapters/zeromq.Observability[T]` (confirmed to have ZERO
+// zeromq-specific code) — `adapters/mqtt5.Observability[T]`/
+// `adapters/mqtt.Observability[T]` delegate to this for their own
+// shared part, then additionally call
+// [stats.Observer.RecordSubscribe]/RecordPublish and drive a
+// [stats.TraceObserver] span on top (genuinely adapter-specific
+// behavior that cannot move here — see those adapters' own
+// `Observability[T]` doc comments). `adapters/zeromq` has no such
+// remainder, so it uses this function directly with no wrapper of its
+// own.
 //
 // Injects obs into ctx via [stats.WithObserver] (so a security-shaped Fn,
 // or any downstream code, can resolve the SAME observer via
 // [stats.ObserverFromContext]) and drains [stats.DiagnosticsFromContext]
 // into [stats.Observer.RecordValidationError] after next returns. Does
 // NOT itself call [stats.Observer.RecordSubscribe]/RecordPublish — those
-// per-message lifecycle events are ALREADY recorded by
-// [subscribeWithHandle]/[publish] via [SubscribeOptions.Observer]/
-// [PublishOptions.Observer] (or the ctx-injection fallback via
-// [stats.ObserverFromContext]) — this general-purpose hook is an
+// per-message lifecycle events are recorded elsewhere (either directly by
+// an adapter's subscribe/publish dispatch via its own
+// `SubscribeOptions.Observer`/`PublishOptions.Observer`, or by an
+// adapter-specific wrapper like `adapters/mqtt5.Observability[T]` that
+// delegates to this function) — this general-purpose hook is an
 // ADDITIONAL, opt-in mechanism for declare-time attachment, not a
-// replacement (see the roadmap subsection's "Observer specifically does
-// NOT need to move off SubscribeOptions.Observer/PublishOptions.Observer
-// entirely" note).
+// replacement.
 func Observability[T any](obs stats.Observer) func(func(context.Context, T) error) func(context.Context, T) error {
 	return func(next func(context.Context, T) error) func(context.Context, T) error {
 		return func(ctx context.Context, msg T) error {

@@ -494,8 +494,7 @@ IS the notification path).
 
 ## See also
 
-- [Feature: Security & Auth](security.md) — MQTT security, SecurityFunc
+- [Feature: Security & Auth](security.md) — MQTT security via SubscribeMW/PublishMW-paired implementations
 - [Concept: Go Library as Contract](../concepts/codec-as-contract.md) — shared contract pattern
-- [examples/adapters-mqtt](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt) — three-layer pipeline with MQTT
-- [examples/adapters-mqtt-contract](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt-contract) — producer + consumer sharing a contract
+- [examples/events-api](https://github.com/DaniDeer/go-codex/tree/main/examples/events-api) — the comprehensive multi-adapter pub/sub demo: three-layer domain-boundary pipeline, shared `routes/` contract package across mqtt v3/mqtt5/zeromq, SubscribeMW/PublishMW security, `events.Observability[T]`
 - [examples/api-events](https://github.com/DaniDeer/go-codex/tree/main/examples/api-events) — event builder + AsyncAPI spec

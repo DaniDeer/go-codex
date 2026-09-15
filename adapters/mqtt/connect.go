@@ -12,8 +12,8 @@ import (
 
 // ConnectOptions configures [Connect]'s broker-connection setup — the
 // [pahomqtt.ClientOptions] fields [Connect] is a thin, faithful wrapper
-// around (see examples/adapters-mqtt's package doc comment for the manual
-// pattern this wraps).
+// around (see [Connect]'s own doc comment for the manual pattern this
+// wraps).
 type ConnectOptions struct {
 	// ClientID identifies this connection to the broker. Empty is valid
 	// (paho generates one) but disables session persistence across
@@ -42,8 +42,8 @@ type ConnectOptions struct {
 // broker-connection handshake: build the [pahomqtt.ClientOptions], construct
 // the [pahomqtt.Client] via [pahomqtt.NewClient], then call
 // [pahomqtt.Client.Connect] and wait for the result — the exact manual
-// pattern examples/adapters-mqtt's package doc comment documents today, now
-// wrapped as a single call:
+// pattern paho.mqtt.golang callers write by hand today, now wrapped as a
+// single call:
 //
 //	opts := pahomqtt.NewClientOptions().AddBroker("tcp://localhost:1883").SetClientID("my-service")
 //	client := pahomqtt.NewClient(opts)

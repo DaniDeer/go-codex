@@ -356,7 +356,8 @@ func TestAttachRouterServer_MissingSocketError(t *testing.T) {
 // securedComputeReq carries an in-payload Token field — zeromq's paired
 // security/credential Fn reads/writes THIS field directly (no raw-message
 // side channel exists, unlike mqtt5's User Properties), mirroring zeromq
-// pub/sub's own SecurityFunc/CredentialFunc contract exactly.
+// pub/sub's own SubscribeMW/PublishMW-paired security implementation
+// contract exactly.
 type securedComputeReq struct {
 	X, Y  int
 	Token string

@@ -427,62 +427,67 @@ func TestServeOneSubscriber_ServesSingleChannel(t *testing.T) {
 	}
 }
 
-// ── Publish-side CredentialFunc (NEW capability) ──────────────────────────────
+// ── Publish-side security-shaped PublishMW implementation ─────────────────────
 
-func TestPublish_CredentialFunc_WritesIntoPayload(t *testing.T) {
+func TestPublish_SecurityImpl_WritesIntoPayload(t *testing.T) {
+	// REPLACES the OLD TestPublish_CredentialFunc_WritesIntoPayload
+	// (PublishOptions.CredentialFunc was removed entirely, Phase 2 of
+	// docs/design/d-0002-pubsub-workflow-simplification.md's Addendum) -- the SAME scenario now
+	// runs through a real PublishMW-paired security implementation Fn.
 	client := &mockClient{token: newCompletedToken(nil)}
 
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	impl := func(_ context.Context, msg *userEvent, reqs []route.SecurityRequirement) error {
+		if len(reqs) == 0 {
+			t.Fatal("want non-empty security requirements passed to the implementation")
+		}
+		// Embed a credential AS AN ORDINARY PAYLOAD FIELD — MQTT 3.1.1 has
+		// no protocol-native attach point, unlike mqtt5's UserProperties.
+		msg.Email = "credentialed-" + msg.Email
+		return nil
+	}
 	handle, err := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithPublish(events.Publish{Security: []route.SecurityRequirement{route.Require("apiKey")}}).
+		PublishMW(nil, impl).
 		Handle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	opts := PublishOptions[userEvent]{
-		CredentialFunc: func(_ context.Context, msg *userEvent, reqs []route.SecurityRequirement) error {
-			if len(reqs) == 0 {
-				t.Fatal("want non-empty security requirements passed to CredentialFunc")
-			}
-			// Embed a credential AS AN ORDINARY PAYLOAD FIELD — MQTT 3.1.1 has
-			// no protocol-native attach point, unlike mqtt5's UserProperties.
-			msg.Email = "credentialed-" + msg.Email
-			return nil
-		},
-	}
-	if err := publish(context.Background(), client, handle, 1, false, event, nil, opts); err != nil {
+	if err := publish(context.Background(), client, handle, 1, false, event, nil, PublishOptions[userEvent]{}); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	if !strings.Contains(string(client.publishedPayloadSnapshot()), "credentialed-alice@example.com") {
-		t.Fatalf("want CredentialFunc-mutated payload, got %s", client.publishedPayloadSnapshot())
+		t.Fatalf("want implementation-mutated payload, got %s", client.publishedPayloadSnapshot())
 	}
 }
 
-func TestPublish_CredentialFunc_ErrorAborts(t *testing.T) {
+func TestPublish_SecurityImpl_ErrorAborts(t *testing.T) {
+	// REPLACES the OLD TestPublish_CredentialFunc_ErrorAborts
+	// (PublishOptions.CredentialFunc was removed entirely, Phase 2 of
+	// docs/design/d-0002-pubsub-workflow-simplification.md's Addendum).
 	client := &mockClient{token: newCompletedToken(nil)}
 
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	wantErr := errors.New("bad credential")
+	impl := func(context.Context, *userEvent, []route.SecurityRequirement) error {
+		return wantErr
+	}
 	handle, err := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithPublish(events.Publish{Security: []route.SecurityRequirement{route.Require("apiKey")}}).
+		PublishMW(nil, impl).
 		Handle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
-	wantErr := errors.New("bad credential")
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	opts := PublishOptions[userEvent]{
-		CredentialFunc: func(context.Context, *userEvent, []route.SecurityRequirement) error {
-			return wantErr
-		},
-	}
-	if err := publish(context.Background(), client, handle, 1, false, event, nil, opts); !errors.Is(err, wantErr) {
+	if err := publish(context.Background(), client, handle, 1, false, event, nil, PublishOptions[userEvent]{}); !errors.Is(err, wantErr) {
 		t.Fatalf("want wantErr, got %v", err)
 	}
 	if len(client.publishedTopicsSnapshot()) != 0 {
-		t.Fatal("want no broker Publish call when CredentialFunc rejects")
+		t.Fatal("want no broker Publish call when the implementation rejects")
 	}
 }
 
@@ -588,6 +593,29 @@ func TestObservability_RecordsSubscribe(t *testing.T) {
 	}
 }
 
+func TestObservability_CtxCarriesObserver_AfterThinning(t *testing.T) {
+	// Confirms the positive behavioral change from thinning Observability
+	// to delegate to events.Observability: downstream code (e.g. a paired
+	// security Fn attached alongside Observability) can now resolve obs
+	// via stats.ObserverFromContext through the wrapper — impossible
+	// before this change, since the old implementation never called
+	// stats.WithObserver at all.
+	obs := &spyObs{}
+	var gotCtxObs stats.Observer
+	mw := Observability[userEvent]("user/created", obs)
+	wrapped := mw(func(ctx context.Context, _ userEvent) error {
+		gotCtxObs = stats.ObserverFromContext(ctx)
+		return nil
+	})
+
+	if err := wrapped(context.Background(), userEvent{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotCtxObs != stats.Observer(obs) {
+		t.Error("Observability must inject obs into ctx (via delegation to events.Observability), visible to next via stats.ObserverFromContext")
+	}
+}
+
 // ── Example (pkg.go.dev documentation) ────────────────────────────────────────
 
 // ExampleSubscribe demonstrates the value-based Caller/Subscribe workflow:
@@ -628,7 +656,7 @@ func ExampleSubscribe() {
 // TestSubscribeHandler_PreExisting_StillWorksIdentically exercises the OLD,
 // pre-existing SubscribeHandler usage pattern directly (build the closure,
 // wire it into client.Subscribe by hand) — EXACTLY the pattern
-// examples/adapters-mqtt-security/main.go and this package's own
+// examples/events-api/mqttbroker and this package's own
 // pre-existing tests already use — proving the internal caller/
 // subscribe wrapping logic does not alter
 // SubscribeHandler's own behavior in any way (subscribe/ServeSubscribers

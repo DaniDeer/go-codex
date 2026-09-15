@@ -11,9 +11,9 @@ import (
 // ConnectOptions configures [Connect]'s broker-connection setup: the CONNECT
 // packet fields ([pahomqtt5.Connect]'s KeepAlive/CleanStart/Username/Password
 // verbatim, since [Connect] is a thin, faithful wrapper around
-// paho.golang's own client construction — see examples/adapters-mqtt5's
-// package doc comment for the manual pattern this wraps) plus an optional
-// TLS config for a secured broker connection.
+// paho.golang's own client construction — see [Connect]'s own doc comment
+// for the manual pattern this wraps) plus an optional TLS config for a
+// secured broker connection.
 type ConnectOptions struct {
 	// ClientID identifies this connection to the broker. Empty is valid
 	// (the broker assigns one) but disables session persistence across
@@ -41,8 +41,7 @@ type ConnectOptions struct {
 // [pahomqtt5.ClientConfig] (Conn + a fresh [pahomqtt5.NewStandardRouter]),
 // construct the [*pahomqtt5.Client] via [pahomqtt5.NewClient], then send
 // the CONNECT packet via opts' fields — the exact manual pattern
-// examples/adapters-mqtt5's package doc comment documents today, now
-// wrapped as a single call:
+// paho.golang callers write by hand today, now wrapped as a single call:
 //
 //	conn, _ := net.Dial("tcp", "localhost:1883")
 //	router := paho.NewStandardRouter()

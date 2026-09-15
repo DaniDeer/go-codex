@@ -420,18 +420,6 @@ func makeErasedSubscribeMessageHandler(ctx context.Context, info erasedSubscribe
 				}
 				return
 			}
-			if opts.SecurityFunc != nil {
-				if err := opts.SecurityFunc(msgCtx, msg, secReqs); err != nil {
-					if secObs, ok := obs.(stats.SecurityObserver); ok {
-						secObs.RecordSecurityRejection(msg.Topic, firstScheme(secReqs))
-					}
-					obs.RecordSubscribe(msg.Topic, false, time.Since(start))
-					if opts.OnError != nil {
-						opts.OnError(SubscribeError{Kind: KindSecurity, Topic: msg.Topic, Err: events.SecurityError{Err: err}})
-					}
-					return
-				}
-			}
 		}
 
 		if len(info.implementations) > 0 {
@@ -508,18 +496,27 @@ func runErasedBuiltinSecurityCheck(msg *pahomqtt5.Publish, secReqs []route.Secur
 // regardless of which specific [subscribe]/[subscribeWithHandle]/
 // [publish]/[ServeSubscribers] call site is used.
 //
+// Delegates its shared, adapter-agnostic part (ctx-injection of obs via
+// [stats.WithObserver], and draining [stats.DiagnosticsFromContext] into
+// [stats.Observer.RecordValidationError]) to [events.Observability] — see
+// that function's own doc comment for the full rationale. This wrapper
+// adds the genuinely mqtt5-specific remainder on top:
+// [stats.Observer.RecordSubscribe]/RecordPublish and a
+// [stats.TraceObserver] span.
+//
 // Direction (subscribe vs. publish) is detected via [MessageFromContext]:
 // present (the subscribe-side dispatch path always stores it) ->
 // [stats.Observer.RecordSubscribe]; absent -> [stats.Observer.RecordPublish].
 func Observability[T any](topic string, obs stats.Observer) func(func(context.Context, T) error) func(context.Context, T) error {
 	return func(next func(context.Context, T) error) func(context.Context, T) error {
+		shared := events.Observability[T](obs)(next)
 		return func(ctx context.Context, msg T) error {
 			start := time.Now()
 			var spanCtx = ctx
 			if to, ok := obs.(stats.TraceObserver); ok {
 				spanCtx = to.StartSpan(ctx, "mqtt5.observability", topic)
 			}
-			err := next(spanCtx, msg)
+			err := shared(spanCtx, msg)
 			if to, ok := obs.(stats.TraceObserver); ok {
 				to.EndSpan(spanCtx, err)
 			}

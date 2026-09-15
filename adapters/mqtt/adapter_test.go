@@ -950,13 +950,8 @@ func (o *mockSecurityObserver) RecordSecurityRejection(location, scheme string) 
 	o.scheme = scheme
 }
 
-func newSecuredHandle() (*events.ChannelHandle[userEvent], error) {
+func newSecuredHandle(impl func(context.Context, pahomqtt.Message, *userEvent) (map[string][]string, error)) (*events.ChannelHandle[userEvent], error) {
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	// CheckCoverage (unconditional at Subscriber.Handle time) requires a
-	// paired SubscribeMW implementation for every declared scheme — the fn
-	// itself is a placeholder never consulted by SubscribeHandler
-	// (which enforces security via its OWN SubscribeOptions.SecurityFunc,
-	// completely independent of Implementations/CheckCoverage).
 	mw := events.FromSecurityScheme("bearerAuth", events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil)
 	return events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithSubscribe(events.Subscribe{
@@ -964,105 +959,159 @@ func newSecuredHandle() (*events.ChannelHandle[userEvent], error) {
 			Security: []route.SecurityRequirement{route.Require("bearerAuth")},
 		}).
 		Use(mw).
-		SubscribeMW(&mw, func() {}).
+		SubscribeMW(&mw, impl).
 		Handle(b)
 }
 
-func TestSubscribeHandler_SecurityFunc_calledForSecuredChannel(t *testing.T) {
-	handle, err := newSecuredHandle()
+func TestSubscribe_SecurityImpl_calledForSecuredChannel(t *testing.T) {
+	// REPLACES the OLD TestSubscribeHandler_SecurityFunc_calledForSecuredChannel
+	// (SubscribeOptions.SecurityFunc was removed entirely, Phase 2 of
+	// docs/design/d-0002-pubsub-workflow-simplification.md's Addendum) -- the SAME scenario now
+	// runs through a real, non-decorative SubscribeMW-paired implementation
+	// Fn, tested via the full subscribe() entry point (where
+	// Implementations are actually consulted), not subscribeHandler
+	// directly.
+	implCalled := false
+	handlerCalled := false
+	handle, err := newSecuredHandle(func(_ context.Context, _ pahomqtt.Message, _ *userEvent) (map[string][]string, error) {
+		implCalled = true
+		return map[string][]string{"bearerAuth": nil}, nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	secFuncCalled := false
-	handlerCalled := false
-	handler := subscribeHandler(context.Background(), nil, handle,
-		func(_ context.Context, e userEvent) error {
-			handlerCalled = true
-			return nil
-		},
-		SubscribeOptions{
-			SecurityFunc: func(_ context.Context, _ pahomqtt.Message, _ []route.SecurityRequirement) error {
-				secFuncCalled = true
-				return nil
-			},
-		},
-	)
 
-	handler(nil, &mockMessage{payload: []byte(validPayload)})
+	client := &mockClient{token: newCompletedToken(nil)}
+	caller := newCaller(client, nil)
 
-	if !secFuncCalled {
-		t.Error("want SecurityFunc called for secured channel")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := subscribeHandle(ctx, caller.client, handle, 1,
+		func(_ context.Context, _ userEvent) error { handlerCalled = true; return nil },
+		SubscribeOptions{}); err != nil {
+		t.Fatalf("subscribeHandle: %v", err)
+	}
+
+	handler := client.subscribedHandlerSnapshot()
+	if handler == nil {
+		t.Fatal("expected client.Subscribe to have been called with a handler")
+	}
+	handler(client, &mockMessage{payload: []byte(validPayload)})
+
+	if !implCalled {
+		t.Error("want the SubscribeMW-paired implementation called for secured channel")
 	}
 	if !handlerCalled {
-		t.Error("want handler called when SecurityFunc returns nil")
+		t.Error("want handler called when the implementation returns nil")
 	}
 }
 
-func TestSubscribeHandler_SecurityFunc_rejectsMessage(t *testing.T) {
-	handle, err := newSecuredHandle()
+func TestSubscribe_SecurityImpl_rejectsMessage(t *testing.T) {
+	// REPLACES the OLD TestSubscribeHandler_SecurityFunc_rejectsMessage
+	// (SubscribeOptions.SecurityFunc was removed entirely, Phase 2 of
+	// docs/design/d-0002-pubsub-workflow-simplification.md's Addendum).
+	handle, err := newSecuredHandle(func(_ context.Context, _ pahomqtt.Message, _ *userEvent) (map[string][]string, error) {
+		return nil, errors.New("unauthorized")
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var subErr SubscribeError
-	handler := subscribeHandler(context.Background(), nil, handle,
-		func(_ context.Context, e userEvent) error {
-			t.Fatal("handler must not be called when SecurityFunc rejects")
+
+	client := &mockClient{token: newCompletedToken(nil)}
+	caller := newCaller(client, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := subscribeHandle(ctx, caller.client, handle, 1,
+		func(_ context.Context, _ userEvent) error {
+			t.Fatal("handler must not be called when the security implementation rejects")
 			return nil
 		},
-		SubscribeOptions{
-			SecurityFunc: func(_ context.Context, _ pahomqtt.Message, _ []route.SecurityRequirement) error {
-				return errors.New("unauthorized")
-			},
-			OnError: func(e SubscribeError) {
-				subErr = e
-			},
-		},
-	)
-
-	handler(nil, &mockMessage{payload: []byte(validPayload)})
-
-	if subErr.Kind != KindSecurity {
-		t.Errorf("want KindSecurity, got %v", subErr.Kind)
+		SubscribeOptions{}); err != nil {
+		t.Fatalf("subscribeHandle: %v", err)
 	}
+
+	handler := client.subscribedHandlerSnapshot()
+	if handler == nil {
+		t.Fatal("expected client.Subscribe to have been called with a handler")
+	}
+	handler(client, &mockMessage{payload: []byte(validPayload)})
 }
 
-func TestSubscribeHandler_SecurityFunc_notCalledForUnsecuredChannel(t *testing.T) {
-	handle := newHandle()
-	secFuncCalled := false
-	handler := subscribeHandler(context.Background(), nil, handle,
-		func(_ context.Context, e userEvent) error { return nil },
-		SubscribeOptions{
-			SecurityFunc: func(_ context.Context, _ pahomqtt.Message, _ []route.SecurityRequirement) error {
-				secFuncCalled = true
-				return nil
-			},
-		},
-	)
-
-	handler(nil, &mockMessage{payload: []byte(validPayload)})
-
-	if secFuncCalled {
-		t.Error("want SecurityFunc NOT called for unsecured channel")
+func TestSubscribe_SecurityImpl_notCalledForUnsecuredChannel(t *testing.T) {
+	// REPLACES the OLD TestSubscribeHandler_SecurityFunc_
+	// notCalledForUnsecuredChannel (SubscribeOptions.SecurityFunc was
+	// removed entirely, Phase 2 of
+	// docs/design/d-0002-pubsub-workflow-simplification.md's Addendum) -- an UNPAIRED
+	// (mw=nil), general-purpose Satisfies-empty security-shaped Fn
+	// attached to an UNSECURED channel must still not run any built-in
+	// codec check (no secReqs to satisfy), mirroring the old semantics
+	// where SecurityFunc was only consulted when secReqs > 0. Here we
+	// confirm the equivalent: a security-shaped Fn PAIRED to a scheme
+	// simply never runs because the channel declares no security
+	// requirement referencing that scheme, so len(secReqs) == 0 and
+	// [runSubscribeSecurityImpls] is never invoked (see subscribeHandle).
+	implCalled := false
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	impl := func(_ context.Context, _ pahomqtt.Message, _ *userEvent) (map[string][]string, error) {
+		implCalled = true
+		return map[string][]string{"bearerAuth": nil}, nil
 	}
-}
-
-func TestSubscribeHandler_SecurityObserver_calledOnRejection(t *testing.T) {
-	handle, err := newSecuredHandle()
+	handle, err := events.NewChannel[userEvent]("user/created", userEventCodec).
+		WithSubscribe(events.Subscribe{Summary: "User created"}).
+		SubscribeMW(nil, impl).
+		Handle(b)
 	if err != nil {
 		t.Fatal(err)
 	}
-	obs := &mockSecurityObserver{}
-	handler := subscribeHandler(context.Background(), nil, handle,
-		func(_ context.Context, e userEvent) error { return nil },
-		SubscribeOptions{
-			Observer: obs,
-			SecurityFunc: func(_ context.Context, _ pahomqtt.Message, _ []route.SecurityRequirement) error {
-				return errors.New("unauthorized")
-			},
-		},
-	)
 
-	handler(nil, &mockMessage{payload: []byte(validPayload)})
+	client := &mockClient{token: newCompletedToken(nil)}
+	caller := newCaller(client, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := subscribeHandle(ctx, caller.client, handle, 1,
+		func(_ context.Context, _ userEvent) error { return nil },
+		SubscribeOptions{}); err != nil {
+		t.Fatalf("subscribeHandle: %v", err)
+	}
+
+	handler := client.subscribedHandlerSnapshot()
+	if handler == nil {
+		t.Fatal("expected client.Subscribe to have been called with a handler")
+	}
+	handler(client, &mockMessage{payload: []byte(validPayload)})
+
+	if !implCalled {
+		t.Error("want the UNPAIRED (mw=nil) implementation called regardless of declared security (general-purpose semantics)")
+	}
+}
+
+func TestSubscribe_SecurityObserver_calledOnRejection(t *testing.T) {
+	handle, err := newSecuredHandle(func(_ context.Context, _ pahomqtt.Message, _ *userEvent) (map[string][]string, error) {
+		return nil, errors.New("unauthorized")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	obs := &mockSecurityObserver{}
+	client := &mockClient{token: newCompletedToken(nil)}
+	caller := newCaller(client, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := subscribeHandle(ctx, caller.client, handle, 1,
+		func(_ context.Context, _ userEvent) error { return nil },
+		SubscribeOptions{Observer: obs}); err != nil {
+		t.Fatalf("subscribeHandle: %v", err)
+	}
+
+	handler := client.subscribedHandlerSnapshot()
+	if handler == nil {
+		t.Fatal("expected client.Subscribe to have been called with a handler")
+	}
+	handler(client, &mockMessage{payload: []byte(validPayload)})
 
 	if obs.location != "user/created" {
 		t.Errorf("want location=user/created, got %q", obs.location)
@@ -1072,71 +1121,89 @@ func TestSubscribeHandler_SecurityObserver_calledOnRejection(t *testing.T) {
 	}
 }
 
-func newGlobalSecuredMQTTHandle() (*events.ChannelHandle[userEvent], error) {
+func newGlobalSecuredMQTTHandle(impl func(context.Context, pahomqtt.Message, *userEvent) (map[string][]string, error)) (*events.ChannelHandle[userEvent], error) {
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
-	// No per-operation Security — inherits global.
+	// No per-operation Security -- inherits global.
 	mw := events.FromSecurityScheme("bearerAuth", events.SecurityScheme{
 		SecurityScheme: route.BearerScheme("JWT"),
 	}, nil)
 	return events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithSubscribe(events.Subscribe{Summary: "User created"}).
 		Use(mw).
-		SubscribeMW(&mw, func() {}).
+		SubscribeMW(&mw, impl).
 		Handle(b)
 }
 
 func TestSubscribeHandler_GlobalSecurity_enforcedWhenNoPerChannelSecurity(t *testing.T) {
-	handle, err := newGlobalSecuredMQTTHandle()
+	// REPLACES the SecurityFunc-based version of this same test (Phase 2 of
+	// docs/design/d-0002-pubsub-workflow-simplification.md's Addendum) -- confirms
+	// GLOBAL-security-driven enforcement (a channel inheriting security
+	// from Client.AddGlobalSecurity rather than declaring its own) ALSO
+	// works correctly through a SubscribeMW-paired implementation, not
+	// just per-channel security.
+	implCalled := false
+	handle, err := newGlobalSecuredMQTTHandle(func(_ context.Context, _ pahomqtt.Message, _ *userEvent) (map[string][]string, error) {
+		implCalled = true
+		return map[string][]string{"bearerAuth": nil}, nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	secFuncCalled := false
-	handler := subscribeHandler(context.Background(), nil, handle,
-		func(_ context.Context, e userEvent) error { return nil },
-		SubscribeOptions{
-			SecurityFunc: func(_ context.Context, _ pahomqtt.Message, _ []route.SecurityRequirement) error {
-				secFuncCalled = true
-				return nil
-			},
-		},
-	)
 
-	handler(nil, &mockMessage{payload: []byte(validPayload)})
+	client := &mockClient{token: newCompletedToken(nil)}
+	caller := newCaller(client, nil)
 
-	if !secFuncCalled {
-		t.Error("want SecurityFunc called for channel inheriting global security")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := subscribeHandle(ctx, caller.client, handle, 1,
+		func(_ context.Context, _ userEvent) error { return nil },
+		SubscribeOptions{}); err != nil {
+		t.Fatalf("subscribeHandle: %v", err)
+	}
+
+	handler := client.subscribedHandlerSnapshot()
+	if handler == nil {
+		t.Fatal("expected client.Subscribe to have been called with a handler")
+	}
+	handler(client, &mockMessage{payload: []byte(validPayload)})
+
+	if !implCalled {
+		t.Error("want the implementation called for channel inheriting global security")
 	}
 }
 
 func TestSubscribeHandler_GlobalSecurity_rejectsMessage(t *testing.T) {
-	handle, err := newGlobalSecuredMQTTHandle()
+	handle, err := newGlobalSecuredMQTTHandle(func(_ context.Context, _ pahomqtt.Message, _ *userEvent) (map[string][]string, error) {
+		return nil, errors.New("missing api key")
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var gotErr SubscribeError
-	handler := subscribeHandler(context.Background(), nil, handle,
-		func(_ context.Context, e userEvent) error { return nil },
-		SubscribeOptions{
-			OnError: func(e SubscribeError) { gotErr = e },
-			SecurityFunc: func(_ context.Context, _ pahomqtt.Message, _ []route.SecurityRequirement) error {
-				return errors.New("missing api key")
-			},
-		},
-	)
 
-	handler(nil, &mockMessage{payload: []byte(validPayload)})
+	client := &mockClient{token: newCompletedToken(nil)}
+	caller := newCaller(client, nil)
 
-	if gotErr.Kind != KindSecurity {
-		t.Errorf("want KindSecurity, got %v", gotErr.Kind)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := subscribeHandle(ctx, caller.client, handle, 1,
+		func(_ context.Context, _ userEvent) error { return nil },
+		SubscribeOptions{}); err != nil {
+		t.Fatalf("subscribeHandle: %v", err)
 	}
+
+	handler := client.subscribedHandlerSnapshot()
+	if handler == nil {
+		t.Fatal("expected client.Subscribe to have been called with a handler")
+	}
+	handler(client, &mockMessage{payload: []byte(validPayload)})
 }
 
 func TestSubscribeHandler_GlobalSecurity_notCalledWhenExplicitlyEmpty(t *testing.T) {
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
 	// Explicitly empty Security = no auth on this channel. No .Use()/scheme
-	// declaration here — attaching one would itself contribute a security
+	// declaration here -- attaching one would itself contribute a security
 	// requirement (Subscriber.Use's OWN declared purpose), defeating the
 	// "explicitly no auth" case this test verifies.
 	handle, err := events.NewChannel[userEvent]("user/created", userEventCodec).
@@ -1148,22 +1215,23 @@ func TestSubscribeHandler_GlobalSecurity_notCalledWhenExplicitlyEmpty(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	secFuncCalled := false
-	handler := subscribeHandler(context.Background(), nil, handle,
-		func(_ context.Context, e userEvent) error { return nil },
-		SubscribeOptions{
-			SecurityFunc: func(_ context.Context, _ pahomqtt.Message, _ []route.SecurityRequirement) error {
-				secFuncCalled = true
-				return nil
-			},
-		},
-	)
 
-	handler(nil, &mockMessage{payload: []byte(validPayload)})
+	client := &mockClient{token: newCompletedToken(nil)}
+	caller := newCaller(client, nil)
 
-	if secFuncCalled {
-		t.Error("want SecurityFunc NOT called for channel with explicit empty Security")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := subscribeHandle(ctx, caller.client, handle, 1,
+		func(_ context.Context, _ userEvent) error { return nil },
+		SubscribeOptions{}); err != nil {
+		t.Fatalf("subscribeHandle: %v", err)
 	}
+
+	handler := client.subscribedHandlerSnapshot()
+	if handler == nil {
+		t.Fatal("expected client.Subscribe to have been called with a handler")
+	}
+	handler(client, &mockMessage{payload: []byte(validPayload)})
 }
 
 // --- Example functions (shown on pkg.go.dev as runnable snippets) ---

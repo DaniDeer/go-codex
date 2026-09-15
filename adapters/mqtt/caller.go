@@ -120,11 +120,30 @@ func subscribeHandle[T any](
 		secReqs = handle.GlobalSecurity
 	}
 
+	obs := opts.Observer
+	if obs == nil {
+		obs = stats.ObserverFromContext(ctx)
+	}
+
+	// Gated on len(handle.Implementations) > 0, NOT len(secReqs) > 0 —
+	// mirrors adapters/zeromq/adapters/mqtt5's identical ordering: an
+	// UNPAIRED (general-purpose Satisfies-empty) security-shaped Fn must
+	// run even on a channel with no declared security (e.g. a
+	// Transform-equivalent reading an in-payload field into *T before fn
+	// runs) — runSubscribeSecurityImpls itself already handles the
+	// Satisfies-empty-vs-secReqs-empty distinction internally.
 	wrapped := wrapSubscribeGeneral(fn, handle.Implementations)
 	finalFn := func(ctx context.Context, v T) error {
-		if len(secReqs) > 0 {
-			msg, _ := MessageFromContext(ctx)
+		if len(handle.Implementations) > 0 {
+			msg, hasMsg := MessageFromContext(ctx)
 			if err := runSubscribeSecurityImpls(ctx, msg, &v, secReqs, handle.Implementations); err != nil {
+				if secObs, ok := obs.(stats.SecurityObserver); ok {
+					topic := handle.Topic
+					if hasMsg {
+						topic = msg.Topic()
+					}
+					secObs.RecordSecurityRejection(topic, firstScheme(secReqs))
+				}
 				return err
 			}
 		}
@@ -617,15 +636,24 @@ func validateSubscribeImplementationShapesReflect(topic string, valueType reflec
 // remain the PRIMARY, zero-ceremony per-call mechanism (see
 // docs/design/d-0002-pubsub-workflow-simplification.md's "General-purpose Fn
 // shapes" subsection).
+//
+// Delegates its shared, adapter-agnostic part (ctx-injection of obs via
+// [stats.WithObserver], and draining [stats.DiagnosticsFromContext] into
+// [stats.Observer.RecordValidationError]) to [events.Observability] — see
+// that function's own doc comment for the full rationale. This wrapper
+// adds the genuinely mqtt-specific remainder on top:
+// [stats.Observer.RecordSubscribe]/RecordPublish and a
+// [stats.TraceObserver] span.
 func Observability[T any](topic string, obs stats.Observer) func(func(context.Context, T) error) func(context.Context, T) error {
 	return func(next func(context.Context, T) error) func(context.Context, T) error {
+		shared := events.Observability[T](obs)(next)
 		return func(ctx context.Context, msg T) error {
 			start := time.Now()
 			spanCtx := ctx
 			if to, ok := obs.(stats.TraceObserver); ok {
 				spanCtx = to.StartSpan(ctx, "mqtt.observability", topic)
 			}
-			err := next(spanCtx, msg)
+			err := shared(spanCtx, msg)
 			if to, ok := obs.(stats.TraceObserver); ok {
 				to.EndSpan(spanCtx, err)
 			}

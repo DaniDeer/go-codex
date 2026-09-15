@@ -248,7 +248,7 @@ func main() {
 
 // ── in-process mock MQTT client (replaces a real paho client in this demo) ──
 //
-// Copied from examples/adapters-mqtt's own mockClient — a minimal
+// Copied from examples/events-api/mqttbroker's own MockClient — a minimal
 // pahomqtt.Client implementation with auto-dispatch (Publish immediately
 // fans out to matching Subscribe handlers), so no manual delivery step is
 // needed for this example's single publish/subscribe round trip.

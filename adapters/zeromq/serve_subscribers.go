@@ -464,7 +464,7 @@ func serveOneSubscriber[T any](
 ) error {
 	ev := events.NewClient(events.WithInfo(events.Info{}))
 	scoped := newCaller(caller.sock, ev)
-	if opts.TopicFilter != "" || opts.OnError != nil || opts.Observer != nil || opts.SecurityFunc != nil {
+	if opts.TopicFilter != "" || opts.OnError != nil || opts.Observer != nil {
 		sub = sub.WithOptions(opts)
 	}
 	if err := sub.WithHandler(fn).Register(ev); err != nil {

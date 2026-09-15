@@ -189,9 +189,10 @@ func (b *recordingBroker) LastReplyUserProperties() pahomqtt5.UserProperties {
 
 // ── in-process mock broker (self-contained — no real MQTT 5 broker needed) ──
 //
-// Mirrors examples/adapters-mqtt5's own mockRouter/mockBroker exactly (kept
-// here, duplicated, rather than exported from that example — examples are
-// standalone `package main` programs, not importable library packages).
+// Mirrors examples/events-api/mqtt5broker's own MockRouter/MockBroker
+// exactly (kept here, duplicated, rather than imported from that example —
+// examples are standalone `package main` programs per project, not shared
+// importable library packages across projects).
 
 type mockRouter struct {
 	mu       sync.RWMutex

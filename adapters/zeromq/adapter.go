@@ -26,8 +26,8 @@ var (
 )
 
 // SubscribeOptions configures [subscribe]/[subscribeWithHandle]. Generic
-// over T (BREAKING change from the previous non-generic SubscribeOptions)
-// since [SubscribeOptions.SecurityFunc] needs read/write access to the
+// over T so declarative security implementations (attached via
+// [events.Subscriber.SubscribeMW]) can grant read/write access to the
 // decoded message — zeromq's [topic, payload] frames carry nothing beyond
 // what's already decoded into T, so there is no raw-message-equivalent
 // parameter to pass instead (unlike mqtt5's *pahomqtt5.Publish) — see
@@ -61,24 +61,6 @@ type SubscribeOptions[T any] struct {
 	// with location "payload".
 	// Defaults to [stats.NoopObserver] when nil.
 	Observer stats.Observer
-
-	// SecurityFunc, when non-nil, is called for channels with non-empty
-	// security requirements before fn is invoked — the message-level
-	// security mechanism zeromq had NONE of before this pass (confirmed
-	// via docs/design/d-0002-pubsub-workflow-simplification.md's escape-hatch
-	// #5 discussion: "zeromq has literally no security mechanism at any
-	// layer"). msg is a pointer to the decoded value — read it to extract
-	// an in-payload credential field, and/or mutate it (the same
-	// read/write access [nethttp.Transform]-equivalent unpaired usage
-	// gets for free). Return a non-nil error to reject the message.
-	//
-	//	opts.SecurityFunc = func(ctx context.Context, msg *Reading, reqs []route.SecurityRequirement) error {
-	//	    if msg.AuthToken == "" {
-	//	        return errors.New("missing credential")
-	//	    }
-	//	    return verifyJWT(msg.AuthToken, reqs)
-	//	}
-	SecurityFunc func(ctx context.Context, msg *T, reqs []route.SecurityRequirement) error
 }
 
 // PublishOptions configures [publish]/[publishHandle]. Generic over T
@@ -92,21 +74,6 @@ type PublishOptions[T any] struct {
 	// "payload". Topic variable errors are reported with location "topic_var".
 	// Defaults to [stats.NoopObserver] when nil.
 	Observer stats.Observer
-
-	// CredentialFunc, when non-nil, is called for channels that declare
-	// non-nil Publish.Security (or inherit non-empty GlobalSecurity) —
-	// the publish-side mirror of [SubscribeOptions.SecurityFunc], SAME
-	// shape as the subscribe side (deliberate symmetry — zeromq's frames
-	// carry nothing beyond T in either direction, unlike mqtt/mqtt5's
-	// asymmetric subscribe-side raw-message access). msg is a pointer to
-	// the value about to be encoded — mutate it to embed a credential as
-	// an ordinary payload field before it is marshalled.
-	//
-	//	opts.CredentialFunc = func(ctx context.Context, msg *Reading, reqs []route.SecurityRequirement) error {
-	//	    msg.AuthToken = "Bearer " + token
-	//	    return nil
-	//	}
-	CredentialFunc func(ctx context.Context, msg *T, reqs []route.SecurityRequirement) error
 }
 
 // ServeOptions configures [Serve].
@@ -272,7 +239,7 @@ func wrapSubscribeGeneral[T any](fn func(context.Context, T) error, impls []midd
 // — a malformed Fn fails loudly and immediately, never silently at
 // message time. General-purpose Fns wrap fn ([wrapSubscribeGeneral]);
 // security-shaped Fns run per-message ([runSubscribeSecurityImpls]),
-// AFTER opts.SecurityFunc.
+// AFTER the built-in codec-based credential check.
 //
 // The loop runs until ctx is cancelled (returns nil) or a socket error occurs
 // (returns the error). Run SubscribeWithHandle in a dedicated goroutine.
@@ -397,26 +364,13 @@ func subscribeWithHandle[T any](
 			}
 		}
 
-		// Security enforcement — opts.SecurityFunc runs first (if any),
-		// then every attached handle.Implementations security-shaped Fn
-		// (populated by [events.Subscriber.SubscribeMW]) runs
-		// UNCONDITIONALLY (mirrors mqtt5's ordering: an UNPAIRED,
+		// Security enforcement — every attached handle.Implementations
+		// security-shaped Fn (populated by [events.Subscriber.SubscribeMW])
+		// runs UNCONDITIONALLY (mirrors mqtt5's ordering: an UNPAIRED,
 		// general-purpose Satisfies-empty Fn must run even on a channel
 		// with no declared security — e.g. a Transform-equivalent reading
 		// an in-payload field into *T before fn runs). Shapes were
 		// already validated eagerly above.
-		if opts.SecurityFunc != nil {
-			if err := opts.SecurityFunc(ctx, &value, secReqs); err != nil {
-				if secObs, ok := obs.(stats.SecurityObserver); ok {
-					secObs.RecordSecurityRejection(topic, firstSchemeName(secReqs))
-				}
-				obs.RecordSubscribe(topic, false, time.Since(start))
-				if opts.OnError != nil {
-					opts.OnError(SubscribeError{Kind: KindSecurity, Topic: topic, Err: events.SecurityError{Err: err}})
-				}
-				continue
-			}
-		}
 		if len(handle.Implementations) > 0 {
 			if err := runSubscribeSecurityImpls(ctx, &value, secReqs, handle.Implementations); err != nil {
 				if secObs, ok := obs.(stats.SecurityObserver); ok {
@@ -638,11 +592,11 @@ func wrapPublishGeneral[T any](fn func(context.Context, T) error, impls []middle
 //   - nil: use handle.Topic directly (static topics).
 //   - non-nil: call handle.BuildTopic(vars) to resolve a template topic.
 //
-// Security/credential resolution (opts.CredentialFunc AND every attached
+// Security/credential resolution (every attached
 // [events.ChannelHandle.ClientImplementations] Fn from
-// [events.Publisher.PublishMW]) runs BEFORE msg is encoded — both
-// mechanisms get write-access to *msg (in-payload credential embedding),
-// so the encode step downstream observes any mutation. Every attached
+// [events.Publisher.PublishMW]) runs BEFORE msg is encoded — it gets
+// write-access to *msg (in-payload credential embedding), so the encode
+// step downstream observes any mutation. Every attached
 // ClientImplementations Fn is shape-validated EAGERLY via
 // [validatePublishImplementationShapes] before anything else runs.
 // General-purpose Fns wrap the internal "encode and transmit" step
@@ -718,21 +672,15 @@ func publish[T any](
 		}
 	}
 
-	// Security/credential resolution — opts.CredentialFunc runs first (if
-	// any), then every attached handle.ClientImplementations security-shaped
-	// Fn, mirroring SubscribeWithHandle's ordering on the subscribe side.
+	// Security/credential resolution — every attached
+	// handle.ClientImplementations security-shaped Fn runs, mirroring
+	// SubscribeWithHandle's ordering on the subscribe side.
 	var secReqs []route.SecurityRequirement
 	if handle.Descriptor.Publish != nil {
 		secReqs = handle.Descriptor.Publish.Security
 	}
 	if secReqs == nil {
 		secReqs = handle.GlobalSecurity
-	}
-	if len(secReqs) > 0 && opts.CredentialFunc != nil {
-		if err = opts.CredentialFunc(ctx, &msg, secReqs); err != nil {
-			obs.RecordPublish(topic, false, time.Since(start))
-			return err
-		}
 	}
 	if len(handle.ClientImplementations) > 0 {
 		if err = runPublishSecurityImpls(ctx, &msg, secReqs, handle.ClientImplementations); err != nil {

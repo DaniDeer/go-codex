@@ -201,7 +201,7 @@ a field rename breaks both the server and the client at compile time.
 
 ```
 examples/adapters-nethttp-client/contract/  ← shared Route specs, codecs, types
-examples/adapters-mqtt-contract/contract/   ← shared Channel specs, codecs, types
+examples/events-api/routes/                 ← shared Channel specs, codecs, types (mqtt v3/mqtt5/zeromq)
 examples/gob-contract/contract/             ← shared Gob format contract
 ```
 

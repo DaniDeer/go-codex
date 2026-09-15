@@ -1,6 +1,44 @@
-# go-codex Review History (R1–R136, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2)
+# go-codex Review History (R1–R137, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 137 (reqreply/declarative middleware focus — Observability doc-sync regressions)
+
+Focused review of `api/reqreply` and its declarative middleware, following the same session's
+shipping of the new `reqreply.Observability[Req,Resp]` general-purpose observer decorator (closing
+a confirmed gap where REST/pub-sub had a ready-made `Observability` helper but reqreply didn't).
+Traced every doc/comment cross-reference touched by that work and found the usual self-introduced
+doc-sync regressions plus a skill-material coverage gap for the whole `Observability` decorator
+family (not just reqreply's new one) — mirrors the established pattern from prior rounds where a
+shipped feature outpaces the skill's own reference material.
+
+- **G1 [small] — dangling anchor link in `docs/features/reqreply-middleware.md`'s "See also"
+  section**: pointed at `observer.md#apireqreplys-general-purpose-middleware-as-a-declarative-observer-wrapper`,
+  which stopped existing when that heading was renamed to `` `api/reqreply.Observability` — a
+  shipped, declarative observer wrapper `` while shipping the real helper. Fixed the link to the
+  new anchor (`#apireqreplyobservability--a-shipped-declarative-observer-wrapper`) and clarified the
+  surrounding text to name the shipped `reqreply.Observability[Req, Resp]` symbol directly.
+- **G2 [trivial] — SKILL.md's Phase 1 file table missing `api/reqreply/observability.go`**: the
+  reqreply-specific file table row never gained an entry for the new file. Added a dedicated row.
+- **G3 [trivial] — checklist.md §8 (Observer Pattern) had ZERO coverage of the general-purpose,
+  declare-time-attached `Observability` decorator family**: confirmed via repo-wide grep that
+  `nethttp.Observability`, `zeromq.Observability`, `mqtt5`/`mqtt.Observability` (pub/sub), and now
+  `reqreply.Observability` — a DIFFERENT mechanism from the direct `Options.Observer` field wiring
+  §8 already documents — had never been added to checklist.md, history.md, or SKILL.md. Added a new
+  "General-purpose `Observability` decorator family" subsection to §8 with a per-package shape/notes
+  table and explicit non-duplication rules (`zeromq`'s pub/sub version deliberately skips
+  `RecordSubscribe`/`RecordPublish`; `reqreply`'s deliberately skips `RecordRequest`/`TraceObserver`
+  span — both because the underlying adapter transport already records them).
+- **G4 [trivial] — `examples/reqreply-api/main.go`'s package doc overstated coverage**: claimed the
+  shipped `reqreply.Observability` "is used directly at every `.HandleMW`/`.ClientMW` attachment
+  point below," ambiguous since `mqtt5server.Build()` intentionally attaches none (already correctly
+  scoped in `observability/observer.go`'s own package doc). Reworded to match that accurate scoping.
+
+Verification: `gofmt -l .` clean, `go build ./...` clean, `go vet`/`go test` on the touched
+`api/reqreply` and `examples/reqreply-api` packages clean — all 4 fixes were doc/comment-only, no
+exported symbol touched, no test/build impact expected or found.
 
 ---
 

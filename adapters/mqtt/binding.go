@@ -9,7 +9,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/ports"
-	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
@@ -37,8 +36,6 @@ type SubscribeAdapterOptions struct {
 	// manual restatement. Set explicitly only for a filter that differs from
 	// this derivation (e.g. a multi-level "#" wildcard).
 	TopicFilter string
-	// SecurityFunc enforces security requirements on each incoming message.
-	SecurityFunc func(context.Context, pahomqtt.Message, []route.SecurityRequirement) error
 	// Observer receives per-message lifecycle events. Resolved from ctx when nil.
 	Observer stats.Observer
 }
@@ -86,9 +83,8 @@ func (a *mqttSubscribeAdapter[T]) Activate(ctx context.Context, dst chan<- T, er
 		obs = stats.ObserverFromContext(ctx)
 	}
 	innerOpts := SubscribeOptions{
-		Observer:     obs,
-		SecurityFunc: a.opts.SecurityFunc,
-		TopicFilter:  a.opts.TopicFilter,
+		Observer:    obs,
+		TopicFilter: a.opts.TopicFilter,
 		OnError: func(e SubscribeError) {
 			select {
 			case errs <- e:

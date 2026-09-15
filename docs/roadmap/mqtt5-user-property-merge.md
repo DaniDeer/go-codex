@@ -168,7 +168,7 @@ convention `events.NewTopicParam` already established.
 |---|---|
 | `adapters/mqtt5/adapter.go` | `MergedUserPropertyParam[T]`, `NewRequiredUserPropertyParam`, `NewOptionalUserPropertyParam`; `makeSubscribeMessageHandler` collects merge-capable User Property values into the SAME `vars` map topic vars already populate |
 | `adapters/mqtt5/adapter_test.go` | Construction + merge tests, mirroring `rest.NewRequiredHeaderParam`'s test shape |
-| `examples/adapters-mqtt5` | Demonstrate a merged User Property alongside the existing validate-only example |
+| `examples/events-api` | Demonstrate a merged User Property alongside `demo_user_property_middleware.go`'s existing validate-only example |
 | `.github/instructions/go-codex.instructions.md` | New `adapters/mqtt5` row entries |
 
 ## See also

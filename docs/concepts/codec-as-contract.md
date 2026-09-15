@@ -85,5 +85,5 @@ For external-facing APIs (consumed by non-Go clients), generate an OpenAPI/Async
 ## Examples
 
 - [adapters-nethttp-client](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-nethttp-client) — HTTP shared contract
-- [adapters-mqtt-contract](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt-contract) — MQTT shared contract
+- [events-api](https://github.com/DaniDeer/go-codex/tree/main/examples/events-api) — MQTT/zeromq shared contract (its `routes/` package is imported by every broker package and demo file, project-wide, proving zero drift across all three transports — see `demo_spec_printing_asyncapi.go`)
 - [gob-contract](https://github.com/DaniDeer/go-codex/tree/main/examples/gob-contract) — binary gob encoding contract

@@ -59,7 +59,7 @@ func UserPropertiesFromContext(ctx context.Context) (pahomqtt5.UserProperties, b
 //
 // Register one or more UserPropertyParams in [SubscribeOptions.UserPropertyParams]
 // or [ServeOptions.UserPropertyParams]. The adapter validates each property before
-// the payload is decoded and before [SubscribeOptions.SecurityFunc] is called.
+// the payload is decoded and before security enforcement runs.
 //
 // Example — require a valid bearer token in the Authorization property:
 //
@@ -130,23 +130,8 @@ type SubscribeOptions struct {
 	// Defaults to [stats.NoopObserver] when nil.
 	Observer stats.Observer
 
-	// SecurityFunc, when non-nil, is called for channels with non-empty security
-	// requirements before fn is invoked. Return a non-nil error to reject the message.
-	// MQTT 5 User Properties are available via msg.Properties.User — use them to
-	// extract per-message credentials for authentication:
-	//
-	//	opts.SecurityFunc = func(ctx context.Context, msg *paho.Publish, reqs []route.SecurityRequirement) error {
-	//	    for _, p := range msg.Properties.User {
-	//	        if p.Key == "Authorization" {
-	//	            return verifyJWT(p.Value, reqs)
-	//	        }
-	//	    }
-	//	    return errors.New("missing Authorization User Property")
-	//	}
-	SecurityFunc func(ctx context.Context, msg *pahomqtt5.Publish, reqs []route.SecurityRequirement) error
-
 	// UserPropertyParams, when non-nil, are validated against the incoming
-	// message's MQTT 5 User Properties before [SecurityFunc] is called.
+	// message's MQTT 5 User Properties before security enforcement runs.
 	// Validation runs per-property: missing required properties return
 	// [SubscribeError]{Kind: KindSecurity} wrapping [MissingUserPropertyError];
 	// codec failures return [SubscribeError]{Kind: KindSecurity} wrapping
@@ -156,10 +141,10 @@ type SubscribeOptions struct {
 	UserPropertyParams []UserPropertyParam
 }
 
-// PublishOptions configures [publish]/[publishHandle]. Generic over T
-// (BREAKING change from the previous non-generic PublishOptions) since
-// [PublishOptions.CredentialFunc]'s revised shape needs write-access to
-// the outgoing message — see that field's doc comment.
+// PublishOptions configures [publish]/[publishHandle]. Generic over T so
+// declarative security implementations (attached via
+// [events.Publisher.PublishMW]) can grant write-access to the outgoing
+// message before it is encoded.
 type PublishOptions[T any] struct {
 	// Observer receives per-publish lifecycle events.
 	// Defaults to [stats.NoopObserver] when nil.
@@ -173,29 +158,6 @@ type PublishOptions[T any] struct {
 	// UserProperties, when non-nil, are attached to outgoing MQTT 5 messages.
 	// Use this to send per-message metadata (e.g. trace IDs, tenant IDs).
 	UserProperties []UserProperty
-
-	// CredentialFunc, when non-nil, is called for channels that declare
-	// non-nil Publish.Security (or inherit non-empty GlobalSecurity),
-	// mirroring [nethttp.CallOptions.CredentialFunc]. REVISED this pass
-	// (BREAKING — previously `func(context.Context, []route.SecurityRequirement)
-	// ([]UserProperty, error)`, with no `*T` access) to also grant
-	// write-access into the outgoing message, mirroring
-	// [SubscribeOptions.SecurityFunc]'s existing read/write `*T` access on
-	// the subscribe side: msg is a pointer to the value about to be
-	// encoded — mutate it to embed a credential AS AN ORDINARY PAYLOAD
-	// FIELD (works identically across every transport, since a payload is
-	// just codec-encoded bytes), and/or return protocol-native MQTT 5 User
-	// Properties — both mechanisms are available simultaneously, caller's
-	// choice. Returned UserProperty values are appended to
-	// [PublishOptions.UserProperties] before publishing. A nil
-	// CredentialFunc on a secured channel is not an error — the message is
-	// published without a credential, same as if the channel declared no
-	// security at all.
-	//
-	//	opts.CredentialFunc = func(ctx context.Context, msg *Reading, reqs []route.SecurityRequirement) ([]mqtt5.UserProperty, error) {
-	//	    return []mqtt5.UserProperty{{Key: "Authorization", Value: "Bearer " + token}}, nil
-	//	}
-	CredentialFunc func(ctx context.Context, msg *T, reqs []route.SecurityRequirement) ([]UserProperty, error)
 }
 
 // Subscribe subscribes to handle.Topic and dispatches messages to fn.
@@ -329,7 +291,7 @@ func makeSubscribeMessageHandler[T any](
 			}
 		}
 
-		// User Property param validation (runs before SecurityFunc).
+		// User Property param validation (runs before security enforcement).
 		if propErr := validateUserProperties(msg, opts.UserPropertyParams); propErr != nil {
 			obs.RecordValidationError("user_property", stats.ConstraintName(propErr), userPropertyName(propErr))
 			obs.RecordSubscribe(msg.Topic, false, time.Since(start))
@@ -348,10 +310,10 @@ func makeSubscribeMessageHandler[T any](
 			secReqs = handle.GlobalSecurity
 		}
 		if len(secReqs) > 0 {
-			// Built-in codec-based credential check — runs BEFORE the
-			// optional custom SecurityFunc, mirroring adapters/nethttp's
-			// validateSecurityCredentials + SecurityFunc ordering exactly.
-			// A scheme with no Codec (or no
+			// Built-in codec-based credential check — runs BEFORE any
+			// declarative [events.Subscriber.SubscribeMW] security
+			// implementation, mirroring adapters/nethttp's
+			// validateSecurityCredentials ordering. A scheme with no Codec (or no
 			// entry in handle.SecuritySchemes) is skipped — "nil Codec
 			// means no format validation" (same contract as REST).
 			schemeTypes := make(map[string]route.SecurityScheme, len(handle.SecuritySchemes))
@@ -374,18 +336,6 @@ func makeSubscribeMessageHandler[T any](
 					opts.OnError(SubscribeError{Kind: KindSecurity, Topic: msg.Topic, Err: wrapped})
 				}
 				return
-			}
-			if opts.SecurityFunc != nil {
-				if err := opts.SecurityFunc(msgCtx, msg, secReqs); err != nil {
-					if secObs, ok := obs.(stats.SecurityObserver); ok {
-						secObs.RecordSecurityRejection(msg.Topic, firstScheme(secReqs))
-					}
-					obs.RecordSubscribe(msg.Topic, false, time.Since(start))
-					if opts.OnError != nil {
-						opts.OnError(SubscribeError{Kind: KindSecurity, Topic: msg.Topic, Err: events.SecurityError{Err: err}})
-					}
-					return
-				}
 			}
 		}
 
@@ -735,11 +685,11 @@ func validatePublishImplementationShapes[T any](impls []middleware.ClientImpleme
 //
 // MQTT 5 properties are set from [PublishOptions]: ContentType and UserProperties.
 //
-// Security/credential resolution (opts.CredentialFunc AND every attached
+// Security/credential resolution (every attached
 // [events.ChannelHandle.ClientImplementations] Fn from
-// [events.Publisher.PublishMW]) runs BEFORE msg is encoded — both
-// mechanisms get write-access to *msg (in-payload credential embedding),
-// so the encode step downstream observes any mutation. Every attached
+// [events.Publisher.PublishMW]) runs BEFORE msg is encoded — it gets
+// write-access to *msg (in-payload credential embedding), so the encode
+// step downstream observes any mutation. Every attached
 // ClientImplementations Fn is shape-validated EAGERLY via
 // [validatePublishImplementationShapes] before anything else runs.
 // General-purpose Fns wrap the internal "encode and transmit" step
@@ -840,16 +790,6 @@ func publish[T any](
 		userProps = append(userProps, UserProperty{Key: k, Value: v})
 	}
 	var credentialRan bool
-	if len(secReqs) > 0 && opts.CredentialFunc != nil {
-		var credProps []UserProperty
-		credProps, err = opts.CredentialFunc(ctx, &msg, secReqs)
-		if err != nil {
-			obs.RecordPublish(topic, false, time.Since(start))
-			return err
-		}
-		credentialRan = credProps != nil
-		userProps = append(userProps, credProps...)
-	}
 	if len(handle.ClientImplementations) > 0 {
 		var implProps []UserProperty
 		implProps, err = runPublishSecurityImpls(ctx, &msg, secReqs, handle.ClientImplementations)
@@ -865,11 +805,11 @@ func publish[T any](
 
 	// Validate the outgoing credential FORMAT before publishing — the
 	// client-side mirror of Subscribe's built-in check. Gated on
-	// credentialRan (CredentialFunc/a ClientImplementations Fn actually
-	// ran and returned something), NOT on len(secReqs) > 0 alone — a nil
-	// CredentialFunc, or one that deliberately returns (nil, nil) for "no
-	// credential needed", must stay a non-error (see Round-93's REST
-	// regression fix, mirrored here from day one).
+	// credentialRan (a ClientImplementations Fn actually ran and returned
+	// something), NOT on len(secReqs) > 0 alone — a ClientImplementations
+	// Fn that deliberately returns (nil, nil) for "no credential needed"
+	// must stay a non-error (see Round-93's REST regression fix, mirrored
+	// here from day one).
 	if len(secReqs) > 0 && credentialRan {
 		schemeTypes := make(map[string]route.SecurityScheme, len(handle.SecuritySchemes))
 		schemeCodecs := make(map[string]*codex.Codec[string], len(handle.SecuritySchemes))

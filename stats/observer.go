@@ -669,8 +669,21 @@ func (NoopObserver) EndSpan(_ context.Context, _ error)                         
 //   - [codex.ValidationErrors]  — each entry reports its field and constraint.
 //   - [codex.KeyError]          — reports the failing map key as the field.
 //   - [codex.ElementError]      — reports the slice index as the field (e.g. "[2]").
+//   - [codex.ParamError]        — reports the param name as the field (this is
+//     the shared foundation of every "{varName}" template-var mechanism in
+//     go-codex: [rest.PathParamError], [events.TopicParamError],
+//     [reqreply.RouteParamError] are all type ALIASES of this exact type).
+//   - [codex.MissingParamError] — reports the param name as the field, with
+//     constraint "required" (the alias-based sibling of ParamError above —
+//     [rest.MissingPathVarError], [events.MissingTopicVarError],
+//     [reqreply.MissingRouteParamError]).
+//   - [codex.InvalidParamError] — reports the param name as the field, with
+//     constraint "declared-var-not-in-template" (a declare-time check —
+//     [rest.InvalidPathParamError] etc. — included here for completeness,
+//     though it typically surfaces at Register/Handle construction time, not
+//     through a per-request Observer call).
 //
-// For all three, the walker recurses into the wrapped cause so nested errors
+// For all six, the walker recurses into the wrapped cause so nested errors
 // (e.g. a KeyError whose cause is a ValidationErrors) are fully reported.
 // Any other wrapped error is unwrapped and recursed into silently.
 func ReportErrors(obs ValidationObserver, location string, err error) {
@@ -699,6 +712,22 @@ func walkErrors(obs ValidationObserver, location string, err error) {
 	if errors.As(err, &ee) {
 		obs.RecordValidationError(location, ConstraintName(ee.Err), fmt.Sprintf("[%d]", ee.Index))
 		walkErrors(obs, location, ee.Err)
+		return
+	}
+	var pe codex.ParamError
+	if errors.As(err, &pe) {
+		obs.RecordValidationError(location, ConstraintName(pe.Err), pe.Name)
+		walkErrors(obs, location, pe.Err)
+		return
+	}
+	var mpe codex.MissingParamError
+	if errors.As(err, &mpe) {
+		obs.RecordValidationError(location, "required", mpe.Name)
+		return
+	}
+	var ipe codex.InvalidParamError
+	if errors.As(err, &ipe) {
+		obs.RecordValidationError(location, "declared-var-not-in-template", ipe.Name)
 		return
 	}
 	// Unwrap and recurse for any other wrapping error (e.g. forge.InputError).

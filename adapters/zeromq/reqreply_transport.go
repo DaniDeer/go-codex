@@ -139,8 +139,8 @@ func sendRouterHandlerErrorReplyReflect(sock FramedSocket, identity []byte, erro
 // Fn shape: zeromq has no raw-message-equivalent type (unlike mqtt5's
 // *pahomqtt5.Publish) to operate on instead, so the paired Fn reads/
 // writes the DECODED *Req directly — mirroring zeromq's OWN pub/sub
-// SecurityFunc/CredentialFunc shape exactly (plain error return, no
-// scope-grant map, unlike mqtt5's `(map[string][]string, error)`).
+// security-shaped SubscribeMW/PublishMW Fn shape exactly (plain error
+// return, no scope-grant map, unlike mqtt5's `(map[string][]string, error)`).
 // Because Req/Resp are only known at Serve/Attach RUNTIME (erased,
 // reflection-only dispatch), converting a reflect.Value holding a
 // decoded Req BY VALUE into an addressable *Req the Fn can read/write
@@ -154,8 +154,8 @@ func sendRouterHandlerErrorReplyReflect(sock FramedSocket, identity []byte, erro
 // precedence every other adapter uses. Unlike mqtt5, zeromq has no
 // built-in credential-FORMAT check layer (no SecuritySchemes/Codec
 // consultation) — the paired Fn is the ONLY enforcement mechanism,
-// mirroring zeromq's OWN pub/sub SecurityFunc/CredentialFunc precedent
-// (custom Fn only, no built-in check to run first).
+// mirroring zeromq's OWN pub/sub security-shaped SubscribeMW/PublishMW
+// precedent (custom Fn only, no built-in check to run first).
 func effectiveSecurity(elem reflect.Value) []route.SecurityRequirement {
 	reqs, _ := elem.FieldByName("Security").Interface().([]route.SecurityRequirement)
 	if reqs == nil {
@@ -169,8 +169,8 @@ func effectiveSecurity(elem reflect.Value) []route.SecurityRequirement {
 // func(context.Context, *Req, []route.SecurityRequirement) error — used
 // for BOTH the server-side security Fn (HandleMW) and the client-side
 // credential-supplying Fn (ClientMW); the shapes are IDENTICAL (mirrors
-// zeromq pub/sub's SecurityFunc/CredentialFunc, which also share one
-// shape both directions) — only the CALL SITE semantics differ (server:
+// zeromq pub/sub's security-shaped SubscribeMW/PublishMW Fn, which also
+// share one shape both directions) — only the CALL SITE semantics differ (server:
 // read, optionally enrich, before dispatch; client: write a credential,
 // before encode).
 func buildPairedSecurityFnType(reqType reflect.Type) reflect.Type {

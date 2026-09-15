@@ -354,14 +354,25 @@ go-codex/
     ├── adapters-templ/         # templ SSR: same route serves HTML and JSON; observer wired
     └── png-upload/             # binary payload upload + download: format.Binary, validate.PNG, codex.Bytes()
     │
-    │   # ── Events / MQTT (Layer 2) ─────────────────────────────────────────────
+    │   # ── Events / MQTT / ZeroMQ (Layer 2) ─────────────────────────────────────
     ├── api-events/             # Event channel builder: typed helpers + AsyncAPI spec
+    ├── events-nested-binary/   # merge-field/non-JSON-format demo (events analogue of rest-nested-binary)
     ├── event-driven/           # full AsyncAPI 2.6 document from channel descriptors
-    ├── adapters-mqtt/          # Paho MQTT 3.1.1: three-layer pipeline, multi-format pub/sub, wildcard
-    ├── adapters-mqtt-security/ # Paho MQTT: security credentials, SecurityFunc, observer
-    ├── adapters-mqtt-contract/ # codec-as-contract MQTT: shared contract/, producer + consumer
-    │   └── contract/           #   shared Channel specs, codecs, types (importable by both sides)
-    ├── adapters-mqtt5/         # MQTT 5.0 PUB/SUB: User Properties, ContentType, UserPropertyParam
+    ├── events-api/             # declare→assemble pub/sub project across mqtt v3/mqtt5/zeromq:
+    │   │                       # routes/, handlers/, observability/, mqtt5broker/, mqttbroker/,
+    │   │                       # zeromqbroker/, client/ packages; Client.Attach workflow, handle-
+    │   │                       # based escape hatch, three-layer domain-boundary pipeline,
+    │   │                       # wildcard subscription, User Properties/ContentType/
+    │   │                       # UserPropertyParam, connect-level + SubscribeMW/PublishMW
+    │   │                       # message-level security, events.ErrorChannel, events.Observability[T],
+    │   │                       # ZeroMQ PUB/SUB roundtrip, AsyncAPI spec printing (zero drift)
+    │   ├── routes/             #   THE shared contract: domain codecs, channel declarations
+    │   ├── handlers/           #   implement: adapter-agnostic business logic + per-adapter security
+    │   ├── observability/      #   this example's own stats.Observer implementation
+    │   ├── mqtt5broker/        #   assemble (mqtt5): Attach + mock broker/router
+    │   ├── mqttbroker/         #   assemble (mqtt v3): Attach + mock client
+    │   ├── zeromqbroker/       #   assemble (zeromq PUB/SUB): Attach + mock PipeSocket pair
+    │   └── client/             #   assemble (client): mqtt5/mqtt/zeromq Attach* per-adapter variants
     └── gob-contract/           # Go library as contract: gob wire encoding, no code-gen
         └── contract/           #   shared Channel, codec, Gob format — compiler-enforced contract
     │
@@ -377,9 +388,6 @@ go-codex/
     │   ├── zeromqserver/       #   assemble (zeromq REQ/REP): AttachServer + 3 socket pairs
     │   ├── zeromqrouterserver/ #   assemble (zeromq ROUTER/DEALER): AttachRouterServer
     │   └── client/             #   assemble (client): mqtt5/zeromq Attach* + per-mode variants
-    │
-    │   # ── ZeroMQ (Layer 2) ─────────────────────────────────────────────────────
-    └── adapters-zeromq/            # ZeroMQ PUB/SUB: three-layer pipeline, FramedSocket, observer
     │
     │   # ── MCP (Layer 2) ────────────────────────────────────────────────────────
     ├── adapters-mcp/           # MCP server: Tools, Resources, Prompts, MCPSpec, observer

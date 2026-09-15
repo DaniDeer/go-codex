@@ -13,7 +13,11 @@
 //	                       (per-route business logic) — the shipped,
 //	                       library-owned [reqreply.Observability] general-
 //	                       purpose middleware is used directly at every
-//	                       .HandleMW/.ClientMW attachment point below (see
+//	                       zeromqserver/zeromqrouterserver/demo .HandleMW/
+//	                       .ClientMW attachment point (mqtt5server attaches
+//	                       none — its server-side ctx-ambient Observer,
+//	                       injected once below, already covers it; see
+//	                       mqtt5server.Build's own doc comment and
 //	                       docs/features/observer.md's reqreply section).
 //	mqtt5server/          — assembles routes/+handlers/ onto adapters/mqtt5
 //	                       (in-process mock broker, no real MQTT 5 broker
@@ -75,7 +79,7 @@ func main() {
 	// synchronously — but ONLY once its dispatch goroutine (started by
 	// Server.Serve above) actually runs; a brief sleep here avoids a
 	// startup race against the very first Client.Call below (mirrors
-	// examples/adapters-mqtt5's own time.Sleep(50ms) convention after
+	// examples/events-api's own time.Sleep(20-50ms) convention after
 	// registering a handler/subscription).
 	time.Sleep(50 * time.Millisecond)
 

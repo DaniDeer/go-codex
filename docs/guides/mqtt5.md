@@ -2,7 +2,7 @@
 
 > See also: [`adapters/mqtt5` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mqtt5) · [`api/reqreply`](../concepts/api-contracts.md) · [`api/events`](../concepts/api-contracts.md) · [Feature: Metrics Observer](../features/observer.md) · [MQTT 3.1.1 Examples](mqtt.md)
 >
-> **Runnable demo**: [`examples/adapters-mqtt5`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt5) — leads with the PREFERRED `Client.Attach` + `Client.Publish`/`.Subscribe` workflow (Demo 1, spec printed for free from the same client), then showcases the handle-based escape hatch for User Properties, UserPropertyParam validation, and ContentType auto-format. Request-Reply now lives in its own dedicated project: [`examples/reqreply-api`](https://github.com/DaniDeer/go-codex/tree/main/examples/reqreply-api).
+> **Runnable demo**: [`examples/events-api`](https://github.com/DaniDeer/go-codex/tree/main/examples/events-api) — a multi-adapter project covering mqtt5 alongside mqtt v3/zeromq. `demo_client_attach_workflow.go` leads with the PREFERRED `Client.Attach` + `Client.Publish`/`.Subscribe` workflow (spec printed for free from the same client); `demo_user_property_middleware.go` showcases the handle-based escape hatch for User Properties, UserPropertyParam validation, and ContentType auto-format; `demo_connect_level_security.go` covers `mqtt5.NewSecuredClient`. Request-Reply lives in its own dedicated project: [`examples/reqreply-api`](https://github.com/DaniDeer/go-codex/tree/main/examples/reqreply-api).
 
 `adapters/mqtt5` provides codec-backed adapters for **MQTT 5.0** using the [`paho.golang`](https://github.com/eclipse/paho.golang) library. It follows the same **declare → register → handle → adapt** pattern as `adapters/mqtt`, `adapters/nethttp`, and `adapters/zeromq`.
 
@@ -548,7 +548,7 @@ if errors.As(err, &encErr) {
 
 - [`adapters/mqtt5` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mqtt5)
 - [`api/reqreply` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/reqreply)
-- [examples/adapters-mqtt5](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt5) — runnable demo: Client.Attach (preferred), User Properties, UserPropertyParam codec validation, ContentType auto-format, AsyncAPI specs
+- [examples/events-api](https://github.com/DaniDeer/go-codex/tree/main/examples/events-api) — runnable demo: Client.Attach (preferred), User Properties, UserPropertyParam codec validation, ContentType auto-format, connect-level security, AsyncAPI specs (mqtt5 alongside mqtt v3/zeromq)
 - [examples/reqreply-api](https://github.com/DaniDeer/go-codex/tree/main/examples/reqreply-api) — request-reply over MQTT 5 AND ZeroMQ: `Client.Attach`/`Server.Attach` workflow, dual-mode `Client.Call`, concurrent multi-route dispatch, route-level + global security, `CallAsync`/`Future`, AsyncAPI spec printing
 - [MQTT 3.1.1 Examples](mqtt.md)
 - [Concept: Codec Layers as Observable Layers](../concepts/observable-layers.md)

@@ -444,29 +444,43 @@ func TestPublish_RejectsMalformedPublishMWShape(t *testing.T) {
 	}
 }
 
-func TestSubscribeWithHandle_SecurityFunc_Rejects(t *testing.T) {
+func TestSubscribeWithHandle_SecurityImpl_Rejects(t *testing.T) {
+	// REPLACES the OLD TestSubscribeWithHandle_SecurityFunc_Rejects
+	// (SubscribeOptions.SecurityFunc was removed entirely, Phase 2 of
+	// docs/design/d-0002-pubsub-workflow-simplification.md's Addendum) — the SAME scenario now
+	// runs through an UNPAIRED (mw=nil), general-purpose, security-shaped
+	// SubscribeMW implementation Fn, which runs unconditionally regardless
+	// of declared security (mirrors mqtt5/mqtt's own unpaired-Fn
+	// precedent).
 	sock := &mockSocket{
 		inFrames: [][][]byte{{[]byte("sensors/readings"), []byte(validSensorJSON)}},
 	}
-	handle := newSubscribeHandle()
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	impl := func(_ context.Context, _ *sensorReading, _ []route.SecurityRequirement) error {
+		return errors.New("rejected")
+	}
+	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
+		WithSubscribe(events.Subscribe{Summary: "Sensor reading received"}).
+		SubscribeMW(nil, impl).
+		Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	called := false
-	err := subscribeWithHandle(ctx, sock, handle,
+	subErr := subscribeWithHandle(ctx, sock, handle,
 		func(_ context.Context, _ sensorReading) error { called = true; return nil },
-		SubscribeOptions[sensorReading]{
-			SecurityFunc: func(_ context.Context, _ *sensorReading, _ []route.SecurityRequirement) error {
-				return errors.New("rejected")
-			},
-		})
-	if err != nil {
+		SubscribeOptions[sensorReading]{})
+	if subErr != nil {
 		// SubscribeWithHandle's own loop returns nil on ctx-timeout; the
 		// rejection is delivered via OnError, not the return value —
 		// tolerate either.
-		t.Logf("SubscribeWithHandle returned: %v", err)
+		t.Logf("SubscribeWithHandle returned: %v", subErr)
 	}
 	if called {
-		t.Fatal("handler must not run when SecurityFunc rejects")
+		t.Fatal("handler must not run when the security implementation rejects")
 	}
 }
 
@@ -478,7 +492,7 @@ func TestObservability_WrapsSubscribeHandler(t *testing.T) {
 	}
 	obs := &testObserver{}
 	sub := sensorChannel("sensors/readings").WithSubscribe(events.Subscribe{}).
-		SubscribeMW(nil, Observability[sensorReading](obs))
+		SubscribeMW(nil, events.Observability[sensorReading](obs))
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	builtHandle, err := sub.Handle(b)
 	if err != nil {
@@ -501,7 +515,7 @@ func TestObservability_PublishSide(t *testing.T) {
 	obs := &testObserver{}
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	pub := sensorChannel("sensors/readings").WithPublish(events.Publish{}).
-		PublishMW(nil, Observability[sensorReading](obs))
+		PublishMW(nil, events.Observability[sensorReading](obs))
 	handle, err := pub.Handle(b)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)

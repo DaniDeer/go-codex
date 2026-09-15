@@ -116,4 +116,4 @@ The three-layer pattern above is for **cross-boundary mappings** (HTTP request �
 - [Feature: REST API & HTTP Adapters](../features/rest-api.md) — three-layer pipeline in HTTP context
 - [Feature: Event Channels & MQTT](../features/events.md) — same pattern for event-driven systems
 - [examples/rest-api](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-api) — full three-layer pipeline demo with `UserStore`, pure domain functions, and both net/http and chi adapters
-- [examples/adapters-mqtt](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt) — three-layer pipeline for MQTT (MeasurementEvent → TSDB → AlertEvent)
+- [examples/events-api/demo_domain_boundary_pipeline.go](https://github.com/DaniDeer/go-codex/blob/main/examples/events-api/demo_domain_boundary_pipeline.go) — three-layer pipeline for MQTT (MeasurementEvent → TSDB → AlertEvent)

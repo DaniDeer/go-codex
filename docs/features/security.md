@@ -2,7 +2,7 @@
 
 > See also: [`route` package on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/route)
 >
-> Runnable demos: [`examples/rest-api`](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-api) (bearer JWT + scopes, both chi and net/http servers) · [`examples/adapters-mqtt-security`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt-security) · [`examples/adapters-mqtt5`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt5) (Demo 3: message-level; Demo 3b: connect-level `SecuredClient`)
+> Runnable demos: [`examples/rest-api`](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-api) (bearer JWT + scopes, both chi and net/http servers) · [`examples/events-api`](https://github.com/DaniDeer/go-codex/tree/main/examples/events-api) (`demo_security_subscribemw.go`: message-level security across mqtt v3/mqtt5/zeromq; `demo_connect_level_security.go`: connect-level `SecuredClient`)
 >
 > `api/mcp` has NO security methods by deliberate, permanent design — MCP
 > security is handled by the host application (its own OAuth flow, or
@@ -68,17 +68,19 @@ security layers exist:
    `ConnectSecurityCredentialError` and the underlying client is never
    touched. `*SecuredClient` satisfies `MQTTClient`/`pahomqtt.Client`
    transparently via Go struct embedding — no other code changes needed.
-2. **Message-level** (`WithSecurityScheme` + `SecurityFunc`/
-   `CredentialFunc`, shipped — MQTT5-only, see below) — opt-in, per-message
-   codec-validated credentials, needed when ONE connection carries traffic
-   for MULTIPLE logical identities (e.g. a gateway relaying many devices'
-   messages over one shared broker connection) and broker ACLs alone can't
+2. **Message-level** (`WithSecurityScheme` + a security-shaped
+   `SubscribeMW`/`PublishMW`-paired implementation, shipped for MQTT v3,
+   MQTT5, AND ZeroMQ — see below) — opt-in, per-message codec-validated
+   credentials, needed when ONE connection carries traffic for MULTIPLE
+   logical identities (e.g. a gateway relaying many devices' messages
+   over one shared broker connection) and broker ACLs alone can't
    distinguish between them.
 
 Both layers are independent and composable — use connection-level ACLs for
-coarse-grained, per-connection authorization, and message-level
-`SecurityFunc`/`CredentialFunc` for fine-grained, per-message claims within
-a single shared connection. Neither requires the other.
+coarse-grained, per-connection authorization, and a message-level
+`SubscribeMW`/`PublishMW`-paired implementation for fine-grained,
+per-message claims within a single shared connection. Neither requires
+the other.
 
 ### TLS / transport encryption is always the caller's own concern
 
@@ -511,26 +513,61 @@ BEFORE the message is actually published, mirroring
 
 MQTT 3.1.1 (`adapters/mqtt`) has no per-message metadata channel, so
 User-Property-style codec extraction only applies to MQTT5 — but message-level
-security is NOT absent for MQTT 3.1.1: `SubscribeOptions.SecurityFunc`
-(subscribe side, `func(ctx, msg pahomqtt.Message, reqs) error`) and
-`PublishOptions.CredentialFunc` (publish side, `func(ctx, msg *T, reqs) error`,
-gaining WRITE-ACCESS to the outgoing payload) both exist — the publish-side
-credential is embedded as an ordinary field in the codec-decoded payload
-itself, rather than a protocol-native side channel, closing what was
-originally a real MQTT 3.1.1 publish-side gap. Use connection-level
-`mqtt.SecuredClient` for connection-level (not message-level) enforcement.
+security is NOT absent for MQTT 3.1.1. The OLD imperative
+`SubscribeOptions.SecurityFunc`/`PublishOptions.CredentialFunc` escape
+hatch was **removed entirely** (BREAKING — see
+[D-0002](../design/d-0002-pubsub-workflow-simplification.md)'s own
+"Addendum: Observability Core Consolidation, `SecurityFunc` Retirement,
+and `examples/events-api`"): message-level security now lives ONLY in a
+security-shaped
+`SubscribeMW`/`PublishMW`-paired implementation Fn, the SAME declarative
+mechanism mqtt5 uses above:
 
-**ZeroMQ pub/sub (`adapters/zeromq`) now has a message-level security
-mechanism too**, via the SAME in-payload write-access pattern as MQTT 3.1.1:
-`SubscribeOptions.SecurityFunc`/`PublishOptions.CredentialFunc`
-(`func(ctx, msg *T, reqs) error`, both directions — ZeroMQ's `[topic,
-payload]` frames carry nothing beyond what's already decoded into `T`, so
-there's no separate raw-message parameter unlike `mqtt`/`mqtt5`'s subscribe
-side). There is still no connection-level `SecuredClient` equivalent for
-ZeroMQ (its base REQ/REP/PUB/SUB patterns have no CONNECT-time credential
-handshake to validate) — a permanent, deliberate, researched exclusion
-(CURVE/ZAP is the caller's own concern), plus a CLOSED optional
-out-of-band frame-based mechanism question (no driver ever surfaced); see
+```go
+// mqtt v3's paired Fn shape: func(ctx, pahomqtt.Message, *T) (map[string][]string, error)
+// — receives the raw pahomqtt.Message directly, since MQTT 3.1.1 carries no
+// User Properties to extract a credential from automatically. The
+// credential itself is typically captured in a CLOSURE at CONNECT time
+// (recommended for Paho) or read from an in-payload field on *T (write
+// access lets it be embedded there too, if needed).
+mqttSecurityImpl := func(credential string) func(context.Context, pahomqtt.Message, *SensorReading) (map[string][]string, error) {
+    return func(_ context.Context, _ pahomqtt.Message, _ *SensorReading) (map[string][]string, error) {
+        if !validAPIKeys[credential] {
+            return nil, fmt.Errorf("unknown API key %q", credential)
+        }
+        return map[string][]string{"apiKeyAuth": {}}, nil
+    }
+}
+sub := sensorDataSub.Use(apiKeyAuthMW).SubscribeMW(&apiKeyAuthMW, mqttSecurityImpl("sensor-key-abc123"))
+```
+
+Use connection-level `mqtt.SecuredClient` for connection-level (not
+message-level) enforcement. See
+[`examples/events-api/handlers/security.go`](https://github.com/DaniDeer/go-codex/blob/main/examples/events-api/handlers/security.go)'s
+`MQTTSecurityImpl` for the full runnable pattern (mirrors Pattern 1 —
+closure — from the now-retired `adapters-mqtt-security` example).
+
+**ZeroMQ pub/sub (`adapters/zeromq`) has a message-level security
+mechanism too** — the OLD `SubscribeOptions.SecurityFunc`/
+`PublishOptions.CredentialFunc` fields were likewise **removed entirely**
+(same Phase 2 as above). The paired Fn shape is
+`func(ctx, *T, []route.SecurityRequirement) error` (plain error return, no
+scope-grant map, unlike mqtt/mqtt5's shape) — ZeroMQ's `[topic, payload]`
+frames carry nothing beyond what's already decoded into `T`, so a
+production route needs an in-payload credential field (e.g. a `Token
+string` field) for the implementation to read/write, since there's no
+raw-message parameter to extract one from. See
+[`examples/events-api/handlers/security.go`](https://github.com/DaniDeer/go-codex/blob/main/examples/events-api/handlers/security.go)'s
+`ZeromqSecurityImpl` for the shape demonstrated without a real credential
+field, and
+[`examples/reqreply-api/routes/routes.go`](https://github.com/DaniDeer/go-codex/blob/main/examples/reqreply-api/routes/routes.go)'s
+`OAuthComputeReq` for the in-payload-field pattern applied for real (reqreply,
+not pub/sub, but the SAME shape). There is still no connection-level
+`SecuredClient` equivalent for ZeroMQ (its base REQ/REP/PUB/SUB patterns
+have no CONNECT-time credential handshake to validate) — a permanent,
+deliberate, researched exclusion (CURVE/ZAP is the caller's own concern),
+plus a CLOSED optional out-of-band frame-based mechanism question (no
+driver ever surfaced); see
 [D-0004](../design/d-0004-reqreply-workflow-simplification.md)'s Addendum
 for the full rationale (the original tracking doc,
 `zeromq-security.md`, has since shipped and been deleted per its own
@@ -640,8 +677,9 @@ bridge), and required vs. optional properties are a first-class choice
 **zeromq** — same `.Use()`/`HandleMW`/`ClientMW` declare/implement split,
 but the paired Fn shape reads/writes the decoded `*Req` directly (no raw
 message exists to operate on instead, unlike mqtt5's `*pahomqtt5.
-Publish`) — mirrors zeromq's OWN pub/sub `SecurityFunc`/`CredentialFunc`
-shape exactly (plain `error`, no scope-grant map):
+Publish`) — mirrors zeromq's OWN pub/sub security-shaped
+`SubscribeMW`/`PublishMW` Fn shape exactly (plain `error`, no scope-grant
+map):
 
 ```go
 type ComputeReq struct{ X, Y int; Token string }

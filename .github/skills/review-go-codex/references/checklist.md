@@ -324,6 +324,37 @@ doesn't wrap a typed sentinel is a finding.
 
 **Check**: in each adapter (`adapter.go`), verify Observer is called in both success and error branches.
 
+### General-purpose `Observability` decorator family (declare-time attachment, distinct from direct `Options.Observer` wiring)
+
+A SEPARATE mechanism from the direct-field wiring above: a ready-made
+`func(next Fn) Fn`-shaped closure attached via each boundary's OWN
+general-purpose (unpaired) declaration surface —
+`route.HandleMW(nil, fn)`/`route.ClientMW(nil, fn)` (REST, reqreply) or
+`sub.SubscribeMW(nil, fn)`/`pub.PublishMW(nil, fn)` (events pub/sub) —
+composable alongside a PAIRED security implementation on the same
+route/channel.
+
+| Package | Symbol | Shape | Notes |
+|---|---|---|---|
+| `adapters/nethttp` | `Observability(obs) func(http.Handler) http.Handler` | wraps the WHOLE call | calls `RecordRequest`+`TraceObserver` span itself (only place doing so for the wrapped call); `adapters/chi` reuses it UNCHANGED — no `chi.Observability` exists |
+| `api/events` (CORE package, not an adapter) | `Observability[T](obs) func(func(ctx,T)error) func(ctx,T)error` | pub/sub | ctx-inject + Diagnostics drain ONLY — does NOT call `RecordSubscribe`/`RecordPublish` itself (done by the adapter wrappers below, or directly by an adapter's own subscribe/publish dispatch) |
+| `adapters/mqtt5`/`adapters/mqtt` | `Observability[T](topic, obs) func(func(ctx,T)error) func(ctx,T)error` | pub/sub | THINNED wrappers delegating to `events.Observability[T]` for the shared ctx-inject/Diagnostics-drain part, then ADDITIONALLY calling `RecordSubscribe`/`RecordPublish` + a `TraceObserver` span, using `MessageFromContext` for adapter-specific direction detection — the genuinely adapter-specific remainder that cannot move into `api/events` |
+| `adapters/zeromq` | — (REMOVED) | pub/sub | had ZERO adapter-specific code (ctx-inject + Diagnostics drain only) — consolidated into `api/events.Observability[T]` directly, no zeromq-owned wrapper remains; callers use `events.Observability[T]` directly |
+| `api/reqreply` (CORE package, not an adapter) | `Observability[Req, Resp](obs) func(func(ctx,Req)(Resp,error)) func(ctx,Req)(Resp,error)` | reqreply | lives in the CORE package because zeromq's server+client AND mqtt5's client general decorators share this EXACT shape — ONE implementation, zero adapter duplication; deliberately does NOT call `RecordRequest`/start a `TraceObserver` span (every reqreply adapter transport already does both on every dispatch path — avoids double-counting); mqtt5's SERVER side has no equivalent (its raw pre-decode handler has no ctx to inject into — see `docs/features/observer.md`'s reqreply section) |
+
+**Check**: do not flag `events.Observability[T]`'s lack of
+`RecordSubscribe`/`RecordPublish`, or `reqreply.Observability`'s lack of
+`RecordRequest`/`TraceObserver`, as missing coverage — both are
+deliberate non-duplication decisions, documented in each symbol's own
+godoc. This consolidation (breaking removal of the old
+`zeromq.Observability[T]`, `mqtt5`/`mqtt` wrappers thinned to delegate to
+`events.Observability[T]`) is ALREADY SHIPPED — see
+`docs/design/d-0002-pubsub-workflow-simplification.md`'s own Addendum
+("Observability Core Consolidation, `SecurityFunc` Retirement, and
+`examples/events-api`") for the full design record. Do not propose
+re-splitting `api/events.Observability[T]` back into a per-adapter
+implementation.
+
 ### Separation of concerns — metrics vs logging
 
 Observer implementations must **not mix** metric counting with slog logging. The canonical pattern uses the library-provided types:
@@ -602,11 +633,11 @@ for user-facing docs.
   identically to one declared directly via `rest.NewRoute`/`events.NewChannel` — no ports-specific
   wiring needed since `Pattern.Opts` is a thin `RouteOpt`/`ChannelOpt` pass-through. A NEW pattern
   type that fails this parity (e.g. silently drops error-pattern opts) is a `bug`.
-- **Examples exist and must stay in sync**: `examples/adapters-mqtt5` (events.ErrorChannel via
-  `ports.SinkPort`+`PublishAdapter`), `examples/websocket-duplex` (websocket.ErrorFrame broadcast),
-  `examples/redis-cache` (SQL/Cache/File composition pattern). If you touch any of these files for an
-  unrelated reason, verify the error-path demo section still builds/runs (`go build` + `go run`
-  clean exit).
+- **Examples exist and must stay in sync**: `examples/events-api` (`demo_error_path_ergonomics.go`
+  — events.ErrorChannel via `ports.SinkPort`+`PublishAdapter`), `examples/websocket-duplex`
+  (websocket.ErrorFrame broadcast), `examples/redis-cache` (SQL/Cache/File composition pattern). If
+  you touch any of these files for an unrelated reason, verify the error-path demo section still
+  builds/runs (`go build` + `go run` clean exit).
 - **`declare → PluginXxxPattern → Bind` is consumption-style-agnostic — do not propose parallel
   plain-Go-only port constructors.** `SourcePort`/`SinkPort`/`LatestPort`/`DuplexPort` already
   satisfy the "plain idiomatic Go, no forge/gstream" consumption style via existing methods:

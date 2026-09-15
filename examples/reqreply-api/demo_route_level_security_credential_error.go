@@ -33,8 +33,8 @@ func malformedBearerCredFn(context.Context, []route.SecurityRequirement) ([]mqtt
 // which declares its OWN Security via .Use(routes.BearerAuthMw) (not
 // relying on GlobalSecurity), called with a deliberately malformed/
 // missing credential — demonstrating reqreply.SecurityCredentialError
-// surfacing via errors.As, mirroring examples/adapters-mqtt5's own
-// runSecurityDemo. Each credential Fn is attached to its OWN Route
+// surfacing via errors.As, mirroring examples/events-api's own
+// security demos. Each credential Fn is attached to its OWN Route
 // variant (via .ClientMW) — [Route] is immutable, so
 // routes.SecuredComputeRoute.ClientMW(...) called twice with different
 // Fns produces two independent Go values sharing the same topic, exactly

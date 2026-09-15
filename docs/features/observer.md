@@ -2,7 +2,7 @@
 
 > See also: [`stats` package on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/stats) · [Guide: Using the Observer Pattern](../guides/observer.md) · [http-trace-span-propagation example](https://github.com/DaniDeer/go-codex/tree/main/examples/http-trace-span-propagation)
 >
-> Runnable demos: [`examples/stats-observer`](https://github.com/DaniDeer/go-codex/tree/main/examples/stats-observer) · [`examples/rest-api`](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-api) · [`examples/adapters-mqtt`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-mqtt) · [`examples/flat-key-patch`](https://github.com/DaniDeer/go-codex/tree/main/examples/flat-key-patch) · [`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service) — multi-adapter observer across HTTP, MQTT, and SQL in one fanout
+> Runnable demos: [`examples/stats-observer`](https://github.com/DaniDeer/go-codex/tree/main/examples/stats-observer) · [`examples/rest-api`](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-api) · [`examples/events-api`](https://github.com/DaniDeer/go-codex/tree/main/examples/events-api) · [`examples/flat-key-patch`](https://github.com/DaniDeer/go-codex/tree/main/examples/flat-key-patch) · [`examples/sensor-service`](https://github.com/DaniDeer/go-codex/tree/main/examples/sensor-service) — multi-adapter observer across HTTP, MQTT/zeromq, and SQL in one fanout
 
 The observer pattern is go-codex's unified observability layer across **all layers** of the library: codecs, adapters, formats (files), forge, and SQL. It provides structured hooks for three observability signals — **metrics, logging, and distributed tracing** — with no library dependency.
 
@@ -255,3 +255,45 @@ Declarative routes/channels and middleware *declarations* themselves
 need no Observer involvement at all — only the *implementation* Fn
 (`HandleMW`/`ClientMW`'s second argument) executes real code, so that is
 the only place an Observer call belongs.
+
+### `api/events.Observability`/adapter-thinned wrappers — pub/sub's shared observer core
+
+`api/events` ships the adapter-agnostic core of pub/sub's general-purpose
+observer wrapper —
+[`events.Observability[T]`](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/events#Observability) —
+attached via the existing general-purpose (unpaired)
+`.SubscribeMW(nil, fn)`/`.PublishMW(nil, fn)` mechanism, the pub/sub
+analogue of `reqreply.Observability` above:
+
+```go
+sub.SubscribeMW(nil, events.Observability[T](obs))
+pub.PublishMW(nil, events.Observability[T](obs))
+```
+
+It injects `obs` into ctx via `stats.WithObserver` and drains
+`stats.DiagnosticsFromContext` into `RecordValidationError` after the
+wrapped handler returns — the exact same shape as `reqreply.Observability`.
+Unlike reqreply, though, pub/sub's 3 adapters do NOT all share one
+implementation unchanged:
+
+- **`adapters/zeromq`** uses `events.Observability[T]` directly — its own
+  former `Observability[T]` was confirmed to have zero zeromq-specific
+  code, so it moved into the core package unchanged (a breaking removal;
+  callers switch imports with no other code change).
+- **`adapters/mqtt5`** and **`adapters/mqtt`** (v3) each keep their OWN
+  `Observability[T](topic string, obs stats.Observer)` wrapper — thinned
+  to delegate the shared ctx-inject/Diagnostics-drain part to
+  `events.Observability[T](obs)` internally, then adding the genuinely
+  adapter-specific remainder on top: `RecordSubscribe`/`RecordPublish` +
+  a `TraceObserver` span + `MessageFromContext`-based direction
+  detection (subscribe vs. publish). This mirrors `reqreply.Observability`'s
+  own "adapter transport already records lifecycle events, so the shared
+  core deliberately does not" rationale — only here the "adapter
+  transport" logic (recording `RecordSubscribe`/`RecordPublish`) lives in
+  the thin wrapper itself, not a separate dispatch function, since pub/sub
+  has no dedicated `Serve`-style entry point comparable to reqreply's.
+
+See
+[`examples/events-api`](https://github.com/DaniDeer/go-codex/tree/main/examples/events-api)
+for the full runnable demonstration, mirroring `reqreply-api`'s own
+`observability/` package + demo layout.

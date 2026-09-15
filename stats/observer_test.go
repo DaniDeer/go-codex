@@ -169,6 +169,55 @@ func TestReportErrors_NestedKeyError_ThroughUnwrap(t *testing.T) {
 	}
 }
 
+// TestReportErrors_ParamError_RealisticConstraintFailure reproduces the O1
+// gap found in the reqreply/events/rest Observer review: codex.Codec.Validate
+// (the real-world source of a ParamError's own Err field) returns a plain
+// codex.ConstraintError, which has NO Unwrap() — before this fix, the walker
+// fell through every handled case and silently produced zero
+// RecordValidationError calls, even though the error was a genuine,
+// realistic param validation failure.
+func TestReportErrors_ParamError_RealisticConstraintFailure(t *testing.T) {
+	c := codex.String().Refine(validate.MinLen(5))
+	verr := c.Validate("ab")
+	if verr == nil {
+		t.Fatal("expected constraint validation error")
+	}
+	paramErr := codex.ParamError{Name: "tenant_id", Value: "ab", Err: verr}
+
+	obs := &capturingObserver{}
+	stats.ReportErrors(obs, "topic_var", paramErr)
+	assertCalls(t, obs, []validationCall{
+		{"topic_var", "minLen(5)", "tenant_id"},
+	})
+}
+
+// TestReportErrors_MissingParamError reproduces O1's other confirmed gap:
+// a codex.MissingParamError (the "{varName}" placeholder had no vars-map
+// entry" case — the shared foundation of rest.MissingPathVarError,
+// events.MissingTopicVarError, reqreply.MissingRouteParamError) produced
+// zero RecordValidationError calls before this fix, despite being a
+// completely realistic runtime case (a caller forgetting to supply a
+// required path/topic/route var).
+func TestReportErrors_MissingParamError(t *testing.T) {
+	obs := &capturingObserver{}
+	stats.ReportErrors(obs, "topic_var", codex.MissingParamError{Name: "tenant_id"})
+	assertCalls(t, obs, []validationCall{
+		{"topic_var", "required", "tenant_id"},
+	})
+}
+
+// TestReportErrors_InvalidParamError covers the third alias sibling —
+// typically surfaces at Register/Handle construction time (a declared
+// Param's Name absent from the template), included for completeness even
+// though it's less likely to reach a per-request Observer call in practice.
+func TestReportErrors_InvalidParamError(t *testing.T) {
+	obs := &capturingObserver{}
+	stats.ReportErrors(obs, "topic_var", codex.InvalidParamError{Name: "tenant_id", Template: "sensors/{id}"})
+	assertCalls(t, obs, []validationCall{
+		{"topic_var", "declared-var-not-in-template", "tenant_id"},
+	})
+}
+
 func TestConstraintName_KeyError(t *testing.T) {
 	pattern := regexp.MustCompile(`^[a-z]+-\d+$`)
 	keyCodec := codex.String().Refine(validate.Pattern(pattern))

@@ -247,7 +247,8 @@ SubscribeMW/PublishMW wrapping — use `events.SubscribeHandle`/`events.PublishH
 `zeromq.NewSubscribeTransport`/`zeromq.NewPublishTransport` directly for those, per Decision 7
 of `docs/design/d-0002-pubsub-workflow-simplification.md`; `Attach`'s internal transport wraps the
 same underlying logic those transports expose).
-`examples/adapters-zeromq` demonstrates this workflow end to end.
+[`examples/events-api`](https://github.com/DaniDeer/go-codex/tree/main/examples/events-api)'s
+`demo_zeromq_pubsub_roundtrip.go` demonstrates this workflow end to end.
 
 ### AsyncAPI spec
 
@@ -580,6 +581,6 @@ client.SetOption(zmq4.PLAIN_PASSWORD, "mypass")
 - [Concept: Codec Layers as Observable Layers](../concepts/observable-layers.md)
 - [Concept: API Contracts](../concepts/api-contracts.md)
 - [Feature: Metrics Observer](../features/observer.md)
-- [examples/adapters-zeromq](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-zeromq) — PUB/SUB demo
+- [examples/events-api](https://github.com/DaniDeer/go-codex/tree/main/examples/events-api) — PUB/SUB demo (zeromq alongside mqtt v3/mqtt5)
 - [examples/reqreply-api](https://github.com/DaniDeer/go-codex/tree/main/examples/reqreply-api) — `api/reqreply`'s `Client.Attach`/`Server.Attach` workflow: REQ/REP AND ROUTER/DEALER, dual-mode `Client.Call`, concurrent multi-route dispatch, route-level + global security, `CallAsync`/`Future`, AsyncAPI spec printing
 - [pebbe/zmq4](https://github.com/pebbe/zmq4) — recommended ZMQ Go binding

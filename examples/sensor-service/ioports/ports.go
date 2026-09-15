@@ -40,7 +40,7 @@ import (
 
 // EventsClient is shared by every EventPattern-based port below via
 // PortOptions.EventClient. Configuring WithTopicConstraints here — exactly
-// the same call examples/adapters-mqtt makes on its own events.NewClient —
+// the same call examples/events-api makes on its own events.NewClient —
 // means every port's Plugin call enforces domain.SensorTopicConstraint too:
 // an invalid topic on any EventPattern plugged into a port constructed with
 // EventClient: EventsClient fails immediately (PatternRegisterError

@@ -265,21 +265,6 @@ func newSecuredSubscribeChannelHandle() *events.ChannelHandle[sensorReading] {
 	return h
 }
 
-// newSecuredPublishChannelHandle returns a channel handle whose Publish
-// operation requires the "bearer" scheme declared above — used to test
-// PublishOptions.CredentialFunc.
-func newSecuredPublishChannelHandle() *events.ChannelHandle[sensorReading] {
-	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	h, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
-		WithPublish(events.Publish{Summary: "test", Security: []route.SecurityRequirement{route.Require("bearer")}}).
-		Use(events.FromSecurityScheme("bearer", securedBearerScheme, nil)).
-		Handle(b)
-	if err != nil {
-		panic(err)
-	}
-	return h
-}
-
 func newRouteHandle() *reqreply.RouteHandle[computeReq, computeResp] {
 	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	h, err := computeRoute.Register(b)
@@ -544,37 +529,54 @@ func TestSubscribe_BuiltInCredentialCheck_RejectsMalformedCredential(t *testing.
 	}
 }
 
-func TestSubscribe_SecurityFunc_StillRunsAfterBuiltInCheck_OnValidCredential(t *testing.T) {
+func TestSubscribe_SecurityImpl_StillRunsAfterBuiltInCheck_OnValidCredential(t *testing.T) {
+	// REPLACES the OLD TestSubscribe_SecurityFunc_StillRunsAfterBuiltInCheck_
+	// OnValidCredential (SubscribeOptions.SecurityFunc was removed entirely,
+	// Phase 2 of docs/design/d-0002-pubsub-workflow-simplification.md's Addendum) -- the SAME
+	// scenario (custom enforcement runs AFTER the built-in codec-based
+	// credential check passes) now runs through a real, non-decorative
+	// SubscribeMW-paired implementation Fn instead of the old imperative
+	// escape hatch.
 	client := &mockClient{}
 	router := newMockRouter()
-	secFuncCalled := false
+	implCalled := false
 	fnCalled := false
+
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	mw := events.FromSecurityScheme("bearer", securedBearerScheme, nil)
+	impl := func(_ context.Context, _ *pahomqtt5.Publish, _ *sensorReading) (map[string][]string, error) {
+		implCalled = true
+		return map[string][]string{"bearer": {}}, nil
+	}
+	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
+		WithSubscribe(events.Subscribe{Summary: "test", Security: []route.SecurityRequirement{route.Require("bearer")}}).
+		Use(mw).
+		SubscribeMW(&mw, impl).
+		Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = subscribeWithHandle(ctx, client, router, newSecuredSubscribeChannelHandle(), 1,
+	_ = subscribeWithHandle(ctx, client, router, handle, 1,
 		func(_ context.Context, _ sensorReading) error { fnCalled = true; return nil },
-		SubscribeOptions{
-			SecurityFunc: func(_ context.Context, _ *pahomqtt5.Publish, _ []route.SecurityRequirement) error {
-				secFuncCalled = true
-				return nil
-			},
-		})
+		SubscribeOptions{})
 
 	router.dispatch("sensors/readings", &pahomqtt5.Publish{
 		Topic:   "sensors/readings",
 		Payload: []byte(validSensorJSON),
 		Properties: &pahomqtt5.PublishProperties{
-			User: pahomqtt5.UserProperties{{Key: "Authorization", Value: "Bearer validtoken"}},
+			User: pahomqtt5.UserProperties{{Key: "Authorization", Value: "x"}},
 		},
 	})
 
-	if !secFuncCalled {
-		t.Error("want SecurityFunc called after the built-in check passes")
+	if !implCalled {
+		t.Error("want the SubscribeMW-paired implementation called after the built-in check passes")
 	}
 	if !fnCalled {
-		t.Error("want fn called after SecurityFunc passes")
+		t.Error("want fn called after the implementation passes")
 	}
 }
 
@@ -772,44 +774,71 @@ func TestPublish_UserProperties(t *testing.T) {
 	}
 }
 
-func TestPublish_CredentialFunc_ValidFormat_Passes(t *testing.T) {
+func TestPublish_SecurityImpl_ValidFormat_Passes(t *testing.T) {
+	// REPLACES the OLD TestPublish_CredentialFunc_ValidFormat_Passes
+	// (PublishOptions.CredentialFunc was removed entirely, Phase 2 of
+	// docs/design/d-0002-pubsub-workflow-simplification.md's Addendum) -- the SAME scenario now
+	// runs through a real PublishMW-paired security implementation Fn.
 	client := &mockClient{}
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
 
-	err := publish(context.Background(), client, newSecuredPublishChannelHandle(), 1, false, reading, nil, true,
-		PublishOptions[sensorReading]{
-			CredentialFunc: func(context.Context, *sensorReading, []route.SecurityRequirement) ([]UserProperty, error) {
-				return []UserProperty{{Key: "Authorization", Value: "Bearer validtoken"}}, nil
-			},
-		})
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	mw := events.FromSecurityScheme("bearer", securedBearerScheme, nil)
+	impl := func(context.Context, *sensorReading, []route.SecurityRequirement) ([]UserProperty, error) {
+		return []UserProperty{{Key: "Authorization", Value: "x"}}, nil
+	}
+	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
+		WithPublish(events.Publish{Summary: "test", Security: []route.SecurityRequirement{route.Require("bearer")}}).
+		Use(mw).
+		PublishMW(&mw, impl).
+		Handle(b)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("Handle: %v", err)
+	}
+
+	pubErr := publish(context.Background(), client, handle, 1, false, reading, nil, true,
+		PublishOptions[sensorReading]{})
+	if pubErr != nil {
+		t.Fatalf("unexpected error: %v", pubErr)
 	}
 	pub := client.lastPublished()
 	if pub == nil || pub.Properties == nil {
 		t.Fatal("expected a published message with properties")
 	}
-	if got := pub.Properties.User.Get("Authorization"); got != "Bearer validtoken" {
-		t.Errorf("want Authorization=%q, got %q", "Bearer validtoken", got)
+	if got := pub.Properties.User.Get("Authorization"); got != "x" {
+		t.Errorf("want Authorization=%q, got %q", "x", got)
 	}
 }
 
-func TestPublish_CredentialFunc_MalformedFormat_ReturnsSecurityCredentialError(t *testing.T) {
+func TestPublish_SecurityImpl_MalformedFormat_ReturnsSecurityCredentialError(t *testing.T) {
+	// REPLACES the OLD TestPublish_CredentialFunc_MalformedFormat_
+	// ReturnsSecurityCredentialError (PublishOptions.CredentialFunc was
+	// removed entirely, Phase 2 of
+	// docs/design/d-0002-pubsub-workflow-simplification.md's Addendum).
 	client := &mockClient{}
 	obs := &testObserver{}
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
 
-	err := publish(context.Background(), client, newSecuredPublishChannelHandle(), 1, false, reading, nil, true,
-		PublishOptions[sensorReading]{
-			Observer: obs,
-			CredentialFunc: func(context.Context, *sensorReading, []route.SecurityRequirement) ([]UserProperty, error) {
-				// Empty Bearer credential -> fails the non-empty-string Codec.
-				return []UserProperty{{Key: "Authorization", Value: "Bearer "}}, nil
-			},
-		})
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	mw := events.FromSecurityScheme("bearer", securedBearerScheme, nil)
+	impl := func(context.Context, *sensorReading, []route.SecurityRequirement) ([]UserProperty, error) {
+		// Empty credential value -> fails the non-empty-string Codec.
+		return []UserProperty{{Key: "Authorization", Value: ""}}, nil
+	}
+	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
+		WithPublish(events.Publish{Summary: "test", Security: []route.SecurityRequirement{route.Require("bearer")}}).
+		Use(mw).
+		PublishMW(&mw, impl).
+		Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	pubErr := publish(context.Background(), client, handle, 1, false, reading, nil, true,
+		PublishOptions[sensorReading]{Observer: obs})
 	var credErr events.SecurityCredentialError
-	if !errors.As(err, &credErr) {
-		t.Fatalf("want events.SecurityCredentialError, got %v", err)
+	if !errors.As(pubErr, &credErr) {
+		t.Fatalf("want events.SecurityCredentialError, got %v", pubErr)
 	}
 	if credErr.Scheme != "bearer" {
 		t.Errorf("want Scheme=bearer, got %q", credErr.Scheme)
@@ -822,21 +851,35 @@ func TestPublish_CredentialFunc_MalformedFormat_ReturnsSecurityCredentialError(t
 	}
 }
 
-func TestPublish_CredentialFunc_ReturnsNilProperties_SkipsValidation(t *testing.T) {
+func TestPublish_SecurityImpl_ReturnsNilProperties_SkipsValidation(t *testing.T) {
+	// REPLACES the OLD TestPublish_CredentialFunc_ReturnsNilProperties_
+	// SkipsValidation (PublishOptions.CredentialFunc was removed entirely,
+	// Phase 2 of docs/design/d-0002-pubsub-workflow-simplification.md's Addendum).
+	//
+	// A security implementation deliberately returning (nil, nil) for "no
+	// credential needed" must NOT be treated as a malformed-empty-credential
+	// error -- the Round-93 regression class, mirrored here from day one.
 	client := &mockClient{}
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
 
-	// A CredentialFunc deliberately returning (nil, nil) for "no credential
-	// needed" must NOT be treated as a malformed-empty-credential error —
-	// the Round-93 regression class, mirrored here from day one.
-	err := publish(context.Background(), client, newSecuredPublishChannelHandle(), 1, false, reading, nil, true,
-		PublishOptions[sensorReading]{
-			CredentialFunc: func(context.Context, *sensorReading, []route.SecurityRequirement) ([]UserProperty, error) {
-				return nil, nil
-			},
-		})
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	mw := events.FromSecurityScheme("bearer", securedBearerScheme, nil)
+	impl := func(context.Context, *sensorReading, []route.SecurityRequirement) ([]UserProperty, error) {
+		return nil, nil
+	}
+	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
+		WithPublish(events.Publish{Summary: "test", Security: []route.SecurityRequirement{route.Require("bearer")}}).
+		Use(mw).
+		PublishMW(&mw, impl).
+		Handle(b)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("Handle: %v", err)
+	}
+
+	pubErr := publish(context.Background(), client, handle, 1, false, reading, nil, true,
+		PublishOptions[sensorReading]{})
+	if pubErr != nil {
+		t.Fatalf("unexpected error: %v", pubErr)
 	}
 	if len(client.published) != 1 {
 		t.Fatalf("expected 1 published message, got %d", len(client.published))

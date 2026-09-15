@@ -1560,18 +1560,19 @@ paired-security and general-purpose Fn shapes — SHIPPED, not deferred.
 - Full verification (`gofmt`/`go build`/`go vet`/`go test -race`/`just
   check`/all examples) — all clean; all 12 planned unit tests pass.
 
-### Still genuinely open (not resolved by either shipped doc, flagged so it is not silently lost)
+### RESOLVED: `adapters/zeromq` pub/sub's flat `SecurityFunc`/`CredentialFunc` — RETIRED
 
 `adapters/zeromq`'s PUB/SUB side (`SubscribeOptions`/`PublishOptions`)
-already gained its OWN declarative `.Use`/`SubscribeMW`/`PublishMW`
+already had its OWN declarative `.Use`/`SubscribeMW`/`PublishMW`
 mechanism (per the D-0003 addendum in `docs/design/
 d-0003-codec-declared-middlewares.md`), but its OLD flat
-`SecurityFunc`/`CredentialFunc` fields were never removed —
-`adapters/zeromq/adapter.go` still declares both. Whether to now retire
-them, mirroring mqtt5 reqreply's own REST-precedent removal above, is a
-genuinely open question with no decision recorded anywhere — flagged
-here explicitly rather than silently dropped when the source roadmap
-docs were deleted. Not actioned by this addendum; a future round should
-make an explicit decision before either keeping both mechanisms
-permanently (events pub/sub's own precedent) or removing the old one
-(REST/mqtt5 reqreply's precedent) becomes accidental-by-default.
+`SecurityFunc`/`CredentialFunc` fields permanently coexisted alongside
+it — previously flagged here as a genuinely open question with no
+decision recorded. **Now resolved: RETIRED**, mirroring mqtt5 reqreply's
+own REST-precedent removal above — `SubscribeOptions[T].SecurityFunc`/
+`PublishOptions[T].CredentialFunc` were removed entirely (BREAKING) from
+ALL 3 pub/sub adapters (`adapters/zeromq`, `adapters/mqtt5`,
+`adapters/mqtt` v3, not just zeromq) — see
+[D-0002](d-0002-pubsub-workflow-simplification.md)'s own "Addendum:
+Observability Core Consolidation, `SecurityFunc` Retirement, and
+`examples/events-api`" for the full evidence/decision record.

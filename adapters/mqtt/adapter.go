@@ -29,7 +29,7 @@ const (
 	// successful decoding.
 	KindHandler
 
-	// KindSecurity indicates the SecurityFunc rejected the message.
+	// KindSecurity indicates security enforcement rejected the message.
 	KindSecurity
 )
 
@@ -146,36 +146,6 @@ type SubscribeOptions struct {
 	// or "topic" (topic-level codec or structural mismatch).
 	// Defaults to [stats.NoopObserver] when nil.
 	Observer stats.Observer
-
-	// SecurityFunc, when non-nil, is called for channels whose subscribe operation
-	// has non-empty security requirements (per-channel Security or global security
-	// declared via [Builder.AddGlobalSecurity]), before fn is invoked.
-	// Return a non-nil error to reject the message; [Options.OnError] is called with
-	// [KindSecurity] and the returned error.
-	//
-	// reqs contains the effective security requirements for the channel.
-	//
-	// Three patterns for obtaining credentials:
-	//
-	// Pattern 1 — Closure: capture a shared secret or token at CONNECT time
-	// and reference it in the closure. No message access needed.
-	//
-	// Pattern 2 — Direct msg access: msg is passed directly to SecurityFunc.
-	// For MQTT 5.0 libraries that expose User Properties, extract via
-	// msg.Properties().User.Get("key"). For MQTT 3.1.1 (Paho), msg does not
-	// carry per-message credentials; use Pattern 1 or 3 instead.
-	//
-	// Pattern 3 — Handler access: use [MessageFromContext] inside fn (after
-	// SecurityFunc returns nil) to inspect QoS, retained flag, or full topic.
-	// SecurityFunc itself always receives the message directly via the msg parameter.
-	//
-	// Example (Pattern 2 with MQTT 5.0 User Properties):
-	//
-	//	opts.SecurityFunc = func(ctx context.Context, msg pahomqtt.Message, reqs []route.SecurityRequirement) error {
-	//	    token := msg.Properties().User.Get("Authorization")
-	//	    return verifyJWT(token, reqs)
-	//	}
-	SecurityFunc func(ctx context.Context, msg pahomqtt.Message, reqs []route.SecurityRequirement) error
 }
 
 // MessageFromContext retrieves the [pahomqtt.Message] stored in ctx by the
@@ -263,7 +233,7 @@ func subscribeHandler[T any](
 			if varErr != nil {
 				reportTopicMismatchErrors(varErr, obs)
 				reportInvalidTopicErrors(varErr, obs)
-				reportTopicParamErrors(varErr, obs)
+				stats.ReportErrors(obs, "topic_var", varErr)
 				obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
 				if opts.OnError != nil {
 					opts.OnError(SubscribeError{Kind: KindDecode, Topic: msg.Topic(), Err: varErr})
@@ -272,7 +242,7 @@ func subscribeHandler[T any](
 			}
 			topicVars = vars
 			if mergeErr := codex.DecodeVars(&value, vars, mergeFields...); mergeErr != nil {
-				reportTopicParamErrors(mergeErr, obs)
+				stats.ReportErrors(obs, "topic_var", mergeErr)
 				obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
 				if opts.OnError != nil {
 					opts.OnError(SubscribeError{Kind: KindDecode, Topic: msg.Topic(), Err: mergeErr})
@@ -300,18 +270,6 @@ func subscribeHandler[T any](
 					opts.OnError(SubscribeError{Kind: KindSecurity, Topic: msg.Topic(), Err: credErr})
 				}
 				return
-			}
-			if opts.SecurityFunc != nil {
-				if err := opts.SecurityFunc(ctx, msg, secReqs); err != nil {
-					if secObs, ok := obs.(stats.SecurityObserver); ok {
-						secObs.RecordSecurityRejection(msg.Topic(), firstScheme(secReqs))
-					}
-					obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
-					if opts.OnError != nil {
-						opts.OnError(SubscribeError{Kind: KindSecurity, Topic: msg.Topic(), Err: err})
-					}
-					return
-				}
 			}
 		}
 
@@ -353,10 +311,9 @@ func subscribeHandler[T any](
 		}
 
 		if err = fn(ctx, value); err != nil {
-			reportTopicParamErrors(err, obs)
 			reportTopicMismatchErrors(err, obs)
 			reportInvalidTopicErrors(err, obs)
-			reportMissingTopicVarErrors(err, obs)
+			stats.ReportErrors(obs, "topic_var", err)
 			obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
 			if resp, matched, matchErr := handle.ErrorResponseFor(err); matched && matchErr == nil && resp.Action == events.ErrorRespond {
 				token := client.Publish(resp.Topic, 0, false, resp.Body)
@@ -381,26 +338,6 @@ func reportPayloadErrors(err error, obs stats.Observer) {
 	stats.ReportErrors(obs, "payload", err)
 }
 
-// reportTopicParamErrors extracts the failing topic variable from a [events.TopicParamError]
-// and reports it to obs with location "topic_var".
-func reportTopicParamErrors(err error, obs stats.Observer) {
-	var pe events.TopicParamError
-	if !errors.As(err, &pe) {
-		return
-	}
-	obs.RecordValidationError("topic_var", stats.ConstraintName(pe.Err), pe.Name)
-}
-
-// reportMissingTopicVarErrors extracts the missing variable name from a [events.MissingTopicVarError]
-// and reports it to obs with location "topic_var" and constraint "required".
-func reportMissingTopicVarErrors(err error, obs stats.Observer) {
-	var me events.MissingTopicVarError
-	if !errors.As(err, &me) {
-		return
-	}
-	obs.RecordValidationError("topic_var", "required", me.Name)
-}
-
 // reportInvalidTopicErrors extracts the constraint from an [events.InvalidTopicError]
 // and reports it to obs with location "topic".
 func reportInvalidTopicErrors(err error, obs stats.Observer) {
@@ -421,15 +358,10 @@ func reportTopicMismatchErrors(err error, obs stats.Observer) {
 	obs.RecordValidationError("topic", "topic-mismatch", "")
 }
 
-// PublishOptions configures [publish]/[publishHandle]. Generic over T
-// (BREAKING change from the previous non-generic PublishOptions, mirroring
-// [mqtt5.PublishOptions]'s own earlier identical tradeoff — every existing
-// `mqtt.PublishOptions{}` call site must add an explicit type argument,
-// e.g. `mqtt.PublishOptions[Reading]{}`, since Go does not infer a generic
-// type's type argument from a composite literal passed as one argument
-// among several to a generic function) since
-// [PublishOptions.CredentialFunc] needs write-access to the outgoing
-// message — see that field's doc comment.
+// PublishOptions configures [publish]/[publishHandle]. Generic over T so
+// declarative security implementations (attached via
+// [events.Publisher.PublishMW]) can grant write-access to the outgoing
+// message before it is encoded.
 type PublishOptions[T any] struct {
 	// Observer, when non-nil, receives per-publish lifecycle events:
 	// [stats.Observer.RecordPublish] is called with success=true on broker
@@ -441,28 +373,6 @@ type PublishOptions[T any] struct {
 	// (topic-level codec failures).
 	// Defaults to [stats.NoopObserver] when nil.
 	Observer stats.Observer
-
-	// CredentialFunc, when non-nil, is called for channels that declare
-	// non-nil Publish.Security (or inherit non-empty GlobalSecurity),
-	// mirroring [SubscribeOptions.SecurityFunc]'s read/write access to the
-	// message on the subscribe side. MQTT 3.1.1 exposes NO per-message
-	// metadata channel at all (no User Properties — that's MQTT 5 only),
-	// so unlike [mqtt5.PublishOptions.CredentialFunc] there is no
-	// protocol-native return value here — msg is a pointer to the value
-	// about to be encoded; mutate it to embed a credential AS AN ORDINARY
-	// PAYLOAD FIELD (works identically across every transport, since a
-	// payload is just codec-encoded bytes). A nil CredentialFunc on a
-	// secured channel is not an error — the message is published without a
-	// credential, same as if the channel declared no security at all. This
-	// closes the "mqtt v3 publish-side has no message-level credential
-	// mechanism" gap — see
-	// docs/design/d-0002-pubsub-workflow-simplification.md's Decision 3.
-	//
-	//	opts.CredentialFunc = func(ctx context.Context, msg *Reading, reqs []route.SecurityRequirement) error {
-	//	    msg.Token = "Bearer " + token
-	//	    return nil
-	//	}
-	CredentialFunc func(ctx context.Context, msg *T, reqs []route.SecurityRequirement) error
 }
 
 // publish encodes msg using handle's codec and publishes it to the broker.
@@ -503,8 +413,7 @@ type PublishOptions[T any] struct {
 // encoding or network activity, via [validatePublishImplementationShapes] —
 // a malformed Fn fails loudly and immediately. Security-shaped
 // implementations (func(context.Context, *T, []route.SecurityRequirement)
-// error) run in attachment order, mutating msg, before opts.CredentialFunc
-// (both mechanisms available simultaneously). General-purpose Fns
+// error) run in attachment order, mutating msg. General-purpose Fns
 // (func(func(context.Context, T) error) func(context.Context, T) error)
 // wrap the internal "encode + transmit" step, outermost-in — this lets a
 // PublishMW-attached Fn add tracing, mutate/log msg, or implement retry
@@ -548,18 +457,17 @@ func publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.
 		topic, err2 = handle.BuildTopic(vars)
 		if err2 != nil {
 			err = err2
-			reportTopicParamErrors(err2, obs)
-			reportMissingTopicVarErrors(err2, obs)
 			reportInvalidTopicErrors(err2, obs)
+			stats.ReportErrors(obs, "topic_var", err2)
 			obs.RecordPublish(handle.Topic, false, time.Since(start))
 			return err
 		}
 	}
 
 	// Resolve effective security requirements (per-operation overrides
-	// global), then run security-shaped implementations and
-	// opts.CredentialFunc — both grant write-access to msg, mirroring
-	// subscribeHandler's server-side SecurityFunc read/write access.
+	// global), then run security-shaped implementations — they grant
+	// write-access to msg, mirroring subscribeHandler's server-side
+	// security-shaped read/write access.
 	var secReqs []route.SecurityRequirement
 	if handle.Descriptor.Publish != nil {
 		secReqs = handle.Descriptor.Publish.Security
@@ -571,12 +479,6 @@ func publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.
 		if err = runPublishSecurityImpls(ctx, &msg, secReqs, handle.ClientImplementations); err != nil {
 			obs.RecordPublish(topic, false, time.Since(start))
 			return err
-		}
-		if opts.CredentialFunc != nil {
-			if err = opts.CredentialFunc(ctx, &msg, secReqs); err != nil {
-				obs.RecordPublish(topic, false, time.Since(start))
-				return err
-			}
 		}
 	}
 
@@ -614,8 +516,8 @@ func publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.
 // [middleware.ClientImplementation] whose Fn matches the security shape
 // (func(context.Context, *T, []route.SecurityRequirement) error) IN
 // ATTACHMENT ORDER, fail-fast on the first error — the mqtt v3 mirror of
-// subscribeHandler's server-side SecurityFunc check, but client-side and
-// generic over T (concrete at this call site). General-purpose
+// subscribeHandler's server-side security-shaped implementation check, but
+// client-side and generic over T (concrete at this call site). General-purpose
 // wrapping-shaped Fns are silently skipped here (consumed instead by
 // [wrapPublishGeneral]).
 func runPublishSecurityImpls[T any](ctx context.Context, msg *T, secReqs []route.SecurityRequirement, impls []middleware.ClientImplementation) error {
@@ -713,11 +615,13 @@ func publishHandle[T any](
 //
 // Because the paho.mqtt.golang library does not expose MQTT 5.0 User Properties
 // through the pahomqtt.Message interface, credential extraction is always a
-// no-op and Codec validation is deliberately skipped. Use SecurityFunc with
-// MessageFromContext for runtime credential inspection instead.
+// no-op and Codec validation is deliberately skipped. Use a security-shaped
+// SubscribeMW-paired implementation with MessageFromContext for runtime
+// credential inspection instead.
 func validateSecurityCredentials(_ pahomqtt.Message, _ []route.SecurityRequirement, _ map[string]events.SecurityScheme) error {
 	// Codec validation skipped: pahomqtt.Message (MQTT 3.1.1) does not expose
-	// per-message credentials. Use SecurityFunc for runtime enforcement instead.
+	// per-message credentials. Use a security-shaped SubscribeMW-paired
+	// implementation for runtime enforcement instead.
 	return nil
 }
 

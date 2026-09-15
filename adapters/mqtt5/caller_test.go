@@ -557,6 +557,29 @@ func TestObservability_NilObserver_FallsBackToCtxInjection_NoPanic(t *testing.T)
 	}
 }
 
+func TestObservability_CtxCarriesObserver_AfterThinning(t *testing.T) {
+	// Confirms the positive behavioral change from thinning Observability
+	// to delegate to events.Observability: downstream code (e.g. a paired
+	// security Fn attached alongside Observability) can now resolve obs
+	// via stats.ObserverFromContext through the wrapper — impossible
+	// before this change, since the old implementation never called
+	// stats.WithObserver at all.
+	obs := &testObserver{}
+	var gotCtxObs stats.Observer
+	mw := Observability[sensorReading]("sensors/readings", obs)
+	wrapped := mw(func(ctx context.Context, _ sensorReading) error {
+		gotCtxObs = stats.ObserverFromContext(ctx)
+		return nil
+	})
+
+	if err := wrapped(context.Background(), sensorReading{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotCtxObs != stats.Observer(obs) {
+		t.Error("Observability must inject obs into ctx (via delegation to events.Observability), visible to next via stats.ObserverFromContext")
+	}
+}
+
 // ── Example (pkg.go.dev documentation) ────────────────────────────────────────
 
 // ExampleSubscribe demonstrates the value-based caller/Subscribe workflow:

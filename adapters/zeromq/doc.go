@@ -67,17 +67,14 @@
 // attach implementations recognized in TWO shapes: the security shape
 // (func(context.Context, *T, []route.SecurityRequirement) error — SAME
 // shape both directions, since ZeroMQ's [topic, payload] frames carry
-// nothing beyond what's already decoded into T) via
-// [SubscribeOptions.SecurityFunc]/[PublishOptions.CredentialFunc]'s
-// per-call equivalent, and the general-purpose wrapping shape
-// (func(next func(context.Context, T) error) func(context.Context, T) error)
-// used by [Observability]. Both are validated EAGERLY (a malformed
-// attachment is a hard [middleware.MiddlewareShapeError], never a silent
-// no-op) at subscribe/publish construction/dispatch time, across both the
+// nothing beyond what's already decoded into T), and the general-purpose
+// wrapping shape (func(next func(context.Context, T) error)
+// func(context.Context, T) error) used by [Observability]. Both are
+// validated EAGERLY (a malformed attachment is a hard
+// [middleware.MiddlewareShapeError], never a silent no-op) at
+// subscribe/publish construction/dispatch time, across both the
 // [NewSubscribeTransport]/[NewPublishTransport] handle-based path and the
 // internal ServeSubscribers path.
-// ZeroMQ had NO message-level security mechanism before this — see
-// [SubscribeOptions.SecurityFunc]'s doc comment.
 //
 // # TopicFilter — ZeroMQ prefix-filter bug fix
 //

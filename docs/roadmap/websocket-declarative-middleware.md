@@ -3,7 +3,8 @@
 > **Status:** Idea only — no code written, no spike run yet. Spun out of
 > reviewing whether the pub/sub `Observability[T]` 3-way-duplication
 > gap (see
-> [Pub/Sub Observability Consolidation](pubsub-observability-consolidation.md))
+> [D-0002](../design/d-0002-pubsub-workflow-simplification.md)'s
+> Addendum — Decision A, now shipped)
 > had an equivalent in REST req/resp, SSE, or WebSocket. REST/SSE were
 > confirmed to have NO equivalent gap (both already share ONE
 > `nethttp.Observability`, reused unchanged by `adapters/chi`).
@@ -86,11 +87,11 @@ none evaluated in depth yet:
   is ever confirmed here, reconciling the two docs' scope (one doc vs.
   two) is a separate decision, not made here.
 - Any relationship to
-  [Pub/Sub Observability Consolidation](pubsub-observability-consolidation.md) —
-  that doc is about consolidating 3 EXISTING, already-shipped
-  duplicate implementations of the SAME mechanism; this doc is about
-  whether the mechanism should exist for WebSocket AT ALL. Different
-  category of question.
+  [D-0002](../design/d-0002-pubsub-workflow-simplification.md)'s
+  Addendum (Decision A) — that decision is about consolidating 3
+  EXISTING, already-shipped duplicate implementations of the SAME
+  mechanism; this doc is about whether the mechanism should exist for
+  WebSocket AT ALL. Different category of question.
 
 Not implemented — investigation/planning only. No committed scope, no
 priority assigned, no driver/concrete use case identified yet.

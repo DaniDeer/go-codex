@@ -10,7 +10,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/ports"
-	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
@@ -40,8 +39,6 @@ type SubscribeAdapterOptions struct {
 	TopicFilter string
 	// UserPropertyParams validates MQTT 5 User Properties on each message.
 	UserPropertyParams []UserPropertyParam
-	// SecurityFunc enforces security requirements on each incoming message.
-	SecurityFunc func(context.Context, *pahomqtt5.Publish, []route.SecurityRequirement) error
 	// Observer receives per-message lifecycle events. Resolved from ctx when nil.
 	Observer stats.Observer
 }
@@ -95,7 +92,6 @@ func (a *mqtt5SubscribeAdapter[T]) Activate(ctx context.Context, dst chan<- T, e
 	}
 	innerOpts := SubscribeOptions{
 		Observer:           obs,
-		SecurityFunc:       a.opts.SecurityFunc,
 		UserPropertyParams: a.opts.UserPropertyParams,
 		TopicFilter:        a.opts.TopicFilter,
 		OnError: func(e SubscribeError) {

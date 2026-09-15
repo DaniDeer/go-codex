@@ -1446,6 +1446,57 @@ one-at-a-time future-round policy as before:**
   round.** No `UnsupportedFeatureError` type is needed anymore — a
   capability mismatch is the Go compiler's own diagnostic, not a custom
   error type with fields to name.
+- **[Review-12, Medium] Should EVERY `Capability` carry its own
+  observable declaration, reducing bespoke adapter-side Observer wiring
+  — FLAGGED this round, NOT investigated or resolved.** Spun out of a
+  separate, broader review of the Observer pattern across the api layer
+  (same session, same "thin adapter, thick api layer" principle) —
+  confirmed via code that adapters ALREADY hand-roll their own
+  capability-specific Observer calls today wherever a protocol feature
+  has an observable runtime effect (e.g. `RecordSubscribe`/
+  `RecordPublish`'s `success bool` says nothing about WHICH QoS tier
+  was actually negotiated, whether a Retained flag was honored, or which
+  Shared Subscription group handled a message — each adapter that wants
+  this visibility must invent its own ad hoc reporting path, no shared
+  mechanism exists). §8's `DispositionObserver` (Review-8, resolved)
+  is a NARROWER, adjacent precedent — it solves ONE specific runtime
+  outcome (ack/nack/requeue) for ONE specific concept (Handler
+  Disposition), not capabilities in general.
+
+  **The open question this bullet exists to scope, not answer:** should
+  the sealed `Capability` interface (§2) itself carry an OPTIONAL,
+  additive observability hook — e.g. a capability-supplied
+  `RecordApplied(obs stats.Observer, ...)`-shaped method, or a NEW
+  `stats.CapabilityObserver`-style interface mirroring
+  `stats.SecurityObserver`/`DispositionObserver`'s exact type-assertion
+  pattern (§8) — so that ANY capability (QoS, Retained, User Properties,
+  a future AMQP ack-mode/persistence, Shared Subscriptions) gets a
+  UNIFORM, declare-time-defined way to report its own runtime effect,
+  instead of each adapter writing bespoke `obs.RecordX(...)` calls
+  scattered through its own dispatch code for whatever capability
+  happens to be attached. If resolved this way, the GENERIC dispatch
+  code in `Attach`/`Serve`/`Subscribe` (adapter-owned) would only need
+  to call ONE shared hook per capability, uniformly, regardless of which
+  concrete capability type is present — matching the SAME "adapter
+  calls one shared thing, doesn't hand-roll per-feature logic" shape
+  a sibling Observer-pattern review already established for non-
+  capability Observer reporting (`stats.ReportErrors`'s Param-error
+  handling gap).
+
+  **Explicitly NOT decided by this bullet:** the exact interface shape;
+  whether this generalizes cleanly across QoS/Retained/User-Properties/
+  Shared-Subscriptions/a-future-AMQP-adapter's ack-mode (their runtime
+  "success" signals may not be uniform enough for one shape — needs a
+  worked-example pass mirroring §5's own rigor before committing);
+  whether it should live on the `Capability` interface itself (making
+  ALL capabilities implement it, even ones with nothing meaningful to
+  observe) or as a SEPARATE, optional, type-asserted interface a
+  capability MAY additionally implement (mirrors `SecurityObserver`/
+  `DispositionObserver`'s own "purely additive, never forced" precedent
+  — likely the safer default given §8's own resolved recommendation
+  favored optional/additive over baked-in every time it was tested).
+  Needs its own dedicated worked-examples pass (mirroring §5) before any
+  implementation — not scoped further here.
 
 ## 8. Handler Disposition — a DISTINCT concept from `Capability`, RESOLVED via a fourth throwaway Go prototype
 
