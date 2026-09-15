@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"reflect"
 
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/middleware"
+	"github.com/DaniDeer/go-codex/route"
 )
 
 // Middleware is a codec-backed, events-specific middleware declaration —
@@ -338,9 +338,12 @@ func (e ConflictingParamContributionError) LogValue() slog.Value {
 
 // eventsParamContribution is one source's declaration for a single property
 // name, tracked for conflict detection — mirrors [rest]'s own
-// paramContribution, extended (Round 15) with a Codec field for the
-// property axis's DELIBERATELY stricter, Schema-based comparison (REST's
-// real paramContribution has no Codec field at all).
+// paramContribution (Round 15 originally added a Codec field here that
+// REST's own paramContribution lacked; REST has since gained its own
+// equivalent field too, see
+// docs/roadmap/rest-middleware-conflict-detection-improvements.md's
+// Candidate 2 — all 3 APIs now compare codec schemas the same way, via the
+// shared [route.CodecSchemaMismatch]).
 type eventsParamContribution struct {
 	source   string
 	required bool
@@ -353,14 +356,13 @@ type eventsParamContribution struct {
 // therefore NEVER cross-checked here (independent namespaces, Round 15
 // decision: a topic var and a property sharing the same name is
 // explicitly fine). Two contributions for the SAME name conflict if
-// Required differs, OR exactly one has a nil Codec, OR both are non-nil
-// and their Schemas differ (reflect.DeepEqual) — DELIBERATELY stricter
-// than REST's real precedent, which never compares codecs at all.
+// Required differs, OR their codec schemas mismatch per
+// [route.CodecSchemaMismatch].
 func checkEventsParamConflicts(topic string, contributions map[string][]eventsParamContribution) error {
 	for name, list := range contributions {
 		first := list[0]
 		for _, c := range list[1:] {
-			if c.required != first.required || codecSchemaMismatch(first.codec, c.codec) {
+			if c.required != first.required || route.CodecSchemaMismatch(first.codec, c.codec) {
 				return ConflictingParamContributionError{
 					Topic: topic, ParamName: name,
 					FirstSource: first.source, SecondSource: c.source,
@@ -369,20 +371,6 @@ func checkEventsParamConflicts(topic string, contributions map[string][]eventsPa
 		}
 	}
 	return nil
-}
-
-// codecSchemaMismatch reports whether a and b conflict for
-// [checkEventsParamConflicts]'s purposes: nil-vs-non-nil is itself a
-// mismatch (differing validation strictness); both non-nil compares
-// Schema via reflect.DeepEqual.
-func codecSchemaMismatch(a, b *codex.Codec[string]) bool {
-	if (a == nil) != (b == nil) {
-		return true
-	}
-	if a == nil {
-		return false
-	}
-	return !reflect.DeepEqual(a.Schema, b.Schema)
 }
 
 // checkEventsMiddlewareNameUniquenessAndAttachment enforces D6(b) and D7

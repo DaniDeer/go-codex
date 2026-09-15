@@ -1026,3 +1026,142 @@ func TestAttachServer_MiddlewareError_WrapsAsKindMiddleware(t *testing.T) {
 		t.Fatal("Serve did not return after ctx cancellation")
 	}
 }
+
+// TestAttachServer_Observer_ReportsMiddlewareOutLocation (Rest-middleware-
+// conflict-detection-improvements' adapter-dispatch review): the reply's
+// own EncodeOut failure (building the REPLY's Out struct, via
+// WithResponseProperty — zeromq has no property mechanism to WRITE the
+// value into, but OutCodec.Validate still runs the SAME refinement) was
+// previously collapsed into "middleware:in" — now reported distinctly as
+// "middleware:out". Mirrors adapters/mqtt5's identical test.
+func TestAttachServer_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
+	mw := reqreply.NewMiddleware(middleware.NewDeclaration("zmq-obs-out-loc", zmwPropInCodec, zmwPropOutCodec)).
+		WithResponseProperty(reqreply.NewPropertyParam("X-Ack", codex.String().Refine(validate.NonEmptyString),
+			func(v zmwPropOut) string { return v.Ack },
+			func(v *zmwPropOut, s string) { v.Ack = s }))
+	fn := func(_ context.Context, r computeReq) (computeResp, error) {
+		return computeResp{Sum: r.X + r.Y}, nil
+	}
+	rt := reqreply.Transform(
+		reqreply.NewRoute[computeReq, computeResp]("/obs-out-loc-compute", computeReqCodec, computeRespCodec),
+		mw,
+		func(ctx context.Context, req *computeReq, in zmwPropIn) (zmwPropOut, error) {
+			// Empty Ack fails the NonEmptyString refinement at
+			// EncodeOut/OutCodec.Validate time, building the reply.
+			return zmwPropOut{Ack: ""}, nil
+		},
+	)
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	if _, err := rt.WithHandler(fn).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	obs := &testObserver{}
+	repSock, reqSock := newChanSocketPair()
+	if err := AttachServer(server, map[string]FramedSocket{"/obs-out-loc-compute": repSock}, ServeOptions{Observer: obs}); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveErrCh := make(chan error, 1)
+	go func() { serveErrCh <- server.Serve(ctx) }()
+
+	if err := reqSock.SendFrames([][]byte{[]byte(`{"x":1,"y":2}`)}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if _, err := reqSock.RecvFrames(); err != nil {
+		t.Fatalf("recv: %v", err)
+	}
+
+	found := false
+	for _, loc := range obs.validationLocations {
+		if loc == "middleware:out" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a RecordValidationError call with location %q, got %v", "middleware:out", obs.validationLocations)
+	}
+
+	cancel()
+	select {
+	case err := <-serveErrCh:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not return after ctx cancellation")
+	}
+}
+
+// TestAttachClient_Observer_ReportsMiddlewareOutLocation (Rest-middleware-
+// conflict-detection-improvements' adapter-dispatch review): a client-side
+// DecodeOut failure (reading the REPLY's Out struct) was previously
+// reported as "middleware:in" — now reported distinctly as
+// "middleware:out". The server does NOT declare WithResponseProperty at
+// all — its reply never carries the value the client's OWN mw requires
+// (Required by default via [reqreply.NewPropertyParam]) — but zeromq has
+// no property mechanism to CARRY it in the first place, so DecodeOut fails
+// naturally on the missing value, same as a real missing property would
+// mirroring mqtt5's identical test.
+func TestAttachClient_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
+	fn := func(_ context.Context, r computeReq) (computeResp, error) {
+		return computeResp{Sum: r.X + r.Y}, nil
+	}
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	if _, err := reqreply.NewRoute[computeReq, computeResp]("/obs-client-out-compute", computeReqCodec, computeRespCodec).
+		WithHandler(fn).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	repSock, reqSock := newChanSocketPair()
+	if err := AttachServer(server, map[string]FramedSocket{"/obs-client-out-compute": repSock}); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveErrCh := make(chan error, 1)
+	go func() { serveErrCh <- server.Serve(ctx) }()
+
+	clientMW := reqreply.NewMiddleware(middleware.NewDeclaration("zmq-obs-client-out-loc", zmwPropInCodec, zmwPropOutCodec)).
+		WithResponseProperty(reqreply.NewPropertyParam("X-Ack", codex.String(),
+			func(v zmwPropOut) string { return v.Ack },
+			func(v *zmwPropOut, s string) { v.Ack = s }))
+	rt := reqreply.ClientTransform(
+		reqreply.NewRoute[computeReq, computeResp]("/obs-client-out-compute", computeReqCodec, computeRespCodec),
+		clientMW,
+		func(ctx context.Context, req computeReq) (zmwPropIn, error) {
+			return zmwPropIn{}, nil
+		},
+	)
+
+	obs := &testObserver{}
+	client := reqreply.NewClient()
+	if err := AttachClient(client, map[string]FramedSocket{"/obs-client-out-compute": reqSock}, CallOptions{Observer: obs}); err != nil {
+		t.Fatalf("AttachClient: %v", err)
+	}
+
+	callCtx, callCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer callCancel()
+	_, _ = client.Call(callCtx, rt, computeReq{X: 1, Y: 2})
+
+	found := false
+	for _, loc := range obs.validationLocations {
+		if loc == "middleware:out" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a RecordValidationError call with location %q, got %v", "middleware:out", obs.validationLocations)
+	}
+
+	cancel()
+	select {
+	case err := <-serveErrCh:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not return after ctx cancellation")
+	}
+}

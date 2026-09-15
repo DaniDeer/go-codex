@@ -217,3 +217,127 @@ func TestPublish_ClientTransform_FnError_AbortsBeforePublish(t *testing.T) {
 		t.Error("want no message published when middleware fn errors")
 	}
 }
+
+// Rest-middleware-conflict-detection-improvements' adapter-dispatch review
+// found adapters/mqtt (v3) had ZERO "middleware:in"/"middleware:fn"
+// reporting anywhere — this package's subscribe/publish dispatch never
+// called stats.ReportErrors for its own middleware failures at all,
+// unlike adapters/mqtt5/adapters/zeromq which already had (mislabeled, in
+// some cases) coverage. This test suite closes that gap, mirroring the
+// mqtt5/zeromq test patterns exactly.
+
+func TestSubscribeHandler_Observer_ReportsMiddlewareInLocation(t *testing.T) {
+	mw := newTDDeclaration("region-policy").
+		WithSubscribeTopic(events.NewTopicParam("region", codex.String().Refine(validate.NonEmptyString),
+			func(in tdIn) string { return in.Key },
+			func(in *tdIn, v string) { in.Key = v },
+		))
+	subscriber := events.NewChannel[userEvent]("user/{region}/created", userEventCodec).
+		WithSubscribe(events.Subscribe{Summary: "test"})
+	subscriber = events.Transform(subscriber, mw, func(ctx context.Context, msg *userEvent, in tdIn) error { return nil })
+	handle := newSubscriberChannelHandle(subscriber)
+
+	obs := &mqttSpyObserver{}
+	handler := subscribeHandler(context.Background(), nil, handle,
+		func(_ context.Context, e userEvent) error { return nil },
+		SubscribeOptions{Observer: obs})
+	// "region" left empty in the topic — fails mw's own InCodec (NonEmptyString).
+	handler(nil, &mockMessage{topic: "user//created", payload: []byte(validPayload)})
+
+	found := false
+	for _, ve := range obs.valErrors {
+		if ve.location == "middleware:in" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a RecordValidationError call with location %q, got %v", "middleware:in", obs.valErrors)
+	}
+}
+
+func TestSubscribeHandler_Observer_ReportsMiddlewareFnLocation(t *testing.T) {
+	mw := newTDEmptyDeclaration("fn-error-policy")
+	subscriber := events.NewChannel[userEvent]("user/created", userEventCodec).
+		WithSubscribe(events.Subscribe{Summary: "test"})
+	subscriber = events.Transform(subscriber, mw, func(ctx context.Context, msg *userEvent, in tdEmpty) error {
+		return codex.ValidationErrors{{Field: "region", Err: errors.New("boom")}}
+	})
+	handle := newSubscriberChannelHandle(subscriber)
+
+	obs := &mqttSpyObserver{}
+	handler := subscribeHandler(context.Background(), nil, handle,
+		func(_ context.Context, e userEvent) error { return nil },
+		SubscribeOptions{Observer: obs})
+	handler(nil, &mockMessage{payload: []byte(validPayload)})
+
+	found := false
+	for _, ve := range obs.valErrors {
+		if ve.location == "middleware:fn" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a RecordValidationError call with location %q, got %v", "middleware:fn", obs.valErrors)
+	}
+}
+
+func TestPublish_Observer_ReportsMiddlewareFnLocation(t *testing.T) {
+	mw := newTDEmptyDeclaration("fn-error-policy")
+	publisher := events.NewChannel[userEvent]("user/created", userEventCodec).
+		WithPublish(events.Publish{Summary: "test"})
+	publisher = events.ClientTransform(publisher, mw, func(ctx context.Context, msg userEvent) (tdEmpty, error) {
+		return tdEmpty{}, codex.ValidationErrors{{Field: "region", Err: errors.New("boom")}}
+	})
+	handle, err := publisher.Handle(nil)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	obs := &mqttSpyObserver{}
+	client := &mockClient{token: newCompletedToken(nil)}
+	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
+	_ = publish(context.Background(), client, handle, 1, false, event, nil, PublishOptions[userEvent]{Observer: obs})
+
+	found := false
+	for _, ve := range obs.valErrors {
+		if ve.location == "middleware:fn" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a RecordValidationError call with location %q, got %v", "middleware:fn", obs.valErrors)
+	}
+}
+
+// This EncodeOut failure is reported as its own "middleware:out" location
+// — distinct from "middleware:fn" (a real fn business error) — symmetric
+// with REST's own "middleware:out".
+func TestPublish_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
+	mw := newTDDeclaration("tenant-required-policy")
+	publisher := events.NewChannel[userEvent]("user/created", userEventCodec).
+		WithPublish(events.Publish{Summary: "test"})
+	publisher = events.ClientTransform(publisher, mw, func(ctx context.Context, msg userEvent) (tdOut, error) {
+		// Empty Value fails tdOutCodec's NonEmptyString refinement at
+		// EncodeOut/OutCodec.Validate time, NOT the fn itself.
+		return tdOut{Value: ""}, nil
+	})
+	handle, err := publisher.Handle(nil)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	obs := &mqttSpyObserver{}
+	client := &mockClient{token: newCompletedToken(nil)}
+	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
+	_ = publish(context.Background(), client, handle, 1, false, event, nil, PublishOptions[userEvent]{Observer: obs})
+
+	found := false
+	for _, ve := range obs.valErrors {
+		if ve.location == "middleware:out" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a RecordValidationError call with location %q, got %v", "middleware:out", obs.valErrors)
+	}
+}

@@ -261,6 +261,56 @@ func TestTransform_InDecodeFailure_ReportsMiddlewareInLocation(t *testing.T) {
 	}
 }
 
+// Rest-middleware-conflict-detection-improvements Candidate 3: the
+// middleware output-encode (EncodeOut) failure path now reports
+// "middleware:out" via stats.ReportErrors, mirroring the "middleware:in"/
+// "middleware:fn" calls above.
+func TestTransform_OutEncodeFailure_ReportsMiddlewareOutLocation(t *testing.T) {
+	// In is tdEmpty (no required fields, so DecodeIn/InCodec.Validate
+	// always succeeds) — isolating the failure to Out's EncodeOut path.
+	decl := middleware.NewDeclaration("api-key-policy", tdEmptyCodec, tdOutCodec)
+	mw := rest.NewMiddleware(decl).
+		WithResponseHeader(rest.NewRequiredResponseHeaderParam("X-Policy-Applied", codex.String(),
+			func(out tdOut) string { return out.Value },
+			func(out *tdOut, v string) { out.Value = v },
+		))
+	route := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userRespCodec,
+		rest.RouteMeta{OperationID: "createUser"},
+	)
+	route = rest.Transform(route, mw, func(ctx context.Context, req *createReq, in tdEmpty) (tdOut, error) {
+		// Empty Value fails tdOutCodec's NonEmptyString refinement at
+		// EncodeOut/OutCodec.Validate time — isolating the "middleware:out"
+		// location from "middleware:in"/"middleware:fn".
+		return tdOut{Value: ""}, nil
+	})
+	spy := &spyValidationObserver{}
+	route = route.WithHandler(func(_ context.Context, req createReq) (userResp, error) {
+		return userResp{ID: "1", Name: req.Name}, nil
+	}).HandleMW(nil, Observability(spy))
+	h, err := ServeOne(route)
+	if err != nil {
+		t.Fatalf("ServeOne: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
+	r.Header.Set("Content-Type", "application/json")
+	h.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("want 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+	found := false
+	for _, loc := range spy.locations {
+		if loc == "middleware:out" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a RecordValidationError call with location %q, got %v", "middleware:out", spy.locations)
+	}
+}
+
 // ── D6(c): two middlewares both writing the SAME *Req field — attachment-
 // order, last-applied-wins, not flagged as a conflict ──
 

@@ -188,20 +188,26 @@ func propertyVarsFromUserProperties(msg *pahomqtt5.Publish) map[string]string {
 // bound handler's fn (Transform-attached; an Agnostic/bundled handler's
 // fn never sees it). Returns the accumulated reply-side topic/property
 // vars every handler's EncodeOut produced (later handlers win on a name
-// conflict — D6(c), "last-applied-wins"). isFnErr distinguishes a
-// DecodeIn failure (false, wraps as [reqreply.MiddlewareInputError]) from
-// the fn's own business error (true, wraps as [reqreply.MiddlewareError],
-// D2's fallback).
+// conflict — D6(c), "last-applied-wins"). failKind distinguishes a
+// DecodeIn failure ("in", wraps as [reqreply.MiddlewareInputError]) from
+// the fn's own business error ("fn", wraps as [reqreply.MiddlewareError],
+// D2's fallback) from an EncodeOut failure ("out", building the REPLY's
+// Out struct) — the caller reports "middleware:in"/"middleware:fn"/
+// "middleware:out" accordingly (see
+// docs/roadmap/rest-middleware-conflict-detection-improvements.md's
+// Candidate-3-equivalent adapter-dispatch review, which found EncodeOut
+// failures here previously collapsed into the SAME bucket as DecodeIn
+// failures, both reported as "middleware:in").
 func dispatchServerMiddlewareHandlers(
 	ctx context.Context,
 	reqPtr reflect.Value,
 	handlers []reqreply.MiddlewareHandler,
 	topicVars, propertyVars map[string]string,
-) (outTopicVars, outPropertyVars map[string]string, name string, isFnErr bool, err error) {
+) (outTopicVars, outPropertyVars map[string]string, name string, failKind string, err error) {
 	for _, h := range handlers {
 		inAny, decErr := h.DecodeIn(topicVars, propertyVars)
 		if decErr != nil {
-			return nil, nil, h.Name, false, decErr
+			return nil, nil, h.Name, "in", decErr
 		}
 		fnVal := reflect.ValueOf(h.Fn)
 		var results []reflect.Value
@@ -211,17 +217,17 @@ func dispatchServerMiddlewareHandlers(
 			results = fnVal.Call([]reflect.Value{reflect.ValueOf(ctx), reqPtr, reflect.ValueOf(inAny)})
 		}
 		if errI, _ := results[1].Interface().(error); errI != nil {
-			return nil, nil, h.Name, true, reqreply.MiddlewareError{Name: h.Name, Err: errI}
+			return nil, nil, h.Name, "fn", reqreply.MiddlewareError{Name: h.Name, Err: errI}
 		}
 		outAny := results[0].Interface()
 		tVars, pVars, encErr := h.EncodeOut(outAny)
 		if encErr != nil {
-			return nil, nil, h.Name, false, encErr
+			return nil, nil, h.Name, "out", encErr
 		}
 		outTopicVars = mergeVarsOverride(outTopicVars, tVars)
 		outPropertyVars = mergeVarsOverride(outPropertyVars, pVars)
 	}
-	return outTopicVars, outPropertyVars, "", false, nil
+	return outTopicVars, outPropertyVars, "", "", nil
 }
 
 // dispatchClientMiddlewareIn is [dispatchServerMiddlewareHandlers]'s
@@ -646,13 +652,18 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 			reqPropVars := propertyVarsFromUserProperties(msg)
 			reqPtr := reflect.New(reqType)
 			reqPtr.Elem().Set(reqVal)
-			_, outPropVars, mwName, isFnErr, mwErr := dispatchServerMiddlewareHandlers(spanCtx, reqPtr, middlewareHandlers, topicVars, reqPropVars)
+			_, outPropVars, mwName, failKind, mwErr := dispatchServerMiddlewareHandlers(spanCtx, reqPtr, middlewareHandlers, topicVars, reqPropVars)
 			if mwErr != nil {
+				isFnErr := failKind == "fn"
 				kind := KindDecode
 				loc := "middleware:in"
-				if isFnErr {
+				switch failKind {
+				case "fn":
 					kind = KindMiddleware
 					loc = "middleware:fn"
+				case "out":
+					kind = KindEncode
+					loc = "middleware:out"
 				}
 				stats.ReportErrors(obs, loc, mwErr)
 				serveErr = mwErr
@@ -1154,7 +1165,13 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 			if len(clientMiddlewareHandlers) > 0 {
 				replyPropertyVars := propertyVarsFromUserProperties(replyMsg)
 				if mwErr := dispatchClientMiddlewareOut(nil, replyPropertyVars, clientMiddlewareHandlers); mwErr != nil {
-					stats.ReportErrors(obs, "middleware:in", mwErr)
+					// mwErr is UNAMBIGUOUSLY an Out-decode failure — no Fn
+					// involved in dispatchClientMiddlewareOut at all —
+					// reported as "middleware:out" (client-side decode of
+					// the reply's Out struct), symmetric with
+					// "middleware:in" already covering the client-side
+					// ENCODE of the request's In struct (dispatchClientMiddlewareIn).
+					stats.ReportErrors(obs, "middleware:out", mwErr)
 					obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
 					return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Kind: KindDecode, Err: mwErr}).Convert(errType)}
 				}

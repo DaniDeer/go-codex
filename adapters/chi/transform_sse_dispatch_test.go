@@ -9,6 +9,8 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/middleware"
+	"github.com/DaniDeer/go-codex/stats"
 )
 
 // ── TransformSSE: happy path, response header composition ───────────────
@@ -156,6 +158,56 @@ func TestTransformSSE_TwoMiddlewaresEnrichSameField_LastAttachedWins(t *testing.
 	}
 	if receivedName != "second" {
 		t.Errorf("want last-attached middleware's write to win (%q), got %q", "second", receivedName)
+	}
+}
+
+// Rest-middleware-conflict-detection-improvements Candidate 3: the SSE
+// middleware output-encode (EncodeOut) failure path now reports
+// "middleware:out" via stats.ReportErrors, mirroring
+// adapters/chi/transform_dispatch_test.go's non-SSE equivalent.
+func TestTransformSSE_OutEncodeFailure_ReportsMiddlewareOutLocation(t *testing.T) {
+	// In is tdEmpty (no required fields, so DecodeIn/InCodec.Validate
+	// always succeeds) — isolating the failure to Out's EncodeOut path.
+	decl := middleware.NewDeclaration("api-key-policy", tdEmptyCodec, tdOutCodec)
+	mw := rest.NewMiddleware(decl).
+		WithResponseHeader(rest.NewRequiredResponseHeaderParam("X-Policy-Applied", codex.String(),
+			func(out tdOut) string { return out.Value },
+			func(out *tdOut, v string) { out.Value = v },
+		))
+	route := rest.NewSSERoute[createReq, sseEvent]("/events-out-fail", createReqCodec, sseEventCodec,
+		rest.RouteMeta{OperationID: "streamEventsOutFail"},
+	)
+	route = rest.TransformSSE(route, mw, func(ctx context.Context, req *createReq, in tdEmpty) (tdOut, error) {
+		// Empty Value fails tdOutCodec's NonEmptyString refinement at
+		// EncodeOut/OutCodec.Validate time.
+		return tdOut{Value: ""}, nil
+	})
+	spy := &spyValidationObserver{}
+	route = route.WithHandler(func(ctx context.Context, _ createReq, send func(sseEvent) error) error {
+		return send(sseEvent{Message: "hello"})
+	})
+	mux := mustServeSSE(t, route, rest.NewServer(testInfo))
+
+	ctx := stats.WithDiagnostics(context.Background())
+	ctx = stats.WithObserver(ctx, spy)
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/events-out-fail", nil).WithContext(ctx)
+	mux.ServeHTTP(rec, r)
+	for _, d := range stats.DiagnosticsFromContext(ctx) {
+		spy.RecordValidationError(d.Location, d.ConstraintName, d.Field)
+	}
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("want 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+	found := false
+	for _, loc := range spy.locations {
+		if loc == "middleware:out" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a RecordValidationError call with location %q, got %v", "middleware:out", spy.locations)
 	}
 }
 

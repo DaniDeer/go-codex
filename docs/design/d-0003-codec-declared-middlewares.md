@@ -1653,3 +1653,133 @@ cross-references in companion roadmap docs) — confirmed CLOSED, zero
 functional gaps remained in shipped code. Full verification (`go build
 ./...`, `go test -count=1 ./...` repo-wide, `just check`, `gofmt -l .`) —
 all clean.
+
+## Addendum 2: REST conflict-detection alignment + `"middleware:out"` cross-adapter parity
+
+Spun out of `docs/roadmap/rest-middleware-conflict-detection-improvements.md`
+(now shipped and deleted per its own graduation policy) — 3 candidate
+improvements found while tracing REST's real `checkParamConflicts`/
+`applyParamDeclarations`/`runMiddlewareHandlersReflect` code as the
+reference model for the ADDENDUM ABOVE's own property-axis design
+decisions. Where that prior addendum brought `api/events`/`api/reqreply`
+up to parity with REST's mechanism, THIS round is the mirror image: REST's
+OWN conflict-detection caught up to `api/events`/`api/reqreply`'s
+already-stricter, unconditional default — REST was the outlier this time,
+confirmed via code (`checkEventsParamConflicts`/`checkReqReplyParamConflicts`
+have been independent-per-axis and codec-schema-comparing since the
+property-axis round above, with no opt-in/toggle in either).
+
+### 1. Cross-kind namespace independence (previously shared)
+
+REST's `checkParamConflicts` previously compared header/cookie/query
+contributions in ONE combined map keyed by name only — a header named "X"
+and a query also named "X" were rejected as conflicting, even though they
+are semantically unrelated values from different parts of an HTTP request.
+Fixed: `applyParamDeclarations` now builds 5 INDEPENDENT per-kind maps
+(header, cookie, query, response-header, response-cookie); a conflict is
+only raised between two contributions of the SAME kind. `paramContribution`
+dropped its now-redundant `kind` field (every entry in a per-kind map
+already shares one). A confirmed real test,
+`TestWithMiddleware_ConflictingParamContribution` (declared a header AND a
+cookie both named "X-Trace" and asserted this conflicted), was rewritten to
+use two same-kind headers instead, preserving genuine same-kind-conflict
+coverage.
+
+**Dependent bug found and fixed in the SAME change** (not previously
+scoped): `paramNameSet`/`paramNameSetResponse` (used to build
+`addedRequestNames`/`addedResponseNames`, the "don't double-add the same
+spec entry when multiple middlewares agree on a name" dedup guard) were
+ALSO flat/kind-agnostic — harmless before this round only because
+`checkParamConflicts` rejected any cross-kind same-name pair before the
+dedup logic ever ran. Once cross-kind pairs became valid, the flat dedup
+guard would have silently DROPPED a legitimate second contribution sharing
+a name across kinds (e.g. a middleware-contributed header "X" and a
+separate middleware-contributed query "X" — only the header would have
+been applied to the spec). Fixed in the same change: these guards are now
+5 independent per-kind sets too, mirroring the conflict-detection maps.
+
+### 2. Codec-schema comparison (previously absent)
+
+REST's `paramContribution` had no `Codec` field at all — two contributions
+sharing a name/kind/required-ness but with WILDLY different codecs (one
+validating a UUID, the other a free-form string) passed silently. Fixed:
+`paramContribution` gained a `codec *codex.Codec[string]` field, wired from
+every contribution site; `checkParamConflicts` now also rejects on a schema
+mismatch.
+
+**Shared-helper extraction** (recommended in the roadmap doc, accepted):
+the schema-mismatch comparison was ALREADY duplicated twice — `api/events`'
+`codecSchemaMismatch` and `api/reqreply`'s inline
+`checkReqReplyContributionMap` comparison. Adding REST's own copy would
+have made a 3rd near-identical implementation. Instead, extracted
+`route.CodecSchemaMismatch(a, b *codex.Codec[string]) bool` (mirroring the
+established `route.FirstSchemeName` extraction precedent — moved there from
+5 duplicated per-adapter copies) and refactored ALL THREE APIs to call it,
+eliminating 3 copies down to 1. `api/events`/`api/reqreply` both lost their
+local `reflect` import as a result (no longer needed once the comparison
+moved out).
+
+### 3. `"middleware:out"` — a new observer location, plus 4 real bugs it surfaced
+
+REST's middleware output-encode (`EncodeOut`/`EncodeOutCookieAttrs`)
+failure path had NO `stats.ReportErrors` call at all, unlike the
+input-decode (`"middleware:in"`) and handler-fn (`"middleware:fn"`) paths —
+confirmed in 4 places, not just the one file originally suspected:
+`adapters/nethttp/serve.go`, `adapters/nethttp/serve_sse.go`,
+`adapters/chi/serve.go`, `adapters/chi/serve_sse.go` (8 total patch points
+— 2 `errFn` sites per file). Fixed: all 8 sites now report
+`stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, "middleware:out",
+err)`, mirroring the existing `"middleware:in"`/`"middleware:fn"` calls'
+shape exactly.
+
+Reviewing whether this same gap existed in `api/events`/`api/reqreply`'s
+own adapter dispatch (mqtt5/zeromq/mqtt) surfaced 4 REAL, CONFIRMED bugs in
+ALREADY-SHIPPED D-0003 code — not just an analogous additive gap:
+
+1. **mqtt5/zeromq events-publish**: `dispatchPublishMiddlewareHandlers`
+   returned a raw, un-wrapped `EncodeOut` error on failure; its callers
+   unconditionally reported EVERY such failure as `"middleware:fn"` —
+   mislabeling an encode failure as a business-logic error. Fixed: the
+   dispatch functions now wrap `EncodeOut` failures distinguishably
+   (`middlewareDispatchError.isEncodeErr`), and callers 3-way switch to
+   `"middleware:out"` for that case.
+2. **`adapters/mqtt` (v3)**: had ZERO `"middleware:in"`/`"middleware:fn"`
+   reporting anywhere in its subscribe/publish dispatch — a strictly
+   BIGGER, pre-existing gap than REST's original one (mqtt5/zeromq at least
+   attempted `"middleware:fn"`, wrongly for `EncodeOut`; mqtt v3 had
+   nothing). Fixed: added the missing calls, mirroring mqtt5/zeromq's
+   pattern, plus the SAME `"middleware:out"` fix.
+3. **mqtt5/zeromq reqreply server-side**: `dispatchServerMiddlewareHandlers`
+   decodes the request's In, runs Fn, THEN encodes the REPLY's Out — but
+   only returned a 2-way `isFnErr bool`, collapsing DecodeIn failures AND
+   EncodeOut failures (building the reply) into the same bucket, both
+   reported as `"middleware:in"`. Fixed: changed to a 3-way `failKind
+   string` ("in"/"fn"/"out"), updated all 3 call sites (mqtt5 ×1; zeromq
+   ×2, router + plain socket variants) to report the correct location.
+4. **mqtt5/zeromq reqreply client-side**: `dispatchClientMiddlewareOut`
+   (client reading the REPLY's Out, no Fn involved) was also reported as
+   `"middleware:in"`. Fixed: pure string-literal change to `"middleware:out"`
+   at all 3 call sites (mqtt5 ×1; zeromq ×2) — no signature change needed,
+   since this function's failure is unambiguously always an Out-decode
+   failure.
+
+`"middleware:out"` is symmetric with `"middleware:in"`'s existing
+dual-direction convention — `"middleware:in"` already covers BOTH the
+server DECODING the request's In (subscribe/reqreply-server) and the
+client ENCODING the request's In before sending (reqreply-client's
+`dispatchClientMiddlewareIn`); `"middleware:out"` now covers BOTH the
+server ENCODING the reply's Out (reqreply-server, events-publish) and the
+client DECODING the reply's Out (reqreply-client) — the location names the
+STRUCT, not the direction, exactly like its sibling.
+
+### Validation
+
+An independent code-review pass (fresh eyes, no assumptions) verified: no
+error-wrapping bugs, correct observer location strings at every call site,
+no fallthrough errors in the 3-way discriminator switches, `errors.As`
+unwrap paths intact, correct per-kind map/set usage in
+`applyParamDeclarations` (no header/cookie/query mixups), and clean
+`route.CodecSchemaMismatch` extraction (no dangling `reflect` imports).
+Full verification (`gofmt -l .`, `go build ./...`, `go test -count=1
+./...` — 55 packages, all pass, `just check` — zero issues,
+`events-api`/`reqreply-api`/`rest-api` examples all exit 0) — all clean.

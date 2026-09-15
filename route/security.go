@@ -1,5 +1,34 @@
 package route
 
+import (
+	"reflect"
+
+	"github.com/DaniDeer/go-codex/codex"
+)
+
+// CodecSchemaMismatch reports whether a and b conflict for a param-
+// conflict-detection check's purposes: nil-vs-non-nil is itself a
+// mismatch (differing validation strictness); both non-nil compares
+// Schema via reflect.DeepEqual; both nil is not a mismatch.
+//
+// Moved here from 2 near-identical per-package copies
+// (`api/events`'s codecSchemaMismatch, `api/reqreply`'s inline
+// checkReqReplyContributionMap comparison) plus `api/rest`'s OWN
+// Candidate-2 addition (see
+// docs/roadmap/rest-middleware-conflict-detection-improvements.md) — this
+// logic operates purely on [codex.Codec], the core `codex` package's own
+// type, with zero API-specific behavior, mirroring [FirstSchemeName]'s
+// existing de-duplication precedent above.
+func CodecSchemaMismatch(a, b *codex.Codec[string]) bool {
+	if (a == nil) != (b == nil) {
+		return true
+	}
+	if a == nil {
+		return false
+	}
+	return !reflect.DeepEqual(a.Schema, b.Schema)
+}
+
 // FirstSchemeName returns the first scheme name found across reqs, or ""
 // if reqs is empty. Used for [stats.SecurityObserver.RecordSecurityRejection]
 // reporting — a rejection needs SOME scheme name to report, and the first

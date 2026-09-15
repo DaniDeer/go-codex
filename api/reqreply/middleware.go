@@ -3,7 +3,6 @@ package reqreply
 import (
 	"fmt"
 	"log/slog"
-	"reflect"
 	"slices"
 
 	"github.com/DaniDeer/go-codex/codex"
@@ -415,22 +414,17 @@ func checkReqReplyParamConflicts(rb *routeBuilder, routeLabel string) error {
 
 // checkReqReplyContributionMap is [checkReqReplyParamConflicts]'s
 // per-namespace comparison loop — two contributions for the SAME name
-// conflict if Required differs, OR exactly one has a nil Codec (nil vs
-// non-nil is itself a mismatch — differing validation strictness), OR
-// both are non-nil and their Schemas differ (via [reflect.DeepEqual]) —
-// Round 15's deliberate, explicitly-flagged divergence from REST's real
-// precedent (which never compares codecs at all).
+// conflict if Required differs, OR their codec schemas mismatch per
+// [route.CodecSchemaMismatch] (Round 15's original inline copy of this
+// comparison was later extracted into that shared helper — see
+// docs/roadmap/rest-middleware-conflict-detection-improvements.md's
+// Candidate 2 — REST has since gained the identical comparison too, so
+// all 3 APIs are consistent).
 func checkReqReplyContributionMap(routeLabel string, contributions map[string][]reqreplyParamContribution) error {
 	for name, list := range contributions {
 		first := list[0]
 		for _, c := range list[1:] {
-			if c.required != first.required {
-				return ConflictingParamContributionError{Route: routeLabel, ParamName: name, FirstSource: first.source, SecondSource: c.source}
-			}
-			if (c.codec == nil) != (first.codec == nil) {
-				return ConflictingParamContributionError{Route: routeLabel, ParamName: name, FirstSource: first.source, SecondSource: c.source}
-			}
-			if c.codec != nil && first.codec != nil && !reflect.DeepEqual(c.codec.Schema, first.codec.Schema) {
+			if c.required != first.required || route.CodecSchemaMismatch(first.codec, c.codec) {
 				return ConflictingParamContributionError{Route: routeLabel, ParamName: name, FirstSource: first.source, SecondSource: c.source}
 			}
 		}

@@ -225,6 +225,10 @@ func TestWithMiddleware_AgreeingParamContributionNotDuplicated(t *testing.T) {
 	}
 }
 
+// Rest-middleware-conflict-detection-improvements Candidate 1: two
+// contributions of the SAME kind (both headers) with a DIFFERING Required
+// value still conflict — same-kind strictness is unaffected by the
+// cross-kind namespace split below.
 func TestWithMiddleware_ConflictingParamContribution(t *testing.T) {
 	b := rest.NewServer(testInfo)
 	mwA := middleware.Middleware{
@@ -233,7 +237,7 @@ func TestWithMiddleware_ConflictingParamContribution(t *testing.T) {
 	}
 	mwB := middleware.Middleware{
 		Name:                "mw-b",
-		RequestCookieParams: []middleware.CookieParamSpec{{Name: "X-Trace", Required: true}}, // DIFFERENT kind, same name
+		RequestHeaderParams: []middleware.HeaderParamSpec{{Name: "X-Trace", Required: false}}, // SAME kind, different Required
 	}
 	_, err := rest.NewRoute[mwTestReq, userResp]("GET", "/traced", mwTestReqCodec, userCodec,
 		rest.WithMiddleware(mwA),
@@ -246,6 +250,131 @@ func TestWithMiddleware_ConflictingParamContribution(t *testing.T) {
 	}
 	if conflictErr.ParamName != "X-Trace" {
 		t.Errorf("unexpected param name: %q", conflictErr.ParamName)
+	}
+}
+
+// Rest-middleware-conflict-detection-improvements Candidate 1: a header
+// and a cookie sharing the SAME name are now INDEPENDENT namespaces — no
+// longer a conflict (previously this WAS a
+// ConflictingParamContributionError; see docs/roadmap/
+// rest-middleware-conflict-detection-improvements.md's Candidate 1
+// compat-risk audit, which found and rewrote the test this replaces).
+func TestWithMiddleware_DifferentKindSameName_NoLongerConflicts(t *testing.T) {
+	b := rest.NewServer(testInfo)
+	mwA := middleware.Middleware{
+		Name:                "mw-a",
+		RequestHeaderParams: []middleware.HeaderParamSpec{{Name: "X-Trace", Required: true}},
+	}
+	mwB := middleware.Middleware{
+		Name:                "mw-b",
+		RequestCookieParams: []middleware.CookieParamSpec{{Name: "X-Trace", Required: true}}, // DIFFERENT kind, same name
+	}
+	handle, err := rest.NewRoute[mwTestReq, userResp]("GET", "/traced-independent", mwTestReqCodec, userCodec,
+		rest.WithMiddleware(mwA),
+		rest.WithMiddleware(mwB),
+	).RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("want no conflict (independent header/cookie namespaces), got: %v", err)
+	}
+	if handle.Descriptor.Path != "/traced-independent" {
+		t.Errorf("want a registered route, got Path %q", handle.Descriptor.Path)
+	}
+}
+
+// Rest-middleware-conflict-detection-improvements Candidate 1's dependent
+// dedup-guard fix: a middleware-contributed header "X" AND a SEPARATE
+// middleware-contributed query "X" must BOTH be applied to the route's
+// spec — a flat, kind-agnostic dedup guard would silently drop the
+// second one, since (pre-fix) it would see "X" as already added by the
+// header.
+func TestApplyParamDeclarations_DifferentKindSameName_BothAppliedToSpec(t *testing.T) {
+	b := rest.NewServer(testInfo)
+	mwA := middleware.Middleware{
+		Name:                "mw-a",
+		RequestHeaderParams: []middleware.HeaderParamSpec{{Name: "X", Required: true}},
+	}
+	mwB := middleware.Middleware{
+		Name:               "mw-b",
+		RequestQueryParams: []middleware.QueryParamSpec{{Name: "X", Required: true}},
+	}
+	handle, err := rest.NewRoute[mwTestReq, userResp]("GET", "/dedup-guard", mwTestReqCodec, userCodec,
+		rest.WithMiddleware(mwA),
+		rest.WithMiddleware(mwB),
+	).RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("RegisterHandle: %v", err)
+	}
+
+	foundHeader, foundQuery := false, false
+	for _, p := range handle.Descriptor.HeaderParams {
+		if p.Name == "X" {
+			foundHeader = true
+		}
+	}
+	for _, p := range handle.Descriptor.QueryParams {
+		if p.Name == "X" {
+			foundQuery = true
+		}
+	}
+	if !foundHeader {
+		t.Error("want header \"X\" applied to spec")
+	}
+	if !foundQuery {
+		t.Error("want query \"X\" ALSO applied to spec (dedup-guard fix)")
+	}
+}
+
+// Rest-middleware-conflict-detection-improvements Candidate 2: two
+// same-kind/same-name/same-required contributions with DIFFERING codec
+// schemas now conflict — previously REST silently allowed this (no codec
+// comparison at all); events/reqreply already had this stricter check.
+func TestWithMiddleware_ConflictingCodecSchema(t *testing.T) {
+	b := rest.NewServer(testInfo)
+	uuidCodec := codex.String().WithDescription("uuid")
+	freeform := codex.String()
+	mwA := middleware.Middleware{
+		Name:                "mw-a",
+		RequestHeaderParams: []middleware.HeaderParamSpec{{Name: "X-Id", Required: true, Codec: &uuidCodec}},
+	}
+	mwB := middleware.Middleware{
+		Name:                "mw-b",
+		RequestHeaderParams: []middleware.HeaderParamSpec{{Name: "X-Id", Required: true, Codec: &freeform}},
+	}
+	_, err := rest.NewRoute[mwTestReq, userResp]("GET", "/codec-conflict", mwTestReqCodec, userCodec,
+		rest.WithMiddleware(mwA),
+		rest.WithMiddleware(mwB),
+	).RegisterHandle(b)
+
+	var conflictErr rest.ConflictingParamContributionError
+	if !errors.As(err, &conflictErr) {
+		t.Fatalf("want ConflictingParamContributionError, got %T: %v", err, err)
+	}
+	if conflictErr.ParamName != "X-Id" {
+		t.Errorf("unexpected param name: %q", conflictErr.ParamName)
+	}
+}
+
+// Rest-middleware-conflict-detection-improvements Candidate 2 negative
+// case: two same-kind/same-name contributions with the SAME codec schema
+// (or both nil) do NOT conflict — avoids false positives from the new
+// comparison.
+func TestWithMiddleware_SameCodecSchema_NoConflict(t *testing.T) {
+	b := rest.NewServer(testInfo)
+	shared := codex.String().WithDescription("uuid")
+	mwA := middleware.Middleware{
+		Name:                "mw-a",
+		RequestHeaderParams: []middleware.HeaderParamSpec{{Name: "X-Id", Required: true, Codec: &shared}},
+	}
+	mwB := middleware.Middleware{
+		Name:                "mw-b",
+		RequestHeaderParams: []middleware.HeaderParamSpec{{Name: "X-Id", Required: true, Codec: &shared}},
+	}
+	_, err := rest.NewRoute[mwTestReq, userResp]("GET", "/codec-no-conflict", mwTestReqCodec, userCodec,
+		rest.WithMiddleware(mwA),
+		rest.WithMiddleware(mwB),
+	).RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("want no conflict (same codec schema), got: %v", err)
 	}
 }
 

@@ -420,3 +420,37 @@ func TestPublish_Observer_ReportsMiddlewareInAndFnLocations(t *testing.T) {
 		t.Errorf("want a RecordValidationError call with location %q, got %v", "middleware:fn", obs.validationLocations)
 	}
 }
+
+// Rest-middleware-conflict-detection-improvements' adapter-dispatch review
+// found this EncodeOut failure was previously mislabeled as
+// "middleware:fn" (indistinguishable from a real fn business error) —
+// now reported as its own "middleware:out" location, symmetric with
+// REST's own "middleware:out".
+func TestPublish_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
+	mw := newTDDeclaration("tenant-required-policy")
+	pub := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).WithPublish(events.Publish{})
+	pub = events.ClientTransform(pub, mw, func(ctx context.Context, msg sensorReading) (tdOut, error) {
+		// Empty Value fails tdOutCodec's NonEmptyString refinement at
+		// EncodeOut/OutCodec.Validate time, NOT the fn itself.
+		return tdOut{Value: ""}, nil
+	})
+	handle, err := pub.Handle(nil)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	obs := &testObserver{}
+	sock := &mockSocket{}
+	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1}
+	_ = publishHandle(context.Background(), sock, handle, reading, PublishOptions[sensorReading]{Observer: obs})
+
+	found := false
+	for _, loc := range obs.validationLocations {
+		if loc == "middleware:out" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a RecordValidationError call with location %q, got %v", "middleware:out", obs.validationLocations)
+	}
+}

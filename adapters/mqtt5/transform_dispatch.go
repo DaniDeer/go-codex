@@ -7,15 +7,24 @@ import (
 	"github.com/DaniDeer/go-codex/api/events"
 )
 
-// middlewareDispatchError distinguishes [dispatchSubscribeMiddlewareHandlers]'s
-// two failure kinds so the caller knows how to respond: a DecodeIn failure
-// has no business error yet (isFnError false); a Fn failure IS
+// middlewareDispatchError distinguishes a dispatch function's failure
+// kinds so the caller knows how to respond AND which observer location to
+// report: a DecodeIn failure has no business error yet (isFnError AND
+// isEncodeErr both false, reported as "middleware:in"); a Fn failure IS
 // ErrorPattern-eligible (D2), needing Name for [events.MiddlewareError]'s
-// fallback. Mirrors adapters/nethttp/serve.go's identical type.
+// fallback (isFnError true, reported as "middleware:fn"); an EncodeOut
+// failure (a middleware's own Out fails to encode into topic/property
+// vars — [dispatchPublishMiddlewareHandlers]'s own failure mode, added
+// alongside docs/roadmap/rest-middleware-conflict-detection-improvements.md's
+// Candidate-3-equivalent review for adapters) is reported as
+// "middleware:out", symmetric with REST's own "middleware:out" — mirrors
+// adapters/nethttp/serve.go's identical type plus this package's own
+// EncodeOut extension.
 type middlewareDispatchError struct {
-	err       error
-	isFnError bool
-	name      string
+	err         error
+	isFnError   bool
+	isEncodeErr bool
+	name        string
 }
 
 func (e middlewareDispatchError) Error() string { return e.err.Error() }
@@ -81,7 +90,7 @@ func dispatchPublishMiddlewareHandlers[T any](ctx context.Context, msg T, handle
 		out := results[0].Interface()
 		mwTopicVars, mwPropertyVars, encErr := h.EncodeOut(out)
 		if encErr != nil {
-			return nil, nil, encErr
+			return nil, nil, middlewareDispatchError{err: encErr, isEncodeErr: true, name: h.Name}
 		}
 		for k, v := range mwTopicVars {
 			topicVars[k] = v

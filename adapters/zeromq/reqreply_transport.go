@@ -322,20 +322,24 @@ func applyGeneralServerMiddleware(fnVal reflect.Value, impls []middleware.Server
 // REQUIRED property naturally fails with [reqreply.MiddlewareInputError],
 // no special-casing needed. Returns the accumulated reply-side topic/
 // property vars every handler's EncodeOut produced (later handlers win
-// on a name conflict — D6(c)). isFnErr distinguishes a DecodeIn failure
-// (false, wraps as [reqreply.MiddlewareInputError]) from the fn's own
-// business error (true, wraps as [reqreply.MiddlewareError], D2's
-// fallback). Mirrors [adapters/mqtt5]'s identical dispatch function.
+// on a name conflict — D6(c)). failKind distinguishes a DecodeIn failure
+// ("in", wraps as [reqreply.MiddlewareInputError]) from the fn's own
+// business error ("fn", wraps as [reqreply.MiddlewareError], D2's
+// fallback) from an EncodeOut failure ("out", building the REPLY's Out
+// struct — see
+// docs/roadmap/rest-middleware-conflict-detection-improvements.md's
+// Candidate-3-equivalent adapter-dispatch review). Mirrors
+// [adapters/mqtt5]'s identical dispatch function.
 func dispatchServerMiddlewareHandlers(
 	ctx context.Context,
 	reqPtr reflect.Value,
 	handlers []reqreply.MiddlewareHandler,
 	topicVars, propertyVars map[string]string,
-) (outTopicVars, outPropertyVars map[string]string, name string, isFnErr bool, err error) {
+) (outTopicVars, outPropertyVars map[string]string, name string, failKind string, err error) {
 	for _, h := range handlers {
 		inAny, decErr := h.DecodeIn(topicVars, propertyVars)
 		if decErr != nil {
-			return nil, nil, h.Name, false, decErr
+			return nil, nil, h.Name, "in", decErr
 		}
 		fnVal := reflect.ValueOf(h.Fn)
 		var results []reflect.Value
@@ -345,17 +349,17 @@ func dispatchServerMiddlewareHandlers(
 			results = fnVal.Call([]reflect.Value{reflect.ValueOf(ctx), reqPtr, reflect.ValueOf(inAny)})
 		}
 		if errI, _ := results[1].Interface().(error); errI != nil {
-			return nil, nil, h.Name, true, reqreply.MiddlewareError{Name: h.Name, Err: errI}
+			return nil, nil, h.Name, "fn", reqreply.MiddlewareError{Name: h.Name, Err: errI}
 		}
 		outAny := results[0].Interface()
 		tVars, pVars, encErr := h.EncodeOut(outAny)
 		if encErr != nil {
-			return nil, nil, h.Name, false, encErr
+			return nil, nil, h.Name, "out", encErr
 		}
 		outTopicVars = mergeVarsOverride(outTopicVars, tVars)
 		outPropertyVars = mergeVarsOverride(outPropertyVars, pVars)
 	}
-	return outTopicVars, outPropertyVars, "", false, nil
+	return outTopicVars, outPropertyVars, "", "", nil
 }
 
 // dispatchClientMiddlewareIn is [dispatchServerMiddlewareHandlers]'s
@@ -673,13 +677,18 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 		if len(middlewareHandlers) > 0 {
 			reqPtr := reflect.New(reqType)
 			reqPtr.Elem().Set(reqVal)
-			_, _, mwName, isFnErr, mwErr := dispatchServerMiddlewareHandlers(spanCtx, reqPtr, middlewareHandlers, nil, nil)
+			_, _, mwName, failKind, mwErr := dispatchServerMiddlewareHandlers(spanCtx, reqPtr, middlewareHandlers, nil, nil)
 			if mwErr != nil {
+				isFnErr := failKind == "fn"
 				kind := KindDecode
 				loc := "middleware:in"
-				if isFnErr {
+				switch failKind {
+				case "fn":
 					kind = KindMiddleware
 					loc = "middleware:fn"
+				case "out":
+					kind = KindEncode
+					loc = "middleware:out"
 				}
 				stats.ReportErrors(obs, loc, mwErr)
 				serveErr = mwErr
@@ -1044,8 +1053,11 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 			// both maps are always empty; a route declaring a REQUIRED
 			// WithResponseTopic/WithResponseProperty naturally fails here,
 			// no special-casing needed, mirrors mqtt5's identical call.
+			// mwErr is UNAMBIGUOUSLY an Out-decode failure — reported as
+			// "middleware:out", symmetric with "middleware:in" already
+			// covering the client-side ENCODE of the request's In struct.
 			if mwErr := dispatchClientMiddlewareOut(nil, nil, clientMiddlewareHandlers); mwErr != nil {
-				stats.ReportErrors(obs, "middleware:in", mwErr)
+				stats.ReportErrors(obs, "middleware:out", mwErr)
 				obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
 				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: mwErr}).Convert(errType)}
 			}
@@ -1311,13 +1323,18 @@ func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny a
 			if len(middlewareHandlers) > 0 {
 				reqPtr := reflect.New(reqType)
 				reqPtr.Elem().Set(reqVal)
-				_, _, mwName, isFnErr, mwErr := dispatchServerMiddlewareHandlers(spanCtx, reqPtr, middlewareHandlers, nil, nil)
+				_, _, mwName, failKind, mwErr := dispatchServerMiddlewareHandlers(spanCtx, reqPtr, middlewareHandlers, nil, nil)
 				if mwErr != nil {
+					isFnErr := failKind == "fn"
 					kind := KindDecode
 					loc := "middleware:in"
-					if isFnErr {
+					switch failKind {
+					case "fn":
 						kind = KindMiddleware
 						loc = "middleware:fn"
+					case "out":
+						kind = KindEncode
+						loc = "middleware:out"
 					}
 					stats.ReportErrors(obs, loc, mwErr)
 					serveErr = mwErr
@@ -1620,9 +1637,10 @@ func (t *dealerClientTransport) call(ctx context.Context, routeAny any, reqAny a
 			// zeromq has neither a reply-topic nor a property mechanism
 			// (ROUTER/DEALER frames carry only [delimiter, status,
 			// payload]) — both maps are always empty; mirrors the
-			// identical ZMQ-REQ variant's call.
+			// identical ZMQ-REQ variant's call. mwErr is UNAMBIGUOUSLY an
+			// Out-decode failure — reported as "middleware:out".
 			if mwErr := dispatchClientMiddlewareOut(nil, nil, clientMiddlewareHandlers); mwErr != nil {
-				stats.ReportErrors(obs, "middleware:in", mwErr)
+				stats.ReportErrors(obs, "middleware:out", mwErr)
 				obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
 				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: mwErr}).Convert(errType)}
 			}

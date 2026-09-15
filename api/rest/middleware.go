@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"slices"
 
+	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
 )
@@ -383,11 +384,20 @@ type securityContribution struct {
 }
 
 // paramContribution is one source's declaration for a single header/cookie/
-// query param name, tracked for conflict detection.
+// query param name, tracked for conflict detection. Kept in ONE PER-KIND
+// map (see [applyParamDeclarations]) rather than a combined map — no
+// `kind` field needed here since every entry sharing a map already shares
+// a kind (see
+// docs/roadmap/rest-middleware-conflict-detection-improvements.md's
+// Candidate 1 for why cross-kind name collisions are no longer
+// cross-checked at all, matching [events]/[reqreply]'s own independent-
+// per-axis default). `codec` is Candidate 2's addition — schema
+// comparison via [route.CodecSchemaMismatch], matching events/reqreply's
+// already-stricter behavior.
 type paramContribution struct {
 	source   string
-	kind     string // "header", "cookie", "query", "response-header", "response-cookie"
 	required bool
+	codec    *codex.Codec[string]
 }
 
 // applyMiddlewareDeclarations is the SINGLE validation/application pass run
@@ -669,41 +679,51 @@ func toResponseCookieParam(s middleware.ResponseCookieParamSpec) ResponseCookieP
 	return ResponseCookieParam{Name: s.Name, Description: s.Description, Required: s.Required, Codec: s.Codec}
 }
 
+// applyParamDeclarations builds 5 INDEPENDENT per-kind contribution maps
+// (header, cookie, query, response-header, response-cookie) — see
+// docs/roadmap/rest-middleware-conflict-detection-improvements.md's
+// Candidate 1: a name conflict is only raised between two contributions
+// of the SAME kind, matching [events]/[reqreply]'s own unconditional,
+// independent-per-axis default. A header and a query param (or any other
+// cross-kind pair) sharing a name no longer conflicts with each other.
 func applyParamDeclarations(rb *routeBuilder, routeLabel string) error {
-	request := map[string][]paramContribution{}
-	response := map[string][]paramContribution{}
+	reqHeader := map[string][]paramContribution{}
+	reqCookie := map[string][]paramContribution{}
+	reqQuery := map[string][]paramContribution{}
+	respHeader := map[string][]paramContribution{}
+	respCookie := map[string][]paramContribution{}
 
 	for _, p := range rb.headerParams {
-		request[p.Name] = append(request[p.Name], paramContribution{source: "manual", kind: "header", required: p.Required})
+		reqHeader[p.Name] = append(reqHeader[p.Name], paramContribution{source: "manual", required: p.Required, codec: p.Codec})
 	}
 	for _, p := range rb.cookieParams {
-		request[p.Name] = append(request[p.Name], paramContribution{source: "manual", kind: "cookie", required: p.Required})
+		reqCookie[p.Name] = append(reqCookie[p.Name], paramContribution{source: "manual", required: p.Required, codec: p.Codec})
 	}
 	for _, p := range rb.queryParams {
-		request[p.Name] = append(request[p.Name], paramContribution{source: "manual", kind: "query", required: p.Required})
+		reqQuery[p.Name] = append(reqQuery[p.Name], paramContribution{source: "manual", required: p.Required, codec: p.Codec})
 	}
 	for _, p := range rb.respHeaders {
-		response[p.Name] = append(response[p.Name], paramContribution{source: "manual", kind: "response-header"})
+		respHeader[p.Name] = append(respHeader[p.Name], paramContribution{source: "manual", codec: p.Codec})
 	}
 	for _, p := range rb.respCookies {
-		response[p.Name] = append(response[p.Name], paramContribution{source: "manual", kind: "response-cookie"})
+		respCookie[p.Name] = append(respCookie[p.Name], paramContribution{source: "manual", codec: p.Codec})
 	}
 
 	for _, mw := range rb.middlewares {
 		for _, s := range mw.RequestHeaderParams {
-			request[s.Name] = append(request[s.Name], paramContribution{source: mw.Name, kind: "header", required: s.Required})
+			reqHeader[s.Name] = append(reqHeader[s.Name], paramContribution{source: mw.Name, required: s.Required, codec: s.Codec})
 		}
 		for _, s := range mw.RequestCookieParams {
-			request[s.Name] = append(request[s.Name], paramContribution{source: mw.Name, kind: "cookie", required: s.Required})
+			reqCookie[s.Name] = append(reqCookie[s.Name], paramContribution{source: mw.Name, required: s.Required, codec: s.Codec})
 		}
 		for _, s := range mw.RequestQueryParams {
-			request[s.Name] = append(request[s.Name], paramContribution{source: mw.Name, kind: "query", required: s.Required})
+			reqQuery[s.Name] = append(reqQuery[s.Name], paramContribution{source: mw.Name, required: s.Required, codec: s.Codec})
 		}
 		for _, s := range mw.ResponseHeaderParams {
-			response[s.Name] = append(response[s.Name], paramContribution{source: mw.Name, kind: "response-header"})
+			respHeader[s.Name] = append(respHeader[s.Name], paramContribution{source: mw.Name, codec: s.Codec})
 		}
 		for _, s := range mw.ResponseCookieParams {
-			response[s.Name] = append(response[s.Name], paramContribution{source: mw.Name, kind: "response-cookie"})
+			respCookie[s.Name] = append(respCookie[s.Name], paramContribution{source: mw.Name, codec: s.Codec})
 		}
 	}
 
@@ -712,118 +732,139 @@ func applyParamDeclarations(rb *routeBuilder, routeLabel string) error {
 	// already-added-names guard as legacy middleware.Middleware above (D4).
 	for _, mw := range rb.middlewareSpecContributions {
 		for _, s := range mw.reqHeaderParams {
-			request[s.Name] = append(request[s.Name], paramContribution{source: mw.name, kind: "header", required: s.Required})
+			reqHeader[s.Name] = append(reqHeader[s.Name], paramContribution{source: mw.name, required: s.Required, codec: s.Codec})
 		}
 		for _, s := range mw.reqCookieParams {
-			request[s.Name] = append(request[s.Name], paramContribution{source: mw.name, kind: "cookie", required: s.Required})
+			reqCookie[s.Name] = append(reqCookie[s.Name], paramContribution{source: mw.name, required: s.Required, codec: s.Codec})
 		}
 		for _, s := range mw.reqQueryParams {
-			request[s.Name] = append(request[s.Name], paramContribution{source: mw.name, kind: "query", required: s.Required})
+			reqQuery[s.Name] = append(reqQuery[s.Name], paramContribution{source: mw.name, required: s.Required, codec: s.Codec})
 		}
 		for _, s := range mw.respHeaderParams {
-			response[s.Name] = append(response[s.Name], paramContribution{source: mw.name, kind: "response-header"})
+			respHeader[s.Name] = append(respHeader[s.Name], paramContribution{source: mw.name, codec: s.Codec})
 		}
 		for _, s := range mw.respCookieParams {
-			response[s.Name] = append(response[s.Name], paramContribution{source: mw.name, kind: "response-cookie"})
+			respCookie[s.Name] = append(respCookie[s.Name], paramContribution{source: mw.name, codec: s.Codec})
 		}
 	}
 
-	if err := checkParamConflicts(routeLabel, request); err != nil {
-		return err
-	}
-	if err := checkParamConflicts(routeLabel, response); err != nil {
-		return err
+	for _, m := range []map[string][]paramContribution{reqHeader, reqCookie, reqQuery, respHeader, respCookie} {
+		if err := checkParamConflicts(routeLabel, m); err != nil {
+			return err
+		}
 	}
 
-	manualRequestNames := paramNameSet(rb.headerParams, rb.cookieParams, rb.queryParams)
-	manualResponseNames := paramNameSetResponse(rb.respHeaders, rb.respCookies)
+	// manualXxxNames/addedXxxNames are now PER-KIND (5 independent sets,
+	// mirroring the 5 conflict-detection maps above) — see
+	// docs/roadmap/rest-middleware-conflict-detection-improvements.md's
+	// Candidate 1 dependent-bug note: a FLAT, kind-agnostic dedup guard
+	// would silently DROP a legitimate cross-kind-same-name contribution
+	// (e.g. a middleware-contributed header "X" AND a separate
+	// middleware-contributed query "X") once cross-kind name collisions
+	// stopped being rejected outright. Splitting these guards per-kind,
+	// alongside the conflict-detection maps, fixes that latent bug.
+	manualHeaderNames := paramNameSet(rb.headerParams)
+	manualCookieNames := paramNameSet(rb.cookieParams)
+	manualQueryNames := paramNameSet(rb.queryParams)
+	manualRespHeaderNames := paramNameSet(rb.respHeaders)
+	manualRespCookieNames := paramNameSet(rb.respCookies)
 
-	// addedRequestNames/addedResponseNames track names ALREADY layered in by
-	// an EARLIER-processed middleware in this same loop, in addition to
-	// manualRequestNames/manualResponseNames — checkParamConflicts above
-	// only rejects a name when its contributing sources DISAGREE (different
-	// kind/required); two (or more) middlewares agreeing on the SAME name
-	// pass that check cleanly, but must still only be layered into the
-	// route's spec ONCE, not once per contributing middleware. Without this
-	// guard, buildHeaderParams/buildCookieParams/buildQueryParams/response
-	// siblings (which perform no dedup by name) would emit the SAME param
-	// name multiple times in the final OpenAPI spec.
-	addedRequestNames := make(map[string]bool, len(manualRequestNames))
-	addedResponseNames := make(map[string]bool, len(manualResponseNames))
+	// addedXxxNames track names ALREADY layered in by an EARLIER-processed
+	// middleware in this same loop, in addition to manualXxxNames —
+	// checkParamConflicts above only rejects a name when its contributing
+	// sources DISAGREE (different required/codec); two (or more)
+	// middlewares agreeing on the SAME name pass that check cleanly, but
+	// must still only be layered into the route's spec ONCE, not once per
+	// contributing middleware. Without this guard, buildHeaderParams/
+	// buildCookieParams/buildQueryParams/response siblings (which perform
+	// no dedup by name) would emit the SAME param name multiple times in
+	// the final OpenAPI spec.
+	addedHeaderNames := make(map[string]bool, len(manualHeaderNames))
+	addedCookieNames := make(map[string]bool, len(manualCookieNames))
+	addedQueryNames := make(map[string]bool, len(manualQueryNames))
+	addedRespHeaderNames := make(map[string]bool, len(manualRespHeaderNames))
+	addedRespCookieNames := make(map[string]bool, len(manualRespCookieNames))
 
 	for _, mw := range rb.middlewares {
 		for _, s := range mw.RequestHeaderParams {
-			if !manualRequestNames[s.Name] && !addedRequestNames[s.Name] {
+			if !manualHeaderNames[s.Name] && !addedHeaderNames[s.Name] {
 				toHeaderParam(s).applyRoute(rb)
-				addedRequestNames[s.Name] = true
+				addedHeaderNames[s.Name] = true
 			}
 		}
 		for _, s := range mw.RequestCookieParams {
-			if !manualRequestNames[s.Name] && !addedRequestNames[s.Name] {
+			if !manualCookieNames[s.Name] && !addedCookieNames[s.Name] {
 				toCookieParam(s).applyRoute(rb)
-				addedRequestNames[s.Name] = true
+				addedCookieNames[s.Name] = true
 			}
 		}
 		for _, s := range mw.RequestQueryParams {
-			if !manualRequestNames[s.Name] && !addedRequestNames[s.Name] {
+			if !manualQueryNames[s.Name] && !addedQueryNames[s.Name] {
 				toQueryParam(s).applyRoute(rb)
-				addedRequestNames[s.Name] = true
+				addedQueryNames[s.Name] = true
 			}
 		}
 		for _, s := range mw.ResponseHeaderParams {
-			if !manualResponseNames[s.Name] && !addedResponseNames[s.Name] {
+			if !manualRespHeaderNames[s.Name] && !addedRespHeaderNames[s.Name] {
 				toResponseHeaderParam(s).applyRoute(rb)
-				addedResponseNames[s.Name] = true
+				addedRespHeaderNames[s.Name] = true
 			}
 		}
 		for _, s := range mw.ResponseCookieParams {
-			if !manualResponseNames[s.Name] && !addedResponseNames[s.Name] {
+			if !manualRespCookieNames[s.Name] && !addedRespCookieNames[s.Name] {
 				toResponseCookieParam(s).applyRoute(rb)
-				addedResponseNames[s.Name] = true
+				addedRespCookieNames[s.Name] = true
 			}
 		}
 	}
 
 	for _, mw := range rb.middlewareSpecContributions {
 		for _, s := range mw.reqHeaderParams {
-			if !manualRequestNames[s.Name] && !addedRequestNames[s.Name] {
+			if !manualHeaderNames[s.Name] && !addedHeaderNames[s.Name] {
 				s.applyRoute(rb)
-				addedRequestNames[s.Name] = true
+				addedHeaderNames[s.Name] = true
 			}
 		}
 		for _, s := range mw.reqCookieParams {
-			if !manualRequestNames[s.Name] && !addedRequestNames[s.Name] {
+			if !manualCookieNames[s.Name] && !addedCookieNames[s.Name] {
 				s.applyRoute(rb)
-				addedRequestNames[s.Name] = true
+				addedCookieNames[s.Name] = true
 			}
 		}
 		for _, s := range mw.reqQueryParams {
-			if !manualRequestNames[s.Name] && !addedRequestNames[s.Name] {
+			if !manualQueryNames[s.Name] && !addedQueryNames[s.Name] {
 				s.applyRoute(rb)
-				addedRequestNames[s.Name] = true
+				addedQueryNames[s.Name] = true
 			}
 		}
 		for _, s := range mw.respHeaderParams {
-			if !manualResponseNames[s.Name] && !addedResponseNames[s.Name] {
+			if !manualRespHeaderNames[s.Name] && !addedRespHeaderNames[s.Name] {
 				s.applyRoute(rb)
-				addedResponseNames[s.Name] = true
+				addedRespHeaderNames[s.Name] = true
 			}
 		}
 		for _, s := range mw.respCookieParams {
-			if !manualResponseNames[s.Name] && !addedResponseNames[s.Name] {
+			if !manualRespCookieNames[s.Name] && !addedRespCookieNames[s.Name] {
 				s.applyRoute(rb)
-				addedResponseNames[s.Name] = true
+				addedRespCookieNames[s.Name] = true
 			}
 		}
 	}
 	return nil
 }
 
+// checkParamConflicts compares contributions SCOPED to a SINGLE kind
+// (caller passes one of the 5 per-kind maps built by
+// [applyParamDeclarations]) — two contributions for the SAME name
+// conflict if Required differs, OR their codec schemas mismatch per
+// [route.CodecSchemaMismatch] (Candidate 2). No `kind` comparison is
+// needed here anymore: every entry in a per-kind map already shares a
+// kind by construction (Candidate 1).
 func checkParamConflicts(routeLabel string, contributions map[string][]paramContribution) error {
 	for name, list := range contributions {
 		first := list[0]
 		for _, c := range list[1:] {
-			if c.kind != first.kind || c.required != first.required {
+			if c.required != first.required || route.CodecSchemaMismatch(first.codec, c.codec) {
 				return ConflictingParamContributionError{
 					Route: routeLabel, ParamName: name,
 					FirstSource: first.source, SecondSource: c.source,
@@ -834,29 +875,41 @@ func checkParamConflicts(routeLabel string, contributions map[string][]paramCont
 	return nil
 }
 
-func paramNameSet(headers []HeaderParam, cookies []CookieParam, queries []QueryParam) map[string]bool {
-	names := make(map[string]bool, len(headers)+len(cookies)+len(queries))
-	for _, p := range headers {
-		names[p.Name] = true
-	}
-	for _, p := range cookies {
-		names[p.Name] = true
-	}
-	for _, p := range queries {
-		names[p.Name] = true
+// namedParam is implemented by every param type applyParamDeclarations
+// tracks names for — [HeaderParam], [CookieParam], [QueryParam],
+// [ResponseHeaderParam], [ResponseCookieParam] all expose Name via this
+// same shape, letting [paramNameSet] stay a single generic helper instead
+// of 5 near-identical copies.
+type namedParam interface {
+	HeaderParam | CookieParam | QueryParam | ResponseHeaderParam | ResponseCookieParam
+}
+
+func paramNameSet[T namedParam](params []T) map[string]bool {
+	names := make(map[string]bool, len(params))
+	for _, p := range params {
+		names[paramName(p)] = true
 	}
 	return names
 }
 
-func paramNameSetResponse(headers []ResponseHeaderParam, cookies []ResponseCookieParam) map[string]bool {
-	names := make(map[string]bool, len(headers)+len(cookies))
-	for _, p := range headers {
-		names[p.Name] = true
+// paramName extracts Name from any [namedParam] — a small type switch
+// since Go generics cannot access a common struct field across a union
+// constraint directly.
+func paramName[T namedParam](p T) string {
+	switch v := any(p).(type) {
+	case HeaderParam:
+		return v.Name
+	case CookieParam:
+		return v.Name
+	case QueryParam:
+		return v.Name
+	case ResponseHeaderParam:
+		return v.Name
+	case ResponseCookieParam:
+		return v.Name
+	default:
+		return ""
 	}
-	for _, p := range cookies {
-		names[p.Name] = true
-	}
-	return names
 }
 
 // MissingSecurityMiddlewareError is returned by [Route.Register] when a
@@ -935,9 +988,15 @@ func (e ConflictingSecurityDeclarationError) LogValue() slog.Value {
 
 // ConflictingParamContributionError is returned by [Route.Register] when
 // two DIFFERENT sources (a manual declaration or a specific middleware's
-// Name) declare the SAME header/cookie/query param name with a DIFFERENT
-// concrete param kind or Required value. Identical redundant declarations
-// are allowed silently.
+// Name) declare the SAME param name, of the SAME kind (header, cookie,
+// query, response-header, or response-cookie), with a DIFFERENT Required
+// value or a mismatching codec schema. Two DIFFERENT-kind params sharing a
+// name (e.g. a header "X" and a query "X") are INDEPENDENT namespaces and
+// never conflict — see
+// docs/roadmap/rest-middleware-conflict-detection-improvements.md's
+// Candidate 1, matching [events]/[reqreply]'s own already-unconditional
+// per-axis independence. Identical redundant declarations are allowed
+// silently.
 type ConflictingParamContributionError struct {
 	Route                     string
 	ParamName                 string

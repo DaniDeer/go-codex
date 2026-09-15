@@ -13,6 +13,7 @@ import (
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
+	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 )
@@ -1409,6 +1410,141 @@ func TestAttachServer_Observer_ReportsMiddlewareInAndFnLocations(t *testing.T) {
 	}
 	if !foundLoc {
 		t.Fatalf("want a RecordValidationError call with location \"middleware:in\", got %+v", obs.validationFull)
+	}
+	cancel()
+	<-errCh
+}
+
+// TestAttachServer_Observer_ReportsMiddlewareOutLocation (Rest-middleware-
+// conflict-detection-improvements' adapter-dispatch review): the reply's
+// own EncodeOut failure (building the REPLY's Out struct, via
+// WithResponseProperty) was previously collapsed into "middleware:in" —
+// now reported distinctly as "middleware:out".
+func TestAttachServer_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
+	mw := reqreply.NewMiddleware(middleware.NewDeclaration("obs-out-loc", mwPropInCodec, mwPropOutCodec)).
+		WithResponseProperty(reqreply.NewPropertyParam("X-Ack", codex.String().Refine(validate.NonEmptyString),
+			func(v mwPropOut) string { return v.Ack },
+			func(v *mwPropOut, s string) { v.Ack = s }))
+	handler := func(ctx context.Context, req computeReq) (computeResp, error) {
+		return computeResp{Sum: req.X + req.Y}, nil
+	}
+	rt := reqreply.Transform(
+		reqreply.NewRoute[computeReq, computeResp]("compute/obs-out-loc-test", computeReqCodec, computeRespCodec),
+		mw,
+		func(ctx context.Context, req *computeReq, in mwPropIn) (mwPropOut, error) {
+			// Empty Ack fails the NonEmptyString refinement at
+			// EncodeOut/OutCodec.Validate time, building the reply.
+			return mwPropOut{Ack: ""}, nil
+		},
+	)
+
+	obs := &testObserver{}
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	if _, err := rt.WithHandler(handler).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	serverClient := &mockClient{}
+	serverRouter := newMockRouter()
+	if err := AttachServer(server, serverClient, serverRouter, ServeOptions{Observer: obs}); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- server.Serve(ctx) }()
+	serverRouter.waitHandler("compute/obs-out-loc-test")
+
+	client := reqreply.NewClient()
+	clientClient := &mockClient{}
+	clientRouter := newMockRouter()
+	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+		t.Fatalf("AttachClient: %v", err)
+	}
+	wireBrokers(t, serverClient, clientRouter)
+	wireBrokers(t, clientClient, serverRouter)
+
+	_, _ = client.Call(context.Background(),
+		reqreply.NewRoute[computeReq, computeResp]("compute/obs-out-loc-test", computeReqCodec, computeRespCodec),
+		computeReq{X: 1, Y: 2})
+	time.Sleep(50 * time.Millisecond)
+
+	var foundLoc bool
+	for _, e := range obs.validationFull {
+		if e.location == "middleware:out" {
+			foundLoc = true
+		}
+	}
+	if !foundLoc {
+		t.Fatalf("want a RecordValidationError call with location \"middleware:out\", got %+v", obs.validationFull)
+	}
+	cancel()
+	<-errCh
+}
+
+// TestAttachClient_Observer_ReportsMiddlewareOutLocation (Rest-middleware-
+// conflict-detection-improvements' adapter-dispatch review): a client-side
+// DecodeOut failure (reading the REPLY's Out struct) was previously
+// reported as "middleware:in" — now reported distinctly as
+// "middleware:out", symmetric with "middleware:in" already covering the
+// client-side ENCODE of the request's In struct.
+func TestAttachClient_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
+	// Server does NOT declare WithResponseProperty at all — the reply
+	// never carries X-Ack. Client's OWN mw declares it as REQUIRED
+	// (NewPropertyParam), so dispatchClientMiddlewareOut's DecodeOut
+	// fails reading the reply.
+	handler := func(ctx context.Context, req computeReq) (computeResp, error) {
+		return computeResp{Sum: req.X + req.Y}, nil
+	}
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	if _, err := reqreply.NewRoute[computeReq, computeResp]("compute/obs-client-out-test", computeReqCodec, computeRespCodec).
+		WithHandler(handler).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	serverClient := &mockClient{}
+	serverRouter := newMockRouter()
+	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- server.Serve(ctx) }()
+	serverRouter.waitHandler("compute/obs-client-out-test")
+
+	clientMW := reqreply.NewMiddleware(middleware.NewDeclaration("obs-client-out-loc", mwPropInCodec, mwPropOutCodec)).
+		WithResponseProperty(reqreply.NewPropertyParam("X-Ack", codex.String(),
+			func(v mwPropOut) string { return v.Ack },
+			func(v *mwPropOut, s string) { v.Ack = s }))
+	rt := reqreply.ClientTransform(
+		reqreply.NewRoute[computeReq, computeResp]("compute/obs-client-out-test", computeReqCodec, computeRespCodec),
+		clientMW,
+		func(ctx context.Context, req computeReq) (mwPropIn, error) {
+			return mwPropIn{}, nil
+		},
+	)
+
+	obs := &testObserver{}
+	client := reqreply.NewClient()
+	clientClient := &mockClient{}
+	clientRouter := newMockRouter()
+	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+		t.Fatalf("AttachClient: %v", err)
+	}
+	wireBrokers(t, serverClient, clientRouter)
+	wireBrokers(t, clientClient, serverRouter)
+
+	callCtx := stats.WithObserver(context.Background(), obs)
+	_, _ = client.Call(callCtx, rt, computeReq{X: 1, Y: 2})
+	time.Sleep(50 * time.Millisecond)
+
+	var foundLoc bool
+	for _, e := range obs.validationFull {
+		if e.location == "middleware:out" {
+			foundLoc = true
+		}
+	}
+	if !foundLoc {
+		t.Fatalf("want a RecordValidationError call with location \"middleware:out\", got %+v", obs.validationFull)
 	}
 	cancel()
 	<-errCh

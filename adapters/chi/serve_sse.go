@@ -218,6 +218,7 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 		for i, mh := range middlewareHandlers {
 			mwHeaders, mwCookies, encErr := mh.EncodeOut(middlewareOuts[i])
 			if encErr != nil {
+				stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, "middleware:out", encErr)
 				errFn(sw, r, http.StatusInternalServerError, encErr)
 				return
 			}
@@ -228,6 +229,7 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 			if mh.EncodeOutCookieAttrs != nil {
 				mwCookieAttrs, encErr = mh.EncodeOutCookieAttrs(middlewareOuts[i])
 				if encErr != nil {
+					stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, "middleware:out", encErr)
 					errFn(sw, r, http.StatusInternalServerError, encErr)
 					return
 				}

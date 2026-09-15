@@ -3,6 +3,7 @@ package route_test
 import (
 	"testing"
 
+	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/route"
 )
 
@@ -217,5 +218,26 @@ func TestSatisfied_missingSchemeFails(t *testing.T) {
 	}
 	if route.Satisfied(reqs, map[string][]string{}) {
 		t.Error("want an ungranted scheme to fail")
+	}
+}
+
+func TestCodecSchemaMismatch(t *testing.T) {
+	uuidCodec := codex.String().WithDescription("uuid")
+	freeform := codex.String()
+
+	if route.CodecSchemaMismatch(nil, nil) {
+		t.Error("want both-nil to NOT be a mismatch")
+	}
+	if !route.CodecSchemaMismatch(&uuidCodec, nil) {
+		t.Error("want non-nil vs nil to be a mismatch")
+	}
+	if !route.CodecSchemaMismatch(nil, &uuidCodec) {
+		t.Error("want nil vs non-nil to be a mismatch")
+	}
+	if route.CodecSchemaMismatch(&uuidCodec, &uuidCodec) {
+		t.Error("want the SAME codec value to NOT be a mismatch")
+	}
+	if !route.CodecSchemaMismatch(&uuidCodec, &freeform) {
+		t.Error("want differing schemas to be a mismatch")
 	}
 }

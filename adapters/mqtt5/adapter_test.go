@@ -1827,6 +1827,44 @@ func TestPublish_Observer_ReportsMiddlewareInAndFnLocations(t *testing.T) {
 	}
 }
 
+// Rest-middleware-conflict-detection-improvements' adapter-dispatch review
+// found this EncodeOut failure was previously mislabeled as
+// "middleware:fn" (indistinguishable from a real fn business error) —
+// now reported as its own "middleware:out" location, symmetric with
+// REST's own "middleware:out".
+func TestPublish_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
+	mw := events.NewMiddleware(newMqttMdDeclaration("tenant-required-policy")).
+		WithPublishProperty(events.NewPropertyParam("tenantID", codex.String().Refine(validate.NonEmptyString),
+			func(o mqttMdOut) string { return o.TenantID },
+			func(o *mqttMdOut, v string) { o.TenantID = v }))
+	pub := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).WithPublish(events.Publish{})
+	pub = events.ClientTransform(pub, mw, func(ctx context.Context, msg sensorReading) (mqttMdOut, error) {
+		// Empty TenantID fails the NonEmptyString refinement at
+		// EncodeOut/OutCodec.Validate time, NOT the fn itself.
+		return mqttMdOut{TenantID: ""}, nil
+	})
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	handle, err := pub.Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	obs := &testObserver{}
+	client := &mockClient{}
+	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1}
+	_ = publishHandle(context.Background(), client, handle, 1, false, reading, PublishOptions[sensorReading]{Observer: obs})
+
+	found := false
+	for _, e := range obs.validationFull {
+		if e.location == "middleware:out" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a RecordValidationError call with location %q, got %v", "middleware:out", obs.validationFull)
+	}
+}
+
 // Write-side wiring Case 2: a Middleware's WithPublishProperty-declared
 // value appears in the outgoing message's real MQTT5 User Properties,
 // confirmed SEPARATE from a WithPublishTopic-declared value on the SAME

@@ -285,6 +285,7 @@ func subscribeHandler[T any](
 				var dispatchErr middlewareDispatchError
 				errors.As(mwErr, &dispatchErr)
 				if dispatchErr.isFnError {
+					stats.ReportErrors(obs, "middleware:fn", dispatchErr.err)
 					if resp, matched, matchErr := handle.ErrorResponseFor(dispatchErr.err); matched && matchErr == nil && resp.Action == events.ErrorRespond {
 						token := client.Publish(resp.Topic, 0, false, resp.Body)
 						token.Wait()
@@ -298,6 +299,7 @@ func subscribeHandler[T any](
 					}
 					return
 				}
+				stats.ReportErrors(obs, "middleware:in", dispatchErr.err)
 				if opts.OnError != nil {
 					opts.OnError(SubscribeError{Kind: KindDecode, Topic: msg.Topic(), Err: dispatchErr.err})
 				}
@@ -444,6 +446,12 @@ func publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.
 	if len(handle.ClientMiddlewareHandlers) > 0 {
 		mwVars, mwErr := dispatchPublishMiddlewareHandlers(ctx, msg, handle.ClientMiddlewareHandlers)
 		if mwErr != nil {
+			var dispatchErr middlewareDispatchError
+			loc := "middleware:fn"
+			if errors.As(mwErr, &dispatchErr) && dispatchErr.isEncodeErr {
+				loc = "middleware:out"
+			}
+			stats.ReportErrors(obs, loc, mwErr)
 			obs.RecordPublish(handle.Topic, false, time.Since(start))
 			err = mwErr
 			return err

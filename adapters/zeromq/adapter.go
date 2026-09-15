@@ -664,7 +664,12 @@ func publish[T any](
 	if len(handle.ClientMiddlewareHandlers) > 0 {
 		mwTopicVars, _, mwErr := dispatchPublishMiddlewareHandlers(ctx, msg, handle.ClientMiddlewareHandlers)
 		if mwErr != nil {
-			stats.ReportErrors(obs, "middleware:fn", mwErr)
+			var dispatchErr middlewareDispatchError
+			loc := "middleware:fn"
+			if errors.As(mwErr, &dispatchErr) && dispatchErr.isEncodeErr {
+				loc = "middleware:out"
+			}
+			stats.ReportErrors(obs, loc, mwErr)
 			obs.RecordPublish(handle.Topic, false, time.Since(start))
 			err = mwErr
 			return err
