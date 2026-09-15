@@ -745,6 +745,38 @@ func (h *ChannelHandle[T]) EncodeVars(msg T) (map[string]string, error) {
 	return codex.EncodeVars(msg, h.mergeFields...)
 }
 
+// MergePropertyVars merges every [NewPropertyParam]/[NewOptionalPropertyParam]-
+// registered property merge field's value (e.g. real incoming MQTT5 User
+// Properties) into an already-decoded *msg, using [codex.DecodeVars]
+// internally — the property-vocabulary-axis mirror of
+// [ChannelHandle.DecodeMerged] for topic vars (see
+// [ChannelHandle.PropertyMergeFields]). No-op (nil error) when the channel
+// declares no property merge fields. Kept as its own method — mirroring
+// [ChannelHandle.MergeFields]'s own [ChannelHandle.EncodeVars]/
+// [ChannelHandle.DecodeMerged] convenience pair — for symmetry with
+// [reqreply.RouteHandle.MergePropertyVars], which adapters' reflection-based
+// dispatch needs as a method (T fixed by the receiver, unexported
+// [codex.FieldCodec] internals unreachable otherwise).
+func (h *ChannelHandle[T]) MergePropertyVars(msg *T, propertyVars map[string]string) error {
+	if len(h.propertyMergeFields) == 0 {
+		return nil
+	}
+	return codex.DecodeVars(msg, propertyVars, h.propertyMergeFields...)
+}
+
+// EncodePropertyVars derives property values (e.g. MQTT5 User Properties)
+// FROM an already-built msg, using the channel's [NewPropertyParam]-
+// registered merge fields — the publish-side, encode-direction complement
+// of [ChannelHandle.MergePropertyVars]. Returns a nil map (no error) when
+// the channel declares no property merge fields — the property-vocabulary-
+// axis mirror of [ChannelHandle.EncodeVars] for topic vars.
+func (h *ChannelHandle[T]) EncodePropertyVars(msg T) (map[string]string, error) {
+	if len(h.propertyMergeFields) == 0 {
+		return nil, nil
+	}
+	return codex.EncodeVars(msg, h.propertyMergeFields...)
+}
+
 // DecodeMerged decodes payload (via the channel's registered format) AND
 // merges every [NewTopicParam]-registered topic variable into the SAME T
 // value, using [codex.DecodeVars] internally — the events-boundary mirror

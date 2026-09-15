@@ -339,7 +339,10 @@ mirroring a missing topic var). Declare it via `events.NewPropertyParam[T,V]`/
   This merges the real MQTT5 User Property directly into `SensorReading`
   on subscribe, and derives an outgoing User Property from it on publish
   — `ChannelHandle.PropertyMergeFields()` is the accessor, mirroring
-  `MergeFields()` for topic vars.
+  `MergeFields()` for topic vars. `ChannelHandle.MergePropertyVars(*T, map[string]string) error`/
+  `EncodePropertyVars(T) (map[string]string, error)` are the one-call
+  convenience wrappers around it, mirroring `MergeFields()`'s own
+  `DecodeMerged`/`EncodeVars` pair.
 
 - **Via `Middleware[In, Out]`'s `WithSubscribeProperty`/`WithPublishProperty`**
   — reach for this ONLY when you also need custom `fn` logic (e.g. a

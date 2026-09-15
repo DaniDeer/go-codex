@@ -148,3 +148,70 @@ func TestNewPropertyParam_DirectAttachment_MergesWithoutMiddleware(t *testing.T)
 		t.Fatalf("EncodeVars: got %q, want %q", vars["tenantID"], "acme")
 	}
 }
+
+// TestChannelHandle_MergePropertyVars_EncodePropertyVars proves the
+// convenience wrapper pair added for symmetry with
+// reqreply.RouteHandle.MergePropertyVars/EncodePropertyVars (and with
+// ChannelHandle.MergeFields's own EncodeVars/DecodeMerged pair) — a
+// caller can merge/derive property values via ONE method call, without
+// reaching into PropertyMergeFields()/codex.DecodeVars/EncodeVars
+// manually.
+func TestChannelHandle_MergePropertyVars_EncodePropertyVars(t *testing.T) {
+	b := events.NewClient(events.WithInfo(testInfo))
+	h, err := events.NewChannel[userEvent]("user/created", userEventCodec,
+		events.NewPropertyParam("tenantID", codex.String().Refine(validate.NonEmptyString),
+			func(e userEvent) string { return e.Name },
+			func(e *userEvent, v string) { e.Name = v }),
+	).WithSubscribe(events.Subscribe{}).Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	msg, err := h.Decode([]byte(`{"id":"u1","name":"placeholder"}`))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if err := h.MergePropertyVars(&msg, map[string]string{"tenantID": "acme"}); err != nil {
+		t.Fatalf("MergePropertyVars: %v", err)
+	}
+	if msg.Name != "acme" {
+		t.Fatalf("want merged property value %q, got %q", "acme", msg.Name)
+	}
+
+	vars, err := h.EncodePropertyVars(msg)
+	if err != nil {
+		t.Fatalf("EncodePropertyVars: %v", err)
+	}
+	if vars["tenantID"] != "acme" {
+		t.Fatalf("EncodePropertyVars: got %q, want %q", vars["tenantID"], "acme")
+	}
+}
+
+// TestChannelHandle_MergePropertyVars_EncodePropertyVars_NoFields_NoOp
+// proves both methods are safe no-ops (nil error, nil map) when the
+// channel declares no property merge fields — mirrors MergeFields()'s own
+// empty-slice behavior for EncodeVars/DecodeMerged.
+func TestChannelHandle_MergePropertyVars_EncodePropertyVars_NoFields_NoOp(t *testing.T) {
+	b := events.NewClient(events.WithInfo(testInfo))
+	h, err := events.NewChannel[userEvent]("user/plain", userEventCodec).
+		WithSubscribe(events.Subscribe{}).Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	msg := userEvent{ID: "u1", Name: "Alice"}
+	if err := h.MergePropertyVars(&msg, map[string]string{"tenantID": "acme"}); err != nil {
+		t.Fatalf("MergePropertyVars: want no-op nil error, got %v", err)
+	}
+	if msg.Name != "Alice" {
+		t.Fatalf("want msg unchanged, got %+v", msg)
+	}
+
+	vars, err := h.EncodePropertyVars(msg)
+	if err != nil {
+		t.Fatalf("EncodePropertyVars: want nil error, got %v", err)
+	}
+	if vars != nil {
+		t.Fatalf("EncodePropertyVars: want nil map, got %v", vars)
+	}
+}

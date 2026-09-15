@@ -497,9 +497,16 @@ func handler(ctx context.Context, req MyRequest) (MyResponse, error) {
 | `"payload"`         | mqtt — message payload decode (subscribe) or encode (publish)   |
 | `"topic_var"`       | mqtt — per-variable codec failure in topic template             |
 | `"topic"`           | mqtt — topic-level codec failure                                |
+| `"property_var"`    | mqtt5/reqreply — per-field codec failure merging a directly-attached `MergedPropertyParam` (e.g. MQTT5 User Property) into a struct field |
+| `"middleware:in"`   | nethttp, events/reqreply `Transform`/`ClientTransform` dispatch (mqtt5, zeromq) — a codec-declared `Middleware`'s own `In` fails to decode/validate |
+| `"middleware:fn"`   | nethttp, events/reqreply `Transform`/`ClientTransform` dispatch (mqtt5, zeromq) — a codec-declared `Middleware`'s own `fn` returns a business error |
+| `"error_channel"`   | mqtt/mqtt5/zeromq events — dispatching/matching a declared `events.ErrorChannel` response fails |
+| `"error_pattern"`   | reqreply (zeromq) — dispatching/matching a declared `reqreply.ErrorPattern` response fails |
+| `"error_frame"`     | websocket — dispatching/matching a declared `websocket.ErrorFrame` fails |
 | `"input"`           | mcpgo — tool argument decode/validation                         |
 | `"prompt.args"`     | mcpgo — prompt argument codec failure                           |
 | `"file"`            | ports.File — per-field codec failure during read/write         |
+| `"sql_row"`         | adapters/sql — per-field constraint failure validating a row before insert/update |
 | any string          | codec-only: choose your own label (`"config"`, `"input"`, etc.) |
 
 ## Prometheus example

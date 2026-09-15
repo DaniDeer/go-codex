@@ -1,6 +1,42 @@
-# go-codex Review History (R1–R137, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2)
+# go-codex Review History (R1–R138, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 138 (property vocabulary axis merge-field fix follow-up)
+
+Focused review following a separately-shipped fix to the "property vocabulary axis" symmetry bug:
+`MergedPropertyParam[T]` (`api/events`/`api/reqreply`) attached directly to `NewChannel`/`NewRoute`
+(no `Middleware` wrapper) previously registered spec metadata only, silently dropping the merge
+field — now fixed in both packages, with matching `adapters/mqtt5` dispatch wiring (that fix itself
+is not re-reported here — it was implemented and fully verified before this review round started).
+This round audited the surrounding area for gaps/regressions the fix introduced or exposed.
+
+- **G1 [small] — `docs/guides/observer.md`'s observer location-value table missing 7 real, shipped
+  strings**: `"property_var"` (new, from the property-merge fix), `"middleware:in"`/`"middleware:fn"`
+  (nethttp, events/reqreply `Transform`/`ClientTransform` dispatch), `"error_channel"` (mqtt/mqtt5/
+  zeromq events `ErrorChannel`), `"error_pattern"` (zeromq reqreply `ErrorPattern`), `"error_frame"`
+  (websocket `ErrorFrame`), `"sql_row"` (adapters/sql `Validate`) were all in use across the codebase
+  but absent from the docs table. Added all 7 rows.
+- **G2 [small] — `api/events.ChannelHandle` lacked the property-axis convenience-method pair
+  `api/reqreply.RouteHandle` gained**: the property-merge fix added `RouteHandle.MergePropertyVars`/
+  `EncodePropertyVars` (needed for `adapters/mqtt5`'s reflection-based reqreply dispatch), but
+  `ChannelHandle` only got the bare `PropertyMergeFields()` accessor — asymmetric with
+  `ChannelHandle.MergeFields()`'s own `EncodeVars`/`DecodeMerged` sibling pair. Added
+  `ChannelHandle.MergePropertyVars(*T, map[string]string) error`/`EncodePropertyVars(T)
+  (map[string]string, error)`, mirroring the reqreply methods and the topic-var precedent exactly;
+  added 2 new unit tests (happy path + no-property-fields no-op).
+- **G3 [trivial] — this skill's own `checklist.md` §12 rows for `api/events`/`api/reqreply`
+  documented only the topic-var merge mechanism**, with no mention of the property vocabulary axis's
+  own parallel, now-symmetric merge mechanism. Added a note to both rows.
+
+Verification: `gofmt -l .` clean, `go build ./...` clean, `go test -count=1 ./...` — 55 packages, all
+`ok`, zero `FAIL` — `just check` (staticcheck+gosec) zero issues, `examples/events-api` exits 0 with
+the new methods in place (no example changes needed — purely additive, `adapters/mqtt5`'s events
+dispatch already called `codex.DecodeVars`/`EncodeVars` directly and doesn't need the wrapper).
+`.github/instructions/go-codex.instructions.md`'s events row and `docs/features/events.md` updated
+to mention the new methods.
 
 ---
 
