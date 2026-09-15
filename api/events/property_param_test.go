@@ -86,3 +86,65 @@ func TestNewOptionalPropertyParam_AbsentLeavesZeroValue(t *testing.T) {
 		t.Errorf("want zero value, got %q", target.TenantID)
 	}
 }
+
+// ── Round 42: MergedPropertyParam[T] direct (Middleware-free) channel
+// attachment — the symmetry-bug fix. Mirrors
+// TestNewTopicParam_RegistersSpecAndMergeField/
+// TestNewTopicParam_TypedIntValue_DecodeMergedRoundTrip's exact shape,
+// proving MergedPropertyParam now behaves like MergedTopicParam when
+// attached directly to NewChannel — no Middleware wrapper needed.
+
+// TestNewPropertyParam_DirectAttachment_RegistersSpecAndMergeField proves
+// attaching a MergedPropertyParam directly to NewChannel registers BOTH the
+// spec metadata AND the merge field (previously only the former).
+func TestNewPropertyParam_DirectAttachment_RegistersSpecAndMergeField(t *testing.T) {
+	b := events.NewClient(events.WithInfo(testInfo))
+	h, err := events.NewChannel[userEvent]("user/created", userEventCodec,
+		events.NewPropertyParam("tenantID", codex.String().Refine(validate.NonEmptyString),
+			func(e userEvent) string { return e.Name },
+			func(e *userEvent, v string) { e.Name = v }),
+	).WithSubscribe(events.Subscribe{}).Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if len(h.Descriptor.Subscribe.Message.Headers.Properties) != 1 {
+		t.Fatalf("Descriptor.Subscribe.Message.Headers.Properties: want 1, got %d", len(h.Descriptor.Subscribe.Message.Headers.Properties))
+	}
+	if len(h.PropertyMergeFields()) != 1 {
+		t.Fatalf("PropertyMergeFields: want 1, got %d", len(h.PropertyMergeFields()))
+	}
+}
+
+// TestNewPropertyParam_DirectAttachment_MergesWithoutMiddleware proves the
+// merge actually happens end-to-end via codex.DecodeVars/EncodeVars using
+// the handle's own PropertyMergeFields() — no Middleware[In,Out] involved.
+func TestNewPropertyParam_DirectAttachment_MergesWithoutMiddleware(t *testing.T) {
+	b := events.NewClient(events.WithInfo(testInfo))
+	h, err := events.NewChannel[userEvent]("user/created", userEventCodec,
+		events.NewPropertyParam("tenantID", codex.String().Refine(validate.NonEmptyString),
+			func(e userEvent) string { return e.Name },
+			func(e *userEvent, v string) { e.Name = v }),
+	).WithSubscribe(events.Subscribe{}).Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	msg, err := h.Decode([]byte(`{"id":"u1","name":"placeholder"}`))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if err := codex.DecodeVars(&msg, map[string]string{"tenantID": "acme"}, h.PropertyMergeFields()...); err != nil {
+		t.Fatalf("DecodeVars: %v", err)
+	}
+	if msg.Name != "acme" {
+		t.Fatalf("want merged property value %q, got %q", "acme", msg.Name)
+	}
+
+	vars, err := codex.EncodeVars(msg, h.PropertyMergeFields()...)
+	if err != nil {
+		t.Fatalf("EncodeVars: %v", err)
+	}
+	if vars["tenantID"] != "acme" {
+		t.Fatalf("EncodeVars: got %q, want %q", vars["tenantID"], "acme")
+	}
+}

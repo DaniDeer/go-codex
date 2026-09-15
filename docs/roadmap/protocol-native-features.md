@@ -43,22 +43,27 @@
 > (both `Middleware[In,Out]` and `Capability` are stage-2 declarations,
 > not a single merged type).
 >
-> **Answers** [MQTT5 User Property Merge](mqtt5-user-property-merge.md)'s own
-> explicitly-flagged "registration surface... NOT resolved" open question — User
-> Properties become a concrete, sealed `mqtt5.Capability` instance under this
-> design (§5.2). **A THIRD, ALREADY-SHIPPED answer to the SAME underlying
-> use case now also exists** —
+> **The formerly-open "registration surface... NOT resolved" question a
+> now-retired sibling roadmap doc (`mqtt5-user-property-merge.md`) raised
+> is ANSWERED TWO WAYS today**: this doc's own §5.2 sealed `mqtt5.Capability`
+> design is one answer (still unimplemented); the OTHER, ALREADY-SHIPPED
+> answer is
 > [D-0003](../design/d-0003-codec-declared-middlewares.md)'s own Addendum
 > (folded in from the now-deleted `reqreply-codec-declared-middleware.md`
 > roadmap doc) —
-> new "property" vocabulary axis (`WithRequestProperty`/`WithResponseProperty`
+> the "property" vocabulary axis (`WithRequestProperty`/`WithResponseProperty`
 > for `api/reqreply`, `WithSubscribeProperty`/`WithPublishProperty` for
 > `api/events`), built directly on D-0003's ALREADY-SHIPPED
 > `Middleware[In,Out]` mechanism — API-level, not adapter-owned, narrower
 > in scope than this doc's `Capability` primitive, and NOT competing with
-> it (see §5.2.1 for the full 3-way relationship: Phase 1b's validate-only
-> bridge, this doc's own planned `Capability`, and that doc's
-> already-designed property axis).
+> it. That retired doc's OWN motivating gap (direct, Middleware-free
+> attachment silently failing to merge) turned out to be a genuine BUG in
+> already-shipped code (`MergedPropertyParam[T].applyChannel`/`applyRoute`
+> not registering the merge field), now fixed — see
+> [Feature: Event Channels](../features/events.md#codec-backed-middleware-transformclienttransform)
+> for the current, correct behavior (see §5.2.1 for the full relationship:
+> Phase 1b's validate-only bridge, this doc's own planned `Capability`,
+> and the property axis).
 >
 > **Response Topic/Correlation Data — DECIDED, closed**:
 > [D-0004 — ReqReply Workflow Simplification](../design/d-0004-reqreply-workflow-simplification.md)'s
@@ -99,9 +104,11 @@ evidence that the constraint is structural, not cosmetic:
    agnostic package" each time does not scale.
 2. **MQTT5-only capabilities (User Properties, Message Expiry, Shared
    Subscriptions, Response Topic/Correlation Data) have no clean declaration
-   surface today** — this doc's own original finding (kept in §5.2/§5.6), and
-   [MQTT5 User Property Merge](mqtt5-user-property-merge.md)'s independent
-   confirmation of the SAME gap from the merge-field angle.
+   surface today** — this doc's own original finding (kept in §5.2/§5.6); a
+   now-retired sibling roadmap doc (`mqtt5-user-property-merge.md`)
+   independently confirmed the SAME gap from the merge-field angle, though
+   its own motivating case turned out to be a fixable BUG in already-shipped
+   code rather than a missing feature (see §5.2 below).
 3. **The deepest issue, not previously named in any doc: `events.NewChannel(topic
    string, codec, opts...)` (confirmed via `api/events/builder.go`) hardcodes a
    FLAT TOPIC STRING as pub/sub's universal addressing primitive.** This fits
@@ -681,12 +688,15 @@ shape argument to make here at all, only the support one.
 Today (`adapters/mqtt5/adapter.go:71`, confirmed via code): `UserPropertyParam`
 is a VALIDATE-ONLY escape hatch, living entirely inside `adapters/mqtt5` (never
 `api/events`) — already correctly scoped to the ONE adapter that understands
-User Properties, but with no MERGE-CAPABLE sibling (the exact gap
-[MQTT5 User Property Merge](mqtt5-user-property-merge.md) targets) and no
-declarative "this channel REQUIRES User Property support" statement a caller
-can make at the `api/events.Channel` level — today, a caller simply never
-attempts to bind an mqtt(v3) client to a channel using `UserPropertyParam`,
-by convention, not by any enforced rule.
+User Properties. A MERGE-CAPABLE sibling for the adapter-agnostic case DOES
+now exist — `events.NewPropertyParam[T,V]`/`reqreply.NewPropertyParam[T,V]`,
+attached directly to `NewChannel`/`NewRoute` (see
+[Feature: Event Channels](../features/events.md#codec-backed-middleware-transformclienttransform)) —
+but there is still no declarative "this channel REQUIRES User Property
+support" statement a caller can make at the `api/events.Channel` level for
+an mqtt(v3)-specific capability; today, a caller simply never attempts to
+bind an mqtt(v3) client to a channel using `UserPropertyParam`, by
+convention, not by any enforced rule.
 
 Under the sealed `Capability` mechanism (§2):
 
@@ -779,11 +789,8 @@ distinct, not overlapping, by design:**
 | Status | Idea only — no driver yet, no code written | ✅ SHIPPED — 19 review rounds, 13 implementation phases, verified end-to-end |
 | Dependency | Needs this doc's OWN redesign implemented first | Reuses D-0003's ALREADY-SHIPPED `Middleware[In,Out]`/`Transform`/`ClientTransform` machinery directly — no new core mechanism needed |
 
-**Not mutually exclusive** — mirrors the SAME non-conflicting
-relationship [MQTT5 User Property Merge](mqtt5-user-property-merge.md)'s
-own banner already documents between Phase 1b's `FromUserPropertyParam`
-(validate+spec only) and that doc's own planned `MergedUserPropertyParam[T]`
-(adds merge, still a plain `ChannelOpt`/`RouteOpt`) — this is a THIRD
+**Not mutually exclusive** with Phase 1b's `FromUserPropertyParam`
+(validate+spec only, unchanged) — this is a THIRD
 point on the SAME spectrum: sooner-to-ship, narrower in scope than
 `Capability`, but NOT redundant with it. A future `mqtt5.Capability`
 could still additionally expose adapter-level concerns (Shared
@@ -1717,8 +1724,10 @@ concrete driver appears.
   the currently-SHIPPED mechanism this doc's chosen direction (§3, Option B)
   intends to eventually subsume; remains the accurate description of shipped
   code until a separate implementation round executes the migration.
-- [MQTT5 User Property Merge](mqtt5-user-property-merge.md) — its own
-  "registration surface... NOT resolved" question is answered by §5.2 above.
+- `mqtt5-user-property-merge.md` (retired) — its own "registration
+  surface... NOT resolved" question is answered by §5.2 above; its own
+  motivating gap turned out to be a fixable bug in already-shipped code,
+  see [Feature: Event Channels](../features/events.md#codec-backed-middleware-transformclienttransform).
 - [D-0004 — ReqReply Workflow Simplification](../design/d-0004-reqreply-workflow-simplification.md) — its
   `Client`/`Server`/`Attach` rework was the prerequisite this doc's
   original finding needed to re-evaluate Response Topic/Correlation Data

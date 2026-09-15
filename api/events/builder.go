@@ -533,6 +533,17 @@ type channelBuilder struct {
 	// the decode (subscribe) and encode (publish) directions — no
 	// role-aware split is needed here (see [ChannelHandle.MergeFields]).
 	mergeFields []any
+	// propertyMergeFields holds type-erased codex.FieldCodec[T] values
+	// registered via [NewPropertyParam]/[NewOptionalPropertyParam] when a
+	// [MergedPropertyParam] is passed DIRECTLY to [NewChannel] (channel-
+	// level, not wrapped in a [Middleware]) — resolved to
+	// []codex.FieldCodec[T] in [Subscriber.Handle]/[Publisher.Handle],
+	// mirroring mergeFields' own type-erasure/resolution pattern exactly.
+	// Kept SEPARATE from mergeFields (independent namespace — a property
+	// name is never checked against the topic template, unlike a topic
+	// var), matching propertyParams' own separation from topicParams
+	// above.
+	propertyMergeFields []any
 	// errorChannelRules hold per-channel error-type -> error-output-topic
 	// declarations from [ErrorChannel].
 	errorChannelRules []errorChannelRule
@@ -604,6 +615,15 @@ type ChannelHandle[T any] struct {
 	// mergeFields holds the merge-capable fields registered via
 	// [NewTopicParam] — see [MergeFields] and [DecodeMerged].
 	mergeFields []codex.FieldCodec[T]
+
+	// propertyMergeFields holds the merge-capable fields registered via
+	// [NewPropertyParam]/[NewOptionalPropertyParam] when a
+	// [MergedPropertyParam] is passed DIRECTLY to [NewChannel] (channel-
+	// level declaration, no [Middleware] wrapper needed) — see
+	// [ChannelHandle.PropertyMergeFields]. Kept separate from mergeFields
+	// (independent namespace, mirrors propertyParams/topicParams' own
+	// separation).
+	propertyMergeFields []codex.FieldCodec[T]
 
 	// errorChannelRules holds per-channel error patterns declared via
 	// [ErrorChannel] — see [ChannelHandle.ErrorResponseFor].
@@ -695,6 +715,18 @@ func (h *ChannelHandle[T]) ResolvePublishAttributes(msg T) PublishAttributes {
 // exists here.
 func (h *ChannelHandle[T]) MergeFields() []codex.FieldCodec[T] {
 	return h.mergeFields
+}
+
+// PropertyMergeFields returns the merge-capable fields registered via
+// [NewPropertyParam]/[NewOptionalPropertyParam] when a
+// [MergedPropertyParam] was passed DIRECTLY to [NewChannel] (channel-level
+// declaration — no [Middleware] wrapper needed). Feed them into
+// [codex.DecodeVars]/[codex.EncodeVars] alongside a property-value map
+// (e.g. MQTT5 User Properties), the SAME way [ChannelHandle.MergeFields]
+// is used for topic vars. Kept separate from [ChannelHandle.MergeFields]
+// — properties and topic vars are independent namespaces.
+func (h *ChannelHandle[T]) PropertyMergeFields() []codex.FieldCodec[T] {
+	return h.propertyMergeFields
 }
 
 // EncodeVars derives the topic variables map from msg's merge-capable
@@ -2231,6 +2263,10 @@ func buildChannelHandle[T any](ch Channel[T], client *Client, role channelRole, 
 	}
 	var mergeErr error
 	h.mergeFields, mergeErr = assertMergeFields[T](cb.mergeFields)
+	if mergeErr != nil {
+		return nil, mergeErr
+	}
+	h.propertyMergeFields, mergeErr = assertMergeFields[T](cb.propertyMergeFields)
 	if mergeErr != nil {
 		return nil, mergeErr
 	}

@@ -109,6 +109,31 @@ var ObservedPub = ObservedChannel.WithPublish(events.Publish{
 	Summary:     "Publish a sensor reading (observability demo).",
 })
 
+// ── PropertyMerge channel — dedicated to the events.NewPropertyParam
+// direct (Middleware-free) attachment demo (mqtt5 User Properties merged
+// straight into TenantSensorReading, no Middleware wrapper needed) ─────────
+
+const PropertyMergeTopic = "sensor/tenant-property"
+
+var PropertyMergeChannel = events.NewChannel[TenantSensorReading](
+	PropertyMergeTopic,
+	TenantSensorReadingCodec,
+	events.NewPropertyParam("tenantID", codex.String(),
+		func(r TenantSensorReading) string { return r.TenantID },
+		func(r *TenantSensorReading, v string) { r.TenantID = v }),
+	events.ChannelMeta{Description: "Sensor readings with a directly-attached MergedPropertyParam (mqtt5 User Property → TenantID, no Middleware needed)."},
+)
+
+var PropertyMergeSub = PropertyMergeChannel.WithSubscribe(events.Subscribe{
+	OperationID: "receiveTenantSensorReading",
+	Summary:     "Receive a sensor reading with its tenant ID merged from a User Property.",
+})
+
+var PropertyMergePub = PropertyMergeChannel.WithPublish(events.Publish{
+	OperationID: "publishTenantSensorReading",
+	Summary:     "Publish a sensor reading, deriving its tenant ID into a User Property.",
+})
+
 // ── SensorAlerts channel — publish only, no security ─────────────────────────
 
 var SensorAlertsChannel = events.NewChannel[AlertEvent](

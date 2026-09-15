@@ -37,6 +37,34 @@ var SensorReadingCodec = codex.Struct[SensorReading](
 	),
 )
 
+// TenantSensorReading is [SensorReading] plus a TenantID field populated
+// via [events.NewPropertyParam]'s direct (Middleware-free) channel
+// attachment — see routes.PropertyMergeChannel and
+// demo_property_merge_direct_attachment.go.
+type TenantSensorReading struct {
+	SensorID string
+	Value    float64
+	TenantID string
+}
+
+var TenantSensorReadingCodec = codex.Struct[TenantSensorReading](
+	codex.RequiredField("sensor_id",
+		codex.String().Refine(validate.UUID).WithTitle("SensorID"),
+		func(r TenantSensorReading) string { return r.SensorID },
+		func(r *TenantSensorReading, v string) { r.SensorID = v },
+	),
+	codex.RequiredField("value",
+		codex.Float64().WithTitle("Value"),
+		func(r TenantSensorReading) float64 { return r.Value },
+		func(r *TenantSensorReading, v float64) { r.Value = v },
+	),
+	codex.OptionalField("tenant_id",
+		codex.String().WithTitle("TenantID"),
+		func(r TenantSensorReading) string { return r.TenantID },
+		func(r *TenantSensorReading, v string) { r.TenantID = v },
+	),
+)
+
 // ── Domain boundary pipeline (MeasurementEvent → TimeSeriesRecord →
 // AlertEvent) — preserves the three-layer scenario docs/concepts/
 // codec-as-domain-boundary.md illustrates itself with. Shared field codecs

@@ -669,6 +669,14 @@ type routeBuilder struct {
 	// reply is correlated by the underlying transport (not by re-encoding
 	// topic vars into Resp) — resolved design decision.
 	mergeFields []any
+	// propertyMergeFields holds type-erased codex.FieldCodec[Req] values
+	// registered via [NewPropertyParam]/[NewOptionalPropertyParam] when a
+	// [MergedPropertyParam] is passed DIRECTLY to [NewRoute] (route-level
+	// declaration, no [Middleware] wrapper needed) — resolved to
+	// []codex.FieldCodec[Req] in [Route.Register]/[Route.ClientHandle],
+	// mirroring mergeFields' own resolution exactly. Request-side only,
+	// same rationale as mergeFields above.
+	propertyMergeFields []any
 	// securitySchemes holds this route's own [WithSecurityScheme]
 	// declarations — the ONLY source of [RouteHandle.SecuritySchemes]
 	// (there is no builder-level equivalent; mirrors rest's/events'
@@ -887,6 +895,7 @@ func (r Route[Req, Resp]) ClientHandle() *RouteHandle[Req, Resp] {
 		DecodeResponse:        func(p []byte) (Resp, error) { return jsonResp.Unmarshal(p) },
 		topicParams:           rb.topicParams,
 		mergeFields:           mustAssertMergeFields[Req]("ClientHandle", rb.mergeFields),
+		propertyMergeFields:   mustAssertMergeFields[Req]("ClientHandle", rb.propertyMergeFields),
 		errorPatternRules:     rb.errorPatternRules,
 		Security:              rb.meta.Security,
 		SecuritySchemes:       schemes,
@@ -1036,6 +1045,10 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 	if mergeErr != nil {
 		return nil, mergeErr
 	}
+	h.propertyMergeFields, mergeErr = assertMergeFields[Req](rb.propertyMergeFields)
+	if mergeErr != nil {
+		return nil, mergeErr
+	}
 
 	b.registerRoute(r.topic, r.reqCodec.Schema, r.respCodec.Schema, reqHeadersSchema, respHeadersSchema, rb.meta, rb.errorReplies, rb.topicParams)
 	// Merge this route's own WithSecurityScheme declarations into the
@@ -1103,6 +1116,14 @@ type RouteHandle[Req, Resp any] struct {
 	// [NewTopicParam] — see [MergeFields] and [DecodeMerged]. Request-side
 	// only (see [routeBuilder.mergeFields] for the rationale).
 	mergeFields []codex.FieldCodec[Req]
+
+	// propertyMergeFields holds the merge-capable fields registered via
+	// [NewPropertyParam]/[NewOptionalPropertyParam] when a
+	// [MergedPropertyParam] was passed DIRECTLY to [NewRoute] (route-level
+	// declaration, no [Middleware] wrapper needed) — see
+	// [RouteHandle.PropertyMergeFields]. Request-side only, same rationale
+	// as mergeFields above.
+	propertyMergeFields []codex.FieldCodec[Req]
 
 	// errorPatternRules holds per-route typed error reply declarations from
 	// [ErrorPattern] — see [ErrorResponseFor].
@@ -1198,6 +1219,49 @@ func (h *RouteHandle[Req, Resp]) ErrorResponseFor(err error) (ErrorPatternRespon
 // [RouteHandle.EncodeVars] for the closed-loop convenience methods.
 func (h *RouteHandle[Req, Resp]) MergeFields() []codex.FieldCodec[Req] {
 	return h.mergeFields
+}
+
+// PropertyMergeFields returns the merge-capable fields registered via
+// [NewPropertyParam]/[NewOptionalPropertyParam] when a
+// [MergedPropertyParam] was passed DIRECTLY to [NewRoute] (route-level
+// declaration — no [Middleware] wrapper needed). Feed them into
+// [codex.DecodeVars]/[codex.EncodeVars] alongside a property-value map
+// (e.g. MQTT5 User Properties), the SAME way [RouteHandle.MergeFields] is
+// used for topic vars. Kept separate — properties and topic vars are
+// independent namespaces.
+func (h *RouteHandle[Req, Resp]) PropertyMergeFields() []codex.FieldCodec[Req] {
+	return h.propertyMergeFields
+}
+
+// MergePropertyVars merges every [NewPropertyParam]/
+// [NewOptionalPropertyParam]-registered property merge field's value (e.g.
+// real incoming MQTT5 User Properties) into an already-decoded *req, using
+// [codex.DecodeVars] internally — the property-vocabulary-axis mirror of
+// merging topic vars (see [RouteHandle.PropertyMergeFields]). No-op (nil
+// error) when the route declares no property merge fields. Reflection-
+// callable (Req fixed by the receiver) — adapters' Attach shims use this to
+// merge a route-level (Middleware-free) [MergedPropertyParam] attachment,
+// the SAME way [RouteHandle.DecodeMerged] is used for topic vars.
+func (h *RouteHandle[Req, Resp]) MergePropertyVars(req *Req, propertyVars map[string]string) error {
+	if len(h.propertyMergeFields) == 0 {
+		return nil
+	}
+	return codex.DecodeVars(req, propertyVars, h.propertyMergeFields...)
+}
+
+// EncodePropertyVars derives property values (e.g. MQTT5 User Properties)
+// FROM an already-built req, using the route's [NewPropertyParam]-registered
+// merge fields — the client-side, encode-direction complement of
+// [RouteHandle.MergePropertyVars]. Returns a nil map (no error) when the
+// route declares no property merge fields. Reflection-callable (Req fixed
+// by the receiver) — a client-side [ClientTransport] uses this to
+// auto-derive outgoing property values (e.g. User Properties) from req
+// directly, the SAME way [RouteHandle.EncodeVars] is used for topic vars.
+func (h *RouteHandle[Req, Resp]) EncodePropertyVars(req Req) (map[string]string, error) {
+	if len(h.propertyMergeFields) == 0 {
+		return nil, nil
+	}
+	return codex.EncodeVars(req, h.propertyMergeFields...)
 }
 
 // EncodeVars derives topic variables FROM an already-built req, using the

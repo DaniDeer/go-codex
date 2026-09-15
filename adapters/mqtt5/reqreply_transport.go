@@ -422,6 +422,15 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 	// template for unrelated reasons).
 	mergeFieldsMethod := rv.MethodByName("MergeFields")
 	hasMergeFields := mergeFieldsMethod.Call(nil)[0].Len() > 0
+	// propertyMergeFieldsMethod is *RouteHandle[Req,Resp].
+	// PropertyMergeFields() []codex.FieldCodec[Req] — non-empty when a
+	// [reqreply.MergedPropertyParam] was attached DIRECTLY to [reqreply.
+	// NewRoute] (no Middleware wrapper needed). Gates the property-var
+	// merge step below, mirroring hasMergeFields's own gate for topic
+	// vars exactly (the symmetry-bug fix — previously the ONLY way to
+	// merge a property value into Req was via a Middleware[In,Out]).
+	propertyMergeFieldsMethod := rv.MethodByName("PropertyMergeFields")
+	hasPropertyMergeFields := propertyMergeFieldsMethod.Call(nil)[0].Len() > 0
 	// errorResponseForMethod is *RouteHandle[Req,Resp].ErrorResponseFor(err
 	// error) (ErrorPatternResponse, bool, error) — closes Phase 0 work item 3.
 	errorResponseForMethod := rv.MethodByName("ErrorResponseFor")
@@ -558,6 +567,30 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 			return
 		}
 		reqVal := decodeResults[0]
+
+		// Route-level (Middleware-free) property merge — a
+		// [reqreply.MergedPropertyParam] attached DIRECTLY to [reqreply.
+		// NewRoute] merges the real incoming MQTT5 User Properties into
+		// reqVal here, the SAME way topicVars was merged above via
+		// DecodeMergedWithFormats — mirrors [RouteHandle.MergePropertyVars]'s
+		// own godoc precedent.
+		if hasPropertyMergeFields {
+			reqPropVars := propertyVarsFromUserProperties(msg)
+			reqPtr := reflect.New(reqType)
+			reqPtr.Elem().Set(reqVal)
+			mergeResults := rv.MethodByName("MergePropertyVars").Call([]reflect.Value{reqPtr, reflect.ValueOf(reqPropVars)})
+			if errI, _ := mergeResults[0].Interface().(error); errI != nil {
+				stats.ReportErrors(obs, "property_var", errI)
+				serveErr = errI
+				obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
+				publishErrorReply(spanCtx, t.client, responseTopic, correlationData, errI)
+				if t.opts.OnError != nil {
+					t.opts.OnError(ServeError{Kind: KindDecode, Err: errI})
+				}
+				return
+			}
+			reqVal = reqPtr.Elem()
+		}
 
 		secReqs, schemeTypes, schemeCodecs := effectiveSecurity(elem)
 		if len(secReqs) > 0 {
@@ -863,7 +896,24 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 	// explicit t.opts.Vars (below), mirroring REST's real 3-tier
 	// precedence (explicit > middleware-derived > route-own-derived).
 	clientMiddlewareHandlers, _ := elem.FieldByName("ClientMiddlewareHandlers").Interface().([]reqreply.ClientMiddlewareHandler)
+	// Route-level (Middleware-free) property derivation — a [reqreply.
+	// MergedPropertyParam] attached DIRECTLY to [reqreply.NewRoute]
+	// derives its value FROM req here, the SAME way vars (topic vars)
+	// was derived above via RouteHandle.EncodeVars — mirrors
+	// [RouteHandle.EncodePropertyVars]'s own godoc precedent. A
+	// ClientMiddlewareHandler's own WithRequestProperty-derived value
+	// (below) then OVERRIDES this route-own-derived value on a key
+	// collision, same precedence direction topic vars use.
 	var middlewarePropertyVarsOut map[string]string
+	hasPropertyMergeFields := rv.MethodByName("PropertyMergeFields").Call(nil)[0].Len() > 0
+	if hasPropertyMergeFields {
+		encodePropResults := rv.MethodByName("EncodePropertyVars").Call([]reflect.Value{reqVal})
+		if errI, _ := encodePropResults[1].Interface().(error); errI != nil {
+			obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
+			return nil, CallError{Kind: KindEncode, Err: errI}
+		}
+		middlewarePropertyVarsOut, _ = encodePropResults[0].Interface().(map[string]string)
+	}
 	if len(clientMiddlewareHandlers) > 0 {
 		mwTopicVars, mwPropertyVars, mwName, mwErr := dispatchClientMiddlewareIn(ctx, reqVal, clientMiddlewareHandlers)
 		if mwErr != nil {
@@ -880,7 +930,7 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 			return nil, CallError{Kind: kind, Err: mwErr}
 		}
 		vars = mergeVarsOverride(vars, mwTopicVars)
-		middlewarePropertyVarsOut = mwPropertyVars
+		middlewarePropertyVarsOut = mergeVarsOverride(middlewarePropertyVarsOut, mwPropertyVars)
 	}
 	// NOTE: t.opts.Vars != nil (not len(...) > 0) — an explicit, even
 	// EMPTY, Vars map must still trigger BuildTopic below, so a route

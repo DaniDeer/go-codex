@@ -90,6 +90,7 @@ func main() {
 	demoWildcardSubscription(ctx)
 	demoDomainBoundaryPipeline(ctx)
 	demoUserPropertyMiddleware(ctx)
+	demoPropertyMergeDirectAttachment(ctx)
 	demoConnectLevelSecurity(ctx)
 	demoErrorPathErgonomics(ctx)
 	demoSecuritySubscribeMW(ctx, obs)

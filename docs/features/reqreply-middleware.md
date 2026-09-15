@@ -59,6 +59,32 @@ wrapper pattern (`WithCodec`, `WithDescription`) over the SAME shared
 `codex.Param`/`MergedParam[T]`/`NewParam[T, V]` primitives every other
 API's own param types already use — see [Feature: Schema Metadata](schema-metadata.md).
 
+### Direct (Middleware-free) route attachment — the simpler default
+
+For the common case — merge a property value straight into a field on
+`Req`, no extra logic needed — attach a `MergedPropertyParam[T]` DIRECTLY
+to `NewRoute`, mirroring `NewTopicParam`'s own framing exactly. No
+`Middleware[In,Out]` wrapper required:
+
+```go
+route := reqreply.NewRoute[ComputeReq, ComputeResp](
+    "compute/add", computeReqCodec, computeRespCodec,
+    reqreply.NewPropertyParam("X-Tenant-Id", codex.String(),
+        func(r ComputeReq) string { return r.TenantID },
+        func(r *ComputeReq, v string) { r.TenantID = v }),
+)
+```
+
+This merges the real incoming MQTT5 User Property directly into
+`ComputeReq` on the server (`RouteHandle.PropertyMergeFields()`/
+`MergePropertyVars`), and derives the outgoing User Property from `Req`
+on the client (`RouteHandle.EncodePropertyVars`) — the SAME
+declare-once, zero-ceremony convenience `NewTopicParam` already provides
+for topic vars. Reach for the `Middleware[In,Out]`-based
+`WithRequestProperty`/`WithResponseProperty` (below) only when you ALSO
+need custom `fn` logic (e.g. a policy lookup keyed by the property value)
+or route-agnostic reuse across many routes.
+
 ## Two attachment styles
 
 Identical to REST's/events' own split:

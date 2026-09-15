@@ -279,16 +279,29 @@ func makeSubscribeMessageHandler[T any](
 
 		// Property vocabulary axis: extract the real MQTT5 User
 		// Properties into a plain map for codec-backed middleware dispatch
-		// below (Transform/bundled .Use()'s WithSubscribeProperty) — the
-		// SAME extraction [validateUserProperties] already does for the
-		// flat mechanism, kept SEPARATE from topicVars (independent
-		// namespace/consumer).
+		// below (Transform/bundled .Use()'s WithSubscribeProperty) AND for
+		// channel-level MergedPropertyParam merge fields declared DIRECTLY
+		// on NewChannel (no Middleware needed — see
+		// [ChannelHandle.PropertyMergeFields]) — the SAME extraction
+		// [validateUserProperties] already does for the flat mechanism,
+		// kept SEPARATE from topicVars (independent namespace/consumer).
+		propertyMergeFields := handle.PropertyMergeFields()
 		var propertyVars map[string]string
-		if len(handle.MiddlewareHandlers) > 0 {
+		if len(handle.MiddlewareHandlers) > 0 || len(propertyMergeFields) > 0 {
 			propertyVars = make(map[string]string)
 			if msg.Properties != nil {
 				for _, p := range msg.Properties.User {
 					propertyVars[p.Key] = p.Value
+				}
+			}
+			if len(propertyMergeFields) > 0 {
+				if mergeErr := codex.DecodeVars(&value, propertyVars, propertyMergeFields...); mergeErr != nil {
+					stats.ReportErrors(obs, "property_var", mergeErr)
+					obs.RecordSubscribe(msg.Topic, false, time.Since(start))
+					if opts.OnError != nil {
+						opts.OnError(SubscribeError{Kind: KindDecode, Topic: msg.Topic, Err: mergeErr})
+					}
+					return
 				}
 			}
 		}
@@ -728,6 +741,27 @@ func publish[T any](
 		defer func() { to.EndSpan(ctx, err) }()
 	}
 
+	// Channel-level MergedPropertyParam merge fields declared DIRECTLY on
+	// NewChannel (no Middleware needed — see
+	// [events.ChannelHandle.PropertyMergeFields]) derive their values FROM
+	// msg here, mirroring how vars (topic vars) is already derived from
+	// msg by the caller (publishHandle) via handle.MergeFields(). A
+	// middleware's own WithPublishProperty-derived value (below) then
+	// OVERRIDES this channel-own-derived value on a key collision — same
+	// precedence direction topic vars use (middleware wins over
+	// channel-own).
+	var propertyVars map[string]string
+	if propertyMergeFields := handle.PropertyMergeFields(); len(propertyMergeFields) > 0 {
+		propVars, propErr := codex.EncodeVars(msg, propertyMergeFields...)
+		if propErr != nil {
+			stats.ReportErrors(obs, "property_var", propErr)
+			obs.RecordPublish(handle.Topic, false, time.Since(start))
+			err = propErr
+			return err
+		}
+		propertyVars = propVars
+	}
+
 	// Codec-backed middleware dispatch (ClientTransform and bundled
 	// .Use()) — SAME pre-publish dispatch point runPublishSecurityImpls
 	// runs at below, but derived FIRST since a middleware's own Out may
@@ -740,7 +774,6 @@ func publish[T any](
 	// reaches this function — explicit ALWAYS wins over middleware-
 	// derived; middleware-derived wins over channel-own-derived (the Bug
 	// 1 fix — previously ALWAYS backwards, channel-own beat middleware).
-	var mwPropertyVars map[string]string
 	if len(handle.ClientMiddlewareHandlers) > 0 {
 		mwTopicVars, mwPropVars, mwErr := dispatchPublishMiddlewareHandlers(ctx, msg, handle.ClientMiddlewareHandlers)
 		if mwErr != nil {
@@ -754,7 +787,7 @@ func publish[T any](
 		} else {
 			vars = overrideDerivedVars(vars, mwTopicVars)
 		}
-		mwPropertyVars = mwPropVars
+		propertyVars = overrideDerivedVars(propertyVars, mwPropVars)
 	}
 
 	topic := handle.Topic
@@ -782,12 +815,13 @@ func publish[T any](
 		secReqs = handle.GlobalSecurity
 	}
 	userProps := append(pahomqtt5.UserProperties(nil), opts.UserProperties...)
-	// Write-side wiring Case 2: a Middleware's WithPublishProperty-declared
+	// Write-side wiring Case 2: a channel-level MergedPropertyParam's
+	// (direct attachment) OR a Middleware's WithPublishProperty-declared
 	// value merges into the SAME outgoing userProps mechanism, SEPARATE
 	// from vars/BuildTopic (topic vars stay topic-vars-only) — see
 	// docs/design/d-0003-codec-declared-middlewares.md's Addendum's "Write-side
 	// wiring" section.
-	for k, v := range mwPropertyVars {
+	for k, v := range propertyVars {
 		userProps = append(userProps, UserProperty{Key: k, Value: v})
 	}
 	var credentialRan bool

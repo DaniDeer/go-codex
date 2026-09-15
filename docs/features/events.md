@@ -318,14 +318,37 @@ unused). Reuses the SAME `events.NewTopicParam[T,V]` constructor a
 channel's own `Item` already uses.
 
 A SECOND, protocol-neutral **property** vocabulary axis exists alongside
-topic vars — `WithSubscribeProperty`/`WithPublishProperty`, via a NEW
-`events.NewPropertyParam[T,V]`/`NewOptionalPropertyParam[T,V]` pair
-(MQTT5 User Properties today; `adapters/zeromq` has no property
-mechanism, so a REQUIRED property there fails naturally, mirroring a
-missing topic var). See
-[Feature: ReqReply Codec-Declared Middleware](reqreply-middleware.md)
-for the identical mechanism shared with `api/reqreply` (same conflict-
-detection rules, same independent topic/property namespaces).
+topic vars — MQTT5 User Properties today (`adapters/zeromq` has no
+property mechanism, so a REQUIRED property there fails naturally,
+mirroring a missing topic var). Declare it via `events.NewPropertyParam[T,V]`/
+`NewOptionalPropertyParam[T,V]`, then attach it EITHER way:
+
+- **Directly to `NewChannel`** (no `Middleware` needed) — the simplest
+  form, recommended by default, mirroring `NewTopicParam`'s own framing
+  exactly:
+
+  ```go
+  channel := events.NewChannel[SensorReading](
+      "sensors/readings", sensorCodec,
+      events.NewPropertyParam("tenantID", codex.String(),
+          func(r SensorReading) string { return r.TenantID },
+          func(r *SensorReading, v string) { r.TenantID = v }),
+  ).WithSubscribe(events.Subscribe{})
+  ```
+
+  This merges the real MQTT5 User Property directly into `SensorReading`
+  on subscribe, and derives an outgoing User Property from it on publish
+  — `ChannelHandle.PropertyMergeFields()` is the accessor, mirroring
+  `MergeFields()` for topic vars.
+
+- **Via `Middleware[In, Out]`'s `WithSubscribeProperty`/`WithPublishProperty`**
+  — reach for this ONLY when you also need custom `fn` logic (e.g. a
+  policy lookup keyed by the property value) or channel-agnostic reuse
+  across multiple channels (`Middleware.WithReceive`/`WithSend` +
+  `.Use(mw)`). See
+  [Feature: ReqReply Codec-Declared Middleware](reqreply-middleware.md)
+  for the identical mechanism shared with `api/reqreply` (same conflict-
+  detection rules, same independent topic/property namespaces).
 
 ```go
 regionPolicy := events.NewMiddleware(

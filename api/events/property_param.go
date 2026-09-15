@@ -49,10 +49,17 @@ func (p MergedPropertyParam[T]) WithDescription(desc string) MergedPropertyParam
 	return p
 }
 
-// applyChannel wires p into cb's property-param list — mirrors
-// [MergedTopicParam.applyChannel]; carries Required through.
+// applyChannel wires p into cb's property-param list AND cb's
+// propertyMergeFields — mirrors [MergedTopicParam.applyChannel] exactly
+// (which does both spec registration AND merge-field registration in one
+// call). Previously this method ONLY registered spec metadata, silently
+// discarding p.Field — a confirmed bug, since the type's own doc comment
+// promised merging on direct (non-[Middleware]) attachment. Fixed:
+// direct attachment to [NewChannel] now genuinely merges, matching
+// [rest.MergedHeaderParam]'s identical direct-attachment behavior.
 func (p MergedPropertyParam[T]) applyChannel(cb *channelBuilder) {
 	cb.propertyParams = append(cb.propertyParams, PropertyParam{Param: p.Param, Required: p.Required})
+	cb.propertyMergeFields = append(cb.propertyMergeFields, p.Field)
 }
 
 // NewPropertyParam declares a property that is BOTH validated AND

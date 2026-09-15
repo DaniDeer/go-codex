@@ -53,10 +53,17 @@ func (p MergedPropertyParam[T]) WithDescription(desc string) MergedPropertyParam
 	return p
 }
 
-// applyRoute wires p into rb's property-param list — mirrors
-// [MergedTopicParam.applyRoute]; carries Required through.
+// applyRoute wires p into rb's property-param list AND rb's
+// propertyMergeFields — mirrors [MergedTopicParam.applyRoute] exactly
+// (which does both spec registration AND merge-field registration in one
+// call). Previously this method ONLY registered spec metadata, silently
+// discarding p.Field — a confirmed bug, since the type's own doc comment
+// promised merging on direct (non-[Middleware]) attachment. Fixed: direct
+// attachment to [NewRoute] now genuinely merges, matching
+// [rest.MergedHeaderParam]'s identical direct-attachment behavior.
 func (p MergedPropertyParam[T]) applyRoute(rb *routeBuilder) {
 	rb.propertyParams = append(rb.propertyParams, PropertyParam{Param: p.Param, Required: p.Required})
+	rb.propertyMergeFields = append(rb.propertyMergeFields, p.Field)
 }
 
 // NewPropertyParam declares a property that is BOTH validated AND
