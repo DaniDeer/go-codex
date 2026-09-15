@@ -679,6 +679,114 @@ func TestSubscribe_ValidationErrorReported(t *testing.T) {
 	}
 }
 
+// TestObserver_RecordValidationError_topicMismatch_subscribe is a genuine
+// end-to-end test (not handler-simulated) — exercises TopicVarsFromMessage's
+// real TopicMismatchError path through the full subscribe dispatch.
+//
+// mockRouter.dispatch does an EXACT-key lookup, unlike a real MQTT
+// broker's own wildcard-based delivery (which routes ANY concrete topic
+// matching the registered wildcard FILTER to the same handler, regardless
+// of whether it also matches the go-codex TEMPLATE structurally — the two
+// can diverge, e.g. a "#" multi-level filter accepting a different total
+// segment count than the template expects). To faithfully simulate that
+// real-broker behavior (impossible via dispatch's exact-string shortcut),
+// this test grabs the registered [pahomqtt5.MessageHandler] directly from
+// the router's own handler map and invokes it with an arbitrary message
+// topic — exactly what a real broker's wildcard delivery would do.
+func TestObserver_RecordValidationError_topicMismatch_subscribe(t *testing.T) {
+	obs := &testObserver{}
+	client := &mockClient{}
+	router := newMockRouter()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	_ = subscribeWithHandle(ctx, client, router, newMergeChannelHandle(), 1,
+		func(_ context.Context, _ sensorReading) error { return nil },
+		SubscribeOptions{Observer: obs})
+	router.waitHandler("sensors/+/readings")
+
+	router.mu.Lock()
+	h := router.handlers["sensors/+/readings"]
+	router.mu.Unlock()
+	if h == nil {
+		t.Fatal("expected a registered handler for sensors/+/readings")
+	}
+	// "sensors/readings" has 2 segments; the template
+	// "sensors/{sensorID}/readings" requires 3 — a genuine structural
+	// mismatch a real broker's wildcard delivery could still produce.
+	h(&pahomqtt5.Publish{Topic: "sensors/readings", Payload: []byte(validSensorJSON)})
+
+	if len(obs.validationFull) != 1 {
+		t.Fatalf("want 1 RecordValidationError call, got %d", len(obs.validationFull))
+	}
+	ve := obs.validationFull[0]
+	if ve.location != "topic" {
+		t.Errorf("want location=%q, got %q", "topic", ve.location)
+	}
+	if ve.constraint != "topic-mismatch" {
+		t.Errorf("want constraintName=%q, got %q", "topic-mismatch", ve.constraint)
+	}
+}
+
+// newTopicConstraintMergeHandle returns a merge-capable channel handle
+// (like newMergeChannelHandle) whose Client ALSO declares a builder-level
+// topic codec via events.WithTopicConstraints — needed to exercise
+// InvalidTopicError through the full subscribe dispatch (newMergeChannelHandle
+// alone has no topic codec, only a per-var TopicParam codec).
+func newTopicConstraintMergeHandle() *events.ChannelHandle[sensorReading] {
+	uuidCodec := codex.String().Refine(validate.UUID)
+	b := events.NewClient(
+		events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}),
+		events.WithTopicConstraints(validate.MQTTPublishTopic),
+	)
+	h, err := events.NewChannel[sensorReading](
+		"sensors/{sensorID}/readings",
+		sensorCodec,
+		events.NewTopicParam("sensorID", uuidCodec,
+			func(r sensorReading) string { return r.SensorID },
+			func(r *sensorReading, v string) { r.SensorID = v }),
+	).WithSubscribe(events.Subscribe{}).Handle(b)
+	if err != nil {
+		panic(err)
+	}
+	return h
+}
+
+// TestObserver_RecordValidationError_invalidTopic_subscribe is a genuine
+// end-to-end test — dispatches a message on a concrete WILDCARD topic
+// (structurally matches the "{sensorID}" template, since "+" normalizes
+// like a template var, but fails the builder-level MQTTPublishTopic
+// codec), exercising InvalidTopicError through the full subscribe
+// dispatch. Mirrors adapters/mqtt/topicvars_test.go's
+// TestTopicVarsFromMessage_TopicCodecFails_InvalidTopicError, but through
+// the OBSERVER-integrated dispatch path rather than calling
+// TopicVarsFromMessage directly.
+func TestObserver_RecordValidationError_invalidTopic_subscribe(t *testing.T) {
+	obs := &testObserver{}
+	client := &mockClient{}
+	router := newMockRouter()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	_ = subscribeWithHandle(ctx, client, router, newTopicConstraintMergeHandle(), 1,
+		func(_ context.Context, _ sensorReading) error { return nil },
+		SubscribeOptions{Observer: obs})
+
+	router.dispatch("sensors/+/readings", &pahomqtt5.Publish{
+		Topic: "sensors/+/readings", Payload: []byte(validSensorJSON),
+	})
+
+	if len(obs.validationFull) != 1 {
+		t.Fatalf("want 1 RecordValidationError call, got %d", len(obs.validationFull))
+	}
+	ve := obs.validationFull[0]
+	if ve.location != "topic" {
+		t.Errorf("want location=%q, got %q", "topic", ve.location)
+	}
+}
+
 func TestSubscribe_TraceSpan(t *testing.T) {
 	obs := &testObserver{}
 	client := &mockClient{}

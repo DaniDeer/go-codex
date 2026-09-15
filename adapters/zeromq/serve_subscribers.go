@@ -325,7 +325,7 @@ func (r *subscriberRoute) processMessage(ctx context.Context, topic string, payl
 		out := r.securityFn.Call([]reflect.Value{reflect.ValueOf(ctx), msgPtr, reflect.ValueOf(r.secReqs)})
 		if secErr, _ := out[0].Interface().(error); secErr != nil {
 			if secObs, ok := obs.(stats.SecurityObserver); ok {
-				secObs.RecordSecurityRejection(topic, firstSchemeName(r.secReqs))
+				secObs.RecordSecurityRejection(topic, route.FirstSchemeName(r.secReqs))
 			}
 			obs.RecordSubscribe(topic, false, time.Since(start))
 			r.reportError(SubscribeError{Kind: KindSecurity, Topic: topic, Err: events.SecurityError{Err: secErr}})
@@ -343,7 +343,7 @@ func (r *subscriberRoute) processMessage(ctx context.Context, topic string, payl
 		out := fnVal.Call([]reflect.Value{reflect.ValueOf(ctx), msgPtr, reflect.ValueOf(r.secReqs)})
 		if secErr, _ := out[0].Interface().(error); secErr != nil {
 			if secObs, ok := obs.(stats.SecurityObserver); ok {
-				secObs.RecordSecurityRejection(topic, firstSchemeName(r.secReqs))
+				secObs.RecordSecurityRejection(topic, route.FirstSchemeName(r.secReqs))
 			}
 			obs.RecordSubscribe(topic, false, time.Since(start))
 			r.reportError(SubscribeError{Kind: KindSecurity, Topic: topic, Err: events.SecurityError{Err: secErr}})

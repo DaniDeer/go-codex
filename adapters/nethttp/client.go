@@ -611,28 +611,28 @@ func callWithVars[Req, Resp any](
 	// 1. Build and validate path.
 	concretePath, err := handle.BuildPath(vars)
 	if err != nil {
-		reportPathErrors(ctx, err)
+		rest.ReportPathErrors(ctx, err)
 		obs.RecordRequest(method, routePath, 0, time.Since(start))
 		return zero, err
 	}
 
 	// 2. Validate query parameters.
 	if err := handle.ValidateQuery(opts.QueryParams); err != nil {
-		reportQueryErrors(ctx, err)
+		rest.ReportQueryErrors(ctx, err)
 		obs.RecordRequest(method, routePath, 0, time.Since(start))
 		return zero, err
 	}
 
 	// 3. Validate cookie parameters.
 	if err := handle.ValidateCookies(opts.CookieParams); err != nil {
-		reportCookieErrors(ctx, err)
+		rest.ReportCookieErrors(ctx, err)
 		obs.RecordRequest(method, routePath, 0, time.Since(start))
 		return zero, err
 	}
 
 	// 4. Validate declared header parameters.
 	if err := handle.ValidateHeaders(opts.HeaderParams); err != nil {
-		reportHeaderErrors(ctx, err)
+		rest.ReportHeaderErrors(ctx, err)
 		obs.RecordRequest(method, routePath, 0, time.Since(start))
 		return zero, err
 	}
@@ -713,7 +713,7 @@ func callWithVars[Req, Resp any](
 		case http.MethodPost, http.MethodPut, http.MethodPatch:
 			bodyBytes, ct, err := handle.EncodeRequestWithFormats(req, reqFormats...)
 			if err != nil {
-				reportBodyErrors(ctx, err)
+				rest.ReportBodyErrors(ctx, err)
 				obs.RecordRequest(method, routePath, 0, time.Since(start))
 				return zero, err
 			}
@@ -794,7 +794,7 @@ func callWithVars[Req, Resp any](
 		if len(secReqs) > 0 && len(credHeaders) > 0 {
 			if credErr := validateSecurityCredentials(httpReq, secReqs, handle.SecuritySchemes); credErr != nil {
 				if secObs, ok := obs.(stats.SecurityObserver); ok {
-					secObs.RecordSecurityRejection(routePath, firstScheme(secReqs))
+					secObs.RecordSecurityRejection(routePath, route.FirstSchemeName(secReqs))
 				}
 				obs.RecordRequest(method, routePath, 0, time.Since(start))
 				return zero, credErr
@@ -857,7 +857,7 @@ func callWithVars[Req, Resp any](
 		// itself.
 		result, err := handle.DecodeResponseWithFormats(respBody, respFormats...)
 		if err != nil {
-			reportBodyErrors(ctx, err)
+			rest.ReportBodyErrors(ctx, err)
 			return zero, err
 		}
 
@@ -881,7 +881,7 @@ func callWithVars[Req, Resp any](
 			mergeFields = append(mergeFields, headerFields...)
 			mergeFields = append(mergeFields, cookieFields...)
 			if err := codex.DecodeVars(&result, vars, mergeFields...); err != nil {
-				reportBodyErrors(ctx, err)
+				rest.ReportBodyErrors(ctx, err)
 				return zero, err
 			}
 		}
@@ -895,7 +895,7 @@ func callWithVars[Req, Resp any](
 		// [WithClientMiddlewareOut].
 		if len(handle.ClientMiddlewareHandlers) > 0 {
 			if err := dispatchClientMiddlewareOut(ctx, resp, handle.ClientMiddlewareHandlers); err != nil {
-				reportBodyErrors(ctx, err)
+				rest.ReportBodyErrors(ctx, err)
 				return zero, err
 			}
 		}

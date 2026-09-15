@@ -14,6 +14,7 @@ import (
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/ports"
+	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
@@ -686,7 +687,7 @@ func consumeSSEOnce[Req, Event any](
 	if len(handle.ClientMiddlewareHandlers) > 0 {
 		mwHeaders, mwCookies, mwQuery, mwErr := dispatchClientMiddlewareIn(ctx, req, handle.ClientMiddlewareHandlers)
 		if mwErr != nil {
-			stats.ReportErrors(diagnosticObserver{ctx}, "middleware:fn", mwErr)
+			stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, "middleware:fn", mwErr)
 			obs.RecordRequest(method, path, 0, time.Since(start))
 			return false, mwErr
 		}
@@ -773,7 +774,7 @@ func consumeSSEOnce[Req, Event any](
 	if len(secReqs) > 0 && len(credHeaders) > 0 {
 		if credErr := validateSecurityCredentials(httpReq, secReqs, handle.SecuritySchemes); credErr != nil {
 			if secObs, ok := obs.(stats.SecurityObserver); ok {
-				secObs.RecordSecurityRejection(path, firstScheme(secReqs))
+				secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
 			}
 			obs.RecordRequest(method, path, 0, time.Since(start))
 			return false, credErr

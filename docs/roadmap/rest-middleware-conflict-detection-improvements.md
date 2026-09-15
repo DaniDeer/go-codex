@@ -178,12 +178,17 @@ for i, h := range middlewareHandlers {
 No `stats.ReportErrors` call anywhere in this block — confirmed via
 direct inspection, not just absence-of-grep-match. Compare to the SAME
 file's `runMiddlewareHandlersReflect` (the pre-handler dispatch path),
-which DOES call `stats.ReportErrors(diagnosticObserver{ctx},
-"middleware:in", err)` and `stats.ReportErrors(diagnosticObserver{ctx},
+which DOES call `stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx},
+"middleware:in", err)` and `stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx},
 "middleware:fn", fnErr)` for its own two failure classes (D5, confirmed
 in the (now-deleted) ReqReply Codec-Declared Middleware roadmap doc's
-own Round 7 review (see D-0003's own Addendum). The OUTPUT-encode failure path — a THIRD, distinct
-failure class — has NO equivalent observability call at all.
+own Round 7 review (see D-0003's own Addendum); `DiagnosticObserver` was
+later moved from a private `adapters/nethttp`/`adapters/chi` type into
+the exported `rest.DiagnosticObserver` (see
+[Feature: Observer Pattern](../features/observer.md#apirest--rests-diagnostics-ferry-mechanism-consolidated-into-the-api-layer)) —
+same mechanism, new location, both `adapter.go` copies deleted. The
+OUTPUT-encode failure path — a THIRD, distinct failure class — has NO
+equivalent observability call at all.
 
 **Candidate change**: add `stats.ReportErrors(obs, "middleware:out", err)`
 (or similar location string) alongside the EXISTING `"middleware:in"`/

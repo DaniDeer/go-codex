@@ -567,7 +567,7 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 			}
 			if name, credErr := validateSecurityCredentials(userProps, secReqs, schemeTypes, schemeCodecs); credErr != nil {
 				if secObs, ok := obs.(stats.SecurityObserver); ok {
-					secObs.RecordSecurityRejection(path, firstScheme(secReqs))
+					secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
 				}
 				wrapped := reqreply.SecurityCredentialError{Scheme: name, Err: credErr}
 				serveErr = wrapped
@@ -587,7 +587,7 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 		// ServeOptions.SecurityFunc call (Phase 1, breaking removal).
 		if err := runServerSecurityMiddleware(msgCtx, msg, impls, secReqs); err != nil {
 			if secObs, ok := obs.(stats.SecurityObserver); ok {
-				secObs.RecordSecurityRejection(path, firstScheme(secReqs))
+				secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
 			}
 			wrapped := reqreply.SecurityError{Err: err}
 			serveErr = wrapped
@@ -901,7 +901,7 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 	if hasMergeFields || t.opts.Vars != nil {
 		buildTopicResults := rv.MethodByName("BuildTopic").Call([]reflect.Value{reflect.ValueOf(vars)})
 		if errI, _ := buildTopicResults[1].Interface().(error); errI != nil {
-			reportRouteParamErrors(errI, obs)
+			stats.ReportErrors(obs, "topic_var", errI)
 			obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
 			return nil, CallError{Kind: KindEncode, Err: errI}
 		}
@@ -1059,7 +1059,7 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 		if len(secReqs) > 0 && ran {
 			if name, credErr := validateSecurityCredentials(userProps, secReqs, schemeTypes, schemeCodecs); credErr != nil {
 				if secObs, ok := obs.(stats.SecurityObserver); ok {
-					secObs.RecordSecurityRejection(path, firstScheme(secReqs))
+					secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
 				}
 				wrapped := reqreply.SecurityCredentialError{Scheme: name, Err: credErr}
 				obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))

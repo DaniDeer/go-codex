@@ -125,6 +125,32 @@ func TestSecuritySchemeTypes(t *testing.T) {
 	}
 }
 
+func TestFirstSchemeName_emptyReqs(t *testing.T) {
+	if got := route.FirstSchemeName(nil); got != "" {
+		t.Errorf("want \"\" for nil reqs, got %q", got)
+	}
+	if got := route.FirstSchemeName([]route.SecurityRequirement{}); got != "" {
+		t.Errorf("want \"\" for empty reqs, got %q", got)
+	}
+}
+
+func TestFirstSchemeName_singleRequirement(t *testing.T) {
+	reqs := []route.SecurityRequirement{{"bearerAuth": nil}}
+	if got := route.FirstSchemeName(reqs); got != "bearerAuth" {
+		t.Errorf("want %q, got %q", "bearerAuth", got)
+	}
+}
+
+func TestFirstSchemeName_multiRequirement_returnsFirst(t *testing.T) {
+	reqs := []route.SecurityRequirement{
+		{"bearerAuth": nil},
+		{"apiKey": nil},
+	}
+	if got := route.FirstSchemeName(reqs); got != "bearerAuth" {
+		t.Errorf("want %q (first requirement), got %q", "bearerAuth", got)
+	}
+}
+
 func TestSatisfied_emptyReqsAlwaysTrue(t *testing.T) {
 	if !route.Satisfied(nil, nil) {
 		t.Error("want empty reqs to always be satisfied")

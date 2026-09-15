@@ -417,6 +417,119 @@ func TestSubscribe_ValidationErrorReported(t *testing.T) {
 	}
 }
 
+// TestObserver_RecordValidationError_topicMismatch_subscribe is a genuine
+// end-to-end test (not handler-simulated) — zeromq's mockSocket has no
+// subscription-filter enforcement on inFrames (unlike a real PUB/SUB
+// broker's prefix match), so a frame with a structurally mismatched
+// topic reaches TopicVarsFromMessage's real dispatch path directly, no
+// workaround needed (unlike mqtt5's exact-key mock router). Mirrors
+// adapters/mqtt's own topicMismatch_subscribe test's assertions.
+func TestObserver_RecordValidationError_topicMismatch_subscribe(t *testing.T) {
+	obs := &testObserver{}
+	sock := &mockSocket{
+		inFrames: [][][]byte{
+			// "sensors/readings" has 2 segments; the template
+			// "sensors/{sensorID}/readings" requires 3 — a genuine
+			// structural mismatch.
+			{[]byte("sensors/readings"), []byte(validSensorJSON)},
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	_ = subscribeWithHandle(ctx, sock, newMergeChannelHandle(),
+		func(_ context.Context, _ sensorReading) error { return nil },
+		SubscribeOptions[sensorReading]{Observer: obs})
+
+	if len(obs.validationErrors) != 1 {
+		t.Fatalf("want 1 RecordValidationError call, got %d", len(obs.validationErrors))
+	}
+	if obs.validationLocations[0] != "topic" {
+		t.Errorf("want location=%q, got %q", "topic", obs.validationLocations[0])
+	}
+	if obs.validationErrors[0] != "topic-mismatch" {
+		t.Errorf("want constraintName=%q, got %q", "topic-mismatch", obs.validationErrors[0])
+	}
+}
+
+// newTopicConstraintMergeChannel returns a merge-capable channel (like
+// newMergeChannelHandle's) whose Client ALSO declares a builder-level
+// topic codec via events.WithTopicConstraints — needed to exercise
+// InvalidTopicError. Callers build the role-specific handle they need
+// via .WithSubscribe(...).Handle(b) or .WithPublish(...).Handle(b).
+func newTopicConstraintMergeChannel() (events.Channel[sensorReading], *events.Client) {
+	uuidCodec := codex.String().Refine(validate.UUID)
+	b := events.NewClient(
+		events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}),
+		events.WithTopicConstraints(validate.MaxLen(30)),
+	)
+	ch := events.NewChannel[sensorReading](
+		"sensors/{sensorID}/readings",
+		sensorCodec,
+		events.NewTopicParam("sensorID", uuidCodec,
+			func(r sensorReading) string { return r.SensorID },
+			func(r *sensorReading, v string) { r.SensorID = v }),
+	)
+	return ch, b
+}
+
+// TestObserver_RecordValidationError_invalidTopic_subscribe is a genuine
+// end-to-end test — dispatches a message whose resolved concrete topic
+// exceeds the builder-level MaxLen(30) topic codec (passes at the template-string check, fails once sensorID is resolved into it), exercising
+// InvalidTopicError through the full subscribe dispatch.
+func TestObserver_RecordValidationError_invalidTopic_subscribe(t *testing.T) {
+	obs := &testObserver{}
+	longTopic := "sensors/f47ac10b-58cc-4372-a567-0e02b2c3d479/readings" // > 30 chars once resolved (passes at the template-string check)
+	sock := &mockSocket{
+		inFrames: [][][]byte{
+			{[]byte(longTopic), []byte(validSensorJSON)},
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	ch, b := newTopicConstraintMergeChannel()
+	handle, err := ch.WithSubscribe(events.Subscribe{}).Handle(b)
+	if err != nil {
+		t.Fatalf("unexpected Handle error: %v", err)
+	}
+	_ = subscribeWithHandle(ctx, sock, handle,
+		func(_ context.Context, _ sensorReading) error { return nil },
+		SubscribeOptions[sensorReading]{Observer: obs})
+
+	if len(obs.validationErrors) != 1 {
+		t.Fatalf("want 1 RecordValidationError call, got %d", len(obs.validationErrors))
+	}
+	if obs.validationLocations[0] != "topic" {
+		t.Errorf("want location=%q, got %q", "topic", obs.validationLocations[0])
+	}
+}
+
+// TestObserver_RecordValidationError_invalidTopic_publish is a genuine
+// end-to-end test — BuildTopic resolves a topic exceeding the
+// builder-level MaxLen(30) topic codec (passes at the template-string check, fails once sensorID is resolved into it), exercising InvalidTopicError
+// through the full publish dispatch (was previously silently dropped).
+func TestObserver_RecordValidationError_invalidTopic_publish(t *testing.T) {
+	obs := &testObserver{}
+	sock := &mockSocket{}
+	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
+	ch, b := newTopicConstraintMergeChannel()
+	handle, herr := ch.WithPublish(events.Publish{}).Handle(b)
+	if herr != nil {
+		t.Fatalf("unexpected Handle error: %v", herr)
+	}
+	err := publish(context.Background(), sock, handle, reading,
+		map[string]string{"sensorID": reading.SensorID}, true,
+		PublishOptions[sensorReading]{Observer: obs})
+	if err == nil {
+		t.Fatal("want error, got nil")
+	}
+	if len(obs.validationErrors) != 1 {
+		t.Fatalf("want 1 RecordValidationError call, got %d", len(obs.validationErrors))
+	}
+	if obs.validationLocations[0] != "topic" {
+		t.Errorf("want location=%q, got %q", "topic", obs.validationLocations[0])
+	}
+}
+
 func TestSubscribe_TraceObserver(t *testing.T) {
 	obs := &testObserver{}
 	sock := &mockSocket{

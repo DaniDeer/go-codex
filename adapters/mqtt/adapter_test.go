@@ -815,6 +815,40 @@ func TestObserver_RecordValidationError_topicMismatch_subscribe(t *testing.T) {
 	}
 }
 
+// TestObserver_RecordValidationError_topicMismatch_subscribe_genuine is a
+// genuine end-to-end retrofit (not handler-simulated, unlike the test
+// above) — dispatches a message on a concrete topic that structurally
+// does NOT match the channel's own "{userID}" template, exercising
+// TopicVarsFromMessage's real TopicMismatchError path through the full
+// subscribeHandler dispatch. Closes a gap where every pre-existing test
+// in this family (all 3 adapters) simulated via the handler's own return
+// value instead of exercising TopicVarsFromMessage's real dispatch path.
+func TestObserver_RecordValidationError_topicMismatch_subscribe_genuine(t *testing.T) {
+	handle := newMergeHandle() // has merge fields, so TopicVarsFromMessage runs for real
+	obs := &mqttSpyObserver{}
+
+	handler := subscribeHandler(context.Background(), nil, handle,
+		func(_ context.Context, _ userEvent) error { return nil },
+		SubscribeOptions{Observer: obs},
+	)
+	// "wrong/topic" has 2 segments; the template "users/{userID}/events"
+	// requires 3 — a genuine structural mismatch.
+	handler(nil, &mockMessage{
+		topic:   "wrong/topic",
+		payload: []byte(validPayload),
+	})
+	if len(obs.valErrors) != 1 {
+		t.Fatalf("want 1 RecordValidationError call, got %d", len(obs.valErrors))
+	}
+	ve := obs.valErrors[0]
+	if ve.location != "topic" {
+		t.Errorf("want location=%q, got %q", "topic", ve.location)
+	}
+	if ve.constraintName != "topic-mismatch" {
+		t.Errorf("want constraintName=%q, got %q", "topic-mismatch", ve.constraintName)
+	}
+}
+
 // --- Multi-format tests ---
 
 func TestSubscribeHandler_YAMLFormat(t *testing.T) {

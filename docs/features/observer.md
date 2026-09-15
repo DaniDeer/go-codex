@@ -297,3 +297,64 @@ See
 [`examples/events-api`](https://github.com/DaniDeer/go-codex/tree/main/examples/events-api)
 for the full runnable demonstration, mirroring `reqreply-api`'s own
 `observability/` package + demo layout.
+
+**Distinct from `Observability[T]` above**: every pub/sub adapter's OWN
+subscribe/publish dispatch — unconditionally, with no opt-in attachment
+step — already calls `RecordValidationError` for two topic-shaped error
+types that have no `Unwrap()` reaching one of `stats.ReportErrors`'s
+handled cases: `events.InvalidTopicError` (builder-level topic codec
+failure, via `events.WithTopicConstraints`) and each adapter's own
+`TopicMismatchError` (topic structurally doesn't match the channel's
+`{varName}` template). `adapters/mqtt` (v3) has always reported both, on
+both the subscribe AND publish sides; `adapters/mqtt5` and
+`adapters/zeromq` previously reported neither on the SUBSCRIBE side (and
+zeromq reported neither on the publish side either) — a silent gap,
+since the generic walker alone cannot see either type. Both adapters now
+call the same dedicated `reportInvalidTopicErrors`/
+`reportTopicMismatchErrors` helper pair mqtt v3 already had, closing the
+gap — pub/sub Observer coverage for these two error shapes is now
+symmetric across all 3 adapters.
+
+### `api/rest` — REST's Diagnostics-ferry mechanism, consolidated into the api layer
+
+REST's decode/validation-error reporting uses a DIFFERENT mechanism from
+`Observability[T]`/`reqreply.Observability` above — it has no
+declare-time-attachable general-purpose middleware wrapper, since
+`adapters/nethttp`/`adapters/chi`'s own `Observability(obs)` already
+wraps the WHOLE call (see the interfaces table above) and calls
+`RecordRequest`/starts a `TraceObserver` span itself. Instead, each
+per-field decode/validation failure (body, query, cookie, header,
+response header, response cookie, path) is ferried out via
+`stats.RecordDiagnostic`/`stats.DiagnosticsFromContext` — a ctx-based
+sink, since these failures happen INSIDE the request dispatch, before
+`RecordRequest`'s own single terminal call.
+
+`DiagnosticObserver{Ctx}` (adapts ctx-based `stats.RecordDiagnostic` to
+the `stats.ValidationObserver` interface, so `stats.ReportErrors`'s
+existing per-field error-walking logic can be reused unchanged) and its
+7 sibling `ReportBodyErrors`/`ReportQueryErrors`/`ReportCookieErrors`/
+`ReportHeaderErrors`/`ReportResponseHeaderErrors`/
+`ReportResponseCookieErrors`/`ReportPathErrors` functions now live in
+[`api/rest`](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/rest#DiagnosticObserver)
+— moved there after being confirmed byte-for-byte IDENTICAL between
+`adapters/nethttp` and `adapters/chi`. Both adapters' own private copies
+were deleted entirely; both call the `api/rest` exports directly, with
+zero adapter-owned wrapper remaining (unlike `adapters/mqtt5.
+Observability`'s genuinely-adapter-specific remainder — these 8 symbols
+have no adapter-specific logic at all, so there is nothing for either
+adapter to keep, mirroring `api/reqreply.Observability`'s own "one
+shared implementation, zero per-adapter indirection" precedent instead).
+
+`ReportPathErrors` also unpacks `MissingPathVarError`/
+`InvalidPathParamError` (previously only `PathParamError` was handled) —
+closing a client-side gap where `nethttp.Call`'s `handle.BuildPath(vars)`
+producing a `MissingPathVarError` (a caller forgetting a required path
+var) reported ZERO `stats.Diagnostic`, though the correct error was
+still returned.
+
+A sibling consolidation of the SAME "thin adapter, thick shared package"
+shape: `route.FirstSchemeName(reqs []route.SecurityRequirement) string`
+(used for `stats.SecurityObserver.RecordSecurityRejection`'s scheme-name
+argument) moved from 5 byte-identical private per-adapter copies
+(`adapters/nethttp`, `adapters/chi`, `adapters/mqtt`, `adapters/mqtt5`,
+`adapters/zeromq`) into `route/security.go`, alongside `route.Satisfied`.

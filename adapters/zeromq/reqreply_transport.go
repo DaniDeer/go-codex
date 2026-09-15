@@ -653,7 +653,7 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 			if secErr := runPairedServerSecurity(spanCtx, reqPtr, impls, secReqs); secErr != nil {
 				wrapped := reqreply.SecurityError{Err: secErr}
 				if secObs, ok := obs.(stats.SecurityObserver); ok {
-					secObs.RecordSecurityRejection(path, firstSchemeName(secReqs))
+					secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
 				}
 				serveErr = wrapped
 				obs.RecordRequest("ZMQ-REP", path, 0, time.Since(start))
@@ -960,9 +960,9 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 			reqPtr := reflect.New(reqType)
 			reqPtr.Elem().Set(innerReqVal)
 			if credErr := runPairedClientCredential(ctx, reqPtr, clientImpls, secReqs); credErr != nil {
-				wrapped := reqreply.SecurityCredentialError{Scheme: firstSchemeName(secReqs), Err: credErr}
+				wrapped := reqreply.SecurityCredentialError{Scheme: route.FirstSchemeName(secReqs), Err: credErr}
 				if secObs, ok := obs.(stats.SecurityObserver); ok {
-					secObs.RecordSecurityRejection(path, firstSchemeName(secReqs))
+					secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
 				}
 				obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
 				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: wrapped}).Convert(errType)}
@@ -1292,7 +1292,7 @@ func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny a
 				if secErr := runPairedServerSecurity(spanCtx, reqPtr, impls, secReqs); secErr != nil {
 					wrapped := reqreply.SecurityError{Err: secErr}
 					if secObs, ok := obs.(stats.SecurityObserver); ok {
-						secObs.RecordSecurityRejection(path, firstSchemeName(secReqs))
+						secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
 					}
 					serveErr = wrapped
 					obs.RecordRequest("ZMQ-ROUTER", path, 0, time.Since(start))
@@ -1540,9 +1540,9 @@ func (t *dealerClientTransport) call(ctx context.Context, routeAny any, reqAny a
 			reqPtr := reflect.New(reqType)
 			reqPtr.Elem().Set(innerReqVal)
 			if credErr := runPairedClientCredential(ctx, reqPtr, clientImpls, secReqs); credErr != nil {
-				wrapped := reqreply.SecurityCredentialError{Scheme: firstSchemeName(secReqs), Err: credErr}
+				wrapped := reqreply.SecurityCredentialError{Scheme: route.FirstSchemeName(secReqs), Err: credErr}
 				if secObs, ok := obs.(stats.SecurityObserver); ok {
-					secObs.RecordSecurityRejection(path, firstSchemeName(secReqs))
+					secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
 				}
 				obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
 				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: wrapped}).Convert(errType)}

@@ -263,7 +263,7 @@ func subscribeHandler[T any](
 		if len(secReqs) > 0 {
 			if credErr := validateSecurityCredentials(msg, secReqs, handle.SecuritySchemes); credErr != nil {
 				if secObs, ok := obs.(stats.SecurityObserver); ok {
-					secObs.RecordSecurityRejection(msg.Topic(), firstScheme(secReqs))
+					secObs.RecordSecurityRejection(msg.Topic(), route.FirstSchemeName(secReqs))
 				}
 				obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
 				if opts.OnError != nil {
@@ -623,14 +623,4 @@ func validateSecurityCredentials(_ pahomqtt.Message, _ []route.SecurityRequireme
 	// per-message credentials. Use a security-shaped SubscribeMW-paired
 	// implementation for runtime enforcement instead.
 	return nil
-}
-
-// firstScheme returns the first scheme name from the security requirements.
-func firstScheme(reqs []route.SecurityRequirement) string {
-	for _, req := range reqs {
-		for name := range req {
-			return name
-		}
-	}
-	return ""
 }

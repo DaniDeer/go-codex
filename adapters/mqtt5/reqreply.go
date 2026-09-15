@@ -270,19 +270,6 @@ func publishErrorReply(ctx context.Context, client MQTTClient, responseTopic str
 	})
 }
 
-// reportRouteParamErrors reports topic variable errors from [reqreply.RouteHandle.BuildTopic]
-// to obs with location "topic_var", extracting variable names and using "required" as the
-// constraint name for missing variables.
-func reportRouteParamErrors(err error, obs stats.Observer) {
-	if e, ok := err.(reqreply.MissingRouteParamError); ok {
-		obs.RecordValidationError("topic_var", "required", e.Name)
-		return
-	}
-	if e, ok := err.(reqreply.RouteParamError); ok {
-		obs.RecordValidationError("topic_var", stats.ConstraintName(e.Err), e.Name)
-	}
-}
-
 // ReplyTopicBuilder generates the reply topic pair for a single [Request] call.
 //
 // It returns two strings:

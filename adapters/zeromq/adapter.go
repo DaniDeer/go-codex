@@ -346,6 +346,8 @@ func subscribeWithHandle[T any](
 		if mergeFields := handle.MergeFields(); len(mergeFields) > 0 || len(handle.MiddlewareHandlers) > 0 {
 			vars, varErr := TopicVarsFromMessage(handle, topic)
 			if varErr != nil {
+				reportInvalidTopicErrors(varErr, obs)
+				reportTopicMismatchErrors(varErr, obs)
 				stats.ReportErrors(obs, "topic_var", varErr)
 				obs.RecordSubscribe(topic, false, time.Since(start))
 				if opts.OnError != nil {
@@ -374,7 +376,7 @@ func subscribeWithHandle[T any](
 		if len(handle.Implementations) > 0 {
 			if err := runSubscribeSecurityImpls(ctx, &value, secReqs, handle.Implementations); err != nil {
 				if secObs, ok := obs.(stats.SecurityObserver); ok {
-					secObs.RecordSecurityRejection(topic, firstSchemeName(secReqs))
+					secObs.RecordSecurityRejection(topic, route.FirstSchemeName(secReqs))
 				}
 				obs.RecordSubscribe(topic, false, time.Since(start))
 				if opts.OnError != nil {
@@ -451,16 +453,30 @@ func subscribeWithHandle[T any](
 	}
 }
 
-// firstSchemeName returns the first scheme name from the security
-// requirements — mirrors [adapters/mqtt5.firstScheme], used for
-// [stats.SecurityObserver.RecordSecurityRejection] reporting.
-func firstSchemeName(reqs []route.SecurityRequirement) string {
-	for _, req := range reqs {
-		for name := range req {
-			return name
-		}
+// reportInvalidTopicErrors extracts the constraint from an [events.InvalidTopicError]
+// and reports it to obs with location "topic". Mirrors adapters/mqtt's/
+// adapters/mqtt5's identical reporter — not redundant with
+// [stats.ReportErrors]'s generic walker, since [events.InvalidTopicError]
+// unwraps to [codex.ConstraintError], which has no further Unwrap().
+func reportInvalidTopicErrors(err error, obs stats.Observer) {
+	var ie events.InvalidTopicError
+	if !errors.As(err, &ie) {
+		return
 	}
-	return ""
+	obs.RecordValidationError("topic", stats.ConstraintName(ie.Err), "")
+}
+
+// reportTopicMismatchErrors reports a [TopicMismatchError] to obs with
+// location "topic" and constraint name "topic-mismatch". Mirrors
+// adapters/mqtt's/adapters/mqtt5's identical reporter — TopicMismatchError
+// is a flat struct with no Unwrap(), invisible to the generic
+// stats.ReportErrors walker.
+func reportTopicMismatchErrors(err error, obs stats.Observer) {
+	var mm TopicMismatchError
+	if !errors.As(err, &mm) {
+		return
+	}
+	obs.RecordValidationError("topic", "topic-mismatch", "")
 }
 
 // Subscribe is the NEW value-based convenience tier — mirrors
@@ -666,6 +682,7 @@ func publish[T any](
 		topic, buildErr = handle.BuildTopic(vars)
 		if buildErr != nil {
 			err = buildErr
+			reportInvalidTopicErrors(buildErr, obs)
 			stats.ReportErrors(obs, "topic_var", buildErr)
 			obs.RecordPublish(handle.Topic, false, time.Since(start))
 			return err

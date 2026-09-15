@@ -272,6 +272,32 @@ func TestCall_PathParamValidation_MissingVar(t *testing.T) {
 	}
 }
 
+// TestCall_PathParamValidation_MissingVar_ReportsDiagnostic verifies the
+// Phase 2 (O7) extension: rest.ReportPathErrors now ALSO unpacks
+// MissingPathVarError (previously only PathParamError was handled),
+// closing a gap where a client-side caller forgetting a required path
+// var produced zero stats.Diagnostic (drained into RecordValidationError
+// by callWithVars's own deferred drain) despite the error being returned
+// correctly.
+func TestCall_PathParamValidation_MissingVar_ReportsDiagnostic(t *testing.T) {
+	handle := newClientGetRoute()
+	obs := &testObserver{}
+
+	_, err := CallWithHandle(context.Background(), http.DefaultClient, "http://localhost",
+		handle, getReq{},
+		CallOptions{Observer: obs})
+	if err == nil {
+		t.Fatal("expected missing path var error, got nil")
+	}
+
+	if len(obs.valErrs) != 1 {
+		t.Fatalf("want 1 RecordValidationError call, got %d: %+v", len(obs.valErrs), obs.valErrs)
+	}
+	if obs.valErrs[0].location != "path" || obs.valErrs[0].constraint != "required" {
+		t.Errorf("got %+v", obs.valErrs[0])
+	}
+}
+
 // --- query parameter validation ---
 
 func TestCall_QueryParamValidation(t *testing.T) {

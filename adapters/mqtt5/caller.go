@@ -412,7 +412,7 @@ func makeErasedSubscribeMessageHandler(ctx context.Context, info erasedSubscribe
 		if len(secReqs) > 0 {
 			if err := runErasedBuiltinSecurityCheck(msg, secReqs, info.securitySchemes); err != nil {
 				if secObs, ok := obs.(stats.SecurityObserver); ok {
-					secObs.RecordSecurityRejection(msg.Topic, firstScheme(secReqs))
+					secObs.RecordSecurityRejection(msg.Topic, route.FirstSchemeName(secReqs))
 				}
 				obs.RecordSubscribe(msg.Topic, false, time.Since(start))
 				if opts.OnError != nil {
@@ -425,7 +425,7 @@ func makeErasedSubscribeMessageHandler(ctx context.Context, info erasedSubscribe
 		if len(info.implementations) > 0 {
 			if err := runSubscribeSecurityImplsReflect(msgCtx, msg, valuePtr, secReqs, info.implementations); err != nil {
 				if secObs, ok := obs.(stats.SecurityObserver); ok {
-					secObs.RecordSecurityRejection(msg.Topic, firstScheme(secReqs))
+					secObs.RecordSecurityRejection(msg.Topic, route.FirstSchemeName(secReqs))
 				}
 				obs.RecordSubscribe(msg.Topic, false, time.Since(start))
 				if opts.OnError != nil {

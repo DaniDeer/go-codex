@@ -145,28 +145,28 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 
 		if opts.MultiValueQueryParams {
 			if errV := callErr(elem.Addr(), "ValidateQueryMulti", reflect.ValueOf(r.URL.Query())); errV != nil {
-				reportQueryErrors(ctx, errV)
+				rest.ReportQueryErrors(ctx, errV)
 				errFn(sw, r, http.StatusBadRequest, errV)
 				return
 			}
 		} else if errV := callErr(elem.Addr(), "ValidateQuery", reflect.ValueOf(queryVars)); errV != nil {
-			reportQueryErrors(ctx, errV)
+			rest.ReportQueryErrors(ctx, errV)
 			errFn(sw, r, http.StatusBadRequest, errV)
 			return
 		}
 		if errV := callErr(elem.Addr(), "ValidateCookies", reflect.ValueOf(cookieVars)); errV != nil {
-			reportCookieErrors(ctx, errV)
+			rest.ReportCookieErrors(ctx, errV)
 			errFn(sw, r, http.StatusBadRequest, errV)
 			return
 		}
 		if errV := callErr(elem.Addr(), "ValidateHeaders", reflect.ValueOf(headerVars)); errV != nil {
-			reportHeaderErrors(ctx, errV)
+			rest.ReportHeaderErrors(ctx, errV)
 			errFn(sw, r, http.StatusBadRequest, errV)
 			return
 		}
 		if len(pathNames) > 0 {
 			if errV := callErr(elem.Addr(), "ValidatePathParams", reflect.ValueOf(pathVars)); errV != nil {
-				reportPathErrors(ctx, errV)
+				rest.ReportPathErrors(ctx, errV)
 				errFn(sw, r, http.StatusBadRequest, errV)
 				return
 			}
@@ -181,7 +181,7 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 		if len(secReqs) > 0 {
 			if credErr := validateSecurityCredentials(r, secReqs, secSchemes); credErr != nil {
 				if secObs, ok := stats.ObserverFromContext(ctx).(stats.SecurityObserver); ok {
-					secObs.RecordSecurityRejection(descriptor.Path, firstScheme(secReqs))
+					secObs.RecordSecurityRejection(descriptor.Path, route.FirstSchemeName(secReqs))
 				}
 				errFn(sw, r, http.StatusUnauthorized, credErr)
 				return
@@ -310,7 +310,7 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 				})
 				mergedE, mergeErrI := mergeResults[0], mergeResults[1].Interface()
 				if mergeErrI != nil {
-					stats.ReportErrors(diagnosticObserver{ctx}, "response", mergeErrI.(error))
+					stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, "response", mergeErrI.(error))
 					return retErr(mergeErrI.(error))
 				}
 				e = mergedE
@@ -329,8 +329,8 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 				ownCookies, _ := ownMergeResults[1].Interface().(map[string]string)
 				if errI := ownMergeResults[2].Interface(); errI != nil {
 					err := errI.(error)
-					reportResponseHeaderErrors(ctx, err)
-					reportResponseCookieErrors(ctx, err)
+					rest.ReportResponseHeaderErrors(ctx, err)
+					rest.ReportResponseCookieErrors(ctx, err)
 					return retErr(err)
 				}
 				for k, v := range ownHeaders {
@@ -342,11 +342,11 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 					pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v, Opts: cookieOptionsFrom(ownCookieAttrs[k])})
 				}
 				if errV := callErr(elem.Addr(), "ValidateResponseHeaders", reflect.ValueOf(responseHeaderValues(responseHeaders))); errV != nil {
-					reportResponseHeaderErrors(ctx, errV)
+					rest.ReportResponseHeaderErrors(ctx, errV)
 					return retErr(errV)
 				}
 				if errV := callErr(elem.Addr(), "ValidateResponseCookies", reflect.ValueOf(responseCookieValues(pendingCookies))); errV != nil {
-					reportResponseCookieErrors(ctx, errV)
+					rest.ReportResponseCookieErrors(ctx, errV)
 					return retErr(errV)
 				}
 				for i := range pendingCookies {

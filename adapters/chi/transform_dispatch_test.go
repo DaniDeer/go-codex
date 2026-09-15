@@ -239,8 +239,8 @@ func TestTransform_InDecodeFailure_ReportsMiddlewareInLocation(t *testing.T) {
 	// adapters/chi has no exported Observability(obs) wrapper (unlike
 	// adapters/nethttp) — decorate ctx with stats.WithDiagnostics/
 	// stats.WithObserver directly and drain manually after ServeHTTP
-	// returns, to exercise the SAME diagnosticObserver{ctx} call this
-	// package's runMiddlewareHandlersReflect already makes.
+	// returns, to exercise the SAME rest.DiagnosticObserver{Ctx: ctx}
+	// call this package's runMiddlewareHandlersReflect already makes.
 	ctx := stats.WithDiagnostics(context.Background())
 	ctx = stats.WithObserver(ctx, spy)
 	rec := httptest.NewRecorder()

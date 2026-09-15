@@ -142,7 +142,7 @@ func subscribeHandle[T any](
 					if hasMsg {
 						topic = msg.Topic()
 					}
-					secObs.RecordSecurityRejection(topic, firstScheme(secReqs))
+					secObs.RecordSecurityRejection(topic, route.FirstSchemeName(secReqs))
 				}
 				return err
 			}
@@ -508,7 +508,7 @@ func subscribeEntryReflect(ctx context.Context, client pahomqtt.Client, entry ev
 		if len(secReqs) > 0 {
 			if err := runSubscribeSecurityImplsReflect(msgCtx, msg, valuePtr, secReqs, impls); err != nil {
 				if secObs, ok := obs.(stats.SecurityObserver); ok {
-					secObs.RecordSecurityRejection(msg.Topic(), firstScheme(secReqs))
+					secObs.RecordSecurityRejection(msg.Topic(), route.FirstSchemeName(secReqs))
 				}
 				obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
 				if opts.OnError != nil {

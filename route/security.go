@@ -1,5 +1,25 @@
 package route
 
+// FirstSchemeName returns the first scheme name found across reqs, or ""
+// if reqs is empty. Used for [stats.SecurityObserver.RecordSecurityRejection]
+// reporting — a rejection needs SOME scheme name to report, and the first
+// one found is as good as any for that purpose (an OR-composed
+// requirement's schemes are all equally "the" requirement that failed).
+//
+// Moved here from 5 byte-identical private per-adapter copies
+// (`adapters/nethttp`, `adapters/chi`, `adapters/mqtt`, `adapters/mqtt5`,
+// `adapters/zeromq` — zeromq's own copy was named `firstSchemeName`) —
+// this logic operates purely on [SecurityRequirement], the core `route`
+// package's own type, with zero adapter-specific behavior.
+func FirstSchemeName(reqs []SecurityRequirement) string {
+	for _, req := range reqs {
+		for name := range req {
+			return name
+		}
+	}
+	return ""
+}
+
 // Satisfied reports whether granted — a scheme name → granted-scopes map —
 // satisfies AT LEAST ONE requirement in reqs (OR across requirements, AND
 // within one requirement's scheme+scopes — the same semantics

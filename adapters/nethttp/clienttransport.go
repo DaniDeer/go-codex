@@ -333,7 +333,7 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 			if len(secReqs) > 0 && len(credHeaders) > 0 {
 				if credErr := validateSecurityCredentials(httpReq, secReqs, secSchemes); credErr != nil {
 					if secObs, ok := obs.(stats.SecurityObserver); ok {
-						secObs.RecordSecurityRejection(path, firstScheme(secReqs))
+						secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
 					}
 					obs.RecordRequest(method, path, 0, time.Since(start))
 					return []reflect.Value{reflect.Zero(respType), reflectErrValue(credErr)}
@@ -568,7 +568,7 @@ func (t *clientTransport) consumeOnce(
 	if len(secReqs) > 0 && len(credHeaders) > 0 {
 		if credErr := validateSecurityCredentials(httpReq, secReqs, secSchemes); credErr != nil {
 			if secObs, ok := obs.(stats.SecurityObserver); ok {
-				secObs.RecordSecurityRejection(path, firstScheme(secReqs))
+				secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
 			}
 			obs.RecordRequest(method, path, 0, time.Since(start))
 			return false, credErr

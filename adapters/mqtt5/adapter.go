@@ -255,6 +255,8 @@ func makeSubscribeMessageHandler[T any](
 		if mergeFields := handle.MergeFields(); len(mergeFields) > 0 || len(handle.MiddlewareHandlers) > 0 {
 			vars, varErr := TopicVarsFromMessage(handle, msg)
 			if varErr != nil {
+				reportInvalidTopicErrors(varErr, obs)
+				reportTopicMismatchErrors(varErr, obs)
 				stats.ReportErrors(obs, "topic_var", varErr)
 				obs.RecordSubscribe(msg.Topic, false, time.Since(start))
 				if opts.OnError != nil {
@@ -328,7 +330,7 @@ func makeSubscribeMessageHandler[T any](
 			}
 			if name, credErr := validateSecurityCredentials(userProps, secReqs, schemeTypes, schemeCodecs); credErr != nil {
 				if secObs, ok := obs.(stats.SecurityObserver); ok {
-					secObs.RecordSecurityRejection(msg.Topic, firstScheme(secReqs))
+					secObs.RecordSecurityRejection(msg.Topic, route.FirstSchemeName(secReqs))
 				}
 				obs.RecordSubscribe(msg.Topic, false, time.Since(start))
 				wrapped := events.SecurityCredentialError{Scheme: name, Err: credErr}
@@ -350,7 +352,7 @@ func makeSubscribeMessageHandler[T any](
 		if len(handle.Implementations) > 0 {
 			if err := runSubscribeSecurityImpls(msgCtx, msg, &value, secReqs, handle.Implementations); err != nil {
 				if secObs, ok := obs.(stats.SecurityObserver); ok {
-					secObs.RecordSecurityRejection(msg.Topic, firstScheme(secReqs))
+					secObs.RecordSecurityRejection(msg.Topic, route.FirstSchemeName(secReqs))
 				}
 				obs.RecordSubscribe(msg.Topic, false, time.Since(start))
 				if opts.OnError != nil {
@@ -761,9 +763,8 @@ func publish[T any](
 		topic, buildErr = handle.BuildTopic(vars)
 		if buildErr != nil {
 			err = buildErr
-			reportTopicParamErrors(buildErr, obs)
-			reportMissingTopicVarErrors(buildErr, obs)
 			reportInvalidTopicErrors(buildErr, obs)
+			stats.ReportErrors(obs, "topic_var", buildErr)
 			obs.RecordPublish(handle.Topic, false, time.Since(start))
 			return err
 		}
@@ -819,7 +820,7 @@ func publish[T any](
 		}
 		if name, credErr := validateSecurityCredentials(userProps, secReqs, schemeTypes, schemeCodecs); credErr != nil {
 			if secObs, ok := obs.(stats.SecurityObserver); ok {
-				secObs.RecordSecurityRejection(topic, firstScheme(secReqs))
+				secObs.RecordSecurityRejection(topic, route.FirstSchemeName(secReqs))
 			}
 			obs.RecordPublish(topic, false, time.Since(start))
 			err = events.SecurityCredentialError{Scheme: name, Err: credErr}
@@ -897,16 +898,6 @@ func publishHandle[T any](
 	return publish(ctx, client, handle, qos, retained, msg, vars, false, opts, formats...)
 }
 
-// firstScheme returns the first scheme name from the security requirements.
-func firstScheme(reqs []route.SecurityRequirement) string {
-	for _, req := range reqs {
-		for name := range req {
-			return name
-		}
-	}
-	return ""
-}
-
 // validateUserProperties checks the incoming message's User Properties against
 // the registered [UserPropertyParam] slice. Returns nil when all params pass,
 // [MissingUserPropertyError] when a required property is absent, or
@@ -939,34 +930,31 @@ func validateUserProperties(msg *pahomqtt5.Publish, params []UserPropertyParam) 
 	return nil
 }
 
-// reportTopicParamErrors extracts the failing topic variable from a [events.TopicParamError]
-// and reports it to obs with location "topic_var".
-func reportTopicParamErrors(err error, obs stats.Observer) {
-	var pe events.TopicParamError
-	if !errors.As(err, &pe) {
-		return
-	}
-	obs.RecordValidationError("topic_var", stats.ConstraintName(pe.Err), pe.Name)
-}
-
-// reportMissingTopicVarErrors extracts the missing variable name from a [events.MissingTopicVarError]
-// and reports it to obs with location "topic_var" and constraint "required".
-func reportMissingTopicVarErrors(err error, obs stats.Observer) {
-	var me events.MissingTopicVarError
-	if !errors.As(err, &me) {
-		return
-	}
-	obs.RecordValidationError("topic_var", "required", me.Name)
-}
-
 // reportInvalidTopicErrors extracts the constraint from an [events.InvalidTopicError]
-// and reports it to obs with location "topic".
+// and reports it to obs with location "topic". Not redundant with
+// [stats.ReportErrors]'s generic walker — [events.InvalidTopicError]
+// unwraps to [codex.ConstraintError], which has no further Unwrap(), so
+// the generic walker's fallback silently drops it. Kept alongside the
+// generic call at every BuildTopic/TopicVarsFromMessage error site.
 func reportInvalidTopicErrors(err error, obs stats.Observer) {
 	var ie events.InvalidTopicError
 	if !errors.As(err, &ie) {
 		return
 	}
 	obs.RecordValidationError("topic", stats.ConstraintName(ie.Err), "")
+}
+
+// reportTopicMismatchErrors reports a [TopicMismatchError] to obs with
+// location "topic" and constraint name "topic-mismatch". Mirrors
+// adapters/mqtt's reportTopicMismatchErrors exactly — TopicMismatchError
+// is a flat struct with no Unwrap(), so it is invisible to the generic
+// stats.ReportErrors walker and needs this dedicated reporter.
+func reportTopicMismatchErrors(err error, obs stats.Observer) {
+	var mm TopicMismatchError
+	if !errors.As(err, &mm) {
+		return
+	}
+	obs.RecordValidationError("topic", "topic-mismatch", "")
 }
 
 // userPropertyName extracts the property key from a User Property error for

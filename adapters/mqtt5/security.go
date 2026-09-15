@@ -12,8 +12,8 @@ import (
 // helpers shared by BOTH the events pub/sub path (adapter.go's
 // Subscribe/Publish) and the reqreply request/reply path (reqreply.go's
 // Serve/Call) — mirroring [adapters/nethttp]'s validateSecurityCredentials/
-// extractCredential/firstScheme, swapped from HTTP headers/query/cookie to
-// MQTT 5 User Properties.
+// extractCredential/route.FirstSchemeName, swapped from HTTP
+// headers/query/cookie to MQTT 5 User Properties.
 //
 // [events.SecurityScheme] and [reqreply.SecurityScheme] are structurally
 // identical (embed [route.SecurityScheme] + an optional *codex.Codec[string])

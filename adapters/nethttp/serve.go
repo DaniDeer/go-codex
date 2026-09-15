@@ -298,7 +298,7 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 				body = b
 				unmarshalResults := chosen.MethodByName("Unmarshal").Call([]reflect.Value{reflect.ValueOf(body)})
 				if err, _ := unmarshalResults[1].Interface().(error); err != nil {
-					reportBodyErrors(ctx, err)
+					rest.ReportBodyErrors(ctx, err)
 					errFn(sw, r, http.StatusBadRequest, err)
 					return
 				}
@@ -333,28 +333,28 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 
 		if opts.MultiValueQueryParams {
 			if errV := callErr(elem.Addr(), "ValidateQueryMulti", reflect.ValueOf(r.URL.Query())); errV != nil {
-				reportQueryErrors(ctx, errV)
+				rest.ReportQueryErrors(ctx, errV)
 				errFn(sw, r, http.StatusBadRequest, errV)
 				return
 			}
 		} else if errV := callErr(elem.Addr(), "ValidateQuery", reflect.ValueOf(queryVars)); errV != nil {
-			reportQueryErrors(ctx, errV)
+			rest.ReportQueryErrors(ctx, errV)
 			errFn(sw, r, http.StatusBadRequest, errV)
 			return
 		}
 		if errV := callErr(elem.Addr(), "ValidateCookies", reflect.ValueOf(cookieVars)); errV != nil {
-			reportCookieErrors(ctx, errV)
+			rest.ReportCookieErrors(ctx, errV)
 			errFn(sw, r, http.StatusBadRequest, errV)
 			return
 		}
 		if errV := callErr(elem.Addr(), "ValidateHeaders", reflect.ValueOf(headerVars)); errV != nil {
-			reportHeaderErrors(ctx, errV)
+			rest.ReportHeaderErrors(ctx, errV)
 			errFn(sw, r, http.StatusBadRequest, errV)
 			return
 		}
 		if len(pathNames) > 0 {
 			if errV := callErr(elem.Addr(), "ValidatePathParams", reflect.ValueOf(pathVars)); errV != nil {
-				reportPathErrors(ctx, errV)
+				rest.ReportPathErrors(ctx, errV)
 				errFn(sw, r, http.StatusBadRequest, errV)
 				return
 			}
@@ -372,7 +372,7 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 				reflect.ValueOf(headerVars), reflect.ValueOf(cookieVars),
 			})
 			if err, _ := applyResults[0].Interface().(error); err != nil {
-				reportBodyErrors(ctx, err)
+				rest.ReportBodyErrors(ctx, err)
 				errFn(sw, r, http.StatusBadRequest, err)
 				return
 			}
@@ -384,7 +384,7 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 			})
 			reqValue, decErr := decodeResults[0], decodeResults[1]
 			if err, _ := decErr.Interface().(error); err != nil {
-				reportBodyErrors(ctx, err)
+				rest.ReportBodyErrors(ctx, err)
 				errFn(sw, r, http.StatusBadRequest, err)
 				return
 			}
@@ -398,7 +398,7 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 		if len(secReqs) > 0 {
 			if credErr := validateSecurityCredentials(r, secReqs, secSchemes); credErr != nil {
 				if secObs, ok := stats.ObserverFromContext(ctx).(stats.SecurityObserver); ok {
-					secObs.RecordSecurityRejection(descriptor.Path, firstScheme(secReqs))
+					secObs.RecordSecurityRejection(descriptor.Path, route.FirstSchemeName(secReqs))
 				}
 				errFn(sw, r, http.StatusUnauthorized, credErr)
 				return
@@ -481,8 +481,8 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 		mergedHeaders, _ := mergeResults[0].Interface().(map[string]string)
 		mergedCookies, _ := mergeResults[1].Interface().(map[string]string)
 		if err, _ := mergeResults[2].Interface().(error); err != nil {
-			reportResponseHeaderErrors(ctx, err)
-			reportResponseCookieErrors(ctx, err)
+			rest.ReportResponseHeaderErrors(ctx, err)
+			rest.ReportResponseCookieErrors(ctx, err)
 			errFn(sw, r, http.StatusInternalServerError, err)
 			return
 		}
@@ -538,19 +538,19 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 				// codec constraints.
 				valResults := chosen.MethodByName("Validate").Call([]reflect.Value{respValue})
 				if err, _ := valResults[0].Interface().(error); err != nil {
-					reportBodyErrors(ctx, err)
+					rest.ReportBodyErrors(ctx, err)
 					errFn(sw, r, http.StatusInternalServerError, err)
 					return
 				}
 				respCT = chosen.MethodByName("ContentType").Call(nil)[0].String()
 
 				if errV := callErr(elem.Addr(), "ValidateResponseHeaders", reflect.ValueOf(responseHeaderValues(respHeaders))); errV != nil {
-					reportResponseHeaderErrors(ctx, errV)
+					rest.ReportResponseHeaderErrors(ctx, errV)
 					errFn(sw, r, http.StatusInternalServerError, errV)
 					return
 				}
 				if errV := callErr(elem.Addr(), "ValidateResponseCookies", reflect.ValueOf(responseCookieValues(pendingCookies))); errV != nil {
-					reportResponseCookieErrors(ctx, errV)
+					rest.ReportResponseCookieErrors(ctx, errV)
 					errFn(sw, r, http.StatusInternalServerError, errV)
 					return
 				}
@@ -575,14 +575,14 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 				// but cannot be returned as HTTP error responses.
 				streamResults := chosen.MethodByName("MarshalTo").Call([]reflect.Value{respValue, reflect.ValueOf(sw)})
 				if err, _ := streamResults[0].Interface().(error); err != nil {
-					reportBodyErrors(ctx, err)
+					rest.ReportBodyErrors(ctx, err)
 				}
 				return
 			}
 			marshalResults := chosen.MethodByName("Marshal").Call([]reflect.Value{respValue})
 			outBytes, _ = marshalResults[0].Interface().([]byte)
 			if err, _ := marshalResults[1].Interface().(error); err != nil {
-				reportBodyErrors(ctx, err)
+				rest.ReportBodyErrors(ctx, err)
 				errFn(sw, r, http.StatusInternalServerError, err)
 				return
 			}
@@ -591,19 +591,19 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 			encodeResults := elem.FieldByName("Encode").Call([]reflect.Value{respValue})
 			outBytes, _ = encodeResults[0].Interface().([]byte)
 			if err, _ := encodeResults[1].Interface().(error); err != nil {
-				reportBodyErrors(ctx, err)
+				rest.ReportBodyErrors(ctx, err)
 				errFn(sw, r, http.StatusInternalServerError, err)
 				return
 			}
 		}
 
 		if errV := callErr(elem.Addr(), "ValidateResponseHeaders", reflect.ValueOf(responseHeaderValues(respHeaders))); errV != nil {
-			reportResponseHeaderErrors(ctx, errV)
+			rest.ReportResponseHeaderErrors(ctx, errV)
 			errFn(sw, r, http.StatusInternalServerError, errV)
 			return
 		}
 		if errV := callErr(elem.Addr(), "ValidateResponseCookies", reflect.ValueOf(responseCookieValues(pendingCookies))); errV != nil {
-			reportResponseCookieErrors(ctx, errV)
+			rest.ReportResponseCookieErrors(ctx, errV)
 			errFn(sw, r, http.StatusInternalServerError, errV)
 			return
 		}
@@ -710,8 +710,8 @@ func writeErrorPatternResponseReflect(
 		headerValues, _ := mergeResults[0].Interface().(map[string]string)
 		cookieValues, _ := mergeResults[1].Interface().(map[string]string)
 		if err, _ := mergeResults[2].Interface().(error); err != nil {
-			reportResponseHeaderErrors(ctx, err)
-			reportResponseCookieErrors(ctx, err)
+			rest.ReportResponseHeaderErrors(ctx, err)
+			rest.ReportResponseCookieErrors(ctx, err)
 			return err
 		}
 		for k, v := range headerValues {
@@ -725,11 +725,11 @@ func writeErrorPatternResponseReflect(
 	}
 
 	if err := callErr(elem.Addr(), "ValidateResponseHeaders", reflect.ValueOf(responseHeaderValues(respHeaders))); err != nil {
-		reportResponseHeaderErrors(ctx, err)
+		rest.ReportResponseHeaderErrors(ctx, err)
 		return err
 	}
 	if err := callErr(elem.Addr(), "ValidateResponseCookies", reflect.ValueOf(responseCookieValues(*pendingCookies))); err != nil {
-		reportResponseCookieErrors(ctx, err)
+		rest.ReportResponseCookieErrors(ctx, err)
 		return err
 	}
 
@@ -846,7 +846,7 @@ func runMiddlewareHandlersReflect(ctx context.Context, reqPtr reflect.Value, han
 	for i, h := range handlers {
 		in, err := h.DecodeIn(headerVars, cookieVars, queryVars)
 		if err != nil {
-			stats.ReportErrors(diagnosticObserver{ctx}, "middleware:in", err)
+			stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, "middleware:in", err)
 			return nil, middlewareDispatchError{err: err, name: h.Name}
 		}
 		fnVal := reflect.ValueOf(h.Fn)
@@ -857,7 +857,7 @@ func runMiddlewareHandlersReflect(ctx context.Context, reqPtr reflect.Value, han
 			results = fnVal.Call([]reflect.Value{reflect.ValueOf(ctx), reqPtr, reflect.ValueOf(in)})
 		}
 		if fnErr, _ := results[1].Interface().(error); fnErr != nil {
-			stats.ReportErrors(diagnosticObserver{ctx}, "middleware:fn", fnErr)
+			stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, "middleware:fn", fnErr)
 			return nil, middlewareDispatchError{err: fnErr, isFnError: true, name: h.Name}
 		}
 		outs[i] = results[0].Interface()

@@ -263,7 +263,7 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 				req, decErr = handle.Decode(body)
 			}
 			if decErr != nil {
-				reportBodyErrors(ctx, decErr)
+				rest.ReportBodyErrors(ctx, decErr)
 				errFn(sw, r, http.StatusBadRequest, decErr)
 				return
 			}
@@ -272,13 +272,13 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 		// Validate query parameters against their registered codecs (if any).
 		if opts.MultiValueQueryParams {
 			if err := handle.ValidateQueryMulti(r.URL.Query()); err != nil {
-				reportQueryErrors(ctx, err)
+				rest.ReportQueryErrors(ctx, err)
 				errFn(sw, r, http.StatusBadRequest, err)
 				return
 			}
 		} else {
 			if err := handle.ValidateQuery(queryValues(r)); err != nil {
-				reportQueryErrors(ctx, err)
+				rest.ReportQueryErrors(ctx, err)
 				errFn(sw, r, http.StatusBadRequest, err)
 				return
 			}
@@ -286,14 +286,14 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 
 		// Validate cookie parameters against their registered codecs (if any).
 		if err := handle.ValidateCookies(cookieValues(r)); err != nil {
-			reportCookieErrors(ctx, err)
+			rest.ReportCookieErrors(ctx, err)
 			errFn(sw, r, http.StatusBadRequest, err)
 			return
 		}
 
 		// Validate header parameters against their registered codecs (if any).
 		if err := handle.ValidateHeaders(headerValues(r)); err != nil {
-			reportHeaderErrors(ctx, err)
+			rest.ReportHeaderErrors(ctx, err)
 			errFn(sw, r, http.StatusBadRequest, err)
 			return
 		}
@@ -302,7 +302,7 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 		names := handle.PathParamNames()
 		if len(names) > 0 {
 			if err := handle.ValidatePathParams(pathValues(r, names)); err != nil {
-				reportPathErrors(ctx, err)
+				rest.ReportPathErrors(ctx, err)
 				errFn(sw, r, http.StatusBadRequest, err)
 				return
 			}
@@ -327,7 +327,7 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 				vars[k] = v
 			}
 			if err := codex.DecodeVars(&req, vars, mergeFields...); err != nil {
-				reportBodyErrors(ctx, err)
+				rest.ReportBodyErrors(ctx, err)
 				errFn(sw, r, http.StatusBadRequest, err)
 				return
 			}
@@ -342,7 +342,7 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 		if len(secReqs) > 0 {
 			if credErr := validateSecurityCredentials(r, secReqs, handle.SecuritySchemes); credErr != nil {
 				if secObs, ok := stats.ObserverFromContext(ctx).(stats.SecurityObserver); ok {
-					secObs.RecordSecurityRejection(handle.Descriptor.Path, firstScheme(secReqs))
+					secObs.RecordSecurityRejection(handle.Descriptor.Path, route.FirstSchemeName(secReqs))
 				}
 				errFn(sw, r, http.StatusUnauthorized, credErr)
 				return
@@ -404,7 +404,7 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 		if headerFields := handle.ResponseHeaderMergeFields(); len(headerFields) > 0 {
 			values, encErr := codex.EncodeVars(resp, headerFields...)
 			if encErr != nil {
-				reportResponseHeaderErrors(ctx, encErr)
+				rest.ReportResponseHeaderErrors(ctx, encErr)
 				errFn(sw, r, http.StatusInternalServerError, encErr)
 				return
 			}
@@ -415,7 +415,7 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 		if cookieFields := handle.ResponseCookieMergeFields(); len(cookieFields) > 0 {
 			values, encErr := codex.EncodeVars(resp, cookieFields...)
 			if encErr != nil {
-				reportResponseCookieErrors(ctx, encErr)
+				rest.ReportResponseCookieErrors(ctx, encErr)
 				errFn(sw, r, http.StatusInternalServerError, encErr)
 				return
 			}
@@ -444,7 +444,7 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 				// Pre-validate before committing response headers so we can still
 				// return an error response if the value violates codec constraints.
 				if valErr := chosen.Validate(resp); valErr != nil {
-					reportBodyErrors(ctx, valErr)
+					rest.ReportBodyErrors(ctx, valErr)
 					errFn(sw, r, http.StatusInternalServerError, valErr)
 					return
 				}
@@ -452,12 +452,12 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 
 				// Validate and write response headers/cookies before streaming.
 				if err := handle.ValidateResponseHeaders(responseHeaderValues(respHeaders)); err != nil {
-					reportResponseHeaderErrors(ctx, err)
+					rest.ReportResponseHeaderErrors(ctx, err)
 					errFn(sw, r, http.StatusInternalServerError, err)
 					return
 				}
 				if err := handle.ValidateResponseCookies(responseCookieValues(pendingCookies)); err != nil {
-					reportResponseCookieErrors(ctx, err)
+					rest.ReportResponseCookieErrors(ctx, err)
 					errFn(sw, r, http.StatusInternalServerError, err)
 					return
 				}
@@ -481,14 +481,14 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 				// this point; streaming errors are logged but cannot be returned
 				// as HTTP error responses.
 				if streamErr := chosen.MarshalTo(resp, sw); streamErr != nil {
-					reportBodyErrors(ctx, streamErr)
+					rest.ReportBodyErrors(ctx, streamErr)
 				}
 				return
 			}
 			var encErr error
 			out, encErr = chosen.Marshal(resp)
 			if encErr != nil {
-				reportBodyErrors(ctx, encErr)
+				rest.ReportBodyErrors(ctx, encErr)
 				errFn(sw, r, http.StatusInternalServerError, encErr)
 				return
 			}
@@ -497,7 +497,7 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 			var encErr error
 			out, encErr = handle.Encode(resp)
 			if encErr != nil {
-				reportBodyErrors(ctx, encErr)
+				rest.ReportBodyErrors(ctx, encErr)
 				errFn(sw, r, http.StatusInternalServerError, encErr)
 				return
 			}
@@ -506,14 +506,14 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 
 		// Validate response headers against registered ResponseHeaderParam codecs.
 		if err := handle.ValidateResponseHeaders(responseHeaderValues(respHeaders)); err != nil {
-			reportResponseHeaderErrors(ctx, err)
+			rest.ReportResponseHeaderErrors(ctx, err)
 			errFn(sw, r, http.StatusInternalServerError, err)
 			return
 		}
 
 		// Validate response cookies against registered ResponseCookieParam codecs.
 		if err := handle.ValidateResponseCookies(responseCookieValues(pendingCookies)); err != nil {
-			reportResponseCookieErrors(ctx, err)
+			rest.ReportResponseCookieErrors(ctx, err)
 			errFn(sw, r, http.StatusInternalServerError, err)
 			return
 		}
@@ -582,13 +582,13 @@ func sseHandlerFunc[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn 
 		// Validate query parameters against their registered codecs (if any).
 		if opts.MultiValueQueryParams {
 			if err := handle.ValidateQueryMulti(r.URL.Query()); err != nil {
-				reportQueryErrors(ctx, err)
+				rest.ReportQueryErrors(ctx, err)
 				opts.ErrorHandler(sw, r, http.StatusBadRequest, err)
 				return
 			}
 		} else {
 			if err := handle.ValidateQuery(queryValues(r)); err != nil {
-				reportQueryErrors(ctx, err)
+				rest.ReportQueryErrors(ctx, err)
 				opts.ErrorHandler(sw, r, http.StatusBadRequest, err)
 				return
 			}
@@ -596,14 +596,14 @@ func sseHandlerFunc[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn 
 
 		// Validate cookie parameters against their registered codecs (if any).
 		if err := handle.ValidateCookies(cookieValues(r)); err != nil {
-			reportCookieErrors(ctx, err)
+			rest.ReportCookieErrors(ctx, err)
 			opts.ErrorHandler(sw, r, http.StatusBadRequest, err)
 			return
 		}
 
 		// Validate header parameters against their registered codecs (if any).
 		if err := handle.ValidateHeaders(headerValues(r)); err != nil {
-			reportHeaderErrors(ctx, err)
+			rest.ReportHeaderErrors(ctx, err)
 			opts.ErrorHandler(sw, r, http.StatusBadRequest, err)
 			return
 		}
@@ -611,7 +611,7 @@ func sseHandlerFunc[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn 
 		// Validate path parameters against their registered codecs (if any).
 		if names := handle.PathParamNames(); len(names) > 0 {
 			if err := handle.ValidatePathParams(pathValues(r, names)); err != nil {
-				reportPathErrors(ctx, err)
+				rest.ReportPathErrors(ctx, err)
 				opts.ErrorHandler(sw, r, http.StatusBadRequest, err)
 				return
 			}
@@ -630,7 +630,7 @@ func sseHandlerFunc[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn 
 		if len(secReqs) > 0 {
 			if credErr := validateSecurityCredentials(r, secReqs, handle.SecuritySchemes); credErr != nil {
 				if secObs, ok := stats.ObserverFromContext(ctx).(stats.SecurityObserver); ok {
-					secObs.RecordSecurityRejection(handle.Descriptor.Path, firstScheme(secReqs))
+					secObs.RecordSecurityRejection(handle.Descriptor.Path, route.FirstSchemeName(secReqs))
 				}
 				opts.ErrorHandler(sw, r, http.StatusUnauthorized, credErr)
 				return
@@ -687,7 +687,7 @@ func sseHandlerFunc[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn 
 				var err error
 				e, err = handle.MergeEvent(e, pathVars, queryVars, headerVars, cookieVars)
 				if err != nil {
-					stats.ReportErrors(diagnosticObserver{ctx}, "response", err)
+					stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, "response", err)
 					return err
 				}
 			}
@@ -696,12 +696,12 @@ func sseHandlerFunc[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn 
 				// Commit staged response headers/cookies on first send, before
 				// any data is written (headers are not yet sent to the client).
 				if err := handle.ValidateResponseHeaders(responseHeaderValues(responseHeaders)); err != nil {
-					reportResponseHeaderErrors(ctx, err)
+					rest.ReportResponseHeaderErrors(ctx, err)
 					return err
 				}
 				if pending, ok := ctx.Value(responseCookiesKey{}).(*[]PendingCookie); ok {
 					if err := handle.ValidateResponseCookies(responseCookieValues(*pending)); err != nil {
-						reportResponseCookieErrors(ctx, err)
+						rest.ReportResponseCookieErrors(ctx, err)
 						return err
 					}
 					for i := range *pending {
@@ -841,54 +841,6 @@ func headerValues(r *http.Request) map[string]string {
 	return m
 }
 
-// diagnosticObserver adapts ctx-based [stats.RecordDiagnostic] to the
-// [stats.ValidationObserver] interface, so [stats.ReportErrors]'s existing
-// per-field error-walking logic can be reused UNCHANGED — the SAME data,
-// just ferried out via ctx instead of a direct Observer call (decode-time
-// validation events have no other home once [Options.Observer] is removed
-// in favor of [Observability]).
-type diagnosticObserver struct{ ctx context.Context }
-
-func (d diagnosticObserver) RecordValidationError(location, constraintName, field string) {
-	stats.RecordDiagnostic(d.ctx, stats.Diagnostic{Location: location, ConstraintName: constraintName, Field: field})
-}
-
-// reportBodyErrors extracts per-field validation errors from a body decode
-// error and ferries them out via [stats.RecordDiagnostic] with location "body".
-func reportBodyErrors(ctx context.Context, err error) {
-	stats.ReportErrors(diagnosticObserver{ctx}, "body", err)
-}
-
-// reportQueryErrors extracts the failing query parameter from a [rest.QueryParamError]
-// and ferries it out via [stats.RecordDiagnostic] with location "query".
-func reportQueryErrors(ctx context.Context, err error) {
-	var qe rest.QueryParamError
-	if !errors.As(err, &qe) {
-		return
-	}
-	stats.RecordDiagnostic(ctx, stats.Diagnostic{Location: "query", ConstraintName: stats.ConstraintName(qe.Err), Field: qe.Name})
-}
-
-// reportCookieErrors extracts the failing cookie parameter from a [rest.CookieParamError]
-// and ferries it out via [stats.RecordDiagnostic] with location "cookie".
-func reportCookieErrors(ctx context.Context, err error) {
-	var ce rest.CookieParamError
-	if !errors.As(err, &ce) {
-		return
-	}
-	stats.RecordDiagnostic(ctx, stats.Diagnostic{Location: "cookie", ConstraintName: stats.ConstraintName(ce.Err), Field: ce.Name})
-}
-
-// reportHeaderErrors extracts the failing header from a [rest.HeaderParamError]
-// and ferries it out via [stats.RecordDiagnostic] with location "header".
-func reportHeaderErrors(ctx context.Context, err error) {
-	var he rest.HeaderParamError
-	if !errors.As(err, &he) {
-		return
-	}
-	stats.RecordDiagnostic(ctx, stats.Diagnostic{Location: "header", ConstraintName: stats.ConstraintName(he.Err), Field: he.Name})
-}
-
 // responseHeaderValues converts an http.Header into a flat map[string]string
 // for use with [rest.RouteHandle.ValidateResponseHeaders].
 // When a header has multiple values, only the first is kept.
@@ -900,17 +852,6 @@ func responseHeaderValues(h http.Header) map[string]string {
 		}
 	}
 	return m
-}
-
-// reportResponseHeaderErrors extracts the failing response header from a
-// [rest.ResponseHeaderParamError] and ferries it out via
-// [stats.RecordDiagnostic] with location "response_header".
-func reportResponseHeaderErrors(ctx context.Context, err error) {
-	var rhe rest.ResponseHeaderParamError
-	if !errors.As(err, &rhe) {
-		return
-	}
-	stats.RecordDiagnostic(ctx, stats.Diagnostic{Location: "response_header", ConstraintName: stats.ConstraintName(rhe.Err), Field: rhe.Name})
 }
 
 // responseCookieValues extracts name→value from a slice of PendingCookie for use
@@ -935,8 +876,8 @@ func writeErrorPatternResponse[Req, Resp any](
 	if respVal, ok := pattern.Value.(Resp); ok {
 		headerValues, cookieValues, encErr := handle.EncodeResponseMergeFields(respVal)
 		if encErr != nil {
-			reportResponseHeaderErrors(ctx, encErr)
-			reportResponseCookieErrors(ctx, encErr)
+			rest.ReportResponseHeaderErrors(ctx, encErr)
+			rest.ReportResponseCookieErrors(ctx, encErr)
 			return encErr
 		}
 		for k, v := range headerValues {
@@ -949,11 +890,11 @@ func writeErrorPatternResponse[Req, Resp any](
 	}
 
 	if err := handle.ValidateResponseHeaders(responseHeaderValues(respHeaders)); err != nil {
-		reportResponseHeaderErrors(ctx, err)
+		rest.ReportResponseHeaderErrors(ctx, err)
 		return err
 	}
 	if err := handle.ValidateResponseCookies(responseCookieValues(pendingCookies)); err != nil {
-		reportResponseCookieErrors(ctx, err)
+		rest.ReportResponseCookieErrors(ctx, err)
 		return err
 	}
 
@@ -974,27 +915,6 @@ func writeErrorPatternResponse[Req, Resp any](
 	w.WriteHeader(pattern.Status)
 	_, err := w.Write(pattern.Body)
 	return err
-}
-
-// reportResponseCookieErrors extracts the failing response cookie from a
-// [rest.ResponseCookieParamError] and ferries it out via
-// [stats.RecordDiagnostic] with location "response_cookie".
-func reportResponseCookieErrors(ctx context.Context, err error) {
-	var rce rest.ResponseCookieParamError
-	if !errors.As(err, &rce) {
-		return
-	}
-	stats.RecordDiagnostic(ctx, stats.Diagnostic{Location: "response_cookie", ConstraintName: stats.ConstraintName(rce.Err), Field: rce.Name})
-}
-
-// reportPathErrors extracts the failing path variable from a [rest.PathParamError]
-// and ferries it out via [stats.RecordDiagnostic] with location "path".
-func reportPathErrors(ctx context.Context, err error) {
-	var pe rest.PathParamError
-	if !errors.As(err, &pe) {
-		return
-	}
-	stats.RecordDiagnostic(ctx, stats.Diagnostic{Location: "path", ConstraintName: stats.ConstraintName(pe.Err), Field: pe.Name})
 }
 
 // negotiateFormat picks the first format whose ContentType matches an entry in
@@ -1092,17 +1012,6 @@ func extractCredential(r *http.Request, s rest.SecurityScheme) string {
 			if c, err := r.Cookie(s.Name); err == nil {
 				return c.Value
 			}
-		}
-	}
-	return ""
-}
-
-// firstScheme returns the first scheme name from the security requirements,
-// or an empty string if there are none. Used for observer reporting.
-func firstScheme(reqs []route.SecurityRequirement) string {
-	for _, req := range reqs {
-		for name := range req {
-			return name
 		}
 	}
 	return ""
