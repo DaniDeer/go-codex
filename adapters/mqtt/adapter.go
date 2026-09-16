@@ -448,10 +448,21 @@ func publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.
 		if mwErr != nil {
 			var dispatchErr middlewareDispatchError
 			loc := "middleware:fn"
-			if errors.As(mwErr, &dispatchErr) && dispatchErr.isEncodeErr {
-				loc = "middleware:out"
+			// dispatchErr.err is ALREADY a properly-wrapped
+			// events.MiddlewareError (fn case) or events.MiddlewareOutputError
+			// (encode case) — see api/events/transform.go's buildEncodeOut
+			// and this package's dispatchPublishMiddlewareHandlers — so
+			// BOTH branches unwrap to the already-typed inner error here,
+			// no re-wrap needed.
+			reported := mwErr
+			if errors.As(mwErr, &dispatchErr) {
+				if dispatchErr.isEncodeErr {
+					loc = "middleware:out"
+				}
+				reported = dispatchErr.err
+				mwErr = dispatchErr.err
 			}
-			stats.ReportErrors(obs, loc, mwErr)
+			stats.ReportErrors(obs, loc, reported)
 			obs.RecordPublish(handle.Topic, false, time.Since(start))
 			err = mwErr
 			return err

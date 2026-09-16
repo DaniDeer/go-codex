@@ -77,7 +77,16 @@ func dispatchPublishMiddlewareHandlers[T any](ctx context.Context, msg T, handle
 			results = fnVal.Call([]reflect.Value{reflect.ValueOf(ctx), reflect.ValueOf(msg)})
 		}
 		if fnErr, _ := results[1].Interface().(error); fnErr != nil {
-			return nil, middlewareDispatchError{err: fnErr, isFnError: true, name: h.Name}
+			// Wrapped in events.MiddlewareError HERE (dispatch-function
+			// level) — mirroring rest/reqreply's own dispatchClientMiddlewareIn,
+			// which both already wrap their Fn error the SAME way. Previously
+			// this returned fnErr raw, so errors.As(pubErr,
+			// &events.MiddlewareError{}) never matched a publish-side Fn
+			// error (a confirmed asymmetry with events' own subscribe-side
+			// Fn error, wrapped via the adapter's OnError callback) — fixed
+			// alongside docs/design/d-0003-codec-declared-middlewares.md's
+			// Addendum 2.
+			return nil, middlewareDispatchError{err: events.MiddlewareError{Name: h.Name, Err: fnErr}, isFnError: true, name: h.Name}
 		}
 		out := results[0].Interface()
 		mwVars, _, encErr := h.EncodeOut(out)

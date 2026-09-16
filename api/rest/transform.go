@@ -179,18 +179,18 @@ func buildEncodeOut[In, Out any](mw Middleware[In, Out]) func(outAny any) (map[s
 	return func(outAny any) (map[string]string, map[string]string, error) {
 		out, _ := outAny.(Out)
 		if err := mw.OutCodec.Validate(out); err != nil {
-			return nil, nil, err
+			return nil, nil, MiddlewareOutputError{Name: mw.Name, Err: err}
 		}
 		var headers, cookies map[string]string
 		var err error
 		if len(respHeaderFields) > 0 {
 			if headers, err = codex.EncodeVars(out, respHeaderFields...); err != nil {
-				return nil, nil, err
+				return nil, nil, MiddlewareOutputError{Name: mw.Name, Err: err}
 			}
 		}
 		if len(respCookieFields) > 0 {
 			if cookies, err = codex.EncodeVars(out, respCookieFields...); err != nil {
-				return nil, nil, err
+				return nil, nil, MiddlewareOutputError{Name: mw.Name, Err: err}
 			}
 		}
 		return headers, cookies, nil

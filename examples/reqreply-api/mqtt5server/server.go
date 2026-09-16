@@ -139,6 +139,13 @@ func Build() (*Built, error) {
 	if err != nil {
 		return nil, err
 	}
+	// ErrorPatternComputeRoute demonstrates the client-side ErrorPattern
+	// decode workflow — see demo_error_pattern_client_decode.go.
+	if _, err := routes.ErrorPatternComputeRoute.
+		WithHandler(handlers.AddOrConflict).
+		Register(server); err != nil {
+		return nil, err
+	}
 
 	rawBroker, router := newMockBroker()
 	broker := &recordingBroker{MQTTClient: rawBroker}

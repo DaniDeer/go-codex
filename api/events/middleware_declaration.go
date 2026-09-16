@@ -265,6 +265,39 @@ func (e MiddlewareError) LogValue() slog.Value {
 	)
 }
 
+// MiddlewareOutputError is returned when a [Middleware]'s Out value fails to
+// encode into outgoing topic/property vars (via [Middleware].EncodeOut) —
+// the OUTPUT-side counterpart of [MiddlewareInputError], added for symmetry
+// (previously this failure propagated as a bare, unwrapped error with no
+// way to recover which middleware failed; see
+// docs/design/d-0003-codec-declared-middlewares.md's Addendum 2). Mirrors
+// [rest.MiddlewareOutputError] exactly.
+//
+// Use errors.As to extract the failing middleware's name:
+//
+//	var outputErr events.MiddlewareOutputError
+//	if errors.As(err, &outputErr) {
+//	    log.Printf("middleware %q: invalid output: %v", outputErr.Name, outputErr.Err)
+//	}
+type MiddlewareOutputError struct {
+	Name string
+	Err  error
+}
+
+func (e MiddlewareOutputError) Error() string {
+	return fmt.Sprintf("api/events: middleware %q: invalid output: %s", e.Name, e.Err.Error())
+}
+
+func (e MiddlewareOutputError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e MiddlewareOutputError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("name", e.Name),
+		slog.Any("err", e.Err),
+	)
+}
+
 // DuplicateMiddlewareNameError is returned by [Subscriber.Handle]/
 // [Publisher.Handle] when two [Middleware] values with the SAME
 // Declaration.Name are attached to one channel (D6(b)) — mirrors

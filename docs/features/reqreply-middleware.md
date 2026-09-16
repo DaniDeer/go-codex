@@ -106,6 +106,23 @@ values with the same `Declaration.Name` to one route returns
 `reqreply.DuplicateMiddlewareNameError`; combining both attachment styles
 on one value returns `reqreply.AmbiguousMiddlewareAttachmentError`.
 
+`reqreply.ErrorPattern` itself now round-trips to the CLIENT too —
+`RouteHandle.DecodeErrorFor` + `mqtt5.ErrorPatternResponse`/
+`zeromq.ErrorPatternResponse`, mirroring REST's client-side decode
+workflow. See the [AsyncAPI guide's "Client-side decode"
+section](../guides/asyncapi.md#client-side-decode--routehandledecodeerrorfor-mqtt5--zeromq)
+for the full workflow, including the `Code`-uniqueness requirement
+(`reqreply.DuplicateErrorPatternCodeError`).
+
+A middleware's `Out` value failing to encode/decode — server-side,
+building the REPLY (`EncodeOut`); client-side, reading the REPLY
+(`ClientMiddlewareHandler.DecodeOut`) — returns
+`reqreply.MiddlewareOutputError{Name, Err}`, the response-side counterpart
+of `MiddlewareInputError`. (Previously the CLIENT-side `DecodeOut` failure
+was mislabeled as `MiddlewareInputError` — a bug, since it decodes the
+`Out` struct, not `In`; fixed alongside
+[D-0003's Addendum 2](../design/d-0003-codec-declared-middlewares.md#addendum-2-rest-conflict-detection-alignment--middlewareout-cross-adapter-parity).)
+
 ## Conflict detection — a deliberate breaking change
 
 `Route.Register` checks EVERY declared topic-var/property contribution —

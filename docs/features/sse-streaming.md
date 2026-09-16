@@ -57,6 +57,10 @@ _ = b.Serve(ctx) // blocks, owns its own http.Server
 - Works identically with `chiadapter.ServeSSE`; use `chi.URLParam(r, "id")` for path vars.
 - The stats observer receives `RecordValidationError("response", constraint, "event")` for each rejected event — use this to count codec validation failures per event type.
 - The stats observer receives `RecordValidationError("response", constraint, "event")` for each rejected event.
+- **`rest.ErrorPattern`/`rest.ErrorStatus` are rejected on SSE routes** — `Register`/`RegisterHandle` return
+  `rest.SSEErrorPatternUnsupportedError` if either is declared. SSE has no declared-error-response concept: a
+  stream, once started, has no single response status/body to attach a typed error to. Use `send`'s returned
+  error (handled inline in your handler) for stream-time failures instead.
 
 ## Codec-backed middleware — `TransformSSE`/`ClientTransformSSE`
 

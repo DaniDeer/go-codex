@@ -93,7 +93,11 @@ func sendHandlerErrorReplyReflect(sock FramedSocket, errorResponseForMethod refl
 	matched, _ := results[1].Interface().(bool)
 	mapErr, _ := results[2].Interface().(error)
 	if matched && mapErr == nil {
-		_ = sock.SendFrames([][]byte{statusError, resp.Body})
+		// NEW: 3rd frame carries the matched pattern's Code — additive,
+		// backward-compatible (the plain-text fallback below stays
+		// 2-frame) — lets the CLIENT look up which pattern produced
+		// this reply via reqreply.RouteHandle.DecodeErrorFor.
+		_ = sock.SendFrames([][]byte{statusError, []byte(resp.Code), resp.Body})
 		return
 	}
 	if matched && mapErr != nil {
@@ -111,7 +115,9 @@ func sendRouterHandlerErrorReplyReflect(sock FramedSocket, identity []byte, erro
 	matched, _ := results[1].Interface().(bool)
 	mapErr, _ := results[2].Interface().(error)
 	if matched && mapErr == nil {
-		_ = sock.SendFrames([][]byte{identity, emptyDelimiter, statusError, resp.Body})
+		// NEW: 4th frame carries the matched pattern's Code — see
+		// sendHandlerErrorReplyReflect's identical rationale.
+		_ = sock.SendFrames([][]byte{identity, emptyDelimiter, statusError, []byte(resp.Code), resp.Body})
 		return
 	}
 	if matched && mapErr != nil {
@@ -1044,7 +1050,25 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 
 		if string(frames[0]) == "error" {
 			obs.RecordRequest("ZMQ-REQ", path, 500, time.Since(start))
-			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: fmt.Errorf("server error: %s", frames[1])}).Convert(errType)}
+			// A matched ErrorPattern reply is 3-frame: [status, code, body].
+			// The plain-text fallback stays 2-frame: [status, body].
+			if len(frames) >= 3 {
+				code := string(frames[1])
+				body := frames[2]
+				decodeResults := rv.MethodByName("DecodeErrorFor").Call([]reflect.Value{reflect.ValueOf(code), reflect.ValueOf(body)})
+				errResp, _ := decodeResults[0].Interface().(reqreply.ErrorPatternResponse)
+				matched, _ := decodeResults[1].Interface().(bool)
+				decErr, _ := decodeResults[2].Interface().(error)
+				if matched && decErr == nil {
+					return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: ErrorPatternResponse{
+						Code: errResp.Code, Value: errResp.Value, Body: errResp.Body,
+					}}).Convert(errType)}
+				}
+			}
+			// UNCHANGED fallback — 2-frame reply, unmatched code, or
+			// decode failed. frames[len(frames)-1] is the body in both
+			// the 2-frame and unmatched-3-frame case.
+			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: fmt.Errorf("server error: %s", frames[len(frames)-1])}).Convert(errType)}
 		}
 
 		if len(clientMiddlewareHandlers) > 0 {
@@ -1630,7 +1654,26 @@ func (t *dealerClientTransport) call(ctx context.Context, routeAny any, reqAny a
 
 		if string(frames[1]) == "error" {
 			obs.RecordRequest("ZMQ-DEALER", path, 500, time.Since(start))
-			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: fmt.Errorf("server error: %s", frames[2])}).Convert(errType)}
+			// A matched ErrorPattern reply is 4-frame:
+			// [delimiter, status, code, body]. The plain-text fallback
+			// stays 3-frame: [delimiter, status, body].
+			if len(frames) >= 4 {
+				code := string(frames[2])
+				body := frames[3]
+				decodeResults := rv.MethodByName("DecodeErrorFor").Call([]reflect.Value{reflect.ValueOf(code), reflect.ValueOf(body)})
+				errResp, _ := decodeResults[0].Interface().(reqreply.ErrorPatternResponse)
+				matched, _ := decodeResults[1].Interface().(bool)
+				decErr, _ := decodeResults[2].Interface().(error)
+				if matched && decErr == nil {
+					return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: ErrorPatternResponse{
+						Code: errResp.Code, Value: errResp.Value, Body: errResp.Body,
+					}}).Convert(errType)}
+				}
+			}
+			// UNCHANGED fallback — 3-frame reply, unmatched code, or
+			// decode failed. frames[len(frames)-1] is the body in both
+			// the 3-frame and unmatched-4-frame case.
+			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: fmt.Errorf("server error: %s", frames[len(frames)-1])}).Convert(errType)}
 		}
 
 		if len(clientMiddlewareHandlers) > 0 {

@@ -156,6 +156,11 @@ Rule of thumb for "continuing" after an error:
   server declared — branch on `.Value`'s concrete type and handle it like
   any other domain error (see the "Client-side decode" section in the
   [REST API feature page](../features/rest-api.md#client-side-decode--nethttpcallwithhandle-and-errorpatternresponse)).
+  **Give each `ErrorPattern` its own status code** — matching is status-only,
+  so two patterns sharing a status make the client always decode via the
+  FIRST-declared one, regardless of which the server actually sent (see the
+  feature page's callout for the full caveat and the shared-interface
+  workaround for legitimately-shared statuses).
 - **`nethttp.UnexpectedStatusError`** is the universal fallback for any
   status/body the route didn't declare a typed pattern for — log the raw
   status + body, do not assume a specific shape.

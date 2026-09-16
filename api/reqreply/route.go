@@ -453,8 +453,17 @@ func (m ErrorReplyMeta) applyRoute(rb *routeBuilder) {
 }
 
 // ErrorPatternResponse is the adapter-ready payload produced by
-// [RouteHandle.ErrorResponseFor] when a declared [ErrorPattern] matches.
+// [RouteHandle.ErrorResponseFor] (server side) or [RouteHandle.DecodeErrorFor]
+// (client side) when a declared [ErrorPattern] matches.
 type ErrorPatternResponse struct {
+	// Code identifies which declared ErrorPattern produced this response —
+	// the SAME value [ErrorPatternOpt.WithCode]/the sanitized-type-name
+	// default already computes for the AsyncAPI reply-error channel's
+	// operation-ID derivation, additionally transmitted on the wire by
+	// adapters (e.g. an mqtt5 User Property, an extra zeromq frame) so
+	// the CLIENT can look up which pattern (if any) produced a given
+	// error reply — see [RouteHandle.DecodeErrorFor].
+	Code string
 	// Body is the JSON-encoded typed error payload.
 	Body []byte
 	// Value is the typed payload before encoding — useful for adapters that
@@ -465,7 +474,67 @@ type ErrorPatternResponse struct {
 // errorPatternRule is the type-erased runtime form of a declared
 // [ErrorPattern], stored on [routeBuilder]/[RouteHandle].
 type errorPatternRule struct {
-	match func(error) (ErrorPatternResponse, bool, error)
+	code     string
+	typeName string
+	match    func(error) (ErrorPatternResponse, bool, error)
+	// decode is the client-side counterpart of match: given the raw wire
+	// body for an error reply whose transmitted code equals this rule's
+	// code, decode it via the pattern's declared codec. Never nil after
+	// applyRoute.
+	decode func([]byte) (ErrorPatternResponse, error)
+}
+
+// DuplicateErrorPatternCodeError is returned by [Route.Register]/
+// [Route.RegisterHandle] when two [ErrorPattern] declarations on the SAME
+// route share the SAME Code (explicit via [ErrorPatternOpt.WithCode], or
+// the sanitized-type-name default). Unlike REST's now-accepted
+// same-status ambiguity — an existing, tested, backward-compatibility-
+// constrained behavior (see docs/features/rest-api.md's "same-status
+// precedence" callout) — reqreply's ErrorPattern is a FRESH mechanism
+// with no existing behavior to preserve, so this is rejected outright:
+// [RouteHandle.DecodeErrorFor] matches by Code alone (no [errors.As] on
+// the wire), so two patterns sharing one Code would make the client
+// unable to distinguish which pattern actually produced a given reply.
+//
+// Fix: give each [ErrorPattern] a unique [ErrorPatternOpt.WithCode] value.
+type DuplicateErrorPatternCodeError struct {
+	Route      string
+	Code       string
+	FirstType  string
+	SecondType string
+}
+
+func (e DuplicateErrorPatternCodeError) Error() string {
+	return fmt.Sprintf("api/reqreply: route %q: ErrorPattern code %q declared for both %s and %s — use .WithCode to give each ErrorPattern a unique code",
+		e.Route, e.Code, e.FirstType, e.SecondType)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e DuplicateErrorPatternCodeError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("route", e.Route),
+		slog.String("code", e.Code),
+		slog.String("first_type", e.FirstType),
+		slog.String("second_type", e.SecondType),
+	)
+}
+
+// checkDuplicateErrorPatternCodes rejects 2+ declared [ErrorPattern] rules
+// on the SAME route sharing one Code — see [DuplicateErrorPatternCodeError].
+func checkDuplicateErrorPatternCodes(rules []errorPatternRule, routeLabel string) error {
+	seen := make(map[string]string, len(rules))
+	for _, rule := range rules {
+		if first, ok := seen[rule.code]; ok {
+			return DuplicateErrorPatternCodeError{
+				Route:      routeLabel,
+				Code:       rule.code,
+				FirstType:  first,
+				SecondType: rule.typeName,
+			}
+		}
+		seen[rule.code] = rule.typeName
+	}
+	return nil
 }
 
 // ErrorPatternOpt is the [RouteOpt] value returned by [ErrorPattern].
@@ -568,6 +637,8 @@ func (o ErrorPatternOpt[E, B]) applyRoute(rb *routeBuilder) {
 	schemaCopy := o.codec.Schema
 
 	rule := errorPatternRule{
+		code:     code,
+		typeName: fmt.Sprintf("%T", *new(E)),
 		match: func(err error) (ErrorPatternResponse, bool, error) {
 			var target E
 			if !errors.As(err, &target) {
@@ -596,7 +667,14 @@ func (o ErrorPatternOpt[E, B]) applyRoute(rb *routeBuilder) {
 			if encErr != nil {
 				return ErrorPatternResponse{}, true, encErr
 			}
-			return ErrorPatternResponse{Body: body, Value: payload}, true, nil
+			return ErrorPatternResponse{Code: code, Body: body, Value: payload}, true, nil
+		},
+		decode: func(body []byte) (ErrorPatternResponse, error) {
+			payload, err := jsonCodec.Unmarshal(body)
+			if err != nil {
+				return ErrorPatternResponse{}, err
+			}
+			return ErrorPatternResponse{Code: code, Body: body, Value: payload}, nil
 		},
 	}
 	rb.errorPatternRules = append(rb.errorPatternRules, rule)
@@ -985,6 +1063,13 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 		return nil, err
 	}
 
+	// Reject 2+ declared ErrorPattern rules sharing one Code — see
+	// DuplicateErrorPatternCodeError's doc comment for why this is a
+	// hard rejection (not REST's accepted same-status ambiguity).
+	if err := checkDuplicateErrorPatternCodes(rb.errorPatternRules, r.topic); err != nil {
+		return nil, err
+	}
+
 	jsonReq := format.JSON(r.reqCodec)
 	jsonResp := format.JSON(r.respCodec)
 
@@ -1209,6 +1294,37 @@ func (h *RouteHandle[Req, Resp]) ErrorResponseFor(err error) (ErrorPatternRespon
 			continue
 		}
 		return resp, true, matchErr
+	}
+	return ErrorPatternResponse{}, false, nil
+}
+
+// DecodeErrorFor is the client-side counterpart of [RouteHandle.ErrorResponseFor]:
+// given an error reply's transmitted code (from the wire discriminator an
+// adapter attaches only for the matched-pattern case — e.g. an mqtt5 User
+// Property, an extra zeromq frame — empty when absent, such as the
+// plain-text fallback path) and raw body, it looks up the declared
+// [ErrorPattern] whose Code matches and decodes body via that pattern's
+// own codec.
+//
+// Matching is code-only: the client has no Go error value to match via
+// [errors.As], only the wire-transmitted code string (mirrors
+// [rest.RouteHandle.DecodeErrorFor]'s status-only matching, adapted for
+// reqreply's code-based discriminator).
+//
+// On a match, body is decoded via that pattern's declared codec. A decode
+// failure (e.g. schema drift between client/server versions) is returned as
+// applyErr with ok=true — callers should treat any non-nil applyErr the same
+// as ok=false (fall back to an untyped error).
+func (h *RouteHandle[Req, Resp]) DecodeErrorFor(code string, body []byte) (resp ErrorPatternResponse, ok bool, applyErr error) {
+	if code == "" {
+		return ErrorPatternResponse{}, false, nil
+	}
+	for _, rule := range h.errorPatternRules {
+		if rule.code != code || rule.decode == nil {
+			continue
+		}
+		decoded, err := rule.decode(body)
+		return decoded, true, err
 	}
 	return ErrorPatternResponse{}, false, nil
 }

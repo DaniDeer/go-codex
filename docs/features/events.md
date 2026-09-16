@@ -421,6 +421,7 @@ broker-mediated QoS/retained-message semantics in ZeroMQ PUB/SUB).
 | `amqtt.TopicMismatchError{Template, Topic}` | Concrete topic doesn't match template structure |
 | `events.MiddlewareInputError{Name, Err}` | A `Middleware`'s `In` fails to decode/validate |
 | `events.MiddlewareError{Name, Err}` | A middleware `fn`'s own error, unmatched by any `ErrorChannel` |
+| `events.MiddlewareOutputError{Name, Err}` | A `Middleware`'s `Out` fails to encode into outgoing topic/property vars (publish direction only — subscribe has no `Out`/reply channel) |
 | `events.DuplicateMiddlewareNameError{Topic, Name}` | Two `Middleware` values share a `Declaration.Name` on one channel |
 | `events.AmbiguousMiddlewareAttachmentError{Name}` | One `Middleware` value combines bundled AND bound attachment |
 

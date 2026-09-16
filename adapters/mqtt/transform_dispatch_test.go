@@ -296,7 +296,7 @@ func TestPublish_Observer_ReportsMiddlewareFnLocation(t *testing.T) {
 	obs := &mqttSpyObserver{}
 	client := &mockClient{token: newCompletedToken(nil)}
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	_ = publish(context.Background(), client, handle, 1, false, event, nil, PublishOptions[userEvent]{Observer: obs})
+	pubErr := publish(context.Background(), client, handle, 1, false, event, nil, PublishOptions[userEvent]{Observer: obs})
 
 	found := false
 	for _, ve := range obs.valErrors {
@@ -306,6 +306,16 @@ func TestPublish_Observer_ReportsMiddlewareFnLocation(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("want a RecordValidationError call with location %q, got %v", "middleware:fn", obs.valErrors)
+	}
+	// pubErr must now be errors.As-able into events.MiddlewareError (see
+	// mqtt5's identical fix, docs/design/d-0003-codec-declared-middlewares.md's
+	// Addendum 2).
+	var mwErr events.MiddlewareError
+	if !errors.As(pubErr, &mwErr) {
+		t.Fatalf("want errors.As to match events.MiddlewareError, got %v", pubErr)
+	}
+	if mwErr.Name != "fn-error-policy" {
+		t.Errorf("want Name %q, got %q", "fn-error-policy", mwErr.Name)
 	}
 }
 
@@ -329,7 +339,7 @@ func TestPublish_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
 	obs := &mqttSpyObserver{}
 	client := &mockClient{token: newCompletedToken(nil)}
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	_ = publish(context.Background(), client, handle, 1, false, event, nil, PublishOptions[userEvent]{Observer: obs})
+	pubErr := publish(context.Background(), client, handle, 1, false, event, nil, PublishOptions[userEvent]{Observer: obs})
 
 	found := false
 	for _, ve := range obs.valErrors {
@@ -339,5 +349,13 @@ func TestPublish_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("want a RecordValidationError call with location %q, got %v", "middleware:out", obs.valErrors)
+	}
+	// pubErr must now be errors.As-able into events.MiddlewareOutputError.
+	var outputErr events.MiddlewareOutputError
+	if !errors.As(pubErr, &outputErr) {
+		t.Fatalf("want errors.As to match events.MiddlewareOutputError, got %v", pubErr)
+	}
+	if outputErr.Name != "tenant-required-policy" {
+		t.Errorf("want Name %q, got %q", "tenant-required-policy", outputErr.Name)
 	}
 }

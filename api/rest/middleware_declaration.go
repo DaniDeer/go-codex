@@ -212,6 +212,40 @@ func (e MiddlewareError) LogValue() slog.Value {
 	)
 }
 
+// MiddlewareOutputError is returned when a [Middleware]'s Out value fails to
+// encode into response headers/cookies (via [Middleware].EncodeOut/
+// EncodeOutCookieAttrs) — the OUTPUT-side counterpart of
+// [MiddlewareInputError], added for symmetry (previously this failure
+// propagated as a bare, unwrapped error with no way to recover which
+// middleware failed; see
+// docs/design/d-0003-codec-declared-middlewares.md's Addendum 2).
+//
+// Use errors.As to extract the failing middleware's name:
+//
+//	var outputErr rest.MiddlewareOutputError
+//	if errors.As(err, &outputErr) {
+//	    log.Printf("middleware %q: invalid output: %v", outputErr.Name, outputErr.Err)
+//	}
+type MiddlewareOutputError struct {
+	Name string
+	Err  error
+}
+
+func (e MiddlewareOutputError) Error() string {
+	return fmt.Sprintf("api/rest: middleware %q: invalid output: %s", e.Name, e.Err.Error())
+}
+
+// Unwrap allows errors.As/errors.Is to traverse the underlying error.
+func (e MiddlewareOutputError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e MiddlewareOutputError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("name", e.Name),
+		slog.Any("err", e.Err),
+	)
+}
+
 // DuplicateMiddlewareNameError is returned at Register/Handle time when two
 // [Middleware] values attached to the SAME route (via ANY combination of
 // .Use()/[Transform]/[ClientTransform]) share the same Declaration.Name —

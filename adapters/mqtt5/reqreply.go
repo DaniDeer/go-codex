@@ -250,6 +250,29 @@ func isErrorReply(msg *pahomqtt5.Publish) bool {
 // errorReplyContentType is the ContentType set on error replies by [Serve].
 const errorReplyContentType = "application/mqtt5-error"
 
+// errorCodePropertyKey is the RESERVED MQTT5 User Property key carrying a
+// matched [reqreply.ErrorPattern]'s Code — set ONLY by
+// [publishHandlerErrorReplyReflect]'s matched branch, never by
+// [publishErrorReply]'s plain-text fallback. Lets the CLIENT look up
+// which declared pattern (if any) produced a given error reply's body —
+// see [reqreply.RouteHandle.DecodeErrorFor].
+const errorCodePropertyKey = "x-error-code"
+
+// errorCodeFromUserProperties reads [errorCodePropertyKey] from an error
+// reply's User Properties — "" when absent (the plain-text fallback path
+// never sets it, and older servers predating this feature never will).
+func errorCodeFromUserProperties(msg *pahomqtt5.Publish) string {
+	if msg.Properties == nil {
+		return ""
+	}
+	for _, p := range msg.Properties.User {
+		if p.Key == errorCodePropertyKey {
+			return p.Value
+		}
+	}
+	return ""
+}
+
 // publishErrorReply sends an error reply to the requester's ResponseTopic as
 // a plain-text payload. Used directly for transport/decode-level errors that
 // occur before the application handler runs (no [reqreply.ErrorPattern] can

@@ -768,8 +768,15 @@ func TestServe_ErrorPatternMatch_HandlerError_SendsTypedPayload(t *testing.T) {
 	if len(sock.sentFrames) != 1 || string(sock.sentFrames[0][0]) != "error" {
 		t.Fatalf("expected error reply frame, got %v", sock.sentFrames)
 	}
-	if !strings.Contains(string(sock.sentFrames[0][1]), `"code":"conflict"`) {
-		t.Errorf("want typed payload with code=conflict, got: %s", sock.sentFrames[0][1])
+	// Matched-pattern reply is now 3-frame: [status, code, payload] — the
+	// code frame lets the client look up which pattern produced this
+	// reply via reqreply.RouteHandle.DecodeErrorFor.
+	frame := sock.sentFrames[0]
+	if len(frame) != 3 {
+		t.Fatalf("expected [status, code, payload] frame, got %v", frame)
+	}
+	if !strings.Contains(string(frame[2]), `"code":"conflict"`) {
+		t.Errorf("want typed payload with code=conflict, got: %s", frame[2])
 	}
 }
 
@@ -805,12 +812,14 @@ func TestServeRouter_ErrorPatternMatch_HandlerError_SendsTypedPayload(t *testing
 	if len(sock.sentFrames) != 1 {
 		t.Fatalf("expected 1 send, got %d", len(sock.sentFrames))
 	}
+	// Matched-pattern reply is now 5-frame:
+	// [identity, delim, error, code, payload].
 	frame := sock.sentFrames[0]
-	if len(frame) != 4 || string(frame[2]) != "error" {
-		t.Fatalf("expected [identity, delim, error, payload] frame, got %v", frame)
+	if len(frame) != 5 || string(frame[2]) != "error" {
+		t.Fatalf("expected [identity, delim, error, code, payload] frame, got %v", frame)
 	}
-	if !strings.Contains(string(frame[3]), `"code":"conflict"`) {
-		t.Errorf("want typed payload with code=conflict, got: %s", frame[3])
+	if !strings.Contains(string(frame[4]), `"code":"conflict"`) {
+		t.Errorf("want typed payload with code=conflict, got: %s", frame[4])
 	}
 }
 

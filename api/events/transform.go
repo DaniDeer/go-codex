@@ -138,20 +138,20 @@ func buildEncodeOut[In, Out any](mw Middleware[In, Out]) func(outAny any) (topic
 	return func(outAny any) (map[string]string, map[string]string, error) {
 		out, _ := outAny.(Out)
 		if err := mw.OutCodec.Validate(out); err != nil {
-			return nil, nil, err
+			return nil, nil, MiddlewareOutputError{Name: mw.Name, Err: err}
 		}
 		var topicVars, propertyVars map[string]string
 		var err error
 		if len(topicFields) > 0 {
 			topicVars, err = codex.EncodeVars(out, topicFields...)
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, MiddlewareOutputError{Name: mw.Name, Err: err}
 			}
 		}
 		if len(propFields) > 0 {
 			propertyVars, err = codex.EncodeVars(out, propFields...)
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, MiddlewareOutputError{Name: mw.Name, Err: err}
 			}
 		}
 		return topicVars, propertyVars, nil

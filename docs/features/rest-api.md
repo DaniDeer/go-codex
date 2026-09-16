@@ -470,6 +470,22 @@ route, _ := rest.NewRoute[CreateJobReq, JobResp]("POST", "/jobs", reqCodec, resp
   `RouteHandle.ErrorResponseFor(err) (ErrorPatternResponse, bool, error)` are
   the lookup accessors adapters call.
 
+> **Give each `ErrorPattern` its own status code.** Client-side decode
+> (`RouteHandle.DecodeErrorFor`, see below) matches by STATUS ONLY — the
+> wire has no Go type to `errors.As` against. If two `ErrorPattern`s on the
+> same route share one status, the client deterministically uses the
+> FIRST-declared pattern's codec regardless of which one the server
+> actually used (intentional, tested — first-declared-rule-wins, the same
+> precedence REST/events/reqreply already use elsewhere). If the two
+> payload shapes happen to be structurally compatible, this SILENTLY
+> decodes as the WRONG type with no error at all; if incompatible, decode
+> fails and the client falls back to `UnexpectedStatusError`. Either way,
+> the caller loses the DISTINCTION between the two error types. If several
+> domain error types genuinely share one status and one response shape,
+> declare ONE `ErrorPattern` against a shared error interface/wrapper type
+> (`errors.As` matches an interface target too) instead of multiple
+> separate declarations at the same status.
+
 ### Action selector — `WithAction`
 
 A matched `ErrorPattern` executes exactly **one** action, mirroring the
@@ -759,6 +775,7 @@ for the full design.
 |---|---|
 | `rest.MiddlewareInputError{Name, Err}` | A `Middleware`'s `In` fails to decode/validate |
 | `rest.MiddlewareError{Name, Err}` | A middleware `fn`'s own error, unmatched by any `ErrorPattern` |
+| `rest.MiddlewareOutputError{Name, Err}` | A `Middleware`'s `Out` fails to encode into response headers/cookies (`EncodeOut`/`EncodeOutCookieAttrs`) — the response-side counterpart of `MiddlewareInputError`; HTTP 500 (server-side encode fault, not the caller's) |
 | `rest.DuplicateMiddlewareNameError{Route, Name}` | Two `Middleware` values share a `Declaration.Name` on one route |
 | `rest.AmbiguousMiddlewareAttachmentError{Name}` | One `Middleware` value combines bundled AND bound attachment |
 | `rest.InvalidPathError{Path, Err}` | Path fails builder-level validation |

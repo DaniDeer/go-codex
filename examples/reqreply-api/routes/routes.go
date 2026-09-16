@@ -198,6 +198,50 @@ var MissingSocketRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 	reqreply.RouteMeta{OperationID: "routerComputeAddMissing", Summary: "Deliberately has no matching socket — demonstrates MissingSocketError."},
 )
 
+// ConflictError is a domain business error handlers.AddOrConflict returns
+// when X is negative — declared as a reqreply.ErrorPattern below so it
+// round-trips to the CLIENT as a typed, errors.As-navigable value instead
+// of an opaque error string (see docs/roadmap/error-handling-rest-events-reqreply.md's
+// "Phase 0" section and docs/guides/asyncapi.md's "Client-side decode" section).
+type ConflictError struct{ Reason string }
+
+func (e ConflictError) Error() string { return "conflict: " + e.Reason }
+
+// ConflictPayload is ConflictError's codec-backed wire shape — the SAME
+// payload the server marshals into the error reply's body AND the client
+// decodes it back into via RouteHandle.DecodeErrorFor.
+type ConflictPayload struct {
+	Code   string
+	Reason string
+}
+
+var ConflictPayloadCodec = codex.Struct[ConflictPayload](
+	codex.RequiredField("code", codex.String(),
+		func(p ConflictPayload) string { return p.Code },
+		func(p *ConflictPayload, v string) { p.Code = v },
+	),
+	codex.RequiredField("reason", codex.String(),
+		func(p ConflictPayload) string { return p.Reason },
+		func(p *ConflictPayload, v string) { p.Reason = v },
+	),
+)
+
+// ErrorPatternComputeRoute demonstrates the client-side ErrorPattern
+// decode workflow (mqtt5 + zeromq): handlers.AddOrConflict returns
+// ConflictError when X is negative, matched by the declared ErrorPattern
+// below and round-tripped to the client as a typed ConflictPayload —
+// see demo_error_pattern_client_decode.go.
+var ErrorPatternComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
+	"compute/add-error-pattern",
+	ComputeReqCodec, ComputeRespCodec,
+	reqreply.RouteMeta{OperationID: "computeAddErrorPattern", Summary: "Add two integers; rejects negative X with a typed ConflictError.", Security: []route.SecurityRequirement{}},
+	reqreply.ErrorPattern[ConflictError, ConflictPayload](ConflictPayloadCodec,
+		func(e ConflictError) (ConflictPayload, error) {
+			return ConflictPayload{Code: "negative-x", Reason: e.Reason}, nil
+		},
+	).WithCode("negative-x").WithDescription("X must not be negative."),
+)
+
 // OAuthComputeReq/OAuthComputeResp carry an in-payload Token field —
 // zeromq's reqreply security Fn-shape (docs/design/d-0004-reqreply-workflow-simplification.md's Addendum,
 // SHIPPED) reads/writes this field directly, since zeromq has no

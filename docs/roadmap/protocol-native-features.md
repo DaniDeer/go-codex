@@ -1075,6 +1075,50 @@ mechanism exists, not necessarily required to):**
 - **AMQP Exchange/RoutingKey/Queue, ack-mode** (§5.3) — the newest addition to
   this survey, and the one that drove §2.3's `Address` resolution.
 
+**A THIRD category the two-part test doesn't yet articulate — AMQP
+dead-lettering (`x-dead-letter-exchange`/`x-dead-letter-routing-key` queue
+arguments):** spun out of
+[Unified Error Handling — REST, Events, ReqReply](error-handling-rest-events-reqreply.md)'s
+Topic 4 (dead-letter queue design). Every OTHER entry in this survey falls
+into one of two buckets: passes BOTH bars → one shared, protocol-agnostic
+declaration (`Security`, the only one); fails EITHER bar → no shared
+declaration at all, fully adapter-owned types with zero cross-adapter Go
+API (QoS, User Properties, Retained, AMQP addressing). **Dead-lettering
+does not fit either bucket cleanly**:
+
+- Its REALIZATION fails both bars badly — AMQP dead-letters via a
+  broker-native QUEUE ARGUMENT (`x-dead-letter-exchange`), configured
+  ONCE at bind/queue-declare time, with the BROKER doing all routing
+  automatically (zero runtime application code); MQTT (v3/v5) has NO
+  native dead-letter concept in the protocol at all, and ZeroMQ has NO
+  broker whatsoever (brokerless by design) — so mqtt/mqtt5/zeromq MUST
+  realize it via the APPLICATION explicitly re-publishing the failed
+  message to a designated topic at RUNTIME. By the two-part test's own
+  logic, this predicts "no shared declaration" (same conclusion as QoS).
+- But its DECLARED INTENT is trivially uniform across every adapter:
+  "if this fails, send it here" is structurally identical to
+  `events.ErrorChannel`'s existing shape (a topic + a codec) — nothing
+  about the DECLARATION itself is protocol-specific, even though the
+  ENFORCEMENT beneath it diverges completely.
+
+**Conclusion**: dead-lettering gets ONE shared, cross-protocol Go API
+(`events.DeadLetter(topic, opts...)`/`reqreply.DeadLetter(topic, opts...)`
+— see the error-handling doc's Topic 4) despite FAILING the two-part
+test's realization bars, because the test's bars are about
+DECLARATION/ENFORCEMENT shape uniformity, and declaration-shape
+uniformity alone is sufficient here — enforcement is free to vary
+per-adapter underneath the SAME declared value. A hypothetical future
+AMQP adapter would realize `DeadLetter(topic)` by setting
+`x-dead-letter-exchange`/`x-dead-letter-routing-key` as queue arguments
+at `Subscribe`/bind time (zero per-message runtime cost — the broker
+does the work); `mqtt`/`mqtt5`/`zeromq` realize the IDENTICAL declared
+value via their own dispatch code explicitly publishing on an unmatched
+failure (runtime cost, since no broker feature exists to delegate to).
+Both realizations satisfy the SAME declared contract — this is the first
+survey entry where "shared declaration, per-adapter-realized" is the
+right answer, rather than either "shared everything" or "shared
+nothing."
+
 **Considered, but likely NOT worth exposing as a `Capability`:**
 
 - **Topic Alias / Subscription Identifiers** (MQTT5-only) — pure
@@ -1504,6 +1548,37 @@ one-at-a-time future-round policy as before:**
   favored optional/additive over baked-in every time it was tested).
   Needs its own dedicated worked-examples pass (mirroring §5) before any
   implementation — not scoped further here.
+- **[Cross-doc, Medium] Dead-letter queue dependency on
+  `error-handling-rest-events-reqreply.md` — FLAGGED this round, MUST be
+  re-checked before implementation begins.** §6's "AMQP dead-lettering"
+  survey entry (added this round) already resolves the DESIGN question —
+  dead-lettering is explicitly EXCLUDED from this document's `Capability`
+  mechanism, because its declarative surface (`events.DeadLetter(topic,
+  ...)`/`reqreply.DeadLetter(topic, ...)`) is meant to live in the CORE
+  `api/events`/`api/reqreply` layer, shared uniformly across every
+  adapter — NOT as a per-adapter sealed `Capability` type the way QoS/
+  User Properties/Retained/AMQP addressing all correctly are. **Before
+  implementing THIS document's `Capability` mechanism, re-check
+  [`docs/roadmap/error-handling-rest-events-reqreply.md`](error-handling-rest-events-reqreply.md)'s
+  Topic 4 status**:
+  - Do NOT fold dead-lettering into this document's implementation scope
+    under any circumstances — it is a confirmed, permanent exclusion
+    (§6), not a deferred/open item like the rest of this section.
+  - If Topic 4 has NOT shipped yet by the time this document's
+    `Capability` mechanism is implemented, there is NO blocking
+    dependency — the two can proceed independently, since `DeadLetter`'s
+    mqtt/mqtt5/zeromq realization needs no `Capability` plumbing at all
+    (plain runtime publish, see Topic 4's "how DLQ works in practice"
+    section).
+  - HOWEVER, if/when a FUTURE AMQP adapter is ALSO built
+    (`docs/roadmap/amqp-adapter.md`, a third, separate roadmap) and
+    realizes `DeadLetter` via that document's pre-existing
+    `QueueConfig.Args` field (`x-dead-letter-exchange`), double-check at
+    that point whether this document's own `Attach`-time `Capability`
+    supply mechanism and `amqp-adapter.md`'s queue-declare-time `Args`
+    field end up BOTH trying to configure AMQP queue arguments through
+    two independent paths — a coordination check, not a design conflict
+    known to exist yet, since neither adapter is built.
 
 ## 8. Handler Disposition — a DISTINCT concept from `Capability`, RESOLVED via a fourth throwaway Go prototype
 

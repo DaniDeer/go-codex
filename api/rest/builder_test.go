@@ -1293,6 +1293,44 @@ func TestSSERouteHandle_ValidateResponseHeaders_invalid(t *testing.T) {
 // identified in docs/design/d-0003-codec-declared-middlewares.md's SSE
 // migration section) ──
 
+// TestSSERoute_ErrorPattern_Rejected confirms ErrorPattern/ErrorStatus
+// RouteOpts — silent no-ops on SSE routes previously — are now rejected
+// explicitly at Register time with SSEErrorPatternUnsupportedError.
+func TestSSERoute_ErrorPattern_Rejected(t *testing.T) {
+	b := rest.NewServer(testInfo)
+	_, err := rest.NewSSERoute[createReq, sseEvent]("/stream-error-pattern",
+		createReqCodec, sseEventCodec,
+		rest.ErrorPattern[directPatternError, directPatternError](409, directPatternCodec),
+	).RegisterHandle(b)
+	if err == nil {
+		t.Fatal("want error, got nil")
+	}
+	var target rest.SSEErrorPatternUnsupportedError
+	if !errors.As(err, &target) {
+		t.Fatalf("want SSEErrorPatternUnsupportedError, got %T: %v", err, err)
+	}
+	if target.Route != "GET /stream-error-pattern" {
+		t.Errorf("want Route %q, got %q", "GET /stream-error-pattern", target.Route)
+	}
+}
+
+// TestSSERoute_ErrorStatus_Rejected confirms the same rejection applies to
+// the status-only ErrorStatus RouteOpt.
+func TestSSERoute_ErrorStatus_Rejected(t *testing.T) {
+	b := rest.NewServer(testInfo)
+	_, err := rest.NewSSERoute[createReq, sseEvent]("/stream-error-status",
+		createReqCodec, sseEventCodec,
+		rest.ErrorStatus[directPatternError](409),
+	).RegisterHandle(b)
+	if err == nil {
+		t.Fatal("want error, got nil")
+	}
+	var target rest.SSEErrorPatternUnsupportedError
+	if !errors.As(err, &target) {
+		t.Fatalf("want SSEErrorPatternUnsupportedError, got %T: %v", err, err)
+	}
+}
+
 func TestSSERouteHandle_EncodeResponseMergeFields_RegisterHandle(t *testing.T) {
 	b := rest.NewServer(testInfo)
 	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream3",

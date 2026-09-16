@@ -209,6 +209,11 @@ func TestTransformSSE_OutEncodeFailure_ReportsMiddlewareOutLocation(t *testing.T
 	if !found {
 		t.Errorf("want a RecordValidationError call with location %q, got %v", "middleware:out", spy.locations)
 	}
+	// The response body should now embed the failing middleware's Name
+	// (rest.MiddlewareOutputError, wrapping the raw encode error).
+	if !strings.Contains(rec.Body.String(), "api-key-policy") {
+		t.Errorf("want response body to embed the middleware Name via MiddlewareOutputError, got %s", rec.Body.String())
+	}
 }
 
 // ── Route-agnostic .Use(mw) dispatch on SSERoute ─────────────────────────

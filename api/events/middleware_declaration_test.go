@@ -3,6 +3,7 @@ package events_test
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 
 	"github.com/DaniDeer/go-codex/api/events"
@@ -191,6 +192,40 @@ func TestMiddlewareError(t *testing.T) {
 	}
 	if err.Error() == "" {
 		t.Error("want non-empty Error() message")
+	}
+}
+
+// TestMiddlewareOutputError verifies the OUTPUT-side counterpart of
+// TestMiddlewareInputError above — added for symmetry (see
+// docs/design/d-0003-codec-declared-middlewares.md's Addendum 2).
+func TestMiddlewareOutputError(t *testing.T) {
+	inner := errors.New("boom")
+	err := events.MiddlewareOutputError{Name: "region-policy", Err: inner}
+	if !errors.Is(err, inner) {
+		t.Errorf("want errors.Is to match the wrapped error")
+	}
+	if err.Error() == "" {
+		t.Error("want non-empty Error() message")
+	}
+	var target events.MiddlewareOutputError
+	if !errors.As(err, &target) {
+		t.Fatal("want errors.As to match MiddlewareOutputError")
+	}
+	if target.Name != "region-policy" {
+		t.Errorf("want Name %q, got %q", "region-policy", target.Name)
+	}
+	v := err.LogValue()
+	if v.Kind() != slog.KindGroup {
+		t.Fatalf("want slog.KindGroup, got %v", v.Kind())
+	}
+	seen := map[string]bool{}
+	for _, a := range v.Group() {
+		seen[a.Key] = true
+	}
+	for _, key := range []string{"name", "err"} {
+		if !seen[key] {
+			t.Errorf("want LogValue group to include key %q, got %v", key, v.Group())
+		}
 	}
 }
 

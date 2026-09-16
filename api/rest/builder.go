@@ -460,6 +460,29 @@ func ErrorPattern[E error, B any](
 	return ErrorPatternOpt[E, B]{status: status, codec: codec, mapper: mapper}
 }
 
+// SSEErrorPatternUnsupportedError is returned by [SSERoute.Register]/
+// [SSERoute.RegisterHandle] when an [ErrorPattern] or [ErrorStatus] RouteOpt
+// is declared on an SSE route. SSE has no declared-error-response concept
+// (a stream, once started, has no single response status/body to attach a
+// typed error to) — previously these opts silently no-op'd on SSE routes
+// (accepted at compile time via the shared [RouteOpt] interface, but never
+// consulted by any SSE adapter code), a confirmed footgun now rejected
+// explicitly at registration time instead.
+type SSEErrorPatternUnsupportedError struct {
+	Route string
+}
+
+func (e SSEErrorPatternUnsupportedError) Error() string {
+	return fmt.Sprintf("api/rest: SSE route %q: ErrorPattern/ErrorStatus is not supported on SSE routes (no declared-error-response concept exists for a stream)", e.Route)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e SSEErrorPatternUnsupportedError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("route", e.Route),
+	)
+}
+
 // RouteOpt is the sealed interface for variadic [NewRoute] and [NewSSERoute] options.
 //
 // The following types implement RouteOpt:
@@ -3978,6 +4001,14 @@ func (s SSERoute[Req, Event]) registerHandle(b *Server) (*SSERouteHandle[Req, Ev
 	var rb routeBuilder
 	for _, opt := range s.opts {
 		opt.applyRoute(&rb)
+	}
+
+	// SSE has no declared-error-response concept — ErrorPattern/ErrorStatus
+	// previously silently no-op'd here (accepted at compile time via the
+	// shared RouteOpt interface, never consulted by any SSE adapter code).
+	// Reject explicitly instead of leaving a silent footgun.
+	if len(rb.errorPatternRules) > 0 || len(rb.errorStatusRules) > 0 {
+		return nil, SSEErrorPatternUnsupportedError{Route: "GET " + s.path}
 	}
 
 	if err := applyMiddlewareDeclarations(&rb, "GET "+s.path); err != nil {

@@ -130,18 +130,18 @@ func buildEncodeOut[In, Out any](mw Middleware[In, Out]) func(outAny any) (map[s
 	return func(outAny any) (map[string]string, map[string]string, error) {
 		out, _ := outAny.(Out)
 		if err := mw.OutCodec.Validate(out); err != nil {
-			return nil, nil, err
+			return nil, nil, MiddlewareOutputError{Name: mw.Name, Err: err}
 		}
 		var topicVars, propertyVars map[string]string
 		var err error
 		if len(topicFields) > 0 {
 			if topicVars, err = codex.EncodeVars(out, topicFields...); err != nil {
-				return nil, nil, err
+				return nil, nil, MiddlewareOutputError{Name: mw.Name, Err: err}
 			}
 		}
 		if len(propertyFields) > 0 {
 			if propertyVars, err = codex.EncodeVars(out, propertyFields...); err != nil {
-				return nil, nil, err
+				return nil, nil, MiddlewareOutputError{Name: mw.Name, Err: err}
 			}
 		}
 		return topicVars, propertyVars, nil
@@ -200,7 +200,14 @@ func buildEncodeIn[In, Out any](mw Middleware[In, Out]) func(inAny any) (map[str
 	}
 }
 
-// buildDecodeOut is [buildEncodeIn]'s response-side sibling.
+// buildDecodeOut is [buildEncodeIn]'s response-side sibling — the
+// CLIENT-side decode of the middleware's OWN Out value from the reply's
+// topic/property vars. Previously (a confirmed bug, fixed alongside
+// docs/design/d-0003-codec-declared-middlewares.md's Addendum 2) this
+// wrapped failures in [MiddlewareInputError] — semantically wrong, since
+// this decodes the Out struct (the REPLY), not the In struct (the
+// REQUEST). Now correctly wraps in [MiddlewareOutputError], matching
+// [buildEncodeOut]'s (the server-side Out-encode sibling) error type.
 func buildDecodeOut[In, Out any](mw Middleware[In, Out]) func(topicVars, propertyVars map[string]string) (any, error) {
 	topicFields := topicFieldsOf(mw.topicMergeFieldsOut)
 	propertyFields := propertyFieldsOf(mw.propertyMergeFieldsOut)
@@ -209,12 +216,12 @@ func buildDecodeOut[In, Out any](mw Middleware[In, Out]) func(topicVars, propert
 		var out Out
 		if len(topicFields) > 0 {
 			if err := codex.DecodeVars(&out, topicVars, topicFields...); err != nil {
-				return nil, MiddlewareInputError{Name: mw.Name, Err: err}
+				return nil, MiddlewareOutputError{Name: mw.Name, Err: err}
 			}
 		}
 		if len(propertyFields) > 0 {
 			if err := codex.DecodeVars(&out, propertyVars, propertyFields...); err != nil {
-				return nil, MiddlewareInputError{Name: mw.Name, Err: err}
+				return nil, MiddlewareOutputError{Name: mw.Name, Err: err}
 			}
 		}
 		return out, nil

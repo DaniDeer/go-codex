@@ -35,3 +35,14 @@ func Triple(_ context.Context, req routes.ComputeReq) (routes.ComputeResp, error
 func AddOAuth(_ context.Context, req routes.OAuthComputeReq) (routes.OAuthComputeResp, error) {
 	return routes.OAuthComputeResp{Sum: req.X + req.Y}, nil
 }
+
+// AddOrConflict is ErrorPatternComputeRoute's handler — same domain logic
+// as Add, except a negative X returns routes.ConflictError instead,
+// matched by the route's declared reqreply.ErrorPattern and round-tripped
+// to the client as a typed routes.ConflictPayload.
+func AddOrConflict(_ context.Context, req routes.ComputeReq) (routes.ComputeResp, error) {
+	if req.X < 0 {
+		return routes.ComputeResp{}, routes.ConflictError{Reason: "X must not be negative"}
+	}
+	return routes.ComputeResp{Sum: req.X + req.Y}, nil
+}

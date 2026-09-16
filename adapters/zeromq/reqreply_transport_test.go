@@ -3,6 +3,7 @@ package zeromq
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -215,6 +216,131 @@ func TestAttachServer_AttachClient_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestAttachClient_ErrorPattern_MatchedReply_DecodesTypedError confirms
+// the FULL REQ/REP round trip: a server publishes a matched-ErrorPattern
+// error reply (3-frame: [status, code, body]), and the CLIENT's Call
+// decodes it into an errors.As-navigable zeromq.ErrorPatternResponse
+// instead of the generic fmt.Errorf("server error: ...") fallback.
+func TestAttachClient_ErrorPattern_MatchedReply_DecodesTypedError(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	handler := func(_ context.Context, _ computeReq) (computeResp, error) {
+		return computeResp{}, serveZmqConflictErr{msg: "duplicate"}
+	}
+	epRoute := reqreply.NewRoute[computeReq, computeResp]("/compute-ep-client", computeReqCodec, computeRespCodec,
+		reqreply.ErrorPattern[serveZmqConflictErr, serveZmqErrPayload](serveZmqErrPayloadCodec,
+			func(e serveZmqConflictErr) (serveZmqErrPayload, error) {
+				return serveZmqErrPayload{Code: "conflict", Message: e.msg}, nil
+			},
+		).WithCode("conflict"),
+	)
+	if _, err := epRoute.WithHandler(handler).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	repSock, reqSock := newChanSocketPair()
+	if err := AttachServer(server, map[string]FramedSocket{"/compute-ep-client": repSock}); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveErrCh := make(chan error, 1)
+	go func() { serveErrCh <- server.Serve(ctx) }()
+
+	clientRoute := reqreply.NewRoute[computeReq, computeResp]("/compute-ep-client", computeReqCodec, computeRespCodec,
+		reqreply.ErrorPattern[serveZmqConflictErr, serveZmqErrPayload](serveZmqErrPayloadCodec).WithCode("conflict"),
+	)
+	client := reqreply.NewClient()
+	if err := AttachClient(client, map[string]FramedSocket{"/compute-ep-client": reqSock}); err != nil {
+		t.Fatalf("AttachClient: %v", err)
+	}
+
+	callCtx, callCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer callCancel()
+	_, callErr := client.Call(callCtx, clientRoute, computeReq{X: 1, Y: 2})
+	if callErr == nil {
+		t.Fatal("want an error, got nil")
+	}
+	var epr ErrorPatternResponse
+	if !errors.As(callErr, &epr) {
+		t.Fatalf("want errors.As to match zeromq.ErrorPatternResponse, got %v", callErr)
+	}
+	if epr.Code != "conflict" {
+		t.Errorf("want Code %q, got %q", "conflict", epr.Code)
+	}
+	payload, ok := epr.Value.(serveZmqErrPayload)
+	if !ok {
+		t.Fatalf("want Value to be serveZmqErrPayload, got %T", epr.Value)
+	}
+	if payload.Message != "duplicate" {
+		t.Errorf("want Message %q, got %q", "duplicate", payload.Message)
+	}
+
+	cancel()
+	select {
+	case err := <-serveErrCh:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not return after ctx cancellation")
+	}
+}
+
+// TestAttachClient_ErrorPattern_NoMatch_FallsBackToGenericError confirms
+// the plain-text fallback path (no declared ErrorPattern) still returns
+// the UNCHANGED generic fmt.Errorf-wrapped error client-side — regression
+// guard for callers who don't declare ErrorPattern at all.
+func TestAttachClient_ErrorPattern_NoMatch_FallsBackToGenericError(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	unrelatedErr := errors.New("unrelated failure")
+	handler := func(_ context.Context, _ computeReq) (computeResp, error) {
+		return computeResp{}, unrelatedErr
+	}
+	route := reqreply.NewRoute[computeReq, computeResp]("/compute-ep-client-nomatch", computeReqCodec, computeRespCodec)
+	if _, err := route.WithHandler(handler).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	repSock, reqSock := newChanSocketPair()
+	if err := AttachServer(server, map[string]FramedSocket{"/compute-ep-client-nomatch": repSock}); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveErrCh := make(chan error, 1)
+	go func() { serveErrCh <- server.Serve(ctx) }()
+
+	client := reqreply.NewClient()
+	if err := AttachClient(client, map[string]FramedSocket{"/compute-ep-client-nomatch": reqSock}); err != nil {
+		t.Fatalf("AttachClient: %v", err)
+	}
+	clientRoute := reqreply.NewRoute[computeReq, computeResp]("/compute-ep-client-nomatch", computeReqCodec, computeRespCodec)
+
+	callCtx, callCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer callCancel()
+	_, callErr := client.Call(callCtx, clientRoute, computeReq{X: 1, Y: 2})
+	if callErr == nil {
+		t.Fatal("want an error, got nil")
+	}
+	var epr ErrorPatternResponse
+	if errors.As(callErr, &epr) {
+		t.Fatalf("want NO match into zeromq.ErrorPatternResponse for the plain-text fallback path, got %+v", epr)
+	}
+	if !strings.Contains(callErr.Error(), unrelatedErr.Error()) {
+		t.Errorf("want fallback error message to contain %q, got: %v", unrelatedErr.Error(), callErr)
+	}
+
+	cancel()
+	select {
+	case err := <-serveErrCh:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not return after ctx cancellation")
+	}
+}
+
 func TestAttachServer_MissingSocketError(t *testing.T) {
 	server, _ := newComputeServerAndHandler(t)
 	err := AttachServer(server, map[string]FramedSocket{}) // no socket for "/compute"
@@ -329,6 +455,76 @@ func TestAttachRouterServer_AttachDealerClient_RoundTrip(t *testing.T) {
 	}
 	if resp.Sum != 11 {
 		t.Fatalf("expected Sum=11, got %d", resp.Sum)
+	}
+
+	cancel()
+	select {
+	case err := <-serveErrCh:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not return after ctx cancellation")
+	}
+}
+
+// TestAttachDealerClient_ErrorPattern_MatchedReply_DecodesTypedError
+// confirms the FULL ROUTER/DEALER round trip: a server publishes a
+// matched-ErrorPattern error reply (5-frame:
+// [identity, delim, status, code, body]), and the CLIENT's Call decodes
+// it into an errors.As-navigable zeromq.ErrorPatternResponse.
+func TestAttachDealerClient_ErrorPattern_MatchedReply_DecodesTypedError(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	handler := func(_ context.Context, _ computeReq) (computeResp, error) {
+		return computeResp{}, serveZmqConflictErr{msg: "duplicate"}
+	}
+	epRoute := reqreply.NewRoute[computeReq, computeResp]("/compute-ep-dealer-client", computeReqCodec, computeRespCodec,
+		reqreply.ErrorPattern[serveZmqConflictErr, serveZmqErrPayload](serveZmqErrPayloadCodec,
+			func(e serveZmqConflictErr) (serveZmqErrPayload, error) {
+				return serveZmqErrPayload{Code: "conflict", Message: e.msg}, nil
+			},
+		).WithCode("conflict"),
+	)
+	if _, err := epRoute.WithHandler(handler).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	dealerSock, routerSock := newDealerRouterPair([]byte("client-1"))
+	if err := AttachRouterServer(server, map[string]FramedSocket{"/compute-ep-dealer-client": routerSock}); err != nil {
+		t.Fatalf("AttachRouterServer: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveErrCh := make(chan error, 1)
+	go func() { serveErrCh <- server.Serve(ctx) }()
+
+	clientRoute := reqreply.NewRoute[computeReq, computeResp]("/compute-ep-dealer-client", computeReqCodec, computeRespCodec,
+		reqreply.ErrorPattern[serveZmqConflictErr, serveZmqErrPayload](serveZmqErrPayloadCodec).WithCode("conflict"),
+	)
+	client := reqreply.NewClient()
+	if err := AttachDealerClient(client, map[string]FramedSocket{"/compute-ep-dealer-client": dealerSock}); err != nil {
+		t.Fatalf("AttachDealerClient: %v", err)
+	}
+
+	callCtx, callCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer callCancel()
+	_, callErr := client.Call(callCtx, clientRoute, computeReq{X: 1, Y: 2})
+	if callErr == nil {
+		t.Fatal("want an error, got nil")
+	}
+	var epr ErrorPatternResponse
+	if !errors.As(callErr, &epr) {
+		t.Fatalf("want errors.As to match zeromq.ErrorPatternResponse, got %v", callErr)
+	}
+	if epr.Code != "conflict" {
+		t.Errorf("want Code %q, got %q", "conflict", epr.Code)
+	}
+	payload, ok := epr.Value.(serveZmqErrPayload)
+	if !ok {
+		t.Fatalf("want Value to be serveZmqErrPayload, got %T", epr.Value)
+	}
+	if payload.Message != "duplicate" {
+		t.Errorf("want Message %q, got %q", "duplicate", payload.Message)
 	}
 
 	cancel()
@@ -1143,7 +1339,7 @@ func TestAttachClient_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
 
 	callCtx, callCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer callCancel()
-	_, _ = client.Call(callCtx, rt, computeReq{X: 1, Y: 2})
+	_, callErr := client.Call(callCtx, rt, computeReq{X: 1, Y: 2})
 
 	found := false
 	for _, loc := range obs.validationLocations {
@@ -1153,6 +1349,16 @@ func TestAttachClient_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("want a RecordValidationError call with location %q, got %v", "middleware:out", obs.validationLocations)
+	}
+	// The returned CallError must wrap a reqreply.MiddlewareOutputError,
+	// recovering the failing middleware's Name (previously mislabeled as
+	// MiddlewareInputError).
+	var outputErr reqreply.MiddlewareOutputError
+	if !errors.As(callErr, &outputErr) {
+		t.Fatalf("want errors.As to match reqreply.MiddlewareOutputError, got %v", callErr)
+	}
+	if outputErr.Name != "zmq-obs-client-out-loc" {
+		t.Errorf("want Name %q, got %q", "zmq-obs-client-out-loc", outputErr.Name)
 	}
 
 	cancel()

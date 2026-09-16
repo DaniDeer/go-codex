@@ -131,6 +131,13 @@ func publishHandlerErrorReplyReflect(
 		if len(propertyVars) > 0 {
 			props.User = userPropertiesFromMap(propertyVars)
 		}
+		// NEW: transmit the matched pattern's Code as a dedicated,
+		// RESERVED User Property — additive alongside any
+		// WithResponseProperty-declared values above — so the CLIENT
+		// can look up which pattern produced this reply via
+		// reqreply.RouteHandle.DecodeErrorFor. Never set on the
+		// plain-text fallback path below.
+		props.User = append(props.User, UserProperty{Key: errorCodePropertyKey, Value: resp.Code})
 		_, _ = client.Publish(ctx, &pahomqtt5.Publish{
 			Topic:      responseTopic,
 			QoS:        1,
@@ -276,6 +283,9 @@ func dispatchClientMiddlewareOut(
 	handlers []reqreply.ClientMiddlewareHandler,
 ) error {
 	for _, h := range handlers {
+		// h.DecodeOut already returns a properly-wrapped
+		// reqreply.MiddlewareOutputError on failure (see
+		// api/reqreply/transform.go's buildDecodeOut) — no re-wrap needed.
 		if _, err := h.DecodeOut(topicVars, propertyVars); err != nil {
 			return err
 		}
@@ -1155,6 +1165,19 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 		case replyMsg := <-replyCh:
 			if isErrorReply(replyMsg) {
 				obs.RecordRequest("MQTT5-REQ", path, 500, time.Since(start))
+				if code := errorCodeFromUserProperties(replyMsg); code != "" {
+					decodeResults := rv.MethodByName("DecodeErrorFor").Call([]reflect.Value{reflect.ValueOf(code), reflect.ValueOf(replyMsg.Payload)})
+					errResp, _ := decodeResults[0].Interface().(reqreply.ErrorPatternResponse)
+					matched, _ := decodeResults[1].Interface().(bool)
+					decErr, _ := decodeResults[2].Interface().(error)
+					if matched && decErr == nil {
+						return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Kind: KindHandler, Err: ErrorPatternResponse{
+							Code: errResp.Code, Value: errResp.Value, Body: errResp.Body,
+						}}).Convert(errType)}
+					}
+				}
+				// UNCHANGED fallback — no code property, unmatched code, or
+				// decode failed.
 				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Kind: KindHandler, Err: fmt.Errorf("server error: %s", replyMsg.Payload)}).Convert(errType)}
 			}
 			if propErr := validateUserProperties(replyMsg, responseHeaderParams); propErr != nil {

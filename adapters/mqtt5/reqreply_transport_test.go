@@ -460,6 +460,132 @@ func TestAttachServer_ErrorPattern_MatchedReply(t *testing.T) {
 	if !strings.Contains(string(pub.Payload), `"code":"conflict"`) {
 		t.Errorf("want typed payload with code=conflict, got: %s", pub.Payload)
 	}
+	// NEW: the matched pattern's Code must also be transmitted as a
+	// dedicated User Property, so the client can look up which pattern
+	// produced this reply.
+	gotCode := errorCodeFromUserProperties(pub)
+	if gotCode != "serveConflictErr" {
+		t.Errorf("want error code User Property %q (default, sanitized type name), got %q", "serveConflictErr", gotCode)
+	}
+}
+
+// TestAttachClient_ErrorPattern_MatchedReply_DecodesTypedError confirms
+// the FULL round trip: a server publishes a matched-ErrorPattern error
+// reply (code User Property + typed JSON body), and the CLIENT's Call
+// decodes it into an errors.As-navigable mqtt5.ErrorPatternResponse
+// (wrapped in CallError{Kind: KindHandler}) instead of the generic
+// fmt.Errorf("server error: ...") fallback.
+func TestAttachClient_ErrorPattern_MatchedReply_DecodesTypedError(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	handler := func(_ context.Context, _ computeReq) (computeResp, error) {
+		return computeResp{}, serveConflictErr{msg: "duplicate"}
+	}
+	epRoute := reqreply.NewRoute[computeReq, computeResp]("compute/add-ep-client", computeReqCodec, computeRespCodec,
+		reqreply.ErrorPattern[serveConflictErr, serveErrPayload](serveErrPayloadCodec,
+			func(e serveConflictErr) (serveErrPayload, error) {
+				return serveErrPayload{Code: "conflict", Message: e.msg}, nil
+			},
+		).WithCode("conflict"),
+	)
+	if _, err := epRoute.WithHandler(handler).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	serverClient := &mockClient{}
+	serverRouter := newMockRouter()
+	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- server.Serve(ctx) }()
+	serverRouter.waitHandler("compute/add-ep-client")
+
+	clientRoute := reqreply.NewRoute[computeReq, computeResp]("compute/add-ep-client", computeReqCodec, computeRespCodec,
+		reqreply.ErrorPattern[serveConflictErr, serveErrPayload](serveErrPayloadCodec).WithCode("conflict"),
+	)
+	client := reqreply.NewClient()
+	clientClient := &mockClient{}
+	clientRouter := newMockRouter()
+	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+		t.Fatalf("AttachClient: %v", err)
+	}
+	wireBrokers(t, serverClient, clientRouter)
+	wireBrokers(t, clientClient, serverRouter)
+
+	_, callErr := client.Call(context.Background(), clientRoute, computeReq{X: 1, Y: 2})
+	if callErr == nil {
+		t.Fatal("want an error, got nil")
+	}
+	var epr ErrorPatternResponse
+	if !errors.As(callErr, &epr) {
+		t.Fatalf("want errors.As to match mqtt5.ErrorPatternResponse, got %v", callErr)
+	}
+	if epr.Code != "conflict" {
+		t.Errorf("want Code %q, got %q", "conflict", epr.Code)
+	}
+	payload, ok := epr.Value.(serveErrPayload)
+	if !ok {
+		t.Fatalf("want Value to be serveErrPayload, got %T", epr.Value)
+	}
+	if payload.Message != "duplicate" {
+		t.Errorf("want Message %q, got %q", "duplicate", payload.Message)
+	}
+	cancel()
+	<-errCh
+}
+
+// TestAttachClient_ErrorPattern_NoMatch_FallsBackToGenericError confirms
+// the plain-text fallback path (no declared ErrorPattern matched
+// server-side) still returns the UNCHANGED generic fmt.Errorf-wrapped
+// error client-side — regression guard for callers who don't declare
+// ErrorPattern at all.
+func TestAttachClient_ErrorPattern_NoMatch_FallsBackToGenericError(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	unrelatedErr := errors.New("unrelated failure")
+	handler := func(_ context.Context, _ computeReq) (computeResp, error) {
+		return computeResp{}, unrelatedErr
+	}
+	route := reqreply.NewRoute[computeReq, computeResp]("compute/add-ep-client-nomatch", computeReqCodec, computeRespCodec)
+	if _, err := route.WithHandler(handler).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	serverClient := &mockClient{}
+	serverRouter := newMockRouter()
+	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- server.Serve(ctx) }()
+	serverRouter.waitHandler("compute/add-ep-client-nomatch")
+
+	clientRoute := reqreply.NewRoute[computeReq, computeResp]("compute/add-ep-client-nomatch", computeReqCodec, computeRespCodec)
+	client := reqreply.NewClient()
+	clientClient := &mockClient{}
+	clientRouter := newMockRouter()
+	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+		t.Fatalf("AttachClient: %v", err)
+	}
+	wireBrokers(t, serverClient, clientRouter)
+	wireBrokers(t, clientClient, serverRouter)
+
+	_, callErr := client.Call(context.Background(), clientRoute, computeReq{X: 1, Y: 2})
+	if callErr == nil {
+		t.Fatal("want an error, got nil")
+	}
+	var epr ErrorPatternResponse
+	if errors.As(callErr, &epr) {
+		t.Fatalf("want NO match into mqtt5.ErrorPatternResponse for the plain-text fallback path, got %+v", epr)
+	}
+	if !strings.Contains(callErr.Error(), unrelatedErr.Error()) {
+		t.Errorf("want fallback error message to contain %q, got: %v", unrelatedErr.Error(), callErr)
+	}
+	cancel()
+	<-errCh
 }
 
 // TestAttachServer_ErrorPattern_NoMatch_FallsBackToPlainText confirms an
@@ -1534,7 +1660,7 @@ func TestAttachClient_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
 	wireBrokers(t, clientClient, serverRouter)
 
 	callCtx := stats.WithObserver(context.Background(), obs)
-	_, _ = client.Call(callCtx, rt, computeReq{X: 1, Y: 2})
+	_, callErr := client.Call(callCtx, rt, computeReq{X: 1, Y: 2})
 	time.Sleep(50 * time.Millisecond)
 
 	var foundLoc bool
@@ -1545,6 +1671,17 @@ func TestAttachClient_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
 	}
 	if !foundLoc {
 		t.Fatalf("want a RecordValidationError call with location \"middleware:out\", got %+v", obs.validationFull)
+	}
+	// The returned CallError must wrap a reqreply.MiddlewareOutputError,
+	// recovering the failing middleware's Name (previously mislabeled as
+	// MiddlewareInputError — see
+	// docs/design/d-0003-codec-declared-middlewares.md's Addendum 2).
+	var outputErr reqreply.MiddlewareOutputError
+	if !errors.As(callErr, &outputErr) {
+		t.Fatalf("want errors.As to match reqreply.MiddlewareOutputError, got %v", callErr)
+	}
+	if outputErr.Name != "obs-client-out-loc" {
+		t.Errorf("want Name %q, got %q", "obs-client-out-loc", outputErr.Name)
 	}
 	cancel()
 	<-errCh

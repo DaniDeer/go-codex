@@ -146,6 +146,43 @@ func (e CallError) LogValue() slog.Value {
 	)
 }
 
+// ErrorPatternResponse is the client-side decoded form of a server's
+// error reply whose transmitted code matched a declared
+// [reqreply.ErrorPattern] — the reqreply/mqtt5 counterpart of
+// [nethttp.ErrorPatternResponse], adapted for reqreply's code-based (not
+// HTTP-status-based) wire discriminator. Wrapped inside [CallError]{Kind:
+// [KindHandler]} (not returned bare, unlike REST's client type) —
+// preserves [errors.As] ergonomics via [CallError.Unwrap] while staying
+// consistent with this package's own every-exit-point-wraps-in-CallError
+// convention.
+//
+//	_, err := mqtt5.Call(ctx, client, router, handle, req, mqtt5.CallOptions{})
+//	var epr mqtt5.ErrorPatternResponse
+//	if errors.As(err, &epr) {
+//	    payload, ok := epr.Value.(domain.ConflictError)
+//	    ...
+//	}
+type ErrorPatternResponse struct {
+	// Code identifies which declared ErrorPattern produced this response.
+	Code string
+	// Value is the decoded typed error payload (the pattern's declared B type).
+	Value any
+	// Body is the raw response body returned by the server.
+	Body []byte
+}
+
+func (e ErrorPatternResponse) Error() string {
+	return fmt.Sprintf("server error [%s]: %T", e.Code, e.Value)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e ErrorPatternResponse) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("code", e.Code),
+		slog.Any("value", e.Value),
+	)
+}
+
 // ServeError is delivered to [ServeOptions.OnError] on responder-side
 // failures: decode, handler, or reply-encode failures.
 //

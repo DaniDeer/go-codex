@@ -1,6 +1,40 @@
-# go-codex Review History (R1–R138, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2)
+# go-codex Review History (R1–R139, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 139 (MiddlewareOutputError unification follow-up — events publish-side Fn error wrap)
+
+Focused review following the same session's shipping of `MiddlewareOutputError{Name, Err}` (added
+to `api/rest`/`api/events`/`api/reqreply`, wrapped at the CORE `buildEncodeOut`/`buildDecodeOut`
+layer, and a new "Middleware error paths" side-by-side guide section in
+`docs/guides/error-handling.md`). Auditing that work's own dispatch code surfaced one real,
+pre-existing bug it was adjacent to (not introduced by it) — exposed because the new guide's
+side-by-side table made an inaccurate claim about it.
+
+- **G1 [bug] — events publish-side Fn business error never wrapped in `events.MiddlewareError`**:
+  `dispatchPublishMiddlewareHandlers` (`adapters/mqtt5`/`adapters/zeromq`/`adapters/mqtt`'s
+  `transform_dispatch.go`) returned a raw, unwrapped Fn error inside the unexported
+  `middlewareDispatchError` — unlike REST's and reqreply's own `dispatchClientMiddlewareIn` (both
+  wrap Fn errors in their own `MiddlewareError{Name, Err}` at the dispatch-function level) and
+  unlike events' own subscribe-side Fn error (wrapped via the adapter's `OnError` callback).
+  Confirmed via a diagnostic test that `errors.As(pubErr, &events.MiddlewareError{})` returned
+  `false` for a publish-side Fn error. Fixed by wrapping `fnErr` in
+  `events.MiddlewareError{Name: h.Name, Err: fnErr}` inside `dispatchPublishMiddlewareHandlers`
+  (all 3 adapters), mirroring REST/reqreply exactly; simplified the 3 `adapter.go` publish call
+  sites to unwrap `dispatchErr.err` unconditionally (both fn and encode branches are now
+  pre-wrapped). Added `errors.As` assertions to the 3 existing
+  `TestPublish_Observer_Reports…FnLocation(s)` tests.
+
+Also cleaned up a stray compiled binary (`./error-types`) accidentally left at the repo root by an
+earlier `go run`.
+
+Verification: `gofmt -l .` clean, `go build ./...` clean, `go test -count=1 ./...` — all packages
+pass, `just check` zero issues, full example sweep all exit 0 (one transient timing-related
+`examples/reqreply-api` failure reproduced as flaky on retry — confirmed unrelated to this round's
+change via 3 consecutive clean re-runs). `.github/instructions/go-codex.instructions.md`'s
+`api/events` row updated.
 
 ---
 

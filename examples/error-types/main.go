@@ -15,17 +15,31 @@
 //   - codex.UnknownVariantError — tagged-union discriminator has no matching codec
 //   - codex.VariantError        — known variant's codec failed
 //   - codex.EitherError         — all Either2 / UntaggedUnion branches failed
+//   - rest.MiddlewareInputError  — a Transform-attached middleware's In fails to decode/validate
+//   - rest.MiddlewareError       — a middleware fn's own business error, unmatched by any ErrorPattern
+//   - rest.MiddlewareOutputError — a middleware's Out fails to encode into response headers/cookies
+//
+// See docs/guides/error-handling.md's "Middleware error paths — REST,
+// events, reqreply side-by-side" section for the full cross-API picture —
+// this example demonstrates REST in isolation since it needs no broker.
 //
 // Run with: go run ./examples/error-types
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
 
+	"github.com/DaniDeer/go-codex/adapters/nethttp"
+	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -318,6 +332,184 @@ func main() {
 		if errors.As(eitherErr, &tme) {
 			fmt.Printf("  branch mismatch: expected=%q got=%q\n", tme.Expected, tme.Got)
 		}
+	}
+	fmt.Println()
+
+	// ── Section 10: Declarative middleware errors (api/rest) ────────────────
+	//
+	// A Transform-attached Middleware[In, Out] has THREE distinct failure
+	// points — DecodeIn, Fn, EncodeOut — each with its own structured error
+	// type. See docs/guides/error-handling.md's "Middleware error paths"
+	// section for the full REST/events/reqreply side-by-side comparison;
+	// this section demonstrates all 3 for REST in isolation (no broker
+	// needed — runs entirely in-process via nethttp.ServeOne).
+
+	fmt.Println("=== 10. Middleware errors (api/rest) ===")
+	fmt.Println()
+
+	runMiddlewareErrorDemo()
+}
+
+// ── Section 10 fixtures ───────────────────────────────────────────────────
+
+type policyIn struct{ TenantID string }
+type policyOut struct{ Ack string }
+
+var policyInCodec = codex.Struct[policyIn](
+	codex.RequiredField("tenant_id", codex.String().Refine(validate.NonEmptyString),
+		func(in policyIn) string { return in.TenantID },
+		func(in *policyIn, v string) { in.TenantID = v },
+	),
+)
+
+var policyOutCodec = codex.Struct[policyOut](
+	codex.RequiredField("ack", codex.String().Refine(validate.NonEmptyString),
+		func(out policyOut) string { return out.Ack },
+		func(out *policyOut, v string) { out.Ack = v },
+	),
+)
+
+// policyEmptyIn has NO required fields — used for section 10c, isolating
+// the demonstrated failure to EncodeOut (DecodeIn/InCodec.Validate always
+// succeeds on a zero value).
+type policyEmptyIn struct{}
+
+var policyEmptyInCodec = codex.Struct[policyEmptyIn]()
+
+type demoReq struct{ Name string }
+type demoResp struct{ ID string }
+
+var demoReqCodec = codex.Struct[demoReq](
+	codex.RequiredField("name", codex.String(),
+		func(r demoReq) string { return r.Name },
+		func(r *demoReq, v string) { r.Name = v },
+	),
+)
+
+var demoRespCodec = codex.Struct[demoResp](
+	codex.RequiredField("id", codex.String(),
+		func(r demoResp) string { return r.ID },
+		func(r *demoResp, v string) { r.ID = v },
+	),
+)
+
+// insufficientCreditError is the business error a middleware's Fn may
+// return — declared as an ErrorPattern below so it's matched the SAME way
+// a HANDLER error would be.
+type insufficientCreditError struct{ Available int }
+
+func (e insufficientCreditError) Error() string {
+	return fmt.Sprintf("insufficient credit: available=%d", e.Available)
+}
+
+var creditErrorCodec = codex.Struct[insufficientCreditError](
+	codex.RequiredField("available", codex.Int(),
+		func(e insufficientCreditError) int { return e.Available },
+		func(e *insufficientCreditError, v int) { e.Available = v },
+	),
+)
+
+func runMiddlewareErrorDemo() {
+	// ── 10a: DecodeIn failure → rest.MiddlewareInputError ──────────────
+	//
+	// The middleware requires "X-Tenant-Id"; the request omits it, so the
+	// middleware's OWN InCodec validation fails before the handler ever runs.
+	inMW := rest.NewMiddleware(middleware.NewDeclaration("tenant-policy", policyInCodec, policyOutCodec)).
+		WithRequestHeader(rest.NewRequiredHeaderParam("X-Tenant-Id", codex.String(),
+			func(in policyIn) string { return in.TenantID },
+			func(in *policyIn, v string) { in.TenantID = v },
+		))
+	handlerCalled := false
+	inRoute := rest.NewRoute[demoReq, demoResp]("POST", "/orders", demoReqCodec, demoRespCodec,
+		rest.RouteMeta{OperationID: "createOrderIn"},
+	)
+	inRoute = rest.Transform(inRoute, inMW, func(ctx context.Context, req *demoReq, in policyIn) (policyOut, error) {
+		return policyOut{Ack: "ok"}, nil
+	})
+	inRoute = inRoute.WithHandler(func(_ context.Context, req demoReq) (demoResp, error) {
+		handlerCalled = true
+		return demoResp{ID: "1"}, nil
+	})
+	inHandler, err := nethttp.ServeOne(inRoute)
+	if err != nil {
+		logger.Error("ServeOne (10a)", "error", err)
+		return
+	}
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(`{"name":"widget"}`))
+	r.Header.Set("Content-Type", "application/json")
+	// X-Tenant-Id deliberately omitted.
+	inHandler.ServeHTTP(rec, r)
+	fmt.Printf("  10a DecodeIn failure: status=%d handlerCalled=%v (want false — middleware failure short-circuits)\n", rec.Code, handlerCalled)
+	logger.Error("middleware DecodeIn failed", "status", rec.Code, "body", rec.Body.String())
+	fmt.Println()
+
+	// ── 10b: Fn business error → matched by a declared ErrorPattern ─────
+	//
+	// The SAME ErrorPattern mechanism a HANDLER error uses also matches a
+	// middleware Fn's own business error — declared once, catches both.
+	fnMW := rest.NewMiddleware(middleware.NewDeclaration("credit-policy", policyInCodec, policyOutCodec)).
+		WithRequestHeader(rest.NewRequiredHeaderParam("X-Tenant-Id", codex.String(),
+			func(in policyIn) string { return in.TenantID },
+			func(in *policyIn, v string) { in.TenantID = v },
+		))
+	fnRoute := rest.NewRoute[demoReq, demoResp]("POST", "/orders", demoReqCodec, demoRespCodec,
+		rest.RouteMeta{OperationID: "createOrderFn"},
+		rest.ErrorPattern[insufficientCreditError, insufficientCreditError](http.StatusPaymentRequired, creditErrorCodec),
+	)
+	fnRoute = rest.Transform(fnRoute, fnMW, func(ctx context.Context, req *demoReq, in policyIn) (policyOut, error) {
+		return policyOut{}, insufficientCreditError{Available: 5}
+	})
+	fnRoute = fnRoute.WithHandler(func(_ context.Context, req demoReq) (demoResp, error) {
+		return demoResp{ID: "1"}, nil
+	})
+	fnHandler, err := nethttp.ServeOne(fnRoute)
+	if err != nil {
+		logger.Error("ServeOne (10b)", "error", err)
+		return
+	}
+	rec = httptest.NewRecorder()
+	r = httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(`{"name":"widget"}`))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("X-Tenant-Id", "acme")
+	fnHandler.ServeHTTP(rec, r)
+	fmt.Printf("  10b Fn business error (ErrorPattern-matched): status=%d body=%s\n", rec.Code, rec.Body.String())
+	fmt.Println()
+
+	// ── 10c: EncodeOut failure → rest.MiddlewareOutputError ─────────────
+	//
+	// The middleware's Fn succeeds, but its returned Out fails its OWN
+	// OutCodec validation while being encoded into the response — a
+	// DIFFERENT failure point from 10a/10b, reported with its own
+	// observer location ("middleware:out") and its own error type.
+	outMW := rest.NewMiddleware(middleware.NewDeclaration("ack-policy", policyEmptyInCodec, policyOutCodec)).
+		WithResponseHeader(rest.NewRequiredResponseHeaderParam("X-Ack", codex.String(),
+			func(out policyOut) string { return out.Ack },
+			func(out *policyOut, v string) { out.Ack = v },
+		))
+	outRoute := rest.NewRoute[demoReq, demoResp]("POST", "/orders", demoReqCodec, demoRespCodec,
+		rest.RouteMeta{OperationID: "createOrderOut"},
+	)
+	outRoute = rest.Transform(outRoute, outMW, func(ctx context.Context, req *demoReq, in policyEmptyIn) (policyOut, error) {
+		// Empty Ack fails policyOutCodec's NonEmptyString refinement at
+		// EncodeOut/OutCodec.Validate time — NOT the fn itself.
+		return policyOut{Ack: ""}, nil
+	})
+	outRoute = outRoute.WithHandler(func(_ context.Context, req demoReq) (demoResp, error) {
+		return demoResp{ID: "1"}, nil
+	})
+	outHandler, err := nethttp.ServeOne(outRoute)
+	if err != nil {
+		logger.Error("ServeOne (10c)", "error", err)
+		return
+	}
+	rec = httptest.NewRecorder()
+	r = httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(`{"name":"widget"}`))
+	r.Header.Set("Content-Type", "application/json")
+	outHandler.ServeHTTP(rec, r)
+	fmt.Printf("  10c EncodeOut failure: status=%d body=%s\n", rec.Code, rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "ack-policy") {
+		logger.Warn("expected the response body to embed the failing middleware's Name via MiddlewareOutputError")
 	}
 	fmt.Println()
 }

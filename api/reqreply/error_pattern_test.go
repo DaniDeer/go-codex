@@ -3,6 +3,7 @@ package reqreply_test
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -235,5 +236,191 @@ func TestErrorPattern_DefaultCode_DerivedFromTypeName(t *testing.T) {
 	out := mustSpec(t, b)
 	if !strings.Contains(out, "address: compute/add-defaultcode/reply/error/computeConflictErr") {
 		t.Errorf("want default code derived from type name in spec:\n%s", out)
+	}
+}
+
+// TestErrorPattern_DuplicateCode_Rejected confirms two ErrorPatterns
+// sharing a Code (default, sanitized-type-name derived) are rejected at
+// Register time — unlike REST's accepted same-status ambiguity, reqreply
+// is a fresh mechanism with no back-compat constraint.
+func TestErrorPattern_DuplicateCode_Rejected(t *testing.T) {
+	route := reqreply.NewRoute[computeReq, computeResp]("compute/add-dupcode", reqCodec, respCodec,
+		reqreply.ErrorPattern[computeConflictErr, computeErrPayload](computeErrPayloadCodec),
+		reqreply.ErrorPattern[computeOtherErr, computeErrPayload](computeErrPayloadCodec).
+			WithCode("computeConflictErr"), // collides with the FIRST pattern's default code
+	)
+	b := newBuilder()
+	_, err := route.Register(b)
+	if err == nil {
+		t.Fatal("want error, got nil")
+	}
+	var dupErr reqreply.DuplicateErrorPatternCodeError
+	if !errors.As(err, &dupErr) {
+		t.Fatalf("want DuplicateErrorPatternCodeError, got %T: %v", err, err)
+	}
+	if dupErr.Code != "computeConflictErr" {
+		t.Errorf("want Code %q, got %q", "computeConflictErr", dupErr.Code)
+	}
+}
+
+// TestErrorPattern_ExplicitWithCode_Unique_NoConflict confirms distinct
+// explicit codes on the same route do not conflict.
+func TestErrorPattern_ExplicitWithCode_Unique_NoConflict(t *testing.T) {
+	route := reqreply.NewRoute[computeReq, computeResp]("compute/add-uniquecode", reqCodec, respCodec,
+		reqreply.ErrorPattern[computeConflictErr, computeErrPayload](computeErrPayloadCodec).WithCode("a"),
+		reqreply.ErrorPattern[computeOtherErr, computeErrPayload](computeErrPayloadCodec).WithCode("b"),
+	)
+	b := newBuilder()
+	if _, err := route.Register(b); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+}
+
+// TestDecodeErrorFor_HappyPath verifies the client-side counterpart of
+// ErrorResponseFor: given the code+body a server would have transmitted
+// for a matched pattern, DecodeErrorFor recovers the SAME typed Value.
+func TestDecodeErrorFor_HappyPath(t *testing.T) {
+	route := reqreply.NewRoute[computeReq, computeResp]("compute/add-decodeerr", reqCodec, respCodec,
+		reqreply.ErrorPattern[computeConflictErr, computeErrPayload](computeErrPayloadCodec,
+			func(e computeConflictErr) (computeErrPayload, error) {
+				return computeErrPayload{Code: "conflict", Message: e.msg}, nil
+			},
+		).WithCode("conflict"),
+	)
+	b := newBuilder()
+	handle, err := route.Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	serverResp, matched, mapErr := handle.ErrorResponseFor(computeConflictErr{msg: "duplicate"})
+	if mapErr != nil || !matched {
+		t.Fatalf("server match failed: matched=%v err=%v", matched, mapErr)
+	}
+
+	decoded, ok, applyErr := handle.DecodeErrorFor(serverResp.Code, serverResp.Body)
+	if applyErr != nil {
+		t.Fatalf("DecodeErrorFor applyErr: %v", applyErr)
+	}
+	if !ok {
+		t.Fatal("want match")
+	}
+	payload, isPayload := decoded.Value.(computeErrPayload)
+	if !isPayload {
+		t.Fatalf("want decoded.Value to be computeErrPayload, got %T", decoded.Value)
+	}
+	if payload.Code != "conflict" || payload.Message != "duplicate" {
+		t.Errorf("unexpected decoded payload: %+v", payload)
+	}
+	if decoded.Code != "conflict" {
+		t.Errorf("want decoded.Code %q, got %q", "conflict", decoded.Code)
+	}
+}
+
+// TestDecodeErrorFor_UnknownCode verifies a code not matching any
+// declared pattern returns ok=false.
+func TestDecodeErrorFor_UnknownCode(t *testing.T) {
+	route := reqreply.NewRoute[computeReq, computeResp]("compute/add-decodeerr-unknown", reqCodec, respCodec,
+		reqreply.ErrorPattern[computeConflictErr, computeErrPayload](computeErrPayloadCodec).WithCode("conflict"),
+	)
+	b := newBuilder()
+	handle, err := route.Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	_, ok, applyErr := handle.DecodeErrorFor("unknown-code", []byte(`{}`))
+	if applyErr != nil {
+		t.Fatalf("unexpected applyErr: %v", applyErr)
+	}
+	if ok {
+		t.Fatal("want no match for an unknown code")
+	}
+}
+
+// TestDecodeErrorFor_EmptyCode verifies an empty code (the plain-text
+// fallback path, which never transmits a code) returns ok=false — mirrors
+// the "no declared pattern" case rather than accidentally matching.
+func TestDecodeErrorFor_EmptyCode(t *testing.T) {
+	route := reqreply.NewRoute[computeReq, computeResp]("compute/add-decodeerr-empty", reqCodec, respCodec,
+		reqreply.ErrorPattern[computeConflictErr, computeErrPayload](computeErrPayloadCodec).WithCode("conflict"),
+	)
+	b := newBuilder()
+	handle, err := route.Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	_, ok, applyErr := handle.DecodeErrorFor("", []byte(`plain text error`))
+	if applyErr != nil {
+		t.Fatalf("unexpected applyErr: %v", applyErr)
+	}
+	if ok {
+		t.Fatal("want no match for an empty code")
+	}
+}
+
+// TestDecodeErrorFor_DecodeFailure verifies a matching code with a
+// malformed body returns ok=true with a non-nil applyErr — callers should
+// treat this the same as ok=false (fall back to the untyped error).
+func TestDecodeErrorFor_DecodeFailure(t *testing.T) {
+	route := reqreply.NewRoute[computeReq, computeResp]("compute/add-decodeerr-fail", reqCodec, respCodec,
+		reqreply.ErrorPattern[computeConflictErr, computeErrPayload](computeErrPayloadCodec).WithCode("conflict"),
+	)
+	b := newBuilder()
+	handle, err := route.Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	_, ok, applyErr := handle.DecodeErrorFor("conflict", []byte(`{"code": ""}`)) // missing required "message" + empty "code"
+	if !ok {
+		t.Fatal("want ok=true (code matched) even though decode failed")
+	}
+	if applyErr == nil {
+		t.Fatal("want a non-nil applyErr for malformed body")
+	}
+}
+
+// TestDecodeErrorFor_NoPatternsDeclared locks DecodeErrorFor's zero-value
+// behavior on a handle with no declared ErrorPattern.
+func TestDecodeErrorFor_NoPatternsDeclared(t *testing.T) {
+	route := reqreply.NewRoute[computeReq, computeResp]("compute/add-decodeerr-none", reqCodec, respCodec)
+	b := newBuilder()
+	handle, err := route.Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	_, ok, applyErr := handle.DecodeErrorFor("anything", []byte(`{}`))
+	if applyErr != nil {
+		t.Fatalf("unexpected applyErr: %v", applyErr)
+	}
+	if ok {
+		t.Fatal("want no match when no patterns declared")
+	}
+}
+
+// TestDuplicateErrorPatternCodeError_LogValue verifies the new error
+// type's LogValue shape.
+func TestDuplicateErrorPatternCodeError_LogValue(t *testing.T) {
+	err := reqreply.DuplicateErrorPatternCodeError{
+		Route: "compute/add", Code: "conflict",
+		FirstType: "domain.ConflictError", SecondType: "domain.OtherConflictError",
+	}
+	if err.Error() == "" {
+		t.Error("want non-empty Error() message")
+	}
+	v := err.LogValue()
+	if v.Kind() != slog.KindGroup {
+		t.Fatalf("want slog.KindGroup, got %v", v.Kind())
+	}
+	seen := map[string]bool{}
+	for _, a := range v.Group() {
+		seen[a.Key] = true
+	}
+	for _, key := range []string{"route", "code", "first_type", "second_type"} {
+		if !seen[key] {
+			t.Errorf("want LogValue group to include key %q, got %v", key, v.Group())
+		}
 	}
 }

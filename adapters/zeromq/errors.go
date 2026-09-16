@@ -171,6 +171,43 @@ func (e CallError) LogValue() slog.Value {
 	)
 }
 
+// ErrorPatternResponse is the client-side decoded form of a server's
+// error reply whose transmitted code matched a declared
+// [reqreply.ErrorPattern] — the reqreply/zeromq counterpart of
+// [nethttp.ErrorPatternResponse] (and mirrors [mqtt5.ErrorPatternResponse]
+// exactly), adapted for reqreply's code-based (not HTTP-status-based)
+// wire discriminator. Wrapped inside [CallError] (not returned bare,
+// unlike REST's client type) — preserves [errors.As] ergonomics via
+// [CallError.Unwrap] while staying consistent with this package's own
+// every-exit-point-wraps-in-CallError convention.
+//
+//	_, err := zeromq.Call(ctx, sock, handle, req, zeromq.CallOptions{})
+//	var epr zeromq.ErrorPatternResponse
+//	if errors.As(err, &epr) {
+//	    payload, ok := epr.Value.(domain.ConflictError)
+//	    ...
+//	}
+type ErrorPatternResponse struct {
+	// Code identifies which declared ErrorPattern produced this response.
+	Code string
+	// Value is the decoded typed error payload (the pattern's declared B type).
+	Value any
+	// Body is the raw response body returned by the server.
+	Body []byte
+}
+
+func (e ErrorPatternResponse) Error() string {
+	return fmt.Sprintf("server error [%s]: %T", e.Code, e.Value)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e ErrorPatternResponse) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("code", e.Code),
+		slog.Any("value", e.Value),
+	)
+}
+
 // SocketError wraps socket-level infrastructure failures: socket option
 // configuration (SetSubscription, SetRecvTimeout) and transport I/O (recv, send).
 // It is distinct from codec-level errors (SubscribeError, ServeError, CallError)

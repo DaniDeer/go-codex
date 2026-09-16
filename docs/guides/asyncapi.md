@@ -121,6 +121,49 @@ computeRoute := reqreply.NewRoute[ComputeReq, ComputeResp](
 )
 ```
 
+### Client-side decode — `RouteHandle.DecodeErrorFor` (mqtt5 + zeromq)
+
+`reqreply.ErrorPattern` round-trips all the way to the CLIENT, mirroring
+REST's `nethttp.CallWithHandle`/`ErrorPatternResponse` workflow — one
+shared `Route` declaration, zero client-side boilerplate:
+
+```go
+_, err := client.Call(ctx, computeRoute, ComputeReq{X: 1, Y: 2})
+if err != nil {
+    var epr mqtt5.ErrorPatternResponse // or zeromq.ErrorPatternResponse
+    if errors.As(err, &epr) {
+        conflict := epr.Value.(domain.ConflictError) // decoded automatically
+        // ... handle the typed conflict ...
+    }
+}
+```
+
+Unlike REST (which has a free HTTP status discriminator), reqreply has no
+status code on the wire — so each `ErrorPattern`'s `Code` (the SAME value
+used to derive the reply-error channel's operation ID, either explicit via
+`.WithCode(...)` or the sanitized-type-name default) is ALSO transmitted:
+mqtt5 as a dedicated MQTT5 User Property, zeromq as an extra frame — only
+on the matched-pattern path; the plain-text fallback is completely
+unchanged. `RouteHandle.DecodeErrorFor(code, body)` is the client-side
+lookup accessor `Call` uses (mirrors `ErrorResponseFor`, but matches by
+`Code` instead of `errors.As`, since the client has no Go error value —
+only the wire-transmitted code string).
+
+**Unlike REST's status code, give each `ErrorPattern` a UNIQUE `Code`**
+— `Register` rejects two patterns sharing one `Code` with
+`reqreply.DuplicateErrorPatternCodeError` (a hard error, not a documented
+caveat like REST's same-status precedence — reqreply is a newer
+mechanism with no existing behavior to preserve, so this ambiguity is
+prevented at declaration time instead of left for the client to
+discover).
+
+Wrapped inside `mqtt5.CallError`/`zeromq.CallError` (not returned bare,
+unlike REST) — preserves `errors.As` ergonomics via `Unwrap()`, staying
+consistent with each package's own established error-wrapping convention.
+`adapters/mqtt` (v3) has no reqreply support at all, so this applies to
+`adapters/mqtt5` and `adapters/zeromq` only (both REQ/REP and
+ROUTER/DEALER for zeromq).
+
 ### What `AppendTo` does and does NOT copy
 
 | Copied by `AppendTo` | Not copied (caller owns) |

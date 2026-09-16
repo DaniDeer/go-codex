@@ -184,6 +184,12 @@ nethttp.CallOptions{
 // A response status matching a route-declared rest.ErrorPattern (default
 // ErrorRespond action) is decoded automatically — check this BEFORE the
 // generic UnexpectedStatusError fallback.
+//
+// Give each ErrorPattern its own status code: matching is status-only (no
+// Go type on the wire), so two patterns sharing a status make the client
+// deterministically pick the FIRST-declared one regardless of which the
+// server actually sent — see the "Client-side decode" section of the REST
+// API feature page for the full caveat + the shared-interface workaround.
 var patternResp nethttp.ErrorPatternResponse
 if errors.As(err, &patternResp) {
     conflict := patternResp.Value.(domain.EmailConflictError) // decoded typed payload
