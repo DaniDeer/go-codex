@@ -91,17 +91,21 @@ func resolveCallFormatReflect(overrideAny any, declaredFieldType reflect.Type) (
 // publishHandlerErrorReplyReflect is the reflection-based counterpart of
 // [publishHandlerErrorReply] — used by [serverTransport.Serve], which has
 // no concretely-typed *reqreply.RouteHandle[Req,Resp] to call the generic
-// function with. errorResponseForMethod is
-// rv.MethodByName("ErrorResponseFor") — see [serverTransport]'s doc
-// comment. Mirrors [publishHandlerErrorReply]'s logic exactly: consults
-// ErrorResponseFor(err) first; on a match, publishes the declared
-// codec-backed typed payload instead of plain text; on no match, or a
-// mapping/encoding failure within the matched pattern, falls back to
-// [publishErrorReply]'s plain-text behavior unchanged.
+// function with. observeErrorResponseForMethod is
+// rv.MethodByName("ObserveErrorResponseFor") — see [serverTransport]'s
+// doc comment. Mirrors [publishHandlerErrorReply]'s logic exactly:
+// consults ObserveErrorResponseFor(ctx, obs, err) first (which ALSO
+// reports match/miss/span-tag observability internally — the
+// RECOMMENDED single call site, see docs/roadmap/
+// error-handling-rest-events-reqreply.md's Topic 1/5); on a match,
+// publishes the declared codec-backed typed payload instead of plain
+// text; on no match, or a mapping/encoding failure within the matched
+// pattern, falls back to [publishErrorReply]'s plain-text behavior
+// unchanged.
 func publishHandlerErrorReplyReflect(
 	ctx context.Context,
 	client MQTTClient,
-	errorResponseForMethod reflect.Value,
+	observeErrorResponseForMethod reflect.Value,
 	responseTopic string,
 	correlationData []byte,
 	err error,
@@ -111,7 +115,9 @@ func publishHandlerErrorReplyReflect(
 	if responseTopic == "" {
 		return
 	}
-	results := errorResponseForMethod.Call([]reflect.Value{reflect.ValueOf(err)})
+	results := observeErrorResponseForMethod.Call([]reflect.Value{
+		reflect.ValueOf(ctx), reflect.ValueOf(&obs).Elem(), reflect.ValueOf(&err).Elem(),
+	})
 	resp, _ := results[0].Interface().(reqreply.ErrorPatternResponse)
 	matched, _ := results[1].Interface().(bool)
 	mapErr, _ := results[2].Interface().(error)
@@ -150,6 +156,38 @@ func publishHandlerErrorReplyReflect(
 		stats.ReportErrors(obs, "error_pattern", mapErr)
 	}
 	publishErrorReply(ctx, client, responseTopic, correlationData, err)
+}
+
+// tryDeadLetterReflect is the reflection-based counterpart of
+// [tryDeadLetter] (the pub/sub adapters' helper) — used by
+// [serverTransport.Serve], which has no concretely-typed
+// *reqreply.RouteHandle[Req,Resp] to call [reqreply.RouteHandle.
+// DeadLetterFor] with directly. sourceTopic is the request's OWN concrete
+// topic (msg.Topic) — a route's declared dead-letter destination is keyed
+// off the REQUEST side, mirroring events' dead-letter's use of the
+// subscribe-side source topic (a reqreply route has no separate
+// "subscribe topic" of its own). Returns true when a dead-letter was
+// attempted (published), false when the route declares no dead-letter
+// rule for this request.
+func tryDeadLetterReflect(
+	ctx context.Context, client MQTTClient, deadLetterForMethod reflect.Value,
+	obs stats.Observer, sourceTopic string, rawPayload []byte, err error,
+) bool {
+	results := deadLetterForMethod.Call([]reflect.Value{
+		reflect.ValueOf(&obs).Elem(), reflect.ValueOf(sourceTopic), reflect.ValueOf(rawPayload), reflect.ValueOf(&err).Elem(),
+	})
+	topic, _ := results[0].Interface().(string)
+	body, _ := results[1].Interface().([]byte)
+	ok, _ := results[2].Interface().(bool)
+	if !ok {
+		return false
+	}
+	_, _ = client.Publish(ctx, &pahomqtt5.Publish{
+		Topic:   topic,
+		QoS:     1,
+		Payload: body,
+	})
+	return true
 }
 
 // userPropertiesFromMap converts a plain map[string]string into
@@ -447,9 +485,19 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 	// merge a property value into Req was via a Middleware[In,Out]).
 	propertyMergeFieldsMethod := rv.MethodByName("PropertyMergeFields")
 	hasPropertyMergeFields := propertyMergeFieldsMethod.Call(nil)[0].Len() > 0
-	// errorResponseForMethod is *RouteHandle[Req,Resp].ErrorResponseFor(err
-	// error) (ErrorPatternResponse, bool, error) — closes Phase 0 work item 3.
-	errorResponseForMethod := rv.MethodByName("ErrorResponseFor")
+	// observeErrorResponseForMethod is *RouteHandle[Req,Resp].
+	// ObserveErrorResponseFor(ctx, obs, err) (ErrorPatternResponse, bool,
+	// error) — closes Phase 0 work item 3, now the RECOMMENDED
+	// observability-aware call (see docs/roadmap/
+	// error-handling-rest-events-reqreply.md's Topic 1/5).
+	observeErrorResponseForMethod := rv.MethodByName("ObserveErrorResponseFor")
+	// deadLetterForMethod is *RouteHandle[Req,Resp].DeadLetterFor(obs,
+	// sourceTopic, rawPayload, err) (topic string, body []byte, ok bool)
+	// — Topic 4's dead-letter fallback (docs/roadmap/
+	// error-handling-rest-events-reqreply.md), attempted alongside/after
+	// ObserveErrorResponseFor at every Category-A failure site, mirroring
+	// the pub/sub adapters' collapsed single-rule wiring exactly.
+	deadLetterForMethod := rv.MethodByName("DeadLetterFor")
 
 	// Phase 1: declarative middleware (docs/design/d-0004-reqreply-workflow-simplification.md's Addendum).
 	// impls are the [reqreply.Route.HandleMW]-attached implementations —
@@ -512,11 +560,17 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 			correlationData = msg.Properties.CorrelationData
 		}
 
+		// Session-review fix (F3): User Property param validation is now
+		// ErrorPattern/DeadLetter-eligible, closing an asymmetry with
+		// REST's own wired header-param validation (Category A row 5) —
+		// previously went straight to the plain-text publishErrorReply
+		// fallback, bypassing ObserveErrorResponseFor entirely.
 		if propErr := validateUserProperties(msg, t.opts.UserPropertyParams); propErr != nil {
 			obs.RecordValidationError("user_property", stats.ConstraintName(propErr), userPropertyName(propErr))
 			serveErr = propErr
 			obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-			publishErrorReply(spanCtx, t.client, responseTopic, correlationData, propErr)
+			publishHandlerErrorReplyReflect(spanCtx, t.client, observeErrorResponseForMethod, responseTopic, correlationData, propErr, obs, nil)
+			tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, propErr)
 			if t.opts.OnError != nil {
 				t.opts.OnError(ServeError{Kind: KindSecurity, Err: propErr})
 			}
@@ -526,7 +580,8 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 			obs.RecordValidationError("user_property", stats.ConstraintName(propErr), userPropertyName(propErr))
 			serveErr = propErr
 			obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-			publishErrorReply(spanCtx, t.client, responseTopic, correlationData, propErr)
+			publishHandlerErrorReplyReflect(spanCtx, t.client, observeErrorResponseForMethod, responseTopic, correlationData, propErr, obs, nil)
+			tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, propErr)
 			if t.opts.OnError != nil {
 				t.opts.OnError(ServeError{Kind: KindSecurity, Err: propErr})
 			}
@@ -556,7 +611,8 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 				stats.ReportErrors(obs, "topic_var", varErr)
 				serveErr = varErr
 				obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-				publishErrorReply(spanCtx, t.client, responseTopic, correlationData, varErr)
+				publishHandlerErrorReplyReflect(spanCtx, t.client, observeErrorResponseForMethod, responseTopic, correlationData, varErr, obs, nil)
+				tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, varErr)
 				if t.opts.OnError != nil {
 					t.opts.OnError(ServeError{Kind: KindDecode, Err: varErr})
 				}
@@ -576,7 +632,8 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 			stats.ReportErrors(obs, "body", errI)
 			serveErr = errI
 			obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-			publishErrorReply(spanCtx, t.client, responseTopic, correlationData, errI)
+			publishHandlerErrorReplyReflect(spanCtx, t.client, observeErrorResponseForMethod, responseTopic, correlationData, errI, obs, nil)
+			tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, errI)
 			if t.opts.OnError != nil {
 				t.opts.OnError(ServeError{Kind: KindDecode, Err: errI})
 			}
@@ -599,7 +656,8 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 				stats.ReportErrors(obs, "property_var", errI)
 				serveErr = errI
 				obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-				publishErrorReply(spanCtx, t.client, responseTopic, correlationData, errI)
+				publishHandlerErrorReplyReflect(spanCtx, t.client, observeErrorResponseForMethod, responseTopic, correlationData, errI, obs, nil)
+				tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, errI)
 				if t.opts.OnError != nil {
 					t.opts.OnError(ServeError{Kind: KindDecode, Err: errI})
 				}
@@ -638,10 +696,15 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 			if secObs, ok := obs.(stats.SecurityObserver); ok {
 				secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
 			}
+			// Security middleware Fn error IS ErrorPattern-eligible now
+			// (Topic 1's Category A fix) — previously bypassed
+			// ErrorResponseFor entirely, always producing
+			// reqreply.SecurityError.
 			wrapped := reqreply.SecurityError{Err: err}
 			serveErr = wrapped
 			obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-			publishErrorReply(spanCtx, t.client, responseTopic, correlationData, wrapped)
+			publishHandlerErrorReplyReflect(spanCtx, t.client, observeErrorResponseForMethod, responseTopic, correlationData, wrapped, obs, nil)
+			tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, wrapped)
 			if t.opts.OnError != nil {
 				t.opts.OnError(ServeError{Kind: KindSecurity, Err: wrapped})
 			}
@@ -664,7 +727,6 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 			reqPtr.Elem().Set(reqVal)
 			_, outPropVars, mwName, failKind, mwErr := dispatchServerMiddlewareHandlers(spanCtx, reqPtr, middlewareHandlers, topicVars, reqPropVars)
 			if mwErr != nil {
-				isFnErr := failKind == "fn"
 				kind := KindDecode
 				loc := "middleware:in"
 				switch failKind {
@@ -678,11 +740,11 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 				stats.ReportErrors(obs, loc, mwErr)
 				serveErr = mwErr
 				obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-				if isFnErr {
-					publishHandlerErrorReplyReflect(spanCtx, t.client, errorResponseForMethod, responseTopic, correlationData, mwErr, obs, nil)
-				} else {
-					publishErrorReply(spanCtx, t.client, responseTopic, correlationData, mwErr)
-				}
+				// Middleware DecodeIn/Fn/EncodeOut errors are ALL
+				// ErrorPattern-eligible now (Topic 1's Category A fix) —
+				// previously only the Fn case consulted ErrorResponseFor.
+				publishHandlerErrorReplyReflect(spanCtx, t.client, observeErrorResponseForMethod, responseTopic, correlationData, mwErr, obs, nil)
+				tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, mwErr)
 				if t.opts.OnError != nil {
 					t.opts.OnError(ServeError{Kind: kind, Err: mwErr})
 				}
@@ -697,7 +759,8 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 		if errI, _ := fnResults[1].Interface().(error); errI != nil {
 			serveErr = errI
 			obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-			publishHandlerErrorReplyReflect(spanCtx, t.client, errorResponseForMethod, responseTopic, correlationData, errI, obs, middlewarePropertyVars)
+			publishHandlerErrorReplyReflect(spanCtx, t.client, observeErrorResponseForMethod, responseTopic, correlationData, errI, obs, middlewarePropertyVars)
+			tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, errI)
 			if t.opts.OnError != nil {
 				t.opts.OnError(ServeError{Kind: KindHandler, Err: errI})
 			}
@@ -712,7 +775,8 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 		if errI, _ := encodeResults[1].Interface().(error); errI != nil {
 			serveErr = errI
 			obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-			publishHandlerErrorReplyReflect(spanCtx, t.client, errorResponseForMethod, responseTopic, correlationData, errI, obs, middlewarePropertyVars)
+			publishHandlerErrorReplyReflect(spanCtx, t.client, observeErrorResponseForMethod, responseTopic, correlationData, errI, obs, middlewarePropertyVars)
+			tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, errI)
 			if t.opts.OnError != nil {
 				t.opts.OnError(ServeError{Kind: KindEncode, Err: errI})
 			}
@@ -743,6 +807,14 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 			}); pubErr != nil {
 				serveErr = pubErr
 				obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
+				// Session-review fix (G1): a broker-level rejection of
+				// the SUCCESSFULLY-encoded reply is ALSO dead-letterable
+				// — mirrors events' pub/sub publish side's own
+				// broker-rejection handling (Topic 4's explicit design
+				// decision), previously missing here even though every
+				// OTHER Category-A failure point in this dispatch
+				// already consults DeadLetterFor.
+				tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, pubErr)
 				if t.opts.OnError != nil {
 					t.opts.OnError(ServeError{Kind: KindEncode, Err: pubErr})
 				}

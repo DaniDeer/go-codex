@@ -547,6 +547,10 @@ type channelBuilder struct {
 	// errorChannelRules hold per-channel error-type -> error-output-topic
 	// declarations from [ErrorChannel].
 	errorChannelRules []errorChannelRule
+	// deadLetterRule holds this channel's own [DeadLetter] declaration —
+	// nil means "not declared at this channel, inherit the Client-level
+	// global default" (see [Client.AddGlobalDeadLetter]).
+	deadLetterRule *deadLetterRule
 	// securitySchemes holds this channel's own [WithSecurityScheme]
 	// declarations — the ONLY source of [ChannelHandle.SecuritySchemes]
 	// (there is no builder-level equivalent; mirrors
@@ -628,6 +632,12 @@ type ChannelHandle[T any] struct {
 	// errorChannelRules holds per-channel error patterns declared via
 	// [ErrorChannel] — see [ChannelHandle.ErrorResponseFor].
 	errorChannelRules []errorChannelRule
+
+	// deadLetterRule is the RESOLVED (channel-level, falling back to the
+	// Client-level global default) [DeadLetter] declaration — nil or an
+	// empty Topic means dead-lettering is disabled for this channel. See
+	// [ChannelHandle.DeadLetterFor].
+	deadLetterRule *deadLetterRule
 
 	// Implementations holds server-side security-enforcing/general-purpose
 	// implementations for the SUBSCRIBE side — populated ONLY by
@@ -1151,6 +1161,10 @@ type Client struct {
 	schemas        map[string]schema.Schema
 	topicCodec     *codex.Codec[string]
 	globalSecurity []route.SecurityRequirement
+	// globalDeadLetter is the Client-level default [DeadLetter]
+	// declaration, set via [Client.AddGlobalDeadLetter]. nil when none is
+	// declared. Channels with no explicit DeadLetter opt inherit this.
+	globalDeadLetter *deadLetterRule
 	// specByTopic dedups [Subscriber.Handle]/[Publisher.Handle] spec
 	// registrations by topic (first-registered-wins on descriptor
 	// content) — see [ChannelTypeConflictError]. Slot 1 of the registry
@@ -1172,6 +1186,15 @@ type Client struct {
 	// a compile-time type-safe generic method — Go forbids methods from
 	// introducing their own type parameters).
 	transport Transport
+	// deadLetterTopicsRegistered dedups AsyncAPI channel-entry
+	// registration for [DeadLetter] destinations by topic — several
+	// channels commonly share ONE dead-letter destination (e.g. via
+	// [Client.AddGlobalDeadLetter]), so only the FIRST channel to
+	// resolve a given dead-letter topic registers its spec entry;
+	// subsequent channels resolving the SAME topic are silent no-ops
+	// here (first-registered-wins, mirroring specByTopic's own
+	// dedup policy).
+	deadLetterTopicsRegistered map[string]bool
 }
 
 // ClientOption configures a [Client] at construction time.
@@ -1276,6 +1299,17 @@ func (c *Client) AddSchema(name string, s schema.Schema) *Client {
 // security), set Security to an empty slice: Security: []route.SecurityRequirement{}.
 func (c *Client) AddGlobalSecurity(reqs ...route.SecurityRequirement) *Client {
 	c.globalSecurity = append(c.globalSecurity, reqs...)
+	return c
+}
+
+// AddGlobalDeadLetter declares a Client-level default [DeadLetter]
+// destination that every channel with NO explicit DeadLetter opt
+// inherits — mirrors [Client.AddGlobalSecurity]'s own nil-inherit/
+// empty-override precedent. To opt a specific channel OUT of this
+// default, declare `events.DeadLetter("")` on that channel explicitly.
+func (c *Client) AddGlobalDeadLetter(topic string, opts ...DeadLetterOpt) *Client {
+	rule := DeadLetter(topic, opts...).rule
+	c.globalDeadLetter = &rule
 	return c
 }
 
@@ -2235,6 +2269,15 @@ func buildChannelHandle[T any](ch Channel[T], client *Client, role channelRole, 
 		globalSecurity = slices.Clone(client.globalSecurity)
 	}
 
+	// Resolve the effective DeadLetter rule: an explicit channel-level
+	// declaration always wins; otherwise inherit the Client-level global
+	// default (nil if neither is declared) — mirrors globalSecurity's
+	// own nil-inherit resolution immediately above.
+	effectiveDeadLetter := cb.deadLetterRule
+	if effectiveDeadLetter == nil && client != nil {
+		effectiveDeadLetter = client.globalDeadLetter
+	}
+
 	frozen := buildChannelItem(ch.topic, ch.codec, cb)
 	if role == roleSubscribe && frozen.Subscribe != nil {
 		frozen.Subscribe.Message.Headers = propertyHeaders
@@ -2259,6 +2302,7 @@ func buildChannelHandle[T any](ch Channel[T], client *Client, role channelRole, 
 		SecuritySchemes:          schemes,
 		GlobalSecurity:           globalSecurity,
 		errorChannelRules:        cb.errorChannelRules,
+		deadLetterRule:           effectiveDeadLetter,
 		Handler:                  handler,
 		HandlerOpts:              opts,
 		Implementations:          impls,
@@ -2329,6 +2373,8 @@ func buildChannelHandle[T any](ch Channel[T], client *Client, role channelRole, 
 
 	client.mu.Lock()
 	defer client.mu.Unlock()
+
+	registerDeadLetterChannel(client, effectiveDeadLetter)
 
 	if existing, ok := client.specByTopic[ch.topic]; ok {
 		if existing.typeName != typeName {

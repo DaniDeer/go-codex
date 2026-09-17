@@ -123,7 +123,9 @@ if errors.As(err, &reqErr) {
 }
 
 // Response-side: a declared rest.ErrorPattern matched and decoded — typed
-// business error, decide what to do per Value's concrete type.
+// business error, decide what to do per Value's concrete type. The
+// manual errors.As + type-switch dance shown here still works, but see
+// "Convenient client-side matching" below for 3 shorter alternatives.
 var patternResp nethttp.ErrorPatternResponse
 if errors.As(err, &patternResp) {
     switch v := patternResp.Value.(type) {
@@ -164,6 +166,51 @@ Rule of thumb for "continuing" after an error:
 - **`nethttp.UnexpectedStatusError`** is the universal fallback for any
   status/body the route didn't declare a typed pattern for — log the raw
   status + body, do not assume a specific shape.
+- **A matched `ErrorPatternResponse` is a business DECISION the server
+  made deliberately — never safe to blindly retry.** This is the OPPOSITE
+  of `nethttp.RequestError` above: retrying an `EmailConflictError`
+  verbatim just reproduces the SAME rejection. The caller needs to change
+  something (a different email, a refreshed credential) before retrying
+  makes sense, if it ever does.
+
+### Convenient client-side matching — `ErrorPatternAs`, `.Match`, `HandleErrorPattern`
+
+The manual `errors.As` + type-switch shown above works for any number of
+declared patterns, but 3 shorter alternatives are available — pick
+whichever fits the call site (see
+[Feature: REST API — client-side decode](../features/rest-api.md#client-side-decode--nethttpcallwithhandle-and-errorpatternresponse)
+for the full reference):
+
+All 3 live in `api/rest` (transport-independent — the same helpers work
+regardless of which client adapter produced `err`, since every adapter's
+own `ErrorPatternResponse` implements the shared `rest.ErrorPatternValuer`
+interface):
+
+```go
+// 1. ErrorPatternAs — a generic one-line decode helper.
+if conflict, ok := rest.ErrorPatternAs[domain.EmailConflictError](err); ok {
+    return promptDifferentEmail(conflict.Email)
+}
+
+// 2. ErrorPatternOpt.Match — the SAME value declares the pattern
+//    (server) AND matches it (client); keep the declaration as a
+//    package-level var to use this style.
+var emailConflictPattern = rest.ErrorPattern[domain.EmailConflictError, domain.EmailConflictError](409, conflictCodec)
+if conflict, ok := emailConflictPattern.Match(err); ok {
+    return promptDifferentEmail(conflict.Email)
+}
+
+// 3. HandleErrorPattern/Case — closest visual parity to a switch
+//    expression; each Case's type is inferred from its closure.
+handled := rest.HandleErrorPattern(err,
+    rest.Case(func(e domain.EmailConflictError) { promptDifferentEmail(e.Email) }),
+    rest.Case(func(e domain.ValidationError) { showValidationErrors(e) }),
+)
+```
+
+All 3 return `false`/`ok=false` when `err` carries no matched
+`ErrorPatternResponse` at all, or when the payload's concrete type
+doesn't match — never panics, never assumes a specific shape.
 
 ## Binary requests and responses (PNG, JPEG, PDF…)
 

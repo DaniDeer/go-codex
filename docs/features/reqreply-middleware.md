@@ -114,6 +114,20 @@ section](../guides/asyncapi.md#client-side-decode--routehandledecodeerrorfor-mqt
 for the full workflow, including the `Code`-uniqueness requirement
 (`reqreply.DuplicateErrorPatternCodeError`).
 
+`ErrorPattern` is eligible at EVERY server-side dispatch failure point,
+not just the handler's own return — request payload decode, topic/
+property-var merge, User Property param validation, middleware
+`DecodeIn`/`EncodeOut`, and security middleware Fn errors are all
+`ErrorPattern`-eligible, exactly like a handler error.
+`RouteHandle.ObserveErrorResponseFor(ctx, obs, err)` is the
+RECOMMENDED single call site: performs the SAME match as
+`ErrorResponseFor`, but ALSO reports `stats.ErrorPatternObserver`/
+`stats.SpanTagger` observability internally (see
+[Observer guide](../guides/observer.md#errorpatternobserver-declared-error-pattern-observability))
+— no separate adapter-side wiring needed. The CLIENT side stays correctly
+excluded (a caller plays the same "client/sender" role a publisher does —
+see `docs/roadmap/error-handling-rest-events-reqreply.md`'s Topic 7).
+
 A middleware's `Out` value failing to encode/decode — server-side,
 building the REPLY (`EncodeOut`); client-side, reading the REPLY
 (`ClientMiddlewareHandler.DecodeOut`) — returns
@@ -122,6 +136,55 @@ of `MiddlewareInputError`. (Previously the CLIENT-side `DecodeOut` failure
 was mislabeled as `MiddlewareInputError` — a bug, since it decodes the
 `Out` struct, not `In`; fixed alongside
 [D-0003's Addendum 2](../design/d-0003-codec-declared-middlewares.md#addendum-2-rest-conflict-detection-alignment--middlewareout-cross-adapter-parity).)
+
+## Dead-letter fallback — `DeadLetter`
+
+`reqreply.DeadLetter(topic, opts...)` declares an OPTIONAL, last-resort
+sink attempted immediately after `ErrorPattern` fails to match (or none
+is declared) — the SAME fixed `DeadLetterEnvelope{SourceTopic, Payload,
+Error, Timestamp}` shape `events.DeadLetter` uses, since no reliable
+business type exists at this point:
+
+```go
+route := reqreply.NewRoute[Req, Resp]("compute/add", reqCodec, respCodec,
+    reqreply.DeadLetter("compute/add/dlq"),
+)
+```
+
+`Server.AddGlobalDeadLetter(topic, opts...)` sets an application-wide
+default; a route with no `DeadLetter` declared inherits it, and an
+explicit `DeadLetter("")` opts out — mirrors `AddGlobalSecurity`'s
+nil-inherit/empty-override convention. `RouteHandle.DeadLetterFor(obs,
+sourceTopic, rawPayload, err) (topic, body, ok)` is the single call site
+adapters consult, at the SAME dispatch points as `ErrorPattern` (request
+decode, topic/property-var merge, security middleware, `Middleware`
+`DecodeIn`/`Fn`/`EncodeOut`, handler error, and the response `EncodeOut`
+failure) as well as a failed reply publish.
+
+`DeadLetter` DOES generate its own AsyncAPI channel entry (a
+receive-only channel carrying the fixed `DeadLetterEnvelope` schema) —
+`WithDescription`/`WithSchemaName`/`WithChannelAddress`/`WithOperationID`
+all affect the rendered spec, mirroring `ErrorPatternOpt`'s equivalents:
+
+```go
+reqreply.DeadLetter("compute/add/dlq").
+    WithDescription("Undeliverable compute requests.").
+    WithSchemaName("ComputeDeadLetter")
+```
+
+Routes sharing ONE dead-letter destination (e.g. via
+`Server.AddGlobalDeadLetter`) register that topic as a SINGLE spec
+channel entry, not once per route.
+
+**`adapters/zeromq`'s REQ/REP transport needs its own DLQ socket.** Unlike
+`adapters/mqtt5` (one shared client reaches any topic), REQ/REP is
+point-to-point — the declared dead-letter topic must have its OWN entry
+in the `sockets` map passed to `zeromq.AttachServer`/`AttachRouterServer`.
+Without one, the dead-letter is silently skipped rather than sent back
+over the route's own REP/ROUTER socket (which would violate REQ/REP's
+one-reply-per-request invariant). See the [Error handling
+guide](../guides/error-handling.md#dead-letter-fallback-when-nothing-else-claimed-the-failure)
+for the full reachability matrix.
 
 ## Conflict detection — a deliberate breaking change
 

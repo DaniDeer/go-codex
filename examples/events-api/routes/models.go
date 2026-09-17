@@ -210,3 +210,51 @@ var SensorErrorPayloadCodec = codex.Struct[SensorErrorPayload](
 		func(e *SensorErrorPayload, v string) { e.Message = v },
 	),
 )
+
+// SensorMaintenanceError is returned directly by a handler AND is itself
+// the typed error-output payload — events.ErrorChannel's DIRECT mode
+// (no mapFn needed, E assignable to B), the 2nd of events' 2 declaration
+// mechanisms (Mapped mode is SensorOutOfRangeError/SensorErrorPayload
+// above).
+type SensorMaintenanceError struct {
+	SensorID string
+}
+
+func (e SensorMaintenanceError) Error() string {
+	return "sensor " + e.SensorID + " is under maintenance"
+}
+
+var SensorMaintenanceErrorCodec = codex.Struct[SensorMaintenanceError](
+	codex.RequiredField("sensor_id", codex.String().Refine(validate.UUID),
+		func(e SensorMaintenanceError) string { return e.SensorID },
+		func(e *SensorMaintenanceError, v string) { e.SensorID = v },
+	),
+)
+
+// SensorOfflineError is a domain error type DELIBERATELY NOT matched by
+// any declared events.ErrorChannel on ReadingsWithErrorsChannel — used to
+// demonstrate the DeadLetter two-tier fallback: SensorOutOfRangeError
+// (declared, matched → typed error-channel publish) vs SensorOfflineError
+// (undeclared, genuine miss → falls through to events.DeadLetter).
+type SensorOfflineError struct {
+	SensorID string
+}
+
+func (e SensorOfflineError) Error() string { return "sensor " + e.SensorID + " is offline" }
+
+// SecurityRejectedPayload is the typed payload published when a
+// SubscribeMW security Fn rejects a message — matched via
+// events.ErrorChannel[events.SecurityError, SecurityRejectedPayload] on
+// SecuredReadingsChannel, proving ErrorChannel intercepts a SECURITY
+// MIDDLEWARE Fn failure (auto-wrapped in events.SecurityError by the
+// adapter), not just a subscribe-handler business error.
+type SecurityRejectedPayload struct {
+	Code string
+}
+
+var SecurityRejectedPayloadCodec = codex.Struct[SecurityRejectedPayload](
+	codex.RequiredField("code", codex.String().Refine(validate.NonEmptyString),
+		func(p SecurityRejectedPayload) string { return p.Code },
+		func(p *SecurityRejectedPayload, v string) { p.Code = v },
+	),
+)

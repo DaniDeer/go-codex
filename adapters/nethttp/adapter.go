@@ -221,6 +221,13 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 		ctx = context.WithValue(ctx, responseHeadersKey{}, respHeaders)
 		pendingCookies := make([]PendingCookie, 0)
 		ctx = context.WithValue(ctx, responseCookiesKey{}, &pendingCookies)
+		// Session-review finding (H1): resolved once here so every
+		// Category-A call site below can consult the SAME declared
+		// rest.ErrorPattern via ObserveErrorResponseFor — mirrors
+		// serve.go's own resolution exactly, closing a previously-total
+		// gap in this SEPARATE (port/stream-adapter-facing) dispatch
+		// function.
+		obs := stats.ObserverFromContext(ctx)
 
 		var req Req
 		if handle.Descriptor.RequestBody != nil {
@@ -264,6 +271,9 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 			}
 			if decErr != nil {
 				rest.ReportBodyErrors(ctx, decErr)
+				if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &decErr) {
+					return
+				}
 				errFn(sw, r, http.StatusBadRequest, decErr)
 				return
 			}
@@ -273,12 +283,18 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 		if opts.MultiValueQueryParams {
 			if err := handle.ValidateQueryMulti(r.URL.Query()); err != nil {
 				rest.ReportQueryErrors(ctx, err)
+				if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &err) {
+					return
+				}
 				errFn(sw, r, http.StatusBadRequest, err)
 				return
 			}
 		} else {
 			if err := handle.ValidateQuery(queryValues(r)); err != nil {
 				rest.ReportQueryErrors(ctx, err)
+				if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &err) {
+					return
+				}
 				errFn(sw, r, http.StatusBadRequest, err)
 				return
 			}
@@ -287,6 +303,9 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 		// Validate cookie parameters against their registered codecs (if any).
 		if err := handle.ValidateCookies(cookieValues(r)); err != nil {
 			rest.ReportCookieErrors(ctx, err)
+			if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &err) {
+				return
+			}
 			errFn(sw, r, http.StatusBadRequest, err)
 			return
 		}
@@ -294,6 +313,9 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 		// Validate header parameters against their registered codecs (if any).
 		if err := handle.ValidateHeaders(headerValues(r)); err != nil {
 			rest.ReportHeaderErrors(ctx, err)
+			if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &err) {
+				return
+			}
 			errFn(sw, r, http.StatusBadRequest, err)
 			return
 		}
@@ -303,6 +325,9 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 		if len(names) > 0 {
 			if err := handle.ValidatePathParams(pathValues(r, names)); err != nil {
 				rest.ReportPathErrors(ctx, err)
+				if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &err) {
+					return
+				}
 				errFn(sw, r, http.StatusBadRequest, err)
 				return
 			}
@@ -328,6 +353,9 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 			}
 			if err := codex.DecodeVars(&req, vars, mergeFields...); err != nil {
 				rest.ReportBodyErrors(ctx, err)
+				if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &err) {
+					return
+				}
 				errFn(sw, r, http.StatusBadRequest, err)
 				return
 			}
@@ -354,7 +382,14 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 		// presence/format check, e.g. RequireAPIKey) must still run — see
 		// runSecurityMiddleware's own doc comment.
 		if err := runSecurityMiddleware(ctx, r, &req, impls, secReqs); err != nil {
-			secErr := rest.SecurityError{Err: err}
+			// Security middleware Fn error IS ErrorPattern-eligible now
+			// (session-review finding H1, mirroring serve.go's own
+			// Category-A fix) — previously bypassed ErrorResponseFor
+			// entirely, always producing SecurityError.
+			var secErr error = rest.SecurityError{Err: err}
+			if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &secErr) {
+				return
+			}
 			errFn(sw, r, http.StatusUnauthorized, secErr)
 			return
 		}
@@ -366,23 +401,13 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 
 		resp, err = fn(ctx, req)
 		if err != nil {
-			if patternResp, matched, applyErr := handle.ErrorResponseFor(err); matched {
-				if applyErr == nil {
-					// ErrorRespond (default): write the typed body directly.
-					// ErrorHandle/ErrorLog: skip the auto-write and fall
-					// through to errFn below (Options.ErrorHandler), same
-					// as an unmatched error, but still using this pattern's
-					// declared status via ErrorStatusFor.
-					if patternResp.Action == "" || patternResp.Action == rest.ErrorRespond {
-						if writeErr := writeErrorPatternResponse(ctx, sw, handle, patternResp, respHeaders, pendingCookies); writeErr == nil {
-							return
-						} else {
-							err = writeErr
-						}
-					}
-				} else {
-					err = applyErr
-				}
+			// H1: upgraded from the bare ErrorResponseFor this branch
+			// used before to tryRespondErrorPatternGeneric/
+			// ObserveErrorResponseFor — now ALSO reports match/miss/
+			// span-tag observability, mirroring serve.go's identical
+			// handler-error site.
+			if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &err) {
+				return
 			}
 			status := http.StatusInternalServerError
 			if mappedStatus, ok := handle.ErrorStatusFor(err); ok {
@@ -405,6 +430,9 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 			values, encErr := codex.EncodeVars(resp, headerFields...)
 			if encErr != nil {
 				rest.ReportResponseHeaderErrors(ctx, encErr)
+				if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &encErr) {
+					return
+				}
 				errFn(sw, r, http.StatusInternalServerError, encErr)
 				return
 			}
@@ -416,6 +444,9 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 			values, encErr := codex.EncodeVars(resp, cookieFields...)
 			if encErr != nil {
 				rest.ReportResponseCookieErrors(ctx, encErr)
+				if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &encErr) {
+					return
+				}
 				errFn(sw, r, http.StatusInternalServerError, encErr)
 				return
 			}
@@ -445,6 +476,9 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 				// return an error response if the value violates codec constraints.
 				if valErr := chosen.Validate(resp); valErr != nil {
 					rest.ReportBodyErrors(ctx, valErr)
+					if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &valErr) {
+						return
+					}
 					errFn(sw, r, http.StatusInternalServerError, valErr)
 					return
 				}
@@ -489,6 +523,9 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 			out, encErr = chosen.Marshal(resp)
 			if encErr != nil {
 				rest.ReportBodyErrors(ctx, encErr)
+				if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &encErr) {
+					return
+				}
 				errFn(sw, r, http.StatusInternalServerError, encErr)
 				return
 			}
@@ -498,6 +535,9 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 			out, encErr = handle.Encode(resp)
 			if encErr != nil {
 				rest.ReportBodyErrors(ctx, encErr)
+				if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &encErr) {
+					return
+				}
 				errFn(sw, r, http.StatusInternalServerError, encErr)
 				return
 			}
@@ -863,6 +903,55 @@ func responseCookieValues(cookies []PendingCookie) map[string]string {
 		m[pc.Name] = pc.Value
 	}
 	return m
+}
+
+// tryRespondErrorPatternGeneric is [handlerFunc]'s own Req/Resp-generic
+// (no reflection needed, unlike serve.go's [tryRespondErrorPattern]
+// reflection-based helper of a similar name) counterpart of the
+// RECOMMENDED single call site for every Category-A failure point
+// (docs/roadmap/error-handling-rest-events-reqreply.md's
+// Topic 1/5): consults a declared [rest.ErrorPattern] via
+// ObserveErrorResponseFor (which ALSO reports match/miss/span-tag
+// observability internally) and, on a matched [rest.ErrorRespond] action,
+// writes the typed response.
+//
+// Session-review finding (H1): handlerFunc — the dispatch behind
+// port/stream bindings (IngestAdapter, LatestAdapter, HandlerLatest,
+// PipelineHandler) — is a SEPARATE dispatch function from serve.go's
+// fully Category-A-wired one; it never received Topic 1/5's wiring even
+// though the roadmap's own North Star principle states any new failure
+// point should, by default, be wired through this SAME enforcement
+// point. This closes that gap for handlerFunc specifically.
+//
+// Returns true when the response was fully handled — the caller should
+// return immediately without invoking its own fixed-shape errFn call.
+// Returns false (unmatched, a non-Respond action, or a write failure)
+// when the caller should fall through to its EXISTING fixed-shape errFn
+// call — purely additive, never a behavior change for routes with no
+// matching declared pattern. *err is mutated in place to the pattern's
+// own applyErr (a mapFn/encode failure) or a response-write failure,
+// mirroring serve.go's identical contract — callers must use the
+// (possibly updated) *err in their own subsequent errFn call.
+func tryRespondErrorPatternGeneric[Req, Resp any](
+	ctx context.Context, sw *statusResponseWriter, handle *rest.RouteHandle[Req, Resp],
+	obs stats.Observer, respHeaders http.Header, pendingCookies *[]PendingCookie, err *error,
+) bool {
+	resp, matched, applyErr := handle.ObserveErrorResponseFor(ctx, obs, *err)
+	if !matched {
+		return false
+	}
+	if applyErr != nil {
+		*err = applyErr
+		return false
+	}
+	if resp.Action != "" && resp.Action != rest.ErrorRespond {
+		return false
+	}
+	if writeErr := writeErrorPatternResponse(ctx, sw, handle, resp, respHeaders, *pendingCookies); writeErr != nil {
+		*err = writeErr
+		return false
+	}
+	return true
 }
 
 func writeErrorPatternResponse[Req, Resp any](

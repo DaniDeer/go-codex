@@ -135,3 +135,69 @@ Decision 6 — the unification onto `Client`/`ClientTransport` is what
 replaced it). A NEW adapter must follow the same rule: see the
 `add-a-new-adapter` skill's own architectural-boundary rule for the concrete
 checklist.
+
+## Convenience helpers belong in `api/*`, not adapters
+
+This section restates, in a different call-site, the SAME architectural
+promise this whole page opens with: a user works ENTIRELY in the `api/*`/
+`ports` abstraction — declaring routes, channels, patterns, ports — and
+ATTACHES an adapter only to supply the concrete IO implementation for a
+protocol already chosen. `Client.Attach`/`Server.Attach`, `Port.Bind`, and
+`PluginXxxPattern` are all instances of the same idea: the adapter is a
+plug-in, never a second vocabulary the user has to learn on top of `api/*`.
+If a helper function's name/behavior changes depending on which adapter
+package it happens to live in — `nethttp.ErrorPatternAs` vs
+`mqtt5.ErrorPatternAs` vs `zeromq.ErrorPatternAs`, say — that is the
+abstraction leaking: the user is no longer working with ONE `api/*`
+vocabulary, they're working with N adapter-flavored variants of it, and
+switching adapters silently changes which function names they must use.
+That is precisely the failure mode this rule exists to prevent.
+
+A DIFFERENT (but related) mistake from the bypass rule above: a helper
+function that a CALLER uses AFTER a decode/encode/dispatch has already
+happened — one that never itself decodes, encodes, or dispatches anything
+— can still end up misplaced in an adapter package by accident. The rule:
+
+> **Adapters implement wire protocols only.** Any user-facing convenience
+> or ergonomic helper that touches ONLY core `api/*` types — codecs,
+> handles, declared patterns, or a core-layer interface — belongs in
+> `api/*`, never in `adapters/*`. This holds EVEN WHEN, at the time of
+> writing, only one adapter happens to implement that boundary — "only
+> one adapter exists today" is not a justification for placing
+> transport-independent logic inside that one adapter.
+
+**The concrete test**: could this function be written using ONLY
+`errors.As`/a core-layer interface, with ZERO reference to any
+adapter-specific type? If yes, it does not belong in `adapters/*`.
+
+**A real, fixed example** — `rest.ErrorPatternAs[B]`/`HandleErrorPattern`/
+`Case` and `reqreply.ErrorPatternAs[B]`/`HandleErrorPattern`/`Case`. These
+extract a matched `ErrorPattern`'s typed payload from a client-side call
+error — they touch ONLY the core `ErrorPatternValuer` interface (the SAME
+interface `ErrorPatternOpt.Match` already correctly used from `api/rest`/
+`api/reqreply`). They were originally placed in `adapters/nethttp`,
+`adapters/mqtt5`, and `adapters/zeromq` instead — for reqreply, this meant
+`adapters/mqtt5` and `adapters/zeromq` carried BYTE-FOR-BYTE IDENTICAL
+copies of the same 3 functions, a duplication that immediately exposed the
+misplacement once someone asked "why do I need the adapter package just to
+match an error?" Fixed by moving all of them into `api/rest`/`api/reqreply`
+— one implementation each, reused transparently by every adapter that
+implements the boundary's `ErrorPatternValuer` interface. See
+`docs/roadmap/error-handling-rest-events-reqreply.md`'s Topic 6 "Design
+guardrail" subsection for the full narrative and the corrected design
+reasoning.
+
+**Why this is distinct from the "no adapter-invented bypass" rule above**:
+that rule governs whether an adapter's OWN decode/encode/dispatch path can
+skip the handle (it never may). This rule governs where a POST-RESPONSE
+convenience helper — one that runs entirely AFTER decode/encode/dispatch
+already happened, using only the result — should live. Both rules point
+the same direction (adapters carry ONLY protocol-specific logic), but they
+guard different call sites and are easy to satisfy one of while missing
+the other.
+
+**The user-experience promise this protects**: a caller should be able to
+declare and consume a communication pattern using ONLY the `api/*`
+abstraction — attaching a specific adapter is purely a protocol-selection
+decision, never something that changes which helper functions/vocabulary
+the caller reaches for.

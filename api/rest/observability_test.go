@@ -167,3 +167,146 @@ func TestDiagnosticObserver_RecordValidationError(t *testing.T) {
 		t.Errorf("got %+v", got[0])
 	}
 }
+
+// ── ObserveErrorResponseFor tests ─────────────────────────────────────────
+
+type errorPatternObserverSpy struct {
+	stats.NoopObserver
+	matches, misses                    int
+	lastLocation, lastCode, lastAction string
+	lastMissLocation                   string
+	tags                               int
+	lastTagKey, lastTagValue           string
+}
+
+func (s *errorPatternObserverSpy) RecordErrorPatternMatch(location, code, action string) {
+	s.matches++
+	s.lastLocation, s.lastCode, s.lastAction = location, code, action
+}
+
+func (s *errorPatternObserverSpy) RecordErrorPatternMiss(location string) {
+	s.misses++
+	s.lastMissLocation = location
+}
+
+func (s *errorPatternObserverSpy) TagSpan(_ context.Context, key, value string) {
+	s.tags++
+	s.lastTagKey, s.lastTagValue = key, value
+}
+
+func newObserveTestRoute(t *testing.T) *rest.RouteHandle[createReq, userResp] {
+	t.Helper()
+	b := rest.NewServer(testInfo)
+	h, err := rest.NewRoute[createReq, userResp]("POST", "/errors/observe-"+t.Name(),
+		createReqCodec, userCodec,
+		rest.ErrorPattern[directPatternError, directPatternError](409, directPatternCodec),
+	).RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("RegisterHandle: %v", err)
+	}
+	return h
+}
+
+func TestObserveErrorResponseFor_RecordsMatch(t *testing.T) {
+	h := newObserveTestRoute(t)
+	spy := &errorPatternObserverSpy{}
+	resp, matched, applyErr := h.ObserveErrorResponseFor(context.Background(), spy, directPatternError{Code: "boom"})
+	if applyErr != nil {
+		t.Fatalf("applyErr: %v", applyErr)
+	}
+	if !matched {
+		t.Fatal("want matched=true")
+	}
+	if resp.Status != 409 {
+		t.Errorf("want Status=409, got %d", resp.Status)
+	}
+	if spy.matches != 1 {
+		t.Fatalf("want 1 RecordErrorPatternMatch call, got %d", spy.matches)
+	}
+	if spy.lastCode != "409" {
+		t.Errorf("want code=409, got %q", spy.lastCode)
+	}
+	if spy.misses != 0 {
+		t.Errorf("want 0 RecordErrorPatternMiss calls on a match, got %d", spy.misses)
+	}
+}
+
+func TestObserveErrorResponseFor_RecordsMiss_OnlyWhenPatternsDeclared(t *testing.T) {
+	h := newObserveTestRoute(t)
+	spy := &errorPatternObserverSpy{}
+	_, matched, _ := h.ObserveErrorResponseFor(context.Background(), spy, errors.New("unrelated"))
+	if matched {
+		t.Fatal("want matched=false")
+	}
+	if spy.misses != 1 {
+		t.Fatalf("want 1 RecordErrorPatternMiss call, got %d", spy.misses)
+	}
+
+	// Now confirm the negative case: a route with NO declared ErrorPatterns
+	// never calls RecordErrorPatternMiss at all.
+	b := rest.NewServer(testInfo)
+	noPatterns, err := rest.NewRoute[createReq, userResp]("POST", "/errors/observe-no-patterns",
+		createReqCodec, userCodec,
+	).RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("RegisterHandle: %v", err)
+	}
+	spy2 := &errorPatternObserverSpy{}
+	_, matched2, _ := noPatterns.ObserveErrorResponseFor(context.Background(), spy2, errors.New("unrelated"))
+	if matched2 {
+		t.Fatal("want matched=false")
+	}
+	if spy2.misses != 0 {
+		t.Errorf("want 0 RecordErrorPatternMiss calls when no patterns declared, got %d", spy2.misses)
+	}
+}
+
+func TestObserveErrorResponseFor_TagsSpan_OnMatch(t *testing.T) {
+	h := newObserveTestRoute(t)
+	spy := &errorPatternObserverSpy{}
+	_, matched, _ := h.ObserveErrorResponseFor(context.Background(), spy, directPatternError{Code: "boom"})
+	if !matched {
+		t.Fatal("want matched=true")
+	}
+	if spy.tags != 1 {
+		t.Fatalf("want 1 TagSpan call, got %d", spy.tags)
+	}
+	if spy.lastTagValue != "409" {
+		t.Errorf("want tag value=409, got %q", spy.lastTagValue)
+	}
+}
+
+func TestObserveErrorResponseFor_PlainObserver_NoPanic(t *testing.T) {
+	h := newObserveTestRoute(t)
+	// stats.NoopObserver implements neither ErrorPatternObserver's methods
+	// with any custom behavior nor SpanTagger with any custom behavior
+	// (only no-ops) — but more importantly, use a bareObserver-equivalent
+	// (an Observer implementing only the base interface, via a minimal
+	// wrapper) to ensure the type-assertion guards inside
+	// ObserveErrorResponseFor never panic.
+	plain := stats.NoopObserver{}
+	if _, _, err := h.ObserveErrorResponseFor(context.Background(), plain, directPatternError{Code: "boom"}); err != nil {
+		t.Fatalf("unexpected applyErr: %v", err)
+	}
+	if _, _, err := h.ObserveErrorResponseFor(context.Background(), plain, errors.New("unrelated")); err != nil {
+		t.Fatalf("unexpected applyErr: %v", err)
+	}
+}
+
+func TestRouteHandle_HasErrorPatterns(t *testing.T) {
+	h := newObserveTestRoute(t)
+	if !h.HasErrorPatterns() {
+		t.Error("want HasErrorPatterns()=true for a route with a declared ErrorPattern")
+	}
+
+	b := rest.NewServer(testInfo)
+	noPatterns, err := rest.NewRoute[createReq, userResp]("POST", "/errors/has-error-patterns-none",
+		createReqCodec, userCodec,
+	).RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("RegisterHandle: %v", err)
+	}
+	if noPatterns.HasErrorPatterns() {
+		t.Error("want HasErrorPatterns()=false for a route with no declared ErrorPattern")
+	}
+}

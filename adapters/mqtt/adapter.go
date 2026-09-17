@@ -61,6 +61,15 @@ func (e SubscribeError) Error() string {
 
 func (e SubscribeError) Unwrap() error { return e.Err }
 
+// As is a thin, self-documenting convenience wrapper over
+// errors.As(e.Err, target) — collapses the two-step
+// "errors.As(subErr.Err, &target)" dance into "subErr.As(&target)" from
+// inside an [SubscribeOptions.OnError] callback. See
+// docs/roadmap/error-handling-rest-events-reqreply.md's Topic 7.
+func (e SubscribeError) As(target any) bool {
+	return errors.As(e.Err, target)
+}
+
 // LogValue implements [slog.LogValuer] for structured logging.
 func (e SubscribeError) LogValue() slog.Value {
 	return slog.GroupValue(
@@ -187,6 +196,54 @@ func MessageFromContext(ctx context.Context) (pahomqtt.Message, bool) {
 // behavior. Mirrors mqtt5's makeSubscribeMessageHandler's identical
 // extension — see docs/design/d-0002-pubsub-workflow-simplification.md's
 // Decision 8.
+
+// tryPublishErrorChannel is the RECOMMENDED single call site for every
+// Category-A failure point on the subscribe side (docs/roadmap/
+// error-handling-rest-events-reqreply.md's Topic 1/5) — mirrors mqtt5's
+// identical helper exactly, using this package's own token-based
+// Publish API.
+//
+// Returns (handled, matched bool) — see mqtt5's identical helper's doc
+// comment for the full 3-outcome contract (handled=return immediately;
+// matched-with-!handled=skip tryDeadLetter but still call opts.OnError;
+// !matched=fall through to tryDeadLetter as before). Session-review
+// round-3 fix (G4): a type-matched ErrorChannel with a non-Respond
+// action must never ALSO be dead-lettered — Topic 4 scopes DeadLetter
+// to the genuinely UNMATCHED case only.
+func tryPublishErrorChannel[T any](
+	ctx context.Context, client pahomqtt.Client, handle *events.ChannelHandle[T], obs stats.Observer, err error,
+) (handled, matched bool) {
+	resp, isMatch, matchErr := handle.ObserveErrorResponseFor(ctx, obs, err)
+	if !isMatch || matchErr != nil {
+		return false, false
+	}
+	if resp.Action != "" && resp.Action != events.ErrorRespond {
+		return false, true
+	}
+	token := client.Publish(resp.Topic, 0, false, resp.Body)
+	token.Wait()
+	if pubErr := token.Error(); pubErr != nil {
+		stats.ReportErrors(obs, "error_channel", pubErr)
+	}
+	return true, true
+}
+
+// tryDeadLetter is the RECOMMENDED single call site for Topic 4's
+// dead-letter fallback (docs/roadmap/error-handling-rest-events-reqreply.md)
+// — mirrors mqtt5's identical helper exactly, using this package's own
+// token-based Publish API.
+func tryDeadLetter[T any](
+	client pahomqtt.Client, handle *events.ChannelHandle[T], obs stats.Observer, sourceTopic string, rawPayload []byte, err error,
+) bool {
+	topic, body, ok := handle.DeadLetterFor(obs, sourceTopic, rawPayload, err)
+	if !ok {
+		return false
+	}
+	token := client.Publish(topic, 0, false, body)
+	token.Wait()
+	return true
+}
+
 func subscribeHandler[T any](
 	ctx context.Context,
 	client pahomqtt.Client,
@@ -211,6 +268,13 @@ func subscribeHandler[T any](
 		if err != nil {
 			reportPayloadErrors(err, obs)
 			obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
+			if handled, matched := tryPublishErrorChannel(ctx, client, handle, obs, err); handled {
+				return
+			} else if !matched {
+				if tryDeadLetter(client, handle, obs, msg.Topic(), msg.Payload(), err) {
+					return
+				}
+			}
 			if opts.OnError != nil {
 				opts.OnError(SubscribeError{Kind: KindDecode, Topic: msg.Topic(), Err: err})
 			}
@@ -235,6 +299,13 @@ func subscribeHandler[T any](
 				reportInvalidTopicErrors(varErr, obs)
 				stats.ReportErrors(obs, "topic_var", varErr)
 				obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
+				if handled, matched := tryPublishErrorChannel(ctx, client, handle, obs, varErr); handled {
+					return
+				} else if !matched {
+					if tryDeadLetter(client, handle, obs, msg.Topic(), msg.Payload(), varErr) {
+						return
+					}
+				}
 				if opts.OnError != nil {
 					opts.OnError(SubscribeError{Kind: KindDecode, Topic: msg.Topic(), Err: varErr})
 				}
@@ -244,6 +315,13 @@ func subscribeHandler[T any](
 			if mergeErr := codex.DecodeVars(&value, vars, mergeFields...); mergeErr != nil {
 				stats.ReportErrors(obs, "topic_var", mergeErr)
 				obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
+				if handled, matched := tryPublishErrorChannel(ctx, client, handle, obs, mergeErr); handled {
+					return
+				} else if !matched {
+					if tryDeadLetter(client, handle, obs, msg.Topic(), msg.Payload(), mergeErr) {
+						return
+					}
+				}
 				if opts.OnError != nil {
 					opts.OnError(SubscribeError{Kind: KindDecode, Topic: msg.Topic(), Err: mergeErr})
 				}
@@ -273,6 +351,37 @@ func subscribeHandler[T any](
 			}
 		}
 
+		// Implementations-based security dispatch (events.Subscriber.
+		// SubscribeMW-attached security-shaped Fns) — SAME pre-handler
+		// dispatch point the built-in credential check above just ran
+		// at, moved HERE (session-review fix: previously lived in
+		// caller.go's subscribeHandle, coupled into fn's own error path,
+		// so a rejection was indistinguishable from a plain handler
+		// error — misreported as KindHandler, never events.SecurityError,
+		// never ErrorChannel/DeadLetter-eligible under its own security
+		// classification). Mirrors mqtt5's/zeromq's identical placement
+		// and events.SecurityError wrapping exactly.
+		if len(handle.Implementations) > 0 {
+			if err := runSubscribeSecurityImpls(ctx, msg, &value, secReqs, handle.Implementations); err != nil {
+				if secObs, ok := obs.(stats.SecurityObserver); ok {
+					secObs.RecordSecurityRejection(msg.Topic(), route.FirstSchemeName(secReqs))
+				}
+				obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
+				wrapped := events.SecurityError{Err: err}
+				if handled, matched := tryPublishErrorChannel(ctx, client, handle, obs, wrapped); handled {
+					return
+				} else if !matched {
+					if tryDeadLetter(client, handle, obs, msg.Topic(), msg.Payload(), wrapped) {
+						return
+					}
+				}
+				if opts.OnError != nil {
+					opts.OnError(SubscribeError{Kind: KindSecurity, Topic: msg.Topic(), Err: wrapped})
+				}
+				return
+			}
+		}
+
 		// Codec-backed middleware dispatch (Transform and bundled .Use())
 		// — SAME pre-handler dispatch point plain security enforcement
 		// above just ran at (D1), reusing the SAME topicVars derived
@@ -286,13 +395,12 @@ func subscribeHandler[T any](
 				errors.As(mwErr, &dispatchErr)
 				if dispatchErr.isFnError {
 					stats.ReportErrors(obs, "middleware:fn", dispatchErr.err)
-					if resp, matched, matchErr := handle.ErrorResponseFor(dispatchErr.err); matched && matchErr == nil && resp.Action == events.ErrorRespond {
-						token := client.Publish(resp.Topic, 0, false, resp.Body)
-						token.Wait()
-						if pubErr := token.Error(); pubErr != nil {
-							stats.ReportErrors(obs, "error_channel", pubErr)
-						}
+					if handled, matched := tryPublishErrorChannel(ctx, client, handle, obs, dispatchErr.err); handled {
 						return
+					} else if !matched {
+						if tryDeadLetter(client, handle, obs, msg.Topic(), msg.Payload(), dispatchErr.err) {
+							return
+						}
 					}
 					if opts.OnError != nil {
 						opts.OnError(SubscribeError{Kind: KindHandler, Topic: msg.Topic(), Err: events.MiddlewareError{Name: dispatchErr.name, Err: dispatchErr.err}})
@@ -300,6 +408,13 @@ func subscribeHandler[T any](
 					return
 				}
 				stats.ReportErrors(obs, "middleware:in", dispatchErr.err)
+				if handled, matched := tryPublishErrorChannel(ctx, client, handle, obs, dispatchErr.err); handled {
+					return
+				} else if !matched {
+					if tryDeadLetter(client, handle, obs, msg.Topic(), msg.Payload(), dispatchErr.err) {
+						return
+					}
+				}
 				if opts.OnError != nil {
 					opts.OnError(SubscribeError{Kind: KindDecode, Topic: msg.Topic(), Err: dispatchErr.err})
 				}
@@ -317,13 +432,12 @@ func subscribeHandler[T any](
 			reportInvalidTopicErrors(err, obs)
 			stats.ReportErrors(obs, "topic_var", err)
 			obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
-			if resp, matched, matchErr := handle.ErrorResponseFor(err); matched && matchErr == nil && resp.Action == events.ErrorRespond {
-				token := client.Publish(resp.Topic, 0, false, resp.Body)
-				token.Wait()
-				if pubErr := token.Error(); pubErr != nil {
-					stats.ReportErrors(obs, "error_channel", pubErr)
-				}
+			if handled, matched := tryPublishErrorChannel(ctx, client, handle, obs, err); handled {
 				return
+			} else if !matched {
+				if tryDeadLetter(client, handle, obs, msg.Topic(), msg.Payload(), err) {
+					return
+				}
 			}
 			if opts.OnError != nil {
 				opts.OnError(SubscribeError{Kind: KindHandler, Topic: msg.Topic(), Err: err})
@@ -465,6 +579,11 @@ func publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.
 			stats.ReportErrors(obs, loc, reported)
 			obs.RecordPublish(handle.Topic, false, time.Since(start))
 			err = mwErr
+			// Topic 4: a failed publish (never reached the broker) is
+			// ALSO dead-letterable, alongside the synchronous error
+			// returned to the caller.
+			bestEffortPayload, _ := handle.Encode(msg)
+			tryDeadLetter(client, handle, obs, handle.Topic, bestEffortPayload, err)
 			return err
 		}
 		vars = overrideDerivedVars(mwVars, vars)
@@ -510,7 +629,13 @@ func publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.
 		if encErr != nil {
 			reportPayloadErrors(encErr, obs)
 			obs.RecordPublish(topic, false, time.Since(start))
-			return PublishEncodeError{Topic: topic, Err: encErr}
+			pubErr := PublishEncodeError{Topic: topic, Err: encErr}
+			// Topic 4: even an encode failure is dead-letterable — the
+			// raw pre-encode payload doesn't exist, so fall back to a
+			// best-effort re-encode via handle.Encode for the envelope.
+			bestEffortPayload, _ := handle.Encode(m)
+			tryDeadLetter(client, handle, obs, topic, bestEffortPayload, pubErr)
+			return pubErr
 		}
 		token := client.Publish(topic, qos, retained, payload)
 		select {
@@ -520,6 +645,7 @@ func publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.
 		case <-token.Done():
 			if token.Error() != nil {
 				obs.RecordPublish(topic, false, time.Since(start))
+				tryDeadLetter(client, handle, obs, topic, payload, token.Error())
 				return token.Error()
 			}
 			obs.RecordPublish(topic, true, time.Since(start))

@@ -6,6 +6,43 @@ import (
 	"github.com/DaniDeer/go-codex/stats"
 )
 
+// ObserveErrorResponseFor is the observability-aware counterpart of
+// [ChannelHandle.ErrorResponseFor]: it performs the SAME errors.As match,
+// but ALSO reports the outcome to obs — stats.ErrorPatternObserver.
+// RecordErrorPatternMatch on a match, RecordErrorPatternMiss on a miss
+// (only when [ChannelHandle.HasErrorPatterns] is true), and stats.
+// SpanTagger.TagSpan when both a match occurs AND obs implements
+// SpanTagger — all type-asserted and derived INTERNALLY, so the adapter
+// needs no knowledge of ErrorPatternObserver/SpanTagger/HasErrorPatterns
+// at all. Returns the IDENTICAL 3-tuple ErrorResponseFor already
+// returns, so an adapter's existing resp.Action-dispatch logic needs no
+// changes beyond swapping which method it calls.
+//
+// This is the RECOMMENDED call site for every Category-A failure point
+// (see docs/roadmap/error-handling-rest-events-reqreply.md's Topic 1/5)
+// — adapters should call this instead of ErrorResponseFor directly
+// whenever an Observer is in scope.
+func (h *ChannelHandle[T]) ObserveErrorResponseFor(
+	ctx context.Context, obs stats.Observer, err error,
+) (resp ErrorChannelResponse, matched bool, applyErr error) {
+	resp, matched, applyErr = h.ErrorResponseFor(err)
+	location := h.Topic
+	switch {
+	case matched && applyErr == nil:
+		if po, ok := obs.(stats.ErrorPatternObserver); ok {
+			po.RecordErrorPatternMatch(location, resp.Topic, string(resp.Action))
+		}
+		if st, ok := obs.(stats.SpanTagger); ok {
+			st.TagSpan(ctx, "error_pattern.code", resp.Topic)
+		}
+	case !matched && h.HasErrorPatterns():
+		if po, ok := obs.(stats.ErrorPatternObserver); ok {
+			po.RecordErrorPatternMiss(location)
+		}
+	}
+	return resp, matched, applyErr
+}
+
 // Observability builds a general-purpose
 // `func(next func(context.Context, T) error) func(context.Context, T) error`
 // closure — the pub/sub analogue of [adapters/nethttp.Observability]

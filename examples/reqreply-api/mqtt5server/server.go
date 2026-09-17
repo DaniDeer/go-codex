@@ -287,6 +287,18 @@ func newMockBroker() (*mockBroker, *mockRouter) {
 	return &mockBroker{router: router}, router
 }
 
+// NewMockBrokerRouter returns a FRESH, independent in-process mock
+// broker/router pair — not the one Build() assembles its full route set
+// onto. Use when a demo needs its OWN scratch server (e.g.
+// demo_ports_error_pattern.go, which binds routes.ErrorPatternComputeRoute
+// via ports.ToolPort + mqtt5.ServeAdapter instead of Build()'s
+// mqtt5.AttachServer, and would otherwise collide with Build()'s own
+// registration of that same route/topic).
+func NewMockBrokerRouter() (mqtt5adapter.MQTTClient, mqtt5adapter.MQTTRouter) {
+	broker, router := newMockBroker()
+	return broker, router
+}
+
 func (b *mockBroker) Publish(_ context.Context, p *pahomqtt5.Publish) (*pahomqtt5.PublishResponse, error) {
 	go b.router.dispatch(p)
 	return &pahomqtt5.PublishResponse{}, nil

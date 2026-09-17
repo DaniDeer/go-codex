@@ -3,6 +3,7 @@ package zeromq
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -1028,6 +1029,36 @@ func TestSubscribeError_ErrorsAs(t *testing.T) {
 	outer := SubscribeError{Kind: KindDecode, Topic: "t", Err: inner}
 	if !errors.Is(outer, inner) {
 		t.Fatal("errors.Is must traverse Unwrap to find inner")
+	}
+}
+
+// TestSubscribeError_As_Method tests Topic 7's convenience method (see
+// docs/roadmap/error-handling-rest-events-reqreply.md): a thin wrapper
+// over errors.As(e.Err, target), collapsing the two-step
+// "errors.As(subErr.Err, &target)" dance into "subErr.As(&target)".
+func TestSubscribeError_As_Method(t *testing.T) {
+	inner := asZmqError{v: "duplicate"}
+	subErr := SubscribeError{Kind: KindHandler, Topic: "t", Err: fmt.Errorf("wrapped: %w", inner)}
+
+	var got asZmqError
+	if !subErr.As(&got) {
+		t.Fatal("want subErr.As to extract the wrapped domain error")
+	}
+	if got.v != "duplicate" {
+		t.Errorf("want v %q, got %q", "duplicate", got.v)
+	}
+}
+
+// asZmqError is a minimal errors.As-target test helper.
+type asZmqError struct{ v string }
+
+func (e asZmqError) Error() string { return e.v }
+
+func TestSubscribeError_As_NoMatch_ReturnsFalse(t *testing.T) {
+	subErr := SubscribeError{Kind: KindDecode, Topic: "t", Err: errors.New("plain")}
+	var target asZmqError
+	if subErr.As(&target) {
+		t.Error("want As to return false when no wrapped value matches target's type")
 	}
 }
 

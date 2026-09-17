@@ -147,6 +147,64 @@ type TraceObserver interface {
 	EndSpan(ctx context.Context, err error)
 }
 
+// ErrorPatternObserver is an optional extension to [Observer] for
+// declared-error-pattern observability. REST's ErrorPattern, events'
+// ErrorChannel, and reqreply's ErrorPattern all share this ONE mechanism —
+// their errors.As-matched, first-declared-wins, codec-backed design is
+// already unified across all 3 APIs. Adapters type-assert the configured
+// Observer to ErrorPatternObserver before calling either method (mirrors
+// [SecurityObserver]'s established pattern), so implementing this
+// interface is purely additive — existing Observer implementations are
+// unaffected.
+//
+// In practice, callers never call these methods directly — they are
+// invoked internally by each API's ObserveErrorResponseFor (e.g.
+// rest.RouteHandle.ObserveErrorResponseFor), the recommended single call
+// site for declared-error-pattern dispatch + observability together.
+type ErrorPatternObserver interface {
+	// RecordErrorPatternMatch is called when a declared ErrorPattern/
+	// ErrorChannel matches a failing operation's error via errors.As —
+	// regardless of whether the matched pattern's OWN encode/mapFn then
+	// succeeds or fails (that sub-case is separately reported via the
+	// existing ReportErrors(obs, "error_pattern"/"error_channel", ...)
+	// mechanism, unchanged). location is the route path/topic template
+	// (same convention as RecordRequest). code identifies which declared
+	// pattern matched — REST: derived from status (e.g. "409"); events/
+	// reqreply: the pattern's own Code (WithCode or the sanitized-type-
+	// name default). action is the resolved action as a plain string
+	// ("respond"/"handle"/"log" for REST/events; "" for reqreply, which
+	// has no ErrorAction concept — always responds).
+	RecordErrorPatternMatch(location, code, action string)
+
+	// RecordErrorPatternMiss is called when a failing operation's error
+	// matched NO declared ErrorPattern/ErrorChannel (the raw/plain-text
+	// fallback path), but at least one ErrorPattern/ErrorChannel IS
+	// declared on that route/channel — a coverage-analysis signal
+	// distinct from a match: "this location keeps failing in a way
+	// nothing declared here anticipated; should a pattern be added?"
+	RecordErrorPatternMiss(location string)
+}
+
+// SpanTagger is an optional extension to [Observer]/[TraceObserver] for
+// tagging the CURRENT active span with additional key/value context (e.g.
+// which declared ErrorPattern/ErrorChannel fired). Adapters do not
+// type-assert this directly — it is called internally by each API's
+// ObserveErrorResponseFor, alongside [ErrorPatternObserver], mirroring
+// [SecurityObserver]'s established type-assertion pattern — purely
+// additive, zero adapter-side wiring.
+//
+// SpanTagger is deliberately a SEPARATE interface from [TraceObserver]
+// rather than a new method added to it: TraceObserver already has ~13
+// concrete implementers across this repo (test spies, stats.fanout,
+// stats.NoopObserver, and multiple examples) — adding a required method
+// would break every one of them. A caller who wants both span lifecycle
+// AND tagging implements both interfaces on the same type.
+type SpanTagger interface {
+	// TagSpan tags the span associated with ctx with a key/value pair.
+	// Exact mechanism (a span event vs. an attribute) is tracer-specific.
+	TagSpan(ctx context.Context, key, value string)
+}
+
 // FileObserver is an optional extension to [Observer] for file I/O lifecycle
 // events. [ports.File] and [ports.Dir] both type-assert the configured
 // observer to FileObserver before calling its methods. Implementing this
@@ -378,6 +436,14 @@ func (o *LoggingObserver) RecordSecurityRejection(location, scheme string) {
 	o.logger.Warn("security rejection", "location", location, "scheme", scheme)
 }
 
+func (o *LoggingObserver) RecordErrorPatternMatch(location, code, action string) {
+	o.logger.Info("error pattern match", "location", location, "code", code, "action", action)
+}
+
+func (o *LoggingObserver) RecordErrorPatternMiss(location string) {
+	o.logger.Warn("error pattern miss", "location", location)
+}
+
 func (o *LoggingObserver) RecordFileRead(path string, success bool, d time.Duration) {
 	o.logger.Debug("file read", "path", path, "success", success, "ms", d.Milliseconds())
 }
@@ -508,6 +574,33 @@ func (f *fanout) RecordSecurityRejection(location, scheme string) {
 	for _, o := range f.observers {
 		if so, ok := o.(SecurityObserver); ok {
 			so.RecordSecurityRejection(location, scheme)
+		}
+	}
+}
+
+// RecordErrorPatternMatch implements [ErrorPatternObserver].
+func (f *fanout) RecordErrorPatternMatch(location, code, action string) {
+	for _, o := range f.observers {
+		if po, ok := o.(ErrorPatternObserver); ok {
+			po.RecordErrorPatternMatch(location, code, action)
+		}
+	}
+}
+
+// RecordErrorPatternMiss implements [ErrorPatternObserver].
+func (f *fanout) RecordErrorPatternMiss(location string) {
+	for _, o := range f.observers {
+		if po, ok := o.(ErrorPatternObserver); ok {
+			po.RecordErrorPatternMiss(location)
+		}
+	}
+}
+
+// TagSpan implements [SpanTagger].
+func (f *fanout) TagSpan(ctx context.Context, key, value string) {
+	for _, o := range f.observers {
+		if st, ok := o.(SpanTagger); ok {
+			st.TagSpan(ctx, key, value)
 		}
 	}
 }
@@ -644,6 +737,9 @@ func (NoopObserver) RecordSubscribe(_ string, _ bool, _ time.Duration)          
 func (NoopObserver) RecordPublish(_ string, _ bool, _ time.Duration)                {}
 func (NoopObserver) RecordApply(_, _ string, _ bool, _ time.Duration)               {}
 func (NoopObserver) RecordSecurityRejection(_, _ string)                            {}
+func (NoopObserver) RecordErrorPatternMatch(_, _, _ string)                         {}
+func (NoopObserver) RecordErrorPatternMiss(_ string)                                {}
+func (NoopObserver) TagSpan(_ context.Context, _, _ string)                         {}
 func (NoopObserver) RecordFileRead(_ string, _ bool, _ time.Duration)               {}
 func (NoopObserver) RecordFileWrite(_ string, _ bool, _ time.Duration)              {}
 func (NoopObserver) RecordFileDelete(_ string, _ bool, _ time.Duration)             {}

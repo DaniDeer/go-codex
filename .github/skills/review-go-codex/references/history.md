@@ -1,6 +1,109 @@
-# go-codex Review History (R1–R139, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2)
+# go-codex Review History (R1–R139, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 140 (error-pattern mechanism deep-dive — H1/H2 fixes + example showcase + doc-sync)
+
+A separate, extended multi-round session (tracked with its own F/G/H labels against
+`docs/roadmap/error-handling-rest-events-reqreply.md` rather than this skill's sequential Round
+numbers) repeatedly re-audited the error-pattern mechanism end to end and surfaced 2 genuine code
+bugs plus a comprehensive example rework. Recording it here now since it was never logged in this
+history file at the time.
+
+- **H1 [bug] — REST's port/stream-adapter dispatch never consulted a declared `ErrorPattern`**:
+  `adapters/nethttp`/`adapters/chi` each have a SEPARATE HTTP dispatch function, `handlerFunc[Req,
+  Resp any]` (backing `IngestAdapter`/`LatestAdapter`/`HandlerLatest`/`PipelineHandler`), distinct
+  from `serve.go`'s already-wired `serve`. `handlerFunc` supported declared `ErrorPattern`s via
+  `RouteHandle` but never consulted them at any Category-A dispatch point except the handler's own
+  business error (and even that used the bare, non-observability `ErrorResponseFor` instead of
+  `ObserveErrorResponseFor`). Fixed by adding a new, non-reflection
+  `tryRespondErrorPatternGeneric[Req,Resp]` helper (named to avoid collision with `serve.go`'s own
+  reflection-based `tryRespondErrorPattern`), wired at the same 13 Category-A points `serve.go`
+  covers. Purely additive — a route with no declared `ErrorPattern` sees zero behavior change.
+  4 new regression tests (2 nethttp + 2 chi) prove a declared pattern is now consulted through
+  `IngestAdapter` and that `RecordErrorPatternMatch` fires.
+- **H2 [small] — events' `PublishAdapter.Activate`'s upstream-error path skipped
+  `ErrorPatternObserver` observability**: `handleUpstreamError` (in `adapters/mqtt`/`adapters/mqtt5`/
+  `adapters/zeromq`'s `binding.go`) hand-rolled its own `events.ErrorChannel` dispatch via the bare
+  `handle.ErrorResponseFor`, instead of reusing each package's own already-correct
+  `tryPublishErrorChannel` helper (used by the subscribe side and `publish()`'s own internal error
+  paths) — silently skipping `stats.ErrorPatternObserver`/`SpanTagger` observability on this one
+  path. Fixed by delegating to `tryPublishErrorChannel` in all 3 packages; error-channel replies
+  from this path now always use QoS 0/non-retained (mqtt/mqtt5 only, matching every other
+  error-channel dispatch site — zeromq had no such option, so its fix was a pure dedup). `DeadLetter`
+  fallback intentionally NOT added — no raw payload exists for an upstream, pre-publish pipeline
+  error (same scope boundary as the publish-side exclusion documented under Topic 4). 3 new
+  observability-spy regression tests (one per package).
+- **Example showcase (2 follow-up rounds)** — consolidated `examples/rest-api`/`events-api`/
+  `reqreply-api` each into ONE comprehensive `demo_error_pattern.go` (replacing several earlier,
+  narrower demo files), covering every declaration mode (REST's `ErrorStatus`/Direct/Mapped;
+  events/reqreply's Direct/Mapped), every `ErrorAction` (REST/events: Respond/Handle/Log; reqreply
+  has none — a matched pattern always replies), all 3 client-side recovery mechanisms
+  (`ErrorPatternAs[B]`/`HandleErrorPattern`+`Case`/the declaration value's own `.Match`), a
+  security-middleware combo (proving `ErrorPattern`/`ErrorChannel` intercepts a middleware Fn
+  failure, not just a handler failure — routes.LoginRoute refactored from a hand-rolled
+  `errors.As` dispatch to a declarative `ErrorPattern` in the same pass), the `DeadLetter` two-tier
+  fallback (events/reqreply, matched vs genuinely-unmatched side-by-side), and the port/stream
+  binding proof (`nethttp.IngestAdapter`, `ports.ToolPort`+`mqtt5.ServeAdapter`). A follow-up review
+  pass confirmed and closed 2 publisher/subscriber ASYMMETRY gaps found in `events-api`'s demo
+  (Direct mode was subscribe-side only; the 3 `ErrorAction`s were publish-side only) by adding the
+  missing `.WithPublish`/`.WithSubscribe` route/channel variants and demo halves for each. `rest-api`
+  and `reqreply-api` were confirmed complete (their request/response model inherently exercises
+  both sides on every call — no pub/sub duality to worry about).
+
+Verification (every fix/round): `gofmt -l .` clean, `go build ./...` clean, `go vet ./examples/...`
+clean, `go test -count=1 ./...` — zero failures across the full repo, `just check` (staticcheck +
+gosec) zero issues, all 3 examples re-run fresh end to end with exit code 0 and zero error/panic
+markers.
+
+---
+
+## Round 141 (client-side ErrorPattern helpers misplaced in adapters — thin-adapter guardrail)
+
+Triggered by a direct user question about `examples/reqreply-api/demo_error_pattern.go`: "why do we
+force the user to use the adapter here (`mqtt5adapter.Case`), instead of a transport-agnostic
+`client.Case`?" Investigation confirmed a real, previously-unfound design mistake, then a follow-up
+"review REST and pub/sub too" request expanded it into a full audit across all 3 APIs.
+
+- **G1 [bug] — `ErrorPatternAs`/`HandleErrorPattern`/`Case` were misplaced in adapter packages,
+  violating this library's own "thin adapter" principle**: these 3 functions touch ONLY the
+  already-core-layer `ErrorPatternValuer` interface (the SAME interface `ErrorPatternOpt.Match`
+  already correctly uses from `api/rest`/`api/reqreply`) — nothing about them is protocol-specific.
+  `adapters/mqtt5/error_pattern_client.go` and `adapters/zeromq/error_pattern_client.go` were
+  **byte-for-byte identical** (only the package name and one doc-comment line differed), confirming
+  the duplication. `adapters/nethttp/error_pattern_client.go` had the same shape (not duplicated
+  today only because chi has no REST client component). The original roadmap decision (Topic 6)
+  reasoned "keep near-identical copies per client package, mirroring the precedent that
+  `ErrorPatternResponse` differs per adapter" — this conflated the (legitimately different) concrete
+  response TYPE with the (not adapter-specific at all) HELPER FUNCTIONS built on top of the shared
+  interface. Fixed: moved `ErrorPatternAs`/`HandleErrorPattern`/`Case`/`errorCase`/`typedCase[T]`
+  into NEW `api/rest/error_pattern_client.go` and `api/reqreply/error_pattern_client.go` (ONE
+  implementation each, generalized to match against `ErrorPatternValuer` instead of a concrete
+  adapter type); deleted all 3 adapter-owned copies entirely
+  (`adapters/nethttp`/`adapters/mqtt5`/`adapters/zeromq`). Existing adapter-level round-trip tests
+  were repointed (not deleted) to the new `rest.*`/`reqreply.*` call sites — still valuable
+  regression coverage proving each adapter's own `ErrorPatternResponse` is recognized correctly via
+  the shared interface. New adapter-INDEPENDENT unit tests added in both new core files, using a
+  minimal local test type implementing `ErrorPatternValuer` with zero adapter dependency at all —
+  something no existing test previously demonstrated.
+- **G2 [trivial] — new permanent design guardrail recorded**: added a "Design guardrail: adapters
+  implement wire protocols only — client-side ergonomics belong in `api/*`" subsection to
+  `docs/roadmap/error-handling-rest-events-reqreply.md`'s Topic 6, cross-referenced from this
+  skill's own `checklist.md` §13, so this class of mistake is caught in future reviews rather than
+  re-discovered. Audited `api/events` (pub/sub), `mcp.ErrorPattern`, and `websocket.ErrorFrame` for
+  the same class of gap — confirmed NONE exists (all 3 are structurally different: no synchronous
+  caller ever receives a matched error back to hand to a client-side helper) — do not re-propose
+  moving anything there.
+- Updated all call sites and docs: `examples/rest-api`/`examples/reqreply-api`'s
+  `demo_error_pattern.go`, `docs/guides/asyncapi.md`, `docs/guides/http-client.md`,
+  `docs/features/rest-api.md`, `.github/instructions/go-codex.instructions.md`'s
+  `api/rest`/`api/reqreply`/`adapters/nethttp`/`adapters/mqtt5`/`adapters/zeromq` rows.
+
+Verification: `gofmt -l .` clean, `go build ./...` clean, `go test -count=1 ./...` — zero failures
+across the full repo, `just check` zero issues, `examples/rest-api` and `examples/reqreply-api`
+re-run fresh with exit code 0 and zero error markers.
 
 ---
 

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"github.com/DaniDeer/go-codex/route"
@@ -30,4 +31,13 @@ func VerifyBearer(_ context.Context, msg *pahomqtt5.Publish, _ []route.SecurityR
 	}
 	_ = token // format already validated upstream; nothing further to check for this demo
 	return map[string][]string{"bearerAuth": nil}, nil
+}
+
+// AlwaysRejectSecurityImpl is a security implementation Fn that ALWAYS
+// rejects — used by demo_error_pattern.go's security-middleware +
+// ErrorPattern combination demo to prove a declared
+// reqreply.ErrorPattern[reqreply.SecurityError, ...] intercepts a
+// SECURITY-MIDDLEWARE Fn failure (not just a handler failure).
+func AlwaysRejectSecurityImpl(_ context.Context, _ *pahomqtt5.Publish, _ []route.SecurityRequirement) (map[string][]string, error) {
+	return nil, errors.New("access denied for demo")
 }

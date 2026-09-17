@@ -92,6 +92,17 @@ type Operation struct {
 	Description string
 	Tags        []string
 	Message     Message
+	// Messages, when non-empty, lists MULTIPLE named message variants for
+	// this operation (e.g. a reply channel's success shape plus N
+	// declared ErrorPattern shapes) — takes priority over Message when
+	// both are set. Each Message's key in the channel's "messages" map is
+	// derived from Message.Name, falling back to SchemaName, falling
+	// back to a generated "message<N>" key. See
+	// docs/roadmap/error-handling-rest-events-reqreply.md's Topic 3 for
+	// the full design rationale (AsyncAPI 3.0's native multi-message
+	// channel mechanism, the direct analogue of OpenAPI's per-status
+	// responses object).
+	Messages []Message
 	// Reply, when non-nil, declares the reply channel for request-reply patterns.
 	// Set this on the sending (action: send) operation only. The reply channel
 	// must be registered in the same document via [DocumentBuilder.AddReplyChannel].
@@ -274,6 +285,14 @@ func collectMessageSchema(op *Operation, schemas map[string]schema.Schema) {
 	if op == nil {
 		return
 	}
+	if len(op.Messages) > 0 {
+		for _, m := range op.Messages {
+			if m.SchemaName != "" {
+				schemas[m.SchemaName] = m.Schema
+			}
+		}
+		return
+	}
 	if op.Message.SchemaName != "" {
 		schemas[op.Message.SchemaName] = op.Message.Schema
 	}
@@ -281,16 +300,41 @@ func collectMessageSchema(op *Operation, schemas map[string]schema.Schema) {
 
 // MarshalJSON encodes the document as JSON bytes.
 func (d Document) MarshalJSON() ([]byte, error) {
-	return json.MarshalIndent(d.toMap(), "", "  ")
+	m, err := d.toMap()
+	if err != nil {
+		return nil, err
+	}
+	return json.MarshalIndent(m, "", "  ")
 }
 
 // MarshalYAML encodes the document as YAML bytes.
 func (d Document) MarshalYAML() ([]byte, error) {
-	return yaml.Marshal(d.toMap())
+	m, err := d.toMap()
+	if err != nil {
+		return nil, err
+	}
+	return yaml.Marshal(m)
+}
+
+// DuplicateMessageKeyError is returned by [Document.MarshalJSON]/
+// [Document.MarshalYAML] when two [Message] values in the SAME
+// [Operation.Messages] slice derive to the same channel "messages" map
+// key (via Name, falling back to SchemaName, falling back to a generated
+// key) — a caller bug, since [Topic 1]'s reopened
+// DuplicateErrorStatusError (REST) and reqreply's own
+// DuplicateErrorPatternCodeError already prevent the realistic
+// naturally-occurring cases upstream, before this renderer ever runs.
+type DuplicateMessageKeyError struct {
+	Channel string
+	Key     string
+}
+
+func (e DuplicateMessageKeyError) Error() string {
+	return fmt.Sprintf("asyncapi: channel %q: duplicate message key %q in Operation.Messages", e.Channel, e.Key)
 }
 
 // toMap converts the document to a map[string]any suitable for JSON/YAML marshaling.
-func (d Document) toMap() map[string]any {
+func (d Document) toMap() (map[string]any, error) {
 	doc := map[string]any{
 		"asyncapi": "3.0.0",
 		"info":     buildInfo(d.info),
@@ -300,7 +344,10 @@ func (d Document) toMap() map[string]any {
 		doc["servers"] = buildServers(d.servers)
 	}
 
-	channels, operations := buildChannelsAndOperations(d.channels)
+	channels, operations, err := buildChannelsAndOperations(d.channels)
+	if err != nil {
+		return nil, err
+	}
 	if len(channels) > 0 {
 		doc["channels"] = channels
 	}
@@ -319,7 +366,7 @@ func (d Document) toMap() map[string]any {
 		doc["components"] = components
 	}
 
-	return doc
+	return doc, nil
 }
 
 // buildInfo produces the AsyncAPI info object.
@@ -355,7 +402,7 @@ func buildServers(servers []namedServer) map[string]any {
 
 // buildChannelsAndOperations produces the AsyncAPI 3.0 channels map and
 // operations map from ChannelItems. In 3.0 these are separate top-level keys.
-func buildChannelsAndOperations(channels map[string]ChannelItem) (map[string]any, map[string]any) {
+func buildChannelsAndOperations(channels map[string]ChannelItem) (map[string]any, map[string]any, error) {
 	chOut := make(map[string]any, len(channels))
 	opOut := map[string]any{}
 
@@ -398,15 +445,11 @@ func buildChannelsAndOperations(channels map[string]ChannelItem) (map[string]any
 
 		// Collect messages from operations into the channel messages map.
 		messages := map[string]any{}
-		if ch.Subscribe != nil && ch.Subscribe.Message.SchemaName != "" {
-			messages[ch.Subscribe.Message.SchemaName] = buildMessage(ch.Subscribe.Message)
-		} else if ch.Subscribe != nil {
-			messages["subscribeMessage"] = buildMessage(ch.Subscribe.Message)
+		if err := addOperationMessages(messages, ch.Subscribe, key, "subscribeMessage"); err != nil {
+			return nil, nil, err
 		}
-		if ch.Publish != nil && ch.Publish.Message.SchemaName != "" {
-			messages[ch.Publish.Message.SchemaName] = buildMessage(ch.Publish.Message)
-		} else if ch.Publish != nil {
-			messages["publishMessage"] = buildMessage(ch.Publish.Message)
+		if err := addOperationMessages(messages, ch.Publish, key, "publishMessage"); err != nil {
+			return nil, nil, err
 		}
 		if len(messages) > 0 {
 			chItem["messages"] = messages
@@ -433,7 +476,46 @@ func buildChannelsAndOperations(channels map[string]ChannelItem) (map[string]any
 		}
 	}
 
-	return chOut, opOut
+	return chOut, opOut, nil
+}
+
+// addOperationMessages adds op's message(s) into messages (the channel's
+// "messages" map under construction). When op.Messages is non-empty, EACH
+// entry is added, keyed by Message.Name, falling back to SchemaName,
+// falling back to a generated "message<N>" key — this is the Topic 3
+// multi-message case (e.g. a reqreply reply channel's success shape plus
+// N declared ErrorPattern shapes). Otherwise falls back to op.Message
+// (the pre-existing single-message case), keyed by SchemaName, falling
+// back to defaultKey — unchanged behavior for every other channel in the
+// codebase that declares exactly one message. Returns
+// [DuplicateMessageKeyError] when two entries in op.Messages derive to
+// the SAME key.
+func addOperationMessages(messages map[string]any, op *Operation, channelKey, defaultKey string) error {
+	if op == nil {
+		return nil
+	}
+	if len(op.Messages) > 0 {
+		for i, m := range op.Messages {
+			key := m.Name
+			if key == "" {
+				key = m.SchemaName
+			}
+			if key == "" {
+				key = fmt.Sprintf("message%d", i+1)
+			}
+			if _, exists := messages[key]; exists {
+				return DuplicateMessageKeyError{Channel: channelKey, Key: key}
+			}
+			messages[key] = buildMessage(m)
+		}
+		return nil
+	}
+	if op.Message.SchemaName != "" {
+		messages[op.Message.SchemaName] = buildMessage(op.Message)
+	} else {
+		messages[defaultKey] = buildMessage(op.Message)
+	}
+	return nil
 }
 
 // buildParameters converts a map of channel parameters into the AsyncAPI parameters object.

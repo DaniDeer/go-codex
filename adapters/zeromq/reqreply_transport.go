@@ -81,14 +81,20 @@ func resolveCallFormatReflect(overrideAny any, declaredFieldType reflect.Type) (
 // sendHandlerErrorReplyReflect is the reflection-based counterpart of
 // [sendHandlerErrorReply] — used by [serverTransport.Serve], which has
 // no concretely-typed *reqreply.RouteHandle[Req,Resp] to call the generic
-// function with. errorResponseForMethod is
-// rv.MethodByName("ErrorResponseFor"). Mirrors [sendHandlerErrorReply]'s
-// logic exactly: consults ErrorResponseFor(err) first; on a match, sends
-// the declared codec-backed typed payload instead of plain text; on no
-// match, or a mapping/encoding failure within the matched pattern, falls
-// back to [sendErrorReply]'s plain-text behavior unchanged.
-func sendHandlerErrorReplyReflect(sock FramedSocket, errorResponseForMethod reflect.Value, err error, obs stats.Observer) {
-	results := errorResponseForMethod.Call([]reflect.Value{reflect.ValueOf(err)})
+// function with. observeErrorResponseForMethod is
+// rv.MethodByName("ObserveErrorResponseFor"). Mirrors
+// [sendHandlerErrorReply]'s logic exactly: consults
+// ObserveErrorResponseFor(ctx, obs, err) first (which ALSO reports
+// match/miss/span-tag observability internally — the RECOMMENDED single
+// call site, see docs/roadmap/error-handling-rest-events-reqreply.md's
+// Topic 1/5); on a match, sends the declared codec-backed typed payload
+// instead of plain text; on no match, or a mapping/encoding failure
+// within the matched pattern, falls back to [sendErrorReply]'s
+// plain-text behavior unchanged.
+func sendHandlerErrorReplyReflect(ctx context.Context, sock FramedSocket, observeErrorResponseForMethod reflect.Value, err error, obs stats.Observer) {
+	results := observeErrorResponseForMethod.Call([]reflect.Value{
+		reflect.ValueOf(ctx), reflect.ValueOf(&obs).Elem(), reflect.ValueOf(&err).Elem(),
+	})
 	resp, _ := results[0].Interface().(reqreply.ErrorPatternResponse)
 	matched, _ := results[1].Interface().(bool)
 	mapErr, _ := results[2].Interface().(error)
@@ -106,11 +112,55 @@ func sendHandlerErrorReplyReflect(sock FramedSocket, errorResponseForMethod refl
 	sendErrorReply(sock, err)
 }
 
+// tryDeadLetterReflect is the reflection-based counterpart of
+// [tryDeadLetter] (the pub/sub adapter's helper) — used by
+// [serverTransport.Serve], which has no concretely-typed
+// *reqreply.RouteHandle[Req,Resp] to call [reqreply.RouteHandle.
+// DeadLetterFor] with directly. sourceTopic is the route's OWN concrete
+// topic (path) — REQ/REP sockets are point-to-point (one socket per
+// route, no topic frame on the wire), so path is the only meaningful
+// "source topic" available, mirroring [tryDeadLetterReflect]'s mqtt5
+// counterpart's use of the request's concrete topic.
+//
+// UNLIKE mqtt5 (one shared client can Publish to ANY topic), a REQ/REP
+// socket is point-to-point: there is no broker to address an arbitrary
+// dead-letter topic through. sockets is the SAME topic→socket map passed
+// to [AttachServer] — the declared dead-letter topic MUST have its own
+// entry there (typically a PUSH socket feeding a dead-letter consumer)
+// for a dead-letter to actually be reachable. When no such entry exists,
+// this is a silent no-op (NOT a fallback onto the route's own REP
+// socket — sending an extra, unsolicited message there would violate
+// REQ/REP's strict one-reply-per-request protocol invariant). Returns
+// true only when a dead-letter was both declared AND successfully routed
+// to its own socket.
+func tryDeadLetterReflect(
+	sockets map[string]FramedSocket, deadLetterForMethod reflect.Value,
+	obs stats.Observer, sourceTopic string, rawPayload []byte, err error,
+) bool {
+	results := deadLetterForMethod.Call([]reflect.Value{
+		reflect.ValueOf(&obs).Elem(), reflect.ValueOf(sourceTopic), reflect.ValueOf(rawPayload), reflect.ValueOf(&err).Elem(),
+	})
+	topic, _ := results[0].Interface().(string)
+	body, _ := results[1].Interface().([]byte)
+	ok, _ := results[2].Interface().(bool)
+	if !ok {
+		return false
+	}
+	dlqSock, sockOK := sockets[topic]
+	if !sockOK {
+		return false
+	}
+	_ = dlqSock.SendFrames([][]byte{[]byte(topic), body})
+	return true
+}
+
 // sendRouterHandlerErrorReplyReflect is [sendHandlerErrorReplyReflect]'s
 // ROUTER-socket counterpart — preserves the identity frame, mirroring
 // [sendRouterHandlerErrorReply]'s logic exactly.
-func sendRouterHandlerErrorReplyReflect(sock FramedSocket, identity []byte, errorResponseForMethod reflect.Value, err error, obs stats.Observer) {
-	results := errorResponseForMethod.Call([]reflect.Value{reflect.ValueOf(err)})
+func sendRouterHandlerErrorReplyReflect(ctx context.Context, sock FramedSocket, identity []byte, observeErrorResponseForMethod reflect.Value, err error, obs stats.Observer) {
+	results := observeErrorResponseForMethod.Call([]reflect.Value{
+		reflect.ValueOf(ctx), reflect.ValueOf(&obs).Elem(), reflect.ValueOf(&err).Elem(),
+	})
 	resp, _ := results[0].Interface().(reqreply.ErrorPatternResponse)
 	matched, _ := results[1].Interface().(bool)
 	mapErr, _ := results[2].Interface().(error)
@@ -555,9 +605,18 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 	// DecodeVars either.
 	decodeWithFormatsMethod := rv.MethodByName("DecodeWithFormats")
 	encodeWithFormatsMethod := rv.MethodByName("EncodeWithFormats")
-	// errorResponseForMethod is *RouteHandle[Req,Resp].ErrorResponseFor —
-	// closes Phase 0 work item 2 (server-side).
-	errorResponseForMethod := rv.MethodByName("ErrorResponseFor")
+	// observeErrorResponseForMethod is *RouteHandle[Req,Resp].
+	// ObserveErrorResponseFor(ctx, obs, err) — closes Phase 0 work item 2
+	// (server-side), now the RECOMMENDED observability-aware call (see
+	// docs/roadmap/error-handling-rest-events-reqreply.md's Topic 1/5).
+	observeErrorResponseForMethod := rv.MethodByName("ObserveErrorResponseFor")
+	// deadLetterForMethod is *RouteHandle[Req,Resp].DeadLetterFor(obs,
+	// sourceTopic, rawPayload, err) (topic string, body []byte, ok bool)
+	// — Topic 4's dead-letter fallback (docs/roadmap/
+	// error-handling-rest-events-reqreply.md), attempted alongside/after
+	// ObserveErrorResponseFor at every Category-A failure site, mirroring
+	// the pub/sub adapters' collapsed single-rule wiring exactly.
+	deadLetterForMethod := rv.MethodByName("DeadLetterFor")
 
 	// Security Fn-shape dispatch (docs/design/d-0004-reqreply-workflow-simplification.md's Addendum):
 	// impls are the [reqreply.Route.HandleMW]-attached implementations —
@@ -644,7 +703,8 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 			stats.ReportErrors(obs, "body", errI)
 			serveErr = errI
 			obs.RecordRequest("ZMQ-REP", path, 0, time.Since(start))
-			sendErrorReply(sock, errI)
+			sendHandlerErrorReplyReflect(spanCtx, sock, observeErrorResponseForMethod, errI, obs)
+			tryDeadLetterReflect(t.sockets, deadLetterForMethod, obs, path, payload, errI)
 			endSpan()
 			if t.opts.OnError != nil {
 				t.opts.OnError(ServeError{Kind: KindDecode, Err: errI})
@@ -661,13 +721,16 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 			reqPtr := reflect.New(reqType)
 			reqPtr.Elem().Set(reqVal)
 			if secErr := runPairedServerSecurity(spanCtx, reqPtr, impls, secReqs); secErr != nil {
+				// Security middleware Fn error IS ErrorPattern-eligible
+				// now (Topic 1's Category A fix).
 				wrapped := reqreply.SecurityError{Err: secErr}
 				if secObs, ok := obs.(stats.SecurityObserver); ok {
 					secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
 				}
 				serveErr = wrapped
 				obs.RecordRequest("ZMQ-REP", path, 0, time.Since(start))
-				sendErrorReply(sock, wrapped)
+				sendHandlerErrorReplyReflect(spanCtx, sock, observeErrorResponseForMethod, wrapped, obs)
+				tryDeadLetterReflect(t.sockets, deadLetterForMethod, obs, path, payload, wrapped)
 				endSpan()
 				if t.opts.OnError != nil {
 					t.opts.OnError(ServeError{Kind: KindSecurity, Err: wrapped})
@@ -685,7 +748,6 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 			reqPtr.Elem().Set(reqVal)
 			_, _, mwName, failKind, mwErr := dispatchServerMiddlewareHandlers(spanCtx, reqPtr, middlewareHandlers, nil, nil)
 			if mwErr != nil {
-				isFnErr := failKind == "fn"
 				kind := KindDecode
 				loc := "middleware:in"
 				switch failKind {
@@ -699,11 +761,10 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 				stats.ReportErrors(obs, loc, mwErr)
 				serveErr = mwErr
 				obs.RecordRequest("ZMQ-REP", path, 0, time.Since(start))
-				if isFnErr {
-					sendHandlerErrorReplyReflect(sock, errorResponseForMethod, mwErr, obs)
-				} else {
-					sendErrorReply(sock, mwErr)
-				}
+				// Middleware DecodeIn/Fn/EncodeOut errors are ALL
+				// ErrorPattern-eligible now (Topic 1's Category A fix).
+				sendHandlerErrorReplyReflect(spanCtx, sock, observeErrorResponseForMethod, mwErr, obs)
+				tryDeadLetterReflect(t.sockets, deadLetterForMethod, obs, path, payload, mwErr)
 				endSpan()
 				if t.opts.OnError != nil {
 					t.opts.OnError(ServeError{Kind: kind, Err: mwErr})
@@ -718,7 +779,8 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 		if errI, _ := fnResults[1].Interface().(error); errI != nil {
 			serveErr = errI
 			obs.RecordRequest("ZMQ-REP", path, 0, time.Since(start))
-			sendHandlerErrorReplyReflect(sock, errorResponseForMethod, errI, obs)
+			sendHandlerErrorReplyReflect(spanCtx, sock, observeErrorResponseForMethod, errI, obs)
+			tryDeadLetterReflect(t.sockets, deadLetterForMethod, obs, path, payload, errI)
 			endSpan()
 			if t.opts.OnError != nil {
 				t.opts.OnError(ServeError{Kind: KindHandler, Err: errI})
@@ -734,7 +796,8 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 		if errI, _ := encodeResults[1].Interface().(error); errI != nil {
 			serveErr = errI
 			obs.RecordRequest("ZMQ-REP", path, 0, time.Since(start))
-			sendHandlerErrorReplyReflect(sock, errorResponseForMethod, errI, obs)
+			sendHandlerErrorReplyReflect(spanCtx, sock, observeErrorResponseForMethod, errI, obs)
+			tryDeadLetterReflect(t.sockets, deadLetterForMethod, obs, path, payload, errI)
 			endSpan()
 			if t.opts.OnError != nil {
 				t.opts.OnError(ServeError{Kind: KindEncode, Err: errI})
@@ -746,6 +809,14 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 		if sendErr := sock.SendFrames([][]byte{statusOK, respPayload}); sendErr != nil {
 			serveErr = sendErr
 			obs.RecordRequest("ZMQ-REP", path, 0, time.Since(start))
+			// Session-review fix (G1): a socket-level rejection of the
+			// SUCCESSFULLY-encoded reply is ALSO dead-letterable —
+			// mirrors events' pub/sub publish side's own
+			// broker-rejection handling (Topic 4's explicit design
+			// decision), previously missing here even though every
+			// OTHER Category-A failure point in this dispatch already
+			// consults DeadLetterFor.
+			tryDeadLetterReflect(t.sockets, deadLetterForMethod, obs, path, payload, sendErr)
 			endSpan()
 			if t.opts.OnError != nil {
 				t.opts.OnError(ServeError{Kind: KindEncode, Err: sendErr})
@@ -1228,7 +1299,14 @@ func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny a
 	// carry no topic either, routing is entirely socket-based).
 	decodeWithFormatsMethod := rv.MethodByName("DecodeWithFormats")
 	encodeWithFormatsMethod := rv.MethodByName("EncodeWithFormats")
-	errorResponseForMethod := rv.MethodByName("ErrorResponseFor")
+	observeErrorResponseForMethod := rv.MethodByName("ObserveErrorResponseFor")
+	// deadLetterForMethod is *RouteHandle[Req,Resp].DeadLetterFor(obs,
+	// sourceTopic, rawPayload, err) (topic string, body []byte, ok bool)
+	// — Topic 4's dead-letter fallback (docs/roadmap/
+	// error-handling-rest-events-reqreply.md), attempted alongside/after
+	// ObserveErrorResponseFor at every Category-A failure site, mirroring
+	// the pub/sub adapters' collapsed single-rule wiring exactly.
+	deadLetterForMethod := rv.MethodByName("DeadLetterFor")
 
 	// Security Fn-shape dispatch (docs/design/d-0004-reqreply-workflow-simplification.md's Addendum) — same
 	// mechanism as [serverTransport.Serve], duplicated for the ROUTER
@@ -1312,7 +1390,8 @@ func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny a
 				stats.ReportErrors(obs, "body", errI)
 				serveErr = errI
 				obs.RecordRequest("ZMQ-ROUTER", path, 0, time.Since(start))
-				sendRouterErrorReply(sock, id, errI)
+				sendRouterHandlerErrorReplyReflect(spanCtx, sock, id, observeErrorResponseForMethod, errI, obs)
+				tryDeadLetterReflect(t.sockets, deadLetterForMethod, obs, path, pl, errI)
 				if t.opts.OnError != nil {
 					t.opts.OnError(ServeError{Kind: KindDecode, Err: errI})
 				}
@@ -1326,13 +1405,16 @@ func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny a
 				reqPtr := reflect.New(reqType)
 				reqPtr.Elem().Set(reqVal)
 				if secErr := runPairedServerSecurity(spanCtx, reqPtr, impls, secReqs); secErr != nil {
+					// Security middleware Fn error IS ErrorPattern-
+					// eligible now (Topic 1's Category A fix).
 					wrapped := reqreply.SecurityError{Err: secErr}
 					if secObs, ok := obs.(stats.SecurityObserver); ok {
 						secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
 					}
 					serveErr = wrapped
 					obs.RecordRequest("ZMQ-ROUTER", path, 0, time.Since(start))
-					sendRouterErrorReply(sock, id, wrapped)
+					sendRouterHandlerErrorReplyReflect(spanCtx, sock, id, observeErrorResponseForMethod, wrapped, obs)
+					tryDeadLetterReflect(t.sockets, deadLetterForMethod, obs, path, pl, wrapped)
 					if t.opts.OnError != nil {
 						t.opts.OnError(ServeError{Kind: KindSecurity, Err: wrapped})
 					}
@@ -1349,7 +1431,6 @@ func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny a
 				reqPtr.Elem().Set(reqVal)
 				_, _, mwName, failKind, mwErr := dispatchServerMiddlewareHandlers(spanCtx, reqPtr, middlewareHandlers, nil, nil)
 				if mwErr != nil {
-					isFnErr := failKind == "fn"
 					kind := KindDecode
 					loc := "middleware:in"
 					switch failKind {
@@ -1363,11 +1444,10 @@ func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny a
 					stats.ReportErrors(obs, loc, mwErr)
 					serveErr = mwErr
 					obs.RecordRequest("ZMQ-ROUTER", path, 0, time.Since(start))
-					if isFnErr {
-						sendRouterHandlerErrorReplyReflect(sock, id, errorResponseForMethod, mwErr, obs)
-					} else {
-						sendRouterErrorReply(sock, id, mwErr)
-					}
+					// Middleware DecodeIn/Fn/EncodeOut errors are ALL
+					// ErrorPattern-eligible now (Topic 1's Category A fix).
+					sendRouterHandlerErrorReplyReflect(spanCtx, sock, id, observeErrorResponseForMethod, mwErr, obs)
+					tryDeadLetterReflect(t.sockets, deadLetterForMethod, obs, path, pl, mwErr)
 					if t.opts.OnError != nil {
 						t.opts.OnError(ServeError{Kind: kind, Err: mwErr})
 					}
@@ -1381,7 +1461,8 @@ func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny a
 			if errI, _ := fnResults[1].Interface().(error); errI != nil {
 				serveErr = errI
 				obs.RecordRequest("ZMQ-ROUTER", path, 0, time.Since(start))
-				sendRouterHandlerErrorReplyReflect(sock, id, errorResponseForMethod, errI, obs)
+				sendRouterHandlerErrorReplyReflect(spanCtx, sock, id, observeErrorResponseForMethod, errI, obs)
+				tryDeadLetterReflect(t.sockets, deadLetterForMethod, obs, path, pl, errI)
 				if t.opts.OnError != nil {
 					t.opts.OnError(ServeError{Kind: KindHandler, Err: errI})
 				}
@@ -1393,7 +1474,8 @@ func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny a
 			if errI, _ := encodeResults[1].Interface().(error); errI != nil {
 				serveErr = errI
 				obs.RecordRequest("ZMQ-ROUTER", path, 0, time.Since(start))
-				sendRouterHandlerErrorReplyReflect(sock, id, errorResponseForMethod, errI, obs)
+				sendRouterHandlerErrorReplyReflect(spanCtx, sock, id, observeErrorResponseForMethod, errI, obs)
+				tryDeadLetterReflect(t.sockets, deadLetterForMethod, obs, path, pl, errI)
 				if t.opts.OnError != nil {
 					t.opts.OnError(ServeError{Kind: KindEncode, Err: errI})
 				}
@@ -1404,6 +1486,14 @@ func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny a
 			if sendErr := sock.SendFrames([][]byte{id, emptyDelimiter, statusOK, respPayload}); sendErr != nil {
 				serveErr = sendErr
 				obs.RecordRequest("ZMQ-ROUTER", path, 0, time.Since(start))
+				// Session-review fix (G1): a socket-level rejection of
+				// the SUCCESSFULLY-encoded reply is ALSO dead-letterable
+				// — mirrors events' pub/sub publish side's own
+				// broker-rejection handling (Topic 4's explicit design
+				// decision), previously missing here even though every
+				// OTHER Category-A failure point in this dispatch
+				// already consults DeadLetterFor.
+				tryDeadLetterReflect(t.sockets, deadLetterForMethod, obs, path, pl, sendErr)
 				if t.opts.OnError != nil {
 					t.opts.OnError(ServeError{Kind: KindEncode, Err: sendErr})
 				}

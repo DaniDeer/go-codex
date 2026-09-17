@@ -4,6 +4,20 @@ For the full reference of all error types, `errors.As` patterns, and slog integr
 
 **Feature:** [Error Handling](../features/error-handling.md)
 
+> **Recommended: declare it, don't dispatch it.** For a route/channel
+> HANDLER's own business error (as opposed to go-codex's own internal
+> typed errors covered below), the RECOMMENDED mechanism is the
+> declarative `rest.ErrorPattern` / `events.ErrorChannel` /
+> `reqreply.ErrorPattern` trio — see
+> ["Sibling mechanism: declared HANDLER errors"](#sibling-mechanism-declared-handler-errors-client-side-decode)
+> further down this guide. It replaces hand-rolled `errors.As` dispatch
+> inside `Options.ErrorHandler`/`OnError` callbacks (still shown below as
+> the lower-level escape hatch) with ONE declaration that drives the
+> typed server response/publish AND the typed client-side recovery
+> simultaneously, self-documents in the OpenAPI/AsyncAPI spec, and reports
+> observability for free. See the "Runnable demos" list below for a
+> complete, guided tour across all 3 mechanisms in each API.
+
 ## Key pattern: errors.As + named slog.Logger
 
 ```go
@@ -257,7 +271,186 @@ round-trips all the way to the CLIENT: `nethttp.CallWithHandle`/
 [Feature: REST API — client-side decode](../features/rest-api.md#client-side-decode--nethttpcallwithhandle-and-errorpatternresponse)
 and the [HTTP Client guide](http-client.md#handling-the-response-happy-path-vs-error-path)
 for the full workflow, including the important "give each `ErrorPattern`
-its own status code" caveat.
+its own status code" caveat (now enforced at `Register` time, not just
+recommended).
+
+### `ErrorPattern`/`ErrorChannel` covers EVERY dispatch failure, not just the handler
+
+A declared `ErrorPattern`/`ErrorChannel` is eligible at every point in a
+route/channel's dispatch where a typed error could occur — not just the
+handler's own return. Body/payload decode, path/query/cookie/header param
+validation, middleware `DecodeIn`/`EncodeOut`, security middleware, and
+response/merge-field encode failures are ALL `ErrorPattern`/`ErrorChannel`-
+eligible, exactly like a handler error — the declarative model doesn't
+care WHICH dispatch step produced the error, only which TYPE it is.
+
+### Security-related patterns: prefer Mapped mode, never reuse an internal error type wholesale
+
+Now that security middleware Fn failures are `ErrorPattern`/`ErrorChannel`-
+eligible (the row directly above), it becomes easy to declare one for a
+security-related error type — but doing so carelessly can leak more than
+intended. **Direct mode** (no `mapFn`, `E` and `B` the SAME type) serializes
+the underlying error's ENTIRE STRUCTURED VALUE via its own codec — every
+field, including any the type happens to carry for internal/logging
+purposes only. For an ORDINARY business error this is the whole point
+(richer data reaching the caller); for a SECURITY error specifically it is
+often a footgun:
+
+- Security error messages are frequently deliberately vague on purpose —
+  e.g. never distinguishing "user not found" from "wrong password," to
+  prevent account-enumeration attacks.
+- An internal security error type may carry EXTRA fields never meant for
+  external disclosure (a wrapped credential-store error, internal
+  validation context, a stack trace, etc.).
+
+**Recommendation: declare security-related `ErrorPattern`/`ErrorChannel`
+values in Mapped mode**, with an explicit `mapFn` that DELIBERATELY
+constructs a minimal, safe payload:
+
+```go
+// Prefer this — Mapped mode, minimal deliberate payload:
+rest.ErrorPattern[internalSecurityError, PublicErrorBody](401, publicErrorCodec,
+    func(e internalSecurityError) (PublicErrorBody, error) {
+        return PublicErrorBody{Code: "unauthorized"}, nil // no internal detail leaks
+    },
+)
+
+// Avoid this — Direct mode reusing an internal type wholesale:
+rest.ErrorPattern[internalSecurityError, internalSecurityError](401, internalSecurityCodec)
+```
+
+This is guidance, not a new mechanism or restriction — `ErrorPattern`/
+`ErrorChannel` themselves gain no new constraint; the risk is entirely in
+HOW a caller chooses to declare the pattern, identical in kind to any
+other codec-declared struct's information-disclosure surface. It is worth
+flagging explicitly for security-related errors specifically, since they
+are so routinely under-specified elsewhere in API design for good reason.
+
+**`DeadLetter` has no equivalent redaction escape hatch — treat its
+destination as an ops-only, access-controlled topic.** Unlike
+`ErrorPattern`/`ErrorChannel`'s Mapped mode above, `DeadLetterEnvelope.
+Error` ALWAYS calls `err.Error()` verbatim, with no mapping/redaction
+option at all — by the time a failure reaches `DeadLetter` (either
+because it's a decode-class failure with no business type yet, or
+because it matched no more specific declared pattern), there is no
+typed value left to selectively redact. Since `DeadLetter` fires for
+Tier-2/handler-class failures too (including an unmatched security
+middleware Fn rejection), a security-related error's full `.Error()`
+string can flow into the dead-letter envelope and reach anyone
+subscribed to that destination topic. Two mitigations:
+
+- **Declare a more specific `ErrorChannel`/`ErrorPattern` in Mapped
+  mode for security-related error types** — a MATCHED pattern always
+  wins over `DeadLetter` (strict fallback-tier ordering), so intercepting
+  the error earlier with a deliberately minimal payload prevents it from
+  ever reaching the dead-letter destination at all.
+- **Treat the `DeadLetter` destination itself as an ops-only topic**,
+  access-controlled the same way you would any internal diagnostics
+  channel — not a general-purpose broadcast a wide audience can
+  subscribe to.
+
+### Observing declared error patterns
+
+`stats.ErrorPatternObserver` (`RecordErrorPatternMatch(location, code,
+action string)` / `RecordErrorPatternMiss(location string)`) is an
+optional `stats.Observer` extension that turns a declared `ErrorPattern`/
+`ErrorChannel` catalogue into a live observability signal — hit-rate per
+error type, and (via `RecordErrorPatternMiss`) a coverage signal for "this
+location keeps failing in a way nothing declared here anticipated."
+`stats.SpanTagger` (`TagSpan(ctx, key, value string)`) is a separate,
+optional extension for tagging the active trace span with which pattern
+fired.
+
+You never call either directly — `RouteHandle.ObserveErrorResponseFor(ctx,
+obs, err)` (REST) / `ChannelHandle.ObserveErrorResponseFor(ctx, obs, err)`
+(events) is the RECOMMENDED single call site: it performs the same
+`errors.As` match as `ErrorResponseFor`, but ALSO reports match/miss/
+span-tag observability internally — a handler/middleware author who
+declares an `ErrorPattern`/`ErrorChannel` and simply returns the domain
+error gets full observability for free, with zero instrumentation code of
+their own.
+
+### Dead-letter fallback: when nothing else claimed the failure
+
+`events.DeadLetter(topic, opts...)` / `reqreply.DeadLetter(topic, opts...)`
+declare an OPTIONAL, LAST-RESORT sink for a channel/route's own dispatch
+failures — attempted immediately after `ErrorChannel`/`ErrorPattern` fails
+to match (or none is declared at all). Unlike `ErrorChannel`/`ErrorPattern`
+(a codec-backed, TYPED response), a dead-letter's payload is always the
+SAME fixed envelope, because by the time nothing else has claimed the
+failure there is no reliable business type left to encode:
+
+```go
+type DeadLetterEnvelope struct {
+    SourceTopic string    // the original channel/route's topic
+    Payload     []byte    // the original, undecoded message bytes
+    Error       string     // err.Error() — a typed value doesn't exist here
+    Timestamp   time.Time
+}
+```
+
+Declare it once per channel/route, or set an application-wide default via
+`Client.AddGlobalDeadLetter`/`Server.AddGlobalDeadLetter` — a channel/route
+that declares NOTHING inherits the global default; declaring
+`DeadLetter("")` (empty topic) explicitly opts out, mirroring
+`AddGlobalSecurity`'s own nil-inherit/empty-override convention exactly:
+
+```go
+b := events.NewClient(events.WithInfo(events.Info{Title: "Sensors", Version: "1.0.0"}))
+b.AddGlobalDeadLetter("dlq/sensors") // every channel inherits this unless it overrides
+
+handle, _ := events.NewChannel[Reading]("sensors/readings", readingCodec,
+    events.DeadLetter("sensors/readings/dlq"), // channel-level override wins
+).WithSubscribe(events.Subscribe{}).Handle(b)
+```
+
+A dead-letter is attempted at every Category-A dispatch failure point
+(decode, topic/property-var merge, User Property param validation
+(mqtt5), security middleware `Fn`, `Transform` middleware
+`DecodeIn`/`Fn`/`EncodeOut`, handler error) — on BOTH the subscribe/serve
+side AND a FAILED publish/reply (the message never reached the broker,
+or the reply's own encode failed) — across `adapters/mqtt`,
+`adapters/mqtt5`, and `adapters/zeromq`.
+
+**Reachability differs by transport.** MQTT (v3 and 5) has one shared
+client used for every topic, so a dead-letter topic is always reachable
+via the SAME `client.Publish` the channel itself uses — no extra wiring
+needed. ZeroMQ's REQ/REP reqreply transport is point-to-point (one socket
+per route, no broker to address an arbitrary topic through) — the
+declared dead-letter topic MUST have its OWN entry in the `sockets` map
+passed to `zeromq.AttachServer`/`AttachRouterServer` (typically a PUSH
+socket feeding a dead-letter consumer). When no such entry exists, the
+dead-letter is silently skipped — it is NEVER sent back over the route's
+own REP/ROUTER socket, since an extra, unsolicited message there would
+violate REQ/REP's strict one-reply-per-request protocol invariant.
+ZeroMQ's pub/sub `Publish`/`Subscribe` has no such restriction (a SUB
+socket can receive on any topic its filter matches), so its dead-letter
+wiring works the same as MQTT's.
+
+```go
+if err := zeromq.AttachServer(server, map[string]zeromq.FramedSocket{
+    "compute/add":     repSock,
+    "compute/add/dlq": dlqPushSock, // required for the dead-letter to be reachable
+}); err != nil {
+    log.Fatal(err)
+}
+```
+
+### Runnable demos: the full ErrorPattern/ErrorChannel/DeadLetter mechanism
+
+Each mini-project example has a single, consolidated `demo_error_pattern.go`
+covering EVERY facet of its API's mechanism end-to-end — declaration
+modes (Direct/Mapped, plus REST's `ErrorStatus`), the 3 `ErrorAction`
+values (`Respond`/`Handle`/`Log`, where applicable), all 3 client-side
+recovery mechanisms (`ErrorPatternAs[B]`, `HandleErrorPattern`+`Case`, and
+the declaration value's own `.Match` method), a security-middleware
+combination (proving the pattern intercepts a middleware Fn failure, not
+just a handler failure), and — for events/reqreply — the `DeadLetter`
+two-tier fallback:
+
+- [examples/rest-api](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-api) — `demo_error_pattern.go`: `ErrorStatus` vs `ErrorPattern` Direct vs Mapped, the 3 `ErrorAction`s, all 3 client-match mechanisms, security-middleware combo, and the port/stream-adapter (`nethttp.IngestAdapter`) dispatch proof. `demo_login.go` shows a REAL primary-flow `ErrorPattern` (invalid-credentials → typed 401).
+- [examples/events-api](https://github.com/DaniDeer/go-codex/tree/main/examples/events-api) — `demo_error_pattern.go`: `ErrorChannel` Direct vs Mapped AND the 3 `ErrorAction`s, EACH demoed on BOTH the publish side (upstream pipeline error) AND the subscribe side (handler error), a downstream consumer decoding the typed error-output topic as an ordinary channel, the `DeadLetter` two-tier fallback (matched vs genuinely-unmatched, side-by-side, subscribe side), and a `SubscribeMW` security combo (subscribe side only, by design — a publish-side security-Fn rejection is a pre-transmission Category-C validation failure, permanently out of Category-A scope, same as REST's client-side credential validation).
+- [examples/reqreply-api](https://github.com/DaniDeer/go-codex/tree/main/examples/reqreply-api) — `demo_error_pattern.go`: `ErrorPattern` Direct vs Mapped (reqreply has NO `ErrorAction` — a match always replies), all 3 client-match mechanisms, `DeadLetter` (fires ALONGSIDE the reply, never instead of it — reqreply always owes the caller a response), a security-middleware combo, and the same mechanism bound through `ports.ToolPort` + `mqtt5.ServeAdapter` instead of direct `AttachServer`.
 
 ## Store/IO boundaries (SQL, Cache, File) — `handle`/`log` by default
 
@@ -314,3 +507,4 @@ adapter only needs its existing `OnError` hook to reach it.
 
 - [examples/error-types](https://github.com/DaniDeer/go-codex/tree/main/examples/error-types) — every error type demonstrated with `errors.As` and slog
 - [examples/decode-errors](https://github.com/DaniDeer/go-codex/tree/main/examples/decode-errors) — multi-field `ValidationErrors` with HTTP 400 response patterns
+- [examples/rest-api](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-api)/[events-api](https://github.com/DaniDeer/go-codex/tree/main/examples/events-api)/[reqreply-api](https://github.com/DaniDeer/go-codex/tree/main/examples/reqreply-api)'s `demo_error_pattern.go` — the full declarative `ErrorPattern`/`ErrorChannel`/`DeadLetter` mechanism per API, see ["Runnable demos"](#runnable-demos-the-full-errorpatternerrorchanneldeadletter-mechanism) above

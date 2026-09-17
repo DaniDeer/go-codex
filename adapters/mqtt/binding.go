@@ -124,8 +124,13 @@ func (a *mqttSubscribeAdapter[T]) Activate(ctx context.Context, dst chan<- T, er
 // MQTTDrainPublishOptions configures [PublishAdapter] publish behaviour.
 type MQTTDrainPublishOptions struct {
 	// QoS is the MQTT quality of service level (0, 1, or 2). Default 0.
+	// Does NOT apply to a matched events.ErrorChannel reply published for
+	// an upstream pipeline error — those always use QoS 0/non-retained,
+	// matching every other error-channel dispatch site (see
+	// tryPublishErrorChannel).
 	QoS byte
-	// Retained, when true, publishes each item as a retained message.
+	// Retained, when true, publishes each item as a retained message. Does
+	// NOT apply to error-channel replies — see QoS.
 	Retained bool
 	// Vars substitutes {varName} placeholders in the topic template.
 	//
@@ -175,29 +180,24 @@ func (a *mqttPublishAdapter[T]) Activate(ctx context.Context, src gstream.Stream
 	pubOpts := PublishOptions[T]{Observer: a.opts.Observer}
 	// handleUpstreamError resolves declared events.ErrorChannel patterns on
 	// a.handle before falling back to the adapter's existing OnError
-	// callback. A matched ErrorRespond pattern publishes the typed error
-	// payload to its declared error-output topic; ErrorHandle runs OnError
-	// (unchanged existing behaviour); ErrorLog and unmatched errors also
-	// fall through to OnError — see [events.ErrorChannel] and mirrors
-	// [adapters/mqtt5.mqtt5PublishAdapter.Activate].
+	// callback, via the SAME tryPublishErrorChannel helper the subscribe
+	// side and publish()'s own internal error paths already use — this
+	// ALSO reports stats.ErrorPatternObserver match/miss + SpanTagger
+	// observability (session review round-5 fix H2: this closure
+	// previously hand-rolled its own dispatch via the bare
+	// handle.ErrorResponseFor, silently skipping that observability).
+	// handled=true: a matched ErrorRespond was published — done.
+	// matched=true (handled=false): ErrorHandle/ErrorLog — fall through to
+	// OnError. matched=false: genuine non-match — fall through to OnError
+	// with the ORIGINAL error unchanged. Error-channel replies published
+	// this way always use QoS 0 / non-retained (tryPublishErrorChannel's
+	// fixed choice, matching every other error-channel dispatch site in
+	// this package — a.opts.QoS/Retained no longer apply to THIS path
+	// specifically, closing a previously-undocumented inconsistency).
 	handleUpstreamError := func(e error) {
-		resp, matched, matchErr := a.handle.ErrorResponseFor(e)
-		if matched && matchErr == nil && resp.Action == events.ErrorRespond {
-			token := a.client.Publish(resp.Topic, a.opts.QoS, a.opts.Retained, resp.Body)
-			select {
-			case <-ctx.Done():
-			case <-token.Done():
-				if pubErr := token.Error(); pubErr != nil {
-					stats.ReportErrors(obs, "error_channel", pubErr)
-					if onErr != nil {
-						onErr(pubErr)
-					}
-				}
-			}
+		handled, _ := tryPublishErrorChannel(ctx, a.client, a.handle, obs, e)
+		if handled {
 			return
-		}
-		if matched && matchErr != nil {
-			stats.ReportErrors(obs, "error_channel", matchErr)
 		}
 		if onErr != nil {
 			onErr(e)

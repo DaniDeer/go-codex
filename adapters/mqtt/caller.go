@@ -112,50 +112,23 @@ func subscribeHandle[T any](
 		return err
 	}
 
-	var secReqs []route.SecurityRequirement
-	if handle.Descriptor.Subscribe != nil {
-		secReqs = handle.Descriptor.Subscribe.Security
-	}
-	if secReqs == nil {
-		secReqs = handle.GlobalSecurity
-	}
-
-	obs := opts.Observer
-	if obs == nil {
-		obs = stats.ObserverFromContext(ctx)
-	}
-
-	// Gated on len(handle.Implementations) > 0, NOT len(secReqs) > 0 —
-	// mirrors adapters/zeromq/adapters/mqtt5's identical ordering: an
-	// UNPAIRED (general-purpose Satisfies-empty) security-shaped Fn must
-	// run even on a channel with no declared security (e.g. a
-	// Transform-equivalent reading an in-payload field into *T before fn
-	// runs) — runSubscribeSecurityImpls itself already handles the
-	// Satisfies-empty-vs-secReqs-empty distinction internally.
-	wrapped := wrapSubscribeGeneral(fn, handle.Implementations)
-	finalFn := func(ctx context.Context, v T) error {
-		if len(handle.Implementations) > 0 {
-			msg, hasMsg := MessageFromContext(ctx)
-			if err := runSubscribeSecurityImpls(ctx, msg, &v, secReqs, handle.Implementations); err != nil {
-				if secObs, ok := obs.(stats.SecurityObserver); ok {
-					topic := handle.Topic
-					if hasMsg {
-						topic = msg.Topic()
-					}
-					secObs.RecordSecurityRejection(topic, route.FirstSchemeName(secReqs))
-				}
-				return err
-			}
-		}
-		return wrapped(ctx, v)
-	}
+	// General-purpose (UNPAIRED) Fn wrapping ONLY — mirrors mqtt5's
+	// identical placement in subscribeWithHandle. The Implementations-
+	// based SECURITY-shaped Fn dispatch (runSubscribeSecurityImpls) now
+	// lives INSIDE subscribeHandler itself (adapter.go), per-message,
+	// with its OWN dedicated events.SecurityError wrapping/KindSecurity
+	// classification and ErrorChannel/DeadLetter eligibility — mirrors
+	// mqtt5's/zeromq's identical structure exactly (session-review fix:
+	// previously wrapped here as part of fn's own error path, making a
+	// security rejection indistinguishable from a plain handler error).
+	fn = wrapSubscribeGeneral(fn, handle.Implementations)
 
 	filter := opts.TopicFilter
 	if filter == "" {
 		filter = deriveWildcardFilter(handle.Topic)
 	}
 
-	handler := subscribeHandler(ctx, client, handle, finalFn, opts, formats...)
+	handler := subscribeHandler(ctx, client, handle, fn, opts, formats...)
 	token := client.Subscribe(filter, qos, handler)
 	token.Wait()
 	return token.Error()

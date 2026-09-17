@@ -257,6 +257,51 @@ func wrapSubscribeGeneral[T any](fn func(context.Context, T) error, impls []midd
 //	        log.Error("subscribe stopped", "err", err)
 //	    }
 //	}()
+//
+// tryPublishErrorChannel is the RECOMMENDED single call site for every
+// Category-A failure point on the subscribe side (docs/roadmap/
+// error-handling-rest-events-reqreply.md's Topic 1/5) — mirrors mqtt5's
+// identical helper exactly, using this package's own frame-based
+// SendFrames API.
+//
+// Returns (handled, matched bool) — see mqtt5's identical helper's doc
+// comment for the full 3-outcome contract (handled=return/continue
+// immediately; matched-with-!handled=skip tryDeadLetter but still call
+// opts.OnError; !matched=fall through to tryDeadLetter as before).
+// Session-review round-3 fix (G4): a type-matched ErrorChannel with a
+// non-Respond action must never ALSO be dead-lettered — Topic 4 scopes
+// DeadLetter to the genuinely UNMATCHED case only.
+func tryPublishErrorChannel[T any](
+	ctx context.Context, sock FramedSocket, handle *events.ChannelHandle[T], obs stats.Observer, err error,
+) (handled, matched bool) {
+	resp, isMatch, matchErr := handle.ObserveErrorResponseFor(ctx, obs, err)
+	if !isMatch || matchErr != nil {
+		return false, false
+	}
+	if resp.Action != "" && resp.Action != events.ErrorRespond {
+		return false, true
+	}
+	if pubErr := sock.SendFrames([][]byte{[]byte(resp.Topic), resp.Body}); pubErr != nil {
+		stats.ReportErrors(obs, "error_channel", pubErr)
+	}
+	return true, true
+}
+
+// tryDeadLetter is the RECOMMENDED single call site for Topic 4's
+// dead-letter fallback (docs/roadmap/error-handling-rest-events-reqreply.md)
+// — mirrors mqtt5's/mqtt's identical helper, using this package's own
+// frame-based FramedSocket.SendFrames API.
+func tryDeadLetter[T any](
+	sock FramedSocket, handle *events.ChannelHandle[T], obs stats.Observer, sourceTopic string, rawPayload []byte, err error,
+) bool {
+	topic, body, ok := handle.DeadLetterFor(obs, sourceTopic, rawPayload, err)
+	if !ok {
+		return false
+	}
+	_ = sock.SendFrames([][]byte{[]byte(topic), body})
+	return true
+}
+
 func subscribeWithHandle[T any](
 	ctx context.Context,
 	sock FramedSocket,
@@ -326,6 +371,13 @@ func subscribeWithHandle[T any](
 		if decErr != nil {
 			stats.ReportErrors(obs, "payload", decErr)
 			obs.RecordSubscribe(topic, false, time.Since(start))
+			if handled, matched := tryPublishErrorChannel(ctx, sock, handle, obs, decErr); handled {
+				continue
+			} else if !matched {
+				if tryDeadLetter(sock, handle, obs, topic, payload, decErr) {
+					continue
+				}
+			}
 			if opts.OnError != nil {
 				opts.OnError(SubscribeError{Kind: KindDecode, Topic: topic, Err: decErr})
 			}
@@ -350,6 +402,13 @@ func subscribeWithHandle[T any](
 				reportTopicMismatchErrors(varErr, obs)
 				stats.ReportErrors(obs, "topic_var", varErr)
 				obs.RecordSubscribe(topic, false, time.Since(start))
+				if handled, matched := tryPublishErrorChannel(ctx, sock, handle, obs, varErr); handled {
+					continue
+				} else if !matched {
+					if tryDeadLetter(sock, handle, obs, topic, payload, varErr) {
+						continue
+					}
+				}
 				if opts.OnError != nil {
 					opts.OnError(SubscribeError{Kind: KindDecode, Topic: topic, Err: varErr})
 				}
@@ -359,6 +418,13 @@ func subscribeWithHandle[T any](
 			if mergeErr := codex.DecodeVars(&value, vars, mergeFields...); mergeErr != nil {
 				stats.ReportErrors(obs, "topic_var", mergeErr)
 				obs.RecordSubscribe(topic, false, time.Since(start))
+				if handled, matched := tryPublishErrorChannel(ctx, sock, handle, obs, mergeErr); handled {
+					continue
+				} else if !matched {
+					if tryDeadLetter(sock, handle, obs, topic, payload, mergeErr) {
+						continue
+					}
+				}
 				if opts.OnError != nil {
 					opts.OnError(SubscribeError{Kind: KindDecode, Topic: topic, Err: mergeErr})
 				}
@@ -379,8 +445,18 @@ func subscribeWithHandle[T any](
 					secObs.RecordSecurityRejection(topic, route.FirstSchemeName(secReqs))
 				}
 				obs.RecordSubscribe(topic, false, time.Since(start))
+				// Security middleware Fn error IS ErrorChannel-eligible
+				// now (Topic 1's Category A fix).
+				wrapped := events.SecurityError{Err: err}
+				if handled, matched := tryPublishErrorChannel(ctx, sock, handle, obs, wrapped); handled {
+					continue
+				} else if !matched {
+					if tryDeadLetter(sock, handle, obs, topic, payload, wrapped) {
+						continue
+					}
+				}
 				if opts.OnError != nil {
-					opts.OnError(SubscribeError{Kind: KindSecurity, Topic: topic, Err: events.SecurityError{Err: err}})
+					opts.OnError(SubscribeError{Kind: KindSecurity, Topic: topic, Err: wrapped})
 				}
 				continue
 			}
@@ -405,11 +481,12 @@ func subscribeWithHandle[T any](
 				errors.As(mwErr, &dispatchErr)
 				if dispatchErr.isFnError {
 					stats.ReportErrors(obs, "middleware:fn", dispatchErr.err)
-					if resp, matched, matchErr := handle.ErrorResponseFor(dispatchErr.err); matched && matchErr == nil && resp.Action == events.ErrorRespond {
-						if pubErr := sock.SendFrames([][]byte{[]byte(resp.Topic), resp.Body}); pubErr != nil {
-							stats.ReportErrors(obs, "error_channel", pubErr)
-						}
+					if handled, matched := tryPublishErrorChannel(ctx, sock, handle, obs, dispatchErr.err); handled {
 						continue
+					} else if !matched {
+						if tryDeadLetter(sock, handle, obs, topic, payload, dispatchErr.err) {
+							continue
+						}
 					}
 					if opts.OnError != nil {
 						opts.OnError(SubscribeError{Kind: KindHandler, Topic: topic, Err: events.MiddlewareError{Name: dispatchErr.name, Err: dispatchErr.err}})
@@ -417,6 +494,13 @@ func subscribeWithHandle[T any](
 					continue
 				}
 				stats.ReportErrors(obs, "middleware:in", dispatchErr.err)
+				if handled, matched := tryPublishErrorChannel(ctx, sock, handle, obs, dispatchErr.err); handled {
+					continue
+				} else if !matched {
+					if tryDeadLetter(sock, handle, obs, topic, payload, dispatchErr.err) {
+						continue
+					}
+				}
 				if opts.OnError != nil {
 					opts.OnError(SubscribeError{Kind: KindDecode, Topic: topic, Err: dispatchErr.err})
 				}
@@ -434,15 +518,12 @@ func subscribeWithHandle[T any](
 		}
 		if fnErr != nil {
 			obs.RecordSubscribe(topic, false, time.Since(start))
-			// Consult a declared events.ErrorChannel BEFORE falling
-			// through to OnError — mirrors
-			// mqtt5PublishAdapter.handleUpstreamError's action dispatch,
-			// extended here to the subscribe side (Decision 8).
-			if resp, matched, matchErr := handle.ErrorResponseFor(fnErr); matched && matchErr == nil && resp.Action == events.ErrorRespond {
-				if pubErr := sock.SendFrames([][]byte{[]byte(resp.Topic), resp.Body}); pubErr != nil {
-					stats.ReportErrors(obs, "error_channel", pubErr)
-				}
+			if handled, matched := tryPublishErrorChannel(ctx, sock, handle, obs, fnErr); handled {
 				continue
+			} else if !matched {
+				if tryDeadLetter(sock, handle, obs, topic, payload, fnErr) {
+					continue
+				}
 			}
 			if opts.OnError != nil {
 				opts.OnError(SubscribeError{Kind: KindHandler, Topic: topic, Err: fnErr})
@@ -683,6 +764,11 @@ func publish[T any](
 			stats.ReportErrors(obs, loc, reported)
 			obs.RecordPublish(handle.Topic, false, time.Since(start))
 			err = mwErr
+			// Topic 4: a failed publish (never reached the broker) is
+			// ALSO dead-letterable, alongside the synchronous error
+			// returned to the caller.
+			bestEffortPayload, _ := handle.Encode(msg)
+			tryDeadLetter(sock, handle, obs, handle.Topic, bestEffortPayload, err)
 			return err
 		}
 		if isExplicitVars {
@@ -741,6 +827,11 @@ func publish[T any](
 
 	if err = transmit(ctx, msg); err != nil {
 		obs.RecordPublish(topic, false, time.Since(start))
+		// Topic 4: a failed publish (encode failure, or never reached
+		// the broker) is ALSO dead-letterable, alongside the synchronous
+		// error returned to the caller.
+		bestEffortPayload, _ := handle.Encode(msg)
+		tryDeadLetter(sock, handle, obs, topic, bestEffortPayload, err)
 		return err
 	}
 	obs.RecordPublish(topic, true, time.Since(start))

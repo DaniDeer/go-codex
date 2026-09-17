@@ -195,8 +195,12 @@ func TestErrorPattern_ClientHandle_carriesRules(t *testing.T) {
 }
 
 // TestErrorPattern_AutoGeneratesAsyncAPIErrorReply verifies ErrorPattern
-// drives the SAME AsyncAPI reply-error channel/operation rendering that
-// ErrorReplyMeta previously required declaring separately.
+// drives the SAME AsyncAPI reply-channel rendering ErrorReplyMeta
+// previously required declaring separately — since Topic 3's
+// multi-message migration (docs/roadmap/
+// error-handling-rest-events-reqreply.md), this means a named message
+// ("ErrorConflict") within the route's SINGLE reply channel, not a
+// separate channel/operation.
 func TestErrorPattern_AutoGeneratesAsyncAPIErrorReply(t *testing.T) {
 	route := reqreply.NewRoute[computeReq, computeResp]("compute/add-spec", reqCodec, respCodec,
 		reqreply.RouteMeta{OperationID: "computeAddSpec"},
@@ -210,11 +214,14 @@ func TestErrorPattern_AutoGeneratesAsyncAPIErrorReply(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 	out := mustSpec(t, b)
-	if !strings.Contains(out, "computeAddSpecReplyErrorConflict:") {
-		t.Errorf("want auto-generated error reply channel key in spec:\n%s", out)
+	if !strings.Contains(out, "computeAddSpecReply:") {
+		t.Errorf("want the SAME single reply channel key in spec:\n%s", out)
 	}
-	if !strings.Contains(out, "address: compute/add-spec/reply/error/conflict") {
-		t.Errorf("want auto-generated error reply address in spec:\n%s", out)
+	if strings.Contains(out, "computeAddSpecReplyErrorConflict:") {
+		t.Errorf("want NO separate error reply channel key (folded into the reply channel's messages map):\n%s", out)
+	}
+	if !strings.Contains(out, "ErrorConflict:") {
+		t.Errorf("want the error reply as a named message in the reply channel's messages map:\n%s", out)
 	}
 	if !strings.Contains(out, "ComputeErrPayload:") {
 		t.Errorf("want error reply schema registered in components:\n%s", out)
@@ -222,7 +229,9 @@ func TestErrorPattern_AutoGeneratesAsyncAPIErrorReply(t *testing.T) {
 }
 
 // TestErrorPattern_DefaultCode_DerivedFromTypeName verifies the default Code
-// (when WithCode is not called) is derived from the error type's name.
+// (when WithCode is not called) is derived from the error type's name, and
+// that this default code drives the message NAME within the SAME reply
+// channel (Topic 3's multi-message migration).
 func TestErrorPattern_DefaultCode_DerivedFromTypeName(t *testing.T) {
 	route := reqreply.NewRoute[computeReq, computeResp]("compute/add-defaultcode", reqCodec, respCodec,
 		reqreply.RouteMeta{OperationID: "computeAddDefaultCode"},
@@ -234,8 +243,8 @@ func TestErrorPattern_DefaultCode_DerivedFromTypeName(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 	out := mustSpec(t, b)
-	if !strings.Contains(out, "address: compute/add-defaultcode/reply/error/computeConflictErr") {
-		t.Errorf("want default code derived from type name in spec:\n%s", out)
+	if !strings.Contains(out, "ErrorComputeconflicterr:") {
+		t.Errorf("want default code derived from type name driving the message name in spec:\n%s", out)
 	}
 }
 

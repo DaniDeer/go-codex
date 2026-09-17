@@ -881,3 +881,133 @@ func TestAsInvalidateObserver_NonImplementingObserver_ReturnsFalse(t *testing.T)
 		t.Error("AsInvalidateObserver: want ok=false for a non-implementing Observer")
 	}
 }
+
+// ── ErrorPatternObserver / SpanTagger tests ────────────────────────────────
+
+type errorPatternFanoutSpy struct {
+	stats.NoopObserver
+	matches, misses                    int
+	lastLocation, lastCode, lastAction string
+}
+
+func (s *errorPatternFanoutSpy) RecordErrorPatternMatch(location, code, action string) {
+	s.matches++
+	s.lastLocation, s.lastCode, s.lastAction = location, code, action
+}
+
+func (s *errorPatternFanoutSpy) RecordErrorPatternMiss(location string) {
+	s.misses++
+	s.lastLocation = location
+}
+
+func TestNoopObserver_ImplementsErrorPatternObserver(t *testing.T) {
+	var noop stats.NoopObserver
+	var obs stats.Observer = noop
+	po, ok := obs.(stats.ErrorPatternObserver)
+	if !ok {
+		t.Fatal("NoopObserver must implement ErrorPatternObserver")
+	}
+	// Must not panic.
+	po.RecordErrorPatternMatch("/users", "409", "respond")
+	po.RecordErrorPatternMiss("/users")
+}
+
+func TestNoopObserver_ImplementsSpanTagger(t *testing.T) {
+	var noop stats.NoopObserver
+	var obs stats.Observer = noop
+	st, ok := obs.(stats.SpanTagger)
+	if !ok {
+		t.Fatal("NoopObserver must implement SpanTagger")
+	}
+	// Must not panic.
+	st.TagSpan(context.Background(), "error_pattern.code", "409")
+}
+
+func TestFanout_ErrorPatternObserver_OnlyToImplementors(t *testing.T) {
+	spy := &errorPatternFanoutSpy{}
+	plain := &fanoutSpy{} // does NOT implement ErrorPatternObserver
+	obs := stats.NewFanout(plain, spy)
+
+	po, ok := obs.(stats.ErrorPatternObserver)
+	if !ok {
+		t.Fatal("fanout must implement ErrorPatternObserver when any inner does")
+	}
+	po.RecordErrorPatternMatch("/users", "409", "respond")
+	po.RecordErrorPatternMiss("/orders")
+	if spy.matches != 1 || spy.misses != 1 {
+		t.Errorf("want 1/1 calls on spy, got %d/%d", spy.matches, spy.misses)
+	}
+	if spy.lastLocation != "/orders" || spy.lastCode != "409" || spy.lastAction != "respond" {
+		t.Errorf("unexpected recorded values: %+v", spy)
+	}
+}
+
+func TestFanout_ErrorPatternObserver_SkipsNonImplementors(t *testing.T) {
+	plain := &fanoutSpy{}
+	obs := stats.NewFanout(plain)
+
+	po, ok := obs.(stats.ErrorPatternObserver)
+	if !ok {
+		t.Fatal("fanout must implement ErrorPatternObserver regardless of inner observers")
+	}
+	// Must not panic when no inner observer implements ErrorPatternObserver.
+	po.RecordErrorPatternMatch("/users", "409", "respond")
+	po.RecordErrorPatternMiss("/orders")
+}
+
+type spanTaggerFanoutSpy struct {
+	stats.NoopObserver
+	tags               int
+	lastKey, lastValue string
+}
+
+func (s *spanTaggerFanoutSpy) TagSpan(_ context.Context, key, value string) {
+	s.tags++
+	s.lastKey, s.lastValue = key, value
+}
+
+func TestFanout_SpanTagger_OnlyToImplementors(t *testing.T) {
+	spy := &spanTaggerFanoutSpy{}
+	plain := &fanoutSpy{} // does NOT implement SpanTagger
+	obs := stats.NewFanout(plain, spy)
+
+	st, ok := obs.(stats.SpanTagger)
+	if !ok {
+		t.Fatal("fanout must implement SpanTagger when any inner does")
+	}
+	st.TagSpan(context.Background(), "error_pattern.code", "409")
+	if spy.tags != 1 || spy.lastKey != "error_pattern.code" || spy.lastValue != "409" {
+		t.Errorf("unexpected recorded values: %+v", spy)
+	}
+}
+
+func TestFanout_SpanTagger_SkipsNonImplementors(t *testing.T) {
+	plain := &fanoutSpy{}
+	obs := stats.NewFanout(plain)
+
+	st, ok := obs.(stats.SpanTagger)
+	if !ok {
+		t.Fatal("fanout must implement SpanTagger regardless of inner observers")
+	}
+	// Must not panic when no inner observer implements SpanTagger.
+	st.TagSpan(context.Background(), "error_pattern.code", "409")
+}
+
+func TestLoggingObserver_ImplementsErrorPatternObserver(t *testing.T) {
+	var obs stats.Observer = stats.NewLoggingObserver(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	po, ok := obs.(stats.ErrorPatternObserver)
+	if !ok {
+		t.Fatal("LoggingObserver must implement ErrorPatternObserver")
+	}
+	// Must not panic.
+	po.RecordErrorPatternMatch("/users", "409", "respond")
+	po.RecordErrorPatternMiss("/orders")
+}
+
+func TestLoggingObserver_DoesNotImplementSpanTagger(t *testing.T) {
+	var obs stats.Observer = stats.NewLoggingObserver(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	_, ok := obs.(stats.SpanTagger)
+	if ok {
+		t.Error("LoggingObserver should NOT implement SpanTagger (mirrors it not implementing TraceObserver)")
+	}
+}

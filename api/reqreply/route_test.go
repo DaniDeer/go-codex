@@ -290,24 +290,41 @@ func TestRoute_AsyncAPISpec_MultipleRoutes(t *testing.T) {
 	}
 }
 
+// TestRoute_AsyncAPISpec_ErrorReplyChannelAndOperation verifies Topic 3's
+// AsyncAPI multi-message migration (docs/roadmap/
+// error-handling-rest-events-reqreply.md): an ErrorReplyMeta no longer
+// produces its OWN separate reply channel/operation — it becomes an
+// additional named message ("ErrorConflict") within the SAME
+// "computeAddReply" channel's single receive operation, alongside the
+// "Success" message.
 func TestRoute_AsyncAPISpec_ErrorReplyChannelAndOperation(t *testing.T) {
 	b := newBuilder()
 	_, _ = computeRouteWithErrorReply.Register(b)
 	out := mustSpec(t, b)
-	if !strings.Contains(out, "computeAddReplyErrorConflict:") {
-		t.Errorf("want error reply channel key in spec:\n%s", out)
+	if !strings.Contains(out, "computeAddReply:") {
+		t.Errorf("want the SAME single reply channel key in spec:\n%s", out)
 	}
-	if !strings.Contains(out, "address: compute/add/reply/error/conflict") {
-		t.Errorf("want error reply address in spec:\n%s", out)
+	if strings.Contains(out, "computeAddReplyErrorConflict:") {
+		t.Errorf("want NO separate error reply channel key (folded into the reply channel's messages map):\n%s", out)
 	}
-	if !strings.Contains(out, "receiveComputeAddReplyErrorConflict:") {
-		t.Errorf("want error reply operation id in spec:\n%s", out)
+	if !strings.Contains(out, "ErrorConflict:") {
+		t.Errorf("want the error reply as a named message in the reply channel's messages map:\n%s", out)
+	}
+	if !strings.Contains(out, "Success:") {
+		t.Errorf("want the success reply as the \"Success\" named message alongside it:\n%s", out)
+	}
+	if !strings.Contains(out, "receiveComputeAddReply:") {
+		t.Errorf("want the SAME single receive operation id in spec (no separate error operation):\n%s", out)
 	}
 	if !strings.Contains(out, "ConflictError:") {
 		t.Errorf("want error reply schema registered in components:\n%s", out)
 	}
 }
 
+// TestRoute_AsyncAPISpec_ErrorReplyCustomOperationAndAddress verifies
+// ErrorReplyMeta.OperationID/ChannelAddress are now IGNORED (Topic 3) —
+// kept for source compatibility, but there is no longer a separate
+// channel/operation for them to apply to.
 func TestRoute_AsyncAPISpec_ErrorReplyCustomOperationAndAddress(t *testing.T) {
 	customErrRoute := reqreply.NewRoute[computeReq, computeResp](
 		"compute/add", reqCodec, respCodec,
@@ -322,11 +339,14 @@ func TestRoute_AsyncAPISpec_ErrorReplyCustomOperationAndAddress(t *testing.T) {
 	b := newBuilder()
 	_, _ = customErrRoute.Register(b)
 	out := mustSpec(t, b)
-	if !strings.Contains(out, "receiveValidationErrorReply:") {
-		t.Errorf("want custom error operation id in spec:\n%s", out)
+	if strings.Contains(out, "receiveValidationErrorReply:") {
+		t.Errorf("want custom operation id IGNORED (no separate error operation exists anymore):\n%s", out)
 	}
-	if !strings.Contains(out, "address: compute/add/reply/validation") {
-		t.Errorf("want custom error reply address in spec:\n%s", out)
+	if strings.Contains(out, "address: compute/add/reply/validation") {
+		t.Errorf("want custom channel address IGNORED (no separate error channel exists anymore):\n%s", out)
+	}
+	if !strings.Contains(out, "ErrorValidation:") {
+		t.Errorf("want the error reply as a named message in the SAME reply channel:\n%s", out)
 	}
 }
 

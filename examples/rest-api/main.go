@@ -88,6 +88,11 @@ func main() {
 	demoAdminAction(chiClient)
 	demoResponseHeaderCookieViolation()
 	demoResponseBodyViolation()
+	demoErrorPatternDeclarationMechanisms()
+	demoErrorPatternActions()
+	demoErrorPatternClientMatchMechanisms()
+	demoErrorPatternMiddlewareCombo()
+	demoErrorPatternPortAdapter()
 	demoSetCookie()
 	demoSpecEndpoint(chiAddr, nethttpAddr)
 

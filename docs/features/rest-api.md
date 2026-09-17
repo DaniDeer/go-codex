@@ -470,21 +470,34 @@ route, _ := rest.NewRoute[CreateJobReq, JobResp]("POST", "/jobs", reqCodec, resp
   `RouteHandle.ErrorResponseFor(err) (ErrorPatternResponse, bool, error)` are
   the lookup accessors adapters call.
 
-> **Give each `ErrorPattern` its own status code.** Client-side decode
-> (`RouteHandle.DecodeErrorFor`, see below) matches by STATUS ONLY — the
-> wire has no Go type to `errors.As` against. If two `ErrorPattern`s on the
-> same route share one status, the client deterministically uses the
-> FIRST-declared pattern's codec regardless of which one the server
-> actually used (intentional, tested — first-declared-rule-wins, the same
-> precedence REST/events/reqreply already use elsewhere). If the two
-> payload shapes happen to be structurally compatible, this SILENTLY
-> decodes as the WRONG type with no error at all; if incompatible, decode
-> fails and the client falls back to `UnexpectedStatusError`. Either way,
-> the caller loses the DISTINCTION between the two error types. If several
-> domain error types genuinely share one status and one response shape,
-> declare ONE `ErrorPattern` against a shared error interface/wrapper type
-> (`errors.As` matches an interface target too) instead of multiple
-> separate declarations at the same status.
+> **Give each `ErrorPattern` its own status code — this is now ENFORCED,
+> not just recommended.** `Register`/`RegisterHandle` reject 2+
+> `ErrorPattern`s declared on the SAME route sharing one HTTP status with
+> `DuplicateErrorStatusError`, mirroring `reqreply.ErrorPattern`'s existing
+> `DuplicateErrorPatternCodeError` rejection exactly. This was previously
+> a silently-accepted ambiguity (client-side decode matches by STATUS
+> ONLY — the wire has no Go type to `errors.As` against — so 2 same-status
+> patterns meant the client deterministically used the FIRST-declared
+> one's codec regardless of which the server actually sent, silently
+> decoding as the wrong type when the payloads were structurally
+> compatible). Reopened and closed under this repo's Breaking Changes
+> Policy — see `docs/roadmap/error-handling-rest-events-reqreply.md`'s
+> Topic 1. If several domain error types genuinely share one status and
+> one response shape, declare ONE `ErrorPattern` against a shared error
+> interface/wrapper type (`errors.As` matches an interface target too)
+> instead of multiple separate declarations at the same status.
+
+`ErrorPattern` is eligible at every point in a route's dispatch where a
+typed error could occur, not just the handler's own return — body decode,
+path/query/cookie/header param validation, middleware `DecodeIn`/
+`EncodeOut`, security middleware, and response/merge-field encode
+failures are ALL `ErrorPattern`-eligible, exactly like a handler error.
+`RouteHandle.ObserveErrorResponseFor(ctx, obs, err) (ErrorPatternResponse,
+bool, error)` is the RECOMMENDED single call site for all of these — it
+wraps `ErrorResponseFor` and ALSO reports match/miss/span-tag
+observability internally (see `docs/features/observer.md`), so adapters
+never need their own `stats.ErrorPatternObserver`/`SpanTagger`
+type-assertions.
 
 ### Action selector — `WithAction`
 
@@ -566,6 +579,25 @@ if err != nil {
   decode it back — no separate client-side declaration.
 - See [`examples/adapters-nethttp-client`](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-nethttp-client)
   section "1b" for a full runnable round trip.
+
+**Convenient matching** — 3 alternatives collapse the `errors.As` +
+type-switch dance above into a single conditional (see
+[HTTP Client guide](../guides/http-client.md#convenient-client-side-matching--errorpatternas-match-handleerrorpattern)):
+
+```go
+// rest.ErrorPatternAs[B any](err error) (B, bool) — generic one-liner.
+// Lives in api/rest (transport-independent), not the adapter package.
+if conflict, ok := rest.ErrorPatternAs[domain.EmailConflictError](err); ok { /* ... */ }
+
+// ErrorPatternOpt.Match — the SAME value declares (server) AND matches (client).
+var emailConflictPattern = rest.ErrorPattern[domain.EmailConflictError, domain.EmailConflictError](409, conflictCodec)
+if conflict, ok := emailConflictPattern.Match(err); ok { /* ... */ }
+
+// rest.HandleErrorPattern/Case — closest parity to a switch expression.
+handled := rest.HandleErrorPattern(err,
+    rest.Case(func(e domain.EmailConflictError) { /* ... */ }),
+)
+```
 
 ## chi adapter
 

@@ -276,6 +276,15 @@ throwaway value per adapter.
 
 ### Why adapter-owned capability declaration doesn't violate the thin-adapter, protocol-agnostic-declaration principle
 
+> **See also — [Thin Adapters Audit](thin-adapters-audit.md)**, the
+> MIRROR-IMAGE investigation to this section: instead of asking "does a
+> NEW protocol-native capability clear the bar for core-layer, protocol-
+> agnostic declaration" (this section's question), that doc asks "does
+> EXISTING adapter-owned dispatch logic ALREADY clear that bar, unnoticed,
+> and is therefore misplaced today." It reuses the exact two-part test
+> below and confirms 3 concrete findings that clear both bars (the same
+> reasoning that puts `Security` in core here) plus 1 nuanced overlap case.
+
 This codebase's guiding architecture is: routes/channels/ports are declared
 ONCE, protocol-agnostically (typically in a shared `domain`/`contract`
 package with zero adapter imports); adapters stay THIN, wired in LATER

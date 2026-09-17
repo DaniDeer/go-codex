@@ -194,6 +194,11 @@ func (e ErrorPatternResponse) Error() string {
 	return fmt.Sprintf("unexpected status %d: %T", e.StatusCode, e.Value)
 }
 
+// ErrorPatternValue implements [rest.ErrorPatternValuer], letting
+// [rest.ErrorPatternOpt.Match] extract this response's decoded typed
+// payload without api/rest importing this adapter package.
+func (e ErrorPatternResponse) ErrorPatternValue() any { return e.Value }
+
 // LogValue implements [slog.LogValuer] for structured logging.
 func (e ErrorPatternResponse) LogValue() slog.Value {
 	return slog.GroupValue(

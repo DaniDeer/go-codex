@@ -3,6 +3,7 @@ package rest
 import (
 	"context"
 	"errors"
+	"strconv"
 
 	"github.com/DaniDeer/go-codex/stats"
 )
@@ -120,4 +121,42 @@ func ReportPathErrors(ctx context.Context, err error) {
 	if errors.As(err, &ipe) {
 		stats.RecordDiagnostic(ctx, stats.Diagnostic{Location: "path", ConstraintName: "declared-var-not-in-template", Field: ipe.Name})
 	}
+}
+
+// ObserveErrorResponseFor is the observability-aware counterpart of
+// [RouteHandle.ErrorResponseFor]: it performs the SAME errors.As match,
+// but ALSO reports the outcome to obs — stats.ErrorPatternObserver.
+// RecordErrorPatternMatch on a match, RecordErrorPatternMiss on a miss
+// (only when [RouteHandle.HasErrorPatterns] is true), and stats.
+// SpanTagger.TagSpan when both a match occurs AND obs implements
+// SpanTagger — all type-asserted and derived INTERNALLY, so the caller
+// needs no knowledge of ErrorPatternObserver/SpanTagger/HasErrorPatterns
+// at all. Returns the IDENTICAL 3-tuple ErrorResponseFor already
+// returns, so an adapter's existing resp.Action-dispatch logic (write
+// body, run ErrorHandle's callback, etc.) needs no changes beyond
+// swapping which method it calls.
+//
+// This is the RECOMMENDED call site for every Category-A failure point
+// (see docs/roadmap/error-handling-rest-events-reqreply.md's Topic 1) —
+// adapters should call this instead of ErrorResponseFor directly
+// whenever an Observer is in scope.
+func (h *RouteHandle[Req, Resp]) ObserveErrorResponseFor(
+	ctx context.Context, obs stats.Observer, err error,
+) (resp ErrorPatternResponse, matched bool, applyErr error) {
+	resp, matched, applyErr = h.ErrorResponseFor(err)
+	location := h.Descriptor.Path
+	switch {
+	case matched && applyErr == nil:
+		if po, ok := obs.(stats.ErrorPatternObserver); ok {
+			po.RecordErrorPatternMatch(location, strconv.Itoa(resp.Status), string(resp.Action))
+		}
+		if st, ok := obs.(stats.SpanTagger); ok {
+			st.TagSpan(ctx, "error_pattern.code", strconv.Itoa(resp.Status))
+		}
+	case !matched && h.HasErrorPatterns():
+		if po, ok := obs.(stats.ErrorPatternObserver); ok {
+			po.RecordErrorPatternMiss(location)
+		}
+	}
+	return resp, matched, applyErr
 }

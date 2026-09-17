@@ -316,6 +316,18 @@ type ErrorPatternResponse struct {
 	Action ErrorAction
 }
 
+// ErrorPatternValuer is implemented by a CLIENT adapter's own
+// error-pattern response error type (e.g. `nethttp.ErrorPatternResponse`)
+// — it lets [ErrorPatternOpt.Match] extract the decoded typed payload via
+// [errors.As] WITHOUT `api/rest` importing the adapter package (which
+// would invert the module's layering). See
+// docs/roadmap/error-handling-rest-events-reqreply.md's Topic 6.
+type ErrorPatternValuer interface {
+	// ErrorPatternValue returns the decoded typed payload — the SAME
+	// value the adapter's own ErrorPatternResponse.Value field carries.
+	ErrorPatternValue() any
+}
+
 type errorPatternRule struct {
 	status int
 	action ErrorAction
@@ -325,10 +337,66 @@ type errorPatternRule struct {
 	// pattern's declared codec. Only populated for [ErrorPattern] rules
 	// (never nil after applyRoute).
 	decode func([]byte) (ErrorPatternResponse, error)
+	// typeName is the declared E type's name (fmt.Sprintf("%T")), used
+	// only for [DuplicateErrorStatusError]'s diagnostic message.
+	typeName string
 }
 
 func (r errorPatternRule) applyRoute(rb *routeBuilder) {
 	rb.errorPatternRules = append(rb.errorPatternRules, r)
+}
+
+// DuplicateErrorStatusError is returned by [Route.Register]/
+// [Route.RegisterHandle] when two [ErrorPattern] declarations on the SAME
+// route share the SAME HTTP status. Reopened under this repo's Breaking
+// Changes Policy — earlier, 2+ same-status patterns were silently
+// accepted, with [RouteHandle.DecodeErrorFor] deterministically picking
+// the FIRST-declared one client-side regardless of which the server
+// actually sent (see docs/features/rest-api.md's former "same-status
+// precedence" callout). This is now rejected outright at Register time,
+// mirroring [reqreply.DuplicateErrorPatternCodeError] exactly — a client
+// cannot reliably distinguish which of 2 same-status patterns actually
+// produced a given response.
+//
+// Fix: give each [ErrorPattern] on a route a unique status.
+type DuplicateErrorStatusError struct {
+	Route      string
+	Status     int
+	FirstType  string
+	SecondType string
+}
+
+func (e DuplicateErrorStatusError) Error() string {
+	return fmt.Sprintf("api/rest: route %q: ErrorPattern status %d declared for both %s and %s — use distinct statuses for each ErrorPattern",
+		e.Route, e.Status, e.FirstType, e.SecondType)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e DuplicateErrorStatusError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("route", e.Route),
+		slog.Int("status", e.Status),
+		slog.String("first_type", e.FirstType),
+		slog.String("second_type", e.SecondType),
+	)
+}
+
+// checkDuplicateErrorStatuses rejects 2+ declared [ErrorPattern] rules on
+// the SAME route sharing one status — see [DuplicateErrorStatusError].
+func checkDuplicateErrorStatuses(rules []errorPatternRule, routeLabel string) error {
+	seen := make(map[int]string, len(rules))
+	for _, rule := range rules {
+		if first, ok := seen[rule.status]; ok {
+			return DuplicateErrorStatusError{
+				Route:      routeLabel,
+				Status:     rule.status,
+				FirstType:  first,
+				SecondType: rule.typeName,
+			}
+		}
+		seen[rule.status] = rule.typeName
+	}
+	return nil
 }
 
 // ErrorPatternOpt is the [RouteOpt] value returned by [ErrorPattern].
@@ -347,6 +415,36 @@ func (o ErrorPatternOpt[E, B]) WithAction(action ErrorAction) ErrorPatternOpt[E,
 	return o
 }
 
+// Match extracts THIS declaration's typed payload from a CLIENT-side call
+// error in one step — a thin wrapper over the SAME [ErrorPatternValuer]
+// mechanism [ErrorPatternAs] uses, scoped to this value's own
+// B type (already known from o's type parameters, so no explicit [B]
+// instantiation is needed at the call site). See
+// docs/roadmap/error-handling-rest-events-reqreply.md's Topic 6.
+//
+// The SAME value declares the pattern (server, via [NewRoute]'s variadic
+// opts) AND matches it (client) — go-codex's existing "declare once, use
+// both directions" philosophy:
+//
+//	var emailConflictPattern = rest.ErrorPattern[domain.EmailConflictError, domain.EmailConflictError](409, conflictCodec)
+//
+//	resp, err := nethttp.CallWithHandle(ctx, client, baseURL, handle, req, opts)
+//	if conflict, ok := emailConflictPattern.Match(err); ok {
+//	    // conflict is domain.EmailConflictError, fully typed
+//	}
+//
+// Returns false when err carries no [ErrorPatternValuer] value at all, OR
+// when it does but the value isn't assignable to B.
+func (o ErrorPatternOpt[E, B]) Match(err error) (B, bool) {
+	var target ErrorPatternValuer
+	if !errors.As(err, &target) {
+		var zero B
+		return zero, false
+	}
+	b, ok := target.ErrorPatternValue().(B)
+	return b, ok
+}
+
 func (o ErrorPatternOpt[E, B]) applyRoute(rb *routeBuilder) {
 	action := o.action
 	if action == "" {
@@ -358,8 +456,9 @@ func (o ErrorPatternOpt[E, B]) applyRoute(rb *routeBuilder) {
 	schemaCopy := o.codec.Schema
 
 	rule := errorPatternRule{
-		status: status,
-		action: action,
+		status:   status,
+		action:   action,
+		typeName: fmt.Sprintf("%T", *new(E)),
 		decode: func(body []byte) (ErrorPatternResponse, error) {
 			payload, err := jsonCodec.Unmarshal(body)
 			if err != nil {
@@ -818,6 +917,16 @@ func (h *RouteHandle[Req, Resp]) ErrorResponseFor(err error) (resp ErrorPatternR
 		}
 	}
 	return ErrorPatternResponse{}, false, nil
+}
+
+// HasErrorPatterns reports whether at least one [ErrorPattern] is
+// declared on this route. Used internally by [RouteHandle.
+// ObserveErrorResponseFor] to gate stats.ErrorPatternObserver.
+// RecordErrorPatternMiss — a route with NO declared patterns has no
+// "coverage" to measure, so a miss there is not reported. Exported for
+// the rare caller who wants the raw signal outside that wrapper.
+func (h *RouteHandle[Req, Resp]) HasErrorPatterns() bool {
+	return len(h.errorPatternRules) > 0
 }
 
 // DecodeErrorFor is the client-side counterpart of [RouteHandle.ErrorResponseFor]:
@@ -3074,6 +3183,10 @@ func (r Route[Req, Resp]) registerHandle(b *Server) (*RouteHandle[Req, Resp], er
 	}
 
 	if err := checkImplementationsDeclared(r.method+" "+r.path, rb.middlewares, rb.impls, rb.clientImpls); err != nil {
+		return nil, err
+	}
+
+	if err := checkDuplicateErrorStatuses(rb.errorPatternRules, r.method+" "+r.path); err != nil {
 		return nil, err
 	}
 

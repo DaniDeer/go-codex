@@ -118,18 +118,6 @@ func MakeProfileHandler() func(context.Context, routes.ProfileReq) (routes.User,
 	}
 }
 
-// invalidCredentialsError is returned by MakeLoginHandler when the
-// username or password is wrong. Each server's ErrorHandler maps it to
-// 401 Unauthorized.
-type invalidCredentialsError struct{ Err error }
-
-func (e invalidCredentialsError) Error() string { return e.Err.Error() }
-func (e invalidCredentialsError) Unwrap() error { return e.Err }
-
-// InvalidCredentialsError exposes invalidCredentialsError for
-// chiserver/nethttpserver's ErrorHandler to errors.As against.
-type InvalidCredentialsError = invalidCredentialsError
-
 // MakeLoginHandler issues a mock bearer token for a known username/password
 // pair — "alice"/"secret" gets a profile-scoped token, "admin"/"secret"
 // gets a profile+admin-scoped token.
@@ -141,7 +129,7 @@ func MakeLoginHandler() func(context.Context, routes.LoginReq) (routes.TokenResp
 		case req.Username == "admin" && req.Password == "secret":
 			return routes.TokenResp{Token: "valid-admin-token"}, nil
 		default:
-			return routes.TokenResp{}, invalidCredentialsError{Err: fmt.Errorf("invalid credentials")}
+			return routes.TokenResp{}, routes.InvalidCredentialsError{Err: fmt.Errorf("invalid credentials")}
 		}
 	}
 }

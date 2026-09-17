@@ -263,6 +263,54 @@ received the `Client`/`ClientTransport` unification (tracked separately in
 adapter may still need a handle-based (not bare) entry point in the
 interim, but should still avoid a bare non-handle escape hatch.
 
+## Step 5d — Client-side/user-facing convenience helpers belong in `api/*`, not the adapter (MANDATORY, distinct from Step 5c)
+
+**The bigger principle this protects**: a user works ENTIRELY in the
+`api/*`/`ports` abstraction — declaring routes/channels/patterns/ports —
+and ATTACHES your new adapter only to supply the concrete IO
+implementation for a protocol they already chose. Your adapter is a
+plug-in, never a second vocabulary the user has to learn on top of
+`api/*`. If a helper's name/behavior would differ depending on which
+adapter package it lives in (`nethttp.Foo` vs `mqtt5.Foo` vs
+`zeromq.Foo`), that is the abstraction leaking — the user is working with
+N adapter-flavored variants of `api/*` instead of one.
+
+**The rule, stated plainly**: any user-facing convenience or ergonomic
+helper that touches ONLY core `api/*` types — codecs, handles, declared
+patterns, or a core-layer interface — belongs in `api/*`, never in
+`adapters/*`. This holds EVEN WHEN, at the time of writing, only ONE
+adapter happens to implement that boundary — "only one adapter exists
+today" is never a justification for adapter placement.
+
+**The concrete test before adding ANY new exported function to your new
+adapter package**: could this function be written using ONLY
+`errors.As`/a core-layer interface, with ZERO reference to any
+adapter-specific type (your new adapter's own response/error types
+included)? If yes, it does NOT belong in your adapter — put it in the
+owning `api/*` package instead.
+
+**Why this is a SEPARATE check from Step 5c above**: Step 5c governs
+whether your adapter's OWN decode/encode/dispatch path can bypass the
+handle (it never may). This step governs where a POST-RESPONSE
+convenience helper — one that runs entirely AFTER your adapter's
+decode/encode/dispatch already happened, operating only on the result —
+should live. A helper can pass Step 5c cleanly (it never bypasses the
+handle) while still failing this check (it's still misplaced in your
+adapter package).
+
+**Real, fixed example (a confirmed recurring mistake in this codebase)**:
+`rest.ErrorPatternAs[B]`/`HandleErrorPattern`/`Case` and
+`reqreply.ErrorPatternAs[B]`/`HandleErrorPattern`/`Case` extract a matched
+`ErrorPattern`'s typed payload from a client-side call error, touching
+ONLY the core `ErrorPatternValuer` interface. They were originally placed
+in `adapters/nethttp`/`adapters/mqtt5`/`adapters/zeromq` — for reqreply,
+this meant TWO adapter packages carried byte-for-byte identical copies of
+the same 3 functions. Fixed by moving all of them into `api/rest`/
+`api/reqreply`. See `docs/concepts/ports-and-adapters.md`'s "Convenience
+helpers belong in `api/*`, not adapters" section for the full write-up —
+consult it, and don't re-word this rule independently, when reviewing a
+new adapter's exported surface.
+
 ## Step 6 — Use the checklist
 
 Work through [references/checklist.md](references/checklist.md) — a
@@ -318,5 +366,5 @@ verification ritual. Track progress with todos, one per checklist block.
 - `adapters/sql/` — reference store adapter (metadata Pattern, validate/observer patterns)
 - `api/rest/builder.go` + `adapters/nethttp/{adapter,client}.go` — reference implementation of Step 5b's one-struct-one-call pattern (`NewPathParam`/etc., `DecodeMerged`, role-aware `PathMergeFields`/etc., `NewRequiredResponseHeaderParam`/etc., `DecodeMergedResponse`, `CallHandle`)
 - `docs/concepts/api-contracts.md` — "one struct, one call" design principle, user-facing framing
-- `docs/concepts/ports-and-adapters.md` — Step 5c's "no adapter-invented escape hatch" principle, user-facing framing
+- `docs/concepts/ports-and-adapters.md` — Step 5c's "no adapter-invented escape hatch" principle AND Step 5d's "convenience helpers belong in `api/*`" principle, user-facing framing
 - `ports/pattern.go`, `ports/handle.go` — Pattern declaration + build machinery

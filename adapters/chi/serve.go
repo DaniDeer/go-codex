@@ -263,6 +263,7 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 		ctx = context.WithValue(ctx, responseHeadersKey{}, respHeaders)
 		pendingCookies := make([]PendingCookie, 0)
 		ctx = context.WithValue(ctx, responseCookiesKey{}, &pendingCookies)
+		obs := stats.ObserverFromContext(ctx)
 
 		var body []byte
 		// reqFormatValue/haveReqFormatValue: when the route declares
@@ -300,6 +301,9 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 				unmarshalResults := chosen.MethodByName("Unmarshal").Call([]reflect.Value{reflect.ValueOf(body)})
 				if err, _ := unmarshalResults[1].Interface().(error); err != nil {
 					rest.ReportBodyErrors(ctx, err)
+					if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &err) {
+						return
+					}
 					errFn(sw, r, http.StatusBadRequest, err)
 					return
 				}
@@ -335,27 +339,42 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 		if opts.MultiValueQueryParams {
 			if errV := callErr(elem.Addr(), "ValidateQueryMulti", reflect.ValueOf(r.URL.Query())); errV != nil {
 				rest.ReportQueryErrors(ctx, errV)
+				if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &errV) {
+					return
+				}
 				errFn(sw, r, http.StatusBadRequest, errV)
 				return
 			}
 		} else if errV := callErr(elem.Addr(), "ValidateQuery", reflect.ValueOf(queryVars)); errV != nil {
 			rest.ReportQueryErrors(ctx, errV)
+			if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &errV) {
+				return
+			}
 			errFn(sw, r, http.StatusBadRequest, errV)
 			return
 		}
 		if errV := callErr(elem.Addr(), "ValidateCookies", reflect.ValueOf(cookieVars)); errV != nil {
 			rest.ReportCookieErrors(ctx, errV)
+			if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &errV) {
+				return
+			}
 			errFn(sw, r, http.StatusBadRequest, errV)
 			return
 		}
 		if errV := callErr(elem.Addr(), "ValidateHeaders", reflect.ValueOf(headerVars)); errV != nil {
 			rest.ReportHeaderErrors(ctx, errV)
+			if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &errV) {
+				return
+			}
 			errFn(sw, r, http.StatusBadRequest, errV)
 			return
 		}
 		if len(pathNames) > 0 {
 			if errV := callErr(elem.Addr(), "ValidatePathParams", reflect.ValueOf(pathVars)); errV != nil {
 				rest.ReportPathErrors(ctx, errV)
+				if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &errV) {
+					return
+				}
 				errFn(sw, r, http.StatusBadRequest, errV)
 				return
 			}
@@ -374,6 +393,9 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 			})
 			if err, _ := applyResults[0].Interface().(error); err != nil {
 				rest.ReportBodyErrors(ctx, err)
+				if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &err) {
+					return
+				}
 				errFn(sw, r, http.StatusBadRequest, err)
 				return
 			}
@@ -386,6 +408,9 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 			reqValue, decErr := decodeResults[0], decodeResults[1]
 			if err, _ := decErr.Interface().(error); err != nil {
 				rest.ReportBodyErrors(ctx, err)
+				if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &err) {
+					return
+				}
 				errFn(sw, r, http.StatusBadRequest, err)
 				return
 			}
@@ -406,6 +431,12 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 			}
 		}
 		if err := runSecurityMiddlewareReflect(ctx, r, reqPtr, impls, secReqs); err != nil {
+			// Security middleware Fn error IS ErrorPattern-eligible now
+			// (Topic 1's Category A fix) — previously bypassed
+			// ErrorResponseFor entirely, always producing SecurityError.
+			if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &err) {
+				return
+			}
 			errFn(sw, r, http.StatusUnauthorized, rest.SecurityError{Err: err})
 			return
 		}
@@ -415,33 +446,23 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 			var dispatchErr middlewareDispatchError
 			errors.As(mwErr, &dispatchErr)
 			if !dispatchErr.isFnError {
-				// In-decode/validation failure — plain 400, mirrors other
-				// param-validation failures (no ErrorPattern consultation;
-				// no business error exists yet at this point).
+				// Middleware DecodeIn failure IS ErrorPattern-eligible now
+				// (Topic 1's Category A fix) — already wrapped in
+				// MiddlewareInputError by runMiddlewareHandlersReflect,
+				// but previously never passed to ErrorResponseFor.
+				if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &dispatchErr.err) {
+					return
+				}
 				errFn(sw, r, http.StatusBadRequest, dispatchErr.err)
 				return
 			}
 			// fn's own business error IS ErrorPattern-eligible (D2) — run
-			// through the SAME ErrorResponseFor mechanism a handler error
-			// uses, falling back to rest.MiddlewareError at status 400
-			// when unmatched.
+			// through the SAME ObserveErrorResponseFor mechanism a handler
+			// error uses, falling back to rest.MiddlewareError at status
+			// 400 when unmatched.
 			err := dispatchErr.err
-			errResults := elem.Addr().MethodByName("ErrorResponseFor").Call([]reflect.Value{reflect.ValueOf(&err).Elem()})
-			patternResp, _ := errResults[0].Interface().(rest.ErrorPatternResponse)
-			matched, _ := errResults[1].Interface().(bool)
-			applyErr, _ := errResults[2].Interface().(error)
-			if matched {
-				if applyErr == nil {
-					if patternResp.Action == "" || patternResp.Action == rest.ErrorRespond {
-						if writeErr := writeErrorPatternResponseReflect(ctx, sw, elem, respType, patternResp, respHeaders, &pendingCookies); writeErr == nil {
-							return
-						} else {
-							err = writeErr
-						}
-					}
-				} else {
-					err = applyErr
-				}
+			if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &err) {
+				return
 			}
 			errFn(sw, r, http.StatusBadRequest, rest.MiddlewareError{Name: dispatchErr.name, Err: err})
 			return
@@ -450,22 +471,8 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 		handlerResults := handlerFn.Call([]reflect.Value{reflect.ValueOf(ctx), reqPtr.Elem()})
 		respValue, handlerErrV := handlerResults[0], handlerResults[1]
 		if err, _ := handlerErrV.Interface().(error); err != nil {
-			errResults := elem.Addr().MethodByName("ErrorResponseFor").Call([]reflect.Value{reflect.ValueOf(&err).Elem()})
-			patternResp, _ := errResults[0].Interface().(rest.ErrorPatternResponse)
-			matched, _ := errResults[1].Interface().(bool)
-			applyErr, _ := errResults[2].Interface().(error)
-			if matched {
-				if applyErr == nil {
-					if patternResp.Action == "" || patternResp.Action == rest.ErrorRespond {
-						if writeErr := writeErrorPatternResponseReflect(ctx, sw, elem, respType, patternResp, respHeaders, &pendingCookies); writeErr == nil {
-							return
-						} else {
-							err = writeErr
-						}
-					}
-				} else {
-					err = applyErr
-				}
+			if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &err) {
+				return
 			}
 			status := http.StatusInternalServerError
 			if mappedStatus, ok := callErrStatusFor(elem.Addr(), err); ok {
@@ -484,6 +491,9 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 		if err, _ := mergeResults[2].Interface().(error); err != nil {
 			rest.ReportResponseHeaderErrors(ctx, err)
 			rest.ReportResponseCookieErrors(ctx, err)
+			if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &err) {
+				return
+			}
 			errFn(sw, r, http.StatusInternalServerError, err)
 			return
 		}
@@ -504,6 +514,9 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 			mwHeaders, mwCookies, encErr := h.EncodeOut(middlewareOuts[i])
 			if encErr != nil {
 				stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, "middleware:out", encErr)
+				if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &encErr) {
+					return
+				}
 				errFn(sw, r, http.StatusInternalServerError, encErr)
 				return
 			}
@@ -515,6 +528,9 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 				mwCookieAttrs, encErr = h.EncodeOutCookieAttrs(middlewareOuts[i])
 				if encErr != nil {
 					stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, "middleware:out", encErr)
+					if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &encErr) {
+						return
+					}
 					errFn(sw, r, http.StatusInternalServerError, encErr)
 					return
 				}
@@ -542,6 +558,9 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 				valResults := chosen.MethodByName("Validate").Call([]reflect.Value{respValue})
 				if err, _ := valResults[0].Interface().(error); err != nil {
 					rest.ReportBodyErrors(ctx, err)
+					if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &err) {
+						return
+					}
 					errFn(sw, r, http.StatusInternalServerError, err)
 					return
 				}
@@ -586,6 +605,9 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 			outBytes, _ = marshalResults[0].Interface().([]byte)
 			if err, _ := marshalResults[1].Interface().(error); err != nil {
 				rest.ReportBodyErrors(ctx, err)
+				if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &err) {
+					return
+				}
 				errFn(sw, r, http.StatusInternalServerError, err)
 				return
 			}
@@ -595,6 +617,9 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 			outBytes, _ = encodeResults[0].Interface().([]byte)
 			if err, _ := encodeResults[1].Interface().(error); err != nil {
 				rest.ReportBodyErrors(ctx, err)
+				if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &err) {
+					return
+				}
 				errFn(sw, r, http.StatusInternalServerError, err)
 				return
 			}
@@ -653,6 +678,22 @@ func callErrStatusFor(target reflect.Value, err error) (int, bool) {
 	return status, ok
 }
 
+// callObserveErrorResponseFor reflect-calls
+// ObserveErrorResponseFor(ctx, obs, err) on target — the RECOMMENDED
+// single call site for every Category-A failure point (see
+// docs/roadmap/error-handling-rest-events-reqreply.md's Topic 1/5):
+// consults a declared [rest.ErrorPattern] AND reports match/miss/span-tag
+// observability internally, in one call.
+func callObserveErrorResponseFor(target reflect.Value, ctx context.Context, obs stats.Observer, err error) (rest.ErrorPatternResponse, bool, error) {
+	results := target.MethodByName("ObserveErrorResponseFor").Call([]reflect.Value{
+		reflect.ValueOf(ctx), reflect.ValueOf(&obs).Elem(), reflect.ValueOf(&err).Elem(),
+	})
+	resp, _ := results[0].Interface().(rest.ErrorPatternResponse)
+	matched, _ := results[1].Interface().(bool)
+	applyErr, _ := results[2].Interface().(error)
+	return resp, matched, applyErr
+}
+
 // formatContentTypesReflect returns the ContentType() of every entry in
 // formats (a reflect.Value of type []format.Format[T] for an erased T) —
 // used to build the Supported list on [rest.UnsupportedMediaTypeError]/
@@ -689,6 +730,45 @@ func negotiateRequestFormatReflect(formats reflect.Value, contentType string) (r
 		}
 	}
 	return reflect.Value{}, false
+}
+
+// tryRespondErrorPattern is the RECOMMENDED single call site for every
+// Category-A failure point (docs/roadmap/error-handling-rest-events-reqreply.md's
+// Topic 1/5): consults a declared [rest.ErrorPattern] via
+// ObserveErrorResponseFor (which ALSO reports match/miss/span-tag
+// observability internally) and, on a matched [rest.ErrorRespond] action,
+// writes the typed response. Returns true when the response was fully
+// handled — the caller should return immediately without invoking its
+// own fixed-shape errFn call. Returns false (unmatched, a non-Respond
+// action, or a write failure) when the caller should fall through to its
+// EXISTING fixed-shape errFn call — purely additive, never a behavior
+// change for routes with no matching declared pattern.
+//
+// *err is mutated in place to the pattern's own applyErr (a mapFn/encode
+// failure) or a response-write failure, mirroring this function's
+// pre-consolidation inline shape exactly — callers must use the
+// (possibly updated) *err in their own subsequent errFn call, not the
+// original value passed in.
+func tryRespondErrorPattern(
+	ctx context.Context, sw *statusResponseWriter, elem reflect.Value, respType reflect.Type,
+	obs stats.Observer, respHeaders http.Header, pendingCookies *[]PendingCookie, err *error,
+) bool {
+	resp, matched, applyErr := callObserveErrorResponseFor(elem.Addr(), ctx, obs, *err)
+	if !matched {
+		return false
+	}
+	if applyErr != nil {
+		*err = applyErr
+		return false
+	}
+	if resp.Action != "" && resp.Action != rest.ErrorRespond {
+		return false
+	}
+	if writeErr := writeErrorPatternResponseReflect(ctx, sw, elem, respType, resp, respHeaders, pendingCookies); writeErr != nil {
+		*err = writeErr
+		return false
+	}
+	return true
 }
 
 // writeErrorPatternResponseReflect is [writeErrorPatternResponse]'s

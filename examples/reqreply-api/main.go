@@ -108,7 +108,11 @@ func main() {
 	demoZeroMQDealerRouterVariant(ctx, obs)
 	demoCrossAPIOAuth2Sharing(ctx, zeromqBuilt)
 	demoObserverMiddleware(ctx, obs, mqtt5Built, mqtt5Client, zeromqClient)
-	demoErrorPatternClientDecode(ctx, mqtt5Built)
+	demoErrorPatternDeclarationMechanisms(ctx)
+	demoErrorPatternClientMatchMechanisms(ctx, mqtt5Built)
+	demoErrorPatternDeadLetterFallback(ctx)
+	demoErrorPatternMiddlewareCombo(ctx)
+	demoErrorPatternPortAdapter(ctx)
 
 	fmt.Println("\n✓ all reqreply-api demos completed successfully")
 }

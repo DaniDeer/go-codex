@@ -1,6 +1,7 @@
 package zeromq
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 )
@@ -80,6 +81,15 @@ func (e SubscribeError) Error() string {
 
 // Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
 func (e SubscribeError) Unwrap() error { return e.Err }
+
+// As is a thin, self-documenting convenience wrapper over
+// errors.As(e.Err, target) — collapses the two-step
+// "errors.As(subErr.Err, &target)" dance into "subErr.As(&target)" from
+// inside an [SubscribeOptions.OnError] callback. See
+// docs/roadmap/error-handling-rest-events-reqreply.md's Topic 7.
+func (e SubscribeError) As(target any) bool {
+	return errors.As(e.Err, target)
+}
 
 // LogValue implements [slog.LogValuer] for structured logging.
 func (e SubscribeError) LogValue() slog.Value {
@@ -199,6 +209,11 @@ type ErrorPatternResponse struct {
 func (e ErrorPatternResponse) Error() string {
 	return fmt.Sprintf("server error [%s]: %T", e.Code, e.Value)
 }
+
+// ErrorPatternValue implements [reqreply.ErrorPatternValuer], letting
+// [reqreply.ErrorPatternOpt.Match] extract this response's decoded typed
+// payload without api/reqreply importing this adapter package.
+func (e ErrorPatternResponse) ErrorPatternValue() any { return e.Value }
 
 // LogValue implements [slog.LogValuer] for structured logging.
 func (e ErrorPatternResponse) LogValue() slog.Value {

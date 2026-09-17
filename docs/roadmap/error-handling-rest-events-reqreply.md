@@ -1,8 +1,61 @@
 # Unified Error Handling — REST, Events, ReqReply (destined for D-0005)
 
-> **Status:** Design draft — all 7 topics' open design decisions
-> resolved; implementation-ready. A final consistency review pass is
-> recommended before starting Mode 3 (Implement).
+> **Status:** Implemented and verified — all 7 phases shipped
+> (`gofmt`/`go build`/`go test -count=1 ./...`/`just check` all clean),
+> including a follow-up consistency-review round that closed several
+> gaps found by cross-checking this document against the actual code:
+> `DeadLetter`'s AsyncAPI channel registration (previously documented as
+> "DECIDED" but not implemented), mqtt v3's Implementations-based
+> security dispatch (previously bypassed `events.SecurityError`
+> wrapping/`ErrorChannel` eligibility on its documented primary subscribe
+> workflow), mqtt5 User Property param validation (now
+> `ErrorChannel`/`ErrorPattern`/`DeadLetter`-eligible, closing an
+> asymmetry with REST's own wired header-param validation), plus missing
+> test coverage for `ObserveErrorResponseFor`/`HasErrorPatterns`/
+> `ErrorPatternObserver` (core-layer AND real-dispatch) and Topic 7's
+> publish-side exclusion invariant, and the security-disclosure guidance
+> `docs/guides/error-handling.md` now documents. This document has NOT
+> yet been physically moved/renamed to `docs/design/d-0005-error-handling.md`
+> — ~55 files across the repo reference it by its current path, and that
+> rename is a separate, optional follow-up (pure doc-reorganization, not
+> a functional change) rather than something this implementation round
+> addressed.
+>
+> **Scope widened in a later review round (H1)**: `adapters/nethttp` and
+> `adapters/chi` each have a SEPARATE HTTP dispatch function,
+> `handlerFunc[Req, Resp any]`, backing the port/stream-binding entry
+> points `IngestAdapter`/`LatestAdapter`/`HandlerLatest`/`PipelineHandler`
+> — distinct from `serve.go`'s `serve`, which this document's Topic 1/4/5
+> fixes were originally scoped to ONLY. `handlerFunc` fully supports
+> declared `ErrorPattern`s via `rest.RouteHandle` but never consulted them
+> at any Category-A dispatch point except the handler's own business
+> error (and even that used the bare, non-observability `ErrorResponseFor`
+> instead of `ObserveErrorResponseFor`). This was closed identically to
+> Topic 1's original fix (a new, non-reflection
+> `tryRespondErrorPatternGeneric[Req,Resp]` helper, wired at the same 13
+> Category-A points), purely additive, with regression tests proving a
+> declared `ErrorPattern` is now consulted and observed via
+> `IngestAdapter` (representative of the shared `handlerFunc` surface).
+>
+> **H2 (same review round)**: `PublishAdapter.Activate`'s
+> `handleUpstreamError` closure in `adapters/mqtt`/`adapters/mqtt5`/
+> `adapters/zeromq`'s `binding.go` (events' publish-side sink adapter,
+> handling errors from an UPSTREAM pipeline stage rather than a publish
+> failure) hand-rolled its own `events.ErrorChannel` dispatch via the
+> bare `handle.ErrorResponseFor`, instead of reusing each package's own
+> already-correct `tryPublishErrorChannel` helper (used by the subscribe
+> side and `publish()`'s own internal error paths) — silently skipping
+> `stats.ErrorPatternObserver`/`SpanTagger` observability on this one
+> path. Fixed by delegating to `tryPublishErrorChannel` in all 3
+> packages; error-channel replies from this path now always use QoS
+> 0/non-retained (mqtt/mqtt5 only — matching every other error-channel
+> dispatch site; zeromq had no such option to begin with, so its fix was
+> a pure zero-behavior-change dedup). `DeadLetter` fallback intentionally
+> NOT added here (no raw payload exists for an upstream, pre-publish
+> pipeline error — same scope boundary as G3). All other events/reqreply
+> port adapters (`SubscribeAdapter`, `CallAdapter`, `ServeAdapter`,
+> `LatestAdapter`) were re-audited and confirmed to delegate straight to
+> already-fully-wired dispatch functions — no further gaps found there.
 > [← Back to Roadmap](index.md)
 
 ## Motivation
@@ -720,7 +773,15 @@ func DeadLetter(topic string, opts ...DeadLetterOpt) RouteOpt
     (once Topic 1's fix makes this last one `ErrorPattern`-eligible).
     This preserves the fallback-tier ordering Topic 1/4 already
     establish: a more specific declared `ErrorPattern`/`ErrorChannel`
-    always wins first; DeadLetter is strictly the LAST resort.
+    always wins first; DeadLetter is strictly the LAST resort. **"No
+    match" means a genuine TYPE non-match only** (session-review
+    round-3 clarification, G4) — a declared `ErrorChannel` that DOES
+    type-match via `errors.As` but resolves to a non-`ErrorRespond`
+    action (`ErrorHandle`/`ErrorLog`) is STILL a match for this
+    purpose, and must NOT also reach `DeadLetter`; only a pattern whose
+    `errors.As` check itself fails (or a matched-but-failed-to-map/
+    encode pattern, per the existing out-of-scope carve-out below) falls
+    through to Tier 2's DeadLetter consultation.
   - **"Handler panic" dropped from scope entirely** — confirmed via
     `grep -rn "recover()"` that only `adapters/nethttp`/`adapters/chi`
     (REST) have any panic-recovery mechanism at all; `mqtt`/`mqtt5`/
@@ -746,7 +807,23 @@ func DeadLetter(topic string, opts ...DeadLetterOpt) RouteOpt
   would use, alongside (not instead of) the synchronous Go error the
   caller already receives from `Publish(...)` (Topic 7) — giving an
   operator a durable, replayable record of outbound failures without
-  requiring the caller to build their own retry-queue plumbing.
+  requiring the caller to build their own retry-queue plumbing. This is
+  DELIBERATELY narrower than the subscribe side's full Category-A
+  coverage — scoped specifically to middleware Fn/encode failures and
+  broker-level rejection (a message that entered dispatch and then
+  failed), NOT to `BuildTopic`/client-side security-Fn failures (a
+  pre-transmission validation/authorization rejection of the caller's
+  OWN outgoing message, structurally closer to REST's client-side
+  param/credential validation — Category C, permanently excluded — than
+  to a genuinely dispatched-and-then-failed message).
+- **reqreply's server-side reply transmission gets the SAME failed-send
+  coverage as events' publish side** (session-review round-3 addition):
+  a broker/socket-level rejection of the FINAL, successfully-encoded
+  reply (after the handler ran and the response encoded cleanly) is ALSO
+  dead-lettered — mirrors the publish-side bullet above exactly,
+  reusing `RouteHandle.DeadLetterFor`/`tryDeadLetterReflect` on the SAME
+  request-side topic/payload every other Category-A failure point in
+  reqreply's server dispatch already uses.
 
 ### Core-layer consolidation — DECIDED this round: `DeadLetterFor`, adapters only publish bytes
 
@@ -1267,38 +1344,63 @@ decoded AT this call; the wire decode already happened earlier, inside
 `Value` — "As" mirrors `errors.As`/Topic 7's `SubscribeError.As` naming
 family directly.
 
+> **CORRECTED in a later review round**: this section originally placed
+> `ErrorPatternAs` (and `HandleErrorPattern`/`Case`, Alternative 3 below)
+> in EACH client adapter package (`adapters/nethttp`, `adapters/mqtt5`,
+> `adapters/zeromq`), reasoning "3/2 near-identical copies... mirroring
+> the existing precedent that each adapter keeps its OWN
+> `ErrorPatternResponse`/`CallError` type." **That reasoning was a design
+> mistake** — it conflated two different things. It IS correct that the
+> CONCRETE response type (`nethttp.ErrorPatternResponse`,
+> `mqtt5.ErrorPatternResponse`, `zeromq.ErrorPatternResponse`)
+> legitimately differs per adapter (protocol-specific fields like
+> `StatusCode` vs `Code`). But `ErrorPatternAs`/`HandleErrorPattern`/
+> `Case` touch ONLY the shared, already-core-layer `ErrorPatternValuer`
+> interface (Alternative 2 below already used this same interface
+> correctly) — they have ZERO protocol-specific logic and never needed
+> to live in an adapter at all. This violated this library's own "thin
+> adapter" design guardrail (see the new subsection below) — a real,
+> user-reported design gap, not a style preference. **Fixed**:
+> `ErrorPatternAs`/`HandleErrorPattern`/`Case` now live in `api/rest` and
+> `api/reqreply` (ONE implementation each, not one per adapter) — `mqtt5`
+> and `zeromq` no longer each carry a byte-for-byte-identical copy. The
+> code example below is kept for illustration but now describes the
+> CORE-layer implementation, not an adapter-owned one.
+
 ```go
-// adapters/nethttp, adapters/mqtt5, adapters/zeromq each gain this —
-// NOT adapters/chi (no client exists there at all) and NOT api/events
+// api/rest and api/reqreply each gain this ONCE (not once per adapter)
+// — NOT adapters/chi (no client exists there at all) and NOT api/events
 // (no synchronous caller — Topic 2's reasoning applies identically here).
 //
 // ErrorPatternAs extracts a matched ErrorPattern's typed payload in one
 // call, collapsing the errors.As + type-switch dance above into a
-// single conditional.
+// single conditional. Works against ANY adapter's own error-pattern
+// response type, since all of them implement ErrorPatternValuer (see
+// Alternative 2) — this function never needs to know which adapter
+// produced err.
 func ErrorPatternAs[B any](err error) (B, bool) {
-	var epr ErrorPatternResponse // this package's own type
-	if !errors.As(err, &epr) {
+	var target ErrorPatternValuer // the SAME core-layer interface Alternative 2 uses
+	if !errors.As(err, &target) {
 		var zero B
 		return zero, false
 	}
-	b, ok := epr.Value.(B)
+	b, ok := target.ErrorPatternValue().(B)
 	return b, ok
 }
 ```
 
-Usage:
+Usage (unchanged for callers, only the import path changed):
 
 ```go
-if conflict, ok := nethttp.ErrorPatternAs[domain.EmailConflictError](err); ok {
+if conflict, ok := rest.ErrorPatternAs[domain.EmailConflictError](err); ok {
 	return promptDifferentEmail(conflict.Email) // conflict is fully typed
 }
 ```
 
 Low-risk, purely additive — no change to the existing `ErrorPatternResponse`
-type or any existing behavior. 3 near-identical copies (one per client
-package), mirroring the existing precedent that `nethttp`/`mqtt5`/
-`zeromq` each keep their OWN `ErrorPatternResponse`/`CallError` types
-rather than sharing one across packages.
+type or any existing behavior. ONE implementation per API (`api/rest`,
+`api/reqreply`), reused transparently by every adapter that implements
+that API's `ErrorPatternValuer` interface — not "one per adapter."
 
 ### Alternative 2 — `.Match` method on the declaration value (thin wrapper over Alternative 1)
 
@@ -1363,9 +1465,15 @@ implementation exists, using an interface + per-case type assertion (the
 same "typed case" idiom used elsewhere for heterogeneous
 type-parameterized collections in Go):
 
+> **CORRECTED in a later review round**: same placement fix as
+> Alternative 1 above — `HandleErrorPattern`/`Case` moved from
+> `adapters/nethttp`/`adapters/mqtt5`/`adapters/zeromq` into `api/rest`/
+> `api/reqreply` (ONE implementation each). The code below is kept for
+> illustration but now describes the core-layer implementation.
+
 ```go
-// adapters/nethttp, adapters/mqtt5, adapters/zeromq — same 3-package
-// scope as Alternatives 1/2.
+// api/rest and api/reqreply each gain this ONCE — same scope as
+// Alternatives 1/2.
 
 // errorCase is the internal, type-erased interface each Case[T] value
 // implements — this is what makes a slice of heterogeneous Case[T]
@@ -1397,15 +1505,16 @@ func (c typedCase[T]) tryHandle(value any) bool {
 // HandleErrorPattern extracts a matched ErrorPattern's typed payload
 // ONCE (a single errors.As call, unlike each Case doing its own), then
 // dispatches to the first Case whose T matches the payload's concrete
-// type. Returns false when err is not an ErrorPatternResponse at all, OR
-// when it is one but no Case's T matches its Value's concrete type.
+// type. Returns false when err carries no ErrorPatternValuer value at
+// all, OR when it does but no Case's T matches its value's concrete
+// type.
 func HandleErrorPattern(err error, cases ...errorCase) bool {
-	var epr ErrorPatternResponse
-	if !errors.As(err, &epr) {
+	var target ErrorPatternValuer // the SAME core-layer interface Alternative 2 uses
+	if !errors.As(err, &target) {
 		return false
 	}
 	for _, c := range cases {
-		if c.tryHandle(epr.Value) {
+		if c.tryHandle(target.ErrorPatternValue()) {
 			return true
 		}
 	}
@@ -1416,9 +1525,9 @@ func HandleErrorPattern(err error, cases ...errorCase) bool {
 Usage:
 
 ```go
-handled := nethttp.HandleErrorPattern(err,
-	nethttp.Case(func(e domain.EmailConflictError) { promptDifferentEmail(e.Email) }),
-	nethttp.Case(func(e domain.ValidationError) { showValidationErrors(e) }),
+handled := rest.HandleErrorPattern(err,
+	rest.Case(func(e domain.EmailConflictError) { promptDifferentEmail(e.Email) }),
+	rest.Case(func(e domain.ValidationError) { showValidationErrors(e) }),
 )
 if !handled {
 	// no case matched — unmapped payload type, or no ErrorPattern matched at all
@@ -1433,8 +1542,9 @@ has to name it explicitly at the call site (unlike Alternative 1's
 reach for which):
 
 - It is a fully SEPARATE mechanism, not a thin wrapper over Alternative 1
-  (unlike Alternative 2) — genuinely new maintenance surface, one per
-  client package.
+  (unlike Alternative 2) — genuinely new maintenance surface, though (per
+  the correction above) only ONE implementation per API, not one per
+  adapter.
 - It is client-only — no "declare once, use both directions" angle the
   way Alternative 2 has (`ErrorPatternOpt.Match` reuses the SAME value
   the server declares with).
@@ -1445,6 +1555,58 @@ reach for which):
   precedent already established elsewhere in this document (Topic 1),
   not a new kind of ambiguity, but worth a one-line godoc callout when
   implemented.
+
+### Design guardrail: adapters implement wire protocols only — client-side ergonomics belong in `api/*`
+
+Added in the SAME later review round that corrected Alternatives 1/3
+above, generalizing the specific mistake into a permanent, explicit rule
+for this library (and for this skill's own review checklist, which now
+cross-references it — see `.github/skills/review-go-codex/references/checklist.md`
+§13):
+
+> **Adapters implement wire protocols only.** Any user-facing convenience
+> or ergonomic helper that touches ONLY core `api/*` types — codecs,
+> handles, declared patterns, or a core-layer interface like
+> `ErrorPatternValuer` — belongs in `api/*`, never in `adapters/*`. This
+> holds EVEN WHEN, at the time of writing, only one adapter happens to
+> implement that boundary (as REST's `nethttp` did before this fix) —
+> "only one adapter exists today" is not a justification for placing
+> transport-independent logic inside that one adapter; the test is
+> whether the logic COULD be written using only `api/*` types, not how
+> many adapters currently exist.
+
+This is the client-side/consumption-side mirror of the "thin adapter"
+principle Category A's server-side dispatch consolidation (Topic 1/5,
+`ObserveErrorResponseFor`/`DeadLetterFor`) already established — that
+work made adapters call ONE shared, generic core-layer method at every
+Category-A dispatch point instead of hand-rolling per-adapter logic.
+`ErrorPatternAs`/`HandleErrorPattern`/`Case` are the exact same shape of
+mistake on the OTHER side of the boundary: convenience helpers a CALLER
+uses after receiving a response, which — exactly like the server-side
+dispatch helpers — only ever need `errors.As` against a core-layer
+interface (`ErrorPatternValuer`), never anything adapter-specific.
+
+**The user-experience promise this protects**: a caller should be able
+to declare and consume a communication pattern using ONLY the `api/*`
+abstraction — attaching a specific adapter is purely a protocol-selection
+decision, never something that changes which helper functions/vocabulary
+the caller reaches for. `rest.ErrorPatternAs`/`reqreply.ErrorPatternAs`
+(not `nethttp.ErrorPatternAs`/`mqtt5.ErrorPatternAs`/`zeromq.ErrorPatternAs`)
+is what makes the whole workflow genuinely protocol-independent, matching
+this document's own "declare it, don't dispatch it" framing for the
+server side.
+
+**Audited against all 3 APIs this round** — confirmed `api/events` (pub/sub)
+has NO equivalent gap: pub/sub has no synchronous caller to hand a
+matched error back to (Topic 2's reasoning), so a downstream consumer
+just subscribes to the declared error-output topic as an ordinary typed
+channel — already core-layer, already protocol-independent, nothing to
+move. `mcp.ErrorPattern` and `websocket.ErrorFrame` were also checked and
+confirmed structurally different (MCP tool errors are structured
+`CallToolResult` values, never a Go `error` the caller matches via
+`errors.As`; `ErrorFrame` broadcasts to all sessions, it isn't a
+call/response the caller receives a matched error back from) — neither
+has an analogous client-side helper to misplace.
 
 ### Retry/idempotency guidance (documentation addition, no code change)
 

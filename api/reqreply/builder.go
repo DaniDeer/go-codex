@@ -36,6 +36,16 @@ type Server struct {
 	securitySchemes map[string]SecurityScheme
 	globalSecurity  []route.SecurityRequirement
 	topicCodec      *codex.Codec[string]
+	// globalDeadLetter is the Server-level default [DeadLetter]
+	// declaration, set via [Server.AddGlobalDeadLetter]. nil when none is
+	// declared. Routes with no explicit DeadLetter opt inherit this.
+	globalDeadLetter *deadLetterRule
+	// deadLetterTopicsRegistered dedups AsyncAPI channel-entry
+	// registration for [DeadLetter] destinations by topic — several
+	// routes commonly share ONE dead-letter destination (e.g. via
+	// [Server.AddGlobalDeadLetter]), so only the FIRST route to resolve
+	// a given dead-letter topic registers its spec entry.
+	deadLetterTopicsRegistered map[string]bool
 
 	// mu guards transport/dispatchEntries, the fields mutated after
 	// construction outside of Route.Register's own topic/schema
@@ -153,6 +163,17 @@ func (b *Builder) AddGlobalSecurity(reqs ...route.SecurityRequirement) *Builder 
 	return b
 }
 
+// AddGlobalDeadLetter declares a Server-level default [DeadLetter]
+// destination that every route with NO explicit DeadLetter opt inherits
+// — mirrors [Builder.AddGlobalSecurity]'s own nil-inherit/empty-override
+// precedent. To opt a specific route OUT of this default, declare
+// `reqreply.DeadLetter("")` on that route explicitly.
+func (b *Builder) AddGlobalDeadLetter(topic string, opts ...DeadLetterOpt) *Builder {
+	rule := DeadLetter(topic, opts...).rule
+	b.globalDeadLetter = &rule
+	return b
+}
+
 // AddServer registers a named server entry in the AsyncAPI document.
 // Entries appear in output in registration order.
 //
@@ -246,51 +267,44 @@ func (b *Builder) registerRoute(
 		},
 	})
 
-	// Register reply channel (receive-only — exempt from subscribe/publish validation).
+	// Register reply channel (receive-only — exempt from subscribe/publish
+	// validation). Topic 3 (docs/roadmap/error-handling-rest-events-reqreply.md):
+	// ONE reply channel, ONE receive operation, carrying N message
+	// variants (the success shape plus one per declared errorReplies
+	// entry) via Operation.Messages — AsyncAPI 3.0's native
+	// channel-level "messages" map mechanism, the direct analogue of
+	// OpenAPI's per-status responses object. Per spec, an operation with
+	// no explicit Messages set applies ALL of its channel's declared
+	// messages — so leaving the operation-level array empty here is
+	// correct, not an omission.
+	replyMessages := make([]asyncapi.Message, 0, len(errorReplies)+1)
+	replyMessages = append(replyMessages, asyncapi.Message{
+		Name:       "Success",
+		Schema:     respSchema,
+		SchemaName: meta.RespSchemaName,
+		Headers:    respHeaders,
+	})
+	for i, er := range errorReplies {
+		name := "Error"
+		if er.Code != "" {
+			name += capitalise(topicToID(er.Code))
+		} else {
+			name += fmt.Sprintf("%d", i+1)
+		}
+		replyMessages = append(replyMessages, asyncapi.Message{
+			Name:       name,
+			Schema:     er.Schema,
+			SchemaName: er.SchemaName,
+		})
+	}
 	b.docBuilder.AddReplyChannel(replyChannelKey, asyncapi.ChannelItem{
 		Address:    topic + "/reply",
 		Parameters: params,
 		Subscribe: &asyncapi.Operation{
 			OperationID: recvOpID,
-			Message: asyncapi.Message{
-				Schema:     respSchema,
-				SchemaName: meta.RespSchemaName,
-				Headers:    respHeaders,
-			},
+			Messages:    replyMessages,
 		},
 	})
-
-	for i, er := range errorReplies {
-		suffix := "Error"
-		if er.Code != "" {
-			suffix += capitalise(topicToID(er.Code))
-		} else {
-			suffix += fmt.Sprintf("%d", i+1)
-		}
-		errReplyChannelKey := replyChannelKey + suffix
-		errReplyAddress := topic + "/reply/error"
-		if er.Code != "" {
-			errReplyAddress += "/" + er.Code
-		}
-		if er.ChannelAddress != "" {
-			errReplyAddress = er.ChannelAddress
-		}
-		errRecvOpID := "receive" + capitalise(base) + "Reply" + suffix
-		if er.OperationID != "" {
-			errRecvOpID = er.OperationID
-		}
-		b.docBuilder.AddReplyChannel(errReplyChannelKey, asyncapi.ChannelItem{
-			Address: errReplyAddress,
-			Subscribe: &asyncapi.Operation{
-				OperationID: errRecvOpID,
-				Description: er.Description,
-				Message: asyncapi.Message{
-					Schema:     er.Schema,
-					SchemaName: er.SchemaName,
-				},
-			},
-		})
-	}
 }
 
 // AsyncAPISpec builds and returns the accumulated AsyncAPI 3.0 document.

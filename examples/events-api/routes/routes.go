@@ -206,10 +206,24 @@ var WildcardSub = WildcardChannel.WithSubscribe(events.Subscribe{
 // ── Error-path ergonomics channel (mqtt5-specific demo) ──────────────────────
 //
 // ReadingsWithErrorsChannel mirrors SensorDataChannel but additionally
-// declares an events.ErrorChannel: when a SensorOutOfRangeError reaches
-// the publish adapter, the typed payload is published to
-// "sensors/{sensorID}/readings/errors" instead of just being forwarded to
-// OnError.
+// declares an events.ErrorChannel (Mapped mode): when a
+// SensorOutOfRangeError reaches the publish adapter, the typed payload is
+// published to the declared error-output topic instead of just being
+// forwarded to OnError. The events.DeadLetter declaration is the OTHER
+// tier of the SAME two-tier fallback: an error type the ErrorChannel does
+// NOT declare (SensorOfflineError — a genuine miss) falls through to the
+// dead-letter topic instead — see demo_error_pattern.go's DLQ demo, which
+// dispatches BOTH error types side-by-side to prove the ordering.
+//
+// NOTE: BOTH the ErrorChannel's error-output topic AND DeadLetter's topic
+// are used LITERALLY — unlike the channel's OWN topic template above (
+// "{sensorID}" IS substituted there), neither error mechanism performs
+// {var} substitution on ITS OWN topic string (see G2's fix, which
+// corrected DeadLetter's docs to stop implying otherwise). A literal
+// "{sensorID}" segment here still functions correctly as a topic (MQTT
+// permits any string), it just never becomes a real sensor ID on the
+// wire — kept here, unsubstituted, deliberately, so demo_error_pattern.go
+// prints the ACTUAL published topic rather than a misleading assumption.
 var ReadingsWithErrorsChannel = events.NewChannel[SensorReading](
 	"sensors/{sensorID}/readings",
 	SensorReadingCodec,
@@ -220,11 +234,174 @@ var ReadingsWithErrorsChannel = events.NewChannel[SensorReading](
 			return SensorErrorPayload{Code: "out_of_range", Message: e.Error()}, nil
 		},
 	),
+	events.DeadLetter("sensors/readings/dlq"),
 )
 
 var ReadingsWithErrorsPub = ReadingsWithErrorsChannel.WithPublish(events.Publish{
 	OperationID: "publishSensorReadingWithErrors",
 	Summary:     "Publish a sensor reading (error-path ergonomics demo).",
+})
+
+// ReadingsWithErrorsSub is the SAME ReadingsWithErrorsChannel bound as a
+// subscribe operation — used by demo_subscribe_error_channel.go to show
+// the OTHER Category-A error-channel dispatch point: a HANDLER (fn)
+// business error, as opposed to ReadingsWithErrorsPub's upstream pipeline
+// error. Both share the SAME declared events.ErrorChannel, proving one
+// declaration covers both directions.
+var ReadingsWithErrorsSub = ReadingsWithErrorsChannel.WithSubscribe(events.Subscribe{
+	OperationID: "receiveSensorReadingWithErrors",
+	Summary:     "Receive a sensor reading (error-path ergonomics demo).",
+})
+
+// SensorErrorTopicChannel declares the error-output topic itself
+// ("sensors/{sensorID}/readings/errors") as an ORDINARY typed channel —
+// the pub/sub analogue of REST/reqreply's client-side ErrorPattern
+// recovery: a downstream consumer decodes the typed SensorErrorPayload
+// exactly like any other declared message, no errors.As/special decode
+// step needed, since the error notification is already just a normal
+// message on the wire. See demo_error_channel_consumer.go.
+var SensorErrorTopicChannel = events.NewChannel[SensorErrorPayload](
+	"sensors/{sensorID}/readings/errors",
+	SensorErrorPayloadCodec,
+	events.TopicParam{Name: "sensorID"}.WithCodec(codex.String().Refine(validate.UUID)),
+)
+
+var SensorErrorTopicSub = SensorErrorTopicChannel.WithSubscribe(events.Subscribe{
+	OperationID: "receiveSensorReadingError",
+	Summary:     "Receive a typed sensor error notification (error-path ergonomics consumer demo).",
+})
+
+// MaintenanceChannel demonstrates events.ErrorChannel's DIRECT mode (no
+// mapFn — SensorMaintenanceError itself IS the payload) — the 2nd of
+// events' 2 declaration mechanisms (Mapped mode is
+// ReadingsWithErrorsChannel above).
+var MaintenanceChannel = events.NewChannel[SensorReading](
+	"sensors/{sensorID}/maintenance-demo",
+	SensorReadingCodec,
+	events.TopicParam{Name: "sensorID"}.WithCodec(codex.String().Refine(validate.UUID)),
+	events.ErrorChannel[SensorMaintenanceError, SensorMaintenanceError](
+		"sensors/{sensorID}/maintenance-demo/errors", SensorMaintenanceErrorCodec,
+	),
+)
+
+var MaintenanceSub = MaintenanceChannel.WithSubscribe(events.Subscribe{
+	OperationID: "receiveSensorMaintenanceDemo",
+	Summary:     "Receive a sensor reading (ErrorChannel Direct-mode demo, subscribe side).",
+})
+
+// MaintenancePub is the SAME MaintenanceChannel bound as a PUBLISH
+// operation — used by demo_error_pattern.go to show Direct mode on the
+// UPSTREAM PIPELINE error path too (mirroring ReadingsWithErrorsPub's
+// role for Mapped mode), so Direct mode is demoed on BOTH sides, not just
+// subscribe.
+var MaintenancePub = MaintenanceChannel.WithPublish(events.Publish{
+	OperationID: "publishSensorMaintenanceDemo",
+	Summary:     "Publish a sensor reading (ErrorChannel Direct-mode demo, publish side).",
+})
+
+// ── 3 ErrorActions (Respond/Handle/Log) — same SensorOutOfRangeError/
+// SensorErrorPayload type, 3 sibling channels so each action's behavior is
+// visible independently — see demo_error_pattern.go.
+var ActionRespondChannel = events.NewChannel[SensorReading](
+	"sensors/{sensorID}/action-respond-demo",
+	SensorReadingCodec,
+	events.TopicParam{Name: "sensorID"}.WithCodec(codex.String().Refine(validate.UUID)),
+	events.ErrorChannel[SensorOutOfRangeError, SensorErrorPayload](
+		"sensors/{sensorID}/action-respond-demo/errors", SensorErrorPayloadCodec,
+		func(e SensorOutOfRangeError) (SensorErrorPayload, error) {
+			return SensorErrorPayload{Code: "out_of_range", Message: e.Error()}, nil
+		},
+	), // Action defaults to ErrorRespond when WithAction is not called.
+)
+
+var ActionRespondPub = ActionRespondChannel.WithPublish(events.Publish{
+	OperationID: "publishActionRespondDemo",
+	Summary:     "Publish a sensor reading (ErrorAction: Respond, publish side).",
+})
+
+// ActionRespondSub is the SAME ActionRespondChannel bound as a SUBSCRIBE
+// operation — used by demo_error_pattern.go to show the 3 ErrorActions on
+// the SUBSCRIBE side too (a handler business error), not just the
+// publish-side upstream-pipeline-error path ActionRespondPub demos.
+var ActionRespondSub = ActionRespondChannel.WithSubscribe(events.Subscribe{
+	OperationID: "receiveActionRespondDemo",
+	Summary:     "Receive a sensor reading (ErrorAction: Respond, subscribe side).",
+})
+
+var ActionHandleChannel = events.NewChannel[SensorReading](
+	"sensors/{sensorID}/action-handle-demo",
+	SensorReadingCodec,
+	events.TopicParam{Name: "sensorID"}.WithCodec(codex.String().Refine(validate.UUID)),
+	events.ErrorChannel[SensorOutOfRangeError, SensorErrorPayload](
+		"sensors/{sensorID}/action-handle-demo/errors", SensorErrorPayloadCodec,
+		func(e SensorOutOfRangeError) (SensorErrorPayload, error) {
+			return SensorErrorPayload{Code: "out_of_range", Message: e.Error()}, nil
+		},
+	).WithAction(events.ErrorHandle),
+)
+
+var ActionHandlePub = ActionHandleChannel.WithPublish(events.Publish{
+	OperationID: "publishActionHandleDemo",
+	Summary:     "Publish a sensor reading (ErrorAction: Handle, publish side).",
+})
+
+// ActionHandleSub is the SAME ActionHandleChannel bound as a SUBSCRIBE
+// operation — see ActionRespondSub's doc comment.
+var ActionHandleSub = ActionHandleChannel.WithSubscribe(events.Subscribe{
+	OperationID: "receiveActionHandleDemo",
+	Summary:     "Receive a sensor reading (ErrorAction: Handle, subscribe side).",
+})
+
+var ActionLogChannel = events.NewChannel[SensorReading](
+	"sensors/{sensorID}/action-log-demo",
+	SensorReadingCodec,
+	events.TopicParam{Name: "sensorID"}.WithCodec(codex.String().Refine(validate.UUID)),
+	events.ErrorChannel[SensorOutOfRangeError, SensorErrorPayload](
+		"sensors/{sensorID}/action-log-demo/errors", SensorErrorPayloadCodec,
+		func(e SensorOutOfRangeError) (SensorErrorPayload, error) {
+			return SensorErrorPayload{Code: "out_of_range", Message: e.Error()}, nil
+		},
+	).WithAction(events.ErrorLog),
+)
+
+var ActionLogPub = ActionLogChannel.WithPublish(events.Publish{
+	OperationID: "publishActionLogDemo",
+	Summary:     "Publish a sensor reading (ErrorAction: Log, publish side).",
+})
+
+// ActionLogSub is the SAME ActionLogChannel bound as a SUBSCRIBE
+// operation — see ActionRespondSub's doc comment.
+var ActionLogSub = ActionLogChannel.WithSubscribe(events.Subscribe{
+	OperationID: "receiveActionLogDemo",
+	Summary:     "Receive a sensor reading (ErrorAction: Log, subscribe side).",
+})
+
+// ── Security middleware + ErrorChannel combination ───────────────────────────
+
+// SecuredReadingsChannel pairs a SubscribeMW-attached security Fn (see
+// demo_error_pattern.go, which ALWAYS rejects) with a declared
+// events.ErrorChannel[events.SecurityError, SecurityRejectedPayload] —
+// proving ErrorChannel intercepts a SECURITY-MIDDLEWARE Fn failure
+// (auto-wrapped in events.SecurityError by the adapter), not just a
+// subscribe-handler business error.
+var SecuredReadingsChannel = events.NewChannel[SensorReading](
+	"sensors/{sensorID}/secured-errorchannel-demo",
+	SensorReadingCodec,
+	events.TopicParam{Name: "sensorID"}.WithCodec(codex.String().Refine(validate.UUID)),
+	events.ErrorChannel[events.SecurityError, SecurityRejectedPayload](
+		"sensors/{sensorID}/secured-errorchannel-demo/errors", SecurityRejectedPayloadCodec,
+		func(e events.SecurityError) (SecurityRejectedPayload, error) {
+			return SecurityRejectedPayload{Code: "security_rejected"}, nil
+		},
+	),
+)
+
+// SecuredReadingsSub is declared PRISTINE (no Security baked in) — the
+// SAME pattern SensorDataSub uses — demo_error_pattern.go attaches
+// .Use(APIKeyAuthMW).SubscribeMW(&APIKeyAuthMW, alwaysRejectFn) per-demo.
+var SecuredReadingsSub = SecuredReadingsChannel.WithSubscribe(events.Subscribe{
+	OperationID: "receiveSecuredReadingsDemo",
+	Summary:     "Receive a sensor reading (security-middleware ErrorChannel demo).",
 })
 
 // ── zeromq PUB/SUB roundtrip channel ──────────────────────────────────────────

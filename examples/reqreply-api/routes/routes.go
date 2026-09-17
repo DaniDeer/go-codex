@@ -226,21 +226,110 @@ var ConflictPayloadCodec = codex.Struct[ConflictPayload](
 	),
 )
 
+// ConflictErrorPattern is exported (not inlined into
+// ErrorPatternComputeRoute's opts) SPECIFICALLY so demo_error_pattern.go
+// can call ConflictErrorPattern.Match(err) — one of the 3 client-side
+// matching mechanisms (alongside reqreply.ErrorPatternAs/HandleErrorPattern).
+var ConflictErrorPattern = reqreply.ErrorPattern[ConflictError, ConflictPayload](ConflictPayloadCodec,
+	func(e ConflictError) (ConflictPayload, error) {
+		return ConflictPayload{Code: "negative-x", Reason: e.Reason}, nil
+	},
+).WithCode("negative-x").WithDescription("X must not be negative.")
+
 // ErrorPatternComputeRoute demonstrates the client-side ErrorPattern
 // decode workflow (mqtt5 + zeromq): handlers.AddOrConflict returns
 // ConflictError when X is negative, matched by the declared ErrorPattern
-// below and round-tripped to the client as a typed ConflictPayload —
-// see demo_error_pattern_client_decode.go.
+// below (Mapped mode) and round-tripped to the client as a typed
+// ConflictPayload — see demo_error_pattern.go.
 var ErrorPatternComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 	"compute/add-error-pattern",
 	ComputeReqCodec, ComputeRespCodec,
 	reqreply.RouteMeta{OperationID: "computeAddErrorPattern", Summary: "Add two integers; rejects negative X with a typed ConflictError.", Security: []route.SecurityRequirement{}},
-	reqreply.ErrorPattern[ConflictError, ConflictPayload](ConflictPayloadCodec,
-		func(e ConflictError) (ConflictPayload, error) {
-			return ConflictPayload{Code: "negative-x", Reason: e.Reason}, nil
-		},
-	).WithCode("negative-x").WithDescription("X must not be negative."),
+	ConflictErrorPattern,
 )
+
+// RateLimitError is returned directly by a handler AND is itself the
+// typed error reply payload — reqreply.ErrorPattern's DIRECT mode (no
+// mapFn, E assignable to B), the 2nd of reqreply's 2 declaration
+// mechanisms (Mapped mode is ConflictError/ConflictPayload above). Unlike
+// REST/events, reqreply has NO ErrorAction — a matched pattern ALWAYS
+// replies with the typed payload (no Handle/Log alternative), since
+// reqreply always owes the caller a reply.
+type RateLimitError struct {
+	RetryAfterSeconds int
+}
+
+func (e RateLimitError) Error() string { return "rate limit exceeded" }
+
+var RateLimitErrorCodec = codex.Struct[RateLimitError](
+	codex.RequiredField("retry_after_seconds", codex.Int(),
+		func(e RateLimitError) int { return e.RetryAfterSeconds },
+		func(e *RateLimitError, v int) { e.RetryAfterSeconds = v },
+	),
+)
+
+// RateLimitComputeRoute demonstrates reqreply.ErrorPattern's Direct mode.
+var RateLimitComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
+	"compute/add-ratelimit-demo",
+	ComputeReqCodec, ComputeRespCodec,
+	reqreply.RouteMeta{OperationID: "computeAddRateLimitDemo", Summary: "Add two integers (ErrorPattern Direct-mode demo).", Security: []route.SecurityRequirement{}},
+	reqreply.ErrorPattern[RateLimitError, RateLimitError](RateLimitErrorCodec),
+)
+
+// TimeoutError is a domain error type DELIBERATELY NOT matched by any
+// declared reqreply.ErrorPattern on DeadLetterComputeRoute — used to
+// demonstrate the DeadLetter mechanism: an undeclared error type falls
+// through to the generic error reply AND is additionally dead-lettered
+// for a durable ops record (reqreply.DeadLetter fires ALONGSIDE the
+// synchronous reply, never instead of it — unlike events/pub-sub, a
+// reqreply caller always gets SOME reply).
+type TimeoutError struct{}
+
+func (TimeoutError) Error() string { return "downstream call timed out" }
+
+// DeadLetterComputeRoute declares ONLY reqreply.DeadLetter (no
+// ErrorPattern) — see demo_error_pattern.go's DLQ demo, which contrasts
+// this route's undeclared-error-type behavior against
+// ErrorPatternComputeRoute's matched-type behavior.
+var DeadLetterComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
+	"compute/add-deadletter-demo",
+	ComputeReqCodec, ComputeRespCodec,
+	reqreply.RouteMeta{OperationID: "computeAddDeadLetterDemo", Summary: "Add two integers (DeadLetter demo).", Security: []route.SecurityRequirement{}},
+	reqreply.DeadLetter("compute/add-deadletter-demo/dlq"),
+)
+
+// ── Security middleware + ErrorPattern combination ───────────────────────────
+
+// SecurityRejectedPayload is the typed reply payload published when a
+// security middleware Fn rejects a call — matched via
+// reqreply.ErrorPattern[reqreply.SecurityError, SecurityRejectedPayload]
+// on SecuredErrorPatternRoute, proving ErrorPattern intercepts a SECURITY
+// MIDDLEWARE Fn failure (auto-wrapped in reqreply.SecurityError by the
+// adapter), not just a handler business error.
+type SecurityRejectedPayload struct {
+	Code string
+}
+
+var SecurityRejectedPayloadCodec = codex.Struct[SecurityRejectedPayload](
+	codex.RequiredField("code", codex.String(),
+		func(p SecurityRejectedPayload) string { return p.Code },
+		func(p *SecurityRejectedPayload, v string) { p.Code = v },
+	),
+)
+
+// SecuredErrorPatternRoute pairs a HandleMW-attached security Fn (see
+// demo_error_pattern.go, which ALWAYS rejects) with a declared
+// reqreply.ErrorPattern[reqreply.SecurityError, SecurityRejectedPayload].
+var SecuredErrorPatternRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
+	"compute/add-security-errorpattern-demo",
+	ComputeReqCodec, ComputeRespCodec,
+	reqreply.RouteMeta{OperationID: "computeAddSecurityErrorPatternDemo", Summary: "Add two integers (security-middleware ErrorPattern demo)."},
+	reqreply.ErrorPattern[reqreply.SecurityError, SecurityRejectedPayload](SecurityRejectedPayloadCodec,
+		func(e reqreply.SecurityError) (SecurityRejectedPayload, error) {
+			return SecurityRejectedPayload{Code: "security_rejected"}, nil
+		},
+	),
+).Use(BearerAuthMw)
 
 // OAuthComputeReq/OAuthComputeResp carry an in-payload Token field —
 // zeromq's reqreply security Fn-shape (docs/design/d-0004-reqreply-workflow-simplification.md's Addendum,

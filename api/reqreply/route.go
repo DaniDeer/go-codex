@@ -441,10 +441,18 @@ type ErrorReplyMeta struct {
 	// SchemaName, when non-empty, emits a $ref and registers Schema in
 	// components/schemas.
 	SchemaName string
-	// OperationID, when non-empty, overrides the generated receive operation ID.
+	// OperationID is IGNORED as of Topic 3's AsyncAPI multi-message
+	// migration (docs/roadmap/error-handling-rest-events-reqreply.md) —
+	// error replies no longer get their own operation; they are message
+	// variants within the route's single reply operation. Kept for
+	// source compatibility with existing declarations; no longer has any
+	// effect on the rendered spec.
 	OperationID string
-	// ChannelAddress, when non-empty, overrides the generated reply-error
-	// channel address. Default: "<topic>/reply/error[/<code>]".
+	// ChannelAddress is IGNORED as of Topic 3's AsyncAPI multi-message
+	// migration — error replies no longer get their own channel; they
+	// are message variants within the route's single reply channel.
+	// Kept for source compatibility with existing declarations; no
+	// longer has any effect on the rendered spec.
 	ChannelAddress string
 }
 
@@ -469,6 +477,19 @@ type ErrorPatternResponse struct {
 	// Value is the typed payload before encoding — useful for adapters that
 	// want to re-encode with a non-JSON format.
 	Value any
+}
+
+// ErrorPatternValuer is implemented by a CLIENT adapter's own
+// error-pattern response error type (e.g. `mqtt5.ErrorPatternResponse`/
+// `zeromq.ErrorPatternResponse`) — it lets [ErrorPatternOpt.Match]
+// extract the decoded typed payload via [errors.As] WITHOUT
+// `api/reqreply` importing the adapter package (which would invert the
+// module's layering). Mirrors [rest.ErrorPatternValuer] exactly. See
+// docs/roadmap/error-handling-rest-events-reqreply.md's Topic 6.
+type ErrorPatternValuer interface {
+	// ErrorPatternValue returns the decoded typed payload — the SAME
+	// value the adapter's own ErrorPatternResponse.Value field carries.
+	ErrorPatternValue() any
 }
 
 // errorPatternRule is the type-erased runtime form of a declared
@@ -627,6 +648,26 @@ func (o ErrorPatternOpt[E, B]) WithOperationID(id string) ErrorPatternOpt[E, B] 
 	return o
 }
 
+// Match extracts THIS declaration's typed payload from a CLIENT-side call
+// error in one step — a thin wrapper over the SAME [ErrorPatternValuer]
+// mechanism `reqreply.ErrorPatternAs[B]` use,
+// scoped to this value's own B type (already known from o's type
+// parameters, so no explicit [B] instantiation is needed at the call
+// site). Mirrors [rest.ErrorPatternOpt.Match] exactly. See
+// docs/roadmap/error-handling-rest-events-reqreply.md's Topic 6.
+//
+// Returns false when err carries no [ErrorPatternValuer] value at all, OR
+// when it does but the value isn't assignable to B.
+func (o ErrorPatternOpt[E, B]) Match(err error) (B, bool) {
+	var target ErrorPatternValuer
+	if !errors.As(err, &target) {
+		var zero B
+		return zero, false
+	}
+	b, ok := target.ErrorPatternValue().(B)
+	return b, ok
+}
+
 func (o ErrorPatternOpt[E, B]) applyRoute(rb *routeBuilder) {
 	code := o.code
 	if code == "" {
@@ -734,6 +775,10 @@ type routeBuilder struct {
 	// errorPatternRules holds per-route typed error reply declarations from
 	// [ErrorPattern] — see [RouteHandle.ErrorResponseFor].
 	errorPatternRules []errorPatternRule
+	// deadLetterRule holds this route's own [DeadLetter] declaration —
+	// nil means "not declared at this route, inherit the Server-level
+	// global default" (see [Builder.AddGlobalDeadLetter]).
+	deadLetterRule *deadLetterRule
 	// requestFormats/formats hold []format.Format[Req]/[]format.Format[Resp]
 	// type-erased (any) — set by [RequestFormats]/[Formats], resolved
 	// generically in [Route.Register] where Req/Resp are concrete. See
@@ -975,6 +1020,7 @@ func (r Route[Req, Resp]) ClientHandle() *RouteHandle[Req, Resp] {
 		mergeFields:           mustAssertMergeFields[Req]("ClientHandle", rb.mergeFields),
 		propertyMergeFields:   mustAssertMergeFields[Req]("ClientHandle", rb.propertyMergeFields),
 		errorPatternRules:     rb.errorPatternRules,
+		deadLetterRule:        rb.deadLetterRule, // route-level only, no global default (mirrors GlobalSecurity's own ClientHandle behavior)
 		Security:              rb.meta.Security,
 		SecuritySchemes:       schemes,
 		Implementations:       rb.impls,
@@ -1078,6 +1124,16 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 		schemes[k] = v
 	}
 
+	// Resolve the effective DeadLetter rule: an explicit route-level
+	// declaration always wins; otherwise inherit the Server-level global
+	// default (nil if neither is declared) — mirrors GlobalSecurity's
+	// own nil-inherit resolution immediately below.
+	effectiveDeadLetter := rb.deadLetterRule
+	if effectiveDeadLetter == nil {
+		effectiveDeadLetter = b.globalDeadLetter
+	}
+	registerDeadLetterChannel(b, effectiveDeadLetter)
+
 	h := &RouteHandle[Req, Resp]{
 		Topic:                    r.topic,
 		Decode:                   func(p []byte) (Req, error) { return jsonReq.Unmarshal(p) },
@@ -1087,6 +1143,7 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 		topicParams:              rb.topicParams,
 		topicCodec:               b.topicCodec,
 		errorPatternRules:        rb.errorPatternRules,
+		deadLetterRule:           effectiveDeadLetter,
 		Implementations:          rb.impls,
 		ClientImplementations:    rb.clientImpls,
 		Security:                 rb.meta.Security,
@@ -1214,6 +1271,12 @@ type RouteHandle[Req, Resp any] struct {
 	// [ErrorPattern] — see [ErrorResponseFor].
 	errorPatternRules []errorPatternRule
 
+	// deadLetterRule is the RESOLVED (route-level, falling back to the
+	// Server-level global default) [DeadLetter] declaration — nil or an
+	// empty Topic means dead-lettering is disabled for this route. See
+	// [RouteHandle.DeadLetterFor].
+	deadLetterRule *deadLetterRule
+
 	// Security holds this route's own effective security requirements — nil
 	// means "inherit GlobalSecurity", an empty (non-nil) slice means
 	// "explicitly no auth required". Set from [RouteMeta.Security].
@@ -1296,6 +1359,16 @@ func (h *RouteHandle[Req, Resp]) ErrorResponseFor(err error) (ErrorPatternRespon
 		return resp, true, matchErr
 	}
 	return ErrorPatternResponse{}, false, nil
+}
+
+// HasErrorPatterns reports whether at least one [ErrorPattern] is
+// declared on this route. Used internally by [RouteHandle.
+// ObserveErrorResponseFor] to gate stats.ErrorPatternObserver.
+// RecordErrorPatternMiss — a route with NO declared patterns has no
+// "coverage" to measure, so a miss there is not reported. Exported for
+// the rare caller who wants the raw signal outside that wrapper.
+func (h *RouteHandle[Req, Resp]) HasErrorPatterns() bool {
+	return len(h.errorPatternRules) > 0
 }
 
 // DecodeErrorFor is the client-side counterpart of [RouteHandle.ErrorResponseFor]:

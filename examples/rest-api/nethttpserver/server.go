@@ -8,7 +8,6 @@ package nethttpserver
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"net/http"
 
@@ -47,11 +46,15 @@ func Build(store *handlers.UserStore, obs stats.Observer, logger *slog.Logger, a
 	obsFn := nethttp.Observability(obs)
 	timingFn := routes.TimingServerMW(logger.With("component", "nethttp"))
 
+	// errorHandler is the shared, generic JSON error envelope used by
+	// every route below (via WithOptions(opts)) when no route-declared
+	// rest.ErrorPattern matches. LoginRoute's invalid-credentials case
+	// USED TO be special-cased here via a manual errors.As(err, &credErr)
+	// branch — that imperative dispatch was replaced by a declarative
+	// rest.ErrorPattern directly on routes.LoginRoute (see routes.go),
+	// so this handler no longer needs to know about
+	// routes.InvalidCredentialsError at all.
 	errorHandler := func(w http.ResponseWriter, r *http.Request, status int, err error) {
-		var credErr handlers.InvalidCredentialsError
-		if errors.As(err, &credErr) {
-			status = http.StatusUnauthorized
-		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})

@@ -248,3 +248,153 @@ var AdminActionRespCodec = codex.Struct[AdminActionResp](
 		func(r *AdminActionResp, v string) { r.Result = v },
 	),
 )
+
+// ── Error-pattern ergonomics (rest.ErrorPattern) ─────────────────────────────
+//
+// ConflictError is a domain error a handler returns when a create-user
+// request targets an email that already exists — matched by
+// CreateUserConflictRoute's declared rest.ErrorPattern (see demo_error_pattern.go).
+type ConflictError struct {
+	Email string
+}
+
+func (e ConflictError) Error() string { return "email already exists: " + e.Email }
+
+// ConflictPayload is the typed, codec-backed response body written when a
+// ConflictError matches — instead of the generic {"error": "..."} envelope.
+type ConflictPayload struct {
+	Code  string
+	Email string
+}
+
+// ConflictPayloadCodec describes ConflictPayload.
+var ConflictPayloadCodec = codex.Struct[ConflictPayload](
+	codex.RequiredField("code",
+		codex.String().WithDescription("Machine-readable conflict reason."),
+		func(p ConflictPayload) string { return p.Code },
+		func(p *ConflictPayload, v string) { p.Code = v },
+	),
+	codex.RequiredField("email",
+		codex.String().WithDescription("The email that already exists."),
+		func(p ConflictPayload) string { return p.Email },
+		func(p *ConflictPayload, v string) { p.Email = v },
+	),
+)
+
+// ValidationPayload is the typed response body for a request body decode/
+// validation failure (codex.ValidationErrors), used by
+// IngestConflictRoute (see demo_error_pattern.go) to prove the port/
+// stream-adapter dispatch (nethttp.IngestAdapter) now ALSO consults a
+// declared rest.ErrorPattern — closing a gap where only the normal
+// AttachRouter/AttachMux serving path did.
+type ValidationPayload struct {
+	Code string
+}
+
+// ValidationPayloadCodec describes ValidationPayload.
+var ValidationPayloadCodec = codex.Struct[ValidationPayload](
+	codex.RequiredField("code",
+		codex.String().WithDescription("Machine-readable validation failure reason."),
+		func(p ValidationPayload) string { return p.Code },
+		func(p *ValidationPayload, v string) { p.Code = v },
+	),
+)
+
+// LoginErrorPayload is the typed response body for LoginRoute's invalid-
+// credentials case — replaces the former hand-rolled errors.As dispatch
+// inside chiserver/nethttpserver's shared adapter ErrorHandler.
+type LoginErrorPayload struct {
+	Message string
+}
+
+// LoginErrorPayloadCodec describes LoginErrorPayload.
+var LoginErrorPayloadCodec = codex.Struct[LoginErrorPayload](
+	codex.RequiredField("message",
+		codex.String().WithDescription("Why the login attempt was rejected."),
+		func(p LoginErrorPayload) string { return p.Message },
+		func(p *LoginErrorPayload, v string) { p.Message = v },
+	),
+)
+
+// InvalidCredentialsError is returned by handlers.MakeLoginHandler when
+// the username or password is wrong — matched by LoginRoute's declared
+// rest.ErrorPattern (see routes.go), which replaces the FORMER hand-rolled
+// errors.As dispatch inside chiserver/nethttpserver's shared adapter
+// ErrorHandler. Lives here (not in handlers/) so LoginRoute's own
+// rest.ErrorPattern declaration can reference it without an
+// otherwise-circular routes→handlers import.
+type InvalidCredentialsError struct{ Err error }
+
+func (e InvalidCredentialsError) Error() string { return e.Err.Error() }
+func (e InvalidCredentialsError) Unwrap() error { return e.Err }
+
+// ── ErrorPattern Direct mode + ErrorStatus (the OTHER 2 of REST's 3
+// declaration mechanisms — Mapped mode is ConflictError/ConflictPayload
+// above) ──────────────────────────────────────────────────────────────────
+
+// RateLimitError is returned directly by a handler AND is itself the typed
+// response payload — Direct mode requires E to be assignable to B, so the
+// SAME type serves both roles (no mapFn needed). Demonstrates
+// rest.ErrorPattern's Direct mode in demo_error_pattern.go.
+type RateLimitError struct {
+	RetryAfterSeconds int
+}
+
+func (e RateLimitError) Error() string { return "rate limit exceeded" }
+
+// RateLimitErrorCodec describes RateLimitError for BOTH error-value and
+// response-payload use (Direct mode).
+var RateLimitErrorCodec = codex.Struct[RateLimitError](
+	codex.RequiredField("retry_after_seconds",
+		codex.Int().WithDescription("Seconds to wait before retrying."),
+		func(e RateLimitError) int { return e.RetryAfterSeconds },
+		func(e *RateLimitError, v int) { e.RetryAfterSeconds = v },
+	),
+)
+
+// ThrottledError is matched by rest.ErrorStatus — the SIMPLEST of REST's 3
+// declaration mechanisms: a bare error-type → HTTP-status mapping, with NO
+// typed response body (the generic {"error": "..."} envelope still
+// applies, unlike ErrorPattern's typed body).
+type ThrottledError struct{}
+
+func (ThrottledError) Error() string { return "too many requests" }
+
+// ── 3 ErrorActions (Respond/Handle/Log) — same ConflictError/
+// ConflictPayload type, 3 sibling routes ─────────────────────────────────────
+//
+// See routes.go's ConflictRespondRoute/ConflictHandleRoute/ConflictLogRoute.
+
+// ── Security middleware + ErrorPattern combination ───────────────────────────
+
+// InsufficientScopeError is returned by a SECURITY MIDDLEWARE Fn (not a
+// business handler) when the caller lacks a required scope — matched by a
+// declared rest.ErrorPattern on SecuredConflictRoute, proving ErrorPattern
+// intercepts a security-middleware-Fn failure, not just handler failures
+// (see docs/roadmap/error-handling-rest-events-reqreply.md's Topic 1
+// Category-A parity).
+type InsufficientScopeError struct {
+	RequiredScope string
+}
+
+func (e InsufficientScopeError) Error() string { return "insufficient scope: " + e.RequiredScope }
+
+// InsufficientScopePayload is the typed 403 response body.
+type InsufficientScopePayload struct {
+	Code          string
+	RequiredScope string
+}
+
+// InsufficientScopePayloadCodec describes InsufficientScopePayload.
+var InsufficientScopePayloadCodec = codex.Struct[InsufficientScopePayload](
+	codex.RequiredField("code",
+		codex.String().WithDescription("Machine-readable rejection reason."),
+		func(p InsufficientScopePayload) string { return p.Code },
+		func(p *InsufficientScopePayload, v string) { p.Code = v },
+	),
+	codex.RequiredField("required_scope",
+		codex.String().WithDescription("The scope the caller was missing."),
+		func(p InsufficientScopePayload) string { return p.RequiredScope },
+		func(p *InsufficientScopePayload, v string) { p.RequiredScope = v },
+	),
+)

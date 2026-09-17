@@ -198,24 +198,18 @@ func (a *zmqPublishAdapter[T]) Activate(ctx context.Context, src gstream.Stream[
 	pubOpts := PublishOptions[T]{Observer: a.opts.Observer}
 	// handleUpstreamError resolves declared events.ErrorChannel patterns on
 	// a.handle before falling back to the adapter's existing OnError
-	// callback. A matched ErrorRespond pattern publishes the typed error
-	// payload to its declared error-output topic; ErrorHandle runs OnError
-	// (unchanged existing behaviour); ErrorLog and unmatched errors also
-	// fall through to OnError — see [events.ErrorChannel] and mirrors
-	// [adapters/mqtt5.mqtt5PublishAdapter.Activate].
+	// callback, via the SAME tryPublishErrorChannel helper the subscribe
+	// side and publish()'s own internal error paths already use — this
+	// ALSO reports stats.ErrorPatternObserver match/miss + SpanTagger
+	// observability (session review round-5 fix H2: this closure
+	// previously hand-rolled its own dispatch via the bare
+	// handle.ErrorResponseFor, silently skipping that observability).
+	// handled=true: a matched ErrorRespond was published — done. Otherwise
+	// falls through to OnError with the ORIGINAL error unchanged.
 	handleUpstreamError := func(e error) {
-		resp, matched, matchErr := a.handle.ErrorResponseFor(e)
-		if matched && matchErr == nil && resp.Action == events.ErrorRespond {
-			if pubErr := a.sock.SendFrames([][]byte{[]byte(resp.Topic), resp.Body}); pubErr != nil {
-				stats.ReportErrors(obs, "error_channel", pubErr)
-				if onErr != nil {
-					onErr(pubErr)
-				}
-			}
+		handled, _ := tryPublishErrorChannel(ctx, a.sock, a.handle, obs, e)
+		if handled {
 			return
-		}
-		if matched && matchErr != nil {
-			stats.ReportErrors(obs, "error_channel", matchErr)
 		}
 		if onErr != nil {
 			onErr(e)

@@ -388,6 +388,68 @@ obs := stats.NewFanout(metrics, stats.NewLoggingObserver(logger), &OTelTracer{})
 
 > **Note**: `LoggingObserver` does **not** implement `TraceObserver` (slog has no tracing). Use a slog→OTel bridge for log-trace correlation.
 
+### ErrorPatternObserver (declared error-pattern observability)
+
+Turns a declared `rest.ErrorPattern`/`events.ErrorChannel`/
+`reqreply.ErrorPattern` catalogue into a live observability signal — REST,
+events, and reqreply all share this ONE mechanism, mirroring
+`SecurityObserver`'s type-asserted, purely-additive pattern:
+
+```go
+type ErrorPatternObserver interface {
+    RecordErrorPatternMatch(location, code, action string)
+    RecordErrorPatternMiss(location string)
+}
+```
+
+`RecordErrorPatternMatch` fires when a declared pattern matches a failing
+operation's error via `errors.As` — `code` identifies WHICH pattern
+matched (REST: derived from status; events/reqreply: the pattern's own
+`Code`); `action` is the resolved action as a plain string. `RecordErrorPatternMiss`
+fires when an error matches NO declared pattern, but at least one IS
+declared on that route/channel — a coverage-analysis signal: "this
+location keeps failing in a way nothing declared here anticipated."
+
+You never call either method directly. `RouteHandle.ObserveErrorResponseFor(ctx,
+obs, err)` (REST, reqreply) / `ChannelHandle.ObserveErrorResponseFor(ctx,
+obs, err)` (events) is the recommended single call site — it performs the
+SAME match `ErrorResponseFor` already does, but ALSO reports both methods
+above internally (plus `SpanTagger.TagSpan`, below, when implemented),
+type-asserted so implementing either interface is purely additive:
+
+```go
+type MyObserver struct {
+    stats.NoopObserver
+    matches, misses int
+}
+
+func (o *MyObserver) RecordErrorPatternMatch(location, code, action string) {
+    o.matches++
+}
+
+func (o *MyObserver) RecordErrorPatternMiss(location string) {
+    o.misses++
+}
+```
+
+### SpanTagger (tagging the active span with a matched pattern)
+
+A separate, optional extension for tagging the CURRENT active span with
+additional key/value context — deliberately NOT a new method on
+`TraceObserver` itself (which has many existing implementers; adding a
+required method would break them all):
+
+```go
+type SpanTagger interface {
+    TagSpan(ctx context.Context, key, value string)
+}
+```
+
+Called internally by `ObserveErrorResponseFor` alongside
+`ErrorPatternObserver`, when a pattern matches AND the configured
+`Observer` implements `SpanTagger` — lets a trace immediately show *why*
+a request failed (which declared error type), not just *that* it failed.
+
 ## Context propagation through layers
 
 TraceObserver spans form a parent-child tree. go-codex adapters propagate the traced
@@ -504,6 +566,7 @@ func handler(ctx context.Context, req MyRequest) (MyResponse, error) {
 | `"error_channel"`   | mqtt/mqtt5/zeromq events — dispatching/matching a declared `events.ErrorChannel` response fails |
 | `"error_pattern"`   | reqreply (zeromq) — dispatching/matching a declared `reqreply.ErrorPattern` response fails |
 | `"error_frame"`     | websocket — dispatching/matching a declared `websocket.ErrorFrame` fails |
+| `"dead_letter"`     | mqtt/mqtt5/zeromq events + reqreply — reported once a message/request is dead-lettered via a declared `events.DeadLetter`/`reqreply.DeadLetter` (the value carried is the ORIGINAL failure, not a dead-letter-specific error) |
 | `"input"`           | mcpgo — tool argument decode/validation                         |
 | `"prompt.args"`     | mcpgo — prompt argument codec failure                           |
 | `"file"`            | ports.File — per-field codec failure during read/write         |

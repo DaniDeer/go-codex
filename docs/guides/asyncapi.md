@@ -98,10 +98,19 @@ At runtime, `mqtt5.Serve`/`zeromq.Serve`/`zeromq.ServeRouter` consult
 pattern sends the encoded typed payload instead of a plain-text error
 string. Unmatched errors keep the existing plain-text fallback unchanged.
 
-Generated AsyncAPI includes an additional dedicated reply-error channel and
-operation (for example `computeAddReplyErrorConflict` with address
-`compute/add/reply/error/conflict`) alongside the normal success reply channel
-— the same spec shape `ErrorReplyMeta` produces.
+Generated AsyncAPI adds an additional NAMED MESSAGE (for example
+`ErrorConflict`) to the route's SINGLE reply channel's `messages` map,
+alongside the normal `Success` message — AsyncAPI 3.0's native
+channel-level multi-message mechanism, the direct analogue of OpenAPI's
+per-status `responses` object. Earlier versions of go-codex generated a
+SEPARATE reply-error channel/operation per declared pattern (e.g.
+`computeAddReplyErrorConflict` at `compute/add/reply/error/conflict`) —
+this was migrated to the single-channel, multi-message shape (see
+`docs/roadmap/error-handling-rest-events-reqreply.md`'s Topic 3): existing
+`ErrorPattern`/`ErrorReplyMeta` declarations need NO changes, only the
+RENDERED spec's shape changed. `ErrorReplyMeta.OperationID`/
+`ChannelAddress` are now ignored (there is no longer a separate
+channel/operation for them to override).
 
 `reqreply.ErrorReplyMeta` remains available unchanged for spec-only
 declarations that document an error reply produced by some other mechanism
@@ -137,6 +146,36 @@ if err != nil {
     }
 }
 ```
+
+**Convenient matching** — the SAME 3 alternatives REST's client offers
+are also available for reqreply, collapsing the `errors.As` +
+type-assertion dance above into a single conditional (Topic 6 of
+`docs/roadmap/error-handling-rest-events-reqreply.md`). All 3 live in
+`api/reqreply` (transport-independent — they work identically whether
+`err` came from `mqtt5.Call`/`AttachClient` or `zeromq.Call`/
+`AttachClient`, since both adapters' `ErrorPatternResponse` types
+implement the same core `reqreply.ErrorPatternValuer` interface):
+
+```go
+// reqreply.ErrorPatternAs[B] — generic one-liner.
+if conflict, ok := reqreply.ErrorPatternAs[domain.ConflictError](err); ok { /* ... */ }
+
+// reqreply.ErrorPatternOpt.Match — the SAME value declares (server) AND matches (client).
+var conflictPattern = reqreply.ErrorPattern[domain.ConflictError, domain.ConflictError](conflictCodec).WithCode("conflict")
+if conflict, ok := conflictPattern.Match(err); ok { /* ... */ }
+
+// reqreply.HandleErrorPattern/Case — closest parity to a switch expression.
+handled := reqreply.HandleErrorPattern(err,
+    reqreply.Case(func(e domain.ConflictError) { /* ... */ }),
+)
+```
+
+All 3 return `false`/`ok=false` when `err` carries no matched
+`ErrorPatternResponse` at all, or when the payload's concrete type
+doesn't match. As with REST, **a matched `ErrorPatternResponse` is a
+business decision the server made deliberately — never safe to blindly
+retry**, unlike a transport-level `mqtt5.CallError{Kind: KindTimeout}`/
+`zeromq.CallError`, which usually IS safe to retry.
 
 Unlike REST (which has a free HTTP status discriminator), reqreply has no
 status code on the wire — so each `ErrorPattern`'s `Code` (the SAME value

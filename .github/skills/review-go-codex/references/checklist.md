@@ -627,17 +627,41 @@ for user-facing docs.
   `handle.ErrorResponseFor(err)` before falling back to `OnError`). A new pub/sub adapter that skips
   this wiring (only has `OnError`, never consults `ErrorResponseFor`) reproduces a known-fixed gap —
   file at least a `small` finding.
+- **Design guardrail: adapters implement wire protocols only — client-side ergonomics belong in
+  `api/*`** (session review round-140, `docs/roadmap/error-handling-rest-events-reqreply.md`'s
+  Topic 6 "Design guardrail" subsection). Any user-facing convenience helper that touches ONLY core
+  `api/*` types — codecs, handles, declared patterns, or a core-layer interface like
+  `ErrorPatternValuer` — belongs in `api/*`, never in `adapters/*`, EVEN WHEN only one adapter
+  happens to implement that boundary today. `rest.ErrorPatternAs`/`HandleErrorPattern`/`Case` and
+  `reqreply.ErrorPatternAs`/`HandleErrorPattern`/`Case` now live in `api/rest`/`api/reqreply`
+  respectively (moved from `adapters/nethttp` and `adapters/mqtt5`+`adapters/zeromq` — the latter
+  pair was byte-for-byte duplicated code, confirming the misplacement). When reviewing a NEW
+  adapter-owned helper, ask: "could this be written using ONLY `errors.As`/a core-layer interface,
+  with zero reference to any adapter-specific type?" If yes, it's misplaced — file at least a
+  `small` finding (or `bug` if duplicated verbatim across 2+ adapters, as reqreply's was). Do NOT
+  accept "only one adapter exists today" as a justification for adapter placement — the test is
+  whether the logic is transport-INDEPENDENT, not how many adapters currently implement it.
+  `api/events` (pub/sub), `mcp.ErrorPattern`, and `websocket.ErrorFrame` were all audited and
+  confirmed to have NO equivalent gap (structurally different — no synchronous caller receives a
+  matched error back to hand to a helper in those 3 cases) — do not propose adding one there.
 - **Ports parity is REQUIRED and already proven** — `TestRESTPattern_ErrorStatus_ParityWithDirectRouteDeclaration`
   (`ports/port_test.go`) and `TestEventPattern_ErrorChannel_ParityWithDirectChannelDeclaration` lock
   that a `Pattern`-declared error rule (via `PluginRESTPattern`/`PluginEventPattern`) behaves
   identically to one declared directly via `rest.NewRoute`/`events.NewChannel` — no ports-specific
   wiring needed since `Pattern.Opts` is a thin `RouteOpt`/`ChannelOpt` pass-through. A NEW pattern
   type that fails this parity (e.g. silently drops error-pattern opts) is a `bug`.
-- **Examples exist and must stay in sync**: `examples/events-api` (`demo_error_path_ergonomics.go`
-  — events.ErrorChannel via `ports.SinkPort`+`PublishAdapter`), `examples/websocket-duplex`
-  (websocket.ErrorFrame broadcast), `examples/redis-cache` (SQL/Cache/File composition pattern). If
-  you touch any of these files for an unrelated reason, verify the error-path demo section still
-  builds/runs (`go build` + `go run` clean exit).
+- **Examples exist and must stay in sync**: `examples/rest-api`, `examples/events-api`, and
+  `examples/reqreply-api` each have ONE consolidated `demo_error_pattern.go` (replaced several
+  earlier, more narrowly-scoped demo files of the same session) covering that API's FULL mechanism
+  end to end — every declaration mode (REST: `ErrorStatus`/Direct/Mapped; events/reqreply:
+  Direct/Mapped), every `ErrorAction` (REST/events: Respond/Handle/Log; reqreply has none), all 3
+  client-side recovery mechanisms (`ErrorPatternAs[B]`/`HandleErrorPattern`+`Case`/the declaration
+  value's own `.Match`), a security-middleware combo, the `DeadLetter` two-tier fallback
+  (events/reqreply), and the port/stream-adapter binding proof. `examples/websocket-duplex`
+  (websocket.ErrorFrame broadcast) and `examples/redis-cache` (SQL/Cache/File composition pattern)
+  remain the reference examples for their respective boundaries. If you touch any of these files
+  for an unrelated reason, verify the error-path demo section still builds/runs (`go build` + `go
+  run` clean exit).
 - **`declare → PluginXxxPattern → Bind` is consumption-style-agnostic — do not propose parallel
   plain-Go-only port constructors.** `SourcePort`/`SinkPort`/`LatestPort`/`DuplexPort` already
   satisfy the "plain idiomatic Go, no forge/gstream" consumption style via existing methods:

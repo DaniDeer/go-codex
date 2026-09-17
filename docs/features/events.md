@@ -114,6 +114,19 @@ err = events.PublishHandle(ctx, sensorPub, measurementTransport, m)
 
 **`SubscribeError.Topic`** — always the concrete incoming message topic, even for template channels (e.g. `sensors/abc-123/measurements`, never `sensors/{sensorID}/measurements`). Use this in `OnError` logging to identify the exact message that failed.
 
+**`SubscribeError.As(target any) bool`** (`adapters/mqtt`/`adapters/mqtt5`/`adapters/zeromq`, Topic 7 of `docs/roadmap/error-handling-rest-events-reqreply.md`) — a thin convenience wrapper over `errors.As(e.Err, target)`, collapsing the two-step `errors.As(subErr.Err, &target)` dance into `subErr.As(&target)` from inside `OnError`:
+
+```go
+opts.OnError = func(subErr mqtt5.SubscribeError) {
+    var conflict domain.EmailConflictError
+    if subErr.As(&conflict) {
+        // ...
+    }
+}
+```
+
+Unlike Topic 6's `ErrorPatternAs` (which decodes WIRE BYTES into a typed value), no decode is involved here — `Err` is already a native Go error value; the subscriber never encoded/decoded it across a wire boundary for this purpose. This mostly matters for failures that matched NO declared `ErrorChannel`/`DeadLetter` — once one is declared, most failures never reach `OnError` at all.
+
 ## TopicVarsFromMessage — wildcard subscription
 
 Extracts and validates `{varName}` from the concrete received topic — the inverse of `BuildTopic`:
@@ -483,6 +496,21 @@ handle, err := events.NewChannel[SensorReading]("sensors/{id}/data", sensorCodec
 - **`ChannelHandle.ErrorResponseFor(err) (ErrorChannelResponse, bool, error)`**
   looks up the first matching pattern — adapters call this before falling back
   to their own default error handling.
+- **`ChannelHandle.ObserveErrorResponseFor(ctx, obs, err) (ErrorChannelResponse,
+  bool, error)`** is the RECOMMENDED single call site: performs the SAME match
+  as `ErrorResponseFor`, but ALSO reports `stats.ErrorPatternObserver`/
+  `stats.SpanTagger` observability internally (see
+  [Observer guide](../guides/observer.md#errorpatternobserver-declared-error-pattern-observability))
+  — no separate adapter-side wiring needed.
+- **`ErrorChannel` is eligible at EVERY subscribe-side dispatch failure point**,
+  not just the handler's own return — payload decode, topic-var
+  extraction/merge, property-var merge (mqtt5), User Property param
+  validation (mqtt5), middleware `DecodeIn`, and security middleware Fn
+  errors are all `ErrorChannel`-eligible, exactly like a handler error.
+  The PUBLISH side stays correctly excluded — a publisher plays the same
+  "client/sender" role a REST/reqreply client plays, which never
+  consults a declared error pattern either (see
+  `docs/roadmap/error-handling-rest-events-reqreply.md`'s Topic 7).
 
 ### Action model — `respond` / `handle` / `log`
 
@@ -510,6 +538,94 @@ before falling back to their own `OnError` option:
 - matched + `handle` → falls through to `OnError` (unchanged existing behavior —
   `OnError` already IS the "handle" realization for these adapters);
 - matched + `log`, or unmatched → falls through to `OnError` unchanged.
+
+## Dead-letter fallback — `DeadLetter`
+
+`events.DeadLetter(topic, opts...)` declares an OPTIONAL, last-resort sink
+attempted immediately after `ErrorChannel` fails to match (or none is
+declared at all) — a fixed, non-codec-backed envelope, since by this
+point no reliable business type exists to encode:
+
+```go
+type DeadLetterEnvelope struct {
+    SourceTopic string
+    Payload     []byte // original, undecoded message bytes
+    Error       string
+    Timestamp   time.Time
+}
+
+handle, err := events.NewChannel[SensorReading]("sensors/{id}/data", sensorCodec,
+    events.DeadLetter("sensors/dead-letter"),
+).Register(client)
+```
+
+- **A `DeadLetter` topic is ALWAYS a plain, literal string — never a
+  template.** Unlike the channel's OWN topic (which may declare
+  `{varName}` placeholders resolved per-message via `NewTopicParam`), the
+  dead-letter destination is resolved ONCE at declaration time and used
+  verbatim on every dead-letter publish; `{varName}`-shaped substrings in
+  a declared `DeadLetter` topic are NOT substituted and would appear
+  literally in both the published topic and the generated AsyncAPI
+  channel address. This mirrors `ErrorChannel`'s own topic field, which
+  is equally literal-only.
+- **`Client.AddGlobalDeadLetter(topic, opts...)`** sets an application-wide
+  default; a channel with no `DeadLetter` declared inherits it. An explicit
+  `DeadLetter("")` (empty topic) opts a channel OUT of the inherited
+  default — mirrors `AddGlobalSecurity`'s nil-inherit/empty-override
+  convention exactly. `ClientHandle()` never inherits the global default
+  (same asymmetry as `GlobalSecurity`).
+- **`ChannelHandle.DeadLetterFor(obs, sourceTopic, rawPayload, err) (topic
+  string, body []byte, ok bool)`** is the single call site adapters
+  consult — `ok` is `false` when no dead-letter rule resolves for this
+  channel.
+- **Eligible at the SAME dispatch points as `ErrorChannel`** (decode,
+  topic/property-var merge, security middleware `Fn`, `Transform`
+  middleware `DecodeIn`/`Fn`/`EncodeOut`, handler error) — on BOTH the
+  subscribe side AND a FAILED publish (the message never reached the
+  broker, or its own encode failed).
+- **A TYPE-MATCHED `ErrorChannel` is NEVER ALSO dead-lettered, even when
+  its declared action is `ErrorHandle`/`ErrorLog` (not the default
+  `ErrorRespond`).** `DeadLetter` is scoped to the genuinely UNMATCHED
+  case only (a decode failure before any business error exists, or a
+  business error whose type matches NO declared `ErrorChannel`) — a
+  type match via `errors.As` means the failure WAS anticipated and IS
+  declared for, regardless of which action was chosen, so it correctly
+  falls through directly to `OnError` without also reaching the
+  dead-letter destination.
+- **On the publish side specifically, dead-lettering is intentionally
+  narrower than the subscribe side's full Category-A coverage.** Only a
+  `ClientTransform`/general-purpose middleware Fn/encode failure and the
+  final broker-rejection are dead-lettered (consistent across
+  `adapters/mqtt`/`mqtt5`/`zeromq`). A `BuildTopic` failure (invalid
+  topic-var value) or a client-side security implementation Fn rejection
+  are NOT — these are pre-transmission validation/authorization failures
+  on the CALLER's own outgoing message, closer in spirit to REST's
+  client-side param/credential validation (Category C, permanently
+  excluded) than to a message that reached dispatch and then failed —
+  the caller already receives the synchronous error directly in both
+  cases, so nothing is silently lost either way.
+- **`DeadLetter` DOES generate its own AsyncAPI channel entry** — a
+  receive-only channel at the declared destination topic, carrying the
+  FIXED `DeadLetterEnvelope` schema. `WithCode` remains inert metadata
+  (no wire/spec effect); `WithDescription`/`WithSchemaName`/
+  `WithChannelAddress`/`WithOperationID` all DO affect the rendered
+  spec, mirroring `reqreply.ErrorPatternOpt`'s equivalents exactly:
+
+```go
+events.NewChannel[Reading]("sensors/{id}/data", readingCodec,
+    events.DeadLetter("sensors/dead-letter").
+        WithDescription("Undeliverable sensor readings.").
+        WithSchemaName("SensorDeadLetter"),
+).Register(client)
+```
+
+  When several channels share ONE dead-letter destination (e.g. via
+  `Client.AddGlobalDeadLetter`), the shared topic is registered as a
+  SINGLE spec channel entry (first-registered-wins dedup by topic) —
+  not once per channel that resolves it.
+
+See [Error handling guide — dead-letter fallback](../guides/error-handling.md#dead-letter-fallback-when-nothing-else-claimed-the-failure)
+for the full adapter-reachability caveats (MQTT vs. ZeroMQ REQ/REP).
 
 ## WebSocket error frames
 

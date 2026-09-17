@@ -3814,9 +3814,15 @@ func TestDecodeErrorFor_MatchedStatus_DecodeFailure(t *testing.T) {
 
 // CDP6: first-declared-match-wins precedence with two patterns sharing the
 // same status.
-func TestDecodeErrorFor_FirstMatchWins_SameStatus(t *testing.T) {
+// TestErrorPattern_DuplicateStatus_Rejected replaces the old
+// TestDecodeErrorFor_FirstMatchWins_SameStatus behavior: under the
+// Breaking Changes Policy, 2+ ErrorPatterns sharing one status are now
+// rejected at Register time, mirroring reqreply's
+// DuplicateErrorPatternCodeError — see
+// docs/roadmap/error-handling-rest-events-reqreply.md's Topic 1.
+func TestErrorPattern_DuplicateStatus_Rejected(t *testing.T) {
 	b := rest.NewServer(testInfo)
-	h, err := rest.NewRoute[createReq, userResp]("POST", "/errors/client-decode-precedence",
+	_, err := rest.NewRoute[createReq, userResp]("POST", "/errors/client-decode-precedence",
 		createReqCodec, userCodec,
 		rest.ErrorPattern[directPatternError, directPatternError](409, directPatternCodec),
 		rest.ErrorPattern[mappedPatternError, mappedPatternPayload](409, mappedPatternCodec,
@@ -3824,18 +3830,32 @@ func TestDecodeErrorFor_FirstMatchWins_SameStatus(t *testing.T) {
 				return mappedPatternPayload{Kind: e.Msg}, nil
 			}),
 	).RegisterHandle(b)
+	if err == nil {
+		t.Fatal("want DuplicateErrorStatusError, got nil")
+	}
+	var dupErr rest.DuplicateErrorStatusError
+	if !errors.As(err, &dupErr) {
+		t.Fatalf("want DuplicateErrorStatusError, got %T: %v", err, err)
+	}
+	if dupErr.Status != 409 {
+		t.Errorf("want Status=409, got %d", dupErr.Status)
+	}
+}
+
+// TestWithMiddleware_DifferentStatus_NoConflict is the negative case:
+// 2 ErrorPatterns with DISTINCT statuses on the same route register fine.
+func TestErrorPattern_DifferentStatus_NoConflict(t *testing.T) {
+	b := rest.NewServer(testInfo)
+	_, err := rest.NewRoute[createReq, userResp]("POST", "/errors/client-decode-distinct",
+		createReqCodec, userCodec,
+		rest.ErrorPattern[directPatternError, directPatternError](409, directPatternCodec),
+		rest.ErrorPattern[mappedPatternError, mappedPatternPayload](422, mappedPatternCodec,
+			func(e mappedPatternError) (mappedPatternPayload, error) {
+				return mappedPatternPayload{Kind: e.Msg}, nil
+			}),
+	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
-	}
-	resp, ok, applyErr := h.DecodeErrorFor(409, []byte(`{"code":"conflict"}`))
-	if applyErr != nil {
-		t.Fatalf("DecodeErrorFor applyErr: %v", applyErr)
-	}
-	if !ok {
-		t.Fatal("want match")
-	}
-	if _, isDirect := resp.Value.(directPatternError); !isDirect {
-		t.Fatalf("want first-declared pattern (directPatternError) to win, got %T", resp.Value)
 	}
 }
 

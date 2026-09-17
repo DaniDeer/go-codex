@@ -188,3 +188,13 @@ func (h *ChannelHandle[T]) ErrorResponseFor(err error) (ErrorChannelResponse, bo
 	}
 	return ErrorChannelResponse{}, false, nil
 }
+
+// HasErrorPatterns reports whether at least one [ErrorChannel] is
+// declared on this channel. Used internally by [ChannelHandle.
+// ObserveErrorResponseFor] to gate stats.ErrorPatternObserver.
+// RecordErrorPatternMiss — a channel with NO declared patterns has no
+// "coverage" to measure, so a miss there is not reported. Exported for
+// the rare caller who wants the raw signal outside that wrapper.
+func (h *ChannelHandle[T]) HasErrorPatterns() bool {
+	return len(h.errorChannelRules) > 0
+}

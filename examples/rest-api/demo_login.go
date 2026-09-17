@@ -30,4 +30,26 @@ func demoLogin(chiClient, nethttpClient *rest.Client) {
 		fmt.Printf("  [%s] login (alice) → token=%q\n", cl.label, respAny.(routes.TokenResp).Token)
 	}
 	fmt.Println()
+
+	// ── invalid credentials — proves routes.LoginRoute's declared
+	// rest.ErrorPattern (replacing a FORMER hand-rolled errors.As dispatch
+	// inside chiserver/nethttpserver's shared adapter ErrorHandler) is
+	// consulted, and that the client recovers the typed payload via
+	// rest.ErrorPatternAs — this negative path had ZERO demo coverage
+	// before this fix.
+	fmt.Println("=== POST /login (invalid credentials — rest.ErrorPattern) ===")
+	for _, cl := range clients {
+		_, err := cl.c.Call(context.Background(), restapiclient.LoginRoute, routes.LoginReq{Username: "alice", Password: "wrong"})
+		if err == nil {
+			fmt.Printf("  [%s] ✗ expected an error, got none\n", cl.label)
+			continue
+		}
+		payload, ok := rest.ErrorPatternAs[routes.LoginErrorPayload](err)
+		if !ok {
+			fmt.Printf("  [%s] ✗ expected routes.LoginErrorPayload, got: %v\n", cl.label, err)
+			continue
+		}
+		fmt.Printf("  [%s] ✓ recovered typed 401 payload client-side: message=%q\n", cl.label, payload.Message)
+	}
+	fmt.Println()
 }
