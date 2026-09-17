@@ -7,7 +7,7 @@ Do not re-report any of these findings. They have been implemented and tested.
 ## Round 140 (error-pattern mechanism deep-dive — H1/H2 fixes + example showcase + doc-sync)
 
 A separate, extended multi-round session (tracked with its own F/G/H labels against
-`docs/roadmap/error-handling-rest-events-reqreply.md` rather than this skill's sequential Round
+`docs/design/d-0005-error-handling.md` rather than this skill's sequential Round
 numbers) repeatedly re-audited the error-pattern mechanism end to end and surfaced 2 genuine code
 bugs plus a comprehensive example rework. Recording it here now since it was never logged in this
 history file at the time.
@@ -90,7 +90,7 @@ force the user to use the adapter here (`mqtt5adapter.Case`), instead of a trans
   something no existing test previously demonstrated.
 - **G2 [trivial] — new permanent design guardrail recorded**: added a "Design guardrail: adapters
   implement wire protocols only — client-side ergonomics belong in `api/*`" subsection to
-  `docs/roadmap/error-handling-rest-events-reqreply.md`'s Topic 6, cross-referenced from this
+  `docs/design/d-0005-error-handling.md`'s Topic 6, cross-referenced from this
   skill's own `checklist.md` §13, so this class of mistake is caught in future reviews rather than
   re-discovered. Audited `api/events` (pub/sub), `mcp.ErrorPattern`, and `websocket.ErrorFrame` for
   the same class of gap — confirmed NONE exists (all 3 are structurally different: no synchronous

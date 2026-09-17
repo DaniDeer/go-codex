@@ -272,7 +272,7 @@ func demoErrorPatternMiddlewareCombo(ctx context.Context) {
 // OWN scratch broker/router — proving zero additional wiring is needed:
 // mqtt5.ServeAdapter delegates straight to the already-fully-wired Serve,
 // confirmed by this session's review (unlike REST's now-fixed handlerFunc
-// gap — see docs/roadmap/error-handling-rest-events-reqreply.md's H1).
+// gap — see docs/design/d-0005-error-handling.md's H1).
 func demoErrorPatternPortAdapter(ctx context.Context) {
 	fmt.Println("\n── Demo: reqreply.ErrorPattern via ports.ToolPort + mqtt5.ServeAdapter ──")
 

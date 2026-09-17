@@ -26,7 +26,7 @@ func jsonMap(t *testing.T, doc v3.Document) (map[string]any, error) {
 }
 
 // This file tests Topic 3's AsyncAPI multi-message migration (see
-// docs/roadmap/error-handling-rest-events-reqreply.md): Operation.Messages
+// docs/design/d-0005-error-handling.md): Operation.Messages
 // lists MULTIPLE named message variants for one channel/operation, the
 // direct analogue of OpenAPI's per-status responses object.
 

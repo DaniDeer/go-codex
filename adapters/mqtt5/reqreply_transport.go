@@ -97,7 +97,7 @@ func resolveCallFormatReflect(overrideAny any, declaredFieldType reflect.Type) (
 // consults ObserveErrorResponseFor(ctx, obs, err) first (which ALSO
 // reports match/miss/span-tag observability internally — the
 // RECOMMENDED single call site, see docs/roadmap/
-// error-handling-rest-events-reqreply.md's Topic 1/5); on a match,
+// d-0005-error-handling.md's Topic 1/5); on a match,
 // publishes the declared codec-backed typed payload instead of plain
 // text; on no match, or a mapping/encoding failure within the matched
 // pattern, falls back to [publishErrorReply]'s plain-text behavior
@@ -489,12 +489,12 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 	// ObserveErrorResponseFor(ctx, obs, err) (ErrorPatternResponse, bool,
 	// error) — closes Phase 0 work item 3, now the RECOMMENDED
 	// observability-aware call (see docs/roadmap/
-	// error-handling-rest-events-reqreply.md's Topic 1/5).
+	// d-0005-error-handling.md's Topic 1/5).
 	observeErrorResponseForMethod := rv.MethodByName("ObserveErrorResponseFor")
 	// deadLetterForMethod is *RouteHandle[Req,Resp].DeadLetterFor(obs,
 	// sourceTopic, rawPayload, err) (topic string, body []byte, ok bool)
 	// — Topic 4's dead-letter fallback (docs/roadmap/
-	// error-handling-rest-events-reqreply.md), attempted alongside/after
+	// d-0005-error-handling.md), attempted alongside/after
 	// ObserveErrorResponseFor at every Category-A failure site, mirroring
 	// the pub/sub adapters' collapsed single-rule wiring exactly.
 	deadLetterForMethod := rv.MethodByName("DeadLetterFor")

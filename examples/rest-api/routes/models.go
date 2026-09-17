@@ -371,7 +371,7 @@ func (ThrottledError) Error() string { return "too many requests" }
 // business handler) when the caller lacks a required scope — matched by a
 // declared rest.ErrorPattern on SecuredConflictRoute, proving ErrorPattern
 // intercepts a security-middleware-Fn failure, not just handler failures
-// (see docs/roadmap/error-handling-rest-events-reqreply.md's Topic 1
+// (see docs/design/d-0005-error-handling.md's Topic 1
 // Category-A parity).
 type InsufficientScopeError struct {
 	RequiredScope string

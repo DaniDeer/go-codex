@@ -201,7 +201,7 @@ var MissingSocketRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 // ConflictError is a domain business error handlers.AddOrConflict returns
 // when X is negative — declared as a reqreply.ErrorPattern below so it
 // round-trips to the CLIENT as a typed, errors.As-navigable value instead
-// of an opaque error string (see docs/roadmap/error-handling-rest-events-reqreply.md's
+// of an opaque error string (see docs/design/d-0005-error-handling.md's
 // "Phase 0" section and docs/guides/asyncapi.md's "Client-side decode" section).
 type ConflictError struct{ Reason string }
 

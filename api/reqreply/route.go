@@ -442,7 +442,7 @@ type ErrorReplyMeta struct {
 	// components/schemas.
 	SchemaName string
 	// OperationID is IGNORED as of Topic 3's AsyncAPI multi-message
-	// migration (docs/roadmap/error-handling-rest-events-reqreply.md) —
+	// migration (docs/design/d-0005-error-handling.md) —
 	// error replies no longer get their own operation; they are message
 	// variants within the route's single reply operation. Kept for
 	// source compatibility with existing declarations; no longer has any
@@ -485,7 +485,7 @@ type ErrorPatternResponse struct {
 // extract the decoded typed payload via [errors.As] WITHOUT
 // `api/reqreply` importing the adapter package (which would invert the
 // module's layering). Mirrors [rest.ErrorPatternValuer] exactly. See
-// docs/roadmap/error-handling-rest-events-reqreply.md's Topic 6.
+// docs/design/d-0005-error-handling.md's Topic 6.
 type ErrorPatternValuer interface {
 	// ErrorPatternValue returns the decoded typed payload — the SAME
 	// value the adapter's own ErrorPatternResponse.Value field carries.
@@ -654,7 +654,7 @@ func (o ErrorPatternOpt[E, B]) WithOperationID(id string) ErrorPatternOpt[E, B] 
 // scoped to this value's own B type (already known from o's type
 // parameters, so no explicit [B] instantiation is needed at the call
 // site). Mirrors [rest.ErrorPatternOpt.Match] exactly. See
-// docs/roadmap/error-handling-rest-events-reqreply.md's Topic 6.
+// docs/design/d-0005-error-handling.md's Topic 6.
 //
 // Returns false when err carries no [ErrorPatternValuer] value at all, OR
 // when it does but the value isn't assignable to B.

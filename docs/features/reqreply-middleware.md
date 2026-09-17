@@ -126,7 +126,7 @@ RECOMMENDED single call site: performs the SAME match as
 [Observer guide](../guides/observer.md#errorpatternobserver-declared-error-pattern-observability))
 — no separate adapter-side wiring needed. The CLIENT side stays correctly
 excluded (a caller plays the same "client/sender" role a publisher does —
-see `docs/roadmap/error-handling-rest-events-reqreply.md`'s Topic 7).
+see `docs/design/d-0005-error-handling.md`'s Topic 7).
 
 A middleware's `Out` value failing to encode/decode — server-side,
 building the REPLY (`EncodeOut`); client-side, reading the REPLY

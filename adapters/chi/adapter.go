@@ -967,7 +967,7 @@ func responseCookieValues(cookies []PendingCookie) map[string]string {
 // (no reflection needed, unlike serve.go's [tryRespondErrorPattern]
 // reflection-based helper of a similar name) counterpart of the
 // RECOMMENDED single call site for every Category-A failure point
-// (docs/roadmap/error-handling-rest-events-reqreply.md's Topic 1/5):
+// (docs/design/d-0005-error-handling.md's Topic 1/5):
 // consults a declared [rest.ErrorPattern] via ObserveErrorResponseFor
 // (which ALSO reports match/miss/span-tag observability internally) and,
 // on a matched [rest.ErrorRespond] action, writes the typed response.

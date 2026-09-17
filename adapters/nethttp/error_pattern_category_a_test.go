@@ -15,7 +15,7 @@ import (
 )
 
 // This file tests Topic 1's Category A full enumeration fix (see
-// docs/roadmap/error-handling-rest-events-reqreply.md): every failure
+// docs/design/d-0005-error-handling.md): every failure
 // point on an already-dispatched request is now ErrorPattern-eligible,
 // not just the handler/middleware-Fn rows shipped previously. Each row
 // gets a matched pair (declared ErrorPattern fires, typed response) and,

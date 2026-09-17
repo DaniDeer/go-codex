@@ -681,7 +681,7 @@ func callErrStatusFor(target reflect.Value, err error) (int, bool) {
 // callObserveErrorResponseFor reflect-calls
 // ObserveErrorResponseFor(ctx, obs, err) on target — the RECOMMENDED
 // single call site for every Category-A failure point (see
-// docs/roadmap/error-handling-rest-events-reqreply.md's Topic 1/5):
+// docs/design/d-0005-error-handling.md's Topic 1/5):
 // consults a declared [rest.ErrorPattern] AND reports match/miss/span-tag
 // observability internally, in one call.
 func callObserveErrorResponseFor(target reflect.Value, ctx context.Context, obs stats.Observer, err error) (rest.ErrorPatternResponse, bool, error) {
@@ -733,7 +733,7 @@ func negotiateRequestFormatReflect(formats reflect.Value, contentType string) (r
 }
 
 // tryRespondErrorPattern is the RECOMMENDED single call site for every
-// Category-A failure point (docs/roadmap/error-handling-rest-events-reqreply.md's
+// Category-A failure point (docs/design/d-0005-error-handling.md's
 // Topic 1/5): consults a declared [rest.ErrorPattern] via
 // ObserveErrorResponseFor (which ALSO reports match/miss/span-tag
 // observability internally) and, on a matched [rest.ErrorRespond] action,

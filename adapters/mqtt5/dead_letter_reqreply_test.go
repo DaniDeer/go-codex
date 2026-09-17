@@ -11,7 +11,7 @@ import (
 )
 
 // This file tests Topic 4's DeadLetter fallback for reqreply's server
-// side (see docs/roadmap/error-handling-rest-events-reqreply.md): a
+// side (see docs/design/d-0005-error-handling.md): a
 // route that declares reqreply.DeadLetter dead-letters a request that
 // fails before a successful reply can be produced.
 

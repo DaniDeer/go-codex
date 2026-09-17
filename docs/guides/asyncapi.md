@@ -106,7 +106,7 @@ per-status `responses` object. Earlier versions of go-codex generated a
 SEPARATE reply-error channel/operation per declared pattern (e.g.
 `computeAddReplyErrorConflict` at `compute/add/reply/error/conflict`) —
 this was migrated to the single-channel, multi-message shape (see
-`docs/roadmap/error-handling-rest-events-reqreply.md`'s Topic 3): existing
+`docs/design/d-0005-error-handling.md`'s Topic 3): existing
 `ErrorPattern`/`ErrorReplyMeta` declarations need NO changes, only the
 RENDERED spec's shape changed. `ErrorReplyMeta.OperationID`/
 `ChannelAddress` are now ignored (there is no longer a separate
@@ -150,7 +150,7 @@ if err != nil {
 **Convenient matching** — the SAME 3 alternatives REST's client offers
 are also available for reqreply, collapsing the `errors.As` +
 type-assertion dance above into a single conditional (Topic 6 of
-`docs/roadmap/error-handling-rest-events-reqreply.md`). All 3 live in
+`docs/design/d-0005-error-handling.md`). All 3 live in
 `api/reqreply` (transport-independent — they work identically whether
 `err` came from `mqtt5.Call`/`AttachClient` or `zeromq.Call`/
 `AttachClient`, since both adapters' `ErrorPatternResponse` types

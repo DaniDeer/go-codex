@@ -28,7 +28,7 @@ A direct user question about `examples/reqreply-api/demo_error_pattern.go`
 for reqreply) across `adapters/nethttp`/`adapters/mqtt5`/`adapters/zeromq`
 even though they touch ONLY core `api/*` types (a shared
 `ErrorPatternValuer` interface) and have zero protocol-specific logic. That
-fix (see `docs/roadmap/error-handling-rest-events-reqreply.md`'s Topic 6
+fix (see `docs/design/d-0005-error-handling.md`'s Topic 6
 "Design guardrail" subsection and `docs/concepts/ports-and-adapters.md`'s
 "Convenience helpers belong in `api/*`, not adapters" section) established
 the permanent rule:

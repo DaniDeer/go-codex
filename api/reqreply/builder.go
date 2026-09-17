@@ -268,7 +268,7 @@ func (b *Builder) registerRoute(
 	})
 
 	// Register reply channel (receive-only — exempt from subscribe/publish
-	// validation). Topic 3 (docs/roadmap/error-handling-rest-events-reqreply.md):
+	// validation). Topic 3 (docs/design/d-0005-error-handling.md):
 	// ONE reply channel, ONE receive operation, carrying N message
 	// variants (the success shape plus one per declared errorReplies
 	// entry) via Operation.Messages — AsyncAPI 3.0's native

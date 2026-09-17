@@ -11,7 +11,7 @@ import (
 )
 
 // This file tests Topic 4's DeadLetter fallback (see docs/roadmap/
-// error-handling-rest-events-reqreply.md): a channel that declares
+// d-0005-error-handling.md): a channel that declares
 // events.DeadLetter dead-letters a subscribe-side failure (when no
 // ErrorChannel matches, or none is declared) AND a failed publish.
 

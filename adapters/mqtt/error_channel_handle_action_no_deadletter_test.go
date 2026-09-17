@@ -11,7 +11,7 @@ import (
 // This file tests G4's fix (session review round-3 finding): a
 // type-matched events.ErrorChannel with a non-Respond action
 // (ErrorHandle/ErrorLog) must NOT ALSO trigger DeadLetter — Topic 4's
-// own scope decision (docs/roadmap/error-handling-rest-events-reqreply.md)
+// own scope decision (docs/design/d-0005-error-handling.md)
 // covers ONLY the genuinely UNMATCHED case ("a business error whose
 // type matches no declared ErrorChannel"), and a type match with a
 // non-Respond action is still a match.

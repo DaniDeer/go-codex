@@ -458,7 +458,7 @@ func demoErrorChannelDeadLetterFallback(ctx context.Context) {
 // (the PublishMW-attached credential Fn) and, on failure, returns that
 // error DIRECTLY, with no ErrorChannel consultation at that call site.
 // This is NOT an oversight — it's a DELIBERATE, already-documented scope
-// boundary (docs/roadmap/error-handling-rest-events-reqreply.md's Topic 4
+// boundary (docs/design/d-0005-error-handling.md's Topic 4
 // "Failed publish" discussion): a publish-side ClientImplementations
 // security-Fn rejection is a PRE-TRANSMISSION validation/authorization
 // failure of the caller's OWN outgoing message — structurally closer to

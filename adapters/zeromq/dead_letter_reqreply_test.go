@@ -10,7 +10,7 @@ import (
 )
 
 // This file tests Topic 4's DeadLetter fallback for reqreply's server
-// side (see docs/roadmap/error-handling-rest-events-reqreply.md).
+// side (see docs/design/d-0005-error-handling.md).
 //
 // UNLIKE mqtt5 (one shared client can Publish to ANY topic), zeromq's
 // REQ/REP is point-to-point — the declared dead-letter topic MUST have

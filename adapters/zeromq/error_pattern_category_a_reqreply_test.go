@@ -10,7 +10,7 @@ import (
 )
 
 // This file tests Topic 1's Category A full enumeration fix for reqreply
-// (see docs/roadmap/error-handling-rest-events-reqreply.md): zeromq's
+// (see docs/design/d-0005-error-handling.md): zeromq's
 // server-side failure points beyond handler/middleware-Fn errors are now
 // reqreply.ErrorPattern-eligible too — mirrors mqtt5's own equivalent
 // test file, one representative row (request payload decode) since the

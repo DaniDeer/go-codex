@@ -16,7 +16,7 @@ import (
 var errSecurityRejected = errors.New("rejected by security impl")
 
 // This file tests Topic 1's Category A full enumeration fix for events
-// (see docs/roadmap/error-handling-rest-events-reqreply.md): the
+// (see docs/design/d-0005-error-handling.md): the
 // subscribe-side failure points beyond handler/middleware-Fn errors
 // (already covered elsewhere) are now events.ErrorChannel-eligible too.
 

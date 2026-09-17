@@ -183,7 +183,7 @@ misplacement once someone asked "why do I need the adapter package just to
 match an error?" Fixed by moving all of them into `api/rest`/`api/reqreply`
 — one implementation each, reused transparently by every adapter that
 implements the boundary's `ErrorPatternValuer` interface. See
-`docs/roadmap/error-handling-rest-events-reqreply.md`'s Topic 6 "Design
+`docs/design/d-0005-error-handling.md`'s Topic 6 "Design
 guardrail" subsection for the full narrative and the corrected design
 reasoning.
 

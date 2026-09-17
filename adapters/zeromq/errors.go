@@ -86,7 +86,7 @@ func (e SubscribeError) Unwrap() error { return e.Err }
 // errors.As(e.Err, target) — collapses the two-step
 // "errors.As(subErr.Err, &target)" dance into "subErr.As(&target)" from
 // inside an [SubscribeOptions.OnError] callback. See
-// docs/roadmap/error-handling-rest-events-reqreply.md's Topic 7.
+// docs/design/d-0005-error-handling.md's Topic 7.
 func (e SubscribeError) As(target any) bool {
 	return errors.As(e.Err, target)
 }

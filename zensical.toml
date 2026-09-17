@@ -76,6 +76,7 @@ repo_name = "DaniDeer/go-codex"
 "— D-0002: Pub/Sub Workflow Simplification" = "design/d-0002-pubsub-workflow-simplification.md"
 "— D-0003: Codec-Declared Middlewares" = "design/d-0003-codec-declared-middlewares.md"
 "— D-0004: ReqReply Workflow Simplification" = "design/d-0004-reqreply-workflow-simplification.md"
+"— D-0005: Unified Error Handling" = "design/d-0005-error-handling.md"
 
 [nav.Roadmap]
 "Overview" = "roadmap/index.md"
@@ -109,5 +110,4 @@ repo_name = "DaniDeer/go-codex"
 "— OpenAPI/AsyncAPI Spec Endpoint" = "roadmap/openapi-spec-endpoint.md"
 "— Request/Event Correlation ID" = "roadmap/request-correlation-id.md"
 "— REST Client.Call: GlobalSecurity Dual-Mode" = "roadmap/rest-client-call-global-security.md"
-"— Unified Error Handling: REST, Events, ReqReply (D-0005 draft)" = "roadmap/error-handling-rest-events-reqreply.md"
 "— Thin Adapters Audit" = "roadmap/thin-adapters-audit.md"

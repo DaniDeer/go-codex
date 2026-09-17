@@ -1,6 +1,6 @@
-# Unified Error Handling — REST, Events, ReqReply (destined for D-0005)
+# D-0005 — Unified Error Handling: REST, Events, ReqReply
 
-> **Status:** Implemented and verified — all 7 phases shipped
+> **Status:** FULLY IMPLEMENTED — all 7 phases shipped
 > (`gofmt`/`go build`/`go test -count=1 ./...`/`just check` all clean),
 > including a follow-up consistency-review round that closed several
 > gaps found by cross-checking this document against the actual code:
@@ -14,12 +14,11 @@
 > test coverage for `ObserveErrorResponseFor`/`HasErrorPatterns`/
 > `ErrorPatternObserver` (core-layer AND real-dispatch) and Topic 7's
 > publish-side exclusion invariant, and the security-disclosure guidance
-> `docs/guides/error-handling.md` now documents. This document has NOT
-> yet been physically moved/renamed to `docs/design/d-0005-error-handling.md`
-> — ~55 files across the repo reference it by its current path, and that
-> rename is a separate, optional follow-up (pure doc-reorganization, not
-> a functional change) rather than something this implementation round
-> addressed.
+> `docs/guides/error-handling.md` now documents. This document has now
+> been physically moved/renamed to `docs/design/d-0005-error-handling.md`
+> (previously tracked as a separate, optional follow-up) — all ~66
+> cross-referencing files across the repo were updated to the new path
+> as part of the same graduation round that performed this move.
 >
 > **Scope widened in a later review round (H1)**: `adapters/nethttp` and
 > `adapters/chi` each have a SEPARATE HTTP dispatch function,
@@ -56,7 +55,7 @@
 > port adapters (`SubscribeAdapter`, `CallAdapter`, `ServeAdapter`,
 > `LatestAdapter`) were re-audited and confirmed to delegate straight to
 > already-fully-wired dispatch functions — no further gaps found there.
-> [← Back to Roadmap](index.md)
+> [← Back to Design Documents](index.md)
 
 ## Motivation
 
@@ -172,9 +171,9 @@ the expected default, not an opt-in.
 The following was fully designed and implemented in a prior round —
 summarized here as the foundation this document builds on, rather than
 re-litigated. Full historical detail remains in
-[D-0004's Addendum](../design/d-0004-reqreply-workflow-simplification.md)
-once this document graduates (see "Out of scope"/graduation note at the
-end).
+[D-0004's Addendum](d-0004-reqreply-workflow-simplification.md)
+(this document has now graduated alongside it, per the "Out of scope"
+section this doc used to close with before graduation).
 
 - `reqreply.ErrorPatternResponse` gained `Code string` — the SAME value
   used to derive the AsyncAPI reply-error channel's operation ID
@@ -683,7 +682,7 @@ arguments — meaning a FUTURE AMQP adapter could realize the exact SAME
 declared `events.DeadLetter(topic, ...)`/`reqreply.DeadLetter(topic, ...)`
 API (this document's proposal, below) via broker-native queue
 configuration instead of runtime application code — zero per-message
-publish cost, the broker does the work. See [`docs/roadmap/protocol-native-features.md`](protocol-native-features.md),
+publish cost, the broker does the work. See [`docs/roadmap/protocol-native-features.md`](../roadmap/protocol-native-features.md),
 §6 "Concrete feature survey," new "AMQP dead-lettering" entry, for the
 full analysis of why this is a genuinely NEW category for that document's
 own two-part `Capability` test — a capability whose DECLARATION can be
@@ -1870,15 +1869,3 @@ sequencing around:
 - Extending dead-lettering to matched-but-failed-to-encode cases.
 - `api/mcp`/`adapters/websocket` error mechanisms.
 - Changing REST's OpenAPI rendering (no equivalent gap exists).
-
-## Graduation note
-
-Once implemented and verified, this document is expected to graduate to
-`docs/design/d-0005-error-handling.md` per the established policy (this
-is a cross-cutting pattern spanning 3 APIs plus the shared AsyncAPI
-renderer — clears the "bigger architecture rework" bar). `docs/roadmap/
-reqreply-error-pattern-client-decode.md` (Phase 0's original source) has
-ALREADY been deleted (its content was folded into this document's Phase
-0 section when this document was first drafted, and its roadmap
-index/nav entries were removed at the same time) — no further action
-needed on that front at graduation time.

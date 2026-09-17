@@ -15,7 +15,7 @@ import (
 )
 
 // This file tests Topic 1's Category A full enumeration fix for reqreply
-// (see docs/roadmap/error-handling-rest-events-reqreply.md): the
+// (see docs/design/d-0005-error-handling.md): the
 // server-side failure points beyond handler/middleware-Fn errors
 // (already covered elsewhere) are now reqreply.ErrorPattern-eligible
 // too — mirrors mqtt5's own equivalent events test file.

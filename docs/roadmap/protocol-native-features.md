@@ -1087,7 +1087,7 @@ mechanism exists, not necessarily required to):**
 **A THIRD category the two-part test doesn't yet articulate — AMQP
 dead-lettering (`x-dead-letter-exchange`/`x-dead-letter-routing-key` queue
 arguments):** spun out of
-[Unified Error Handling — REST, Events, ReqReply](error-handling-rest-events-reqreply.md)'s
+[Unified Error Handling — REST, Events, ReqReply](d-0005-error-handling.md)'s
 Topic 4 (dead-letter queue design). Every OTHER entry in this survey falls
 into one of two buckets: passes BOTH bars → one shared, protocol-agnostic
 declaration (`Security`, the only one); fails EITHER bar → no shared
@@ -1558,7 +1558,7 @@ one-at-a-time future-round policy as before:**
   Needs its own dedicated worked-examples pass (mirroring §5) before any
   implementation — not scoped further here.
 - **[Cross-doc, Medium] Dead-letter queue dependency on
-  `error-handling-rest-events-reqreply.md` — FLAGGED this round, MUST be
+  `d-0005-error-handling.md` — FLAGGED this round, MUST be
   re-checked before implementation begins.** §6's "AMQP dead-lettering"
   survey entry (added this round) already resolves the DESIGN question —
   dead-lettering is explicitly EXCLUDED from this document's `Capability`
@@ -1568,7 +1568,7 @@ one-at-a-time future-round policy as before:**
   adapter — NOT as a per-adapter sealed `Capability` type the way QoS/
   User Properties/Retained/AMQP addressing all correctly are. **Before
   implementing THIS document's `Capability` mechanism, re-check
-  [`docs/roadmap/error-handling-rest-events-reqreply.md`](error-handling-rest-events-reqreply.md)'s
+  [`docs/design/d-0005-error-handling.md`](d-0005-error-handling.md)'s
   Topic 4 status**:
   - Do NOT fold dead-lettering into this document's implementation scope
     under any circumstances — it is a confirmed, permanent exclusion

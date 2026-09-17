@@ -114,7 +114,7 @@ err = events.PublishHandle(ctx, sensorPub, measurementTransport, m)
 
 **`SubscribeError.Topic`** — always the concrete incoming message topic, even for template channels (e.g. `sensors/abc-123/measurements`, never `sensors/{sensorID}/measurements`). Use this in `OnError` logging to identify the exact message that failed.
 
-**`SubscribeError.As(target any) bool`** (`adapters/mqtt`/`adapters/mqtt5`/`adapters/zeromq`, Topic 7 of `docs/roadmap/error-handling-rest-events-reqreply.md`) — a thin convenience wrapper over `errors.As(e.Err, target)`, collapsing the two-step `errors.As(subErr.Err, &target)` dance into `subErr.As(&target)` from inside `OnError`:
+**`SubscribeError.As(target any) bool`** (`adapters/mqtt`/`adapters/mqtt5`/`adapters/zeromq`, Topic 7 of `docs/design/d-0005-error-handling.md`) — a thin convenience wrapper over `errors.As(e.Err, target)`, collapsing the two-step `errors.As(subErr.Err, &target)` dance into `subErr.As(&target)` from inside `OnError`:
 
 ```go
 opts.OnError = func(subErr mqtt5.SubscribeError) {
@@ -510,7 +510,7 @@ handle, err := events.NewChannel[SensorReading]("sensors/{id}/data", sensorCodec
   The PUBLISH side stays correctly excluded — a publisher plays the same
   "client/sender" role a REST/reqreply client plays, which never
   consults a declared error pattern either (see
-  `docs/roadmap/error-handling-rest-events-reqreply.md`'s Topic 7).
+  `docs/design/d-0005-error-handling.md`'s Topic 7).
 
 ### Action model — `respond` / `handle` / `log`
 

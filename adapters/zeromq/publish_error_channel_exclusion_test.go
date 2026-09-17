@@ -9,7 +9,7 @@ import (
 )
 
 // This file tests F5's fix (session review finding): Topic 7's role
-// clarification (docs/roadmap/error-handling-rest-events-reqreply.md) —
+// clarification (docs/design/d-0005-error-handling.md) —
 // a publish-side middleware Fn error is returned DIRECTLY to the caller,
 // NEVER checked against a declared events.ErrorChannel, even when one
 // exists on the same channel and would type-match. No test previously

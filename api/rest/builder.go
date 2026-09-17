@@ -321,7 +321,7 @@ type ErrorPatternResponse struct {
 // — it lets [ErrorPatternOpt.Match] extract the decoded typed payload via
 // [errors.As] WITHOUT `api/rest` importing the adapter package (which
 // would invert the module's layering). See
-// docs/roadmap/error-handling-rest-events-reqreply.md's Topic 6.
+// docs/design/d-0005-error-handling.md's Topic 6.
 type ErrorPatternValuer interface {
 	// ErrorPatternValue returns the decoded typed payload — the SAME
 	// value the adapter's own ErrorPatternResponse.Value field carries.
@@ -420,7 +420,7 @@ func (o ErrorPatternOpt[E, B]) WithAction(action ErrorAction) ErrorPatternOpt[E,
 // mechanism [ErrorPatternAs] uses, scoped to this value's own
 // B type (already known from o's type parameters, so no explicit [B]
 // instantiation is needed at the call site). See
-// docs/roadmap/error-handling-rest-events-reqreply.md's Topic 6.
+// docs/design/d-0005-error-handling.md's Topic 6.
 //
 // The SAME value declares the pattern (server, via [NewRoute]'s variadic
 // opts) AND matches it (client) — go-codex's existing "declare once, use

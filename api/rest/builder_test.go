@@ -3819,7 +3819,7 @@ func TestDecodeErrorFor_MatchedStatus_DecodeFailure(t *testing.T) {
 // Breaking Changes Policy, 2+ ErrorPatterns sharing one status are now
 // rejected at Register time, mirroring reqreply's
 // DuplicateErrorPatternCodeError — see
-// docs/roadmap/error-handling-rest-events-reqreply.md's Topic 1.
+// docs/design/d-0005-error-handling.md's Topic 1.
 func TestErrorPattern_DuplicateStatus_Rejected(t *testing.T) {
 	b := rest.NewServer(testInfo)
 	_, err := rest.NewRoute[createReq, userResp]("POST", "/errors/client-decode-precedence",

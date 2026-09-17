@@ -14,7 +14,7 @@ import "errors"
 // [ErrorPatternValuer] interface (the SAME interface
 // [ErrorPatternOpt.Match] already uses) and have ZERO protocol-specific
 // logic. Per this library's "thin adapter" design guardrail
-// (docs/roadmap/error-handling-rest-events-reqreply.md's Topic 6 "Design
+// (docs/design/d-0005-error-handling.md's Topic 6 "Design
 // guardrail" subsection): a user-facing convenience helper that only
 // touches core api/* types belongs in api/*, never in adapters/*, even
 // when multiple adapters happen to implement that boundary today. Moved

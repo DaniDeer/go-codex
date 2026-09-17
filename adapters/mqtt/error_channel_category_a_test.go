@@ -13,7 +13,7 @@ import (
 )
 
 // This file tests Topic 1's Category A full enumeration fix for events
-// (see docs/roadmap/error-handling-rest-events-reqreply.md): mqtt v3's
+// (see docs/design/d-0005-error-handling.md): mqtt v3's
 // subscribe-side failure points beyond handler/middleware-Fn errors are
 // now events.ErrorChannel-eligible too — mirrors mqtt5's own equivalent
 // test file, one representative row (payload decode) since the

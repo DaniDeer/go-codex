@@ -204,7 +204,7 @@ func registerDeadLetterChannel(client *Client, rule *deadLetterRule) {
 
 // DeadLetterFor is the RECOMMENDED single call site for dead-lettering a
 // message that could not be processed — see docs/roadmap/
-// error-handling-rest-events-reqreply.md's Topic 4. Builds the envelope
+// d-0005-error-handling.md's Topic 4. Builds the envelope
 // for a failure at sourceTopic, reports it to obs (stats.ReportErrors(obs,
 // "dead_letter", err)), and returns the destination topic + already-
 // ENCODED envelope bytes ready to publish — or ok=false when no

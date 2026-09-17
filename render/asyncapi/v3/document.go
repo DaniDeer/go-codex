@@ -98,7 +98,7 @@ type Operation struct {
 	// both are set. Each Message's key in the channel's "messages" map is
 	// derived from Message.Name, falling back to SchemaName, falling
 	// back to a generated "message<N>" key. See
-	// docs/roadmap/error-handling-rest-events-reqreply.md's Topic 3 for
+	// docs/design/d-0005-error-handling.md's Topic 3 for
 	// the full design rationale (AsyncAPI 3.0's native multi-message
 	// channel mechanism, the direct analogue of OpenAPI's per-status
 	// responses object).

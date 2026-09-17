@@ -198,7 +198,7 @@ func TestErrorPattern_ClientHandle_carriesRules(t *testing.T) {
 // drives the SAME AsyncAPI reply-channel rendering ErrorReplyMeta
 // previously required declaring separately — since Topic 3's
 // multi-message migration (docs/roadmap/
-// error-handling-rest-events-reqreply.md), this means a named message
+// d-0005-error-handling.md), this means a named message
 // ("ErrorConflict") within the route's SINGLE reply channel, not a
 // separate channel/operation.
 func TestErrorPattern_AutoGeneratesAsyncAPIErrorReply(t *testing.T) {

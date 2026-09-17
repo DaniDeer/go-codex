@@ -10,7 +10,7 @@ import (
 )
 
 // This file tests Topic 6's client-side ergonomics (see docs/roadmap/
-// error-handling-rest-events-reqreply.md): ErrorPatternAs, HandleErrorPattern/
+// d-0005-error-handling.md): ErrorPatternAs, HandleErrorPattern/
 // Case, and ErrorPatternOpt.Match — all 3 collapse the errors.As +
 // type-switch dance into a single conditional.
 

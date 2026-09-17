@@ -196,7 +196,7 @@ type PublishOptions[T any] struct {
 
 // tryPublishErrorChannel is the RECOMMENDED single call site for every
 // Category-A failure point on the subscribe side (docs/roadmap/
-// error-handling-rest-events-reqreply.md's Topic 1/5): consults a
+// d-0005-error-handling.md's Topic 1/5): consults a
 // declared [events.ErrorChannel] via ObserveErrorResponseFor (which ALSO
 // reports match/miss/span-tag observability internally) and, on a
 // matched [events.ErrorRespond] action, publishes the typed payload to
@@ -237,7 +237,7 @@ func tryPublishErrorChannel[T any](
 
 // tryDeadLetter is the RECOMMENDED single call site for Topic 4's
 // two-tier dead-letter fallback (docs/roadmap/
-// error-handling-rest-events-reqreply.md): consults a declared
+// d-0005-error-handling.md): consults a declared
 // [events.DeadLetter] via [events.ChannelHandle.DeadLetterFor] and, when
 // declared, publishes the fixed envelope to the declared destination.
 // Returns true when the caller should return immediately. Callers use

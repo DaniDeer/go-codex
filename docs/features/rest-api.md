@@ -481,7 +481,7 @@ route, _ := rest.NewRoute[CreateJobReq, JobResp]("POST", "/jobs", reqCodec, resp
 > one's codec regardless of which the server actually sent, silently
 > decoding as the wrong type when the payloads were structurally
 > compatible). Reopened and closed under this repo's Breaking Changes
-> Policy — see `docs/roadmap/error-handling-rest-events-reqreply.md`'s
+> Policy — see `docs/design/d-0005-error-handling.md`'s
 > Topic 1. If several domain error types genuinely share one status and
 > one response shape, declare ONE `ErrorPattern` against a shared error
 > interface/wrapper type (`errors.As` matches an interface target too)

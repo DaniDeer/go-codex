@@ -19,7 +19,7 @@ import (
 // changes beyond swapping which method it calls.
 //
 // This is the RECOMMENDED call site for every Category-A failure point
-// (see docs/roadmap/error-handling-rest-events-reqreply.md's Topic 1/5)
+// (see docs/design/d-0005-error-handling.md's Topic 1/5)
 // — adapters should call this instead of ErrorResponseFor directly
 // whenever an Observer is in scope.
 func (h *ChannelHandle[T]) ObserveErrorResponseFor(

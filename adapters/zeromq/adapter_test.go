@@ -1033,7 +1033,7 @@ func TestSubscribeError_ErrorsAs(t *testing.T) {
 }
 
 // TestSubscribeError_As_Method tests Topic 7's convenience method (see
-// docs/roadmap/error-handling-rest-events-reqreply.md): a thin wrapper
+// docs/design/d-0005-error-handling.md): a thin wrapper
 // over errors.As(e.Err, target), collapsing the two-step
 // "errors.As(subErr.Err, &target)" dance into "subErr.As(&target)".
 func TestSubscribeError_As_Method(t *testing.T) {

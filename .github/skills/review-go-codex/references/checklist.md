@@ -628,7 +628,7 @@ for user-facing docs.
   this wiring (only has `OnError`, never consults `ErrorResponseFor`) reproduces a known-fixed gap —
   file at least a `small` finding.
 - **Design guardrail: adapters implement wire protocols only — client-side ergonomics belong in
-  `api/*`** (session review round-140, `docs/roadmap/error-handling-rest-events-reqreply.md`'s
+  `api/*`** (session review round-140, `docs/design/d-0005-error-handling.md`'s
   Topic 6 "Design guardrail" subsection). Any user-facing convenience helper that touches ONLY core
   `api/*` types — codecs, handles, declared patterns, or a core-layer interface like
   `ErrorPatternValuer` — belongs in `api/*`, never in `adapters/*`, EVEN WHEN only one adapter

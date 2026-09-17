@@ -85,7 +85,7 @@ func (e SubscribeError) Unwrap() error { return e.Err }
 // inside an [SubscribeOptions.OnError] callback. Unlike Topic 6's
 // `ErrorPatternAs` (which decodes WIRE BYTES into a typed value), no
 // decode is involved here — Err is already a native Go error value. See
-// docs/roadmap/error-handling-rest-events-reqreply.md's Topic 7.
+// docs/design/d-0005-error-handling.md's Topic 7.
 //
 //	opts.OnError = func(subErr mqtt5.SubscribeError) {
 //	    var conflict domain.EmailConflictError

@@ -65,7 +65,7 @@ func (e SubscribeError) Unwrap() error { return e.Err }
 // errors.As(e.Err, target) — collapses the two-step
 // "errors.As(subErr.Err, &target)" dance into "subErr.As(&target)" from
 // inside an [SubscribeOptions.OnError] callback. See
-// docs/roadmap/error-handling-rest-events-reqreply.md's Topic 7.
+// docs/design/d-0005-error-handling.md's Topic 7.
 func (e SubscribeError) As(target any) bool {
 	return errors.As(e.Err, target)
 }
@@ -199,7 +199,7 @@ func MessageFromContext(ctx context.Context) (pahomqtt.Message, bool) {
 
 // tryPublishErrorChannel is the RECOMMENDED single call site for every
 // Category-A failure point on the subscribe side (docs/roadmap/
-// error-handling-rest-events-reqreply.md's Topic 1/5) — mirrors mqtt5's
+// d-0005-error-handling.md's Topic 1/5) — mirrors mqtt5's
 // identical helper exactly, using this package's own token-based
 // Publish API.
 //
@@ -229,7 +229,7 @@ func tryPublishErrorChannel[T any](
 }
 
 // tryDeadLetter is the RECOMMENDED single call site for Topic 4's
-// dead-letter fallback (docs/roadmap/error-handling-rest-events-reqreply.md)
+// dead-letter fallback (docs/design/d-0005-error-handling.md)
 // — mirrors mqtt5's identical helper exactly, using this package's own
 // token-based Publish API.
 func tryDeadLetter[T any](
