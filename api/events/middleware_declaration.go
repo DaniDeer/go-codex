@@ -374,7 +374,7 @@ func (e ConflictingParamContributionError) LogValue() slog.Value {
 // paramContribution (Round 15 originally added a Codec field here that
 // REST's own paramContribution lacked; REST has since gained its own
 // equivalent field too, see
-// docs/roadmap/rest-middleware-conflict-detection-improvements.md's
+// docs/design/d-0003-codec-declared-middlewares.md's Addendum 2,
 // Candidate 2 — all 3 APIs now compare codec schemas the same way, via the
 // shared [route.CodecSchemaMismatch]).
 type eventsParamContribution struct {

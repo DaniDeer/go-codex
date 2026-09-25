@@ -1,6 +1,48 @@
-# go-codex Review History (R1–R139, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2)
+# go-codex Review History (R1–R142, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 142 (dangling roadmap-doc references after roadmap→design/guide consolidations)
+
+Checklist §14 sweep (Godoc & Documentation-Site Reference Integrity) triggered by no new code
+change — a periodic audit surfaced comment-only drift left over from several EARLIER rounds/commits
+that deleted `docs/roadmap/*.md` files once their content was merged into `docs/design/*.md` or
+`docs/guides/*.md`, without updating the godoc/comments that still pointed at the old roadmap path.
+None of these are caught by `go build`/`go vet`/`go test`/staticcheck. All fixes are comment-text-only
+— zero exported-API/behavior change.
+
+- **G1 [trivial] — stale `docs/roadmap/d-0005-error-handling.md` path**: `api/events/dead_letter.go`
+  and `api/reqreply/dead_letter.go`'s `DeadLetterFor` godoc pointed at a roadmap path; the file has
+  always lived at `docs/design/d-0005-error-handling.md`. Fixed both references.
+- **G2 [small] — 11 references across 8 files to deleted
+  `docs/roadmap/rest-middleware-conflict-detection-improvements.md`**: `api/rest/middleware.go` (×4),
+  `api/rest/middleware_test.go`, `api/events/middleware_declaration.go`, `api/reqreply/middleware.go`,
+  `adapters/mqtt5/reqreply_transport.go`, `adapters/mqtt5/transform_dispatch.go`,
+  `adapters/zeromq/reqreply_transport.go`, `route/security.go`. Content was "spun out" into
+  `docs/design/d-0003-codec-declared-middlewares.md`'s Addendum 2 (confirmed by its own text: "Spun
+  out of `docs/roadmap/rest-middleware-conflict-detection-improvements.md`"). Repointed all 11
+  references to the Addendum 2 location.
+- **G3 [small] — stale `docs/roadmap/reqreply-codec-declared-middleware.md` reference**:
+  `api/reqreply/route.go`'s `MiddlewareHandlers`/`ClientMiddlewareHandlers` godoc — content merged
+  into `docs/design/d-0003-codec-declared-middlewares.md`. Repointed.
+- **G4 [trivial] — stale `docs/roadmap/llm-integration.md` reference**: `api/llm/builder.go`'s
+  `SystemPrompt` godoc — the roadmap doc was promoted to `docs/guides/llm-integration.md` (which
+  already exists and is correctly referenced elsewhere, e.g. `examples/adapters-openai/main.go`).
+  Repointed.
+- **G5 [trivial] — stale `docs/roadmap/pipe-port-composition-hardening.md` references**:
+  `examples/sensor-service/demo.go` and `examples/sensor-service/pipeline/pipeline.go` — content now
+  covered by `docs/guides/ports.md`'s `PipePort` section. Repointed both.
+- **G6 [trivial] — 4 references to deleted `docs/roadmap/rest-client-general-purpose-middleware.md`**:
+  `adapters/nethttp/client.go`, `adapters/nethttp/client_test.go`, `adapters/nethttp/binding_test.go`,
+  `middleware/middleware.go` — content covered by
+  `docs/design/d-0001-rest-middleware-workflow-simplification.md` (confirmed via its
+  `ClientImplementation`/general-purpose-middleware sections). Repointed all 4.
+
+Verification: `gofmt -l .` clean, `go build ./...` clean, `go test ./...` — all 55 packages pass
+(zero FAIL), `just check` (staticcheck + gosec) — 0 issues. No exported symbols changed, so
+`.github/instructions/go-codex.instructions.md` required no update.
 
 ---
 

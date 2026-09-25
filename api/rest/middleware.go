@@ -387,9 +387,8 @@ type securityContribution struct {
 // query param name, tracked for conflict detection. Kept in ONE PER-KIND
 // map (see [applyParamDeclarations]) rather than a combined map — no
 // `kind` field needed here since every entry sharing a map already shares
-// a kind (see
-// docs/roadmap/rest-middleware-conflict-detection-improvements.md's
-// Candidate 1 for why cross-kind name collisions are no longer
+// a kind (see docs/design/d-0003-codec-declared-middlewares.md's
+// Addendum 2, Candidate 1 for why cross-kind name collisions are no longer
 // cross-checked at all, matching [events]/[reqreply]'s own independent-
 // per-axis default). `codec` is Candidate 2's addition — schema
 // comparison via [route.CodecSchemaMismatch], matching events/reqreply's
@@ -681,7 +680,7 @@ func toResponseCookieParam(s middleware.ResponseCookieParamSpec) ResponseCookieP
 
 // applyParamDeclarations builds 5 INDEPENDENT per-kind contribution maps
 // (header, cookie, query, response-header, response-cookie) — see
-// docs/roadmap/rest-middleware-conflict-detection-improvements.md's
+// docs/design/d-0003-codec-declared-middlewares.md's Addendum 2,
 // Candidate 1: a name conflict is only raised between two contributions
 // of the SAME kind, matching [events]/[reqreply]'s own unconditional,
 // independent-per-axis default. A header and a query param (or any other
@@ -756,7 +755,7 @@ func applyParamDeclarations(rb *routeBuilder, routeLabel string) error {
 
 	// manualXxxNames/addedXxxNames are now PER-KIND (5 independent sets,
 	// mirroring the 5 conflict-detection maps above) — see
-	// docs/roadmap/rest-middleware-conflict-detection-improvements.md's
+	// docs/design/d-0003-codec-declared-middlewares.md's Addendum 2,
 	// Candidate 1 dependent-bug note: a FLAT, kind-agnostic dedup guard
 	// would silently DROP a legitimate cross-kind-same-name contribution
 	// (e.g. a middleware-contributed header "X" AND a separate
@@ -992,9 +991,8 @@ func (e ConflictingSecurityDeclarationError) LogValue() slog.Value {
 // query, response-header, or response-cookie), with a DIFFERENT Required
 // value or a mismatching codec schema. Two DIFFERENT-kind params sharing a
 // name (e.g. a header "X" and a query "X") are INDEPENDENT namespaces and
-// never conflict — see
-// docs/roadmap/rest-middleware-conflict-detection-improvements.md's
-// Candidate 1, matching [events]/[reqreply]'s own already-unconditional
+// never conflict — see docs/design/d-0003-codec-declared-middlewares.md's
+// Addendum 2, Candidate 1, matching [events]/[reqreply]'s own already-unconditional
 // per-axis independence. Identical redundant declarations are allowed
 // silently.
 type ConflictingParamContributionError struct {

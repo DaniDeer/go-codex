@@ -215,8 +215,9 @@ func NewExportPipeline(
 	}
 }
 
-// Spec generation (Gap 4 of the now-shipped pipe-port-composition-hardening
-// roadmap) no longer lives here as a hand-typed pipeline.Topology function
+// Spec generation (Gap 4 of the now-shipped PipePort composition hardening,
+// see docs/guides/ports.md's PipePort section) no longer lives here as a
+// hand-typed pipeline.Topology function
 // — it is derived directly from the real wiring via [ports.PipelineSpec],
 // called in demo.go with (ioports.Sensors, Params, Saved, ioports.Alerts) —
 // see demo.go's spec-printing section. Params/Saved are declared in this

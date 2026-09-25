@@ -287,7 +287,7 @@ type ServerImplementation struct {
 // above) and a general-purpose wrapping shape that composes around the
 // adapter's own "encode and transmit"/"network round-trip" step,
 // unconditionally, in attachment order (see
-// docs/roadmap/rest-client-general-purpose-middleware.md for the REST
+// docs/design/d-0001-rest-middleware-workflow-simplification.md for the REST
 // side and adapters/mqtt5/adapter.go's wrapPublishGeneral for the
 // pub/sub precedent it mirrors). adapters/nethttp's SSE
 // Consume/CallSSEAdapter recognizes only the credential shape — its

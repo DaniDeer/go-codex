@@ -1329,8 +1329,8 @@ type RouteHandle[Req, Resp any] struct {
 	// MiddlewareHandlers/ClientMiddlewareHandlers hold the codec-backed
 	// [Middleware][In,Out] runtime dispatch units attached via
 	// [Transform]/[ClientTransform] or plain [Route.Use] (bundled
-	// WithReceive/WithSend) — docs/roadmap/reqreply-codec-declared-
-	// middleware.md. Consulted by the attached [ServerTransport]/
+	// WithReceive/WithSend) — docs/design/d-0003-codec-declared-
+	// middlewares.md. Consulted by the attached [ServerTransport]/
 	// [ClientTransport] (mqtt5/zeromq), dispatched AFTER the paired
 	// security Fn. Populated by [Route.Register]/[Route.ClientHandle].
 	MiddlewareHandlers       []MiddlewareHandler

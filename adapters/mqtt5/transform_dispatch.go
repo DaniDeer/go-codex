@@ -15,7 +15,7 @@ import (
 // fallback (isFnError true, reported as "middleware:fn"); an EncodeOut
 // failure (a middleware's own Out fails to encode into topic/property
 // vars — [dispatchPublishMiddlewareHandlers]'s own failure mode, added
-// alongside docs/roadmap/rest-middleware-conflict-detection-improvements.md's
+// alongside docs/design/d-0003-codec-declared-middlewares.md's Addendum 2,
 // Candidate-3-equivalent review for adapters) is reported as
 // "middleware:out", symmetric with REST's own "middleware:out" — mirrors
 // adapters/nethttp/serve.go's identical type plus this package's own

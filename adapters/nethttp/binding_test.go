@@ -558,7 +558,7 @@ func TestConsume_HappyPath_SingleEvent(t *testing.T) {
 }
 
 // TestConsume_GeneralShapeFn_StillRejected is a regression guard for
-// docs/roadmap/rest-client-general-purpose-middleware.md: consumeSSE
+// docs/design/d-0001-rest-middleware-workflow-simplification.md: consumeSSE
 // deliberately keeps using the OLD, credential-only
 // validateClientImplementationShapes rather than the new
 // validateCallImplementationShapes callWithVars/CallWithHandle use — a

@@ -206,7 +206,7 @@ func runDemo(env demoEnv) {
 	// transform's real Go function identity via reflection) directly from
 	// the four PipePorts pipeline.Build wired — no separate,
 	// hand-maintained pipeline.Topology function to keep in sync (Gap 4 of
-	// docs/roadmap/pipe-port-composition-hardening.md). This package
+	// docs/guides/ports.md's PipePort section). This package
 	// imports both ioports (for Sensors/Alerts) and pipeline (for
 	// Params/Saved), so it — not pipeline itself — is where the call
 	// belongs (pipeline never imports ioports).

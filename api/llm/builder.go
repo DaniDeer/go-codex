@@ -62,7 +62,7 @@ type CallSpec struct {
 	// DIFFERENT LLM (e.g. render/openaitools.FromLLMSpec's agent-calls-agent
 	// use) could leak prompt text into that other agent's context. Revisit
 	// if this proves undesirable in practice — flagged as an open design
-	// decision in docs/roadmap/llm-integration.md.
+	// decision in docs/guides/llm-integration.md.
 	SystemPrompt string `json:"systemPrompt"`
 
 	RequestSchema  json.RawMessage `json:"requestSchema,omitempty"`

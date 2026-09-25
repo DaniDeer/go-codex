@@ -784,7 +784,7 @@ for `api/reqreply`, `WithSubscribeProperty`/`WithPublishProperty` for
 `NewPropertyParam[T,V]`/`NewOptionalPropertyParam[T,V]` triple, confirmed
 to mirror `TopicParam`'s existing wrapper pattern exactly (see
 D-0003's own Addendum, and
-[Feature: ReqReply Codec-Declared Middleware](../features/reqreply-middleware.md)
+[Feature: Codec-Declared Middleware](../features/codec-declared-middleware.md)
 for the user-facing docs).
 
 **Where this sits relative to THIS doc's `Capability` mechanism —

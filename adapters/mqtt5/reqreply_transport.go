@@ -239,7 +239,7 @@ func propertyVarsFromUserProperties(msg *pahomqtt5.Publish) map[string]string {
 // D2's fallback) from an EncodeOut failure ("out", building the REPLY's
 // Out struct) — the caller reports "middleware:in"/"middleware:fn"/
 // "middleware:out" accordingly (see
-// docs/roadmap/rest-middleware-conflict-detection-improvements.md's
+// docs/design/d-0003-codec-declared-middlewares.md's Addendum 2,
 // Candidate-3-equivalent adapter-dispatch review, which found EncodeOut
 // failures here previously collapsed into the SAME bucket as DecodeIn
 // failures, both reported as "middleware:in").

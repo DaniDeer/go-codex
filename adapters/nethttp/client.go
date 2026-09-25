@@ -368,7 +368,7 @@ func (e ConflictingCredentialHeaderError) LogValue() slog.Value {
 // long-lived stream) does not match that wrap shape, so widening THIS
 // function would let a general-purpose Fn silently pass validation on an
 // SSE route while never actually being invoked anywhere. See
-// docs/roadmap/rest-client-general-purpose-middleware.md's scope table.
+// docs/design/d-0001-rest-middleware-workflow-simplification.md's scope table.
 func validateClientImplementationShapes(impls []middleware.ClientImplementation) error {
 	for _, impl := range impls {
 		switch impl.Fn.(type) {

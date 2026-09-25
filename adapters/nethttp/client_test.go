@@ -608,7 +608,8 @@ func TestCall_GeneralAndCredential_Coexist(t *testing.T) {
 // error returned by a general-purpose ClientMW Fn's own next() call is
 // still visible to a stats.TraceObserver's EndSpan — a regression guard
 // for the variable-scoping refactor that moved the network round-trip
-// into a nested closure (see docs/roadmap/rest-client-general-purpose-middleware.md).
+// into a nested closure (see
+// docs/design/d-0001-rest-middleware-workflow-simplification.md).
 type recordingTraceObserver struct {
 	stats.NoopObserver
 	endSpanErr error

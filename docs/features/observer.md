@@ -202,7 +202,7 @@ mirroring `adapters/nethttp.Observability` (REST) and
 It attaches via the existing general-purpose (unpaired)
 `.HandleMW(nil, fn)`/`.ClientMW(nil, fn)` middleware-implementation
 mechanism (see
-[Feature: ReqReply Codec-Declared Middleware](reqreply-middleware.md)) —
+[Feature: Codec-Declared Middleware](codec-declared-middleware.md)) —
 no new attachment API, just an observability `fn` attached the same way a
 security implementation is:
 

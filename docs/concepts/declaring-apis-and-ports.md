@@ -166,6 +166,20 @@ topic, a channel replies by being *itself* a channel). `ports.File`/
 to the caller, never "replied" to a remote peer, so there's no declaration
 to make.
 
+## Codec-declared middleware — a cross-cutting attachment mechanism
+
+The three spec-backed request/response-shaped boundaries — `api/rest`,
+`api/events`, and `api/reqreply` — additionally share ONE
+`middleware.Declaration[In,Out]`-based mechanism for attaching reusable,
+codec-validated enrichment/enforcement concerns to an already-declared
+route or channel (`Transform`/`ClientTransform` for a route/channel-bound
+attachment, or `.Use(mw)` for a route/channel-agnostic one reused verbatim
+across many declarations). It composes with, rather than replaces, the
+declaration story above — you declare the route/channel/resource first,
+the same way regardless, then optionally attach middleware afterward. See
+[Feature: Codec-Declared Middleware](../features/codec-declared-middleware.md)
+for the full cross-API walkthrough.
+
 ## See also
 
 - [API Contracts](api-contracts.md) — the one-struct-one-call convenience

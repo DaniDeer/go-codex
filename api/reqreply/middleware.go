@@ -417,7 +417,7 @@ func checkReqReplyParamConflicts(rb *routeBuilder, routeLabel string) error {
 // conflict if Required differs, OR their codec schemas mismatch per
 // [route.CodecSchemaMismatch] (Round 15's original inline copy of this
 // comparison was later extracted into that shared helper — see
-// docs/roadmap/rest-middleware-conflict-detection-improvements.md's
+// docs/design/d-0003-codec-declared-middlewares.md's Addendum 2,
 // Candidate 2 — REST has since gained the identical comparison too, so
 // all 3 APIs are consistent).
 func checkReqReplyContributionMap(routeLabel string, contributions map[string][]reqreplyParamContribution) error {

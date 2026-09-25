@@ -328,43 +328,7 @@ is the RECEIVING role (`In` decoded from incoming topic vars, `Out`
 unused — no reply channel to encode into), publish is the SENDING role
 (`Out` encoded into outgoing topic vars via `WithPublishTopic`, `In`
 unused). Reuses the SAME `events.NewTopicParam[T,V]` constructor a
-channel's own `Item` already uses.
-
-A SECOND, protocol-neutral **property** vocabulary axis exists alongside
-topic vars — MQTT5 User Properties today (`adapters/zeromq` has no
-property mechanism, so a REQUIRED property there fails naturally,
-mirroring a missing topic var). Declare it via `events.NewPropertyParam[T,V]`/
-`NewOptionalPropertyParam[T,V]`, then attach it EITHER way:
-
-- **Directly to `NewChannel`** (no `Middleware` needed) — the simplest
-  form, recommended by default, mirroring `NewTopicParam`'s own framing
-  exactly:
-
-  ```go
-  channel := events.NewChannel[SensorReading](
-      "sensors/readings", sensorCodec,
-      events.NewPropertyParam("tenantID", codex.String(),
-          func(r SensorReading) string { return r.TenantID },
-          func(r *SensorReading, v string) { r.TenantID = v }),
-  ).WithSubscribe(events.Subscribe{})
-  ```
-
-  This merges the real MQTT5 User Property directly into `SensorReading`
-  on subscribe, and derives an outgoing User Property from it on publish
-  — `ChannelHandle.PropertyMergeFields()` is the accessor, mirroring
-  `MergeFields()` for topic vars. `ChannelHandle.MergePropertyVars(*T, map[string]string) error`/
-  `EncodePropertyVars(T) (map[string]string, error)` are the one-call
-  convenience wrappers around it, mirroring `MergeFields()`'s own
-  `DecodeMerged`/`EncodeVars` pair.
-
-- **Via `Middleware[In, Out]`'s `WithSubscribeProperty`/`WithPublishProperty`**
-  — reach for this ONLY when you also need custom `fn` logic (e.g. a
-  policy lookup keyed by the property value) or channel-agnostic reuse
-  across multiple channels (`Middleware.WithReceive`/`WithSend` +
-  `.Use(mw)`). See
-  [Feature: ReqReply Codec-Declared Middleware](reqreply-middleware.md)
-  for the identical mechanism shared with `api/reqreply` (same conflict-
-  detection rules, same independent topic/property namespaces).
+channel's own `Item` already uses:
 
 ```go
 regionPolicy := events.NewMiddleware(
@@ -392,6 +356,14 @@ runs at; publish dispatch derives middleware-contributed topic vars BEFORE
 `BuildTopic`, following the FULL 3-tier precedence: explicit (a per-call
 `Vars` override) wins over middleware-derived, which in turn wins over the
 channel's own derived vars, on a key collision.
+
+A SECOND, protocol-neutral **property** vocabulary axis also exists
+alongside topic vars, shared with `api/reqreply` — see
+[Feature: Codec-Declared Middleware](codec-declared-middleware.md#the-property-vocabulary-axis-events--reqreply-only)
+for the full explanation (`NewPropertyParam`/`NewOptionalPropertyParam`,
+direct attachment, write-side wiring, AsyncAPI rendering) and
+[D-0003 — Codec-Declared Middlewares](../design/d-0003-codec-declared-middlewares.md)
+for the full design.
 
 ## Declarative MQTT QoS and Retained flag
 

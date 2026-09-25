@@ -14,8 +14,8 @@ import (
 // Moved here from 2 near-identical per-package copies
 // (`api/events`'s codecSchemaMismatch, `api/reqreply`'s inline
 // checkReqReplyContributionMap comparison) plus `api/rest`'s OWN
-// Candidate-2 addition (see
-// docs/roadmap/rest-middleware-conflict-detection-improvements.md) — this
+// Candidate-2 addition (see docs/design/d-0003-codec-declared-middlewares.md's
+// Addendum 2) — this
 // logic operates purely on [codex.Codec], the core `codex` package's own
 // type, with zero API-specific behavior, mirroring [FirstSchemeName]'s
 // existing de-duplication precedent above.

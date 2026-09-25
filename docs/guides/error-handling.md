@@ -252,7 +252,7 @@ candidate follow-up, not yet scheduled.
 ### Runnable demos
 
 - [examples/error-types](https://github.com/DaniDeer/go-codex/tree/main/examples/error-types) — demonstrates all 3 middleware error types side-by-side (REST) plus an events/reqreply variant
-- [Feature: REST API](../features/rest-api.md#codec-backed-middleware-transformclienttransform) · [Feature: Event Channels](../features/events.md#codec-backed-middleware-transformclienttransform) · [Feature: ReqReply Middleware](../features/reqreply-middleware.md) — each API's own full error-type reference table
+- [Feature: REST API](../features/rest-api.md#codec-backed-middleware-transformclienttransform) · [Feature: Event Channels](../features/events.md#codec-backed-middleware-transformclienttransform) · [Feature: Codec-Declared Middleware](../features/codec-declared-middleware.md) — the cross-API mechanism reference, including `api/reqreply`
 
 ### Sibling mechanism: declared HANDLER errors, client-side decode
 

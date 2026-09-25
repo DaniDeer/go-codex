@@ -382,9 +382,8 @@ func applyGeneralServerMiddleware(fnVal reflect.Value, impls []middleware.Server
 // ("in", wraps as [reqreply.MiddlewareInputError]) from the fn's own
 // business error ("fn", wraps as [reqreply.MiddlewareError], D2's
 // fallback) from an EncodeOut failure ("out", building the REPLY's Out
-// struct — see
-// docs/roadmap/rest-middleware-conflict-detection-improvements.md's
-// Candidate-3-equivalent adapter-dispatch review). Mirrors
+// struct — see docs/design/d-0003-codec-declared-middlewares.md's
+// Addendum 2, Candidate-3-equivalent adapter-dispatch review). Mirrors
 // [adapters/mqtt5]'s identical dispatch function.
 func dispatchServerMiddlewareHandlers(
 	ctx context.Context,

@@ -755,49 +755,34 @@ enforcement concern independent of any one route's `Req`/`Resp` — its own
 cookie/query merge fields (`WithRequestHeader`/`WithRequestCookie`/
 `WithRequestQuery`/`WithResponseHeader`/`WithResponseCookie`) reuse the SAME
 constructors a route's own `Req`/`Resp` already use — no new param
-vocabulary.
+vocabulary. Attached route-BOUND via `rest.Transform`/`rest.ClientTransform`
+(fn additionally receives the route's own already-decoded `req`) or
+route-AGNOSTIC via `Middleware.WithReceive`/`WithSend` + plain `.Use(mw)`
+(reusable verbatim across many routes):
 
-Two attachment styles:
+```go
+apiKeyPolicy := rest.NewMiddleware(
+    middleware.NewDeclaration("api-key-policy", apiKeyInCodec, apiKeyOutCodec),
+).WithRequestHeader(rest.NewRequiredHeaderParam("X-API-Key", codex.String(),
+    func(in APIKeyIn) string { return in.Key },
+    func(in *APIKeyIn, v string) { in.Key = v },
+))
 
-- **Route-BOUND**, via `rest.Transform`/`rest.ClientTransform` (and their
-  SSE-route counterparts `rest.TransformSSE`/`rest.ClientTransformSSE`) — fn
-  additionally receives the route's own already-decoded `req *Req`
-  (server) / `req Req` (client), for concerns that need to read or enrich
-  it:
+route = rest.Transform(route, apiKeyPolicy,
+    func(ctx context.Context, req *GetProfileReq, in APIKeyIn) (APIKeyOut, error) {
+        return APIKeyOut{Validated: true}, nil
+    })
+```
 
-  ```go
-  apiKeyPolicy := rest.NewMiddleware(
-      middleware.NewDeclaration("api-key-policy", apiKeyInCodec, apiKeyOutCodec),
-  ).WithRequestHeader(rest.NewRequiredHeaderParam("X-API-Key", codex.String(),
-      func(in APIKeyIn) string { return in.Key },
-      func(in *APIKeyIn, v string) { in.Key = v },
-  ))
-
-  route = rest.Transform(route, apiKeyPolicy,
-      func(ctx context.Context, req *GetProfileReq, in APIKeyIn) (APIKeyOut, error) {
-          return APIKeyOut{Validated: true}, nil
-      })
-  ```
-
-- **Route-AGNOSTIC**, via `Middleware.WithReceive`/`Middleware.WithSend`
-  bundling a `Req`-free fn directly onto the value, attached via plain
-  `.Use(mw)` — reusable verbatim across many routes with different `Req`
-  types:
-
-  ```go
-  reusablePolicy := apiKeyPolicy.WithReceive(func(ctx context.Context, in APIKeyIn) (APIKeyOut, error) {
-      return APIKeyOut{Validated: true}, nil
-  })
-  routeA = routeA.Use(reusablePolicy)
-  routeB = routeB.Use(reusablePolicy)
-  ```
-
-A middleware `fn`'s own business error is `ErrorPattern`-eligible (matched
-the SAME way a handler error is) before falling back to
-`rest.MiddlewareError{Name, Err}` (status 400). Attaching two
-`Middleware[In,Out]` values with the same `Declaration.Name` to one route
-returns `rest.DuplicateMiddlewareNameError`; combining BOTH attachment
-styles on one value returns `rest.AmbiguousMiddlewareAttachmentError`. See
+REST additionally has SSE-route counterparts `rest.TransformSSE`/
+`rest.ClientTransformSSE`. A middleware `fn`'s own business error is
+`ErrorPattern`-eligible (matched the SAME way a handler error is) before
+falling back to `rest.MiddlewareError{Name, Err}` (status 400). This is the
+SAME mechanism `api/events`/`api/reqreply` implement for their own wire
+shapes — see
+[Feature: Codec-Declared Middleware](codec-declared-middleware.md) for the
+full cross-API walkthrough (attachment styles, conflict detection, value
+precedence, and the events/reqreply-only "property" vocabulary axis) and
 [D-0003 — Codec-Declared Middlewares](../design/d-0003-codec-declared-middlewares.md)
 for the full design.
 

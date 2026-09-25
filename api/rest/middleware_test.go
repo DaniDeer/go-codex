@@ -256,8 +256,8 @@ func TestWithMiddleware_ConflictingParamContribution(t *testing.T) {
 // Rest-middleware-conflict-detection-improvements Candidate 1: a header
 // and a cookie sharing the SAME name are now INDEPENDENT namespaces — no
 // longer a conflict (previously this WAS a
-// ConflictingParamContributionError; see docs/roadmap/
-// rest-middleware-conflict-detection-improvements.md's Candidate 1
+// ConflictingParamContributionError; see
+// docs/design/d-0003-codec-declared-middlewares.md's Addendum 2, Candidate 1
 // compat-risk audit, which found and rewrote the test this replaces).
 func TestWithMiddleware_DifferentKindSameName_NoLongerConflicts(t *testing.T) {
 	b := rest.NewServer(testInfo)
