@@ -1588,6 +1588,51 @@ one-at-a-time future-round policy as before:**
     field end up BOTH trying to configure AMQP queue arguments through
     two independent paths — a coordination check, not a design conflict
     known to exist yet, since neither adapter is built.
+- **[Review-13, Medium] `Attach` signature reconciliation — FLAGGED this
+  round, NOT resolved.** Found while cross-checking this document against
+  [Thin Adapters Audit](thin-adapters-audit.md) (independent of anything
+  THAT document changes — it does not touch `Attach` at all). §2.2's
+  pseudocode (repeated at 2 other points in this document) sketches:
+
+  ```go
+  func Attach[T any](client *Client, ch events.Channel[T], caps ...Capability) error
+  ```
+
+  a PER-CHANNEL function taking a specific `ch events.Channel[T]` plus
+  `caps ...Capability`. Confirmed via `grep -n "^func Attach"
+  adapters/*/*.go` that NONE of the 3 actually shipped signatures match
+  this shape — all 3 are BULK, per-`*events.Client` functions wiring
+  every subscriber/publisher on the Client at once, with NO `ch`/`caps`
+  parameter at all:
+  - `adapters/mqtt5/transport.go:77` —
+    `func Attach(client *events.Client, mqttClient MQTTClient, router MQTTRouter) error`
+  - `adapters/mqtt/transport.go:72` —
+    `func Attach(eventsClient *events.Client, mqttClient pahomqtt.Client) error`
+  - `adapters/zeromq/transport.go:66` —
+    `func Attach(client *events.Client, sock FramedSocket) error`
+
+  **Open question, NOT resolved here** — how does Capability's `Attach`
+  relate to these 3 shipped functions?
+  1. A signature CHANGE to the existing bulk function (unclear how a
+     single, multi-channel call would accept PER-channel capabilities
+     through one variadic `caps` list spanning every channel it wires);
+  2. A NEW, differently-named per-channel function coexisting with the
+     bulk one (Go does not allow two `func Attach` overloads in one
+     package, so this needs its own name — e.g. `mqtt5.AttachChannel[T]`,
+     TBD); or
+  3. Capabilities attach via a SEPARATE, channel-scoped call BEFORE the
+     existing bulk `Attach` runs — mirroring how `Subscriber`/
+     `Publisher`'s own `.Use(mw)` already attaches per-channel behavior
+     onto the channel value itself, before ONE bulk `Client.Attach`/
+     `ServeSubscribers` call dispatches everything at once.
+
+  Option 3 is the MOST STRUCTURALLY CONSISTENT with today's shipped
+  pattern (channel-level concerns attach to the channel/`Subscriber`/
+  `Publisher` value itself, before the one bulk wiring call) — flagged
+  as a hypothesis to validate during the dedicated implementation-
+  planning round, not a decision made here. Whichever option is chosen,
+  every `Attach`-pseudocode snippet in this document (§2.2, §5.1, §5.2)
+  will need updating to match the resolved, real signature.
 
 ## 8. Handler Disposition — a DISTINCT concept from `Capability`, RESOLVED via a fourth throwaway Go prototype
 
@@ -1798,6 +1843,58 @@ concrete driver appears.
   dispatch — those stay owned by D-0003's test plan; this section only
   covers test cases specific to `Capability`/`Address`/`Disposition`, the
   concepts this doc actually introduces.
+
+## Final implementation phase — sync `go-codex.instructions.md` and `review-go-codex` (once shipped)
+
+**Not part of implementation itself — the LAST step, only once `Capability`/
+`Address`/`Disposition` are actually built, tested (per the Test plan
+above), and merged.** Two interim documents already give adapter authors
+guidance in the meantime and are NOT touched by this phase:
+[Thin Adapters Audit](thin-adapters-audit.md)'s "Forward-looking
+guardrail: adapters as pure protocol shims" section (states the target
+design ahead of its own implementation, as a guardrail against inventing
+a competing ad-hoc mechanism) and
+`add-a-new-adapter/SKILL.md`'s Step 5e (tells a new-adapter author today
+not to bolt a protocol-specific field onto an `api/*` declaration type).
+Both are deliberately framed as "not yet shipped" — appropriate for
+PREP guidance, but NOT a substitute for updating the project's actual
+sources of truth once the mechanism is real. That update is this phase:
+
+1. **`.github/instructions/go-codex.instructions.md`** — add a Design
+   Philosophy bullet describing the SHIPPED sealed `Capability` mechanism
+   in PRESENT tense (no "forward-looking"/"not yet shipped" hedging by
+   this point), alongside the existing "Adapters are thin"/"a user works
+   ENTIRELY in the `api/*`/`ports` abstraction" bullet pair — mirrors how
+   every other graduated design doc (D-0001 through D-0005) updated this
+   file at its own point of shipping.
+2. **`review-go-codex/references/checklist.md`** — add a new numbered
+   section (e.g. "§15. Adapter Thinness & Capability Guardrail") auditing
+   REAL, post-ship conformance: confirm `api/events/mqtt_qos.go` was
+   ACTUALLY DELETED (not merely documented as pending removal), and flag
+   any `api/*` package that still carries protocol-specific vocabulary
+   after this point as a genuine finding — plus a matching Gotchas-list
+   pointer bullet in `review-go-codex/SKILL.md` (mirroring the existing
+   "Design guardrail: adapters implement wire protocols only..." bullet's
+   format, which points at checklist.md §13 rather than restating it
+   inline).
+3. **`add-a-new-adapter/SKILL.md`'s Step 5e** — reword from
+   "forward-looking... preparing for a future, not-yet-shipped design" to
+   a MANDATORY, present-tense requirement; drop the "until it ships"
+   interim-guidance framing entirely.
+4. **`docs/concepts/ports-and-adapters.md`**'s "Forward-looking: adapter-
+   specific extensions as sealed `Capability` interfaces" section — drop
+   "Forward-looking" from the heading/framing once the mechanism it
+   describes is real.
+5. **`review-go-codex/references/history.md`** — append a new Round entry
+   recording this sync itself (mirrors how every other graduated design
+   doc's own instructions-file/skill sync is recorded there today).
+
+This document's own implementation is NOT complete until this phase
+runs — a `Capability`/`Address`/`Disposition` merge that skips it leaves
+the project's sources of truth silently out of date, the exact failure
+mode `docs/design/d-0001-rest-middleware-workflow-simplification.md`'s
+own "Lessons Learned" section warns is invisible to
+`go build`/`go vet`/`go test`/staticcheck.
 
 ## See also
 

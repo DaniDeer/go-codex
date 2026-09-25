@@ -311,6 +311,27 @@ helpers belong in `api/*`, not adapters" section for the full write-up —
 consult it, and don't re-word this rule independently, when reviewing a
 new adapter's exported surface.
 
+## Step 5e — Forward-looking: don't invent an ad-hoc capability mechanism (preparing for a future, not-yet-shipped design)
+
+A sealed, per-adapter `Capability` interface mechanism is DESIGNED (not
+yet implemented) in `docs/roadmap/protocol-native-features.md`'s
+§2.1/§2.2, for exposing adapter-specific extensions (MQTT QoS, User
+Properties, an AMQP ack-mode, ...) — one sealed interface type PER
+adapter package, mirroring `ports.Pattern`'s own sealing technique,
+supplied only at `Attach`/`Bind` time. See
+`docs/roadmap/thin-adapters-audit.md`'s "Forward-looking guardrail"
+section for the full statement.
+
+**Until it ships**: if your new adapter needs a protocol-specific
+toggle/option with no cross-protocol meaning, keep it a plain,
+adapter-owned field on your adapter's own `Options`/`SubscribeOptions`/
+etc. struct — do NOT add it to the owning `api/*` package's declaration
+type (`events.Channel`, `rest.Route`, etc.), even as a "just this one
+field" convenience. `api/events/mqtt_qos.go` (`MQTTQoS`/`Subscribe.QoS`)
+is the one confirmed EXISTING exception to this rule in the codebase
+today — already cataloged as drift to be resolved once `Capability`
+ships, not a precedent to extend.
+
 ## Step 6 — Use the checklist
 
 Work through [references/checklist.md](references/checklist.md) — a
@@ -367,4 +388,5 @@ verification ritual. Track progress with todos, one per checklist block.
 - `api/rest/builder.go` + `adapters/nethttp/{adapter,client}.go` — reference implementation of Step 5b's one-struct-one-call pattern (`NewPathParam`/etc., `DecodeMerged`, role-aware `PathMergeFields`/etc., `NewRequiredResponseHeaderParam`/etc., `DecodeMergedResponse`, `CallHandle`)
 - `docs/concepts/api-contracts.md` — "one struct, one call" design principle, user-facing framing
 - `docs/concepts/ports-and-adapters.md` — Step 5c's "no adapter-invented escape hatch" principle AND Step 5d's "convenience helpers belong in `api/*`" principle, user-facing framing
+- `docs/roadmap/protocol-native-features.md` + `docs/roadmap/thin-adapters-audit.md` — Step 5e's forward-looking sealed `Capability` mechanism design (not yet shipped) and its "adapters as pure protocol shims" guardrail
 - `ports/pattern.go`, `ports/handle.go` — Pattern declaration + build machinery

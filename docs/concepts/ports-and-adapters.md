@@ -201,3 +201,22 @@ declare and consume a communication pattern using ONLY the `api/*`
 abstraction — attaching a specific adapter is purely a protocol-selection
 decision, never something that changes which helper functions/vocabulary
 the caller reaches for.
+
+## Forward-looking: adapter-specific extensions as sealed `Capability` interfaces
+
+Both rules above are about where LOGIC lives (never adapter-invented,
+never a bypass). A related, still-open question is where adapter-specific
+EXTENSION POINTS live — e.g. MQTT's QoS level or User Properties, which
+have no cross-protocol meaning ZeroMQ or a future AMQP adapter could
+honor. [Protocol-Native Features](../roadmap/protocol-native-features.md)
+designs (not yet implemented) a sealed, per-adapter `Capability` interface
+for exactly this — one unexported marker method per adapter package,
+mirroring `ports.Pattern`'s own sealing technique, supplied only at
+`Attach`/`Bind` time, so a value from the wrong adapter package is a Go
+COMPILE error rather than a silent no-op or a runtime check. See
+[Thin Adapters Audit](../roadmap/thin-adapters-audit.md)'s "Forward-
+looking guardrail" section for the concrete, precise statement: adapters
+should wrap their external SDK with zero business logic and expose any
+protocol-specific extension this way once the mechanism ships — new
+adapters should not invent a competing, non-sealed alternative (a loose
+`bool`/string-ID option field) in the interim.
