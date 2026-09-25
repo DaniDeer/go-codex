@@ -475,34 +475,33 @@ func subscribeWithHandle[T any](
 			// extraction (nothing to extract from). A channel declaring
 			// a REQUIRED property fails naturally with the SAME
 			// MiddlewareInputError a missing topic var would.
-			if mwErr := dispatchSubscribeMiddlewareHandlers(ctx, &value, handle.MiddlewareHandlers, topicVars, nil); mwErr != nil {
+			if mwErr := events.DispatchSubscribeMiddlewareHandlers(ctx, &value, handle.MiddlewareHandlers, topicVars, nil); mwErr != nil {
 				obs.RecordSubscribe(topic, false, time.Since(start))
-				var dispatchErr middlewareDispatchError
-				errors.As(mwErr, &dispatchErr)
-				if dispatchErr.isFnError {
-					stats.ReportErrors(obs, "middleware:fn", dispatchErr.err)
-					if handled, matched := tryPublishErrorChannel(ctx, sock, handle, obs, dispatchErr.err); handled {
+				dispatchErr, _ := events.AsMiddlewareDispatchError(mwErr)
+				if dispatchErr.IsFnError {
+					stats.ReportErrors(obs, "middleware:fn", dispatchErr.Err)
+					if handled, matched := tryPublishErrorChannel(ctx, sock, handle, obs, dispatchErr.Err); handled {
 						continue
 					} else if !matched {
-						if tryDeadLetter(sock, handle, obs, topic, payload, dispatchErr.err) {
+						if tryDeadLetter(sock, handle, obs, topic, payload, dispatchErr.Err) {
 							continue
 						}
 					}
 					if opts.OnError != nil {
-						opts.OnError(SubscribeError{Kind: KindHandler, Topic: topic, Err: events.MiddlewareError{Name: dispatchErr.name, Err: dispatchErr.err}})
+						opts.OnError(SubscribeError{Kind: KindHandler, Topic: topic, Err: events.MiddlewareError{Name: dispatchErr.Name, Err: dispatchErr.Err}})
 					}
 					continue
 				}
-				stats.ReportErrors(obs, "middleware:in", dispatchErr.err)
-				if handled, matched := tryPublishErrorChannel(ctx, sock, handle, obs, dispatchErr.err); handled {
+				stats.ReportErrors(obs, "middleware:in", dispatchErr.Err)
+				if handled, matched := tryPublishErrorChannel(ctx, sock, handle, obs, dispatchErr.Err); handled {
 					continue
 				} else if !matched {
-					if tryDeadLetter(sock, handle, obs, topic, payload, dispatchErr.err) {
+					if tryDeadLetter(sock, handle, obs, topic, payload, dispatchErr.Err) {
 						continue
 					}
 				}
 				if opts.OnError != nil {
-					opts.OnError(SubscribeError{Kind: KindDecode, Topic: topic, Err: dispatchErr.err})
+					opts.OnError(SubscribeError{Kind: KindDecode, Topic: topic, Err: dispatchErr.Err})
 				}
 				continue
 			}
@@ -743,23 +742,22 @@ func publish[T any](
 	// mechanism); a required property still fails naturally at DecodeIn
 	// time on the subscribe side.
 	if len(handle.ClientMiddlewareHandlers) > 0 {
-		mwTopicVars, _, mwErr := dispatchPublishMiddlewareHandlers(ctx, msg, handle.ClientMiddlewareHandlers)
+		mwTopicVars, _, mwErr := events.DispatchPublishMiddlewareHandlers(ctx, msg, handle.ClientMiddlewareHandlers)
 		if mwErr != nil {
-			var dispatchErr middlewareDispatchError
 			loc := "middleware:fn"
-			// dispatchErr.err is ALREADY a properly-wrapped
+			// dispatchErr.Err is ALREADY a properly-wrapped
 			// events.MiddlewareError (fn case) or events.MiddlewareOutputError
 			// (encode case) — see api/events/transform.go's buildEncodeOut
-			// and this package's dispatchPublishMiddlewareHandlers — so
-			// BOTH branches unwrap to the already-typed inner error here,
-			// no re-wrap needed.
+			// and events.DispatchPublishMiddlewareHandlers — so BOTH
+			// branches unwrap to the already-typed inner error here, no
+			// re-wrap needed.
 			reported := mwErr
-			if errors.As(mwErr, &dispatchErr) {
-				if dispatchErr.isEncodeErr {
+			if dispatchErr, ok := events.AsMiddlewareDispatchError(mwErr); ok {
+				if dispatchErr.IsEncodeErr {
 					loc = "middleware:out"
 				}
-				reported = dispatchErr.err
-				mwErr = dispatchErr.err
+				reported = dispatchErr.Err
+				mwErr = dispatchErr.Err
 			}
 			stats.ReportErrors(obs, loc, reported)
 			obs.RecordPublish(handle.Topic, false, time.Since(start))
@@ -772,9 +770,9 @@ func publish[T any](
 			return err
 		}
 		if isExplicitVars {
-			vars = overrideDerivedVars(mwTopicVars, vars)
+			vars = events.OverrideDerivedVars(mwTopicVars, vars)
 		} else {
-			vars = overrideDerivedVars(vars, mwTopicVars)
+			vars = events.OverrideDerivedVars(vars, mwTopicVars)
 		}
 	}
 

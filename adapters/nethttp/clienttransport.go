@@ -102,7 +102,7 @@ func callVarsMethod(handleVal, reqVal reflect.Value, methodName string) (map[str
 // fields every *rest.RouteHandle[Req,Resp]/*rest.SSERouteHandle[Req,Event]
 // carries (Descriptor.Security falling back to GlobalSecurity,
 // ClientImplementations, SecuritySchemes) — no reflection is needed to
-// CALL [mergeCredentialHeaders]/[validateSecurityCredentials] themselves
+// CALL [mergeCredentialHeaders]/[rest.ValidateSecurityCredentials] themselves
 // (both are already non-generic), only to REACH these plain-typed struct
 // fields on a type-erased handle value.
 func resolveClientSecurity(elem, descriptor reflect.Value) (secReqs []route.SecurityRequirement, clientImpls []middleware.ClientImplementation, secSchemes map[string]rest.SecurityScheme) {
@@ -168,7 +168,7 @@ func wrapGeneralPurposeFn(impls []middleware.ClientImplementation, wrapType refl
 // SAME steps [callWithVars] does: path/query/header/cookie param
 // derivation (via [rest.RouteHandle.EncodeVars]/EncodeQueryVars/
 // EncodeHeaderVars/EncodeCookieVars), security/credential ClientMW
-// resolution ([mergeCredentialHeaders]/[validateSecurityCredentials]),
+// resolution ([mergeCredentialHeaders]/[rest.ValidateSecurityCredentials]),
 // per-call format overrides (opts.RequestFormats/ResponseFormats), and
 // general-purpose ClientMW wrapping — the LAST of which wraps ONLY the
 // network round-trip (encode → send → decode), exactly mirroring
@@ -331,7 +331,7 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 			}
 
 			if len(secReqs) > 0 && len(credHeaders) > 0 {
-				if credErr := validateSecurityCredentials(httpReq, secReqs, secSchemes); credErr != nil {
+				if credErr := rest.ValidateSecurityCredentials(credentialExtractorFor(httpReq), secReqs, secSchemes); credErr != nil {
 					if secObs, ok := obs.(stats.SecurityObserver); ok {
 						secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
 					}
@@ -566,7 +566,7 @@ func (t *clientTransport) consumeOnce(
 	}
 
 	if len(secReqs) > 0 && len(credHeaders) > 0 {
-		if credErr := validateSecurityCredentials(httpReq, secReqs, secSchemes); credErr != nil {
+		if credErr := rest.ValidateSecurityCredentials(credentialExtractorFor(httpReq), secReqs, secSchemes); credErr != nil {
 			if secObs, ok := obs.(stats.SecurityObserver); ok {
 				secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
 			}

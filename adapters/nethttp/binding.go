@@ -772,7 +772,7 @@ func consumeSSEOnce[Req, Event any](
 	}
 
 	if len(secReqs) > 0 && len(credHeaders) > 0 {
-		if credErr := validateSecurityCredentials(httpReq, secReqs, handle.SecuritySchemes); credErr != nil {
+		if credErr := rest.ValidateSecurityCredentials(credentialExtractorFor(httpReq), secReqs, handle.SecuritySchemes); credErr != nil {
 			if secObs, ok := obs.(stats.SecurityObserver); ok {
 				secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
 			}

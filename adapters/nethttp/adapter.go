@@ -368,7 +368,7 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 			secReqs = handle.GlobalSecurity
 		}
 		if len(secReqs) > 0 {
-			if credErr := validateSecurityCredentials(r, secReqs, handle.SecuritySchemes); credErr != nil {
+			if credErr := rest.ValidateSecurityCredentials(credentialExtractorFor(r), secReqs, handle.SecuritySchemes); credErr != nil {
 				if secObs, ok := stats.ObserverFromContext(ctx).(stats.SecurityObserver); ok {
 					secObs.RecordSecurityRejection(handle.Descriptor.Path, route.FirstSchemeName(secReqs))
 				}
@@ -668,7 +668,7 @@ func sseHandlerFunc[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn 
 			secReqs = handle.GlobalSecurity
 		}
 		if len(secReqs) > 0 {
-			if credErr := validateSecurityCredentials(r, secReqs, handle.SecuritySchemes); credErr != nil {
+			if credErr := rest.ValidateSecurityCredentials(credentialExtractorFor(r), secReqs, handle.SecuritySchemes); credErr != nil {
 				if secObs, ok := stats.ObserverFromContext(ctx).(stats.SecurityObserver); ok {
 					secObs.RecordSecurityRejection(handle.Descriptor.Path, route.FirstSchemeName(secReqs))
 				}
@@ -1046,62 +1046,23 @@ func negotiateRequestFormat[T any](formats []format.Format[T], contentType strin
 	return format.Format[T]{}, false
 }
 
-// validateSecurityCredentials extracts credentials from the request and validates
-// them against the registered SecurityScheme codecs for the declared requirements.
-// Returns a [rest.SecurityCredentialError] if any codec check fails.
-func validateSecurityCredentials(r *http.Request, reqs []route.SecurityRequirement, schemes map[string]rest.SecurityScheme) error {
-	for _, req := range reqs {
-		for name := range req {
-			s, ok := schemes[name]
-			if !ok || s.Codec == nil {
-				continue
-			}
-			cred := extractCredential(r, s)
-			if err := s.Codec.Validate(cred); err != nil {
-				return rest.SecurityCredentialError{Scheme: name, Err: err}
-			}
-		}
-	}
-	return nil
-}
-
-// extractCredential returns the raw credential string from the request based
-// on the scheme type and location.
-func extractCredential(r *http.Request, s rest.SecurityScheme) string {
-	switch s.Type {
-	case route.SecuritySchemeHTTP:
-		auth := r.Header.Get("Authorization")
-		switch strings.ToLower(s.Scheme) {
-		case "bearer":
-			// RFC 7235 §2.1: scheme names are case-insensitive.
-			if len(auth) >= 7 && strings.EqualFold(auth[:7], "Bearer ") {
-				return auth[7:]
-			}
-			return auth
-		case "basic":
-			if len(auth) >= 6 && strings.EqualFold(auth[:6], "Basic ") {
-				return auth[6:]
-			}
-			return auth
-		}
-		return auth
-	case route.SecuritySchemeOAuth2, route.SecuritySchemeOpenIDConnect:
-		auth := r.Header.Get("Authorization")
-		if len(auth) >= 7 && strings.EqualFold(auth[:7], "Bearer ") {
-			return auth[7:]
-		}
-		return auth
-	case route.SecuritySchemeAPIKey:
-		switch strings.ToLower(s.In) {
+// credentialExtractorFor builds a [rest.CredentialExtractor] closure from
+// r — the ONLY piece of this package's security-credential validation
+// that still touches *http.Request directly. The actual codec
+// validation/dispatch logic lives in [rest.ValidateSecurityCredentials],
+// which needs no net/http import at all.
+func credentialExtractorFor(r *http.Request) rest.CredentialExtractor {
+	return func(location, name string) string {
+		switch location {
 		case "header":
-			return r.Header.Get(s.Name)
+			return r.Header.Get(name)
 		case "query":
-			return r.URL.Query().Get(s.Name)
+			return r.URL.Query().Get(name)
 		case "cookie":
-			if c, err := r.Cookie(s.Name); err == nil {
+			if c, err := r.Cookie(name); err == nil {
 				return c.Value
 			}
 		}
+		return ""
 	}
-	return ""
 }

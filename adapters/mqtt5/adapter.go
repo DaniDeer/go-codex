@@ -496,36 +496,35 @@ func makeSubscribeMessageHandler[T any](
 		// events.MiddlewareError when unmatched — mirrors REST's identical
 		// resolution.
 		if len(handle.MiddlewareHandlers) > 0 {
-			if err := dispatchSubscribeMiddlewareHandlers(msgCtx, &value, handle.MiddlewareHandlers, topicVars, propertyVars); err != nil {
+			if err := events.DispatchSubscribeMiddlewareHandlers(msgCtx, &value, handle.MiddlewareHandlers, topicVars, propertyVars); err != nil {
 				obs.RecordSubscribe(msg.Topic, false, time.Since(start))
-				var dispatchErr middlewareDispatchError
-				errors.As(err, &dispatchErr)
-				if dispatchErr.isFnError {
-					stats.ReportErrors(obs, "middleware:fn", dispatchErr.err)
-					if handled, matched := tryPublishErrorChannel(ctx, client, handle, obs, dispatchErr.err); handled {
+				dispatchErr, _ := events.AsMiddlewareDispatchError(err)
+				if dispatchErr.IsFnError {
+					stats.ReportErrors(obs, "middleware:fn", dispatchErr.Err)
+					if handled, matched := tryPublishErrorChannel(ctx, client, handle, obs, dispatchErr.Err); handled {
 						return
 					} else if !matched {
-						if tryDeadLetter(ctx, client, handle, obs, msg.Topic, msg.Payload, dispatchErr.err) {
+						if tryDeadLetter(ctx, client, handle, obs, msg.Topic, msg.Payload, dispatchErr.Err) {
 							return
 						}
 					}
 					if opts.OnError != nil {
-						opts.OnError(SubscribeError{Kind: KindHandler, Topic: msg.Topic, Err: events.MiddlewareError{Name: dispatchErr.name, Err: dispatchErr.err}})
+						opts.OnError(SubscribeError{Kind: KindHandler, Topic: msg.Topic, Err: events.MiddlewareError{Name: dispatchErr.Name, Err: dispatchErr.Err}})
 					}
 					return
 				}
-				stats.ReportErrors(obs, "middleware:in", dispatchErr.err)
+				stats.ReportErrors(obs, "middleware:in", dispatchErr.Err)
 				// Middleware DecodeIn failure IS ErrorChannel-eligible now
 				// (Topic 1's Category A fix).
-				if handled, matched := tryPublishErrorChannel(ctx, client, handle, obs, dispatchErr.err); handled {
+				if handled, matched := tryPublishErrorChannel(ctx, client, handle, obs, dispatchErr.Err); handled {
 					return
 				} else if !matched {
-					if tryDeadLetter(ctx, client, handle, obs, msg.Topic, msg.Payload, dispatchErr.err) {
+					if tryDeadLetter(ctx, client, handle, obs, msg.Topic, msg.Payload, dispatchErr.Err) {
 						return
 					}
 				}
 				if opts.OnError != nil {
-					opts.OnError(SubscribeError{Kind: KindDecode, Topic: msg.Topic, Err: dispatchErr.err})
+					opts.OnError(SubscribeError{Kind: KindDecode, Topic: msg.Topic, Err: dispatchErr.Err})
 				}
 				return
 			}
@@ -899,23 +898,22 @@ func publish[T any](
 	// derived; middleware-derived wins over channel-own-derived (the Bug
 	// 1 fix — previously ALWAYS backwards, channel-own beat middleware).
 	if len(handle.ClientMiddlewareHandlers) > 0 {
-		mwTopicVars, mwPropVars, mwErr := dispatchPublishMiddlewareHandlers(ctx, msg, handle.ClientMiddlewareHandlers)
+		mwTopicVars, mwPropVars, mwErr := events.DispatchPublishMiddlewareHandlers(ctx, msg, handle.ClientMiddlewareHandlers)
 		if mwErr != nil {
-			var dispatchErr middlewareDispatchError
 			loc := "middleware:fn"
-			// dispatchErr.err is ALREADY a properly-wrapped
+			// dispatchErr.Err is ALREADY a properly-wrapped
 			// events.MiddlewareError (fn case) or events.MiddlewareOutputError
 			// (encode case) — see api/events/transform.go's buildEncodeOut
-			// and this package's dispatchPublishMiddlewareHandlers — so
-			// BOTH branches unwrap to the already-typed inner error here,
-			// no re-wrap needed.
+			// and events.DispatchPublishMiddlewareHandlers — so BOTH
+			// branches unwrap to the already-typed inner error here, no
+			// re-wrap needed.
 			reported := mwErr
-			if errors.As(mwErr, &dispatchErr) {
-				if dispatchErr.isEncodeErr {
+			if dispatchErr, ok := events.AsMiddlewareDispatchError(mwErr); ok {
+				if dispatchErr.IsEncodeErr {
 					loc = "middleware:out"
 				}
-				reported = dispatchErr.err
-				mwErr = dispatchErr.err
+				reported = dispatchErr.Err
+				mwErr = dispatchErr.Err
 			}
 			stats.ReportErrors(obs, loc, reported)
 			obs.RecordPublish(handle.Topic, false, time.Since(start))
@@ -928,11 +926,11 @@ func publish[T any](
 			return err
 		}
 		if isExplicitVars {
-			vars = overrideDerivedVars(mwTopicVars, vars)
+			vars = events.OverrideDerivedVars(mwTopicVars, vars)
 		} else {
-			vars = overrideDerivedVars(vars, mwTopicVars)
+			vars = events.OverrideDerivedVars(vars, mwTopicVars)
 		}
-		propertyVars = overrideDerivedVars(propertyVars, mwPropVars)
+		propertyVars = events.OverrideDerivedVars(propertyVars, mwPropVars)
 	}
 
 	topic := handle.Topic

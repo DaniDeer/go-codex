@@ -3,13 +3,13 @@ package nethttp
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"reflect"
 	"strings"
 
+	"github.com/DaniDeer/go-codex/adapters/internal/httpsecurity"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
@@ -182,7 +182,7 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 			secReqs = globalSecurity
 		}
 		if len(secReqs) > 0 {
-			if credErr := validateSecurityCredentials(r, secReqs, secSchemes); credErr != nil {
+			if credErr := rest.ValidateSecurityCredentials(credentialExtractorFor(r), secReqs, secSchemes); credErr != nil {
 				if secObs, ok := stats.ObserverFromContext(ctx).(stats.SecurityObserver); ok {
 					secObs.RecordSecurityRejection(descriptor.Path, route.FirstSchemeName(secReqs))
 				}
@@ -190,27 +190,27 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 				return
 			}
 		}
-		if err := runSecurityMiddlewareReflect(ctx, r, reqPtr, impls, secReqs); err != nil {
+		if err := httpsecurity.RunSecurityMiddlewareReflect(ctx, r, reqPtr, impls, secReqs); err != nil {
 			errFn(sw, r, http.StatusUnauthorized, rest.SecurityError{Err: err})
 			return
 		}
 
 		// Codec-backed middleware dispatch (TransformSSE/ClientTransformSSE
 		// and bundled .Use()) — SAME pre-handler dispatch point plain Route
-		// uses (D1), reusing runMiddlewareHandlersReflect/middlewareDispatchError
-		// verbatim from serve.go. SSE has no ErrorResponseFor (no declared
-		// ErrorPattern concept exists for SSE at all today — mirrors how
-		// SSE's own handler errors below have never consulted one either),
-		// so a fn error always falls back to rest.MiddlewareError directly.
-		middlewareOuts, mwErr := runMiddlewareHandlersReflect(ctx, reqPtr, middlewareHandlers, headerVars, cookieVars, queryVars)
+		// uses (D1), reusing rest.DispatchMiddlewareHandlers/
+		// rest.AsMiddlewareDispatchError verbatim from serve.go. SSE has no
+		// ErrorResponseFor (no declared ErrorPattern concept exists for SSE
+		// at all today — mirrors how SSE's own handler errors below have
+		// never consulted one either), so a fn error always falls back to
+		// rest.MiddlewareError directly.
+		middlewareOuts, mwErr := rest.DispatchMiddlewareHandlers(ctx, reqPtr, middlewareHandlers, headerVars, cookieVars, queryVars)
 		if mwErr != nil {
-			var dispatchErr middlewareDispatchError
-			errors.As(mwErr, &dispatchErr)
-			if !dispatchErr.isFnError {
-				errFn(sw, r, http.StatusBadRequest, dispatchErr.err)
+			dispatchErr, _ := rest.AsMiddlewareDispatchError(mwErr)
+			if !dispatchErr.IsFnError {
+				errFn(sw, r, http.StatusBadRequest, dispatchErr.Err)
 				return
 			}
-			errFn(sw, r, http.StatusBadRequest, rest.MiddlewareError{Name: dispatchErr.name, Err: dispatchErr.err})
+			errFn(sw, r, http.StatusBadRequest, rest.MiddlewareError{Name: dispatchErr.Name, Err: dispatchErr.Err})
 			return
 		}
 		// Compose every middleware's OWN response header/cookie values

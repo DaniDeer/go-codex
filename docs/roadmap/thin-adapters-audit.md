@@ -1,13 +1,26 @@
 # Thin Adapters Audit — moving misplaced dispatch logic into `api/rest`/`api/events`/`api/reqreply`
 
-> **Status:** Design finalized across TWO rounds — an initial findings +
-> detailed-design pass, then a critical re-examination (see "Critical
-> review round") that revised 2 of the first pass's decisions (F4 split
-> into F4a/F4b; `MiddlewareDispatchError` export reversed) and confirmed
-> the rest. See "Detailed design" and "Resolved design decisions" below
-> for the current, final state. Implementation has NOT started; it is
-> intentionally deferred to a separate future session — see "Next step"
-> at the end of this document.
+> **Status: IMPLEMENTED.** All 5 findings (F1, F2, F3, F4a, F4b) shipped
+> exactly per this document's finalized design — `api/events/transform_dispatch.go`,
+> `api/reqreply/transform_dispatch.go`, `api/rest/transform_dispatch.go`,
+> `api/rest/security_dispatch.go`, and the new `adapters/internal/httpsecurity`
+> package. Every adapter call site (mqtt/mqtt5/zeromq/nethttp/chi) updated
+> to call the new `api/*`-owned/shared functions; all old adapter-local
+> copies deleted. Verified: `go fmt`/`go build`/`go test` clean across the
+> full repo, `just check` (staticcheck+gosec) zero issues, all 53 examples
+> exit cleanly, new unit tests added for every new exported symbol.
+> `.github/instructions/go-codex.instructions.md` updated (Design
+> Philosophy bullet + package import table). The "Forward-looking
+> guardrail" section below remains a STANDING guardrail for future work —
+> it was not a one-time implementation step.
+>
+> Design finalized across TWO rounds before implementation — an initial
+> findings + detailed-design pass, then a critical re-examination (see
+> "Critical review round") that revised 2 of the first pass's decisions
+> (F4 split into F4a/F4b; `MiddlewareDispatchError` export reversed) and
+> confirmed the rest. See "Detailed design" and "Resolved design
+> decisions" below for that design record — kept for traceability, not
+> as a still-open TODO.
 > [← Back to Roadmap](index.md)
 >
 > **Relationship to [Protocol-Native Features](protocol-native-features.md)
@@ -653,16 +666,58 @@ exception in hand without needing to search the considerably longer
 `protocol-native-features.md` to find it. Its actual FIX is deferred to
 that document's own implementation — not part of this round's scope.
 
-## Next step
+## Implementation record
 
-This document's design is now finalized (findings confirmed accurate
-against current code, all open questions resolved with concrete
-package/file/function-level detail, PLUS a forward-looking guardrail for
-future adapter/API/port work). **Implementation is intentionally NOT
-part of this round** — actually moving the code (F1–F4a/F4b, in whatever
-order implementation convenience dictates, per decision #4 above) is
-planned as a separate future session, which should read this document in
-full before starting, follow its Detailed design section per-finding,
-and treat the "Forward-looking guardrail" section as a standing
-constraint on the implementation itself (do not introduce a competing,
-non-sealed capability mechanism while moving F1–F4b's own code).
+All 5 findings implemented in one session, sequenced F1 → F2 → F3 → F4a →
+F4b exactly as this document's Detailed design prescribed, each phase
+independently verified (`go fmt`/`go build`/`go test`/`just check`) before
+starting the next:
+
+- **F1**: `api/events/transform_dispatch.go` — `DispatchSubscribeMiddlewareHandlers`/
+  `DispatchPublishMiddlewareHandlers`/`OverrideDerivedVars`/`AsMiddlewareDispatchError`
+  (exported); `middlewareDispatchError` stays unexported per decision #5.
+  mqtt v3 unified onto the shared 2-map signature, passing `nil` for
+  `propertyVars`. All 3 adapters' `transform_dispatch.go` deleted.
+- **F2**: `api/reqreply/transform_dispatch.go` — `DispatchServerMiddlewareHandlers`/
+  `DispatchClientMiddlewareIn`/`DispatchClientMiddlewareOut`/`MergeVarsOverride`
+  (all exported — `MergeVarsOverride` confirmed needed at an adapter call
+  site beyond the dispatch functions themselves, not just internally).
+  Updated all 9 call sites (mqtt5: 3; zeromq: 6, confirmed the
+  REQ/REP+ROUTER/DEALER doubling found during design).
+- **F3**: `api/rest/transform_dispatch.go` — `DispatchMiddlewareHandlers`
+  (dropped the "Reflect" suffix per the design's own naming proposal),
+  `CallObserveErrorResponseFor`, `AsMiddlewareDispatchError`. Updated all
+  10 call sites across `nethttp`/`chi`'s `serve.go`+`serve_sse.go`.
+- **F4a**: `api/rest/security_dispatch.go` — `ValidateSecurityCredentials`
+  + a new `CredentialExtractor` closure type, resolving the
+  `*http.Request` dependency exactly as designed. **Real call-site count
+  confirmed larger than originally documented**: 12 sites across 6 files
+  in `nethttp` (`adapter.go` ×2, `binding.go`, `client.go`,
+  `clienttransport.go` ×2, `serve.go`, `serve_sse.go`) and 4 sites across
+  3 files in `chi` — all updated, each adapter building its own small
+  `credentialExtractorFor(r)` closure locally (not a shared package,
+  matching the design's own framing).
+- **F4b**: new `adapters/internal/httpsecurity` package —
+  `RunSecurityMiddlewareReflect`, scoped under `adapters/internal/` per
+  the design's own location rationale. Updated all 4 call sites
+  (`nethttp`/`chi` × `serve.go`/`serve_sse.go`).
+- **The cross-boundary error-kind question flagged during design** (how
+  does an adapter recover `isFnError`/`isEncodeErr` from an unexported
+  error type now living in a different package?) resolved via a small
+  exported accessor per package — `events.AsMiddlewareDispatchError`/
+  `rest.AsMiddlewareDispatchError` returning a `MiddlewareDispatchInfo`
+  struct. `api/reqreply` needed no such accessor — its dispatch functions
+  already returned a plain `failKind string`, not a wrapped error type.
+- New unit tests added for every new exported symbol across all 4
+  packages/the new httpsecurity package (dispatch success/DecodeIn
+  failure/Fn failure/EncodeOut failure per package, plus
+  `ValidateSecurityCredentials`'s bearer/apiKey-query/apiKey-cookie/
+  codec-failure/no-codec/unknown-scheme cases).
+- Full verification: `go fmt`/`go build`/`go test` clean across the
+  entire repo, `just check` (staticcheck+gosec) zero issues, all 53
+  examples exit cleanly. `.github/instructions/go-codex.instructions.md`
+  updated (a new Design Philosophy bullet + 2 package-import-table rows).
+
+The "Forward-looking guardrail" section above remains a STANDING
+constraint for future adapter/API/port work — it was not a one-time
+implementation step tied to this round.

@@ -389,34 +389,35 @@ func subscribeHandler[T any](
 		// to events.MiddlewareError when unmatched — mirrors mqtt5's
 		// identical resolution.
 		if len(handle.MiddlewareHandlers) > 0 {
-			if mwErr := dispatchSubscribeMiddlewareHandlers(ctx, &value, handle.MiddlewareHandlers, topicVars); mwErr != nil {
+			// mqtt (v3) has no property mechanism at all — passes nil for
+			// propertyVars, mirroring zeromq's identical carve-out.
+			if mwErr := events.DispatchSubscribeMiddlewareHandlers(ctx, &value, handle.MiddlewareHandlers, topicVars, nil); mwErr != nil {
 				obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
-				var dispatchErr middlewareDispatchError
-				errors.As(mwErr, &dispatchErr)
-				if dispatchErr.isFnError {
-					stats.ReportErrors(obs, "middleware:fn", dispatchErr.err)
-					if handled, matched := tryPublishErrorChannel(ctx, client, handle, obs, dispatchErr.err); handled {
+				dispatchErr, _ := events.AsMiddlewareDispatchError(mwErr)
+				if dispatchErr.IsFnError {
+					stats.ReportErrors(obs, "middleware:fn", dispatchErr.Err)
+					if handled, matched := tryPublishErrorChannel(ctx, client, handle, obs, dispatchErr.Err); handled {
 						return
 					} else if !matched {
-						if tryDeadLetter(client, handle, obs, msg.Topic(), msg.Payload(), dispatchErr.err) {
+						if tryDeadLetter(client, handle, obs, msg.Topic(), msg.Payload(), dispatchErr.Err) {
 							return
 						}
 					}
 					if opts.OnError != nil {
-						opts.OnError(SubscribeError{Kind: KindHandler, Topic: msg.Topic(), Err: events.MiddlewareError{Name: dispatchErr.name, Err: dispatchErr.err}})
+						opts.OnError(SubscribeError{Kind: KindHandler, Topic: msg.Topic(), Err: events.MiddlewareError{Name: dispatchErr.Name, Err: dispatchErr.Err}})
 					}
 					return
 				}
-				stats.ReportErrors(obs, "middleware:in", dispatchErr.err)
-				if handled, matched := tryPublishErrorChannel(ctx, client, handle, obs, dispatchErr.err); handled {
+				stats.ReportErrors(obs, "middleware:in", dispatchErr.Err)
+				if handled, matched := tryPublishErrorChannel(ctx, client, handle, obs, dispatchErr.Err); handled {
 					return
 				} else if !matched {
-					if tryDeadLetter(client, handle, obs, msg.Topic(), msg.Payload(), dispatchErr.err) {
+					if tryDeadLetter(client, handle, obs, msg.Topic(), msg.Payload(), dispatchErr.Err) {
 						return
 					}
 				}
 				if opts.OnError != nil {
-					opts.OnError(SubscribeError{Kind: KindDecode, Topic: msg.Topic(), Err: dispatchErr.err})
+					opts.OnError(SubscribeError{Kind: KindDecode, Topic: msg.Topic(), Err: dispatchErr.Err})
 				}
 				return
 			}
@@ -558,23 +559,24 @@ func publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.
 	// middleware-derived vars on a key collision. Mirrors mqtt5's
 	// identical wiring.
 	if len(handle.ClientMiddlewareHandlers) > 0 {
-		mwVars, mwErr := dispatchPublishMiddlewareHandlers(ctx, msg, handle.ClientMiddlewareHandlers)
+		// mqtt (v3) has no property mechanism — discards the propertyVars
+		// return, mirroring zeromq's identical carve-out.
+		mwVars, _, mwErr := events.DispatchPublishMiddlewareHandlers(ctx, msg, handle.ClientMiddlewareHandlers)
 		if mwErr != nil {
-			var dispatchErr middlewareDispatchError
 			loc := "middleware:fn"
-			// dispatchErr.err is ALREADY a properly-wrapped
+			// dispatchErr.Err is ALREADY a properly-wrapped
 			// events.MiddlewareError (fn case) or events.MiddlewareOutputError
 			// (encode case) — see api/events/transform.go's buildEncodeOut
-			// and this package's dispatchPublishMiddlewareHandlers — so
-			// BOTH branches unwrap to the already-typed inner error here,
-			// no re-wrap needed.
+			// and events.DispatchPublishMiddlewareHandlers — so BOTH
+			// branches unwrap to the already-typed inner error here, no
+			// re-wrap needed.
 			reported := mwErr
-			if errors.As(mwErr, &dispatchErr) {
-				if dispatchErr.isEncodeErr {
+			if dispatchErr, ok := events.AsMiddlewareDispatchError(mwErr); ok {
+				if dispatchErr.IsEncodeErr {
 					loc = "middleware:out"
 				}
-				reported = dispatchErr.err
-				mwErr = dispatchErr.err
+				reported = dispatchErr.Err
+				mwErr = dispatchErr.Err
 			}
 			stats.ReportErrors(obs, loc, reported)
 			obs.RecordPublish(handle.Topic, false, time.Since(start))
@@ -586,7 +588,7 @@ func publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.
 			tryDeadLetter(client, handle, obs, handle.Topic, bestEffortPayload, err)
 			return err
 		}
-		vars = overrideDerivedVars(mwVars, vars)
+		vars = events.OverrideDerivedVars(mwVars, vars)
 	}
 
 	topic := handle.Topic

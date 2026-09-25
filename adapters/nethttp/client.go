@@ -773,7 +773,7 @@ func callWithVars[Req, Resp any](
 
 		// 8b. Validate the outgoing credential FORMAT — the client-side
 		// mirror of the server-side check in Handler
-		// (validateSecurityCredentials). httpReq now carries every
+		// (rest.ValidateSecurityCredentials). httpReq now carries every
 		// header/cookie/query value that will be sent, including
 		// credHeaders merged above, so it is a valid input to the SAME
 		// extraction/validation helpers the server adapter uses on an
@@ -797,7 +797,7 @@ func callWithVars[Req, Resp any](
 		// determined no credential was needed, since the resulting
 		// (absent) Authorization header extracts as "" either way.
 		if len(secReqs) > 0 && len(credHeaders) > 0 {
-			if credErr := validateSecurityCredentials(httpReq, secReqs, handle.SecuritySchemes); credErr != nil {
+			if credErr := rest.ValidateSecurityCredentials(credentialExtractorFor(httpReq), secReqs, handle.SecuritySchemes); credErr != nil {
 				if secObs, ok := obs.(stats.SecurityObserver); ok {
 					secObs.RecordSecurityRejection(routePath, route.FirstSchemeName(secReqs))
 				}

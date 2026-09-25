@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/DaniDeer/go-codex/adapters/internal/httpsecurity"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
@@ -422,7 +423,7 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 			secReqs = globalSecurity
 		}
 		if len(secReqs) > 0 {
-			if credErr := validateSecurityCredentials(r, secReqs, secSchemes); credErr != nil {
+			if credErr := rest.ValidateSecurityCredentials(credentialExtractorFor(r), secReqs, secSchemes); credErr != nil {
 				if secObs, ok := stats.ObserverFromContext(ctx).(stats.SecurityObserver); ok {
 					secObs.RecordSecurityRejection(descriptor.Path, route.FirstSchemeName(secReqs))
 				}
@@ -430,7 +431,7 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 				return
 			}
 		}
-		if err := runSecurityMiddlewareReflect(ctx, r, reqPtr, impls, secReqs); err != nil {
+		if err := httpsecurity.RunSecurityMiddlewareReflect(ctx, r, reqPtr, impls, secReqs); err != nil {
 			// Security middleware Fn error IS ErrorPattern-eligible now
 			// (Topic 1's Category A fix) — previously bypassed
 			// ErrorResponseFor entirely, always producing SecurityError.
@@ -441,30 +442,29 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 			return
 		}
 
-		middlewareOuts, mwErr := runMiddlewareHandlersReflect(ctx, reqPtr, middlewareHandlers, headerVars, cookieVars, queryVars)
+		middlewareOuts, mwErr := rest.DispatchMiddlewareHandlers(ctx, reqPtr, middlewareHandlers, headerVars, cookieVars, queryVars)
 		if mwErr != nil {
-			var dispatchErr middlewareDispatchError
-			errors.As(mwErr, &dispatchErr)
-			if !dispatchErr.isFnError {
+			dispatchErr, _ := rest.AsMiddlewareDispatchError(mwErr)
+			if !dispatchErr.IsFnError {
 				// Middleware DecodeIn failure IS ErrorPattern-eligible now
 				// (Topic 1's Category A fix) — already wrapped in
-				// MiddlewareInputError by runMiddlewareHandlersReflect,
+				// MiddlewareInputError by rest.DispatchMiddlewareHandlers,
 				// but previously never passed to ErrorResponseFor.
-				if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &dispatchErr.err) {
+				if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &dispatchErr.Err) {
 					return
 				}
-				errFn(sw, r, http.StatusBadRequest, dispatchErr.err)
+				errFn(sw, r, http.StatusBadRequest, dispatchErr.Err)
 				return
 			}
 			// fn's own business error IS ErrorPattern-eligible (D2) — run
 			// through the SAME ObserveErrorResponseFor mechanism a handler
 			// error uses, falling back to rest.MiddlewareError at status
 			// 400 when unmatched.
-			err := dispatchErr.err
+			err := dispatchErr.Err
 			if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &err) {
 				return
 			}
-			errFn(sw, r, http.StatusBadRequest, rest.MiddlewareError{Name: dispatchErr.name, Err: err})
+			errFn(sw, r, http.StatusBadRequest, rest.MiddlewareError{Name: dispatchErr.Name, Err: err})
 			return
 		}
 
@@ -678,22 +678,6 @@ func callErrStatusFor(target reflect.Value, err error) (int, bool) {
 	return status, ok
 }
 
-// callObserveErrorResponseFor reflect-calls
-// ObserveErrorResponseFor(ctx, obs, err) on target — the RECOMMENDED
-// single call site for every Category-A failure point (see
-// docs/design/d-0005-error-handling.md's Topic 1/5):
-// consults a declared [rest.ErrorPattern] AND reports match/miss/span-tag
-// observability internally, in one call.
-func callObserveErrorResponseFor(target reflect.Value, ctx context.Context, obs stats.Observer, err error) (rest.ErrorPatternResponse, bool, error) {
-	results := target.MethodByName("ObserveErrorResponseFor").Call([]reflect.Value{
-		reflect.ValueOf(ctx), reflect.ValueOf(&obs).Elem(), reflect.ValueOf(&err).Elem(),
-	})
-	resp, _ := results[0].Interface().(rest.ErrorPatternResponse)
-	matched, _ := results[1].Interface().(bool)
-	applyErr, _ := results[2].Interface().(error)
-	return resp, matched, applyErr
-}
-
 // formatContentTypesReflect returns the ContentType() of every entry in
 // formats (a reflect.Value of type []format.Format[T] for an erased T) —
 // used to build the Supported list on [rest.UnsupportedMediaTypeError]/
@@ -753,7 +737,7 @@ func tryRespondErrorPattern(
 	ctx context.Context, sw *statusResponseWriter, elem reflect.Value, respType reflect.Type,
 	obs stats.Observer, respHeaders http.Header, pendingCookies *[]PendingCookie, err *error,
 ) bool {
-	resp, matched, applyErr := callObserveErrorResponseFor(elem.Addr(), ctx, obs, *err)
+	resp, matched, applyErr := rest.CallObserveErrorResponseFor(elem.Addr(), ctx, obs, *err)
 	if !matched {
 		return false
 	}
@@ -872,79 +856,4 @@ func validateImplementationShapesReflect(routeLabel string, reqType reflect.Type
 		}
 	}
 	return nil
-}
-
-// runSecurityMiddlewareReflect is [runSecurityMiddleware]'s reflect-based
-// equivalent — reqPtr is an addressable *Req reflect.Value (Req erased).
-func runSecurityMiddlewareReflect(ctx context.Context, r *http.Request, reqPtr reflect.Value, impls []middleware.ServerImplementation, secReqs []route.SecurityRequirement) error {
-	granted := make(map[string][]string)
-	for _, impl := range impls {
-		fnVal := reflect.ValueOf(impl.Fn)
-		if !fnVal.IsValid() || fnVal.Kind() != reflect.Func || fnVal.Type().NumIn() != 3 {
-			continue // not the security shape (general-purpose or nil)
-		}
-		if len(impl.Satisfies) > 0 && len(secReqs) == 0 {
-			continue
-		}
-		results := fnVal.Call([]reflect.Value{reflect.ValueOf(ctx), reflect.ValueOf(r), reqPtr})
-		if err, _ := results[1].Interface().(error); err != nil {
-			return err
-		}
-		g, _ := results[0].Interface().(map[string][]string)
-		for k, v := range g {
-			granted[k] = v
-		}
-	}
-	return middleware.CheckScopes(secReqs, granted)
-}
-
-// middlewareDispatchError distinguishes [runMiddlewareHandlersReflect]'s two
-// failure kinds so the caller (serve()'s own request loop) knows how to
-// respond: a DecodeIn failure is a plain param-validation-style 400 (no
-// ErrorPattern consultation — no business error exists yet); a Fn failure
-// IS ErrorPattern-eligible (D2), needing Name for [rest.MiddlewareError]'s
-// fallback. Mirrors adapters/nethttp/serve.go's identical type exactly.
-type middlewareDispatchError struct {
-	err       error
-	isFnError bool
-	name      string
-}
-
-func (e middlewareDispatchError) Error() string { return e.err.Error() }
-func (e middlewareDispatchError) Unwrap() error { return e.err }
-
-// runMiddlewareHandlersReflect dispatches every [rest.MiddlewareHandler]
-// attached to this route (via Transform/ClientTransform OR a bundled
-// .Use(mw)) at the SAME pre-handler dispatch point [runSecurityMiddlewareReflect]
-// already runs at (D1) — reqPtr is the SAME already-decoded *Req the
-// handler will also receive, so a bound mw's fn may read/enrich it. Returns
-// each handler's decoded Out (boxed `any`, in attachment order) for later
-// [MiddlewareHandler.EncodeOut] composition into the response, once the
-// route's own handler has produced its Resp. Mirrors
-// adapters/nethttp/serve.go's identical function exactly.
-func runMiddlewareHandlersReflect(ctx context.Context, reqPtr reflect.Value, handlers []rest.MiddlewareHandler, headerVars, cookieVars, queryVars map[string]string) ([]any, error) {
-	if len(handlers) == 0 {
-		return nil, nil
-	}
-	outs := make([]any, len(handlers))
-	for i, h := range handlers {
-		in, err := h.DecodeIn(headerVars, cookieVars, queryVars)
-		if err != nil {
-			stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, "middleware:in", err)
-			return nil, middlewareDispatchError{err: err, name: h.Name}
-		}
-		fnVal := reflect.ValueOf(h.Fn)
-		var results []reflect.Value
-		if h.Agnostic {
-			results = fnVal.Call([]reflect.Value{reflect.ValueOf(ctx), reflect.ValueOf(in)})
-		} else {
-			results = fnVal.Call([]reflect.Value{reflect.ValueOf(ctx), reqPtr, reflect.ValueOf(in)})
-		}
-		if fnErr, _ := results[1].Interface().(error); fnErr != nil {
-			stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, "middleware:fn", fnErr)
-			return nil, middlewareDispatchError{err: fnErr, isFnError: true, name: h.Name}
-		}
-		outs[i] = results[0].Interface()
-	}
-	return outs, nil
 }

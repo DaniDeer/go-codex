@@ -226,130 +226,6 @@ func propertyVarsFromUserProperties(msg *pahomqtt5.Publish) map[string]string {
 	return out
 }
 
-// dispatchServerMiddlewareHandlers runs every attached
-// [reqreply.MiddlewareHandler] in registration order — AFTER the paired
-// security Fn, mirroring D1's dispatch order. reqPtr is the route's own
-// decoded *Req (addressable) — read AND potentially enriched by each
-// bound handler's fn (Transform-attached; an Agnostic/bundled handler's
-// fn never sees it). Returns the accumulated reply-side topic/property
-// vars every handler's EncodeOut produced (later handlers win on a name
-// conflict — D6(c), "last-applied-wins"). failKind distinguishes a
-// DecodeIn failure ("in", wraps as [reqreply.MiddlewareInputError]) from
-// the fn's own business error ("fn", wraps as [reqreply.MiddlewareError],
-// D2's fallback) from an EncodeOut failure ("out", building the REPLY's
-// Out struct) — the caller reports "middleware:in"/"middleware:fn"/
-// "middleware:out" accordingly (see
-// docs/design/d-0003-codec-declared-middlewares.md's Addendum 2,
-// Candidate-3-equivalent adapter-dispatch review, which found EncodeOut
-// failures here previously collapsed into the SAME bucket as DecodeIn
-// failures, both reported as "middleware:in").
-func dispatchServerMiddlewareHandlers(
-	ctx context.Context,
-	reqPtr reflect.Value,
-	handlers []reqreply.MiddlewareHandler,
-	topicVars, propertyVars map[string]string,
-) (outTopicVars, outPropertyVars map[string]string, name string, failKind string, err error) {
-	for _, h := range handlers {
-		inAny, decErr := h.DecodeIn(topicVars, propertyVars)
-		if decErr != nil {
-			return nil, nil, h.Name, "in", decErr
-		}
-		fnVal := reflect.ValueOf(h.Fn)
-		var results []reflect.Value
-		if h.Agnostic {
-			results = fnVal.Call([]reflect.Value{reflect.ValueOf(ctx), reflect.ValueOf(inAny)})
-		} else {
-			results = fnVal.Call([]reflect.Value{reflect.ValueOf(ctx), reqPtr, reflect.ValueOf(inAny)})
-		}
-		if errI, _ := results[1].Interface().(error); errI != nil {
-			return nil, nil, h.Name, "fn", reqreply.MiddlewareError{Name: h.Name, Err: errI}
-		}
-		outAny := results[0].Interface()
-		tVars, pVars, encErr := h.EncodeOut(outAny)
-		if encErr != nil {
-			return nil, nil, h.Name, "out", encErr
-		}
-		outTopicVars = mergeVarsOverride(outTopicVars, tVars)
-		outPropertyVars = mergeVarsOverride(outPropertyVars, pVars)
-	}
-	return outTopicVars, outPropertyVars, "", "", nil
-}
-
-// dispatchClientMiddlewareIn is [dispatchServerMiddlewareHandlers]'s
-// CLIENT-side, request-encode-direction sibling — runs every attached
-// [reqreply.ClientMiddlewareHandler] in registration order, producing In
-// (via Fn) then encoding it into topic/property vars — accumulated with
-// later handlers winning on a name conflict, mirroring the server side.
-func dispatchClientMiddlewareIn(
-	ctx context.Context,
-	reqVal reflect.Value,
-	handlers []reqreply.ClientMiddlewareHandler,
-) (topicVars, propertyVars map[string]string, name string, err error) {
-	for _, h := range handlers {
-		fnVal := reflect.ValueOf(h.Fn)
-		var results []reflect.Value
-		if h.Agnostic {
-			results = fnVal.Call([]reflect.Value{reflect.ValueOf(ctx)})
-		} else {
-			results = fnVal.Call([]reflect.Value{reflect.ValueOf(ctx), reqVal})
-		}
-		if errI, _ := results[1].Interface().(error); errI != nil {
-			return nil, nil, h.Name, reqreply.MiddlewareError{Name: h.Name, Err: errI}
-		}
-		inAny := results[0].Interface()
-		tVars, pVars, encErr := h.EncodeIn(inAny)
-		if encErr != nil {
-			return nil, nil, h.Name, encErr
-		}
-		topicVars = mergeVarsOverride(topicVars, tVars)
-		propertyVars = mergeVarsOverride(propertyVars, pVars)
-	}
-	return topicVars, propertyVars, "", nil
-}
-
-// dispatchClientMiddlewareOut is [dispatchClientMiddlewareIn]'s reply-
-// decode-direction sibling — mechanically decodes every attached
-// [reqreply.ClientMiddlewareHandler]'s own Out value from the reply's
-// actual topic/property vars, no Fn involved (mirrors
-// [rest.dispatchClientMiddlewareOut]'s identical "no Fn, no reply-
-// inspection Fn needed" design). Only the first decode failure is
-// reported — a malformed reply fails the call; the decoded values
-// themselves are not currently surfaced further (no context-accessor API
-// is part of this doc's scope).
-func dispatchClientMiddlewareOut(
-	topicVars, propertyVars map[string]string,
-	handlers []reqreply.ClientMiddlewareHandler,
-) error {
-	for _, h := range handlers {
-		// h.DecodeOut already returns a properly-wrapped
-		// reqreply.MiddlewareOutputError on failure (see
-		// api/reqreply/transform.go's buildDecodeOut) — no re-wrap needed.
-		if _, err := h.DecodeOut(topicVars, propertyVars); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// mergeVarsOverride merges src into dst, src's values WINNING on a key
-// conflict — mirrors D3's real, shipped precedence rule (see
-// docs/design/d-0003-codec-declared-middlewares.md's Addendum's "Value
-// precedence" section: "middleware-derived ALWAYS wins over route-own-
-// derived").
-func mergeVarsOverride(dst, src map[string]string) map[string]string {
-	if len(src) == 0 {
-		return dst
-	}
-	out := make(map[string]string, len(dst)+len(src))
-	for k, v := range dst {
-		out[k] = v
-	}
-	for k, v := range src {
-		out[k] = v
-	}
-	return out
-}
-
 // effectiveSecurity resolves elem's effective security requirements
 // (Security falling back to GlobalSecurity) and its SecuritySchemes,
 // flattened into the two maps [validateSecurityCredentials] expects —
@@ -725,7 +601,7 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 			reqPropVars := propertyVarsFromUserProperties(msg)
 			reqPtr := reflect.New(reqType)
 			reqPtr.Elem().Set(reqVal)
-			_, outPropVars, mwName, failKind, mwErr := dispatchServerMiddlewareHandlers(spanCtx, reqPtr, middlewareHandlers, topicVars, reqPropVars)
+			_, outPropVars, mwName, failKind, mwErr := reqreply.DispatchServerMiddlewareHandlers(spanCtx, reqPtr, middlewareHandlers, topicVars, reqPropVars)
 			if mwErr != nil {
 				kind := KindDecode
 				loc := "middleware:in"
@@ -1008,7 +884,7 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 		middlewarePropertyVarsOut, _ = encodePropResults[0].Interface().(map[string]string)
 	}
 	if len(clientMiddlewareHandlers) > 0 {
-		mwTopicVars, mwPropertyVars, mwName, mwErr := dispatchClientMiddlewareIn(ctx, reqVal, clientMiddlewareHandlers)
+		mwTopicVars, mwPropertyVars, mwName, mwErr := reqreply.DispatchClientMiddlewareIn(ctx, reqVal, clientMiddlewareHandlers)
 		if mwErr != nil {
 			_, isFnErr := mwErr.(reqreply.MiddlewareError)
 			kind := KindEncode
@@ -1022,8 +898,8 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 			_ = mwName
 			return nil, CallError{Kind: kind, Err: mwErr}
 		}
-		vars = mergeVarsOverride(vars, mwTopicVars)
-		middlewarePropertyVarsOut = mergeVarsOverride(middlewarePropertyVarsOut, mwPropertyVars)
+		vars = reqreply.MergeVarsOverride(vars, mwTopicVars)
+		middlewarePropertyVarsOut = reqreply.MergeVarsOverride(middlewarePropertyVarsOut, mwPropertyVars)
 	}
 	// NOTE: t.opts.Vars != nil (not len(...) > 0) — an explicit, even
 	// EMPTY, Vars map must still trigger BuildTopic below, so a route
@@ -1259,7 +1135,7 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 			}
 			if len(clientMiddlewareHandlers) > 0 {
 				replyPropertyVars := propertyVarsFromUserProperties(replyMsg)
-				if mwErr := dispatchClientMiddlewareOut(nil, replyPropertyVars, clientMiddlewareHandlers); mwErr != nil {
+				if mwErr := reqreply.DispatchClientMiddlewareOut(nil, replyPropertyVars, clientMiddlewareHandlers); mwErr != nil {
 					// mwErr is UNAMBIGUOUSLY an Out-decode failure — no Fn
 					// involved in dispatchClientMiddlewareOut at all —
 					// reported as "middleware:out" (client-side decode of
