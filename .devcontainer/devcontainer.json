@@ -30,8 +30,6 @@
 			},
 			"extensions": [
 				"golang.go",
-				"github.copilot",
-				"github.copilot-chat",
 				"eamodio.gitlens",
 				"ms-azuretools.vscode-docker",
 				"streetsidesoftware.code-spell-checker",
