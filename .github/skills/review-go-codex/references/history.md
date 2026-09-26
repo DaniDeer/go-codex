@@ -1,6 +1,50 @@
-# go-codex Review History (R1–R142, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2)
+# go-codex Review History (R1–R143, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 143 (post-thin-adapters-audit doc/test cleanup)
+
+Triggered by `/review-go-codex` run immediately after implementing `docs/roadmap/thin-adapters-audit.md`'s
+F1–F4b (moving middleware/security dispatch logic from adapters into `api/*` + new
+`adapters/internal/httpsecurity`). Phase 1 focused on the freshly-added code
+(`api/events/transform_dispatch.go`, `api/reqreply/transform_dispatch.go`,
+`api/rest/transform_dispatch.go`, `api/rest/security_dispatch.go`,
+`adapters/internal/httpsecurity/httpsecurity.go`) plus their new tests; checklist §14 (Godoc &
+Documentation-Site Reference Integrity) applied per the skill's own Gotchas rule (run after any
+exported-symbol removal/rename). All 5 findings were documentation/test-quality only — zero
+production-code bugs.
+
+- **G1 [trivial] — dangling cross-package godoc link**: `adapters/internal/httpsecurity/httpsecurity.go`'s
+  `RunSecurityMiddlewareReflect` doc comment used `[runSecurityMiddleware]` link syntax pointing at
+  an unexported symbol in a DIFFERENT package (`adapters/nethttp`) — never resolves. Fixed by
+  rewording to a plain-text cross-reference.
+- **G2 [small] — stale mention of deleted `validateSecurityCredentials`/`extractCredential`**:
+  `.github/instructions/go-codex.instructions.md`'s `api/rest` row described client-side credential
+  validation as "reusing the same `validateSecurityCredentials`/`extractCredential` helpers the
+  server side uses" — both unexported functions were deleted during F4a's implementation (replaced
+  by `rest.ValidateSecurityCredentials` + each adapter's own `credentialExtractorFor` closure
+  builder). Fixed the wording to name the current mechanism.
+- **G3 [small] — stale mention of deleted `callObserveErrorResponseFor`**: same `api/rest` row
+  described adapter dispatch as going "via `tryRespondErrorPattern`/`callObserveErrorResponseFor`
+  reflection helpers" — `callObserveErrorResponseFor` was deleted during F3's implementation
+  (replaced by `rest.CallObserveErrorResponseFor` in `api/rest/transform_dispatch.go`). Fixed.
+- **G4 [trivial] — 4 stale references to a deleted roadmap doc, missed by Round 142's sweep**:
+  `.github/instructions/go-codex.instructions.md` had 4 remaining citations of
+  `docs/roadmap/rest-middleware-conflict-detection-improvements.md` (deleted once its content
+  graduated into `docs/design/d-0003-codec-declared-middlewares.md`'s Addendum 2) — Round 142's own
+  repointing sweep fixed this same stale path everywhere else in the repo but missed this file.
+  Repointed all 4 to the Addendum 2 location, matching Round 142's established pattern.
+- **G5 [small] — weak assertion in `TestValidateSecurityCredentials_bearerHappyPath`**: the test
+  only asserted "no error," never confirming the `"Bearer "` prefix was actually stripped before
+  reaching the codec — a codec accepting the RAW, un-stripped credential would have passed silently.
+  Strengthened by swapping in a value-capturing `codex.Constraint` and asserting the exact stripped
+  credential string.
+
+Verification: `gofmt -l .` clean, `go build ./...` clean, `go test ./...` — zero failures across the
+full repo, `just check` (staticcheck + gosec) zero issues, full example sweep (all `examples/*`)
+exits cleanly.
 
 ---
 

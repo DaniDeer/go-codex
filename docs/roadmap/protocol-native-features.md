@@ -276,14 +276,19 @@ throwaway value per adapter.
 
 ### Why adapter-owned capability declaration doesn't violate the thin-adapter, protocol-agnostic-declaration principle
 
-> **See also — [Thin Adapters Audit](thin-adapters-audit.md)**, the
-> MIRROR-IMAGE investigation to this section: instead of asking "does a
-> NEW protocol-native capability clear the bar for core-layer, protocol-
-> agnostic declaration" (this section's question), that doc asks "does
-> EXISTING adapter-owned dispatch logic ALREADY clear that bar, unnoticed,
-> and is therefore misplaced today." It reuses the exact two-part test
-> below and confirms 3 concrete findings that clear both bars (the same
-> reasoning that puts `Security` in core here) plus 1 nuanced overlap case.
+> This section's two-part test was later reapplied in the MIRROR-IMAGE
+> direction by a since-completed "Thin Adapters Audit" — instead of
+> asking "does a NEW protocol-native capability clear the bar for
+> core-layer, protocol-agnostic declaration" (this section's question),
+> that audit asked "does EXISTING adapter-owned dispatch logic ALREADY
+> clear that bar, unnoticed, and is therefore misplaced today." It
+> reused the exact two-part test below, confirmed 4 concrete findings
+> (moving duplicated middleware/security dispatch logic from
+> `adapters/{mqtt,mqtt5,zeromq,nethttp,chi}` into `api/events`/
+> `api/reqreply`/`api/rest`/a new `adapters/internal/httpsecurity`), and
+> has since SHIPPED — see `docs/concepts/ports-and-adapters.md`'s
+> "Guardrail: adapters as pure protocol shims" section for the resulting
+> permanent rule.
 
 This codebase's guiding architecture is: routes/channels/ports are declared
 ONCE, protocol-agnostically (typically in a shared `domain`/`contract`
@@ -1590,9 +1595,10 @@ one-at-a-time future-round policy as before:**
     known to exist yet, since neither adapter is built.
 - **[Review-13, Medium] `Attach` signature reconciliation — FLAGGED this
   round, NOT resolved.** Found while cross-checking this document against
-  [Thin Adapters Audit](thin-adapters-audit.md) (independent of anything
-  THAT document changes — it does not touch `Attach` at all). §2.2's
-  pseudocode (repeated at 2 other points in this document) sketches:
+  a since-completed, unrelated "Thin Adapters Audit" round (independent
+  of anything THAT audit changed — it never touched `Attach` at all).
+  §2.2's pseudocode (repeated at 2 other points in this document)
+  sketches:
 
   ```go
   func Attach[T any](client *Client, ch events.Channel[T], caps ...Capability) error
@@ -1850,15 +1856,15 @@ concrete driver appears.
 `Address`/`Disposition` are actually built, tested (per the Test plan
 above), and merged.** Two interim documents already give adapter authors
 guidance in the meantime and are NOT touched by this phase:
-[Thin Adapters Audit](thin-adapters-audit.md)'s "Forward-looking
-guardrail: adapters as pure protocol shims" section (states the target
-design ahead of its own implementation, as a guardrail against inventing
-a competing ad-hoc mechanism) and
-`add-a-new-adapter/SKILL.md`'s Step 5e (tells a new-adapter author today
-not to bolt a protocol-specific field onto an `api/*` declaration type).
-Both are deliberately framed as "not yet shipped" — appropriate for
-PREP guidance, but NOT a substitute for updating the project's actual
-sources of truth once the mechanism is real. That update is this phase:
+`docs/concepts/ports-and-adapters.md`'s "Guardrail: adapters as pure
+protocol shims" section (states the target design ahead of its own
+implementation, as a guardrail against inventing a competing ad-hoc
+mechanism) and `add-a-new-adapter/SKILL.md`'s Step 5e (tells a
+new-adapter author today not to bolt a protocol-specific field onto an
+`api/*` declaration type). Both are deliberately framed as "not yet
+shipped" — appropriate for PREP guidance, but NOT a substitute for
+updating the project's actual sources of truth once the mechanism is
+real. That update is this phase:
 
 1. **`.github/instructions/go-codex.instructions.md`** — add a Design
    Philosophy bullet describing the SHIPPED sealed `Capability` mechanism
@@ -1881,10 +1887,10 @@ sources of truth once the mechanism is real. That update is this phase:
    "forward-looking... preparing for a future, not-yet-shipped design" to
    a MANDATORY, present-tense requirement; drop the "until it ships"
    interim-guidance framing entirely.
-4. **`docs/concepts/ports-and-adapters.md`**'s "Forward-looking: adapter-
-   specific extensions as sealed `Capability` interfaces" section — drop
-   "Forward-looking" from the heading/framing once the mechanism it
-   describes is real.
+4. **`docs/concepts/ports-and-adapters.md`**'s "Guardrail: adapters as
+   pure protocol shims" section — drop the "not yet implemented"/"once
+   `Capability` ships" hedging from its "Already shipped vs. genuinely
+   new" framing once the mechanism it describes is real.
 5. **`review-go-codex/references/history.md`** — append a new Round entry
    recording this sync itself (mirrors how every other graduated design
    doc's own instructions-file/skill sync is recorded there today).

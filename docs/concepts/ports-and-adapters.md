@@ -202,21 +202,47 @@ abstraction — attaching a specific adapter is purely a protocol-selection
 decision, never something that changes which helper functions/vocabulary
 the caller reaches for.
 
-## Forward-looking: adapter-specific extensions as sealed `Capability` interfaces
+## Guardrail: adapters as pure protocol shims
 
 Both rules above are about where LOGIC lives (never adapter-invented,
-never a bypass). A related, still-open question is where adapter-specific
-EXTENSION POINTS live — e.g. MQTT's QoS level or User Properties, which
-have no cross-protocol meaning ZeroMQ or a future AMQP adapter could
-honor. [Protocol-Native Features](../roadmap/protocol-native-features.md)
-designs (not yet implemented) a sealed, per-adapter `Capability` interface
-for exactly this — one unexported marker method per adapter package,
-mirroring `ports.Pattern`'s own sealing technique, supplied only at
-`Attach`/`Bind` time, so a value from the wrong adapter package is a Go
-COMPILE error rather than a silent no-op or a runtime check. See
-[Thin Adapters Audit](../roadmap/thin-adapters-audit.md)'s "Forward-
-looking guardrail" section for the concrete, precise statement: adapters
-should wrap their external SDK with zero business logic and expose any
-protocol-specific extension this way once the mechanism ships — new
-adapters should not invent a competing, non-sealed alternative (a loose
-`bool`/string-ID option field) in the interim.
+never a bypass). This section states the standing principle those rules
+serve, precisely:
+
+> **Adapters are thin protocol shims:** wrap exactly one external SDK,
+> contain zero declarative/business logic, and expose any
+> adapter-specific extension (MQTT QoS, User Properties, ...) as a
+> SEALED, adapter-owned `Capability` interface supplied only at
+> `Attach`/`Bind` time — never baked into an `api/*` declaration. All
+> declaration, validation, and dispatch logic lives in `api/*`/`ports`.
+> A user's entire vocabulary is `api/*`/`ports`: declare, compose,
+> attach — the adapter package is touched only to `Attach`/`Bind` and
+> supply its `Options`/`Capability` values, never as a second
+> business-logic API.
+
+**Already shipped vs. genuinely new.** Most of this guardrail is not
+new — it restates the two rules already established above in this page
+("Relationship to adapters used directly" and "Convenience helpers
+belong in `api/*`, not adapters"), and their `add-a-new-adapter/SKILL.md`
+mandatory counterparts (Step 5c, Step 5d). The genuinely NEW piece is the
+sealed, per-adapter `Capability` interface — a related, still-open
+question of where adapter-specific EXTENSION POINTS live (e.g. MQTT's
+QoS level or User Properties, which have no cross-protocol meaning
+ZeroMQ or a future AMQP adapter could honor).
+[Protocol-Native Features](../roadmap/protocol-native-features.md)
+designs (not yet implemented) exactly this: one unexported marker method
+PER adapter package, mirroring `ports.Pattern`'s own sealing technique,
+supplied only at `Attach`/`Bind` time, so a value from the wrong adapter
+package is a Go COMPILE error rather than a silent no-op or a runtime
+check — see that doc's §2.1/§2.2 for the full design.
+
+**Until the `Capability` mechanism ships**: if a new adapter needs a
+protocol-specific toggle/option with no cross-protocol meaning, keep it
+a plain, adapter-owned field on that adapter's own `Options`/
+`SubscribeOptions`/etc. struct — do NOT add it to the owning `api/*`
+package's declaration type (`events.Channel`, `rest.Route`, etc.), even
+as a "just this one field" convenience. `api/events/mqtt_qos.go`
+(`MQTTQoS`/`Subscribe.QoS`) is the one confirmed EXISTING exception to
+this rule in the codebase today — already cataloged as drift to be
+resolved once `Capability` ships (see
+[Protocol-Native Features](../roadmap/protocol-native-features.md)'s
+§5.1), not a precedent to extend.

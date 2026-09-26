@@ -16,8 +16,20 @@ func staticExtractor(values map[string]map[string]string) rest.CredentialExtract
 }
 
 func TestValidateSecurityCredentials_bearerHappyPath(t *testing.T) {
+	// Captures the credential value ValidateSecurityCredentials actually
+	// hands to the codec, so this test verifies the "Bearer " prefix is
+	// stripped by extractCredential -- not merely that a non-empty string
+	// passes validation.
+	var gotCred string
+	captureCodec := codex.String().Refine(codex.Constraint[string]{
+		Name:  "capture",
+		Check: func(s string) bool { gotCred = s; return true },
+		Message: func(s string) string {
+			return "unreachable"
+		},
+	})
 	schemes := map[string]rest.SecurityScheme{
-		"bearer": rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(codex.String()),
+		"bearer": rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(captureCodec),
 	}
 	reqs := []route.SecurityRequirement{{"bearer": nil}}
 	extract := staticExtractor(map[string]map[string]string{
@@ -25,6 +37,9 @@ func TestValidateSecurityCredentials_bearerHappyPath(t *testing.T) {
 	})
 	if err := rest.ValidateSecurityCredentials(extract, reqs, schemes); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotCred != "abc123" {
+		t.Fatalf("expected \"Bearer \" prefix to be stripped, got credential %q", gotCred)
 	}
 }
 

@@ -10,9 +10,9 @@
 // internal/templatematch) since this package will NEVER be needed
 // outside the net/http-family adapter tree (adapters/nethttp,
 // adapters/chi, and any future adapter built on net/http) — see
-// docs/roadmap/thin-adapters-audit.md's "Forward-looking guardrail"
-// section and its F4b "Detailed design" subsection for the full
-// rationale.
+// docs/concepts/ports-and-adapters.md's "Guardrail: adapters as pure
+// protocol shims" section for the general principle this package
+// follows.
 package httpsecurity
 
 import (
@@ -24,8 +24,9 @@ import (
 	"github.com/DaniDeer/go-codex/route"
 )
 
-// RunSecurityMiddlewareReflect is [runSecurityMiddleware]'s reflect-based
-// equivalent — reqPtr is an addressable *Req reflect.Value (Req erased).
+// RunSecurityMiddlewareReflect is adapters/nethttp's generic
+// runSecurityMiddleware's reflect-based equivalent — reqPtr is an
+// addressable *Req reflect.Value (Req erased).
 func RunSecurityMiddlewareReflect(ctx context.Context, r *http.Request, reqPtr reflect.Value, impls []middleware.ServerImplementation, secReqs []route.SecurityRequirement) error {
 	granted := make(map[string][]string)
 	for _, impl := range impls {

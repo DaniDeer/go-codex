@@ -319,8 +319,8 @@ yet implemented) in `docs/roadmap/protocol-native-features.md`'s
 Properties, an AMQP ack-mode, ...) — one sealed interface type PER
 adapter package, mirroring `ports.Pattern`'s own sealing technique,
 supplied only at `Attach`/`Bind` time. See
-`docs/roadmap/thin-adapters-audit.md`'s "Forward-looking guardrail"
-section for the full statement.
+`docs/concepts/ports-and-adapters.md`'s "Guardrail: adapters as pure
+protocol shims" section for the full statement.
 
 **Until it ships**: if your new adapter needs a protocol-specific
 toggle/option with no cross-protocol meaning, keep it a plain,
@@ -388,5 +388,5 @@ verification ritual. Track progress with todos, one per checklist block.
 - `api/rest/builder.go` + `adapters/nethttp/{adapter,client}.go` — reference implementation of Step 5b's one-struct-one-call pattern (`NewPathParam`/etc., `DecodeMerged`, role-aware `PathMergeFields`/etc., `NewRequiredResponseHeaderParam`/etc., `DecodeMergedResponse`, `CallHandle`)
 - `docs/concepts/api-contracts.md` — "one struct, one call" design principle, user-facing framing
 - `docs/concepts/ports-and-adapters.md` — Step 5c's "no adapter-invented escape hatch" principle AND Step 5d's "convenience helpers belong in `api/*`" principle, user-facing framing
-- `docs/roadmap/protocol-native-features.md` + `docs/roadmap/thin-adapters-audit.md` — Step 5e's forward-looking sealed `Capability` mechanism design (not yet shipped) and its "adapters as pure protocol shims" guardrail
+- `docs/roadmap/protocol-native-features.md` + `docs/concepts/ports-and-adapters.md` — Step 5e's forward-looking sealed `Capability` mechanism design (not yet shipped) and its "adapters as pure protocol shims" guardrail
 - `ports/pattern.go`, `ports/handle.go` — Pattern declaration + build machinery
