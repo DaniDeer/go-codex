@@ -6,19 +6,28 @@
 > an OPEN `Feature`/`Provider` primitive (string-based capability matching),
 > to its CURRENT mechanism — a SEALED, per-adapter capability interface
 > (mirroring `ports.Pattern`'s own already-proven technique) with capabilities
-> supplied at `Attach`/bind time, not baked into a channel/route's own
-> declared type. **This pivot happened because the open, string-ID-based
-> `Feature`/`Provider` primitive could not guarantee Go compile-time errors
-> the way today's sealed `RouteOpt`/`ChannelOpt` already do — and compile-time
-> safety is a non-negotiable requirement, not a nice-to-have, for this
-> redesign.** Read §2 for the current mechanism; §1 still holds as prior-art
-> analysis (why today's mechanisms are each partial); some of §5's worked
-> examples and §7's open questions have been updated to match the current
-> mechanism, others remain from earlier rounds where still accurate. **§8
-> adds a DISTINCT, complementary concept — Handler Disposition** —
-> resolving how a handler's PER-MESSAGE RUNTIME outcome (e.g. an AMQP
-> ack/nack/requeue decision) gets abstracted through the API layer,
-> separate from `Capability`'s declare-time configuration.
+> supplied at DECLARE time, via a new `Capabilities []<pkg>.Capability` field
+> on each adapter's EXISTING `SubscribeOptions`/`PublishOptions` struct (not a
+> new `Attach`-time parameter — see §7 Review-13's resolution), not baked
+> into a channel/route's own declared type. **This pivot happened because the
+> open, string-ID-based `Feature`/`Provider` primitive could not guarantee Go
+> compile-time errors the way today's sealed `RouteOpt`/`ChannelOpt` already
+> do — and compile-time safety is a non-negotiable requirement, not a
+> nice-to-have, for this redesign.** Read §2 for the current mechanism; §1
+> still holds as prior-art analysis (why today's mechanisms are each
+> partial); §5's worked examples and §7's open questions have been updated
+> to match the current mechanism. **§8 adds a DISTINCT, complementary
+> concept — Handler Disposition** — resolving how a handler's PER-MESSAGE
+> RUNTIME outcome (e.g. an AMQP ack/nack/requeue decision) gets abstracted
+> through the API layer, separate from `Capability`'s declare-time
+> configuration.
+>
+> **Phase 0 (design resolution) is COMPLETE as of this round:** every
+> previously-open §7 item material to implementation — Review-13 (Attach
+> signature), spec-rendering (`CapabilitySpec`/`x-capabilities`), and
+> Review-12 (Capability Observer) — is now RESOLVED and written into this
+> doc. Remaining work is Phase 1+ implementation (see
+> `docs/roadmap/index.md` for current phase tracking), not further design.
 >
 > **Relationship to already-SHIPPED designs — stated up front, not buried:**
 > §3 RESOLVES (does not merely propose) the relationship to
@@ -246,20 +255,39 @@ implement an unexported method belonging to a different package. This is a
 closed, Go-compiler-enforced guarantee, not a convention callers must
 remember to respect.
 
-### 2.2 Capabilities are supplied at `Attach`/bind time — not baked into a channel's own declared type
+### 2.2 Capabilities are supplied at declare time via `SubscribeOptions`/`PublishOptions` — not baked into a channel's own declared type
+
+**REVISED — see §7's Review-13 for the full resolution history.** An
+earlier round of this section sketched capabilities as a NEW `Attach`
+function parameter (`func Attach[T any](client *Client, ch
+events.Channel[T], caps ...Capability) error`); tracing the ACTUAL shipped
+`Subscriber[T]`/`Publisher[T]`/`ChannelHandle[T]` machinery found this
+ALREADY has an answer, via the existing `WithOptions`/`HandlerOpts`
+mechanism:
 
 ```go
 // package mqtt5
-func Attach[T any](client *Client, ch events.Channel[T], caps ...Capability) error
+type SubscribeOptions struct {
+    // ... existing fields (TopicFilter, QoS, OnError, Observer, UserPropertyParams) ...
+
+    // Capabilities supplies sealed, compile-time-checked protocol-native
+    // declarations (QoS, Retained, UserProperty, ...) for this channel —
+    // the RECOMMENDED path going forward, alongside the pre-existing QoS/
+    // Retained fields (kept, not deprecated — an escape hatch for the
+    // common single-value case).
+    Capabilities []Capability
+}
 ```
 
-A caller wanting QoS or User Property support supplies it HERE, at the
-adapter-specific binding call — NOT at `events.NewChannel(...)` (which stays
-exactly as it is today, fully protocol-agnostic, zero adapter import
-required). Passing a `zeromq`-defined capability to `mqtt5.Attach` is a
-**Go COMPILE ERROR** — the value simply does not satisfy the `caps
-...Capability` parameter's type constraint — with NO custom error type
-needed at all (the compiler's own diagnostic IS the error), and NO
+A caller wanting QoS or User Property support supplies it HERE, attached
+via the ALREADY-SHIPPED `Subscriber[T].WithOptions(mqtt5.SubscribeOptions{
+Capabilities: []mqtt5.Capability{mqtt5.QoSAtLeastOnce}})` — NOT at
+`events.NewChannel(...)` (which stays exactly as it is today, fully
+protocol-agnostic, zero adapter import required). A `zeromq`-defined
+capability inside `mqtt5.SubscribeOptions.Capabilities` is a **Go COMPILE
+ERROR** — the value simply does not satisfy the field's
+`[]mqtt5.Capability` element type — with NO custom error type needed at
+all (the compiler's own diagnostic IS the error), and NO
 `Provider`/`Supports`/boolean check anywhere in the design. This is the
 concrete mechanism realizing the "tick a box" model from your own framing:
 an MQTT v3 client simply has no `mqtt.Capability`-satisfying type for User
@@ -267,12 +295,11 @@ Properties to begin with — there is nothing to "not tick," the capability
 literally cannot be constructed against that adapter.
 
 The SAME `events.Channel[T]` value stays attachable to MULTIPLE adapters,
-each supplying its own capabilities (or none) — `mqtt5.Attach(mqtt5Client,
-ch, mqtt5.QoSAtLeastOnce)` and, separately, `zeromq.Attach(zeromqClient,
-ch)` both remain valid for the identical declared channel — preserving
-"declare once" more cleanly than an earlier (now-superseded) proposal in
-this doc that considered adapter-specific DERIVED WRAPPER TYPES requiring a
-throwaway value per adapter.
+each supplying its own capabilities (or none) via its OWN
+`Subscriber[T]`/`Publisher[T]` built from the SAME underlying channel —
+preserving "declare once" more cleanly than an earlier (now-superseded)
+proposal in this doc that considered adapter-specific DERIVED WRAPPER
+TYPES requiring a throwaway value per adapter.
 
 ### Why adapter-owned capability declaration doesn't violate the thin-adapter, protocol-agnostic-declaration principle
 
@@ -616,7 +643,13 @@ type QoS byte
 func (QoS) isMQTTCapability() {}
 const (QoSAtMostOnce QoS = 0; QoSAtLeastOnce QoS = 1; QoSExactlyOnce QoS = 2)
 
-func Attach[T any](client *Client, ch events.Channel[T], caps ...Capability) error
+// Capabilities supplied via the EXISTING SubscribeOptions/PublishOptions +
+// WithOptions/HandlerOpts mechanism (§2.2/§7 Review-13) — no new Attach
+// parameter needed.
+type SubscribeOptions struct {
+    // ... existing fields ...
+    Capabilities []Capability
+}
 
 // adapters/mqtt5 — a SEPARATE sealed Capability + QoS type, deliberately
 // NOT shared with adapters/mqtt's own (even though the numeric values are
@@ -629,17 +662,25 @@ type QoS byte
 func (QoS) isMQTT5Capability() {}
 const (QoSAtMostOnce QoS = 0; QoSAtLeastOnce QoS = 1; QoSExactlyOnce QoS = 2)
 
-func Attach[T any](client *Client, ch events.Channel[T], caps ...Capability) error
+type SubscribeOptions struct {
+    // ... existing fields ...
+    Capabilities []Capability
+}
 ```
 
-`api/events` itself carries NOTHING mqtt-specific anymore — `mqtt_qos.go` is
-DELETED. A caller declares the base channel exactly as today
-(`events.NewChannel(topic, codec, opts...)`, zero adapter import), then
-supplies QoS AT ATTACH TIME: `mqtt5.Attach(client, ch, mqtt5.QoSAtLeastOnce)`.
-Attempting `zeromq.Attach(zeromqClient, ch, mqtt5.QoSAtLeastOnce)` **does
-not compile** — `mqtt5.QoS` does not implement `zeromq.Capability` (different
-unexported marker method, different package) — the Go compiler rejects it
-before the program can even be built, let alone run.
+`api/events` itself carries NOTHING NEW mqtt-specific — `mqtt_qos.go`'s
+`MQTTQoS`/`PublishAttributes` stay as an ADDITIVE legacy path (§7 Review-13's
+resolution: no breaking change to existing fields with no correctness
+problem), with `Capabilities` as the new, RECOMMENDED, sealed path. A
+caller declares the base channel exactly as today (`events.NewChannel(topic,
+codec, opts...)`, zero adapter import), then supplies QoS AT DECLARE TIME,
+via the existing `WithOptions` mechanism:
+`sub.WithOptions(mqtt5.SubscribeOptions{Capabilities: []mqtt5.Capability{mqtt5.QoSAtLeastOnce}})`.
+Attempting the equivalent with `zeromq.SubscribeOptions{Capabilities:
+[]zeromq.Capability{mqtt5.QoSAtLeastOnce}}` **does not compile** —
+`mqtt5.QoS` does not implement `zeromq.Capability` (different unexported
+marker method, different package) — the Go compiler rejects it before the
+program can even be built, let alone run.
 
 **Error timing:** compile time — strictly stronger than an eager runtime
 check, and a strict improvement over today's silent no-op for ZeroMQ (which
@@ -728,14 +769,16 @@ type UserProperty[In any] struct {
 func (UserProperty[In]) isMQTT5Capability() {}
 ```
 
-Supplied at `mqtt5.Attach(client, ch, mqtt5.NewUserProperty[AuthIn](...)
-.WithMergeField(...))` — NOT baked into the channel's own declared type.
+Supplied at declare time via `sub.WithOptions(mqtt5.SubscribeOptions{
+Capabilities: []mqtt5.Capability{mqtt5.NewUserProperty[AuthIn](...)
+.WithMergeField(...)}})` — NOT baked into the channel's own declared type
+(§7 Review-13's resolution — no separate `Attach`-time parameter needed).
 `adapters/mqtt` (v3) has no `isMQTT5Capability()`-implementing type for User
 Properties AT ALL — there is no `mqtt.UserProperty` to construct in the
 first place, so the mismatched combination is simply UNWRITABLE, not just
-fast-failing. Attempting `mqtt.Attach(v3Client, ch,
-mqtt5.NewUserProperty[AuthIn](...))` **does not compile** — the value
-doesn't satisfy `mqtt.Capability`.
+fast-failing. Attempting `mqtt.SubscribeOptions{Capabilities:
+[]mqtt.Capability{mqtt5.NewUserProperty[AuthIn](...)}}` **does not
+compile** — the value doesn't satisfy `mqtt.Capability`.
 
 **Error timing:** compile time — this is the MOST DIRECT realization of
 your own original framing: "the MQTT v3 adapter just not ticks the
@@ -996,16 +1039,18 @@ wrapping `Read`/`Write` — a security-shaped `Fn` extracting grants, merged and
 checked ONCE via `middleware.CheckScopes`, attached directly at the
 `Read`/`Write` call site.
 
-**§2's sealed-`Capability`-supplied-at-`Attach`-time mechanism presupposes a
-separate BINDING step** (`mqtt5.Attach(client, ch, caps...)`) distinct from
-the channel/route's own declaration — `ports.File[T]` has NO equivalent
-"attach" phase at all: its `Read(ctx, vars, opts)`/`Write(ctx, vars, v,
-opts)` methods ARE the only call site, called directly, with no separate
-binding step to supply capabilities at. Forcing §2's mechanism onto
-`ports.File` would require EITHER inventing a new binding step `ports.File`
-doesn't otherwise need, or attaching capabilities via `opts` instead
-(`Read(ctx, vars, opts, caps...)`) — structurally different from every
-other worked example in this section.
+**§2's sealed-`Capability`-supplied-at-declare-time mechanism (§7 Review-13's
+resolution) presupposes an existing per-call `Options` struct** (e.g.
+`mqtt5.SubscribeOptions.Capabilities`) distinct from the channel/route's own
+declaration — `ports.File[T]` has NO equivalent options-carrying phase at
+all: its `Read(ctx, vars, opts)`/`Write(ctx, vars, v, opts)` methods ARE the
+only call site, and while `opts` exists, it is a `ports`-level, adapter-
+agnostic struct — there is no adapter-owned `SubscribeOptions`-equivalent to
+add a `Capabilities` field to. Forcing §2's mechanism onto `ports.File`
+would require EITHER inventing an adapter-specific options type `ports.File`
+doesn't otherwise need, or extending the generic `opts` with a type-erased
+capabilities slot — structurally different from every other worked example
+in this section.
 
 **Left genuinely open here, not resolved — but no longer undriven.** This
 doc does not attempt to force a fit for §2's Attach-time `Capability`
@@ -1203,20 +1248,24 @@ before any code is written:
   field getters/setters, never from a pre-built struct-level codec argument)
   — this is now a CONFIRMED constraint, not merely a stylistic preference.
 - **Spec (OpenAPI/AsyncAPI) rendering plan for adapter-defined
-  capabilities — ADVANCED (not fully resolved) by §3's 4-stage model.**
-  §3's CONFIRMED Candidate 3 (`DeclareCapabilitySpec`, a decoupled,
-  adapter-agnostic sibling value declared BEFORE `Attach`) gives spec
-  rendering a concrete HOOK POINT it didn't have before — spec generation
-  can consume the stage-2 `CapabilitySpec` list without needing to know
-  the adapter at all, resolving the "isn't even part of the channel's
-  own declared value" objection this bullet originally raised. STILL not
-  decided: the EXACT rendering mechanism once a `CapabilitySpec` exists
-  (a vendor-extension field, e.g. AsyncAPI's `x-mqtt5-qos`; a generic
-  "capabilities" array in the spec; or something else) — that wiring is
-  left for the dedicated implementation-planning round, not designed
-  here. Shared Subscriptions (§6) remains the sharpest example of why
-  spec-visibility matters (delivery-semantics-changing, not just
-  metadata).
+  capabilities — RESOLVED this round.** A new `events.CapabilitySpec{Name,
+  Description string}` value implements `ChannelOpt`, declared inline in
+  `NewChannel(...)`/`WithSubscribe`/`WithPublish`'s variadic opts (mirrors
+  `TopicParam`'s own declaration-site placement) — this IS §3's Candidate 3
+  (`DeclareCapabilitySpec`) made concrete. Rendering choice: a GENERIC
+  `x-capabilities: [{name, description}]` AsyncAPI vendor-extension array at
+  the channel/operation level — chosen over a per-capability vendor field
+  (e.g. `x-mqtt5-qos`) so the spec renderer never needs a change when a new
+  capability type is added; every declared `CapabilitySpec` renders
+  uniformly regardless of which adapter eventually supplies it. A
+  companion `CheckCapabilityCoverage(declared []CapabilitySpec, supplied
+  []Capability) error` helper (opt-in, mirrors `rest.CheckCoverage`'s own
+  not-compiler-enforced precedent, returning a `MissingCapabilityError` on
+  drift) is called AUTOMATICALLY by each adapter's own bulk
+  `ServeSubscribers`/`Attach`-equivalent dispatch at startup — the caller
+  never has to remember to invoke it by hand. Shared Subscriptions (§6)
+  remains the sharpest example of why spec-visibility matters
+  (delivery-semantics-changing, not just metadata).
 - **Whether/how D-0003 relates to this mechanism — RESOLVED this round,
   see §3.** No longer "reopened, not decided" — §3 now gives a concrete
   answer (both are stage-2 declarations, sharing a lifecycle stage, not
@@ -1513,77 +1562,59 @@ one-at-a-time future-round policy as before:**
   error type with fields to name.
 - **[Review-12, Medium] Should EVERY `Capability` carry its own
   observable declaration, reducing bespoke adapter-side Observer wiring
-  — FLAGGED this round, NOT investigated or resolved.** Spun out of a
-  separate, broader review of the Observer pattern across the api layer
-  (same session, same "thin adapter, thick api layer" principle) —
-  confirmed via code that adapters ALREADY hand-roll their own
-  capability-specific Observer calls today wherever a protocol feature
-  has an observable runtime effect (e.g. `RecordSubscribe`/
-  `RecordPublish`'s `success bool` says nothing about WHICH QoS tier
-  was actually negotiated, whether a Retained flag was honored, or which
-  Shared Subscription group handled a message — each adapter that wants
-  this visibility must invent its own ad hoc reporting path, no shared
-  mechanism exists). §8's `DispositionObserver` (Review-8, resolved)
-  is a NARROWER, adjacent precedent — it solves ONE specific runtime
-  outcome (ack/nack/requeue) for ONE specific concept (Handler
-  Disposition), not capabilities in general.
+  — RESOLVED this round.** Spun out of a separate, broader review of the
+  Observer pattern across the api layer (same session, same "thin
+  adapter, thick api layer" principle) — confirmed via code that adapters
+  ALREADY hand-roll their own capability-specific Observer calls today
+  wherever a protocol feature has an observable runtime effect (e.g.
+  `RecordSubscribe`/`RecordPublish`'s `success bool` says nothing about
+  WHICH QoS tier was actually negotiated, whether a Retained flag was
+  honored, or which Shared Subscription group handled a message — each
+  adapter that wants this visibility must invent its own ad hoc reporting
+  path, no shared mechanism exists). §8's `DispositionObserver`
+  (Review-8, resolved) is a NARROWER, adjacent precedent — it solves ONE
+  specific runtime outcome (ack/nack/requeue) for ONE specific concept
+  (Handler Disposition), not capabilities in general.
 
-  **The open question this bullet exists to scope, not answer:** should
-  the sealed `Capability` interface (§2) itself carry an OPTIONAL,
-  additive observability hook — e.g. a capability-supplied
-  `RecordApplied(obs stats.Observer, ...)`-shaped method, or a NEW
-  `stats.CapabilityObserver`-style interface mirroring
-  `stats.SecurityObserver`/`DispositionObserver`'s exact type-assertion
-  pattern (§8) — so that ANY capability (QoS, Retained, User Properties,
-  a future AMQP ack-mode/persistence, Shared Subscriptions) gets a
-  UNIFORM, declare-time-defined way to report its own runtime effect,
-  instead of each adapter writing bespoke `obs.RecordX(...)` calls
-  scattered through its own dispatch code for whatever capability
-  happens to be attached. If resolved this way, the GENERIC dispatch
-  code in `Attach`/`Serve`/`Subscribe` (adapter-owned) would only need
-  to call ONE shared hook per capability, uniformly, regardless of which
-  concrete capability type is present — matching the SAME "adapter
-  calls one shared thing, doesn't hand-roll per-feature logic" shape
-  a sibling Observer-pattern review already established for non-
-  capability Observer reporting (`stats.ReportErrors`'s Param-error
-  handling gap).
-
-  **Explicitly NOT decided by this bullet:** the exact interface shape;
-  whether this generalizes cleanly across QoS/Retained/User-Properties/
-  Shared-Subscriptions/a-future-AMQP-adapter's ack-mode (their runtime
-  "success" signals may not be uniform enough for one shape — needs a
-  worked-example pass mirroring §5's own rigor before committing);
-  whether it should live on the `Capability` interface itself (making
-  ALL capabilities implement it, even ones with nothing meaningful to
-  observe) or as a SEPARATE, optional, type-asserted interface a
-  capability MAY additionally implement (mirrors `SecurityObserver`/
-  `DispositionObserver`'s own "purely additive, never forced" precedent
-  — likely the safer default given §8's own resolved recommendation
-  favored optional/additive over baked-in every time it was tested).
-  Needs its own dedicated worked-examples pass (mirroring §5) before any
-  implementation — not scoped further here.
+  **Resolution: ONE new, optional, type-asserted `stats.CapabilityObserver`
+  interface** — `RecordCapabilityApplied(location, capability string)` —
+  mirroring `SecurityObserver`/`DispositionObserver`'s exact "purely
+  additive, never forced" type-assertion pattern (not baked into the
+  `Capability` interface itself; `Capability` stays a bare marker-method
+  seal with zero observability surface of its own). Generic across EVERY
+  capability type (QoS, Retained, User Properties, HWM, Conflate, a
+  future AMQP ack-mode/persistence) — an adapter's dispatch code calls
+  it ONCE per capability actually exercised, with `capability` being that
+  capability's own self-reported or `%T`-derived name, and `location`
+  identifying the channel/topic. This gives the GENERIC dispatch code in
+  each adapter's `ServeSubscribers`/publish path a SINGLE shared hook to
+  call, uniformly, regardless of which concrete capability is present —
+  matching the same "adapter calls one shared thing, doesn't hand-roll
+  per-feature logic" shape established elsewhere for Observer reporting.
+  Purely additive: zero change to any existing `Observer` implementation,
+  since the interface is optional and type-asserted exactly like
+  `SecurityObserver`.
 - **[Cross-doc, Medium] Dead-letter queue dependency on
-  `d-0005-error-handling.md` — FLAGGED this round, MUST be
-  re-checked before implementation begins.** §6's "AMQP dead-lettering"
-  survey entry (added this round) already resolves the DESIGN question —
-  dead-lettering is explicitly EXCLUDED from this document's `Capability`
-  mechanism, because its declarative surface (`events.DeadLetter(topic,
-  ...)`/`reqreply.DeadLetter(topic, ...)`) is meant to live in the CORE
-  `api/events`/`api/reqreply` layer, shared uniformly across every
-  adapter — NOT as a per-adapter sealed `Capability` type the way QoS/
-  User Properties/Retained/AMQP addressing all correctly are. **Before
-  implementing THIS document's `Capability` mechanism, re-check
-  [`docs/design/d-0005-error-handling.md`](d-0005-error-handling.md)'s
-  Topic 4 status**:
+  `d-0005-error-handling.md` — RESOLVED this round: Topic 4 has SHIPPED.**
+  §6's "AMQP dead-lettering" survey entry (added this round) already
+  resolves the DESIGN question — dead-lettering is explicitly EXCLUDED
+  from this document's `Capability` mechanism, because its declarative
+  surface (`events.DeadLetter(topic, ...)`/`reqreply.DeadLetter(topic,
+  ...)`) is meant to live in the CORE `api/events`/`api/reqreply` layer,
+  shared uniformly across every adapter — NOT as a per-adapter sealed
+  `Capability` type the way QoS/User Properties/Retained/AMQP addressing
+  all correctly are. **Confirmed via code**:
+  [`docs/design/d-0005-error-handling.md`](../design/d-0005-error-handling.md)'s
+  Topic 4 has SHIPPED (`api/events/dead_letter.go`/`api/reqreply/dead_letter.go`
+  both exist, `DeadLetter`/`AddGlobalDeadLetter` implemented and tested) —
+  the "if Topic 4 has NOT shipped yet" branch below no longer applies:
   - Do NOT fold dead-lettering into this document's implementation scope
     under any circumstances — it is a confirmed, permanent exclusion
     (§6), not a deferred/open item like the rest of this section.
-  - If Topic 4 has NOT shipped yet by the time this document's
-    `Capability` mechanism is implemented, there is NO blocking
-    dependency — the two can proceed independently, since `DeadLetter`'s
+  - Confirmed NO blocking dependency existed either way — `DeadLetter`'s
     mqtt/mqtt5/zeromq realization needs no `Capability` plumbing at all
     (plain runtime publish, see Topic 4's "how DLQ works in practice"
-    section).
+    section) — this held true even before Topic 4 shipped.
   - HOWEVER, if/when a FUTURE AMQP adapter is ALSO built
     (`docs/roadmap/amqp-adapter.md`, a third, separate roadmap) and
     realizes `DeadLetter` via that document's pre-existing
@@ -1593,12 +1624,13 @@ one-at-a-time future-round policy as before:**
     field end up BOTH trying to configure AMQP queue arguments through
     two independent paths — a coordination check, not a design conflict
     known to exist yet, since neither adapter is built.
-- **[Review-13, Medium] `Attach` signature reconciliation — FLAGGED this
-  round, NOT resolved.** Found while cross-checking this document against
-  a since-completed, unrelated "Thin Adapters Audit" round (independent
-  of anything THAT audit changed — it never touched `Attach` at all).
-  §2.2's pseudocode (repeated at 2 other points in this document)
-  sketches:
+- **[Review-13, Medium] `Attach` signature reconciliation — RESOLVED this
+  round: Option 3 was already-shipped, existing code, just not yet
+  recognized as the answer.** Originally found while cross-checking this
+  document against a since-completed, unrelated "Thin Adapters Audit"
+  round (independent of anything THAT audit changed — it never touched
+  `Attach` at all). §2.2's ORIGINAL pseudocode (now retired — see below)
+  sketched:
 
   ```go
   func Attach[T any](client *Client, ch events.Channel[T], caps ...Capability) error
@@ -1609,36 +1641,51 @@ one-at-a-time future-round policy as before:**
   adapters/*/*.go` that NONE of the 3 actually shipped signatures match
   this shape — all 3 are BULK, per-`*events.Client` functions wiring
   every subscriber/publisher on the Client at once, with NO `ch`/`caps`
-  parameter at all:
-  - `adapters/mqtt5/transport.go:77` —
-    `func Attach(client *events.Client, mqttClient MQTTClient, router MQTTRouter) error`
-  - `adapters/mqtt/transport.go:72` —
-    `func Attach(eventsClient *events.Client, mqttClient pahomqtt.Client) error`
-  - `adapters/zeromq/transport.go:66` —
-    `func Attach(client *events.Client, sock FramedSocket) error`
+  parameter at all (`adapters/mqtt5/transport.go:77`,
+  `adapters/mqtt/transport.go:72`, `adapters/zeromq/transport.go:66`).
 
-  **Open question, NOT resolved here** — how does Capability's `Attach`
-  relate to these 3 shipped functions?
-  1. A signature CHANGE to the existing bulk function (unclear how a
-     single, multi-channel call would accept PER-channel capabilities
-     through one variadic `caps` list spanning every channel it wires);
-  2. A NEW, differently-named per-channel function coexisting with the
-     bulk one (Go does not allow two `func Attach` overloads in one
-     package, so this needs its own name — e.g. `mqtt5.AttachChannel[T]`,
-     TBD); or
-  3. Capabilities attach via a SEPARATE, channel-scoped call BEFORE the
-     existing bulk `Attach` runs — mirroring how `Subscriber`/
-     `Publisher`'s own `.Use(mw)` already attaches per-channel behavior
-     onto the channel value itself, before ONE bulk `Client.Attach`/
-     `ServeSubscribers` call dispatches everything at once.
-
-  Option 3 is the MOST STRUCTURALLY CONSISTENT with today's shipped
-  pattern (channel-level concerns attach to the channel/`Subscriber`/
-  `Publisher` value itself, before the one bulk wiring call) — flagged
-  as a hypothesis to validate during the dedicated implementation-
-  planning round, not a decision made here. Whichever option is chosen,
-  every `Attach`-pseudocode snippet in this document (§2.2, §5.1, §5.2)
-  will need updating to match the resolved, real signature.
+  **The resolution — tracing the ACTUAL `Subscriber[T]`/`Publisher[T]`/
+  `ChannelHandle[T]` machinery (`api/events/builder.go`), not just the
+  `Attach` function in isolation, surfaces that this question is ALREADY
+  ANSWERED by existing shipped code:**
+  - `Subscriber[T].WithOptions(opts any)`/`Publisher[T].WithOptions(opts
+    any)` already exist TODAY, copying onto `ChannelHandle.HandlerOpts
+    any` — a general, ALREADY-SHIPPED, per-channel, adapter-owned,
+    DECLARE-TIME (i.e. BEFORE the bulk `Attach`/`ServeSubscribers` call)
+    configuration slot.
+  - `adapters/mqtt5.SubscribeOptions.QoS byte`'s own EXISTING doc comment
+    says this VERBATIM, confirmed via code: "when `Subscriber.WithOptions`
+    attaches a `SubscribeOptions` value as a channel's declare-time
+    `ChannelHandle.HandlerOpts`... there is no other way for
+    `ServeSubscribers` to learn a per-channel QoS." **This is Option 3,
+    literally already built** — `adapters/mqtt`, `adapters/mqtt5`, AND
+    `adapters/zeromq` each already have their OWN `SubscribeOptions`/
+    `PublishOptions` struct wired through this identical
+    `WithOptions`→`HandlerOpts` pipeline; `mqtt5.UserPropertyParam` is the
+    closest existing precedent for a LIST of adapter-owned declarations
+    living inside such a struct.
+  - **Confirmed resolution**: Capability supply is a DECLARE-TIME concern
+    via a NEW `Capabilities []<pkg>.Capability` field added to each
+    adapter's EXISTING `SubscribeOptions`/`PublishOptions` struct (mirrors
+    `UserPropertyParams []UserPropertyParam`'s own shape exactly) — NOT a
+    new `Attach(client, ch, caps...)` parameter as originally sketched
+    above. `caps ...Capability` variadic parameters are retired from
+    §2.2/§5.1/§5.2/§5.3's pseudocode; every one of those snippets should
+    read `SubscribeOptions{..., Capabilities: []mqtt5.Capability{mqtt5.QoSAtLeastOnce}}`
+    (attached via `Subscriber.WithOptions(opts)`) instead, when this
+    document's own implementation round updates them.
+  - **Additive, not breaking, for existing `QoS byte`/`Retained bool`
+    fields**: kept as-is (no correctness problem to fix), with the new
+    `Capabilities` slice as the RECOMMENDED, sealed-and-compile-time-
+    checked path going forward — mirrors how `rest.PathParam` struct
+    literals stay valid alongside `NewPathParam[T]`'s merge-capable
+    convenience (an escape hatch, not a deprecation).
+  - No new mechanism needed for compile-time adapter-rejection either —
+    a concretely-typed `Capabilities []mqtt5.Capability` field on
+    `mqtt5.SubscribeOptions` already rejects a `zeromq.Capability` value
+    at compile time, the identical guarantee §2.2's original `Attach`
+    parameter would have given, via ordinary Go field-type-checking
+    instead of a new function parameter.
 
 ## 8. Handler Disposition — a DISTINCT concept from `Capability`, RESOLVED via a fourth throwaway Go prototype
 
@@ -1905,12 +1952,17 @@ own "Lessons Learned" section warns is invisible to
 ## See also
 
 - [Common-Base + Per-Pattern-Derived Middleware Types](common-middleware-architecture.md) —
-  already superseded once by d-0003; this doc's `Feature`/`Provider` model is
-  now the intended LONG-TERM resolution instead (§3).
+  already superseded once by d-0003, and this doc's own EARLIER "Option B:
+  subsume D-0003" framing (superseded in turn — see §3) never actually
+  reopened it a second time; §3's confirmed 4-stage lifecycle model is the
+  CURRENT resolution instead — `Capability` and `Middleware[In,Out]` share a
+  lifecycle STAGE, not a Go type.
 - [D-0003 — Codec-Declared Middlewares](../design/d-0003-codec-declared-middlewares.md) —
-  the currently-SHIPPED mechanism this doc's chosen direction (§3, Option B)
-  intends to eventually subsume; remains the accurate description of shipped
-  code until a separate implementation round executes the migration.
+  the currently-SHIPPED mechanism this doc's `Capability` mechanism (§2)
+  coexists ALONGSIDE, per §3's confirmed 4-stage model — NOT a mechanism it
+  subsumes or migrates (that was an earlier, now-superseded framing); both
+  remain the accurate, current description of their respective shipped/
+  planned code.
 - `mqtt5-user-property-merge.md` (retired) — its own "registration
   surface... NOT resolved" question is answered by §5.2 above; its own
   motivating gap turned out to be a fixable bug in already-shipped code,
