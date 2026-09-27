@@ -55,6 +55,7 @@ type DemoObserver struct {
 	subscribed int
 	published  int
 	rejected   int
+	capApplied int
 }
 
 // NewDemoObserver returns a [DemoObserver] logging via logger.
@@ -91,11 +92,22 @@ func (o *DemoObserver) RecordSecurityRejection(location, scheme string) {
 	o.logger.Warn("observer.security_rejection", "location", location, "scheme", scheme)
 }
 
+// RecordCapabilityApplied implements [stats.CapabilityObserver] — called
+// by adapters/mqtt5/adapters/mqtt/adapters/zeromq once per
+// protocol-native Capability (QoS, Retained, HWM, Conflate, ...) actually
+// exercised during dispatch. See demo_capability_mechanism.go.
+func (o *DemoObserver) RecordCapabilityApplied(location, capability string) {
+	o.mu.Lock()
+	o.capApplied++
+	o.mu.Unlock()
+	o.logger.Info("observer.capability_applied", "location", location, "capability", capability)
+}
+
 // Summary returns a snapshot of counts recorded so far — printed at the
 // end of main.go's demo run to show the shared Observer really did
 // accumulate events from every layer/adapter/demo.
-func (o *DemoObserver) Summary() (subscribed, published, rejected int) {
+func (o *DemoObserver) Summary() (subscribed, published, rejected, capabilitiesApplied int) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	return o.subscribed, o.published, o.rejected
+	return o.subscribed, o.published, o.rejected, o.capApplied
 }

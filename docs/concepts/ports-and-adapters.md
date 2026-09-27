@@ -211,38 +211,38 @@ serve, precisely:
 > **Adapters are thin protocol shims:** wrap exactly one external SDK,
 > contain zero declarative/business logic, and expose any
 > adapter-specific extension (MQTT QoS, User Properties, ...) as a
-> SEALED, adapter-owned `Capability` interface supplied only at
-> `Attach`/`Bind` time — never baked into an `api/*` declaration. All
-> declaration, validation, and dispatch logic lives in `api/*`/`ports`.
-> A user's entire vocabulary is `api/*`/`ports`: declare, compose,
-> attach — the adapter package is touched only to `Attach`/`Bind` and
-> supply its `Options`/`Capability` values, never as a second
-> business-logic API.
+> SEALED, adapter-owned `Capability` interface supplied at DECLARE time
+> (via that adapter's own `SubscribeOptions`/`PublishOptions.Capabilities`
+> field) — never baked into an `api/*` declaration. All declaration,
+> validation, and dispatch logic lives in `api/*`/`ports`. A user's
+> entire vocabulary is `api/*`/`ports`: declare, compose, attach — the
+> adapter package is touched only to `Attach`/`Bind` and supply its
+> `Options`/`Capability` values, never as a second business-logic API.
 
 **Already shipped vs. genuinely new.** Most of this guardrail is not
 new — it restates the two rules already established above in this page
 ("Relationship to adapters used directly" and "Convenience helpers
 belong in `api/*`, not adapters"), and their `add-a-new-adapter/SKILL.md`
-mandatory counterparts (Step 5c, Step 5d). The genuinely NEW piece is the
-sealed, per-adapter `Capability` interface — a related, still-open
-question of where adapter-specific EXTENSION POINTS live (e.g. MQTT's
-QoS level or User Properties, which have no cross-protocol meaning
-ZeroMQ or a future AMQP adapter could honor).
-[Protocol-Native Features](../roadmap/protocol-native-features.md)
-designs (not yet implemented) exactly this: one unexported marker method
-PER adapter package, mirroring `ports.Pattern`'s own sealing technique,
-supplied only at `Attach`/`Bind` time, so a value from the wrong adapter
-package is a Go COMPILE error rather than a silent no-op or a runtime
-check — see that doc's §2.1/§2.2 for the full design.
+mandatory counterparts (Step 5c, Step 5d). The sealed, per-adapter
+`Capability` interface has SHIPPED (see
+[`docs/design/d-0006-protocol-native-capabilities.md`](../design/d-0006-protocol-native-capabilities.md)):
+one unexported marker method PER adapter package (`adapters/mqtt`,
+`adapters/mqtt5`, `adapters/zeromq` each define their OWN `Capability`
+interface), mirroring `ports.Pattern`'s own sealing technique. A
+capability value is supplied via a `Capabilities []<pkg>.Capability`
+field on that adapter's EXISTING `SubscribeOptions`/`PublishOptions`
+struct (attached via `events.Subscriber.WithOptions`/
+`events.Publisher.WithOptions` — NOT a new `Attach`-time parameter), so
+a value from the wrong adapter package is a Go COMPILE error rather than
+a silent no-op or a runtime check.
 
-**Until the `Capability` mechanism ships**: if a new adapter needs a
-protocol-specific toggle/option with no cross-protocol meaning, keep it
-a plain, adapter-owned field on that adapter's own `Options`/
-`SubscribeOptions`/etc. struct — do NOT add it to the owning `api/*`
-package's declaration type (`events.Channel`, `rest.Route`, etc.), even
-as a "just this one field" convenience. `api/events/mqtt_qos.go`
-(`MQTTQoS`/`Subscribe.QoS`) is the one confirmed EXISTING exception to
-this rule in the codebase today — already cataloged as drift to be
-resolved once `Capability` ships (see
-[Protocol-Native Features](../roadmap/protocol-native-features.md)'s
-§5.1), not a precedent to extend.
+**If a new adapter needs a protocol-specific toggle/option with no
+cross-protocol meaning**: define a sealed `Capability` type in that
+adapter's OWN package (mirroring `mqtt5.QoS`/`zeromq.HWM`) and a
+`Capabilities []<pkg>.Capability` field on its `SubscribeOptions`/
+`PublishOptions` — do NOT add the option to the owning `api/*` package's
+declaration type (`events.Channel`, `rest.Route`, etc.), even as a "just
+this one field" convenience. `api/events/mqtt_qos.go`
+(`MQTTQoS`/`Subscribe.QoS`) is kept as an ADDITIVE, still-fully-supported
+legacy path — not deprecated, but not a precedent to extend either; new
+protocol-specific toggles use the `Capability` mechanism.

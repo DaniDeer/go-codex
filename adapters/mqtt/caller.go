@@ -418,6 +418,24 @@ func subscribeEntryReflect(ctx context.Context, client pahomqtt.Client, entry ev
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
 	}
+	// opts.Capabilities (the RECOMMENDED, sealed path) overrides opts.QoS
+	// when supplied — reported once per exercised capability via
+	// [stats.CapabilityObserver].
+	if capQoS, qosSet, _, _ := resolveCapabilities(opts.Capabilities); qosSet {
+		opts.QoS = byte(capQoS)
+		if capObs, ok := obs.(stats.CapabilityObserver); ok {
+			capObs.RecordCapabilityApplied(topic, capQoS.CapabilityName())
+		}
+	}
+	if specs, ok := elem.FieldByName("CapabilitySpecs").Interface().([]events.CapabilitySpec); ok && len(specs) > 0 {
+		supplied := make([]any, len(opts.Capabilities))
+		for i, c := range opts.Capabilities {
+			supplied[i] = c
+		}
+		if covErr := events.CheckCapabilityCoverage(topic, specs, supplied); covErr != nil {
+			return covErr
+		}
+	}
 
 	if err := validateSubscribeImplementationShapesReflect(topic, handlerVal.Type().In(1), impls); err != nil {
 		return err
@@ -477,6 +495,13 @@ func subscribeEntryReflect(ctx context.Context, client pahomqtt.Client, entry ev
 		}
 
 		msgCtx := context.WithValue(ctx, contextKey{}, msg)
+		// EnsureDispositionBox is called unconditionally, at zero cost to
+		// adapters/callers that never call SetDisposition — mqtt v3 has
+		// no acknowledgement concept of its own today, but the plumbing
+		// is proven end-to-end here for a future ack-capable adapter
+		// (e.g. AMQP) to consume without further core changes. See
+		// docs/design/d-0006-protocol-native-capabilities.md's §8.
+		msgCtx = middleware.EnsureDispositionBox(msgCtx)
 
 		if len(secReqs) > 0 {
 			if err := runSubscribeSecurityImplsReflect(msgCtx, msg, valuePtr, secReqs, impls); err != nil {
@@ -492,10 +517,15 @@ func subscribeEntryReflect(ctx context.Context, client pahomqtt.Client, entry ev
 		}
 
 		results := wrapped.Call([]reflect.Value{reflect.ValueOf(msgCtx), valuePtr.Elem()})
-		if errI, _ := results[0].Interface().(error); errI != nil {
+		handlerErr, _ := results[0].Interface().(error)
+		disposition := middleware.ResolveDisposition(msgCtx, handlerErr)
+		if dispObs, ok := obs.(stats.DispositionObserver); ok {
+			dispObs.RecordDisposition(msg.Topic(), disposition)
+		}
+		if handlerErr != nil {
 			obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
 			if opts.OnError != nil {
-				opts.OnError(SubscribeError{Kind: KindHandler, Topic: msg.Topic(), Err: errI})
+				opts.OnError(SubscribeError{Kind: KindHandler, Topic: msg.Topic(), Err: handlerErr})
 			}
 			return
 		}

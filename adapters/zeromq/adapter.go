@@ -61,6 +61,14 @@ type SubscribeOptions[T any] struct {
 	// with location "payload".
 	// Defaults to [stats.NoopObserver] when nil.
 	Observer stats.Observer
+
+	// Capabilities supplies sealed, compile-time-checked protocol-native
+	// declarations (currently [HWM], [Conflate]) for this channel —
+	// applied to the socket once, at ServeSubscribers's SetSubscription
+	// time. Each exercised capability is reported once via
+	// [stats.CapabilityObserver.RecordCapabilityApplied] when Observer
+	// implements it.
+	Capabilities []Capability
 }
 
 // PublishOptions configures [publish]/[publishHandle]. Generic over T
@@ -74,6 +82,12 @@ type PublishOptions[T any] struct {
 	// "payload". Topic variable errors are reported with location "topic_var".
 	// Defaults to [stats.NoopObserver] when nil.
 	Observer stats.Observer
+
+	// Capabilities supplies sealed, compile-time-checked protocol-native
+	// declarations (currently [HWM], [Conflate]) for this publish —
+	// applied to the socket via [HWMSetter]/[ConflateSetter] when the
+	// configured [FramedSocket] implements them.
+	Capabilities []Capability
 }
 
 // ServeOptions configures [Serve].
@@ -716,6 +730,7 @@ func publish[T any](
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
 	}
+	applyCapabilities(sock, opts.Capabilities, obs, handle.Topic)
 
 	if err := validatePublishImplementationShapes[T](handle.ClientImplementations); err != nil {
 		return err

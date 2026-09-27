@@ -709,3 +709,42 @@ exported symbol.
   this," the same way `docs/design/d-0001-rest-middleware-workflow-simplification.md`'s Lessons Learned
   documents `Serve`/`ServeSSE` silently losing `rest.CheckCoverage` when `Register`/`RegisterSSE`
   were deleted.
+
+## 15. Adapter Thinness & Capability Guardrail
+
+Verify every adapter package stays a thin protocol shim, and that any protocol-specific
+extension point uses the sealed `Capability` mechanism instead of leaking into `api/*` or
+inventing an ad-hoc option. See `docs/design/d-0006-protocol-native-capabilities.md` and
+`docs/concepts/ports-and-adapters.md`'s "Guardrail: adapters as pure protocol shims" section.
+
+| Check | Expected |
+|-------|----------|
+| Sealed `Capability` interface | Each adapter package exposing a protocol-native toggle (MQTT QoS/Retained, ZeroMQ HWM/Conflate, ...) defines its OWN `type Capability interface{ isXxxCapability() }` — never shared across adapter packages, never a plain `any`/string-keyed map |
+| `Capabilities` field placement | Concrete `Capability` values are supplied via a `Capabilities []<pkg>.Capability` field on that adapter's EXISTING `SubscribeOptions`/`PublishOptions` struct — attached at DECLARE time via `events.Subscriber.WithOptions`/`events.Publisher.WithOptions`. Flag any new `Attach`/`Bind`-time `caps ...Capability` parameter as a design regression (superseded shape) |
+| No `api/*`-level leakage | A new protocol-specific field/type must NOT be added to `events.Channel`/`events.Subscribe`/`events.Publish`/`rest.Route`/etc. — only to the adapter's own `Options` struct. `api/events/mqtt_qos.go` (`MQTTQoS`/`Subscribe.QoS`) is the one grandfathered, ADDITIVE legacy exception — not a precedent to extend |
+| `CapabilitySpec` + coverage | If a channel declares `events.CapabilitySpec` values, the adapter's `ServeSubscribers` (or equivalent bulk dispatch) calls `events.CheckCapabilityCoverage` automatically — a caller should never have to remember to invoke it by hand |
+| `CapabilityObserver` reporting | Each capability actually exercised during dispatch reports once via `stats.CapabilityObserver.RecordCapabilityApplied` (guarded by a type assertion — never assume the configured `Observer` implements it) |
+| Handler Disposition wiring | An adapter with no acknowledgement concept still calls `middleware.EnsureDispositionBox`/`middleware.ResolveDisposition` around its dispatch loop (zero-cost when no handler ever calls `SetDisposition`) — proves the plumbing for a future ack-capable adapter without requiring one to exist yet. Report the resolved disposition via `stats.DispositionObserver.RecordDisposition` (guarded) |
+
+### Rules
+
+- **A `Capability` mismatch across adapter packages must be a Go COMPILE error**, never a runtime
+  check, boolean `Supports(...)` method, or silent no-op. If a review finds a capability-like
+  mechanism that resolves compatibility at runtime instead of compile time, it is a `bug`-severity
+  finding, not `small`.
+- **`Capabilities` wins over an adapter's own legacy numeric/boolean shorthand field** (e.g.
+  `mqtt5.SubscribeOptions.QoS byte`) when both are set — this is the documented precedence; do not
+  flag the coexistence of both fields as duplication, and do not propose deprecating the legacy
+  field (additive, not breaking, per D-0006's own explicit decision).
+- **Disposition is a DISTINCT axis from Capability — do not conflate them in a finding.**
+  `Capability` is declare-time, static configuration; `middleware.Disposition` is a handler's
+  per-message runtime outcome signal. A capability-shaped review finding that also touches
+  Disposition should be split into two findings.
+- **`events.Address`/`events.TopicAddress` are standalone additive types, NOT a retrofit of
+  `events.Channel[T]`.** Do not flag the absence of a `Channel[Addr, T]` two-type-parameter
+  signature as an incomplete implementation — this was a deliberate, documented scope decision
+  (a genuine name collision with the already-shipped `NewChannelFromTopic[T any](topic Topic,
+  ...)` constructor, plus zero real consumer until a future AMQP adapter exists). Only flag this
+  area if a NEW adapter reintroduces the exact rejected pattern (a bespoke, adapter-owned address
+  type bypassing `events.Address` entirely, when `events.Address`/`events.TopicAddress` would have
+  worked).

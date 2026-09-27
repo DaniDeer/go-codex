@@ -1,33 +1,53 @@
-# Feature — sealed, per-adapter capability interfaces for protocol-native declarations
+# D-0006 — Protocol-Native Capabilities
 
-> **Status:** Idea only — no driver yet, no code written. This doc has GROWN
-> across several rounds: from its original narrow scope (a pub/sub-only
-> `ProtocolFeature` sealed interface) to a cross-boundary design built around
-> an OPEN `Feature`/`Provider` primitive (string-based capability matching),
-> to its CURRENT mechanism — a SEALED, per-adapter capability interface
-> (mirroring `ports.Pattern`'s own already-proven technique) with capabilities
-> supplied at DECLARE time, via a new `Capabilities []<pkg>.Capability` field
-> on each adapter's EXISTING `SubscribeOptions`/`PublishOptions` struct (not a
-> new `Attach`-time parameter — see §7 Review-13's resolution), not baked
-> into a channel/route's own declared type. **This pivot happened because the
-> open, string-ID-based `Feature`/`Provider` primitive could not guarantee Go
-> compile-time errors the way today's sealed `RouteOpt`/`ChannelOpt` already
-> do — and compile-time safety is a non-negotiable requirement, not a
-> nice-to-have, for this redesign.** Read §2 for the current mechanism; §1
-> still holds as prior-art analysis (why today's mechanisms are each
-> partial); §5's worked examples and §7's open questions have been updated
-> to match the current mechanism. **§8 adds a DISTINCT, complementary
-> concept — Handler Disposition** — resolving how a handler's PER-MESSAGE
-> RUNTIME outcome (e.g. an AMQP ack/nack/requeue decision) gets abstracted
-> through the API layer, separate from `Capability`'s declare-time
-> configuration.
+> **Status: GRADUATED — core mechanisms fully IMPLEMENTED and shipped.**
+> This document was originally `docs/roadmap/protocol-native-features.md`;
+> it graduated here once its Capability mechanism, spec-rendering,
+> Observer integration, and Handler Disposition all shipped (mirroring
+> [D-0001](d-0001-rest-middleware-workflow-simplification.md)'s own
+> graduation precedent). What follows below this status block is largely
+> the ORIGINAL design-round text (kept for its reasoning/history value,
+> per this repo's convention — see [D-0001](d-0001-rest-middleware-workflow-simplification.md)'s
+> own "Idea only" framing preserved inline for the same reason); read this
+> block first for the actual shipped shape.
 >
-> **Phase 0 (design resolution) is COMPLETE as of this round:** every
-> previously-open §7 item material to implementation — Review-13 (Attach
-> signature), spec-rendering (`CapabilitySpec`/`x-capabilities`), and
-> Review-12 (Capability Observer) — is now RESOLVED and written into this
-> doc. Remaining work is Phase 1+ implementation (see
-> `docs/roadmap/index.md` for current phase tracking), not further design.
+> **Shipped**: a SEALED, per-adapter `Capability` interface (mirrors
+> `ports.Pattern`'s technique — `adapters/mqtt.Capability`,
+> `adapters/mqtt5.Capability`, `adapters/zeromq.Capability`, each with its
+> own concrete types: `QoS`/`Retained` for mqtt/mqtt5, `HWM`/`Conflate`
+> for zeromq), supplied at DECLARE time via a `Capabilities
+> []<pkg>.Capability` field on each adapter's EXISTING
+> `SubscribeOptions`/`PublishOptions` struct (attached via
+> `events.Subscriber.WithOptions`/`events.Publisher.WithOptions` —
+> §7 Review-13's resolution; NOT a new `Attach`-time parameter as this
+> doc's earlier §2.2 originally sketched). Purely additive alongside the
+> pre-existing `QoS byte`/`Retained bool`/`api/events/mqtt_qos.go`
+> fields — those stay as a documented, still-supported legacy path.
+> `events.CapabilitySpec` (a `ChannelOpt`) + `events.CheckCapabilityCoverage`
+> (called automatically by each adapter's `ServeSubscribers`) + the
+> AsyncAPI `x-capabilities` vendor-extension render — all shipped, per §7's
+> resolutions. `stats.CapabilityObserver`/`stats.DispositionObserver` — both
+> optional, type-asserted, mirroring `SecurityObserver` — shipped. §8's
+> Handler Disposition (`middleware.Disposition`/`EnsureDispositionBox`/
+> `SetDisposition`/`DispositionFromContext`/`ResolveDisposition`) shipped
+> in `middleware` (not `api/events`, so `api/reqreply` reuses it with no
+> `api/events` dependency), wired into all 3 event adapters AND both
+> reqreply adapters (`mqtt5`, `zeromq`) — each currently resolves to a
+> no-op-equivalent default (no adapter has a real ack/nack protocol yet),
+> proving the plumbing end-to-end for a future ack-capable adapter (AMQP)
+> to consume without further core changes.
+>
+> **Deferred, not abandoned**: `events.Address`/`events.TopicAddress`
+> shipped as standalone, ADDITIVE types (§2.3/§5.3). The originally-planned
+> full `Channel[Addr Address, T any]` generic retrofit of `Channel[T]`/
+> `NewChannel` (and its ~300-call-site migration) is DEFERRED — discovered
+> mid-implementation to COLLIDE with the already-shipped
+> `NewChannelFromTopic[T any](topic Topic, ...)` symbol (a completely
+> different, pre-existing constructor this doc's plan assumed was free to
+> repurpose), and has zero real consumer today (building the AMQP adapter
+> itself remains `docs/roadmap/amqp-adapter.md`'s own separate, future
+> effort). A fresh naming survey is required before any future round
+> attempts this migration.
 >
 > **Relationship to already-SHIPPED designs — stated up front, not buried:**
 > §3 RESOLVES (does not merely propose) the relationship to
@@ -45,7 +65,7 @@
 > make breaking changes if we can achieve these goals more easily").
 >
 > **Supersedes** the open question in
-> [Common-Base + Per-Pattern-Derived Middleware Types](common-middleware-architecture.md)
+> [Common-Base + Per-Pattern-Derived Middleware Types](../roadmap/common-middleware-architecture.md)
 > (already superseded once, by d-0003) for the specific finding it raised
 > (a single shared `middleware.Middleware` struct carrying REST-only
 > fields) — §3's confirmed 4-stage model is now the long-term resolution
@@ -55,7 +75,7 @@
 > **The formerly-open "registration surface... NOT resolved" question a
 > now-retired sibling roadmap doc (`mqtt5-user-property-merge.md`) raised
 > is ANSWERED TWO WAYS today**: this doc's own §5.2 sealed `mqtt5.Capability`
-> design is one answer (still unimplemented); the OTHER, ALREADY-SHIPPED
+> design is one answer (now ALSO shipped, see this doc's own Status block above); the OTHER, ALREADY-SHIPPED
 > answer is
 > [D-0003](../design/d-0003-codec-declared-middlewares.md)'s own Addendum
 > (folded in from the now-deleted `reqreply-codec-declared-middleware.md`
@@ -419,7 +439,13 @@ to one destination, get individually-addressed messages").
 **The compile-time-safety resolution for (a), confirmed via the prototype
 (full reasoning and evidence in §5.3):** `events.Channel[T]` gains a SECOND
 type parameter, `Addr`, constrained to an `Address` interface that requires
-ONE real method — `Template() string` — not a bare marker:
+ONE real method — `Template() string` — not a bare marker. **Implementation
+status (see §7's "Blocking discovery... RESOLVED this round" note):** the
+`Address`/`TopicAddress` TYPES below have SHIPPED, as standalone, additive
+types — the retrofit of `Channel[T]` itself into `Channel[Addr, T]` (and the
+~300-call-site migration that would require) is DEFERRED until a real
+Address-needing adapter (AMQP) exists to consume it. The pseudocode below
+therefore still describes the FULL, not-yet-built target shape:
 
 ```go
 // package events
@@ -1061,7 +1087,7 @@ cross-cutting-concern mechanism at all is no longer an open question
 without a driver — the driver is the library's UX North Star
 (declarative/simple/consistent workflow), and it is already being
 pursued, as its own decorator-shaped design, in
-[Declarative Middleware](declarative-middleware.md)'s remaining `ports`
+[Declarative Middleware](../roadmap/declarative-middleware.md)'s remaining `ports`
 scope. That doc, not this one, is where `ports.File`/`Cache`/`SQL`/`Dir`'s
 cross-cutting-concern story gets resolved (see §7's Review-7 bullet for
 the cross-reference).
@@ -1450,13 +1476,38 @@ one-at-a-time future-round policy as before:**
 
   This is a genuinely large blast radius, not a small one — any adoption
   of `Channel[Addr, T]`'s two-type-parameter signature touches roughly 300
-  places across the repo. One mitigating, but NOT yet verified, factor:
-  the overwhelming majority of the 272 real call sites follow one
-  mechanical shape (`events.NewChannel[T](topic, codec, ...)` →
-  `events.NewChannelFromTopic(topic, codec, ...)`), suggesting a scripted
-  codemod is plausible — this has only been confirmed by visual pattern
-  inspection, not by actually running a migration tool, so it stays a
-  hypothesis, not a resolved sub-question.
+  places across the repo.
+
+  **Blocking discovery this round — the hypothesized migration name
+  COLLIDES with an already-shipped, unrelated symbol.** The mitigating
+  hypothesis above (`events.NewChannel[T](topic, codec, ...)` →
+  `events.NewChannelFromTopic(topic, codec, ...)`) assumed
+  `NewChannelFromTopic` was free to repurpose. It is NOT:
+  `NewChannelFromTopic[T any](topic Topic, codec codex.Codec[T], opts
+  ...ChannelOpt) Channel[T]` already exists, shipped, documented, and
+  actively used — it takes a pre-built [`Topic`] VALUE (topic template +
+  bundled `TopicParam`s), a COMPLETELY DIFFERENT shape from the
+  string-topic constructor this section's plan needed that name for.
+  Reusing the name would either silently change its meaning (a real
+  breaking change disguised as a rename) or require a signature-based
+  overload Go generics do not support.
+
+  **RESOLVED this round — Address parameterization ships ADDITIVELY,
+  NOT as a retrofit of `Channel[T]`/`NewChannel[T]`.** Given (a) this
+  naming collision proves the originally-planned migration was never as
+  mechanical as hoped, (b) Phase 4 (the only concrete CONSUMER of a
+  non-topic-string `Address` — a real AMQP adapter) is explicitly out of
+  scope for this implementation round, and (c) a ~300-call-site breaking
+  change with ZERO real consumer today is not yet justified — this round
+  ships `events.Address` (the `Template() string` interface) and
+  `events.TopicAddress{Topic string}` (today's only implementation) as
+  standalone, ADDITIVE types with NO changes to `Channel[T]`, `NewChannel`,
+  or any of the 272 real call sites. `Channel[Addr Address, T any]`'s full
+  generic retrofit (and the resulting mass migration) is DEFERRED until
+  `docs/roadmap/amqp-adapter.md`'s own future round actually needs a
+  non-topic-string address to exist for something to consume — at which
+  point a fresh naming survey (avoiding today's `NewChannelFromTopic`
+  collision) is required BEFORE any call-site migration begins.
 - **[Review-5, Medium] Transport lock-in — RESOLVED/reframed this round.**
   Supplying a capability at `Attach` time (not baked into the channel's own
   declared type) means the lock-in is now EXPLICIT and LOCAL to that one
@@ -1479,7 +1530,7 @@ one-at-a-time future-round policy as before:**
   mechanism.** The driver is the library's own UX North Star (declarative/
   simple/consistent workflow for the user), not adapter/protocol
   capability mismatch — and it is already being pursued in
-  [Declarative Middleware](declarative-middleware.md)'s remaining
+  [Declarative Middleware](../roadmap/declarative-middleware.md)'s remaining
   `ports.File`/`Cache`/`SQL`/`Dir` scope (decorator-shaped cross-cutting
   concerns), NOT here. §5.6's structural observation stands unchanged:
   ports has no separate "Attach" binding step to hang a `Capability` off
@@ -1951,7 +2002,7 @@ own "Lessons Learned" section warns is invisible to
 
 ## See also
 
-- [Common-Base + Per-Pattern-Derived Middleware Types](common-middleware-architecture.md) —
+- [Common-Base + Per-Pattern-Derived Middleware Types](../roadmap/common-middleware-architecture.md) —
   already superseded once by d-0003, and this doc's own EARLIER "Option B:
   subsume D-0003" framing (superseded in turn — see §3) never actually
   reopened it a second time; §3's confirmed 4-stage lifecycle model is the
@@ -1972,7 +2023,7 @@ own "Lessons Learned" section warns is invisible to
   original finding needed to re-evaluate Response Topic/Correlation Data
   against; now shipped, and the re-evaluation DECIDED it stays implicit,
   NOT a declared `Capability`/`Feature` (see §6's own updated entry).
-- [Declarative Middleware](declarative-middleware.md) — its own unshipped
+- [Declarative Middleware](../roadmap/declarative-middleware.md) — its own unshipped
   `ports.File[T]` sketch is the basis for §5.6's worked example.
 - `docs/concepts/api-contracts.md` — the "one struct, one call" principle every
   worked example in §5 is checked against for non-regression.

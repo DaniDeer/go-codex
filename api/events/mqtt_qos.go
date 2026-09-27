@@ -5,6 +5,17 @@ package events
 // adapters/mqtt and adapters/mqtt5 translate this to their own byte wire
 // value (numerically identical to the MQTT wire protocol's own QoS byte,
 // 0/1/2, by design — no translation table needed).
+//
+// MQTTQoS/PublishAttributes are an ADDITIVE, still-fully-supported legacy
+// path — kept unchanged, not deprecated, since neither has any correctness
+// problem. The RECOMMENDED path going forward is each adapter's own sealed
+// Capability mechanism (e.g. adapters/mqtt5.QoS/adapters/mqtt5.Retained,
+// supplied via SubscribeOptions.Capabilities/PublishOptions.Capabilities),
+// which is compile-time-checked (a zeromq.Capability cannot be supplied to
+// an mqtt5.SubscribeOptions.Capabilities field — a Go compile error) and
+// generalizes to adapters (e.g. zeromq HWM/Conflate) that have no
+// MQTT-specific concept at all. See
+// docs/design/d-0006-protocol-native-capabilities.md.
 type MQTTQoS byte
 
 const (

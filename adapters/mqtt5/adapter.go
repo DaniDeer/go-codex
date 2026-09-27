@@ -139,6 +139,15 @@ type SubscribeOptions struct {
 	// Per-property validation errors are also reported via
 	// [stats.Observer.RecordValidationError] with location "user_property".
 	UserPropertyParams []UserPropertyParam
+
+	// Capabilities supplies sealed, compile-time-checked protocol-native
+	// declarations (currently [QoS]) for this channel — the RECOMMENDED
+	// path going forward, alongside the pre-existing QoS field (kept, not
+	// deprecated). When both are set, Capabilities wins. Each exercised
+	// capability is reported once via
+	// [stats.CapabilityObserver.RecordCapabilityApplied] when Observer
+	// implements it.
+	Capabilities []Capability
 }
 
 // PublishOptions configures [publish]/[publishHandle]. Generic over T so
@@ -158,6 +167,13 @@ type PublishOptions[T any] struct {
 	// UserProperties, when non-nil, are attached to outgoing MQTT 5 messages.
 	// Use this to send per-message metadata (e.g. trace IDs, tenant IDs).
 	UserProperties []UserProperty
+
+	// Capabilities supplies sealed, compile-time-checked protocol-native
+	// declarations (currently [Retained]) for this publish — the
+	// RECOMMENDED path going forward. Only consulted by [publishHandle]'s
+	// zero-value qos/retained fallback (an explicit call-time
+	// qos/retained argument still always wins).
+	Capabilities []Capability
 }
 
 // Subscribe subscribes to handle.Topic and dispatches messages to fn.
@@ -846,6 +862,23 @@ func publish[T any](
 	obs := opts.Observer
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
+	}
+	// opts.Capabilities (the RECOMMENDED, sealed path) is consulted as a
+	// fallback when the caller didn't pass an explicit non-default
+	// qos/retained.
+	if capQoS, qosSet, capRetained, retainedSet := resolveCapabilities(opts.Capabilities); qosSet || retainedSet {
+		if qos == 0 && qosSet {
+			qos = byte(capQoS)
+			if capObs, ok := obs.(stats.CapabilityObserver); ok {
+				capObs.RecordCapabilityApplied(handle.Topic, capQoS.CapabilityName())
+			}
+		}
+		if !retained && retainedSet {
+			retained = bool(capRetained)
+			if capObs, ok := obs.(stats.CapabilityObserver); ok {
+				capObs.RecordCapabilityApplied(handle.Topic, capRetained.CapabilityName())
+			}
+		}
 	}
 
 	if err := validatePublishImplementationShapes[T](handle.ClientImplementations); err != nil {

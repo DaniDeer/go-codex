@@ -42,7 +42,7 @@ application reinventing it.
 | A ctx-carried correlation ID, generated once per logical unit of work | Full distributed tracing (already covered by `TraceObserver`/OpenTelemetry integration) — this is a lighter-weight, NOT-a-span-tree primitive |
 | Retrieval helpers for application code (handlers, Fns, middleware) | Auto-propagation ACROSS process boundaries (e.g. auto-injecting into outgoing HTTP headers or MQTT user properties) — Phase 2 at best |
 | Reaching structured logs | Pluggable ID generation strategy (ULID vs UUID vs snowflake) — default only, Phase 1 |
-| REST/events/reqreply adapter entry points setting it once per request/message/call | `ports.File`/`Cache`/`SQL`/`Dir` coverage — the user explicitly asked for this; flagged as a genuinely open question below, not force-included (ports lack the per-request dispatch loop REST/events/reqreply have, the SAME structural point `protocol-native-features.md`'s Review-7 already raised for capability-like mechanisms) |
+| REST/events/reqreply adapter entry points setting it once per request/message/call | `ports.File`/`Cache`/`SQL`/`Dir` coverage — the user explicitly asked for this; flagged as a genuinely open question below, not force-included (ports lack the per-request dispatch loop REST/events/reqreply have, the SAME structural point `d-0006-protocol-native-capabilities.md`'s Review-7 already raised for capability-like mechanisms) |
 | Whether/how it reaches `stats.Observer` at all | — still open, see "Observer integration" below (structural blocker: existing methods take no `ctx`) |
 
 ## Prior art already in this codebase
@@ -182,7 +182,7 @@ ctx is invisible to these calls without either:
 
 - **(a) a breaking signature change** — rejected on sight, same
   "don't compromise an existing shipped contract" bar this codebase
-  applies elsewhere (e.g. `protocol-native-features.md`'s Review-8
+  applies elsewhere (e.g. `d-0006-protocol-native-capabilities.md`'s Review-8
   explicitly rejected changing `RecordSubscribe`'s `success bool`
   meaning for the same reason); or
 - **(b) a NEW, additive extension interface**, mirroring
@@ -251,7 +251,7 @@ type RequestIDObserver interface {
    explicitly asked for this. Worth a concrete, dedicated investigation
    — but ports' `Read`/`Write`/`Get`/`Set` call shape has no per-request
    dispatch loop or `Attach` step the way REST/events/reqreply do, the
-   SAME structural point `protocol-native-features.md`'s Review-7
+   SAME structural point `d-0006-protocol-native-capabilities.md`'s Review-7
    already raised for capability-like mechanisms on ports. NOT assumed
    away — flagged for a dedicated future round, not force-resolved here.
 4. **ID generation default** — a UUID is the obvious default (matches
@@ -284,7 +284,7 @@ type RequestIDObserver interface {
 
 ## See also
 
-- [Protocol-Native Features](protocol-native-features.md) — §8 Handler
+- [Protocol-Native Features](../design/d-0006-protocol-native-capabilities.md) — §8 Handler
   Disposition and its Review-8 `DispositionObserver` are the closest
   existing precedent for "add a new, additive Observer extension
   interface, don't change an existing method's signature." The same

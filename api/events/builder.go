@@ -556,6 +556,9 @@ type channelBuilder struct {
 	// (there is no builder-level equivalent; mirrors
 	// [rest's routeBuilder.securitySchemes]).
 	securitySchemes map[string]SecurityScheme
+	// capabilitySpecs holds this channel's own [CapabilitySpec]
+	// declarations — the ONLY source of [ChannelHandle.CapabilitySpecs].
+	capabilitySpecs []CapabilitySpec
 }
 
 // ChannelHandle is returned by [Subscriber.Handle]/[Publisher.Handle]. It holds the spec
@@ -699,6 +702,14 @@ type ChannelHandle[T any] struct {
 	// override still wins when set to a non-zero value). Zero value
 	// ([QoSAtMostOnce]) when [Subscribe.QoS] was never declared.
 	SubscribeQoS MQTTQoS
+
+	// CapabilitySpecs holds this channel's own [CapabilitySpec]
+	// declarations — spec-only, adapter-agnostic descriptions of
+	// protocol-native capabilities (e.g. QoS, Retained). A supplying
+	// adapter's own SubscribeOptions/PublishOptions.Capabilities field
+	// carries the REAL, sealed Capability values at declare time; use
+	// [CheckCapabilityCoverage] to check the two agree.
+	CapabilitySpecs []CapabilitySpec
 }
 
 // ResolvePublishAttributes derives [PublishAttributes] (QoS/Retained) for
@@ -2309,6 +2320,7 @@ func buildChannelHandle[T any](ch Channel[T], client *Client, role channelRole, 
 		ClientImplementations:    clientImpls,
 		MiddlewareHandlers:       middlewareHandlers,
 		ClientMiddlewareHandlers: clientMiddlewareHandlers,
+		CapabilitySpecs:          slices.Clone(cb.capabilitySpecs),
 	}
 	if role == roleSubscribe && cb.subscribe != nil {
 		h.SubscribeQoS = cb.subscribe.QoS
@@ -2935,12 +2947,13 @@ func checkOp(op *asyncapi.Operation, resolvable, seen map[string]bool, unresolve
 // TopicParam.Description adds a human-readable description.
 func buildChannelItem[T any](topic string, codec codex.Codec[T], cb channelBuilder) asyncapi.ChannelItem {
 	item := asyncapi.ChannelItem{
-		Address:     topic,
-		Title:       cb.meta.Title,
-		Summary:     cb.meta.Summary,
-		Description: cb.meta.Description,
-		Tags:        slices.Clone(cb.meta.Tags),
-		Parameters:  buildTopicParameters(topic, cb.topicParams),
+		Address:      topic,
+		Title:        cb.meta.Title,
+		Summary:      cb.meta.Summary,
+		Description:  cb.meta.Description,
+		Tags:         slices.Clone(cb.meta.Tags),
+		Parameters:   buildTopicParameters(topic, cb.topicParams),
+		Capabilities: buildCapabilitySpecs(cb.capabilitySpecs),
 	}
 
 	if cb.subscribe != nil {
@@ -2982,6 +2995,19 @@ func buildChannelItem[T any](topic string, codec codex.Codec[T], cb channelBuild
 // Priority for each variable's schema:
 //  1. TopicParam.Codec.Schema — when a codec is registered for the variable
 //  2. Default: {type: string}
+//
+// buildCapabilitySpecs converts []CapabilitySpec to its render-layer mirror.
+func buildCapabilitySpecs(specs []CapabilitySpec) []asyncapi.CapabilitySpec {
+	if len(specs) == 0 {
+		return nil
+	}
+	out := make([]asyncapi.CapabilitySpec, len(specs))
+	for i, s := range specs {
+		out[i] = asyncapi.CapabilitySpec{Name: s.Name, Description: s.Description}
+	}
+	return out
+}
+
 func buildTopicParameters(
 	topic string,
 	params []TopicParam,

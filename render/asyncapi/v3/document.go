@@ -131,6 +131,20 @@ type ChannelItem struct {
 	Subscribe *Operation
 	// Publish is the operation where the application sends messages.
 	Publish *Operation
+	// Capabilities declares this channel's protocol-native capabilities
+	// (e.g. QoS, Retained) as spec metadata — rendered as a generic
+	// "x-capabilities" vendor-extension array. See
+	// docs/design/d-0006-protocol-native-capabilities.md's §7 "Spec rendering plan".
+	Capabilities []CapabilitySpec
+}
+
+// CapabilitySpec is the render-layer mirror of api/events.CapabilitySpec —
+// kept as its own type here (not imported from api/events, to avoid an
+// import cycle: api/events already imports this package) with identical
+// field shape.
+type CapabilitySpec struct {
+	Name        string
+	Description string
 }
 
 // namedServer pairs a server name with its Server value for deterministic output.
@@ -442,6 +456,9 @@ func buildChannelsAndOperations(channels map[string]ChannelItem) (map[string]any
 		if len(ch.Parameters) > 0 {
 			chItem["parameters"] = buildParameters(ch.Parameters)
 		}
+		if len(ch.Capabilities) > 0 {
+			chItem["x-capabilities"] = buildCapabilities(ch.Capabilities)
+		}
 
 		// Collect messages from operations into the channel messages map.
 		messages := map[string]any{}
@@ -532,6 +549,22 @@ func buildParameters(params map[string]Parameter) map[string]any {
 			entry["schema"] = map[string]any{"type": "string"}
 		}
 		out[name] = entry
+	}
+	return out
+}
+
+// buildCapabilities converts []CapabilitySpec to the "x-capabilities"
+// vendor-extension array shape — a generic {name, description} array,
+// chosen so the renderer never needs a change when a new capability type
+// is added (see docs/design/d-0006-protocol-native-capabilities.md's §7).
+func buildCapabilities(specs []CapabilitySpec) []any {
+	out := make([]any, len(specs))
+	for i, s := range specs {
+		entry := map[string]any{"name": s.Name}
+		if s.Description != "" {
+			entry["description"] = s.Description
+		}
+		out[i] = entry
 	}
 	return out
 }

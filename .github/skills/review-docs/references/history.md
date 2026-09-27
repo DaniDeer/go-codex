@@ -4,6 +4,42 @@ Do not re-report any findings listed here. They have been implemented.
 
 ---
 
+## Round DR8 (D-0006 capabilities reference doc + nav sync)
+
+Docs gap discovered while answering a user question about D-0006's scope: the
+graduated `Capability` mechanism had no dedicated feature page, and
+`zensical.toml` nav was out of sync with D-0006's graduation from roadmap to
+design doc.
+
+- **D1 — no `docs/features/capabilities.md`**: added. New feature page
+  explaining the sealed, per-adapter `Capability` mechanism, a per-adapter
+  capability reference table (`adapters/mqtt`/`adapters/mqtt5`: QoS,
+  Retained; `adapters/zeromq`: HWM, Conflate), not-yet-migrated call-time
+  options (`ContentType`, `UserProperty`), surveyed-but-unshipped items,
+  and a "why not REST/Security/reqreply" section explaining the two-part
+  test that keeps those on different, already-documented mechanisms.
+- **D2 — `zensical.toml` `[nav."Design Documents"]` missing D-0006**: added
+  `"— D-0006: Protocol-Native Capabilities" = "design/d-0006-protocol-native-capabilities.md"`.
+- **D3 — `zensical.toml` `[nav.Roadmap]` dead link**: removed
+  `"— Protocol-Native Feature Declarations" = "roadmap/protocol-native-features.md"`
+  — the doc graduated to `docs/design/d-0006-protocol-native-capabilities.md`
+  and the roadmap file no longer exists.
+- **D4 — `zensical.toml` `[nav.Features]` missing capabilities entry**:
+  added `"Protocol-Native Capabilities" = "features/capabilities.md"`.
+- Cross-linked the new page from `docs/features/events.md`,
+  `docs/guides/mqtt.md`, `docs/guides/mqtt5.md`, `docs/guides/zeromq.md`
+  (`See also`/`Feature:` lines).
+
+Pre-existing, unrelated broken nav links noted but left untouched (out of
+scope for this round): `features/reqreply-middleware.md`,
+`roadmap/events-pubsub-consolidation.md`,
+`roadmap/mqtt5-user-property-merge.md`,
+`roadmap/observer-param-error-consolidation.md`,
+`roadmap/thin-adapters-audit.md` — all referenced in nav but absent from
+`docs/`.
+
+---
+
 ## Round DR7 (error-path ergonomics — docs sync across all boundaries)
 
 Docs work accompanying the error-path-ergonomics feature (Phases 1A–1D + Phase 2). Not a

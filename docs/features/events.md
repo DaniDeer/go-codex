@@ -1,6 +1,6 @@
 # Event Channels — MQTT & AsyncAPI
 
-> See also: [`api/events` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/events) · [`adapters/mqtt` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mqtt)
+> See also: [`api/events` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/events) · [`adapters/mqtt` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mqtt) · [Feature: Protocol-Native Capabilities](capabilities.md) (QoS/Retained/HWM/Conflate)
 
 `api/events` is a transport-agnostic event channel client. The same `events.Client` that drives typed decode/encode also generates a complete AsyncAPI 3.0 spec.
 

@@ -106,7 +106,7 @@
 > scoped content (that doc's pub/sub-scoped content is superseded by
 > [Pub/Sub Workflow Simplification](../design/d-0002-pubsub-workflow-simplification.md),
 > now fully implemented). Spun out of a dedicated thin-adapter review
-> (see [Feature/Provider](../roadmap/protocol-native-features.md)'s
+> (see [Feature/Provider](d-0006-protocol-native-capabilities.md)'s
 > status banner, then titled "Protocol-Native Feature Declarations") that confirmed REST and pub/sub already follow the
 > codebase's guiding principle — adapters stay THIN (pure IO, attach-only,
 > adapter-specific config/options); ALL workflow (middleware/handler
@@ -121,7 +121,7 @@
 ## Why this exists
 
 A dedicated review (triggered while reviewing
-[Feature/Provider](../roadmap/protocol-native-features.md) — then titled
+[Feature/Provider](d-0006-protocol-native-capabilities.md) — then titled
 "Protocol-Native Feature Declarations" — against the codebase's guiding
 principle) confirmed, via direct code inspection:
 
@@ -151,7 +151,7 @@ principle) confirmed, via direct code inspection:
   fn, opts)`, `mqtt5.Call(ctx, client, router, handle, req, opts)`) —
   the opposite of every other boundary's shipped design.
 - This is not a hypothetical concern: it is exactly where
-  `protocol-native-features.md`'s own confirmed, already-shipped
+  `d-0006-protocol-native-capabilities.md`'s own confirmed, already-shipped
   protocol-native capability — MQTT5's Response Topic + Correlation
   Data — is hardwired (`adapters/mqtt5/reqreply.go` reads/writes
   `msg.Properties.ResponseTopic`/`CorrelationData` directly inside
@@ -623,7 +623,7 @@ FIRST prototype attempt tried constructing `Future[Resp]` at the
 adapter's `CallAsync` dispatch time via `reflect` on `route any` alone —
 this does NOT work; Go's `reflect` package cannot instantiate a generic
 type for a type argument known only at runtime (the same category of
-limitation `protocol-native-features.md`'s own rejected "type-erased
+limitation `d-0006-protocol-native-capabilities.md`'s own rejected "type-erased
 storage" candidate ran into). **The confirmed, working fix:** expose a
 PLAIN, non-generic `FutureFactory` interface —
 
@@ -669,7 +669,7 @@ against an already-expired `context.Context` returns a timeout error,
 mirroring `Call`'s existing `CallError{Kind: KindTimeout}` semantics.
 `Call` itself is UNCHANGED — `CallAsync` is purely additive, same
 discipline as every other confirmed mechanism in this doc/
-`protocol-native-features.md`.
+`d-0006-protocol-native-capabilities.md`.
 
 **Confirmed: `CallAsync` preserves Decision 2's api-as-abstraction-layer/
 adapter-as-thin-IO-mapper split — not just Decision 1/2's `Call`/`Serve`
@@ -710,7 +710,7 @@ shape); whether `Server`-side dispatch needs any equivalent concept
 (unlikely — a server handler already runs synchronously per request in
 this design, with no analogous "fire and check back later" need); and
 the exact relationship, if any, to
-[Protocol-Native Features](../roadmap/protocol-native-features.md)'s §8 Handler
+[Protocol-Native Features](d-0006-protocol-native-capabilities.md)'s §8 Handler
 Disposition — these are LIKELY orthogonal (Disposition is
 server-side ack/nack/requeue outcome signaling; `Future`/`CallAsync` is
 client-side response awaiting), but that has not been separately
@@ -738,7 +738,7 @@ The bottom two rows are what Decision 3 (above) closes — SHIPPED for
 BOTH `mqtt5` and `zeromq` (see the Addendum below for the full,
 adapter-specific detail).
 
-## Relationship to `protocol-native-features.md` (now [Feature](../roadmap/protocol-native-features.md))
+## Relationship to `d-0006-protocol-native-capabilities.md` (now [Feature](d-0006-protocol-native-capabilities.md))
 
 MQTT5's Response Topic + Correlation Data — hardwired inside
 `adapters/mqtt5/reqreply.go`/`reqreply_transport.go` — was originally
@@ -755,7 +755,7 @@ here. Shared Subscriptions (`$share/group/topic`) for reply-topic
 fan-out across multiple `Server` instances remain the genuine candidate
 for a declared, sealed capability on a `reqreply.Route` from this same
 feature cluster — mirroring the pub/sub use case in
-[Feature](../roadmap/protocol-native-features.md) directly — tracked
+[Feature](d-0006-protocol-native-capabilities.md) directly — tracked
 independently THERE, not blocked by anything in this doc.
 
 ## Escape hatches (carried forward from the deleted doc, still accurate)
@@ -1285,10 +1285,10 @@ examples/reqreply-api/
 - ~~Whether Response Topic + Correlation Data should be a DECLARED
   `Feature` at all, or remain an implicit, always-on capability
   of `mqtt5`'s reqreply transport (see "Relationship to
-  `protocol-native-features.md`" above) — not decided, deferred until
+  `d-0006-protocol-native-capabilities.md`" above) — not decided, deferred until
   the `Client`/`Server` shape exists to prototype against~~ **RESOLVED —
   DECIDED: stays IMPLICIT, NOT a declared `Capability`.** A `Capability`
-  (per `docs/roadmap/protocol-native-features.md`'s own definition)
+  (per `docs/design/d-0006-protocol-native-capabilities.md`'s own definition)
   exists to give a route/binding a compile-time-safe way to OPT INTO
   optional, protocol-specific behavior — sealed opt-in gating is the
   entire point of the mechanism. Response Topic + Correlation Data is
@@ -1308,7 +1308,7 @@ examples/reqreply-api/
   or without shared-subscription reply fan-out, and getting it wrong
   changes CORRECTNESS (competing vs. duplicating consumers), unlike
   Response Topic/Correlation Data's all-or-nothing nature — tracked
-  independently in `docs/roadmap/protocol-native-features.md`, not
+  independently in `docs/design/d-0006-protocol-native-capabilities.md`, not
   blocked by anything in this doc.
 
 ~~No implementation has started. A future session should pick the
@@ -1345,7 +1345,7 @@ since been deleted, per their own graduation policy; see "Addendum:
 `reqreply-middleware.md` and `zeromq-security.md`" below for the full,
 consolidated, durable record — promoted into this doc now that the
 multi-adapter bar is met. Shared Subscriptions as a `Capability`
-candidate (`docs/roadmap/protocol-native-features.md`) remains
+candidate (`docs/design/d-0006-protocol-native-capabilities.md`) remains
 separately tracked, unrelated to the above. None of this represents an
 unresolved question WITHIN d-0004's own scope (the
 `Server`/`Client`/`Attach` rework, which is fully shipped and verified).
@@ -1354,7 +1354,7 @@ unresolved question WITHIN d-0004's own scope (the
 implementation plan above for the actual verification evidence per phase)
 
 Mirroring [D-0003](../design/d-0003-codec-declared-middlewares.md)'s
-and [Protocol-Native Features](../roadmap/protocol-native-features.md)'s own Test
+and [Protocol-Native Features](d-0006-protocol-native-capabilities.md)'s own Test
 plan sections:
 
 - `Client`/`Server`+`Attach`+reflection dispatch (Decision 1/2, already

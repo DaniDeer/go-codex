@@ -2321,7 +2321,7 @@ DEEPER, unresolved question: how should PROTOCOL-NATIVE capabilities
 (MQTT5 User Properties, Shared Subscriptions, Message Expiry; ZeroMQ's
 Conflate/HWM) be declared, given pub/sub spans THREE incompatible
 transports within ONE pattern (unlike REST, always HTTP)? See
-[Protocol-Native Feature Declarations](../roadmap/protocol-native-features.md) —
+[Protocol-Native Feature Declarations](d-0006-protocol-native-capabilities.md) —
 spun out rather than resolved here, proposing a `ProtocolFeature` sealed-
 interface mechanism (mirrors `ports.Pattern`) for "declare a capability,
 let the binding adapter validate/fulfill it or reject," generalized
@@ -3193,7 +3193,7 @@ still open at the time this section was written, tracked via spun-out
 docs — `zeromq-security.md` (SHIPPED since, then deleted per its own
 graduation policy — folded into [D-0004](d-0004-reqreply-workflow-simplification.md)'s
 Addendum), `d-0004-reqreply-workflow-simplification.md`,
-`common-middleware-architecture.md`, `protocol-native-features.md` —
+`common-middleware-architecture.md`, `d-0006-protocol-native-capabilities.md` —
 none blocking THIS doc's own completion; the fifth spun-out item, REST's
 client-side general-purpose `ClientMW` hook, has since been resolved and
 folded into
@@ -3649,7 +3649,7 @@ model (pub/sub), not to an unintentional drift between the two designs.
   [Common-Base + Per-Pattern-Derived Middleware Types](../roadmap/common-middleware-architecture.md)
   (REST's `middleware.Middleware` struct carries fields only REST
   uses — found while reviewing pub/sub's OWN middleware params), and
-  [Protocol-Native Feature Declarations](../roadmap/protocol-native-features.md)
+  [Protocol-Native Feature Declarations](d-0006-protocol-native-capabilities.md)
   (a generalization that could also apply to REST's header/cookie/query
   params — found while reviewing pub/sub's OWN spec-adding middleware).
   None of these four docs was produced by actually SITTING DOWN and

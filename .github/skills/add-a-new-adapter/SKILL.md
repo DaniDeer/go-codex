@@ -311,26 +311,36 @@ helpers belong in `api/*`, not adapters" section for the full write-up —
 consult it, and don't re-word this rule independently, when reviewing a
 new adapter's exported surface.
 
-## Step 5e — Forward-looking: don't invent an ad-hoc capability mechanism (preparing for a future, not-yet-shipped design)
+## Step 5e — MANDATORY: expose adapter-specific extensions via the sealed `Capability` mechanism
 
-A sealed, per-adapter `Capability` interface mechanism is DESIGNED (not
-yet implemented) in `docs/roadmap/protocol-native-features.md`'s
-§2.1/§2.2, for exposing adapter-specific extensions (MQTT QoS, User
-Properties, an AMQP ack-mode, ...) — one sealed interface type PER
-adapter package, mirroring `ports.Pattern`'s own sealing technique,
-supplied only at `Attach`/`Bind` time. See
-`docs/concepts/ports-and-adapters.md`'s "Guardrail: adapters as pure
-protocol shims" section for the full statement.
+A sealed, per-adapter `Capability` interface mechanism has SHIPPED (see
+`docs/design/d-0006-protocol-native-capabilities.md`) for exposing
+adapter-specific extensions (MQTT QoS, User Properties, ZeroMQ HWM/
+Conflate, a future AMQP ack-mode, ...): one sealed interface type PER
+adapter package (`type Capability interface{ isXxxCapability() }`,
+mirroring `ports.Pattern`'s own sealing technique), with concrete
+implementations supplied via a `Capabilities []<pkg>.Capability` field
+on that adapter's own `SubscribeOptions`/`PublishOptions` struct
+(attached at DECLARE time via `events.Subscriber.WithOptions`/
+`events.Publisher.WithOptions` — NOT a new `Attach`/`Bind`-time
+parameter). See `docs/concepts/ports-and-adapters.md`'s "Guardrail:
+adapters as pure protocol shims" section for the full statement, and
+`adapters/mqtt5/capability.go`/`adapters/zeromq/capability.go` for
+reference implementations.
 
-**Until it ships**: if your new adapter needs a protocol-specific
-toggle/option with no cross-protocol meaning, keep it a plain,
-adapter-owned field on your adapter's own `Options`/`SubscribeOptions`/
-etc. struct — do NOT add it to the owning `api/*` package's declaration
-type (`events.Channel`, `rest.Route`, etc.), even as a "just this one
-field" convenience. `api/events/mqtt_qos.go` (`MQTTQoS`/`Subscribe.QoS`)
-is the one confirmed EXISTING exception to this rule in the codebase
-today — already cataloged as drift to be resolved once `Capability`
-ships, not a precedent to extend.
+**Your new adapter MUST use this mechanism** for any protocol-specific
+toggle/option with no cross-protocol meaning: define a sealed
+`Capability` type in your adapter's OWN package, add a `Capabilities
+[]<pkg>.Capability` field to your `SubscribeOptions`/`PublishOptions`,
+and wire your dispatch loop to read it (see `adapters/mqtt5/caller.go`'s
+`resolveCapabilities`/`stats.CapabilityObserver.RecordCapabilityApplied`
+wiring for the pattern). Do NOT add the option to the owning `api/*`
+package's declaration type (`events.Channel`, `rest.Route`, etc.), even
+as a "just this one field" convenience, and do NOT invent a new
+`Attach`/`Bind`-time parameter instead of using `Capabilities`.
+`api/events/mqtt_qos.go` (`MQTTQoS`/`Subscribe.QoS`) is kept as an
+ADDITIVE, still-fully-supported legacy path predating this mechanism —
+not a precedent to extend for a NEW adapter.
 
 ## Step 6 — Use the checklist
 
@@ -388,5 +398,5 @@ verification ritual. Track progress with todos, one per checklist block.
 - `api/rest/builder.go` + `adapters/nethttp/{adapter,client}.go` — reference implementation of Step 5b's one-struct-one-call pattern (`NewPathParam`/etc., `DecodeMerged`, role-aware `PathMergeFields`/etc., `NewRequiredResponseHeaderParam`/etc., `DecodeMergedResponse`, `CallHandle`)
 - `docs/concepts/api-contracts.md` — "one struct, one call" design principle, user-facing framing
 - `docs/concepts/ports-and-adapters.md` — Step 5c's "no adapter-invented escape hatch" principle AND Step 5d's "convenience helpers belong in `api/*`" principle, user-facing framing
-- `docs/roadmap/protocol-native-features.md` + `docs/concepts/ports-and-adapters.md` — Step 5e's forward-looking sealed `Capability` mechanism design (not yet shipped) and its "adapters as pure protocol shims" guardrail
+- `docs/design/d-0006-protocol-native-capabilities.md` + `docs/concepts/ports-and-adapters.md` — Step 5e's MANDATORY sealed `Capability` mechanism and its "adapters as pure protocol shims" guardrail
 - `ports/pattern.go`, `ports/handle.go` — Pattern declaration + build machinery

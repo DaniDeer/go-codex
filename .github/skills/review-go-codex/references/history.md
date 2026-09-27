@@ -1,6 +1,40 @@
-# go-codex Review History (R1–R143, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2)
+# go-codex Review History (R1–R143, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## protocol-native-capabilities (D-0006 implementation — not a review round, recorded per this skill's own precedent for major implementation rounds)
+
+Implemented `docs/roadmap/protocol-native-features.md`'s design in full (Phase 0 design
+resolution through Phase 5 documentation sync + graduation to
+`docs/design/d-0006-protocol-native-capabilities.md`). Not `/review-go-codex` findings — recorded
+here so future review rounds don't re-flag any of this as a gap (see checklist.md §15).
+
+- **P1 — Sealed `Capability` mechanism**: `adapters/mqtt.Capability`/`adapters/mqtt5.Capability`/
+  `adapters/zeromq.Capability` (each package's own sealed marker interface), concrete types
+  (`QoS`/`Retained` for mqtt/mqtt5, `HWM`/`Conflate` for zeromq), supplied via a new
+  `Capabilities []<pkg>.Capability` field on each adapter's existing `SubscribeOptions`/
+  `PublishOptions` struct (attached via `events.Subscriber.WithOptions`/
+  `events.Publisher.WithOptions` — not a new `Attach`-time parameter). Additive alongside the
+  pre-existing `QoS byte`/`Retained bool`/`api/events/mqtt_qos.go` fields.
+- **P2 — `CapabilitySpec`/spec-rendering/coverage**: `events.CapabilitySpec` (`ChannelOpt`),
+  `events.CheckCapabilityCoverage`/`MissingCapabilityError`, `events.CapabilityNameOf`/
+  `CapabilityName`, AsyncAPI `x-capabilities` vendor-extension rendering
+  (`asyncapi.CapabilitySpec`, `buildCapabilities`). Coverage check wired into all 3 event
+  adapters' `ServeSubscribers`.
+- **P3 — Observer integration**: `stats.CapabilityObserver`/`stats.DispositionObserver`, both
+  optional/type-asserted (mirror `SecurityObserver`), implemented by `LoggingObserver`/`fanout`/
+  `NoopObserver`.
+- **P4 — Handler Disposition**: `middleware.Disposition`/`EnsureDispositionBox`/`SetDisposition`/
+  `DispositionFromContext`/`ResolveDisposition` (ctx-mutable-sink, mirrors `ContextField`/
+  `nethttp.WithResponseHeaders`), wired into all 3 event adapters (mqtt/mqtt5/zeromq) and both
+  reqreply adapters (mqtt5, zeromq) — each resolves to a no-op-equivalent default today.
+- **P5 — Address (additive, retrofit deferred)**: `events.Address`/`events.TopicAddress` shipped
+  as standalone types. The full `Channel[Addr Address, T any]` generic retrofit (and ~300-call-site
+  migration) is DEFERRED — discovered mid-implementation to collide with the already-shipped
+  `NewChannelFromTopic[T any](topic Topic, ...)` symbol, and has zero real consumer until a future
+  AMQP adapter exists.
 
 ---
 

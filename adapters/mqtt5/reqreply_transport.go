@@ -418,10 +418,16 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 		// from this reflection-based dispatcher before Serve/Call became
 		// thin wrappers delegating here (found and closed as part of that
 		// delegation, not originally part of Phase 0's 4 work items).
-		var spanCtx = msgCtx
+		// EnsureDispositionBox is called unconditionally, at zero cost to
+		// adapters/callers that never call SetDisposition — mqtt5
+		// reqreply has no acknowledgement concept of its own today, but
+		// the plumbing is proven end-to-end here for a future
+		// ack-capable adapter (e.g. AMQP) to consume without further core
+		// changes. See docs/design/d-0006-protocol-native-capabilities.md's §8.
+		var spanCtx = middleware.EnsureDispositionBox(msgCtx)
 		var serveErr error
 		if to, ok := obs.(stats.TraceObserver); ok {
-			spanCtx = to.StartSpan(msgCtx, "mqtt5.serve", path)
+			spanCtx = to.StartSpan(spanCtx, "mqtt5.serve", path)
 		}
 		defer func() {
 			if to, ok := obs.(stats.TraceObserver); ok {
@@ -632,13 +638,18 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 		}
 
 		fnResults := fnVal.Call([]reflect.Value{reflect.ValueOf(spanCtx), reqVal})
-		if errI, _ := fnResults[1].Interface().(error); errI != nil {
-			serveErr = errI
+		handlerErr, _ := fnResults[1].Interface().(error)
+		disposition := middleware.ResolveDisposition(spanCtx, handlerErr)
+		if dispObs, ok := obs.(stats.DispositionObserver); ok {
+			dispObs.RecordDisposition(path, disposition)
+		}
+		if handlerErr != nil {
+			serveErr = handlerErr
 			obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-			publishHandlerErrorReplyReflect(spanCtx, t.client, observeErrorResponseForMethod, responseTopic, correlationData, errI, obs, middlewarePropertyVars)
-			tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, errI)
+			publishHandlerErrorReplyReflect(spanCtx, t.client, observeErrorResponseForMethod, responseTopic, correlationData, handlerErr, obs, middlewarePropertyVars)
+			tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, handlerErr)
 			if t.opts.OnError != nil {
-				t.opts.OnError(ServeError{Kind: KindHandler, Err: errI})
+				t.opts.OnError(ServeError{Kind: KindHandler, Err: handlerErr})
 			}
 			return
 		}

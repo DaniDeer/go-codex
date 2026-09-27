@@ -59,6 +59,13 @@ type subscriberRoute struct {
 	secReqs      []route.SecurityRequirement
 	onError      func(SubscribeError)
 	observer     stats.Observer
+	// capabilities holds this route's declared [SubscribeOptions.Capabilities]
+	// — applied to the socket once, via [applyCapabilities], right after
+	// [FramedSocket.SetSubscription] in [(*caller).ServeSubscribers].
+	capabilities []Capability
+	// capabilitySpecs holds the channel's declared [events.CapabilitySpec]
+	// values, consulted by [events.CheckCapabilityCoverage].
+	capabilitySpecs []events.CapabilitySpec
 }
 
 // buildSubscriberRoute compiles entry into a [subscriberRoute] via
@@ -128,16 +135,20 @@ func buildSubscriberRoute(entry events.SubscriberEntry) (*subscriberRoute, error
 		}
 	}
 
+	capabilitySpecs, _ := elem.FieldByName("CapabilitySpecs").Interface().([]events.CapabilitySpec)
+
 	return &subscriberRoute{
-		topic:        topic,
-		filter:       filter,
-		handleVal:    hv,
-		next:         next,
-		securityFn:   resolved.securityFn,
-		implSecurity: securityImpls,
-		secReqs:      secReqs,
-		onError:      resolved.onError,
-		observer:     resolved.observer,
+		topic:           topic,
+		filter:          filter,
+		handleVal:       hv,
+		next:            next,
+		securityFn:      resolved.securityFn,
+		implSecurity:    securityImpls,
+		secReqs:         secReqs,
+		onError:         resolved.onError,
+		observer:        resolved.observer,
+		capabilities:    resolved.capabilities,
+		capabilitySpecs: capabilitySpecs,
 	}, nil
 }
 
@@ -188,10 +199,11 @@ func validateSubscribeImplementationShapesReflect(topic string, msgType reflect.
 // assertion, which is not possible against a generic type from
 // non-generic code) since ServeSubscribers never knows T at compile time.
 type resolvedSubscribeOpts struct {
-	topicFilter string
-	onError     func(SubscribeError)
-	observer    stats.Observer
-	securityFn  reflect.Value // func(context.Context, *T, []route.SecurityRequirement) error; invalid (zero Value) if unset
+	topicFilter  string
+	onError      func(SubscribeError)
+	observer     stats.Observer
+	securityFn   reflect.Value // func(context.Context, *T, []route.SecurityRequirement) error; invalid (zero Value) if unset
+	capabilities []Capability
 }
 
 // zeromqPkgPath is this package's import path, used by
@@ -238,6 +250,11 @@ func resolveSubscribeOptsReflect(topic string, handlerOptsAny any) (resolvedSubs
 	}
 	if f := v.FieldByName("SecurityFunc"); f.IsValid() && f.Kind() == reflect.Func && !f.IsNil() {
 		out.securityFn = f
+	}
+	if f := v.FieldByName("Capabilities"); f.IsValid() {
+		if caps, ok := f.Interface().([]Capability); ok {
+			out.capabilities = caps
+		}
 	}
 	return out, nil
 }
@@ -352,14 +369,24 @@ func (r *subscriberRoute) processMessage(ctx context.Context, topic string, payl
 		valueVal = msgPtr.Elem()
 	}
 
-	var spanCtx = ctx
+	// EnsureDispositionBox is called unconditionally, at zero cost to
+	// adapters/callers that never call SetDisposition — zeromq PUB/SUB
+	// has no acknowledgement concept of its own today, but the plumbing
+	// is proven end-to-end here for a future ack-capable adapter (e.g.
+	// AMQP) to consume without further core changes. See
+	// docs/design/d-0006-protocol-native-capabilities.md's §8.
+	spanCtx := middleware.EnsureDispositionBox(ctx)
 	if to, ok := obs.(stats.TraceObserver); ok {
-		spanCtx = to.StartSpan(ctx, "zmq.subscribe", topic)
+		spanCtx = to.StartSpan(spanCtx, "zmq.subscribe", topic)
 	}
 	results := r.next.Call([]reflect.Value{reflect.ValueOf(spanCtx), valueVal})
 	fnErr, _ := results[0].Interface().(error)
 	if to, ok := obs.(stats.TraceObserver); ok {
 		to.EndSpan(spanCtx, fnErr)
+	}
+	disposition := middleware.ResolveDisposition(spanCtx, fnErr)
+	if dispObs, ok := obs.(stats.DispositionObserver); ok {
+		dispObs.RecordDisposition(topic, disposition)
 	}
 	if fnErr != nil {
 		obs.RecordSubscribe(topic, false, time.Since(start))
@@ -409,6 +436,20 @@ func (c *caller) ServeSubscribers(ctx context.Context) error {
 	for _, r := range routes {
 		if err := c.sock.SetSubscription(r.filter); err != nil {
 			return SocketError{Op: "set_subscription", Err: err}
+		}
+		obs := r.observer
+		if obs == nil {
+			obs = stats.ObserverFromContext(ctx)
+		}
+		applyCapabilities(c.sock, r.capabilities, obs, r.topic)
+		if len(r.capabilitySpecs) > 0 {
+			supplied := make([]any, len(r.capabilities))
+			for i, c := range r.capabilities {
+				supplied[i] = c
+			}
+			if covErr := events.CheckCapabilityCoverage(r.topic, r.capabilitySpecs, supplied); covErr != nil {
+				return covErr
+			}
 		}
 	}
 	if err := c.sock.SetRecvTimeout(recvPollInterval); err != nil {

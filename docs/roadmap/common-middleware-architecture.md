@@ -30,7 +30,7 @@
 > — see that doc's F6 resolution) while this doc investigates the
 > proper long-term fix. **Update, resolved in three steps since**: first
 > superseded by D-0003 (above); D-0003's OWN relationship to
-> [Feature](protocol-native-features.md) (formerly "Protocol-Native
+> [Feature](../design/d-0006-protocol-native-capabilities.md) (formerly "Protocol-Native
 > Feature Declarations," then "Feature/Provider") was then reopened, and
 > has SINCE been RESOLVED there via a confirmed 4-stage lifecycle model
 > (§3 of that doc) — `middleware.Middleware`/D-0003's `Declaration[In,Out]`

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -1009,5 +1010,61 @@ func TestLoggingObserver_DoesNotImplementSpanTagger(t *testing.T) {
 	_, ok := obs.(stats.SpanTagger)
 	if ok {
 		t.Error("LoggingObserver should NOT implement SpanTagger (mirrors it not implementing TraceObserver)")
+	}
+}
+
+type fanoutCapSpy struct {
+	fanoutSpy
+	applied []string
+}
+
+func (s *fanoutCapSpy) RecordCapabilityApplied(location, capability string) {
+	s.applied = append(s.applied, location+":"+capability)
+}
+
+func TestNewFanout_CapabilityObserver_OnlyToImplementors(t *testing.T) {
+	plain := &fanoutSpy{}
+	capObs := &fanoutCapSpy{}
+	obs := stats.NewFanout(plain, capObs)
+	co, ok := obs.(stats.CapabilityObserver)
+	if !ok {
+		t.Fatal("fanout must implement CapabilityObserver")
+	}
+	co.RecordCapabilityApplied("sensors/x", "QoS")
+	if len(capObs.applied) != 1 || capObs.applied[0] != "sensors/x:QoS" {
+		t.Errorf("CapabilityObserver not delegated: %v", capObs.applied)
+	}
+}
+
+type fanoutDispSpy struct {
+	fanoutSpy
+	dispositions []middleware.Disposition
+}
+
+func (s *fanoutDispSpy) RecordDisposition(_ string, d middleware.Disposition) {
+	s.dispositions = append(s.dispositions, d)
+}
+
+func TestNewFanout_DispositionObserver_OnlyToImplementors(t *testing.T) {
+	plain := &fanoutSpy{}
+	disp := &fanoutDispSpy{}
+	obs := stats.NewFanout(plain, disp)
+	do, ok := obs.(stats.DispositionObserver)
+	if !ok {
+		t.Fatal("fanout must implement DispositionObserver")
+	}
+	do.RecordDisposition("sensors/x", middleware.DispositionNackRequeue)
+	if len(disp.dispositions) != 1 || disp.dispositions[0] != middleware.DispositionNackRequeue {
+		t.Errorf("DispositionObserver not delegated: %v", disp.dispositions)
+	}
+}
+
+func TestNoopObserver_ImplementsCapabilityAndDispositionObserver(t *testing.T) {
+	var obs stats.Observer = stats.NoopObserver{}
+	if _, ok := obs.(stats.CapabilityObserver); !ok {
+		t.Error("NoopObserver must implement CapabilityObserver")
+	}
+	if _, ok := obs.(stats.DispositionObserver); !ok {
+		t.Error("NoopObserver must implement DispositionObserver")
 	}
 }

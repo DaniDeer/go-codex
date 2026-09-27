@@ -44,7 +44,7 @@
 > declarative, consistent workflow for the user across every boundary,
 > not "REST/events have one, so ports must too." This is a DIFFERENT
 > driver from, and a DIFFERENT mechanism than,
-> [Protocol-Native Features](protocol-native-features.md)'s sealed
+> [Protocol-Native Features](../design/d-0006-protocol-native-capabilities.md)'s sealed
 > `Capability`, supplied at `Attach`/bind time — `ports.File`/`Cache`/
 > `SQL` have no `Attach` step to hang a capability off of at all (see
 > that doc's §5.6/Review-7). Do not read the two docs as blocked on each

@@ -1,6 +1,6 @@
 # MQTT 5 Examples
 
-> See also: [`adapters/mqtt5` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mqtt5) · [`api/reqreply`](../concepts/api-contracts.md) · [`api/events`](../concepts/api-contracts.md) · [Feature: Metrics Observer](../features/observer.md) · [MQTT 3.1.1 Examples](mqtt.md)
+> See also: [`adapters/mqtt5` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mqtt5) · [`api/reqreply`](../concepts/api-contracts.md) · [`api/events`](../concepts/api-contracts.md) · [Feature: Metrics Observer](../features/observer.md) · [Feature: Protocol-Native Capabilities](../features/capabilities.md) (QoS/Retained) · [MQTT 3.1.1 Examples](mqtt.md)
 >
 > **Runnable demo**: [`examples/events-api`](https://github.com/DaniDeer/go-codex/tree/main/examples/events-api) — a multi-adapter project covering mqtt5 alongside mqtt v3/zeromq. `demo_client_attach_workflow.go` leads with the PREFERRED `Client.Attach` + `Client.Publish`/`.Subscribe` workflow (spec printed for free from the same client); `demo_user_property_middleware.go` showcases the handle-based escape hatch for User Properties, UserPropertyParam validation, and ContentType auto-format; `demo_connect_level_security.go` covers `mqtt5.NewSecuredClient`. Request-Reply lives in its own dedicated project: [`examples/reqreply-api`](https://github.com/DaniDeer/go-codex/tree/main/examples/reqreply-api).
 

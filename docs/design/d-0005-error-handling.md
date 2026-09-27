@@ -223,7 +223,7 @@ compatibility for its own sake.
 | **REOPENED under the Breaking Changes Policy**: making REST's `DecodeErrorFor`/`Register` reject 2+ `ErrorPattern`s sharing one status, mirroring reqreply's `DuplicateErrorPatternCodeError` — see Topic 1's new subsection | Changing REST's OpenAPI rendering — OpenAPI already has native per-status responses; no equivalent gap exists there |
 | Migrating AsyncAPI reply-error rendering to "multiple messages on one reply channel" (`render/asyncapi/v3` + `api/reqreply/builder.go`) — a breaking spec-shape change, now uncontroversial under the Breaking Changes Policy | |
 | A NEW declarative dead-letter mechanism for `api/events`/`api/reqreply`, scoped to the UNMATCHED-failure case only (per user decision) | Extending dead-lettering to matched-but-failed-to-encode cases (deferred — those still silently fall back to the existing plain-text/log path, unchanged) |
-| Extending `ErrorPattern`/`ErrorChannel` eligibility to EVERY Category-A failure point (Topic 1): security middleware Fn errors, decode/param-validation failures, `MiddlewareInputError`/`MiddlewareOutputError`, and response/merge-field encode failures — matching the ALREADY-eligible handler + general-purpose middleware Fn path | `docs/roadmap/protocol-native-features.md`'s "Handler Disposition" (ack/nack/requeue signaling) — a distinct, complementary, separately-tracked mechanism; cross-referenced, not merged |
+| Extending `ErrorPattern`/`ErrorChannel` eligibility to EVERY Category-A failure point (Topic 1): security middleware Fn errors, decode/param-validation failures, `MiddlewareInputError`/`MiddlewareOutputError`, and response/merge-field encode failures — matching the ALREADY-eligible handler + general-purpose middleware Fn path | `docs/design/d-0006-protocol-native-capabilities.md`'s "Handler Disposition" (ack/nack/requeue signaling) — a distinct, complementary, separately-tracked mechanism; cross-referenced, not merged |
 | | Category B (codex's own error taxonomy) and Category C (ports/adapter infrastructure errors — wiring-time or no-correlated-recipient) — PERMANENT structural exclusions, not gaps; see Topic 1 |
 
 ## Topic 1 — Applying REST's workflow to reqreply (status check)
@@ -636,7 +636,7 @@ Confirmed via repo-wide search: no declarative dead-letter mechanism
 exists anywhere in go-codex today. The closest adjacent things are (a)
 `stream.MapErr`/`LogOnError` — generic, IMPERATIVE, pipeline-level
 dead-lettering, not a route/channel DECLARATION, and (b)
-`docs/roadmap/protocol-native-features.md`'s "Handler Disposition" — a
+`docs/design/d-0006-protocol-native-capabilities.md`'s "Handler Disposition" — a
 DISTINCT, NOT YET IMPLEMENTED idea for a handler to signal ack/nack/
 requeue outcomes (a per-message disposition signal, not a destination
 policy for given-up-on messages — complementary, tracked separately, not
@@ -682,7 +682,7 @@ arguments — meaning a FUTURE AMQP adapter could realize the exact SAME
 declared `events.DeadLetter(topic, ...)`/`reqreply.DeadLetter(topic, ...)`
 API (this document's proposal, below) via broker-native queue
 configuration instead of runtime application code — zero per-message
-publish cost, the broker does the work. See [`docs/roadmap/protocol-native-features.md`](../roadmap/protocol-native-features.md),
+publish cost, the broker does the work. See [`docs/design/d-0006-protocol-native-capabilities.md`](d-0006-protocol-native-capabilities.md),
 §6 "Concrete feature survey," new "AMQP dead-lettering" entry, for the
 full analysis of why this is a genuinely NEW category for that document's
 own two-part `Capability` test — a capability whose DECLARATION can be
@@ -1865,7 +1865,7 @@ sequencing around:
 ## Out of scope (this round)
 
 - Handler Disposition (ack/nack/requeue) — tracked separately in
-  `docs/roadmap/protocol-native-features.md`, cross-referenced only.
+  `docs/design/d-0006-protocol-native-capabilities.md`, cross-referenced only.
 - Extending dead-lettering to matched-but-failed-to-encode cases.
 - `api/mcp`/`adapters/websocket` error mechanisms.
 - Changing REST's OpenAPI rendering (no equivalent gap exists).

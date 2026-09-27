@@ -571,10 +571,16 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 		// silently absent from this reflection-based dispatcher (found
 		// and closed as part of Phase 0/0b, mirroring the SAME gap found
 		// and fixed for mqtt5).
-		spanCtx := ctx
+		// EnsureDispositionBox is called unconditionally, at zero cost to
+		// adapters/callers that never call SetDisposition — zeromq
+		// reqreply has no acknowledgement concept of its own today, but
+		// the plumbing is proven end-to-end here for a future
+		// ack-capable adapter (e.g. AMQP) to consume without further core
+		// changes. See docs/design/d-0006-protocol-native-capabilities.md's §8.
+		spanCtx := middleware.EnsureDispositionBox(ctx)
 		var serveErr error
 		if to, ok := obs.(stats.TraceObserver); ok {
-			spanCtx = to.StartSpan(ctx, "zmq.serve", path)
+			spanCtx = to.StartSpan(spanCtx, "zmq.serve", path)
 		}
 		endSpan := func() {
 			if to, ok := obs.(stats.TraceObserver); ok {
@@ -662,14 +668,19 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 		}
 
 		fnResults := dispatchFn.Call([]reflect.Value{reflect.ValueOf(spanCtx), reqVal})
-		if errI, _ := fnResults[1].Interface().(error); errI != nil {
-			serveErr = errI
+		handlerErr, _ := fnResults[1].Interface().(error)
+		disposition := middleware.ResolveDisposition(spanCtx, handlerErr)
+		if dispObs, ok := obs.(stats.DispositionObserver); ok {
+			dispObs.RecordDisposition(path, disposition)
+		}
+		if handlerErr != nil {
+			serveErr = handlerErr
 			obs.RecordRequest("ZMQ-REP", path, 0, time.Since(start))
-			sendHandlerErrorReplyReflect(spanCtx, sock, observeErrorResponseForMethod, errI, obs)
-			tryDeadLetterReflect(t.sockets, deadLetterForMethod, obs, path, payload, errI)
+			sendHandlerErrorReplyReflect(spanCtx, sock, observeErrorResponseForMethod, handlerErr, obs)
+			tryDeadLetterReflect(t.sockets, deadLetterForMethod, obs, path, payload, handlerErr)
 			endSpan()
 			if t.opts.OnError != nil {
-				t.opts.OnError(ServeError{Kind: KindHandler, Err: errI})
+				t.opts.OnError(ServeError{Kind: KindHandler, Err: handlerErr})
 			}
 			continue
 		}
@@ -1260,10 +1271,14 @@ func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny a
 			// TraceObserver span — mirrors [serverTransport.Serve]'s
 			// identical addition (span name "zmq.serve"); closes the
 			// SAME gap found for the ROUTER variant.
-			spanCtx := ctx
+			//
+			// EnsureDispositionBox — see this file's serverTransport.Serve
+			// wiring for the full rationale (§8 of
+			// docs/design/d-0006-protocol-native-capabilities.md).
+			spanCtx := middleware.EnsureDispositionBox(ctx)
 			var serveErr error
 			if to, ok := obs.(stats.TraceObserver); ok {
-				spanCtx = to.StartSpan(ctx, "zmq.serve", path)
+				spanCtx = to.StartSpan(spanCtx, "zmq.serve", path)
 			}
 			defer func() {
 				if to, ok := obs.(stats.TraceObserver); ok {
@@ -1344,13 +1359,18 @@ func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny a
 			}
 
 			fnResults := dispatchFn.Call([]reflect.Value{reflect.ValueOf(spanCtx), reqVal})
-			if errI, _ := fnResults[1].Interface().(error); errI != nil {
-				serveErr = errI
+			handlerErr, _ := fnResults[1].Interface().(error)
+			disposition := middleware.ResolveDisposition(spanCtx, handlerErr)
+			if dispObs, ok := obs.(stats.DispositionObserver); ok {
+				dispObs.RecordDisposition(path, disposition)
+			}
+			if handlerErr != nil {
+				serveErr = handlerErr
 				obs.RecordRequest("ZMQ-ROUTER", path, 0, time.Since(start))
-				sendRouterHandlerErrorReplyReflect(spanCtx, sock, id, observeErrorResponseForMethod, errI, obs)
-				tryDeadLetterReflect(t.sockets, deadLetterForMethod, obs, path, pl, errI)
+				sendRouterHandlerErrorReplyReflect(spanCtx, sock, id, observeErrorResponseForMethod, handlerErr, obs)
+				tryDeadLetterReflect(t.sockets, deadLetterForMethod, obs, path, pl, handlerErr)
 				if t.opts.OnError != nil {
-					t.opts.OnError(ServeError{Kind: KindHandler, Err: errI})
+					t.opts.OnError(ServeError{Kind: KindHandler, Err: handlerErr})
 				}
 				return
 			}

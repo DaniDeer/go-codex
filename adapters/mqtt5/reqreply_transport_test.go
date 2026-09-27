@@ -1686,3 +1686,112 @@ func TestAttachClient_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
 	cancel()
 	<-errCh
 }
+
+// mockDispositionObserver spies on RecordDisposition calls.
+type mockDispositionObserver struct {
+	stats.NoopObserver
+	dispositions []middleware.Disposition
+}
+
+func (o *mockDispositionObserver) RecordDisposition(_ string, d middleware.Disposition) {
+	o.dispositions = append(o.dispositions, d)
+}
+
+// TestAttachServer_Disposition_ExplicitSignalResolvedAndObserved confirms
+// a handler's middleware.SetDisposition call is resolved via
+// middleware.ResolveDisposition and reported via
+// stats.DispositionObserver, end-to-end through AttachServer's real
+// dispatch path.
+func TestAttachServer_Disposition_ExplicitSignalResolvedAndObserved(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	serverClient := &mockClient{}
+	serverRouter := newMockRouter()
+	obs := &mockDispositionObserver{}
+
+	handler := func(ctx context.Context, req computeReq) (computeResp, error) {
+		middleware.SetDisposition(ctx, middleware.DispositionNackRequeue)
+		return computeResp{Sum: req.X + req.Y}, nil
+	}
+	if _, err := computeRoute.WithHandler(handler).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if err := AttachServer(server, serverClient, serverRouter, ServeOptions{Observer: obs}); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- server.Serve(ctx) }()
+	serverRouter.waitHandler("compute/add")
+
+	client := reqreply.NewClient()
+	clientClient := &mockClient{}
+	clientRouter := newMockRouter()
+	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+		t.Fatalf("AttachClient: %v", err)
+	}
+	wireBrokers(t, serverClient, clientRouter)
+	wireBrokers(t, clientClient, serverRouter)
+
+	if _, err := client.Call(context.Background(), computeRoute, computeReq{X: 1, Y: 2}); err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+
+	cancel()
+	if err := <-errCh; err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+
+	if len(obs.dispositions) != 1 || obs.dispositions[0] != middleware.DispositionNackRequeue {
+		t.Errorf("want [DispositionNackRequeue], got %v", obs.dispositions)
+	}
+}
+
+// TestAttachServer_Disposition_DefaultFallback_NilError confirms a
+// handler that never calls SetDisposition resolves to
+// middleware.DispositionAck on success.
+func TestAttachServer_Disposition_DefaultFallback_NilError(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	serverClient := &mockClient{}
+	serverRouter := newMockRouter()
+	obs := &mockDispositionObserver{}
+
+	handler := func(ctx context.Context, req computeReq) (computeResp, error) {
+		return computeResp{Sum: req.X + req.Y}, nil
+	}
+	if _, err := computeRoute.WithHandler(handler).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if err := AttachServer(server, serverClient, serverRouter, ServeOptions{Observer: obs}); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- server.Serve(ctx) }()
+	serverRouter.waitHandler("compute/add")
+
+	client := reqreply.NewClient()
+	clientClient := &mockClient{}
+	clientRouter := newMockRouter()
+	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+		t.Fatalf("AttachClient: %v", err)
+	}
+	wireBrokers(t, serverClient, clientRouter)
+	wireBrokers(t, clientClient, serverRouter)
+
+	if _, err := client.Call(context.Background(), computeRoute, computeReq{X: 1, Y: 2}); err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+
+	cancel()
+	if err := <-errCh; err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+
+	if len(obs.dispositions) != 1 || obs.dispositions[0] != middleware.DispositionAck {
+		t.Errorf("want [DispositionAck], got %v", obs.dispositions)
+	}
+}

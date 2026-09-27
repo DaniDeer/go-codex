@@ -155,6 +155,15 @@ type SubscribeOptions struct {
 	// or "topic" (topic-level codec or structural mismatch).
 	// Defaults to [stats.NoopObserver] when nil.
 	Observer stats.Observer
+
+	// Capabilities supplies sealed, compile-time-checked protocol-native
+	// declarations (currently [QoS]) for this channel — the RECOMMENDED
+	// path going forward, alongside the pre-existing QoS field (kept, not
+	// deprecated). When both are set, Capabilities wins. Each exercised
+	// capability is reported once via
+	// [stats.CapabilityObserver.RecordCapabilityApplied] when Observer
+	// implements it.
+	Capabilities []Capability
 }
 
 // MessageFromContext retrieves the [pahomqtt.Message] stored in ctx by the
@@ -490,6 +499,13 @@ type PublishOptions[T any] struct {
 	// (topic-level codec failures).
 	// Defaults to [stats.NoopObserver] when nil.
 	Observer stats.Observer
+
+	// Capabilities supplies sealed, compile-time-checked protocol-native
+	// declarations (currently [Retained]) for this publish — the
+	// RECOMMENDED path going forward. Only consulted by [publishHandle]'s
+	// zero-value qos/retained fallback (an explicit call-time
+	// qos/retained argument still always wins).
+	Capabilities []Capability
 }
 
 // publish encodes msg using handle's codec and publishes it to the broker.
@@ -539,6 +555,24 @@ func publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.
 	obs := opts.Observer
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
+	}
+	// opts.Capabilities (the RECOMMENDED, sealed path) is consulted as a
+	// fallback when the caller didn't pass an explicit non-default
+	// qos/retained — mirrors handle.ResolvePublishAttributes's own
+	// zero-value fallback precedence.
+	if capQoS, qosSet, capRetained, retainedSet := resolveCapabilities(opts.Capabilities); qosSet || retainedSet {
+		if qos == 0 && qosSet {
+			qos = byte(capQoS)
+			if capObs, ok := obs.(stats.CapabilityObserver); ok {
+				capObs.RecordCapabilityApplied(handle.Topic, capQoS.CapabilityName())
+			}
+		}
+		if !retained && retainedSet {
+			retained = bool(capRetained)
+			if capObs, ok := obs.(stats.CapabilityObserver); ok {
+				capObs.RecordCapabilityApplied(handle.Topic, capRetained.CapabilityName())
+			}
+		}
 	}
 	start := time.Now()
 	var err error

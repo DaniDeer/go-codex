@@ -7,7 +7,7 @@
 > remains the accurate, current description of shipped code.**
 >
 > **Forward-looking note (not a status change):**
-> [Feature](../roadmap/protocol-native-features.md) (a broader
+> [Feature](d-0006-protocol-native-capabilities.md) (a broader
 > roadmap-stage redesign, idea only, no code written — formerly titled
 > "Feature/Provider") has RESOLVED its relationship to this doc's
 > `Declaration[In,Out]`/`Middleware[In,Out]` mechanism (that doc's §3, via
@@ -1448,7 +1448,7 @@ bundled into this design's readiness.
   continue to work exactly as before, side by side with this new mechanism.
 - **Update — relationship RESOLVED, via a confirmed 4-stage lifecycle
   model.** An earlier version of this section described
-  [Feature](../roadmap/protocol-native-features.md) (then titled
+  [Feature](d-0006-protocol-native-capabilities.md) (then titled
   "Protocol-Native Feature Declarations," later "Feature/Provider") as a
   separate, complementary axis — opaque protocol capability flags (MQTT5
   Shared Subscriptions, Message Expiry, ZeroMQ Conflate/HWM) evaluated via

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/middleware"
 )
 
 // ValidationObserver is the codec-level observability hook.
@@ -98,6 +99,45 @@ type SecurityObserver interface {
 	// or message. location is the route path (HTTP) or topic (MQTT). scheme is
 	// the first declared security scheme name for the operation.
 	RecordSecurityRejection(location, scheme string)
+}
+
+// CapabilityObserver is an optional extension to [Observer] for
+// protocol-native capability application events (QoS, Retained, User
+// Properties, HWM, Conflate, ...). Adapters type-assert the configured
+// Observer to CapabilityObserver before calling RecordCapabilityApplied, so
+// implementing this interface is purely additive — existing Observer
+// implementations need not change. ONE generic hook covers every
+// capability type, uniformly, rather than a bespoke per-capability-type
+// hook — see docs/design/d-0006-protocol-native-capabilities.md's §7 Review-12.
+//
+//	type MyObserver struct{ ... }
+//	func (o *MyObserver) RecordCapabilityApplied(location, capability string) {
+//	    // increment a Prometheus counter, emit a log line, etc.
+//	}
+type CapabilityObserver interface {
+	// RecordCapabilityApplied is called once per capability actually
+	// exercised during dispatch. location is the topic (or route path).
+	// capability is that capability's own self-reported name (see
+	// events.CapabilityNameOf), e.g. "QoS", "Retained", "UserProperty".
+	RecordCapabilityApplied(location, capability string)
+}
+
+// DispositionObserver is an optional extension to [Observer] for Handler
+// Disposition resolution events (see middleware.ResolveDisposition).
+// Adapters type-assert the configured Observer to DispositionObserver
+// before calling RecordDisposition, so implementing this interface is
+// purely additive — existing Observer implementations need not change.
+//
+//	type MyObserver struct{ ... }
+//	func (o *MyObserver) RecordDisposition(location string, disposition middleware.Disposition) {
+//	    // increment a Prometheus counter, emit a log line, etc.
+//	}
+type DispositionObserver interface {
+	// RecordDisposition is called once per message/request dispatch with
+	// the FINAL, resolved [middleware.Disposition] (see
+	// middleware.ResolveDisposition) — location is the topic (or route
+	// path).
+	RecordDisposition(location string, disposition middleware.Disposition)
 }
 
 // TraceObserver is an optional extension to [Observer] for distributed tracing.
@@ -436,6 +476,14 @@ func (o *LoggingObserver) RecordSecurityRejection(location, scheme string) {
 	o.logger.Warn("security rejection", "location", location, "scheme", scheme)
 }
 
+func (o *LoggingObserver) RecordCapabilityApplied(location, capability string) {
+	o.logger.Debug("capability applied", "location", location, "capability", capability)
+}
+
+func (o *LoggingObserver) RecordDisposition(location string, disposition middleware.Disposition) {
+	o.logger.Debug("disposition resolved", "location", location, "disposition", disposition)
+}
+
 func (o *LoggingObserver) RecordErrorPatternMatch(location, code, action string) {
 	o.logger.Info("error pattern match", "location", location, "code", code, "action", action)
 }
@@ -574,6 +622,24 @@ func (f *fanout) RecordSecurityRejection(location, scheme string) {
 	for _, o := range f.observers {
 		if so, ok := o.(SecurityObserver); ok {
 			so.RecordSecurityRejection(location, scheme)
+		}
+	}
+}
+
+// RecordCapabilityApplied implements [CapabilityObserver].
+func (f *fanout) RecordCapabilityApplied(location, capability string) {
+	for _, o := range f.observers {
+		if co, ok := o.(CapabilityObserver); ok {
+			co.RecordCapabilityApplied(location, capability)
+		}
+	}
+}
+
+// RecordDisposition implements [DispositionObserver].
+func (f *fanout) RecordDisposition(location string, disposition middleware.Disposition) {
+	for _, o := range f.observers {
+		if do, ok := o.(DispositionObserver); ok {
+			do.RecordDisposition(location, disposition)
 		}
 	}
 }
@@ -737,6 +803,8 @@ func (NoopObserver) RecordSubscribe(_ string, _ bool, _ time.Duration)          
 func (NoopObserver) RecordPublish(_ string, _ bool, _ time.Duration)                {}
 func (NoopObserver) RecordApply(_, _ string, _ bool, _ time.Duration)               {}
 func (NoopObserver) RecordSecurityRejection(_, _ string)                            {}
+func (NoopObserver) RecordCapabilityApplied(_, _ string)                            {}
+func (NoopObserver) RecordDisposition(_ string, _ middleware.Disposition)           {}
 func (NoopObserver) RecordErrorPatternMatch(_, _, _ string)                         {}
 func (NoopObserver) RecordErrorPatternMiss(_ string)                                {}
 func (NoopObserver) TagSpan(_ context.Context, _, _ string)                         {}

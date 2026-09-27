@@ -2,7 +2,7 @@
 
 This guide walks through the MQTT examples. For the full API reference, see the feature page.
 
-**Feature:** [Event Channels — MQTT & AsyncAPI](../features/events.md)
+**Feature:** [Event Channels — MQTT & AsyncAPI](../features/events.md) · [Protocol-Native Capabilities](../features/capabilities.md) (QoS/Retained)
 
 ## examples/events-api
 

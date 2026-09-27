@@ -61,6 +61,8 @@ Read all of these before opening any finding:
 | ----------------------------------------------- | ------------------------------------------------------------------------ |
 | `api/rest/builder.go`                           | Layer 2 REST: all param types, builder methods, error types              |
 | `api/events/builder.go`                         | Layer 2 events: ChannelHandle, TopicParam, Builder                       |
+| `api/events/capability.go`, `api/events/address.go` | `CapabilitySpec`/`CheckCapabilityCoverage`/`CapabilityNameOf` (spec-rendering + drift-check for the sealed `Capability` mechanism), `Address`/`TopicAddress` (additive addressing types) — see `docs/design/d-0006-protocol-native-capabilities.md` |
+| `middleware/disposition.go`                     | Handler Disposition: `Disposition`/`EnsureDispositionBox`/`SetDisposition`/`DispositionFromContext`/`ResolveDisposition` — ctx-mutable-sink for a handler's per-message runtime outcome, shared by `api/events` and `api/reqreply` |
 | `api/mcp/builder.go`                            | Layer 2 MCP: ToolHandle, ResourceHandle, PromptHandle, Builder, MCPSpec  |
 | `api/mcp/errors.go`                             | MCP error types: ToolInputError, ResourceEncodeError, PromptArgError, … |
 | `forge/forge.go`                                | Layer 3: PipelineInfo, FunctionMeta, Registry, error types               |
@@ -76,6 +78,7 @@ Read all of these before opening any finding:
 | `adapters/mqtt/adapter.go`                      | Adapter: subscribe/publish, observer calls                               |
 | `adapters/mqtt/stream.go`                       | MQTT stream bridges: SubscribeStream, DrainPublish                       |
 | `adapters/mqtt5/adapter.go`                     | MQTT5 adapter: Subscribe, Publish, makeSubscribeMessageHandler           |
+| `adapters/mqtt5/capability.go`, `adapters/zeromq/capability.go`, `adapters/mqtt/capability.go` | Sealed `Capability` interfaces + concrete types (QoS/Retained/HWM/Conflate) + `resolveCapabilities` — reference implementations for checklist.md §15 |
 | `adapters/mqtt5/stream.go`                      | MQTT5 stream bridges: SubscribeStream, DrainPublish, AsPipelineFunc, CallStream |
 | `adapters/zeromq/stream.go`                     | ZeroMQ stream bridges: SubscribeStream, DrainPublish, AsPipelineFunc, CallStream, ServeLatest |
 | `adapters/mcpgo/adapter.go`                     | MCP adapter: ToolHandler/ResourceHandler/PromptHandler, observer, errors |
@@ -541,6 +544,13 @@ Used correctly in: `PipelineHandlerFunc`, `AsPipelineFunc`. Do not flag as an is
 ## Gotchas
 
 - **Do not re-report R1-Rxx items.** See `references/history.md` for the full list of what is already fixed.
+- **Sealed `Capability`/`Capabilities` field/Handler Disposition mechanism has SHIPPED (D-0006) —
+  do not flag its absence as a gap, and do not flag `events.Address`/`events.TopicAddress` staying
+  additive (no `Channel[Addr,T]` retrofit) as incomplete.** See checklist.md §15 for the full
+  guardrail and its rules — this is a pointer, not a restatement. `adapters/mqtt5/capability.go`/
+  `adapters/zeromq/capability.go` are the reference implementations; `middleware/disposition.go`
+  is the shared ctx-sink Handler Disposition lives in (not `api/events`, so `api/reqreply` reuses
+  it without an `api/events` dependency).
 - **After any exported symbol removal/rename, run checklist §14 (Godoc & Documentation-Site
   Reference Integrity) explicitly.** Dangling `[Symbol]` godoc links and stale `docs/*.md`/
   `examples/*` code snippets are invisible to `go build`/`go vet`/`go test`/`staticcheck` — see

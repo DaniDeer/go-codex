@@ -151,6 +151,28 @@ func (c *caller) ServeSubscribers(ctx context.Context) error {
 		if opts.QoS == 0 {
 			opts.QoS = byte(info.subscribeQoS)
 		}
+		obsForCap := opts.Observer
+		if obsForCap == nil {
+			obsForCap = stats.ObserverFromContext(ctx)
+		}
+		// opts.Capabilities (the RECOMMENDED, sealed path) overrides
+		// opts.QoS when supplied — reported once per exercised
+		// capability via [stats.CapabilityObserver].
+		if capQoS, qosSet, _, _ := resolveCapabilities(opts.Capabilities); qosSet {
+			opts.QoS = byte(capQoS)
+			if capObs, ok := obsForCap.(stats.CapabilityObserver); ok {
+				capObs.RecordCapabilityApplied(info.topic, capQoS.CapabilityName())
+			}
+		}
+		if len(info.capabilitySpecs) > 0 {
+			supplied := make([]any, len(opts.Capabilities))
+			for i, c := range opts.Capabilities {
+				supplied[i] = c
+			}
+			if covErr := events.CheckCapabilityCoverage(info.topic, info.capabilitySpecs, supplied); covErr != nil {
+				return covErr
+			}
+		}
 		filter := opts.TopicFilter
 		if filter == "" {
 			filter = deriveWildcardFilter(info.topic)
@@ -234,6 +256,9 @@ type erasedSubscriberHandle struct {
 	// default consulted when SubscribeOptions.QoS is left at its own zero
 	// value.
 	subscribeQoS events.MQTTQoS
+	// capabilitySpecs holds the channel's declared [events.CapabilitySpec]
+	// values, consulted by [events.CheckCapabilityCoverage].
+	capabilitySpecs []events.CapabilitySpec
 }
 
 // extractErasedSubscriberHandle recovers an [erasedSubscriberHandle] from
@@ -253,6 +278,7 @@ func extractErasedSubscriberHandle(handleAny any) (erasedSubscriberHandle, error
 	globalSecurity, _ := elem.FieldByName("GlobalSecurity").Interface().([]route.SecurityRequirement)
 	implementations, _ := elem.FieldByName("Implementations").Interface().([]middleware.ServerImplementation)
 	subscribeQoS, _ := elem.FieldByName("SubscribeQoS").Interface().(events.MQTTQoS)
+	capabilitySpecs, _ := elem.FieldByName("CapabilitySpecs").Interface().([]events.CapabilitySpec)
 	return erasedSubscriberHandle{
 		topic:           elem.FieldByName("Topic").String(),
 		descriptor:      descriptor,
@@ -264,6 +290,7 @@ func extractErasedSubscriberHandle(handleAny any) (erasedSubscriberHandle, error
 		handlerFn:       handlerFn,
 		msgType:         handlerFn.Type().In(1),
 		subscribeQoS:    subscribeQoS,
+		capabilitySpecs: capabilitySpecs,
 	}, nil
 }
 
@@ -436,16 +463,26 @@ func makeErasedSubscribeMessageHandler(ctx context.Context, info erasedSubscribe
 		}
 
 		wrappedHandler := wrapHandlerGeneralReflect(info.handlerFn, info.implementations)
-		var spanCtx = msgCtx
+		// EnsureDispositionBox is called unconditionally, at zero cost to
+		// adapters/callers that never call SetDisposition — mqtt5 has no
+		// acknowledgement concept of its own today, but the plumbing is
+		// proven end-to-end here for a future ack-capable adapter (e.g.
+		// AMQP) to consume without further core changes. See
+		// docs/design/d-0006-protocol-native-capabilities.md's §8.
+		spanCtx := middleware.EnsureDispositionBox(msgCtx)
 		if to, ok := obs.(stats.TraceObserver); ok {
-			spanCtx = to.StartSpan(msgCtx, "mqtt5.subscribe", msg.Topic)
+			spanCtx = to.StartSpan(spanCtx, "mqtt5.subscribe", msg.Topic)
 		}
 		results := wrappedHandler.Call([]reflect.Value{reflect.ValueOf(spanCtx), valuePtr.Elem()})
+		fnErr, _ := results[0].Interface().(error)
 		if to, ok := obs.(stats.TraceObserver); ok {
-			fnErr, _ := results[0].Interface().(error)
 			to.EndSpan(spanCtx, fnErr)
 		}
-		if fnErr, _ := results[0].Interface().(error); fnErr != nil {
+		disposition := middleware.ResolveDisposition(spanCtx, fnErr)
+		if dispObs, ok := obs.(stats.DispositionObserver); ok {
+			dispObs.RecordDisposition(msg.Topic, disposition)
+		}
+		if fnErr != nil {
 			stats.ReportErrors(obs, "topic_var", fnErr)
 			obs.RecordSubscribe(msg.Topic, false, time.Since(start))
 			if opts.OnError != nil {

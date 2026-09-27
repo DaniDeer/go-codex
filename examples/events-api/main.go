@@ -101,10 +101,11 @@ func main() {
 	demoSecuritySubscribeMW(ctx, obs)
 	demoZeromqPubSubRoundtrip(ctx)
 	demoObservabilityMiddleware(ctx, obs)
+	demoCapabilityMechanism(ctx)
 	demoSpecPrintingAsyncAPI()
 
-	subCount, pubCount, rejCount := obs.Summary()
+	subCount, pubCount, rejCount, capCount := obs.Summary()
 	fmt.Println("═══════════════════════════════════════════════════════")
-	fmt.Printf(" Observer summary: subscribed=%d published=%d rejected=%d\n", subCount, pubCount, rejCount)
+	fmt.Printf(" Observer summary: subscribed=%d published=%d rejected=%d capabilities_applied=%d\n", subCount, pubCount, rejCount, capCount)
 	fmt.Println("═══════════════════════════════════════════════════════")
 }

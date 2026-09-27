@@ -28,7 +28,7 @@ import (
 func demoSecuritySubscribeMW(ctx context.Context, obs *observability.DemoObserver) {
 	fmt.Println("--- Demo: SubscribeMW/PublishMW-based security (all 3 adapters) ---")
 
-	_, _, rejectedBefore := obs.Summary()
+	_, _, rejectedBefore, _ := obs.Summary()
 
 	// mqtt5 — credential extracted from a User Property (Pattern 2).
 	// MUST use the handle-based escape hatch, NOT Client.Attach's
@@ -91,7 +91,7 @@ func demoSecuritySubscribeMW(ctx context.Context, obs *observability.DemoObserve
 	// which silently masked a real bug (mqtt5's leg rejected every
 	// message before the fix above). Checking the SHARED obs's rejection
 	// count delta catches any future regression the same way.
-	_, _, rejectedAfter := obs.Summary()
+	_, _, rejectedAfter, _ := obs.Summary()
 	if rejectedAfter == rejectedBefore {
 		fmt.Println("  ✓ same declared security requirement enforced across mqtt5, mqtt v3, and zeromq (0 new rejections)")
 	} else {

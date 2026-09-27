@@ -61,7 +61,7 @@ func demoObservabilityMiddleware(ctx context.Context, obs *observability.DemoObs
 	time.Sleep(30 * time.Millisecond)
 	cancel()
 
-	subCount, pubCount, rejCount := obs.Summary()
+	subCount, pubCount, rejCount, _ := obs.Summary()
 	fmt.Printf("  ✓ observer summary so far: subscribed=%d published=%d rejected=%d\n", subCount, pubCount, rejCount)
 	fmt.Println()
 }
