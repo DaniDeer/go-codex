@@ -1,6 +1,9 @@
 package zeromq
 
-import "github.com/DaniDeer/go-codex/stats"
+import (
+	"github.com/DaniDeer/go-codex/api/events"
+	"github.com/DaniDeer/go-codex/stats"
+)
 
 // Capability is the sealed interface for adapters/zeromq-specific
 // protocol-native declarations. Supplied via [SubscribeOptions.Capabilities]/
@@ -23,6 +26,11 @@ func (HWM) isZeroMQCapability() {}
 
 // CapabilityName implements [events.CapabilityName].
 func (HWM) CapabilityName() string { return "HWM" }
+
+// Level implements [events.LeveledCapability] — lets a declare-time
+// [events.RequireHWM] requirement be checked for VALUE (not just
+// presence) by [events.CheckCapabilityCoverage].
+func (h HWM) Level() int { return int(h) }
 
 // Conflate is a sealed [Capability] declaring whether the socket should
 // keep only the LATEST message per topic (ZMQ_CONFLATE), discarding
@@ -51,21 +59,6 @@ type ConflateSetter interface {
 	SetConflate(on bool) error
 }
 
-// resolveCapabilities extracts the effective HWM/Conflate values declared
-// via caps. hwmSet/conflateSet report whether the corresponding
-// capability was present in caps at all.
-func resolveCapabilities(caps []Capability) (hwm HWM, hwmSet bool, conflate Conflate, conflateSet bool) {
-	for _, c := range caps {
-		switch v := c.(type) {
-		case HWM:
-			hwm, hwmSet = v, true
-		case Conflate:
-			conflate, conflateSet = v, true
-		}
-	}
-	return
-}
-
 // applyCapabilities applies every capability in caps to sock (via
 // [HWMSetter]/[ConflateSetter] when sock implements them — a documented
 // no-op otherwise), reporting each SUCCESSFULLY applied capability once
@@ -75,19 +68,19 @@ func applyCapabilities(sock FramedSocket, caps []Capability, obs stats.Observer,
 	if len(caps) == 0 {
 		return
 	}
-	hwm, hwmSet, conflate, conflateSet := resolveCapabilities(caps)
-	capObs, hasCapObs := obs.(stats.CapabilityObserver)
+	hwm, hwmSet := events.ResolveCapabilityValue[Capability, HWM](caps)
+	conflate, conflateSet := events.ResolveCapabilityValue[Capability, Conflate](caps)
 	if hwmSet {
 		if setter, ok := sock.(HWMSetter); ok {
-			if err := setter.SetHWM(int(hwm)); err == nil && hasCapObs {
-				capObs.RecordCapabilityApplied(location, hwm.CapabilityName())
+			if err := setter.SetHWM(int(hwm)); err == nil {
+				events.RecordCapabilityApplied(obs, location, hwm)
 			}
 		}
 	}
 	if conflateSet {
 		if setter, ok := sock.(ConflateSetter); ok {
-			if err := setter.SetConflate(bool(conflate)); err == nil && hasCapObs {
-				capObs.RecordCapabilityApplied(location, conflate.CapabilityName())
+			if err := setter.SetConflate(bool(conflate)); err == nil {
+				events.RecordCapabilityApplied(obs, location, conflate)
 			}
 		}
 	}

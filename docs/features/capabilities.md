@@ -7,6 +7,14 @@
 > `api/events`). REST, Security, and reqreply deliberately use different,
 > already-documented mechanisms instead — see
 > ["Why not REST/Security/reqreply?"](#why-not-restsecurityreqreply) below.
+>
+> **Terminology note:** the declare-time type is `events.CapabilityRequirement`
+> (renamed from `CapabilitySpec`) and its coverage-check error is
+> `events.CapabilityCoverageError` (renamed from `MissingCapabilityError`)
+> — see [`docs/roadmap/capability-requirement-composition.md`](../roadmap/capability-requirement-composition.md)
+> for the full three-tier vocabulary (Baseline/Implicit/Explicit) this
+> page's `Capability` mechanism is now classified under (Tier 3 —
+> Explicit), and for the planned Phase 2/3 rollout to `api/reqreply`/`api/rest`.
 
 ## What a `Capability` is
 
@@ -69,14 +77,49 @@ A capability that a socket implementation doesn't support (e.g. a
 error — applying `zeromq.HWM` to a socket type that doesn't implement
 `HWMSetter` simply has no effect.
 
+### Requirement sugar helpers
+
+Instead of writing `events.CapabilityRequirement{Name: "QoS", ...}` by
+hand, use the adapter-agnostic sugar helpers — each produces an ordinary
+`CapabilityRequirement`:
+
+```go
+ch := events.NewChannel[SensorReading]("sensor/reading", sensorCodec,
+    events.RequireQoS(events.AtLeastOnce),   // GENUINELY value-checked, see below
+    events.RequireRetained(),                // presence-only (boolean toggle)
+)
+```
+
+`RequireQoS(level)`/`RequireHWM(minimum)` set a `MinLevel` that's
+GENUINELY enforced (see "Coverage checking" below); `RequireRetained()`/
+`RequireConflate()` are presence-only, correctly — a boolean toggle has
+no "insufficient level" to check. There is no `RequireUserProperties()` —
+`UserPropertyParam` is a Tier 2 (Implicit), adapter-options-scoped
+declaration, not a Tier 3 (Explicit) requirement; see
+`docs/roadmap/capability-requirement-composition.md`'s "Design guardrails"
+section for the full classification.
+
 ### Coverage checking
 
-`events.CapabilitySpec` is a `ChannelOpt` you declare on a channel to
-assert "this channel requires capability X." `events.CheckCapabilityCoverage`
+`events.CapabilityRequirement` is a `ChannelOpt` you declare on a channel
+to assert "this channel requires capability X." `events.CheckCapabilityCoverage`
 runs automatically inside each adapter's `ServeSubscribers`, comparing
-declared specs against the capabilities actually supplied — a genuine
-mismatch (a spec declared with no matching capability ever supplied)
-surfaces as a typed `MissingCapabilityError`.
+declared requirements against the capabilities actually supplied.
+
+Two kinds of mismatch are caught, both surfaced via a typed
+`*events.CapabilityCoverageError`:
+
+- **Missing** — no supplied capability matches the declared `Name` at
+  all.
+- **Insufficient** — a matching capability EXISTS, but its value doesn't
+  meet the declared `MinLevel` (e.g. `RequireQoS(ExactlyOnce)` declared,
+  only `mqtt5.QoSAtMostOnce` supplied). This is a GENUINE value check, via
+  the optional `events.LeveledCapability` interface
+  (`adapters/mqtt.QoS`/`adapters/mqtt5.QoS`/`adapters/zeromq.HWM` all
+  implement `Level() int`) — mirrors the `CapabilityName` optional-
+  interface pattern, so `api/events` never imports an adapter package to
+  do this. A requirement with no `MinLevel` (e.g. `RequireRetained()`) is
+  presence-only, unaffected by this check.
 
 ### Observability
 

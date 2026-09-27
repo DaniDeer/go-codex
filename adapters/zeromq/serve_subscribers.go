@@ -63,9 +63,9 @@ type subscriberRoute struct {
 	// — applied to the socket once, via [applyCapabilities], right after
 	// [FramedSocket.SetSubscription] in [(*caller).ServeSubscribers].
 	capabilities []Capability
-	// capabilitySpecs holds the channel's declared [events.CapabilitySpec]
+	// requirements holds the channel's declared [events.CapabilityRequirement]
 	// values, consulted by [events.CheckCapabilityCoverage].
-	capabilitySpecs []events.CapabilitySpec
+	requirements []events.CapabilityRequirement
 }
 
 // buildSubscriberRoute compiles entry into a [subscriberRoute] via
@@ -135,20 +135,20 @@ func buildSubscriberRoute(entry events.SubscriberEntry) (*subscriberRoute, error
 		}
 	}
 
-	capabilitySpecs, _ := elem.FieldByName("CapabilitySpecs").Interface().([]events.CapabilitySpec)
+	requirements, _ := elem.FieldByName("Requirements").Interface().([]events.CapabilityRequirement)
 
 	return &subscriberRoute{
-		topic:           topic,
-		filter:          filter,
-		handleVal:       hv,
-		next:            next,
-		securityFn:      resolved.securityFn,
-		implSecurity:    securityImpls,
-		secReqs:         secReqs,
-		onError:         resolved.onError,
-		observer:        resolved.observer,
-		capabilities:    resolved.capabilities,
-		capabilitySpecs: capabilitySpecs,
+		topic:        topic,
+		filter:       filter,
+		handleVal:    hv,
+		next:         next,
+		securityFn:   resolved.securityFn,
+		implSecurity: securityImpls,
+		secReqs:      secReqs,
+		onError:      resolved.onError,
+		observer:     resolved.observer,
+		capabilities: resolved.capabilities,
+		requirements: requirements,
 	}, nil
 }
 
@@ -442,14 +442,8 @@ func (c *caller) ServeSubscribers(ctx context.Context) error {
 			obs = stats.ObserverFromContext(ctx)
 		}
 		applyCapabilities(c.sock, r.capabilities, obs, r.topic)
-		if len(r.capabilitySpecs) > 0 {
-			supplied := make([]any, len(r.capabilities))
-			for i, c := range r.capabilities {
-				supplied[i] = c
-			}
-			if covErr := events.CheckCapabilityCoverage(r.topic, r.capabilitySpecs, supplied); covErr != nil {
-				return covErr
-			}
+		if covErr := events.VerifyCapabilityCoverage(r.topic, r.requirements, r.capabilities); covErr != nil {
+			return covErr
 		}
 	}
 	if err := c.sock.SetRecvTimeout(recvPollInterval); err != nil {

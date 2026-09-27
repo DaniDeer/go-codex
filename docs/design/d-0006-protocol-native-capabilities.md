@@ -37,6 +37,17 @@
 > proving the plumbing end-to-end for a future ack-capable adapter (AMQP)
 > to consume without further core changes.
 >
+> **Amendment (Phase 1 of [Composable Capability Requirements](../roadmap/capability-requirement-composition.md)):**
+> `events.CapabilitySpec`/`events.MissingCapabilityError` (named above) were
+> BREAKING-RENAMED to `events.CapabilityRequirement`/
+> `events.CapabilityCoverageError`, and `events.CheckCapabilityCoverage`
+> became VALUE-AWARE (not just name-matching) via a new optional
+> `events.LeveledCapability` interface. The historical narrative below this
+> status block still uses the ORIGINAL pre-rename names — read
+> `docs/roadmap/capability-requirement-composition.md`'s Phase 1 subsection
+> for the current, authoritative shape; this doc's own text is NOT rewritten
+> (per this repo's convention for graduated design docs).
+>
 > **Deferred, not abandoned**: `events.Address`/`events.TopicAddress`
 > shipped as standalone, ADDITIVE types (§2.3/§5.3). The originally-planned
 > full `Channel[Addr Address, T any]` generic retrofit of `Channel[T]`/

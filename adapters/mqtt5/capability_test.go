@@ -26,6 +26,19 @@ func TestQoS_ImplementsCapability(t *testing.T) {
 	}
 }
 
+func TestQoS_ImplementsLeveledCapability(t *testing.T) {
+	var _ events.LeveledCapability = QoSAtLeastOnce
+	if got := QoSAtMostOnce.Level(); got != 0 {
+		t.Errorf("want Level 0, got %d", got)
+	}
+	if got := QoSAtLeastOnce.Level(); got != 1 {
+		t.Errorf("want Level 1, got %d", got)
+	}
+	if got := QoSExactlyOnce.Level(); got != 2 {
+		t.Errorf("want Level 2, got %d", got)
+	}
+}
+
 func TestRetained_ImplementsCapability(t *testing.T) {
 	var _ Capability = Retained(true)
 	if got := Retained(true).CapabilityName(); got != "Retained" {
@@ -33,15 +46,9 @@ func TestRetained_ImplementsCapability(t *testing.T) {
 	}
 }
 
-func TestResolveCapabilities(t *testing.T) {
-	qos, qosSet, retained, retainedSet := resolveCapabilities([]Capability{QoSAtLeastOnce, Retained(true)})
-	if !qosSet || qos != QoSAtLeastOnce {
-		t.Errorf("want QoSAtLeastOnce set, got %v set=%v", qos, qosSet)
-	}
-	if !retainedSet || !bool(retained) {
-		t.Errorf("want Retained(true) set, got %v set=%v", retained, retainedSet)
-	}
-}
+// resolveCapabilities (this package's own hand-rolled extraction
+// function) was REMOVED — replaced by the generic
+// [events.ResolveCapabilityValue], tested once in api/events.
 
 // TestServeSubscribers_CapabilitiesOverridesQoS confirms
 // SubscribeOptions.Capabilities (the RECOMMENDED path) overrides the

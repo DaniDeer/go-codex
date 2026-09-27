@@ -44,4 +44,33 @@
 // adapters/mqtt.NewSubscribeTransport/NewPublishTransport, consumed via
 // [SubscribeHandle]/[PublishHandle]) or attach it declaratively via [Formats]/
 // [SubscribeFormats]/[PublishFormats].
+//
+// # Protocol-native capabilities
+//
+// A channel's protocol behavior (MQTT QoS, retained messages, ZeroMQ
+// high-water-mark, ...) is classified into a three-tier vocabulary — see
+// docs/roadmap/capability-requirement-composition.md for the full design:
+//
+//   - Baseline — the Topic itself (matching the address, encoding/decoding
+//     the declared payload codec). Mandatory, never declared explicitly; the
+//     precondition every channel already satisfies.
+//   - Implicit — a requirement that arises as a side effect of declaring a
+//     codec-backed field (e.g. an adapter's own UserPropertyParam-style
+//     option). Declaring the field IS the requirement.
+//   - Explicit — a standalone requirement, declared via [CapabilityRequirement]
+//     (or the sugar helpers [RequireQoS]/[RequireRetained]/[RequireHWM]/
+//     [RequireConflate]), independent of any adapter until [Attach] time.
+//     [CheckCapabilityCoverage] verifies the supplied adapter Capability
+//     values satisfy every declared requirement — including, for
+//     requirements with a MinLevel (e.g. RequireQoS), a genuine VALUE
+//     check via the optional [LeveledCapability] interface, not just
+//     presence-by-name.
+//
+// Thin-adapter helpers — every adapter maps its own declared Capability
+// values to the wire/protocol using these three, instead of hand-rolling
+// the same boilerplate per adapter: [VerifyCapabilityCoverage] (guard +
+// coverage-check in one call), [ResolveCapabilityValue] (generic
+// last-matching-value extraction from a `[]<pkg>.Capability` slice), and
+// [RecordCapabilityApplied] (report a successfully-applied capability to
+// an optional [stats.CapabilityObserver]).
 package events

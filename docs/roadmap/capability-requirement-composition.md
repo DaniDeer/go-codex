@@ -1,15 +1,14 @@
 # Composable Capability Requirements — declare-first, adapter-satisfies-second
 
-> **Status:** Idea only — no code written. Spun out of a user question
-> about [D-0006 — Protocol-Native Capabilities](../design/d-0006-protocol-native-capabilities.md)'s
+> **Status:** Phase 1 SHIPPED (see its own subsection for the Learnings
+> entry); Phases 2-4 not yet started. Spun out of a user question about
+> [D-0006 — Protocol-Native Capabilities](../design/d-0006-protocol-native-capabilities.md)'s
 > scope (events-only) while reviewing [`docs/features/capabilities.md`](../features/capabilities.md).
 > Planned as 3 sequential implementation phases (`api/events` →
 > `api/reqreply` → `api/rest`), each following its own
 > design → implement → examples → docs → learnings cycle, followed by a
 > Phase 4 review/closeout once all three ship — see "Implementation
-> approach" below. **Phase 1's design is FINALIZED and
-> READY FOR IMPLEMENTATION** (no code written yet — design and
-> implementation are separate steps in this doc's own process).
+> approach" below.
 > [← Back to Roadmap](index.md)
 
 ## Motivation
@@ -303,9 +302,10 @@ once here rather than repeated three times:**
 
 ### Phase 1 — `api/events` (rewrite the shipped D-0006 mechanism)
 
-**Status: DESIGN FINALIZED — READY FOR IMPLEMENTATION.** Every open
-question below has an exact, pinned-down answer; nothing remains for the
-Implement step to decide on the fly.
+**Status: SHIPPED.** Design finalized, implemented, tested, documented,
+and verified (`go fmt`/`go build`/`go test ./...`/`just check`/all
+examples all green). See the Learnings entry at the end of this
+subsection for what carries forward to Phase 2.
 
 **Design — RESOLVED, breaking changes deliberately chosen (no
 compromise):** the sole user of go-codex has confirmed breaking changes
@@ -634,15 +634,60 @@ test files, not assumed — closes the last ambiguity before Implement):
     (a historical, append-only round log — its Round P2 entry describes
     what was true AT THAT TIME, consistent with how this repo already
     treats `review-docs`' own history.md).
-- **Learnings:** recorded here before Phase 2's Design step begins —
-  directly resolves the existing "where does reqreply's capability-spec
-  type live" open decision with real evidence from Phase 1, instead of
-  speculating; also records whether the `LeveledCapability` pattern
-  generalizes cleanly to any reqreply capability candidate; **MUST also
-  catalog, with exact file/symbol detail (not just "something broke"),
-  any `api/reqreply`-related breakage inside `adapters/mqtt5`/
-  `adapters/zeromq` caused by Phase 1's renames** — this is the concrete
-  input Phase 2 fixes first.
+- **Learnings (recorded, real evidence from Implement — not speculation):**
+  - **Zero `api/reqreply` collateral breakage occurred.** `go test
+    ./adapters/mqtt5/... ./adapters/zeromq/...` (which includes each
+    package's own reqreply-related test files, e.g. `reqreply_test.go`,
+    `reqreply_transport_test.go`) passed FULLY on the first run after
+    Step 4's renames — confirming the "low risk" assessment from Phase
+    1's own Design step was correct. Reason confirmed: reqreply's own
+    `QoS byte` field genuinely never touched the sealed
+    `Capability`/`CapabilityRequirement` mechanism.
+  - **`LeveledCapability` generalized cleanly, zero friction** — adding
+    `Level() int` to `mqtt.QoS`/`mqtt5.QoS`/`zeromq.HWM` was a pure,
+    additive one-line method each; no adapter-side design tension found.
+    This is a positive signal for Phase 2: if reqreply ever gains a
+    leveled capability candidate, the same optional-interface technique
+    should transplant directly.
+  - **Real-adapter types CANNOT be imported into `api/events`'s own
+    internal test package** (`package events`) — `adapters/mqtt5`/
+    `adapters/zeromq` both import `api/events`, so importing either back
+    from an internal test file is a genuine import cycle. Tests requiring
+    a `LeveledCapability`-implementing value had to use hand-written fake
+    types (`fakeLeveledCapability`, `fakeNamedCapability`) instead of
+    real `mqtt5.QoS`/`zeromq.HWM` values. **Carries forward to Phase 2:**
+    if `api/reqreply`'s own capability tests live in `package reqreply`
+    and reqreply's adapters import `api/reqreply`, the SAME fake-type
+    pattern will be needed there too — plan for it in Phase 2's Design
+    step rather than rediscovering it during Implement.
+  - **This resolves Open Design Decision #1 with real evidence, not
+    speculation:** Phase 1 confirms `CapabilityRequirement`'s shape
+    (`Name string`, `Description string`, `MinLevel *int`) is simple
+    enough to duplicate cheaply into a reqreply-local type with zero
+    `api/events` dependency (mirroring `middleware.Disposition`'s
+    placement rationale) — no evidence emerged that a SHARED type across
+    packages would save meaningful duplication, since the whole struct is
+    3 fields. Leading answer for Phase 2's Design step: own
+    package-local type, not shared.
+  - **Workflow note, not a design finding:** a `go fmt` pass was needed
+    at the end of Implement (2 files had formatting drift) — no code
+    change, just a reminder to run `gofmt`/`go fmt ./...` before the
+    final verification pass, not only after.
+  - **Post-ship follow-up, applied the same session:** a code review
+    found each adapter's own `resolveCapabilities` (mqtt/mqtt5 were
+    BYTE-IDENTICAL bodies; zeromq the same shape) and the repeated
+    "guard + `[]any` conversion + coverage-check" / "type-assert observer
+    + report" blocks were pure, protocol-agnostic boilerplate — moved to
+    `api/events` as 3 new generic helpers
+    (`VerifyCapabilityCoverage[C any]`, `ResolveCapabilityValue[Iface,
+    V any]`, `RecordCapabilityApplied`), and each adapter's own
+    `resolveCapabilities` function (+ its dedicated test) DELETED
+    entirely. Zero behavior change (verified: `events-api`'s capability
+    demo output is byte-identical pre/post). **Carries forward as a
+    reusable pattern for Phase 2/3**: when reqreply/REST need the same
+    "resolve a declared capability value from an adapter-owned slice"
+    shape, reuse `ResolveCapabilityValue` directly rather than
+    re-deriving a per-adapter switch statement.
 
 ### Phase 2 — `api/reqreply` (apply the (possibly revised) mechanism)
 

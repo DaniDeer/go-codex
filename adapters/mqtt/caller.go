@@ -421,18 +421,12 @@ func subscribeEntryReflect(ctx context.Context, client pahomqtt.Client, entry ev
 	// opts.Capabilities (the RECOMMENDED, sealed path) overrides opts.QoS
 	// when supplied — reported once per exercised capability via
 	// [stats.CapabilityObserver].
-	if capQoS, qosSet, _, _ := resolveCapabilities(opts.Capabilities); qosSet {
+	if capQoS, qosSet := events.ResolveCapabilityValue[Capability, QoS](opts.Capabilities); qosSet {
 		opts.QoS = byte(capQoS)
-		if capObs, ok := obs.(stats.CapabilityObserver); ok {
-			capObs.RecordCapabilityApplied(topic, capQoS.CapabilityName())
-		}
+		events.RecordCapabilityApplied(obs, topic, capQoS)
 	}
-	if specs, ok := elem.FieldByName("CapabilitySpecs").Interface().([]events.CapabilitySpec); ok && len(specs) > 0 {
-		supplied := make([]any, len(opts.Capabilities))
-		for i, c := range opts.Capabilities {
-			supplied[i] = c
-		}
-		if covErr := events.CheckCapabilityCoverage(topic, specs, supplied); covErr != nil {
+	if reqs, ok := elem.FieldByName("Requirements").Interface().([]events.CapabilityRequirement); ok {
+		if covErr := events.VerifyCapabilityCoverage(topic, reqs, opts.Capabilities); covErr != nil {
 			return covErr
 		}
 	}

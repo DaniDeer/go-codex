@@ -12,15 +12,22 @@ import (
 )
 
 // demoCapabilityMechanism demonstrates the protocol-native Capability
-// mechanism (docs/design/d-0006-protocol-native-capabilities.md): a sealed,
-// compile-time-checked adapter-owned type (mqtt5.QoS/mqtt5.Retained)
-// supplied at DECLARE time via SubscribeOptions.Capabilities/
-// PublishOptions.Capabilities — NOT a new Attach-time parameter — plus:
-//   - events.CapabilitySpec (declared on routes.CapabilityChannel) renders
-//     as the AsyncAPI "x-capabilities" vendor extension (see
-//     demo_spec_printing_asyncapi.go for spec output).
-//   - events.CheckCapabilityCoverage confirms the declared spec and the
-//     actually-supplied Capabilities agree.
+// mechanism, REWRITTEN by Phase 1 of
+// docs/roadmap/capability-requirement-composition.md into the doc's
+// three-tier vocabulary (Baseline/Implicit/Explicit — this is the
+// Explicit tier): a sealed, compile-time-checked adapter-owned type
+// (mqtt5.QoS/mqtt5.Retained) supplied at DECLARE time via
+// SubscribeOptions.Capabilities/PublishOptions.Capabilities — NOT a new
+// Attach-time parameter — plus:
+//   - events.RequireQoS (sugar over events.CapabilityRequirement, declared
+//     on routes.CapabilityChannel) renders as the AsyncAPI "x-capabilities"
+//     vendor extension (see demo_spec_printing_asyncapi.go for spec
+//     output).
+//   - events.CheckCapabilityCoverage confirms the declared requirement and
+//     the actually-supplied Capabilities agree — now GENUINELY value-aware
+//     via the new events.LeveledCapability interface (mqtt5.QoS.Level()):
+//     a supplied QoS BELOW the declared minimum is caught as Insufficient,
+//     not just name-matched (see the second demonstration below).
 //   - stats.CapabilityObserver.RecordCapabilityApplied reports each
 //     exercised capability through the SAME shared Observer this example's
 //     other demos already use (see observability.DemoObserver).
@@ -34,24 +41,38 @@ func demoCapabilityMechanism(ctx context.Context) {
 	router := mqtt5broker.NewMockRouter()
 	broker := mqtt5broker.NewMockBroker(router)
 
-	// Coverage check: the channel declares a CapabilitySpec for "QoS" (see
-	// routes.CapabilityChannel) — the subscribe side's supplied
-	// Capabilities (below) satisfies it. This SAME check runs
+	// Coverage check: the channel declares a requirement for "QoS" (see
+	// routes.CapabilityChannel's events.RequireQoS) — the subscribe side's
+	// supplied Capabilities (below) satisfies it. This SAME check runs
 	// AUTOMATICALLY inside ServeSubscribers; called here too just to show
 	// it explicitly.
-	specHandle, err := routes.CapabilitySub.Handle(nil)
+	reqHandle, err := routes.CapabilitySub.Handle(nil)
 	if err != nil {
 		fmt.Printf("  [error] Handle: %v\n", err)
 		return
 	}
 	if err := events.CheckCapabilityCoverage(routes.CapabilityTopic,
-		specHandle.CapabilitySpecs,
+		reqHandle.Requirements,
 		[]any{mqtt5adapter.QoSAtLeastOnce},
 	); err != nil {
 		fmt.Printf("  [error] CheckCapabilityCoverage: %v\n", err)
 		return
 	}
-	fmt.Println("  ✓ CheckCapabilityCoverage: declared CapabilitySpecs satisfied")
+	fmt.Println("  ✓ CheckCapabilityCoverage: declared Requirements satisfied")
+
+	// NEW this round — value-aware coverage checking: the channel
+	// requires AT LEAST QoS AtLeastOnce, but a hypothetical adapter only
+	// supplies QoSAtMostOnce (a LOWER level). Before this rewrite, this
+	// mismatch was NOT caught (only the NAME "QoS" was checked). Now it
+	// is, via mqtt5.QoS's new Level() method (events.LeveledCapability).
+	if err := events.CheckCapabilityCoverage(routes.CapabilityTopic,
+		reqHandle.Requirements,
+		[]any{mqtt5adapter.QoSAtMostOnce},
+	); err != nil {
+		fmt.Printf("  ✓ CheckCapabilityCoverage correctly rejects an insufficient QoS level: %v\n", err)
+	} else {
+		fmt.Println("  [error] expected an Insufficient-level error, got nil")
+	}
 
 	// The Capability mechanism's QoS override only takes effect on the
 	// Attach/ServeSubscribers path (it has no call-time qos parameter to

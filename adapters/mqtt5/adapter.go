@@ -866,19 +866,15 @@ func publish[T any](
 	// opts.Capabilities (the RECOMMENDED, sealed path) is consulted as a
 	// fallback when the caller didn't pass an explicit non-default
 	// qos/retained.
-	if capQoS, qosSet, capRetained, retainedSet := resolveCapabilities(opts.Capabilities); qosSet || retainedSet {
-		if qos == 0 && qosSet {
-			qos = byte(capQoS)
-			if capObs, ok := obs.(stats.CapabilityObserver); ok {
-				capObs.RecordCapabilityApplied(handle.Topic, capQoS.CapabilityName())
-			}
-		}
-		if !retained && retainedSet {
-			retained = bool(capRetained)
-			if capObs, ok := obs.(stats.CapabilityObserver); ok {
-				capObs.RecordCapabilityApplied(handle.Topic, capRetained.CapabilityName())
-			}
-		}
+	capQoS, qosSet := events.ResolveCapabilityValue[Capability, QoS](opts.Capabilities)
+	capRetained, retainedSet := events.ResolveCapabilityValue[Capability, Retained](opts.Capabilities)
+	if qos == 0 && qosSet {
+		qos = byte(capQoS)
+		events.RecordCapabilityApplied(obs, handle.Topic, capQoS)
+	}
+	if !retained && retainedSet {
+		retained = bool(capRetained)
+		events.RecordCapabilityApplied(obs, handle.Topic, capRetained)
 	}
 
 	if err := validatePublishImplementationShapes[T](handle.ClientImplementations); err != nil {

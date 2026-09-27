@@ -32,6 +32,11 @@ func (QoS) isMQTT5Capability() {}
 // CapabilityName implements [events.CapabilityName].
 func (QoS) CapabilityName() string { return "QoS" }
 
+// Level implements [events.LeveledCapability] — lets a declare-time
+// [events.RequireQoS] requirement be checked for VALUE (not just
+// presence) by [events.CheckCapabilityCoverage].
+func (q QoS) Level() int { return int(q) }
+
 // Retained is a sealed [Capability] declaring the MQTT 5 retained-message
 // flag for one outgoing publish. Equivalent to the pre-existing
 // [events.PublishAttributes.Retained]/call-time retained parameter (kept,
@@ -43,23 +48,8 @@ func (Retained) isMQTT5Capability() {}
 // CapabilityName implements [events.CapabilityName].
 func (Retained) CapabilityName() string { return "Retained" }
 
-// resolveCapabilities extracts the effective QoS/Retained values declared
-// via caps. qosSet/retainedSet report whether the corresponding
-// capability was present in caps at all.
-//
 // User Properties remain declared via [UserPropertyParam] (a distinct,
 // pre-existing mechanism) rather than as a sealed Capability — folding
 // [UserPropertyParam] into this mechanism (embedding
 // middleware.Declaration, per §5.2's worked example) is left for a future
 // round; the two mechanisms coexist without conflict today.
-func resolveCapabilities(caps []Capability) (qos QoS, qosSet bool, retained Retained, retainedSet bool) {
-	for _, c := range caps {
-		switch v := c.(type) {
-		case QoS:
-			qos, qosSet = v, true
-		case Retained:
-			retained, retainedSet = v, true
-		}
-	}
-	return
-}

@@ -44,6 +44,13 @@ func TestHWM_ImplementsCapability(t *testing.T) {
 	}
 }
 
+func TestHWM_ImplementsLeveledCapability(t *testing.T) {
+	var _ events.LeveledCapability = HWM(100)
+	if got := HWM(100).Level(); got != 100 {
+		t.Errorf("want Level 100, got %d", got)
+	}
+}
+
 func TestConflate_ImplementsCapability(t *testing.T) {
 	var _ Capability = Conflate(true)
 	if got := Conflate(true).CapabilityName(); got != "Conflate" {
@@ -51,15 +58,9 @@ func TestConflate_ImplementsCapability(t *testing.T) {
 	}
 }
 
-func TestResolveCapabilities(t *testing.T) {
-	hwm, hwmSet, conflate, conflateSet := resolveCapabilities([]Capability{HWM(10), Conflate(true)})
-	if !hwmSet || hwm != 10 {
-		t.Errorf("want HWM(10) set, got %v set=%v", hwm, hwmSet)
-	}
-	if !conflateSet || !bool(conflate) {
-		t.Errorf("want Conflate(true) set, got %v set=%v", conflate, conflateSet)
-	}
-}
+// resolveCapabilities (this package's own hand-rolled extraction
+// function) was REMOVED — replaced by the generic
+// [events.ResolveCapabilityValue], tested once in api/events.
 
 // TestServeSubscribers_Capabilities_AppliedToSocket confirms
 // SubscribeOptions.Capabilities is applied to the socket via

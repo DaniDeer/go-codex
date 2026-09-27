@@ -560,19 +560,15 @@ func publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.
 	// fallback when the caller didn't pass an explicit non-default
 	// qos/retained — mirrors handle.ResolvePublishAttributes's own
 	// zero-value fallback precedence.
-	if capQoS, qosSet, capRetained, retainedSet := resolveCapabilities(opts.Capabilities); qosSet || retainedSet {
-		if qos == 0 && qosSet {
-			qos = byte(capQoS)
-			if capObs, ok := obs.(stats.CapabilityObserver); ok {
-				capObs.RecordCapabilityApplied(handle.Topic, capQoS.CapabilityName())
-			}
-		}
-		if !retained && retainedSet {
-			retained = bool(capRetained)
-			if capObs, ok := obs.(stats.CapabilityObserver); ok {
-				capObs.RecordCapabilityApplied(handle.Topic, capRetained.CapabilityName())
-			}
-		}
+	capQoS, qosSet := events.ResolveCapabilityValue[Capability, QoS](opts.Capabilities)
+	capRetained, retainedSet := events.ResolveCapabilityValue[Capability, Retained](opts.Capabilities)
+	if qos == 0 && qosSet {
+		qos = byte(capQoS)
+		events.RecordCapabilityApplied(obs, handle.Topic, capQoS)
+	}
+	if !retained && retainedSet {
+		retained = bool(capRetained)
+		events.RecordCapabilityApplied(obs, handle.Topic, capRetained)
 	}
 	start := time.Now()
 	var err error

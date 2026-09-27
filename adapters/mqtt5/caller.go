@@ -158,20 +158,12 @@ func (c *caller) ServeSubscribers(ctx context.Context) error {
 		// opts.Capabilities (the RECOMMENDED, sealed path) overrides
 		// opts.QoS when supplied — reported once per exercised
 		// capability via [stats.CapabilityObserver].
-		if capQoS, qosSet, _, _ := resolveCapabilities(opts.Capabilities); qosSet {
+		if capQoS, qosSet := events.ResolveCapabilityValue[Capability, QoS](opts.Capabilities); qosSet {
 			opts.QoS = byte(capQoS)
-			if capObs, ok := obsForCap.(stats.CapabilityObserver); ok {
-				capObs.RecordCapabilityApplied(info.topic, capQoS.CapabilityName())
-			}
+			events.RecordCapabilityApplied(obsForCap, info.topic, capQoS)
 		}
-		if len(info.capabilitySpecs) > 0 {
-			supplied := make([]any, len(opts.Capabilities))
-			for i, c := range opts.Capabilities {
-				supplied[i] = c
-			}
-			if covErr := events.CheckCapabilityCoverage(info.topic, info.capabilitySpecs, supplied); covErr != nil {
-				return covErr
-			}
+		if covErr := events.VerifyCapabilityCoverage(info.topic, info.requirements, opts.Capabilities); covErr != nil {
+			return covErr
 		}
 		filter := opts.TopicFilter
 		if filter == "" {
@@ -256,9 +248,9 @@ type erasedSubscriberHandle struct {
 	// default consulted when SubscribeOptions.QoS is left at its own zero
 	// value.
 	subscribeQoS events.MQTTQoS
-	// capabilitySpecs holds the channel's declared [events.CapabilitySpec]
+	// requirements holds the channel's declared [events.CapabilityRequirement]
 	// values, consulted by [events.CheckCapabilityCoverage].
-	capabilitySpecs []events.CapabilitySpec
+	requirements []events.CapabilityRequirement
 }
 
 // extractErasedSubscriberHandle recovers an [erasedSubscriberHandle] from
@@ -278,7 +270,7 @@ func extractErasedSubscriberHandle(handleAny any) (erasedSubscriberHandle, error
 	globalSecurity, _ := elem.FieldByName("GlobalSecurity").Interface().([]route.SecurityRequirement)
 	implementations, _ := elem.FieldByName("Implementations").Interface().([]middleware.ServerImplementation)
 	subscribeQoS, _ := elem.FieldByName("SubscribeQoS").Interface().(events.MQTTQoS)
-	capabilitySpecs, _ := elem.FieldByName("CapabilitySpecs").Interface().([]events.CapabilitySpec)
+	requirements, _ := elem.FieldByName("Requirements").Interface().([]events.CapabilityRequirement)
 	return erasedSubscriberHandle{
 		topic:           elem.FieldByName("Topic").String(),
 		descriptor:      descriptor,
@@ -290,7 +282,7 @@ func extractErasedSubscriberHandle(handleAny any) (erasedSubscriberHandle, error
 		handlerFn:       handlerFn,
 		msgType:         handlerFn.Type().In(1),
 		subscribeQoS:    subscribeQoS,
-		capabilitySpecs: capabilitySpecs,
+		requirements:    requirements,
 	}, nil
 }
 

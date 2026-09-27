@@ -112,14 +112,14 @@ var ObservedPub = ObservedChannel.WithPublish(events.Publish{
 // ── Capability channel — dedicated to the protocol-native Capability
 // mechanism demo (adapters/mqtt5.QoS/adapters/mqtt5.Retained, supplied via
 // SubscribeOptions.Capabilities/PublishOptions.Capabilities). Declares ONE
-// events.CapabilitySpec ("QoS") so the AsyncAPI spec renders
+// events.RequireQoS requirement ("QoS") so the AsyncAPI spec renders
 // "x-capabilities" and events.CheckCapabilityCoverage has something to
 // check against — only "QoS" (not "Retained") since coverage is
 // auto-checked at SUBSCRIBE dispatch time (adapters/mqtt/mqtt5/zeromq's
 // ServeSubscribers) against the SUBSCRIBE side's own supplied
 // Capabilities; a publish-only capability like "Retained" is
-// demonstrated below WITHOUT a declared spec — CapabilitySpec is opt-in,
-// not a gate on which Capabilities may be supplied. ─────────────────────────
+// demonstrated below WITHOUT a declared requirement — CapabilityRequirement
+// is opt-in, not a gate on which Capabilities may be supplied. ─────────────
 
 const CapabilityTopic = "sensor/capability"
 
@@ -127,7 +127,10 @@ var CapabilityChannel = events.NewChannel[SensorReading](
 	CapabilityTopic,
 	SensorReadingCodec,
 	events.ChannelMeta{Description: "Sensor readings — protocol-native Capability mechanism demo."},
-	events.CapabilitySpec{Name: "QoS", Description: "MQTT quality-of-service level"},
+	// RequireQoS is sugar over events.CapabilityRequirement{Name: "QoS", ...}
+	// — declares the SAME requirement, GENUINELY value-checked now (a
+	// supplied QoS below AtLeastOnce is rejected, not just name-matched).
+	events.RequireQoS(events.AtLeastOnce),
 )
 
 var CapabilitySub = CapabilityChannel.WithSubscribe(events.Subscribe{

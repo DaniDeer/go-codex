@@ -28,6 +28,11 @@ func (QoS) isMQTTCapability() {}
 // CapabilityName implements [events.CapabilityName].
 func (QoS) CapabilityName() string { return "QoS" }
 
+// Level implements [events.LeveledCapability] — lets a declare-time
+// [events.RequireQoS] requirement be checked for VALUE (not just
+// presence) by [events.CheckCapabilityCoverage].
+func (q QoS) Level() int { return int(q) }
+
 // Retained is a sealed [Capability] declaring the MQTT retained-message
 // flag for one outgoing publish. Equivalent to the pre-existing
 // call-time retained parameter (kept, not deprecated).
@@ -37,21 +42,3 @@ func (Retained) isMQTTCapability() {}
 
 // CapabilityName implements [events.CapabilityName].
 func (Retained) CapabilityName() string { return "Retained" }
-
-// resolveCapabilities extracts the effective QoS/Retained values declared
-// via caps, applied and reported to obs.RecordCapabilityApplied for every
-// exercised capability. qosSet/retainedSet report whether the
-// corresponding capability was present in caps at all — callers use this
-// to decide whether a Capabilities-derived value should override an
-// existing default.
-func resolveCapabilities(caps []Capability) (qos QoS, qosSet bool, retained Retained, retainedSet bool) {
-	for _, c := range caps {
-		switch v := c.(type) {
-		case QoS:
-			qos, qosSet = v, true
-		case Retained:
-			retained, retainedSet = v, true
-		}
-	}
-	return
-}

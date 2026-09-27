@@ -158,12 +158,21 @@ problem `docs/roadmap/protocol-native-features.md` set out to resolve:
   `QoS byte`/`Retained bool`/`events.MQTTQoS`/`events.PublishAttributes`
   fields — Capabilities is the RECOMMENDED, compile-time-checked path
   going forward, the older fields stay valid, undeprecated shorthand.
-  `events.CapabilitySpec{Name, Description}` (a `ChannelOpt`) declares a
-  capability at the channel level for spec-rendering (`x-capabilities`
+  `events.CapabilityRequirement{Name, Description, MinLevel *int}` (a
+  `ChannelOpt`, renamed from `CapabilitySpec`) declares a capability
+  requirement at the channel level for spec-rendering (`x-capabilities`
   AsyncAPI vendor extension) and `events.CheckCapabilityCoverage`
   drift-checking (called automatically by each adapter's own
-  `ServeSubscribers`). `events.CapabilityNameOf`/`CapabilityName`
-  interface derive a capability's self-reported name.
+  `ServeSubscribers`), returning `*events.CapabilityCoverageError`
+  (renamed from `MissingCapabilityError`) with both `Missing []string` and
+  `Insufficient []LevelMismatch`. `events.LeveledCapability` (embeds
+  `CapabilityName`, adds `Level() int`) is a NEW optional interface
+  (`mqtt.QoS`/`mqtt5.QoS`/`zeromq.HWM` all implement it) letting a
+  `MinLevel`-bearing requirement (via `events.RequireQoS`/`RequireHWM`
+  sugar) be checked for VALUE, not just presence — `RequireRetained`/
+  `RequireConflate` stay presence-only (boolean toggles).
+  `events.CapabilityNameOf`/`CapabilityName` interface derive a
+  capability's self-reported name (unchanged).
 - **`Address`** (`events.Address` — `Template() string`,
   `events.TopicAddress{Topic string}`) — a standalone, ADDITIVE type
   pair, NOT a retrofit of `Channel[T]`/`NewChannel` (a full
