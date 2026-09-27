@@ -1,7 +1,9 @@
 # Composable Capability Requirements — declare-first, adapter-satisfies-second
 
 > **Status:** Phase 1 SHIPPED (see its own subsection for the Learnings
-> entry); Phases 2-4 not yet started. Spun out of a user question about
+> entry); Phase 2's DESIGN is FINALIZED — READY FOR IMPLEMENTATION (not
+> yet implemented); Phases 3-4 not yet started. Spun out of a user
+> question about
 > [D-0006 — Protocol-Native Capabilities](../design/d-0006-protocol-native-capabilities.md)'s
 > scope (events-only) while reviewing [`docs/features/capabilities.md`](../features/capabilities.md).
 > Planned as 3 sequential implementation phases (`api/events` →
@@ -129,6 +131,16 @@ it — this symmetry is the actual point, not a side note:
 - **What it is:** a standalone requirement, declared directly, NOT
   derived from any codec field — the user states the protocol behavior
   they want by name.
+
+Tier 3 splits into TWO sub-shapes on the adapter-author side — both are
+still Tier 3 from the DECLARING side (standalone, not field-derived);
+they differ only in how an adapter author fulfills them. Conflating the
+two (found while reviewing how the already-shipped `DeadLetter` pattern
+fits this framework) was a real gap in this doc's own vocabulary, now
+closed:
+
+#### Tier 3a — Sealed, adapter-owned
+
 - **Declaring-user side, shipped example:** `events.CapabilitySpec`
   (renamed to `events.CapabilityRequirement` by Phase 1 — see
   "Implementation approach" below; `RequireQoS`/`RequireRetained` per
@@ -156,6 +168,52 @@ it — this symmetry is the actual point, not a side note:
   structural type-non-satisfaction (implicit) already make a declared-
   but-unsatisfied requirement transparent and diagnosable at attach
   time — the mismatch is never silently swallowed.
+- **Genuine per-adapter mismatch is POSSIBLE and is exactly what this
+  shape exists to catch.** A sealed per-adapter `Capability` type means an
+  adapter can legitimately lack the capability entirely — that's the
+  whole point of `CheckCapabilityCoverage`.
+
+#### Tier 3b — Shared-declaration, universally-realizable
+
+- **Shipped example, traced through actual code:** `events.DeadLetter`/
+  `reqreply.DeadLetter` (`api/events/dead_letter.go`/
+  `api/reqreply/dead_letter.go`) — declared directly on `NewChannel`/
+  `NewRoute` (like 3a), renders a full `asyncapi.ChannelItem` (a
+  receive-only operation carrying `DeadLetterEnvelope`'s schema, deduped
+  by topic), and is a fully independent type PER PACKAGE (zero shared
+  type between `events`/`reqreply` — pre-existing precedent that directly
+  validates Phase 2's own placement decision for `CapabilityRequirement`).
+- **The critical difference from 3a: NO sealed per-adapter type exists at
+  all.** Confirmed by tracing every adapter's dispatch code: `adapters/mqtt`,
+  `adapters/mqtt5`, and `adapters/zeromq` ALL call
+  `handle.DeadLetterFor(...)` UNCONDITIONALLY, then perform a PLAIN
+  `client.Publish(topic, body)` using whatever publish primitive that
+  adapter already has for ordinary messages. There is no
+  `mqtt5.DeadLetterCapability`-shaped sealed type, no `CheckCapabilityCoverage`
+  call, no possibility of "this adapter doesn't implement dead-lettering"
+  — because the realization ("publish this envelope to another topic")
+  is something ANY pub/sub or reqreply adapter can already do, by
+  definition of being a pub/sub or reqreply adapter at all. There is
+  nothing to check for absence, so no coverage-check mechanism was ever
+  built for it — CORRECTLY, not as a gap.
+- **This is D-0006 section 6's OWN already-identified "third category,"**
+  now given a name in this doc's vocabulary: declared INTENT is trivially
+  uniform across every adapter (one shared Go type suffices), but
+  REALIZATION cost genuinely varies per-adapter underneath that SAME
+  declared value — AMQP realizes it broker-natively via queue arguments
+  (zero runtime cost, no application code); `mqtt`/`mqtt5`/`zeromq`
+  realize the IDENTICAL declared value via application-level re-publish
+  (real runtime cost) — but this cost difference NEVER surfaces as a
+  Go-level compile-time or coverage-check mismatch, unlike 3a.
+- **When to reach for 3b instead of 3a:** a capability qualifies for 3b
+  ONLY when its declared intent is trivially uniform AND every adapter
+  the API spans can ALREADY realize it using a primitive that
+  transport/pattern already requires it to have (e.g. "publish somewhere
+  else" for any pub/sub-shaped transport). If even ONE plausible future
+  adapter genuinely could NOT realize it, use 3a instead — sealing
+  incorrectly (3b for something that should be 3a) would silently hide a
+  real "this adapter can't do this" case that a coverage check should
+  have caught.
 
 ### Why this is one framework, not three separate rules
 
@@ -172,7 +230,12 @@ Go's own implicit interface satisfaction, one layer up, and fully
 symmetric: a declaring user sees "what must I ask for / what can I ask
 for," an adapter author sees "what must I implement / what can I
 implement / what should I never bother implementing," from the exact
-same three-tier vocabulary.
+same three-tier vocabulary. Tier 3's OWN 3a/3b split (above) doesn't
+fragment this — both sub-shapes are still Tier 3 from the declaring
+side (standalone, not field-derived); they differ ONLY in which
+adapter-author-side enforcement mechanism applies, exactly the same way
+Tier 2's `HeaderParam`-vs-`UserPropertyParam` distinction is one tier
+read at two different levels, not two tiers.
 
 **The guardrail going forward:** when this doc (or its implementation)
 introduces a new capability, or when reviewing an existing one for
@@ -184,9 +247,20 @@ adapter's own options struct already (like `UserPropertyParam` today)?
 (3) for an explicit one on the adapter-author side, is this capability
 Step 5e's sealed mechanism, and if the adapter's protocol genuinely
 cannot support it, is that recorded as a deliberate, documented omission
-(not a TODO)? Conflating tiers, or describing only the declaring-user
-half, was the exact gap this round's course-correction identified in
-D-0006's original implementation.
+(not a TODO)? (4) **for an explicit one, is it Tier 3a (sealed,
+per-adapter, a genuine "can't implement it" case is possible — needs
+`CheckCapabilityCoverage`) or Tier 3b (one shared Go type, every adapter
+the API spans can ALREADY realize it via a primitive it's required to
+have anyway — needs no coverage check at all)?** Picking the wrong
+sub-shape either forces an artificial sealed-per-adapter type onto
+something every adapter can trivially do (3b masquerading as 3a — extra
+ceremony for no safety benefit), or forces a single shared declaration
+onto something that genuinely needs per-adapter compile-time mismatch
+safety (3a masquerading as 3b — silently hiding a real "this adapter
+can't do this" case a coverage check should have caught). Conflating
+tiers, or describing only the declaring-user half, was the exact gap
+this round's course-correction identified in D-0006's original
+implementation.
 
 ## Relationship to D-0006 — reused mechanism, NOT reopened value-sharing decision
 
@@ -689,30 +763,329 @@ test files, not assumed — closes the last ambiguity before Implement):
     shape, reuse `ResolveCapabilityValue` directly rather than
     re-deriving a per-adapter switch statement.
 
-### Phase 2 — `api/reqreply` (apply the (possibly revised) mechanism)
+### Phase 2 — `api/reqreply` (apply the mechanism, reusing all 4 existing capability values)
 
-- **Design:** finalize `api/reqreply`'s capability-spec/coverage-check
-  API surface in this doc, informed by Phase 1's learnings.
-  **FIRST sub-step: reconcile any reqreply breakage Phase 1's Learnings
-  cataloged** (see Phase 1 above) — before any of Phase 2's OWN new
-  capability work begins. Chosen second because reqreply is structurally
-  closest to events (both are dispatch-loop-shaped;
-  `middleware.Disposition` is existing precedent for a shared mechanism
-  reqreply already consumes without an `api/events` dependency).
-  **Also confirm** (per the cross-cutting alignment note above): the new
-  reqreply capability mechanism coexists with the ALREADY-SHIPPED
-  `reqreply.Middleware[In,Out]` (D-0003) as two independent stage-2
-  declarations, per D-0006 §3's resolution — don't assume this holds
-  unexamined just because it held for events; and that
-  `stats.CapabilityObserver` is wired into reqreply's attach path using
-  the SAME type-assertion-guard pattern events already uses, not a new
-  interface.
-- **Implement:** FIRST fix the cataloged Phase 1 breakage (build/tests
-  green again for `api/reqreply` and its adapters), THEN the six
-  mandatory requirements for Phase 2's own new capability work.
-- **Examples:** update reqreply's own example(s) demonstrating the new
-  capability mechanism.
-- **Docs:** update reqreply's feature/guide pages and
+**Status: DESIGN FINALIZED — READY FOR IMPLEMENTATION.** Chosen second
+because reqreply is structurally closest to events (both are
+dispatch-loop-shaped; `middleware.Disposition` is existing precedent for
+a shared mechanism reqreply already consumes without an `api/events`
+dependency). **Phase 1's cataloged-breakage sub-step is MOOT** — Phase 1's
+Learnings confirmed ZERO collateral `api/reqreply` breakage occurred, so
+there is nothing to reconcile before Phase 2's own work begins.
+
+**Key finding that changes this phase's scope for the better: this ships
+REAL capabilities, not an empty mechanism.** The roadmap's earlier framing
+("even with zero concrete reqreply capabilities shipped today") is
+SUPERSEDED — research found both reqreply transports
+(`adapters/mqtt5`/`adapters/zeromq` — confirmed `adapters/mqtt` v3 has NO
+reqreply transport at all) live in the SAME PACKAGE as their events-side
+sealed Capability types. `mqtt5.QoS`/`mqtt5.Retained`/`zeromq.HWM`/
+`zeromq.Conflate` (all 4, already shipped, unchanged) apply to reqreply
+requests/replies immediately, once reqreply's `ServeOptions`/`CallOptions`
+gain a `Capabilities` field mirroring events'
+`SubscribeOptions`/`PublishOptions.Capabilities` — **zero new adapter-side
+capability VALUES needed.**
+
+**Design:**
+
+```go
+// api/reqreply/capability.go — NEW, own package, ZERO api/events import
+// (resolves Open Design Decision #1: the struct is small enough to
+// duplicate cheaply — mirrors middleware.Disposition's D-0004 placement
+// precedent). Byte-identical SHAPE to events' capability.go — see Phase
+// 1's subsection above for the full rationale behind each piece; not
+// re-derived here.
+
+type CapabilityRequirement struct {
+	Name        string
+	Description string
+	MinLevel    *int
+}
+
+func (r CapabilityRequirement) applyRoute(rb *routeBuilder) {
+	rb.requirements = append(rb.requirements, r)
+}
+
+type CapabilityName interface{ CapabilityName() string }
+
+func CapabilityNameOf(c any) string { /* identical to events' */ }
+
+type LeveledCapability interface {
+	CapabilityName
+	Level() int
+}
+
+func CheckCapabilityCoverage(topic string, declared []CapabilityRequirement, supplied []any) error {
+	/* identical algorithm to events.CheckCapabilityCoverage */
+}
+
+type CapabilityCoverageError struct {
+	Topic        string
+	Missing      []string
+	Insufficient []LevelMismatch
+}
+
+type LevelMismatch struct {
+	Name     string
+	Required int
+	Supplied int
+}
+
+func VerifyCapabilityCoverage[C any](topic string, declared []CapabilityRequirement, supplied []C) error {
+	/* identical to events.VerifyCapabilityCoverage — built in from the
+	   START this time, per Phase 1's post-ship Learnings, not added
+	   later as a follow-up refactor */
+}
+```
+
+```go
+// api/reqreply/capability_require.go — NEW, OWN QoSLevel (duplicated,
+// not shared with events.QoSLevel — same "cheap to duplicate, avoid the
+// api/events import" reasoning).
+
+type QoSLevel int
+
+const ( AtMostOnce QoSLevel = iota; AtLeastOnce; ExactlyOnce )
+func (l QoSLevel) String() string { /* identical labels to events' */ }
+
+func RequireQoS(level QoSLevel) RouteOpt
+func RequireRetained() RouteOpt
+func RequireHWM(minimum int) RouteOpt
+func RequireConflate() RouteOpt
+```
+
+**Builder/handle wiring** (exact integration points found by reading the
+actual code, not assumed):
+- `routeBuilder` (`api/reqreply/route.go`) gains a
+  `requirements []CapabilityRequirement` field, alongside its existing
+  `middlewareSpecContributions`/`topicParams`/etc. fields — structurally
+  identical to how `channelBuilder` already hosts `requirements` beside
+  its own middleware contributions, CONFIRMING the D-0003 cross-cutting
+  non-conflict by construction, not just by analogy.
+- `RouteHandle[Req,Resp]` gains a `Requirements []CapabilityRequirement`
+  field, populated at BOTH construction sites: `Route.Register` (route.go
+  line ~1013) and `Route.ClientHandle` (line ~1137).
+- `Builder.registerRoute` (`api/reqreply/builder.go`, called from
+  `Route.Register` at line ~1195) gains a
+  `requirements []CapabilityRequirement` parameter — the request-side
+  `asyncapi.ChannelItem` it builds ALREADY has a
+  `Capabilities []asyncapi.CapabilitySpec` field (the same render-layer
+  type events populates); wire it via a reqreply-owned
+  `buildCapabilityRequirements` function, byte-identical shape to events'.
+  The REPLY channel (receive-only) does NOT get this — mirrors events'
+  "coverage is checked once at dispatch time, not per direction"
+  reasoning.
+
+**Adapter-side wiring — FULL, PRECISE plumbing (closed a real gap found
+during Phase 2's review: earlier drafts of this section vaguely said
+"gains `Capabilities`... reuses existing `QoS`/`Retained`" as if mirroring
+an existing configurable path — tracing the ACTUAL code found the
+server/reply side has NO such path at all today; every touch point below
+is a confirmed, counted call site, not an estimate):**
+
+- `adapters/mqtt5.ServeOptions`/`CallOptions` gain
+  `Capabilities []mqtt5.Capability`. `adapters/zeromq.ServeOptions`/
+  `CallOptions` gain `Capabilities []zeromq.Capability`.
+
+- **`adapters/mqtt5` — Server side (`serverTransport.Serve`,
+  `reqreply_transport.go`).** Confirmed: `api/reqreply/reqreply.go`'s
+  escape-hatch `Serve[Req,Resp]()` (line 162) is a THIN WRAPPER that
+  constructs a `serverTransport` and calls its OWN `Serve` method — there
+  is only ONE real dispatch implementation to fix (unlike events, where
+  the escape hatch and the Attach-based path are genuinely separate
+  implementations) — fixing `serverTransport.Serve` and its 2 helper
+  functions fixes BOTH entry points simultaneously, automatically.
+  **Two file-level prerequisites closed this round (found by direct
+  read, not assumed from package-level import presence):**
+  - `adapters/mqtt5/reqreply.go` and `adapters/mqtt5/reqreply_transport.go`
+    each need a NEW `"github.com/DaniDeer/go-codex/api/events"` import
+    line added — confirmed NEITHER file imports it today (only
+    `api/reqreply`). Trivial, zero cycle risk (other files in the same
+    package already import it), but must be an explicit file change, not
+    assumed "already there" from the package as a whole — Go imports are
+    per-file.
+  - `requirements` (used below in the coverage check) is NOT yet
+    in scope — derive it via reflection, mirroring events' OWN identical
+    line exactly (`caller.go:273`/`serve_subscribers.go:138`):
+    ```go
+    requirements, _ := elem.FieldByName("Requirements").Interface().([]reqreply.CapabilityRequirement)
+    ```
+    placed right after `path := elem.FieldByName("Topic").String()`,
+    alongside where `coverageReqs, _, _ := effectiveSecurity(elem)` is
+    already derived for the existing security check.
+
+  Resolve QoS/Retained ONCE near Serve's existing setup code (alongside
+  the NEW coverage check):
+  ```go
+  qos, qosSet := events.ResolveCapabilityValue[Capability, QoS](t.opts.Capabilities)
+  retained, retainedSet := events.ResolveCapabilityValue[Capability, Retained](t.opts.Capabilities)
+  effectiveQoS := byte(1)       // unchanged existing default
+  effectiveRetained := false    // unchanged existing default
+  if qosSet {
+  	effectiveQoS = byte(qos)
+  	events.RecordCapabilityApplied(obs, path, qos)
+  }
+  if retainedSet {
+  	effectiveRetained = bool(retained)
+  	events.RecordCapabilityApplied(obs, path, retained)
+  }
+  if err := reqreply.VerifyCapabilityCoverage(path, requirements, t.opts.Capabilities); err != nil {
+  	return err
+  }
+  ```
+  Then THREAD `effectiveQoS`/`effectiveRetained` through EVERY real reply
+  publish site (confirmed via grep — not estimated):
+  - `publishErrorReply` (`adapters/mqtt5/reqreply.go:280`) — currently
+    hardcodes `QoS: 1`, sets no `Retained`. Add `qos byte, retained bool`
+    parameters; update its own `Publish{}` literal; update its 2 call
+    sites (`reqreply_transport.go:158,564`).
+  - `tryDeadLetterReflect` (`reqreply_transport.go:172`) — currently
+    hardcodes `QoS: 1`, sets no `Retained`. Add `qos byte, retained bool`
+    parameters; update its own `Publish{}` literal; update ALL 9 call
+    sites (lines 455/466/497/518/542/589/629/650/666/704).
+  - The success-reply inline `Publish{}` literal (`reqreply_transport.go:691`)
+    — set `QoS: effectiveQoS, Retained: effectiveRetained` directly
+    (already in scope inside `baseHandler`, no threading needed).
+
+- **`adapters/mqtt5` — Client side (`Call`, around
+  `reqreply_transport.go:945`).** A real, precise precedent already
+  exists here (`qos := t.opts.QoS`, already resolved and used on the
+  outgoing request `Publish{}` literal at line ~1106) — EXTEND it rather
+  than invent a new pattern:
+  ```go
+  qos := t.opts.QoS
+  if qos == 0 {
+  	qos = 1
+  }
+  retained := false
+  if capQoS, ok := events.ResolveCapabilityValue[Capability, QoS](t.opts.Capabilities); ok {
+  	qos = byte(capQoS)
+  	events.RecordCapabilityApplied(obs, path, capQoS)
+  }
+  if capRetained, ok := events.ResolveCapabilityValue[Capability, Retained](t.opts.Capabilities); ok {
+  	retained = bool(capRetained)
+  	events.RecordCapabilityApplied(obs, path, capRetained)
+  }
+  ```
+  Set `Retained: retained` on the outgoing request `Publish{}` literal
+  (currently has NO `Retained` field at all — confirmed, a genuine gap
+  being closed, not merely wired). **No coverage check on the client/Call
+  side** — mirrors events' own "publish side never auto-checks coverage"
+  precedent exactly. **`Call` is itself a thin wrapper around a private
+  `t.call` helper, and `CallAsync` ALSO delegates to that same `t.call`**
+  (confirmed by direct read) — fixing `t.call` once fixes both `Call` and
+  `CallAsync` automatically; no separate `CallAsync` work item exists.
+
+- **`adapters/zeromq` — FOUR real dispatch implementations need this,
+  not two** (a genuine under-count in earlier drafts of this section,
+  closed this round by direct read of `reqreply_transport.go`):
+  `serverTransport`/`clientTransport` are NOT the only pair — ZMQ ROUTER/
+  DEALER sockets get their OWN, entirely separate `routerServerTransport`/
+  `dealerClientTransport` types (used by `AttachRouterServer`/
+  `AttachDealerClient`), which do **not** delegate to the REQ/REP pair at
+  all. The codebase's own existing comment on `routerServerTransport.Serve`
+  already confirms this is the established norm for exactly this kind of
+  cross-cutting concern: *"mirrors how Phase 0's capability-parity work
+  was ALSO duplicated, not shared, across these same 4 transports."*
+  Server AND client sides need ZERO new resolve/apply/record code either
+  way — the EXISTING `applyCapabilities(sock, caps, obs, location)`
+  function (`adapters/zeromq/capability.go`) already does resolve + apply
+  (via `HWMSetter`/`ConflateSetter`) + observer-report internally — call
+  it DIRECTLY, at all 4 sites:
+  - **`serverTransport.Serve`** (REQ/REP server): right after
+    `sock, ok := t.sockets[path]`, add the SAME `requirements` derivation
+    line as mqtt5's above, then
+    `applyCapabilities(sock, t.opts.Capabilities, obs, path)` +
+    `reqreply.VerifyCapabilityCoverage(path, requirements, t.opts.Capabilities)`.
+  - **`routerServerTransport.Serve`** (ROUTER server) — identical
+    treatment, at its own `sock, ok := t.sockets[path]` site, right
+    alongside its own existing `secReqs := effectiveSecurity(elem)` +
+    `reqreply.CheckCoverage(...)` pair (same duplication pattern the
+    codebase already applies there for security).
+  - **`clientTransport.call`** (REQ/DEALER client, private helper behind
+    `Call`/`CallAsync` — see mqtt5 note above, same delegation shape
+    applies here too): add
+    `applyCapabilities(sock, opts.Capabilities, obs, path)` once per
+    invocation.
+  - **`dealerClientTransport.call`** (DEALER client, private helper behind
+    its own `Call`/`CallAsync`): same one-line call.
+
+  HWM/Conflate re-application is idempotent (a minor, accepted
+  inefficiency if called on every request, not a correctness issue —
+  consistent with how per-call `CallOptions` already override defaults on
+  every invocation today). This is because HWM/Conflate are socket-level
+  settings (not per-message, unlike mqtt5's QoS/Retained) — applying once
+  per Serve/Call invocation, not per received/sent message, mirrors
+  events' own zeromq subscribe-dispatch placement exactly.
+
+- **`adapters/mqtt5`/`adapters/zeromq` REUSE `events.ResolveCapabilityValue`/
+  `events.RecordCapabilityApplied` AS-IS** (confirmed both adapter
+  packages already import both `api/events` AND `api/reqreply` in the
+  same package) — this is Phase 1's Learnings applied concretely, not
+  just cited.
+
+**D-0003 cross-cutting confirm (per the cross-cutting alignment note
+above):** VERIFIED by construction (see `routeBuilder` wiring above), not
+merely assumed to hold because it held for events.
+
+**Import-cycle constraint carries forward exactly as flagged in Phase 1's
+Learnings:** `adapters/mqtt5`/`adapters/zeromq` import `api/reqreply`, so
+`api/reqreply`'s own internal test file (`package reqreply`) cannot
+import them — `capability_test.go`/`capability_require_test.go` must use
+hand-written fake types (mirrors `fakeLeveledCapability`/
+`fakeNamedCapability` from `api/events/capability_require_test.go`
+exactly).
+
+**Structured errors:** `reqreply.CapabilityCoverageError`/`LevelMismatch`
+— own types (per the placement decision), `Error()`/`LogValue()`, same
+shape as events'.
+
+**Observer integration:** reuses `stats.CapabilityObserver` (the SAME
+shared extension per the cross-cutting alignment note) via
+`events.RecordCapabilityApplied` calls from adapter code — no new
+observer interface.
+
+**Unit test plan** (mirrors Phase 1's matrix, reqreply-scoped): the SAME
+16-ish rows as Phase 1's finalized table (construction tests for all 4
+`RequireXxx` helpers, `QoSLevel.String()`, sufficient/exact/insufficient-
+level coverage cases, missing case, presence-only cases, non-leveled-
+supplied case, `LogValue`/`errors.As`, 2 `Example` funcs) — in
+`api/reqreply/capability_require_test.go`, using fake types per the
+import-cycle constraint above. PLUS new adapter-side tests closing the
+plumbing gap found this round (not just a generic "wiring" test):
+
+| Test | Verifies |
+|---|---|
+| `TestServeOptions_CapabilitiesWiredToCoverage` (mqtt5, zeromq) | `Capabilities`/`VerifyCapabilityCoverage` wiring end-to-end |
+| `TestServe_QoSAppliedToAllReplyPaths` (mqtt5) | A supplied `mqtt5.QoSExactlyOnce` capability is honored on ALL THREE reply publish paths — success reply, error-pattern-matched reply, AND dead-letter reply — not just one of them |
+| `TestServe_RetainedAppliedToReplyPublishes` (mqtt5) | A supplied `mqtt5.Retained(true)` capability sets `Retained: true` on reply publishes (previously never set anywhere) |
+| `TestCall_RetainedAppliedToRequestPublish` (mqtt5) | A supplied `mqtt5.Retained(true)` capability sets `Retained: true` on the outgoing request publish (previously never set anywhere) |
+| `TestServe_CapabilitiesAppliedViaExistingApplyCapabilities` (zeromq, `serverTransport`) | `ServeOptions.Capabilities` reaches the REQ/REP socket via the EXISTING `applyCapabilities` helper, unchanged behavior, just a new call site |
+| `TestRouterServe_CapabilitiesAppliedViaExistingApplyCapabilities` (zeromq, `routerServerTransport`) | Same, for the SEPARATE ROUTER server implementation — not covered by the REQ/REP test above, since neither delegates to the other |
+| `TestCall_CapabilitiesAppliedViaExistingApplyCapabilities` (zeromq, `clientTransport`) | Same, for the REQ/DEALER client's private `call` helper — implicitly also verifies `CallAsync` since it delegates to the same helper |
+| `TestDealerCall_CapabilitiesAppliedViaExistingApplyCapabilities` (zeromq, `dealerClientTransport`) | Same, for the SEPARATE DEALER client implementation — not covered by the REQ/DEALER test above |
+
+**Files to create/modify:**
+
+| File | Change |
+|---|---|
+| `api/reqreply/capability.go` | NEW — full shape per above |
+| `api/reqreply/capability_require.go` | NEW — `QoSLevel`, 4 `RequireXxx` helpers |
+| `api/reqreply/capability_test.go`, `capability_require_test.go` | NEW — full test matrix, fake types |
+| `api/reqreply/route.go` | `routeBuilder.requirements`, `RouteHandle.Requirements` (2 construction sites) |
+| `api/reqreply/builder.go` | `registerRoute` gains `requirements` param + `buildCapabilityRequirements` |
+| `adapters/mqtt5/reqreply.go` | NEW `api/events` import; `ServeOptions`/`CallOptions.Capabilities []mqtt5.Capability`; `publishErrorReply` gains `qos byte, retained bool` params (1 signature + 1 `Publish{}` literal) |
+| `adapters/mqtt5/reqreply_transport.go` | NEW `api/events` import; `serverTransport.Serve`: NEW `requirements` reflection-derivation line + resolve QoS/Retained once + `reqreply.VerifyCapabilityCoverage` call; `tryDeadLetterReflect` gains `qos byte, retained bool` params (1 signature + 1 literal); update ALL 9 `tryDeadLetterReflect` call sites + 2 `publishErrorReply` call sites + 1 success-reply inline literal (12 call-site edits total, all pre-counted via grep); client-side private `call` helper (covers `Call`+`CallAsync` for free): extend the existing `qos := t.opts.QoS` resolution + add `Retained` threading (previously unset) |
+| `adapters/zeromq/reqreply_transport.go` | FOUR separate dispatch implementations, each gets a `requirements` derivation line (server variants only) + one-line `applyCapabilities(sock, ...)` call: `serverTransport.Serve` (+ `reqreply.VerifyCapabilityCoverage`), `routerServerTransport.Serve` (+ same coverage check, alongside its existing `secReqs`/`CheckCoverage` pair), `clientTransport.call` (covers `Call`+`CallAsync` for free), `dealerClientTransport.call` (covers its own `Call`+`CallAsync` for free) — zero new resolve/apply/record code, reuses the existing `applyCapabilities` function as-is at all 4 sites |
+| `examples/reqreply-api` | New capability demo, mirrors `demo_capability_mechanism.go` |
+| `docs/features/capabilities.md` | Extended — reqreply now included, no longer pub/sub-only |
+| reqreply feature/guide pages, `.github/instructions/go-codex.instructions.md` | Updated |
+
+- **Implement:** the six mandatory requirements against this finalized
+  design.
+- **Examples:** new capability demo in `examples/reqreply-api`.
+- **Docs:** `docs/features/capabilities.md` (no longer describes itself
+  as pub/sub-only), reqreply feature/guide pages,
   `.github/instructions/go-codex.instructions.md`.
 - **Learnings:** recorded here before Phase 3's Design step begins.
 
@@ -773,6 +1146,32 @@ COMPLETE — Phase 4 is the closing review pass, not further feature work:
   param types).
 - Run the `review-docs` skill for a final three-surface documentation
   sync pass across every touched package.
+- **Joint declarative-workflow walkthrough** — once Phase 3 ships,
+  design review alone won't catch every rough edge; only walking the
+  real, end-to-end user journey does. Together (user + agent), declare
+  one `api/rest`, one `api/events`, and one `api/reqreply` API from
+  scratch, step by step: struct codec definition → route/channel
+  declaration → capability requirement declaration → adapter
+  attachment → running it. This is a real "first-time user" simulation,
+  not a test-writing exercise. Document every friction point, awkward
+  step, or improvement opportunity found along the way — either as a
+  Learnings entry in this doc or as a new follow-on roadmap doc if the
+  fix is substantial enough to warrant one.
+- **Add three per-API guided tutorial skills**, split rather than
+  combined (per explicit preference), so each covers one API's full
+  declarative workflow end to end:
+  - `.github/skills/tutorial-api-rest/SKILL.md`
+  - `.github/skills/tutorial-api-events/SKILL.md`
+  - `.github/skills/tutorial-api-reqreply/SKILL.md`
+
+  Each skill's scope mirrors the joint walkthrough above: guide a user,
+  live, from struct codec definition through route/channel declaration,
+  capability requirement declaration, and adapter attachment. Author
+  these during Phase 4, informed by whatever the joint walkthrough
+  surfaces — the tutorials should teach the polished workflow, not the
+  as-yet-unrefined one. Follow
+  `.github/instructions/agent-skills.instructions.md` for skill
+  authoring conventions.
 - **Create `docs/roadmap/zeromq-rest-adapter.md`** — a dedicated,
   Explore-mode roadmap doc (mirrors the existing `amqp-adapter.md`/
   `tcp-adapter.md` precedent) capturing the ZeroMQ REQ/REP `api/rest`
@@ -803,7 +1202,7 @@ COMPLETE — Phase 4 is the closing review pass, not further feature work:
 | In scope (this doc) | Out of scope / deferred |
 |---|---|
 | **Phase 1** — Renamed/redesigned requirement type for events (`CapabilityRequirement`, was `CapabilitySpec`) + value-aware `LeveledCapability` + sugar helpers (`events.RequireQoS(events.AtLeastOnce)`, `RequireRetained`, `RequireHWM`, `RequireConflate`), rewriting D-0006's shipped mechanism into the three-tier vocabulary — BREAKING, deliberately (see Open Design Decision #7) | Any new shared capability VALUE type spanning adapters (rejected by D-0006, not reopened here) |
-| **Phase 2** — Generalizing the declare-then-verify PATTERN to `api/reqreply` (new `reqreply.CapabilityRequirement`-equivalent + coverage check, even with zero concrete reqreply capabilities shipped today) | Any NEW capability VALUE beyond D-0006's existing survey (Message Expiry, Shared Subscriptions, AMQP addressing/dead-lettering remain exactly as speced in D-0006 section 6 — this doc only sketches what a PRESET for them would look like once/if they ship) |
+| **Phase 2** — Generalizing the declare-then-verify PATTERN to `api/reqreply` (own `reqreply.CapabilityRequirement` + coverage check) AND reusing all 4 ALREADY-SHIPPED capability values (`mqtt5.QoS`/`Retained`, `zeromq.HWM`/`Conflate` — zero new adapter types, per Phase 2's Design finding) | Any NEW capability VALUE beyond D-0006's existing survey (Message Expiry, Shared Subscriptions, AMQP addressing/dead-lettering remain exactly as speced in D-0006 section 6 — this doc only sketches what a PRESET for them would look like once/if they ship) |
 | **Phase 3** — A NEW, synchronous, transport-stateless ZeroMQ REQ/REP adapter for `api/rest`, governed by the REST-eligible-transport guardrail | Ever giving `api/rest` an MQTT (v3/5) adapter — permanently excluded by design, not deferred; that shape belongs to `api/reqreply` |
 | Adapter-owned preset/bundle constructors (e.g. `mqtt5.PresetReliableWithHeaders()`) bundling multiple existing `Capability` values + a matching `CapabilityRequirement` set in one call | Merging/consolidating `api/rest` and `api/reqreply` — considered settled as permanently separate APIs (sync/stateless vs. async/broker-mediated), even where both touch ZeroMQ |
 | Compile-time vs. runtime enforcement — explicitly documented as staying RUNTIME (like today) for Phases 1-2; becoming genuinely runtime-checked for REST's implicit capabilities once Phase 3 ships a second transport family | Solving compile-time requirement-composition (would need reflection or a closed capability enum; not attempted) |
@@ -811,26 +1210,12 @@ COMPLETE — Phase 4 is the closing review pass, not further feature work:
 
 ## Sketched API surface
 
-**Phase 1's `api/events` surface is now FINALIZED — see the "Phase 1"
-subsection under "Implementation approach" above for the authoritative,
-resolved signatures** (`CapabilityRequirement`, `LeveledCapability`,
-`CapabilityCoverageError`/`LevelMismatch`, `RequireQoS`/`RequireRetained`/
-`RequireHWM`/`RequireConflate`). The sketch below is kept for Phases 2-3,
-still speculative:
+**Phase 1's `api/events` and Phase 2's `api/reqreply` surfaces are now
+FINALIZED — see their own subsections under "Implementation approach"
+above for the authoritative, resolved signatures.** The sketch below is
+kept for Phase 3 only, still speculative:
 
 ```go
-// api/reqreply — the SAME declare-then-verify pattern events now has
-// (post-Phase-1), ported to reqreply's own Route builder. Naming/shape
-// TBD during Phase 2's own Design step, informed by Phase 1's learnings
-// (see "Open design decisions").
-type CapabilityRequirement struct {
-	Name        string
-	Description string
-	MinLevel    *int
-}
-
-func CheckCapabilityCoverage(topic string, declared []CapabilityRequirement, supplied []any) error
-
 // adapters/mqtt5 — preset/bundle constructors. Each preset is sugar: it
 // returns exactly what a caller would otherwise assemble by hand from
 // existing SubscribeOptions/PublishOptions/Capabilities/
@@ -857,15 +1242,11 @@ func PresetReliableWithHeaders() SubscribeOptions
   covering BOTH `Missing` and `Insufficient` (`[]LevelMismatch`) failure
   kinds. No `Unwrap()` (no wrapped inner error, matches the old type's
   shape).
-- **ReqReply (Phase 2, still open):** needs its OWN typed error — either
-  a `reqreply`-local type (no `api/events` dependency — mirrors why
-  `middleware.Disposition` was placed outside `api/events` specifically
-  so `api/reqreply` could reuse it without importing `api/events`) or
-  literal reuse of `events.CapabilityCoverageError` if a cross-package
-  error type turns out to be acceptable once Phase 1 ships. Whichever is
-  chosen, the error MUST implement `Error()`/`LogValue()` per this repo's
-  structured-error convention (see `codex/errors.go`). Decided during
-  Phase 2's own Design step, informed by Phase 1's Learnings.
+- **ReqReply (Phase 2, FINALIZED):** own `reqreply.CapabilityCoverageError`/
+  `LevelMismatch` — a `reqreply`-local type (no `api/events` dependency —
+  mirrors why `middleware.Disposition` was placed outside `api/events`
+  specifically so `api/reqreply` could reuse it without importing
+  `api/events`), same shape/`Error()`/`LogValue()` convention as events'.
 
 ## Observer integration
 
@@ -874,36 +1255,34 @@ func PresetReliableWithHeaders() SubscribeOptions
   every adapter-supplied capability; value-aware checking happens
   entirely inside `CheckCapabilityCoverage`, upstream of where the
   observer fires. No new observer method needed.
-- **ReqReply (Phase 2, still open):** needs the type-assertion guard
-  extended to reqreply's own attach path
-  (`if capObs, ok := obs.(stats.CapabilityObserver); ok { ... }`), wired
-  into whichever reqreply adapters eventually supply capabilities. No
-  concrete reqreply capability exists yet (mirrors Disposition's own
-  "prove the plumbing before a real capability arrives" precedent from
-  D-0006 section 8).
+- **ReqReply (Phase 2, FINALIZED):** reuses the SAME shared
+  `stats.CapabilityObserver` extension — `adapters/mqtt5`/
+  `adapters/zeromq`'s reqreply dispatch code calls
+  `events.RecordCapabilityApplied` directly (already fully generic, no
+  reqreply-specific observer code needed) for every capability actually
+  applied to a served/called route.
 
 ## Unit test plan
 
-**Phase 1's full test matrix is FINALIZED — see its own subsection under
-"Implementation approach" above.** Phase 2/3 sketch below, still open:
+**Phase 1's and Phase 2's full test matrices are FINALIZED — see their
+own subsections under "Implementation approach" above.** Phase 3 sketch
+below, still open:
 
 | Test | Verifies |
 |---|---|
-| reqreply `CapabilityRequirement`/`CheckCapabilityCoverage` — happy path (all declared requirements matched) | New reqreply mechanism, happy path |
-| reqreply `CheckCapabilityCoverage` — missing/insufficient requirement returns typed error with `errors.As` reachable inner error and correct `LogValue()` group | New reqreply mechanism, error path |
 | `mqtt5.PresetReliable()`/`PresetReliableWithHeaders()` return the same `SubscribeOptions` a caller would hand-assemble | Preset correctness, no hidden extra behavior |
-| `nil` Observer / plain Observer (no `CapabilityObserver`) → no panic on reqreply's new attach path | Observer guard correctness |
+| `nil` Observer / plain Observer (no `CapabilityObserver`) → no panic on the new REST/ZeroMQ adapter's attach path | Observer guard correctness |
 
 ## Files to create
 
-**Phase 1's full file list is FINALIZED — see its own subsection under
-"Implementation approach" above.** Phase 2/3 sketch, still open:
+**Phase 1's and Phase 2's full file lists are FINALIZED — see their own
+subsections under "Implementation approach" above.** Phase 3 sketch,
+still open:
 
 | File | Responsibility |
 |---|---|
-| `api/reqreply/capability.go` | `CapabilityRequirement`, `CheckCapabilityCoverage`, capability-related error type (naming TBD during Phase 2's Design step) |
 | `adapters/mqtt5/preset.go` | `PresetReliable`, `PresetReliableWithHeaders` (and equivalents for `adapters/mqtt`/`adapters/zeromq` if the pattern proves useful there) |
-| `docs/features/capabilities.md` | Updated in Phase 1 already; extended again once Phase 2/3 ship |
+| `docs/features/capabilities.md` | Updated in Phase 1/2 already; extended again once Phase 3 ships |
 
 ## Out of scope (this doc, until resolved elsewhere)
 
@@ -921,12 +1300,19 @@ func PresetReliableWithHeaders() SubscribeOptions
 
 ## Open design decisions (to resolve before/during implementation)
 
-1. **Where does reqreply's capability-spec type live?** Own package-local
-   type in `api/reqreply` (no `api/events` dependency, mirrors
-   `middleware.Disposition`'s placement rationale), or does it make more
-   sense for both to share one type in a neutral location? Needs a
-   concrete reqreply capability candidate (e.g. a future AMQP ack-mode) to
-   decide with real evidence, not speculatively.
+1. **(RESOLVED by Phase 2's Design step) Where does reqreply's capability
+   type live?** Own package-local type in `api/reqreply`
+   (`CapabilityRequirement`/`CheckCapabilityCoverage`/etc., full
+   independent duplication, zero `api/events` dependency) — mirrors
+   `middleware.Disposition`'s placement rationale. Decided WITH a
+   concrete driver, not speculatively: Phase 2 found both reqreply
+   transports (`mqtt5`, `zeromq`) can reuse their EXISTING events-side
+   capability VALUES (`QoS`/`Retained`/`HWM`/`Conflate`) immediately, so
+   there was never a need for a shared type across packages — only the
+   generic, adapter-facing HELPERS (`events.ResolveCapabilityValue`/
+   `events.RecordCapabilityApplied`) are reused as-is (from adapters,
+   which already import both packages), while the DECLARATION-side type
+   stays independently duplicated per package.
 2. **(RESOLVED by Phase 1's Design step) Package placement for events'
    `RequireXxx` helpers** — `api/events` directly, alongside
    `CapabilityRequirement` (its own new home, renamed from
