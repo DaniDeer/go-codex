@@ -11,39 +11,58 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 )
 
-// serverTransport implements [rest.ServerTransport], wiring builder's
-// routes onto r (reusing the unexported [serve]/[serveSSE] internally)
-// and owning its own [*http.Server] — built by [AttachRouter]. Mirrors
-// [adapters/nethttp]'s identical transport exactly ([gochi.Router]
-// already satisfies [http.Handler], so the same *http.Server{Handler: ...}
-// pattern applies unchanged). See
+// serverTransport implements [rest.ServerTransport] AND
+// [rest.ServerAwareTransport] (via [serverTransport.BindServer]), wiring
+// builder's routes onto r (reusing the unexported [serve]/[serveSSE]
+// internally) and owning its own [*http.Server] — built by
+// [NewServerTransport]. Mirrors [adapters/nethttp]'s identical transport
+// exactly ([gochi.Router] already satisfies [http.Handler], so the same
+// *http.Server{Handler: ...} pattern applies unchanged). See
 // docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 5 for the full design.
 //
 // Fixes a real gap confirmed while scoping Decision 6 (see
-// docs/design/d-0002-pubsub-workflow-simplification.md): earlier, [AttachRouter]'s
-// [serverTransport.Serve] wired ONLY plain routes via [serve], never SSE
-// routes registered via [rest.SSERoute.Register]/[rest.SSERoute.RegisterHandle]
-// — an SSE route was silently unreachable through the Attach workflow.
-// [serverTransport.Serve] now calls BOTH [serve] and [serveSSE] against the
-// SAME router/builder pair — safe to call back-to-back since each walks
-// only its OWN entry kind (plain vs. SSE) and returns nil, wiring nothing,
-// when that kind is simply absent from builder (see
-// adapters/chi/servertransport_test.go's plain-only/SSE-only/mixed
-// coverage).
+// docs/design/d-0002-pubsub-workflow-simplification.md): earlier, this
+// type's [serverTransport.Serve] wired ONLY plain routes via [serve],
+// never SSE routes registered via [rest.SSERoute.Register]/
+// [rest.SSERoute.RegisterHandle] — an SSE route was silently unreachable
+// through the Attach workflow. [serverTransport.Serve] now calls BOTH
+// [serve] and [serveSSE] against the SAME router/builder pair — safe to
+// call back-to-back since each walks only its OWN entry kind (plain vs.
+// SSE) and returns nil, wiring nothing, when that kind is simply absent
+// from builder (see adapters/chi/servertransport_test.go's
+// plain-only/SSE-only/mixed coverage).
 type serverTransport struct {
 	builder *rest.Server
 	router  gochi.Router
 	addr    string
 }
 
-// AttachRouter binds builder+r+addr as builder's [rest.ServerTransport] —
-// the "attach the adapter to the builder" step behind
-// [rest.Server.Serve]. Returns [rest.ServerTransportAlreadyAttachedError]
-// if builder already has a transport attached.
+// ServerTransportOptions configures [NewServerTransport] — the SOLE
+// configuration surface for a chi [rest.ServerTransport] (docs/roadmap/
+// capability-requirement-composition.md's Phase 4d: a single Options
+// struct, no positional params, even for these REQUIRED fields).
+type ServerTransportOptions struct {
+	// Router receives every wired route/SSE handler. Required.
+	Router gochi.Router
+	// Addr is the address the owned *http.Server listens on. Required.
+	Addr string
+}
+
+// NewServerTransport returns a [rest.ServerTransport] configured per opts
+// — the adapter's ONLY job in the attach workflow (docs/roadmap/
+// capability-requirement-composition.md's Phase 4d): construct a
+// fully-configured, attachable value. Attaching it is EXCLUSIVELY
+// [rest.Server.Attach]'s job — there is no adapter-namespaced Attach
+// function anymore (REMOVED, breaking, per that phase's explicit
+// "zero backdoor between the api layer and the adapters" directive). The
+// returned value also implements [rest.ServerAwareTransport] —
+// [rest.Server.Attach] supplies the [*rest.Server] reference
+// [serverTransport.Serve] needs via [serverTransport.BindServer],
+// immediately after storing it.
 //
 // Unlike [serve] (wire-only, non-blocking, caller owns their own
-// *http.Server), [rest.Server.Serve] (after AttachRouter) BLOCKS, owning
-// its OWN *http.Server{Addr: addr, Handler: r}, until ctx is cancelled
+// *http.Server), [rest.Server.Serve] (after Attach) BLOCKS, owning its
+// OWN *http.Server{Addr: addr, Handler: r}, until ctx is cancelled
 // (graceful [http.Server.Shutdown]) — a NEW, ADDITIVE, opt-in convenience.
 // [serve] itself remains completely unchanged for callers needing full
 // *http.Server control.
@@ -51,10 +70,19 @@ type serverTransport struct {
 //	builder := rest.NewServer(rest.Info{Title: "My API", Version: "1.0.0"})
 //	if err := createUserRoute.Register(builder); err != nil { ... }
 //	r := gochi.NewRouter()
-//	if err := chi.AttachRouter(builder, r, ":8080"); err != nil { ... }
+//	transport := chi.NewServerTransport(chi.ServerTransportOptions{Router: r, Addr: ":8080"})
+//	if err := builder.Attach(transport); err != nil { ... }
 //	err := builder.Serve(ctx) // blocks, owns its own http.Server
-func AttachRouter(builder *rest.Server, r gochi.Router, addr string) error {
-	return builder.Attach(&serverTransport{builder: builder, router: r, addr: addr})
+func NewServerTransport(opts ServerTransportOptions) rest.ServerTransport {
+	return &serverTransport{router: opts.Router, addr: opts.Addr}
+}
+
+// BindServer implements [rest.ServerAwareTransport] — called by
+// [rest.Server.Attach] immediately after storing t, supplying the
+// [*rest.Server] reference [serverTransport.Serve] needs.
+func (t *serverTransport) BindServer(b *rest.Server) error {
+	t.builder = b
+	return nil
 }
 
 // Serve implements [rest.ServerTransport]. Wires BOTH plain routes (via

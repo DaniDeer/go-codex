@@ -30,7 +30,7 @@ func mergeSensorChannel(topic string) events.Channel[sensorReading] {
 func TestAttach_ClientPublish_RoundTrip(t *testing.T) {
 	sock := &mockSocket{}
 	client := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	if err := Attach(client, sock); err != nil {
+	if err := client.Attach(NewTransport(TransportOptions{Socket: sock})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 
@@ -52,10 +52,37 @@ func TestAttach_ClientPublish_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestAttach_ClientPublish_HonorsDeclaredCapabilities confirms Phase 4c
+// (docs/roadmap/capability-requirement-composition.md): a Capabilities
+// value declared via [events.Publisher.WithOptions] is resolved and
+// applied by [events.Client.Publish]'s reflection shim — closing the
+// gap where this shim never configured HWM/Conflate at all.
+func TestAttach_ClientPublish_HonorsDeclaredCapabilities(t *testing.T) {
+	sock := &capableSocket{mockSocket: &mockSocket{}}
+	client := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	if err := client.Attach(NewTransport(TransportOptions{Socket: sock})); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	pub := mergeSensorChannel("sensors/{sensorID}/readings").WithPublish(events.Publish{}).
+		WithOptions(PublishOptions[sensorReading]{Capabilities: []Capability{HWM(42), Conflate(true)}})
+	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
+	if err := client.Publish(context.Background(), pub, reading); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	if sock.hwm != 42 {
+		t.Errorf("HWM = %d, want 42 from declared Capabilities", sock.hwm)
+	}
+	if !sock.conflate {
+		t.Error("want Conflate true from declared Capabilities")
+	}
+}
+
 func TestAttach_ClientPublish_WrongPubType_ReturnsTransportTypeMismatchError(t *testing.T) {
 	sock := &mockSocket{}
 	client := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	if err := Attach(client, sock); err != nil {
+	if err := client.Attach(NewTransport(TransportOptions{Socket: sock})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 	err := client.Publish(context.Background(), "not-a-publisher", sensorReading{})
@@ -68,7 +95,7 @@ func TestAttach_ClientPublish_WrongPubType_ReturnsTransportTypeMismatchError(t *
 func TestAttach_ClientPublish_WrongMsgType_ReturnsTransportTypeMismatchError(t *testing.T) {
 	sock := &mockSocket{}
 	client := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	if err := Attach(client, sock); err != nil {
+	if err := client.Attach(NewTransport(TransportOptions{Socket: sock})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 	pub := sensorChannel("sensors/readings").WithPublish(events.Publish{})
@@ -84,7 +111,7 @@ func TestAttach_ClientSubscribe_RoundTrip(t *testing.T) {
 		inFrames: [][][]byte{{[]byte("sensors/readings"), []byte(validSensorJSON)}},
 	}
 	client := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	if err := Attach(client, sock); err != nil {
+	if err := client.Attach(NewTransport(TransportOptions{Socket: sock})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 
@@ -111,6 +138,34 @@ func TestAttach_ClientSubscribe_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestAttach_ClientSubscribe_HonorsDeclaredCapabilities confirms Phase
+// 4c (docs/roadmap/capability-requirement-composition.md): a
+// Capabilities value declared via [events.Subscriber.WithOptions] is
+// resolved and applied by [events.Client.Subscribe]'s reflection shim —
+// closing the gap where this shim never configured HWM/Conflate at all.
+func TestAttach_ClientSubscribe_HonorsDeclaredCapabilities(t *testing.T) {
+	sock := &capableSocket{mockSocket: &mockSocket{}}
+	client := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	if err := client.Attach(NewTransport(TransportOptions{Socket: sock})); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	sub := sensorChannel("sensors/readings").WithSubscribe(events.Subscribe{}).
+		WithOptions(SubscribeOptions[sensorReading]{Capabilities: []Capability{HWM(7), Conflate(true)}})
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := client.Subscribe(ctx, sub, func(_ context.Context, _ sensorReading) error { return nil }); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	if sock.hwm != 7 {
+		t.Errorf("HWM = %d, want 7 from declared Capabilities", sock.hwm)
+	}
+	if !sock.conflate {
+		t.Error("want Conflate true from declared Capabilities")
+	}
+}
+
 // TestAttach_ClientSubscribe_RegistersSpecIntoRealClient is a regression
 // test proving Client.Subscribe registers sub's spec into the SAME
 // client the caller attached (not a throwaway scratch client) — an
@@ -122,7 +177,7 @@ func TestAttach_ClientSubscribe_RegistersSpecIntoRealClient(t *testing.T) {
 		inFrames: [][][]byte{{[]byte("sensors/readings"), []byte(validSensorJSON)}},
 	}
 	client := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	if err := Attach(client, sock); err != nil {
+	if err := client.Attach(NewTransport(TransportOptions{Socket: sock})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 	sub := sensorChannel("sensors/readings").WithSubscribe(events.Subscribe{OperationID: "receiveReading"})
@@ -151,7 +206,7 @@ func TestAttach_ClientSubscribe_RegistersSpecIntoRealClient(t *testing.T) {
 func TestAttach_ClientSubscribe_WrongSubType_ReturnsTransportTypeMismatchError(t *testing.T) {
 	sock := &mockSocket{}
 	client := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	if err := Attach(client, sock); err != nil {
+	if err := client.Attach(NewTransport(TransportOptions{Socket: sock})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 	err := client.Subscribe(context.Background(), "not-a-subscriber", func() {})
@@ -224,7 +279,7 @@ func TestNewSubscribeTransport_SubscribeHandle_RoundTrip(t *testing.T) {
 func TestAttach_ClientPublish_RecordsObserver(t *testing.T) {
 	sock := &mockSocket{}
 	client := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	if err := Attach(client, sock); err != nil {
+	if err := client.Attach(NewTransport(TransportOptions{Socket: sock})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 
@@ -249,7 +304,7 @@ func TestAttach_ClientSubscribe_RecordsObserver(t *testing.T) {
 		inFrames: [][][]byte{{[]byte("sensors/readings"), []byte(validSensorJSON)}},
 	}
 	client := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	if err := Attach(client, sock); err != nil {
+	if err := client.Attach(NewTransport(TransportOptions{Socket: sock})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 
@@ -276,7 +331,7 @@ func TestAttach_ClientSubscribe_HandlerError_MatchedErrorChannel_PublishesTypedP
 		inFrames: [][][]byte{{[]byte("sensors/readings"), []byte(validSensorJSON)}},
 	}
 	client := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	if err := Attach(client, sock); err != nil {
+	if err := client.Attach(NewTransport(TransportOptions{Socket: sock})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 
@@ -323,7 +378,7 @@ func TestAttach_ClientSubscribe_HandlerError_MatchedErrorChannel_PublishesTypedP
 func TestAttach_ClientPublishSubscribe_HonorsDeclaredYAMLFormat(t *testing.T) {
 	pubSock := &mockSocket{}
 	pubClient := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	if err := Attach(pubClient, pubSock); err != nil {
+	if err := pubClient.Attach(NewTransport(TransportOptions{Socket: pubSock})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 
@@ -357,7 +412,7 @@ func TestAttach_ClientPublishSubscribe_HonorsDeclaredYAMLFormat(t *testing.T) {
 		inFrames: [][][]byte{{[]byte("sensors/readings"), gotPayload}},
 	}
 	subClient := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	if err := Attach(subClient, subSock); err != nil {
+	if err := subClient.Attach(NewTransport(TransportOptions{Socket: subSock})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 	sub := ch.WithSubscribe(events.Subscribe{})

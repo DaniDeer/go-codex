@@ -30,8 +30,7 @@ func TestServe_QoSAppliedToAllReplyPaths(t *testing.T) {
 		}
 		serverClient := &mockClient{}
 		serverRouter := newMockRouter()
-		if err := AttachServer(server, serverClient, serverRouter,
-			ServeOptions{Capabilities: []Capability{QoS(2)}}); err != nil {
+		if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter, Serve: ServeOptions{Capabilities: []Capability{QoS(2)}}})); err != nil {
 			t.Fatalf("AttachServer: %v", err)
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -75,8 +74,7 @@ func TestServe_QoSAppliedToAllReplyPaths(t *testing.T) {
 		}
 		serverClient := &mockClient{}
 		serverRouter := newMockRouter()
-		if err := AttachServer(server, serverClient, serverRouter,
-			ServeOptions{Capabilities: []Capability{QoS(2)}}); err != nil {
+		if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter, Serve: ServeOptions{Capabilities: []Capability{QoS(2)}}})); err != nil {
 			t.Fatalf("AttachServer: %v", err)
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -116,8 +114,7 @@ func TestServe_QoSAppliedToAllReplyPaths(t *testing.T) {
 		}
 		serverClient := &mockClient{}
 		serverRouter := newMockRouter()
-		if err := AttachServer(server, serverClient, serverRouter,
-			ServeOptions{Capabilities: []Capability{QoS(2)}}); err != nil {
+		if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter, Serve: ServeOptions{Capabilities: []Capability{QoS(2)}}})); err != nil {
 			t.Fatalf("AttachServer: %v", err)
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -164,8 +161,7 @@ func TestServe_RetainedAppliedToReplyPublishes(t *testing.T) {
 	}
 	serverClient := &mockClient{}
 	serverRouter := newMockRouter()
-	if err := AttachServer(server, serverClient, serverRouter,
-		ServeOptions{Capabilities: []Capability{Retained(true)}}); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter, Serve: ServeOptions{Capabilities: []Capability{Retained(true)}}})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)

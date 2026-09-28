@@ -62,7 +62,7 @@ route = route.WithHandler(fn).WithOptions(nethttp.Options{
     },
 })
 route.Register(b)
-if err := nethttp.AttachMux(b, mux, addr); err != nil {
+if err := b.Attach(nethttp.NewServerTransport(nethttp.ServerTransportOptions{Mux: mux, Addr: addr})); err != nil {
     log.Fatal(err)
 }
 _ = b.Serve(ctx) // blocks, owns its own http.Server
@@ -428,10 +428,10 @@ socket can receive on any topic its filter matches), so its dead-letter
 wiring works the same as MQTT's.
 
 ```go
-if err := zeromq.AttachServer(server, map[string]zeromq.FramedSocket{
+if err := server.Attach(zeromq.NewServerTransport(zeromq.ServerTransportOptions{Sockets: map[string]zeromq.FramedSocket{
     "compute/add":     repSock,
     "compute/add/dlq": dlqPushSock, // required for the dead-letter to be reachable
-}); err != nil {
+}})); err != nil {
     log.Fatal(err)
 }
 ```

@@ -406,14 +406,12 @@ func subscribeEntryReflect(ctx context.Context, client pahomqtt.Client, entry ev
 	if err != nil {
 		return err
 	}
-	// Declared events.Subscribe.QoS is the FALLBACK default — an explicit
-	// SubscribeOptions.QoS override (attached via Subscriber.WithOptions)
-	// still wins when set to a non-zero value.
-	if opts.QoS == 0 {
-		if subscribeQoS, ok := elem.FieldByName("SubscribeQoS").Interface().(events.MQTTQoS); ok {
-			opts.QoS = byte(subscribeQoS)
-		}
-	}
+	// docs/roadmap/capability-requirement-composition.md's Phase 4b: the
+	// events.Subscribe.QoS declared-fallback field was REMOVED from
+	// api/events entirely (a parallel, non-Capability-shaped mechanism)
+	// — opts.QoS is this adapter's ONLY source for now. Full migration of
+	// this package to the Capability/Apply-only shape mqtt5 already has
+	// is Phase 5's job.
 	obs := opts.Observer
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)

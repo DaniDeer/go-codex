@@ -66,7 +66,7 @@ func demoObserverMiddleware(ctx context.Context, obs *observability.DemoObserver
 		ClientMW(&routes.BearerAuthMw, validBearerCredFn).
 		ClientMW(nil, reqreply.Observability[routes.ComputeReq, routes.ComputeResp](obs))
 	securedClient := reqreply.NewClient()
-	if err := mqtt5adapter.AttachClient(securedClient, mqtt5Built.Broker, mqtt5Built.Router); err != nil {
+	if err := securedClient.Attach(mqtt5adapter.NewClientTransport(mqtt5adapter.ClientTransportOptions{Client: mqtt5Built.Broker, Router: mqtt5Built.Router})); err != nil {
 		fmt.Fprintf(os.Stderr, "unexpected error attaching client: %v\n", err)
 		os.Exit(1)
 	}

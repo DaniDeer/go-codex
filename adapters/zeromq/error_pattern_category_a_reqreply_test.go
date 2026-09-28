@@ -34,7 +34,7 @@ func TestErrorPattern_RequestPayloadDecode_Matched_DecodesTypedError(t *testing.
 	}
 
 	repSock, reqSock := newChanSocketPair()
-	if err := AttachServer(server, map[string]FramedSocket{"/compute-payload-decode-ep": repSock}); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Sockets: map[string]FramedSocket{"/compute-payload-decode-ep": repSock}})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -42,7 +42,7 @@ func TestErrorPattern_RequestPayloadDecode_Matched_DecodesTypedError(t *testing.
 	go func() { _ = server.Serve(ctx) }()
 
 	client := reqreply.NewClient()
-	if err := AttachClient(client, map[string]FramedSocket{"/compute-payload-decode-ep": reqSock}); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Sockets: map[string]FramedSocket{"/compute-payload-decode-ep": reqSock}})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 	// Bypass the client's own codec-based encode to send a deliberately

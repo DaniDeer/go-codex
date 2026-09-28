@@ -3,9 +3,22 @@
 > **Status:** Phases 1-2 SHIPPED; Phase 3's CAPABILITY MECHANISM
 > SHIPPED (the sibling `adapters/zeromqrest` adapter build is
 > deliberately OUT of this roadmap's own scope — an independent future
-> effort, see `docs/roadmap/zeromq-rest-adapter.md`); Phase 4 not yet
-> started. See each subsection's own Learnings entry. Spun out of a user
-> question about
+> effort, see `docs/roadmap/zeromq-rest-adapter.md`); Phase 4 (the
+> Apply-interface, API-layer-owned dispatch redesign — `api/events` +
+> `adapters/mqtt5`/`adapters/zeromq`) SHIPPED, including Phase 4b (a
+> post-hoc "zero backdoor" guardrail audit that found and closed 3 real
+> gaps — see the new "Architectural guardrail" section below and Phase
+> 4's own Phase 4b subsection); Phase 4c (closing `Client.Publish`/
+> `Subscribe`'s Capabilities gap) SHIPPED; Phase 4d (Attach factory
+> redesign — adapters expose `New*Transport` factories, attaching is
+> EXCLUSIVELY an api-layer method, all 12 adapter-namespaced `Attach*`
+> convenience functions removed) SHIPPED; Phase 4e (renumbered from the
+> original "Phase 4d" — closing the remaining format/security/middleware
+> "v1 scope" gaps) is DESIGNED, next up, confirmed to run BEFORE Phase 5;
+> Phase 5 (`api/reqreply` + the deferred `adapters/mqtt` v3 mirror) and
+> Phase 6 (`api/rest`) not yet started. See each subsection's own
+> Learnings entry. Spun out of a
+> user question about
 > [D-0006 — Protocol-Native Capabilities](../design/d-0006-protocol-native-capabilities.md)'s
 > scope (events-only) while reviewing [`docs/features/capabilities.md`](../features/capabilities.md).
 > Planned as 3 sequential implementation phases (`api/events` →
@@ -54,6 +67,62 @@ pattern only exists for `api/events` today (`api/rest`/`api/reqreply` have
 nothing equivalent), and there's no "I already know I'm using MQTT5/AMQP,
 give me a bundled preset" convenience for users who don't want to compose
 requirements one at a time.
+
+## Architectural guardrail: zero backdoors between the api layer and adapters
+
+**Added in Phase 4b**, in response to an explicit user directive, and
+elevated to THE central, non-negotiable goal of this entire roadmap AND
+of [D-0006](../design/d-0006-protocol-native-capabilities.md) itself —
+stated verbatim: *"There should be no backdoor open between the api
+layer of go-codex and the adapters. This is the goal of this whole
+design d-0006 and this roadmap plan."*
+
+**The rule, stated precisely:** every interaction through which an
+adapter fulfills an API/communication-pattern requirement DECLARED on a
+route/channel (or its middleware) MUST go through the `Capability` +
+`Apply(Target) (bool, error)` interface mechanism, dispatched
+EXCLUSIVELY by the API-layer-owned `events.ApplyCapabilities` (and its
+future `reqreply`/`rest` mirrors). **Zero raw-value bypass paths. Zero
+parallel, non-`Capability`-shaped declaration mechanisms for the same
+protocol-native concern** — not even as an "additive, still-supported
+legacy path." If a SECOND way to express the same protocol-native
+concern exists anywhere between a route/channel declaration and the
+wire, that is a backdoor and must be closed, not merely documented as a
+fallback.
+
+**Why this needed its own explicit statement, not just "Phase 4
+shipped":** a post-hoc audit of the ALREADY-SHIPPED Phase 4 code (see
+Phase 4b below) found that shipping the `Capability`/`Apply`/
+`ApplyCapabilities` mechanism for the CORE `Subscribe`/`Publish` dispatch
+path was necessary but not sufficient — THREE separate backdoors
+survived in code Phase 4 had already touched:
+
+1. A ports-binding constructor (`mqtt5.SubscribeAdapter`) took a raw
+   `qos byte` parameter and wrote it directly into the native wire
+   struct, never touching `Capability`/`Apply` at all.
+2. A ports-binding options struct (`MQTT5DrainPublishOptions`) exposed
+   raw `QoS byte`/`Retained bool` fields — internally folded into
+   `Capability` values before the wire call, but the DECLARATION
+   surface itself was still a raw-value shape, not something a user
+   configures via the `Capability` interface.
+3. A THIRD, transport-agnostic, route/channel-level mechanism
+   (`events.MQTTQoS`/`events.PublishAttributes`/
+   `Publisher.WithAttributes`) predated this whole redesign and was
+   explicitly documented as "additive, still-fully-supported legacy" —
+   the clearest violation, since it is declared ON THE CHANNEL itself
+   and entirely bypasses `Capability`.
+
+**This is why "purely additive, nothing deprecated" is the WRONG
+default posture for this roadmap**, even though it is normally sound
+API-evolution practice elsewhere in this codebase. A capability
+mechanism whose entire PURPOSE is "the sole, compile-time-checked way an
+adapter fulfills a declared protocol-native requirement" cannot coexist
+with an undeprecated parallel path for the identical concern — the
+parallel path is not a convenience, it is a hole in the guardrail. Every
+phase of this roadmap (past and future) must be re-read against this
+rule, and Phase 7 ("Review & Closeout" — D-0006's own rework) must state
+this guardrail as D-0006's own explicit design goal, not merely link
+back to this doc.
 
 ## Design guardrails: one three-tier framework, read from both sides
 
@@ -1540,7 +1609,775 @@ triggers the Cookie requirement).
     into its own dispatch exactly like nethttp/chi just did — zero
     `api/rest`-side changes anticipated.
 
-### Phase 4 — Review & Closeout (not a feature phase)
+### Phase 4 — `api/events`: promote capability APPLICATION from adapter-owned loops to an API-layer-owned dispatcher
+
+**Status: SHIPPED (mqtt5 + zeromq events-side), INCLUDING Phase 4b's
+zero-backdoor guardrail fixes** (see Phase 4b subsection below).
+`adapters/mqtt` (v3)'s full migration to this same shape (not merely its
+`PublishAttributes` follow-on, already done in Phase 4b) is deferred to
+Phase 5 (see Learnings below).
+
+**Motivation — a deeper gap found reviewing Phases 1-3's own shipped
+mechanism against the corrected mental model:** the goal is not merely
+"an adapter implements SOME interface" — it's that the **`api/*` layer
+itself calls through that interface**, driven by what the user declared
+on the route/channel, with the adapter contributing ONLY the interface
+implementation + its own protocol-specific target object. Re-auditing
+the ALREADY-SHIPPED mechanism against this bar found it still falls
+short in two places:
+
+- **`adapters/zeromq.HWMSetter`/`ConflateSetter` ARE real interfaces**
+  (`SetHWM(n int) error` genuinely configures the socket) — **but the
+  LOOP that resolves a supplied capability, type-asserts the Setter,
+  and calls it is itself defined IN THE ADAPTER**
+  (`adapters/zeromq/capability.go`'s `applyCapabilities`), not in
+  `api/events`. The API layer defines `HWMSetter` but never CALLS it —
+  the adapter still does that itself.
+- **`adapters/mqtt5.QoS`/`Retained` have NO interface at all** — the
+  supplied value is extracted via `events.ResolveCapabilityValue` and
+  used DIRECTLY as a raw byte/bool in a `Publish{}` literal, inline, at
+  every publish call site (`adapter.go`/`caller.go`, several sites
+  each). Not pluggable, not an interface the adapter "implements
+  against" in any meaningful sense.
+
+**Design — the `Apply(Target) (applied bool, err error)` shape:**
+
+Give every capability value a method against its OWN adapter-specific
+target type, and move the CALLING LOOP into `api/events` as a single,
+fully generic function — Go's type inference resolves the target type
+`T` per call site, so ONE function serves every adapter family with
+zero per-family special-casing:
+
+```go
+// api/events — the API LAYER now owns this generic dispatch loop.
+// Replaces EVERY adapter's own hand-rolled resolve+assert+call+record
+// sequence (adapters/zeromq's own (deleted) applyCapabities function;
+// adapters/mqtt5's inline manual field-assignment blocks).
+func ApplyCapabilities[C interface{ Apply(T) (bool, error) }, T any](
+    caps []C, target T, obs stats.Observer, location string,
+) {
+    for _, c := range caps {
+        applied, err := c.Apply(target)
+        if applied && err == nil {
+            if nc, ok := any(c).(CapabilityName); ok {
+                RecordCapabilityApplied(obs, location, nc)
+            }
+        }
+    }
+}
+```
+
+```go
+// adapters/zeromq/capability.go — Capability itself now REQUIRES
+// Apply (merged into the sealed marker interface, not a separate
+// optional Setter split) — genuinely "an API the adapter implements
+// against."
+type Capability interface {
+    isZeroMQCapability()
+    Apply(sock FramedSocket) (applied bool, err error)
+}
+
+func (h HWM) Apply(sock FramedSocket) (bool, error) {
+    setter, ok := sock.(HWMSetter)
+    if !ok {
+        return false, nil // documented no-op, UNCHANGED semantics
+    }
+    return true, setter.SetHWM(int(h))
+}
+```
+
+**`adapters/mqtt5` needed one more piece than zeromq: `WireAttributes`.**
+`mqtt5.QoS`/`Retained` apply to TWO different native paho target types —
+`*pahomqtt5.Publish` (publish path) AND `pahomqtt5.SubscribeOptions`
+(subscribe path) — and Go doesn't support method overloading by
+parameter type, so ONE `Apply` method can't target both directly. The
+shipped design introduces an adapter-owned intermediate struct BOTH
+call sites populate/consume:
+
+```go
+// adapters/mqtt5/capability.go — shipped shape.
+type WireAttributes struct {
+    QoS      byte
+    Retained bool
+}
+
+type Capability interface {
+    isMQTT5Capability()
+    Apply(wire *WireAttributes) (bool, error)
+}
+
+func (q QoS) Apply(wire *WireAttributes) (bool, error) {
+    wire.QoS = byte(q)
+    return true, nil
+}
+func (r Retained) Apply(wire *WireAttributes) (bool, error) {
+    wire.Retained = bool(r)
+    return true, nil
+}
+```
+
+Adapter code SHRINKS to one call site each, replacing every existing
+resolve+assign block:
+
+```go
+// adapters/zeromq/serve_subscribers.go — was a local applyCapabilities(...) call
+events.ApplyCapabilities(r.capabilities, c.sock, obs, r.topic)
+
+// adapters/mqtt5/adapter.go / caller.go — was manual "if qosSet {...}" blocks
+var wire WireAttributes
+events.ApplyCapabilities(opts.Capabilities, &wire, obs, path)
+// wire.QoS / wire.Retained then flow into the native Publish{}/SubscribeOptions{} literal.
+```
+
+**Semantics preserved exactly, verified not assumed:** `(false, nil)`
+means "target doesn't support this capability" — the SAME documented
+no-op-not-an-error convention every capability already had; a genuine
+`Apply` error is silently swallowed (no `RecordCapabilityApplied`),
+matching today's `if err == nil { RecordCapabilityApplied(...) }`
+pattern exactly — no behavior change, only WHERE the loop lives.
+
+**Radical breaking change, per explicit user direction ("we are doing
+breaking changes; every interaction between the api layer and the
+adapter layer is via the interface approach"):** the former
+`qos byte, retained bool` positional call-time parameters and the
+`SubscribeOptions.QoS` plain field were REMOVED ENTIRELY from
+`adapters/mqtt5` — `Capabilities` is now the SOLE mechanism, closing the
+old precedence ambiguity (`if qos == 0 && qosSet { qos = capQoS }`)
+outright rather than reconciling it. `adapters/zeromq` never had this
+dual-path (`Capabilities` was always its only mechanism), so its own
+fix was purely the calling-loop relocation, with ZERO call-site changes
+needed anywhere (including its `reqreply_transport.go` sites) — `zeromq`
+package's `applyCapabilities` kept its EXACT prior signature
+(`FramedSocket, []Capability, stats.Observer, string`) but its body is
+now a 1-line delegation to `events.ApplyCapabilities`.
+
+- **Implemented:** the six mandatory requirements, for `adapters/mqtt5`
+  and `adapters/zeromq` (events-side call sites: `adapter.go`,
+  `caller.go`, `handletransport.go`, `binding.go`). `api/events`'s new
+  `ApplyCapabilities[C,T]` generic function. `adapters/zeromq`'s
+  `applyCapabilities` kept as a thin same-signature wrapper (not
+  deleted — see Learnings). `adapters/mqtt5`'s every manual QoS/Retained
+  inline assignment (subscribe-dispatch AND publish-dispatch call
+  sites) replaced with `events.ApplyCapabilities` calls against
+  `WireAttributes`.
+- **Deferred to Phase 5 (a new addition, not originally planned):**
+  mirroring this SAME treatment in `adapters/mqtt` (v3) — same file
+  names, same pattern. Kept out of this round to preserve
+  phase-by-phase discipline; `adapters/mqtt` (v3) is UNCHANGED and
+  still fully on its pre-Phase-4 legacy positional-param path, which
+  still compiles and passes today (this package was never touched this
+  round).
+- **Examples:** `examples/events-api`'s mqtt5-backed demos (
+  `demo_capability_mechanism.go`, `demo_connect_level_security.go`,
+  `demo_error_pattern.go`, `demo_property_merge_direct_attachment.go`,
+  `demo_security_subscribemw.go`, `demo_user_property_middleware.go`)
+  updated to construct `Capabilities: []mqtt5.Capability{...}` instead
+  of the removed positional qos/retained constructor args — this is a
+  REAL breaking change surfaced in example code, not merely internal;
+  every declaring user of `NewPublishTransport`/`NewSubscribeTransport`
+  must migrate the same way.
+- **Docs:** update `docs/features/capabilities.md`'s mechanism
+  description and `.github/instructions/go-codex.instructions.md`.
+- **Learnings:** recorded here before Phase 5 begins.
+
+**Learnings:**
+
+1. **The `WireAttributes` intermediate wasn't optional design polish —
+   it's the ONLY way a single `Apply` method can serve two native
+   target types.** Any future capability that applies to multiple wire
+   objects (e.g. a hypothetical MQTT5 "message expiry" affecting both
+   `Publish` and a retained-message read path) should reach for this
+   same adapter-owned intermediate-struct pattern rather than trying to
+   force method overloading Go doesn't support.
+2. **`adapters/zeromq`'s fix was cheaper than `adapters/mqtt5`'s by
+   construction, not luck.** zeromq's `HWM`/`Conflate` never had a
+   legacy positional dual-path — `Capabilities` was ALWAYS the sole
+   mechanism there. Because `applyCapabilities` kept its exact prior
+   signature, EVERY existing call site (events- AND reqreply-side)
+   needed zero changes — this is a real, generalizable lesson: keeping
+   an unchanged function signature while swapping its INTERNAL
+   implementation to delegate to a new API-layer mechanism is strictly
+   preferable to a call-site-breaking rewrite, whenever the old
+   signature was already capability-only.
+3. **The scope of "radical breaking changes" turned out larger than
+   the initial design sketch implied** — it wasn't just
+   `adapter.go`/`caller.go`'s dispatch blocks, but also
+   `handletransport.go`'s public `NewPublishTransport`/
+   `NewSubscribeTransport` constructor signatures AND `binding.go`'s
+   `ports.SinkAdapter`-facing `MQTT5DrainPublishOptions.QoS`/`Retained`
+   fields. **Update, Phase 4b:** the initial pass folded these into a
+   per-item `Capabilities` slice internally while KEEPING the struct's
+   raw fields, reasoning `MQTT5DrainPublishOptions` and
+   `events.PublishAttributes`/`ResolvePublishAttributes` were "a
+   SEPARATE, pre-existing declarative mechanism, out of scope." A
+   follow-up guardrail audit (see Phase 4b below) found this reasoning
+   was WRONG — that separateness is exactly what makes it a backdoor,
+   not a reason to leave it alone. Both were removed entirely in Phase
+   4b. Enumerating a legacy mechanism's FULL call-site list via grep
+   BEFORE starting the rewrite (as this session did) is what kept this
+   discoverable rather than a series of surprise compile failures.
+4. **Real compile-time proof the design works:** `adapters/mqtt5`'s
+   full pre-existing test suite (52+ files) needed mechanical
+   call-site updates (removing positional args, folding
+   qos/retained into `Capabilities`) but ZERO test assertions changed
+   meaning — confirming the redesign is a pure mechanism relocation,
+   not a behavior change, exactly as designed.
+
+#### Phase 4b — closing the guardrail gaps found in a post-hoc audit
+
+**Status: SHIPPED.** After Phase 4's initial implementation, the user
+asked for an explicit review against the "no backdoor between the api
+layer and the adapters" guardrail (see "Architectural guardrail" above)
+— this subsection records that audit's findings and the fixes shipped
+in response, all within the SAME `adapters/mqtt5`/`api/events` scope
+Phase 4 already owned (no new packages touched).
+
+**Findings:**
+
+1. **`mqtt5.SubscribeAdapter`'s raw `qos byte` parameter** — wrote
+   directly into `pahomqtt5.Subscribe{QoS: a.qos}`, never touching
+   `Capability`/`Apply` at all. **Fixed:** removed the parameter; added
+   `Capabilities []Capability` to `SubscribeAdapterOptions`; wired
+   through `events.ApplyCapabilities` into a `WireAttributes`, exactly
+   mirroring the core `subscribeWithHandle` path.
+2. **`MQTT5DrainPublishOptions.QoS byte`/`.Retained bool`** — a raw-value
+   declaration surface, even though the wire application already routed
+   through `Apply`. **Fixed:** removed both fields; added
+   `Capabilities []Capability`; the adapter now passes it straight
+   through with no reconstruction step.
+3. **`events.MQTTQoS`/`events.PublishAttributes`/
+   `Publisher.WithAttributes`** (core `api/events`) — a third,
+   transport-agnostic, route/channel-level declaration mechanism
+   entirely bypassing `Capability`, previously documented as "additive,
+   still-fully-supported legacy." The clearest backdoor found.
+   **Fixed:** deleted `api/events/mqtt_qos.go` entirely; removed
+   `Publisher.WithAttributes`, `ChannelHandle.publishAttrsFn`/
+   `ResolvePublishAttributes`. Since `events.Subscribe.QoS`'s type WAS
+   `MQTTQoS`, the SAME symmetric backdoor on the subscribe side was
+   found and closed too: removed `Subscribe.QoS`/
+   `ChannelHandle.SubscribeQoS` entirely — `Capabilities` is now the
+   ONLY way to express subscribe-side QoS, matching the publish side.
+   This is a BREAKING change reaching into core `api/events`, affecting
+   BOTH `adapters/mqtt` (v3) and `adapters/mqtt5`.
+4. **`adapters/mqtt` (v3) — narrow follow-on, not a full migration.**
+   Since `PublishAttributes` was deleted from `api/events`, `adapters/mqtt`'s
+   own `PublishAdapter`/`ServeSubscribers` had to drop their usage of it
+   too (their `ResolvePublishAttributes` fallback block and the
+   `SubscribeQoS`-via-reflection fallback) — but their OWN raw
+   `qos byte, retained bool` positional params and `SubscribeOptions.QoS`
+   field were DELIBERATELY LEFT AS-IS, since a full migration to the
+   `Capability`/`Apply`-only shape `adapters/mqtt5` now has is Phase 5's
+   job, not Phase 4b's. Phase 5's own scope statement is updated
+   accordingly (see below).
+5. **`adapters/zeromq`'s `SubscribeAdapter`/`PublishAdapter` ports
+   bindings** — not a backdoor (nothing bypassed `Capability`), but a
+   coverage gap: neither exposed a `Capabilities` field at all, making
+   `HWM`/`Conflate` unreachable through these two adapters. **Fixed:**
+   added `Capabilities []Capability` to both
+   `SubscribeAdapterOptions`/`DrainPublishOptions`, purely additive.
+6. **Stale doc comments** in `adapters/mqtt5/adapter.go`'s
+   `SubscribeOptions.Capabilities`/`PublishOptions.Capabilities` still
+   described the OLD dual-path/fallback precedence Phase 4's actual code
+   change had already removed. **Fixed:** corrected to describe the
+   shipped sole-mechanism behavior.
+
+**Learnings:**
+
+1. **"Purely additive, nothing deprecated" is the wrong default posture
+   for a capability mechanism whose whole point is being the SOLE path.**
+   Phase 4's own initial pass treated `MQTT5DrainPublishOptions`/
+   `PublishAttributes` as "a separate, pre-existing mechanism, out of
+   scope" — reasonable-sounding, but wrong: for a "no backdoor" design,
+   separateness IS the violation, not an excuse to leave it alone. This
+   is now stated as this roadmap's own explicit guardrail (see above) so
+   future phases don't repeat the mistake.
+2. **A "kept, not deprecated" comment on a parallel mechanism is a code
+   smell worth treating as a standing audit item, not reassurance.**
+   `mqtt_qos.go`'s own doc comment said exactly this about
+   `PublishAttributes` — its presence should have been a prompt to ask
+   "does this bypass the interface?" at Phase 4 design time, not
+   discovered only in a follow-up audit.
+3. **Deleting a shared type (`MQTTQoS`) forces auditing EVERY field of
+   that type across the codebase, not just the one call site that
+   prompted the deletion.** `Subscribe.QoS`'s type was `MQTTQoS` —
+   deleting `PublishAttributes` (the originally-named target) could not
+   be done without ALSO resolving `Subscribe.QoS`, which turned out to
+   be the exact same backdoor shape on the subscribe side. Grepping for
+   every USE of a type being deleted (not just its originally-flagged
+   use) is what surfaced this before it caused a silent compile break.
+4. **A backdoor's "internal reconstruction" doesn't excuse its public
+   shape.** `MQTT5DrainPublishOptions.QoS`/`.Retained` already flowed
+   into `Capability.Apply` internally before Phase 4b — the WIRE
+   application was already correct. It was still a backdoor, because the
+   guardrail is about where the USER interacts with the mechanism, not
+   only where the adapter ends up calling it.
+
+#### Phase 4c — closing the `Client.Publish`/`Client.Subscribe` Capabilities gap
+
+**Status: SHIPPED.** Found while reviewing `examples/events-api/
+demo_capability_mechanism.go` against the "zero backdoor" guardrail: the
+demo builds a real `*events.Client`, attaches `mqtt5.Attach` (used for
+the subscribe side), then for PUBLISH drops into
+`mqtt5.NewPublishTransport`+`events.PublishHandle` directly — bypassing
+the attached Client entirely — to express `Capabilities: []Capability{
+Retained(true)}`.
+
+**Root cause, confirmed via code trace, not assumed:** every adapter's
+`events.Transport` implementation (`adapters/mqtt5`/`mqtt`/`zeromq`'s
+`transport.go`) is explicitly documented **"v1 scope"**: `Client.Publish`
+hardcodes `QoS: defaultQoS` (always 0) and has NO path to read
+`Capabilities` at all — there is no `Publisher[T].WithOptions` method to
+even DECLARE Capabilities on a Publisher (unlike `Subscriber[T].WithOptions`,
+which already exists and IS read by `ServeSubscribers`, just not by the
+single-channel `Client.Subscribe`). Each adapter's own doc comment says
+the same thing near-verbatim: *"a caller needing [QoS/security/format
+overrides] should use [subscribe]/[Publish] directly."* This is a
+pre-existing scope decision from `docs/design/d-0002-pubsub-workflow-simplification.md`'s
+Decision 5 — not something Phase 4/4b introduced — but it is EXACTLY
+the shape of backdoor the Phase 4b guardrail forbids: a user needing
+Capabilities is systematically forced off the api-layer-owned
+`Client.Publish`/`Subscribe` surface.
+
+**Cross-API comparison, confirming this is events-specific, not
+universal:**
+- `api/rest`'s `adapters/nethttp/clienttransport.go` states, verbatim:
+  *"Call and Consume are FULL-FEATURED... there is NO remaining 'v1
+  scope' asterisk."* Achieved by resolving header/cookie/query/security
+  FROM THE DECLARED ROUTE/MIDDLEWARE (the reflection shim reads them off
+  the `RouteHandle`), not via a bigger per-call options struct.
+- `api/reqreply`'s `mqtt5.AttachClient`/`AttachServer` accept an
+  ATTACH-TIME `CallOptions`/`ServeOptions` value (including
+  `Capabilities`) applied UNIFORMLY to every route through that
+  Client/Server — coarser-grained than REST, but not a backdoor.
+- `api/events`'s `mqtt5.Attach` takes NO opts param at all — zero ways
+  to express Capabilities without touching `adapters/mqtt5` directly.
+  The actual gap this phase closes.
+
+**Design — Option A, per-channel declared (matches REST's actual
+mechanism: declared where the requirement lives, and reuses
+`Subscriber.WithOptions`'s ALREADY-PROVEN shape verbatim for the publish
+side, rather than an attach-time-global setting):**
+
+```go
+// api/events/builder.go — NEW, mirrors Subscriber[T].WithOptions exactly.
+func (p Publisher[T]) WithOptions(opts any) Publisher[T] {
+    p.handlerOpts = opts
+    return p
+}
+```
+
+`Publisher.Handle` copies `handlerOpts` onto the built
+`ChannelHandle.HandlerOpts` field (today only populated on the subscribe
+side) — a `mqtt5.PublishOptions[T]{Capabilities: []mqtt5.Capability{...}}`
+value declared this way is now reachable by `Client.Publish`'s
+reflection shim via `elem.FieldByName("HandlerOpts")`, exactly the same
+technique `ServeSubscribers`/`Client.Subscribe`'s OWN HandlerOpts
+resolution already uses elsewhere in this codebase.
+
+Each adapter's `transport.go` `Publish`/`Subscribe` methods then:
+1. Recover `HandlerOpts` via reflection (already have `elem`/`handleVal`
+   in scope).
+2. Type-assert to the adapter's own `PublishOptions[T]`/`SubscribeOptions`
+   shape (or extract just `.Capabilities` — Design detail to finalize:
+   whether the WHOLE Options struct is read, matching per-channel
+   declared `Capabilities`, `UserPropertyParams`, etc., or ONLY
+   `Capabilities` for this narrower phase — leaning toward reading the
+   Capabilities field ONLY this round, to keep Phase 4c scoped; anything
+   else declared via `WithOptions` for OTHER purposes stays honored only
+   by `ServeSubscribers`/the direct escape-hatch calls, unchanged).
+3. Build a `WireAttributes` (mqtt5) and call `events.ApplyCapabilities`
+   — IDENTICAL to the core `publish`/`subscribeWithHandle` path — before
+   the native publish/subscribe call, replacing the hardcoded
+   `defaultQoS`.
+4. `adapters/zeromq`: confirm `HWM`/`Conflate` are meaningful on BOTH
+   Publish and Subscribe sides or subscribe-only before wiring (avoid
+   assuming symmetry with mqtt5 uncritically).
+
+**Fix `demo_capability_mechanism.go`:** replace the manual
+`NewPublishTransport`+`events.PublishHandle` call with
+`evClient.Publish(ctx, routes.CapabilityPub, msg)`, with
+`routes.CapabilityPub` declaring `Capabilities` via the new
+`WithOptions`.
+
+**Explicitly out of scope for Phase 4c** (see Phase 4d immediately
+below): format overrides, security/credential ClientMW enforcement, and
+general-purpose middleware wrapping remain unaddressed by
+`Client.Publish`/`Subscribe` after this phase — Capabilities is the ONLY
+gap closed here.
+
+**Implemented, exactly as designed:**
+- `Publisher[T].WithOptions(opts any) Publisher[T]` added to
+  `api/events/builder.go`, mirroring `Subscriber[T].WithOptions` field-
+  for-field; `Publisher.Handle` now threads `p.opts` into
+  `buildChannelHandle` instead of a hardcoded `nil` — `ChannelHandle.HandlerOpts`
+  is now populated on BOTH sides, closing the asymmetry.
+- `adapters/mqtt5/transport.go`: both `Publish` and `Subscribe` resolve
+  `HandlerOpts.Capabilities` via a new `resolveHandlerOptsCapabilities`
+  reflection helper, build a `WireAttributes`, and call
+  `events.ApplyCapabilities` — IDENTICAL mechanism to the core
+  `publish`/`subscribeWithHandle` path Phase 4 already built. The
+  `Capabilities`-only field extraction (not the whole Options struct) was
+  chosen, exactly as the Design anticipated — format/security/general
+  middleware stay out of scope for THIS phase (Phase 4d's job).
+- `adapters/mqtt/transport.go`: same fix, but resolved via
+  `events.ResolveCapabilityValue` (this package's still-legacy
+  mechanism, unaffected by mqtt5's Apply-interface migration) — matching
+  `adapters/mqtt`'s OWN current shape exactly, not silently upgrading it
+  to mqtt5's Apply shape (that remains Phase 5's job).
+- `adapters/zeromq/transport.go`: same fix, `events.ApplyCapabilities`
+  applied directly against the socket for BOTH Publish and Subscribe
+  (HWM/Conflate ARE meaningful on both sides, confirmed by the existing
+  `HWMSetter`/`ConflateSetter` extensions accepting any `FramedSocket`).
+- All 3 adapters' `Attach`/`transport` doc comments updated to say
+  "v1 scope, NARROWED by Phase 4c" instead of blanket "v1 scope" —
+  explicitly naming Capabilities as closed and format/security/
+  middleware as still open (Phase 4d), rather than leaving a stale,
+  now-partially-wrong blanket claim in place.
+- `demo_capability_mechanism.go` fixed to call `evClient.Publish`
+  directly — zero adapter-package touch needed for this demo's own
+  purpose anymore.
+- 6 new tests added (2 per adapter — Publish and Subscribe honoring a
+  declared Capabilities value), all passing; full existing test suites
+  (`mqtt5`, `mqtt`, `zeromq`) pass UNCHANGED — confirming, as Phase 4/4b
+  did before, that this is a pure mechanism-reach fix, not a behavior
+  change to any EXISTING call path.
+
+**Learnings:**
+1. **A "the demo used the escape hatch" observation was a genuine,
+   reproducible product gap, not an example-quality nit.** Tracing WHY
+   the demo used the escape hatch (not just fixing the demo's code)
+   surfaced a real, pre-existing "v1 scope" limitation dating back to
+   `docs/design/d-0002-pubsub-workflow-simplification.md`'s Decision 5 —
+   confirming the general principle that an example reaching for a
+   lower-level API is itself a signal worth investigating, not just
+   patching over.
+2. **Cross-API comparison (REST vs. reqreply vs. events) was the fastest
+   way to find the RIGHT fix shape.** REST's `Client.Call` was already
+   "full-featured, no v1-scope asterisk"; reqreply's `AttachClient`/
+   `AttachServer` had a coarser, attach-time-uniform partial fix; events
+   had neither. Comparing all three directly (rather than designing
+   events' fix in isolation) is what surfaced Option A (per-channel
+   declared, matching REST's actual mechanism) as preferable to Option B
+   (attach-time uniform, matching reqreply's partial fix) BEFORE writing
+   any code.
+3. **Symmetric field addition (`Publisher.WithOptions` mirroring
+   `Subscriber.WithOptions`) cost nothing extra** — `buildChannelHandle`
+   already accepted `opts any` generically and unconditionally populated
+   `HandlerOpts` regardless of role; the ONLY asymmetry was
+   `Publisher.Handle` passing a hardcoded `nil` instead of a real field.
+   A one-line fix once the missing field/method was noticed — worth
+   flagging as a lesson: an asymmetric fallback (`nil`) two structurally
+   IDENTICAL types share is a natural place to look for exactly this
+   kind of quietly-missing capability.
+4. **Not every `evtClient := events.NewClient(...)` without a visible
+   `.Attach()` call in the SAME file is a violation.** Re-auditing
+   `demo_error_pattern.go` confirmed its several un-attached Clients are
+   legitimate spec-registration-only containers (`pub.Handle(evtClient)`)
+   feeding a SEPARATE `ports.SinkPort`/`PublishAdapter` dispatch path —
+   a DIFFERENT, equally sanctioned mechanism, not a bypass of anything.
+   Distinguishing "built a Client, used a lower-level path anyway" from
+   "built a Client, registered its spec, dispatched through ports
+   instead" mattered for not over-flagging false positives.
+
+#### Phase 4d — Attach factory redesign: adapters expose `New*Transport` factories; attaching is EXCLUSIVELY an api-layer method
+
+**Status: SHIPPED.** Found while reviewing `demo_capability_mechanism.go`:
+the demo called `mqtt5adapter.Attach(evClient, broker, router)` — an
+ADAPTER-namespaced free function that internally builds an unexported
+`*transport` value and calls `evClient.Attach(...)` itself, hiding the
+object entirely. User's explicit directive: "In the adapter layer we
+can have a New factory to retrieving an attachable Client/Server with
+the respective configuration provided by the user. This gets attached
+to the api layer via an attach method owned by the api layer" — this is
+arguably the MOST foundational expression of the "zero backdoor between
+the api layer and the adapters" guardrail (Phase 4b): even the ATTACH
+step itself must go through `api/events`/`api/rest`/`api/reqreply`, not
+an adapter-owned convenience wrapper.
+
+**Verified before implementing, not assumed:** does `Attach` itself
+composite the spec by registering routes/channels? NO — `Route.Register`/
+`Subscriber.Register` (operating on the SAME `Client`/`Server` object
+`Attach` later binds a transport to) is what accumulates the spec +
+dispatch registry; `Attach` is a strictly SEPARATE, later step that only
+binds the wire transport. Confirmed `reqreply`'s `Builder` is literally
+`type Builder = Server` (a type alias, not a separate type) — the same
+one-object, two-separate-steps pattern holds across all 3 APIs. All 5
+api-layer `Attach` methods (`events.Client.Attach`, `rest.Client.Attach`,
+`rest.Server.Attach`, `reqreply.Client.Attach`, `reqreply.Server.Attach`)
+ALREADY EXISTED — zero core `api/*` changes were needed; this phase's
+entire job was removing the adapter-side convenience wrappers that hid
+them.
+
+**Design — one uniform shape, all 12 Attach-family functions inventoried
+via grep and replaced identically:**
+
+```go
+// BEFORE — adapter-namespaced, hides the transport object, does the
+// attach itself:
+func Attach(client *events.Client, mqttClient MQTTClient, router MQTTRouter) error {
+    return client.Attach(&transport{caller: newCaller(mqttClient, router, client)})
+}
+
+// AFTER — adapter provides ONLY a configured transport value via a
+// factory taking a SINGLE Options struct (confirmed with user: no
+// positional params, even for currently-required config — a
+// deliberate, strict, declarative shape, trading compile-time-enforced
+// required-arg positions for a uniform New(opts) pattern); attaching is
+// EXCLUSIVELY the caller's own client.Attach(...) call:
+type TransportOptions struct {
+    Client MQTTClient
+    Router MQTTRouter
+}
+
+func NewTransport(opts TransportOptions) events.Transport {
+    return &transport{caller: newCaller(opts.Client, opts.Router, nil)}
+}
+
+// caller:
+transport := mqtt5.NewTransport(mqtt5.TransportOptions{Client: broker, Router: router})
+if err := evClient.Attach(transport); err != nil { ... }
+```
+
+The Options struct name is the factory name + `Options` (mirrors this
+codebase's existing `PublishOptions`/`SubscribeOptions`/`ServeOptions`/
+`CallOptions` convention exactly); pre-existing `ServeOptions`/
+`CallOptions` (reqreply) are NESTED as a field inside the new structs
+(`Serve ServeOptions`/`Call CallOptions`), not flattened — keeping their
+own established field names/doc comments intact.
+
+**Full inventory (12 functions removed, 12 factories added, all
+verified mechanically trivial — each old `Attach*` function was
+confirmed to be EXACTLY `return client.Attach(&transport{...})`, a
+one-line wrap, so this is pure code motion + a config-shape change, not
+new runtime behavior):**
+
+| Package | Removed | Added |
+|---|---|---|
+| `adapters/mqtt5` (events) | `Attach(client, mqttClient, router)` | `NewTransport(TransportOptions{Client, Router})` |
+| `adapters/mqtt` (events) | `Attach(eventsClient, mqttClient)` | `NewTransport(TransportOptions{Client})` |
+| `adapters/zeromq` (events) | `Attach(client, sock)` | `NewTransport(TransportOptions{Socket})` |
+| `adapters/nethttp` (rest client) | `Attach(client, httpClient, baseURL)` | `NewClientTransport(ClientTransportOptions{HTTPClient, BaseURL})` |
+| `adapters/nethttp` (rest server) | `AttachMux(builder, mux, addr)` | `NewServerTransport(ServerTransportOptions{Mux, Addr})` |
+| `adapters/chi` (rest server) | `AttachRouter(builder, r, addr)` | `NewServerTransport(ServerTransportOptions{Router, Addr})` |
+| `adapters/mqtt5` (reqreply server) | `AttachServer(server, client, router, opts...)` | `NewServerTransport(ServerTransportOptions{Client, Router, Serve})` |
+| `adapters/mqtt5` (reqreply client) | `AttachClient(client, mqttClient, router, opts...)` | `NewClientTransport(ClientTransportOptions{Client, Router, Call})` |
+| `adapters/zeromq` (reqreply server, REQ/REP) | `AttachServer(server, sockets, opts...)` | `NewServerTransport(ServerTransportOptions{Sockets, Serve})` |
+| `adapters/zeromq` (reqreply client, REQ/REP) | `AttachClient(client, sockets, opts...)` | `NewClientTransport(ClientTransportOptions{Sockets, Call})` |
+| `adapters/zeromq` (reqreply server, ROUTER/DEALER) | `AttachRouterServer(server, sockets, opts...)` | `NewRouterServerTransport(RouterServerTransportOptions{Sockets, Serve})` |
+| `adapters/zeromq` (reqreply client, ROUTER/DEALER) | `AttachDealerClient(client, sockets, opts...)` | `NewDealerClientTransport(DealerClientTransportOptions{Sockets, Call})` |
+
+**Blast radius, sized explicitly before starting (confirmed acceptable
+— breaking change, no deprecate-and-keep):** every example across
+`examples/events-api`/`examples/reqreply-api`/`examples/rest-api` and
+any other example touching these 5 adapter packages; every adapter's
+own test suite; the 3 `NoXTransportAttachedError` message strings
+(previously suggesting `nethttp.Attach(client, httpClient, baseURL)` as
+the fix); `docs/features/`/`docs/guides/`/
+`.github/instructions/go-codex.instructions.md`/the
+`add-a-new-adapter` skill's own reference pattern (so future adapters
+follow the NEW convention from day one).
+
+**Also folded in, same sweep:** `examples/events-api`'s remaining
+`NewSubscribeTransport`/`NewPublishTransport` DIRECT usages (the LOWER,
+adapter-facing escape-hatch tier, distinct from but adjacent to the
+Attach-factory work) — converted to the `Client`+`Attach`+
+`Publish`/`Subscribe`/`ServeSubscribers` pattern in every demo EXCEPT
+`demo_escape_hatch_workflow.go`, whose entire documented purpose is
+demonstrating that escape hatch remains available for cases the
+`Client` surface doesn't (yet) cover.
+
+- **Learnings (recorded, real evidence from Implement — not
+  speculation):**
+  - **A real deadlock, not a hypothetical one.** `Client.Attach`/
+    `Server.Attach` called the new `BindClient`/`BindServer` hook WHILE
+    STILL HOLDING their own write lock. `zeromq`'s reqreply server-side
+    `BindServer` needs `server.RegisteredTopics()`, which takes an
+    `RLock` on the SAME mutex — `sync.RWMutex` is not reentrant, so this
+    deadlocked immediately in a real test run, not a contrived one. Fixed
+    by releasing the lock BEFORE calling the Bind hook in all 3 `Attach`
+    implementations. General lesson: never call an optional
+    caller-supplied hook while holding a mutex the hook might re-enter
+    via another method on the same receiver.
+  - **Converting the escape-hatch demos surfaced a genuine, previously
+    masked test-infrastructure bug**, not a mechanism gap:
+    `MockRouter.WaitHandler` (events-api's test broker) matched topics by
+    an EXACT string compare against the caller's literal
+    `"sensors/{sensorID}/..."` form, but registered map keys are always
+    the wildcard-derived form (`"sensors/+/..."`) — so it always
+    silently consumed its full ~1s worst-case poll. This was invisible
+    under `NewSubscribeTransport` (non-blocking registration, survives a
+    short ctx) but became a real, intermittent timeout under
+    `Client.Subscribe` (blocking, unregisters on ctx cancel) once a
+    short-lived handler ctx raced against the ~1-2s worst-case poll.
+    Fixed by checking both the literal and the wildcard-normalized form.
+    Confirms this roadmap's own "verify equivalence by migration, not by
+    review" lesson (Phase 1) once again — converting REAL call sites
+    found a bug a design review never would have.
+  - **The conversion also surfaced a second real, if narrower, gap:**
+    `Client.Subscribe`'s reflection shim never consulted
+    `events.DeadLetter` (only `ErrorChannel`) — fixed as a direct
+    side-effect of the WaitHandler debugging session, mirroring
+    `adapter.go`'s existing `tryDeadLetter` convention.
+  - **Two escape-hatch usages in `demo_error_pattern.go` were
+    deliberately NOT converted**, because they depend on features
+    `Client.Subscribe` genuinely lacks today (`SubscribeOptions.OnError`
+    callback dispatch; `SubscribeMW`/security enforcement) — both are
+    explicitly Phase 4e's scope, not silently dropped. Tracked via
+    inline comments at the call sites AND 2 dedicated SQL todos
+    (`p4e-onerror-dispatch`, `p4e-subscribemw-security-real-case`) so
+    they are not lost across the phase renumbering.
+  - **Full verification, repeated (not one-shot):** `gofmt -l .` clean;
+    `go build ./...`/`go vet ./...` clean; `go test ./...` run 4 times
+    (once full, 3x targeted at `./api/...`/`./adapters/...`) all green —
+    one apparent one-off `FAIL` on a single full run did not reproduce
+    across 3 immediate repeats of the same targeted packages, consistent
+    with test-timing flakiness rather than a real regression; all
+    `examples/*` run to exit 0; `just check` (gosec + staticcheck) clean,
+    zero new suppressions.
+
+#### Phase 4e — closing the REMAINING `Client.Publish`/`Subscribe` "v1 scope" gaps
+
+**Status: DESIGN.** Renumbered from the original "Phase 4d" — the
+Attach-factory redesign above was inserted BEFORE this phase since it
+reshapes the SAME `transport.go`/`reqreply_transport.go` files this
+phase touches; doing the factory redesign first avoids reworking those
+files twice. Immediately follows the NEW Phase 4d, BEFORE Phase 5 —
+finishing the FULL guardrail closure on `api/events`'s
+`Client.Publish`/`Subscribe` shim (not just its Capabilities slice)
+avoids doing overlapping shim-editing work in two separate passes once
+Phase 5 touches the same files for reqreply parity.
+
+**Concrete, confirmed-real gaps found DURING Phase 4d's own examples
+sweep (recorded here explicitly so they are NOT forgotten — user's
+direction: "You can move it to 4e. The important thing is that we do
+not forget it!"):**
+
+- `examples/events-api/demo_error_pattern.go`'s
+  `demoErrorChannelActionsSubscribeSide` (the `run` closure, ~line 388)
+  observes `SubscribeOptions.OnError` firing on a handler business
+  error — `Client.Subscribe`'s reflection shim (`adapters/mqtt5/transport.go`)
+  never calls `opts.OnError` at all. Kept on the `NewSubscribeTransport`
+  escape hatch, with an explicit comment naming this phase, pending
+  Item 1 (format overrides)/a new "OnError dispatch" sub-item below.
+- `examples/events-api/demo_error_pattern.go`'s
+  `demoErrorChannelMiddlewareCombo` (the `securedSub`/`dataTransport`
+  half, ~line 549) proves a security-rejecting `SubscribeMW` blocks the
+  handler — `Client.Subscribe` doesn't run SubscribeMW/security
+  dispatch at all today, so this is a DIRECT, real-world instance of
+  Item 2's "silent security bypass" finding below, not merely a
+  hypothetical. Kept on the escape hatch with an explicit comment.
+- Once Phase 4e ships OnError dispatch + SubscribeMW/security
+  enforcement in `Client.Subscribe`, BOTH of these demo functions should
+  be converted to the `Client.Attach`+`Client.Subscribe` pattern (same
+  sweep discipline as the rest of Phase 4d), closing the LAST 2
+  `NewSubscribeTransport` escape-hatch usages in `examples/events-api`
+  outside `demo_escape_hatch_workflow.go` (which stays exempt by
+  design).
+
+Per each adapter's own "v1 scope" doc comment (still true after Phase
+4c) and the REST reference shape:
+
+1. **Format overrides** — REST's `ClientCallOptions{RequestFormats,
+   ResponseFormats any}`/`ClientConsumeOptions{Formats any}` is the
+   reference: a per-call, adapter-agnostic options struct the
+   reflection shim resolves generically. `events.Client.Publish`/
+   `.Subscribe` take NO per-call options param today
+   (`Publish(ctx, pub any, msg any)`/`Subscribe(ctx, sub any, fn any)`)
+   — needs an analogous `events.ClientPublishOptions`/
+   `ClientSubscribeOptions` (name TBD) as a variadic trailing param —
+   PER-CALL, unlike Phase 4c's Capabilities (per-channel-declared),
+   since format overrides are legitimately a call-time concern.
+2. **Security/credential ClientMW enforcement — the MOST SEVERE gap.**
+   REST's `Client.Call` resolves declared security/credential ClientMW
+   automatically from the RouteHandle. `events.Client.Publish`/
+   `.Subscribe`'s shim currently skips this ENTIRELY — confirmed via
+   its own doc comment: *"a channel declaring Security plus a
+   correctly-paired credential SubscribeMW/PublishMW gets ZERO runtime
+   enforcement through Client.Attach — no credential is fetched or
+   injected, silently, with no error."* This is a SILENT SECURITY
+   BYPASS, not just a missing convenience. Open design decision: should
+   `Client.Attach` eagerly reject a Client with any declared-but-
+   unenforceable security scheme (fail closed), or should this stay
+   silent until fixed (current, unsafe default)? Resolve via reflecting
+   `ChannelHandle.Implementations`/`ClientImplementations`, mirroring
+   `subscribeWithHandle`'s/`publish`'s own already-working security
+   dispatch.
+3. **General-purpose middleware wrapping** — declared `SubscribeMW`/
+   `PublishMW` (logging/observability/rate-limiting, non-security) also
+   currently skipped — same fix shape as #2, lower severity.
+4. Mirror across all 3 adapters (`mqtt5`, `mqtt` v3, `zeromq`).
+5. **Definition of done:** drop the "v1 scope" doc-comment framing
+   entirely from all 3 adapters' `transport.go`, matching
+   `adapters/nethttp/clienttransport.go`'s already-achieved "no
+   remaining v1 scope asterisk" wording.
+
+**Open design decisions for Phase 4e's own Design step:**
+- Exact shape/name of the new per-call Publish/Subscribe options
+  struct.
+- Fail-open vs fail-closed semantics for a declared-but-unenforced
+  security scheme (validate eagerly at `Attach`, or reject at call
+  time?).
+- Whether `Client.Subscribe`'s existing ErrorChannel/DeadLetter dispatch
+  needs reordering once general middleware wrapping is added.
+
+**Sequencing: Phase 4c → Phase 4d → Phase 4e → THEN Phase 5**
+(`api/reqreply` + `adapters/mqtt` v3 mirror). Phase 6 (`api/rest`)/
+Phase 7 (Review & Closeout / D-0006 rework) remain after that, unchanged
+in relative
+order.
+
+### Phase 5 — `api/reqreply`: apply the SAME `Apply`/`ApplyCapabilities` shift
+
+**Status: Design not yet started — scope statement only, per
+phase-by-phase discipline.** Since `adapters/mqtt5`/`adapters/zeromq`'s
+`Capability` types are the SAME types Phase 4 touches (shared package,
+shared code), this phase is expected to be SMALLER than Phase 4's own
+work — mainly replacing reqreply's OWN QoS/Retained/HWM/Conflate
+resolve+assign call sites (mqtt5's `reqreply_transport.go`'s 3 reply
+publish paths + client-side request publish; zeromq's 4 reqreply
+dispatch implementations) with the SAME `events.ApplyCapabilities` call
+already built in Phase 4 — zero new `api/events`-side code anticipated,
+confirmed generic and reusable as-is. `adapters/zeromq`'s reqreply call
+sites in particular need ZERO changes (confirmed in Phase 4 — its
+`applyCapabilities` kept its exact prior signature).
+
+**Also in scope for Phase 5 (added after Phase 4 shipped):** mirroring
+Phase 4's `adapters/mqtt5` treatment (`Capability` interface requiring
+`Apply`, `WireAttributes`, removing the legacy positional
+`qos byte, retained bool`/`SubscribeOptions.QoS` dual-path) in
+`adapters/mqtt` (v3) — same file names (`capability.go`, `adapter.go`,
+`caller.go`, `handletransport.go`, `binding.go`), same pattern,
+deliberately deferred out of Phase 4 to preserve phase-by-phase
+discipline rather than doubling that round's scope.
+
+**Definition-of-done, corrected by Phase 4b's guardrail audit:** Phase
+5 must leave `adapters/mqtt` (v3) meeting the FULL zero-backdoor
+guardrail (see "Architectural guardrail" above) — the SAME bar
+`adapters/mqtt5` now meets — not merely "reqreply migrated to
+`ApplyCapabilities`." Phase 4b already did the narrow
+`events.PublishAttributes`-deletion follow-on for `adapters/mqtt` (its
+`ResolvePublishAttributes` fallback and `SubscribeQoS`-via-reflection
+read were removed since the TYPE itself no longer exists), but its raw
+`qos byte, retained bool` positional params, `SubscribeOptions.QoS`
+field, and `MQTTDrainPublishOptions.QoS`/`.Retained` ports-binding
+fields are ALL still standing legacy backdoors — Phase 5 must close
+every one of them, mirroring `adapters/mqtt5`'s Phase 4/4b shape
+exactly (`Capability`/`Apply`/`WireAttributes`, `Capabilities`-only
+`SubscribeAdapterOptions`/`MQTTDrainPublishOptions`).
+
+### Phase 6 — `api/rest`: the SAME shift for Header/Cookie/Query
+
+**Status: Design not yet started — scope statement only.** Promotes
+`HeaderCapableTransport`/`CookieCapableTransport`/`QueryCapableTransport`
+(currently no-op markers, shipped in this doc's own earlier Phase 3
+round) from Pattern C to the full `Apply`/`ApplyCapabilities`-owned-by-
+the-API-layer shape: an `Extract`-shaped method the adapter's
+per-request carrier implements, called through a generic
+`rest.ApplyRequestParams`-style dispatcher `api/rest` owns, replacing
+`adapters/nethttp`/`adapters/chi`'s own inline extract+validate blocks
+at every one of their ~9 existing call sites each.
+
+### Phase 7 — Review & Closeout (not a feature phase)
 
 Once Phase 3 ships, this roadmap doc's implementation is considered
 COMPLETE — Phase 4 is the closing review pass, not further feature work:
@@ -1604,6 +2441,18 @@ COMPLETE — Phase 4 is the closing review pass, not further feature work:
     the subscribe filter at Attach time, or does it require a NEW
     `TopicParam`-adjacent declaration?) — not silently assumed to be a
     trivial string-prefix operation.
+- **Rework `docs/design/d-0006-protocol-native-capabilities.md` itself
+  to state the "zero backdoor between the api layer and the adapters"
+  rule (see "Architectural guardrail" above) as its OWN first-class,
+  explicit design goal** — not merely a cross-reference to this roadmap
+  doc. D-0006 predates this guardrail (it originally shipped
+  `PublishAttributes`-shaped mechanisms as "additive, not deprecated");
+  its rewritten form must state plainly that `Capability`/`Apply`/
+  `ApplyCapabilities` is the SOLE mechanism for every protocol-native
+  concern it covers, with no parallel declaration path ever considered
+  acceptable going forward, and must record Phase 4b's audit (3 real
+  backdoors found in already-shipped code) as the motivating case study
+  for why this rule exists.
 - Decide this roadmap doc's fate per the `plan-a-new-codex-feature`
   skill's delete/keep/promote-to-`docs/design/` policy. **Anticipated
   outcome, flagged now but confirmed only once Phase 3 actually

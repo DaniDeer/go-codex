@@ -65,7 +65,7 @@
 // reachable — call [Attach] and use the returned [events.Client] methods
 // instead.
 //
-//	_ = mqtt.Attach(eventsClient, client)
+//	_ = eventsClient.Attach(mqtt.NewTransport(mqtt.TransportOptions{Client: client}))
 //	sub := userCreated.WithSubscribe(events.Subscribe{})
 //	err := eventsClient.Subscribe(ctx, sub, func(ctx context.Context, e UserCreated) error {
 //	    return svc.HandleUserCreated(ctx, e)

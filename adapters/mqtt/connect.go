@@ -60,7 +60,7 @@ type ConnectOptions struct {
 //	    ClientID: "my-service", CleanSession: true,
 //	})
 //	if err != nil { /* handle */ }
-//	if err := mqtt.Attach(eventsClient, client); err != nil { /* handle */ }
+//	if err := eventsClient.Attach(mqtt.NewTransport(mqtt.TransportOptions{Client: client})); err != nil { /* handle */ }
 //
 // On CONNECT failure (including ctx cancellation before the broker
 // acknowledges), returns a [ConnectError] wrapping the underlying error —

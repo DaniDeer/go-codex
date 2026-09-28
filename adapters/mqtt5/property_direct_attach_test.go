@@ -55,8 +55,7 @@ func TestSubscribe_DirectPropertyAttachment_MergesRealUserProperty(t *testing.T)
 	var got tenantReading
 	client := &mockClient{}
 	router := newMockRouter()
-	if err := subscribeWithHandle(ctx, client, router, handle, 1,
-		func(_ context.Context, msg tenantReading) error { got = msg; return nil },
+	if err := subscribeWithHandle(ctx, client, router, handle, func(_ context.Context, msg tenantReading) error { got = msg; return nil },
 		SubscribeOptions{}); err != nil {
 		t.Fatalf("Subscribe setup failed: %v", err)
 	}
@@ -92,7 +91,7 @@ func TestPublish_DirectPropertyAttachment_WritesRealUserProperty(t *testing.T) {
 
 	client := &mockClient{}
 	msg := tenantReading{SensorID: "s1", TenantID: "acme"}
-	if err := publishHandle(context.Background(), client, handle, 1, false, msg, PublishOptions[tenantReading]{}); err != nil {
+	if err := publishHandle(context.Background(), client, handle, msg, PublishOptions[tenantReading]{Capabilities: []Capability{QoS(1)}}); err != nil {
 		t.Fatalf("publishHandle: %v", err)
 	}
 

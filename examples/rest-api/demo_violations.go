@@ -74,7 +74,7 @@ func demoResponseHeaderCookieViolation() {
 	must(violationRoute.Register(b), "register violation route")
 	router := gochi.NewRouter()
 	addr := mustFreeAddr()
-	must(chiadapter.AttachRouter(b, router, addr), "AttachRouter violation")
+	must(b.Attach(chiadapter.NewServerTransport(chiadapter.ServerTransportOptions{Router: router, Addr: addr})), "AttachRouter violation")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() { _ = b.Serve(ctx) }()

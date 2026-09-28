@@ -28,8 +28,9 @@ func demoUserPropertyMiddleware(ctx context.Context) {
 	router := mqtt5broker.NewMockRouter()
 	broker := mqtt5broker.NewMockBroker(router)
 
-	subTransport := mqtt5adapter.NewSubscribeTransport[routes.SensorReading](broker, router, 1,
+	subTransport := mqtt5adapter.NewSubscribeTransport[routes.SensorReading](broker, router,
 		mqtt5adapter.SubscribeOptions{
+			Capabilities: []mqtt5adapter.Capability{mqtt5adapter.QoSAtLeastOnce},
 			OnError: func(e mqtt5adapter.SubscribeError) {
 				fmt.Printf("  [error] kind=%s: %v\n", e.Kind, e.Err)
 			},
@@ -52,9 +53,10 @@ func demoUserPropertyMiddleware(ctx context.Context) {
 		return
 	}
 
-	pubTransport := mqtt5adapter.NewPublishTransport[routes.SensorReading](broker, 1, false,
+	pubTransport := mqtt5adapter.NewPublishTransport[routes.SensorReading](broker,
 		mqtt5adapter.PublishOptions[routes.SensorReading]{
-			ContentType: "application/json",
+			Capabilities: []mqtt5adapter.Capability{mqtt5adapter.QoSAtLeastOnce},
+			ContentType:  "application/json",
 			UserProperties: []mqtt5adapter.UserProperty{
 				{Key: "TenantID", Value: "acme"},
 			},

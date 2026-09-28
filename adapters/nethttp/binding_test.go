@@ -1033,7 +1033,7 @@ func ExampleClient_Consume() {
 	defer srv.Close()
 
 	client := rest.NewClient()
-	if err := Attach(client, srv.Client(), srv.URL); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
 		panic(err)
 	}
 

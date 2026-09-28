@@ -56,6 +56,13 @@ type SubscribeAdapterOptions struct {
 	// [SubscribeOptions.TopicFilter] exactly, moved down to this
 	// ports-binding layer's own option struct.
 	TopicFilter string
+
+	// Capabilities supplies sealed, compile-time-checked protocol-native
+	// declarations (currently [HWM]/[Conflate]) for this subscription —
+	// mirrors [SubscribeOptions.Capabilities] exactly, moved down to this
+	// ports-binding layer's own option struct (docs/roadmap/
+	// capability-requirement-composition.md's Phase 4b).
+	Capabilities []Capability
 }
 
 // SubscribeAdapter returns a [ports.SourceAdapter] backed by the ZeroMQ PUB/SUB
@@ -101,7 +108,8 @@ func (a *zmqSubscribeAdapter[T]) Activate(ctx context.Context, dst chan<- T, err
 		defer close(valCh)
 		defer close(errCh)
 		subOpts := SubscribeOptions[T]{
-			TopicFilter: a.opts.TopicFilter,
+			TopicFilter:  a.opts.TopicFilter,
+			Capabilities: a.opts.Capabilities,
 			OnError: func(se SubscribeError) {
 				select {
 				case errCh <- se:
@@ -164,6 +172,12 @@ type DrainPublishOptions struct {
 	OnError func(error)
 	// Observer receives per-publish lifecycle events.
 	Observer stats.Observer
+	// Capabilities supplies sealed, compile-time-checked protocol-native
+	// declarations (currently [HWM]/[Conflate]) for every published item
+	// — mirrors [PublishOptions.Capabilities] exactly, moved down to this
+	// ports-binding layer's own option struct (docs/roadmap/
+	// capability-requirement-composition.md's Phase 4b).
+	Capabilities []Capability
 }
 
 // PublishAdapter returns a [ports.SinkAdapter] that publishes each item via ZeroMQ.
@@ -195,7 +209,7 @@ func (a *zmqPublishAdapter[T]) Activate(ctx context.Context, src gstream.Stream[
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
 	}
-	pubOpts := PublishOptions[T]{Observer: a.opts.Observer}
+	pubOpts := PublishOptions[T]{Observer: a.opts.Observer, Capabilities: a.opts.Capabilities}
 	// handleUpstreamError resolves declared events.ErrorChannel patterns on
 	// a.handle before falling back to the adapter's existing OnError
 	// callback, via the SAME tryPublishErrorChannel helper the subscribe

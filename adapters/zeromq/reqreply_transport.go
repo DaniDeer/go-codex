@@ -416,35 +416,57 @@ type serverTransport struct {
 	opts    ServeOptions
 }
 
-// AttachServer binds server+sockets (via an internal ServerTransport
-// shim) as server's [reqreply.ServerTransport] — the "attach the adapter
-// to the server" step behind [reqreply.Server.Serve]. sockets maps each
-// registered route's topic to the REP socket handling it (REQ/REP is
-// point-to-point, so one socket serves exactly one route/topic — unlike
-// pub/sub's topic-multiplexed SUB socket). opts (0 or 1 value) configures
-// every route dispatched through this transport uniformly.
-//
-// Returns [MissingSocketError] if server has a registered route whose
-// topic has no entry in sockets — checked upfront, at Attach time, not
-// discovered later when a request for it arrives. Returns
-// [reqreply.ServerTransportAlreadyAttachedError] if server already has a
-// transport attached.
+// ServerTransportOptions configures [NewServerTransport] — the SOLE
+// configuration surface for a zeromq REQ/REP [reqreply.ServerTransport]
+// (docs/roadmap/capability-requirement-composition.md's Phase 4d: a
+// single Options struct, no positional params). Serve nests the
+// pre-existing [ServeOptions] type unchanged.
+type ServerTransportOptions struct {
+	// Sockets maps each registered route's topic to the REP socket
+	// handling it (REQ/REP is point-to-point, so one socket serves
+	// exactly one route/topic — unlike pub/sub's topic-multiplexed SUB
+	// socket). Required.
+	Sockets map[string]FramedSocket
+	// Serve configures per-route dispatch behavior. Optional (zero
+	// value is a valid, fully-functional configuration).
+	Serve ServeOptions
+}
+
+// NewServerTransport returns a [reqreply.ServerTransport] configured per
+// opts — the adapter's ONLY job in the attach workflow (docs/roadmap/
+// capability-requirement-composition.md's Phase 4d): construct a
+// fully-configured, attachable value. Attaching it is EXCLUSIVELY
+// [reqreply.Server.Attach]'s job — there is no adapter-namespaced Attach
+// function anymore (REMOVED, breaking, per that phase's explicit
+// "zero backdoor between the api layer and the adapters" directive). The
+// returned value also implements [reqreply.ServerAwareTransport] —
+// [reqreply.Server.Attach] supplies the [*reqreply.Server] reference
+// this shim needs for its eager [MissingSocketError] coverage check (a
+// registered route whose topic has no entry in Sockets — checked
+// upfront, at Attach time, not discovered later when a request for it
+// arrives) via [serverTransport.BindServer], immediately after storing
+// it.
 //
 //	server := reqreply.NewServer(reqreply.Info{Title: "Compute API", Version: "1.0.0"})
 //	handle, _ := ComputeRoute.WithHandler(computeHandler).Register(server)
-//	err := zeromq.AttachServer(server, map[string]zeromq.FramedSocket{"compute/add": repSock})
-//	err = server.Serve(ctx) // blocks, dispatching ComputeRoute (and every other registered route) concurrently
-func AttachServer(server *reqreply.Server, sockets map[string]FramedSocket, opts ...ServeOptions) error {
-	var o ServeOptions
-	if len(opts) > 0 {
-		o = opts[0]
-	}
-	for _, topic := range server.RegisteredTopics() {
-		if _, ok := sockets[topic]; !ok {
+//	transport := zeromq.NewServerTransport(zeromq.ServerTransportOptions{Sockets: map[string]zeromq.FramedSocket{"compute/add": repSock}})
+//	if err := server.Attach(transport); err != nil { ... }
+//	err := server.Serve(ctx) // blocks, dispatching ComputeRoute (and every other registered route) concurrently
+func NewServerTransport(opts ServerTransportOptions) reqreply.ServerTransport {
+	return &serverTransport{sockets: opts.Sockets, opts: opts.Serve}
+}
+
+// BindServer implements [reqreply.ServerAwareTransport] — called by
+// [reqreply.Server.Attach] immediately after storing t, running the
+// EAGER [MissingSocketError] coverage check the OLD `AttachServer`
+// convenience function used to run BEFORE calling `server.Attach`.
+func (t *serverTransport) BindServer(s *reqreply.Server) error {
+	for _, topic := range s.RegisteredTopics() {
+		if _, ok := t.sockets[topic]; !ok {
 			return MissingSocketError{Topic: topic}
 		}
 	}
-	return server.Attach(&serverTransport{sockets: sockets, opts: o})
+	return nil
 }
 
 // Serve implements [reqreply.ServerTransport]. Mirrors [Serve]'s core
@@ -744,37 +766,47 @@ var _ reqreply.ServerTransport = (*serverTransport)(nil)
 // ── REQ/REP client ───────────────────────────────────────────────────────
 
 // clientTransport implements [reqreply.ClientTransport] for ZMQ REQ
-// sockets, wrapping a topic→socket map — built by [AttachClient]. See
-// [serverTransport]'s doc comment for this shim's identical reflection
-// technique and documented v1 scope.
+// sockets, wrapping a topic→socket map — built by [NewClientTransport].
+// See [serverTransport]'s doc comment for this shim's identical
+// reflection technique and documented v1 scope.
 type clientTransport struct {
 	sockets map[string]FramedSocket
 	opts    CallOptions
 }
 
-// AttachClient binds client+sockets (via an internal ClientTransport
-// shim) as client's [reqreply.ClientTransport] — the "attach the adapter
-// to the client" step behind [reqreply.Client.Call]/
-// [reqreply.Client.CallAsync]. sockets maps each route's topic to the
-// REQ socket used to call it. opts (0 or 1 value) configures every call
-// dispatched through this transport uniformly.
-//
-// Returns [reqreply.ClientTransportAlreadyAttachedError] if client
-// already has a transport attached. A call for a route whose topic has
-// no entry in sockets returns [MissingSocketError] at call time (no
-// upfront coverage check on the client side — unlike [AttachServer],
-// the client may only ever need a subset of the server's registered
-// routes).
+// ClientTransportOptions configures [NewClientTransport] — the SOLE
+// configuration surface for a zeromq REQ/REP [reqreply.ClientTransport]
+// (docs/roadmap/capability-requirement-composition.md's Phase 4d: a
+// single Options struct, no positional params). Call nests the
+// pre-existing [CallOptions] type unchanged.
+type ClientTransportOptions struct {
+	// Sockets maps each route's topic to the REQ socket used to call
+	// it. Required.
+	Sockets map[string]FramedSocket
+	// Call configures per-call dispatch behavior. Optional (zero value
+	// is a valid, fully-functional configuration).
+	Call CallOptions
+}
+
+// NewClientTransport returns a [reqreply.ClientTransport] configured per
+// opts — the adapter's ONLY job in the attach workflow (docs/roadmap/
+// capability-requirement-composition.md's Phase 4d): construct a
+// fully-configured, attachable value. Attaching it is EXCLUSIVELY
+// [reqreply.Client.Attach]'s job — there is no adapter-namespaced Attach
+// function anymore (REMOVED, breaking, per that phase's explicit
+// "zero backdoor between the api layer and the adapters" directive). A
+// call for a route whose topic has no entry in Sockets returns
+// [MissingSocketError] at call time (no upfront coverage check on the
+// client side — unlike [NewServerTransport], the client may only ever
+// need a subset of the server's registered routes, so no
+// [reqreply.ClientAwareTransport]-style bind hook is needed here).
 //
 //	client := reqreply.NewClient()
-//	_ = zeromq.AttachClient(client, map[string]zeromq.FramedSocket{"compute/add": reqSock})
+//	transport := zeromq.NewClientTransport(zeromq.ClientTransportOptions{Sockets: map[string]zeromq.FramedSocket{"compute/add": reqSock}})
+//	if err := client.Attach(transport); err != nil { ... }
 //	respAny, err := client.Call(ctx, ComputeRoute, ComputeReq{X: 1, Y: 2})
-func AttachClient(client *reqreply.Client, sockets map[string]FramedSocket, opts ...CallOptions) error {
-	var o CallOptions
-	if len(opts) > 0 {
-		o = opts[0]
-	}
-	return client.Attach(&clientTransport{sockets: sockets, opts: o})
+func NewClientTransport(opts ClientTransportOptions) reqreply.ClientTransport {
+	return &clientTransport{sockets: opts.Sockets, opts: opts.Call}
 }
 
 // Call implements [reqreply.ClientTransport]. Mirrors [Call]'s core logic
@@ -1144,38 +1176,55 @@ var _ reqreply.ClientTransport = (*clientTransport)(nil)
 
 // routerServerTransport implements [reqreply.ServerTransport] for ZMQ
 // ROUTER sockets, wrapping a topic→socket map — built by
-// [AttachRouterServer]. Mirrors [serverTransport]'s reflection technique
-// and documented v1 scope; dispatches each request in its own goroutine
-// (mirroring [ServeRouter]'s own per-request concurrency), preserving
-// the identity frame so the reply reaches the correct DEALER peer.
+// [NewRouterServerTransport]. Mirrors [serverTransport]'s reflection
+// technique and documented v1 scope; dispatches each request in its own
+// goroutine (mirroring [ServeRouter]'s own per-request concurrency),
+// preserving the identity frame so the reply reaches the correct DEALER
+// peer.
 type routerServerTransport struct {
 	sockets map[string]FramedSocket
 	opts    ServeOptions
 }
 
-// AttachRouterServer binds server+sockets (via an internal
-// ServerTransport shim) as server's [reqreply.ServerTransport] for
-// ROUTER sockets — the ROUTER/DEALER counterpart of [AttachServer].
-// sockets maps each registered route's topic to the ROUTER socket
-// handling it.
+// RouterServerTransportOptions configures [NewRouterServerTransport] —
+// the SOLE configuration surface for a zeromq ROUTER
+// [reqreply.ServerTransport] (docs/roadmap/
+// capability-requirement-composition.md's Phase 4d: a single Options
+// struct, no positional params). Serve nests the pre-existing
+// [ServeOptions] type unchanged.
+type RouterServerTransportOptions struct {
+	// Sockets maps each registered route's topic to the ROUTER socket
+	// handling it. Required.
+	Sockets map[string]FramedSocket
+	// Serve configures per-route dispatch behavior. Optional (zero
+	// value is a valid, fully-functional configuration).
+	Serve ServeOptions
+}
+
+// NewRouterServerTransport returns a [reqreply.ServerTransport]
+// configured per opts — the ROUTER/DEALER counterpart of
+// [NewServerTransport]; see that function's doc comment for the full
+// attach-workflow rationale (docs/roadmap/
+// capability-requirement-composition.md's Phase 4d). The returned value
+// also implements [reqreply.ServerAwareTransport] — see
+// [routerServerTransport.BindServer].
 //
-// Returns [MissingSocketError] if server has a registered route whose
-// topic has no entry in sockets, checked upfront at Attach time.
-// Returns [reqreply.ServerTransportAlreadyAttachedError] if server
-// already has a transport attached.
-//
-//	err := zeromq.AttachRouterServer(server, map[string]zeromq.FramedSocket{"compute/add": routerSock})
-func AttachRouterServer(server *reqreply.Server, sockets map[string]FramedSocket, opts ...ServeOptions) error {
-	var o ServeOptions
-	if len(opts) > 0 {
-		o = opts[0]
-	}
-	for _, topic := range server.RegisteredTopics() {
-		if _, ok := sockets[topic]; !ok {
+//	transport := zeromq.NewRouterServerTransport(zeromq.RouterServerTransportOptions{Sockets: map[string]zeromq.FramedSocket{"compute/add": routerSock}})
+//	if err := server.Attach(transport); err != nil { ... }
+func NewRouterServerTransport(opts RouterServerTransportOptions) reqreply.ServerTransport {
+	return &routerServerTransport{sockets: opts.Sockets, opts: opts.Serve}
+}
+
+// BindServer implements [reqreply.ServerAwareTransport] — mirrors
+// [serverTransport.BindServer]'s identical eager [MissingSocketError]
+// coverage check.
+func (t *routerServerTransport) BindServer(s *reqreply.Server) error {
+	for _, topic := range s.RegisteredTopics() {
+		if _, ok := t.sockets[topic]; !ok {
 			return MissingSocketError{Topic: topic}
 		}
 	}
-	return server.Attach(&routerServerTransport{sockets: sockets, opts: o})
+	return nil
 }
 
 // Serve implements [reqreply.ServerTransport]. Mirrors [ServeRouter]'s
@@ -1448,25 +1497,39 @@ var _ reqreply.ServerTransport = (*routerServerTransport)(nil)
 
 // dealerClientTransport implements [reqreply.ClientTransport] for ZMQ
 // DEALER sockets, wrapping a topic→socket map — built by
-// [AttachDealerClient]. Mirrors [CallDealer]'s envelope framing (empty
-// delimiter + payload).
+// [NewDealerClientTransport]. Mirrors [CallDealer]'s envelope framing
+// (empty delimiter + payload).
 type dealerClientTransport struct {
 	sockets map[string]FramedSocket
 	opts    CallOptions
 }
 
-// AttachDealerClient binds client+sockets (via an internal
-// ClientTransport shim) as client's [reqreply.ClientTransport] for
-// DEALER sockets — the ROUTER/DEALER counterpart of [AttachClient].
+// DealerClientTransportOptions configures [NewDealerClientTransport] —
+// the SOLE configuration surface for a zeromq DEALER
+// [reqreply.ClientTransport] (docs/roadmap/
+// capability-requirement-composition.md's Phase 4d: a single Options
+// struct, no positional params). Call nests the pre-existing
+// [CallOptions] type unchanged.
+type DealerClientTransportOptions struct {
+	// Sockets maps each route's topic to the DEALER socket used to call
+	// it. Required.
+	Sockets map[string]FramedSocket
+	// Call configures per-call dispatch behavior. Optional (zero value
+	// is a valid, fully-functional configuration).
+	Call CallOptions
+}
+
+// NewDealerClientTransport returns a [reqreply.ClientTransport]
+// configured per opts — the ROUTER/DEALER counterpart of
+// [NewClientTransport]; see that function's doc comment for the full
+// attach-workflow rationale (docs/roadmap/
+// capability-requirement-composition.md's Phase 4d).
 //
 //	client := reqreply.NewClient()
-//	_ = zeromq.AttachDealerClient(client, map[string]zeromq.FramedSocket{"compute/add": dealerSock})
-func AttachDealerClient(client *reqreply.Client, sockets map[string]FramedSocket, opts ...CallOptions) error {
-	var o CallOptions
-	if len(opts) > 0 {
-		o = opts[0]
-	}
-	return client.Attach(&dealerClientTransport{sockets: sockets, opts: o})
+//	transport := zeromq.NewDealerClientTransport(zeromq.DealerClientTransportOptions{Sockets: map[string]zeromq.FramedSocket{"compute/add": dealerSock}})
+//	if err := client.Attach(transport); err != nil { ... }
+func NewDealerClientTransport(opts DealerClientTransportOptions) reqreply.ClientTransport {
+	return &dealerClientTransport{sockets: opts.Sockets, opts: opts.Call}
 }
 
 // Call implements [reqreply.ClientTransport]. Mirrors [CallDealer]'s core

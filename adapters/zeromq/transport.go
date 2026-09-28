@@ -18,8 +18,9 @@ import (
 // [Client.Publish]/[Client.Subscribe].
 const eventsPkgPath = "github.com/DaniDeer/go-codex/api/events"
 
-// transport implements [events.Transport], wrapping an internal [*Caller]
-// — built by [Attach]. See docs/design/d-0002-pubsub-workflow-simplification.md's
+// transport implements [events.Transport] AND [events.ClientAwareTransport]
+// (via [transport.BindClient]), wrapping an internal [*caller] — built by
+// [NewTransport]. See docs/design/d-0002-pubsub-workflow-simplification.md's
 // Decision 5 for the full design and the reflection technique this type
 // relies on (Go forbids generic methods, so Publish/Subscribe/
 // ServeSubscribers recover the concrete payload type at runtime via
@@ -30,41 +31,73 @@ type transport struct {
 	caller *caller
 }
 
-// Attach binds sock+client (via an internal [*Caller]) as client's
-// [events.Transport] — the "attach the adapter to the client" step
-// behind [events.Client.Publish]/[events.Client.Subscribe]/
-// [events.Client.ServeSubscribers]. Returns
-// [events.TransportAlreadyAttachedError] if client already has a
-// transport attached.
+// TransportOptions configures [NewTransport] — the SOLE configuration
+// surface for a zeromq [events.Transport] (docs/roadmap/
+// capability-requirement-composition.md's Phase 4d: a single Options
+// struct, no positional params, even for this one REQUIRED field — a
+// deliberate, uniform, declarative shape across every adapter's
+// `New*Transport` factory).
+type TransportOptions struct {
+	// Socket is the ZeroMQ PUB/SUB socket. Required.
+	Socket FramedSocket
+}
+
+// NewTransport returns an [events.Transport] configured per opts — the
+// adapter's ONLY job in the attach workflow (docs/roadmap/
+// capability-requirement-composition.md's Phase 4d): construct a
+// fully-configured, attachable value. Attaching it is EXCLUSIVELY
+// [events.Client.Attach]'s job — there is no adapter-namespaced Attach
+// function anymore (REMOVED, breaking, per that phase's explicit
+// "zero backdoor between the api layer and the adapters" directive).
+// The returned value also implements [events.ClientAwareTransport] —
+// [events.Client.Attach] supplies the [*events.Client] reference this
+// shim needs (spec-registration + [ServeSubscribers]'s registry walk)
+// via [transport.BindClient], immediately after storing it; NewTransport
+// itself never needs a [*events.Client] parameter.
 //
 //	client := events.NewClient(events.WithInfo(events.Info{Title: "Sensor Network", Version: "1.0.0"}))
-//	if err := zeromq.Attach(client, sock); err != nil { ... }
+//	if err := client.Attach(zeromq.NewTransport(zeromq.TransportOptions{Socket: sock})); err != nil { ... }
 //	sub := ReadingsChannel.WithSubscribe(events.Subscribe{})
 //	pub := ReadingsChannel.WithPublish(events.Publish{})
 //	err := client.Subscribe(ctx, sub, func(ctx context.Context, r SensorReading) error { ... })
 //	err = client.Publish(ctx, pub, reading)
 //
-// NOTE — v1 scope: the reflection shim's Publish/Subscribe cover the
-// CORE common case (JSON default format, automatic topic-var
-// derivation via [events.ChannelHandle.EncodeVars]/[events.ChannelHandle.BuildTopic],
-// observer resolved from ctx). Per-call [format.Format] overrides and
-// declare-time SubscribeMW/PublishMW — of EITHER shape, credential-paired
-// OR general-purpose wrapping — are NOT exercised by this shim (mirrors
-// [adapters/nethttp/clienttransport.go]'s identical "no security/
-// credential handling" v1-scope limitation): a channel declaring
-// Security plus a correctly-paired credential SubscribeMW/PublishMW gets
-// ZERO runtime enforcement through Client.Attach — no credential is
-// fetched or injected, silently, with no error. A caller needing ANY
-// declared SubscribeMW/PublishMW (credential or general-purpose)
-// enforced should use [subscribeWithHandle]/[publish] directly, which
-// remain fully featured and completely unaffected by this addition.
+// NOTE — v1 scope, NARROWED by Phase 4c (docs/roadmap/
+// capability-requirement-composition.md): the reflection shim's
+// Publish/Subscribe now honor a declared [Publisher.WithOptions]/
+// [Subscriber.WithOptions]([PublishOptions]/[SubscribeOptions]{
+// Capabilities: ...}) value, applied via [events.ApplyCapabilities]
+// against the socket — closing the ONE gap that forced a caller needing
+// HWM/Conflate to bypass [events.Client.Publish]/[Client.Subscribe]
+// entirely. Per-call [format.Format] overrides and declare-time
+// SubscribeMW/PublishMW — of EITHER shape, credential-paired OR
+// general-purpose wrapping — are STILL NOT exercised by this shim
+// (Phase 4e's scope, not yet shipped; mirrors
+// [adapters/nethttp/clienttransport.go]'s now-closed "no security/
+// credential handling" limitation, which this package has not closed
+// yet): a channel declaring Security plus a correctly-paired credential
+// SubscribeMW/PublishMW STILL gets ZERO runtime enforcement through the
+// attached transport — no credential is fetched or injected, silently,
+// with no error. A caller needing ANY declared SubscribeMW/PublishMW
+// (credential or general-purpose) enforced, or a per-call format
+// override, should use [subscribeWithHandle]/[publish] directly until
+// Phase 4e ships.
 // [stats.Observer] (RecordPublish/RecordSubscribe, TraceObserver) IS
 // fully wired; a subscribe handler's returned error also consults a
 // declared [events.ErrorChannel] — see
 // docs/design/d-0002-pubsub-workflow-simplification.md's Decision 8 for the
 // fix history.
-func Attach(client *events.Client, sock FramedSocket) error {
-	return client.Attach(&transport{caller: newCaller(sock, client)})
+func NewTransport(opts TransportOptions) events.Transport {
+	return &transport{caller: newCaller(opts.Socket, nil)}
+}
+
+// BindClient implements [events.ClientAwareTransport] — called by
+// [events.Client.Attach] immediately after storing t, supplying the
+// [*events.Client] reference [recoverHandle] (spec-registration) and
+// [ServeSubscribers] (registry walk) need.
+func (t *transport) BindClient(c *events.Client) error {
+	t.caller.events = c
+	return nil
 }
 
 // recoverHandle calls anyAny's Handle(client) method via reflection —
@@ -92,10 +125,37 @@ func recoverHandle(kind string, anyAny any, client *events.Client) (reflect.Valu
 	return handleVal, handleVal.Elem(), nil
 }
 
-// Publish implements [events.Transport]. See [Attach]'s doc comment for
-// v1 scope notes. Resolves [stats.Observer] from ctx (this shim has no
-// per-call Options struct to carry an explicit override) and calls
-// RecordPublish on EVERY exit path, mirroring [publish]'s own convention.
+// resolveHandlerOptsCapabilities extracts the []Capability slice from a
+// type-erased HandlerOpts value (a concrete zeromq.SubscribeOptions[T]
+// or zeromq.PublishOptions[T] boxed as any) via reflection against the
+// fixed "Capabilities" field name — works regardless of T, since that
+// field's type ([]Capability) doesn't depend on T. Returns nil (not an
+// error) when handlerOpts is nil/wrong-shape/has no such field — a
+// declared channel with no Capabilities is the common, valid case.
+// Mirrors [adapters/mqtt5]'s identical helper.
+func resolveHandlerOptsCapabilities(handlerOptsField reflect.Value) []Capability {
+	if !handlerOptsField.IsValid() || handlerOptsField.IsNil() {
+		return nil
+	}
+	v := reflect.ValueOf(handlerOptsField.Interface())
+	if v.Kind() != reflect.Struct {
+		return nil
+	}
+	capsField := v.FieldByName("Capabilities")
+	if !capsField.IsValid() {
+		return nil
+	}
+	caps, _ := capsField.Interface().([]Capability)
+	return caps
+}
+
+// Publish implements [events.Transport]. Resolves [stats.Observer] from
+// ctx and calls RecordPublish on EVERY exit path, mirroring [publish]'s
+// own convention. docs/roadmap/capability-requirement-composition.md's
+// Phase 4c: a declared [Publisher.WithOptions]([PublishOptions]{
+// Capabilities: ...}) value is now resolved and applied via
+// [events.ApplyCapabilities] — closing the gap where this shim never
+// configured HWM/Conflate at all.
 func (t *transport) Publish(ctx context.Context, pubAny, msgAny any) (err error) {
 	obs := stats.ObserverFromContext(ctx)
 	start := time.Now()
@@ -156,6 +216,14 @@ func (t *transport) Publish(ctx context.Context, pubAny, msgAny any) (err error)
 	}
 	payload, _ := encodeResults[0].Interface().([]byte)
 
+	// docs/roadmap/capability-requirement-composition.md's Phase 4c: a
+	// declared [Publisher.WithOptions]([PublishOptions]{Capabilities:
+	// ...}) value is now resolved and applied via
+	// [events.ApplyCapabilities] against t.caller.sock — closing the gap
+	// where this shim never configured HWM/Conflate at all.
+	caps := resolveHandlerOptsCapabilities(elem.FieldByName("HandlerOpts"))
+	events.ApplyCapabilities(caps, t.caller.sock, obs, finalTopic)
+
 	if sendErr := t.caller.sock.SendFrames([][]byte{[]byte(finalTopic), payload}); sendErr != nil {
 		obs.RecordPublish(finalTopic, false, time.Since(start))
 		err = SocketError{Op: "send", Err: sendErr}
@@ -215,6 +283,14 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any) error {
 	if err := t.caller.sock.SetRecvTimeout(recvPollInterval); err != nil {
 		return SocketError{Op: "set_recv_timeout", Err: err}
 	}
+
+	// docs/roadmap/capability-requirement-composition.md's Phase 4c: a
+	// declared [Subscriber.WithOptions]([SubscribeOptions]{Capabilities:
+	// ...}) value is now resolved and applied via
+	// [events.ApplyCapabilities] against t.caller.sock — closing the gap
+	// where this shim never configured HWM/Conflate at all.
+	caps := resolveHandlerOptsCapabilities(elem.FieldByName("HandlerOpts"))
+	events.ApplyCapabilities(caps, t.caller.sock, obs, topic)
 
 	ctxVal := reflect.ValueOf(ctx)
 	for {

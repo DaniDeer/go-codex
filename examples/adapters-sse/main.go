@@ -476,7 +476,7 @@ func main() {
 	// simply wires nothing.
 	mux := http.NewServeMux()
 	httpAddr := mustFreeAddr()
-	mustServe(nethttp.AttachMux(bHTTP, mux, httpAddr), "nethttp.AttachMux")
+	mustServe(bHTTP.Attach(nethttp.NewServerTransport(nethttp.ServerTransportOptions{Mux: mux, Addr: httpAddr})), "nethttp.AttachMux")
 	httpCtx, httpCancel := context.WithCancel(context.Background())
 	go func() { _ = bHTTP.Serve(httpCtx) }()
 	defer httpCancel()
@@ -484,7 +484,7 @@ func main() {
 
 	r := gochi.NewRouter()
 	chiAddr := mustFreeAddr()
-	mustServe(chiadapter.AttachRouter(bChi, r, chiAddr), "chiadapter.AttachRouter")
+	mustServe(bChi.Attach(chiadapter.NewServerTransport(chiadapter.ServerTransportOptions{Router: r, Addr: chiAddr})), "chiadapter.AttachRouter")
 	chiCtx, chiCancel := context.WithCancel(context.Background())
 	go func() { _ = bChi.Serve(chiCtx) }()
 	defer chiCancel()
@@ -504,7 +504,7 @@ func main() {
 	// client.Consume is the thin, ClientTransport-based SSE counterpart of
 	// client.Call — see docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 4.
 	client := rest.NewClient()
-	if err := nethttp.Attach(client, srv.Client(), srv.URL); err != nil {
+	if err := client.Attach(nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
 		log.Fatalf("nethttp.Attach: %v", err)
 	}
 

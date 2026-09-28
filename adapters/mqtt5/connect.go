@@ -58,7 +58,7 @@ type ConnectOptions struct {
 //	    ClientID: "my-service", CleanStart: true,
 //	})
 //	if err != nil { /* handle */ }
-//	if err := mqtt5.Attach(eventsClient, client, router); err != nil { /* handle */ }
+//	if err := eventsClient.Attach(mqtt5.NewTransport(mqtt5.TransportOptions{Client: client, Router: router})); err != nil { /* handle */ }
 //
 // On dial or CONNECT failure, returns a [ConnectError] wrapping the
 // underlying error — the connection, if partially established, is closed

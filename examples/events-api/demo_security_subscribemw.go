@@ -45,8 +45,9 @@ func demoSecuritySubscribeMW(ctx context.Context, obs *observability.DemoObserve
 	}
 	go func() { _ = built5.Client.ServeSubscribers(ctx) }()
 	built5.Router.WaitHandler("sensor/data")
-	pub5Transport := mqtt5adapter.NewPublishTransport[routes.SensorReading](built5.Broker, 1, false,
+	pub5Transport := mqtt5adapter.NewPublishTransport[routes.SensorReading](built5.Broker,
 		mqtt5adapter.PublishOptions[routes.SensorReading]{
+			Capabilities:   []mqtt5adapter.Capability{mqtt5adapter.QoSAtLeastOnce},
 			UserProperties: []mqtt5adapter.UserProperty{{Key: "X-API-Key", Value: "sensor-key-abc123"}},
 		},
 	)

@@ -148,12 +148,31 @@ func Call[Req, Resp any](
     opts CallOptions,
 ) (Resp, error)
 
-// AttachServer/AttachClient bind an entire *rest.Server's/*rest.Client's
-// registered routes at once — mirrors [zeromq.AttachServer]/
-// [zeromq.AttachClient]'s reflection-based bulk-dispatch mechanism
-// exactly (one FramedSocket per registered route's Path).
-func AttachServer(server *rest.Server, sockets map[string]FramedSocket, opts ...ServeOptions) error
-func AttachClient(client *rest.Client, sockets map[string]FramedSocket, opts ...CallOptions) error
+// NewServerTransport/NewClientTransport build a configured, attachable
+// transport binding an entire *rest.Server's/*rest.Client's registered
+// routes at once (one FramedSocket per registered route's Path) —
+// mirrors [zeromq.NewServerTransport]/[zeromq.NewClientTransport]'s
+// reflection-based bulk-dispatch mechanism exactly. Per docs/roadmap/
+// capability-requirement-composition.md's Phase 4d (Attach factory
+// redesign, already shipped for events/rest/reqreply's OTHER adapters
+// by the time this adapter is built): attaching is EXCLUSIVELY
+// `server.Attach(...)`/`client.Attach(...)` — no adapter-namespaced
+// Attach* convenience function should be added here.
+func NewServerTransport(opts ServerTransportOptions) rest.ServerTransport
+func NewClientTransport(opts ClientTransportOptions) rest.ClientTransport
+
+// ServerTransportOptions/ClientTransportOptions bundle sockets+opts into
+// a SINGLE Options struct parameter (docs/roadmap/
+// capability-requirement-composition.md's Phase 4d convention — no
+// positional params, even for required fields).
+type ServerTransportOptions struct {
+    Sockets map[string]FramedSocket
+    Serve   ServeOptions
+}
+type ClientTransportOptions struct {
+    Sockets map[string]FramedSocket
+    Call    CallOptions
+}
 
 // binding.go: ports.IOAdapter implementation for ports.Pattern support
 // (PluginRESTPattern etc.) — mirrors adapters/nethttp/binding.go's

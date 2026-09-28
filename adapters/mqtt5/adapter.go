@@ -110,15 +110,6 @@ type SubscribeOptions struct {
 	// [serveOneSubscriber], which all funnel through it).
 	TopicFilter string
 
-	// QoS, when [Subscriber.WithOptions] attaches a SubscribeOptions value
-	// as a channel's declare-time [events.ChannelHandle.HandlerOpts], is
-	// the MQTT quality-of-service level (*caller).ServeSubscribers uses to
-	// subscribe that channel — there is no other way for ServeSubscribers
-	// to learn a per-channel QoS, since it has no call-time qos parameter
-	// (unlike [subscribe]/[subscribeWithHandle], whose own qos parameter
-	// ALWAYS takes precedence and never reads this field). Defaults to 0.
-	QoS byte
-
 	// OnError, when non-nil, is called with a typed [SubscribeError] on decode,
 	// handler, or security failure. If nil, errors are silently discarded.
 	OnError func(SubscribeError)
@@ -141,10 +132,13 @@ type SubscribeOptions struct {
 	UserPropertyParams []UserPropertyParam
 
 	// Capabilities supplies sealed, compile-time-checked protocol-native
-	// declarations (currently [QoS]) for this channel — the RECOMMENDED
-	// path going forward, alongside the pre-existing QoS field (kept, not
-	// deprecated). When both are set, Capabilities wins. Each exercised
-	// capability is reported once via
+	// declarations (currently [QoS]) for this channel — the SOLE
+	// mechanism (docs/roadmap/capability-requirement-composition.md's
+	// Phase 4/4b: the former plain QoS field/call-time qos parameter
+	// escape hatch and the events.Subscribe.QoS declared-fallback field
+	// were REMOVED entirely). Applied via [events.ApplyCapabilities]
+	// against a [WireAttributes] value; each exercised capability is
+	// reported once via
 	// [stats.CapabilityObserver.RecordCapabilityApplied] when Observer
 	// implements it.
 	Capabilities []Capability
@@ -169,10 +163,12 @@ type PublishOptions[T any] struct {
 	UserProperties []UserProperty
 
 	// Capabilities supplies sealed, compile-time-checked protocol-native
-	// declarations (currently [Retained]) for this publish — the
-	// RECOMMENDED path going forward. Only consulted by [publishHandle]'s
-	// zero-value qos/retained fallback (an explicit call-time
-	// qos/retained argument still always wins).
+	// declarations (currently [Retained]) for this publish — the SOLE
+	// mechanism (docs/roadmap/capability-requirement-composition.md's
+	// Phase 4/4b: the former call-time qos/retained parameters and the
+	// events.PublishAttributes declared-on-channel fallback were REMOVED
+	// entirely). Applied via [events.ApplyCapabilities] against a
+	// [WireAttributes] value.
 	Capabilities []Capability
 }
 
@@ -693,7 +689,6 @@ func subscribeWithHandle[T any](
 	client MQTTClient,
 	router MQTTRouter,
 	handle *events.ChannelHandle[T],
-	qos byte,
 	fn func(context.Context, T) error,
 	opts SubscribeOptions,
 	formats ...format.Format[T],
@@ -721,9 +716,17 @@ func subscribeWithHandle[T any](
 	router.RegisterHandler(filter,
 		makeSubscribeMessageHandler(ctx, client, handle, effectiveFmts, fn, obs, opts))
 
+	// docs/roadmap/capability-requirement-composition.md's Phase 4:
+	// Capabilities is now the ONLY mechanism for QoS — the former
+	// SubscribeOptions.QoS plain field/call-time qos parameter escape
+	// hatch is REMOVED. events.ApplyCapabilities is the API-LAYER-OWNED
+	// dispatch loop; this package contributes only Capability.Apply.
+	var wire WireAttributes
+	events.ApplyCapabilities(opts.Capabilities, &wire, obs, filter)
+
 	_, err := client.Subscribe(ctx, &pahomqtt5.Subscribe{
 		Subscriptions: []pahomqtt5.SubscribeOptions{
-			{Topic: filter, QoS: qos},
+			{Topic: filter, QoS: wire.QoS},
 		},
 	})
 	if err != nil {
@@ -851,8 +854,6 @@ func publish[T any](
 	ctx context.Context,
 	client MQTTClient,
 	handle *events.ChannelHandle[T],
-	qos byte,
-	retained bool,
 	msg T,
 	vars map[string]string,
 	isExplicitVars bool,
@@ -863,19 +864,13 @@ func publish[T any](
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
 	}
-	// opts.Capabilities (the RECOMMENDED, sealed path) is consulted as a
-	// fallback when the caller didn't pass an explicit non-default
-	// qos/retained.
-	capQoS, qosSet := events.ResolveCapabilityValue[Capability, QoS](opts.Capabilities)
-	capRetained, retainedSet := events.ResolveCapabilityValue[Capability, Retained](opts.Capabilities)
-	if qos == 0 && qosSet {
-		qos = byte(capQoS)
-		events.RecordCapabilityApplied(obs, handle.Topic, capQoS)
-	}
-	if !retained && retainedSet {
-		retained = bool(capRetained)
-		events.RecordCapabilityApplied(obs, handle.Topic, capRetained)
-	}
+	// docs/roadmap/capability-requirement-composition.md's Phase 4:
+	// Capabilities is now the ONLY mechanism for QoS/Retained — the
+	// former call-time qos/retained parameter escape hatch is REMOVED.
+	// events.ApplyCapabilities is the API-LAYER-OWNED dispatch loop;
+	// this package contributes only Capability.Apply.
+	var wire WireAttributes
+	events.ApplyCapabilities(opts.Capabilities, &wire, obs, handle.Topic)
 
 	if err := validatePublishImplementationShapes[T](handle.ClientImplementations); err != nil {
 		return err
@@ -1054,8 +1049,8 @@ func publish[T any](
 		}
 		if _, pubErr := client.Publish(ctx, &pahomqtt5.Publish{
 			Topic:      topic,
-			QoS:        qos,
-			Retain:     retained,
+			QoS:        wire.QoS,
+			Retain:     wire.Retained,
 			Payload:    payload,
 			Properties: props,
 		}); pubErr != nil {
@@ -1093,8 +1088,6 @@ func publishHandle[T any](
 	ctx context.Context,
 	client MQTTClient,
 	handle *events.ChannelHandle[T],
-	qos byte,
-	retained bool,
 	msg T,
 	opts PublishOptions[T],
 	formats ...format.Format[T],
@@ -1106,7 +1099,7 @@ func publishHandle[T any](
 	if len(vars) == 0 {
 		vars = nil
 	}
-	return publish(ctx, client, handle, qos, retained, msg, vars, false, opts, formats...)
+	return publish(ctx, client, handle, msg, vars, false, opts, formats...)
 }
 
 // validateUserProperties checks the incoming message's User Properties against

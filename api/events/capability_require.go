@@ -5,7 +5,7 @@ import "fmt"
 // QoSLevel is a DECLARATION-ONLY vocabulary for [RequireQoS] — it never
 // crosses into an adapter's own sealed Capability type. Its int values
 // intentionally mirror MQTT's own wire QoS byte (0/1/2), matching
-// [MQTTQoS]/adapters/mqtt.QoS/adapters/mqtt5.QoS numerically, but this
+// adapters/mqtt.QoS's/adapters/mqtt5.QoS's own numerically, but this
 // type itself is never compared against or converted to those — only
 // used to shape [CapabilityRequirement.Description] and to set
 // [CapabilityRequirement.MinLevel] for [CheckCapabilityCoverage]'s

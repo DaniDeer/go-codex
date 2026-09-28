@@ -41,8 +41,7 @@ func TestErrorChannel_PayloadDecode_Matched_Publishes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = subscribeWithHandle(ctx, client, router, handle, 1,
-		func(_ context.Context, _ sensorReading) error { return nil },
+	_ = subscribeWithHandle(ctx, client, router, handle, func(_ context.Context, _ sensorReading) error { return nil },
 		SubscribeOptions{OnError: func(SubscribeError) { onErrorCalled = true }})
 
 	router.dispatch("sensors/readings", &pahomqtt5.Publish{
@@ -87,8 +86,7 @@ func TestErrorChannel_TopicMismatch_Matched_Publishes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = subscribeWithHandle(ctx, client, router, handle, 1,
-		func(_ context.Context, _ sensorReading) error { return nil },
+	_ = subscribeWithHandle(ctx, client, router, handle, func(_ context.Context, _ sensorReading) error { return nil },
 		SubscribeOptions{OnError: func(SubscribeError) { onErrorCalled = true }})
 	router.waitHandler("sensors/+/readings")
 
@@ -143,8 +141,7 @@ func TestErrorChannel_MiddlewareDecodeIn_Matched_Publishes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	if err := subscribeWithHandle(ctx, client, router, handle, 1,
-		func(_ context.Context, _ sensorReading) error { return nil },
+	if err := subscribeWithHandle(ctx, client, router, handle, func(_ context.Context, _ sensorReading) error { return nil },
 		SubscribeOptions{OnError: func(SubscribeError) { onErrorCalled = true }}); err != nil {
 		t.Fatalf("Subscribe setup failed: %v", err)
 	}
@@ -205,8 +202,7 @@ func TestErrorChannel_SecurityMiddlewareFn_Matched_Publishes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = subscribeWithHandle(ctx, client, router, handle, 1,
-		func(_ context.Context, _ sensorReading) error { return nil },
+	_ = subscribeWithHandle(ctx, client, router, handle, func(_ context.Context, _ sensorReading) error { return nil },
 		SubscribeOptions{OnError: func(SubscribeError) { onErrorCalled = true }})
 
 	router.dispatch("sensors/readings", &pahomqtt5.Publish{
@@ -252,8 +248,7 @@ func TestErrorChannel_UserPropertyParam_Matched_Publishes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = subscribeWithHandle(ctx, client, router, handle, 1,
-		func(_ context.Context, _ sensorReading) error { return nil },
+	_ = subscribeWithHandle(ctx, client, router, handle, func(_ context.Context, _ sensorReading) error { return nil },
 		SubscribeOptions{
 			OnError: func(SubscribeError) { onErrorCalled = true },
 			UserPropertyParams: []UserPropertyParam{

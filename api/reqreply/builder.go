@@ -380,23 +380,66 @@ type ServerTransport interface {
 	Serve(ctx context.Context, route any, fn any) error
 }
 
+// ServerAwareTransport is an OPTIONAL extension to [ServerTransport] —
+// mirrors [events.ClientAwareTransport]/[rest.ServerAwareTransport]
+// exactly, for the identical reason: a [ServerTransport] built via an
+// adapter's `New*Transport(opts)` factory (docs/roadmap/
+// capability-requirement-composition.md's Phase 4d) is constructed
+// BEFORE the [*Server] that will attach it is known. Some adapters (e.g.
+// adapters/zeromq's reqreply `NewServerTransport`/
+// `NewRouterServerTransport`) need a [*Server] reference at bind time
+// for an EAGER validation the OLD `AttachServer(server, sockets, ...)`
+// convenience function used to run BEFORE calling `server.Attach`
+// (confirming every one of server's registered routes has a matching
+// socket entry, returning [MissingSocketError] upfront rather than
+// discovering the gap later when a request arrives).
+type ServerAwareTransport interface {
+	ServerTransport
+	// BindServer receives s immediately after [Server.Attach] stores t
+	// as s's transport. A non-nil error rolls back the attach (s's
+	// transport is cleared, [Server.Attach] returns this error) —
+	// [Server.Attach] remains all-or-nothing.
+	BindServer(s *Server) error
+}
+
 // Attach binds t to s as s's server transport — the "attach the adapter to
 // the server" step behind [Server.Serve]. Each adapter provides its own
-// entry point (e.g. [mqtt5.Attach](server, client, router)) that builds an
-// internal ServerTransport implementation and calls this method
-// internally; application code calls the ADAPTER's Attach function, not
-// this method directly, in the common case.
+// `New*Transport` factory (e.g. `mqtt5.NewServerTransport(mqtt5.ServerTransportOptions{Client: client, Router: router})`)
+// that builds a configured [ServerTransport] value; application code
+// attaches it via THIS method directly — never via an adapter-namespaced
+// convenience function (removed, see docs/roadmap/
+// capability-requirement-composition.md's Phase 4d).
+//
+// If t implements [ServerAwareTransport], its BindServer(s) is called
+// IMMEDIATELY after storing t — see that interface's doc comment.
 //
 // Returns [ServerTransportAlreadyAttachedError] if s already has a
 // transport attached — Attach is exclusive, mirrors [rest.Server.Attach]/
 // [events.Client.Attach] exactly.
 func (s *Server) Attach(t ServerTransport) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.transport != nil {
+		s.mu.Unlock()
 		return ServerTransportAlreadyAttachedError{}
 	}
 	s.transport = t
+	s.mu.Unlock()
+
+	// BindServer is called OUTSIDE s.mu — a [ServerAwareTransport]
+	// implementation legitimately needs to call back into s's OWN
+	// methods (e.g. [Server.RegisteredTopics], which itself acquires
+	// s.mu.RLock — sync.RWMutex is NOT reentrant, so calling BindServer
+	// while still holding the write lock would deadlock; confirmed via
+	// a real deadlock hit during adapters/zeromq's reqreply
+	// NewServerTransport/NewRouterServerTransport testing).
+	if aware, ok := t.(ServerAwareTransport); ok {
+		if err := aware.BindServer(s); err != nil {
+			s.mu.Lock()
+			s.transport = nil
+			s.mu.Unlock()
+			return err
+		}
+	}
 	return nil
 }
 
@@ -535,7 +578,7 @@ func (e ServerTransportAlreadyAttachedError) LogValue() slog.Value {
 type NoServerTransportAttachedError struct{}
 
 func (e NoServerTransportAttachedError) Error() string {
-	return "api/reqreply: Server has no ServerTransport attached (call an adapter's Attach function first, e.g. mqtt5.Attach(server, client, router))"
+	return "api/reqreply: Server has no ServerTransport attached (build an adapter transport and call Attach yourself, e.g. server.Attach(mqtt5.NewServerTransport(mqtt5.ServerTransportOptions{Client: client, Router: router})))"
 }
 
 // LogValue implements [slog.LogValuer] for structured logging.

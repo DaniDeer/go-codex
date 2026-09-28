@@ -59,8 +59,7 @@ func TestEventsSubscribe_RealDispatch_RecordsErrorPatternMatch(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = subscribeWithHandle(ctx, client, router, handle, 1,
-		func(_ context.Context, _ sensorReading) error { return nil },
+	_ = subscribeWithHandle(ctx, client, router, handle, func(_ context.Context, _ sensorReading) error { return nil },
 		SubscribeOptions{Observer: spy})
 
 	router.dispatch("sensors/observer-match", &pahomqtt5.Publish{
@@ -99,8 +98,7 @@ func TestEventsSubscribe_RealDispatch_RecordsErrorPatternMiss(t *testing.T) {
 	// The declared ErrorChannel matches a DIFFERENT error type than the
 	// real decode failure produces (codex.ValidationErrors), so this is
 	// a genuine miss, not an absence of any declared pattern at all.
-	_ = subscribeWithHandle(ctx, client, router, handle, 1,
-		func(_ context.Context, _ sensorReading) error { return nil },
+	_ = subscribeWithHandle(ctx, client, router, handle, func(_ context.Context, _ sensorReading) error { return nil },
 		SubscribeOptions{Observer: spy})
 
 	router.dispatch("sensors/observer-miss", &pahomqtt5.Publish{
@@ -138,7 +136,7 @@ func TestReqReplyServe_RealDispatch_RecordsErrorPatternMatch(t *testing.T) {
 	serverClient := &mockClient{}
 	serverRouter := newMockRouter()
 	spy := &mqtt5ErrorPatternObserverSpy{}
-	if err := AttachServer(server, serverClient, serverRouter, ServeOptions{Observer: spy}); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter, Serve: ServeOptions{Observer: spy}})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)

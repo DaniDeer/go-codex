@@ -39,7 +39,7 @@
 // of that is publicly reachable — call [Attach] and use the returned
 // [api/events.Client] methods instead:
 //
-//	_ = zeromq.Attach(eventsClient, sock)
+//	_ = eventsClient.Attach(zeromq.NewTransport(zeromq.TransportOptions{Socket: sock}))
 //	sub := SensorReadings.WithSubscribe(events.Subscribe{})
 //	err := eventsClient.Subscribe(ctx, sub, fn)
 //

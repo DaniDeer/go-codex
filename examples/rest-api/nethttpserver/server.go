@@ -165,7 +165,7 @@ func Build(store *handlers.UserStore, obs stats.Observer, logger *slog.Logger, a
 	// consistency between the two packages.
 	mux.HandleFunc("GET /openapi.yaml", specHandler(b))
 
-	if err := nethttp.AttachMux(b, mux, addr); err != nil {
+	if err := b.Attach(nethttp.NewServerTransport(nethttp.ServerTransportOptions{Mux: mux, Addr: addr})); err != nil {
 		return nil, err
 	}
 

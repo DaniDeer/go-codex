@@ -72,10 +72,15 @@ func NewClient() *Client {
 
 // Attach binds t to c as c's transport — the "attach the adapter to the
 // client" step behind [Client.Call]/[Client.CallAsync]. Each adapter
-// provides its own entry point (e.g. [mqtt5.Attach](client, mqttClient,
-// router)) that builds an internal ClientTransport implementation and
-// calls this method internally; application code calls the ADAPTER's
-// Attach function, not this method directly, in the common case.
+// provides its own `New*Transport` factory (e.g.
+// `mqtt5.NewClientTransport(mqtt5.ClientTransportOptions{Client: mqttClient, Router: router})`)
+// that builds a configured [ClientTransport] value; application code
+// attaches it via THIS method directly — never via an adapter-namespaced
+// convenience function (removed, see docs/roadmap/
+// capability-requirement-composition.md's Phase 4d). No adapter's
+// [ClientTransport] currently needs a [*Client] back-reference at bind
+// time (unlike [ServerAwareTransport]'s server-side need), so there is
+// no `ClientAwareTransport` counterpart today.
 //
 // Returns [ClientTransportAlreadyAttachedError] if c already has a
 // transport attached — Attach is exclusive, mirrors [rest.Client.Attach]/
@@ -168,7 +173,7 @@ func (e ClientTransportAlreadyAttachedError) LogValue() slog.Value {
 type NoClientTransportAttachedError struct{}
 
 func (e NoClientTransportAttachedError) Error() string {
-	return "api/reqreply: Client has no ClientTransport attached (call an adapter's Attach function first, e.g. mqtt5.Attach(client, mqttClient, router))"
+	return "api/reqreply: Client has no ClientTransport attached (build an adapter transport and call Attach yourself, e.g. client.Attach(mqtt5.NewClientTransport(mqtt5.ClientTransportOptions{Client: mqttClient, Router: router})))"
 }
 
 // LogValue implements [slog.LogValuer] for structured logging.

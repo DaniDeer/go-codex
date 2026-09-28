@@ -40,8 +40,7 @@ func TestErrorChannel_HandleAction_Matched_DoesNotAlsoDeadLetter(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = subscribeWithHandle(ctx, client, router, handle, 1,
-		func(_ context.Context, _ sensorReading) error { return nil },
+	_ = subscribeWithHandle(ctx, client, router, handle, func(_ context.Context, _ sensorReading) error { return nil },
 		SubscribeOptions{OnError: func(SubscribeError) { onErrorCalled = true }})
 
 	router.dispatch("sensors/readings", &pahomqtt5.Publish{
@@ -90,8 +89,7 @@ func TestErrorChannel_LogAction_Matched_DoesNotAlsoDeadLetter(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = subscribeWithHandle(ctx, client, router, handle, 1,
-		func(_ context.Context, _ sensorReading) error { return nil },
+	_ = subscribeWithHandle(ctx, client, router, handle, func(_ context.Context, _ sensorReading) error { return nil },
 		SubscribeOptions{OnError: func(SubscribeError) { onErrorCalled = true }})
 
 	router.dispatch("sensors/readings", &pahomqtt5.Publish{
@@ -131,8 +129,7 @@ func TestErrorChannel_GenuineNonMatch_StillDeadLetters(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = subscribeWithHandle(ctx, client, router, handle, 1,
-		func(_ context.Context, _ sensorReading) error { return nil },
+	_ = subscribeWithHandle(ctx, client, router, handle, func(_ context.Context, _ sensorReading) error { return nil },
 		SubscribeOptions{})
 
 	router.dispatch("sensors/readings", &pahomqtt5.Publish{

@@ -37,7 +37,7 @@ func TestAttach_ClientPublish_RoundTrip(t *testing.T) {
 	client := &mockClient{}
 	router := newMockRouter()
 	c := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	if err := Attach(c, client, router); err != nil {
+	if err := c.Attach(NewTransport(TransportOptions{Client: client, Router: router})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 
@@ -57,11 +57,45 @@ func TestAttach_ClientPublish_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestAttach_ClientPublish_HonorsDeclaredCapabilities confirms Phase 4c
+// (docs/roadmap/capability-requirement-composition.md): a Capabilities
+// value declared via [events.Publisher.WithOptions] is resolved and
+// applied by [events.Client.Publish]'s reflection shim — closing the
+// gap where this shim could only ever publish at QoS 0/non-retained.
+func TestAttach_ClientPublish_HonorsDeclaredCapabilities(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+	c := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	if err := c.Attach(NewTransport(TransportOptions{Client: client, Router: router})); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	pub := mergeSensorChannel("sensors/{sensorID}/readings").WithPublish(events.Publish{}).
+		WithOptions(PublishOptions[sensorReading]{
+			Capabilities: []Capability{QoSExactlyOnce, Retained(true)},
+		})
+	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
+	if err := c.Publish(context.Background(), pub, reading); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	got := client.lastPublished()
+	if got == nil {
+		t.Fatal("want 1 published message, got none")
+	}
+	if got.QoS != 2 {
+		t.Errorf("QoS = %d, want 2 from declared Capabilities", got.QoS)
+	}
+	if !got.Retain {
+		t.Error("want Retain true from declared Capabilities")
+	}
+}
+
 func TestAttach_ClientPublish_WrongPubType_ReturnsTransportTypeMismatchError(t *testing.T) {
 	client := &mockClient{}
 	router := newMockRouter()
 	c := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	if err := Attach(c, client, router); err != nil {
+	if err := c.Attach(NewTransport(TransportOptions{Client: client, Router: router})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 	err := c.Publish(context.Background(), "not-a-publisher", sensorReading{})
@@ -75,7 +109,7 @@ func TestAttach_ClientPublish_WrongMsgType_ReturnsTransportTypeMismatchError(t *
 	client := &mockClient{}
 	router := newMockRouter()
 	c := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	if err := Attach(c, client, router); err != nil {
+	if err := c.Attach(NewTransport(TransportOptions{Client: client, Router: router})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 	pub := plainSensorChannel("sensors/readings").WithPublish(events.Publish{})
@@ -90,7 +124,7 @@ func TestAttach_ClientSubscribe_RoundTrip(t *testing.T) {
 	client := &mockClient{}
 	router := newMockRouter()
 	c := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	if err := Attach(c, client, router); err != nil {
+	if err := c.Attach(NewTransport(TransportOptions{Client: client, Router: router})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 
@@ -126,13 +160,50 @@ func TestAttach_ClientSubscribe_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestAttach_ClientSubscribe_HonorsDeclaredCapabilities confirms Phase
+// 4c (docs/roadmap/capability-requirement-composition.md): a
+// Capabilities value declared via [events.Subscriber.WithOptions] is
+// resolved and applied by [events.Client.Subscribe]'s reflection shim —
+// closing the gap where this shim could only ever subscribe at QoS 0.
+func TestAttach_ClientSubscribe_HonorsDeclaredCapabilities(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+	c := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	if err := c.Attach(NewTransport(TransportOptions{Client: client, Router: router})); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	sub := plainSensorChannel("sensors/readings").WithSubscribe(events.Subscribe{}).
+		WithOptions(SubscribeOptions{Capabilities: []Capability{QoSExactlyOnce}})
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- c.Subscribe(ctx, sub, func(_ context.Context, _ sensorReading) error { return nil })
+	}()
+
+	router.waitHandler("sensors/readings")
+	cancel()
+	<-done
+
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if len(client.subscribed) != 1 || len(client.subscribed[0].Subscriptions) != 1 {
+		t.Fatalf("expected exactly 1 subscription, got %+v", client.subscribed)
+	}
+	if got := client.subscribed[0].Subscriptions[0].QoS; got != 2 {
+		t.Errorf("QoS = %d, want 2 from declared Capabilities", got)
+	}
+}
+
 // TestAttach_ClientSubscribe_RegistersSpecIntoRealClient mirrors
 // adapters/zeromq's identical regression test.
 func TestAttach_ClientSubscribe_RegistersSpecIntoRealClient(t *testing.T) {
 	client := &mockClient{}
 	router := newMockRouter()
 	c := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	if err := Attach(c, client, router); err != nil {
+	if err := c.Attach(NewTransport(TransportOptions{Client: client, Router: router})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 	sub := plainSensorChannel("sensors/readings").WithSubscribe(events.Subscribe{OperationID: "receiveReading"})
@@ -162,7 +233,7 @@ func TestAttach_ClientSubscribe_WrongSubType_ReturnsTransportTypeMismatchError(t
 	client := &mockClient{}
 	router := newMockRouter()
 	c := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	if err := Attach(c, client, router); err != nil {
+	if err := c.Attach(NewTransport(TransportOptions{Client: client, Router: router})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 	err := c.Subscribe(context.Background(), "not-a-subscriber", func() {})
@@ -176,7 +247,7 @@ func TestAttach_ClientSubscribe_WrongSubType_ReturnsTransportTypeMismatchError(t
 
 func TestNewPublishTransport_PublishHandle_RoundTrip(t *testing.T) {
 	client := &mockClient{}
-	transport := NewPublishTransport[sensorReading](client, 1, false, PublishOptions[sensorReading]{})
+	transport := NewPublishTransport[sensorReading](client, PublishOptions[sensorReading]{Capabilities: []Capability{QoS(1)}})
 
 	pub := mergeSensorChannel("sensors/{sensorID}/readings").WithPublish(events.Publish{})
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
@@ -197,7 +268,7 @@ func TestNewPublishTransport_PublishHandle_RoundTrip(t *testing.T) {
 func TestNewSubscribeTransport_SubscribeHandle_RoundTrip(t *testing.T) {
 	client := &mockClient{}
 	router := newMockRouter()
-	subTransport := NewSubscribeTransport[sensorReading](client, router, 1, SubscribeOptions{})
+	subTransport := NewSubscribeTransport[sensorReading](client, router, SubscribeOptions{Capabilities: []Capability{QoS(1)}})
 
 	sub := plainSensorChannel("sensors/readings").WithSubscribe(events.Subscribe{})
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -237,7 +308,7 @@ func TestAttach_ClientPublish_RecordsObserver(t *testing.T) {
 	client := &mockClient{}
 	router := newMockRouter()
 	c := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	if err := Attach(c, client, router); err != nil {
+	if err := c.Attach(NewTransport(TransportOptions{Client: client, Router: router})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 
@@ -261,7 +332,7 @@ func TestAttach_ClientSubscribe_RecordsObserver(t *testing.T) {
 	client := &mockClient{}
 	router := newMockRouter()
 	c := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	if err := Attach(c, client, router); err != nil {
+	if err := c.Attach(NewTransport(TransportOptions{Client: client, Router: router})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 
@@ -296,7 +367,7 @@ func TestAttach_ClientSubscribe_HandlerError_MatchedErrorChannel_PublishesTypedP
 	client := &mockClient{}
 	router := newMockRouter()
 	c := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	if err := Attach(c, client, router); err != nil {
+	if err := c.Attach(NewTransport(TransportOptions{Client: client, Router: router})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 
@@ -351,7 +422,7 @@ func TestAttach_ClientPublishSubscribe_HonorsDeclaredYAMLFormat(t *testing.T) {
 	client := &mockClient{}
 	router := newMockRouter()
 	c := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	if err := Attach(c, client, router); err != nil {
+	if err := c.Attach(NewTransport(TransportOptions{Client: client, Router: router})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 

@@ -27,7 +27,7 @@
 //	if err := createUser.Register(b); err != nil { ... }
 //
 //	r := chi.NewRouter()
-//	if err := chiadapter.AttachRouter(b, r, ":8080"); err != nil { ... }
+//	if err := b.Attach(chiadapter.NewServerTransport(chiadapter.ServerTransportOptions{Router: r, Addr: ":8080"})); err != nil { ... }
 //	if err := b.Serve(ctx); err != nil { ... } // blocks, owns its own http.Server
 //
 // Error responses use the JSON body {"error":"<message>"} by default: 400 for

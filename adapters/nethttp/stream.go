@@ -224,7 +224,7 @@ type SSEStreamOptions struct {
 //	        return stream.Filter(ctx, sharedOEEStream, req.MatchesMachine)
 //	    }, nethttp.SSEStreamOptions{Topic: dashboardRoute.Descriptor.Path, Observer: obs}),
 //	).WithOptions(nethttp.Options{Observer: obs})
-//	dashboardRoute.Register(b); nethttp.AttachMux(b, mux, ":8080")
+//	dashboardRoute.Register(b); b.Attach(nethttp.NewServerTransport(nethttp.ServerTransportOptions{Mux: mux, Addr: ":8080"}))
 //
 // When the client disconnects, ctx is cancelled and the returned fn exits,
 // terminating the per-connection pipeline.
@@ -294,7 +294,7 @@ func sseFromStream[Req, Event any](
 //	    nethttp.SSEFromHub[struct{}, OEEResult](hub,
 //	        nethttp.SSEStreamOptions{Topic: dashboardRoute.Descriptor.Path, Observer: obs}),
 //	).WithOptions(nethttp.Options{Observer: obs})
-//	dashboardRoute.Register(b); nethttp.AttachMux(b, mux, ":8080")
+//	dashboardRoute.Register(b); b.Attach(nethttp.NewServerTransport(nethttp.ServerTransportOptions{Mux: mux, Addr: ":8080"}))
 func SSEFromHub[Req, Event any](
 	hub *gstream.BroadcastHub[Event],
 	opts SSEStreamOptions,

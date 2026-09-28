@@ -267,7 +267,7 @@ func effectiveSecurity(elem reflect.Value) (reqs []route.SecurityRequirement, sc
 // ── Server side ──────────────────────────────────────────────────────────
 
 // serverTransport implements [reqreply.ServerTransport], wrapping client+
-// router+opts — built by [AttachServer]. A reflection shim (mirroring
+// router+opts — built by [NewServerTransport]. A reflection shim (mirroring
 // [adapters/nethttp]'s clientTransport/[adapters/mqtt5]'s events
 // transport): Go forbids generic methods, so Serve recovers the concrete
 // Req/Resp types at runtime via reflection against the type-erased
@@ -291,26 +291,41 @@ type serverTransport struct {
 	opts   ServeOptions
 }
 
-// AttachServer binds server+client+router (via an internal ServerTransport
-// shim) as server's [reqreply.ServerTransport] — the "attach the adapter
-// to the server" step behind [reqreply.Server.Serve]. opts (0 or 1 value)
-// configures every route dispatched through this transport uniformly
-// (Observer, UserPropertyParams, SecurityFunc, OnError) — see
-// [serverTransport]'s doc comment for this shim's documented v1 scope.
-//
-// Returns [reqreply.ServerTransportAlreadyAttachedError] if server
-// already has a transport attached.
+// ServerTransportOptions configures [NewServerTransport] — the SOLE
+// configuration surface for an mqtt5 reqreply [reqreply.ServerTransport]
+// (docs/roadmap/capability-requirement-composition.md's Phase 4d: a
+// single Options struct, no positional params, even for the two
+// REQUIRED fields). Serve nests the pre-existing [ServeOptions] type
+// unchanged (Observer, UserPropertyParams, SecurityFunc, OnError,
+// configuring every route dispatched through this transport uniformly).
+type ServerTransportOptions struct {
+	// Client is the MQTT 5 broker connection. Required.
+	Client MQTTClient
+	// Router dispatches incoming messages to registered handlers.
+	// Required.
+	Router MQTTRouter
+	// Serve configures per-route dispatch behavior. Optional (zero value
+	// is a valid, fully-functional configuration).
+	Serve ServeOptions
+}
+
+// NewServerTransport returns a [reqreply.ServerTransport] configured per
+// opts — the adapter's ONLY job in the attach workflow (docs/roadmap/
+// capability-requirement-composition.md's Phase 4d): construct a
+// fully-configured, attachable value. Attaching it is EXCLUSIVELY
+// [reqreply.Server.Attach]'s job — there is no adapter-namespaced Attach
+// function anymore (REMOVED, breaking, per that phase's explicit
+// "zero backdoor between the api layer and the adapters" directive) —
+// see [serverTransport]'s doc comment for this shim's documented v1
+// scope.
 //
 //	server := reqreply.NewServer(reqreply.Info{Title: "Compute API", Version: "1.0.0"})
 //	handle, _ := ComputeRoute.WithHandler(computeHandler).Register(server)
-//	_ = mqtt5.AttachServer(server, client, router)
+//	transport := mqtt5.NewServerTransport(mqtt5.ServerTransportOptions{Client: client, Router: router})
+//	if err := server.Attach(transport); err != nil { ... }
 //	err := server.Serve(ctx) // dispatches ComputeRoute concurrently with every other registered route
-func AttachServer(server *reqreply.Server, client MQTTClient, router MQTTRouter, opts ...ServeOptions) error {
-	var o ServeOptions
-	if len(opts) > 0 {
-		o = opts[0]
-	}
-	return server.Attach(&serverTransport{client: client, router: router, opts: o})
+func NewServerTransport(opts ServerTransportOptions) reqreply.ServerTransport {
+	return &serverTransport{client: opts.Client, router: opts.Router, opts: opts.Serve}
 }
 
 // Serve implements [reqreply.ServerTransport]. Mirrors [Serve]'s core
@@ -773,7 +788,7 @@ var _ reqreply.ServerTransport = (*serverTransport)(nil)
 // ── Client side ──────────────────────────────────────────────────────────
 
 // clientTransport implements [reqreply.ClientTransport], wrapping client+
-// router+opts — built by [AttachClient]. Capability parity with [Call]/
+// router+opts — built by [NewClientTransport]. Capability parity with [Call]/
 // [CallHandle] (Phase 0 of docs/design/d-0004-reqreply-workflow-simplification.md's Addendum, SHIPPED):
 // route-declared [reqreply.RouteHandle.RequestFormats]/
 // [reqreply.RouteHandle.Formats], a per-call [reqreply.ClientCallOptions]
@@ -787,25 +802,37 @@ type clientTransport struct {
 	opts   CallOptions
 }
 
-// AttachClient binds client+mqttClient+router (via an internal
-// ClientTransport shim) as client's [reqreply.ClientTransport] — the
-// "attach the adapter to the client" step behind [reqreply.Client.Call]/
-// [reqreply.Client.CallAsync]. opts (0 or 1 value) configures every call
-// dispatched through this transport uniformly (Timeout, QoS,
-// CredentialFunc, ReplyTopicPrefix/Builder).
-//
-// Returns [reqreply.ClientTransportAlreadyAttachedError] if client
-// already has a transport attached.
+// ClientTransportOptions configures [NewClientTransport] — the SOLE
+// configuration surface for an mqtt5 reqreply [reqreply.ClientTransport]
+// (docs/roadmap/capability-requirement-composition.md's Phase 4d: a
+// single Options struct, no positional params, even for the two
+// REQUIRED fields). Call nests the pre-existing [CallOptions] type
+// unchanged (Timeout, QoS, CredentialFunc, ReplyTopicPrefix/Builder,
+// configuring every call dispatched through this transport uniformly).
+type ClientTransportOptions struct {
+	// Client is the MQTT 5 broker connection. Required.
+	Client MQTTClient
+	// Router dispatches incoming reply messages. Required.
+	Router MQTTRouter
+	// Call configures per-call dispatch behavior. Optional (zero value
+	// is a valid, fully-functional configuration).
+	Call CallOptions
+}
+
+// NewClientTransport returns a [reqreply.ClientTransport] configured per
+// opts — the adapter's ONLY job in the attach workflow (docs/roadmap/
+// capability-requirement-composition.md's Phase 4d): construct a
+// fully-configured, attachable value. Attaching it is EXCLUSIVELY
+// [reqreply.Client.Attach]'s job — there is no adapter-namespaced Attach
+// function anymore (REMOVED, breaking, per that phase's explicit
+// "zero backdoor between the api layer and the adapters" directive).
 //
 //	client := reqreply.NewClient()
-//	_ = mqtt5.AttachClient(client, mqttClient, router)
+//	transport := mqtt5.NewClientTransport(mqtt5.ClientTransportOptions{Client: mqttClient, Router: router})
+//	if err := client.Attach(transport); err != nil { ... }
 //	respAny, err := client.Call(ctx, ComputeRoute, ComputeReq{X: 1, Y: 2})
-func AttachClient(client *reqreply.Client, mqttClient MQTTClient, router MQTTRouter, opts ...CallOptions) error {
-	var o CallOptions
-	if len(opts) > 0 {
-		o = opts[0]
-	}
-	return client.Attach(&clientTransport{client: mqttClient, router: router, opts: o})
+func NewClientTransport(opts ClientTransportOptions) reqreply.ClientTransport {
+	return &clientTransport{client: opts.Client, router: opts.Router, opts: opts.Call}
 }
 
 // Call implements [reqreply.ClientTransport]. Mirrors [Call]'s core logic

@@ -23,7 +23,7 @@ import (
 // to that server via the shared broker.
 func BuildMQTT5(info events.Info, broker mqtt5adapter.MQTTClient, router mqtt5adapter.MQTTRouter) (*events.Client, error) {
 	c := events.NewClient(events.WithInfo(info))
-	if err := mqtt5adapter.Attach(c, broker, router); err != nil {
+	if err := c.Attach(mqtt5adapter.NewTransport(mqtt5adapter.TransportOptions{Client: broker, Router: router})); err != nil {
 		return nil, err
 	}
 	return c, nil
@@ -34,7 +34,7 @@ func BuildMQTT5(info events.Info, broker mqtt5adapter.MQTTClient, router mqtt5ad
 // side.
 func BuildMQTT(info events.Info, mqttClient pahomqtt.Client) (*events.Client, error) {
 	c := events.NewClient(events.WithInfo(info))
-	if err := adaptermqtt.Attach(c, mqttClient); err != nil {
+	if err := c.Attach(adaptermqtt.NewTransport(adaptermqtt.TransportOptions{Client: mqttClient})); err != nil {
 		return nil, err
 	}
 	return c, nil
@@ -45,7 +45,7 @@ func BuildMQTT(info events.Info, mqttClient pahomqtt.Client) (*events.Client, er
 // either end of the shared in-process pipe.
 func BuildZeroMQ(info events.Info, sock zeromq.FramedSocket) (*events.Client, error) {
 	c := events.NewClient(events.WithInfo(info))
-	if err := zeromq.Attach(c, sock); err != nil {
+	if err := c.Attach(zeromq.NewTransport(zeromq.TransportOptions{Socket: sock})); err != nil {
 		return nil, err
 	}
 	return c, nil

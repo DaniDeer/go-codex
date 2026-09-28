@@ -102,8 +102,14 @@ A one-call convenience might look something like:
 
 ```go
 // Sketch only — exact signature TBD in a future Refine/Implement pass.
-err := chiadapter.AttachRouter(b, router, addr,
-    nethttp.WithSpecRoute("/openapi.yaml", nethttp.SpecFormatYAML))
+// Per docs/roadmap/capability-requirement-composition.md's Phase 4d
+// (Attach factory redesign, already shipped by the time this idea is
+// implemented): any such convenience must still go through
+// b.Attach(...) — never a new adapter-namespaced Attach* function.
+err := b.Attach(chiadapter.NewServerTransport(chiadapter.ServerTransportOptions{
+    Router: router, Addr: addr,
+    SpecRoute: nethttp.WithSpecRoute("/openapi.yaml", nethttp.SpecFormatYAML),
+}))
 ```
 
 ## Next steps

@@ -1,5 +1,5 @@
 // Package mqttbroker assembles routes/+handlers/ onto an in-process mock
-// MQTT v3 client via mqtt.Attach — the events analogue of
+// MQTT v3 client via mqtt.NewTransport+Client.Attach — the events analogue of
 // examples/reqreply-api's mqtt5server package, for mqtt v3 (Paho).
 // Demonstrates: Client.Attach preferred workflow, the handle-based escape
 // hatch (OnError, wildcard subscription, multi-format), the domain-
@@ -48,7 +48,7 @@ func Build(credential string, store *handlers.TimeSeriesStore, threshold float64
 		Description: "Production MQTT broker",
 	})
 
-	if err := adaptermqtt.Attach(eventsClient, client); err != nil {
+	if err := eventsClient.Attach(adaptermqtt.NewTransport(adaptermqtt.TransportOptions{Client: client})); err != nil {
 		return nil, err
 	}
 

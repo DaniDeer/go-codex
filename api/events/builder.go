@@ -225,15 +225,6 @@ type Subscribe struct {
 	// Pass an empty slice to declare "no auth required" for this subscription.
 	// nil (default) inherits global security declared via [Client.AddGlobalSecurity].
 	Security []route.SecurityRequirement
-
-	// QoS declares this channel's MQTT subscription quality-of-service
-	// level. Zero value ([QoSAtMostOnce]) matches the prior, undeclared
-	// default exactly — fully backward compatible. Consumed by
-	// adapters/mqtt and adapters/mqtt5's own Subscribe/ServeSubscribers
-	// dispatch (as the FALLBACK default — an explicit per-call
-	// SubscribeOptions.QoS override still wins when set to a non-zero
-	// value); ignored by adapters/zeromq (no QoS concept there).
-	QoS MQTTQoS
 }
 
 func (s Subscribe) applyChannel(cb *channelBuilder) { cb.subscribe = &s }
@@ -689,20 +680,6 @@ type ChannelHandle[T any] struct {
 	// [Subscriber.Handle]), mirroring [rest.RouteHandle.ClientMiddlewareHandlers].
 	ClientMiddlewareHandlers []ClientMiddlewareHandler
 
-	// publishAttrsFn holds the type-erased func(T) PublishAttributes
-	// declared via [Publisher.WithAttributes] — populated ONLY by
-	// [Publisher.Handle] (never [Subscriber.Handle]). Resolved via
-	// [ChannelHandle.ResolvePublishAttributes].
-	publishAttrsFn any
-
-	// SubscribeQoS holds the MQTT QoS level declared via [Subscribe.QoS]
-	// — populated ONLY by [Subscriber.Handle] (never [Publisher.Handle]).
-	// Consumed by adapters/mqtt's/adapters/mqtt5's own subscribe dispatch
-	// as the FALLBACK default (an explicit per-call SubscribeOptions.QoS
-	// override still wins when set to a non-zero value). Zero value
-	// ([QoSAtMostOnce]) when [Subscribe.QoS] was never declared.
-	SubscribeQoS MQTTQoS
-
 	// Requirements holds this channel's own [CapabilityRequirement]
 	// declarations — spec-only, adapter-agnostic descriptions of
 	// protocol-native capabilities (e.g. QoS, Retained). A supplying
@@ -710,20 +687,6 @@ type ChannelHandle[T any] struct {
 	// carries the REAL, sealed Capability values at declare time; use
 	// [CheckCapabilityCoverage] to check the two agree.
 	Requirements []CapabilityRequirement
-}
-
-// ResolvePublishAttributes derives [PublishAttributes] (QoS/Retained) for
-// msg, using the func(T) PublishAttributes declared via
-// [Publisher.WithAttributes] — returns the ZERO VALUE (QoS 0, Retained
-// false) when no attributes were ever declared, which is IDENTICAL to the
-// undeclared default this codebase used before this mechanism existed
-// (100% backward compatible).
-func (h *ChannelHandle[T]) ResolvePublishAttributes(msg T) PublishAttributes {
-	fn, ok := h.publishAttrsFn.(func(T) PublishAttributes)
-	if !ok {
-		return PublishAttributes{}
-	}
-	return fn(msg)
 }
 
 // MergeFields returns the merge-capable fields registered via
@@ -1936,26 +1899,13 @@ type Publisher[T any] struct {
 	// attached via [ClientTransform], in attachment order — copied onto
 	// [ChannelHandle.ClientMiddlewareHandlers] by [Publisher.Handle].
 	clientMiddlewareHandlers []ClientMiddlewareHandler
-
-	// publishAttrsFn holds the func(T) PublishAttributes declared via
-	// [Publisher.WithAttributes] — copied onto [ChannelHandle]'s own
-	// type-erased field by [Publisher.Handle]. nil means "no declared
-	// attributes" (fully backward compatible — see
-	// [ChannelHandle.ResolvePublishAttributes]).
-	publishAttrsFn any
-}
-
-// WithAttributes declares fn, deriving [PublishAttributes] (QoS/Retained)
-// from the OUTGOING message T itself — the pub/sub-side mirror of
-// [rest.MergedResponseCookieParam.WithAttributes]'s "derive from the value
-// being sent" shape. nil (never called) preserves the PRIOR, undeclared
-// default behavior exactly (QoS 0, Retained false). Consumed by
-// adapters/mqtt's/adapters/mqtt5's own publish dispatch as the FALLBACK
-// default — an explicit per-call PublishAdapterOptions/HandleTransport
-// QoS/Retained override still wins when set to a non-default value.
-func (p Publisher[T]) WithAttributes(fn func(T) PublishAttributes) Publisher[T] {
-	p.publishAttrsFn = fn
-	return p
+	// opts holds the type-erased adapter options attached via
+	// [Publisher.WithOptions] — copied onto [ChannelHandle.HandlerOpts].
+	// Mirrors [Subscriber.opts] exactly (docs/roadmap/
+	// capability-requirement-composition.md's Phase 4c — closes the gap
+	// where only the subscribe side could declare per-channel adapter
+	// options such as Capabilities).
+	opts any
 }
 
 // WithSubscribe returns a [Subscriber] for this channel's subscribe side,
@@ -2126,6 +2076,23 @@ func (p Publisher[T]) PublishMW(mw *middleware.Middleware, fn any) Publisher[T] 
 	return p
 }
 
+// WithOptions returns a copy of p carrying opts as its declare-time,
+// type-erased per-channel adapter options (e.g. an MQTT
+// PublishOptions[T]{Capabilities: ...} value) — mirrors
+// [Subscriber.WithOptions] exactly. Copied onto the built
+// [ChannelHandle.HandlerOpts] field by [Publisher.Handle]; the adapter
+// recovers the concrete type via a type assertion/reflection at dispatch
+// time. Closes the Phase 4c gap (docs/roadmap/
+// capability-requirement-composition.md): before this, only the
+// subscribe side could declare per-channel adapter options, so
+// [Client.Publish]'s reflection shim had NO way to resolve a declared
+// Capabilities value — forcing a caller who needed one to bypass
+// [Client.Publish] and construct an adapter's PublishTransport directly.
+func (p Publisher[T]) WithOptions(opts any) Publisher[T] {
+	p.opts = opts
+	return p
+}
+
 // Handle builds a fresh, independent [ChannelHandle] for s's subscribe-side
 // declaration. client is optional — nil builds a spec-free handle (no
 // [Client] registration); a non-nil client additionally dedups this
@@ -2150,11 +2117,10 @@ func (s Subscriber[T]) Handle(client *Client) (*ChannelHandle[T], error) {
 // declaration. See [Subscriber.Handle]'s doc comment for the shared
 // nil-client/dedup/unconditional-validation/fresh-handle contract.
 func (p Publisher[T]) Handle(client *Client) (*ChannelHandle[T], error) {
-	h, err := buildChannelHandle(p.channel, client, rolePublish, p.mws, nil, nil, nil, p.clientImpls, nil, p.clientMiddlewareHandlers)
+	h, err := buildChannelHandle(p.channel, client, rolePublish, p.mws, nil, p.opts, nil, p.clientImpls, nil, p.clientMiddlewareHandlers)
 	if err != nil {
 		return nil, err
 	}
-	h.publishAttrsFn = p.publishAttrsFn
 	return h, nil
 }
 
@@ -2321,9 +2287,6 @@ func buildChannelHandle[T any](ch Channel[T], client *Client, role channelRole, 
 		MiddlewareHandlers:       middlewareHandlers,
 		ClientMiddlewareHandlers: clientMiddlewareHandlers,
 		Requirements:             slices.Clone(cb.requirements),
-	}
-	if role == roleSubscribe && cb.subscribe != nil {
-		h.SubscribeQoS = cb.subscribe.QoS
 	}
 	if cb.formats != nil {
 		fmts, ok := cb.formats.([]format.Format[T])
@@ -2649,14 +2612,59 @@ type Transport interface {
 	ServeSubscribers(ctx context.Context) error
 }
 
+// ClientAwareTransport is an OPTIONAL extension to [Transport] — mirrors
+// the [stats.CapabilityObserver]-style optional-interface idiom already
+// used throughout this codebase. A [Transport] implementing it receives
+// the [*Client] it was attached to, via [Client.Attach], IMMEDIATELY
+// after being stored — never before, never again.
+//
+// This exists for docs/roadmap/capability-requirement-composition.md's
+// Phase 4d (Attach factory redesign): a [Transport] built via an
+// adapter's `New*Transport(opts)` factory is constructed BEFORE the
+// [*Client] that will attach it is known (the factory takes only
+// adapter-specific config, no [*Client] parameter — that's the whole
+// point of decoupling "build a configured transport" from "attach it").
+// But mqtt5/mqtt/zeromq's own [Transport] implementations DO need a
+// [*Client] reference for two purposes the OLD `Attach(client, ...)`
+// convenience functions used to supply directly at construction time:
+// (1) [Publisher.Handle]/[Subscriber.Handle]'s dedup/spec-registration
+// side effect (so `Client.Publish`/`Client.Subscribe` also register the
+// channel's spec into the SAME attached Client — see
+// [Client.SubscriberEntries]'s own doc comment for why this matters),
+// and (2) [ServeSubscribers]'s registry walk ([Client.SubscriberEntries]).
+// [ClientAwareTransport] closes that gap WITHOUT reintroducing a
+// [*Client] parameter to the factory — [Client.Attach] itself supplies
+// it, exactly once, right after storing t.
+// BindClient returns an error (rather than nothing) so an implementation
+// needing to VALIDATE against c at bind time (e.g. an eager coverage
+// check the OLD `Attach(client, ...)` function used to run BEFORE
+// calling `client.Attach`) can reject the attach — mirrors
+// [reqreply.ServerAwareTransport.BindServer]'s identical shape exactly
+// (adapters/zeromq's reqreply `AttachServer`/`AttachRouterServer` need
+// this for their own `MissingSocketError` upfront check).
+type ClientAwareTransport interface {
+	Transport
+	// BindClient receives c immediately after [Client.Attach] stores
+	// t as c's transport. Implementations typically store c on their
+	// own internal dispatch state (mirroring what the OLD
+	// `Attach(client, ...)` convenience functions used to capture at
+	// construction time). A non-nil error rolls back the attach (c's
+	// transport is cleared, [Client.Attach] returns this error) —
+	// [Client.Attach] remains all-or-nothing.
+	BindClient(c *Client) error
+}
+
 // Attach binds t to c as c's transport — the "attach the adapter to the
 // client" step behind [Client.Publish]/[Client.Subscribe]/
-// [Client.ServeSubscribers]. Each adapter provides its own entry point
-// (e.g. zeromq.Attach(client, sock)) that builds an internal Transport
-// implementation and calls this method internally; application code
-// calls the ADAPTER's Attach function, not this method directly, in the
-// common case (though nothing prevents a custom [Transport]
-// implementation from calling this directly).
+// [Client.ServeSubscribers]. Each adapter provides its own `New*Transport`
+// factory (e.g. `zeromq.NewTransport(zeromq.TransportOptions{Socket: sock})`)
+// that builds a configured [Transport] value; application code attaches
+// it via THIS method directly — `client.Attach(zeromq.NewTransport(...))`
+// — never via an adapter-namespaced convenience function (removed, see
+// docs/roadmap/capability-requirement-composition.md's Phase 4d).
+//
+// If t implements [ClientAwareTransport], its BindClient(c) is called
+// IMMEDIATELY after storing t — see that interface's doc comment.
 //
 // Returns [TransportAlreadyAttachedError] if c already has a transport
 // attached — Attach is exclusive, never silently replaces an existing
@@ -2671,11 +2679,27 @@ type Transport interface {
 // real I/O once attached.
 func (c *Client) Attach(t Transport) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.transport != nil {
+		c.mu.Unlock()
 		return TransportAlreadyAttachedError{}
 	}
 	c.transport = t
+	c.mu.Unlock()
+
+	// BindClient is called OUTSIDE c.mu — a [ClientAwareTransport]
+	// implementation might legitimately need to call back into c's OWN
+	// methods; sync.RWMutex is NOT reentrant, so calling BindClient
+	// while still holding the write lock would deadlock the moment such
+	// a callback is added (mirrors a REAL deadlock confirmed and fixed
+	// in [reqreply.Server.Attach] for the identical reason).
+	if aware, ok := t.(ClientAwareTransport); ok {
+		if err := aware.BindClient(c); err != nil {
+			c.mu.Lock()
+			c.transport = nil
+			c.mu.Unlock()
+			return err
+		}
+	}
 	return nil
 }
 
@@ -2757,7 +2781,7 @@ func (e TransportAlreadyAttachedError) LogValue() slog.Value {
 type NoTransportAttachedError struct{}
 
 func (e NoTransportAttachedError) Error() string {
-	return "api/events: Client has no Transport attached (call an adapter's Attach function first, e.g. zeromq.Attach(client, sock))"
+	return "api/events: Client has no Transport attached (build an adapter transport and call Attach yourself, e.g. client.Attach(zeromq.NewTransport(zeromq.TransportOptions{Socket: sock})))"
 }
 
 // LogValue implements [slog.LogValuer] for structured logging.

@@ -279,7 +279,7 @@ route := createUser.WithHandler(handler).WithOptions(nethttp.Options{
     },
 })
 route.Register(b)
-nethttp.AttachMux(b, mux, addr)
+b.Attach(nethttp.NewServerTransport(nethttp.ServerTransportOptions{Mux: mux, Addr: addr}))
 go func() { _ = b.Serve(ctx) }()
 ```
 

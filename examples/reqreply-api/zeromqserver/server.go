@@ -122,7 +122,7 @@ func Build(obs stats.Observer) (*Built, error) {
 		"compute/oauth-add":         oauthRep,
 		"compute/property-axis-add": propertyAxisRep,
 	}
-	if err := zeromq.AttachServer(server, serverSockets); err != nil {
+	if err := server.Attach(zeromq.NewServerTransport(zeromq.ServerTransportOptions{Sockets: serverSockets})); err != nil {
 		return nil, err
 	}
 

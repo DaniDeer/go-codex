@@ -82,8 +82,7 @@ func TestSubscribe_Transform_HappyPath_EnrichesMsg(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	if err := subscribeWithHandle(ctx, client, router, handle, 1,
-		func(_ context.Context, r sensorReading) error { received = r; return nil },
+	if err := subscribeWithHandle(ctx, client, router, handle, func(_ context.Context, r sensorReading) error { received = r; return nil },
 		SubscribeOptions{}); err != nil {
 		t.Fatalf("Subscribe setup failed: %v", err)
 	}
@@ -121,8 +120,7 @@ func TestSubscribe_Transform_InDecodeFailure_HandlerNotCalled(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = subscribeWithHandle(ctx, client, router, handle, 1,
-		func(_ context.Context, r sensorReading) error { return nil },
+	_ = subscribeWithHandle(ctx, client, router, handle, func(_ context.Context, r sensorReading) error { return nil },
 		SubscribeOptions{OnError: func(e SubscribeError) { gotErr = e }})
 
 	// "region" left empty in the topic — fails mw's own InCodec
@@ -160,8 +158,7 @@ func TestSubscribe_Transform_FnError_WrapsAsMiddlewareError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = subscribeWithHandle(ctx, client, router, handle, 1,
-		func(_ context.Context, r sensorReading) error { handlerCalled = true; return nil },
+	_ = subscribeWithHandle(ctx, client, router, handle, func(_ context.Context, r sensorReading) error { handlerCalled = true; return nil },
 		SubscribeOptions{OnError: func(e SubscribeError) { gotErr = e }})
 
 	router.dispatch("sensors/readings", &pahomqtt5.Publish{
@@ -199,8 +196,7 @@ func TestSubscribe_Use_AgnosticMiddleware_Dispatches(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	if err := subscribeWithHandle(ctx, client, router, handle, 1,
-		func(_ context.Context, r sensorReading) error { return nil },
+	if err := subscribeWithHandle(ctx, client, router, handle, func(_ context.Context, r sensorReading) error { return nil },
 		SubscribeOptions{}); err != nil {
 		t.Fatalf("Subscribe setup failed: %v", err)
 	}
@@ -235,7 +231,7 @@ func TestPublish_ClientTransform_HappyPath_EncodesOutIntoTopicVars(t *testing.T)
 
 	client := &mockClient{}
 	reading := sensorReading{SensorID: "11111111-1111-1111-1111-111111111111", Value: 1.5}
-	if err := publish(context.Background(), client, handle, 1, false, reading, nil, false, PublishOptions[sensorReading]{}); err != nil {
+	if err := publish(context.Background(), client, handle, reading, nil, false, PublishOptions[sensorReading]{}); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	if len(client.published) != 1 {
@@ -262,7 +258,7 @@ func TestPublish_ClientTransform_FnError_AbortsBeforePublish(t *testing.T) {
 
 	client := &mockClient{}
 	reading := sensorReading{SensorID: "11111111-1111-1111-1111-111111111111", Value: 1.5}
-	pubErr := publish(context.Background(), client, handle, 1, false, reading, nil, false, PublishOptions[sensorReading]{})
+	pubErr := publish(context.Background(), client, handle, reading, nil, false, PublishOptions[sensorReading]{})
 	if pubErr == nil {
 		t.Fatal("want error from ClientTransform fn")
 	}
@@ -294,7 +290,7 @@ func TestPublish_ClientTransform_D3Precedence_ExplicitVarsWinOverMiddleware(t *t
 	// Explicit vars (the 6th "vars" param, mirroring channel-own-derived
 	// precedence) supplies its OWN "region" — must win over the
 	// middleware-derived value.
-	if err := publish(context.Background(), client, handle, 1, false, reading,
+	if err := publish(context.Background(), client, handle, reading,
 		map[string]string{"region": "explicit-region"}, true, PublishOptions[sensorReading]{}); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
@@ -328,8 +324,7 @@ func TestSubscribe_TwoMiddlewaresEnrichSameField_LastAttachedWins(t *testing.T) 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	if err := subscribeWithHandle(ctx, client, router, handle, 1,
-		func(_ context.Context, r sensorReading) error { received = r; return nil },
+	if err := subscribeWithHandle(ctx, client, router, handle, func(_ context.Context, r sensorReading) error { received = r; return nil },
 		SubscribeOptions{}); err != nil {
 		t.Fatalf("Subscribe setup failed: %v", err)
 	}
@@ -376,13 +371,11 @@ func TestSubscribe_Use_AgnosticMiddleware_DispatchesOnBothChannels(t *testing.T)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	if err := subscribeWithHandle(ctx, client, router, handleA, 1,
-		func(_ context.Context, r sensorReading) error { return nil },
+	if err := subscribeWithHandle(ctx, client, router, handleA, func(_ context.Context, r sensorReading) error { return nil },
 		SubscribeOptions{}); err != nil {
 		t.Fatalf("Subscribe A setup failed: %v", err)
 	}
-	if err := subscribeWithHandle(ctx, client, router, handleB, 1,
-		func(_ context.Context, r computeReq) error { return nil },
+	if err := subscribeWithHandle(ctx, client, router, handleB, func(_ context.Context, r computeReq) error { return nil },
 		SubscribeOptions{}); err != nil {
 		t.Fatalf("Subscribe B setup failed: %v", err)
 	}

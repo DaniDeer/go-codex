@@ -207,7 +207,7 @@ var getUserActivity = rest.NewRoute[GetUserActivityReq, User](
 )
 
 restClient := rest.NewClient()
-_ = nethttp.Attach(restClient, client, baseURL)
+_ = restClient.Attach(nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: client, BaseURL: baseURL}))
 req := GetUserActivityReq{ID: userID, Filter: "logins"}
 
 // rest.Client.Call takes the rest.Route value directly and ALWAYS auto-derives
@@ -254,7 +254,7 @@ route.WithHandler(func(ctx context.Context, req GetUserActivityReq) (User, error
     u.RequestID = generateTraceID() // adapter sets the X-Request-Id header from this automatically
     return u, nil
 }).Register(builder)
-// ... nethttp.AttachMux(builder, mux, addr) + builder.Serve(ctx) wires it
+// ... builder.Attach(nethttp.NewServerTransport(nethttp.ServerTransportOptions{Mux: mux, Addr: addr})) + builder.Serve(ctx) wires it
 ```
 
 On the **client**, `nethttp.CallWithHandle`/`rest.Client.Call` automatically merge the HTTP response's
@@ -280,7 +280,7 @@ single-workflow client-side entry point (see
 
 ```go
 restClient := rest.NewClient()
-_ = nethttp.Attach(restClient, client, baseURL)
+_ = restClient.Attach(nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: client, BaseURL: baseURL}))
 activityAny, err := restClient.Call(ctx, getUserActivity,
     GetUserActivityReq{ID: userID, Filter: "logins"})
 activity := activityAny.(User)
@@ -407,7 +407,7 @@ route := createUser.WithHandler(func(ctx context.Context, req CreateUserReq) (Us
     return svc.CreateUser(ctx, req)
 }).WithOptions(nethttp.Options{Observer: obs})
 route.Register(builder)
-nethttp.AttachMux(builder, mux, addr)
+builder.Attach(nethttp.NewServerTransport(nethttp.ServerTransportOptions{Mux: mux, Addr: addr}))
 
 go func() { _ = builder.Serve(ctx) }()
 ```
@@ -613,7 +613,7 @@ chiRoute := getUser.WithHandler(func(ctx context.Context, _ struct{}) (User, err
     return svc.GetUser(ctx, gochi.URLParam(rr, "id"))
 })
 chiRoute.Register(builder)
-if err := chiadapter.AttachRouter(builder, r, addr); err != nil {
+if err := builder.Attach(chiadapter.NewServerTransport(chiadapter.ServerTransportOptions{Router: r, Addr: addr})); err != nil {
     log.Fatal(err)
 }
 _ = builder.Serve(ctx) // blocks, owns its own http.Server
@@ -672,7 +672,7 @@ route := createUser.WithHandler(func(ctx context.Context, req CreateUserReq) (Us
     return u, nil
 })
 route.Register(builder)
-nethttp.AttachMux(builder, mux, addr)
+builder.Attach(nethttp.NewServerTransport(nethttp.ServerTransportOptions{Mux: mux, Addr: addr}))
 go func() { _ = builder.Serve(ctx) }()
 
 // Declare response header + codec — validated after handler returns

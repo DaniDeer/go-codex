@@ -19,10 +19,10 @@ import (
 func TestAttachRouter_SecondCall_ReturnsServerTransportAlreadyAttachedError(t *testing.T) {
 	b := rest.NewServer(testInfo)
 	r := gochi.NewRouter()
-	if err := AttachRouter(b, r, "127.0.0.1:0"); err != nil {
+	if err := b.Attach(NewServerTransport(ServerTransportOptions{Router: r, Addr: "127.0.0.1:0"})); err != nil {
 		t.Fatalf("first AttachRouter: %v", err)
 	}
-	err := AttachRouter(b, r, "127.0.0.1:0")
+	err := b.Attach(NewServerTransport(ServerTransportOptions{Router: r, Addr: "127.0.0.1:0"}))
 	var attachedErr rest.ServerTransportAlreadyAttachedError
 	if !errors.As(err, &attachedErr) {
 		t.Fatalf("want ServerTransportAlreadyAttachedError, got %v (%T)", err, err)
@@ -53,7 +53,7 @@ func TestAttachRouter_BuilderServe_ActuallyServesHTTP(t *testing.T) {
 
 	addr := "127.0.0.1:18733" // fixed test port, unlikely to collide in CI
 	r := gochi.NewRouter()
-	if err := AttachRouter(b, r, addr); err != nil {
+	if err := b.Attach(NewServerTransport(ServerTransportOptions{Router: r, Addr: addr})); err != nil {
 		t.Fatalf("AttachRouter: %v", err)
 	}
 
@@ -114,7 +114,7 @@ func TestAttachRouter_BuilderServe_SSEOnly_ActuallyServesSSE(t *testing.T) {
 
 	addr := "127.0.0.1:18735" // fixed test port, unlikely to collide in CI
 	r := gochi.NewRouter()
-	if err := AttachRouter(b, r, addr); err != nil {
+	if err := b.Attach(NewServerTransport(ServerTransportOptions{Router: r, Addr: addr})); err != nil {
 		t.Fatalf("AttachRouter: %v", err)
 	}
 
@@ -182,7 +182,7 @@ func TestAttachRouter_BuilderServe_MixedRoutes_BothReachable(t *testing.T) {
 
 	addr := "127.0.0.1:18736" // fixed test port, unlikely to collide in CI
 	r := gochi.NewRouter()
-	if err := AttachRouter(b, r, addr); err != nil {
+	if err := b.Attach(NewServerTransport(ServerTransportOptions{Router: r, Addr: addr})); err != nil {
 		t.Fatalf("AttachRouter: %v", err)
 	}
 

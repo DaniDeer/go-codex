@@ -27,7 +27,7 @@ func TestAttachMux_BuilderServe_RoundTrip(t *testing.T) {
 	}
 
 	mux := http.NewServeMux()
-	if err := AttachMux(b, mux, "127.0.0.1:0"); err != nil {
+	if err := b.Attach(NewServerTransport(ServerTransportOptions{Mux: mux, Addr: "127.0.0.1:0"})); err != nil {
 		t.Fatalf("AttachMux: %v", err)
 	}
 
@@ -52,10 +52,10 @@ func TestAttachMux_BuilderServe_RoundTrip(t *testing.T) {
 func TestAttachMux_SecondCall_ReturnsServerTransportAlreadyAttachedError(t *testing.T) {
 	b := rest.NewServer(testInfo)
 	mux := http.NewServeMux()
-	if err := AttachMux(b, mux, "127.0.0.1:0"); err != nil {
+	if err := b.Attach(NewServerTransport(ServerTransportOptions{Mux: mux, Addr: "127.0.0.1:0"})); err != nil {
 		t.Fatalf("first AttachMux: %v", err)
 	}
-	err := AttachMux(b, mux, "127.0.0.1:0")
+	err := b.Attach(NewServerTransport(ServerTransportOptions{Mux: mux, Addr: "127.0.0.1:0"}))
 	var attachedErr rest.ServerTransportAlreadyAttachedError
 	if !errors.As(err, &attachedErr) {
 		t.Fatalf("want ServerTransportAlreadyAttachedError, got %v (%T)", err, err)
@@ -89,7 +89,7 @@ func TestAttachMux_BuilderServe_ActuallyServesHTTP(t *testing.T) {
 
 	addr := "127.0.0.1:18732" // fixed test port, unlikely to collide in CI
 	mux := http.NewServeMux()
-	if err := AttachMux(b, mux, addr); err != nil {
+	if err := b.Attach(NewServerTransport(ServerTransportOptions{Mux: mux, Addr: addr})); err != nil {
 		t.Fatalf("AttachMux: %v", err)
 	}
 
@@ -155,7 +155,7 @@ func TestAttachMux_BuilderServe_SSEOnly_ActuallyServesSSE(t *testing.T) {
 
 	addr := "127.0.0.1:18733" // fixed test port, unlikely to collide in CI
 	mux := http.NewServeMux()
-	if err := AttachMux(b, mux, addr); err != nil {
+	if err := b.Attach(NewServerTransport(ServerTransportOptions{Mux: mux, Addr: addr})); err != nil {
 		t.Fatalf("AttachMux: %v", err)
 	}
 
@@ -223,7 +223,7 @@ func TestAttachMux_BuilderServe_MixedRoutes_BothReachable(t *testing.T) {
 
 	addr := "127.0.0.1:18734" // fixed test port, unlikely to collide in CI
 	mux := http.NewServeMux()
-	if err := AttachMux(b, mux, addr); err != nil {
+	if err := b.Attach(NewServerTransport(ServerTransportOptions{Mux: mux, Addr: addr})); err != nil {
 		t.Fatalf("AttachMux: %v", err)
 	}
 

@@ -187,7 +187,7 @@ func main() {
     subSock.Connect("tcp://localhost:5555")
 
     sock := WrapSocket(subSock)
-    if err := zeromq.Attach(eventsClient, sock); err != nil { // Decision 5: Client.Attach workflow
+    if err := eventsClient.Attach(zeromq.NewTransport(zeromq.TransportOptions{Socket: sock})); err != nil { // Decision 5: Client.Attach workflow
         log.Fatal(err)
     }
     sub := contract.ReadingsChannel.WithSubscribe(events.Subscribe{})
@@ -211,14 +211,14 @@ were DELETED, with no separate binding type needed anymore.
 
 ### `Client.Attach` — the inverted-control workflow
 
-`zeromq.Attach(client, sock)` binds sock to `client` as its `events.Transport` — the
+`client.Attach(zeromq.NewTransport(zeromq.TransportOptions{Socket: sock}))` binds sock to `client` as its `events.Transport` — the
 "attach the adapter to the client" step. From there, call `client.Publish`/`client.Subscribe`
 directly on the `*events.Client` value itself; there is no adapter-package-qualified call
 needed at the usage site anymore, only at attach time:
 
 ```go
 client := events.NewClient(events.WithInfo(events.Info{Title: "Sensor Network", Version: "1.0.0"}))
-if err := zeromq.Attach(client, sock); err != nil {
+if err := client.Attach(zeromq.NewTransport(zeromq.TransportOptions{Socket: sock})); err != nil {
     log.Fatal(err)
 }
 
@@ -308,7 +308,7 @@ if err != nil {
 rep, _ := zmq.NewSocket(zmq.REP)
 rep.Bind("tcp://*:5556")
 sockets := map[string]zeromq.FramedSocket{"compute/add": WrapSocket(rep)}
-if err := zeromq.AttachServer(server, sockets); err != nil {
+if err := server.Attach(zeromq.NewServerTransport(zeromq.ServerTransportOptions{Sockets: sockets})); err != nil {
     log.Fatal(err) // e.g. zeromq.MissingSocketError if a registered route has no socket entry
 }
 go server.Serve(ctx) // dispatches every registered route concurrently, blocks until ctx cancelled
@@ -317,7 +317,7 @@ go server.Serve(ctx) // dispatches every registered route concurrently, blocks u
 req, _ := zmq.NewSocket(zmq.REQ)
 req.Connect("tcp://localhost:5556")
 client := reqreply.NewClient()
-if err := zeromq.AttachClient(client, map[string]zeromq.FramedSocket{"compute/add": WrapSocket(req)}); err != nil {
+if err := client.Attach(zeromq.NewClientTransport(zeromq.ClientTransportOptions{Sockets: map[string]zeromq.FramedSocket{"compute/add": WrapSocket(req)}})); err != nil {
     log.Fatal(err)
 }
 respAny, err := client.Call(ctx, ComputeRoute, ComputeReq{X: 3, Y: 4})
@@ -488,7 +488,7 @@ handle, _ := RouterComputeRoute.WithHandler(fn).Register(server)
 
 router, _ := zmq.NewSocket(zmq.ROUTER)
 router.Bind("tcp://*:5557")
-if err := zeromq.AttachRouterServer(server, map[string]zeromq.FramedSocket{"compute/router-add": WrapSocket(router)}); err != nil {
+if err := server.Attach(zeromq.NewRouterServerTransport(zeromq.RouterServerTransportOptions{Sockets: map[string]zeromq.FramedSocket{"compute/router-add": WrapSocket(router)}})); err != nil {
     log.Fatal(err)
 }
 go server.Serve(ctx)
@@ -496,7 +496,7 @@ go server.Serve(ctx)
 dealer, _ := zmq.NewSocket(zmq.DEALER)
 dealer.Connect("tcp://localhost:5557")
 client := reqreply.NewClient()
-if err := zeromq.AttachDealerClient(client, map[string]zeromq.FramedSocket{"compute/router-add": WrapSocket(dealer)}); err != nil {
+if err := client.Attach(zeromq.NewDealerClientTransport(zeromq.DealerClientTransportOptions{Sockets: map[string]zeromq.FramedSocket{"compute/router-add": WrapSocket(dealer)}})); err != nil {
     log.Fatal(err)
 }
 respAny, err := client.Call(ctx, RouterComputeRoute, ComputeReq{X: 3, Y: 4})

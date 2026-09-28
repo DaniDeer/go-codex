@@ -235,3 +235,45 @@ func RecordCapabilityApplied(obs stats.Observer, location string, cap Capability
 		capObs.RecordCapabilityApplied(location, cap.CapabilityName())
 	}
 }
+
+// ApplyCapabilities is the API-LAYER-OWNED capability dispatch loop —
+// docs/roadmap/capability-requirement-composition.md's Phase 4: rather
+// than an adapter defining its OWN resolve+assert+call+record loop (the
+// pre-Phase-4 pattern, e.g. adapters/zeromq's now-removed
+// `applyCapabilities` function), every adapter's own capability VALUE
+// type implements `Apply(T) (applied bool, err error)` against its OWN
+// protocol-specific target type T (e.g. `*pahomqtt5.Publish`,
+// `zeromq.FramedSocket`) — and THIS function, living in api/events, is
+// the ONE place that calls through that interface, for every adapter,
+// via Go generics (T is inferred per call site, zero per-adapter
+// special-casing needed here).
+//
+// caps is applied IN ORDER — later entries overwrite earlier ones for
+// the same effective field on target, mirroring ordinary struct-field
+// assignment semantics (no special "last unique type wins" dedup logic
+// needed, unlike the old [ResolveCapabilityValue]-based pattern).
+//
+// applied=false (from Apply) means "target structurally cannot carry
+// this capability" — a documented, silent no-op, NOT an error (mirrors
+// every existing Capability's own established convention). A genuine
+// Apply error is likewise swallowed here (no RecordCapabilityApplied),
+// matching the pre-Phase-4 `if err == nil { RecordCapabilityApplied }`
+// pattern byte-for-byte — no behavior change, only WHERE the loop lives.
+//
+// Example — adapters/mqtt5 (T = *WireAttributes, an adapter-owned
+// intermediate letting ONE Apply method serve BOTH the publish and
+// subscribe call sites, which target different paho struct types):
+//
+//	var wire mqtt5.WireAttributes
+//	events.ApplyCapabilities(opts.Capabilities, &wire, obs, path)
+//	pub := &pahomqtt5.Publish{QoS: wire.QoS, Retain: wire.Retained, ...}
+func ApplyCapabilities[C interface{ Apply(T) (bool, error) }, T any](caps []C, target T, obs stats.Observer, location string) {
+	for _, c := range caps {
+		applied, err := c.Apply(target)
+		if applied && err == nil {
+			if nc, ok := any(c).(CapabilityName); ok {
+				RecordCapabilityApplied(obs, location, nc)
+			}
+		}
+	}
+}

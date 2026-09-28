@@ -167,7 +167,7 @@ func Build(store *handlers.UserStore, obs stats.Observer, logger *slog.Logger, a
 	// new handlers once serving starts.
 	router.Get("/openapi.yaml", specHandler(b))
 
-	if err := chiadapter.AttachRouter(b, router, addr); err != nil {
+	if err := b.Attach(chiadapter.NewServerTransport(chiadapter.ServerTransportOptions{Router: router, Addr: addr})); err != nil {
 		return nil, err
 	}
 

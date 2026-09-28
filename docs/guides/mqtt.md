@@ -149,13 +149,13 @@ per-message credential metadata).
 
 ## `Client.Attach` — the inverted-control workflow
 
-`mqtt.Attach(client, mqttClient)` binds mqttClient to `client` as its `events.Transport` —
+`client.Attach(mqtt.NewTransport(mqtt.TransportOptions{Client: mqttClient}))` binds mqttClient to `client` as its `events.Transport` —
 the "attach the adapter to the client" step. From there, call `client.Publish`/
 `client.Subscribe` directly on the `*events.Client` value itself:
 
 ```go
 client := events.NewClient(events.WithInfo(events.Info{Title: "Sensor Network", Version: "1.0.0"}))
-if err := mqtt.Attach(client, mqttClient); err != nil {
+if err := client.Attach(mqtt.NewTransport(mqtt.TransportOptions{Client: mqttClient})); err != nil {
     log.Fatal(err)
 }
 

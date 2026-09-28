@@ -14,7 +14,18 @@ import (
 // compiler rejects the mismatch at build time. See
 // docs/design/d-0006-protocol-native-capabilities.md's §2/§6/§7 (Review-13) — zeromq
 // is a REAL, non-MQTT capability slice, proving the mechanism generalizes.
-type Capability interface{ isZeroMQCapability() }
+//
+// Apply is REQUIRED (docs/roadmap/capability-requirement-composition.md's
+// Phase 4) — every Capability value must know how to apply itself to a
+// [FramedSocket], returning applied=false as a documented no-op (not an
+// error) when sock doesn't implement the socket-specific setter
+// interface it needs. [events.ApplyCapabilities] — an API-LAYER-OWNED,
+// fully generic dispatch loop — is the ONLY caller of Apply; this
+// package no longer owns its own resolve+dispatch loop.
+type Capability interface {
+	isZeroMQCapability()
+	Apply(sock FramedSocket) (applied bool, err error)
+}
 
 // HWM is a sealed [Capability] declaring the socket's high-water-mark (the
 // outstanding-message queue limit before ZMQ starts dropping/blocking,
@@ -32,6 +43,17 @@ func (HWM) CapabilityName() string { return "HWM" }
 // presence) by [events.CheckCapabilityCoverage].
 func (h HWM) Level() int { return int(h) }
 
+// Apply implements [Capability]. Configures sock's high-water-mark via
+// [HWMSetter] when sock implements it; a documented no-op (applied=false,
+// err=nil) otherwise.
+func (h HWM) Apply(sock FramedSocket) (bool, error) {
+	setter, ok := sock.(HWMSetter)
+	if !ok {
+		return false, nil
+	}
+	return true, setter.SetHWM(int(h))
+}
+
 // Conflate is a sealed [Capability] declaring whether the socket should
 // keep only the LATEST message per topic (ZMQ_CONFLATE), discarding
 // older, still-unread ones. Applied via [ConflateSetter] when the
@@ -42,6 +64,17 @@ func (Conflate) isZeroMQCapability() {}
 
 // CapabilityName implements [events.CapabilityName].
 func (Conflate) CapabilityName() string { return "Conflate" }
+
+// Apply implements [Capability]. Configures ZMQ_CONFLATE on sock via
+// [ConflateSetter] when sock implements it; a documented no-op
+// (applied=false, err=nil) otherwise.
+func (c Conflate) Apply(sock FramedSocket) (bool, error) {
+	setter, ok := sock.(ConflateSetter)
+	if !ok {
+		return false, nil
+	}
+	return true, setter.SetConflate(bool(c))
+}
 
 // HWMSetter is an optional extension to [FramedSocket] — implement it to
 // let an [HWM] capability configure the socket's high-water-mark. Purely
@@ -59,29 +92,12 @@ type ConflateSetter interface {
 	SetConflate(on bool) error
 }
 
-// applyCapabilities applies every capability in caps to sock (via
-// [HWMSetter]/[ConflateSetter] when sock implements them — a documented
-// no-op otherwise), reporting each SUCCESSFULLY applied capability once
-// via obs.RecordCapabilityApplied when obs implements
-// [stats.CapabilityObserver].
+// applyCapabilities applies every capability in caps to sock via
+// [events.ApplyCapabilities] — the API-LAYER-OWNED, fully generic
+// dispatch loop (docs/roadmap/capability-requirement-composition.md's
+// Phase 4). This package contributes only [Capability.Apply]; kept as a
+// thin same-signature wrapper so every existing call site (events- AND
+// reqreply-side) needs no change this round.
 func applyCapabilities(sock FramedSocket, caps []Capability, obs stats.Observer, location string) {
-	if len(caps) == 0 {
-		return
-	}
-	hwm, hwmSet := events.ResolveCapabilityValue[Capability, HWM](caps)
-	conflate, conflateSet := events.ResolveCapabilityValue[Capability, Conflate](caps)
-	if hwmSet {
-		if setter, ok := sock.(HWMSetter); ok {
-			if err := setter.SetHWM(int(hwm)); err == nil {
-				events.RecordCapabilityApplied(obs, location, hwm)
-			}
-		}
-	}
-	if conflateSet {
-		if setter, ok := sock.(ConflateSetter); ok {
-			if err := setter.SetConflate(bool(conflate)); err == nil {
-				events.RecordCapabilityApplied(obs, location, conflate)
-			}
-		}
-	}
+	events.ApplyCapabilities(caps, sock, obs, location)
 }

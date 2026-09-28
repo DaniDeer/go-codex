@@ -175,7 +175,7 @@ func main() {
 	// contract.OrderRoute's declared Gob formats automatically (both
 	// directions) — no ClientHandle()/WithRequestFormats escape hatch.
 	client := rest.NewClient()
-	if err := nethttp.Attach(client, srv.Client(), srv.URL); err != nil {
+	if err := client.Attach(nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
 		fmt.Fprintln(os.Stderr, "attach rest client:", err)
 		os.Exit(1)
 	}
@@ -198,7 +198,7 @@ func main() {
 		Description: "Internal order events — Go-to-Go binary channel (gob).",
 	}))
 	mock := newAutoDispatchMockClient()
-	if err := adaptermqtt.Attach(eventsClient, mock); err != nil {
+	if err := eventsClient.Attach(adaptermqtt.NewTransport(adaptermqtt.TransportOptions{Client: mock})); err != nil {
 		fmt.Fprintln(os.Stderr, "attach events client:", err)
 		os.Exit(1)
 	}

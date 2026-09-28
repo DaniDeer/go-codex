@@ -59,12 +59,12 @@ var CreateUser = rest.NewRoute[CreateUserReq, User](
 
 // server.go — declare the handler, register, and wire the whole builder
 err := contract.CreateUser.WithHandler(myHandler).Register(builder)
-err = nethttp.AttachMux(builder, mux, addr)
+err = builder.Attach(nethttp.NewServerTransport(nethttp.ServerTransportOptions{Mux: mux, Addr: addr}))
 go func() { _ = builder.Serve(ctx) }()
 
 // client.go — reuse the SAME Route value directly, no separate registration
 client := rest.NewClient()
-err = nethttp.Attach(client, http.DefaultClient, "https://api.example.com")
+err = client.Attach(nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: http.DefaultClient, BaseURL: "https://api.example.com"}))
 
 userAny, err := client.Call(ctx, contract.CreateUser,
     CreateUserReq{Name: "Alice", Email: "alice@example.com"})
@@ -87,7 +87,7 @@ var getUser = rest.NewRoute[GetUserReq, User]("GET", "/users/{id}",
 )
 
 client := rest.NewClient()
-err := nethttp.Attach(client, http.DefaultClient, "https://api.example.com")
+err := client.Attach(nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: http.DefaultClient, BaseURL: "https://api.example.com"}))
 userAny, err := client.Call(ctx, getUser, GetUserReq{ID: userID})
 user := userAny.(User)
 ```

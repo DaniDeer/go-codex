@@ -172,7 +172,7 @@ noPipelineErrHandler := func(w http.ResponseWriter, r *http.Request, status int,
 noPipelineRoute = noPipelineRoute.WithHandler(noPipelineFn).
     WithOptions(nethttp.Options{ErrorHandler: noPipelineErrHandler})
 noPipelineRoute.Register(b)
-if err := nethttp.AttachMux(b, mux, addr); err != nil {
+if err := b.Attach(nethttp.NewServerTransport(nethttp.ServerTransportOptions{Mux: mux, Addr: addr})); err != nil {
     log.Fatal(err)
 }
 _ = b.Serve(ctx) // blocks, owns its own http.Server
@@ -228,7 +228,7 @@ uploadRoute = uploadRoute.WithHandler(handler).WithOptions(nethttp.Options{
     MaxBodyBytes: maxPNG,
 })
 uploadRoute.Register(b)
-if err := nethttp.AttachMux(b, mux, addr); err != nil {
+if err := b.Attach(nethttp.NewServerTransport(nethttp.ServerTransportOptions{Mux: mux, Addr: addr})); err != nil {
     log.Fatal(err)
 }
 _ = b.Serve(ctx) // blocks, owns its own http.Server
@@ -248,7 +248,7 @@ See the `## examples/rest-api` section above for the full adapter-based server d
 
 ## `Server.Attach` + `Server.Serve` — the ONLY server startup workflow
 
-`nethttp.AttachMux(builder, mux, addr)` (or `chi.AttachRouter(builder, r, addr)`) binds a mux/router
+`builder.Attach(nethttp.NewServerTransport(nethttp.ServerTransportOptions{Mux: mux, Addr: addr}))` (or `builder.Attach(chi.NewServerTransport(chi.ServerTransportOptions{Router: r, Addr: addr}))`) binds a mux/router
 + address to `builder` as its `rest.ServerTransport`. From there, `builder.Serve(ctx)` wires every
 route (both plain and SSE) onto the mux/router AND owns its own `*http.Server`, blocking until
 `ctx` is cancelled (graceful shutdown via `http.Server.Shutdown`):
@@ -258,7 +258,7 @@ builder := rest.NewServer(rest.Info{Title: "My API", Version: "1.0.0"})
 _, _ = createUserRoute.Register(builder)
 
 mux := http.NewServeMux()
-if err := nethttp.AttachMux(builder, mux, ":8080"); err != nil {
+if err := builder.Attach(nethttp.NewServerTransport(nethttp.ServerTransportOptions{Mux: mux, Addr: ":8080"})); err != nil {
     log.Fatal(err)
 }
 err := builder.Serve(ctx) // blocks, owns its own http.Server

@@ -227,7 +227,7 @@ func main() {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	if err := nethttp.Attach(client, srv.Client(), srv.URL); err != nil {
+	if err := client.Attach(nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
 		fmt.Fprintf(os.Stderr, "Attach failed: %v\n", err)
 		os.Exit(1)
 	}

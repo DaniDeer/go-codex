@@ -53,7 +53,7 @@ func TestSubscribe_ValueBased_DeliversMessage(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	if err := subscribe(ctx, caller, sub, 1,
+	if err := subscribe(ctx, caller, sub,
 		func(_ context.Context, r sensorReading) error { received = r; return nil },
 		SubscribeOptions{}); err != nil {
 		t.Fatalf("Subscribe: %v", err)
@@ -87,8 +87,7 @@ func TestSubscribe_TopicFilter_DerivesWildcardFromTemplate(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := subscribeWithHandle(ctx, client, router, handle, 1,
-		func(context.Context, sensorReading) error { return nil },
+	if err := subscribeWithHandle(ctx, client, router, handle, func(context.Context, sensorReading) error { return nil },
 		SubscribeOptions{}); err != nil {
 		t.Fatalf("SubscribeWithHandle: %v", err)
 	}
@@ -124,8 +123,7 @@ func TestSubscribe_TopicFilter_ExplicitOverrideWins(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := subscribeWithHandle(ctx, client, router, handle, 1,
-		func(context.Context, sensorReading) error { return nil },
+	if err := subscribeWithHandle(ctx, client, router, handle, func(context.Context, sensorReading) error { return nil },
 		SubscribeOptions{TopicFilter: "sensors/#"}); err != nil {
 		t.Fatalf("SubscribeWithHandle: %v", err)
 	}
@@ -200,7 +198,7 @@ func TestServeSubscribers_HandlerOpts_QoSDispatch(t *testing.T) {
 	ch := events.NewChannel[sensorReading]("sensors/qos", sensorCodec)
 	sub := ch.WithSubscribe(events.Subscribe{}).
 		WithHandler(func(context.Context, sensorReading) error { return nil }).
-		WithOptions(SubscribeOptions{QoS: 2})
+		WithOptions(SubscribeOptions{Capabilities: []Capability{QoS(2)}})
 
 	if err := sub.Register(evtClient); err != nil {
 		t.Fatalf("Register: %v", err)
@@ -223,76 +221,6 @@ func TestServeSubscribers_HandlerOpts_QoSDispatch(t *testing.T) {
 	}
 	if got := client.subscribed[0].Subscriptions[0].QoS; got != 2 {
 		t.Errorf("want QoS 2 from HandlerOpts dispatch, got %d", got)
-	}
-}
-
-// TestServeSubscribers_DeclaredQoS_UsedAsFallback exercises
-// the declarative MQTT QoS/Retained mechanism: a declared
-// events.Subscribe.QoS is used as the FALLBACK default when no explicit
-// SubscribeOptions.QoS override is set.
-func TestServeSubscribers_DeclaredQoS_UsedAsFallback(t *testing.T) {
-	client := &mockClient{}
-	router := newMockRouter()
-	evtClient := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-
-	ch := events.NewChannel[sensorReading]("sensors/declared-qos", sensorCodec)
-	sub := ch.WithSubscribe(events.Subscribe{QoS: events.QoSExactlyOnce}).
-		WithHandler(func(context.Context, sensorReading) error { return nil })
-
-	if err := sub.Register(evtClient); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-
-	caller := newCaller(client, router, evtClient)
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- caller.ServeSubscribers(ctx) }()
-
-	router.waitHandler("sensors/declared-qos")
-	time.Sleep(20 * time.Millisecond)
-	cancel()
-	<-done
-
-	client.mu.Lock()
-	defer client.mu.Unlock()
-	if len(client.subscribed) != 1 || len(client.subscribed[0].Subscriptions) != 1 {
-		t.Fatalf("expected exactly 1 subscription, got %+v", client.subscribed)
-	}
-	if got := client.subscribed[0].Subscriptions[0].QoS; got != 2 {
-		t.Errorf("want QoS 2 from declared Subscribe.QoS fallback, got %d", got)
-	}
-}
-
-// TestServeSubscribers_ExplicitQoSOverridesDeclared confirms an explicit
-// SubscribeOptions.QoS (non-zero) still wins over a declared Subscribe.QoS.
-func TestServeSubscribers_ExplicitQoSOverridesDeclared(t *testing.T) {
-	client := &mockClient{}
-	router := newMockRouter()
-	evtClient := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-
-	ch := events.NewChannel[sensorReading]("sensors/explicit-qos", sensorCodec)
-	sub := ch.WithSubscribe(events.Subscribe{QoS: events.QoSExactlyOnce}).
-		WithHandler(func(context.Context, sensorReading) error { return nil }).
-		WithOptions(SubscribeOptions{QoS: 1})
-
-	if err := sub.Register(evtClient); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-
-	caller := newCaller(client, router, evtClient)
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- caller.ServeSubscribers(ctx) }()
-
-	router.waitHandler("sensors/explicit-qos")
-	time.Sleep(20 * time.Millisecond)
-	cancel()
-	<-done
-
-	client.mu.Lock()
-	defer client.mu.Unlock()
-	if got := client.subscribed[0].Subscriptions[0].QoS; got != 1 {
-		t.Errorf("want explicit QoS 1 to win over declared QoS 2, got %d", got)
 	}
 }
 
@@ -330,7 +258,7 @@ func TestServeOneSubscriber_Shortcut(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- serveOneSubscriber(ctx, caller, sub, 1,
+		done <- serveOneSubscriber(ctx, caller, sub,
 			func(_ context.Context, r sensorReading) error { received = r; return nil },
 			SubscribeOptions{})
 	}()
@@ -369,8 +297,7 @@ func TestSubscribeMW_WrongShape_ReturnsMiddlewareShapeError(t *testing.T) {
 		t.Fatalf("Handle: %v", err)
 	}
 
-	err = subscribeWithHandle(context.Background(), client, router, handle, 1,
-		func(context.Context, sensorReading) error { return nil },
+	err = subscribeWithHandle(context.Background(), client, router, handle, func(context.Context, sensorReading) error { return nil },
 		SubscribeOptions{})
 	var shapeErr middleware.MiddlewareShapeError
 	if !errors.As(err, &shapeErr) {
@@ -391,7 +318,7 @@ func TestPublishMW_WrongShape_ReturnsMiddlewareShapeError(t *testing.T) {
 	}
 
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
-	err = publish(context.Background(), client, handle, 1, false, reading, nil, true, PublishOptions[sensorReading]{})
+	err = publish(context.Background(), client, handle, reading, nil, true, PublishOptions[sensorReading]{})
 	var shapeErr middleware.MiddlewareShapeError
 	if !errors.As(err, &shapeErr) {
 		t.Fatalf("want middleware.MiddlewareShapeError, got %v", err)
@@ -442,8 +369,7 @@ func TestSubscribeMW_GeneralShape_WrapsHandler(t *testing.T) {
 	var received sensorReading
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := subscribeWithHandle(ctx, client, router, handle, 1,
-		func(_ context.Context, r sensorReading) error { received = r; return nil },
+	if err := subscribeWithHandle(ctx, client, router, handle, func(_ context.Context, r sensorReading) error { received = r; return nil },
 		SubscribeOptions{}); err != nil {
 		t.Fatalf("SubscribeWithHandle: %v", err)
 	}
@@ -474,7 +400,7 @@ func TestPublishMW_SecurityShape_WritesIntoPayload(t *testing.T) {
 	}
 
 	reading := sensorReading{SensorID: "00000000-0000-0000-0000-000000000000", Value: 1.0}
-	if err := publish(context.Background(), client, handle, 1, false, reading, nil, true, PublishOptions[sensorReading]{}); err != nil {
+	if err := publish(context.Background(), client, handle, reading, nil, true, PublishOptions[sensorReading]{}); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	pub2 := client.lastPublished()
@@ -518,8 +444,7 @@ func TestObservability_Subscribe_RecordsSuccessAndFailure(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := subscribeWithHandle(ctx, client, router, handle, 1,
-		func(context.Context, sensorReading) error { return nil },
+	if err := subscribeWithHandle(ctx, client, router, handle, func(context.Context, sensorReading) error { return nil },
 		// NOTE: opts.Observer intentionally left nil here — Observability's
 		// own obs (closed over above) is independent of opts.Observer;
 		// both fire, so obs.subscribes accumulates from Observability's
@@ -596,7 +521,7 @@ func ExampleSubscribe() {
 	sub := ch.WithSubscribe(events.Subscribe{Summary: "Sensor readings"})
 
 	ctx := context.Background()
-	err := subscribe(ctx, caller, sub, 1,
+	err := subscribe(ctx, caller, sub,
 		func(_ context.Context, r sensorReading) error {
 			fmt.Printf("received reading from %s: %.1f\n", r.SensorID, r.Value)
 			return nil

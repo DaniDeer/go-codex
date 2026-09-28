@@ -55,14 +55,13 @@ func newCaller(client MQTTClient, router MQTTRouter, eventsClient *events.Client
 //	// OLD (still available as SubscribeWithHandle):
 //	err := mqtt5.SubscribeWithHandle(ctx, client, router, handle, qos, fn, opts)
 //
-//	// NEW:
+//	// NEW: QoS is supplied via opts.Capabilities (Phase 4 — the sole mechanism).
 //	caller := mqtt5.newCaller(client, router, nil) // nil = no spec
-//	err := mqtt5.subscribe(ctx, caller, sub, qos, fn, opts)
+//	err := mqtt5.subscribe(ctx, caller, sub, fn, opts)
 func subscribe[T any](
 	ctx context.Context,
 	caller *caller,
 	sub events.Subscriber[T],
-	qos byte,
 	fn func(context.Context, T) error,
 	opts SubscribeOptions,
 	formats ...format.Format[T],
@@ -71,7 +70,7 @@ func subscribe[T any](
 	if err != nil {
 		return err
 	}
-	return subscribeWithHandle(ctx, caller.client, caller.router, handle, qos, fn, opts, formats...)
+	return subscribeWithHandle(ctx, caller.client, caller.router, handle, fn, opts, formats...)
 }
 
 // serveOneSubscriber builds a scratch, single-channel [*events.Client],
@@ -87,12 +86,10 @@ func serveOneSubscriber[T any](
 	ctx context.Context,
 	caller *caller,
 	sub events.Subscriber[T],
-	qos byte,
 	fn func(context.Context, T) error,
 	opts SubscribeOptions,
 	formats ...format.Format[T],
 ) error {
-	opts.QoS = qos
 	scratch := events.NewClient(events.WithInfo(events.Info{}))
 	if err := sub.WithHandler(fn).WithOptions(opts).Register(scratch); err != nil {
 		return err
@@ -144,24 +141,18 @@ func (c *caller) ServeSubscribers(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		// Declared events.Subscribe.QoS is the FALLBACK default — an
-		// explicit SubscribeOptions.QoS override (attached via
-		// Subscriber.WithOptions) still wins when set to a non-zero
-		// value.
-		if opts.QoS == 0 {
-			opts.QoS = byte(info.subscribeQoS)
-		}
 		obsForCap := opts.Observer
 		if obsForCap == nil {
 			obsForCap = stats.ObserverFromContext(ctx)
 		}
-		// opts.Capabilities (the RECOMMENDED, sealed path) overrides
-		// opts.QoS when supplied — reported once per exercised
-		// capability via [stats.CapabilityObserver].
-		if capQoS, qosSet := events.ResolveCapabilityValue[Capability, QoS](opts.Capabilities); qosSet {
-			opts.QoS = byte(capQoS)
-			events.RecordCapabilityApplied(obsForCap, info.topic, capQoS)
-		}
+		// opts.Capabilities is the SOLE mechanism (docs/roadmap/
+		// capability-requirement-composition.md Phase 4/4b — the former
+		// events.Subscribe.QoS declared-fallback field was REMOVED
+		// entirely, closing that parallel non-Capability-shaped
+		// declaration path), applied via the API-layer-owned
+		// [events.ApplyCapabilities].
+		var wire WireAttributes
+		events.ApplyCapabilities(opts.Capabilities, &wire, obsForCap, info.topic)
 		if covErr := events.VerifyCapabilityCoverage(info.topic, info.requirements, opts.Capabilities); covErr != nil {
 			return covErr
 		}
@@ -171,15 +162,17 @@ func (c *caller) ServeSubscribers(ctx context.Context) error {
 		}
 
 		g.Go(func() error {
-			return c.serveOneEntry(gctx, filter, opts, info)
+			return c.serveOneEntry(gctx, filter, wire.QoS, opts, info)
 		})
 	}
 	return g.Wait()
 }
 
 // serveOneEntry registers and subscribes exactly one erased subscriber
-// entry against c.client/c.router, blocking until ctx is cancelled.
-func (c *caller) serveOneEntry(ctx context.Context, filter string, opts SubscribeOptions, info erasedSubscriberHandle) error {
+// entry against c.client/c.router, blocking until ctx is cancelled. qos
+// is the RESOLVED wire-level QoS (declared fallback + Capabilities
+// already applied by [(*caller).ServeSubscribers]).
+func (c *caller) serveOneEntry(ctx context.Context, filter string, qos byte, opts SubscribeOptions, info erasedSubscriberHandle) error {
 	obs := opts.Observer
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
@@ -189,7 +182,7 @@ func (c *caller) serveOneEntry(ctx context.Context, filter string, opts Subscrib
 	c.router.RegisterHandler(filter, handler)
 
 	_, err := c.client.Subscribe(ctx, &pahomqtt5.Subscribe{
-		Subscriptions: []pahomqtt5.SubscribeOptions{{Topic: filter, QoS: opts.QoS}},
+		Subscriptions: []pahomqtt5.SubscribeOptions{{Topic: filter, QoS: qos}},
 	})
 	if err != nil {
 		c.router.UnregisterHandler(filter)
@@ -244,10 +237,6 @@ type erasedSubscriberHandle struct {
 	decodeFn        reflect.Value
 	handlerFn       reflect.Value
 	msgType         reflect.Type
-	// subscribeQoS is the declared events.Subscribe.QoS — the FALLBACK
-	// default consulted when SubscribeOptions.QoS is left at its own zero
-	// value.
-	subscribeQoS events.MQTTQoS
 	// requirements holds the channel's declared [events.CapabilityRequirement]
 	// values, consulted by [events.CheckCapabilityCoverage].
 	requirements []events.CapabilityRequirement
@@ -269,7 +258,6 @@ func extractErasedSubscriberHandle(handleAny any) (erasedSubscriberHandle, error
 	securitySchemes, _ := elem.FieldByName("SecuritySchemes").Interface().(map[string]events.SecurityScheme)
 	globalSecurity, _ := elem.FieldByName("GlobalSecurity").Interface().([]route.SecurityRequirement)
 	implementations, _ := elem.FieldByName("Implementations").Interface().([]middleware.ServerImplementation)
-	subscribeQoS, _ := elem.FieldByName("SubscribeQoS").Interface().(events.MQTTQoS)
 	requirements, _ := elem.FieldByName("Requirements").Interface().([]events.CapabilityRequirement)
 	return erasedSubscriberHandle{
 		topic:           elem.FieldByName("Topic").String(),
@@ -281,7 +269,6 @@ func extractErasedSubscriberHandle(handleAny any) (erasedSubscriberHandle, error
 		decodeFn:        elem.FieldByName("Decode"),
 		handlerFn:       handlerFn,
 		msgType:         handlerFn.Type().In(1),
-		subscribeQoS:    subscribeQoS,
 		requirements:    requirements,
 	}, nil
 }

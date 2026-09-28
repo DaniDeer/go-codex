@@ -29,7 +29,7 @@ func TestDeadLetter_ServeRequestPayloadDecode_Published(t *testing.T) {
 
 	serverClient := &mockClient{}
 	serverRouter := newMockRouter()
-	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -84,7 +84,7 @@ func TestDeadLetter_ServeReplyTransmissionFailure_Published(t *testing.T) {
 	// letting the dead-letter publish (a DIFFERENT topic) succeed.
 	serverClient := &topicFailingClient{failTopic: "replies/client-1", failErr: errors.New("broker rejected reply")}
 	serverRouter := newMockRouter()
-	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)

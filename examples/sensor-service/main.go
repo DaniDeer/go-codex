@@ -369,7 +369,7 @@ func main() {
 	// AttachMux's Handler must be the bare mux while every request here
 	// still needs obs injected into its context first.
 	restAddr := mustFreeAddr()
-	must(nethttp.AttachMux(ioports.RESTBuilder, mux, restAddr), "AttachMux create/get routes")
+	must(ioports.RESTBuilder.Attach(nethttp.NewServerTransport(nethttp.ServerTransportOptions{Mux: mux, Addr: restAddr})), "AttachMux create/get routes")
 	restCtx, restCancel := context.WithCancel(context.Background())
 	go func() { _ = ioports.RESTBuilder.Serve(restCtx) }()
 	waitForReady(restAddr) // blocks until AttachMux's wiring above has completed

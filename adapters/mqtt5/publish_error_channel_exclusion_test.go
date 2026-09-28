@@ -42,7 +42,7 @@ func TestPublish_ClientMiddlewareFnError_NeverConsultsErrorChannel(t *testing.T)
 
 	client := &mockClient{}
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1}
-	pubErr := publishHandle(context.Background(), client, handle, 1, false, reading, PublishOptions[sensorReading]{})
+	pubErr := publishHandle(context.Background(), client, handle, reading, PublishOptions[sensorReading]{Capabilities: []Capability{QoS(1)}})
 
 	if pubErr == nil {
 		t.Fatal("want the middleware Fn error returned DIRECTLY to the caller, got nil")

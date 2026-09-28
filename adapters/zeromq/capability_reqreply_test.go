@@ -24,8 +24,7 @@ func TestServe_CapabilitiesAppliedViaExistingApplyCapabilities(t *testing.T) {
 	server, _ := newComputeServerAndHandler(t)
 	sock := &capableSocket{mockSocket: &mockSocket{}}
 
-	if err := AttachServer(server, map[string]FramedSocket{"/compute": sock},
-		ServeOptions{Capabilities: []Capability{HWM(42), Conflate(true)}}); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Sockets: map[string]FramedSocket{"/compute": sock}, Serve: ServeOptions{Capabilities: []Capability{HWM(42), Conflate(true)}}})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
@@ -48,8 +47,7 @@ func TestRouterServe_CapabilitiesAppliedViaExistingApplyCapabilities(t *testing.
 	server, _ := newComputeServerAndHandler(t)
 	sock := &capableSocket{mockSocket: &mockSocket{}}
 
-	if err := AttachRouterServer(server, map[string]FramedSocket{"/compute": sock},
-		ServeOptions{Capabilities: []Capability{HWM(43), Conflate(true)}}); err != nil {
+	if err := server.Attach(NewRouterServerTransport(RouterServerTransportOptions{Sockets: map[string]FramedSocket{"/compute": sock}, Serve: ServeOptions{Capabilities: []Capability{HWM(43), Conflate(true)}}})); err != nil {
 		t.Fatalf("AttachRouterServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
@@ -71,8 +69,7 @@ func TestRouterServe_CapabilitiesAppliedViaExistingApplyCapabilities(t *testing.
 func TestCall_CapabilitiesAppliedViaExistingApplyCapabilities(t *testing.T) {
 	sock := &capableSocket{mockSocket: &mockSocket{}}
 	client := reqreply.NewClient()
-	if err := AttachClient(client, map[string]FramedSocket{"/compute": sock},
-		CallOptions{Capabilities: []Capability{HWM(44), Conflate(true)}}); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Sockets: map[string]FramedSocket{"/compute": sock}, Call: CallOptions{Capabilities: []Capability{HWM(44), Conflate(true)}}})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 	route := reqreply.NewRoute[computeReq, computeResp](
@@ -99,8 +96,7 @@ func TestCall_CapabilitiesAppliedViaExistingApplyCapabilities(t *testing.T) {
 func TestDealerCall_CapabilitiesAppliedViaExistingApplyCapabilities(t *testing.T) {
 	sock := &capableSocket{mockSocket: &mockSocket{}}
 	client := reqreply.NewClient()
-	if err := AttachDealerClient(client, map[string]FramedSocket{"/compute": sock},
-		CallOptions{Capabilities: []Capability{HWM(45), Conflate(true)}}); err != nil {
+	if err := client.Attach(NewDealerClientTransport(DealerClientTransportOptions{Sockets: map[string]FramedSocket{"/compute": sock}, Call: CallOptions{Capabilities: []Capability{HWM(45), Conflate(true)}}})); err != nil {
 		t.Fatalf("AttachDealerClient: %v", err)
 	}
 	route := reqreply.NewRoute[computeReq, computeResp](

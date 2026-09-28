@@ -1,5 +1,5 @@
 // Package mqtt5broker assembles routes/+handlers/ onto an in-process mock
-// MQTT 5 broker via mqtt5.Attach — the events analogue of
+// MQTT 5 broker via mqtt5.NewTransport+Client.Attach — the events analogue of
 // examples/reqreply-api's mqtt5server package. Demonstrates: User
 // Properties + ContentType, Connect-level security, error-path
 // ergonomics (events.ErrorChannel).
@@ -44,7 +44,7 @@ func Build() (*Built, error) {
 		Description: "Production MQTT 5 broker",
 	})
 
-	if err := mqtt5adapter.Attach(client, broker, router); err != nil {
+	if err := client.Attach(mqtt5adapter.NewTransport(mqtt5adapter.TransportOptions{Client: broker, Router: router})); err != nil {
 		return nil, err
 	}
 
@@ -98,10 +98,28 @@ func (r *MockRouter) UnregisterHandler(topic string) {
 
 // WaitHandler blocks until the handler for topic is registered or 1 second
 // passes — Client.Attach's subscription registration runs asynchronously.
+// WaitHandler matches topic against a registered key EITHER literally OR
+// after wildcard-normalisation (topic's own "{var}" placeholders replaced
+// with "+", mirroring adapters/mqtt5's deriveWildcardFilter) — a caller
+// may pass either the raw declared "{varName}" template (this package's
+// own established calling convention) or the already-derived "+"-wildcard
+// filter actually registered with the router; both must resolve
+// immediately once registration completes, not just eventually via this
+// loop's own timeout margin. Confirmed via a real regression
+// (docs/roadmap/capability-requirement-composition.md's Phase 4d): an
+// EXACT-only match here silently masked handler-registration latency
+// behind this loop's up-to-1-second worst-case wait, which a
+// SHORT-lived caller ctx (e.g. handleCtx, 300-500ms, also governing
+// events.Client.Subscribe's OWN un-registration-on-cancel lifetime) can
+// easily lose the race against.
 func (r *MockRouter) WaitHandler(topic string) {
+	normalised := normaliseTopic(topic)
 	for i := 0; i < 200; i++ {
 		r.mu.RLock()
 		_, ok := r.handlers[topic]
+		if !ok {
+			_, ok = r.handlers[normalised]
+		}
 		r.mu.RUnlock()
 		if ok {
 			return

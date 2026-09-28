@@ -98,7 +98,7 @@ func TestSecuredClient_TransparentDelegation(t *testing.T) {
 	}
 
 	// Publish through the wrapper — behaves identically to the raw client.
-	err = publish(context.Background(), secured, newChannelHandle(), 1, false,
+	err = publish(context.Background(), secured, newChannelHandle(),
 		sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}, nil, true,
 		PublishOptions[sensorReading]{})
 	if err != nil {
@@ -111,8 +111,7 @@ func TestSecuredClient_TransparentDelegation(t *testing.T) {
 	// Subscribe through the wrapper — behaves identically to the raw client.
 	router := newMockRouter()
 	var received sensorReading
-	if err := subscribeWithHandle(context.Background(), secured, router, newChannelHandle(), 1,
-		func(_ context.Context, r sensorReading) error { received = r; return nil },
+	if err := subscribeWithHandle(context.Background(), secured, router, newChannelHandle(), func(_ context.Context, r sensorReading) error { received = r; return nil },
 		SubscribeOptions{}); err != nil {
 		t.Fatalf("Subscribe via SecuredClient: %v", err)
 	}

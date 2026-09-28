@@ -1,5 +1,5 @@
 // Package zeromqbroker assembles routes/+handlers/ onto an in-process
-// mock ZeroMQ PUB/SUB socket pair via zeromq.Attach — the events analogue
+// mock ZeroMQ PUB/SUB socket pair via zeromq.NewTransport+Client.Attach — the events analogue
 // of examples/reqreply-api's zeromqserver package. Demonstrates: ZeroMQ
 // PUB/SUB full roundtrip and SubscribeMW-based security via
 // handlers.ZeromqSecurityImpl.
@@ -38,7 +38,7 @@ func Build() (*Built, error) {
 		Version:     "1.0.0",
 		Description: "Publisher-side connection for sensor readings over ZeroMQ PUB/SUB.",
 	}))
-	if err := zeromqadapter.Attach(pub, pubSock); err != nil {
+	if err := pub.Attach(zeromqadapter.NewTransport(zeromqadapter.TransportOptions{Socket: pubSock})); err != nil {
 		return nil, err
 	}
 	if _, err := routes.ZeromqReadingsPub.Handle(pub); err != nil {
@@ -50,7 +50,7 @@ func Build() (*Built, error) {
 		Version:     "1.0.0",
 		Description: "Subscriber-side connection for sensor readings over ZeroMQ PUB/SUB.",
 	}))
-	if err := zeromqadapter.Attach(sub, subSock); err != nil {
+	if err := sub.Attach(zeromqadapter.NewTransport(zeromqadapter.TransportOptions{Socket: subSock})); err != nil {
 		return nil, err
 	}
 	roundtripSub := routes.ZeromqReadingsSub.WithHandler(handlers.PrintReading("zeromq"))

@@ -65,7 +65,7 @@ func demoErrorPatternDeclarationMechanisms(ctx context.Context) {
 		fmt.Fprintf(os.Stderr, "unexpected error registering conflict route: %v\n", err)
 		os.Exit(1)
 	}
-	if err := mqtt5adapter.AttachServer(server, broker, router); err != nil {
+	if err := server.Attach(mqtt5adapter.NewServerTransport(mqtt5adapter.ServerTransportOptions{Client: broker, Router: router})); err != nil {
 		fmt.Fprintf(os.Stderr, "unexpected error attaching server: %v\n", err)
 		os.Exit(1)
 	}
@@ -73,7 +73,7 @@ func demoErrorPatternDeclarationMechanisms(ctx context.Context) {
 	time.Sleep(50 * time.Millisecond)
 
 	client := reqreply.NewClient()
-	if err := mqtt5adapter.AttachClient(client, broker, router); err != nil {
+	if err := client.Attach(mqtt5adapter.NewClientTransport(mqtt5adapter.ClientTransportOptions{Client: broker, Router: router})); err != nil {
 		fmt.Fprintf(os.Stderr, "unexpected error attaching client: %v\n", err)
 		os.Exit(1)
 	}
@@ -107,7 +107,7 @@ func demoErrorPatternClientMatchMechanisms(ctx context.Context, built *mqtt5serv
 	fmt.Println("\n── Demo: reqreply client-side ErrorPattern matching: 3 mechanisms ──")
 
 	client := reqreply.NewClient()
-	if err := mqtt5adapter.AttachClient(client, built.Broker, built.Router); err != nil {
+	if err := client.Attach(mqtt5adapter.NewClientTransport(mqtt5adapter.ClientTransportOptions{Client: built.Broker, Router: built.Router})); err != nil {
 		fmt.Fprintf(os.Stderr, "unexpected error attaching client: %v\n", err)
 		os.Exit(1)
 	}
@@ -184,7 +184,7 @@ func demoErrorPatternDeadLetterFallback(ctx context.Context) {
 		}
 	})
 
-	if err := mqtt5adapter.AttachServer(server, broker, router); err != nil {
+	if err := server.Attach(mqtt5adapter.NewServerTransport(mqtt5adapter.ServerTransportOptions{Client: broker, Router: router})); err != nil {
 		fmt.Fprintf(os.Stderr, "unexpected error attaching server: %v\n", err)
 		os.Exit(1)
 	}
@@ -192,7 +192,7 @@ func demoErrorPatternDeadLetterFallback(ctx context.Context) {
 	time.Sleep(50 * time.Millisecond)
 
 	client := reqreply.NewClient()
-	if err := mqtt5adapter.AttachClient(client, broker, router); err != nil {
+	if err := client.Attach(mqtt5adapter.NewClientTransport(mqtt5adapter.ClientTransportOptions{Client: broker, Router: router})); err != nil {
 		fmt.Fprintf(os.Stderr, "unexpected error attaching client: %v\n", err)
 		os.Exit(1)
 	}
@@ -234,7 +234,7 @@ func demoErrorPatternMiddlewareCombo(ctx context.Context) {
 		os.Exit(1)
 	}
 
-	if err := mqtt5adapter.AttachServer(server, broker, router); err != nil {
+	if err := server.Attach(mqtt5adapter.NewServerTransport(mqtt5adapter.ServerTransportOptions{Client: broker, Router: router})); err != nil {
 		fmt.Fprintf(os.Stderr, "unexpected error attaching server: %v\n", err)
 		os.Exit(1)
 	}
@@ -242,7 +242,7 @@ func demoErrorPatternMiddlewareCombo(ctx context.Context) {
 	time.Sleep(50 * time.Millisecond)
 
 	client := reqreply.NewClient()
-	if err := mqtt5adapter.AttachClient(client, broker, router); err != nil {
+	if err := client.Attach(mqtt5adapter.NewClientTransport(mqtt5adapter.ClientTransportOptions{Client: broker, Router: router})); err != nil {
 		fmt.Fprintf(os.Stderr, "unexpected error attaching client: %v\n", err)
 		os.Exit(1)
 	}
@@ -308,7 +308,7 @@ func demoErrorPatternPortAdapter(ctx context.Context) {
 	time.Sleep(50 * time.Millisecond)
 
 	client := reqreply.NewClient()
-	if err := mqtt5adapter.AttachClient(client, broker, router); err != nil {
+	if err := client.Attach(mqtt5adapter.NewClientTransport(mqtt5adapter.ClientTransportOptions{Client: broker, Router: router})); err != nil {
 		fmt.Fprintf(os.Stderr, "unexpected error attaching client: %v\n", err)
 		os.Exit(1)
 	}

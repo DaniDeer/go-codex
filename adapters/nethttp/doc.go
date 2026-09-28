@@ -26,7 +26,7 @@
 //	if err := createUser.Register(b); err != nil { ... }
 //
 //	mux := http.NewServeMux()
-//	if err := nethttp.AttachMux(b, mux, ":8080"); err != nil { ... }
+//	if err := b.Attach(nethttp.NewServerTransport(nethttp.ServerTransportOptions{Mux: mux, Addr: ":8080"})); err != nil { ... }
 //	if err := b.Serve(ctx); err != nil { ... } // blocks, owns its own http.Server
 //
 // Error responses use the JSON body {"error":"<message>"} by default: 400 for

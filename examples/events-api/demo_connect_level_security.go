@@ -40,9 +40,19 @@ func demoConnectLevelSecurity(ctx context.Context) {
 	}
 	fmt.Println("  ✓ credential accepted — secured is a drop-in replacement for broker")
 
-	securedTransport := mqtt5adapter.NewPublishTransport[routes.SensorReading](secured, 1, false,
-		mqtt5adapter.PublishOptions[routes.SensorReading]{})
-	if err := events.PublishHandle(ctx, routes.PlainReadingsPub, securedTransport,
+	// The api-layer-owned Client.Attach workflow (docs/roadmap/
+	// capability-requirement-composition.md's Phase 4d): mqtt5.NewTransport
+	// builds the configured transport, evClient.Attach binds it — secured
+	// is a drop-in MQTTClient replacement, so nothing else changes.
+	evClient := events.NewClient(events.WithInfo(events.Info{Title: "Connect-level security demo", Version: "1.0.0"}))
+	pub := routes.PlainReadingsPub.WithOptions(mqtt5adapter.PublishOptions[routes.SensorReading]{
+		Capabilities: []mqtt5adapter.Capability{mqtt5adapter.QoSAtLeastOnce},
+	})
+	if err := evClient.Attach(mqtt5adapter.NewTransport(mqtt5adapter.TransportOptions{Client: secured, Router: router})); err != nil {
+		fmt.Printf("  [error] Attach: %v\n", err)
+		return
+	}
+	if err := evClient.Publish(ctx, pub,
 		routes.SensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}); err != nil {
 		fmt.Printf("  [error] Publish: %v\n", err)
 	} else {

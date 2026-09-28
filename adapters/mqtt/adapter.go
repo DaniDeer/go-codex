@@ -535,7 +535,7 @@ type PublishOptions[T any] struct {
 // Example — [Attach] + [events.Client.Publish] (full pub/sub workflow,
 // static or template topics resolved from msg automatically):
 //
-//	_ = mqtt.Attach(eventsClient, client)
+//	_ = eventsClient.Attach(mqtt.NewTransport(mqtt.TransportOptions{Client: client}))
 //	err := eventsClient.Publish(ctx, notifChannel.WithPublish(events.Publish{}), notification)
 //
 // publish waits for broker acknowledgement, respecting ctx cancellation. If the
@@ -558,8 +558,10 @@ func publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.
 	}
 	// opts.Capabilities (the RECOMMENDED, sealed path) is consulted as a
 	// fallback when the caller didn't pass an explicit non-default
-	// qos/retained — mirrors handle.ResolvePublishAttributes's own
-	// zero-value fallback precedence.
+	// qos/retained. Full migration of this package to the
+	// Capability/Apply-only shape mqtt5 already has (docs/roadmap/
+	// capability-requirement-composition.md's Phase 4/4b) is Phase 5's
+	// job.
 	capQoS, qosSet := events.ResolveCapabilityValue[Capability, QoS](opts.Capabilities)
 	capRetained, retainedSet := events.ResolveCapabilityValue[Capability, Retained](opts.Capabilities)
 	if qos == 0 && qosSet {

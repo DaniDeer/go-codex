@@ -164,8 +164,10 @@ func Build() (*Built, error) {
 	// reqreply.VerifyCapabilityCoverage at Serve setup, then applied to
 	// EVERY reply publish for this route (success, error-pattern-matched,
 	// and dead-letter alike, per Phase 2's server-side plumbing fix).
-	if err := mqtt5adapter.AttachServer(server, broker, router,
-		mqtt5adapter.ServeOptions{Capabilities: []mqtt5adapter.Capability{mqtt5adapter.QoSAtLeastOnce}}); err != nil {
+	if err := server.Attach(mqtt5adapter.NewServerTransport(mqtt5adapter.ServerTransportOptions{
+		Client: broker, Router: router,
+		Serve: mqtt5adapter.ServeOptions{Capabilities: []mqtt5adapter.Capability{mqtt5adapter.QoSAtLeastOnce}},
+	})); err != nil {
 		return nil, err
 	}
 	return &Built{

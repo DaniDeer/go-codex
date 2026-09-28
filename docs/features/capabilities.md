@@ -30,17 +30,64 @@ A `Capability` is a **sealed, per-adapter, compile-time-checked** value
 that declares a protocol-native, transport-specific behavior — MQTT
 quality-of-service, MQTT retained-message flags, ZeroMQ high-water-mark,
 and so on. Each adapter defines its OWN `Capability` interface, sealed to
-that package (mirroring the technique `ports.Pattern` already uses):
+that package (mirroring the technique `ports.Pattern` already uses).
+
+As of [Phase 4 of the capability-requirement-composition
+roadmap](../roadmap/capability-requirement-composition.md), `Capability`
+is a REAL programming interface, not a zero-cost marker: every value
+must implement `Apply(Target) (applied bool, err error)` against its
+adapter-specific target object, and `api/events` OWNS the generic
+dispatch loop that calls it — `events.ApplyCapabilities[C,T]` — rather
+than each adapter hand-rolling its own resolve+assert+call sequence:
 
 ```go
-// adapters/mqtt5
-type Capability interface{ isMQTT5Capability() }
+// adapters/mqtt5 — QoS/Retained apply to a per-message WireAttributes
+// struct (the intermediate BOTH the publish and subscribe native paho
+// call sites populate/consume, since Go can't overload Apply by target
+// type and mqtt5 QoS/Retained apply to TWO different native types).
+type WireAttributes struct {
+    QoS      byte
+    Retained bool
+}
+
+type Capability interface {
+    isMQTT5Capability()
+    Apply(wire *WireAttributes) (applied bool, err error)
+}
 
 type QoS byte
-func (QoS) isMQTT5Capability() {}
+func (q QoS) Apply(wire *WireAttributes) (bool, error) {
+    wire.QoS = byte(q)
+    return true, nil
+}
 
 type Retained bool
-func (Retained) isMQTT5Capability() {}
+func (r Retained) Apply(wire *WireAttributes) (bool, error) {
+    wire.Retained = bool(r)
+    return true, nil
+}
+```
+
+```go
+// adapters/zeromq — HWM/Conflate apply directly to the adapter's own
+// FramedSocket, via the pre-existing HWMSetter/ConflateSetter optional
+// extensions (a documented no-op when sock doesn't implement them).
+type Capability interface {
+    isZeroMQCapability()
+    Apply(sock FramedSocket) (applied bool, err error)
+}
+```
+
+```go
+// api/events — the API LAYER calls through the interface; adapter code
+// shrinks to ONE call site each, replacing a hand-rolled dispatch loop.
+func ApplyCapabilities[C interface{ Apply(T) (bool, error) }, T any](
+    caps []C, target T, obs stats.Observer, location string,
+)
+
+var wire mqtt5.WireAttributes
+events.ApplyCapabilities(opts.Capabilities, &wire, obs, topic) // mqtt5
+events.ApplyCapabilities(opts.Capabilities, sock, obs, topic)  // zeromq
 ```
 
 Because the marker method is unexported, a `zeromq.Capability` value
@@ -53,21 +100,72 @@ Capabilities are supplied at **declare time**, via the adapter's existing
 `events.Subscriber.WithOptions`/`events.Publisher.WithOptions`:
 
 ```go
-sub := events.NewSubscriber(channel, transport).
+sub := channel.WithSubscribe(events.Subscribe{}).
     WithOptions(mqtt5.SubscribeOptions{
         Capabilities: []mqtt5.Capability{mqtt5.QoSAtLeastOnce},
     })
 
-pub := events.NewPublisher(channel, transport).
-    WithOptions(mqtt5.PublishOptions{
+pub := channel.WithPublish(events.Publish{}).
+    WithOptions(mqtt5.PublishOptions[SensorReading]{
         Capabilities: []mqtt5.Capability{mqtt5.Retained(true)},
     })
 ```
 
-This is purely additive alongside the pre-existing `QoS byte`/`Retained
-bool` call-time fields — those remain a documented, supported "escape
-hatch" for the common single-value case. `Capabilities` is the
-RECOMMENDED, sealed path going forward.
+**`Publisher.WithOptions` (Phase 4c):** before Phase 4c, only
+`Subscriber` had a `WithOptions` method — `Publisher` had none, so
+`events.Client.Publish`'s reflection shim had NO way to reach a declared
+Capabilities value at all (it always published at QoS 0/non-retained).
+This forced a caller who needed Capabilities to bypass the attached
+`events.Client` entirely and construct an adapter's `PublishTransport`
+directly via `mqtt5.NewPublishTransport`+`events.PublishHandle` — the
+exact shape the "zero backdoor" guardrail forbids, confirmed via a real
+example (`examples/events-api/demo_capability_mechanism.go`) that had
+done exactly this. `Publisher.WithOptions` now mirrors
+`Subscriber.WithOptions` exactly, and BOTH `events.Client.Publish` and
+`events.Client.Subscribe`'s reflection shims (`adapters/mqtt5`/`mqtt`/
+`zeromq`, all 3) resolve the declared Capabilities value and apply it
+via `events.ApplyCapabilities`/`events.ResolveCapabilityValue` before
+dispatching — a caller using an already-attached `events.Client` never
+needs to touch the adapter's own constructors for this purpose again.
+
+`events.Client.Publish`/`.Subscribe` still don't support PER-CALL format
+overrides or declared security/general-purpose middleware wrapping
+(Phase 4d's scope, not yet shipped) — a caller needing those still uses
+`subscribe`/`publish` (or the adapter's `PublishTransport`/
+`SubscribeTransport`) directly. See
+[`docs/roadmap/capability-requirement-composition.md`](../roadmap/capability-requirement-composition.md)'s
+Phase 4d section.
+
+**Breaking change (Phase 4/4b, `adapters/mqtt5` + core `api/events`):**
+`Capabilities` is now the SOLE mechanism for `adapters/mqtt5` — every
+parallel, non-`Capability`-shaped path was removed entirely, per this
+codebase's explicit "zero backdoor between the api layer and the
+adapters" guardrail (see
+[`docs/roadmap/capability-requirement-composition.md`](../roadmap/capability-requirement-composition.md)'s
+"Architectural guardrail" section):
+
+- The former call-time `qos byte, retained bool` positional parameters
+  and the `SubscribeOptions.QoS` plain field on `adapters/mqtt5` were
+  REMOVED entirely.
+- `events.MQTTQoS`/`events.PublishAttributes`/`Publisher.WithAttributes`
+  — a third, transport-agnostic, route/channel-level declaration
+  mechanism that entirely bypassed `Capability` — was DELETED from core
+  `api/events`, along with its subscribe-side mirror
+  (`events.Subscribe.QoS`/`ChannelHandle.SubscribeQoS`). Neither is
+  available anymore, on any adapter.
+- Every ports-binding convenience (`mqtt5.SubscribeAdapter`,
+  `MQTT5DrainPublishOptions`) was migrated to the SAME
+  `Capabilities []mqtt5.Capability`-only shape — no raw-value
+  constructor parameters or struct fields remain anywhere in this
+  package.
+
+`adapters/mqtt` (v3) is NOT yet fully migrated — see the roadmap doc's
+Phase 5 scope note — and still supports its OWN legacy `qos byte`/
+`retained bool` positional/field path alongside `Capabilities` today
+(its usage of the now-deleted `events.PublishAttributes`/
+`events.Subscribe.QoS` was removed in Phase 4b, since those types no
+longer exist, but its own raw fields were deliberately left standing —
+full migration is Phase 5's job).
 
 ### reqreply: the SAME sealed values, a separate `ServeOptions`/`CallOptions.Capabilities` field
 
@@ -85,15 +183,17 @@ route := reqreply.NewRoute[ComputeReq, ComputeResp]("compute/add", reqCodec, res
 
 // server side — applied to EVERY reply publish (success, error-pattern-
 // matched, and dead-letter alike):
-mqtt5.AttachServer(server, client, router,
-    mqtt5.ServeOptions{Capabilities: []mqtt5.Capability{mqtt5.QoSAtLeastOnce}})
+server.Attach(mqtt5.NewServerTransport(mqtt5.ServerTransportOptions{
+    Client: client, Router: router,
+    Serve:  mqtt5.ServeOptions{Capabilities: []mqtt5.Capability{mqtt5.QoSAtLeastOnce}},
+}))
 
 // client side — applied to the outgoing request publish:
 resp, err := mqtt5.Call(ctx, client, router, handle, req,
     mqtt5.CallOptions{Capabilities: []mqtt5.Capability{mqtt5.QoSAtLeastOnce, mqtt5.Retained(true)}})
 ```
 
-Coverage is checked once at `Serve`/`AttachServer` setup (server side
+Coverage is checked once at `Serve`/`Attach` setup (server side
 only, mirroring events' "publish side never auto-checks coverage"
 precedent) via `reqreply.VerifyCapabilityCoverage`. zeromq's REQ/REP and
 ROUTER/DEALER reqreply transports (4 real dispatch implementations —

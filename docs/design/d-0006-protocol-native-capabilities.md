@@ -20,9 +20,26 @@
 > `SubscribeOptions`/`PublishOptions` struct (attached via
 > `events.Subscriber.WithOptions`/`events.Publisher.WithOptions` —
 > §7 Review-13's resolution; NOT a new `Attach`-time parameter as this
-> doc's earlier §2.2 originally sketched). Purely additive alongside the
+> doc's earlier §2.2 originally sketched).
+>
+> **STALE, pending rework (flagged, not yet fixed here):** the paragraph
+> below describing this mechanism as "purely additive alongside the
 > pre-existing `QoS byte`/`Retained bool`/`api/events/mqtt_qos.go`
-> fields — those stay as a documented, still-supported legacy path.
+> fields... those stay as a documented, still-supported legacy path" is
+> now INCORRECT for `adapters/mqtt5`/core `api/events` —
+> [`docs/roadmap/capability-requirement-composition.md`](../roadmap/capability-requirement-composition.md)'s
+> Phase 4b deleted `api/events/mqtt_qos.go` entirely and removed the
+> legacy positional/field path from `adapters/mqtt5`, per an explicit
+> "zero backdoor between the api layer and the adapters" guardrail —
+> see that doc's "Architectural guardrail" section. This whole document
+> is scheduled for a full rework under that same roadmap's Phase 7
+> ("Review & Closeout"), which will restate this mechanism's shipped
+> shape as SOLE, not additive, and remove every "kept, not deprecated"
+> framing below. Until that rework lands, treat the ORIGINAL paragraph
+> immediately below as historical for `adapters/mqtt5`/`api/events`
+> specifically (still accurate for `adapters/mqtt` v3's OWN un-migrated
+> legacy path, and for `adapters/zeromq`, which never had a legacy
+> dual-path to begin with).
 > `events.CapabilitySpec` (a `ChannelOpt`) + `events.CheckCapabilityCoverage`
 > (called automatically by each adapter's `ServeSubscribers`) + the
 > AsyncAPI `x-capabilities` vendor-extension render — all shipped, per §7's

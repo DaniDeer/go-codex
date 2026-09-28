@@ -32,10 +32,10 @@ func TestDeadLetter_ServeRequestPayloadDecode_Published(t *testing.T) {
 
 	repSock, reqSock := newChanSocketPair()
 	dlqSock := &mockSocket{}
-	if err := AttachServer(server, map[string]FramedSocket{
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Sockets: map[string]FramedSocket{
 		"/compute-dlq-decode":     repSock,
 		"/compute-dlq-decode/dlq": dlqSock,
-	}); err != nil {
+	}})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -74,10 +74,10 @@ func TestDeadLetter_RouterServeRequestPayloadDecode_Published(t *testing.T) {
 
 	dealerSock, routerSock := newDealerRouterPair([]byte("client-1"))
 	dlqSock := &mockSocket{}
-	if err := AttachRouterServer(server, map[string]FramedSocket{
+	if err := server.Attach(NewRouterServerTransport(RouterServerTransportOptions{Sockets: map[string]FramedSocket{
 		"/compute-router-dlq-decode":     routerSock,
 		"/compute-router-dlq-decode/dlq": dlqSock,
-	}); err != nil {
+	}})); err != nil {
 		t.Fatalf("AttachRouterServer: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -120,9 +120,9 @@ func TestDeadLetter_ServeRequestPayloadDecode_NoDLQSocket_NoOp(t *testing.T) {
 	}
 
 	repSock, reqSock := newChanSocketPair()
-	if err := AttachServer(server, map[string]FramedSocket{
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Sockets: map[string]FramedSocket{
 		"/compute-dlq-decode-missing": repSock,
-	}); err != nil {
+	}})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -195,10 +195,10 @@ func TestDeadLetter_ServeReplyTransmissionFailure_Published(t *testing.T) {
 	repSock, reqSock := newChanSocketPair()
 	failingRepSock := &replySendFailingSocket{FramedSocket: repSock, failErr: errors.New("socket rejected reply")}
 	dlqSock := &mockSocket{}
-	if err := AttachServer(server, map[string]FramedSocket{
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Sockets: map[string]FramedSocket{
 		"/compute-dlq-reply-fail":     failingRepSock,
 		"/compute-dlq-reply-fail/dlq": dlqSock,
-	}); err != nil {
+	}})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -240,10 +240,10 @@ func TestDeadLetter_RouterServeReplyTransmissionFailure_Published(t *testing.T) 
 	dealerSock, routerSock := newDealerRouterPair([]byte("client-1"))
 	failingRouterSock := &replySendFailingSocket{FramedSocket: routerSock, failErr: errors.New("socket rejected reply")}
 	dlqSock := &mockSocket{}
-	if err := AttachRouterServer(server, map[string]FramedSocket{
+	if err := server.Attach(NewRouterServerTransport(RouterServerTransportOptions{Sockets: map[string]FramedSocket{
 		"/compute-router-dlq-reply-fail":     failingRouterSock,
 		"/compute-router-dlq-reply-fail/dlq": dlqSock,
-	}); err != nil {
+	}})); err != nil {
 		t.Fatalf("AttachRouterServer: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())

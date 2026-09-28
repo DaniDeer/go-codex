@@ -143,17 +143,34 @@ func demoErrorChannelSubscribeSideAndConsumer(ctx context.Context) {
 	broker := mqtt5broker.NewMockBroker(router)
 	sensorID := "f47ac10b-58cc-4372-a567-0e02b2c3d479"
 
-	// ── Consumer: subscribes to the error-output topic as an ORDINARY
-	// typed channel — no errors.As, no special decode step, just the
-	// SAME declarative Subscribe mechanism as any other message.
-	consumerTransport := mqtt5adapter.NewSubscribeTransport[routes.SensorErrorPayload](broker, router, 1, mqtt5adapter.SubscribeOptions{})
+	// docs/roadmap/capability-requirement-composition.md's Phase 4d: ONE
+	// api-layer-owned Client, attached once, used for every Subscribe
+	// below — no adapter-specific NewSubscribeTransport escape hatch
+	// needed. (A prior attempt at this conversion hit a real, now-fixed
+	// MockRouter.WaitHandler bug — see that function's own doc comment
+	// — that masked handler-registration latency behind an up-to-1s
+	// worst-case wait, racing handleCtx's own short lifetime.)
+	evtClient := events.NewClient(events.WithInfo(events.Info{Title: "Error channel demo", Version: "1.0.0"}))
+	if err := evtClient.Attach(mqtt5adapter.NewTransport(mqtt5adapter.TransportOptions{Client: broker, Router: router})); err != nil {
+		fmt.Printf("  [error] Attach: %v\n", err)
+		return
+	}
+	errorSub := routes.SensorErrorTopicSub.WithOptions(mqtt5adapter.SubscribeOptions{
+		Capabilities: []mqtt5adapter.Capability{mqtt5adapter.QoSAtLeastOnce},
+	})
+	dataSub := routes.ReadingsWithErrorsSub.WithOptions(mqtt5adapter.SubscribeOptions{
+		Capabilities: []mqtt5adapter.Capability{mqtt5adapter.QoSAtLeastOnce},
+	})
 
 	handleCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 	defer cancel()
 
+	// ── Consumer: subscribes to the error-output topic as an ORDINARY
+	// typed channel — no errors.As, no special decode step, just the
+	// SAME declarative Subscribe mechanism as any other message.
 	received := make(chan routes.SensorErrorPayload, 1)
 	go func() {
-		_ = events.SubscribeHandle(handleCtx, routes.SensorErrorTopicSub, consumerTransport,
+		_ = evtClient.Subscribe(handleCtx, errorSub,
 			func(_ context.Context, payload routes.SensorErrorPayload) error {
 				received <- payload
 				return nil
@@ -166,9 +183,8 @@ func demoErrorChannelSubscribeSideAndConsumer(ctx context.Context) {
 	// business error — the declared ErrorChannel matches it and publishes
 	// the typed payload to the error topic (which the consumer above is
 	// already listening on).
-	dataTransport := mqtt5adapter.NewSubscribeTransport[routes.SensorReading](broker, router, 1, mqtt5adapter.SubscribeOptions{})
 	go func() {
-		_ = events.SubscribeHandle(handleCtx, routes.ReadingsWithErrorsSub, dataTransport,
+		_ = evtClient.Subscribe(handleCtx, dataSub,
 			func(_ context.Context, r routes.SensorReading) error {
 				return routes.SensorOutOfRangeError(r)
 			})
@@ -206,14 +222,22 @@ func demoErrorChannelDirectMode(ctx context.Context) {
 	handleCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 	defer cancel()
 
+	// docs/roadmap/capability-requirement-composition.md's Phase 4d: ONE
+	// api-layer-owned Client, attached once.
+	evtClient := events.NewClient(events.WithInfo(events.Info{Title: "Direct mode demo", Version: "1.0.0"}))
+	if err := evtClient.Attach(mqtt5adapter.NewTransport(mqtt5adapter.TransportOptions{Client: broker, Router: router})); err != nil {
+		fmt.Printf("  [error] Attach: %v\n", err)
+		return
+	}
+
 	received := make(chan routes.SensorMaintenanceError, 1)
-	errorTransport := mqtt5adapter.NewSubscribeTransport[routes.SensorMaintenanceError](broker, router, 1, mqtt5adapter.SubscribeOptions{})
 	errorTopicSub := events.NewChannel[routes.SensorMaintenanceError](
 		"sensors/{sensorID}/maintenance-demo/errors", routes.SensorMaintenanceErrorCodec,
 		events.TopicParam{Name: "sensorID"},
-	).WithSubscribe(events.Subscribe{OperationID: "receiveMaintenanceError"})
+	).WithSubscribe(events.Subscribe{OperationID: "receiveMaintenanceError"}).
+		WithOptions(mqtt5adapter.SubscribeOptions{Capabilities: []mqtt5adapter.Capability{mqtt5adapter.QoSAtLeastOnce}})
 	go func() {
-		_ = events.SubscribeHandle(handleCtx, errorTopicSub, errorTransport,
+		_ = evtClient.Subscribe(handleCtx, errorTopicSub,
 			func(_ context.Context, e routes.SensorMaintenanceError) error {
 				received <- e
 				return nil
@@ -221,9 +245,9 @@ func demoErrorChannelDirectMode(ctx context.Context) {
 	}()
 	router.WaitHandler("sensors/{sensorID}/maintenance-demo/errors")
 
-	dataTransport := mqtt5adapter.NewSubscribeTransport[routes.SensorReading](broker, router, 1, mqtt5adapter.SubscribeOptions{})
+	dataSub := routes.MaintenanceSub.WithOptions(mqtt5adapter.SubscribeOptions{Capabilities: []mqtt5adapter.Capability{mqtt5adapter.QoSAtLeastOnce}})
 	go func() {
-		_ = events.SubscribeHandle(handleCtx, routes.MaintenanceSub, dataTransport,
+		_ = evtClient.Subscribe(handleCtx, dataSub,
 			func(_ context.Context, r routes.SensorReading) error {
 				return routes.SensorMaintenanceError{SensorID: r.SensorID}
 			})
@@ -363,9 +387,18 @@ func demoErrorChannelActionsSubscribeSide(ctx context.Context) {
 		handleCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 		defer cancel()
 
+		// Deliberately kept on the NewSubscribeTransport escape hatch,
+		// NOT converted to events.Client.Attach+Client.Subscribe
+		// (docs/roadmap/capability-requirement-composition.md's Phase
+		// 4d sweep): this demo's whole point is observing
+		// SubscribeOptions.OnError, which Client.Subscribe's reflection
+		// shim does not yet call (a real, separate gap — Phase 4e's
+		// scope, not yet shipped). Converting would silently make
+		// onErrorCalled permanently false.
 		var onErrorCalled bool
-		transport := mqtt5adapter.NewSubscribeTransport[routes.SensorReading](broker, router, 1, mqtt5adapter.SubscribeOptions{
-			OnError: func(mqtt5adapter.SubscribeError) { onErrorCalled = true },
+		transport := mqtt5adapter.NewSubscribeTransport[routes.SensorReading](broker, router, mqtt5adapter.SubscribeOptions{
+			Capabilities: []mqtt5adapter.Capability{mqtt5adapter.QoSAtLeastOnce},
+			OnError:      func(mqtt5adapter.SubscribeError) { onErrorCalled = true },
 		})
 		go func() {
 			_ = events.SubscribeHandle(handleCtx, sub, transport,
@@ -417,9 +450,18 @@ func demoErrorChannelDeadLetterFallback(ctx context.Context) {
 	// nextErr controls which business error the handler returns per
 	// dispatch, alternating between a MATCHED and an UNMATCHED type.
 	var nextErr error
-	dataTransport := mqtt5adapter.NewSubscribeTransport[routes.SensorReading](broker, router, 1, mqtt5adapter.SubscribeOptions{})
+	// docs/roadmap/capability-requirement-composition.md's Phase 4d: the
+	// api-layer-owned Client.Attach workflow — no adapter-specific
+	// NewSubscribeTransport escape hatch needed for this plain-Capabilities
+	// demo.
+	evtClient := events.NewClient(events.WithInfo(events.Info{Title: "Dead-letter demo", Version: "1.0.0"}))
+	if err := evtClient.Attach(mqtt5adapter.NewTransport(mqtt5adapter.TransportOptions{Client: broker, Router: router})); err != nil {
+		fmt.Printf("  [error] Attach: %v\n", err)
+		return
+	}
+	dataSub := routes.ReadingsWithErrorsSub.WithOptions(mqtt5adapter.SubscribeOptions{Capabilities: []mqtt5adapter.Capability{mqtt5adapter.QoSAtLeastOnce}})
 	go func() {
-		_ = events.SubscribeHandle(handleCtx, routes.ReadingsWithErrorsSub, dataTransport,
+		_ = evtClient.Subscribe(handleCtx, dataSub,
 			func(_ context.Context, _ routes.SensorReading) error {
 				return nextErr
 			})
@@ -478,13 +520,21 @@ func demoErrorChannelMiddlewareCombo(ctx context.Context) {
 	defer cancel()
 
 	received := make(chan routes.SecurityRejectedPayload, 1)
-	errorTransport := mqtt5adapter.NewSubscribeTransport[routes.SecurityRejectedPayload](broker, router, 1, mqtt5adapter.SubscribeOptions{})
+	// docs/roadmap/capability-requirement-composition.md's Phase 4d: the
+	// error-topic CONSUMER doesn't need SubscribeMW/security, so it's
+	// safely converted to the api-layer-owned Client.Attach workflow.
+	evtClient := events.NewClient(events.WithInfo(events.Info{Title: "Middleware combo demo", Version: "1.0.0"}))
+	if err := evtClient.Attach(mqtt5adapter.NewTransport(mqtt5adapter.TransportOptions{Client: broker, Router: router})); err != nil {
+		fmt.Printf("  [error] Attach: %v\n", err)
+		return
+	}
 	errorTopicSub := events.NewChannel[routes.SecurityRejectedPayload](
 		"sensors/{sensorID}/secured-errorchannel-demo/errors", routes.SecurityRejectedPayloadCodec,
 		events.TopicParam{Name: "sensorID"},
-	).WithSubscribe(events.Subscribe{OperationID: "receiveSecurityRejected"})
+	).WithSubscribe(events.Subscribe{OperationID: "receiveSecurityRejected"}).
+		WithOptions(mqtt5adapter.SubscribeOptions{Capabilities: []mqtt5adapter.Capability{mqtt5adapter.QoSAtLeastOnce}})
 	go func() {
-		_ = events.SubscribeHandle(handleCtx, errorTopicSub, errorTransport,
+		_ = evtClient.Subscribe(handleCtx, errorTopicSub,
 			func(_ context.Context, p routes.SecurityRejectedPayload) error {
 				received <- p
 				return nil
@@ -496,7 +546,12 @@ func demoErrorChannelMiddlewareCombo(ctx context.Context) {
 		return nil, errors.New("access denied for demo")
 	}
 	securedSub := routes.SecuredReadingsSub.Use(routes.APIKeyAuthMW).SubscribeMW(&routes.APIKeyAuthMW, alwaysRejectFn)
-	dataTransport := mqtt5adapter.NewSubscribeTransport[routes.SensorReading](broker, router, 1, mqtt5adapter.SubscribeOptions{})
+	// Deliberately kept on the NewSubscribeTransport escape hatch: this
+	// demo's whole point is SubscribeMW security ENFORCEMENT, which
+	// Client.Subscribe's reflection shim does not yet run (Phase 4e's
+	// scope, not yet shipped) — converting would silently skip the
+	// rejection this demo exists to prove.
+	dataTransport := mqtt5adapter.NewSubscribeTransport[routes.SensorReading](broker, router, mqtt5adapter.SubscribeOptions{Capabilities: []mqtt5adapter.Capability{mqtt5adapter.QoSAtLeastOnce}})
 	go func() {
 		_ = events.SubscribeHandle(handleCtx, securedSub, dataTransport,
 			func(_ context.Context, _ routes.SensorReading) error {

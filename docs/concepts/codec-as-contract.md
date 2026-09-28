@@ -27,12 +27,12 @@ var CreateUser = rest.NewRoute[CreateUserReq, User](
 // server/main.go
 route := contract.CreateUser.WithHandler(myHandler).WithOptions(opts)
 route.Register(builder)
-nethttp.AttachMux(builder, mux, addr)
+builder.Attach(nethttp.NewServerTransport(nethttp.ServerTransportOptions{Mux: mux, Addr: addr}))
 go func() { _ = builder.Serve(ctx) }()
 
 // client/main.go — same Route, no duplication
 client := rest.NewClient()
-nethttp.Attach(client, http.DefaultClient, serverURL)
+client.Attach(nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: http.DefaultClient, BaseURL: serverURL}))
 userAny, err := client.Call(ctx, contract.CreateUser, req)
 user := userAny.(User)
 ```

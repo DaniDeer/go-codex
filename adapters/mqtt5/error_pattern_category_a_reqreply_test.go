@@ -38,7 +38,7 @@ func TestErrorPattern_RequestPayloadDecode_Matched_Publishes(t *testing.T) {
 
 	serverClient := &mockClient{}
 	serverRouter := newMockRouter()
-	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -88,7 +88,7 @@ func TestErrorPattern_SecurityMiddlewareFn_Matched_Publishes_ReqReply(t *testing
 
 	serverClient := &mockClient{}
 	serverRouter := newMockRouter()
-	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -153,7 +153,7 @@ func TestErrorPattern_MiddlewareDecodeIn_Matched_Publishes_ReqReply(t *testing.T
 	}
 	serverClient := &mockClient{}
 	serverRouter := newMockRouter()
-	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -202,13 +202,13 @@ func TestErrorPattern_UserPropertyParam_Matched_Publishes(t *testing.T) {
 
 	serverClient := &mockClient{}
 	serverRouter := newMockRouter()
-	if err := AttachServer(server, serverClient, serverRouter, ServeOptions{
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter, Serve: ServeOptions{
 		UserPropertyParams: []UserPropertyParam{
 			UserPropertyParam{Name: "TenantID", Required: true}.WithCodec(
 				codex.String().Refine(validate.NonEmptyString),
 			),
 		},
-	}); err != nil {
+	}})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)

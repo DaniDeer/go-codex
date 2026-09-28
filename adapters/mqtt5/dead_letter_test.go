@@ -31,8 +31,7 @@ func TestDeadLetter_SubscribeDecodeFailure_Published(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = subscribeWithHandle(ctx, client, router, handle, 1,
-		func(_ context.Context, _ sensorReading) error { return nil },
+	_ = subscribeWithHandle(ctx, client, router, handle, func(_ context.Context, _ sensorReading) error { return nil },
 		SubscribeOptions{OnError: func(SubscribeError) { onErrorCalled = true }})
 
 	router.dispatch("sensors/readings", &pahomqtt5.Publish{
@@ -81,7 +80,7 @@ func TestDeadLetter_PublishFailure_Published(t *testing.T) {
 
 	client := &topicFailingClient{failTopic: "sensors/readings", failErr: errors.New("broker unavailable")}
 
-	err = publish(context.Background(), client, handle, 1, false,
+	err = publish(context.Background(), client, handle,
 		sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1.0}, nil, false, PublishOptions[sensorReading]{})
 	if err == nil {
 		t.Fatal("want a publish error to propagate to the caller unchanged")

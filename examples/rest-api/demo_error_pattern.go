@@ -108,13 +108,13 @@ func buildErrorPatternDemoServer() (*rest.Server, *rest.Client, string) {
 
 	router := gochi.NewRouter()
 	addr := mustFreeAddr()
-	must(chiadapter.AttachRouter(b, router, addr), "AttachRouter error-pattern demo")
+	must(b.Attach(chiadapter.NewServerTransport(chiadapter.ServerTransportOptions{Router: router, Addr: addr})), "AttachRouter error-pattern demo")
 	ctx := context.Background()
 	go func() { _ = b.Serve(ctx) }()
 	waitForReady(addr)
 
 	client := rest.NewClient()
-	must(nethttp.Attach(client, http.DefaultClient, "http://"+addr), "attach error-pattern demo client")
+	must(client.Attach(nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: http.DefaultClient, BaseURL: "http://" + addr})), "attach error-pattern demo client")
 
 	errorPatternDemoServer, errorPatternDemoClient, errorPatternDemoAddr = b, client, addr
 	return b, client, addr

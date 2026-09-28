@@ -15,7 +15,7 @@ import (
 // server via the shared broker.
 func BuildMQTT5(broker mqtt5adapter.MQTTClient, router mqtt5adapter.MQTTRouter) (*reqreply.Client, error) {
 	c := reqreply.NewClient()
-	if err := mqtt5adapter.AttachClient(c, broker, router); err != nil {
+	if err := c.Attach(mqtt5adapter.NewClientTransport(mqtt5adapter.ClientTransportOptions{Client: broker, Router: router})); err != nil {
 		return nil, err
 	}
 	return c, nil
@@ -26,7 +26,7 @@ func BuildMQTT5(broker mqtt5adapter.MQTTClient, router mqtt5adapter.MQTTRouter) 
 // exposes.
 func BuildZeroMQ(sockets map[string]zeromq.FramedSocket) (*reqreply.Client, error) {
 	c := reqreply.NewClient()
-	if err := zeromq.AttachClient(c, sockets); err != nil {
+	if err := c.Attach(zeromq.NewClientTransport(zeromq.ClientTransportOptions{Sockets: sockets})); err != nil {
 		return nil, err
 	}
 	return c, nil
@@ -37,7 +37,7 @@ func BuildZeroMQ(sockets map[string]zeromq.FramedSocket) (*reqreply.Client, erro
 // zeromqrouterserver's socket topology.
 func BuildZeroMQDealer(topic string, sock zeromq.FramedSocket) (*reqreply.Client, error) {
 	c := reqreply.NewClient()
-	if err := zeromq.AttachDealerClient(c, map[string]zeromq.FramedSocket{topic: sock}); err != nil {
+	if err := c.Attach(zeromq.NewDealerClientTransport(zeromq.DealerClientTransportOptions{Sockets: map[string]zeromq.FramedSocket{topic: sock}})); err != nil {
 		return nil, err
 	}
 	return c, nil

@@ -270,7 +270,7 @@ once an HTTP connection is attached via `nethttp.Attach` — this is the single-
 
 ```go
 client := rest.NewClient()
-if err := nethttp.Attach(client, httpClient, baseURL); err != nil { ... }
+if err := client.Attach(nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: httpClient, BaseURL: baseURL})); err != nil { ... }
 respAny, err := client.Call(ctx, getUserRoute, GetUserReq{ID: "f47ac10b"})
 resp := respAny.(GetUserResp) // type-assert the result
 ```

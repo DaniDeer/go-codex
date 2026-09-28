@@ -135,13 +135,13 @@ below.
 
 ### `Client.Attach` — the inverted-control workflow
 
-`mqtt5.Attach(client, mqttClient, router)` binds mqttClient+router to `client` as its
+`client.Attach(mqtt5.NewTransport(mqtt5.TransportOptions{Client: mqttClient, Router: router}))` binds mqttClient+router to `client` as its
 `events.Transport` — the "attach the adapter to the client" step. From there, call
 `client.Publish`/`client.Subscribe` directly on the `*events.Client` value itself:
 
 ```go
 client := events.NewClient(events.WithInfo(events.Info{Title: "Sensor Network", Version: "1.0.0"}))
-if err := mqtt5.Attach(client, mqttClient, router); err != nil {
+if err := client.Attach(mqtt5.NewTransport(mqtt5.TransportOptions{Client: mqttClient, Router: router})); err != nil {
     log.Fatal(err)
 }
 
@@ -238,7 +238,7 @@ handle, err := ComputeRoute.WithHandler(func(ctx context.Context, req ComputeReq
 if err != nil {
     log.Fatal(err)
 }
-if err := mqtt5adapter.AttachServer(server, client, router); err != nil {
+if err := server.Attach(mqtt5adapter.NewServerTransport(mqtt5adapter.ServerTransportOptions{Client: client, Router: router})); err != nil {
     log.Fatal(err)
 }
 go server.Serve(ctx) // dispatches every registered route concurrently, blocks until ctx is cancelled
@@ -247,7 +247,7 @@ go server.Serve(ctx) // dispatches every registered route concurrently, blocks u
 // for a raw Route call (GlobalSecurity is invisible in that mode, same
 // accepted limitation as REST's own Route.ClientHandle()).
 reqreplyClient := reqreply.NewClient()
-if err := mqtt5adapter.AttachClient(reqreplyClient, client, router); err != nil {
+if err := reqreplyClient.Attach(mqtt5adapter.NewClientTransport(mqtt5adapter.ClientTransportOptions{Client: client, Router: router})); err != nil {
     log.Fatal(err)
 }
 respAny, err := reqreplyClient.Call(ctx, ComputeRoute, ComputeReq{X: 3, Y: 4})

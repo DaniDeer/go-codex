@@ -33,7 +33,7 @@ func setUpErrorPatternRoundTrip(t *testing.T, topic string) (clientRoute reqrepl
 
 	serverClient := &mockClient{}
 	serverRouter := newMockRouter()
-	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -47,7 +47,7 @@ func setUpErrorPatternRoundTrip(t *testing.T, topic string) (clientRoute reqrepl
 	client = reqreply.NewClient()
 	clientClient := &mockClient{}
 	clientRouter := newMockRouter()
-	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Client: clientClient, Router: clientRouter})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 	wireBrokers(t, serverClient, clientRouter)
@@ -109,7 +109,7 @@ func TestErrorPatternOpt_Match_MatchedReply_ExtractsTypedPayload(t *testing.T) {
 	}
 	serverClient := &mockClient{}
 	serverRouter := newMockRouter()
-	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -121,7 +121,7 @@ func TestErrorPatternOpt_Match_MatchedReply_ExtractsTypedPayload(t *testing.T) {
 	client := reqreply.NewClient()
 	clientClient := &mockClient{}
 	clientRouter := newMockRouter()
-	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Client: clientClient, Router: clientRouter})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 	wireBrokers(t, serverClient, clientRouter)

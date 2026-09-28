@@ -22,7 +22,7 @@
 // itself (EncodeWithFormats/DecodeMergedWithFormats), so every caller —
 // escape-hatch AND Client.Attach — is a thin caller of the SAME method.
 // See docs/design/d-0002-pubsub-workflow-simplification.md's Decision 9. This
-// example runs the round trip through a REAL adapters/mqtt.Attach +
+// example runs the round trip through a REAL adapters/mqtt.NewTransport+Client.Attach ++
 // Client.Publish/Client.Subscribe pair (backed by an in-process mock MQTT
 // client, so it needs no real broker) — not a hand-simulation of what the
 // adapter does internally, unlike this example's previous version.
@@ -127,7 +127,7 @@ func main() {
 	// ONLY client.Publish/client.Subscribe — no adaptermqtt.* call at the
 	// usage site.
 	mock := newAutoDispatchMockClient()
-	if err := adaptermqtt.Attach(client, mock); err != nil {
+	if err := client.Attach(adaptermqtt.NewTransport(adaptermqtt.TransportOptions{Client: mock})); err != nil {
 		fmt.Fprintln(os.Stderr, "attach:", err)
 		os.Exit(1)
 	}

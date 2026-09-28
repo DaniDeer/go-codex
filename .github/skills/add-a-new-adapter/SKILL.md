@@ -148,7 +148,7 @@ route := route.WithHandler(func(ctx context.Context, req Req) (Resp, error) {
     return resp, nil // adapter auto-decoded req, will auto-encode resp
 })
 route.Register(b)
-if err := nethttp.AttachMux(b, mux, addr); err != nil {
+if err := b.Attach(nethttp.NewServerTransport(nethttp.ServerTransportOptions{Mux: mux, Addr: addr})); err != nil {
     log.Fatal(err)
 }
 _ = b.Serve(ctx) // blocks, owns its own http.Server
@@ -330,17 +330,70 @@ reference implementations.
 
 **Your new adapter MUST use this mechanism** for any protocol-specific
 toggle/option with no cross-protocol meaning: define a sealed
-`Capability` type in your adapter's OWN package, add a `Capabilities
-[]<pkg>.Capability` field to your `SubscribeOptions`/`PublishOptions`,
-and wire your dispatch loop to read it (see `adapters/mqtt5/caller.go`'s
-`resolveCapabilities`/`stats.CapabilityObserver.RecordCapabilityApplied`
-wiring for the pattern). Do NOT add the option to the owning `api/*`
-package's declaration type (`events.Channel`, `rest.Route`, etc.), even
-as a "just this one field" convenience, and do NOT invent a new
-`Attach`/`Bind`-time parameter instead of using `Capabilities`.
-`api/events/mqtt_qos.go` (`MQTTQoS`/`Subscribe.QoS`) is kept as an
-ADDITIVE, still-fully-supported legacy path predating this mechanism —
-not a precedent to extend for a NEW adapter.
+`Capability` type in your adapter's OWN package requiring a REAL
+`Apply(Target) (applied bool, err error)` method (not a zero-cost
+marker — docs/roadmap/capability-requirement-composition.md's Phase 4),
+add a `Capabilities []<pkg>.Capability` field to your
+`SubscribeOptions`/`PublishOptions`, and dispatch via the API-layer-owned
+`events.ApplyCapabilities[C,T](caps, target, obs, location)` — NEVER a
+hand-rolled per-adapter resolve+assert+call loop (see
+`adapters/mqtt5/transport.go`'s `resolveHandlerOptsCapabilities`+
+`events.ApplyCapabilities` wiring for the reference pattern). Do NOT add
+the option to the owning `api/*` package's declaration type
+(`events.Channel`, `rest.Route`, etc.), even as a "just this one field"
+convenience, and do NOT invent a new `Attach`/`Bind`-time parameter
+instead of using `Capabilities`. There is NO legacy
+`api/events/mqtt_qos.go`-style fallback to mirror — that file was
+DELETED (Phase 4b) for being exactly this kind of forbidden parallel,
+non-`Capability`-shaped mechanism; `Capabilities` is the SOLE path for
+every SHIPPED adapter today.
+
+## Step 5f — MANDATORY: expose a `New*Transport` factory; NEVER an adapter-namespaced `Attach*` function
+
+Per docs/roadmap/capability-requirement-composition.md's Phase 4d: the
+adapter's ENTIRE job in the attach workflow is constructing a
+fully-configured, attachable transport value — attaching it is
+EXCLUSIVELY the api layer's own `Client.Attach`/`Server.Attach` method
+call, made directly by the caller. **Do NOT add an adapter-namespaced
+`Attach(client, ...)`/`AttachServer(...)`/`AttachClient(...)`
+convenience function** that builds the transport AND calls
+`client.Attach(...)`/`server.Attach(...)` itself internally — this
+hides the transport object and is exactly the "backdoor" pattern this
+phase removed (12 such functions, repo-wide) in favor of:
+
+```go
+// Single Options struct parameter — no positional params, even for
+// currently-required config (a deliberate, uniform, declarative shape).
+type TransportOptions struct {
+    Client MQTTClient // or whatever your adapter's config needs
+    Router MQTTRouter
+}
+
+func NewTransport(opts TransportOptions) events.Transport { // or rest.ClientTransport/ServerTransport, reqreply.ClientTransport/ServerTransport
+    return &transport{ /* ... */ }
+}
+```
+
+```go
+// Caller — attaching is ALWAYS the api-layer's own method:
+transport := yourpkg.NewTransport(yourpkg.TransportOptions{Client: c, Router: r})
+if err := client.Attach(transport); err != nil { ... }
+```
+
+If your transport genuinely needs a `*Client`/`*Server` reference it
+can't receive at construction time (e.g. for spec-registration
+side-effects or an eager coverage check the old Attach-time convenience
+used to run), implement the matching OPTIONAL `ClientAwareTransport`/
+`ServerAwareTransport` interface (`events`/`rest`/`reqreply` each define
+one, mirroring `stats.CapabilityObserver`'s idiom) —
+`BindClient(c) error`/`BindServer(s) error` is called by
+`Client.Attach`/`Server.Attach` immediately after storing your
+transport. **Call any such callback-driven logic OUTSIDE the owning
+mutex** — `Client.Attach`/`Server.Attach` already do this correctly;
+mirror their pattern exactly if you ever touch that code, since
+`sync.RWMutex` is not reentrant (a real deadlock was found and fixed
+here when a `BindServer` implementation called back into a
+`RLock`-guarded method while `Attach` still held the write lock).
 
 ## Step 6 — Use the checklist
 

@@ -314,7 +314,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	addr := mustFreeAddr()
-	mustServe(nethttp.AttachMux(b, mux, addr), "AttachMux")
+	mustServe(b.Attach(nethttp.NewServerTransport(nethttp.ServerTransportOptions{Mux: mux, Addr: addr})), "AttachMux")
 
 	// b.Serve blocks until ctx is cancelled, so it runs in a goroutine —
 	// demo requests below run concurrently against the real listener it owns.
@@ -344,7 +344,7 @@ func main() {
 	// stats.WithObserver, set up above) is picked up automatically by
 	// Client.Call too — no separate wiring needed.
 	restClient := rest.NewClient()
-	if err := nethttp.Attach(restClient, httpClient, baseURL); err != nil {
+	if err := restClient.Attach(nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: httpClient, BaseURL: baseURL})); err != nil {
 		fmt.Fprintln(os.Stderr, "attach rest client:", err)
 		os.Exit(1)
 	}

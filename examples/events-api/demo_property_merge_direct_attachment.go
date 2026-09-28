@@ -39,8 +39,9 @@ func demoPropertyMergeDirectAttachment(ctx context.Context) {
 	router := mqtt5broker.NewMockRouter()
 	broker := mqtt5broker.NewMockBroker(router)
 
-	subTransport := mqtt5adapter.NewSubscribeTransport[routes.TenantSensorReading](broker, router, 1,
+	subTransport := mqtt5adapter.NewSubscribeTransport[routes.TenantSensorReading](broker, router,
 		mqtt5adapter.SubscribeOptions{
+			Capabilities: []mqtt5adapter.Capability{mqtt5adapter.QoSAtLeastOnce},
 			OnError: func(e mqtt5adapter.SubscribeError) {
 				fmt.Printf("  [error] kind=%s: %v\n", e.Kind, e.Err)
 			},
@@ -57,8 +58,10 @@ func demoPropertyMergeDirectAttachment(ctx context.Context) {
 		return
 	}
 
-	pubTransport := mqtt5adapter.NewPublishTransport[routes.TenantSensorReading](broker, 1, false,
-		mqtt5adapter.PublishOptions[routes.TenantSensorReading]{},
+	pubTransport := mqtt5adapter.NewPublishTransport[routes.TenantSensorReading](broker,
+		mqtt5adapter.PublishOptions[routes.TenantSensorReading]{
+			Capabilities: []mqtt5adapter.Capability{mqtt5adapter.QoSAtLeastOnce},
+		},
 	)
 	// TenantID is set on the OUTGOING struct value — PropertyMergeChannel's
 	// directly-attached MergedPropertyParam derives it into a real MQTT5

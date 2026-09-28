@@ -43,7 +43,7 @@ sensorRoute := rest.NewSSERoute[struct{}, SensorReading](
 sensorRoute.Register(b)
 
 // Wire onto net/http (AttachMux wires plain AND SSE routes together).
-if err := nethttp.AttachMux(b, mux, addr); err != nil {
+if err := b.Attach(nethttp.NewServerTransport(nethttp.ServerTransportOptions{Mux: mux, Addr: addr})); err != nil {
     log.Fatal(err)
 }
 _ = b.Serve(ctx) // blocks, owns its own http.Server
@@ -118,7 +118,7 @@ route := rest.NewSSERoute[struct{}, Event](
         func(e *Event, v string) { e.Tenant = v }),
 ).WithHandler(streamFn)
 route.Register(b)
-if err := nethttp.AttachMux(b, mux, addr); err != nil {
+if err := b.Attach(nethttp.NewServerTransport(nethttp.ServerTransportOptions{Mux: mux, Addr: addr})); err != nil {
     log.Fatal(err)
 }
 _ = b.Serve(ctx) // blocks, owns its own http.Server
@@ -149,7 +149,7 @@ import (
 )
 
 client := rest.NewClient()
-_ = nethttp.Attach(client, httpClient, "https://api.example.com")
+_ = client.Attach(nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: httpClient, BaseURL: "https://api.example.com"}))
 
 err := client.Consume(ctx, sensorRoute, struct{}{},
     func(ctx context.Context, reading SensorReading) error {
@@ -221,7 +221,7 @@ articleRoute := rest.NewRoute[struct{}, ArticleProps]("GET", "/article",
 
 // One handler, one route — the adapter picks the format from the Accept header.
 articleRoute.Register(b)
-if err := nethttp.AttachMux(b, mux, addr); err != nil {
+if err := b.Attach(nethttp.NewServerTransport(nethttp.ServerTransportOptions{Mux: mux, Addr: addr})); err != nil {
     log.Fatal(err)
 }
 _ = b.Serve(ctx) // blocks, owns its own http.Server

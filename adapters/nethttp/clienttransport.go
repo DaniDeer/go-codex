@@ -25,7 +25,7 @@ import (
 const restPkgPath = "github.com/DaniDeer/go-codex/api/rest"
 
 // clientTransport implements [rest.ClientTransport], wrapping an internal
-// [*caller] — built by [Attach]. See
+// [*caller] — built by [NewClientTransport]. See
 // docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 4 for the full design
 // and the reflection technique both Call and Consume rely on (Go forbids
 // generic methods, so both recover the concrete Req/Resp/Event types at
@@ -39,11 +39,26 @@ type clientTransport struct {
 	caller *caller
 }
 
-// Attach binds httpClient+baseURL (via an internal [*caller]) as client's
-// [rest.ClientTransport] — the "attach the adapter to the client" step
-// behind [rest.Client.Call]/[rest.Client.Consume]. Returns
-// [rest.ClientTransportAlreadyAttachedError] if client already has a
-// transport attached.
+// ClientTransportOptions configures [NewClientTransport] — the SOLE
+// configuration surface for a nethttp [rest.ClientTransport] (docs/roadmap/
+// capability-requirement-composition.md's Phase 4d: a single Options
+// struct, no positional params, even for these REQUIRED fields — a
+// deliberate, uniform, declarative shape across every adapter's
+// `New*Transport` factory).
+type ClientTransportOptions struct {
+	// HTTPClient issues every outgoing request. Required.
+	HTTPClient *http.Client
+	// BaseURL is prepended to every route's derived path. Required.
+	BaseURL string
+}
+
+// NewClientTransport returns a [rest.ClientTransport] configured per opts
+// — the adapter's ONLY job in the attach workflow (docs/roadmap/
+// capability-requirement-composition.md's Phase 4d): construct a
+// fully-configured, attachable value. Attaching it is EXCLUSIVELY
+// [rest.Client.Attach]'s job — there is no adapter-namespaced Attach
+// function anymore (REMOVED, breaking, per that phase's explicit
+// "zero backdoor between the api layer and the adapters" directive).
 //
 // Call and Consume are FULL-FEATURED (see
 // docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 4): path/query/header/
@@ -58,11 +73,12 @@ type clientTransport struct {
 // directly instead.
 //
 //	client := rest.NewClient()
-//	if err := nethttp.Attach(client, httpClient, baseURL); err != nil { ... }
+//	transport := nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: httpClient, BaseURL: baseURL})
+//	if err := client.Attach(transport); err != nil { ... }
 //	respAny, err := client.Call(ctx, getUserRoute, GetUserReq{ID: "f47ac10b"})
 //	resp := respAny.(GetUserResp)
-func Attach(client *rest.Client, httpClient *http.Client, baseURL string) error {
-	return client.Attach(&clientTransport{caller: newCaller(httpClient, baseURL)})
+func NewClientTransport(opts ClientTransportOptions) rest.ClientTransport {
+	return &clientTransport{caller: newCaller(opts.HTTPClient, opts.BaseURL)}
 }
 
 var (

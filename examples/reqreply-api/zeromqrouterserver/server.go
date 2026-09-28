@@ -1,6 +1,6 @@
 // Package zeromqrouterserver assembles routes.RouterComputeRoute onto an
 // in-process mock ZMQ ROUTER/DEALER socket pair via
-// zeromq.AttachRouterServer — the DEALER/ROUTER socket-topology variant
+// zeromq.NewRouterServerTransport — the DEALER/ROUTER socket-topology variant
 // carried over from the deleted examples/adapters-zeromq-dealer-router.
 package zeromqrouterserver
 
@@ -16,7 +16,7 @@ import (
 )
 
 // Built bundles the assembled Server with the DEALER-side socket a caller's
-// Client needs to zeromq.AttachDealerClient against.
+// Client needs to zeromq.NewDealerClientTransport against.
 type Built struct {
 	Server       *reqreply.Server
 	ClientSocket zeromq.FramedSocket
@@ -25,7 +25,7 @@ type Built struct {
 // BuildWithMissingSocket registers BOTH routes.RouterComputeRoute AND
 // routes.MissingSocketRoute against a fresh reqreply.Server, but wires a
 // socket for ONLY routes.RouterComputeRoute — deliberately leaving
-// MissingSocketRoute uncovered, to demonstrate zeromq.AttachRouterServer's
+// MissingSocketRoute uncovered, to demonstrate zeromq.NewRouterServerTransport's
 // upfront [zeromq.MissingSocketError] (returned at Attach time, before
 // [reqreply.Server.Serve] ever runs).
 func BuildWithMissingSocket() (*reqreply.Server, error) {
@@ -44,7 +44,7 @@ func BuildWithMissingSocket() (*reqreply.Server, error) {
 	incompleteSockets := map[string]zeromq.FramedSocket{
 		"compute/router-add": routerSock, // MissingSocketRoute's topic has no entry
 	}
-	if err := zeromq.AttachRouterServer(server, incompleteSockets); err != nil {
+	if err := server.Attach(zeromq.NewRouterServerTransport(zeromq.RouterServerTransportOptions{Sockets: incompleteSockets})); err != nil {
 		return nil, err // expected: zeromq.MissingSocketError
 	}
 	return server, errors.New("expected MissingSocketError, got none")
@@ -52,7 +52,7 @@ func BuildWithMissingSocket() (*reqreply.Server, error) {
 
 // Build registers ONLY routes.RouterComputeRoute (the working, complete
 // configuration used by the rest of Demo 8) against a fresh reqreply.Server,
-// then zeromq.AttachRouterServer's it to an in-process ROUTER/DEALER socket
+// then zeromq.NewRouterServerTransport's it to an in-process ROUTER/DEALER socket
 // pair. Also attaches the shipped [reqreply.Observability] via
 // .HandleMW(nil, ...) — mirrors zeromqserver.Build's identical
 // declare-time Observer attachment (see its doc comment).
@@ -69,7 +69,7 @@ func Build(obs stats.Observer) (*Built, error) {
 
 	dealerSock, routerSock := newDealerRouterPair([]byte("client-1"))
 	sockets := map[string]zeromq.FramedSocket{"compute/router-add": routerSock}
-	if err := zeromq.AttachRouterServer(server, sockets); err != nil {
+	if err := server.Attach(zeromq.NewRouterServerTransport(zeromq.RouterServerTransportOptions{Sockets: sockets})); err != nil {
 		return nil, err
 	}
 	return &Built{Server: server, ClientSocket: dealerSock}, nil

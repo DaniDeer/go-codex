@@ -38,7 +38,7 @@ func TestAttach_ClientCall_RoundTrip(t *testing.T) {
 	defer srv.Close()
 
 	client := rest.NewClient()
-	if err := Attach(client, srv.Client(), srv.URL); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 	respAny, err := client.Call(context.Background(), route, createReq{Name: "Alice"})
@@ -56,10 +56,10 @@ func TestAttach_ClientCall_RoundTrip(t *testing.T) {
 
 func TestAttach_SecondCall_ReturnsClientTransportAlreadyAttachedError(t *testing.T) {
 	client := rest.NewClient()
-	if err := Attach(client, http.DefaultClient, "http://example.com"); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: http.DefaultClient, BaseURL: "http://example.com"})); err != nil {
 		t.Fatalf("first Attach: %v", err)
 	}
-	err := Attach(client, http.DefaultClient, "http://example.com")
+	err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: http.DefaultClient, BaseURL: "http://example.com"}))
 	var alreadyErr rest.ClientTransportAlreadyAttachedError
 	if !errors.As(err, &alreadyErr) {
 		t.Fatalf("want ClientTransportAlreadyAttachedError, got %v (%T)", err, err)
@@ -80,7 +80,7 @@ func TestClientCall_NoTransportAttached_ReturnsNoClientTransportAttachedError(t 
 
 func TestAttach_ClientCall_WrongRouteType_ReturnsTransportTypeMismatchError(t *testing.T) {
 	client := rest.NewClient()
-	if err := Attach(client, http.DefaultClient, "http://example.com"); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: http.DefaultClient, BaseURL: "http://example.com"})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 	_, err := client.Call(context.Background(), "not-a-route", createReq{})
@@ -95,7 +95,7 @@ func TestAttach_ClientCall_WrongReqType_ReturnsTransportTypeMismatchError(t *tes
 		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "createUser"},
 	)
 	client := rest.NewClient()
-	if err := Attach(client, http.DefaultClient, "http://example.com"); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: http.DefaultClient, BaseURL: "http://example.com"})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 	_, err := client.Call(context.Background(), route, "wrong-type")
@@ -124,7 +124,7 @@ func TestAttach_ClientCall_NonSuccessStatus_ReturnsUnexpectedStatusError(t *test
 	defer srv.Close()
 
 	client := rest.NewClient()
-	if err := Attach(client, srv.Client(), srv.URL); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 	_, err := client.Call(context.Background(), route, createReq{Name: "Alice"})
@@ -162,7 +162,7 @@ func TestAttach_ClientCall_RecordsObserver_Success(t *testing.T) {
 	defer srv.Close()
 
 	client := rest.NewClient()
-	if err := Attach(client, srv.Client(), srv.URL); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 
@@ -192,7 +192,7 @@ func TestAttach_ClientCall_RecordsObserver_NetworkFailure(t *testing.T) {
 	)
 	client := rest.NewClient()
 	// Port 0 on localhost — connection refused, no server listening.
-	if err := Attach(client, http.DefaultClient, "http://127.0.0.1:1"); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: http.DefaultClient, BaseURL: "http://127.0.0.1:1"})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 
@@ -246,7 +246,7 @@ func TestAttach_ClientCall_ErrorPatternResponse_MatchedPattern(t *testing.T) {
 	defer srv.Close()
 
 	client := rest.NewClient()
-	if err := Attach(client, srv.Client(), srv.URL); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 	_, err := client.Call(context.Background(), route, createReq{Name: "Alice"})
@@ -285,7 +285,7 @@ func TestAttach_ClientCall_ErrorPatternResponse_NoMatch_FallsBackToUnexpectedSta
 	defer srv.Close()
 
 	client := rest.NewClient()
-	if err := Attach(client, srv.Client(), srv.URL); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 	_, err := client.Call(context.Background(), route, createReq{Name: "Alice"})
@@ -329,7 +329,7 @@ func TestAttach_ClientCall_HonorsDeclaredYAMLFormat(t *testing.T) {
 	defer srv.Close()
 
 	client := rest.NewClient()
-	if err := Attach(client, srv.Client(), srv.URL); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 	respAny, err := client.Call(context.Background(), route, createReq{Name: "Alice"})
@@ -369,7 +369,7 @@ func TestAttach_ClientCall_DerivesPathVars(t *testing.T) {
 	defer srv.Close()
 
 	client := rest.NewClient()
-	if err := Attach(client, srv.Client(), srv.URL); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 	respAny, err := client.Call(context.Background(), route, getByIDReq{ID: "42"})
@@ -412,7 +412,7 @@ func TestAttach_ClientCall_CredentialClientMW_Invoked(t *testing.T) {
 	defer srv.Close()
 
 	client := rest.NewClient()
-	if err := Attach(client, srv.Client(), srv.URL); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 	respAny, err := client.Call(context.Background(), r, getReq{})
@@ -450,7 +450,7 @@ func TestAttach_ClientCall_GeneralPurposeClientMW_Wraps(t *testing.T) {
 	defer srv.Close()
 
 	client := rest.NewClient()
-	if err := Attach(client, srv.Client(), srv.URL); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 	respAny, err := client.Call(context.Background(), r, getReq{})
@@ -490,7 +490,7 @@ func TestAttach_ClientCall_WithClientRequestResponseFormats_Overrides(t *testing
 	defer srv.Close()
 
 	client := rest.NewClient()
-	if err := Attach(client, srv.Client(), srv.URL); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 	respAny, err := client.Call(context.Background(), route, createReq{Name: "Alice"}, rest.ClientCallOptions{
@@ -525,7 +525,7 @@ func TestAttach_ClientCall_BackwardCompatible_NoOptsStillWorks(t *testing.T) {
 	defer srv.Close()
 
 	client := rest.NewClient()
-	if err := Attach(client, srv.Client(), srv.URL); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 	// No opts argument at all — locks in the additive, non-breaking contract.
@@ -577,7 +577,7 @@ func TestAttach_ClientConsume_RoundTrip(t *testing.T) {
 	defer srv.Close()
 
 	client := rest.NewClient()
-	if err := Attach(client, srv.Client(), srv.URL); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 
@@ -634,7 +634,7 @@ func TestAttach_ClientConsume_DerivesPathVars(t *testing.T) {
 	defer srv.Close()
 
 	client := rest.NewClient()
-	if err := Attach(client, srv.Client(), srv.URL); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 
@@ -674,7 +674,7 @@ func TestAttach_ClientConsume_NoTransportAttached_ReturnsNoClientTransportAttach
 
 func TestAttach_ClientConsume_WrongRouteType_ReturnsTransportTypeMismatchError(t *testing.T) {
 	client := rest.NewClient()
-	if err := Attach(client, http.DefaultClient, "http://localhost"); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: http.DefaultClient, BaseURL: "http://localhost"})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 	err := client.Consume(context.Background(), "not-a-route", getReq{}, func(_ context.Context, _ counterSSEEvent) error { return nil })
@@ -714,7 +714,7 @@ func TestAttach_ClientConsume_CredentialClientMW_Invoked(t *testing.T) {
 	defer srv.Close()
 
 	client := rest.NewClient()
-	if err := Attach(client, srv.Client(), srv.URL); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 
@@ -760,7 +760,7 @@ func TestAttach_ClientConsume_GeneralPurposeClientMW_Wraps(t *testing.T) {
 	defer srv.Close()
 
 	client := rest.NewClient()
-	if err := Attach(client, srv.Client(), srv.URL); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 
@@ -802,7 +802,7 @@ func TestAttach_ClientConsume_WithFormats_Overrides(t *testing.T) {
 	defer srv.Close()
 
 	client := rest.NewClient()
-	if err := Attach(client, srv.Client(), srv.URL); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 

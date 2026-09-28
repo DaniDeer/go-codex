@@ -32,7 +32,7 @@ func setUpZmqErrorPatternRoundTrip(t *testing.T, topic string) (clientRoute reqr
 	}
 
 	repSock, reqSock := newChanSocketPair()
-	if err := AttachServer(server, map[string]FramedSocket{topic: repSock}); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Sockets: map[string]FramedSocket{topic: repSock}})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -43,7 +43,7 @@ func setUpZmqErrorPatternRoundTrip(t *testing.T, topic string) (clientRoute reqr
 		reqreply.ErrorPattern[serveZmqConflictErr, serveZmqErrPayload](serveZmqErrPayloadCodec).WithCode("conflict"),
 	)
 	client = reqreply.NewClient()
-	if err := AttachClient(client, map[string]FramedSocket{topic: reqSock}); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Sockets: map[string]FramedSocket{topic: reqSock}})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 	return clientRoute, client
@@ -106,7 +106,7 @@ func TestErrorPatternOpt_Match_MatchedReply_ExtractsTypedPayload(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 	repSock, reqSock := newChanSocketPair()
-	if err := AttachServer(server, map[string]FramedSocket{"/compute-ep-match": repSock}); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Sockets: map[string]FramedSocket{"/compute-ep-match": repSock}})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -115,7 +115,7 @@ func TestErrorPatternOpt_Match_MatchedReply_ExtractsTypedPayload(t *testing.T) {
 
 	clientRoute := reqreply.NewRoute[computeReq, computeResp]("/compute-ep-match", computeReqCodec, computeRespCodec, pattern)
 	client := reqreply.NewClient()
-	if err := AttachClient(client, map[string]FramedSocket{"/compute-ep-match": reqSock}); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Sockets: map[string]FramedSocket{"/compute-ep-match": reqSock}})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 

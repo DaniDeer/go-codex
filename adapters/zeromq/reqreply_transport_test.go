@@ -171,11 +171,11 @@ func TestAttachServer_AttachClient_RoundTrip(t *testing.T) {
 
 	repSock, reqSock := newChanSocketPair()
 
-	if err := AttachServer(server, map[string]FramedSocket{"/compute": repSock}); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Sockets: map[string]FramedSocket{"/compute": repSock}})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	client := reqreply.NewClient()
-	if err := AttachClient(client, map[string]FramedSocket{"/compute": reqSock}); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Sockets: map[string]FramedSocket{"/compute": reqSock}})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 
@@ -238,7 +238,7 @@ func TestAttachClient_ErrorPattern_MatchedReply_DecodesTypedError(t *testing.T) 
 	}
 
 	repSock, reqSock := newChanSocketPair()
-	if err := AttachServer(server, map[string]FramedSocket{"/compute-ep-client": repSock}); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Sockets: map[string]FramedSocket{"/compute-ep-client": repSock}})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -250,7 +250,7 @@ func TestAttachClient_ErrorPattern_MatchedReply_DecodesTypedError(t *testing.T) 
 		reqreply.ErrorPattern[serveZmqConflictErr, serveZmqErrPayload](serveZmqErrPayloadCodec).WithCode("conflict"),
 	)
 	client := reqreply.NewClient()
-	if err := AttachClient(client, map[string]FramedSocket{"/compute-ep-client": reqSock}); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Sockets: map[string]FramedSocket{"/compute-ep-client": reqSock}})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 
@@ -302,7 +302,7 @@ func TestAttachClient_ErrorPattern_NoMatch_FallsBackToGenericError(t *testing.T)
 	}
 
 	repSock, reqSock := newChanSocketPair()
-	if err := AttachServer(server, map[string]FramedSocket{"/compute-ep-client-nomatch": repSock}); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Sockets: map[string]FramedSocket{"/compute-ep-client-nomatch": repSock}})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -311,7 +311,7 @@ func TestAttachClient_ErrorPattern_NoMatch_FallsBackToGenericError(t *testing.T)
 	go func() { serveErrCh <- server.Serve(ctx) }()
 
 	client := reqreply.NewClient()
-	if err := AttachClient(client, map[string]FramedSocket{"/compute-ep-client-nomatch": reqSock}); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Sockets: map[string]FramedSocket{"/compute-ep-client-nomatch": reqSock}})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 	clientRoute := reqreply.NewRoute[computeReq, computeResp]("/compute-ep-client-nomatch", computeReqCodec, computeRespCodec)
@@ -343,7 +343,7 @@ func TestAttachClient_ErrorPattern_NoMatch_FallsBackToGenericError(t *testing.T)
 
 func TestAttachServer_MissingSocketError(t *testing.T) {
 	server, _ := newComputeServerAndHandler(t)
-	err := AttachServer(server, map[string]FramedSocket{}) // no socket for "/compute"
+	err := server.Attach(NewServerTransport(ServerTransportOptions{Sockets: map[string]FramedSocket{}})) // no socket for "/compute"
 	var missing MissingSocketError
 	if !errors.As(err, &missing) {
 		t.Fatalf("expected MissingSocketError, got %v (%T)", err, err)
@@ -355,7 +355,7 @@ func TestAttachServer_MissingSocketError(t *testing.T) {
 
 func TestAttachClient_MissingSocketError(t *testing.T) {
 	client := reqreply.NewClient()
-	if err := AttachClient(client, map[string]FramedSocket{}); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Sockets: map[string]FramedSocket{}})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 	route := reqreply.NewRoute[computeReq, computeResp](
@@ -376,11 +376,11 @@ func TestAttachClient_CallAsync_RoundTrip(t *testing.T) {
 	server, _ := newComputeServerAndHandler(t)
 
 	repSock, reqSock := newChanSocketPair()
-	if err := AttachServer(server, map[string]FramedSocket{"/compute": repSock}); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Sockets: map[string]FramedSocket{"/compute": repSock}})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	client := reqreply.NewClient()
-	if err := AttachClient(client, map[string]FramedSocket{"/compute": reqSock}); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Sockets: map[string]FramedSocket{"/compute": reqSock}})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 
@@ -425,11 +425,11 @@ func TestAttachRouterServer_AttachDealerClient_RoundTrip(t *testing.T) {
 
 	dealerSock, routerSock := newDealerRouterPair([]byte("client-1"))
 
-	if err := AttachRouterServer(server, map[string]FramedSocket{"/compute": routerSock}); err != nil {
+	if err := server.Attach(NewRouterServerTransport(RouterServerTransportOptions{Sockets: map[string]FramedSocket{"/compute": routerSock}})); err != nil {
 		t.Fatalf("AttachRouterServer: %v", err)
 	}
 	client := reqreply.NewClient()
-	if err := AttachDealerClient(client, map[string]FramedSocket{"/compute": dealerSock}); err != nil {
+	if err := client.Attach(NewDealerClientTransport(DealerClientTransportOptions{Sockets: map[string]FramedSocket{"/compute": dealerSock}})); err != nil {
 		t.Fatalf("AttachDealerClient: %v", err)
 	}
 
@@ -490,7 +490,7 @@ func TestAttachDealerClient_ErrorPattern_MatchedReply_DecodesTypedError(t *testi
 	}
 
 	dealerSock, routerSock := newDealerRouterPair([]byte("client-1"))
-	if err := AttachRouterServer(server, map[string]FramedSocket{"/compute-ep-dealer-client": routerSock}); err != nil {
+	if err := server.Attach(NewRouterServerTransport(RouterServerTransportOptions{Sockets: map[string]FramedSocket{"/compute-ep-dealer-client": routerSock}})); err != nil {
 		t.Fatalf("AttachRouterServer: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -502,7 +502,7 @@ func TestAttachDealerClient_ErrorPattern_MatchedReply_DecodesTypedError(t *testi
 		reqreply.ErrorPattern[serveZmqConflictErr, serveZmqErrPayload](serveZmqErrPayloadCodec).WithCode("conflict"),
 	)
 	client := reqreply.NewClient()
-	if err := AttachDealerClient(client, map[string]FramedSocket{"/compute-ep-dealer-client": dealerSock}); err != nil {
+	if err := client.Attach(NewDealerClientTransport(DealerClientTransportOptions{Sockets: map[string]FramedSocket{"/compute-ep-dealer-client": dealerSock}})); err != nil {
 		t.Fatalf("AttachDealerClient: %v", err)
 	}
 
@@ -540,7 +540,7 @@ func TestAttachDealerClient_ErrorPattern_MatchedReply_DecodesTypedError(t *testi
 
 func TestAttachRouterServer_MissingSocketError(t *testing.T) {
 	server, _ := newComputeServerAndHandler(t)
-	err := AttachRouterServer(server, map[string]FramedSocket{})
+	err := server.Attach(NewRouterServerTransport(RouterServerTransportOptions{Sockets: map[string]FramedSocket{}}))
 	var missing MissingSocketError
 	if !errors.As(err, &missing) {
 		t.Fatalf("expected MissingSocketError, got %v (%T)", err, err)
@@ -612,7 +612,7 @@ func TestAttachServer_HandleMW_PairedSecurityFn_Verifies(t *testing.T) {
 	}
 
 	repSock, reqSock := newChanSocketPair()
-	if err := AttachServer(server, map[string]FramedSocket{"/secured-compute": repSock}); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Sockets: map[string]FramedSocket{"/secured-compute": repSock}})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -680,7 +680,7 @@ func TestAttachServer_HandleMW_PairedSecurityFn_MutatesReq(t *testing.T) {
 	}
 
 	repSock, reqSock := newChanSocketPair()
-	if err := AttachServer(server, map[string]FramedSocket{"/secured-compute": repSock}); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Sockets: map[string]FramedSocket{"/secured-compute": repSock}})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -710,11 +710,11 @@ func TestAttachRouterServer_HandleMW_PairedSecurityFn_Verifies(t *testing.T) {
 	}
 
 	dealerSock, routerSock := newDealerRouterPair([]byte("client-1"))
-	if err := AttachRouterServer(server, map[string]FramedSocket{"/secured-compute": routerSock}); err != nil {
+	if err := server.Attach(NewRouterServerTransport(RouterServerTransportOptions{Sockets: map[string]FramedSocket{"/secured-compute": routerSock}})); err != nil {
 		t.Fatalf("AttachRouterServer: %v", err)
 	}
 	client := reqreply.NewClient()
-	if err := AttachDealerClient(client, map[string]FramedSocket{"/secured-compute": dealerSock}); err != nil {
+	if err := client.Attach(NewDealerClientTransport(DealerClientTransportOptions{Sockets: map[string]FramedSocket{"/secured-compute": dealerSock}})); err != nil {
 		t.Fatalf("AttachDealerClient: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -751,7 +751,7 @@ func TestAttachServer_CheckCoverage_MissingSecurityMiddlewareError(t *testing.T)
 		t.Fatalf("Register: %v", err)
 	}
 	repSock, _ := newChanSocketPair()
-	if err := AttachServer(server, map[string]FramedSocket{"/secured-compute": repSock}); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Sockets: map[string]FramedSocket{"/secured-compute": repSock}})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	err := server.Serve(context.Background())
@@ -771,7 +771,7 @@ func TestAttachRouterServer_CheckCoverage_MissingSecurityMiddlewareError(t *test
 		t.Fatalf("Register: %v", err)
 	}
 	_, routerSock := newDealerRouterPair([]byte("client-1"))
-	if err := AttachRouterServer(server, map[string]FramedSocket{"/secured-compute": routerSock}); err != nil {
+	if err := server.Attach(NewRouterServerTransport(RouterServerTransportOptions{Sockets: map[string]FramedSocket{"/secured-compute": routerSock}})); err != nil {
 		t.Fatalf("AttachRouterServer: %v", err)
 	}
 	err := server.Serve(context.Background())
@@ -809,11 +809,11 @@ func TestAttachClient_ClientMW_PairedCredentialFn_WritesReq(t *testing.T) {
 	}
 
 	repSock, reqSock := newChanSocketPair()
-	if err := AttachServer(server, map[string]FramedSocket{"/secured-compute": repSock}); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Sockets: map[string]FramedSocket{"/secured-compute": repSock}})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	client := reqreply.NewClient()
-	if err := AttachClient(client, map[string]FramedSocket{"/secured-compute": reqSock}); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Sockets: map[string]FramedSocket{"/secured-compute": reqSock}})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -836,7 +836,7 @@ func TestAttachClient_ClientMW_PairedCredentialFn_WritesReq(t *testing.T) {
 func TestAttachClient_ClientMW_PairedCredentialFn_RejectsBeforeSend(t *testing.T) {
 	client := reqreply.NewClient()
 	reqSock, _ := newChanSocketPair()
-	if err := AttachClient(client, map[string]FramedSocket{"/secured-compute": reqSock}); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Sockets: map[string]FramedSocket{"/secured-compute": reqSock}})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 	callRoute := newSecuredComputeRoute().Use(zmqBearerAuthMw).ClientMW(&zmqBearerAuthMw, rejectingCredentialFn)
@@ -861,11 +861,11 @@ func TestAttachDealerClient_ClientMW_PairedCredentialFn_WritesReq(t *testing.T) 
 		t.Fatalf("Register: %v", err)
 	}
 	dealerSock, routerSock := newDealerRouterPair([]byte("client-1"))
-	if err := AttachRouterServer(server, map[string]FramedSocket{"/secured-compute": routerSock}); err != nil {
+	if err := server.Attach(NewRouterServerTransport(RouterServerTransportOptions{Sockets: map[string]FramedSocket{"/secured-compute": routerSock}})); err != nil {
 		t.Fatalf("AttachRouterServer: %v", err)
 	}
 	client := reqreply.NewClient()
-	if err := AttachDealerClient(client, map[string]FramedSocket{"/secured-compute": dealerSock}); err != nil {
+	if err := client.Attach(NewDealerClientTransport(DealerClientTransportOptions{Sockets: map[string]FramedSocket{"/secured-compute": dealerSock}})); err != nil {
 		t.Fatalf("AttachDealerClient: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -910,7 +910,7 @@ func TestAttachServer_HandleMW_GeneralPurpose_AlwaysRuns(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 	repSock, reqSock := newChanSocketPair()
-	if err := AttachServer(server, map[string]FramedSocket{"/compute": repSock}); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Sockets: map[string]FramedSocket{"/compute": repSock}})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -931,11 +931,11 @@ func TestAttachServer_HandleMW_GeneralPurpose_AlwaysRuns(t *testing.T) {
 func TestAttachClient_MultipleGeneralPurposeClientMW_ComposeOutermostIn(t *testing.T) {
 	server, _ := newComputeServerAndHandler(t)
 	repSock, reqSock := newChanSocketPair()
-	if err := AttachServer(server, map[string]FramedSocket{"/compute": repSock}); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Sockets: map[string]FramedSocket{"/compute": repSock}})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	client := reqreply.NewClient()
-	if err := AttachClient(client, map[string]FramedSocket{"/compute": reqSock}); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Sockets: map[string]FramedSocket{"/compute": reqSock}})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -977,11 +977,11 @@ func TestAttachClient_MultipleGeneralPurposeClientMW_ComposeOutermostIn(t *testi
 func TestAttachClient_ClientMW_AppliesToCallAsyncToo(t *testing.T) {
 	server, _ := newComputeServerAndHandler(t)
 	repSock, reqSock := newChanSocketPair()
-	if err := AttachServer(server, map[string]FramedSocket{"/compute": repSock}); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Sockets: map[string]FramedSocket{"/compute": repSock}})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	client := reqreply.NewClient()
-	if err := AttachClient(client, map[string]FramedSocket{"/compute": reqSock}); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Sockets: map[string]FramedSocket{"/compute": reqSock}})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1030,7 +1030,7 @@ func TestAttachServer_HandleMW_SecurityRejection_CallsSecurityObserver(t *testin
 	}
 	repSock, reqSock := newChanSocketPair()
 	obs := &testObserver{}
-	if err := AttachServer(server, map[string]FramedSocket{"/secured-compute": repSock}, ServeOptions{Observer: obs}); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Sockets: map[string]FramedSocket{"/secured-compute": repSock}, Serve: ServeOptions{Observer: obs}})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1064,7 +1064,7 @@ var testCtxKey = testCtxKeyType{}
 func TestAttachClient_ClientMW_ContextMutationPropagatesIntoInnerCall(t *testing.T) {
 	client := reqreply.NewClient()
 	reqSock, _ := newChanSocketPair()
-	if err := AttachClient(client, map[string]FramedSocket{"/ctx-propagation": reqSock}); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Sockets: map[string]FramedSocket{"/ctx-propagation": reqSock}})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 
@@ -1133,7 +1133,7 @@ func TestAttachServer_Transform_RunsAfterPairedSecurity(t *testing.T) {
 	}
 
 	repSock, reqSock := newChanSocketPair()
-	if err := AttachServer(server, map[string]FramedSocket{"/secured-compute": repSock}); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Sockets: map[string]FramedSocket{"/secured-compute": repSock}})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1186,14 +1186,14 @@ func TestAttachServer_MiddlewareError_WrapsAsKindMiddleware(t *testing.T) {
 	var gotKind ErrorKind
 	var kindSet bool
 	repSock, reqSock := newChanSocketPair()
-	if err := AttachServer(server, map[string]FramedSocket{"/mw-error-compute": repSock}, ServeOptions{
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Sockets: map[string]FramedSocket{"/mw-error-compute": repSock}, Serve: ServeOptions{
 		OnError: func(e ServeError) {
 			if !kindSet {
 				gotKind = e.Kind
 				kindSet = true
 			}
 		},
-	}); err != nil {
+	}})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1254,7 +1254,7 @@ func TestAttachServer_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
 
 	obs := &testObserver{}
 	repSock, reqSock := newChanSocketPair()
-	if err := AttachServer(server, map[string]FramedSocket{"/obs-out-loc-compute": repSock}, ServeOptions{Observer: obs}); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Sockets: map[string]FramedSocket{"/obs-out-loc-compute": repSock}, Serve: ServeOptions{Observer: obs}})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1311,7 +1311,7 @@ func TestAttachClient_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
 	}
 
 	repSock, reqSock := newChanSocketPair()
-	if err := AttachServer(server, map[string]FramedSocket{"/obs-client-out-compute": repSock}); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Sockets: map[string]FramedSocket{"/obs-client-out-compute": repSock}})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1333,7 +1333,7 @@ func TestAttachClient_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
 
 	obs := &testObserver{}
 	client := reqreply.NewClient()
-	if err := AttachClient(client, map[string]FramedSocket{"/obs-client-out-compute": reqSock}, CallOptions{Observer: obs}); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Sockets: map[string]FramedSocket{"/obs-client-out-compute": reqSock}, Call: CallOptions{Observer: obs}})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 

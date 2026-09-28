@@ -45,7 +45,7 @@ func AdminCredFn(_ context.Context, _ []route.SecurityRequirement) (http.Header,
 // identical either way.
 func Build(httpClient *http.Client, baseURL string) (*rest.Client, error) {
 	c := rest.NewClient()
-	if err := nethttp.Attach(c, httpClient, baseURL); err != nil {
+	if err := c.Attach(nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: httpClient, BaseURL: baseURL})); err != nil {
 		return nil, err
 	}
 	return c, nil

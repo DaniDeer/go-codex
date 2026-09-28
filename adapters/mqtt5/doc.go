@@ -17,10 +17,11 @@
 //
 // [caller] (built via [newCaller]) bundles the repeated client/router/
 // events.Client params for the value-based pub/sub surface, internally;
-// none of this is publicly reachable — call [Attach] and use the returned
-// [events.Client]'s Publish/Subscribe/ServeSubscribers methods instead:
+// none of this is publicly reachable — call [NewTransport] + the
+// [events.Client]'s own [events.Client.Attach], then use ITS
+// Publish/Subscribe/ServeSubscribers methods instead:
 //
-//	_ = mqtt5.Attach(eventsClient, client, router)
+//	_ = eventsClient.Attach(mqtt5.NewTransport(mqtt5.TransportOptions{Client: client, Router: router}))
 //	sub := SensorReadings.WithSubscribe(events.Subscribe{})
 //	err := eventsClient.Subscribe(ctx, sub, fn)
 //

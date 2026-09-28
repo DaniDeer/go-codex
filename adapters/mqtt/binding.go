@@ -205,15 +205,14 @@ func (a *mqttPublishAdapter[T]) Activate(ctx context.Context, src gstream.Stream
 	}
 	gstream.Drain(ctx, src,
 		func(ctx context.Context, v T) error {
-			// Declared events.PublishAttributes (via Publisher.WithAttributes)
-			// is the FALLBACK default when neither QoS nor Retained is
-			// explicitly set on a.opts — an explicit opts.QoS/Retained
-			// override still wins when set to a non-default value.
+			// docs/roadmap/capability-requirement-composition.md's Phase
+			// 4b: the events.PublishAttributes declared-on-channel
+			// fallback was REMOVED from api/events entirely (a parallel,
+			// non-Capability-shaped mechanism) — a.opts.QoS/Retained are
+			// this adapter's ONLY source for now. Full migration of this
+			// package to the Capability/Apply-only shape mqtt5 already
+			// has is Phase 5's job.
 			qos, retained := a.opts.QoS, a.opts.Retained
-			if qos == 0 && !retained {
-				attrs := a.handle.ResolvePublishAttributes(v)
-				qos, retained = byte(attrs.QoS), attrs.Retained
-			}
 			var err error
 			if a.opts.Vars == nil {
 				err = publishHandle(ctx, a.client, a.handle, qos, retained, v, pubOpts, a.fmt)

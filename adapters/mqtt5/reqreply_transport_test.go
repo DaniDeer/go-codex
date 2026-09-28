@@ -31,7 +31,7 @@ func TestAttachServer_AttachClient_RoundTrip(t *testing.T) {
 	if _, err := computeRoute.WithHandler(handler).Register(server); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 
@@ -49,7 +49,7 @@ func TestAttachServer_AttachClient_RoundTrip(t *testing.T) {
 	client := reqreply.NewClient()
 	clientClient := &mockClient{}
 	clientRouter := newMockRouter()
-	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Client: clientClient, Router: clientRouter})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 
@@ -142,7 +142,7 @@ func TestAttachClient_DualMode_GlobalSecurity(t *testing.T) {
 
 	serverClient := &mockClient{}
 	serverRouter := newMockRouter()
-	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
@@ -153,7 +153,7 @@ func TestAttachClient_DualMode_GlobalSecurity(t *testing.T) {
 	client := reqreply.NewClient()
 	clientClient := &mockClient{}
 	clientRouter := newMockRouter()
-	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Client: clientClient, Router: clientRouter})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 	wireBrokers(t, serverClient, clientRouter)
@@ -179,7 +179,7 @@ func TestAttachClient_DualMode_GlobalSecurity(t *testing.T) {
 	client2 := reqreply.NewClient()
 	clientClient2 := &mockClient{}
 	clientRouter2 := newMockRouter()
-	if err := AttachClient(client2, clientClient2, clientRouter2); err != nil {
+	if err := client2.Attach(NewClientTransport(ClientTransportOptions{Client: clientClient2, Router: clientRouter2})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 	wireBrokers(t, clientClient2, serverRouter)
@@ -211,7 +211,7 @@ func TestAttachClient_CallAsync_RoundTrip(t *testing.T) {
 
 	serverClient := &mockClient{}
 	serverRouter := newMockRouter()
-	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -222,7 +222,7 @@ func TestAttachClient_CallAsync_RoundTrip(t *testing.T) {
 	client := reqreply.NewClient()
 	clientClient := &mockClient{}
 	clientRouter := newMockRouter()
-	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Client: clientClient, Router: clientRouter})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 	wireBrokers(t, serverClient, clientRouter)
@@ -282,7 +282,7 @@ func TestAttachServer_AttachClient_MergeFields_RoundTrip(t *testing.T) {
 
 	serverClient := &mockClient{}
 	serverRouter := newMockRouter()
-	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -293,7 +293,7 @@ func TestAttachServer_AttachClient_MergeFields_RoundTrip(t *testing.T) {
 	client := reqreply.NewClient()
 	clientClient := &mockClient{}
 	clientRouter := newMockRouter()
-	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Client: clientClient, Router: clientRouter})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 
@@ -375,7 +375,7 @@ func TestAttachServer_Formats_Honored(t *testing.T) {
 
 	serverClient := &mockClient{}
 	serverRouter := newMockRouter()
-	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -432,7 +432,7 @@ func TestAttachServer_ErrorPattern_MatchedReply(t *testing.T) {
 
 	serverClient := &mockClient{}
 	serverRouter := newMockRouter()
-	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -493,7 +493,7 @@ func TestAttachClient_ErrorPattern_MatchedReply_DecodesTypedError(t *testing.T) 
 
 	serverClient := &mockClient{}
 	serverRouter := newMockRouter()
-	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -508,7 +508,7 @@ func TestAttachClient_ErrorPattern_MatchedReply_DecodesTypedError(t *testing.T) 
 	client := reqreply.NewClient()
 	clientClient := &mockClient{}
 	clientRouter := newMockRouter()
-	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Client: clientClient, Router: clientRouter})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 	wireBrokers(t, serverClient, clientRouter)
@@ -554,7 +554,7 @@ func TestAttachClient_ErrorPattern_NoMatch_FallsBackToGenericError(t *testing.T)
 
 	serverClient := &mockClient{}
 	serverRouter := newMockRouter()
-	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -567,7 +567,7 @@ func TestAttachClient_ErrorPattern_NoMatch_FallsBackToGenericError(t *testing.T)
 	client := reqreply.NewClient()
 	clientClient := &mockClient{}
 	clientRouter := newMockRouter()
-	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Client: clientClient, Router: clientRouter})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 	wireBrokers(t, serverClient, clientRouter)
@@ -611,7 +611,7 @@ func TestAttachServer_ErrorPattern_NoMatch_FallsBackToPlainText(t *testing.T) {
 
 	serverClient := &mockClient{}
 	serverRouter := newMockRouter()
-	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -659,7 +659,7 @@ func TestAttachClient_Call_ClientCallOptions_ResponseFormats_Overrides(t *testin
 
 	serverClient := &mockClient{}
 	serverRouter := newMockRouter()
-	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -670,7 +670,7 @@ func TestAttachClient_Call_ClientCallOptions_ResponseFormats_Overrides(t *testin
 	client := reqreply.NewClient()
 	clientClient := &mockClient{}
 	clientRouter := newMockRouter()
-	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Client: clientClient, Router: clientRouter})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 	wireBrokers(t, serverClient, clientRouter)
@@ -714,7 +714,7 @@ func TestAttachClient_CallAsync_AppliesClientCallOptions(t *testing.T) {
 
 	serverClient := &mockClient{}
 	serverRouter := newMockRouter()
-	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -725,7 +725,7 @@ func TestAttachClient_CallAsync_AppliesClientCallOptions(t *testing.T) {
 	client := reqreply.NewClient()
 	clientClient := &mockClient{}
 	clientRouter := newMockRouter()
-	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Client: clientClient, Router: clientRouter})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 	wireBrokers(t, serverClient, clientRouter)
@@ -779,7 +779,7 @@ func TestAttachServer_HandleMW_GeneralPurpose_AlwaysRuns(t *testing.T) {
 
 	serverClient := &mockClient{}
 	serverRouter := newMockRouter()
-	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -835,7 +835,7 @@ func TestAttachServer_MultipleGeneralPurposeHandleMW_ComposeOutermostIn(t *testi
 
 	serverClient := &mockClient{}
 	serverRouter := newMockRouter()
-	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -881,7 +881,7 @@ func TestAttachClient_MultipleGeneralPurposeClientMW_ComposeOutermostIn(t *testi
 
 	serverClient := &mockClient{}
 	serverRouter := newMockRouter()
-	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -892,7 +892,7 @@ func TestAttachClient_MultipleGeneralPurposeClientMW_ComposeOutermostIn(t *testi
 	client := reqreply.NewClient()
 	clientClient := &mockClient{}
 	clientRouter := newMockRouter()
-	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Client: clientClient, Router: clientRouter})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 	wireBrokers(t, serverClient, clientRouter)
@@ -953,7 +953,7 @@ func TestAttachClient_ClientMW_AppliesToCallAsyncToo(t *testing.T) {
 
 	serverClient := &mockClient{}
 	serverRouter := newMockRouter()
-	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -964,7 +964,7 @@ func TestAttachClient_ClientMW_AppliesToCallAsyncToo(t *testing.T) {
 	client := reqreply.NewClient()
 	clientClient := &mockClient{}
 	clientRouter := newMockRouter()
-	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Client: clientClient, Router: clientRouter})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 	wireBrokers(t, serverClient, clientRouter)
@@ -1018,7 +1018,7 @@ func TestAttachClient_ClientMW_ContextMutationPropagatesIntoInnerCall(t *testing
 	client := reqreply.NewClient()
 	clientClient := &mockClient{}
 	clientRouter := newMockRouter()
-	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Client: clientClient, Router: clientRouter})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 
@@ -1088,7 +1088,7 @@ func TestAttachClient_WithRequestProperty_WritesOutgoingUserProperty(t *testing.
 	}
 	serverClient := &mockClient{}
 	serverRouter := newMockRouter()
-	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -1100,7 +1100,7 @@ func TestAttachClient_WithRequestProperty_WritesOutgoingUserProperty(t *testing.
 	client := reqreply.NewClient()
 	clientClient := &mockClient{}
 	clientRouter := newMockRouter()
-	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Client: clientClient, Router: clientRouter})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 	wireBrokers(t, serverClient, clientRouter)
@@ -1157,7 +1157,7 @@ func TestAttachServer_WithResponseProperty_WritesOutgoingUserProperty(t *testing
 	}
 	serverClient := &mockClient{}
 	serverRouter := newMockRouter()
-	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -1169,7 +1169,7 @@ func TestAttachServer_WithResponseProperty_WritesOutgoingUserProperty(t *testing
 	client := reqreply.NewClient()
 	clientClient := &mockClient{}
 	clientRouter := newMockRouter()
-	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Client: clientClient, Router: clientRouter})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 	wireBrokers(t, serverClient, clientRouter)
@@ -1230,7 +1230,7 @@ func TestAttachServer_WithResponseProperty_ErrorReplyAlsoWritesUserProperty(t *t
 	}
 	serverClient := &mockClient{}
 	serverRouter := newMockRouter()
-	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -1242,7 +1242,7 @@ func TestAttachServer_WithResponseProperty_ErrorReplyAlsoWritesUserProperty(t *t
 	client := reqreply.NewClient()
 	clientClient := &mockClient{}
 	clientRouter := newMockRouter()
-	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Client: clientClient, Router: clientRouter})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 	wireBrokers(t, serverClient, clientRouter)
@@ -1307,7 +1307,7 @@ func TestAttachServer_Transform_RunsAfterPairedSecurity(t *testing.T) {
 	}
 	serverClient := &mockClient{}
 	serverRouter := newMockRouter()
-	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -1319,7 +1319,7 @@ func TestAttachServer_Transform_RunsAfterPairedSecurity(t *testing.T) {
 	client := reqreply.NewClient()
 	clientClient := &mockClient{}
 	clientRouter := newMockRouter()
-	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Client: clientClient, Router: clientRouter})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 	wireBrokers(t, serverClient, clientRouter)
@@ -1365,14 +1365,14 @@ func TestAttachServer_MiddlewareError_WrapsAsKindMiddleware(t *testing.T) {
 	}
 	serverClient := &mockClient{}
 	serverRouter := newMockRouter()
-	if err := AttachServer(server, serverClient, serverRouter, ServeOptions{
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter, Serve: ServeOptions{
 		OnError: func(e ServeError) {
 			if !kindSet {
 				gotKind = e.Kind
 				kindSet = true
 			}
 		},
-	}); err != nil {
+	}})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -1384,7 +1384,7 @@ func TestAttachServer_MiddlewareError_WrapsAsKindMiddleware(t *testing.T) {
 	client := reqreply.NewClient()
 	clientClient := &mockClient{}
 	clientRouter := newMockRouter()
-	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Client: clientClient, Router: clientRouter})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 	wireBrokers(t, serverClient, clientRouter)
@@ -1438,7 +1438,7 @@ func TestTransform_MiddlewareError_FallsBackWhenNoErrorPatternMatch(t *testing.T
 	}
 	serverClient := &mockClient{}
 	serverRouter := newMockRouter()
-	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -1450,7 +1450,7 @@ func TestTransform_MiddlewareError_FallsBackWhenNoErrorPatternMatch(t *testing.T
 	client := reqreply.NewClient()
 	clientClient := &mockClient{}
 	clientRouter := newMockRouter()
-	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Client: clientClient, Router: clientRouter})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 	wireBrokers(t, serverClient, clientRouter)
@@ -1502,7 +1502,7 @@ func TestAttachServer_Observer_ReportsMiddlewareInAndFnLocations(t *testing.T) {
 	}
 	serverClient := &mockClient{}
 	serverRouter := newMockRouter()
-	if err := AttachServer(server, serverClient, serverRouter, ServeOptions{Observer: obs}); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter, Serve: ServeOptions{Observer: obs}})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -1514,7 +1514,7 @@ func TestAttachServer_Observer_ReportsMiddlewareInAndFnLocations(t *testing.T) {
 	client := reqreply.NewClient()
 	clientClient := &mockClient{}
 	clientRouter := newMockRouter()
-	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Client: clientClient, Router: clientRouter})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 	wireBrokers(t, serverClient, clientRouter)
@@ -1571,7 +1571,7 @@ func TestAttachServer_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
 	}
 	serverClient := &mockClient{}
 	serverRouter := newMockRouter()
-	if err := AttachServer(server, serverClient, serverRouter, ServeOptions{Observer: obs}); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter, Serve: ServeOptions{Observer: obs}})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -1583,7 +1583,7 @@ func TestAttachServer_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
 	client := reqreply.NewClient()
 	clientClient := &mockClient{}
 	clientRouter := newMockRouter()
-	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Client: clientClient, Router: clientRouter})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 	wireBrokers(t, serverClient, clientRouter)
@@ -1628,7 +1628,7 @@ func TestAttachClient_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
 	}
 	serverClient := &mockClient{}
 	serverRouter := newMockRouter()
-	if err := AttachServer(server, serverClient, serverRouter); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -1653,7 +1653,7 @@ func TestAttachClient_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
 	client := reqreply.NewClient()
 	clientClient := &mockClient{}
 	clientRouter := newMockRouter()
-	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Client: clientClient, Router: clientRouter})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 	wireBrokers(t, serverClient, clientRouter)
@@ -1715,7 +1715,7 @@ func TestAttachServer_Disposition_ExplicitSignalResolvedAndObserved(t *testing.T
 	if _, err := computeRoute.WithHandler(handler).Register(server); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	if err := AttachServer(server, serverClient, serverRouter, ServeOptions{Observer: obs}); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter, Serve: ServeOptions{Observer: obs}})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 
@@ -1728,7 +1728,7 @@ func TestAttachServer_Disposition_ExplicitSignalResolvedAndObserved(t *testing.T
 	client := reqreply.NewClient()
 	clientClient := &mockClient{}
 	clientRouter := newMockRouter()
-	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Client: clientClient, Router: clientRouter})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 	wireBrokers(t, serverClient, clientRouter)
@@ -1763,7 +1763,7 @@ func TestAttachServer_Disposition_DefaultFallback_NilError(t *testing.T) {
 	if _, err := computeRoute.WithHandler(handler).Register(server); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	if err := AttachServer(server, serverClient, serverRouter, ServeOptions{Observer: obs}); err != nil {
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter, Serve: ServeOptions{Observer: obs}})); err != nil {
 		t.Fatalf("AttachServer: %v", err)
 	}
 
@@ -1776,7 +1776,7 @@ func TestAttachServer_Disposition_DefaultFallback_NilError(t *testing.T) {
 	client := reqreply.NewClient()
 	clientClient := &mockClient{}
 	clientRouter := newMockRouter()
-	if err := AttachClient(client, clientClient, clientRouter); err != nil {
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Client: clientClient, Router: clientRouter})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
 	wireBrokers(t, serverClient, clientRouter)

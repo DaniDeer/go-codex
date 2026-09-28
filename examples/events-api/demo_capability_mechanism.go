@@ -74,11 +74,10 @@ func demoCapabilityMechanism(ctx context.Context) {
 		fmt.Println("  [error] expected an Insufficient-level error, got nil")
 	}
 
-	// The Capability mechanism's QoS override only takes effect on the
-	// Attach/ServeSubscribers path (it has no call-time qos parameter to
-	// otherwise prefer) — unlike subscribeWithHandle/NewSubscribeTransport,
-	// whose OWN call-time qos parameter always wins by design (see
-	// SubscribeOptions.QoS's own doc comment).
+	// Capabilities is the SOLE mechanism (docs/roadmap/
+	// capability-requirement-composition.md's Phase 4/4b) — there is no
+	// call-time qos parameter to otherwise prefer, on either the
+	// subscribe or publish side.
 	evClient := events.NewClient(events.WithInfo(events.Info{Title: "Capability demo", Version: "1.0.0"}))
 	sub := routes.CapabilitySub.WithHandler(func(ctx context.Context, r routes.SensorReading) error {
 		fmt.Printf("  ✓ received: sensorId=%s value=%.1f\n", r.SensorID, r.Value)
@@ -90,22 +89,28 @@ func demoCapabilityMechanism(ctx context.Context) {
 		fmt.Printf("  [error] Register: %v\n", err)
 		return
 	}
-	if err := mqtt5adapter.Attach(evClient, broker, router); err != nil {
+	if err := evClient.Attach(mqtt5adapter.NewTransport(mqtt5adapter.TransportOptions{Client: broker, Router: router})); err != nil {
 		fmt.Printf("  [error] Attach: %v\n", err)
 		return
 	}
 	go func() { _ = evClient.ServeSubscribers(ctx) }()
 	router.WaitHandler(routes.CapabilityTopic)
 
-	pubTransport := mqtt5adapter.NewPublishTransport[routes.SensorReading](broker, 0, false,
-		mqtt5adapter.PublishOptions[routes.SensorReading]{
-			Capabilities: []mqtt5adapter.Capability{mqtt5adapter.Retained(true)},
-		},
-	)
-	if err := events.PublishHandle(ctx, routes.CapabilityPub, pubTransport,
+	// docs/roadmap/capability-requirement-composition.md's Phase 4c:
+	// evClient is ALREADY attached (above, for the subscribe side) —
+	// Publisher.WithOptions declares Capabilities the SAME way
+	// Subscriber.WithOptions does, so evClient.Publish itself now
+	// resolves and applies them. No adapter-specific
+	// NewPublishTransport/events.PublishHandle escape hatch needed here
+	// anymore — the api-layer-owned Client is the ONLY thing this demo
+	// touches for both directions.
+	pub := routes.CapabilityPub.WithOptions(mqtt5adapter.PublishOptions[routes.SensorReading]{
+		Capabilities: []mqtt5adapter.Capability{mqtt5adapter.Retained(true)},
+	})
+	if err := evClient.Publish(ctx, pub,
 		routes.SensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5},
 	); err != nil {
-		fmt.Printf("  [error] PublishHandle: %v\n", err)
+		fmt.Printf("  [error] Publish: %v\n", err)
 	}
 	time.Sleep(20 * time.Millisecond)
 	fmt.Println()

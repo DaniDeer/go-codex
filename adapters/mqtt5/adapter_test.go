@@ -343,8 +343,7 @@ func TestSubscribe_ValidPayload(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	if err := subscribeWithHandle(ctx, client, router, newChannelHandle(), 1,
-		func(_ context.Context, r sensorReading) error { received = r; return nil },
+	if err := subscribeWithHandle(ctx, client, router, newChannelHandle(), func(_ context.Context, r sensorReading) error { received = r; return nil },
 		SubscribeOptions{}); err != nil {
 		t.Fatalf("Subscribe setup failed: %v", err)
 	}
@@ -367,8 +366,7 @@ func TestSubscribe_DecodeError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = subscribeWithHandle(ctx, client, router, newChannelHandle(), 1,
-		func(_ context.Context, _ sensorReading) error { t.Fatal("fn must not be called"); return nil },
+	_ = subscribeWithHandle(ctx, client, router, newChannelHandle(), func(_ context.Context, _ sensorReading) error { t.Fatal("fn must not be called"); return nil },
 		SubscribeOptions{OnError: func(e SubscribeError) { gotErr = e }})
 
 	router.dispatch("sensors/readings", &pahomqtt5.Publish{
@@ -389,8 +387,7 @@ func TestSubscribe_HandlerError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = subscribeWithHandle(ctx, client, router, newChannelHandle(), 1,
-		func(_ context.Context, _ sensorReading) error { return handlerErr },
+	_ = subscribeWithHandle(ctx, client, router, newChannelHandle(), func(_ context.Context, _ sensorReading) error { return handlerErr },
 		SubscribeOptions{OnError: func(e SubscribeError) { gotErr = e }})
 
 	router.dispatch("sensors/readings", &pahomqtt5.Publish{
@@ -432,10 +429,9 @@ func TestSubscribe_HandlerError_MatchedErrorChannel_PublishesTypedPayload(t *tes
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = subscribeWithHandle(ctx, client, router, handle, 1,
-		func(_ context.Context, _ sensorReading) error {
-			return sensorValidationErr{msg: "value too high"}
-		},
+	_ = subscribeWithHandle(ctx, client, router, handle, func(_ context.Context, _ sensorReading) error {
+		return sensorValidationErr{msg: "value too high"}
+	},
 		SubscribeOptions{OnError: func(SubscribeError) { onErrorCalled = true }})
 
 	router.dispatch("sensors/readings", &pahomqtt5.Publish{
@@ -467,14 +463,13 @@ func TestSubscribe_UserProperties_InContext(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = subscribeWithHandle(ctx, client, router, newChannelHandle(), 1,
-		func(ctx context.Context, _ sensorReading) error {
-			props, ok := UserPropertiesFromContext(ctx)
-			if ok {
-				gotProps = props
-			}
-			return nil
-		},
+	_ = subscribeWithHandle(ctx, client, router, newChannelHandle(), func(ctx context.Context, _ sensorReading) error {
+		props, ok := UserPropertiesFromContext(ctx)
+		if ok {
+			gotProps = props
+		}
+		return nil
+	},
 		SubscribeOptions{})
 
 	router.dispatch("sensors/readings", &pahomqtt5.Publish{
@@ -499,8 +494,7 @@ func TestSubscribe_BuiltInCredentialCheck_RejectsMalformedCredential(t *testing.
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = subscribeWithHandle(ctx, client, router, newSecuredSubscribeChannelHandle(), 1,
-		func(_ context.Context, _ sensorReading) error { t.Fatal("fn must not be called"); return nil },
+	_ = subscribeWithHandle(ctx, client, router, newSecuredSubscribeChannelHandle(), func(_ context.Context, _ sensorReading) error { t.Fatal("fn must not be called"); return nil },
 		SubscribeOptions{
 			Observer: obs,
 			OnError:  func(e SubscribeError) { gotErr = e },
@@ -561,8 +555,7 @@ func TestSubscribe_SecurityImpl_StillRunsAfterBuiltInCheck_OnValidCredential(t *
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = subscribeWithHandle(ctx, client, router, handle, 1,
-		func(_ context.Context, _ sensorReading) error { fnCalled = true; return nil },
+	_ = subscribeWithHandle(ctx, client, router, handle, func(_ context.Context, _ sensorReading) error { fnCalled = true; return nil },
 		SubscribeOptions{})
 
 	router.dispatch("sensors/readings", &pahomqtt5.Publish{
@@ -599,8 +592,7 @@ func TestSubscribe_ContentTypeAutoFormat(t *testing.T) {
 		return
 	}
 
-	_ = subscribeWithHandle(ctx, client, router, handle, 1,
-		func(_ context.Context, r sensorReading) error { received = r; return nil },
+	_ = subscribeWithHandle(ctx, client, router, handle, func(_ context.Context, r sensorReading) error { received = r; return nil },
 		SubscribeOptions{})
 
 	// Dispatch a message with ContentType header matching the format.
@@ -625,8 +617,7 @@ func TestSubscribe_ObserverRecordSubscribeSuccess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = subscribeWithHandle(ctx, client, router, newChannelHandle(), 1,
-		func(_ context.Context, _ sensorReading) error { return nil },
+	_ = subscribeWithHandle(ctx, client, router, newChannelHandle(), func(_ context.Context, _ sensorReading) error { return nil },
 		SubscribeOptions{Observer: obs})
 
 	router.dispatch("sensors/readings", &pahomqtt5.Publish{
@@ -646,8 +637,7 @@ func TestSubscribe_ObserverRecordSubscribeFailure(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = subscribeWithHandle(ctx, client, router, newChannelHandle(), 1,
-		func(_ context.Context, _ sensorReading) error { return nil },
+	_ = subscribeWithHandle(ctx, client, router, newChannelHandle(), func(_ context.Context, _ sensorReading) error { return nil },
 		SubscribeOptions{Observer: obs})
 
 	router.dispatch("sensors/readings", &pahomqtt5.Publish{
@@ -667,8 +657,7 @@ func TestSubscribe_ValidationErrorReported(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = subscribeWithHandle(ctx, client, router, newChannelHandle(), 1,
-		func(_ context.Context, _ sensorReading) error { return nil },
+	_ = subscribeWithHandle(ctx, client, router, newChannelHandle(), func(_ context.Context, _ sensorReading) error { return nil },
 		SubscribeOptions{Observer: obs})
 
 	router.dispatch("sensors/readings", &pahomqtt5.Publish{
@@ -702,8 +691,7 @@ func TestObserver_RecordValidationError_topicMismatch_subscribe(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = subscribeWithHandle(ctx, client, router, newMergeChannelHandle(), 1,
-		func(_ context.Context, _ sensorReading) error { return nil },
+	_ = subscribeWithHandle(ctx, client, router, newMergeChannelHandle(), func(_ context.Context, _ sensorReading) error { return nil },
 		SubscribeOptions{Observer: obs})
 	router.waitHandler("sensors/+/readings")
 
@@ -771,8 +759,7 @@ func TestObserver_RecordValidationError_invalidTopic_subscribe(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = subscribeWithHandle(ctx, client, router, newTopicConstraintMergeHandle(), 1,
-		func(_ context.Context, _ sensorReading) error { return nil },
+	_ = subscribeWithHandle(ctx, client, router, newTopicConstraintMergeHandle(), func(_ context.Context, _ sensorReading) error { return nil },
 		SubscribeOptions{Observer: obs})
 
 	router.dispatch("sensors/+/readings", &pahomqtt5.Publish{
@@ -796,8 +783,7 @@ func TestSubscribe_TraceSpan(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = subscribeWithHandle(ctx, client, router, newChannelHandle(), 1,
-		func(_ context.Context, _ sensorReading) error { return nil },
+	_ = subscribeWithHandle(ctx, client, router, newChannelHandle(), func(_ context.Context, _ sensorReading) error { return nil },
 		SubscribeOptions{Observer: obs})
 
 	router.dispatch("sensors/readings", &pahomqtt5.Publish{
@@ -818,13 +804,12 @@ func TestSubscribe_MessageFromContext(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = subscribeWithHandle(ctx, client, router, newChannelHandle(), 1,
-		func(ctx context.Context, _ sensorReading) error {
-			if msg, ok := MessageFromContext(ctx); ok {
-				gotTopic = msg.Topic
-			}
-			return nil
-		},
+	_ = subscribeWithHandle(ctx, client, router, newChannelHandle(), func(ctx context.Context, _ sensorReading) error {
+		if msg, ok := MessageFromContext(ctx); ok {
+			gotTopic = msg.Topic
+		}
+		return nil
+	},
 		SubscribeOptions{})
 
 	router.dispatch("sensors/readings", &pahomqtt5.Publish{
@@ -842,7 +827,7 @@ func TestPublish_ValidMessage(t *testing.T) {
 	client := &mockClient{}
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
 
-	err := publish(context.Background(), client, newChannelHandle(), 1, false, reading, nil, true,
+	err := publish(context.Background(), client, newChannelHandle(), reading, nil, true,
 		PublishOptions[sensorReading]{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -856,7 +841,7 @@ func TestPublish_ContentTypeProperty(t *testing.T) {
 	client := &mockClient{}
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
 
-	_ = publish(context.Background(), client, newChannelHandle(), 1, false, reading, nil, true,
+	_ = publish(context.Background(), client, newChannelHandle(), reading, nil, true,
 		PublishOptions[sensorReading]{ContentType: "application/json"})
 
 	pub := client.lastPublished()
@@ -869,7 +854,7 @@ func TestPublish_UserProperties(t *testing.T) {
 	client := &mockClient{}
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
 
-	_ = publish(context.Background(), client, newChannelHandle(), 1, false, reading, nil, true,
+	_ = publish(context.Background(), client, newChannelHandle(), reading, nil, true,
 		PublishOptions[sensorReading]{
 			UserProperties: []UserProperty{{Key: "TenantID", Value: "acme"}},
 		})
@@ -905,7 +890,7 @@ func TestPublish_SecurityImpl_ValidFormat_Passes(t *testing.T) {
 		t.Fatalf("Handle: %v", err)
 	}
 
-	pubErr := publish(context.Background(), client, handle, 1, false, reading, nil, true,
+	pubErr := publish(context.Background(), client, handle, reading, nil, true,
 		PublishOptions[sensorReading]{})
 	if pubErr != nil {
 		t.Fatalf("unexpected error: %v", pubErr)
@@ -943,7 +928,7 @@ func TestPublish_SecurityImpl_MalformedFormat_ReturnsSecurityCredentialError(t *
 		t.Fatalf("Handle: %v", err)
 	}
 
-	pubErr := publish(context.Background(), client, handle, 1, false, reading, nil, true,
+	pubErr := publish(context.Background(), client, handle, reading, nil, true,
 		PublishOptions[sensorReading]{Observer: obs})
 	var credErr events.SecurityCredentialError
 	if !errors.As(pubErr, &credErr) {
@@ -985,7 +970,7 @@ func TestPublish_SecurityImpl_ReturnsNilProperties_SkipsValidation(t *testing.T)
 		t.Fatalf("Handle: %v", err)
 	}
 
-	pubErr := publish(context.Background(), client, handle, 1, false, reading, nil, true,
+	pubErr := publish(context.Background(), client, handle, reading, nil, true,
 		PublishOptions[sensorReading]{})
 	if pubErr != nil {
 		t.Fatalf("unexpected error: %v", pubErr)
@@ -1000,7 +985,7 @@ func TestPublish_EncodeError(t *testing.T) {
 	// Use empty UUID (invalid) to trigger codec validation error
 	invalid := sensorReading{SensorID: "not-a-uuid", Value: 1.0}
 
-	err := publish(context.Background(), client, newChannelHandle(), 1, false, invalid, nil, true,
+	err := publish(context.Background(), client, newChannelHandle(), invalid, nil, true,
 		PublishOptions[sensorReading]{})
 
 	var encErr PublishEncodeError
@@ -1014,7 +999,7 @@ func TestPublish_ObserverRecordPublishSuccess(t *testing.T) {
 	client := &mockClient{}
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1.0}
 
-	_ = publish(context.Background(), client, newChannelHandle(), 1, false, reading, nil, true,
+	_ = publish(context.Background(), client, newChannelHandle(), reading, nil, true,
 		PublishOptions[sensorReading]{Observer: obs})
 
 	if len(obs.publishes) != 1 || !obs.publishes[0] {
@@ -1027,7 +1012,7 @@ func TestPublish_TraceSpan(t *testing.T) {
 	client := &mockClient{}
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1.0}
 
-	_ = publish(context.Background(), client, newChannelHandle(), 1, false, reading, nil, true,
+	_ = publish(context.Background(), client, newChannelHandle(), reading, nil, true,
 		PublishOptions[sensorReading]{Observer: obs})
 
 	if len(obs.startSpanOps) != 1 || obs.startSpanOps[0] != "mqtt5.publish" {
@@ -1143,8 +1128,7 @@ func TestUserPropertyParam_ValidProperties_MessageDelivered(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = subscribeWithHandle(ctx, client, router, newChannelHandle(), 1,
-		func(_ context.Context, r sensorReading) error { received = r; return nil },
+	_ = subscribeWithHandle(ctx, client, router, newChannelHandle(), func(_ context.Context, r sensorReading) error { received = r; return nil },
 		SubscribeOptions{
 			UserPropertyParams: []UserPropertyParam{
 				UserPropertyParam{Name: "TenantID", Required: true}.WithCodec(
@@ -1169,8 +1153,7 @@ func TestUserPropertyParam_MissingRequired_SecurityError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = subscribeWithHandle(ctx, client, router, newChannelHandle(), 1,
-		func(_ context.Context, _ sensorReading) error { t.Fatal("fn must not be called"); return nil },
+	_ = subscribeWithHandle(ctx, client, router, newChannelHandle(), func(_ context.Context, _ sensorReading) error { t.Fatal("fn must not be called"); return nil },
 		SubscribeOptions{
 			OnError: func(e SubscribeError) { gotErr = e },
 			UserPropertyParams: []UserPropertyParam{
@@ -1204,8 +1187,7 @@ func TestUserPropertyParam_CodecFailure_SecurityError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = subscribeWithHandle(ctx, client, router, newChannelHandle(), 1,
-		func(_ context.Context, _ sensorReading) error { t.Fatal("fn must not be called"); return nil },
+	_ = subscribeWithHandle(ctx, client, router, newChannelHandle(), func(_ context.Context, _ sensorReading) error { t.Fatal("fn must not be called"); return nil },
 		SubscribeOptions{
 			OnError: func(e SubscribeError) { gotErr = e },
 			UserPropertyParams: []UserPropertyParam{
@@ -1239,8 +1221,7 @@ func TestUserPropertyParam_Optional_AbsentOk(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = subscribeWithHandle(ctx, client, router, newChannelHandle(), 1,
-		func(_ context.Context, r sensorReading) error { received = r; return nil },
+	_ = subscribeWithHandle(ctx, client, router, newChannelHandle(), func(_ context.Context, r sensorReading) error { received = r; return nil },
 		SubscribeOptions{
 			UserPropertyParams: []UserPropertyParam{
 				UserPropertyParam{Name: "OptionalHeader", Required: false}.WithCodec(
@@ -1267,8 +1248,7 @@ func TestUserPropertyParam_ObserverValidationErrorReported(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = subscribeWithHandle(ctx, client, router, newChannelHandle(), 1,
-		func(_ context.Context, _ sensorReading) error { return nil },
+	_ = subscribeWithHandle(ctx, client, router, newChannelHandle(), func(_ context.Context, _ sensorReading) error { return nil },
 		SubscribeOptions{
 			Observer: obs,
 			UserPropertyParams: []UserPropertyParam{
@@ -1355,8 +1335,7 @@ func TestSubscribe_BrokerError_OnSubscribeFail(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	err := subscribeWithHandle(ctx, client, router, newChannelHandle(), 1,
-		func(_ context.Context, _ sensorReading) error { return nil },
+	err := subscribeWithHandle(ctx, client, router, newChannelHandle(), func(_ context.Context, _ sensorReading) error { return nil },
 		SubscribeOptions{})
 
 	var be BrokerError
@@ -1376,7 +1355,7 @@ func TestPublish_BrokerError_OnPublishFail(t *testing.T) {
 	client := &mockClient{publishErr: brokerErr}
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1.0}
 
-	err := publish(context.Background(), client, newChannelHandle(), 1, false, reading, nil, true,
+	err := publish(context.Background(), client, newChannelHandle(), reading, nil, true,
 		PublishOptions[sensorReading]{})
 
 	var be BrokerError
@@ -1411,7 +1390,7 @@ func TestPublish_Vars_MissingVar_ReportsRequiredConstraintWithVarName(t *testing
 	client := &mockClient{}
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1.0}
 
-	err := publish(context.Background(), client, newTemplateChannelHandle(), 1, false,
+	err := publish(context.Background(), client, newTemplateChannelHandle(),
 		reading, map[string]string{}, true, // sensorID missing
 		PublishOptions[sensorReading]{Observer: obs})
 
@@ -1442,7 +1421,7 @@ func TestPublish_Vars_CodecFailure_ReportsVarNameAsField(t *testing.T) {
 	client := &mockClient{}
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1.0}
 
-	err := publish(context.Background(), client, newTemplateChannelHandle(), 1, false,
+	err := publish(context.Background(), client, newTemplateChannelHandle(),
 		reading, map[string]string{"sensorID": "not-a-uuid"}, true,
 		PublishOptions[sensorReading]{Observer: obs})
 
@@ -1496,8 +1475,7 @@ func TestSubscribe_MergeFields_AutoMergesTopicVars(t *testing.T) {
 	defer cancel()
 
 	handle := newMergeChannelHandle()
-	if err := subscribeWithHandle(ctx, client, router, handle, 1,
-		func(_ context.Context, r sensorReading) error { received = r; return nil },
+	if err := subscribeWithHandle(ctx, client, router, handle, func(_ context.Context, r sensorReading) error { received = r; return nil },
 		SubscribeOptions{}); err != nil {
 		t.Fatalf("Subscribe setup failed: %v", err)
 	}
@@ -1532,8 +1510,7 @@ func TestSubscribe_NoMergeFieldsIsUnaffected(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	if err := subscribeWithHandle(ctx, client, router, newChannelHandle(), 1,
-		func(_ context.Context, r sensorReading) error { received = r; return nil },
+	if err := subscribeWithHandle(ctx, client, router, newChannelHandle(), func(_ context.Context, r sensorReading) error { received = r; return nil },
 		SubscribeOptions{}); err != nil {
 		t.Fatalf("Subscribe setup failed: %v", err)
 	}
@@ -1555,7 +1532,7 @@ func TestPublishHandle_DerivesVarsFromMsg(t *testing.T) {
 	handle := newMergeChannelHandle()
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
 
-	err := publishHandle(context.Background(), client, handle, 1, false, reading, PublishOptions[sensorReading]{})
+	err := publishHandle(context.Background(), client, handle, reading, PublishOptions[sensorReading]{Capabilities: []Capability{QoS(1)}})
 	if err != nil {
 		t.Fatalf("PublishHandle: %v", err)
 	}
@@ -1615,14 +1592,13 @@ func TestPublishHandleSubscribe_NestedGobPayload_RoundTrip(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := subscribeWithHandle(ctx, client, router, handle, 1,
-		func(_ context.Context, r reading) error { received = r; return nil },
+	if err := subscribeWithHandle(ctx, client, router, handle, func(_ context.Context, r reading) error { received = r; return nil },
 		SubscribeOptions{}); err != nil {
 		t.Fatalf("Subscribe setup failed: %v", err)
 	}
 
 	msg := reading{Meta: meta{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479"}, Value: 42.5}
-	if err := publishHandle(ctx, client, handle, 1, false, msg, PublishOptions[reading]{}); err != nil {
+	if err := publishHandle(ctx, client, handle, msg, PublishOptions[reading]{Capabilities: []Capability{QoS(1)}}); err != nil {
 		t.Fatalf("PublishHandle: %v", err)
 	}
 	if len(client.published) != 1 {
@@ -1687,8 +1663,7 @@ func TestSubscribe_MiddlewareDispatch_RunsAfterPairedSecurity(t *testing.T) {
 	router := newMockRouter()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := subscribeWithHandle(ctx, client, router, handle, 1,
-		func(_ context.Context, _ sensorReading) error { return nil },
+	if err := subscribeWithHandle(ctx, client, router, handle, func(_ context.Context, _ sensorReading) error { return nil },
 		SubscribeOptions{}); err != nil {
 		t.Fatalf("Subscribe setup failed: %v", err)
 	}
@@ -1731,8 +1706,8 @@ func TestPublish_MiddlewareDispatch_ValuePrecedence_ExplicitBeatsMiddlewareBeats
 
 	// (a) explicit ALWAYS wins over middleware-derived.
 	client := &mockClient{}
-	if err := publish(ctx, client, handle, 1, false, reading,
-		map[string]string{"sensorID": "cccccccc-cccc-cccc-cccc-cccccccccccc"}, true, PublishOptions[sensorReading]{}); err != nil {
+	if err := publish(ctx, client, handle, reading,
+		map[string]string{"sensorID": "cccccccc-cccc-cccc-cccc-cccccccccccc"}, true, PublishOptions[sensorReading]{Capabilities: []Capability{QoS(1)}}); err != nil {
 		t.Fatalf("publish (explicit): %v", err)
 	}
 	if !strings.Contains(client.lastPublished().Topic, "cccccccc-cccc-cccc-cccc-cccccccccccc") {
@@ -1741,7 +1716,7 @@ func TestPublish_MiddlewareDispatch_ValuePrecedence_ExplicitBeatsMiddlewareBeats
 
 	// (b) middleware-derived wins over channel-own-derived (the Bug 1 fix).
 	client2 := &mockClient{}
-	if err := publishHandle(ctx, client2, handle, 1, false, reading, PublishOptions[sensorReading]{}); err != nil {
+	if err := publishHandle(ctx, client2, handle, reading, PublishOptions[sensorReading]{Capabilities: []Capability{QoS(1)}}); err != nil {
 		t.Fatalf("publishHandle: %v", err)
 	}
 	if !strings.Contains(client2.lastPublished().Topic, "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb") {
@@ -1774,8 +1749,7 @@ func TestSubscribe_Observer_ReportsMiddlewareInAndFnLocations(t *testing.T) {
 	obsIn := &testObserver{}
 	clientIn := &mockClient{}
 	routerIn := newMockRouter()
-	if err := subscribeWithHandle(ctx, clientIn, routerIn, handleIn, 1,
-		func(_ context.Context, _ sensorReading) error { return nil },
+	if err := subscribeWithHandle(ctx, clientIn, routerIn, handleIn, func(_ context.Context, _ sensorReading) error { return nil },
 		SubscribeOptions{Observer: obsIn}); err != nil {
 		t.Fatalf("Subscribe setup failed: %v", err)
 	}
@@ -1808,8 +1782,7 @@ func TestSubscribe_Observer_ReportsMiddlewareInAndFnLocations(t *testing.T) {
 	obsFn := &testObserver{}
 	clientFn := &mockClient{}
 	routerFn := newMockRouter()
-	if err := subscribeWithHandle(ctx, clientFn, routerFn, handleFn, 1,
-		func(_ context.Context, _ sensorReading) error { return nil },
+	if err := subscribeWithHandle(ctx, clientFn, routerFn, handleFn, func(_ context.Context, _ sensorReading) error { return nil },
 		SubscribeOptions{Observer: obsFn}); err != nil {
 		t.Fatalf("Subscribe setup failed: %v", err)
 	}
@@ -1847,7 +1820,7 @@ func TestPublish_Observer_ReportsMiddlewareInAndFnLocations(t *testing.T) {
 	obs := &testObserver{}
 	client := &mockClient{}
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1}
-	pubErr := publishHandle(context.Background(), client, handle, 1, false, reading, PublishOptions[sensorReading]{Observer: obs})
+	pubErr := publishHandle(context.Background(), client, handle, reading, PublishOptions[sensorReading]{Observer: obs, Capabilities: []Capability{QoS(1)}})
 
 	found := false
 	for _, e := range obs.validationFull {
@@ -1897,7 +1870,7 @@ func TestPublish_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
 	obs := &testObserver{}
 	client := &mockClient{}
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1}
-	pubErr := publishHandle(context.Background(), client, handle, 1, false, reading, PublishOptions[sensorReading]{Observer: obs})
+	pubErr := publishHandle(context.Background(), client, handle, reading, PublishOptions[sensorReading]{Observer: obs, Capabilities: []Capability{QoS(1)}})
 
 	found := false
 	for _, e := range obs.validationFull {
@@ -1950,7 +1923,7 @@ func TestPublish_WithPublishProperty_WritesOutgoingUserProperty_SeparateFromTopi
 
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1}
 	client := &mockClient{}
-	if err := publishHandle(context.Background(), client, handle, 1, false, reading, PublishOptions[sensorReading]{}); err != nil {
+	if err := publishHandle(context.Background(), client, handle, reading, PublishOptions[sensorReading]{Capabilities: []Capability{QoS(1)}}); err != nil {
 		t.Fatalf("publishHandle: %v", err)
 	}
 

@@ -16,18 +16,23 @@ import (
 // — unlike [events.Transport], which is a method-based, `any`-typed
 // interface out of structural necessity, not stylistic choice).
 //
-//	transport := mqtt5.NewPublishTransport[SensorReading](client, 1, false, mqtt5.PublishOptions[SensorReading]{})
+// QoS/Retained are supplied EXCLUSIVELY via [PublishOptions.Capabilities]
+// (docs/roadmap/capability-requirement-composition.md's Phase 4 — a
+// deliberate breaking change: the former call-time qos/retained
+// parameters are REMOVED, Capabilities is now the ONLY mechanism).
+//
+//	transport := mqtt5.NewPublishTransport[SensorReading](client, mqtt5.PublishOptions[SensorReading]{
+//	    Capabilities: []mqtt5.Capability{mqtt5.QoSAtLeastOnce},
+//	})
 //	err := events.PublishHandle(ctx, ReadingsChannel.WithPublish(events.Publish{}), transport, reading)
-func NewPublishTransport[T any](client MQTTClient, qos byte, retained bool, opts PublishOptions[T], formats ...format.Format[T]) events.PublishTransport[T] {
-	return &publishTransport[T]{client: client, qos: qos, retained: retained, opts: opts, formats: formats}
+func NewPublishTransport[T any](client MQTTClient, opts PublishOptions[T], formats ...format.Format[T]) events.PublishTransport[T] {
+	return &publishTransport[T]{client: client, opts: opts, formats: formats}
 }
 
 type publishTransport[T any] struct {
-	client   MQTTClient
-	qos      byte
-	retained bool
-	opts     PublishOptions[T]
-	formats  []format.Format[T]
+	client  MQTTClient
+	opts    PublishOptions[T]
+	formats []format.Format[T]
 }
 
 // Publish implements [events.PublishTransport]. Delegates to the same
@@ -36,7 +41,7 @@ type publishTransport[T any] struct {
 // resolution, Observer/tracing, general-purpose middleware wrapping —
 // unchanged.
 func (t *publishTransport[T]) Publish(ctx context.Context, handle *events.ChannelHandle[T], msg T) error {
-	return publishHandle(ctx, t.client, handle, t.qos, t.retained, msg, t.opts, t.formats...)
+	return publishHandle(ctx, t.client, handle, msg, t.opts, t.formats...)
 }
 
 // AdapterName implements [events.PublishTransport].
@@ -48,19 +53,21 @@ var _ events.PublishTransport[struct{}] = (*publishTransport[struct{}])(nil)
 // client+router — the GENERIC, per-T constructor Decision 7 uses to
 // satisfy api/events' new inverted, no-*Client-needed
 // [events.SubscribeHandle] call surface. See [NewPublishTransport]'s doc
-// comment for the full design rationale.
+// comment for the full design rationale — QoS is supplied EXCLUSIVELY
+// via [SubscribeOptions.Capabilities] the same way.
 //
-//	transport := mqtt5.NewSubscribeTransport[SensorReading](client, router, 1, mqtt5.SubscribeOptions{})
+//	transport := mqtt5.NewSubscribeTransport[SensorReading](client, router, mqtt5.SubscribeOptions{
+//	    Capabilities: []mqtt5.Capability{mqtt5.QoSAtLeastOnce},
+//	})
 //	err := events.SubscribeHandle(ctx, ReadingsChannel.WithSubscribe(events.Subscribe{}), transport,
 //	    func(ctx context.Context, r SensorReading) error { ... })
-func NewSubscribeTransport[T any](client MQTTClient, router MQTTRouter, qos byte, opts SubscribeOptions, formats ...format.Format[T]) events.SubscribeTransport[T] {
-	return &subscribeTransport[T]{client: client, router: router, qos: qos, opts: opts, formats: formats}
+func NewSubscribeTransport[T any](client MQTTClient, router MQTTRouter, opts SubscribeOptions, formats ...format.Format[T]) events.SubscribeTransport[T] {
+	return &subscribeTransport[T]{client: client, router: router, opts: opts, formats: formats}
 }
 
 type subscribeTransport[T any] struct {
 	client  MQTTClient
 	router  MQTTRouter
-	qos     byte
 	opts    SubscribeOptions
 	formats []format.Format[T]
 }
@@ -71,7 +78,7 @@ type subscribeTransport[T any] struct {
 // resolution, decode+merge, security enforcement, Observer/tracing —
 // unchanged.
 func (t *subscribeTransport[T]) Subscribe(ctx context.Context, handle *events.ChannelHandle[T], fn func(context.Context, T) error) error {
-	return subscribeWithHandle(ctx, t.client, t.router, handle, t.qos, fn, t.opts, t.formats...)
+	return subscribeWithHandle(ctx, t.client, t.router, handle, fn, t.opts, t.formats...)
 }
 
 // AdapterName implements [events.SubscribeTransport].

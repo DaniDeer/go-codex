@@ -47,7 +47,7 @@ func demoRouteLevelSecurityCredentialError(ctx context.Context, built *mqtt5serv
 	fmt.Println("\n── Demo 3: route-level security — SecurityCredentialError ──")
 
 	client := reqreply.NewClient()
-	if err := mqtt5adapter.AttachClient(client, built.Broker, built.Router); err != nil {
+	if err := client.Attach(mqtt5adapter.NewClientTransport(mqtt5adapter.ClientTransportOptions{Client: built.Broker, Router: built.Router})); err != nil {
 		fmt.Fprintf(os.Stderr, "unexpected error attaching client: %v\n", err)
 		os.Exit(1)
 	}

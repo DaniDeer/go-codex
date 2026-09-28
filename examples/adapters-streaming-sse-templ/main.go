@@ -305,7 +305,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	addr := mustFreeAddr()
-	mustServe(nethttp.AttachMux(b, mux, addr), "AttachMux")
+	mustServe(b.Attach(nethttp.NewServerTransport(nethttp.ServerTransportOptions{Mux: mux, Addr: addr})), "AttachMux")
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = b.Serve(ctx) }()
 	defer cancel()
@@ -353,7 +353,7 @@ func main() {
 
 	invalidMux := http.NewServeMux()
 	invalidAddr := mustFreeAddr()
-	mustServe(nethttp.AttachMux(invalidBuilder, invalidMux, invalidAddr), "AttachMux(invalid)")
+	mustServe(invalidBuilder.Attach(nethttp.NewServerTransport(nethttp.ServerTransportOptions{Mux: invalidMux, Addr: invalidAddr})), "AttachMux(invalid)")
 	invalidCtx, invalidCancel := context.WithCancel(context.Background())
 	go func() { _ = invalidBuilder.Serve(invalidCtx) }()
 	defer invalidCancel()

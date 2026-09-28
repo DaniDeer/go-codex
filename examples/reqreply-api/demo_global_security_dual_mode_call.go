@@ -50,7 +50,7 @@ func demoGlobalSecurityDualModeCall(ctx context.Context, built *mqtt5server.Buil
 
 	fmt.Println("\n  → a SEPARATE Route variant with .Use()+.ClientMW() attached, credential supplied declaratively:")
 	credentialedClient := reqreply.NewClient()
-	if err := mqtt5adapter.AttachClient(credentialedClient, built.Broker, built.Router); err != nil {
+	if err := credentialedClient.Attach(mqtt5adapter.NewClientTransport(mqtt5adapter.ClientTransportOptions{Client: built.Broker, Router: built.Router})); err != nil {
 		fmt.Fprintf(os.Stderr, "unexpected error attaching credentialed client: %v\n", err)
 		os.Exit(1)
 	}

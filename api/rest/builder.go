@@ -2701,23 +2701,63 @@ type ServerTransport interface {
 	Serve(ctx context.Context) error
 }
 
+// ServerAwareTransport is an OPTIONAL extension to [ServerTransport] —
+// mirrors [events.ClientAwareTransport] exactly, for the identical
+// reason: a [ServerTransport] built via an adapter's `New*Transport(opts)`
+// factory (docs/roadmap/capability-requirement-composition.md's Phase 4d)
+// is constructed BEFORE the [*Server] that will attach it is known, but
+// [ServerTransport.Serve] needs a [*Server] reference to walk its
+// registered routes (`serve(mux, builder)`'s own `builder` parameter).
+// [ServerAwareTransport] closes that gap WITHOUT reintroducing a
+// [*Server] parameter to the factory — [Server.Attach] supplies it,
+// exactly once, right after storing t.
+type ServerAwareTransport interface {
+	ServerTransport
+	// BindServer receives b immediately after [Server.Attach] stores t
+	// as b's transport. A non-nil error rolls back the attach (b's
+	// transport is cleared, [Server.Attach] returns this error) —
+	// [Server.Attach] remains all-or-nothing. Mirrors
+	// [events.ClientAwareTransport.BindClient]'s identical shape.
+	BindServer(b *Server) error
+}
+
 // Attach binds t to b as b's server transport — the "attach the adapter to
 // the builder" step behind [Server.Serve]. Each adapter provides its own
-// entry point (e.g. nethttp.AttachMux(builder, mux, addr)) that builds an
-// internal ServerTransport implementation and calls this method
-// internally; application code calls the ADAPTER's Attach function, not
-// this method directly, in the common case.
+// `New*Transport` factory (e.g. `nethttp.NewServerTransport(nethttp.ServerTransportOptions{Mux: mux, Addr: addr})`)
+// that builds a configured [ServerTransport] value; application code
+// attaches it via THIS method directly — never via an adapter-namespaced
+// convenience function (removed, see docs/roadmap/
+// capability-requirement-composition.md's Phase 4d).
+//
+// If t implements [ServerAwareTransport], its BindServer(b) is called
+// IMMEDIATELY after storing t.
 //
 // Returns [ServerTransportAlreadyAttachedError] if b already has a
 // transport attached — Attach is exclusive, mirrors
 // [events.Client.Attach] exactly.
 func (b *Server) Attach(t ServerTransport) error {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	if b.transport != nil {
+		b.mu.Unlock()
 		return ServerTransportAlreadyAttachedError{}
 	}
 	b.transport = t
+	b.mu.Unlock()
+
+	// BindServer is called OUTSIDE b.mu — a [ServerAwareTransport]
+	// implementation might legitimately need to call back into b's OWN
+	// methods; sync.RWMutex is NOT reentrant, so calling BindServer
+	// while still holding the write lock would deadlock the moment such
+	// a callback is added (mirrors a REAL deadlock confirmed and fixed
+	// in [reqreply.Server.Attach] for the identical reason).
+	if aware, ok := t.(ServerAwareTransport); ok {
+		if err := aware.BindServer(b); err != nil {
+			b.mu.Lock()
+			b.transport = nil
+			b.mu.Unlock()
+			return err
+		}
+	}
 	return nil
 }
 
@@ -2769,7 +2809,7 @@ func (e ServerTransportAlreadyAttachedError) LogValue() slog.Value {
 type NoServerTransportAttachedError struct{}
 
 func (e NoServerTransportAttachedError) Error() string {
-	return "api/rest: Server has no ServerTransport attached (call an adapter's Attach function first, e.g. nethttp.AttachMux(builder, mux, addr))"
+	return "api/rest: Server has no ServerTransport attached (build an adapter transport and call Attach yourself, e.g. builder.Attach(nethttp.NewServerTransport(nethttp.ServerTransportOptions{Mux: mux, Addr: addr})))"
 }
 
 // LogValue implements [slog.LogValuer] for structured logging.
@@ -2973,7 +3013,7 @@ func (e ClientTransportAlreadyAttachedError) LogValue() slog.Value {
 type NoClientTransportAttachedError struct{}
 
 func (e NoClientTransportAttachedError) Error() string {
-	return "api/rest: Client has no ClientTransport attached (call an adapter's Attach function first, e.g. nethttp.Attach(client, httpClient, baseURL))"
+	return "api/rest: Client has no ClientTransport attached (build an adapter transport and call Attach yourself, e.g. client.Attach(nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: httpClient, BaseURL: baseURL})))"
 }
 
 // LogValue implements [slog.LogValuer] for structured logging.
