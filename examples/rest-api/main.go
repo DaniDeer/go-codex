@@ -94,6 +94,7 @@ func main() {
 	demoErrorPatternMiddlewareCombo()
 	demoErrorPatternPortAdapter()
 	demoSetCookie()
+	demoCapabilityMechanism()
 	demoSpecEndpoint(chiAddr, nethttpAddr)
 
 	fmt.Println("=== Observer summary (merged: both servers) ===")

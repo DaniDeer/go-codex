@@ -1,6 +1,14 @@
 # `adapters/zeromqrest` — ZeroMQ REQ/REP Adapter for `api/rest`
 
-> **Status:** Design draft — not yet implemented.
+> **Status:** Design draft — not yet implemented. **Now an INDEPENDENT
+> future effort**, no longer gated on/gating
+> `capability-requirement-composition.md`'s own Phase 3, whose
+> CAPABILITY MECHANISM half has since SHIPPED without this adapter
+> (an explicit scope decision at Implement time — see that doc's Phase
+> 3 Learnings entry). Every design decision below (wire framing, API
+> surface, Security/Middleware dispatch requirements, all 6 Open Design
+> Decisions) stands unchanged and ready for whenever a future session
+> picks this up — nothing here depends on timing.
 > [← Back to Roadmap](index.md)
 
 Spun out of [Composable Capability Requirements — Phase
@@ -12,9 +20,15 @@ ONLY the adapter's own binding-level design (wire framing, socket
 lifecycle, error types, `ports.IOAdapter` implementation). The
 CAPABILITY mechanism this new adapter must eventually satisfy
 (`rest.CapabilityRequirement`, `HeaderParam`/`CookieParam` becoming
-genuinely-checked Tier 2 capabilities) is designed separately, in the
-capability-composition doc's own Phase 3 section — cross-reference it,
-don't re-derive it here.
+genuinely-checked Tier 2 capabilities) is designed AND IMPLEMENTED
+separately, already SHIPPED in the capability-composition doc's own
+Phase 3 section — cross-reference it, don't re-derive it here. A future
+Implement session for THIS adapter inherits that mechanism fully built
+and tested: it need only implement `HeaderCapableTransport`/
+`QueryCapableTransport` (not `CookieCapableTransport`) and a real `HWM`
+`Capability` value (not `Conflate`), then wire
+`rest.CheckParamKindCoverage`/`VerifyCapabilityCoverage` into its own
+dispatch — mirroring exactly how `adapters/nethttp`/`adapters/chi` did.
 
 ## Motivation
 

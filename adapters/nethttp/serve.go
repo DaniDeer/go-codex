@@ -238,6 +238,30 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 		return nil, err
 	}
 
+	// docs/roadmap/capability-requirement-composition.md's Phase 3:
+	// Tier 3a — nethttp supplies NO concrete Capability values at all
+	// (HTTP has no QoS/HWM concept), so a route declaring RequireQoS/
+	// RequireHWM correctly, EAGERLY fails coverage here rather than
+	// silently ignoring the requirement — exactly the intended "adapter
+	// doesn't support this capability" outcome, not a bug.
+	requirements, _ := elem.FieldByName("Requirements").Interface().([]rest.CapabilityRequirement)
+	if err := rest.VerifyCapabilityCoverage[rest.CapabilityName](routeLabel, requirements, nil); err != nil {
+		return nil, err
+	}
+	// Tier 2 — HeaderParamNames/CookieParamNames/QueryParamNames already
+	// reflect the FULL declared set (plain-opt AND middleware-merged),
+	// scanned alongside every declared SecurityScheme's In field. This
+	// check can never fail for nethttp (transportCapabilities implements
+	// all 3 markers) — proves the mechanism coexists with zero behavior
+	// change for existing routes.
+	headerNames, _ := hv.MethodByName("HeaderParamNames").Call(nil)[0].Interface().([]string)
+	cookieNames, _ := hv.MethodByName("CookieParamNames").Call(nil)[0].Interface().([]string)
+	queryNames, _ := hv.MethodByName("QueryParamNames").Call(nil)[0].Interface().([]string)
+	requiredKinds := rest.RequiredParamKinds(headerNames, cookieNames, queryNames, secSchemes)
+	if err := rest.CheckParamKindCoverage("nethttp", requiredKinds, httpTransport); err != nil {
+		return nil, err
+	}
+
 	opts, err := resolveOptions(descriptor.Method, descriptor.Path, handlerOptsAny)
 	if err != nil {
 		return nil, err

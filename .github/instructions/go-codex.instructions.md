@@ -197,6 +197,31 @@ problem `docs/roadmap/protocol-native-features.md` set out to resolve:
   `events.RecordCapabilityApplied` ARE reused as-is by reqreply's
   adapter-side code (fully generic, no events-specific types) — only the
   declaration-side pieces are duplicated.
+  **Phase 3 (capability mechanism only — the new
+  `adapters/zeromqrest` build itself is an INDEPENDENT future effort,
+  see `docs/roadmap/zeromq-rest-adapter.md`) extends the mechanism to
+  `api/rest`** with a DIFFERENT tier split than events/reqreply:
+  `rest.CapabilityRequirement`/`CheckCapabilityCoverage`/
+  `RequireQoS`/`RequireHWM` (no `RequireRetained`/`RequireConflate` —
+  correctly absent, REST has neither concept) is Tier 3a, IDENTICAL
+  mechanism, but with ZERO concrete adapter-supplied values today (HTTP
+  has no QoS/HWM concept) — a route declaring `RequireQoS` correctly,
+  eagerly fails coverage when attached to `adapters/nethttp`/
+  `adapters/chi`. NEW for REST (events/reqreply never needed this):
+  Tier 2 — `rest.HeaderParam`/`CookieParam`/`QueryParam` become
+  genuinely runtime-checked via 3 optional marker interfaces
+  (`rest.HeaderCapableTransport`/`CookieCapableTransport`/
+  `QueryCapableTransport`, one no-op method each) an adapter's transport
+  type implements; `RouteHandle.HeaderParamNames()`/`CookieParamNames()`/
+  `QueryParamNames()` (mirrors `PathParamNames()`, returns the FULL
+  declared set including declarative-middleware-merged contributions)
+  feed `rest.RequiredParamKinds`/`CheckParamKindCoverage`, which ALSO
+  scans declared `SecuritySchemes`' `In` field
+  (closing an APIKey-cookie coverage gap). `nethttp`/`chi` implement all
+  3 markers trivially (zero behavior change to existing routes);
+  `rest.UnsupportedParamKindError` fires at attach time for a genuinely
+  unsupported kind. Renders into OpenAPI's `x-codex-capabilities` vendor
+  extension (mirrors AsyncAPI's `x-capabilities`).
 - **`Address`** (`events.Address` — `Template() string`,
   `events.TopicAddress{Topic string}`) — a standalone, ADDITIVE type
   pair, NOT a retrofit of `Channel[T]`/`NewChannel` (a full

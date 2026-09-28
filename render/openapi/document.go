@@ -260,7 +260,28 @@ func buildOperation(r route.Route) map[string]any {
 		op["security"] = buildSecurityRequirements(r.Security)
 	}
 
+	if len(r.Capabilities) > 0 {
+		op["x-codex-capabilities"] = buildCapabilities(r.Capabilities)
+	}
+
 	return op
+}
+
+// buildCapabilities converts []route.CapabilitySpec to the
+// "x-codex-capabilities" OpenAPI vendor-extension array — mirrors
+// render/asyncapi/v3's identical "x-capabilities" rendering exactly,
+// adapted to OpenAPI's own "x-" extension convention (docs/roadmap/
+// capability-requirement-composition.md's Phase 3).
+func buildCapabilities(specs []route.CapabilitySpec) []any {
+	out := make([]any, len(specs))
+	for i, s := range specs {
+		entry := map[string]any{"name": s.Name}
+		if s.Description != "" {
+			entry["description"] = s.Description
+		}
+		out[i] = entry
+	}
+	return out
 }
 
 // buildParams converts a slice of Params into OpenAPI parameter objects.

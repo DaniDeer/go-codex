@@ -140,6 +140,23 @@ type Route struct {
 	// An empty slice explicitly declares "no auth required" for the operation.
 	// nil means "inherit global security".
 	Security []SecurityRequirement
+	// Capabilities declares this route's protocol-native capability
+	// requirements (docs/roadmap/capability-requirement-composition.md's
+	// Phase 3) — rendered into the OpenAPI operation's "x-codex-capabilities"
+	// vendor extension. Mirrors [render/asyncapi/v3.CapabilitySpec]'s
+	// identical role for events/reqreply's AsyncAPI "x-capabilities"
+	// extension — a package-local mirror, not literally shared, since
+	// `route` has no dependency on either renderer package.
+	Capabilities []CapabilitySpec
+}
+
+// CapabilitySpec is the render-layer mirror of [rest.CapabilityRequirement]
+// consumed by the OpenAPI renderer's "x-codex-capabilities" vendor
+// extension — stable, adapter-agnostic output-format concept, distinct
+// from the Go-facing declaration type feeding it.
+type CapabilitySpec struct {
+	Name        string
+	Description string
 }
 
 // Param describes a path or query parameter.

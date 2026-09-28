@@ -1,7 +1,10 @@
 # Composable Capability Requirements — declare-first, adapter-satisfies-second
 
-> **Status:** Phases 1-2 SHIPPED (see each subsection's own Learnings
-> entry); Phases 3-4 not yet started. Spun out of a user
+> **Status:** Phases 1-2 SHIPPED; Phase 3's CAPABILITY MECHANISM
+> SHIPPED (the sibling `adapters/zeromqrest` adapter build is
+> deliberately OUT of this roadmap's own scope — an independent future
+> effort, see `docs/roadmap/zeromq-rest-adapter.md`); Phase 4 not yet
+> started. See each subsection's own Learnings entry. Spun out of a user
 > question about
 > [D-0006 — Protocol-Native Capabilities](../design/d-0006-protocol-native-capabilities.md)'s
 > scope (events-only) while reviewing [`docs/features/capabilities.md`](../features/capabilities.md).
@@ -1158,10 +1161,31 @@ plumbing gap found this round (not just a generic "wiring" test):
 
 ### Phase 3 — `api/rest` (a new, synchronous, transport-stateless adapter)
 
-**Scope split (resolved this round):** this phase spans TWO concerns
-that get designed in TWO separate docs, per this repo's own convention —
-a new adapter gets its own dedicated Explore-mode roadmap doc, written
-BEFORE its Implement step:
+**Status: CAPABILITY MECHANISM SHIPPED.** Per an explicit scope
+narrowing (this doc's implementation execution deliberately excludes
+the new `adapters/zeromqrest` adapter build — see the scope-split note
+below, now further refined): Design finalized, Implemented, tested,
+documented, and verified (`go fmt`/`go build ./...`/`go test ./...`/
+`just check`/all examples all green) for the CAPABILITY MECHANISM half
+only. The new ZeroMQ REQ/REP adapter itself is NOT part of this
+roadmap's own phase count or Implement scope — it remains entirely
+tracked, independently, in
+[`docs/roadmap/zeromq-rest-adapter.md`](zeromq-rest-adapter.md), free to
+be picked up in a wholly separate future session whenever real demand
+appears, with ZERO information lost (that doc's full design — wire
+framing, dispatch requirements, all 6 Open Design Decisions — stands on
+its own). See the Learnings entry at the end of this subsection for
+what carries forward to that future session and to Phase 4.
+
+**Scope split (resolved earlier, refined further at Implement time):**
+this phase originally spanned TWO concerns designed in TWO separate
+docs, per this repo's own convention — a new adapter gets its own
+dedicated Explore-mode roadmap doc, written BEFORE its Implement step.
+At Implement time, this was narrowed FURTHER: only the capability
+mechanism's OWN Implement step happens as part of this roadmap; the
+adapter's Implement step is deliberately deferred to its own,
+completely independent future session — not merely designed separately
+but EXECUTED separately too:
 
 - **Adapter plumbing** (wire framing, socket lifecycle, package naming,
   `ports.IOAdapter` binding) — designed in
@@ -1445,19 +1469,76 @@ triggers the Cookie requirement).
 | `api/rest/builder.go` | `routeBuilder.requirements` field; `RouteHandle.Requirements` field (populated at both Register-equivalent construction sites); NEW `HeaderParamNames`/`CookieParamNames`/`QueryParamNames` methods (mirrors `PathParamNames()` exactly, full declared set not just merge-field subset); a coverage-scan helper inspecting BOTH the 3 new accessors AND every declared `SecurityScheme`'s `In` field |
 | `api/rest/capability_test.go`, `capability_require_test.go` | NEW — full test matrix per above, fake types |
 | `render/openapi/openapi.go` | NEW `x-codex-capabilities` vendor extension rendering on the route's `Operation` object |
-| `adapters/zeromqrest/*` | Per the sibling adapter doc's own design — consumes `HeaderParamNames`/etc. via reflection, exactly as described in that doc's "Security/Middleware dispatch" section |
+| `route/route.go` | NEW `route.CapabilitySpec{Name, Description}` render-layer mirror + `Route.Capabilities []CapabilitySpec` field (added during Implement — the Design step's own sketch didn't anticipate `route.Route`, the shared HTTP-shaped descriptor type, needing this itself) |
+| `adapters/nethttp/capability.go`, `adapters/chi/capability.go` | NEW — trivial `transportCapabilities` marker implementing all 3 Tier 2 interfaces (added during Implement, per the narrowed scope below — proves the mechanism over a REAL adapter without needing `adapters/zeromqrest` to exist) |
+| `adapters/zeromqrest/*` | **DEFERRED, NOT part of this Implement step** — an independent future session, per the sibling adapter doc's own design (unchanged, untouched) |
 
-- **Implement:** the six mandatory requirements PLUS the
-  `add-a-new-adapter` skill's full new-adapter checklist (this is a brand
-  new transport package, not an extension of an existing one) — the
-  ADAPTER half of Implement follows
-  [`zeromq-rest-adapter.md`](zeromq-rest-adapter.md)'s own design; the
-  CAPABILITY half follows this doc's design above.
-- **Examples:** update/add `api/rest` example(s) demonstrating the
-  ZeroMQ REQ/REP adapter alongside the existing HTTP ones.
-- **Docs:** update `docs/features/rest-api.md`, `docs/features/capabilities.md`,
-  relevant guides, and `.github/instructions/go-codex.instructions.md`.
-- **Learnings:** recorded here before Phase 4 begins.
+- **Implement (NARROWED SCOPE — capability mechanism only, executed):**
+  the six mandatory requirements for the `api/rest`/`route`/
+  `render/openapi` changes above, PLUS wiring `adapters/nethttp`/
+  `adapters/chi`'s 3 trivial marker implementations into their EXISTING
+  `Serve`/`AttachServer` dispatch (verified: full pre-existing test
+  suites pass UNCHANGED). The `adapters/zeromqrest` adapter's own
+  Implement step (full `add-a-new-adapter` skill checklist) does NOT
+  happen here — deferred whole, to its own future session.
+- **Examples:** `examples/rest-api` gained
+  `demo_capability_mechanism.go` — demonstrates Tier 2 (HeaderParam/
+  QueryParam, always passes) and Tier 3a (RequireQoS, correctly
+  rejected — no adapter supplies a QoS value yet) against the REAL
+  nethttp adapter.
+- **Docs:** updated `docs/features/rest-api.md`, `docs/features/capabilities.md`
+  (new "REST's capability mechanism" section, "Why not REST/Security?"
+  retitled to "Why not Security?"), `.github/instructions/go-codex.instructions.md`.
+- **Learnings (recorded, real evidence from Implement — not
+  speculation):**
+  - **A genuine client/server ASYMMETRY was found and correctly worked
+    around, not silently papered over.** `Route.ClientHandle()` does
+    NOT run `applyParamDeclarations`'s middleware-merge step (only
+    `applyMiddlewareSecurityForClient` — Security only) — confirmed by
+    a FAILING test (`TestHeaderParamNames_IncludesMiddlewareDeclaredHeader`
+    initially returned an empty slice via `ClientHandle()`). Root cause:
+    `ClientHandle()` is DELIBERATELY infallible (its own doc comment:
+    "conflict detection and drift-closing coverage checking do NOT run
+    here"), and the merge step can fail (`checkParamConflicts`), so it's
+    correctly excluded from the infallible path. Fixed by testing
+    through `RegisterHandle` (server-side) instead — the CORRECT handle
+    source for `HeaderParamNames()`'s actual consumers (an adapter's
+    `Serve`/`AttachServer`, always server-side). Carries forward: any
+    FUTURE `adapters/zeromqrest` Implement session must consume
+    `HeaderParamNames()`/etc. from the SAME server-side construction
+    path, not assume `ClientHandle()`-sourced handles carry the full
+    merged set.
+  - **`route.Route` (the shared, transport-agnostic descriptor type)
+    needed a NEW field the Design step's file sketch never
+    anticipated** — `Capabilities []route.CapabilitySpec` — since
+    OpenAPI rendering operates on `route.Route`, not `rest.RouteHandle`
+    directly. A small, zero-cost addition (mirrors `SecurityRequirement`'s
+    existing role on the same struct), but a reminder that a Design
+    step's own "Files to create" sketch can still miss a render-layer
+    plumbing detail until Implement traces the ACTUAL rendering call
+    path.
+  - **Wiring nethttp/chi's markers surfaced a genuinely useful NEW
+    shared helper not in the original Design sketch**:
+    `rest.CheckParamKindCoverage(adapter, requiredKinds, transport)` —
+    added during Implement (mirrors `VerifyCapabilityCoverage`'s own
+    "thin-adapter convenience wrapper, don't hand-roll per-adapter"
+    philosophy) once it became clear EVERY adapter wiring this in would
+    otherwise duplicate the identical 3-kind type-assertion sequence.
+  - **Zero behavior change to nethttp/chi, PROVEN not assumed**: both
+    packages' FULL pre-existing test suites (8.2s/0.4s respectively)
+    pass byte-for-byte unmodified after wiring both new coverage checks
+    into their dispatch — confirming the "declare first, adapter
+    satisfies second" mechanism genuinely coexists with zero regression
+    risk for a real, heavily-tested adapter, not just in theory.
+  - **Carries forward to `adapters/zeromqrest`'s own FUTURE Implement
+    session** (whenever it happens, entirely separately): that session
+    inherits a FULLY SHIPPED, tested `api/rest` capability mechanism —
+    it need only implement `HeaderCapableTransport`/
+    `QueryCapableTransport` (deliberately NOT `CookieCapableTransport`)
+    and a real `HWM` `Capability` value (deliberately NOT `Conflate`),
+    then wire `rest.CheckParamKindCoverage`/`VerifyCapabilityCoverage`
+    into its own dispatch exactly like nethttp/chi just did — zero
+    `api/rest`-side changes anticipated.
 
 ### Phase 4 — Review & Closeout (not a feature phase)
 

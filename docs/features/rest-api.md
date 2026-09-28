@@ -804,6 +804,21 @@ for the full design.
 | `rest.UnsupportedMediaTypeError{Got, Supported}` | Wrong Content-Type → 415 |
 | `rest.NotAcceptableError{Accept, Supported}` | Accept has no match → 406 |
 | `rest.BodyTooLargeError{Limit}` | Body exceeds MaxBodyBytes → 413 |
+| `rest.CapabilityCoverageError{Route, Missing, Insufficient}` | A declared `RequireQoS`/`RequireHWM` capability requirement has no matching adapter-supplied value (or an insufficient level) |
+| `rest.UnsupportedParamKindError{Kind, Adapter}` | A declared `HeaderParam`/`CookieParam`/`QueryParam` (or a `SecurityScheme`'s `In` field) names a param kind the attached adapter's transport doesn't implement |
+
+## Protocol-native capabilities
+
+`api/rest` gains the same protocol-native `Capability` mechanism
+`api/events`/`api/reqreply` already ship — `rest.RequireQoS`/`RequireHWM`
+declare a standalone requirement an adapter may or may not satisfy;
+`HeaderParam`/`CookieParam`/`QueryParam` become genuinely runtime-checked
+once more than one transport family exists. `adapters/nethttp`/
+`adapters/chi` implement the 3 Tier 2 marker interfaces trivially (HTTP
+always supports headers/cookies/query) with zero behavior change to
+existing routes; no shipped adapter supplies a concrete QoS/HWM value
+yet. See [Feature: Protocol-Native Capabilities](capabilities.md) for
+the full mechanism.
 
 ## Security
 

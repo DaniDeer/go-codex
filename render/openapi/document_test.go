@@ -462,3 +462,58 @@ func TestDocumentBuilder_defaultResponseStatus(t *testing.T) {
 		t.Error("missing 2XX response in output")
 	}
 }
+
+func TestDocumentBuilder_addRoute_rendersCapabilitiesVendorExtension(t *testing.T) {
+	doc, err := openapi.NewDocumentBuilder(testInfo).
+		AddRoute(route.Route{
+			Method:      "POST",
+			Path:        "/compute/add",
+			OperationID: "computeAdd",
+			Responses: []route.Response{
+				{Status: "200", Description: "OK"},
+			},
+			Capabilities: []route.CapabilitySpec{
+				{Name: "QoS", Description: "requires at least at-least-once delivery"},
+			},
+		}).
+		Build()
+	if err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+
+	b, err := doc.MarshalYAML()
+	if err != nil {
+		t.Fatalf("MarshalYAML error: %v", err)
+	}
+	out := string(b)
+	if !strings.Contains(out, "x-codex-capabilities") {
+		t.Errorf("missing x-codex-capabilities vendor extension in output:\n%s", out)
+	}
+	if !strings.Contains(out, "requires at least at-least-once delivery") {
+		t.Errorf("missing capability description in output:\n%s", out)
+	}
+}
+
+func TestDocumentBuilder_addRoute_noCapabilities_omitsVendorExtension(t *testing.T) {
+	doc, err := openapi.NewDocumentBuilder(testInfo).
+		AddRoute(route.Route{
+			Method: "GET",
+			Path:   "/users",
+			Responses: []route.Response{
+				{Status: "200", Description: "OK"},
+			},
+		}).
+		Build()
+	if err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+
+	b, err := doc.MarshalYAML()
+	if err != nil {
+		t.Fatalf("MarshalYAML error: %v", err)
+	}
+	out := string(b)
+	if strings.Contains(out, "x-codex-capabilities") {
+		t.Errorf("unexpected x-codex-capabilities in output with no declared capabilities:\n%s", out)
+	}
+}

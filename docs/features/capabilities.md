@@ -2,15 +2,17 @@
 
 > See also: [`docs/design/d-0006-protocol-native-capabilities.md`](../design/d-0006-protocol-native-capabilities.md) (full design rationale + survey) · [`adapters/mqtt`](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mqtt) · [`adapters/mqtt5`](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mqtt5) · [`adapters/zeromq`](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/zeromq)
 >
-> `Capability` covers BOTH `api/events` (pub/sub) and `api/reqreply`
-> (request/reply) — each API owns its own package-local declaration types
-> (`events.CapabilityRequirement`/`reqreply.CapabilityRequirement`, etc. —
-> deliberately NOT shared, see the "Coverage checking" section below),
-> both consuming the SAME 4 existing sealed adapter-owned `Capability`
-> values (`mqtt`/`mqtt5`'s `QoS`/`Retained`, `zeromq`'s `HWM`/`Conflate`)
-> with zero new adapter-side capability types needed. REST and Security
-> deliberately use different, already-documented mechanisms instead — see
-> ["Why not REST/Security?"](#why-not-restsecurity) below.
+> `Capability` covers `api/events` (pub/sub), `api/reqreply`
+> (request/reply), AND `api/rest` (Phase 3) — each API owns its own
+> package-local declaration types (`events.CapabilityRequirement`/
+> `reqreply.CapabilityRequirement`/`rest.CapabilityRequirement`, etc. —
+> deliberately NOT shared, see the "Coverage checking" section below).
+> events/reqreply consume the SAME 4 existing sealed adapter-owned
+> `Capability` values (`mqtt`/`mqtt5`'s `QoS`/`Retained`, `zeromq`'s
+> `HWM`/`Conflate`); REST has its OWN mechanism with a DIFFERENT tier
+> split — see ["REST's capability mechanism"](#rests-capability-mechanism)
+> below. Security deliberately uses a different, already-documented
+> mechanism instead — see ["Why not Security?"](#why-not-security) below.
 >
 > **Terminology note:** the declare-time type is `events.CapabilityRequirement`/
 > `reqreply.CapabilityRequirement` (renamed from `CapabilitySpec`) and its
@@ -219,26 +221,70 @@ code yet: MQTT5 Message Expiry Interval, MQTT5 Shared Subscriptions
 these exist in go-codex today; consult the design doc before assuming
 otherwise.
 
-## Why not REST/Security?
+## REST's capability mechanism
+
+`api/rest` (Phase 3 of `docs/roadmap/capability-requirement-composition.md`)
+gains the SAME conceptual mechanism events/reqreply already ship, but
+split across TWO axes REST's own shape demands:
+
+- **Tier 3a (Explicit, Sealed)** — `rest.RequireQoS`/`RequireHWM` +
+  `rest.CapabilityRequirement`/`CheckCapabilityCoverage`/
+  `VerifyCapabilityCoverage`/`LeveledCapability`. Byte-identical shape
+  and mechanism to events'/reqreply's own. **As of this writing, NO
+  shipped REST adapter supplies a concrete Capability value** — HTTP
+  (`adapters/nethttp`/`adapters/chi`) has no QoS/HWM concept at all, so
+  a route declaring `RequireQoS` is CORRECTLY, EAGERLY rejected at
+  Serve/Attach time (`*rest.CapabilityCoverageError`) when attached to
+  either — exactly the intended "this adapter doesn't support this
+  capability" outcome, not a bug. This mirrors this doc's own "declare
+  first, adapter satisfies second, adapter may lag behind declaration"
+  philosophy: the mechanism is real and generic NOW; a future non-HTTP
+  REST-eligible transport (a ZeroMQ REQ/REP adapter — see
+  [`docs/roadmap/zeromq-rest-adapter.md`](../roadmap/zeromq-rest-adapter.md),
+  tracked as an INDEPENDENT future effort, no longer gated on/gating
+  this mechanism) would be the first to satisfy it.
+- **Tier 2 (Implicit) — NEW, not needed by events/reqreply**:
+  `rest.HeaderParam`/`CookieParam`/`QueryParam` become GENUINELY
+  runtime-checked capabilities once REST has more than one transport
+  family. Three OPTIONAL marker interfaces —
+  `rest.HeaderCapableTransport`/`CookieCapableTransport`/
+  `QueryCapableTransport` (one no-op method each) — are implemented by
+  an adapter's own transport type; `RouteHandle.HeaderParamNames()`/
+  `CookieParamNames()`/`QueryParamNames()` (mirrors `PathParamNames()`)
+  return the FULL declared set (plain-opt AND declarative-middleware-
+  merged) for an adapter's `Serve`/`AttachServer` to scan, ALONGSIDE
+  every declared `SecurityScheme`'s `In` field
+  (`rest.RequiredParamKinds`) — closing a gap where a Cookie-based API
+  key with no separate `CookieParam` would otherwise bypass the check.
+  `adapters/nethttp`/`adapters/chi` implement all 3 markers trivially
+  (HTTP always supports headers/cookies/query) — every EXISTING route
+  using these params continues to work with ZERO behavior change,
+  proven by the full existing test suite passing unmodified.
+  `rest.UnsupportedParamKindError` fires at attach time for a param kind
+  an adapter's transport genuinely can't carry — e.g. the future ZeroMQ
+  REQ/REP adapter deliberately omitting `CookieCapableTransport`.
+  Renders into the OpenAPI spec's `x-codex-capabilities` vendor
+  extension (mirrors AsyncAPI's own `x-capabilities`).
+
+See [`docs/features/rest-api.md`](rest-api.md) for REST's own feature
+page.
+
+## Why not Security?
 
 D-0006's own two-part test — does a capability have a **compatible
 shape** AND **uniform-enough support** across every adapter that could
 carry it — decides whether something becomes a sealed, adapter-owned
 `Capability`, or a single shared, protocol-agnostic mechanism instead:
 
-- **`api/rest`** needs no `Capability` mechanism at all. REST has exactly
-  one transport family (HTTP, via `adapters/nethttp`/`adapters/chi`), so
-  its existing sealed `RouteOpt` already gives the same compile-time
-  exhaustiveness — there's no cross-adapter mismatch to guard against.
-  See [`docs/features/rest-api.md`](rest-api.md). (Phase 3 of
-  `docs/roadmap/capability-requirement-composition.md` revisits this once
-  a genuinely synchronous, transport-stateless non-HTTP REST adapter
-  exists — a new ZeroMQ REQ/REP adapter, not MQTT.)
 - **Security** is the one surveyed case that CLEARS both bars — the same
   scheme+scopes+credential shape, and every adapter can enforce or
   document it — so it stays a single, protocol-agnostic
   `middleware.SecurityScheme` declaration, unchanged by this mechanism.
-  See [`docs/features/security.md`](security.md).
+  See [`docs/features/security.md`](security.md). (Whether this legacy,
+  non-generic declaration mechanism should eventually fold into the
+  newer codec-backed `Middleware[In,Out]` family is a SEPARATE,
+  unresolved evaluation — see
+  [`docs/roadmap/middleware-consolidation.md`](../roadmap/middleware-consolidation.md).)
 - **`api/reqreply`** ALSO shares **Handler Disposition**
   (`middleware.Disposition`/`SetDisposition`/`ResolveDisposition`) with
   `api/events` — Disposition lives in `middleware`, not `api/events`,
@@ -252,5 +298,5 @@ carry it — decides whether something becomes a sealed, adapter-owned
   [`docs/roadmap/declarative-middleware.md`](../roadmap/declarative-middleware.md).
 
 If you're looking for a single "what protocol knobs exist per API" answer:
-`Capability` (this page) covers `api/events` and `api/reqreply`;
-everything else uses the mechanism linked above for its API.
+`Capability` (this page) covers `api/events`, `api/reqreply`, and
+`api/rest`; Security uses the mechanism linked above instead.

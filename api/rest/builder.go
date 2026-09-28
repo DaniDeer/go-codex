@@ -607,6 +607,12 @@ type routeBuilder struct {
 	respHeaders  []ResponseHeaderParam
 	respCookies  []ResponseCookieParam
 	extraResps   []ResponseMeta
+	// requirements holds this route's own [CapabilityRequirement]
+	// declarations (docs/roadmap/capability-requirement-composition.md's
+	// Phase 3) — copied onto [RouteHandle.Requirements] at construction
+	// time and rendered into the route's AsyncAPI/OpenAPI
+	// "x-codex-capabilities" vendor extension.
+	requirements []CapabilityRequirement
 	// requestFormats/respFormats hold []format.Format[Req]/[]format.Format[Resp]
 	// type-erased (any) — set by [RequestFormats]/[Formats], resolved generically
 	// in [Route.Register] where Req/Resp are concrete. See [FormatOptError].
@@ -885,6 +891,16 @@ type RouteHandle[Req, Resp any] struct {
 	// built internally by ClientTransform. Populated by BOTH
 	// [Route.Register]/[Route.RegisterHandle] and [Route.ClientHandle].
 	ClientMiddlewareHandlers []ClientMiddlewareHandler
+
+	// Requirements holds this route's own [CapabilityRequirement]
+	// declarations (docs/roadmap/capability-requirement-composition.md's
+	// Phase 3) — consulted by an attached adapter via
+	// [VerifyCapabilityCoverage] before dispatch. Populated by
+	// [Route.Register]/[Route.RegisterHandle]/[Route.ClientHandle]. Read
+	// via reflection (elem.FieldByName("Requirements")) by adapter code,
+	// mirroring [events.ChannelHandle.Requirements]/
+	// [reqreply.RouteHandle.Requirements]'s identical pattern exactly.
+	Requirements []CapabilityRequirement
 }
 
 // ErrorStatusFor returns the first declared per-route mapping status for err
@@ -1432,6 +1448,46 @@ func (h *RouteHandle[Req, Resp]) PathParamNames() []string {
 	names := make([]string, len(h.pathParams))
 	for i := range h.pathParams {
 		names[i] = h.pathParams[i].Name
+	}
+	return names
+}
+
+// HeaderParamNames returns the names of ALL registered header
+// parameters — BOTH plain [HeaderParam] route opts AND
+// middleware-declared header contributions (legacy [middleware.Middleware]
+// and D-0003 codec-backed [Middleware] via [Transform]/[ClientTransform]),
+// since [applyParamDeclarations] merges the latter directly into the
+// SAME h.headerParams list before this RouteHandle is constructed —
+// this method sees the FULL, POST-MERGE set, not just plain-opt
+// declarations. Mirrors [RouteHandle.PathParamNames]'s exact shape.
+// Adapters use this (docs/roadmap/capability-requirement-composition.md's
+// Phase 3) to decide, ONCE at Serve/Attach setup, whether their own
+// transport type must implement [HeaderCapableTransport] — see
+// [UnsupportedParamKindError].
+func (h *RouteHandle[Req, Resp]) HeaderParamNames() []string {
+	names := make([]string, len(h.headerParams))
+	for i := range h.headerParams {
+		names[i] = h.headerParams[i].Name
+	}
+	return names
+}
+
+// CookieParamNames is [HeaderParamNames]'s cookie sibling — same
+// full-declared-set semantics, same merge-before-construction guarantee.
+func (h *RouteHandle[Req, Resp]) CookieParamNames() []string {
+	names := make([]string, len(h.cookieParams))
+	for i := range h.cookieParams {
+		names[i] = h.cookieParams[i].Name
+	}
+	return names
+}
+
+// QueryParamNames is [HeaderParamNames]'s query-param sibling — same
+// full-declared-set semantics, same merge-before-construction guarantee.
+func (h *RouteHandle[Req, Resp]) QueryParamNames() []string {
+	names := make([]string, len(h.queryParams))
+	for i := range h.queryParams {
+		names[i] = h.queryParams[i].Name
 	}
 	return names
 }
@@ -3223,6 +3279,7 @@ func (r Route[Req, Resp]) registerHandle(b *Server) (*RouteHandle[Req, Resp], er
 		ClientImplementations:    slices.Clone(rb.clientImpls),
 		MiddlewareHandlers:       slices.Clone(rb.middlewareHandlers),
 		ClientMiddlewareHandlers: slices.Clone(rb.clientMiddlewareHandlers),
+		Requirements:             slices.Clone(rb.requirements),
 	}
 	if rb.requestFormats != nil {
 		fmts, ok := rb.requestFormats.([]format.Format[Req])
@@ -3344,6 +3401,7 @@ func (r Route[Req, Resp]) ClientHandle() *RouteHandle[Req, Resp] {
 		Middlewares:               slices.Clone(rb.middlewares),
 		ClientImplementations:     slices.Clone(rb.clientImpls),
 		ClientMiddlewareHandlers:  slices.Clone(rb.clientMiddlewareHandlers),
+		Requirements:              slices.Clone(rb.requirements),
 	}
 	// Apply any inline Formats/RequestFormats RouteOpt declared on the
 	// Route -- the SAME rb.requestFormats/rb.respFormats fields
@@ -4357,6 +4415,7 @@ func buildDescriptor(method, path string, reqSchema, respSchema schema.Schema, r
 		CookieParams: buildCookieParams(rb.cookieParams),
 		HeaderParams: buildHeaderParams(rb.headerParams),
 		Security:     slices.Clone(rb.meta.Security),
+		Capabilities: buildCapabilityRequirements(rb.requirements),
 	}
 
 	if isBodyMethod(method) {
@@ -4507,4 +4566,20 @@ func buildResponseCookieParams(params []ResponseCookieParam) []route.Param {
 		result[i] = rp
 	}
 	return result
+}
+
+// buildCapabilityRequirements converts []CapabilityRequirement to its
+// render-layer mirror (route.CapabilitySpec — unchanged, stable
+// output-format concept, distinct from the Go-facing declaration type
+// feeding it). Byte-identical shape to events'/reqreply's own function
+// of the same name.
+func buildCapabilityRequirements(reqs []CapabilityRequirement) []route.CapabilitySpec {
+	if len(reqs) == 0 {
+		return nil
+	}
+	out := make([]route.CapabilitySpec, len(reqs))
+	for i, r := range reqs {
+		out[i] = route.CapabilitySpec{Name: r.Name, Description: r.Description}
+	}
+	return out
 }
