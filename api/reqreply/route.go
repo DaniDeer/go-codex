@@ -775,6 +775,12 @@ type routeBuilder struct {
 	// errorPatternRules holds per-route typed error reply declarations from
 	// [ErrorPattern] — see [RouteHandle.ErrorResponseFor].
 	errorPatternRules []errorPatternRule
+	// requirements holds this route's own [CapabilityRequirement]
+	// declarations (docs/roadmap/capability-requirement-composition.md's
+	// Phase 2) — copied onto [RouteHandle.Requirements] at Register/
+	// ClientHandle time and rendered into the request channel's
+	// AsyncAPI "x-capabilities" vendor extension by [Builder.registerRoute].
+	requirements []CapabilityRequirement
 	// deadLetterRule holds this route's own [DeadLetter] declaration —
 	// nil means "not declared at this route, inherit the Server-level
 	// global default" (see [Builder.AddGlobalDeadLetter]).
@@ -1032,6 +1038,7 @@ func (r Route[Req, Resp]) ClientHandle() *RouteHandle[Req, Resp] {
 		// infallible, mirroring rest.Route.ClientHandle exactly.
 		MiddlewareHandlers:       rb.middlewareHandlers,
 		ClientMiddlewareHandlers: rb.clientMiddlewareHandlers,
+		Requirements:             rb.requirements,
 	}
 	// Apply any inline RequestFormats/Formats RouteOpt declared on the
 	// Route -- the SAME rb.requestFormats/rb.formats fields Register
@@ -1151,6 +1158,7 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 		GlobalSecurity:           append([]route.SecurityRequirement(nil), b.globalSecurity...),
 		MiddlewareHandlers:       rb.middlewareHandlers,
 		ClientMiddlewareHandlers: rb.clientMiddlewareHandlers,
+		Requirements:             rb.requirements,
 	}
 
 	// Decision #5 (Round 18, uniform algorithm): conflict-detect ALL
@@ -1192,7 +1200,7 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 		return nil, mergeErr
 	}
 
-	b.registerRoute(r.topic, r.reqCodec.Schema, r.respCodec.Schema, reqHeadersSchema, respHeadersSchema, rb.meta, rb.errorReplies, rb.topicParams)
+	b.registerRoute(r.topic, r.reqCodec.Schema, r.respCodec.Schema, reqHeadersSchema, respHeadersSchema, rb.meta, rb.errorReplies, rb.topicParams, rb.requirements)
 	// Merge this route's own WithSecurityScheme declarations into the
 	// builder's aggregate — last-registered-wins on name collision,
 	// matching rest's/events' documented policy. There is no per-route
@@ -1335,6 +1343,16 @@ type RouteHandle[Req, Resp any] struct {
 	// security Fn. Populated by [Route.Register]/[Route.ClientHandle].
 	MiddlewareHandlers       []MiddlewareHandler
 	ClientMiddlewareHandlers []ClientMiddlewareHandler
+
+	// Requirements holds this route's own [CapabilityRequirement]
+	// declarations (docs/roadmap/capability-requirement-composition.md's
+	// Phase 2) — consulted by the attached [ServerTransport]/
+	// [ClientTransport] via [VerifyCapabilityCoverage] before dispatch.
+	// Populated by [Route.Register]/[Route.ClientHandle]. Read via
+	// reflection (elem.FieldByName("Requirements")) by adapter code,
+	// mirroring [events.ChannelHandle.Requirements]'s identical pattern
+	// exactly.
+	Requirements []CapabilityRequirement
 }
 
 // ErrorResponseFor returns the first declared [ErrorPattern] match for err

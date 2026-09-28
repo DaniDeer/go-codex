@@ -2,19 +2,25 @@
 
 > See also: [`docs/design/d-0006-protocol-native-capabilities.md`](../design/d-0006-protocol-native-capabilities.md) (full design rationale + survey) · [`adapters/mqtt`](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mqtt) · [`adapters/mqtt5`](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mqtt5) · [`adapters/zeromq`](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/zeromq)
 >
-> `Capability` is a **pub/sub-only** mechanism, scoped to
-> `adapters/mqtt`/`adapters/mqtt5`/`adapters/zeromq` (consumed via
-> `api/events`). REST, Security, and reqreply deliberately use different,
-> already-documented mechanisms instead — see
-> ["Why not REST/Security/reqreply?"](#why-not-restsecurityreqreply) below.
+> `Capability` covers BOTH `api/events` (pub/sub) and `api/reqreply`
+> (request/reply) — each API owns its own package-local declaration types
+> (`events.CapabilityRequirement`/`reqreply.CapabilityRequirement`, etc. —
+> deliberately NOT shared, see the "Coverage checking" section below),
+> both consuming the SAME 4 existing sealed adapter-owned `Capability`
+> values (`mqtt`/`mqtt5`'s `QoS`/`Retained`, `zeromq`'s `HWM`/`Conflate`)
+> with zero new adapter-side capability types needed. REST and Security
+> deliberately use different, already-documented mechanisms instead — see
+> ["Why not REST/Security?"](#why-not-restsecurity) below.
 >
-> **Terminology note:** the declare-time type is `events.CapabilityRequirement`
-> (renamed from `CapabilitySpec`) and its coverage-check error is
-> `events.CapabilityCoverageError` (renamed from `MissingCapabilityError`)
+> **Terminology note:** the declare-time type is `events.CapabilityRequirement`/
+> `reqreply.CapabilityRequirement` (renamed from `CapabilitySpec`) and its
+> coverage-check error is `events.CapabilityCoverageError`/
+> `reqreply.CapabilityCoverageError` (renamed from `MissingCapabilityError`)
 > — see [`docs/roadmap/capability-requirement-composition.md`](../roadmap/capability-requirement-composition.md)
-> for the full three-tier vocabulary (Baseline/Implicit/Explicit) this
-> page's `Capability` mechanism is now classified under (Tier 3 —
-> Explicit), and for the planned Phase 2/3 rollout to `api/reqreply`/`api/rest`.
+> for the full three-tier vocabulary (Baseline/Implicit/Explicit, with
+> Explicit further split into 3a/3b) this mechanism is classified under
+> (Tier 3a — Explicit, sealed, adapter-owned), and for the planned Phase 3
+> rollout to `api/rest`.
 
 ## What a `Capability` is
 
@@ -61,6 +67,39 @@ bool` call-time fields — those remain a documented, supported "escape
 hatch" for the common single-value case. `Capabilities` is the
 RECOMMENDED, sealed path going forward.
 
+### reqreply: the SAME sealed values, a separate `ServeOptions`/`CallOptions.Capabilities` field
+
+`api/reqreply` uses the identical mechanism — `adapters/mqtt5`/
+`adapters/zeromq`'s reqreply transports live in the SAME package as their
+events-side `Capability` types, so `mqtt5.QoS`/`mqtt5.Retained`/
+`zeromq.HWM`/`zeromq.Conflate` apply immediately, once
+`ServeOptions`/`CallOptions` gain a `Capabilities` field mirroring
+events' `SubscribeOptions`/`PublishOptions.Capabilities`:
+
+```go
+route := reqreply.NewRoute[ComputeReq, ComputeResp]("compute/add", reqCodec, respCodec,
+    reqreply.RequireQoS(reqreply.AtLeastOnce),
+)
+
+// server side — applied to EVERY reply publish (success, error-pattern-
+// matched, and dead-letter alike):
+mqtt5.AttachServer(server, client, router,
+    mqtt5.ServeOptions{Capabilities: []mqtt5.Capability{mqtt5.QoSAtLeastOnce}})
+
+// client side — applied to the outgoing request publish:
+resp, err := mqtt5.Call(ctx, client, router, handle, req,
+    mqtt5.CallOptions{Capabilities: []mqtt5.Capability{mqtt5.QoSAtLeastOnce, mqtt5.Retained(true)}})
+```
+
+Coverage is checked once at `Serve`/`AttachServer` setup (server side
+only, mirroring events' "publish side never auto-checks coverage"
+precedent) via `reqreply.VerifyCapabilityCoverage`. zeromq's REQ/REP and
+ROUTER/DEALER reqreply transports (4 real dispatch implementations —
+`serverTransport`/`routerServerTransport`/`clientTransport`/
+`dealerClientTransport`, each independent, none delegating to another)
+all wire through the SAME existing `applyCapabilities` helper unchanged
+from its events/pub-sub usage.
+
 ## Per-adapter capability reference
 
 | Adapter | Capability type | Values | Applied via |
@@ -77,16 +116,29 @@ A capability that a socket implementation doesn't support (e.g. a
 error — applying `zeromq.HWM` to a socket type that doesn't implement
 `HWMSetter` simply has no effect.
 
+`adapters/mqtt5`/`adapters/zeromq`'s reqreply transports (`api/reqreply`,
+NOT `adapters/mqtt` v3 — it has no reqreply transport at all) reuse these
+SAME 4 sealed types, applied via `ServeOptions.Capabilities`/
+`CallOptions.Capabilities` instead of `SubscribeOptions`/
+`PublishOptions` — see "reqreply" below.
+
 ### Requirement sugar helpers
 
 Instead of writing `events.CapabilityRequirement{Name: "QoS", ...}` by
 hand, use the adapter-agnostic sugar helpers — each produces an ordinary
-`CapabilityRequirement`:
+`CapabilityRequirement`. `api/reqreply` has its OWN identical set
+(`reqreply.RequireQoS`/`RequireRetained`/`RequireHWM`/`RequireConflate`,
+`reqreply.QoSLevel`) — a deliberately separate, package-local copy (see
+below), not shared with `events`:
 
 ```go
 ch := events.NewChannel[SensorReading]("sensor/reading", sensorCodec,
     events.RequireQoS(events.AtLeastOnce),   // GENUINELY value-checked, see below
     events.RequireRetained(),                // presence-only (boolean toggle)
+)
+
+route := reqreply.NewRoute[ComputeReq, ComputeResp]("compute/add", reqCodec, respCodec,
+    reqreply.RequireQoS(reqreply.AtLeastOnce), // identical shape, api/reqreply's own type
 )
 ```
 
@@ -101,25 +153,41 @@ section for the full classification.
 
 ### Coverage checking
 
-`events.CapabilityRequirement` is a `ChannelOpt` you declare on a channel
-to assert "this channel requires capability X." `events.CheckCapabilityCoverage`
-runs automatically inside each adapter's `ServeSubscribers`, comparing
-declared requirements against the capabilities actually supplied.
+`events.CapabilityRequirement`/`reqreply.CapabilityRequirement` is a
+`ChannelOpt`/`RouteOpt` you declare on a channel/route to assert "this
+channel/route requires capability X."
+`events.CheckCapabilityCoverage`/`reqreply.CheckCapabilityCoverage` runs
+automatically inside each adapter's `ServeSubscribers`/`Serve`/
+`AttachServer`, comparing declared requirements against the capabilities
+actually supplied.
+
+`api/reqreply` deliberately does NOT import `api/events` for this — it
+has its OWN, byte-for-byte-identical-in-shape `CapabilityRequirement`/
+`CheckCapabilityCoverage`/`CapabilityCoverageError`/
+`VerifyCapabilityCoverage`/`LeveledCapability` types, mirroring
+`middleware.Disposition`'s own D-0004 placement precedent (cheap to
+duplicate a small struct + a handful of functions, rather than introduce
+a cross-API import for it). The GENERIC helpers
+`events.ResolveCapabilityValue`/`events.RecordCapabilityApplied` ARE
+reused as-is by reqreply's adapter-side dispatch code (they're fully
+generic, no `api/events`-specific types beyond the trivially-structural
+`CapabilityName` interface) — only the declaration-side pieces above are
+duplicated.
 
 Two kinds of mismatch are caught, both surfaced via a typed
-`*events.CapabilityCoverageError`:
+`*events.CapabilityCoverageError`/`*reqreply.CapabilityCoverageError`:
 
 - **Missing** — no supplied capability matches the declared `Name` at
   all.
 - **Insufficient** — a matching capability EXISTS, but its value doesn't
   meet the declared `MinLevel` (e.g. `RequireQoS(ExactlyOnce)` declared,
   only `mqtt5.QoSAtMostOnce` supplied). This is a GENUINE value check, via
-  the optional `events.LeveledCapability` interface
-  (`adapters/mqtt.QoS`/`adapters/mqtt5.QoS`/`adapters/zeromq.HWM` all
-  implement `Level() int`) — mirrors the `CapabilityName` optional-
-  interface pattern, so `api/events` never imports an adapter package to
-  do this. A requirement with no `MinLevel` (e.g. `RequireRetained()`) is
-  presence-only, unaffected by this check.
+  the optional `events.LeveledCapability`/`reqreply.LeveledCapability`
+  interface (`adapters/mqtt.QoS`/`adapters/mqtt5.QoS`/`adapters/zeromq.HWM`
+  all implement `Level() int`) — mirrors the `CapabilityName` optional-
+  interface pattern, so neither `api/events` nor `api/reqreply` ever
+  imports an adapter package to do this. A requirement with no `MinLevel`
+  (e.g. `RequireRetained()`) is presence-only, unaffected by this check.
 
 ### Observability
 
@@ -151,7 +219,7 @@ code yet: MQTT5 Message Expiry Interval, MQTT5 Shared Subscriptions
 these exist in go-codex today; consult the design doc before assuming
 otherwise.
 
-## Why not REST/Security/reqreply?
+## Why not REST/Security?
 
 D-0006's own two-part test — does a capability have a **compatible
 shape** AND **uniform-enough support** across every adapter that could
@@ -162,22 +230,27 @@ carry it — decides whether something becomes a sealed, adapter-owned
   one transport family (HTTP, via `adapters/nethttp`/`adapters/chi`), so
   its existing sealed `RouteOpt` already gives the same compile-time
   exhaustiveness — there's no cross-adapter mismatch to guard against.
-  See [`docs/features/rest-api.md`](rest-api.md).
+  See [`docs/features/rest-api.md`](rest-api.md). (Phase 3 of
+  `docs/roadmap/capability-requirement-composition.md` revisits this once
+  a genuinely synchronous, transport-stateless non-HTTP REST adapter
+  exists — a new ZeroMQ REQ/REP adapter, not MQTT.)
 - **Security** is the one surveyed case that CLEARS both bars — the same
   scheme+scopes+credential shape, and every adapter can enforce or
   document it — so it stays a single, protocol-agnostic
   `middleware.SecurityScheme` declaration, unchanged by this mechanism.
   See [`docs/features/security.md`](security.md).
-- **`api/reqreply`** doesn't get `Capability` either, but shares **Handler
-  Disposition** (`middleware.Disposition`/`SetDisposition`/
-  `ResolveDisposition`) with `api/events` — Disposition lives in
-  `middleware`, not `api/events`, specifically so `api/reqreply` can reuse
-  it with no `api/events` dependency.
+- **`api/reqreply`** ALSO shares **Handler Disposition**
+  (`middleware.Disposition`/`SetDisposition`/`ResolveDisposition`) with
+  `api/events` — Disposition lives in `middleware`, not `api/events`,
+  specifically so `api/reqreply` can reuse it with no `api/events`
+  dependency. Unlike Disposition, `reqreply.CapabilityRequirement` and
+  friends are NOT literally shared with `events` — each API has its own
+  package-local copy of the SAME shape (see "Coverage checking" above).
 - **`ports.File`/`Cache`/`SQL`/`Dir`** structurally lack the
   options-at-a-bind-step shape `Capability` requires; their own
   cross-cutting-concern story is tracked separately in
   [`docs/roadmap/declarative-middleware.md`](../roadmap/declarative-middleware.md).
 
 If you're looking for a single "what protocol knobs exist per API" answer:
-`Capability` (this page) is pub/sub-only; everything else uses the
-mechanism linked above for its API.
+`Capability` (this page) covers `api/events` and `api/reqreply`;
+everything else uses the mechanism linked above for its API.

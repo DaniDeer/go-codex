@@ -104,6 +104,15 @@ type ServeOptions struct {
 	// Per-field validation errors are reported with location "body".
 	// Defaults to [stats.NoopObserver] when nil.
 	Observer stats.Observer
+
+	// Capabilities supplies this server's concrete protocol-native
+	// capability values (docs/roadmap/capability-requirement-composition.md's
+	// Phase 2) — e.g. [HWM]/[Conflate] — checked against the route's
+	// declared [reqreply.CapabilityRequirement]s via
+	// [reqreply.VerifyCapabilityCoverage], then applied to the socket via
+	// the existing [applyCapabilities] helper (unchanged from its
+	// events/pub-sub usage).
+	Capabilities []Capability
 }
 
 // CallOptions configures [Call] and [CallDealer].
@@ -115,6 +124,14 @@ type CallOptions struct {
 	// Topic variable errors are reported with location "topic_var".
 	// Defaults to [stats.NoopObserver] when nil.
 	Observer stats.Observer
+
+	// Capabilities supplies this call's concrete protocol-native
+	// capability values (docs/roadmap/capability-requirement-composition.md's
+	// Phase 2) — e.g. [HWM]/[Conflate] — applied to the socket via the
+	// existing [applyCapabilities] helper. No coverage check runs on the
+	// client/Call side, mirroring events' own "publish side never
+	// auto-checks coverage" precedent.
+	Capabilities []Capability
 
 	// Vars, when non-nil, substitutes {varName} placeholders in the route topic
 	// template before encoding. Uses [reqreply.RouteHandle.BuildTopic] to

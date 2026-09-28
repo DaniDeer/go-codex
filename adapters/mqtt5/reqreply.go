@@ -30,6 +30,15 @@ type ServeOptions struct {
 	// Validation failure delivers [ServeError]{Kind: KindSecurity}
 	// and sends an error reply to the caller.
 	UserPropertyParams []UserPropertyParam
+
+	// Capabilities supplies this server's concrete protocol-native
+	// capability values (docs/roadmap/capability-requirement-composition.md's
+	// Phase 2) — e.g. [QoS]/[Retained] — checked against the route's
+	// declared [reqreply.CapabilityRequirement]s via
+	// [reqreply.VerifyCapabilityCoverage] at Serve setup, then applied to
+	// EVERY reply publish (success, error-pattern-matched, and
+	// dead-letter alike).
+	Capabilities []Capability
 }
 
 // REMOVED (Phase 1 of docs/design/d-0004-reqreply-workflow-simplification.md's Addendum, BREAKING):
@@ -117,6 +126,15 @@ type CallOptions struct {
 	// for the response direction ([]format.Format[Resp]); a type mismatch
 	// returns [CallError]{Kind: [KindDecode]}.
 	ResponseFormats any
+
+	// Capabilities supplies this call's concrete protocol-native
+	// capability values (docs/roadmap/capability-requirement-composition.md's
+	// Phase 2) — e.g. [QoS]/[Retained] — applied to the outgoing request
+	// publish. Overrides [CallOptions.QoS] when a [QoS] capability is
+	// present (its dedicated MinLevel-checked declaration path). No
+	// coverage check runs on the client/Call side, mirroring events' own
+	// "publish side never auto-checks coverage" precedent.
+	Capabilities []Capability
 }
 
 // REMOVED (Phase 1 of docs/design/d-0004-reqreply-workflow-simplification.md's Addendum, BREAKING):
@@ -277,7 +295,14 @@ func errorCodeFromUserProperties(msg *pahomqtt5.Publish) string {
 // a plain-text payload. Used directly for transport/decode-level errors that
 // occur before the application handler runs (no [reqreply.ErrorPattern] can
 // apply — there is no business error to match yet).
-func publishErrorReply(ctx context.Context, client MQTTClient, responseTopic string, correlationData []byte, err error) {
+//
+// qos/retained are the EFFECTIVE values resolved once at Serve setup from
+// [ServeOptions.Capabilities] (docs/roadmap/capability-requirement-
+// composition.md's Phase 2) — applied here so this error-reply path
+// honors a supplied capability exactly like the success/dead-letter reply
+// paths do, closing a gap where this path previously hardcoded QoS 1 and
+// never set Retained at all.
+func publishErrorReply(ctx context.Context, client MQTTClient, responseTopic string, correlationData []byte, err error, qos byte, retained bool) {
 	if responseTopic == "" {
 		return
 	}
@@ -287,7 +312,8 @@ func publishErrorReply(ctx context.Context, client MQTTClient, responseTopic str
 	}
 	_, _ = client.Publish(ctx, &pahomqtt5.Publish{
 		Topic:      responseTopic,
-		QoS:        1,
+		QoS:        qos,
+		Retain:     retained,
 		Payload:    []byte(err.Error()),
 		Properties: props,
 	})

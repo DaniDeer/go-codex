@@ -521,6 +521,20 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 	if err := reqreply.CheckCoverage(path, secReqs, impls); err != nil {
 		return err
 	}
+
+	// docs/roadmap/capability-requirement-composition.md's Phase 2:
+	// apply this Serve's supplied [ServeOptions.Capabilities] to the
+	// socket ONCE, at setup (HWM/Conflate are socket-level settings, not
+	// per-message) via the EXISTING [applyCapabilities] helper — zero new
+	// resolve/apply/record code, reused as-is from its events/pub-sub
+	// usage. Then verify the route's declared [reqreply.
+	// CapabilityRequirement]s are covered.
+	requirements, _ := elem.FieldByName("Requirements").Interface().([]reqreply.CapabilityRequirement)
+	applyCapabilities(sock, t.opts.Capabilities, obs, path)
+	if err := reqreply.VerifyCapabilityCoverage(path, requirements, t.opts.Capabilities); err != nil {
+		return err
+	}
+
 	// dispatchFn is fnVal wrapped by every general-purpose (UNPAIRED)
 	// HandleMW implementation, OUTERMOST-in — the paired security Fns
 	// run SEPARATELY, between decode and this call, since they need
@@ -797,6 +811,13 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 		obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
 		return nil, MissingSocketError{Topic: path}
 	}
+
+	// docs/roadmap/capability-requirement-composition.md's Phase 2: apply
+	// this call's supplied [CallOptions.Capabilities] to the socket via
+	// the EXISTING [applyCapabilities] helper (re-application on every
+	// call is idempotent — a minor, accepted inefficiency, not a
+	// correctness issue). No coverage check on the client/Call side.
+	applyCapabilities(sock, t.opts.Capabilities, obs, path)
 
 	reqType := elem.FieldByName("EncodeRequest").Type().In(0)
 	reqVal := reflect.ValueOf(reqAny)
@@ -1220,6 +1241,17 @@ func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny a
 	if err := reqreply.CheckCoverage(path, secReqs, impls); err != nil {
 		return err
 	}
+
+	// docs/roadmap/capability-requirement-composition.md's Phase 2 — same
+	// mechanism as [serverTransport.Serve], duplicated for the ROUTER
+	// variant (see the comment above citing the established 4-transport
+	// duplication precedent).
+	requirements, _ := elem.FieldByName("Requirements").Interface().([]reqreply.CapabilityRequirement)
+	applyCapabilities(sock, t.opts.Capabilities, obs, path)
+	if err := reqreply.VerifyCapabilityCoverage(path, requirements, t.opts.Capabilities); err != nil {
+		return err
+	}
+
 	dispatchFn := applyGeneralServerMiddleware(fnVal, impls)
 
 	// docs/design/d-0003-codec-declared-middlewares.md's Addendum: codec-backed
@@ -1470,6 +1502,12 @@ func (t *dealerClientTransport) call(ctx context.Context, routeAny any, reqAny a
 		obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
 		return nil, MissingSocketError{Topic: path}
 	}
+
+	// docs/roadmap/capability-requirement-composition.md's Phase 2: same
+	// mechanism as [clientTransport.call], duplicated for the DEALER
+	// variant (see the established 4-transport duplication precedent
+	// cited on [routerServerTransport.Serve]).
+	applyCapabilities(sock, t.opts.Capabilities, obs, path)
 
 	reqType := elem.FieldByName("EncodeRequest").Type().In(0)
 	reqVal := reflect.ValueOf(reqAny)

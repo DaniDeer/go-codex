@@ -229,6 +229,7 @@ func (b *Builder) registerRoute(
 	meta RouteMeta,
 	errorReplies []ErrorReplyMeta,
 	topicParams []TopicParam,
+	requirements []CapabilityRequirement,
 ) {
 	b.topics[topic] = struct{}{}
 
@@ -249,10 +250,11 @@ func (b *Builder) registerRoute(
 
 	// Register request channel.
 	b.docBuilder.AddChannel(reqChannelKey, asyncapi.ChannelItem{
-		Address:    topic,
-		Summary:    meta.Summary,
-		Tags:       meta.Tags,
-		Parameters: params,
+		Address:      topic,
+		Summary:      meta.Summary,
+		Tags:         meta.Tags,
+		Parameters:   params,
+		Capabilities: buildCapabilityRequirements(requirements),
 		Publish: &asyncapi.Operation{
 			OperationID: sendOpID,
 			Summary:     meta.Summary,
@@ -305,6 +307,22 @@ func (b *Builder) registerRoute(
 			Messages:    replyMessages,
 		},
 	})
+}
+
+// buildCapabilityRequirements converts []CapabilityRequirement to its
+// render-layer mirror (asyncapi.CapabilitySpec — unchanged, stable
+// output-format concept, distinct from the Go-facing declaration type
+// feeding it). Byte-identical shape to [events]'s own function of the
+// same name.
+func buildCapabilityRequirements(reqs []CapabilityRequirement) []asyncapi.CapabilitySpec {
+	if len(reqs) == 0 {
+		return nil
+	}
+	out := make([]asyncapi.CapabilitySpec, len(reqs))
+	for i, s := range reqs {
+		out[i] = asyncapi.CapabilitySpec{Name: s.Name, Description: s.Description}
+	}
+	return out
 }
 
 // AsyncAPISpec builds and returns the accumulated AsyncAPI 3.0 document.

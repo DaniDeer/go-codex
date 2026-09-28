@@ -63,6 +63,23 @@ var ComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 	reqreply.RouteMeta{OperationID: "computeAdd", Summary: "Add two integers.", Security: []route.SecurityRequirement{}},
 )
 
+// CapabilityRoute demonstrates Phase 2 of docs/roadmap/
+// capability-requirement-composition.md: reqreply.RequireQoS declares,
+// independent of any concrete adapter, that this route needs AT LEAST
+// the given QoS level from whichever adapter attaches — renders as the
+// AsyncAPI "x-capabilities" vendor extension (mirrors examples/
+// events-api/routes.CapabilityChannel's identical role for pub/sub).
+// mqtt5server.Build supplies a matching mqtt5.QoS capability at
+// AttachServer time; demo_capability_mechanism.go supplies one at Call
+// time too, and also demonstrates CheckCapabilityCoverage rejecting an
+// INSUFFICIENT level (via mqtt5.QoS's Level() method).
+var CapabilityRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
+	"compute/capability-add",
+	ComputeReqCodec, ComputeRespCodec,
+	reqreply.RouteMeta{OperationID: "computeCapabilityAdd", Summary: "Add two integers, requiring at-least-once QoS.", Security: []route.SecurityRequirement{}},
+	reqreply.RequireQoS(reqreply.AtLeastOnce),
+)
+
 // DoubleRoute and TripleRoute exist ALONGSIDE ComputeRoute purely to give
 // Demo 4 (concurrent multi-route dispatch) 3+ distinct routes registered
 // against ONE Server, each independently answering calls concurrently.

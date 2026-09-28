@@ -30,6 +30,7 @@ type Built struct {
 	SecuredHandle      *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]
 	HeaderParamHandle  *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]
 	PropertyAxisHandle *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]
+	CapabilityHandle   *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]
 }
 
 // LastReplyUserProperties returns the MQTT5 User Properties on the most
@@ -146,10 +147,25 @@ func Build() (*Built, error) {
 		Register(server); err != nil {
 		return nil, err
 	}
+	// CapabilityRoute demonstrates Phase 2 of docs/roadmap/
+	// capability-requirement-composition.md — see demo_capability_mechanism.go.
+	capabilityHandle, err := routes.CapabilityRoute.
+		WithHandler(handlers.Add).
+		Register(server)
+	if err != nil {
+		return nil, err
+	}
 
 	rawBroker, router := newMockBroker()
 	broker := &recordingBroker{MQTTClient: rawBroker}
-	if err := mqtt5adapter.AttachServer(server, broker, router); err != nil {
+	// Capabilities supplies mqtt5.QoSAtLeastOnce, satisfying
+	// CapabilityRoute's declared reqreply.RequireQoS(reqreply.AtLeastOnce)
+	// requirement — checked automatically by AttachServer via
+	// reqreply.VerifyCapabilityCoverage at Serve setup, then applied to
+	// EVERY reply publish for this route (success, error-pattern-matched,
+	// and dead-letter alike, per Phase 2's server-side plumbing fix).
+	if err := mqtt5adapter.AttachServer(server, broker, router,
+		mqtt5adapter.ServeOptions{Capabilities: []mqtt5adapter.Capability{mqtt5adapter.QoSAtLeastOnce}}); err != nil {
 		return nil, err
 	}
 	return &Built{
@@ -160,6 +176,7 @@ func Build() (*Built, error) {
 		SecuredHandle:      securedHandle,
 		HeaderParamHandle:  headerParamHandle,
 		PropertyAxisHandle: propertyAxisHandle,
+		CapabilityHandle:   capabilityHandle,
 	}, nil
 }
 

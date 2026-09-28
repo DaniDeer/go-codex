@@ -93,4 +93,42 @@
 // Per-adapter [ServerTransport]/[ClientTransport] implementations (e.g.
 // mqtt5.Attach, zeromq.Attach) land incrementally — see the roadmap doc's
 // phased implementation plan for the current status of each transport.
+//
+// # Protocol-native capabilities
+//
+// A route's protocol behavior (MQTT QoS, retained messages, ZeroMQ
+// high-water-mark, ...) is classified into the same three-tier vocabulary
+// [api/events] uses — see docs/roadmap/capability-requirement-composition.md
+// for the full design:
+//
+//   - Baseline — the Topic itself. Mandatory, never declared explicitly.
+//   - Implicit — a requirement that arises as a side effect of declaring a
+//     codec-backed field (e.g. an adapter's own UserPropertyParam-style
+//     option). Declaring the field IS the requirement.
+//   - Explicit — a standalone requirement, declared via [CapabilityRequirement]
+//     (or the sugar helpers [RequireQoS]/[RequireRetained]/[RequireHWM]/
+//     [RequireConflate]), independent of any adapter until [Server.Attach]/
+//     [Client.Attach] time. [CheckCapabilityCoverage] verifies the supplied
+//     adapter Capability values (via each adapter's `ServeOptions`/
+//     `CallOptions.Capabilities` field) satisfy every declared requirement
+//     — including, for requirements with a MinLevel (e.g. RequireQoS), a
+//     genuine VALUE check via the optional [LeveledCapability] interface,
+//     not just presence-by-name. Checked once at Serve/AttachServer setup;
+//     the resolved values are then applied to EVERY reply publish
+//     (success, error-pattern-matched, and dead-letter alike).
+//
+// [reqreply] deliberately does NOT import [api/events] for this — it has
+// its OWN, byte-for-byte-identical-in-shape [CapabilityRequirement]/
+// [CheckCapabilityCoverage]/[CapabilityCoverageError]/
+// [VerifyCapabilityCoverage]/[LeveledCapability] types (mirrors
+// [middleware.Disposition]'s own placement rationale: cheap to duplicate
+// a small type, rather than introduce a cross-API import for it). The
+// generic adapter-side helpers `events.ResolveCapabilityValue`/
+// `events.RecordCapabilityApplied` ARE reused as-is by reqreply's adapter
+// dispatch code (fully generic, no events-specific types beyond the
+// trivially-structural `CapabilityName` interface) — only the
+// declaration-side pieces above are duplicated. Reuses the SAME sealed
+// adapter-owned Capability values [api/events] already ships
+// (`mqtt5.QoS`/`mqtt5.Retained`, `zeromq.HWM`/`zeromq.Conflate`) — zero
+// new adapter-side capability types needed.
 package reqreply

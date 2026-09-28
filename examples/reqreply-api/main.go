@@ -113,6 +113,7 @@ func main() {
 	demoErrorPatternDeadLetterFallback(ctx)
 	demoErrorPatternMiddlewareCombo(ctx)
 	demoErrorPatternPortAdapter(ctx)
+	demoCapabilityMechanism(ctx, mqtt5Built)
 
 	fmt.Println("\n✓ all reqreply-api demos completed successfully")
 }

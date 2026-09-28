@@ -1,8 +1,7 @@
 # Composable Capability Requirements — declare-first, adapter-satisfies-second
 
-> **Status:** Phase 1 SHIPPED (see its own subsection for the Learnings
-> entry); Phase 2's DESIGN is FINALIZED — READY FOR IMPLEMENTATION (not
-> yet implemented); Phases 3-4 not yet started. Spun out of a user
+> **Status:** Phases 1-2 SHIPPED (see each subsection's own Learnings
+> entry); Phases 3-4 not yet started. Spun out of a user
 > question about
 > [D-0006 — Protocol-Native Capabilities](../design/d-0006-protocol-native-capabilities.md)'s
 > scope (events-only) while reviewing [`docs/features/capabilities.md`](../features/capabilities.md).
@@ -765,7 +764,12 @@ test files, not assumed — closes the last ambiguity before Implement):
 
 ### Phase 2 — `api/reqreply` (apply the mechanism, reusing all 4 existing capability values)
 
-**Status: DESIGN FINALIZED — READY FOR IMPLEMENTATION.** Chosen second
+**Status: SHIPPED.** Design finalized, implemented, tested, documented,
+and verified (`go fmt`/`go build ./...`/`go test ./...`/`just check`/all
+examples all green). See the Learnings entry at the end of this
+subsection for what carries forward to Phase 3.
+
+Chosen second
 because reqreply is structurally closest to events (both are
 dispatch-loop-shaped; `middleware.Disposition` is existing precedent for
 a shared mechanism reqreply already consumes without an `api/events`
@@ -1074,7 +1078,7 @@ plumbing gap found this round (not just a generic "wiring" test):
 | `api/reqreply/capability_test.go`, `capability_require_test.go` | NEW — full test matrix, fake types |
 | `api/reqreply/route.go` | `routeBuilder.requirements`, `RouteHandle.Requirements` (2 construction sites) |
 | `api/reqreply/builder.go` | `registerRoute` gains `requirements` param + `buildCapabilityRequirements` |
-| `adapters/mqtt5/reqreply.go` | NEW `api/events` import; `ServeOptions`/`CallOptions.Capabilities []mqtt5.Capability`; `publishErrorReply` gains `qos byte, retained bool` params (1 signature + 1 `Publish{}` literal) |
+| `adapters/mqtt5/reqreply.go` | `ServeOptions`/`CallOptions.Capabilities []mqtt5.Capability`; `publishErrorReply` gains `qos byte, retained bool` params (1 signature + 1 `Publish{}` literal) — **no new import needed here** (corrected during Implement — see Learnings: `Capabilities []Capability` is a package-local type, `byte`/`bool` params need no `api/events`; ONLY `reqreply_transport.go` ends up calling `events.*`) |
 | `adapters/mqtt5/reqreply_transport.go` | NEW `api/events` import; `serverTransport.Serve`: NEW `requirements` reflection-derivation line + resolve QoS/Retained once + `reqreply.VerifyCapabilityCoverage` call; `tryDeadLetterReflect` gains `qos byte, retained bool` params (1 signature + 1 literal); update ALL 9 `tryDeadLetterReflect` call sites + 2 `publishErrorReply` call sites + 1 success-reply inline literal (12 call-site edits total, all pre-counted via grep); client-side private `call` helper (covers `Call`+`CallAsync` for free): extend the existing `qos := t.opts.QoS` resolution + add `Retained` threading (previously unset) |
 | `adapters/zeromq/reqreply_transport.go` | FOUR separate dispatch implementations, each gets a `requirements` derivation line (server variants only) + one-line `applyCapabilities(sock, ...)` call: `serverTransport.Serve` (+ `reqreply.VerifyCapabilityCoverage`), `routerServerTransport.Serve` (+ same coverage check, alongside its existing `secReqs`/`CheckCoverage` pair), `clientTransport.call` (covers `Call`+`CallAsync` for free), `dealerClientTransport.call` (covers its own `Call`+`CallAsync` for free) — zero new resolve/apply/record code, reuses the existing `applyCapabilities` function as-is at all 4 sites |
 | `examples/reqreply-api` | New capability demo, mirrors `demo_capability_mechanism.go` |
@@ -1087,7 +1091,70 @@ plumbing gap found this round (not just a generic "wiring" test):
 - **Docs:** `docs/features/capabilities.md` (no longer describes itself
   as pub/sub-only), reqreply feature/guide pages,
   `.github/instructions/go-codex.instructions.md`.
-- **Learnings:** recorded here before Phase 3's Design step begins.
+- **Learnings (recorded, real evidence from Implement — not
+  speculation):**
+  - **The Design step's own file-level import claim was WRONG in one
+    place, corrected during Implement, not caught by review.** The
+    finalized Design said `adapters/mqtt5/reqreply.go` needs a NEW
+    `api/events` import "confirmed both adapter packages already import
+    both api/events AND api/reqreply in the same package" — true at the
+    PACKAGE level, false at the FILE level (Go imports are per-file):
+    `reqreply.go`'s own changes (`Capabilities []Capability` field,
+    `publishErrorReply`'s new `qos byte, retained bool` params) never
+    reference `events.*` at all — only `reqreply_transport.go` (which
+    calls `events.ResolveCapabilityValue`/`RecordCapabilityApplied`)
+    needed the new import. `go build` caught it immediately
+    ("imported and not used"), so this was a zero-cost correction, but a
+    reminder: a package-level import-cycle analysis in Design does NOT
+    guarantee a specific FILE needs the import — verify per-file during
+    Implement, don't assume.
+  - **The `requirements` reflection-derivation line was correctly
+    anticipated in Design (from the gap-fix review round) and needed
+    ZERO changes during Implement** — `elem.FieldByName("Requirements").
+    Interface().([]reqreply.CapabilityRequirement)` worked exactly as
+    designed, both in mqtt5's and zeromq's `Serve` methods, mirroring
+    events' identical pattern byte-for-byte. This is a genuine positive
+    signal: whenever `LeveledCapability`/`CapabilityRequirement`
+    threading design work is done at the SAME precision level Phase 1's
+    post-ship review demanded, Implement introduces zero surprises.
+  - **The 4-transport zeromq duplication (server: REQ/REP +
+    ROUTER, client: REQ + DEALER) was likewise anticipated precisely and
+    needed zero changes during Implement** — each of the 4 real dispatch
+    implementations got its own one-line `applyCapabilities` call (plus
+    the `requirements` line on the 2 server variants), exactly as
+    planned; no 5th/6th call site was found (the earlier Design-time
+    finding — that `Call`/`CallAsync` on each client type both delegate
+    to a single private `call` helper — held up perfectly, verified by
+    the passing round-trip and per-transport unit tests).
+  - **Zero new reqreply-side test-fixture friction beyond what Phase 1
+    already flagged.** The anticipated import-cycle constraint (real
+    `mqtt5.QoS`/`zeromq.HWM` values cannot be imported into
+    `api/reqreply`'s own internal `package reqreply` test file) held
+    exactly as predicted — `fakeLeveledCapability`/`fakeNamedCapability`
+    were duplicated verbatim from `api/events`'s own test file with zero
+    adaptation beyond the package name, confirming Phase 1's Learnings
+    entry flagging this in advance was the correct call.
+  - **The AsyncAPI rendering reuse (`asyncapi.ChannelItem.Capabilities`/
+    `asyncapi.CapabilitySpec`, a render-layer type SHARED across events
+    and reqreply, unlike the Go-facing declaration types) required zero
+    new render-layer code** — only a new `buildCapabilityRequirements`
+    function in `api/reqreply/builder.go` (byte-identical shape to
+    events' own function of the same name) populating the ALREADY-
+    EXISTING shared field. Confirms the render layer was correctly
+    designed as protocol/API-agnostic from D-0006 onward.
+  - **All examples continued to pass without modification to any
+    OTHER example** — only `examples/reqreply-api` itself was touched
+    (1 new route, 1 new `Build()` wiring line, 1 new demo file, 1 new
+    `main.go` call), confirming Phase 2's additive-only claim held in
+    practice, not just in the design's own "Scope decisions" table.
+  - **Carries forward to Phase 3:** REST's request/reply shape is
+    closest to reqreply's own (synchronous, one reply per request) of
+    the three APIs — expect the SAME "requirements reflection line +
+    per-dispatch-implementation applyCapabilities-equivalent call"
+    pattern to transplant directly once Phase 3's own adapter (a NEW
+    ZeroMQ REQ/REP-based `api/rest` adapter, not an existing one) exists;
+    verify per-file imports explicitly during THAT Implement step too,
+    given this phase's one real (if trivial) miss.
 
 ### Phase 3 — `api/rest` (a new, synchronous, transport-stateless adapter)
 

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/middleware"
@@ -102,6 +103,13 @@ func resolveCallFormatReflect(overrideAny any, declaredFieldType reflect.Type) (
 // text; on no match, or a mapping/encoding failure within the matched
 // pattern, falls back to [publishErrorReply]'s plain-text behavior
 // unchanged.
+//
+// qos/retained are the EFFECTIVE values resolved once at Serve setup from
+// [ServeOptions.Capabilities] (docs/roadmap/capability-requirement-
+// composition.md's Phase 2) — applied to BOTH the matched-pattern reply
+// literal below AND threaded into the [publishErrorReply] fallback call,
+// closing a gap where this path previously hardcoded QoS 1 and never set
+// Retained.
 func publishHandlerErrorReplyReflect(
 	ctx context.Context,
 	client MQTTClient,
@@ -111,6 +119,8 @@ func publishHandlerErrorReplyReflect(
 	err error,
 	obs stats.Observer,
 	propertyVars map[string]string,
+	qos byte,
+	retained bool,
 ) {
 	if responseTopic == "" {
 		return
@@ -146,7 +156,8 @@ func publishHandlerErrorReplyReflect(
 		props.User = append(props.User, UserProperty{Key: errorCodePropertyKey, Value: resp.Code})
 		_, _ = client.Publish(ctx, &pahomqtt5.Publish{
 			Topic:      responseTopic,
-			QoS:        1,
+			QoS:        qos,
+			Retain:     retained,
 			Payload:    resp.Body,
 			Properties: props,
 		})
@@ -155,7 +166,7 @@ func publishHandlerErrorReplyReflect(
 	if matched && mapErr != nil {
 		stats.ReportErrors(obs, "error_pattern", mapErr)
 	}
-	publishErrorReply(ctx, client, responseTopic, correlationData, err)
+	publishErrorReply(ctx, client, responseTopic, correlationData, err, qos, retained)
 }
 
 // tryDeadLetterReflect is the reflection-based counterpart of
@@ -169,9 +180,15 @@ func publishHandlerErrorReplyReflect(
 // "subscribe topic" of its own). Returns true when a dead-letter was
 // attempted (published), false when the route declares no dead-letter
 // rule for this request.
+//
+// qos/retained are the EFFECTIVE values resolved once at Serve setup from
+// [ServeOptions.Capabilities] (docs/roadmap/capability-requirement-
+// composition.md's Phase 2) — closing a gap where this path previously
+// hardcoded QoS 1 and never set Retained.
 func tryDeadLetterReflect(
 	ctx context.Context, client MQTTClient, deadLetterForMethod reflect.Value,
 	obs stats.Observer, sourceTopic string, rawPayload []byte, err error,
+	qos byte, retained bool,
 ) bool {
 	results := deadLetterForMethod.Call([]reflect.Value{
 		reflect.ValueOf(&obs).Elem(), reflect.ValueOf(sourceTopic), reflect.ValueOf(rawPayload), reflect.ValueOf(&err).Elem(),
@@ -184,7 +201,8 @@ func tryDeadLetterReflect(
 	}
 	_, _ = client.Publish(ctx, &pahomqtt5.Publish{
 		Topic:   topic,
-		QoS:     1,
+		QoS:     qos,
+		Retain:  retained,
 		Payload: body,
 	})
 	return true
@@ -390,6 +408,30 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 		return err
 	}
 
+	// docs/roadmap/capability-requirement-composition.md's Phase 2:
+	// resolve the route's declared [reqreply.CapabilityRequirement]s and
+	// this Serve's supplied [ServeOptions.Capabilities] ONCE, at setup —
+	// not per message. effectiveQoS/effectiveRetained are then threaded
+	// through EVERY reply publish path (success, error-pattern-matched,
+	// and dead-letter alike) inside baseHandler below, closing a gap
+	// where all three previously hardcoded QoS 1 and never set Retained.
+	requirements, _ := elem.FieldByName("Requirements").Interface().([]reqreply.CapabilityRequirement)
+	qos, qosSet := events.ResolveCapabilityValue[Capability, QoS](t.opts.Capabilities)
+	retained, retainedSet := events.ResolveCapabilityValue[Capability, Retained](t.opts.Capabilities)
+	effectiveQoS := byte(1)    // unchanged existing default
+	effectiveRetained := false // unchanged existing default
+	if qosSet {
+		effectiveQoS = byte(qos)
+		events.RecordCapabilityApplied(obs, path, qos)
+	}
+	if retainedSet {
+		effectiveRetained = bool(retained)
+		events.RecordCapabilityApplied(obs, path, retained)
+	}
+	if err := reqreply.VerifyCapabilityCoverage(path, requirements, t.opts.Capabilities); err != nil {
+		return err
+	}
+
 	// Phase 1b: header-param-as-middleware (docs/roadmap/reqreply-
 	// middleware.md). requestHeaderParams are declared via [reqreply.
 	// Route.Use]/[FromUserPropertyParam] — validated against the real
@@ -451,8 +493,8 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 			obs.RecordValidationError("user_property", stats.ConstraintName(propErr), userPropertyName(propErr))
 			serveErr = propErr
 			obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-			publishHandlerErrorReplyReflect(spanCtx, t.client, observeErrorResponseForMethod, responseTopic, correlationData, propErr, obs, nil)
-			tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, propErr)
+			publishHandlerErrorReplyReflect(spanCtx, t.client, observeErrorResponseForMethod, responseTopic, correlationData, propErr, obs, nil, effectiveQoS, effectiveRetained)
+			tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, propErr, effectiveQoS, effectiveRetained)
 			if t.opts.OnError != nil {
 				t.opts.OnError(ServeError{Kind: KindSecurity, Err: propErr})
 			}
@@ -462,8 +504,8 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 			obs.RecordValidationError("user_property", stats.ConstraintName(propErr), userPropertyName(propErr))
 			serveErr = propErr
 			obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-			publishHandlerErrorReplyReflect(spanCtx, t.client, observeErrorResponseForMethod, responseTopic, correlationData, propErr, obs, nil)
-			tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, propErr)
+			publishHandlerErrorReplyReflect(spanCtx, t.client, observeErrorResponseForMethod, responseTopic, correlationData, propErr, obs, nil, effectiveQoS, effectiveRetained)
+			tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, propErr, effectiveQoS, effectiveRetained)
 			if t.opts.OnError != nil {
 				t.opts.OnError(ServeError{Kind: KindSecurity, Err: propErr})
 			}
@@ -493,8 +535,8 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 				stats.ReportErrors(obs, "topic_var", varErr)
 				serveErr = varErr
 				obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-				publishHandlerErrorReplyReflect(spanCtx, t.client, observeErrorResponseForMethod, responseTopic, correlationData, varErr, obs, nil)
-				tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, varErr)
+				publishHandlerErrorReplyReflect(spanCtx, t.client, observeErrorResponseForMethod, responseTopic, correlationData, varErr, obs, nil, effectiveQoS, effectiveRetained)
+				tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, varErr, effectiveQoS, effectiveRetained)
 				if t.opts.OnError != nil {
 					t.opts.OnError(ServeError{Kind: KindDecode, Err: varErr})
 				}
@@ -514,8 +556,8 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 			stats.ReportErrors(obs, "body", errI)
 			serveErr = errI
 			obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-			publishHandlerErrorReplyReflect(spanCtx, t.client, observeErrorResponseForMethod, responseTopic, correlationData, errI, obs, nil)
-			tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, errI)
+			publishHandlerErrorReplyReflect(spanCtx, t.client, observeErrorResponseForMethod, responseTopic, correlationData, errI, obs, nil, effectiveQoS, effectiveRetained)
+			tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, errI, effectiveQoS, effectiveRetained)
 			if t.opts.OnError != nil {
 				t.opts.OnError(ServeError{Kind: KindDecode, Err: errI})
 			}
@@ -538,8 +580,8 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 				stats.ReportErrors(obs, "property_var", errI)
 				serveErr = errI
 				obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-				publishHandlerErrorReplyReflect(spanCtx, t.client, observeErrorResponseForMethod, responseTopic, correlationData, errI, obs, nil)
-				tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, errI)
+				publishHandlerErrorReplyReflect(spanCtx, t.client, observeErrorResponseForMethod, responseTopic, correlationData, errI, obs, nil, effectiveQoS, effectiveRetained)
+				tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, errI, effectiveQoS, effectiveRetained)
 				if t.opts.OnError != nil {
 					t.opts.OnError(ServeError{Kind: KindDecode, Err: errI})
 				}
@@ -561,7 +603,7 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 				wrapped := reqreply.SecurityCredentialError{Scheme: name, Err: credErr}
 				serveErr = wrapped
 				obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-				publishErrorReply(spanCtx, t.client, responseTopic, correlationData, wrapped)
+				publishErrorReply(spanCtx, t.client, responseTopic, correlationData, wrapped, effectiveQoS, effectiveRetained)
 				if t.opts.OnError != nil {
 					t.opts.OnError(ServeError{Kind: KindSecurity, Err: wrapped})
 				}
@@ -585,8 +627,8 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 			wrapped := reqreply.SecurityError{Err: err}
 			serveErr = wrapped
 			obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-			publishHandlerErrorReplyReflect(spanCtx, t.client, observeErrorResponseForMethod, responseTopic, correlationData, wrapped, obs, nil)
-			tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, wrapped)
+			publishHandlerErrorReplyReflect(spanCtx, t.client, observeErrorResponseForMethod, responseTopic, correlationData, wrapped, obs, nil, effectiveQoS, effectiveRetained)
+			tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, wrapped, effectiveQoS, effectiveRetained)
 			if t.opts.OnError != nil {
 				t.opts.OnError(ServeError{Kind: KindSecurity, Err: wrapped})
 			}
@@ -625,8 +667,8 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 				// Middleware DecodeIn/Fn/EncodeOut errors are ALL
 				// ErrorPattern-eligible now (Topic 1's Category A fix) —
 				// previously only the Fn case consulted ErrorResponseFor.
-				publishHandlerErrorReplyReflect(spanCtx, t.client, observeErrorResponseForMethod, responseTopic, correlationData, mwErr, obs, nil)
-				tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, mwErr)
+				publishHandlerErrorReplyReflect(spanCtx, t.client, observeErrorResponseForMethod, responseTopic, correlationData, mwErr, obs, nil, effectiveQoS, effectiveRetained)
+				tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, mwErr, effectiveQoS, effectiveRetained)
 				if t.opts.OnError != nil {
 					t.opts.OnError(ServeError{Kind: kind, Err: mwErr})
 				}
@@ -646,8 +688,8 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 		if handlerErr != nil {
 			serveErr = handlerErr
 			obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-			publishHandlerErrorReplyReflect(spanCtx, t.client, observeErrorResponseForMethod, responseTopic, correlationData, handlerErr, obs, middlewarePropertyVars)
-			tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, handlerErr)
+			publishHandlerErrorReplyReflect(spanCtx, t.client, observeErrorResponseForMethod, responseTopic, correlationData, handlerErr, obs, middlewarePropertyVars, effectiveQoS, effectiveRetained)
+			tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, handlerErr, effectiveQoS, effectiveRetained)
 			if t.opts.OnError != nil {
 				t.opts.OnError(ServeError{Kind: KindHandler, Err: handlerErr})
 			}
@@ -662,8 +704,8 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 		if errI, _ := encodeResults[1].Interface().(error); errI != nil {
 			serveErr = errI
 			obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-			publishHandlerErrorReplyReflect(spanCtx, t.client, observeErrorResponseForMethod, responseTopic, correlationData, errI, obs, middlewarePropertyVars)
-			tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, errI)
+			publishHandlerErrorReplyReflect(spanCtx, t.client, observeErrorResponseForMethod, responseTopic, correlationData, errI, obs, middlewarePropertyVars, effectiveQoS, effectiveRetained)
+			tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, errI, effectiveQoS, effectiveRetained)
 			if t.opts.OnError != nil {
 				t.opts.OnError(ServeError{Kind: KindEncode, Err: errI})
 			}
@@ -688,7 +730,8 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 			}
 			if _, pubErr := t.client.Publish(spanCtx, &pahomqtt5.Publish{
 				Topic:      responseTopic,
-				QoS:        1,
+				QoS:        effectiveQoS,
+				Retain:     effectiveRetained,
 				Payload:    respPayload,
 				Properties: replyProps,
 			}); pubErr != nil {
@@ -701,7 +744,7 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 				// decision), previously missing here even though every
 				// OTHER Category-A failure point in this dispatch
 				// already consults DeadLetterFor.
-				tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, pubErr)
+				tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, pubErr, effectiveQoS, effectiveRetained)
 				if t.opts.OnError != nil {
 					t.opts.OnError(ServeError{Kind: KindEncode, Err: pubErr})
 				}
@@ -946,6 +989,20 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 	if qos == 0 {
 		qos = 1
 	}
+	// docs/roadmap/capability-requirement-composition.md's Phase 2: a
+	// supplied [QoS] capability overrides [CallOptions.QoS] (its
+	// dedicated MinLevel-checked declaration path); a supplied [Retained]
+	// capability sets Retain on the outgoing request publish — previously
+	// never set anywhere on the client/Call side.
+	retained := false
+	if capQoS, ok := events.ResolveCapabilityValue[Capability, QoS](t.opts.Capabilities); ok {
+		qos = byte(capQoS)
+		events.RecordCapabilityApplied(obs, path, capQoS)
+	}
+	if capRetained, ok := events.ResolveCapabilityValue[Capability, Retained](t.opts.Capabilities); ok {
+		retained = bool(capRetained)
+		events.RecordCapabilityApplied(obs, path, capRetained)
+	}
 
 	var replyTopic, subscribeFilter string
 	if t.opts.ReplyTopicBuilder != nil {
@@ -1104,6 +1161,7 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 		if _, err := t.client.Publish(ctx, &pahomqtt5.Publish{
 			Topic:      path,
 			QoS:        qos,
+			Retain:     retained,
 			Payload:    payload,
 			Properties: reqProps,
 		}); err != nil {

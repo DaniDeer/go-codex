@@ -173,6 +173,30 @@ problem `docs/roadmap/protocol-native-features.md` set out to resolve:
   `RequireConflate` stay presence-only (boolean toggles).
   `events.CapabilityNameOf`/`CapabilityName` interface derive a
   capability's self-reported name (unchanged).
+  **Phase 2 of `docs/roadmap/capability-requirement-composition.md`
+  extends this SAME mechanism to `api/reqreply`** — its own,
+  package-local `reqreply.CapabilityRequirement`/`CheckCapabilityCoverage`/
+  `CapabilityCoverageError`/`VerifyCapabilityCoverage`/`LeveledCapability`/
+  `RequireQoS`/`RequireRetained`/`RequireHWM`/`RequireConflate`/`QoSLevel`
+  (byte-for-byte-identical SHAPE to `events`'s, deliberately NOT shared —
+  mirrors `middleware.Disposition`'s own D-0004 placement precedent),
+  consuming the SAME 4 sealed adapter values via a NEW
+  `Capabilities []<pkg>.Capability` field on `ServeOptions`/`CallOptions`
+  (mqtt5/zeromq's reqreply transports live in the SAME package as their
+  events-side `Capability` types — zero new adapter-side capability
+  values needed). Coverage is checked once at `Serve`/`AttachServer`
+  setup (server side only); the resolved QoS/Retained values are then
+  threaded through EVERY server-side reply publish path (success,
+  error-pattern-matched, dead-letter) and the client-side outgoing
+  request publish. zeromq's reqreply transport has FOUR real,
+  independent dispatch implementations needing this wiring
+  (`serverTransport`/`routerServerTransport`/`clientTransport`/
+  `dealerClientTransport` — REQ/REP and ROUTER/DEALER don't delegate to
+  each other), all reusing the existing `applyCapabilities` helper
+  unchanged. The GENERIC helpers `events.ResolveCapabilityValue`/
+  `events.RecordCapabilityApplied` ARE reused as-is by reqreply's
+  adapter-side code (fully generic, no events-specific types) — only the
+  declaration-side pieces are duplicated.
 - **`Address`** (`events.Address` — `Template() string`,
   `events.TopicAddress{Topic string}`) — a standalone, ADDITIVE type
   pair, NOT a retrofit of `Channel[T]`/`NewChannel` (a full
