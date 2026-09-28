@@ -1158,8 +1158,18 @@ plumbing gap found this round (not just a generic "wiring" test):
 
 ### Phase 3 — `api/rest` (a new, synchronous, transport-stateless adapter)
 
-- **Design:** finalize a NEW ZeroMQ REQ/REP-based adapter for `api/rest`
-  in this doc, informed by Phases 1-2's learnings, governed by the new
+**Scope split (resolved this round):** this phase spans TWO concerns
+that get designed in TWO separate docs, per this repo's own convention —
+a new adapter gets its own dedicated Explore-mode roadmap doc, written
+BEFORE its Implement step:
+
+- **Adapter plumbing** (wire framing, socket lifecycle, package naming,
+  `ports.IOAdapter` binding) — designed in
+  [`docs/roadmap/zeromq-rest-adapter.md`](zeromq-rest-adapter.md), a
+  SEPARATE, dedicated doc (mirrors `docs/roadmap/amqp-adapter.md`'s own
+  precedent). Do not re-derive that doc's proposals here.
+- **The capability mechanism itself** — designed HERE, since it's the
+  subject of this whole roadmap doc, governed by the new
   **REST-eligible-transport guardrail**: a transport is only ever
   REST-eligible if it is BOTH (1) synchronous (request immediately
   expects its matching response, no broker-mediated delivery gap) AND
@@ -1175,27 +1185,274 @@ plumbing gap found this round (not just a generic "wiring" test):
   both will touch ZeroMQ, they do so via genuinely DIFFERENT socket
   patterns (REQ/REP for REST vs. reqreply's existing async-correlation
   pattern), which is expected and is NOT a reason to merge the two APIs.
-  Also resolve during Design: `rest.HeaderParam`/`CookieParam` become
-  GENUINELY runtime-checked Tier 2 (implicit) capabilities once REST has
-  a second transport family (today's "trivially always satisfied because
-  REST has one transport" argument disappears); and whether REST's
-  OpenAPI-only spec rendering stays OpenAPI-only for the new transport or
-  needs its own rendering path (flagged now, resolved during Phase 3's
-  Design step, not before). **Also confirm** (per the cross-cutting
-  alignment note above): the new REST capability mechanism coexists with
-  the ALREADY-SHIPPED `rest.Middleware[In,Out]` (D-0003) as two
-  independent stage-2 declarations, per D-0006 §3's resolution — REST's
-  own `Transform`/`ClientTransform`/`.Use(mw)` dispatch wiring
-  (`adapters/nethttp`/`adapters/chi`) differs from events'/reqreply's, so
-  this is NOT assumed to hold automatically just because it held for the
-  other two; and that `stats.CapabilityObserver` is wired into the new
-  ZeroMQ REST adapter's dispatch path using the SAME type-assertion-guard
-  pattern events/reqreply use — this phase is where `CapabilityObserver`
-  reaches REST for the first time, since Phase 3 introduces REST's
-  capability mechanism from scratch.
+
+- **Design:** finalize, in THIS doc:
+  - **`rest.PathParam` is Tier 1 (Baseline), NOT part of this
+    discussion** — a gap in this doc's own taxonomy found and closed
+    this round: Path resolution is mandatory, part of route matching
+    itself (same reasoning as `Topic`/`Route` for events/reqreply), so
+    it was never meant to be Tier 2 alongside Header/Cookie/Query —
+    stated explicitly here so a future reader doesn't wonder why it's
+    absent from the Tier 2 discussion below. (Whether `zeromqrest` can
+    even REALIZE a templated `Path` server-side is a separate, adapter-
+    plumbing concern — see the sibling adapter doc's "Path template
+    variables" section: a real, inherited limitation from
+    `adapters/zeromq`'s own literal-socket-map precedent, resolved
+    there as an accepted Phase 3 scope limitation, not a capability-tier
+    question.)
+  - `rest.HeaderParam`/`CookieParam`/`QueryParam` become GENUINELY
+    runtime-checked Tier 2 (Implicit) capabilities once REST has a
+    second transport family (today's "trivially always satisfied
+    because REST has one transport" argument disappears — confirmed by
+    tracing `adapters/nethttp`: it unconditionally calls
+    `handle.ValidateHeaders`/`ValidateCookies`/`ValidateQuery` every
+    request, since `*http.Request` structurally always carries all
+    three).
+
+    **The concrete mechanism (resolved this round, not left as a vague
+    "runtime-checked" placeholder):** three tiny, zero-cost OPTIONAL
+    marker interfaces in `api/rest`, mirroring `adapters/zeromq`'s
+    `HWMSetter`/`ConflateSetter` and `LeveledCapability`'s EXACT
+    optional-interface pattern — the only difference being WHAT gets
+    type-asserted: Tier 3 asserts on a supplied capability VALUE, Tier 2
+    asserts on the ADAPTER'S OWN TRANSPORT TYPE (there is no per-declare
+    "supplied capabilities slice" for headers/cookies/query the way
+    there is for QoS):
+    ```go
+    // api/rest — implemented by an adapter's own transport type
+    // (*nethttp.transport, *zeromqrest.transport, ...) when it can
+    // extract that param kind from its wire format. One no-op method
+    // each — pure compile-time marker, zero runtime cost.
+    type HeaderCapableTransport interface{ SupportsHeaderParams() }
+    type CookieCapableTransport interface{ SupportsCookieParams() }
+    type QueryCapableTransport  interface{ SupportsQueryParams() }
+    ```
+    `adapters/nethttp`/`adapters/chi` implement all three trivially
+    (HTTP's baseline reality made explicit in code, not just doc
+    comments). `adapters/zeromqrest` implements `HeaderCapableTransport`/
+    `QueryCapableTransport` (both fold into ONE params frame — no
+    wire-level reason to distinguish once you're not literally HTTP) but
+    DELIBERATELY OMITS `CookieCapableTransport` (a correct, permanent,
+    compiler-visible adapter-side omission, exactly like AMQP's
+    exchange/queue capability being MQTT5-unsatisfiable — see the
+    sibling adapter doc's Open Design Decision #1, now resolved to
+    reference this exact marker).
+
+    At `Serve`/`AttachServer`/`Call`/`AttachClient` setup — ONCE, not
+    per-request, the SAME timing `VerifyCapabilityCoverage` already
+    uses — the adapter checks: does the route declare a requirement for
+    this param kind, AND does my own transport type implement the
+    matching marker? A NEW typed error,
+    `rest.UnsupportedParamKindError{Kind string, Adapter string}`,
+    is returned IMMEDIATELY at attach time on a mismatch — not a
+    confusing per-request `MissingRequiredParam` failure discovered only
+    when a caller happens to hit that specific route.
+
+    **A real, previously-missed BLOCKER, now closed:** there was no way
+    for an adapter to even ASK "does this route declare any Header/
+    Cookie/Query params at all" — every exported field on `rest.
+    RouteHandle` was enumerated (`Descriptor`, `RequestFormats`/
+    `Formats`, `SecuritySchemes`, `GlobalSecurity`, `Middlewares`,
+    `Implementations`/`ClientImplementations`, `MiddlewareHandlers`/
+    `ClientMiddlewareHandlers`) — NONE expose the declared `headerParams`/
+    `cookieParams`/`queryParams` (all unexported). The EXISTING
+    `HeaderMergeFields()`/`CookieMergeFields()`/`QueryMergeFields()`
+    methods are INSUFFICIENT — they only cover the merge-field-style
+    subset, silently missing a plain `rest.HeaderParam{Name: "X"}` opt
+    declaration that needs no merge field at all. **Fix:** add 3 new
+    exported methods, mirroring the EXISTING `PathParamNames() []string`
+    method's exact shape and doc-comment convention
+    ("Adapters use this to build the map required by..."):
+    ```go
+    func (h *RouteHandle[Req, Resp]) HeaderParamNames() []string
+    func (h *RouteHandle[Req, Resp]) CookieParamNames() []string
+    func (h *RouteHandle[Req, Resp]) QueryParamNames() []string
+    ```
+    Each iterates the FULL declared set (`h.headerParams`/
+    `h.cookieParams`/`h.queryParams` directly — NOT the merge-field-only
+    subset) — called via reflection
+    (`rv.MethodByName("CookieParamNames").Call(nil)`) by the coverage
+    check above, exactly like every adapter already reflects on
+    `MergeFields()`/`PathParamNames()`-style methods elsewhere in this
+    codebase — no new reflection pattern, just a missing accessor.
+
+    **Coverage-check SCOPE must include declared `SecurityScheme`s, not
+    just plain param declarations** (a real gap found and closed this
+    round, not originally obvious): `route.APIKeyScheme(name, in
+    string)`'s `in` field is literally `"header"`/`"query"`/`"cookie"` —
+    a route declaring `route.APIKeyScheme("key", "cookie")` with NO
+    separate `CookieParam` would otherwise silently bypass a check that
+    only scans `RequestCookieParams`/`RequestHeaderParams`/
+    `QueryParams`. The scanning helper that feeds
+    `UnsupportedParamKindError`'s check must inspect BOTH plain param
+    declarations AND every declared `SecurityScheme`'s `In` field.
+    Bearer/OAuth2 schemes conventionally rely on the Header capability
+    (`Authorization` header, pure HTTP convention) — `route.
+    SecurityScheme` has NO explicit `In` field for those two types, so
+    this dependency is documented as an ACCEPTED, UNENFORCED assumption,
+    not structurally checkable the way APIKey's explicit `In` is.
+    Credential EXTRACTION itself (reading the actual header/cookie/query
+    value) stays entirely the DECLARING USER'S OWN job inside their
+    `ServerImplementation.Fn` — go-codex never extracts credentials
+    itself, confirmed by tracing `examples/rest-api/handlers/security.go`
+    — so Security's OWN mechanism needs ZERO new go-codex-side plumbing
+    beyond this coverage-check SCOPE widening.
+
+    **`ErrorPattern` needs NO separate capability entry at all**
+    (confirmed by tracing `rest.ErrorPatternResponse{Status int, Body
+    []byte, Value any, Action}` and `adapters/nethttp`'s
+    `writeErrorPatternResponse`): the type is purely Status+Body,
+    already trivially portable to ANY REST-eligible transport (the
+    sibling adapter doc's `[status, code, body]` frame already covers it
+    exactly) — and when a matched pattern's `Value` ALSO merges response
+    headers/cookies, `writeErrorPatternResponse` reuses the IDENTICAL
+    `ValidateResponseHeaders`/`ValidateResponseCookies` path a plain
+    success response uses. ErrorPattern rides entirely on the
+    Header/Cookie mechanism above; it does not need its own marker
+    interface or coverage check.
+  - `api/rest` gains its OWN `rest.CapabilityRequirement`/
+    `CheckCapabilityCoverage`/`CapabilityCoverageError`/
+    `VerifyCapabilityCoverage`/`LeveledCapability`/`RequireQoS`/
+    `RequireHWM` (own package-local mirror, SAME reasoning as reqreply's
+    Phase 2 — cheap to duplicate a small shape, avoid a cross-API
+    import). No `RequireRetained` — REST has no retained-message
+    concept; this ISN'T a gap, it's correctly absent.
+
+    **No `RequireConflate` either — resolved with protocol-level
+    reasoning, not deferred as "zero Tier 3a for now."** Tracing
+    `adapters/zeromq/capability.go`'s own doc comments: `HWM`
+    (`ZMQ_SNDHWM`/`ZMQ_RCVHWM`) is documented as applying "depending on
+    socket type" — a genuine per-socket-type ZeroMQ option that bounds
+    internal queue depth regardless of pattern, so it transfers cleanly
+    to a synchronous REQ/REP socket (guards against unbounded memory
+    growth if a peer stalls) — KEEP `RequireHWM`/`mqtt5`-style `HWM`
+    support for `zeromqrest`. `Conflate` (`ZMQ_CONFLATE`, "keep only the
+    LATEST message **per topic**, discarding older, still-unread ones")
+    has NO protocol-level meaning for REQ/REP: the pattern has at most
+    ONE outstanding request/reply in flight at a time by definition —
+    there is no backlog of unread messages for "keep only latest" to
+    ever apply to. This is a genuine, permanent, protocol-driven
+    omission (mirrors `CookieCapableTransport`'s omission exactly), not
+    a "surveyed but not implemented" placeholder awaiting future demand
+    — `zeromqrest` should never grow a `Conflate` capability, unlike
+    MQTT5's Message Expiry/Shared Subscriptions (see Phase 4's new
+    `mqtt5-capability-extensions.md` task below), which ARE genuinely
+    just waiting for someone to ask.
+
+    **Tier 2's `UnsupportedParamKindError` is a plain Go error, never an
+    observer event** — mirrors `VerifyCapabilityCoverage`'s own
+    established precedent exactly (confirmed by tracing every one of
+    its 5 existing call sites across `adapters/mqtt5`/`adapters/zeromq`:
+    the error is always `return`ed directly, never wrapped in a
+    `stats.Report*`/`RecordCapabilityApplied` call). Both are
+    attach-time/Serve-setup-time structural failures, discovered BEFORE
+    any request stream exists to report an observer event into — the
+    caller of `AttachServer`/`Serve` receives the error synchronously.
+    Only TWO things ever reach an Observer in this whole mechanism:
+    successful Tier 3a capability APPLICATION
+    (`RecordCapabilityApplied`, once, at setup) and per-REQUEST
+    rejections happening inside the live dispatch loop
+    (`RecordSecurityRejection` being the existing example) — coverage/
+    structural mismatches of any tier are never one of those two.
+  - Whether REST's OpenAPI-only spec rendering stays OpenAPI-only for
+    the new transport, or needs a parallel AsyncAPI-style rendering path
+    for capability vendor extensions — OpenAPI 3.1 has no native
+    "x-capabilities"-equivalent convention the way AsyncAPI's own
+    vendor-extension mechanism does; resolve via an
+    `x-codex-capabilities` OpenAPI vendor extension (mirrors AsyncAPI's
+    `x-capabilities` naming, adapted to OpenAPI's own extension
+    convention of an `x-` prefix on ANY object, not just channels), added
+    to the route's own `Operation` object.
+  - **REST's relationship to declarative middleware is NOT one uniform
+    thing — traced precisely this round, replacing an earlier vague
+    "not assumed to hold automatically" hedge with two DIFFERENT,
+    verified findings:**
+    - **Tier 3a (`RequireQoS`/`RequireHWM` → the new `routeBuilder.
+      requirements` field) is INDEPENDENT from declarative middleware —
+      same pattern Phases 1-2 already confirmed.** `requirements` is a
+      field no middleware contribution (`middlewareSpecContributions`,
+      `middlewares`) ever touches — two genuinely separate
+      declarations sharing nothing at the Go-type level, exactly as
+      D-0006 §3 resolved for events/reqreply.
+    - **Tier 2 (`HeaderParamNames`/`CookieParamNames`/`QueryParamNames`)
+      is GENUINELY ENTANGLED with declarative middleware — NOT
+      independent, and this is CORRECT, verified by tracing
+      `api/rest/middleware.go`'s `applyParamDeclarations`, not assumed:**
+      it merges BOTH legacy `middleware.Middleware.RequestHeaderParams`/
+      `RequestCookieParams`/`RequestQueryParams` AND D-0003's codec-
+      backed `Middleware[In,Out]` contributions (attached via
+      `Transform`/`ClientTransform`) DIRECTLY into `rb.headerParams`/
+      `cookieParams`/`queryParams` — via `toHeaderParam(s).applyRoute(rb)`
+      and its cookie/query siblings — appending to the EXACT SAME list
+      a plain `rest.HeaderParam{}` route opt would. This merge
+      (`Route.registerHandle` → `applyMiddlewareDeclarations` →
+      `applyParamDeclarations`) runs BEFORE `RouteHandle` is
+      constructed, so by the time the 3 new accessor methods read
+      `h.headerParams`/etc., they ALREADY reflect middleware-declared
+      requirements too. **Net effect, confirmed not assumed:** a route
+      declaring a header requirement ONLY via `Transform`/`.Use(mw)`
+      (never a plain `HeaderParam{}` opt) is STILL correctly covered by
+      the Tier 2 coverage-check — nothing extra needs to be built for
+      this, but it must be stated as a verified fact (mirroring Phase
+      2's "VERIFIED by construction" bar), not left as an unstated
+      side effect a future reader might assume was accidental. The SAME
+      reasoning extends to the `SecurityScheme.In` coverage-scope
+      finding from earlier this round: a scheme attached via
+      `.Use(SomeMiddleware.Security)` lands in the SAME `SecuritySchemes`
+      map (populated by `applySecurityDeclarations`) the coverage-check
+      already reads — also automatically correct, also previously
+      unstated.
+    - **Legacy `middleware.Middleware` vs. codec-backed
+      `Middleware[In,Out]`'s own future is tracked SEPARATELY** — see
+      the new `docs/roadmap/middleware-consolidation.md`, spun out this
+      round after finding `HandleMW`/`ClientMW` are hard-coded to the
+      LEGACY concrete type (not the shared `RouteMiddleware` interface),
+      meaning Security enforcement and codec-backed param merging are
+      two genuinely different mechanisms today, not a redundant
+      duplication — Phase 3 does NOT block on that doc's outcome either
+      way, since both mechanisms already coexist correctly as traced
+      above.
+    - `stats.CapabilityObserver` is wired into the new ZeroMQ REST
+      adapter's dispatch path (designed in the sibling adapter doc)
+      using the SAME type-assertion-guard pattern events/reqreply use —
+      this phase is where `CapabilityObserver` reaches REST for the
+      first time, since Phase 3 introduces REST's capability mechanism
+      from scratch.
+
+**Unit test plan** (mirrors Phase 1/2's matrix format): construction
+tests for `RequireQoS`/`RequireHWM` (no `RequireRetained`/
+`RequireConflate` — correctly absent), sufficient/exact/insufficient-
+level coverage cases, missing case, presence-only cases,
+non-leveled-supplied case, `LogValue`/`errors.As`, 2 `Example` funcs —
+in `api/rest/capability_require_test.go`, using fake types per the SAME
+import-cycle constraint Phase 1/2 already hit (`adapters/nethttp`
+imports `api/rest`, so `api/rest`'s own `package rest` test file cannot
+import it). PLUS 3 NEW tests closing this round's accessor gap:
+`TestHeaderParamNames_ReturnsPlainAndMergeFieldDeclarations`/
+`TestCookieParamNames_...`/`TestQueryParamNames_...` (each verifying
+BOTH a plain-opt AND a merge-field-style declaration are returned, not
+just one) — plus `TestCoverageScan_IncludesAPIKeySchemeIn` (the
+APIKey-cookie gap case found earlier this round: a route declaring only
+`route.APIKeyScheme("key", "cookie")`, no separate `CookieParam`, still
+triggers the Cookie requirement).
+
+**Files to create/modify:**
+
+| File | Change |
+|---|---|
+| `api/rest/capability.go` | NEW — `CapabilityRequirement`, `CheckCapabilityCoverage`, `CapabilityCoverageError`/`LevelMismatch`, `VerifyCapabilityCoverage`, `LeveledCapability`, `HeaderCapableTransport`/`CookieCapableTransport`/`QueryCapableTransport`, `UnsupportedParamKindError` |
+| `api/rest/capability_require.go` | NEW — `RequireQoS`/`RequireHWM` sugar (no `RequireRetained`/`RequireConflate`) |
+| `api/rest/builder.go` | `routeBuilder.requirements` field; `RouteHandle.Requirements` field (populated at both Register-equivalent construction sites); NEW `HeaderParamNames`/`CookieParamNames`/`QueryParamNames` methods (mirrors `PathParamNames()` exactly, full declared set not just merge-field subset); a coverage-scan helper inspecting BOTH the 3 new accessors AND every declared `SecurityScheme`'s `In` field |
+| `api/rest/capability_test.go`, `capability_require_test.go` | NEW — full test matrix per above, fake types |
+| `render/openapi/openapi.go` | NEW `x-codex-capabilities` vendor extension rendering on the route's `Operation` object |
+| `adapters/zeromqrest/*` | Per the sibling adapter doc's own design — consumes `HeaderParamNames`/etc. via reflection, exactly as described in that doc's "Security/Middleware dispatch" section |
+
 - **Implement:** the six mandatory requirements PLUS the
   `add-a-new-adapter` skill's full new-adapter checklist (this is a brand
-  new transport package, not an extension of an existing one).
+  new transport package, not an extension of an existing one) — the
+  ADAPTER half of Implement follows
+  [`zeromq-rest-adapter.md`](zeromq-rest-adapter.md)'s own design; the
+  CAPABILITY half follows this doc's design above.
 - **Examples:** update/add `api/rest` example(s) demonstrating the
   ZeroMQ REQ/REP adapter alongside the existing HTTP ones.
 - **Docs:** update `docs/features/rest-api.md`, `docs/features/capabilities.md`,
@@ -1239,22 +1496,33 @@ COMPLETE — Phase 4 is the closing review pass, not further feature work:
   as-yet-unrefined one. Follow
   `.github/instructions/agent-skills.instructions.md` for skill
   authoring conventions.
-- **Create `docs/roadmap/zeromq-rest-adapter.md`** — a dedicated,
-  Explore-mode roadmap doc (mirrors the existing `amqp-adapter.md`/
-  `tcp-adapter.md` precedent) capturing the ZeroMQ REQ/REP `api/rest`
-  adapter's actual binding-level design (`ports.IOAdapter`
-  implementation, error types, `add-a-new-adapter` skill's full
-  checklist) with BASIC functionality/capabilities — this doc's own
-  Phase 3 subsection only states the adapter's SCOPE (the
-  REST-eligible-transport guardrail, MQTT's permanent exclusion), not
-  its adapter-level design, which is a separate concern per that skill.
-  **Sequencing tension, flagged rather than silently resolved:** per this
-  repo's own convention, a dedicated adapter roadmap doc is normally
-  written via Explore mode BEFORE that adapter's own Implement step —
-  i.e., this naturally belongs at/before Phase 3's own Design step, not
-  after Phase 4 (which only starts once Phase 3 has ALREADY shipped).
-  Recorded here exactly where requested; confirm/reorder before Phase 3
-  begins if the earlier timing was intended instead.
+- **`docs/roadmap/zeromq-rest-adapter.md` — SPUN OUT ALREADY, not a
+  Phase 4 task.** An earlier draft of this bullet flagged a sequencing
+  tension (a dedicated adapter roadmap doc normally belongs BEFORE its
+  adapter's Implement step, not after Phase 4) and left it open pending
+  confirmation. RESOLVED: the doc was written during Phase 3's own
+  Design step (the earlier timing), not deferred here — this bullet is
+  kept only as a historical pointer, no further action needed.
+- **Create `docs/roadmap/mqtt5-capability-extensions.md`** — a
+  dedicated, Explore-mode roadmap doc designing+shipping the 2
+  surveyed-but-deferred Tier 3a candidates from `docs/features/
+  capabilities.md`'s "Surveyed but not implemented" section, now that
+  `adapters/mqtt5` already exists (no adapter-doesn't-exist-yet blocker,
+  unlike AMQP's still-pending candidates) — the ONLY reason these were
+  deferred through Phases 1-2 was "nobody asked for this specific toggle
+  yet," not a structural limitation:
+  - **MQTT5 Message Expiry Interval** — a new sealed `mqtt5.Capability`
+    (e.g. `mqtt5.MessageExpiry(seconds int)`), applied via
+    `PublishOptions.Capabilities` — mirrors `Retained`'s shape exactly
+    (a Publish-side-only attribute, no Subscribe-side equivalent).
+  - **MQTT5 Shared Subscriptions** (`$share/group/topic`) — a new sealed
+    `mqtt5.Capability` (e.g. `mqtt5.SharedSubscription(group string)`),
+    applied via `SubscribeOptions.Capabilities` — needs its OWN design
+    decision on how the `$share/` prefix composes with the channel's
+    already-declared topic template (does the capability wrap/rewrite
+    the subscribe filter at Attach time, or does it require a NEW
+    `TopicParam`-adjacent declaration?) — not silently assumed to be a
+    trivial string-prefix operation.
 - Decide this roadmap doc's fate per the `plan-a-new-codex-feature`
   skill's delete/keep/promote-to-`docs/design/` policy. **Anticipated
   outcome, flagged now but confirmed only once Phase 3 actually
