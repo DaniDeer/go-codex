@@ -66,10 +66,13 @@ func demoCapabilityMechanism(ctx context.Context, built *mqtt5server.Built) {
 	// The CALL side additionally supplies mqtt5.Retained(true), applied
 	// to the OUTGOING REQUEST publish — Phase 2's client-side fix (this
 	// field previously did not exist on CallOptions at all).
-	resp, err := mqtt5adapter.Call(ctx, built.Broker, built.Router, built.CapabilityHandle,
-		routes.ComputeReq{X: 5, Y: 6}, mqtt5adapter.CallOptions{
+	transport := mqtt5adapter.NewClientTransport(mqtt5adapter.ClientTransportOptions{
+		Client: built.Broker, Router: built.Router,
+		Call: mqtt5adapter.CallOptions{
 			Capabilities: []mqtt5adapter.Capability{mqtt5adapter.QoSAtLeastOnce, mqtt5adapter.Retained(true)},
-		})
+		},
+	})
+	resp, err := reqreply.CallWithTransport(ctx, transport, built.CapabilityHandle, routes.ComputeReq{X: 5, Y: 6})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Call: %v\n", err)
 		os.Exit(1)

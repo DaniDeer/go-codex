@@ -23,7 +23,7 @@ func TestErrorPatternAs_MatchedPattern_ExtractsTypedPayload(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	_, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, createReq{Name: "Alice"}, CallOptions{})
 
 	payload, ok := rest.ErrorPatternAs[clientErrPayload](err)
@@ -44,7 +44,7 @@ func TestErrorPatternAs_WrongType_ReturnsFalse(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	_, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, createReq{Name: "Alice"}, CallOptions{})
 
 	type unrelatedType struct{ X int }
@@ -70,7 +70,7 @@ func TestHandleErrorPattern_DispatchesFirstMatchingCase(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	_, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, createReq{Name: "Alice"}, CallOptions{})
 
 	var gotCode string
@@ -94,7 +94,7 @@ func TestHandleErrorPattern_NoCaseMatches_ReturnsFalse(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	_, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, createReq{Name: "Alice"}, CallOptions{})
 
 	type unrelatedType struct{ X int }
@@ -124,7 +124,7 @@ func TestErrorPatternOpt_Match_SameValueDeclaresAndMatches(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, callErr := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	_, callErr := callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, createReq{Name: "Alice"}, CallOptions{})
 
 	payload, ok := pattern.Match(callErr)

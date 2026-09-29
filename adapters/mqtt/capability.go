@@ -4,17 +4,56 @@ package mqtt
 // protocol-native declarations. Supplied via [SubscribeOptions.Capabilities]/
 // [PublishOptions.Capabilities] at DECLARE time (attached via
 // [events.Subscriber.WithOptions]/[events.Publisher.WithOptions]) — NOT a
-// new Attach-time parameter. Sealed so a [adapters/zeromq.Capability]
-// (or any other adapter's) value cannot be supplied here — the Go compiler
-// rejects the mismatch at build time, with no custom error type needed.
-// See docs/design/d-0006-protocol-native-capabilities.md's §2/§7 (Review-13).
-type Capability interface{ isMQTTCapability() }
+// new Attach-time parameter. Sealed so a [adapters/zeromq.Capability]/
+// [adapters/mqtt5.Capability] (or any other adapter's) value cannot be
+// supplied here — the Go compiler rejects the mismatch at build time, with
+// no custom error type needed. A SEPARATE sealed type from
+// [adapters/mqtt5.Capability], deliberately not shared — a future
+// divergence between MQTT v3 and MQTT 5 QoS semantics would not require
+// touching a shared type. See
+// docs/design/d-0006-protocol-native-capabilities.md's §2/§7 (Review-13).
+//
+// Capability now REQUIRES Apply (docs/roadmap/capability-requirement-
+// composition.md's Phase 5) — this is genuinely "an API the adapter
+// implements against," not a marker: [events.ApplyCapabilities] (living
+// in api/events, NOT here) is the ONE place that calls Apply, for every
+// capability, driven entirely by what the declaring user supplied via
+// Capabilities — this package no longer owns any resolve+assign loop of
+// its own. Mirrors [adapters/mqtt5.Capability]'s identical,
+// already-shipped shape exactly.
+type Capability interface {
+	isMQTTCapability()
+	// Apply applies this capability's value to wire, returning
+	// applied=false when it doesn't apply (never the case for QoS/
+	// Retained today, both always apply — reserved for a future
+	// capability that might legitimately not) and a non-nil err only on
+	// a genuine failure (also not possible for these two, which are pure
+	// field assignments).
+	Apply(wire *WireAttributes) (applied bool, err error)
+}
+
+// WireAttributes is the adapter-owned intermediate [events.ApplyCapabilities]
+// target — NOT a native `paho.mqtt.golang` type, deliberately: [QoS]
+// applies to BOTH the publish path (`client.Publish(topic, qos, retained,
+// payload)`) and the subscribe path (`client.Subscribe(filter, qos,
+// handler)`), two genuinely different call shapes, but Go does not allow
+// ONE method (`Apply`) to be overloaded by parameter type — WireAttributes
+// lets ONE `Apply(*WireAttributes)` method serve BOTH call sites; each call
+// site then reads the (possibly capability-overridden) fields directly.
+// Mirrors [adapters/mqtt5.WireAttributes]'s identical, already-shipped
+// shape exactly.
+type WireAttributes struct {
+	QoS      byte
+	Retained bool
+}
 
 // QoS is a sealed [Capability] declaring the MQTT quality-of-service level
-// for one channel. Equivalent to the pre-existing
-// [SubscribeOptions.QoS]/call-time qos parameter (kept, not deprecated —
-// an escape hatch for the common single-value case); QoS via Capabilities
-// is the RECOMMENDED, sealed/compile-time-checked path going forward.
+// for one channel. Capabilities is now the ONLY mechanism — the former
+// plain [SubscribeOptions.QoS] field/call-time qos parameter escape hatch
+// has been REMOVED (docs/roadmap/capability-requirement-composition.md's
+// Phase 5, a deliberate breaking change: every interaction between the API
+// layer and the adapter layer now goes through the Capability/Apply
+// interface, no competing raw-value path).
 type QoS byte
 
 const (
@@ -33,12 +72,28 @@ func (QoS) CapabilityName() string { return "QoS" }
 // presence) by [events.CheckCapabilityCoverage].
 func (q QoS) Level() int { return int(q) }
 
+// Apply implements [Capability] — sets wire.QoS. Always applies (QoS is
+// meaningful in every context this package uses WireAttributes for).
+func (q QoS) Apply(wire *WireAttributes) (bool, error) {
+	wire.QoS = byte(q)
+	return true, nil
+}
+
 // Retained is a sealed [Capability] declaring the MQTT retained-message
-// flag for one outgoing publish. Equivalent to the pre-existing
-// call-time retained parameter (kept, not deprecated).
+// flag for one outgoing publish. Capabilities is now the ONLY mechanism —
+// the former call-time retained parameter escape hatch has been REMOVED
+// (same Phase 5 breaking change as [QoS]).
 type Retained bool
 
 func (Retained) isMQTTCapability() {}
 
 // CapabilityName implements [events.CapabilityName].
 func (Retained) CapabilityName() string { return "Retained" }
+
+// Apply implements [Capability] — sets wire.Retained. Always applies to
+// the publish path; harmless (ignored) on the subscribe path, which never
+// reads wire.Retained.
+func (r Retained) Apply(wire *WireAttributes) (bool, error) {
+	wire.Retained = bool(r)
+	return true, nil
+}

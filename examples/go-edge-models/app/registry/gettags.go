@@ -6,6 +6,7 @@ import (
 
 	mcpgo "github.com/DaniDeer/go-codex/adapters/mcpgo"
 	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
+	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker"
 	regmodels "github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker/registry"
 )
@@ -52,15 +53,16 @@ func GetTags(ctx context.Context, httpClient *http.Client, imageURL string, opts
 	// the SAME declaration) — authFn supplies the credential; see
 	// newAuthCredentialFunc's own doc comment (auth.go). The baseURL is
 	// rebuilt per call since the target registry host varies with
-	// ImageURL; nethttp.CallWithHandle takes httpClient/baseURL directly
-	// (no intermediate Caller value needed), which needs an Observer
-	// passed explicitly via CallOptions.
+	// ImageURL; a fresh nethttp.NewClientTransport is built per call for
+	// the same reason (no intermediate Caller value needed), which needs
+	// an Observer passed explicitly via ClientCallOptions.
 	authFn := newAuthCredentialFunc(httpClient, ref.Registry, ref.Repository, opts...)
 	route := regmodels.GetTagsRoute.ClientMW(&regmodels.BearerAuthDeclaration, authFn)
 	handle := route.ClientHandle()
-	callOpts := nethttp.CallOptions{Observer: o.observer}
+	callOpts := rest.ClientCallOptions{Observer: o.observer}
+	transport := nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: httpClient, BaseURL: registryBaseURL(ref.Registry)})
 
-	return nethttp.CallWithHandle(ctx, httpClient, registryBaseURL(ref.Registry), handle, regmodels.GetTagsReq{Name: ref.Repository}, callOpts)
+	return rest.CallWithTransport(ctx, transport, handle, regmodels.GetTagsReq{Name: ref.Repository}, callOpts)
 }
 
 // GetTagsFiltered calls GetTags, then sorts/limits the result's Tags via

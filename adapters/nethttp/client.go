@@ -550,7 +550,14 @@ func equalHeaderValues(a, b []string) bool {
 // code, and total duration. Per-field validation errors are reported separately via
 // [stats.Observer.RecordValidationError].
 //
-// See [Attach] for the public entry point using this internally.
+// call is an internal, test-only primitive predating [NewClientTransport]/
+// [rest.CallWithTransport] (docs/roadmap/capability-requirement-
+// composition.md's Phase 5a) — kept ONLY because this package's own
+// existing test suite exercises it; no real (non-test) caller remains.
+// Delegates to [rest.CallWithTransport] via a scratch transport built
+// from c's own client/baseURL, converting opts field-for-field —
+// ExtraHeaders via a direct type conversion (http.Header IS
+// map[string][]string under the hood).
 func call[Req, Resp any](
 	ctx context.Context,
 	c *caller,
@@ -559,7 +566,17 @@ func call[Req, Resp any](
 	opts CallOptions,
 ) (Resp, error) {
 	handle := r.ClientHandle()
-	return CallWithHandle(ctx, c.client, c.baseURL, handle, req, opts)
+	transport := NewClientTransport(ClientTransportOptions{HTTPClient: c.client, BaseURL: c.baseURL})
+	return rest.CallWithTransport(ctx, transport, handle, req, rest.ClientCallOptions{
+		RequestFormats:       opts.RequestFormats,
+		ResponseFormats:      opts.ResponseFormats,
+		QueryParams:          opts.QueryParams,
+		CookieParams:         opts.CookieParams,
+		HeaderParams:         opts.HeaderParams,
+		ExtraHeaders:         map[string][]string(opts.ExtraHeaders),
+		OnCredentialRejected: opts.OnCredentialRejected,
+		Observer:             opts.Observer,
+	})
 }
 
 // callWithVars is the UNEXPORTED, handle-based call primitive — the
@@ -913,81 +930,32 @@ func callWithVars[Req, Resp any](
 	return result, err
 }
 
-// CallWithHandle is [callWithVars]'s single-call convenience wrapper,
-// EXPORTED for callers that already have a *[rest.RouteHandle] but no
-// [rest.Route] value to build one from — e.g. [ports]' handle-based
-// binding adapters, and other packages bridging a REST route into a
-// different protocol (see adapters/mcprest, which proxies MCP tool calls
-// through an outbound REST call using a *rest.RouteHandle it was handed
-// directly). Derives the path vars AND [CallOptions.QueryParams]/
-// [HeaderParams]/[CookieParams] from req automatically, using the
-// route's role-aware merge-field accessors
-// ([rest.RouteHandle.PathMergeFields]/[QueryMergeFields]/
-// [HeaderMergeFields]/[CookieMergeFields]) and [codex.EncodeVars] — the
-// SAME auto-derivation [call] performs internally.
+// CallWithHandle was REMOVED (docs/roadmap/capability-requirement-
+// composition.md's Phase 5a, a deliberate breaking change): it was a
+// single-call convenience wrapper for callers with only a
+// *[rest.RouteHandle] (e.g. adapters/mcprest, bridging a REST route into
+// a different protocol) — [rest.CallWithTransport] now serves this exact
+// use case, mirroring [events.PublishHandle]/[reqreply.CallWithTransport]'s
+// already-correct split. [rest.ClientCallOptions] was grown (Phase 5a)
+// with every field CallWithHandle's own richer [CallOptions] had
+// (QueryParams/CookieParams/HeaderParams explicit overrides,
+// ExtraHeaders, OnCredentialRejected, a per-call Observer), so this is a
+// LOSSLESS replacement:
 //
-// Prefer [call] when a [rest.Route] value is available (the common
-// case) — it additionally builds the handle for you via
-// [rest.Route.ClientHandle].
+//	transport := nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: client, BaseURL: baseURL})
+//	resp, err := rest.CallWithTransport(ctx, transport, handle, req)
 //
-// Any entry already present in opts.QueryParams/HeaderParams/CookieParams
-// takes PRECEDENCE over the corresponding derived value for the same key.
-func CallWithHandle[Req, Resp any](
-	ctx context.Context,
-	client *http.Client,
-	baseURL string,
-	handle *rest.RouteHandle[Req, Resp],
-	req Req,
-	opts CallOptions,
-) (Resp, error) {
-	var zero Resp
-
-	vars, err := codex.EncodeVars(req, handle.PathMergeFields()...)
-	if err != nil {
-		return zero, err
-	}
-	query, err := codex.EncodeVars(req, handle.QueryMergeFields()...)
-	if err != nil {
-		return zero, err
-	}
-	headers, err := codex.EncodeVars(req, handle.HeaderMergeFields()...)
-	if err != nil {
-		return zero, err
-	}
-	cookies, err := codex.EncodeVars(req, handle.CookieMergeFields()...)
-	if err != nil {
-		return zero, err
-	}
-
-	// D3: explicit CallOptions > middleware-derived (ClientTransform's/
-	// bundled .Use()'s In) > route-own-derived — capture explicit BEFORE
-	// any merging below, so it survives being layered against the
-	// middleware tier.
-	explicitQuery, explicitHeaders, explicitCookies := opts.QueryParams, opts.HeaderParams, opts.CookieParams
-
-	if len(handle.ClientMiddlewareHandlers) > 0 {
-		start := time.Now()
-		mwHeaders, mwCookies, mwQuery, mwErr := dispatchClientMiddlewareIn(ctx, req, handle.ClientMiddlewareHandlers)
-		if mwErr != nil {
-			obs := opts.Observer
-			if obs == nil {
-				obs = stats.ObserverFromContext(ctx)
-			}
-			stats.ReportErrors(obs, "middleware:fn", mwErr)
-			obs.RecordRequest(strings.ToUpper(handle.Descriptor.Method), handle.Descriptor.Path, 0, time.Since(start))
-			return zero, mwErr
-		}
-		query = overrideDerived(query, mwQuery)
-		headers = overrideDerived(headers, mwHeaders)
-		cookies = overrideDerived(cookies, mwCookies)
-	}
-
-	opts.QueryParams = overrideDerived(query, explicitQuery)
-	opts.HeaderParams = overrideDerived(headers, explicitHeaders)
-	opts.CookieParams = overrideDerived(cookies, explicitCookies)
-
-	return callWithVars(ctx, client, baseURL, handle, req, vars, opts)
-}
+// One pre-existing, KNOWN, unchanged limitation carries over unchanged:
+// neither this deleted function's replacement NOR [rest.Client.Call]
+// dispatch declared [rest.Route.ClientTransform]/bundled `.Use()`
+// codec-backed middleware today (confirmed via code — [clientTransport.
+// Call] never called dispatchClientMiddlewareIn/Out) — CallWithHandle
+// itself DID dispatch it, a capability [rest.CallWithTransport] does NOT
+// carry over (it mirrors [rest.Client.Call]'s existing ceiling exactly,
+// not CallWithHandle's superset of it). Confirmed via repo-wide grep: no
+// real (non-test) CallWithHandle caller used [rest.Route.ClientTransform]
+// — this is a known, accepted gap, not a regression affecting any
+// migrated caller.
 
 // overrideDerived merges derived (from codex.EncodeVars) and explicit (from
 // caller-supplied CallOptions) maps, with explicit taking precedence on key

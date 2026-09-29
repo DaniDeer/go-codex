@@ -2,10 +2,8 @@ package mqtt5
 
 import (
 	"context"
-	"fmt"
 	"time"
 
-	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/stats"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 	"github.com/google/uuid"
@@ -147,116 +145,26 @@ type CallOptions struct {
 // UNAFFECTED — it stays, a distinct decision scoped to reqreply only in
 // this phase.
 
-// Serve subscribes to the route path as an MQTT 5 request topic and
-// replies to each request using the ResponseTopic and CorrelationData MQTT 5
-// properties.
+// Serve/Call/CallHandle were REMOVED (docs/roadmap/capability-
+// requirement-composition.md's Phase 5a, a deliberate breaking change):
+// they were thin, single-route/single-call wrappers that built a
+// [serverTransport]/[clientTransport] directly from client/router/opts
+// and delegated immediately — the EXACT SAME construction
+// [NewServerTransport]/[NewClientTransport] (Phase 4d's factories)
+// already perform. The api-layer-owned [reqreply.ServeWithTransport]/
+// [reqreply.CallWithTransport] now serve this exact use case (a caller
+// wanting compile-time type safety and zero [*reqreply.Server]/
+// [*reqreply.Client] registration ceremony for a single route), mirroring
+// [events.SubscribeHandle]/[events.PublishHandle]'s already-correct
+// split exactly:
 //
-// Serve is a thin, single-route wrapper around [reqreply.ServerTransport.
-// Serve] — builds a [serverTransport] directly from client/router/opts and
-// delegates to it (the SAME reflection-based dispatch [AttachServer]'s
-// registered routes use), rather than duplicating the decode/merge/
-// security/encode/error-pattern pipeline inline. Zero duplicate logic —
-// full capability parity with [AttachServer] is therefore automatic (see
-// docs/design/d-0004-reqreply-workflow-simplification.md's Addendum's Phase 0/0b for the history: this
-// used to be a separate, hand-written implementation; Phase 0 closed the
-// capability gap, Phase 0b collapsed the duplication).
+//	transport := mqtt5.NewServerTransport(mqtt5.ServerTransportOptions{
+//	    Client: client, Router: router, Serve: mqtt5.ServeOptions{},
+//	})
+//	err := reqreply.ServeWithTransport(ctx, transport, computeRoute.ClientHandle(), computeHandler)
 //
-// For each incoming message, the underlying dispatch:
-//  1. Decodes the payload using handle's codec (honoring RequestFormats
-//     and NewTopicParam merge fields).
-//  2. Calls fn with the decoded value.
-//  3. Encodes the response (honoring Formats) and publishes it to
-//     msg.Properties.ResponseTopic with the same CorrelationData.
-//
-// When fn or encoding fails, an error reply is published to ResponseTopic
-// (honoring a declared [reqreply.ErrorPattern]) so the requester receives
-// a [CallError] rather than blocking indefinitely.
-//
-// Errors per-request are delivered via [ServeOptions.OnError].
-//
-// Serve registers the handler with router and calls client.Subscribe
-// once. It returns nil immediately; messages are processed asynchronously as
-// they arrive via the router.
-func Serve[Req, Resp any](
-	ctx context.Context,
-	client MQTTClient,
-	router MQTTRouter,
-	handle *reqreply.RouteHandle[Req, Resp],
-	fn func(context.Context, Req) (Resp, error),
-	opts ServeOptions,
-) error {
-	t := &serverTransport{client: client, router: router, opts: opts}
-	return t.Serve(ctx, handle, fn)
-}
-
-// Request encodes req, publishes it to the route path with MQTT 5 ResponseTopic
-// and CorrelationData properties, then waits for a matching reply.
-//
-// Call is a thin, single-call wrapper around [reqreply.ClientTransport.
-// Call] — builds a [clientTransport] directly from client/router/opts and
-// delegates to it (the SAME reflection-based dispatch [AttachClient]
-// uses), rather than duplicating the encode/merge/security/decode
-// pipeline inline. Zero duplicate logic — full capability parity with
-// [AttachClient] is therefore automatic, including [CallOptions.Vars]
-// (explicit override, takes PRECEDENCE over any [reqreply.NewTopicParam]
-// merge-field-derived value for the same key — mirrors [CallHandle]'s own
-// documented precedence) and [CallOptions.RequestFormats]/[ResponseFormats]
-// (per-call format overrides). See docs/design/d-0004-reqreply-workflow-simplification.md's Addendum's
-// Phase 0/0b for the history: this used to be a separate, hand-written
-// implementation; Phase 0 closed the capability gap, Phase 0b collapsed
-// the duplication.
-//
-// Each call generates a unique reply topic: "<opts.ReplyTopicPrefix>/<uuid>".
-// Call subscribes to this topic before publishing (avoiding a race), waits
-// for a message with matching CorrelationData, then unsubscribes.
-//
-// On success, returns the decoded response.
-// On timeout, returns [CallError]{Kind: [KindTimeout]}.
-// On server error reply, returns [CallError]{Kind: [KindHandler]}.
-// On decode failure, returns [CallError]{Kind: [KindDecode]}.
-func Call[Req, Resp any](
-	ctx context.Context,
-	client MQTTClient,
-	router MQTTRouter,
-	handle *reqreply.RouteHandle[Req, Resp],
-	req Req,
-	opts CallOptions,
-) (Resp, error) {
-	var zero Resp
-	t := &clientTransport{client: client, router: router, opts: opts}
-	respAny, err := t.Call(ctx, handle, req)
-	if err != nil {
-		return zero, err
-	}
-	resp, ok := respAny.(Resp)
-	if !ok {
-		return zero, reqreply.TransportTypeMismatchError{Topic: handle.Topic, Want: fmt.Sprintf("%T", zero), Got: fmt.Sprintf("%T", respAny)}
-	}
-	return resp, nil
-}
-
-// CallHandle is a deprecated-but-kept alias for [Call] — [Call] itself
-// now auto-derives [CallOptions.Vars] from req (via the route's
-// merge-capable topic params, [reqreply.RouteHandle.MergeFields] +
-// [reqreply.RouteHandle.EncodeVars]), the SAME auto-derivation this
-// function used to add on top of [Call] before [AttachClient]'s
-// underlying [clientTransport.call] gained it directly (Phase 0 of
-// docs/design/d-0004-reqreply-workflow-simplification.md's Addendum). An explicit [CallOptions.Vars]
-// still takes PRECEDENCE over the derived value for the same key.
-// Kept for existing callers — prefer [Call] directly in new code, since
-// it is now identical.
-//
-//	resp, err := mqtt5.CallHandle(ctx, client, router, computeRoute, req, mqtt5.CallOptions{})
-func CallHandle[Req, Resp any](
-	ctx context.Context,
-	client MQTTClient,
-	router MQTTRouter,
-	handle *reqreply.RouteHandle[Req, Resp],
-	req Req,
-	opts CallOptions,
-) (Resp, error) {
-	return Call(ctx, client, router, handle, req, opts)
-}
+//	transport := mqtt5.NewClientTransport(mqtt5.ClientTransportOptions{Client: client, Router: router})
+//	resp, err := reqreply.CallWithTransport(ctx, transport, computeRoute.ClientHandle(), req)
 
 // isErrorReply checks whether an incoming reply was sent as an error by the responder.
 // Error replies carry a special ContentType "application/mqtt5-error".

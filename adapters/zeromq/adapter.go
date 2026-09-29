@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/DaniDeer/go-codex/api/events"
-	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/middleware"
@@ -897,132 +896,26 @@ func publishHandle[T any](
 	return publish(ctx, sock, handle, msg, vars, false, opts, formats...)
 }
 
-// Serve runs a blocking REP loop: receives requests, calls fn, sends replies.
-// It is the server side of a ZMQ REQ/REP contract.
+// Serve/Call/CallHandle/ServeRouter/CallDealer were REMOVED (docs/roadmap/
+// capability-requirement-composition.md's Phase 5a, a deliberate breaking
+// change): they were thin, single-route/single-call wrappers that built a
+// [serverTransport]/[clientTransport]/[routerServerTransport]/
+// [dealerClientTransport] directly from sock/opts and delegated
+// immediately — the EXACT SAME construction [NewServerTransport]/
+// [NewClientTransport]/[NewRouterServerTransport]/
+// [NewDealerClientTransport] (Phase 4d's factories) already perform. The
+// api-layer-owned [reqreply.ServeWithTransport]/[reqreply.CallWithTransport]
+// now serve this exact use case, mirroring [events.SubscribeHandle]/
+// [events.PublishHandle]'s already-correct split exactly:
 //
-// Serve is a thin, single-route wrapper around [reqreply.ServerTransport.
-// Serve] — builds a [serverTransport] directly from sock/opts (a
-// single-entry socket map keyed by handle.Topic) and delegates to it (the
-// SAME reflection-based dispatch [AttachServer]'s registered routes use),
-// rather than duplicating the decode/handler/encode/error-pattern
-// pipeline inline. Zero duplicate logic — full capability parity with
-// [AttachServer] is therefore automatic (see
-// docs/design/d-0004-reqreply-workflow-simplification.md's Addendum's
-// Phase 0/0b for the history — this used to be
-// a separate, hand-written implementation, mirroring the SAME
-// de-duplication mqtt5's [adapters/mqtt5.Serve] already shipped).
+//	transport := zeromq.NewServerTransport(zeromq.ServerTransportOptions{Sockets: map[string]zeromq.FramedSocket{"compute/add": repSock}})
+//	err := reqreply.ServeWithTransport(ctx, transport, computeHandle, handler)
 //
-// Message framing:
-//   - Incoming request: [payload]
-//   - Reply on success: ["ok", encoded_response]
-//   - Reply on failure: ["error", error_message]
+//	transport := zeromq.NewClientTransport(zeromq.ClientTransportOptions{Sockets: map[string]zeromq.FramedSocket{"compute/add": reqSock}})
+//	resp, err := reqreply.CallWithTransport(ctx, transport, computeHandle.ClientHandle(), req)
 //
-// The REP socket always sends a reply (even on error) to avoid leaving the
-// REQ peer blocked. Per-error details are delivered via [ServeOptions.OnError].
-//
-// The loop runs until ctx is cancelled (returns nil) or a socket error occurs.
-// Run Serve in a dedicated goroutine.
-//
-// Format overrides are applied via [reqreply.RouteHandle.WithRequestFormats] and
-// [reqreply.RouteHandle.WithFormats] on the handle before calling Serve.
-//
-// Example (REP compute server):
-//
-//	go func() {
-//	    if err := zeromq.Serve(ctx, sock, computeHandle, handler, zeromq.ServeOptions{Observer: obs}); err != nil {
-//	        log.Error("serve stopped", "err", err)
-//	    }
-//	}()
-func Serve[Req, Resp any](
-	ctx context.Context,
-	sock FramedSocket,
-	handle *reqreply.RouteHandle[Req, Resp],
-	fn func(context.Context, Req) (Resp, error),
-	opts ServeOptions,
-) error {
-	t := &serverTransport{sockets: map[string]FramedSocket{handle.Topic: sock}, opts: opts}
-	return t.Serve(ctx, handle, fn)
-}
-
-// Call encodes req, sends it to a REQ socket, and decodes the reply.
-// It is the client side of a ZMQ REQ/REP contract.
-//
-// Call is a thin, single-call wrapper around [reqreply.ClientTransport.
-// Call] — builds a [clientTransport] directly from sock/opts (a
-// single-entry socket map keyed by handle.Topic) and delegates to it (the
-// SAME reflection-based dispatch [AttachClient] uses), rather than
-// duplicating the encode/send/recv/decode pipeline inline. Zero duplicate
-// logic — full capability parity with [AttachClient] is therefore
-// automatic, including [CallOptions.Vars] (explicit override, PRECEDENCE
-// over any [reqreply.NewTopicParam] merge-field-derived value — used
-// ONLY for observability path/span naming, never socket selection, since
-// zeromq REQ/REP routing is socket-based, not topic-based) and
-// [CallOptions.RequestFormats]/[ResponseFormats] (per-call format
-// overrides). See docs/design/d-0004-reqreply-workflow-simplification.md's Addendum's Phase 0/0b for
-// the history — this used to be a separate, hand-written implementation,
-// mirroring the SAME de-duplication mqtt5's [adapters/mqtt5.Call]
-// already shipped.
-//
-// Message framing:
-//   - Outgoing request:  [payload]
-//   - Expected reply OK: ["ok", encoded_response]
-//   - Server error reply:["error", message] → returns [CallError]
-//
-// ctx cancellation is honoured during the reply receive loop. Call blocks
-// until a reply arrives, ctx is cancelled, or a socket error occurs.
-//
-// Format overrides are applied via [reqreply.RouteHandle.WithRequestFormats] and
-// [reqreply.RouteHandle.WithFormats] on the handle before calling Call.
-//
-// Example (REQ compute client):
-//
-//	result, err := zeromq.Call(ctx, sock, computeHandle.ClientHandle(), req,
-//	    zeromq.CallOptions{Observer: obs})
-func Call[Req, Resp any](
-	ctx context.Context,
-	sock FramedSocket,
-	handle *reqreply.RouteHandle[Req, Resp],
-	req Req,
-	opts CallOptions,
-) (Resp, error) {
-	var zero Resp
-	t := &clientTransport{sockets: map[string]FramedSocket{handle.Topic: sock}, opts: opts}
-	respAny, err := t.Call(ctx, handle, req)
-	if err != nil {
-		return zero, err
-	}
-	resp, ok := respAny.(Resp)
-	if !ok {
-		return zero, reqreply.TransportTypeMismatchError{Topic: handle.Topic, Want: fmt.Sprintf("%T", zero), Got: fmt.Sprintf("%T", respAny)}
-	}
-	return resp, nil
-}
-
-// CallHandle is a deprecated-but-kept alias for [Call] — [Call] itself
-// now auto-derives [CallOptions.Vars] from req (via the route's
-// merge-capable topic params, [reqreply.RouteHandle.MergeFields] +
-// [reqreply.RouteHandle.EncodeVars]), the SAME auto-derivation this
-// function used to add on top of [Call] before [AttachClient]'s
-// underlying [clientTransport.call] gained it directly (Phase 0/0b of
-// docs/design/d-0004-reqreply-workflow-simplification.md's Addendum, mirroring mqtt5's identical
-// outcome). An explicit [CallOptions.Vars] still takes PRECEDENCE over
-// the derived value for the same key. Kept for existing callers — prefer
-// [Call] directly in new code, since it is now identical.
-//
-// Note: this derivation is OBSERVABILITY-only (span/RecordRequest path
-// naming) — it never affects socket selection. ZMQ REQ/REP routing is
-// socket-based, not topic-based.
-//
-//	resp, err := zeromq.CallHandle(ctx, sock, computeRoute, req, zeromq.CallOptions{})
-func CallHandle[Req, Resp any](
-	ctx context.Context,
-	sock FramedSocket,
-	handle *reqreply.RouteHandle[Req, Resp],
-	req Req,
-	opts CallOptions,
-) (Resp, error) {
-	return Call(ctx, sock, handle, req, opts)
-}
+// ROUTER/DEALER mirror this exactly via [NewRouterServerTransport]/
+// [NewDealerClientTransport].
 
 // sendErrorReply sends an error reply frame to the REQ peer as plain text.
 // Always called in the Serve loop on handler, decode, or encode failures
@@ -1037,113 +930,9 @@ func sendErrorReply(sock FramedSocket, err error) {
 // payload in DEALER/ROUTER ZMQ envelope format.
 var emptyDelimiter = []byte{}
 
-// ServeRouter runs a blocking ROUTER loop. Each incoming request is dispatched
-// concurrently in its own goroutine. Identity frames are extracted automatically
-// and re-prepended to every reply so the DEALER peer can correlate responses.
-//
-// ServeRouter is a thin, single-route wrapper around
-// [reqreply.ServerTransport.Serve] — builds a [routerServerTransport]
-// directly from sock/opts (a single-entry socket map keyed by
-// handle.Topic) and delegates to it (the SAME reflection-based dispatch
-// [AttachRouterServer]'s registered routes use), rather than duplicating
-// the decode/handler/encode/error-pattern pipeline inline. Zero duplicate
-// logic — full capability parity with [AttachRouterServer] is therefore
-// automatic. See docs/design/d-0004-reqreply-workflow-simplification.md's Addendum's Phase 0/0b for the
-// history — this used to be a separate, hand-written implementation,
-// mirroring the SAME de-duplication mqtt5's escape hatch already shipped.
-//
-// ROUTER message framing (server receives):
-//
-//	[identity, "", payload]
-//
-// Reply framing (server sends):
-//
-//	[identity, "", "ok", encoded_response]
-//	[identity, "", "error", error_message]
-//
-// The loop runs until ctx is cancelled; it waits for all in-flight goroutines
-// to drain before returning nil. A socket recv error stops the loop immediately.
-//
-// Errors are delivered via [ServeOptions.OnError] using the same [ServeError]
-// type as [Serve]. Format overrides are applied via [reqreply.RouteHandle.WithRequestFormats]
-// and [reqreply.RouteHandle.WithFormats] before calling ServeRouter.
-//
-// Example (ROUTER compute server):
-//
-//	go func() {
-//	    if err := zeromq.ServeRouter(ctx, sock, handle, handler,
-//	        zeromq.ServeOptions{Observer: obs}); err != nil {
-//	        log.Error("serve stopped", "err", err)
-//	    }
-//	}()
-func ServeRouter[Req, Resp any](
-	ctx context.Context,
-	sock FramedSocket,
-	handle *reqreply.RouteHandle[Req, Resp],
-	fn func(context.Context, Req) (Resp, error),
-	opts ServeOptions,
-) error {
-	t := &routerServerTransport{sockets: map[string]FramedSocket{handle.Topic: sock}, opts: opts}
-	return t.Serve(ctx, handle, fn)
-}
-
 // sendRouterErrorReply sends an error reply to a ROUTER peer, preserving
 // identity frames, as plain text. Used directly for decode-level errors (no
 // [reqreply.ErrorPattern] can apply yet).
 func sendRouterErrorReply(sock FramedSocket, identity []byte, err error) {
 	_ = sock.SendFrames([][]byte{identity, emptyDelimiter, statusError, []byte(err.Error())})
-}
-
-// CallDealer encodes req and sends it via a DEALER socket using the ZMQ envelope
-// format (empty delimiter + payload), then synchronously waits for one reply.
-//
-// CallDealer is a thin, single-call wrapper around
-// [reqreply.ClientTransport.Call] — builds a [dealerClientTransport]
-// directly from sock/opts (a single-entry socket map keyed by
-// handle.Topic) and delegates to it (the SAME reflection-based dispatch
-// [AttachDealerClient] uses), rather than duplicating the encode/send/
-// recv/decode pipeline inline. Zero duplicate logic — full capability
-// parity with [AttachDealerClient] is therefore automatic (same
-// [CallOptions.Vars]/[RequestFormats]/[ResponseFormats] handling as
-// [Call] — see its doc comment for the full rationale). See
-// docs/design/d-0004-reqreply-workflow-simplification.md's Addendum's Phase 0/0b for the history.
-//
-// DEALER message framing (client sends):
-//
-//	["", payload]
-//
-// Expected reply framing (client receives):
-//
-//	["", "ok", encoded_response]
-//	["", "error", error_message]
-//
-// For concurrent use, call CallDealer from multiple goroutines; each invocation
-// manages its own independent send/recv cycle.
-//
-// ctx cancellation is honoured during the reply receive loop.
-//
-// Errors are wrapped in [CallError], the same type used by [Call].
-//
-// Example (DEALER compute client):
-//
-//	result, err := zeromq.CallDealer(ctx, sock, handle, ComputeReq{X: 3, Y: 4},
-//	    zeromq.CallOptions{Observer: obs})
-func CallDealer[Req, Resp any](
-	ctx context.Context,
-	sock FramedSocket,
-	handle *reqreply.RouteHandle[Req, Resp],
-	req Req,
-	opts CallOptions,
-) (Resp, error) {
-	var zero Resp
-	t := &dealerClientTransport{sockets: map[string]FramedSocket{handle.Topic: sock}, opts: opts}
-	respAny, err := t.Call(ctx, handle, req)
-	if err != nil {
-		return zero, err
-	}
-	resp, ok := respAny.(Resp)
-	if !ok {
-		return zero, reqreply.TransportTypeMismatchError{Topic: handle.Topic, Want: fmt.Sprintf("%T", zero), Got: fmt.Sprintf("%T", respAny)}
-	}
-	return resp, nil
 }

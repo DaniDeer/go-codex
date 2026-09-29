@@ -79,7 +79,7 @@ func TestToolHandler_HappyPath_ForwardsToCallWithHandle(t *testing.T) {
 	defer srv.Close()
 
 	handle := newGreetRoute()
-	fn := mcprest.ToolHandler(srv.Client(), srv.URL, handle, nethttp.CallOptions{})
+	fn := mcprest.ToolHandler(srv.Client(), srv.URL, handle, rest.ClientCallOptions{})
 
 	out, err := fn(context.Background(), greetReq{Name: "Alice"})
 	if err != nil {
@@ -95,7 +95,7 @@ func TestToolHandler_ErrorPath_ForwardsUnderlyingErrorUnchanged(t *testing.T) {
 	defer srv.Close()
 
 	handle := newGreetRoute()
-	fn := mcprest.ToolHandler(srv.Client(), srv.URL, handle, nethttp.CallOptions{})
+	fn := mcprest.ToolHandler(srv.Client(), srv.URL, handle, rest.ClientCallOptions{})
 
 	_, err := fn(context.Background(), greetReq{Name: "Alice"})
 	var statusErr nethttp.UnexpectedStatusError
@@ -115,8 +115,8 @@ func TestToolHandler_FixedCallOptions_AppliedToEveryCall(t *testing.T) {
 	defer srv.Close()
 
 	handle := newGreetRoute()
-	fn := mcprest.ToolHandler(srv.Client(), srv.URL, handle, nethttp.CallOptions{
-		ExtraHeaders: http.Header{"Authorization": []string{"Bearer fixed-token"}},
+	fn := mcprest.ToolHandler(srv.Client(), srv.URL, handle, rest.ClientCallOptions{
+		ExtraHeaders: map[string][]string{"Authorization": {"******"}},
 	})
 
 	for i := 0; i < 2; i++ {
@@ -125,8 +125,8 @@ func TestToolHandler_FixedCallOptions_AppliedToEveryCall(t *testing.T) {
 		}
 	}
 
-	if len(gotAuth) != 2 || gotAuth[0] != "Bearer fixed-token" || gotAuth[1] != "Bearer fixed-token" {
-		t.Errorf("Authorization headers = %v, want [Bearer fixed-token, Bearer fixed-token]", gotAuth)
+	if len(gotAuth) != 2 || gotAuth[0] != "******" || gotAuth[1] != "******" {
+		t.Errorf("Authorization headers = %q, want [****** ******]", gotAuth)
 	}
 }
 
@@ -145,7 +145,7 @@ func TestMappedToolHandler_HappyPath_MapsInputAndOutput(t *testing.T) {
 	defer srv.Close()
 
 	handle := newGreetRoute()
-	fn := mcprest.MappedToolHandler(srv.Client(), srv.URL, handle, nethttp.CallOptions{},
+	fn := mcprest.MappedToolHandler(srv.Client(), srv.URL, handle, rest.ClientCallOptions{},
 		func(in simpleIn) (greetReq, error) { return greetReq{Name: in.Who}, nil },
 		func(resp greetResp) (simpleOut, error) { return simpleOut{Message: resp.Greeting}, nil },
 	)
@@ -166,7 +166,7 @@ func TestMappedToolHandler_ToReqError_WrapsAsToolRequestMapError(t *testing.T) {
 
 	handle := newGreetRoute()
 	wantErr := errors.New("cannot build request")
-	fn := mcprest.MappedToolHandler(srv.Client(), srv.URL, handle, nethttp.CallOptions{},
+	fn := mcprest.MappedToolHandler(srv.Client(), srv.URL, handle, rest.ClientCallOptions{},
 		func(simpleIn) (greetReq, error) { return greetReq{}, wantErr },
 		func(resp greetResp) (simpleOut, error) { return simpleOut{Message: resp.Greeting}, nil },
 	)
@@ -193,7 +193,7 @@ func TestMappedToolHandler_FromRespError_WrapsAsToolResponseMapError(t *testing.
 
 	handle := newGreetRoute()
 	wantErr := errors.New("cannot map response")
-	fn := mcprest.MappedToolHandler(srv.Client(), srv.URL, handle, nethttp.CallOptions{},
+	fn := mcprest.MappedToolHandler(srv.Client(), srv.URL, handle, rest.ClientCallOptions{},
 		func(in simpleIn) (greetReq, error) { return greetReq{Name: in.Who}, nil },
 		func(greetResp) (simpleOut, error) { return simpleOut{}, wantErr },
 	)
@@ -214,7 +214,7 @@ func TestMappedToolHandler_UnderlyingCallError_ForwardsUnchanged(t *testing.T) {
 
 	var fromRespCalled bool
 	handle := newGreetRoute()
-	fn := mcprest.MappedToolHandler(srv.Client(), srv.URL, handle, nethttp.CallOptions{},
+	fn := mcprest.MappedToolHandler(srv.Client(), srv.URL, handle, rest.ClientCallOptions{},
 		func(in simpleIn) (greetReq, error) { return greetReq{Name: in.Who}, nil },
 		func(resp greetResp) (simpleOut, error) {
 			fromRespCalled = true
@@ -305,7 +305,7 @@ func TestToolHandler_ComposesWithToolPortSetFunc(t *testing.T) {
 	}
 	// The exact assertion this test exists for: SetFunc accepts
 	// mcprest.ToolHandler's return value directly, with zero adaptation.
-	domainPort.SetFunc(mcprest.ToolHandler(srv.Client(), srv.URL, handle, nethttp.CallOptions{}))
+	domainPort.SetFunc(mcprest.ToolHandler(srv.Client(), srv.URL, handle, rest.ClientCallOptions{}))
 
 	adapter := &fakeToolAdapter[greetReq, greetResp]{}
 	if err := domainPort.Bind(context.Background(), adapter); err != nil {
@@ -332,7 +332,7 @@ func Example_toolHandler() {
 	defer srv.Close()
 
 	handle := newGreetRoute()
-	fn := mcprest.ToolHandler(srv.Client(), srv.URL, handle, nethttp.CallOptions{})
+	fn := mcprest.ToolHandler(srv.Client(), srv.URL, handle, rest.ClientCallOptions{})
 
 	out, err := fn(context.Background(), greetReq{Name: "Example"})
 	if err != nil {
@@ -352,7 +352,7 @@ func Example_mappedToolHandler() {
 	defer srv.Close()
 
 	handle := newGreetRoute()
-	fn := mcprest.MappedToolHandler(srv.Client(), srv.URL, handle, nethttp.CallOptions{},
+	fn := mcprest.MappedToolHandler(srv.Client(), srv.URL, handle, rest.ClientCallOptions{},
 		func(in simpleIn) (greetReq, error) { return greetReq{Name: in.Who}, nil },
 		func(resp greetResp) (simpleOut, error) { return simpleOut{Message: resp.Greeting}, nil },
 	)

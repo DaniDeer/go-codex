@@ -41,7 +41,7 @@ func TestPublish_ClientMiddlewareFnError_NeverConsultsErrorChannel(t *testing.T)
 
 	client := &mockClient{token: newCompletedToken(nil)}
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	pubErr := publish(context.Background(), client, handle, 1, false, event, nil, PublishOptions[userEvent]{})
+	pubErr := publish(context.Background(), client, handle, event, nil, PublishOptions[userEvent]{})
 
 	if pubErr == nil {
 		t.Fatal("want the middleware Fn error returned DIRECTLY to the caller, got nil")

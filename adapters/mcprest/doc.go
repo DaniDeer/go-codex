@@ -2,8 +2,9 @@
 // calls (via [github.com/DaniDeer/go-codex/adapters/nethttp]) to MCP tool
 // handlers (via [github.com/DaniDeer/go-codex/adapters/mcpgo]) — any
 // already-declared [rest.Route] can become an MCP tool with a single
-// function, because [nethttp.CallWithHandle]'s shape already almost matches
-// [mcpgo.HandlerFunc]'s shape.
+// function, because [rest.CallWithTransport]'s shape already almost matches
+// [mcpgo.HandlerFunc]'s shape (docs/roadmap/capability-requirement-
+// composition.md's Phase 5a).
 //
 // This package deliberately imports BOTH adapters/nethttp and
 // adapters/mcpgo — neither of those two adapters imports the other or
@@ -21,7 +22,7 @@
 //	    mcprest.DefaultErrorPatterns()...,
 //	).Register(mcpBuilder)
 //	tool, handlerFn := mcpgoAdapter.ToolHandler(toolHandle,
-//	    mcprest.ToolHandler(httpClient, baseURL, restHandle, nethttp.CallOptions{}),
+//	    mcprest.ToolHandler(httpClient, baseURL, restHandle, rest.ClientCallOptions{}),
 //	    mcpgo.Options{},
 //	)
 //
@@ -33,7 +34,7 @@
 // fromResp mapper functions to bridge between them:
 //
 //	handlerFn := mcprest.MappedToolHandler(httpClient, baseURL, restHandle,
-//	    nethttp.CallOptions{},
+//	    rest.ClientCallOptions{},
 //	    func(in SimpleSearchInput) (registry.GetTagsReq, error) {
 //	        return registry.GetTagsReq{Name: in.Image}, nil
 //	    },

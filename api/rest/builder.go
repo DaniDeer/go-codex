@@ -17,6 +17,7 @@ import (
 	"github.com/DaniDeer/go-codex/render/openapi"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/schema"
+	"github.com/DaniDeer/go-codex/stats"
 )
 
 // Info is an alias for [openapi.Info]. Using the alias avoids duplicating
@@ -1212,6 +1213,37 @@ func (h *RouteHandle[Req, Resp]) ResponseHeaderMergeFields() []codex.FieldCodec[
 // as [ResponseHeaderMergeFields], for Set-Cookie instead of headers.
 func (h *RouteHandle[Req, Resp]) ResponseCookieMergeFields() []codex.FieldCodec[Resp] {
 	return h.responseCookieMergeFields
+}
+
+// ApplyResponseMergeFields merges headers/cookies into an ALREADY-DECODED
+// resp value via [ResponseHeaderMergeFields]/[ResponseCookieMergeFields]
+// + [codex.DecodeVars] — the RESPONSE-direction mirror of
+// [ApplyMergeFields], split out (docs/roadmap/capability-requirement-
+// composition.md's Phase 5a) for callers that decode the body via a
+// negotiated [format.Format] (i.e. [RouteHandle.DecodeResponseWithFormats],
+// not plain [DecodeResponse]) and therefore cannot use
+// [DecodeMergedResponse] (which only ever calls the plain, JSON-only
+// [DecodeResponse] internally) — reachable via reflection since Resp is
+// erased at the [ClientTransport.Call] call site. A no-op when the route
+// declares no response merge-capable params.
+func (h *RouteHandle[Req, Resp]) ApplyResponseMergeFields(
+	resp *Resp,
+	headers, cookies map[string]string,
+) error {
+	mergeFields := make([]codex.FieldCodec[Resp], 0, len(h.responseHeaderMergeFields)+len(h.responseCookieMergeFields))
+	mergeFields = append(mergeFields, h.responseHeaderMergeFields...)
+	mergeFields = append(mergeFields, h.responseCookieMergeFields...)
+	if len(mergeFields) == 0 {
+		return nil
+	}
+	vars := make(map[string]string, len(headers)+len(cookies))
+	for k, v := range headers {
+		vars[k] = v
+	}
+	for k, v := range cookies {
+		vars[k] = v
+	}
+	return codex.DecodeVars(resp, vars, mergeFields...)
 }
 
 // DecodeMergedResponse decodes the response body (via [RouteHandle.DecodeResponse],
@@ -2865,6 +2897,46 @@ type ClientCallOptions struct {
 	// ResponseFormats is [RequestFormats]'s response-direction sibling
 	// ([]format.Format[Resp]) — mirrors [CallOptions.ResponseFormats].
 	ResponseFormats any
+
+	// QueryParams/CookieParams/HeaderParams append explicit, per-call
+	// query/cookie/header values, each validated against the route's
+	// registered [QueryParam]/[CookieParam]/[HeaderParam] codec (if any)
+	// before the request is sent (docs/roadmap/capability-requirement-
+	// composition.md's Phase 5a: grown onto this type-erased,
+	// cross-adapter interface so [CallWithTransport] fully replaces the
+	// former adapter-owned `nethttp.CallWithHandle`'s richer surface, no
+	// capability loss). An explicit entry here takes PRECEDENCE over the
+	// automatically-derived value for the same key (mirrors D3's
+	// existing "explicit > middleware-derived > route-own-derived"
+	// precedence chain).
+	QueryParams  map[string]string
+	CookieParams map[string]string
+	HeaderParams map[string]string
+
+	// ExtraHeaders adds arbitrary HTTP headers to the outgoing request
+	// without codec validation — represented as `map[string][]string`
+	// (rather than `net/http`'s `http.Header`, an identical underlying
+	// type) since api/rest may not import net/http; the attached
+	// [ClientTransport] converts it back via a direct type conversion
+	// when building the real request. Use for non-declared headers such
+	// as X-Request-ID, User-Agent, or static Authorization values.
+	//
+	// Do not pass the Authorization header via [HeaderParams] — use
+	// ExtraHeaders or a credential-providing
+	// [middleware.ClientImplementation] for security credentials.
+	ExtraHeaders map[string][]string
+
+	// OnCredentialRejected, when non-nil, is called when the server
+	// responds with HTTP 401 AND at least one credential-providing
+	// [middleware.ClientImplementation] was attached to this call.
+	// Purely a notification hook — the attached [ClientTransport] does
+	// NOT retry the request automatically.
+	OnCredentialRejected func()
+
+	// Observer, when non-nil, receives per-call lifecycle events for
+	// THIS call only, overriding [stats.ObserverFromContext](ctx).
+	// Defaults to ctx's own observer (or [stats.NoopObserver]) when nil.
+	Observer stats.Observer
 }
 
 // ClientConsumeOptions is [ClientCallOptions]'s SSE-consumption sibling,

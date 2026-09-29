@@ -185,7 +185,7 @@ func TestPublish_ClientTransform_HappyPath_EncodesOutIntoTopicVars(t *testing.T)
 
 	client := &mockClient{token: newCompletedToken(nil)}
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	if err := publish(context.Background(), client, handle, 1, false, event, nil, PublishOptions[userEvent]{}); err != nil {
+	if err := publish(context.Background(), client, handle, event, nil, PublishOptions[userEvent]{}); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	if got := client.publishedTopicSnapshot(); got != "user/us-west/created" {
@@ -209,7 +209,7 @@ func TestPublish_ClientTransform_FnError_AbortsBeforePublish(t *testing.T) {
 
 	client := &mockClient{token: newCompletedToken(nil)}
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	pubErr := publish(context.Background(), client, handle, 1, false, event, nil, PublishOptions[userEvent]{})
+	pubErr := publish(context.Background(), client, handle, event, nil, PublishOptions[userEvent]{})
 	if pubErr == nil {
 		t.Fatal("want error from ClientTransform fn")
 	}
@@ -296,7 +296,7 @@ func TestPublish_Observer_ReportsMiddlewareFnLocation(t *testing.T) {
 	obs := &mqttSpyObserver{}
 	client := &mockClient{token: newCompletedToken(nil)}
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	pubErr := publish(context.Background(), client, handle, 1, false, event, nil, PublishOptions[userEvent]{Observer: obs})
+	pubErr := publish(context.Background(), client, handle, event, nil, PublishOptions[userEvent]{Observer: obs})
 
 	found := false
 	for _, ve := range obs.valErrors {
@@ -339,7 +339,7 @@ func TestPublish_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
 	obs := &mqttSpyObserver{}
 	client := &mockClient{token: newCompletedToken(nil)}
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	pubErr := publish(context.Background(), client, handle, 1, false, event, nil, PublishOptions[userEvent]{Observer: obs})
+	pubErr := publish(context.Background(), client, handle, event, nil, PublishOptions[userEvent]{Observer: obs})
 
 	found := false
 	for _, ve := range obs.valErrors {

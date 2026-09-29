@@ -22,7 +22,7 @@ import (
 // ── GetTagsReq / GetTagsRoute ──────────────────────────────────────────────────
 
 // GetTagsReq is GetTagsRoute's request — Name merges automatically into
-// the {name} path variable via nethttp.Call/CallWithHandle.
+// the {name} path variable via nethttp.Call/rest.CallWithTransport.
 type GetTagsReq struct {
 	Name string
 }
@@ -32,7 +32,7 @@ type GetTagsReq struct {
 // e.g. "prometheus/prometheus") — substituted as-is, no escaping
 // needed (see BuildPath's plain string-replace semantics). Req is
 // GetTagsReq, whose Name field merges into {name} automatically via
-// nethttp.Call/CallWithHandle — no manual vars map needed.
+// nethttp.Call/rest.CallWithTransport — no manual vars map needed.
 //
 // GetTagsRoute declares its "bearerAuth" requirement via .Use(BearerAuthDeclaration)
 // below — a spec-only declaration (see BearerAuthSchemeName's doc comment):

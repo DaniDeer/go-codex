@@ -52,11 +52,12 @@ func TestRetained_ImplementsCapability(t *testing.T) {
 // (covering the same "extract last-matching value, ok=false when empty"
 // behavior). See ExampleRequireQoS/api/events/capability_test.go.
 
-// TestServeSubscribers_CapabilitiesOverridesQoS confirms
-// SubscribeOptions.Capabilities (the RECOMMENDED path) overrides the
-// legacy SubscribeOptions.QoS field, and reports the applied capability
-// via stats.CapabilityObserver.
-func TestServeSubscribers_CapabilitiesOverridesQoS(t *testing.T) {
+// TestServeSubscribers_CapabilitiesSetsQoS confirms
+// SubscribeOptions.Capabilities (the SOLE mechanism as of
+// docs/roadmap/capability-requirement-composition.md's Phase 5) sets the
+// wire-level QoS and reports the applied capability via
+// stats.CapabilityObserver.
+func TestServeSubscribers_CapabilitiesSetsQoS(t *testing.T) {
 	client := &mockClient{token: newCompletedToken(nil)}
 	ev := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	caller := newCaller(client, ev)
@@ -65,7 +66,7 @@ func TestServeSubscribers_CapabilitiesOverridesQoS(t *testing.T) {
 	ch := events.NewChannel[sensorReading]("sensors/capabilities-qos", sensorCodec)
 	sub := ch.WithSubscribe(events.Subscribe{}).
 		WithHandler(func(context.Context, sensorReading) error { return nil }).
-		WithOptions(SubscribeOptions{QoS: 1, Capabilities: []Capability{QoSExactlyOnce}, Observer: obs})
+		WithOptions(SubscribeOptions{Capabilities: []Capability{QoSExactlyOnce}, Observer: obs})
 	if err := sub.Register(ev); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -77,7 +78,7 @@ func TestServeSubscribers_CapabilitiesOverridesQoS(t *testing.T) {
 	<-done
 
 	if got := client.subscribedQoSSnapshot(); got != 2 {
-		t.Errorf("want QoS 2 from Capabilities override, got %d", got)
+		t.Errorf("want QoS 2 from Capabilities, got %d", got)
 	}
 	found := false
 	for _, a := range obs.applied {
@@ -90,10 +91,11 @@ func TestServeSubscribers_CapabilitiesOverridesQoS(t *testing.T) {
 	}
 }
 
-// TestPublish_CapabilitiesRetainedFallback confirms
-// PublishOptions.Capabilities supplies a fallback Retained value when the
-// caller passes retained=false, and reports it via CapabilityObserver.
-func TestPublish_CapabilitiesRetainedFallback(t *testing.T) {
+// TestPublish_CapabilitiesSetsRetained confirms
+// PublishOptions.Capabilities (the SOLE mechanism as of
+// docs/roadmap/capability-requirement-composition.md's Phase 5) sets the
+// wire-level retained flag and reports it via CapabilityObserver.
+func TestPublish_CapabilitiesSetsRetained(t *testing.T) {
 	client := &mockClient{token: newCompletedToken(nil)}
 	obs := &mockCapabilityObserver{}
 	handle, err := events.NewChannel[sensorReading]("sensors/capabilities-retained", sensorCodec).
@@ -102,7 +104,7 @@ func TestPublish_CapabilitiesRetainedFallback(t *testing.T) {
 		t.Fatalf("Handle: %v", err)
 	}
 
-	err = publishHandle(context.Background(), client, handle, 0, false,
+	err = publishHandle(context.Background(), client, handle,
 		sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1}, PublishOptions[sensorReading]{
 			Capabilities: []Capability{Retained(true)},
 			Observer:     obs,

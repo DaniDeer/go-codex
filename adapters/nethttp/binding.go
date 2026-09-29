@@ -19,6 +19,29 @@ import (
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
 
+// toCallOptions converts a [rest.ClientCallOptions] (the API-layer-owned,
+// cross-adapter options type) into this package's internal [CallOptions]
+// — used by [callWithVars]'s "explicit Vars" call sites, which still
+// need the concrete nethttp-native `http.Header` shape for ExtraHeaders
+// (docs/roadmap/capability-requirement-composition.md's Phase 5a:
+// [CallWithHandle] was deleted, but [callWithVars] itself — an internal
+// primitive with real remaining callers below — was not; this
+// conversion is a lossless, field-for-field copy, ExtraHeaders included
+// via a direct type conversion since http.Header IS map[string][]string
+// under the hood).
+func toCallOptions(o rest.ClientCallOptions) CallOptions {
+	return CallOptions{
+		QueryParams:          o.QueryParams,
+		CookieParams:         o.CookieParams,
+		HeaderParams:         o.HeaderParams,
+		ExtraHeaders:         http.Header(o.ExtraHeaders),
+		OnCredentialRejected: o.OnCredentialRejected,
+		Observer:             o.Observer,
+		RequestFormats:       o.RequestFormats,
+		ResponseFormats:      o.ResponseFormats,
+	}
+}
+
 // ── IngestAdapter ─────────────────────────────────────────────────────────────
 
 // IngestAdapterOptions configures [IngestAdapter].
@@ -158,11 +181,11 @@ type CallStreamOptions struct {
 	//
 	// When nil, path/query/header/cookie vars are derived PER-ITEM from each
 	// item's own merge-field-declared struct fields (the same convenience
-	// [CallWithHandle] provides). When set to a non-nil map (including an
-	// explicitly empty one), that map is used as-is for every request
+	// [rest.CallWithTransport] provides). When set to a non-nil map (including
+	// an explicitly empty one), that map is used as-is for every request
 	// (static vars only) — the escape hatch, unchanged from prior behavior.
 	Vars     map[string]string
-	CallOpts CallOptions
+	CallOpts rest.ClientCallOptions
 	// Buffer is the output Stream channel buffer size. Default 0.
 	Buffer int
 }
@@ -191,6 +214,10 @@ type nethttpCallAdapter[Req, Resp any] struct {
 func (a *nethttpCallAdapter[Req, Resp]) AdapterName() string { return "nethttp.CallAdapter" }
 
 func (a *nethttpCallAdapter[Req, Resp]) Transform(ctx context.Context, src gstream.Stream[Req]) gstream.Stream[Resp] {
+	// Built ONCE, reused for every item's derived-vars call — mirrors
+	// [rest.Client.Attach]'s own one-transport-per-connection shape
+	// (docs/roadmap/capability-requirement-composition.md's Phase 5a).
+	transport := NewClientTransport(ClientTransportOptions{HTTPClient: a.client, BaseURL: a.baseURL})
 	values := make(chan Resp, a.opts.Buffer)
 	errs := make(chan error, a.opts.Buffer)
 	go func() {
@@ -210,9 +237,9 @@ func (a *nethttpCallAdapter[Req, Resp]) Transform(ctx context.Context, src gstre
 				var resp Resp
 				var err error
 				if a.opts.Vars == nil {
-					resp, err = CallWithHandle(ctx, a.client, a.baseURL, a.handle, req, a.opts.CallOpts)
+					resp, err = rest.CallWithTransport(ctx, transport, a.handle, req, a.opts.CallOpts)
 				} else {
-					resp, err = callWithVars(ctx, a.client, a.baseURL, a.handle, req, a.opts.Vars, a.opts.CallOpts)
+					resp, err = callWithVars(ctx, a.client, a.baseURL, a.handle, req, a.opts.Vars, toCallOptions(a.opts.CallOpts))
 				}
 				if err != nil {
 					select {
@@ -356,15 +383,15 @@ type DrainCallOptions struct {
 	//
 	// When nil, path/query/header/cookie vars are derived PER-ITEM from each
 	// item's own merge-field-declared struct fields (the same convenience
-	// [CallWithHandle] provides) — every item may resolve to a different
-	// concrete path/query/header/cookie set. When set to a non-nil map
-	// (including an explicitly empty one), that map is used as-is for every
-	// item (today's static-vars behavior, unchanged) — this remains the
-	// escape hatch for routes with no merge fields or a route shared across
-	// unrelated Req shapes.
+	// [rest.CallWithTransport] provides) — every item may resolve to a
+	// different concrete path/query/header/cookie set. When set to a
+	// non-nil map (including an explicitly empty one), that map is used
+	// as-is for every item (today's static-vars behavior, unchanged) —
+	// this remains the escape hatch for routes with no merge fields or a
+	// route shared across unrelated Req shapes.
 	Vars     map[string]string
 	OnError  func(error)
-	CallOpts CallOptions
+	CallOpts rest.ClientCallOptions
 }
 
 // DrainCallAdapter returns a [ports.SinkAdapter] that calls an HTTP endpoint
@@ -392,13 +419,17 @@ func (a *nethttpDrainCallAdapter[Req, Resp]) AdapterName() string { return "neth
 
 func (a *nethttpDrainCallAdapter[Req, Resp]) Activate(ctx context.Context, src gstream.Stream[Req]) {
 	onErr := a.opts.OnError
+	// Built ONCE, reused for every item's derived-vars call — mirrors
+	// [rest.Client.Attach]'s own one-transport-per-connection shape
+	// (docs/roadmap/capability-requirement-composition.md's Phase 5a).
+	transport := NewClientTransport(ClientTransportOptions{HTTPClient: a.client, BaseURL: a.baseURL})
 	gstream.Drain(ctx, src,
 		func(ctx context.Context, item Req) error {
 			var err error
 			if a.opts.Vars == nil {
-				_, err = CallWithHandle(ctx, a.client, a.baseURL, a.handle, item, a.opts.CallOpts)
+				_, err = rest.CallWithTransport(ctx, transport, a.handle, item, a.opts.CallOpts)
 			} else {
-				_, err = callWithVars(ctx, a.client, a.baseURL, a.handle, item, a.opts.Vars, a.opts.CallOpts)
+				_, err = callWithVars(ctx, a.client, a.baseURL, a.handle, item, a.opts.Vars, toCallOptions(a.opts.CallOpts))
 			}
 			if err != nil {
 				if onErr != nil {

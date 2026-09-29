@@ -234,7 +234,8 @@ func main() {
 	}
 
 	fmt.Println("=== One struct, one call: nested Req, Gob body, header+query merge ===")
-	resp, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL, clientHandle, req, nethttp.CallOptions{})
+	transport := nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})
+	resp, err := rest.CallWithTransport(context.Background(), transport, clientHandle, req)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "call:", err)
 		os.Exit(1)

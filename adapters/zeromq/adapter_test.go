@@ -647,7 +647,7 @@ const validComputeJSON = `{"x":3,"y":4}`
 func runServe(sock *mockSocket, fn func(context.Context, computeReq) (computeResp, error), opts ServeOptions) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	return Serve(ctx, sock, newRouteHandle(), fn, opts)
+	return testServe(ctx, sock, newRouteHandle(), fn, opts)
 }
 
 func TestServe_ValidRoundTrip(t *testing.T) {
@@ -761,7 +761,7 @@ func TestServe_ErrorPatternMatch_HandlerError_SendsTypedPayload(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
-	_ = Serve(ctx, sock, newErrorPatternRouteHandle(t),
+	_ = testServe(ctx, sock, newErrorPatternRouteHandle(t),
 		func(_ context.Context, _ computeReq) (computeResp, error) {
 			return computeResp{}, serveZmqConflictErr{msg: "duplicate"}
 		}, ServeOptions{})
@@ -787,7 +787,7 @@ func TestServe_ErrorPatternNoMatch_HandlerError_FallsBackToPlainText(t *testing.
 	defer cancel()
 	unrelatedErr := errors.New("unrelated failure")
 
-	_ = Serve(ctx, sock, newErrorPatternRouteHandle(t),
+	_ = testServe(ctx, sock, newErrorPatternRouteHandle(t),
 		func(_ context.Context, _ computeReq) (computeResp, error) {
 			return computeResp{}, unrelatedErr
 		}, ServeOptions{})
@@ -805,7 +805,7 @@ func TestServeRouter_ErrorPatternMatch_HandlerError_SendsTypedPayload(t *testing
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
-	_ = ServeRouter(ctx, sock, newErrorPatternRouteHandle(t),
+	_ = testServeRouter(ctx, sock, newErrorPatternRouteHandle(t),
 		func(_ context.Context, _ computeReq) (computeResp, error) {
 			return computeResp{}, serveZmqConflictErr{msg: "duplicate"}
 		}, ServeOptions{})
@@ -830,7 +830,7 @@ func TestServeRouter_ErrorPatternNoMatch_HandlerError_FallsBackToPlainText(t *te
 	defer cancel()
 	unrelatedErr := errors.New("unrelated failure")
 
-	_ = ServeRouter(ctx, sock, newErrorPatternRouteHandle(t),
+	_ = testServeRouter(ctx, sock, newErrorPatternRouteHandle(t),
 		func(_ context.Context, _ computeReq) (computeResp, error) {
 			return computeResp{}, unrelatedErr
 		}, ServeOptions{})
@@ -895,7 +895,7 @@ func TestCall_ValidRoundTrip(t *testing.T) {
 			{[]byte("ok"), []byte(replyJSON)},
 		},
 	}
-	result, err := Call(context.Background(), sock, newRouteHandle(),
+	result, err := testCall(context.Background(), sock, newRouteHandle(),
 		computeReq{X: 3, Y: 4}, CallOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -914,7 +914,7 @@ func TestCall_ServerErrorReply(t *testing.T) {
 			{[]byte("error"), []byte("overflow")},
 		},
 	}
-	_, err := Call(context.Background(), sock, newRouteHandle(),
+	_, err := testCall(context.Background(), sock, newRouteHandle(),
 		computeReq{X: 3, Y: 4}, CallOptions{})
 
 	var callErr CallError
@@ -929,7 +929,7 @@ func TestCall_MalformedReply(t *testing.T) {
 			{[]byte("only-one-frame")},
 		},
 	}
-	_, err := Call(context.Background(), sock, newRouteHandle(),
+	_, err := testCall(context.Background(), sock, newRouteHandle(),
 		computeReq{X: 1, Y: 2}, CallOptions{})
 
 	var callErr CallError
@@ -941,7 +941,7 @@ func TestCall_MalformedReply(t *testing.T) {
 func TestCall_ObserverRecordRequestSuccess(t *testing.T) {
 	obs := &testObserver{}
 	sock := &mockSocket{inFrames: [][][]byte{{[]byte("ok"), []byte(`{"sum":7}`)}}}
-	_, _ = Call(context.Background(), sock, newRouteHandle(),
+	_, _ = testCall(context.Background(), sock, newRouteHandle(),
 		computeReq{X: 3, Y: 4}, CallOptions{Observer: obs})
 
 	if len(obs.requests) != 1 || obs.requests[0] != 200 {
@@ -952,7 +952,7 @@ func TestCall_ObserverRecordRequestSuccess(t *testing.T) {
 func TestCall_ObserverRecordRequestFailure_ServerError(t *testing.T) {
 	obs := &testObserver{}
 	sock := &mockSocket{inFrames: [][][]byte{{[]byte("error"), []byte("internal")}}}
-	_, _ = Call(context.Background(), sock, newRouteHandle(),
+	_, _ = testCall(context.Background(), sock, newRouteHandle(),
 		computeReq{X: 3, Y: 4}, CallOptions{Observer: obs})
 
 	if len(obs.requests) != 1 || obs.requests[0] != 500 {
@@ -963,7 +963,7 @@ func TestCall_ObserverRecordRequestFailure_ServerError(t *testing.T) {
 func TestCall_TraceObserver(t *testing.T) {
 	obs := &testObserver{}
 	sock := &mockSocket{inFrames: [][][]byte{{[]byte("ok"), []byte(`{"sum":7}`)}}}
-	_, _ = Call(context.Background(), sock, newRouteHandle(),
+	_, _ = testCall(context.Background(), sock, newRouteHandle(),
 		computeReq{X: 3, Y: 4}, CallOptions{Observer: obs})
 
 	if len(obs.startSpanOps) != 1 || obs.startSpanOps[0] != "zmq.request" {
@@ -977,7 +977,7 @@ func TestCall_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	_, err := Call(ctx, sock, newRouteHandle(),
+	_, err := testCall(ctx, sock, newRouteHandle(),
 		computeReq{X: 1, Y: 2}, CallOptions{})
 
 	var callErr CallError
@@ -1083,7 +1083,7 @@ func TestCallError_ErrorsAs(t *testing.T) {
 func runServeRouter(sock *mockSocket, fn func(context.Context, computeReq) (computeResp, error), opts ServeOptions) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	return ServeRouter(ctx, sock, newRouteHandle(), fn, opts)
+	return testServeRouter(ctx, sock, newRouteHandle(), fn, opts)
 }
 
 func routerFrame(payload string) [][]byte {
@@ -1212,7 +1212,7 @@ func TestCallDealer_ValidRoundTrip(t *testing.T) {
 	sock := &mockSocket{
 		inFrames: [][][]byte{dealerReply("ok", `{"sum":7}`)},
 	}
-	result, err := CallDealer(context.Background(), sock, newRouteHandle(),
+	result, err := testCallDealer(context.Background(), sock, newRouteHandle(),
 		computeReq{X: 3, Y: 4}, CallOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1228,7 +1228,7 @@ func TestCallDealer_ValidRoundTrip(t *testing.T) {
 
 func TestCallDealer_ServerErrorReply(t *testing.T) {
 	sock := &mockSocket{inFrames: [][][]byte{dealerReply("error", "overflow")}}
-	_, err := CallDealer(context.Background(), sock, newRouteHandle(),
+	_, err := testCallDealer(context.Background(), sock, newRouteHandle(),
 		computeReq{X: 1, Y: 2}, CallOptions{})
 
 	var callErr CallError
@@ -1239,7 +1239,7 @@ func TestCallDealer_ServerErrorReply(t *testing.T) {
 
 func TestCallDealer_MalformedReply(t *testing.T) {
 	sock := &mockSocket{inFrames: [][][]byte{{[]byte("only-one-frame")}}}
-	_, err := CallDealer(context.Background(), sock, newRouteHandle(),
+	_, err := testCallDealer(context.Background(), sock, newRouteHandle(),
 		computeReq{X: 1, Y: 2}, CallOptions{})
 
 	var callErr CallError
@@ -1254,7 +1254,7 @@ func TestCallDealer_EncodeError(t *testing.T) {
 	// Instead test that socket is NOT written when encode succeeds but test the path is wired.
 	sock := &mockSocket{inFrames: [][][]byte{dealerReply("ok", `{"sum":0}`)}}
 	// zero values for computeReq are valid (int codec has no constraints) — just verify normal path
-	result, err := CallDealer(context.Background(), sock, newRouteHandle(),
+	result, err := testCallDealer(context.Background(), sock, newRouteHandle(),
 		computeReq{X: 0, Y: 0}, CallOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1267,7 +1267,7 @@ func TestCallDealer_EncodeError(t *testing.T) {
 func TestCallDealer_ObserverRecordRequestSuccess(t *testing.T) {
 	obs := &testObserver{}
 	sock := &mockSocket{inFrames: [][][]byte{dealerReply("ok", `{"sum":7}`)}}
-	_, _ = CallDealer(context.Background(), sock, newRouteHandle(),
+	_, _ = testCallDealer(context.Background(), sock, newRouteHandle(),
 		computeReq{X: 3, Y: 4}, CallOptions{Observer: obs})
 
 	if len(obs.requests) != 1 || obs.requests[0] != 200 {
@@ -1278,7 +1278,7 @@ func TestCallDealer_ObserverRecordRequestSuccess(t *testing.T) {
 func TestCallDealer_ObserverRecordRequestFailure_ServerError(t *testing.T) {
 	obs := &testObserver{}
 	sock := &mockSocket{inFrames: [][][]byte{dealerReply("error", "internal")}}
-	_, _ = CallDealer(context.Background(), sock, newRouteHandle(),
+	_, _ = testCallDealer(context.Background(), sock, newRouteHandle(),
 		computeReq{X: 1, Y: 2}, CallOptions{Observer: obs})
 
 	if len(obs.requests) != 1 || obs.requests[0] != 500 {
@@ -1289,7 +1289,7 @@ func TestCallDealer_ObserverRecordRequestFailure_ServerError(t *testing.T) {
 func TestCallDealer_TraceObserver(t *testing.T) {
 	obs := &testObserver{}
 	sock := &mockSocket{inFrames: [][][]byte{dealerReply("ok", `{"sum":7}`)}}
-	_, _ = CallDealer(context.Background(), sock, newRouteHandle(),
+	_, _ = testCallDealer(context.Background(), sock, newRouteHandle(),
 		computeReq{X: 3, Y: 4}, CallOptions{Observer: obs})
 
 	if len(obs.startSpanOps) != 1 || obs.startSpanOps[0] != "zmq.request" {
@@ -1302,7 +1302,7 @@ func TestCallDealer_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := CallDealer(ctx, sock, newRouteHandle(),
+	_, err := testCallDealer(ctx, sock, newRouteHandle(),
 		computeReq{X: 1, Y: 2}, CallOptions{})
 
 	var callErr CallError
@@ -1398,7 +1398,7 @@ func TestCall_Vars_ObserverPathIsResolved(t *testing.T) {
 		},
 	}
 
-	_, _ = Call(context.Background(), sock, newTemplateRouteHandle(),
+	_, _ = testCall(context.Background(), sock, newTemplateRouteHandle(),
 		computeReq{X: 1, Y: 2},
 		CallOptions{
 			Observer: obs,
@@ -1412,7 +1412,7 @@ func TestCall_Vars_ObserverPathIsResolved(t *testing.T) {
 
 func TestCall_Vars_MissingVar_ReturnsCallError(t *testing.T) {
 	sock := &mockSocket{}
-	_, err := Call(context.Background(), sock, newTemplateRouteHandle(),
+	_, err := testCall(context.Background(), sock, newTemplateRouteHandle(),
 		computeReq{X: 1, Y: 2},
 		CallOptions{
 			Vars: map[string]string{}, // tenantID missing
@@ -1430,7 +1430,7 @@ func TestCall_Vars_MissingVar_ReturnsCallError(t *testing.T) {
 
 func TestCallDealer_Vars_MissingVar_ReturnsCallError(t *testing.T) {
 	sock := &mockSocket{}
-	_, err := CallDealer(context.Background(), sock, newTemplateRouteHandle(),
+	_, err := testCallDealer(context.Background(), sock, newTemplateRouteHandle(),
 		computeReq{X: 1, Y: 2},
 		CallOptions{
 			Vars: map[string]string{}, // tenantID missing
@@ -1448,7 +1448,7 @@ func TestCallDealer_Vars_MissingVar_ReturnsCallError(t *testing.T) {
 
 func TestCall_Vars_InvalidVar_ReturnsCallError(t *testing.T) {
 	sock := &mockSocket{}
-	_, err := Call(context.Background(), sock, newTemplateRouteHandle(),
+	_, err := testCall(context.Background(), sock, newTemplateRouteHandle(),
 		computeReq{X: 1, Y: 2},
 		CallOptions{
 			Vars: map[string]string{"tenantID": "not-a-uuid"},
@@ -1503,7 +1503,7 @@ func TestCallHandle_DerivesVarsFromReq(t *testing.T) {
 		},
 	}
 
-	_, _ = CallHandle(context.Background(), sock, newMergeRouteHandle(),
+	_, _ = testCall(context.Background(), sock, newMergeRouteHandle(),
 		tenantComputeReq{TenantID: "acme", X: 1, Y: 2},
 		CallOptions{Observer: obs})
 
@@ -1522,7 +1522,7 @@ func TestCallHandle_ExplicitVarsOverridePrecedence(t *testing.T) {
 		},
 	}
 
-	_, _ = CallHandle(context.Background(), sock, newMergeRouteHandle(),
+	_, _ = testCall(context.Background(), sock, newMergeRouteHandle(),
 		tenantComputeReq{TenantID: "acme", X: 1, Y: 2},
 		CallOptions{Observer: obs, Vars: map[string]string{"tenantID": "overridden"}})
 
@@ -1541,7 +1541,7 @@ func TestCall_RequestFormats_OverridesRouteDeclaredFormat(t *testing.T) {
 	sock := &mockSocket{recvErr: ErrTimeout} // no reply — inspect the sent payload only
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	_, _ = Call(ctx, sock, newRouteHandle(),
+	_, _ = testCall(ctx, sock, newRouteHandle(),
 		computeReq{X: 3, Y: 4}, CallOptions{
 			RequestFormats: []format.Format[computeReq]{format.YAML(computeReqCodec)},
 		})
@@ -1562,7 +1562,7 @@ func TestCall_RequestFormats_RouteDeclaredStillAppliesWithoutOverride(t *testing
 	sock := &mockSocket{recvErr: ErrTimeout}
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	_, _ = Call(ctx, sock, newRouteHandle(),
+	_, _ = testCall(ctx, sock, newRouteHandle(),
 		computeReq{X: 3, Y: 4}, CallOptions{})
 
 	sent := sock.sentSnapshot()
@@ -1589,7 +1589,7 @@ func TestCall_ResponseFormats_OverridesRouteDeclaredFormat(t *testing.T) {
 			{[]byte("ok"), []byte("sum: 7\n")},
 		},
 	}
-	result, err := Call(context.Background(), sock, newRouteHandle(),
+	result, err := testCall(context.Background(), sock, newRouteHandle(),
 		computeReq{X: 3, Y: 4}, CallOptions{
 			ResponseFormats: []format.Format[computeResp]{format.YAML(computeRespCodec)},
 		})
@@ -1605,7 +1605,7 @@ func TestCall_ResponseFormats_OverridesRouteDeclaredFormat(t *testing.T) {
 // wrong-typed CallOptions.RequestFormats returns CallError, errors.As-reachable.
 func TestCall_RequestFormats_TypeMismatch_ReturnsCallError(t *testing.T) {
 	sock := &mockSocket{}
-	_, err := Call(context.Background(), sock, newRouteHandle(),
+	_, err := testCall(context.Background(), sock, newRouteHandle(),
 		computeReq{X: 3, Y: 4}, CallOptions{
 			// Wrong type: []format.Format[computeResp] instead of []format.Format[computeReq].
 			RequestFormats: []format.Format[computeResp]{format.JSON(computeRespCodec)},
@@ -1626,7 +1626,7 @@ func TestCall_ResponseFormats_TypeMismatch_ReturnsCallError(t *testing.T) {
 			{[]byte("ok"), []byte(`{"sum":7}`)},
 		},
 	}
-	_, err := Call(context.Background(), sock, newRouteHandle(),
+	_, err := testCall(context.Background(), sock, newRouteHandle(),
 		computeReq{X: 3, Y: 4}, CallOptions{
 			// Wrong type: []format.Format[computeReq] instead of []format.Format[computeResp].
 			ResponseFormats: []format.Format[computeReq]{format.JSON(computeReqCodec)},
@@ -1644,7 +1644,7 @@ func TestCallDealer_RequestFormats_OverridesRouteDeclaredFormat(t *testing.T) {
 	sock := &mockSocket{recvErr: ErrTimeout}
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	_, _ = CallDealer(ctx, sock, newRouteHandle(),
+	_, _ = testCallDealer(ctx, sock, newRouteHandle(),
 		computeReq{X: 3, Y: 4}, CallOptions{
 			RequestFormats: []format.Format[computeReq]{format.YAML(computeReqCodec)},
 		})

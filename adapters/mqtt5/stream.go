@@ -7,27 +7,27 @@ import (
 )
 
 // AsPipelineFunc converts a pipeline handler function into the plain handler
-// function signature accepted by [Serve].
+// function signature accepted by [reqreply.ServeWithTransport].
 //
 // Internally: calls fn(ctx, req) to build the pipeline, then collects the result
 // via [gstream.Collect]. Errors take precedence over values. If the pipeline emits
 // no value, [PipelineNoResponseError] is returned.
 //
-// Use AsPipelineFunc when the [Serve] handler body benefits from [gstream.Tap]
+// Use AsPipelineFunc when the handler body benefits from [gstream.Tap]
 // for declarative intermediate observation, [gstream.Apply] for multi-step forge
 // function composition, or [gstream.MapErr] for per-step typed error recovery:
 //
-//	mqtt5.Serve(ctx, client, router, oeeHandle,
+//	transport := mqtt5.NewServerTransport(mqtt5.ServerTransportOptions{Client: client, Router: router})
+//	reqreply.ServeWithTransport(ctx, transport, oeeHandle,
 //	    mqtt5.AsPipelineFunc(func(ctx context.Context, req SensorReq) gstream.Stream[OEEResult] {
 //	        s  := gstream.Single(ctx, req)
 //	        s   = gstream.Apply(ctx, s, validateFn, gstream.ApplyOptions{Observer: obs})
 //	        s   = gstream.Tap(ctx, s, func(v ValidatedReq) { slog.Info("request", "id", v.ID) })
 //	        out := gstream.Apply(ctx, s, oeeCalcFn, gstream.ApplyOptions{Observer: obs})
 //	        return gstream.Tap(ctx, out, func(r OEEResult) { auditLog.Write(r) })
-//	    }),
-//	    mqtt5.ServeOptions{Observer: obs})
+//	    }))
 //
-// For simple single-step handlers, use a plain fn directly with [Serve].
+// For simple single-step handlers, use a plain fn directly.
 func AsPipelineFunc[Req, Resp any](
 	fn func(context.Context, Req) gstream.Stream[Resp],
 ) func(context.Context, Req) (Resp, error) {

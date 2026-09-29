@@ -24,6 +24,41 @@ import (
 // to [rest.Client.Call]/[rest.Client.Consume].
 const restPkgPath = "github.com/DaniDeer/go-codex/api/rest"
 
+// recoverClientRouteHandleValue reflects routeAny into a
+// *rest.RouteHandle[Req,Resp] reflect.Value, accepting EITHER shape
+// [rest.CallWithTransport]'s confirmed dual-mode acceptance allows
+// (docs/roadmap/capability-requirement-composition.md's Phase 5a,
+// mirroring [reqreply]'s identical, already-shipped
+// recoverRouteHandleValue helper exactly): a raw, unregistered
+// rest.Route[Req,Resp] (calls its ClientHandle() method reflectively to
+// derive one — the SAME derivation [clientTransport.Call] already
+// performed before this helper existed) OR an already-built
+// *rest.RouteHandle[Req,Resp] (used as-is — needed for
+// [rest.CallWithTransport]'s own target caller: a bare-handle caller
+// with no rest.Route value at all, e.g. adapters/mcprest bridging a REST
+// route into a different protocol). Returns the handle's reflect.Value
+// (always a pointer) and its Elem() struct value for field access.
+func recoverClientRouteHandleValue(routeAny any) (reflect.Value, reflect.Value, error) {
+	rv := reflect.ValueOf(routeAny)
+	if !rv.IsValid() {
+		return reflect.Value{}, reflect.Value{}, rest.TransportTypeMismatchError{
+			Want: "rest.Route[Req, Resp] or *rest.RouteHandle[Req, Resp]", Got: fmt.Sprintf("%T", routeAny),
+		}
+	}
+	t := rv.Type()
+	switch {
+	case t.PkgPath() == restPkgPath && strings.HasPrefix(t.Name(), "Route["):
+		handleVal := rv.MethodByName("ClientHandle").Call(nil)[0]
+		return handleVal, handleVal.Elem(), nil
+	case t.Kind() == reflect.Pointer && t.Elem().PkgPath() == restPkgPath && strings.HasPrefix(t.Elem().Name(), "RouteHandle["):
+		return rv, rv.Elem(), nil
+	default:
+		return reflect.Value{}, reflect.Value{}, rest.TransportTypeMismatchError{
+			Want: "rest.Route[Req, Resp] or *rest.RouteHandle[Req, Resp]", Got: fmt.Sprintf("%T", routeAny),
+		}
+	}
+}
+
 // clientTransport implements [rest.ClientTransport], wrapping an internal
 // [*caller] — built by [NewClientTransport]. See
 // docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 4 for the full design
@@ -173,6 +208,33 @@ func wrapGeneralPurposeFn(impls []middleware.ClientImplementation, wrapType refl
 	return next
 }
 
+// validateClientImplementationShapesReflect is [validateCallImplementationShapes]'s
+// reflection-based mirror (docs/roadmap/capability-requirement-
+// composition.md's Phase 5a) — checks every attached impl.Fn against the
+// SAME 2 shapes THIS package recognizes client-side (the fixed
+// credential shape, and the general-purpose wrap shape matching
+// wrapType, Req/Resp-concrete at THIS call site even though this
+// function itself never learns Req/Resp by name) — a nil Fn (spec-only/
+// no-op implementation) is always allowed.
+func validateClientImplementationShapesReflect(impls []middleware.ClientImplementation, wrapType reflect.Type) error {
+	credType := reflect.TypeOf(func(context.Context, []route.SecurityRequirement) (http.Header, error) { return nil, nil })
+	for _, impl := range impls {
+		if impl.Fn == nil {
+			continue
+		}
+		fnType := reflect.TypeOf(impl.Fn)
+		if fnType == credType || fnType == wrapType {
+			continue
+		}
+		return middleware.MiddlewareShapeError{
+			Name:     impl.Name,
+			Expected: "func(context.Context, []route.SecurityRequirement) (http.Header, error) or func(next func(context.Context, Req) (Resp, error)) func(context.Context, Req) (Resp, error)",
+			Got:      fmt.Sprintf("%T", impl.Fn),
+		}
+	}
+	return nil
+}
+
 // Call implements [rest.ClientTransport]. Resolves [stats.Observer] from
 // ctx (this shim has no per-call Options struct to carry an explicit
 // override) and calls RecordRequest on EVERY exit path — status 0 before
@@ -195,17 +257,32 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 	if len(optsVariadic) > 0 {
 		opts = optsVariadic[0]
 	}
-	obs := stats.ObserverFromContext(ctx)
+	obs := opts.Observer
+	if obs == nil {
+		obs = stats.ObserverFromContext(ctx)
+	}
 	start := time.Now()
 
-	rv := reflect.ValueOf(routeAny)
-	if !rv.IsValid() || rv.Type().PkgPath() != restPkgPath || !strings.HasPrefix(rv.Type().Name(), "Route[") {
+	// docs/roadmap/capability-requirement-composition.md's Phase 5a:
+	// ferry per-field validation errors (Class B) out via ctx, then
+	// drain them into obs.RecordValidationError exactly once before
+	// returning — mirrors [callWithVars]'s identical deferred-drain
+	// convention exactly (a confirmed, previously-missing gap in this
+	// reflection dispatch found via CallWithHandle's own migrated test
+	// suite).
+	ctx = stats.WithDiagnostics(ctx)
+	defer func() {
+		for _, d := range stats.DiagnosticsFromContext(ctx) {
+			obs.RecordValidationError(d.Location, d.ConstraintName, d.Field)
+		}
+	}()
+
+	handleVal, elem, herr := recoverClientRouteHandleValue(routeAny)
+	if herr != nil {
 		obs.RecordRequest("", "", 0, time.Since(start))
-		err = rest.TransportTypeMismatchError{Want: "rest.Route[Req, Resp]", Got: fmt.Sprintf("%T", routeAny)}
+		err = herr
 		return nil, err
 	}
-	handleVal := rv.MethodByName("ClientHandle").Call(nil)[0]
-	elem := handleVal.Elem()
 
 	descriptor := elem.FieldByName("Descriptor")
 	method := strings.ToUpper(descriptor.FieldByName("Method").String())
@@ -250,11 +327,50 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 
 		buildPathResults := handleVal.MethodByName("BuildPath").Call([]reflect.Value{reflect.ValueOf(pathVars)})
 		if errI, _ := buildPathResults[1].Interface().(error); errI != nil {
+			rest.ReportPathErrors(ctx, errI)
 			obs.RecordRequest(method, path, 0, time.Since(start))
 			err = errI
 			return nil, err
 		}
 		concretePath, _ := buildPathResults[0].Interface().(string)
+
+		// docs/roadmap/capability-requirement-composition.md's Phase
+		// 5a: validate the EXPLICIT opts.QueryParams/CookieParams/
+		// HeaderParams against each param's registered codec (if any)
+		// — mirrors [callWithVars]'s identical steps 2-4 exactly (a
+		// confirmed, previously-missing gap in this reflection
+		// dispatch). Derived values are NOT re-validated here — each
+		// contributing field's own codec already ran during
+		// EncodeQueryVars/EncodeHeaderVars/EncodeCookieVars above.
+		if errI, _ := handleVal.MethodByName("ValidateQuery").Call([]reflect.Value{reflect.ValueOf(opts.QueryParams)})[0].Interface().(error); errI != nil {
+			rest.ReportQueryErrors(ctx, errI)
+			obs.RecordRequest(method, path, 0, time.Since(start))
+			err = errI
+			return nil, err
+		}
+		if errI, _ := handleVal.MethodByName("ValidateCookies").Call([]reflect.Value{reflect.ValueOf(opts.CookieParams)})[0].Interface().(error); errI != nil {
+			rest.ReportCookieErrors(ctx, errI)
+			obs.RecordRequest(method, path, 0, time.Since(start))
+			err = errI
+			return nil, err
+		}
+		if errI, _ := handleVal.MethodByName("ValidateHeaders").Call([]reflect.Value{reflect.ValueOf(opts.HeaderParams)})[0].Interface().(error); errI != nil {
+			rest.ReportHeaderErrors(ctx, errI)
+			obs.RecordRequest(method, path, 0, time.Since(start))
+			err = errI
+			return nil, err
+		}
+
+		// docs/roadmap/capability-requirement-composition.md's Phase
+		// 5a: an explicit opts.QueryParams/HeaderParams/CookieParams
+		// entry takes PRECEDENCE over the derived value for the same
+		// key — mirrors [callWithVars]'s own D3 precedence chain
+		// exactly (explicit > middleware-derived > route-own-derived —
+		// no middleware tier exists at THIS call site, so this is the
+		// 2-tier "explicit > derived" collapse of that same chain).
+		queryVars = overrideDerived(queryVars, opts.QueryParams)
+		headerVars = overrideDerived(headerVars, opts.HeaderParams)
+		cookieVars = overrideDerived(cookieVars, opts.CookieParams)
 
 		rawURL := strings.TrimRight(t.caller.baseURL, "/") + concretePath
 		if len(queryVars) > 0 {
@@ -269,8 +385,9 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 		// any general-purpose wrap (mirrors [callWithVars] step 6).
 		secReqs, clientImpls, secSchemes := resolveClientSecurity(elem, descriptor)
 		var credHeaders http.Header
+		var credentialFnRan bool
 		if len(secReqs) > 0 {
-			credHeaders, _, err = mergeCredentialHeaders(ctx, secReqs, clientImpls)
+			credHeaders, credentialFnRan, err = mergeCredentialHeaders(ctx, secReqs, clientImpls)
 			if err != nil {
 				obs.RecordRequest(method, path, 0, time.Since(start))
 				return nil, err
@@ -308,6 +425,22 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 		// any attached general-purpose ClientMW Fn can compose around it
 		// — mirrors [callWithVars]'s exact wrap boundary.
 		nextType := reflect.FuncOf([]reflect.Type{ctxType, reqType}, []reflect.Type{respType, errType}, false)
+		wrapType := reflect.FuncOf([]reflect.Type{nextType}, []reflect.Type{nextType}, false)
+
+		// docs/roadmap/capability-requirement-composition.md's Phase
+		// 5a: validate every attached impl.Fn against the shapes THIS
+		// package recognizes client-side, EAGERLY before any network
+		// activity — mirrors [validateCallImplementationShapes]'s
+		// identical, generic-side check exactly (a confirmed,
+		// previously-missing gap in this reflection dispatch: a
+		// malformed Fn was silently ignored by [wrapGeneralPurposeFn]
+		// instead of failing loudly).
+		if verr := validateClientImplementationShapesReflect(clientImpls, wrapType); verr != nil {
+			obs.RecordRequest(method, path, 0, time.Since(start))
+			err = verr
+			return nil, err
+		}
+
 		networkStep := reflect.MakeFunc(nextType, func(args []reflect.Value) []reflect.Value {
 			stepCtx, _ := args[0].Interface().(context.Context)
 			stepReqVal := args[1]
@@ -336,6 +469,14 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 			httpReq.Header.Set("Accept", acceptContentType)
 			for k, v := range headerVars {
 				httpReq.Header.Set(k, v)
+			}
+			// docs/roadmap/capability-requirement-composition.md's Phase
+			// 5a: opts.ExtraHeaders adds arbitrary, non-codec-validated
+			// headers — mirrors [callWithVars]'s identical merge.
+			for k, vs := range opts.ExtraHeaders {
+				for _, v := range vs {
+					httpReq.Header.Add(k, v)
+				}
 			}
 			for k, vs := range credHeaders {
 				for _, v := range vs {
@@ -371,6 +512,15 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 				return []reflect.Value{reflect.Zero(respType), reflectErrValue(ResponseBodyError{Err: readErr})}
 			}
 			if statusCode < 200 || statusCode >= 300 {
+				// docs/roadmap/capability-requirement-composition.md's
+				// Phase 5a: a 401 with an engaged credential-providing
+				// implementation notifies opts.OnCredentialRejected (if
+				// set) so a caching wrapper can invalidate its cached
+				// credential — mirrors [callWithVars]'s identical hook,
+				// orthogonal to the ErrorPattern decode below.
+				if statusCode == http.StatusUnauthorized && credentialFnRan && opts.OnCredentialRejected != nil {
+					opts.OnCredentialRejected()
+				}
 				decodeErrResults := handleVal.MethodByName("DecodeErrorFor").Call([]reflect.Value{
 					reflect.ValueOf(statusCode), reflect.ValueOf(respBody),
 				})
@@ -384,10 +534,35 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 			}
 
 			decodeResults := decodeRespMethod.CallSlice([]reflect.Value{reflect.ValueOf(respBody), respFormatsVal})
-			return []reflect.Value{decodeResults[0], decodeResults[1]}
+			if errI, _ := decodeResults[1].Interface().(error); errI != nil {
+				return []reflect.Value{decodeResults[0], decodeResults[1]}
+			}
+
+			// docs/roadmap/capability-requirement-composition.md's
+			// Phase 5a: merge every registered response header/cookie
+			// value into the SAME decoded result — mirrors
+			// [callWithVars]'s identical step 13 exactly (a confirmed,
+			// previously-missing gap in this reflection dispatch).
+			// [rest.RouteHandle.ApplyResponseMergeFields] itself no-ops
+			// when the route declares no response merge-capable params.
+			respPtr := reflect.New(respType)
+			respPtr.Elem().Set(decodeResults[0])
+			respHeaders := make(map[string]string, len(resp.Header))
+			for k := range resp.Header {
+				respHeaders[k] = resp.Header.Get(k)
+			}
+			respCookies := make(map[string]string)
+			for _, c := range resp.Cookies() {
+				respCookies[c.Name] = c.Value
+			}
+			applyResults := handleVal.MethodByName("ApplyResponseMergeFields").Call(
+				[]reflect.Value{respPtr, reflect.ValueOf(respHeaders), reflect.ValueOf(respCookies)})
+			if errI, _ := applyResults[0].Interface().(error); errI != nil {
+				return []reflect.Value{reflect.Zero(respType), reflectErrValue(errI)}
+			}
+			return []reflect.Value{respPtr.Elem(), decodeResults[1]}
 		})
 
-		wrapType := reflect.FuncOf([]reflect.Type{nextType}, []reflect.Type{nextType}, false)
 		finalStep := wrapGeneralPurposeFn(clientImpls, wrapType, networkStep)
 
 		results := finalStep.Call([]reflect.Value{reflect.ValueOf(ctx), reqVal})

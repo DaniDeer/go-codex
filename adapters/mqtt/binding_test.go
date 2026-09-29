@@ -26,7 +26,7 @@ func TestSubscribeAdapter_ValidPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	p.Bind(ctx, SubscribeAdapter(client, handle, 0, format.JSON(userEventCodec), SubscribeAdapterOptions{}))
+	p.Bind(ctx, SubscribeAdapter(client, handle, format.JSON(userEventCodec), SubscribeAdapterOptions{}))
 	s := p.Stream(ctx)
 
 	deadline := time.Now().Add(200 * time.Millisecond)
@@ -64,7 +64,7 @@ func TestSubscribeAdapter_AutoDerivesWildcardFilter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	p.Bind(ctx, SubscribeAdapter(client, handle, 0, format.JSON(userEventCodec), SubscribeAdapterOptions{}))
+	p.Bind(ctx, SubscribeAdapter(client, handle, format.JSON(userEventCodec), SubscribeAdapterOptions{}))
 	p.Stream(ctx)
 
 	deadline := time.Now().Add(200 * time.Millisecond)
@@ -127,7 +127,7 @@ func TestPublishAdapter_ExplicitOptionsSetQoSAndRetained(t *testing.T) {
 	if err != nil {
 		t.Fatalf("construct port: %v", err)
 	}
-	p.Bind(ctx, PublishAdapter(client, handle, format.JSON(userEventCodec), MQTTDrainPublishOptions{QoS: 1, Retained: true}))
+	p.Bind(ctx, PublishAdapter(client, handle, format.JSON(userEventCodec), MQTTDrainPublishOptions{Capabilities: []Capability{QoSAtLeastOnce, Retained(true)}}))
 	p.Feed(ctx, gstream.From(ctx, ch))
 
 	qos, retained := client.publishedQoSRetainedSnapshot()

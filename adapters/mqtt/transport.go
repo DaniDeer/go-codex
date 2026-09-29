@@ -21,15 +21,15 @@ import (
 // [Client.Publish]/[Client.Subscribe].
 const eventsPkgPath = "github.com/DaniDeer/go-codex/api/events"
 
-// defaultQoS is the fallback QoS/Retain-false zero value the reflection
-// shim's Publish/Subscribe start from before resolving a declared
-// [Publisher.WithOptions]/[Subscriber.WithOptions] Capabilities value
-// (docs/roadmap/capability-requirement-composition.md's Phase 4c) —
-// matches MQTT's own protocol-level default (at-most-once). This
-// package has not yet migrated to the Apply-interface shape mqtt5 has
-// (Phase 5's job), so Capabilities are resolved the OLD way, via
-// [events.ResolveCapabilityValue] — mirroring [publish]'s own identical
-// resolution block.
+// defaultQoS is the fixed QoS/non-retained value used for error-channel
+// replies and dead-letter publishes (docs/roadmap/capability-requirement-
+// composition.md's Phase 4c) — matches MQTT's own protocol-level default
+// (at-most-once) and deliberately never consults a declared Capabilities
+// value, mirroring every other error-channel/dead-letter dispatch site
+// across this codebase (these always use QoS 0/non-retained, regardless
+// of the route's own declared Capabilities). Ordinary Publish/Subscribe
+// dispatch resolves Capabilities via [events.ApplyCapabilities] against a
+// [WireAttributes] value instead (Phase 5) — see [publish]'s doc comment.
 const defaultQoS byte = 0
 
 // resolveHandlerOptsCapabilities extracts the []Capability slice from a
@@ -96,9 +96,9 @@ type TransportOptions struct {
 // Publish/Subscribe are FULL-FEATURED (docs/roadmap/
 // capability-requirement-composition.md's Phase 4e — the former "v1
 // scope" narrowing is CLOSED for this package): declared Capabilities
-// (Phase 4c, still resolved via [events.ResolveCapabilityValue] — this
-// package has not yet migrated to the Apply-interface shape, Phase 5's
-// job), per-call [format.Format] overrides
+// (Phase 5, resolved via [events.ApplyCapabilities] against a
+// [WireAttributes] value — mirrors adapters/mqtt5's identical shape),
+// per-call [format.Format] overrides
 // ([events.ClientPublishOptions]/[events.ClientSubscribeOptions]),
 // declarative SubscribeMW/PublishMW security enforcement (credential-
 // paired or general-purpose wrapping), and codec-backed Middleware/
@@ -161,10 +161,9 @@ func recoverHandle(kind string, anyAny any, client *events.Client) (reflect.Valu
 // (codec-Middleware/Transform dispatch → Implementations-based
 // PublishMW security → general-purpose PublishMW wrapping around the
 // send), not just Capabilities (Phase 4c) — closing the "v1 scope" gap
-// entirely. Capabilities resolution itself is UNCHANGED (still via
-// [events.ResolveCapabilityValue] — see [defaultQoS]'s doc comment;
-// migrating to the Apply-interface shape is Phase 5's job, not this
-// one's). opts is an OPTIONAL, PER-CALL [events.ClientPublishOptions]
+// entirely. Capabilities resolution is now via [events.ApplyCapabilities]
+// against a [WireAttributes] value (Phase 5) — see [defaultQoS]'s doc
+// comment. opts is an OPTIONAL, PER-CALL [events.ClientPublishOptions]
 // format override.
 func (t *transport) Publish(ctx context.Context, pubAny, msgAny any, optsVariadic ...events.ClientPublishOptions) (err error) {
 	obs := stats.ObserverFromContext(ctx)
@@ -275,20 +274,13 @@ func (t *transport) Publish(ctx context.Context, pubAny, msgAny any, optsVariadi
 		}
 	}
 
-	// docs/roadmap/capability-requirement-composition.md's Phase 4c: a
-	// declared Capabilities value resolves via
-	// [events.ResolveCapabilityValue] (this package's still-legacy
-	// mechanism — see [defaultQoS]'s doc comment).
+	// docs/roadmap/capability-requirement-composition.md's Phase 5: a
+	// declared Capabilities value is applied via [events.ApplyCapabilities]
+	// against a [WireAttributes] value — mirrors adapters/mqtt5's
+	// identical, already-shipped shape exactly.
 	caps := resolveHandlerOptsCapabilities(elem.FieldByName("HandlerOpts"))
-	qos, retained := defaultQoS, false
-	if capQoS, qosSet := events.ResolveCapabilityValue[Capability, QoS](caps); qosSet {
-		qos = byte(capQoS)
-		events.RecordCapabilityApplied(obs, finalTopic, capQoS)
-	}
-	if capRetained, retainedSet := events.ResolveCapabilityValue[Capability, Retained](caps); retainedSet {
-		retained = bool(capRetained)
-		events.RecordCapabilityApplied(obs, finalTopic, capRetained)
-	}
+	var wire WireAttributes
+	events.ApplyCapabilities(caps, &wire, obs, finalTopic)
 
 	// transmit is wrapped via [reflect.MakeFunc] so every attached
 	// general-purpose PublishMW Fn can compose around it — mirrors
@@ -300,7 +292,7 @@ func (t *transport) Publish(ctx context.Context, pubAny, msgAny any, optsVariadi
 			return []reflect.Value{reflect.ValueOf(fmt.Errorf("mqtt: encode: %w", encErr)).Convert(dispatchErrType)}
 		}
 		payload, _ := encodeResults[0].Interface().([]byte)
-		token := t.caller.client.Publish(finalTopic, qos, retained, payload)
+		token := t.caller.client.Publish(finalTopic, wire.QoS, wire.Retained, payload)
 		token.Wait()
 		if tokErr := token.Error(); tokErr != nil {
 			return []reflect.Value{reflect.ValueOf(tokErr).Convert(dispatchErrType)}
@@ -337,10 +329,10 @@ func (t *transport) Publish(ctx context.Context, pubAny, msgAny any, optsVariadi
 // failure point consults a declared [events.ErrorChannel]/
 // [events.DeadLetter]/a declared OnError callback, in that fallback
 // order — CLOSING a previously-silent gap where this shim never
-// consulted DeadLetter at all. Capabilities resolution itself is
-// UNCHANGED (still via [events.ResolveCapabilityValue] — Phase 5's
-// job). opts is an OPTIONAL, PER-CALL [events.ClientSubscribeOptions]
-// format override.
+// consulted DeadLetter at all. Capabilities resolution is now via
+// [events.ApplyCapabilities] against a [WireAttributes] value (Phase 5).
+// opts is an OPTIONAL, PER-CALL [events.ClientSubscribeOptions] format
+// override.
 func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariadic ...events.ClientSubscribeOptions) error {
 	obs := stats.ObserverFromContext(ctx)
 
@@ -500,19 +492,15 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 		dispatchFailure(KindHandler, msg.Topic(), msg.Payload(), handlerErr)
 	}
 
-	// docs/roadmap/capability-requirement-composition.md's Phase 4c: a
-	// declared Capabilities value resolves via
-	// [events.ResolveCapabilityValue], closing the gap where this shim
-	// could only ever subscribe at QoS 0.
-	subQoS := defaultQoS
-	if caps := resolveHandlerOptsCapabilities(elem.FieldByName("HandlerOpts")); caps != nil {
-		if capQoS, qosSet := events.ResolveCapabilityValue[Capability, QoS](caps); qosSet {
-			subQoS = byte(capQoS)
-			events.RecordCapabilityApplied(obs, topic, capQoS)
-		}
-	}
+	// docs/roadmap/capability-requirement-composition.md's Phase 5: a
+	// declared Capabilities value is applied via
+	// [events.ApplyCapabilities] against a [WireAttributes] value —
+	// mirrors adapters/mqtt5's identical, already-shipped shape exactly.
+	caps := resolveHandlerOptsCapabilities(elem.FieldByName("HandlerOpts"))
+	var wire WireAttributes
+	events.ApplyCapabilities(caps, &wire, obs, topic)
 
-	subToken := t.caller.client.Subscribe(filter, subQoS, handler)
+	subToken := t.caller.client.Subscribe(filter, wire.QoS, handler)
 	subToken.Wait()
 	if err := subToken.Error(); err != nil {
 		return err

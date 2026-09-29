@@ -71,7 +71,7 @@
 //     GetManifestRoute) — pass any of them directly to
 //     adapters/nethttp.Call (via a nethttp.Caller wrapping your own
 //     *http.Client, retry policy, or observer), or call .ClientHandle()
-//     on one and drive the lower-level adapters/nethttp.CallWithHandle
+//     on one and drive the lower-level api/rest.CallWithTransport
 //     yourself. GetTagsRoute/GetManifestRoute both declare
 //     Security, so driving them directly means chaining your own
 //     nethttp.CredentialFunc onto the route via .ClientMW(...) — this

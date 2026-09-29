@@ -11,13 +11,17 @@ import (
 
 // MappedToolHandler returns an [mcpgo.HandlerFunc][ToolIn, ToolOut] that
 // proxies each MCP tool call to an outbound REST request via
-// [nethttp.CallWithHandle], mapping between the tool's own In/Out shape and
-// the REST route's Req/Resp wire shape via the supplied toReq/fromResp
-// functions. Both mapper functions are fallible — return a non-nil error
-// to abort the call before/after the underlying HTTP request; errors are
-// wrapped as [ToolRequestMapError]/[ToolResponseMapError] respectively
-// (kept distinct from the underlying REST call's own typed errors, which
-// continue to forward unchanged via errors.As).
+// [rest.CallWithTransport] (docs/roadmap/capability-requirement-
+// composition.md's Phase 5a — the former [nethttp.CallWithHandle] this
+// bridged through was removed; a [nethttp.NewClientTransport] built once
+// here replaces it losslessly), mapping between the tool's own In/Out
+// shape and the REST route's Req/Resp wire shape via the supplied
+// toReq/fromResp functions. Both mapper functions are fallible — return a
+// non-nil error to abort the call before/after the underlying HTTP
+// request; errors are wrapped as [ToolRequestMapError]/
+// [ToolResponseMapError] respectively (kept distinct from the underlying
+// REST call's own typed errors, which continue to forward unchanged via
+// errors.As).
 //
 // handle's declared path/query/header/cookie merge fields, security
 // schemes, and any [rest.Route.ClientMW]-attached credential
@@ -39,10 +43,11 @@ func MappedToolHandler[ToolIn, ToolOut, Req, Resp any](
 	client *http.Client,
 	baseURL string,
 	handle *rest.RouteHandle[Req, Resp],
-	opts nethttp.CallOptions,
+	opts rest.ClientCallOptions,
 	toReq func(ToolIn) (Req, error),
 	fromResp func(Resp) (ToolOut, error),
 ) mcpgo.HandlerFunc[ToolIn, ToolOut] {
+	transport := nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: client, BaseURL: baseURL})
 	return func(ctx context.Context, in ToolIn) (ToolOut, error) {
 		var zero ToolOut
 
@@ -55,7 +60,7 @@ func MappedToolHandler[ToolIn, ToolOut, Req, Resp any](
 			}
 		}
 
-		resp, err := nethttp.CallWithHandle(ctx, client, baseURL, handle, req, opts)
+		resp, err := rest.CallWithTransport(ctx, transport, handle, req, opts)
 		if err != nil {
 			return zero, err
 		}
@@ -88,14 +93,14 @@ func MappedToolHandler[ToolIn, ToolOut, Req, Resp any](
 //	    mcprest.DefaultErrorPatterns()...,
 //	).Register(mcpBuilder)
 //	tool, handlerFn := mcpgoAdapter.ToolHandler(toolHandle,
-//	    mcprest.ToolHandler(httpClient, baseURL, restHandle, nethttp.CallOptions{}),
+//	    mcprest.ToolHandler(httpClient, baseURL, restHandle, rest.ClientCallOptions{}),
 //	    mcpgo.Options{},
 //	)
 func ToolHandler[Req, Resp any](
 	client *http.Client,
 	baseURL string,
 	handle *rest.RouteHandle[Req, Resp],
-	opts nethttp.CallOptions,
+	opts rest.ClientCallOptions,
 ) mcpgo.HandlerFunc[Req, Resp] {
 	return MappedToolHandler(client, baseURL, handle, opts,
 		func(req Req) (Req, error) { return req, nil },

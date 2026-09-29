@@ -81,7 +81,6 @@ func subscribe[T any](
 	ctx context.Context,
 	caller *caller,
 	sub events.Subscriber[T],
-	qos byte,
 	fn func(context.Context, T) error,
 	opts SubscribeOptions,
 	formats ...format.Format[T],
@@ -90,7 +89,7 @@ func subscribe[T any](
 	if err != nil {
 		return err
 	}
-	return subscribeHandle(ctx, caller.client, handle, qos, fn, opts, formats...)
+	return subscribeHandle(ctx, caller.client, handle, fn, opts, formats...)
 }
 
 // subscribeHandle is the shared implementation behind [subscribe] and
@@ -103,11 +102,14 @@ func subscribeHandle[T any](
 	ctx context.Context,
 	client pahomqtt.Client,
 	handle *events.ChannelHandle[T],
-	qos byte,
 	fn func(context.Context, T) error,
 	opts SubscribeOptions,
 	formats ...format.Format[T],
 ) error {
+	obs := opts.Observer
+	if obs == nil {
+		obs = stats.ObserverFromContext(ctx)
+	}
 	if err := validateSubscribeImplementationShapes[T](handle.Implementations); err != nil {
 		return err
 	}
@@ -128,8 +130,16 @@ func subscribeHandle[T any](
 		filter = deriveWildcardFilter(handle.Topic)
 	}
 
+	// docs/roadmap/capability-requirement-composition.md's Phase 5:
+	// Capabilities is now the ONLY mechanism for QoS — the former
+	// SubscribeOptions.QoS plain field/call-time qos parameter escape
+	// hatch is REMOVED. Mirrors adapters/mqtt5's identical, already-
+	// shipped shape exactly.
+	var wire WireAttributes
+	events.ApplyCapabilities(opts.Capabilities, &wire, obs, filter)
+
 	handler := subscribeHandler(ctx, client, handle, fn, opts, formats...)
-	token := client.Subscribe(filter, qos, handler)
+	token := client.Subscribe(filter, wire.QoS, handler)
 	token.Wait()
 	return token.Error()
 }
@@ -290,23 +300,20 @@ func (c *caller) ServeSubscribers(ctx context.Context) error {
 // reason [adapters/nethttp.ServeOne] is a package function rather than a
 // method on a REST-side caller type.
 //
-// qos (this function's own call-time parameter) always takes precedence —
-// it overwrites opts.QoS before attaching opts, mirroring [subscribe]'s own
-// qos-parameter precedence (opts.QoS otherwise only matters to
-// [(*caller).ServeSubscribers], which has no call-time qos parameter of its
-// own to prefer). Blocks until ctx is cancelled or the subscribe itself
-// fails.
+// docs/roadmap/capability-requirement-composition.md's Phase 5:
+// Capabilities (via opts) is now the ONLY mechanism for QoS — the former
+// call-time qos parameter escape hatch is REMOVED, mirroring
+// adapters/mqtt5's identical, already-shipped shape exactly. Blocks
+// until ctx is cancelled or the subscribe itself fails.
 func serveOneSubscriber[T any](
 	ctx context.Context,
 	caller *caller,
 	sub events.Subscriber[T],
-	qos byte,
 	fn func(context.Context, T) error,
 	opts SubscribeOptions,
 	formats ...format.Format[T],
 ) error {
 	scratch := events.NewClient(events.WithInfo(events.Info{Title: "ServeOneSubscriber", Version: "0.0.0"}))
-	opts.QoS = qos
 	sub = sub.WithHandler(fn).WithOptions(opts)
 	if err := sub.Register(scratch); err != nil {
 		return err
@@ -406,23 +413,16 @@ func subscribeEntryReflect(ctx context.Context, client pahomqtt.Client, entry ev
 	if err != nil {
 		return err
 	}
-	// docs/roadmap/capability-requirement-composition.md's Phase 4b: the
-	// events.Subscribe.QoS declared-fallback field was REMOVED from
-	// api/events entirely (a parallel, non-Capability-shaped mechanism)
-	// — opts.QoS is this adapter's ONLY source for now. Full migration of
-	// this package to the Capability/Apply-only shape mqtt5 already has
-	// is Phase 5's job.
 	obs := opts.Observer
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
 	}
-	// opts.Capabilities (the RECOMMENDED, sealed path) overrides opts.QoS
-	// when supplied — reported once per exercised capability via
-	// [stats.CapabilityObserver].
-	if capQoS, qosSet := events.ResolveCapabilityValue[Capability, QoS](opts.Capabilities); qosSet {
-		opts.QoS = byte(capQoS)
-		events.RecordCapabilityApplied(obs, topic, capQoS)
-	}
+	// docs/roadmap/capability-requirement-composition.md's Phase 5:
+	// Capabilities is now the ONLY mechanism for QoS — the former
+	// SubscribeOptions.QoS plain field escape hatch is REMOVED. Mirrors
+	// adapters/mqtt5's identical, already-shipped shape exactly.
+	var wire WireAttributes
+	events.ApplyCapabilities(opts.Capabilities, &wire, obs, topic)
 	if reqs, ok := elem.FieldByName("Requirements").Interface().([]events.CapabilityRequirement); ok {
 		if covErr := events.VerifyCapabilityCoverage(topic, reqs, opts.Capabilities); covErr != nil {
 			return covErr
@@ -524,7 +524,7 @@ func subscribeEntryReflect(ctx context.Context, client pahomqtt.Client, entry ev
 		obs.RecordSubscribe(msg.Topic(), true, time.Since(start))
 	}
 
-	token := client.Subscribe(filter, opts.QoS, handler)
+	token := client.Subscribe(filter, wire.QoS, handler)
 	token.Wait()
 	return token.Error()
 }

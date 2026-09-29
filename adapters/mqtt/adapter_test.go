@@ -335,7 +335,7 @@ func TestPublish_Success(t *testing.T) {
 	client := &mockClient{token: newCompletedToken(nil)}
 
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	err := publish(context.Background(), client, handle, 1, false, event, nil, PublishOptions[userEvent]{})
+	err := publish(context.Background(), client, handle, event, nil, PublishOptions[userEvent]{})
 	if err != nil {
 		t.Fatalf("want nil error, got %v", err)
 	}
@@ -353,7 +353,7 @@ func TestPublish_BrokerError(t *testing.T) {
 	client := &mockClient{token: newCompletedToken(brokerErr)}
 
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	err := publish(context.Background(), client, handle, 1, false, event, nil, PublishOptions[userEvent]{})
+	err := publish(context.Background(), client, handle, event, nil, PublishOptions[userEvent]{})
 	if !errors.Is(err, brokerErr) {
 		t.Fatalf("want brokerErr, got %v", err)
 	}
@@ -367,7 +367,7 @@ func TestPublish_ContextCancelled(t *testing.T) {
 	cancel() // cancel immediately
 
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	err := publish(ctx, client, handle, 1, false, event, nil, PublishOptions[userEvent]{})
+	err := publish(ctx, client, handle, event, nil, PublishOptions[userEvent]{})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("want context.Canceled, got %v", err)
 	}
@@ -457,7 +457,7 @@ func TestPublishHandle_DerivesTopicFromMsg(t *testing.T) {
 	client := &mockClient{token: newCompletedToken(nil)}
 
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	err := publishHandle(context.Background(), client, handle, 1, false, event, PublishOptions[userEvent]{})
+	err := publishHandle(context.Background(), client, handle, event, PublishOptions[userEvent]{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -474,7 +474,7 @@ func TestPublishHandle_NoMergeFields_MatchesPlainPublish(t *testing.T) {
 	client := &mockClient{token: newCompletedToken(nil)}
 
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	err := publishHandle(context.Background(), client, handle, 1, false, event, PublishOptions[userEvent]{})
+	err := publishHandle(context.Background(), client, handle, event, PublishOptions[userEvent]{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -488,7 +488,7 @@ func TestPublish_TemplateVars(t *testing.T) {
 	client := &mockClient{token: newCompletedToken(nil)}
 
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	err := publish(context.Background(), client, handle, 1, false, event,
+	err := publish(context.Background(), client, handle, event,
 		map[string]string{"userID": "f47ac10b-58cc-4372-a567-0e02b2c3d479"}, PublishOptions[userEvent]{})
 	if err != nil {
 		t.Fatalf("want nil error, got %v", err)
@@ -503,7 +503,7 @@ func TestPublish_TemplateVars_InvalidUUID(t *testing.T) {
 	client := &mockClient{token: newCompletedToken(nil)}
 
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	err := publish(context.Background(), client, handle, 1, false, event,
+	err := publish(context.Background(), client, handle, event,
 		map[string]string{"userID": "not-a-uuid"}, PublishOptions[userEvent]{})
 	if err == nil {
 		t.Fatal("want error for invalid UUID, got nil")
@@ -523,7 +523,7 @@ func TestObserver_RecordPublish_buildTopicError(t *testing.T) {
 	client := &mockClient{token: newCompletedToken(nil)}
 
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	err := publish(context.Background(), client, handle, 1, false, event,
+	err := publish(context.Background(), client, handle, event,
 		map[string]string{"userID": "not-a-uuid"}, PublishOptions[userEvent]{Observer: obs})
 	if err == nil {
 		t.Fatal("want error, got nil")
@@ -686,7 +686,7 @@ func TestObserver_RecordPublish_success(t *testing.T) {
 	client := &mockClient{token: newCompletedToken(nil)}
 
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	err := publish(context.Background(), client, handle, 1, false, event, nil,
+	err := publish(context.Background(), client, handle, event, nil,
 		PublishOptions[userEvent]{Observer: obs})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -712,7 +712,7 @@ func TestObserver_RecordPublish_brokerError(t *testing.T) {
 	client := &mockClient{token: newCompletedToken(brokerErr)}
 
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	err := publish(context.Background(), client, handle, 1, false, event, nil,
+	err := publish(context.Background(), client, handle, event, nil,
 		PublishOptions[userEvent]{Observer: obs})
 	if !errors.Is(err, brokerErr) {
 		t.Fatalf("want brokerErr, got %v", err)
@@ -734,7 +734,7 @@ func TestObserver_RecordValidationError_topicParam_publish(t *testing.T) {
 	client := &mockClient{token: newCompletedToken(nil)}
 
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	err := publish(context.Background(), client, handle, 1, false, event,
+	err := publish(context.Background(), client, handle, event,
 		map[string]string{"userID": "not-a-uuid"}, PublishOptions[userEvent]{Observer: obs})
 	if err == nil {
 		t.Fatal("want error, got nil")
@@ -904,7 +904,7 @@ func TestPublish_YAMLFormat(t *testing.T) {
 		ID:    "f47ac10b-58cc-4372-a567-0e02b2c3d479",
 		Email: "alice@example.com",
 	}
-	err := publish(context.Background(), client, handle, 1, false, event, nil,
+	err := publish(context.Background(), client, handle, event, nil,
 		PublishOptions[userEvent]{},
 		format.YAML(userEventCodec),
 	)
@@ -926,7 +926,7 @@ func TestPublish_YAMLFormat_EncodeError(t *testing.T) {
 
 	// Empty email fails the Email constraint.
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: ""}
-	err := publish(context.Background(), client, handle, 1, false, event, nil,
+	err := publish(context.Background(), client, handle, event, nil,
 		PublishOptions[userEvent]{},
 		format.YAML(userEventCodec),
 	)
@@ -941,7 +941,7 @@ func TestPublish_EncodeError_returnsPublishEncodeError(t *testing.T) {
 
 	// Empty email fails the Email constraint on default JSON encode.
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: ""}
-	err := publish(context.Background(), client, handle, 1, false, event, nil,
+	err := publish(context.Background(), client, handle, event, nil,
 		PublishOptions[userEvent]{},
 	)
 	if err == nil {
@@ -1020,7 +1020,7 @@ func TestSubscribe_SecurityImpl_calledForSecuredChannel(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := subscribeHandle(ctx, caller.client, handle, 1,
+	if err := subscribeHandle(ctx, caller.client, handle,
 		func(_ context.Context, _ userEvent) error { handlerCalled = true; return nil },
 		SubscribeOptions{}); err != nil {
 		t.Fatalf("subscribeHandle: %v", err)
@@ -1056,7 +1056,7 @@ func TestSubscribe_SecurityImpl_rejectsMessage(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := subscribeHandle(ctx, caller.client, handle, 1,
+	if err := subscribeHandle(ctx, caller.client, handle,
 		func(_ context.Context, _ userEvent) error {
 			t.Fatal("handler must not be called when the security implementation rejects")
 			return nil
@@ -1104,7 +1104,7 @@ func TestSubscribe_SecurityImpl_notCalledForUnsecuredChannel(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := subscribeHandle(ctx, caller.client, handle, 1,
+	if err := subscribeHandle(ctx, caller.client, handle,
 		func(_ context.Context, _ userEvent) error { return nil },
 		SubscribeOptions{}); err != nil {
 		t.Fatalf("subscribeHandle: %v", err)
@@ -1135,7 +1135,7 @@ func TestSubscribe_SecurityObserver_calledOnRejection(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := subscribeHandle(ctx, caller.client, handle, 1,
+	if err := subscribeHandle(ctx, caller.client, handle,
 		func(_ context.Context, _ userEvent) error { return nil },
 		SubscribeOptions{Observer: obs}); err != nil {
 		t.Fatalf("subscribeHandle: %v", err)
@@ -1190,7 +1190,7 @@ func TestSubscribeHandler_GlobalSecurity_enforcedWhenNoPerChannelSecurity(t *tes
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := subscribeHandle(ctx, caller.client, handle, 1,
+	if err := subscribeHandle(ctx, caller.client, handle,
 		func(_ context.Context, _ userEvent) error { return nil },
 		SubscribeOptions{}); err != nil {
 		t.Fatalf("subscribeHandle: %v", err)
@@ -1220,7 +1220,7 @@ func TestSubscribeHandler_GlobalSecurity_rejectsMessage(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := subscribeHandle(ctx, caller.client, handle, 1,
+	if err := subscribeHandle(ctx, caller.client, handle,
 		func(_ context.Context, _ userEvent) error { return nil },
 		SubscribeOptions{}); err != nil {
 		t.Fatalf("subscribeHandle: %v", err)
@@ -1255,7 +1255,7 @@ func TestSubscribeHandler_GlobalSecurity_notCalledWhenExplicitlyEmpty(t *testing
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := subscribeHandle(ctx, caller.client, handle, 1,
+	if err := subscribeHandle(ctx, caller.client, handle,
 		func(_ context.Context, _ userEvent) error { return nil },
 		SubscribeOptions{}); err != nil {
 		t.Fatalf("subscribeHandle: %v", err)
@@ -1294,7 +1294,7 @@ func ExamplePublish() {
 	// Mock client records the published topic and payload.
 	client := &mockClient{token: newCompletedToken(nil)}
 
-	err := publish(context.Background(), client, alertChannel, 1, false,
+	err := publish(context.Background(), client, alertChannel,
 		Alert{SensorID: "s1", Message: "threshold exceeded"},
 		map[string]string{"sensorID": "sensor-01"},
 		PublishOptions[Alert]{},

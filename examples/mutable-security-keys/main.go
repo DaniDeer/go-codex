@@ -163,10 +163,11 @@ func main() {
 	// handle is built ONCE and reused by every call below — the
 	// recommended pattern for many calls to the same route.
 	handle := securedClientRoute.ClientHandle()
+	transport := nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})
 
 	call := func(label string) {
-		_, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL, handle, struct{}{},
-			nethttp.CallOptions{
+		_, err := rest.CallWithTransport(context.Background(), transport, handle, struct{}{},
+			rest.ClientCallOptions{
 				// A 401 means the cached credential no longer matches the
 				// server's rotated key — invalidate so the NEXT call
 				// refetches instead of retrying the same stale value.

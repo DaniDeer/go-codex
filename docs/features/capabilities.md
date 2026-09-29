@@ -159,13 +159,15 @@ adapters" guardrail (see
   constructor parameters or struct fields remain anywhere in this
   package.
 
-`adapters/mqtt` (v3) is NOT yet fully migrated — see the roadmap doc's
-Phase 5 scope note — and still supports its OWN legacy `qos byte`/
-`retained bool` positional/field path alongside `Capabilities` today
-(its usage of the now-deleted `events.PublishAttributes`/
-`events.Subscribe.QoS` was removed in Phase 4b, since those types no
-longer exist, but its own raw fields were deliberately left standing —
-full migration is Phase 5's job).
+`adapters/mqtt` (v3) is now fully migrated too (docs/roadmap/
+capability-requirement-composition.md's Phase 5) — its `Capability`
+interface requires `Apply(wire *WireAttributes) (bool, error)`, mirroring
+`adapters/mqtt5`'s identical shape exactly. Every former raw `qos byte`/
+`retained bool` positional parameter and `SubscribeOptions.QoS`/
+`MQTTDrainPublishOptions.QoS`/`.Retained` field was REMOVED entirely —
+`Capabilities []mqtt.Capability` is the SOLE mechanism, with no
+raw-value constructor parameters or struct fields remaining anywhere in
+this package either.
 
 ### reqreply: the SAME sealed values, a separate `ServeOptions`/`CallOptions.Capabilities` field
 

@@ -2738,8 +2738,9 @@ func TestClientEncode_RoleAwareMergeFields_NoLeakage(t *testing.T) {
 
 	item := req{ID: "abc-123", Filter: "active"}
 
-	_, err = nethttp.CallWithHandle(t.Context(), srv.Client(), srv.URL, h, item,
-		nethttp.CallOptions{})
+	transport := nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})
+	_, err = rest.CallWithTransport(t.Context(), transport, h, item,
+		rest.ClientCallOptions{})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
@@ -3253,7 +3254,8 @@ func TestGobBodyFormat_ComposesWithNestedMergeFields(t *testing.T) {
 		Meta:    meta{ContentHash: "sha256:abc"},
 		Payload: payload{Filename: "x.bin", Data: []byte("hello world")},
 	}
-	resp, err := nethttp.CallWithHandle(context.Background(), srv.Client(), srv.URL, clientHandle, item, nethttp.CallOptions{})
+	transport := nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})
+	resp, err := rest.CallWithTransport(context.Background(), transport, clientHandle, item, rest.ClientCallOptions{})
 	if err != nil {
 		t.Fatalf("CallHandle: %v", err)
 	}

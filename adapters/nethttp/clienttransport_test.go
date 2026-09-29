@@ -823,3 +823,186 @@ func TestAttach_ClientConsume_WithFormats_Overrides(t *testing.T) {
 		t.Fatalf("want 1, got %d", got)
 	}
 }
+
+// ── Phase 5a: rest.CallWithTransport (bare *RouteHandle acceptance +
+// grown rest.ClientCallOptions field parity with the deleted
+// CallWithHandle/nethttp.CallOptions) ──────────────────────────────────
+
+// TestCallWithTransport_BareRouteHandle_Accepted confirms
+// clientTransport.Call accepts a bare *rest.RouteHandle (built via
+// Route.ClientHandle(), no rest.Client/Attach ceremony) directly —
+// the dual-mode acceptance this phase added, mirroring
+// [reqreply.CallWithTransport]'s identical, already-shipped behavior.
+func TestCallWithTransport_BareRouteHandle_Accepted(t *testing.T) {
+	handle := rest.NewRoute[getReq, userResp]("GET", "/me",
+		getReqCodec, userRespCodec,
+	).ClientHandle()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"me"}`)) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	transport := NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})
+	resp, err := rest.CallWithTransport(context.Background(), transport, handle, getReq{})
+	if err != nil {
+		t.Fatalf("CallWithTransport: %v", err)
+	}
+	if resp.ID != "me" {
+		t.Errorf("resp.ID = %q, want %q", resp.ID, "me")
+	}
+}
+
+func TestCallWithTransport_QueryParams_AppendedToURL(t *testing.T) {
+	handle := rest.NewRoute[getReq, userResp]("GET", "/users",
+		getReqCodec, userRespCodec,
+	).ClientHandle()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if q := r.URL.Query().Get("limit"); q != "10" {
+			t.Errorf("query param limit = %q, want '10'", q)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"x"}`)) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	transport := NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})
+	_, err := rest.CallWithTransport(context.Background(), transport, handle, getReq{},
+		rest.ClientCallOptions{QueryParams: map[string]string{"limit": "10"}})
+	if err != nil {
+		t.Fatalf("CallWithTransport: %v", err)
+	}
+}
+
+func TestCallWithTransport_ExtraHeaders_Sent(t *testing.T) {
+	handle := rest.NewRoute[getReq, userResp]("GET", "/me",
+		getReqCodec, userRespCodec,
+	).ClientHandle()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Request-ID") != "req-123" {
+			t.Errorf("X-Request-ID header missing or wrong")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"me"}`)) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	transport := NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})
+	_, err := rest.CallWithTransport(context.Background(), transport, handle, getReq{},
+		rest.ClientCallOptions{ExtraHeaders: map[string][]string{"X-Request-ID": {"req-123"}}})
+	if err != nil {
+		t.Fatalf("CallWithTransport: %v", err)
+	}
+}
+
+func TestCallWithTransport_OnCredentialRejected_FiresOn401(t *testing.T) {
+	b := rest.NewServer(testInfo)
+	b.AddGlobalSecurity(route.Require("bearerAuth"))
+	declMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
+	handle, err := rest.NewRoute[getReq, userResp]("GET", "/me",
+		getReqCodec, userRespCodec,
+	).Use(declMw).ClientMW(&declMw, func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
+		h := make(http.Header)
+		h.Set("Authorization", "test-bearer-token")
+		return h, nil
+	}).RegisterHandle(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	rejectedCalls := 0
+	transport := NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})
+	_, err = rest.CallWithTransport(context.Background(), transport, handle, getReq{},
+		rest.ClientCallOptions{OnCredentialRejected: func() { rejectedCalls++ }})
+
+	var statusErr UnexpectedStatusError
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected UnexpectedStatusError{StatusCode:401}, got %v", err)
+	}
+	if rejectedCalls != 1 {
+		t.Errorf("want OnCredentialRejected called exactly once, got %d", rejectedCalls)
+	}
+}
+
+func TestCallWithTransport_OnCredentialRejected_NotCalledWithoutEngagedCredential(t *testing.T) {
+	handle := rest.NewRoute[getReq, userResp]("GET", "/me",
+		getReqCodec, userRespCodec).ClientHandle()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	rejectedCalls := 0
+	transport := NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})
+	_, err := rest.CallWithTransport(context.Background(), transport, handle, getReq{},
+		rest.ClientCallOptions{OnCredentialRejected: func() { rejectedCalls++ }})
+
+	var statusErr UnexpectedStatusError
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected UnexpectedStatusError{StatusCode:401}, got %v", err)
+	}
+	if rejectedCalls != 0 {
+		t.Errorf("want OnCredentialRejected never called without a credential-providing ClientMW, got %d calls", rejectedCalls)
+	}
+}
+
+func TestCallWithTransport_Observer_PerCallOverride(t *testing.T) {
+	handle := rest.NewRoute[getReq, userResp]("GET", "/me",
+		getReqCodec, userRespCodec).ClientHandle()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"me"}`)) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	obs := &testObserver{}
+	transport := NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})
+	_, err := rest.CallWithTransport(context.Background(), transport, handle, getReq{},
+		rest.ClientCallOptions{Observer: obs})
+	if err != nil {
+		t.Fatalf("CallWithTransport: %v", err)
+	}
+	if !obs.called {
+		t.Error("want the per-call Observer override to be used, but it was never called")
+	}
+}
+
+// callWithHandle mirrors the exact signature of the now-DELETED
+// CallWithHandle (docs/roadmap/capability-requirement-composition.md's
+// Phase 5a) — a thin, test-only shim reducing this package's existing
+// call sites (testing behavior UNCHANGED by the deletion — path/query/
+// header/cookie derivation, security, format overrides, Observer,
+// QueryParams/ExtraHeaders/OnCredentialRejected, all still fully
+// supported via the grown rest.ClientCallOptions) to a single
+// mechanical rename instead of restructuring every call site's argument
+// list into a build-transport-then-call shape.
+func callWithHandle[Req, Resp any](
+	ctx context.Context,
+	client *http.Client,
+	baseURL string,
+	handle *rest.RouteHandle[Req, Resp],
+	req Req,
+	opts CallOptions,
+) (Resp, error) {
+	transport := NewClientTransport(ClientTransportOptions{HTTPClient: client, BaseURL: baseURL})
+	return rest.CallWithTransport(ctx, transport, handle, req, rest.ClientCallOptions{
+		RequestFormats:       opts.RequestFormats,
+		ResponseFormats:      opts.ResponseFormats,
+		QueryParams:          opts.QueryParams,
+		CookieParams:         opts.CookieParams,
+		HeaderParams:         opts.HeaderParams,
+		ExtraHeaders:         map[string][]string(opts.ExtraHeaders),
+		OnCredentialRejected: opts.OnCredentialRejected,
+		Observer:             opts.Observer,
+	})
+}

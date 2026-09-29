@@ -423,26 +423,24 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 		return err
 	}
 
-	// docs/roadmap/capability-requirement-composition.md's Phase 2:
+	// docs/roadmap/capability-requirement-composition.md's Phase 5:
 	// resolve the route's declared [reqreply.CapabilityRequirement]s and
 	// this Serve's supplied [ServeOptions.Capabilities] ONCE, at setup —
-	// not per message. effectiveQoS/effectiveRetained are then threaded
-	// through EVERY reply publish path (success, error-pattern-matched,
-	// and dead-letter alike) inside baseHandler below, closing a gap
-	// where all three previously hardcoded QoS 1 and never set Retained.
+	// not per message — via [events.ApplyCapabilities] against a
+	// [WireAttributes] value, the SAME API-layer-owned dispatch loop
+	// Publish/Subscribe already use (mirrors [publish]/[subscribeWithHandle]'s
+	// identical shape exactly — this is a pure relocation, not a
+	// behavior change: wire is pre-seeded with the prior hardcoded
+	// defaults — QoS 1, Retained false — then ApplyCapabilities
+	// overwrites only the fields a supplied capability actually targets,
+	// matching the former manual qosSet/retainedSet gating exactly).
+	// effectiveQoS/effectiveRetained are then threaded through EVERY
+	// reply publish path (success, error-pattern-matched, and
+	// dead-letter alike) inside baseHandler below.
 	requirements, _ := elem.FieldByName("Requirements").Interface().([]reqreply.CapabilityRequirement)
-	qos, qosSet := events.ResolveCapabilityValue[Capability, QoS](t.opts.Capabilities)
-	retained, retainedSet := events.ResolveCapabilityValue[Capability, Retained](t.opts.Capabilities)
-	effectiveQoS := byte(1)    // unchanged existing default
-	effectiveRetained := false // unchanged existing default
-	if qosSet {
-		effectiveQoS = byte(qos)
-		events.RecordCapabilityApplied(obs, path, qos)
-	}
-	if retainedSet {
-		effectiveRetained = bool(retained)
-		events.RecordCapabilityApplied(obs, path, retained)
-	}
+	wire := WireAttributes{QoS: 1} // unchanged existing defaults: QoS 1, Retained false
+	events.ApplyCapabilities(t.opts.Capabilities, &wire, obs, path)
+	effectiveQoS, effectiveRetained := wire.QoS, wire.Retained
 	if err := reqreply.VerifyCapabilityCoverage(path, requirements, t.opts.Capabilities); err != nil {
 		return err
 	}
@@ -1016,20 +1014,19 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 	if qos == 0 {
 		qos = 1
 	}
-	// docs/roadmap/capability-requirement-composition.md's Phase 2: a
+	// docs/roadmap/capability-requirement-composition.md's Phase 5: a
 	// supplied [QoS] capability overrides [CallOptions.QoS] (its
 	// dedicated MinLevel-checked declaration path); a supplied [Retained]
-	// capability sets Retain on the outgoing request publish — previously
-	// never set anywhere on the client/Call side.
-	retained := false
-	if capQoS, ok := events.ResolveCapabilityValue[Capability, QoS](t.opts.Capabilities); ok {
-		qos = byte(capQoS)
-		events.RecordCapabilityApplied(obs, path, capQoS)
-	}
-	if capRetained, ok := events.ResolveCapabilityValue[Capability, Retained](t.opts.Capabilities); ok {
-		retained = bool(capRetained)
-		events.RecordCapabilityApplied(obs, path, capRetained)
-	}
+	// capability sets Retain on the outgoing request publish — resolved
+	// via [events.ApplyCapabilities] against a [WireAttributes] value,
+	// the SAME API-layer-owned dispatch loop Publish/Subscribe already
+	// use (pure relocation, not a behavior change: wire is pre-seeded
+	// with CallOptions.QoS's own already-resolved value/the prior
+	// hardcoded Retained-false default, then ApplyCapabilities overwrites
+	// only the fields a supplied capability actually targets).
+	wire := WireAttributes{QoS: qos}
+	events.ApplyCapabilities(t.opts.Capabilities, &wire, obs, path)
+	qos, retained := wire.QoS, wire.Retained
 
 	var replyTopic, subscribeFilter string
 	if t.opts.ReplyTopicBuilder != nil {

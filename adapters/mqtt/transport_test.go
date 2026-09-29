@@ -241,7 +241,7 @@ func TestAttach_ClientSubscribe_WrongSubType_ReturnsTransportTypeMismatchError(t
 
 func TestNewPublishTransport_PublishHandle_RoundTrip(t *testing.T) {
 	client := &mockClient{token: newCompletedToken(nil)}
-	transport := NewPublishTransport[sensorReading](client, 1, false, PublishOptions[sensorReading]{})
+	transport := NewPublishTransport[sensorReading](client, PublishOptions[sensorReading]{})
 
 	pub := mergeSensorChannel("sensors/{sensorID}/readings").WithPublish(events.Publish{})
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
@@ -258,7 +258,7 @@ func TestNewPublishTransport_PublishHandle_RoundTrip(t *testing.T) {
 
 func TestNewSubscribeTransport_SubscribeHandle_RoundTrip(t *testing.T) {
 	client := &mockClient{token: newCompletedToken(nil)}
-	subTransport := NewSubscribeTransport[sensorReading](client, 1, SubscribeOptions{})
+	subTransport := NewSubscribeTransport[sensorReading](client, SubscribeOptions{})
 
 	sub := plainSensorChannel("sensors/readings").WithSubscribe(events.Subscribe{})
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)

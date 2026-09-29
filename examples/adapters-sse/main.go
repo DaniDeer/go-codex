@@ -551,7 +551,7 @@ func main() {
 
 	// ── Invalid event demo (needs OnError, which client.Consume does not
 	// expose) — uses nethttp.CallSSEAdapter instead, the SOLE remaining
-	// full-featured escape hatch (mirrors nethttp.CallWithHandle exactly),
+	// full-featured escape hatch (mirrors rest.CallWithTransport exactly),
 	// taking a pre-built *rest.SSERouteHandle directly.
 	fmt.Println("=== CallSSEAdapter /sse/invalid (middle event rejected by codec) ===")
 	func() {

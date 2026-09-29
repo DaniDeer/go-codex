@@ -13,13 +13,13 @@
 > redesign — adapters expose `New*Transport` factories, attaching is
 > EXCLUSIVELY an api-layer method, all 12 adapter-namespaced `Attach*`
 > convenience functions removed) SHIPPED; Phase 4e (closing the
-> remaining format/security/middleware "v1 scope" gaps) SHIPPED; Phase 5a
-> (Design complete — moving the type-safe escape hatch itself onto the
-> API layer, formerly "Phase 4f") DESIGNED, sequenced to run AFTER Phase
-> 5; Phase 5 (closing `adapters/mqtt` v3's Phase 4 pub/sub Capability
-> parity gap, and applying the same `Apply`/`ApplyCapabilities` shift to
-> `api/reqreply`'s mqtt5/zeromq call sites) and Phase 6 (`api/rest`) not
-> yet started. See each subsection's own Learnings entry. Spun out of a
+> remaining format/security/middleware "v1 scope" gaps) SHIPPED; Phase 5
+> (closing `adapters/mqtt` v3's Phase 4 pub/sub Capability parity gap,
+> and applying the same `Apply`/`ApplyCapabilities` shift to
+> `api/reqreply`'s mqtt5/zeromq call sites) SHIPPED; Phase 5a (Design
+> complete — moving the type-safe escape hatch itself onto the API
+> layer, formerly "Phase 4f") DESIGNED, next up; Phase 6 (`api/rest`)
+> not yet started. See each subsection's own Learnings entry. Spun out of a
 > user question about
 > [D-0006 — Protocol-Native Capabilities](../design/d-0006-protocol-native-capabilities.md)'s
 > scope (events-only) while reviewing [`docs/features/capabilities.md`](../features/capabilities.md).
@@ -2634,46 +2634,104 @@ verified accurate, not just left unchecked).
 
 ### Phase 5 — closing `adapters/mqtt` (v3)'s Phase 4 pub/sub Capability parity gap, and applying the same `Apply`/`ApplyCapabilities` shift to `api/reqreply`'s mqtt5/zeromq call sites
 
-**Status: Design not yet started — scope statement only, per
-phase-by-phase discipline.** Since `adapters/mqtt5`/`adapters/zeromq`'s
-`Capability` types are the SAME types Phase 4 touches (shared package,
-shared code), this phase is expected to be SMALLER than Phase 4's own
-work — mainly replacing reqreply's OWN QoS/Retained/HWM/Conflate
-resolve+assign call sites (mqtt5's `reqreply_transport.go`'s 3 reply
-publish paths + client-side request publish; zeromq's 4 reqreply
-dispatch implementations) with the SAME `events.ApplyCapabilities` call
-already built in Phase 4 — zero new `api/events`-side code anticipated,
-confirmed generic and reusable as-is. `adapters/zeromq`'s reqreply call
-sites in particular need ZERO changes (confirmed in Phase 4 — its
-`applyCapabilities` kept its exact prior signature).
+**Status: SHIPPED.** Two independent workstreams, both confirmed to
+match this section's original scope exactly, with zero surprises found
+during implementation:
 
-**Also in scope for Phase 5 (added after Phase 4 shipped):** mirroring
-Phase 4's `adapters/mqtt5` treatment (`Capability` interface requiring
-`Apply`, `WireAttributes`, removing the legacy positional
-`qos byte, retained bool`/`SubscribeOptions.QoS` dual-path) in
-`adapters/mqtt` (v3) — same file names (`capability.go`, `adapter.go`,
-`caller.go`, `handletransport.go`, `binding.go`), same pattern,
-deliberately deferred out of Phase 4 to preserve phase-by-phase
-discipline rather than doubling that round's scope.
+- **`adapters/mqtt` (v3) — the large piece.** `Capability` now REQUIRES
+  `Apply(wire *WireAttributes) (bool, error)` (a real interface, not a
+  marker), mirroring `adapters/mqtt5`'s identical shape exactly. Every
+  legacy positional/field-based backdoor was removed entirely:
+  `publish[T]`/`publishHandle[T]`'s `qos byte, retained bool` params
+  (`adapter.go`), `subscribe[T]`/`subscribeHandle[T]`/
+  `serveOneSubscriber[T]`'s `qos byte` param (`caller.go`), the
+  reflection-based `Client.Publish`/`Client.Subscribe` dispatch's inline
+  `events.ResolveCapabilityValue` resolution (`transport.go`),
+  `NewPublishTransport`/`NewSubscribeTransport`'s `qos byte, retained
+  bool`/`qos byte` params (`handletransport.go`), and
+  `SubscribeAdapter`'s `qos byte` param +
+  `MQTTDrainPublishOptions.QoS`/`.Retained` fields (`binding.go`) — all
+  replaced by `Capabilities []Capability`-only construction, applied via
+  `events.ApplyCapabilities` against a `WireAttributes` value. A
+  post-implementation grep sweep (mirroring Phase 4b's own audit
+  discipline) confirmed zero remaining legacy call sites.
+- **`api/reqreply`'s Apply shift — the small piece.**
+  `adapters/mqtt5/reqreply_transport.go`'s `Serve`/`Call` capability
+  resolution (previously manual `events.ResolveCapabilityValue[Capability,
+  QoS/Retained]` calls) now goes through the SAME `WireAttributes`+
+  `events.ApplyCapabilities` pattern Publish/Subscribe already use — a
+  pure relocation, zero behavior change (confirmed via the full
+  pre-existing reqreply test suite passing unchanged). `adapters/zeromq`
+  needed ZERO changes — confirmed via re-reading all 5 of its reqreply
+  `applyCapabilities` call sites, already delegating to
+  `events.ApplyCapabilities` since Phase 4.
 
-**Definition-of-done, corrected by Phase 4b's guardrail audit:** Phase
-5 must leave `adapters/mqtt` (v3) meeting the FULL zero-backdoor
-guardrail (see "Architectural guardrail" above) — the SAME bar
-`adapters/mqtt5` now meets — not merely "reqreply migrated to
-`ApplyCapabilities`." Phase 4b already did the narrow
-`events.PublishAttributes`-deletion follow-on for `adapters/mqtt` (its
-`ResolvePublishAttributes` fallback and `SubscribeQoS`-via-reflection
-read were removed since the TYPE itself no longer exists), but its raw
-`qos byte, retained bool` positional params, `SubscribeOptions.QoS`
-field, and `MQTTDrainPublishOptions.QoS`/`.Retained` ports-binding
-fields are ALL still standing legacy backdoors — Phase 5 must close
-every one of them, mirroring `adapters/mqtt5`'s Phase 4/4b shape
-exactly (`Capability`/`Apply`/`WireAttributes`, `Capabilities`-only
-`SubscribeAdapterOptions`/`MQTTDrainPublishOptions`).
+**Definition-of-done met:** `adapters/mqtt` (v3) now meets the FULL
+zero-backdoor guardrail (see "Architectural guardrail" above) — the
+SAME bar `adapters/mqtt5` already met.
+
+**Real call sites migrated (breaking change, confirmed bounded via
+repo-wide grep before starting, exactly as anticipated):**
+`examples/events-api/mqttbroker/broker.go`'s `NewPublishTransport` call
+and `examples/events-api/demo_escape_hatch_workflow.go`'s
+`NewSubscribeTransport` call (both switched to `Capabilities`-based
+construction); `examples/sensor-service/main.go`'s `SubscribeAdapter`
+call (dropped the now-removed positional `qos` argument — it was
+already `0`, the same value `WireAttributes{}`'s zero value produces,
+so no `Capabilities` value was needed to preserve behavior).
+
+**Learnings:**
+
+1. **Applying Phase 4b's OWN corrected lesson directly, from the start,
+   avoided repeating its mistake.** Phase 4b had to walk back an
+   earlier decision to "fold Capabilities in internally while keeping
+   the raw QoS/Retained fields, since they're a separate mechanism" —
+   this round went straight to the Capabilities-only end state for
+   `MQTTDrainPublishOptions`/`SubscribeAdapterOptions` in one pass, with
+   no intermediate "keep both" step to later walk back.
+2. **The mechanical test-migration surface was genuinely large (20+
+   call sites across 5 test files) but ENTIRELY mechanical** — every
+   call site's literal `1`/`false` qos/retained argument was simply
+   removed (Go generic type inference then resolves cleanly against
+   the new, shorter signature); zero test assertions changed meaning,
+   confirming — exactly as Phase 4's own Learnings #4 predicted for
+   this exact follow-on — that this is a pure mechanism relocation, not
+   a behavior change. 2 tests (`TestServeSubscribers_CapabilitiesOverridesQoS`,
+   `TestPublish_CapabilitiesRetainedFallback`) tested OLD dual-path
+   semantics that no longer exist (Capabilities "overriding" a
+   now-deleted QoS field/call-time fallback) — renamed and rewritten to
+   assert the NEW single-mechanism semantics, mirroring
+   `adapters/mqtt5`'s own equivalent test names/shapes exactly
+   (`TestServeSubscribers_CapabilitiesSetsQoS`/
+   `TestPublish_CapabilitiesSetsRetained`).
+3. **The reqreply Apply-shift's `WireAttributes` seeding required care
+   to preserve 2 DIFFERENT pre-existing default/precedence behaviors,
+   not a single uniform default** — `Serve`'s reply-publish path
+   defaulted to a HARDCODED `QoS 1` (unrelated to any `CallOptions`),
+   while `Call`'s request-publish path defaulted to `CallOptions.QoS`
+   (itself defaulting to 1 only when unset) — confirmed via
+   `events.ApplyCapabilities`'s own semantics (only calls `Apply` for
+   capabilities PRESENT in the slice, leaving a pre-seeded
+   `WireAttributes` value untouched otherwise) that pre-seeding
+   `wire := WireAttributes{QoS: <the correct prior default for THIS
+   call site>}` before calling `ApplyCapabilities` exactly reproduces
+   each site's own prior fallback behavior — a generalizable technique
+   for any future relocation onto `ApplyCapabilities` where the
+   pre-migration code had a non-zero default.
 
 #### Phase 5a — moving the type-safe escape hatch itself onto the API layer (formerly "Phase 4f")
 
-**Status: Design complete as of the follow-up review below.**
+**Status: Implemented.** `api/reqreply.ServeWithTransport`/
+`CallWithTransport` and `api/rest.CallWithTransport` have shipped;
+`adapters/mqtt5`/`adapters/zeromq`'s `Serve`/`Call`/`ServeRouter`/
+`CallDealer`/`CallHandle` and `adapters/nethttp.CallWithHandle` are
+fully deleted. See "Implementation learnings" below for what changed
+relative to the design sketch this section originally shipped with —
+`ClientCallOptions` grew substantially beyond the two-field sketch, and
+`ServeOne` was NOT relocated (a design decision reversed during
+implementation, not an oversight).
+
+**Original design pass (kept for history):**
 Originally raised while reviewing `demo_escape_hatch_workflow.go`'s own
 justification (above): its current, still-true reason to exist
 (compile-time type safety, no `*events.Client` ceremony, mqtt v3's
@@ -2765,24 +2823,37 @@ enormously — captured below, resolved per-API:**
   // ALREADY duplicated in rest.ClientTransport's own Call path via
   // NewClientTransport(opts) — no new adapter-side type needed.
   ```
+  **This original sketch UNDERSTATED the real scope — see "Implementation
+  learnings" below: `ClientCallOptions` had to grow six new fields, and
+  `clientTransport.Call` itself (the pre-existing `Client.Attach` path,
+  not just the new verb) had four real, previously-undiscovered gaps
+  that had to be fixed for the deletion to be truly lossless.**
 
 - **`ServeOne` — RESOLVED: structurally REST-only, cannot be
-  generalized.** `rest.ServerTransport.Serve(ctx) error` (Phase 4d,
-  already shipped) already blocks and owns its own `*http.Server`,
-  walking every registered route — the direct, already-existing
+  generalized. Final decision (reverses the "adopted" recommendation
+  below): NOT relocated, stays in `adapters/nethttp` unchanged.**
+  `rest.ServerTransport.Serve(ctx) error` (Phase 4d, already shipped)
+  already blocks and owns its own `*http.Server`, walking every
+  registered route — the direct, already-existing
   cross-API-consistent equivalent of `reqreply.ServerTransport.Serve`/
   `events.Transport.Subscribe`. `ServeOne` is a DIFFERENT, additional
   use case — build a bare `http.Handler` for exactly one route, to
   mount onto a caller-owned, external `*http.ServeMux`/app router — a
   use case with NO structural equivalent in MQTT/ZeroMQ/reqreply
   (there is no "caller-owned external broker to embed a handler into"
-  concept for those protocols). **`ServeOne` cannot be
-  cross-API-generalized — it is correctly, permanently REST-only.**
-  Recommendation (adopted): still relocate it to `api/rest` as a
-  REST-only verb, for consistency with `CallWithHandle`'s move — it is
-  pure builder-pattern sugar with no adapter-specific state
-  (`rest.NewServer`+`Register`+internal `serve` are all already
-  callable from `api/rest`+the adapter's own `Register` alone).
+  concept for those protocols). Its own return type, `http.Handler`,
+  is inherently, unavoidably HTTP-specific — `api/rest` cannot express
+  it at all by design (no `net/http` import). A closer look during
+  implementation walked back the original "still relocate it"
+  recommendation directly below: `ServeOne` was never actually a
+  backdoor (it doesn't bypass `rest.ServerTransport`/duplicate logic
+  the way `CallWithHandle` risked doing) — it is already exactly where
+  it should structurally live. ~~Recommendation (adopted): still
+  relocate it to `api/rest` as a REST-only verb, for consistency with
+  `CallWithHandle`'s move — it is pure builder-pattern sugar with no
+  adapter-specific state (`rest.NewServer`+`Register`+internal `serve`
+  are all already callable from `api/rest`+the adapter's own
+  `Register` alone).~~
 
 - **`chi` — CONFIRMED out of scope, not symmetric with `nethttp`.**
   `chi` has NO `CallWithHandle` equivalent at all (server-only router
@@ -2818,6 +2889,92 @@ enormously — captured below, resolved per-API:**
   (`ServeWithTransport`/`CallWithTransport` above are working names,
   not final); whether `ServeOne`'s relocated name changes to match
   `rest`'s existing verb-naming convention.
+
+**Implementation learnings (this section written after Phase 5a
+shipped — reconciles the design sketch above with what was actually
+built):**
+
+- **`reqreply` was exactly as easy as designed — a provably lossless,
+  mechanical relocation.** `NewServerTransport`/`NewClientTransport`
+  (both adapters) already nested the full rich options type the
+  deleted escape hatches took directly; zero fields were lost. The one
+  real (non-test) call site (`examples/reqreply-api`) and ~80 test
+  call sites across both adapters were migrated using a **reusable
+  test-shim pattern**: define a test-only function with the OLD
+  signature that internally builds the new transport and delegates,
+  then do a precise, method-call-excluding regex rename
+  (`(?<![\w.])FuncName\(`) across every test file — avoids rewriting
+  every call site's argument list by hand.
+- **`api/rest.ClientCallOptions` had to grow FAR beyond the two-field
+  sketch above.** Investigating `nethttp.CallWithHandle`'s actual
+  richness (not just its signature) surfaced that its own
+  `nethttp.CallOptions` carried six fields `ClientCallOptions` lacked:
+  explicit per-call `QueryParams`/`CookieParams`/`HeaderParams`
+  override maps, `ExtraHeaders` (arbitrary undeclared headers),
+  `OnCredentialRejected` (401 notification hook), and a per-call
+  `Observer` override. All six were added to `ClientCallOptions`.
+  `ExtraHeaders` could NOT be typed `http.Header` (`api/rest` may not
+  import `net/http`, per `.github/instructions/go-codex.instructions.md`)
+  — it is `map[string][]string` instead, which is `http.Header`'s
+  exact underlying layout; `nethttp` converts it back via a direct
+  type conversion at the request-build boundary. `Observer
+  stats.Observer` introduced no NEW import-rule violation — `api/rest`
+  already imports `stats` elsewhere (`observability.go`,
+  `transform_dispatch.go`).
+- **The biggest, previously-unknown finding: `clientTransport.Call`
+  itself — i.e. the EXISTING, "blessed" `Client.Attach`+`Client.Call`
+  workflow, not just the new escape-hatch replacement — had FOUR real,
+  pre-existing gaps relative to `callWithVars`/`CallWithHandle`.**
+  These were never exercised by `Client.Call`'s own test suite because
+  nothing had ever compared the two paths field-by-field before. Only
+  discovered by literally porting a representative sample of
+  `CallWithHandle`'s existing tests onto `CallWithTransport` and
+  running them (per this skill's "Removing an old API" checklist —
+  reflection-dispatcher equivalence is a hypothesis until verified by
+  migration, not by code review). All four were fixed directly in
+  `clientTransport.Call`, benefiting `Client.Attach` too, not just the
+  new verb:
+  1. Query/Cookie/Header codec validation (`ValidateQuery`/
+     `ValidateCookies`/`ValidateHeaders`) was never called.
+  2. Implementation-shape eager validation was missing (new
+     `validateClientImplementationShapesReflect` helper added).
+  3. Response header/cookie merge-field decoding was missing — no
+     reflection-callable way existed to merge into an already-decoded
+     value, so a new exported method, `RouteHandle.
+     ApplyResponseMergeFields(resp *Resp, headers, cookies
+     map[string]string) error`, was added to `api/rest` (mirrors the
+     existing request-side `ApplyMergeFields`).
+  4. `stats.WithDiagnostics`/`DiagnosticsFromContext` draining was
+     missing.
+  - **One gap was left as an accepted, documented limitation, not
+    fixed:** `rest.ClientTransform` dispatch. Confirmed via repo-wide
+    grep that ZERO real (non-test) `CallWithHandle` callers ever used
+    it, and that `Client.Attach`+`Client.Consume` has the IDENTICAL,
+    symmetric gap already (unaffected by this phase) — closing it was
+    out of scope for a "lossless replacement of `CallWithHandle`"
+    goal, since `CallWithHandle` itself never supported it either.
+- **`clientTransport.Call`'s reflection dispatch also had to accept a
+  bare `*rest.RouteHandle[Req,Resp]`, not just `rest.Route[Req,Resp]`**
+  — confirmed via reading its actual type check
+  (`!strings.HasPrefix(rv.Type().Name(), "Route[")`, hard-rejecting a
+  bare handle). A new `recoverClientRouteHandleValue` helper (mirrors
+  reqreply's `recoverRouteHandleValue`) fixed this — required for
+  `mcprest`/`binding.go`'s bare-handle callers to work at all.
+- **Blast radius was confirmed narrow, not "every REST adapter":**
+  `chi` has zero `rest.ClientTransport` implementation at all
+  (server-only router) — `nethttp` was the only adapter needing the
+  reflection-dispatch work.
+- **Real callers migrated, beyond the 9+ examples originally
+  estimated:** `adapters/mcprest/bridge.go`'s OWN public API
+  (`ToolHandler`/`MappedToolHandler`) took a `nethttp.CallOptions`
+  parameter — migrated to `rest.ClientCallOptions`, decoupling
+  `mcprest` from a specific adapter's option type as a side benefit.
+  `adapters/nethttp/binding.go`'s `ports.IOAdapter` REST-call binding
+  (`nethttpCallAdapter`) also called `CallWithHandle` internally —
+  `CallStreamOptions`/`DrainCallOptions`'s public `CallOpts` field type
+  changed from `nethttp.CallOptions` to `rest.ClientCallOptions`
+  accordingly (a real, but 1:1 field-mapping-preserving, breaking
+  change for that binding's own callers).
 
 ### Phase 6 — `api/rest`: the SAME shift for Header/Cookie/Query
 

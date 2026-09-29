@@ -76,7 +76,7 @@ func TestErrorChannel_SecurityImplFn_Matched_Publishes_ViaSubscribeHandle(t *tes
 	onErrorCalled := false
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := subscribeHandle(ctx, caller.client, handle, 1,
+	if err := subscribeHandle(ctx, caller.client, handle,
 		func(_ context.Context, _ userEvent) error {
 			t.Fatal("handler must not be called when the security implementation rejects")
 			return nil

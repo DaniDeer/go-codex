@@ -291,13 +291,8 @@ func (a *mqtt5CallAdapter[Req, Resp]) Transform(ctx context.Context, src gstream
 					valCh = nil
 					continue
 				}
-				var resp Resp
-				var err error
-				if a.opts.Vars == nil {
-					resp, err = CallHandle(ctx, a.client, a.router, a.handle, req, a.opts)
-				} else {
-					resp, err = Call(ctx, a.client, a.router, a.handle, req, a.opts)
-				}
+				transport := NewClientTransport(ClientTransportOptions{Client: a.client, Router: a.router, Call: a.opts})
+				resp, err := reqreply.CallWithTransport(ctx, transport, a.handle, req)
 				if err != nil {
 					select {
 					case errs <- err:
@@ -330,9 +325,10 @@ func (a *mqtt5CallAdapter[Req, Resp]) Transform(ctx context.Context, src gstream
 // ── ServeAdapter ──────────────────────────────────────────────────────────────
 
 // ServeAdapter returns a [ports.ToolAdapter] that registers the pipeline
-// function as an MQTT 5 request/reply server via [Serve]. When
-// [ports.ToolPort.Bind] is called, the pipeline function is wrapped as an
-// [AsPipelineFunc] handler and [Serve] is started in a background goroutine.
+// function as an MQTT 5 request/reply server via
+// [reqreply.ServeWithTransport]. When [ports.ToolPort.Bind] is called,
+// the pipeline function is wrapped as an [AsPipelineFunc] handler and
+// [reqreply.ServeWithTransport] is started in a background goroutine.
 // Use with [ports.ToolPort.Bind]:
 //
 //	domain.OEEToolPort.Bind(ctx, mqtt5.ServeAdapter(client, router, handle, opts))
@@ -358,6 +354,7 @@ func (a *mqtt5ServeAdapter[Req, Resp]) Bind(
 	ctx context.Context,
 	fn func(context.Context, Req) gstream.Stream[Resp],
 ) error {
-	go Serve(ctx, a.client, a.router, a.handle, AsPipelineFunc(fn), a.opts) //nolint:errcheck
+	transport := NewServerTransport(ServerTransportOptions{Client: a.client, Router: a.router, Serve: a.opts})
+	go reqreply.ServeWithTransport(ctx, transport, a.handle, AsPipelineFunc(fn)) //nolint:errcheck
 	return nil
 }

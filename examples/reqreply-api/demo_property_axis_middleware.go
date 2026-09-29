@@ -7,6 +7,7 @@ import (
 
 	mqtt5adapter "github.com/DaniDeer/go-codex/adapters/mqtt5"
 	"github.com/DaniDeer/go-codex/adapters/zeromq"
+	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/mqtt5server"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/routes"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/zeromqserver"
@@ -50,10 +51,13 @@ func demoPropertyAxisMiddleware(ctx context.Context, mqtt5Built *mqtt5server.Bui
 // TestAttachServer_WithResponseProperty_WritesOutgoingUserProperty's own
 // assertion but as a visible, narrated demo instead of a unit test.
 func demoPropertyAxisMQTT5(ctx context.Context, built *mqtt5server.Built) {
-	resp, err := mqtt5adapter.Call(ctx, built.Broker, built.Router, built.PropertyAxisHandle,
-		routes.ComputeReq{X: 5, Y: 7}, mqtt5adapter.CallOptions{
+	transport := mqtt5adapter.NewClientTransport(mqtt5adapter.ClientTransportOptions{
+		Client: built.Broker, Router: built.Router,
+		Call: mqtt5adapter.CallOptions{
 			UserProperties: []mqtt5adapter.UserProperty{{Key: "X-Tenant-Id", Value: "tenant-42"}},
-		})
+		},
+	})
+	resp, err := reqreply.CallWithTransport(ctx, transport, built.PropertyAxisHandle, routes.ComputeReq{X: 5, Y: 7})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "unexpected error: %v\n", err)
 		os.Exit(1)
@@ -95,8 +99,10 @@ func demoPropertyAxisMQTT5(ctx context.Context, built *mqtt5server.Built) {
 // TestMiddleware_WithRequestProperty_RequiredButAdapterSuppliesNoPropertyMap
 // for that scenario, unit-tested at the package level.)
 func demoPropertyAxisZeroMQ(ctx context.Context, built *zeromqserver.Built) {
-	resp, err := zeromq.Call(ctx, built.ClientSockets["compute/property-axis-add"], built.PropertyAxisHandle,
-		routes.ComputeReq{X: 5, Y: 7}, zeromq.CallOptions{})
+	transport := zeromq.NewClientTransport(zeromq.ClientTransportOptions{
+		Sockets: map[string]zeromq.FramedSocket{built.PropertyAxisHandle.Topic: built.ClientSockets["compute/property-axis-add"]},
+	})
+	resp, err := reqreply.CallWithTransport(ctx, transport, built.PropertyAxisHandle, routes.ComputeReq{X: 5, Y: 7})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "unexpected error: %v\n", err)
 		os.Exit(1)

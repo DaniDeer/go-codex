@@ -8,6 +8,7 @@ import (
 
 	mcpgo "github.com/DaniDeer/go-codex/adapters/mcpgo"
 	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
+	"github.com/DaniDeer/go-codex/api/rest"
 	internal "github.com/DaniDeer/go-codex/examples/go-edge-models/internal/registry"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker"
 	regmodels "github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker/registry"
@@ -42,7 +43,7 @@ const acceptManifestTypes = "application/vnd.docker.distribution.manifest.v2+jso
 // defaultPlatform is used when GetImageMetadataReq.Platform is empty.
 const defaultPlatform = "linux/amd64"
 
-// fetchManifest is a single, fully declarative nethttp.CallWithHandle for
+// fetchManifest is a single, fully declarative rest.CallWithTransport for
 // one manifest reference — GetManifestRoute's response-header merge field
 // already populates the returned internal.ManifestEnvelope's Digest from
 // Docker-Content-Digest automatically, so no manual HTTP or header
@@ -62,11 +63,12 @@ const defaultPlatform = "linux/amd64"
 func fetchManifest(ctx context.Context, httpClient *http.Client, baseURL, repository, reference string, authFn credentialFunc, obs stats.Observer) (internal.ManifestEnvelope, error) {
 	route := regmodels.GetManifestRoute.ClientMW(&regmodels.BearerAuthDeclaration, authFn)
 	handle := route.ClientHandle()
-	opts := nethttp.CallOptions{
-		ExtraHeaders: http.Header{"Accept": []string{acceptManifestTypes}},
+	opts := rest.ClientCallOptions{
+		ExtraHeaders: map[string][]string{"Accept": {acceptManifestTypes}},
 		Observer:     obs,
 	}
-	return nethttp.CallWithHandle(ctx, httpClient, baseURL, handle,
+	transport := nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: httpClient, BaseURL: baseURL})
+	return rest.CallWithTransport(ctx, transport, handle,
 		regmodels.GetManifestReq{Name: repository, Reference: reference}, opts)
 }
 

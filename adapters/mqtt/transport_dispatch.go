@@ -23,12 +23,11 @@ import (
 // (validateSubscribeImplementationShapesReflect/
 // runSubscribeSecurityImplsReflect) ALREADY EXIST in caller.go, built for
 // [(*caller).ServeSubscribers]'s own reflection-only dispatch — reused
-// directly here rather than duplicated. This package has NOT yet
-// migrated to the Apply-interface Capability shape mqtt5/zeromq use
-// (Phase 5's explicit job — see transport.go's [defaultQoS] doc comment)
-// — Capabilities resolution is untouched by this Phase 4e work, only
-// wired ALONGSIDE it via the existing [events.ResolveCapabilityValue]
-// mechanism.
+// directly here rather than duplicated. This package now uses the SAME
+// Apply-interface Capability shape mqtt5/zeromq use (docs/roadmap/
+// capability-requirement-composition.md's Phase 5 — see transport.go's
+// [defaultQoS] doc comment) — Capabilities resolution is wired via
+// [events.ApplyCapabilities] against a [WireAttributes] value.
 //
 // Per docs/roadmap/capability-requirement-composition.md's Phase 4e:
 // middleware.ServerImplementation/ClientImplementation are ALREADY

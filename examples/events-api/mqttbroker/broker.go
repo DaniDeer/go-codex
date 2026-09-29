@@ -67,7 +67,9 @@ func Build(credential string, store *handlers.TimeSeriesStore, threshold float64
 
 	measurementSub := routes.MeasurementSub.WithHandler(
 		handlers.MeasurementHandler(store, threshold, func(ctx context.Context, a routes.AlertEvent) error {
-			return events.PublishHandle(ctx, routes.MeasurementAlertPub, adaptermqtt.NewPublishTransport[routes.AlertEvent](client, 1, false, adaptermqtt.PublishOptions[routes.AlertEvent]{}), a)
+			return events.PublishHandle(ctx, routes.MeasurementAlertPub, adaptermqtt.NewPublishTransport[routes.AlertEvent](client, adaptermqtt.PublishOptions[routes.AlertEvent]{
+				Capabilities: []adaptermqtt.Capability{adaptermqtt.QoSAtLeastOnce},
+			}), a)
 		}),
 	)
 	if err := measurementSub.Register(eventsClient); err != nil {

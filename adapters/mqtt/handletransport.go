@@ -18,18 +18,18 @@ import (
 // — unlike [events.Transport], which is a method-based, `any`-typed
 // interface out of structural necessity, not stylistic choice).
 //
-//	transport := mqtt.NewPublishTransport[Reading](client, 1, false, mqtt.PublishOptions[Reading]{})
+//	transport := mqtt.NewPublishTransport[Reading](client, mqtt.PublishOptions[Reading]{
+//	    Capabilities: []mqtt.Capability{mqtt.QoSAtLeastOnce},
+//	})
 //	err := events.PublishHandle(ctx, sensorChannel.WithPublish(events.Publish{}), transport, reading)
-func NewPublishTransport[T any](client pahomqtt.Client, qos byte, retained bool, opts PublishOptions[T], formats ...format.Format[T]) events.PublishTransport[T] {
-	return &publishTransport[T]{client: client, qos: qos, retained: retained, opts: opts, formats: formats}
+func NewPublishTransport[T any](client pahomqtt.Client, opts PublishOptions[T], formats ...format.Format[T]) events.PublishTransport[T] {
+	return &publishTransport[T]{client: client, opts: opts, formats: formats}
 }
 
 type publishTransport[T any] struct {
-	client   pahomqtt.Client
-	qos      byte
-	retained bool
-	opts     PublishOptions[T]
-	formats  []format.Format[T]
+	client  pahomqtt.Client
+	opts    PublishOptions[T]
+	formats []format.Format[T]
 }
 
 // Publish implements [events.PublishTransport]. Delegates to the same
@@ -38,7 +38,7 @@ type publishTransport[T any] struct {
 // resolution, Observer/tracing, general-purpose middleware wrapping —
 // unchanged.
 func (t *publishTransport[T]) Publish(ctx context.Context, handle *events.ChannelHandle[T], msg T) error {
-	return publishHandle(ctx, t.client, handle, t.qos, t.retained, msg, t.opts, t.formats...)
+	return publishHandle(ctx, t.client, handle, msg, t.opts, t.formats...)
 }
 
 // AdapterName implements [events.PublishTransport].
@@ -52,16 +52,17 @@ var _ events.PublishTransport[struct{}] = (*publishTransport[struct{}])(nil)
 // call surface. See [NewPublishTransport]'s doc comment for the full
 // design rationale.
 //
-//	transport := mqtt.NewSubscribeTransport[Reading](client, 1, mqtt.SubscribeOptions{})
+//	transport := mqtt.NewSubscribeTransport[Reading](client, mqtt.SubscribeOptions{
+//	    Capabilities: []mqtt.Capability{mqtt.QoSAtLeastOnce},
+//	})
 //	err := events.SubscribeHandle(ctx, sensorChannel.WithSubscribe(events.Subscribe{}), transport,
 //	    func(ctx context.Context, r Reading) error { ... })
-func NewSubscribeTransport[T any](client pahomqtt.Client, qos byte, opts SubscribeOptions, formats ...format.Format[T]) events.SubscribeTransport[T] {
-	return &subscribeTransport[T]{client: client, qos: qos, opts: opts, formats: formats}
+func NewSubscribeTransport[T any](client pahomqtt.Client, opts SubscribeOptions, formats ...format.Format[T]) events.SubscribeTransport[T] {
+	return &subscribeTransport[T]{client: client, opts: opts, formats: formats}
 }
 
 type subscribeTransport[T any] struct {
 	client  pahomqtt.Client
-	qos     byte
 	opts    SubscribeOptions
 	formats []format.Format[T]
 }
@@ -82,7 +83,7 @@ type subscribeTransport[T any] struct {
 // ctx is cancelled" contract even though the receiving itself happens on
 // paho's own goroutines in the background.
 func (t *subscribeTransport[T]) Subscribe(ctx context.Context, handle *events.ChannelHandle[T], fn func(context.Context, T) error) error {
-	if err := subscribeHandle(ctx, t.client, handle, t.qos, fn, t.opts, t.formats...); err != nil {
+	if err := subscribeHandle(ctx, t.client, handle, fn, t.opts, t.formats...); err != nil {
 		return err
 	}
 	<-ctx.Done()

@@ -30,20 +30,25 @@ import (
 // NON-BLOCKING (registers with the broker and returns immediately),
 // a DELIBERATE, structural difference from Client.Subscribe's
 // block-until-cancelled contract that Client.Subscribe cannot provide.
-// This mirrors adapters/nethttp's OWN CallWithHandle/ServeOne — an
-// analogous adapter-owned, lower-tier primitive existing alongside
-// api/rest's Client.Call/Attach for the identical reason.
+// This mirrors adapters/nethttp's `ServeOne` — an analogous
+// adapter-owned, lower-tier primitive existing alongside api/rest's
+// Client.Call/Attach for the identical reason (REST/reqreply's OWN
+// "drive" verb, `CallWithHandle`, moved onto the API layer as
+// `rest.CallWithTransport`/`reqreply.CallWithTransport` — see below).
 //
-// TRACKED FOR POSSIBLE ELIMINATION: per an explicit user directive, this
-// whole tier (adapter-owned New*Transport[T] factories +
-// events.SubscribeHandle/PublishHandle for events; adapters/nethttp's
-// CallWithHandle/ServeOne for REST; adapters/mqtt5/zeromq's
-// Serve[Req,Resp]/Call[Req,Resp] for reqreply) is a candidate to move
-// onto an API-layer-owned attach mechanism — see the roadmap doc's
-// Phase 4f (scope statement only, not yet designed/implemented) for the
-// concrete investigation of what such a move would require. This demo's
-// premise is NOT considered final until Phase 4f resolves one way or
-// the other.
+// RESOLVED (docs/roadmap/capability-requirement-composition.md's Phase
+// 5a): `adapters/nethttp.CallWithHandle` and `adapters/mqtt5`/
+// `adapters/zeromq`'s `Serve[Req,Resp]`/`Call[Req,Resp]` were deleted;
+// `api/rest.CallWithTransport`/`api/reqreply.CallWithTransport`/
+// `ServeWithTransport` now own the "drive" step, taking an adapter-built
+// `New*Transport` value — matching THIS demo's `events.SubscribeHandle`/
+// `PublishHandle` shape exactly. `ServeOne` was investigated too and
+// confirmed to stay adapter-owned (its return type, `http.Handler`, is
+// inherently HTTP-specific — no reqreply/events equivalent concept
+// exists to compare it against). This demo's own premise (a
+// compile-time type-safe, spec-free, non-blocking primitive existing
+// alongside the spec-driven Client workflow) is UNCHANGED and now the
+// established, final shape across all three APIs.
 func demoEscapeHatchWorkflow(ctx context.Context) {
 	fmt.Println("--- Demo: mqtt v3 handle-based escape hatch (OnError, non-default format) ---")
 
@@ -57,7 +62,8 @@ func demoEscapeHatchWorkflow(ctx context.Context) {
 		},
 	}
 	yamlFormat := format.YAML(routes.SensorReadingCodec)
-	transport := adaptermqtt.NewSubscribeTransport[routes.SensorReading](client, 1, opts, yamlFormat)
+	opts.Capabilities = []adaptermqtt.Capability{adaptermqtt.QoSAtLeastOnce}
+	transport := adaptermqtt.NewSubscribeTransport[routes.SensorReading](client, opts, yamlFormat)
 
 	handleCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 	defer cancel()

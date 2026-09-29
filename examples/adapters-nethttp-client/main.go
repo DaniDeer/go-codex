@@ -23,17 +23,22 @@
 // contract.EmailConflictError, with [stats.WithObserver] on the ctx picked
 // up automatically by both calls.
 //
-// # Sections 1-5 — CallWithHandle: the escape hatch for per-call HTTP options
+// # Sections 1-5 — CallWithTransport: per-call HTTP options against a bare *RouteHandle
 //
 // This example makes over a dozen calls, all against the SAME
-// (httpClient, baseURL) pair, and relies on [stats.WithObserver]'s
-// context-based metrics collection for EVERY call (see the Observer
-// summary section at the end) — [nethttp.CallWithHandle] remains in use
-// for sections 1-5 because they demonstrate [nethttp.CallOptions] fields
-// (credential caching/invalidation, per-call retry-once-on-401) that
-// [rest.Client.Call]'s simpler, option-free signature does not expose —
-// NOT because of any remaining Observer/ErrorPattern gap (that gap is
-// closed; Section 0 proves it). Each distinct contract.Route value builds
+// (httpClient, baseURL) pair (via ONE transport built once), and relies
+// on [stats.WithObserver]'s context-based metrics collection for EVERY
+// call (see the Observer summary section at the end) —
+// [rest.CallWithTransport] is used for sections 1-5 because they
+// demonstrate [rest.ClientCallOptions] fields (credential caching/
+// invalidation, per-call retry-once-on-401, explicit Query/Cookie/Header
+// overrides) against a bare *rest.RouteHandle, with no [*rest.Client]/
+// spec-registration ceremony needed (docs/roadmap/capability-requirement-
+// composition.md's Phase 5a — the former [nethttp.CallWithHandle] this
+// section used to demonstrate was removed; [rest.CallWithTransport]
+// replaces it losslessly, now built on the SAME [rest.ClientTransport]
+// interface [rest.Client.Call] itself uses, mirroring events/reqreply's
+// own api-layer-owned verb). Each distinct contract.Route value builds
 // its own *rest.RouteHandle ONCE, right after the server starts (or right
 // after a fresh .ClientMW(...) call for the security scenarios in section
 // 4, since ClientMW produces a distinct route value each time), and every
@@ -325,11 +330,17 @@ func main() {
 
 	httpClient := &http.Client{}
 	baseURL := "http://" + addr
+	// transport is built ONCE and reused for every rest.CallWithTransport
+	// call below (docs/roadmap/capability-requirement-composition.md's
+	// Phase 5a — the former nethttp.CallWithHandle this example
+	// demonstrated was removed; rest.CallWithTransport replaces it
+	// losslessly, mirroring events/reqreply's own api-layer-owned verb).
+	transport := nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: httpClient, BaseURL: baseURL})
 
 	// Each distinct route value below builds its OWN *rest.RouteHandle
 	// ONCE, right after the server starts, and reuses it for every
-	// CallWithHandle call against that same route — the recommended
-	// pattern for many calls to the same route.
+	// rest.CallWithTransport call against that same route — the
+	// recommended pattern for many calls to the same route.
 	createUserHandle := contract.CreateUser.ClientHandle()
 	getUserHandle := contract.GetUser.ClientHandle()
 	getUserActivityHandle := contract.GetUserActivity.ClientHandle()
@@ -361,7 +372,7 @@ func main() {
 	// Duplicate email — CreateUser's declared rest.ErrorPattern still
 	// decodes correctly through Client.Attach: errors.As extracts the
 	// SAME typed contract.EmailConflictError Call's escape-hatch sibling
-	// (nethttp.CallWithHandle, section 1b below) also produces.
+	// (rest.CallWithTransport, section 1b below) also produces.
 	_, err = restClient.Call(clientCtx, contract.CreateUser,
 		contract.CreateUserReq{Name: "Bob Again", Email: "bob@example.com"})
 	var attachConflictResp nethttp.ErrorPatternResponse
@@ -385,9 +396,9 @@ func main() {
 	// Call takes the SAME contract.CreateUser rest.Route value directly —
 	// it derives a client handle internally via Route.ClientHandle(), so
 	// there is no separate "register a client copy" step needed at all.
-	alice, err := nethttp.CallWithHandle(clientCtx, httpClient, baseURL, createUserHandle,
+	alice, err := rest.CallWithTransport(clientCtx, transport, createUserHandle,
 		contract.CreateUserReq{Name: "Alice", Email: "alice@example.com"},
-		nethttp.CallOptions{}) // observer from clientCtx
+		rest.ClientCallOptions{}) // observer from clientCtx
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "create alice:", err)
 		os.Exit(1)
@@ -405,9 +416,9 @@ func main() {
 	// json.Unmarshal needed.
 	fmt.Println("=== 1b. Client-side typed error decode ===")
 
-	_, err = nethttp.CallWithHandle(clientCtx, httpClient, baseURL, createUserHandle,
+	_, err = rest.CallWithTransport(clientCtx, transport, createUserHandle,
 		contract.CreateUserReq{Name: "Alice Again", Email: "alice@example.com"}, // duplicate email
-		nethttp.CallOptions{})
+		rest.ClientCallOptions{})
 	if err == nil {
 		fmt.Fprintln(os.Stderr, "expected email-conflict error, got nil")
 		os.Exit(1)
@@ -439,9 +450,9 @@ func main() {
 	// for client use must declare merge fields for the values it needs).
 	fmt.Println("=== 2. Path params: GET /users/{id} ===")
 
-	fetched, err := nethttp.CallWithHandle(clientCtx, httpClient, baseURL, getUserHandle,
+	fetched, err := rest.CallWithTransport(clientCtx, transport, getUserHandle,
 		contract.GetUserReq{ID: alice.ID},
-		nethttp.CallOptions{}) // observer from clientCtx
+		rest.ClientCallOptions{}) // observer from clientCtx
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "get alice:", err)
 		os.Exit(1)
@@ -453,9 +464,9 @@ func main() {
 	// field's own codec, checked at DERIVE time), not rest.PathParamError
 	// (which only ever fires from BuildPath's re-validation, unreachable
 	// here since the merge field already rejects the value first).
-	_, err = nethttp.CallWithHandle(clientCtx, httpClient, baseURL, getUserHandle,
+	_, err = rest.CallWithTransport(clientCtx, transport, getUserHandle,
 		contract.GetUserReq{ID: ""}, // empty — fails NonEmptyString codec
-		nethttp.CallOptions{})       // observer from clientCtx
+		rest.ClientCallOptions{})    // observer from clientCtx
 	if err != nil {
 		var valErr codex.ValidationError
 		if errors.As(err, &valErr) {
@@ -485,8 +496,8 @@ func main() {
 	fmt.Println("=== 2b. Client encode: role-aware merge fields + response merge ===")
 
 	activityReq := contract.GetUserActivityReq{ID: alice.ID, Filter: "logins"}
-	activity, err := nethttp.CallWithHandle(clientCtx, httpClient, baseURL, getUserActivityHandle,
-		activityReq, nethttp.CallOptions{})
+	activity, err := rest.CallWithTransport(clientCtx, transport, getUserActivityHandle,
+		activityReq, rest.ClientCallOptions{})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "get user activity:", err)
 		os.Exit(1)
@@ -501,8 +512,8 @@ func main() {
 	fmt.Println("=== 3. Cookies + headers: GET /profile ===")
 
 	// Happy path: valid session_token cookie and X-Request-Id header.
-	profile, err := nethttp.CallWithHandle(clientCtx, httpClient, baseURL, getProfileHandle, struct{}{},
-		nethttp.CallOptions{
+	profile, err := rest.CallWithTransport(clientCtx, transport, getProfileHandle, struct{}{},
+		rest.ClientCallOptions{
 			CookieParams: map[string]string{
 				"session_token": "my-valid-session-abc123",
 			},
@@ -518,8 +529,8 @@ func main() {
 	fmt.Printf("profile: %+v\n", profile)
 
 	// Cookie validation failure: empty session_token fails NonEmptyString codec.
-	_, err = nethttp.CallWithHandle(clientCtx, httpClient, baseURL, getProfileHandle, struct{}{},
-		nethttp.CallOptions{
+	_, err = rest.CallWithTransport(clientCtx, transport, getProfileHandle, struct{}{},
+		rest.ClientCallOptions{
 			CookieParams: map[string]string{"session_token": ""}, // invalid
 			HeaderParams: map[string]string{"X-Request-Id": "f47ac10b-58cc-4372-a567-0e02b2c3d479"},
 		})
@@ -535,8 +546,8 @@ func main() {
 	}
 
 	// Header validation failure: non-UUID value fails UUID codec.
-	_, err = nethttp.CallWithHandle(clientCtx, httpClient, baseURL, getProfileHandle, struct{}{},
-		nethttp.CallOptions{
+	_, err = rest.CallWithTransport(clientCtx, transport, getProfileHandle, struct{}{},
+		rest.ClientCallOptions{
 			CookieParams: map[string]string{"session_token": "my-valid-session-abc123"},
 			HeaderParams: map[string]string{"X-Request-Id": "not-a-uuid"}, // invalid
 		})
@@ -584,7 +595,7 @@ func main() {
 	securedRouteWithAuthHandle := securedRouteWithAuth.ClientHandle()
 
 	// Happy path: the credential fn declared via ClientMW runs automatically.
-	data, err := nethttp.CallWithHandle(clientCtx, httpClient, baseURL, securedRouteWithAuthHandle, struct{}{}, nethttp.CallOptions{})
+	data, err := rest.CallWithTransport(clientCtx, transport, securedRouteWithAuthHandle, struct{}{}, rest.ClientCallOptions{})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "get secured data:", err)
 		os.Exit(1)
@@ -599,7 +610,7 @@ func main() {
 	// unchanged non-error, symmetric with server-side security enforcement.
 	securedRouteNoAuth := contract.GetSecuredData(securedMw)
 	securedRouteNoAuthHandle := securedRouteNoAuth.ClientHandle()
-	_, err = nethttp.CallWithHandle(clientCtx, httpClient, baseURL, securedRouteNoAuthHandle, struct{}{}, nethttp.CallOptions{})
+	_, err = rest.CallWithTransport(clientCtx, transport, securedRouteNoAuthHandle, struct{}{}, rest.ClientCallOptions{})
 	if err != nil {
 		var statusErr nethttp.UnexpectedStatusError
 		if errors.As(err, &statusErr) {
@@ -624,7 +635,7 @@ func main() {
 			return h, nil
 		})
 	securedRouteMalformedHandle := securedRouteMalformed.ClientHandle()
-	_, err = nethttp.CallWithHandle(clientCtx, httpClient, baseURL, securedRouteMalformedHandle, struct{}{}, nethttp.CallOptions{})
+	_, err = rest.CallWithTransport(clientCtx, transport, securedRouteMalformedHandle, struct{}{}, rest.ClientCallOptions{})
 	if err != nil {
 		var credErr rest.SecurityCredentialError
 		if errors.As(err, &credErr) {
@@ -643,7 +654,7 @@ func main() {
 			return nil, tokenExpiredErr
 		})
 	securedRouteErrCredHandle := securedRouteErrCred.ClientHandle()
-	_, err = nethttp.CallWithHandle(clientCtx, httpClient, baseURL, securedRouteErrCredHandle, struct{}{}, nethttp.CallOptions{})
+	_, err = rest.CallWithTransport(clientCtx, transport, securedRouteErrCredHandle, struct{}{}, rest.ClientCallOptions{})
 	if err != nil {
 		if errors.Is(err, tokenExpiredErr) {
 			logger.Warn("credential error (no request sent)", "cause", err)
@@ -679,7 +690,7 @@ func main() {
 	cachedCredFn, invalidateCred := nethttp.NewCachingCredentialFunc(innerCredFn, nethttp.CachingCredentialFuncOptions{
 		TTL: time.Hour,
 	})
-	cachedCallOpts := nethttp.CallOptions{
+	cachedCallOpts := rest.ClientCallOptions{
 		OnCredentialRejected: invalidateCred,
 	}
 	// Declared ONCE via .ClientMW(...) — every Call below reuses the SAME
@@ -690,11 +701,11 @@ func main() {
 
 	// First call: the stale cached token is rejected (401). OnCredentialRejected
 	// purges the cache, so an explicit retry fetches a fresh credential.
-	_, err = nethttp.CallWithHandle(clientCtx, httpClient, baseURL, securedRouteCachedHandle, struct{}{}, cachedCallOpts)
+	_, err = rest.CallWithTransport(clientCtx, transport, securedRouteCachedHandle, struct{}{}, cachedCallOpts)
 	var rejectedErr nethttp.UnexpectedStatusError
 	if errors.As(err, &rejectedErr) && rejectedErr.StatusCode == http.StatusUnauthorized {
 		logger.Info("credential rejected — retrying once with a refreshed credential")
-		data, err = nethttp.CallWithHandle(clientCtx, httpClient, baseURL, securedRouteCachedHandle, struct{}{}, cachedCallOpts)
+		data, err = rest.CallWithTransport(clientCtx, transport, securedRouteCachedHandle, struct{}{}, cachedCallOpts)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "retry after credential refresh:", err)
 			os.Exit(1)
@@ -704,7 +715,7 @@ func main() {
 
 	// Second call reuses the now-valid cached credential — inner is NOT
 	// invoked again.
-	data, err = nethttp.CallWithHandle(clientCtx, httpClient, baseURL, securedRouteCachedHandle, struct{}{}, cachedCallOpts)
+	data, err = rest.CallWithTransport(clientCtx, transport, securedRouteCachedHandle, struct{}{}, cachedCallOpts)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cached call:", err)
 		os.Exit(1)

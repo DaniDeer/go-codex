@@ -179,7 +179,7 @@ func main() {
 	mqttClient := adapters.NewMockMQTTClient()
 	readingHandle, err := ioports.Sensors.PluginEventPattern(ioports.SensorsPattern)
 	must(err, "plug in sensors EventPattern")
-	ioports.Sensors.Bind(ctx, adaptermqtt.SubscribeAdapter(mqttClient, readingHandle, 0,
+	ioports.Sensors.Bind(ctx, adaptermqtt.SubscribeAdapter(mqttClient, readingHandle,
 		format.JSON(domain.MQTTPayloadCodec),
 		adaptermqtt.SubscribeAdapterOptions{TopicFilter: "sensors/+/data"}))
 

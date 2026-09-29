@@ -74,7 +74,7 @@ func TestDeadLetter_PublishFailure_Published(t *testing.T) {
 
 	client := &topicFailingClient{mockClient: &mockClient{token: newCompletedToken(nil)}, failTopic: "user/created", failErr: errors.New("broker unavailable")}
 
-	err = publish(context.Background(), client, handle, 1, false,
+	err = publish(context.Background(), client, handle,
 		userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}, nil, PublishOptions[userEvent]{})
 	if err == nil {
 		t.Fatal("want a publish error to propagate to the caller unchanged")

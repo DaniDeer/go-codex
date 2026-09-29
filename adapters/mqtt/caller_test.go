@@ -69,7 +69,7 @@ func TestSubscribe_ValueBased_DeliversMessage(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	if err := subscribe(ctx, caller, sub, 1,
+	if err := subscribe(ctx, caller, sub,
 		func(_ context.Context, r sensorReading) error {
 			mu.Lock()
 			received = r
@@ -180,7 +180,7 @@ func TestSubscribe_TopicFilter_DerivesWildcardFromTemplate(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	if err := subscribe(ctx, caller, sub, 1,
+	if err := subscribe(ctx, caller, sub,
 		func(_ context.Context, r sensorReading) error {
 			mu.Lock()
 			received = r
@@ -215,7 +215,7 @@ func TestSubscribe_TopicFilter_ExplicitOverrideWins(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := subscribe(ctx, caller, sub, 1,
+	if err := subscribe(ctx, caller, sub,
 		func(context.Context, sensorReading) error { return nil },
 		SubscribeOptions{TopicFilter: "sensors/#"}); err != nil {
 		t.Fatalf("Subscribe: %v", err)
@@ -345,13 +345,13 @@ func TestServeOneSubscriber_ServesSingleChannel(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- serveOneSubscriber(ctx, caller, sub, 1,
+		done <- serveOneSubscriber(ctx, caller, sub,
 			func(_ context.Context, r sensorReading) error {
 				mu.Lock()
 				received = r
 				mu.Unlock()
 				return nil
-			}, SubscribeOptions{})
+			}, SubscribeOptions{Capabilities: []Capability{QoSAtLeastOnce}})
 	}()
 
 	deadline := time.Now().Add(time.Second)
@@ -402,7 +402,7 @@ func TestPublish_SecurityImpl_WritesIntoPayload(t *testing.T) {
 	}
 
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	if err := publish(context.Background(), client, handle, 1, false, event, nil, PublishOptions[userEvent]{}); err != nil {
+	if err := publish(context.Background(), client, handle, event, nil, PublishOptions[userEvent]{}); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	if !strings.Contains(string(client.publishedPayloadSnapshot()), "credentialed-alice@example.com") {
@@ -430,7 +430,7 @@ func TestPublish_SecurityImpl_ErrorAborts(t *testing.T) {
 	}
 
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
-	if err := publish(context.Background(), client, handle, 1, false, event, nil, PublishOptions[userEvent]{}); !errors.Is(err, wantErr) {
+	if err := publish(context.Background(), client, handle, event, nil, PublishOptions[userEvent]{}); !errors.Is(err, wantErr) {
 		t.Fatalf("want wantErr, got %v", err)
 	}
 	if len(client.publishedTopicsSnapshot()) != 0 {
@@ -450,7 +450,7 @@ func TestSubscribeMW_WrongShape_RejectedEagerly(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	err := subscribe(ctx, caller, sub, 1,
+	err := subscribe(ctx, caller, sub,
 		func(context.Context, sensorReading) error { return nil },
 		SubscribeOptions{})
 	var shapeErr middleware.MiddlewareShapeError
@@ -472,7 +472,7 @@ func TestPublishMW_WrongShape_RejectedEagerly(t *testing.T) {
 	}
 
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1}
-	err = publish(context.Background(), client, handle, 1, false, reading, nil,
+	err = publish(context.Background(), client, handle, reading, nil,
 		PublishOptions[sensorReading]{})
 	var shapeErr middleware.MiddlewareShapeError
 	if !errors.As(err, &shapeErr) {
@@ -522,7 +522,7 @@ func TestObservability_RecordsSubscribe(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := subscribe(ctx, caller, sub, 1,
+	if err := subscribe(ctx, caller, sub,
 		func(context.Context, sensorReading) error { return nil },
 		SubscribeOptions{}); err != nil {
 		t.Fatalf("Subscribe: %v", err)
@@ -578,7 +578,7 @@ func ExampleSubscribe() {
 	sub := ch.WithSubscribe(events.Subscribe{Summary: "Sensor readings"})
 
 	ctx := context.Background()
-	err := subscribe(ctx, caller, sub, 1,
+	err := subscribe(ctx, caller, sub,
 		func(_ context.Context, r sensorReading) error {
 			fmt.Printf("received reading from %s: %.1f\n", r.SensorID, r.Value)
 			return nil

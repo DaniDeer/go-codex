@@ -28,7 +28,7 @@ import (
 
 // GetManifestReq is GetManifestRoute's request — Name and Reference merge
 // automatically into the {name}/{reference} path variables via
-// nethttp.Call/CallWithHandle.
+// nethttp.Call/rest.CallWithTransport.
 type GetManifestReq struct {
 	Name      string
 	Reference string
@@ -39,10 +39,10 @@ type GetManifestReq struct {
 // dispatched automatically by internal.ManifestEnvelopeCodec based on the
 // response shape. {reference} is a tag or a digest. Req is GetManifestReq,
 // whose Name/Reference fields merge into {name}/{reference} automatically
-// via nethttp.Call/CallWithHandle. Resp additionally merges the
+// via nethttp.Call/rest.CallWithTransport. Resp additionally merges the
 // Docker-Content-Digest RESPONSE HEADER directly into
 // internal.ManifestEnvelope.Digest via rest.NewRequiredResponseHeaderParam
-// — nethttp.Call/CallWithHandle applies this merge automatically on every
+// — nethttp.Call/rest.CallWithTransport applies this merge automatically on every
 // successful (2xx) response, so app/registry's fetchManifest never needs
 // a manual HTTP call just to read that header.
 //

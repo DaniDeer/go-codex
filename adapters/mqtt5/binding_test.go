@@ -541,7 +541,7 @@ func TestMQTT5CallAdapter_DerivesVarsPerItem_WhenOptsVarsNil(t *testing.T) {
 	defer cancel()
 
 	handle := newTenantRouteHandle()
-	_ = Serve(ctx, client, router, handle,
+	_ = testServe(ctx, client, router, handle,
 		func(_ context.Context, req tenantReq) (tenantResp, error) {
 			return tenantResp{Sum: req.X + req.Y}, nil
 		},

@@ -12,7 +12,7 @@ import (
 )
 
 // AsPipelineFunc converts a pipeline handler function into the plain handler
-// function signature accepted by [Serve] and [ServeRouter].
+// function signature accepted by [reqreply.ServeWithTransport].
 //
 // Internally: wraps req as [gstream.Single], calls fn to build the pipeline,
 // then collects the result via [gstream.Collect]. Errors take precedence over
@@ -22,17 +22,17 @@ import (
 // declarative intermediate observation, [gstream.Apply] for multi-step forge
 // function composition, or [gstream.MapErr] for per-step error recovery:
 //
-//	zeromq.Serve(ctx, sock, oeeHandle,
+//	transport := zeromq.NewServerTransport(zeromq.ServerTransportOptions{Sockets: map[string]zeromq.FramedSocket{"compute/oee": sock}})
+//	reqreply.ServeWithTransport(ctx, transport, oeeHandle,
 //	    zeromq.AsPipelineFunc(func(ctx context.Context, req SensorReq) gstream.Stream[OEEResult] {
 //	        s  := gstream.Single(ctx, req)
 //	        s   = gstream.Apply(ctx, s, validateFn, gstream.ApplyOptions{Observer: obs})
 //	        s   = gstream.Tap(ctx, s, func(v ValidatedReq) { slog.Info("valid", "id", v.ID) })
 //	        out := gstream.Apply(ctx, s, oeeCalcFn, gstream.ApplyOptions{Observer: obs})
 //	        return gstream.Tap(ctx, out, func(r OEEResult) { auditLog.Write(r) })
-//	    }),
-//	    zeromq.ServeOptions{Observer: obs})
+//	    }))
 //
-// For simple single-step handlers, use a plain fn directly with [Serve].
+// For simple single-step handlers, use a plain fn directly.
 func AsPipelineFunc[Req, Resp any](
 	fn func(context.Context, Req) gstream.Stream[Resp],
 ) func(context.Context, Req) (Resp, error) {
@@ -67,7 +67,7 @@ type ServeLatestOptions struct {
 // When a request arrives but no value has been produced yet, the REP socket
 // sends an error reply and opts.OnError is called with [NoLatestValueError].
 //
-// The Req payload is decoded and validated by handle (standard [Serve] behaviour)
+// The Req payload is decoded and validated by handle (standard [reqreply.ServeWithTransport] behaviour)
 // but is not used to compute the response — the response is always the latest value.
 //
 // Returns nil when ctx is cancelled, or a [SocketError] on socket failure.
@@ -117,12 +117,13 @@ func ServeLatest[Req, Resp any](
 		}
 	}
 
-	return Serve(ctx, sock, handle, func(ctx context.Context, _ Req) (Resp, error) {
+	transport := NewServerTransport(ServerTransportOptions{Sockets: map[string]FramedSocket{handle.Topic: sock}, Serve: serveOpts})
+	return reqreply.ServeWithTransport(ctx, transport, handle, func(ctx context.Context, _ Req) (Resp, error) {
 		ptr := latest.Load()
 		if ptr == nil {
 			var zero Resp
 			return zero, fmt.Errorf("%w", NoLatestValueError{Topic: handle.Topic})
 		}
 		return *ptr, nil
-	}, serveOpts)
+	})
 }

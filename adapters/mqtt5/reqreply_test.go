@@ -26,7 +26,7 @@ func TestServe_ValidRoundTrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	err := Serve(ctx, client, router, newRouteHandle(),
+	err := testServe(ctx, client, router, newRouteHandle(),
 		func(_ context.Context, req computeReq) (computeResp, error) {
 			return computeResp{Sum: req.X + req.Y}, nil
 		},
@@ -68,7 +68,7 @@ func TestServe_DecodeError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = Serve(ctx, client, router, newRouteHandle(),
+	_ = testServe(ctx, client, router, newRouteHandle(),
 		func(_ context.Context, _ computeReq) (computeResp, error) {
 			t.Fatal("fn must not be called on decode error")
 			return computeResp{}, nil
@@ -99,7 +99,7 @@ func TestServe_HandlerError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = Serve(ctx, client, router, newRouteHandle(),
+	_ = testServe(ctx, client, router, newRouteHandle(),
 		func(_ context.Context, _ computeReq) (computeResp, error) {
 			return computeResp{}, handlerErr
 		},
@@ -134,7 +134,7 @@ func TestServe_BuiltInCredentialCheck_RejectsMalformedCredential(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = Serve(ctx, client, router, newSecuredRouteHandle(),
+	_ = testServe(ctx, client, router, newSecuredRouteHandle(),
 		func(_ context.Context, _ computeReq) (computeResp, error) {
 			t.Fatal("fn must not be called on security rejection")
 			return computeResp{}, nil
@@ -194,7 +194,7 @@ func TestServe_HandleMW_PairedSecurityFn_Verifies(t *testing.T) {
 	rejectingImpl := func(context.Context, *pahomqtt5.Publish, []route.SecurityRequirement) (map[string][]string, error) {
 		return nil, secErr
 	}
-	_ = Serve(ctx, client, router, newSecuredRouteHandleWithImpl(rejectingImpl),
+	_ = testServe(ctx, client, router, newSecuredRouteHandleWithImpl(rejectingImpl),
 		func(_ context.Context, _ computeReq) (computeResp, error) {
 			t.Fatal("fn must not be called on HandleMW security rejection")
 			return computeResp{}, nil
@@ -238,7 +238,7 @@ func TestAttachServer_CheckCoverage_MissingSecurityMiddlewareError(t *testing.T)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	err := Serve(ctx, client, router, newSecuredRouteHandleNoImpl(),
+	err := testServe(ctx, client, router, newSecuredRouteHandleNoImpl(),
 		func(_ context.Context, req computeReq) (computeResp, error) {
 			return computeResp{Sum: req.X + req.Y}, nil
 		},
@@ -299,7 +299,7 @@ func TestCall_ClientMW_PairedCredentialFn_Supplies(t *testing.T) {
 	handle := newSecuredRouteHandleWithClientImpl(func(context.Context, []route.SecurityRequirement) ([]UserProperty, error) {
 		return []UserProperty{{Key: "Authorization", Value: "******"}}, nil
 	})
-	resp, err := Call(ctx, client, router, handle, computeReq{X: 3, Y: 4}, CallOptions{})
+	resp, err := testCall(ctx, client, router, handle, computeReq{X: 3, Y: 4}, CallOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -327,7 +327,7 @@ func TestCall_ClientMW_MalformedCredentialFormat_ReturnsSecurityCredentialError(
 		// Empty ****** -> fails the non-empty-string Codec.
 		return []UserProperty{{Key: "Authorization", Value: "Bearer "}}, nil
 	})
-	_, err := Call(ctx, client, router, handle, computeReq{X: 3, Y: 4}, CallOptions{Observer: obs})
+	_, err := testCall(ctx, client, router, handle, computeReq{X: 3, Y: 4}, CallOptions{Observer: obs})
 	var credErr reqreply.SecurityCredentialError
 	if !errors.As(err, &credErr) {
 		t.Fatalf("want reqreply.SecurityCredentialError, got %v", err)
@@ -399,7 +399,7 @@ func TestServe_ErrorPatternMatch_HandlerError_PublishesTypedPayload(t *testing.T
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = Serve(ctx, client, router, handle,
+	_ = testServe(ctx, client, router, handle,
 		func(_ context.Context, _ computeReq) (computeResp, error) {
 			return computeResp{}, serveConflictErr{msg: "duplicate"}
 		},
@@ -447,7 +447,7 @@ func TestServe_ErrorPatternNoMatch_HandlerError_FallsBackToPlainText(t *testing.
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = Serve(ctx, client, router, handle,
+	_ = testServe(ctx, client, router, handle,
 		func(_ context.Context, _ computeReq) (computeResp, error) {
 			return computeResp{}, unrelatedErr
 		},
@@ -495,7 +495,7 @@ func TestServe_ErrorPatternMatch_EncodeError_PublishesTypedPayload(t *testing.T)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = Serve(ctx, client, router, handle,
+	_ = testServe(ctx, client, router, handle,
 		func(_ context.Context, req computeReq) (computeResp, error) {
 			return computeResp{Sum: req.X + req.Y}, nil
 		},
@@ -528,7 +528,7 @@ func TestServe_ObserverRecordRequestSuccess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = Serve(ctx, client, router, newRouteHandle(),
+	_ = testServe(ctx, client, router, newRouteHandle(),
 		func(_ context.Context, req computeReq) (computeResp, error) {
 			return computeResp{Sum: req.X + req.Y}, nil
 		},
@@ -556,7 +556,7 @@ func TestServe_ObserverRecordRequestFailure(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = Serve(ctx, client, router, newRouteHandle(),
+	_ = testServe(ctx, client, router, newRouteHandle(),
 		func(_ context.Context, _ computeReq) (computeResp, error) { return computeResp{}, nil },
 		ServeOptions{Observer: obs})
 
@@ -580,7 +580,7 @@ func TestServe_TraceSpan(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = Serve(ctx, client, router, newRouteHandle(),
+	_ = testServe(ctx, client, router, newRouteHandle(),
 		func(_ context.Context, req computeReq) (computeResp, error) {
 			return computeResp{Sum: req.X + req.Y}, nil
 		},
@@ -624,14 +624,14 @@ func TestCall_ValidRoundTrip(t *testing.T) {
 	defer cancel()
 
 	// Set up the responder.
-	_ = Serve(ctx, client, router, newRouteHandle(),
+	_ = testServe(ctx, client, router, newRouteHandle(),
 		func(_ context.Context, req computeReq) (computeResp, error) {
 			return computeResp{Sum: req.X + req.Y}, nil
 		},
 		ServeOptions{})
 
 	// Make a request.
-	resp, err := Call(ctx, client, router, newRouteHandle(),
+	resp, err := testCall(ctx, client, router, newRouteHandle(),
 		computeReq{X: 3, Y: 4},
 		CallOptions{
 			ReplyTopicPrefix: "replies",
@@ -652,7 +652,7 @@ func TestCall_Timeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	_, err := Call(ctx, client, router, newRouteHandle(),
+	_, err := testCall(ctx, client, router, newRouteHandle(),
 		computeReq{X: 1, Y: 2},
 		CallOptions{
 			ReplyTopicPrefix: "replies",
@@ -675,13 +675,13 @@ func TestCall_ObserverRecordRequestSuccess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	_ = Serve(ctx, client, router, newRouteHandle(),
+	_ = testServe(ctx, client, router, newRouteHandle(),
 		func(_ context.Context, req computeReq) (computeResp, error) {
 			return computeResp{Sum: req.X + req.Y}, nil
 		},
 		ServeOptions{})
 
-	_, _ = Call(ctx, client, router, newRouteHandle(),
+	_, _ = testCall(ctx, client, router, newRouteHandle(),
 		computeReq{X: 1, Y: 2},
 		CallOptions{Timeout: 2 * time.Second, Observer: obs})
 
@@ -697,7 +697,7 @@ func TestCall_ObserverRecordRequestTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	_, _ = Call(ctx, client, router, newRouteHandle(),
+	_, _ = testCall(ctx, client, router, newRouteHandle(),
 		computeReq{X: 1, Y: 2},
 		CallOptions{Timeout: 50 * time.Millisecond, Observer: obs})
 
@@ -713,13 +713,13 @@ func TestCall_TraceSpan(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	_ = Serve(ctx, client, router, newRouteHandle(),
+	_ = testServe(ctx, client, router, newRouteHandle(),
 		func(_ context.Context, req computeReq) (computeResp, error) {
 			return computeResp{Sum: req.X + req.Y}, nil
 		},
 		ServeOptions{})
 
-	_, _ = Call(ctx, client, router, newRouteHandle(),
+	_, _ = testCall(ctx, client, router, newRouteHandle(),
 		computeReq{X: 1, Y: 2},
 		CallOptions{Timeout: 2 * time.Second, Observer: obs})
 
@@ -734,7 +734,7 @@ func TestCall_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	_, err := Call(ctx, client, router, newRouteHandle(),
+	_, err := testCall(ctx, client, router, newRouteHandle(),
 		computeReq{X: 1, Y: 2},
 		CallOptions{Timeout: 5 * time.Second})
 
@@ -763,7 +763,7 @@ func TestCall_WithVars_PublishesToResolvedTopic(t *testing.T) {
 
 	// Request will timeout (no responder), but we only care that it published
 	// to the resolved topic "compute/acme/add".
-	_, _ = Call(ctx, client, router, handle,
+	_, _ = testCall(ctx, client, router, handle,
 		computeReq{X: 3, Y: 4},
 		CallOptions{
 			Vars:    map[string]string{"tenantID": "acme"},
@@ -802,7 +802,7 @@ func TestCall_WithVars_MissingVar_ReturnsRequestError(t *testing.T) {
 	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	handle, _ := templateRoute.Register(b)
 
-	_, err := Call(ctx, client, router, handle,
+	_, err := testCall(ctx, client, router, handle,
 		computeReq{X: 1, Y: 2},
 		CallOptions{
 			Vars:    map[string]string{}, // tenantID missing
@@ -836,7 +836,7 @@ func TestCall_WithVars_MissingVar_ReportsRequiredConstraintWithVarName(t *testin
 	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	handle, _ := templateRoute.Register(b)
 
-	_, _ = Call(ctx, client, router, handle,
+	_, _ = testCall(ctx, client, router, handle,
 		computeReq{X: 1, Y: 2},
 		CallOptions{
 			Vars:     map[string]string{}, // tenantID missing
@@ -955,7 +955,7 @@ func TestCall_ReplyTopicBuilder_UsesReturnedResponseTopic(t *testing.T) {
 	handle, _ := computeRoute.Register(b)
 
 	customTopic := "custom/replies/abc"
-	_, _ = Call(ctx, client, router, handle, computeReq{X: 1, Y: 2},
+	_, _ = testCall(ctx, client, router, handle, computeReq{X: 1, Y: 2},
 		CallOptions{
 			ReplyTopicBuilder: func() (string, string) { return customTopic, customTopic },
 			Timeout:           100 * time.Millisecond,
@@ -995,7 +995,7 @@ func TestCall_ReplyTopicBuilder_UsesReturnedSubscribeFilter(t *testing.T) {
 	responseTopic := "replies/abc"
 	sharedFilter := "$share/mygroup/replies/abc"
 
-	_, _ = Call(ctx, client, router, handle, computeReq{X: 1, Y: 2},
+	_, _ = testCall(ctx, client, router, handle, computeReq{X: 1, Y: 2},
 		CallOptions{
 			ReplyTopicBuilder: func() (string, string) { return responseTopic, sharedFilter },
 			Timeout:           100 * time.Millisecond,
@@ -1022,7 +1022,7 @@ func TestCall_ReplyTopicBuilder_EmptyResponseTopic_ReturnsRequestError(t *testin
 	b := reqreply.NewServer(reqreply.Info{Title: "T", Version: "1"})
 	handle, _ := computeRoute.Register(b)
 
-	_, err := Call(ctx, client, router, handle, computeReq{X: 1, Y: 2},
+	_, err := testCall(ctx, client, router, handle, computeReq{X: 1, Y: 2},
 		CallOptions{
 			ReplyTopicBuilder: func() (string, string) { return "", "" },
 		})
@@ -1047,7 +1047,7 @@ func TestCall_ReplyTopicBuilder_EmptyFilter_FallsBackToResponseTopic(t *testing.
 	handle, _ := computeRoute.Register(b)
 
 	responseTopic := "replies/fallback"
-	_, _ = Call(ctx, client, router, handle, computeReq{X: 1, Y: 2},
+	_, _ = testCall(ctx, client, router, handle, computeReq{X: 1, Y: 2},
 		CallOptions{
 			ReplyTopicBuilder: func() (string, string) { return responseTopic, "" },
 			Timeout:           100 * time.Millisecond,
@@ -1075,7 +1075,7 @@ func TestCall_NilBuilder_UsesReplyTopicPrefix(t *testing.T) {
 	b := reqreply.NewServer(reqreply.Info{Title: "T", Version: "1"})
 	handle, _ := computeRoute.Register(b)
 
-	_, _ = Call(ctx, client, router, handle, computeReq{X: 1, Y: 2},
+	_, _ = testCall(ctx, client, router, handle, computeReq{X: 1, Y: 2},
 		CallOptions{
 			ReplyTopicPrefix: "custom-prefix",
 			Timeout:          100 * time.Millisecond,
@@ -1104,7 +1104,7 @@ func TestCall_NilBuilder_DefaultPrefix(t *testing.T) {
 	b := reqreply.NewServer(reqreply.Info{Title: "T", Version: "1"})
 	handle, _ := computeRoute.Register(b)
 
-	_, _ = Call(ctx, client, router, handle, computeReq{X: 1, Y: 2},
+	_, _ = testCall(ctx, client, router, handle, computeReq{X: 1, Y: 2},
 		CallOptions{
 			Timeout: 100 * time.Millisecond,
 		})
@@ -1170,7 +1170,7 @@ func TestServe_MergeFields_AutoMergesTopicVars(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	err := Serve(ctx, client, router, handle,
+	err := testServe(ctx, client, router, handle,
 		func(_ context.Context, req tenantReq) (tenantResp, error) {
 			received = req
 			return tenantResp{Sum: req.X + req.Y}, nil
@@ -1207,7 +1207,7 @@ func TestCallHandle_DerivesVarsFromReq(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	_, _ = CallHandle(ctx, client, router, handle,
+	_, _ = testCall(ctx, client, router, handle,
 		tenantReq{TenantID: "acme", X: 1, Y: 2},
 		CallOptions{Timeout: 100 * time.Millisecond})
 
@@ -1229,7 +1229,7 @@ func TestCallHandle_ExplicitVarsOverridePrecedence(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	_, _ = CallHandle(ctx, client, router, handle,
+	_, _ = testCall(ctx, client, router, handle,
 		tenantReq{TenantID: "acme", X: 1, Y: 2},
 		CallOptions{
 			Timeout: 100 * time.Millisecond,
@@ -1281,7 +1281,7 @@ func TestServeCallHandle_NestedReq_RoundTrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	if err := Serve(ctx, client, router, handle,
+	if err := testServe(ctx, client, router, handle,
 		func(_ context.Context, req nestedReq) (tenantResp, error) {
 			received = req
 			return tenantResp{Sum: req.X + req.Y}, nil
@@ -1292,7 +1292,7 @@ func TestServeCallHandle_NestedReq_RoundTrip(t *testing.T) {
 
 	req := nestedReq{Meta: meta{TenantID: "acme"}, X: 5, Y: 6}
 	go func() {
-		_, _ = CallHandle(ctx, client, router, handle, req, CallOptions{Timeout: 500 * time.Millisecond})
+		_, _ = testCall(ctx, client, router, handle, req, CallOptions{Timeout: 500 * time.Millisecond})
 	}()
 
 	// Wait for the request to be published, then dispatch it to Serve's
@@ -1333,7 +1333,7 @@ func TestCall_RequestFormats_OverridesRouteDeclaredFormat(t *testing.T) {
 
 	// Request will timeout (no responder) — we only care about the
 	// encoded payload bytes.
-	_, _ = Call(ctx, client, router, newRouteHandle(),
+	_, _ = testCall(ctx, client, router, newRouteHandle(),
 		computeReq{X: 3, Y: 4},
 		CallOptions{
 			Timeout:        100 * time.Millisecond,
@@ -1358,7 +1358,7 @@ func TestCall_RequestFormats_RouteDeclaredStillAppliesWithoutOverride(t *testing
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_, _ = Call(ctx, client, router, newRouteHandle(),
+	_, _ = testCall(ctx, client, router, newRouteHandle(),
 		computeReq{X: 3, Y: 4},
 		CallOptions{Timeout: 100 * time.Millisecond})
 
@@ -1389,13 +1389,13 @@ func TestCall_ResponseFormats_OverridesRouteDeclaredFormat(t *testing.T) {
 
 	serverHandle := newRouteHandle()
 	serverHandle.WithFormats(format.YAML(computeRespCodec))
-	_ = Serve(ctx, client, router, serverHandle,
+	_ = testServe(ctx, client, router, serverHandle,
 		func(_ context.Context, req computeReq) (computeResp, error) {
 			return computeResp{Sum: req.X + req.Y}, nil
 		},
 		ServeOptions{})
 
-	resp, err := Call(ctx, client, router, newRouteHandle(), // client handle: no Formats declared
+	resp, err := testCall(ctx, client, router, newRouteHandle(), // client handle: no Formats declared
 		computeReq{X: 3, Y: 4},
 		CallOptions{
 			Timeout:         2 * time.Second,
@@ -1418,7 +1418,7 @@ func TestCall_RequestFormats_TypeMismatch_ReturnsCallError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_, err := Call(ctx, client, router, newRouteHandle(),
+	_, err := testCall(ctx, client, router, newRouteHandle(),
 		computeReq{X: 3, Y: 4},
 		CallOptions{
 			Timeout: time.Second,
@@ -1441,13 +1441,13 @@ func TestCall_ResponseFormats_TypeMismatch_ReturnsCallError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	_ = Serve(ctx, client, router, newRouteHandle(),
+	_ = testServe(ctx, client, router, newRouteHandle(),
 		func(_ context.Context, req computeReq) (computeResp, error) {
 			return computeResp{Sum: req.X + req.Y}, nil
 		},
 		ServeOptions{})
 
-	_, err := Call(ctx, client, router, newRouteHandle(),
+	_, err := testCall(ctx, client, router, newRouteHandle(),
 		computeReq{X: 3, Y: 4},
 		CallOptions{
 			Timeout: 2 * time.Second,
@@ -1489,7 +1489,7 @@ func TestServe_HandleMW_RequestHeaderParam_MissingRequired_Rejects(t *testing.T)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = Serve(ctx, client, router, newUserPropertyRouteHandle(),
+	_ = testServe(ctx, client, router, newUserPropertyRouteHandle(),
 		func(_ context.Context, _ computeReq) (computeResp, error) {
 			t.Fatal("fn must not be called when a required Phase 1b header param is missing")
 			return computeResp{}, nil
@@ -1527,7 +1527,7 @@ func TestServe_HandleMW_RequestHeaderParam_Present_Succeeds(t *testing.T) {
 	defer cancel()
 
 	called := false
-	_ = Serve(ctx, client, router, newUserPropertyRouteHandle(),
+	_ = testServe(ctx, client, router, newUserPropertyRouteHandle(),
 		func(_ context.Context, req computeReq) (computeResp, error) {
 			called = true
 			return computeResp{Sum: req.X + req.Y}, nil
@@ -1582,7 +1582,7 @@ func TestCall_ClientMW_ResponseHeaderParam_MissingRequired_Rejects(t *testing.T)
 
 	// Plain Serve responder — attaches NO extra reply User Properties, so
 	// the declared X-Trace-Id requirement is unmet.
-	_ = Serve(context.Background(), client, router, newResponseHeaderParamRouteHandle(),
+	_ = testServe(context.Background(), client, router, newResponseHeaderParamRouteHandle(),
 		func(_ context.Context, req computeReq) (computeResp, error) {
 			return computeResp{Sum: req.X + req.Y}, nil
 		},
@@ -1591,7 +1591,7 @@ func TestCall_ClientMW_ResponseHeaderParam_MissingRequired_Rejects(t *testing.T)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	_, err := Call(ctx, client, router, newResponseHeaderParamRouteHandle(),
+	_, err := testCall(ctx, client, router, newResponseHeaderParamRouteHandle(),
 		computeReq{X: 3, Y: 4},
 		CallOptions{Timeout: 2 * time.Second})
 
@@ -1635,7 +1635,7 @@ func TestCall_ClientMW_ResponseHeaderParam_Present_Succeeds(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	resp, err := Call(ctx, client, router, newResponseHeaderParamRouteHandle(),
+	resp, err := testCall(ctx, client, router, newResponseHeaderParamRouteHandle(),
 		computeReq{X: 3, Y: 4},
 		CallOptions{Timeout: 2 * time.Second})
 	if err != nil {

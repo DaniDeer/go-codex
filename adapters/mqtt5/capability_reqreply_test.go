@@ -197,7 +197,7 @@ func TestCall_RetainedAppliedToRequestPublish(t *testing.T) {
 	clientRouter := newMockRouter()
 
 	go func() {
-		_, _ = Call(context.Background(), clientClient, clientRouter, computeRoute.ClientHandle(), computeReq{X: 1, Y: 2},
+		_, _ = testCall(context.Background(), clientClient, clientRouter, computeRoute.ClientHandle(), computeReq{X: 1, Y: 2},
 			CallOptions{Timeout: 100 * time.Millisecond, Capabilities: []Capability{Retained(true)}})
 	}()
 

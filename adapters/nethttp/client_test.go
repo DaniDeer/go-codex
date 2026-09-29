@@ -109,7 +109,7 @@ func TestCall_POST_HappyPath(t *testing.T) {
 	defer srv.Close()
 
 	obs := &testObserver{}
-	resp, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	resp, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, createReq{Name: "Alice"},
 		CallOptions{Observer: obs})
 
@@ -142,7 +142,7 @@ func TestCall_GET_HappyPath(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	resp, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	resp, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, getByIDReq{ID: "abc"},
 		CallOptions{})
 
@@ -165,7 +165,7 @@ func TestCall_UnexpectedStatus(t *testing.T) {
 	defer srv.Close()
 
 	obs := &testObserver{}
-	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	_, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, createReq{Name: "Alice"},
 		CallOptions{Observer: obs})
 
@@ -208,7 +208,7 @@ func TestCall_UnexpectedStatus_HeaderPopulated(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	_, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, createReq{Name: "Alice"}, CallOptions{})
 
 	var statusErr UnexpectedStatusError
@@ -234,7 +234,7 @@ func TestCall_UnexpectedStatus_HeaderPopulated(t *testing.T) {
 func TestCall_PathParamValidation_EmptyID(t *testing.T) {
 	handle := newClientGetByIDRoute() // id param requires NonEmptyString
 
-	_, err := CallWithHandle(context.Background(), http.DefaultClient, "http://localhost",
+	_, err := callWithHandle(context.Background(), http.DefaultClient, "http://localhost",
 		handle, getByIDReq{ID: ""},
 		CallOptions{})
 
@@ -259,7 +259,7 @@ func TestCall_PathParamValidation_EmptyID(t *testing.T) {
 func TestCall_PathParamValidation_MissingVar(t *testing.T) {
 	handle := newClientGetRoute()
 
-	_, err := CallWithHandle(context.Background(), http.DefaultClient, "http://localhost",
+	_, err := callWithHandle(context.Background(), http.DefaultClient, "http://localhost",
 		handle, getReq{},
 		CallOptions{})
 
@@ -283,7 +283,7 @@ func TestCall_PathParamValidation_MissingVar_ReportsDiagnostic(t *testing.T) {
 	handle := newClientGetRoute()
 	obs := &testObserver{}
 
-	_, err := CallWithHandle(context.Background(), http.DefaultClient, "http://localhost",
+	_, err := callWithHandle(context.Background(), http.DefaultClient, "http://localhost",
 		handle, getReq{},
 		CallOptions{Observer: obs})
 	if err == nil {
@@ -308,7 +308,7 @@ func TestCall_QueryParamValidation(t *testing.T) {
 	).ClientHandle()
 
 	obs := &testObserver{}
-	_, err := CallWithHandle(context.Background(), http.DefaultClient, "http://localhost",
+	_, err := callWithHandle(context.Background(), http.DefaultClient, "http://localhost",
 		handle, getReq{},
 		CallOptions{
 			QueryParams: map[string]string{"filter": ""},
@@ -339,7 +339,7 @@ func TestCall_CookieParamValidation(t *testing.T) {
 		rest.CookieParam{Name: "session", Required: true}.WithCodec(cookieCodec),
 	).ClientHandle()
 
-	_, err := CallWithHandle(context.Background(), http.DefaultClient, "http://localhost",
+	_, err := callWithHandle(context.Background(), http.DefaultClient, "http://localhost",
 		handle, getReq{},
 		CallOptions{
 			CookieParams: map[string]string{"session": ""},
@@ -366,7 +366,7 @@ func TestCall_HeaderParamValidation(t *testing.T) {
 		rest.HeaderParam{Name: "X-Tenant-ID", Required: true}.WithCodec(headerCodec),
 	).ClientHandle()
 
-	_, err := CallWithHandle(context.Background(), http.DefaultClient, "http://localhost",
+	_, err := callWithHandle(context.Background(), http.DefaultClient, "http://localhost",
 		handle, getReq{},
 		CallOptions{
 			HeaderParams: map[string]string{"X-Tenant-ID": ""},
@@ -414,7 +414,7 @@ func TestCall_CredentialFunc_Invoked(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	resp, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	resp, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, getReq{}, CallOptions{})
 
 	if err != nil {
@@ -442,7 +442,7 @@ func TestCall_CredentialFunc_Error(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, callErr := CallWithHandle(context.Background(), http.DefaultClient, "http://localhost",
+	_, callErr := callWithHandle(context.Background(), http.DefaultClient, "http://localhost",
 		handle, getReq{}, CallOptions{})
 
 	if !errors.Is(callErr, credErr) {
@@ -461,7 +461,7 @@ func TestCall_WrongShapeMiddleware_ReturnsMiddlewareShapeError(t *testing.T) {
 		ClientMW(nil, func(http.Handler) http.Handler { return nil }). // server-side shape, wrong for Call
 		ClientHandle()
 
-	_, err := CallWithHandle(context.Background(), http.DefaultClient, "http://localhost",
+	_, err := callWithHandle(context.Background(), http.DefaultClient, "http://localhost",
 		handle, getReq{}, CallOptions{})
 
 	var shapeErr middleware.MiddlewareShapeError
@@ -497,7 +497,7 @@ func TestCall_GeneralShape_WrapsRequest(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	resp, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	resp, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, getReq{}, CallOptions{})
 
 	if err != nil {
@@ -538,7 +538,7 @@ func TestCall_GeneralShape_MultipleFns_OuterToInner_AttachmentOrder(t *testing.T
 	}))
 	defer srv.Close()
 
-	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	_, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, getReq{}, CallOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -590,7 +590,7 @@ func TestCall_GeneralAndCredential_Coexist(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	resp, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	resp, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, getReq{}, CallOptions{})
 
 	if err != nil {
@@ -639,7 +639,7 @@ func TestCall_GeneralShape_TraceObserver_SeesFinalError(t *testing.T) {
 	to := &recordingTraceObserver{}
 	ctx := stats.WithObserver(context.Background(), to)
 
-	_, err := CallWithHandle(ctx, http.DefaultClient, "http://localhost",
+	_, err := callWithHandle(ctx, http.DefaultClient, "http://localhost",
 		handle, getReq{}, CallOptions{})
 
 	if !errors.Is(err, wantErr) {
@@ -681,7 +681,7 @@ func TestCall_TwoCredentialMiddlewares_DifferingHeaderValuesConflict(t *testing.
 		t.Fatal(err)
 	}
 
-	_, callErr := CallWithHandle(context.Background(), http.DefaultClient, "http://localhost",
+	_, callErr := callWithHandle(context.Background(), http.DefaultClient, "http://localhost",
 		handle, getReq{}, CallOptions{})
 
 	var conflictErr ConflictingCredentialHeaderError
@@ -725,7 +725,7 @@ func TestCall_TwoCredentialMiddlewares_IdenticalHeaderValuesMergeSilently(t *tes
 	}))
 	defer srv.Close()
 
-	resp, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	resp, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, getReq{}, CallOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -756,7 +756,7 @@ func TestCall_OnCredentialRejected_FiresOn401(t *testing.T) {
 	defer srv.Close()
 
 	rejectedCalls := 0
-	_, err = CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	_, err = callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, getReq{},
 		CallOptions{
 			OnCredentialRejected: func() { rejectedCalls++ },
@@ -781,7 +781,7 @@ func TestCall_OnCredentialRejected_NotCalledWhenCredentialFuncNil(t *testing.T) 
 	defer srv.Close()
 
 	rejectedCalls := 0
-	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	_, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, getReq{},
 		CallOptions{
 			// No credential-providing ClientMW configured.
@@ -818,7 +818,7 @@ func TestCall_OnCredentialRejected_NotCalledOnNon401Status(t *testing.T) {
 	defer srv.Close()
 
 	rejectedCalls := 0
-	_, err = CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	_, err = callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, getReq{},
 		CallOptions{
 			OnCredentialRejected: func() { rejectedCalls++ },
@@ -840,7 +840,7 @@ func TestCall_Observer_RecordRequest_OnValidationFailure(t *testing.T) {
 	obs := &testObserver{}
 
 	// Missing path var → validation error before any request is sent.
-	CallWithHandle(context.Background(), http.DefaultClient, "http://localhost", //nolint:errcheck
+	callWithHandle(context.Background(), http.DefaultClient, "http://localhost", //nolint:errcheck
 		handle, getReq{},
 		CallOptions{Observer: obs})
 
@@ -868,7 +868,7 @@ func TestCall_ClientHandle_NoBuilder(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	resp, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	resp, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, createReq{Name: "Widget"},
 		CallOptions{})
 
@@ -897,7 +897,7 @@ func TestCall_QueryParams_AppendedToURL(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	_, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, getReq{},
 		CallOptions{QueryParams: map[string]string{"limit": "10"}})
 
@@ -924,7 +924,7 @@ func TestCall_ExtraHeaders_Sent(t *testing.T) {
 
 	extra := make(http.Header)
 	extra.Set("X-Request-ID", "req-123")
-	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	_, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, getReq{},
 		CallOptions{ExtraHeaders: extra})
 
@@ -1039,7 +1039,7 @@ func TestCall_ResponseMergeFields_DecodesIntoResp(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	resp, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	resp, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, getUserActivityReq{ID: "u1"}, CallOptions{})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
@@ -1072,7 +1072,7 @@ func TestCallHandle_HappyPath_NoLeakage(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	resp, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	resp, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, getUserActivityReq{ID: "u1", Filter: "logins"}, CallOptions{})
 	if err != nil {
 		t.Fatalf("CallWithHandle: %v", err)
@@ -1101,7 +1101,7 @@ func TestCallHandle_ExplicitOptsOverridePrecedence(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	_, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, getUserActivityReq{ID: "u1", Filter: "logins"},
 		CallOptions{QueryParams: map[string]string{"filter": "overridden"}})
 	if err != nil {
@@ -1129,7 +1129,7 @@ func TestCallHandle_NoMergeFieldsMatchesCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	viaCallWithHandle, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	viaCallWithHandle, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, createReq{Name: "Alice"}, CallOptions{})
 	if err != nil {
 		t.Fatalf("CallWithHandle: %v", err)
@@ -1223,7 +1223,7 @@ func TestCall_ErrorPatternResponse_MatchedPattern(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	_, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, createReq{Name: "Alice"}, CallOptions{})
 
 	if err == nil {
@@ -1258,7 +1258,7 @@ func TestCall_ErrorPatternResponse_DecodeFailureFallsBackToUnexpectedStatus(t *t
 	}))
 	defer srv.Close()
 
-	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	_, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, createReq{Name: "Alice"}, CallOptions{})
 
 	if err == nil {
@@ -1287,7 +1287,7 @@ func TestCall_ErrorPatternResponse_NoMatch_FallsBackToUnexpectedStatus(t *testin
 	}))
 	defer srv.Close()
 
-	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	_, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, createReq{Name: "Alice"}, CallOptions{})
 
 	if err == nil {
@@ -1352,7 +1352,7 @@ func TestCall_CredentialFunc_ValidFormat_Passes(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	resp, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	resp, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, getReq{}, CallOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1376,7 +1376,7 @@ func TestCall_CredentialFunc_MalformedFormat_ReturnsSecurityCredentialError(t *t
 	}))
 	defer srv.Close()
 
-	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	_, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, getReq{}, CallOptions{})
 
 	var credErr rest.SecurityCredentialError
@@ -1404,7 +1404,7 @@ func TestCall_CredentialFunc_MalformedFormat_RecordsSecurityRejection(t *testing
 	defer srv.Close()
 
 	obs := &mockSecurityObserver{}
-	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	_, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, getReq{},
 		CallOptions{
 			Observer: obs,
@@ -1435,7 +1435,7 @@ func TestCall_NoSecurityScheme_NoValidation(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	_, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, getReq{}, CallOptions{}) // no credential-providing ClientMW
 
 	var statusErr UnexpectedStatusError
@@ -1464,7 +1464,7 @@ func TestCall_NoCredentialFunc_SecuredRoute_StillNotAnError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	_, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, getReq{}, CallOptions{}) // no credential-providing ClientMW
 	if err != nil {
 		t.Fatalf("no credential-providing ClientMW on a secured route must not itself be an error: %v", err)
@@ -1490,7 +1490,7 @@ func TestCall_CredentialFunc_ReturnsNilHeader_SkipsValidation(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	_, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, getReq{}, CallOptions{})
 	if err != nil {
 		t.Fatalf("CredentialFunc returning (nil, nil) must not be rejected by the codec check: %v", err)
@@ -1514,7 +1514,7 @@ func TestCall_ResponseFormats_OverridesRouteDeclaredFormat(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	resp, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	resp, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, getReq{}, CallOptions{
 			ResponseFormats: []format.Format[userResp]{format.YAML(userRespCodec)},
 		})
@@ -1542,7 +1542,7 @@ func TestCall_ResponseFormats_RouteDeclaredStillAppliesWithoutOverride(t *testin
 	}))
 	defer srv.Close()
 
-	resp, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	resp, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, getReq{}, CallOptions{})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
@@ -1571,7 +1571,7 @@ func TestCall_RequestFormats_OverridesRouteDeclaredFormat(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	_, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, createReq{Name: "Alice"}, CallOptions{
 			RequestFormats: []format.Format[createReq]{format.YAML(createReqCodec)},
 		})
@@ -1598,7 +1598,7 @@ func TestCall_ResponseFormats_TypeMismatch_ReturnsCallFormatOptError(t *testing.
 	}))
 	defer srv.Close()
 
-	_, err := CallWithHandle(context.Background(), srv.Client(), srv.URL,
+	_, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
 		handle, createReq{Name: "Alice"}, CallOptions{
 			// Wrong type: []format.Format[getReq] instead of []format.Format[userResp].
 			ResponseFormats: []format.Format[getReq]{format.JSON(getReqCodec)},
@@ -1631,7 +1631,7 @@ func TestCall_ResponseFormats_TypeMismatch_ReturnsCallFormatOptError(t *testing.
 func TestCall_RequestFormats_TypeMismatch_ReturnsCallFormatOptError(t *testing.T) {
 	handle := newClientCreateRoute()
 
-	_, err := CallWithHandle(context.Background(), http.DefaultClient, "http://unused.invalid",
+	_, err := callWithHandle(context.Background(), http.DefaultClient, "http://unused.invalid",
 		handle, createReq{Name: "Alice"}, CallOptions{
 			// Wrong type: []format.Format[userResp] instead of []format.Format[createReq].
 			RequestFormats: []format.Format[userResp]{format.JSON(userRespCodec)},

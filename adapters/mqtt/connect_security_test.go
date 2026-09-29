@@ -91,7 +91,7 @@ func TestSecuredClient_TransparentDelegation(t *testing.T) {
 	}
 
 	// Publish through the wrapper — behaves identically to the raw client.
-	err = publish(context.Background(), secured, newHandle(), 1, false,
+	err = publish(context.Background(), secured, newHandle(),
 		userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}, nil,
 		PublishOptions[userEvent]{})
 	if err != nil {

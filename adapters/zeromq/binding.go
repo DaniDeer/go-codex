@@ -305,13 +305,8 @@ func (a *zmqCallAdapter[Req, Resp]) Transform(ctx context.Context, src gstream.S
 					valCh = nil
 					continue
 				}
-				var resp Resp
-				var err error
-				if a.opts.Vars == nil {
-					resp, err = CallHandle(ctx, a.sock, a.handle, req, callOpts)
-				} else {
-					resp, err = Call(ctx, a.sock, a.handle, req, callOpts)
-				}
+				transport := NewClientTransport(ClientTransportOptions{Sockets: map[string]FramedSocket{a.handle.Topic: a.sock}, Call: callOpts})
+				resp, err := reqreply.CallWithTransport(ctx, transport, a.handle, req)
 				if err != nil {
 					select {
 					case errs <- err:
@@ -344,9 +339,10 @@ func (a *zmqCallAdapter[Req, Resp]) Transform(ctx context.Context, src gstream.S
 // ── ServeAdapter ──────────────────────────────────────────────────────────────
 
 // ServeAdapter returns a [ports.ToolAdapter] that registers the pipeline
-// function as a ZeroMQ REP server via [Serve]. When [ports.ToolPort.Bind] is
-// called, the pipeline function is wrapped as an [AsPipelineFunc] handler and
-// [Serve] is started in a background goroutine. Use with [ports.ToolPort.Bind]:
+// function as a ZeroMQ REP server via [reqreply.ServeWithTransport]. When
+// [ports.ToolPort.Bind] is called, the pipeline function is wrapped as an
+// [AsPipelineFunc] handler and [reqreply.ServeWithTransport] is started in
+// a background goroutine. Use with [ports.ToolPort.Bind]:
 //
 //	domain.OEEToolPort.Bind(ctx, zeromq.ServeAdapter(repSock, handle, zeromq.ServeOptions{}))
 func ServeAdapter[Req, Resp any](
@@ -369,7 +365,8 @@ func (a *zmqServeAdapter[Req, Resp]) Bind(
 	ctx context.Context,
 	fn func(context.Context, Req) gstream.Stream[Resp],
 ) error {
-	go Serve(ctx, a.sock, a.handle, AsPipelineFunc(fn), a.opts) //nolint:errcheck
+	transport := NewServerTransport(ServerTransportOptions{Sockets: map[string]FramedSocket{a.handle.Topic: a.sock}, Serve: a.opts})
+	go reqreply.ServeWithTransport(ctx, transport, a.handle, AsPipelineFunc(fn)) //nolint:errcheck
 	return nil
 }
 
@@ -419,12 +416,13 @@ func (a *zmqLatestAdapter[Resp]) Serve(ctx context.Context, latest func() (Resp,
 	}
 	// Blocking REP loop until ctx is done — the port's supervised goroutine
 	// accommodates this Serve shape.
-	return Serve(ctx, a.sock, a.handle, func(_ context.Context, _ struct{}) (Resp, error) {
+	transport := NewServerTransport(ServerTransportOptions{Sockets: map[string]FramedSocket{a.handle.Topic: a.sock}, Serve: serveOpts})
+	return reqreply.ServeWithTransport(ctx, transport, a.handle, func(_ context.Context, _ struct{}) (Resp, error) {
 		v, ok := latest()
 		if !ok {
 			var zero Resp
 			return zero, fmt.Errorf("%w", NoLatestValueError{Topic: a.handle.Topic})
 		}
 		return v, nil
-	}, serveOpts)
+	})
 }

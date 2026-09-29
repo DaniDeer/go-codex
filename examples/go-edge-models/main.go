@@ -32,8 +32,8 @@ import (
 
 	mcpgo "github.com/DaniDeer/go-codex/adapters/mcpgo"
 	mcprest "github.com/DaniDeer/go-codex/adapters/mcprest"
-	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/api/mcp"
+	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	iotedgeapp "github.com/DaniDeer/go-codex/examples/go-edge-models/app/iotedge"
 	registryapp "github.com/DaniDeer/go-codex/examples/go-edge-models/app/registry"
@@ -785,11 +785,11 @@ func runRegistryDemo() {
 	ctx := context.Background()
 
 	// registryapp.WithObserver wires a stats.Observer through every
-	// nethttp.CallWithHandle invocation GetTags/GetImageMetadata make,
+	// rest.CallWithTransport invocation GetTags/GetImageMetadata make,
 	// including the Ping/token-exchange auth flow — the same mechanism
 	// demonstrated for iotedge above, applied to an HTTP client instead of
 	// a plain codec Decode. This explicit Option isn't strictly required:
-	// docker/registry builds on nethttp.Call/CallWithHandle internally, which
+	// docker/registry builds on nethttp.Call/rest.CallWithTransport internally, which
 	// ALREADY falls back to stats.ObserverFromContext(ctx) when no
 	// Observer is set — `ctx = stats.WithObserver(ctx, regObs)` before
 	// these calls would give the exact same result with zero registry
@@ -859,7 +859,7 @@ func runMCPBridgeDemo(client *http.Client, registryHost, fakeToken string) {
 		h.Set("Authorization", "Bearer "+fakeToken)
 		return h, nil
 	}
-	callOpts := nethttp.CallOptions{}
+	callOpts := rest.ClientCallOptions{}
 	restHandle := registry.GetTagsRoute.ClientMW(&registry.BearerAuthDeclaration, credFn).ClientHandle()
 
 	mcpBuilder := mcp.NewBuilder(mcp.Info{Name: "go-edge-models MCP bridge demo", Version: "1.0.0"})
@@ -889,8 +889,8 @@ func runMCPBridgeDemo(client *http.Client, registryHost, fakeToken string) {
 	}
 	// credFn is NOT passed here again — restHandle already carries it via
 	// .ClientMW(&registry.BearerAuthDeclaration, credFn) above, and
-	// CallWithHandle (which ToolHandler calls internally) picks it up
-	// automatically from restHandle.ClientImplementations.
+	// rest.CallWithTransport (which ToolHandler calls internally) picks it
+	// up automatically from restHandle.ClientImplementations.
 	_, getTagsHandlerFn := mcpgo.ToolHandler(getTagsTool,
 		mcprest.ToolHandler(client, baseURL, restHandle, callOpts),
 		mcpgo.Options{},

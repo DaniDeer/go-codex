@@ -38,15 +38,25 @@ type SubscribeAdapterOptions struct {
 	TopicFilter string
 	// Observer receives per-message lifecycle events. Resolved from ctx when nil.
 	Observer stats.Observer
+	// Capabilities supplies sealed, compile-time-checked protocol-native
+	// declarations (currently [QoS]) for this subscription — the SOLE
+	// mechanism (docs/roadmap/capability-requirement-composition.md's
+	// Phase 5: the former raw `qos byte` constructor parameter was
+	// REMOVED entirely — it bypassed [Capability]/[Apply] completely).
+	// Mirrors adapters/mqtt5's identical, already-shipped shape exactly.
+	Capabilities []Capability
 }
 
 // SubscribeAdapter returns a [ports.SourceAdapter] backed by the MQTT v3/v3.1.1
 // subscription machinery. Use with [ports.SourcePort.Bind]:
 //
 //	domain.SensorReadings.Bind(ctx, mqtt.SubscribeAdapter(
-//	    client, sensorHandle, 0,
+//	    client, sensorHandle,
 //	    format.JSON(ReadingCodec),
-//	    mqtt.SubscribeAdapterOptions{TopicFilter: "sensors/+/data"},
+//	    mqtt.SubscribeAdapterOptions{
+//	        TopicFilter:  "sensors/+/data",
+//	        Capabilities: []mqtt.Capability{mqtt.QoSAtLeastOnce},
+//	    },
 //	))
 //
 // The full MQTT validation pipeline runs: format priority, topic var validation,
@@ -54,14 +64,12 @@ type SubscribeAdapterOptions struct {
 func SubscribeAdapter[T any](
 	client pahomqtt.Client,
 	handle *events.ChannelHandle[T],
-	qos byte,
 	fmt format.Format[T],
 	opts SubscribeAdapterOptions,
 ) ports.SourceAdapter[T] {
 	return &mqttSubscribeAdapter[T]{
 		client: client,
 		handle: handle,
-		qos:    qos,
 		fmt:    fmt,
 		opts:   opts,
 	}
@@ -70,7 +78,6 @@ func SubscribeAdapter[T any](
 type mqttSubscribeAdapter[T any] struct {
 	client pahomqtt.Client
 	handle *events.ChannelHandle[T]
-	qos    byte
 	fmt    format.Format[T]
 	opts   SubscribeAdapterOptions
 }
@@ -107,7 +114,14 @@ func (a *mqttSubscribeAdapter[T]) Activate(ctx context.Context, dst chan<- T, er
 	if filter == "" {
 		filter = deriveWildcardFilter(a.handle.Topic)
 	}
-	token := a.client.Subscribe(filter, a.qos, handler)
+	// docs/roadmap/capability-requirement-composition.md's Phase 5:
+	// Capabilities is the SOLE mechanism — events.ApplyCapabilities is
+	// the API-LAYER-OWNED dispatch loop; this adapter contributes only
+	// Capability.Apply. Mirrors adapters/mqtt5's identical, already-
+	// shipped shape exactly.
+	var wire WireAttributes
+	events.ApplyCapabilities(a.opts.Capabilities, &wire, obs, filter)
+	token := a.client.Subscribe(filter, wire.QoS, handler)
 	token.Wait()
 	if err := token.Error(); err != nil {
 		select {
@@ -123,15 +137,16 @@ func (a *mqttSubscribeAdapter[T]) Activate(ctx context.Context, dst chan<- T, er
 
 // MQTTDrainPublishOptions configures [PublishAdapter] publish behaviour.
 type MQTTDrainPublishOptions struct {
-	// QoS is the MQTT quality of service level (0, 1, or 2). Default 0.
-	// Does NOT apply to a matched events.ErrorChannel reply published for
-	// an upstream pipeline error — those always use QoS 0/non-retained,
-	// matching every other error-channel dispatch site (see
-	// tryPublishErrorChannel).
-	QoS byte
-	// Retained, when true, publishes each item as a retained message. Does
-	// NOT apply to error-channel replies — see QoS.
-	Retained bool
+	// Capabilities supplies sealed, compile-time-checked protocol-native
+	// declarations (currently [QoS]/[Retained]) for every published item
+	// — the SOLE mechanism (docs/roadmap/capability-requirement-composition.md's
+	// Phase 5: the former raw QoS byte/Retained bool fields were REMOVED
+	// entirely). Does NOT apply to a matched events.ErrorChannel reply
+	// published for an upstream pipeline error — those always use QoS
+	// 0/non-retained, matching every other error-channel dispatch site
+	// (see tryPublishErrorChannel). Mirrors adapters/mqtt5's identical,
+	// already-shipped shape exactly.
+	Capabilities []Capability
 	// Vars substitutes {varName} placeholders in the topic template.
 	//
 	// When nil, topic vars are derived PER-ITEM from each item's own
@@ -192,7 +207,7 @@ func (a *mqttPublishAdapter[T]) Activate(ctx context.Context, src gstream.Stream
 	// with the ORIGINAL error unchanged. Error-channel replies published
 	// this way always use QoS 0 / non-retained (tryPublishErrorChannel's
 	// fixed choice, matching every other error-channel dispatch site in
-	// this package — a.opts.QoS/Retained no longer apply to THIS path
+	// this package — a.opts.Capabilities no longer applies to THIS path
 	// specifically, closing a previously-undocumented inconsistency).
 	handleUpstreamError := func(e error) {
 		handled, _ := tryPublishErrorChannel(ctx, a.client, a.handle, obs, e)
@@ -205,20 +220,13 @@ func (a *mqttPublishAdapter[T]) Activate(ctx context.Context, src gstream.Stream
 	}
 	gstream.Drain(ctx, src,
 		func(ctx context.Context, v T) error {
-			// docs/roadmap/capability-requirement-composition.md's Phase
-			// 4b: the events.PublishAttributes declared-on-channel
-			// fallback was REMOVED from api/events entirely (a parallel,
-			// non-Capability-shaped mechanism) — a.opts.QoS/Retained are
-			// this adapter's ONLY source for now. Full migration of this
-			// package to the Capability/Apply-only shape mqtt5 already
-			// has is Phase 5's job.
-			qos, retained := a.opts.QoS, a.opts.Retained
+			itemOpts := pubOpts
+			itemOpts.Capabilities = a.opts.Capabilities
 			var err error
 			if a.opts.Vars == nil {
-				err = publishHandle(ctx, a.client, a.handle, qos, retained, v, pubOpts, a.fmt)
+				err = publishHandle(ctx, a.client, a.handle, v, itemOpts, a.fmt)
 			} else {
-				err = publish(ctx, a.client, a.handle, qos, retained, v,
-					a.opts.Vars, pubOpts, a.fmt)
+				err = publish(ctx, a.client, a.handle, v, a.opts.Vars, itemOpts, a.fmt)
 			}
 			if err != nil {
 				if onErr != nil {
