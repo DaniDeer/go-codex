@@ -3678,18 +3678,27 @@ COMPLETE — Phase 8 is the closing review pass, not further feature work:
     `TopicParam`-adjacent declaration that bypasses
     `ApplyCapabilities`) — not silently assumed to be a trivial
     string-prefix operation, not pre-decided here.
-- **Rework `docs/design/d-0006-protocol-native-capabilities.md` itself
-  to state the "zero backdoor between the api layer and the adapters"
-  rule (see "Architectural guardrail" above) as its OWN first-class,
-  explicit design goal** — not merely a cross-reference to this roadmap
-  doc. D-0006 predates this guardrail (it originally shipped
-  `PublishAttributes`-shaped mechanisms as "additive, not deprecated");
-  its rewritten form must state plainly that `Capability`/`Apply`/
-  `ApplyCapabilities` is the SOLE mechanism for every protocol-native
-  concern it covers, with no parallel declaration path ever considered
-  acceptable going forward, and must record Phase 4b's audit (3 real
-  backdoors found in already-shipped code) as the motivating case study
-  for why this rule exists.
+- **`docs/design/d-0006-protocol-native-capabilities.md` reworked —
+  DONE.** Its status block now states the "zero backdoor between the
+  api layer and the adapters" rule as its OWN first-class, explicit
+  design goal (not merely a cross-reference to this roadmap doc),
+  records Phase 4b's audit (3 real backdoors found in already-shipped
+  code) as the motivating case study, and trims the accumulated
+  "Amendment"/"Relationship to..."/"Supersedes" addenda layering into a
+  condensed "Other resolved follow-ons" list — the body (§0-§9) is kept
+  as original design-round history per repo convention.
+- **Widened follow-on, spun into its OWN roadmap doc**:
+  [`docs/roadmap/design-doc-compaction.md`](design-doc-compaction.md) —
+  the api/adapter layer is now considered architecturally+feature
+  complete for the workflow model this whole roadmap built (declare
+  pattern → declare capability requirement/value → attach adapter, with
+  `Capability` as the adapter's programming contract). That doc plans:
+  further D-0006 body trimming if any is found necessary, giving the
+  workflow model a durable narrative home in `docs/concepts/
+  declaring-apis-and-ports.md`, and relocating THIS phase's own
+  interface-audit bullet (below) into a new `docs/concepts/
+  ports-and-adapters.md` section so it survives this roadmap doc's own
+  eventual delete/promote fate (see the next bullet).
 - Decide this roadmap doc's fate per the `plan-a-new-codex-feature`
   skill's delete/keep/promote-to-`docs/design/` policy. **Anticipated
   outcome, flagged now but confirmed only once Phase 3 actually
@@ -3700,7 +3709,13 @@ COMPLETE — Phase 8 is the closing review pass, not further feature work:
   promotion bar exactly (not a routine, single-feature roadmap doc).
 - **Audit which adapter-side functions implement a real, declared
   interface vs. which are ad-hoc functions with no interface contract
-  at all — raised during Phase 5a's review, COMPLETED below.** Phase
+  at all — raised during Phase 5a's review, COMPLETED below.**
+  **Slated for relocation** (not yet moved) — per
+  `design-doc-compaction.md` above, this table is durable reference
+  material that should live in `docs/concepts/ports-and-adapters.md`'s
+  planned "Interface inventory" section so it survives this roadmap
+  doc's own eventual delete/promote fate; kept inline here until that
+  move executes. Phase
   5a's own investigation surfaced this as a recurring, easy-to-miss
   distinction: `adapters/mqtt5.NewServerTransport(opts)
   reqreply.ServerTransport`/`adapters/nethttp.NewClientTransport(opts)
