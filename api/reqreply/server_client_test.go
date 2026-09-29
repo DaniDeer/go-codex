@@ -427,3 +427,22 @@ func TestFutureFactory_NewFutureAny_TypeErasureCrossing(t *testing.T) {
 		t.Fatalf("resp.Sum = %d, want 42", resp.Sum)
 	}
 }
+
+func TestFutureFactory_NewFutureAny_TypeMismatch_ReturnsTransportTypeMismatchError(t *testing.T) {
+	handle := ComputeRoute.ClientHandle()
+	var ff reqreply.FutureFactory = handle
+	futureAny, resolve := ff.NewFutureAny()
+	future, ok := futureAny.(*reqreply.Future[computeResp])
+	if !ok {
+		t.Fatalf("NewFutureAny() future type = %T, want *reqreply.Future[computeResp]", futureAny)
+	}
+	// Resolve with a value of the WRONG dynamic type — mirrors
+	// CallWithTransport's own respAny.(Resp) assertion failure path,
+	// which must return the same typed, errors.As-navigable error.
+	resolve("wrong-type", nil)
+	_, err := future.Wait(context.Background())
+	var mismatch reqreply.TransportTypeMismatchError
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("Wait() error = %v (%T), want TransportTypeMismatchError", err, err)
+	}
+}

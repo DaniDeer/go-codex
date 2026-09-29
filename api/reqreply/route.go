@@ -1734,7 +1734,7 @@ func (h *RouteHandle[Req, Resp]) NewFutureAny() (any, func(any, error)) {
 		}
 		resp, ok := v.(Resp)
 		if !ok {
-			f.resolve(*new(Resp), fmt.Errorf("api/reqreply: NewFutureAny: want %T, got %T", *new(Resp), v))
+			f.resolve(*new(Resp), TransportTypeMismatchError{Topic: h.Topic, Want: fmt.Sprintf("%T", *new(Resp)), Got: fmt.Sprintf("%T", v)})
 			return
 		}
 		f.resolve(resp, nil)

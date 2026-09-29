@@ -1,6 +1,32 @@
-# go-codex Review History (R1–R144, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
+# go-codex Review History (R1–R145, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 145 (api/reqreply-scoped pass — Phase 8 ToDo 1.2 of capability-requirement-composition.md)
+
+Triggered by `docs/roadmap/capability-requirement-composition.md`'s Phase 8 review-go-codex
+ToDo, split per-API (ToDo 1.2 = `api/reqreply` only; sibling to Round 144's `api/events` pass).
+Scoped to `api/reqreply` core + its 2 reqreply adapters (mqtt5, zeromq) +
+`render/asyncapi/v3`'s reqreply-relevant rendering.
+
+- **Q1 — `RouteHandle.NewFutureAny`'s type-mismatch path used a bare `fmt.Errorf`, not the typed
+  `TransportTypeMismatchError` its synchronous twin returns**: `NewFutureAny` (the
+  `FutureFactory` mechanism behind `Client.CallAsync`) resolved a wrong-dynamic-type value with
+  `fmt.Errorf("api/reqreply: NewFutureAny: want %T, got %T", ...)` — not `errors.As`-navigable,
+  and inconsistent with `CallWithTransport`'s identical assertion failure (already correctly
+  `TransportTypeMismatchError`). Fixed to return
+  `TransportTypeMismatchError{Topic, Want, Got}`, matching `CallWithTransport` exactly. Added
+  `TestFutureFactory_NewFutureAny_TypeMismatch_ReturnsTransportTypeMismatchError` (was previously
+  untested — the existing `TestFutureFactory_NewFutureAny_TypeErasureCrossing` only covered the
+  happy path).
+
+No other findings — reqreply's package-local `Capability`/`CapabilityRequirement` mirror
+(deliberately not importing `api/events`), `Observability[Req,Resp]`, dead-letter/error-pattern
+dispatch parity across mqtt5+zeromq, and AsyncAPI capability/error-channel rendering were all
+already correct or covered by Rounds 127/134-141/144 and the capability-requirement-composition
+Phases.
 
 ---
 

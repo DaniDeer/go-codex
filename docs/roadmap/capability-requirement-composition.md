@@ -3621,7 +3621,14 @@ COMPLETE — Phase 8 is the closing review pass, not further feature work:
     findings — naming parity, param types, `ErrorChannel`, the
     `Capability`/`LeveledCapability` mechanism, and observer wiring were
     all already covered by prior rounds.
-  - 1.2 — `api/reqreply` — not yet run.
+  - **1.2 — `api/reqreply` — DONE (Round 145).** 1 `bug` finding: the
+    async `RouteHandle.NewFutureAny`'s type-mismatch path (the
+    `FutureFactory` mechanism behind `Client.CallAsync`) used a bare
+    `fmt.Errorf`, not `errors.As`-navigable, while its synchronous twin
+    (`CallWithTransport`) correctly returned the typed
+    `TransportTypeMismatchError` for the identical failure — fixed +
+    regression test added. No other findings — the rest was already
+    covered by prior rounds.
   - 1.3 — `api/rest` — not yet run.
 - Run the `review-docs` skill for a final three-surface documentation
   sync pass across every touched package.
