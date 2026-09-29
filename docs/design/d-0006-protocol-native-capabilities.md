@@ -1,140 +1,101 @@
 # D-0006 — Protocol-Native Capabilities
 
-> **Status: GRADUATED — core mechanisms fully IMPLEMENTED and shipped.**
-> This document was originally `docs/roadmap/protocol-native-features.md`;
-> it graduated here once its Capability mechanism, spec-rendering,
-> Observer integration, and Handler Disposition all shipped (mirroring
+> **Status: GRADUATED — fully implemented and shipped.** This document
+> was originally `docs/roadmap/protocol-native-features.md`; it
+> graduated here once its Capability mechanism, spec-rendering, Observer
+> integration, and Handler Disposition all shipped (mirroring
 > [D-0001](d-0001-rest-middleware-workflow-simplification.md)'s own
-> graduation precedent). What follows below this status block is largely
-> the ORIGINAL design-round text (kept for its reasoning/history value,
-> per this repo's convention — see [D-0001](d-0001-rest-middleware-workflow-simplification.md)'s
-> own "Idea only" framing preserved inline for the same reason); read this
-> block first for the actual shipped shape.
+> graduation precedent). What follows below this status block is the
+> ORIGINAL design-round text (kept for its reasoning/history value, per
+> this repo's convention); read this block first for the current,
+> authoritative shipped shape.
 >
-> **Shipped**: a SEALED, per-adapter `Capability` interface (mirrors
-> `ports.Pattern`'s technique — `adapters/mqtt.Capability`,
-> `adapters/mqtt5.Capability`, `adapters/zeromq.Capability`, each with its
-> own concrete types: `QoS`/`Retained` for mqtt/mqtt5, `HWM`/`Conflate`
-> for zeromq), supplied at DECLARE time via a `Capabilities
-> []<pkg>.Capability` field on each adapter's EXISTING
-> `SubscribeOptions`/`PublishOptions` struct (attached via
-> `events.Subscriber.WithOptions`/`events.Publisher.WithOptions` —
-> §7 Review-13's resolution; NOT a new `Attach`-time parameter as this
-> doc's earlier §2.2 originally sketched).
+> ## Shipped shape
 >
-> **STALE, pending rework (flagged, not yet fixed here):** the paragraph
-> below describing this mechanism as "purely additive alongside the
-> pre-existing `QoS byte`/`Retained bool`/`api/events/mqtt_qos.go`
-> fields... those stay as a documented, still-supported legacy path" is
-> now INCORRECT for `adapters/mqtt5`/core `api/events` —
-> [`docs/roadmap/capability-requirement-composition.md`](../roadmap/capability-requirement-composition.md)'s
-> Phase 4b deleted `api/events/mqtt_qos.go` entirely and removed the
-> legacy positional/field path from `adapters/mqtt5`, per an explicit
-> "zero backdoor between the api layer and the adapters" guardrail —
-> see that doc's "Architectural guardrail" section. This whole document
-> is scheduled for a full rework under that same roadmap's Phase 7
-> ("Review & Closeout"), which will restate this mechanism's shipped
-> shape as SOLE, not additive, and remove every "kept, not deprecated"
-> framing below. Until that rework lands, treat the ORIGINAL paragraph
-> immediately below as historical for `adapters/mqtt5`/`api/events`
-> specifically (still accurate for `adapters/mqtt` v3's OWN un-migrated
-> legacy path, and for `adapters/zeromq`, which never had a legacy
-> dual-path to begin with).
-> `events.CapabilitySpec` (a `ChannelOpt`) + `events.CheckCapabilityCoverage`
-> (called automatically by each adapter's `ServeSubscribers`) + the
-> AsyncAPI `x-capabilities` vendor-extension render — all shipped, per §7's
-> resolutions. `stats.CapabilityObserver`/`stats.DispositionObserver` — both
-> optional, type-asserted, mirroring `SecurityObserver` — shipped. §8's
+> A SEALED, per-adapter `Capability` interface (mirrors `ports.Pattern`'s
+> technique) — `adapters/mqtt.Capability`, `adapters/mqtt5.Capability`,
+> `adapters/zeromq.Capability`, each with its own concrete types
+> (`QoS`/`Retained` for mqtt/mqtt5, `HWM`/`Conflate` for zeromq) —
+> supplied at DECLARE time via a `Capabilities []<pkg>.Capability` field
+> on each adapter's `SubscribeOptions`/`PublishOptions` struct, attached
+> via `events.Subscriber.WithOptions`/`events.Publisher.WithOptions`
+> (not a new `Attach`-time parameter). `events.CapabilityRequirement`
+> (a `ChannelOpt`, renamed from `CapabilitySpec`) declares a requirement
+> at channel level for AsyncAPI `x-capabilities` rendering; the adapter's
+> `ServeSubscribers` automatically calls `events.CheckCapabilityCoverage`
+> (VALUE-aware via the optional `events.LeveledCapability` interface, not
+> just name-matching), returning `*events.CapabilityCoverageError` on a
+> mismatch. `stats.CapabilityObserver`/`stats.DispositionObserver` — both
+> optional, type-asserted, mirroring `SecurityObserver` — are shipped.
 > Handler Disposition (`middleware.Disposition`/`EnsureDispositionBox`/
-> `SetDisposition`/`DispositionFromContext`/`ResolveDisposition`) shipped
-> in `middleware` (not `api/events`, so `api/reqreply` reuses it with no
-> `api/events` dependency), wired into all 3 event adapters AND both
-> reqreply adapters (`mqtt5`, `zeromq`) — each currently resolves to a
-> no-op-equivalent default (no adapter has a real ack/nack protocol yet),
-> proving the plumbing end-to-end for a future ack-capable adapter (AMQP)
-> to consume without further core changes.
+> `SetDisposition`/`DispositionFromContext`/`ResolveDisposition`) is
+> shipped in `middleware` (not `api/events`, so `api/reqreply` reuses it
+> with no `api/events` dependency), wired into all 3 event adapters and
+> both reqreply adapters (`mqtt5`, `zeromq`) — each currently resolves to
+> a no-op-equivalent default (no adapter has a real ack/nack protocol
+> yet), proving the plumbing end-to-end for a future ack-capable adapter
+> (AMQP) to consume without further core changes.
 >
-> **Amendment (Phase 1 of [Composable Capability Requirements](../roadmap/capability-requirement-composition.md)):**
-> `events.CapabilitySpec`/`events.MissingCapabilityError` (named above) were
-> BREAKING-RENAMED to `events.CapabilityRequirement`/
-> `events.CapabilityCoverageError`, and `events.CheckCapabilityCoverage`
-> became VALUE-AWARE (not just name-matching) via a new optional
-> `events.LeveledCapability` interface. The historical narrative below this
-> status block still uses the ORIGINAL pre-rename names — read
-> `docs/roadmap/capability-requirement-composition.md`'s Phase 1 subsection
-> for the current, authoritative shape; this doc's own text is NOT rewritten
-> (per this repo's convention for graduated design docs).
+> ## Design goal: zero backdoor between the api layer and the adapters
 >
-> **Deferred, not abandoned**: `events.Address`/`events.TopicAddress`
-> shipped as standalone, ADDITIVE types (§2.3/§5.3). The originally-planned
-> full `Channel[Addr Address, T any]` generic retrofit of `Channel[T]`/
-> `NewChannel` (and its ~300-call-site migration) is DEFERRED — discovered
-> mid-implementation to COLLIDE with the already-shipped
-> `NewChannelFromTopic[T any](topic Topic, ...)` symbol (a completely
-> different, pre-existing constructor this doc's plan assumed was free to
-> repurpose), and has zero real consumer today (building the AMQP adapter
-> itself remains `docs/roadmap/amqp-adapter.md`'s own separate, future
-> effort). A fresh naming survey is required before any future round
-> attempts this migration.
+> `Capability`/`Apply`/`events.ApplyCapabilities` is the SOLE mechanism
+> for every protocol-native concern this document covers — there is no
+> parallel declaration path, and none is ever acceptable going forward.
+> This was NOT true from the start: this mechanism originally shipped
+> ADDITIVE, alongside a pre-existing `QoS byte`/`Retained bool`/
+> `api/events/mqtt_qos.go` legacy field path, on the theory that the two
+> could coexist. [`docs/roadmap/capability-requirement-composition.md`](../roadmap/capability-requirement-composition.md)'s
+> Phase 4b audited every real adapter for exactly this coexistence and
+> found **3 genuine backdoors already shipped** — code paths that bypassed
+> `Capability`/`Apply` entirely and set protocol-native wire state
+> directly — proving "additive" quietly reintroduces the same
+> uncontrolled-adapter-surface problem §0 below identifies as the core
+> motivation for this whole document. That roadmap's Phase 4b deleted
+> `api/events/mqtt_qos.go` entirely and removed every legacy
+> positional/field path from `adapters/mqtt5`, closing all 3. This rule
+> is now this document's own first-class design goal, not merely a
+> cross-reference: **any future capability, on any adapter, MUST go
+> through `Capability`/`Apply` — a "kept for compatibility" parallel path
+> is the exact failure mode already caught and fixed once.**
+> `adapters/mqtt` v3's own un-migrated legacy path and `adapters/zeromq`
+> (which never had a legacy dual-path) are unaffected by this history —
+> the backdoor was specific to `adapters/mqtt5`/core `api/events`.
 >
-> **Relationship to already-SHIPPED designs — stated up front, not buried:**
-> §3 RESOLVES (does not merely propose) the relationship to
-> [D-0003 — Codec-Declared Middlewares](../design/d-0003-codec-declared-middlewares.md)
-> (`middleware.Declaration[In,Out]`, `rest.Middleware[In,Out]`/
-> `events.Middleware[In,Out]`, `Transform`/`ClientTransform`/`.Use(mw)`) —
-> ALREADY IMPLEMENTED, tested, and documented as current: both mechanisms
-> occupy the SAME lifecycle stage (declare-time, spec-contributing),
-> confirmed via a 4-stage model, WITHOUT merging into one Go type. Nothing
-> in `api/rest`/`api/events`/`middleware` changes as a RESULT of this doc
-> alone; d-0003 remains the accurate, current description of shipped code
-> until a SEPARATE implementation-planning round executes any migration.
-> Breaking changes are explicitly accepted as a possibility for that
-> future round (see the repo owner's own framing of this rethink: "we can
-> make breaking changes if we can achieve these goals more easily").
+> ## Other resolved follow-ons (condensed)
 >
-> **Supersedes** the open question in
-> [Common-Base + Per-Pattern-Derived Middleware Types](../roadmap/common-middleware-architecture.md)
-> (already superseded once, by d-0003) for the specific finding it raised
-> (a single shared `middleware.Middleware` struct carrying REST-only
-> fields) — §3's confirmed 4-stage model is now the long-term resolution
-> (both `Middleware[In,Out]` and `Capability` are stage-2 declarations,
-> not a single merged type).
+> - **`Address`/`Channel[Addr,T]` retrofit — deferred, not abandoned.**
+>   `events.Address`/`events.TopicAddress` shipped as standalone, additive
+>   types (§2.3/§5.3); the full `Channel[Addr Address, T any]` generic
+>   retrofit collides with the already-shipped
+>   `NewChannelFromTopic[T any](topic Topic, ...)` symbol and has zero
+>   real consumer until a future AMQP adapter needs a non-topic-string
+>   address — a fresh naming survey is required before attempting it.
+> - **Relationship to [D-0003](../design/d-0003-codec-declared-middlewares.md)
+>   — resolved.** `Middleware[In,Out]` and `Capability` occupy the same
+>   lifecycle stage (declare-time, spec-contributing) per a confirmed
+>   4-stage model, without merging into one Go type.
+> - **MQTT5 User Property merge gap — resolved as a bug fix, not a new
+>   mechanism.** The property vocabulary axis
+>   (`WithRequestProperty`/`WithSubscribeProperty`/etc., built on
+>   D-0003's `Middleware[In,Out]`) already covers this; the actual
+>   blocker was a merge-field registration bug in
+>   `MergedPropertyParam[T].applyChannel`/`applyRoute`, now fixed — see
+>   [Feature: Event Channels](../features/events.md#codec-backed-middleware-transformclienttransform).
+> - **Response Topic/Correlation Data — decided, closed.** Stays an
+>   IMPLICIT, always-on characteristic of `mqtt5`'s reqreply transport
+>   (every route needs it unconditionally, no opt-out scenario to gate),
+>   NOT a declared `Capability` — see
+>   [D-0004](../design/d-0004-reqreply-workflow-simplification.md)'s own
+>   "Relationship to `protocol-native-features.md`" section.
+> - **MQTT5 Message Expiry Interval / Shared Subscriptions — spun out.**
+>   Both genuine, never-implemented `Capability` candidates from this
+>   document's own survey (§6) are now designed in their own dedicated
+>   doc, [`docs/roadmap/mqtt5-capability-extensions.md`](../roadmap/mqtt5-capability-extensions.md) —
+>   Message Expiry is ready to implement; Shared Subscriptions carries a
+>   genuine open design decision (topic-filter-string composition, not a
+>   `WireAttributes` field) not resolved here.
 >
-> **The formerly-open "registration surface... NOT resolved" question a
-> now-retired sibling roadmap doc (`mqtt5-user-property-merge.md`) raised
-> is ANSWERED TWO WAYS today**: this doc's own §5.2 sealed `mqtt5.Capability`
-> design is one answer (now ALSO shipped, see this doc's own Status block above); the OTHER, ALREADY-SHIPPED
-> answer is
-> [D-0003](../design/d-0003-codec-declared-middlewares.md)'s own Addendum
-> (folded in from the now-deleted `reqreply-codec-declared-middleware.md`
-> roadmap doc) —
-> the "property" vocabulary axis (`WithRequestProperty`/`WithResponseProperty`
-> for `api/reqreply`, `WithSubscribeProperty`/`WithPublishProperty` for
-> `api/events`), built directly on D-0003's ALREADY-SHIPPED
-> `Middleware[In,Out]` mechanism — API-level, not adapter-owned, narrower
-> in scope than this doc's `Capability` primitive, and NOT competing with
-> it. That retired doc's OWN motivating gap (direct, Middleware-free
-> attachment silently failing to merge) turned out to be a genuine BUG in
-> already-shipped code (`MergedPropertyParam[T].applyChannel`/`applyRoute`
-> not registering the merge field), now fixed — see
-> [Feature: Event Channels](../features/events.md#codec-backed-middleware-transformclienttransform)
-> for the current, correct behavior (see §5.2.1 for the full relationship:
-> Phase 1b's validate-only bridge, this doc's own planned `Capability`,
-> and the property axis).
->
-> **Response Topic/Correlation Data — DECIDED, closed**:
-> [D-0004 — ReqReply Workflow Simplification](../design/d-0004-reqreply-workflow-simplification.md)'s
-> `Client`/`Server`/`Attach` rework (the prerequisite this doc's original
-> finding was waiting on) has SHIPPED, and re-evaluating against the real
-> `Attach` shape settled the question: Response Topic/Correlation Data
-> stays an IMPLICIT, always-on characteristic of `mqtt5`'s reqreply
-> transport, NOT a declared `Capability` (see §5.2's own list and
-> d-0004's "Relationship to `protocol-native-features.md`" section for
-> the full reasoning) — every mqtt5 reqreply route needs it
-> unconditionally, with no opt-out scenario to gate. Shared
-> Subscriptions remain this doc's own genuine `Capability` candidate
-> from the same MQTT5 feature cluster, undecided and tracked
-> independently here.
+> [← Back to Roadmap](index.md)
 > [← Back to Roadmap](index.md)
 
 ## 0. Motivation — are we actually hitting unsolvable constraints, or just discomfort?
