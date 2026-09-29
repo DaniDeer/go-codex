@@ -12,12 +12,14 @@
 > `Subscribe`'s Capabilities gap) SHIPPED; Phase 4d (Attach factory
 > redesign — adapters expose `New*Transport` factories, attaching is
 > EXCLUSIVELY an api-layer method, all 12 adapter-namespaced `Attach*`
-> convenience functions removed) SHIPPED; Phase 4e (renumbered from the
-> original "Phase 4d" — closing the remaining format/security/middleware
-> "v1 scope" gaps) is DESIGNED, next up, confirmed to run BEFORE Phase 5;
-> Phase 5 (`api/reqreply` + the deferred `adapters/mqtt` v3 mirror) and
-> Phase 6 (`api/rest`) not yet started. See each subsection's own
-> Learnings entry. Spun out of a
+> convenience functions removed) SHIPPED; Phase 4e (closing the
+> remaining format/security/middleware "v1 scope" gaps) SHIPPED; Phase 5a
+> (Design complete — moving the type-safe escape hatch itself onto the
+> API layer, formerly "Phase 4f") DESIGNED, sequenced to run AFTER Phase
+> 5; Phase 5 (closing `adapters/mqtt` v3's Phase 4 pub/sub Capability
+> parity gap, and applying the same `Apply`/`ApplyCapabilities` shift to
+> `api/reqreply`'s mqtt5/zeromq call sites) and Phase 6 (`api/rest`) not
+> yet started. See each subsection's own Learnings entry. Spun out of a
 > user question about
 > [D-0006 — Protocol-Native Capabilities](../design/d-0006-protocol-native-capabilities.md)'s
 > scope (events-only) while reviewing [`docs/features/capabilities.md`](../features/capabilities.md).
@@ -2413,10 +2415,11 @@ Per each adapter's own "v1 scope" doc comment (still true after Phase
   during mqtt5's work).
 
 **Sequencing: Phase 4c → Phase 4d → Phase 4e → THEN Phase 5**
-(`api/reqreply` + `adapters/mqtt` v3 mirror). Phase 6 (`api/rest`)/
-Phase 7 (Review & Closeout / D-0006 rework) remain after that, unchanged
-in relative
-order.
+(closing `adapters/mqtt` v3's Phase 4 pub/sub Capability parity gap,
+and the `api/reqreply` Apply shift for mqtt5/zeromq) → Phase 5a (moving
+the type-safe escape hatch onto the API layer, formerly "Phase 4f").
+Phase 6 (`api/rest`)/Phase 7 (Review & Closeout / D-0006 rework) remain
+after that, unchanged in relative order.
 
 **Stages A/B implementation plan (`adapters/mqtt5`, the reference
 adapter) — user-confirmed before implementing:**
@@ -2629,7 +2632,46 @@ DESIGNATED exempt demo — confirmed via `grep -rn
 (every other match is comment-only, and each comment was individually
 verified accurate, not just left unchecked).
 
-#### New Phase 4f (Design complete — NOT yet implemented) — moving the type-safe escape hatch itself onto the API layer
+### Phase 5 — closing `adapters/mqtt` (v3)'s Phase 4 pub/sub Capability parity gap, and applying the same `Apply`/`ApplyCapabilities` shift to `api/reqreply`'s mqtt5/zeromq call sites
+
+**Status: Design not yet started — scope statement only, per
+phase-by-phase discipline.** Since `adapters/mqtt5`/`adapters/zeromq`'s
+`Capability` types are the SAME types Phase 4 touches (shared package,
+shared code), this phase is expected to be SMALLER than Phase 4's own
+work — mainly replacing reqreply's OWN QoS/Retained/HWM/Conflate
+resolve+assign call sites (mqtt5's `reqreply_transport.go`'s 3 reply
+publish paths + client-side request publish; zeromq's 4 reqreply
+dispatch implementations) with the SAME `events.ApplyCapabilities` call
+already built in Phase 4 — zero new `api/events`-side code anticipated,
+confirmed generic and reusable as-is. `adapters/zeromq`'s reqreply call
+sites in particular need ZERO changes (confirmed in Phase 4 — its
+`applyCapabilities` kept its exact prior signature).
+
+**Also in scope for Phase 5 (added after Phase 4 shipped):** mirroring
+Phase 4's `adapters/mqtt5` treatment (`Capability` interface requiring
+`Apply`, `WireAttributes`, removing the legacy positional
+`qos byte, retained bool`/`SubscribeOptions.QoS` dual-path) in
+`adapters/mqtt` (v3) — same file names (`capability.go`, `adapter.go`,
+`caller.go`, `handletransport.go`, `binding.go`), same pattern,
+deliberately deferred out of Phase 4 to preserve phase-by-phase
+discipline rather than doubling that round's scope.
+
+**Definition-of-done, corrected by Phase 4b's guardrail audit:** Phase
+5 must leave `adapters/mqtt` (v3) meeting the FULL zero-backdoor
+guardrail (see "Architectural guardrail" above) — the SAME bar
+`adapters/mqtt5` now meets — not merely "reqreply migrated to
+`ApplyCapabilities`." Phase 4b already did the narrow
+`events.PublishAttributes`-deletion follow-on for `adapters/mqtt` (its
+`ResolvePublishAttributes` fallback and `SubscribeQoS`-via-reflection
+read were removed since the TYPE itself no longer exists), but its raw
+`qos byte, retained bool` positional params, `SubscribeOptions.QoS`
+field, and `MQTTDrainPublishOptions.QoS`/`.Retained` ports-binding
+fields are ALL still standing legacy backdoors — Phase 5 must close
+every one of them, mirroring `adapters/mqtt5`'s Phase 4/4b shape
+exactly (`Capability`/`Apply`/`WireAttributes`, `Capabilities`-only
+`SubscribeAdapterOptions`/`MQTTDrainPublishOptions`).
+
+#### Phase 5a — moving the type-safe escape hatch itself onto the API layer (formerly "Phase 4f")
 
 **Status: Design complete as of the follow-up review below.**
 Originally raised while reviewing `demo_escape_hatch_workflow.go`'s own
@@ -2660,7 +2702,7 @@ enormously — captured below, resolved per-API:**
   `Router` for mqtt5, `pahomqtt.Client` for mqtt v3, `FramedSocket` for
   zeromq — as a constructor parameter, which `api/events` cannot
   itself supply) stays adapter-owned. This is the reference shape
-  Phase 4f brings REST and reqreply to.
+  Phase 5a brings REST and reqreply to.
 
 - **`api/reqreply` — CONFIRMED a near-trivial, LOW-RISK pure
   relocation, not a redesign.** Reading `mqtt5.Serve[Req,Resp]`/
@@ -2748,7 +2790,7 @@ enormously — captured below, resolved per-API:**
   is UNEXPORTED — used only by `chi`'s own test suite, never a real
   caller; its own doc comment states it became *"an internal helper
   now that [AttachRouter]..."* (demoted during Phase 4d, not an
-  oversight). **Phase 4f's REST scope is entirely about
+  oversight). **Phase 5a's REST scope is entirely about
   `adapters/nethttp.CallWithHandle`/`ServeOne` — `chi` has nothing to
   migrate.**
 
@@ -2757,63 +2799,25 @@ enormously — captured below, resolved per-API:**
   `ServeOne` spans 9+ example directories AND, notably,
   `adapters/mcprest/bridge.go` — a DIFFERENT adapter package depending
   directly on `nethttp.CallWithHandle` to bridge MCP tool calls through
-  an outbound REST call. Phase 4f's Implement step must explicitly
+  an outbound REST call. Phase 5a's Implement step must explicitly
   migrate `mcprest` too, not just examples.
 
-- **Sequencing (resolved): Phase 4f runs AFTER Phase 5.** Phase 4f's
+- **Sequencing (resolved): Phase 5a runs immediately AFTER Phase 5**
+  (this section), which is why it is positioned right here. Phase 5a's
   reqreply relocation touches the SAME `adapters/mqtt5`/`adapters/
   zeromq` reqreply files Phase 5's `Apply`/`ApplyCapabilities` shift
-  will also touch — doing Phase 5 first avoids reworking those files
+  also touches — running Phase 5 first avoids reworking those files
   twice (the same reasoning that already ordered Phase 4d before 4e in
   this doc). Phase 6 (REST Header/Cookie/Query real-interface work)
   touches different files (`capability.go`/carrier extraction, not
   `client.go`/`serve.go`'s Call/Serve dispatch) — independent of Phase
-  4f, can run in parallel or either order.
+  5a, can run in parallel or either order.
 
-- **Remaining open items for Phase 4f's Implement step** (naming
+- **Remaining open items for Phase 5a's Implement step** (naming
   bikeshed only, non-blocking): exact final function names
   (`ServeWithTransport`/`CallWithTransport` above are working names,
   not final); whether `ServeOne`'s relocated name changes to match
   `rest`'s existing verb-naming convention.
-
-### Phase 5 — `api/reqreply`: apply the SAME `Apply`/`ApplyCapabilities` shift
-
-**Status: Design not yet started — scope statement only, per
-phase-by-phase discipline.** Since `adapters/mqtt5`/`adapters/zeromq`'s
-`Capability` types are the SAME types Phase 4 touches (shared package,
-shared code), this phase is expected to be SMALLER than Phase 4's own
-work — mainly replacing reqreply's OWN QoS/Retained/HWM/Conflate
-resolve+assign call sites (mqtt5's `reqreply_transport.go`'s 3 reply
-publish paths + client-side request publish; zeromq's 4 reqreply
-dispatch implementations) with the SAME `events.ApplyCapabilities` call
-already built in Phase 4 — zero new `api/events`-side code anticipated,
-confirmed generic and reusable as-is. `adapters/zeromq`'s reqreply call
-sites in particular need ZERO changes (confirmed in Phase 4 — its
-`applyCapabilities` kept its exact prior signature).
-
-**Also in scope for Phase 5 (added after Phase 4 shipped):** mirroring
-Phase 4's `adapters/mqtt5` treatment (`Capability` interface requiring
-`Apply`, `WireAttributes`, removing the legacy positional
-`qos byte, retained bool`/`SubscribeOptions.QoS` dual-path) in
-`adapters/mqtt` (v3) — same file names (`capability.go`, `adapter.go`,
-`caller.go`, `handletransport.go`, `binding.go`), same pattern,
-deliberately deferred out of Phase 4 to preserve phase-by-phase
-discipline rather than doubling that round's scope.
-
-**Definition-of-done, corrected by Phase 4b's guardrail audit:** Phase
-5 must leave `adapters/mqtt` (v3) meeting the FULL zero-backdoor
-guardrail (see "Architectural guardrail" above) — the SAME bar
-`adapters/mqtt5` now meets — not merely "reqreply migrated to
-`ApplyCapabilities`." Phase 4b already did the narrow
-`events.PublishAttributes`-deletion follow-on for `adapters/mqtt` (its
-`ResolvePublishAttributes` fallback and `SubscribeQoS`-via-reflection
-read were removed since the TYPE itself no longer exists), but its raw
-`qos byte, retained bool` positional params, `SubscribeOptions.QoS`
-field, and `MQTTDrainPublishOptions.QoS`/`.Retained` ports-binding
-fields are ALL still standing legacy backdoors — Phase 5 must close
-every one of them, mirroring `adapters/mqtt5`'s Phase 4/4b shape
-exactly (`Capability`/`Apply`/`WireAttributes`, `Capabilities`-only
-`SubscribeAdapterOptions`/`MQTTDrainPublishOptions`).
 
 ### Phase 6 — `api/rest`: the SAME shift for Header/Cookie/Query
 
@@ -3033,13 +3037,13 @@ COMPLETE — Phase 4 is the closing review pass, not further feature work:
   promotion bar exactly (not a routine, single-feature roadmap doc).
 - **Audit which adapter-side functions implement a real, declared
   interface vs. which are ad-hoc functions with no interface contract
-  at all — raised during Phase 4f's review.** Phase 4f's own
+  at all — raised during Phase 5a's review.** Phase 5a's own
   investigation surfaced this as a recurring, easy-to-miss distinction:
   `adapters/mqtt5.NewServerTransport(opts) reqreply.ServerTransport`/
   `adapters/nethttp.NewClientTransport(opts) rest.ClientTransport`
   satisfy REAL, declared, api-layer-owned interfaces (Phase 4d's
   shipped shape) — but plenty of other adapter-exported functions
-  (e.g. the pre-Phase-4f `Serve[Req,Resp]`/`Call[Req,Resp]`,
+  (e.g. the pre-Phase-5a `Serve[Req,Resp]`/`Call[Req,Resp]`,
   `CallWithHandle[Req,Resp]`, `ServeOne[Req,Resp]`) are exported,
   documented, real API surface that DON'T implement any declared
   interface at all — they're just free functions with their own
@@ -3055,8 +3059,8 @@ COMPLETE — Phase 4 is the closing review pass, not further feature work:
   implements or satisfies, and — for functions with none — a one-line
   justification for why it's a free function rather than an interface
   method (e.g. "genuinely can't be generalized," "legacy, scheduled for
-  Phase 4f-style relocation," "intentionally adapter-specific sugar").
-  This closes the exact kind of ambiguity Phase 4f's review had to
+  Phase 5a-style relocation," "intentionally adapter-specific sugar").
+  This closes the exact kind of ambiguity Phase 5a's review had to
   rediscover via first-principles code reading rather than consulting
   an existing, trustworthy inventory.
 
