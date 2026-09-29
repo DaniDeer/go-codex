@@ -387,21 +387,23 @@ func demoErrorChannelActionsSubscribeSide(ctx context.Context) {
 		handleCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 		defer cancel()
 
-		// Deliberately kept on the NewSubscribeTransport escape hatch,
-		// NOT converted to events.Client.Attach+Client.Subscribe
-		// (docs/roadmap/capability-requirement-composition.md's Phase
-		// 4d sweep): this demo's whole point is observing
-		// SubscribeOptions.OnError, which Client.Subscribe's reflection
-		// shim does not yet call (a real, separate gap — Phase 4e's
-		// scope, not yet shipped). Converting would silently make
-		// onErrorCalled permanently false.
+		// Converted to Client.Attach+Client.Subscribe (docs/roadmap/
+		// capability-requirement-composition.md's Phase 4e closed the
+		// gap this demo used to document — Client.Subscribe's
+		// reflection shim now calls a declared SubscribeOptions.OnError
+		// callback, same as the escape hatch always did).
 		var onErrorCalled bool
-		transport := mqtt5adapter.NewSubscribeTransport[routes.SensorReading](broker, router, mqtt5adapter.SubscribeOptions{
+		evClient := events.NewClient(events.WithInfo(events.Info{Title: "Error pattern demo", Version: "1.0.0"}))
+		if err := evClient.Attach(mqtt5adapter.NewTransport(mqtt5adapter.TransportOptions{Client: broker, Router: router})); err != nil {
+			fmt.Printf("  %s: Attach error: %v\n", label, err)
+			return
+		}
+		sub = sub.WithOptions(mqtt5adapter.SubscribeOptions{
 			Capabilities: []mqtt5adapter.Capability{mqtt5adapter.QoSAtLeastOnce},
 			OnError:      func(mqtt5adapter.SubscribeError) { onErrorCalled = true },
 		})
 		go func() {
-			_ = events.SubscribeHandle(handleCtx, sub, transport,
+			_ = evClient.Subscribe(handleCtx, sub,
 				func(_ context.Context, _ routes.SensorReading) error {
 					return routes.SensorOutOfRangeError{SensorID: sensorID, Value: 999.9}
 				})
@@ -545,15 +547,17 @@ func demoErrorChannelMiddlewareCombo(ctx context.Context) {
 	alwaysRejectFn := func(_ context.Context, _ *pahomqtt5.Publish, _ *routes.SensorReading) (map[string][]string, error) {
 		return nil, errors.New("access denied for demo")
 	}
-	securedSub := routes.SecuredReadingsSub.Use(routes.APIKeyAuthMW).SubscribeMW(&routes.APIKeyAuthMW, alwaysRejectFn)
-	// Deliberately kept on the NewSubscribeTransport escape hatch: this
-	// demo's whole point is SubscribeMW security ENFORCEMENT, which
-	// Client.Subscribe's reflection shim does not yet run (Phase 4e's
-	// scope, not yet shipped) — converting would silently skip the
-	// rejection this demo exists to prove.
-	dataTransport := mqtt5adapter.NewSubscribeTransport[routes.SensorReading](broker, router, mqtt5adapter.SubscribeOptions{Capabilities: []mqtt5adapter.Capability{mqtt5adapter.QoSAtLeastOnce}})
+	securedSub := routes.SecuredReadingsSub.Use(routes.APIKeyAuthMW).SubscribeMW(&routes.APIKeyAuthMW, alwaysRejectFn).
+		WithOptions(mqtt5adapter.SubscribeOptions{Capabilities: []mqtt5adapter.Capability{mqtt5adapter.QoSAtLeastOnce}})
+	// Converted to Client.Attach+Client.Subscribe (docs/roadmap/
+	// capability-requirement-composition.md's Phase 4e closed the gap
+	// this demo used to document — Client.Subscribe's reflection shim
+	// now runs Implementations-based SubscribeMW security enforcement,
+	// same as the escape hatch always did). Reuses the SAME evtClient/
+	// attached transport as the error-topic consumer above — one
+	// Client.Attach, many Client.Subscribe calls.
 	go func() {
-		_ = events.SubscribeHandle(handleCtx, securedSub, dataTransport,
+		_ = evtClient.Subscribe(handleCtx, securedSub,
 			func(_ context.Context, _ routes.SensorReading) error {
 				fmt.Println("  ✗ subscribe handler ran (unexpected — security Fn should have rejected first)")
 				return nil

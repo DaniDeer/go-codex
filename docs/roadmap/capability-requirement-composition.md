@@ -2237,7 +2237,8 @@ demonstrating that escape hatch remains available for cases the
 
 #### Phase 4e — closing the REMAINING `Client.Publish`/`Subscribe` "v1 scope" gaps
 
-**Status: DESIGN.** Renumbered from the original "Phase 4d" — the
+**Status: SHIPPED — all 4 stages (A/B/C/D) complete for all 3 adapters
+(`mqtt5`, `mqtt` v3, `zeromq`).** Renumbered from the original "Phase 4d" — the
 Attach-factory redesign above was inserted BEFORE this phase since it
 reshapes the SAME `transport.go`/`reqreply_transport.go` files this
 phase touches; doing the factory redesign first avoids reworking those
@@ -2274,8 +2275,32 @@ not forget it!"):**
   outside `demo_escape_hatch_workflow.go` (which stays exempt by
   design).
 
+**Scope, corrected by a code-reading review pass (done before
+implementation started) — the gap is BIGGER than originally listed.**
+Reading `subscribeHandler[T]`/`publish[T]`'s real per-message pipeline
+(`adapters/mqtt5/adapter.go`, the reference implementation this shim
+was always meant to match) end-to-end shows the reflection shim
+(`transport.go`'s `Client.Publish`/`Subscribe`) currently skips EVERY
+pipeline step between decode and calling `fn` except `ApplyCapabilities`
+(Phase 4c) — not just the 3 originally-named items. Two ADDITIONAL,
+previously-undocumented gaps found this pass, folded into scope below
+rather than deferred to yet another phase:
+
+- **Property-merge** (`ChannelHandle.PropertyMergeFields`/
+  `MergePropertyVars`) — a channel declaring a `MergedPropertyParam`
+  directly on `NewChannel` never gets those fields populated from
+  incoming User Properties through `Client.Subscribe`.
+- **Codec-backed Middleware/Transform dispatch**
+  (`ChannelHandle.MiddlewareHandlers`/`ClientMiddlewareHandlers`, the
+  `.Use()`-attached mechanism from
+  docs/design/d-0003-codec-declared-middlewares.md) — entirely
+  unexercised by the shim today.
+- Also folded in: **User-Property-param validation**
+  (`SubscribeOptions.UserPropertyParams`, the adapter-local mirror of
+  REST's header-param validation) — likewise unexercised.
+
 Per each adapter's own "v1 scope" doc comment (still true after Phase
-4c) and the REST reference shape:
+4c) and the REST reference shape, the full item list:
 
 1. **Format overrides** — REST's `ClientCallOptions{RequestFormats,
    ResponseFormats any}`/`ClientConsumeOptions{Formats any}` is the
@@ -2284,9 +2309,9 @@ Per each adapter's own "v1 scope" doc comment (still true after Phase
    `.Subscribe` take NO per-call options param today
    (`Publish(ctx, pub any, msg any)`/`Subscribe(ctx, sub any, fn any)`)
    — needs an analogous `events.ClientPublishOptions`/
-   `ClientSubscribeOptions` (name TBD) as a variadic trailing param —
-   PER-CALL, unlike Phase 4c's Capabilities (per-channel-declared),
-   since format overrides are legitimately a call-time concern.
+   `ClientSubscribeOptions` as a variadic trailing param — PER-CALL,
+   unlike Phase 4c's Capabilities (per-channel-declared), since format
+   overrides are legitimately a call-time concern.
 2. **Security/credential ClientMW enforcement — the MOST SEVERE gap.**
    REST's `Client.Call` resolves declared security/credential ClientMW
    automatically from the RouteHandle. `events.Client.Publish`/
@@ -2295,36 +2320,461 @@ Per each adapter's own "v1 scope" doc comment (still true after Phase
    correctly-paired credential SubscribeMW/PublishMW gets ZERO runtime
    enforcement through Client.Attach — no credential is fetched or
    injected, silently, with no error."* This is a SILENT SECURITY
-   BYPASS, not just a missing convenience. Open design decision: should
-   `Client.Attach` eagerly reject a Client with any declared-but-
-   unenforceable security scheme (fail closed), or should this stay
-   silent until fixed (current, unsafe default)? Resolve via reflecting
+   BYPASS, not just a missing convenience. Resolved via reflecting
    `ChannelHandle.Implementations`/`ClientImplementations`, mirroring
    `subscribeWithHandle`'s/`publish`'s own already-working security
    dispatch.
 3. **General-purpose middleware wrapping** — declared `SubscribeMW`/
    `PublishMW` (logging/observability/rate-limiting, non-security) also
    currently skipped — same fix shape as #2, lower severity.
-4. Mirror across all 3 adapters (`mqtt5`, `mqtt` v3, `zeromq`).
-5. **Definition of done:** drop the "v1 scope" doc-comment framing
+4. **Property-merge** and **User-Property-param validation** (see
+   above) — wired alongside #2/#3, same reflection technique.
+5. **Codec-backed Middleware/Transform dispatch** (see above).
+6. Mirror across all 3 adapters (`mqtt5`, `mqtt` v3, `zeromq`).
+7. **Definition of done:** drop the "v1 scope" doc-comment framing
    entirely from all 3 adapters' `transport.go`, matching
    `adapters/nethttp/clienttransport.go`'s already-achieved "no
    remaining v1 scope asterisk" wording.
 
-**Open design decisions for Phase 4e's own Design step:**
-- Exact shape/name of the new per-call Publish/Subscribe options
-  struct.
-- Fail-open vs fail-closed semantics for a declared-but-unenforced
-  security scheme (validate eagerly at `Attach`, or reject at call
-  time?).
-- Whether `Client.Subscribe`'s existing ErrorChannel/DeadLetter dispatch
-  needs reordering once general middleware wrapping is added.
+**Design decisions, resolved via this review — not left open:**
+
+- **No core `api/events` changes needed for security/general-middleware
+  dispatch.** `middleware.ServerImplementation`/`ClientImplementation`
+  are ALREADY non-generic (`Fn any`, `Name string`, `Satisfies []string`)
+  plain fields on `ChannelHandle` (`Implementations`/
+  `ClientImplementations`), reachable via the SAME
+  `elem.FieldByName(...)` reflection technique
+  `adapters/mqtt5/reqreply_transport.go`'s `Call` and
+  `adapters/nethttp/clienttransport.go`'s `Call` ALREADY use for their
+  own client-side security dispatch — proven, shipped precedent, not a
+  new technique. `impl.Fn`'s boxed value is ALREADY a concretely-T Go
+  closure (built when `.SubscribeMW(fn)`/`.PublishMW(fn)` was called at
+  declare time) — `reflect.ValueOf(impl.Fn).Call(...)` invokes it
+  directly; a general-purpose wrapping Fn's decorator shape
+  (`func(next func(ctx,T) error) func(ctx,T) error`) is composed via
+  `reflect.MakeFunc`, mirroring `reqreply_transport.go`'s `innerCall`/
+  `wantGeneralFnType` technique and
+  `adapters/nethttp/clienttransport.go`'s `networkStep` exactly — an
+  ALREADY-established codebase idiom for this exact problem.
+- **Two SMALL, additive core `api/events` changes ARE needed** — thin
+  monomorphized wrapper methods on `ChannelHandle[T]`, mirroring the
+  ALREADY-EXISTING convention `EncodeVars`/`DecodeMergedWithFormats`/
+  `MergePropertyVars`/`ErrorResponseFor`/`DeadLetterFor` establish (a
+  core generic helper gets a thin per-T method wrapper specifically so
+  reflection can call it):
+  `ChannelHandle[T].DispatchSubscribeMiddleware(ctx, msg *T, topicVars, propertyVars map[string]string) error`
+  and
+  `ChannelHandle[T].DispatchPublishMiddleware(ctx, msg T) (topicVars, propertyVars map[string]string, err error)`
+  — each a ONE-LINE body calling the existing free generic function
+  (`DispatchSubscribeMiddlewareHandlers`/`DispatchPublishMiddlewareHandlers`,
+  `api/events/transform_dispatch.go`) with `h.MiddlewareHandlers`/
+  `h.ClientMiddlewareHandlers`. No new behavior, no new type — purely a
+  reflection-callability adapter, same bar as every other handle method.
+- **Per-call validation, not Attach-time eager validation — matches
+  existing REST/reqreply precedent, not a new choice.** Confirmed via
+  reading `adapters/nethttp/clienttransport.go`'s `Call`: it validates
+  `ClientImplementations` shapes at the START of EACH `Call`, not once
+  at `Attach` time. `Client.Publish`/`Subscribe`'s shim does the SAME —
+  validate shapes once per `Publish` call / once at the start of each
+  `Subscribe` call (before its blocking per-message loop starts,
+  mirroring `subscribeWithHandle`'s own "validated EAGERLY here, before
+  the broker subscription is made" timing) — a malformed Fn fails
+  loudly and immediately via the existing
+  `middleware.MiddlewareShapeError`, never silently. This RESOLVES the
+  original "fail-open vs fail-closed" question: there is no
+  silent-bypass window left once this ships — the question was really
+  "what happens during the gap," and closing the gap answers it.
+- **Format overrides struct shape** — mirrors `rest.ClientConsumeOptions`
+  (single `Formats any` field, not REST `Call`'s Request/Response
+  split, since Publish/Subscribe are each single-direction):
+  `type ClientPublishOptions struct { Formats any }` /
+  `type ClientSubscribeOptions struct { Formats any }` — added as a
+  trailing variadic param:
+  `Publish(ctx, pub, msg any, opts ...ClientPublishOptions) error` /
+  `Subscribe(ctx, sub any, fn any, opts ...ClientSubscribeOptions) error`
+  — non-breaking for every existing call site (0 args = current
+  behavior).
+- **Error-dispatch ordering, resolved by mirroring `subscribeHandler[T]`'s
+  own real order exactly** (property-merge → user-property-param
+  validation → security/codec-credential → security/Implementations →
+  codec-Middleware/Transform → handler call), with ErrorChannel/
+  DeadLetter/`OnError` consulted at EVERY one of those failure points,
+  exactly as `adapter.go`'s existing per-step `tryPublishErrorChannel`/
+  `tryDeadLetter`/`opts.OnError` triplet already does — no reordering
+  question remains once the shim runs the SAME steps in the SAME order
+  as the reference implementation it was always meant to match.
+- **Format overrides are bundled into `adapters/mqtt5`'s Stage A/B
+  work** (user-confirmed), not a fully separate later stage — they
+  share the eager-shape-validation scaffolding Stage A/B already builds,
+  and security (the most severe gap) is addressed first regardless.
+  Only `adapters/mqtt` (v3) and `adapters/zeromq` need a dedicated
+  later stage purely for format-override wiring (the core
+  `ClientPublishOptions`/`ClientSubscribeOptions` structs land once,
+  during mqtt5's work).
 
 **Sequencing: Phase 4c → Phase 4d → Phase 4e → THEN Phase 5**
 (`api/reqreply` + `adapters/mqtt` v3 mirror). Phase 6 (`api/rest`)/
 Phase 7 (Review & Closeout / D-0006 rework) remain after that, unchanged
 in relative
 order.
+
+**Stages A/B implementation plan (`adapters/mqtt5`, the reference
+adapter) — user-confirmed before implementing:**
+
+- **Format overrides bundled into Stage A/B** (not a separate later
+  stage) — shares the eager-shape-validation scaffolding Stage A/B
+  already builds; security (the most severe gap) addressed first
+  regardless.
+- Stage A = full `Client.Subscribe` pipeline parity (property-merge,
+  User-Property-param validation, codec-based + declarative
+  SubscribeMW security, codec-Middleware/Transform dispatch,
+  general-purpose wrapping, format overrides). Stage B = the SAME for
+  `Client.Publish`. Stage C narrows to ONLY wiring the (once-added)
+  core `ClientPublishOptions`/`ClientSubscribeOptions` structs' Formats
+  resolution into `adapters/mqtt` (v3) and `adapters/zeromq`. Stage D =
+  mirroring Stage A/B's full security/middleware pipeline to those same
+  2 adapters.
+
+- **Learnings (recorded, real evidence from Implement — not
+  speculation):**
+  - **A previously-existing, ALREADY-SHIPPED reflection-only dispatch
+    mechanism was found and reused, not duplicated.**
+    `adapters/mqtt5/caller.go` (built for `(*caller).ServeSubscribers`'s
+    own registry-walk dispatch) ALREADY contained
+    `subscribeSecurityFnType`/`generalWrapFnType`/
+    `validateSubscribeImplementationShapesReflect`/
+    `runSubscribeSecurityImplsReflect`/`wrapHandlerGeneralReflect`/
+    `runErasedBuiltinSecurityCheck` — the EXACT subscribe-side
+    reflection helpers Stage A needed. Confirmed via a first-attempt
+    duplicate (`transport_dispatch.go`) that collided by function name
+    at compile time — the collision itself is direct evidence the two
+    independently-designed mechanisms converged on identical shapes,
+    validating the design review's "already-established, proven
+    precedent" claim. Deleted the duplicate subscribe-side helpers and
+    reused `caller.go`'s directly; only wrote NEW publish-side
+    siblings (`runPublishSecurityImplsReflect`,
+    `validateClientImplementationShapesReflect`,
+    `wrapClientGeneralDecoratorReflect`,
+    `buildPublishSecurityFnType`) plus small shared HandlerOpts-
+    extraction/security-requirement-resolution/format-override helpers
+    in a NEW `transport_dispatch.go`.
+  - **`caller.go`'s existing mechanism was confirmed to be a
+    deliberate, documented SUBSET** ("a known simplification of this
+    reflect dispatch path" — its own doc comment) — no MergeFields/
+    property-merge/ErrorChannel/DeadLetter/codec-Middleware/format
+    overrides. Stage A's `Client.Subscribe` needed ALL of those (its
+    whole point), so `caller.go`'s pieces were reused for the security/
+    general-MW SUBSET only; property-merge, User-Property-param
+    validation, ErrorChannel/DeadLetter dispatch, and codec-Middleware
+    dispatch were newly wired directly in `transport.go`, matching
+    `subscribeHandler[T]`'s real order exactly (property-merge →
+    user-property-param validation → security/codec-credential →
+    security/Implementations → codec-Middleware/Transform → handler
+    call), each with the SAME ErrorChannel→DeadLetter→OnError fallback
+    triplet — factored into one `dispatchFailure` closure to avoid
+    repeating it at all 6 call sites.
+  - **2 new core `api/events` additions, exactly as scoped**:
+    `ChannelHandle[T].DispatchSubscribeMiddleware`/
+    `DispatchPublishMiddleware` (thin one-line wrapper methods) and
+    `ClientPublishOptions`/`ClientSubscribeOptions` + the variadic
+    `Transport.Publish`/`Subscribe`/`Client.Publish`/`Subscribe`
+    signature change — confirmed non-breaking for every existing call
+    site (0 variadic args = current behavior); the ONE test-only
+    breakage was `api/events/builder_test.go`'s `mockTransport`, fixed
+    by adding the 2 new variadic params to its method signatures.
+  - **Full verification, repeated:** `gofmt -l .` clean; `go build
+    ./...`/`go vet ./...` clean; `go test ./...` full run green (56
+    packages); all `examples/*/` exit 0; `just check` (gosec +
+    staticcheck) clean, 0 issues, 492 files, 0 new suppressions. 15 new
+    tests added (`adapters/mqtt5/client_full_pipeline_test.go`),
+    covering property-merge, User-Property-param validation
+    (success/reject), codec-based security credential (reject),
+    SubscribeMW/PublishMW security (success), general-purpose wrapping
+    (order verified both sides), codec-Middleware dispatch (order
+    verified both sides), format overrides (both sides), and eager
+    shape-validation errors (both sides) — all passing on first real
+    run against the NEW `Client.Attach`+`Client.Subscribe`/`Publish`
+    surface (never the lower escape hatch).
+  - `adapters/mqtt` (v3) and `adapters/zeromq`'s `Transport.Publish`/
+    `Subscribe` were given the SAME variadic-param signature (interface
+    conformance only) with an explicit code comment marking Stage D as
+    the deferred, NOT-forgotten follow-up — mirrors this roadmap's own
+    established "close the interface now, mirror the full
+    implementation in a later, explicitly-tracked stage" discipline
+    from Phase 4d's Attach-factory rollout.
+
+**Stage D (`adapters/mqtt` v3, `adapters/zeromq`) + Stage E
+(definition-of-done) — Learnings:**
+
+- **Both adapters ALREADY had reusable, pre-existing reflection
+  dispatch helpers for the subscribe side, confirming the design
+  review's precedent claim a SECOND time (Stage A's mqtt5 reuse was the
+  first).** `adapters/mqtt/caller.go` (built for its own
+  `ServeSubscribers`) already had `runSubscribeSecurityImplsReflect`/
+  `validateSubscribeImplementationShapesReflect` in the EXACT shape
+  needed; `adapters/zeromq/serve_subscribers.go` already had
+  `validateSubscribeImplementationShapesReflect`. Both reused directly
+  — only publish-side siblings (`runPublishSecurityImplsReflect`,
+  `validateClientImplementationShapesReflect`,
+  `wrapClientGeneralDecoratorReflect`) were newly written per adapter,
+  in a new `transport_dispatch.go` file each, mirroring mqtt5's own
+  file structure.
+- **The two adapters' security Fn SHAPES genuinely differ, confirmed
+  by reading each adapter's OWN generic reference implementation before
+  writing any reflection code** — not assumed identical across
+  adapters: `mqtt` (v3)'s subscribe-side security shape is
+  MAP-based (`func(context.Context, pahomqtt.Message, *T)
+  (map[string][]string, error)`, mirroring mqtt5's grant-merge design,
+  via `middleware.CheckScopes`), while `zeromq`'s is a plain
+  `func(context.Context, *T, []route.SecurityRequirement) error` (no
+  grants map — zeromq has no built-in credential-extraction mechanism
+  of its own). A first-draft mqtt-v3 test using the WRONG (zeromq-style)
+  shape silently no-opped (shape mismatch → eager
+  `MiddlewareShapeError` → the test's own `_ = c.Subscribe(...)`
+  discarded it) — caught by the test's own assertion failing with a
+  zero-value error, not a panic; fixed by reading `adapter.go`'s actual
+  `impl.Fn.(func(...))` type assertion for each adapter before writing
+  the corresponding test, not by assumption.
+- **`mqtt` (v3)'s Capabilities resolution was deliberately left
+  UNTOUCHED** (still `events.ResolveCapabilityValue`, the pre-Phase-4
+  mechanism) — migrating it to the Apply-interface shape `mqtt5`/
+  `zeromq` already use is explicitly Phase 5's job, not this one's;
+  Stage D's security/middleware/format-override pipeline work was
+  wired ALONGSIDE the existing Capabilities resolution, not through it.
+- **A REAL bug found via example conversion, not via unit tests** (the
+  SAME lesson Phase 1 first taught this roadmap, and Phase 4d's own
+  WaitHandler bug repeated): converting
+  `examples/events-api/demo_error_pattern.go`'s LAST 2
+  `NewSubscribeTransport` escape-hatch usages onto
+  `Client.Attach`+`Client.Subscribe` (closing the final escape-hatch
+  usages outside `demo_escape_hatch_workflow.go`) surfaced that all 3
+  adapters' shared `dispatchFailure` closure called a declared
+  `OnError` callback UNCONDITIONALLY after every branch — including
+  when a declared `events.ErrorChannel` had ALREADY matched and
+  published an `ErrorRespond` response, which `tryPublishErrorChannel`'s
+  own contract says must return immediately, `handled=true`, WITHOUT
+  ever calling `OnError`. None of the 27 new unit tests (mqtt5: 16
+  including the regression test; zeromq: 12; mqtt v3: 12) caught this,
+  because none happened to combine a matched `ErrorRespond` declaration
+  with a non-nil `OnError` callback in the SAME test — exactly the
+  combination the demo's `onErrorCalled` assertion exercises. Fixed in
+  all 3 adapters' `dispatchFailure` closures (added explicit `return`
+  after the `ErrorRespond`-publish branch AND after a successful
+  DeadLetter publish); a regression test
+  (`TestClientSubscribe_ErrorChannel_MatchedRespond_SkipsOnError`) was
+  added to `adapters/mqtt5/client_full_pipeline_test.go` to lock in the
+  fix (verified 3x non-flaky). **Lesson reconfirmed**: converting a
+  REAL, pre-existing caller onto a new mechanism is the actual
+  verification step for "this dispatcher is equivalent to the reference
+  implementation" — a passing, hand-written unit test suite is not
+  equivalent to exercising it through genuine, independently-written
+  call sites.
+- **Definition of done, verified via grep, not assumed:** all 3
+  adapters' `transport.go` doc comments now say "FULL-FEATURED... no
+  remaining 'v1 scope' asterisk," matching
+  `adapters/nethttp/clienttransport.go`'s own wording exactly. The 3
+  guide docs (`docs/guides/mqtt5.md`/`mqtt.md`/`zeromq.md`) and
+  `.github/instructions/go-codex.instructions.md` were swept for the
+  same stale "v1 scope limits... use `New*Transport` directly instead"
+  phrasing.
+- **Full verification, repeated across the WHOLE Stage D+E change,
+  not just the new files:** `gofmt -l .` clean; `go build ./...`/
+  `go vet ./...` clean; `go test ./...` full run green (all packages,
+  post-bugfix); all `examples/*/` exit 0 (including the converted
+  `demo_error_pattern.go`, manually re-inspected for the corrected
+  `onErrorCalled=false` output on the `ErrorRespond` case); `just check`
+  (gosec + staticcheck) clean, 0 issues, 494 files, 0 new suppressions.
+
+**Addendum — a real, previously-untracked gap found and fixed during a
+LATER `examples/events-api` escape-hatch sweep (not part of the
+original Stage A-E work above):** reviewing every remaining
+`NewPublishTransport`/`NewSubscribeTransport` usage in
+`examples/events-api` for staleness (per an explicit user request)
+surfaced that `Client.Subscribe`'s dispatch handler in BOTH
+`adapters/mqtt5/transport.go` and `adapters/mqtt/transport.go` never
+called `context.WithValue(ctx, contextKey{}, msg)`/
+`context.WithValue(msgCtx, userPropsKey{}, msg.Properties.User)` the
+way `adapter.go`'s `makeSubscribeMessageHandler`/`subscribeHandler[T]`
+already does — so `MessageFromContext`/`UserPropertiesFromContext`
+(mqtt5) and `MessageFromContext` (mqtt v3) silently returned
+`(nil, false)` through `Client.Subscribe`, even though Stage A's own
+"full pipeline parity" claim implied otherwise. This is a genuine gap
+Stage A missed (it added property-MERGE support but never added raw
+ctx-based message/property access). **Fixed**: injected the SAME
+`context.WithValue` calls at the SAME pre-decode placement in both
+adapters' `Client.Subscribe` handlers, threading the resulting
+`msgCtx` through security/middleware/handler dispatch (mqtt v3's
+handler additionally had to move its once-precomputed `ctxVal` INSIDE
+the per-message closure, since it must now vary per message). 2 new
+regression tests added
+(`TestClientSubscribe_MessageAndUserPropertiesFromContext_Retrievable`
+in `adapters/mqtt5`, `TestClientSubscribe_MessageFromContext_Retrievable`
+in `adapters/mqtt`). This closes the LAST remaining reason (beyond
+Category 3's structural one, see below) any `examples/events-api` demo
+needed the escape hatch — `demo_user_property_middleware.go` converted
+onto `Client.Attach`+`Client.Subscribe`/`Publish` as a direct result.
+
+**Also found during the SAME sweep: 2 stale-but-harmless comments,
+fixed.** `demo_security_subscribemw.go`'s mqtt5 leg and
+`demo_property_merge_direct_attachment.go`/`demo_wildcard_subscription.go`
+had never been converted despite Stage A-E already closing the
+capability gaps their (now-stale) comments cited — converted onto
+`Client.Attach`+`Client.Subscribe`/`Publish`, no new mechanism needed.
+
+**Definition-of-done re-confirmed, not just assumed:** after this
+addendum, exactly ONE real `NewSubscribeTransport` call site remains in
+`examples/events-api` — `demo_escape_hatch_workflow.go`, the
+DESIGNATED exempt demo — confirmed via `grep -rn
+"NewPublishTransport\|NewSubscribeTransport" examples/events-api/*.go`
+(every other match is comment-only, and each comment was individually
+verified accurate, not just left unchecked).
+
+#### New Phase 4f (Design complete — NOT yet implemented) — moving the type-safe escape hatch itself onto the API layer
+
+**Status: Design complete as of the follow-up review below.**
+Originally raised while reviewing `demo_escape_hatch_workflow.go`'s own
+justification (above): its current, still-true reason to exist
+(compile-time type safety, no `*events.Client` ceremony, mqtt v3's
+non-blocking registration semantics) mirrors `adapters/nethttp`'s OWN
+`CallWithHandle`/`ServeOne` existing alongside `api/rest`'s
+`Client.Call`/`Attach` for the identical reason — a consistent
+pattern, but NOT one the user accepts as permanent. **Directive:
+investigate moving this WHOLE tier's "drive" verb onto the API layer,
+keeping ONLY a `New*Transport[T]`-shaped factory adapter-owned**
+(mirrors `api/events`'s OWN, ALREADY-correct split — see below).
+
+**A follow-up review pass (separate session) corrected a significant
+mischaracterization in the ORIGINAL scope statement above: it wrongly
+implied reqreply's gap was "the same shape as REST's, just less
+investigated." It is NOT. The three APIs' actual difficulty differs
+enormously — captured below, resolved per-API:**
+
+- **`api/events` — CONFIRMED already at the target shape, zero work
+  needed.** `events.SubscribeHandle`/`PublishHandle` (the "attach and
+  drive" verbs) ALREADY live in `api/events` itself. Reading
+  `adapters/mqtt5.NewSubscribeTransport[T]`/`NewPublishTransport[T]`'s
+  actual bodies confirms they delegate to `subscribeWithHandle[T]`/
+  `publishHandle[T]` — FULLY GENERIC, ZERO-REFLECTION, `T` flowing as
+  a real compile-time type parameter throughout. Only the factory
+  (needs the adapter's own concrete connection type — `MQTTClient`+
+  `Router` for mqtt5, `pahomqtt.Client` for mqtt v3, `FramedSocket` for
+  zeromq — as a constructor parameter, which `api/events` cannot
+  itself supply) stays adapter-owned. This is the reference shape
+  Phase 4f brings REST and reqreply to.
+
+- **`api/reqreply` — CONFIRMED a near-trivial, LOW-RISK pure
+  relocation, not a redesign.** Reading `mqtt5.Serve[Req,Resp]`/
+  `Call[Req,Resp]`'s actual bodies (and `zeromq`'s identical
+  counterparts) shows they build `&serverTransport{...}`/
+  `&clientTransport{...}` — the EXACT SAME types
+  `NewServerTransport(opts)`/`NewClientTransport(opts)` (Phase 4d's
+  already-shipped factories) build — and delegate immediately:
+  `return t.Serve(ctx, handle, fn)` / `t.Call(ctx, handle, req)`. Their
+  own doc comments confirm it: *"Zero duplicate logic — full
+  capability parity with AttachClient is therefore automatic."*
+  **This also means reqreply's escape hatch was NEVER actually
+  reflection-free** — `clientTransport.call`'s internals already
+  reflect over the `*RouteHandle[Req,Resp]`'s own monomorphized
+  closures (e.g. `elem.FieldByName("EncodeRequest")`) — the same
+  established, safe "reflect against already-concrete closures on a
+  type-erased handle" idiom used pervasively elsewhere in this
+  codebase (not raw/unsafe reflection). Design (resolved):
+  ```go
+  // api/reqreply — NEW, thin api-layer verbs (pure relocation — the
+  // function body IS the adapter's existing Serve/Call body, unchanged)
+  func ServeWithTransport[Req, Resp any](ctx context.Context, transport ServerTransport, handle *RouteHandle[Req, Resp], fn func(context.Context, Req) (Resp, error)) error {
+      return transport.Serve(ctx, handle, fn)
+  }
+  func CallWithTransport[Req, Resp any](ctx context.Context, transport ClientTransport, handle *RouteHandle[Req, Resp], req Req, opts ...ClientCallOptions) (Resp, error) {
+      var zero Resp
+      respAny, err := transport.Call(ctx, handle, req, opts...)
+      if err != nil { return zero, err }
+      resp, ok := respAny.(Resp)
+      if !ok { return zero, TransportTypeMismatchError{...} }
+      return resp, nil
+  }
+  // adapters/mqtt5 + adapters/zeromq — DELETE Serve[Req,Resp]/Call[Req,Resp]
+  // entirely; NewServerTransport/NewClientTransport (Phase 4d, already
+  // shipped) are the ONLY adapter-owned piece left — matches events' shape.
+  ```
+
+- **`api/rest` — CONFIRMED genuinely harder; this was the one real
+  open design decision, now resolved by explicit user choice.**
+  Reading `CallWithHandle`'s actual body shows it does NOT delegate to
+  `rest.ClientTransport` at all — it takes a raw `*http.Client,
+  baseURL string` and calls `callWithVars(...)`, nethttp's OWN
+  separate, hand-written implementation (param derivation, security,
+  network call, decode — all duplicated logic, never shared with
+  `rest.ClientTransport.Call`'s reflection-based pipeline). This is a
+  material difference from reqreply, not just "less investigated."
+  **Decision (user-confirmed): Option A — delegate through the
+  EXISTING `rest.ClientTransport` interface**, mirroring how
+  reqreply's escape hatch already works, rather than introducing a
+  brand-new `rest.CallTransport[Req,Resp]` generic interface (Option
+  B, rejected — would have preserved strict zero-reflection but at the
+  cost of a second interface every REST adapter must implement/
+  maintain, unlike events/reqreply where ONE interface already covers
+  both call shapes). Design (resolved):
+  ```go
+  // api/rest — NEW, thin api-layer verb, delegates through the EXISTING
+  // type-erased rest.ClientTransport interface (same shape reqreply uses)
+  func CallWithTransport[Req, Resp any](ctx context.Context, transport ClientTransport, handle *RouteHandle[Req, Resp], req Req, opts ...ClientCallOptions) (Resp, error)
+  // adapters/nethttp — DELETE CallWithHandle[Req,Resp]; its logic is
+  // ALREADY duplicated in rest.ClientTransport's own Call path via
+  // NewClientTransport(opts) — no new adapter-side type needed.
+  ```
+
+- **`ServeOne` — RESOLVED: structurally REST-only, cannot be
+  generalized.** `rest.ServerTransport.Serve(ctx) error` (Phase 4d,
+  already shipped) already blocks and owns its own `*http.Server`,
+  walking every registered route — the direct, already-existing
+  cross-API-consistent equivalent of `reqreply.ServerTransport.Serve`/
+  `events.Transport.Subscribe`. `ServeOne` is a DIFFERENT, additional
+  use case — build a bare `http.Handler` for exactly one route, to
+  mount onto a caller-owned, external `*http.ServeMux`/app router — a
+  use case with NO structural equivalent in MQTT/ZeroMQ/reqreply
+  (there is no "caller-owned external broker to embed a handler into"
+  concept for those protocols). **`ServeOne` cannot be
+  cross-API-generalized — it is correctly, permanently REST-only.**
+  Recommendation (adopted): still relocate it to `api/rest` as a
+  REST-only verb, for consistency with `CallWithHandle`'s move — it is
+  pure builder-pattern sugar with no adapter-specific state
+  (`rest.NewServer`+`Register`+internal `serve` are all already
+  callable from `api/rest`+the adapter's own `Register` alone).
+
+- **`chi` — CONFIRMED out of scope, not symmetric with `nethttp`.**
+  `chi` has NO `CallWithHandle` equivalent at all (server-only router
+  adapter, no HTTP client concept). `chi.serveOne[Req,Resp]` exists but
+  is UNEXPORTED — used only by `chi`'s own test suite, never a real
+  caller; its own doc comment states it became *"an internal helper
+  now that [AttachRouter]..."* (demoted during Phase 4d, not an
+  oversight). **Phase 4f's REST scope is entirely about
+  `adapters/nethttp.CallWithHandle`/`ServeOne` — `chi` has nothing to
+  migrate.**
+
+- **Real, broad existing usage confirmed — a genuine migration, not a
+  toy relocation.** Non-test usage of `nethttp.CallWithHandle`/
+  `ServeOne` spans 9+ example directories AND, notably,
+  `adapters/mcprest/bridge.go` — a DIFFERENT adapter package depending
+  directly on `nethttp.CallWithHandle` to bridge MCP tool calls through
+  an outbound REST call. Phase 4f's Implement step must explicitly
+  migrate `mcprest` too, not just examples.
+
+- **Sequencing (resolved): Phase 4f runs AFTER Phase 5.** Phase 4f's
+  reqreply relocation touches the SAME `adapters/mqtt5`/`adapters/
+  zeromq` reqreply files Phase 5's `Apply`/`ApplyCapabilities` shift
+  will also touch — doing Phase 5 first avoids reworking those files
+  twice (the same reasoning that already ordered Phase 4d before 4e in
+  this doc). Phase 6 (REST Header/Cookie/Query real-interface work)
+  touches different files (`capability.go`/carrier extraction, not
+  `client.go`/`serve.go`'s Call/Serve dispatch) — independent of Phase
+  4f, can run in parallel or either order.
+
+- **Remaining open items for Phase 4f's Implement step** (naming
+  bikeshed only, non-blocking): exact final function names
+  (`ServeWithTransport`/`CallWithTransport` above are working names,
+  not final); whether `ServeOne`'s relocated name changes to match
+  `rest`'s existing verb-naming convention.
 
 ### Phase 5 — `api/reqreply`: apply the SAME `Apply`/`ApplyCapabilities` shift
 
@@ -2367,15 +2817,135 @@ exactly (`Capability`/`Apply`/`WireAttributes`, `Capabilities`-only
 
 ### Phase 6 — `api/rest`: the SAME shift for Header/Cookie/Query
 
-**Status: Design not yet started — scope statement only.** Promotes
-`HeaderCapableTransport`/`CookieCapableTransport`/`QueryCapableTransport`
-(currently no-op markers, shipped in this doc's own earlier Phase 3
-round) from Pattern C to the full `Apply`/`ApplyCapabilities`-owned-by-
-the-API-layer shape: an `Extract`-shaped method the adapter's
-per-request carrier implements, called through a generic
-`rest.ApplyRequestParams`-style dispatcher `api/rest` owns, replacing
-`adapters/nethttp`/`adapters/chi`'s own inline extract+validate blocks
-at every one of their ~9 existing call sites each.
+**Status: Design complete — not yet implemented; pending user
+confirmation before touching load-bearing dispatch code (see
+"Implementation risk" below).** Promotes `HeaderCapableTransport`/
+`CookieCapableTransport`/`QueryCapableTransport` from Pattern C's
+no-op markers (`SupportsHeaderParams()` etc. — presence-only, used
+SOLELY for the Attach-time `CheckParamKindCoverage` check, never
+called at request time) to REAL, callable `Extract`-shaped methods —
+directly answering the earlier open question ("capabilities are just
+zero-cost markers... I want it a programming interface an adapter can
+be implemented against").
+
+**Design, resolved via a full inventory of every current call site
+(not assumed) — code-reading pass done before writing this section:**
+
+- **Full inventory: 4 request-side extraction call sites × 2 adapters
+  (`nethttp`, `chi`) = 8 files touched, ~16 individual
+  `queryValues(r)`/`cookieValues(r)`/`headerValues(r)` call sites total**
+  (`adapter.go`'s 2 non-reflection dispatch blocks — one plain, one SSE
+  — plus `serve.go`/`serve_sse.go`'s reflection-based dispatch), NOT the
+  "~9 each" originally estimated in this section's scope statement
+  before the inventory was done.
+- **Scope is SERVER-side extraction ONLY — client-side is confirmed
+  OUT of scope, not silently forgotten.** `adapters/nethttp/client.go`'s
+  `ValidateQuery(opts.QueryParams)`/`ValidateCookies(opts.CookieParams)`/
+  `ValidateHeaders(opts.HeaderParams)` and `clienttransport.go`'s
+  `EncodeQueryVars`/`EncodeHeaderVars`/`EncodeCookieVars` calls both
+  operate on a caller-SUPPLIED map or an ENCODED-FROM-Req value — there
+  is no incoming carrier to extract FROM on the client side (the client
+  BUILDS the outgoing request, it doesn't read one), so `Extract`-shaped
+  methods have no client-side counterpart to unify.
+- **Response-header validation (`ValidateResponseHeaders`) is ALSO
+  confirmed OUT of scope** — a server validates its OWN
+  already-built response headers before writing them; there is no
+  "does this transport support extracting response headers" question
+  (a server can always read the response headers IT is about to write),
+  so this axis has no coverage/capability question to answer at all.
+- **REJECTED: a single generic `rest.ApplyRequestParams`-style
+  dispatcher swallowing extract+validate+error-response in one call**
+  (the ORIGINAL scope statement's proposed shape, before this
+  inventory). Reading all 4 call-site shapes closely shows each one's
+  error-response ceremony is genuinely, irreducibly different per call
+  site — different HTTP status semantics are NOT the variable (all 4
+  use `http.StatusBadRequest`), but the SURROUNDING dispatch is: two
+  call sites consult a declared `ErrorPattern` via
+  `tryRespondErrorPatternGeneric`/`tryRespondErrorPattern` (one
+  reflection-based, one generic-based) before falling back to
+  `errFn`/`opts.ErrorHandler`, while the plain-non-reflection SSE block
+  skips `ErrorPattern` entirely; `rest.ReportQueryErrors`/
+  `ReportCookieErrors`/`ReportHeaderErrors` differ per param KIND (not
+  per call site) and must stay separately callable so a caller's
+  `stats.Observer` can distinguish which kind failed. Forcing ALL of
+  this through one generic callback-laden function would trade a small
+  amount of extraction duplication for a much LARGER, uglier
+  configuration-object surface — a worse trade than what Phase 4's
+  `ApplyCapabilities` made (there, the "surrounding ceremony" was
+  uniform: `WireAttributes`/`FramedSocket` mutation plus one
+  `RecordCapabilityApplied` call, identical at every call site — NOT
+  true here). **Resolved, narrower scope: unify ONLY the raw
+  EXTRACTION step** (turning `queryValues(r)`/`cookieValues(r)`/
+  `headerValues(r)` into real interface method calls on a per-request
+  carrier), leaving each call site's own validate+error-response
+  ceremony exactly as-is, calling `handle.ValidateQuery`/
+  `ValidateCookies`/`ValidateHeaders` with the carrier's extracted map
+  the SAME way it calls them with `queryValues(r)`'s map today — a
+  drop-in, byte-identical-output replacement, not a dispatch redesign.
+- **Concrete new interface shape** (in `api/rest/capability.go`,
+  replacing the existing no-op declarations — a breaking rename,
+  consistent with this whole roadmap's "breaking changes are
+  acceptable" stance):
+  ```go
+  type HeaderCapableTransport interface{ ExtractHeaders() map[string]string }
+  type CookieCapableTransport interface{ ExtractCookies() map[string]string }
+  type QueryCapableTransport interface {
+      ExtractQuery() map[string]string        // first-value-wins, mirrors ValidateQuery
+      ExtractQueryMulti() map[string][]string  // mirrors ValidateQueryMulti
+  }
+  ```
+  `QueryCapableTransport` gains TWO methods (not one) because
+  `opts.MultiValueQueryParams` already toggles between
+  `ValidateQuery(queryValues(r))` (first-value-wins) and
+  `ValidateQueryMulti(r.URL.Query())` (full multi-value) at every
+  existing call site — both forms must remain reachable through the
+  carrier, matching the existing toggle exactly, not silently
+  collapsing to one shape.
+- **`httpCarrier{r *http.Request}`** — a NEW, per-adapter (one in
+  `adapters/nethttp`, one in `adapters/chi`, byte-identical shape,
+  mirrors `transportCapabilities{}`'s existing per-adapter duplication
+  precedent) per-REQUEST value (unlike the OLD `transportCapabilities{}`
+  singleton, which held no data — the whole point of a "real" interface
+  is that it wraps genuine per-request state) implementing all 3
+  interfaces by moving `queryValues`/`cookieValues`/`headerValues`'s
+  EXISTING logic verbatim into `ExtractQuery`/`ExtractCookies`/
+  `ExtractHeaders` methods, plus a trivial `ExtractQueryMulti() map[string][]string { return c.r.URL.Query() }`. The 3 old private
+  helper functions are DELETED (their logic didn't change, only its
+  home — method on a carrier type instead of a free function).
+- **`CheckParamKindCoverage`'s Attach-time coverage check is
+  UNCHANGED and stays SAFE** — confirmed via re-reading its
+  implementation: it performs ONLY a `transport.(HeaderCapableTransport)`
+  TYPE ASSERTION, never invokes the method — so the existing
+  package-level zero-value `httpTransport = transportCapabilities{}`
+  singleton pattern is replaced by a zero-value `httpTransport =
+  httpCarrier{}` (nil `*http.Request` field) used SOLELY for that one
+  Attach-time type-assertion call; it is NEVER used for real
+  extraction (each per-request dispatch constructs its OWN
+  `httpCarrier{r}` from the real, live `*http.Request`). No nil-pointer
+  risk: the zero-value carrier's methods are never called, only
+  type-asserted against.
+- **Every one of the ~16 call sites' extraction line changes from**
+  `queryValues(r)`/`cookieValues(r)`/`headerValues(r)`/`r.URL.Query()`
+  **to** `httpCarrier{r}.ExtractQuery()`/`.ExtractCookies()`/
+  `.ExtractHeaders()`/`.ExtractQueryMulti()` **— a mechanical,
+  behavior-identical rename, not a logic change.** `pathValues`/
+  `responseHeaderValues` are NOT touched (confirmed out of scope above).
+
+**Implementation risk, stated explicitly before starting:** this phase
+touches 8 files of ALREADY-SHIPPED, heavily-tested, core REST
+request-dispatch code (`adapters/nethttp`/`adapters/chi`'s
+`adapter.go`/`serve.go`/`serve_sse.go`) across ~16 individual call
+sites — the largest surface area any single phase in this roadmap has
+touched in already-working dispatch code. Per the `plan-a-new-codex-
+feature` skill's "Removing an old API" checklist (enumerate every
+responsibility, verify a representative sample by migration not
+review, sweep for doc references), this warrants explicit user
+confirmation before implementation begins, not autonomous continuation
+— unlike Phase 4e's mechanical, additive, strictly-non-breaking
+signature changes, this phase's `queryValues`/`cookieValues`/
+`headerValues` DELETION is a genuine "old API removal" against
+production dispatch code with real regression risk if any one of the
+~16 call sites is migrated incorrectly.
 
 ### Phase 7 — Review & Closeout (not a feature phase)
 
@@ -2461,6 +3031,34 @@ COMPLETE — Phase 4 is the closing review pass, not further feature work:
   (`api/events`, `api/reqreply`, `api/rest`) and fundamentally changes
   how all three declare protocol-native behavior, matching the skill's
   promotion bar exactly (not a routine, single-feature roadmap doc).
+- **Audit which adapter-side functions implement a real, declared
+  interface vs. which are ad-hoc functions with no interface contract
+  at all — raised during Phase 4f's review.** Phase 4f's own
+  investigation surfaced this as a recurring, easy-to-miss distinction:
+  `adapters/mqtt5.NewServerTransport(opts) reqreply.ServerTransport`/
+  `adapters/nethttp.NewClientTransport(opts) rest.ClientTransport`
+  satisfy REAL, declared, api-layer-owned interfaces (Phase 4d's
+  shipped shape) — but plenty of other adapter-exported functions
+  (e.g. the pre-Phase-4f `Serve[Req,Resp]`/`Call[Req,Resp]`,
+  `CallWithHandle[Req,Resp]`, `ServeOne[Req,Resp]`) are exported,
+  documented, real API surface that DON'T implement any declared
+  interface at all — they're just free functions with their own
+  bespoke signatures, discoverable only by reading the adapter
+  package's godoc, not by checking "does this satisfy interface X."
+  This makes it hard to answer, package-by-package, "is this adapter
+  function REQUIRED by an api-layer contract, or is it a
+  convenience-only addition with no contract backing it" — exactly the
+  ambiguity that let `CallWithHandle`/`ServeOne`/reqreply's `Serve`/
+  `Call` drift into escape-hatch status unnoticed for as long as they
+  did. **Action for Phase 7:** produce an explicit table (per adapter
+  package) of every exported function, its interface (if any) it
+  implements or satisfies, and — for functions with none — a one-line
+  justification for why it's a free function rather than an interface
+  method (e.g. "genuinely can't be generalized," "legacy, scheduled for
+  Phase 4f-style relocation," "intentionally adapter-specific sugar").
+  This closes the exact kind of ambiguity Phase 4f's review had to
+  rediscover via first-principles code reading rather than consulting
+  an existing, trustworthy inventory.
 
 ## Scope decisions
 

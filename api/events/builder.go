@@ -761,6 +761,25 @@ func (h *ChannelHandle[T]) EncodePropertyVars(msg T) (map[string]string, error) 
 	return codex.EncodeVars(msg, h.propertyMergeFields...)
 }
 
+// DispatchSubscribeMiddleware invokes [DispatchSubscribeMiddlewareHandlers]
+// with h's OWN [ChannelHandle.MiddlewareHandlers] — a thin, monomorphized
+// wrapper needed SOLELY so a reflection-based Client.Subscribe shim
+// (docs/roadmap/capability-requirement-composition.md's Phase 4e) can
+// invoke the dispatch mechanism without recovering the free generic
+// function's type parameter itself; mirrors [ChannelHandle.MergePropertyVars]/
+// [ChannelHandle.DecodeMergedWithFormats]'s SAME "generic helper gets a
+// thin per-T method wrapper for reflection callability" convention.
+func (h *ChannelHandle[T]) DispatchSubscribeMiddleware(ctx context.Context, msg *T, topicVars, propertyVars map[string]string) error {
+	return DispatchSubscribeMiddlewareHandlers(ctx, msg, h.MiddlewareHandlers, topicVars, propertyVars)
+}
+
+// DispatchPublishMiddleware invokes [DispatchPublishMiddlewareHandlers]
+// with h's OWN [ChannelHandle.ClientMiddlewareHandlers] — the publish-side
+// sibling of [ChannelHandle.DispatchSubscribeMiddleware], same rationale.
+func (h *ChannelHandle[T]) DispatchPublishMiddleware(ctx context.Context, msg T) (topicVars, propertyVars map[string]string, err error) {
+	return DispatchPublishMiddlewareHandlers(ctx, msg, h.ClientMiddlewareHandlers)
+}
+
 // DecodeMerged decodes payload (via the channel's registered format) AND
 // merges every [NewTopicParam]-registered topic variable into the SAME T
 // value, using [codex.DecodeVars] internally — the events-boundary mirror
@@ -2597,19 +2616,55 @@ type SubscriberServer interface {
 // compile-time type-safe.
 type Transport interface {
 	// Publish sends msg (dynamic type T) on the channel pub (dynamic type
-	// [Publisher][T]) describes.
-	Publish(ctx context.Context, pub any, msg any) error
+	// [Publisher][T]) describes. opts is an OPTIONAL, PER-CALL override —
+	// see [ClientPublishOptions]'s doc comment
+	// (docs/roadmap/capability-requirement-composition.md's Phase 4e) —
+	// at most one value is ever passed by [Client.Publish].
+	Publish(ctx context.Context, pub any, msg any, opts ...ClientPublishOptions) error
 	// Subscribe starts consuming the channel sub (dynamic type
 	// [Subscriber][T]) describes, calling fn (dynamic type
 	// func(context.Context, T) error) for each message. Blocks until ctx
 	// is cancelled, mirroring the adapter's own Subscribe[T]/
-	// SubscribeTransport semantics.
-	Subscribe(ctx context.Context, sub any, fn any) error
+	// SubscribeTransport semantics. opts is an OPTIONAL, PER-CALL
+	// override — see [ClientSubscribeOptions]'s doc comment — at most
+	// one value is ever passed by [Client.Subscribe].
+	Subscribe(ctx context.Context, sub any, fn any, opts ...ClientSubscribeOptions) error
 	// ServeSubscribers walks every [Subscriber] registered against the
 	// owning [Client] via [Subscriber.Register] and starts consuming each
 	// one — mirrors [SubscriberServer.ServeSubscribers] exactly (a
 	// Transport-attached [Client] satisfies [SubscriberServer] too).
 	ServeSubscribers(ctx context.Context) error
+}
+
+// ClientPublishOptions is an OPTIONAL, PER-CALL override passed to
+// [Client.Publish] — mirrors [rest.ClientConsumeOptions]'s single
+// `Formats any` shape (not [rest.ClientCallOptions]'s Request/Response
+// split, since Publish is single-direction) — introduced by
+// docs/roadmap/capability-requirement-composition.md's Phase 4e.
+// Deliberately DISTINCT from [PublishOptions] (a per-channel DECLARED
+// value, attached via [Publisher.WithOptions] at declare time, covering
+// Capabilities — see Phase 4c): ClientPublishOptions is a CALL-TIME
+// override, legitimately different from every call since format
+// negotiation can vary per invocation.
+type ClientPublishOptions struct {
+	// Formats overrides the channel's declared publish format(s) for
+	// THIS call only. Dynamic type must be []format.Format[T] for the
+	// channel's own T (the SAME format.Format[T] slice
+	// [Publisher.WithOptions]/[ChannelHandle.WithPublishFormats] use) —
+	// an adapter's reflection shim validates this via
+	// [TransportTypeMismatchError] on mismatch. nil (the zero value)
+	// means "no override," falling back to the channel's own declared
+	// Formats/PublishFormats exactly like today.
+	Formats any
+}
+
+// ClientSubscribeOptions is [ClientPublishOptions]'s subscribe-side
+// sibling — an OPTIONAL, PER-CALL override passed to [Client.Subscribe].
+type ClientSubscribeOptions struct {
+	// Formats overrides the channel's declared subscribe format(s) for
+	// THIS call only. Dynamic type must be []format.Format[T] for the
+	// channel's own T. nil means "no override."
+	Formats any
 }
 
 // ClientAwareTransport is an OPTIONAL extension to [Transport] — mirrors
@@ -2707,20 +2762,22 @@ func (c *Client) Attach(t Transport) error {
 // [Transport] — see [Transport]'s doc comment for the full design
 // rationale (why this is `any`-typed/reflection-based) and
 // [Client.Attach] for how a Transport gets attached. Returns
-// [NoTransportAttachedError] if [Client.Attach] was never called.
+// [NoTransportAttachedError] if [Client.Attach] was never called. opts is
+// an OPTIONAL, PER-CALL [ClientPublishOptions] override (Phase 4e); at
+// most the first value is used — pass zero or one.
 //
 //	client := events.NewClient(events.WithInfo(events.Info{...}))
 //	_ = zeromq.Attach(client, sock)
 //	pub := ReadingsChannel.WithPublish(events.Publish{...})
 //	err := client.Publish(ctx, pub, reading)
-func (c *Client) Publish(ctx context.Context, pub any, msg any) error {
+func (c *Client) Publish(ctx context.Context, pub any, msg any, opts ...ClientPublishOptions) error {
 	c.mu.RLock()
 	t := c.transport
 	c.mu.RUnlock()
 	if t == nil {
 		return NoTransportAttachedError{}
 	}
-	return t.Publish(ctx, pub, msg)
+	return t.Publish(ctx, pub, msg, opts...)
 }
 
 // Subscribe starts consuming the channel sub describes, via c's attached
@@ -2728,20 +2785,22 @@ func (c *Client) Publish(ctx context.Context, pub any, msg any) error {
 // rationale and [Client.Attach] for how a Transport gets attached.
 // Returns [NoTransportAttachedError] if [Client.Attach] was never called.
 // Blocks until ctx is cancelled, mirroring the underlying adapter's own
-// Subscribe[T]/SubscribeTransport semantics.
+// Subscribe[T]/SubscribeTransport semantics. opts is an OPTIONAL,
+// PER-CALL [ClientSubscribeOptions] override (Phase 4e); at most the
+// first value is used — pass zero or one.
 //
 //	client := events.NewClient(events.WithInfo(events.Info{...}))
 //	_ = zeromq.Attach(client, sock)
 //	sub := ReadingsChannel.WithSubscribe(events.Subscribe{...})
 //	err := client.Subscribe(ctx, sub, func(ctx context.Context, r SensorReading) error { ... })
-func (c *Client) Subscribe(ctx context.Context, sub any, fn any) error {
+func (c *Client) Subscribe(ctx context.Context, sub any, fn any, opts ...ClientSubscribeOptions) error {
 	c.mu.RLock()
 	t := c.transport
 	c.mu.RUnlock()
 	if t == nil {
 		return NoTransportAttachedError{}
 	}
-	return t.Subscribe(ctx, sub, fn)
+	return t.Subscribe(ctx, sub, fn, opts...)
 }
 
 // ServeSubscribers walks every [Subscriber] registered against c via

@@ -241,12 +241,15 @@ method from introducing its own type parameters), `pub`/`sub`/`msg`/`fn` are pas
 their concrete types are recovered internally via reflection; a mismatch surfaces as
 `events.TransportTypeMismatchError` at CALL time rather than a compile error — an explicit,
 narrowly-scoped trade-off for this one convenience surface. See
-`docs/design/d-0002-pubsub-workflow-simplification.md`'s Decision 5 for the full design and its
-documented v1 scope limits (no per-call format override, no non-default QoS, no general-purpose
-SubscribeMW/PublishMW wrapping — use `events.SubscribeHandle`/`events.PublishHandle` with
-`zeromq.NewSubscribeTransport`/`zeromq.NewPublishTransport` directly for those, per Decision 7
-of `docs/design/d-0002-pubsub-workflow-simplification.md`; `Attach`'s internal transport wraps the
-same underlying logic those transports expose).
+`docs/design/d-0002-pubsub-workflow-simplification.md`'s Decision 5 for the full design.
+`Client.Publish`/`Client.Subscribe` are FULL-FEATURED for this adapter (`docs/roadmap/
+capability-requirement-composition.md`'s Phase 4e closed the former "v1 scope" narrowing):
+declared Capabilities, per-call format overrides (`events.ClientPublishOptions`/
+`events.ClientSubscribeOptions`), declarative SubscribeMW/PublishMW security enforcement, and
+codec-backed Middleware/Transform dispatch are all honored (zeromq has no property-vocabulary
+axis and no built-in codec-based credential check, unlike mqtt5) — there is no remaining
+reason to reach for `zeromq.NewSubscribeTransport`/`zeromq.NewPublishTransport` directly except
+the general escape-hatch case.
 [`examples/events-api`](https://github.com/DaniDeer/go-codex/tree/main/examples/events-api)'s
 `demo_zeromq_pubsub_roundtrip.go` demonstrates this workflow end to end.
 

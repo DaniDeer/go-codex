@@ -10,6 +10,8 @@ import (
 	pahomqtt "github.com/eclipse/paho.mqtt.golang"
 
 	"github.com/DaniDeer/go-codex/api/events"
+	"github.com/DaniDeer/go-codex/middleware"
+	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 )
 
@@ -91,29 +93,24 @@ type TransportOptions struct {
 // via [transport.BindClient], immediately after storing it; NewTransport
 // itself never needs a [*events.Client] parameter.
 //
-// NOTE — v1 scope, NARROWED by Phase 4c (docs/roadmap/
-// capability-requirement-composition.md): the reflection shim's
-// Publish/Subscribe now honor a declared [Publisher.WithOptions]/
-// [Subscriber.WithOptions]([PublishOptions][T]/[SubscribeOptions]{
-// Capabilities: ...}) value, resolved via [events.ResolveCapabilityValue]
-// — closing the ONE gap that forced a caller needing Capabilities to
-// bypass [events.Client.Publish]/[Client.Subscribe] entirely. Per-call
-// [format.Format] overrides and declare-time SubscribeMW/PublishMW — of
-// EITHER shape, credential-paired OR general-purpose wrapping — are
-// STILL NOT exercised by this shim (Phase 4e's scope, not yet shipped;
-// mirrors [adapters/nethttp/clienttransport.go]'s now-closed "no
-// security/credential handling" limitation, which this package has not
-// closed yet): a channel declaring Security plus a correctly-paired
-// credential SubscribeMW/PublishMW STILL gets ZERO runtime enforcement
-// through the attached transport — no credential is fetched or
-// injected, silently, with no error. A caller needing ANY declared
-// SubscribeMW/PublishMW (credential or general-purpose) enforced, or a
-// per-call format override, should use [subscribe]/[publish] directly
-// until Phase 4e ships.
+// Publish/Subscribe are FULL-FEATURED (docs/roadmap/
+// capability-requirement-composition.md's Phase 4e — the former "v1
+// scope" narrowing is CLOSED for this package): declared Capabilities
+// (Phase 4c, still resolved via [events.ResolveCapabilityValue] — this
+// package has not yet migrated to the Apply-interface shape, Phase 5's
+// job), per-call [format.Format] overrides
+// ([events.ClientPublishOptions]/[events.ClientSubscribeOptions]),
+// declarative SubscribeMW/PublishMW security enforcement (credential-
+// paired or general-purpose wrapping), and codec-backed Middleware/
+// Transform dispatch are ALL supported (mqtt v3 has no property-
+// vocabulary axis and no built-in codec-based credential check, unlike
+// mqtt5 — those 2 pipeline steps simply don't exist for this adapter) —
+// there is no remaining "v1 scope" asterisk.
 // [stats.Observer] (RecordPublish/RecordSubscribe, TraceObserver) IS
 // fully wired, resolved from ctx same as [subscribe]/[publish]; a
 // subscribe handler's returned error also consults a declared
-// [events.ErrorChannel] — see
+// [events.ErrorChannel]/[events.DeadLetter]/a declared OnError callback,
+// in that fallback order — see
 // docs/design/d-0002-pubsub-workflow-simplification.md's Decision 8 for the
 // fix history.
 //
@@ -154,11 +151,22 @@ func recoverHandle(kind string, anyAny any, client *events.Client) (reflect.Valu
 	return handleVal, handleVal.Elem(), nil
 }
 
-// Publish implements [events.Transport]. See [Attach]'s doc comment for
-// v1 scope notes. Resolves [stats.Observer] from ctx (this shim has no
-// per-call Options struct to carry an explicit override) and calls
-// RecordPublish on EVERY exit path, mirroring [publish]'s own convention.
-func (t *transport) Publish(ctx context.Context, pubAny, msgAny any) (err error) {
+// Publish implements [events.Transport]. Resolves [stats.Observer] from
+// ctx (this shim has no per-call Options struct to carry an explicit
+// override) and calls RecordPublish on EVERY exit path, mirroring
+// [publish]'s own convention.
+//
+// docs/roadmap/capability-requirement-composition.md's Phase 4e: this
+// shim now runs the FULL [publish][T] pipeline, matched step-for-step
+// (codec-Middleware/Transform dispatch → Implementations-based
+// PublishMW security → general-purpose PublishMW wrapping around the
+// send), not just Capabilities (Phase 4c) — closing the "v1 scope" gap
+// entirely. Capabilities resolution itself is UNCHANGED (still via
+// [events.ResolveCapabilityValue] — see [defaultQoS]'s doc comment;
+// migrating to the Apply-interface shape is Phase 5's job, not this
+// one's). opts is an OPTIONAL, PER-CALL [events.ClientPublishOptions]
+// format override.
+func (t *transport) Publish(ctx context.Context, pubAny, msgAny any, optsVariadic ...events.ClientPublishOptions) (err error) {
 	obs := stats.ObserverFromContext(ctx)
 	start := time.Now()
 
@@ -174,13 +182,62 @@ func (t *transport) Publish(ctx context.Context, pubAny, msgAny any) (err error)
 	}
 
 	encodeWithFormatsMethod := handleVal.MethodByName("EncodeWithFormats") // func(T, ...format.Format[T]) ([]byte, error)
+	tType := encodeWithFormatsMethod.Type().In(0)
 	msgVal := reflect.ValueOf(msgAny)
-	if !msgVal.IsValid() || msgVal.Type() != encodeWithFormatsMethod.Type().In(0) {
+	if !msgVal.IsValid() || msgVal.Type() != tType {
 		obs.RecordPublish(topic, false, time.Since(start))
-		err = events.TransportTypeMismatchError{
-			Topic: topic, Want: encodeWithFormatsMethod.Type().In(0).String(), Got: fmt.Sprintf("%T", msgAny),
-		}
+		err = events.TransportTypeMismatchError{Topic: topic, Want: tType.String(), Got: fmt.Sprintf("%T", msgAny)}
 		return err
+	}
+
+	var callOpts events.ClientPublishOptions
+	if len(optsVariadic) > 0 {
+		callOpts = optsVariadic[0]
+	}
+	formatsOverride, formatsErr := resolveFormatsOverride(callOpts.Formats, encodeWithFormatsMethod.Type().In(1))
+	if formatsErr != nil {
+		obs.RecordPublish(topic, false, time.Since(start))
+		err = events.TransportTypeMismatchError{Topic: topic, Want: encodeWithFormatsMethod.Type().In(1).String(), Got: fmt.Sprintf("%T", callOpts.Formats)}
+		return err
+	}
+
+	clientImplementations, _ := elem.FieldByName("ClientImplementations").Interface().([]middleware.ClientImplementation)
+	wantHandlerFnType := reflect.FuncOf([]reflect.Type{dispatchCtxType, tType}, []reflect.Type{dispatchErrType}, false)
+	secFnType := buildPublishSecurityFnType(tType)
+	generalFnType := buildGeneralDecoratorFnType(wantHandlerFnType)
+	if err = validateClientImplementationShapesReflect(clientImplementations, secFnType, generalFnType); err != nil {
+		obs.RecordPublish(topic, false, time.Since(start))
+		return err
+	}
+
+	valuePtr := reflect.New(tType)
+	valuePtr.Elem().Set(msgVal)
+
+	// Codec-backed middleware dispatch (ClientTransform and bundled
+	// .Use()) — mirrors [publish][T]'s own ordering (derived BEFORE
+	// security). mqtt v3 has no property mechanism — supplies a nil
+	// property-value map.
+	clientMiddlewareHandlersLen := elem.FieldByName("ClientMiddlewareHandlers").Len()
+	var vars map[string]string
+	if clientMiddlewareHandlersLen > 0 {
+		mwResults := handleVal.MethodByName("DispatchPublishMiddleware").Call([]reflect.Value{reflect.ValueOf(ctx), msgVal})
+		mwTopicVars, _ := mwResults[0].Interface().(map[string]string)
+		if mwErr, _ := mwResults[2].Interface().(error); mwErr != nil {
+			loc := "middleware:fn"
+			reported := mwErr
+			if dispatchErr, ok := events.AsMiddlewareDispatchError(mwErr); ok {
+				if dispatchErr.IsEncodeErr {
+					loc = "middleware:out"
+				}
+				reported = dispatchErr.Err
+				mwErr = dispatchErr.Err
+			}
+			stats.ReportErrors(obs, loc, reported)
+			obs.RecordPublish(topic, false, time.Since(start))
+			err = mwErr
+			return err
+		}
+		vars = events.OverrideDerivedVars(vars, mwTopicVars)
 	}
 
 	varsResults := handleVal.MethodByName("EncodeVars").Call([]reflect.Value{msgVal})
@@ -189,7 +246,8 @@ func (t *transport) Publish(ctx context.Context, pubAny, msgAny any) (err error)
 		err = errI
 		return err
 	}
-	vars, _ := varsResults[0].Interface().(map[string]string)
+	channelVars, _ := varsResults[0].Interface().(map[string]string)
+	vars = events.OverrideDerivedVars(channelVars, vars)
 
 	finalTopic := topic
 	if len(vars) > 0 {
@@ -202,24 +260,25 @@ func (t *transport) Publish(ctx context.Context, pubAny, msgAny any) (err error)
 		finalTopic, _ = topicResults[0].Interface().(string)
 	}
 
-	// The channel's OWN declaration (WithFormats/WithPublishFormats) is
-	// the single source of truth for which format applies —
-	// EncodeWithFormats resolves it; Client.Attach never duplicates that
-	// resolution logic itself (no call-time override to pass, matching
-	// this shim's documented v1 scope).
-	encodeResults := encodeWithFormatsMethod.Call([]reflect.Value{msgVal})
-	if errI, _ := encodeResults[1].Interface().(error); errI != nil {
-		obs.RecordPublish(topic, false, time.Since(start))
-		err = fmt.Errorf("mqtt: encode: %w", errI)
-		return err
+	// Implementations-based security (PublishMW) — mirrors [publish][T]'s
+	// ordering. mqtt v3 has no built-in codec-based credential check —
+	// Implementations IS the entire security mechanism.
+	secReqs := resolveSecReqsReflect(elem, "Publish")
+	if len(clientImplementations) > 0 {
+		if secErr := runPublishSecurityImplsReflect(reflect.ValueOf(ctx), valuePtr, secReqs, clientImplementations, secFnType); secErr != nil {
+			if secObs, ok := obs.(stats.SecurityObserver); ok {
+				secObs.RecordSecurityRejection(finalTopic, route.FirstSchemeName(secReqs))
+			}
+			obs.RecordPublish(finalTopic, false, time.Since(start))
+			err = secErr
+			return err
+		}
 	}
-	payload, _ := encodeResults[0].Interface().([]byte)
 
 	// docs/roadmap/capability-requirement-composition.md's Phase 4c: a
-	// declared Capabilities value now resolves via
+	// declared Capabilities value resolves via
 	// [events.ResolveCapabilityValue] (this package's still-legacy
-	// mechanism — see [defaultQoS]'s doc comment), closing the gap
-	// where this shim could only ever publish at QoS 0/non-retained.
+	// mechanism — see [defaultQoS]'s doc comment).
 	caps := resolveHandlerOptsCapabilities(elem.FieldByName("HandlerOpts"))
 	qos, retained := defaultQoS, false
 	if capQoS, qosSet := events.ResolveCapabilityValue[Capability, QoS](caps); qosSet {
@@ -231,11 +290,29 @@ func (t *transport) Publish(ctx context.Context, pubAny, msgAny any) (err error)
 		events.RecordCapabilityApplied(obs, finalTopic, capRetained)
 	}
 
-	token := t.caller.client.Publish(finalTopic, qos, retained, payload)
-	token.Wait()
-	if tokErr := token.Error(); tokErr != nil {
+	// transmit is wrapped via [reflect.MakeFunc] so every attached
+	// general-purpose PublishMW Fn can compose around it — mirrors
+	// [wrapPublishGeneral][T]'s exact wrap boundary (encode → send).
+	transmit := reflect.MakeFunc(wantHandlerFnType, func(args []reflect.Value) []reflect.Value {
+		mVal := args[1]
+		encodeResults := encodeWithFormatsMethod.CallSlice([]reflect.Value{mVal, formatsOverride})
+		if encErr, _ := encodeResults[1].Interface().(error); encErr != nil {
+			return []reflect.Value{reflect.ValueOf(fmt.Errorf("mqtt: encode: %w", encErr)).Convert(dispatchErrType)}
+		}
+		payload, _ := encodeResults[0].Interface().([]byte)
+		token := t.caller.client.Publish(finalTopic, qos, retained, payload)
+		token.Wait()
+		if tokErr := token.Error(); tokErr != nil {
+			return []reflect.Value{reflect.ValueOf(tokErr).Convert(dispatchErrType)}
+		}
+		return []reflect.Value{reflect.Zero(dispatchErrType)}
+	})
+	transmit = wrapClientGeneralDecoratorReflect(transmit, clientImplementations, generalFnType)
+
+	transmitResults := transmit.Call([]reflect.Value{reflect.ValueOf(ctx), valuePtr.Elem()})
+	if txErr, _ := transmitResults[0].Interface().(error); txErr != nil {
 		obs.RecordPublish(finalTopic, false, time.Since(start))
-		err = tokErr
+		err = txErr
 		return err
 	}
 	obs.RecordPublish(finalTopic, true, time.Since(start))
@@ -250,14 +327,21 @@ func (t *transport) Publish(ctx context.Context, pubAny, msgAny any) (err error)
 // [Attach]'s doc comment for why this blocks even though v3's dispatch
 // mechanism itself is callback-driven, not loop-driven.
 //
-// [stats.Observer] is resolved from ctx ONCE and RecordSubscribe is
-// called PER INCOMING MESSAGE (mirrors [subscribeHandler]'s own
-// per-message convention, not a single call for the whole blocking
-// Subscribe). When fn (the caller's handler) returns a non-nil error, a
-// declared [events.ErrorChannel] is consulted via handle.ErrorResponseFor
-// — on an [events.ErrorRespond] match, the typed payload is published to
-// the declared error-output topic.
-func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any) error {
+// docs/roadmap/capability-requirement-composition.md's Phase 4e: this
+// shim now runs the FULL [subscribeHandler][T] pipeline, matched
+// step-for-step (Implementations-based SubscribeMW security → codec-
+// Middleware/Transform dispatch → general-purpose SubscribeMW wrapping
+// around the handler call), not just Capabilities (Phase 4c) — closing
+// the "v1 scope" gap entirely (mqtt v3 has no property-vocabulary axis
+// and no built-in codec-based credential check, unlike mqtt5). Every
+// failure point consults a declared [events.ErrorChannel]/
+// [events.DeadLetter]/a declared OnError callback, in that fallback
+// order — CLOSING a previously-silent gap where this shim never
+// consulted DeadLetter at all. Capabilities resolution itself is
+// UNCHANGED (still via [events.ResolveCapabilityValue] — Phase 5's
+// job). opts is an OPTIONAL, PER-CALL [events.ClientSubscribeOptions]
+// format override.
+func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariadic ...events.ClientSubscribeOptions) error {
 	obs := stats.ObserverFromContext(ctx)
 
 	handleVal, elem, err := recoverHandle("Subscriber", subAny, t.caller.events)
@@ -266,56 +350,158 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any) error {
 	}
 	topic := elem.FieldByName("Topic").String()
 
-	// The channel's OWN declaration (WithFormats/WithSubscribeFormats) is
-	// the single source of truth for which format applies —
-	// DecodeMergedWithFormats resolves it; Client.Attach never duplicates
-	// that resolution logic itself (no call-time override to pass,
-	// matching this shim's documented v1 scope).
 	decodeMergedMethod := handleVal.MethodByName("DecodeMergedWithFormats") // (payload []byte, vars map[string]string, formats ...format.Format[T]) (T, error)
 	errorResponseForMethod := handleVal.MethodByName("ErrorResponseFor")
+	deadLetterForMethod := handleVal.MethodByName("DeadLetterFor")
+	dispatchSubscribeMiddlewareMethod := handleVal.MethodByName("DispatchSubscribeMiddleware")
 	fnVal := reflect.ValueOf(fnAny)
+	tType := decodeMergedMethod.Type().Out(0)
 	wantFnType := reflect.FuncOf(
-		[]reflect.Type{reflect.TypeOf((*context.Context)(nil)).Elem(), decodeMergedMethod.Type().Out(0)},
-		[]reflect.Type{reflect.TypeOf((*error)(nil)).Elem()},
+		[]reflect.Type{dispatchCtxType, tType},
+		[]reflect.Type{dispatchErrType},
 		false,
 	)
 	if !fnVal.IsValid() || fnVal.Type() != wantFnType {
 		return events.TransportTypeMismatchError{Topic: topic, Want: wantFnType.String(), Got: fmt.Sprintf("%T", fnAny)}
 	}
 
+	var callOpts events.ClientSubscribeOptions
+	if len(optsVariadic) > 0 {
+		callOpts = optsVariadic[0]
+	}
+	formatsOverride, formatsErr := resolveFormatsOverride(callOpts.Formats, decodeMergedMethod.Type().In(2))
+	if formatsErr != nil {
+		return events.TransportTypeMismatchError{Topic: topic, Want: decodeMergedMethod.Type().In(2).String(), Got: fmt.Sprintf("%T", callOpts.Formats)}
+	}
+
+	opts, err := resolveHandlerOpts(topic, elem.FieldByName("HandlerOpts").Interface())
+	if err != nil {
+		return err
+	}
+
+	// Every attached [events.ChannelHandle.Implementations] Fn (from
+	// [Subscriber.SubscribeMW]) is shape-validated EAGERLY here, before
+	// the broker subscription is made.
+	implementations, _ := elem.FieldByName("Implementations").Interface().([]middleware.ServerImplementation)
+	generalFnType := buildGeneralDecoratorFnType(wantFnType)
+	if err := validateSubscribeImplementationShapesReflect(topic, tType, implementations); err != nil {
+		return err
+	}
+	// General-purpose wrapping composes ONCE, outside the per-message
+	// loop — mirrors [subscribeHandle]'s inline wrap loop.
+	fnVal = wrapServerGeneralDecoratorReflect(fnVal, implementations, generalFnType)
+
 	filter := deriveWildcardFilter(topic)
-	ctxVal := reflect.ValueOf(ctx)
+	secReqs := resolveSecReqsReflect(elem, "Subscribe")
+	middlewareHandlersLen := elem.FieldByName("MiddlewareHandlers").Len()
+
+	// dispatchFailure is the shared ErrorChannel→DeadLetter→OnError
+	// fallback triplet every pipeline step below consults on failure.
+	dispatchFailure := func(kind ErrorKind, sourceTopic string, payload []byte, failErr error) {
+		errResults := errorResponseForMethod.Call([]reflect.Value{reflect.ValueOf(&failErr).Elem()})
+		resp, _ := errResults[0].Interface().(events.ErrorChannelResponse)
+		matched, _ := errResults[1].Interface().(bool)
+		matchErrI, _ := errResults[2].Interface().(error)
+		if matched && matchErrI == nil && resp.Action == events.ErrorRespond {
+			// handled=true (mirrors tryPublishErrorChannel's exact
+			// contract): a matched, published ErrorRespond skips
+			// DeadLetter AND opts.OnError entirely.
+			token := t.caller.client.Publish(resp.Topic, defaultQoS, false, resp.Body)
+			token.Wait()
+			return
+		}
+		if !matched {
+			dlResults := deadLetterForMethod.Call([]reflect.Value{
+				reflect.ValueOf(obs), reflect.ValueOf(sourceTopic), reflect.ValueOf(payload), reflect.ValueOf(&failErr).Elem(),
+			})
+			dlTopic, _ := dlResults[0].Interface().(string)
+			dlBody, _ := dlResults[1].Interface().([]byte)
+			dlOk, _ := dlResults[2].Interface().(bool)
+			if dlOk {
+				token := t.caller.client.Publish(dlTopic, defaultQoS, false, dlBody)
+				token.Wait()
+				return
+			}
+		}
+		// matched but a non-Respond action (ErrorHandle/ErrorLog): falls
+		// through DIRECTLY to opts.OnError, skipping DeadLetter.
+		if opts.OnError != nil {
+			opts.OnError(SubscribeError{Kind: kind, Topic: sourceTopic, Err: failErr})
+		}
+	}
 
 	handler := func(client pahomqtt.Client, msg pahomqtt.Message) {
 		start := time.Now()
+		// docs/roadmap/capability-requirement-composition.md's Phase 4e
+		// addendum: msgCtx stores msg, closing a gap where
+		// [MessageFromContext] never worked through Client.Subscribe —
+		// mirrors [subscribeHandler][T]'s IDENTICAL, pre-decode placement
+		// exactly.
+		msgCtx := context.WithValue(ctx, contextKey{}, msg)
+		ctxVal := reflect.ValueOf(msgCtx)
 		vars, matchErr := matchTopicTemplate(topic, msg.Topic())
 		if matchErr != nil {
 			return // broader wildcard subscription received a non-matching topic — expected, not an error
 		}
-		decodeResults := decodeMergedMethod.Call([]reflect.Value{reflect.ValueOf(msg.Payload()), reflect.ValueOf(vars)})
-		if errI, _ := decodeResults[1].Interface().(error); errI != nil {
+		decodeResults := decodeMergedMethod.CallSlice([]reflect.Value{reflect.ValueOf(msg.Payload()), reflect.ValueOf(vars), formatsOverride})
+		if decErr, _ := decodeResults[1].Interface().(error); decErr != nil {
+			stats.ReportErrors(obs, "payload", decErr)
 			obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
+			dispatchFailure(KindDecode, msg.Topic(), msg.Payload(), decErr)
 			return
 		}
-		fnResults := fnVal.Call([]reflect.Value{ctxVal, decodeResults[0]})
+		valuePtr := reflect.New(tType)
+		valuePtr.Elem().Set(decodeResults[0])
+
+		// Implementations-based security (SubscribeMW) — runs
+		// UNCONDITIONALLY, mirroring [subscribeHandler][T]. mqtt v3 has
+		// no built-in codec-based credential check — Implementations IS
+		// the entire security mechanism.
+		if len(implementations) > 0 {
+			if secErr := runSubscribeSecurityImplsReflect(msgCtx, msg, valuePtr, secReqs, implementations); secErr != nil {
+				if secObs, ok := obs.(stats.SecurityObserver); ok {
+					secObs.RecordSecurityRejection(msg.Topic(), route.FirstSchemeName(secReqs))
+				}
+				obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
+				dispatchFailure(KindSecurity, msg.Topic(), msg.Payload(), events.SecurityError{Err: secErr})
+				return
+			}
+		}
+
+		// Codec-backed middleware dispatch (Transform and bundled
+		// .Use()) — SAME pre-handler dispatch point the security
+		// Implementations check just ran at. mqtt v3 has no property
+		// mechanism — supplies a nil property-value map.
+		if middlewareHandlersLen > 0 {
+			mwResults := dispatchSubscribeMiddlewareMethod.Call([]reflect.Value{
+				reflect.ValueOf(msgCtx), valuePtr, reflect.ValueOf(vars), reflect.Zero(reflect.TypeOf(map[string]string(nil))),
+			})
+			if mwErr, _ := mwResults[0].Interface().(error); mwErr != nil {
+				obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
+				dispatchErr, _ := events.AsMiddlewareDispatchError(mwErr)
+				if dispatchErr.IsFnError {
+					stats.ReportErrors(obs, "middleware:fn", dispatchErr.Err)
+					dispatchFailure(KindHandler, msg.Topic(), msg.Payload(), events.MiddlewareError{Name: dispatchErr.Name, Err: dispatchErr.Err})
+				} else {
+					stats.ReportErrors(obs, "middleware:in", dispatchErr.Err)
+					dispatchFailure(KindDecode, msg.Topic(), msg.Payload(), dispatchErr.Err)
+				}
+				return
+			}
+		}
+
+		fnResults := fnVal.Call([]reflect.Value{ctxVal, valuePtr.Elem()})
 		handlerErr, _ := fnResults[0].Interface().(error)
 		if handlerErr == nil {
 			obs.RecordSubscribe(msg.Topic(), true, time.Since(start))
 			return
 		}
 		obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
-		errResults := errorResponseForMethod.Call([]reflect.Value{reflect.ValueOf(&handlerErr).Elem()})
-		resp, _ := errResults[0].Interface().(events.ErrorChannelResponse)
-		matched, _ := errResults[1].Interface().(bool)
-		matchErrI, _ := errResults[2].Interface().(error)
-		if matched && matchErrI == nil && resp.Action == events.ErrorRespond {
-			token := client.Publish(resp.Topic, defaultQoS, false, resp.Body)
-			token.Wait()
-		}
+		dispatchFailure(KindHandler, msg.Topic(), msg.Payload(), handlerErr)
 	}
 
 	// docs/roadmap/capability-requirement-composition.md's Phase 4c: a
-	// declared Capabilities value now resolves via
+	// declared Capabilities value resolves via
 	// [events.ResolveCapabilityValue], closing the gap where this shim
 	// could only ever subscribe at QoS 0.
 	subQoS := defaultQoS

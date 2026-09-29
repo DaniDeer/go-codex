@@ -31,13 +31,15 @@ func demoSecuritySubscribeMW(ctx context.Context, obs *observability.DemoObserve
 	_, _, rejectedBefore, _ := obs.Summary()
 
 	// mqtt5 — credential extracted from a User Property (Pattern 2).
-	// MUST use the handle-based escape hatch, NOT Client.Attach's
-	// pub5.Publish — [mqtt5adapter.(*transport).Publish]'s reflection-
-	// based workflow builds a bare *paho.Publish with NO Properties ever
-	// set (documented v1 scope limitation, see demo_client_attach_
-	// workflow.go), but handlers.MQTT5SecurityImpl STRICTLY requires the
-	// "X-API-Key" User Property to be present — using Client.Attach here
-	// would make the security check unconditionally reject every message.
+	// built5.Client is ALREADY an attached *events.Client (mqtt5broker.
+	// Build's own Client.Attach) — Client.Publish itself now reads
+	// PublishOptions.UserProperties and sets them on the outgoing
+	// message (docs/roadmap/capability-requirement-composition.md's
+	// Phase 4e closed the former "reflection-based Publish builds a
+	// bare *paho.Publish with NO Properties ever set" gap), so no
+	// adapter-specific NewPublishTransport escape hatch is needed
+	// anymore for handlers.MQTT5SecurityImpl's "X-API-Key" User
+	// Property requirement.
 	built5, err := mqtt5broker.Build()
 	if err != nil {
 		fmt.Printf("  [error] mqtt5broker.Build: %v\n", err)
@@ -45,13 +47,11 @@ func demoSecuritySubscribeMW(ctx context.Context, obs *observability.DemoObserve
 	}
 	go func() { _ = built5.Client.ServeSubscribers(ctx) }()
 	built5.Router.WaitHandler("sensor/data")
-	pub5Transport := mqtt5adapter.NewPublishTransport[routes.SensorReading](built5.Broker,
-		mqtt5adapter.PublishOptions[routes.SensorReading]{
-			Capabilities:   []mqtt5adapter.Capability{mqtt5adapter.QoSAtLeastOnce},
-			UserProperties: []mqtt5adapter.UserProperty{{Key: "X-API-Key", Value: "sensor-key-abc123"}},
-		},
-	)
-	if err := events.PublishHandle(ctx, routes.SensorDataPub, pub5Transport,
+	pub5 := routes.SensorDataPub.WithOptions(mqtt5adapter.PublishOptions[routes.SensorReading]{
+		Capabilities:   []mqtt5adapter.Capability{mqtt5adapter.QoSAtLeastOnce},
+		UserProperties: []mqtt5adapter.UserProperty{{Key: "X-API-Key", Value: "sensor-key-abc123"}},
+	})
+	if err := built5.Client.Publish(ctx, pub5,
 		routes.SensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 21.0}); err != nil {
 		fmt.Printf("  [error] mqtt5 publish: %v\n", err)
 	}

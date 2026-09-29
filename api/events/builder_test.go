@@ -2601,11 +2601,11 @@ type mockTransport struct {
 	publishErr, subscribeErr, serveErr          error
 }
 
-func (m *mockTransport) Publish(_ context.Context, _, _ any) error {
+func (m *mockTransport) Publish(_ context.Context, _, _ any, _ ...events.ClientPublishOptions) error {
 	m.publishCalled = true
 	return m.publishErr
 }
-func (m *mockTransport) Subscribe(_ context.Context, _, _ any) error {
+func (m *mockTransport) Subscribe(_ context.Context, _, _ any, _ ...events.ClientSubscribeOptions) error {
 	m.subscribeCalled = true
 	return m.subscribeErr
 }

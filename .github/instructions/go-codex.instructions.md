@@ -227,10 +227,9 @@ problem `docs/roadmap/protocol-native-features.md` set out to resolve:
   socket. `demo_capability_mechanism.go` now calls `evClient.Publish`
   directly, no adapter import needed for that purpose. Remaining v1-scope
   gaps (per-call format overrides, declared security/general-purpose
-  middleware wrapping through `Client.Publish`/`Subscribe`) are Phase
-  4e's scope (renumbered from the original "Phase 4d" — see below), not
-  yet shipped — flagged explicitly in each adapter's `transport.go` doc
-  comment, not silently left unstated.
+  middleware wrapping through `Client.Publish`/`Subscribe`) were Phase
+  4e's scope (renumbered from the original "Phase 4d" — see below) —
+  since SHIPPED for all 3 adapters, see Phase 4e's own paragraph below.
 
   **Phase 4d — Attach factory redesign: adapters expose `New*Transport`
   factories; attaching is EXCLUSIVELY an api-layer method.** Found
@@ -271,6 +270,60 @@ problem `docs/roadmap/protocol-native-features.md` set out to resolve:
   is not reentrant, and `BindServer`'s `s.RegisteredTopics()` callback
   (itself `RLock`-guarded) deadlocked when called while `Attach` still
   held the write lock.
+  **Phase 4e — closing the REMAINING `events.Client.Publish`/
+  `Client.Subscribe` "v1 scope" gaps (SHIPPED for all 3 adapters:
+  `mqtt5`, `mqtt` v3, `zeromq`).** `events.ChannelHandle[T]` gained 2
+  thin, one-line wrapper methods —
+  `DispatchSubscribeMiddleware(ctx, msg *T, topicVars, propertyVars)
+  error` / `DispatchPublishMiddleware(ctx, msg T) (topicVars,
+  propertyVars, err)` — delegating to the pre-existing generic
+  `DispatchSubscribeMiddlewareHandlers`/`DispatchPublishMiddlewareHandlers`,
+  needed so each adapter's reflection shim can invoke them without a
+  compile-time T. `events.ClientPublishOptions{Formats any}`/
+  `events.ClientSubscribeOptions{Formats any}` (mirrors
+  `rest.ClientConsumeOptions`'s single-field shape) are NEW, OPTIONAL,
+  PER-CALL trailing variadic params on `events.Transport.Publish`/
+  `.Subscribe` and `Client.Publish`/`.Subscribe` themselves (non-breaking
+  — 0 args = prior behavior). Each adapter's `transport.go`
+  `Publish`/`Subscribe` now run the FULL reference pipeline
+  (`adapter.go`'s `subscribeHandler[T]`/`publish[T]`), not just
+  Capabilities: property-merge + User-Property-param validation +
+  codec-based credential check (mqtt5 only — mqtt v3/zeromq have no
+  property-vocabulary axis or built-in credential check), Implementations-
+  based SubscribeMW/PublishMW security (`mqtt5`/`zeromq`'s existing
+  reflection-only dispatch helpers — `adapters/mqtt5/caller.go`'s
+  `runSubscribeSecurityImplsReflect`/`validateSubscribeImplementationShapesReflect`/
+  `wrapHandlerGeneralReflect`/`runErasedBuiltinSecurityCheck`,
+  `adapters/mqtt/caller.go`'s `runSubscribeSecurityImplsReflect`/
+  `validateSubscribeImplementationShapesReflect`, `adapters/zeromq/
+  serve_subscribers.go`'s `validateSubscribeImplementationShapesReflect`
+  — ALL pre-existing, built for each adapter's own `ServeSubscribers`,
+  REUSED here rather than duplicated; only the PUBLISH-side reflection
+  mirrors were newly written, one `transport_dispatch.go` per adapter),
+  codec-backed Middleware/Transform dispatch, general-purpose
+  SubscribeMW/PublishMW wrapping (`reflect.MakeFunc`-composed on
+  publish, direct wrap-loop on subscribe), and per-call format overrides
+  — eagerly shape-validated per call (matches `nethttp.Call`'s own
+  per-call, not per-Attach, validation timing), never silently. Every
+  subscribe-side failure point now consults a declared
+  `events.ErrorChannel`/`events.DeadLetter`/a declared `OnError`
+  callback, in that exact fallback order — closing a previously-silent
+  gap where 2 of the 3 adapters' `Client.Subscribe` shims never
+  consulted `DeadLetter` at all. **A real bug found and fixed during
+  this work**: the shared per-adapter `dispatchFailure` closure
+  initially called `OnError` UNCONDITIONALLY after every branch,
+  diverging from `tryPublishErrorChannel`'s own contract (`handled=true`
+  — a matched, published `ErrorRespond` — must return immediately,
+  never falling through to `OnError`); found by converting
+  `examples/events-api/demo_error_pattern.go`'s last 2
+  `NewSubscribeTransport` escape-hatch usages onto `Client.Subscribe`
+  (closing the LAST escape-hatch usages outside
+  `demo_escape_hatch_workflow.go`, which stays exempt by design) and
+  observing `onErrorCalled` was wrongly `true` for the `ErrorRespond`
+  case; fixed, with a regression test locking in the correct behavior.
+  `mqtt` (v3)'s Capabilities resolution is UNTOUCHED by this phase
+  (still `events.ResolveCapabilityValue`, not the Apply-interface shape
+  — full migration stays Phase 5's job).
   `events.CapabilityRequirement{Name, Description, MinLevel *int}` (a
   `ChannelOpt`, renamed from `CapabilitySpec`) declares a capability
   requirement at the channel level for spec-rendering (`x-capabilities`

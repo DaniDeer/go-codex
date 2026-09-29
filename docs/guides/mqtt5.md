@@ -162,11 +162,14 @@ Since `Client.Publish`/`Client.Subscribe` are ordinary Go methods (not generic �
 method from introducing its own type parameters), arguments are passed as `any` and their
 concrete types are recovered internally via reflection; a mismatch surfaces as
 `events.TransportTypeMismatchError` at CALL time. See
-`docs/design/d-0002-pubsub-workflow-simplification.md`'s Decision 5 for the full design and its
-documented v1 scope limits (no per-call format override, QoS 0 only, no general-purpose
-SubscribeMW/PublishMW wrapping, no custom `OnError` — use `events.SubscribeHandle`/
-`events.PublishHandle` with `mqtt5.NewSubscribeTransport`/`mqtt5.NewPublishTransport` directly
-for those).
+`docs/design/d-0002-pubsub-workflow-simplification.md`'s Decision 5 for the full design.
+`Client.Publish`/`Client.Subscribe` are FULL-FEATURED for this adapter (`docs/roadmap/
+capability-requirement-composition.md`'s Phase 4e closed the former "v1 scope" narrowing):
+declared Capabilities, per-call format overrides (`events.ClientPublishOptions`/
+`events.ClientSubscribeOptions`), declarative SubscribeMW/PublishMW security enforcement,
+codec-backed Middleware/Transform dispatch, and a declared `OnError` callback are all honored
+— there is no remaining reason to reach for `mqtt5.NewSubscribeTransport`/
+`mqtt5.NewPublishTransport` directly except the general escape-hatch case.
 
 ### AsyncAPI spec
 

@@ -19,7 +19,17 @@ func demoWildcardSubscription(ctx context.Context) {
 	fmt.Println("--- Demo: wildcard topic subscription (sensors/#) ---")
 
 	client := mqttbroker.NewMockClient()
-	transport := adaptermqtt.NewSubscribeTransport[routes.SensorReading](client, 1, adaptermqtt.SubscribeOptions{})
+
+	// Client.Attach + Client.Subscribe — deriveWildcardFilter/
+	// matchTopicTemplate already handle MQTT's "#" multi-level wildcard
+	// unchanged (no {var} placeholders to rewrite), so no
+	// adapter-specific NewSubscribeTransport escape hatch is needed for
+	// a literal wildcard topic like this one.
+	evClient := events.NewClient(events.WithInfo(events.Info{Title: "Wildcard demo", Version: "1.0.0"}))
+	if err := evClient.Attach(adaptermqtt.NewTransport(adaptermqtt.TransportOptions{Client: client})); err != nil {
+		fmt.Printf("  [error] Attach: %v\n", err)
+		return
+	}
 
 	handleCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 	defer cancel()
@@ -27,7 +37,7 @@ func demoWildcardSubscription(ctx context.Context) {
 	var received []string
 	done := make(chan error, 1)
 	go func() {
-		done <- events.SubscribeHandle(handleCtx, routes.WildcardSub, transport,
+		done <- evClient.Subscribe(handleCtx, routes.WildcardSub,
 			func(_ context.Context, r routes.SensorReading) error {
 				received = append(received, r.SensorID)
 				fmt.Printf("  ✓ received from wildcard: sensorId=%s value=%.1f\n", r.SensorID, r.Value)
