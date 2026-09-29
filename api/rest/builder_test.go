@@ -3354,7 +3354,7 @@ func TestSSERouteHandle_WithHandler_PostRegistration(t *testing.T) {
 
 // TestRouteHandle_ApplyMergeFields covers ApplyMergeFields in isolation —
 // DecodeMerged's var-merge half, split out so each adapter's internal serve
-// dispatch (invoked via nethttp.AttachMux/chi.AttachRouter) can apply it to
+// dispatch (invoked via nethttp.NewServerTransport/chi.NewServerTransport (via Server.Attach)) can apply it to
 // a body ALREADY decoded via a negotiated
 // [format.Format] (WithRequestFormats), not just via plain Decode.
 func TestRouteHandle_ApplyMergeFields(t *testing.T) {
@@ -3401,7 +3401,7 @@ func TestRouteHandle_ApplyMergeFields_NoMergeFieldsIsNoop(t *testing.T) {
 // TestRouteHandle_EncodeResponseMergeFields covers EncodeResponseMergeFields
 // in isolation — EncodeMerged's response header/cookie-merge half, split out
 // so each adapter's internal serve dispatch (invoked via
-// nethttp.AttachMux/chi.AttachRouter) can derive header/cookie
+// nethttp.NewServerTransport/chi.NewServerTransport (via Server.Attach)) can derive header/cookie
 // values for a response body encoded via a negotiated [format.Format]
 // (WithFormats), not just via plain Encode — and so a matched [ErrorPattern]
 // payload can reuse the SAME derivation.

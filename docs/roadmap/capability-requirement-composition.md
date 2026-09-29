@@ -3642,8 +3642,31 @@ COMPLETE — Phase 8 is the closing review pass, not further feature work:
     REST's naming parity, param types, format API parity, error
     sentinels, observer wiring, boundary symmetry, and error-path
     ergonomics were all already covered by prior rounds.
-- Run the `review-docs` skill for a final three-surface documentation
-  sync pass across every touched package.
+- Run the `review-docs` skill, split per-API (mirrors the 1.1/1.2/1.3
+  `review-go-codex` split, per explicit user preference):
+  - **2.1 — `api/rest` — DONE (Round DR9).** Found the D1 root cause was
+    much larger than a typical round: an earlier Phase 4d rename
+    (`nethttp.AttachMux`/`chi.AttachRouter`/client-side `nethttp.Attach`
+    → `NewServerTransport`/`NewClientTransport` + `.Attach(...)`) was
+    applied correctly in code everywhere but never fully swept from
+    docs — including `api/rest/builder.go`'s OWN exported godoc. Fixed
+    across `docs/concepts/*.md` (REST-scoped portions), `docs/guides/
+    {http-server,http-client,openapi}.md`, `docs/features/{http-client,
+    security,rest-api,sse-streaming}.md`, `examples/rest-api/*` stale
+    comments, `api/rest/{builder,middleware,builder_test}.go` godoc,
+    `adapters/nethttp/{doc,stream,client_test}.go`, `adapters/chi/
+    {doc,adapter_test}.go`. Also fixed a fictional roadmap-labeled
+    `ErrorResponse[...]` block in `http-server.md` (real mechanism:
+    `rest.ErrorPattern`) and false "v1-scoped" claims about
+    `rest.Client.Call` (it is full-featured). See
+    `.github/skills/review-docs/references/history.md`'s Round DR9 for
+    the full finding list.
+  - 2.2 — `api/events` — not yet run.
+  - 2.3 — `api/reqreply` — not yet run.
+  - 2.4 — shared/cross-cutting surfaces (README, project-structure.md,
+    zensical.toml nav, go-codex.instructions.md, docs/index.md,
+    get-started.md, reference/index.md) — not yet run; runs LAST (after
+    2.1-2.3) to verify their nav/cross-link changes are consistent.
 - **Joint declarative-workflow walkthrough** — once Phase 3 ships,
   design review alone won't catch every rough edge; only walking the
   real, end-to-end user journey does. Together (user + agent), declare

@@ -4,6 +4,60 @@ Do not re-report any findings listed here. They have been implemented.
 
 ---
 
+## Round DR9 (api/rest — stale AttachMux/AttachRouter/nethttp.Attach sweep)
+
+Scoped pass over `api/rest`-owned docs/godoc/examples (Phase 8 item 2.1 of
+`docs/roadmap/capability-requirement-composition.md`). Root cause: an
+earlier Phase 4d rename (`nethttp.AttachMux(builder, mux, addr)` →
+`nethttp.NewServerTransport(...)` + `builder.Attach(...)`; similarly for
+`chi.AttachRouter`/client-side `nethttp.Attach`) was applied correctly in
+code everywhere, but documentation and even some exported godoc comments
+were never fully swept.
+
+- **D1 — pervasive stale `AttachMux`/`AttachRouter`/`nethttp.Attach`
+  references** [bug]: fixed across `docs/concepts/{observable-layers,
+  codec-as-domain-boundary,api-contracts,codec-as-contract,
+  ports-and-adapters}.md` (REST-scoped portions only), `docs/guides/
+  {http-server,http-client}.md`, `docs/features/{http-client,security,
+  rest-api,sse-streaming}.md`, `docs/guides/openapi.md`,
+  `examples/rest-api/*` stale code comments (server/client/routes/util/
+  demo files — code itself was already correct), and — most notably —
+  **`api/rest/builder.go`'s own exported godoc** (`NewClient`,
+  `Client.Attach`, `Client.Call`/`Client.Consume` examples,
+  `ServerTransport`/`ClientTransport` interface docs, `Server.transport`
+  field doc, `Server.Serve`'s embedded code example) plus
+  `api/rest/middleware.go` and `api/rest/builder_test.go` godoc bracket-
+  links, `adapters/nethttp/{doc.go,stream.go,client_test.go}`,
+  `adapters/chi/{doc.go,adapter_test.go}`. ASCII-box diagrams in
+  `observable-layers.md`/`codec-as-domain-boundary.md` required exact
+  width recalculation to preserve alignment after text-length changes.
+- **D2 — `docs/guides/http-server.md` fictional `ErrorResponse[...]`
+  roadmap block** [bug]: replaced with an accurate description of the
+  actually-shipped `rest.ErrorPattern`/`ErrorStatus`/`ErrorAction`
+  mechanism.
+- **D3 — false "v1-scoped" claims about `rest.Client.Call`** [small]:
+  corrected in `docs/guides/http-client.md`, `docs/features/http-client.md`,
+  and `docs/features/security.md` — `Client.Call`/`Client.Consume` are
+  full-featured (path/query/header/cookie params, security/credential
+  `ClientMW`, per-call format override, error-pattern decoding); the real
+  distinction from `CallWithHandle` is handle-vs-route-value ergonomics,
+  not a feature gap.
+- **D4 — `docs/guides/openapi.md` stale example description** [small]:
+  corrected "low-level `DocumentBuilder`" to `Server.OpenAPISpec()`
+  (verified against `examples/rest-api/main.go`).
+- D5 (missing named `adapters/nethttp.ExampleCall()`) — reviewed and
+  DEFERRED: `Example()` in `client_test.go` already covers client-side
+  path-param validation; adding a fully-scaffolded `ExampleClient_Call`
+  mirroring `ExampleClient_Consume` is worthwhile future work but was
+  judged out of this round's bug/small bar given the round's already
+  large D1 scope.
+
+Verification: `gofmt`/`go build`/`go vet`/`go test ./...`/`just check` all
+clean (one flaky, timing-based `TestChiSSEAdapter_ServesItemsToClients`
+failure reproduced as pre-existing and unrelated — passed on retry).
+
+---
+
 ## Round DR8 (D-0006 capabilities reference doc + nav sync)
 
 Docs gap discovered while answering a user question about D-0006's scope: the

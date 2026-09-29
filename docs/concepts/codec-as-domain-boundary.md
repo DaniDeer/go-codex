@@ -26,7 +26,7 @@ A codec is not just a validator — it is the **public contract** of a module bo
 │                                                                     │
 │  UserStore — uses userRecordCodec.Encode/Decode for all DB IO       │
 │  makeCreateUserHandler(store) — orchestrates L2 + L3               │
-│  nethttp.AttachMux + b.Serve(ctx) — the only HTTP lines              │
+│  b.Attach(nethttp.NewServerTransport(...)); b.Serve(ctx) — HTTP     │
 │  b.OpenAPISpec()               — the only OpenAPI line              │
 │    ← swap to gRPC, CLI, or test without touching L1 or L2           │
 └─────────────────────────────────────────────────────────────────────┘

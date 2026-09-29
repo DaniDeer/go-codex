@@ -108,7 +108,7 @@ func buildErrorPatternDemoServer() (*rest.Server, *rest.Client, string) {
 
 	router := gochi.NewRouter()
 	addr := mustFreeAddr()
-	must(b.Attach(chiadapter.NewServerTransport(chiadapter.ServerTransportOptions{Router: router, Addr: addr})), "AttachRouter error-pattern demo")
+	must(b.Attach(chiadapter.NewServerTransport(chiadapter.ServerTransportOptions{Router: router, Addr: addr})), "Attach error-pattern demo")
 	ctx := context.Background()
 	go func() { _ = b.Serve(ctx) }()
 	waitForReady(addr)
@@ -268,7 +268,7 @@ func demoErrorPatternMiddlewareCombo() {
 // demoErrorPatternPortAdapter proves H1's fix (session review round-4
 // finding): a declared rest.ErrorPattern is now ALSO consulted through the
 // port/stream-adapter dispatch path — nethttp.IngestAdapter's handlerFunc
-// — not just the normal AttachRouter/AttachMux serving path serve.go
+// — not just the normal Server.Attach(NewServerTransport(...)) serving path serve.go
 // already covered. routes.IngestConflictRoute's ErrorPattern matches a
 // request BODY validation failure (codex.ValidationErrors), which
 // IngestAdapter's dispatch encounters BEFORE ever handing a value to the

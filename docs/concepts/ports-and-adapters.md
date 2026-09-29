@@ -110,8 +110,9 @@ style preference. Every adapter entry point is one of exactly three shapes:
 
 1. **A `ClientTransport`/`ServerTransport` (REST) or `Transport` (events)
    implementation**, attached via `rest.Client.Attach`/`rest.Server.Attach`/
-   `events.Client.Attach` — e.g. `nethttp.Attach`, `nethttp.AttachMux`,
-   `chi.AttachRouter`, `mqtt5.Attach`, `mqtt.Attach`, `zeromq.Attach`. This is
+   `events.Client.Attach` — e.g. `nethttp.NewClientTransport`/
+   `nethttp.NewServerTransport`, `chi.NewServerTransport`, `mqtt5.Attach`,
+   `mqtt.Attach`, `zeromq.Attach`. This is
    the declarative, common-case path: `client.Call(...)`/`client.Consume(...)`
    for REST, `client.Publish(...)`/`client.Subscribe(...)` for events.
 2. **A `ports.SourceAdapter`/`SinkAdapter`/`IOAdapter`/etc. implementation**,

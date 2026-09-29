@@ -31,7 +31,7 @@ type Built struct {
 // http.ServeMux: business logic from handlers/, security enforcement
 // paired against routes.ProfileScopeMw/AdminScopeMw, the shared Observer,
 // and the general-purpose timing middleware — then wires the mux via
-// nethttp.AttachMux and starts serving on addr (via the returned
+// b.Attach(nethttp.NewServerTransport(...)) and starts serving on addr (via the returned
 // Server.Serve(ctx), left for the caller to run).
 func Build(store *handlers.UserStore, obs stats.Observer, logger *slog.Logger, addr string) (*Built, error) {
 	domainLogger := logger.With("layer", "domain")
@@ -160,7 +160,7 @@ func Build(store *handlers.UserStore, obs stats.Observer, logger *slog.Logger, a
 	// GET /openapi.yaml — a hand-rolled, manual escape hatch: go-codex has
 	// no declarative "serve my own spec" convenience today (see
 	// docs/roadmap/openapi-spec-endpoint.md for a captured future idea).
-	// Registered BEFORE AttachMux — the mux itself is safe to register
+	// Registered BEFORE Attach — the mux itself is safe to register
 	// onto at any time here, but this mirrors chiserver's ordering for
 	// consistency between the two packages.
 	mux.HandleFunc("GET /openapi.yaml", specHandler(b))

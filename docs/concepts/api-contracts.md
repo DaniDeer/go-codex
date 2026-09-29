@@ -106,7 +106,7 @@ Step 5b).
 
 | Boundary | Declare-once constructor | Single-call convenience | Reference |
 |---|---|---|---|
-| REST (`api/rest` + `adapters/nethttp`/`chi`) | `rest.NewPathParam[T]`/`NewRequiredQueryParam[T]`/etc. + `NewRequiredResponseHeaderParam[Resp]`/etc. | `rest.Client.Call`/`nethttp.CallWithHandle` (client) + each adapter's internal serve dispatch, wired via `AttachMux`/`AttachRouter` (server) | [Feature: REST API](../features/rest-api.md#one-line-client-calls--restclientcall--nethttpcallwithhandle) |
+| REST (`api/rest` + `adapters/nethttp`/`chi`) | `rest.NewPathParam[T]`/`NewRequiredQueryParam[T]`/etc. + `NewRequiredResponseHeaderParam[Resp]`/etc. | `rest.Client.Call`/`nethttp.CallWithHandle` (client) + each adapter's internal serve dispatch, wired via `Server.Attach(NewServerTransport(...))` (server) | [Feature: REST API](../features/rest-api.md#one-line-client-calls--restclientcall--nethttpcallwithhandle) |
 | REST SSE (`api/rest` + `adapters/nethttp`/`chi`) | `rest.NewRequiredSSEEventParam[T]`/`NewOptionalSSEEventParam[T]` | `send(event)` on `SSEHandler`/`RegisterSSE` auto-merges path/query/header/cookie vars into each event | [Feature: SSE & Streaming](../features/sse-streaming.md#one-struct-one-call-for-sse-events) |
 | Events pub/sub (`api/events` + `adapters/mqtt`/`mqtt5`/`zeromq`) | `events.NewTopicParam[T]` | `events.PublishHandle` + each adapter's `NewPublishTransport` (publish) + `events.SubscribeHandle` + `NewSubscribeTransport` auto-merge (subscribe) | [Feature: Event Channels & MQTT](../features/events.md#topic-vars-with-automatic-merge-newtopicparam) |
 | Req/reply (`api/reqreply` + `adapters/mqtt5`/`zeromq`) | `reqreply.NewTopicParam[T]` (Req-side only) | `mqtt5.CallHandle`/`zeromq.CallHandle` (client) + `mqtt5.Serve` auto-merge (server) | [MQTT 5 Guide — Request/Reply](../guides/mqtt5.md) |
@@ -141,7 +141,7 @@ handle, _ := createUser.RegisterHandle(builder)
 // builder.OpenAPISpec()      → full OpenAPI 3.1 document
 ```
 
-For the HTTP client side, `rest.Client.Call` (bound via `nethttp.Attach`)
+For the HTTP client side, `rest.Client.Call` (bound via `Client.Attach(nethttp.NewClientTransport(...))`)
 takes the `rest.Route` value directly — no builder, no separate handle
 needed:
 

@@ -1105,7 +1105,7 @@ func (h *RouteHandle[Req, Resp]) DecodeMerged(
 // body via a negotiated [format.Format] (i.e. [WithRequestFormats], not
 // plain [Decode]) can still apply merge-capable params afterward. Used by
 // each adapter's internal serve dispatch (invoked via
-// [nethttp.AttachMux]/[chi.AttachRouter]) for multi-format routes; a
+// [nethttp.NewServerTransport]/[chi.NewServerTransport] (via [Server.Attach])) for multi-format routes; a
 // no-op when the route declares no merge-capable params.
 func (h *RouteHandle[Req, Resp]) ApplyMergeFields(
 	req *Req,
@@ -1136,7 +1136,7 @@ func (h *RouteHandle[Req, Resp]) ApplyMergeFields(
 // [ResponseCookieMergeFields] + [codex.EncodeVars]) in ONE call — the
 // SERVER-side, response-direction mirror of [DecodeMerged]. Used by
 // each adapter's internal serve dispatch (invoked via
-// [nethttp.AttachMux]/[chi.AttachRouter]) via a single reflect call,
+// [nethttp.NewServerTransport]/[chi.NewServerTransport] (via [Server.Attach])) via a single reflect call,
 // since Resp is erased at THAT call site — see
 // docs/design/d-0001-rest-middleware-workflow-simplification.md's "Decision: Serve's
 // generic dispatch mechanism") so the adapter never needs its own
@@ -1162,7 +1162,7 @@ func (h *RouteHandle[Req, Resp]) EncodeMerged(resp Resp) (body []byte, headers, 
 // encode the body via a negotiated [format.Format] (i.e. [WithFormats],
 // not plain [Encode]) can still derive merge-capable response
 // header/cookie values. Used by each adapter's internal serve dispatch
-// (invoked via [nethttp.AttachMux]/[chi.AttachRouter]) for multi-format
+// (invoked via [nethttp.NewServerTransport]/[chi.NewServerTransport] (via [Server.Attach])) for multi-format
 // routes AND for a matched [ErrorPattern] payload whose concrete type
 // equals Resp. Returns nil maps when the route declares no response
 // merge-capable params.
@@ -1722,7 +1722,7 @@ type routeEntry interface {
 	securitySchemes() map[string]SecurityScheme
 	// hasHandler reports whether WithHandler was ever called — the Part-1
 	// gating signal each adapter's internal serve/serveSSE dispatch (invoked via
-	// [nethttp.AttachMux]/[chi.AttachRouter]) uses to skip
+	// [nethttp.NewServerTransport]/[chi.NewServerTransport] (via [Server.Attach])) uses to skip
 	// spec-only routes entirely (see "Decision: Serve's whole-builder
 	// failure semantics").
 	hasHandler() bool
@@ -1731,7 +1731,7 @@ type routeEntry interface {
 // RouteEntry is a read-only, reflection-friendly view of one [Route]
 // registered into a [Server] — returned by [Server.RouteEntries]. It
 // exists so each adapter's internal serve dispatch (invoked via
-// [nethttp.AttachMux]/[chi.AttachRouter]) can walk a HETEROGENEOUS
+// [nethttp.NewServerTransport]/[chi.NewServerTransport] (via [Server.Attach])) can walk a HETEROGENEOUS
 // collection of routes (each with a DIFFERENT Req/Resp pair) without
 // api/rest itself needing net/http or reflect: Handle() returns the
 // concrete *[RouteHandle][Req, Resp] type-erased to any; the consuming
@@ -2707,20 +2707,22 @@ type Server struct {
 	// docs/roadmap/dynamic-port-rebinding.md for that separate gap).
 	mu sync.RWMutex
 	// transport is the optional, adapter-provided [ServerTransport]
-	// attached via [Server.Attach] (e.g. by nethttp.AttachMux/
-	// chi.AttachRouter) — nil until Attach is called. See
+	// attached via [Server.Attach] (e.g. by nethttp.NewServerTransport/
+	// chi.NewServerTransport) — nil until Attach is called. See
 	// [Server.Serve]'s doc comment and Decision 5 of
 	// docs/design/d-0002-pubsub-workflow-simplification.md /
 	// docs/design/d-0001-rest-middleware-workflow-simplification.md's
 	// Addendum 5 for the full design (this is purely ADDITIVE — today's existing
-	// nethttp.Serve(mux, builder)/chi.Serve(r, builder), wire-only,
-	// caller owns their own http.Server, remain completely unchanged).
+	// wire-only escape hatch of registering routes directly onto a
+	// caller-owned mux/router, caller owns their own http.Server,
+	// remains completely unchanged).
 	transport ServerTransport
 }
 
 // ServerTransport is implemented by each adapter's internal, unexported
-// binding attached to a [Server] via an adapter-specific Attach function
-// (e.g. [nethttp.AttachMux], chi.AttachRouter) — see [Server.Attach].
+// binding built by an adapter-specific constructor
+// (e.g. [nethttp.NewServerTransport], chi.NewServerTransport) and passed
+// to [Server.Attach].
 // Mirrors [events.Transport] (docs/design/d-0002-pubsub-workflow-simplification.md's
 // Decision 5) for the pub/sub side of this same unification — see
 // docs/design/d-0001-rest-middleware-workflow-simplification.md's
@@ -2801,16 +2803,16 @@ func (b *Server) Attach(t ServerTransport) error {
 //
 // The older, non-blocking wire-only primitives this replaces
 // (`nethttp.Serve(mux, builder)`/`chi.Serve(r, builder)`) were REMOVED
-// (unexported) once `AttachMux`/`AttachRouter` + Serve shipped — see
+// (unexported) once `Attach` + `Serve` shipped — see
 // `docs/design/d-0002-pubsub-workflow-simplification.md`'s Decision 6.
 // A caller needing full control over TLS/timeouts/etc. builds their own
-// `*http.Server{Handler: mux}` after `AttachMux`/`AttachRouter` has wired
-// mux, without ever calling `Serve` itself.
+// `*http.Server{Handler: mux}` after [Server.Attach] has wired mux,
+// without ever calling `Serve` itself.
 //
 //	builder := rest.NewServer(rest.Info{...})
 //	if err := createUserRoute.Register(builder); err != nil { ... }
 //	mux := http.NewServeMux()
-//	_ = nethttp.AttachMux(builder, mux, ":8080")
+//	_ = builder.Attach(nethttp.NewServerTransport(nethttp.ServerTransportOptions{Mux: mux, Addr: ":8080"}))
 //	err := builder.Serve(ctx) // blocks, owns its own http.Server
 func (b *Server) Serve(ctx context.Context) error {
 	b.mu.RLock()
@@ -2949,8 +2951,8 @@ type ClientConsumeOptions struct {
 }
 
 // ClientTransport is implemented by each adapter's internal, unexported
-// binding attached to a [Client] via an adapter-specific Attach function
-// (e.g. [nethttp.Attach]) — see [Client.Attach]. Mirrors
+// binding built by an adapter-specific constructor
+// (e.g. [nethttp.NewClientTransport]) and passed to [Client.Attach]. Mirrors
 // [events.Transport] (docs/design/d-0002-pubsub-workflow-simplification.md's
 // Decision 5) for the pub/sub side of this same unification — see
 // docs/design/d-0001-rest-middleware-workflow-simplification.md's
@@ -2985,26 +2987,27 @@ type ClientTransport interface {
 // mirrors what adapters/nethttp.Caller already did (just a connection
 // holder), relocated to the api/rest domain level.
 //
-// Construct via [NewClient], then bind it to a concrete transport via an
-// adapter's own Attach function (e.g. [nethttp.Attach]) before calling
+// Construct via [NewClient], then bind it to a concrete transport by
+// passing an adapter's own transport constructor to [Client.Attach]
+// (e.g. [nethttp.NewClientTransport]) before calling
 // [Client.Call].
 type Client struct {
 	mu        sync.RWMutex
 	transport ClientTransport
 }
 
-// NewClient returns an unattached [Client]. Call an adapter's Attach
-// function (e.g. [nethttp.Attach]) before using [Client.Call].
+// NewClient returns an unattached [Client]. Call [Client.Attach] with a
+// [ClientTransport] built by an adapter's `New*Transport` constructor
+// (e.g. [nethttp.NewClientTransport]) before using [Client.Call].
 func NewClient() *Client {
 	return &Client{}
 }
 
 // Attach binds t to c as c's transport — the "attach the adapter to the
-// client" step behind [Client.Call]. Each adapter provides its own entry
-// point (e.g. [nethttp.Attach](client, httpClient, baseURL)) that builds
-// an internal ClientTransport implementation and calls this method
-// internally; application code calls the ADAPTER's Attach function, not
-// this method directly, in the common case.
+// client" step behind [Client.Call]. Each adapter provides its own
+// `New*Transport` constructor (e.g. [nethttp.NewClientTransport]) that
+// builds a [ClientTransport] value; pass it to Attach directly — there is
+// no adapter-namespaced Attach function.
 //
 // Returns [ClientTransportAlreadyAttachedError] if c already has a
 // transport attached — Attach is exclusive, mirrors
@@ -3026,7 +3029,7 @@ func (c *Client) Attach(t ClientTransport) error {
 // [NoClientTransportAttachedError] if [Client.Attach] was never called.
 //
 //	client := rest.NewClient()
-//	_ = nethttp.Attach(client, httpClient, baseURL)
+//	_ = client.Attach(nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: httpClient, BaseURL: baseURL}))
 //	respAny, err := client.Call(ctx, getUserRoute, GetUserReq{ID: "f47ac10b"})
 //	resp := respAny.(GetUserResp)
 //
@@ -3051,7 +3054,7 @@ func (c *Client) Call(ctx context.Context, route any, req any, opts ...ClientCal
 // was never called.
 //
 //	client := rest.NewClient()
-//	_ = nethttp.Attach(client, httpClient, baseURL)
+//	_ = client.Attach(nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: httpClient, BaseURL: baseURL}))
 //	err := client.Consume(ctx, sensorStreamRoute, GetSensorReq{ID: "room-42"},
 //	    func(ctx context.Context, e SensorReading) error { ...; return nil })
 //
@@ -3302,7 +3305,7 @@ func NewRouteFromPath[Req, Resp any](
 // (attached via [Route.WithHandler]), and middleware implementations
 // (attached via [Route.HandleMW]/[Route.ClientMW]) into b — for use by
 // each adapter's internal serve/serveSSE/serveOne dispatch (invoked via
-// [nethttp.AttachMux]/[nethttp.ServeOne]/[chi.AttachRouter]), which
+// [nethttp.NewServerTransport]/[nethttp.ServeOne]/[chi.NewServerTransport] (via [Server.Attach])), which
 // walk b's accumulated routes and wire each one. No [*RouteHandle] is
 // returned — a caller wiring routes through Attach never needs one
 // directly. Use [Route.RegisterHandle] instead when a direct handle is
@@ -3324,7 +3327,7 @@ func (r Route[Req, Resp]) Register(b *Server) error {
 // binding and validation as [Route.Register] — but ALSO returns the
 // resulting [*RouteHandle], for direct-wiring callers that bypass
 // each adapter's internal serve dispatch (invoked via
-// [nethttp.AttachMux]/[chi.AttachRouter]) entirely (e.g. [ports]'
+// [nethttp.NewServerTransport]/[chi.NewServerTransport] (via [Server.Attach])) entirely (e.g. [ports]'
 // pattern-building machinery, which owns its own adapter wiring and never
 // mounts routes on a *http.ServeMux itself).
 //
@@ -4218,7 +4221,7 @@ func NewSSERoute[Req, Event any](
 // (attached via [SSERoute.WithHandler]), and middleware implementations
 // (attached via [SSERoute.HandleMW]) into b — for use by
 // each adapter's internal serveSSE dispatch (invoked via
-// [nethttp.AttachMux]/[chi.AttachRouter]). No [*SSERouteHandle] is returned;
+// [nethttp.NewServerTransport]/[chi.NewServerTransport] (via [Server.Attach])). No [*SSERouteHandle] is returned;
 // use [SSERoute.RegisterHandle] when a direct handle is needed.
 //
 // Path validation follows the same rules as [Route.Register].
@@ -4231,7 +4234,7 @@ func (s SSERoute[Req, Event]) Register(b *Server) error {
 // validation as [SSERoute.Register] — but ALSO returns the resulting
 // [*SSERouteHandle], for direct-wiring callers (e.g. [ports]) that bypass
 // each adapter's internal serveSSE dispatch (invoked via
-// [nethttp.AttachMux]/[chi.AttachRouter]) entirely.
+// [nethttp.NewServerTransport]/[chi.NewServerTransport] (via [Server.Attach])) entirely.
 //
 // Use [SSERouteHandle.WithFormats] on the returned handle to configure
 // non-JSON event serialisation formats.
@@ -4458,7 +4461,7 @@ func (b *Server) OpenAPISpec() (openapi.Document, error) {
 
 // RouteEntries returns every [Route] registered into b, as read-only
 // [RouteEntry] views — for use by each adapter's internal serve dispatch
-// (invoked via [nethttp.AttachMux]/[chi.AttachRouter]) to walk and
+// (invoked via [nethttp.NewServerTransport]/[chi.NewServerTransport] (via [Server.Attach])) to walk and
 // wire the whole builder in one call. SSE entries are excluded; see
 // [Server.SSEEntries].
 func (b *Server) RouteEntries() []RouteEntry {
@@ -4475,7 +4478,7 @@ func (b *Server) RouteEntries() []RouteEntry {
 
 // SSEEntries returns every [SSERoute] registered into b, as read-only
 // [SSERouteEntry] views — for use by each adapter's internal serveSSE
-// dispatch (invoked via [nethttp.AttachMux]/[chi.AttachRouter]).
+// dispatch (invoked via [nethttp.NewServerTransport]/[chi.NewServerTransport] (via [Server.Attach])).
 // Regular Route entries are excluded; see [Server.RouteEntries].
 func (b *Server) SSEEntries() []SSERouteEntry {
 	b.mu.RLock()

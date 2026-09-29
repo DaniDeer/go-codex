@@ -42,7 +42,7 @@ sensorRoute := rest.NewSSERoute[struct{}, SensorReading](
 }).WithOptions(nethttp.Options{Observer: obs})
 sensorRoute.Register(b)
 
-// Wire onto net/http (AttachMux wires plain AND SSE routes together).
+// Wire onto net/http (Server.Attach wires plain AND SSE routes together).
 if err := b.Attach(nethttp.NewServerTransport(nethttp.ServerTransportOptions{Mux: mux, Addr: addr})); err != nil {
     log.Fatal(err)
 }
@@ -54,7 +54,7 @@ _ = b.Serve(ctx) // blocks, owns its own http.Server
 - `ctx.Done()` signals client disconnects; handlers should return `nil` on context cancellation.
 - `sensorRoute.BuildPath(vars)` validates path variables before assembling the URL — same contract as `RouteHandle.BuildPath`.
 - The route appears in the OpenAPI spec as `GET /sensors/{id}/readings` with `Content-Type: text/event-stream`.
-- Works identically with `chiadapter.ServeSSE`; use `chi.URLParam(r, "id")` for path vars.
+- Works identically wired via `b.Attach(chiadapter.NewServerTransport(...))`; use `chi.URLParam(r, "id")` for path vars.
 - The stats observer receives `RecordValidationError("response", constraint, "event")` for each rejected event — use this to count codec validation failures per event type.
 - The stats observer receives `RecordValidationError("response", constraint, "event")` for each rejected event.
 - **`rest.ErrorPattern`/`rest.ErrorStatus` are rejected on SSE routes** — `Register`/`RegisterHandle` return
@@ -136,7 +136,7 @@ field manually from request context before `send`. The runnable
 the SAME declared `rest.SSERoute` used to serve events (above) is passed
 directly to `Consume` to consume them back, no separate client-side
 declaration needed. `Client.Consume` is `ClientTransport`-based (via
-`nethttp.Attach`), mirroring `Client.Call` exactly and fully-featured:
+`Client.Attach(nethttp.NewClientTransport(...))`), mirroring `Client.Call` exactly and fully-featured:
 path/query/header/cookie param derivation, security/credential `ClientMW`,
 per-call format overrides, and general-purpose `ClientMW` wrapping are ALL
 supported (see `docs/design/d-0001-rest-middleware-workflow-simplification.md`'s

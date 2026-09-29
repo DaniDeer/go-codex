@@ -12,7 +12,7 @@ producer/
   main.go       ← imports contract/, calls events.PublishHandle / rest.Client.Call
 
 consumer/
-  main.go       ← imports contract/, calls events.SubscribeHandle / nethttp.AttachMux
+  main.go       ← imports contract/, calls events.SubscribeHandle / builder.Attach(nethttp.NewServerTransport(...))
 ```
 
 ## HTTP example

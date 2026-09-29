@@ -19,8 +19,7 @@ go-codex has three codec layers — domain types, API contracts, and forge pipel
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  LAYER 2 — API ADAPTERS (api/rest · api/events · api/mcp)                   │
 │                                                                             │
-│  nethttp.AttachMux  ·  mqtt.NewSubscribeTransport  ·  mcpgo.ToolHandler     │
-│                                                                             │
+│  nethttp's Attach(...)  ·  mqtt.SubscribeTransport  ·  mcpgo.ToolHandler    │
 │  Observable:  stats.Observer (embeds ValidationObserver)                    │
 │               + stats.SecurityObserver (optional extension)                 │
 │  Signal:      metrics / logging / distributed tracing                       │
@@ -256,7 +255,7 @@ forge.NewRegistry("P", "1.0.0").WithObserver(obs)                       // expli
 
 **Precedence:** explicit `opts.Observer` > context observer > `NoopObserver{}`.
 
-HTTP adapters (`nethttp.AttachMux`/`ServeOne`, `chi.AttachRouter`) resolve the observer per-request
+HTTP adapters (`nethttp`/`chi`'s internal serve dispatch, wired via `Server.Attach(NewServerTransport(...))`, and `ServeOne`) resolve the observer per-request
 from `r.Context()`, enabling per-request injection via a server middleware.
 `forge.Registry` uses the explicit `.WithObserver(obs)` builder — no context
 integration by design.
@@ -269,7 +268,7 @@ When an HTTP request arrives carrying a `traceparent` header (propagated by OTel
 
 ```
 Incoming HTTP request (traceparent header present)
-    └─ nethttp's internal serve dispatch (wired via AttachMux) → StartSpan(ctx, "http.request", "/orders/{id}")
+    └─ nethttp's internal serve dispatch (wired via Server.Attach(NewServerTransport(...))) → StartSpan(ctx, "http.request", "/orders/{id}")
             └─ handler(ctx, req)
                     ├─ forge.Function.ApplyContext(ctx, in)
                     │       └─ StartSpan(ctx, "forge.apply", "availabilityCalc")

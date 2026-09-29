@@ -34,7 +34,7 @@ type Built struct {
 // business logic from handlers/, security enforcement paired against
 // routes.ProfileScopeMw/AdminScopeMw, the shared Observer, and the
 // general-purpose timing middleware — then wires the router via
-// chiadapter.AttachRouter and starts serving on addr (via the returned
+// b.Attach(chiadapter.NewServerTransport(...)) and starts serving on addr (via the returned
 // Server.Serve(ctx), left for the caller to run).
 func Build(store *handlers.UserStore, obs stats.Observer, logger *slog.Logger, addr string) (*Built, error) {
 	domainLogger := logger.With("layer", "domain")
@@ -163,7 +163,7 @@ func Build(store *handlers.UserStore, obs stats.Observer, logger *slog.Logger, a
 	// GET /openapi.yaml — a hand-rolled, manual escape hatch: go-codex has
 	// no declarative "serve my own spec" convenience today (see
 	// docs/roadmap/openapi-spec-endpoint.md for a captured future idea).
-	// Registered BEFORE AttachRouter — chi's router cannot safely receive
+	// Registered BEFORE Attach — chi's router cannot safely receive
 	// new handlers once serving starts.
 	router.Get("/openapi.yaml", specHandler(b))
 

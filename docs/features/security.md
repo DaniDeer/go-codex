@@ -95,7 +95,7 @@ touches go-codex's security-scheme model. Confirmed per transport:
   `nethttp.Call`/`CallWithHandle` — TLS is entirely
   `http.Transport.TLSClientConfig`'s concern (client certs, custom
   `RootCAs`, etc.), go-codex never constructs an `http.Client` itself.
-  Server-side, `nethttp.AttachMux`/`chi.AttachRouter` just wire a `mux`;
+  Server-side, `b.Attach(nethttp.NewServerTransport(...))`/`b.Attach(chiadapter.NewServerTransport(...))` just wire a `mux`/`router`;
   the caller builds their own `*http.Server` (with or without
   `TLSConfig`) around it — go-codex's own `Server.Serve` explicitly
   documents this ("a caller needing full control over TLS/timeouts/etc.
@@ -290,7 +290,7 @@ The adapter enforcement sequence:
 
 Routes with `nil Security` (default) trigger enforcement when global security is set.
 
-`nethttp.CallWithHandle` (client-side) runs the SAME sequence, symmetrically, on the OUTGOING request before it is sent — see "HTTP client — credential-providing ClientMW" below. **`rest.Client.Call` (the `nethttp.Attach`-based reflection shim) does NOT** — it is v1-scoped to the core JSON encode/decode case with no path/query/header/cookie params and no `ClientMW` of any shape (credential or general-purpose); a route relying on `ClientMW` for credentials must use `CallWithHandle` directly (see `adapters/nethttp/clienttransport.go`'s own doc comment for the full v1-scope note).
+`nethttp.CallWithHandle` (client-side) runs the SAME sequence, symmetrically, on the OUTGOING request before it is sent — see "HTTP client — credential-providing ClientMW" below. **`rest.Client.Call` (bound via `Client.Attach(nethttp.NewClientTransport(...))`) runs the SAME enforcement too** — it is full-featured: security/credential `ClientMW`, path/query/header/cookie params, per-call format override, and error-pattern decoding are all supported (see `adapters/nethttp/clienttransport.go`'s own doc comment for confirmation there is no remaining "v1 scope" limitation).
 
 ## Credential format validation
 
@@ -309,9 +309,9 @@ codex.String().Refine(validate.NonEmptyString)
 
 ## HTTP client — credential-providing `ClientMW`
 
-For `nethttp.CallWithHandle` (NOT `rest.Client.Call` — see the "Runtime
-enforcement" section above for why the `nethttp.Attach`-based reflection
-shim doesn't honor this), provide credentials via a credential-providing
+For `nethttp.CallWithHandle` and `rest.Client.Call` alike (both are
+full-featured — see the "Runtime enforcement" section above), provide
+credentials via a credential-providing
 implementation attached with [`Route.ClientMW`](../features/http-client.md),
 PAIRED against the SAME `middleware.Middleware` value the route's security
 requirement was declared with (via `.Use(mw)`). The Fn matches

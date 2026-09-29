@@ -199,7 +199,7 @@ func RegisterPipeline[Req, Resp any](
 // SSEStreamOptions configures [SSEFromHub].
 type SSEStreamOptions struct {
 	// Topic is the SSE route path used for observer reporting and error context.
-	// Set this to the route's Descriptor.Path when wiring via [AttachMux].
+	// Set this to the route's Descriptor.Path when wiring via [NewServerTransport].
 	Topic string
 
 	// OnError, when non-nil, is called for write failures ([SSEWriteError]) and

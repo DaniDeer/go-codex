@@ -20,7 +20,7 @@ pipeline**:
 
 - Layer 1: shared field codecs (`emailFieldCodec`, `nameFieldCodec`) propagate constraints to all three boundary codecs (request, database, response)
 - Layer 2: pure domain functions (`handlers.BuildUserRecord`, `handlers.BuildUserResponse`) with zero IO — independently unit-testable
-- Layer 3: infrastructure (`handlers.UserStore` uses codec for all DB IO; `nethttp.AttachMux`/`chiadapter.AttachRouter` + `Server.Serve(ctx)` — the calls that wire every declared route onto the mux/router and start serving — are the only HTTP lines)
+- Layer 3: infrastructure (`handlers.UserStore` uses codec for all DB IO; `b.Attach(nethttp.NewServerTransport(...))`/`b.Attach(chiadapter.NewServerTransport(...))` + `Server.Serve(ctx)` — the calls that wire every declared route onto the mux/router and start serving — are the only HTTP lines)
 
 Key patterns:
 - `rest.RequestFormats(format.JSON(...), format.YAML(...))` declared inline in `NewRoute`'s opts — JSON + YAML bodies
@@ -126,16 +126,20 @@ handle, _ := rest.NewRoute[Req, Resp]("POST", "/jobs", reqCodec, respCodec,
 - No pipeline value defaults to `503` (`PipelineNoResponseError`), overridable
   with `ErrorStatus[...](status)`.
 
-Design closeout for unified REST error RouteOpt (roadmap):
-- `ErrorResponse[...]` becomes primary declaration (status + typed error body +
-  optional mapper/action), usable by plain and pipeline handlers.
-- `ErrorStatus[...]` is status-only shorthand; `ErrorStatus[...]` stays
-  deprecated alias for compatibility.
-- Matching precedence remains first declaration that matches via `errors.As`.
-- One matched rule performs one primary action only (`respond` OR `handle` OR
-  `log`), no implicit chaining.
-- Typed error response headers/cookies follow same codec+merge-field pattern as
-  happy-path response metadata, but scoped to matched error status.
+Full typed-error-response declaration is already shipped as [`rest.ErrorPattern`](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/rest#ErrorPattern):
+- `rest.ErrorPattern[E, B](status, codec, mapFn...)` declares a codec-backed
+  typed error response for a matched error type (status + typed error body +
+  optional mapper), usable by plain and pipeline handlers alike.
+- `rest.ErrorStatus[E](status)` is the status-only shorthand — use it when you
+  don't need a typed response body.
+- Matching precedence is first declaration that matches via `errors.As`.
+- By default a matched `ErrorPattern` responds directly (`rest.ErrorRespond`);
+  use `.WithAction(rest.ErrorHandle)`/`.WithAction(rest.ErrorLog)` to fall
+  through to `Options.ErrorHandler` instead (still using the pattern's
+  declared status).
+- Typed error response headers/cookies follow the same codec+merge-field
+  pattern as happy-path response metadata, but scoped to the matched error
+  status.
 
 ### Ergonomics: same domain error, no-pipeline vs pipeline
 
@@ -267,8 +271,9 @@ err := builder.Serve(ctx) // blocks, owns its own http.Server
 This is the SOLE public server-startup workflow (per
 `docs/design/d-0002-pubsub-workflow-simplification.md`'s Decision 6 — "no escape hatches"): the
 lower-level, wire-only `Serve(mux, builder)`/`ServeSSE(mux, builder)` functions this guide's
-earlier code snippets used to call directly are now unexported internals that `AttachMux`/
-`AttachRouter` call for you — there is no other public entry point for wiring a `*rest.Server`
+earlier code snippets used to call directly are now unexported internals that
+`Server.Attach(nethttp.NewServerTransport(...))`/`Server.Attach(chiadapter.NewServerTransport(...))`
+call for you — there is no other public entry point for wiring a `*rest.Server`
 onto a mux/router. `Server.Attach`/`Serve` give an app ONE unified `Attach`-then-`Serve` startup
 call across both its REST API and its pub/sub channels (see `events.Client.Attach`/
 `.ServeSubscribers` in `docs/guides/mqtt5.md`/`docs/guides/zeromq.md`) — see

@@ -1145,8 +1145,8 @@ func TestCallHandle_NoMergeFieldsMatchesCall(t *testing.T) {
 // the route declares a path merge field, so the merge-field's own codec
 // constraint is checked at derive time, and an invalid value surfaces as
 // a [codex.ValidationError] without ever reaching the network. This
-// derivation is internal plumbing shared by [Attach] (the sole public
-// client-side workflow — see
+// derivation is internal plumbing shared by [rest.Client.Attach] (the
+// sole public client-side workflow — see
 // docs/design/d-0002-pubsub-workflow-simplification.md's Decision 6) and by
 // [ports]' handle-based binding adapters.
 func Example() {

@@ -1679,8 +1679,9 @@ func TestSSEHandler_EventMerge_FromConnectionVars(t *testing.T) {
 
 // --- Example functions (shown on pkg.go.dev as runnable snippets) ---
 
-// Example demonstrates serveOne — an internal helper now that [AttachRouter]
-// is the sole public server-side workflow (see
+// Example demonstrates serveOne — an internal helper now that
+// [NewServerTransport] (passed to [rest.Server.Attach]) is the sole
+// public server-side workflow (see
 // docs/design/d-0002-pubsub-workflow-simplification.md's Decision 6); named
 // Example() (not ExampleServeOne, which vet would reject for referring to
 // an unexported identifier) so it still runs as a documented runnable

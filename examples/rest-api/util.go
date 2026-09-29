@@ -8,7 +8,7 @@ import (
 )
 
 // mustFreeAddr reserves an OS-assigned free TCP port on localhost, then
-// releases it immediately so AttachMux/AttachRouter's own *http.Server
+// releases it immediately so Server.Attach(NewServerTransport(...))'s own *http.Server
 // can bind to it.
 func mustFreeAddr() string {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -36,7 +36,7 @@ func waitForReady(addr string) {
 }
 
 // must exits the program if err is non-nil — used for startup wiring
-// (Register/AttachMux/AttachRouter), where a failure means a malformed
+// (Register/Attach), where a failure means a malformed
 // declaration, caught eagerly rather than on the first incoming request.
 func must(err error, what string) {
 	if err != nil {

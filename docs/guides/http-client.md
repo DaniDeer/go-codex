@@ -11,11 +11,14 @@ The most comprehensive client demo. Every call in the example shares ONE
 server registered. It uses `nethttp.CallWithHandle` throughout — building
 each `contract.Route`'s `*rest.RouteHandle` ONCE via `route.ClientHandle()`
 right after the server starts, then reusing that handle for every call —
-rather than the higher-level `nethttp.Attach`/`rest.Client.Call` workflow,
-specifically because that workflow's v1 scope does not route per-call
-metrics through `stats.Observer` at all, which would silently undercount
-the Observer summary this example demonstrates. Demonstrates both usage
-patterns in five numbered sections:
+rather than `Client.Attach(nethttp.NewClientTransport(...))`/`rest.Client.Call`'s
+uniform `Call(ctx, route, req)` shape. Both are full-featured (path/query/
+header/cookie params, security/credential `ClientMW`, per-call format
+overrides, error-pattern decoding, and per-call `stats.Observer` overrides
+via `ClientCallOptions.Observer` are all supported by either path); this
+example deliberately demonstrates the pre-built-handle pattern because it
+is the lower-level primitive `Client.Call` itself is built on. Demonstrates
+both usage patterns in five numbered sections:
 
 1. **Body** — POST /users with a shared contract: `contract.CreateUser.Register(builder)` (server) and `nethttp.CallWithHandle(ctx, httpClient, baseURL, createUserHandle, req, opts)` (client) both operate on the SAME `rest.Route` value
    - **1b. Client-side typed error decode** — `CreateUser` declares `rest.ErrorPattern[EmailConflictError, EmailConflictError](409, ...)`; calling `CallWithHandle` with a duplicate email returns a decoded `nethttp.ErrorPatternResponse` instead of the untyped `UnexpectedStatusError` — see "Handling the response" below
@@ -54,11 +57,12 @@ handle := contract.CreateUser.ClientHandle() // build once
 user, err := nethttp.CallWithHandle(ctx, httpClient, baseURL, handle, req, nethttp.CallOptions{})
 ```
 
-`rest.Client.Call` (bound via `nethttp.Attach`) — the single-workflow
+`rest.Client.Call` (bound via `Client.Attach(nethttp.NewClientTransport(...))`) — the single-workflow
 entry point (Decision 6) `CallWithHandle`'s internal derivation logic also
 powers — is the RECOMMENDED pattern for a simpler, uniform `Call(ctx,
-route, req)` shape across REST/pub-sub, at the cost of some v1-scope
-limitations (see below). `CallWithHandle` remains public and is still
+route, req)` shape across REST/pub-sub. Both are full-featured (path/query/
+header/cookie params, security/credential `ClientMW`, per-call format
+overrides, error-pattern decoding — see below). `CallWithHandle` remains public and is still
 needed directly for callers that already have a `*rest.RouteHandle` but no
 `rest.Route` value: `ports.Pattern`'s REST binding machinery
 (`DrainCallAdapter`/`CallAdapter`), which owns its own client/baseURL via
@@ -262,10 +266,10 @@ handle.WithFormats(format.Binary(pngCodec).WithContentType("image/png"))
 
 See [`examples/png-upload`](https://github.com/DaniDeer/go-codex/tree/main/examples/png-upload) for upload (binary request → JSON response) and download (JSON request → binary response) routes with full codec validation.
 
-## `rest.Client`/`nethttp.Attach` — the single-workflow entry point
+## `rest.Client`/`nethttp.NewClientTransport` — the single-workflow entry point
 
 `rest.Client` (mirrors `events.Client`'s design exactly) gains a `.Call(ctx, route, req)` method
-once an HTTP connection is attached via `nethttp.Attach` — this is the single-workflow entry point
+once an HTTP connection is attached via `Client.Attach(nethttp.NewClientTransport(...))` — this is the single-workflow entry point
 (Decision 6) — call it directly on the `*rest.Client` value:
 
 ```go
@@ -277,13 +281,16 @@ resp := respAny.(GetUserResp) // type-assert the result
 
 Since `Client.Call` is an ordinary Go method (not generic — Go forbids a method from introducing
 its own type parameters), `route`/`req` are passed as `any` and `Req`/`Resp` are recovered
-internally via reflection (inside `nethttp.Attach`'s internal transport, wrapping an unexported,
+internally via reflection (inside the `clientTransport` `NewClientTransport` returns, wrapping an unexported,
 internal `caller`/`call[Req,Resp]` — the package's former public `Caller`/`NewCaller`/
 `Call[Req,Resp]`); a mismatch surfaces as `rest.TransportTypeMismatchError`
-at CALL time, not a compile error. **v1 scope**: covers the core common case (JSON body
-encode/decode) — no path/query/header/cookie params, no security/credential handling, no per-call
-format override, no error-pattern decoding. `nethttp.CallWithHandle` (the lower-level,
-handle-based primitive `Attach`'s internal transport wraps) remains fully featured and
-unaffected; use it directly for anything beyond the simple case. `Client.Attach` is exclusive —
+at CALL time, not a compile error. `Client.Call` is FULL-FEATURED: path/query/header/
+cookie params, security/credential `ClientMW`, per-call format override
+(`ClientCallOptions.RequestFormats`/`ResponseFormats`), and error-pattern decoding are all
+supported — there is no remaining "v1 scope" limitation. `nethttp.CallWithHandle` (the lower-level,
+handle-based primitive `NewClientTransport`'s internal transport wraps) remains fully featured and
+unaffected; use it directly for anything beyond `Client.Call`'s `route`/`req`-as-`any` shape
+(e.g. a pre-built `*rest.RouteHandle` with no `rest.Route` value, or finer per-call control
+`ClientCallOptions` doesn't expose). `Client.Attach` is exclusive —
 a second `Attach` call returns `rest.ClientTransportAlreadyAttachedError`. See
 `docs/design/d-0001-rest-middleware-workflow-simplification.md`'s Addendum 5 for the full design.

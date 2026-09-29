@@ -7,5 +7,5 @@ For the full API reference and all code examples, see the feature page.
 ## Examples
 
 - [examples/rest-schema-docs](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-schema-docs) — `components/schemas` generation from codecs (standalone, no HTTP server)
-- [examples/rest-api](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-api) — full OpenAPI 3.1 document via the low-level `DocumentBuilder`
+- [examples/rest-api](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-api) — full OpenAPI 3.1 document via `Server.OpenAPISpec()`, served over the wire at `GET /openapi.yaml`
 - [examples/rest-builder](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-builder) — `api/rest` builder + `OpenAPISpec()` with all route types

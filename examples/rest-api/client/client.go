@@ -5,7 +5,7 @@
 // examples/adapters-sse's securedRoute/securedBase pattern), the SAME
 // general-purpose timing middleware shown server-side (attached via
 // ClientMW instead of HandleMW), and a rest.Client attached via
-// nethttp.Attach — deliberately the SAME adapters/nethttp client used to
+// Client.Attach(nethttp.NewClientTransport(...)) — deliberately the SAME adapters/nethttp client used to
 // call BOTH the chi-routed AND the net/http-routed server, since a
 // declared rest.Route and its rest.Client are transport-agnostic on the
 // wire: chi is just an http.Handler-producing router underneath.
@@ -40,7 +40,7 @@ func AdminCredFn(_ context.Context, _ []route.SecurityRequirement) (http.Header,
 }
 
 // Build attaches httpClient+baseURL as client's rest.ClientTransport via
-// nethttp.Attach — the SAME adapters/nethttp client works against EITHER
+// Client.Attach(nethttp.NewClientTransport(...)) — the SAME adapters/nethttp client works against EITHER
 // server (chi-routed or net/http-routed), proving the wire protocol is
 // identical either way.
 func Build(httpClient *http.Client, baseURL string) (*rest.Client, error) {

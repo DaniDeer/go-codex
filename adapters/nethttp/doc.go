@@ -1,6 +1,6 @@
 // Package nethttp adapts [api/rest] routes to [net/http] handlers.
 //
-// [AttachMux] is the sole public server-side workflow (see
+// [NewServerTransport], passed to [rest.Server.Attach], is the sole public server-side workflow (see
 // docs/design/d-0002-pubsub-workflow-simplification.md's Decision 6): it wires
 // every handler-bearing [rest.Route]/[rest.SSERoute] registered into a
 // [rest.Server] directly onto an [http.ServeMux] using the Go 1.22+

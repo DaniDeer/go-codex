@@ -286,7 +286,7 @@ var ConflictPayloadCodec = codex.Struct[ConflictPayload](
 // IngestConflictRoute (see demo_error_pattern.go) to prove the port/
 // stream-adapter dispatch (nethttp.IngestAdapter) now ALSO consults a
 // declared rest.ErrorPattern — closing a gap where only the normal
-// AttachRouter/AttachMux serving path did.
+// normal Server.Attach(NewServerTransport(...)) serving path did.
 type ValidationPayload struct {
 	Code string
 }

@@ -10,25 +10,26 @@ constraints. **No duplication between client and server.**
 
 Two entry points exist:
 
-- **`rest.Client.Call`** (bound via `nethttp.Attach`) — the single-workflow
+- **`rest.Client.Call`** (bound via `Client.Attach(nethttp.NewClientTransport(...))`) — the single-workflow
   entry point (Decision 6), and the RECOMMENDED pattern for every call.
-  Build a `rest.Client` once, `nethttp.Attach` it to an `*http.Client` +
+  Build a `rest.Client` once, attach a `nethttp.NewClientTransport(...)` to an `*http.Client` +
   baseURL, then call `client.Call(ctx, route, req)` with a `rest.Route`
   value directly (the SAME value the server registers) — no separate
   "build a client copy" step needed at all.
 - **`nethttp.CallWithHandle`** — the lower-level, handle-based primitive
-  `Attach`'s internal transport wraps. Stays public for callers that
+  the client transport wraps internally. Stays public for callers that
   already have a `*rest.RouteHandle` but no `rest.Route` value, or that
-  need a v1-scope feature `Attach`'s reflection shim doesn't cover yet
-  (path/query/header/cookie params, security/credential handling,
-  per-call format override, error-pattern decoding) — e.g. `ports.Pattern`'s
+  need finer per-call control `ClientCallOptions` doesn't expose — e.g. `ports.Pattern`'s
   REST binding machinery (`DrainCallAdapter`/`CallAdapter`), which owns
   its own client/baseURL via `PortOptions`, or `adapters/mcprest`'s
-  REST-to-MCP bridge.
+  REST-to-MCP bridge. `Client.Call` itself is full-featured (path/query/
+  header/cookie params, security/credential `ClientMW`, per-call format
+  override, error-pattern decoding) — there is no capability `CallWithHandle`
+  has that `Client.Call` lacks.
 
 The package's former `Caller`/`NewCaller`/`Call[Req,Resp]` (a two-tier
-value-based convenience predating `Attach`) are now an unexported internal
-`caller`/`newCaller`/`call[Req,Resp]`, reachable only through `Attach`.
+value-based convenience predating the transport-based `Attach` workflow) are now an unexported internal
+`caller`/`newCaller`/`call[Req,Resp]`, reachable only through `Client.Attach`.
 
 Credential fulfillment is declared **per-route** via
 [`Route.ClientMW`](../features/security.md), paired against the SAME
@@ -46,7 +47,7 @@ Define routes, codecs, and types in a shared Go package. Both server and client 
 ```
 contract/
   contract.go   ← shared Route specs, codecs, types
-server/main.go  ← imports contract/, registers routes, calls AttachMux+Serve
+server/main.go  ← imports contract/, registers routes, calls builder.Attach(...)+Serve
 client/main.go  ← imports contract/, calls via rest.Client.Call
 ```
 
@@ -97,21 +98,22 @@ declared merge field ([`rest.NewPathParam`](rest-api.md)) — the reflection
 shim always auto-derives path/query/header/cookie values from a route's
 declared merge fields; there is no manual `vars map[string]string` escape
 hatch. A route intended for client use must declare a merge field for
-every path/query/header/cookie value it needs. This v1-scope shim covers
-the CORE common case only (JSON body, no per-call format override, no
-security/credential handling) — use `nethttp.CallWithHandle` directly for
-anything beyond that.
+every path/query/header/cookie value it needs. `Client.Call` is
+full-featured (JSON body, per-call format override, security/credential
+handling all supported) — use `nethttp.CallWithHandle` directly only when
+you need a pre-built `*rest.RouteHandle` or finer per-call control
+`ClientCallOptions` doesn't expose.
 
-## nethttp.Attach
+## `nethttp.NewClientTransport`
 
 ```go
-func Attach(client *rest.Client, httpClient *http.Client, baseURL string) error
+func NewClientTransport(opts ClientTransportOptions) rest.ClientTransport
 ```
 
-`Attach` binds `httpClient`+`baseURL` (via an internal, unexported
+`NewClientTransport` returns a `rest.ClientTransport` (via an internal, unexported
 `caller`/`newCaller` — a pure `(client, baseURL)` holder, NOT a
-spec-accumulating `Builder` equivalent) as `client`'s `rest.ClientTransport`,
-giving `client` its `Call(ctx, route, req)` call shape. Credential
+spec-accumulating `Builder` equivalent) configured with `opts.HTTPClient`+`opts.BaseURL`. Pass it to
+`client.Attach(...)` to give `client` its `Call(ctx, route, req)` call shape. Credential
 fulfillment lives on the `Route` itself via `ClientMW`, not on the
 internal caller.
 

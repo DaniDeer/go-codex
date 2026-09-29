@@ -92,7 +92,7 @@ var getUser = rest.NewRoute[GetUserReq, User]("GET", "/users/{id}", reqCodec, us
 )
 getUser.Register(builder)
 
-// AttachMux/AttachRouter's internal serve dispatch applies RouteHandle.MergeFields() automatically
+// Server.Attach's internal serve dispatch applies RouteHandle.MergeFields() automatically
 // whenever it is non-empty — the handler function just
 // receives a fully populated, validated GetUserReq:
 func(ctx context.Context, req GetUserReq) (User, error) {
@@ -243,7 +243,7 @@ var getUserActivity = rest.NewRoute[GetUserActivityReq, User]("GET", "/users/{id
 )
 ```
 
-On the **server**, `nethttp`/`chi`'s internal serve dispatch (via `Route.WithHandler`, wired by `AttachMux`/`AttachRouter`)
+On the **server**, `nethttp`/`chi`'s internal serve dispatch (via `Route.WithHandler`, wired by `Server.Attach(NewServerTransport(...))`)
 automatically encode `User.RequestID` into the actual `X-Request-Id` HTTP
 response header after your handler returns — no
 `nethttp.WithResponseHeaders` call needed:
@@ -271,7 +271,7 @@ field not modeled as a struct field.
 
 ### One-line client calls — rest.Client.Call / nethttp.CallWithHandle
 
-`rest.Client.Call` (bound via `nethttp.Attach`) and `nethttp.CallWithHandle`
+`rest.Client.Call` (bound via `Client.Attach(nethttp.NewClientTransport(...))`) and `nethttp.CallWithHandle`
 both derive `vars`/`QueryParams`/`HeaderParams`/`CookieParams` from `req`
 automatically, using the route's role-aware merge-field accessors — no
 `codex.EncodeVars` calls needed at the call site. `rest.Client.Call` is the
@@ -385,7 +385,7 @@ API. See `examples/rest-nested-binary` for the full runnable version:
 nested `Meta`/`Payload` sub-structs, Gob body projected onto `Payload`,
 header/query merged into `Meta`, and a response header merge field
 (`Resp.Meta.TraceID`) — one struct in, one struct out, on both
-`nethttp.CallWithHandle` (client) and each adapter's internal serve dispatch, wired via `nethttp.AttachMux`/`chi.AttachRouter` (server).
+`nethttp.CallWithHandle` (client) and each adapter's internal serve dispatch, wired via `Server.Attach(NewServerTransport(...))` (server).
 
 ## BuildPath — type-safe URL construction
 
@@ -402,7 +402,7 @@ import nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 
 mux := http.NewServeMux()
 
-// AttachMux uses the Go 1.22+ "METHOD /path" ServeMux pattern automatically.
+// Server.Attach(NewServerTransport(...)) uses the Go 1.22+ "METHOD /path" ServeMux pattern automatically.
 route := createUser.WithHandler(func(ctx context.Context, req CreateUserReq) (User, error) {
     return svc.CreateUser(ctx, req)
 }).WithOptions(nethttp.Options{Observer: obs})

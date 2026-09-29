@@ -201,7 +201,7 @@ func (o handlerOpt) applyRoute(rb *routeBuilder) { rb.handlerFn = o.fn }
 // WithHandler returns a NEW [Route] with fn attached as the route's own
 // business handler — the LAST step before [Route.Register], consumed by
 // each adapter's internal serve dispatch (invoked via
-// [nethttp.AttachMux]/[chi.AttachRouter], or [nethttp.ServeOne]) to wire
+// [nethttp.NewServerTransport]/[chi.NewServerTransport] (via [Server.Attach]), or [nethttp.ServeOne]) to wire
 // the actual mux.Handle(...) call. A route with NO WithHandler call is
 // spec-only — Serve skips it entirely (see "Serve's whole-builder failure semantics"
 // in docs/design/d-0001-rest-middleware-workflow-simplification.md).
@@ -233,7 +233,7 @@ func (o optionsOpt) applyRoute(rb *routeBuilder) { rb.handlerOpts = o.opts }
 // (a different ErrorHandler for different routes on the same server,
 // say). Defaults to the adapter's zero-value Options when never called.
 // Each adapter's internal serve dispatch (invoked via
-// [nethttp.AttachMux]/[chi.AttachRouter]) takes NO Options parameter at
+// [nethttp.NewServerTransport]/[chi.NewServerTransport] (via [Server.Attach])) takes NO Options parameter at
 // all — they use whatever each route declared via WithOptions.
 func (r Route[Req, Resp]) WithOptions(opts any) Route[Req, Resp] {
 	r.opts = append(slices.Clone(r.opts), optionsOpt{opts: opts})

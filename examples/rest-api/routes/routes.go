@@ -160,7 +160,7 @@ var SecuredConflictRoute = rest.NewRoute[CreateUserReq, User]("POST", "/users-se
 // IngestConflictRoute demonstrates that a declared rest.ErrorPattern is
 // now ALSO consulted through the port/stream-adapter dispatch path
 // (nethttp.IngestAdapter's handlerFunc) — not just the normal
-// AttachRouter/AttachMux serving path (serve.go) — closing a gap found and
+// normal Server.Attach(NewServerTransport(...)) serving path (serve.go) — closing a gap found and
 // fixed in this session's review round. Resp=struct{} is required by
 // IngestAdapter; the declared pattern matches a request BODY decode/
 // validation failure (codex.ValidationErrors), which IngestAdapter's own
