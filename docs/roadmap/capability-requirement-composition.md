@@ -16,10 +16,14 @@
 > remaining format/security/middleware "v1 scope" gaps) SHIPPED; Phase 5
 > (closing `adapters/mqtt` v3's Phase 4 pub/sub Capability parity gap,
 > and applying the same `Apply`/`ApplyCapabilities` shift to
-> `api/reqreply`'s mqtt5/zeromq call sites) SHIPPED; Phase 5a (Design
-> complete — moving the type-safe escape hatch itself onto the API
-> layer, formerly "Phase 4f") DESIGNED, next up; Phase 6 (`api/rest`)
-> not yet started. See each subsection's own Learnings entry. Spun out of a
+> `api/reqreply`'s mqtt5/zeromq call sites) SHIPPED; Phase 5a (moving
+> the type-safe escape hatch itself onto the API layer, formerly
+> "Phase 4f") SHIPPED; Phase 6 (`api/rest` Header/Cookie/Query
+> real-interface promotion) and Phase 6a (SSE coverage-check gap +
+> `adapters/websocket`) DESIGNED, not yet implemented; Phase 7
+> (Observer + ErrorPattern interface-level cross-cutting concerns)
+> DESIGN EXPLORATION, open decisions; Phase 8 (Review & Closeout)
+> pending. See each subsection's own Learnings entry. Spun out of a
 > user question about
 > [D-0006 — Protocol-Native Capabilities](../design/d-0006-protocol-native-capabilities.md)'s
 > scope (events-only) while reviewing [`docs/features/capabilities.md`](../features/capabilities.md).
@@ -2989,16 +2993,73 @@ directly answering the earlier open question ("capabilities are just
 zero-cost markers... I want it a programming interface an adapter can
 be implemented against").
 
-**Design, resolved via a full inventory of every current call site
-(not assumed) — code-reading pass done before writing this section:**
+**Review pass (separate session, before implementation started) found
+the inventory below materially incomplete — corrected here, both
+open decisions RESOLVED:**
 
-- **Full inventory: 4 request-side extraction call sites × 2 adapters
-  (`nethttp`, `chi`) = 8 files touched, ~16 individual
-  `queryValues(r)`/`cookieValues(r)`/`headerValues(r)` call sites total**
-  (`adapter.go`'s 2 non-reflection dispatch blocks — one plain, one SSE
-  — plus `serve.go`/`serve_sse.go`'s reflection-based dispatch), NOT the
-  "~9 each" originally estimated in this section's scope statement
-  before the inventory was done.
+- **Corrected inventory: the real count is 36 individual
+  `queryValues(r)`/`cookieValues(r)`/`headerValues(r)` call sites, not
+  "~16" as originally estimated** (counted via direct grep across all 6
+  files, not re-derived from the block-count reasoning below).
+  Breakdown: `nethttp/adapter.go`=12, `nethttp/serve.go`=3,
+  `nethttp/serve_sse.go`=3, `chi/adapter.go`=12, `chi/serve.go`=3,
+  `chi/serve_sse.go`=3. The root cause of the undercount:
+  `adapter.go`'s 2 non-reflection dispatch blocks (one plain, one SSE,
+  in EACH adapter) each call `queryValues(r)`/`cookieValues(r)`/
+  `headerValues(r)` TWICE per request — once for
+  `ValidateQuery`/`ValidateCookies`/`ValidateHeaders`, then AGAIN later
+  to build the merge-field vars map consumed by `codex.DecodeVars`
+  (plain) / `handle.MergeEvent` (SSE, captured once per connection via
+  closure, reused per-event-send). `serve.go`/`serve_sse.go`'s
+  reflection-based dispatch already extracts once into
+  `queryVars`/`headerVars`/`cookieVars` locals and reuses them for both
+  validation and merge — no double extraction there. The "8 files
+  touched" count is unaffected and accurate (`adapter.go`/`serve.go`/
+  `serve_sse.go`/`capability.go` × 2 adapters).
+- **Decision A — RESOLVED: fix the double extraction, not preserve
+  it.** Since Phase 6 touches every one of these call sites anyway
+  (renaming the extraction call), it will ALSO construct exactly ONE
+  carrier value per request-dispatch invocation and reuse its
+  extracted maps for BOTH the validation call and the merge-field
+  vars — eliminating the redundant re-parsing (repeated
+  `r.URL.Query()`/header-map-copy/cookie-jar-walk work) in
+  `adapter.go`'s 2 blocks × 2 adapters as a bonus fix bundled into the
+  migration, not a separate phase (the fix is mechanically identical
+  work to the rename itself — capture the extracted map into a local
+  once, consumed by both call sites, instead of calling `Extract*()`
+  twice).
+- **Decision B — RESOLVED: widen scope, but as a SEPARATE new phase, not
+  folded into this one.** `adapters/websocket/binding.go` was found to
+  have its own, previously undocumented, near-identical duplicate of
+  this exact mechanism: private `queryValues`/`headerValues` functions
+  (not `nethttp`'s — a THIRD, package-local copy), calling
+  `route.ValidateQuery`/`ValidateHeaders` against an inline interface
+  literal satisfied by `ports.Socket.Route`'s concrete type,
+  `*rest.RouteHandle[struct{}, struct{}]` — the SAME Tier-2 REST
+  validation this whole roadmap is built around, just never wired into
+  `HeaderCapableTransport`/`CookieCapableTransport`/
+  `QueryCapableTransport`/`CheckParamKindCoverage` at all, and with NO
+  cookie support (upgrade requests can carry cookies too). This is
+  material enough (a genuinely separate package, its own carrier type,
+  a real API signature change on 3 exported constructors) to warrant
+  its own phase rather than scope-creeping Phase 6 — see the new
+  **Phase 6a** below, which also bundles in a related, also
+  previously-undocumented gap: `serve_sse.go` (both `nethttp` AND
+  `chi`) never calls `CheckParamKindCoverage` for SSE routes at all
+  (currently harmless, since `nethttp`/`chi` always satisfy every kind
+  — but a real gap for any future SSE-capable adapter that doesn't).
+- **Confirmed out of scope, explicitly recorded so it is not later
+  mistaken for an oversight**: `credentialExtractorFor(r)`
+  (`adapters/nethttp`/`adapters/chi`'s security-credential extraction)
+  uses raw single-key `r.Header.Get`/`r.URL.Query().Get`/`r.Cookie`
+  lookups — structurally different from bulk-map extraction (it never
+  builds a full map), so it does not naturally map onto
+  `Extract*() map[string]string` and stays untouched.
+  `pathValues`/`responseHeaderValues`/`responseCookieValues` remain
+  out of scope too, as already stated below (path vars have no
+  capability-coverage question; response-header/cookie validation
+  reads a server's OWN already-built outgoing values, no incoming
+  carrier involved).
 - **Scope is SERVER-side extraction ONLY — client-side is confirmed
   OUT of scope, not silently forgotten.** `adapters/nethttp/client.go`'s
   `ValidateQuery(opts.QueryParams)`/`ValidateCookies(opts.CookieParams)`/
@@ -3085,19 +3146,25 @@ be implemented against").
   `httpCarrier{r}` from the real, live `*http.Request`). No nil-pointer
   risk: the zero-value carrier's methods are never called, only
   type-asserted against.
-- **Every one of the ~16 call sites' extraction line changes from**
+- **Every one of the 36 call sites' extraction line changes from**
   `queryValues(r)`/`cookieValues(r)`/`headerValues(r)`/`r.URL.Query()`
   **to** `httpCarrier{r}.ExtractQuery()`/`.ExtractCookies()`/
-  `.ExtractHeaders()`/`.ExtractQueryMulti()` **— a mechanical,
-  behavior-identical rename, not a logic change.** `pathValues`/
-  `responseHeaderValues` are NOT touched (confirmed out of scope above).
+  `.ExtractHeaders()`/`.ExtractQueryMulti()` **— a mechanical rename for
+  the 12 `serve.go`/`serve_sse.go` call sites (3 each × 4 files,
+  behavior-identical, no logic change), and a rename PLUS the
+  Decision-A de-duplication fix for the 24 `adapter.go` call sites (12
+  each × 2 adapters, each of the 2 blocks per adapter collapsing from 2
+  extractions down to 1 reused carrier — see Decision A above).**
+  `pathValues`/`responseHeaderValues` are NOT touched (confirmed out of
+  scope above).
 
 **Implementation risk, stated explicitly before starting:** this phase
 touches 8 files of ALREADY-SHIPPED, heavily-tested, core REST
 request-dispatch code (`adapters/nethttp`/`adapters/chi`'s
-`adapter.go`/`serve.go`/`serve_sse.go`) across ~16 individual call
-sites — the largest surface area any single phase in this roadmap has
-touched in already-working dispatch code. Per the `plan-a-new-codex-
+`adapter.go`/`serve.go`/`serve_sse.go`) across 36 individual call
+sites (corrected count — see the review pass above) — the largest
+surface area any single phase in this roadmap has touched in
+already-working dispatch code. Per the `plan-a-new-codex-
 feature` skill's "Removing an old API" checklist (enumerate every
 responsibility, verify a representative sample by migration not
 review, sweep for doc references), this warrants explicit user
@@ -3106,12 +3173,272 @@ confirmation before implementation begins, not autonomous continuation
 signature changes, this phase's `queryValues`/`cookieValues`/
 `headerValues` DELETION is a genuine "old API removal" against
 production dispatch code with real regression risk if any one of the
-~16 call sites is migrated incorrectly.
+36 call sites is migrated incorrectly. Mitigating factor found during
+the review pass: 17 existing test files across both adapters already
+exercise Query/Cookie/HeaderParam behavior via real HTTP
+request/response assertions (not by calling the private functions
+directly — none do) — a reasonable regression safety net for what is,
+underneath, a pure internal refactor.
 
-### Phase 7 — Review & Closeout (not a feature phase)
+### Phase 6a — closing the SSE `CheckParamKindCoverage` gap, and bringing `adapters/websocket` into the same real-interface mechanism
+
+**Status: Design complete — not yet implemented.** Split out of Phase
+6's Decision B (above) per explicit user direction, rather than
+scope-creeping Phase 6 itself — this phase is INDEPENDENT of Phase 6's
+own implementation (it can run before, after, or interleaved, since it
+touches entirely different files: `serve_sse.go`'s registration path
+and all of `adapters/websocket`), though it reuses Phase 6's
+`HeaderCapableTransport`/`CookieCapableTransport`/`QueryCapableTransport`
+interface shapes once those are real (so in PRACTICE it should follow
+Phase 6, not precede it).
+
+**Two independent findings, bundled into one phase because both are
+"coverage/capability-check completeness" gaps found during the same
+review pass:**
+
+- **Finding 1 — `serve_sse.go` never calls `CheckParamKindCoverage` at
+  all, in EITHER adapter.** `serve.go`'s reflection-dispatch route
+  builder calls `rest.CheckParamKindCoverage("nethttp"/"chi",
+  requiredKinds, httpTransport)` once per route at build time (verified
+  — this is the ONLY call site of `CheckParamKindCoverage` in either
+  adapter's non-test code). `serve_sse.go`'s equivalent SSE route
+  builder has no such call — an SSE route declaring Header/Cookie/Query
+  params gets ZERO coverage verification. Currently harmless (`nethttp`/
+  `chi` both trivially satisfy every kind via `httpCarrier{}`, so the
+  check can never fail for them today), but a real, silent gap for any
+  future SSE-capable adapter that doesn't support one of these kinds —
+  it would proceed without error instead of failing fast at
+  registration time the way a REST route on the same adapter would.
+  **Fix**: add the identical `CheckParamKindCoverage` call to
+  `serve_sse.go`'s route-registration path, in both adapters, deriving
+  `requiredKinds` from the SSE handle's own
+  `HeaderParamNames`/`CookieParamNames`/`QueryParamNames`/
+  `SecuritySchemes` (same accessors `serve.go` already uses, confirmed
+  present on `*rest.SSERouteHandle` too).
+- **Finding 2 — `adapters/websocket/binding.go` independently
+  reimplements this whole mechanism, undocumented anywhere in this
+  roadmap, with 2 real gaps of its own.** Structure (confirmed via
+  reading the code): `upgradeAndValidate` (ONE shared function) is
+  called from all 3 exported constructors
+  (`IngestSocketAdapter`/`BroadcastSocketAdapter`/`DuplexSocketAdapter`
+  — `wsIngestAdapter`/`wsBroadcastAdapter`/`wsDuplexAdapter`'s
+  `Activate` methods). It takes an inline interface literal
+  (`{ValidatePathParams(...); ValidateQuery(...); ValidateHeaders(...)}`)
+  satisfied by `ports.Socket.Route`'s concrete type,
+  `*rest.RouteHandle[struct{}, struct{}]` — i.e. this IS the same
+  Tier-2 REST validation mechanism, just reached via a hand-rolled
+  `Socket` port type rather than `api/rest`'s own `Builder`/`Attach`
+  flow. Its own private `queryValues`/`headerValues` (package-local,
+  NOT reusing `nethttp`'s — Go disallows cross-package unexported
+  reuse) extract ONCE and correctly reuse the same maps for both
+  validation and the `vars` merge (no Decision-A-style double
+  extraction here — this package never had that bug). Two real gaps:
+  1. **No cookie support at all** — `upgradeAndValidate` extracts/
+     validates query and headers but never cookies, even though a
+     WebSocket upgrade request (an ordinary HTTP GET) can carry
+     cookies exactly like any REST request. `*rest.RouteHandle`
+     already has `ValidateCookies` — this is a real, addressable gap,
+     not a protocol limitation.
+  2. **Never wired into `HeaderCapableTransport`/`QueryCapableTransport`/
+     `CheckParamKindCoverage` at all** — `adapters/websocket` does not
+     implement any of the 3 capable-transport interfaces, so a
+     websocket route declaring Header/Query/Cookie params gets NO
+     Attach-time (construction-time, for this adapter)
+     coverage-check protection — the same class of silent gap as
+     Finding 1, just never given the mechanism to begin with rather
+     than having it and skipping one call site.
+  **Fix**:
+  - New `adapters/websocket/capability.go`: a `wsCarrier{r *http.Request}`
+    type implementing all 3 real interfaces (Phase 6's shape),
+    mirroring `httpCarrier`'s structure — package-local, per this
+    roadmap's established per-adapter-duplication precedent (same
+    reasoning as `Capability`/`WireAttributes` being separate types per
+    MQTT adapter).
+  - Add `ValidateCookies(map[string]string) error` to
+    `upgradeAndValidate`'s inline route-interface parameter; extract
+    via `wsCarrier{r}.ExtractCookies()`; validate; merge into `vars`
+    alongside query/header (identical pattern to the existing two).
+  - Wire `rest.CheckParamKindCoverage("websocket", requiredKinds,
+    wsCarrier{})` into all 3 constructors
+    (`IngestSocketAdapter`/`BroadcastSocketAdapter`/`DuplexSocketAdapter`)
+    at construction time — mirroring nethttp/chi's Attach-time
+    placement, since these constructors ARE this adapter's
+    "Attach"-equivalent moment. `requiredKinds` derives from
+    `handle.Route.HeaderParamNames()`/`CookieParamNames()`/
+    `QueryParamNames()`/`SecuritySchemes` (all already present on
+    `*rest.RouteHandle`, zero `api/rest` changes needed for this part).
+  - **Confirmed, deliberate breaking change**: all 3 constructors gain
+    an `error` return (they currently return only the adapter value) —
+    every real caller (`examples/websocket-duplex`,
+    `examples/websocket-client`, plus this package's own tests) needs
+    migrating to handle it. Consistent with this roadmap's established
+    "breaking changes are acceptable, call them out explicitly" stance.
+  - Migrate `adapters/websocket`'s own private `queryValues`/
+    `headerValues` onto `wsCarrier`, delete the free functions.
+
+**Implementation risk**: smaller and more contained than Phase 6—
+Finding 1 is a 2-line addition per adapter (no behavior change for
+existing routes); Finding 2 touches one already-small file
+(`binding.go`, ~690 lines) plus one new file, with the ONE real risk
+being the constructor signature change's caller-migration surface
+(expected small: 2 examples + this package's own test suite, based on
+a repo-wide grep before starting — verify this estimate is still
+accurate at implementation time, don't assume it).
+
+### Phase 7 — Observer + ErrorPattern as interface-level cross-cutting concerns
+
+**Status: Design exploration — open design decisions, not pre-decided.**
+Raised while reviewing this doc's own Phase 8 (below) closing todo:
+"check in every api and its adapter the observer pattern integration
+and the error pattern integration, with the goal to have a thin
+adapter and the observation/error handling inside the API layer."
+Phases 4d/4e/6/6a already promoted `ClientTransport`/`ServerTransport`/
+`Transport` (and `HeaderCapableTransport`/`CookieCapableTransport`/
+`QueryCapableTransport`) from ad-hoc adapter wiring to REAL, declared
+interfaces every adapter implements and attaches via `Client.Attach`/
+`Server.Attach`. This phase asks whether that same treatment should
+extend to Observer instrumentation and ErrorPattern dispatch — still
+substantially adapter-owned today, sometimes duplicated verbatim
+across sibling adapters. **This is a genuinely open exploration, not a
+committed design**: the investigation below found real, defensible
+architectural reasons why some of today's adapter-ownership is
+deliberate (not an oversight), alongside one proven, concrete
+duplication that IS worth fixing.
+
+**Current-state findings (confirmed via direct code investigation, not assumed):**
+
+- **Observer outcome-recording is 100% adapter-owned — deliberately,
+  by existing design.** Counting every `obs.Record*`/`Observer.Record*`
+  call site repo-wide (excluding tests): `adapters/mqtt5`=94,
+  `adapters/zeromq`=93, `adapters/nethttp`=70, `adapters/mqtt` (v3)=46,
+  `adapters/websocket`=26, `adapters/mcpgo`=15, `adapters/openai`=12,
+  `adapters/sql`=8, `adapters/chi`=4, vs only `api/reqreply`=4 and
+  `api/events`=4 — and those last 8 are `RecordValidationError` calls
+  inside their shared `Observability[Req,Resp]`/`Observability[T]`
+  decorators (diagnostics-draining only), NOT outcome recording
+  (`RecordRequest`/`RecordPublish`/`RecordSubscribe`). Reading
+  `api/reqreply/observability.go`'s own doc comment confirms this is
+  intentional: *"Deliberately does NOT itself call
+  `stats.Observer.RecordRequest` or start a `stats.TraceObserver`
+  span — every reqreply adapter transport ... ALREADY calls
+  `RecordRequest` ... unconditionally on every code path, so doing so
+  again here would double-count/duplicate those events."* The
+  underlying reason this is correct, not merely convenient: only the
+  adapter's transport dispatch code has access to the REAL outcome
+  data (an HTTP status code, a QoS-acked publish, a ZeroMQ reply
+  frame) and the REAL duration measured around the actual network
+  round-trip — a generic, api-layer-owned wrapper sitting "above" the
+  adapter can at best observe `error != nil`, strictly less granular
+  than what adapters record today.
+- **ErrorPattern matching is already api-layer-owned; only wire-writing
+  is adapter-owned.** `RouteHandle.ObserveErrorResponseFor` (in
+  `api/rest`) already performs the `errors.As` match against declared
+  `ErrorPattern` rules AND reports the outcome to
+  `stats.ErrorPatternObserver` — correctly centralized. Adapters call
+  it and then handle ONLY the protocol-specific remainder: encoding
+  the matched response onto the wire (HTTP status+body+headers+cookies
+  for REST; a declared topic publish for pub/sub; a broadcast for
+  duplex/broadcast sockets).
+- **Proven, concrete duplication: `adapters/nethttp` and
+  `adapters/chi`.** Three functions are BYTE-IDENTICAL between the two
+  packages (verified via direct diff, zero output both times):
+  `tryRespondErrorPatternGeneric[Req, Resp any](...)`,
+  `writeErrorPatternResponse[Req, Resp any](...)`, and
+  `tryRespondErrorPattern(...)` (the reflection-dispatch variant in
+  `serve.go`). Both packages are net/http-family (chi is a router ON
+  TOP of `net/http`, using the identical `*http.Request`/
+  `http.ResponseWriter` types) and both define a structurally identical
+  `PendingCookie{Name, Value, Opts CookieOptions}` type. This exactly
+  mirrors the existing precedent already established for
+  `adapters/internal/httpsecurity` (which centralized
+  `RunSecurityMiddlewareReflect` for the identical reason:
+  net/http-family-only, not cross-protocol, so sharing is safe and
+  mechanical). `adapters/mqtt5`/`adapters/zeromq` have NO equivalent
+  finding — their ErrorPattern wire-realization genuinely differs by
+  protocol shape (declared topic publish vs. broadcast), so there is
+  no byte-identical duplication to centralize there.
+
+**Candidate approaches (open design decisions — none pre-decided):**
+
+- **Approach A — Narrow: centralize the proven nethttp/chi
+  duplication.** Move `tryRespondErrorPatternGeneric`/
+  `writeErrorPatternResponse`/`tryRespondErrorPattern` into a new
+  shared package (e.g. `adapters/internal/resterror`, or folded into
+  the EXISTING `adapters/internal/httpsecurity` — naming left open),
+  mirroring the `httpsecurity` precedent. `PendingCookie`/
+  `CookieOptions` would need to become shared types too (or the new
+  package stays generic over them via a small interface). Tradeoffs:
+  low risk, fully scoped already (exact functions identified, exact
+  byte-for-byte proof of duplication in hand); does NOT touch
+  Observer's Record* placement — leaves that architecture exactly as
+  it is today (which the findings above argue is already correct).
+- **Approach B — Observer decorator at Attach-time.** Explore whether
+  `Client.Attach(transport)`/`Server.Attach(transport)` could wrap the
+  adapter's `ClientTransport`/`ServerTransport` in a generic,
+  api-layer-owned instrumented decorator that measures duration around
+  `Call`/`Serve` and calls `obs.RecordRequest` itself, centrally, once
+  per API package. **Real tension, not assumed away**: `RecordRequest`'s
+  existing, adapter-recorded status/outcome granularity (an actual
+  HTTP status code; a real QoS ack) is NOT recoverable from a generic
+  wrapper that only sees `error`/`nil` around an opaque `Call`/`Serve`
+  invocation, unless the `ClientTransport`/`ServerTransport` interface
+  signatures themselves change to RETURN a structured outcome value
+  alongside (or instead of) a plain `error` — e.g. `Call(...) (any,
+  Outcome, error)`. That is a materially invasive interface change
+  touching EVERY adapter across `api/rest`/`api/events`/`api/reqreply`
+  simultaneously, with real risk of losing today's per-protocol
+  granularity if the shared `Outcome` shape can't faithfully represent
+  every protocol's own status concept (HTTP status codes vs. MQTT
+  QoS/ack vs. ZeroMQ reply presence are not obviously unifiable into
+  one small struct without lossy compromise). **NOT recommended
+  without further evidence** — the existing adapter-owned design
+  already has a clear, documented rationale this approach would have
+  to genuinely improve on, not merely relocate.
+- **Approach C — ErrorPattern write via a new interface method.**
+  Explore adding a method to `ServerTransport` (or a new, narrower
+  interface every adapter's response-writing code implements), e.g.
+  `ErrorResponseWriter interface { WriteErrorResponse(ctx, resp
+  ErrorPatternResponse) error }` (sketch only), so `api/*` could own
+  the FULL match-then-dispatch loop generically, with each adapter
+  implementing only the minimal, genuinely protocol-specific
+  wire-encoding step. More tractable than Approach B:
+  `ErrorPatternResponse`'s wire shape (status/body/headers/cookies for
+  REST; a payload + declared topic for pub/sub) is already small and
+  mostly protocol-agnostic — no need to invent a new, lossy shared
+  "outcome" abstraction the way B's `RecordRequest` granularity problem
+  does. **Left genuinely open** — needs a closer look at whether
+  REST's merge-field/header/cookie encoding step (which needs
+  `handle`-specific codec access, not just the matched value) can be
+  cleanly expressed through one small interface method without
+  re-introducing the very duplication this approach is meant to
+  remove. Not designed in enough detail here to commit to.
+
+**Provisional conclusion (subject to revision): pursue Approach A now**
+(concrete, fully scoped, low-risk, does not depend on resolving B/C —
+implement as part of this phase's own closeout); **Approach B is NOT
+recommended** without further evidence a shared `Outcome` shape can be
+defined without losing today's per-protocol Observer granularity;
+**Approach C is left genuinely open** — the more promising of the two
+broader directions, but a future session should attempt a throwaway
+spike against `api/rest`'s ErrorPattern dispatch specifically (the
+richest, most-duplicated case) before deciding whether to generalize
+further.
+
+**Remaining open items for this phase's Implement step**: Approach A's
+exact shared-package name (new `adapters/internal/resterror` vs folding
+into `adapters/internal/httpsecurity`); Approach C's interface shape
+(REQUIRED method on `ServerTransport` — a breaking change — vs a NEW,
+separate, optional/type-asserted interface, matching Phase 6's
+`HeaderCapableTransport`-style precedent) is flagged but explicitly
+NOT decided here; whether `adapters/mqtt5`/`adapters/zeromq`'s
+reqreply-side ErrorPattern dispatch needs revisiting once Approach C
+is designed further, or is a genuinely separate, already-adequate
+mechanism not worth touching.
+
+### Phase 8 — Review & Closeout (not a feature phase)
 
 Once Phase 3 ships, this roadmap doc's implementation is considered
-COMPLETE — Phase 4 is the closing review pass, not further feature work:
+COMPLETE — Phase 8 is the closing review pass, not further feature work:
 
 - Run the `review-go-codex` skill across `api/events`/`api/reqreply`/
   `api/rest` for cross-layer consistency now that all three implement the
@@ -3211,7 +3538,7 @@ COMPLETE — Phase 4 is the closing review pass, not further feature work:
   convenience-only addition with no contract backing it" — exactly the
   ambiguity that let `CallWithHandle`/`ServeOne`/reqreply's `Serve`/
   `Call` drift into escape-hatch status unnoticed for as long as they
-  did. **Action for Phase 7:** produce an explicit table (per adapter
+  did. **Action for Phase 8:** produce an explicit table (per adapter
   package) of every exported function, its interface (if any) it
   implements or satisfies, and — for functions with none — a one-line
   justification for why it's a free function rather than an interface
@@ -3220,6 +3547,8 @@ COMPLETE — Phase 4 is the closing review pass, not further feature work:
   This closes the exact kind of ambiguity Phase 5a's review had to
   rediscover via first-principles code reading rather than consulting
   an existing, trustworthy inventory.
+- **Observer + ErrorPattern cross-cutting concerns** — see Phase 7
+  above (folded in inline, no longer a separate spun-out doc).
 
 ## Scope decisions
 
