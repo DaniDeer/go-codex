@@ -24,10 +24,11 @@
 > `Extract`-shaped methods on a new `httpCarrier` type) SHIPPED; Phase
 > 6a (SSE coverage-check gap closed + `adapters/websocket` brought into
 > the same mechanism via a new `wsCarrier` type + cookie support) SHIPPED;
-> Phase 7 (Observer + ErrorPattern interface-level
-> cross-cutting concerns) DESIGN EXPLORATION, open decisions; Phase 8
-> (Review & Closeout) pending. See each subsection's own Learnings
-> entry. Spun out of a
+> Phase 7 (ErrorPattern: committed `ErrorResponseWriter` interface
+> design, deleting all 5 duplicated nethttp/chi functions; Observer:
+> formally CLOSED as correctly adapter-owned) DESIGN COMPLETE, not yet
+> implemented; Phase 8 (Review & Closeout) pending. See each
+> subsection's own Learnings entry. Spun out of a
 > user question about
 > [D-0006 — Protocol-Native Capabilities](../design/d-0006-protocol-native-capabilities.md)'s
 > scope (events-only) while reviewing [`docs/features/capabilities.md`](../features/capabilities.md).
@@ -3399,25 +3400,25 @@ first attempt.
 
 ### Phase 7 — Observer + ErrorPattern as interface-level cross-cutting concerns
 
-**Status: Design exploration — open design decisions, not pre-decided.**
-Raised while reviewing this doc's own Phase 8 (below) closing todo:
-"check in every api and its adapter the observer pattern integration
-and the error pattern integration, with the goal to have a thin
-adapter and the observation/error handling inside the API layer."
-Phases 4d/4e/6/6a already promoted `ClientTransport`/`ServerTransport`/
-`Transport` (and `HeaderCapableTransport`/`CookieCapableTransport`/
+**Status: Design complete — not yet implemented.** Raised while
+reviewing this doc's own Phase 8 (below) closing todo: "check in every
+api and its adapter the observer pattern integration and the error
+pattern integration, with the goal to have a thin adapter and the
+observation/error handling inside the API layer, with interfaces
+adapters implement against." Phases 4d/4e/6/6a already promoted
+`ClientTransport`/`ServerTransport`/`Transport` (and
+`HeaderCapableTransport`/`CookieCapableTransport`/
 `QueryCapableTransport`) from ad-hoc adapter wiring to REAL, declared
 interfaces every adapter implements and attaches via `Client.Attach`/
 `Server.Attach`. This phase asks whether that same treatment should
-extend to Observer instrumentation and ErrorPattern dispatch — still
-substantially adapter-owned today, sometimes duplicated verbatim
-across sibling adapters. **This is a genuinely open exploration, not a
-committed design**: the investigation below found real, defensible
-architectural reasons why some of today's adapter-ownership is
-deliberate (not an oversight), alongside one proven, concrete
-duplication that IS worth fixing.
+extend to Observer instrumentation and ErrorPattern dispatch — both
+were investigated in DEPTH across two separate review passes; ONE
+(ErrorPattern) reached a committed, interface-based design matching
+the stated goal exactly; the OTHER (Observer) was found to be a
+genuine structural constraint, not a gap, and is formally CLOSED below
+rather than left open.
 
-**Current-state findings (confirmed via direct code investigation, not assumed):**
+**Current-state findings (confirmed via direct code investigation across two review passes, not assumed):**
 
 - **Observer outcome-recording is 100% adapter-owned — deliberately,
   by existing design.** Counting every `obs.Record*`/`Observer.Record*`
@@ -3442,110 +3443,121 @@ duplication that IS worth fixing.
   round-trip — a generic, api-layer-owned wrapper sitting "above" the
   adapter can at best observe `error != nil`, strictly less granular
   than what adapters record today.
-- **ErrorPattern matching is already api-layer-owned; only wire-writing
-  is adapter-owned.** `RouteHandle.ObserveErrorResponseFor` (in
-  `api/rest`) already performs the `errors.As` match against declared
-  `ErrorPattern` rules AND reports the outcome to
-  `stats.ErrorPatternObserver` — correctly centralized. Adapters call
-  it and then handle ONLY the protocol-specific remainder: encoding
-  the matched response onto the wire (HTTP status+body+headers+cookies
-  for REST; a declared topic publish for pub/sub; a broadcast for
-  duplex/broadcast sockets).
-- **Proven, concrete duplication: `adapters/nethttp` and
-  `adapters/chi`.** Three functions are BYTE-IDENTICAL between the two
-  packages (verified via direct diff, zero output both times):
-  `tryRespondErrorPatternGeneric[Req, Resp any](...)`,
-  `writeErrorPatternResponse[Req, Resp any](...)`, and
-  `tryRespondErrorPattern(...)` (the reflection-dispatch variant in
-  `serve.go`). Both packages are net/http-family (chi is a router ON
-  TOP of `net/http`, using the identical `*http.Request`/
-  `http.ResponseWriter` types) and both define a structurally identical
-  `PendingCookie{Name, Value, Opts CookieOptions}` type. This exactly
-  mirrors the existing precedent already established for
-  `adapters/internal/httpsecurity` (which centralized
-  `RunSecurityMiddlewareReflect` for the identical reason:
-  net/http-family-only, not cross-protocol, so sharing is safe and
-  mechanical). `adapters/mqtt5`/`adapters/zeromq` have NO equivalent
-  finding — their ErrorPattern wire-realization genuinely differs by
-  protocol shape (declared topic publish vs. broadcast), so there is
-  no byte-identical duplication to centralize there.
+- **ErrorPattern MATCHING is already api-layer-owned; only wire-WRITING
+  is adapter-owned — and even that is smaller than first estimated.**
+  `RouteHandle.ObserveErrorResponseFor` (in `api/rest`) already
+  performs the `errors.As` match against declared `ErrorPattern` rules
+  AND reports the outcome to `stats.ErrorPatternObserver` —
+  centralized, confirmed via `api/rest/transform_dispatch.go`'s
+  `CallObserveErrorResponseFor` (the reflection-based caller uses this
+  SAME centralized function too, not a separate copy). This means
+  every adapter-side function touching ErrorPattern dispatch has
+  ALREADY delegated the hard part (matching) to `api/*` — what
+  remains, everywhere, is JUST the final protocol-specific step:
+  encoding the matched response onto the wire (HTTP
+  status+body+headers+cookies for REST; a declared topic publish for
+  pub/sub; a broadcast for duplex/broadcast sockets).
+- **Corrected duplication inventory (a SECOND review pass found 2 MORE
+  byte-identical/near-identical functions the first pass missed):**
+  Between `adapters/nethttp` and `adapters/chi`, **5 functions** are
+  duplicated, not 3:
+  1. `tryRespondErrorPatternGeneric[Req, Resp any](...)` — byte-identical.
+  2. `writeErrorPatternResponse[Req, Resp any](...)` — byte-identical.
+  3. `tryRespondErrorPattern(...)` (reflection-dispatch variant,
+     `serve.go`) — byte-identical.
+  4. **`writeErrorPatternResponseReflect(...)`** (the reflection
+     variant's OWN response-writer, also in `serve.go`) —
+     byte-identical, confirmed via direct diff — MISSED by the first
+     review pass entirely.
+  5. **`SetCookie(w http.ResponseWriter, name, value string, opts
+     CookieOptions) error`** — identical signature, near-identical body
+     (differs only in comment wording, confirmed via diff) — also
+     MISSED by the first pass.
+  Both packages are net/http-family (chi is a router ON TOP of
+  `net/http`, using the identical `*http.Request`/`http.ResponseWriter`
+  types) and both define a structurally identical `PendingCookie{Name,
+  Value, Opts CookieOptions}` type (fields confirmed identical via
+  diff — only doc-comment wording differs). This mirrors the existing
+  precedent already established for `adapters/internal/httpsecurity`
+  (net/http-family-only sharing). `adapters/mqtt5`/`adapters/zeromq`
+  have NO equivalent finding — their ErrorPattern wire-realization
+  genuinely differs by protocol shape (declared topic publish vs.
+  broadcast), so there is no byte-identical duplication to centralize
+  there, and this phase's ErrorPattern work stays REST-scoped
+  (`nethttp`/`chi` only), matching Phase 6's own scope precedent.
 
-**Candidate approaches (open design decisions — none pre-decided):**
+**Committed design — ErrorPattern: a real `ErrorResponseWriter` interface, not just shared code**
 
-- **Approach A — Narrow: centralize the proven nethttp/chi
-  duplication.** Move `tryRespondErrorPatternGeneric`/
-  `writeErrorPatternResponse`/`tryRespondErrorPattern` into a new
-  shared package (e.g. `adapters/internal/resterror`, or folded into
-  the EXISTING `adapters/internal/httpsecurity` — naming left open),
-  mirroring the `httpsecurity` precedent. `PendingCookie`/
-  `CookieOptions` would need to become shared types too (or the new
-  package stays generic over them via a small interface). Tradeoffs:
-  low risk, fully scoped already (exact functions identified, exact
-  byte-for-byte proof of duplication in hand); does NOT touch
-  Observer's Record* placement — leaves that architecture exactly as
-  it is today (which the findings above argue is already correct).
-- **Approach B — Observer decorator at Attach-time.** Explore whether
-  `Client.Attach(transport)`/`Server.Attach(transport)` could wrap the
-  adapter's `ClientTransport`/`ServerTransport` in a generic,
-  api-layer-owned instrumented decorator that measures duration around
-  `Call`/`Serve` and calls `obs.RecordRequest` itself, centrally, once
-  per API package. **Real tension, not assumed away**: `RecordRequest`'s
-  existing, adapter-recorded status/outcome granularity (an actual
-  HTTP status code; a real QoS ack) is NOT recoverable from a generic
-  wrapper that only sees `error`/`nil` around an opaque `Call`/`Serve`
-  invocation, unless the `ClientTransport`/`ServerTransport` interface
-  signatures themselves change to RETURN a structured outcome value
-  alongside (or instead of) a plain `error` — e.g. `Call(...) (any,
-  Outcome, error)`. That is a materially invasive interface change
-  touching EVERY adapter across `api/rest`/`api/events`/`api/reqreply`
-  simultaneously, with real risk of losing today's per-protocol
-  granularity if the shared `Outcome` shape can't faithfully represent
-  every protocol's own status concept (HTTP status codes vs. MQTT
-  QoS/ack vs. ZeroMQ reply presence are not obviously unifiable into
-  one small struct without lossy compromise). **NOT recommended
-  without further evidence** — the existing adapter-owned design
-  already has a clear, documented rationale this approach would have
-  to genuinely improve on, not merely relocate.
-- **Approach C — ErrorPattern write via a new interface method.**
-  Explore adding a method to `ServerTransport` (or a new, narrower
-  interface every adapter's response-writing code implements), e.g.
-  `ErrorResponseWriter interface { WriteErrorResponse(ctx, resp
-  ErrorPatternResponse) error }` (sketch only), so `api/*` could own
-  the FULL match-then-dispatch loop generically, with each adapter
-  implementing only the minimal, genuinely protocol-specific
-  wire-encoding step. More tractable than Approach B:
-  `ErrorPatternResponse`'s wire shape (status/body/headers/cookies for
-  REST; a payload + declared topic for pub/sub) is already small and
-  mostly protocol-agnostic — no need to invent a new, lossy shared
-  "outcome" abstraction the way B's `RecordRequest` granularity problem
-  does. **Left genuinely open** — needs a closer look at whether
-  REST's merge-field/header/cookie encoding step (which needs
-  `handle`-specific codec access, not just the matched value) can be
-  cleanly expressed through one small interface method without
-  re-introducing the very duplication this approach is meant to
-  remove. Not designed in enough detail here to commit to.
+Because ALL 5 duplicated functions' remaining logic (after the
+already-centralized match step) is JUST the header/cookie/status/body
+WRITE onto `http.ResponseWriter`, this is small enough to express as
+ONE new interface method — achieving the user's stated goal directly
+(a real interface adapters implement against, full responsibility
+inside `api/rest`, adapters reduced to a thin write-only
+implementation) rather than merely relocating duplicate code into a
+shared internal package:
 
-**Provisional conclusion (subject to revision): pursue Approach A now**
-(concrete, fully scoped, low-risk, does not depend on resolving B/C —
-implement as part of this phase's own closeout); **Approach B is NOT
-recommended** without further evidence a shared `Outcome` shape can be
-defined without losing today's per-protocol Observer granularity;
-**Approach C is left genuinely open** — the more promising of the two
-broader directions, but a future session should attempt a throwaway
-spike against `api/rest`'s ErrorPattern dispatch specifically (the
-richest, most-duplicated case) before deciding whether to generalize
-further.
+```go
+// api/rest — sketch; exact field names/types finalized at implementation time.
+type CookiePayload struct {
+    Name, Value string
+    Opts        CookieOptions // generalizes nethttp/chi's already-identical CookieOptions
+}
 
-**Remaining open items for this phase's Implement step**: Approach A's
-exact shared-package name (new `adapters/internal/resterror` vs folding
-into `adapters/internal/httpsecurity`); Approach C's interface shape
-(REQUIRED method on `ServerTransport` — a breaking change — vs a NEW,
-separate, optional/type-asserted interface, matching Phase 6's
-`HeaderCapableTransport`-style precedent) is flagged but explicitly
-NOT decided here; whether `adapters/mqtt5`/`adapters/zeromq`'s
-reqreply-side ErrorPattern dispatch needs revisiting once Approach C
-is designed further, or is a genuinely separate, already-adequate
-mechanism not worth touching.
+// ErrorResponseWriter is an OPTIONAL, type-asserted interface (mirrors
+// Phase 6's HeaderCapableTransport precedent — NOT a required method on
+// ServerTransport, so this is additive, not a breaking interface
+// change) an adapter's response-writer implements to realize a matched
+// ErrorPattern onto the wire.
+type ErrorResponseWriter interface {
+    WriteErrorResponse(headers map[string][]string, cookies []CookiePayload, status int, body []byte) error
+}
+
+// api/rest — NEW orchestrating function owning the FULL
+// match→validate→encode→write loop end to end (both the generic and
+// reflection-dispatch callers use this ONE function going forward —
+// no more separate Generic/Reflect pairs).
+func DispatchErrorPattern(ctx context.Context, obs stats.Observer, handle any, w ErrorResponseWriter, err error) (handled bool, updatedErr error)
+```
+
+`adapters/nethttp`/`adapters/chi` each implement ONE ~10-line
+`WriteErrorResponse` method (the actual `w.Header().Add`/`SetCookie`/
+`w.WriteHeader`/`w.Write` calls) — genuinely thin, not just
+deduplicated. **All 5 duplicated functions get DELETED outright** in
+both adapters (not relocated to a shared internal package) once
+`DispatchErrorPattern` replaces every one of their call sites — this
+is the key difference from a narrower "just share the code" approach:
+the adapter's OWN exported/internal surface shrinks, rather than
+staying the same size but pointing at shared code.
+
+**Formally CLOSED — Observer (no further exploration planned):** a
+generic, api-layer-owned decorator wrapping `Call`/`Serve` to call
+`obs.RecordRequest` centrally was explored and found to have a real,
+unavoidable structural cost: `RecordRequest`'s existing,
+adapter-recorded status/outcome granularity (an actual HTTP status
+code; a real QoS ack; a ZeroMQ reply-presence signal) is NOT
+recoverable from a generic wrapper that only sees `error`/`nil` around
+an opaque `Call`/`Serve` invocation, unless `ClientTransport`/
+`ServerTransport`'s signatures themselves changed to return a
+structured outcome value — a materially invasive change across EVERY
+adapter, with real risk of losing today's per-protocol granularity
+(HTTP status codes vs. MQTT QoS/ack vs. ZeroMQ reply presence are not
+obviously unifiable into one small struct without lossy compromise).
+**Closing condition, explicitly checked before closing (not assumed):
+is the Observer API already clear enough, per-adapter and per-API, that
+adapter-ownership here isn't itself a documentation gap masquerading
+as an architecture gap?** Verified YES — `docs/features/observer.md`
+already has a "Per-layer behavior" table stating plainly that
+`RecordRequest`/`RecordSubscribe`/`RecordPublish` are adapter-owned,
+PLUS three dedicated, detailed sections (`api/reqreply.Observability`,
+`api/events.Observability`, `api/rest`'s Diagnostics-ferry mechanism),
+each explaining ITS OWN rationale (double-counting avoidance, ctx
+injection shape, per-adapter exceptions like mqtt5's server side
+having no ctx to inject into), each cross-referencing a runnable
+example. This is not a documentation gap — the API is already clear.
+**Conclusion: Observer's current adapter-ownership is CORRECT, not a
+gap, and this question is closed — no code change, no further
+exploration planned for this roadmap.**
 
 ### Phase 8 — Review & Closeout (not a feature phase)
 
