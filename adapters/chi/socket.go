@@ -34,51 +34,61 @@ func registerSocket(r gochi.Router, path string) socketMux {
 // identical behaviour, chi-safe registration (swap handler registered at
 // constructor time; requests before Activate get 503).
 //
-//	domain.Commands.Bind(ctx, chi.IngestSocketAdapter(
+//	domain.Commands.Bind(ctx, codex.Must(chi.IngestSocketAdapter(
 //	    router, hub, websocket.NewUpgrader(websocket.UpgraderOptions{}),
-//	    handle, websocket.IngestSocketAdapterOptions{}))
+//	    handle, websocket.IngestSocketAdapterOptions{})))
+//
+// Returns an error (docs/roadmap/capability-requirement-composition.md's
+// Phase 6a — propagated from [websocket.IngestSocketAdapter]'s own
+// Header/Cookie/Query coverage check) when handle's declared param
+// requirements are not covered.
 func IngestSocketAdapter[T any](
 	r gochi.Router,
 	hub *websocket.Hub,
 	upgrader websocket.Upgrader,
 	handle ports.Socket[T, struct{}],
 	opts websocket.IngestSocketAdapterOptions,
-) ports.SourceAdapter[T] {
-	return chiSourceName[T]{
-		SourceAdapter: websocket.IngestSocketAdapter(registerSocket(r, handle.Path), hub, upgrader, handle, opts),
-		name:          "chi.IngestSocketAdapter",
+) (ports.SourceAdapter[T], error) {
+	inner, err := websocket.IngestSocketAdapter(registerSocket(r, handle.Path), hub, upgrader, handle, opts)
+	if err != nil {
+		return nil, err
 	}
+	return chiSourceName[T]{SourceAdapter: inner, name: "chi.IngestSocketAdapter"}, nil
 }
 
 // BroadcastSocketAdapter is the chi variant of
 // [websocket.BroadcastSocketAdapter] — chi-safe registration, otherwise
-// identical.
+// identical. Returns an error under the same conditions as
+// [IngestSocketAdapter].
 func BroadcastSocketAdapter[T any](
 	r gochi.Router,
 	hub *websocket.Hub,
 	upgrader websocket.Upgrader,
 	handle ports.Socket[struct{}, T],
 	opts websocket.BroadcastSocketAdapterOptions,
-) ports.SinkAdapter[T] {
-	return chiSinkName[T]{
-		SinkAdapter: websocket.BroadcastSocketAdapter(registerSocket(r, handle.Path), hub, upgrader, handle, opts),
-		name:        "chi.BroadcastSocketAdapter",
+) (ports.SinkAdapter[T], error) {
+	inner, err := websocket.BroadcastSocketAdapter(registerSocket(r, handle.Path), hub, upgrader, handle, opts)
+	if err != nil {
+		return nil, err
 	}
+	return chiSinkName[T]{SinkAdapter: inner, name: "chi.BroadcastSocketAdapter"}, nil
 }
 
 // DuplexSocketAdapter is the chi variant of [websocket.DuplexSocketAdapter]
-// — chi-safe registration, otherwise identical.
+// — chi-safe registration, otherwise identical. Returns an error under the
+// same conditions as [IngestSocketAdapter].
 func DuplexSocketAdapter[In, Out any](
 	r gochi.Router,
 	hub *websocket.Hub,
 	upgrader websocket.Upgrader,
 	handle ports.Socket[In, Out],
 	opts websocket.DuplexSocketAdapterOptions,
-) ports.DuplexAdapter[In, Out] {
-	return chiDuplexName[In, Out]{
-		DuplexAdapter: websocket.DuplexSocketAdapter(registerSocket(r, handle.Path), hub, upgrader, handle, opts),
-		name:          "chi.DuplexSocketAdapter",
+) (ports.DuplexAdapter[In, Out], error) {
+	inner, err := websocket.DuplexSocketAdapter(registerSocket(r, handle.Path), hub, upgrader, handle, opts)
+	if err != nil {
+		return nil, err
 	}
+	return chiDuplexName[In, Out]{DuplexAdapter: inner, name: "chi.DuplexSocketAdapter"}, nil
 }
 
 // Naming shims: behaviour delegates entirely to the websocket adapters; only

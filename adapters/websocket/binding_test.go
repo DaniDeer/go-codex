@@ -201,8 +201,8 @@ func TestDuplex_InboundFrame_SessionTagged(t *testing.T) {
 		ports.PortOptions{Buffer: 4})
 	handle, _ := port.PluginSocketPattern(ports.SocketPattern{Path: "/live/{room}"})
 
-	if err := port.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, up, handle,
-		adapterws.DuplexSocketAdapterOptions{})); err != nil {
+	if err := port.Bind(ctx, codex.Must(adapterws.DuplexSocketAdapter(mux, hub, up, handle,
+		adapterws.DuplexSocketAdapterOptions{}))); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
 
@@ -280,7 +280,7 @@ func TestDuplex_InboundMerge_FromConnectionVars(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PluginSocketPattern: %v", err)
 	}
-	if err := port.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, up, handle, adapterws.DuplexSocketAdapterOptions{})); err != nil {
+	if err := port.Bind(ctx, codex.Must(adapterws.DuplexSocketAdapter(mux, hub, up, handle, adapterws.DuplexSocketAdapterOptions{}))); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
 	time.Sleep(20 * time.Millisecond)
@@ -318,8 +318,8 @@ func TestDuplex_UpgradeRejected_InvalidPathVar(t *testing.T) {
 	})
 	handle := duplexHandle(t, "/live/{room}", rest.PathParam{Name: "room"}.WithCodec(uuidish))
 
-	adapter := adapterws.DuplexSocketAdapter(mux, hub, up, handle,
-		adapterws.DuplexSocketAdapterOptions{Observer: obs})
+	adapter := codex.Must(adapterws.DuplexSocketAdapter(mux, hub, up, handle,
+		adapterws.DuplexSocketAdapterOptions{Observer: obs}))
 	port, _ := ports.NewDuplexPort[command, update]("live2", commandCodec, updateCodec, ports.PortOptions{})
 	_ = port.Bind(ctx, adapter)
 	time.Sleep(20 * time.Millisecond)
@@ -357,8 +357,8 @@ func TestDuplex_DecodeFailure_ConnectionStaysOpen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PluginSocketPattern: %v", err)
 	}
-	_ = port.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, up, handle,
-		adapterws.DuplexSocketAdapterOptions{Observer: obs}))
+	_ = port.Bind(ctx, codex.Must(adapterws.DuplexSocketAdapter(mux, hub, up, handle,
+		adapterws.DuplexSocketAdapterOptions{Observer: obs})))
 	time.Sleep(20 * time.Millisecond)
 
 	connect(t, mux, "/live")
@@ -412,8 +412,8 @@ func TestDuplex_TargetedAndBroadcast(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PluginSocketPattern: %v", err)
 	}
-	_ = port.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, up, handle,
-		adapterws.DuplexSocketAdapterOptions{}))
+	_ = port.Bind(ctx, codex.Must(adapterws.DuplexSocketAdapter(mux, hub, up, handle,
+		adapterws.DuplexSocketAdapterOptions{})))
 	time.Sleep(20 * time.Millisecond)
 
 	connect(t, mux, "/live")
@@ -488,7 +488,7 @@ func TestDuplex_OutboundMerge_TargetedAndBroadcast(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PluginSocketPattern: %v", err)
 	}
-	if err := port.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, up, handle, adapterws.DuplexSocketAdapterOptions{})); err != nil {
+	if err := port.Bind(ctx, codex.Must(adapterws.DuplexSocketAdapter(mux, hub, up, handle, adapterws.DuplexSocketAdapterOptions{}))); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
 	time.Sleep(20 * time.Millisecond)
@@ -582,7 +582,7 @@ func TestDuplex_Merge_NestedGobFormat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PluginSocketPattern: %v", err)
 	}
-	if err := port.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, up, handle, adapterws.DuplexSocketAdapterOptions{})); err != nil {
+	if err := port.Bind(ctx, codex.Must(adapterws.DuplexSocketAdapter(mux, hub, up, handle, adapterws.DuplexSocketAdapterOptions{}))); err != nil {
 		t.Fatalf("bind: %v", err)
 	}
 	time.Sleep(20 * time.Millisecond)
@@ -680,12 +680,12 @@ func TestBroadcast_SlowClient_FrameDropped(t *testing.T) {
 	up.socks[0] = nil
 	up2 := &fakeUpgrader2{sock: blockingSock}
 
-	adapter := adapterws.BroadcastSocketAdapter(mux, hub, up2, handle,
+	adapter := codex.Must(adapterws.BroadcastSocketAdapter(mux, hub, up2, handle,
 		adapterws.BroadcastSocketAdapterOptions{OnError: func(err error) {
 			mu.Lock()
 			seen = append(seen, err)
 			mu.Unlock()
-		}})
+		}}))
 
 	vals := make(chan update)
 	errCh := make(chan error)
@@ -746,7 +746,7 @@ func TestBroadcast_ErrorFrame_Match_BroadcastsToAllSessions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PluginSocketPattern: %v", err)
 	}
-	port.Bind(ctx, adapterws.BroadcastSocketAdapter(mux, hub, up, handle,
+	port.Bind(ctx, codex.Must(adapterws.BroadcastSocketAdapter(mux, hub, up, handle,
 		adapterws.BroadcastSocketAdapterOptions{
 			ErrorFrames: []adapterws.ErrorFrameRule{
 				adapterws.ErrorFrame[duplexValidationErr, duplexErrPayload](duplexErrPayloadCodec,
@@ -755,7 +755,7 @@ func TestBroadcast_ErrorFrame_Match_BroadcastsToAllSessions(t *testing.T) {
 					},
 				),
 			},
-		}))
+		})))
 	time.Sleep(20 * time.Millisecond)
 
 	connectMux(mux, "/updates")
@@ -794,7 +794,7 @@ func TestBroadcast_ErrorFrame_NoMatch_FallsBackToOnError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PluginSocketPattern: %v", err)
 	}
-	port.Bind(ctx, adapterws.BroadcastSocketAdapter(mux, hub, up, handle,
+	port.Bind(ctx, codex.Must(adapterws.BroadcastSocketAdapter(mux, hub, up, handle,
 		adapterws.BroadcastSocketAdapterOptions{
 			ErrorFrames: []adapterws.ErrorFrameRule{
 				adapterws.ErrorFrame[duplexValidationErr, duplexErrPayload](duplexErrPayloadCodec,
@@ -808,7 +808,7 @@ func TestBroadcast_ErrorFrame_NoMatch_FallsBackToOnError(t *testing.T) {
 				gotOnError = e
 				mu.Unlock()
 			},
-		}))
+		})))
 	time.Sleep(20 * time.Millisecond)
 
 	connectMux(mux, "/updates")
@@ -852,7 +852,7 @@ func TestBroadcast_ErrorFrame_HandleAction_NoBroadcast(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PluginSocketPattern: %v", err)
 	}
-	port.Bind(ctx, adapterws.BroadcastSocketAdapter(mux, hub, up, handle,
+	port.Bind(ctx, codex.Must(adapterws.BroadcastSocketAdapter(mux, hub, up, handle,
 		adapterws.BroadcastSocketAdapterOptions{
 			ErrorFrames: []adapterws.ErrorFrameRule{
 				adapterws.ErrorFrame[duplexValidationErr, duplexErrPayload](duplexErrPayloadCodec,
@@ -865,7 +865,7 @@ func TestBroadcast_ErrorFrame_HandleAction_NoBroadcast(t *testing.T) {
 					mu.Unlock()
 				}),
 			},
-		}))
+		})))
 	time.Sleep(20 * time.Millisecond)
 
 	connectMux(mux, "/updates")
@@ -931,8 +931,8 @@ func TestDuplex_UnknownSession_Error(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PluginSocketPattern: %v", err)
 	}
-	_ = port.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, up, handle,
-		adapterws.DuplexSocketAdapterOptions{}))
+	_ = port.Bind(ctx, codex.Must(adapterws.DuplexSocketAdapter(mux, hub, up, handle,
+		adapterws.DuplexSocketAdapterOptions{})))
 
 	outVals := make(chan ports.Framed[update], 1)
 	outVals <- ports.Framed[update]{Session: "ghost", Payload: update{Text: "x"}}
@@ -973,7 +973,7 @@ func TestDuplex_ErrorFrame_Match_BroadcastsToAllSessions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PluginSocketPattern: %v", err)
 	}
-	_ = port.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, up, handle,
+	_ = port.Bind(ctx, codex.Must(adapterws.DuplexSocketAdapter(mux, hub, up, handle,
 		adapterws.DuplexSocketAdapterOptions{
 			ErrorFrames: []adapterws.ErrorFrameRule{
 				adapterws.ErrorFrame[duplexValidationErr, update](updateCodec,
@@ -982,7 +982,7 @@ func TestDuplex_ErrorFrame_Match_BroadcastsToAllSessions(t *testing.T) {
 					},
 				),
 			},
-		}))
+		})))
 	time.Sleep(20 * time.Millisecond)
 
 	connect(t, mux, "/live")
@@ -1017,7 +1017,7 @@ func TestDuplex_ErrorFrame_NoMatch_ForwardsToPortErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PluginSocketPattern: %v", err)
 	}
-	_ = port.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, up, handle,
+	_ = port.Bind(ctx, codex.Must(adapterws.DuplexSocketAdapter(mux, hub, up, handle,
 		adapterws.DuplexSocketAdapterOptions{
 			ErrorFrames: []adapterws.ErrorFrameRule{
 				adapterws.ErrorFrame[duplexValidationErr, update](updateCodec,
@@ -1026,7 +1026,7 @@ func TestDuplex_ErrorFrame_NoMatch_ForwardsToPortErrors(t *testing.T) {
 					},
 				),
 			},
-		}))
+		})))
 
 	outErrs := make(chan error, 1)
 	outVals := make(chan ports.Framed[update])
@@ -1063,7 +1063,7 @@ func TestDuplex_ErrorFrame_HandleAction_NoBroadcast(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PluginSocketPattern: %v", err)
 	}
-	_ = port.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, up, handle,
+	_ = port.Bind(ctx, codex.Must(adapterws.DuplexSocketAdapter(mux, hub, up, handle,
 		adapterws.DuplexSocketAdapterOptions{
 			ErrorFrames: []adapterws.ErrorFrameRule{
 				adapterws.ErrorFrame[duplexValidationErr, update](updateCodec,
@@ -1076,7 +1076,7 @@ func TestDuplex_ErrorFrame_HandleAction_NoBroadcast(t *testing.T) {
 					mu.Unlock()
 				}),
 			},
-		}))
+		})))
 	time.Sleep(20 * time.Millisecond)
 
 	connect(t, mux, "/live")
@@ -1145,7 +1145,7 @@ func TestDuplex_ErrorFrame_IndependentCodec_ValidatesAndBroadcasts(t *testing.T)
 	if err != nil {
 		t.Fatalf("PluginSocketPattern: %v", err)
 	}
-	_ = port.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, up, handle,
+	_ = port.Bind(ctx, codex.Must(adapterws.DuplexSocketAdapter(mux, hub, up, handle,
 		adapterws.DuplexSocketAdapterOptions{
 			ErrorFrames: []adapterws.ErrorFrameRule{
 				adapterws.ErrorFrame[duplexValidationErr, duplexErrPayload](duplexErrPayloadCodec,
@@ -1154,7 +1154,7 @@ func TestDuplex_ErrorFrame_IndependentCodec_ValidatesAndBroadcasts(t *testing.T)
 					},
 				),
 			},
-		}))
+		})))
 	time.Sleep(20 * time.Millisecond)
 
 	connect(t, mux, "/live")
@@ -1199,8 +1199,8 @@ func TestErrorFrame_MapperProducesInvalidPayload_ReturnsValidationError(t *testi
 	if err != nil {
 		t.Fatalf("PluginSocketPattern: %v", err)
 	}
-	_ = port.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, up, handle,
-		adapterws.DuplexSocketAdapterOptions{ErrorFrames: []adapterws.ErrorFrameRule{rule}}))
+	_ = port.Bind(ctx, codex.Must(adapterws.DuplexSocketAdapter(mux, hub, up, handle,
+		adapterws.DuplexSocketAdapterOptions{ErrorFrames: []adapterws.ErrorFrameRule{rule}})))
 	time.Sleep(20 * time.Millisecond)
 
 	connect(t, mux, "/live")
@@ -1243,8 +1243,8 @@ func TestIngest_CtxCancel_ClosesSessions(t *testing.T) {
 	}
 
 	done := make(chan struct{})
-	adapter := adapterws.IngestSocketAdapter(mux, hub, up, handle,
-		adapterws.IngestSocketAdapterOptions{})
+	adapter := codex.Must(adapterws.IngestSocketAdapter(mux, hub, up, handle,
+		adapterws.IngestSocketAdapterOptions{}))
 	dst := make(chan command, 4)
 	errs := make(chan error, 4)
 	go func() {
@@ -1316,8 +1316,8 @@ func TestGorillaLoopback_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PluginSocketPattern: %v", err)
 	}
-	_ = port.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, up, handle,
-		adapterws.DuplexSocketAdapterOptions{}))
+	_ = port.Bind(ctx, codex.Must(adapterws.DuplexSocketAdapter(mux, hub, up, handle,
+		adapterws.DuplexSocketAdapterOptions{})))
 	time.Sleep(20 * time.Millisecond)
 
 	srv := httptest.NewServer(mux)
@@ -1377,8 +1377,8 @@ func ExampleDuplexSocketAdapter() {
 	port, _ := ports.NewDuplexPort[command, update]("example", commandCodec, updateCodec,
 		ports.PortOptions{Buffer: 4})
 	handle, _ := port.PluginSocketPattern(ports.SocketPattern{Path: "/live/{room}"})
-	_ = port.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, up, handle,
-		adapterws.DuplexSocketAdapterOptions{}))
+	_ = port.Bind(ctx, codex.Must(adapterws.DuplexSocketAdapter(mux, hub, up, handle,
+		adapterws.DuplexSocketAdapterOptions{})))
 	time.Sleep(20 * time.Millisecond)
 
 	// A client connects to /live/kitchen and sends a command.

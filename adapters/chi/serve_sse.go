@@ -118,6 +118,19 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 	if err := rest.CheckCoverage(routeLabel, coverageReqs, impls); err != nil {
 		return nil, err
 	}
+	// Tier 2 — mirrors [buildRouteHandler]'s identical block
+	// (docs/roadmap/capability-requirement-composition.md's Phase 6a —
+	// this check was previously MISSING entirely for SSE routes, a real
+	// gap for any future SSE-capable adapter that doesn't support one of
+	// these kinds; harmless for chi today since httpCarrier implements
+	// all 3 capability interfaces).
+	headerNames, _ := hv.MethodByName("HeaderParamNames").Call(nil)[0].Interface().([]string)
+	cookieNames, _ := hv.MethodByName("CookieParamNames").Call(nil)[0].Interface().([]string)
+	queryNames, _ := hv.MethodByName("QueryParamNames").Call(nil)[0].Interface().([]string)
+	requiredKinds := rest.RequiredParamKinds(headerNames, cookieNames, queryNames, secSchemes)
+	if err := rest.CheckParamKindCoverage("chi", requiredKinds, httpTransport); err != nil {
+		return nil, err
+	}
 
 	opts, err := resolveOptions(descriptor.Method, descriptor.Path, handlerOptsAny)
 	if err != nil {
@@ -139,12 +152,13 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 
 		pathNames := elem.Addr().MethodByName("PathParamNames").Call(nil)[0].Interface().([]string)
 		pathVars := pathValues(r, pathNames)
-		queryVars := queryValues(r)
-		headerVars := headerValues(r)
-		cookieVars := cookieValues(r)
+		carrier := httpCarrier{r}
+		queryVars := carrier.ExtractQuery()
+		headerVars := carrier.ExtractHeaders()
+		cookieVars := carrier.ExtractCookies()
 
 		if opts.MultiValueQueryParams {
-			if errV := callErr(elem.Addr(), "ValidateQueryMulti", reflect.ValueOf(r.URL.Query())); errV != nil {
+			if errV := callErr(elem.Addr(), "ValidateQueryMulti", reflect.ValueOf(carrier.ExtractQueryMulti())); errV != nil {
 				rest.ReportQueryErrors(ctx, errV)
 				errFn(sw, r, http.StatusBadRequest, errV)
 				return

@@ -195,26 +195,40 @@ func VerifyCapabilityCoverage[C any](routeLabel string, declared []CapabilityReq
 	return CheckCapabilityCoverage(routeLabel, declared, anySupplied)
 }
 
-// HeaderCapableTransport is an OPTIONAL marker interface an adapter's own
-// transport type implements when it can extract HTTP-header-equivalent
-// key/value pairs from its wire format — Tier 2 (Implicit) capability
-// checking's structural counterpart to Tier 3a's [LeveledCapability]
-// (the difference: Tier 2 asserts on the ADAPTER'S TRANSPORT TYPE, since
-// there is no per-declare "supplied capabilities slice" for
-// headers/cookies/query the way there is for QoS). One no-op method —
-// pure compile-time marker, zero runtime cost. adapters/nethttp/
-// adapters/chi implement this trivially (HTTP always supports headers).
-type HeaderCapableTransport interface{ SupportsHeaderParams() }
+// HeaderCapableTransport is an OPTIONAL capability interface an adapter's
+// own per-request carrier type implements when it can extract
+// HTTP-header-equivalent key/value pairs from its wire format — Tier 2
+// (Implicit) capability checking's structural counterpart to Tier 3a's
+// [LeveledCapability] (the difference: Tier 2 asserts on the ADAPTER'S
+// TRANSPORT TYPE, since there is no per-declare "supplied capabilities
+// slice" for headers/cookies/query the way there is for QoS).
+// `ExtractHeaders` is a REAL, callable method (docs/roadmap/
+// capability-requirement-composition.md's Phase 6 — promoted from a
+// zero-cost, never-invoked marker method to a genuine per-request
+// extraction interface) — adapters/nethttp/adapters/chi's own
+// per-request `httpCarrier{r}` implement it by wrapping the request's
+// own header map; [CheckParamKindCoverage] still only TYPE-ASSERTS
+// against this interface (never invokes it) at Attach/Serve setup time,
+// so a zero-value carrier remains safe to use for that one check.
+type HeaderCapableTransport interface{ ExtractHeaders() map[string]string }
 
 // CookieCapableTransport is [HeaderCapableTransport]'s cookie sibling.
 // A transport that structurally cannot carry cookies (e.g. a future
 // ZeroMQ REQ/REP adapter — see docs/roadmap/zeromq-rest-adapter.md's
 // Open Design Decision #1) correctly, permanently omits this — a
 // compiler-visible, diagnosable-at-attach-time outcome, not a silent gap.
-type CookieCapableTransport interface{ SupportsCookieParams() }
+type CookieCapableTransport interface{ ExtractCookies() map[string]string }
 
-// QueryCapableTransport is [HeaderCapableTransport]'s query-param sibling.
-type QueryCapableTransport interface{ SupportsQueryParams() }
+// QueryCapableTransport is [HeaderCapableTransport]'s query-param
+// sibling. Two methods, not one: `opts.MultiValueQueryParams` toggles
+// between first-value-wins (`ExtractQuery`) and full multi-value
+// (`ExtractQueryMulti`) semantics at every existing call site — both
+// forms remain reachable through the carrier, matching that toggle
+// exactly.
+type QueryCapableTransport interface {
+	ExtractQuery() map[string]string
+	ExtractQueryMulti() map[string][]string
+}
 
 // UnsupportedParamKindError is returned by an adapter's Serve/Attach
 // dispatch (ONCE, at setup — never per-request) when a route declares a
@@ -284,7 +298,7 @@ func RequiredParamKinds(headerNames, cookieNames, queryNames []string, schemes m
 }
 
 // CheckParamKindCoverage checks EVERY kind in requiredKinds (as produced
-// by [RequiredParamKinds]) against transport's own optional marker
+// by [RequiredParamKinds]) against transport's own optional capability
 // interfaces ([HeaderCapableTransport]/[CookieCapableTransport]/
 // [QueryCapableTransport]), returning the FIRST [UnsupportedParamKindError]
 // found (deterministic order: Header, Cookie, Query) — a thin-adapter

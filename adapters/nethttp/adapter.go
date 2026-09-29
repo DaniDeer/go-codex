@@ -279,9 +279,18 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 			}
 		}
 
+		// carrier is constructed ONCE and its extracted maps reused for
+		// BOTH the validation calls below AND the merge-field building
+		// further down (docs/roadmap/capability-requirement-composition.md's
+		// Phase 6 "Decision A" — eliminates the former double extraction).
+		carrier := httpCarrier{r}
+		queryVars := carrier.ExtractQuery()
+		headerVars := carrier.ExtractHeaders()
+		cookieVars := carrier.ExtractCookies()
+
 		// Validate query parameters against their registered codecs (if any).
 		if opts.MultiValueQueryParams {
-			if err := handle.ValidateQueryMulti(r.URL.Query()); err != nil {
+			if err := handle.ValidateQueryMulti(carrier.ExtractQueryMulti()); err != nil {
 				rest.ReportQueryErrors(ctx, err)
 				if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &err) {
 					return
@@ -290,7 +299,7 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 				return
 			}
 		} else {
-			if err := handle.ValidateQuery(queryValues(r)); err != nil {
+			if err := handle.ValidateQuery(queryVars); err != nil {
 				rest.ReportQueryErrors(ctx, err)
 				if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &err) {
 					return
@@ -301,7 +310,7 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 		}
 
 		// Validate cookie parameters against their registered codecs (if any).
-		if err := handle.ValidateCookies(cookieValues(r)); err != nil {
+		if err := handle.ValidateCookies(cookieVars); err != nil {
 			rest.ReportCookieErrors(ctx, err)
 			if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &err) {
 				return
@@ -311,7 +320,7 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 		}
 
 		// Validate header parameters against their registered codecs (if any).
-		if err := handle.ValidateHeaders(headerValues(r)); err != nil {
+		if err := handle.ValidateHeaders(headerVars); err != nil {
 			rest.ReportHeaderErrors(ctx, err)
 			if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &err) {
 				return
@@ -339,16 +348,17 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 		// compatible: identical behavior to the block above when none are
 		// declared). Values were already validated by the block above;
 		// DecodeVars re-validates as a byproduct of decoding, which is
-		// harmless (same codec, same value).
+		// harmless (same codec, same value). Reuses queryVars/headerVars/
+		// cookieVars captured above instead of re-extracting.
 		if mergeFields := handle.MergeFields(); len(mergeFields) > 0 {
 			vars := pathValues(r, names)
-			for k, v := range queryValues(r) {
+			for k, v := range queryVars {
 				vars[k] = v
 			}
-			for k, v := range headerValues(r) {
+			for k, v := range headerVars {
 				vars[k] = v
 			}
-			for k, v := range cookieValues(r) {
+			for k, v := range cookieVars {
 				vars[k] = v
 			}
 			if err := codex.DecodeVars(&req, vars, mergeFields...); err != nil {
@@ -619,15 +629,25 @@ func sseHandlerFunc[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn 
 		ctx = context.WithValue(ctx, responseHeadersKey{}, responseHeaders)
 		ctx = context.WithValue(ctx, responseCookiesKey{}, &[]PendingCookie{})
 
+		// carrier is constructed ONCE and its extracted maps reused for
+		// BOTH the validation calls below AND the per-event MergeEvent
+		// closure captured further down (docs/roadmap/
+		// capability-requirement-composition.md's Phase 6 "Decision A"
+		// — eliminates the former double extraction).
+		carrier := httpCarrier{r}
+		queryVars := carrier.ExtractQuery()
+		headerVars := carrier.ExtractHeaders()
+		cookieVars := carrier.ExtractCookies()
+
 		// Validate query parameters against their registered codecs (if any).
 		if opts.MultiValueQueryParams {
-			if err := handle.ValidateQueryMulti(r.URL.Query()); err != nil {
+			if err := handle.ValidateQueryMulti(carrier.ExtractQueryMulti()); err != nil {
 				rest.ReportQueryErrors(ctx, err)
 				opts.ErrorHandler(sw, r, http.StatusBadRequest, err)
 				return
 			}
 		} else {
-			if err := handle.ValidateQuery(queryValues(r)); err != nil {
+			if err := handle.ValidateQuery(queryVars); err != nil {
 				rest.ReportQueryErrors(ctx, err)
 				opts.ErrorHandler(sw, r, http.StatusBadRequest, err)
 				return
@@ -635,14 +655,14 @@ func sseHandlerFunc[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn 
 		}
 
 		// Validate cookie parameters against their registered codecs (if any).
-		if err := handle.ValidateCookies(cookieValues(r)); err != nil {
+		if err := handle.ValidateCookies(cookieVars); err != nil {
 			rest.ReportCookieErrors(ctx, err)
 			opts.ErrorHandler(sw, r, http.StatusBadRequest, err)
 			return
 		}
 
 		// Validate header parameters against their registered codecs (if any).
-		if err := handle.ValidateHeaders(headerValues(r)); err != nil {
+		if err := handle.ValidateHeaders(headerVars); err != nil {
 			rest.ReportHeaderErrors(ctx, err)
 			opts.ErrorHandler(sw, r, http.StatusBadRequest, err)
 			return
@@ -657,9 +677,6 @@ func sseHandlerFunc[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn 
 			}
 		}
 		pathVars := pathValues(r, handle.PathParamNames())
-		queryVars := queryValues(r)
-		headerVars := headerValues(r)
-		cookieVars := cookieValues(r)
 
 		// Enforce security: per-route requirements take precedence; nil falls back
 		// to global security declared via Builder.AddGlobalSecurity.
@@ -839,44 +856,6 @@ func pathValues(r *http.Request, names []string) map[string]string {
 	m := make(map[string]string, len(names))
 	for _, name := range names {
 		m[name] = r.PathValue(name)
-	}
-	return m
-}
-
-// queryValues extracts all query parameters from r into a flat map[string]string.
-// When a key appears multiple times, the first value is used.
-func queryValues(r *http.Request) map[string]string {
-	q := r.URL.Query()
-	m := make(map[string]string, len(q))
-	for k, vs := range q {
-		if len(vs) > 0 {
-			m[k] = vs[0]
-		}
-	}
-	return m
-}
-
-// cookieValues extracts all cookies from r into a flat map[string]string.
-// When a cookie name appears multiple times, the first value is used.
-func cookieValues(r *http.Request) map[string]string {
-	cookies := r.Cookies()
-	m := make(map[string]string, len(cookies))
-	for _, c := range cookies {
-		if _, exists := m[c.Name]; !exists {
-			m[c.Name] = c.Value
-		}
-	}
-	return m
-}
-
-// headerValues extracts HTTP headers from r into a flat map[string]string.
-// When a header has multiple values, only the first is kept.
-func headerValues(r *http.Request) map[string]string {
-	m := make(map[string]string, len(r.Header))
-	for k, vs := range r.Header {
-		if len(vs) > 0 {
-			m[k] = vs[0]
-		}
 	}
 	return m
 }

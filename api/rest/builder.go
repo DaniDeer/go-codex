@@ -3995,6 +3995,40 @@ func (h *SSERouteHandle[Req, Event]) PathParamNames() []string {
 	return names
 }
 
+// HeaderParamNames returns the names of all registered header parameters —
+// mirrors [RouteHandle.HeaderParamNames] exactly (docs/roadmap/
+// capability-requirement-composition.md's Phase 6a). Adapters use this,
+// alongside [CookieParamNames]/[QueryParamNames]/[SecuritySchemes], to
+// build the [RequiredParamKinds] set passed to [CheckParamKindCoverage]
+// at SSE route registration time.
+func (h *SSERouteHandle[Req, Event]) HeaderParamNames() []string {
+	names := make([]string, len(h.headerParams))
+	for i := range h.headerParams {
+		names[i] = h.headerParams[i].Name
+	}
+	return names
+}
+
+// CookieParamNames is [HeaderParamNames]'s cookie sibling — mirrors
+// [RouteHandle.CookieParamNames] exactly.
+func (h *SSERouteHandle[Req, Event]) CookieParamNames() []string {
+	names := make([]string, len(h.cookieParams))
+	for i := range h.cookieParams {
+		names[i] = h.cookieParams[i].Name
+	}
+	return names
+}
+
+// QueryParamNames is [HeaderParamNames]'s query-param sibling — mirrors
+// [RouteHandle.QueryParamNames] exactly.
+func (h *SSERouteHandle[Req, Event]) QueryParamNames() []string {
+	names := make([]string, len(h.queryParams))
+	for i := range h.queryParams {
+		names[i] = h.queryParams[i].Name
+	}
+	return names
+}
+
 // ValidateQuery validates query parameter values against their registered codecs.
 // Mirrors [RouteHandle.ValidateQuery] for SSE routes.
 func (h *SSERouteHandle[Req, Event]) ValidateQuery(params map[string]string) error {

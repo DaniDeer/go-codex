@@ -19,11 +19,15 @@
 > `api/reqreply`'s mqtt5/zeromq call sites) SHIPPED; Phase 5a (moving
 > the type-safe escape hatch itself onto the API layer, formerly
 > "Phase 4f") SHIPPED; Phase 6 (`api/rest` Header/Cookie/Query
-> real-interface promotion) and Phase 6a (SSE coverage-check gap +
-> `adapters/websocket`) DESIGNED, not yet implemented; Phase 7
-> (Observer + ErrorPattern interface-level cross-cutting concerns)
-> DESIGN EXPLORATION, open decisions; Phase 8 (Review & Closeout)
-> pending. See each subsection's own Learnings entry. Spun out of a
+> real-interface promotion, `HeaderCapableTransport`/
+> `CookieCapableTransport`/`QueryCapableTransport` now genuine
+> `Extract`-shaped methods on a new `httpCarrier` type) SHIPPED; Phase
+> 6a (SSE coverage-check gap closed + `adapters/websocket` brought into
+> the same mechanism via a new `wsCarrier` type + cookie support) SHIPPED;
+> Phase 7 (Observer + ErrorPattern interface-level
+> cross-cutting concerns) DESIGN EXPLORATION, open decisions; Phase 8
+> (Review & Closeout) pending. See each subsection's own Learnings
+> entry. Spun out of a
 > user question about
 > [D-0006 — Protocol-Native Capabilities](../design/d-0006-protocol-native-capabilities.md)'s
 > scope (events-only) while reviewing [`docs/features/capabilities.md`](../features/capabilities.md).
@@ -2982,9 +2986,7 @@ built):**
 
 ### Phase 6 — `api/rest`: the SAME shift for Header/Cookie/Query
 
-**Status: Design complete — not yet implemented; pending user
-confirmation before touching load-bearing dispatch code (see
-"Implementation risk" below).** Promotes `HeaderCapableTransport`/
+**Status: SHIPPED.** Promotes `HeaderCapableTransport`/
 `CookieCapableTransport`/`QueryCapableTransport` from Pattern C's
 no-op markers (`SupportsHeaderParams()` etc. — presence-only, used
 SOLELY for the Attach-time `CheckParamKindCoverage` check, never
@@ -3180,9 +3182,23 @@ request/response assertions (not by calling the private functions
 directly — none do) — a reasonable regression safety net for what is,
 underneath, a pure internal refactor.
 
+**Learnings (implementation matched the design exactly, zero
+surprises):** the mitigating factor above held — the full pre-existing
+`adapters/nethttp`/`adapters/chi`/`api/rest` test suites passed
+unchanged after the migration, confirming the 36-call-site rename +
+Decision-A de-duplication was genuinely behavior-identical. The
+`net/http.Query()`-called-twice-per-request inefficiency Decision A
+targeted is now gone from both adapters' non-reflection dispatch
+blocks. `CheckParamKindCoverage`'s Attach-time type-assertion against
+the zero-value `httpCarrier{}` needed zero changes, exactly as
+predicted. Full verification (`gofmt`/`build`/`vet`/`test`/`just
+check`/all examples) passed clean on the first attempt.
+
+**Status: SHIPPED.**
+
 ### Phase 6a — closing the SSE `CheckParamKindCoverage` gap, and bringing `adapters/websocket` into the same real-interface mechanism
 
-**Status: Design complete — not yet implemented.** Split out of Phase
+**Status: SHIPPED.** Split out of Phase
 6's Decision B (above) per explicit user direction, rather than
 scope-creeping Phase 6 itself — this phase is INDEPENDENT of Phase 6's
 own implementation (it can run before, after, or interleaved, since it
@@ -3190,7 +3206,13 @@ touches entirely different files: `serve_sse.go`'s registration path
 and all of `adapters/websocket`), though it reuses Phase 6's
 `HeaderCapableTransport`/`CookieCapableTransport`/`QueryCapableTransport`
 interface shapes once those are real (so in PRACTICE it should follow
-Phase 6, not precede it).
+Phase 6, not precede it — Phase 6 has since SHIPPED, so this
+precondition is now satisfied).
+
+**A follow-up review pass (separate session, after Phase 6 shipped)
+found 2 real gaps in the design below and resolved both — see "Gap A"
+and "Gap B" inline where each finding's fix is described, plus the
+corrected "Implementation risk" paragraph at the end of this section.**
 
 **Two independent findings, bundled into one phase because both are
 "coverage/capability-check completeness" gaps found during the same
@@ -3213,8 +3235,22 @@ review pass:**
   `serve_sse.go`'s route-registration path, in both adapters, deriving
   `requiredKinds` from the SSE handle's own
   `HeaderParamNames`/`CookieParamNames`/`QueryParamNames`/
-  `SecuritySchemes` (same accessors `serve.go` already uses, confirmed
-  present on `*rest.SSERouteHandle` too).
+  `SecuritySchemes`.
+  **Review-pass correction (Gap A — the ORIGINAL text above wrongly
+  claimed these 3 accessors were "confirmed present on
+  `*rest.SSERouteHandle` too"; verified FALSE via direct code reading):
+  only `PathParamNames()` currently exists on `*rest.SSERouteHandle` —
+  `HeaderParamNames`/`CookieParamNames`/`QueryParamNames` exist ONLY on
+  `*rest.RouteHandle` today.** `SSERouteHandle` already has the
+  BACKING unexported fields (`headerParams`/`cookieParams`/
+  `queryParams`) — it just never got the 3 public accessor methods.
+  **New prerequisite step, folded into this phase**: add
+  `HeaderParamNames`/`CookieParamNames`/`QueryParamNames` methods to
+  `*rest.SSERouteHandle` in `api/rest/builder.go`, mirroring
+  `RouteHandle`'s identical methods' body exactly (same
+  field-to-name-slice shape) — a small, low-risk, purely additive
+  `api/rest` change Finding 1's `serve_sse.go` fix now explicitly
+  depends on.
 - **Finding 2 — `adapters/websocket/binding.go` independently
   reimplements this whole mechanism, undocumented anywhere in this
   roadmap, with 2 real gaps of its own.** Structure (confirmed via
@@ -3269,21 +3305,97 @@ review pass:**
     `*rest.RouteHandle`, zero `api/rest` changes needed for this part).
   - **Confirmed, deliberate breaking change**: all 3 constructors gain
     an `error` return (they currently return only the adapter value) —
-    every real caller (`examples/websocket-duplex`,
-    `examples/websocket-client`, plus this package's own tests) needs
-    migrating to handle it. Consistent with this roadmap's established
-    "breaking changes are acceptable, call them out explicitly" stance.
+    every real caller needs migrating to handle it. Consistent with
+    this roadmap's established "breaking changes are acceptable, call
+    them out explicitly" stance.
   - Migrate `adapters/websocket`'s own private `queryValues`/
     `headerValues` onto `wsCarrier`, delete the free functions.
 
-**Implementation risk**: smaller and more contained than Phase 6—
-Finding 1 is a 2-line addition per adapter (no behavior change for
-existing routes); Finding 2 touches one already-small file
-(`binding.go`, ~690 lines) plus one new file, with the ONE real risk
-being the constructor signature change's caller-migration surface
-(expected small: 2 examples + this package's own test suite, based on
-a repo-wide grep before starting — verify this estimate is still
-accurate at implementation time, don't assume it).
+**Review-pass correction (Gap B — the ORIGINAL text above materially
+understated the caller-migration surface as "expected small: 2
+examples + this package's own test suite"; a direct repo-wide grep
+before starting found the real count, mirroring the SAME kind of
+undercount Phase 6's own review pass found for ITS call-site
+inventory):**
+
+- **Real total: 30 call sites**, not "2 examples + this package's own
+  test suite" — `adapters/websocket/binding_test.go` alone has **21**
+  (including one godoc `ExampleDuplexSocketAdapter` function, whose
+  inline `port.Bind(ctx, adapterws.DuplexSocketAdapter(...))` call
+  needs restructuring into an idiomatic 2-statement form, not just a
+  mechanical `_ = err`, since it is user-facing documentation);
+  `adapters/websocket/client_test.go` has 1; `adapters/chi/socket_test.go`
+  has 1; `examples/websocket-duplex/main.go` and
+  `examples/websocket-client/main.go` have 1 each.
+- **Previously unmentioned cascade, found only by grepping for the
+  constructor names repo-wide rather than assuming the blast radius
+  stopped at `adapters/websocket`**: `adapters/chi/socket.go`'s OWN 3
+  wrapper constructors (`chi.IngestSocketAdapter`/
+  `chi.BroadcastSocketAdapter`/`chi.DuplexSocketAdapter` — the chi
+  variants documented as mirroring `adapters/websocket`'s exactly)
+  directly embed `websocket.XSocketAdapter(...)`'s return value as a
+  struct-literal field (e.g. `SourceAdapter:
+  websocket.IngestSocketAdapter(...)`) — a 2-value return cannot be
+  used as a single struct-literal field initializer, so `chi`'s own 3
+  wrapper constructors MUST ALSO gain the identical `(adapter, error)`
+  signature change, cascading one package further than the original
+  scope described. `chi`'s wrappers have ZERO external callers today
+  (confirmed via repo-wide grep) beyond their own doc comments and
+  `socket_test.go`'s 1 call site (already counted above), so this
+  cascade's OWN migration cost is small — but the signature change
+  itself must still happen, and was completely unmentioned before this
+  review pass.
+- **Open architectural alternative surfaced and put to the user, then
+  resolved**: instead of changing all 3 constructors' signatures, run
+  `CheckParamKindCoverage` INSIDE `Activate` and report a failure via
+  the adapter's already-existing async `errs chan<- error` parameter
+  (`ports.SourceAdapter.Activate(ctx, dst, errs)` already has this
+  channel — zero constructor signature change, zero caller migration
+  anywhere would have been needed). **Rejected in favor of keeping the
+  constructor-returns-error design** (user decision) — the
+  `Activate`-based alternative's fail-fast guarantee is materially
+  WEAKER than nethttp/chi's (asynchronous, discovered only once
+  `Activate` actually runs, and only if the caller is draining the
+  `errs` channel — vs. nethttp/chi's guaranteed-synchronous,
+  before-anything-starts failure). Preserving PARITY with nethttp/chi's
+  existing guarantee was judged more valuable than avoiding the larger
+  (but still entirely mechanical, no-new-decisions-per-site) migration.
+
+**Implementation risk**: Finding 1 is a 2-line addition per adapter (no
+behavior change for existing routes), now ALSO requiring the new Gap A
+`SSERouteHandle` accessor-method prerequisite (small, additive,
+low-risk). Finding 2 touches one already-small file (`binding.go`,
+~690 lines) plus one new file, with the corrected, now-precise real
+risk being the constructor signature change's caller-migration
+surface: 30 call sites in `adapters/websocket`/its examples/tests, PLUS
+`adapters/chi/socket.go`'s own 3 wrapper constructors needing the
+identical signature change cascaded through. Still smaller than Phase
+6's 36-call-site surface, and every one of these ~34 sites is
+mechanical (thread through the already-typed `error`, zero per-site
+decisions) — but the corrected count is meaningfully larger than
+originally estimated, so treat this phase with the SAME migration-care
+discipline Phase 6 required, not as the "smaller, more contained"
+phase the pre-review-pass text characterized it as.
+
+**Learnings (implementation matched the corrected design exactly, one
+small positive discovery beyond it):** the corrected 30+/~34-call-site
+estimate held — every call site was a mechanical wrap, zero behavior
+changes needed at any of them (every existing route/handle already
+satisfies the coverage check, so `codex.Must` never panics in any
+pre-existing test/example). One thing NOT anticipated in the design:
+rather than inventing a new test-only "unwrap or fail" helper for the
+~30 call-site migration, the existing library-wide `codex.Must[T
+any](v T, err error) T` (already imported/used in most of the touched
+files for unrelated `PluginSocketPattern`/etc. calls) was reused
+directly — simpler than a bespoke helper, and consistent with how the
+2 real examples already handled other fallible constructors. A new
+`checkSocketParamKindCoverage` helper in `adapters/websocket/
+capability.go` was added (not originally spelled out in the design) to
+avoid tripling the same 4-line coverage-check block across all 3
+constructors — a small, uncontroversial addition. Full verification
+(`gofmt`/`build`/`vet`/`test`/`just check`/all examples, including both
+`websocket-duplex`/`websocket-client` explicitly) passed clean on the
+first attempt.
 
 ### Phase 7 — Observer + ErrorPattern as interface-level cross-cutting concerns
 

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	adapterws "github.com/DaniDeer/go-codex/adapters/websocket"
+	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/ports"
 	"github.com/DaniDeer/go-codex/stream"
 )
@@ -251,9 +252,9 @@ func TestGorillaDial_Loopback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PluginSocketPattern: %v", err)
 	}
-	_ = serverPort.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub,
+	_ = serverPort.Bind(ctx, codex.Must(adapterws.DuplexSocketAdapter(mux, hub,
 		adapterws.NewUpgrader(adapterws.UpgraderOptions{CheckOrigin: func(*http.Request) bool { return true }}),
-		sHandle, adapterws.DuplexSocketAdapterOptions{}))
+		sHandle, adapterws.DuplexSocketAdapterOptions{})))
 	time.Sleep(20 * time.Millisecond)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()

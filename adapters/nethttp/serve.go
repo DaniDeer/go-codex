@@ -251,9 +251,9 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 	// Tier 2 — HeaderParamNames/CookieParamNames/QueryParamNames already
 	// reflect the FULL declared set (plain-opt AND middleware-merged),
 	// scanned alongside every declared SecurityScheme's In field. This
-	// check can never fail for nethttp (transportCapabilities implements
-	// all 3 markers) — proves the mechanism coexists with zero behavior
-	// change for existing routes.
+	// check can never fail for nethttp (httpCarrier implements all 3
+	// capability interfaces) — proves the mechanism coexists with zero
+	// behavior change for existing routes.
 	headerNames, _ := hv.MethodByName("HeaderParamNames").Call(nil)[0].Interface().([]string)
 	cookieNames, _ := hv.MethodByName("CookieParamNames").Call(nil)[0].Interface().([]string)
 	queryNames, _ := hv.MethodByName("QueryParamNames").Call(nil)[0].Interface().([]string)
@@ -356,12 +356,13 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 
 		pathNames := elem.Addr().MethodByName("PathParamNames").Call(nil)[0].Interface().([]string)
 		pathVars := pathValues(r, pathNames)
-		queryVars := queryValues(r)
-		headerVars := headerValues(r)
-		cookieVars := cookieValues(r)
+		carrier := httpCarrier{r}
+		queryVars := carrier.ExtractQuery()
+		headerVars := carrier.ExtractHeaders()
+		cookieVars := carrier.ExtractCookies()
 
 		if opts.MultiValueQueryParams {
-			if errV := callErr(elem.Addr(), "ValidateQueryMulti", reflect.ValueOf(r.URL.Query())); errV != nil {
+			if errV := callErr(elem.Addr(), "ValidateQueryMulti", reflect.ValueOf(carrier.ExtractQueryMulti())); errV != nil {
 				rest.ReportQueryErrors(ctx, errV)
 				if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &errV) {
 					return

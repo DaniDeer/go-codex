@@ -236,10 +236,10 @@ func main() {
 		CheckOrigin: func(*http.Request) bool { return true }, // demo only
 	})
 	handle := codex.Must(Live.PluginSocketPattern(LivePattern))
-	if err := Live.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub, upgrader, handle,
+	if err := Live.Bind(ctx, codex.Must(adapterws.DuplexSocketAdapter(mux, hub, upgrader, handle,
 		adapterws.DuplexSocketAdapterOptions{
 			ErrorFrames: []adapterws.ErrorFrameRule{negativeValueErrorFrame},
-		})); err != nil {
+		}))); err != nil {
 		panic(err)
 	}
 

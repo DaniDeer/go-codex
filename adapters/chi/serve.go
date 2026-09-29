@@ -249,7 +249,7 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 		return nil, err
 	}
 	// Tier 2 — mirrors nethttp's identical wiring: can never fail here
-	// (transportCapabilities implements all 3 markers), proving the
+	// (httpCarrier implements all 3 capability interfaces), proving the
 	// mechanism coexists with zero behavior change for existing routes.
 	headerNames, _ := hv.MethodByName("HeaderParamNames").Call(nil)[0].Interface().([]string)
 	cookieNames, _ := hv.MethodByName("CookieParamNames").Call(nil)[0].Interface().([]string)
@@ -353,12 +353,13 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 
 		pathNames := elem.Addr().MethodByName("PathParamNames").Call(nil)[0].Interface().([]string)
 		pathVars := pathValues(r, pathNames)
-		queryVars := queryValues(r)
-		headerVars := headerValues(r)
-		cookieVars := cookieValues(r)
+		carrier := httpCarrier{r}
+		queryVars := carrier.ExtractQuery()
+		headerVars := carrier.ExtractHeaders()
+		cookieVars := carrier.ExtractCookies()
 
 		if opts.MultiValueQueryParams {
-			if errV := callErr(elem.Addr(), "ValidateQueryMulti", reflect.ValueOf(r.URL.Query())); errV != nil {
+			if errV := callErr(elem.Addr(), "ValidateQueryMulti", reflect.ValueOf(carrier.ExtractQueryMulti())); errV != nil {
 				rest.ReportQueryErrors(ctx, errV)
 				if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &errV) {
 					return

@@ -43,8 +43,8 @@ func demoCapabilityMechanism() {
 	fmt.Println("=== Demo: protocol-native Capability mechanism reaches api/rest (Phase 3) ===")
 
 	// Tier 2: a route declaring Header/Query params serves with ZERO
-	// behavior change — nethttp's transportCapabilities marker satisfies
-	// all 3 Tier 2 interfaces trivially.
+	// behavior change — nethttp's httpCarrier satisfies all 3 Tier 2
+	// interfaces trivially.
 	tier2Route := rest.NewRoute[capabilityDemoReq, capabilityDemoResp]("GET", "/capability-demo/echo",
 		capabilityDemoReqCodec, capabilityDemoRespCodec,
 		rest.RouteMeta{OperationID: "capabilityDemoEcho"},

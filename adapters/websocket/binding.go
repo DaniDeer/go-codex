@@ -34,6 +34,7 @@ func upgradeAndValidate(
 	route interface {
 		ValidatePathParams(map[string]string) error
 		ValidateQuery(map[string]string) error
+		ValidateCookies(map[string]string) error
 		ValidateHeaders(map[string]string) error
 	},
 	path string,
@@ -56,14 +57,25 @@ func upgradeAndValidate(
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return nil, nil, false
 	}
-	query := queryValues(r)
+	// carrier is constructed ONCE and its extracted maps reused for both
+	// the validation calls below AND the vars merge (docs/roadmap/
+	// capability-requirement-composition.md's Phase 6a).
+	carrier := wsCarrier{r}
+	query := carrier.ExtractQuery()
 	if err := route.ValidateQuery(query); err != nil {
 		stats.ReportErrors(obs, "query", err)
 		obs.RecordRequest(http.MethodGet, path, http.StatusUnprocessableEntity, time.Since(start))
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return nil, nil, false
 	}
-	headers := headerValues(r)
+	cookies := carrier.ExtractCookies()
+	if err := route.ValidateCookies(cookies); err != nil {
+		stats.ReportErrors(obs, "cookie", err)
+		obs.RecordRequest(http.MethodGet, path, http.StatusUnprocessableEntity, time.Since(start))
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return nil, nil, false
+	}
+	headers := carrier.ExtractHeaders()
 	if err := route.ValidateHeaders(headers); err != nil {
 		stats.ReportErrors(obs, "header", err)
 		obs.RecordRequest(http.MethodGet, path, http.StatusUnprocessableEntity, time.Since(start))
@@ -71,6 +83,9 @@ func upgradeAndValidate(
 		return nil, nil, false
 	}
 	for k, v := range query {
+		vars[k] = v
+	}
+	for k, v := range cookies {
 		vars[k] = v
 	}
 	for k, v := range headers {
@@ -84,26 +99,6 @@ func upgradeAndValidate(
 	}
 	obs.RecordRequest(http.MethodGet, path, http.StatusSwitchingProtocols, time.Since(start))
 	return sock, vars, true
-}
-
-func queryValues(r *http.Request) map[string]string {
-	m := make(map[string]string, len(r.URL.Query()))
-	for k, vals := range r.URL.Query() {
-		if len(vals) > 0 {
-			m[k] = vals[0]
-		}
-	}
-	return m
-}
-
-func headerValues(r *http.Request) map[string]string {
-	m := make(map[string]string, len(r.Header))
-	for k, vals := range r.Header {
-		if len(vals) > 0 {
-			m[k] = vals[0]
-		}
-	}
-	return m
 }
 
 // muxPattern renders the Go 1.22 ServeMux pattern for the handle path.
@@ -128,9 +123,15 @@ type IngestSocketAdapterOptions struct {
 // (from ALL connected clients) into the port. The inbound-only socket —
 // the server never pushes. Use with [ports.SourcePort.Bind]:
 //
-//	domain.Commands.Bind(ctx, websocket.IngestSocketAdapter(
+//	domain.Commands.Bind(ctx, codex.Must(websocket.IngestSocketAdapter(
 //	    mux, hub, websocket.NewUpgrader(websocket.UpgraderOptions{}),
-//	    handle, websocket.IngestSocketAdapterOptions{}))
+//	    handle, websocket.IngestSocketAdapterOptions{})))
+//
+// Returns an error (docs/roadmap/capability-requirement-composition.md's
+// Phase 6a) when handle's declared Header/Cookie/Query param requirements
+// are not covered by this adapter's own capability interfaces — checked
+// ONCE here, at construction time (this adapter's "Attach"-equivalent
+// moment), never per-request; see [rest.CheckParamKindCoverage].
 //
 // Frame decode/validation failures go to the port's Errors channel as
 // [SocketError] (per-field reports with location "payload"); the connection
@@ -141,8 +142,11 @@ func IngestSocketAdapter[T any](
 	upgrader Upgrader,
 	handle ports.Socket[T, struct{}],
 	opts IngestSocketAdapterOptions,
-) ports.SourceAdapter[T] {
-	return &wsIngestAdapter[T]{mux: mux, hub: hub, upgrader: upgrader, handle: handle, opts: opts}
+) (ports.SourceAdapter[T], error) {
+	if err := checkSocketParamKindCoverage(handle.Route); err != nil {
+		return nil, err
+	}
+	return &wsIngestAdapter[T]{mux: mux, hub: hub, upgrader: upgrader, handle: handle, opts: opts}, nil
 }
 
 type wsIngestAdapter[T any] struct {
@@ -269,9 +273,13 @@ type BroadcastSocketAdapterOptions struct {
 // adapter. Inbound frames from clients are discarded. Use with
 // [ports.SinkPort.Bind]:
 //
-//	domain.Updates.Bind(ctx, websocket.BroadcastSocketAdapter(
+//	domain.Updates.Bind(ctx, codex.Must(websocket.BroadcastSocketAdapter(
 //	    mux, hub, websocket.NewUpgrader(websocket.UpgraderOptions{}),
-//	    handle, websocket.BroadcastSocketAdapterOptions{}))
+//	    handle, websocket.BroadcastSocketAdapterOptions{})))
+//
+// Returns an error (docs/roadmap/capability-requirement-composition.md's
+// Phase 6a) when handle's declared Header/Cookie/Query param requirements
+// are not covered — see [IngestSocketAdapter]'s identical doc note.
 //
 // Slow clients: a session whose outbound queue is full has the frame
 // DROPPED for that session only (reported via OnError as a [SocketError]
@@ -282,8 +290,11 @@ func BroadcastSocketAdapter[T any](
 	upgrader Upgrader,
 	handle ports.Socket[struct{}, T],
 	opts BroadcastSocketAdapterOptions,
-) ports.SinkAdapter[T] {
-	return &wsBroadcastAdapter[T]{mux: mux, hub: hub, upgrader: upgrader, handle: handle, opts: opts}
+) (ports.SinkAdapter[T], error) {
+	if err := checkSocketParamKindCoverage(handle.Route); err != nil {
+		return nil, err
+	}
+	return &wsBroadcastAdapter[T]{mux: mux, hub: hub, upgrader: upgrader, handle: handle, opts: opts}, nil
 }
 
 type wsBroadcastAdapter[T any] struct {
@@ -445,9 +456,13 @@ type DuplexSocketAdapterOptions struct {
 // outbound frames fed to the port are delivered to their target session
 // (zero Session = broadcast). Use with [ports.DuplexPort.Bind]:
 //
-//	must0(domain.Live.Bind(ctx, websocket.DuplexSocketAdapter(
+//	must0(domain.Live.Bind(ctx, codex.Must(websocket.DuplexSocketAdapter(
 //	    mux, hub, websocket.NewUpgrader(websocket.UpgraderOptions{}),
-//	    handle, websocket.DuplexSocketAdapterOptions{})))
+//	    handle, websocket.DuplexSocketAdapterOptions{}))))
+//
+// Returns an error (docs/roadmap/capability-requirement-composition.md's
+// Phase 6a) when handle's declared Header/Cookie/Query param requirements
+// are not covered — see [IngestSocketAdapter]'s identical doc note.
 //
 // Query hub.SessionInfo(session) from pipeline code for the upgrade-time
 // path vars (e.g. the {room} a session joined). Write failures, unknown
@@ -459,8 +474,11 @@ func DuplexSocketAdapter[In, Out any](
 	upgrader Upgrader,
 	handle ports.Socket[In, Out],
 	opts DuplexSocketAdapterOptions,
-) ports.DuplexAdapter[In, Out] {
-	return &wsDuplexAdapter[In, Out]{mux: mux, hub: hub, upgrader: upgrader, handle: handle, opts: opts}
+) (ports.DuplexAdapter[In, Out], error) {
+	if err := checkSocketParamKindCoverage(handle.Route); err != nil {
+		return nil, err
+	}
+	return &wsDuplexAdapter[In, Out]{mux: mux, hub: hub, upgrader: upgrader, handle: handle, opts: opts}, nil
 }
 
 type wsDuplexAdapter[In, Out any] struct {

@@ -69,8 +69,8 @@ func TestChiDuplexSocket_SwapHandlerAndRoundTrip(t *testing.T) {
 	}
 
 	// Constructor registers the swap handler — BEFORE Activate/Bind.
-	adapter := DuplexSocketAdapter(router, hub, up, handle,
-		adapterws.DuplexSocketAdapterOptions{})
+	adapter := codex.Must(DuplexSocketAdapter(router, hub, up, handle,
+		adapterws.DuplexSocketAdapterOptions{}))
 	if got := adapter.AdapterName(); got != "chi.DuplexSocketAdapter" {
 		t.Errorf("AdapterName: %s", got)
 	}

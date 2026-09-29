@@ -72,9 +72,9 @@ func main() {
 	mux := http.NewServeMux()
 	hub := adapterws.NewHub(0)
 	sHandle := codex.Must(serverPort.PluginSocketPattern(ports.SocketPattern{Path: "/live/{room}"}))
-	if err := serverPort.Bind(ctx, adapterws.DuplexSocketAdapter(mux, hub,
+	if err := serverPort.Bind(ctx, codex.Must(adapterws.DuplexSocketAdapter(mux, hub,
 		adapterws.NewUpgrader(adapterws.UpgraderOptions{CheckOrigin: func(*http.Request) bool { return true }}),
-		sHandle, adapterws.DuplexSocketAdapterOptions{})); err != nil {
+		sHandle, adapterws.DuplexSocketAdapterOptions{}))); err != nil {
 		panic(err)
 	}
 	srv := httptest.NewServer(mux)

@@ -1,27 +1,81 @@
 package nethttp
 
-import "github.com/DaniDeer/go-codex/api/rest"
+import (
+	"net/http"
 
-// transportCapabilities is nethttp's own zero-cost marker satisfying
+	"github.com/DaniDeer/go-codex/api/rest"
+)
+
+// httpCarrier is nethttp's own per-REQUEST value satisfying
 // [rest.HeaderCapableTransport]/[rest.CookieCapableTransport]/
 // [rest.QueryCapableTransport] (docs/roadmap/
-// capability-requirement-composition.md's Phase 3) — HTTP structurally
-// ALWAYS supports all three (baseline reality, made explicit in code, not
-// just doc comments), so there is no per-connection variability to check
-// the way a socket-based adapter's transport type would need: ONE static
-// value represents "HTTP itself" for the coverage check, called ONCE per
-// Serve/AttachServer/Call/AttachClient setup (never per-request).
-type transportCapabilities struct{}
+// capability-requirement-composition.md's Phase 6 — promoted from the
+// former zero-cost, data-less `transportCapabilities{}` marker to a
+// REAL, callable extraction interface). Every request-dispatch call
+// site constructs its OWN `httpCarrier{r}` from the real, live
+// `*http.Request` and calls its `Extract*` methods exactly once,
+// reusing the extracted maps for both codec validation AND
+// merge-field building (eliminating the double-extraction the
+// pre-Phase-6 `queryValues`/`cookieValues`/`headerValues` free
+// functions had at 2 of the 4 dispatch call sites — see the roadmap
+// doc's Phase 6 "Decision A").
+type httpCarrier struct{ r *http.Request }
 
-func (transportCapabilities) SupportsHeaderParams() {}
-func (transportCapabilities) SupportsCookieParams() {}
-func (transportCapabilities) SupportsQueryParams()  {}
+// ExtractQuery extracts all query parameters into a flat
+// map[string]string. When a key appears multiple times, the first
+// value is used — mirrors [rest.RouteHandle.ValidateQuery]'s expected
+// shape.
+func (c httpCarrier) ExtractQuery() map[string]string {
+	q := c.r.URL.Query()
+	m := make(map[string]string, len(q))
+	for k, vs := range q {
+		if len(vs) > 0 {
+			m[k] = vs[0]
+		}
+	}
+	return m
+}
 
-// httpTransport is the single shared value passed to
-// [rest.CheckParamKindCoverage] — this check can never fail for nethttp,
-// proving the Tier 2 mechanism coexists with HTTP's existing dispatch
-// with ZERO behavior change for any existing route.
-var httpTransport = transportCapabilities{}
+// ExtractQueryMulti returns the full multi-value query map — mirrors
+// [rest.RouteHandle.ValidateQueryMulti]'s expected shape, used when
+// `Options.MultiValueQueryParams` is set.
+func (c httpCarrier) ExtractQueryMulti() map[string][]string {
+	return c.r.URL.Query()
+}
+
+// ExtractCookies extracts all cookies into a flat map[string]string.
+// When a cookie name appears multiple times, the first value is used.
+func (c httpCarrier) ExtractCookies() map[string]string {
+	cookies := c.r.Cookies()
+	m := make(map[string]string, len(cookies))
+	for _, ck := range cookies {
+		if _, exists := m[ck.Name]; !exists {
+			m[ck.Name] = ck.Value
+		}
+	}
+	return m
+}
+
+// ExtractHeaders extracts HTTP headers into a flat map[string]string.
+// When a header has multiple values, only the first is kept.
+func (c httpCarrier) ExtractHeaders() map[string]string {
+	m := make(map[string]string, len(c.r.Header))
+	for k, vs := range c.r.Header {
+		if len(vs) > 0 {
+			m[k] = vs[0]
+		}
+	}
+	return m
+}
+
+// httpTransport is a zero-value carrier (nil *http.Request) used
+// SOLELY for the Attach-time [rest.CheckParamKindCoverage] type
+// assertion — that check never invokes the method, only asserts the
+// interface is implemented, so a nil-field zero value is safe here.
+// This check can never fail for nethttp, proving the Tier 2 mechanism
+// coexists with HTTP's existing dispatch with ZERO behavior change for
+// any existing route.
+var httpTransport = httpCarrier{}
 
 var (
 	_ rest.HeaderCapableTransport = httpTransport

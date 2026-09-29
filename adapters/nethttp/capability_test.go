@@ -11,7 +11,7 @@ import (
 )
 
 // This file closes docs/roadmap/capability-requirement-composition.md's
-// Phase 3 verification: nethttp's transportCapabilities marker satisfies
+// Phase 3/6 verification: nethttp's httpCarrier satisfies
 // all 3 Tier 2 interfaces, so a declared HeaderParam/CookieParam/
 // QueryParam requirement is ALWAYS covered — proving the mechanism
 // coexists with zero behavior change. A declared Tier 3a requirement
