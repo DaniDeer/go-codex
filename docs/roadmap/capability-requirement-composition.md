@@ -3652,8 +3652,8 @@ COMPLETE — Phase 8 is the closing review pass, not further feature work:
   confirmation. RESOLVED: the doc was written during Phase 3's own
   Design step (the earlier timing), not deferred here — this bullet is
   kept only as a historical pointer, no further action needed.
-- **Create `docs/roadmap/mqtt5-capability-extensions.md`** — a
-  dedicated, Explore-mode roadmap doc designing+shipping the 2
+- **`docs/roadmap/mqtt5-capability-extensions.md` — DONE, created.** A
+  dedicated, Explore-mode roadmap doc designing the 2
   surveyed-but-deferred Tier 3a candidates from `docs/features/
   capabilities.md`'s "Surveyed but not implemented" section, now that
   `adapters/mqtt5` already exists (no adapter-doesn't-exist-yet blocker,
@@ -3661,17 +3661,23 @@ COMPLETE — Phase 8 is the closing review pass, not further feature work:
   deferred through Phases 1-2 was "nobody asked for this specific toggle
   yet," not a structural limitation:
   - **MQTT5 Message Expiry Interval** — a new sealed `mqtt5.Capability`
-    (e.g. `mqtt5.MessageExpiry(seconds int)`), applied via
+    (`mqtt5.MessageExpiry(seconds uint32)`), applied via
     `PublishOptions.Capabilities` — mirrors `Retained`'s shape exactly
     (a Publish-side-only attribute, no Subscribe-side equivalent).
+    Ready to implement, no open questions — a one-line `adapter.go`
+    change wires `wire.MessageExpiryInterval` into the already-existing
+    `pahomqtt5.PublishProperties` construction.
   - **MQTT5 Shared Subscriptions** (`$share/group/topic`) — a new sealed
-    `mqtt5.Capability` (e.g. `mqtt5.SharedSubscription(group string)`),
-    applied via `SubscribeOptions.Capabilities` — needs its OWN design
-    decision on how the `$share/` prefix composes with the channel's
-    already-declared topic template (does the capability wrap/rewrite
-    the subscribe filter at Attach time, or does it require a NEW
-    `TopicParam`-adjacent declaration?) — not silently assumed to be a
-    trivial string-prefix operation.
+    `mqtt5.Capability` (`mqtt5.SharedSubscription(group string)`),
+    applied via `SubscribeOptions.Capabilities` — confirmed via
+    `paho.golang`'s `SubscribeOptions` struct that `$share/` is a
+    topic-FILTER-STRING prefix, not a `WireAttributes` field, so it
+    does NOT fit `Capability.Apply(*WireAttributes)`'s existing shape.
+    Left as a genuine OPEN design decision in the new doc (widen
+    `WireAttributes` with a mutable `Topic` field vs. a separate
+    `TopicParam`-adjacent declaration that bypasses
+    `ApplyCapabilities`) — not silently assumed to be a trivial
+    string-prefix operation, not pre-decided here.
 - **Rework `docs/design/d-0006-protocol-native-capabilities.md` itself
   to state the "zero backdoor between the api layer and the adapters"
   rule (see "Architectural guardrail" above) as its OWN first-class,
@@ -3694,32 +3700,98 @@ COMPLETE — Phase 8 is the closing review pass, not further feature work:
   promotion bar exactly (not a routine, single-feature roadmap doc).
 - **Audit which adapter-side functions implement a real, declared
   interface vs. which are ad-hoc functions with no interface contract
-  at all — raised during Phase 5a's review.** Phase 5a's own
-  investigation surfaced this as a recurring, easy-to-miss distinction:
-  `adapters/mqtt5.NewServerTransport(opts) reqreply.ServerTransport`/
-  `adapters/nethttp.NewClientTransport(opts) rest.ClientTransport`
-  satisfy REAL, declared, api-layer-owned interfaces (Phase 4d's
-  shipped shape) — but plenty of other adapter-exported functions
-  (e.g. the pre-Phase-5a `Serve[Req,Resp]`/`Call[Req,Resp]`,
-  `CallWithHandle[Req,Resp]`, `ServeOne[Req,Resp]`) are exported,
-  documented, real API surface that DON'T implement any declared
-  interface at all — they're just free functions with their own
-  bespoke signatures, discoverable only by reading the adapter
-  package's godoc, not by checking "does this satisfy interface X."
-  This makes it hard to answer, package-by-package, "is this adapter
-  function REQUIRED by an api-layer contract, or is it a
-  convenience-only addition with no contract backing it" — exactly the
-  ambiguity that let `CallWithHandle`/`ServeOne`/reqreply's `Serve`/
-  `Call` drift into escape-hatch status unnoticed for as long as they
-  did. **Action for Phase 8:** produce an explicit table (per adapter
-  package) of every exported function, its interface (if any) it
-  implements or satisfies, and — for functions with none — a one-line
-  justification for why it's a free function rather than an interface
-  method (e.g. "genuinely can't be generalized," "legacy, scheduled for
-  Phase 5a-style relocation," "intentionally adapter-specific sugar").
-  This closes the exact kind of ambiguity Phase 5a's review had to
-  rediscover via first-principles code reading rather than consulting
-  an existing, trustworthy inventory.
+  at all — raised during Phase 5a's review, COMPLETED below.** Phase
+  5a's own investigation surfaced this as a recurring, easy-to-miss
+  distinction: `adapters/mqtt5.NewServerTransport(opts)
+  reqreply.ServerTransport`/`adapters/nethttp.NewClientTransport(opts)
+  rest.ClientTransport` satisfy REAL, declared, api-layer-owned
+  interfaces (Phase 4d's shipped shape) — but plenty of other
+  adapter-exported functions (e.g. the pre-Phase-5a
+  `Serve[Req,Resp]`/`Call[Req,Resp]`, `CallWithHandle[Req,Resp]`,
+  `ServeOne[Req,Resp]`) were exported, documented, real API surface
+  that DON'T implement any declared interface at all. This closes the
+  exact kind of ambiguity Phase 5a's review had to rediscover via
+  first-principles code reading rather than consulting an existing,
+  trustworthy inventory.
+
+  **(A) Available interfaces adapters implement against** (confirmed
+  via direct grep across every adapter, not assumed):
+
+  | Package | Interface | Implemented by |
+  |---|---|---|
+  | `api/rest` | `ServerTransport`/`ServerAwareTransport` | `nethttp.serverTransport`, `chi.serverTransport` |
+  | `api/rest` | `ClientTransport` | `nethttp.clientTransport` only (chi is server-only) |
+  | `api/rest` | `HeaderCapableTransport`/`CookieCapableTransport`/`QueryCapableTransport` (Phase 6) | `nethttp.httpCarrier`, `chi.httpCarrier` |
+  | `api/rest` | `ErrorResponseWriter` (Phase 7) | `nethttp`/`chi`'s `*statusResponseWriter` |
+  | `api/rest` | `ErrorPatternValuer` | `nethttp.ErrorPatternResponse` |
+  | `api/events` | `Transport`/`ClientAwareTransport` | `mqtt5`, `mqtt` (v3), `zeromq` |
+  | `api/events` | `PublishTransport[T]`/`SubscribeTransport[T]` (Phase 5a shape) | `mqtt5`, `mqtt`, `zeromq` |
+  | `api/reqreply` | `ServerTransport`/`ServerAwareTransport`/`ClientTransport` | `mqtt5`, `zeromq` |
+  | `api/reqreply` | `ErrorPatternValuer` | `mqtt5.ErrorPatternResponse`, `zeromq.ErrorPatternResponse` |
+  | all 3 | `CapabilityName`/`LeveledCapability` | `mqtt5.QoS`/`Retained`, `zeromq.HWM`/`Conflate`, `mqtt.QoS`/`Retained` |
+
+  `Topical` (`api/reqreply`) and `RouteOpt`/`ChannelOpt` are NOT
+  adapter-facing at all — `Topical` is implemented by `*RouteHandle`
+  itself (api-layer-internal), and `RouteOpt`/`ChannelOpt` are
+  implemented by USER-declared param types, not adapters — both listed
+  here only to confirm they were checked, not omitted by oversight.
+
+  **(B) Missing interfaces / gaps + potential closes:**
+  1. REST supplies no native Tier-3a `Capability` VALUE of its own
+     (`RequireQoS`/`RequireHWM` are REST-side requirement
+     declarations, but no adapter can satisfy them — HTTP genuinely
+     has no QoS/HWM concept). Confirmed CORRECT-AS-IS (Phase 3's own
+     design: "adapter doesn't support this capability" is the intended
+     outcome) — NOT a real gap, listed for completeness.
+  2. `events.Address`/the full `Channel[Addr,T]` retrofit remains
+     unshipped — a REAL gap, but deliberately DEFERRED (per D-0006's
+     graduation note) until a real Address-needing adapter (AMQP)
+     exists; not actionable today.
+  3. reqreply's server-side ErrorPattern WRITE step (after the
+     already-centralized `ObserveErrorResponseFor` match) has no
+     `ErrorResponseWriter`-equivalent interface — mqtt5/zeromq realize
+     it via inline/free-function reply-publish logic. Phase 7
+     evaluated exactly this and found the 2 adapters' protocol shapes
+     (declared-topic reply vs. broadcast) too divergent to unify
+     profitably for just 2 implementers — a narrower, PER-PATTERN
+     interface (e.g. `ReplyPublisher interface { PublishReply(topic
+     string, body []byte) error }`) could be designed in a future
+     session if this becomes a maintenance burden, but is not an
+     obvious net win today.
+
+  **(C) Interactions deliberately NOT interface-implemented, with reasons:**
+  1. **Observer outcome-recording** (`RecordRequest`/`RecordPublish`/
+     `RecordSubscribe`) — formally closed in Phase 7's review: only
+     the adapter's own transport dispatch has the REAL per-protocol
+     status/duration data; documented adapter-owned-by-design in
+     `docs/features/observer.md`.
+  2. **Capability VALUES themselves** (`mqtt5.QoS`, `zeromq.HWM`,
+     etc.) — D-0006's original, never-reopened rejection of a shared
+     value type: only the `CapabilityName`/`LeveledCapability`/`Apply`
+     INTERFACES are shared, never the concrete sealed values.
+  3. **Adapter `Options` structs** (`IngestSocketAdapterOptions`,
+     `PublishOptions`, `ServerTransportOptions`, etc.) — deliberately
+     concrete, never interfaces: these are CONSTRUCTOR-TIME
+     configuration, not a dispatch contract, and forcing a shared
+     field set across adapters with zero configuration overlap would
+     defeat the purpose of adapter-specific tuning.
+  4. **reqreply/events' server-side ErrorPattern wire-write** — see
+     (B3) above.
+  5. **A small set of genuinely free-standing exported helper
+     functions per adapter** (confirmed via a full exported-function
+     sweep across all 6 adapters, finding no additional gaps beyond
+     B1-B3): `Connect`/`NewSecuredClient` (connection establishment),
+     `MessageFromContext`/`RequestFromContext`/
+     `ResponseCookiesFromContext`/`ResponseHeadersFromContext` (ctx
+     accessors), `FromUserPropertyParam`/
+     `FromResponseUserPropertyParam` (codec-declaration sugar),
+     `NewCachingCredentialFunc` (credential-caching utility),
+     `NewHub`/`NewDialer`/`NewUpgrader` (websocket connection-management
+     constructors) — none of these are escape-hatch-style dispatch
+     functions competing with an interface; each is connection setup,
+     ctx plumbing, or declaration sugar, genuinely outside any
+     interface's scope, matching the "intentionally adapter-specific
+     sugar" category this audit's own action item anticipated.
 - **Observer + ErrorPattern cross-cutting concerns** — see Phase 7
   above (folded in inline, no longer a separate spun-out doc).
 
