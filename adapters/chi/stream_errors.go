@@ -24,7 +24,7 @@ func (e NoLatestValueError) LogValue() slog.Value {
 }
 
 // PipelineFullError is passed to [Options.ErrorHandler] (status 503) by
-// [HandlerIngest] when the destination channel is full and the incoming
+// [IngestAdapter] when the destination channel is full and the incoming
 // request cannot be enqueued without blocking.
 type PipelineFullError struct {
 	// Path is the route path (from RouteHandle.Descriptor.Path).
@@ -61,7 +61,7 @@ func (e PipelineNoResponseError) LogValue() slog.Value {
 	return slog.GroupValue(slog.String("path", e.Path))
 }
 
-// SSEWriteError is passed to [SSEStreamOptions.OnError] by [SSEFromStream] and
+// SSEWriteError is passed to [SSEStreamOptions.OnError] by
 // [SSEFromHub] when writing a server-sent event to the HTTP response fails.
 type SSEWriteError struct {
 	// Path is the route path (from SSERouteHandle.Descriptor.Path).

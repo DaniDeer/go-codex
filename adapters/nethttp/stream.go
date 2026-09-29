@@ -196,7 +196,7 @@ func RegisterPipeline[Req, Resp any](
 
 // ── SSEFromHub ───────────────────────────────────────────────────────────────────
 
-// SSEStreamOptions configures [SSEFromStream] and [SSEFromHub].
+// SSEStreamOptions configures [SSEFromHub].
 type SSEStreamOptions struct {
 	// Topic is the SSE route path used for observer reporting and error context.
 	// Set this to the route's Descriptor.Path when wiring via [AttachMux].
@@ -213,18 +213,10 @@ type SSEStreamOptions struct {
 	Observer stats.Observer
 }
 
-// sseFromStream returns an SSEHandlerFunc where streamFactory is called once
-// per connecting SSE client with the decoded Req. The resulting
-// [gstream.Stream] is consumed for that connection only.
-//
-// Use SSEFromStream when each client receives a personalised or filtered stream:
-//
-//	dashboardRoute = dashboardRoute.WithHandler(
-//	    nethttp.SSEFromStream(func(_ context.Context, req DashboardReq) gstream.Stream[OEEResult] {
-//	        return stream.Filter(ctx, sharedOEEStream, req.MatchesMachine)
-//	    }, nethttp.SSEStreamOptions{Topic: dashboardRoute.Descriptor.Path, Observer: obs}),
-//	).WithOptions(nethttp.Options{Observer: obs})
-//	dashboardRoute.Register(b); b.Attach(nethttp.NewServerTransport(nethttp.ServerTransportOptions{Mux: mux, Addr: ":8080"}))
+// sseFromStream is the internal per-connection SSE loop shared by
+// [SSEFromHub]: streamFactory is called once per connecting SSE client with
+// the decoded Req, and the resulting [gstream.Stream] is consumed for that
+// connection only.
 //
 // When the client disconnects, ctx is cancelled and the returned fn exits,
 // terminating the per-connection pipeline.

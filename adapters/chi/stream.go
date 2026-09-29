@@ -166,7 +166,7 @@ func RegisterPipeline[Req, Resp any](
 
 // ── SSEFromHub ───────────────────────────────────────────────────────────────────
 
-// SSEStreamOptions configures [SSEFromStream] and [SSEFromHub].
+// SSEStreamOptions configures [SSEFromHub].
 // Mirrors [nethttp.SSEStreamOptions].
 type SSEStreamOptions struct {
 	// Topic is the SSE route path used for observer reporting and error context.
@@ -182,10 +182,9 @@ type SSEStreamOptions struct {
 	Observer stats.Observer
 }
 
-// SSEFromStream returns an [SSEHandlerFunc] where streamFactory is called once
-// per connecting SSE client with the decoded Req. Each client gets its own stream.
-//
-// Use SSEFromStream when each client receives a personalised or filtered stream.
+// sseFromStream is the internal per-connection SSE loop shared by
+// [SSEFromHub]: streamFactory is called once per connecting SSE client with
+// the decoded Req. Each client gets its own stream.
 func sseFromStream[Req, Event any](
 	streamFactory func(context.Context, Req) gstream.Stream[Event],
 	opts SSEStreamOptions,

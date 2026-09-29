@@ -79,7 +79,7 @@ type OptionsShapeError struct {
 }
 
 func (e OptionsShapeError) Error() string {
-	return fmt.Sprintf("nethttp: %s %s: WithOptions value has wrong type: want nethttp.Options, got %T", e.Method, e.Path, e.Got)
+	return fmt.Sprintf("chi: %s %s: WithOptions value has wrong type: want chi.Options, got %T", e.Method, e.Path, e.Got)
 }
 
 // resolveOptions type-asserts a route's type-erased HandlerOpts (from

@@ -1,6 +1,39 @@
-# go-codex Review History (R1–R145, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
+# go-codex Review History (R1–R146, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 146 (api/rest-scoped pass — Phase 8 ToDo 1.3 of capability-requirement-composition.md)
+
+Triggered by `docs/roadmap/capability-requirement-composition.md`'s Phase 8 review-go-codex
+ToDo, split per-API (ToDo 1.3 = `api/rest` only; sibling to Round 144's `api/events` pass and
+Round 145's `api/reqreply` pass). Scoped to `api/rest` core + `adapters/nethttp`/`adapters/chi` +
+`render/openapi`.
+
+- **R1 — `adapters/chi.OptionsShapeError.Error()` said "nethttp"/"want nethttp.Options" instead
+  of "chi"/"want chi.Options"**: a copy-paste artifact from mirroring `adapters/nethttp`'s
+  identical error type. Fixed the message to say "chi"/"want chi.Options", matching the
+  package it actually lives in.
+- **R2 — stale `[HandlerIngest]`/`[SSEFromStream]` godoc bracket-links across
+  `adapters/nethttp/stream_errors.go`, `adapters/nethttp/stream.go`,
+  `adapters/chi/stream_errors.go`, `adapters/chi/stream.go`**: both symbols were renamed/made
+  unexported during the earlier stream-bridge cleanup (`HandlerIngest` → `IngestAdapter`;
+  `SSEFromStream` → unexported `sseFromStream`, now reachable only through `SSEFromHub`) but
+  6 doc comments across both adapters still referenced the old names. Fixed
+  `PipelineFullError`'s doc comment to point at `[IngestAdapter]`; fixed `SSEWriteError`'s and
+  `SSEStreamOptions`'s doc comments to drop the dangling `[SSEFromStream]` link and reference
+  only `[SSEFromHub]`; reworded `sseFromStream`'s own doc comment (previously written as if it
+  were still an exported, directly-callable helper with a usage example) to describe it as the
+  internal per-connection loop shared by `SSEFromHub`.
+
+No other findings. Checked: cross-layer naming parity, param type consistency, builder method
+parity, format API parity, error sentinel consistency (structured errors), observer pattern
+(client + server), unit test coverage, example correctness, stream bridge consistency,
+merge-field/boundary symmetry, error-path ergonomics (`rest.ErrorPattern`), and godoc/doc-site
+reference integrity (§14, run in full given REST's Phase 6/6a/7 churn this session) — all
+already covered by Rounds 1–145, including the specific REST/chi patterns noted in this file's
+Gotchas.
 
 ---
 

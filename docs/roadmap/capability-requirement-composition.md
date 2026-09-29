@@ -3629,7 +3629,19 @@ COMPLETE — Phase 8 is the closing review pass, not further feature work:
     `TransportTypeMismatchError` for the identical failure — fixed +
     regression test added. No other findings — the rest was already
     covered by prior rounds.
-  - 1.3 — `api/rest` — not yet run.
+  - 1.3 — `api/rest` — **DONE (Round 146).** 2 `small`/`trivial`
+    findings: `adapters/chi.OptionsShapeError.Error()` said "nethttp"
+    instead of "chi" (copy-paste artifact from mirroring the nethttp
+    adapter's identical error type) — fixed; and 6 stale
+    `[HandlerIngest]`/`[SSEFromStream]` godoc bracket-links across
+    `adapters/nethttp` and `adapters/chi`'s `stream.go`/
+    `stream_errors.go` (both symbols were renamed/unexported during the
+    earlier stream-bridge cleanup — `HandlerIngest`→`IngestAdapter`,
+    `SSEFromStream`→unexported `sseFromStream` reachable only via
+    `SSEFromHub`) — repointed to the live symbols. No `bug` findings —
+    REST's naming parity, param types, format API parity, error
+    sentinels, observer wiring, boundary symmetry, and error-path
+    ergonomics were all already covered by prior rounds.
 - Run the `review-docs` skill for a final three-surface documentation
   sync pass across every touched package.
 - **Joint declarative-workflow walkthrough** — once Phase 3 ships,
