@@ -1,6 +1,33 @@
-# go-codex Review History (R1–R143, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
+# go-codex Review History (R1–R144, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 144 (api/events-scoped pass — Phase 8 ToDo 1.1 of capability-requirement-composition.md)
+
+Triggered by `docs/roadmap/capability-requirement-composition.md`'s Phase 8 review-go-codex
+ToDo, split per-API (ToDo 1.1 = `api/events` only; `api/reqreply`/`api/rest` get their own
+separate rounds). Scoped to `api/events` core + its 3 event/pubsub adapters (mqtt, mqtt5,
+zeromq) + `render/asyncapi/v3`.
+
+- **E1 — stale `CapabilitySpec` cross-reference in `render/asyncapi/v3/document.go`**: doc
+  comment referenced `api/events.CapabilitySpec`, renamed to `CapabilityRequirement` by Phase 1
+  of `capability-requirement-composition.md`; the render-layer type intentionally keeps its own
+  name, but the prose was stale — reworded to state the rename explicitly.
+- **E2 — `events.ApplyCapabilities` had no direct unit test**: only exercised indirectly via
+  `adapters/zeromq`'s own capability tests. Added `TestApplyCapabilities_appliesAndRecords`/
+  `_laterEntryOverwritesEarlier`/`_appliedFalse_noRecord`/`_nilObserver_noPanic` to
+  `api/events/capability_test.go`, using a new `fakeWireAttributes`/`fakeQoSCapability`/
+  `fakeNeverAppliesCapability` trio mirroring `adapters/mqtt5`'s real `WireAttributes`/`QoS`
+  shape.
+
+No other findings — naming parity vs REST, param types, `ErrorChannel`/`ErrorAction`, the
+sealed `Capability`/`LeveledCapability`/`CheckCapabilityCoverage` mechanism, mqtt/mqtt5/zeromq
+`Capability`/`Apply`/`WireAttributes` parity, `Observability[T]` consolidation, dead-letter/
+middleware-declaration errors, and `Address`/`TopicAddress`'s additive design were all already
+covered by prior rounds (notably R99, R132, R138, R139, capability-requirement-composition
+Phases 1-5, error-path-ergonomics rounds 64-65).
 
 ---
 

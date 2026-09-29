@@ -132,6 +132,76 @@ func TestRecordCapabilityApplied_noopWhenObserverDoesNotImplementCapabilityObser
 	RecordCapabilityApplied(stats.NoopObserver{}, "sensors/x", fakeCapabilityWithName{})
 }
 
+// fakeWireAttributes mirrors adapters/mqtt5.WireAttributes's role: an
+// adapter-owned intermediate target ApplyCapabilities writes into.
+type fakeWireAttributes struct {
+	QoS byte
+}
+
+// fakeQoSCapability mirrors adapters/mqtt5.QoS: a sealed capability value
+// implementing both Apply (required by ApplyCapabilities) and
+// CapabilityName (optional, consulted for RecordCapabilityApplied).
+type fakeQoSCapability byte
+
+func (fakeQoSCapability) CapabilityName() string { return "QoS" }
+
+func (q fakeQoSCapability) Apply(wire *fakeWireAttributes) (bool, error) {
+	wire.QoS = byte(q)
+	return true, nil
+}
+
+// fakeNeverAppliesCapability always reports applied=false — mirrors a
+// capability that's structurally incompatible with the target type.
+type fakeNeverAppliesCapability struct{}
+
+func (fakeNeverAppliesCapability) CapabilityName() string { return "Never" }
+
+func (fakeNeverAppliesCapability) Apply(*fakeWireAttributes) (bool, error) {
+	return false, nil
+}
+
+func TestApplyCapabilities_appliesAndRecords(t *testing.T) {
+	var wire fakeWireAttributes
+	obs := &mockCapabilityObserver{}
+	ApplyCapabilities([]fakeQoSCapability{fakeQoSCapability(1)}, &wire, obs, "sensors/x")
+	if wire.QoS != 1 {
+		t.Errorf("want wire.QoS=1, got %d", wire.QoS)
+	}
+	if len(obs.applied) != 1 || obs.applied[0] != "sensors/x:QoS" {
+		t.Errorf("want [\"sensors/x:QoS\"], got %v", obs.applied)
+	}
+}
+
+func TestApplyCapabilities_laterEntryOverwritesEarlier(t *testing.T) {
+	var wire fakeWireAttributes
+	obs := &mockCapabilityObserver{}
+	ApplyCapabilities([]fakeQoSCapability{fakeQoSCapability(1), fakeQoSCapability(2)}, &wire, obs, "sensors/x")
+	if wire.QoS != 2 {
+		t.Errorf("want wire.QoS=2 (last wins), got %d", wire.QoS)
+	}
+	if len(obs.applied) != 2 {
+		t.Errorf("want 2 RecordCapabilityApplied calls, got %d", len(obs.applied))
+	}
+}
+
+func TestApplyCapabilities_appliedFalse_noRecord(t *testing.T) {
+	var wire fakeWireAttributes
+	obs := &mockCapabilityObserver{}
+	ApplyCapabilities([]fakeNeverAppliesCapability{{}}, &wire, obs, "sensors/x")
+	if len(obs.applied) != 0 {
+		t.Errorf("want no RecordCapabilityApplied calls for applied=false, got %v", obs.applied)
+	}
+}
+
+func TestApplyCapabilities_nilObserver_noPanic(t *testing.T) {
+	var wire fakeWireAttributes
+	// stats.NoopObserver does NOT implement CapabilityObserver — must not panic.
+	ApplyCapabilities([]fakeQoSCapability{fakeQoSCapability(1)}, &wire, stats.NoopObserver{}, "sensors/x")
+	if wire.QoS != 1 {
+		t.Errorf("want wire.QoS=1, got %d", wire.QoS)
+	}
+}
+
 func TestVerifyCapabilityCoverage_emptyDeclared_skipsEntirely(t *testing.T) {
 	// No declared requirements — must return nil without even attempting
 	// to build the []any conversion (and must not panic on a nil supplied

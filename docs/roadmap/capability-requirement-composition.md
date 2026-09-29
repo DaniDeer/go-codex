@@ -3613,10 +3613,16 @@ were folded into the design before writing any code.
 Once Phase 3 ships, this roadmap doc's implementation is considered
 COMPLETE — Phase 8 is the closing review pass, not further feature work:
 
-- Run the `review-go-codex` skill across `api/events`/`api/reqreply`/
-  `api/rest` for cross-layer consistency now that all three implement the
-  same three-tier model (naming parity, error shapes, observer wiring,
-  param types).
+- Run the `review-go-codex` skill, split per-API (not one combined pass):
+  - **1.1 — `api/events` — DONE (Round 144).** 2 trivial findings: a
+    stale `CapabilitySpec`→`CapabilityRequirement` rename cross-reference
+    in `render/asyncapi/v3/document.go`'s godoc, and a missing direct
+    unit test for `events.ApplyCapabilities` (added). No `bug`/`small`
+    findings — naming parity, param types, `ErrorChannel`, the
+    `Capability`/`LeveledCapability` mechanism, and observer wiring were
+    all already covered by prior rounds.
+  - 1.2 — `api/reqreply` — not yet run.
+  - 1.3 — `api/rest` — not yet run.
 - Run the `review-docs` skill for a final three-surface documentation
   sync pass across every touched package.
 - **Joint declarative-workflow walkthrough** — once Phase 3 ships,
