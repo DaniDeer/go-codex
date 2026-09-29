@@ -527,7 +527,7 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 		cookieAttrsResults := elem.Addr().MethodByName("EncodeResponseCookieAttributes").Call([]reflect.Value{respValue})
 		cookieAttrs, _ := cookieAttrsResults[0].Interface().(map[string]rest.CookieAttributes)
 		for k, v := range mergedCookies {
-			pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v, Opts: cookieOptionsFrom(cookieAttrs[k])})
+			pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v, Attrs: cookieAttrs[k]})
 		}
 
 		// Compose every middleware's OWN response header/cookie values
@@ -560,7 +560,7 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 				}
 			}
 			for k, v := range mwCookies {
-				pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v, Opts: cookieOptionsFrom(mwCookieAttrs[k])})
+				pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v, Attrs: mwCookieAttrs[k]})
 			}
 		}
 
@@ -607,8 +607,7 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 				}
 				for i := range pendingCookies {
 					pc := &pendingCookies[i]
-					writeOpts := pc.Opts
-					writeOpts.Codec = nil
+					writeOpts := cookieOptionsFrom(pc.Attrs) // Codec is always nil here — cookieOptionsFrom never sets it
 					if err := SetCookie(sw, pc.Name, pc.Value, writeOpts); err != nil {
 						errFn(sw, r, http.StatusInternalServerError, err)
 						return
@@ -667,8 +666,7 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 		}
 		for i := range pendingCookies {
 			pc := &pendingCookies[i]
-			writeOpts := pc.Opts
-			writeOpts.Codec = nil
+			writeOpts := cookieOptionsFrom(pc.Attrs) // Codec is always nil here — cookieOptionsFrom never sets it
 			if err := SetCookie(sw, pc.Name, pc.Value, writeOpts); err != nil {
 				errFn(sw, r, http.StatusInternalServerError, err)
 				return
@@ -757,90 +755,23 @@ func negotiateRequestFormatReflect(formats reflect.Value, contentType string) (r
 // pre-consolidation inline shape exactly — callers must use the
 // (possibly updated) *err in their own subsequent errFn call, not the
 // original value passed in.
+// Delegates ENTIRELY to [rest.CallDispatchErrorResponse]
+// (docs/roadmap/capability-requirement-composition.md's Phase 7) —
+// this thin wrapper exists only to preserve every existing call site's
+// bool-return/*err-mutation contract unchanged; respType is no longer
+// needed (the generic [rest.RouteHandle.DispatchErrorResponse] this
+// reflect-calls into does its own `pattern.Value.(Resp)` type
+// assertion against the ACTUAL Resp type parameter, recovered by Go's
+// runtime from elem's own concrete instantiation — the same reflection
+// idiom [rest.CallObserveErrorResponseFor] already relies on).
 func tryRespondErrorPattern(
 	ctx context.Context, sw *statusResponseWriter, elem reflect.Value, respType reflect.Type,
 	obs stats.Observer, respHeaders http.Header, pendingCookies *[]PendingCookie, err *error,
 ) bool {
-	resp, matched, applyErr := rest.CallObserveErrorResponseFor(elem.Addr(), ctx, obs, *err)
-	if !matched {
-		return false
-	}
-	if applyErr != nil {
-		*err = applyErr
-		return false
-	}
-	if resp.Action != "" && resp.Action != rest.ErrorRespond {
-		return false
-	}
-	if writeErr := writeErrorPatternResponseReflect(ctx, sw, elem, respType, resp, respHeaders, pendingCookies); writeErr != nil {
-		*err = writeErr
-		return false
-	}
-	return true
-}
-
-// writeErrorPatternResponseReflect is [writeErrorPatternResponse]'s
-// reflect-based equivalent — elem is the *rest.RouteHandle[Req, Resp]
-// reflect.Value (Resp erased at [serve]'s call site) and respType is
-// Resp's reflect.Type (recovered from the route's HandlerFn — see
-// [buildRouteHandler]). pattern.Value's response header/cookie
-// merge-field values are applied ONLY when its concrete type equals Resp
-// — same parity rule as [writeErrorPatternResponse].
-func writeErrorPatternResponseReflect(
-	ctx context.Context,
-	w http.ResponseWriter,
-	elem reflect.Value,
-	respType reflect.Type,
-	pattern rest.ErrorPatternResponse,
-	respHeaders http.Header,
-	pendingCookies *[]PendingCookie,
-) error {
-	if pattern.Value != nil && reflect.TypeOf(pattern.Value) == respType {
-		respVal := reflect.ValueOf(pattern.Value)
-		mergeResults := elem.Addr().MethodByName("EncodeResponseMergeFields").Call([]reflect.Value{respVal})
-		headerValues, _ := mergeResults[0].Interface().(map[string]string)
-		cookieValues, _ := mergeResults[1].Interface().(map[string]string)
-		if err, _ := mergeResults[2].Interface().(error); err != nil {
-			rest.ReportResponseHeaderErrors(ctx, err)
-			rest.ReportResponseCookieErrors(ctx, err)
-			return err
-		}
-		for k, v := range headerValues {
-			respHeaders.Set(k, v)
-		}
-		cookieAttrsResults := elem.Addr().MethodByName("EncodeResponseCookieAttributes").Call([]reflect.Value{respVal})
-		cookieAttrs, _ := cookieAttrsResults[0].Interface().(map[string]rest.CookieAttributes)
-		for k, v := range cookieValues {
-			*pendingCookies = append(*pendingCookies, PendingCookie{Name: k, Value: v, Opts: cookieOptionsFrom(cookieAttrs[k])})
-		}
-	}
-
-	if err := callErr(elem.Addr(), "ValidateResponseHeaders", reflect.ValueOf(responseHeaderValues(respHeaders))); err != nil {
-		rest.ReportResponseHeaderErrors(ctx, err)
-		return err
-	}
-	if err := callErr(elem.Addr(), "ValidateResponseCookies", reflect.ValueOf(responseCookieValues(*pendingCookies))); err != nil {
-		rest.ReportResponseCookieErrors(ctx, err)
-		return err
-	}
-
-	for key, vals := range respHeaders {
-		for _, v := range vals {
-			w.Header().Add(key, v)
-		}
-	}
-	for i := range *pendingCookies {
-		pc := &(*pendingCookies)[i]
-		writeOpts := pc.Opts
-		writeOpts.Codec = nil
-		if err := SetCookie(w, pc.Name, pc.Value, writeOpts); err != nil {
-			return err
-		}
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(pattern.Status)
-	_, err := w.Write(pattern.Body)
-	return err
+	var w rest.ErrorResponseWriter = sw
+	handled, updatedErr := rest.CallDispatchErrorResponse(elem.Addr(), ctx, obs, w, respHeaders, *pendingCookies, *err)
+	*err = updatedErr
+	return handled
 }
 
 // validateImplementationShapesReflect checks every attached impl.Fn against

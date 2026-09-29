@@ -64,7 +64,7 @@ func demoResponseHeaderCookieViolation() {
 			chiadapter.WithResponseCookies(ctx, chiadapter.PendingCookie{
 				Name:  "session",
 				Value: "short", // < 8 chars → fails MinLen(8) → 500
-				Opts:  chiadapter.CookieOptions{Insecure: true},
+				Attrs: rest.CookieAttributes{Insecure: true},
 			})
 			return routes.User{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Name: "Carol", Email: "carol@example.com"}, nil
 		},

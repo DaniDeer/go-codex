@@ -109,11 +109,14 @@ func SetCookie(w http.ResponseWriter, name, value string, opts CookieOptions) er
 
 // PendingCookie is a cookie queued to be validated and written as a Set-Cookie
 // response header by the request pipeline.
-type PendingCookie struct {
-	Name  string
-	Value string
-	Opts  CookieOptions
-}
+//
+// Type alias (docs/roadmap/capability-requirement-composition.md's
+// Phase 7 — promoted to api/rest, since nethttp/chi's own copies were
+// byte-for-byte structurally identical): [rest.PendingCookie]'s
+// `Attrs CookieAttributes` field replaces this former `Opts
+// CookieOptions` field — see [cookieOptionsFrom] for the write-time
+// conversion back to this package's own [CookieOptions].
+type PendingCookie = rest.PendingCookie
 
 // cookieOptionsFrom translates a codec-declared [rest.CookieAttributes]
 // (the transport-agnostic api/rest declaration, populated via
@@ -548,7 +551,7 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 			}
 			cookieAttrs := handle.EncodeResponseCookieAttributes(resp)
 			for k, v := range values {
-				pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v, Opts: cookieOptionsFrom(cookieAttrs[k])})
+				pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v, Attrs: cookieAttrs[k]})
 			}
 		}
 
@@ -595,8 +598,7 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 				}
 				for i := range pendingCookies {
 					pc := &pendingCookies[i]
-					writeOpts := pc.Opts
-					writeOpts.Codec = nil
+					writeOpts := cookieOptionsFrom(pc.Attrs) // Codec is always nil here — cookieOptionsFrom never sets it
 					if err := SetCookie(sw, pc.Name, pc.Value, writeOpts); err != nil {
 						errFn(sw, r, http.StatusInternalServerError, err)
 						return
@@ -653,8 +655,7 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 		}
 		for i := range pendingCookies {
 			pc := &pendingCookies[i]
-			writeOpts := pc.Opts
-			writeOpts.Codec = nil
+			writeOpts := cookieOptionsFrom(pc.Attrs) // Codec is always nil here — cookieOptionsFrom never sets it
 			if err := SetCookie(sw, pc.Name, pc.Value, writeOpts); err != nil {
 				errFn(sw, r, http.StatusInternalServerError, err)
 				return
@@ -839,8 +840,7 @@ func sseHandlerFunc[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn 
 					}
 					for i := range *pending {
 						pc := &(*pending)[i]
-						writeOpts := pc.Opts
-						writeOpts.Codec = nil
+						writeOpts := cookieOptionsFrom(pc.Attrs) // Codec is always nil here — cookieOptionsFrom never sets it
 						if err := SetCookie(sw, pc.Name, pc.Value, writeOpts); err != nil {
 							return err
 						}
@@ -975,77 +975,42 @@ func responseCookieValues(cookies []PendingCookie) map[string]string {
 // own applyErr (a mapFn/encode failure) or a response-write failure,
 // mirroring serve.go's identical contract — callers must use the
 // (possibly updated) *err in their own subsequent errFn call.
+// Delegates ENTIRELY to [rest.RouteHandle.DispatchErrorResponse]
+// (docs/roadmap/capability-requirement-composition.md's Phase 7) —
+// this thin wrapper exists only to preserve every existing call site's
+// bool-return/*err-mutation contract unchanged; the match/encode/
+// validate/write orchestration itself now lives entirely in api/rest.
 func tryRespondErrorPatternGeneric[Req, Resp any](
 	ctx context.Context, sw *statusResponseWriter, handle *rest.RouteHandle[Req, Resp],
 	obs stats.Observer, respHeaders http.Header, pendingCookies *[]PendingCookie, err *error,
 ) bool {
-	resp, matched, applyErr := handle.ObserveErrorResponseFor(ctx, obs, *err)
-	if !matched {
-		return false
-	}
-	if applyErr != nil {
-		*err = applyErr
-		return false
-	}
-	if resp.Action != "" && resp.Action != rest.ErrorRespond {
-		return false
-	}
-	if writeErr := writeErrorPatternResponse(ctx, sw, handle, resp, respHeaders, *pendingCookies); writeErr != nil {
-		*err = writeErr
-		return false
-	}
-	return true
+	handled, updatedErr := handle.DispatchErrorResponse(ctx, obs, sw, respHeaders, *pendingCookies, *err)
+	*err = updatedErr
+	return handled
 }
 
-func writeErrorPatternResponse[Req, Resp any](
-	ctx context.Context,
-	w http.ResponseWriter,
-	handle *rest.RouteHandle[Req, Resp],
-	pattern rest.ErrorPatternResponse,
-	respHeaders http.Header,
-	pendingCookies []PendingCookie,
-) error {
-	if respVal, ok := pattern.Value.(Resp); ok {
-		headerValues, cookieValues, encErr := handle.EncodeResponseMergeFields(respVal)
-		if encErr != nil {
-			rest.ReportResponseHeaderErrors(ctx, encErr)
-			rest.ReportResponseCookieErrors(ctx, encErr)
-			return encErr
-		}
-		for k, v := range headerValues {
-			respHeaders.Set(k, v)
-		}
-		cookieAttrs := handle.EncodeResponseCookieAttributes(respVal)
-		for k, v := range cookieValues {
-			pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v, Opts: cookieOptionsFrom(cookieAttrs[k])})
-		}
-	}
-
-	if err := handle.ValidateResponseHeaders(responseHeaderValues(respHeaders)); err != nil {
-		rest.ReportResponseHeaderErrors(ctx, err)
-		return err
-	}
-	if err := handle.ValidateResponseCookies(responseCookieValues(pendingCookies)); err != nil {
-		rest.ReportResponseCookieErrors(ctx, err)
-		return err
-	}
-
-	for key, vals := range respHeaders {
+// WriteErrorResponse implements [rest.ErrorResponseWriter] — the ONLY
+// genuinely protocol-specific remainder of the former
+// `writeErrorPatternResponse` (docs/roadmap/
+// capability-requirement-composition.md's Phase 7): match, encode, and
+// validate all now happen inside [rest.RouteHandle.DispatchErrorResponse]
+// itself; this method only writes the already-validated headers,
+// cookies, status, and body onto the wire.
+func (sw *statusResponseWriter) WriteErrorResponse(headers map[string][]string, cookies []PendingCookie, status int, body []byte) error {
+	for key, vals := range headers {
 		for _, v := range vals {
-			w.Header().Add(key, v)
+			sw.Header().Add(key, v)
 		}
 	}
-	for i := range pendingCookies {
-		pc := &pendingCookies[i]
-		writeOpts := pc.Opts
-		writeOpts.Codec = nil
-		if err := SetCookie(w, pc.Name, pc.Value, writeOpts); err != nil {
+	for _, pc := range cookies {
+		writeOpts := cookieOptionsFrom(pc.Attrs) // Codec is always nil here — cookieOptionsFrom never sets it
+		if err := SetCookie(sw, pc.Name, pc.Value, writeOpts); err != nil {
 			return err
 		}
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(pattern.Status)
-	_, err := w.Write(pattern.Body)
+	sw.Header().Set("Content-Type", "application/json")
+	sw.WriteHeader(status)
+	_, err := sw.Write(body)
 	return err
 }
 

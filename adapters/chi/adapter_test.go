@@ -340,7 +340,7 @@ func TestHandler_ResponseCookies(t *testing.T) {
 	).WithHandler(func(ctx context.Context, req createReq) (userResp, error) {
 		WithResponseCookies(ctx, PendingCookie{
 			Name: "session", Value: "abcdefgh",
-			Opts: CookieOptions{MaxAge: 3600, Insecure: true},
+			Attrs: rest.CookieAttributes{MaxAge: 3600, Insecure: true},
 		})
 		return userResp{ID: "1", Name: req.Name}, nil
 	})

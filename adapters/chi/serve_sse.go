@@ -249,7 +249,7 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 				}
 			}
 			for k, v := range mwCookies {
-				pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v, Opts: cookieOptionsFrom(mwCookieAttrs[k])})
+				pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v, Attrs: mwCookieAttrs[k]})
 			}
 		}
 
@@ -355,7 +355,7 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 				ownCookieAttrsResults := elem.Addr().MethodByName("EncodeResponseCookieAttributes").Call([]reflect.Value{e})
 				ownCookieAttrs, _ := ownCookieAttrsResults[0].Interface().(map[string]rest.CookieAttributes)
 				for k, v := range ownCookies {
-					pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v, Opts: cookieOptionsFrom(ownCookieAttrs[k])})
+					pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v, Attrs: ownCookieAttrs[k]})
 				}
 				if errV := callErr(elem.Addr(), "ValidateResponseHeaders", reflect.ValueOf(responseHeaderValues(responseHeaders))); errV != nil {
 					rest.ReportResponseHeaderErrors(ctx, errV)
@@ -367,8 +367,7 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 				}
 				for i := range pendingCookies {
 					pc := &pendingCookies[i]
-					writeOpts := pc.Opts
-					writeOpts.Codec = nil
+					writeOpts := cookieOptionsFrom(pc.Attrs) // Codec is always nil here — cookieOptionsFrom never sets it
 					if err := SetCookie(sw, pc.Name, pc.Value, writeOpts); err != nil {
 						return retErr(err)
 					}

@@ -24,11 +24,13 @@
 > `Extract`-shaped methods on a new `httpCarrier` type) SHIPPED; Phase
 > 6a (SSE coverage-check gap closed + `adapters/websocket` brought into
 > the same mechanism via a new `wsCarrier` type + cookie support) SHIPPED;
-> Phase 7 (ErrorPattern: committed `ErrorResponseWriter` interface
-> design, deleting all 5 duplicated nethttp/chi functions; Observer:
-> formally CLOSED as correctly adapter-owned) DESIGN COMPLETE, not yet
-> implemented; Phase 8 (Review & Closeout) pending. See each
-> subsection's own Learnings entry. Spun out of a
+> Phase 7 (ErrorPattern: `ErrorResponseWriter` interface + new
+> `rest.PendingCookie`/`DispatchErrorResponse`/
+> `CallDispatchErrorResponse`, deleting 2 of 4 remaining
+> nethttp/chi ErrorPattern write functions outright — `SetCookie`
+> correctly excluded, still public API; Observer: formally CLOSED as
+> correctly adapter-owned) SHIPPED; Phase 8 (Review & Closeout)
+> pending. See each subsection's own Learnings entry. Spun out of a
 > user question about
 > [D-0006 — Protocol-Native Capabilities](../design/d-0006-protocol-native-capabilities.md)'s
 > scope (events-only) while reviewing [`docs/features/capabilities.md`](../features/capabilities.md).
@@ -3400,7 +3402,8 @@ first attempt.
 
 ### Phase 7 — Observer + ErrorPattern as interface-level cross-cutting concerns
 
-**Status: Design complete — not yet implemented.** Raised while
+**Status: SHIPPED (ErrorPattern half); Observer half formally CLOSED,
+no code needed.** Raised while
 reviewing this doc's own Phase 8 (below) closing todo: "check in every
 api and its adapter the observer pattern integration and the error
 pattern integration, with the goal to have a thin adapter and the
@@ -3558,6 +3561,52 @@ example. This is not a documentation gap — the API is already clear.
 **Conclusion: Observer's current adapter-ownership is CORRECT, not a
 gap, and this question is closed — no code change, no further
 exploration planned for this roadmap.**
+
+**Learnings (ErrorPattern implementation — 3 real corrections found
+during detailed signature design, all resolved before writing code,
+none discovered mid-implementation):**
+
+1. **`SetCookie` was wrongly included in the "delete all 5" plan.**
+   It's a general-purpose, exported, public API function with ~15 real
+   call sites beyond ErrorPattern (success-path cookie writing in both
+   adapters) — it cannot be deleted. Only 2 of the 4 remaining
+   ErrorPattern-specific functions (`tryRespondErrorPatternGeneric`/
+   `tryRespondErrorPattern`) needed FULL deletion of their write logic;
+   the other 2 became thin `WriteErrorResponse` interface-method
+   implementations that still call the UNCHANGED, still-public
+   `SetCookie` internally.
+2. **Real call-site count for the 2 fully-internally-replaced
+   orchestrator functions was 66** (`tryRespondErrorPatternGeneric`:
+   14+14; `tryRespondErrorPattern`: 19+19) — every one of them stayed
+   completely UNCHANGED at the call site (only the 2 functions'
+   INTERNAL bodies were replaced with thin delegating shims preserving
+   the exact bool-return/`*err`-mutation contract), so this large
+   count carried ZERO actual migration risk — a good example of
+   "large count, low per-site complexity."
+3. **The "full migration" of the shared `PendingCookie` staging type
+   was precisely scoped and much narrower than initially feared.**
+   `respHeaders` needed ZERO type migration (`http.Header` already IS
+   `map[string][]string`, Go's assignability rules allow passing it
+   directly to a `map[string][]string` parameter with no conversion
+   boilerplate at all). `PendingCookie` itself became a straightforward
+   TYPE ALIAS (`type PendingCookie = rest.PendingCookie` in both
+   adapters) — the ~80 `ctx.Value(...)`/pass-through touch points
+   originally worried about were unaffected (they never touch the
+   internal field), leaving only 14 CONSTRUCTION sites (`Opts:
+   cookieOptionsFrom(...)` → `Attrs: ...` directly) and 16
+   CONSUMPTION sites (`pc.Opts` → `cookieOptionsFrom(pc.Attrs)`,
+   moving the adapter-specific conversion from staging-time to
+   write-time) across both adapters — squarely in line with prior
+   phases' migration scale (30 real touch points, not 80+).
+   `CookieAttributes` (already existing in `api/rest`) turned out to
+   be an exact structural match for what the new `PendingCookie.Attrs`
+   field needed — no new attribute type was required at all.
+
+Full verification (`gofmt`/`build`/`vet`/`test`/`just check`/all
+examples, including explicit confirmation that `examples/rest-api`'s
+own `ErrorPattern`/response-violation demos still produce byte-identical
+output) passed clean on the first attempt after these 3 corrections
+were folded into the design before writing any code.
 
 ### Phase 8 — Review & Closeout (not a feature phase)
 

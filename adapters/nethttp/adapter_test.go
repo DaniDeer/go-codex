@@ -950,7 +950,7 @@ func TestWithResponseCookies_setsCookieOnSuccess(t *testing.T) {
 		WithResponseCookies(ctx, PendingCookie{
 			Name:  "session",
 			Value: "tok_abcdefgh",
-			Opts:  CookieOptions{MaxAge: 3600},
+			Attrs: rest.CookieAttributes{MaxAge: 3600},
 		})
 		return userResp{ID: "1", Name: req.Name}, nil
 	})
