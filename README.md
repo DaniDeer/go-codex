@@ -43,7 +43,9 @@ the last, but none requires the next:
 | **2 — API contract** | `api/rest`, `api/events`, `api/reqreply`, `api/mcp`, `render/*` | Routes, channels, tools | Typed helpers + OpenAPI / AsyncAPI / MCP spec |
 | **3 — Application foundation** | `ports/`, `app/`, `stream/`, `forge/`, `adapters/*` | IO boundaries + computation contracts | Protocol-agnostic ports, supervised lifecycle, governed/signed pipelines — bind concrete transports only in `main()` |
 
-All three follow the same pattern: **declare → register → handle**.
+All three follow the same pattern: **declare → register → handle**, with
+protocol capabilities (QoS, retained, …) declared separately, at the
+adapter/attach step — the route or channel itself stays protocol-neutral.
 
 ```go
 // Layer 1 — define a codec once; constraints run on both encode and decode
@@ -62,17 +64,29 @@ var createUser = rest.NewRoute[CreateUserReq, User]("POST", "/users",
 handle, _ := createUser.RegisterHandle(builder)
 req, _    := handle.Decode(body)           // validates automatically
 
-// Layer 2 (client) — reuse the same route spec on the client side
-user, _ := nethttp.Call(ctx, http.DefaultClient, serverURL, handle, req, nil, opts)
+// Layer 2 (client) — reuse the SAME route value on the client side, via
+// rest.Client + Client.Attach (no separate handle needed for the caller)
+client := rest.NewClient()
+client.Attach(nethttp.NewClientTransport(nethttp.ClientTransportOptions{
+    HTTPClient: http.DefaultClient, BaseURL: serverURL,
+}))
+respAny, _ := client.Call(ctx, createUser, req)
+user := respAny.(User)
 
 // Layer 3 — declare an IO boundary with zero transport imports in domain code;
-// bind the concrete adapter only in main()
+// bind the concrete adapter (and its protocol capabilities) only in main()
 var SensorReadings = codex.Must(ports.NewSourcePort[SensorReading]("sensors", readingCodec,
     ports.PortOptions{}))
 var SensorReadingsPattern = ports.EventPattern{Topic: "sensors/{sensorID}/data"}
 // main.go:
 handle, _ := SensorReadings.PluginEventPattern(SensorReadingsPattern)
-SensorReadings.Bind(ctx, mqtt5.SubscribeAdapter(client, handle, opts))
+client5, router, _ := mqtt5.Connect(ctx, "tcp://broker:1883", mqtt5.ConnectOptions{ClientID: "svc-1"})
+SensorReadings.Bind(ctx, mqtt5.SubscribeAdapter(client5, router, handle,
+    format.JSON(readingCodec),
+    mqtt5.SubscribeAdapterOptions{
+        Capabilities: []mqtt5.Capability{mqtt5.QoSAtLeastOnce}, // declared HERE, not on the route
+    },
+))
 
 // Layer 3 — governed computation with automatic input/output validation
 fn := forge.NewFunction[OEEInput, OEEResult]("oee", "1.0.0",

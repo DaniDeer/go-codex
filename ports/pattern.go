@@ -140,7 +140,9 @@ type EventPattern struct {
 func (EventPattern) isPortPattern() {}
 
 // ReqReplyPattern declares a request/reply-shaped communication pattern for a
-// port bound to a reqreply-style adapter (mqtt5 Call/Serve, zeromq Call/Serve).
+// port bound to a reqreply-style adapter (mqtt5 NewServerTransport/
+// NewClientTransport, zeromq NewServerTransport/NewClientTransport, both
+// consumed via reqreply.Server.Attach/Client.Attach).
 // Topic mirrors [reqreply.NewRoute]'s first argument; Opts accepts the same
 // option vocabulary ([reqreply.RouteMeta], [reqreply.TopicParam]).
 //
