@@ -805,7 +805,7 @@ type clientTransport struct {
 // (docs/roadmap/capability-requirement-composition.md's Phase 4d: a
 // single Options struct, no positional params, even for the two
 // REQUIRED fields). Call nests the pre-existing [CallOptions] type
-// unchanged (Timeout, QoS, CredentialFunc, ReplyTopicPrefix/Builder,
+// unchanged (Timeout, QoS, Capabilities, ReplyTopicPrefix/Builder,
 // configuring every call dispatched through this transport uniformly).
 type ClientTransportOptions struct {
 	// Client is the MQTT 5 broker connection. Required.

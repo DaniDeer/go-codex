@@ -23,17 +23,22 @@
 //	    ).WithCode("conflict").WithDescription("Business conflict.").WithSchemaName("ConflictError"),
 //	)
 //
-//	// Register with a Server to get a RouteHandle and an AsyncAPI 3.0 spec.
+//	// Register a domain handler, then attach a Server to get a RouteHandle
+//	// and an AsyncAPI 3.0 spec. Handler/encode errors matching a declared
+//	// ErrorPattern get the typed payload as the reply instead of a
+//	// plain-text error string — dispatched uniformly regardless of adapter.
 //	server := reqreply.NewServer(reqreply.Info{Title: "Compute API", Version: "1.0.0"})
 //	server.AddServer("zmq", reqreply.ServerEntry{URL: "tcp://localhost:5556", Protocol: "zmq"})
 //	// OR: server.AddServer("mqtt5", reqreply.ServerEntry{URL: "mqtt://broker:1883", Protocol: "mqtt5"})
-//	handle, err := ComputeRoute.Register(server)
+//	handle, err := ComputeRoute.WithHandler(computeHandler).Register(server)
 //
-//	// Same handle — works with any request-reply adapter. Handler/encode
-//	// errors matching a declared ErrorPattern get the typed payload as the
-//	// reply instead of a plain-text error string:
-//	zmqadapter.Serve(ctx, sock, handle, fn, zmqadapter.ServeOptions{Observer: obs})
-//	mqtt5adapter.Serve(ctx, client, router, handle, fn, mqtt5.ServeOptions{Observer: obs})
+//	// Attach an adapter transport, then Serve — dispatches every registered route:
+//	transport := zeromqadapter.NewServerTransport(zeromqadapter.ServerTransportOptions{
+//	    Sockets: map[string]zeromqadapter.FramedSocket{"compute/add": repSock},
+//	})
+//	// OR: transport := mqtt5adapter.NewServerTransport(mqtt5adapter.ServerTransportOptions{Client: client, Router: router})
+//	if err := server.Attach(transport); err != nil { /* handle */ }
+//	err = server.Serve(ctx)
 //
 //	// AsyncAPI 3.0 spec with request-reply reply: block, plus the
 //	// ErrorPattern-derived reply-error channel/operation:
@@ -57,30 +62,35 @@
 // [ErrorPattern] is the codec-first, runtime-wired error declaration — the
 // request-reply analogue of [rest.ErrorPattern] and [events.ErrorChannel]:
 // declare a typed error payload for a matched error type (direct or mapped
-// mode), and [mqtt5.Serve]/[zeromq.Serve]/[zeromq.ServeRouter] automatically
-// send it on handler/encode failure instead of a plain-text error string.
+// mode), and every adapter's [ServerTransport] (mqtt5, zeromq REQ/REP,
+// zeromq ROUTER/DEALER) automatically sends it on handler/encode failure
+// instead of a plain-text error string.
 // [ErrorPattern] also drives the AsyncAPI reply-error channel/operation that
 // [ErrorReplyMeta] previously required a separate declaration for — one
 // declaration now produces both. [ErrorReplyMeta] remains available
 // unchanged for spec-only declarations that need no runtime dispatch.
 //
-// # Server/Client + Attach (workflow simplification, in progress)
+// # Server/Client + Attach
 //
 // [Server] absorbs [Builder]'s spec-accumulation role (AddServer,
 // AddGlobalSecurity, route registration) AND owns request-reply dispatch
 // once a [ServerTransport] is attached via [Server.Attach] — mirroring
 // [rest.Server]'s identical unification. [Builder]/[NewBuilder] remain
-// available as DEPRECATED aliases for [Server]/[NewServer] during the
-// migration described in
-// [docs/design/d-0004-reqreply-workflow-simplification.md]; existing code using
-// [Builder] keeps compiling and behaving identically.
+// available as DEPRECATED aliases for [Server]/[NewServer]; existing code
+// using [Builder] keeps compiling and behaving identically. There is no
+// adapter-namespaced Attach function anymore (removed, breaking, per
+// docs/roadmap/capability-requirement-composition.md's "zero backdoor
+// between the api layer and the adapters" directive) — every adapter
+// instead exposes a NewServerTransport/NewClientTransport constructor,
+// consumed uniformly via [Server.Attach]/[Client.Attach].
 //
 // [Route.WithHandler] attaches a domain handler fluently, PRE-registration
 // — mirroring [rest.Route.WithHandler]'s real, dominant idiom exactly:
 //
 //	handle, err := ComputeRoute.WithHandler(computeHandler).Register(server)
-//	_ = mqtt5.Attach(server, client, router) // adapter-specific, lands per-adapter
-//	err = server.Serve(ctx)                  // dispatches every registered route
+//	transport := mqtt5adapter.NewServerTransport(mqtt5adapter.ServerTransportOptions{Client: client, Router: router})
+//	if err := server.Attach(transport); err != nil { /* handle */ }
+//	err = server.Serve(ctx) // dispatches every registered route concurrently
 //
 // [Client] offers a blocking [Client.Call] (accepting EITHER a raw,
 // unregistered [Route] — REST-style, [RouteHandle.GlobalSecurity]
@@ -90,9 +100,10 @@
 // asynchronously — needed because reqreply's transport (unlike REST's
 // synchronous HTTP) is genuinely asynchronous underneath.
 //
-// Per-adapter [ServerTransport]/[ClientTransport] implementations (e.g.
-// mqtt5.Attach, zeromq.Attach) land incrementally — see the roadmap doc's
-// phased implementation plan for the current status of each transport.
+// Every adapter (mqtt5, zeromq REQ/REP, zeromq ROUTER/DEALER) ships both a
+// [ServerTransport] and [ClientTransport] implementation — see each
+// adapter's own doc.go for its NewServerTransport/NewClientTransport
+// signature and options.
 //
 // # Protocol-native capabilities
 //
@@ -113,7 +124,7 @@
 //     `CallOptions.Capabilities` field) satisfy every declared requirement
 //     — including, for requirements with a MinLevel (e.g. RequireQoS), a
 //     genuine VALUE check via the optional [LeveledCapability] interface,
-//     not just presence-by-name. Checked once at Serve/AttachServer setup;
+//     not just presence-by-name. Checked once at Serve/Attach setup;
 //     the resolved values are then applied to EVERY reply publish
 //     (success, error-pattern-matched, and dead-letter alike).
 //

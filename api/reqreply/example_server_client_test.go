@@ -10,7 +10,8 @@ import (
 // exampleInProcessTransport is a minimal in-process ServerTransport/
 // ClientTransport pair — NOT a real adapter, just enough to demonstrate
 // the Server/Client + Attach workflow end-to-end without a real broker.
-// Real transports (mqtt5.Attach, zeromq.Attach) land per-adapter — see
+// Real transports (mqtt5.NewServerTransport/NewClientTransport, zeromq.NewServerTransport/
+// NewClientTransport, each paired with Server.Attach/Client.Attach) land per-adapter — see
 // docs/design/d-0004-reqreply-workflow-simplification.md.
 type exampleInProcessTransport struct {
 	handlers map[string]func(context.Context, any) (any, error)

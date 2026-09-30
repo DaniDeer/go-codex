@@ -240,7 +240,7 @@ route.
 
 **`adapters/zeromq`'s REQ/REP transport needs its own DLQ socket.** Unlike `adapters/mqtt5` (one
 shared client reaches any topic), REQ/REP is point-to-point — the declared dead-letter topic must
-have its OWN entry in the `sockets` map passed to `zeromq.AttachServer`/`AttachRouterServer`.
+have its OWN entry in the `sockets` map passed to `zeromq.NewServerTransport`/`NewRouterServerTransport`.
 Without one, the dead-letter is silently skipped rather than sent back over the route's own
 REP/ROUTER socket (which would violate REQ/REP's one-reply-per-request invariant).
 

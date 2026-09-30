@@ -469,7 +469,7 @@ func checkImplementationsDeclared(routeLabel string, mws []middleware.Middleware
 // at runtime despite declaring a scheme in its spec. Returns
 // [MissingSecurityMiddlewareError] on the first uncovered scheme found.
 // Mirrors [rest.CheckCoverage] exactly — called explicitly by the
-// attached [ServerTransport] (e.g. mqtt5's `AttachServer`-built
+// attached [ServerTransport] (e.g. mqtt5's `NewServerTransport`-built
 // `serverTransport.Serve`) at Serve time, the point where the route's
 // declared security requirements AND its attached
 // []middleware.ServerImplementation values are BOTH known.

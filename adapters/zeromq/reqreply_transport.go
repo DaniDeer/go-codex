@@ -387,7 +387,7 @@ func (e MissingSocketError) LogValue() slog.Value {
 // ── REQ/REP server ───────────────────────────────────────────────────────
 
 // serverTransport implements [reqreply.ServerTransport] for ZMQ REQ/REP
-// sockets, wrapping a topic→socket map — built by [AttachServer]. A
+// sockets, wrapping a topic→socket map — built by [NewServerTransport]. A
 // reflection shim (mirrors [adapters/mqtt5]'s identical technique): Go
 // forbids generic methods, so Serve recovers the concrete Req/Resp types
 // at runtime via reflection against the type-erased
@@ -395,20 +395,26 @@ func (e MissingSocketError) LogValue() slog.Value {
 // FIELDS holding func values, not methods — reflect.Value.Call works
 // identically either way).
 //
-// v1 scope (documented, matching [adapters/mqtt5]'s reqreply shim's own
-// precedent): route-declared [reqreply.RouteHandle.RequestFormats]/
-// [reqreply.RouteHandle.Formats] overrides and [reqreply.ErrorPattern]-
-// typed error replies are NOT honored by this shim — it always uses
-// handle.Decode/handle.Encode (JSON) and always sends plain-text error
-// replies via [sendErrorReply]. A caller needing either of these should
-// use [Serve] directly (fully featured, completely unaffected by this
-// addition) instead of the [reqreply.Server]/[AttachServer] workflow.
+// Capability parity (Phase 0 of
+// docs/design/d-0004-reqreply-workflow-simplification.md's Addendum,
+// SHIPPED, mirroring [adapters/mqtt5]'s identical shim): route-declared
+// [reqreply.RouteHandle.RequestFormats]/[reqreply.RouteHandle.Formats]
+// overrides and [reqreply.ErrorPattern]-typed error replies (via
+// [reqreply.RouteHandle.ObserveErrorResponseFor]/[reqreply.RouteHandle.DeadLetterFor])
+// are honored via [reqreply.RouteHandle.DecodeWithFormats]/
+// [reqreply.RouteHandle.EncodeWithFormats], reached through reflection
+// against rv — there is no remaining feature gap against a route
+// registered directly through [reqreply.Server]/[reqreply.Server.Attach].
+// No merge-field support is added (unlike mqtt5): zeromq's REQ/REP wire
+// format carries no topic frame at all (routing is entirely
+// socket-based, one socket per concrete topic, never a template), so
+// [reqreply.NewTopicParam] merge-field decode was never applicable here.
 //
 // Serve BLOCKS until ctx is cancelled or a fatal socket error occurs —
 // unlike [adapters/mqtt5]'s non-blocking Serve (which registers +
 // returns immediately), ZMQ has no built-in dispatch loop of its own to
-// delegate to, so this shim runs its own receive loop, exactly like
-// [Serve] does. This is the confirmed BLOCKING-transport branch
+// delegate to, so this shim runs its own receive loop. This is the
+// confirmed BLOCKING-transport branch
 // [reqreply.Server.Serve]'s concurrent dispatch (one goroutine per
 // route) is designed to accommodate.
 type serverTransport struct {
@@ -469,10 +475,10 @@ func (t *serverTransport) BindServer(s *reqreply.Server) error {
 	return nil
 }
 
-// Serve implements [reqreply.ServerTransport]. Mirrors [Serve]'s core
-// receive loop (recv → decode → call fn → encode → send reply) via
-// reflection against routeAny/fnAny — see [serverTransport]'s doc
-// comment for this shim's documented v1 scope and blocking contract.
+// Serve implements [reqreply.ServerTransport]. Runs a recv → decode →
+// call fn → encode → send-reply loop via reflection against
+// routeAny/fnAny — see [serverTransport]'s doc comment for this shim's
+// shipped capability parity and blocking contract.
 func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) error {
 	rv, elem, err := recoverRouteHandleValue(routeAny)
 	if err != nil {
@@ -768,7 +774,7 @@ var _ reqreply.ServerTransport = (*serverTransport)(nil)
 // clientTransport implements [reqreply.ClientTransport] for ZMQ REQ
 // sockets, wrapping a topic→socket map — built by [NewClientTransport].
 // See [serverTransport]'s doc comment for this shim's identical
-// reflection technique and documented v1 scope.
+// reflection technique and shipped capability parity.
 type clientTransport struct {
 	sockets map[string]FramedSocket
 	opts    CallOptions
@@ -1177,10 +1183,9 @@ var _ reqreply.ClientTransport = (*clientTransport)(nil)
 // routerServerTransport implements [reqreply.ServerTransport] for ZMQ
 // ROUTER sockets, wrapping a topic→socket map — built by
 // [NewRouterServerTransport]. Mirrors [serverTransport]'s reflection
-// technique and documented v1 scope; dispatches each request in its own
-// goroutine (mirroring [ServeRouter]'s own per-request concurrency),
-// preserving the identity frame so the reply reaches the correct DEALER
-// peer.
+// technique and shipped capability parity; dispatches each request in
+// its own goroutine, preserving the identity frame so the reply reaches
+// the correct DEALER peer.
 type routerServerTransport struct {
 	sockets map[string]FramedSocket
 	opts    ServeOptions

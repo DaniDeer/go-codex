@@ -1261,8 +1261,8 @@ adapters like `file`/`sql` use `Params` instead; see below).
 
 Standalone (non-pipeline) use of adapters — `mqtt5.NewSubscribeTransport`/
 `events.SubscribeHandle`, `rest.Client.Call`/`nethttp.CallWithHandle`,
-`zeromq.Serve` (req/reply), etc. — remains fully supported and unaffected by
-`ports`.
+`zeromq.NewServerTransport`+`reqreply.Server.Attach` (req/reply), etc. —
+remains fully supported and unaffected by `ports`.
 
 ## Design pattern: declarative descriptor + plain function
 

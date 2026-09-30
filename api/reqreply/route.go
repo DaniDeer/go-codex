@@ -1709,8 +1709,8 @@ func (h *RouteHandle[Req, Resp]) ValidateTopicVars(vars map[string]string) error
 }
 
 // TopicOf implements [Topical] — returns h's registered Topic. Backs
-// [Server.RegisteredTopics], used by adapters like [zeromq.Attach] to
-// validate topic/socket coverage at Attach time.
+// [Server.RegisteredTopics], used by adapters like adapters/zeromq to
+// validate topic/socket coverage at [Server.Attach] time.
 func (h *RouteHandle[Req, Resp]) TopicOf() string { return h.Topic }
 
 // NewFutureAny implements [FutureFactory] — constructs a correctly-typed

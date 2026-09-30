@@ -608,9 +608,9 @@ var ComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 Server side — `.Use(bearerAuth)` declares the requirement; `HandleMW`
 attaches the PAIRED implementation Fn (`func(ctx, msg *paho.Publish, reqs)
 (map[string][]string, error)` — the SAME scope-grant shape REST's
-`HandleMW` uses), consulted by `mqtt5.AttachServer`'s dispatch. A route
+`HandleMW` uses), consulted by mqtt5's server-transport dispatch (built via `mqtt5.NewServerTransport`). A route
 declaring a scheme with no attached implementation fails loudly at
-`Serve`/`AttachServer` construction time with `reqreply.
+Serve time with `reqreply.
 MissingSecurityMiddlewareError` (`reqreply.CheckCoverage`, mirrors
 `rest.CheckCoverage` exactly) — never a silent no-op:
 
@@ -625,7 +625,7 @@ handle, err := securedRoute.Register(server)
 Client side — `ClientMW` attaches the PAIRED credential-supplying Fn
 (`func(ctx, reqs) ([]mqtt5.UserProperty, error)` — replaces the OLD
 `CallOptions.CredentialFunc`, removed entirely as a breaking change),
-consulted by `mqtt5.AttachClient`'s dispatch, validated client-side
+consulted by mqtt5's client-transport dispatch (built via `mqtt5.NewClientTransport`), validated client-side
 before the request is ever published:
 
 ```go
@@ -659,7 +659,7 @@ middleware — a header-like param declaration (mirrors REST's
 reply message. No `HandleMW`/`ClientMW` pairing needed (unlike security
 schemes, header params aren't gated behind `CheckCoverage`) — declaring
 `.Use(mqtt5.FromUserPropertyParam(apiKeyParam))` is enough for
-`mqtt5.AttachServer` to validate the real MQTT5 User Property
+mqtt5's server-transport dispatch to validate the real MQTT5 User Property
 automatically, and for the property to render into the request/reply
 message's AsyncAPI `headers` schema:
 

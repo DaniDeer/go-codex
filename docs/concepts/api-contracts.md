@@ -67,11 +67,12 @@ and `examples/rest-nested-binary` for the full runnable version.
 
 **Shipped for `api/events` (pub/sub) and `api/reqreply` (req/reply) too**:
 `events.NewTopicParam[T]`/`ChannelHandle.DecodeMerged`/`events.PublishHandle`
-(+ `mqtt5.NewPublishTransport`) and `reqreply.NewTopicParam[T]`/`RouteHandle.DecodeMerged`/`mqtt5.CallHandle`
+(+ `mqtt5.NewPublishTransport`) and `reqreply.NewTopicParam[T]`/`RouteHandle.DecodeMerged`
+(auto-merged by each adapter's `NewClientTransport`/`NewServerTransport` dispatch)
 close the same loop for MQTT pub/sub and request/reply. Req/reply routes can
 also declare dedicated, RUNTIME-WIRED error-reply channels via
 `reqreply.ErrorPattern` on `NewRoute(...)` — one declaration drives both the
-AsyncAPI reply-error channel/operation AND the actual `mqtt5`/`zeromq` Serve
+AsyncAPI reply-error channel/operation AND the actual `mqtt5`/`zeromq` server-transport
 reply behavior (matched errors get a typed codec-backed payload instead of a
 plain-text string). `reqreply.ErrorReplyMeta` remains available for
 spec-only declarations with no runtime dispatch — see
@@ -109,7 +110,7 @@ Step 5b).
 | REST (`api/rest` + `adapters/nethttp`/`chi`) | `rest.NewPathParam[T]`/`NewRequiredQueryParam[T]`/etc. + `NewRequiredResponseHeaderParam[Resp]`/etc. | `rest.Client.Call`/`nethttp.CallWithHandle` (client) + each adapter's internal serve dispatch, wired via `Server.Attach(NewServerTransport(...))` (server) | [Feature: REST API](../features/rest-api.md#one-line-client-calls--restclientcall--nethttpcallwithhandle) |
 | REST SSE (`api/rest` + `adapters/nethttp`/`chi`) | `rest.NewRequiredSSEEventParam[T]`/`NewOptionalSSEEventParam[T]` | `send(event)` on `SSEHandler`/`RegisterSSE` auto-merges path/query/header/cookie vars into each event | [Feature: SSE & Streaming](../features/sse-streaming.md#one-struct-one-call-for-sse-events) |
 | Events pub/sub (`api/events` + `adapters/mqtt`/`mqtt5`/`zeromq`) | `events.NewTopicParam[T]` | `events.PublishHandle` + each adapter's `NewPublishTransport` (publish) + `events.SubscribeHandle` + `NewSubscribeTransport` auto-merge (subscribe) | [Feature: Event Channels & MQTT](../features/events.md#topic-vars-with-automatic-merge-newtopicparam) |
-| Req/reply (`api/reqreply` + `adapters/mqtt5`/`zeromq`) | `reqreply.NewTopicParam[T]` (Req-side only) | `mqtt5.CallHandle`/`zeromq.CallHandle` (client) + `mqtt5.Serve` auto-merge (server) | [MQTT 5 Guide — Request/Reply](../guides/mqtt5.md) |
+| Req/reply (`api/reqreply` + `adapters/mqtt5`/`zeromq`) | `reqreply.NewTopicParam[T]` (Req-side only) | `Client.Attach(NewClientTransport(...))` auto-merge (client) + `Server.Attach(NewServerTransport(...))` auto-merge (server) | [MQTT 5 Guide — Request/Reply](../guides/mqtt5.md) |
 | WebSocket (`ports.DuplexPort` + `adapters/websocket`) | `ports.NewRequiredSocketInParam[T]`/`NewOptionalSocketInParam[T]` + `ports.NewRequiredSocketOutParam[T]`/`NewOptionalSocketOutParam[T]` on `SocketPattern` | `DuplexSocketAdapter`/`IngestSocketAdapter`/`BroadcastSocketAdapter` auto-merge connection vars into inbound/outbound payload structs | [Feature: WebSocket](../features/websocket.md#one-struct-one-call-with-connection-vars) |
 | `ports.Pattern` binding layer (`nethttp`/`mqtt5`/`zeromq`/`mqtt`) | n/a — delegates to the underlying transport's constructors above | `DrainCallAdapter`/`PublishAdapter`/`CallAdapter` derive vars per-item when `Vars` is left `nil` | [Feature: Ports](../features/ports.md#available-adapters-by-transport) |
 | MCP Resources (`api/mcp` + `adapters/mcpgo`) | URI `{varName}` template — `ResourceHandle[V,T]` built directly on `codex.Template[V]` (a real typed vars container, not merge-capable into `T` — see below) | `ResourceHandle.ExtractURIVars` + `mcpgo.RegisterResourceWithVars`/`ResourceHandlerWithVars` (additive; `RegisterResource`/`ResourceHandlerFunc` unchanged) | [Feature: MCP Server](../features/mcp.md#automatic-uri-var-extraction-extracturivars-registerresourcewithvars) |

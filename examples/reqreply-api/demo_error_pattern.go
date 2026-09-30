@@ -36,7 +36,7 @@ import (
 //     just a handler failure.
 //  5. demoErrorPatternPortAdapter — proves the ErrorPattern mechanism
 //     works transparently through ports.ToolPort + mqtt5.ServeAdapter,
-//     not just mqtt5.AttachServer's direct dispatch.
+//     not just mqtt5's server-transport direct dispatch.
 
 // demoErrorPatternDeclarationMechanisms shows reqreply's 2 DECLARATION
 // mechanisms side-by-side: ErrorPattern Direct mode (E itself IS the
@@ -266,7 +266,7 @@ func demoErrorPatternMiddlewareCombo(ctx context.Context) {
 
 // demoErrorPatternPortAdapter proves reqreply.ErrorPattern works
 // transparently through the ports binding layer — not just
-// mqtt5.AttachServer's direct dispatch. Binds the SAME
+// mqtt5's server-transport direct dispatch. Binds the SAME
 // routes.ErrorPatternComputeRoute + handlers.AddOrConflict via
 // ports.NewToolPort + mqtt5.ServeAdapter (instead of AttachServer), on its
 // OWN scratch broker/router — proving zero additional wiring is needed:

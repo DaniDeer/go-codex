@@ -17,7 +17,7 @@ import (
 // variant (carried over from the deleted
 // examples/adapters-zeromq-dealer-router): one ROUTER can multiplex many
 // DEALER clients, unlike the point-to-point REQ/REP topology used by Demo
-// 4. It also demonstrates zeromq.AttachRouterServer's upfront
+// 4. It also demonstrates zeromq.NewRouterServerTransport's upfront
 // [zeromq.MissingSocketError] when a registered route has no socket
 // wired for it — returned BEFORE reqreply.Server.Serve ever runs.
 func demoZeroMQDealerRouterVariant(ctx context.Context, obs stats.Observer) {
@@ -49,7 +49,7 @@ func demoZeroMQDealerRouterVariant(ctx context.Context, obs stats.Observer) {
 	_, err = zeromqrouterserver.BuildWithMissingSocket()
 	var missingErr zeromq.MissingSocketError
 	if errors.As(err, &missingErr) {
-		fmt.Printf("  ✓ zeromq.AttachRouterServer rejected upfront: topic=%q (before Serve ever ran)\n", missingErr.Topic)
+		fmt.Printf("  ✓ zeromq.NewRouterServerTransport rejected upfront: topic=%q (before Serve ever ran)\n", missingErr.Topic)
 	} else {
 		fmt.Fprintf(os.Stderr, "expected MissingSocketError, got: %v\n", err)
 		os.Exit(1)

@@ -1,5 +1,5 @@
 // Package mqtt5server assembles routes/+handlers/ onto an in-process mock
-// MQTT 5 broker via mqtt5.AttachServer — the reqreply.Server/Client+Attach
+// MQTT 5 broker via mqtt5.NewServerTransport + Server.Attach — the reqreply.Server/Client+Attach
 // counterpart of examples/rest-api's chiserver/nethttpserver packages.
 package mqtt5server
 
@@ -54,13 +54,13 @@ var traceUserProp = mqtt5adapter.UserPropertyParam{Name: "X-Trace-Id", Descripti
 // Build registers routes.ComputeRoute, routes.SecuredComputeRoute, and
 // routes.GlobalOnlyComputeRoute (with GlobalSecurity attached at the
 // Server level, not per-route) against a fresh reqreply.Server, then
-// mqtt5.AttachServer's it to an in-process mock broker.
+// attaches it (via mqtt5.NewServerTransport) to an in-process mock broker.
 //
 // No per-route observer wiring is attached here — mqtt5's server-side
 // general decorator wraps the raw, pre-decode *pahomqtt5.Publish
 // handler, which has no ctx to inject an Observer into (see
 // [reqreply.Observability]'s own doc comment for the full rationale).
-// mqtt5.AttachServer's dispatch already resolves whichever Observer is
+// mqtt5's server-transport dispatch already resolves whichever Observer is
 // present in the ctx passed to [reqreply.Server.Serve] (via
 // [stats.ObserverFromContext]) for its own RecordRequest calls — main.go
 // injects the shared Observer into that ctx ONCE via [stats.WithObserver]
@@ -109,7 +109,7 @@ func Build() (*Built, error) {
 	// HeaderParamComputeRoute demonstrates Phase 1b — NO .HandleMW()
 	// pairing needed (unlike security schemes): RequestHeaderParams/
 	// ResponseHeaderParams are validated automatically by
-	// mqtt5adapter.AttachServer/AttachClient, not gated behind
+	// mqtt5adapter.NewServerTransport/NewClientTransport's dispatch, not gated behind
 	// [reqreply.CheckCoverage] (that check is security-scheme-specific).
 	headerParamHandle, err := routes.HeaderParamComputeRoute.
 		Use(mqtt5adapter.FromUserPropertyParam(apiKeyUserProp), mqtt5adapter.FromResponseUserPropertyParam(traceUserProp)).
@@ -311,7 +311,7 @@ func newMockBroker() (*mockBroker, *mockRouter) {
 // onto. Use when a demo needs its OWN scratch server (e.g.
 // demo_ports_error_pattern.go, which binds routes.ErrorPatternComputeRoute
 // via ports.ToolPort + mqtt5.ServeAdapter instead of Build()'s
-// mqtt5.AttachServer, and would otherwise collide with Build()'s own
+// mqtt5's server-transport dispatch, and would otherwise collide with Build()'s own
 // registration of that same route/topic).
 func NewMockBrokerRouter() (mqtt5adapter.MQTTClient, mqtt5adapter.MQTTRouter) {
 	broker, router := newMockBroker()

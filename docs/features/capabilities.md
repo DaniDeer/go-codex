@@ -191,8 +191,11 @@ server.Attach(mqtt5.NewServerTransport(mqtt5.ServerTransportOptions{
 }))
 
 // client side — applied to the outgoing request publish:
-resp, err := mqtt5.Call(ctx, client, router, handle, req,
-    mqtt5.CallOptions{Capabilities: []mqtt5.Capability{mqtt5.QoSAtLeastOnce, mqtt5.Retained(true)}})
+reqreplyClient.Attach(mqtt5.NewClientTransport(mqtt5.ClientTransportOptions{
+    Client: client, Router: router,
+    Call:   mqtt5.CallOptions{Capabilities: []mqtt5.Capability{mqtt5.QoSAtLeastOnce, mqtt5.Retained(true)}},
+}))
+respAny, err := reqreplyClient.Call(ctx, route, req)
 ```
 
 Coverage is checked once at `Serve`/`Attach` setup (server side
@@ -261,9 +264,9 @@ section for the full classification.
 `ChannelOpt`/`RouteOpt` you declare on a channel/route to assert "this
 channel/route requires capability X."
 `events.CheckCapabilityCoverage`/`reqreply.CheckCapabilityCoverage` runs
-automatically inside each adapter's `ServeSubscribers`/`Serve`/
-`AttachServer`, comparing declared requirements against the capabilities
-actually supplied.
+automatically inside each adapter's `ServeSubscribers`/`Serve` dispatch
+(reached via `Client.Attach`/`Server.Attach`), comparing declared
+requirements against the capabilities actually supplied.
 
 `api/reqreply` deliberately does NOT import `api/events` for this — it
 has its OWN, byte-for-byte-identical-in-shape `CapabilityRequirement`/
@@ -354,7 +357,7 @@ split across TWO axes REST's own shape demands:
   an adapter's own transport type; `RouteHandle.HeaderParamNames()`/
   `CookieParamNames()`/`QueryParamNames()` (mirrors `PathParamNames()`)
   return the FULL declared set (plain-opt AND declarative-middleware-
-  merged) for an adapter's `Serve`/`AttachServer` to scan, ALONGSIDE
+  merged) for an adapter's `Serve` dispatch to scan, ALONGSIDE
   every declared `SecurityScheme`'s `In` field
   (`rest.RequiredParamKinds`) — closing a gap where a Cookie-based API
   key with no separate `CookieParam` would otherwise bypass the check.

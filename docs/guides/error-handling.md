@@ -418,7 +418,7 @@ via the SAME `client.Publish` the channel itself uses — no extra wiring
 needed. ZeroMQ's REQ/REP reqreply transport is point-to-point (one socket
 per route, no broker to address an arbitrary topic through) — the
 declared dead-letter topic MUST have its OWN entry in the `sockets` map
-passed to `zeromq.AttachServer`/`AttachRouterServer` (typically a PUSH
+passed to `zeromq.NewServerTransport`/`NewRouterServerTransport` (typically a PUSH
 socket feeding a dead-letter consumer). When no such entry exists, the
 dead-letter is silently skipped — it is NEVER sent back over the route's
 own REP/ROUTER socket, since an extra, unsolicited message there would

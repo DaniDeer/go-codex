@@ -7,8 +7,9 @@ import (
 )
 
 // ClientTransport is implemented by each adapter's internal, unexported
-// binding attached to a [Client] via an adapter-specific Attach function
-// (e.g. [mqtt5.Attach], [zeromq.Attach]) — see [Client.Attach]. Mirrors
+// binding returned by an adapter-specific NewClientTransport constructor and
+// attached to a [Client] via [Client.Attach] (e.g. client.Attach(mqtt5.NewClientTransport(...)),
+// client.Attach(zeromq.NewClientTransport(...))). Mirrors
 // [rest.ClientTransport]/[events.Transport]'s Publish side.
 type ClientTransport interface {
 	// Call performs a round trip against route (dynamic type
@@ -64,8 +65,10 @@ type Client struct {
 	transport ClientTransport
 }
 
-// NewClient returns an unattached [Client]. Call an adapter's Attach
-// function (e.g. [mqtt5.Attach]) before using [Client.Call]/[Client.CallAsync].
+// NewClient returns an unattached [Client]. Call client.Attach(...) with an
+// adapter-specific NewClientTransport result (e.g.
+// client.Attach(mqtt5.NewClientTransport(...))) before using
+// [Client.Call]/[Client.CallAsync].
 func NewClient() *Client {
 	return &Client{}
 }

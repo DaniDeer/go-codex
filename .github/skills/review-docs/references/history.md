@@ -4,6 +4,79 @@ Do not re-report any findings listed here. They have been implemented.
 
 ---
 
+## Round DR11 (api/reqreply — stale Attach/AttachServer/AttachClient naming + dead escape-hatch examples)
+
+Scoped pass over `api/reqreply` + `adapters/mqtt5`/`zeromq` reqreply-side
+docs/godoc/examples (Phase 8 item 2.3 of
+`docs/roadmap/capability-requirement-composition.md`). Same root-cause
+class as DR9/DR10: an `AttachServer`/`AttachClient`/`AttachRouterServer`/
+`AttachDealerClient`/standalone-`Serve`/`Call`/`ServeRouter`/`CallDealer`
+convenience-function generation was fully REMOVED (zero backdoor
+directive) in favor of `NewServerTransport`/`NewClientTransport`/
+`NewRouterServerTransport`/`NewDealerClientTransport` constructors
+consumed via `Server.Attach`/`Client.Attach` — but docs/godoc across the
+whole reqreply surface still taught the removed names/functions.
+
+- **D1 — stale `mqtt5.Attach`/`zeromq.Attach`/`AttachServer`/`AttachClient`/
+  `AttachRouterServer`/`AttachDealerClient` naming** [bug]: fixed across
+  `api/reqreply/{client,builder,route,doc}.go`, `api/events/builder.go`
+  (one reqreply cross-reference), `docs/guides/{mqtt5,zeromq,
+  error-handling}.md`, `docs/features/{security,codec-declared-middleware,
+  capabilities,observer,ports}.md`, `docs/concepts/api-contracts.md`,
+  `examples/reqreply-api/{mqtt5server,zeromqserver}/server.go`,
+  `examples/reqreply-api/{demo_error_pattern,
+  demo_user_property_param_middleware,
+  demo_zeromq_dealer_router_variant}.go`,
+  `examples/reqreply-api/routes/routes.go`,
+  `api/reqreply/example_server_client_test.go`.
+- **D2 — dead escape-hatch examples calling removed standalone
+  `Serve`/`Call`/`ServeRouter`/`CallDealer` functions** [bug]: an entire
+  guide section in `docs/guides/mqtt5.md` ("Escape hatch: Serve/Call
+  directly") and `docs/guides/zeromq.md` (two sections) taught calling
+  functions that no longer exist at all (confirmed via repo-wide grep —
+  zero `func Serve(`/`func Call(`/`func ServeRouter(`/`func CallDealer(`
+  remain in either adapter). Rewrote both as "per-route/per-call
+  customization via `ServerTransportOptions.Serve`/
+  `ClientTransportOptions.Call` at attach time" — the actual current
+  mechanism. Also fixed a real invented-API bug introduced then caught
+  mid-round: `reqreply.ClientCallOptions` has NO `Vars` field (only
+  `RequestFormats`/`ResponseFormats`) — per-call template topic vars are
+  derived automatically from the request struct via
+  `reqreply.NewTopicParam` merge fields, mirroring `events.NewTopicParam`;
+  corrected the guide's template-topic example to use a merge field
+  instead of a nonexistent `ClientCallOptions.Vars`.
+- **D3 — stale "v1 scope" claim in `adapters/zeromq/reqreply_transport.go`**
+  [bug]: `serverTransport`/`clientTransport`/`routerServerTransport`'s own
+  godoc claimed `RequestFormats`/`Formats`/`ErrorPattern` were "NOT
+  honored" and recommended "use `[Serve]` directly" as an escape hatch —
+  verified FALSE by reading `Serve`'s actual body (it calls
+  `DecodeWithFormats`/`EncodeWithFormats`/`ObserveErrorResponseFor`/
+  `DeadLetterFor` throughout) AND confirming the recommended escape hatch
+  function doesn't exist. Rewrote to describe the actual shipped
+  capability parity, mirroring `adapters/mqtt5`'s own already-correct
+  "Capability parity ... SHIPPED" wording.
+- **D4 — misc stale/wrong references caught while sweeping** [bug/small]:
+  `docs/features/observer.md`'s `mqtt5.Server.Serve(...)` (wrong
+  qualifier — `Server` is a `reqreply` type, not `mqtt5`'s); a stale
+  `CredentialFunc` field mention in `adapters/mqtt5/reqreply_transport.go`'s
+  `ClientTransportOptions` doc (removed, replaced by `Capabilities`); bare
+  `[Serve]`/`[Call]` godoc bracket links on `ServeOptions`/`CallOptions`
+  type comments in `adapters/mqtt5/reqreply.go` and
+  `adapters/zeromq/adapter.go`; `docs/concepts/api-contracts.md`'s stale
+  `mqtt5.CallHandle`/`zeromq.CallHandle` references (never existed as
+  standalone functions).
+- **Deferred (below the bug/small bar given round size)**: ~150
+  `TestAttachServer_*`/`TestAttachClient_*`/`TestAttachRouterServer_*`/
+  `TestAttachDealerClient_*`-named test functions and matching
+  `t.Fatalf("AttachServer: %v", err)`-style internal error labels across
+  `adapters/zeromq/{reqreply_transport,dead_letter_reqreply,
+  capability_reqreply}_test.go` — internal test identifiers only, no
+  pkg.go.dev/docs-site visibility, purely cosmetic if renamed; explicitly
+  deferred rather than doing a ~150-occurrence mechanical rename for zero
+  user-facing value.
+
+---
+
 ## Round DR10 (api/events — stale Attach naming + broken positional qos/retained examples)
 
 Scoped pass over `api/events` + `adapters/mqtt`/`mqtt5`/`zeromq` docs/godoc/

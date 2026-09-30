@@ -188,12 +188,14 @@ spec, _ := eventsClient.AsyncAPISpec()
 
 MQTT 5.0 introduces `ResponseTopic` and `CorrelationData` message properties, enabling typed request-reply over pub/sub infrastructure.
 
-> **Preferred workflow**: `reqreply.NewClient()` + `mqtt5.AttachClient`/`mqtt5.AttachServer`
-> mirror `events.Client`'s `Attach` + `.Publish`/`.Subscribe` workflow — one `Attach`
+> **Preferred workflow**: `reqreply.NewServer()`/`reqreply.NewClient()` +
+> `mqtt5adapter.NewServerTransport`/`NewClientTransport` mirror `events.Client`'s
+> `Attach` + `.Publish`/`.Subscribe` workflow — one `Server.Attach`/`Client.Attach`
 > call, then plain `Client.Call`/`Client.CallAsync` and `Server.Serve`, no further
-> `mqtt5adapter.*` calls needed at the call site. The lower-level `Serve`/`Call`
-> functions below remain as the escape hatch for custom `SecurityFunc`,
-> per-call `Observer` overrides, or non-default `ReplyTopicPrefix`/`Timeout`. See
+> `mqtt5adapter.*` calls needed at the call site. Per-route customization (custom
+> security implementation Fn, per-call `Observer` overrides, non-default
+> `ReplyTopicPrefix`/`Timeout`) is configured via `ServerTransportOptions.Serve`/
+> `ClientTransportOptions.Call` at attach time. See
 > [`examples/reqreply-api`](https://github.com/DaniDeer/go-codex/tree/main/examples/reqreply-api)
 > for the full `Attach`-based workflow, dual-mode `Client.Call`, concurrent
 > multi-route dispatch, `CallAsync`/`Future`, and AsyncAPI spec printing.
@@ -214,15 +216,18 @@ var ComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
     reqreply.RouteMeta{OperationID: "computeAdd"},
 )
 
-// Template topic — {tenantID} is validated per-call via TopicParam.
+// Template topic — {tenantID} is validated AND auto-merged into/from
+// ComputeReq.TenantID via NewTopicParam (assumes ComputeReq has a
+// TenantID string field) — the client derives the topic from the
+// request struct automatically; the server receives it already merged.
 var TenantComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
     "compute/{tenantID}/add",
     computeReqCodec, computeRespCodec,
     reqreply.RouteMeta{OperationID: "computeAdd"},
-    reqreply.TopicParam{
-        Name:        "tenantID",
-        Description: "Tenant namespace for this computation.",
-    }.WithCodec(codex.String().Refine(validate.NonEmptyString)),
+    reqreply.NewTopicParam("tenantID", codex.String().Refine(validate.NonEmptyString),
+        func(r ComputeReq) string { return r.TenantID },
+        func(r *ComputeReq, v string) { r.TenantID = v },
+    ),
 )
 ```
 
@@ -269,86 +274,99 @@ Use an already-registered `*RouteHandle` (instead of the raw `Route`) with
 enforced client-side — see [`examples/reqreply-api`](https://github.com/DaniDeer/go-codex/tree/main/examples/reqreply-api)'s
 dual-mode demo for the side-by-side contrast.
 
-### Escape hatch: `Serve`/`Call` directly
+### Per-route/per-call customization
 
-Use these lower-level functions instead of `Attach` when you need a custom
-`SecurityFunc`, a per-call `Observer` override, or non-default
-`ReplyTopicPrefix`/`Timeout`/`ReplyTopicBuilder` — everything below still
-works against the SAME route declarations shown above.
+There is no separate lower-level escape hatch anymore — `NewServerTransport`/
+`NewClientTransport` are the SOLE entry points (docs/roadmap/
+capability-requirement-composition.md's "zero backdoor between the api
+layer and the adapters" directive). Customize dispatch (a security
+implementation Fn, `Observer` overrides, non-default
+`ReplyTopicPrefix`/`Timeout`/`ReplyTopicBuilder`) via
+`ServerTransportOptions.Serve`/`ClientTransportOptions.Call` at attach time
+— configuration applies uniformly to every route dispatched through that
+transport.
 
-### Responder (Serve)
+### Responder
 
 ```go
-if err := mqtt5adapter.Serve(ctx, client, router, handle,
-    func(ctx context.Context, req ComputeReq) (ComputeResp, error) {
-        return ComputeResp{Sum: req.X + req.Y}, nil
-    },
-    mqtt5adapter.ServeOptions{Observer: obs},
-); err != nil {
+transport := mqtt5adapter.NewServerTransport(mqtt5adapter.ServerTransportOptions{
+    Client: client, Router: router,
+    Serve: mqtt5adapter.ServeOptions{Observer: obs},
+})
+if err := server.Attach(transport); err != nil {
     log.Fatal(err)
 }
+go server.Serve(ctx)
 ```
 
-### Caller (Call)
+### Caller
 
 ```go
-// Static topic — no Vars needed.
-resp, err := mqtt5adapter.Call(ctx, client, router, handle,
-    ComputeReq{X: 3, Y: 4},
-    mqtt5adapter.CallOptions{
+transport := mqtt5adapter.NewClientTransport(mqtt5adapter.ClientTransportOptions{
+    Client: client, Router: router,
+    Call: mqtt5adapter.CallOptions{
         ReplyTopicPrefix: "replies",    // generates: "replies/<uuid>"
         Timeout:          5 * time.Second,
         Observer:         obs,
-    })
+    },
+})
+if err := reqreplyClient.Attach(transport); err != nil {
+    log.Fatal(err)
+}
+
+// Static topic — no template vars involved.
+respAny, err := reqreplyClient.Call(ctx, ComputeRoute, ComputeReq{X: 3, Y: 4})
 if err != nil {
     var reqErr mqtt5adapter.CallError
     if errors.As(err, &reqErr) && reqErr.Kind == mqtt5adapter.KindTimeout {
         log.Warn("request timed out")
     }
 }
+resp := respAny.(ComputeResp)
 
-// Template topic — Vars resolved before publish; each variable codec-validated.
-resp, err = mqtt5adapter.Call(ctx, client, router, tenantHandle,
-    ComputeReq{X: 3, Y: 4},
-    mqtt5adapter.CallOptions{
-        Vars:    map[string]string{"tenantID": "acme"},
-        Timeout: 5 * time.Second,
-        Observer: obs,
-    })
+// Template topic — TenantComputeRoute's NewTopicParam merge field derives
+// the topic from the request struct automatically; no separate vars
+// argument needed. Setting req.TenantID is enough:
+respAny, err = reqreplyClient.Call(ctx, TenantComputeRoute, ComputeReq{X: 3, Y: 4, TenantID: "acme"})
 // On validation failure: CallError wrapping reqreply.RouteParamError
 // or reqreply.MissingRouteParamError — both errors.As-navigable.
 ```
 
-
 ### Custom reply topics
 
-By default, `Call` generates `"replies/<uuid>"` for both the MQTT 5 `ResponseTopic` property and the broker subscription. Use `ReplyTopicBuilder` in `CallOptions` to override this with a built-in constructor or a custom function.
+By default, `Call` generates `"replies/<uuid>"` for both the MQTT 5 `ResponseTopic` property and the broker subscription. Use `ReplyTopicBuilder` in `ClientTransportOptions.Call` to override this with a built-in constructor or a custom function.
 
 ```go
 // Built-in default — explicit form (identical to not setting ReplyTopicBuilder)
-resp, err := mqtt5adapter.Call(ctx, client, router, handle, req,
-    mqtt5adapter.CallOptions{
+transport := mqtt5adapter.NewClientTransport(mqtt5adapter.ClientTransportOptions{
+    Client: client, Router: router,
+    Call: mqtt5adapter.CallOptions{
         ReplyTopicBuilder: mqtt5adapter.UUIDReplyTopic("replies"),
-    })
+    },
+})
 
 // Shared subscription — scale reply consumers horizontally.
 // The ResponseTopic sent to the responder is "replies/<uuid>" (plain publish topic).
 // The local subscribe uses "$share/gateway-pool/replies/<uuid>".
 // The broker delivers each reply to exactly one subscriber in the group.
-resp, err = mqtt5adapter.Call(ctx, client, router, handle, req,
-    mqtt5adapter.CallOptions{
+transport = mqtt5adapter.NewClientTransport(mqtt5adapter.ClientTransportOptions{
+    Client: client, Router: router,
+    Call: mqtt5adapter.CallOptions{
         ReplyTopicBuilder: mqtt5adapter.SharedReplyTopic("replies", "gateway-pool"),
-    })
+    },
+})
 
 // Fully custom builder — client-ID + monotonic counter, no uuid dependency.
 var seq int64
-resp, err = mqtt5adapter.Call(ctx, client, router, handle, req,
-    mqtt5adapter.CallOptions{
+transport = mqtt5adapter.NewClientTransport(mqtt5adapter.ClientTransportOptions{
+    Client: client, Router: router,
+    Call: mqtt5adapter.CallOptions{
         ReplyTopicBuilder: func() (string, string) {
             t := fmt.Sprintf("replies/gw-1/%d", atomic.AddInt64(&seq, 1))
             return t, t
         },
-    })
+    },
+})
 ```
 
 **`ReplyTopicBuilder` contract:**

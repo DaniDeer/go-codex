@@ -9,7 +9,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// ServeOptions configures [Serve].
+// ServeOptions configures a server-side [serverTransport] (built by
+// [NewServerTransport]) via its ServerTransportOptions.Serve field.
 type ServeOptions struct {
 	// OnError, when non-nil, is called with a typed [ServeError] on decode,
 	// handler, or reply-encode failure. If nil, errors are silently discarded.
@@ -52,7 +53,8 @@ type ServeOptions struct {
 // UNAFFECTED by this — it stays, a distinct decision scoped to reqreply
 // only in this phase.
 
-// CallOptions configures [Call].
+// CallOptions configures a client-side [clientTransport] (built by
+// [NewClientTransport]) via its ClientTransportOptions.Call field.
 type CallOptions struct {
 	// ReplyTopicPrefix is the prefix for the auto-generated reply topic.
 	// Call generates: "<ReplyTopicPrefix>/<uuid>" per call.

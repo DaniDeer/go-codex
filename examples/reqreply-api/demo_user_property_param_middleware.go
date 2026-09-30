@@ -17,7 +17,7 @@ import (
 // docs/design/d-0004-reqreply-workflow-simplification.md's Addendum —
 // the User-Property param-as-middleware
 // mechanism. Unlike security schemes (Demo 2/3), RequestHeaderParams
-// need no HandleMW pairing: mqtt5adapter.AttachServer validates the
+// need no HandleMW pairing: mqtt5adapter's server-transport dispatch validates the
 // declared "X-API-Key" User Property automatically, BEFORE the handler
 // ever runs.
 //

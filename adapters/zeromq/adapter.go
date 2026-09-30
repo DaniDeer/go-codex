@@ -89,7 +89,9 @@ type PublishOptions[T any] struct {
 	Capabilities []Capability
 }
 
-// ServeOptions configures [Serve].
+// ServeOptions configures a server-side [reqreply.ServerTransport] (built by
+// [NewServerTransport]/[NewRouterServerTransport]) via its ServerTransportOptions.Serve/
+// RouterServerTransportOptions.Serve field.
 type ServeOptions struct {
 	// OnError, when non-nil, is called with a typed [ServeError] on decode,
 	// handler, or encode failure. The REP socket always sends an error reply
@@ -114,7 +116,9 @@ type ServeOptions struct {
 	Capabilities []Capability
 }
 
-// CallOptions configures [Call] and [CallDealer].
+// CallOptions configures a client-side [reqreply.ClientTransport] (built by
+// [NewClientTransport]/[NewDealerClientTransport]) via its ClientTransportOptions.Call/
+// DealerClientTransportOptions.Call field.
 type CallOptions struct {
 	// Observer, when non-nil, receives per-call lifecycle events:
 	// [stats.Observer.RecordRequest] is called with method "ZMQ-REQ" or

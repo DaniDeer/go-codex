@@ -235,7 +235,8 @@ would double-count.
 **mqtt5's server side has no equivalent attachment point**: its
 server-side general decorator wraps the raw, pre-decode
 `*pahomqtt5.Publish` handler, which has no `ctx` parameter to inject an
-Observer into. `mqtt5.Server.Serve(ctx, ...)` already resolves whichever
+Observer into. `reqreply.Server.Serve(ctx)` (dispatching through an
+attached `mqtt5.NewServerTransport`) already resolves whichever
 Observer is present in the ctx it was called with (via
 `stats.ObserverFromContext`) for its own dispatch-time `RecordRequest`
 calls — injecting `obs` once into that ctx (e.g. before calling `Serve`)

@@ -3686,7 +3686,25 @@ COMPLETE — Phase 8 is the closing review pass, not further feature work:
     `docs/what-is-go-codex.md`, and `examples/gob-contract/main.go`'s
     stale comment. See `.github/skills/review-docs/references/
     history.md`'s Round DR10 for the full finding list.
-  - 2.3 — `api/reqreply` — not yet run.
+  - 2.3 — `api/reqreply` — **DONE (Round DR11).** Found the SAME
+    stale-Attach-naming root cause as 2.1/2.2 (`AttachServer`/
+    `AttachClient`/`AttachRouterServer`/`AttachDealerClient`/standalone
+    `Serve`/`Call`/`ServeRouter`/`CallDealer` all removed, replaced by
+    `NewServerTransport`/`NewClientTransport`/`NewRouterServerTransport`/
+    `NewDealerClientTransport` + `Server.Attach`/`Client.Attach`) —
+    plus an entire dead "escape hatch" guide section in each of
+    `docs/guides/{mqtt5,zeromq}.md` teaching calls to functions that no
+    longer exist anywhere in the codebase. Also found and fixed a false
+    "v1 scope, NOT honored" doc claim in
+    `adapters/zeromq/reqreply_transport.go` (verified the code actually
+    DOES honor `RequestFormats`/`Formats`/`ErrorPattern` — the doc was
+    simply never updated after that work shipped), plus a self-caught bug
+    where an initial fix attempt invented a nonexistent
+    `reqreply.ClientCallOptions.Vars` field (real mechanism: per-call
+    template vars are derived from the request struct via
+    `reqreply.NewTopicParam` merge fields). See
+    `.github/skills/review-docs/references/history.md`'s Round DR11 for
+    the full finding list.
   - 2.4 — shared/cross-cutting surfaces (README, project-structure.md,
     zensical.toml nav, go-codex.instructions.md, docs/index.md,
     get-started.md, reference/index.md) — not yet run; runs LAST (after

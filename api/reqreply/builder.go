@@ -53,7 +53,8 @@ type Server struct {
 	// calling Serve — mirrors [rest.Server]'s identical mu usage note).
 	mu sync.RWMutex
 	// transport is the optional, adapter-provided [ServerTransport]
-	// attached via [Server.Attach] (e.g. by mqtt5.Attach/zeromq.Attach) —
+	// attached via [Server.Attach] (e.g. server.Attach(mqtt5.NewServerTransport(...)),
+	// server.Attach(zeromq.NewServerTransport(...))) —
 	// nil until Attach is called.
 	transport ServerTransport
 	// dispatchEntries holds one entry per route registered via
@@ -362,8 +363,9 @@ func (b *Builder) AppendTo(db *asyncapi.DocumentBuilder) error {
 }
 
 // ServerTransport is implemented by each adapter's internal, unexported
-// binding attached to a [Server] via an adapter-specific Attach function
-// (e.g. [mqtt5.Attach], [zeromq.Attach]) — see [Server.Attach]. Mirrors
+// binding returned by an adapter-specific NewServerTransport constructor and
+// attached to a [Server] via [Server.Attach] (e.g. server.Attach(mqtt5.NewServerTransport(...)),
+// server.Attach(zeromq.NewServerTransport(...))). Mirrors
 // [rest.ServerTransport]/[events.Transport], with ONE confirmed
 // structural difference: Serve is called ONCE PER REGISTERED ROUTE (not
 // once for the whole Server the way [rest.ServerTransport.Serve](ctx)
@@ -527,9 +529,9 @@ func (s *Server) Serve(ctx context.Context) error {
 // pair) — a plain, non-generic interface exposing the route's Topic
 // without reflection, mirroring [FutureFactory]'s identical type-erasure-
 // via-compile-time-method-dispatch technique. Backs [Server.
-// RegisteredTopics], which some adapters (e.g. [zeromq.Attach]) use to
-// validate full topic/socket coverage at Attach time, before [Server.
-// Serve] ever runs.
+// RegisteredTopics], which some adapters (e.g. adapters/zeromq's
+// NewServerTransport/Server.Attach path) use to validate full topic/socket
+// coverage at Attach time, before [Server.Serve] ever runs.
 type Topical interface {
 	// TopicOf returns the route's registered topic/address.
 	TopicOf() string
@@ -537,8 +539,8 @@ type Topical interface {
 
 // RegisteredTopics returns the topic of every route registered via
 // [Route.Register] so far (regardless of whether [Route.WithHandler] was
-// used) — used by adapters like [zeromq.Attach] to validate topic/socket
-// coverage at Attach time (before [Server.Serve] runs), since routes are
+// used) — used by adapters like adapters/zeromq to validate topic/socket
+// coverage at [Server.Attach] time (before [Server.Serve] runs), since routes are
 // always registered BEFORE Attach is called.
 func (s *Server) RegisteredTopics() []string {
 	s.mu.RLock()

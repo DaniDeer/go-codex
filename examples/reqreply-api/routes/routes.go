@@ -70,7 +70,7 @@ var ComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 // AsyncAPI "x-capabilities" vendor extension (mirrors examples/
 // events-api/routes.CapabilityChannel's identical role for pub/sub).
 // mqtt5server.Build supplies a matching mqtt5.QoS capability at
-// AttachServer time; demo_capability_mechanism.go supplies one at Call
+// Server.Attach time; demo_capability_mechanism.go supplies one at Call
 // time too, and also demonstrates CheckCapabilityCoverage rejecting an
 // INSUFFICIENT level (via mqtt5.QoS's Level() method).
 var CapabilityRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
@@ -208,7 +208,7 @@ var RouterComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 
 // MissingSocketRoute is registered on the SAME router server as
 // RouterComputeRoute but Demo 8 deliberately never wires a matching socket
-// for it — demonstrating AttachRouterServer's upfront MissingSocketError.
+// for it — demonstrating NewRouterServerTransport's upfront MissingSocketError.
 var MissingSocketRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 	"compute/router-add-missing",
 	ComputeReqCodec, ComputeRespCodec,

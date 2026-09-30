@@ -1,5 +1,5 @@
 // Package zeromqserver assembles routes/+handlers/ onto in-process mock ZMQ
-// REQ/REP socket pairs via zeromq.AttachServer — the reqreply.Server/
+// REQ/REP socket pairs via zeromq.NewServerTransport + Server.Attach — the reqreply.Server/
 // Client+Attach counterpart for the REQ/REP socket family. Registers 3
 // routes (ComputeRoute, DoubleRoute, TripleRoute) against ONE Server so
 // Demo 4 (concurrent multi-route dispatch) can exercise them all
@@ -19,7 +19,7 @@ import (
 )
 
 // Built bundles the assembled Server with the REQ-side sockets a caller's
-// Client needs to zeromq.AttachClient against.
+// Client needs to Attach (via zeromq.NewClientTransport) against.
 type Built struct {
 	Server        *reqreply.Server
 	ClientSockets map[string]zeromq.FramedSocket
@@ -37,7 +37,7 @@ type Built struct {
 }
 
 // Build registers ComputeRoute/DoubleRoute/TripleRoute against a fresh
-// reqreply.Server, then zeromq.AttachServer's it to 3 independent
+// reqreply.Server, then attaches it (via zeromq.NewServerTransport) to 3 independent
 // in-process REQ/REP socket pairs (one pair per route — REQ/REP is
 // point-to-point, unlike pub/sub's topic-multiplexed SUB socket).
 //

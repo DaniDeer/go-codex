@@ -6,7 +6,7 @@ go-codex provides two packages behind ZeroMQ support:
 
 | Package | Purpose |
 |---|---|
-| `adapters/zeromq` | Codec-backed adapters: `NewPublishTransport`/`NewSubscribeTransport` (pub/sub, consumed via `events.PublishHandle`/`events.SubscribeHandle`), `AttachServer`/`AttachClient`/`AttachRouterServer`/`AttachDealerClient` (request-reply, preferred), `Serve`/`Call`/`ServeRouter`/`CallDealer` (request-reply escape hatch) |
+| `adapters/zeromq` | Codec-backed adapters: `NewPublishTransport`/`NewSubscribeTransport` (pub/sub, consumed via `events.PublishHandle`/`events.SubscribeHandle`), `NewServerTransport`/`NewClientTransport`/`NewRouterServerTransport`/`NewDealerClientTransport` (request-reply, consumed via `reqreply.Server.Attach`/`Client.Attach`) |
 | `api/reqreply` | Transport-agnostic AsyncAPI 3.0 spec builder for request-reply contracts (`NewRoute`, `Server`, `Client`, `AsyncAPISpec`) — shared with `adapters/mqtt5`, not ZMQ-specific despite the historical `api/zeromq` name |
 
 Both follow the same **declare → register → handle → adapt** pattern as the HTTP and MQTT adapters.
@@ -292,11 +292,12 @@ var ComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 
 ### Preferred: `Server`/`Client` + `Attach`
 
-`zeromq.AttachServer`/`AttachClient` mirror `events.Client`'s
-`Attach`+`.Publish`/`.Subscribe` workflow: one `Attach` call (against a
-`topic → socket` map — REQ/REP sockets are point-to-point, unlike PUB/SUB's
-topic-multiplexed SUB socket), then plain `Server.Serve`/`Client.Call`/
-`Client.CallAsync`, no further `zeromq.*` calls needed at the call site.
+`zeromq.NewServerTransport`/`NewClientTransport` mirror `events.Client`'s
+`Attach`+`.Publish`/`.Subscribe` workflow: one `Server.Attach`/`Client.Attach`
+call (against a `topic → socket` map — REQ/REP sockets are point-to-point,
+unlike PUB/SUB's topic-multiplexed SUB socket), then plain
+`Server.Serve`/`Client.Call`/`Client.CallAsync`, no further `zeromq.*` calls
+needed at the call site.
 
 ```go
 server := reqreply.NewServer(reqreply.Info{Title: "Compute API", Version: "1.0.0"})
@@ -353,37 +354,48 @@ operations:
       $ref: '#/channels/computeAddReply'
 ```
 
-### Escape hatch: `Serve`/`Call` directly
+### Per-route/per-call customization
 
-Use these lower-level functions instead of `Attach` when you need a custom
-per-call `Observer` override or other fine-grained control — they work
-against the SAME route declarations shown above, and `Route.ClientHandle()`
-gets a handle with no `Server` needed at all:
+There is no separate lower-level escape hatch anymore — `NewServerTransport`/
+`NewClientTransport` are the SOLE entry points (docs/roadmap/
+capability-requirement-composition.md's "zero backdoor between the api
+layer and the adapters" directive). Customize dispatch (a custom
+`Observer` override or other fine-grained control) via
+`ServerTransportOptions.Serve`/`ClientTransportOptions.Call` at attach
+time — they work against the SAME route declarations shown above:
 
 ```go
 // Server (REP socket)
-handle := ComputeRoute.ClientHandle() // or Route.Register(server) if a spec is also needed
 rep, _ := zmq.NewSocket(zmq.REP)
 defer rep.Close()
 rep.Bind("tcp://*:5556")
-sock := WrapSocket(rep)
-if err := zeromq.Serve(ctx, sock, handle, func(ctx context.Context, req ComputeReq) (ComputeResp, error) {
-    return ComputeResp{Sum: req.X + req.Y}, nil
-}, zeromq.ServeOptions{Observer: obs}); err != nil {
+sockets := map[string]zeromq.FramedSocket{"compute/add": WrapSocket(rep)}
+transport := zeromq.NewServerTransport(zeromq.ServerTransportOptions{
+    Sockets: sockets,
+    Serve:   zeromq.ServeOptions{Observer: obs},
+})
+if err := server.Attach(transport); err != nil {
     log.Fatal(err)
 }
+go server.Serve(ctx)
 
 // Client (REQ socket)
 req, _ := zmq.NewSocket(zmq.REQ)
 defer req.Close()
 req.Connect("tcp://localhost:5556")
-sock = WrapSocket(req)
-result, err := zeromq.Call(ctx, sock, handle, ComputeReq{X: 3, Y: 4},
-    zeromq.CallOptions{Observer: obs})
+clientTransport := zeromq.NewClientTransport(zeromq.ClientTransportOptions{
+    Sockets: map[string]zeromq.FramedSocket{"compute/add": WrapSocket(req)},
+    Call:    zeromq.CallOptions{Observer: obs},
+})
+if err := client.Attach(clientTransport); err != nil {
+    log.Fatal(err)
+}
+respAny, err := client.Call(ctx, ComputeRoute, ComputeReq{X: 3, Y: 4})
 if err != nil {
     log.Fatal(err)
 }
-log.Printf("sum: %d", result.Sum)
+resp := respAny.(ComputeResp)
+log.Printf("sum: %d", resp.Sum)
 ```
 
 ---
@@ -405,8 +417,9 @@ err := events.SubscribeHandle(ctx, sub, subTransport, fn)
 pubTransport := zeromq.NewPublishTransport[T](sock, zeromq.PublishOptions[T]{Observer: obs})
 err = events.PublishHandle(ctx, pub, pubTransport, msg)
 
-zeromq.Serve(ctx, sock, handle, fn, zeromq.ServeOptions{Observer: obs})
-zeromq.Call(ctx, sock, handle, req, zeromq.CallOptions{Observer: obs})
+// req/rep: Observer set on ServerTransportOptions.Serve/ClientTransportOptions.Call
+serverTransport := zeromq.NewServerTransport(zeromq.ServerTransportOptions{Sockets: repSockets, Serve: zeromq.ServeOptions{Observer: obs}})
+clientTransport := zeromq.NewClientTransport(zeromq.ClientTransportOptions{Sockets: reqSockets, Call: zeromq.CallOptions{Observer: obs}})
 ```
 
 | Event | Observer method | Operation |
@@ -465,7 +478,7 @@ DEALER and ROUTER are the async variants of REQ and REP. The ROUTER server handl
 | Alternation | Strict (send→recv) | Free (async) |
 | Concurrency | Serial | Per-request goroutine (ROUTER) |
 | Framing | `[payload]` / `["ok", resp]` | `["", payload]` / `["", "ok", resp]` |
-| API | `Serve` / `Call` | `ServeRouter` / `CallDealer` |
+| Transport constructors | `NewServerTransport` / `NewClientTransport` | `NewRouterServerTransport` / `NewDealerClientTransport` |
 
 The frame layout adds an empty **delimiter frame** to separate the DEALER identity from the payload:
 
@@ -478,11 +491,12 @@ DEALER receives: ["", "ok", encoded_response]
 
 ### Preferred: `Server`/`Client` + `Attach` (ROUTER/DEALER)
 
-`zeromq.AttachRouterServer`/`AttachDealerClient` are the ROUTER/DEALER
-counterparts of `AttachServer`/`AttachClient` above — same `topic → socket`
-map, same `MissingSocketError` upfront check, same `Server.Serve`/
-`Client.Call`/`Client.CallAsync` call sites once attached; the identity-
-frame envelope below is handled internally, transparent to the caller:
+`zeromq.NewRouterServerTransport`/`NewDealerClientTransport` are the
+ROUTER/DEALER counterparts of `NewServerTransport`/`NewClientTransport`
+above — same `topic → socket` map, same `MissingSocketError` upfront
+check, same `Server.Serve`/`Client.Call`/`Client.CallAsync` call sites
+once attached; the identity-frame envelope below is handled internally,
+transparent to the caller:
 
 ```go
 server := reqreply.NewServer(reqreply.Info{Title: "Compute API", Version: "1.0.0"})
@@ -505,31 +519,44 @@ if err := client.Attach(zeromq.NewDealerClientTransport(zeromq.DealerClientTrans
 respAny, err := client.Call(ctx, RouterComputeRoute, ComputeReq{X: 3, Y: 4})
 ```
 
-### Escape hatch: `ServeRouter`/`CallDealer` directly
+### Concurrent dispatch (ROUTER/DEALER)
 
-`ServeRouter` and `CallDealer` reuse the same `ServeOptions`/`CallOptions` and `ServeError`/`CallError` types:
+`NewRouterServerTransport`'s server dispatches each request in its own
+goroutine (mirroring ROUTER's own per-request concurrency), and
+`NewDealerClientTransport`'s client is safe to call concurrently from
+multiple goroutines — both reuse the same `ServeOptions`/`CallOptions` and
+`ServeError`/`CallError` types shown above:
 
 ```go
-// Server (ROUTER socket) — concurrent
-go func() {
-    router, _ := zmq.NewSocket(zmq.ROUTER)
-    router.Bind("tcp://*:5557")
-    zeromqadapter.ServeRouter(ctx, WrapSocket(router), handle, fn,
-        zeromqadapter.ServeOptions{Observer: obs})
-}()
+// Server (ROUTER socket) — dispatches concurrently, one goroutine per request
+router, _ := zmq.NewSocket(zmq.ROUTER)
+router.Bind("tcp://*:5557")
+transport := zeromqadapter.NewRouterServerTransport(zeromqadapter.RouterServerTransportOptions{
+    Sockets: map[string]zeromqadapter.FramedSocket{"compute/router-add": WrapSocket(router)},
+    Serve:   zeromqadapter.ServeOptions{Observer: obs},
+})
+if err := server.Attach(transport); err != nil {
+    log.Fatal(err)
+}
+go server.Serve(ctx)
 
 // Client (DEALER socket) — concurrent calls from multiple goroutines
 dealer, _ := zmq.NewSocket(zmq.DEALER)
 dealer.Connect("tcp://localhost:5557")
-sock := WrapSocket(dealer)
+clientTransport := zeromqadapter.NewDealerClientTransport(zeromqadapter.DealerClientTransportOptions{
+    Sockets: map[string]zeromqadapter.FramedSocket{"compute/router-add": WrapSocket(dealer)},
+    Call:    zeromqadapter.CallOptions{Observer: obs},
+})
+if err := client.Attach(clientTransport); err != nil {
+    log.Fatal(err)
+}
 
 var wg sync.WaitGroup
 for _, req := range reqs {
     wg.Add(1)
     go func(req ComputeReq) {
         defer wg.Done()
-        resp, err := zeromqadapter.CallDealer(ctx, sock, handle, req,
-            zeromqadapter.CallOptions{Observer: obs})
+        respAny, err := client.Call(ctx, RouterComputeRoute, req)
         // ...
     }(req)
 }

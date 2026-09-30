@@ -2698,8 +2698,8 @@ type ClientSubscribeOptions struct {
 // check the OLD `Attach(client, ...)` function used to run BEFORE
 // calling `client.Attach`) can reject the attach — mirrors
 // [reqreply.ServerAwareTransport.BindServer]'s identical shape exactly
-// (adapters/zeromq's reqreply `AttachServer`/`AttachRouterServer` need
-// this for their own `MissingSocketError` upfront check).
+// (adapters/zeromq's reqreply `NewServerTransport`/`NewRouterServerTransport`-built
+// transports need this for their own `MissingSocketError` upfront check).
 type ClientAwareTransport interface {
 	Transport
 	// BindClient receives c immediately after [Client.Attach] stores
