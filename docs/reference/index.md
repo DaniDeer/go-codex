@@ -27,7 +27,12 @@ go get github.com/DaniDeer/go-codex@latest
 | MQTT 5.0 adapter | `github.com/DaniDeer/go-codex/adapters/mqtt5` |
 | ZeroMQ adapter (PUB/SUB, REQ/REP, DEALER/ROUTER) | `github.com/DaniDeer/go-codex/adapters/zeromq` |
 | SQL adapter (goose migrations + codec validation) | `github.com/DaniDeer/go-codex/adapters/sql` |
+| Redis cache adapter (typed) | `github.com/DaniDeer/go-codex/adapters/redis` |
+| WebSocket adapter (server-side, duplex sessions) | `github.com/DaniDeer/go-codex/adapters/websocket` |
+| File IO adapter (ports bindings) | `github.com/DaniDeer/go-codex/adapters/file` |
 | mark3labs/mcp-go adapter | `github.com/DaniDeer/go-codex/adapters/mcpgo` |
+| REST-client-to-MCP-tool bridge | `github.com/DaniDeer/go-codex/adapters/mcprest` |
+| OpenAI-compatible Chat Completions adapter | `github.com/DaniDeer/go-codex/adapters/openai` |
 | templ SSR format plug-in | `github.com/DaniDeer/go-codex/adapters/templ` |
 | OpenAPI 3.1 renderer | `github.com/DaniDeer/go-codex/render/openapi` |
 | AsyncAPI 3.0 renderer | `github.com/DaniDeer/go-codex/render/asyncapi/v3` |
@@ -35,7 +40,11 @@ go get github.com/DaniDeer/go-codex@latest
 | Forge pipelines (governed, batch) | `github.com/DaniDeer/go-codex/forge` |
 | Reactive stream pipelines | `github.com/DaniDeer/go-codex/stream` |
 | HTTP route descriptors | `github.com/DaniDeer/go-codex/route` |
+| Declarative security/Transform middleware (shared by rest/events/reqreply) | `github.com/DaniDeer/go-codex/middleware` |
 | Schema model | `github.com/DaniDeer/go-codex/schema` |
+| Env-var config loading (`FromEnv`/`FromEnvVar`) | `github.com/DaniDeer/go-codex/config` |
+| Application lifecycle (context, supervised goroutines, shutdown) | `github.com/DaniDeer/go-codex/app` |
+| Protocol-agnostic IO ports (Source/Sink/IO/Latest/Tool/Duplex) | `github.com/DaniDeer/go-codex/ports` |
 | Observer interfaces | `github.com/DaniDeer/go-codex/stats` |
 
 ## Core
@@ -47,7 +56,11 @@ go get github.com/DaniDeer/go-codex@latest
 | `format` | Format bridges: JSON, YAML, TOML, Gob, Binary (raw bytes), streaming, env vars, File I/O | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/format) |
 | `schema` | Schema model (pure data, zero dependencies) | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/schema) |
 | `route` | HTTP route descriptors: `Route`, `Param`, `SecurityScheme` | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/route) |
+| `middleware` | Declarative security/Transform middleware vocabulary shared by `api/rest`/`api/events`/`api/reqreply`: `Middleware`, `Declaration[In,Out]`, `SecurityScheme`, `Disposition`, `ContextField[V]` | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/middleware) |
 | `stats` | Observer interfaces: `ValidationObserver`, `Observer`, `PipelineObserver`, `SecurityObserver`, `FileObserver`, `SQLObserver`, `TraceObserver`; `NoopObserver` + `LoggingObserver` + `NewFanout` | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/stats) |
+| `config` | Typed env-var config loading: `FromEnv[T]`/`FromEnvVar[T]`, schema-driven coercion | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/config) |
+| `app` | Application lifecycle: root ctx + observer injection, supervised goroutines (fail-fast), LIFO shutdown hooks | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/app) |
+| `ports` | Protocol-agnostic IO enforcement points: `SourcePort`/`SinkPort`/`IOPort`/`LatestPort`/`ToolPort`/`DuplexPort` | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/ports) |
 
 ## API builders (Layer 2)
 
@@ -55,7 +68,7 @@ go get github.com/DaniDeer/go-codex@latest
 |---------|-------------|-----------|
 | `api/rest` | REST API builder: typed Decode/Encode + OpenAPI spec | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/rest) |
 | `api/events` | Event channel builder (PUB/SUB): typed Decode/Encode + AsyncAPI spec; works for MQTT 3, MQTT 5, ZMQ PUB/SUB | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/events) |
-| `api/reqreply` | Request-reply route builder: `NewRoute[Req,Resp](topic, codecs, ...RouteMeta)` + `Route.Register(b) *RouteHandle`; mirrors `api/rest` for async transports (ZMQ REQ/REP, MQTT 5); generates AsyncAPI 3.0 with request-reply `reply:` block | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/reqreply) |
+| `api/reqreply` | Request-reply route builder: `NewRoute[Req,Resp](topic, codecs, ...RouteOpt)` + `Route.RegisterHandle(server) (*RouteHandle, error)`; mirrors `api/rest` for async transports (ZMQ REQ/REP, MQTT 5); generates AsyncAPI 3.0 with request-reply `reply:` block | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/reqreply) |
 | `api/mcp` | MCP server builder: Tools, Resources, Prompts | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/mcp) |
 
 ## Adapters
@@ -65,10 +78,15 @@ go get github.com/DaniDeer/go-codex@latest
 | `adapters/nethttp` | net/http: server (Handler, Register) + client (Call) | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/nethttp) |
 | `adapters/chi` | chi router adapter | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/chi) |
 | `adapters/mqtt` | Paho MQTT 3.1.1: `NewSubscribeTransport`/`NewPublishTransport` (PUB/SUB, consumed via `events.SubscribeHandle`/`events.PublishHandle`) + `Connect`; uses `api/events` channel declarations | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mqtt) |
-| `adapters/mqtt5` | MQTT 5.0 (paho.golang): `NewSubscribeTransport`/`NewPublishTransport` (PUB/SUB, consumed via `events.SubscribeHandle`/`events.PublishHandle`) + `Connect` + `Serve` + `Call` (request-reply); User Properties + ContentType auto-format; `UserPropertyParam.WithCodec` for property validation | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mqtt5) |
-| `adapters/zeromq` | ZeroMQ (CGO-free `FramedSocket` interface): `NewSubscribeTransport`/`NewPublishTransport` (PUB/SUB, consumed via `events.SubscribeHandle`/`events.PublishHandle`) + `Serve`/`Call` (REQ/REP) + `ServeRouter`/`CallDealer` (DEALER/ROUTER concurrent); accepts `*reqreply.RouteHandle` | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/zeromq) |
+| `adapters/mqtt5` | MQTT 5.0 (paho.golang): `NewSubscribeTransport`/`NewPublishTransport` (PUB/SUB) + `NewServerTransport`/`NewClientTransport` (request-reply, consumed via `reqreply.Server.Attach`/`Client.Attach`) + `Connect`; User Properties + ContentType auto-format; `UserPropertyParam.WithCodec` for property validation | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mqtt5) |
+| `adapters/zeromq` | ZeroMQ (CGO-free `FramedSocket` interface): `NewSubscribeTransport`/`NewPublishTransport` (PUB/SUB) + `NewServerTransport`/`NewClientTransport` (REQ/REP) + `NewRouterServerTransport`/`NewDealerClientTransport` (DEALER/ROUTER concurrent), all consumed via `reqreply.Server.Attach`/`Client.Attach` | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/zeromq) |
 | `adapters/sql` | SQL adapter: `Validate[T]` (codec-level row validation, wraps codec encode→decode round trip) + `Migrator` (goose migrations wrapper); `RowValidationError`, `MigrationError` — both `slog.LogValuer` | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/sql) |
+| `adapters/redis` | Typed cache adapter for any Redis-protocol server: `Get`/`Set`/`Seed`, codec-validated round trip | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/redis) |
+| `adapters/websocket` | Server-side WebSocket adapter: typed, codec-validated frame streams over persistent duplex connections | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/websocket) |
+| `adapters/file` | Protocol-agnostic file IO adapter bindings for `ports` (stdlib-only, no CGO/external deps) | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/file) |
 | `adapters/mcpgo` | mark3labs/mcp-go adapter | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mcpgo) |
+| `adapters/mcprest` | Bridges `api/rest` client calls (via `adapters/nethttp`) to MCP tool handlers (via `adapters/mcpgo`) | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mcprest) |
+| `adapters/openai` | `ports.IOAdapter` against any OpenAI-compatible Chat Completions endpoint (OpenAI, Azure OpenAI, Ollama, vLLM, LM Studio, Groq, …) | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/openai) |
 | `adapters/templ` | templ SSR format plug-in | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/templ) |
 
 ## Forge pipelines (Layer 3) and Reactive streams

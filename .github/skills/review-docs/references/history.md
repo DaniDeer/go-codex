@@ -4,6 +4,82 @@ Do not re-report any findings listed here. They have been implemented.
 
 ---
 
+## Round DR12 (cross-cutting surfaces — README, project-structure.md, zensical.toml nav, go-codex.instructions.md, docs/index.md, reference/index.md)
+
+Scoped pass over the 5 shared/cross-cutting surfaces (Phase 8 item 2.4 of
+`docs/roadmap/capability-requirement-composition.md`), the final review-docs
+sub-item — runs last so it can verify nav/cross-link consistency after
+2.1-2.3's per-API fixes.
+
+- **D1 — `README.md`'s "Layer 2" code sample called `createUser.Register(builder)`
+  as `handle, _ := ...`** [bug]: `rest.Route.Register` returns ONLY `error`
+  (confirmed via `api/rest/builder.go`); the two-value form is a literal
+  compile error. Fixed to `RegisterHandle` (the `(*RouteHandle, error)`-returning
+  method).
+- **D2 — `zensical.toml` nav pointed at 4 nonexistent files** [bug]: `"features/
+  reqreply-middleware.md"` (renamed to `features/codec-declared-middleware.md`,
+  confirmed via the file's own title "Codec-Declared Middleware — REST, Events
+  & ReqReply" — an orphaned file with no nav entry at all) and 3 stale roadmap
+  entries (`roadmap/events-pubsub-consolidation.md`, `roadmap/
+  mqtt5-user-property-merge.md`, `roadmap/thin-adapters-audit.md` — none exist,
+  none referenced anywhere else, confirmed fully superseded/removed). Fixed the
+  first by repointing nav to the real file; removed the 3 dead entries. Also
+  found `docs/roadmap/idea-codec-defined-hateoas.md` — a real, substantial
+  (1000-line) file with NO nav entry and NO `roadmap/index.md` table row;
+  added both.
+- **D3 — `docs/reference/index.md` repeated `api/reqreply`'s "Round DR11"
+  stale-API bugs** [bug]: `Route.Register(b) *RouteHandle` (wrong — same
+  Register/RegisterHandle confusion as D1), `adapters/mqtt5`'s "`Serve` +
+  `Call` (request-reply)" and `adapters/zeromq`'s "`Serve`/`Call` (REQ/REP) +
+  `ServeRouter`/`CallDealer`" (none of these standalone functions exist
+  anymore — confirmed removed in DR11). Fixed to `NewServerTransport`/
+  `NewClientTransport`/`NewRouterServerTransport`/`NewDealerClientTransport`
+  consumed via `Server.Attach`/`Client.Attach`.
+- **D4 — coverage gaps across README/reference/index.md** [small]: `middleware`
+  (a real top-level package, confirmed documented in
+  `go-codex.instructions.md`'s Package Structure table but entirely absent
+  from README's directory summary + import table, `docs/reference/
+  index.md`'s Core table + quick-import table, AND `docs/reference/
+  project-structure.md`'s full tree) and `adapters/{mcprest,openai,file,
+  redis,websocket}` (all real, all missing from one or more of README's
+  directory summary/import table and `docs/reference/index.md`'s Adapters
+  table/quick-import table) — added throughout all 4 locations.
+- **D5 — `middleware` package has NO `doc.go`** [small]: violates the
+  established "every package under the module root has one" guardrail
+  (confirmed via `ls middleware/` — genuinely missing, not just thin).
+  Created `middleware/doc.go` covering all 4 sub-concerns (Middleware/
+  Declaration, SecurityScheme, Disposition, ContextField).
+- **D6 — `adapters/file`'s package doc comment lived in `binding.go`, not
+  `doc.go`** [trivial]: same guardrail, softer violation (content existed,
+  wrong file). Moved the existing comment into a new `adapters/file/doc.go`
+  (mechanical split, zero content change).
+- **D7 — `.github/instructions/go-codex.instructions.md`'s `api/reqreply`
+  Package Structure table row repeated the SAME stale
+  `AttachServer`/`AttachClient`/`AttachRouterServer`/`AttachDealerClient`/
+  standalone-`Serve`/`Call`/`ServeRouter`/`CallDealer` naming DR11 fixed
+  everywhere else** [bug]: this is a very large (~29KB), deeply historical
+  single table cell narrating the reqreply workflow-simplification's
+  multi-phase migration — most of the historical "X was later REMOVED/
+  DELETED" framing is already correctly past-tense and accurate as written.
+  Fixed only the clearly-wrong PRESENT-TENSE claims describing removed
+  symbols as currently callable (the REQ/REP "escape hatch" paragraph, the
+  per-call-format-override paragraph, 3 dead-letter/coverage-check
+  sentences) via targeted, high-confidence mechanical replacement — left
+  the surrounding historical narrative prose untouched. **A full rewrite of
+  this file's verbose historical content is explicitly the separate,
+  already-accepted `docs/roadmap/design-doc-compaction.md` roadmap's job,
+  not this pass's** — scoped deliberately narrow here to avoid duplicating
+  that effort.
+- **Verified clean (no action needed)**: `docs/get-started.md` (already
+  accurate, includes `api/reqreply`, `Format.Unmarshal` signature matches);
+  `docs/reference/project-structure.md`'s adapters/ subtree (already fully
+  synced with actual directory layout, confirmed via diff).
+- **Also fixed**: `docs/index.md`'s "API contract" layer row and "What you
+  get" bullets omitted `api/reqreply` entirely (a fully shipped Layer-2
+  feature) — added both a table mention and a dedicated bullet.
+
+---
+
 ## Round DR11 (api/reqreply — stale Attach/AttachServer/AttachClient naming + dead escape-hatch examples)
 
 Scoped pass over `api/reqreply` + `adapters/mqtt5`/`zeromq` reqreply-side

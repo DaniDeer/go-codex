@@ -45,6 +45,19 @@ go-codex/
 ├── route/                  # HTTP route descriptors (no renderer logic)
 │   └── route.go            # Route, Param, Body, Response, SecurityScheme, SecurityRequirement
 │
+├── middleware/             # declarative, composable enrichment/enforcement vocabulary — shared
+│   │                       #   across api/rest, api/events, api/reqreply (security schemes,
+│   │                       #   codec-declared Transform middleware, general-purpose wrapping)
+│   ├── middleware.go       # Middleware, Declaration[In,Out], NewDeclaration, SecurityScheme,
+│   │                       #   ServerImplementation, ClientImplementation, RouteMiddleware,
+│   │                       #   MiddlewareShapeError, CheckScopes, UnsatisfiedScopesError
+│   ├── disposition.go      # Disposition, EnsureDispositionBox, SetDisposition,
+│   │                       #   DispositionFromContext, ResolveDisposition
+│   ├── context_field.go    # ContextField[V], NewContextField, EnsureContextFields,
+│   │                       #   ContextFieldNotPreparedError
+│   └── params.go           # HeaderParamSpec, CookieParamSpec, QueryParamSpec,
+│                           #   ResponseHeaderParamSpec, ResponseCookieParamSpec
+│
 ├── internal/               # module-wide shared helpers (not public API; importable from
 │   │                       #   anywhere in the module, unlike api/internal below)
 │   └── templatematch/      # shared {varName}-template matching core

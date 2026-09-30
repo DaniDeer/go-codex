@@ -3707,8 +3707,33 @@ COMPLETE — Phase 8 is the closing review pass, not further feature work:
     the full finding list.
   - 2.4 — shared/cross-cutting surfaces (README, project-structure.md,
     zensical.toml nav, go-codex.instructions.md, docs/index.md,
-    get-started.md, reference/index.md) — not yet run; runs LAST (after
-    2.1-2.3) to verify their nav/cross-link changes are consistent.
+    get-started.md, reference/index.md) — **DONE (Round DR12).** Found:
+    a real compile-error bug in README's own Layer-2 code sample
+    (`handle, _ := createUser.Register(builder)` — `Register` returns
+    only `error`, not `(handle, error)`; fixed to `RegisterHandle`);
+    `zensical.toml` nav pointing at 4 nonexistent files (1 renamed —
+    `features/reqreply-middleware.md` → `features/codec-declared-
+    middleware.md`, an orphaned file with zero nav entry — and 3 fully
+    dead roadmap entries removed) plus 1 orphaned real file
+    (`roadmap/idea-codec-defined-hateoas.md`) with no nav entry or
+    roadmap/index.md row, both added; `docs/reference/index.md`
+    repeating the SAME stale `api/reqreply`/`adapters/mqtt5`/
+    `adapters/zeromq` Register/Serve/Call/ServeRouter/CallDealer bugs
+    2.2/2.3 already fixed elsewhere; `middleware` and 5 real adapters
+    (`mcprest`/`openai`/`file`/`redis`/`websocket`) missing from
+    README's and reference/index.md's directory/import tables despite
+    already being documented in go-codex.instructions.md's canonical
+    Package Structure table; `middleware` package missing `doc.go`
+    entirely (created one) and `adapters/file`'s package doc living in
+    `binding.go` instead of `doc.go` (moved, mechanical). Also applied
+    targeted, high-confidence fixes to
+    `.github/instructions/go-codex.instructions.md`'s `api/reqreply` row
+    (same stale-Attach-naming class as 2.2/2.3) WITHOUT attempting a
+    full historical-narrative rewrite — that remains explicitly scoped
+    to the separate `design-doc-compaction.md` roadmap. See
+    `.github/skills/review-docs/references/history.md`'s Round DR12 for
+    the full finding list. **Phase 8 item 2 (review-docs, all 4
+    sub-items) is now fully complete.**
 - **Joint declarative-workflow walkthrough** — once Phase 3 ships,
   design review alone won't catch every rough edge; only walking the
   real, end-to-end user journey does. Together (user + agent), declare

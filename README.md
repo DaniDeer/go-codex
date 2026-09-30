@@ -59,7 +59,7 @@ var createUser = rest.NewRoute[CreateUserReq, User]("POST", "/users",
     reqCodec, userCodec,
     rest.RouteMeta{OperationID: "createUser"},
 )
-handle, _ := createUser.Register(builder)
+handle, _ := createUser.RegisterHandle(builder)
 req, _    := handle.Decode(body)           // validates automatically
 
 // Layer 2 (client) — reuse the same route spec on the client side
@@ -177,9 +177,12 @@ go get github.com/DaniDeer/go-codex@latest
 | MQTT 5.0 adapter (paho.golang) | `github.com/DaniDeer/go-codex/adapters/mqtt5` |
 | ZeroMQ adapter (PUB/SUB, REQ/REP, DEALER/ROUTER) | `github.com/DaniDeer/go-codex/adapters/zeromq` |
 | SQL adapter (goose migrations + codec validation) | `github.com/DaniDeer/go-codex/adapters/sql` |
+| File IO adapter (ports bindings) | `github.com/DaniDeer/go-codex/adapters/file` |
 | Redis adapter (typed cache) | `github.com/DaniDeer/go-codex/adapters/redis` |
 | WebSocket adapter (server + client, duplex sessions) | `github.com/DaniDeer/go-codex/adapters/websocket` |
 | mark3labs/mcp-go adapter | `github.com/DaniDeer/go-codex/adapters/mcpgo` |
+| REST-client-to-MCP-tool bridge | `github.com/DaniDeer/go-codex/adapters/mcprest` |
+| OpenAI-compatible Chat Completions adapter | `github.com/DaniDeer/go-codex/adapters/openai` |
 | templ SSR format plug-in | `github.com/DaniDeer/go-codex/adapters/templ` |
 | OpenAPI 3.1 renderer | `github.com/DaniDeer/go-codex/render/openapi` |
 | AsyncAPI 3.0 renderer (2.6 also supported) | `github.com/DaniDeer/go-codex/render/asyncapi/v3` |
@@ -191,6 +194,7 @@ go get github.com/DaniDeer/go-codex@latest
 | HTTP route descriptors | `github.com/DaniDeer/go-codex/route` |
 | Schema model | `github.com/DaniDeer/go-codex/schema` |
 | Observer interfaces | `github.com/DaniDeer/go-codex/stats` |
+| Declarative security/Transform middleware (shared by rest/events/reqreply) | `github.com/DaniDeer/go-codex/middleware` |
 
 ---
 
@@ -222,7 +226,7 @@ config/      — standalone env-var config loading (FromEnv, FromEnvVar) — no 
 ports/       — protocol-agnostic IO ports: SourcePort, SinkPort, IOPort, LatestPort, ToolPort, DuplexPort
 app/         — application lifecycle: context + observer, supervised goroutines, shutdown hooks
 api/         — transport-agnostic API builders (rest/, events/, reqreply/, mcp/)
-adapters/    — transport adapters (nethttp, chi, mqtt, mqtt5, zeromq, sql, redis, websocket, mcpgo, templ, file)
+adapters/    — transport adapters (nethttp, chi, mqtt, mqtt5, zeromq, sql, redis, websocket, mcpgo, mcprest, openai, templ, file)
 forge/       — governed KPI computation pipelines (synchronous, batch, signed, spec-generating)
 stream/      — reactive stream pipelines: From, Apply, Filter, Tap, Buffer, Merge, Drain over chan T
 render/      — spec renderers (openapi/, asyncapi/v2, asyncapi/v3, jsonschema/, pipeline/, stream/)
@@ -230,5 +234,6 @@ validate/    — reusable constraints (Email, UUID, URL, ranges, MQTT topics, �
 stats/       — observer interfaces (ValidationObserver → SQLObserver, CacheObserver, LoggingObserver, NewFanout)
 schema/      — schema model (pure data, zero dependencies)
 route/       — HTTP route descriptors + shared security-scheme vocabulary (OpenAPI + AsyncAPI)
+middleware/  — declarative security/Transform middleware vocabulary shared by rest/events/reqreply
 examples/    — 50+ runnable demos (not importable by library packages)
 ```

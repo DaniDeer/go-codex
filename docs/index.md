@@ -30,6 +30,7 @@ var UserCodec = codex.Struct[User](
 - **AsyncAPI 3.0** — complete event-driven spec from channel descriptors; same schemas, no duplication
 - **REST + HTTP client** — typed `Decode`/`Encode` per route; `rest.Client.Call` typed client; both share the same `Route` definition — shared contract, compiler-enforced
 - **MQTT events** — typed subscribe/publish with topic template validation, wildcard support, `TopicVarsFromMessage`, and AsyncAPI spec
+- **Request-reply** — typed async request/response over MQTT 5 or ZeroMQ (`api/reqreply`); same declare → register → handle pattern as REST/events, AsyncAPI 3.0 with request-reply `reply:` blocks
 - **MCP server** — Tools, Resources, and Prompts follow declare → register → handle; codec drives `inputSchema` automatically
 - **SSE (Server-Sent Events)** — codec-validated event streams; path params work identically to REST routes
 - **templ SSR** — same route serves HTML (`Accept: text/html`) and JSON (`Accept: application/json`) via content negotiation; props validated by codec before render
@@ -41,7 +42,7 @@ var UserCodec = codex.Struct[User](
 | Layer | What you declare | What you get |
 |-------|-----------------|-------------|
 | **Codec** (`codex/`) | Shape + constraints | Encode, decode, validate, schema — automatically |
-| **API contract** (`api/rest`, `api/events`, `api/mcp`) | Routes and channels | Typed Decode/Encode helpers + OpenAPI / AsyncAPI spec |
+| **API contract** (`api/rest`, `api/events`, `api/reqreply`, `api/mcp`) | Routes, channels, tools | Typed Decode/Encode helpers + OpenAPI / AsyncAPI spec |
 | **Forge pipeline** (`forge/`) | Computation contract | Governed, signed, self-documenting KPI functions |
 
 ## Quick links
