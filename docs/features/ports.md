@@ -558,7 +558,7 @@ method+path, topic, or MCP tool name, plus routing params — as a standalone,
 reusable value, plugged into a port at wiring time, reusing the exact same
 option vocabulary as `rest.NewRoute`/`events.NewChannel`/`reqreply.NewRoute`/
 `apimcp.NewTool` (`PathParam`, `QueryParam`, `TopicParam`, …). No new param
-types, no separate `events.NewChannel(...).Register(builder)` call written
+types, no separate `events.NewChannel(...).WithSubscribe(...).Handle(builder)` call written
 by hand: the port's `PluginXxxPattern` method makes that call **internally**.
 
 | Pattern | Protocol family | Wraps |
@@ -598,8 +598,9 @@ Internally, a `Pattern` is turned into a handle via **exactly the same**
 `Route`/`Channel`/`Tool.Register(builder)` call a hand-declared route makes —
 `ports` never calls the weaker, builder-free `ClientHandle()`. This makes a
 `Pattern`-derived handle **indistinguishable** from one built by calling
-`Register` directly: `port.PluginEventPattern(pattern)` and
-`events.NewChannel[T](topic, codec, opts...).Register(myBuilder)` produce the
+`Register`/`Handle` directly: `port.PluginEventPattern(pattern)` and
+`events.NewChannel[T](topic, codec, opts...).WithSubscribe(events.Subscribe{}).Handle(myBuilder)`
+(or `.WithPublish(...)` on the sink side) produce the
 same kind of `*events.ChannelHandle[T]`, and any adapter (`mqtt5.SubscribeAdapter`, etc.)
 that receives either cannot tell which one it got.
 
@@ -1284,7 +1285,7 @@ use follows the same two-part shape, for the same three reasons:
 | `ports` + `adapters/file` (file) | `ports.NewFile(path, fmt, opts...)` | `File.Read`/`.Write`/`.Update`/`.Patch` | `ports.FilePathParam.WithCodec` |
 | `ports` + `adapters/redis` (cache) | `ports.NewCache(key, fmt, opts...)` | `redis.Get`/`redis.Set`/`redis.Seed` | `ports.CacheKeyParam.WithCodec` |
 | `api/rest` | `route.ClientHandle()` | `rest.Client.Call`/`nethttp.CallWithHandle` | `rest.PathParam.WithCodec` |
-| `api/events` | `channel.ClientHandle()` | `events.Client.Publish`/`.Subscribe` (or `mqtt.NewPublishTransport`/`NewSubscribeTransport` + `events.PublishHandle`/`SubscribeHandle`) | `events.TopicParam.WithCodec` |
+| `api/events` | `sub.Handle(nil)`/`pub.Handle(nil)` (client-only) | `events.Client.Publish`/`.Subscribe` (or `mqtt.NewPublishTransport`/`NewSubscribeTransport` + `events.PublishHandle`/`SubscribeHandle`) | `events.TopicParam.WithCodec` |
 | `adapters/sql` | `codex.Codec[T]` (the codec itself — no wrapper needed) | `sql.Validate`, or declared once via `sql.DecorateInput`/`DecorateOutput` | **N/A — no templated key exists** (see below) |
 
 `ports.File[T]` and `ports.Cache[T]` both "have a" `format.Format[T]` field

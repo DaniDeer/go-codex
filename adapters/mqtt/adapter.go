@@ -524,7 +524,7 @@ type PublishOptions[T any] struct {
 // Example — [NewPublishTransport] + [events.PublishHandle] (handle-based,
 // no manual client plumbing):
 //
-//	transport := mqtt.NewPublishTransport[NotificationCommand](client, 1, false, mqtt.PublishOptions[NotificationCommand]{})
+//	transport := mqtt.NewPublishTransport[NotificationCommand](client, mqtt.PublishOptions[NotificationCommand]{})
 //	err := events.PublishHandle(ctx, notifChannel.WithPublish(events.Publish{}), transport, notification)
 //
 // Example — [Attach] + [events.Client.Publish] (full pub/sub workflow,

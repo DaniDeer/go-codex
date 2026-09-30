@@ -483,7 +483,7 @@ errHandle, _ := events.NewChannel[Order]("orders/create", orderCodec,
             return ErrorPayload{Code: "validation", Message: e.Error()}, nil
         },
     ),
-).Register(b)
+).WithSubscribe(events.Subscribe{}).Handle(b)
 
 sql.DrainInsertAdapter(db, "orders", format.JSON(orderCodec), sql.DrainInsertOptions{
     OnError: func(err error) {

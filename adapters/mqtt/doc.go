@@ -15,7 +15,7 @@
 //	    events.ChannelMeta{}).WithSubscribe(events.Subscribe{}).Handle(b)
 //
 //	// Wire to Paho on connect (JSON, the default):
-//	subTransport := mqtt.NewSubscribeTransport[UserCreated](client, 1, mqtt.SubscribeOptions{
+//	subTransport := mqtt.NewSubscribeTransport[UserCreated](client, mqtt.SubscribeOptions{
 //	    OnError: func(e mqtt.SubscribeError) { log.Println("event error:", e) },
 //	})
 //	err := events.SubscribeHandle(ctx, userCreated, subTransport, func(ctx context.Context, e UserCreated) error {
@@ -23,16 +23,16 @@
 //	})
 //
 //	// Subscribe with a custom format (e.g. YAML):
-//	subTransport := mqtt.NewSubscribeTransport[UserCreated](client, 1, opts, format.YAML(codec))
+//	subTransport := mqtt.NewSubscribeTransport[UserCreated](client, opts, format.YAML(codec))
 //	err := events.SubscribeHandle(ctx, userCreated, subTransport, handler)
 //
 //	// Publish an event (JSON, the default):
 //	notification := NotificationCommand{Recipient: "alice@example.com", ...}
-//	pubTransport := mqtt.NewPublishTransport[NotificationCommand](client, 1, false, opts)
+//	pubTransport := mqtt.NewPublishTransport[NotificationCommand](client, opts)
 //	err = events.PublishHandle(ctx, notifChannel.WithPublish(events.Publish{}), pubTransport, notification)
 //
 //	// Publish with a custom format (e.g. YAML):
-//	pubTransport := mqtt.NewPublishTransport[NotificationCommand](client, 1, false, opts, format.YAML(codec))
+//	pubTransport := mqtt.NewPublishTransport[NotificationCommand](client, opts, format.YAML(codec))
 //	err = events.PublishHandle(ctx, notifChannel.WithPublish(events.Publish{}), pubTransport, notification)
 //
 // # Connect — owning the broker connection
@@ -85,11 +85,9 @@
 // via [SubscribeOptions.TopicFilter] — set explicitly to override, or
 // leave empty for the auto-derived filter.
 //
-// [PublishOptions.CredentialFunc] closes MQTT 3.1.1's message-level
-// credential gap: unlike MQTT 5's User Properties, 3.1.1 carries no
-// per-message metadata channel at all, so CredentialFunc grants
-// write-access directly into the outgoing payload (an ordinary struct
-// field) instead of a protocol-native side channel.
+// [PublishOptions.Capabilities]/[SubscribeOptions.Capabilities] declare QoS
+// protocol-natively — see docs/features/capabilities.md ("Protocol-Native
+// Capabilities") for the full mechanism.
 //
 // [events.Subscriber.SubscribeMW]/[events.Publisher.PublishMW]-attached
 // Fns recognize two shapes, validated eagerly: the security shape

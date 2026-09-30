@@ -116,7 +116,7 @@ All MQTT adapter error types implement `slog.LogValuer`.
 | `events.MissingTopicVarError{Name}` | topic variable absent from vars map |
 
 ```go
-transport := mqtt.NewSubscribeTransport[Measurement](client, 1, mqtt.SubscribeOptions{
+transport := mqtt.NewSubscribeTransport[Measurement](client, mqtt.SubscribeOptions{
     OnError: func(e mqtt.SubscribeError) {
         switch e.Kind {
         case mqtt.KindDecode:

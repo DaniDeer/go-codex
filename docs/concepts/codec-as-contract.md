@@ -49,12 +49,12 @@ var ReadingsChannel = events.NewChannel[SensorReading](
 // producer/main.go — events.PublishHandle auto-derives topic vars from reading's
 // declared merge fields, no manual vars map needed
 pub := contract.ReadingsChannel.WithPublish(events.Publish{...})
-transport := adaptermqtt.NewPublishTransport[SensorReading](client, 1, false, adaptermqtt.PublishOptions[SensorReading]{})
+transport := adaptermqtt.NewPublishTransport[SensorReading](client, adaptermqtt.PublishOptions[SensorReading]{})
 err := events.PublishHandle(ctx, pub, transport, reading)
 
 // consumer/main.go
 sub := contract.ReadingsChannel.WithSubscribe(events.Subscribe{...})
-subTransport := adaptermqtt.NewSubscribeTransport[SensorReading](client, 1, opts)
+subTransport := adaptermqtt.NewSubscribeTransport[SensorReading](client, opts)
 go func() { _ = events.SubscribeHandle(ctx, sub, subTransport, fn) }()
 ```
 

@@ -59,7 +59,7 @@
 //     option). Declaring the field IS the requirement.
 //   - Explicit — a standalone requirement, declared via [CapabilityRequirement]
 //     (or the sugar helpers [RequireQoS]/[RequireRetained]/[RequireHWM]/
-//     [RequireConflate]), independent of any adapter until [Attach] time.
+//     [RequireConflate]), independent of any adapter until [Client.Attach] time.
 //     [CheckCapabilityCoverage] verifies the supplied adapter Capability
 //     values satisfy every declared requirement — including, for
 //     requirements with a MinLevel (e.g. RequireQoS), a genuine VALUE

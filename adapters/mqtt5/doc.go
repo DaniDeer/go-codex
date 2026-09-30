@@ -10,7 +10,7 @@
 //
 // Three patterns are supported:
 //
-//   - PUB/SUB — via [api/events] channel declarations + [Attach]
+//   - PUB/SUB — via [api/events] channel declarations + [events.Client.Attach]
 //   - REQ/REP — via [api/reqreply] route declarations + [Serve]/[Call]
 //
 // # caller — bundling client+router+events.Client
@@ -38,13 +38,13 @@
 // whole-client entry point that walks every [events.Subscriber] registered
 // via [events.Subscriber.Register] and starts consuming each one, one
 // goroutine per channel, blocking until ctx is cancelled (available once
-// [Attach] has bound a transport, via [events.Client.ServeSubscribers]).
+// [events.Client.Attach] has bound a transport, via [events.Client.ServeSubscribers]).
 // Per-channel QoS/TopicFilter are recovered from
 // [events.ChannelHandle.HandlerOpts] (attached via
 // [events.Subscriber.WithOptions] with a [SubscribeOptions] value).
 // [serveOneSubscriber] is the zero-ceremony shortcut for a single channel.
 //
-// Publishing goes through [events.Client.Publish] (once [Attach] has bound
+// Publishing goes through [events.Client.Publish] (once [events.Client.Attach] has bound
 // a transport) — the publish-side mirror of the subscribe-side
 // abstractions above. A caller who already owns a pre-built handle reaches
 // the same underlying logic via [events.PublishHandle] +
@@ -79,7 +79,8 @@
 //
 // # MQTT 5 enhancements over MQTT 3.1.1
 //
-//   - User Properties: per-message key-value pairs exposed in SecurityFunc and
+//   - User Properties: per-message key-value pairs exposed to a Security-shaped
+//     SubscribeMW/PublishMW Fn and
 //     via [UserPropertiesFromContext] — enables proper per-message authentication.
 //   - Content-Type auto-selection: when the incoming message carries a ContentType
 //     property, [subscribe] auto-selects the matching format from the formats slice

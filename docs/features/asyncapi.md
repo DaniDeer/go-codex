@@ -26,34 +26,32 @@ eventsClient.AddServer("production", events.Server{
 })
 
 // Register a static topic channel
-userCreated, _ := events.NewChannel[UserCreatedEvent]("user/created", userCreatedCodec,
-    events.Subscribe{
+userCreated, _ := events.NewChannel[UserCreatedEvent]("user/created", userCreatedCodec).
+    WithSubscribe(events.Subscribe{
         OperationID: "receiveUserCreated",
         Summary:     "A user was created",
         SchemaName:  "UserCreatedEvent",  // → $ref in spec
-    },
-).Register(eventsClient)
+    }).Handle(eventsClient)
 
 // Register a template topic channel with parameter
 sensorUUIDCodec := codex.String().Refine(validate.UUID)
 sensorMeasurement, _ := events.NewChannel[Measurement]("sensors/{sensorID}/measurements",
     measurementCodec,
-    events.Subscribe{
-        OperationID: "receiveSensorMeasurement",
-        Summary:     "Sensor measurement received",
-        SchemaName:  "Measurement",
-    },
     events.TopicParam{
         Name:        "sensorID",
         Description: "UUID of the sensor publishing the measurement.",
     }.WithCodec(sensorUUIDCodec),  // codec validates + flows schema into spec parameters:
-).Register(eventsClient)
+).WithSubscribe(events.Subscribe{
+    OperationID: "receiveSensorMeasurement",
+    Summary:     "Sensor measurement received",
+    SchemaName:  "Measurement",
+}).Handle(eventsClient)
 
-// Register both directions on same channel
-events.NewChannel[UserEvent]("user/events", codec,
-    events.Subscribe{OperationID: "receiveUserEvent", Summary: "Receive user events"},
-    events.Publish{OperationID: "sendUserEvent",    Summary: "Send user events"},
-).Register(eventsClient)
+// Register both directions on the same channel — fork into a Subscriber AND
+// a Publisher, each registering its own operation against the SAME channel:
+userEventsChannel := events.NewChannel[UserEvent]("user/events", codec)
+_, _ = userEventsChannel.WithSubscribe(events.Subscribe{OperationID: "receiveUserEvent", Summary: "Receive user events"}).Handle(eventsClient)
+_, _ = userEventsChannel.WithPublish(events.Publish{OperationID: "sendUserEvent", Summary: "Send user events"}).Handle(eventsClient)
 
 // Generate the full AsyncAPI 3.0 spec:
 doc, err := eventsClient.AsyncAPISpec()
@@ -148,12 +146,11 @@ b.AddSecurityScheme("bearerAuth", events.SecurityScheme{
     SecurityScheme: route.BearerScheme("JWT"),
 }.WithCodec(codex.String().Refine(validate.BearerToken)))
 
-userCreated, _ := events.NewChannel[UserCreatedEvent]("user/created", codec,
-    events.Subscribe{
+userCreated, _ := events.NewChannel[UserCreatedEvent]("user/created", codec).
+    WithSubscribe(events.Subscribe{
         Summary:  "Receive user created events",
         Security: []route.SecurityRequirement{route.Require("bearerAuth")},
-    },
-).Register(eventsClient)
+    }).Handle(eventsClient)
 ```
 
 ## Error types

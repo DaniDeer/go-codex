@@ -115,7 +115,7 @@ obs := stats.NewFanout(metrics, stats.NewLoggingObserver(slog.Default()))
 ctx := stats.WithObserver(context.Background(), obs)
 
 // All of the below use obs because Options.Observer is nil:
-events.SubscribeHandle(ctx, sub, mqtt.NewSubscribeTransport[T](client, 1, mqtt.SubscribeOptions{}), fn)
+events.SubscribeHandle(ctx, sub, mqtt.NewSubscribeTransport[T](client, mqtt.SubscribeOptions{}), fn)
 stream.Apply(ctx, s, fn, stream.ApplyOptions{})
 zeromq.Call(ctx, sock, handle, req, zeromq.CallOptions{})
 ```
@@ -272,10 +272,10 @@ createUser.WithHandler(handler).WithOptions(nethttp.Options{Observer: obs})
 ### MQTT adapter
 
 ```go
-subTransport := amqtt.NewSubscribeTransport[T](client, qos, amqtt.SubscribeOptions{Observer: obs})
+subTransport := amqtt.NewSubscribeTransport[T](client, amqtt.SubscribeOptions{Observer: obs, Capabilities: []amqtt.Capability{amqtt.QoS(qos)}})
 events.SubscribeHandle(ctx, sub, subTransport, handler)
 
-pubTransport := amqtt.NewPublishTransport[T](client, qos, retained, amqtt.PublishOptions[T]{Observer: obs})
+pubTransport := amqtt.NewPublishTransport[T](client, amqtt.PublishOptions[T]{Observer: obs, Capabilities: []amqtt.Capability{amqtt.QoS(qos), amqtt.Retained(retained)}})
 events.PublishHandle(ctx, pub, pubTransport, msg)
 ```
 

@@ -55,7 +55,7 @@ security layers exist:
    // secured is a drop-in replacement — every NewSubscribeTransport/
    // NewPublishTransport/Serve/Call call site below is UNCHANGED from how
    // it would look with the raw client.
-   transport := mqtt5.NewSubscribeTransport[T](secured, router, 1, opts)
+   transport := mqtt5.NewSubscribeTransport[T](secured, router, opts)
    err = events.SubscribeHandle(ctx, sub, transport, fn)
    ```
 
@@ -487,12 +487,14 @@ check (extracting the "Authorization" MQTT5 User Property for `http`/`oauth2`/
 security Fn — same two-step order as the nethttp/chi request pipeline:
 
 ```go
-// NOTE: mqtt5.Attach + Client.Subscribe is v1-scoped and does NOT enforce
-// SubscribeMW of any shape (see adapters/mqtt5/transport.go's Attach doc
-// comment) — use events.SubscribeHandle + mqtt5.NewSubscribeTransport
-// directly, which delegates to the SAME full-featured internal logic
-// mqtt5.Serve's dispatch uses, to get SubscribeMW enforcement.
-transport := mqtt5.NewSubscribeTransport[UserCreated](client, router, 1, mqtt5.SubscribeOptions{})
+// client.Attach(mqtt5.NewTransport(...)) + events.Client.Subscribe is
+// FULL-FEATURED (docs/roadmap/capability-requirement-composition.md's
+// Phase 4e closed the former "v1 scope" gap for this package — see
+// adapters/mqtt5/transport.go's NewTransport doc comment) — it enforces
+// SubscribeMW of both recognized shapes identically to the
+// events.SubscribeHandle + mqtt5.NewSubscribeTransport handle-based path
+// below, so either call surface works here.
+transport := mqtt5.NewSubscribeTransport[UserCreated](client, router, mqtt5.SubscribeOptions{})
 err := events.SubscribeHandle(ctx, userCreatedSub.SubscribeMW(&bearerAuth,
     func(ctx context.Context, msg *paho.Publish, value *UserCreated) (map[string][]string, error) {
         // Runs AFTER the built-in Codec check passes — add extra business

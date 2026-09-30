@@ -230,7 +230,7 @@ lefts, rights := stream.SplitEither(ctx, unionStream, stream.SwitchOptions{})
 concurrently in a single select loop — no goroutine leaks:
 
 ```go
-alertTransport := adaptermqtt5.NewPublishTransport[Alert](mqttClient, 0, false, adaptermqtt5.PublishOptions[Alert]{Observer: obs})
+alertTransport := adaptermqtt5.NewPublishTransport[Alert](mqttClient, adaptermqtt5.PublishOptions[Alert]{Observer: obs})
 stream.Drain(ctx, debounced,
     func(ctx context.Context, oee OEE) error {
         return events.PublishHandle(ctx, alertPub, alertTransport, buildAlert(oee))

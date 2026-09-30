@@ -120,10 +120,8 @@ handle, _ := createUser.RegisterHandle(b)
 req, _    := handle.Decode(body)
 
 // Layer 2 — channel: same pattern for events → typed handle + AsyncAPI spec
-var sensorCh = events.NewChannel[SensorReading]("sensors/{id}/readings", sensorCodec,
-    events.Subscribe{Summary: "Receive sensor readings"},
-)
-handle, _ = sensorCh.Register(b)
+var sensorCh = events.NewChannel[SensorReading]("sensors/{id}/readings", sensorCodec)
+handle, _ = sensorCh.WithSubscribe(events.Subscribe{Summary: "Receive sensor readings"}).Handle(b)
 reading, _ := handle.Decode(payload)
 
 // Layer 3 — pipeline: declare a governed computation, use directly, register for spec

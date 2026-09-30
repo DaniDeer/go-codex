@@ -3661,7 +3661,31 @@ COMPLETE — Phase 8 is the closing review pass, not further feature work:
     `rest.Client.Call` (it is full-featured). See
     `.github/skills/review-docs/references/history.md`'s Round DR9 for
     the full finding list.
-  - 2.2 — `api/events` — not yet run.
+  - 2.2 — `api/events` — **DONE (Round DR10).** Found an EVEN LARGER
+    problem than 2.1: on top of the same stale-Attach-naming pattern
+    (`mqtt.Attach`/`mqtt5.Attach`/`zeromq.Attach` → `NewTransport(...)` +
+    `client.Attach(...)`), Phase 5's "zero backdoor" redesign REMOVED
+    positional `qos`/`retained` call-time parameters from
+    `NewSubscribeTransport`/`NewPublishTransport` entirely (replaced by a
+    `Capabilities []Capability` field), leaving many docs with literally
+    non-compiling example code — including `docs/features/events.md`'s
+    very first "Declaring channels" example calling `.Register(client)`
+    on a `Channel[T]` value, which has never had that method (only
+    `Subscriber[T]`/`Publisher[T]`, reached via `.WithSubscribe(...)`/
+    `.WithPublish(...)`, have `Register`/`Handle`). Also found a false
+    "v1-scoped, does NOT enforce SubscribeMW" claim about
+    `mqtt5.Attach + Client.Subscribe` (verified full-featured via
+    `adapters/mqtt5/transport.go`'s own doc comment) and stale
+    `SecurityFunc`/`CredentialFunc` field references (removed, replaced
+    by security-shaped `SubscribeMW`/`PublishMW`). Fixed across
+    `api/events/{doc.go,builder.go}`, every `adapters/{mqtt,mqtt5,
+    zeromq}` doc.go/godoc, `docs/features/{events,asyncapi,ports,
+    error-handling,observer,security,redis}.md`, `docs/guides/{mqtt,
+    mqtt5,observer,stream,error-handling}.md`, `docs/concepts/{codec-as-
+    contract,observable-layers,ports-and-adapters,pipelines}.md`,
+    `docs/what-is-go-codex.md`, and `examples/gob-contract/main.go`'s
+    stale comment. See `.github/skills/review-docs/references/
+    history.md`'s Round DR10 for the full finding list.
   - 2.3 — `api/reqreply` — not yet run.
   - 2.4 — shared/cross-cutting surfaces (README, project-structure.md,
     zensical.toml nav, go-codex.instructions.md, docs/index.md,

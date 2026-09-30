@@ -4,6 +4,63 @@ Do not re-report any findings listed here. They have been implemented.
 
 ---
 
+## Round DR10 (api/events — stale Attach naming + broken positional qos/retained examples)
+
+Scoped pass over `api/events` + `adapters/mqtt`/`mqtt5`/`zeromq` docs/godoc/
+examples (Phase 8 item 2.2 of `docs/roadmap/capability-requirement-composition.md`).
+Two root causes, both more severe than the REST pass's D1: (1) the same
+`Attach`-suffixed-helper → `NewTransport(...)` + `Client.Attach(...)` rename
+DR9 fixed for REST, never swept for events; (2) Phase 5's "zero backdoor"
+redesign REMOVED positional `qos byte`/`retained bool` call-time parameters
+from `NewSubscribeTransport`/`NewPublishTransport` entirely (replaced by a
+`Capabilities []Capability` field), leaving many docs with literally
+non-compiling example code — including a `Channel[T].Register(client)` call
+that has never existed on `Channel[T]` (only `Subscriber[T]`/`Publisher[T]`,
+reached via `.WithSubscribe(...)`/`.WithPublish(...)`, have `Register`/`Handle`).
+
+- **D1 — stale `mqtt.Attach`/`mqtt5.Attach`/`zeromq.Attach` naming** [bug]:
+  fixed across `api/events/{doc.go,builder.go}`, `adapters/{mqtt,mqtt5,
+  zeromq}/doc.go`, `adapters/mqtt/connect_security.go`,
+  `docs/concepts/ports-and-adapters.md` (events-scoped portion). Current
+  pattern is `client.Attach(<adapter>.NewTransport(...))`.
+- **D2 — impossible `Channel[T].Register(client)`/stale channel-declaration
+  examples** [bug]: rewrote `docs/features/events.md`'s "Declaring channels"
+  section and every other `NewChannel(...).Register(...)` call site found
+  repo-wide (`docs/features/{asyncapi,ports}.md`, `docs/guides/error-handling.md`,
+  `docs/concepts/pipelines.md`, `docs/what-is-go-codex.md`) to the correct
+  `NewChannel(...)` → `.WithSubscribe(...)`/`.WithPublish(...)` →
+  `.Handle(client)` (spec-only) or `.WithHandler(fn).Register(client)`
+  (handler + registration) pattern.
+- **D3 — stale positional `qos`/`retained`/`router` transport-constructor
+  calls** [bug]: removed stale positional args and, where the original
+  example specified a non-default value, added the replacement
+  `Capabilities: []<pkg>.Capability{<pkg>.QoS(n)}`/`Retained(true)` field
+  across `docs/features/{events,error-handling,observer,security}.md`,
+  `docs/guides/{mqtt,mqtt5,observer,stream}.md`, `docs/concepts/{codec-as-contract,
+  observable-layers}.md`, and each adapter's own godoc (`adapters/mqtt/
+  {adapter.go,doc.go,topicvars.go,connect_security.go}`) — including a
+  self-contradicting bug where `adapters/mqtt/adapter.go`'s own
+  `PublishOptions.Capabilities` field doc (correctly describing the
+  removal) sat next to a stale example a few lines below still using the
+  removed signature. `adapters/mqtt5`'s `router` positional argument
+  (unrelated to qos/retained, still required) was preserved everywhere.
+- **D4 — false "v1-scoped"/removed-field security claims** [bug]: corrected
+  `docs/features/security.md`'s claim that `mqtt5.Attach + Client.Subscribe`
+  is "v1-scoped and does NOT enforce SubscribeMW" — verified via
+  `adapters/mqtt5/transport.go`'s own doc comment that `Client.Attach` +
+  `Client.Subscribe`/`Publish` are FULL-FEATURED (Phase 4e closed that gap).
+  Also fixed stale `SubscribeOptions.SecurityFunc`/`PublishOptions.CredentialFunc`
+  field references (removed, replaced by security-shaped `SubscribeMW`/
+  `PublishMW`-attached Fns) in `docs/guides/mqtt5.md` and
+  `adapters/mqtt/{doc.go,connect_security.go}`.
+- **Also fixed while sweeping**: `docs/features/redis.md` and
+  `docs/features/ports.md`'s stale `channel.ClientHandle()` references
+  (that method never existed on `Channel[T]` — corrected to
+  `sub.Handle(nil)`/`pub.Handle(nil)`), and `examples/gob-contract/main.go`'s
+  own stale `adapters/mqtt.Attach`/`nethttp.Attach` comment references.
+
+---
+
 ## Round DR9 (api/rest — stale AttachMux/AttachRouter/nethttp.Attach sweep)
 
 Scoped pass over `api/rest`-owned docs/godoc/examples (Phase 8 item 2.1 of

@@ -94,7 +94,7 @@ import (
 // constructors, no reflection; use these for custom OnError/Observer/security
 // impls or wildcard topics. The simple case uses Client.Attach/.Subscribe below
 // instead.
-subTransport := mqtt5adapter.NewSubscribeTransport[SensorReading](client, router, 1,
+subTransport := mqtt5adapter.NewSubscribeTransport[SensorReading](client, router,
     mqtt5adapter.SubscribeOptions{Observer: obs})
 
 sub := contract.ReadingsChannel.WithSubscribe(events.Subscribe{})
@@ -107,7 +107,7 @@ if err := events.SubscribeHandle(ctx, sub, subTransport,
 }
 
 // Publish
-pubTransport := mqtt5adapter.NewPublishTransport[SensorReading](client, 1, false,
+pubTransport := mqtt5adapter.NewPublishTransport[SensorReading](client,
     mqtt5adapter.PublishOptions[SensorReading]{
         Observer:    obs,
         ContentType: "application/json", // sets MQTT 5 ContentType property
@@ -377,20 +377,26 @@ doc, _ := server.AsyncAPISpec()  // AsyncAPI 3.0 with reply: block
 
 ## User Properties for authentication
 
-MQTT 5.0 User Properties expose per-message key-value pairs. Use them in `SecurityFunc` for runtime authentication:
+MQTT 5.0 User Properties expose per-message key-value pairs. Attach a
+security-shaped Fn via `Subscriber.SubscribeMW` for runtime authentication
+(the `SubscribeOptions.SecurityFunc` field was removed — see
+[Feature: Security & Auth](../features/security.md)):
 
 ```go
-transport := mqtt5adapter.NewSubscribeTransport[SensorReading](client, router, 1,
-    mqtt5adapter.SubscribeOptions{
-        SecurityFunc: func(ctx context.Context, msg *paho.Publish, reqs []route.SecurityRequirement) error {
+scheme := route.SecurityScheme{Type: "http", Scheme: "bearer"}
+sub := contract.ReadingsChannel.WithSubscribe(events.Subscribe{}).
+    SubscribeMW(events.FromSecurityScheme("bearerAuth", scheme, nil),
+        func(ctx context.Context, msg *paho.Publish, r *SensorReading) (map[string][]string, error) {
             for _, p := range msg.Properties.User {
                 if p.Key == "Authorization" {
-                    return verifyJWT(strings.TrimPrefix(p.Value, "Bearer "), reqs)
+                    return verifyJWT(strings.TrimPrefix(p.Value, "Bearer "), []route.SecurityRequirement{{"bearerAuth": nil}})
                 }
             }
-            return errors.New("missing Authorization User Property")
-        },
-    })
+            return nil, errors.New("missing Authorization User Property")
+        })
+
+transport := mqtt5adapter.NewSubscribeTransport[SensorReading](client, router,
+    mqtt5adapter.SubscribeOptions{})
 err := events.SubscribeHandle(ctx, sub, transport, fn)
 
 // Access User Properties inside the handler:
@@ -415,7 +421,7 @@ func(ctx context.Context, r SensorReading) error {
 `UserPropertyParam` lets you validate MQTT 5 User Properties with codecs — the same mechanism as `rest.HeaderParam` for HTTP request headers. Define params in `SubscribeOptions.UserPropertyParams` (or `ServeOptions.UserPropertyParams` for request-reply responders).
 
 ```go
-transport := mqtt5adapter.NewSubscribeTransport[SensorReading](client, router, 1,
+transport := mqtt5adapter.NewSubscribeTransport[SensorReading](client, router,
     mqtt5adapter.SubscribeOptions{
         UserPropertyParams: []mqtt5adapter.UserPropertyParam{
             // Required bearer token — validated with a codec:
@@ -430,8 +436,8 @@ err := events.SubscribeHandle(ctx, sub, transport, fn)
 ```
 
 **Validation order** for each incoming message:
-1. User Property params validated (before SecurityFunc)
-2. SecurityFunc called (if channel has security requirements)
+1. User Property params validated (before the security-shaped SubscribeMW Fn)
+2. Security-shaped SubscribeMW Fn called (if the channel has security requirements)
 3. Payload decoded
 4. fn called
 
@@ -464,7 +470,7 @@ Per-property validation errors are also reported via `obs.RecordValidationError(
 When a message carries a ContentType property, the adapter auto-selects the matching format from the provided `formats` slice by comparing `format.Format.ContentType()`. No manual content-type switching needed:
 
 ```go
-transport := mqtt5adapter.NewSubscribeTransport[SensorReading](client, router, 1,
+transport := mqtt5adapter.NewSubscribeTransport[SensorReading](client, router,
     mqtt5adapter.SubscribeOptions{},
     format.JSON(sensorCodec),   // ContentType: "application/json"
     format.YAML(sensorCodec),   // ContentType: "application/yaml"
@@ -487,10 +493,10 @@ obs := stats.NewFanout(
     tracer,
 )
 
-subTransport := mqtt5adapter.NewSubscribeTransport[SensorReading](client, router, 1, mqtt5adapter.SubscribeOptions{Observer: obs})
+subTransport := mqtt5adapter.NewSubscribeTransport[SensorReading](client, router, mqtt5adapter.SubscribeOptions{Observer: obs})
 err := events.SubscribeHandle(ctx, sub, subTransport, fn)
 
-pubTransport := mqtt5adapter.NewPublishTransport[SensorReading](client, 1, false, mqtt5adapter.PublishOptions[SensorReading]{Observer: obs})
+pubTransport := mqtt5adapter.NewPublishTransport[SensorReading](client, mqtt5adapter.PublishOptions[SensorReading]{Observer: obs})
 err = events.PublishHandle(ctx, pub, pubTransport, msg)
 
 mqtt5adapter.Serve(ctx, client, router, handle, fn, mqtt5adapter.ServeOptions{Observer: obs})

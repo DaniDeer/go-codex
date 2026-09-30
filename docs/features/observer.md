@@ -108,7 +108,7 @@ obs := stats.NewFanout(metricsObserver, stats.NewLoggingObserver(slog.Default())
 ctx := stats.WithObserver(context.Background(), obs)
 
 // All adapters now use obs when Options.Observer is nil:
-events.SubscribeHandle(ctx, sub, mqtt.NewSubscribeTransport[T](client, 1, mqtt.SubscribeOptions{}), fn)
+events.SubscribeHandle(ctx, sub, mqtt.NewSubscribeTransport[T](client, mqtt.SubscribeOptions{}), fn)
 stream.Apply(ctx, s, fn, stream.ApplyOptions{})
 route.WithOptions(nethttp.Options{}) // resolved per-request (see below)
 ```

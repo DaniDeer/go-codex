@@ -14,8 +14,11 @@ import (
 // This file holds CONNECTION-LEVEL security — a codec-validated CONNECT-time
 // (username/password) credential check, distinct from the MESSAGE-LEVEL
 // security in adapter.go (events.WithSecurityScheme +
-// SubscribeOptions.SecurityFunc; MQTT 3.1.1 has no PublishOptions.CredentialFunc
-// equivalent, since the protocol carries no per-message metadata at all).
+// [events.Subscriber.SubscribeMW]/[events.Publisher.PublishMW]-paired
+// implementations; MQTT 3.1.1 has no per-message metadata channel at all,
+// so a publish-side security implementation writes credentials directly
+// into the outgoing payload struct instead of a protocol-native side
+// channel).
 // See docs/features/security.md's "Connection-level vs message-level
 // security" section for when to use which.
 //
@@ -127,7 +130,7 @@ func WithObserver(obs stats.Observer) SecuredClientOption {
 //	secured, err := mqtt.NewSecuredClient(client, bearerAuth, "svc-account", token)
 //	if err != nil { /* malformed credential — client is never used */ }
 //
-//	transport := mqtt.NewPublishTransport[T](secured, 1, false, mqtt.PublishOptions[T]{})
+//	transport := mqtt.NewPublishTransport[T](secured, mqtt.PublishOptions[T]{})
 //	err = events.PublishHandle(ctx, pub, transport, msg) // works exactly as before
 func NewSecuredClient(client pahomqtt.Client, scheme ConnectSecurityScheme, username, password string, opts ...SecuredClientOption) (*SecuredClient, error) {
 	o := resolveSecuredClientOptions(opts)

@@ -229,7 +229,7 @@ obs := stats.NewFanout(
 // Pass the same value to every layer:
 stats.ReportErrors(obs, "config", err)                        // codec layer
 route.WithHandler(handler).WithOptions(nethttp.Options{Observer: obs})  // adapter
-subTransport := mqtt.NewSubscribeTransport[T](client, 1, mqtt.SubscribeOptions{Observer: obs})
+subTransport := mqtt.NewSubscribeTransport[T](client, mqtt.SubscribeOptions{Observer: obs})
 events.SubscribeHandle(ctx, sub, subTransport, fn)
 file.Read(vars, ports.FileOptions{Observer: obs})            // file I/O
 forge.NewRegistry("P", "1.0.0").WithObserver(obs)            // forge
@@ -247,7 +247,7 @@ obs := stats.NewFanout(metricsObserver, stats.NewLoggingObserver(slog.Default())
 ctx := stats.WithObserver(context.Background(), obs)
 
 // Adapters resolve obs from ctx when Options.Observer is nil:
-events.SubscribeHandle(ctx, sub, mqtt.NewSubscribeTransport[T](client, 1, mqtt.SubscribeOptions{}), fn) // uses obs
+events.SubscribeHandle(ctx, sub, mqtt.NewSubscribeTransport[T](client, mqtt.SubscribeOptions{}), fn) // uses obs
 stream.Apply(ctx, s, fn, stream.ApplyOptions{})                         // uses obs
 file.Read(vars, ports.FileOptions{Context: ctx})                       // uses obs
 forge.NewRegistry("P", "1.0.0").WithObserver(obs)                       // explicit — no ctx

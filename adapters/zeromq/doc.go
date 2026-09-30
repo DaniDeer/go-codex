@@ -8,8 +8,8 @@
 //
 // Four ZMQ patterns are supported:
 //
-//   - PUB/SUB (and PUSH/PULL) — via [api/events] channel declarations + [Attach]
-//   - REQ/REP — via [api/rest] route declarations + [Serve]/[Call]
+//   - PUB/SUB (and PUSH/PULL) — via [api/events] channel declarations + [events.Client.Attach]
+//   - REQ/REP — via [api/reqreply] route declarations + [Serve]/[Call]
 //   - ROUTER/DEALER (concurrent) — [ServeRouter]/[CallDealer]; same options and error types
 //
 // Channel and route declarations are identical to the MQTT and HTTP adapters.
@@ -30,13 +30,13 @@
 //
 // # Attach — the single-workflow entry point
 //
-// [Attach] binds a [FramedSocket] to an [api/events.Client] registry and
+// [events.Client.Attach] binds a [FramedSocket] to an [api/events.Client] registry and
 // returns an [api/events.Transport], giving the [api/events.Client] a
 // literal `Publish(ctx, pub, msg)`/`Subscribe(ctx, sub, fn)`/
 // `ServeSubscribers(ctx)` call shape — the single workflow this package
 // exposes for pub/sub. Internally, an unexported caller type still
 // bundles the [FramedSocket] with the [api/events.Client] registry; none
-// of that is publicly reachable — call [Attach] and use the returned
+// of that is publicly reachable — call [events.Client.Attach] and use the returned
 // [api/events.Client] methods instead:
 //
 //	_ = eventsClient.Attach(zeromq.NewTransport(zeromq.TransportOptions{Socket: sock}))
@@ -54,7 +54,7 @@
 // available: declare each channel's handler at declare time via
 // [api/events.Subscriber.WithHandler], register it via
 // [api/events.Subscriber.Register], then call
-// [api/events.Client.ServeSubscribers] (available once [Attach] has bound
+// [api/events.Client.ServeSubscribers] (available once [events.Client.Attach] has bound
 // a transport) to start consuming every registered channel in one call
 // over a SINGLE shared receive loop (see serve_subscribers.go's design
 // note for why one shared loop is used instead of one goroutine per
@@ -107,7 +107,7 @@
 //
 // See also:
 //   - [api/events] — channel declarations for PUB/SUB
-//   - [api/rest] — route declarations for REQ/REP
+//   - [api/reqreply] — route declarations for REQ/REP
 //   - [stats] — observer interfaces
 //   - https://github.com/pebbe/zmq4 — recommended ZMQ Go binding
 

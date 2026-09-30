@@ -977,7 +977,7 @@ func (h *ChannelHandle[T]) ValidateTopicVars(vars map[string]string) error {
 //	ch = ch.WithFormats(format.YAML(measurementCodec))
 //
 //	// Adapter uses YAML automatically — no format arg needed:
-//	transport := amqtt.NewSubscribeTransport[Reading](client, 1, opts)
+//	transport := amqtt.NewSubscribeTransport[Reading](client, opts)
 //	SubscribeHandle(ctx, sub, transport, fn)
 func (h *ChannelHandle[T]) WithFormats(fmts ...format.Format[T]) *ChannelHandle[T] {
 	h.Formats = slices.Clone(fmts)
@@ -1171,7 +1171,8 @@ type Client struct {
 	// topic+client. See [Client.SubscriberEntries].
 	subscriberByTopic map[string]SubscriberEntry
 	// transport is the optional, adapter-provided [Transport] attached via
-	// [Client.Attach] (e.g. by zeromq.Attach/mqtt5.Attach/mqtt.Attach) —
+	// [Client.Attach] (e.g. client.Attach(zeromq.NewTransport(...)),
+	// client.Attach(mqtt5.NewTransport(...)), client.Attach(mqtt.NewTransport(...))) —
 	// nil until Attach is called. See [Client.Publish]/[Client.Subscribe]/
 	// [Client.ServeSubscribers]'s doc comments and Decision 5 of
 	// docs/design/d-0002-pubsub-workflow-simplification.md for the full design
@@ -2578,12 +2579,13 @@ func (c *Client) SubscriberEntries() []SubscriberEntry {
 // circular imports. Lets application code write ONE generic "start
 // consuming" call across transports, without caring which adapter is
 // underneath — reachable uniformly via [Client.Attach] (e.g.
-// mqtt5.Attach, mqtt.Attach, zeromq.Attach) followed by
+// client.Attach(mqtt5.NewTransport(...)), client.Attach(mqtt.NewTransport(...)),
+// client.Attach(zeromq.NewTransport(...))) followed by
 // [Client.ServeSubscribers].
 //
 // There is no publish-side counterpart to this interface — [Client.Publish]
 // itself is already the SOLE, transport-agnostic publish call shape (e.g.
-// [zeromq.Attach], mqtt5.Attach, mqtt.Attach all bind into the SAME
+// zeromq/mqtt5/mqtt Transports all bind into the SAME
 // [Client.Publish] method), so no separate per-channel binding type or
 // interface is needed on that side.
 type SubscriberServer interface {
@@ -2595,9 +2597,10 @@ type SubscriberServer interface {
 }
 
 // Transport is implemented by each adapter's internal, unexported binding
-// attached to a [Client] via an adapter-specific Attach function (e.g.
-// [zeromq.Attach], mqtt5.Attach, mqtt.Attach) — see [Client.Attach]. It
-// gives [Client] itself a literal Publish/Subscribe/ServeSubscribers call
+// returned by an adapter-specific NewTransport constructor and attached to
+// a [Client] via [Client.Attach] (e.g. client.Attach(zeromq.NewTransport(...)),
+// client.Attach(mqtt5.NewTransport(...)), client.Attach(mqtt.NewTransport(...))).
+// It gives [Client] itself a literal Publish/Subscribe/ServeSubscribers call
 // shape (Decision 5 of docs/design/d-0002-pubsub-workflow-simplification.md).
 //
 // Methods are necessarily `any`-typed: Go forbids methods from
@@ -2767,7 +2770,7 @@ func (c *Client) Attach(t Transport) error {
 // most the first value is used — pass zero or one.
 //
 //	client := events.NewClient(events.WithInfo(events.Info{...}))
-//	_ = zeromq.Attach(client, sock)
+//	client.Attach(zeromq.NewTransport(zeromq.TransportOptions{Socket: sock}))
 //	pub := ReadingsChannel.WithPublish(events.Publish{...})
 //	err := client.Publish(ctx, pub, reading)
 func (c *Client) Publish(ctx context.Context, pub any, msg any, opts ...ClientPublishOptions) error {
@@ -2790,7 +2793,7 @@ func (c *Client) Publish(ctx context.Context, pub any, msg any, opts ...ClientPu
 // first value is used — pass zero or one.
 //
 //	client := events.NewClient(events.WithInfo(events.Info{...}))
-//	_ = zeromq.Attach(client, sock)
+//	client.Attach(zeromq.NewTransport(zeromq.TransportOptions{Socket: sock}))
 //	sub := ReadingsChannel.WithSubscribe(events.Subscribe{...})
 //	err := client.Subscribe(ctx, sub, func(ctx context.Context, r SensorReading) error { ... })
 func (c *Client) Subscribe(ctx context.Context, sub any, fn any, opts ...ClientSubscribeOptions) error {

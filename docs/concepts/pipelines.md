@@ -110,7 +110,7 @@ into the outside world declaratively, without changing the forge functions. See 
 ├─────────────────────────────────────────────────────────────────────┤
 │  LAYER 2 — api/events: transport contracts                          │
 │                                                                     │
-│  events.NewChannel[SensorReading](...).Register(b)                  │
+│  events.NewChannel[SensorReading](...).WithSubscribe(events.Subscribe{}).Handle(b) │
 │  b.AsyncAPISpec()                                                    │
 ├─────────────────────────────────────────────────────────────────────┤
 │  LAYER 3 — forge: governed KPI computation                          │

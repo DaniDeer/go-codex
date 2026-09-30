@@ -13,29 +13,35 @@ client := events.NewClient(
 )
 client.AddServer("production", events.Server{URL: "mqtt://broker.example.com:1883", Protocol: "mqtt"})
 
-// Static topic
-userCreated, _ := events.NewChannel[UserCreatedEvent]("user/created", userCreatedCodec,
-    events.Subscribe{OperationID: "receiveUserCreated", Summary: "A user was created", SchemaName: "UserCreatedEvent"},
-).Register(client)
+// Static topic — NewChannel opts are ChannelMeta/TopicParam only;
+// fork into a role via WithSubscribe/WithPublish, then Register (handler
+// attached) or Handle (spec-only) against the client.
+userCreatedChannel := events.NewChannel[UserCreatedEvent]("user/created", userCreatedCodec)
+userCreatedSub := userCreatedChannel.WithSubscribe(events.Subscribe{
+    OperationID: "receiveUserCreated", Summary: "A user was created", SchemaName: "UserCreatedEvent",
+})
+handle, err := userCreatedSub.Handle(client) // spec-only registration; returns *ChannelHandle[T]
 
 // Template topic with parameter codec
 sensorUUIDCodec := codex.String().Refine(validate.UUID)
-sensorMeasurement, _ := events.NewChannel[Measurement]("sensors/{sensorID}/measurements",
+sensorMeasurement := events.NewChannel[Measurement]("sensors/{sensorID}/measurements",
     measurementCodec,
-    events.Subscribe{OperationID: "receiveMeasurement", SchemaName: "Measurement"},
-    events.Publish{OperationID: "publishMeasurement"},
     events.TopicParam{
         Name:        "sensorID",
         Description: "UUID of the sensor.",
     }.WithCodec(sensorUUIDCodec),
-).Register(client)
+)
+measurementSub := sensorMeasurement.WithSubscribe(events.Subscribe{OperationID: "receiveMeasurement", SchemaName: "Measurement"})
+measurementPub := sensorMeasurement.WithPublish(events.Publish{OperationID: "publishMeasurement"})
 ```
 
 Attaching security or general-purpose middleware (Observer-style logging,
-etc.) to a channel uses the role-scoped path instead —
+etc.) to a channel uses the SAME role-scoped path shown above —
 `Channel.WithSubscribe(events.Subscribe{...})`/`Channel.WithPublish(events.Publish{...})`
 each return a `Subscriber[T]`/`Publisher[T]` builder with its own
-`.Use(mws ...middleware.Middleware)` and a terminal `.Handle(client)`:
+`.Use(mws ...middleware.Middleware)` and a terminal `.Handle(client)`
+(spec-only) or `.WithHandler(fn).Register(client)` (spec + local dispatch
+registration, requires a handler):
 
 ```go
 handle, err := sensorMeasurement.
@@ -55,7 +61,8 @@ handle, err := sensorMeasurement.
 ## BuildTopic — type-safe topic construction
 
 ```go
-topic, err := sensorMeasurement.BuildTopic(map[string]string{"sensorID": "f47ac10b-..."})
+measurementHandle, err := measurementSub.Handle(client) // *ChannelHandle[Measurement]
+topic, err := measurementHandle.BuildTopic(map[string]string{"sensorID": "f47ac10b-..."})
 // → "sensors/f47ac10b-.../measurements"
 // err: events.TopicParamError or events.MissingTopicVarError on failure
 ```
@@ -69,9 +76,12 @@ import (
 )
 
 sub := sensorMeasurement.WithSubscribe(events.Subscribe{})
-transport := amqtt.NewSubscribeTransport[Measurement](client, 1,
+transport := amqtt.NewSubscribeTransport[Measurement](client,
     amqtt.SubscribeOptions{
-        Observer: obs,
+        // Capabilities declares QoS/Retained protocol-natively — see
+        // [Feature: Protocol-Native Capabilities](capabilities.md).
+        Capabilities: []amqtt.Capability{amqtt.QoS(1)},
+        Observer:     obs,
         OnError: func(e amqtt.SubscribeError) {
             switch e.Kind {
             case amqtt.KindDecode:
@@ -104,11 +114,17 @@ alertPub := alertChannel.WithPublish(events.Publish{})
 sensorPub := sensorMeasurement.WithPublish(events.Publish{})
 
 // Static topic — vars derived automatically from the channel's merge fields
-pubTransport := amqtt.NewPublishTransport[Alert](client, 1, false, amqtt.PublishOptions[Alert]{Observer: obs})
+pubTransport := amqtt.NewPublishTransport[Alert](client, amqtt.PublishOptions[Alert]{
+    Capabilities: []amqtt.Capability{amqtt.QoS(1)},
+    Observer:     obs,
+})
 err := events.PublishHandle(ctx, alertPub, pubTransport, alert)
 
 // Template topic — BuildTopic called internally from m's own merge-capable fields
-measurementTransport := amqtt.NewPublishTransport[Measurement](client, 1, false, amqtt.PublishOptions[Measurement]{Observer: obs})
+measurementTransport := amqtt.NewPublishTransport[Measurement](client, amqtt.PublishOptions[Measurement]{
+    Capabilities: []amqtt.Capability{amqtt.QoS(1)},
+    Observer:     obs,
+})
 err = events.PublishHandle(ctx, sensorPub, measurementTransport, m)
 ```
 
@@ -205,7 +221,7 @@ The same convenience exists for every transport with a pub/sub event surface —
 `zeromq.NewPublishTransport[T]` — identical shape and semantics, one per transport package.
 
 ```go
-transport := mqtt5.NewPublishTransport[SensorReading](client, 1, false, mqtt5.PublishOptions[SensorReading]{})
+transport := mqtt5.NewPublishTransport[SensorReading](client, mqtt5.PublishOptions[SensorReading]{})
 err := events.PublishHandle(ctx, sensorChannel.WithPublish(events.Publish{}), transport, reading)
 // topic + payload both derived from the SAME reading value — no manual vars map.
 ```
@@ -263,14 +279,14 @@ yamlChannel := measurementCh.WithFormats(format.YAML(measurementCodec))
 sub := yamlChannel.WithSubscribe(events.Subscribe{})
 pub := yamlChannel.WithPublish(events.Publish{})
 
-transport := amqtt.NewSubscribeTransport[Measurement](client, 1, opts)
+transport := amqtt.NewSubscribeTransport[Measurement](client, opts)
 go func() { _ = events.SubscribeHandle(ctx, sub, transport, handler) }()
 
-pubTransport := amqtt.NewPublishTransport[Measurement](client, 1, false, amqtt.PublishOptions[Measurement]{})
+pubTransport := amqtt.NewPublishTransport[Measurement](client, amqtt.PublishOptions[Measurement]{})
 err := events.PublishHandle(ctx, pub, pubTransport, m)
 
 // Call-time format override still works — passed as trailing variadic to the constructor
-jsonTransport := amqtt.NewSubscribeTransport[Measurement](client, 1, opts, format.JSON(measurementCodec))
+jsonTransport := amqtt.NewSubscribeTransport[Measurement](client, opts, format.JSON(measurementCodec))
 go func() { _ = events.SubscribeHandle(ctx, sub, jsonTransport, handler) }()
 ```
 
@@ -365,36 +381,19 @@ direct attachment, write-side wiring, AsyncAPI rendering) and
 [D-0003 — Codec-Declared Middlewares](../design/d-0003-codec-declared-middlewares.md)
 for the full design.
 
-## Declarative MQTT QoS and Retained flag
+## Protocol-native QoS and Retained (Capability mechanism)
 
-`events.MQTTQoS` (`QoSAtMostOnce`/`QoSAtLeastOnce`/`QoSExactlyOnce`) declares
-a channel's subscribe-side quality-of-service level directly on
-`Subscribe.QoS` — no more smuggling it through a type-asserted `HandlerOpts`
-escape hatch:
-
-```go
-sub := channel.WithSubscribe(events.Subscribe{QoS: events.QoSExactlyOnce}).
-    WithHandler(func(ctx context.Context, r SensorReading) error { ... })
-```
-
-Publish-side QoS AND the Retained flag are often message-dependent (e.g.
-only a channel's "latest status" message should be retained) — declare them
-via `Publisher.WithAttributes`, mirroring `rest.CookieAttributes`'s
-"derive from the value being sent" shape:
-
-```go
-pub := channel.WithPublish(events.Publish{}).
-    WithAttributes(func(r SensorReading) events.PublishAttributes {
-        return events.PublishAttributes{QoS: events.QoSAtLeastOnce, Retained: r.IsLatestStatus}
-    })
-```
-
-Both `adapters/mqtt` (v3) and `adapters/mqtt5` consume these as the FALLBACK
-default — an explicit per-call `SubscribeOptions.QoS`/`PublishAdapterOptions.QoS`/
-`.Retained` override still wins when set to a non-default value. Zero
-declared attributes preserves the prior, undeclared behavior exactly (QoS 0,
-Retained false). `adapters/zeromq` has no equivalent concept (no
-broker-mediated QoS/retained-message semantics in ZeroMQ PUB/SUB).
+The declarative, transport-agnostic `events.MQTTQoS`/`Subscribe.QoS`/
+`Publisher.WithAttributes` design described in earlier revisions of this
+page was DELETED — it bypassed the sealed `Capability` mechanism's
+"zero backdoor between the api layer and the adapters" guardrail. QoS and
+Retained are now declared per-adapter via `Capabilities []<adapter>.Capability`
+on `SubscribeOptions`/`PublishOptions` (shown in the Paho MQTT
+subscribe/publish sections above) — see
+[Feature: Protocol-Native Capabilities](capabilities.md) for the full
+mechanism, adapter coverage table, and rationale. `adapters/zeromq` has no
+QoS/Retained equivalent (no broker-mediated semantics in ZeroMQ PUB/SUB);
+its own capabilities (HWM, Conflate) are documented on the same page.
 
 ## Error types
 
@@ -423,13 +422,13 @@ var ReadingsChannel = events.NewChannel[SensorReading](
 // events.PublishHandle's own transport call is spec-free (Publisher.Handle(nil) internally).
 pub := contract.ReadingsChannel.WithPublish(events.Publish{...})
 _, _ = pub.Handle(producerClient) // optional — only needed if producerClient generates a spec
-transport := amqtt.NewPublishTransport[SensorReading](mqttClient, 1, false, amqtt.PublishOptions[SensorReading]{})
+transport := amqtt.NewPublishTransport[SensorReading](mqttClient, amqtt.PublishOptions[SensorReading]{})
 err := events.PublishHandle(ctx, pub, transport, reading)
 
 // consumer/main.go
 sub := contract.ReadingsChannel.WithSubscribe(events.Subscribe{...})
 _, _ = sub.Handle(consumerClient) // optional — same spec-registration purpose
-subTransport := amqtt.NewSubscribeTransport[SensorReading](mqttClient, 1, opts)
+subTransport := amqtt.NewSubscribeTransport[SensorReading](mqttClient, opts)
 go func() { _ = events.SubscribeHandle(ctx, sub, subTransport, fn) }()
 ```
 
@@ -456,7 +455,7 @@ handle, err := events.NewChannel[SensorReading]("sensors/{id}/data", sensorCodec
             return ErrorPayload{Code: "validation", Message: e.Reason}, nil
         },
     ),
-).Register(client)
+).WithSubscribe(events.Subscribe{}).Handle(client)
 ```
 
 - **Direct mode** (no map function): `E` must itself be assignable to the declared
@@ -528,7 +527,7 @@ type DeadLetterEnvelope struct {
 
 handle, err := events.NewChannel[SensorReading]("sensors/{id}/data", sensorCodec,
     events.DeadLetter("sensors/dead-letter"),
-).Register(client)
+).WithSubscribe(events.Subscribe{}).Handle(client)
 ```
 
 - **A `DeadLetter` topic is ALWAYS a plain, literal string — never a
@@ -588,7 +587,7 @@ events.NewChannel[Reading]("sensors/{id}/data", readingCodec,
     events.DeadLetter("sensors/dead-letter").
         WithDescription("Undeliverable sensor readings.").
         WithSchemaName("SensorDeadLetter"),
-).Register(client)
+).WithSubscribe(events.Subscribe{}).Handle(client)
 ```
 
   When several channels share ONE dead-letter destination (e.g. via

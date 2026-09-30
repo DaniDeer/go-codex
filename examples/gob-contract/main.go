@@ -48,13 +48,14 @@
 // contract:
 //
 //   - "REST client/server" — a real server (nethttp.ServeOne) and a real
-//     client (rest.NewClient + nethttp.Attach + Client.Call) exchange an
-//     Order over Gob in BOTH directions, entirely through Client.Call —
-//     no ClientHandle()/WithRequestFormats escape hatch needed.
+//     client (rest.NewClient + client.Attach(nethttp.NewClientTransport(...)) +
+//     Client.Call) exchange an Order over Gob in BOTH directions, entirely
+//     through Client.Call — no ClientHandle()/WithRequestFormats escape
+//     hatch needed.
 //   - "Pub/Sub" — a publisher and a subscriber (events.NewClient +
-//     adapters/mqtt.Attach + Client.Publish/Client.Subscribe, backed by
-//     an in-process mock MQTT client) exchange the SAME Order over Gob,
-//     entirely through Client.Attach.
+//     client.Attach(mqtt.NewTransport(...)) + Client.Publish/Client.Subscribe,
+//     backed by an in-process mock MQTT client) exchange the SAME Order over
+//     Gob, entirely through Client.Attach.
 //
 // Run with: go run ./examples/gob-contract
 package main

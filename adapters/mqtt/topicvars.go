@@ -25,12 +25,13 @@ import (
 //
 // Typical usage — channel defined with go-codex template variables:
 //
-//	sensorChannel, _ := events.NewChannel[SensorReading]("sensors/{sensorID}/measurements", ...).Register(b)
+//	sensorChannel := events.NewChannel[SensorReading]("sensors/{sensorID}/measurements", codec, ...)
 //	sub := sensorChannel.WithSubscribe(events.Subscribe{})
-//	subTransport := mqtt.NewSubscribeTransport[SensorReading](client, 1, mqtt.SubscribeOptions{})
+//	handle, _ := sub.Handle(b)
+//	subTransport := mqtt.NewSubscribeTransport[SensorReading](client, mqtt.SubscribeOptions{})
 //	err := events.SubscribeHandle(ctx, sub, subTransport, func(ctx context.Context, r SensorReading) error {
 //	    msg, _ := mqtt.MessageFromContext(ctx)
-//	    vars, err := mqtt.TopicVarsFromMessage(sensorChannel, msg)
+//	    vars, err := mqtt.TopicVarsFromMessage(handle, msg)
 //	    // vars["sensorID"] == "f47ac10b-..."
 //	    ...
 //	})

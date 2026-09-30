@@ -63,32 +63,30 @@ pngCodec := codex.Bytes().
     Refine(validate.PNG)
 
 // 2. Channel — T = []byte, registered with an events.Client
-imageCh, _ := events.NewChannel[[]byte](
+imageCh := events.NewChannel[[]byte](
     "cameras/{id}/snapshot",
     pngCodec,
-    events.Publish{OperationID:   "publishSnapshot"},
-    events.Subscribe{OperationID: "subscribeSnapshot"},
     events.TopicParam{Name: "id"},
-).Register(b)
-
-// 3. Set binary as the payload format for both directions
-imageCh.WithFormats(format.Binary(pngCodec).WithContentType("image/png"))
+    events.Formats(format.Binary(pngCodec).WithContentType("image/png")),
+)
 
 // Publish a PNG — validate.PNG runs before the message is sent, via the
 // spec-free, handle-based Decision 7 call surface
 // (docs/design/d-0002-pubsub-workflow-simplification.md): adaptermqtt.NewPublishTransport[T]
 // satisfies events.PublishTransport[T], consumed through events.PublishHandle.
-pubTransport := adaptermqtt.NewPublishTransport[[]byte](client, 1, false,
+pubTransport := adaptermqtt.NewPublishTransport[[]byte](client,
     adaptermqtt.PublishOptions[[]byte]{Observer: obs})
-pub := imageCh.WithPublish(events.Publish{})
-err := events.PublishHandle(ctx, pub, pubTransport, pngBytes)
+pub := imageCh.WithPublish(events.Publish{OperationID: "publishSnapshot"})
+_, err := pub.Handle(b) // registers the AsyncAPI spec entry once
+err = events.PublishHandle(ctx, pub, pubTransport, pngBytes)
 
 // Subscribe — handler receives validated PNG bytes. mqtt (v3) has no broker
 // router, so subscribeTransport.Subscribe registers the subscription then
 // blocks on ctx.Done(); run it in a goroutine.
-subTransport := adaptermqtt.NewSubscribeTransport[[]byte](client, 1,
+subTransport := adaptermqtt.NewSubscribeTransport[[]byte](client,
     adaptermqtt.SubscribeOptions{Observer: obs})
-sub := imageCh.WithSubscribe(events.Subscribe{})
+sub := imageCh.WithSubscribe(events.Subscribe{OperationID: "subscribeSnapshot"})
+_, err = sub.Handle(b) // registers the AsyncAPI spec entry once
 go func() {
     _ = events.SubscribeHandle(ctx, sub, subTransport,
         func(ctx context.Context, png []byte) error {
