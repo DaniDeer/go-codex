@@ -12,6 +12,13 @@
 > declarative middleware-attachment mechanism at all — which this doc
 > exists to scope, not to assume needs fixing.
 > [← Back to Roadmap](index.md)
+>
+> **See also**: [Declarative Middleware as Partial Route/Channel
+> Definitions](declarative-middleware-layering.md) — that doc's shared
+> `middleware.DecodeLayer`/`EncodeLayer` mechanism is specific to
+> `api/rest`/`api/events`/`api/reqreply`'s shared `Middleware[In,Out]`
+> shape, which WebSocket does not have (confirmed below) — the two docs
+> are independent, not competing or overlapping.
 
 ## Motivation
 

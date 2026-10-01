@@ -23,6 +23,14 @@
 > rather than carrying the older, now-superseded sketch forward
 > unchanged.
 > [← Back to Roadmap](index.md)
+>
+> **See also**: [Declarative Middleware as Partial Route/Channel
+> Definitions](declarative-middleware-layering.md) — proposes a shared
+> `middleware.DecodeLayer`/`EncodeLayer` mechanism for
+> `api/rest`/`api/events`/`api/reqreply`'s EXISTING two-phase
+> declare-dispatch `Middleware[In,Out]` shape. Independent of this doc:
+> MCP/`ports` use the single-phase attachment model described below, not
+> that shape, so the two designs don't compete or overlap.
 
 ## Motivation
 
