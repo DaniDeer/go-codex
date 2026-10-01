@@ -35,6 +35,34 @@ HTTP client that never generates its own spec) — `mcp.Resource`/`mcp.Prompt`
 do not offer `ClientHandle`, since resources/prompts are inherently
 server-declared concepts with no independent client-side spec use case.
 
+**`api/rest`/`api/events`/`api/reqreply` add a middle step**: capability
+requirement/value declaration, between declaring the pattern and attaching
+an adapter (`api/mcp` has no equivalent — MCP has no protocol-native
+capability concept to declare):
+
+```
+NewRoute / NewChannel                      (step 1 — declare the pattern)
+    │
+    ├─ RequireQoS(...) / HeaderParam{...}   (step 2 — declare capability
+    │  / Capabilities: []pkg.Capability{}    requirements and/or values,
+    │                                        via a RouteOpt/ChannelOpt or
+    │                                        an adapter's Options struct)
+    │
+    └─ .Register(builder) ──→ Handle ──→ adapter (step 3 — attach)
+```
+
+`Capability` is the interface an adapter implements against — the
+PROGRAMMING CONTRACT between the api layer and the adapter layer for
+protocol-native behavior, exactly like `ServerTransport`/`ClientTransport`
+are the contract for the base pattern itself. A route/channel declares WHAT
+it needs (`RequireQoS`, a `HeaderParam`, …) independent of which adapter
+eventually attaches; the adapter declares WHAT it can supply (a sealed
+`Capability` value, or simply existing as an HTTP transport that can always
+extract headers); `Serve`/`Attach` time is where the two are checked against
+each other — see [D-0006 — Protocol-Native Capabilities](../design/d-0006-protocol-native-capabilities.md)
+for the complete three-tier model (Explicit/Implicit/adapter-value) this
+step covers.
+
 **Non-spec (`ports.File`, `ports.Dir`) — two steps:**
 
 ```

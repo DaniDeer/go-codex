@@ -238,7 +238,7 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 		return nil, err
 	}
 
-	// docs/roadmap/capability-requirement-composition.md's Phase 3:
+	// docs/design/d-0006-protocol-native-capabilities.md's Phase 3:
 	// Tier 3a — nethttp supplies NO concrete Capability values at all
 	// (HTTP has no QoS/HWM concept), so a route declaring RequireQoS/
 	// RequireHWM correctly, EAGERLY fails coverage here rather than
@@ -756,7 +756,7 @@ func negotiateRequestFormatReflect(formats reflect.Value, contentType string) (r
 // (possibly updated) *err in their own subsequent errFn call, not the
 // original value passed in.
 // Delegates ENTIRELY to [rest.CallDispatchErrorResponse]
-// (docs/roadmap/capability-requirement-composition.md's Phase 7) —
+// (docs/design/d-0006-protocol-native-capabilities.md's Phase 7) —
 // this thin wrapper exists only to preserve every existing call site's
 // bool-return/*err-mutation contract unchanged; respType is no longer
 // needed (the generic [rest.RouteHandle.DispatchErrorResponse] this

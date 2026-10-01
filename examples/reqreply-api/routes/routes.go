@@ -64,7 +64,7 @@ var ComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 )
 
 // CapabilityRoute demonstrates Phase 2 of docs/roadmap/
-// capability-requirement-composition.md: reqreply.RequireQoS declares,
+// d-0006-protocol-native-capabilities.md: reqreply.RequireQoS declares,
 // independent of any concrete adapter, that this route needs AT LEAST
 // the given QoS level from whichever adapter attaches — renders as the
 // AsyncAPI "x-capabilities" vendor extension (mirrors examples/

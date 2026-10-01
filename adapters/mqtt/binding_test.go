@@ -104,7 +104,7 @@ func TestPublishAdapter_PublishesEachItem(t *testing.T) {
 // MQTTDrainPublishOptions.QoS/.Retained (this package's still-legacy raw
 // fields — full migration to the Capability/Apply-only shape mqtt5
 // already has is Phase 5's job, per docs/roadmap/
-// capability-requirement-composition.md's Phase 4b) set the wire-level
+// d-0006-protocol-native-capabilities.md's Phase 4b) set the wire-level
 // QoS/Retain flags. The former events.PublishAttributes declared-on-
 // channel fallback this test used to also exercise was REMOVED entirely
 // from api/events (a parallel, non-Capability-shaped mechanism).

@@ -119,7 +119,7 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 		return nil, err
 	}
 	// Tier 2 — mirrors [buildRouteHandler]'s identical block
-	// (docs/roadmap/capability-requirement-composition.md's Phase 6a —
+	// (docs/design/d-0006-protocol-native-capabilities.md's Phase 6a —
 	// this check was previously MISSING entirely for SSE routes, a real
 	// gap for any future SSE-capable adapter that doesn't support one of
 	// these kinds; harmless for chi today since httpCarrier implements

@@ -9,7 +9,7 @@ import (
 // testServe/testCall/testServeRouter/testCallDealer mirror the exact
 // signatures of the now-DELETED Serve[Req,Resp]/Call[Req,Resp]/
 // ServeRouter[Req,Resp]/CallDealer[Req,Resp] escape hatches
-// (docs/roadmap/capability-requirement-composition.md's Phase 5a) — a
+// (docs/design/d-0006-protocol-native-capabilities.md's Phase 5a) — a
 // thin, test-only shim reducing this package's existing call sites to a
 // single mechanical rename instead of restructuring every argument
 // list. Real callers use [reqreply.ServeWithTransport]/

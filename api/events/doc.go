@@ -49,7 +49,7 @@
 //
 // A channel's protocol behavior (MQTT QoS, retained messages, ZeroMQ
 // high-water-mark, ...) is classified into a three-tier vocabulary — see
-// docs/roadmap/capability-requirement-composition.md for the full design:
+// docs/design/d-0006-protocol-native-capabilities.md for the full design:
 //
 //   - Baseline — the Topic itself (matching the address, encoding/decoding
 //     the declared payload codec). Mandatory, never declared explicitly; the

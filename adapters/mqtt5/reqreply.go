@@ -31,7 +31,7 @@ type ServeOptions struct {
 	UserPropertyParams []UserPropertyParam
 
 	// Capabilities supplies this server's concrete protocol-native
-	// capability values (docs/roadmap/capability-requirement-composition.md's
+	// capability values (docs/design/d-0006-protocol-native-capabilities.md's
 	// Phase 2) — e.g. [QoS]/[Retained] — checked against the route's
 	// declared [reqreply.CapabilityRequirement]s via
 	// [reqreply.VerifyCapabilityCoverage] at Serve setup, then applied to
@@ -128,7 +128,7 @@ type CallOptions struct {
 	ResponseFormats any
 
 	// Capabilities supplies this call's concrete protocol-native
-	// capability values (docs/roadmap/capability-requirement-composition.md's
+	// capability values (docs/design/d-0006-protocol-native-capabilities.md's
 	// Phase 2) — e.g. [QoS]/[Retained] — applied to the outgoing request
 	// publish. Overrides [CallOptions.QoS] when a [QoS] capability is
 	// present (its dedicated MinLevel-checked declaration path). No

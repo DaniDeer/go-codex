@@ -2,7 +2,7 @@
 
 > **Status:** Design draft — not yet implemented. **Now an INDEPENDENT
 > future effort**, no longer gated on/gating
-> `capability-requirement-composition.md`'s own Phase 3, whose
+> `d-0006-protocol-native-capabilities.md`'s own Phase 3, whose
 > CAPABILITY MECHANISM half has since SHIPPED without this adapter
 > (an explicit scope decision at Implement time — see that doc's Phase
 > 3 Learnings entry). Every design decision below (wire framing, API
@@ -12,7 +12,7 @@
 > [← Back to Roadmap](index.md)
 
 Spun out of [Composable Capability Requirements — Phase
-3](capability-requirement-composition.md#phase-3--apirest-a-new-synchronous-transport-stateless-adapter),
+3](../design/d-0006-protocol-native-capabilities.md#phase-3--apirest-a-new-synchronous-transport-stateless-adapter),
 per this repo's own convention (a new adapter gets its own dedicated
 Explore-mode roadmap doc, written BEFORE its Implement step — see the
 `plan-a-new-codex-feature`/`add-a-new-adapter` skills). This doc covers
@@ -153,7 +153,7 @@ func Call[Req, Resp any](
 // routes at once (one FramedSocket per registered route's Path) —
 // mirrors [zeromq.NewServerTransport]/[zeromq.NewClientTransport]'s
 // reflection-based bulk-dispatch mechanism exactly. Per docs/roadmap/
-// capability-requirement-composition.md's Phase 4d (Attach factory
+// d-0006-protocol-native-capabilities.md's Phase 4d (Attach factory
 // redesign, already shipped for events/rest/reqreply's OTHER adapters
 // by the time this adapter is built): attaching is EXCLUSIVELY
 // `server.Attach(...)`/`client.Attach(...)` — no adapter-namespaced
@@ -163,7 +163,7 @@ func NewClientTransport(opts ClientTransportOptions) rest.ClientTransport
 
 // ServerTransportOptions/ClientTransportOptions bundle sockets+opts into
 // a SINGLE Options struct parameter (docs/roadmap/
-// capability-requirement-composition.md's Phase 4d convention — no
+// d-0006-protocol-native-capabilities.md's Phase 4d convention — no
 // positional params, even for required fields).
 type ServerTransportOptions struct {
     Sockets map[string]FramedSocket
@@ -391,7 +391,7 @@ Mirrors reqreply's own test shape closely:
 ## See also
 
 - [Composable Capability Requirements — Phase
-  3](capability-requirement-composition.md#phase-3--apirest-a-new-synchronous-transport-stateless-adapter)
+  3](../design/d-0006-protocol-native-capabilities.md#phase-3--apirest-a-new-synchronous-transport-stateless-adapter)
   — the capability mechanism this adapter must satisfy once built
 - [`docs/roadmap/amqp-adapter.md`](amqp-adapter.md) — the template this
   doc's structure follows

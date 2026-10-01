@@ -331,7 +331,7 @@ func main() {
 	httpClient := &http.Client{}
 	baseURL := "http://" + addr
 	// transport is built ONCE and reused for every rest.CallWithTransport
-	// call below (docs/roadmap/capability-requirement-composition.md's
+	// call below (docs/design/d-0006-protocol-native-capabilities.md's
 	// Phase 5a — the former nethttp.CallWithHandle this example
 	// demonstrated was removed; rest.CallWithTransport replaces it
 	// losslessly, mirroring events/reqreply's own api-layer-owned verb).

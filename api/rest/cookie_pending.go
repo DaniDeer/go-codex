@@ -1,7 +1,7 @@
 package rest
 
 // PendingCookie is a protocol-agnostic, staged outgoing cookie —
-// docs/roadmap/capability-requirement-composition.md's Phase 7 promoted
+// docs/design/d-0006-protocol-native-capabilities.md's Phase 7 promoted
 // this from a per-adapter type (`nethttp.PendingCookie`/
 // `chi.PendingCookie`, both `{Name, Value string; Opts CookieOptions}`)
 // into `api/rest` itself, since both adapters' shapes were already

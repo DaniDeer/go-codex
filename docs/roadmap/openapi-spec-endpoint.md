@@ -102,7 +102,7 @@ A one-call convenience might look something like:
 
 ```go
 // Sketch only — exact signature TBD in a future Refine/Implement pass.
-// Per docs/roadmap/capability-requirement-composition.md's Phase 4d
+// Per docs/design/d-0006-protocol-native-capabilities.md's Phase 4d
 // (Attach factory redesign, already shipped by the time this idea is
 // implemented): any such convenience must still go through
 // b.Attach(...) — never a new adapter-namespaced Attach* function.

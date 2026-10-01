@@ -4,9 +4,9 @@ Do not re-report any of these findings. They have been implemented and tested.
 
 ---
 
-## Round 146 (api/rest-scoped pass — Phase 8 ToDo 1.3 of capability-requirement-composition.md)
+## Round 146 (api/rest-scoped pass — Phase 8 ToDo 1.3 of d-0006-protocol-native-capabilities.md)
 
-Triggered by `docs/roadmap/capability-requirement-composition.md`'s Phase 8 review-go-codex
+Triggered by `docs/design/d-0006-protocol-native-capabilities.md`'s Phase 8 review-go-codex
 ToDo, split per-API (ToDo 1.3 = `api/rest` only; sibling to Round 144's `api/events` pass and
 Round 145's `api/reqreply` pass). Scoped to `api/rest` core + `adapters/nethttp`/`adapters/chi` +
 `render/openapi`.
@@ -37,9 +37,9 @@ Gotchas.
 
 ---
 
-## Round 145 (api/reqreply-scoped pass — Phase 8 ToDo 1.2 of capability-requirement-composition.md)
+## Round 145 (api/reqreply-scoped pass — Phase 8 ToDo 1.2 of d-0006-protocol-native-capabilities.md)
 
-Triggered by `docs/roadmap/capability-requirement-composition.md`'s Phase 8 review-go-codex
+Triggered by `docs/design/d-0006-protocol-native-capabilities.md`'s Phase 8 review-go-codex
 ToDo, split per-API (ToDo 1.2 = `api/reqreply` only; sibling to Round 144's `api/events` pass).
 Scoped to `api/reqreply` core + its 2 reqreply adapters (mqtt5, zeromq) +
 `render/asyncapi/v3`'s reqreply-relevant rendering.
@@ -63,16 +63,16 @@ Phases.
 
 ---
 
-## Round 144 (api/events-scoped pass — Phase 8 ToDo 1.1 of capability-requirement-composition.md)
+## Round 144 (api/events-scoped pass — Phase 8 ToDo 1.1 of d-0006-protocol-native-capabilities.md)
 
-Triggered by `docs/roadmap/capability-requirement-composition.md`'s Phase 8 review-go-codex
+Triggered by `docs/design/d-0006-protocol-native-capabilities.md`'s Phase 8 review-go-codex
 ToDo, split per-API (ToDo 1.1 = `api/events` only; `api/reqreply`/`api/rest` get their own
 separate rounds). Scoped to `api/events` core + its 3 event/pubsub adapters (mqtt, mqtt5,
 zeromq) + `render/asyncapi/v3`.
 
 - **E1 — stale `CapabilitySpec` cross-reference in `render/asyncapi/v3/document.go`**: doc
   comment referenced `api/events.CapabilitySpec`, renamed to `CapabilityRequirement` by Phase 1
-  of `capability-requirement-composition.md`; the render-layer type intentionally keeps its own
+  of `d-0006-protocol-native-capabilities.md`; the render-layer type intentionally keeps its own
   name, but the prose was stale — reworded to state the rename explicitly.
 - **E2 — `events.ApplyCapabilities` had no direct unit test**: only exercised indirectly via
   `adapters/zeromq`'s own capability tests. Added `TestApplyCapabilities_appliesAndRecords`/

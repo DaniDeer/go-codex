@@ -332,7 +332,7 @@ reference implementations.
 toggle/option with no cross-protocol meaning: define a sealed
 `Capability` type in your adapter's OWN package requiring a REAL
 `Apply(Target) (applied bool, err error)` method (not a zero-cost
-marker — docs/roadmap/capability-requirement-composition.md's Phase 4),
+marker — docs/design/d-0006-protocol-native-capabilities.md's Phase 4),
 add a `Capabilities []<pkg>.Capability` field to your
 `SubscribeOptions`/`PublishOptions`, and dispatch via the API-layer-owned
 `events.ApplyCapabilities[C,T](caps, target, obs, location)` — NEVER a
@@ -350,7 +350,7 @@ every SHIPPED adapter today.
 
 ## Step 5f — MANDATORY: expose a `New*Transport` factory; NEVER an adapter-namespaced `Attach*` function
 
-Per docs/roadmap/capability-requirement-composition.md's Phase 4d: the
+Per docs/design/d-0006-protocol-native-capabilities.md's Phase 4d: the
 adapter's ENTIRE job in the attach workflow is constructing a
 fully-configured, attachable transport value — attaching it is
 EXCLUSIVELY the api layer's own `Client.Attach`/`Server.Attach` method

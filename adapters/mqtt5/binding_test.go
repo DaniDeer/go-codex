@@ -165,7 +165,7 @@ func TestMQTT5PublishAdapter_PublishesEachItem(t *testing.T) {
 
 // TestMQTT5PublishAdapter_CapabilitiesSetsQoSAndRetained confirms
 // MQTT5DrainPublishOptions.Capabilities (the SOLE mechanism as of
-// docs/roadmap/capability-requirement-composition.md's Phase 4b — the
+// docs/design/d-0006-protocol-native-capabilities.md's Phase 4b — the
 // former raw QoS/Retained fields and events.PublishAttributes fallback
 // were REMOVED entirely) sets the wire-level QoS/Retain flags.
 func TestMQTT5PublishAdapter_CapabilitiesSetsQoSAndRetained(t *testing.T) {

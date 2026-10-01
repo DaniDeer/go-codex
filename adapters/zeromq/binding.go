@@ -61,7 +61,7 @@ type SubscribeAdapterOptions struct {
 	// declarations (currently [HWM]/[Conflate]) for this subscription —
 	// mirrors [SubscribeOptions.Capabilities] exactly, moved down to this
 	// ports-binding layer's own option struct (docs/roadmap/
-	// capability-requirement-composition.md's Phase 4b).
+	// d-0006-protocol-native-capabilities.md's Phase 4b).
 	Capabilities []Capability
 }
 
@@ -176,7 +176,7 @@ type DrainPublishOptions struct {
 	// declarations (currently [HWM]/[Conflate]) for every published item
 	// — mirrors [PublishOptions.Capabilities] exactly, moved down to this
 	// ports-binding layer's own option struct (docs/roadmap/
-	// capability-requirement-composition.md's Phase 4b).
+	// d-0006-protocol-native-capabilities.md's Phase 4b).
 	Capabilities []Capability
 }
 

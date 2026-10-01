@@ -9,7 +9,7 @@ import (
 // wsCarrier is adapters/websocket's own per-REQUEST value satisfying
 // [rest.HeaderCapableTransport]/[rest.CookieCapableTransport]/
 // [rest.QueryCapableTransport] (docs/roadmap/
-// capability-requirement-composition.md's Phase 6a — bringing
+// d-0006-protocol-native-capabilities.md's Phase 6a — bringing
 // adapters/websocket into the SAME real-interface mechanism
 // adapters/nethttp/adapters/chi's httpCarrier already implements,
 // Phase 6). Package-local, not a reuse of nethttp's httpCarrier — Go

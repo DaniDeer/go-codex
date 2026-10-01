@@ -271,7 +271,7 @@ func buildOperation(r route.Route) map[string]any {
 // "x-codex-capabilities" OpenAPI vendor-extension array — mirrors
 // render/asyncapi/v3's identical "x-capabilities" rendering exactly,
 // adapted to OpenAPI's own "x-" extension convention (docs/roadmap/
-// capability-requirement-composition.md's Phase 3).
+// d-0006-protocol-native-capabilities.md's Phase 3).
 func buildCapabilities(specs []route.CapabilitySpec) []any {
 	out := make([]any, len(specs))
 	for i, s := range specs {

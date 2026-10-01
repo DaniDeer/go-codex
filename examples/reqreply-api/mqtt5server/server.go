@@ -148,7 +148,7 @@ func Build() (*Built, error) {
 		return nil, err
 	}
 	// CapabilityRoute demonstrates Phase 2 of docs/roadmap/
-	// capability-requirement-composition.md — see demo_capability_mechanism.go.
+	// d-0006-protocol-native-capabilities.md — see demo_capability_mechanism.go.
 	capabilityHandle, err := routes.CapabilityRoute.
 		WithHandler(handlers.Add).
 		Register(server)

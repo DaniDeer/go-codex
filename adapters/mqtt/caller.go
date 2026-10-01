@@ -130,7 +130,7 @@ func subscribeHandle[T any](
 		filter = deriveWildcardFilter(handle.Topic)
 	}
 
-	// docs/roadmap/capability-requirement-composition.md's Phase 5:
+	// docs/design/d-0006-protocol-native-capabilities.md's Phase 5:
 	// Capabilities is now the ONLY mechanism for QoS — the former
 	// SubscribeOptions.QoS plain field/call-time qos parameter escape
 	// hatch is REMOVED. Mirrors adapters/mqtt5's identical, already-
@@ -300,7 +300,7 @@ func (c *caller) ServeSubscribers(ctx context.Context) error {
 // reason [adapters/nethttp.ServeOne] is a package function rather than a
 // method on a REST-side caller type.
 //
-// docs/roadmap/capability-requirement-composition.md's Phase 5:
+// docs/design/d-0006-protocol-native-capabilities.md's Phase 5:
 // Capabilities (via opts) is now the ONLY mechanism for QoS — the former
 // call-time qos parameter escape hatch is REMOVED, mirroring
 // adapters/mqtt5's identical, already-shipped shape exactly. Blocks
@@ -417,7 +417,7 @@ func subscribeEntryReflect(ctx context.Context, client pahomqtt.Client, entry ev
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
 	}
-	// docs/roadmap/capability-requirement-composition.md's Phase 5:
+	// docs/design/d-0006-protocol-native-capabilities.md's Phase 5:
 	// Capabilities is now the ONLY mechanism for QoS — the former
 	// SubscribeOptions.QoS plain field escape hatch is REMOVED. Mirrors
 	// adapters/mqtt5's identical, already-shipped shape exactly.

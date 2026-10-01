@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// This file closes docs/roadmap/capability-requirement-composition.md's
+// This file closes docs/design/d-0006-protocol-native-capabilities.md's
 // Phase 6a verification gap: wsCarrier's Extract* methods were never
 // directly unit-tested (only exercised indirectly via existing
 // upgrade/dispatch integration tests) — mirrors adapters/nethttp's and

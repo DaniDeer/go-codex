@@ -41,7 +41,7 @@ type SubscribeAdapterOptions struct {
 	UserPropertyParams []UserPropertyParam
 	// Capabilities supplies sealed, compile-time-checked protocol-native
 	// declarations (currently [QoS]) for this subscription — the SOLE
-	// mechanism (docs/roadmap/capability-requirement-composition.md's
+	// mechanism (docs/design/d-0006-protocol-native-capabilities.md's
 	// Phase 4b: the former raw `qos byte` constructor parameter was
 	// REMOVED entirely — it bypassed [Capability]/[Apply] completely).
 	Capabilities []Capability
@@ -124,7 +124,7 @@ func (a *mqtt5SubscribeAdapter[T]) Activate(ctx context.Context, dst chan<- T, e
 	}
 	a.router.RegisterHandler(filter, handler)
 
-	// docs/roadmap/capability-requirement-composition.md's Phase 4b:
+	// docs/design/d-0006-protocol-native-capabilities.md's Phase 4b:
 	// Capabilities is the SOLE mechanism — events.ApplyCapabilities is
 	// the API-LAYER-OWNED dispatch loop; this adapter contributes only
 	// Capability.Apply.
@@ -150,7 +150,7 @@ func (a *mqtt5SubscribeAdapter[T]) Activate(ctx context.Context, dst chan<- T, e
 type MQTT5DrainPublishOptions struct {
 	// Capabilities supplies sealed, compile-time-checked protocol-native
 	// declarations (currently [QoS]/[Retained]) for every published item
-	// — the SOLE mechanism (docs/roadmap/capability-requirement-composition.md's
+	// — the SOLE mechanism (docs/design/d-0006-protocol-native-capabilities.md's
 	// Phase 4b: the former raw QoS byte/Retained bool fields and the
 	// events.PublishAttributes declared-on-channel fallback were REMOVED
 	// entirely, closing both parallel non-Capability-shaped paths). Does

@@ -106,7 +106,7 @@ func (r *MockRouter) UnregisterHandler(topic string) {
 // filter actually registered with the router; both must resolve
 // immediately once registration completes, not just eventually via this
 // loop's own timeout margin. Confirmed via a real regression
-// (docs/roadmap/capability-requirement-composition.md's Phase 4d): an
+// (docs/design/d-0006-protocol-native-capabilities.md's Phase 4d): an
 // EXACT-only match here silently masked handler-registration latency
 // behind this loop's up-to-1-second worst-case wait, which a
 // SHORT-lived caller ctx (e.g. handleCtx, 300-500ms, also governing

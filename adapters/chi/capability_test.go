@@ -14,7 +14,7 @@ import (
 	"github.com/DaniDeer/go-codex/route"
 )
 
-// This file closes docs/roadmap/capability-requirement-composition.md's
+// This file closes docs/design/d-0006-protocol-native-capabilities.md's
 // Phase 3 verification for chi — mirrors adapters/nethttp's identical
 // capability_test.go exactly.
 

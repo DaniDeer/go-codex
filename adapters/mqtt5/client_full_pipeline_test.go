@@ -14,7 +14,7 @@ import (
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 )
 
-// This file tests docs/roadmap/capability-requirement-composition.md's
+// This file tests docs/design/d-0006-protocol-native-capabilities.md's
 // Phase 4e: [events.Client.Subscribe]/[events.Client.Publish]'s
 // reflection shim (transport.go) now runs the FULL [subscribeHandler][T]/
 // [publish][T] pipeline (property-merge, User-Property-param validation,

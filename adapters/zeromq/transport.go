@@ -35,7 +35,7 @@ type transport struct {
 
 // TransportOptions configures [NewTransport] — the SOLE configuration
 // surface for a zeromq [events.Transport] (docs/roadmap/
-// capability-requirement-composition.md's Phase 4d: a single Options
+// d-0006-protocol-native-capabilities.md's Phase 4d: a single Options
 // struct, no positional params, even for this one REQUIRED field — a
 // deliberate, uniform, declarative shape across every adapter's
 // `New*Transport` factory).
@@ -46,7 +46,7 @@ type TransportOptions struct {
 
 // NewTransport returns an [events.Transport] configured per opts — the
 // adapter's ONLY job in the attach workflow (docs/roadmap/
-// capability-requirement-composition.md's Phase 4d): construct a
+// d-0006-protocol-native-capabilities.md's Phase 4d): construct a
 // fully-configured, attachable value. Attaching it is EXCLUSIVELY
 // [events.Client.Attach]'s job — there is no adapter-namespaced Attach
 // function anymore (REMOVED, breaking, per that phase's explicit
@@ -65,7 +65,7 @@ type TransportOptions struct {
 //	err = client.Publish(ctx, pub, reading)
 //
 // Publish/Subscribe are FULL-FEATURED (docs/roadmap/
-// capability-requirement-composition.md's Phase 4e — the former "v1
+// d-0006-protocol-native-capabilities.md's Phase 4e — the former "v1
 // scope" narrowing is CLOSED for this package): declared Capabilities
 // (Phase 4c), per-call [format.Format] overrides
 // ([events.ClientPublishOptions]/[events.ClientSubscribeOptions]),
@@ -130,7 +130,7 @@ func recoverHandle(kind string, anyAny any, client *events.Client) (reflect.Valu
 // ctx and calls RecordPublish on EVERY exit path, mirroring [publish]'s
 // own convention.
 //
-// docs/roadmap/capability-requirement-composition.md's Phase 4e: this
+// docs/design/d-0006-protocol-native-capabilities.md's Phase 4e: this
 // shim now runs the FULL [publish][T] pipeline, matched step-for-step
 // (codec-Middleware/Transform dispatch → Implementations-based
 // PublishMW security → general-purpose PublishMW wrapping around the
@@ -255,7 +255,7 @@ func (t *transport) Publish(ctx context.Context, pubAny, msgAny any, optsVariadi
 		}
 	}
 
-	// docs/roadmap/capability-requirement-composition.md's Phase 4c: a
+	// docs/design/d-0006-protocol-native-capabilities.md's Phase 4c: a
 	// declared [Publisher.WithOptions]([PublishOptions]{Capabilities:
 	// ...}) value is resolved and applied via [events.ApplyCapabilities]
 	// against t.caller.sock.
@@ -321,7 +321,7 @@ func publishDeadLetterReflect(t *transport, handleVal reflect.Value, obs stats.O
 // correctly includes this operation, then runs a DEDICATED receive loop
 // scoped to just this one channel.
 //
-// docs/roadmap/capability-requirement-composition.md's Phase 4e: this
+// docs/design/d-0006-protocol-native-capabilities.md's Phase 4e: this
 // shim now runs the FULL [subscribeHandler][T] pipeline, matched
 // step-for-step (codec-Middleware/Transform dispatch → Implementations-
 // based SubscribeMW security → general-purpose SubscribeMW wrapping
@@ -390,7 +390,7 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 		return SocketError{Op: "set_recv_timeout", Err: err}
 	}
 
-	// docs/roadmap/capability-requirement-composition.md's Phase 4c: a
+	// docs/design/d-0006-protocol-native-capabilities.md's Phase 4c: a
 	// declared [Subscriber.WithOptions]([SubscribeOptions]{Capabilities:
 	// ...}) value is resolved and applied via [events.ApplyCapabilities]
 	// against t.caller.sock.

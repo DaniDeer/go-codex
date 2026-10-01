@@ -50,7 +50,7 @@ type WireAttributes struct {
 // QoS is a sealed [Capability] declaring the MQTT quality-of-service level
 // for one channel. Capabilities is now the ONLY mechanism — the former
 // plain [SubscribeOptions.QoS] field/call-time qos parameter escape hatch
-// has been REMOVED (docs/roadmap/capability-requirement-composition.md's
+// has been REMOVED (docs/design/d-0006-protocol-native-capabilities.md's
 // Phase 5, a deliberate breaking change: every interaction between the API
 // layer and the adapter layer now goes through the Capability/Apply
 // interface, no competing raw-value path).

@@ -16,7 +16,7 @@ import (
 // demoUserPropertyMiddleware demonstrates 3 mqtt5-specific features: User
 // Properties + ContentType auto-format-selection + UserPropertyParam
 // validation — ALL now reachable through Client.Attach+Client.Subscribe/
-// Publish (docs/roadmap/capability-requirement-composition.md's Phase 4e
+// Publish (docs/design/d-0006-protocol-native-capabilities.md's Phase 4e
 // closed the UserPropertyParams/UserProperties/ContentType gaps; its own
 // addendum ALSO added the ctx-injection this demo's
 // UserPropertiesFromContext call needs, which was the one genuinely

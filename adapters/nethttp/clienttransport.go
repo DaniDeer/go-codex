@@ -27,7 +27,7 @@ const restPkgPath = "github.com/DaniDeer/go-codex/api/rest"
 // recoverClientRouteHandleValue reflects routeAny into a
 // *rest.RouteHandle[Req,Resp] reflect.Value, accepting EITHER shape
 // [rest.CallWithTransport]'s confirmed dual-mode acceptance allows
-// (docs/roadmap/capability-requirement-composition.md's Phase 5a,
+// (docs/design/d-0006-protocol-native-capabilities.md's Phase 5a,
 // mirroring [reqreply]'s identical, already-shipped
 // recoverRouteHandleValue helper exactly): a raw, unregistered
 // rest.Route[Req,Resp] (calls its ClientHandle() method reflectively to
@@ -76,7 +76,7 @@ type clientTransport struct {
 
 // ClientTransportOptions configures [NewClientTransport] — the SOLE
 // configuration surface for a nethttp [rest.ClientTransport] (docs/roadmap/
-// capability-requirement-composition.md's Phase 4d: a single Options
+// d-0006-protocol-native-capabilities.md's Phase 4d: a single Options
 // struct, no positional params, even for these REQUIRED fields — a
 // deliberate, uniform, declarative shape across every adapter's
 // `New*Transport` factory).
@@ -89,7 +89,7 @@ type ClientTransportOptions struct {
 
 // NewClientTransport returns a [rest.ClientTransport] configured per opts
 // — the adapter's ONLY job in the attach workflow (docs/roadmap/
-// capability-requirement-composition.md's Phase 4d): construct a
+// d-0006-protocol-native-capabilities.md's Phase 4d): construct a
 // fully-configured, attachable value. Attaching it is EXCLUSIVELY
 // [rest.Client.Attach]'s job — there is no adapter-namespaced Attach
 // function anymore (REMOVED, breaking, per that phase's explicit
@@ -263,7 +263,7 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 	}
 	start := time.Now()
 
-	// docs/roadmap/capability-requirement-composition.md's Phase 5a:
+	// docs/design/d-0006-protocol-native-capabilities.md's Phase 5a:
 	// ferry per-field validation errors (Class B) out via ctx, then
 	// drain them into obs.RecordValidationError exactly once before
 	// returning — mirrors [callWithVars]'s identical deferred-drain
@@ -334,7 +334,7 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 		}
 		concretePath, _ := buildPathResults[0].Interface().(string)
 
-		// docs/roadmap/capability-requirement-composition.md's Phase
+		// docs/design/d-0006-protocol-native-capabilities.md's Phase
 		// 5a: validate the EXPLICIT opts.QueryParams/CookieParams/
 		// HeaderParams against each param's registered codec (if any)
 		// — mirrors [callWithVars]'s identical steps 2-4 exactly (a
@@ -361,7 +361,7 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 			return nil, err
 		}
 
-		// docs/roadmap/capability-requirement-composition.md's Phase
+		// docs/design/d-0006-protocol-native-capabilities.md's Phase
 		// 5a: an explicit opts.QueryParams/HeaderParams/CookieParams
 		// entry takes PRECEDENCE over the derived value for the same
 		// key — mirrors [callWithVars]'s own D3 precedence chain
@@ -427,7 +427,7 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 		nextType := reflect.FuncOf([]reflect.Type{ctxType, reqType}, []reflect.Type{respType, errType}, false)
 		wrapType := reflect.FuncOf([]reflect.Type{nextType}, []reflect.Type{nextType}, false)
 
-		// docs/roadmap/capability-requirement-composition.md's Phase
+		// docs/design/d-0006-protocol-native-capabilities.md's Phase
 		// 5a: validate every attached impl.Fn against the shapes THIS
 		// package recognizes client-side, EAGERLY before any network
 		// activity — mirrors [validateCallImplementationShapes]'s
@@ -470,7 +470,7 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 			for k, v := range headerVars {
 				httpReq.Header.Set(k, v)
 			}
-			// docs/roadmap/capability-requirement-composition.md's Phase
+			// docs/design/d-0006-protocol-native-capabilities.md's Phase
 			// 5a: opts.ExtraHeaders adds arbitrary, non-codec-validated
 			// headers — mirrors [callWithVars]'s identical merge.
 			for k, vs := range opts.ExtraHeaders {
@@ -512,7 +512,7 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 				return []reflect.Value{reflect.Zero(respType), reflectErrValue(ResponseBodyError{Err: readErr})}
 			}
 			if statusCode < 200 || statusCode >= 300 {
-				// docs/roadmap/capability-requirement-composition.md's
+				// docs/design/d-0006-protocol-native-capabilities.md's
 				// Phase 5a: a 401 with an engaged credential-providing
 				// implementation notifies opts.OnCredentialRejected (if
 				// set) so a caching wrapper can invalidate its cached
@@ -538,7 +538,7 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 				return []reflect.Value{decodeResults[0], decodeResults[1]}
 			}
 
-			// docs/roadmap/capability-requirement-composition.md's
+			// docs/design/d-0006-protocol-native-capabilities.md's
 			// Phase 5a: merge every registered response header/cookie
 			// value into the SAME decoded result — mirrors
 			// [callWithVars]'s identical step 13 exactly (a confirmed,

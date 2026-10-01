@@ -141,7 +141,7 @@ type Route struct {
 	// nil means "inherit global security".
 	Security []SecurityRequirement
 	// Capabilities declares this route's protocol-native capability
-	// requirements (docs/roadmap/capability-requirement-composition.md's
+	// requirements (docs/design/d-0006-protocol-native-capabilities.md's
 	// Phase 3) — rendered into the OpenAPI operation's "x-codex-capabilities"
 	// vendor extension. Mirrors [render/asyncapi/v3.CapabilitySpec]'s
 	// identical role for events/reqreply's AsyncAPI "x-capabilities"

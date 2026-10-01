@@ -38,7 +38,7 @@ func registerSocket(r gochi.Router, path string) socketMux {
 //	    router, hub, websocket.NewUpgrader(websocket.UpgraderOptions{}),
 //	    handle, websocket.IngestSocketAdapterOptions{})))
 //
-// Returns an error (docs/roadmap/capability-requirement-composition.md's
+// Returns an error (docs/design/d-0006-protocol-native-capabilities.md's
 // Phase 6a — propagated from [websocket.IngestSocketAdapter]'s own
 // Header/Cookie/Query coverage check) when handle's declared param
 // requirements are not covered.

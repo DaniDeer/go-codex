@@ -23,7 +23,7 @@ import (
 //
 // Uses [reqreply.CallWithTransport] directly against a
 // [mqtt5adapter.NewClientTransport]-built transport (docs/roadmap/
-// capability-requirement-composition.md's Phase 5a — zero duplicate
+// d-0006-protocol-native-capabilities.md's Phase 5a — zero duplicate
 // logic, delegates straight to the SAME AttachServer/AttachClient
 // dispatch this demo already exercises elsewhere) rather than
 // reqreply.Client, since attaching a raw, non-security User Property on

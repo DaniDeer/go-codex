@@ -143,7 +143,7 @@ func demoErrorChannelSubscribeSideAndConsumer(ctx context.Context) {
 	broker := mqtt5broker.NewMockBroker(router)
 	sensorID := "f47ac10b-58cc-4372-a567-0e02b2c3d479"
 
-	// docs/roadmap/capability-requirement-composition.md's Phase 4d: ONE
+	// docs/design/d-0006-protocol-native-capabilities.md's Phase 4d: ONE
 	// api-layer-owned Client, attached once, used for every Subscribe
 	// below — no adapter-specific NewSubscribeTransport escape hatch
 	// needed. (A prior attempt at this conversion hit a real, now-fixed
@@ -222,7 +222,7 @@ func demoErrorChannelDirectMode(ctx context.Context) {
 	handleCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 	defer cancel()
 
-	// docs/roadmap/capability-requirement-composition.md's Phase 4d: ONE
+	// docs/design/d-0006-protocol-native-capabilities.md's Phase 4d: ONE
 	// api-layer-owned Client, attached once.
 	evtClient := events.NewClient(events.WithInfo(events.Info{Title: "Direct mode demo", Version: "1.0.0"}))
 	if err := evtClient.Attach(mqtt5adapter.NewTransport(mqtt5adapter.TransportOptions{Client: broker, Router: router})); err != nil {
@@ -388,7 +388,7 @@ func demoErrorChannelActionsSubscribeSide(ctx context.Context) {
 		defer cancel()
 
 		// Converted to Client.Attach+Client.Subscribe (docs/roadmap/
-		// capability-requirement-composition.md's Phase 4e closed the
+		// d-0006-protocol-native-capabilities.md's Phase 4e closed the
 		// gap this demo used to document — Client.Subscribe's
 		// reflection shim now calls a declared SubscribeOptions.OnError
 		// callback, same as the escape hatch always did).
@@ -452,7 +452,7 @@ func demoErrorChannelDeadLetterFallback(ctx context.Context) {
 	// nextErr controls which business error the handler returns per
 	// dispatch, alternating between a MATCHED and an UNMATCHED type.
 	var nextErr error
-	// docs/roadmap/capability-requirement-composition.md's Phase 4d: the
+	// docs/design/d-0006-protocol-native-capabilities.md's Phase 4d: the
 	// api-layer-owned Client.Attach workflow — no adapter-specific
 	// NewSubscribeTransport escape hatch needed for this plain-Capabilities
 	// demo.
@@ -522,7 +522,7 @@ func demoErrorChannelMiddlewareCombo(ctx context.Context) {
 	defer cancel()
 
 	received := make(chan routes.SecurityRejectedPayload, 1)
-	// docs/roadmap/capability-requirement-composition.md's Phase 4d: the
+	// docs/design/d-0006-protocol-native-capabilities.md's Phase 4d: the
 	// error-topic CONSUMER doesn't need SubscribeMW/security, so it's
 	// safely converted to the api-layer-owned Client.Attach workflow.
 	evtClient := events.NewClient(events.WithInfo(events.Info{Title: "Middleware combo demo", Version: "1.0.0"}))
@@ -550,7 +550,7 @@ func demoErrorChannelMiddlewareCombo(ctx context.Context) {
 	securedSub := routes.SecuredReadingsSub.Use(routes.APIKeyAuthMW).SubscribeMW(&routes.APIKeyAuthMW, alwaysRejectFn).
 		WithOptions(mqtt5adapter.SubscribeOptions{Capabilities: []mqtt5adapter.Capability{mqtt5adapter.QoSAtLeastOnce}})
 	// Converted to Client.Attach+Client.Subscribe (docs/roadmap/
-	// capability-requirement-composition.md's Phase 4e closed the gap
+	// d-0006-protocol-native-capabilities.md's Phase 4e closed the gap
 	// this demo used to document — Client.Subscribe's reflection shim
 	// now runs Implementations-based SubscribeMW security enforcement,
 	// same as the escape hatch always did). Reuses the SAME evtClient/

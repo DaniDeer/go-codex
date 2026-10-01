@@ -59,7 +59,7 @@ func upgradeAndValidate(
 	}
 	// carrier is constructed ONCE and its extracted maps reused for both
 	// the validation calls below AND the vars merge (docs/roadmap/
-	// capability-requirement-composition.md's Phase 6a).
+	// d-0006-protocol-native-capabilities.md's Phase 6a).
 	carrier := wsCarrier{r}
 	query := carrier.ExtractQuery()
 	if err := route.ValidateQuery(query); err != nil {
@@ -127,7 +127,7 @@ type IngestSocketAdapterOptions struct {
 //	    mux, hub, websocket.NewUpgrader(websocket.UpgraderOptions{}),
 //	    handle, websocket.IngestSocketAdapterOptions{})))
 //
-// Returns an error (docs/roadmap/capability-requirement-composition.md's
+// Returns an error (docs/design/d-0006-protocol-native-capabilities.md's
 // Phase 6a) when handle's declared Header/Cookie/Query param requirements
 // are not covered by this adapter's own capability interfaces — checked
 // ONCE here, at construction time (this adapter's "Attach"-equivalent
@@ -277,7 +277,7 @@ type BroadcastSocketAdapterOptions struct {
 //	    mux, hub, websocket.NewUpgrader(websocket.UpgraderOptions{}),
 //	    handle, websocket.BroadcastSocketAdapterOptions{})))
 //
-// Returns an error (docs/roadmap/capability-requirement-composition.md's
+// Returns an error (docs/design/d-0006-protocol-native-capabilities.md's
 // Phase 6a) when handle's declared Header/Cookie/Query param requirements
 // are not covered — see [IngestSocketAdapter]'s identical doc note.
 //
@@ -460,7 +460,7 @@ type DuplexSocketAdapterOptions struct {
 //	    mux, hub, websocket.NewUpgrader(websocket.UpgraderOptions{}),
 //	    handle, websocket.DuplexSocketAdapterOptions{}))))
 //
-// Returns an error (docs/roadmap/capability-requirement-composition.md's
+// Returns an error (docs/design/d-0006-protocol-native-capabilities.md's
 // Phase 6a) when handle's declared Header/Cookie/Query param requirements
 // are not covered — see [IngestSocketAdapter]'s identical doc note.
 //

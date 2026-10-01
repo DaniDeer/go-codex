@@ -29,7 +29,7 @@ const eventsPkgPath = "github.com/DaniDeer/go-codex/api/events"
 // deliberately NOT affected by a declared Capabilities value. The
 // MAIN-PATH Publish/Subscribe QoS is resolved from a declared
 // [Publisher.WithOptions]/[Subscriber.WithOptions] value as of
-// docs/roadmap/capability-requirement-composition.md's Phase 4c — see
+// docs/design/d-0006-protocol-native-capabilities.md's Phase 4c — see
 // [subscribeHandlerOptsFields]/[publishHandlerOptsFields].
 const defaultQoS byte = 0
 
@@ -48,7 +48,7 @@ type transport struct {
 
 // TransportOptions configures [NewTransport] — the SOLE configuration
 // surface for an mqtt5 [events.Transport] (docs/roadmap/
-// capability-requirement-composition.md's Phase 4d: a single Options
+// d-0006-protocol-native-capabilities.md's Phase 4d: a single Options
 // struct, no positional params, even for these two REQUIRED fields — a
 // deliberate, uniform, declarative shape across every adapter's
 // `New*Transport` factory).
@@ -62,7 +62,7 @@ type TransportOptions struct {
 
 // NewTransport returns an [events.Transport] configured per opts — the
 // adapter's ONLY job in the attach workflow (docs/roadmap/
-// capability-requirement-composition.md's Phase 4d): construct a
+// d-0006-protocol-native-capabilities.md's Phase 4d): construct a
 // fully-configured, attachable value. Attaching it is EXCLUSIVELY
 // [events.Client.Attach]'s job — there is no adapter-namespaced Attach
 // function anymore (REMOVED, breaking, per that phase's explicit
@@ -74,7 +74,7 @@ type TransportOptions struct {
 // itself never needs a [*events.Client] parameter.
 //
 // Call/Consume are FULL-FEATURED (docs/roadmap/
-// capability-requirement-composition.md's Phase 4e — the former "v1
+// d-0006-protocol-native-capabilities.md's Phase 4e — the former "v1
 // scope" narrowing is CLOSED for this package): declared Capabilities
 // (Phase 4c), per-call [format.Format] overrides
 // ([events.ClientPublishOptions]/[events.ClientSubscribeOptions]),
@@ -144,7 +144,7 @@ func recoverHandle(kind string, anyAny any, client *events.Client) (reflect.Valu
 // ctx and calls RecordPublish on EVERY exit path, mirroring [publish]'s
 // own convention.
 //
-// docs/roadmap/capability-requirement-composition.md's Phase 4e: this
+// docs/design/d-0006-protocol-native-capabilities.md's Phase 4e: this
 // shim now runs the FULL [publish][T] pipeline, matched step-for-step
 // (property-merge → codec-Middleware/Transform dispatch → security
 // credential resolution+validation → general-purpose PublishMW wrapping
@@ -315,7 +315,7 @@ func (t *transport) Publish(ctx context.Context, pubAny, msgAny any, optsVariadi
 		}
 	}
 
-	// docs/roadmap/capability-requirement-composition.md's Phase 4c: a
+	// docs/design/d-0006-protocol-native-capabilities.md's Phase 4c: a
 	// declared [Publisher.WithOptions]([PublishOptions][T]{Capabilities:
 	// ...}) value is resolved and applied via [events.ApplyCapabilities].
 	var wire WireAttributes
@@ -394,7 +394,7 @@ func publishDeadLetterReflect(ctx context.Context, t *transport, handleVal refle
 // Client.Subscribe contract) even though the underlying mqtt5 dispatch
 // mechanism itself is callback-driven, not loop-driven.
 //
-// docs/roadmap/capability-requirement-composition.md's Phase 4e: this
+// docs/design/d-0006-protocol-native-capabilities.md's Phase 4e: this
 // shim now runs the FULL [subscribeHandler][T] pipeline, matched
 // step-for-step (property-merge → user-property-param validation →
 // codec-based security credential check → Implementations-based security
@@ -452,7 +452,7 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 	// the broker subscription is made — mirrors
 	// [subscribeWithHandle]'s own "validated EAGERLY... a malformed Fn
 	// fails loudly and immediately" timing (docs/roadmap/
-	// capability-requirement-composition.md's Phase 4e design decision:
+	// d-0006-protocol-native-capabilities.md's Phase 4e design decision:
 	// per-call, not Attach-time, validation).
 	implementations, _ := elem.FieldByName("Implementations").Interface().([]middleware.ServerImplementation)
 	if err := validateSubscribeImplementationShapesReflect(tType, implementations); err != nil {
@@ -514,7 +514,7 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 
 	handler := func(msg *pahomqtt5.Publish) {
 		start := time.Now()
-		// docs/roadmap/capability-requirement-composition.md's Phase 4e
+		// docs/design/d-0006-protocol-native-capabilities.md's Phase 4e
 		// addendum: msgCtx stores msg AND its User Properties, closing a
 		// gap where [MessageFromContext]/[UserPropertiesFromContext]
 		// never worked through Client.Subscribe — mirrors

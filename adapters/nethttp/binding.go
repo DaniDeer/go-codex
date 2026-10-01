@@ -23,7 +23,7 @@ import (
 // cross-adapter options type) into this package's internal [CallOptions]
 // — used by [callWithVars]'s "explicit Vars" call sites, which still
 // need the concrete nethttp-native `http.Header` shape for ExtraHeaders
-// (docs/roadmap/capability-requirement-composition.md's Phase 5a:
+// (docs/design/d-0006-protocol-native-capabilities.md's Phase 5a:
 // [CallWithHandle] was deleted, but [callWithVars] itself — an internal
 // primitive with real remaining callers below — was not; this
 // conversion is a lossless, field-for-field copy, ExtraHeaders included
@@ -216,7 +216,7 @@ func (a *nethttpCallAdapter[Req, Resp]) AdapterName() string { return "nethttp.C
 func (a *nethttpCallAdapter[Req, Resp]) Transform(ctx context.Context, src gstream.Stream[Req]) gstream.Stream[Resp] {
 	// Built ONCE, reused for every item's derived-vars call — mirrors
 	// [rest.Client.Attach]'s own one-transport-per-connection shape
-	// (docs/roadmap/capability-requirement-composition.md's Phase 5a).
+	// (docs/design/d-0006-protocol-native-capabilities.md's Phase 5a).
 	transport := NewClientTransport(ClientTransportOptions{HTTPClient: a.client, BaseURL: a.baseURL})
 	values := make(chan Resp, a.opts.Buffer)
 	errs := make(chan error, a.opts.Buffer)
@@ -421,7 +421,7 @@ func (a *nethttpDrainCallAdapter[Req, Resp]) Activate(ctx context.Context, src g
 	onErr := a.opts.OnError
 	// Built ONCE, reused for every item's derived-vars call — mirrors
 	// [rest.Client.Attach]'s own one-transport-per-connection shape
-	// (docs/roadmap/capability-requirement-composition.md's Phase 5a).
+	// (docs/design/d-0006-protocol-native-capabilities.md's Phase 5a).
 	transport := NewClientTransport(ClientTransportOptions{HTTPClient: a.client, BaseURL: a.baseURL})
 	gstream.Drain(ctx, src,
 		func(ctx context.Context, item Req) error {

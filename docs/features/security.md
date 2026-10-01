@@ -488,7 +488,7 @@ security Fn — same two-step order as the nethttp/chi request pipeline:
 
 ```go
 // client.Attach(mqtt5.NewTransport(...)) + events.Client.Subscribe is
-// FULL-FEATURED (docs/roadmap/capability-requirement-composition.md's
+// FULL-FEATURED (docs/design/d-0006-protocol-native-capabilities.md's
 // Phase 4e closed the former "v1 scope" gap for this package — see
 // adapters/mqtt5/transport.go's NewTransport doc comment) — it enforces
 // SubscribeMW of both recognized shapes identically to the

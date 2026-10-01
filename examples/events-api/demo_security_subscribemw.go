@@ -34,7 +34,7 @@ func demoSecuritySubscribeMW(ctx context.Context, obs *observability.DemoObserve
 	// built5.Client is ALREADY an attached *events.Client (mqtt5broker.
 	// Build's own Client.Attach) — Client.Publish itself now reads
 	// PublishOptions.UserProperties and sets them on the outgoing
-	// message (docs/roadmap/capability-requirement-composition.md's
+	// message (docs/design/d-0006-protocol-native-capabilities.md's
 	// Phase 4e closed the former "reflection-based Publish builds a
 	// bare *paho.Publish with NO Properties ever set" gap), so no
 	// adapter-specific NewPublishTransport escape hatch is needed

@@ -133,7 +133,7 @@ type SubscribeOptions struct {
 
 	// Capabilities supplies sealed, compile-time-checked protocol-native
 	// declarations (currently [QoS]) for this channel — the SOLE
-	// mechanism (docs/roadmap/capability-requirement-composition.md's
+	// mechanism (docs/design/d-0006-protocol-native-capabilities.md's
 	// Phase 4/4b: the former plain QoS field/call-time qos parameter
 	// escape hatch and the events.Subscribe.QoS declared-fallback field
 	// were REMOVED entirely). Applied via [events.ApplyCapabilities]
@@ -164,7 +164,7 @@ type PublishOptions[T any] struct {
 
 	// Capabilities supplies sealed, compile-time-checked protocol-native
 	// declarations (currently [Retained]) for this publish — the SOLE
-	// mechanism (docs/roadmap/capability-requirement-composition.md's
+	// mechanism (docs/design/d-0006-protocol-native-capabilities.md's
 	// Phase 4/4b: the former call-time qos/retained parameters and the
 	// events.PublishAttributes declared-on-channel fallback were REMOVED
 	// entirely). Applied via [events.ApplyCapabilities] against a
@@ -716,7 +716,7 @@ func subscribeWithHandle[T any](
 	router.RegisterHandler(filter,
 		makeSubscribeMessageHandler(ctx, client, handle, effectiveFmts, fn, obs, opts))
 
-	// docs/roadmap/capability-requirement-composition.md's Phase 4:
+	// docs/design/d-0006-protocol-native-capabilities.md's Phase 4:
 	// Capabilities is now the ONLY mechanism for QoS — the former
 	// SubscribeOptions.QoS plain field/call-time qos parameter escape
 	// hatch is REMOVED. events.ApplyCapabilities is the API-LAYER-OWNED
@@ -864,7 +864,7 @@ func publish[T any](
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
 	}
-	// docs/roadmap/capability-requirement-composition.md's Phase 4:
+	// docs/design/d-0006-protocol-native-capabilities.md's Phase 4:
 	// Capabilities is now the ONLY mechanism for QoS/Retained — the
 	// former call-time qos/retained parameter escape hatch is REMOVED.
 	// events.ApplyCapabilities is the API-LAYER-OWNED dispatch loop;

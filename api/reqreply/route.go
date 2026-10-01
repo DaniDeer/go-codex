@@ -776,7 +776,7 @@ type routeBuilder struct {
 	// [ErrorPattern] — see [RouteHandle.ErrorResponseFor].
 	errorPatternRules []errorPatternRule
 	// requirements holds this route's own [CapabilityRequirement]
-	// declarations (docs/roadmap/capability-requirement-composition.md's
+	// declarations (docs/design/d-0006-protocol-native-capabilities.md's
 	// Phase 2) — copied onto [RouteHandle.Requirements] at Register/
 	// ClientHandle time and rendered into the request channel's
 	// AsyncAPI "x-capabilities" vendor extension by [Builder.registerRoute].
@@ -1345,7 +1345,7 @@ type RouteHandle[Req, Resp any] struct {
 	ClientMiddlewareHandlers []ClientMiddlewareHandler
 
 	// Requirements holds this route's own [CapabilityRequirement]
-	// declarations (docs/roadmap/capability-requirement-composition.md's
+	// declarations (docs/design/d-0006-protocol-native-capabilities.md's
 	// Phase 2) — consulted by the attached [ServerTransport]/
 	// [ClientTransport] via [VerifyCapabilityCoverage] before dispatch.
 	// Populated by [Route.Register]/[Route.ClientHandle]. Read via

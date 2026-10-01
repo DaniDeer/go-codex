@@ -41,7 +41,7 @@ func demoPropertyMergeDirectAttachment(ctx context.Context) {
 
 	// Client.Attach + Client.Subscribe/Publish — property-merge, OnError,
 	// and Capabilities are ALL supported through the api-layer-owned
-	// Client since docs/roadmap/capability-requirement-composition.md's
+	// Client since docs/design/d-0006-protocol-native-capabilities.md's
 	// Phase 4e; no adapter-specific NewSubscribeTransport/
 	// NewPublishTransport escape hatch needed here anymore.
 	evClient := events.NewClient(events.WithInfo(events.Info{Title: "Property merge demo", Version: "1.0.0"}))

@@ -8,7 +8,7 @@ import (
 // CallWithTransport is the API-LAYER-OWNED "attach and drive" verb for
 // calling exactly ONE route against an ALREADY-BUILT [ClientTransport] —
 // mirrors [events.PublishHandle]/[reqreply.CallWithTransport]'s shape
-// exactly (docs/roadmap/capability-requirement-composition.md's Phase
+// exactly (docs/design/d-0006-protocol-native-capabilities.md's Phase
 // 5a). It replaces the former adapter-owned
 // `nethttp.CallWithHandle[Req,Resp]`, which built a SEPARATE, hand-
 // written encode/dispatch pipeline rather than delegating through this

@@ -164,7 +164,7 @@ concrete types are recovered internally via reflection; a mismatch surfaces as
 `events.TransportTypeMismatchError` at CALL time. See
 `docs/design/d-0002-pubsub-workflow-simplification.md`'s Decision 5 for the full design.
 `Client.Publish`/`Client.Subscribe` are FULL-FEATURED for this adapter (`docs/roadmap/
-capability-requirement-composition.md`'s Phase 4e closed the former "v1 scope" narrowing):
+d-0006-protocol-native-capabilities.md`'s Phase 4e closed the former "v1 scope" narrowing):
 declared Capabilities, per-call format overrides (`events.ClientPublishOptions`/
 `events.ClientSubscribeOptions`), declarative SubscribeMW/PublishMW security enforcement,
 codec-backed Middleware/Transform dispatch, and a declared `OnError` callback are all honored
@@ -278,7 +278,7 @@ dual-mode demo for the side-by-side contrast.
 
 There is no separate lower-level escape hatch anymore — `NewServerTransport`/
 `NewClientTransport` are the SOLE entry points (docs/roadmap/
-capability-requirement-composition.md's "zero backdoor between the api
+d-0006-protocol-native-capabilities.md's "zero backdoor between the api
 layer and the adapters" directive). Customize dispatch (a security
 implementation Fn, `Observer` overrides, non-default
 `ReplyTopicPrefix`/`Timeout`/`ReplyTopicBuilder`) via

@@ -8,7 +8,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/reqreply"
 )
 
-// This file closes docs/roadmap/capability-requirement-composition.md's
+// This file closes docs/design/d-0006-protocol-native-capabilities.md's
 // Phase 2 plumbing gap for zeromq: [ServeOptions]/[CallOptions].
 // Capabilities must reach the socket via the EXISTING [applyCapabilities]
 // helper at ALL FOUR real dispatch implementations

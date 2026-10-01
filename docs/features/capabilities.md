@@ -18,7 +18,7 @@
 > `reqreply.CapabilityRequirement` (renamed from `CapabilitySpec`) and its
 > coverage-check error is `events.CapabilityCoverageError`/
 > `reqreply.CapabilityCoverageError` (renamed from `MissingCapabilityError`)
-> — see [`docs/roadmap/capability-requirement-composition.md`](../roadmap/capability-requirement-composition.md)
+> — see [`docs/design/d-0006-protocol-native-capabilities.md`](../design/d-0006-protocol-native-capabilities.md)
 > for the full three-tier vocabulary (Baseline/Implicit/Explicit, with
 > Explicit further split into 3a/3b) this mechanism is classified under
 > (Tier 3a — Explicit, sealed, adapter-owned), and for the planned Phase 3
@@ -32,8 +32,7 @@ quality-of-service, MQTT retained-message flags, ZeroMQ high-water-mark,
 and so on. Each adapter defines its OWN `Capability` interface, sealed to
 that package (mirroring the technique `ports.Pattern` already uses).
 
-As of [Phase 4 of the capability-requirement-composition
-roadmap](../roadmap/capability-requirement-composition.md), `Capability`
+As of [D-0006 §9's Phase 4](../design/d-0006-protocol-native-capabilities.md), `Capability`
 is a REAL programming interface, not a zero-cost marker: every value
 must implement `Apply(Target) (applied bool, err error)` against its
 adapter-specific target object, and `api/events` OWNS the generic
@@ -133,7 +132,7 @@ overrides or declared security/general-purpose middleware wrapping
 (Phase 4d's scope, not yet shipped) — a caller needing those still uses
 `subscribe`/`publish` (or the adapter's `PublishTransport`/
 `SubscribeTransport`) directly. See
-[`docs/roadmap/capability-requirement-composition.md`](../roadmap/capability-requirement-composition.md)'s
+[`docs/design/d-0006-protocol-native-capabilities.md`](../design/d-0006-protocol-native-capabilities.md)'s
 Phase 4d section.
 
 **Breaking change (Phase 4/4b, `adapters/mqtt5` + core `api/events`):**
@@ -141,7 +140,7 @@ Phase 4d section.
 parallel, non-`Capability`-shaped path was removed entirely, per this
 codebase's explicit "zero backdoor between the api layer and the
 adapters" guardrail (see
-[`docs/roadmap/capability-requirement-composition.md`](../roadmap/capability-requirement-composition.md)'s
+[`docs/design/d-0006-protocol-native-capabilities.md`](../design/d-0006-protocol-native-capabilities.md)'s
 "Architectural guardrail" section):
 
 - The former call-time `qos byte, retained bool` positional parameters
@@ -160,7 +159,7 @@ adapters" guardrail (see
   package.
 
 `adapters/mqtt` (v3) is now fully migrated too (docs/roadmap/
-capability-requirement-composition.md's Phase 5) — its `Capability`
+d-0006-protocol-native-capabilities.md's Phase 5) — its `Capability`
 interface requires `Apply(wire *WireAttributes) (bool, error)`, mirroring
 `adapters/mqtt5`'s identical shape exactly. Every former raw `qos byte`/
 `retained bool` positional parameter and `SubscribeOptions.QoS`/
@@ -255,7 +254,7 @@ GENUINELY enforced (see "Coverage checking" below); `RequireRetained()`/
 no "insufficient level" to check. There is no `RequireUserProperties()` —
 `UserPropertyParam` is a Tier 2 (Implicit), adapter-options-scoped
 declaration, not a Tier 3 (Explicit) requirement; see
-`docs/roadmap/capability-requirement-composition.md`'s "Design guardrails"
+`docs/design/d-0006-protocol-native-capabilities.md`'s "Design guardrails"
 section for the full classification.
 
 ### Coverage checking
@@ -328,7 +327,7 @@ otherwise.
 
 ## REST's capability mechanism
 
-`api/rest` (Phase 3 of `docs/roadmap/capability-requirement-composition.md`)
+`api/rest` (Phase 3 of `docs/design/d-0006-protocol-native-capabilities.md`)
 gains the SAME conceptual mechanism events/reqreply already ship, but
 split across TWO axes REST's own shape demands:
 

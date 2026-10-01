@@ -35,7 +35,7 @@ type serverTransport struct {
 
 // ServerTransportOptions configures [NewServerTransport] — the SOLE
 // configuration surface for a nethttp [rest.ServerTransport] (docs/roadmap/
-// capability-requirement-composition.md's Phase 4d: a single Options
+// d-0006-protocol-native-capabilities.md's Phase 4d: a single Options
 // struct, no positional params, even for these REQUIRED fields).
 type ServerTransportOptions struct {
 	// Mux receives every wired route/SSE handler. Required.
@@ -46,7 +46,7 @@ type ServerTransportOptions struct {
 
 // NewServerTransport returns a [rest.ServerTransport] configured per opts
 // — the adapter's ONLY job in the attach workflow (docs/roadmap/
-// capability-requirement-composition.md's Phase 4d): construct a
+// d-0006-protocol-native-capabilities.md's Phase 4d): construct a
 // fully-configured, attachable value. Attaching it is EXCLUSIVELY
 // [rest.Server.Attach]'s job — there is no adapter-namespaced Attach
 // function anymore (REMOVED, breaking, per that phase's explicit

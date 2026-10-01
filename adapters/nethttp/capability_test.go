@@ -12,7 +12,7 @@ import (
 	"github.com/DaniDeer/go-codex/route"
 )
 
-// This file closes docs/roadmap/capability-requirement-composition.md's
+// This file closes docs/design/d-0006-protocol-native-capabilities.md's
 // Phase 3/6 verification: nethttp's httpCarrier satisfies
 // all 3 Tier 2 interfaces, so a declared HeaderParam/CookieParam/
 // QueryParam requirement is ALWAYS covered — proving the mechanism

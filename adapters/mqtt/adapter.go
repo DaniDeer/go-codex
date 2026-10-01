@@ -148,7 +148,7 @@ type SubscribeOptions struct {
 
 	// Capabilities supplies sealed, compile-time-checked protocol-native
 	// declarations (currently [QoS]) for this channel — the SOLE
-	// mechanism (docs/roadmap/capability-requirement-composition.md's
+	// mechanism (docs/design/d-0006-protocol-native-capabilities.md's
 	// Phase 5: the former plain QoS field/call-time qos parameter escape
 	// hatch was REMOVED entirely, mirroring adapters/mqtt5's identical,
 	// already-shipped shape). Applied via [events.ApplyCapabilities]
@@ -495,7 +495,7 @@ type PublishOptions[T any] struct {
 
 	// Capabilities supplies sealed, compile-time-checked protocol-native
 	// declarations (currently [QoS]/[Retained]) for this publish — the
-	// SOLE mechanism (docs/roadmap/capability-requirement-composition.md's
+	// SOLE mechanism (docs/design/d-0006-protocol-native-capabilities.md's
 	// Phase 5: the former call-time qos/retained parameters were REMOVED
 	// entirely, mirroring adapters/mqtt5's identical, already-shipped
 	// shape). Applied via [events.ApplyCapabilities] against a
@@ -551,7 +551,7 @@ func publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
 	}
-	// docs/roadmap/capability-requirement-composition.md's Phase 5:
+	// docs/design/d-0006-protocol-native-capabilities.md's Phase 5:
 	// Capabilities is now the ONLY mechanism for QoS/Retained — the
 	// former call-time qos/retained parameter escape hatch is REMOVED.
 	// events.ApplyCapabilities is the API-LAYER-OWNED dispatch loop;

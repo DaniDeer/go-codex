@@ -71,7 +71,7 @@ type transport struct {
 
 // TransportOptions configures [NewTransport] — the SOLE configuration
 // surface for an mqtt (v3) [events.Transport] (docs/roadmap/
-// capability-requirement-composition.md's Phase 4d: a single Options
+// d-0006-protocol-native-capabilities.md's Phase 4d: a single Options
 // struct, no positional params, even for this one REQUIRED field — a
 // deliberate, uniform, declarative shape across every adapter's
 // `New*Transport` factory).
@@ -82,7 +82,7 @@ type TransportOptions struct {
 
 // NewTransport returns an [events.Transport] configured per opts — the
 // adapter's ONLY job in the attach workflow (docs/roadmap/
-// capability-requirement-composition.md's Phase 4d): construct a
+// d-0006-protocol-native-capabilities.md's Phase 4d): construct a
 // fully-configured, attachable value. Attaching it is EXCLUSIVELY
 // [events.Client.Attach]'s job — there is no adapter-namespaced Attach
 // function anymore (REMOVED, breaking, per that phase's explicit
@@ -94,7 +94,7 @@ type TransportOptions struct {
 // itself never needs a [*events.Client] parameter.
 //
 // Publish/Subscribe are FULL-FEATURED (docs/roadmap/
-// capability-requirement-composition.md's Phase 4e — the former "v1
+// d-0006-protocol-native-capabilities.md's Phase 4e — the former "v1
 // scope" narrowing is CLOSED for this package): declared Capabilities
 // (Phase 5, resolved via [events.ApplyCapabilities] against a
 // [WireAttributes] value — mirrors adapters/mqtt5's identical shape),
@@ -156,7 +156,7 @@ func recoverHandle(kind string, anyAny any, client *events.Client) (reflect.Valu
 // override) and calls RecordPublish on EVERY exit path, mirroring
 // [publish]'s own convention.
 //
-// docs/roadmap/capability-requirement-composition.md's Phase 4e: this
+// docs/design/d-0006-protocol-native-capabilities.md's Phase 4e: this
 // shim now runs the FULL [publish][T] pipeline, matched step-for-step
 // (codec-Middleware/Transform dispatch → Implementations-based
 // PublishMW security → general-purpose PublishMW wrapping around the
@@ -274,7 +274,7 @@ func (t *transport) Publish(ctx context.Context, pubAny, msgAny any, optsVariadi
 		}
 	}
 
-	// docs/roadmap/capability-requirement-composition.md's Phase 5: a
+	// docs/design/d-0006-protocol-native-capabilities.md's Phase 5: a
 	// declared Capabilities value is applied via [events.ApplyCapabilities]
 	// against a [WireAttributes] value — mirrors adapters/mqtt5's
 	// identical, already-shipped shape exactly.
@@ -319,7 +319,7 @@ func (t *transport) Publish(ctx context.Context, pubAny, msgAny any, optsVariadi
 // [Attach]'s doc comment for why this blocks even though v3's dispatch
 // mechanism itself is callback-driven, not loop-driven.
 //
-// docs/roadmap/capability-requirement-composition.md's Phase 4e: this
+// docs/design/d-0006-protocol-native-capabilities.md's Phase 4e: this
 // shim now runs the FULL [subscribeHandler][T] pipeline, matched
 // step-for-step (Implementations-based SubscribeMW security → codec-
 // Middleware/Transform dispatch → general-purpose SubscribeMW wrapping
@@ -424,7 +424,7 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 
 	handler := func(client pahomqtt.Client, msg pahomqtt.Message) {
 		start := time.Now()
-		// docs/roadmap/capability-requirement-composition.md's Phase 4e
+		// docs/design/d-0006-protocol-native-capabilities.md's Phase 4e
 		// addendum: msgCtx stores msg, closing a gap where
 		// [MessageFromContext] never worked through Client.Subscribe —
 		// mirrors [subscribeHandler][T]'s IDENTICAL, pre-decode placement
@@ -492,7 +492,7 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 		dispatchFailure(KindHandler, msg.Topic(), msg.Payload(), handlerErr)
 	}
 
-	// docs/roadmap/capability-requirement-composition.md's Phase 5: a
+	// docs/design/d-0006-protocol-native-capabilities.md's Phase 5: a
 	// declared Capabilities value is applied via
 	// [events.ApplyCapabilities] against a [WireAttributes] value —
 	// mirrors adapters/mqtt5's identical, already-shipped shape exactly.

@@ -31,7 +31,7 @@ import (
 // PublishMW) security, matching adapter.go's own subscribeHandler[T]/
 // publish[T] pipeline exactly.
 //
-// Per docs/roadmap/capability-requirement-composition.md's Phase 4e:
+// Per docs/design/d-0006-protocol-native-capabilities.md's Phase 4e:
 // middleware.ServerImplementation/ClientImplementation are ALREADY
 // non-generic (Fn any) — impl.Fn's boxed value is ALREADY a concretely-T
 // Go closure built at declare time, reachable via

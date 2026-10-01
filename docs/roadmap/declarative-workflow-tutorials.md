@@ -5,7 +5,7 @@
 
 ## Motivation
 
-`docs/roadmap/capability-requirement-composition.md`'s Phase 8 review
+`docs/design/d-0006-protocol-native-capabilities.md`'s Phase 8 review
 closeout left two linked items unstarted: a **joint declarative-workflow
 walkthrough** (user + agent declare one `api/rest`, one `api/events`, and
 one `api/reqreply` API from scratch, end-to-end, as a genuine first-time-user
@@ -29,7 +29,7 @@ content other sessions can load).
 |---|---|
 | A structured walkthrough SCRIPT (not a transcript) — exact steps, decision points, and "what friction to watch for" prompts for each of the 3 APIs | Actually running every step with a live broker/socket connection — the walkthrough uses the same in-process mock clients `examples/{rest,events,reqreply}-api` already use; no new infrastructure |
 | Three tutorial `SKILL.md` files, one per API, each teaching the FULL declare → register/attach capability → run workflow live | A combined single tutorial skill — explicitly rejected per the main roadmap doc's "split rather than combined" preference, same reasoning as the 1.1/1.2/1.3 and 2.1-2.4 per-API review splits this session already established |
-| Capturing walkthrough findings as roadmap-doc Learnings entries (in THIS doc, not the now-closed `capability-requirement-composition.md`) or spinning out a new follow-on roadmap doc if a finding is substantial | Fixing every friction point found — a genuinely substantial fix (e.g. a missing convenience method) gets its OWN follow-on roadmap doc per the `plan-a-new-codex-feature` skill's own rule, not folded in here silently |
+| Capturing walkthrough findings as roadmap-doc Learnings entries (in THIS doc, not the now-closed `d-0006-protocol-native-capabilities.md`) or spinning out a new follow-on roadmap doc if a finding is substantial | Fixing every friction point found — a genuinely substantial fix (e.g. a missing convenience method) gets its OWN follow-on roadmap doc per the `plan-a-new-codex-feature` skill's own rule, not folded in here silently |
 | Referencing/building on the existing flagship examples (`examples/rest-api`, `examples/events-api`, `examples/reqreply-api`, `examples/sensor-service`) rather than inventing new demo code | Writing brand-new example programs — the walkthrough and tutorials should point at and walk through EXISTING, already-verified-green examples, not duplicate them |
 | Deciding each tutorial skill's "teaching style" (does it generate real files in the user's workspace, or talk through the `examples/*-api` source read-only?) | Authoring any skill content before the walkthrough runs — tutorials must reflect the POLISHED workflow the walkthrough validates, not a guess at one |
 | **A true interactive, per-step GATED mode**: the skill performs ONE step, presents it, then STOPS and waits for the user's explicit go-ahead (`ask_user` with options "Continue to next step" / "Redo this step" / "Go back to step N" / "Stop here") before proceeding — never auto-advances through multiple steps in one turn | A freeform chat-only pacing with no enforced stop ("I'll let you know when to continue" left to prose alone) — rejected per explicit user direction; gating MUST be tool-enforced (`ask_user`), not prose-only, since prose-only pauses are not reliably honored under autopilot/auto-approval runtime modes |
@@ -71,10 +71,11 @@ API — each following the IDENTICAL shape so friction patterns common to all
    the flat/no-vars happy path).
 3. **Capability requirement declaration** — a `RequireX`/explicit
    `Capability` value declared on the route/channel (e.g. `RequireQoS` for
-   events, a REST `HeaderParam`-implied Tier 2 requirement) — the step this
-   whole capability-requirement-composition roadmap built, and the one
-   most likely to surface fresh friction since it's the newest, least-
-   polished part of the workflow.
+   events, a REST `HeaderParam`-implied Tier 2 requirement) — the step
+   [D-0006](../design/d-0006-protocol-native-capabilities.md)'s whole
+   capability-requirement-composition rework built (now merged into that
+   doc as its §9), and the one most likely to surface fresh friction
+   since it's the newest, least-polished part of the workflow.
 4. **Adapter attachment** — `Client.Attach`/`Server.Attach` with a real
    adapter's `New*Transport` constructor (the in-process mock client/socket
    each flagship example already wires up — no new infrastructure).
@@ -275,7 +276,7 @@ direction; see Scope decisions above).
 
 ## See also
 
-- [Composable Capability Requirements](capability-requirement-composition.md) —
+- [Composable Capability Requirements](../design/d-0006-protocol-native-capabilities.md) —
   Phase 8's review that raised this need; the two-step declare/capability
   model this walkthrough exercises end-to-end.
 - [`docs/concepts/declaring-apis-and-ports.md`](../concepts/declaring-apis-and-ports.md) —

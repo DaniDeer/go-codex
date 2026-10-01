@@ -13,7 +13,7 @@ import (
 
 // demoCapabilityMechanism demonstrates the protocol-native Capability
 // mechanism, REWRITTEN by Phase 1 of
-// docs/roadmap/capability-requirement-composition.md into the doc's
+// docs/design/d-0006-protocol-native-capabilities.md into the doc's
 // three-tier vocabulary (Baseline/Implicit/Explicit — this is the
 // Explicit tier): a sealed, compile-time-checked adapter-owned type
 // (mqtt5.QoS/mqtt5.Retained) supplied at DECLARE time via
@@ -75,7 +75,7 @@ func demoCapabilityMechanism(ctx context.Context) {
 	}
 
 	// Capabilities is the SOLE mechanism (docs/roadmap/
-	// capability-requirement-composition.md's Phase 4/4b) — there is no
+	// d-0006-protocol-native-capabilities.md's Phase 4/4b) — there is no
 	// call-time qos parameter to otherwise prefer, on either the
 	// subscribe or publish side.
 	evClient := events.NewClient(events.WithInfo(events.Info{Title: "Capability demo", Version: "1.0.0"}))
@@ -96,7 +96,7 @@ func demoCapabilityMechanism(ctx context.Context) {
 	go func() { _ = evClient.ServeSubscribers(ctx) }()
 	router.WaitHandler(routes.CapabilityTopic)
 
-	// docs/roadmap/capability-requirement-composition.md's Phase 4c:
+	// docs/design/d-0006-protocol-native-capabilities.md's Phase 4c:
 	// evClient is ALREADY attached (above, for the subscribe side) —
 	// Publisher.WithOptions declares Capabilities the SAME way
 	// Subscriber.WithOptions does, so evClient.Publish itself now

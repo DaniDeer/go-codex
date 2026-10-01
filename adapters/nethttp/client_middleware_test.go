@@ -14,7 +14,7 @@ import (
 
 // CallWithHandle-specific ClientTransform tests (HappyPath/FnError/
 // AgnosticMiddleware/D3Precedence — all 4 REMOVED, docs/roadmap/
-// capability-requirement-composition.md's Phase 5a): CallWithHandle's
+// d-0006-protocol-native-capabilities.md's Phase 5a): CallWithHandle's
 // OWN body was the ONLY reachable place on the plain-Call (non-SSE)
 // path that ever dispatched rest.ClientTransform/bundled `.Use()`
 // codec-backed middleware — confirmed via code that NEITHER the deleted

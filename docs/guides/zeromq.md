@@ -243,7 +243,7 @@ their concrete types are recovered internally via reflection; a mismatch surface
 narrowly-scoped trade-off for this one convenience surface. See
 `docs/design/d-0002-pubsub-workflow-simplification.md`'s Decision 5 for the full design.
 `Client.Publish`/`Client.Subscribe` are FULL-FEATURED for this adapter (`docs/roadmap/
-capability-requirement-composition.md`'s Phase 4e closed the former "v1 scope" narrowing):
+d-0006-protocol-native-capabilities.md`'s Phase 4e closed the former "v1 scope" narrowing):
 declared Capabilities, per-call format overrides (`events.ClientPublishOptions`/
 `events.ClientSubscribeOptions`), declarative SubscribeMW/PublishMW security enforcement, and
 codec-backed Middleware/Transform dispatch are all honored (zeromq has no property-vocabulary
@@ -358,7 +358,7 @@ operations:
 
 There is no separate lower-level escape hatch anymore — `NewServerTransport`/
 `NewClientTransport` are the SOLE entry points (docs/roadmap/
-capability-requirement-composition.md's "zero backdoor between the api
+d-0006-protocol-native-capabilities.md's "zero backdoor between the api
 layer and the adapters" directive). Customize dispatch (a custom
 `Observer` override or other fine-grained control) via
 `ServerTransportOptions.Serve`/`ClientTransportOptions.Call` at attach

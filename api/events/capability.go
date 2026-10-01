@@ -9,7 +9,7 @@ import (
 
 // CapabilityRequirement declares one adapter-defined protocol-native
 // capability requirement (Tier 3 — Explicit, per
-// docs/roadmap/capability-requirement-composition.md's three-tier
+// docs/design/d-0006-protocol-native-capabilities.md's three-tier
 // vocabulary: Baseline/Implicit/Explicit) at the channel level — the
 // decoupled, adapter-agnostic spec-rendering hook resolved in
 // docs/design/d-0006-protocol-native-capabilities.md's §7 ("Spec rendering
@@ -149,7 +149,7 @@ func CheckCapabilityCoverage(topic string, declared []CapabilityRequirement, sup
 // MinLevel being set).
 //
 // Replaces MissingCapabilityError (a breaking rename, deliberate — see
-// docs/roadmap/capability-requirement-composition.md's Phase 1
+// docs/design/d-0006-protocol-native-capabilities.md's Phase 1
 // subsection) — the old name no longer described its own shape once
 // Insufficient was added.
 type CapabilityCoverageError struct {
@@ -237,7 +237,7 @@ func RecordCapabilityApplied(obs stats.Observer, location string, cap Capability
 }
 
 // ApplyCapabilities is the API-LAYER-OWNED capability dispatch loop —
-// docs/roadmap/capability-requirement-composition.md's Phase 4: rather
+// docs/design/d-0006-protocol-native-capabilities.md's Phase 4: rather
 // than an adapter defining its OWN resolve+assert+call+record loop (the
 // pre-Phase-4 pattern, e.g. adapters/zeromq's now-removed
 // `applyCapabilities` function), every adapter's own capability VALUE

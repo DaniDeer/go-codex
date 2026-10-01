@@ -15,7 +15,7 @@ import (
 	"github.com/DaniDeer/go-codex/route"
 )
 
-// This file tests docs/roadmap/capability-requirement-composition.md's
+// This file tests docs/design/d-0006-protocol-native-capabilities.md's
 // Phase 4e (Stage D): [events.Client.Subscribe]/[events.Client.Publish]'s
 // reflection shim (transport.go) now runs the FULL [subscribeHandler][T]/
 // [publish][T] pipeline (Implementations-based SubscribeMW/PublishMW

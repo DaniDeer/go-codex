@@ -8,7 +8,7 @@ import (
 
 // testServe/testCall mirror the exact signatures of the now-DELETED
 // Serve[Req,Resp]/Call[Req,Resp] escape hatches (docs/roadmap/
-// capability-requirement-composition.md's Phase 5a) — a thin,
+// d-0006-protocol-native-capabilities.md's Phase 5a) — a thin,
 // test-only shim reducing this package's ~90 existing call sites (both
 // exercising the SAME underlying serverTransport.Serve/clientTransport.
 // Call dispatch, unchanged by the deletion) to a single mechanical

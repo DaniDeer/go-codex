@@ -18,7 +18,7 @@ import (
 //
 // NOTE: a custom OnError callback and a non-default (YAML) payload
 // format are BOTH now supported through Client.Attach's reflection-based
-// workflow too (docs/roadmap/capability-requirement-composition.md's
+// workflow too (docs/design/d-0006-protocol-native-capabilities.md's
 // Phase 4e closed that gap) — this demo's escape-hatch usage is no
 // longer justified by either capability. It remains on the escape hatch
 // for a DIFFERENT, still-genuinely-permanent reason, confirmed via
@@ -36,7 +36,7 @@ import (
 // "drive" verb, `CallWithHandle`, moved onto the API layer as
 // `rest.CallWithTransport`/`reqreply.CallWithTransport` — see below).
 //
-// RESOLVED (docs/roadmap/capability-requirement-composition.md's Phase
+// RESOLVED (docs/design/d-0006-protocol-native-capabilities.md's Phase
 // 5a): `adapters/nethttp.CallWithHandle` and `adapters/mqtt5`/
 // `adapters/zeromq`'s `Serve[Req,Resp]`/`Call[Req,Resp]` were deleted;
 // `api/rest.CallWithTransport`/`api/reqreply.CallWithTransport`/

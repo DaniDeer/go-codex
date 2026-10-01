@@ -8,7 +8,7 @@ import (
 )
 
 // ErrorResponseWriter is an OPTIONAL, type-asserted interface
-// (docs/roadmap/capability-requirement-composition.md's Phase 7 —
+// (docs/design/d-0006-protocol-native-capabilities.md's Phase 7 —
 // mirrors Phase 6's HeaderCapableTransport-style precedent: additive,
 // NOT a required method on [ServerTransport]) an adapter's own
 // response-writer type implements to realize a matched [ErrorPattern]

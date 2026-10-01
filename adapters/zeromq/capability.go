@@ -15,7 +15,7 @@ import (
 // docs/design/d-0006-protocol-native-capabilities.md's §2/§6/§7 (Review-13) — zeromq
 // is a REAL, non-MQTT capability slice, proving the mechanism generalizes.
 //
-// Apply is REQUIRED (docs/roadmap/capability-requirement-composition.md's
+// Apply is REQUIRED (docs/design/d-0006-protocol-native-capabilities.md's
 // Phase 4) — every Capability value must know how to apply itself to a
 // [FramedSocket], returning applied=false as a documented no-op (not an
 // error) when sock doesn't implement the socket-specific setter
@@ -94,7 +94,7 @@ type ConflateSetter interface {
 
 // applyCapabilities applies every capability in caps to sock via
 // [events.ApplyCapabilities] — the API-LAYER-OWNED, fully generic
-// dispatch loop (docs/roadmap/capability-requirement-composition.md's
+// dispatch loop (docs/design/d-0006-protocol-native-capabilities.md's
 // Phase 4). This package contributes only [Capability.Apply]; kept as a
 // thin same-signature wrapper so every existing call site (events- AND
 // reqreply-side) needs no change this round.

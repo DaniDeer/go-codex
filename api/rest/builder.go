@@ -609,7 +609,7 @@ type routeBuilder struct {
 	respCookies  []ResponseCookieParam
 	extraResps   []ResponseMeta
 	// requirements holds this route's own [CapabilityRequirement]
-	// declarations (docs/roadmap/capability-requirement-composition.md's
+	// declarations (docs/design/d-0006-protocol-native-capabilities.md's
 	// Phase 3) — copied onto [RouteHandle.Requirements] at construction
 	// time and rendered into the route's AsyncAPI/OpenAPI
 	// "x-codex-capabilities" vendor extension.
@@ -894,7 +894,7 @@ type RouteHandle[Req, Resp any] struct {
 	ClientMiddlewareHandlers []ClientMiddlewareHandler
 
 	// Requirements holds this route's own [CapabilityRequirement]
-	// declarations (docs/roadmap/capability-requirement-composition.md's
+	// declarations (docs/design/d-0006-protocol-native-capabilities.md's
 	// Phase 3) — consulted by an attached adapter via
 	// [VerifyCapabilityCoverage] before dispatch. Populated by
 	// [Route.Register]/[Route.RegisterHandle]/[Route.ClientHandle]. Read
@@ -1492,7 +1492,7 @@ func (h *RouteHandle[Req, Resp]) PathParamNames() []string {
 // SAME h.headerParams list before this RouteHandle is constructed —
 // this method sees the FULL, POST-MERGE set, not just plain-opt
 // declarations. Mirrors [RouteHandle.PathParamNames]'s exact shape.
-// Adapters use this (docs/roadmap/capability-requirement-composition.md's
+// Adapters use this (docs/design/d-0006-protocol-native-capabilities.md's
 // Phase 3) to decide, ONCE at Serve/Attach setup, whether their own
 // transport type must implement [HeaderCapableTransport] — see
 // [UnsupportedParamKindError].
@@ -2738,7 +2738,7 @@ type ServerTransport interface {
 // ServerAwareTransport is an OPTIONAL extension to [ServerTransport] —
 // mirrors [events.ClientAwareTransport] exactly, for the identical
 // reason: a [ServerTransport] built via an adapter's `New*Transport(opts)`
-// factory (docs/roadmap/capability-requirement-composition.md's Phase 4d)
+// factory (docs/design/d-0006-protocol-native-capabilities.md's Phase 4d)
 // is constructed BEFORE the [*Server] that will attach it is known, but
 // [ServerTransport.Serve] needs a [*Server] reference to walk its
 // registered routes (`serve(mux, builder)`'s own `builder` parameter).
@@ -2761,7 +2761,7 @@ type ServerAwareTransport interface {
 // that builds a configured [ServerTransport] value; application code
 // attaches it via THIS method directly — never via an adapter-namespaced
 // convenience function (removed, see docs/roadmap/
-// capability-requirement-composition.md's Phase 4d).
+// d-0006-protocol-native-capabilities.md's Phase 4d).
 //
 // If t implements [ServerAwareTransport], its BindServer(b) is called
 // IMMEDIATELY after storing t.
@@ -4000,7 +4000,7 @@ func (h *SSERouteHandle[Req, Event]) PathParamNames() []string {
 
 // HeaderParamNames returns the names of all registered header parameters —
 // mirrors [RouteHandle.HeaderParamNames] exactly (docs/roadmap/
-// capability-requirement-composition.md's Phase 6a). Adapters use this,
+// d-0006-protocol-native-capabilities.md's Phase 6a). Adapters use this,
 // alongside [CookieParamNames]/[QueryParamNames]/[SecuritySchemes], to
 // build the [RequiredParamKinds] set passed to [CheckParamKindCoverage]
 // at SSE route registration time.

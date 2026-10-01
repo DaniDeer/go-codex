@@ -7,7 +7,7 @@ Do not re-report any findings listed here. They have been implemented.
 ## Round DR12 (cross-cutting surfaces — README, project-structure.md, zensical.toml nav, go-codex.instructions.md, docs/index.md, reference/index.md)
 
 Scoped pass over the 5 shared/cross-cutting surfaces (Phase 8 item 2.4 of
-`docs/roadmap/capability-requirement-composition.md`), the final review-docs
+`docs/design/d-0006-protocol-native-capabilities.md`), the final review-docs
 sub-item — runs last so it can verify nav/cross-link consistency after
 2.1-2.3's per-API fixes.
 
@@ -84,7 +84,7 @@ sub-item — runs last so it can verify nav/cross-link consistency after
 
 Scoped pass over `api/reqreply` + `adapters/mqtt5`/`zeromq` reqreply-side
 docs/godoc/examples (Phase 8 item 2.3 of
-`docs/roadmap/capability-requirement-composition.md`). Same root-cause
+`docs/design/d-0006-protocol-native-capabilities.md`). Same root-cause
 class as DR9/DR10: an `AttachServer`/`AttachClient`/`AttachRouterServer`/
 `AttachDealerClient`/standalone-`Serve`/`Call`/`ServeRouter`/`CallDealer`
 convenience-function generation was fully REMOVED (zero backdoor
@@ -156,7 +156,7 @@ whole reqreply surface still taught the removed names/functions.
 ## Round DR10 (api/events — stale Attach naming + broken positional qos/retained examples)
 
 Scoped pass over `api/events` + `adapters/mqtt`/`mqtt5`/`zeromq` docs/godoc/
-examples (Phase 8 item 2.2 of `docs/roadmap/capability-requirement-composition.md`).
+examples (Phase 8 item 2.2 of `docs/design/d-0006-protocol-native-capabilities.md`).
 Two root causes, both more severe than the REST pass's D1: (1) the same
 `Attach`-suffixed-helper → `NewTransport(...)` + `Client.Attach(...)` rename
 DR9 fixed for REST, never swept for events; (2) Phase 5's "zero backdoor"
@@ -213,7 +213,7 @@ reached via `.WithSubscribe(...)`/`.WithPublish(...)`, have `Register`/`Handle`)
 ## Round DR9 (api/rest — stale AttachMux/AttachRouter/nethttp.Attach sweep)
 
 Scoped pass over `api/rest`-owned docs/godoc/examples (Phase 8 item 2.1 of
-`docs/roadmap/capability-requirement-composition.md`). Root cause: an
+`docs/design/d-0006-protocol-native-capabilities.md`). Root cause: an
 earlier Phase 4d rename (`nethttp.AttachMux(builder, mux, addr)` →
 `nethttp.NewServerTransport(...)` + `builder.Attach(...)`; similarly for
 `chi.AttachRouter`/client-side `nethttp.Attach`) was applied correctly in

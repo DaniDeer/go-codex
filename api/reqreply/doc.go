@@ -79,7 +79,7 @@
 // available as DEPRECATED aliases for [Server]/[NewServer]; existing code
 // using [Builder] keeps compiling and behaving identically. There is no
 // adapter-namespaced Attach function anymore (removed, breaking, per
-// docs/roadmap/capability-requirement-composition.md's "zero backdoor
+// docs/design/d-0006-protocol-native-capabilities.md's "zero backdoor
 // between the api layer and the adapters" directive) — every adapter
 // instead exposes a NewServerTransport/NewClientTransport constructor,
 // consumed uniformly via [Server.Attach]/[Client.Attach].
@@ -109,7 +109,7 @@
 //
 // A route's protocol behavior (MQTT QoS, retained messages, ZeroMQ
 // high-water-mark, ...) is classified into the same three-tier vocabulary
-// [api/events] uses — see docs/roadmap/capability-requirement-composition.md
+// [api/events] uses — see docs/design/d-0006-protocol-native-capabilities.md
 // for the full design:
 //
 //   - Baseline — the Topic itself. Mandatory, never declared explicitly.

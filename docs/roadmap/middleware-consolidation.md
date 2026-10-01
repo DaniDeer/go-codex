@@ -6,7 +6,7 @@
 > [← Back to Roadmap](index.md)
 
 Spun out while reviewing [Composable Capability Requirements — Phase
-3](capability-requirement-composition.md#phase-3--apirest-a-new-synchronous-transport-stateless-adapter)'s
+3](../design/d-0006-protocol-native-capabilities.md#phase-3--apirest-a-new-synchronous-transport-stateless-adapter)'s
 own relationship to declarative middleware. This doc is scoped
 narrowly: it evaluates dropping the LEGACY, non-generic
 `middleware.Middleware` type in favor of the codec-backed
@@ -104,7 +104,7 @@ plan for parity.
 | In scope (this doc evaluates) | Out of scope |
 |---|---|
 | Whether/how to fold Security declaration into the codec-backed family, or keep it permanently separate | D-0003's own already-shipped design (not reopened) |
-| Whether/how to add a presence-only (non-merged) param variant to `Middleware[In,Out]` | Phase 3's own capability mechanism (`capability-requirement-composition.md`) — unaffected by this doc's outcome either way, confirmed by tracing that both middleware mechanisms already coexist correctly with it |
+| Whether/how to add a presence-only (non-merged) param variant to `Middleware[In,Out]` | Phase 3's own capability mechanism (`d-0006-protocol-native-capabilities.md`) — unaffected by this doc's outcome either way, confirmed by tracing that both middleware mechanisms already coexist correctly with it |
 | A migration/removal plan for legacy `middleware.Middleware` IF consolidation is found superior | Inventing a THIRD middleware mechanism — every option below reuses existing pieces |
 
 ## Open design decisions (genuinely open — no leaning presupposed)
@@ -207,7 +207,7 @@ type/method is deleted:
   — the legacy mechanism's own shipped design, including its "Lessons
   Learned" on removing an old API the hard way
 - [Composable Capability Requirements — Phase
-  3](capability-requirement-composition.md#phase-3--apirest-a-new-synchronous-transport-stateless-adapter)
+  3](../design/d-0006-protocol-native-capabilities.md#phase-3--apirest-a-new-synchronous-transport-stateless-adapter)
   — where this evaluation was spun out from; confirmed unaffected by
   this doc's outcome either way
 - [`plan-a-new-codex-feature` skill](../../.github/skills/plan-a-new-codex-feature/SKILL.md)

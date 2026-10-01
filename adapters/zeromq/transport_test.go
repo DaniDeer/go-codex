@@ -53,7 +53,7 @@ func TestAttach_ClientPublish_RoundTrip(t *testing.T) {
 }
 
 // TestAttach_ClientPublish_HonorsDeclaredCapabilities confirms Phase 4c
-// (docs/roadmap/capability-requirement-composition.md): a Capabilities
+// (docs/design/d-0006-protocol-native-capabilities.md): a Capabilities
 // value declared via [events.Publisher.WithOptions] is resolved and
 // applied by [events.Client.Publish]'s reflection shim — closing the
 // gap where this shim never configured HWM/Conflate at all.
@@ -139,7 +139,7 @@ func TestAttach_ClientSubscribe_RoundTrip(t *testing.T) {
 }
 
 // TestAttach_ClientSubscribe_HonorsDeclaredCapabilities confirms Phase
-// 4c (docs/roadmap/capability-requirement-composition.md): a
+// 4c (docs/design/d-0006-protocol-native-capabilities.md): a
 // Capabilities value declared via [events.Subscriber.WithOptions] is
 // resolved and applied by [events.Client.Subscribe]'s reflection shim —
 // closing the gap where this shim never configured HWM/Conflate at all.

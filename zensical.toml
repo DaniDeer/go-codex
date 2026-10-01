@@ -83,7 +83,6 @@ repo_name = "DaniDeer/go-codex"
 [nav.Roadmap]
 "Overview" = "roadmap/index.md"
 "— Stream: FlatMap" = "roadmap/stream-flatmap.md"
-"— Composable Capability Requirements" = "roadmap/capability-requirement-composition.md"
 "— Middleware Consolidation" = "roadmap/middleware-consolidation.md"
 "— ZeroMQ REQ/REP Adapter for api/rest" = "roadmap/zeromq-rest-adapter.md"
 "— AMQP 0.9.1 Adapter" = "roadmap/amqp-adapter.md"

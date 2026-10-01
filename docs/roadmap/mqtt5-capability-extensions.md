@@ -16,7 +16,7 @@ or Response Topic/Correlation Data (decided NOT a `Capability`
 candidate — always-on, no opt-out scenario). `docs/features/
 capabilities.md`'s "Surveyed but not implemented" section confirms
 neither exists in go-codex today. The ONLY reason these were deferred
-through Phases 1-2 of `capability-requirement-composition.md` was
+through Phases 1-2 of `d-0006-protocol-native-capabilities.md` was
 "nobody asked for this specific toggle yet" — not a structural
 limitation, since `adapters/mqtt5` (the only adapter either capability
 applies to) already exists, unlike AMQP's still-pending candidates.
@@ -192,6 +192,6 @@ committed here.
 
 ## See also
 
-- [Composable Capability Requirements](capability-requirement-composition.md) — the shipped `Capability`/`ApplyCapabilities` mechanism this doc's `MessageExpiry`/`SharedSubscription` values plug into.
+- [Composable Capability Requirements](../design/d-0006-protocol-native-capabilities.md) — the shipped `Capability`/`ApplyCapabilities` mechanism this doc's `MessageExpiry`/`SharedSubscription` values plug into.
 - [D-0006 — Protocol-Native Capabilities](../design/d-0006-protocol-native-capabilities.md) — §6's original feature survey identifying both candidates.
 - [`docs/features/capabilities.md`](../features/capabilities.md) — "Surveyed but not implemented" section, the other cross-reference for these 2 candidates.

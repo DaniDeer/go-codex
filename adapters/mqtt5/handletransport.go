@@ -17,7 +17,7 @@ import (
 // interface out of structural necessity, not stylistic choice).
 //
 // QoS/Retained are supplied EXCLUSIVELY via [PublishOptions.Capabilities]
-// (docs/roadmap/capability-requirement-composition.md's Phase 4 — a
+// (docs/design/d-0006-protocol-native-capabilities.md's Phase 4 — a
 // deliberate breaking change: the former call-time qos/retained
 // parameters are REMOVED, Capabilities is now the ONLY mechanism).
 //

@@ -25,13 +25,13 @@ import (
 // runErasedBuiltinSecurityCheck) ALREADY EXIST in caller.go, built for
 // [(*caller).ServeSubscribers]'s own reflection-only dispatch — this file
 // reuses them directly rather than duplicating (confirming, via this
-// reuse, that docs/roadmap/capability-requirement-composition.md's Phase
+// reuse, that docs/design/d-0006-protocol-native-capabilities.md's Phase
 // 4e design review correctly identified this as ALREADY-established,
 // proven precedent, not a new technique). generalWrapFnType is shared by
 // BOTH subscribe- and publish-side general-purpose decorator dispatch
 // (see its own doc comment in caller.go).
 //
-// Per docs/roadmap/capability-requirement-composition.md's Phase 4e:
+// Per docs/design/d-0006-protocol-native-capabilities.md's Phase 4e:
 // middleware.ServerImplementation/ClientImplementation are ALREADY
 // non-generic (Fn any) — impl.Fn's boxed value is ALREADY a concretely-T
 // Go closure built at declare time, reachable via

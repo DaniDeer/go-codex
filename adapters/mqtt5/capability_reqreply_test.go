@@ -9,7 +9,7 @@ import (
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 )
 
-// This file closes docs/roadmap/capability-requirement-composition.md's
+// This file closes docs/design/d-0006-protocol-native-capabilities.md's
 // Phase 2 plumbing gap: a supplied ServeOptions/CallOptions.Capabilities
 // QoS/Retained value must be honored on EVERY reply/request publish
 // path, not just one of them — previously all three server-side reply

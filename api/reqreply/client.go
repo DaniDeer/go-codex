@@ -80,7 +80,7 @@ func NewClient() *Client {
 // that builds a configured [ClientTransport] value; application code
 // attaches it via THIS method directly — never via an adapter-namespaced
 // convenience function (removed, see docs/roadmap/
-// capability-requirement-composition.md's Phase 4d). No adapter's
+// d-0006-protocol-native-capabilities.md's Phase 4d). No adapter's
 // [ClientTransport] currently needs a [*Client] back-reference at bind
 // time (unlike [ServerAwareTransport]'s server-side need), so there is
 // no `ClientAwareTransport` counterpart today.

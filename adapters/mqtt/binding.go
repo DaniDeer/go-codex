@@ -40,7 +40,7 @@ type SubscribeAdapterOptions struct {
 	Observer stats.Observer
 	// Capabilities supplies sealed, compile-time-checked protocol-native
 	// declarations (currently [QoS]) for this subscription — the SOLE
-	// mechanism (docs/roadmap/capability-requirement-composition.md's
+	// mechanism (docs/design/d-0006-protocol-native-capabilities.md's
 	// Phase 5: the former raw `qos byte` constructor parameter was
 	// REMOVED entirely — it bypassed [Capability]/[Apply] completely).
 	// Mirrors adapters/mqtt5's identical, already-shipped shape exactly.
@@ -114,7 +114,7 @@ func (a *mqttSubscribeAdapter[T]) Activate(ctx context.Context, dst chan<- T, er
 	if filter == "" {
 		filter = deriveWildcardFilter(a.handle.Topic)
 	}
-	// docs/roadmap/capability-requirement-composition.md's Phase 5:
+	// docs/design/d-0006-protocol-native-capabilities.md's Phase 5:
 	// Capabilities is the SOLE mechanism — events.ApplyCapabilities is
 	// the API-LAYER-OWNED dispatch loop; this adapter contributes only
 	// Capability.Apply. Mirrors adapters/mqtt5's identical, already-
@@ -139,7 +139,7 @@ func (a *mqttSubscribeAdapter[T]) Activate(ctx context.Context, dst chan<- T, er
 type MQTTDrainPublishOptions struct {
 	// Capabilities supplies sealed, compile-time-checked protocol-native
 	// declarations (currently [QoS]/[Retained]) for every published item
-	// — the SOLE mechanism (docs/roadmap/capability-requirement-composition.md's
+	// — the SOLE mechanism (docs/design/d-0006-protocol-native-capabilities.md's
 	// Phase 5: the former raw QoS byte/Retained bool fields were REMOVED
 	// entirely). Does NOT apply to a matched events.ErrorChannel reply
 	// published for an upstream pipeline error — those always use QoS

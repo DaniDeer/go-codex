@@ -386,7 +386,7 @@ type ServerTransport interface {
 // mirrors [events.ClientAwareTransport]/[rest.ServerAwareTransport]
 // exactly, for the identical reason: a [ServerTransport] built via an
 // adapter's `New*Transport(opts)` factory (docs/roadmap/
-// capability-requirement-composition.md's Phase 4d) is constructed
+// d-0006-protocol-native-capabilities.md's Phase 4d) is constructed
 // BEFORE the [*Server] that will attach it is known. Some adapters (e.g.
 // adapters/zeromq's reqreply `NewServerTransport`/
 // `NewRouterServerTransport`) need a [*Server] reference at bind time
@@ -410,7 +410,7 @@ type ServerAwareTransport interface {
 // that builds a configured [ServerTransport] value; application code
 // attaches it via THIS method directly — never via an adapter-namespaced
 // convenience function (removed, see docs/roadmap/
-// capability-requirement-composition.md's Phase 4d).
+// d-0006-protocol-native-capabilities.md's Phase 4d).
 //
 // If t implements [ServerAwareTransport], its BindServer(s) is called
 // IMMEDIATELY after storing t — see that interface's doc comment.

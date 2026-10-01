@@ -73,7 +73,7 @@ func ResponseHeadersFromContext(ctx context.Context) (http.Header, bool) {
 // response header by the request pipeline. Create one inside a [HandlerFunc] and deposit
 // it via [WithResponseCookies].
 //
-// Type alias (docs/roadmap/capability-requirement-composition.md's
+// Type alias (docs/design/d-0006-protocol-native-capabilities.md's
 // Phase 7 — promoted to api/rest, since nethttp/chi's own copies were
 // byte-for-byte structurally identical): [rest.PendingCookie]'s
 // `Attrs CookieAttributes` field replaces this former `Opts
@@ -284,7 +284,7 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 
 		// carrier is constructed ONCE and its extracted maps reused for
 		// BOTH the validation calls below AND the merge-field building
-		// further down (docs/roadmap/capability-requirement-composition.md's
+		// further down (docs/design/d-0006-protocol-native-capabilities.md's
 		// Phase 6 "Decision A" — eliminates the former double extraction).
 		carrier := httpCarrier{r}
 		queryVars := carrier.ExtractQuery()
@@ -633,7 +633,7 @@ func sseHandlerFunc[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn 
 		// carrier is constructed ONCE and its extracted maps reused for
 		// BOTH the validation calls below AND the per-event MergeEvent
 		// closure captured further down (docs/roadmap/
-		// capability-requirement-composition.md's Phase 6 "Decision A"
+		// d-0006-protocol-native-capabilities.md's Phase 6 "Decision A"
 		// — eliminates the former double extraction).
 		carrier := httpCarrier{r}
 		queryVars := carrier.ExtractQuery()
@@ -913,7 +913,7 @@ func responseCookieValues(cookies []PendingCookie) map[string]string {
 // (possibly updated) *err in their own subsequent errFn call.
 //
 // Delegates ENTIRELY to [rest.RouteHandle.DispatchErrorResponse]
-// (docs/roadmap/capability-requirement-composition.md's Phase 7) —
+// (docs/design/d-0006-protocol-native-capabilities.md's Phase 7) —
 // this thin wrapper exists only to preserve every existing call site's
 // bool-return/*err-mutation contract unchanged; the match/encode/
 // validate/write orchestration itself now lives entirely in api/rest.
@@ -929,7 +929,7 @@ func tryRespondErrorPatternGeneric[Req, Resp any](
 // WriteErrorResponse implements [rest.ErrorResponseWriter] — the ONLY
 // genuinely protocol-specific remainder of the former
 // `writeErrorPatternResponse` (docs/roadmap/
-// capability-requirement-composition.md's Phase 7): match, encode, and
+// d-0006-protocol-native-capabilities.md's Phase 7): match, encode, and
 // validate all now happen inside [rest.RouteHandle.DispatchErrorResponse]
 // itself; this method only writes the already-validated headers,
 // cookies, status, and body onto the wire.

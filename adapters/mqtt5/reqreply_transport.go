@@ -293,7 +293,7 @@ type serverTransport struct {
 
 // ServerTransportOptions configures [NewServerTransport] — the SOLE
 // configuration surface for an mqtt5 reqreply [reqreply.ServerTransport]
-// (docs/roadmap/capability-requirement-composition.md's Phase 4d: a
+// (docs/design/d-0006-protocol-native-capabilities.md's Phase 4d: a
 // single Options struct, no positional params, even for the two
 // REQUIRED fields). Serve nests the pre-existing [ServeOptions] type
 // unchanged (Observer, UserPropertyParams, SecurityFunc, OnError,
@@ -311,7 +311,7 @@ type ServerTransportOptions struct {
 
 // NewServerTransport returns a [reqreply.ServerTransport] configured per
 // opts — the adapter's ONLY job in the attach workflow (docs/roadmap/
-// capability-requirement-composition.md's Phase 4d): construct a
+// d-0006-protocol-native-capabilities.md's Phase 4d): construct a
 // fully-configured, attachable value. Attaching it is EXCLUSIVELY
 // [reqreply.Server.Attach]'s job — there is no adapter-namespaced Attach
 // function anymore (REMOVED, breaking, per that phase's explicit
@@ -423,7 +423,7 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 		return err
 	}
 
-	// docs/roadmap/capability-requirement-composition.md's Phase 5:
+	// docs/design/d-0006-protocol-native-capabilities.md's Phase 5:
 	// resolve the route's declared [reqreply.CapabilityRequirement]s and
 	// this Serve's supplied [ServeOptions.Capabilities] ONCE, at setup —
 	// not per message — via [events.ApplyCapabilities] against a
@@ -802,7 +802,7 @@ type clientTransport struct {
 
 // ClientTransportOptions configures [NewClientTransport] — the SOLE
 // configuration surface for an mqtt5 reqreply [reqreply.ClientTransport]
-// (docs/roadmap/capability-requirement-composition.md's Phase 4d: a
+// (docs/design/d-0006-protocol-native-capabilities.md's Phase 4d: a
 // single Options struct, no positional params, even for the two
 // REQUIRED fields). Call nests the pre-existing [CallOptions] type
 // unchanged (Timeout, QoS, Capabilities, ReplyTopicPrefix/Builder,
@@ -819,7 +819,7 @@ type ClientTransportOptions struct {
 
 // NewClientTransport returns a [reqreply.ClientTransport] configured per
 // opts — the adapter's ONLY job in the attach workflow (docs/roadmap/
-// capability-requirement-composition.md's Phase 4d): construct a
+// d-0006-protocol-native-capabilities.md's Phase 4d): construct a
 // fully-configured, attachable value. Attaching it is EXCLUSIVELY
 // [reqreply.Client.Attach]'s job — there is no adapter-namespaced Attach
 // function anymore (REMOVED, breaking, per that phase's explicit
@@ -1014,7 +1014,7 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 	if qos == 0 {
 		qos = 1
 	}
-	// docs/roadmap/capability-requirement-composition.md's Phase 5: a
+	// docs/design/d-0006-protocol-native-capabilities.md's Phase 5: a
 	// supplied [QoS] capability overrides [CallOptions.QoS] (its
 	// dedicated MinLevel-checked declaration path); a supplied [Retained]
 	// capability sets Retain on the outgoing request publish — resolved

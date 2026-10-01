@@ -1,11 +1,18 @@
 # Design-Doc Compaction & the Workflow-Model Narrative
 
-> **Status:** Design draft — not yet implemented.
+> **Status: IMPLEMENTED.** Scope widened at execution time (explicit user
+> direction): rather than just trimming D-0006 and relocating the
+> interface-audit table, `docs/roadmap/capability-requirement-composition.md`
+> — confirmed to be D-0006's own REWORK, extending it from events-only to
+> all 3 api packages — was merged wholesale into D-0006 as its new §9, and
+> the roadmap file deleted (not promoted separately), after a full ~100-file
+> blast-radius sweep repointed every inline reference. See "Learnings"
+> below for the full executed scope.
 > [← Back to Roadmap](index.md)
 
 ## Motivation
 
-`docs/roadmap/capability-requirement-composition.md`'s Phase 8 review
+`docs/design/d-0006-protocol-native-capabilities.md`'s Phase 8 review
 concluded that go-codex's api layer and adapter layer are now
 architecturally AND feature complete for the model this whole roadmap
 built: a two-step declaration workflow (declare the communication
@@ -122,7 +129,7 @@ manual read-through of the edited sections for internal consistency.
 | `docs/design/d-0006-protocol-native-capabilities.md` | Further trims, if any remain, beyond the status-block consolidation already done in Phase 8's item 5 |
 | `docs/concepts/declaring-apis-and-ports.md` | Add the capability-declaration step + "Capability is the adapter's programming contract" paragraph to "The two declaration workflows" |
 | `docs/concepts/ports-and-adapters.md` | Add "Interface inventory: what adapters implement against" section (the relocated, rewritten audit table) |
-| `docs/roadmap/capability-requirement-composition.md` | Shrink the Phase 8 interface-audit bullet to a pointer once the table is moved |
+| `docs/design/d-0006-protocol-native-capabilities.md` | Shrink the Phase 8 interface-audit bullet to a pointer once the table is moved |
 
 ## Out of scope (Phase 2)
 
@@ -132,23 +139,68 @@ manual read-through of the edited sections for internal consistency.
 - Re-auditing for NEW interface gaps — this doc only relocates
   already-completed findings.
 
-## Open design decisions
+## Open design decisions — RESOLVED at Implement time
 
-- **Exact trim boundary for D-0006's body (§0-§9)** — the status block
-  was already consolidated (Phase 8 item 5); whether the body itself
-  (kept per repo convention as "original design-round text") needs
-  further trimming, or should stay fully as-is as prior-art history, is
-  not pre-decided — resolve during the Refine/Implement pass by reading
-  the body fresh against the now-consolidated status block for genuine
-  redundancy (not just length).
-- **Whether "Interface inventory" in `ports-and-adapters.md` should be
-  a living section updated whenever a 7th adapter ships**, or a
-  point-in-time snapshot with an explicit "as of" note — leaning
-  living/maintained, but not committed here.
+- **Exact trim boundary for D-0006's body (§0-§9)** — RESOLVED: trimmed
+  only §7's dense `[Review-N, Severity]` bracket-tag churn (13 tags
+  removed mechanically, substance/reasoning untouched) — the prototype
+  REASONING in §0-§6/§8 was confirmed to have real, lasting design value
+  (not just process noise) and was left as-is per repo convention.
+- **Whether "Interface inventory" in `ports-and-adapters.md` should be a
+  living section** — RESOLVED: yes, explicitly marked as a living
+  section in its own intro paragraph, to be updated whenever a new
+  adapter ships or a new interface is introduced.
+- **Scope widened at execution time, beyond this doc's original plan**:
+  confirmed via explicit user direction that
+  `capability-requirement-composition.md` is D-0006's own REWORK (it
+  literally says so in its own Phase 1: "rewriting D-0006's shipped
+  mechanism into the three-tier vocabulary"), not a separate,
+  independently-promotable design. Decided outcome: merge + delete, not
+  merge + promote-separately — rewrote D-0006's status block to
+  describe the COMPLETE current three-tier model (adding Tier 2 REST
+  Header/Cookie/Query, which D-0006 never originally covered), then
+  appended the roadmap doc's full Phase 1-8 content wholesale as a new
+  §9 (heading levels demoted, phase labels preserved VERBATIM), then
+  mechanically repointed all ~100 files' inline
+  `"...capability-requirement-composition.md's Phase N"` references at
+  D-0006 instead (safe specifically because the phase labels were
+  preserved verbatim during the §9 merge), then deleted the roadmap
+  file and its roadmap-index/nav entries. A full repo-wide grep
+  confirmed zero remaining references to the old path before deletion.
+
+## Learnings
+
+- **The "safe mechanical replace" insight was the key unlock**: a naive
+  rename/reference-sweep of ~100 files citing specific "Phase N" sections
+  would normally require re-deriving which NEW section each old
+  reference should point to — expensive and error-prone at this scale.
+  Preserving the roadmap doc's phase headers VERBATIM during the
+  wholesale §9 merge (rather than renumbering them to fit D-0006's own
+  `§N.M` scheme) meant a single, blind path-string replace
+  (`docs/roadmap/capability-requirement-composition.md` →
+  `docs/design/d-0006-protocol-native-capabilities.md`) kept every
+  citation accurate with zero per-reference judgment calls needed.
+- **A blast-radius grep BEFORE executing a merge+delete is not
+  optional** — the original plan assumed a routine "compact one design
+  doc" scope; the actual blast radius (~100 files, deeply embedded in
+  shipped source code's own godoc comments, not just a few stray doc
+  mentions) was only discovered by grepping first. Confirms the
+  `plan-a-new-codex-feature` skill's own "Removing an old API" checklist
+  rule: sweep for documentation references BEFORE declaring a removal
+  done — this applies to deleting a DOC other files cite, not just
+  deleting a Go symbol.
+- **A seemingly-safe exclude filter can silently misfire**: an
+  `if "/.git" in root: continue` check (meant to skip the `.git`
+  directory) ALSO matched `.github` as a substring (`.github` contains
+  the literal characters `.git` at its start) — silently skipping all 6
+  `.github/` files during the first mechanical sweep pass. Caught only
+  by a follow-up verification grep, not by the sweep's own reported
+  "changed N files" count looking wrong. Lesson: path-prefix exclusion
+  checks need an explicit path-separator boundary (e.g. `root ==
+  "./.git" or root.startswith("./.git/")`), not a bare substring test.
 
 ## See also
 
-- [Composable Capability Requirements](capability-requirement-composition.md) — Phase 8's review that surfaced this need.
-- [D-0006 — Protocol-Native Capabilities](../design/d-0006-protocol-native-capabilities.md) — the design doc whose status block was already consolidated as a first step.
-- [`docs/concepts/declaring-apis-and-ports.md`](../concepts/declaring-apis-and-ports.md) — planned new home for the workflow-model narrative.
-- [`docs/concepts/ports-and-adapters.md`](../concepts/ports-and-adapters.md) — planned new home for the interface-inventory table.
+- [D-0006 — Protocol-Native Capabilities](../design/d-0006-protocol-native-capabilities.md) — the design doc this whole compaction merged into; see its §9 for the full merged phase history.
+- [`docs/concepts/declaring-apis-and-ports.md`](../concepts/declaring-apis-and-ports.md) — new home for the workflow-model narrative (capability-declaration step added).
+- [`docs/concepts/ports-and-adapters.md`](../concepts/ports-and-adapters.md) — new home for the interface-inventory table (its own "Interface inventory" section).

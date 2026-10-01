@@ -978,7 +978,7 @@ func TestCallWithTransport_Observer_PerCallOverride(t *testing.T) {
 }
 
 // callWithHandle mirrors the exact signature of the now-DELETED
-// CallWithHandle (docs/roadmap/capability-requirement-composition.md's
+// CallWithHandle (docs/design/d-0006-protocol-native-capabilities.md's
 // Phase 5a) — a thin, test-only shim reducing this package's existing
 // call sites (testing behavior UNCHANGED by the deletion — path/query/
 // header/cookie derivation, security, format overrides, Observer,

@@ -107,7 +107,7 @@ type ServeOptions struct {
 	Observer stats.Observer
 
 	// Capabilities supplies this server's concrete protocol-native
-	// capability values (docs/roadmap/capability-requirement-composition.md's
+	// capability values (docs/design/d-0006-protocol-native-capabilities.md's
 	// Phase 2) — e.g. [HWM]/[Conflate] — checked against the route's
 	// declared [reqreply.CapabilityRequirement]s via
 	// [reqreply.VerifyCapabilityCoverage], then applied to the socket via
@@ -129,7 +129,7 @@ type CallOptions struct {
 	Observer stats.Observer
 
 	// Capabilities supplies this call's concrete protocol-native
-	// capability values (docs/roadmap/capability-requirement-composition.md's
+	// capability values (docs/design/d-0006-protocol-native-capabilities.md's
 	// Phase 2) — e.g. [HWM]/[Conflate] — applied to the socket via the
 	// existing [applyCapabilities] helper. No coverage check runs on the
 	// client/Call side, mirroring events' own "publish side never
@@ -901,7 +901,7 @@ func publishHandle[T any](
 }
 
 // Serve/Call/CallHandle/ServeRouter/CallDealer were REMOVED (docs/roadmap/
-// capability-requirement-composition.md's Phase 5a, a deliberate breaking
+// d-0006-protocol-native-capabilities.md's Phase 5a, a deliberate breaking
 // change): they were thin, single-route/single-call wrappers that built a
 // [serverTransport]/[clientTransport]/[routerServerTransport]/
 // [dealerClientTransport] directly from sock/opts and delegated

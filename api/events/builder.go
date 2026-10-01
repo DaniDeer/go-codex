@@ -764,7 +764,7 @@ func (h *ChannelHandle[T]) EncodePropertyVars(msg T) (map[string]string, error) 
 // DispatchSubscribeMiddleware invokes [DispatchSubscribeMiddlewareHandlers]
 // with h's OWN [ChannelHandle.MiddlewareHandlers] — a thin, monomorphized
 // wrapper needed SOLELY so a reflection-based Client.Subscribe shim
-// (docs/roadmap/capability-requirement-composition.md's Phase 4e) can
+// (docs/design/d-0006-protocol-native-capabilities.md's Phase 4e) can
 // invoke the dispatch mechanism without recovering the free generic
 // function's type parameter itself; mirrors [ChannelHandle.MergePropertyVars]/
 // [ChannelHandle.DecodeMergedWithFormats]'s SAME "generic helper gets a
@@ -1922,7 +1922,7 @@ type Publisher[T any] struct {
 	// opts holds the type-erased adapter options attached via
 	// [Publisher.WithOptions] — copied onto [ChannelHandle.HandlerOpts].
 	// Mirrors [Subscriber.opts] exactly (docs/roadmap/
-	// capability-requirement-composition.md's Phase 4c — closes the gap
+	// d-0006-protocol-native-capabilities.md's Phase 4c — closes the gap
 	// where only the subscribe side could declare per-channel adapter
 	// options such as Capabilities).
 	opts any
@@ -2103,7 +2103,7 @@ func (p Publisher[T]) PublishMW(mw *middleware.Middleware, fn any) Publisher[T] 
 // [ChannelHandle.HandlerOpts] field by [Publisher.Handle]; the adapter
 // recovers the concrete type via a type assertion/reflection at dispatch
 // time. Closes the Phase 4c gap (docs/roadmap/
-// capability-requirement-composition.md): before this, only the
+// d-0006-protocol-native-capabilities.md): before this, only the
 // subscribe side could declare per-channel adapter options, so
 // [Client.Publish]'s reflection shim had NO way to resolve a declared
 // Capabilities value — forcing a caller who needed one to bypass
@@ -2621,7 +2621,7 @@ type Transport interface {
 	// Publish sends msg (dynamic type T) on the channel pub (dynamic type
 	// [Publisher][T]) describes. opts is an OPTIONAL, PER-CALL override —
 	// see [ClientPublishOptions]'s doc comment
-	// (docs/roadmap/capability-requirement-composition.md's Phase 4e) —
+	// (docs/design/d-0006-protocol-native-capabilities.md's Phase 4e) —
 	// at most one value is ever passed by [Client.Publish].
 	Publish(ctx context.Context, pub any, msg any, opts ...ClientPublishOptions) error
 	// Subscribe starts consuming the channel sub (dynamic type
@@ -2643,7 +2643,7 @@ type Transport interface {
 // [Client.Publish] — mirrors [rest.ClientConsumeOptions]'s single
 // `Formats any` shape (not [rest.ClientCallOptions]'s Request/Response
 // split, since Publish is single-direction) — introduced by
-// docs/roadmap/capability-requirement-composition.md's Phase 4e.
+// docs/design/d-0006-protocol-native-capabilities.md's Phase 4e.
 // Deliberately DISTINCT from [PublishOptions] (a per-channel DECLARED
 // value, attached via [Publisher.WithOptions] at declare time, covering
 // Capabilities — see Phase 4c): ClientPublishOptions is a CALL-TIME
@@ -2676,7 +2676,7 @@ type ClientSubscribeOptions struct {
 // the [*Client] it was attached to, via [Client.Attach], IMMEDIATELY
 // after being stored — never before, never again.
 //
-// This exists for docs/roadmap/capability-requirement-composition.md's
+// This exists for docs/design/d-0006-protocol-native-capabilities.md's
 // Phase 4d (Attach factory redesign): a [Transport] built via an
 // adapter's `New*Transport(opts)` factory is constructed BEFORE the
 // [*Client] that will attach it is known (the factory takes only
@@ -2719,7 +2719,7 @@ type ClientAwareTransport interface {
 // that builds a configured [Transport] value; application code attaches
 // it via THIS method directly — `client.Attach(zeromq.NewTransport(...))`
 // — never via an adapter-namespaced convenience function (removed, see
-// docs/roadmap/capability-requirement-composition.md's Phase 4d).
+// docs/design/d-0006-protocol-native-capabilities.md's Phase 4d).
 //
 // If t implements [ClientAwareTransport], its BindClient(c) is called
 // IMMEDIATELY after storing t — see that interface's doc comment.

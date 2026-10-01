@@ -52,7 +52,7 @@ func TestRetained_ImplementsCapability(t *testing.T) {
 
 // TestServeSubscribers_CapabilitiesSetsQoS confirms
 // SubscribeOptions.Capabilities (the SOLE mechanism as of
-// docs/roadmap/capability-requirement-composition.md's Phase 4) sets
+// docs/design/d-0006-protocol-native-capabilities.md's Phase 4) sets
 // the wire-level QoS and reports the applied capability via
 // stats.CapabilityObserver.
 func TestServeSubscribers_CapabilitiesSetsQoS(t *testing.T) {
@@ -101,7 +101,7 @@ func TestServeSubscribers_CapabilitiesSetsQoS(t *testing.T) {
 
 // TestPublish_CapabilitiesSetsRetained confirms
 // PublishOptions.Capabilities (the SOLE mechanism as of
-// docs/roadmap/capability-requirement-composition.md's Phase 4) sets
+// docs/design/d-0006-protocol-native-capabilities.md's Phase 4) sets
 // the wire-level Retain flag and reports it via CapabilityObserver.
 func TestPublish_CapabilitiesSetsRetained(t *testing.T) {
 	client := &mockClient{}

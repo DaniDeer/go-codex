@@ -9,7 +9,7 @@ import (
 // httpCarrier is nethttp's own per-REQUEST value satisfying
 // [rest.HeaderCapableTransport]/[rest.CookieCapableTransport]/
 // [rest.QueryCapableTransport] (docs/roadmap/
-// capability-requirement-composition.md's Phase 6 — promoted from the
+// d-0006-protocol-native-capabilities.md's Phase 6 — promoted from the
 // former zero-cost, data-less `transportCapabilities{}` marker to a
 // REAL, callable extraction interface). Every request-dispatch call
 // site constructs its OWN `httpCarrier{r}` from the real, live

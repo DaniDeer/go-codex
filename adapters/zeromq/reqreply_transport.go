@@ -424,7 +424,7 @@ type serverTransport struct {
 
 // ServerTransportOptions configures [NewServerTransport] — the SOLE
 // configuration surface for a zeromq REQ/REP [reqreply.ServerTransport]
-// (docs/roadmap/capability-requirement-composition.md's Phase 4d: a
+// (docs/design/d-0006-protocol-native-capabilities.md's Phase 4d: a
 // single Options struct, no positional params). Serve nests the
 // pre-existing [ServeOptions] type unchanged.
 type ServerTransportOptions struct {
@@ -440,7 +440,7 @@ type ServerTransportOptions struct {
 
 // NewServerTransport returns a [reqreply.ServerTransport] configured per
 // opts — the adapter's ONLY job in the attach workflow (docs/roadmap/
-// capability-requirement-composition.md's Phase 4d): construct a
+// d-0006-protocol-native-capabilities.md's Phase 4d): construct a
 // fully-configured, attachable value. Attaching it is EXCLUSIVELY
 // [reqreply.Server.Attach]'s job — there is no adapter-namespaced Attach
 // function anymore (REMOVED, breaking, per that phase's explicit
@@ -550,7 +550,7 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 		return err
 	}
 
-	// docs/roadmap/capability-requirement-composition.md's Phase 2:
+	// docs/design/d-0006-protocol-native-capabilities.md's Phase 2:
 	// apply this Serve's supplied [ServeOptions.Capabilities] to the
 	// socket ONCE, at setup (HWM/Conflate are socket-level settings, not
 	// per-message) via the EXISTING [applyCapabilities] helper — zero new
@@ -782,7 +782,7 @@ type clientTransport struct {
 
 // ClientTransportOptions configures [NewClientTransport] — the SOLE
 // configuration surface for a zeromq REQ/REP [reqreply.ClientTransport]
-// (docs/roadmap/capability-requirement-composition.md's Phase 4d: a
+// (docs/design/d-0006-protocol-native-capabilities.md's Phase 4d: a
 // single Options struct, no positional params). Call nests the
 // pre-existing [CallOptions] type unchanged.
 type ClientTransportOptions struct {
@@ -796,7 +796,7 @@ type ClientTransportOptions struct {
 
 // NewClientTransport returns a [reqreply.ClientTransport] configured per
 // opts — the adapter's ONLY job in the attach workflow (docs/roadmap/
-// capability-requirement-composition.md's Phase 4d): construct a
+// d-0006-protocol-native-capabilities.md's Phase 4d): construct a
 // fully-configured, attachable value. Attaching it is EXCLUSIVELY
 // [reqreply.Client.Attach]'s job — there is no adapter-namespaced Attach
 // function anymore (REMOVED, breaking, per that phase's explicit
@@ -850,7 +850,7 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 		return nil, MissingSocketError{Topic: path}
 	}
 
-	// docs/roadmap/capability-requirement-composition.md's Phase 2: apply
+	// docs/design/d-0006-protocol-native-capabilities.md's Phase 2: apply
 	// this call's supplied [CallOptions.Capabilities] to the socket via
 	// the EXISTING [applyCapabilities] helper (re-application on every
 	// call is idempotent — a minor, accepted inefficiency, not a
@@ -1194,7 +1194,7 @@ type routerServerTransport struct {
 // RouterServerTransportOptions configures [NewRouterServerTransport] —
 // the SOLE configuration surface for a zeromq ROUTER
 // [reqreply.ServerTransport] (docs/roadmap/
-// capability-requirement-composition.md's Phase 4d: a single Options
+// d-0006-protocol-native-capabilities.md's Phase 4d: a single Options
 // struct, no positional params). Serve nests the pre-existing
 // [ServeOptions] type unchanged.
 type RouterServerTransportOptions struct {
@@ -1210,7 +1210,7 @@ type RouterServerTransportOptions struct {
 // configured per opts — the ROUTER/DEALER counterpart of
 // [NewServerTransport]; see that function's doc comment for the full
 // attach-workflow rationale (docs/roadmap/
-// capability-requirement-composition.md's Phase 4d). The returned value
+// d-0006-protocol-native-capabilities.md's Phase 4d). The returned value
 // also implements [reqreply.ServerAwareTransport] — see
 // [routerServerTransport.BindServer].
 //
@@ -1296,7 +1296,7 @@ func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny a
 		return err
 	}
 
-	// docs/roadmap/capability-requirement-composition.md's Phase 2 — same
+	// docs/design/d-0006-protocol-native-capabilities.md's Phase 2 — same
 	// mechanism as [serverTransport.Serve], duplicated for the ROUTER
 	// variant (see the comment above citing the established 4-transport
 	// duplication precedent).
@@ -1512,7 +1512,7 @@ type dealerClientTransport struct {
 // DealerClientTransportOptions configures [NewDealerClientTransport] —
 // the SOLE configuration surface for a zeromq DEALER
 // [reqreply.ClientTransport] (docs/roadmap/
-// capability-requirement-composition.md's Phase 4d: a single Options
+// d-0006-protocol-native-capabilities.md's Phase 4d: a single Options
 // struct, no positional params). Call nests the pre-existing
 // [CallOptions] type unchanged.
 type DealerClientTransportOptions struct {
@@ -1528,7 +1528,7 @@ type DealerClientTransportOptions struct {
 // configured per opts — the ROUTER/DEALER counterpart of
 // [NewClientTransport]; see that function's doc comment for the full
 // attach-workflow rationale (docs/roadmap/
-// capability-requirement-composition.md's Phase 4d).
+// d-0006-protocol-native-capabilities.md's Phase 4d).
 //
 //	client := reqreply.NewClient()
 //	transport := zeromq.NewDealerClientTransport(zeromq.DealerClientTransportOptions{Sockets: map[string]zeromq.FramedSocket{"compute/add": dealerSock}})
@@ -1571,7 +1571,7 @@ func (t *dealerClientTransport) call(ctx context.Context, routeAny any, reqAny a
 		return nil, MissingSocketError{Topic: path}
 	}
 
-	// docs/roadmap/capability-requirement-composition.md's Phase 2: same
+	// docs/design/d-0006-protocol-native-capabilities.md's Phase 2: same
 	// mechanism as [clientTransport.call], duplicated for the DEALER
 	// variant (see the established 4-transport duplication precedent
 	// cited on [routerServerTransport.Serve]).
