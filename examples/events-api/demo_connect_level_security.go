@@ -40,7 +40,7 @@ func demoConnectLevelSecurity(ctx context.Context) {
 	}
 	fmt.Println("  ✓ credential accepted — secured is a drop-in replacement for broker")
 
-	// The api-layer-owned Client.Attach workflow (docs/roadmap/
+	// The api-layer-owned Client.Attach workflow (docs/design/
 	// d-0006-protocol-native-capabilities.md's Phase 4d): mqtt5.NewTransport
 	// builds the configured transport, evClient.Attach binds it — secured
 	// is a drop-in MQTTClient replacement, so nothing else changes.

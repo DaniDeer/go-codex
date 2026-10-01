@@ -34,7 +34,7 @@ type transport struct {
 }
 
 // TransportOptions configures [NewTransport] — the SOLE configuration
-// surface for a zeromq [events.Transport] (docs/roadmap/
+// surface for a zeromq [events.Transport] (docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 4d: a single Options
 // struct, no positional params, even for this one REQUIRED field — a
 // deliberate, uniform, declarative shape across every adapter's
@@ -45,7 +45,7 @@ type TransportOptions struct {
 }
 
 // NewTransport returns an [events.Transport] configured per opts — the
-// adapter's ONLY job in the attach workflow (docs/roadmap/
+// adapter's ONLY job in the attach workflow (docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 4d): construct a
 // fully-configured, attachable value. Attaching it is EXCLUSIVELY
 // [events.Client.Attach]'s job — there is no adapter-namespaced Attach
@@ -64,7 +64,7 @@ type TransportOptions struct {
 //	err := client.Subscribe(ctx, sub, func(ctx context.Context, r SensorReading) error { ... })
 //	err = client.Publish(ctx, pub, reading)
 //
-// Publish/Subscribe are FULL-FEATURED (docs/roadmap/
+// Publish/Subscribe are FULL-FEATURED (docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 4e — the former "v1
 // scope" narrowing is CLOSED for this package): declared Capabilities
 // (Phase 4c), per-call [format.Format] overrides

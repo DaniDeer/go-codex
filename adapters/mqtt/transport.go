@@ -22,10 +22,11 @@ import (
 const eventsPkgPath = "github.com/DaniDeer/go-codex/api/events"
 
 // defaultQoS is the fixed QoS/non-retained value used for error-channel
-// replies and dead-letter publishes (docs/roadmap/capability-requirement-
-// composition.md's Phase 4c) — matches MQTT's own protocol-level default
-// (at-most-once) and deliberately never consults a declared Capabilities
-// value, mirroring every other error-channel/dead-letter dispatch site
+// replies and dead-letter publishes (docs/design/
+// d-0006-protocol-native-capabilities.md's Phase 4c) — matches MQTT's
+// own protocol-level default (at-most-once) and deliberately never
+// consults a declared Capabilities value, mirroring every other
+// error-channel/dead-letter dispatch site
 // across this codebase (these always use QoS 0/non-retained, regardless
 // of the route's own declared Capabilities). Ordinary Publish/Subscribe
 // dispatch resolves Capabilities via [events.ApplyCapabilities] against a
@@ -70,7 +71,7 @@ type transport struct {
 }
 
 // TransportOptions configures [NewTransport] — the SOLE configuration
-// surface for an mqtt (v3) [events.Transport] (docs/roadmap/
+// surface for an mqtt (v3) [events.Transport] (docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 4d: a single Options
 // struct, no positional params, even for this one REQUIRED field — a
 // deliberate, uniform, declarative shape across every adapter's
@@ -81,7 +82,7 @@ type TransportOptions struct {
 }
 
 // NewTransport returns an [events.Transport] configured per opts — the
-// adapter's ONLY job in the attach workflow (docs/roadmap/
+// adapter's ONLY job in the attach workflow (docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 4d): construct a
 // fully-configured, attachable value. Attaching it is EXCLUSIVELY
 // [events.Client.Attach]'s job — there is no adapter-namespaced Attach
@@ -93,7 +94,7 @@ type TransportOptions struct {
 // via [transport.BindClient], immediately after storing it; NewTransport
 // itself never needs a [*events.Client] parameter.
 //
-// Publish/Subscribe are FULL-FEATURED (docs/roadmap/
+// Publish/Subscribe are FULL-FEATURED (docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 4e — the former "v1
 // scope" narrowing is CLOSED for this package): declared Capabilities
 // (Phase 5, resolved via [events.ApplyCapabilities] against a

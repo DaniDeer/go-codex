@@ -139,7 +139,7 @@ type ChannelItem struct {
 }
 
 // CapabilitySpec is the render-layer mirror of api/events.CapabilityRequirement
-// (renamed from CapabilitySpec by Phase 1 of docs/roadmap/
+// (renamed from CapabilitySpec by Phase 1 of docs/design/
 // d-0006-protocol-native-capabilities.md) — kept as its own type here (not
 // imported from api/events, to avoid an import cycle: api/events already
 // imports this package) with identical field shape. This render-layer type

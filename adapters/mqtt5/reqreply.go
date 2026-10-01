@@ -207,9 +207,10 @@ func errorCodeFromUserProperties(msg *pahomqtt5.Publish) string {
 // apply — there is no business error to match yet).
 //
 // qos/retained are the EFFECTIVE values resolved once at Serve setup from
-// [ServeOptions.Capabilities] (docs/roadmap/capability-requirement-
-// composition.md's Phase 2) — applied here so this error-reply path
-// honors a supplied capability exactly like the success/dead-letter reply
+// [ServeOptions.Capabilities] (docs/design/
+// d-0006-protocol-native-capabilities.md's Phase 2) — applied here so
+// this error-reply path honors a supplied capability exactly like the
+// success/dead-letter reply
 // paths do, closing a gap where this path previously hardcoded QoS 1 and
 // never set Retained at all.
 func publishErrorReply(ctx context.Context, client MQTTClient, responseTopic string, correlationData []byte, err error, qos byte, retained bool) {

@@ -9,8 +9,11 @@
 // Four ZMQ patterns are supported:
 //
 //   - PUB/SUB (and PUSH/PULL) — via [api/events] channel declarations + [events.Client.Attach]
-//   - REQ/REP — via [api/reqreply] route declarations + [Serve]/[Call]
-//   - ROUTER/DEALER (concurrent) — [ServeRouter]/[CallDealer]; same options and error types
+//   - REQ/REP — via [api/reqreply] route declarations + [NewServerTransport]/
+//     [NewClientTransport], driven via [reqreply.ServeWithTransport]/[reqreply.CallWithTransport]
+//   - ROUTER/DEALER (concurrent) — [NewRouterServerTransport]/
+//     [NewDealerClientTransport]; same options and error types, driven the
+//     same way via [reqreply.ServeWithTransport]/[reqreply.CallWithTransport]
 //
 // Channel and route declarations are identical to the MQTT and HTTP adapters.
 // Only the adapter import changes.

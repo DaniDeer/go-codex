@@ -332,9 +332,12 @@ omitted by oversight.
    `MessageFromContext`/`RequestFromContext`/
    `ResponseCookiesFromContext`/`ResponseHeadersFromContext` (ctx
    accessors), `FromUserPropertyParam`/`FromResponseUserPropertyParam`
-   (codec-declaration sugar), `NewCachingCredentialFunc`
-   (credential-caching utility), `NewHub`/`NewDialer`/`NewUpgrader`
-   (websocket connection-management constructors) — none of these are
+   (codec-declaration sugar), `TopicVarsFromMessage` (`mqtt`/`mqtt5`/
+   `zeromq` — the inverse of `events.ChannelHandle.BuildTopic`, for a
+   caller extracting topic vars outside the standard subscribe
+   dispatch path), `NewCachingCredentialFunc` (credential-caching
+   utility), `NewHub`/`NewDialer`/`NewUpgrader` (websocket
+   connection-management constructors) — none of these are
    escape-hatch-style dispatch functions competing with an interface;
    each is connection setup, ctx plumbing, or declaration sugar,
    genuinely outside any interface's scope.

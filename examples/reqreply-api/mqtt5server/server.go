@@ -147,7 +147,7 @@ func Build() (*Built, error) {
 		Register(server); err != nil {
 		return nil, err
 	}
-	// CapabilityRoute demonstrates Phase 2 of docs/roadmap/
+	// CapabilityRoute demonstrates Phase 2 of docs/design/
 	// d-0006-protocol-native-capabilities.md — see demo_capability_mechanism.go.
 	capabilityHandle, err := routes.CapabilityRoute.
 		WithHandler(handlers.Add).

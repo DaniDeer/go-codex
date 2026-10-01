@@ -154,10 +154,10 @@ type CallOptions struct {
 
 	// RequestFormats, when non-nil, OVERRIDES the route's declared request
 	// encode format for THIS call only. Type-erased ([]format.Format[Req])
-	// since CallOptions itself is not generic; [Call]/[CallDealer]
-	// type-assert it once Req is concrete, returning [CallError] on a
-	// type mismatch — mirrors [nethttp.CallOptions.RequestFormats]
-	// exactly.
+	// since CallOptions itself is not generic; the client transport's
+	// Call dispatch type-asserts it once Req is concrete, returning
+	// [CallError] on a type mismatch — mirrors
+	// [nethttp.CallOptions.RequestFormats] exactly.
 	//
 	// Priority: RequestFormats (this field) > handle.RequestFormats
 	// (route-declared) > handle.EncodeRequest (JSON default).
@@ -293,7 +293,7 @@ func wrapSubscribeGeneral[T any](fn func(context.Context, T) error, impls []midd
 //	}()
 //
 // tryPublishErrorChannel is the RECOMMENDED single call site for every
-// Category-A failure point on the subscribe side (docs/roadmap/
+// Category-A failure point on the subscribe side (docs/design/
 // d-0005-error-handling.md's Topic 1/5) — mirrors mqtt5's
 // identical helper exactly, using this package's own frame-based
 // SendFrames API.
@@ -900,7 +900,7 @@ func publishHandle[T any](
 	return publish(ctx, sock, handle, msg, vars, false, opts, formats...)
 }
 
-// Serve/Call/CallHandle/ServeRouter/CallDealer were REMOVED (docs/roadmap/
+// Serve/Call/CallHandle/ServeRouter/CallDealer were REMOVED (docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 5a, a deliberate breaking
 // change): they were thin, single-route/single-call wrappers that built a
 // [serverTransport]/[clientTransport]/[routerServerTransport]/

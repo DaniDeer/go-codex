@@ -47,7 +47,7 @@ type transport struct {
 }
 
 // TransportOptions configures [NewTransport] — the SOLE configuration
-// surface for an mqtt5 [events.Transport] (docs/roadmap/
+// surface for an mqtt5 [events.Transport] (docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 4d: a single Options
 // struct, no positional params, even for these two REQUIRED fields — a
 // deliberate, uniform, declarative shape across every adapter's
@@ -61,7 +61,7 @@ type TransportOptions struct {
 }
 
 // NewTransport returns an [events.Transport] configured per opts — the
-// adapter's ONLY job in the attach workflow (docs/roadmap/
+// adapter's ONLY job in the attach workflow (docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 4d): construct a
 // fully-configured, attachable value. Attaching it is EXCLUSIVELY
 // [events.Client.Attach]'s job — there is no adapter-namespaced Attach
@@ -73,7 +73,7 @@ type TransportOptions struct {
 // via [transport.BindClient], immediately after storing it; NewTransport
 // itself never needs a [*events.Client] parameter.
 //
-// Call/Consume are FULL-FEATURED (docs/roadmap/
+// Call/Consume are FULL-FEATURED (docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 4e — the former "v1
 // scope" narrowing is CLOSED for this package): declared Capabilities
 // (Phase 4c), per-call [format.Format] overrides
@@ -451,7 +451,7 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 	// [Subscriber.SubscribeMW]) is shape-validated EAGERLY here, before
 	// the broker subscription is made — mirrors
 	// [subscribeWithHandle]'s own "validated EAGERLY... a malformed Fn
-	// fails loudly and immediately" timing (docs/roadmap/
+	// fails loudly and immediately" timing (docs/design/
 	// d-0006-protocol-native-capabilities.md's Phase 4e design decision:
 	// per-call, not Attach-time, validation).
 	implementations, _ := elem.FieldByName("Implementations").Interface().([]middleware.ServerImplementation)

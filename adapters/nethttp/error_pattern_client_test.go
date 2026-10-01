@@ -9,7 +9,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 )
 
-// This file tests Topic 6's client-side ergonomics (see docs/roadmap/
+// This file tests Topic 6's client-side ergonomics (see docs/design/
 // d-0005-error-handling.md): ErrorPatternAs, HandleErrorPattern/
 // Case, and ErrorPatternOpt.Match — all 3 collapse the errors.As +
 // type-switch dance into a single conditional.

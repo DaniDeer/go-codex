@@ -63,7 +63,7 @@ var ComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 	reqreply.RouteMeta{OperationID: "computeAdd", Summary: "Add two integers.", Security: []route.SecurityRequirement{}},
 )
 
-// CapabilityRoute demonstrates Phase 2 of docs/roadmap/
+// CapabilityRoute demonstrates Phase 2 of docs/design/
 // d-0006-protocol-native-capabilities.md: reqreply.RequireQoS declares,
 // independent of any concrete adapter, that this route needs AT LEAST
 // the given QoS level from whichever adapter attaches — renders as the

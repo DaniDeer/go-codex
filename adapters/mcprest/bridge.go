@@ -11,10 +11,11 @@ import (
 
 // MappedToolHandler returns an [mcpgo.HandlerFunc][ToolIn, ToolOut] that
 // proxies each MCP tool call to an outbound REST request via
-// [rest.CallWithTransport] (docs/roadmap/capability-requirement-
-// composition.md's Phase 5a — the former [nethttp.CallWithHandle] this
-// bridged through was removed; a [nethttp.NewClientTransport] built once
-// here replaces it losslessly), mapping between the tool's own In/Out
+// [rest.CallWithTransport] (docs/design/
+// d-0006-protocol-native-capabilities.md's Phase 5a — the former
+// [nethttp.CallWithHandle] this bridged through was removed; a
+// [nethttp.NewClientTransport] built once here replaces it losslessly),
+// mapping between the tool's own In/Out
 // shape and the REST route's Req/Resp wire shape via the supplied
 // toReq/fromResp functions. Both mapper functions are fallible — return a
 // non-nil error to abort the call before/after the underlying HTTP

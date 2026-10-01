@@ -200,7 +200,7 @@ func MessageFromContext(ctx context.Context) (pahomqtt.Message, bool) {
 // Decision 8.
 
 // tryPublishErrorChannel is the RECOMMENDED single call site for every
-// Category-A failure point on the subscribe side (docs/roadmap/
+// Category-A failure point on the subscribe side (docs/design/
 // d-0005-error-handling.md's Topic 1/5) — mirrors mqtt5's
 // identical helper exactly, using this package's own token-based
 // Publish API.

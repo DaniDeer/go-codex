@@ -2,9 +2,9 @@
 // calls (via [github.com/DaniDeer/go-codex/adapters/nethttp]) to MCP tool
 // handlers (via [github.com/DaniDeer/go-codex/adapters/mcpgo]) — any
 // already-declared [rest.Route] can become an MCP tool with a single
-// function, because [rest.CallWithTransport]'s shape already almost matches
-// [mcpgo.HandlerFunc]'s shape (docs/roadmap/capability-requirement-
-// composition.md's Phase 5a).
+// function, because [rest.CallWithTransport]'s shape already almost
+// matches [mcpgo.HandlerFunc]'s shape (docs/design/
+// d-0006-protocol-native-capabilities.md's Phase 5a).
 //
 // This package deliberately imports BOTH adapters/nethttp and
 // adapters/mcpgo — neither of those two adapters imports the other or

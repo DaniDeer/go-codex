@@ -19,7 +19,7 @@ import (
 	"github.com/DaniDeer/go-codex/stats"
 )
 
-// CredentialFunc names the credential-providing shape [call]/[CallWithHandle]
+// CredentialFunc names the credential-providing shape [call]
 // recognize on an attached [middleware.ClientImplementation.Fn] — a type ALIAS
 // (not a new defined type). Lets callers (and [NewCachingCredentialFunc])
 // name the shape instead of repeating the inline function type everywhere;
@@ -81,7 +81,7 @@ type CallOptions struct {
 	// RequestFormats, when non-nil, OVERRIDES the route's declared
 	// request-body encode format for THIS call only. Type-erased
 	// ([]format.Format[Req]) since CallOptions itself is not generic;
-	// [call]/[CallWithHandle] type-assert it once Req is concrete,
+	// [call] type-assert it once Req is concrete,
 	// returning [CallFormatOptError] on a type mismatch.
 	//
 	// Priority: RequestFormats (this field) > handle.RequestFormats
@@ -301,7 +301,7 @@ func (e ResponseBodyError) LogValue() slog.Value {
 	)
 }
 
-// CallFormatOptError is returned by [call]/[CallWithHandle] when
+// CallFormatOptError is returned by [call] when
 // [CallOptions.RequestFormats] or [CallOptions.ResponseFormats] was set
 // with formats for a type that does not match the route's actual
 // request/response type parameter — the per-call analogue of
@@ -361,7 +361,7 @@ func (e ConflictingCredentialHeaderError) LogValue() slog.Value {
 // shape meant for a different transport, passed here by mistake) fails
 // loudly and immediately instead.
 //
-// Used ONLY by SSE's [consumeSSE] today. [call]/[CallWithHandle] use the
+// Used ONLY by SSE's [consumeSSE] today. [call] use the
 // generic [validateCallImplementationShapes] instead, which additionally
 // recognizes a general-purpose wrapping shape — SSE's per-event dispatch
 // shape (func(context.Context, Event) error, invoked repeatedly for a
@@ -388,7 +388,7 @@ func validateClientImplementationShapes(impls []middleware.ClientImplementation)
 }
 
 // validateCallImplementationShapes checks every attached impl.Fn against
-// the TWO shapes [call]/[CallWithHandle] recognize for Req/Resp — the
+// the TWO shapes [call] recognize for Req/Resp — the
 // credential shape (func(context.Context, []route.SecurityRequirement)
 // (http.Header, error)) or the general-purpose wrapping shape
 // (func(next func(context.Context, Req) (Resp, error))
@@ -518,10 +518,11 @@ func equalHeaderValues(a, b []string) bool {
 // unexported: the sole PUBLIC client-side workflow is [Attach] +
 // [rest.Client.Call] (see
 // docs/design/d-0002-pubsub-workflow-simplification.md's Decision 6); call
-// remains load-bearing internally, used by [clientTransport] and by
-// [ports]' handle-based binding adapters via [CallWithHandle] (see
-// docs/design/d-0001-rest-middleware-workflow-simplification.md's "Decision:
-// symmetric client-side declarative wiring"). r is a [rest.Route] value
+// remains load-bearing internally, delegating to [rest.CallWithTransport]
+// (see docs/design/d-0001-rest-middleware-workflow-simplification.md's "Decision:
+// symmetric client-side declarative wiring"). [ports]' handle-based
+// binding adapters use the SEPARATE [callWithVars] primitive directly,
+// not call. r is a [rest.Route] value
 // (typically the SAME value the server side declared via [rest.Route.Use]/
 // [rest.Route.HandleMW]); call derives a [*rest.RouteHandle] internally via
 // [rest.Route.ClientHandle] and ALWAYS auto-derives path/query/header/cookie
@@ -551,9 +552,10 @@ func equalHeaderValues(a, b []string) bool {
 // [stats.Observer.RecordValidationError].
 //
 // call is an internal, test-only primitive predating [NewClientTransport]/
-// [rest.CallWithTransport] (docs/roadmap/capability-requirement-
-// composition.md's Phase 5a) — kept ONLY because this package's own
-// existing test suite exercises it; no real (non-test) caller remains.
+// [rest.CallWithTransport] (docs/design/
+// d-0006-protocol-native-capabilities.md's Phase 5a) — kept ONLY because
+// this package's own existing test suite exercises it; no real
+// (non-test) caller remains.
 // Delegates to [rest.CallWithTransport] via a scratch transport built
 // from c's own client/baseURL, converting opts field-for-field —
 // ExtraHeaders via a direct type conversion (http.Header IS
@@ -579,14 +581,17 @@ func call[Req, Resp any](
 	})
 }
 
-// callWithVars is the UNEXPORTED, handle-based call primitive — the
-// actual call logic, shared internally by [call] (via [CallWithHandle])
-// AND [ports]' nethttp binding adapters (which own a *rest.RouteHandle
-// directly, built once and called many times, and never a [rest.Route]
-// value — see docs/design/d-0001-rest-middleware-workflow-simplification.md's
-// "Decision: unexported handle-based primitive" for the full rationale).
+// callWithVars is the UNEXPORTED, handle-based call primitive used
+// directly by [ports]' nethttp binding adapters (which own a
+// *rest.RouteHandle directly, built once and called many times, and
+// never a [rest.Route] value — see
+// docs/design/d-0001-rest-middleware-workflow-simplification.md's
+// "Decision: unexported handle-based primitive" for the full rationale;
+// [call] no longer shares this primitive — it delegates to
+// [rest.CallWithTransport] instead, see [call]'s own doc comment).
 // vars supplies path template values explicitly (no merge-field
-// auto-derivation) — see [CallWithHandle] for that convenience.
+// auto-derivation) — see [rest.CallWithTransport] for the
+// merge-field-auto-deriving convenience.
 func callWithVars[Req, Resp any](
 	ctx context.Context,
 	client *http.Client,
@@ -930,9 +935,10 @@ func callWithVars[Req, Resp any](
 	return result, err
 }
 
-// CallWithHandle was REMOVED (docs/roadmap/capability-requirement-
-// composition.md's Phase 5a, a deliberate breaking change): it was a
-// single-call convenience wrapper for callers with only a
+// CallWithHandle was REMOVED (docs/design/
+// d-0006-protocol-native-capabilities.md's Phase 5a, a deliberate
+// breaking change): it was a single-call convenience wrapper for
+// callers with only a
 // *[rest.RouteHandle] (e.g. adapters/mcprest, bridging a REST route into
 // a different protocol) — [rest.CallWithTransport] now serves this exact
 // use case, mirroring [events.PublishHandle]/[reqreply.CallWithTransport]'s

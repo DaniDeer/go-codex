@@ -385,7 +385,7 @@ type ServerTransport interface {
 // ServerAwareTransport is an OPTIONAL extension to [ServerTransport] —
 // mirrors [events.ClientAwareTransport]/[rest.ServerAwareTransport]
 // exactly, for the identical reason: a [ServerTransport] built via an
-// adapter's `New*Transport(opts)` factory (docs/roadmap/
+// adapter's `New*Transport(opts)` factory (docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 4d) is constructed
 // BEFORE the [*Server] that will attach it is known. Some adapters (e.g.
 // adapters/zeromq's reqreply `NewServerTransport`/
@@ -409,7 +409,7 @@ type ServerAwareTransport interface {
 // `New*Transport` factory (e.g. `mqtt5.NewServerTransport(mqtt5.ServerTransportOptions{Client: client, Router: router})`)
 // that builds a configured [ServerTransport] value; application code
 // attaches it via THIS method directly — never via an adapter-namespaced
-// convenience function (removed, see docs/roadmap/
+// convenience function (removed, see docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 4d).
 //
 // If t implements [ServerAwareTransport], its BindServer(s) is called

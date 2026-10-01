@@ -145,7 +145,7 @@ func (c *caller) ServeSubscribers(ctx context.Context) error {
 		if obsForCap == nil {
 			obsForCap = stats.ObserverFromContext(ctx)
 		}
-		// opts.Capabilities is the SOLE mechanism (docs/roadmap/
+		// opts.Capabilities is the SOLE mechanism (docs/design/
 		// d-0006-protocol-native-capabilities.md Phase 4/4b — the former
 		// events.Subscribe.QoS declared-fallback field was REMOVED
 		// entirely, closing that parallel non-Capability-shaped

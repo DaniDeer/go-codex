@@ -10,7 +10,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/events"
 )
 
-// This file tests Topic 4's DeadLetter fallback (see docs/roadmap/
+// This file tests Topic 4's DeadLetter fallback (see docs/design/
 // d-0005-error-handling.md): a channel that declares
 // events.DeadLetter dead-letters a subscribe-side failure (when no
 // ErrorChannel matches, or none is declared) AND a failed publish.

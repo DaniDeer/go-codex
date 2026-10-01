@@ -207,7 +207,7 @@ type PublishOptions[T any] struct {
 // reuse the same validation logic without calling the broker.
 
 // tryPublishErrorChannel is the RECOMMENDED single call site for every
-// Category-A failure point on the subscribe side (docs/roadmap/
+// Category-A failure point on the subscribe side (docs/design/
 // d-0005-error-handling.md's Topic 1/5): consults a
 // declared [events.ErrorChannel] via ObserveErrorResponseFor (which ALSO
 // reports match/miss/span-tag observability internally) and, on a
@@ -248,7 +248,7 @@ func tryPublishErrorChannel[T any](
 }
 
 // tryDeadLetter is the RECOMMENDED single call site for Topic 4's
-// two-tier dead-letter fallback (docs/roadmap/
+// two-tier dead-letter fallback (docs/design/
 // d-0005-error-handling.md): consults a declared
 // [events.DeadLetter] via [events.ChannelHandle.DeadLetterFor] and, when
 // declared, publishes the fixed envelope to the declared destination.
@@ -1077,7 +1077,7 @@ func publish[T any](
 // derives the topic vars map from msg automatically, using the channel's
 // merge-capable topic params ([events.ChannelHandle.MergeFields] +
 // [codex.EncodeVars]) — one struct in, no manual vars map, mirroring
-// [nethttp.CallWithHandle]'s client-side convenience for REST.
+// [rest.CallWithTransport]'s client-side convenience for REST.
 //
 // [Publish] remains available as the lower-level escape hatch for callers
 // that build the vars map themselves (e.g. no merge fields declared, or

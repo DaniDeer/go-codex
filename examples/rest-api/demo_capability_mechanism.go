@@ -13,7 +13,7 @@ import (
 	"github.com/DaniDeer/go-codex/codex"
 )
 
-// demoCapabilityMechanism demonstrates Phase 3 of docs/roadmap/
+// demoCapabilityMechanism demonstrates Phase 3 of docs/design/
 // d-0006-protocol-native-capabilities.md: `api/rest` gains the SAME
 // protocol-native Capability mechanism `api/events`/`api/reqreply`
 // already ship, generalized across THREE layers:

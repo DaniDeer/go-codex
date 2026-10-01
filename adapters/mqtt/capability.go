@@ -13,9 +13,10 @@ package mqtt
 // touching a shared type. See
 // docs/design/d-0006-protocol-native-capabilities.md's §2/§7 (Review-13).
 //
-// Capability now REQUIRES Apply (docs/roadmap/capability-requirement-
-// composition.md's Phase 5) — this is genuinely "an API the adapter
-// implements against," not a marker: [events.ApplyCapabilities] (living
+// Capability now REQUIRES Apply (docs/design/
+// d-0006-protocol-native-capabilities.md's Phase 5) — this is genuinely
+// "an API the adapter implements against," not a marker:
+// [events.ApplyCapabilities] (living
 // in api/events, NOT here) is the ONE place that calls Apply, for every
 // capability, driven entirely by what the declaring user supplied via
 // Capabilities — this package no longer owns any resolve+assign loop of

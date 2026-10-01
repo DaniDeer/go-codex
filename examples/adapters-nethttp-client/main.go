@@ -33,10 +33,11 @@
 // demonstrate [rest.ClientCallOptions] fields (credential caching/
 // invalidation, per-call retry-once-on-401, explicit Query/Cookie/Header
 // overrides) against a bare *rest.RouteHandle, with no [*rest.Client]/
-// spec-registration ceremony needed (docs/roadmap/capability-requirement-
-// composition.md's Phase 5a — the former [nethttp.CallWithHandle] this
-// section used to demonstrate was removed; [rest.CallWithTransport]
-// replaces it losslessly, now built on the SAME [rest.ClientTransport]
+// spec-registration ceremony needed (docs/design/
+// d-0006-protocol-native-capabilities.md's Phase 5a — the former
+// [nethttp.CallWithHandle] this section used to demonstrate was
+// removed; [rest.CallWithTransport] replaces it losslessly, now built
+// on the SAME [rest.ClientTransport]
 // interface [rest.Client.Call] itself uses, mirroring events/reqreply's
 // own api-layer-owned verb). Each distinct contract.Route value builds
 // its own *rest.RouteHandle ONCE, right after the server starts (or right

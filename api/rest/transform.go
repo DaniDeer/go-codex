@@ -63,7 +63,8 @@ type MiddlewareHandler struct {
 // ClientMiddlewareHandler is the type-erased, SENDING-role runtime
 // dispatch unit built by [ClientTransform] — the client-side mirror of
 // [MiddlewareHandler]. Stored on [RouteHandle.ClientMiddlewareHandlers];
-// consumed by [nethttp.Call]/[nethttp.CallWithHandle].
+// consumed by nethttp's internal client dispatch (shared by
+// [CallWithTransport] and the handle-based binding adapters).
 type ClientMiddlewareHandler struct {
 	// Name identifies this middleware in errors and observability.
 	Name string

@@ -11,7 +11,7 @@ import (
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/routes"
 )
 
-// demoCapabilityMechanism demonstrates Phase 2 of docs/roadmap/
+// demoCapabilityMechanism demonstrates Phase 2 of docs/design/
 // d-0006-protocol-native-capabilities.md: the SAME protocol-native
 // Capability mechanism examples/events-api's demo_capability_mechanism.go
 // exercises for pub/sub, now applied to reqreply — reusing the SAME 2

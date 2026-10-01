@@ -38,7 +38,7 @@ type serverTransport struct {
 }
 
 // ServerTransportOptions configures [NewServerTransport] — the SOLE
-// configuration surface for a chi [rest.ServerTransport] (docs/roadmap/
+// configuration surface for a chi [rest.ServerTransport] (docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 4d: a single Options
 // struct, no positional params, even for these REQUIRED fields).
 type ServerTransportOptions struct {
@@ -49,7 +49,7 @@ type ServerTransportOptions struct {
 }
 
 // NewServerTransport returns a [rest.ServerTransport] configured per opts
-// — the adapter's ONLY job in the attach workflow (docs/roadmap/
+// — the adapter's ONLY job in the attach workflow (docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 4d): construct a
 // fully-configured, attachable value. Attaching it is EXCLUSIVELY
 // [rest.Server.Attach]'s job — there is no adapter-namespaced Attach

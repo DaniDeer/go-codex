@@ -8,7 +8,7 @@ import (
 
 // httpCarrier is chi's own per-REQUEST value satisfying
 // [rest.HeaderCapableTransport]/[rest.CookieCapableTransport]/
-// [rest.QueryCapableTransport] (docs/roadmap/
+// [rest.QueryCapableTransport] (docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 6 — promoted from the
 // former zero-cost, data-less `transportCapabilities{}` marker to a
 // REAL, callable extraction interface) — mirrors [nethttp]'s identical

@@ -282,7 +282,7 @@ type ServerImplementation struct {
 // Fn is deliberately untyped (any) for the SAME reason as
 // [ServerImplementation.Fn] — resolved by the specific client adapter
 // function that consumes it. adapters/mqtt5/mqtt/zeromq's Publish and
-// adapters/nethttp's Call/CallWithHandle each recognize TWO concrete
+// adapters/nethttp's internal call dispatch each recognize TWO concrete
 // shapes: the credential-providing shape (satisfies-gated, per Satisfies
 // above) and a general-purpose wrapping shape that composes around the
 // adapter's own "encode and transmit"/"network round-trip" step,

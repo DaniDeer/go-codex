@@ -75,7 +75,7 @@ type clientTransport struct {
 }
 
 // ClientTransportOptions configures [NewClientTransport] — the SOLE
-// configuration surface for a nethttp [rest.ClientTransport] (docs/roadmap/
+// configuration surface for a nethttp [rest.ClientTransport] (docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 4d: a single Options
 // struct, no positional params, even for these REQUIRED fields — a
 // deliberate, uniform, declarative shape across every adapter's
@@ -88,7 +88,7 @@ type ClientTransportOptions struct {
 }
 
 // NewClientTransport returns a [rest.ClientTransport] configured per opts
-// — the adapter's ONLY job in the attach workflow (docs/roadmap/
+// — the adapter's ONLY job in the attach workflow (docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 4d): construct a
 // fully-configured, attachable value. Attaching it is EXCLUSIVELY
 // [rest.Client.Attach]'s job — there is no adapter-namespaced Attach
@@ -104,8 +104,8 @@ type ClientTransportOptions struct {
 // *rest.RouteHandle/*rest.SSERouteHandle directly (e.g. adapters/mcprest
 // bridging a REST route into another protocol), or finer per-call control
 // [ClientCallOptions]/[ClientConsumeOptions] don't expose (OnCredentialRejected,
-// ExtraHeaders, MaxBackoff, OnError), uses [CallWithHandle]/[CallSSEAdapter]
-// directly instead.
+// ExtraHeaders, MaxBackoff, OnError), uses [rest.CallWithTransport]/
+// [CallSSEAdapter] directly instead.
 //
 //	client := rest.NewClient()
 //	transport := nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: httpClient, BaseURL: baseURL})
@@ -209,9 +209,10 @@ func wrapGeneralPurposeFn(impls []middleware.ClientImplementation, wrapType refl
 }
 
 // validateClientImplementationShapesReflect is [validateCallImplementationShapes]'s
-// reflection-based mirror (docs/roadmap/capability-requirement-
-// composition.md's Phase 5a) — checks every attached impl.Fn against the
-// SAME 2 shapes THIS package recognizes client-side (the fixed
+// reflection-based mirror (docs/design/
+// d-0006-protocol-native-capabilities.md's Phase 5a) — checks every
+// attached impl.Fn against the SAME 2 shapes THIS package recognizes
+// client-side (the fixed
 // credential shape, and the general-purpose wrap shape matching
 // wrapType, Req/Resp-concrete at THIS call site even though this
 // function itself never learns Req/Resp by name) — a nil Fn (spec-only/

@@ -58,7 +58,7 @@ func upgradeAndValidate(
 		return nil, nil, false
 	}
 	// carrier is constructed ONCE and its extracted maps reused for both
-	// the validation calls below AND the vars merge (docs/roadmap/
+	// the validation calls below AND the vars merge (docs/design/
 	// d-0006-protocol-native-capabilities.md's Phase 6a).
 	carrier := wsCarrier{r}
 	query := carrier.ExtractQuery()

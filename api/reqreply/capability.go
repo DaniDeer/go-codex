@@ -6,7 +6,7 @@ import (
 )
 
 // CapabilityRequirement declares one adapter-defined protocol-native
-// capability requirement (Tier 3 — Explicit, per docs/roadmap/
+// capability requirement (Tier 3 — Explicit, per docs/design/
 // d-0006-protocol-native-capabilities.md's three-tier vocabulary:
 // Baseline/Implicit/Explicit) at the route level — the reqreply-side
 // counterpart of [events.CapabilityRequirement]. Own type, in its own

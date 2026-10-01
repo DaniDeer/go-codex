@@ -1218,9 +1218,10 @@ func (h *RouteHandle[Req, Resp]) ResponseCookieMergeFields() []codex.FieldCodec[
 // ApplyResponseMergeFields merges headers/cookies into an ALREADY-DECODED
 // resp value via [ResponseHeaderMergeFields]/[ResponseCookieMergeFields]
 // + [codex.DecodeVars] — the RESPONSE-direction mirror of
-// [ApplyMergeFields], split out (docs/roadmap/capability-requirement-
-// composition.md's Phase 5a) for callers that decode the body via a
-// negotiated [format.Format] (i.e. [RouteHandle.DecodeResponseWithFormats],
+// [ApplyMergeFields], split out (docs/design/
+// d-0006-protocol-native-capabilities.md's Phase 5a) for callers that
+// decode the body via a negotiated [format.Format] (i.e.
+// [RouteHandle.DecodeResponseWithFormats],
 // not plain [DecodeResponse]) and therefore cannot use
 // [DecodeMergedResponse] (which only ever calls the plain, JSON-only
 // [DecodeResponse] internally) — reachable via reflection since Resp is
@@ -2760,7 +2761,7 @@ type ServerAwareTransport interface {
 // `New*Transport` factory (e.g. `nethttp.NewServerTransport(nethttp.ServerTransportOptions{Mux: mux, Addr: addr})`)
 // that builds a configured [ServerTransport] value; application code
 // attaches it via THIS method directly — never via an adapter-namespaced
-// convenience function (removed, see docs/roadmap/
+// convenience function (removed, see docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 4d).
 //
 // If t implements [ServerAwareTransport], its BindServer(b) is called
@@ -2903,12 +2904,13 @@ type ClientCallOptions struct {
 	// QueryParams/CookieParams/HeaderParams append explicit, per-call
 	// query/cookie/header values, each validated against the route's
 	// registered [QueryParam]/[CookieParam]/[HeaderParam] codec (if any)
-	// before the request is sent (docs/roadmap/capability-requirement-
-	// composition.md's Phase 5a: grown onto this type-erased,
-	// cross-adapter interface so [CallWithTransport] fully replaces the
-	// former adapter-owned `nethttp.CallWithHandle`'s richer surface, no
-	// capability loss). An explicit entry here takes PRECEDENCE over the
-	// automatically-derived value for the same key (mirrors D3's
+	// before the request is sent (docs/design/
+	// d-0006-protocol-native-capabilities.md's Phase 5a: grown onto this
+	// type-erased, cross-adapter interface so [CallWithTransport] fully
+	// replaces the former adapter-owned `nethttp.CallWithHandle`'s
+	// richer surface, no capability loss). An explicit entry here takes
+	// PRECEDENCE over the automatically-derived value for the same key
+	// (mirrors D3's
 	// existing "explicit > middleware-derived > route-own-derived"
 	// precedence chain).
 	QueryParams  map[string]string
@@ -3999,7 +4001,7 @@ func (h *SSERouteHandle[Req, Event]) PathParamNames() []string {
 }
 
 // HeaderParamNames returns the names of all registered header parameters —
-// mirrors [RouteHandle.HeaderParamNames] exactly (docs/roadmap/
+// mirrors [RouteHandle.HeaderParamNames] exactly (docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 6a). Adapters use this,
 // alongside [CookieParamNames]/[QueryParamNames]/[SecuritySchemes], to
 // build the [RequiredParamKinds] set passed to [CheckParamKindCoverage]

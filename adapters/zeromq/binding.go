@@ -60,7 +60,7 @@ type SubscribeAdapterOptions struct {
 	// Capabilities supplies sealed, compile-time-checked protocol-native
 	// declarations (currently [HWM]/[Conflate]) for this subscription —
 	// mirrors [SubscribeOptions.Capabilities] exactly, moved down to this
-	// ports-binding layer's own option struct (docs/roadmap/
+	// ports-binding layer's own option struct (docs/design/
 	// d-0006-protocol-native-capabilities.md's Phase 4b).
 	Capabilities []Capability
 }
@@ -175,7 +175,7 @@ type DrainPublishOptions struct {
 	// Capabilities supplies sealed, compile-time-checked protocol-native
 	// declarations (currently [HWM]/[Conflate]) for every published item
 	// — mirrors [PublishOptions.Capabilities] exactly, moved down to this
-	// ports-binding layer's own option struct (docs/roadmap/
+	// ports-binding layer's own option struct (docs/design/
 	// d-0006-protocol-native-capabilities.md's Phase 4b).
 	Capabilities []Capability
 }

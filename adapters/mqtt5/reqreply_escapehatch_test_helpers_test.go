@@ -7,7 +7,7 @@ import (
 )
 
 // testServe/testCall mirror the exact signatures of the now-DELETED
-// Serve[Req,Resp]/Call[Req,Resp] escape hatches (docs/roadmap/
+// Serve[Req,Resp]/Call[Req,Resp] escape hatches (docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 5a) — a thin,
 // test-only shim reducing this package's ~90 existing call sites (both
 // exercising the SAME underlying serverTransport.Serve/clientTransport.

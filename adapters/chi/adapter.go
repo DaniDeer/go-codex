@@ -709,7 +709,7 @@ func sseHandlerFunc[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn 
 
 		// carrier is constructed ONCE and its extracted maps reused for
 		// BOTH the validation calls below AND the per-event MergeEvent
-		// closure captured further down (docs/roadmap/
+		// closure captured further down (docs/design/
 		// d-0006-protocol-native-capabilities.md's Phase 6 "Decision A"
 		// — eliminates the former double extraction).
 		carrier := httpCarrier{r}
@@ -991,7 +991,7 @@ func tryRespondErrorPatternGeneric[Req, Resp any](
 
 // WriteErrorResponse implements [rest.ErrorResponseWriter] — the ONLY
 // genuinely protocol-specific remainder of the former
-// `writeErrorPatternResponse` (docs/roadmap/
+// `writeErrorPatternResponse` (docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 7): match, encode, and
 // validate all now happen inside [rest.RouteHandle.DispatchErrorResponse]
 // itself; this method only writes the already-validated headers,

@@ -7,7 +7,7 @@ import (
 
 // ServeWithTransport is the API-LAYER-OWNED "attach and drive" verb for
 // serving exactly ONE route against an ALREADY-BUILT [ServerTransport] —
-// mirrors [events.SubscribeHandle]'s shape exactly (docs/roadmap/
+// mirrors [events.SubscribeHandle]'s shape exactly (docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 5a). It replaces the
 // former adapter-owned `mqtt5.Serve[Req,Resp]`/`zeromq.Serve[Req,Resp]`/
 // `zeromq.ServeRouter[Req,Resp]` escape hatches, which built the SAME
@@ -39,7 +39,7 @@ func ServeWithTransport[Req, Resp any](
 
 // CallWithTransport is the API-LAYER-OWNED "attach and drive" verb for
 // calling exactly ONE route against an ALREADY-BUILT [ClientTransport] —
-// mirrors [events.PublishHandle]'s shape exactly (docs/roadmap/
+// mirrors [events.PublishHandle]'s shape exactly (docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 5a). It replaces the
 // former adapter-owned `mqtt5.Call[Req,Resp]`/`mqtt5.CallHandle[Req,Resp]`/
 // `zeromq.Call[Req,Resp]`/`zeromq.CallHandle[Req,Resp]`/

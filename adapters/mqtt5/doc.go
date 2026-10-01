@@ -11,7 +11,8 @@
 // Three patterns are supported:
 //
 //   - PUB/SUB — via [api/events] channel declarations + [events.Client.Attach]
-//   - REQ/REP — via [api/reqreply] route declarations + [Serve]/[Call]
+//   - REQ/REP — via [api/reqreply] route declarations + [NewServerTransport]/
+//     [NewClientTransport], driven via [reqreply.ServeWithTransport]/[reqreply.CallWithTransport]
 //
 // # caller — bundling client+router+events.Client
 //
@@ -86,10 +87,11 @@
 //     property, [subscribe] auto-selects the matching format from the formats slice
 //     by comparing with [format.Format.ContentType]. Set ContentType on outgoing
 //     messages via [PublishOptions.ContentType].
-//   - Request-Reply: [Serve] reads the ResponseTopic and CorrelationData
-//     MQTT 5 message properties to reply to the caller. [Call] publishes
-//     a request with a per-call reply topic and waits for the response.
-//     Customise reply topic generation via [CallOptions.ReplyTopicBuilder];
+//   - Request-Reply: [NewServerTransport]'s [ServerTransportOptions.Serve]
+//     reads the ResponseTopic and CorrelationData MQTT 5 message properties
+//     to reply to the caller. [NewClientTransport]'s [ClientTransportOptions.Call]
+//     publishes a request with a per-call reply topic and waits for the
+//     response. Customise reply topic generation via [CallOptions.ReplyTopicBuilder];
 //     use [UUIDReplyTopic] (default) or [SharedReplyTopic] for shared subscriptions.
 //
 // # Client and router

@@ -6,7 +6,7 @@ import (
 )
 
 // CapabilityRequirement declares one adapter-defined protocol-native
-// capability requirement (Tier 3a — Explicit, Sealed, per docs/roadmap/
+// capability requirement (Tier 3a — Explicit, Sealed, per docs/design/
 // d-0006-protocol-native-capabilities.md's three-tier vocabulary) at the
 // route level — the REST-side counterpart of [events.CapabilityRequirement]/
 // [reqreply.CapabilityRequirement]. Own type, in its own package,
@@ -202,7 +202,7 @@ func VerifyCapabilityCoverage[C any](routeLabel string, declared []CapabilityReq
 // [LeveledCapability] (the difference: Tier 2 asserts on the ADAPTER'S
 // TRANSPORT TYPE, since there is no per-declare "supplied capabilities
 // slice" for headers/cookies/query the way there is for QoS).
-// `ExtractHeaders` is a REAL, callable method (docs/roadmap/
+// `ExtractHeaders` is a REAL, callable method (docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 6 — promoted from a
 // zero-cost, never-invoked marker method to a genuine per-request
 // extraction interface) — adapters/nethttp/adapters/chi's own

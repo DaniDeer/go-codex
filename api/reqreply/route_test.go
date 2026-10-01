@@ -291,7 +291,7 @@ func TestRoute_AsyncAPISpec_MultipleRoutes(t *testing.T) {
 }
 
 // TestRoute_AsyncAPISpec_ErrorReplyChannelAndOperation verifies Topic 3's
-// AsyncAPI multi-message migration (docs/roadmap/
+// AsyncAPI multi-message migration (docs/design/
 // d-0005-error-handling.md): an ErrorReplyMeta no longer
 // produces its OWN separate reply channel/operation — it becomes an
 // additional named message ("ErrorConflict") within the SAME

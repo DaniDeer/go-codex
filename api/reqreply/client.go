@@ -79,7 +79,7 @@ func NewClient() *Client {
 // `mqtt5.NewClientTransport(mqtt5.ClientTransportOptions{Client: mqttClient, Router: router})`)
 // that builds a configured [ClientTransport] value; application code
 // attaches it via THIS method directly — never via an adapter-namespaced
-// convenience function (removed, see docs/roadmap/
+// convenience function (removed, see docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 4d). No adapter's
 // [ClientTransport] currently needs a [*Client] back-reference at bind
 // time (unlike [ServerAwareTransport]'s server-side need), so there is

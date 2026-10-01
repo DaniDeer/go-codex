@@ -24,7 +24,7 @@ import (
 // runSubscribeSecurityImplsReflect) ALREADY EXIST in caller.go, built for
 // [(*caller).ServeSubscribers]'s own reflection-only dispatch — reused
 // directly here rather than duplicated. This package now uses the SAME
-// Apply-interface Capability shape mqtt5/zeromq use (docs/roadmap/
+// Apply-interface Capability shape mqtt5/zeromq use (docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 5 — see transport.go's
 // [defaultQoS] doc comment) — Capabilities resolution is wired via
 // [events.ApplyCapabilities] against a [WireAttributes] value.

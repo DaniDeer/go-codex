@@ -13,7 +13,7 @@ import (
 )
 
 // CallWithHandle-specific ClientTransform tests (HappyPath/FnError/
-// AgnosticMiddleware/D3Precedence — all 4 REMOVED, docs/roadmap/
+// AgnosticMiddleware/D3Precedence — all 4 REMOVED, docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 5a): CallWithHandle's
 // OWN body was the ONLY reachable place on the plain-Call (non-SSE)
 // path that ever dispatched rest.ClientTransform/bundled `.Use()`

@@ -713,8 +713,8 @@ func consumeSSEOnce[Req, Event any](
 		return false, err
 	}
 	// D3: explicit ConsumeOptions > middleware-derived (ClientTransformSSE's/
-	// bundled .Use()'s In) > route-own-derived — mirrors CallWithHandle's
-	// identical precedence for plain Route.
+	// bundled .Use()'s In) > route-own-derived — mirrors
+	// [rest.CallWithTransport]'s identical precedence for plain Route.
 	if len(handle.ClientMiddlewareHandlers) > 0 {
 		mwHeaders, mwCookies, mwQuery, mwErr := dispatchClientMiddlewareIn(ctx, req, handle.ClientMiddlewareHandlers)
 		if mwErr != nil {
@@ -918,8 +918,8 @@ func resolveSSEDecodeFormat[Req, Event any](handle *rest.SSERouteHandle[Req, Eve
 // [consumeSSE], the SAME underlying connect+decode+reconnect loop. Takes
 // a pre-built *rest.SSERouteHandle (not a bare [rest.SSERoute]) —
 // matching [CallAdapter]/[DrainCallAdapter]'s existing handle-based
-// convention (mirrors [CallWithHandle], the equally handle-based
-// escape-hatch sibling for request/response — see
+// convention (mirrors [rest.CallWithTransport], the equally handle-based
+// entry point for request/response — see
 // [rest.Client.Consume] for the declarative, route-value-based
 // convenience, plumbed through a SEPARATE reflection-based
 // implementation). Deliberately stays on PLAIN client/baseURL

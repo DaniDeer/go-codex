@@ -158,7 +158,7 @@ adapters" guardrail (see
   constructor parameters or struct fields remain anywhere in this
   package.
 
-`adapters/mqtt` (v3) is now fully migrated too (docs/roadmap/
+`adapters/mqtt` (v3) is now fully migrated too (docs/design/
 d-0006-protocol-native-capabilities.md's Phase 5) — its `Capability`
 interface requires `Apply(wire *WireAttributes) (bool, error)`, mirroring
 `adapters/mqtt5`'s identical shape exactly. Every former raw `qos byte`/

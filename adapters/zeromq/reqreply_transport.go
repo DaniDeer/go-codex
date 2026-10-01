@@ -439,7 +439,7 @@ type ServerTransportOptions struct {
 }
 
 // NewServerTransport returns a [reqreply.ServerTransport] configured per
-// opts — the adapter's ONLY job in the attach workflow (docs/roadmap/
+// opts — the adapter's ONLY job in the attach workflow (docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 4d): construct a
 // fully-configured, attachable value. Attaching it is EXCLUSIVELY
 // [reqreply.Server.Attach]'s job — there is no adapter-namespaced Attach
@@ -526,7 +526,7 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 	observeErrorResponseForMethod := rv.MethodByName("ObserveErrorResponseFor")
 	// deadLetterForMethod is *RouteHandle[Req,Resp].DeadLetterFor(obs,
 	// sourceTopic, rawPayload, err) (topic string, body []byte, ok bool)
-	// — Topic 4's dead-letter fallback (docs/roadmap/
+	// — Topic 4's dead-letter fallback (docs/design/
 	// d-0005-error-handling.md), attempted alongside/after
 	// ObserveErrorResponseFor at every Category-A failure site, mirroring
 	// the pub/sub adapters' collapsed single-rule wiring exactly.
@@ -795,7 +795,7 @@ type ClientTransportOptions struct {
 }
 
 // NewClientTransport returns a [reqreply.ClientTransport] configured per
-// opts — the adapter's ONLY job in the attach workflow (docs/roadmap/
+// opts — the adapter's ONLY job in the attach workflow (docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 4d): construct a
 // fully-configured, attachable value. Attaching it is EXCLUSIVELY
 // [reqreply.Client.Attach]'s job — there is no adapter-namespaced Attach
@@ -1193,7 +1193,7 @@ type routerServerTransport struct {
 
 // RouterServerTransportOptions configures [NewRouterServerTransport] —
 // the SOLE configuration surface for a zeromq ROUTER
-// [reqreply.ServerTransport] (docs/roadmap/
+// [reqreply.ServerTransport] (docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 4d: a single Options
 // struct, no positional params). Serve nests the pre-existing
 // [ServeOptions] type unchanged.
@@ -1209,7 +1209,7 @@ type RouterServerTransportOptions struct {
 // NewRouterServerTransport returns a [reqreply.ServerTransport]
 // configured per opts — the ROUTER/DEALER counterpart of
 // [NewServerTransport]; see that function's doc comment for the full
-// attach-workflow rationale (docs/roadmap/
+// attach-workflow rationale (docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 4d). The returned value
 // also implements [reqreply.ServerAwareTransport] — see
 // [routerServerTransport.BindServer].
@@ -1232,8 +1232,8 @@ func (t *routerServerTransport) BindServer(s *reqreply.Server) error {
 	return nil
 }
 
-// Serve implements [reqreply.ServerTransport]. Mirrors [ServeRouter]'s
-// core receive loop (recv identity+payload → dispatch to its own
+// Serve implements [reqreply.ServerTransport]. Mirrors the former,
+// now-deleted ServeRouter's core receive loop (recv identity+payload → dispatch to its own
 // goroutine → decode → call fn → encode → send identity-addressed
 // reply) via reflection against routeAny/fnAny.
 func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny any) error {
@@ -1274,7 +1274,7 @@ func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny a
 	observeErrorResponseForMethod := rv.MethodByName("ObserveErrorResponseFor")
 	// deadLetterForMethod is *RouteHandle[Req,Resp].DeadLetterFor(obs,
 	// sourceTopic, rawPayload, err) (topic string, body []byte, ok bool)
-	// — Topic 4's dead-letter fallback (docs/roadmap/
+	// — Topic 4's dead-letter fallback (docs/design/
 	// d-0005-error-handling.md), attempted alongside/after
 	// ObserveErrorResponseFor at every Category-A failure site, mirroring
 	// the pub/sub adapters' collapsed single-rule wiring exactly.
@@ -1502,7 +1502,8 @@ var _ reqreply.ServerTransport = (*routerServerTransport)(nil)
 
 // dealerClientTransport implements [reqreply.ClientTransport] for ZMQ
 // DEALER sockets, wrapping a topic→socket map — built by
-// [NewDealerClientTransport]. Mirrors [CallDealer]'s envelope framing
+// [NewDealerClientTransport]. Mirrors the former, now-deleted CallDealer's
+// envelope framing
 // (empty delimiter + payload).
 type dealerClientTransport struct {
 	sockets map[string]FramedSocket
@@ -1511,7 +1512,7 @@ type dealerClientTransport struct {
 
 // DealerClientTransportOptions configures [NewDealerClientTransport] —
 // the SOLE configuration surface for a zeromq DEALER
-// [reqreply.ClientTransport] (docs/roadmap/
+// [reqreply.ClientTransport] (docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 4d: a single Options
 // struct, no positional params). Call nests the pre-existing
 // [CallOptions] type unchanged.
@@ -1527,7 +1528,7 @@ type DealerClientTransportOptions struct {
 // NewDealerClientTransport returns a [reqreply.ClientTransport]
 // configured per opts — the ROUTER/DEALER counterpart of
 // [NewClientTransport]; see that function's doc comment for the full
-// attach-workflow rationale (docs/roadmap/
+// attach-workflow rationale (docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 4d).
 //
 //	client := reqreply.NewClient()
@@ -1537,8 +1538,8 @@ func NewDealerClientTransport(opts DealerClientTransportOptions) reqreply.Client
 	return &dealerClientTransport{sockets: opts.Sockets, opts: opts.Call}
 }
 
-// Call implements [reqreply.ClientTransport]. Mirrors [CallDealer]'s core
-// logic (encode → send with empty-delimiter envelope → await reply →
+// Call implements [reqreply.ClientTransport]. Mirrors the former,
+// now-deleted CallDealer's core logic (encode → send with empty-delimiter envelope → await reply →
 // decode) via reflection against routeAny/reqAny. opts carries a
 // per-call format override — see [dealerClientTransport.call].
 func (t *dealerClientTransport) Call(ctx context.Context, routeAny any, reqAny any, opts ...reqreply.ClientCallOptions) (any, error) {
@@ -1587,8 +1588,8 @@ func (t *dealerClientTransport) call(ctx context.Context, routeAny any, reqAny a
 	// Resolve an OBSERVABILITY-only path override — mirrors
 	// [clientTransport.call]'s identical block (see its comment for the
 	// full rationale: does NOT affect socket selection, sock is already
-	// resolved above; a BuildTopic failure IS FATAL, matching the escape
-	// hatch's [CallDealer] exactly).
+	// resolved above; a BuildTopic failure IS FATAL, matching the former,
+	// now-deleted CallDealer escape hatch exactly).
 	if mergeFieldsMethod := rv.MethodByName("MergeFields"); mergeFieldsMethod.Call(nil)[0].Len() > 0 || t.opts.Vars != nil {
 		var vars map[string]string
 		if mergeFieldsMethod.Call(nil)[0].Len() > 0 {

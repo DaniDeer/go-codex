@@ -14,13 +14,15 @@ type clientMiddlewareOutKey struct{}
 
 // WithClientMiddlewareOut decorates ctx so decoded client-side middleware Out
 // values (see [ClientMiddlewareOutFromContext]) become retrievable after a
-// [Call]/[CallWithHandle] returns — mirrors [stats.WithDiagnostics]'s own
-// sink-in-context technique, since [rest.ClientTransform]'s exact "how does
-// the caller get Out back" return shape was deliberately left as a small
-// signature detail to finalize during implementation, not a design blocker
-// (see docs/design/d-0003-codec-declared-middlewares.md §5). A context-based
-// accessor keeps [Call]'s/[CallWithHandle]'s own signature completely
-// unchanged. A no-op (nothing recorded) when ctx was never so decorated —
+// [rest.Client.Call]/[rest.CallWithTransport] returns — mirrors
+// [stats.WithDiagnostics]'s own sink-in-context technique, since
+// [rest.ClientTransform]'s exact "how does the caller get Out back" return
+// shape was deliberately left as a small signature detail to finalize
+// during implementation, not a design blocker (see
+// docs/design/d-0003-codec-declared-middlewares.md §5). A context-based
+// accessor keeps [rest.Client.Call]'s/[rest.CallWithTransport]'s own
+// signature completely unchanged. A no-op (nothing recorded) when ctx was
+// never so decorated —
 // mirrors [stats.RecordDiagnostic]'s same no-op-when-absent safety.
 func WithClientMiddlewareOut(ctx context.Context) context.Context {
 	sink := &map[string]any{}
@@ -28,8 +30,9 @@ func WithClientMiddlewareOut(ctx context.Context) context.Context {
 }
 
 // ClientMiddlewareOutFromContext returns every client-side middleware Out
-// value decoded during the most recent [Call]/[CallWithHandle] using this
-// ctx, keyed by the middleware's own Declaration.Name. Returns nil if ctx
+// value decoded during the most recent [rest.Client.Call]/
+// [rest.CallWithTransport] using this ctx, keyed by the middleware's own
+// Declaration.Name. Returns nil if ctx
 // was never decorated by [WithClientMiddlewareOut].
 func ClientMiddlewareOutFromContext(ctx context.Context) map[string]any {
 	if sink, ok := ctx.Value(clientMiddlewareOutKey{}).(*map[string]any); ok {

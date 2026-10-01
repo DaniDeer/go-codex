@@ -270,7 +270,7 @@ func buildOperation(r route.Route) map[string]any {
 // buildCapabilities converts []route.CapabilitySpec to the
 // "x-codex-capabilities" OpenAPI vendor-extension array — mirrors
 // render/asyncapi/v3's identical "x-capabilities" rendering exactly,
-// adapted to OpenAPI's own "x-" extension convention (docs/roadmap/
+// adapted to OpenAPI's own "x-" extension convention (docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 3).
 func buildCapabilities(specs []route.CapabilitySpec) []any {
 	out := make([]any, len(specs))

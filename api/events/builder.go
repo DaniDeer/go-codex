@@ -1921,7 +1921,7 @@ type Publisher[T any] struct {
 	clientMiddlewareHandlers []ClientMiddlewareHandler
 	// opts holds the type-erased adapter options attached via
 	// [Publisher.WithOptions] — copied onto [ChannelHandle.HandlerOpts].
-	// Mirrors [Subscriber.opts] exactly (docs/roadmap/
+	// Mirrors [Subscriber.opts] exactly (docs/design/
 	// d-0006-protocol-native-capabilities.md's Phase 4c — closes the gap
 	// where only the subscribe side could declare per-channel adapter
 	// options such as Capabilities).
@@ -2102,7 +2102,7 @@ func (p Publisher[T]) PublishMW(mw *middleware.Middleware, fn any) Publisher[T] 
 // [Subscriber.WithOptions] exactly. Copied onto the built
 // [ChannelHandle.HandlerOpts] field by [Publisher.Handle]; the adapter
 // recovers the concrete type via a type assertion/reflection at dispatch
-// time. Closes the Phase 4c gap (docs/roadmap/
+// time. Closes the Phase 4c gap (docs/design/
 // d-0006-protocol-native-capabilities.md): before this, only the
 // subscribe side could declare per-channel adapter options, so
 // [Client.Publish]'s reflection shim had NO way to resolve a declared

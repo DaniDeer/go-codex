@@ -152,7 +152,7 @@ func Call[Req, Resp any](
 // transport binding an entire *rest.Server's/*rest.Client's registered
 // routes at once (one FramedSocket per registered route's Path) —
 // mirrors [zeromq.NewServerTransport]/[zeromq.NewClientTransport]'s
-// reflection-based bulk-dispatch mechanism exactly. Per docs/roadmap/
+// reflection-based bulk-dispatch mechanism exactly. Per docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 4d (Attach factory
 // redesign, already shipped for events/rest/reqreply's OTHER adapters
 // by the time this adapter is built): attaching is EXCLUSIVELY
@@ -162,7 +162,7 @@ func NewServerTransport(opts ServerTransportOptions) rest.ServerTransport
 func NewClientTransport(opts ClientTransportOptions) rest.ClientTransport
 
 // ServerTransportOptions/ClientTransportOptions bundle sockets+opts into
-// a SINGLE Options struct parameter (docs/roadmap/
+// a SINGLE Options struct parameter (docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 4d convention — no
 // positional params, even for required fields).
 type ServerTransportOptions struct {

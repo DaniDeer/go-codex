@@ -387,7 +387,7 @@ func demoErrorChannelActionsSubscribeSide(ctx context.Context) {
 		handleCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 		defer cancel()
 
-		// Converted to Client.Attach+Client.Subscribe (docs/roadmap/
+		// Converted to Client.Attach+Client.Subscribe (docs/design/
 		// d-0006-protocol-native-capabilities.md's Phase 4e closed the
 		// gap this demo used to document — Client.Subscribe's
 		// reflection shim now calls a declared SubscribeOptions.OnError
@@ -549,7 +549,7 @@ func demoErrorChannelMiddlewareCombo(ctx context.Context) {
 	}
 	securedSub := routes.SecuredReadingsSub.Use(routes.APIKeyAuthMW).SubscribeMW(&routes.APIKeyAuthMW, alwaysRejectFn).
 		WithOptions(mqtt5adapter.SubscribeOptions{Capabilities: []mqtt5adapter.Capability{mqtt5adapter.QoSAtLeastOnce}})
-	// Converted to Client.Attach+Client.Subscribe (docs/roadmap/
+	// Converted to Client.Attach+Client.Subscribe (docs/design/
 	// d-0006-protocol-native-capabilities.md's Phase 4e closed the gap
 	// this demo used to document — Client.Subscribe's reflection shim
 	// now runs Implementations-based SubscribeMW security enforcement,

@@ -74,7 +74,7 @@ func demoCapabilityMechanism(ctx context.Context) {
 		fmt.Println("  [error] expected an Insufficient-level error, got nil")
 	}
 
-	// Capabilities is the SOLE mechanism (docs/roadmap/
+	// Capabilities is the SOLE mechanism (docs/design/
 	// d-0006-protocol-native-capabilities.md's Phase 4/4b) — there is no
 	// call-time qos parameter to otherwise prefer, on either the
 	// subscribe or publish side.
