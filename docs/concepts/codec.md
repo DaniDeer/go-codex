@@ -293,7 +293,7 @@ request-side constructors above) declare a response header/cookie merge field on
 `Resp`: the server sets it automatically from the returned struct's field,
 and the client merges the HTTP response back into the same field
 automatically. On top of the four merge-field roles (path/query/header/cookie),
-`nethttp.Call`/`CallWithHandle` is the single-call client convenience that derives
+`nethttp.Call`/`rest.CallWithTransport` is the single-call client convenience that derives
 every request-side map from ONE struct automatically — this is the
 concrete "one struct, one call" experience end to end. See
 [REST API — Response merge fields](../features/rest-api.md#response-merge-fields)

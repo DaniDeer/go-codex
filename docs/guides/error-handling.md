@@ -224,7 +224,7 @@ route = reqreply.Transform(route, creditPolicy, func(ctx context.Context, req *R
 ### Recovering the failing middleware's name from an encode/decode failure
 
 ```go
-resp, err := nethttp.CallWithHandle(ctx, client, baseURL, handle, req, opts)
+resp, err := rest.CallWithTransport(ctx, transport, handle, req, opts)
 var outputErr rest.MiddlewareOutputError
 if errors.As(err, &outputErr) {
     // outputErr.Name — which middleware's Out failed to encode/decode
@@ -263,7 +263,7 @@ HANDLER's own business error: `rest.ErrorPattern`/`events.ErrorChannel`/
 handler's error matches type E, respond with this codec-backed payload"
 (see [checklist reference — error-path ergonomics](https://github.com/DaniDeer/go-codex/blob/main/.github/skills/review-go-codex/references/checklist.md)
 for the full per-boundary matrix). For REST specifically, this declaration
-round-trips all the way to the CLIENT: `nethttp.CallWithHandle`/
+round-trips all the way to the CLIENT: `rest.CallWithTransport`/
 `rest.Client.Call` automatically decode a matching response status via
 `RouteHandle.DecodeErrorFor` and return a typed, `errors.As`-navigable
 `nethttp.ErrorPatternResponse{StatusCode, Value, Body}` — one shared

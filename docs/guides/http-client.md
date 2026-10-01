@@ -7,23 +7,25 @@ This guide walks through the HTTP client example. For the full API reference, se
 ## examples/adapters-nethttp-client
 
 The most comprehensive client demo. Every call in the example shares ONE
-`(httpClient, baseURL)` pair against the SAME `contract.Route` value the
-server registered. It uses `nethttp.CallWithHandle` throughout — building
-each `contract.Route`'s `*rest.RouteHandle` ONCE via `route.ClientHandle()`
+`transport` (`nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient,
+BaseURL})`, built once) against the SAME `contract.Route` value the server
+registered. It uses `rest.CallWithTransport` throughout — building each
+`contract.Route`'s `*rest.RouteHandle` ONCE via `route.ClientHandle()`
 right after the server starts, then reusing that handle for every call —
-rather than `Client.Attach(nethttp.NewClientTransport(...))`/`rest.Client.Call`'s
+alongside `rest.NewClient()` + `Client.Attach(transport)`/`Client.Call`'s
 uniform `Call(ctx, route, req)` shape. Both are full-featured (path/query/
 header/cookie params, security/credential `ClientMW`, per-call format
 overrides, error-pattern decoding, and per-call `stats.Observer` overrides
 via `ClientCallOptions.Observer` are all supported by either path); this
 example deliberately demonstrates the pre-built-handle pattern because it
 is the lower-level primitive `Client.Call` itself is built on. Demonstrates
-both usage patterns in five numbered sections:
+both usage patterns in six numbered sections:
 
-1. **Body** — POST /users with a shared contract: `contract.CreateUser.Register(builder)` (server) and `nethttp.CallWithHandle(ctx, httpClient, baseURL, createUserHandle, req, opts)` (client) both operate on the SAME `rest.Route` value
-   - **1b. Client-side typed error decode** — `CreateUser` declares `rest.ErrorPattern[EmailConflictError, EmailConflictError](409, ...)`; calling `CallWithHandle` with a duplicate email returns a decoded `nethttp.ErrorPatternResponse` instead of the untyped `UnexpectedStatusError` — see "Handling the response" below
-2. **Path params** — GET /users/{id} with a path MERGE field (`rest.NewPathParam`) so `CallWithHandle` derives the path value directly from the request struct, codec validated client-side before any HTTP call is sent
-3. **Cookies + headers** — GET /profile with `CallOptions.CookieParams` + `CallOptions.HeaderParams`; empty or invalid values are rejected pre-flight
+0. **`Client.Attach` — the PREFERRED workflow** — one `Attach` call, then every route call is just `client.Call(ctx, route, req)`
+1. **Body** — POST /users with a shared contract: `contract.CreateUser.Register(builder)` (server) and `rest.CallWithTransport(ctx, transport, createUserHandle, req, opts)` (client) both operate on the SAME `rest.Route` value
+   - **1b. Client-side typed error decode** — `CreateUser` declares `rest.ErrorPattern[EmailConflictError, EmailConflictError](409, ...)`; calling `CallWithTransport` with a duplicate email returns a decoded `nethttp.ErrorPatternResponse` instead of the untyped `UnexpectedStatusError` — see "Handling the response" below
+2. **Path params** — GET /users/{id} with a path MERGE field (`rest.NewPathParam`) so `CallWithTransport` derives the path value directly from the request struct, codec validated client-side before any HTTP call is sent
+3. **Cookies + headers** — GET /profile with `ClientCallOptions.CookieParams` + `ClientCallOptions.HeaderParams`; empty or invalid values are rejected pre-flight
 4. **Security** — GET /data with a credential-providing implementation attached via `Route.ClientMW(mw, fn)` (paired against the route's declared `middleware.Middleware`) injecting an Authorization header; demonstrates all three cases: happy path, no credentials (401), credential-Fn error (pre-flight abort)
 5. **OpenAPI spec** — same `rest.Server` used by the server generates the full spec
 
@@ -45,32 +47,34 @@ if errors.As(err, &pathErr) {
 
 → [examples/adapters-nethttp-client](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-nethttp-client)
 
-## CallWithHandle vs. rest.Client.Call
+## CallWithTransport vs. rest.Client.Call
 
-`nethttp.CallWithHandle` is the lower-level, handle-based, full-featured
-primitive — it takes a `*rest.RouteHandle` directly (built once via
-`Route.ClientHandle()`) and is the recommended pattern for every call in
-this example (see the reasoning above):
+`rest.CallWithTransport` is the lower-level, handle-based, full-featured
+primitive — it takes an adapter-built `rest.ClientTransport` plus a
+`*rest.RouteHandle` directly (built once via `Route.ClientHandle()`) and
+is the recommended pattern for every call in this example (see the
+reasoning above):
 
 ```go
+transport := nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: httpClient, BaseURL: baseURL})
 handle := contract.CreateUser.ClientHandle() // build once
-user, err := nethttp.CallWithHandle(ctx, httpClient, baseURL, handle, req, nethttp.CallOptions{})
+user, err := rest.CallWithTransport(ctx, transport, handle, req, rest.ClientCallOptions{})
 ```
 
-`rest.Client.Call` (bound via `Client.Attach(nethttp.NewClientTransport(...))`) — the single-workflow
-entry point (Decision 6) `CallWithHandle`'s internal derivation logic also
+`rest.Client.Call` (bound via `Client.Attach(transport)`) — the single-workflow
+entry point `CallWithTransport`'s internal derivation logic also
 powers — is the RECOMMENDED pattern for a simpler, uniform `Call(ctx,
 route, req)` shape across REST/pub-sub. Both are full-featured (path/query/
 header/cookie params, security/credential `ClientMW`, per-call format
-overrides, error-pattern decoding — see below). `CallWithHandle` remains public and is still
+overrides, error-pattern decoding — see below). `CallWithTransport` remains public and is still
 needed directly for callers that already have a `*rest.RouteHandle` but no
 `rest.Route` value: `ports.Pattern`'s REST binding machinery
-(`DrainCallAdapter`/`CallAdapter`), which owns its own client/baseURL via
+(`DrainCallAdapter`/`CallAdapter`), which owns its own transport via
 `PortOptions`, and `adapters/mcprest`'s REST-to-MCP bridge.
 
 ## Handling the response: happy path vs error path
 
-`nethttp.CallWithHandle` always returns exactly `(Resp, error)` — the "one
+`rest.CallWithTransport` always returns exactly `(Resp, error)` — the "one
 struct, one call" contract holds for BOTH directions. There is no
 partial-success shape to handle: either you get a fully-decoded,
 fully-merged `Resp`, or you get a non-nil `error`.
@@ -78,7 +82,7 @@ fully-merged `Resp`, or you get a non-nil `error`.
 ### Happy path — use the returned value directly
 
 ```go
-user, err := nethttp.CallWithHandle(ctx, httpClient, baseURL, handle, req, nethttp.CallOptions{})
+user, err := rest.CallWithTransport(ctx, transport, handle, req, rest.ClientCallOptions{})
 if err != nil {
     // handle the error path — see below
     return err
@@ -94,12 +98,12 @@ returned as a non-nil `error` instead. A nil error guarantees a usable
 
 ### Error path — walk the error chain with `errors.As`
 
-Every failure mode `CallWithHandle` can produce is a distinct,
+Every failure mode `CallWithTransport` can produce is a distinct,
 `errors.As`-navigable typed error. Check them in the order they can occur
 — pre-flight (no network call sent) first, then response-side:
 
 ```go
-_, err := nethttp.CallWithHandle(ctx, httpClient, baseURL, handle, req, opts)
+_, err := rest.CallWithTransport(ctx, transport, handle, req, opts)
 if err == nil {
     return // happy path handled above
 }
@@ -161,7 +165,7 @@ Rule of thumb for "continuing" after an error:
 - **`nethttp.ErrorPatternResponse`** is a decoded, typed BUSINESS error the
   server declared — branch on `.Value`'s concrete type and handle it like
   any other domain error (see the "Client-side decode" section in the
-  [REST API feature page](../features/rest-api.md#client-side-decode--nethttpcallwithhandle-and-errorpatternresponse)).
+  [REST API feature page](../features/rest-api.md#client-side-decode--restcallwithtransport-and-errorpatternresponse)).
   **Give each `ErrorPattern` its own status code** — matching is status-only,
   so two patterns sharing a status make the client always decode via the
   FIRST-declared one, regardless of which the server actually sent (see the
@@ -182,7 +186,7 @@ Rule of thumb for "continuing" after an error:
 The manual `errors.As` + type-switch shown above works for any number of
 declared patterns, but 3 shorter alternatives are available — pick
 whichever fits the call site (see
-[Feature: REST API — client-side decode](../features/rest-api.md#client-side-decode--nethttpcallwithhandle-and-errorpatternresponse)
+[Feature: REST API — client-side decode](../features/rest-api.md#client-side-decode--restcallwithtransport-and-errorpatternresponse)
 for the full reference):
 
 All 3 live in `api/rest` (transport-independent — the same helpers work
@@ -218,11 +222,11 @@ doesn't match — never panics, never assumes a specific shape.
 
 ## Binary requests and responses (PNG, JPEG, PDF…)
 
-The client (`nethttp.CallWithHandle`/`rest.Client.Call`) supports binary request bodies and binary response bodies the same way as JSON — register `format.Binary` on the route handle and the client sets headers and validates automatically.
+The client (`rest.CallWithTransport`/`rest.Client.Call`) supports binary request bodies and binary response bodies the same way as JSON — register `format.Binary` on the route handle and the client sets headers and validates automatically.
 
 ### Sending a binary request body
 
-Register `format.Binary` via `WithRequestFormats`. The client calls `format.Binary.Marshal` (validates magic bytes and size), sets `Content-Type: image/png`, and sends the raw bytes as the request body. The route's path variable must be declared as a MERGE field (`rest.NewPathParam`, not a plain `PathParam`) since `CallWithHandle`/`rest.Client.Call` derive path values ONLY from merge fields — there is no manual `vars map[string]string` escape hatch:
+Register `format.Binary` via `WithRequestFormats`. The client calls `format.Binary.Marshal` (validates magic bytes and size), sets `Content-Type: image/png`, and sends the raw bytes as the request body. The route's path variable must be declared as a MERGE field (`rest.NewPathParam`, not a plain `PathParam`) since `CallWithTransport`/`rest.Client.Call` derive path values ONLY from merge fields — there is no manual `vars map[string]string` escape hatch:
 
 ```go
 pngCodec := codex.Bytes().
@@ -232,8 +236,9 @@ pngCodec := codex.Bytes().
 uploadHandle := uploadRoute.ClientHandle()
 uploadHandle.WithRequestFormats(format.Binary(pngCodec).WithContentType("image/png"))
 
-meta, err := nethttp.CallWithHandle(ctx, client, baseURL, uploadHandle, pngBytes,
-    nethttp.CallOptions{Observer: obs},
+transport := nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: client, BaseURL: baseURL})
+meta, err := rest.CallWithTransport(ctx, transport, uploadHandle, pngBytes,
+    rest.ClientCallOptions{Observer: obs},
 )
 ```
 
@@ -247,8 +252,8 @@ Register `format.Binary` via `WithFormats`. The client sets `Accept: image/png`,
 downloadHandle := downloadRoute.ClientHandle()
 downloadHandle.WithFormats(format.Binary(pngCodec).WithContentType("image/png"))
 
-png, err := nethttp.CallWithHandle(ctx, client, baseURL, downloadHandle, downloadReq,
-    nethttp.CallOptions{Observer: obs},
+png, err := rest.CallWithTransport(ctx, transport, downloadHandle, downloadReq,
+    rest.ClientCallOptions{Observer: obs},
 )
 // png is validated (magic bytes + size) — safe to write to disk or display
 ```
@@ -287,8 +292,8 @@ internal `caller`/`call[Req,Resp]` — the package's former public `Caller`/`New
 at CALL time, not a compile error. `Client.Call` is FULL-FEATURED: path/query/header/
 cookie params, security/credential `ClientMW`, per-call format override
 (`ClientCallOptions.RequestFormats`/`ResponseFormats`), and error-pattern decoding are all
-supported — there is no remaining "v1 scope" limitation. `nethttp.CallWithHandle` (the lower-level,
-handle-based primitive `NewClientTransport`'s internal transport wraps) remains fully featured and
+supported — there is no remaining "v1 scope" limitation. `rest.CallWithTransport` (the lower-level,
+handle-based primitive built directly on the SAME `ClientTransport` `Client.Attach` wraps) remains fully featured and
 unaffected; use it directly for anything beyond `Client.Call`'s `route`/`req`-as-`any` shape
 (e.g. a pre-built `*rest.RouteHandle` with no `rest.Route` value, or finer per-call control
 `ClientCallOptions` doesn't expose). `Client.Attach` is exclusive —

@@ -16,15 +16,15 @@ Two entry points exist:
   baseURL, then call `client.Call(ctx, route, req)` with a `rest.Route`
   value directly (the SAME value the server registers) — no separate
   "build a client copy" step needed at all.
-- **`nethttp.CallWithHandle`** — the lower-level, handle-based primitive
+- **`rest.CallWithTransport`** — the lower-level, handle-based primitive
   the client transport wraps internally. Stays public for callers that
   already have a `*rest.RouteHandle` but no `rest.Route` value, or that
   need finer per-call control `ClientCallOptions` doesn't expose — e.g. `ports.Pattern`'s
   REST binding machinery (`DrainCallAdapter`/`CallAdapter`), which owns
-  its own client/baseURL via `PortOptions`, or `adapters/mcprest`'s
+  its own transport via `PortOptions`, or `adapters/mcprest`'s
   REST-to-MCP bridge. `Client.Call` itself is full-featured (path/query/
   header/cookie params, security/credential `ClientMW`, per-call format
-  override, error-pattern decoding) — there is no capability `CallWithHandle`
+  override, error-pattern decoding) — there is no capability `CallWithTransport`
   has that `Client.Call` lacks.
 
 The package's former `Caller`/`NewCaller`/`Call[Req,Resp]` (a two-tier
@@ -100,7 +100,7 @@ declared merge fields; there is no manual `vars map[string]string` escape
 hatch. A route intended for client use must declare a merge field for
 every path/query/header/cookie value it needs. `Client.Call` is
 full-featured (JSON body, per-call format override, security/credential
-handling all supported) — use `nethttp.CallWithHandle` directly only when
+handling all supported) — use `rest.CallWithTransport` directly only when
 you need a pre-built `*rest.RouteHandle` or finer per-call control
 `ClientCallOptions` doesn't expose.
 
@@ -117,27 +117,28 @@ spec-accumulating `Builder` equivalent) configured with `opts.HTTPClient`+`opts.
 fulfillment lives on the `Route` itself via `ClientMW`, not on the
 internal caller.
 
-## nethttp.CallWithHandle
+## rest.CallWithTransport
 
 ```go
-func CallWithHandle[Req, Resp any](
-    ctx     context.Context,
-    client  *http.Client,
-    baseURL string,
-    handle  *rest.RouteHandle[Req, Resp],
-    req     Req,
-    opts    CallOptions,
+func CallWithTransport[Req, Resp any](
+    ctx       context.Context,
+    transport rest.ClientTransport,
+    handle    *rest.RouteHandle[Req, Resp],
+    req       Req,
+    opts      ...rest.ClientCallOptions,
 ) (Resp, error)
 ```
 
-`CallWithHandle` derives `vars`/`QueryParams`/`HeaderParams`/`CookieParams`
+`CallWithTransport` derives `vars`/`QueryParams`/`HeaderParams`/`CookieParams`
 from `req` automatically via the route's declared merge fields, and merges
 any response merge fields (e.g. a declared response header) back into the
 returned value — the full request+response, single-call story, with full
-type safety (no `any` cast) and access to every `CallOptions` field.
+type safety (no `any` cast) and access to every `ClientCallOptions` field.
 `rest.Client.Call` (via `Attach`) performs the identical derivation
 internally for the common case, trading some of these features for a
-uniform `Call(ctx, route, req)` shape across REST/pub-sub.
+uniform `Call(ctx, route, req)` shape across REST/pub-sub. `transport` is
+built once via `nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient, BaseURL})`
+(or `chi`'s equivalent) and reused for every call.
 
 **What Call does before sending the request:**
 1. `BuildPath(vars)` — derives path values from merge fields, validates each against its codec
@@ -154,10 +155,10 @@ uniform `Call(ctx, route, req)` shape across REST/pub-sub.
 
 A validation failure aborts the call and returns the typed error — no HTTP request is sent. Note some merge-field constraint failures now surface as `codex.ValidationError` (caught at merge-derive time) rather than `rest.PathParamError` (which only fires from `BuildPath`'s own re-validation).
 
-## CallOptions
+## rest.ClientCallOptions
 
 ```go
-nethttp.CallOptions{
+rest.ClientCallOptions{
     // Codec-validated params (pre-flight) — override the value derived
     // from a merge field for the same key, or add ad-hoc params the
     // struct doesn't declare.
@@ -166,7 +167,9 @@ nethttp.CallOptions{
     HeaderParams: map[string]string{"X-Tenant-ID": tenantID},
 
     // Extra headers — no codec validation (User-Agent, X-Request-ID, etc.)
-    ExtraHeaders: http.Header{"User-Agent": {"my-client/1.0"}},
+    // — map[string][]string (not net/http's http.Header, since api/rest
+    // may not import net/http; an identical underlying type).
+    ExtraHeaders: map[string][]string{"User-Agent": {"my-client/1.0"}},
 
     // OnCredentialRejected fires on HTTP 401 when a credential-providing
     // ClientMW implementation was attached — wire
@@ -223,7 +226,7 @@ if errors.As(err, &valErr) {
     )
 }
 
-// Pre-flight query param validation failure (from CallOptions.QueryParams, not a merge field)
+// Pre-flight query param validation failure (from ClientCallOptions.QueryParams, not a merge field)
 var qpErr rest.QueryParamError
 if errors.As(err, &qpErr) {
     logger.Warn("query param rejected (no request sent)",
@@ -271,11 +274,11 @@ func (o *CountingObserver) RecordValidationError(location, constraint, field str
 }
 ```
 
-Pass `nethttp.CallOptions{Observer: obs}` to every call to collect metrics.
+Pass `rest.ClientCallOptions{Observer: obs}` to every call to collect metrics.
 In production, replace the in-memory counters with Prometheus or
 OpenTelemetry instruments. `stats.WithObserver(ctx, obs)` stores an
 observer in `ctx` once — every call that receives that `ctx` picks it up
-automatically when `CallOptions.Observer` is nil.
+automatically when `ClientCallOptions.Observer` is nil.
 
 ## General-purpose `ClientMW` hook
 
@@ -308,10 +311,10 @@ route := contract.GetUser().ClientMW(nil, loggingHook)
 
 Multiple general-purpose hooks compose outermost-in, in attachment
 order — the first `.ClientMW(nil, ...)` call wraps every later one.
-`CallOptions.Observer`/`RecordRequest` are unaffected — the observer stays
+`ClientCallOptions.Observer`/`RecordRequest` are unaffected — the observer stays
 a permanent per-call field, independent of this hook, exactly as before.
 
-Only `Call`/`CallWithHandle` recognize this shape; SSE's
+Only `Call`/`CallWithTransport` recognize this shape; SSE's
 `Consume`/`CallSSEAdapter` recognize only the credential shape (SSE's
 per-event dispatch doesn't match the single-call wrap signature).
 
@@ -330,9 +333,10 @@ cachedFn, invalidate := nethttp.NewCachingCredentialFunc(fetchToken,
 securedRoute := contract.GetSecuredData(securedMw).ClientMW(&securedMw, cachedFn)
 
 // Wire invalidate into OnCredentialRejected for a retry-once-on-401 pattern.
-opts := nethttp.CallOptions{OnCredentialRejected: invalidate}
+opts := rest.ClientCallOptions{OnCredentialRejected: invalidate}
 handle := securedRoute.ClientHandle()
-resp, err := nethttp.CallWithHandle(ctx, httpClient, baseURL, handle, struct{}{}, opts)
+transport := nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: httpClient, BaseURL: baseURL})
+resp, err := rest.CallWithTransport(ctx, transport, handle, struct{}{}, opts)
 ```
 
 ## See also
@@ -342,4 +346,4 @@ resp, err := nethttp.CallWithHandle(ctx, httpClient, baseURL, handle, struct{}{}
 - [Guide: HTTP Client](../guides/http-client.md) — full walkthrough of the runnable demo
 - [Guide: Error Handling](error-handling.md) — all typed errors
 - [Guide: Observer](observer.md) — metrics wiring
-- [examples/adapters-nethttp-client](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-nethttp-client) — full demo with shared contract, cookies, headers, security, credential caching, Observer + slog, all via `nethttp.CallWithHandle`
+- [examples/adapters-nethttp-client](https://github.com/DaniDeer/go-codex/tree/main/examples/adapters-nethttp-client) — full demo with shared contract, cookies, headers, security, credential caching, Observer + slog, all via `rest.CallWithTransport`

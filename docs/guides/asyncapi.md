@@ -133,7 +133,7 @@ computeRoute := reqreply.NewRoute[ComputeReq, ComputeResp](
 ### Client-side decode — `RouteHandle.DecodeErrorFor` (mqtt5 + zeromq)
 
 `reqreply.ErrorPattern` round-trips all the way to the CLIENT, mirroring
-REST's `nethttp.CallWithHandle`/`ErrorPatternResponse` workflow — one
+REST's `rest.CallWithTransport`/`ErrorPatternResponse` workflow — one
 shared `Route` declaration, zero client-side boilerplate:
 
 ```go

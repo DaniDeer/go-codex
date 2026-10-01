@@ -120,14 +120,14 @@ func ReceiveAdapter[T any](mux *http.ServeMux, handle *rest.RouteHandle[T, struc
 on `rest.RouteHandle`) gives the exact marshaled bytes *before* the HTTP
 call is made. `DeliverAdapter` calls it once to compute the signature, adds
 the signature (and optionally a timestamp) header via
-`nethttp.CallOptions.ExtraHeaders`, then calls **`nethttp.CallWithHandle`**
+`rest.ClientCallOptions.ExtraHeaders`, then calls **`rest.CallWithTransport`**
 directly — the handle-based primitive `nethttp.Call` wraps internally,
 still fully exported (unlike `Handler`) specifically for callers holding a
 handle but no `rest.Route` value (the same primitive `ports`' own binding
 adapters and `adapters/mcprest` use) — full reuse of path/query/cookie/
 header validation, any handle-declared credential-providing
 `middleware.ClientImplementation`, observer, and tracing. Retry-with-backoff
-wraps the `CallWithHandle` invocation, mirroring `adapters/websocket`'s
+wraps the `CallWithTransport` invocation, mirroring `adapters/websocket`'s
 reconnect-backoff loop (`initialBackoff`, doubling, capped at `MaxBackoff`)
 rather than introducing a new stdlib dependency.
 
@@ -310,7 +310,7 @@ the Redis pub/sub roadmap ("the whole point of transport-agnostic hooks"):
   wrapped `nethttp.IngestAdapter`, unchanged) — status 401 on signature rejection.
 - `stats.SecurityObserver.RecordSecurityRejection(path, "webhook-hmac")` —
   type-asserted, fires on signature AND timestamp-tolerance failures.
-- `stats.Observer.RecordRequest` (client-side, via `nethttp.CallWithHandle`,
+- `stats.Observer.RecordRequest` (client-side, via `rest.CallWithTransport`,
   reused as-is) fires per outbound attempt, including retries — each retry
   is a distinct `RecordRequest` call, so retry count is directly observable.
 - Nil observer → `stats.ObserverFromContext(ctx)` (both directions have a
@@ -346,7 +346,7 @@ the Redis pub/sub roadmap ("the whole point of transport-agnostic hooks"):
 | File | Responsibility |
 |---|---|
 | `adapters/nethttp/binding.go` (Phase 0, EDIT not new) | add `IngestAdapterOptions.Middleware func(http.Handler) http.Handler`, apply it (when non-nil) to the handler before `mux.Handle` — nil-safe, zero behavior change for existing callers |
-| `adapters/webhook/doc.go` | package overview: inbound composes over `nethttp.IngestAdapter`'s Middleware hook, outbound reuses `nethttp.CallWithHandle`, both directions, spec story |
+| `adapters/webhook/doc.go` | package overview: inbound composes over `nethttp.IngestAdapter`'s Middleware hook, outbound reuses `rest.CallWithTransport`, both directions, spec story |
 | `adapters/webhook/signature.go` | `SignPayload`, `VerifySignature` |
 | `adapters/webhook/binding.go` | `ReceiveAdapter`, `DeliverAdapter` + options structs, internal `verifyMiddleware` |
 | `adapters/webhook/errors.go` | `SignatureError`, `DeliveryError` |

@@ -75,7 +75,7 @@ func (t *OTelTracer) StartSpan(ctx context.Context, op, name string) context.Con
 The library provides the hook; the user's implementation controls span parenting.
 
 All adapter entry points accept `context.Context`:
-- `rest.Client.Call(ctx, ...)`/`CallWithHandle(ctx, ...)` — HTTP client, propagates downstream
+- `rest.Client.Call(ctx, ...)`/`rest.CallWithTransport(ctx, ...)` — HTTP client, propagates downstream
 - `rest.Server.Serve(ctx)`/`nethttp.ServeOne` — HTTP server, ctx from `*http.Request.Context()`
 - `mqtt.NewPublishTransport[T](...).Publish(ctx, ...)` (via `events.PublishHandle`) — MQTT publish
 - `mqtt.NewSubscribeTransport[T](...).Subscribe(ctx, ...)` (via `events.SubscribeHandle`) — MQTT subscribe, ctx flows to handler
@@ -142,7 +142,7 @@ route.WithOptions(nethttp.Options{Observer: auditObserver}) // explicit, no look
 | Layer | ctx source | Resolution |
 |-------|-----------|------------|
 | **HTTP adapters** (`nethttp.Serve`/`ServeOne`/`ServeSSE`, chi mirrors) | `r.Context()` per-request | Resolved inside the request closure — a server middleware can inject per-request observers |
-| **HTTP client** (`Client.Call`/`Client.Consume`, `CallWithHandle`, `CallSSEAdapter`) | ctx passed to function | Resolved at call time — SAME mechanism as MQTT/ZeroMQ below; see the callout after this table for what this means for client wrapper packages |
+| **HTTP client** (`Client.Call`/`Client.Consume`, `CallWithTransport`, `CallSSEAdapter`) | ctx passed to function | Resolved at call time — SAME mechanism as MQTT/ZeroMQ below; see the callout after this table for what this means for client wrapper packages |
 | **SSE stream bridges** (`SSEFromStream`, `SSEFromHub`) | ctx from each SSE connection | Resolved inside the per-connection closure |
 | **MQTT adapters** (`Subscribe`, `Publish`) | ctx passed to function | Resolved at call time |
 | **ZeroMQ adapters** (`Subscribe`, `Publish`, `Serve`, `Call`) | ctx passed to function | Resolved at call time |
@@ -153,7 +153,7 @@ route.WithOptions(nethttp.Options{Observer: auditObserver}) // explicit, no look
 | **`sql.Validate`** | not applicable | No ctx parameter — falls back to `NoopObserver{}` only |
 
 > **Client wrapper packages inherit this for free.** Any package that
-> builds its own typed client on top of `rest.Client.Call`/`CallWithHandle`
+> builds its own typed client on top of `rest.Client.Call`/`CallWithTransport`
 > internally (a generated API client, a registry client, an SDK, etc.)
 > automatically supports `stats.WithObserver(ctx, obs)` with **zero extra
 > code**, as long as it doesn't hard-code a non-nil default into its own

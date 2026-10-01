@@ -141,7 +141,7 @@ shape:
 
 ```go
 // Client: ONE struct in, ONE struct out.
-resp, err := nethttp.CallWithHandle(ctx, client, baseURL, handle, req, nethttp.CallOptions{})
+resp, err := rest.CallWithTransport(ctx, transport, handle, req, rest.ClientCallOptions{})
 
 // Server: ONE struct in, ONE struct out.
 route := route.WithHandler(func(ctx context.Context, req Req) (Resp, error) {
@@ -232,14 +232,14 @@ there is no fourth:
    method. This is the declarative, common-case path — see
    `rest.ClientTransport`/`rest.ServerTransport` and `events.Transport` for
    the exact interfaces every REST/events adapter implements today
-   (`nethttp.Attach`/`AttachMux`, `chi.AttachRouter`, `mqtt5`/`mqtt`/
-   `zeromq.Attach`).
+   (`nethttp.NewServerTransport`/`NewClientTransport`,
+   `chi.NewServerTransport`, `mqtt5`/`mqtt`/`zeromq.NewTransport`).
 2. **A `ports.SourceAdapter`/`SinkAdapter`/`IOAdapter`/`ToolAdapter`/
    `LatestAdapter`/`DuplexAdapter` implementation**, bound via `Port.Bind`
    (Step 1's port-type classification).
 3. **A SANCTIONED, handle-based escape hatch** for callers needing a
    pre-built handle directly, or capability the declarative path doesn't
-   expose — `nethttp.CallWithHandle`/`CallSSEAdapter`,
+   expose — `rest.CallWithTransport`/`CallSSEAdapter`,
    `mqtt5`/`mqtt`/`zeromq`'s `NewPublishTransport`/`NewSubscribeTransport`
    (paired with `events.PublishHandle`/`SubscribeHandle`) are the shipped
    examples. Every one of these STILL takes a `*RouteHandle`/

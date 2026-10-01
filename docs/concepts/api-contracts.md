@@ -30,8 +30,9 @@ directions, both roles:
 ```go
 // Client: ONE struct in, ONE struct out.
 handle := getUserActivity.ClientHandle()
+transport := nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: client, BaseURL: baseURL})
 req := GetUserActivityReq{ID: userID, Filter: "logins"} // literal, or a New... factory
-resp, err := nethttp.CallWithHandle(ctx, client, baseURL, handle, req, nethttp.CallOptions{})
+resp, err := rest.CallWithTransport(ctx, transport, handle, req, rest.ClientCallOptions{})
 // resp is fully decoded AND merged — body + response header/cookie fields
 // (e.g. resp.RequestID) are all populated. Nothing else to do.
 
@@ -107,7 +108,7 @@ Step 5b).
 
 | Boundary | Declare-once constructor | Single-call convenience | Reference |
 |---|---|---|---|
-| REST (`api/rest` + `adapters/nethttp`/`chi`) | `rest.NewPathParam[T]`/`NewRequiredQueryParam[T]`/etc. + `NewRequiredResponseHeaderParam[Resp]`/etc. | `rest.Client.Call`/`nethttp.CallWithHandle` (client) + each adapter's internal serve dispatch, wired via `Server.Attach(NewServerTransport(...))` (server) | [Feature: REST API](../features/rest-api.md#one-line-client-calls--restclientcall--nethttpcallwithhandle) |
+| REST (`api/rest` + `adapters/nethttp`/`chi`) | `rest.NewPathParam[T]`/`NewRequiredQueryParam[T]`/etc. + `NewRequiredResponseHeaderParam[Resp]`/etc. | `rest.Client.Call`/`rest.CallWithTransport` (client) + each adapter's internal serve dispatch, wired via `Server.Attach(NewServerTransport(...))` (server) | [Feature: REST API](../features/rest-api.md#one-line-client-calls--restclientcall--restcallwithtransport) |
 | REST SSE (`api/rest` + `adapters/nethttp`/`chi`) | `rest.NewRequiredSSEEventParam[T]`/`NewOptionalSSEEventParam[T]` | `send(event)` on `SSEHandler`/`RegisterSSE` auto-merges path/query/header/cookie vars into each event | [Feature: SSE & Streaming](../features/sse-streaming.md#one-struct-one-call-for-sse-events) |
 | Events pub/sub (`api/events` + `adapters/mqtt`/`mqtt5`/`zeromq`) | `events.NewTopicParam[T]` | `events.PublishHandle` + each adapter's `NewPublishTransport` (publish) + `events.SubscribeHandle` + `NewSubscribeTransport` auto-merge (subscribe) | [Feature: Event Channels & MQTT](../features/events.md#topic-vars-with-automatic-merge-newtopicparam) |
 | Req/reply (`api/reqreply` + `adapters/mqtt5`/`zeromq`) | `reqreply.NewTopicParam[T]` (Req-side only) | `Client.Attach(NewClientTransport(...))` auto-merge (client) + `Server.Attach(NewServerTransport(...))` auto-merge (server) | [MQTT 5 Guide — Request/Reply](../guides/mqtt5.md) |
@@ -163,7 +164,7 @@ transport is ordinary HTTP, an SSE route reuses `api/rest`'s ENTIRE
 existing toolchain — path/query/header params, security schemes,
 OpenAPI generation, and (on the client side) `rest.Client.Consume`/
 `nethttp.CallSSEAdapter` — the STRICT client-side counterparts to
-`rest.Client.Call`/`nethttp.CallWithHandle` (see
+`rest.Client.Call`/`rest.CallWithTransport` (see
 docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 4), for a stream of many
 events instead of one response — with zero new machinery, instead of needing an
 AsyncAPI-shaped channel/message model built from scratch. This

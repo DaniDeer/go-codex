@@ -121,7 +121,7 @@ style preference. Every adapter entry point is one of exactly three shapes:
    pre-built `*rest.RouteHandle`/`*rest.SSERouteHandle`/`*events.ChannelHandle`
    directly rather than a `rest.Route`/`rest.SSERoute`/`events.Channel`
    value, or who need capability the declarative path doesn't expose (e.g.
-   per-call retry/backoff control). `nethttp.CallWithHandle`,
+   per-call retry/backoff control). `rest.CallWithTransport`,
    `nethttp.CallSSEAdapter`, and `mqtt5`/`mqtt`/`zeromq`'s
    `NewPublishTransport`/`NewSubscribeTransport` (paired with
    `events.PublishHandle`/`SubscribeHandle`) are the shipped examples. Every

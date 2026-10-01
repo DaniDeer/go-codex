@@ -472,7 +472,7 @@ Service B (server)
 
 | Entry point                                                         | ctx purpose                                           |
 | ------------------------------------------------------------------- | ----------------------------------------------------- |
-| `rest.Client.Call(ctx, route, req)` / `nethttp.CallWithHandle(ctx, client, baseURL, handle, req, opts)` | Creates child span, sends `traceparent` header |
+| `rest.Client.Call(ctx, route, req)` / `rest.CallWithTransport(ctx, transport, handle, req, opts)` | Creates child span, sends `traceparent` header |
 | `events.SubscribeHandle(ctx, sub, mqttTransport, fn)`               | Parent for subscribe span, passed to `fn(ctx, value)` |
 | `events.PublishHandle(ctx, pub, mqttTransport, msg)`                | Creates child span for publish                        |
 

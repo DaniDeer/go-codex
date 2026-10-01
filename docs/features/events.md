@@ -214,7 +214,7 @@ value, in one call.
 
 `events.PublishHandle` + each adapter's `NewPublishTransport[T]` is the single-call publisher
 convenience (Decision 7 of `docs/design/d-0002-pubsub-workflow-simplification.md`) — mirrors
-`nethttp.CallWithHandle`: the transport's `Publish` method derives the topic vars from the
+`rest.CallWithTransport`: the transport's `Publish` method derives the topic vars from the
 payload struct automatically via `codex.EncodeVars(msg, handle.MergeFields()...)` internally.
 The same convenience exists for every transport with a pub/sub event surface —
 `mqtt5.NewPublishTransport[T]`, `mqtt.NewPublishTransport[T]` (MQTT 3.1.1), and

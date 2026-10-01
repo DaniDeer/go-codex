@@ -14,7 +14,7 @@ go-codex documents security requirements in the spec and provides declarative ho
 
 ## Connection-level vs message-level security
 
-REST is stateless per-request — every `nethttp.CallWithHandle`/incoming request IS a
+REST is stateless per-request — every `rest.CallWithTransport`/incoming request IS a
 fresh connection-equivalent, so there's no "connection level" distinct
 from "message level" at all.
 
@@ -92,7 +92,7 @@ implied by the `servers` entry's own scheme, e.g. `https://`), and never
 touches go-codex's security-scheme model. Confirmed per transport:
 
 - **REST**: client-side, the caller supplies its own `*http.Client` to
-  `nethttp.Call`/`CallWithHandle` — TLS is entirely
+  `nethttp.Call`/`rest.CallWithTransport` — TLS is entirely
   `http.Transport.TLSClientConfig`'s concern (client certs, custom
   `RootCAs`, etc.), go-codex never constructs an `http.Client` itself.
   Server-side, `b.Attach(nethttp.NewServerTransport(...))`/`b.Attach(chiadapter.NewServerTransport(...))` just wire a `mux`/`router`;
@@ -290,7 +290,7 @@ The adapter enforcement sequence:
 
 Routes with `nil Security` (default) trigger enforcement when global security is set.
 
-`nethttp.CallWithHandle` (client-side) runs the SAME sequence, symmetrically, on the OUTGOING request before it is sent — see "HTTP client — credential-providing ClientMW" below. **`rest.Client.Call` (bound via `Client.Attach(nethttp.NewClientTransport(...))`) runs the SAME enforcement too** — it is full-featured: security/credential `ClientMW`, path/query/header/cookie params, per-call format override, and error-pattern decoding are all supported (see `adapters/nethttp/clienttransport.go`'s own doc comment for confirmation there is no remaining "v1 scope" limitation).
+`rest.CallWithTransport` (client-side) runs the SAME sequence, symmetrically, on the OUTGOING request before it is sent — see "HTTP client — credential-providing ClientMW" below. **`rest.Client.Call` (bound via `Client.Attach(nethttp.NewClientTransport(...))`) runs the SAME enforcement too** — it is full-featured: security/credential `ClientMW`, path/query/header/cookie params, per-call format override, and error-pattern decoding are all supported (see `adapters/nethttp/clienttransport.go`'s own doc comment for confirmation there is no remaining "v1 scope" limitation).
 
 ## Credential format validation
 
@@ -309,7 +309,7 @@ codex.String().Refine(validate.NonEmptyString)
 
 ## HTTP client — credential-providing `ClientMW`
 
-For `nethttp.CallWithHandle` and `rest.Client.Call` alike (both are
+For `rest.CallWithTransport` and `rest.Client.Call` alike (both are
 full-featured — see the "Runtime enforcement" section above), provide
 credentials via a credential-providing
 implementation attached with [`Route.ClientMW`](../features/http-client.md),
@@ -334,13 +334,14 @@ securedRoute := rest.NewRoute[GetDataReq, Data]("GET", "/data",
 })
 
 handle := securedRoute.ClientHandle()
-data, err := nethttp.CallWithHandle(ctx, http.DefaultClient, serverURL, handle, GetDataReq{}, nethttp.CallOptions{})
+transport := nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: http.DefaultClient, BaseURL: serverURL})
+data, err := rest.CallWithTransport(ctx, transport, handle, GetDataReq{}, rest.ClientCallOptions{})
 ```
 
 The credential-providing `Fn` is GATED by `Satisfies` (derived from
 `mw.Security.SchemeName`) vs. the route's declared requirements — it only
 runs when the route actually declares that scheme. For static
-credentials, use `CallOptions.ExtraHeaders` instead.
+credentials, use `ClientCallOptions.ExtraHeaders` instead.
 
 **Symmetric credential-format validation.** If `securedRoute`'s declared
 scheme carries a non-nil `Codec` — populated identically on BOTH
@@ -386,23 +387,24 @@ securedRoute := contract.GetSecuredData(securedMw).ClientMW(&securedMw, credFn)
   credential. `NewCachingCredentialFunc` does NOT know when a credential is
   rejected — the server only reveals that via a 401 response, which is
   observed by `Call`, not by the credential Fn (which runs before
-  the network call). Wire `invalidate` to `CallOptions.OnCredentialRejected`
+  the network call). Wire `invalidate` to `ClientCallOptions.OnCredentialRejected`
   and retry once, explicitly:
 
 ```go
-callOpts := nethttp.CallOptions{
+callOpts := rest.ClientCallOptions{
     OnCredentialRejected: invalidate, // purges the cache; does NOT retry
 }
 handle := securedRoute.ClientHandle()
-resp, err := nethttp.CallWithHandle(ctx, http.DefaultClient, serverURL, handle, req, callOpts)
+transport := nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: http.DefaultClient, BaseURL: serverURL})
+resp, err := rest.CallWithTransport(ctx, transport, handle, req, callOpts)
 
 var statusErr nethttp.UnexpectedStatusError
 if errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusUnauthorized {
-    resp, err = nethttp.CallWithHandle(ctx, http.DefaultClient, serverURL, handle, req, callOpts) // fresh credential now
+    resp, err = rest.CallWithTransport(ctx, transport, handle, req, callOpts) // fresh credential now
 }
 ```
 
-`OnCredentialRejected` is purely a notification hook — `CallWithHandle`
+`OnCredentialRejected` is purely a notification hook — `CallWithTransport`
 never retries automatically, keeping control flow explicit and in the
 caller's hands.
 
@@ -511,7 +513,7 @@ err := events.SubscribeHandle(ctx, userCreatedSub.SubscribeMW(&bearerAuth,
 The client (publish) side is symmetric via `PublishMW` — supplies the
 credential as MQTT5 User Properties, and the SAME built-in codec check runs
 BEFORE the message is actually published, mirroring
-`nethttp.CallWithHandle`'s `CredentialFunc` handling exactly.
+`rest.CallWithTransport`'s `CredentialFunc` handling exactly.
 
 MQTT 3.1.1 (`adapters/mqtt`) has no per-message metadata channel, so
 User-Property-style codec extraction only applies to MQTT5 — but message-level

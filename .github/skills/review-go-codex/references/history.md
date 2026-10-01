@@ -1,6 +1,68 @@
-# go-codex Review History (R1–R146, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
+# go-codex Review History (R1–R147, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 147 (post-middleware-consolidation §14 sweep — nethttp.CallWithHandle deletion never fully propagated)
+
+Triggered by the user invoking this skill after the middleware-consolidation roadmap doc was
+merged into D-0003. Phase 1 focused on the just-changed middleware files plus a full checklist
+§14 (Godoc & Documentation-Site Reference Integrity) sweep, confirming `nethttp.CallWithHandle`
+(deleted during an earlier round's Phase 5a) had never been fully propagated beyond the example
+code and `go-codex.instructions.md` — a much larger gap than any single prior round caught.
+
+- **G1 — 4 current, user-facing docs extensively described the deleted `nethttp.CallWithHandle`
+  as present-day API, with dozens of non-compiling code examples**: `docs/guides/http-client.md`
+  (18 mentions, essentially the whole guide), `docs/features/rest-api.md` (12), `docs/features/
+  http-client.md` (9, essentially the whole feature page), `docs/features/security.md` (9).
+  Rewrote every mention/example to use `rest.CallWithTransport(ctx, transport, handle, req, opts)`
+  (built via `nethttp.NewClientTransport(...)`) and `rest.ClientCallOptions` (not
+  `nethttp.CallOptions`), matching `examples/adapters-nethttp-client`'s already-migrated real code
+  exactly. Also fixed the cross-referencing anchor fragment
+  (`#client-side-decode--nethttpcallwithhandle-and-errorpatternresponse` →
+  `#client-side-decode--restcallwithtransport-and-errorpatternresponse`) after renaming the
+  corresponding heading in `rest-api.md`.
+- **G2 — 12 more current docs with the same stale pattern, smaller footprint each**:
+  `docs/concepts/api-contracts.md` (1 code example + 2 prose), `docs/features/observer.md` (3),
+  `docs/guides/error-handling.md` (2, including 1 code example), `docs/features/ports.md` (2),
+  `docs/features/mcp.md` (2), `docs/concepts/codec.md`, `docs/concepts/pipelines.md`,
+  `docs/concepts/ports-and-adapters.md`, `docs/guides/observer.md`, `docs/guides/asyncapi.md`,
+  `docs/features/error-handling.md`, `docs/features/events.md` (1 each). Same mechanical fix.
+- **G3 — `.github/skills/add-a-new-adapter/SKILL.md`**: a non-compiling `nethttp.CallWithHandle`
+  code example plus present-tense prose listing it as a current adapter export; also found and
+  fixed an adjacent, same-class staleness in the same paragraph (`nethttp.Attach`/`AttachMux`/
+  `chi.AttachRouter`/`zeromq.Attach` — standalone functions deleted by the EARLIER Attach-factory
+  redesign, never caught by any prior round since this skill file wasn't in Round 1-146's regular
+  read set).
+- **G4 — this skill's OWN `references/checklist.md`**: 4 separate sections (§7's "adapters/nethttp
+  client" header+table, the format-options row, the REST boundary-symmetry row, and the
+  error-path-ergonomics row) all presented `nethttp.CallWithHandle`/`nethttp.Attach`/`AttachMux`/
+  `AttachRouter` as current. Rewrote all 4 to `rest.CallWithTransport`/`Client.Attach`/
+  `Server.Attach(nethttp.NewServerTransport(...))`, with an explicit "REPLACING the former
+  adapter-owned `nethttp.CallWithHandle`" note so the historical lineage stays visible to future
+  reviewers.
+- **G5 — `docs/roadmap/webhook-adapter.md`** (idea-only roadmap doc, 4 mentions) and
+  **`docs/roadmap/index.md`** (1 mention in the same doc's summary row): same mechanical fix.
+- **G6 — `adapters/mqtt5/reqreply_transport.go`**: 2 dangling godoc `[FromUserPropertyParam]`/
+  `[FromResponseUserPropertyParam]` bracket-links (both deleted this session, in the
+  middleware-consolidation round) each also citing a dead `docs/roadmap/reqreply-middleware.md`
+  path. Reworded both doc comments to describe the current
+  `WithRequestPropertySpec`/`WithResponsePropertySpec` mechanism and dropped the dead path mention.
+
+Deferred, no action taken (matches established precedent): `adapters/mcprest/bridge_test.go:77`'s
+test function name `TestToolHandler_HappyPath_ForwardsToCallWithHandle` references the deleted
+function in its name only (body unaffected, zero pkg.go.dev visibility) — same class as the
+~150 `TestAttachServer_*`-named internal test functions already deliberately left alone by earlier
+rounds. `docs/design/d-0001` through `d-0006`, `docs/design/index.md`,
+`.github/instructions/go-codex.instructions.md`, and both skills' `history.md` round-logs were all
+independently re-confirmed to already be correctly historical/past-tense — left untouched.
+
+Full verification: `gofmt -l .` clean; `go build ./...`/`go vet ./...` clean; `go test ./...` — 56
+packages, zero failures; `just check` — 0 issues/501 files; every example under `examples/*/`
+re-run to exit 0; a final repo-wide grep confirmed zero remaining present-tense
+`nethttp.CallWithHandle` mentions anywhere in the repo (only correctly-historical, past-tense
+mentions remain, in Go source comments, frozen design docs, and both skills' own round-log files).
 
 ---
 

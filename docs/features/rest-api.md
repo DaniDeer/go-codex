@@ -173,7 +173,7 @@ for the underlying mechanism.
 ### Client-side encode — role-aware merge fields
 
 The merge fields declared via `NewPathParam`/`NewRequiredQueryParam`/etc.
-also benefit the CLIENT (encode) direction: `nethttp.CallWithHandle`/`rest.Client.Call` take the
+also benefit the CLIENT (encode) direction: `rest.CallWithTransport`/`rest.Client.Call` take the
 `rest.Route` value directly and ALWAYS auto-derives path/query/header/cookie
 values from its declared merge fields internally — there is no manual
 `vars map[string]string`/`codex.EncodeVars` step for the caller to perform;
@@ -257,7 +257,7 @@ route.WithHandler(func(ctx context.Context, req GetUserActivityReq) (User, error
 // ... builder.Attach(nethttp.NewServerTransport(nethttp.ServerTransportOptions{Mux: mux, Addr: addr})) + builder.Serve(ctx) wires it
 ```
 
-On the **client**, `nethttp.CallWithHandle`/`rest.Client.Call` automatically merge the HTTP response's
+On the **client**, `rest.CallWithTransport`/`rest.Client.Call` automatically merge the HTTP response's
 `X-Request-Id` header back into the decoded `User.RequestID` field — no
 `resp.Header.Get(...)` call needed. `NewRequiredResponseCookieParam`/
 `NewOptionalResponseCookieParam` work identically for Set-Cookie values.
@@ -269,9 +269,9 @@ Path/Secure/SameSite override) — use `nethttp.WithResponseCookies`
 directly for custom attributes, the same escape hatch that remains for any
 field not modeled as a struct field.
 
-### One-line client calls — rest.Client.Call / nethttp.CallWithHandle
+### One-line client calls — rest.Client.Call / rest.CallWithTransport
 
-`rest.Client.Call` (bound via `Client.Attach(nethttp.NewClientTransport(...))`) and `nethttp.CallWithHandle`
+`rest.Client.Call` (bound via `Client.Attach(nethttp.NewClientTransport(...))`) and `rest.CallWithTransport`
 both derive `vars`/`QueryParams`/`HeaderParams`/`CookieParams` from `req`
 automatically, using the route's role-aware merge-field accessors — no
 `codex.EncodeVars` calls needed at the call site. `rest.Client.Call` is the
@@ -291,7 +291,7 @@ Any entry explicitly set in `opts.QueryParams`/`HeaderParams`/`CookieParams`
 takes PRECEDENCE over the value `Call` derives from `req` for the
 same key — this lets you override a field's value or add an ad-hoc param
 the struct doesn't declare, without losing the one-line convenience for
-the common case. `nethttp.CallWithHandle` remains available as the
+the common case. `rest.CallWithTransport` remains available as the
 lower-level, handle-based escape hatch for callers that already have a
 `*rest.RouteHandle` but no `rest.Route` value.
 
@@ -306,7 +306,7 @@ version.
 
 This convenience also runs through the `ports` binding layer:
 `nethttp.DrainCallAdapter` (`ports.SinkAdapter`) and `nethttp.CallAdapter`
-(`ports.IOAdapter`) delegate to `CallWithHandle` and derive path/query/header/
+(`ports.IOAdapter`) delegate to `rest.CallWithTransport` and derive path/query/header/
 cookie vars PER-ITEM from each streamed item's own merge fields whenever
 their `Vars` option is left `nil` — every item may resolve to a different
 concrete request. Set `Vars` to a non-nil map to keep the same, static vars
@@ -385,7 +385,7 @@ API. See `examples/rest-nested-binary` for the full runnable version:
 nested `Meta`/`Payload` sub-structs, Gob body projected onto `Payload`,
 header/query merged into `Meta`, and a response header merge field
 (`Resp.Meta.TraceID`) — one struct in, one struct out, on both
-`nethttp.CallWithHandle` (client) and each adapter's internal serve dispatch, wired via `Server.Attach(NewServerTransport(...))` (server).
+`rest.CallWithTransport` (client) and each adapter's internal serve dispatch, wired via `Server.Attach(NewServerTransport(...))` (server).
 
 ## BuildPath — type-safe URL construction
 
@@ -539,16 +539,17 @@ boundary, adapted to its transport: [`events.ErrorChannel`](events.md#error-path
 (MCP tools), and the [Store/IO boundaries](../guides/error-handling.md#storeio-boundaries-sql-cache-file--handlelog-by-default)
 composition pattern (SQL/Cache/File).
 
-### Client-side decode — `nethttp.CallWithHandle` and `ErrorPatternResponse`
+### Client-side decode — `rest.CallWithTransport` and `ErrorPatternResponse`
 
 The declarative `ErrorPattern` data is not server-only — `Route.ClientHandle()`/
 `Register()` carry the SAME declared patterns onto the client-side
-`RouteHandle`. `nethttp.CallWithHandle` consults them automatically on any non-2xx
+`RouteHandle`. `rest.CallWithTransport` consults them automatically on any non-2xx
 response:
 
 ```go
 handle := clientCreate.ClientHandle()
-_, err := nethttp.CallWithHandle(ctx, client, baseURL, handle, req, nethttp.CallOptions{})
+transport := nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: client, BaseURL: baseURL})
+_, err := rest.CallWithTransport(ctx, transport, handle, req, rest.ClientCallOptions{})
 if err != nil {
     var conflict nethttp.ErrorPatternResponse
     if errors.As(err, &conflict) {
@@ -644,18 +645,19 @@ articleRoute := rest.NewRoute[struct{}, ArticleProps]("GET", "/article",
 ```
 
 `Route.ClientHandle()` applies these SAME declared formats identically to
-`Register`/`RegisterHandle` — `nethttp.CallWithHandle`/`rest.Client.Call` pick up a declared
+`Register`/`RegisterHandle` — `rest.CallWithTransport`/`rest.Client.Call` pick up a declared
 `RequestFormats`/`Formats` automatically, whether the route was registered
 with a `Server` or built client-only via `ClientHandle()`.
 
 To override the format for ONE specific call without changing the route's
-declaration, set `CallOptions.RequestFormats`/`ResponseFormats` (type-erased
+declaration, set `ClientCallOptions.RequestFormats`/`ResponseFormats` (type-erased
 `[]format.Format[Req]`/`[]format.Format[Resp]`) — wins over the
 route-declared format for that call only:
 
 ```go
 handle := createUser.ClientHandle()
-resp, err := nethttp.CallWithHandle(ctx, client, baseURL, handle, req, nethttp.CallOptions{
+transport := nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: client, BaseURL: baseURL})
+resp, err := rest.CallWithTransport(ctx, transport, handle, req, rest.ClientCallOptions{
     ResponseFormats: []format.Format[User]{format.YAML(userCodec)},
 })
 ```

@@ -82,7 +82,7 @@ if errors.As(err, &ve) {
 | `rest.SecurityCredentialError` | credential codec validation failure | `SecurityCredentialError{Scheme, Err}` |
 | `rest.SecurityError` | `SecurityFunc` rejected the request | `SecurityError{Err}` |
 
-## HTTP client errors (adapters/nethttp — `Client.Call`/`CallWithHandle`)
+## HTTP client errors (adapters/nethttp — `Client.Call`/`rest.CallWithTransport`)
 
 | Error type | When returned |
 |---|---|

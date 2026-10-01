@@ -446,12 +446,11 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 		return err
 	}
 
-	// Phase 1b: header-param-as-middleware (docs/roadmap/reqreply-
-	// middleware.md). requestHeaderParams are declared via [reqreply.
-	// Route.Use]/[FromUserPropertyParam] — validated against the real
-	// incoming message's User Properties, ADDITIVELY alongside the OLD
-	// [ServeOptions.UserPropertyParams] escape hatch (unchanged, checked
-	// separately inside baseHandler below). Reuses the SAME
+	// requestHeaderParams are declared via [reqreply.Route.Use] +
+	// [reqreply.Middleware.WithRequestPropertySpec] — validated against
+	// the real incoming message's User Properties, ADDITIVELY alongside
+	// the OLD [ServeOptions.UserPropertyParams] escape hatch (unchanged,
+	// checked separately inside baseHandler below). Reuses the SAME
 	// [validateUserProperties]/[MissingUserPropertyError]/
 	// [UserPropertyError] machinery the old mechanism already uses — the
 	// failure MODE is identical, only the attachment surface differs.
@@ -1104,9 +1103,8 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 		return nil, err
 	}
 
-	// Phase 1b: header-param-as-middleware (docs/roadmap/reqreply-
-	// middleware.md) — reply/response-side. responseHeaderParams are
-	// declared via [reqreply.Route.Use]/[FromResponseUserPropertyParam],
+	// reply/response-side. responseHeaderParams are declared via
+	// [reqreply.Route.Use] + [reqreply.Middleware.WithResponsePropertySpec],
 	// validated against the reply message's User Properties inside
 	// innerCall below, reusing the SAME [validateUserProperties]
 	// machinery the request side (and the OLD escape hatch) already use.
