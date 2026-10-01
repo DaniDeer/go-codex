@@ -351,22 +351,33 @@ split across TWO axes REST's own shape demands:
 - **Tier 2 (Implicit) — NEW, not needed by events/reqreply**:
   `rest.HeaderParam`/`CookieParam`/`QueryParam` become GENUINELY
   runtime-checked capabilities once REST has more than one transport
-  family. Three OPTIONAL marker interfaces —
-  `rest.HeaderCapableTransport`/`CookieCapableTransport`/
-  `QueryCapableTransport` (one no-op method each) — are implemented by
-  an adapter's own transport type; `RouteHandle.HeaderParamNames()`/
-  `CookieParamNames()`/`QueryParamNames()` (mirrors `PathParamNames()`)
-  return the FULL declared set (plain-opt AND declarative-middleware-
-  merged) for an adapter's `Serve` dispatch to scan, ALONGSIDE
-  every declared `SecurityScheme`'s `In` field
-  (`rest.RequiredParamKinds`) — closing a gap where a Cookie-based API
-  key with no separate `CookieParam` would otherwise bypass the check.
-  `adapters/nethttp`/`adapters/chi` implement all 3 markers trivially
-  (HTTP always supports headers/cookies/query) — every EXISTING route
-  using these params continues to work with ZERO behavior change,
-  proven by the full existing test suite passing unmodified.
-  `rest.UnsupportedParamKindError` fires at attach time for a param kind
-  an adapter's transport genuinely can't carry — e.g. the future ZeroMQ
+  family. Three REAL, callable interfaces —
+  `rest.HeaderCapableTransport` (`ExtractHeaders() map[string]string`),
+  `rest.CookieCapableTransport` (`ExtractCookies() map[string]string`),
+  and `rest.QueryCapableTransport` (`ExtractQuery() map[string]string`
+  + `ExtractQueryMulti() map[string][]string`) — are implemented by an
+  adapter's own per-request carrier type (`adapters/nethttp`/
+  `adapters/chi`'s `httpCarrier`, `adapters/websocket`'s `wsCarrier`),
+  constructed fresh for each request/connection and used for BOTH the
+  attach-time coverage check AND the actual query/header/cookie
+  extraction at dispatch time — these are no longer presence-only
+  markers; `rest.CheckParamKindCoverage(adapter, requiredKinds,
+  transport)` type-asserts against a zero-value carrier to answer
+  "does this transport support extracting this param kind at all,"
+  while the SAME carrier's methods do the real per-request work.
+  `RouteHandle.HeaderParamNames()`/`CookieParamNames()`/
+  `QueryParamNames()` (mirrors `PathParamNames()`) return the FULL
+  declared set (plain-opt AND declarative-middleware-merged) for
+  `CheckParamKindCoverage` to scan, ALONGSIDE every declared
+  `SecurityScheme`'s `In` field (`rest.RequiredParamKinds`) — closing a
+  gap where a Cookie-based API key with no separate `CookieParam` would
+  otherwise bypass the check. `adapters/nethttp`/`adapters/chi`/
+  `adapters/websocket` implement all 3 interfaces trivially (HTTP
+  always supports headers/cookies/query) — every EXISTING route using
+  these params continues to work with ZERO behavior change, proven by
+  the full existing test suite passing unmodified. `rest.
+  UnsupportedParamKindError` fires at attach time for a param kind an
+  adapter's transport genuinely can't carry — e.g. the future ZeroMQ
   REQ/REP adapter deliberately omitting `CookieCapableTransport`.
   Renders into the OpenAPI spec's `x-codex-capabilities` vendor
   extension (mirrors AsyncAPI's own `x-capabilities`).

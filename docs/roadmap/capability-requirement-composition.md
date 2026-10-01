@@ -3734,32 +3734,17 @@ COMPLETE — Phase 8 is the closing review pass, not further feature work:
     `.github/skills/review-docs/references/history.md`'s Round DR12 for
     the full finding list. **Phase 8 item 2 (review-docs, all 4
     sub-items) is now fully complete.**
-- **Joint declarative-workflow walkthrough** — once Phase 3 ships,
-  design review alone won't catch every rough edge; only walking the
-  real, end-to-end user journey does. Together (user + agent), declare
-  one `api/rest`, one `api/events`, and one `api/reqreply` API from
-  scratch, step by step: struct codec definition → route/channel
-  declaration → capability requirement declaration → adapter
-  attachment → running it. This is a real "first-time user" simulation,
-  not a test-writing exercise. Document every friction point, awkward
-  step, or improvement opportunity found along the way — either as a
-  Learnings entry in this doc or as a new follow-on roadmap doc if the
-  fix is substantial enough to warrant one.
-- **Add three per-API guided tutorial skills**, split rather than
-  combined (per explicit preference), so each covers one API's full
-  declarative workflow end to end:
-  - `.github/skills/tutorial-api-rest/SKILL.md`
-  - `.github/skills/tutorial-api-events/SKILL.md`
-  - `.github/skills/tutorial-api-reqreply/SKILL.md`
-
-  Each skill's scope mirrors the joint walkthrough above: guide a user,
-  live, from struct codec definition through route/channel declaration,
-  capability requirement declaration, and adapter attachment. Author
-  these during Phase 4, informed by whatever the joint walkthrough
-  surfaces — the tutorials should teach the polished workflow, not the
-  as-yet-unrefined one. Follow
-  `.github/instructions/agent-skills.instructions.md` for skill
-  authoring conventions.
+- **Joint declarative-workflow walkthrough + 3 per-API tutorial
+  skills — SPUN OUT into their own roadmap doc,
+  [`docs/roadmap/declarative-workflow-tutorials.md`](declarative-workflow-tutorials.md),
+  Design draft.** Mirrors how `design-doc-compaction.md` and
+  `mqtt5-capability-extensions.md` were already spun out above — both
+  remaining Phase 8 items (the human-in-the-loop walkthrough declaring
+  one `api/rest`/`api/events`/`api/reqreply` API end-to-end, and the 3
+  `tutorial-api-{rest,events,reqreply}` skills it feeds) are now planned
+  in full detail there, not inline here. See that doc for the exact
+  walkthrough script, the shared tutorial-skill shape, and its own Open
+  design decisions.
 - **`docs/roadmap/zeromq-rest-adapter.md` — SPUN OUT ALREADY, not a
   Phase 4 task.** An earlier draft of this bullet flagged a sequencing
   tension (a dedicated adapter roadmap doc normally belongs BEFORE its

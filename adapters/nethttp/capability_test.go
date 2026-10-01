@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"github.com/DaniDeer/go-codex/api/rest"
@@ -87,5 +89,67 @@ func TestServe_CapabilityCoverage_APIKeyCookieScheme_StillPasses(t *testing.T) {
 	mux := http.NewServeMux()
 	if err := serve(mux, b); err != nil {
 		t.Fatalf("Serve: %v (want nil — Cookie kind implied by SecurityScheme.In must still pass)", err)
+	}
+}
+
+// TestHttpCarrier_ExtractQuery_FirstValueWins confirms httpCarrier.ExtractQuery
+// (unlike ExtractQueryMulti) collapses a repeated query key to its first
+// value — the documented first-value-wins contract.
+func TestHttpCarrier_ExtractQuery_FirstValueWins(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/?dryRun=true&dryRun=false&tenant=acme", nil)
+	c := httpCarrier{r}
+	got := c.ExtractQuery()
+	want := map[string]string{"dryRun": "true", "tenant": "acme"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ExtractQuery() = %v, want %v", got, want)
+	}
+}
+
+// TestHttpCarrier_ExtractQueryMulti_PreservesAllValues confirms
+// ExtractQueryMulti keeps every value for a repeated query key, unlike
+// ExtractQuery's first-value-wins collapse.
+func TestHttpCarrier_ExtractQueryMulti_PreservesAllValues(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/?tags=a&tags=b&tags=c", nil)
+	c := httpCarrier{r}
+	got := c.ExtractQueryMulti()
+	want := map[string][]string{"tags": {"a", "b", "c"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ExtractQueryMulti() = %v, want %v", got, want)
+	}
+}
+
+// TestHttpCarrier_ExtractHeaders_FirstValueWins confirms
+// httpCarrier.ExtractHeaders collapses a multi-value header to its first
+// value, mirroring ExtractQuery's contract on the header axis.
+func TestHttpCarrier_ExtractHeaders_FirstValueWins(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Add("X-Trace-Id", "trace-1")
+	r.Header.Add("X-Trace-Id", "trace-2")
+	r.Header.Set("X-Tenant", "acme")
+	c := httpCarrier{r}
+	got := c.ExtractHeaders()
+	if got["X-Trace-Id"] != "trace-1" {
+		t.Errorf("ExtractHeaders()[X-Trace-Id] = %q, want %q", got["X-Trace-Id"], "trace-1")
+	}
+	if got["X-Tenant"] != "acme" {
+		t.Errorf("ExtractHeaders()[X-Tenant] = %q, want %q", got["X-Tenant"], "acme")
+	}
+}
+
+// TestHttpCarrier_ExtractCookies_FirstValueWins confirms
+// httpCarrier.ExtractCookies collapses a repeated cookie name to its
+// first value, mirroring ExtractQuery/ExtractHeaders' contract.
+func TestHttpCarrier_ExtractCookies_FirstValueWins(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.AddCookie(&http.Cookie{Name: "session", Value: "first"})
+	r.Header.Add("Cookie", "session=second")
+	r.AddCookie(&http.Cookie{Name: "tenant", Value: "acme"})
+	c := httpCarrier{r}
+	got := c.ExtractCookies()
+	if got["session"] != "first" {
+		t.Errorf("ExtractCookies()[session] = %q, want %q", got["session"], "first")
+	}
+	if got["tenant"] != "acme" {
+		t.Errorf("ExtractCookies()[tenant] = %q, want %q", got["tenant"], "acme")
 	}
 }
