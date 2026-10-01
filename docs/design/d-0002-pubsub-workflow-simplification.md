@@ -334,8 +334,10 @@ multi-phase implementation rounds can avoid repeating them.
 > rejects any `.Use()`-attached middleware setting them; the PROPER
 > long-term fix (a common-base + per-pattern-derived middleware TYPE
 > hierarchy) is bigger than pub/sub — confirmed `api/reqreply` has the
-> SAME pre-existing issue already shipped — spun out to
-> [Common-Base + Per-Pattern-Derived Middleware Types](../roadmap/common-middleware-architecture.md).
+> SAME pre-existing issue already shipped — spun out, and since
+> resolved non-breakingly by
+> [D-0003 — Codec-Declared Middlewares](d-0003-codec-declared-middlewares.md)'s
+> additive `RouteMiddleware`/`Declaration[In,Out]` mechanism instead.
 > F7 (resolved) — `ServeSubscribers` (unlike the already-minimal
 > `Subscribe(fn)`) genuinely needed a non-nil `*events.Client` with ≥1
 > registered `Subscriber[T]`, with no zero-ceremony shortcut; fixed by
@@ -1079,8 +1081,11 @@ PRE-EXISTING, not pub/sub-specific, and the PROPER fix (a common-base +
 per-API-pattern-derived middleware TYPE hierarchy, making the mistake a
 Go COMPILE error instead of a runtime one) means retrofitting REST's
 and reqreply's already-shipped code — genuinely out of THIS doc's
-scope. See [Common-Base + Per-Pattern-Derived Middleware Types](../roadmap/common-middleware-architecture.md)
-for that bigger investigation, spun out rather than folded in here.
+scope. Spun out rather than folded in here, and since resolved
+non-breakingly by
+[D-0003 — Codec-Declared Middlewares](d-0003-codec-declared-middlewares.md)'s
+additive `RouteMiddleware`/`Declaration[In,Out]` mechanism instead of
+the originally-sketched breaking struct split.
 
 #### Why `Subscribe(fn)` itself never became declare-time-only (still true — refined, not reversed, by the next subsection)
 
@@ -3193,7 +3198,7 @@ still open at the time this section was written, tracked via spun-out
 docs — `zeromq-security.md` (SHIPPED since, then deleted per its own
 graduation policy — folded into [D-0004](d-0004-reqreply-workflow-simplification.md)'s
 Addendum), `d-0004-reqreply-workflow-simplification.md`,
-`common-middleware-architecture.md`, `d-0006-protocol-native-capabilities.md` —
+`common-middleware-architecture.md` (resolved by D-0003, now deleted), `d-0006-protocol-native-capabilities.md` —
 none blocking THIS doc's own completion; the fifth spun-out item, REST's
 client-side general-purpose `ClientMW` hook, has since been resolved and
 folded into
@@ -3646,9 +3651,10 @@ model (pub/sub), not to an unintentional drift between the two designs.
   hook gap (found while reviewing pub/sub's OWN middleware concept,
   since resolved — see
   [d-0001's Addendum 3](d-0001-rest-middleware-workflow-simplification.md#addendum-3-client-side-general-purpose-clientmw-hook-closes-the-last-known-restevents-middleware-asymmetry)),
-  [Common-Base + Per-Pattern-Derived Middleware Types](../roadmap/common-middleware-architecture.md)
-  (REST's `middleware.Middleware` struct carries fields only REST
-  uses — found while reviewing pub/sub's OWN middleware params), and
+  the finding that REST's `middleware.Middleware` struct carries
+  fields only REST uses (found while reviewing pub/sub's OWN
+  middleware params, since resolved by
+  [D-0003](d-0003-codec-declared-middlewares.md)), and
   [Protocol-Native Feature Declarations](d-0006-protocol-native-capabilities.md)
   (a generalization that could also apply to REST's header/cookie/query
   params — found while reviewing pub/sub's OWN spec-adding middleware).

@@ -96,10 +96,10 @@ func (Middleware) RouteMiddlewareMarker() {}
 // inside its OWN generic type (e.g. api/rest's Middleware[In, Out]) that
 // adds exactly the merge machinery relevant to that pattern's boundary —
 // see docs/design/d-0003-codec-declared-middlewares.md for the full
-// design and docs/roadmap/common-middleware-architecture.md (superseded
-// by that doc) for the problem this was designed to resolve: a single
-// shared middleware type carrying pattern-specific fields unused by every
-// OTHER pattern importing it.
+// design — originally motivated by the now-deleted
+// docs/roadmap/common-middleware-architecture.md's finding (superseded
+// by that doc): a single shared middleware type carrying pattern-specific
+// fields unused by every OTHER pattern importing it.
 //
 // [SecurityDeclaration] is intentionally NOT retrofitted onto Declaration
 // — security's shape (a raw credential string, a route.SecurityScheme,

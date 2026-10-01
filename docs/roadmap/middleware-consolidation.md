@@ -212,3 +212,15 @@ type/method is deleted:
   this doc's outcome either way
 - [`plan-a-new-codex-feature` skill](../../.github/skills/plan-a-new-codex-feature/SKILL.md)
   — the "Removing an old API" checklist applied above
+- **Historical note**: the FIRST doc to notice this tension was
+  `docs/roadmap/common-middleware-architecture.md` (now deleted, its
+  finding fully absorbed here and into D-0003) — spun out of D-0002's
+  "F6" critical-review finding that `middleware.Middleware` is a single
+  flat struct carrying REST-only fields `api/events`/`api/reqreply`
+  import unused. That doc's own proposed fix (retrofit
+  `middleware.Middleware` into a breaking `Common`-base + per-pattern
+  DERIVED STRUCTS) was superseded by D-0003's additive, non-breaking
+  `RouteMiddleware` marker + generic `Declaration[In,Out]` family
+  instead — this doc picks up where that left off, evaluating the
+  REMAINING tension (legacy `middleware.Middleware` vs. D-0003's
+  codec-backed family) D-0003's shipped design didn't fully close.

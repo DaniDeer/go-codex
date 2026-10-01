@@ -53,7 +53,8 @@
 > attachment styles on one `Middleware[In,Out]` value as ambiguous (NEW
 > `rest.AmbiguousMiddlewareAttachmentError`).
 >
-> **Supersedes** [Common-Base + Per-Pattern-Derived Middleware Types](../roadmap/common-middleware-architecture.md)
+> **Supersedes** `docs/roadmap/common-middleware-architecture.md` (now
+> deleted, its finding fully absorbed here)
 > — see "Relationship to other roadmap docs" below. [← Back to Design Documents](index.md)
 
 ## Lessons learned (implementation, Phase 1)
@@ -1439,8 +1440,11 @@ bundled into this design's readiness.
 
 ## Relationship to other roadmap docs
 
-- **Supersedes** [Common-Base + Per-Pattern-Derived Middleware Types](../roadmap/common-middleware-architecture.md):
-  that doc's core finding (a single shared `middleware.Middleware` struct carrying
+- **Supersedes** `docs/roadmap/common-middleware-architecture.md` (now
+  deleted, its finding fully absorbed here — see
+  `docs/roadmap/middleware-consolidation.md`'s "See also" section for
+  the preserved historical note): that doc's core finding (a single
+  shared `middleware.Middleware` struct carrying
   REST-only fields unused by `api/events`/`api/reqreply`) is what this design fixes —
   but via an ADDITIVE marker interface + NEW per-pattern generic types
   (`rest.Middleware[In,Out]`/`events.Middleware[In,Out]`), not that doc's original

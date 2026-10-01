@@ -6107,7 +6107,8 @@ own "Lessons Learned" section warns is invisible to
 
 ## See also
 
-- [Common-Base + Per-Pattern-Derived Middleware Types](../roadmap/common-middleware-architecture.md) —
+- `docs/roadmap/common-middleware-architecture.md` (now deleted, its
+  finding fully absorbed into D-0003) —
   already superseded once by d-0003, and this doc's own EARLIER "Option B:
   subsume D-0003" framing (superseded in turn — see §3) never actually
   reopened it a second time; §3's confirmed 4-stage lifecycle model is the
