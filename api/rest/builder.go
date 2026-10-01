@@ -2980,19 +2980,34 @@ type ClientConsumeOptions struct {
 // docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 4).
 type ClientTransport interface {
 	// Call performs a round trip against route (dynamic type
-	// rest.Route[Req, Resp]) with req (dynamic type Req), returning the
-	// decoded response as `any` (dynamic type Resp). opts is VARIADIC
-	// (0 or 1 value; a 2nd+ is ignored) so existing 3-arg call sites stay
-	// source-compatible — see [ClientCallOptions].
+	// rest.Route[Req, Resp] OR an already-registered
+	// *rest.RouteHandle[Req, Resp] — see below) with req (dynamic type
+	// Req), returning the decoded response as `any` (dynamic type
+	// Resp). opts is VARIADIC (0 or 1 value; a 2nd+ is ignored) so
+	// existing 3-arg call sites stay source-compatible — see
+	// [ClientCallOptions].
+	//
+	// Dual-mode route acceptance is part of this interface's contract,
+	// not an implementation accident: a raw, unregistered Route derives
+	// a fresh handle with no [Server] reference, so
+	// [Server.AddGlobalSecurity]-declared requirements stay invisible
+	// (only per-route Security is seen); an already-registered
+	// *RouteHandle (obtained via [Route.RegisterHandle]) carries its
+	// Server's GlobalSecurity, making it visible to credential
+	// resolution too. Implementations must support both (see
+	// docs/design/d-0001-rest-middleware-workflow-simplification.md's
+	// Addendum 6).
 	Call(ctx context.Context, route any, req any, opts ...ClientCallOptions) (any, error)
 
 	// Consume starts consuming the SSE route sseRoute (dynamic type
-	// rest.SSERoute[Req, Event]) with req (dynamic type Req), calling fn
-	// (dynamic type func(context.Context, Event) error) for each event.
-	// Blocks until ctx is cancelled — mirrors [events.Transport.Subscribe]'s
-	// identical blocking contract for the SAME reason (a long-lived
-	// stream, not a one-shot call). opts is variadic for the SAME reason
-	// as [Call]'s.
+	// rest.SSERoute[Req, Event] OR an already-registered
+	// *rest.SSERouteHandle[Req, Event] — same dual-mode contract as
+	// [Call], see its doc comment) with req (dynamic type Req), calling
+	// fn (dynamic type func(context.Context, Event) error) for each
+	// event. Blocks until ctx is cancelled — mirrors
+	// [events.Transport.Subscribe]'s identical blocking contract for the
+	// SAME reason (a long-lived stream, not a one-shot call). opts is
+	// variadic for the SAME reason as [Call]'s.
 	Consume(ctx context.Context, sseRoute any, req any, fn any, opts ...ClientConsumeOptions) error
 }
 
@@ -3052,6 +3067,17 @@ func (c *Client) Attach(t ClientTransport) error {
 //
 // opts is variadic (0 or 1 value) — additive, backward-compatible with
 // every existing 3-arg call site.
+//
+// route may ALSO be an already-registered *[RouteHandle] (obtained via
+// [Route.RegisterHandle], not [Route.Register] — which discards the
+// handle) instead of a raw [Route]. Passing the handle makes any
+// [Server.AddGlobalSecurity]-declared requirement visible to credential
+// resolution, in addition to per-route Security; a raw Route only ever
+// sees per-route Security (docs/design/
+// d-0001-rest-middleware-workflow-simplification.md's Addendum 6):
+//
+//	handle, _ := getUserRoute.RegisterHandle(server) // server declared AddGlobalSecurity
+//	respAny, err := client.Call(ctx, handle, GetUserReq{ID: "f47ac10b"}) // GlobalSecurity now visible
 func (c *Client) Call(ctx context.Context, route any, req any, opts ...ClientCallOptions) (any, error) {
 	c.mu.RLock()
 	t := c.transport
@@ -3076,6 +3102,12 @@ func (c *Client) Call(ctx context.Context, route any, req any, opts ...ClientCal
 //	    func(ctx context.Context, e SensorReading) error { ...; return nil })
 //
 // opts is variadic (0 or 1 value) — additive.
+//
+// sseRoute may ALSO be an already-registered *[SSERouteHandle] (obtained
+// via [SSERoute.RegisterHandle]) instead of a raw [SSERoute] — same
+// GlobalSecurity-visibility contract as [Client.Call]'s dual-mode
+// acceptance (docs/design/d-0001-rest-middleware-workflow-simplification.md's
+// Addendum 6).
 func (c *Client) Consume(ctx context.Context, sseRoute any, req any, fn any, opts ...ClientConsumeOptions) error {
 	c.mu.RLock()
 	t := c.transport

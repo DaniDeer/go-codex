@@ -3056,3 +3056,109 @@ already did.
 
 **Verified at the time**: `gofmt`/`go build`/`go vet`/`go test`/`just
 check`/`just examples` all green.
+
+## Addendum 6: `Client.Call`/`Client.Consume`'s `GlobalSecurity` dual-mode dispatch
+
+Folded in from `docs/roadmap/rest-client-call-global-security.md`, now
+deleted (its content lives here).
+
+**The gap.** `Route.ClientHandle()`/`SSERoute.ClientHandle()` explicitly
+"source no Builder" — the handle they return always has
+`GlobalSecurity: nil`, regardless of whether the same route was also
+registered against a `*Server` with `AddGlobalSecurity(...)` declared.
+`resolveClientSecurity` (`adapters/nethttp/clienttransport.go`) already
+contained the correct fallback (`if secReqs == nil { secReqs, _ =
+elem.FieldByName("GlobalSecurity")... }`), but it only fires when the
+handle it inspects genuinely carries a populated `GlobalSecurity` field —
+i.e. when the dispatcher was handed an already-registered `*RouteHandle`
+rather than a fresh `ClientHandle()` built from a raw `Route`.
+
+**`Client.Call`'s half was already fixed, as an unplanned side effect.**
+`clientTransport.Call` dispatches through `recoverClientRouteHandleValue`
+(built during the earlier, unrelated Phase 5a work, to support
+bare-handle callers like `adapters/mcprest`), which already implements a
+dual-mode type-switch: a raw, unregistered `Route[Req,Resp]` derives
+`ClientHandle()` fresh (`GlobalSecurity` stays invisible — the accepted,
+documented limitation); an already-registered `*RouteHandle[Req,Resp]`
+(obtained via `Route.RegisterHandle(server)` — **not** `Route.Register
+(server)`, which returns only an `error` and discards the handle) is used
+as-is, with `GlobalSecurity` populated and visible to
+`resolveClientSecurity`'s existing fallback. This was confirmed to work
+via code trace, but had **zero test coverage** of the scenario — every
+existing `AddGlobalSecurity`-involving test also declared per-route
+Security on the same route, so the fallback path had never actually been
+exercised.
+
+**`Client.Consume` (SSE) had the identical, unfixed gap.**
+`clientTransport.Consume` had no dual-mode branch at all — it
+type-checked only for a raw `SSERoute[...]` and unconditionally called
+`.ClientHandle()` fresh, every time, even though `SSERouteHandle
+.GlobalSecurity` exists and is populated at registration time exactly
+like `RouteHandle`'s.
+
+**Confirmed N/A for `api/events` and `api/reqreply`** — neither has this
+bug class:
+
+- `api/events` is architecturally immune by design:
+  `events.Client.AddGlobalSecurity` lives on `Client` itself (events
+  unifies builder+dispatcher into one type, unlike REST's Server/Client
+  split). `Client.Subscribe`/`Publish` resolve handles via a shared
+  `recoverHandle(kind, anyAny, client *events.Client)` helper (mirrored
+  across `adapters/mqtt5`/`zeromq`/`mqtt`), which calls `sub.Handle
+  (client)` — passing the **live** `*events.Client` reference on every
+  single dispatch, never a cached/disconnected handle. There is no
+  "stale handle built without a client reference" failure mode here at
+  all; `GlobalSecurity` is always current.
+- `api/reqreply` already had this fix as its reference implementation.
+  `reqreply.Client` has only three methods (`Attach`/`Call`/`CallAsync` —
+  no SSE-like second entry point); `CallAsync`'s own doc comment confirms
+  it shares `Call`'s dual-mode dispatch. At the adapter level,
+  `adapters/mqtt5/reqreply_transport.go`'s `recoverRouteHandleValue` is
+  in fact the **original** mechanism `nethttp`'s
+  `recoverClientRouteHandleValue` was modeled after — reqreply is the
+  source, not a follower, here.
+
+**What shipped.**
+
+1. Two regression tests proving `Call`'s already-shipped mechanism:
+   `TestCall_GlobalSecurityOnly_RouteHandle_CredentialInvoked` (a route
+   with no per-route Security, a `Server` with `AddGlobalSecurity`,
+   registered via `RegisterHandle`, called via `client.Call(ctx, handle,
+   req)` — the credential-providing general-purpose `ClientMW` Fn is
+   invoked and succeeds) and
+   `TestCall_GlobalSecurityOnly_RawRoute_CredentialNotInvoked` (same
+   setup via the raw, unregistered `Route` — credential Fn is *not*
+   invoked, confirming the accepted limitation is preserved). Both test
+   servers are built directly via `httptest.NewServer`, not via
+   `serve`/`rest.Server.Serve` — real server-side dispatch runs
+   `rest.CheckCoverage` at Serve time, which requires a SERVER-side
+   `HandleMW` satisfying any scheme in `GlobalSecurity` (a separate,
+   orthogonal, server-side concern), and attaching a scheme-gated
+   `ClientMW` would itself require a matching `.Use()` declaration
+   (`UnknownMiddlewareImplementationError`), which would populate
+   per-route Security and defeat the point of the test. The credential
+   `ClientMW` is attached general-purpose (nil `mw`, no `Satisfies`) —
+   it only runs when `secReqs` is non-empty (`mergeCredentialHeaders` is
+   gated by `len(secReqs) > 0` in `clientTransport.Call`), which is
+   exactly the `GlobalSecurity` fallback being tested.
+2. A new `recoverClientSSERouteHandleValue` helper in
+   `adapters/nethttp/clienttransport.go`, mirroring
+   `recoverClientRouteHandleValue` exactly for `SSERoute`/
+   `SSERouteHandle`, wired into `Consume` in place of its previous
+   single-branch check — the one real code change this addendum made.
+   Nothing downstream (`consumeOnce`, `resolveClientSecurity`,
+   `mergeCredentialHeaders`) needed any change — both already operate
+   generically against the resolved handle's fields via reflection.
+3. Two mirrored regression tests for `Consume`
+   (`TestConsume_GlobalSecurityOnly_RouteHandle_CredentialInvoked`/
+   `_RawRoute_CredentialNotInvoked`) — confirmed to genuinely fail
+   against the pre-fix code (verified via a temporary revert) and pass
+   against the fix, not just compile.
+4. Documentation: `Client.Call`/`Client.Consume`'s own godoc, and the
+   `ClientTransport` interface's `Call`/`Consume` doc comments, now state
+   the dual-mode acceptance contract explicitly — a future second
+   `ClientTransport` implementer knows this is part of the interface
+   contract, not an `nethttp`-specific accident.
+
+**Verified**: `gofmt`/`go build`/`go vet`/`go test ./adapters/nethttp/...
+./api/rest/...` (then full `go test ./...`)/`just check` all green.

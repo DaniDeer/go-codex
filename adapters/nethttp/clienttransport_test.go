@@ -427,6 +427,124 @@ func TestAttach_ClientCall_CredentialClientMW_Invoked(t *testing.T) {
 	}
 }
 
+// ── Call: GlobalSecurity-only dual-mode dispatch (docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 6) ──
+
+// TestCall_GlobalSecurityOnly_RouteHandle_CredentialInvoked proves
+// Client.Call's existing dual-mode dispatch (recoverClientRouteHandleValue)
+// resolves a route protected ONLY by Server.AddGlobalSecurity (no
+// per-route .Use()/Security declared at all) when passed an
+// already-registered *RouteHandle — confirming the GlobalSecurity
+// fallback in resolveClientSecurity actually fires end-to-end, not just
+// in theory.
+//
+// The credential ClientMW is attached general-purpose (nil mw, no
+// Satisfies) — attaching a SCHEME-gated ClientMW would itself require a
+// matching .Use() declaration (UnknownMiddlewareImplementationError),
+// which would populate per-route Security and defeat the point of this
+// test; a general-purpose credential Fn only runs when secReqs is
+// non-empty (mergeCredentialHeaders is gated by len(secReqs) > 0 in
+// [clientTransport.Call]), which is exactly the GlobalSecurity fallback
+// this test targets.
+//
+// The test server is built directly via [httptest.NewServer], NOT via
+// [serve]/[rest.Server.Serve] — the real nethttp.Serve dispatch runs
+// [rest.CheckCoverage] at Serve time, which requires a SERVER-side
+// HandleMW satisfying any scheme in GlobalSecurity on EVERY route (a
+// separate, server-side concern unrelated to what this test verifies);
+// this test only exercises CLIENT-side credential resolution, mirroring
+// how [TestCall_CredentialFunc_Invoked] (client_test.go) already does
+// the same for the per-route-Security case.
+func TestCall_GlobalSecurityOnly_RouteHandle_CredentialInvoked(t *testing.T) {
+	s := rest.NewServer(testInfo)
+	s.AddGlobalSecurity(route.Require("bearerAuth"))
+	credCalled := false
+	// Deliberately NO .Use(...)/.HandleMW(...) — Descriptor.Security
+	// stays nil, so secReqs can ONLY come from the GlobalSecurity
+	// fallback, never from per-route Security.
+	r := rest.NewRoute[getReq, userResp]("GET", "/me", getReqCodec, userRespCodec).ClientMW(nil, func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
+		credCalled = true
+		h := make(http.Header)
+		h.Set("Authorization", "test-bearer-token")
+		return h, nil
+	})
+	handle, err := r.RegisterHandle(s)
+	if err != nil {
+		t.Fatalf("RegisterHandle: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Header.Get("Authorization") != "test-bearer-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"me"}`)) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	client := rest.NewClient()
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	respAny, err := client.Call(context.Background(), handle, getReq{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if !credCalled {
+		t.Error("credential ClientMW was not invoked — GlobalSecurity fallback did not fire for a *RouteHandle")
+	}
+	if respAny.(userResp).ID != "me" {
+		t.Errorf("unexpected response: %+v", respAny)
+	}
+}
+
+// TestCall_GlobalSecurityOnly_RawRoute_CredentialNotInvoked documents
+// that the accepted limitation is preserved: a RAW, unregistered Route
+// (not a *RouteHandle) still cannot see GlobalSecurity, since
+// Route.ClientHandle() always builds a handle with GlobalSecurity nil —
+// so even a general-purpose credential ClientMW (which would fire the
+// instant secReqs is non-empty) never runs via the raw-Route path. See
+// [TestCall_GlobalSecurityOnly_RouteHandle_CredentialInvoked]'s doc
+// comment for why the test server is built directly rather than via
+// [serve].
+func TestCall_GlobalSecurityOnly_RawRoute_CredentialNotInvoked(t *testing.T) {
+	s := rest.NewServer(testInfo)
+	s.AddGlobalSecurity(route.Require("bearerAuth"))
+	credCalled := false
+	r := rest.NewRoute[getReq, userResp]("GET", "/me", getReqCodec, userRespCodec).ClientMW(nil, func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
+		credCalled = true
+		h := make(http.Header)
+		h.Set("Authorization", "test-bearer-token")
+		return h, nil
+	})
+	if _, err := r.RegisterHandle(s); err != nil {
+		t.Fatalf("RegisterHandle: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"me"}`)) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	client := rest.NewClient()
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	// Pass the RAW route, not the handle — GlobalSecurity must stay
+	// invisible, same as always.
+	respAny, err := client.Call(context.Background(), r, getReq{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if credCalled {
+		t.Error("credential ClientMW was invoked — expected GlobalSecurity to stay invisible for a raw Route")
+	}
+	if respAny.(userResp).ID != "me" {
+		t.Errorf("unexpected response: %+v", respAny)
+	}
+}
+
 func TestAttach_ClientCall_GeneralPurposeClientMW_Wraps(t *testing.T) {
 	s := rest.NewServer(testInfo)
 	var wrapperRan bool
@@ -731,6 +849,117 @@ func TestAttach_ClientConsume_CredentialClientMW_Invoked(t *testing.T) {
 	}
 	if !credCalled {
 		t.Error("credential ClientMW was not invoked")
+	}
+	if got != 1 {
+		t.Fatalf("want 1, got %d", got)
+	}
+}
+
+// ── Consume: GlobalSecurity-only dual-mode dispatch (docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 6) ──
+
+// TestConsume_GlobalSecurityOnly_RouteHandle_CredentialInvoked proves
+// Client.Consume's dual-mode dispatch (recoverClientSSERouteHandleValue)
+// resolves an SSE route protected ONLY by Server.AddGlobalSecurity (no
+// per-route .Use()/Security declared at all) when passed an
+// already-registered *SSERouteHandle — mirrors
+// [TestCall_GlobalSecurityOnly_RouteHandle_CredentialInvoked] exactly,
+// for the SSE side of the same fix. See that test's doc comment for why
+// the credential ClientMW is general-purpose (nil mw) and why the test
+// server is built directly rather than via [serveSSE] (CheckCoverage
+// would otherwise require a server-side HandleMW, an orthogonal concern
+// to what this test verifies).
+func TestConsume_GlobalSecurityOnly_RouteHandle_CredentialInvoked(t *testing.T) {
+	s := rest.NewServer(testInfo)
+	s.AddGlobalSecurity(route.Require("bearerAuth"))
+	credCalled := false
+	sseRoute := rest.NewSSERoute[getReq, counterSSEEvent]("/sse/counter", getReqCodec, counterSSEEventCodec).ClientMW(nil, func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
+		credCalled = true
+		h := make(http.Header)
+		h.Set("Authorization", "test-bearer-token")
+		return h, nil
+	})
+	handle, err := sseRoute.RegisterHandle(s)
+	if err != nil {
+		t.Fatalf("RegisterHandle: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("data: {\"count\":1}\n\n")) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	client := rest.NewClient()
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var got int
+	err = client.Consume(ctx, handle, getReq{}, func(_ context.Context, e counterSSEEvent) error {
+		got = e.Count
+		cancel()
+		return nil
+	})
+	if err != nil && ctx.Err() == nil {
+		t.Fatalf("Consume: %v", err)
+	}
+	if !credCalled {
+		t.Error("credential ClientMW was not invoked — GlobalSecurity fallback did not fire for a *SSERouteHandle")
+	}
+	if got != 1 {
+		t.Fatalf("want 1, got %d", got)
+	}
+}
+
+// TestConsume_GlobalSecurityOnly_RawRoute_CredentialNotInvoked documents
+// that the accepted limitation is preserved: a RAW, unregistered
+// SSERoute (not a *SSERouteHandle) still cannot see GlobalSecurity,
+// since SSERoute.ClientHandle() always builds a handle with
+// GlobalSecurity nil.
+func TestConsume_GlobalSecurityOnly_RawRoute_CredentialNotInvoked(t *testing.T) {
+	s := rest.NewServer(testInfo)
+	s.AddGlobalSecurity(route.Require("bearerAuth"))
+	credCalled := false
+	sseRoute := rest.NewSSERoute[getReq, counterSSEEvent]("/sse/counter", getReqCodec, counterSSEEventCodec).ClientMW(nil, func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
+		credCalled = true
+		h := make(http.Header)
+		h.Set("Authorization", "test-bearer-token")
+		return h, nil
+	})
+	if _, err := sseRoute.RegisterHandle(s); err != nil {
+		t.Fatalf("RegisterHandle: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("data: {\"count\":1}\n\n")) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	client := rest.NewClient()
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var got int
+	// Pass the RAW sseRoute, not the handle — GlobalSecurity must stay
+	// invisible, same as Call's identical raw-Route limitation.
+	err := client.Consume(ctx, sseRoute, getReq{}, func(_ context.Context, e counterSSEEvent) error {
+		got = e.Count
+		cancel()
+		return nil
+	})
+	if err != nil && ctx.Err() == nil {
+		t.Fatalf("Consume: %v", err)
+	}
+	if credCalled {
+		t.Error("credential ClientMW was invoked — expected GlobalSecurity to stay invisible for a raw SSERoute")
 	}
 	if got != 1 {
 		t.Fatalf("want 1, got %d", got)

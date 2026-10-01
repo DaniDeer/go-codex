@@ -59,6 +59,35 @@ func recoverClientRouteHandleValue(routeAny any) (reflect.Value, reflect.Value, 
 	}
 }
 
+// recoverClientSSERouteHandleValue is [recoverClientRouteHandleValue]'s
+// SSE-stream sibling, for [clientTransport.Consume] — same dual-mode
+// acceptance (raw rest.SSERoute[Req,Event] OR an already-built
+// *rest.SSERouteHandle[Req,Event]), closing the identical GlobalSecurity-
+// visibility gap [recoverClientRouteHandleValue] already closes for
+// [clientTransport.Call] (docs/design/d-0001-rest-middleware-workflow-simplification.md's
+// Addendum 6). Returns the handle's reflect.Value (always a pointer) and
+// its Elem() struct value for field access.
+func recoverClientSSERouteHandleValue(sseRouteAny any) (reflect.Value, reflect.Value, error) {
+	rv := reflect.ValueOf(sseRouteAny)
+	if !rv.IsValid() {
+		return reflect.Value{}, reflect.Value{}, rest.TransportTypeMismatchError{
+			Want: "rest.SSERoute[Req, Event] or *rest.SSERouteHandle[Req, Event]", Got: fmt.Sprintf("%T", sseRouteAny),
+		}
+	}
+	t := rv.Type()
+	switch {
+	case t.PkgPath() == restPkgPath && strings.HasPrefix(t.Name(), "SSERoute["):
+		handleVal := rv.MethodByName("ClientHandle").Call(nil)[0]
+		return handleVal, handleVal.Elem(), nil
+	case t.Kind() == reflect.Pointer && t.Elem().PkgPath() == restPkgPath && strings.HasPrefix(t.Elem().Name(), "SSERouteHandle["):
+		return rv, rv.Elem(), nil
+	default:
+		return reflect.Value{}, reflect.Value{}, rest.TransportTypeMismatchError{
+			Want: "rest.SSERoute[Req, Event] or *rest.SSERouteHandle[Req, Event]", Got: fmt.Sprintf("%T", sseRouteAny),
+		}
+	}
+}
+
 // clientTransport implements [rest.ClientTransport], wrapping an internal
 // [*caller] — built by [NewClientTransport]. See
 // docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 4 for the full design
@@ -591,6 +620,14 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 // — mirrors [wrapSubscribeGeneral]'s identical per-message (not
 // per-connection) wrap boundary, the natural SSE analogue since Consume
 // has no single "Resp" the way Call does.
+//
+// Accepts EITHER a raw, unregistered rest.SSERoute[Req,Event] (derives a
+// fresh ClientHandle() — GlobalSecurity stays invisible, the longstanding
+// accepted limitation) OR an already-registered *rest.SSERouteHandle[Req,Event]
+// (GlobalSecurity becomes visible to [resolveClientSecurity]'s existing
+// fallback) — mirrors [Call]'s identical dual-mode acceptance via
+// [recoverClientSSERouteHandleValue] (docs/design/
+// d-0001-rest-middleware-workflow-simplification.md's Addendum 6).
 func (t *clientTransport) Consume(ctx context.Context, sseRouteAny, reqAny, fnAny any, optsVariadic ...rest.ClientConsumeOptions) error {
 	var opts rest.ClientConsumeOptions
 	if len(optsVariadic) > 0 {
@@ -598,12 +635,10 @@ func (t *clientTransport) Consume(ctx context.Context, sseRouteAny, reqAny, fnAn
 	}
 	obs := stats.ObserverFromContext(ctx)
 
-	rv := reflect.ValueOf(sseRouteAny)
-	if !rv.IsValid() || rv.Type().PkgPath() != restPkgPath || !strings.HasPrefix(rv.Type().Name(), "SSERoute[") {
-		return rest.TransportTypeMismatchError{Want: "rest.SSERoute[Req, Event]", Got: fmt.Sprintf("%T", sseRouteAny)}
+	handleVal, elem, err := recoverClientSSERouteHandleValue(sseRouteAny)
+	if err != nil {
+		return err
 	}
-	handleVal := rv.MethodByName("ClientHandle").Call(nil)[0]
-	elem := handleVal.Elem()
 	descriptor := elem.FieldByName("Descriptor")
 	method := http.MethodGet
 	path := descriptor.FieldByName("Path").String()
