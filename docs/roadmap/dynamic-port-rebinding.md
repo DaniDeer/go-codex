@@ -11,17 +11,19 @@
 
 > **Cross-reference:** "credential rollover" above is listed as one
 > motivating scenario for hot-swap, but it is ALREADY solved for
-> `ports`, today, by [Declarative Middleware](declarative-middleware.md)'s
-> per-call middleware attachment — a `ports` security/credential
-> middleware value is never baked into an immutable handle, so it can be
-> swapped between calls with zero mechanism from this doc. This doc's
-> `Rebind` remains necessary for swapping the underlying TRANSPORT
-> ADAPTER itself (broker failover, endpoint rotation, phased
-> migration) — a different concern from credential rotation. See
-> Declarative Middleware's "L11" for the full reconciliation; note also
-> that REST/events/reqreply's immutable `RouteHandle`/`ChannelHandle`
-> middleware attachment has NO hot-swap story today — an acknowledged
-> gap in BOTH docs, not yet designed.
+> `ports`, today (by design, not yet implemented), by
+> [MCP and Ports Declarative Middleware](mcp-ports-declarative-middleware.md)'s
+> declare-time `.Use()` middleware attachment — a `ports` security/
+> credential middleware value is never baked into an immutable spec the
+> way a REST route's is, so it can be swapped by rebuilding the
+> `File[T]`/`Cache[T]` value with different `.Use()` args, zero
+> mechanism from this doc needed. This doc's `Rebind` remains necessary
+> for swapping the underlying TRANSPORT ADAPTER itself (broker failover,
+> endpoint rotation, phased migration) — a different concern from
+> credential rotation. See that doc's "L11" for the full reconciliation;
+> note also that REST/events/reqreply's immutable `RouteHandle`/
+> `ChannelHandle` middleware attachment has NO hot-swap story today — an
+> acknowledged gap in BOTH docs, not yet designed.
 
 **Operational baseline today:** fail-fast + process/container restart remains a
 valid default strategy and is intentionally simple. Dynamic rebinding is for

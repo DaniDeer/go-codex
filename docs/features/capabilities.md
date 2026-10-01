@@ -410,7 +410,7 @@ carry it — decides whether something becomes a sealed, adapter-owned
 - **`ports.File`/`Cache`/`SQL`/`Dir`** structurally lack the
   options-at-a-bind-step shape `Capability` requires; their own
   cross-cutting-concern story is tracked separately in
-  [`docs/roadmap/declarative-middleware.md`](../roadmap/declarative-middleware.md).
+  [`docs/roadmap/mcp-ports-declarative-middleware.md`](../roadmap/mcp-ports-declarative-middleware.md).
 
 If you're looking for a single "what protocol knobs exist per API" answer:
 `Capability` (this page) covers `api/events`, `api/reqreply`, and

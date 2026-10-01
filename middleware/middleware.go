@@ -36,9 +36,9 @@
 //     Satisfies matches the route's declared security requirements.
 //
 // See docs/design/d-0001-rest-middleware-workflow-simplification.md for the full
-// design rationale and resolution history (supersedes the earlier
-// docs/roadmap/declarative-middleware.md "Revision 2 — the declare/
-// implement split," which introduced Middleware/ServerImplementation's
+// design rationale and resolution history (supersedes the earlier,
+// now-deleted docs/roadmap/declarative-middleware.md "Revision 2 — the
+// declare/implement split," which introduced Middleware/ServerImplementation's
 // split but predates HandleMW/ClientMW's unification described above).
 package middleware
 

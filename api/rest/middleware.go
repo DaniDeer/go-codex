@@ -412,7 +412,8 @@ type paramContribution struct {
 //  4. Applies every middleware-contributed RequestParams/ResponseParams
 //     entry not already manually declared.
 //
-// Unlike before Revision 2 (see docs/roadmap/declarative-middleware.md),
+// Unlike before Revision 2 (see the now-deleted docs/roadmap/
+// declarative-middleware.md),
 // this does NOT check that every declared scheme has an ENFORCING
 // implementation — [middleware.Middleware] no longer carries a runtime Fn
 // at all, so there is nothing here to check coverage against yet. That

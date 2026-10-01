@@ -29,9 +29,11 @@
 > implementation gaps of THIS doc): Events/ReqReply/Ports-beyond-
 > pattern-building and SSE CLIENT consumption — see the sibling docs
 > cross-referenced at the bottom of this summary. Started as a factual
-> audit of the SHIPPED workflow (post [Declarative
-> Middleware](../roadmap/declarative-middleware.md) "Revision 2 — the declare/
-> implement split"); all 6 open questions raised during that audit have
+> audit of the SHIPPED workflow (post the now-deleted `declarative-
+> middleware.md`'s "Revision 2 — the declare/
+> implement split", content since absorbed into [MCP and Ports
+> Declarative Middleware](../roadmap/mcp-ports-declarative-middleware.md));
+> all 6 open questions raised during that audit have
 > since been worked through collaboratively and resolved into 5 concrete
 > decisions (a 6th confirmed the status quo as correct, no change).
 > **Scope: REST (`api/rest`/`adapters/nethttp`/`adapters/chi`) only** —
@@ -799,8 +801,9 @@ always did, just also handing back the handle.
   could adopt the identical pattern later (`Channel.WithHandler`/
   `Channel.HandleMW`/`Channel.Register(builder) error` +
   `mqtt5.Serve(client, builder)`/`mcpgo.Serve(server, builder)`, etc.) —
-  only REST is actually being redesigned now; other boundaries remain
-  Phase 2+, unchanged from the existing declarative-middleware roadmap.
+  only REST is actually being redesigned now; `api/mcp`/`ports` remain
+  Phase 2+, tracked in [MCP and Ports Declarative
+  Middleware](../roadmap/mcp-ports-declarative-middleware.md).
 
 ### `HandleMW`-to-`.Use()` pairing validation — RESOLVED, refined across THREE successive critical review passes
 

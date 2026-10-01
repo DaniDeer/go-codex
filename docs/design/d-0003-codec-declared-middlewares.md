@@ -158,8 +158,9 @@ before.
 **This is the guiding design principle for REST and events middleware today, and
 should guide any FUTURE `ports` middleware mechanism too.** No `ports.Middleware`
 concept exists yet (`ports.Pattern` is a different thing — binding metadata, not
-cross-cutting-concern attachment); `docs/roadmap/declarative-middleware.md` already
-sketches/proves `ports.File`'s own decorator shapes as Phase 2 prior art.
+cross-cutting-concern attachment); `docs/roadmap/mcp-ports-declarative-middleware.md`
+(formerly `declarative-middleware.md`) already sketches/proves `ports.File`'s own
+decorator shapes as Phase 2 prior art.
 
 ### Feasibility of a full `.Use()`-based `ports.Middleware[In,Out]` — a grounded analysis, not just a placeholder
 
@@ -1472,8 +1473,9 @@ bundled into this design's readiness.
   already-resolved topic, untouched by this design.
   `docs/roadmap/declarative-middleware.md` (the doc that ORIGINALLY
   proposed that split, before d-0001/d-0002 shipped it) has since been
-  trimmed to its own remaining MCP/ports scope, which THIS design's own
-  "Feasibility" section above builds directly on.
+  deleted, its remaining MCP/ports scope moved to
+  `docs/roadmap/mcp-ports-declarative-middleware.md`, which THIS
+  design's own "Feasibility" section above builds directly on.
 
 ## Next steps
 

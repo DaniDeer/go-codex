@@ -1,32 +1,37 @@
 # Forge/Pipeline Middleware Integration — `forge`, `stats`
 
-> **Status:** Idea only — no driver yet. Spun out from
-> [Declarative Middleware](declarative-middleware.md)'s "L14" finding
-> (third critical review pass). Independent of that doc's own
-> implementation status — no sequencing dependency either way.
+> **Status:** Idea only — no driver yet. Spun out from the (now-DELETED)
+> `declarative-middleware.md`'s "L14" finding (third critical review
+> pass) — L14 now lives in
+> [MCP and Ports Declarative Middleware](mcp-ports-declarative-middleware.md),
+> the doc that absorbed `declarative-middleware.md`'s remaining content.
+> Independent of that doc's own implementation status — no sequencing
+> dependency either way.
 > [← Back to Roadmap](index.md)
 >
 > **Note:** REST's/events' own declare/implement split (originally
-> designed in Declarative Middleware's "Revision 2") has since SHIPPED —
-> see
+> designed in `declarative-middleware.md`'s "Revision 2") has since
+> SHIPPED — see
 > [Middleware Workflow Simplification](../design/d-0001-rest-middleware-workflow-simplification.md)
 > and
 > [D-0003 — Codec-Declared Middlewares](../design/d-0003-codec-declared-middlewares.md)
 > — `middleware.Middleware`/`ServerImplementation`/`ClientMiddleware` are
-> final for Layer 2 REST/events; Declarative Middleware itself has since
-> been trimmed to its remaining MCP/ports scope. This doc's open
-> question (whether/how forge's `Registry.WithObserver` should adopt the
-> same declare/implement discipline) is UNCHANGED by any of that — still
-> deferred to a future dedicated design pass, no new driver identified
-> here.
+> final for Layer 2 REST/events; the ORIGINAL `declarative-middleware.md`
+> was deleted after its remaining MCP/ports scope moved to
+> [MCP and Ports Declarative Middleware](mcp-ports-declarative-middleware.md).
+> This doc's open question (whether/how forge's `Registry.WithObserver`
+> should adopt the same declare/implement discipline) is UNCHANGED by
+> any of that — still deferred to a future dedicated design pass, no new
+> driver identified here.
 
 ## Motivation
 
-[Declarative Middleware](declarative-middleware.md) originally reviewed
+[MCP and Ports Declarative Middleware](mcp-ports-declarative-middleware.md)
+(and its now-deleted predecessor, `declarative-middleware.md`) reviewed
 and resolved coverage for every Layer 2 (request/response or
 per-call-invoked) boundary go-codex ships — REST, events, reqreply, MCP,
 and ports (REST/events have since shipped via d-0001/d-0003 and are no
-longer that doc's own scope; MCP/ports remain) — but `forge.Registry`/
+longer in scope there; MCP/ports remain) — but `forge.Registry`/
 pipeline functions (Layer 3 — `forge.NewFunction`, `Compose`,
 `Registry.Apply`) were never checked against that design at all. That
 doc's "coverage across every API/port boundary" claim was, until this
@@ -84,12 +89,12 @@ shape as the template.
 
 ## See also
 
-- [Declarative Middleware](declarative-middleware.md) — "L14" in
-  "Known limitations and open risks" is the finding this doc spins out
-  from (L14 resolved BY being spun out here, not by being decided); that
-  doc has since been trimmed to its remaining MCP/ports scope, with L14
-  kept as a short pointer to this doc.
+- [MCP and Ports Declarative Middleware](mcp-ports-declarative-middleware.md) —
+  "L14" in "Known limitations and open risks" is the finding this doc
+  spins out from (L14 resolved BY being spun out here, not by being
+  decided); that doc (and its now-deleted predecessor,
+  `declarative-middleware.md`) keeps L14 as a short pointer to this doc.
 - [Dynamic Port Rebinding](dynamic-port-rebinding.md) — "L11" in
-  Declarative Middleware used the SAME "no concrete driver → don't
+  MCP and Ports Declarative Middleware used the SAME "no concrete driver → don't
   build it yet, cross-reference instead" resolution style this doc
   follows.
