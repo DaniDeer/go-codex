@@ -1,7 +1,7 @@
 # Declarative Middleware for MCP and `ports` — `api/mcp`, `adapters/mcpgo`, `ports`
 
 > **Status:** Design draft — not yet implemented. Spun out of
-> [Declarative Middleware](declarative-middleware.md) (now DELETED —
+> `docs/roadmap/declarative-middleware.md` (now DELETED, no remaining link —
 > its REST/events/reqreply content was fully superseded by
 > [D-0001](../design/d-0001-rest-middleware-workflow-simplification.md)/
 > [D-0002](../design/d-0002-pubsub-workflow-simplification.md)/

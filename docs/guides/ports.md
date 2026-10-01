@@ -380,7 +380,7 @@ for a full 3-stage demo including derived spec generation.
 
 **Lifecycle supervision**: `Done() <-chan struct{}` closes only after
 `Connect`'s internal goroutines fully exit — pair it with
-[`app.App.Supervise`](app.md) instead of hand-rolling a fire-and-forget
+[`app.App.Supervise`](../features/app.md) instead of hand-rolling a fire-and-forget
 goroutine:
 
 ```go

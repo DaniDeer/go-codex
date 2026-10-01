@@ -3166,7 +3166,7 @@ documented, and verified (`go fmt`/`go build ./...`/`go test ./...`/
 only. The new ZeroMQ REQ/REP adapter itself is NOT part of this
 roadmap's own phase count or Implement scope — it remains entirely
 tracked, independently, in
-[`docs/roadmap/zeromq-rest-adapter.md`](zeromq-rest-adapter.md), free to
+[`docs/roadmap/zeromq-rest-adapter.md`](../roadmap/zeromq-rest-adapter.md), free to
 be picked up in a wholly separate future session whenever real demand
 appears, with ZERO information lost (that doc's full design — wire
 framing, dispatch requirements, all 6 Open Design Decisions — stands on
@@ -3185,7 +3185,7 @@ but EXECUTED separately too:
 
 - **Adapter plumbing** (wire framing, socket lifecycle, package naming,
   `ports.IOAdapter` binding) — designed in
-  [`docs/roadmap/zeromq-rest-adapter.md`](zeromq-rest-adapter.md), a
+  [`docs/roadmap/zeromq-rest-adapter.md`](../roadmap/zeromq-rest-adapter.md), a
   SEPARATE, dedicated doc (mirrors `docs/roadmap/amqp-adapter.md`'s own
   precedent). Do not re-derive that doc's proposals here.
 - **The capability mechanism itself** — designed HERE, since it's the
@@ -5641,7 +5641,7 @@ COMPLETE — Phase 8 is the closing review pass, not further feature work:
     sub-items) is now fully complete.**
 - **Joint declarative-workflow walkthrough + 3 per-API tutorial
   skills — SPUN OUT into their own roadmap doc,
-  [`docs/roadmap/declarative-workflow-tutorials.md`](declarative-workflow-tutorials.md),
+  [`docs/roadmap/declarative-workflow-tutorials.md`](../roadmap/declarative-workflow-tutorials.md),
   Design draft.** Mirrors how `design-doc-compaction.md` and
   `mqtt5-capability-extensions.md` were already spun out above — both
   remaining Phase 8 items (the human-in-the-loop walkthrough declaring
@@ -5693,7 +5693,7 @@ COMPLETE — Phase 8 is the closing review pass, not further feature work:
   condensed "Other resolved follow-ons" list — the body (§0-§9) is kept
   as original design-round history per repo convention.
 - **Widened follow-on, spun into its OWN roadmap doc**:
-  [`docs/roadmap/design-doc-compaction.md`](design-doc-compaction.md) —
+  [`docs/roadmap/design-doc-compaction.md`](../roadmap/design-doc-compaction.md) —
   the api/adapter layer is now considered architecturally+feature
   complete for the workflow model this whole roadmap built (declare
   pattern → declare capability requirement/value → attach adapter, with

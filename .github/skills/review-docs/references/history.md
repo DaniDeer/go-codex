@@ -4,6 +4,53 @@ Do not re-report any findings listed here. They have been implemented.
 
 ---
 
+## Round DR13 (post-review-go-codex-R147 verification sweep — nav/README/instructions sync + cross-link correctness)
+
+Triggered immediately after `review-go-codex` Round 147 fixed a large, repo-wide
+`nethttp.CallWithHandle` documentation-staleness bug (71 mentions across 17 files). This round
+verified that fix's completeness from the documentation-sync angle (nav, README, instructions.md,
+cross-link correctness) rather than re-auditing API accuracy (already covered by R147).
+
+- **Nav completeness (checklist §1) — CONFIRMED CLEAN, no finding.** `zensical.toml`'s 93 `*.md`
+  nav entries vs. `find docs/ -name "*.md"`'s 93 actual files: exact 1:1 match, zero dangling
+  entries, zero orphaned files (confirms the earlier middleware-consolidation.md nav-entry removal
+  this session was done correctly).
+- **README/instructions.md/reference-index sync (checklist §9-10) — CONFIRMED CLEAN, no finding.**
+  `middleware` package's rows in `README.md`, `.github/instructions/go-codex.instructions.md`, and
+  `docs/reference/index.md` are all already accurate post-middleware-consolidation (Security-only
+  shrink correctly reflected everywhere); no stale `CallWithHandle` mentions in any of README.md,
+  `docs/get-started.md`, `docs/index.md`, or `docs/reference/project-structure.md`.
+- **D1 [bug] — 3 dangling same-directory-assumed relative links in `docs/design/
+  d-0006-protocol-native-capabilities.md`**: `[...](zeromq-rest-adapter.md)` (×2),
+  `[...](declarative-workflow-tutorials.md)`, `[...](design-doc-compaction.md)` — all 3 targets
+  actually live in `docs/roadmap/`, not `docs/design/` (d-0006's own directory), so the links
+  resolved to nonexistent `docs/design/<name>.md`. Fixed all 3 to `../roadmap/<name>.md`.
+- **D2 [bug] — `docs/guides/ports.md:383`**: `[app.App.Supervise](app.md)` — missing the
+  `../features/` prefix present on the SAME page's 2 other correct links to the same file. Fixed.
+- **D3 [small] — `docs/roadmap/mcp-ports-declarative-middleware.md`**: its own status header links
+  `[Declarative Middleware](declarative-middleware.md)` while the SAME sentence correctly says
+  "(now DELETED...)" — a dead link pointing at a file the prose itself says doesn't exist. Changed
+  to a plain, non-linked filename mention (matches the established convention for citing deleted
+  docs elsewhere in the repo).
+- **D4 [bug] — `docs/roadmap/declarative-workflow-tutorials.md:285`**: `[...](../../instructions/
+  agent-skills.instructions.md)` — resolves to `<repo-root>/instructions/...` (missing the
+  `.github/` path segment the real file lives under: `.github/instructions/
+  agent-skills.instructions.md`). Fixed to `../../.github/instructions/agent-skills.instructions.md`.
+- **Accuracy guardrail spot-check (checklist §2-3) — CONFIRMED CLEAN, no finding.** Checked all
+  `codex.Field[T,V]{...}` / `Codec: &c`-shaped mentions found via grep across `docs/`: the
+  `codex.Field[T,V]` ones are return-type signatures (not struct-literal construction — correct);
+  the `Codec: &c` ones (`ports.EntryParam` — a type alias for `codex.Param`, `events.TopicParam`
+  shown as a from-scratch struct literal) are legitimate alternate constructions for types that
+  are plain data structs, not violations of the `.WithCodec(c)` idiom guardrail.
+
+`zensical build` is not available in this environment (CLI not installed) — substituted a custom
+Python nav-sync check (93/93 exact match) and a full-repo markdown-link resolver (confirmed only 1
+false positive remaining, inside a Go code-block comment the regex misparsed — `docs/features/
+events.md`'s `capabilities.md` link is real and resolves correctly). `go build ./...`/`go test
+./...` (56 packages, zero failures)/`just check` (0 issues/501 files) all clean.
+
+---
+
 ## Round DR12 (cross-cutting surfaces — README, project-structure.md, zensical.toml nav, go-codex.instructions.md, docs/index.md, reference/index.md)
 
 Scoped pass over the 5 shared/cross-cutting surfaces (Phase 8 item 2.4 of

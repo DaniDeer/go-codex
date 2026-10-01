@@ -282,7 +282,7 @@ direction; see Scope decisions above).
 - [`docs/concepts/declaring-apis-and-ports.md`](../concepts/declaring-apis-and-ports.md) —
   the durable narrative home for the declare → capability → attach model
   this walkthrough and these tutorials teach live.
-- [`.github/instructions/agent-skills.instructions.md`](../../instructions/agent-skills.instructions.md) —
+- [`.github/instructions/agent-skills.instructions.md`](../../.github/instructions/agent-skills.instructions.md) —
   skill-authoring conventions the 3 new `SKILL.md` files must follow.
 - `examples/rest-api`, `examples/events-api`, `examples/reqreply-api`,
   `examples/sensor-service` — the existing flagship examples the
