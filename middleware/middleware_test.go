@@ -14,9 +14,7 @@ import (
 
 func TestMiddleware_ZeroValue(t *testing.T) {
 	var mw middleware.Middleware
-	if mw.Name != "" || mw.Security != nil ||
-		mw.RequestHeaderParams != nil || mw.RequestCookieParams != nil || mw.RequestQueryParams != nil ||
-		mw.ResponseHeaderParams != nil || mw.ResponseCookieParams != nil {
+	if mw.Name != "" || mw.Security != nil {
 		t.Errorf("want zero-value Middleware to have empty fields, got %+v", mw)
 	}
 }

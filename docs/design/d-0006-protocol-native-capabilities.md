@@ -3424,12 +3424,14 @@ but EXECUTED separately too:
       unstated.
     - **Legacy `middleware.Middleware` vs. codec-backed
       `Middleware[In,Out]`'s own future is tracked SEPARATELY** — see
-      the new `docs/roadmap/middleware-consolidation.md`, spun out this
-      round after finding `HandleMW`/`ClientMW` are hard-coded to the
-      LEGACY concrete type (not the shared `RouteMiddleware` interface),
-      meaning Security enforcement and codec-backed param merging are
-      two genuinely different mechanisms today, not a redundant
-      duplication — Phase 3 does NOT block on that doc's outcome either
+      `docs/design/d-0003-codec-declared-middlewares.md`'s Addendum 3
+      (originally a standalone roadmap doc spun out this round after
+      finding `HandleMW`/`ClientMW` are hard-coded to the LEGACY concrete
+      type, not the shared `RouteMiddleware` interface; later merged into
+      D-0003 once resolved), meaning Security enforcement and codec-backed
+      param merging are two genuinely different mechanisms today, not a
+      redundant duplication — Phase 3 does NOT block on that doc's
+      outcome either
       way, since both mechanisms already coexist correctly as traced
       above.
     - `stats.CapabilityObserver` is wired into the new ZeroMQ REST

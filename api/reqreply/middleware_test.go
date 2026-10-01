@@ -193,19 +193,13 @@ func isUnknownMiddlewareImplementationError(err error, target *reqreply.UnknownM
 // ── Phase 1b: header-param-as-middleware ────────────────────────────────────
 
 var apiKeyHeaderCodec = codex.String()
-var apiKeyHeaderMw = middleware.Middleware{
+var apiKeyHeaderMw = reqreply.NewMiddleware[struct{}, struct{}](middleware.Declaration[struct{}, struct{}]{
 	Name: "declare-user-property-param:X-API-Key",
-	RequestHeaderParams: []middleware.HeaderParamSpec{
-		{Name: "X-API-Key", Description: "API key", Required: true, Codec: &apiKeyHeaderCodec},
-	},
-}
+}).WithRequestPropertySpec(reqreply.PropertyParam{Param: codex.Param{Name: "X-API-Key", Description: "API key", Codec: &apiKeyHeaderCodec}, Required: true})
 
-var traceHeaderMw = middleware.Middleware{
+var traceHeaderMw = reqreply.NewMiddleware[struct{}, struct{}](middleware.Declaration[struct{}, struct{}]{
 	Name: "declare-response-user-property-param:X-Trace-Id",
-	ResponseHeaderParams: []middleware.ResponseHeaderParamSpec{
-		{Name: "X-Trace-Id", Description: "Trace correlation id", Required: false},
-	},
-}
+}).WithResponsePropertySpec(reqreply.PropertyParam{Param: codex.Param{Name: "X-Trace-Id", Description: "Trace correlation id"}, Required: false})
 
 func TestRoute_Register_RendersRequestHeaderParamsIntoAsyncAPI(t *testing.T) {
 	b := newBuilder()
@@ -264,12 +258,9 @@ func TestRoute_Register_DedupsHeaderParamsByName(t *testing.T) {
 	// declarations; only AGREEING declarations dedupe without error now
 	// (see TestRoute_Register_TwoPhase1bOnlyContributions_MismatchNowErrors
 	// for the mismatched-declaration regression case).
-	dup := middleware.Middleware{
+	dup := reqreply.NewMiddleware[struct{}, struct{}](middleware.Declaration[struct{}, struct{}]{
 		Name: "declare-user-property-param:X-API-Key-dup",
-		RequestHeaderParams: []middleware.HeaderParamSpec{
-			{Name: "X-API-Key", Required: true, Codec: &apiKeyHeaderCodec},
-		},
-	}
+	}).WithRequestPropertySpec(reqreply.PropertyParam{Param: codex.Param{Name: "X-API-Key", Codec: &apiKeyHeaderCodec}, Required: true})
 	b := newBuilder()
 	r := newMWTestRoute().Use(apiKeyHeaderMw, dup)
 	h, err := r.Register(b)

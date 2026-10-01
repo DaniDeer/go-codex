@@ -83,6 +83,27 @@ type RouteMiddleware interface{ RouteMiddlewareMarker() }
 // site. Carries no behavior.
 func (Middleware) RouteMiddlewareMarker() {}
 
+// SecurityCarrier is implemented by any [RouteMiddleware] value that MAY
+// carry a [SecurityDeclaration] — [Middleware] (legacy) and every
+// per-pattern codec-backed `Middleware[In, Out]` (api/rest/api/events/
+// api/reqreply, via their own embedded [Declaration]) all implement it,
+// letting the shared pairing dispatch (HandleMW/ClientMW/SubscribeMW/
+// PublishMW) extract a Security declaration UNIFORMLY, without a
+// per-concrete-type switch — part of the middleware-consolidation effort
+// (docs/design/d-0003-codec-declared-middlewares.md) folding Security into the
+// codec-backed family. A plain [RouteMiddleware] value that does NOT
+// implement this (e.g. a future non-Security-capable attachment) is
+// always treated as general-purpose (no Security) by the type-assertion
+// callers use — see [Middleware.SecurityDeclaration].
+type SecurityCarrier interface {
+	RouteMiddleware
+	SecurityDeclaration() *SecurityDeclaration
+}
+
+// SecurityDeclaration makes Middleware satisfy [SecurityCarrier] —
+// returns the legacy value's own Security field directly.
+func (m Middleware) SecurityDeclaration() *SecurityDeclaration { return m.Security }
+
 // Declaration is a minimal, pattern-agnostic DECLARE-TIME-ONLY core for a
 // codec-backed middleware: a name plus an Input and Output codec, exactly
 // mirroring how a route/channel itself declares its Req/Resp (or Item)
@@ -117,6 +138,16 @@ type Declaration[In, Out any] struct {
 	// OutCodec validates/schemas the middleware's own output value —
 	// independent of any route/channel's own Resp codec.
 	OutCodec codex.Codec[Out]
+
+	// Security, when non-nil, is a COMPLETE security scheme + requirement
+	// declaration for the attaching route/channel — nothing is inferred
+	// from this Declaration's mere presence. Mirrors [Middleware.Security]
+	// exactly; folded in here (not re-declared per-pattern) so
+	// rest.Middleware[In,Out]/events.Middleware[In,Out]/
+	// reqreply.Middleware[In,Out] all gain it for free via embedding.
+	// Security-only values use In=Out=struct{} (no var-boundary to
+	// decode) — see [NewSecurityDeclaration].
+	Security *SecurityDeclaration
 }
 
 // NewDeclaration builds a [Declaration] from a name and its Input/Output
@@ -137,6 +168,27 @@ func NewDeclaration[In, Out any](name string, inCodec codex.Codec[In], outCodec 
 // exact bundling this package's Revision 2 removed (see the former
 // RequireScopes/RequireAPIKey/Observability, which no longer
 // exist in this bundled shape).
+//
+// Middleware is now SECURITY-ONLY — the middleware-consolidation effort
+// (docs/design/d-0006-protocol-native-capabilities.md) removed its former
+// RequestHeaderParams/RequestCookieParams/RequestQueryParams/
+// ResponseHeaderParams/ResponseCookieParams fields (and the
+// FromHeaderParam/FromCookieParam/FromQueryParam/FromResponseHeaderParam/
+// FromResponseCookieParam constructors that built them), fully replaced
+// by each per-pattern codec-backed Middleware[In,Out] type's own
+// WithRequestHeaderSpec/WithRequestCookieSpec/WithRequestQuerySpec/
+// WithResponseHeaderSpec/WithResponseCookieSpec methods.
+//
+// This type survives, permanently, as the ONLY mechanism that lets a
+// SINGLE Go value be attached to routes/channels across MULTIPLE
+// patterns (REST/events/reqreply) — a per-pattern codec-backed
+// Middleware[In,Out] value cannot be shared this way: each pattern's
+// internal dispatch only recognizes its own concrete type, so a foreign
+// pattern's value would compile (both satisfy [RouteMiddleware]) but be
+// silently dropped, contributing nothing. See [SecurityScheme] and
+// docs/features/security.md's "Sharing a security SCHEME across
+// REST/events/reqreply" section for the (now config-level, not
+// value-level) replacement guarantee this enables.
 type Middleware struct {
 	// Name identifies this middleware in errors and observability.
 	Name string
@@ -145,26 +197,6 @@ type Middleware struct {
 	// declaration for the attaching route/channel — nothing is inferred
 	// from this Middleware's mere presence.
 	Security *SecurityDeclaration
-
-	// RequestHeaderParams/RequestCookieParams/RequestQueryParams contribute
-	// additional request param spec entries this middleware itself needs
-	// represented (e.g. an API-key middleware documenting "X-API-Key").
-	// Typed — a wrong-shape value is a Go compile error, not a runtime one
-	// (see [HeaderParamSpec]'s doc comment for why these are
-	// middleware-package-local types, not [rest.HeaderParam] etc.
-	// directly). Build one from scratch, or use api/rest's
-	// FromHeaderParam/FromCookieParam/FromQueryParam to bridge an
-	// existing rest.HeaderParam/CookieParam/QueryParam value.
-	RequestHeaderParams []HeaderParamSpec
-	RequestCookieParams []CookieParamSpec
-	RequestQueryParams  []QueryParamSpec
-
-	// ResponseHeaderParams/ResponseCookieParams mirror the RequestParams
-	// fields above for response-side spec contributions. Bridge an
-	// existing rest.ResponseHeaderParam/ResponseCookieParam value via
-	// api/rest's FromResponseHeaderParam/FromResponseCookieParam.
-	ResponseHeaderParams []ResponseHeaderParamSpec
-	ResponseCookieParams []ResponseCookieParamSpec
 }
 
 // SecurityDeclaration is a COMPLETE, explicit security scheme + requirement
@@ -188,6 +220,21 @@ type SecurityDeclaration struct {
 	Codec *codex.Codec[string]
 }
 
+// NewSecurityDeclaration builds a [SecurityDeclaration] value directly —
+// the codec-backed-family equivalent of [SecurityScheme], returning just
+// the declaration (not a full legacy [Middleware]) for attaching to a
+// [Declaration]'s own Security field. Each API pattern's own
+// SecurityMiddleware-style constructor (e.g. rest.SecurityMiddleware)
+// wraps this into its own Middleware[struct{}, struct{}] value.
+func NewSecurityDeclaration(schemeName string, scheme route.SecurityScheme, scopes []string, codec *codex.Codec[string]) *SecurityDeclaration {
+	return &SecurityDeclaration{
+		SchemeName: schemeName,
+		Scheme:     scheme,
+		Scopes:     scopes,
+		Codec:      codec,
+	}
+}
+
 // SecurityScheme builds a Middleware carrying ONLY a [SecurityDeclaration]
 // — no runtime behavior at all. This is the declare-time half of a
 // security requirement; pair it with a [ServerImplementation] (e.g. one
@@ -208,13 +255,8 @@ type SecurityDeclaration struct {
 // known.
 func SecurityScheme(schemeName string, scheme route.SecurityScheme, scopes []string, codec *codex.Codec[string]) Middleware {
 	return Middleware{
-		Name: "declare-security:" + schemeName,
-		Security: &SecurityDeclaration{
-			SchemeName: schemeName,
-			Scheme:     scheme,
-			Scopes:     scopes,
-			Codec:      codec,
-		},
+		Name:     "declare-security:" + schemeName,
+		Security: NewSecurityDeclaration(schemeName, scheme, scopes, codec),
 	}
 }
 

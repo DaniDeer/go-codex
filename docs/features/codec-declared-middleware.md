@@ -180,16 +180,29 @@ routes/channels.
 `WithRequestProperty`'s produced value merges into the SAME MQTT5 User Properties mechanism a
 request's security credentials already use. `WithResponseProperty`'s produced value is written onto
 the SERVER's actual outgoing reply — both the success-reply AND error-reply paths — as real MQTT5
-User Properties, using the SAME extraction/validation machinery the older, still-fully-functional
-flat `UserPropertyParam` mechanism already uses for the request side (see
-[Feature: Security & Auth](security.md)).
+User Properties, using the SAME extraction/validation machinery
+`reqreply.Middleware[In,Out]`'s presence-only sibling
+(`WithRequestPropertySpec`/`WithResponsePropertySpec`, below) and the manual, call-time
+`ServeOptions.UserPropertyParams`/`SubscribeOptions.UserPropertyParams` options (see
+[Feature: Security & Auth](security.md)) both also use for the request side.
+
+### Presence-only property declarations
+
+`WithRequestPropertySpec`/`WithResponsePropertySpec` are `WithRequestProperty`/
+`WithResponseProperty`'s PRESENCE-ONLY siblings — a pure spec+validation declaration (an MQTT5 User
+Property that needs validating and rendering into the AsyncAPI spec, but has NO corresponding
+`In`/`Out` struct field to decode into), for the case a merge field isn't wanted at all. Both
+replaced the older `mqtt5.FromUserPropertyParam`/`FromResponseUserPropertyParam` bridges (REMOVED as
+part of the middleware-consolidation effort,
+[docs/design/d-0006-protocol-native-capabilities.md](../design/d-0006-protocol-native-capabilities.md)),
+which built the same declaration from the now Security-only legacy `middleware.Middleware` type.
 
 ### AsyncAPI spec rendering
 
-The property axis's declared contributions render into the SAME request/reply message `headers`
-schema the older `FromUserPropertyParam`/`FromResponseUserPropertyParam` bridge already populates —
-`Required` correctly determines which property names appear in the schema's `required` array (an
-optional property does not appear there, even though it's still validated/merged when present).
+The property axis's declared contributions (both merge-field and presence-only) render into the
+SAME request/reply message `headers` schema — `Required` correctly determines which property names
+appear in the schema's `required` array (an optional property does not appear there, even though
+it's still validated/merged when present).
 
 ## Conflict detection — a uniform algorithm across all 3 APIs
 
@@ -254,8 +267,9 @@ REP/ROUTER socket (which would violate REQ/REP's one-reply-per-request invariant
 - [Feature: REST API — Codec-backed middleware](rest-api.md#codec-backed-middleware-transformclienttransform)
 - [Feature: Event Channels — Codec-backed middleware](events.md#codec-backed-middleware-transformclienttransform) ·
   [Feature: Event Channels — Dead-letter fallback](events.md#dead-letter-fallback--deadletter)
-- [Feature: Security & Auth](security.md) — the older flat `UserPropertyParam`/
-  `FromUserPropertyParam` mechanism, unchanged, still fully functional alongside this one
+- [Feature: Security & Auth](security.md) — the manual, call-time
+  `ServeOptions.UserPropertyParams`/`SubscribeOptions.UserPropertyParams` mechanism, unchanged,
+  still fully functional alongside this one
 - [Feature: Observer Pattern](observer.md#apireqreplyobservability--a-shipped-declarative-observer-wrapper) —
   the DIFFERENT, general-purpose (unpaired) `.HandleMW(nil, fn)`/`.ClientMW(nil, fn)` mechanism this
   SAME package exposes via `reqreply.Observability[Req, Resp]`, used for observability rather than

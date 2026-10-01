@@ -25,7 +25,7 @@ var APIKeyAuth = events.SecurityScheme{
 // channel declaring this security requirement — CheckCoverage (run
 // unconditionally at Subscriber/Publisher.Handle time) rejects a declared
 // scheme with no attached implementation satisfying it.
-var APIKeyAuthMW = events.FromSecurityScheme("apiKeyAuth", APIKeyAuth, nil)
+var APIKeyAuthMW = events.SecurityMiddleware("apiKeyAuth", APIKeyAuth, nil)
 
 // ── SensorData channel — secured, shared across all 3 adapters ───────────────
 //

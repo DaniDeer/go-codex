@@ -305,7 +305,7 @@ func RequiredParamKinds(headerNames, cookieNames, queryNames []string, schemes m
 // convenience wrapper, mirroring [VerifyCapabilityCoverage]'s own
 // "don't hand-roll the guard+assert sequence per adapter" philosophy.
 // adapter names the calling adapter for the error message. Called ONCE,
-// at Serve/AttachServer/Call/AttachClient setup — never per-request.
+// at Serve/NewServerTransport/Call/NewClientTransport setup — never per-request.
 func CheckParamKindCoverage(adapter string, requiredKinds map[string]bool, transport any) error {
 	if requiredKinds["Header"] {
 		if _, ok := transport.(HeaderCapableTransport); !ok {

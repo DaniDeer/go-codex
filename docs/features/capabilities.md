@@ -396,10 +396,12 @@ carry it — decides whether something becomes a sealed, adapter-owned
   document it — so it stays a single, protocol-agnostic
   `middleware.SecurityScheme` declaration, unchanged by this mechanism.
   See [`docs/features/security.md`](security.md). (Whether this legacy,
-  non-generic declaration mechanism should eventually fold into the
-  newer codec-backed `Middleware[In,Out]` family is a SEPARATE,
-  unresolved evaluation — see
-  [`docs/roadmap/middleware-consolidation.md`](../roadmap/middleware-consolidation.md).)
+  non-generic declaration mechanism should fold into the codec-backed
+  `Middleware[In,Out]` family was a SEPARATE evaluation, now RESOLVED —
+  see
+  [`docs/design/d-0003-codec-declared-middlewares.md`](../design/d-0003-codec-declared-middlewares.md)'s
+  Addendum 3: presence-only params fully folded in; Security
+  permanently stays on its own dedicated type.)
 - **`api/reqreply`** ALSO shares **Handler Disposition**
   (`middleware.Disposition`/`SetDisposition`/`ResolveDisposition`) with
   `api/events` — Disposition lives in `middleware`, not `api/events`,

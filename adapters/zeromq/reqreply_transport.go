@@ -19,8 +19,8 @@ import (
 // reqreplyPkgPath is api/reqreply's import path — used to distinguish a
 // genuine reqreply.Route[Req,Resp]/*reqreply.RouteHandle[Req,Resp] value
 // (for ANY Req/Resp) from an unrelated/wrong-package value passed by
-// caller mistake to [AttachServer]/[AttachClient]/[AttachRouterServer]/
-// [AttachDealerClient]'s resulting [reqreply.ServerTransport]/
+// caller mistake to [NewServerTransport]/[NewClientTransport]/[NewRouterServerTransport]/
+// [NewDealerClientTransport]'s resulting [reqreply.ServerTransport]/
 // [reqreply.ClientTransport]. Mirrors [adapters/mqtt5]'s identical
 // constant.
 const reqreplyPkgPath = "github.com/DaniDeer/go-codex/api/reqreply"
@@ -125,7 +125,7 @@ func sendHandlerErrorReplyReflect(ctx context.Context, sock FramedSocket, observ
 // UNLIKE mqtt5 (one shared client can Publish to ANY topic), a REQ/REP
 // socket is point-to-point: there is no broker to address an arbitrary
 // dead-letter topic through. sockets is the SAME topic→socket map passed
-// to [AttachServer] — the declared dead-letter topic MUST have its own
+// to [NewServerTransport] — the declared dead-letter topic MUST have its own
 // entry there (typically a PUSH socket feeding a dead-letter consumer)
 // for a dead-letter to actually be reachable. When no such entry exists,
 // this is a silent no-op (NOT a fallback onto the route's own REP
@@ -176,9 +176,9 @@ func sendRouterHandlerErrorReplyReflect(ctx context.Context, sock FramedSocket, 
 	sendRouterErrorReply(sock, identity, err)
 }
 
-// MissingSocketError is returned by [AttachServer]/[AttachRouterServer]
+// MissingSocketError is returned by [NewServerTransport]/[NewRouterServerTransport]
 // when server has a route registered whose topic is not a key in the
-// sockets map, and by [AttachClient]/[AttachDealerClient]'s resulting
+// sockets map, and by [NewClientTransport]/[NewDealerClientTransport]'s resulting
 // transport when a call is made for a route whose topic is likewise
 // missing. Unlike MQTT5's single shared client+router, ZMQ REQ/REP and
 // ROUTER/DEALER sockets are point-to-point (one socket per logical
@@ -374,7 +374,7 @@ type MissingSocketError struct {
 }
 
 func (e MissingSocketError) Error() string {
-	return fmt.Sprintf("zeromq: no socket registered for route topic %q (add it to the sockets map passed to AttachServer/AttachClient/AttachRouterServer/AttachDealerClient)", e.Topic)
+	return fmt.Sprintf("zeromq: no socket registered for route topic %q (add it to the sockets map passed to NewServerTransport/NewClientTransport/NewRouterServerTransport/NewDealerClientTransport)", e.Topic)
 }
 
 // LogValue implements [slog.LogValuer] for structured logging.

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
 )
 
@@ -137,21 +138,23 @@ func TestQueryParamNames_ReturnsPlainAndMergeFieldDeclarations(t *testing.T) {
 }
 
 func TestHeaderParamNames_IncludesMiddlewareDeclaredHeader(t *testing.T) {
-	// FromHeaderParam bridges a plain HeaderParam into a legacy
-	// middleware.Middleware value — applyParamDeclarations merges it
-	// DIRECTLY into rb.headerParams (confirmed via source trace), so a
-	// route declaring a header ONLY via .Use(mw) must still show up in
-	// HeaderParamNames(). Uses RegisterHandle (server-side), NOT
-	// ClientHandle — a genuine, confirmed ASYMMETRY found while writing
-	// this test: ClientHandle deliberately stays infallible and does
-	// NOT run applyParamDeclarations's middleware-merge step at all
-	// (only applyMiddlewareSecurityForClient, Security-only) — so a
+	// WithRequestHeaderSpec declares a presence-only header on a
+	// codec-backed Middleware[struct{},struct{}] value —
+	// applyParamDeclarations merges it DIRECTLY into rb.headerParams
+	// (confirmed via source trace), so a route declaring a header ONLY
+	// via .Use(mw) must still show up in HeaderParamNames(). Uses
+	// RegisterHandle (server-side), NOT ClientHandle — a genuine,
+	// confirmed ASYMMETRY found while writing this test: ClientHandle
+	// deliberately stays infallible and does NOT run
+	// applyParamDeclarations's middleware-merge step at all (only
+	// applyMiddlewareSecurityForClient, Security-only) — so a
 	// middleware-declared header is invisible via ClientHandle().
 	// HeaderParamNames() is documented for adapter Serve/AttachServer
 	// consumption, which always uses the Register/RegisterHandle path,
 	// so this is the CORRECT handle source for this test, not a
 	// workaround.
-	mw := FromHeaderParam(HeaderParam{Name: "X-Via-Middleware"})
+	mw := NewMiddleware(middleware.Declaration[struct{}, struct{}]{Name: "declare-header-param:X-Via-Middleware"}).
+		WithRequestHeaderSpec(HeaderParam{Name: "X-Via-Middleware"})
 	rt := NewRoute[capTestReq, capTestResp]("GET", "/cap/mw-header", capTestReqCodec, capTestRespCodec).Use(mw)
 	server := NewServer(Info{Title: "Test", Version: "1.0.0"})
 	handle, err := rt.RegisterHandle(server)

@@ -141,6 +141,29 @@ func (m Middleware[In, Out]) WithPublishProperty(p MergedPropertyParam[Out]) Mid
 	return m
 }
 
+// WithSubscribePropertySpec registers a PRESENCE-ONLY (non-merged)
+// SUBSCRIBE-side property declaration — p is validated and rendered into
+// the channel's AsyncAPI spec, but has NO corresponding In struct field
+// to decode into. Use [Middleware.WithSubscribeProperty] instead when a
+// merge field is wanted. Mirrors legacy middleware.Middleware's
+// RequestHeaderParams shape (see adapters/mqtt5.FromUserPropertyParam).
+// Part of the middleware-consolidation effort
+// (docs/design/d-0003-codec-declared-middlewares.md) closing the one real gap
+// the codec-backed family had relative to the legacy type.
+func (m Middleware[In, Out]) WithSubscribePropertySpec(p PropertyParam) Middleware[In, Out] {
+	m.propertyParamsIn = append(cloneParams(m.propertyParamsIn), p)
+	return m
+}
+
+// WithPublishPropertySpec is [Middleware.WithSubscribePropertySpec]'s
+// publish-side sibling — mirrors legacy middleware.Middleware's
+// ResponseHeaderParams shape (see
+// adapters/mqtt5.FromResponseUserPropertyParam).
+func (m Middleware[In, Out]) WithPublishPropertySpec(p PropertyParam) Middleware[In, Out] {
+	m.propertyParamsOut = append(cloneParams(m.propertyParamsOut), p)
+	return m
+}
+
 // cloneParams is [cloneFieldCodecs]'s []PropertyParam sibling, avoiding the
 // SAME aliasing bug across chained With* calls.
 func cloneParams(ps []PropertyParam) []PropertyParam {
@@ -185,6 +208,23 @@ func (m Middleware[In, Out]) WithSend(fn func(ctx context.Context) (Out, error))
 // comment. So a channel's plain .Use(...) can recognize and dispatch a
 // channel-agnostic Middleware value carrying a WithReceive/WithSend fn.
 func (Middleware[In, Out]) RouteMiddlewareMarker() {}
+
+// SecurityDeclaration makes Middleware[In,Out] satisfy
+// [middleware.SecurityCarrier] — returns the embedded Declaration's own
+// Security field directly. Part of the middleware-consolidation effort
+// (docs/design/d-0003-codec-declared-middlewares.md) folding Security into the
+// codec-backed family: [Subscriber.SubscribeMW]/[Publisher.PublishMW]
+// extract Security via this method UNIFORMLY, regardless of whether the
+// attached value is this type or the legacy [middleware.Middleware].
+func (m Middleware[In, Out]) SecurityDeclaration() *middleware.SecurityDeclaration {
+	return m.Declaration.Security
+}
+
+// MiddlewareName makes Middleware[In,Out] satisfy a name-exposing
+// interface used internally when synthesizing a legacy-shaped Security
+// entry from a codec-backed value (see api/rest's routeMiddlewareOpt.applyRoute
+// for the consuming side) — returns the embedded Declaration's own Name.
+func (m Middleware[In, Out]) MiddlewareName() string { return m.Declaration.Name }
 
 // applyAgnosticSubscriber implements the events-side routeMiddlewareContributor
 // pattern — called by [Subscriber.Use] for a bundled Middleware value. In

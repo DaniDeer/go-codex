@@ -10,6 +10,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/validate"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
@@ -1460,28 +1461,34 @@ func TestCall_ResponseFormats_TypeMismatch_ReturnsCallError(t *testing.T) {
 	}
 }
 
-// ── Phase 1b: header-param-as-middleware (request side) ────────────────
+// ── Phase D0: codec-backed presence-only property spec enforcement ─────
+//
+// Regression test for docs/design/d-0006-protocol-native-capabilities.md's
+// middleware-consolidation Phase D0 gap: a presence-only property
+// declared via the codec-backed Middleware[In,Out] axis
+// (WithRequestPropertySpec) must be ENFORCED at runtime (missing required
+// property rejected), not merely rendered into the AsyncAPI schema — this
+// is now the ONLY request-side header/property-param-as-middleware
+// mechanism (the legacy FromUserPropertyParam bridge it originally backed
+// up against was deleted once this coverage was proven equivalent).
 
-// apiKeyUserProp declares a REQUIRED User Property via .Use()/
-// [FromUserPropertyParam] — Phase 1b of docs/design/d-0004-reqreply-workflow-simplification.md's Addendum.
-var apiKeyUserProp = UserPropertyParam{Name: "X-API-Key", Required: true}
-
-var userPropertyComputeRoute = reqreply.NewRoute[computeReq, computeResp](
-	"compute/user-property-add",
+var codecBackedPropertySpecRoute = reqreply.NewRoute[computeReq, computeResp](
+	"compute/codec-backed-property-spec-add",
 	computeReqCodec, computeRespCodec,
-	reqreply.RouteMeta{OperationID: "userPropertyCompute"},
-).Use(FromUserPropertyParam(apiKeyUserProp))
+	reqreply.RouteMeta{OperationID: "codecBackedPropertySpecCompute"},
+).Use(reqreply.NewMiddleware[struct{}, struct{}](middleware.Declaration[struct{}, struct{}]{Name: "declare-api-key-property"}).
+	WithRequestPropertySpec(reqreply.PropertyParam{Param: codex.Param{Name: "X-API-Key"}, Required: true}))
 
-func newUserPropertyRouteHandle() *reqreply.RouteHandle[computeReq, computeResp] {
+func newCodecBackedPropertySpecRouteHandle() *reqreply.RouteHandle[computeReq, computeResp] {
 	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
-	h, err := userPropertyComputeRoute.Register(b)
+	h, err := codecBackedPropertySpecRoute.Register(b)
 	if err != nil {
 		panic(err)
 	}
 	return h
 }
 
-func TestServe_HandleMW_RequestHeaderParam_MissingRequired_Rejects(t *testing.T) {
+func TestServe_CodecBackedPropertySpec_MissingRequired_Rejects(t *testing.T) {
 	client := &mockClient{}
 	router := newMockRouter()
 	var gotErr ServeError
@@ -1489,20 +1496,21 @@ func TestServe_HandleMW_RequestHeaderParam_MissingRequired_Rejects(t *testing.T)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	_ = testServe(ctx, client, router, newUserPropertyRouteHandle(),
+	_ = testServe(ctx, client, router, newCodecBackedPropertySpecRouteHandle(),
 		func(_ context.Context, _ computeReq) (computeResp, error) {
-			t.Fatal("fn must not be called when a required Phase 1b header param is missing")
+			t.Fatal("fn must not be called when a required codec-backed presence-only property is missing")
 			return computeResp{}, nil
 		},
 		ServeOptions{OnError: func(e ServeError) { gotErr = e }})
 
-	// No X-API-Key User Property attached — must be rejected.
-	router.dispatch("compute/user-property-add", &pahomqtt5.Publish{
-		Topic:   "compute/user-property-add",
+	// No X-API-Key User Property attached — must be rejected, exactly
+	// like the legacy FromUserPropertyParam-declared case above.
+	router.dispatch("compute/codec-backed-property-spec-add", &pahomqtt5.Publish{
+		Topic:   "compute/codec-backed-property-spec-add",
 		Payload: []byte(validComputeJSON),
 		Properties: &pahomqtt5.PublishProperties{
 			ResponseTopic:   "replies/client-1",
-			CorrelationData: []byte("corr-hp-1"),
+			CorrelationData: []byte("corr-cbps-1"),
 		},
 	})
 	time.Sleep(50 * time.Millisecond)
@@ -1519,7 +1527,7 @@ func TestServe_HandleMW_RequestHeaderParam_MissingRequired_Rejects(t *testing.T)
 	}
 }
 
-func TestServe_HandleMW_RequestHeaderParam_Present_Succeeds(t *testing.T) {
+func TestServe_CodecBackedPropertySpec_Present_Succeeds(t *testing.T) {
 	client := &mockClient{}
 	router := newMockRouter()
 
@@ -1527,26 +1535,26 @@ func TestServe_HandleMW_RequestHeaderParam_Present_Succeeds(t *testing.T) {
 	defer cancel()
 
 	called := false
-	_ = testServe(ctx, client, router, newUserPropertyRouteHandle(),
+	_ = testServe(ctx, client, router, newCodecBackedPropertySpecRouteHandle(),
 		func(_ context.Context, req computeReq) (computeResp, error) {
 			called = true
 			return computeResp{Sum: req.X + req.Y}, nil
 		},
 		ServeOptions{})
 
-	router.dispatch("compute/user-property-add", &pahomqtt5.Publish{
-		Topic:   "compute/user-property-add",
+	router.dispatch("compute/codec-backed-property-spec-add", &pahomqtt5.Publish{
+		Topic:   "compute/codec-backed-property-spec-add",
 		Payload: []byte(validComputeJSON),
 		Properties: &pahomqtt5.PublishProperties{
 			ResponseTopic:   "replies/client-1",
-			CorrelationData: []byte("corr-hp-2"),
+			CorrelationData: []byte("corr-cbps-2"),
 			User:            pahomqtt5.UserProperties{{Key: "X-API-Key", Value: "secret"}},
 		},
 	})
 	time.Sleep(50 * time.Millisecond)
 
 	if !called {
-		t.Fatal("expected fn to be called when the required Phase 1b header param is present")
+		t.Fatal("expected fn to be called when the required codec-backed presence-only property is present")
 	}
 	pub := client.lastPublished()
 	if pub == nil {
@@ -1554,35 +1562,36 @@ func TestServe_HandleMW_RequestHeaderParam_Present_Succeeds(t *testing.T) {
 	}
 }
 
-// ── Phase 1b: header-param-as-middleware (reply/response side) ─────────
+// ── Phase D0: codec-backed presence-only property spec enforcement ─────
+// (reply/response side) — mirrors the request-side
+// codecBackedPropertySpecRoute block above; replaces the now-deleted
+// FromResponseUserPropertyParam-declared responseHeaderParamComputeRoute
+// (same scenario, ported onto the codec-backed WithResponsePropertySpec
+// mechanism instead of the legacy middleware.Middleware bridge).
 
-// traceIDResponseUserProp declares a REQUIRED reply-side User Property
-// via .Use()/[FromResponseUserPropertyParam] — Phase 1b's response-
-// direction half.
-var traceIDResponseUserProp = UserPropertyParam{Name: "X-Trace-Id", Required: true}
-
-var responseHeaderParamComputeRoute = reqreply.NewRoute[computeReq, computeResp](
-	"compute/response-header-add",
+var codecBackedResponsePropertySpecRoute = reqreply.NewRoute[computeReq, computeResp](
+	"compute/codec-backed-response-property-spec-add",
 	computeReqCodec, computeRespCodec,
-	reqreply.RouteMeta{OperationID: "responseHeaderParamCompute"},
-).Use(FromResponseUserPropertyParam(traceIDResponseUserProp))
+	reqreply.RouteMeta{OperationID: "codecBackedResponsePropertySpecCompute"},
+).Use(reqreply.NewMiddleware[struct{}, struct{}](middleware.Declaration[struct{}, struct{}]{Name: "declare-trace-id-response-property"}).
+	WithResponsePropertySpec(reqreply.PropertyParam{Param: codex.Param{Name: "X-Trace-Id"}, Required: true}))
 
-func newResponseHeaderParamRouteHandle() *reqreply.RouteHandle[computeReq, computeResp] {
+func newCodecBackedResponsePropertySpecRouteHandle() *reqreply.RouteHandle[computeReq, computeResp] {
 	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
-	h, err := responseHeaderParamComputeRoute.Register(b)
+	h, err := codecBackedResponsePropertySpecRoute.Register(b)
 	if err != nil {
 		panic(err)
 	}
 	return h
 }
 
-func TestCall_ClientMW_ResponseHeaderParam_MissingRequired_Rejects(t *testing.T) {
+func TestCall_ClientMW_ResponsePropertySpec_MissingRequired_Rejects(t *testing.T) {
 	router := newMockRouter()
 	client := &brokerClient{router: router}
 
 	// Plain Serve responder — attaches NO extra reply User Properties, so
 	// the declared X-Trace-Id requirement is unmet.
-	_ = testServe(context.Background(), client, router, newResponseHeaderParamRouteHandle(),
+	_ = testServe(context.Background(), client, router, newCodecBackedResponsePropertySpecRouteHandle(),
 		func(_ context.Context, req computeReq) (computeResp, error) {
 			return computeResp{Sum: req.X + req.Y}, nil
 		},
@@ -1591,7 +1600,7 @@ func TestCall_ClientMW_ResponseHeaderParam_MissingRequired_Rejects(t *testing.T)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	_, err := testCall(ctx, client, router, newResponseHeaderParamRouteHandle(),
+	_, err := testCall(ctx, client, router, newCodecBackedResponsePropertySpecRouteHandle(),
 		computeReq{X: 3, Y: 4},
 		CallOptions{Timeout: 2 * time.Second})
 
@@ -1611,17 +1620,17 @@ func TestCall_ClientMW_ResponseHeaderParam_MissingRequired_Rejects(t *testing.T)
 	}
 }
 
-func TestCall_ClientMW_ResponseHeaderParam_Present_Succeeds(t *testing.T) {
+func TestCall_ClientMW_ResponsePropertySpec_Present_Succeeds(t *testing.T) {
 	router := newMockRouter()
 	client := &brokerClient{router: router}
 
 	// Manually register a "server" handler that attaches the declared
-	// X-Trace-Id User Property on its reply — Phase 1b has no
-	// server-side declaration mechanism to generate reply-side User
-	// Properties via Serve itself (only the request side does), so this
-	// test constructs the reply directly, mirroring
+	// X-Trace-Id User Property on its reply — the codec-backed mechanism
+	// has no server-side declaration mechanism to generate reply-side
+	// User Properties via Serve itself (only the request side does), so
+	// this test constructs the reply directly, mirroring
 	// TestServe_ValidRoundTrip's own raw-dispatch style.
-	router.RegisterHandler("compute/response-header-add", func(msg *pahomqtt5.Publish) {
+	router.RegisterHandler("compute/codec-backed-response-property-spec-add", func(msg *pahomqtt5.Publish) {
 		_, _ = client.Publish(context.Background(), &pahomqtt5.Publish{
 			Topic:   msg.Properties.ResponseTopic,
 			Payload: []byte(`{"sum":7}`),
@@ -1635,7 +1644,7 @@ func TestCall_ClientMW_ResponseHeaderParam_Present_Succeeds(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	resp, err := testCall(ctx, client, router, newResponseHeaderParamRouteHandle(),
+	resp, err := testCall(ctx, client, router, newCodecBackedResponsePropertySpecRouteHandle(),
 		computeReq{X: 3, Y: 4},
 		CallOptions{Timeout: 2 * time.Second})
 	if err != nil {

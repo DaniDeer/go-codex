@@ -21,7 +21,7 @@ import (
 // reqreplyPkgPath is api/reqreply's import path — used to distinguish a
 // genuine reqreply.Route[Req,Resp]/*reqreply.RouteHandle[Req,Resp] value
 // (for ANY Req/Resp) from an unrelated/wrong-package value passed by
-// caller mistake to [AttachServer]/[AttachClient]'s resulting
+// caller mistake to [NewServerTransport]/[NewClientTransport]'s resulting
 // [reqreply.ServerTransport]/[reqreply.ClientTransport].
 const reqreplyPkgPath = "github.com/DaniDeer/go-codex/api/reqreply"
 
@@ -1488,11 +1488,12 @@ func mergeCredentialUserProperties(ctx context.Context, secReqs []route.Security
 }
 
 // userPropertyParamsFromHeaderSpecs converts declared
-// [middleware.HeaderParamSpec] values (attached via [reqreply.Route.Use]/
-// [FromUserPropertyParam]) back into [UserPropertyParam] values —
-// field-for-field identical shapes (Name, Description, Required, Codec
-// *codex.Codec[string]) — so [validateUserProperties] can be reused
-// unchanged for Phase 1b's new request-side attachment surface.
+// [middleware.HeaderParamSpec] values (attached via
+// [reqreply.Route.Use]/[reqreply.Middleware.WithRequestPropertySpec])
+// back into [UserPropertyParam] values — field-for-field identical
+// shapes (Name, Description, Required, Codec *codex.Codec[string]) — so
+// [validateUserProperties] can be reused unchanged for this request-side
+// attachment surface.
 func userPropertyParamsFromHeaderSpecs(specs []middleware.HeaderParamSpec) []UserPropertyParam {
 	if len(specs) == 0 {
 		return nil
@@ -1507,8 +1508,8 @@ func userPropertyParamsFromHeaderSpecs(specs []middleware.HeaderParamSpec) []Use
 // userPropertyParamsFromResponseHeaderSpecs is
 // [userPropertyParamsFromHeaderSpecs]'s reply/response-side sibling —
 // converts [middleware.ResponseHeaderParamSpec] values (attached via
-// [FromResponseUserPropertyParam]) into [UserPropertyParam] values for
-// [AttachClient]'s reply-message validation.
+// [reqreply.Middleware.WithResponsePropertySpec]) into [UserPropertyParam]
+// values for [NewClientTransport]'s reply-message validation.
 func userPropertyParamsFromResponseHeaderSpecs(specs []middleware.ResponseHeaderParamSpec) []UserPropertyParam {
 	if len(specs) == 0 {
 		return nil
@@ -1520,46 +1521,17 @@ func userPropertyParamsFromResponseHeaderSpecs(specs []middleware.ResponseHeader
 	return out
 }
 
-// FromUserPropertyParam bridges an EXISTING [UserPropertyParam] value
-// into a real [middleware.Middleware], usable with [reqreply.Route.Use]
-// exactly like one built from scratch — Phase 1b of
-// docs/design/d-0004-reqreply-workflow-simplification.md's Addendum, mirroring [rest.FromHeaderParam]'s
-// "wrap what you already have" pattern. Populates
-// [middleware.Middleware.RequestHeaderParams] — consulted by
-// [reqreply.Route.Register] (rendered into the request message's
-// AsyncAPI "headers" schema) AND by this package's own [AttachServer]
-// (validated against the real incoming *pahomqtt5.Publish's User
-// Properties, additively alongside [ServeOptions.UserPropertyParams],
-// which remains unchanged).
+// NOTE: FromUserPropertyParam/FromResponseUserPropertyParam (the legacy
+// middleware.Middleware-returning bridges this package used to export)
+// were REMOVED as part of the middleware-consolidation effort
+// (docs/design/d-0006-protocol-native-capabilities.md) — fully replaced
+// by [reqreply.Middleware.WithRequestPropertySpec]/
+// [reqreply.Middleware.WithResponsePropertySpec], a codec-backed
+// declaration attached the SAME way (via [reqreply.Route.Use]):
 //
-// Lives in adapters/mqtt5, NOT middleware/api/reqreply — the same
-// import-direction reason [rest.FromHeaderParam] lives in api/rest:
-// neither middleware nor api/reqreply may import an adapter package, and
-// [UserPropertyParam] is an mqtt5-adapter-specific type.
-//
-//	var authProp = mqtt5.UserPropertyParam{Name: "Authorization", Required: true}
+//	var authProp = reqreply.PropertyParam{Param: codex.Param{Name: "Authorization"}, Required: true}
 //
 //	route := reqreply.NewRoute[Req, Resp]("compute/add", reqCodec, respCodec,
-//	).Use(mqtt5.FromUserPropertyParam(authProp))
-func FromUserPropertyParam(p UserPropertyParam) middleware.Middleware {
-	return middleware.Middleware{
-		Name: "declare-user-property-param:" + p.Name,
-		RequestHeaderParams: []middleware.HeaderParamSpec{
-			{Name: p.Name, Description: p.Description, Required: p.Required, Codec: p.Codec},
-		},
-	}
-}
-
-// FromResponseUserPropertyParam is [FromUserPropertyParam]'s reply/
-// response-side sibling — populates
-// [middleware.Middleware.ResponseHeaderParams], rendered into the reply
-// message's AsyncAPI "headers" schema and validated by this package's
-// [AttachClient] against the reply message's User Properties.
-func FromResponseUserPropertyParam(p UserPropertyParam) middleware.Middleware {
-	return middleware.Middleware{
-		Name: "declare-response-user-property-param:" + p.Name,
-		ResponseHeaderParams: []middleware.ResponseHeaderParamSpec{
-			{Name: p.Name, Description: p.Description, Required: p.Required, Codec: p.Codec},
-		},
-	}
-}
+//	).Use(reqreply.NewMiddleware[struct{}, struct{}](middleware.Declaration[struct{}, struct{}]{
+//	    Name: "declare-authorization-property",
+//	}).WithRequestPropertySpec(authProp))

@@ -4,7 +4,13 @@
 > (D1-D7, see "Resolved design decisions") are shipped and verified across
 > `api/rest` (`Route` AND `SSERoute`), `api/events`, and every pub/sub
 > adapter (`adapters/mqtt5`, `adapters/mqtt`, `adapters/zeromq`). **This
-> remains the accurate, current description of shipped code.**
+> remains the accurate, current description of shipped code — UPDATED by
+> Addendum 3 below**, which folds in the middleware-consolidation effort's
+> outcome: presence-only (non-merged) param declarations are now FULLY
+> part of this mechanism (closing this doc's own §2 gap), and
+> `middleware.Middleware` is no longer unchanged — it was DELIBERATELY
+> shrunk to `{Name, Security}` (see Addendum 3 for the full reasoning and
+> what was deleted).
 >
 > **Forward-looking note (not a status change):**
 > [Feature](d-0006-protocol-native-capabilities.md) (a broader
@@ -291,6 +297,14 @@ type Declaration[In, Out any] struct {
 	Name     string
 	InCodec  codex.Codec[In]
 	OutCodec codex.Codec[Out]
+
+	// Security, when non-nil, is a COMPLETE security scheme + requirement
+	// declaration for the attaching route/channel. Folded in here (not
+	// re-declared per-pattern) so rest.Middleware[In,Out]/
+	// events.Middleware[In,Out]/reqreply.Middleware[In,Out] all gain it
+	// for free via embedding — see Addendum 3 below for why this WAS
+	// retrofitted after all, correcting this section's original claim.
+	Security *SecurityDeclaration
 }
 
 func NewDeclaration[In, Out any](name string, inCodec codex.Codec[In], outCodec codex.Codec[Out]) Declaration[In, Out] {
@@ -298,14 +312,20 @@ func NewDeclaration[In, Out any](name string, inCodec codex.Codec[In], outCodec 
 }
 ```
 
-`SecurityDeclaration` (today's security-specific shape: raw credential string +
-`route.SecurityScheme` + scopes) is intentionally **NOT** retrofitted onto
-`Declaration` — it is protocol-driven, already shipped and stable, and stays its own
-special-cased mechanism. `middleware.Common`'s original proposal (see
-`common-middleware-architecture.md`) — `{Name, Security}` — and `Declaration[In,Out]`
-are separate, independent, COMPOSABLE mechanisms: a route can `.Use(securityScheme)`
-for security and separately attach a `Declaration`-backed middleware for a
-non-security concern, together.
+**Correction (Addendum 3, below): this section originally claimed `SecurityDeclaration`
+was intentionally NOT retrofitted onto `Declaration`.** That held true for a while,
+but a later, separate round (breaking changes pre-approved) DID add a `Security
+*SecurityDeclaration` field directly to `Declaration[In,Out]` — each pattern's own
+`SecurityMiddleware` constructor builds a `Middleware[struct{},struct{}]` carrying
+ONLY this field (In=Out=struct{}, no var-boundary to decode), attachable via the
+SAME `.Use(...)`/`HandleMW(...)`/`ClientMW(...)` vocabulary as any other codec-backed
+value, for the SAME-API-only case. The ORIGINAL legacy `middleware.Middleware{Name,
+Security}` type (this section's own `middleware.Common`-proposal precedent, from the
+now-deleted `common-middleware-architecture.md`) still survives, PERMANENTLY, for
+the one case the codec-backed fold cannot replicate — see Addendum 3 for the full
+reasoning (a genuinely cross-API-shared Security declaration — one Go value usable
+on REST + events + reqreply at once — cannot be built from a per-pattern generic
+type, since each pattern's internal dispatch only recognizes its own concrete type).
 
 ### 3. `rest.Middleware[In, Out]` — REST's own per-pattern derived type, populating BOTH the spec and runtime columns
 
@@ -1441,16 +1461,21 @@ bundled into this design's readiness.
 ## Relationship to other roadmap docs
 
 - **Supersedes** `docs/roadmap/common-middleware-architecture.md` (now
-  deleted, its finding fully absorbed here — see
-  `docs/roadmap/middleware-consolidation.md`'s "See also" section for
-  the preserved historical note): that doc's core finding (a single
-  shared `middleware.Middleware` struct carrying
-  REST-only fields unused by `api/events`/`api/reqreply`) is what this design fixes —
-  but via an ADDITIVE marker interface + NEW per-pattern generic types
-  (`rest.Middleware[In,Out]`/`events.Middleware[In,Out]`), not that doc's original
-  proposal to retrofit/split `middleware.Middleware` itself (which would have been
-  breaking). `middleware.Middleware`/`SecurityScheme` remain completely unchanged and
-  continue to work exactly as before, side by side with this new mechanism.
+  deleted, its finding fully absorbed here): that doc's core finding (a
+  single shared `middleware.Middleware` struct carrying REST-only fields
+  unused by `api/events`/`api/reqreply`) is what this design fixes — but
+  via an ADDITIVE marker interface + NEW per-pattern generic types
+  (`rest.Middleware[In,Out]`/`events.Middleware[In,Out]`), not that doc's
+  original proposal to retrofit/split `middleware.Middleware` itself
+  (which would have been breaking). `middleware.Middleware`/
+  `SecurityScheme` remained completely unchanged at the time this design
+  shipped — **since then, Addendum 3 (below) records a LATER, separate
+  round that DID change `middleware.Middleware`** (breaking changes
+  pre-approved by that point): it was shrunk to `{Name, Security}`, fully
+  absorbing `docs/roadmap/middleware-consolidation.md`'s own evaluation
+  and outcome (that roadmap doc is now ALSO deleted, its content folded
+  into Addendum 3 the same way `common-middleware-architecture.md`'s
+  was folded in here).
 - **Update — relationship RESOLVED, via a confirmed 4-stage lifecycle
   model.** An earlier version of this section described
   [Feature](d-0006-protocol-native-capabilities.md) (then titled
@@ -1789,3 +1814,145 @@ unwrap paths intact, correct per-kind map/set usage in
 Full verification (`gofmt -l .`, `go build ./...`, `go test -count=1
 ./...` — 55 packages, all pass, `just check` — zero issues,
 `events-api`/`reqreply-api`/`rest-api` examples all exit 0) — all clean.
+
+## Addendum 3: middleware-consolidation — folding in the legacy `middleware.Middleware` type's presence-only params, Security's permanent split
+
+Absorbs `docs/roadmap/middleware-consolidation.md` in full (now deleted,
+per this repo's standard "merge the finding, drop the now-empty roadmap
+shell" convention). That roadmap doc was itself the SECOND doc to notice
+this tension — the FIRST was `docs/roadmap/common-middleware-architecture.md`
+(deleted earlier, see "Relationship to other roadmap docs" above),
+spun out of D-0002's "F6" critical-review finding that
+`middleware.Middleware` is a single flat struct carrying REST-only
+fields `api/events`/`api/reqreply` import unused. That doc's own
+proposed fix (retrofit `middleware.Middleware` into a breaking
+`Common`-base + per-pattern DERIVED STRUCTS) was superseded by THIS
+design's additive, non-breaking `RouteMiddleware` marker + generic
+`Declaration[In,Out]` family instead — `middleware-consolidation.md`
+picked up where that left off, evaluating the REMAINING tension this
+design's own shipped mechanism didn't fully close. This Addendum
+evaluates — and resolves —
+the tension §2's original text glossed over: this design's own
+`Declaration[In,Out]`/`Middleware[In,Out]` family was never actually a
+drop-in superset of the legacy `middleware.Middleware` type it was meant
+to (eventually) replace. Two real capability gaps existed, confirmed via
+code, not assumed:
+
+1. **Security had no codec-backed equivalent at all.**
+   `middleware.SecurityScheme(...)`/`rest.FromSecurityScheme(...)` both
+   returned the legacy type; `Middleware[In,Out]` had no `Security`
+   field, and `HandleMW`/`ClientMW`/`SubscribeMW`/`PublishMW` (all 3
+   APIs) were hard-coded to the CONCRETE legacy type, not the shared
+   `RouteMiddleware` interface both families implement.
+2. **Presence-only (non-merged) header/cookie/query/property
+   declarations had no codec-backed equivalent either — an ACTIVELY USED
+   pattern, not a hypothetical.** `mqtt5.FromUserPropertyParam`/
+   `FromResponseUserPropertyParam` built a legacy
+   `middleware.Middleware{RequestHeaderParams: [...]}` value with NO
+   merge field at all — pure spec+validation (an MQTT5 User Property
+   needing validation + AsyncAPI rendering, but no corresponding Go
+   struct field to decode into). `Middleware[In,Out].WithRequestHeader`
+   REQUIRES a merge field; there was no presence-only variant.
+
+### What shipped — a deliberate hybrid, not a full fold
+
+Breaking changes were pre-approved, so this went further than a
+"drop-in-only-if-free" evaluation — but landed on a hybrid, not a clean
+single-mechanism fold:
+
+- **Presence-only params fully consolidated (gap 2, closed in full).**
+  `Middleware[In,Out]` gained `WithRequestHeaderSpec`/
+  `WithRequestCookieSpec`/`WithRequestQuerySpec`/`WithResponseHeaderSpec`/
+  `WithResponseCookieSpec` (REST) and `WithRequestPropertySpec`/
+  `WithResponsePropertySpec` (events/reqreply) — presence-only siblings
+  of the existing merge-field methods, feeding the SAME
+  `applyParamDeclarations` conflict-detection/spec-layering pass the
+  merge-field contributions already use (§3 above). The legacy type's
+  `RequestHeaderParams`/`RequestCookieParams`/`RequestQueryParams`/
+  `ResponseHeaderParams`/`ResponseCookieParams` fields, and the bridge
+  constructors that built them (`rest.FromHeaderParam`/`FromCookieParam`/
+  `FromQueryParam`/`FromResponseHeaderParam`/`FromResponseCookieParam`,
+  `mqtt5.FromUserPropertyParam`/`FromResponseUserPropertyParam`), were
+  DELETED entirely — fully replaced, zero remaining callers (confirmed
+  via repo-wide grep before deletion). `events.
+  UnsupportedMiddlewareParamsError` (which guarded against a legacy
+  value's REST-only param fields leaking into a pub/sub channel) was ALSO
+  deleted — the condition it guarded against can no longer occur once
+  those fields don't exist.
+- **Security followed a DIFFERENT path than gap 2 — discovered DURING
+  implementation, not anticipated up front.** A genuinely
+  cross-API-shared Security declaration (one Go value, attached via
+  `.Use()` to a REST route, an events channel, AND a reqreply route — a
+  real, documented, tested capability; see
+  `examples/reqreply-api/demo_cross_api_oauth2_sharing.go` and
+  `docs/features/security.md`'s "Sharing a security SCHEME across
+  REST/events/reqreply" section) CANNOT be replicated by a per-pattern
+  codec-backed `Middleware[In,Out]` value. Each pattern's internal
+  dispatch recognizes values via its OWN unexported, package-private
+  interface (`routeMiddlewareContributor`-shaped in REST; the
+  identically-shaped-but-separately-named equivalent in events/reqreply),
+  whose method takes THAT package's own concrete, unexported
+  `*routeBuilder` type as its parameter. A foreign pattern's codec-backed
+  value satisfies NEITHER pattern's own dispatch interface (Go requires
+  an EXACT parameter-type match), so it would COMPILE — both the native
+  and foreign values structurally satisfy the generic `RouteMiddleware`
+  marker interface `.Use()` accepts — but be SILENTLY DROPPED at
+  attachment time: no error, no spec contribution, the Security
+  requirement simply vanishes, exactly the "declared but not enforced,
+  nobody notices" failure class `d-0006-protocol-native-capabilities.md`'s
+  entire capability-coverage mechanism was built to eliminate elsewhere.
+  Reintroducing a NEW instance of that failure mode to achieve "one
+  mechanism" was judged worse than keeping Security on its own dedicated,
+  permanent type.
+- **`middleware.Middleware` therefore SURVIVES, permanently, SHRUNK to
+  `{Name string; Security *SecurityDeclaration}`** — its former
+  RequestParams/ResponseParams fields removed (fully absorbed by the
+  codec-backed presence-only methods above), but its Security half kept
+  exactly as-is. `middleware.SecurityScheme`/`rest.FromSecurityScheme`/
+  `events.FromSecurityScheme` all remain, unchanged — alongside each
+  API's own `rest.SecurityMiddleware`/`events.SecurityMiddleware`/
+  `reqreply.SecurityMiddleware` (added per §2's correction above),
+  for the SAME-API-only case.
+- **The cross-API sharing GUARANTEE narrowed slightly, where it actually
+  mattered.** `examples/reqreply-api/routes/middleware.go`'s `OAuthMw`
+  (the one real call site needing genuine cross-API sharing) became 2
+  values (`OAuthMwReqreply`/`OAuthMwREST`) built from ONE shared
+  `route.SecurityScheme`/credential-codec config, rather than 1 literal
+  shared Go value — "same config, declared twice" instead of "one value,
+  attached twice". See `docs/features/security.md`'s rewritten section
+  for the full guarantee as it stands today.
+- **The 8 pairing methods** (`Route.HandleMW`/`SSERoute.HandleMW`/
+  `Route.ClientMW`/`SSERoute.ClientMW` (REST), `Subscriber.SubscribeMW`/
+  `Publisher.PublishMW` (events), `Route.HandleMW`/`Route.ClientMW`
+  (reqreply)) were widened from the concrete legacy type to the shared
+  `middleware.RouteMiddleware` interface — via a new
+  `middleware.SecurityCarrier` interface (duck-typed `SecurityDeclaration()`
+  method) both the legacy AND codec-backed types implement, letting
+  dispatch extract Security UNIFORMLY. Confirmed: this widening required
+  ZERO changes to any of the ~52 pre-existing call sites (Go's structural
+  interface satisfaction + the legacy type's value-receiver
+  `RouteMiddlewareMarker()` method, promoted to the pointer type too,
+  means every existing `route.HandleMW(&someMw, fn)`/`route.HandleMW(nil,
+  fn)` call site kept compiling unchanged) — exactly as this section's
+  original cost-correction (above) predicted.
+
+### Tests migrated, not just deleted
+
+Every test exercising a deleted symbol was PORTED onto its codec-backed
+replacement rather than simply removed, closing 2 real pre-existing test
+gaps found along the way: REST's presence-only methods
+(`WithRequestHeaderSpec`/etc., shipped earlier but never covered by a
+dedicated test) and reqreply's RESPONSE-side presence-only property
+enforcement (`WithResponsePropertySpec`'s runtime enforcement had no
+regression test until this round — only the request side did).
+
+### Validation
+
+`gofmt -l .` clean; `go build ./...`/`go vet ./...` clean; `go test
+./...` — 56 packages, zero failures; `just check` — 501 files, 0 issues;
+every example under `examples/*/` re-run to exit 0; a final repo-wide
+grep confirmed zero remaining non-historical references to any deleted
+symbol (`FromHeaderParam`/`FromCookieParam`/`FromQueryParam`/
+`FromResponseHeaderParam`/`FromResponseCookieParam`/
+`FromUserPropertyParam`/`FromResponseUserPropertyParam`/
+`UnsupportedMiddlewareParamsError`).

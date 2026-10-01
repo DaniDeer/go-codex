@@ -2,6 +2,7 @@ package routes
 
 import (
 	"github.com/DaniDeer/go-codex/api/reqreply"
+	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
@@ -19,8 +20,12 @@ var BearerCodec = codex.String().Refine(validate.NonEmptyString)
 // reqreply.WithSecurityScheme + manual RouteMeta.Security declaration
 // pattern still shown on routes.SecuredComputeRoute's own (deprecated)
 // path — mirrors routes.ProfileScopeMw/AdminScopeMw's identical role in
-// examples/rest-api.
-var BearerAuthMw = middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, &BearerCodec)
+// examples/rest-api. Reqreply-only (never attached to a REST/events
+// route anywhere in this example) — reqreply.SecurityMiddleware is the
+// correct, single-vocabulary constructor; see OAuthMwReqreply/
+// OAuthMwREST below for the genuinely cross-API case and why it is
+// declared differently.
+var BearerAuthMw = reqreply.SecurityMiddleware("bearerAuth", reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(BearerCodec), nil)
 
 // OAuthCodec validates a raw OAuth2 bearer token string's FORMAT
 // (non-empty) — same role as BearerCodec above.
@@ -47,25 +52,51 @@ const oauthComputeWriteScopeDescription = "Submit compute requests"
 const oauthAuthServerBaseURL = "https://auth.example.com"
 const oauthGrantEndpointPath = "/oauth2/token"
 
-// OAuthMw declares an OAuth2 "oauth2Compute" scheme — via
-// route.OAuth2Scheme, the SAME route.SecurityScheme/middleware.
-// SecurityScheme mechanism BearerAuthMw uses above. Demonstrates
-// docs/features/security.md's "Sharing a security scheme declaration
-// across REST/events/reqreply" pattern: this EXACT Go value is
-// attachable via .Use() to a REST route, an events channel, OR a
-// reqreply route — see demo_cross_api_oauth2_sharing.go, which attaches
-// it to BOTH a zeromq reqreply route (real, served, called) and a
-// locally-declared REST route (spec-only, proving the declaration is
-// byte-for-byte shared, not just superficially similar).
+// oauthComputeFlows is the ONE shared, protocol-agnostic OAuth2 scheme
+// config (a plain [route.SecurityScheme] value, no attachment semantics
+// of its own) — the true single source of truth for both declarations
+// below. OAuthMwReqreply and OAuthMwREST are each built from THIS SAME
+// scheme + OAuthCodec, through their own API's own vocabulary
+// (reqreply.SecurityMiddleware / rest.SecurityMiddleware) — "shared
+// config, declared twice" rather than "one Go value, attached twice".
+//
+// Earlier revisions of this example shared ONE middleware.Middleware
+// value (built via the now-deleted middleware.SecurityScheme) across
+// BOTH APIs — this worked because the legacy type was a single shared
+// concrete type every API's internal dispatch recognized identically.
+// The newer per-pattern codec-backed Middleware[In,Out] family CANNOT
+// replicate that: a reqreply.Middleware value attached to a REST route
+// compiles (both satisfy the generic middleware.RouteMiddleware marker)
+// but is SILENTLY DROPPED by REST's own internal dispatch (which only
+// recognizes rest.Middleware's own concrete type) — no error, no spec
+// contribution, the Security requirement simply vanishes. Declaring two
+// pattern-specific values from one shared config avoids that failure
+// mode entirely, while keeping exactly ONE vocabulary per API
+// permanently (no middleware.SecurityScheme escape hatch to reach for).
+// See docs/features/security.md's "Sharing a security SCHEME across
+// REST/events/reqreply" section for the full write-up this backs.
 var oauthComputeFlows = route.OAuthFlows{
 	ClientCredentials: &route.OAuthFlow{
 		TokenURL: oauthAuthServerBaseURL + oauthGrantEndpointPath,
 		Scopes:   map[string]string{OAuthComputeWriteScope: oauthComputeWriteScopeDescription},
 	},
 }
+var oauthComputeScheme = route.OAuth2Scheme(oauthComputeFlows)
+var oauthComputeScopes = []string{OAuthComputeWriteScope}
 
-var OAuthMw = middleware.SecurityScheme("oauth2Compute", route.OAuth2Scheme(oauthComputeFlows),
-	[]string{OAuthComputeWriteScope}, &OAuthCodec)
+// OAuthMwReqreply declares the "oauth2Compute" scheme for reqreply —
+// attached to OAuthComputeRoute via .Use()/HandleMW()/ClientMW() in
+// zeromqserver/server.go and demo_cross_api_oauth2_sharing.go.
+var OAuthMwReqreply = reqreply.SecurityMiddleware("oauth2Compute",
+	reqreply.SecurityScheme{SecurityScheme: oauthComputeScheme}.WithCodec(OAuthCodec), oauthComputeScopes)
+
+// OAuthMwREST declares the SAME "oauth2Compute" scheme (same
+// oauthComputeScheme/OAuthCodec config as OAuthMwReqreply above) for
+// REST — attached to a locally-declared REST route in
+// demo_cross_api_oauth2_sharing.go to prove the two specs render the
+// identical scheme, even though they are two distinct Go values.
+var OAuthMwREST = rest.SecurityMiddleware("oauth2Compute",
+	rest.SecurityScheme{SecurityScheme: oauthComputeScheme}.WithCodec(OAuthCodec), oauthComputeScopes)
 
 // ── Codec-declared enrichment middleware (docs/roadmap/reqreply-codec- ──
 // ── declared-middleware.md) — a DIFFERENT kind of declaration than the ──

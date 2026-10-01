@@ -174,12 +174,7 @@ func TestRegister_ManualSecurityWithAttachedMiddlewareOK(t *testing.T) {
 
 func TestWithMiddleware_RequestParamsContribution(t *testing.T) {
 	b := rest.NewServer(testInfo)
-	mw := middleware.Middleware{
-		Name: "require-api-key",
-		RequestHeaderParams: []middleware.HeaderParamSpec{
-			{Name: "X-API-Key", Required: true},
-		},
-	}
+	mw := presenceOnlyMW("require-api-key").WithRequestHeaderSpec(rest.HeaderParam{Name: "X-API-Key", Required: true})
 	h, err := rest.NewRoute[mwTestReq, userResp]("GET", "/keyed", mwTestReqCodec, userCodec,
 		rest.WithMiddleware(mw),
 	).RegisterHandle(b)
@@ -199,14 +194,8 @@ func TestWithMiddleware_RequestParamsContribution(t *testing.T) {
 
 func TestWithMiddleware_AgreeingParamContributionNotDuplicated(t *testing.T) {
 	b := rest.NewServer(testInfo)
-	mwA := middleware.Middleware{
-		Name:                "mw-a",
-		RequestHeaderParams: []middleware.HeaderParamSpec{{Name: "X-API-Key", Required: true}},
-	}
-	mwB := middleware.Middleware{
-		Name:                "mw-b",
-		RequestHeaderParams: []middleware.HeaderParamSpec{{Name: "X-API-Key", Required: true}}, // SAME kind/name/required — agreeing, not conflicting
-	}
+	mwA := presenceOnlyMW("mw-a").WithRequestHeaderSpec(rest.HeaderParam{Name: "X-API-Key", Required: true})
+	mwB := presenceOnlyMW("mw-b").WithRequestHeaderSpec(rest.HeaderParam{Name: "X-API-Key", Required: true}) // SAME kind/name/required — agreeing, not conflicting
 	h, err := rest.NewRoute[mwTestReq, userResp]("GET", "/keyed-twice", mwTestReqCodec, userCodec,
 		rest.WithMiddleware(mwA),
 		rest.WithMiddleware(mwB),
@@ -231,14 +220,8 @@ func TestWithMiddleware_AgreeingParamContributionNotDuplicated(t *testing.T) {
 // cross-kind namespace split below.
 func TestWithMiddleware_ConflictingParamContribution(t *testing.T) {
 	b := rest.NewServer(testInfo)
-	mwA := middleware.Middleware{
-		Name:                "mw-a",
-		RequestHeaderParams: []middleware.HeaderParamSpec{{Name: "X-Trace", Required: true}},
-	}
-	mwB := middleware.Middleware{
-		Name:                "mw-b",
-		RequestHeaderParams: []middleware.HeaderParamSpec{{Name: "X-Trace", Required: false}}, // SAME kind, different Required
-	}
+	mwA := presenceOnlyMW("mw-a").WithRequestHeaderSpec(rest.HeaderParam{Name: "X-Trace", Required: true})
+	mwB := presenceOnlyMW("mw-b").WithRequestHeaderSpec(rest.HeaderParam{Name: "X-Trace", Required: false}) // SAME kind, different Required
 	_, err := rest.NewRoute[mwTestReq, userResp]("GET", "/traced", mwTestReqCodec, userCodec,
 		rest.WithMiddleware(mwA),
 		rest.WithMiddleware(mwB),
@@ -261,14 +244,8 @@ func TestWithMiddleware_ConflictingParamContribution(t *testing.T) {
 // compat-risk audit, which found and rewrote the test this replaces).
 func TestWithMiddleware_DifferentKindSameName_NoLongerConflicts(t *testing.T) {
 	b := rest.NewServer(testInfo)
-	mwA := middleware.Middleware{
-		Name:                "mw-a",
-		RequestHeaderParams: []middleware.HeaderParamSpec{{Name: "X-Trace", Required: true}},
-	}
-	mwB := middleware.Middleware{
-		Name:                "mw-b",
-		RequestCookieParams: []middleware.CookieParamSpec{{Name: "X-Trace", Required: true}}, // DIFFERENT kind, same name
-	}
+	mwA := presenceOnlyMW("mw-a").WithRequestHeaderSpec(rest.HeaderParam{Name: "X-Trace", Required: true})
+	mwB := presenceOnlyMW("mw-b").WithRequestCookieSpec(rest.CookieParam{Name: "X-Trace", Required: true}) // DIFFERENT kind, same name
 	handle, err := rest.NewRoute[mwTestReq, userResp]("GET", "/traced-independent", mwTestReqCodec, userCodec,
 		rest.WithMiddleware(mwA),
 		rest.WithMiddleware(mwB),
@@ -289,14 +266,8 @@ func TestWithMiddleware_DifferentKindSameName_NoLongerConflicts(t *testing.T) {
 // header.
 func TestApplyParamDeclarations_DifferentKindSameName_BothAppliedToSpec(t *testing.T) {
 	b := rest.NewServer(testInfo)
-	mwA := middleware.Middleware{
-		Name:                "mw-a",
-		RequestHeaderParams: []middleware.HeaderParamSpec{{Name: "X", Required: true}},
-	}
-	mwB := middleware.Middleware{
-		Name:               "mw-b",
-		RequestQueryParams: []middleware.QueryParamSpec{{Name: "X", Required: true}},
-	}
+	mwA := presenceOnlyMW("mw-a").WithRequestHeaderSpec(rest.HeaderParam{Name: "X", Required: true})
+	mwB := presenceOnlyMW("mw-b").WithRequestQuerySpec(rest.QueryParam{Name: "X", Required: true})
 	handle, err := rest.NewRoute[mwTestReq, userResp]("GET", "/dedup-guard", mwTestReqCodec, userCodec,
 		rest.WithMiddleware(mwA),
 		rest.WithMiddleware(mwB),
@@ -332,14 +303,8 @@ func TestWithMiddleware_ConflictingCodecSchema(t *testing.T) {
 	b := rest.NewServer(testInfo)
 	uuidCodec := codex.String().WithDescription("uuid")
 	freeform := codex.String()
-	mwA := middleware.Middleware{
-		Name:                "mw-a",
-		RequestHeaderParams: []middleware.HeaderParamSpec{{Name: "X-Id", Required: true, Codec: &uuidCodec}},
-	}
-	mwB := middleware.Middleware{
-		Name:                "mw-b",
-		RequestHeaderParams: []middleware.HeaderParamSpec{{Name: "X-Id", Required: true, Codec: &freeform}},
-	}
+	mwA := presenceOnlyMW("mw-a").WithRequestHeaderSpec(rest.HeaderParam{Name: "X-Id", Required: true, Codec: &uuidCodec})
+	mwB := presenceOnlyMW("mw-b").WithRequestHeaderSpec(rest.HeaderParam{Name: "X-Id", Required: true, Codec: &freeform})
 	_, err := rest.NewRoute[mwTestReq, userResp]("GET", "/codec-conflict", mwTestReqCodec, userCodec,
 		rest.WithMiddleware(mwA),
 		rest.WithMiddleware(mwB),
@@ -361,14 +326,8 @@ func TestWithMiddleware_ConflictingCodecSchema(t *testing.T) {
 func TestWithMiddleware_SameCodecSchema_NoConflict(t *testing.T) {
 	b := rest.NewServer(testInfo)
 	shared := codex.String().WithDescription("uuid")
-	mwA := middleware.Middleware{
-		Name:                "mw-a",
-		RequestHeaderParams: []middleware.HeaderParamSpec{{Name: "X-Id", Required: true, Codec: &shared}},
-	}
-	mwB := middleware.Middleware{
-		Name:                "mw-b",
-		RequestHeaderParams: []middleware.HeaderParamSpec{{Name: "X-Id", Required: true, Codec: &shared}},
-	}
+	mwA := presenceOnlyMW("mw-a").WithRequestHeaderSpec(rest.HeaderParam{Name: "X-Id", Required: true, Codec: &shared})
+	mwB := presenceOnlyMW("mw-b").WithRequestHeaderSpec(rest.HeaderParam{Name: "X-Id", Required: true, Codec: &shared})
 	_, err := rest.NewRoute[mwTestReq, userResp]("GET", "/codec-no-conflict", mwTestReqCodec, userCodec,
 		rest.WithMiddleware(mwA),
 		rest.WithMiddleware(mwB),
@@ -797,15 +756,24 @@ func TestUnknownMiddlewareImplementationError_LogValue(t *testing.T) {
 	}
 }
 
-// ── FromHeaderParam/FromCookieParam/FromQueryParam/FromResponseHeaderParam/
-//    FromResponseCookieParam (bridge an existing rest.XParam into a Middleware)
+// ── WithRequestHeaderSpec/WithRequestCookieSpec/WithRequestQuerySpec/
+//    WithResponseHeaderSpec/WithResponseCookieSpec (presence-only, codec-
+//    backed param spec contribution — the replacement for the now-deleted
+//    FromHeaderParam/FromCookieParam/FromQueryParam/FromResponseHeaderParam/
+//    FromResponseCookieParam bridges, which wrapped an existing rest.XParam
+//    value into the LEGACY middleware.Middleware type.)
 
-func TestFromHeaderParam_Register_ContributesHeaderParamToSpec(t *testing.T) {
+func presenceOnlyMW(name string) rest.Middleware[struct{}, struct{}] {
+	return rest.NewMiddleware(middleware.Declaration[struct{}, struct{}]{Name: name})
+}
+
+func TestWithRequestHeaderSpec_Register_ContributesHeaderParamToSpec(t *testing.T) {
 	b := rest.NewServer(testInfo)
 	c := codex.String().Refine(validate.NonEmptyString)
 	apiKeyHeader := rest.HeaderParam{Name: "X-API-Key", Required: true}.WithCodec(c)
 
-	h, err := rest.NewRoute[mwTestReq, userResp]("GET", "/keyed", mwTestReqCodec, userCodec).Use(rest.FromHeaderParam(apiKeyHeader)).RegisterHandle(b)
+	h, err := rest.NewRoute[mwTestReq, userResp]("GET", "/keyed", mwTestReqCodec, userCodec).
+		Use(presenceOnlyMW("declare-header-param:X-API-Key").WithRequestHeaderSpec(apiKeyHeader)).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -819,8 +787,8 @@ func TestFromHeaderParam_Register_ContributesHeaderParamToSpec(t *testing.T) {
 		t.Errorf("want X-API-Key header param in spec, got %+v", h.Descriptor.HeaderParams)
 	}
 	// Codec propagation proven via runtime validation: a non-empty-string
-	// constraint fires against an empty header value only if the bridged
-	// HeaderParam's Codec actually reached the handle.
+	// constraint fires against an empty header value only if the spec's
+	// Codec actually reached the handle.
 	if err := h.ValidateHeaders(map[string]string{"X-API-Key": ""}); err == nil {
 		t.Error("want validation error for empty X-API-Key (Codec not propagated?)")
 	}
@@ -829,11 +797,12 @@ func TestFromHeaderParam_Register_ContributesHeaderParamToSpec(t *testing.T) {
 	}
 }
 
-func TestFromCookieParam_Register_ContributesCookieParamToSpec(t *testing.T) {
+func TestWithRequestCookieSpec_Register_ContributesCookieParamToSpec(t *testing.T) {
 	b := rest.NewServer(testInfo)
 	sessionCookie := rest.CookieParam{Name: "session_token", Required: true}
 
-	h, err := rest.NewRoute[mwTestReq, userResp]("GET", "/session", mwTestReqCodec, userCodec).Use(rest.FromCookieParam(sessionCookie)).RegisterHandle(b)
+	h, err := rest.NewRoute[mwTestReq, userResp]("GET", "/session", mwTestReqCodec, userCodec).
+		Use(presenceOnlyMW("declare-cookie-param:session_token").WithRequestCookieSpec(sessionCookie)).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -848,11 +817,12 @@ func TestFromCookieParam_Register_ContributesCookieParamToSpec(t *testing.T) {
 	}
 }
 
-func TestFromQueryParam_Register_ContributesQueryParamToSpec(t *testing.T) {
+func TestWithRequestQuerySpec_Register_ContributesQueryParamToSpec(t *testing.T) {
 	b := rest.NewServer(testInfo)
 	pageParam := rest.QueryParam{Name: "page"}
 
-	h, err := rest.NewRoute[mwTestReq, userResp]("GET", "/list", mwTestReqCodec, userCodec).Use(rest.FromQueryParam(pageParam)).RegisterHandle(b)
+	h, err := rest.NewRoute[mwTestReq, userResp]("GET", "/list", mwTestReqCodec, userCodec).
+		Use(presenceOnlyMW("declare-query-param:page").WithRequestQuerySpec(pageParam)).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -867,12 +837,13 @@ func TestFromQueryParam_Register_ContributesQueryParamToSpec(t *testing.T) {
 	}
 }
 
-func TestFromResponseHeaderParam_Register_ContributesResponseHeaderParamToSpec(t *testing.T) {
+func TestWithResponseHeaderSpec_Register_ContributesResponseHeaderParamToSpec(t *testing.T) {
 	b := rest.NewServer(testInfo)
 	uuidCodec := codex.String().Refine(validate.UUID)
 	locationHeader := rest.ResponseHeaderParam{Name: "Location", Required: true, Codec: &uuidCodec}
 
-	h, err := rest.NewRoute[mwTestReq, userResp]("POST", "/created", mwTestReqCodec, userCodec).Use(rest.FromResponseHeaderParam(locationHeader)).RegisterHandle(b)
+	h, err := rest.NewRoute[mwTestReq, userResp]("POST", "/created", mwTestReqCodec, userCodec).
+		Use(presenceOnlyMW("declare-response-header-param:Location").WithResponseHeaderSpec(locationHeader)).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -886,12 +857,13 @@ func TestFromResponseHeaderParam_Register_ContributesResponseHeaderParamToSpec(t
 	}
 }
 
-func TestFromResponseCookieParam_Register_ContributesResponseCookieParamToSpec(t *testing.T) {
+func TestWithResponseCookieSpec_Register_ContributesResponseCookieParamToSpec(t *testing.T) {
 	b := rest.NewServer(testInfo)
 	uuidCodec := codex.String().Refine(validate.UUID)
 	sessionCookie := rest.ResponseCookieParam{Name: "session_token", Required: true, Codec: &uuidCodec}
 
-	h, err := rest.NewRoute[mwTestReq, userResp]("POST", "/login", mwTestReqCodec, userCodec).Use(rest.FromResponseCookieParam(sessionCookie)).RegisterHandle(b)
+	h, err := rest.NewRoute[mwTestReq, userResp]("POST", "/login", mwTestReqCodec, userCodec).
+		Use(presenceOnlyMW("declare-response-cookie-param:session_token").WithResponseCookieSpec(sessionCookie)).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -903,14 +875,14 @@ func TestFromResponseCookieParam_Register_ContributesResponseCookieParamToSpec(t
 	}
 }
 
-func TestFromHeaderParam_ConflictsWithManualDeclaration(t *testing.T) {
+func TestWithRequestHeaderSpec_ConflictsWithManualDeclaration(t *testing.T) {
 	b := rest.NewServer(testInfo)
 	manualHeader := rest.HeaderParam{Name: "X-Trace", Required: false}
 	bridgedHeader := rest.HeaderParam{Name: "X-Trace", Required: true} // different Required
 
 	_, err := rest.NewRoute[mwTestReq, userResp]("GET", "/traced2", mwTestReqCodec, userCodec,
 		manualHeader,
-	).Use(rest.FromHeaderParam(bridgedHeader)).RegisterHandle(b)
+	).Use(presenceOnlyMW("declare-header-param:X-Trace").WithRequestHeaderSpec(bridgedHeader)).RegisterHandle(b)
 
 	var conflictErr rest.ConflictingParamContributionError
 	if !errors.As(err, &conflictErr) {

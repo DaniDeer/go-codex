@@ -27,7 +27,7 @@ import (
 //     QoS BELOW the declared minimum is caught as Insufficient, not just
 //     name-matched.
 //   - mqtt5server.Build already supplies mqtt5.QoSAtLeastOnce at
-//     AttachServer time (see its own Build() doc comment) — this demo's
+//     NewServerTransport time (see its own Build() doc comment) — this demo's
 //     Call additionally supplies one at CALL time, applied to the
 //     OUTGOING REQUEST publish (client/Call side), closing Phase 2's
 //     server+client plumbing gap end to end.
@@ -37,7 +37,7 @@ func demoCapabilityMechanism(ctx context.Context, built *mqtt5server.Built) {
 	// Coverage check: CapabilityRoute declares a requirement for "QoS"
 	// (see routes.CapabilityRoute's reqreply.RequireQoS) — the supplied
 	// Capabilities below satisfy it. This SAME check runs AUTOMATICALLY
-	// inside AttachServer/AttachClient; called here too just to show it
+	// inside NewServerTransport/NewClientTransport; called here too just to show it
 	// explicitly.
 	reqHandle := routes.CapabilityRoute.ClientHandle()
 	if err := reqreply.CheckCapabilityCoverage(reqHandle.Topic,

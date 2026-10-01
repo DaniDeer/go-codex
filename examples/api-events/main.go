@@ -112,7 +112,7 @@ func main() {
 	// scheme with no attached implementation satisfying it. The Fn here is a
 	// no-op placeholder: real deployments would parse the actual credential
 	// and return its granted scopes (or an error to reject the message).
-	bearerAuthMW := events.FromSecurityScheme("bearerAuth", bearerAuth, nil)
+	bearerAuthMW := events.SecurityMiddleware("bearerAuth", bearerAuth, nil)
 	userCreated, err := events.NewChannel[UserCreatedEvent]("user/created", userCreatedCodec,
 		events.ChannelMeta{Description: "User registration events consumed by the notification service."},
 	).WithSubscribe(events.Subscribe{

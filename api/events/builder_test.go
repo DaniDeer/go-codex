@@ -2212,7 +2212,7 @@ func TestPublisherHandle_unconditionalValidation_mergeFieldTypeMismatch_nilClien
 }
 
 // ── FromSecurityScheme / ConflictingSecurityDeclarationError /
-// UnsupportedMiddlewareParamsError / CheckCoverage (Phase 2) ───────────────
+// CheckCoverage (Phase 2) ───────────────
 
 func TestFromSecurityScheme_producesUsableMiddleware(t *testing.T) {
 	scheme := events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}
@@ -2319,59 +2319,6 @@ func TestConflictingSecurityDeclarationError_LogValue(t *testing.T) {
 	}
 	if got["topic"] != "user/created" {
 		t.Errorf("LogValue topic = %v, want %q", got["topic"], "user/created")
-	}
-}
-
-func TestSubscriberHandle_UnsupportedMiddlewareParamsError(t *testing.T) {
-	// A middleware carrying a REST-only param contribution (e.g. one built
-	// via rest.FromHeaderParam) attached directly to a channel must be
-	// rejected eagerly.
-	mw := middleware.Middleware{
-		Name:                "leaked-rest-header",
-		RequestHeaderParams: []middleware.HeaderParamSpec{{Name: "X-API-Key"}},
-	}
-	sub := events.NewChannel[userEvent]("user/created", userEventCodec).
-		WithSubscribe(events.Subscribe{}).
-		Use(mw)
-
-	_, err := sub.Handle(nil)
-	var paramsErr events.UnsupportedMiddlewareParamsError
-	if !errors.As(err, &paramsErr) {
-		t.Fatalf("expected UnsupportedMiddlewareParamsError, got %T: %v", err, err)
-	}
-	if paramsErr.Middleware != "leaked-rest-header" {
-		t.Errorf("Middleware = %q, want %q", paramsErr.Middleware, "leaked-rest-header")
-	}
-}
-
-func TestPublisherHandle_UnsupportedMiddlewareParamsError(t *testing.T) {
-	mw := middleware.Middleware{
-		Name:                 "leaked-rest-cookie",
-		ResponseCookieParams: []middleware.ResponseCookieParamSpec{{Name: "session"}},
-	}
-	pub := events.NewChannel[userEvent]("user/created", userEventCodec).
-		WithPublish(events.Publish{}).
-		Use(mw)
-
-	_, err := pub.Handle(nil)
-	var paramsErr events.UnsupportedMiddlewareParamsError
-	if !errors.As(err, &paramsErr) {
-		t.Fatalf("expected UnsupportedMiddlewareParamsError, got %T: %v", err, err)
-	}
-}
-
-func TestUnsupportedMiddlewareParamsError_LogValue(t *testing.T) {
-	err := events.UnsupportedMiddlewareParamsError{Topic: "user/created", Middleware: "leaked"}
-	lv := err.LogValue()
-	if lv.Kind() != slog.KindGroup {
-		t.Fatalf("LogValue().Kind() = %v, want %v", lv.Kind(), slog.KindGroup)
-	}
-	got := map[string]any{}
-	for _, a := range lv.Group() {
-		got[a.Key] = a.Value.Any()
-	}
-	if got["topic"] != "user/created" || got["middleware"] != "leaked" {
-		t.Errorf("LogValue = %v, want topic=user/created middleware=leaked", got)
 	}
 }
 

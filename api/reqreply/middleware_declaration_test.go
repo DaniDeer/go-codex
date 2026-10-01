@@ -225,23 +225,15 @@ func TestRoute_Register_AgreeingParamContributions_DedupeWithoutError(t *testing
 }
 
 // TestRoute_Register_TwoPhase1bOnlyContributions_MismatchNowErrors is the
-// BREAKING-CHANGE regression test (Round 18): two Phase-1b-ONLY
-// declarations (zero new-axis involvement) with differing Required/codec
+// BREAKING-CHANGE regression test (Round 18): two presence-only
+// (WithRequestPropertySpec) declarations with differing Required/codec
 // for the same property name must now FAIL.
 func TestRoute_Register_TwoPhase1bOnlyContributions_MismatchNowErrors(t *testing.T) {
 	strCodec := codex.String()
-	mw1 := middleware.Middleware{
-		Name: "flat-mw-1",
-		RequestHeaderParams: []middleware.HeaderParamSpec{
-			{Name: "X-Region", Required: true, Codec: &strCodec},
-		},
-	}
-	mw2 := middleware.Middleware{
-		Name: "flat-mw-2",
-		RequestHeaderParams: []middleware.HeaderParamSpec{
-			{Name: "X-Region", Required: false},
-		},
-	}
+	mw1 := reqreply.NewMiddleware[struct{}, struct{}](middleware.Declaration[struct{}, struct{}]{Name: "flat-mw-1"}).
+		WithRequestPropertySpec(reqreply.PropertyParam{Param: codex.Param{Name: "X-Region", Codec: &strCodec}, Required: true})
+	mw2 := reqreply.NewMiddleware[struct{}, struct{}](middleware.Declaration[struct{}, struct{}]{Name: "flat-mw-2"}).
+		WithRequestPropertySpec(reqreply.PropertyParam{Param: codex.Param{Name: "X-Region"}, Required: false})
 	r := newMWTestRoute().Use(mw1, mw2)
 	b := newBuilder()
 	_, err := r.Register(b)

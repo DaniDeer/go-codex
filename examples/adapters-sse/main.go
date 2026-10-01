@@ -23,7 +23,7 @@
 //     [ports.SourcePort] pipelines, or when a caller already holds a
 //     handle, or needs [ConsumeOptions.OnError] which Client.Consume
 //     does not expose)
-//   - Bearer-secured SSE — a single [middleware.SecurityScheme] value,
+//   - Bearer-secured SSE — a single [rest.SecurityMiddleware] value,
 //     [rest.SSERoute.Use]-declared ONCE, then paired on BOTH roles of
 //     the SAME [rest.SSERoute] value: server-side via
 //     [rest.SSERoute.HandleMW] (verifies the credential), client-side via
@@ -52,7 +52,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/ports"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
@@ -363,7 +362,7 @@ func main() {
 
 	// ── Bearer-secured SSE: declare-once middleware, both roles ─────────────
 	//
-	// ONE middleware.SecurityScheme value (securedMw) is declared ONCE via
+	// ONE rest.SecurityMiddleware value (securedMw) is declared ONCE via
 	// .Use(securedMw) on securedBase — this is the SAME declaration
 	// mechanism REST's plain routes use (see examples/mutable-security-keys),
 	// applied here to an SSERoute. Two INDEPENDENT chains are then derived
@@ -381,9 +380,9 @@ func main() {
 	// securedRoute (WITH .ClientMW(&securedMw, credFn) chained on, below)
 	// is the value BOTH .Register(bHTTP) (server) AND nethttp.Consume
 	// (client, further down) use — one declared route, one shared
-	// middleware.Middleware value, both roles.
+	// codec-backed middleware value, both roles.
 	bearerTokenCodec := codex.String().Refine(validate.BearerToken)
-	securedMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, &bearerTokenCodec)
+	securedMw := rest.SecurityMiddleware("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT"), Codec: &bearerTokenCodec}, nil)
 	const demoBearerToken = "demo-secret-token"
 	secureImplFn := func(_ context.Context, r *http.Request, _ *struct{}) (map[string][]string, error) {
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")

@@ -36,6 +36,20 @@ type Middleware[In, Out any] struct {
 	propertyMergeFieldsIn  []MergedPropertyParam[In]
 	propertyMergeFieldsOut []MergedPropertyParam[Out]
 
+	// propertySpecsIn/Out carry PRESENCE-ONLY (non-merged) property
+	// declarations — pure spec+validation entries with NO corresponding
+	// In/Out struct field to decode into (an MQTT5 User Property that
+	// needs validating and rendering into the AsyncAPI spec, but has no
+	// corresponding struct field). Replaces the former, now-deleted
+	// adapters/mqtt5.FromUserPropertyParam, which built this same
+	// declaration from the legacy middleware.Middleware type's
+	// RequestHeaderParams/ResponseHeaderParams fields (removed along with
+	// it). Part of the middleware-consolidation effort
+	// (docs/design/d-0003-codec-declared-middlewares.md) closing the one real gap
+	// the codec-backed family had relative to the legacy type.
+	propertySpecsIn  []PropertyParam
+	propertySpecsOut []PropertyParam
+
 	// receiveFn/sendFn, when set (via WithReceive/WithSend below), carry a
 	// Req/Resp-FREE runtime Fn directly on the value itself — enabling
 	// route-AGNOSTIC attachment via plain .Use(mw). Left nil for the
@@ -91,6 +105,26 @@ func (m Middleware[In, Out]) WithResponseProperty(p MergedPropertyParam[Out]) Mi
 	return m
 }
 
+// WithRequestPropertySpec registers a PRESENCE-ONLY (non-merged) REQUEST-
+// side property declaration — p is validated and rendered into the
+// route's AsyncAPI spec, but has NO corresponding In struct field to
+// decode into. Use [Middleware.WithRequestProperty] instead when a merge
+// field is wanted. Mirrors legacy middleware.Middleware's
+// RequestHeaderParams shape (see adapters/mqtt5.FromUserPropertyParam).
+func (m Middleware[In, Out]) WithRequestPropertySpec(p PropertyParam) Middleware[In, Out] {
+	m.propertySpecsIn = append(slices.Clone(m.propertySpecsIn), p)
+	return m
+}
+
+// WithResponsePropertySpec is [Middleware.WithRequestPropertySpec]'s
+// REPLY-side sibling — mirrors legacy middleware.Middleware's
+// ResponseHeaderParams shape (see
+// adapters/mqtt5.FromResponseUserPropertyParam).
+func (m Middleware[In, Out]) WithResponsePropertySpec(p PropertyParam) Middleware[In, Out] {
+	m.propertySpecsOut = append(slices.Clone(m.propertySpecsOut), p)
+	return m
+}
+
 // WithReceive attaches a route-AGNOSTIC runtime Fn directly to m — its
 // signature never mentions Req/Resp, so the returned Middleware value (fn
 // included) can be passed to .Use(...) verbatim, on as many different
@@ -118,6 +152,23 @@ func (m Middleware[In, Out]) WithSend(fn func(ctx context.Context) (In, error)) 
 // recognize and dispatch a route-agnostic Middleware value carrying a
 // WithReceive/WithSend fn.
 func (Middleware[In, Out]) RouteMiddlewareMarker() {}
+
+// SecurityDeclaration makes Middleware[In,Out] satisfy
+// [middleware.SecurityCarrier] — returns the embedded Declaration's own
+// Security field directly. Part of the middleware-consolidation effort
+// (docs/design/d-0003-codec-declared-middlewares.md) folding Security into the
+// codec-backed family: [Route.HandleMW]/[Route.ClientMW] extract Security
+// via this method UNIFORMLY, regardless of whether the attached value is
+// this type or the legacy [middleware.Middleware].
+func (m Middleware[In, Out]) SecurityDeclaration() *middleware.SecurityDeclaration {
+	return m.Declaration.Security
+}
+
+// MiddlewareName makes Middleware[In,Out] satisfy a name-exposing
+// interface used internally when synthesizing a legacy-shaped Security
+// entry from a codec-backed value (see api/rest's routeMiddlewareOpt.applyRoute
+// for the consuming side) — returns the embedded Declaration's own Name.
+func (m Middleware[In, Out]) MiddlewareName() string { return m.Declaration.Name }
 
 // applyAgnosticRoute implements [routeMiddlewareContributor] — called by
 // [routeMiddlewareOpt.applyRoute] for a .Use()-attached Middleware value.

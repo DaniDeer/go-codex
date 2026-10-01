@@ -13,7 +13,6 @@ import (
 	c "github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/internal/registry"
 	regmodels "github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker/registry"
-	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
@@ -412,11 +411,13 @@ func newAuthCredentialFunc(httpClient *http.Client, registryHost, repository str
 // credentialFunc on a secured route is never an error (see auth.go) — the
 // request simply goes out without a Basic-auth header in that case,
 // exactly as it always has.
-// basicAuthMw is the DECLARE-TIME-ONLY middleware.Middleware for
+// basicAuthMw is the DECLARE-TIME-ONLY codec-backed middleware for
 // getTokenRoute's "basicAuth" scheme, attached via .Use() below and
 // paired against by authenticate()'s .ClientMW(&basicAuthMw, ...) call
-// when creds is non-nil.
-var basicAuthMw = middleware.SecurityScheme("basicAuth", route.BasicScheme(), nil, &basicAuthCredCodec)
+// when creds is non-nil. Built via rest.SecurityMiddleware
+// (docs/design/d-0003-codec-declared-middlewares.md), not the legacy
+// middleware.SecurityScheme.
+var basicAuthMw = rest.SecurityMiddleware("basicAuth", rest.SecurityScheme{SecurityScheme: route.BasicScheme(), Codec: &basicAuthCredCodec}, nil)
 
 var basicAuthCredCodec = c.String().Refine(validate.NonEmptyString)
 

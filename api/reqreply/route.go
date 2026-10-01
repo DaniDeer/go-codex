@@ -367,6 +367,22 @@ func WithSecurityScheme(name string, scheme SecurityScheme) RouteOpt {
 	return securitySchemeOpt{name: name, scheme: scheme}
 }
 
+// SecurityMiddleware builds a [Middleware][struct{}, struct{}] carrying
+// ONLY a [middleware.SecurityDeclaration] (In=Out=struct{}, no
+// var-boundary to decode), attachable via `.Use(...)`/`HandleMW(...)`/
+// `ClientMW(...)` — the codec-backed-family equivalent of
+// `.Use(middleware.SecurityScheme(...))`, the RECOMMENDED path per
+// [WithSecurityScheme]'s own deprecation note. Part of the
+// middleware-consolidation effort
+// (docs/design/d-0003-codec-declared-middlewares.md) folding Security into the
+// codec-backed family instead of the legacy [middleware.Middleware] type.
+func SecurityMiddleware(schemeName string, scheme SecurityScheme, scopes []string) Middleware[struct{}, struct{}] {
+	return NewMiddleware[struct{}, struct{}](middleware.Declaration[struct{}, struct{}]{
+		Name:     "declare-security:" + schemeName,
+		Security: middleware.NewSecurityDeclaration(schemeName, scheme.SecurityScheme, scopes, scheme.Codec),
+	})
+}
+
 // SecurityCredentialError is returned when credential format validation via
 // SecurityScheme.Codec fails (MQTT5 only). It is distinct from [SecurityError],
 // which wraps rejections from ServeOptions.SecurityFunc.
@@ -1308,7 +1324,7 @@ type RouteHandle[Req, Resp any] struct {
 
 	// Implementations are the server-side middleware implementations
 	// attached via [Route.HandleMW], consulted by the attached
-	// [ServerTransport] (e.g. mqtt5's `AttachServer`) instead of a
+	// [ServerTransport] (e.g. mqtt5's `NewServerTransport`) instead of a
 	// per-call/per-Attach `SecurityFunc` option. Populated by
 	// [Route.Register]/[Route.ClientHandle]. Mirrors
 	// [rest.RouteHandle.Implementations].
@@ -1316,7 +1332,7 @@ type RouteHandle[Req, Resp any] struct {
 
 	// ClientImplementations are the client-side middleware
 	// implementations attached via [Route.ClientMW], consulted by the
-	// attached [ClientTransport] (e.g. mqtt5's `AttachClient`) instead of
+	// attached [ClientTransport] (e.g. mqtt5's `NewClientTransport`) instead of
 	// a per-call/per-Attach `CredentialFunc` option. Populated by
 	// [Route.Register]/[Route.ClientHandle]. Mirrors
 	// [rest.RouteHandle.ClientImplementations].

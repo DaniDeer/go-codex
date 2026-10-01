@@ -2586,6 +2586,21 @@ func FromSecurityScheme(schemeName string, scheme SecurityScheme, scopes []strin
 	return middleware.SecurityScheme(schemeName, scheme.SecurityScheme, scopes, scheme.Codec)
 }
 
+// SecurityMiddleware is [FromSecurityScheme]'s codec-backed-family
+// equivalent — builds a [Middleware][struct{}, struct{}] carrying ONLY a
+// [middleware.SecurityDeclaration] (In=Out=struct{}, no var-boundary to
+// decode), attachable via the SAME .Use(...)/HandleMW(...)/ClientMW(...)
+// vocabulary as any other codec-backed middleware. Part of the
+// middleware-consolidation effort (docs/design/d-0003-codec-declared-middlewares.md)
+// folding Security into the codec-backed family instead of the legacy
+// [middleware.Middleware] type.
+func SecurityMiddleware(schemeName string, scheme SecurityScheme, scopes []string) Middleware[struct{}, struct{}] {
+	return NewMiddleware[struct{}, struct{}](middleware.Declaration[struct{}, struct{}]{
+		Name:     "declare-security:" + schemeName,
+		Security: middleware.NewSecurityDeclaration(schemeName, scheme.SecurityScheme, scopes, scheme.Codec),
+	})
+}
+
 // SecurityCredentialError is returned when credential format validation via
 // SecurityScheme.Codec fails. It is distinct from [SecurityError], which wraps
 // rejections from SecurityFunc.

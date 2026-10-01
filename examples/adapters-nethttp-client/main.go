@@ -241,7 +241,7 @@ func main() {
 	// runtime enforcement half, attached below via Route.HandleMW, paired
 	// against this same securedMw value.
 	const validToken = "secret-token"
-	securedMw := middleware.SecurityScheme("bearerAuth", contract.BearerAuthScheme, nil, &contract.BearerCredentialCodec)
+	securedMw := rest.SecurityMiddleware("bearerAuth", rest.SecurityScheme{SecurityScheme: contract.BearerAuthScheme, Codec: &contract.BearerCredentialCodec}, nil)
 	securedImplMw := middleware.ServerImplementation{
 		Name:      "implement-scopes:bearerAuth",
 		Satisfies: []string{"bearerAuth"},

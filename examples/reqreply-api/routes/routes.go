@@ -385,13 +385,17 @@ var OAuthComputeRespCodec = codex.Struct[OAuthComputeResp](
 	),
 )
 
-// OAuthComputeRoute demonstrates the SAME OAuthMw declaration (see
+// OAuthComputeRoute demonstrates the OAuthMwReqreply declaration (see
 // middleware.go) attached to a zeromq reqreply route, via .Use()+
 // HandleMW()/ClientMW() — Demo 9 (demo_cross_api_oauth2_sharing.go) also
-// attaches this EXACT Go value to a locally-declared REST route, proving
-// one declaration is shareable across BOTH APIs. Declared PRISTINE here
-// (no Security baked in, no GlobalSecurity to opt out of on the zeromq
-// server) — mirrors HeaderParamComputeRoute/SecuredComputeRoute's own
+// attaches OAuthMwREST (the SAME oauth2Compute route.SecurityScheme
+// config, declared through rest.SecurityMiddleware instead) to a
+// locally-declared REST route, proving the SCHEME is shareable across
+// BOTH APIs even though each pattern gets its own declared Go value —
+// see middleware.go's OAuthMwReqreply/OAuthMwREST doc comments for why.
+// Declared PRISTINE here (no Security baked in, no GlobalSecurity to
+// opt out of on the zeromq server) — mirrors HeaderParamComputeRoute/
+// SecuredComputeRoute's own
 // "pristine base, secured at the attachment site" separation.
 var OAuthComputeRoute = reqreply.NewRoute[OAuthComputeReq, OAuthComputeResp](
 	"compute/oauth-add",

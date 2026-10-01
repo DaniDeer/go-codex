@@ -71,15 +71,17 @@ func Build(obs stats.Observer) (*Built, error) {
 		return nil, err
 	}
 	// OAuthComputeRoute demonstrates zeromq's reqreply security Fn-shape
-	// (docs/design/d-0004-reqreply-workflow-simplification.md's Addendum, SHIPPED) AND the SAME OAuthMw
-	// declaration shared across REST/reqreply — see Demo 9
-	// (demo_cross_api_oauth2_sharing.go). The general-purpose observer
+	// (docs/design/d-0004-reqreply-workflow-simplification.md's Addendum, SHIPPED) AND the
+	// oauth2Compute scheme ALSO declared for REST from the SAME shared
+	// route.SecurityScheme config — see Demo 9
+	// (demo_cross_api_oauth2_sharing.go) and routes.OAuthMwReqreply/
+	// routes.OAuthMwREST's doc comments. The general-purpose observer
 	// HandleMW(nil, ...) attaches ALONGSIDE the paired security
-	// HandleMW(&routes.OAuthMw, ...) below — proving the two mechanisms
+	// HandleMW(&routes.OAuthMwReqreply, ...) below — proving the two mechanisms
 	// compose freely on the same route.
 	oauthHandle, err := routes.OAuthComputeRoute.
-		Use(routes.OAuthMw).
-		HandleMW(&routes.OAuthMw, handlers.VerifyOAuthComputeZeroMQ).
+		Use(routes.OAuthMwReqreply).
+		HandleMW(&routes.OAuthMwReqreply, handlers.VerifyOAuthComputeZeroMQ).
 		HandleMW(nil, reqreply.Observability[routes.OAuthComputeReq, routes.OAuthComputeResp](obs)).
 		WithHandler(handlers.AddOAuth).
 		Register(server)

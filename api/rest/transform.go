@@ -408,6 +408,11 @@ func specContributionOf[In, Out any](mw Middleware[In, Out]) middlewareSpecContr
 	for _, p := range mw.respCookieParams {
 		c.respCookieParams = append(c.respCookieParams, p.ResponseCookieParam)
 	}
+	c.reqHeaderParams = append(c.reqHeaderParams, mw.reqHeaderSpecs...)
+	c.reqCookieParams = append(c.reqCookieParams, mw.reqCookieSpecs...)
+	c.reqQueryParams = append(c.reqQueryParams, mw.reqQuerySpecs...)
+	c.respHeaderParams = append(c.respHeaderParams, mw.respHeaderSpecs...)
+	c.respCookieParams = append(c.respCookieParams, mw.respCookieSpecs...)
 	return c
 }
 

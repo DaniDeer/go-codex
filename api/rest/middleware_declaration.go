@@ -43,6 +43,20 @@ type Middleware[In, Out any] struct {
 	respHeaderParams []MergedResponseHeaderParam[Out]
 	respCookieParams []MergedResponseCookieParam[Out]
 
+	// reqHeaderSpecs/reqCookieSpecs/reqQuerySpecs/respHeaderSpecs/
+	// respCookieSpecs carry PRESENCE-ONLY (non-merged) param
+	// declarations — pure spec+validation entries with NO corresponding
+	// In/Out struct field to decode into, mirroring legacy
+	// [middleware.Middleware]'s RequestHeaderParams/etc. shape. Part of
+	// the middleware-consolidation effort
+	// (docs/design/d-0003-codec-declared-middlewares.md) closing the one real gap
+	// the codec-backed family had relative to the legacy type.
+	reqHeaderSpecs  []HeaderParam
+	reqCookieSpecs  []CookieParam
+	reqQuerySpecs   []QueryParam
+	respHeaderSpecs []ResponseHeaderParam
+	respCookieSpecs []ResponseCookieParam
+
 	// receiveFn/sendFn, when set (via WithReceive/WithSend below), carry a
 	// Req/Resp-FREE runtime Fn directly on the value itself — enabling
 	// route/channel-AGNOSTIC attachment via plain .Use(mw). Left nil for
@@ -104,6 +118,44 @@ func (m Middleware[In, Out]) WithResponseCookie(p MergedResponseCookieParam[Out]
 	return m
 }
 
+// WithRequestHeaderSpec registers a PRESENCE-ONLY (non-merged) request
+// header declaration — p is validated and rendered into the route's spec,
+// but has NO corresponding In struct field to decode into. Use
+// [Middleware.WithRequestHeader] instead when a merge field is wanted.
+// Mirrors legacy middleware.Middleware's RequestHeaderParams shape.
+func (m Middleware[In, Out]) WithRequestHeaderSpec(p HeaderParam) Middleware[In, Out] {
+	m.reqHeaderSpecs = append(slices.Clone(m.reqHeaderSpecs), p)
+	return m
+}
+
+// WithRequestCookieSpec is [Middleware.WithRequestHeaderSpec]'s cookie
+// sibling.
+func (m Middleware[In, Out]) WithRequestCookieSpec(p CookieParam) Middleware[In, Out] {
+	m.reqCookieSpecs = append(slices.Clone(m.reqCookieSpecs), p)
+	return m
+}
+
+// WithRequestQuerySpec is [Middleware.WithRequestHeaderSpec]'s query
+// sibling.
+func (m Middleware[In, Out]) WithRequestQuerySpec(p QueryParam) Middleware[In, Out] {
+	m.reqQuerySpecs = append(slices.Clone(m.reqQuerySpecs), p)
+	return m
+}
+
+// WithResponseHeaderSpec is [Middleware.WithRequestHeaderSpec]'s
+// response-side sibling.
+func (m Middleware[In, Out]) WithResponseHeaderSpec(p ResponseHeaderParam) Middleware[In, Out] {
+	m.respHeaderSpecs = append(slices.Clone(m.respHeaderSpecs), p)
+	return m
+}
+
+// WithResponseCookieSpec is [Middleware.WithRequestHeaderSpec]'s
+// response-cookie sibling.
+func (m Middleware[In, Out]) WithResponseCookieSpec(p ResponseCookieParam) Middleware[In, Out] {
+	m.respCookieSpecs = append(slices.Clone(m.respCookieSpecs), p)
+	return m
+}
+
 // WithReceive attaches a route/channel-AGNOSTIC runtime Fn directly to m —
 // its signature never mentions Req/Resp, so the returned Middleware value
 // (fn included) can be passed to .Use(...) verbatim, on as many different
@@ -132,6 +184,23 @@ func (m Middleware[In, Out]) WithSend(fn func(ctx context.Context) (In, error)) 
 // dispatch a route/channel-agnostic Middleware value carrying a
 // WithReceive/WithSend fn.
 func (Middleware[In, Out]) RouteMiddlewareMarker() {}
+
+// SecurityDeclaration makes Middleware[In,Out] satisfy
+// [middleware.SecurityCarrier] — returns the embedded Declaration's own
+// Security field directly. Part of the middleware-consolidation effort
+// (docs/design/d-0003-codec-declared-middlewares.md) folding Security into the
+// codec-backed family: [Route.HandleMW]/[Route.ClientMW] extract Security
+// via this method UNIFORMLY, regardless of whether the attached value is
+// this type or the legacy [middleware.Middleware].
+func (m Middleware[In, Out]) SecurityDeclaration() *middleware.SecurityDeclaration {
+	return m.Declaration.Security
+}
+
+// MiddlewareName makes Middleware[In,Out] satisfy a name-exposing
+// interface used internally when synthesizing a legacy-shaped Security
+// entry from a codec-backed value (see api/rest's routeMiddlewareOpt.applyRoute
+// for the consuming side) — returns the embedded Declaration's own Name.
+func (m Middleware[In, Out]) MiddlewareName() string { return m.Declaration.Name }
 
 // applyAgnosticRoute implements routeMiddlewareContributor — called by
 // [routeMiddlewareOpt.applyRoute] for a .Use()-attached Middleware value.

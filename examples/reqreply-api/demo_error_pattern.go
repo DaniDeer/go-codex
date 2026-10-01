@@ -268,7 +268,7 @@ func demoErrorPatternMiddlewareCombo(ctx context.Context) {
 // transparently through the ports binding layer — not just
 // mqtt5's server-transport direct dispatch. Binds the SAME
 // routes.ErrorPatternComputeRoute + handlers.AddOrConflict via
-// ports.NewToolPort + mqtt5.ServeAdapter (instead of AttachServer), on its
+// ports.NewToolPort + mqtt5.ServeAdapter (instead of NewServerTransport+Serve), on its
 // OWN scratch broker/router — proving zero additional wiring is needed:
 // mqtt5.ServeAdapter delegates straight to the already-fully-wired Serve,
 // confirmed by this session's review (unlike REST's now-fixed handlerFunc

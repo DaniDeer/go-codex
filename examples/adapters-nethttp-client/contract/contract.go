@@ -295,10 +295,10 @@ var BearerCredentialCodec = codex.String().Refine(validate.NonEmptyString)
 // reusable scheme/codec above. mw is the DECLARE-TIME-ONLY spec declaration
 // (Security + SecuritySchemes, identical on server Register AND client
 // ClientHandle) — see main.go for how it's built via
-// middleware.SecurityScheme, and separately, how the runtime enforcement
+// rest.SecurityMiddleware, and separately, how the runtime enforcement
 // (a middleware.ServerImplementation server-side, or a credential-providing
 // Fn attached via rest.Route.ClientMW client-side) is supplied.
-func GetSecuredData(mw middleware.Middleware) rest.Route[struct{}, Profile] {
+func GetSecuredData(mw middleware.RouteMiddleware) rest.Route[struct{}, Profile] {
 	return rest.NewRoute[struct{}, Profile](
 		"GET", "/data",
 		codex.Empty, ProfileCodec,

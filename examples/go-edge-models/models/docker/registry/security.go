@@ -3,7 +3,6 @@ package registry
 import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	c "github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -14,11 +13,11 @@ import (
 // Distribution Spec registry (Docker Hub, GHCR, etc.) this package only
 // ever calls AS A CLIENT. The scheme is still declared "from the server's
 // perspective" — it documents what THAT external system requires — via
-// [middleware.SecurityScheme] below, attached with [rest.Route.Use]
+// [rest.SecurityMiddleware] below, attached with [rest.Route.Use]
 // exactly like a real server route would — this mirrors HandleMW/ClientMW's
 // "server declares, client fulfills" split
 // (docs/design/d-0001-rest-middleware-workflow-simplification.md).
-// [middleware.SecurityScheme] deliberately has NO
+// [rest.SecurityMiddleware] deliberately has NO
 // Fn: nothing in THIS codebase verifies the credential — that is the
 // external registry's job. app/registry's own newAuthCredentialFunc supplies
 // the credential CLIENT-side, attached via [rest.Route.ClientMW]
@@ -44,8 +43,10 @@ var BearerAuthScheme = rest.SecurityScheme{
 	SecurityScheme: route.BearerScheme(""),
 }.WithCodec(c.String().Refine(validate.NonEmptyString))
 
-// BearerAuthDeclaration is the spec-only [middleware.Middleware] GetTagsRoute/
-// GetManifestRoute attach via [rest.Route.Use] — see BearerAuthSchemeName's
-// own doc comment for why this codebase declares (but never enforces) this
-// requirement.
-var BearerAuthDeclaration = middleware.SecurityScheme(BearerAuthSchemeName, BearerAuthScheme.SecurityScheme, nil, BearerAuthScheme.Codec)
+// BearerAuthDeclaration is the spec-only codec-backed middleware
+// GetTagsRoute/GetManifestRoute attach via [rest.Route.Use] — see
+// BearerAuthSchemeName's own doc comment for why this codebase declares
+// (but never enforces) this requirement. Built via rest.SecurityMiddleware
+// (docs/design/d-0003-codec-declared-middlewares.md), not the legacy
+// middleware.SecurityScheme.
+var BearerAuthDeclaration = rest.SecurityMiddleware(BearerAuthSchemeName, BearerAuthScheme, nil)

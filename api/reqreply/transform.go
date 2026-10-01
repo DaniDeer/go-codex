@@ -281,6 +281,18 @@ type middlewareSpecContribution struct {
 	propertyParamsIn  []PropertyParam
 	propertyParamsOut []PropertyParam
 
+	// presencePropertyParamsIn/Out carry PRESENCE-ONLY (non-merged)
+	// property contributions ONLY (from WithRequestPropertySpec/
+	// WithResponsePropertySpec) — kept SEPARATE from
+	// propertyParamsIn/Out (which also carries merge-field contributions
+	// that deliberately stay schema-only, see applyParamDeclarations'
+	// own comment) because presence-only entries have NO alternate
+	// runtime-validation path of their own and must ALSO reach
+	// RouteHandle.RequestHeaderParams/ResponseHeaderParams — the gap
+	// closed by docs/design/d-0003-codec-declared-middlewares.md's Phase D0.
+	presencePropertyParamsIn  []PropertyParam
+	presencePropertyParamsOut []PropertyParam
+
 	// dualAttached is true ONLY for a contribution built from [Transform]/
 	// [ClientTransform] whose mw ALSO carries a WithReceive/WithSend Fn —
 	// exactly D7's ambiguous case. A contribution built from the plain
@@ -313,6 +325,8 @@ func specContributionOf[In, Out any](mw Middleware[In, Out]) middlewareSpecContr
 	for _, p := range mw.propertyMergeFieldsOut {
 		c.propertyParamsOut = append(c.propertyParamsOut, PropertyParam{Param: p.Param, Required: p.Required})
 	}
+	c.presencePropertyParamsIn = append(c.presencePropertyParamsIn, mw.propertySpecsIn...)
+	c.presencePropertyParamsOut = append(c.presencePropertyParamsOut, mw.propertySpecsOut...)
 	return c
 }
 

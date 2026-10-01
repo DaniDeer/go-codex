@@ -280,6 +280,14 @@ compatibility shim) is an open design decision, see below.
 
 ## Security design — reuses `middleware.SecurityScheme`/`CheckScopes` directly, no new type
 
+**Cross-reference**: [`docs/design/d-0003-codec-declared-middlewares.md`](../design/d-0003-codec-declared-middlewares.md)'s
+Addendum 3 separately evaluates (and resolves) whether Security should
+ever fold into the codec-backed `Declaration[In,Out]` family for
+REST/events/reqreply — this design's choice below (reuse the shared
+mechanism directly, don't fold) is independently-derived evidence
+consistent with that resolution (Security permanently stays on its own
+dedicated type), not a presupposed answer for it.
+
 `ports.RequireScopes[T]`-style security middleware is built the SAME
 way REST/events/reqreply already build theirs — via the EXISTING,
 shared `middleware.SecurityScheme(schemeName, scheme, scopes, codec)`

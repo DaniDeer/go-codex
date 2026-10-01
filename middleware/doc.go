@@ -43,6 +43,9 @@
 //
 // [HeaderParamSpec], [CookieParamSpec], [QueryParamSpec],
 // [ResponseHeaderParamSpec], and [ResponseCookieParamSpec] are the plain,
-// transport-agnostic shapes [api/rest]'s header/cookie/query param helpers
+// transport-agnostic shapes api/rest's codec-backed Middleware
+// (WithRequestHeaderSpec/WithRequestCookieSpec/WithRequestQuerySpec/
+// WithResponseHeaderSpec/WithResponseCookieSpec) and api/reqreply's
+// RouteHandle.RequestHeaderParams/ResponseHeaderParams runtime fields
 // build on.
 package middleware

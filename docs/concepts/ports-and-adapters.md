@@ -331,8 +331,7 @@ omitted by oversight.
    `Connect`/`NewSecuredClient` (connection establishment),
    `MessageFromContext`/`RequestFromContext`/
    `ResponseCookiesFromContext`/`ResponseHeadersFromContext` (ctx
-   accessors), `FromUserPropertyParam`/`FromResponseUserPropertyParam`
-   (codec-declaration sugar), `TopicVarsFromMessage` (`mqtt`/`mqtt5`/
+   accessors), `TopicVarsFromMessage` (`mqtt`/`mqtt5`/
    `zeromq` — the inverse of `events.ChannelHandle.BuildTopic`, for a
    caller extracting topic vars outside the standard subscribe
    dispatch path), `NewCachingCredentialFunc` (credential-caching

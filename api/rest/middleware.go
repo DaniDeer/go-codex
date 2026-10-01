@@ -11,106 +11,56 @@ import (
 	"github.com/DaniDeer/go-codex/route"
 )
 
-// middlewareOpt is the [RouteOpt] returned by [WithMiddleware]. It only
-// accumulates mws into rb.middlewares — the actual Security/RequestParams/
-// ResponseParams application (merging into the route's security
-// requirements/params, plus conflict detection) happens ONCE, at
-// Register/ValidateRoute time, via [applyMiddlewareDeclarations] — order-
-// independent regardless of where WithMiddleware appears among a route's
-// other RouteOpts.
+// middlewareOpt is [routeMiddlewareOpt]'s legacy-only helper — accumulates
+// mws into rb.middlewares (the Security application, merging into the
+// route's security requirements, plus conflict detection, happens ONCE at
+// Register/ValidateRoute time via [applyMiddlewareDeclarations] — order-
+// independent regardless of where a middleware is attached among a
+// route's other RouteOpts).
 type middlewareOpt struct{ mws []middleware.Middleware }
 
 func (o middlewareOpt) applyRoute(rb *routeBuilder) {
 	rb.middlewares = append(rb.middlewares, o.mws...)
 }
 
-// WithMiddleware attaches one or more [middleware.Middleware] values to a
-// route at declaration time — the spec-relevant attachment point. A
-// middleware carrying a non-nil Security declares a security scheme +
-// requirement for THIS route (fed into the OpenAPI spec exactly as if the
-// route had set [RouteMeta.Security] and a [SecurityScheme] manually); a
-// middleware carrying RequestParams/ResponseParams declares additional
-// header/cookie/query param spec entries. A route needs ZERO manual
+// WithMiddleware attaches one or more [middleware.RouteMiddleware] values
+// (the legacy, Security-only [middleware.Middleware] — see
+// [middleware.SecurityScheme]/[FromSecurityScheme] — or a codec-backed
+// [Middleware]) to a route at declaration time — the spec-relevant
+// attachment point. A RouteOpt-form equivalent of [Route.Use]/
+// [SSERoute.Use], for use directly inside [NewRoute]'s variadic opts
+// instead of chaining `.Use(...)` afterward. A middleware carrying a
+// Security declaration declares a security scheme + requirement for THIS
+// route (fed into the OpenAPI spec exactly as if the route had set
+// [RouteMeta.Security] and a [SecurityScheme] manually); a codec-backed
+// middleware's WithRequestHeaderSpec/etc. declares additional header/
+// cookie/query param spec entries. A route needs ZERO manual
 // RouteMeta.Security/param calls when the attached middleware already
 // carries a complete declaration.
-//
-// Attaching a general-purpose (non-declarative) middleware — one with a nil
-// Security and empty RequestParams/ResponseParams — is also valid here; it
-// simply has no spec effect.
-func WithMiddleware(mws ...middleware.Middleware) RouteOpt {
-	return middlewareOpt{mws: mws}
+func WithMiddleware(mws ...middleware.RouteMiddleware) RouteOpt {
+	return routeMiddlewareOpt{mws: mws}
 }
 
-// FromHeaderParam/FromCookieParam/FromQueryParam/FromResponseHeaderParam/
-// FromResponseCookieParam bridge an EXISTING [HeaderParam]/[CookieParam]/
-// [QueryParam]/[ResponseHeaderParam]/[ResponseCookieParam] value (e.g. a
-// package-level var shared across several routes) into a real
-// [middleware.Middleware], usable with [Route.Use] exactly like one built
-// from scratch. Mirror [FromSecurityScheme]'s "wrap what you already have"
-// pattern.
-//
-// Live in api/rest, NOT middleware — for the SAME reason [FromSecurityScheme]
-// does: middleware cannot import api/rest without a cycle (api/rest already
-// imports middleware). Each is a 1-line field copy into the matching
-// middleware-package-local spec type (see [middleware.HeaderParamSpec]'s
-// doc comment).
+// NOTE: FromHeaderParam/FromCookieParam/FromQueryParam/
+// FromResponseHeaderParam/FromResponseCookieParam (legacy
+// middleware.Middleware-returning bridges that used to live here) were
+// REMOVED as part of the middleware-consolidation effort
+// (docs/design/d-0006-protocol-native-capabilities.md) — fully replaced by
+// [Middleware.WithRequestHeaderSpec]/[Middleware.WithRequestCookieSpec]/
+// [Middleware.WithRequestQuerySpec]/[Middleware.WithResponseHeaderSpec]/
+// [Middleware.WithResponseCookieSpec], attached the SAME way (via
+// [Route.Use]):
 //
 //	var apiKeyHeader = rest.HeaderParam{Name: "X-API-Key", Required: true}
 //
 //	route := rest.NewRoute[Req, Resp]("GET", "/data", reqCodec, respCodec,
 //	    rest.RouteMeta{OperationID: "getData"},
-//	).Use(rest.FromHeaderParam(apiKeyHeader)).
+//	).Use(rest.NewMiddleware(middleware.Declaration[struct{}, struct{}]{
+//	    Name: "declare-header-param:X-API-Key",
+//	}).WithRequestHeaderSpec(apiKeyHeader)).
 //	    HandleMW(nil, func(ctx context.Context, r *http.Request, req *Req) (map[string][]string, error) {
 //	        return nil, verify(ctx, r.Header.Get("X-API-Key"))
 //	    })
-func FromHeaderParam(p HeaderParam) middleware.Middleware {
-	return middleware.Middleware{
-		Name: "declare-header-param:" + p.Name,
-		RequestHeaderParams: []middleware.HeaderParamSpec{
-			{Name: p.Name, Description: p.Description, Required: p.Required, Codec: p.Codec},
-		},
-	}
-}
-
-// FromCookieParam is [FromHeaderParam]'s cookie-request-param sibling.
-func FromCookieParam(p CookieParam) middleware.Middleware {
-	return middleware.Middleware{
-		Name: "declare-cookie-param:" + p.Name,
-		RequestCookieParams: []middleware.CookieParamSpec{
-			{Name: p.Name, Description: p.Description, Required: p.Required, Codec: p.Codec},
-		},
-	}
-}
-
-// FromQueryParam is [FromHeaderParam]'s query-param sibling.
-func FromQueryParam(p QueryParam) middleware.Middleware {
-	return middleware.Middleware{
-		Name: "declare-query-param:" + p.Name,
-		RequestQueryParams: []middleware.QueryParamSpec{
-			{Name: p.Name, Description: p.Description, Required: p.Required, Codec: p.Codec},
-		},
-	}
-}
-
-// FromResponseHeaderParam is [FromHeaderParam]'s response-header sibling.
-func FromResponseHeaderParam(p ResponseHeaderParam) middleware.Middleware {
-	return middleware.Middleware{
-		Name: "declare-response-header-param:" + p.Name,
-		ResponseHeaderParams: []middleware.ResponseHeaderParamSpec{
-			{Name: p.Name, Description: p.Description, Required: p.Required, Codec: p.Codec},
-		},
-	}
-}
-
-// FromResponseCookieParam is [FromHeaderParam]'s response-cookie sibling.
-func FromResponseCookieParam(p ResponseCookieParam) middleware.Middleware {
-	return middleware.Middleware{
-		Name: "declare-response-cookie-param:" + p.Name,
-		ResponseCookieParams: []middleware.ResponseCookieParamSpec{
-			{Name: p.Name, Description: p.Description, Required: p.Required, Codec: p.Codec},
-		},
-	}
-}
 
 // Use returns a NEW [Route] with mws chained onto it — chi/net-http-style
 // declaration-time sugar for [WithMiddleware], usable AFTER [NewRoute]
@@ -178,6 +128,27 @@ func (o routeMiddlewareOpt) applyRoute(rb *routeBuilder) {
 			middlewareOpt{mws: []middleware.Middleware{v}}.applyRoute(rb)
 		case routeMiddlewareContributor:
 			v.applyAgnosticRoute(rb)
+			// A codec-backed value's Security declaration (folded into
+			// middleware.Declaration per the middleware-consolidation
+			// effort, docs/design/d-0003-codec-declared-middlewares.md) is NOT
+			// visible to middlewareSpecContribution (which only carries
+			// header/cookie/query param entries) — synthesize a
+			// Middleware{Name, Security} entry into rb.middlewares too,
+			// so the EXISTING Security/spec-rendering + coverage-check
+			// pipeline (which only reads rb.middlewares) sees it exactly
+			// like a legacy middleware.Middleware would, with ZERO
+			// changes to that pipeline itself.
+			if sc, ok := mw.(middleware.SecurityCarrier); ok {
+				if sec := sc.SecurityDeclaration(); sec != nil {
+					name := ""
+					if named, ok := mw.(interface{ MiddlewareName() string }); ok {
+						name = named.MiddlewareName()
+					} else {
+						name = "declare-security:" + sec.SchemeName
+					}
+					middlewareOpt{mws: []middleware.Middleware{{Name: name, Security: sec}}}.applyRoute(rb)
+				}
+			}
 		}
 	}
 }
@@ -261,11 +232,25 @@ func (o handleMWOpt) applyRoute(rb *routeBuilder) {
 	rb.impls = append(rb.impls, o.impl)
 }
 
-func buildServerImplementation(mw *middleware.Middleware, fn any) middleware.ServerImplementation {
-	if mw != nil && mw.Security != nil {
+// securityDeclarationOf extracts mw's Security declaration, regardless of
+// whether mw is the legacy [middleware.Middleware] or a codec-backed
+// Middleware[In,Out] (both implement [middleware.SecurityCarrier]) — or
+// nil, or any other [middleware.RouteMiddleware] value that doesn't carry
+// Security at all (returns nil safely in every case, never panics: a type
+// assertion on a nil interface fails cleanly, it does not panic).
+func securityDeclarationOf(mw middleware.RouteMiddleware) *middleware.SecurityDeclaration {
+	sc, ok := mw.(middleware.SecurityCarrier)
+	if !ok {
+		return nil
+	}
+	return sc.SecurityDeclaration()
+}
+
+func buildServerImplementation(mw middleware.RouteMiddleware, fn any) middleware.ServerImplementation {
+	if sec := securityDeclarationOf(mw); sec != nil {
 		return middleware.ServerImplementation{
-			Name:      "implement:" + mw.Security.SchemeName,
-			Satisfies: []string{mw.Security.SchemeName},
+			Name:      "implement:" + sec.SchemeName,
+			Satisfies: []string{sec.SchemeName},
 			Fn:        fn,
 		}
 	}
@@ -289,14 +274,14 @@ func buildServerImplementation(mw *middleware.Middleware, fn any) middleware.Ser
 // [middleware.ServerImplementation.Fn]'s existing type-erasure. A
 // wrong-shaped fn fails with a typed error at that point, never
 // silently.
-func (r Route[Req, Resp]) HandleMW(mw *middleware.Middleware, fn any) Route[Req, Resp] {
+func (r Route[Req, Resp]) HandleMW(mw middleware.RouteMiddleware, fn any) Route[Req, Resp] {
 	r.opts = append(slices.Clone(r.opts), handleMWOpt{impl: buildServerImplementation(mw, fn)})
 	return r
 }
 
 // HandleMW is [SSERoute]'s equivalent of [Route.HandleMW] — identical
 // nilable-mw semantics.
-func (s SSERoute[Req, Event]) HandleMW(mw *middleware.Middleware, fn any) SSERoute[Req, Event] {
+func (s SSERoute[Req, Event]) HandleMW(mw middleware.RouteMiddleware, fn any) SSERoute[Req, Event] {
 	s.opts = append(slices.Clone(s.opts), handleMWOpt{impl: buildServerImplementation(mw, fn)})
 	return s
 }
@@ -332,7 +317,7 @@ func (o clientMWOpt) applyRoute(rb *routeBuilder) {
 // Name means same source, skip conflict check" heuristic would otherwise
 // incorrectly treat two same-scheme ClientMW attachments as one source,
 // silently picking a value instead of flagging a genuine conflict.
-func (r Route[Req, Resp]) ClientMW(mw *middleware.Middleware, fn any) Route[Req, Resp] {
+func (r Route[Req, Resp]) ClientMW(mw middleware.RouteMiddleware, fn any) Route[Req, Resp] {
 	idx := 0
 	for _, o := range r.opts {
 		if _, ok := o.(clientMWOpt); ok {
@@ -340,9 +325,9 @@ func (r Route[Req, Resp]) ClientMW(mw *middleware.Middleware, fn any) Route[Req,
 		}
 	}
 	impl := middleware.ClientImplementation{Fn: fn}
-	if mw != nil && mw.Security != nil {
-		impl.Name = fmt.Sprintf("fulfill:%s#%d", mw.Security.SchemeName, idx)
-		impl.Satisfies = []string{mw.Security.SchemeName}
+	if sec := securityDeclarationOf(mw); sec != nil {
+		impl.Name = fmt.Sprintf("fulfill:%s#%d", sec.SchemeName, idx)
+		impl.Satisfies = []string{sec.SchemeName}
 	} else {
 		impl.Name = fmt.Sprintf("fulfill:general#%d", idx)
 	}
@@ -357,7 +342,7 @@ func (r Route[Req, Resp]) ClientMW(mw *middleware.Middleware, fn any) Route[Req,
 // marks fn general-purpose (always runs). Consumed by
 // [Client.Consume]/[nethttp.CallSSEAdapter] the same way
 // [Client.Call] consumes [Route.ClientMW]'s attached implementations.
-func (s SSERoute[Req, Event]) ClientMW(mw *middleware.Middleware, fn any) SSERoute[Req, Event] {
+func (s SSERoute[Req, Event]) ClientMW(mw middleware.RouteMiddleware, fn any) SSERoute[Req, Event] {
 	idx := 0
 	for _, o := range s.opts {
 		if _, ok := o.(clientMWOpt); ok {
@@ -365,9 +350,9 @@ func (s SSERoute[Req, Event]) ClientMW(mw *middleware.Middleware, fn any) SSERou
 		}
 	}
 	impl := middleware.ClientImplementation{Fn: fn}
-	if mw != nil && mw.Security != nil {
-		impl.Name = fmt.Sprintf("fulfill:%s#%d", mw.Security.SchemeName, idx)
-		impl.Satisfies = []string{mw.Security.SchemeName}
+	if sec := securityDeclarationOf(mw); sec != nil {
+		impl.Name = fmt.Sprintf("fulfill:%s#%d", sec.SchemeName, idx)
+		impl.Satisfies = []string{sec.SchemeName}
 	} else {
 		impl.Name = fmt.Sprintf("fulfill:general#%d", idx)
 	}
@@ -656,29 +641,6 @@ func checkImplementationsDeclared(routeLabel string, mws []middleware.Middleware
 	return nil
 }
 
-// toHeaderParam/toCookieParam/toQueryParam/toResponseHeaderParam/
-// toResponseCookieParam convert a middleware-package-local typed spec
-// (see [middleware.HeaderParamSpec]'s doc comment) into the matching
-// api/rest param type — a straightforward, infallible field copy. There is
-// no shape-mismatch case anymore: the Go compiler enforces the correct
-// type at the [middleware.Middleware] field declaration itself, replacing
-// the former runtime type-switch + [ParamContributionShapeError].
-func toHeaderParam(s middleware.HeaderParamSpec) HeaderParam {
-	return HeaderParam{Name: s.Name, Description: s.Description, Required: s.Required, Codec: s.Codec}
-}
-func toCookieParam(s middleware.CookieParamSpec) CookieParam {
-	return CookieParam{Name: s.Name, Description: s.Description, Required: s.Required, Codec: s.Codec}
-}
-func toQueryParam(s middleware.QueryParamSpec) QueryParam {
-	return QueryParam{Name: s.Name, Description: s.Description, Required: s.Required, Codec: s.Codec}
-}
-func toResponseHeaderParam(s middleware.ResponseHeaderParamSpec) ResponseHeaderParam {
-	return ResponseHeaderParam{Name: s.Name, Description: s.Description, Required: s.Required, Codec: s.Codec}
-}
-func toResponseCookieParam(s middleware.ResponseCookieParamSpec) ResponseCookieParam {
-	return ResponseCookieParam{Name: s.Name, Description: s.Description, Required: s.Required, Codec: s.Codec}
-}
-
 // applyParamDeclarations builds 5 INDEPENDENT per-kind contribution maps
 // (header, cookie, query, response-header, response-cookie) — see
 // docs/design/d-0003-codec-declared-middlewares.md's Addendum 2,
@@ -709,27 +671,14 @@ func applyParamDeclarations(rb *routeBuilder, routeLabel string) error {
 		respCookie[p.Name] = append(respCookie[p.Name], paramContribution{source: "manual", codec: p.Codec})
 	}
 
-	for _, mw := range rb.middlewares {
-		for _, s := range mw.RequestHeaderParams {
-			reqHeader[s.Name] = append(reqHeader[s.Name], paramContribution{source: mw.Name, required: s.Required, codec: s.Codec})
-		}
-		for _, s := range mw.RequestCookieParams {
-			reqCookie[s.Name] = append(reqCookie[s.Name], paramContribution{source: mw.Name, required: s.Required, codec: s.Codec})
-		}
-		for _, s := range mw.RequestQueryParams {
-			reqQuery[s.Name] = append(reqQuery[s.Name], paramContribution{source: mw.Name, required: s.Required, codec: s.Codec})
-		}
-		for _, s := range mw.ResponseHeaderParams {
-			respHeader[s.Name] = append(respHeader[s.Name], paramContribution{source: mw.Name, codec: s.Codec})
-		}
-		for _, s := range mw.ResponseCookieParams {
-			respCookie[s.Name] = append(respCookie[s.Name], paramContribution{source: mw.Name, codec: s.Codec})
-		}
-	}
-
 	// codec-backed Middleware[In,Out] contributions (attached via
-	// Transform/ClientTransform) — collected into the SAME
-	// already-added-names guard as legacy middleware.Middleware above (D4).
+	// Transform/ClientTransform, or via plain .Use() for the
+	// route/channel-agnostic case) — the legacy middleware.Middleware
+	// type never carried RequestParams/ResponseParams fields (removed as
+	// part of the middleware-consolidation effort,
+	// docs/design/d-0006-protocol-native-capabilities.md); it only ever
+	// contributes a Security declaration, handled separately by
+	// applySecurityDeclarations.
 	for _, mw := range rb.middlewareSpecContributions {
 		for _, s := range mw.reqHeaderParams {
 			reqHeader[s.Name] = append(reqHeader[s.Name], paramContribution{source: mw.name, required: s.Required, codec: s.Codec})
@@ -784,39 +733,6 @@ func applyParamDeclarations(rb *routeBuilder, routeLabel string) error {
 	addedQueryNames := make(map[string]bool, len(manualQueryNames))
 	addedRespHeaderNames := make(map[string]bool, len(manualRespHeaderNames))
 	addedRespCookieNames := make(map[string]bool, len(manualRespCookieNames))
-
-	for _, mw := range rb.middlewares {
-		for _, s := range mw.RequestHeaderParams {
-			if !manualHeaderNames[s.Name] && !addedHeaderNames[s.Name] {
-				toHeaderParam(s).applyRoute(rb)
-				addedHeaderNames[s.Name] = true
-			}
-		}
-		for _, s := range mw.RequestCookieParams {
-			if !manualCookieNames[s.Name] && !addedCookieNames[s.Name] {
-				toCookieParam(s).applyRoute(rb)
-				addedCookieNames[s.Name] = true
-			}
-		}
-		for _, s := range mw.RequestQueryParams {
-			if !manualQueryNames[s.Name] && !addedQueryNames[s.Name] {
-				toQueryParam(s).applyRoute(rb)
-				addedQueryNames[s.Name] = true
-			}
-		}
-		for _, s := range mw.ResponseHeaderParams {
-			if !manualRespHeaderNames[s.Name] && !addedRespHeaderNames[s.Name] {
-				toResponseHeaderParam(s).applyRoute(rb)
-				addedRespHeaderNames[s.Name] = true
-			}
-		}
-		for _, s := range mw.ResponseCookieParams {
-			if !manualRespCookieNames[s.Name] && !addedRespCookieNames[s.Name] {
-				toResponseCookieParam(s).applyRoute(rb)
-				addedRespCookieNames[s.Name] = true
-			}
-		}
-	}
 
 	for _, mw := range rb.middlewareSpecContributions {
 		for _, s := range mw.reqHeaderParams {

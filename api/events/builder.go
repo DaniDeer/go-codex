@@ -149,6 +149,21 @@ func FromSecurityScheme(schemeName string, scheme SecurityScheme, scopes []strin
 	return middleware.SecurityScheme(schemeName, scheme.SecurityScheme, scopes, scheme.Codec)
 }
 
+// SecurityMiddleware is [FromSecurityScheme]'s codec-backed-family
+// equivalent — builds a [Middleware][struct{}, struct{}] carrying ONLY a
+// [middleware.SecurityDeclaration] (In=Out=struct{}, no var-boundary to
+// decode), attachable via the SAME .Use(...)/SubscribeMW(...)/
+// PublishMW(...) vocabulary as any other codec-backed middleware. Part of
+// the middleware-consolidation effort
+// (docs/design/d-0003-codec-declared-middlewares.md) folding Security into the
+// codec-backed family instead of the legacy [middleware.Middleware] type.
+func SecurityMiddleware(schemeName string, scheme SecurityScheme, scopes []string) Middleware[struct{}, struct{}] {
+	return NewMiddleware[struct{}, struct{}](middleware.Declaration[struct{}, struct{}]{
+		Name:     "declare-security:" + schemeName,
+		Security: middleware.NewSecurityDeclaration(schemeName, scheme.SecurityScheme, scopes, scheme.Codec),
+	})
+}
+
 // SecurityCredentialError is returned when credential format validation via
 // SecurityScheme.Codec fails (MQTT5 only — MQTT 3.1.1 and ZeroMQ have no
 // per-message credential extraction). It is distinct from [SecurityError],
@@ -1629,25 +1644,6 @@ func applyEventsSecurityDeclarations(topic string, security *[]route.SecurityReq
 	return merged, nil
 }
 
-// checkUnsupportedMiddlewareParams rejects any mws entry carrying a
-// REST-only param contribution (RequestHeaderParams/RequestCookieParams/
-// RequestQueryParams/ResponseHeaderParams/ResponseCookieParams) — fields
-// [middleware.Middleware] carries for api/rest's header/cookie/query
-// boundary, meaningless for pub/sub's topic-only boundary. This is an
-// INTERIM fix (see docs/design/d-0002-pubsub-workflow-simplification.md's
-// "middleware.Middleware's REST-only fields, rejected eagerly" subsection);
-// the long-term fix is a common-base + per-pattern-derived middleware type
-// hierarchy, tracked separately.
-func checkUnsupportedMiddlewareParams(topic string, mws []middleware.Middleware) error {
-	for _, mw := range mws {
-		if len(mw.RequestHeaderParams) > 0 || len(mw.RequestCookieParams) > 0 || len(mw.RequestQueryParams) > 0 ||
-			len(mw.ResponseHeaderParams) > 0 || len(mw.ResponseCookieParams) > 0 {
-			return UnsupportedMiddlewareParamsError{Topic: topic, Middleware: mw.Name}
-		}
-	}
-	return nil
-}
-
 // CheckCoverage verifies that every security scheme named anywhere in
 // secReqs has at least one [middleware.ServerImplementation] in impls whose
 // Satisfies names it — otherwise the channel would enforce nothing at
@@ -1820,39 +1816,12 @@ func (e ConflictingSecurityDeclarationError) LogValue() slog.Value {
 	)
 }
 
-// UnsupportedMiddlewareParamsError is returned by [Subscriber.Handle]/
-// [Publisher.Handle] when a [.Use]-attached [middleware.Middleware] carries
-// a non-empty RequestHeaderParams/RequestCookieParams/RequestQueryParams/
-// ResponseHeaderParams/ResponseCookieParams field — REST-only param
-// contributions that are meaningless for pub/sub's topic-only boundary
-// (e.g. a [middleware.Middleware] accidentally built via
-// rest.FromHeaderParam and attached directly to a channel). See
-// docs/design/d-0002-pubsub-workflow-simplification.md's "middleware.Middleware's
-// REST-only fields, rejected eagerly" subsection.
-//
-// Use [errors.As] to extract the topic and middleware name:
-//
-//	var paramsErr events.UnsupportedMiddlewareParamsError
-//	if errors.As(err, &paramsErr) {
-//	    log.Printf("topic %q: middleware %q carries unsupported REST-only params",
-//	        paramsErr.Topic, paramsErr.Middleware)
-//	}
-type UnsupportedMiddlewareParamsError struct {
-	Topic      string
-	Middleware string
-}
-
-func (e UnsupportedMiddlewareParamsError) Error() string {
-	return fmt.Sprintf("api/events: topic %q: middleware %q carries REST-only param contributions (RequestHeaderParams/RequestCookieParams/RequestQueryParams/ResponseHeaderParams/ResponseCookieParams), unsupported for pub/sub's topic-only boundary", e.Topic, e.Middleware)
-}
-
-// LogValue implements [slog.LogValuer] for structured logging.
-func (e UnsupportedMiddlewareParamsError) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("topic", e.Topic),
-		slog.String("middleware", e.Middleware),
-	)
-}
+// NOTE: UnsupportedMiddlewareParamsError (returned when a [.Use]-attached
+// [middleware.Middleware] carried a REST-only RequestHeaderParams/etc.
+// field) was REMOVED — the middleware-consolidation effort
+// (docs/design/d-0006-protocol-native-capabilities.md) removed those
+// fields from [middleware.Middleware] entirely (it is now Security-only),
+// so the condition this error guarded against can no longer occur.
 
 // Subscriber is a role-scoped builder for a channel's subscribe side,
 // returned by [Channel.WithSubscribe]. It carries the underlying [Channel]
@@ -1972,6 +1941,9 @@ func (s Subscriber[T]) Use(mws ...middleware.RouteMiddleware) Subscriber[T] {
 			if h, ok := v.applyAgnosticSubscriber(); ok {
 				s.middlewareHandlers = append(slices.Clone(s.middlewareHandlers), h)
 			}
+			if synthesized, ok := synthesizeLegacySecurity(mw); ok {
+				s.mws = append(slices.Clone(s.mws), synthesized)
+			}
 		}
 	}
 	return s
@@ -2010,12 +1982,14 @@ func (s Subscriber[T]) WithOptions(opts any) Subscriber[T] {
 // against a previously-.Use()'d declaration); mw nil (or Security nil)
 // leaves Satisfies empty (UNPAIRED, general-purpose — runs
 // unconditionally). Mirrors [api/rest]'s buildServerImplementation exactly.
-func buildServerImplementation(mw *middleware.Middleware, fn any) middleware.ServerImplementation {
-	if mw != nil && mw.Security != nil {
-		return middleware.ServerImplementation{
-			Name:      "implement:" + mw.Security.SchemeName,
-			Satisfies: []string{mw.Security.SchemeName},
-			Fn:        fn,
+func buildServerImplementation(mw middleware.RouteMiddleware, fn any) middleware.ServerImplementation {
+	if sc, ok := mw.(middleware.SecurityCarrier); ok {
+		if sec := sc.SecurityDeclaration(); sec != nil {
+			return middleware.ServerImplementation{
+				Name:      "implement:" + sec.SchemeName,
+				Satisfies: []string{sec.SchemeName},
+				Fn:        fn,
+			}
 		}
 	}
 	return middleware.ServerImplementation{Name: "implement:general", Fn: fn}
@@ -2044,7 +2018,7 @@ func buildServerImplementation(mw *middleware.Middleware, fn any) middleware.Ser
 // another. [Subscriber.Handle] copies the accumulated slice onto
 // [ChannelHandle.Implementations] verbatim. Mirrors [rest.Route.HandleMW]
 // exactly.
-func (s Subscriber[T]) SubscribeMW(mw *middleware.Middleware, fn any) Subscriber[T] {
+func (s Subscriber[T]) SubscribeMW(mw middleware.RouteMiddleware, fn any) Subscriber[T] {
 	s.impls = append(slices.Clone(s.impls), buildServerImplementation(mw, fn))
 	return s
 }
@@ -2061,9 +2035,36 @@ func (p Publisher[T]) Use(mws ...middleware.RouteMiddleware) Publisher[T] {
 			if h, ok := v.applyAgnosticPublisher(); ok {
 				p.clientMiddlewareHandlers = append(slices.Clone(p.clientMiddlewareHandlers), h)
 			}
+			if synthesized, ok := synthesizeLegacySecurity(mw); ok {
+				p.mws = append(slices.Clone(p.mws), synthesized)
+			}
 		}
 	}
 	return p
+}
+
+// synthesizeLegacySecurity extracts mw's Security declaration (folded into
+// middleware.Declaration per the middleware-consolidation effort,
+// docs/design/d-0003-codec-declared-middlewares.md) and wraps it into a
+// legacy-shaped middleware.Middleware{Name, Security} entry — so the
+// EXISTING Security/spec-rendering + coverage-check pipeline (which only
+// reads s.mws/p.mws) sees a codec-backed value's Security exactly like a
+// real legacy middleware.Middleware would, with ZERO changes to that
+// pipeline. Returns ok=false when mw carries no Security at all.
+func synthesizeLegacySecurity(mw middleware.RouteMiddleware) (middleware.Middleware, bool) {
+	sc, ok := mw.(middleware.SecurityCarrier)
+	if !ok {
+		return middleware.Middleware{}, false
+	}
+	sec := sc.SecurityDeclaration()
+	if sec == nil {
+		return middleware.Middleware{}, false
+	}
+	name := "declare-security:" + sec.SchemeName
+	if named, ok := mw.(interface{ MiddlewareName() string }); ok {
+		name = named.MiddlewareName()
+	}
+	return middleware.Middleware{Name: name, Security: sec}, true
 }
 
 // PublishMW is the ONLY client-side implementation-attachment method for a
@@ -2083,13 +2084,16 @@ func (p Publisher[T]) Use(mws ...middleware.RouteMiddleware) Publisher[T] {
 // another. [Publisher.Handle] copies the accumulated slice onto
 // [ChannelHandle.ClientImplementations] verbatim. Mirrors
 // [rest.Route.ClientMW] exactly.
-func (p Publisher[T]) PublishMW(mw *middleware.Middleware, fn any) Publisher[T] {
+func (p Publisher[T]) PublishMW(mw middleware.RouteMiddleware, fn any) Publisher[T] {
 	idx := len(p.clientImpls)
 	impl := middleware.ClientImplementation{Fn: fn}
-	if mw != nil && mw.Security != nil {
-		impl.Name = fmt.Sprintf("fulfill:%s#%d", mw.Security.SchemeName, idx)
-		impl.Satisfies = []string{mw.Security.SchemeName}
-	} else {
+	if sc, ok := mw.(middleware.SecurityCarrier); ok {
+		if sec := sc.SecurityDeclaration(); sec != nil {
+			impl.Name = fmt.Sprintf("fulfill:%s#%d", sec.SchemeName, idx)
+			impl.Satisfies = []string{sec.SchemeName}
+		}
+	}
+	if impl.Name == "" {
 		impl.Name = fmt.Sprintf("fulfill:general#%d", idx)
 	}
 	p.clientImpls = append(slices.Clone(p.clientImpls), impl)
@@ -2223,13 +2227,6 @@ func buildChannelHandle[T any](ch Channel[T], client *Client, role channelRole, 
 	// nilness. Reuses the existing, shared codex.InvalidParamError — no new
 	// pub/sub-local error type is needed for this check.
 	if err := codex.ValidateDeclaredParams(ch.topic, toCodexParams(cb.topicParams)); err != nil {
-		return nil, err
-	}
-
-	// Unconditional validation (Decision 1, "middleware.Middleware's
-	// REST-only fields" subsection): rejects a REST-oriented middleware
-	// accidentally attached directly to a pub/sub channel.
-	if err := checkUnsupportedMiddlewareParams(ch.topic, mws); err != nil {
 		return nil, err
 	}
 

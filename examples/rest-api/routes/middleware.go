@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -35,14 +35,20 @@ import (
 // is defined once.
 var BearerCodec = codex.String().Refine(validate.BearerToken)
 
+// bearerAuthScheme is shared by both scope declarations below.
+var bearerAuthScheme = rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT"), Codec: &BearerCodec}
+
 // ProfileScopeMw declares the "bearerAuth" scheme, requiring the
 // "profile" scope — attached via .Use(ProfileScopeMw) on routes any
-// authenticated user may call.
-var ProfileScopeMw = middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), []string{"profile"}, &BearerCodec)
+// authenticated user may call. Built via the codec-backed
+// [rest.SecurityMiddleware] (docs/design/d-0003-codec-declared-middlewares.md),
+// not the legacy middleware.SecurityScheme — the migration representative
+// sample for the middleware-consolidation effort.
+var ProfileScopeMw = rest.SecurityMiddleware("bearerAuth", bearerAuthScheme, []string{"profile"})
 
 // AdminScopeMw declares the SAME "bearerAuth" scheme, requiring the
 // "admin" scope — attached via .Use(AdminScopeMw) on privileged routes.
-var AdminScopeMw = middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), []string{"admin"}, &BearerCodec)
+var AdminScopeMw = rest.SecurityMiddleware("bearerAuth", bearerAuthScheme, []string{"admin"})
 
 // ── Middleware kind 2: observer ──────────────────────────────────────────────
 //

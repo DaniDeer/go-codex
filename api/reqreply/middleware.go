@@ -36,6 +36,22 @@ func (o routeMiddlewareOpt) applyRoute(rb *routeBuilder) {
 			// handler is registered ONLY when bundled via
 			// WithReceive/WithSend (see Middleware.applyAgnosticRoute).
 			v.applyAgnosticRoute(rb)
+			// Its Security declaration (folded into middleware.Declaration
+			// per the middleware-consolidation effort,
+			// docs/design/d-0003-codec-declared-middlewares.md) is NOT visible to
+			// applyAgnosticRoute's spec contribution — synthesize a
+			// legacy-shaped Middleware{Name, Security} entry into
+			// rb.middlewares too, so applySecurityDeclarations (below)
+			// sees it with ZERO changes to that function.
+			if sc, ok := mw.(middleware.SecurityCarrier); ok {
+				if sec := sc.SecurityDeclaration(); sec != nil {
+					name := "declare-security:" + sec.SchemeName
+					if named, ok := mw.(interface{ MiddlewareName() string }); ok {
+						name = named.MiddlewareName()
+					}
+					rb.middlewares = append(rb.middlewares, middleware.Middleware{Name: name, Security: sec})
+				}
+			}
 		}
 	}
 }
@@ -77,12 +93,14 @@ func (o handleMWOpt) applyRoute(rb *routeBuilder) {
 	rb.impls = append(rb.impls, o.impl)
 }
 
-func buildServerImplementation(mw *middleware.Middleware, fn any) middleware.ServerImplementation {
-	if mw != nil && mw.Security != nil {
-		return middleware.ServerImplementation{
-			Name:      "implement:" + mw.Security.SchemeName,
-			Satisfies: []string{mw.Security.SchemeName},
-			Fn:        fn,
+func buildServerImplementation(mw middleware.RouteMiddleware, fn any) middleware.ServerImplementation {
+	if sc, ok := mw.(middleware.SecurityCarrier); ok {
+		if sec := sc.SecurityDeclaration(); sec != nil {
+			return middleware.ServerImplementation{
+				Name:      "implement:" + sec.SchemeName,
+				Satisfies: []string{sec.SchemeName},
+				Fn:        fn,
+			}
 		}
 	}
 	return middleware.ServerImplementation{Name: "implement:general", Fn: fn}
@@ -98,10 +116,10 @@ func buildServerImplementation(mw *middleware.Middleware, fn any) middleware.Ser
 //     unconditionally.
 //
 // fn is deliberately untyped (any) — resolved by the attached adapter
-// (e.g. mqtt5's `AttachServer`) via a type-switch/reflection, mirroring
+// (e.g. mqtt5's `NewServerTransport`) via a type-switch/reflection, mirroring
 // [middleware.ServerImplementation.Fn]'s existing type-erasure. A
 // wrong-shaped fn fails with a typed error at Serve time, never silently.
-func (r Route[Req, Resp]) HandleMW(mw *middleware.Middleware, fn any) Route[Req, Resp] {
+func (r Route[Req, Resp]) HandleMW(mw middleware.RouteMiddleware, fn any) Route[Req, Resp] {
 	r.opts = append(slices.Clone(r.opts), handleMWOpt{impl: buildServerImplementation(mw, fn)})
 	return r
 }
@@ -130,7 +148,7 @@ func (o clientMWOpt) applyRoute(rb *routeBuilder) {
 // "fulfill:bearerAuth#1") so that TWO ClientMW calls attached for the
 // SAME scheme on the SAME route still get DISTINCT Names — mirrors
 // [rest.Route.ClientMW]'s identical rationale.
-func (r Route[Req, Resp]) ClientMW(mw *middleware.Middleware, fn any) Route[Req, Resp] {
+func (r Route[Req, Resp]) ClientMW(mw middleware.RouteMiddleware, fn any) Route[Req, Resp] {
 	idx := 0
 	for _, o := range r.opts {
 		if _, ok := o.(clientMWOpt); ok {
@@ -138,10 +156,13 @@ func (r Route[Req, Resp]) ClientMW(mw *middleware.Middleware, fn any) Route[Req,
 		}
 	}
 	impl := middleware.ClientImplementation{Fn: fn}
-	if mw != nil && mw.Security != nil {
-		impl.Name = fmt.Sprintf("fulfill:%s#%d", mw.Security.SchemeName, idx)
-		impl.Satisfies = []string{mw.Security.SchemeName}
-	} else {
+	if sc, ok := mw.(middleware.SecurityCarrier); ok {
+		if sec := sc.SecurityDeclaration(); sec != nil {
+			impl.Name = fmt.Sprintf("fulfill:%s#%d", sec.SchemeName, idx)
+			impl.Satisfies = []string{sec.SchemeName}
+		}
+	}
+	if impl.Name == "" {
 		impl.Name = fmt.Sprintf("fulfill:general#%d", idx)
 	}
 	r.opts = append(slices.Clone(r.opts), clientMWOpt{impl: impl})
@@ -180,28 +201,26 @@ func applySecurityDeclarations(rb *routeBuilder) {
 	}
 }
 
-// applyParamDeclarations is Phase 1b's header-param-as-middleware
-// counterpart to [applySecurityDeclarations] — collects every
-// [middleware.Middleware.RequestHeaderParams]/[middleware.Middleware.ResponseHeaderParams]
-// contributed via [Route.Use] (e.g. via
-// [mqtt5.FromUserPropertyParam]/[mqtt5.FromResponseUserPropertyParam])
-// and renders them into two AsyncAPI "headers" schemas — one for the
-// request message, one for the reply message. Mirrors [rest.
-// applyParamDeclarations], SCOPED DOWN: reqreply's [RouteMeta] has no
-// manual header-param declaration fields to merge/conflict-check against
-// (unlike REST's rb.headerParams/rb.respHeaders), so this only needs to
-// dedup by name across attached middlewares — two middlewares
-// contributing the SAME name are folded into one property, first-seen
-// wins (mirrors the manual-vs-middleware name-collision policy used
-// elsewhere in this file: last write to the map is irrelevant since
-// property/required values are identical for a well-formed declaration).
-// Returns two zero [schema.Schema] values when no header params were
-// declared — [render/asyncapi/v3.Message.Headers] treats a zero Schema as
-// "omit the headers field entirely" (see its own [schema.Schema.IsZero]
-// check in buildMessage). Also returns the deduped raw param specs
-// themselves (reqParams/respParams) — populated onto
-// [RouteHandle.RequestHeaderParams]/[RouteHandle.ResponseHeaderParams]
-// for the attached adapter (e.g. mqtt5's `AttachServer`/`AttachClient`)
+// applyParamDeclarations collects every property param contributed via
+// [Route.Use] (the codec-backed [Middleware.WithRequestPropertySpec]/
+// [Middleware.WithResponsePropertySpec] axis — the legacy
+// [middleware.Middleware] type is Security-only now, see
+// docs/design/d-0006-protocol-native-capabilities.md's
+// middleware-consolidation effort) and renders them into two AsyncAPI
+// "headers" schemas — one for the request message, one for the reply
+// message. Mirrors [rest.applyParamDeclarations], SCOPED DOWN: reqreply's
+// [RouteMeta] has no manual header-param declaration fields to
+// merge/conflict-check against (unlike REST's rb.headerParams/
+// rb.respHeaders), so this only needs to dedup by name across attached
+// middlewares — two middlewares contributing the SAME name are folded
+// into one property, first-seen wins. Returns two zero [schema.Schema]
+// values when no header params were declared — [render/asyncapi/
+// v3.Message.Headers] treats a zero Schema as "omit the headers field
+// entirely" (see its own [schema.Schema.IsZero] check in buildMessage).
+// Also returns the deduped raw param specs themselves
+// (reqParams/respParams) — populated onto [RouteHandle.
+// RequestHeaderParams]/[RouteHandle.ResponseHeaderParams] for the
+// attached adapter (e.g. mqtt5's `NewServerTransport`/`NewClientTransport`)
 // to validate at dispatch time, mirroring how [RouteHandle.
 // Implementations]/[RouteHandle.ClientImplementations] carry the
 // SECURITY-side middleware for the SAME "spec AND runtime both consult
@@ -213,31 +232,6 @@ func applyParamDeclarations(rb *routeBuilder) (reqParams []middleware.HeaderPara
 	seenResp := make(map[string]bool)
 	var respProps []schema.Property
 	var respRequired []string
-
-	for _, mw := range rb.middlewares {
-		for _, p := range mw.RequestHeaderParams {
-			if seenReq[p.Name] {
-				continue
-			}
-			seenReq[p.Name] = true
-			reqParams = append(reqParams, p)
-			reqProps = append(reqProps, headerParamProperty(p.Name, p.Description, p.Codec))
-			if p.Required {
-				reqRequired = append(reqRequired, p.Name)
-			}
-		}
-		for _, p := range mw.ResponseHeaderParams {
-			if seenResp[p.Name] {
-				continue
-			}
-			seenResp[p.Name] = true
-			respParams = append(respParams, p)
-			respProps = append(respProps, headerParamProperty(p.Name, p.Description, p.Codec))
-			if p.Required {
-				respRequired = append(respRequired, p.Name)
-			}
-		}
-	}
 
 	// Unify the codec-backed Middleware[In,Out] axis's property
 	// contributions (WithRequestProperty/WithResponseProperty, attached
@@ -274,6 +268,37 @@ func applyParamDeclarations(rb *routeBuilder) (reqParams []middleware.HeaderPara
 				continue
 			}
 			seenResp[p.Name] = true
+			respProps = append(respProps, headerParamProperty(p.Name, p.Description, p.Codec))
+			if p.Required {
+				respRequired = append(respRequired, p.Name)
+			}
+		}
+		// presencePropertyParamsIn/Out (WithRequestPropertySpec/
+		// WithResponsePropertySpec) have NO alternate runtime-validation
+		// path of their own (unlike the merge-field contributions above,
+		// which are deliberately excluded here) — so they DO feed
+		// reqParams/respParams too, exactly like Phase 1b's flat
+		// mechanism, closing docs/design/d-0003-codec-declared-middlewares.md's
+		// Phase D0 gap.
+		for _, p := range c.presencePropertyParamsIn {
+			spec := middleware.HeaderParamSpec{Name: p.Name, Description: p.Description, Required: p.Required, Codec: p.Codec}
+			if seenReq[p.Name] {
+				continue
+			}
+			seenReq[p.Name] = true
+			reqParams = append(reqParams, spec)
+			reqProps = append(reqProps, headerParamProperty(p.Name, p.Description, p.Codec))
+			if p.Required {
+				reqRequired = append(reqRequired, p.Name)
+			}
+		}
+		for _, p := range c.presencePropertyParamsOut {
+			spec := middleware.ResponseHeaderParamSpec{Name: p.Name, Description: p.Description, Required: p.Required, Codec: p.Codec}
+			if seenResp[p.Name] {
+				continue
+			}
+			seenResp[p.Name] = true
+			respParams = append(respParams, spec)
 			respProps = append(respProps, headerParamProperty(p.Name, p.Description, p.Codec))
 			if p.Required {
 				respRequired = append(respRequired, p.Name)
@@ -362,12 +387,12 @@ type reqreplyParamContribution struct {
 
 // checkReqReplyParamConflicts is decision #5's (Round 18-revised) UNIFORM
 // conflict-detection algorithm — applies to ALL topic-var/property
-// contributions alike, regardless of which mechanism declared them
-// (Phase 1b's flat .Use(mqtt5.FromUserPropertyParam(...)) mechanism AND
-// the codec-backed Middleware[In,Out] axis's WithRequestTopic/
-// WithRequestProperty/etc.). Phase 1b's OWN historical silent-first-seen-
-// wins dedupe for MISMATCHED declarations is RETIRED — a deliberate,
-// narrow, accepted breaking change (see the doc's decision #5, Round 18).
+// contributions alike, regardless of which mechanism declared them (the
+// codec-backed Middleware[In,Out] axis's WithRequestTopic/
+// WithRequestProperty/WithRequestPropertySpec/etc. — the legacy
+// middleware.Middleware type is Security-only now, see
+// docs/design/d-0006-protocol-native-capabilities.md's
+// middleware-consolidation effort).
 //
 // Two INDEPENDENT namespaces (Round 15) — a topic var and a property
 // sharing the SAME name never conflict, since they come from genuinely
@@ -383,14 +408,6 @@ func checkReqReplyParamConflicts(rb *routeBuilder, routeLabel string) error {
 	for _, p := range rb.propertyParams {
 		propertyContributions[p.Name] = append(propertyContributions[p.Name], reqreplyParamContribution{source: "manual", required: p.Required, codec: p.Codec})
 	}
-	for _, mw := range rb.middlewares {
-		for _, p := range mw.RequestHeaderParams {
-			propertyContributions[p.Name] = append(propertyContributions[p.Name], reqreplyParamContribution{source: mw.Name, required: p.Required, codec: p.Codec})
-		}
-		for _, p := range mw.ResponseHeaderParams {
-			propertyContributions[p.Name] = append(propertyContributions[p.Name], reqreplyParamContribution{source: mw.Name, required: p.Required, codec: p.Codec})
-		}
-	}
 	for _, c := range rb.middlewareSpecContributions {
 		for _, p := range c.topicParamsIn {
 			topicContributions[p.Name] = append(topicContributions[p.Name], reqreplyParamContribution{source: c.name, required: true, codec: p.Codec})
@@ -402,6 +419,12 @@ func checkReqReplyParamConflicts(rb *routeBuilder, routeLabel string) error {
 			propertyContributions[p.Name] = append(propertyContributions[p.Name], reqreplyParamContribution{source: c.name, required: p.Required, codec: p.Codec})
 		}
 		for _, p := range c.propertyParamsOut {
+			propertyContributions[p.Name] = append(propertyContributions[p.Name], reqreplyParamContribution{source: c.name, required: p.Required, codec: p.Codec})
+		}
+		for _, p := range c.presencePropertyParamsIn {
+			propertyContributions[p.Name] = append(propertyContributions[p.Name], reqreplyParamContribution{source: c.name, required: p.Required, codec: p.Codec})
+		}
+		for _, p := range c.presencePropertyParamsOut {
 			propertyContributions[p.Name] = append(propertyContributions[p.Name], reqreplyParamContribution{source: c.name, required: p.Required, codec: p.Codec})
 		}
 	}

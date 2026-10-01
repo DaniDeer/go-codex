@@ -99,14 +99,14 @@ func main() {
 	}
 
 	// ── Spec: ONE secured route, declared with
-	// middleware.SecurityScheme — completely unaware that
+	// rest.SecurityMiddleware — completely unaware that
 	// Mutable[T]/Cacheable[T] exist. Nothing about the route/handle/
 	// builder changes to support either container; that is the point.
 	// The runtime enforcement (a middleware.ServerImplementation built
 	// inline below) is supplied SEPARATELY, at Register time — its
 	// extraction Fn calls keys.Get() INSIDE the closure body, on every
 	// request — never hoisted to a local outside the closure. ──────────
-	secureDeclMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, &keyCodec)
+	secureDeclMw := rest.SecurityMiddleware("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT"), Codec: &keyCodec}, nil)
 
 	secureRoute := rest.NewRoute[struct{}, secureResp]("GET", "/secure",
 		codex.Empty, secureRespCodec,

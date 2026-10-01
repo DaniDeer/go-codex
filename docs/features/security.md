@@ -651,30 +651,32 @@ sibling of `MissingSecurityMiddlewareError` above.
 request-reply analogues of REST's error types — same fields, same
 `errors.As`/`slog.LogValuer` shape.
 
-**Phase 1b — User Property param-as-middleware**: `mqtt5.
-FromUserPropertyParam(p)`/`mqtt5.FromResponseUserPropertyParam(p)` bridge
-an existing `mqtt5.UserPropertyParam` into a `.Use()`-attachable
-middleware — a header-like param declaration (mirrors REST's
-`FromHeaderParam`/`FromResponseHeaderParam`), for BOTH the request AND
-reply message. No `HandleMW`/`ClientMW` pairing needed (unlike security
-schemes, header params aren't gated behind `CheckCoverage`) — declaring
-`.Use(mqtt5.FromUserPropertyParam(apiKeyParam))` is enough for
-mqtt5's server-transport dispatch to validate the real MQTT5 User Property
-automatically, and for the property to render into the request/reply
-message's AsyncAPI `headers` schema:
+**User Property param-as-middleware**: `reqreply.Middleware[In,Out]`'s
+`WithRequestPropertySpec`/`WithResponsePropertySpec` declare a
+presence-only (non-merged) User Property param — a header-like param
+declaration with no corresponding `In`/`Out` struct field to decode
+into. No `HandleMW`/`ClientMW` pairing needed (unlike security schemes,
+header params aren't gated behind `CheckCoverage`) — declaring
+`.Use(...)` is enough for mqtt5's server-transport dispatch to validate
+the real MQTT5 User Property automatically, and for the property to
+render into the request/reply message's AsyncAPI `headers` schema:
 
 ```go
-var apiKeyParam = mqtt5.UserPropertyParam{Name: "X-API-Key", Required: true}
+var apiKeyParam = reqreply.PropertyParam{Param: codex.Param{Name: "X-API-Key"}, Required: true}
 
-route := ComputeRoute.Use(mqtt5.FromUserPropertyParam(apiKeyParam))
+route := ComputeRoute.Use(
+    reqreply.NewMiddleware[struct{}, struct{}](middleware.Declaration[struct{}, struct{}]{
+        Name: "declare-api-key-property",
+    }).WithRequestPropertySpec(apiKeyParam),
+)
 ```
 
-A SECOND, newer mechanism now exists ALONGSIDE this one, unchanged:
 [Feature: Codec-Declared Middleware](codec-declared-middleware.md)'s
 `reqreply.Middleware[In,Out]`'s `WithRequestProperty`/`WithResponseProperty`
-axis — codec-backed, merge-capable (unlike this validate-only Phase 1b
-bridge), and required vs. optional properties are a first-class choice
-(`NewPropertyParam`/`NewOptionalPropertyParam`).
+axis is this mechanism's MERGE-capable sibling — required vs. optional
+properties are a first-class choice there too
+(`NewPropertyParam`/`NewOptionalPropertyParam`), the difference being
+whether a decoded `In`/`Out` struct field exists to merge into.
 
 **zeromq** — same `.Use()`/`HandleMW`/`ClientMW` declare/implement split,
 but the paired Fn shape reads/writes the decoded `*Req` directly (no raw
@@ -707,41 +709,62 @@ itself for zeromq's model to work (`Token string` above) — a documented,
 accepted transport limitation (zeromq has no property/header side
 channel), not a bug.
 
-## Sharing a security scheme declaration across REST/events/reqreply
+## Sharing a security SCHEME across REST/events/reqreply
 
-A `middleware.SecurityScheme(schemeName, scheme, scopes, codec)` value
-(built from a `route.SecurityScheme` — `BearerScheme`/`BasicScheme`/
-`APIKeyScheme`/`OAuth2Scheme`/`OpenIDConnectScheme`) is a **single,
-fully shared, transport-agnostic Go value** — the SAME `middleware.
-Middleware` returned by `middleware.SecurityScheme(...)` can be attached
-via `.Use()` to a `rest.Route`, an `events.Subscriber`/`Publisher`, AND a
-`reqreply.Route`, with zero duplication:
+Each of `rest`/`events`/`reqreply` has its own `SecurityMiddleware(schemeName,
+scheme, scopes) Middleware[struct{}, struct{}]` constructor — the one, single
+vocabulary for declaring a security requirement in that pattern. These
+constructors are pattern-specific BY DESIGN (their return types differ:
+`rest.Middleware[struct{},struct{}]`, `events.Middleware[struct{},struct{}]`,
+`reqreply.Middleware[struct{},struct{}]` are three distinct Go types, and a
+value of one does NOT work if attached to another pattern's routes/channels —
+each pattern's internal dispatch only recognizes its own concrete type; a
+foreign-pattern value would compile but be silently dropped, contributing
+nothing to that pattern's spec).
+
+What genuinely IS shared, and is the actual mechanism behind "one OAuth2
+scheme, usable everywhere": the underlying `route.SecurityScheme` value
+(`BearerScheme`/`BasicScheme`/`APIKeyScheme`/`OAuth2Scheme`/
+`OpenIDConnectScheme`) and the credential-format `codex.Codec[string]`, both
+of which are already protocol-agnostic, ordinary Go values with no
+per-pattern type at all. Declare these ONCE, then pass the SAME values into
+each pattern's own `SecurityMiddleware` constructor — "one shared config,
+one declaration per pattern":
 
 ```go
-var oauthMw = middleware.SecurityScheme("oauth2Compute",
-    route.OAuth2Scheme(route.OAuthFlows{
-        ClientCredentials: &route.OAuthFlow{
-            TokenURL: "https://auth.example.com/oauth2/token",
-            Scopes:   map[string]string{"compute:write": "Submit compute requests"},
-        },
-    }), []string{"compute:write"}, &oauthCodec)
+// ONE shared, protocol-agnostic config — not pattern-specific.
+var oauthScheme = route.OAuth2Scheme(route.OAuthFlows{
+    ClientCredentials: &route.OAuthFlow{
+        TokenURL: "https://auth.example.com/oauth2/token",
+        Scopes:   map[string]string{"compute:write": "Submit compute requests"},
+    },
+})
+var oauthScopes = []string{"compute:write"}
 
-// The EXACT SAME value, attached to three different API boundaries:
-restRoute := rest.NewRoute[Req, Resp]("POST", "/compute", reqCodec, respCodec, meta).Use(oauthMw)
-channel := events.NewChannel[Msg]("compute/events", codec, meta).WithSubscribe(events.Subscribe{}).Use(oauthMw)
-reqreplyRoute := reqreply.NewRoute[Req, Resp]("compute/add", reqCodec, respCodec, meta).Use(oauthMw)
+// Three pattern-specific declarations, same underlying scheme + scopes:
+restMw     := rest.SecurityMiddleware("oauth2Compute", rest.SecurityScheme{SecurityScheme: oauthScheme}.WithCodec(oauthCodec), oauthScopes)
+eventsMw   := events.SecurityMiddleware("oauth2Compute", events.SecurityScheme{SecurityScheme: oauthScheme}.WithCodec(oauthCodec), oauthScopes)
+reqreplyMw := reqreply.SecurityMiddleware("oauth2Compute", reqreply.SecurityScheme{SecurityScheme: oauthScheme}.WithCodec(oauthCodec), oauthScopes)
+
+restRoute := rest.NewRoute[Req, Resp]("POST", "/compute", reqCodec, respCodec, meta).Use(restMw)
+channel := events.NewChannel[Msg]("compute/events", codec, meta).WithSubscribe(events.Subscribe{}).Use(eventsMw)
+reqreplyRoute := reqreply.NewRoute[Req, Resp]("compute/add", reqCodec, respCodec, meta).Use(reqreplyMw)
 ```
 
 Each of the three specs (`Server.OpenAPISpec()`/`Client.AsyncAPISpec()`/
 `Server.AsyncAPISpec()`) renders an IDENTICAL `securitySchemes.
-oauth2Compute` entry (same type, flows, scopes) — because they all read
-the SAME `route.SecurityScheme` value out of the SAME `middleware.
-Middleware`. `examples/reqreply-api`'s Demo 9
+oauth2Compute` entry (same type, flows, scopes) — because all three
+declarations were built from the SAME `oauthScheme`/`oauthScopes`/
+`oauthCodec` values, even though each is its own distinct
+`Middleware[struct{},struct{}]` instance. `examples/reqreply-api`'s Demo 9
 (`demo_cross_api_oauth2_sharing.go`) demonstrates this concretely:
-`routes.OAuthMw` is attached to a REAL, served, called zeromq reqreply
-route AND to a locally-declared REST route (registered just to print its
-`OpenAPISpec()` output), then prints both specs' `oauth2Compute` entries
-side by side to show they're byte-for-byte identical.
+`routes.OAuthMwReqreply` is attached to a REAL, served, called zeromq
+reqreply route, and `routes.OAuthMwREST` (same `route.SecurityScheme`
+config) is attached to a locally-declared REST route (registered just to
+print its `OpenAPISpec()` output) — the demo then prints both specs'
+`oauth2Compute` entries side by side to show they're byte-for-byte
+identical, even though the two `Middleware` values attached to get there
+are not the same Go value.
 
 **What is NOT shared: the paired implementation Fn.** `HandleMW`/
 `ClientMW`/`SubscribeMW`/`PublishMW`'s attached Fn is adapter-specific —

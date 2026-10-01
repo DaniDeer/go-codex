@@ -9,8 +9,10 @@ import (
 
 	mqtt5adapter "github.com/DaniDeer/go-codex/adapters/mqtt5"
 	"github.com/DaniDeer/go-codex/api/reqreply"
+	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/handlers"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/routes"
+	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 )
@@ -43,13 +45,26 @@ func (b *Built) LastReplyUserProperties() pahomqtt5.UserProperties {
 
 // apiKeyUserProp/traceUserProp are Phase 1b's (see
 // docs/design/d-0004-reqreply-workflow-simplification.md's Addendum)
-// mqtt5-specific User Property declarations —
-// bridged into a [reqreply.Route.Use]-attachable middleware via
-// [mqtt5adapter.FromUserPropertyParam]/[mqtt5adapter.
-// FromResponseUserPropertyParam]. mqtt5-specific, so declared here (not
-// in routes/middleware.go, which stays adapter-agnostic).
-var apiKeyUserProp = mqtt5adapter.UserPropertyParam{Name: "X-API-Key", Description: "API key for compute/header-param-add", Required: true}
-var traceUserProp = mqtt5adapter.UserPropertyParam{Name: "X-Trace-Id", Description: "Trace correlation id on the reply"}
+// mqtt5-specific User Property declarations — bridged into a
+// [reqreply.Route.Use]-attachable middleware via the codec-backed
+// presence-only axis (WithRequestPropertySpec/WithResponsePropertySpec,
+// docs/design/d-0003-codec-declared-middlewares.md's Phase D0) instead of the
+// legacy [mqtt5adapter.FromUserPropertyParam]/
+// [mqtt5adapter.FromResponseUserPropertyParam] — the migration
+// representative sample for the middleware-consolidation effort.
+// Codec-agnostic (no mqtt5-specific type involved), so this now reads
+// identically whether the attached adapter is mqtt5 or any future
+// adapter with the same User-Property/message-header concept.
+var apiKeyUserProp = reqreply.PropertyParam{Param: codex.Param{Name: "X-API-Key", Description: "API key for compute/header-param-add"}, Required: true}
+var traceUserProp = reqreply.PropertyParam{Param: codex.Param{Name: "X-Trace-Id", Description: "Trace correlation id on the reply"}}
+
+// headerParamMw declares BOTH apiKeyUserProp (request-side) and
+// traceUserProp (response-side) on ONE codec-backed Middleware value —
+// In=Out=struct{} since neither side merges a value, only validates
+// presence/format.
+var headerParamMw = reqreply.NewMiddleware[struct{}, struct{}](middleware.Declaration[struct{}, struct{}]{Name: "declare-header-params"}).
+	WithRequestPropertySpec(apiKeyUserProp).
+	WithResponsePropertySpec(traceUserProp)
 
 // Build registers routes.ComputeRoute, routes.SecuredComputeRoute, and
 // routes.GlobalOnlyComputeRoute (with GlobalSecurity attached at the
@@ -83,7 +98,7 @@ func Build() (*Built, error) {
 	// ServeOptions.SecurityFunc mechanism entirely (removed, breaking
 	// change). A paired implementation is now REQUIRED for every route
 	// with a non-empty effective security requirement — mqtt5.
-	// AttachServer's CheckCoverage enforces this at Serve time, closing a
+	// NewServerTransport's CheckCoverage enforces this at Serve time, closing a
 	// latent gap the old SecurityFunc-optional design silently allowed
 	// (a route could declare a security scheme with NO enforcing
 	// implementation attached anywhere and nothing would ever catch it).
@@ -112,7 +127,7 @@ func Build() (*Built, error) {
 	// mqtt5adapter.NewServerTransport/NewClientTransport's dispatch, not gated behind
 	// [reqreply.CheckCoverage] (that check is security-scheme-specific).
 	headerParamHandle, err := routes.HeaderParamComputeRoute.
-		Use(mqtt5adapter.FromUserPropertyParam(apiKeyUserProp), mqtt5adapter.FromResponseUserPropertyParam(traceUserProp)).
+		Use(headerParamMw).
 		WithHandler(handlers.Add).
 		Register(server)
 	if err != nil {
@@ -160,7 +175,7 @@ func Build() (*Built, error) {
 	broker := &recordingBroker{MQTTClient: rawBroker}
 	// Capabilities supplies mqtt5.QoSAtLeastOnce, satisfying
 	// CapabilityRoute's declared reqreply.RequireQoS(reqreply.AtLeastOnce)
-	// requirement — checked automatically by AttachServer via
+	// requirement — checked automatically by NewServerTransport via
 	// reqreply.VerifyCapabilityCoverage at Serve setup, then applied to
 	// EVERY reply publish for this route (success, error-pattern-matched,
 	// and dead-letter alike, per Phase 2's server-side plumbing fix).
