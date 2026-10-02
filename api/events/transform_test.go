@@ -30,7 +30,7 @@ func TestMiddleware_WithSubscribeProperty_MergesIn(t *testing.T) {
 			func(in *mdTestIn, v string) { in.Key = v }))
 	subscriber := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithSubscribe(events.Subscribe{Summary: "User created"})
-	subscriber = events.Transform(subscriber, mw, func(ctx context.Context, msg *userEvent, in mdTestIn) error {
+	subscriber = subscriber.SubscribeMW(mw, func(ctx context.Context, msg *userEvent, in mdTestIn) error {
 		msg.Name = in.Key
 		return nil
 	})
@@ -44,7 +44,7 @@ func TestMiddleware_WithSubscribeProperty_MergesIn(t *testing.T) {
 
 	// Decoded from its OWN, SEPARATE property-value map — topicVars is nil
 	// here, confirming the two axes never combine.
-	in, err := h.MiddlewareHandlers[0].DecodeIn(nil, map[string]string{"tenantID": "acme"})
+	in, err := h.MiddlewareHandlers[0].DecodeIn(context.Background(), nil, map[string]string{"tenantID": "acme"})
 	if err != nil {
 		t.Fatalf("DecodeIn: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestMiddleware_WithPublishProperty_EncodesOutIntoMessage(t *testing.T) {
 			func(out *mdTestOut, v string) { out.Value = v }))
 	publisher := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithPublish(events.Publish{Summary: "User created"})
-	publisher = events.ClientTransform(publisher, mw, func(ctx context.Context, msg userEvent) (mdTestOut, error) {
+	publisher = publisher.PublishMW(mw, func(ctx context.Context, msg userEvent) (mdTestOut, error) {
 		return mdTestOut{Value: "acme"}, nil
 	})
 	h, err := publisher.Handle(nil)
@@ -72,7 +72,7 @@ func TestMiddleware_WithPublishProperty_EncodesOutIntoMessage(t *testing.T) {
 		t.Fatalf("want exactly one ClientMiddlewareHandler, got %d", len(h.ClientMiddlewareHandlers))
 	}
 
-	topicVars, propertyVars, err := h.ClientMiddlewareHandlers[0].EncodeOut(mdTestOut{Value: "acme"})
+	topicVars, propertyVars, err := h.ClientMiddlewareHandlers[0].EncodeOut(context.Background(), mdTestOut{Value: "acme"})
 	if err != nil {
 		t.Fatalf("EncodeOut: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestMiddleware_WithSubscribeProperty_RequiredButAdapterSuppliesNoPropertyMa
 			func(in *mdTestIn, v string) { in.Key = v }))
 	subscriber := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithSubscribe(events.Subscribe{Summary: "User created"})
-	subscriber = events.Transform(subscriber, mw, func(ctx context.Context, msg *userEvent, in mdTestIn) error { return nil })
+	subscriber = subscriber.SubscribeMW(mw, func(ctx context.Context, msg *userEvent, in mdTestIn) error { return nil })
 	h, err := subscriber.Handle(nil)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -100,7 +100,7 @@ func TestMiddleware_WithSubscribeProperty_RequiredButAdapterSuppliesNoPropertyMa
 	// Simulates an adapter with no property mechanism (e.g. zeromq) — a
 	// REQUIRED property fails naturally with the SAME MiddlewareInputError
 	// a missing topic var would, no special-casing needed.
-	_, err = h.MiddlewareHandlers[0].DecodeIn(nil, nil)
+	_, err = h.MiddlewareHandlers[0].DecodeIn(context.Background(), nil, nil)
 	var mie events.MiddlewareInputError
 	if !errors.As(err, &mie) {
 		t.Fatalf("want MiddlewareInputError, got %v", err)
@@ -115,13 +115,13 @@ func TestMiddleware_WithOptionalSubscribeProperty_AbsentLeavesZeroValueNoError(t
 			func(in *propOptIn, v string) { in.TenantID = v }))
 	subscriber := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithSubscribe(events.Subscribe{Summary: "User created"})
-	subscriber = events.Transform(subscriber, mw, func(ctx context.Context, msg *userEvent, in propOptIn) error { return nil })
+	subscriber = subscriber.SubscribeMW(mw, func(ctx context.Context, msg *userEvent, in propOptIn) error { return nil })
 	h, err := subscriber.Handle(nil)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
 
-	in, err := h.MiddlewareHandlers[0].DecodeIn(nil, nil)
+	in, err := h.MiddlewareHandlers[0].DecodeIn(context.Background(), nil, nil)
 	if err != nil {
 		t.Fatalf("want no error for an absent OPTIONAL property, got %v", err)
 	}
@@ -150,7 +150,7 @@ func TestMiddleware_PropertyMergeComposesWithGobRequestFormat(t *testing.T) {
 
 	subscriber := events.NewChannel[payload]("uploads/data", payloadCodec, events.Formats(gobFmt)).
 		WithSubscribe(events.Subscribe{Summary: "Upload received"})
-	subscriber = events.Transform(subscriber, mw, func(ctx context.Context, msg *payload, in mdTestIn) error { return nil })
+	subscriber = subscriber.SubscribeMW(mw, func(ctx context.Context, msg *payload, in mdTestIn) error { return nil })
 	h, err := subscriber.Handle(nil)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -161,7 +161,7 @@ func TestMiddleware_PropertyMergeComposesWithGobRequestFormat(t *testing.T) {
 
 	// Payload format (Gob) and property merge remain fully orthogonal —
 	// neither affects the other.
-	in, err := h.MiddlewareHandlers[0].DecodeIn(nil, map[string]string{"tenantID": "acme"})
+	in, err := h.MiddlewareHandlers[0].DecodeIn(context.Background(), nil, map[string]string{"tenantID": "acme"})
 	if err != nil {
 		t.Fatalf("DecodeIn: %v", err)
 	}

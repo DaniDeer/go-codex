@@ -21,9 +21,20 @@ import (
 // message via MQTT 5 User Properties — MQTT5-only, since MQTT 3.1.1 has no
 // per-message metadata channel), connection-level security validates ONCE,
 // synchronously, at construction — appropriate for the common "one
-// connection = one identity" case. go-codex NEVER calls Connect() itself;
-// the caller connects their own client first, THEN wraps it with
-// NewSecuredClient before passing it to Subscribe/Publish/Serve/Call.
+// connection = one identity" case. NewSecuredClient itself NEVER calls
+// Connect() — it wraps an ALREADY-connected client for a FORMAT-only
+// pre-check, appropriate when the caller connects via their own means.
+//
+// Housekeeping correction (docs/roadmap/declarative-middleware-layering.md's
+// Rollout Phase B): this file's own doc comment PREVIOUSLY claimed
+// "go-codex NEVER calls Connect() itself" at the PACKAGE level — that is
+// FALSE. [Connect] (in connect.go) is this package's own sibling function
+// that performs the REAL broker CONNECT handshake. The "never calls
+// Connect()" property described here is true ONLY of NewSecuredClient's
+// OWN mechanism (which always receives an already-connected client) — the
+// caller connects their own client first (via [Connect] or any other
+// means), THEN wraps it with NewSecuredClient before passing it to
+// Subscribe/Publish/Serve/Call.
 
 // ConnectSecurityScheme combines [route.SecurityScheme] spec metadata with a
 // runtime Codec for connect-level (CONNECT username/password) credential

@@ -8,7 +8,23 @@ import (
 	"time"
 
 	pahomqtt "github.com/eclipse/paho.mqtt.golang"
+
+	"github.com/DaniDeer/go-codex/stats"
 )
+
+// mqttReturnCodeNames maps MQTT 3.1.1's small, fixed CONNACK return-code
+// enum (0-5, per the spec) to its human-readable name — unlike MQTT5's
+// open-ended reason-code space (see [mqtt5.ConnectError.ReasonCode]), v3
+// has exactly six defined codes and no equivalent of MQTT5's
+// ConnackProperties.ReasonString.
+var mqttReturnCodeNames = map[byte]string{
+	0: "Accepted",
+	1: "Unacceptable protocol version",
+	2: "Identifier rejected",
+	3: "Server unavailable",
+	4: "Bad username or password",
+	5: "Not authorized",
+}
 
 // ConnectOptions configures [Connect]'s broker-connection setup — the
 // [pahomqtt.ClientOptions] fields [Connect] is a thin, faithful wrapper
@@ -33,6 +49,35 @@ type ConnectOptions struct {
 	// TLS, when non-nil, connects over TLS instead of a plain TCP socket —
 	// passed to [pahomqtt.ClientOptions.SetTLSConfig].
 	TLS *tls.Config
+	// Observer, when set and implementing [stats.SecurityObserver], has
+	// [stats.SecurityObserver.RecordSecurityRejection] called on a
+	// broker-rejected CONNECT whose CONNACK return code is 4 ("Bad
+	// username or password") or 5 ("Not authorized") — MQTT 3.1.1's own
+	// two auth-specific codes (unlike MQTT5's open `>= 0x80` range; see
+	// [mqtt5.ConnectOptions.Observer]). Mirrors [NewSecuredClient]'s
+	// existing [WithObserver] pattern, extended here to the REAL CONNECT
+	// handshake itself. Defaults to [stats.NoopObserver] behavior when
+	// nil (never called).
+	//
+	// docs/roadmap/declarative-middleware-layering.md's Rollout Phase B
+	// follow-up: closes a confirmed mqtt-vs-mqtt5 parity gap.
+	Observer stats.Observer
+}
+
+// recordConnectSecurityRejection reports a broker-rejected CONNECT to
+// opts.Observer, when set and implementing [stats.SecurityObserver], and
+// returnCode is one of MQTT 3.1.1's two auth-specific CONNACK return codes:
+// 4 ("Bad username or password") or 5 ("Not authorized").
+func recordConnectSecurityRejection(opts ConnectOptions, returnCode byte) {
+	if returnCode != 4 && returnCode != 5 {
+		return
+	}
+	if opts.Observer == nil {
+		return
+	}
+	if secObs, ok := opts.Observer.(stats.SecurityObserver); ok {
+		secObs.RecordSecurityRejection("connect", "broker-credentials")
+	}
 }
 
 // Connect dials brokerURL (a full broker URL with scheme — e.g.
@@ -101,7 +146,17 @@ func Connect(ctx context.Context, brokerURL string, opts ConnectOptions) (pahomq
 
 	if err := token.Error(); err != nil {
 		client.Disconnect(0)
-		return nil, ConnectError{Op: "connect", Err: err}
+		connErr := ConnectError{Op: "connect", Err: err}
+		// Populate the structured CONNACK return code when the broker
+		// actually sent one — previously discarded, only the generic
+		// wrapped error string survived (docs/roadmap/
+		// declarative-middleware-layering.md's Rollout Phase B follow-up,
+		// mirroring mqtt5's own equivalent fix).
+		if ct, ok := token.(*pahomqtt.ConnectToken); ok {
+			connErr.ReturnCode = ct.ReturnCode()
+			recordConnectSecurityRejection(opts, ct.ReturnCode())
+		}
+		return nil, connErr
 	}
 	return client, nil
 }
@@ -119,9 +174,26 @@ type ConnectError struct {
 	Op string
 	// Err is the underlying network or protocol error.
 	Err error
+	// ReturnCode is the CONNACK return code (0-5, per MQTT 3.1.1's small
+	// fixed enum — e.g. 4 "Bad username or password", 5 "Not authorized")
+	// when Op=="connect" and a CONNACK was actually received from the
+	// broker — populated from [pahomqtt.ConnectToken.ReturnCode], which
+	// was previously discarded. Zero value when no CONNACK was ever
+	// received, OR when the broker accepted the connection (0 is also
+	// "Accepted") — callers must not treat a zero ReturnCode alone as
+	// evidence of failure, only [Err] indicates that.
+	//
+	// docs/roadmap/declarative-middleware-layering.md's Rollout Phase B
+	// follow-up: closes a confirmed mqtt-vs-mqtt5 parity gap. Unlike
+	// [mqtt5.ConnectError], there is no ReasonString equivalent — MQTT
+	// 3.1.1's CONNACK carries no properties.
+	ReturnCode byte
 }
 
 func (e ConnectError) Error() string {
+	if name, ok := mqttReturnCodeNames[e.ReturnCode]; ok && e.ReturnCode != 0 {
+		return fmt.Sprintf("mqtt connect %s: %v (return code %d: %s)", e.Op, e.Err, e.ReturnCode, name)
+	}
 	return fmt.Sprintf("mqtt connect %s: %v", e.Op, e.Err)
 }
 
@@ -130,8 +202,12 @@ func (e ConnectError) Unwrap() error { return e.Err }
 
 // LogValue implements [slog.LogValuer] for structured logging.
 func (e ConnectError) LogValue() slog.Value {
-	return slog.GroupValue(
+	attrs := []slog.Attr{
 		slog.String("op", e.Op),
 		slog.Any("err", e.Err),
-	)
+	}
+	if e.ReturnCode != 0 {
+		attrs = append(attrs, slog.Int("return_code", int(e.ReturnCode)))
+	}
+	return slog.GroupValue(attrs...)
 }

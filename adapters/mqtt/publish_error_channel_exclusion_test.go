@@ -31,7 +31,7 @@ func TestPublish_ClientMiddlewareFnError_NeverConsultsErrorChannel(t *testing.T)
 			},
 		),
 	).WithPublish(events.Publish{Summary: "test"})
-	pub = events.ClientTransform(pub, mw, func(ctx context.Context, msg userEvent) (tdEmpty, error) {
+	pub = pub.PublishMW(mw, func(ctx context.Context, msg userEvent) (tdEmpty, error) {
 		return tdEmpty{}, fnErr
 	})
 	handle, err := pub.Handle(nil)

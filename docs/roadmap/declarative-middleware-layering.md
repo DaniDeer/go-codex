@@ -1,9 +1,10 @@
 # Declarative Middleware as Partial Route/Channel Definitions — and Security Credentials as the Proving Case
 
-> **Status:** Rollout Phase A (`api/rest`) IMPLEMENTED and fully verified
-> (`go build`/`go vet`/`go test`/`just check`/every `examples/*/` clean;
-> see "Learnings from Rollout Phase A" below). Phase B (`api/events`) and
-> Phase C (`api/reqreply`) remain NOT yet implemented — all other design
+> **Status:** Rollout Phase A (`api/rest`) AND Rollout Phase B
+> (`api/events`) IMPLEMENTED and fully verified (`go build`/`go vet`/
+> `go test`/`just check`/every `examples/*/` clean; see "Learnings from
+> Rollout Phase A"/"Learnings from Rollout Phase B" below). Phase C
+> (`api/reqreply`) remains NOT yet implemented — all other design
 > decisions below (including Phase 2-4's cross-API design) stay resolved
 > and current.
 > [← Back to Roadmap](index.md)
@@ -1747,7 +1748,91 @@ Phase C (`api/reqreply`):
 
 ### Learnings from Rollout Phase B (for Phase C)
 
-_Not yet started._
+**Shipped.** `api/events`'s `Transform`/`ClientTransform` were removed
+and folded into `SubscribeMW`/`PublishMW`; Security generalized
+(`SecurityMiddleware[In,Out]`) with the zero-value-codec fix applied
+FROM THE START (not rediscovered); `events.CheckCoverage` extended;
+`SetContextFieldFromIn`/`SetContextFieldFromOut` added (Publish-only for
+the latter); `Client.AddConnectSecurityScheme` ships Phase 4 for events;
+`adapters/mqtt5.ConnectError`/`ConnectOptions` extended. Full
+verification clean. Concrete findings for Phase C (`api/reqreply`):
+
+1. **Reqreply's legacy-vs-bound shape ambiguity needs checking
+   per-adapter, not assumed identical to REST or events.** Phase B found
+   a GENUINE divergence from REST's own shape-detection technique:
+   events' `adapters/mqtt`/`zeromq` legacy subscribe-security Fn shares
+   BOTH the bound shape's arity AND its 2nd-param type (`*T`), forcing a
+   3rd-param-type check instead of REST's simpler 2nd-param check —
+   confirmed only by writing the actual test, not by analogy to REST.
+   Before implementing reqreply's fold-in, write out EVERY adapter's
+   (`mqtt5`, `zeromq`) actual legacy Fn shapes FIRST and compare arities/
+   param types against the bound shape directly — do not assume "REST's
+   technique generalizes unchanged" a second time.
+2. **The "DRY builder consolidation" (one `buildXAny` function shared by
+   agnostic AND bound paths) has a real trap: don't let a field meant
+   ONLY for the bound path (like D7's `dualAttached`) leak into the
+   shared builder.** Confirmed via an ACTUAL test failure during Phase
+   B's own implementation (not caught by design review): computing
+   `dualAttached: mw.isBundled()` inside the shared builder broke the
+   legitimate pure-agnostic case, since `isBundled()` is naturally true
+   there too. Fix: the shared builder must NEVER set attachment-style-
+   specific fields; only the BOUND call site sets them, after calling
+   the shared builder. Apply this discipline from the start for reqreply
+   rather than rediscovering it.
+3. **A signature change to a dispatch-closure field type (adding `ctx
+   context.Context` to `DecodeIn`/`EncodeOut` for Phase 3's context
+   propagation) ripples into EVERY direct struct-literal test fixture
+   constructing that type, not just production call sites.** Confirmed
+   via compile errors in `transform_dispatch_test.go`'s own hand-built
+   `MiddlewareHandler{DecodeIn: func(...){...}}` literals — grep for
+   struct-literal fixtures of the affected type BEFORE assuming a
+   signature change is contained to production code and its direct
+   callers.
+4. **Reqreply's own `buildDecodeIn`/`buildEncodeIn`/`buildEncodeOut`/
+   `buildDecodeOut` migration onto `middleware.DecodeLayer`/`EncodeLayer`
+   is the 3RD (not 2nd) consumer — by this point the mechanism is
+   thoroughly proven; expect this step to be routine, not risky.**
+   Confirmed zero behavior change required for events' identical
+   migration (every pre-existing test passed unchanged) — the SAME
+   should hold for reqreply, which is fully symmetric with REST (unlike
+   events' asymmetric Subscribe/Publish shape), making it if anything an
+   EASIER migration than events' was.
+5. **Reqreply's context-propagation is confirmed fully symmetric with
+   REST (no events-style asymmetry)** — per this doc's own
+   "Package-by-package verdict," both `SetContextFieldFromIn` AND
+   `SetContextFieldFromOut` apply on BOTH reqreply's request and response
+   sides, unlike events' Subscribe-has-no-Out asymmetry. This should
+   make reqreply's Phase 3 work a more direct port of REST's exact
+   pattern than events' was.
+6. **Reqreply's `AddConnectSecurityScheme`/`mqtt5.Connect` reuse needs
+   ZERO adapter code change** — confirmed already, by design, before
+   Phase B even shipped (`adapters/mqtt5/reqreply_transport.go`'s `Call`/
+   `Serve` already take the same plain `MQTTClient`/`MQTTRouter` pair
+   `mqtt5.Connect` returns). Phase C's version of this step should be a
+   pure `reqreply.Builder.AddConnectSecurityScheme` addition (mirroring
+   `events.Client`'s identical method byte-for-byte) plus wiring into
+   `reqreply.Builder.AsyncAPISpec()`'s own securitySchemes aggregation —
+   no `adapters/mqtt5` changes anticipated at all.
+7. **A connection-level enhancement scoped to "the mqtt protocol family"
+   in design discussion must be checked against EVERY adapter in that
+   family, not just the one named in the roadmap text.** Phase B's
+   Level 0 (steps 2-3) extended `adapters/mqtt5.ConnectError`/
+   `ConnectOptions` with `ReasonCode`/`ReasonString`/`Observer`, but the
+   roadmap doc only ever said "mqtt5.Connect" by name — `adapters/mqtt`
+   (v3)'s own, separately-implemented `Connect`/`ConnectError`/
+   `ConnectOptions` was overlooked entirely until a post-ship review
+   caught it. Confirmed fixable: `paho.mqtt.golang`'s
+   `*pahomqtt.ConnectToken.ReturnCode()` exposes v3's CONNACK return
+   code, analogous to v5's `Connack.ReasonCode` — now added as
+   `ConnectError.ReturnCode byte` + `ConnectOptions.Observer`, gated on
+   MQTT 3.1.1's own auth-specific codes (4, 5) rather than MQTT5's
+   `>= 0x80` range (the two protocol versions' CONNACK semantics are
+   NOT interchangeable — no `ReasonString` equivalent exists for v3).
+   Before closing out reqreply's Phase 4 (step 6, above), explicitly
+   re-check whether `adapters/mqtt` needs the identical reqreply-side
+   treatment too (reqreply's `Call`/`Serve` plumbing is shared with
+   events' Connect helpers, so this may already be covered — verify,
+   don't assume).
 
 ### Learnings from Rollout Phase C
 

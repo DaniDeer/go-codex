@@ -145,7 +145,7 @@ func TestClientSubscribe_MiddlewareDispatch_RunsBeforeHandler(t *testing.T) {
 	emw := newTDEmptyDeclaration("full-pipeline-policy")
 	sub := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
 		WithSubscribe(events.Subscribe{Summary: "test"})
-	sub = events.Transform(sub, emw, func(_ context.Context, _ *sensorReading, _ tdEmpty) error {
+	sub = sub.SubscribeMW(emw, func(_ context.Context, _ *sensorReading, _ tdEmpty) error {
 		order = append(order, "middleware")
 		return nil
 	})
@@ -305,7 +305,7 @@ func TestClientPublish_MiddlewareDispatch_RunsBeforeSend(t *testing.T) {
 	emw := newTDEmptyDeclaration("full-pipeline-out-policy")
 	pub := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
 		WithPublish(events.Publish{Summary: "test"})
-	pub = events.ClientTransform(pub, emw, func(_ context.Context, _ sensorReading) (tdEmpty, error) {
+	pub = pub.PublishMW(emw, func(_ context.Context, _ sensorReading) (tdEmpty, error) {
 		mwCalled = true
 		return tdEmpty{}, nil
 	})

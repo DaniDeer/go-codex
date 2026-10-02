@@ -644,6 +644,90 @@ for the full rationale (the original tracking doc,
 `zeromq-security.md`, has since shipped and been deleted per its own
 graduation policy).
 
+### Codec-backed Security — `SubscribeMW`/`PublishMW`'s bound path + `GrantedScopes`
+
+Mirrors `api/rest`'s identical Rollout Phase A mechanism (see "Codec-backed
+Security" under "Runtime enforcement" above), folded into events as Rollout
+Phase B: a codec-backed `events.Middleware[In, Out]` (built via
+`events.SecurityMiddleware[In, Out]`, generalized over In/Out) can ALSO
+carry a real credential payload and be attached via `Subscriber.SubscribeMW`/
+`Publisher.PublishMW` — the SAME two methods used for the legacy shape above.
+`SubscribeMW`/`PublishMW` detect which shape `fn` is by its REFLECTED
+signature (never `mw`'s type), so attaching either shape uses the identical
+method call:
+
+```go
+type BearerIn struct{ Token string }
+type BearerOut struct{ GrantedScopes map[string][]string }
+
+bearerMw := events.SecurityMiddleware[BearerIn, BearerOut]("bearerAuth",
+    bearerAuthScheme, nil,
+).WithSubscribeProperty(events.NewPropertyParam("Authorization", codex.String(),
+    func(in BearerIn) string { return in.Token },
+    func(in *BearerIn, v string) { in.Token = v },
+))
+
+userCreatedSub = userCreatedSub.SubscribeMW(bearerMw,
+    func(ctx context.Context, msg *UserCreated, in BearerIn) error {
+        if !validToken(in.Token) {
+            return errors.New("invalid bearer token")
+        }
+        return nil
+    })
+```
+
+`fn` gets `*T` access (read/enrich, exactly like the generic middleware
+mechanism), and `In`'s own topic/property merge fields decode declaratively
+from the incoming message — no manual extraction anywhere. `Out` carries the
+SAME conventional `GrantedScopes map[string][]string` field REST uses,
+read by the adapter via reflection and fed into the SAME `middleware.CheckScopes`
+call the legacy Fn path already used.
+
+On the publish side, `PublishMW`'s bound shape is `func(ctx, msg T) (Out, error)`
+(T BY VALUE) — recognized identically, dispatched through the SAME
+merge-field mechanism instead of hand-building MQTT5 User Properties.
+
+### Connection-level auth spec registration — `Client.AddConnectSecurityScheme`
+
+A connection-level scheme (the broker's OWN CONNECT-time credential —
+see "Connection-level vs message-level security" above) referenced ONLY
+via a `Server.Security` list, never by any individual channel's own
+Subscribe/Publish requirement, previously had no way to be spec-registered
+at all (`components/securitySchemes` was aggregated ONLY from
+per-channel declarations). `Client.AddConnectSecurityScheme` closes this:
+
+```go
+eventsClient.AddConnectSecurityScheme("brokerAuth", route.SecurityScheme{
+    Type: route.SecuritySchemeHTTP, Scheme: "basic",
+})
+eventsClient.AddServer("mqtt5", events.Server{
+    URL: "mqtts://broker:8883", Protocol: "mqtt5",
+    Security: []route.SecurityRequirement{route.Require("brokerAuth")},
+})
+
+// ... later, at ATTACH time — real credentials handed to the adapter,
+// a real broker-rejection error surfaces BEFORE Client.Attach is reached.
+client, router, err := mqtt5.Connect(ctx, "broker:8883", mqtt5.ConnectOptions{
+    ClientID: "svc-1", Username: username, Password: password,
+    Observer: obs, // optional — reports a broker-rejected CONNECT via RecordSecurityRejection
+})
+if err != nil {
+    var connErr mqtt5.ConnectError
+    if errors.As(err, &connErr) {
+        // connErr.ReasonCode/ReasonString are populated when the broker
+        // actually sent a CONNACK (e.g. 0x86 "Bad username or password") —
+        // zero-value for a dial-stage failure.
+    }
+    return err
+}
+```
+
+Reuse the SAME scheme NAME at both call sites — the primary (and today
+only) safety mechanism linking the declared spec entry to the real
+credentials supplied at attach time; see
+[D-0006](../design/d-0006-protocol-native-capabilities.md) for the full
+declare/attach-time-supply lifecycle this capability follows.
+
 ## Security for request-reply routes (reqreply)
 
 `api/reqreply` now mirrors REST/events' exact declare-once,

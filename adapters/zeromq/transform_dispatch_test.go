@@ -71,7 +71,7 @@ func TestSubscribe_Transform_HappyPath_EnrichesMsg(t *testing.T) {
 		))
 	subscriber := events.NewChannel[sensorReading]("sensors/{region}/readings", sensorCodec).
 		WithSubscribe(events.Subscribe{Summary: "test"})
-	subscriber = events.Transform(subscriber, mw, func(ctx context.Context, msg *sensorReading, in tdIn) error {
+	subscriber = subscriber.SubscribeMW(mw, func(ctx context.Context, msg *sensorReading, in tdIn) error {
 		msg.SensorID = in.Key + "-enriched"
 		return nil
 	})
@@ -104,7 +104,7 @@ func TestSubscribe_Transform_InDecodeFailure_HandlerNotCalled(t *testing.T) {
 	subscriber := events.NewChannel[sensorReading]("sensors/{region}/readings", sensorCodec).
 		WithSubscribe(events.Subscribe{Summary: "test"})
 	handlerCalled := false
-	subscriber = events.Transform(subscriber, mw, func(ctx context.Context, msg *sensorReading, in tdIn) error {
+	subscriber = subscriber.SubscribeMW(mw, func(ctx context.Context, msg *sensorReading, in tdIn) error {
 		handlerCalled = true
 		return nil
 	})
@@ -137,7 +137,7 @@ func TestSubscribe_Transform_FnError_WrapsAsMiddlewareError(t *testing.T) {
 	subscriber := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
 		WithSubscribe(events.Subscribe{Summary: "test"})
 	handlerCalled := false
-	subscriber = events.Transform(subscriber, mw, func(ctx context.Context, msg *sensorReading, in tdEmpty) error {
+	subscriber = subscriber.SubscribeMW(mw, func(ctx context.Context, msg *sensorReading, in tdEmpty) error {
 		return errors.New("boom")
 	})
 	handle := newSubscriberHandle(subscriber)
@@ -198,7 +198,7 @@ func TestPublish_ClientTransform_HappyPath_EncodesOutIntoTopicVars(t *testing.T)
 		))
 	publisher := events.NewChannel[sensorReading]("sensors/{region}/readings", sensorCodec).
 		WithPublish(events.Publish{Summary: "test"})
-	publisher = events.ClientTransform(publisher, mw, func(ctx context.Context, msg sensorReading) (tdOut, error) {
+	publisher = publisher.PublishMW(mw, func(ctx context.Context, msg sensorReading) (tdOut, error) {
 		return tdOut{Value: "us-west"}, nil
 	})
 	handle, err := publisher.Handle(nil)
@@ -225,7 +225,7 @@ func TestPublish_ClientTransform_FnError_AbortsBeforePublish(t *testing.T) {
 	mw := newTDEmptyDeclaration("region-policy")
 	publisher := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
 		WithPublish(events.Publish{Summary: "test"})
-	publisher = events.ClientTransform(publisher, mw, func(ctx context.Context, msg sensorReading) (tdEmpty, error) {
+	publisher = publisher.PublishMW(mw, func(ctx context.Context, msg sensorReading) (tdEmpty, error) {
 		return tdEmpty{}, errors.New("boom")
 	})
 	handle, err := publisher.Handle(nil)
@@ -260,7 +260,7 @@ func TestSubscribe_MiddlewareDispatch_RunsAfterPairedSecurity(t *testing.T) {
 			order = append(order, "security")
 			return nil
 		})
-	subscriber = events.Transform(subscriber, mw, func(ctx context.Context, msg *sensorReading, in tdEmpty) error {
+	subscriber = subscriber.SubscribeMW(mw, func(ctx context.Context, msg *sensorReading, in tdEmpty) error {
 		order = append(order, "middleware")
 		return nil
 	})
@@ -295,7 +295,7 @@ func TestPublish_MiddlewareDispatch_ValuePrecedence_ExplicitBeatsMiddlewareBeats
 			func(r sensorReading) string { return r.SensorID },
 			func(r *sensorReading, v string) { r.SensorID = v }),
 	).WithPublish(events.Publish{})
-	pub = events.ClientTransform(pub, mw, func(ctx context.Context, msg sensorReading) (tdOut, error) {
+	pub = pub.PublishMW(mw, func(ctx context.Context, msg sensorReading) (tdOut, error) {
 		return tdOut{Value: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"}, nil
 	})
 	handle, err := pub.Handle(nil)
@@ -343,7 +343,7 @@ func TestSubscribe_Observer_ReportsMiddlewareInAndFnLocations(t *testing.T) {
 			func(in tdIn) string { return in.Key },
 			func(in *tdIn, v string) { in.Key = v }))
 	subIn := events.NewChannel[sensorReading]("sensors/{region}/readings", sensorCodec).WithSubscribe(events.Subscribe{Summary: "test"})
-	subIn = events.Transform(subIn, inMW, func(ctx context.Context, msg *sensorReading, in tdIn) error { return nil })
+	subIn = subIn.SubscribeMW(inMW, func(ctx context.Context, msg *sensorReading, in tdIn) error { return nil })
 	handleIn := newSubscriberHandle(subIn)
 
 	obsIn := &testObserver{}
@@ -368,7 +368,7 @@ func TestSubscribe_Observer_ReportsMiddlewareInAndFnLocations(t *testing.T) {
 	// walkErrors and is observable via RecordValidationError.
 	fnMW := newTDEmptyDeclaration("fn-error-policy")
 	subFn := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).WithSubscribe(events.Subscribe{Summary: "test"})
-	subFn = events.Transform(subFn, fnMW, func(ctx context.Context, msg *sensorReading, in tdEmpty) error {
+	subFn = subFn.SubscribeMW(fnMW, func(ctx context.Context, msg *sensorReading, in tdEmpty) error {
 		return codex.ValidationErrors{{Field: "region", Err: errors.New("boom")}}
 	})
 	handleFn := newSubscriberHandle(subFn)
@@ -397,7 +397,7 @@ func TestSubscribe_Observer_ReportsMiddlewareInAndFnLocations(t *testing.T) {
 func TestPublish_Observer_ReportsMiddlewareInAndFnLocations(t *testing.T) {
 	mw := newTDEmptyDeclaration("fn-error-policy")
 	pub := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).WithPublish(events.Publish{})
-	pub = events.ClientTransform(pub, mw, func(ctx context.Context, msg sensorReading) (tdEmpty, error) {
+	pub = pub.PublishMW(mw, func(ctx context.Context, msg sensorReading) (tdEmpty, error) {
 		return tdEmpty{}, codex.ValidationErrors{{Field: "region", Err: errors.New("boom")}}
 	})
 	handle, err := pub.Handle(nil)
@@ -439,7 +439,7 @@ func TestPublish_Observer_ReportsMiddlewareInAndFnLocations(t *testing.T) {
 func TestPublish_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
 	mw := newTDDeclaration("tenant-required-policy")
 	pub := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).WithPublish(events.Publish{})
-	pub = events.ClientTransform(pub, mw, func(ctx context.Context, msg sensorReading) (tdOut, error) {
+	pub = pub.PublishMW(mw, func(ctx context.Context, msg sensorReading) (tdOut, error) {
 		// Empty Value fails tdOutCodec's NonEmptyString refinement at
 		// EncodeOut/OutCodec.Validate time, NOT the fn itself.
 		return tdOut{Value: ""}, nil

@@ -2,9 +2,9 @@ package events
 
 import (
 	"context"
-	"slices"
 
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/middleware"
 )
 
 // MiddlewareHandler is the type-erased, RECEIVING-role (subscribe) runtime
@@ -28,7 +28,7 @@ type MiddlewareHandler struct {
 	// decoded In boxed as `any` (its concrete type is recovered by the
 	// adapter via reflection, mirroring how
 	// [middleware.ServerImplementation.Fn] is already reflect-called).
-	DecodeIn func(topicVars, propertyVars map[string]string) (any, error)
+	DecodeIn func(ctx context.Context, topicVars, propertyVars map[string]string) (any, error)
 
 	// propertyParams holds this handler's OWN property-param declarations
 	// in spec-level form (Name/Required/Codec) — mirrors [MiddlewareHandler.Name]'s
@@ -57,6 +57,18 @@ type MiddlewareHandler struct {
 	// handler built from the plain .Use() path never sets this — bundled
 	// there is the WHOLE POINT of that attachment style, not a conflict.
 	dualAttached bool
+
+	// Satisfies names the security scheme(s) this handler's Fn satisfies
+	// when it is Security-shaped (derived from mw's own
+	// [Middleware.SecurityDeclaration] via [satisfiesOf]) — empty for a
+	// general-purpose (non-Security) middleware, which always runs
+	// regardless of the channel's declared requirements. Mirrors
+	// [rest.MiddlewareHandler.Satisfies] exactly (docs/roadmap/
+	// declarative-middleware-layering.md's Rollout Phase B) — lets
+	// [CheckCoverage] recognize a bound-or-agnostic-attached codec-backed
+	// Security middleware as satisfying a declared requirement, the same
+	// way it already recognizes a legacy [middleware.ServerImplementation].
+	Satisfies []string
 }
 
 // ClientMiddlewareHandler is the type-erased, SENDING-role (publish)
@@ -79,7 +91,7 @@ type ClientMiddlewareHandler struct {
 	// identical pattern) from the Out value returned by Fn, using ONLY
 	// this middleware's own publish-topic/publish-property merge-field
 	// declarations and the middleware's own OutCodec.
-	EncodeOut func(out any) (topicVars, propertyVars map[string]string, err error)
+	EncodeOut func(ctx context.Context, out any) (topicVars, propertyVars map[string]string, err error)
 
 	// propertyParams mirrors [MiddlewareHandler.propertyParams] for the
 	// publish (SENDING) role — this handler's OWN property-param
@@ -97,32 +109,42 @@ type ClientMiddlewareHandler struct {
 	// whose mw ALSO carries a WithSend Fn — D7's ambiguous case. See
 	// [MiddlewareHandler.dualAttached]'s identical rationale.
 	dualAttached bool
+
+	// Satisfies mirrors [MiddlewareHandler.Satisfies]'s identical
+	// rationale, for the SENDING (publish/client) role.
+	Satisfies []string
 }
 
 // buildDecodeIn builds the DecodeIn closure shared by [buildMiddlewareHandler]
 // (channel-BOUND) and [buildAgnosticMiddlewareHandler] (channel-AGNOSTIC).
-// Decodes topicVars and propertyVars against &in SEPARATELY, in two
-// sequential [codex.DecodeVars] calls, never combining the two maps — each
-// call only touches the fields THAT AXIS declared, so calling DecodeVars
-// twice against one &in is safe and side-effect-free across axes (mirrors
-// REST's real multi-axis buildDecodeIn).
-func buildDecodeIn[In, Out any](mw Middleware[In, Out]) func(topicVars, propertyVars map[string]string) (any, error) {
+// Internally a thin wrapper over [middleware.DecodeLayer] (docs/roadmap/
+// declarative-middleware-layering.md's Rollout Phase B — the mechanism's
+// generality test, migrated from api/rest's own identical migration in
+// Phase A) — behavior is UNCHANGED: same 2-axis order (topic, property),
+// same fail-fast-at-first-error semantics, same [MiddlewareInputError]
+// wrapping. Decodes topicVars and propertyVars against &in SEPARATELY,
+// never combining the two maps — each axis only touches the fields THAT
+// AXIS declared.
+func buildDecodeIn[In, Out any](mw Middleware[In, Out]) func(ctx context.Context, topicVars, propertyVars map[string]string) (any, error) {
 	topicFields := mw.topicMergeFieldsIn
 	propFields := mw.propertyMergeFieldsIn
-	return func(topicVars, propertyVars map[string]string) (any, error) {
-		var in In
-		if len(topicFields) > 0 {
-			if err := codex.DecodeVars(&in, topicVars, topicFields...); err != nil {
-				return nil, MiddlewareInputError{Name: mw.Name, Err: err}
-			}
-		}
-		if len(propFields) > 0 {
-			if err := codex.DecodeVars(&in, propertyVars, propFields...); err != nil {
-				return nil, MiddlewareInputError{Name: mw.Name, Err: err}
-			}
+	wrapErr := func(err error) error { return MiddlewareInputError{Name: mw.Name, Err: err} }
+	ctxFieldsFromIn := mw.ctxFieldsFromIn
+	return func(ctx context.Context, topicVars, propertyVars map[string]string) (any, error) {
+		in, err := middleware.DecodeLayer([]middleware.Axis[In]{
+			{Fields: topicFields, Vars: topicVars},
+			{Fields: propFields, Vars: propertyVars},
+		}, wrapErr)
+		if err != nil {
+			return nil, err
 		}
 		if err := mw.InCodec.Validate(in); err != nil {
 			return nil, MiddlewareInputError{Name: mw.Name, Err: err}
+		}
+		for _, cf := range ctxFieldsFromIn {
+			if err := cf.field.Set(ctx, cf.get(in)); err != nil {
+				return nil, MiddlewareInputError{Name: mw.Name, Err: err}
+			}
 		}
 		return in, nil
 	}
@@ -130,126 +152,135 @@ func buildDecodeIn[In, Out any](mw Middleware[In, Out]) func(topicVars, property
 
 // buildEncodeOut builds the EncodeOut closure shared by
 // [buildClientMiddlewareHandler] (channel-BOUND) and
-// [buildAgnosticClientMiddlewareHandler] (channel-AGNOSTIC). Returns topic
-// vars and property vars as TWO SEPARATE maps, never combined.
-func buildEncodeOut[In, Out any](mw Middleware[In, Out]) func(outAny any) (topicVars, propertyVars map[string]string, err error) {
+// [buildAgnosticClientMiddlewareHandler] (channel-AGNOSTIC). Internally a
+// thin wrapper over [middleware.EncodeLayer] — behavior is UNCHANGED: same
+// 2-axis order (topic, property), same fail-fast semantics, same
+// [MiddlewareOutputError] wrapping, same nil-map-when-no-fields contract.
+// Returns topic vars and property vars as TWO SEPARATE maps, never
+// combined. [middleware.EncodeLayer] uses [codex.EncodeMergeVars]
+// internally for EVERY axis (not just property) — a safe, behavior-
+// preserving change for the topic axis specifically, since topic merge
+// fields never use [codex.OmitEmptyField]/[OmitEmptyFieldFunc] (topics
+// have no Required/Optional split to begin with — confirmed
+// [codex.EncodeMergeVars] is byte-identical to [codex.EncodeVars] for any
+// non-sparse field).
+func buildEncodeOut[In, Out any](mw Middleware[In, Out]) func(ctx context.Context, outAny any) (topicVars, propertyVars map[string]string, err error) {
 	topicFields := mw.topicMergeFieldsOut
 	propFields := mw.propertyMergeFieldsOut
-	return func(outAny any) (map[string]string, map[string]string, error) {
+	wrapErr := func(err error) error { return MiddlewareOutputError{Name: mw.Name, Err: err} }
+	ctxFieldsFromOut := mw.ctxFieldsFromOut
+	return func(ctx context.Context, outAny any) (map[string]string, map[string]string, error) {
 		out, _ := outAny.(Out)
 		if err := mw.OutCodec.Validate(out); err != nil {
 			return nil, nil, MiddlewareOutputError{Name: mw.Name, Err: err}
 		}
-		var topicVars, propertyVars map[string]string
-		var err error
-		if len(topicFields) > 0 {
-			topicVars, err = codex.EncodeVars(out, topicFields...)
-			if err != nil {
+		for _, cf := range ctxFieldsFromOut {
+			if err := cf.field.Set(ctx, cf.get(out)); err != nil {
 				return nil, nil, MiddlewareOutputError{Name: mw.Name, Err: err}
 			}
 		}
-		if len(propFields) > 0 {
-			propertyVars, err = codex.EncodeMergeVars(out, propFields...)
-			if err != nil {
-				return nil, nil, MiddlewareOutputError{Name: mw.Name, Err: err}
-			}
+		vars, err := middleware.EncodeLayer(out, [][]codex.FieldCodec[Out]{
+			topicFields,
+			propFields,
+		}, wrapErr)
+		if err != nil {
+			return nil, nil, err
 		}
-		return topicVars, propertyVars, nil
+		return vars[0], vars[1], nil
 	}
 }
 
-// buildMiddlewareHandler builds a type-erased [MiddlewareHandler] from a
-// concrete [Middleware][In, Out] and its fn — In/Out are known here (the
-// generic call site) and erased into plain closures where needed, so
-// api/events never needs reflection for the decode half.
-func buildMiddlewareHandler[T, In, Out any](mw Middleware[In, Out], fn func(ctx context.Context, msg *T, in In) error) MiddlewareHandler {
+// satisfiesOf mirrors [rest.satisfiesOf] exactly — derives the
+// [MiddlewareHandler.Satisfies]/[ClientMiddlewareHandler.Satisfies] value
+// shared by EVERY handler-building function below (bound AND agnostic,
+// both roles), so [CheckCoverage] can treat a codec-backed Middleware's
+// dispatch handler identically to a legacy
+// [middleware.ServerImplementation]/[middleware.ClientImplementation]
+// regardless of which attachment style produced it.
+func satisfiesOf[In, Out any](mw Middleware[In, Out]) []string {
+	if sec := mw.SecurityDeclaration(); sec != nil {
+		return []string{sec.SchemeName}
+	}
+	return nil
+}
+
+// buildMiddlewareHandlerAny builds a type-erased [MiddlewareHandler] from a
+// concrete [Middleware][In, Out] and an UNTYPED fn — the SOLE builder for
+// the channel-BOUND, RECEIVING role, used by both [Subscriber.SubscribeMW]'s
+// bound path (see [Middleware.applyBoundSubscriber]) and
+// [buildAgnosticMiddlewareHandler] (docs/roadmap/
+// declarative-middleware-layering.md's Rollout Phase B — events' own
+// Architecture-revision fold-in, mirroring api/rest's identical Phase A
+// consolidation): fn is already `any` on [MiddlewareHandler.Fn] itself, so
+// a single `any`-typed builder needs zero new type parameters beyond
+// In/Out (the receiver mw already carries).
+// dualAttached is DELIBERATELY NOT set here — this builder is shared by
+// BOTH the bound path (Transform/applyBoundSubscriber) AND
+// [buildAgnosticMiddlewareHandler]; mw.isBundled() is naturally true for
+// a LEGITIMATE agnostic-only attachment (bundled IS the whole point of
+// that style), so setting it unconditionally here would misfire D7's
+// ambiguous-attachment check against pure agnostic usage (confirmed via
+// an actual test failure — see git history). Only a BOUND call site may
+// set dualAttached, and only when mw is ALSO bundled.
+func buildMiddlewareHandlerAny[In, Out any](mw Middleware[In, Out], fn any) MiddlewareHandler {
 	return MiddlewareHandler{
 		Name:           mw.Name,
 		DecodeIn:       buildDecodeIn(mw),
 		Fn:             fn,
-		dualAttached:   mw.isBundled(),
 		propertyParams: mw.propertyParamsIn,
+		Satisfies:      satisfiesOf(mw),
 	}
 }
 
 // buildAgnosticMiddlewareHandler builds a type-erased [MiddlewareHandler]
 // from a channel-AGNOSTIC [Middleware][In, Out] — one attached via plain
-// .Use(mw), bundled via [Middleware.WithReceive].
+// .Use(mw), bundled via [Middleware.WithReceive] — mirroring the bound
+// case (see [buildMiddlewareHandlerAny]) except Fn is mw's OWN bundled
+// receiveFn (func(ctx, In) error, no *T) and [MiddlewareHandler.Agnostic]
+// is set so the adapter reflect-calls Fn with the matching arity.
 func buildAgnosticMiddlewareHandler[In, Out any](mw Middleware[In, Out]) MiddlewareHandler {
-	return MiddlewareHandler{
-		Name:           mw.Name,
-		DecodeIn:       buildDecodeIn(mw),
-		Fn:             mw.receiveFn,
-		Agnostic:       true,
-		propertyParams: mw.propertyParamsIn,
-	}
+	h := buildMiddlewareHandlerAny(mw, mw.receiveFn)
+	h.Agnostic = true
+	return h
 }
 
-// buildClientMiddlewareHandler builds a type-erased [ClientMiddlewareHandler]
-// from a concrete [Middleware][In, Out] and its fn, mirroring
-// [buildMiddlewareHandler]'s technique for the SENDING role.
-func buildClientMiddlewareHandler[T, In, Out any](mw Middleware[In, Out], fn func(ctx context.Context, msg T) (Out, error)) ClientMiddlewareHandler {
+// buildClientMiddlewareHandlerAny builds a type-erased
+// [ClientMiddlewareHandler] from a concrete [Middleware][In, Out] and an
+// UNTYPED fn — the SENDING-role mirror of [buildMiddlewareHandlerAny],
+// used by both [Publisher.PublishMW]'s bound path (see
+// [Middleware.applyBoundPublisher]) and
+// [buildAgnosticClientMiddlewareHandler].
+// dualAttached is DELIBERATELY NOT set here — see [buildMiddlewareHandlerAny]'s
+// identical rationale.
+func buildClientMiddlewareHandlerAny[In, Out any](mw Middleware[In, Out], fn any) ClientMiddlewareHandler {
 	return ClientMiddlewareHandler{
 		Name:           mw.Name,
 		Fn:             fn,
 		EncodeOut:      buildEncodeOut(mw),
-		dualAttached:   mw.isBundled(),
 		propertyParams: mw.propertyParamsOut,
+		Satisfies:      satisfiesOf(mw),
 	}
 }
 
 // buildAgnosticClientMiddlewareHandler builds a type-erased
 // [ClientMiddlewareHandler] from a channel-AGNOSTIC [Middleware][In, Out]
-// — one attached via plain .Use(mw), bundled via [Middleware.WithSend].
+// — one attached via plain .Use(mw), bundled via [Middleware.WithSend] —
+// mirroring the bound case (see [buildClientMiddlewareHandlerAny]) except
+// Fn is mw's OWN bundled sendFn (func(ctx) (Out, error), no T) and
+// [ClientMiddlewareHandler.Agnostic] is set so the adapter reflect-calls
+// Fn with the matching arity.
 func buildAgnosticClientMiddlewareHandler[In, Out any](mw Middleware[In, Out]) ClientMiddlewareHandler {
-	return ClientMiddlewareHandler{
-		Name:           mw.Name,
-		Fn:             mw.sendFn,
-		EncodeOut:      buildEncodeOut(mw),
-		Agnostic:       true,
-		propertyParams: mw.propertyParamsOut,
-	}
+	h := buildClientMiddlewareHandlerAny(mw, mw.sendFn)
+	h.Agnostic = true
+	return h
 }
 
-// Transform attaches mw's declaration AND its runtime fn to s in ONE call
-// — the channel-BOUND, RECEIVING-role (subscribe) attachment point for a
-// codec-backed [Middleware]. fn receives ctx, the channel's OWN
-// already-decoded *T (POINTER — fn may both read AND enrich it with
-// derived data the wire message never carried), and mw's own decoded+
-// validated In (declaratively extracted from topic vars the channel's T
-// does NOT model). Dispatches at the SAME pre-handler point
-// runSubscribeSecurityImpls already runs at (D1) — see
-// docs/design/d-0003-codec-declared-middlewares.md for the full design.
-//
-//	route = events.Transform(subscriber, regionPolicy,
-//	    func(ctx context.Context, msg *SensorReading, in RegionIn) error {
-//	        msg.Region = in.Region
-//	        return nil
-//	    })
-func Transform[T, In, Out any](
-	s Subscriber[T],
-	mw Middleware[In, Out],
-	fn func(ctx context.Context, msg *T, in In) error,
-) Subscriber[T] {
-	s.middlewareHandlers = append(slices.Clone(s.middlewareHandlers), buildMiddlewareHandler(mw, fn))
-	return s
-}
-
-// ClientTransform is [Transform]'s channel-BOUND, SENDING-role (publish)
-// counterpart. fn PRODUCES mw's own Out value from msg (the caller's OWN
-// already-built value, available to inspect) — mw's own publish-topic
-// merge fields then encode the returned Out into ADDITIONAL outgoing
-// topic vars, merged alongside the channel's own topic vars.
-//
-//	pub = events.ClientTransform(publisher, regionPolicy,
-//	    func(ctx context.Context, msg SensorReading) (RegionOut, error) {
-//	        return RegionOut{Region: resolveRegion(msg)}, nil
-//	    })
-func ClientTransform[T, In, Out any](
-	p Publisher[T],
-	mw Middleware[In, Out],
-	fn func(ctx context.Context, msg T) (Out, error),
-) Publisher[T] {
-	p.clientMiddlewareHandlers = append(slices.Clone(p.clientMiddlewareHandlers), buildClientMiddlewareHandler(mw, fn))
-	return p
-}
+// Transform/ClientTransform (the channel-BOUND, free-function attachment
+// point) were REMOVED (docs/roadmap/declarative-middleware-layering.md's
+// Rollout Phase B — events' own Architecture revision, mirroring Phase
+// A's identical REST removal) — folded into [Subscriber.SubscribeMW]/
+// [Publisher.PublishMW] directly via reflection-based shape detection
+// ([isBoundSubscribeMWShape]/[isBoundPublishMWShape]). Use
+// `subscriber.SubscribeMW(mw, fn)`/`publisher.PublishMW(mw, fn)` instead —
+// identical Fn signatures, identical dispatch, reached through the
+// ordinary method-chain API instead of a separate free function.

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"reflect"
+	"slices"
 
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/middleware"
@@ -84,6 +86,34 @@ type Middleware[In, Out any] struct {
 	// "Lessons learned" section.
 	receiveFn func(ctx context.Context, in In) error
 	sendFn    func(ctx context.Context) (Out, error)
+
+	// ctxFieldsFromIn/ctxFieldsFromOut hold every
+	// [Middleware.SetContextFieldFromIn]/[Middleware.SetContextFieldFromOut]
+	// registration — mirrors [rest.Middleware]'s identical fields
+	// (docs/roadmap/declarative-middleware-layering.md's Rollout Phase
+	// B). ctxFieldsFromIn dispatches from [buildDecodeIn] (Subscribe side
+	// ONLY — Publish's Fn has no In parameter at all to source a value
+	// from); ctxFieldsFromOut dispatches from [buildEncodeOut] (Publish
+	// side ONLY — Subscribe's Fn produces no Out at all, the one
+	// confirmed, genuine asymmetry relative to REST/reqreply).
+	ctxFieldsFromIn  []contextFieldInSetter[In]
+	ctxFieldsFromOut []contextFieldOutSetter[Out]
+}
+
+// contextFieldInSetter mirrors [rest]'s identical type — pairs a
+// [middleware.ContextFieldSetter] with the getter that extracts its raw
+// value from this middleware's decoded In — one entry per
+// [Middleware.SetContextFieldFromIn] call.
+type contextFieldInSetter[In any] struct {
+	field middleware.ContextFieldSetter
+	get   func(In) any
+}
+
+// contextFieldOutSetter is [contextFieldInSetter]'s Out-side mirror — one
+// entry per [Middleware.SetContextFieldFromOut] call.
+type contextFieldOutSetter[Out any] struct {
+	field middleware.ContextFieldSetter
+	get   func(Out) any
 }
 
 // NewMiddleware builds a [Middleware] from a [middleware.Declaration] —
@@ -184,18 +214,49 @@ func cloneFieldCodecs[T any](fs []codex.FieldCodec[T]) []codex.FieldCodec[T] {
 // WithReceive attaches a channel-AGNOSTIC Fn directly to mw — NEITHER
 // WithReceive NOR WithSend below mentions T, so the returned
 // Middleware[In,Out] value (fn included) can be passed to .Use(...)
-// verbatim, on as many different channels as needed. Use [Transform]
-// instead when fn genuinely needs msg *T access.
+// verbatim, on as many different channels as needed. Use
+// [Subscriber.SubscribeMW]'s bound path instead when fn genuinely needs
+// msg *T access.
 func (m Middleware[In, Out]) WithReceive(fn func(ctx context.Context, in In) error) Middleware[In, Out] {
 	m.receiveFn = fn
 	return m
 }
 
 // WithSend is [Middleware.WithReceive]'s publish-side sibling — fn
-// produces mw's own Out value (the SAME shape [ClientTransform]'s bound fn
-// produces — see [Middleware]'s doc comment for why this is Out, not In).
+// produces mw's own Out value (the SAME shape [Publisher.PublishMW]'s
+// bound path produces — see [Middleware]'s doc comment for why this is
+// Out, not In).
 func (m Middleware[In, Out]) WithSend(fn func(ctx context.Context) (Out, error)) Middleware[In, Out] {
 	m.sendFn = fn
+	return m
+}
+
+// SetContextFieldFromIn registers field to be published (via
+// field.Set(ctx, get(in))) immediately after this middleware's In value is
+// decoded+validated (DecodeIn), BEFORE the Fn runs — mirrors
+// [rest.Middleware.SetContextFieldFromIn] exactly (docs/roadmap/
+// declarative-middleware-layering.md's Rollout Phase B). Works on BOTH
+// Subscribe and Publish attachment, since In is always decoded
+// post-merge-field-decode regardless of direction — though in practice
+// this is the ONLY context-propagation option on Subscribe specifically
+// (see [Middleware.SetContextFieldFromOut]'s doc comment for why).
+//
+//	authMw = authMw.SetContextFieldFromIn(UserIDField, func(in BearerCred) any { return in.UserID })
+func (m Middleware[In, Out]) SetContextFieldFromIn(field middleware.ContextFieldSetter, get func(In) any) Middleware[In, Out] {
+	m.ctxFieldsFromIn = append(slices.Clone(m.ctxFieldsFromIn), contextFieldInSetter[In]{field: field, get: get})
+	return m
+}
+
+// SetContextFieldFromOut is [Middleware.SetContextFieldFromIn]'s sibling
+// for the PRODUCED value — dispatched immediately after this middleware's
+// Out value is validated (inside [buildEncodeOut]), alongside the
+// merge-field encode. **NOT usable for events' Subscribe** — Subscribe's
+// Fn (WithReceive) produces no Out at all (confirmed, the one genuine
+// asymmetry vs. REST/reqreply); Go's own type system means this method
+// simply isn't reachable there in practice, not a runtime restriction —
+// it is only ever meaningfully called on a Publish-side [Middleware].
+func (m Middleware[In, Out]) SetContextFieldFromOut(field middleware.ContextFieldSetter, get func(Out) any) Middleware[In, Out] {
+	m.ctxFieldsFromOut = append(slices.Clone(m.ctxFieldsFromOut), contextFieldOutSetter[Out]{field: field, get: get})
 	return m
 }
 
@@ -246,11 +307,91 @@ func (m Middleware[In, Out]) applyAgnosticPublisher() (ClientMiddlewareHandler, 
 	return buildAgnosticClientMiddlewareHandler(m), true
 }
 
+// applyBoundSubscriber implements [eventsMiddlewareContributor] — called by
+// [Subscriber.SubscribeMW] for a bound-shaped codec-backed [Middleware][In,
+// Out] (docs/roadmap/declarative-middleware-layering.md's Rollout Phase
+// B — events' own Architecture-revision fold-in, mirroring
+// [rest.Middleware.applyBoundRoute]). fn is UNTYPED here (already `any` at
+// SubscribeMW's own signature) — m's own In/Out type parameters are ALL
+// this method needs. **Simpler than REST's equivalent** (confirmed
+// Learning #10, this session's Phase B model-review round): events
+// already bundles spec metadata (propertyParams) DIRECTLY on
+// [MiddlewareHandler] itself — no separate middlewareSpecContribution-
+// style object to also populate, so this method need only build and
+// return ONE handler value; [Subscriber.SubscribeMW] appends it directly.
+func (m Middleware[In, Out]) applyBoundSubscriber(fn any) MiddlewareHandler {
+	h := buildMiddlewareHandlerAny(m, fn)
+	h.dualAttached = m.isBundled() // SubscribeMW is the BOUND path — D7 fires only here, mirrors Transform's identical rule.
+	return h
+}
+
+// applyBoundPublisher is [applyBoundSubscriber]'s publish-side mirror —
+// called by [Publisher.PublishMW] for a bound-shaped codec-backed
+// [Middleware][In, Out].
+func (m Middleware[In, Out]) applyBoundPublisher(fn any) ClientMiddlewareHandler {
+	h := buildClientMiddlewareHandlerAny(m, fn)
+	h.dualAttached = m.isBundled()
+	return h
+}
+
 // isBundled reports whether mw carries a WithReceive/WithSend Fn — used by
 // [checkMiddlewareNameUniquenessAndAttachment]'s D7 ambiguous-dual-attachment
 // check, mirroring rest's identical technique.
 func (m Middleware[In, Out]) isBundled() bool {
 	return m.receiveFn != nil || m.sendFn != nil
+}
+
+// isBoundSubscribeMWShape is [Subscriber.SubscribeMW]'s events-side mirror
+// of [rest.isBoundHandleMWShape] (docs/roadmap/declarative-middleware-
+// layering.md's Rollout Phase B) — detects the channel-BOUND shape
+// (func(ctx, *T, In) error, arity 3-in/1-out) via fn's OWN REFLECTED
+// signature, never mw's dynamic type (same reasoning as REST: a
+// generalized [SecurityMiddleware][In, Out] can ALSO be used purely as a
+// legacy credential-shape carrier).
+//
+// Arity alone is NOT sufficient here, unlike REST's 2nd-param check:
+// confirmed via code, `adapters/mqtt`'s/`adapters/zeromq`'s OWN legacy
+// subscribe-security Fn shape — func(ctx, *T, []route.SecurityRequirement)
+// error — shares the EXACT SAME 3-in/1-out arity AND the EXACT SAME 2nd
+// param type (*T) as the bound shape. The 3rd param is the only
+// differentiator: legacy's is always []route.SecurityRequirement; the
+// bound shape's is mw's own In (never that exact type in practice).
+// (`adapters/mqtt5`'s OWN legacy subscribe-security Fn — func(ctx,
+// *pahomqtt5.Publish, *T) (map[string][]string, error) — already differs
+// in both 2nd-param type AND arity, so needs no special-casing here.)
+func isBoundSubscribeMWShape[T any](fn any) bool {
+	fnVal := reflect.ValueOf(fn)
+	if !fnVal.IsValid() {
+		return false
+	}
+	t := fnVal.Type()
+	if t.Kind() != reflect.Func || t.NumIn() != 3 || t.NumOut() != 1 {
+		return false
+	}
+	if t.In(1) != reflect.TypeOf((*T)(nil)) {
+		return false
+	}
+	return t.In(2) != reflect.TypeOf([]route.SecurityRequirement(nil))
+}
+
+// isBoundPublishMWShape is [Publisher.PublishMW]'s events-side mirror of
+// [rest.isBoundClientMWShape] — the bound shape is func(ctx, msg T)
+// (Out, error) (T BY VALUE, arity 2-in/2-out), vs. EVERY confirmed legacy
+// publish-security Fn shape (`adapters/mqtt5`: func(ctx, *T,
+// []route.SecurityRequirement) ([]UserProperty, error); `adapters/mqtt`/
+// `adapters/zeromq`: func(ctx, *T, []route.SecurityRequirement) error) —
+// all 3-in, distinguished from the bound shape's 2-in by arity ALONE, no
+// param-type inspection needed.
+func isBoundPublishMWShape[T any](fn any) bool {
+	fnVal := reflect.ValueOf(fn)
+	if !fnVal.IsValid() {
+		return false
+	}
+	t := fnVal.Type()
+	if t.Kind() != reflect.Func || t.NumIn() != 2 || t.NumOut() != 2 {
+		return false
+	}
+	return t.In(1) == reflect.TypeOf((*T)(nil)).Elem()
 }
 
 // MiddlewareInputError is returned when a [Middleware]'s In value fails to
@@ -487,4 +628,14 @@ type eventsMiddlewareContributor interface {
 	middleware.RouteMiddleware
 	applyAgnosticSubscriber() (MiddlewareHandler, bool)
 	applyAgnosticPublisher() (ClientMiddlewareHandler, bool)
+
+	// applyBoundSubscriber/applyBoundPublisher (docs/roadmap/declarative-
+	// middleware-layering.md's Rollout Phase B) let [Subscriber.SubscribeMW]/
+	// [Publisher.PublishMW] apply a BOUND codec-backed middleware WITHOUT
+	// needing to know In/Out — mirrors api/rest's identical
+	// routeMiddlewareContributor extension (Rollout Phase A's Architecture
+	// revision). fn is `any` (already erased at SubscribeMW/PublishMW's
+	// own signature).
+	applyBoundSubscriber(fn any) MiddlewareHandler
+	applyBoundPublisher(fn any) ClientMiddlewareHandler
 }

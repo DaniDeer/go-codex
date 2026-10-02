@@ -260,7 +260,12 @@ func subscribeHandler[T any](
 	}
 	return func(_ pahomqtt.Client, msg pahomqtt.Message) {
 		start := time.Now()
-		ctx := context.WithValue(ctx, contextKey{}, msg)
+		// docs/roadmap/declarative-middleware-layering.md's Rollout Phase
+		// B: pre-allocates the shared ContextField box (idempotent,
+		// mirrors adapters/nethttp/chi's identical per-request call) so a
+		// Subscribe-side Middleware.SetContextFieldFromIn link has
+		// somewhere to publish into.
+		ctx := middleware.EnsureContextFields(context.WithValue(ctx, contextKey{}, msg))
 		// The channel's OWN declaration (WithFormats/WithSubscribeFormats)
 		// is the single source of truth for which format applies —
 		// DecodeWithFormats resolves it (call-time formats override >
@@ -547,6 +552,12 @@ type PublishOptions[T any] struct {
 // PublishMW-attached Fn add tracing, mutate/log msg, or implement retry
 // logic around the actual encode/publish call.
 func publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.ChannelHandle[T], msg T, vars map[string]string, opts PublishOptions[T], formats ...format.Format[T]) error {
+	// docs/roadmap/declarative-middleware-layering.md's Rollout Phase B:
+	// pre-allocates the shared ContextField box (idempotent, mirrors
+	// adapters/nethttp/chi's identical per-call site) so a Publish-side
+	// Middleware.SetContextFieldFromOut link has somewhere to publish
+	// into, BEFORE DispatchPublishMiddlewareHandlers below ever runs.
+	ctx = middleware.EnsureContextFields(ctx)
 	obs := opts.Observer
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)

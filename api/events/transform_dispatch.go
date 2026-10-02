@@ -79,7 +79,7 @@ func AsMiddlewareDispatchError(err error) (MiddlewareDispatchInfo, bool) {
 // would, no special-casing needed by the caller.
 func DispatchSubscribeMiddlewareHandlers[T any](ctx context.Context, msg *T, handlers []MiddlewareHandler, topicVars, propertyVars map[string]string) error {
 	for _, h := range handlers {
-		in, err := h.DecodeIn(topicVars, propertyVars)
+		in, err := h.DecodeIn(ctx, topicVars, propertyVars)
 		if err != nil {
 			return middlewareDispatchError{err: err, name: h.Name}
 		}
@@ -130,7 +130,7 @@ func DispatchPublishMiddlewareHandlers[T any](ctx context.Context, msg T, handle
 			return nil, nil, middlewareDispatchError{err: MiddlewareError{Name: h.Name, Err: fnErr}, isFnError: true, name: h.Name}
 		}
 		out := results[0].Interface()
-		mwTopicVars, mwPropertyVars, encErr := h.EncodeOut(out)
+		mwTopicVars, mwPropertyVars, encErr := h.EncodeOut(ctx, out)
 		if encErr != nil {
 			return nil, nil, middlewareDispatchError{err: encErr, isEncodeErr: true, name: h.Name}
 		}

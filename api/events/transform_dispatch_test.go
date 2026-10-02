@@ -14,7 +14,7 @@ func TestDispatchSubscribeMiddlewareHandlers_success(t *testing.T) {
 	called := false
 	h := events.MiddlewareHandler{
 		Name: "mw",
-		DecodeIn: func(topicVars, propertyVars map[string]string) (any, error) {
+		DecodeIn: func(ctx context.Context, topicVars, propertyVars map[string]string) (any, error) {
 			return topicVars["id"], nil
 		},
 		Fn: func(ctx context.Context, msg *dispatchMsg, in string) error {
@@ -37,7 +37,7 @@ func TestDispatchSubscribeMiddlewareHandlers_decodeInError(t *testing.T) {
 	wantErr := errors.New("decode failed")
 	h := events.MiddlewareHandler{
 		Name: "mw",
-		DecodeIn: func(topicVars, propertyVars map[string]string) (any, error) {
+		DecodeIn: func(ctx context.Context, topicVars, propertyVars map[string]string) (any, error) {
 			return nil, wantErr
 		},
 	}
@@ -56,7 +56,7 @@ func TestDispatchSubscribeMiddlewareHandlers_fnError(t *testing.T) {
 	wantErr := errors.New("fn failed")
 	h := events.MiddlewareHandler{
 		Name: "mw",
-		DecodeIn: func(topicVars, propertyVars map[string]string) (any, error) {
+		DecodeIn: func(ctx context.Context, topicVars, propertyVars map[string]string) (any, error) {
 			return "in", nil
 		},
 		Fn: func(ctx context.Context, msg *dispatchMsg, in string) error {
@@ -77,7 +77,7 @@ func TestDispatchPublishMiddlewareHandlers_success(t *testing.T) {
 		Fn: func(ctx context.Context, msg dispatchMsg) (string, error) {
 			return msg.Val, nil
 		},
-		EncodeOut: func(out any) (topicVars, propertyVars map[string]string, err error) {
+		EncodeOut: func(ctx context.Context, out any) (topicVars, propertyVars map[string]string, err error) {
 			return map[string]string{"id": out.(string)}, map[string]string{"prop": "x"}, nil
 		},
 	}
@@ -115,7 +115,7 @@ func TestDispatchPublishMiddlewareHandlers_encodeOutError(t *testing.T) {
 		Fn: func(ctx context.Context, msg dispatchMsg) (string, error) {
 			return "out", nil
 		},
-		EncodeOut: func(out any) (topicVars, propertyVars map[string]string, err error) {
+		EncodeOut: func(ctx context.Context, out any) (topicVars, propertyVars map[string]string, err error) {
 			return nil, nil, wantErr
 		},
 	}
@@ -144,5 +144,64 @@ func TestOverrideDerivedVars(t *testing.T) {
 func TestAsMiddlewareDispatchError_notADispatchError(t *testing.T) {
 	if _, ok := events.AsMiddlewareDispatchError(errors.New("plain error")); ok {
 		t.Fatal("expected ok=false for a plain error")
+	}
+}
+
+// TestDispatchSubscribeMiddlewareHandlers_FailFast_SecondHandlerNeverRuns
+// confirms the layers-within-a-stack fail-fast behavior (docs/roadmap/
+// declarative-middleware-layering.md's Phase B model-review round —
+// RESOLVED: fail-fast, confirmed as what Phase A's rest.
+// DispatchMiddlewareHandlers already does) also holds for events: the
+// SECOND handler's DecodeIn is never even called after the first fails.
+func TestDispatchSubscribeMiddlewareHandlers_FailFast_SecondHandlerNeverRuns(t *testing.T) {
+	first := events.MiddlewareHandler{
+		Name: "first",
+		DecodeIn: func(ctx context.Context, topicVars, propertyVars map[string]string) (any, error) {
+			return nil, errors.New("first failed")
+		},
+	}
+	secondCalled := false
+	second := events.MiddlewareHandler{
+		Name: "second",
+		DecodeIn: func(ctx context.Context, topicVars, propertyVars map[string]string) (any, error) {
+			secondCalled = true
+			return "in", nil
+		},
+		Fn: func(ctx context.Context, msg *dispatchMsg, in string) error { return nil },
+	}
+	msg := &dispatchMsg{}
+	err := events.DispatchSubscribeMiddlewareHandlers(context.Background(), msg, []events.MiddlewareHandler{first, second}, nil, nil)
+	if err == nil {
+		t.Fatal("want an error from the first handler")
+	}
+	if secondCalled {
+		t.Error("want the SECOND handler's DecodeIn never called after the FIRST fails (fail-fast)")
+	}
+}
+
+// TestDispatchPublishMiddlewareHandlers_FailFast_SecondHandlerNeverRuns
+// mirrors the subscribe-side test for the publish direction.
+func TestDispatchPublishMiddlewareHandlers_FailFast_SecondHandlerNeverRuns(t *testing.T) {
+	first := events.ClientMiddlewareHandler{
+		Name: "first",
+		Fn:   func(ctx context.Context, msg dispatchMsg) (string, error) { return "", errors.New("first failed") },
+		EncodeOut: func(ctx context.Context, out any) (map[string]string, map[string]string, error) {
+			return nil, nil, nil
+		},
+	}
+	secondCalled := false
+	second := events.ClientMiddlewareHandler{
+		Name: "second",
+		Fn:   func(ctx context.Context, msg dispatchMsg) (string, error) { secondCalled = true; return "out", nil },
+		EncodeOut: func(ctx context.Context, out any) (map[string]string, map[string]string, error) {
+			return nil, nil, nil
+		},
+	}
+	_, _, err := events.DispatchPublishMiddlewareHandlers(context.Background(), dispatchMsg{}, []events.ClientMiddlewareHandler{first, second})
+	if err == nil {
+		t.Fatal("want an error from the first handler")
+	}
+	if secondCalled {
+		t.Error("want the SECOND handler's Fn never called after the FIRST fails (fail-fast)")
 	}
 }

@@ -6,6 +6,8 @@ import (
 	"net"
 
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
+
+	"github.com/DaniDeer/go-codex/stats"
 )
 
 // ConnectOptions configures [Connect]'s broker-connection setup: the CONNECT
@@ -32,6 +34,33 @@ type ConnectOptions struct {
 	// TLS, when non-nil, connects over TLS ([tls.Dial]) instead of a plain
 	// TCP socket ([net.Dial]).
 	TLS *tls.Config
+	// Observer, when set and implementing [stats.SecurityObserver], has
+	// [stats.SecurityObserver.RecordSecurityRejection] called on a
+	// broker-rejected CONNECT (a CONNACK reason code in the "not
+	// authorized"/"bad username or password" range, >= 0x80) — mirrors
+	// [NewSecuredClient]'s existing [WithObserver] pattern, extended here
+	// to the REAL CONNECT handshake itself (docs/roadmap/
+	// declarative-middleware-layering.md's Rollout Phase A: NewSecuredClient
+	// pre-validates FORMAT only; Connect performs the actual handshake and
+	// is where a real broker rejection is observable). Defaults to
+	// [stats.NoopObserver] behavior when nil (never called).
+	Observer stats.Observer
+}
+
+// recordConnectSecurityRejection reports a broker-rejected CONNECT to
+// opts.Observer, when set and implementing [stats.SecurityObserver], and
+// reasonCode falls in the "not authorized"/"bad username or password"
+// range (MQTT 5's reason codes >= 0x80 are uniformly failure codes; the
+// auth-specific ones are 0x86 "Bad username or password" and 0x87 "Not
+// authorized" — but any >= 0x80 code on a CONNECT is, at minimum, a
+// rejection worth observing, not just those two specifically).
+func recordConnectSecurityRejection(opts ConnectOptions, reasonCode byte) {
+	if reasonCode < 0x80 || opts.Observer == nil {
+		return
+	}
+	if secObs, ok := opts.Observer.(stats.SecurityObserver); ok {
+		secObs.RecordSecurityRejection("connect", "broker-credentials")
+	}
 }
 
 // Connect dials brokerURL (a bare "host:port" address — e.g.
@@ -98,9 +127,25 @@ func Connect(ctx context.Context, brokerURL string, opts ConnectOptions) (MQTTCl
 		connectPacket.PasswordFlag = true
 	}
 
-	if _, err := client.Connect(ctx, connectPacket); err != nil {
+	connack, err := client.Connect(ctx, connectPacket)
+	if err != nil {
 		_ = conn.Close()
-		return nil, nil, ConnectError{Op: "connect", Err: err}
+		connErr := ConnectError{Op: "connect", Err: err}
+		// Populate the structured CONNACK reason when the broker actually
+		// sent one — confirmed via paho.golang's own Client.Connect: on an
+		// auth rejection (reason code >= 0x80) it returns BOTH a non-nil
+		// *paho.Connack AND a generic wrapped error; previously this
+		// struct reason was silently discarded, only the generic error
+		// string survived (docs/roadmap/declarative-middleware-layering.md's
+		// Rollout Phase B).
+		if connack != nil {
+			connErr.ReasonCode = connack.ReasonCode
+			if connack.Properties != nil {
+				connErr.ReasonString = connack.Properties.ReasonString
+			}
+			recordConnectSecurityRejection(opts, connack.ReasonCode)
+		}
+		return nil, nil, connErr
 	}
 	return client, router, nil
 }

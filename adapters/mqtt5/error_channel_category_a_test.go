@@ -130,7 +130,7 @@ func TestErrorChannel_MiddlewareDecodeIn_Matched_Publishes(t *testing.T) {
 			},
 		),
 	).WithSubscribe(events.Subscribe{Summary: "test"})
-	subscriber = events.Transform(subscriber, mw, func(ctx context.Context, msg *sensorReading, in tdIn) error {
+	subscriber = subscriber.SubscribeMW(mw, func(ctx context.Context, msg *sensorReading, in tdIn) error {
 		return nil
 	})
 	handle := newSubscriberChannelHandle(subscriber)

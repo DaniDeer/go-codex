@@ -28,16 +28,22 @@ type contextFieldBox struct {
 }
 
 // EnsureContextFields pre-allocates the shared ContextField box on ctx if
-// not already present, and returns the resulting context. Called ONCE by
-// the request pipeline (today: adapters/nethttp's and adapters/chi's Serve
-// dispatch), BEFORE any attached Fn runs. Idempotent — safe to call more
-// than once on the same ctx chain.
-//
-// Events adapters (mqtt/mqtt5/zeromq) do not call this — their
-// security-shaped SubscribeMW/PublishMW Fns already get write access to
-// the decoded payload (*T) directly, serving the same cross-cutting-data
-// need ContextField serves for REST, via a different mechanism suited to
-// pub/sub's own Fn shape.
+// not already present, and returns the resulting context. Called ONCE per
+// request/message by the owning transport's dispatch entry point, BEFORE
+// any attached Fn runs — today: adapters/nethttp's and adapters/chi's
+// Serve dispatch (REST), and adapters/mqtt5/mqtt/zeromq's Subscribe/
+// Publish dispatch entry points (docs/roadmap/
+// declarative-middleware-layering.md's Rollout Phase B, Phase 3). The
+// mqtt5/mqtt adapters call this once per message (a fresh box each time,
+// since the outer ctx captured once per subscription never itself carries
+// a box); zeromq calls it once per subscription instead, reusing ONE box
+// across that subscription's whole message loop — safe either way, since
+// [Middleware.SetContextFieldFromIn]/[Middleware.SetContextFieldFromOut]
+// unconditionally overwrite their own key on every successfully-decoded
+// message (the middleware handler list is static per channel, so every
+// message takes the identical dispatch path) — a reused box never
+// surfaces a stale value left over from a prior message. Idempotent —
+// safe to call more than once on the same ctx chain.
 func EnsureContextFields(ctx context.Context) context.Context {
 	if _, ok := ctx.Value(ctxFieldBoxKey{}).(*contextFieldBox); ok {
 		return ctx

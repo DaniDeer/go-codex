@@ -326,9 +326,29 @@ type ConnectError struct {
 	Op string
 	// Err is the underlying network or protocol error.
 	Err error
+	// ReasonCode is the CONNACK reason code (e.g. 0x86 "Bad username or
+	// password", 0x87 "Not authorized") when Op=="connect" and a CONNACK
+	// was actually received from the broker — populated from the
+	// [paho.Connack] paho.golang's Client.Connect already returns
+	// (previously discarded). Zero value when no CONNACK was ever
+	// received (a "dial"-stage failure, or a "connect"-stage failure
+	// before any CONNACK arrived) — callers must not treat a zero
+	// ReasonCode as "success", only as "no CONNACK reason available."
+	//
+	// docs/roadmap/declarative-middleware-layering.md's Rollout Phase B:
+	// closes a confirmed gap where the structured CONNACK reason was
+	// silently discarded, leaving only a generic wrapped error string.
+	ReasonCode byte
+	// ReasonString is the CONNACK's human-readable reason, when the
+	// broker supplied one (via [paho.ConnackProperties.ReasonString]) —
+	// empty when absent or when no CONNACK was received.
+	ReasonString string
 }
 
 func (e ConnectError) Error() string {
+	if e.ReasonString != "" {
+		return fmt.Sprintf("mqtt5 connect %s: %v (reason code %#x: %s)", e.Op, e.Err, e.ReasonCode, e.ReasonString)
+	}
 	return fmt.Sprintf("mqtt5 connect %s: %v", e.Op, e.Err)
 }
 
@@ -337,10 +357,17 @@ func (e ConnectError) Unwrap() error { return e.Err }
 
 // LogValue implements [slog.LogValuer] for structured logging.
 func (e ConnectError) LogValue() slog.Value {
-	return slog.GroupValue(
+	attrs := []slog.Attr{
 		slog.String("op", e.Op),
 		slog.Any("err", e.Err),
-	)
+	}
+	if e.ReasonCode != 0 {
+		attrs = append(attrs, slog.Int("reason_code", int(e.ReasonCode)))
+	}
+	if e.ReasonString != "" {
+		attrs = append(attrs, slog.String("reason_string", e.ReasonString))
+	}
+	return slog.GroupValue(attrs...)
 }
 
 // PipelineNoResponseError is returned by [AsPipelineFunc] when [stream.Collect]

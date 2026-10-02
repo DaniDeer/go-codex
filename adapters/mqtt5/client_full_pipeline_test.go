@@ -272,7 +272,7 @@ func TestClientSubscribe_MiddlewareDispatch_RunsBeforeHandler(t *testing.T) {
 	emw := events.NewMiddleware(decl)
 	sub := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
 		WithSubscribe(events.Subscribe{Summary: "test"})
-	sub = events.Transform(sub, emw, func(_ context.Context, _ *sensorReading, _ mqttFullPipelineIn) error {
+	sub = sub.SubscribeMW(emw, func(_ context.Context, _ *sensorReading, _ mqttFullPipelineIn) error {
 		order = append(order, "middleware")
 		return nil
 	})
@@ -605,7 +605,7 @@ func TestClientPublish_MiddlewareDispatch_ContributesPropertyVar(t *testing.T) {
 			func(o *mqttFullPipelineOut, v string) { o.Marker = v }))
 	pub := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
 		WithPublish(events.Publish{Summary: "test"})
-	pub = events.ClientTransform(pub, emw, func(_ context.Context, _ sensorReading) (mqttFullPipelineOut, error) {
+	pub = pub.PublishMW(emw, func(_ context.Context, _ sensorReading) (mqttFullPipelineOut, error) {
 		return mqttFullPipelineOut{Marker: "from-middleware"}, nil
 	})
 

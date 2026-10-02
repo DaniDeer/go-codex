@@ -930,6 +930,69 @@ func TestAsyncAPISpec_SecuritySchemeCollision_LastRegisteredWins(t *testing.T) {
 	}
 }
 
+// TestAddConnectSecurityScheme_AppearsInAsyncAPISpec proves a
+// connection-level scheme registered via AddConnectSecurityScheme is
+// aggregated into components/securitySchemes even with NO channel
+// referencing it directly (docs/roadmap/declarative-middleware-
+// layering.md's Rollout Phase B — Phase 4, connection-level auth).
+func TestAddConnectSecurityScheme_AppearsInAsyncAPISpec(t *testing.T) {
+	b := events.NewClient(events.WithInfo(testInfo))
+	b.AddConnectSecurityScheme("brokerAuth", route.SecurityScheme{Type: route.SecuritySchemeHTTP, Scheme: "basic"})
+	b.AddServer("mqtt5", events.Server{URL: "mqtts://broker:8883", Protocol: "mqtt5",
+		Security: []route.SecurityRequirement{route.Require("brokerAuth")}})
+
+	_, err := events.NewChannel[userEvent]("user/created", userEventCodec).
+		WithSubscribe(events.Subscribe{Summary: "User created"}).Handle(b)
+	if err != nil {
+		t.Fatalf("Register user/created: %v", err)
+	}
+
+	doc, err := b.AsyncAPISpec()
+	if err != nil {
+		t.Fatalf("AsyncAPISpec: %v", err)
+	}
+	yamlBytes, err := doc.MarshalYAML()
+	if err != nil {
+		t.Fatalf("MarshalYAML: %v", err)
+	}
+	spec := string(yamlBytes)
+	if !strings.Contains(spec, "brokerAuth:") {
+		t.Errorf("want 'brokerAuth' connection-level scheme in components/securitySchemes, got:\n%s", spec)
+	}
+	if !strings.Contains(spec, "scheme: basic") {
+		t.Errorf("want scheme: basic rendered, got:\n%s", spec)
+	}
+}
+
+// TestAddConnectSecurityScheme_ChannelCollision_LastRegisteredWins proves
+// a channel re-registering the IDENTICAL scheme name still wins on
+// collision (unchanged last-registered-wins policy, now a 3rd
+// contributor alongside AddSchema/AddServer).
+func TestAddConnectSecurityScheme_ChannelCollision_LastRegisteredWins(t *testing.T) {
+	b := events.NewClient(events.WithInfo(testInfo))
+	b.AddConnectSecurityScheme("shared", route.SecurityScheme{Type: route.SecuritySchemeHTTP, Scheme: "basic"})
+
+	_, err := events.NewChannel[userEvent]("user/created", userEventCodec,
+		events.WithSecurityScheme("shared", events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")})).
+		WithSubscribe(events.Subscribe{Summary: "User created"}).Handle(b)
+	if err != nil {
+		t.Fatalf("Register user/created: %v", err)
+	}
+
+	doc, err := b.AsyncAPISpec()
+	if err != nil {
+		t.Fatalf("AsyncAPISpec: %v", err)
+	}
+	yamlBytes, err := doc.MarshalYAML()
+	if err != nil {
+		t.Fatalf("MarshalYAML: %v", err)
+	}
+	spec := string(yamlBytes)
+	if !strings.Contains(spec, "scheme: bearer") {
+		t.Errorf("want channel-registered (bearer) scheme to win collision over the connection-level one, got:\n%s", spec)
+	}
+}
+
 func TestBuilder_AddGlobalSecurity_populatesChannelHandleGlobalSecurity(t *testing.T) {
 	b := events.NewClient(events.WithInfo(testInfo))
 	b.AddGlobalSecurity(route.Require("bearer"))
@@ -2958,5 +3021,28 @@ func TestCheckCoverage_fails_withoutMatchingSubscribeMW(t *testing.T) {
 	}
 	if covErr.Scheme != "bearerAuth" {
 		t.Errorf("Scheme = %q, want %q", covErr.Scheme, "bearerAuth")
+	}
+}
+
+// TestCheckCoverage_passes_withBoundSubscribeMW is
+// TestCheckCoverage_passes_withMatchingSubscribeMW's Rollout-Phase-B
+// mirror — proves CheckCoverage recognizes a BOUND-attached (via
+// SubscribeMW's new codec-backed dispatch path, built from a generalized
+// events.SecurityMiddleware[In,Out]) Security handler as satisfying a
+// declared requirement, not just the legacy ServerImplementation path.
+func TestCheckCoverage_passes_withBoundSubscribeMW(t *testing.T) {
+	mw := events.SecurityMiddleware[mdTestIn, mdTestOut]("bearerAuth",
+		events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, []string{"subscribe:sensors"})
+
+	sub := events.NewChannel[userEvent]("sensors/data", userEventCodec).
+		WithSubscribe(events.Subscribe{}).
+		SubscribeMW(mw, func(ctx context.Context, msg *userEvent, in mdTestIn) error { return nil })
+
+	handle, err := sub.Handle(nil)
+	if err != nil {
+		t.Fatalf("expected Handle to succeed with a BOUND SubscribeMW attached, got error: %v", err)
+	}
+	if len(handle.MiddlewareHandlers) != 1 {
+		t.Fatalf("len(MiddlewareHandlers) = %d, want 1", len(handle.MiddlewareHandlers))
 	}
 }

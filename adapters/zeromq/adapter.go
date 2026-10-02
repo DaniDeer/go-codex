@@ -344,6 +344,14 @@ func subscribeWithHandle[T any](
 	opts SubscribeOptions[T],
 	formats ...format.Format[T],
 ) error {
+	// docs/roadmap/declarative-middleware-layering.md's Rollout Phase B:
+	// pre-allocates the shared ContextField box ONCE for this
+	// subscription's whole lifetime (idempotent; zeromq's loop reuses ONE
+	// ctx across every received message already, unlike mqtt5/mqtt's
+	// per-message context.WithValue wrapping — a Subscribe-side
+	// Middleware.SetContextFieldFromIn link overwrites the box fresh on
+	// EVERY message's own dispatch below, so reuse here is safe).
+	ctx = middleware.EnsureContextFields(ctx)
 	obs := opts.Observer
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
@@ -746,6 +754,12 @@ func publish[T any](
 	opts PublishOptions[T],
 	formats ...format.Format[T],
 ) error {
+	// docs/roadmap/declarative-middleware-layering.md's Rollout Phase B:
+	// pre-allocates the shared ContextField box (idempotent, mirrors
+	// adapters/nethttp/chi's identical per-call site) so a Publish-side
+	// Middleware.SetContextFieldFromOut link has somewhere to publish
+	// into, BEFORE DispatchPublishMiddlewareHandlers below ever runs.
+	ctx = middleware.EnsureContextFields(ctx)
 	obs := opts.Observer
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)

@@ -19,11 +19,21 @@
 > `HandleMW`/`ClientMW` via reflection-based shape detection
 > (`docs/roadmap/declarative-middleware-layering.md`'s Rollout Phase A).
 > Every `rest.Transform(...)`/`rest.ClientTransform(...)` code sample
-> below is HISTORICAL — accurate for `api/events`/`api/reqreply` (Phase
-> B/C, not yet implemented) but no longer for `api/rest`. See Addendum 4
-> for the current `api/rest` mechanism, the `GrantedScopes` Security
-> convention, and the `codex.EncodeMergeVars`/omit-empty constructor
-> family.
+> below is HISTORICAL — accurate for `api/reqreply` (Phase C, not yet
+> implemented) but no longer for `api/rest`. See Addendum 4 for the
+> current `api/rest` mechanism, the `GrantedScopes` Security convention,
+> and the `codex.EncodeMergeVars`/omit-empty constructor family.
+>
+> **Addendum 5 below further UPDATES `api/events` specifically**
+> (Rollout Phase B): `events.Transform`/`events.ClientTransform` were
+> REMOVED the SAME way — folded into `Subscriber.SubscribeMW`/
+> `Publisher.PublishMW`. Every `events.Transform(...)`/
+> `events.ClientTransform(...)` code sample below is now ALSO
+> HISTORICAL — accurate for `api/reqreply` only (Phase C, not yet
+> implemented). See Addendum 5 for events' own version of the
+> reflection-based shape detection (a genuine extra wrinkle vs. REST's),
+> the generalized `events.SecurityMiddleware[In,Out]`, and
+> `Client.AddConnectSecurityScheme`.
 >
 > **Forward-looking note (not a status change):**
 > [Feature](d-0006-protocol-native-capabilities.md) (a broader
@@ -2125,3 +2135,140 @@ references to `rest.Transform`/`rest.ClientTransform`/`rest.TransformSSE`/
 `rest.ClientTransformSSE` (this doc's own code samples above are the
 historical exception, left as-is per this doc's standing "frozen design
 record" convention).
+
+## Addendum 5: `api/events`'s `Transform`/`ClientTransform` folded into `SubscribeMW`/`PublishMW` — unified reflection dispatch (Rollout Phase B)
+
+Absorbs the EVENTS-specific outcome of `docs/roadmap/declarative-
+middleware-layering.md`'s Rollout Phase B (that roadmap doc stays in
+`docs/roadmap/` — Phase C, `api/reqreply`, remains open). Mirrors
+Addendum 4's REST change in structure and intent, applied to events' own
+`Transform`/`ClientTransform`/`SubscribeMW`/`PublishMW` — every code
+sample above showing `events.Transform(subscriber, mw, fn)`/
+`events.ClientTransform(publisher, mw, fn)` is now HISTORICAL.
+
+### What changed
+
+`Subscriber.SubscribeMW`/`Publisher.PublishMW` — previously the
+LEGACY-only attachment methods (`middleware.Middleware`/`nil`, building a
+`middleware.ServerImplementation`/`ClientImplementation`
+unconditionally) — now ALSO recognize a codec-backed `Middleware[In,Out]`
+and dispatch it through the SAME channel-BOUND mechanism `Transform`/
+`ClientTransform` used to provide, via `fn`'s REFLECTED signature (not
+`mw`'s type):
+
+- `SubscribeMW`'s bound shape: `func(ctx context.Context, msg *T, in In) error` —
+  3-in/1-out, 2nd param type `*T`. **A subtlety events has that REST does
+  NOT**: `adapters/mqtt`'s/`adapters/zeromq`'s OWN legacy subscribe-
+  security Fn shape — `func(ctx, *T, []route.SecurityRequirement) error`
+  — shares the EXACT SAME 3-in/1-out arity AND the EXACT SAME 2nd-param
+  type (`*T`) as the bound shape; REST's "2nd param differs" check alone
+  is insufficient here. Distinguished instead by the 3RD param's type:
+  legacy is always `[]route.SecurityRequirement`, the bound shape's is
+  `In` (confirmed via an actual test exercising this exact edge case —
+  not just code review). `adapters/mqtt5`'s OWN legacy subscribe-security
+  Fn (`func(ctx, *pahomqtt5.Publish, *T) (map[string][]string, error)`)
+  already differs in both 2nd-param type AND arity (1-out vs. 2-out), so
+  needs no special-casing.
+- `PublishMW`'s bound shape: `func(ctx context.Context, msg T) (Out, error)` —
+  2-in/2-out, `T` BY VALUE. EVERY confirmed legacy publish-security Fn
+  shape (`adapters/mqtt5`: 3-in/2-out; `adapters/mqtt`/`adapters/zeromq`:
+  3-in/1-out) is 3-in, distinguished from the bound shape's 2-in by arity
+  ALONE — no param-type inspection needed here, simpler than Subscribe's
+  case.
+
+`MiddlewareHandler`/`ClientMiddlewareHandler` gained a `Satisfies
+[]string` field (mirroring REST's identical Phase A addition), populated
+via ONE shared pair of builders (`buildMiddlewareHandlerAny`/
+`buildClientMiddlewareHandlerAny`) reused by BOTH the agnostic (`.Use()`)
+AND bound (`SubscribeMW`/`PublishMW`) paths — a DRY consolidation REST's
+OWN Phase A also converged on. **One events-specific wrinkle this
+consolidation surfaced, caught via an actual test failure**:
+`dualAttached` (D7's ambiguous-dual-attachment marker) must NEVER be set
+inside the shared builder, since `mw.isBundled()` is naturally true for a
+LEGITIMATE agnostic-only attachment (bundled IS the whole point of that
+style) — setting it there unconditionally misfired D7 against pure
+agnostic usage. Fixed: only the BOUND call sites (`SubscribeMW`/
+`PublishMW`'s bound branch) set `dualAttached` explicitly, after calling
+the shared builder.
+
+`events.CheckCoverage` gained a 4th parameter (`handlers
+[]MiddlewareHandler`) to check BOTH lists — identical to REST's Phase A
+extension. `checkEventsMiddlewareNameUniquenessAndAttachment` (D6(b)/D7)
+needed ZERO changes — confirmed already generic over both attachment
+styles, since it already took `[]MiddlewareHandler`/
+`[]ClientMiddlewareHandler` directly.
+
+### Security generalized the SAME way — `GrantedScopes`, applied from the start
+
+`events.SecurityMiddleware[In, Out any]` is now GENERALIZED over In/Out
+(was a hardcoded `Middleware[struct{}, struct{}]`) — `InCodec`/`OutCodec`
+default to `codex.Struct[In]()`/`codex.Struct[Out]()` from the FIRST
+version shipped, not discovered as a panic later the way REST's
+generalization was. Security dispatches through the SAME
+`SubscribeMW`/`PublishMW` mechanism as any other codec-backed middleware
+— no separate `httpsecurity`-equivalent retirement was needed for events,
+since `adapters/mqtt5/adapter.go`'s existing `DispatchSubscribeMiddlewareHandlers`/
+`DispatchPublishMiddlewareHandlers` calls were ALREADY the ONE AND ONLY
+per-message dispatch pipeline (confirmed no REST-style duplicate-path
+risk — events never had a separate reflect-based `Attach` loop vs. a
+`ports`-facing generic one the way REST's `serve.go`/`handlerFunc` split
+did).
+
+### Phase 1 generality test — `DecodeLayer`/`EncodeLayer` proven on a SECOND consumer
+
+`api/events/transform.go`'s `buildDecodeIn`/`buildEncodeOut` were
+migrated from hand-written sequential `codex.DecodeVars`/`EncodeVars`/
+`EncodeMergeVars` calls onto the SAME shared `middleware.DecodeLayer`/
+`EncodeLayer` mechanism REST's Phase A extracted — confirming the
+mechanism generalizes to events' 2-axis (topic, property) shape, not just
+REST's 3-axis (header, cookie, query) one. Zero behavior change,
+confirmed via the full pre-existing test suite passing unchanged before
+any other Phase B work began.
+
+### `SetContextFieldFromIn`/`SetContextFieldFromOut` — the SAME `ContextFieldSetter` fix, zero NEW implementation needed
+
+`events.Middleware[In,Out]` gained `SetContextFieldFromIn`/
+`SetContextFieldFromOut`, dispatched from `buildDecodeIn`/`buildEncodeOut`
+respectively — confirmed requiring ZERO changes to
+`middleware.ContextFieldSetter`/`EnsureContextFields` themselves (both
+were ALREADY `V`-free and package-agnostic, per Addendum 4's own fix).
+**`SetContextFieldFromOut` is Publish-only** — events' Subscribe
+(`WithReceive`) produces no `Out` at all (the one confirmed, genuine
+asymmetry vs. REST/reqreply), so this method is only ever meaningfully
+called on a Publish-side `Middleware`. `middleware.EnsureContextFields`
+is now wired into `adapters/mqtt5`/`mqtt`/`zeromq`'s per-message
+Subscribe/Publish dispatch — fully greenfield (confirmed zero prior
+usage anywhere in events' adapters).
+
+### Connection-level auth — `Client.AddConnectSecurityScheme`, closing the spec-registration gap
+
+A NEW, small, additive method — `Client.AddConnectSecurityScheme(name
+string, scheme route.SecurityScheme) *Client` — registers a
+connection-level scheme directly into `components/securitySchemes`,
+independent of any channel's own declaration, closing a confirmed gap:
+`AsyncAPISpec()` previously aggregated `securitySchemes` ONLY from
+per-channel declarations, meaning a scheme referenced solely via a
+`Server.Security` list (never by any individual channel) could not be
+spec-registered at all. Registered BEFORE the per-channel aggregation
+loop (same last-registered-wins collision policy, now a 3rd contributor
+alongside `AddSchema`/`AddServer`). `adapters/mqtt5.ConnectError` gained
+`ReasonCode byte`/`ReasonString string` fields, populated from the
+`*paho.Connack` `Connect` already received from the broker on a
+CONNECT-time rejection (previously silently discarded — only a generic
+wrapped error string survived); `ConnectOptions` gained an `Observer
+stats.Observer` field, reporting `RecordSecurityRejection("connect",
+...)` on an auth-rejected CONNACK (reason code `>= 0x80`), mirroring
+`NewSecuredClient`'s existing `WithObserver` pattern.
+
+### Validation
+
+`go build ./...`/`go vet ./...` clean; `go test ./...` clean across
+every package; the full `examples/*/` sweep re-run to exit 0; a
+repo-wide grep confirmed zero remaining non-historical references to
+`events.Transform`/`events.ClientTransform` (this doc's own code samples
+above are the historical exception, per this doc's standing "frozen
+design record" convention); the 2 real, shipping motivating examples
+(`examples/events-api/routes/routes.go`'s `APIKeyAuthMW`,
+`examples/api-events/main.go`'s `bearerAuthMW`) were migrated onto the
+generalized `SecurityMiddleware[In, Out]` signature early, per this
+doc's own established "migrate the real motivating case early" discipline.

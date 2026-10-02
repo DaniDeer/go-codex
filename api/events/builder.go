@@ -150,16 +150,31 @@ func FromSecurityScheme(schemeName string, scheme SecurityScheme, scopes []strin
 }
 
 // SecurityMiddleware is [FromSecurityScheme]'s codec-backed-family
-// equivalent — builds a [Middleware][struct{}, struct{}] carrying ONLY a
-// [middleware.SecurityDeclaration] (In=Out=struct{}, no var-boundary to
-// decode), attachable via the SAME .Use(...)/SubscribeMW(...)/
-// PublishMW(...) vocabulary as any other codec-backed middleware. Part of
-// the middleware-consolidation effort
-// (docs/design/d-0003-codec-declared-middlewares.md) folding Security into the
-// codec-backed family instead of the legacy [middleware.Middleware] type.
-func SecurityMiddleware(schemeName string, scheme SecurityScheme, scopes []string) Middleware[struct{}, struct{}] {
-	return NewMiddleware[struct{}, struct{}](middleware.Declaration[struct{}, struct{}]{
+// equivalent, GENERALIZED over In/Out (docs/roadmap/declarative-
+// middleware-layering.md's Rollout Phase B, mirroring
+// `rest.SecurityMiddleware`'s identical Phase A generalization) — builds a
+// [Middleware][In, Out] carrying a [middleware.SecurityDeclaration],
+// attachable via the SAME .Use(...)/SubscribeMW(...)/PublishMW(...)
+// vocabulary as any other codec-backed middleware. A non-`struct{}`
+// In/Out lets a Security-carrying middleware ALSO carry a real credential
+// payload (e.g. a Bearer token), dispatched through SubscribeMW/PublishMW's
+// bound path — NOT via a 3-tuple return, via the `GrantedScopes
+// map[string][]string`-named conventional field on Out instead (see
+// `adapters/internal/httpsecurity`'s identical REST convention — events'
+// OWN adapters read this the SAME way, confirmed via
+// `adapters/mqtt5`/`mqtt`/`zeromq`'s existing CheckScopes integration).
+//
+// InCodec/OutCodec default to [codex.Struct[In]()]/[codex.Struct[Out]()]
+// (a safe, zero-field no-op codec) when In/Out are NOT explicitly
+// codec-backed by the caller — confirmed, applied FROM THE START this
+// time (Phase A's own carried-forward learning: shipping the naive
+// generalization first, THEN discovering a nil-codec panic the first time
+// a non-`struct{}` In/Out is actually validated, is avoidable).
+func SecurityMiddleware[In, Out any](schemeName string, scheme SecurityScheme, scopes []string) Middleware[In, Out] {
+	return NewMiddleware[In, Out](middleware.Declaration[In, Out]{
 		Name:     "declare-security:" + schemeName,
+		InCodec:  codex.Struct[In](),
+		OutCodec: codex.Struct[Out](),
 		Security: middleware.NewSecurityDeclaration(schemeName, scheme.SecurityScheme, scopes, scheme.Codec),
 	})
 }
@@ -1169,6 +1184,12 @@ type Client struct {
 	schemas        map[string]schema.Schema
 	topicCodec     *codex.Codec[string]
 	globalSecurity []route.SecurityRequirement
+	// connectSecuritySchemes holds every [Client.AddConnectSecurityScheme]
+	// registration — a connection-level security scheme referenced ONLY
+	// via a [Server.Security] list, never by any individual channel's own
+	// WithSecurityScheme declaration (docs/roadmap/declarative-middleware-
+	// layering.md's Rollout Phase B — Phase 4, connection-level auth).
+	connectSecuritySchemes map[string]route.SecurityScheme
 	// globalDeadLetter is the Client-level default [DeadLetter]
 	// declaration, set via [Client.AddGlobalDeadLetter]. nil when none is
 	// declared. Channels with no explicit DeadLetter opt inherit this.
@@ -1268,7 +1289,8 @@ func WithInfo(info Info) ClientOption {
 // without ever needing a spec.
 func NewClient(opts ...ClientOption) *Client {
 	c := &Client{
-		schemas: make(map[string]schema.Schema),
+		schemas:                make(map[string]schema.Schema),
+		connectSecuritySchemes: make(map[string]route.SecurityScheme),
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -1292,6 +1314,31 @@ func (c *Client) AddServer(name string, s Server) *Client {
 // channel configs but not inlined in any codec.
 func (c *Client) AddSchema(name string, s schema.Schema) *Client {
 	c.schemas[name] = s
+	return c
+}
+
+// AddConnectSecurityScheme registers name/scheme directly into
+// components/securitySchemes, independent of any channel's own
+// [Subscribe]/[Publish] security requirement — for a scheme used ONLY via
+// a [Server]'s connection-level [Server.Security] list (see [AddServer]),
+// never referenced by any individual channel's own Subscribe/Publish
+// requirements (docs/roadmap/declarative-middleware-layering.md's
+// Rollout Phase B — Phase 4, connection-level auth). Collision policy
+// matches every other registration on Client: last-registered-wins (no
+// error returned), consistent with [Client.AddSchema]/[Client.AddServer].
+//
+// Reuse the SAME scheme's NAME, unchanged, when later supplying real
+// credentials via the adapter's own attach-time mechanism — e.g.
+// mqtt5.Connect(ctx, brokerURL, mqtt5.ConnectOptions{Username, Password})
+// — closing the spec/runtime link via one reused declared value, not a
+// new shared mechanism:
+//
+//	client.AddConnectSecurityScheme("brokerAuth", route.SecurityScheme{Type: route.SecuritySchemeHTTP, Scheme: "basic"})
+//	client.AddServer("mqtt5", events.Server{URL: "mqtts://broker:8883", Protocol: "mqtt5",
+//	    Security: []route.SecurityRequirement{route.Require("brokerAuth")}})
+//	conn, router, err := mqtt5.Connect(ctx, "broker:8883", mqtt5.ConnectOptions{Username: user, Password: pass})
+func (c *Client) AddConnectSecurityScheme(name string, scheme route.SecurityScheme) *Client {
+	c.connectSecuritySchemes[name] = scheme
 	return c
 }
 
@@ -1664,7 +1711,15 @@ func applyEventsSecurityDeclarations(topic string, security *[]route.SecurityReq
 // attachment fails [Subscriber.Handle] with
 // [MissingSecurityMiddlewareError]; attaching a SubscribeMW whose
 // Satisfies names the scheme resolves it.
-func CheckCoverage(topic string, secReqs []route.SecurityRequirement, impls []middleware.ServerImplementation) error {
+// handlers (docs/roadmap/declarative-middleware-layering.md's Rollout
+// Phase B, mirroring rest.CheckCoverage's identical Phase A extension — a
+// SIGNATURE extension, not a storage merge: [ChannelHandle] already
+// carries Implementations and MiddlewareHandlers as two separate
+// exported fields) checks the SAME declared requirement against a
+// SubscribeMW/PublishMW-attached codec-backed [MiddlewareHandler], so a
+// Security scheme migrated onto the bound path is still correctly
+// recognized as covered.
+func CheckCoverage(topic string, secReqs []route.SecurityRequirement, impls []middleware.ServerImplementation, handlers []MiddlewareHandler) error {
 	for _, req := range secReqs {
 		for schemeName := range req {
 			satisfied := false
@@ -1672,6 +1727,14 @@ func CheckCoverage(topic string, secReqs []route.SecurityRequirement, impls []mi
 				if slices.Contains(impl.Satisfies, schemeName) {
 					satisfied = true
 					break
+				}
+			}
+			if !satisfied {
+				for _, h := range handlers {
+					if slices.Contains(h.Satisfies, schemeName) {
+						satisfied = true
+						break
+					}
 				}
 			}
 			if !satisfied {
@@ -2018,7 +2081,21 @@ func buildServerImplementation(mw middleware.RouteMiddleware, fn any) middleware
 // another. [Subscriber.Handle] copies the accumulated slice onto
 // [ChannelHandle.Implementations] verbatim. Mirrors [rest.Route.HandleMW]
 // exactly.
+//
+// docs/roadmap/declarative-middleware-layering.md's Rollout Phase B
+// (events' own Architecture-revision fold-in, mirroring Phase A's
+// identical REST change): when mw is a codec-backed [Middleware][In, Out]
+// AND fn matches the channel-BOUND shape (func(ctx, *T, In) error,
+// detected via [isBoundSubscribeMWShape] on fn's OWN reflected signature
+// — never mw's dynamic type, since a [SecurityMiddleware] value can ALSO
+// be used purely as a legacy credential-shape carrier), dispatch is now
+// folded in here directly — [Transform] remains available as an
+// equivalent, explicit-type-parameter alternative, not the only path.
 func (s Subscriber[T]) SubscribeMW(mw middleware.RouteMiddleware, fn any) Subscriber[T] {
+	if v, ok := mw.(eventsMiddlewareContributor); ok && isBoundSubscribeMWShape[T](fn) {
+		s.middlewareHandlers = append(slices.Clone(s.middlewareHandlers), v.applyBoundSubscriber(fn))
+		return s
+	}
 	s.impls = append(slices.Clone(s.impls), buildServerImplementation(mw, fn))
 	return s
 }
@@ -2084,7 +2161,19 @@ func synthesizeLegacySecurity(mw middleware.RouteMiddleware) (middleware.Middlew
 // another. [Publisher.Handle] copies the accumulated slice onto
 // [ChannelHandle.ClientImplementations] verbatim. Mirrors
 // [rest.Route.ClientMW] exactly.
+//
+// docs/roadmap/declarative-middleware-layering.md's Rollout Phase B: when
+// mw is a codec-backed [Middleware][In, Out] AND fn matches the
+// channel-BOUND shape (func(ctx, T) (Out, error), T BY VALUE — detected
+// via [isBoundPublishMWShape] on fn's OWN reflected signature, never mw's
+// dynamic type, mirroring [Subscriber.SubscribeMW]'s identical rule),
+// dispatch is folded in here directly — [ClientTransform] remains
+// available as an equivalent, explicit-type-parameter alternative.
 func (p Publisher[T]) PublishMW(mw middleware.RouteMiddleware, fn any) Publisher[T] {
+	if v, ok := mw.(eventsMiddlewareContributor); ok && isBoundPublishMWShape[T](fn) {
+		p.clientMiddlewareHandlers = append(slices.Clone(p.clientMiddlewareHandlers), v.applyBoundPublisher(fn))
+		return p
+	}
 	idx := len(p.clientImpls)
 	impl := middleware.ClientImplementation{Fn: fn}
 	if sc, ok := mw.(middleware.SecurityCarrier); ok {
@@ -2352,7 +2441,7 @@ func buildChannelHandle[T any](ch Channel[T], client *Client, role channelRole, 
 	}
 
 	if role == roleSubscribe {
-		if err := CheckCoverage(ch.topic, *securityField, h.Implementations); err != nil {
+		if err := CheckCoverage(ch.topic, *securityField, h.Implementations, h.MiddlewareHandlers); err != nil {
 			return nil, err
 		}
 	}
@@ -2922,6 +3011,15 @@ func (b *Client) AsyncAPISpec() (asyncapi.Document, error) {
 	}
 	for name, s := range b.schemas {
 		ab.AddSchema(name, s)
+	}
+	// connectSecuritySchemes (docs/roadmap/declarative-middleware-
+	// layering.md's Rollout Phase B — Phase 4, connection-level auth)
+	// registered FIRST, before the per-channel loop below — a channel
+	// re-registering the IDENTICAL name still wins on collision
+	// (unchanged last-registered-wins policy, now a 3rd contributor
+	// instead of 2).
+	for name, s := range b.connectSecuritySchemes {
+		ab.AddSecurityScheme(name, s)
 	}
 	// Aggregate SecuritySchemes from every registered channel's own
 	// [WithSecurityScheme] declarations (there is no builder-level

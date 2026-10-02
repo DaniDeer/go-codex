@@ -280,7 +280,12 @@ func makeSubscribeMessageHandler[T any](
 ) func(*pahomqtt5.Publish) {
 	return func(msg *pahomqtt5.Publish) {
 		start := time.Now()
-		msgCtx := context.WithValue(ctx, contextKey{}, msg)
+		// docs/roadmap/declarative-middleware-layering.md's Rollout Phase
+		// B: pre-allocates the shared ContextField box (idempotent, mirrors
+		// adapters/nethttp/chi's identical per-request call) so a
+		// Subscribe-side Middleware.SetContextFieldFromIn link has
+		// somewhere to publish into.
+		msgCtx := middleware.EnsureContextFields(context.WithValue(ctx, contextKey{}, msg))
 		if msg.Properties != nil && len(msg.Properties.User) > 0 {
 			msgCtx = context.WithValue(msgCtx, userPropsKey{}, msg.Properties.User)
 		}
@@ -860,6 +865,12 @@ func publish[T any](
 	opts PublishOptions[T],
 	formats ...format.Format[T],
 ) error {
+	// docs/roadmap/declarative-middleware-layering.md's Rollout Phase B:
+	// pre-allocates the shared ContextField box (idempotent, mirrors
+	// adapters/nethttp/chi's identical per-call site) so a Publish-side
+	// Middleware.SetContextFieldFromOut link has somewhere to publish
+	// into, BEFORE DispatchPublishMiddlewareHandlers below ever runs.
+	ctx = middleware.EnsureContextFields(ctx)
 	obs := opts.Observer
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)

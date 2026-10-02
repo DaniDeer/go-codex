@@ -31,7 +31,7 @@ func TestPublish_ClientMiddlewareFnError_NeverConsultsErrorChannel(t *testing.T)
 			},
 		),
 	).WithPublish(events.Publish{})
-	pub = events.ClientTransform(pub, mw, func(ctx context.Context, msg sensorReading) (mqttMdOut, error) {
+	pub = pub.PublishMW(mw, func(ctx context.Context, msg sensorReading) (mqttMdOut, error) {
 		return mqttMdOut{}, fnErr
 	})
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
