@@ -195,6 +195,24 @@ reason. The one confirmed, genuine asymmetry — `api/events`' Subscribe (`WithR
 `Out` at all, unlike REST/reqreply's fully symmetric shape — is covered
 in depth in the Phase 3 section below ("Package-by-package verdict").
 
+**A second, separate clarification (Phase B model-review round): section
+1's closing "fully bidirectional" paragraph is REST/reqreply-specific
+framing that does NOT carry over literally to events.** That paragraph
+describes a TRUE request/response duplex — one conversation, two ends,
+where the server's `Out` and the client's `Out` are the SAME wire
+payload, produced by one side and consumed by the other. **Events has no
+such duplex on a single channel** — Subscribe and Publish are
+independent message streams (even on the same topic), not a paired
+request+response, so there is no analogous "produced on one side,
+consumed on the other" relationship between a channel's Subscribe `In`
+and its Publish `Out`. Reusing ONE declared `events.Middleware[In,Out]`
+value across a `SubscribeMW` attachment and a `PublishMW` attachment
+(same or different channel) remains FULLY supported — via the
+ALREADY-SHIPPED `.Use()`-style cross-attachment reuse every agnostic
+middleware already gets — just without REST's "shared wire payload"
+relationship, since there is no single conversation to share in the
+first place.
+
 ### 6. Summary: what goes where, what's codec-declared, what reaches spec
 
 A consolidated wrap-up of sections 1–5 above, for quick reference.
@@ -555,6 +573,24 @@ func EncodeLayer[T any](
 ) ([]map[string]string, error) // one map per axis, same order as axes
 ```
 
+> **Implementation note (Phase B model-review round) — the ABOVE sketch
+> is illustrative only; the ACTUAL shipped `middleware/layer.go`
+> (Rollout Phase A) is simpler and SIGNATURE-DIFFERENT, confirmed via
+> code. Phase B must call the REAL functions, not this sketch:**
+> ```go
+> type Axis[T any] struct { Fields []codex.FieldCodec[T]; Vars map[string]string }
+> func DecodeLayer[T any](axes []Axis[T], wrapErr func(err error) error) (T, error)
+> func EncodeLayer[T any](v T, axisFields [][]codex.FieldCodec[T], wrapErr func(err error) error) ([]map[string]string, error)
+> ```
+> No `name`/`codec` parameters exist on either function — codec
+> validation (`mw.InCodec.Validate(in)`/`mw.OutCodec.Validate(out)`)
+> happens OUTSIDE `DecodeLayer`/`EncodeLayer`, inside each package's OWN
+> `buildDecodeIn`/`buildEncodeOut` (confirmed via
+> `api/rest/transform.go`) — `DecodeLayer`/`EncodeLayer` themselves are
+> PURELY the axis-iteration mechanism, nothing else. `Axis`/`AxisVars`
+> were also merged into ONE struct (`Axis[T]{Fields, Vars}`), not kept
+> as two separate types as sketched above.
+
 Each package's OWN `buildDecodeIn`/`buildEncodeIn`/`buildEncodeOut`/
 `buildDecodeOut` becomes a THIN wrapper: supply ITS OWN axis definitions
 (REST: header/cookie/query; events/reqreply: topic/property) and ITS OWN
@@ -665,13 +701,24 @@ already prefers typed errors + `errors.As`, per its own established
 "Six mandatory requirements" convention — a formal Either/Result
 algebraic type would be a foundational, un-idiomatic departure for
 little real benefit, since `(T, error)` already IS go-codex's Either).
-**Folded into Phase 1's scope as an open design decision** (below):
-should `middleware.DecodeLayer`'s dispatch across STACKED layers also
-accumulate every layer's error (extending `ValidationErrors`' existing
-precedent upward from "fields within an axis" to "layers within a
-stack"), or is today's fail-fast-across-layers behavior deliberate and
-should stay? Not pre-decided — a real behavior change either way,
-needing its own confirmation before Phase 1 ships.
+**RESOLVED (Phase B model-review round): fail-fast-across-layers,
+confirmed as what Phase A actually shipped — not left undecided.**
+`rest.DispatchMiddlewareHandlers` returns immediately on the first
+STACKED layer's `DecodeIn`/Fn error, exactly as described above. **One
+additional confirmed level this round, not previously stated**:
+`middleware.DecodeLayer`'s real implementation (`middleware/layer.go`)
+is ALSO fail-fast ACROSS AXES WITHIN one layer (header fails → cookie/
+query never attempted) — a third, finer-grained level the original
+framing above didn't address (it only contrasted "layers across a
+stack" vs. "fields within one axis's own `DecodeVars` call," leaving
+"axes within one layer" unstated). All 3 levels are now confirmed:
+fields-within-an-axis ACCUMULATE (`ValidationErrors`, unchanged);
+axes-within-a-layer and layers-within-a-stack are BOTH fail-fast. Not a
+remaining design choice — **directly actionable for Phase B**:
+`events.DispatchSubscribeMiddlewareHandlers`/
+`DispatchPublishMiddlewareHandlers` must match this SAME confirmed
+fail-fast behavior at every level for consistency, not re-litigate the
+choice during implementation.
 
 Note: literally reusing `forge.Function[In,Out]` as the middleware step
 type itself was explicitly considered and rejected — it carries a
@@ -1626,6 +1673,77 @@ Phase C (`api/reqreply`):
    analogous gap once events/reqreply gain their own `HandleMW`-fold-in
    equivalent — do not assume parity with the reflect-based `Attach`/
    `Serve` path without checking each ports adapter individually.
+8. **Confirmed, events-specific: `adapters/mqtt5/adapter.go`'s
+   Subscribe/Publish dispatch is the ONE AND ONLY per-message pipeline
+   for events — no Gap-1-style duplicate-dispatch-path risk exists.**
+   Unlike REST's `Server.Attach`'s reflect-based `serve.go` vs. the
+   SEPARATE `handlerFunc`/`sseHandlerFunc` used by `ports` adapters (2
+   independent implementations of the same pipeline that silently
+   drifted apart), `adapters/mqtt5/adapter.go` already dispatches
+   `MiddlewareHandlers`/`ClientMiddlewareHandlers` generically via the
+   existing `Agnostic bool` field, reused identically regardless of
+   consumer. Phase B's bound-dispatch handlers will be picked up
+   automatically by this SAME call site — confirmed, no second
+   ports-adapter-specific wiring pass needed for events.
+9. **Confirmed, events-specific: shape-detection (fn signature, not
+   `mw`'s dynamic type) must apply to events' fold-in from the start,
+   not be rediscovered via a failing test.** `events.SubscribeMW`/
+   `PublishMW` already share REST's PRE-Phase-A pattern exactly —
+   unconditional `buildServerImplementation(mw, fn)`, legacy
+   `middleware.Middleware`+`ServerImplementation.Fn` shape — meaning
+   once `events.SecurityMiddleware` is generalized to `[In,Out]`, it can
+   ALSO be used purely as a legacy credential-shape carrier, the EXACT
+   same ambiguity Phase A found via `examples/go-edge-models`'s real
+   `basicAuthMw`. Events' fold-in must use the SAME `fn`-signature
+   detection technique (`isBoundHandleMWShape`'s events equivalent) from
+   day one.
+10. **Confirmed, events-specific: spec metadata is ALREADY bundled
+    directly on `MiddlewareHandler` — simpler than REST, not a gap.**
+    REST's `applyAgnosticRoute`/`applyBoundRoute` append to TWO separate
+    builder fields (`rb.middlewareHandlers` AND
+    `rb.middlewareSpecContributions`). Events' `MiddlewareHandler` struct
+    (`api/events/transform.go`) already carries its OWN
+    `propertyParams []PropertyParam` field directly — no parallel
+    spec-contribution slice exists or is needed. Phase B's new
+    `applyBoundSubscriber`/`applyBoundPublisher` methods (events' mirror
+    of REST's `applyBoundRoute`/`applyBoundClientRoute`) only need to
+    append ONE handler value each, `propertyParams` populated inline.
+11. **Confirmed, events-specific: `checkEventsMiddlewareNameUniquenessAndAttachment`
+    (D6(b)/D7) is ALREADY generic over both attachment styles — no
+    change needed, unlike `CheckCoverage`.** It already takes
+    `[]MiddlewareHandler`/`[]ClientMiddlewareHandler` directly and
+    doesn't care how a handler was built — confirmed it will keep
+    working unchanged once `SubscribeMW`/`PublishMW` populate these via
+    the new bound path. Only `events.CheckCoverage` (a DIFFERENT
+    function — the Security-coverage check) needs the SAME signature
+    extension `rest.CheckCoverage` got in Phase A (a `handlers
+    []MiddlewareHandler` parameter, not a storage merge).
+12. **Confirmed, events-specific: the cross-cutting `EncodeMergeVars`/
+    omit-empty-constructor work is ALREADY DONE for events — not a Phase
+    B deliverable.** `api/events/builder.go`/`property_param.go` already
+    use `codex.EncodeMergeVars` for property merge fields and already
+    have `NewOmitEmptyPropertyParam` (shipped as part of Phase A's
+    cross-package Level-1 step, since that primitive was never
+    REST-specific). Topic vars correctly still use plain
+    `codex.EncodeVars` (no omit-empty — topic vars are never optional,
+    mirrors REST's path vars). Phase B's own remaining mechanism work is
+    narrower than it might first appear: migrating
+    `buildDecodeIn`/`buildEncodeIn`/`buildEncodeOut`/`buildDecodeOut`'s
+    INTERNAL implementation onto `middleware.DecodeLayer`/`EncodeLayer`
+    (confirmed still using hand-written sequential
+    `codex.DecodeVars`/`EncodeVars`/`EncodeMergeVars` calls per axis
+    today) — the EXTERNAL `EncodeMergeVars`/omit-empty surface is
+    already fully shared across all 3 packages.
+13. **Real migration targets identified for events — migrate early, per
+    learning #5 above.** `examples/events-api/routes/routes.go`'s
+    `APIKeyAuthMW` and `examples/api-events/main.go`'s `bearerAuthMW` are
+    REAL, shipping uses of `events.SecurityMiddleware` attached via
+    `.Use(mw).SubscribeMW(&mw, implFn)` — the exact legacy-shape pattern
+    that will need migrating onto the new bound path (or confirmed to
+    keep working via the legacy branch) once the fold-in ships. Schedule
+    migrating these EARLY in Phase B's implementation, mirroring
+    `examples/go-edge-models`'s role for Phase A, rather than discovering
+    a real-world incompatibility late.
 
 ### Learnings from Rollout Phase B (for Phase C)
 
@@ -1963,7 +2081,7 @@ value to the handler, so the agnostic `.Use(mw.WithSend(...))` style
 ships — if Phase 3 is deferred, Phase 2 should note this as an interim
 trade-off (see new Open design decision below).
 
-### Open design decisions for Phase 3 (NOT yet resolved — genuinely new, unlike Phase 1/2's)
+### Design decisions for Phase 3 — all 4 RESOLVED (were "NOT yet resolved — genuinely new, unlike Phase 1/2's")
 
 - **Sequencing: does Phase 2 need `*Req`/`*T` enrichment access for
   Security if Phase 3 is deferred or ships later? — RESOLVED by the
@@ -1994,21 +2112,40 @@ trade-off (see new Open design decision below).
   wrong direction for events, defeating the whole point of catching the
   events-Subscribe case at compile time); a single method overloaded via
   Go's type system (not possible — Go has no function overloading).
-- **Does `ContextField`'s existing shared-mutable-box implementation
-  need any change to support reqreply/events' dispatch models**, or does
-  `EnsureContextFields` just need a new call site in each adapter,
-  reusing the box as-is? Needs a close read of reqreply's/events'
-  context-propagation chain during implementation — not yet spiked.
-- **Should `SetContextFieldFromIn`'s derivation-at-the-codec-level requirement
-  (for events' Subscribe specifically) be documented as a design
-  constraint up front, or should events eventually gain its OWN
-  post-Fn "Out-equivalent" return channel** (a `WithReceive(fn func(ctx,
-  In) (SomeNewType, error))` signature change) to close this asymmetry
-  properly instead of working around it? The latter is a BREAKING change
-  to events' `WithReceive` signature, explicitly NOT proposed here — but
-  flagged as the more symmetric long-term alternative, worth a future,
-  separate evaluation if the codec-level-derivation constraint proves
-  too limiting in practice.
+- **RESOLVED (Phase B design-closure round): `ContextField`'s existing
+  shared-mutable-box implementation needs ZERO changes to support
+  events'/reqreply's dispatch models — only a new `EnsureContextFields`
+  call site per adapter, reusing the box as-is.** Confirmed by direct
+  analogy to Phase A's OWN shipped proof, not left as a speculative
+  "needs a close read": `ContextFieldSetter.Set(ctx context.Context, raw
+  any) error` was deliberately designed to be BOTH `V`-free AND
+  direction-free (see the "CRITICAL FIX" note above) — it has no
+  awareness of In vs. Out, Subscribe vs. Publish, or which package calls
+  it; it is a pure `(ctx, raw) error` sink. `EnsureContextFields` itself
+  (pre-allocates the shared box once per ctx, idempotent) is ALSO
+  already package-agnostic — confirmed via code, it takes only a
+  `context.Context`, nothing REST-specific. The ONLY per-package work is
+  therefore: (1) call `EnsureContextFields` at the right dispatch point
+  in `adapters/mqtt5`/`mqtt`/`zeromq`'s Subscribe/Publish path (events)
+  and `adapters/mqtt5`/`zeromq`'s reqreply transport (mirroring
+  `adapters/nethttp`/`chi`'s existing call sites exactly), and (2) add
+  `SetContextFieldFromIn`/`SetContextFieldFromOut` methods to
+  `events.Middleware[In,Out]`/`reqreply.Middleware[In,Out]`, dispatched
+  from their OWN `buildDecodeIn`/`buildEncodeOut` — immediately after
+  `InCodec.Validate`/`OutCodec.Validate` respectively, the EXACT two
+  insertion points REST's `api/rest/transform.go` already uses. No
+  design spike needed; this is now a mechanical port.
+- **RESOLVED-AS-DEFERRED (Phase B design-closure round): events does
+  NOT gain its own post-Fn "Out-equivalent" return channel for Subscribe
+  in Phase B.** Re-confirmed, no new information changes the prior
+  conclusion — `SetContextFieldFromIn`'s derivation-at-the-codec-level
+  constraint (the UserID-from-token derivation happening in the
+  credential field's OWN `codex.Struct`/`Refine` composition, not in a
+  post-Fn return value) is accepted as Phase B's documented design
+  constraint, not a gap to close. A breaking `WithReceive` signature
+  change remains explicitly OUT of scope for Phase B — revisit only if
+  real Phase B usage surfaces a concrete case the codec-level-derivation
+  constraint cannot express (none identified so far).
 
 ## Cross-call client-side state (session/cookie-jar pattern) — confirmed already achievable, no new mechanism
 
