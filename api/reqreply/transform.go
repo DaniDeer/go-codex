@@ -140,7 +140,7 @@ func buildEncodeOut[In, Out any](mw Middleware[In, Out]) func(outAny any) (map[s
 			}
 		}
 		if len(propertyFields) > 0 {
-			if propertyVars, err = codex.EncodeVars(out, propertyFields...); err != nil {
+			if propertyVars, err = codex.EncodeMergeVars(out, propertyFields...); err != nil {
 				return nil, nil, MiddlewareOutputError{Name: mw.Name, Err: err}
 			}
 		}
@@ -192,7 +192,7 @@ func buildEncodeIn[In, Out any](mw Middleware[In, Out]) func(inAny any) (map[str
 			}
 		}
 		if len(propertyFields) > 0 {
-			if propertyVars, err = codex.EncodeVars(in, propertyFields...); err != nil {
+			if propertyVars, err = codex.EncodeMergeVars(in, propertyFields...); err != nil {
 				return nil, nil, err
 			}
 		}

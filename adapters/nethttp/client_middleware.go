@@ -9,16 +9,17 @@ import (
 )
 
 // clientMiddlewareOutKey is the context key for client-side middleware Out
-// values decoded by [ClientTransform]-attached [rest.ClientMiddlewareHandler]s.
+// values decoded by a [rest.ClientMiddlewareHandler] — attached via
+// [rest.Route.ClientMW]'s bound path or a bundled .Use(mw).
 type clientMiddlewareOutKey struct{}
 
 // WithClientMiddlewareOut decorates ctx so decoded client-side middleware Out
 // values (see [ClientMiddlewareOutFromContext]) become retrievable after a
 // [rest.Client.Call]/[rest.CallWithTransport] returns — mirrors
-// [stats.WithDiagnostics]'s own sink-in-context technique, since
-// [rest.ClientTransform]'s exact "how does the caller get Out back" return
-// shape was deliberately left as a small signature detail to finalize
-// during implementation, not a design blocker (see
+// [stats.WithDiagnostics]'s own sink-in-context technique: a
+// [rest.ClientMiddlewareHandler]'s "how does the caller get Out back"
+// return shape was deliberately left as a small signature detail to
+// finalize during implementation, not a design blocker (see
 // docs/design/d-0003-codec-declared-middlewares.md §5). A context-based
 // accessor keeps [rest.Client.Call]'s/[rest.CallWithTransport]'s own
 // signature completely unchanged. A no-op (nothing recorded) when ctx was
@@ -82,7 +83,7 @@ func dispatchClientMiddlewareIn[Req any](ctx context.Context, req Req, handlers 
 			return nil, nil, nil, rest.MiddlewareError{Name: h.Name, Err: fnErr}
 		}
 		in := results[0].Interface()
-		hh, cc, qq, encErr := h.EncodeIn(in)
+		hh, cc, qq, encErr := h.EncodeIn(ctx, in)
 		if encErr != nil {
 			return nil, nil, nil, encErr
 		}
@@ -119,7 +120,7 @@ func dispatchClientMiddlewareOut(ctx context.Context, resp *http.Response, handl
 		cookies[c.Name] = c.Value
 	}
 	for _, h := range handlers {
-		out, err := h.DecodeOut(headers, cookies)
+		out, err := h.DecodeOut(ctx, headers, cookies)
 		if err != nil {
 			return err
 		}

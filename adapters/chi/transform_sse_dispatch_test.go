@@ -29,7 +29,7 @@ func TestTransformSSE_HappyPath_SetsResponseHeader(t *testing.T) {
 	route := rest.NewSSERoute[createReq, sseEvent]("/events", createReqCodec, sseEventCodec,
 		rest.RouteMeta{OperationID: "streamEvents"},
 	)
-	route = rest.TransformSSE(route, mw, func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
+	route = route.HandleMW(mw, func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
 		return tdOut{Value: "applied:" + in.Key}, nil
 	})
 	route = route.WithHandler(func(ctx context.Context, _ createReq, send func(sseEvent) error) error {
@@ -66,7 +66,7 @@ func TestTransformSSE_InDecodeFailure_Returns400(t *testing.T) {
 	route := rest.NewSSERoute[createReq, sseEvent]("/events2", createReqCodec, sseEventCodec,
 		rest.RouteMeta{OperationID: "streamEvents2"},
 	)
-	route = rest.TransformSSE(route, mw, func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
+	route = route.HandleMW(mw, func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
 		return tdOut{Value: in.Key}, nil
 	})
 	route = route.WithHandler(func(ctx context.Context, _ createReq, send func(sseEvent) error) error {
@@ -101,7 +101,7 @@ func TestTransformSSE_FnError_FallsBackToMiddlewareError(t *testing.T) {
 	route := rest.NewSSERoute[createReq, sseEvent]("/events3", createReqCodec, sseEventCodec,
 		rest.RouteMeta{OperationID: "streamEvents3"},
 	)
-	route = rest.TransformSSE(route, mw, func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
+	route = route.HandleMW(mw, func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
 		return tdOut{}, errBadAPIKey
 	})
 	route = route.WithHandler(func(ctx context.Context, _ createReq, send func(sseEvent) error) error {
@@ -133,11 +133,11 @@ func TestTransformSSE_TwoMiddlewaresEnrichSameField_LastAttachedWins(t *testing.
 	route := rest.NewSSERoute[createReq, sseEvent]("/events5", createReqCodec, sseEventCodec,
 		rest.RouteMeta{OperationID: "streamEvents5"},
 	)
-	route = rest.TransformSSE(route, mwFirst, func(ctx context.Context, req *createReq, in tdEmpty) (tdEmpty, error) {
+	route = route.HandleMW(mwFirst, func(ctx context.Context, req *createReq, in tdEmpty) (tdEmpty, error) {
 		req.Name = "first"
 		return tdEmpty{}, nil
 	})
-	route = rest.TransformSSE(route, mwSecond, func(ctx context.Context, req *createReq, in tdEmpty) (tdEmpty, error) {
+	route = route.HandleMW(mwSecond, func(ctx context.Context, req *createReq, in tdEmpty) (tdEmpty, error) {
 		req.Name = "second"
 		return tdEmpty{}, nil
 	})
@@ -177,7 +177,7 @@ func TestTransformSSE_OutEncodeFailure_ReportsMiddlewareOutLocation(t *testing.T
 	route := rest.NewSSERoute[createReq, sseEvent]("/events-out-fail", createReqCodec, sseEventCodec,
 		rest.RouteMeta{OperationID: "streamEventsOutFail"},
 	)
-	route = rest.TransformSSE(route, mw, func(ctx context.Context, req *createReq, in tdEmpty) (tdOut, error) {
+	route = route.HandleMW(mw, func(ctx context.Context, req *createReq, in tdEmpty) (tdOut, error) {
 		// Empty Value fails tdOutCodec's NonEmptyString refinement at
 		// EncodeOut/OutCodec.Validate time.
 		return tdOut{Value: ""}, nil

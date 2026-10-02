@@ -72,7 +72,7 @@ func HandlerLatest[Req, Resp any](
 			return zero, NoLatestValueError{Path: handle.Descriptor.Path}
 		}
 		return *ptr, nil
-	}, wrappedOpts)
+	}, wrappedOpts, handle.Implementations...)
 }
 
 // RegisterLatest wires [HandlerLatest] onto a chi router using the route's method and path.
@@ -150,7 +150,7 @@ func PipelineHandler[Req, Resp any](
 			return zero, PipelineNoResponseError{Path: handle.Descriptor.Path}
 		}
 		return vals[0], nil
-	}, wrappedOpts)
+	}, wrappedOpts, handle.Implementations...)
 }
 
 // RegisterPipeline wires [PipelineHandler] onto a chi router using the route's method and path.

@@ -56,7 +56,7 @@ func GetTags(ctx context.Context, httpClient *http.Client, imageURL string, opts
 	// ImageURL; a fresh nethttp.NewClientTransport is built per call for
 	// the same reason (no intermediate Caller value needed), which needs
 	// an Observer passed explicitly via ClientCallOptions.
-	authFn := newAuthCredentialFunc(httpClient, ref.Registry, ref.Repository, opts...)
+	authFn := newAuthCredentialFunc[regmodels.GetTagsReq](httpClient, ref.Registry, ref.Repository, opts...)
 	route := regmodels.GetTagsRoute.ClientMW(&regmodels.BearerAuthDeclaration, authFn)
 	handle := route.ClientHandle()
 	callOpts := rest.ClientCallOptions{Observer: o.observer}

@@ -228,3 +228,37 @@ func TestContextFieldNotPreparedError(t *testing.T) {
 		t.Error("want non-empty LogValue")
 	}
 }
+
+// TestContextField_SatisfiesContextFieldSetter is a COMPILE-LEVEL
+// confirmation (docs/roadmap/declarative-middleware-layering.md's Rollout
+// Phase A) that [middleware.ContextField][V] satisfies
+// [middleware.ContextFieldSetter] regardless of V — the fix for a
+// confirmed, previously compile-verified design error
+// (`func (m Middleware[In, Out]) SetContextFieldFromIn(field
+// ContextField[V], ...)` does not compile: `undefined: V`). This line
+// itself IS the test: it fails to compile if the interface satisfaction
+// ever regresses.
+func TestContextField_SatisfiesContextFieldSetter(t *testing.T) {
+	var _ middleware.ContextFieldSetter = middleware.NewContextField[string](codex.String())
+	var _ middleware.ContextFieldSetter = middleware.NewContextField[int](codex.Int())
+	type customStruct struct{ A, B string }
+	var _ middleware.ContextFieldSetter = middleware.NewContextField[customStruct](codex.Struct[customStruct]())
+}
+
+// TestContextFieldSetter_DispatchViaInterface proves a caller holding only
+// the ContextFieldSetter interface value (NOT the concrete
+// ContextField[V]) can still Set/the concrete field can still Get —
+// confirming the interface genuinely carries the SAME underlying box key,
+// not a copy that loses identity.
+func TestContextFieldSetter_DispatchViaInterface(t *testing.T) {
+	field := middleware.NewContextField[string](codex.String())
+	var setter middleware.ContextFieldSetter = field
+	ctx := middleware.EnsureContextFields(context.Background())
+	if err := setter.Set(ctx, "via-interface"); err != nil {
+		t.Fatalf("Set via interface: %v", err)
+	}
+	got, ok := field.Get(ctx)
+	if !ok || got != "via-interface" {
+		t.Errorf("want (%q, true), got (%q, %v)", "via-interface", got, ok)
+	}
+}

@@ -235,7 +235,7 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 	if coverageReqs == nil {
 		coverageReqs = globalSecurity
 	}
-	if err := rest.CheckCoverage(routeLabel, coverageReqs, impls); err != nil {
+	if err := rest.CheckCoverage(routeLabel, coverageReqs, impls, middlewareHandlers); err != nil {
 		return nil, err
 	}
 
@@ -452,14 +452,22 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 				return
 			}
 		}
-		if err := httpsecurity.RunSecurityMiddlewareReflect(ctx, r, reqPtr, impls, secReqs); err != nil {
-			// Security middleware Fn error IS ErrorPattern-eligible now
-			// (Topic 1's Category A fix) — previously bypassed
-			// ErrorResponseFor entirely, always producing SecurityError.
-			if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &err) {
+		// docs/roadmap/declarative-middleware-layering.md's Rollout Phase
+		// A: runSecurityMiddleware's separate code path is RETIRED —
+		// Security now dispatches through the SAME unified
+		// MiddlewareHandler mechanism every other middleware uses.
+		// CollectGrantsReflect runs the legacy security-shaped impls
+		// WITHOUT calling middleware.CheckScopes yet (that now happens
+		// ONCE, below, after merging in any GrantedScopes a
+		// MiddlewareHandler-dispatched Security middleware contributes —
+		// its Out only becomes available once DispatchMiddlewareHandlers
+		// runs).
+		granted, grantErr := httpsecurity.CollectGrantsReflect(ctx, r, reqPtr, impls, secReqs)
+		if grantErr != nil {
+			if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &grantErr) {
 				return
 			}
-			errFn(sw, r, http.StatusUnauthorized, rest.SecurityError{Err: err})
+			errFn(sw, r, http.StatusUnauthorized, rest.SecurityError{Err: grantErr})
 			return
 		}
 
@@ -477,15 +485,37 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 				errFn(sw, r, http.StatusBadRequest, dispatchErr.Err)
 				return
 			}
+			// A FAILING handler whose OWN Satisfies is non-empty (i.e. a
+			// Security-paired MiddlewareHandler, confirmed via Name
+			// lookup) keeps Security's own, DISTINCT fallback (401,
+			// rest.SecurityError) — mirrors runSecurityMiddleware's prior,
+			// established behavior exactly, even though both now dispatch
+			// through the SAME mechanism. An ordinary (non-Security) Fn
+			// error keeps the generic fallback (400, rest.MiddlewareError).
+			err := dispatchErr.Err
+			if isSecuritySatisfyingHandler(middlewareHandlers, dispatchErr.Name) {
+				if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &err) {
+					return
+				}
+				errFn(sw, r, http.StatusUnauthorized, rest.SecurityError{Err: err})
+				return
+			}
 			// fn's own business error IS ErrorPattern-eligible (D2) — run
 			// through the SAME ObserveErrorResponseFor mechanism a handler
 			// error uses, falling back to rest.MiddlewareError at status
 			// 400 when unmatched.
-			err := dispatchErr.Err
 			if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &err) {
 				return
 			}
 			errFn(sw, r, http.StatusBadRequest, rest.MiddlewareError{Name: dispatchErr.Name, Err: err})
+			return
+		}
+		httpsecurity.MergeMiddlewareHandlerGrants(granted, satisfiesPerHandler(middlewareHandlers), middlewareOuts)
+		if err := middleware.CheckScopes(secReqs, granted); err != nil {
+			if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &err) {
+				return
+			}
+			errFn(sw, r, http.StatusUnauthorized, rest.SecurityError{Err: err})
 			return
 		}
 
@@ -532,7 +562,7 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 		// registration-order, last-applied-wins alongside the route's own
 		// values just merged above.
 		for i, h := range middlewareHandlers {
-			mwHeaders, mwCookies, encErr := h.EncodeOut(middlewareOuts[i])
+			mwHeaders, mwCookies, encErr := h.EncodeOut(ctx, middlewareOuts[i])
 			if encErr != nil {
 				stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, "middleware:out", encErr)
 				if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &encErr) {
@@ -779,6 +809,33 @@ func tryRespondErrorPattern(
 // serve build the EXACT expected security Fn shape
 // (func(context.Context, *http.Request, *Req) (map[string][]string, error))
 // dynamically instead of via a static type parameter.
+// satisfiesPerHandler extracts handlers[i].Satisfies into a parallel
+// [][]string slice — [httpsecurity.MergeMiddlewareHandlerGrants]'s own
+// input shape, kept package-agnostic (no api/rest dependency in
+// adapters/internal/httpsecurity).
+func satisfiesPerHandler(handlers []rest.MiddlewareHandler) [][]string {
+	out := make([][]string, len(handlers))
+	for i, h := range handlers {
+		out[i] = h.Satisfies
+	}
+	return out
+}
+
+// isSecuritySatisfyingHandler reports whether handlers contains an entry
+// named name with a non-empty Satisfies — i.e. a Security-paired
+// MiddlewareHandler (docs/roadmap/declarative-middleware-layering.md's
+// Rollout Phase A) — used to keep Security's OWN distinct error fallback
+// (401, rest.SecurityError) for a failing Security-gated Fn, even though
+// it now dispatches through the SAME mechanism as ordinary middleware.
+func isSecuritySatisfyingHandler(handlers []rest.MiddlewareHandler, name string) bool {
+	for _, h := range handlers {
+		if h.Name == name {
+			return len(h.Satisfies) > 0
+		}
+	}
+	return false
+}
+
 func validateImplementationShapesReflect(routeLabel string, reqType reflect.Type, impls []middleware.ServerImplementation) error {
 	generalType := reflect.TypeOf((func(http.Handler) http.Handler)(nil))
 	securityType := reflect.FuncOf(

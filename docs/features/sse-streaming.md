@@ -62,16 +62,16 @@ _ = b.Serve(ctx) // blocks, owns its own http.Server
   stream, once started, has no single response status/body to attach a typed error to. Use `send`'s returned
   error (handled inline in your handler) for stream-time failures instead.
 
-## Codec-backed middleware — `TransformSSE`/`ClientTransformSSE`
+## Codec-backed middleware — `SSERoute.HandleMW`/`SSERoute.ClientMW`
 
-`rest.TransformSSE`/`rest.ClientTransformSSE` extend REST's codec-backed
-`Middleware[In, Out]` mechanism (see [Feature: REST API](rest-api.md)) onto
-`SSERoute` — Event plays `Transform`'s `Resp` role: a middleware's own
-response header/cookie merge fields (`WithResponseHeader`/
-`WithResponseCookie`) compose into the connection's headers BEFORE SSE's
-own `Content-Type: text/event-stream` etc. are committed, and
-`ClientTransformSSE`'s `Out` is decoded ONCE at connection-open time — NOT
-re-decoded per event.
+`SSERoute.HandleMW`/`SSERoute.ClientMW`'s bound path extends REST's
+codec-backed `Middleware[In, Out]` mechanism (see
+[Feature: REST API](rest-api.md)) onto `SSERoute` — Event plays
+`HandleMW`'s `Resp` role: a middleware's own response header/cookie merge
+fields (`WithResponseHeader`/`WithResponseCookie`) compose into the
+connection's headers BEFORE SSE's own `Content-Type: text/event-stream`
+etc. are committed, and `ClientMW`'s `Out` is decoded ONCE at
+connection-open time — NOT re-decoded per event.
 
 ```go
 sessionCookiePolicy := rest.NewMiddleware(
@@ -83,7 +83,7 @@ sessionCookiePolicy := rest.NewMiddleware(
     return rest.CookieAttributes{MaxAge: 3600, Insecure: true} // declarative Set-Cookie attributes
 }))
 
-sseRoute = rest.TransformSSE(sseRoute, sessionCookiePolicy,
+sseRoute = sseRoute.HandleMW(sessionCookiePolicy,
     func(ctx context.Context, req *StreamReq, _ struct{}) (CookieValue, error) {
         return CookieValue{Token: newSessionToken()}, nil
     })

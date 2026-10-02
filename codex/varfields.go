@@ -106,3 +106,57 @@ func EncodeVars[T any](v T, fields ...FieldCodec[T]) (map[string]string, error) 
 	}
 	return out, nil
 }
+
+// EncodeMergeVars is [EncodeVars]'s sparse-aware sibling: a field built with
+// [OmitEmptyField]/[OmitEmptyFieldFunc]/[OmitDefaultField] (see
+// omitempty.go) has its key OMITTED from the returned map entirely when the
+// field reports itself not present, instead of always writing it (as
+// [EncodeVars] does for every field, deliberately -- see [EncodeVars]'s own
+// doc comment on why path/topic/dotted-key building needs every field
+// written unconditionally).
+//
+// Use EncodeMergeVars for MERGE-FIELD locations only (REST/events/reqreply
+// header, cookie, query, and property fields) where an omitted key has a
+// well-defined meaning (the header/cookie/query param or message property
+// is simply not sent). Never use it for path/topic/dotted-key segments,
+// where a missing segment would corrupt the structure -- use [EncodeVars]
+// there, as every existing adapter constructor already does.
+//
+// Fields that don't implement the sparse-field capability (plain
+// [RequiredField]/[OptionalField]/[DefaultField]) behave exactly as they do
+// under [EncodeVars] -- this is purely additive.
+func EncodeMergeVars[T any](v T, fields ...FieldCodec[T]) (map[string]string, error) {
+	out := make(map[string]string, len(fields))
+	var errs ValidationErrors
+	for _, f := range fields {
+		var name string
+		var val any
+		var err error
+		if sf, ok := f.(sparseFieldCodec[T]); ok {
+			var present bool
+			name, val, present, err = sf.encodeSparse(v)
+			if err != nil {
+				errs = append(errs, ValidationError{Field: name, Err: err})
+				continue
+			}
+			if !present {
+				continue
+			}
+		} else {
+			name, val, err = f.encode(v)
+			if err != nil {
+				errs = append(errs, ValidationError{Field: name, Err: err})
+				continue
+			}
+		}
+		s, ok := val.(string)
+		if !ok {
+			return nil, VarEncodeTypeError{Field: name, Got: fmt.Sprintf("%T", val)}
+		}
+		out[name] = s
+	}
+	if len(errs) > 0 {
+		return nil, errs
+	}
+	return out, nil
+}

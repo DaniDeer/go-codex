@@ -2,13 +2,13 @@ package rest
 
 import (
 	"context"
-	"slices"
 
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/middleware"
 )
 
 // MiddlewareHandler is the type-erased, RECEIVING-role runtime dispatch
-// unit built by [Transform] — the codec-backed-middleware counterpart to
+// unit built by [Route.HandleMW]'s bound path — the codec-backed-middleware counterpart to
 // [middleware.ServerImplementation]. Stored on [RouteHandle.MiddlewareHandlers];
 // consumed by each server adapter's own dispatch (nethttp/chi) via its
 // reflect-based route serving — never constructed directly by callers.
@@ -29,8 +29,13 @@ type MiddlewareHandler struct {
 	// merge-field declarations and the middleware's own InCodec. Returns
 	// the decoded In boxed as `any` (its concrete type is recovered by the
 	// adapter via reflection, mirroring how [middleware.ServerImplementation.Fn]
-	// is already reflect-called against a concrete Req).
-	DecodeIn func(headerVars, cookieVars, queryVars map[string]string) (any, error)
+	// is already reflect-called against a concrete Req). ctx is the
+	// SAME request-scoped ctx [DispatchMiddlewareHandlers] was called
+	// with — needed so an attached [Middleware.SetContextFieldFromIn]
+	// ContextFieldSetter can publish into the SAME box
+	// [middleware.EnsureContextFields] pre-allocated (docs/roadmap/
+	// declarative-middleware-layering.md's Rollout Phase A).
+	DecodeIn func(ctx context.Context, headerVars, cookieVars, queryVars map[string]string) (any, error)
 
 	// Fn is the type-erased business Fn — concretely
 	// func(ctx context.Context, req *Req, in In) (Out, error) — reflect-
@@ -40,8 +45,11 @@ type MiddlewareHandler struct {
 
 	// EncodeOut derives response header/cookie values from the Out value
 	// returned by Fn, using ONLY this middleware's own response
-	// merge-field declarations and the middleware's own OutCodec.
-	EncodeOut func(out any) (headers map[string]string, cookies map[string]string, err error)
+	// merge-field declarations and the middleware's own OutCodec. ctx is
+	// the SAME request-scoped ctx — needed for
+	// [Middleware.SetContextFieldFromOut] (see [MiddlewareHandler.DecodeIn]'s
+	// doc comment for the full rationale).
+	EncodeOut func(ctx context.Context, out any) (headers map[string]string, cookies map[string]string, err error)
 
 	// EncodeOutCookieAttrs derives declared [CookieAttributes] for every
 	// response cookie mw.WithResponseCookie(...).WithAttributes(...)
@@ -52,16 +60,25 @@ type MiddlewareHandler struct {
 
 	// Agnostic is true when this handler was built from a route/channel-
 	// AGNOSTIC attachment (plain .Use(mw), mw bundled via
-	// [Middleware.WithReceive]) rather than [Transform] — in that case Fn's
+	// [Middleware.WithReceive]) rather than HandleMW's bound path — in that case Fn's
 	// ACTUAL shape is func(ctx context.Context, in In) (Out, error) (no
 	// *Req parameter at all), since an agnostic mw is reused verbatim
 	// across routes with different Req types and never accesses one. The
 	// adapter must branch on this flag when reflect-calling Fn.
 	Agnostic bool
+
+	// Satisfies names the security scheme(s) this handler PAIRS against,
+	// derived from mw's own Security declaration (see
+	// [securityDeclarationOf]) — empty for a general-purpose (no Security)
+	// middleware, which [CheckCoverage] always treats as non-covering.
+	// Mirrors [middleware.ServerImplementation.Satisfies] exactly, so
+	// [CheckCoverage] can check BOTH lists uniformly (docs/roadmap/
+	// declarative-middleware-layering.md's Rollout Phase A).
+	Satisfies []string
 }
 
 // ClientMiddlewareHandler is the type-erased, SENDING-role runtime
-// dispatch unit built by [ClientTransform] — the client-side mirror of
+// dispatch unit built by [Route.ClientMW]'s bound path — the client-side mirror of
 // [MiddlewareHandler]. Stored on [RouteHandle.ClientMiddlewareHandlers];
 // consumed by nethttp's internal client dispatch (shared by
 // [CallWithTransport] and the handle-based binding adapters).
@@ -76,22 +93,30 @@ type ClientMiddlewareHandler struct {
 
 	// EncodeIn derives outgoing header/cookie/query values from the In
 	// value returned by Fn, using ONLY this middleware's own request
-	// merge-field declarations.
-	EncodeIn func(in any) (headers, cookies, query map[string]string, err error)
+	// merge-field declarations. ctx is the SAME call-scoped ctx — needed
+	// for [Middleware.SetContextFieldFromIn] on the client side (see
+	// [MiddlewareHandler.DecodeIn]'s doc comment for the full rationale).
+	EncodeIn func(ctx context.Context, in any) (headers, cookies, query map[string]string, err error)
 
 	// DecodeOut derives the middleware's own Out value from the HTTP
 	// response's actual headers/cookies — mechanical, no Fn — using ONLY
 	// this middleware's own response merge-field declarations. Returns
-	// the decoded Out boxed as `any`.
-	DecodeOut func(headers, cookies map[string]string) (any, error)
+	// the decoded Out boxed as `any`. ctx is the SAME call-scoped ctx —
+	// needed for [Middleware.SetContextFieldFromOut] on the client side.
+	DecodeOut func(ctx context.Context, headers, cookies map[string]string) (any, error)
 
 	// Agnostic is true when this handler was built from a route/channel-
 	// AGNOSTIC attachment (plain .Use(mw), mw bundled via
-	// [Middleware.WithSend]) rather than [ClientTransform] — in that case
+	// [Middleware.WithSend]) rather than ClientMW's bound path — in that case
 	// Fn's ACTUAL shape is func(ctx context.Context) (In, error) (no Req
 	// parameter at all). The adapter must branch on this flag when
 	// reflect-calling Fn.
 	Agnostic bool
+
+	// Satisfies names the security scheme(s) this handler PAIRS against —
+	// see [MiddlewareHandler.Satisfies]'s doc comment for the full
+	// rationale, applied identically to the client/SENDING role.
+	Satisfies []string
 }
 
 // middlewareFieldsToDecodeVarsFields converts a slice of Merged*Param
@@ -141,60 +166,68 @@ func responseCookieFieldsOf[T any](ps []MergedResponseCookieParam[T]) []codex.Fi
 // buildDecodeIn builds the DecodeIn closure shared by [buildMiddlewareHandler]
 // (route-BOUND) and [buildAgnosticMiddlewareHandler] (route-AGNOSTIC) — the
 // decode logic itself never depends on Req, only on mw's own In/InCodec and
-// merge-field declarations.
-func buildDecodeIn[In, Out any](mw Middleware[In, Out]) func(headerVars, cookieVars, queryVars map[string]string) (any, error) {
+// merge-field declarations. Internally a thin wrapper over
+// [middleware.DecodeLayer] (docs/roadmap/declarative-middleware-layering.md's
+// Rollout Phase A) — behavior is UNCHANGED: same 3-axis order
+// (header, cookie, query), same fail-fast-at-first-error semantics, same
+// [MiddlewareInputError] wrapping.
+func buildDecodeIn[In, Out any](mw Middleware[In, Out]) func(ctx context.Context, headerVars, cookieVars, queryVars map[string]string) (any, error) {
 	reqHeaderFields := headerFieldsOf(mw.reqHeaderParams)
 	reqCookieFields := cookieFieldsOf(mw.reqCookieParams)
 	reqQueryFields := queryFieldsOf(mw.reqQueryParams)
+	wrapErr := func(err error) error { return MiddlewareInputError{Name: mw.Name, Err: err} }
+	ctxFieldsFromIn := mw.ctxFieldsFromIn
 
-	return func(headerVars, cookieVars, queryVars map[string]string) (any, error) {
-		var in In
-		if len(reqHeaderFields) > 0 {
-			if err := codex.DecodeVars(&in, headerVars, reqHeaderFields...); err != nil {
-				return nil, MiddlewareInputError{Name: mw.Name, Err: err}
-			}
-		}
-		if len(reqCookieFields) > 0 {
-			if err := codex.DecodeVars(&in, cookieVars, reqCookieFields...); err != nil {
-				return nil, MiddlewareInputError{Name: mw.Name, Err: err}
-			}
-		}
-		if len(reqQueryFields) > 0 {
-			if err := codex.DecodeVars(&in, queryVars, reqQueryFields...); err != nil {
-				return nil, MiddlewareInputError{Name: mw.Name, Err: err}
-			}
+	return func(ctx context.Context, headerVars, cookieVars, queryVars map[string]string) (any, error) {
+		in, err := middleware.DecodeLayer([]middleware.Axis[In]{
+			{Fields: reqHeaderFields, Vars: headerVars},
+			{Fields: reqCookieFields, Vars: cookieVars},
+			{Fields: reqQueryFields, Vars: queryVars},
+		}, wrapErr)
+		if err != nil {
+			return nil, err
 		}
 		if err := mw.InCodec.Validate(in); err != nil {
 			return nil, MiddlewareInputError{Name: mw.Name, Err: err}
+		}
+		for _, cf := range ctxFieldsFromIn {
+			if err := cf.field.Set(ctx, cf.get(in)); err != nil {
+				return nil, MiddlewareInputError{Name: mw.Name, Err: err}
+			}
 		}
 		return in, nil
 	}
 }
 
 // buildEncodeOut is [buildDecodeIn]'s response-side sibling, shared by
-// [buildMiddlewareHandler] and [buildAgnosticMiddlewareHandler].
-func buildEncodeOut[In, Out any](mw Middleware[In, Out]) func(outAny any) (map[string]string, map[string]string, error) {
+// [buildMiddlewareHandler] and [buildAgnosticMiddlewareHandler]. Internally
+// a thin wrapper over [middleware.EncodeLayer] — behavior is UNCHANGED:
+// same 2-axis order (header, cookie), same fail-fast semantics, same
+// [MiddlewareOutputError] wrapping, same nil-map-when-no-fields contract.
+func buildEncodeOut[In, Out any](mw Middleware[In, Out]) func(ctx context.Context, outAny any) (map[string]string, map[string]string, error) {
 	respHeaderFields := responseHeaderFieldsOf(mw.respHeaderParams)
 	respCookieFields := responseCookieFieldsOf(mw.respCookieParams)
+	wrapErr := func(err error) error { return MiddlewareOutputError{Name: mw.Name, Err: err} }
+	ctxFieldsFromOut := mw.ctxFieldsFromOut
 
-	return func(outAny any) (map[string]string, map[string]string, error) {
+	return func(ctx context.Context, outAny any) (map[string]string, map[string]string, error) {
 		out, _ := outAny.(Out)
 		if err := mw.OutCodec.Validate(out); err != nil {
 			return nil, nil, MiddlewareOutputError{Name: mw.Name, Err: err}
 		}
-		var headers, cookies map[string]string
-		var err error
-		if len(respHeaderFields) > 0 {
-			if headers, err = codex.EncodeVars(out, respHeaderFields...); err != nil {
+		for _, cf := range ctxFieldsFromOut {
+			if err := cf.field.Set(ctx, cf.get(out)); err != nil {
 				return nil, nil, MiddlewareOutputError{Name: mw.Name, Err: err}
 			}
 		}
-		if len(respCookieFields) > 0 {
-			if cookies, err = codex.EncodeVars(out, respCookieFields...); err != nil {
-				return nil, nil, MiddlewareOutputError{Name: mw.Name, Err: err}
-			}
+		vars, err := middleware.EncodeLayer(out, [][]codex.FieldCodec[Out]{
+			respHeaderFields,
+			respCookieFields,
+		}, wrapErr)
+		if err != nil {
+			return nil, nil, err
 		}
-		return headers, cookies, nil
+		return vars[0], vars[1], nil
 	}
 }
 
@@ -223,89 +256,112 @@ func buildEncodeOutCookieAttrs[In, Out any](mw Middleware[In, Out]) func(outAny 
 	}
 }
 
-// buildMiddlewareHandler builds a type-erased [MiddlewareHandler] from a
-// concrete [Middleware][In, Out] and its fn — In/Out are known here (the
-// generic call site) and erased into plain closures where needed, so
-// api/rest never needs reflection for the decode/encode halves (unlike
-// [middleware.ServerImplementation.Fn], which IS resolved via reflection
-// by the ADAPTER, since it predates this generic mechanism and the
-// adapter's own dispatch is itself fully reflect-based).
-func buildMiddlewareHandler[Req, Resp, In, Out any](mw Middleware[In, Out], fn func(ctx context.Context, req *Req, in In) (Out, error)) MiddlewareHandler {
+// satisfiesOf derives the Satisfies slice shared by every
+// MiddlewareHandler/ClientMiddlewareHandler builder (bound AND agnostic,
+// both roles) — mirrors [buildServerImplementation]'s own
+// [securityDeclarationOf]-based derivation exactly, so [CheckCoverage] can
+// treat a codec-backed Middleware's dispatch handler identically to a
+// legacy [middleware.ServerImplementation]/[middleware.ClientImplementation]
+// regardless of which attachment style produced it.
+func satisfiesOf[In, Out any](mw Middleware[In, Out]) []string {
+	if sec := mw.SecurityDeclaration(); sec != nil {
+		return []string{sec.SchemeName}
+	}
+	return nil
+}
+
+// buildMiddlewareHandlerAny builds a type-erased [MiddlewareHandler] from
+// a concrete [Middleware][In, Out] and an UNTYPED fn — the SOLE builder
+// for the route-BOUND, RECEIVING role, used by both [Route.HandleMW]'s
+// bound path (see [Middleware.applyBoundRoute]) and
+// [buildAgnosticMiddlewareHandler] (docs/roadmap/
+// declarative-middleware-layering.md's Rollout Phase A): fn is already
+// `any` on [MiddlewareHandler.Fn] itself, so a SEPARATE `any`-typed
+// builder needs zero new type parameters beyond In/Out (the receiver mw
+// already carries), confirmed mechanically trivial — see the roadmap
+// doc's "Confirmed mechanical details" section.
+func buildMiddlewareHandlerAny[In, Out any](mw Middleware[In, Out], fn any) MiddlewareHandler {
 	return MiddlewareHandler{
 		Name:                 mw.Name,
 		DecodeIn:             buildDecodeIn(mw),
 		Fn:                   fn,
 		EncodeOut:            buildEncodeOut(mw),
 		EncodeOutCookieAttrs: buildEncodeOutCookieAttrs(mw),
+		Satisfies:            satisfiesOf(mw),
 	}
 }
 
 // buildAgnosticMiddlewareHandler builds a type-erased [MiddlewareHandler]
 // from a route/channel-AGNOSTIC [Middleware][In, Out] — one attached via
-// plain .Use(mw), bundled via [Middleware.WithReceive] — mirroring
-// [buildMiddlewareHandler] except Fn is mw's OWN bundled receiveFn
-// (func(ctx, In) (Out, error), no *Req) and [MiddlewareHandler.Agnostic]
-// is set so the adapter reflect-calls Fn with the matching arity.
+// plain .Use(mw), bundled via [Middleware.WithReceive] — mirroring the
+// bound case (see [Middleware.applyBoundRoute]) except Fn is mw's OWN
+// bundled receiveFn (func(ctx, In) (Out, error), no *Req) and
+// [MiddlewareHandler.Agnostic] is set so the adapter reflect-calls Fn
+// with the matching arity.
 func buildAgnosticMiddlewareHandler[In, Out any](mw Middleware[In, Out]) MiddlewareHandler {
-	return MiddlewareHandler{
-		Name:                 mw.Name,
-		DecodeIn:             buildDecodeIn(mw),
-		Fn:                   mw.receiveFn,
-		EncodeOut:            buildEncodeOut(mw),
-		EncodeOutCookieAttrs: buildEncodeOutCookieAttrs(mw),
-		Agnostic:             true,
-	}
+	h := buildMiddlewareHandlerAny(mw, mw.receiveFn)
+	h.Agnostic = true
+	return h
 }
 
 // buildEncodeIn builds the EncodeIn closure shared by
 // [buildClientMiddlewareHandler] (route-BOUND) and
-// [buildAgnosticClientMiddlewareHandler] (route-AGNOSTIC).
-func buildEncodeIn[In, Out any](mw Middleware[In, Out]) func(inAny any) (map[string]string, map[string]string, map[string]string, error) {
+// [buildAgnosticClientMiddlewareHandler] (route-AGNOSTIC). Internally a
+// thin wrapper over [middleware.EncodeLayer] — behavior is UNCHANGED: same
+// 3-axis order (header, cookie, query), same fail-fast semantics, same
+// raw (unwrapped) error return.
+func buildEncodeIn[In, Out any](mw Middleware[In, Out]) func(ctx context.Context, inAny any) (map[string]string, map[string]string, map[string]string, error) {
 	reqHeaderFields := headerFieldsOf(mw.reqHeaderParams)
 	reqCookieFields := cookieFieldsOf(mw.reqCookieParams)
 	reqQueryFields := queryFieldsOf(mw.reqQueryParams)
+	wrapErr := func(err error) error { return err }
+	ctxFieldsFromIn := mw.ctxFieldsFromIn
 
-	return func(inAny any) (map[string]string, map[string]string, map[string]string, error) {
+	return func(ctx context.Context, inAny any) (map[string]string, map[string]string, map[string]string, error) {
 		in, _ := inAny.(In)
 		if err := mw.InCodec.Validate(in); err != nil {
 			return nil, nil, nil, err
 		}
-		var headers, cookies, query map[string]string
-		var err error
-		if len(reqHeaderFields) > 0 {
-			if headers, err = codex.EncodeVars(in, reqHeaderFields...); err != nil {
+		for _, cf := range ctxFieldsFromIn {
+			if err := cf.field.Set(ctx, cf.get(in)); err != nil {
 				return nil, nil, nil, err
 			}
 		}
-		if len(reqCookieFields) > 0 {
-			if cookies, err = codex.EncodeVars(in, reqCookieFields...); err != nil {
-				return nil, nil, nil, err
-			}
+		vars, err := middleware.EncodeLayer(in, [][]codex.FieldCodec[In]{
+			reqHeaderFields,
+			reqCookieFields,
+			reqQueryFields,
+		}, wrapErr)
+		if err != nil {
+			return nil, nil, nil, err
 		}
-		if len(reqQueryFields) > 0 {
-			if query, err = codex.EncodeVars(in, reqQueryFields...); err != nil {
-				return nil, nil, nil, err
-			}
-		}
-		return headers, cookies, query, nil
+		return vars[0], vars[1], vars[2], nil
 	}
 }
 
 // buildDecodeOut is [buildEncodeIn]'s response-side sibling, shared by
 // [buildClientMiddlewareHandler] and [buildAgnosticClientMiddlewareHandler].
-func buildDecodeOut[In, Out any](mw Middleware[In, Out]) func(headers, cookies map[string]string) (any, error) {
+// Internally a thin wrapper over [middleware.DecodeLayer] — behavior is
+// UNCHANGED: same 2-axis order (header, cookie), same fail-fast semantics,
+// same [MiddlewareInputError] wrapping (preserved verbatim even on the
+// OUT-decode direction — matches this function's own prior, established
+// behavior exactly, not "fixed" by this refactor).
+func buildDecodeOut[In, Out any](mw Middleware[In, Out]) func(ctx context.Context, headers, cookies map[string]string) (any, error) {
 	respHeaderFields := responseHeaderFieldsOf(mw.respHeaderParams)
 	respCookieFields := responseCookieFieldsOf(mw.respCookieParams)
+	wrapErr := func(err error) error { return MiddlewareInputError{Name: mw.Name, Err: err} }
+	ctxFieldsFromOut := mw.ctxFieldsFromOut
 
-	return func(headers, cookies map[string]string) (any, error) {
-		var out Out
-		if len(respHeaderFields) > 0 {
-			if err := codex.DecodeVars(&out, headers, respHeaderFields...); err != nil {
-				return nil, MiddlewareInputError{Name: mw.Name, Err: err}
-			}
+	return func(ctx context.Context, headers, cookies map[string]string) (any, error) {
+		out, err := middleware.DecodeLayer([]middleware.Axis[Out]{
+			{Fields: respHeaderFields, Vars: headers},
+			{Fields: respCookieFields, Vars: cookies},
+		}, wrapErr)
+		if err != nil {
+			return nil, err
 		}
-		if len(respCookieFields) > 0 {
-			if err := codex.DecodeVars(&out, cookies, respCookieFields...); err != nil {
+		for _, cf := range ctxFieldsFromOut {
+			if err := cf.field.Set(ctx, cf.get(out)); err != nil {
 				return nil, MiddlewareInputError{Name: mw.Name, Err: err}
 			}
 		}
@@ -313,55 +369,43 @@ func buildDecodeOut[In, Out any](mw Middleware[In, Out]) func(headers, cookies m
 	}
 }
 
-// buildClientMiddlewareHandler builds a type-erased [ClientMiddlewareHandler]
-// from a concrete [Middleware][In, Out] and its fn, mirroring
-// [buildMiddlewareHandler]'s technique for the SENDING role.
-func buildClientMiddlewareHandler[Req, Resp, In, Out any](mw Middleware[In, Out], fn func(ctx context.Context, req Req) (In, error)) ClientMiddlewareHandler {
+// buildClientMiddlewareHandlerAny builds a type-erased
+// [ClientMiddlewareHandler] from a concrete [Middleware][In, Out] and an
+// UNTYPED fn — the SENDING-role mirror of [buildMiddlewareHandlerAny],
+// used by both [Route.ClientMW]'s bound path (see
+// [Middleware.applyBoundClientRoute]) and
+// [buildAgnosticClientMiddlewareHandler].
+func buildClientMiddlewareHandlerAny[In, Out any](mw Middleware[In, Out], fn any) ClientMiddlewareHandler {
 	return ClientMiddlewareHandler{
 		Name:      mw.Name,
 		Fn:        fn,
 		EncodeIn:  buildEncodeIn(mw),
 		DecodeOut: buildDecodeOut(mw),
+		Satisfies: satisfiesOf(mw),
 	}
 }
 
 // buildAgnosticClientMiddlewareHandler builds a type-erased
 // [ClientMiddlewareHandler] from a route/channel-AGNOSTIC
 // [Middleware][In, Out] — one attached via plain .Use(mw), bundled via
-// [Middleware.WithSend] — mirroring [buildClientMiddlewareHandler] except
-// Fn is mw's OWN bundled sendFn (func(ctx) (In, error), no Req) and
+// [Middleware.WithSend] — mirroring the bound case (see
+// [Middleware.applyBoundClientRoute]) except Fn is mw's OWN bundled
+// sendFn (func(ctx) (In, error), no Req) and
 // [ClientMiddlewareHandler.Agnostic] is set so the adapter reflect-calls
 // Fn with the matching arity.
 func buildAgnosticClientMiddlewareHandler[In, Out any](mw Middleware[In, Out]) ClientMiddlewareHandler {
-	return ClientMiddlewareHandler{
-		Name:      mw.Name,
-		Fn:        mw.sendFn,
-		EncodeIn:  buildEncodeIn(mw),
-		DecodeOut: buildDecodeOut(mw),
-		Agnostic:  true,
-	}
-}
-
-// middlewareHandlerOpt is the [RouteOpt] returned by [Transform].
-type middlewareHandlerOpt struct{ handler MiddlewareHandler }
-
-func (o middlewareHandlerOpt) applyRoute(rb *routeBuilder) {
-	rb.middlewareHandlers = append(rb.middlewareHandlers, o.handler)
-}
-
-// clientMiddlewareHandlerOpt is the [RouteOpt] returned by [ClientTransform].
-type clientMiddlewareHandlerOpt struct{ handler ClientMiddlewareHandler }
-
-func (o clientMiddlewareHandlerOpt) applyRoute(rb *routeBuilder) {
-	rb.clientMiddlewareHandlers = append(rb.clientMiddlewareHandlers, o.handler)
+	h := buildClientMiddlewareHandlerAny(mw, mw.sendFn)
+	h.Agnostic = true
+	return h
 }
 
 // middlewareSpecContribution captures the spec-relevant param
 // declarations from ONE attached codec-backed [Middleware] — converted to
-// plain, Req/Resp-agnostic spec types at the GENERIC call site (Transform/
-// ClientTransform) where In/Out are still concrete. Fed into
-// applyParamDeclarations' conflict-detection/layering pass, the SAME one
-// legacy middleware.Middleware values already use (D4).
+// plain, Req/Resp-agnostic spec types at the GENERIC call site (mw's own
+// applyBoundRoute/applyBoundClientRoute/applyAgnosticRoute methods) where
+// In/Out are still concrete. Fed into applyParamDeclarations'
+// conflict-detection/layering pass, the SAME one legacy
+// middleware.Middleware values already use (D4).
 type middlewareSpecContribution struct {
 	name             string
 	reqHeaderParams  []HeaderParam
@@ -370,18 +414,21 @@ type middlewareSpecContribution struct {
 	respHeaderParams []ResponseHeaderParam
 	respCookieParams []ResponseCookieParam
 
-	// dualAttached is true ONLY for a contribution built from [Transform]/
-	// [ClientTransform] whose mw ALSO carries a WithReceive/WithSend Fn —
-	// exactly D7's ambiguous case (bound AND agnostic attachment styles
-	// combined on the SAME value). A contribution built from the plain
-	// .Use() path (applyAgnosticRoute) never sets this — bundled there is
-	// the WHOLE POINT of that attachment style, not a conflict.
+	// dualAttached is true ONLY for a contribution built from the
+	// route/channel-BOUND path (HandleMW/ClientMW's bound case — see
+	// [Middleware.applyBoundRoute]/[Middleware.applyBoundClientRoute])
+	// whose mw ALSO carries a WithReceive/WithSend Fn — exactly D7's
+	// ambiguous case (bound AND agnostic attachment styles combined on
+	// the SAME value). A contribution built from the plain .Use() path
+	// (applyAgnosticRoute) never sets this — bundled there is the WHOLE
+	// POINT of that attachment style, not a conflict.
 	dualAttached bool
 }
 
 // boundSpecContributionOf is [specContributionOf] plus D7's dualAttached
-// flag — used ONLY by [Transform]/[ClientTransform] (the route/channel-
-// BOUND attachment path), never by the .Use()-agnostic path.
+// flag — used ONLY by the route/channel-BOUND attachment path
+// ([Middleware.applyBoundRoute]/[Middleware.applyBoundClientRoute]),
+// never by the .Use()-agnostic path.
 func boundSpecContributionOf[In, Out any](mw Middleware[In, Out]) middlewareSpecContribution {
 	c := specContributionOf(mw)
 	c.dualAttached = mw.receiveFn != nil || mw.sendFn != nil
@@ -390,7 +437,7 @@ func boundSpecContributionOf[In, Out any](mw Middleware[In, Out]) middlewareSpec
 
 // specContributionOf extracts mw's plain spec Param values (discarding
 // the merge field half, which is only needed at DecodeIn/EncodeOut time,
-// already handled by buildMiddlewareHandler/buildClientMiddlewareHandler).
+// already handled by buildMiddlewareHandlerAny/buildClientMiddlewareHandlerAny).
 func specContributionOf[In, Out any](mw Middleware[In, Out]) middlewareSpecContribution {
 	c := middlewareSpecContribution{name: mw.Name}
 	for _, p := range mw.reqHeaderParams {
@@ -414,134 +461,4 @@ func specContributionOf[In, Out any](mw Middleware[In, Out]) middlewareSpecContr
 	c.respHeaderParams = append(c.respHeaderParams, mw.respHeaderSpecs...)
 	c.respCookieParams = append(c.respCookieParams, mw.respCookieSpecs...)
 	return c
-}
-
-// middlewareSpecContributionOpt is the [RouteOpt] that layers a
-// [middlewareSpecContribution] into rb.middlewareSpecContributions —
-// attached alongside middlewareHandlerOpt/clientMiddlewareHandlerOpt by
-// both Transform and ClientTransform.
-type middlewareSpecContributionOpt struct{ contribution middlewareSpecContribution }
-
-func (o middlewareSpecContributionOpt) applyRoute(rb *routeBuilder) {
-	rb.middlewareSpecContributions = append(rb.middlewareSpecContributions, o.contribution)
-}
-
-// Transform attaches mw's declaration AND its runtime fn to r in ONE call
-// — the route/channel-BOUND, RECEIVING-role attachment point for a
-// codec-backed [Middleware]. fn receives ctx, the route's OWN
-// already-decoded *Req (POINTER — fn may both read AND enrich it with
-// derived data the wire request never carried, mirroring the
-// security-shaped Fn's existing *Req access), and mw's own decoded+
-// validated In (declaratively extracted from header/cookie/query values
-// the route's Req does NOT model at all). fn's returned Out is, in turn,
-// derived declaratively into actual HTTP response headers/cookies via
-// mw's own response merge-field declarations, composing with (not
-// replacing) the route's own [RouteHandle.EncodeResponseMergeFields]
-// output.
-//
-// Adopts the name of the ALREADY-EXISTING [nethttp.Transform] — the SAME
-// concept ("a Req-bound enrichment Fn"), generalized here to also cover
-// mw's own In/Out — see docs/design/d-0003-codec-declared-middlewares.md.
-//
-// Transform is a free function, not a method — Go disallows type
-// parameters on a method beyond its receiver's own; In/Out are inferred
-// from mw/fn directly, so a wrong-shaped fn is a Go COMPILE error, never a
-// runtime one.
-//
-//	sessionCookiePolicy := rest.NewMiddleware(
-//	    middleware.NewDeclaration[struct{}, CookieAttrs]("session-cookie-policy", codex.Struct[struct{}](), cookieAttrsCodec),
-//	).WithResponseCookie(rest.NewRequiredResponseCookieParam("session", valueCodec,
-//	    func(a CookieAttrs) string { return a.Value },
-//	    func(a *CookieAttrs, v string) { a.Value = v },
-//	))
-//
-//	route = rest.Transform(route, sessionCookiePolicy,
-//	    func(ctx context.Context, req *LoginReq, _ struct{}) (CookieAttrs, error) {
-//	        return CookieAttrs{Value: newSessionToken(), MaxAge: 3600, Insecure: true}, nil
-//	    })
-func Transform[Req, Resp, In, Out any](
-	r Route[Req, Resp],
-	mw Middleware[In, Out],
-	fn func(ctx context.Context, req *Req, in In) (Out, error),
-) Route[Req, Resp] {
-	r.opts = append(slices.Clone(r.opts),
-		middlewareHandlerOpt{handler: buildMiddlewareHandler[Req, Resp](mw, fn)},
-		middlewareSpecContributionOpt{contribution: boundSpecContributionOf(mw)},
-	)
-	return r
-}
-
-// ClientTransform is [Transform]'s route/channel-BOUND, SENDING-role
-// counterpart — the client-side mirror. fn PRODUCES mw's own In value
-// (mirrors a credential Fn producing a value to send, rather than
-// decoding one that arrived), with the caller's OWN already-built Req
-// value (VALUE, not pointer — the caller already owns and can mutate its
-// own Req directly before calling Call at all) available to inspect. mw's
-// own request header/cookie/query merge fields are reused for ENCODING
-// the returned In, merged into the outgoing call per the documented
-// 3-tier precedence (explicit CallOptions > middleware-derived >
-// route-own-derived). After the response, mw's own response merge fields
-// mechanically decode Out from the response's actual headers/cookies.
-//
-//	route = rest.ClientTransform(route, apiKeyPolicy,
-//	    func(ctx context.Context, req GetProfileReq) (APIKeyIn, error) {
-//	        return APIKeyIn{Key: os.Getenv("MY_API_KEY")}, nil
-//	    })
-func ClientTransform[Req, Resp, In, Out any](
-	r Route[Req, Resp],
-	mw Middleware[In, Out],
-	fn func(ctx context.Context, req Req) (In, error),
-) Route[Req, Resp] {
-	r.opts = append(slices.Clone(r.opts),
-		clientMiddlewareHandlerOpt{handler: buildClientMiddlewareHandler[Req, Resp](mw, fn)},
-		middlewareSpecContributionOpt{contribution: boundSpecContributionOf(mw)},
-	)
-	return r
-}
-
-// TransformSSE is [Transform]'s [SSERoute] counterpart — the SAME
-// route/channel-BOUND, RECEIVING-role attachment point, migrated onto
-// SSE's Req/Event shape (Event plays [Transform]'s Resp role: mw's own
-// response header/cookie merge fields, once EncodeOut runs, compose
-// alongside [SSERouteHandle.EncodeResponseMergeFields]'s own Event-derived
-// values — see docs/design/d-0003-codec-declared-middlewares.md's SSE
-// migration section for the exact dispatch timing: BEFORE SSE's own
-// headers (Content-Type: text/event-stream, etc.) are committed).
-//
-//	sseRoute = rest.TransformSSE(sseRoute, sessionCookiePolicy,
-//	    func(ctx context.Context, req *StreamReq, _ struct{}) (CookieAttrs, error) {
-//	        return CookieAttrs{Value: newSessionToken(), MaxAge: 3600, Insecure: true}, nil
-//	    })
-func TransformSSE[Req, Event, In, Out any](
-	s SSERoute[Req, Event],
-	mw Middleware[In, Out],
-	fn func(ctx context.Context, req *Req, in In) (Out, error),
-) SSERoute[Req, Event] {
-	s.opts = append(slices.Clone(s.opts),
-		middlewareHandlerOpt{handler: buildMiddlewareHandler[Req, Event](mw, fn)},
-		middlewareSpecContributionOpt{contribution: boundSpecContributionOf(mw)},
-	)
-	return s
-}
-
-// ClientTransformSSE is [ClientTransform]'s [SSERoute] counterpart — the
-// SAME route/channel-BOUND, SENDING-role attachment point, migrated onto
-// SSE's Req/Event shape. mw's own response merge fields decode Out ONCE,
-// at connection-open time (NOT re-decoded per event) — see
-// docs/design/d-0003-codec-declared-middlewares.md's SSE migration section.
-//
-//	sseRoute = rest.ClientTransformSSE(sseRoute, apiKeyPolicy,
-//	    func(ctx context.Context, req StreamReq) (APIKeyIn, error) {
-//	        return APIKeyIn{Key: os.Getenv("MY_API_KEY")}, nil
-//	    })
-func ClientTransformSSE[Req, Event, In, Out any](
-	s SSERoute[Req, Event],
-	mw Middleware[In, Out],
-	fn func(ctx context.Context, req Req) (In, error),
-) SSERoute[Req, Event] {
-	s.opts = append(slices.Clone(s.opts),
-		clientMiddlewareHandlerOpt{handler: buildClientMiddlewareHandler[Req, Event](mw, fn)},
-		middlewareSpecContributionOpt{contribution: boundSpecContributionOf(mw)},
-	)
-	return s
 }

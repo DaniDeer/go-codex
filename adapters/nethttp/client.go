@@ -460,6 +460,26 @@ func wrapCallGeneral[Req, Resp any](
 // Every impl.Fn here is already guaranteed to match this shape (or be
 // nil) — [validateClientImplementationShapes] rejects anything else EAGERLY,
 // at the top of [call], before this function is ever reached.
+//
+// NOT retired by docs/roadmap/declarative-middleware-layering.md's
+// Rollout Phase A (unlike the SERVER-side runSecurityMiddleware/
+// httpsecurity.RunSecurityMiddlewareReflect, which WAS retired) —
+// confirmed via investigation, not assumed: this function's legacy Fn
+// shape (func(ctx, []route.SecurityRequirement) (http.Header, error))
+// genuinely needs secReqs itself (to decide WHICH scheme's credential to
+// produce — e.g. examples/go-edge-models/app/registry/auth.go's
+// newAuthCredentialFunc), a capability [ClientMiddlewareHandler]'s bound
+// EncodeIn shape (func(ctx, Req) (In, error), no secReqs) does not
+// provide and was never meant to replace. There is also no
+// server-side-style "separate early CheckScopes call" to reorder here —
+// the client never judges its own authorization (see this function's own
+// doc comment above) — so there is nothing to unify/retire structurally.
+// The two mechanisms already compose correctly, side by side:
+// mergeCredentialHeaders (this function, legacy ClientImplementation
+// path) and [dispatchClientMiddlewareIn] (ClientMiddlewareHandler path)
+// both contribute to the SAME outgoing header/cookie/query D3 precedence
+// chain in [clienttransport.Call]/[clienttransport.Consume] — confirmed
+// via [TestAttach_ClientCall_CodecBackedClientMW_EncodesInAndDecodesOut].
 func mergeCredentialHeaders(ctx context.Context, secReqs []route.SecurityRequirement, impls []middleware.ClientImplementation) (combined http.Header, ran bool, err error) {
 	combined = make(http.Header)
 	setBy := make(map[string]string)

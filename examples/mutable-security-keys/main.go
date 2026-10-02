@@ -106,7 +106,7 @@ func main() {
 	// inline below) is supplied SEPARATELY, at Register time — its
 	// extraction Fn calls keys.Get() INSIDE the closure body, on every
 	// request — never hoisted to a local outside the closure. ──────────
-	secureDeclMw := rest.SecurityMiddleware("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT"), Codec: &keyCodec}, nil)
+	secureDeclMw := rest.SecurityMiddleware[struct{}, struct{}]("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT"), Codec: &keyCodec}, nil)
 
 	secureRoute := rest.NewRoute[struct{}, secureResp]("GET", "/secure",
 		codex.Empty, secureRespCodec,

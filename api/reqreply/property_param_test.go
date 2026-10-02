@@ -67,6 +67,48 @@ func TestNewOptionalPropertyParam_AbsentLeavesZeroValueNoError(t *testing.T) {
 	}
 }
 
+func TestNewOmitEmptyPropertyParam_NotRequired(t *testing.T) {
+	p := reqreply.NewOmitEmptyPropertyParam("region", codex.String(),
+		func(v propTestIn) string { return v.Meta.Region },
+		func(v *propTestIn, s string) { v.Meta.Region = s })
+	if p.Required {
+		t.Fatalf("want Required false from NewOmitEmptyPropertyParam")
+	}
+}
+
+// TestNewOmitEmptyPropertyParam_OmitsWhenEmpty_IncludesWhenPresent proves
+// the sparse-encode behavior end-to-end via [RouteHandle.EncodePropertyVars]
+// (built on [codex.EncodeMergeVars], NOT [codex.EncodeVars], which never
+// omits).
+func TestNewOmitEmptyPropertyParam_OmitsWhenEmpty_IncludesWhenPresent(t *testing.T) {
+	b := reqreply.NewServer(reqreply.Info{})
+	h, err := reqreply.NewRoute[regionComputeReq, computeResp]("compute/omitprops",
+		regionComputeReqCodec, respCodec,
+		reqreply.NewOmitEmptyPropertyParam("region", codex.String(),
+			func(r regionComputeReq) string { return r.Region },
+			func(r *regionComputeReq, v string) { r.Region = v }),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	vars, err := h.EncodePropertyVars(regionComputeReq{X: 1, Y: 2, Region: ""})
+	if err != nil {
+		t.Fatalf("EncodePropertyVars: %v", err)
+	}
+	if _, ok := vars["region"]; ok {
+		t.Errorf("want region omitted, got %q", vars["region"])
+	}
+
+	vars, err = h.EncodePropertyVars(regionComputeReq{X: 1, Y: 2, Region: "eu-west"})
+	if err != nil {
+		t.Fatalf("EncodePropertyVars: %v", err)
+	}
+	if vars["region"] != "eu-west" {
+		t.Errorf("want region %q, got %q", "eu-west", vars["region"])
+	}
+}
+
 func TestPropertyParam_WithCodec(t *testing.T) {
 	pp := reqreply.PropertyParam{Param: codex.Param{Name: "X"}}.WithCodec(codex.String())
 	if pp.Codec == nil {

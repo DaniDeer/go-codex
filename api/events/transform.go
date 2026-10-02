@@ -149,7 +149,7 @@ func buildEncodeOut[In, Out any](mw Middleware[In, Out]) func(outAny any) (topic
 			}
 		}
 		if len(propFields) > 0 {
-			propertyVars, err = codex.EncodeVars(out, propFields...)
+			propertyVars, err = codex.EncodeMergeVars(out, propFields...)
 			if err != nil {
 				return nil, nil, MiddlewareOutputError{Name: mw.Name, Err: err}
 			}

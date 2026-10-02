@@ -60,7 +60,7 @@ func TestMiddleware_WithRequestHeader_PopulatesParam(t *testing.T) {
 	route := rest.NewRoute[mwTestReq, userResp]("GET", "/profile", mwTestReqCodec, userCodec,
 		rest.RouteMeta{OperationID: "getProfile"},
 	)
-	route = rest.Transform(route, mw, func(ctx context.Context, req *mwTestReq, in mdTestIn) (mdTestOut, error) {
+	route = route.HandleMW(mw, func(ctx context.Context, req *mwTestReq, in mdTestIn) (mdTestOut, error) {
 		return mdTestOut{Value: in.Key}, nil
 	})
 	h, err := route.RegisterHandle(rest.NewServer(testInfo))
@@ -87,7 +87,7 @@ func TestMiddleware_WithResponseCookie_PopulatesParam(t *testing.T) {
 	route := rest.NewRoute[mwTestReq, userResp]("GET", "/profile", mwTestReqCodec, userCodec,
 		rest.RouteMeta{OperationID: "getProfile"},
 	)
-	route = rest.Transform(route, mw, func(ctx context.Context, req *mwTestReq, in mdTestIn) (mdTestOut, error) {
+	route = route.HandleMW(mw, func(ctx context.Context, req *mwTestReq, in mdTestIn) (mdTestOut, error) {
 		return mdTestOut{Value: "sess-123"}, nil
 	})
 	h, err := route.RegisterHandle(rest.NewServer(testInfo))
@@ -125,7 +125,7 @@ func TestMiddleware_WithResponseCookie_WithAttributes_ReachesMiddlewareHandler(t
 	route := rest.NewRoute[mwTestReq, userResp]("GET", "/profile2", mwTestReqCodec, userCodec,
 		rest.RouteMeta{OperationID: "getProfile2"},
 	)
-	route = rest.Transform(route, mw, func(ctx context.Context, req *mwTestReq, in mdTestIn) (mdTestOut, error) {
+	route = route.HandleMW(mw, func(ctx context.Context, req *mwTestReq, in mdTestIn) (mdTestOut, error) {
 		return mdTestOut{Value: "sess-123"}, nil
 	})
 	h, err := route.RegisterHandle(rest.NewServer(testInfo))
@@ -168,8 +168,8 @@ func TestRegister_DuplicateMiddlewareNameRejected(t *testing.T) {
 	fn := func(ctx context.Context, req *mwTestReq, in mdTestIn) (mdTestOut, error) {
 		return mdTestOut{Value: in.Key}, nil
 	}
-	route = rest.Transform(route, mwA, fn)
-	route = rest.Transform(route, mwB, fn)
+	route = route.HandleMW(mwA, fn)
+	route = route.HandleMW(mwB, fn)
 
 	err := route.Register(rest.NewServer(testInfo))
 	var dupErr rest.DuplicateMiddlewareNameError
@@ -190,7 +190,7 @@ func TestRegister_AmbiguousDualAttachmentRejected(t *testing.T) {
 	route := rest.NewRoute[mwTestReq, userResp]("GET", "/ambiguous", mwTestReqCodec, userCodec,
 		rest.RouteMeta{OperationID: "ambiguous"},
 	)
-	route = rest.Transform(route, mw, func(ctx context.Context, req *mwTestReq, in mdTestIn) (mdTestOut, error) {
+	route = route.HandleMW(mw, func(ctx context.Context, req *mwTestReq, in mdTestIn) (mdTestOut, error) {
 		return mdTestOut{Value: in.Key}, nil
 	})
 
@@ -210,7 +210,7 @@ func TestRegister_SingleAttachmentStyleSucceeds(t *testing.T) {
 	route := rest.NewRoute[mwTestReq, userResp]("GET", "/single", mwTestReqCodec, userCodec,
 		rest.RouteMeta{OperationID: "single"},
 	)
-	route = rest.Transform(route, mw, func(ctx context.Context, req *mwTestReq, in mdTestIn) (mdTestOut, error) {
+	route = route.HandleMW(mw, func(ctx context.Context, req *mwTestReq, in mdTestIn) (mdTestOut, error) {
 		return mdTestOut{Value: in.Key}, nil
 	})
 	if err := route.Register(rest.NewServer(testInfo)); err != nil {
@@ -234,7 +234,7 @@ func TestSSERoute_TransformSSE_LayersHeaderIntoSpec(t *testing.T) {
 		mwTestReqCodec, sseEventCodec,
 		rest.RouteMeta{OperationID: "stream"},
 	)
-	sseRoute = rest.TransformSSE(sseRoute, mw, func(ctx context.Context, req *mwTestReq, in mdTestIn) (mdTestOut, error) {
+	sseRoute = sseRoute.HandleMW(mw, func(ctx context.Context, req *mwTestReq, in mdTestIn) (mdTestOut, error) {
 		return mdTestOut{Value: "applied:" + in.Key}, nil
 	})
 	h, err := sseRoute.RegisterHandle(rest.NewServer(testInfo))
@@ -282,7 +282,7 @@ func TestSSERoute_ClientTransformSSE_PopulatesClientHandle(t *testing.T) {
 		mwTestReqCodec, sseEventCodec,
 		rest.RouteMeta{OperationID: "stream2"},
 	)
-	sseRoute = rest.ClientTransformSSE(sseRoute, mw, func(ctx context.Context, req mwTestReq) (mdTestIn, error) {
+	sseRoute = sseRoute.ClientMW(mw, func(ctx context.Context, req mwTestReq) (mdTestIn, error) {
 		return mdTestIn{Key: "secret"}, nil
 	})
 	h := sseRoute.ClientHandle()
@@ -301,8 +301,8 @@ func TestSSERoute_Register_DuplicateMiddlewareNameRejected(t *testing.T) {
 	fn := func(ctx context.Context, req *mwTestReq, in mdTestIn) (mdTestOut, error) {
 		return mdTestOut{Value: in.Key}, nil
 	}
-	sseRoute = rest.TransformSSE(sseRoute, mwA, fn)
-	sseRoute = rest.TransformSSE(sseRoute, mwB, fn)
+	sseRoute = sseRoute.HandleMW(mwA, fn)
+	sseRoute = sseRoute.HandleMW(mwB, fn)
 
 	_, err := sseRoute.RegisterHandle(rest.NewServer(testInfo))
 	var dupErr rest.DuplicateMiddlewareNameError

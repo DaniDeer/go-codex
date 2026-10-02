@@ -1,7 +1,11 @@
 # Declarative Middleware as Partial Route/Channel Definitions — and Security Credentials as the Proving Case
 
-> **Status:** Design draft — all open design decisions resolved (see
-> "Open design decisions" below); not yet implemented.
+> **Status:** Rollout Phase A (`api/rest`) IMPLEMENTED and fully verified
+> (`go build`/`go vet`/`go test`/`just check`/every `examples/*/` clean;
+> see "Learnings from Rollout Phase A" below). Phase B (`api/events`) and
+> Phase C (`api/reqreply`) remain NOT yet implemented — all other design
+> decisions below (including Phase 2-4's cross-API design) stay resolved
+> and current.
 > [← Back to Roadmap](index.md)
 
 ## Motivation
@@ -1536,7 +1540,92 @@ silently re-discover it).
 
 ### Learnings from Rollout Phase A (for Phase B/C)
 
-_Not yet started._
+**Shipped.** `api/rest`'s `Transform`/`ClientTransform`/`TransformSSE`/
+`ClientTransformSSE` were removed and folded into `HandleMW`/`ClientMW`;
+Security now dispatches through the SAME unified mechanism via a new
+`GrantedScopes` conventional field. Full verification (`go build ./...`,
+`go vet ./...`, `go test ./...`, `just check`, every `examples/*/`) is
+clean. Concrete findings worth carrying into Phase B (`api/events`) and
+Phase C (`api/reqreply`):
+
+1. **Shape-detect on `fn`'s reflected signature, never on `mw`'s dynamic
+   type.** `rest.SecurityMiddleware[In,Out]` can produce a
+   `Middleware[In,Out]` value used PURELY as a legacy credential-shape
+   carrier (its `In`/`Out` never touched by `fn`) — only inspecting
+   `fn`'s own parameter types (`isBoundHandleMWShape`/
+   `isBoundClientMWShape` in `api/rest/middleware.go`) correctly
+   disambiguates the bound-dispatch path from the legacy path. This was
+   caught by an ACTUAL test misclassification, not design review — plan
+   for an equivalent representative-migration step in Phase B/C before
+   trusting the analogous `events`/`reqreply` dispatchers.
+2. **A generalized `SecurityMiddleware[In,Out]` needs a real default
+   codec, not a zero value.** Leaving `InCodec`/`OutCodec` at Go
+   zero-value panics (nil Encode/Decode funcs) the first time a
+   non-`struct{}` `In`/`Out` is actually validated. `codex.Struct[T]()`
+   with zero declared fields is a safe, verified no-op default
+   (`Encode` returns `map[string]any{}`; `Decode`/`Validate` succeed
+   trivially) — apply the same default when `events`/
+   `reqreply.SecurityMiddleware` are generalized in Phase B/C.
+3. **`EncodeMergeVars` must be a NEW sibling function, never an
+   extension of `EncodeVars`.** Extending `EncodeVars` directly to
+   support omission broke 2 existing tests and would have silently
+   violated the documented path/topic/dotted-key "a declared var is
+   always present" guarantee. The omit-aware sparse-check belongs in a
+   separate function consulted only by the NEW omit-empty constructor
+   family, never by the existing required/optional ones.
+4. **Removing an old multi-purpose function needs its FULL
+   responsibility list enumerated before deletion, not just its
+   headline purpose.** `runSecurityMiddleware`/`mergeCredentialHeaders`
+   bundled wiring + grant-merging + dispatch-ordering in one call;
+   retiring them required the `GrantedScopes`-conventional-field +
+   `CollectGrantsReflect`/`MergeMiddlewareHandlerGrants` replacement to
+   be independently verified (via real test migration, not review) to
+   reproduce every one of those responsibilities before the old
+   functions were deleted.
+5. **Migrate the real motivating example early, not last.** The
+   `examples/go-edge-models` `newAuthCredentialFunc` migration surfaced
+   the `SecurityMiddleware` zero-value-codec panic (finding 2 above) —
+   a case review alone would not have caught, since it only manifests
+   when a REAL non-`struct{}` credential type flows through dispatch.
+   Schedule the equivalent real-example migration for Phase B/C before
+   declaring either phase done.
+6. **Design-doc addenda, not rewritten body text, for a "frozen but
+   evolving" design record.** `docs/design/d-0003-codec-declared-middlewares.md`'s
+   own established convention (append "Addendum N", flag prior code
+   samples as historical) scaled cleanly to a 4th addendum — reuse this
+   pattern rather than rewriting the doc's original worked examples when
+   Phase B/C ship their own architectural changes.
+7. **A post-implementation REVIEW pass (comparing shipped code line-by-line
+   against this doc's own "Confirmed mechanical details," not just
+   re-reading the doc) found and closed a real gap: `adapters/nethttp`'s/
+   `adapters/chi`'s `ports`-facing single-route binding adapters
+   (`IngestAdapter`, `SSEAdapter`, `LatestAdapter`, `stream.go`'s
+   handlers — all built on `handlerFunc`/`sseHandlerFunc`) never
+   dispatched `RouteHandle.MiddlewareHandlers` at all, silently dropping
+   Security/ordinary codec-backed middleware for any route served via a
+   `ports.SourceAdapter`/`SinkAdapter`/`LatestAdapter` instead of
+   `Server.Attach`.** Pre-existing (predated this phase — the SAME gap
+   applied to the already-shipped agnostic `.Use(mw)`-attached middleware
+   before Rollout Phase A even began), not a regression introduced by
+   this phase, but directly adjacent to its own "Security now fully
+   unified through HandleMW" claim. Fixed by threading the SAME
+   `CollectGrantsReflect`/`DispatchMiddlewareHandlers`/
+   `MergeMiddlewareHandlerGrants`/`CheckScopes` sequence `serve.go`/
+   `serve_sse.go` already used into `handlerFunc`/`sseHandlerFunc`
+   directly, and wiring real `Implementations`/`MiddlewareHandlers` into
+   all 2×6 ports-adapter call sites (both nethttp and chi). A second,
+   smaller drift was found and fixed in the SAME pass: chi's
+   `handlerFunc` still inlined `codex.EncodeVars` (no omit-empty support)
+   for response header/cookie merge fields where nethttp's had already
+   been updated to `codex.EncodeMergeVars` — confirming that a
+   mechanical, cross-adapter change (nethttp/chi are supposed to mirror
+   each other exactly) can silently drift out of sync even within the
+   SAME phase unless a dedicated line-by-line review pass checks for it.
+   **Actionable for Phase B/C**: check whether `adapters/mqtt`/`mqtt5`/
+   `zeromq`'s own single-item/ports-facing binding adapters have an
+   analogous gap once events/reqreply gain their own `HandleMW`-fold-in
+   equivalent — do not assume parity with the reflect-based `Attach`/
+   `Serve` path without checking each ports adapter individually.
 
 ### Learnings from Rollout Phase B (for Phase C)
 

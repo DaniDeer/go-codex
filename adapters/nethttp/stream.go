@@ -77,7 +77,7 @@ func HandlerLatest[Req, Resp any](
 			return zero, NoLatestValueError{Path: handle.Descriptor.Path}
 		}
 		return *ptr, nil
-	}, wrappedOpts)
+	}, wrappedOpts, handle.Implementations...)
 }
 
 // RegisterLatest wires [HandlerLatest] onto mux using the route's method and path.
@@ -180,7 +180,7 @@ func PipelineHandler[Req, Resp any](
 			return zero, PipelineNoResponseError{Path: handle.Descriptor.Path}
 		}
 		return vals[0], nil // multiple values: only first used; extras silently discarded
-	}, wrappedOpts)
+	}, wrappedOpts, handle.Implementations...)
 }
 
 // RegisterPipeline wires [PipelineHandler] onto mux using the route's method and path.

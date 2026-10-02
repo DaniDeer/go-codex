@@ -89,6 +89,27 @@ func (f ContextField[V]) Set(ctx context.Context, raw any) error {
 	return nil
 }
 
+// ContextFieldSetter is the interface every [ContextField][V] satisfies,
+// REGARDLESS of V — [ContextField.Set]'s own signature never references V
+// (decoding happens internally via the field's own codec), so this
+// interface lets a caller accept "any ContextField, whatever V is" without
+// itself needing a new type parameter for V. This is the fix for a
+// confirmed, compile-verified design error: a method cannot introduce a
+// new type parameter beyond its receiver's own (Go's "no new type params
+// on a method" rule) — `func (m Middleware[In, Out]) SetContextFieldFromIn(field
+// ContextField[V], ...)` does NOT compile (`undefined: V`). Every
+// [ContextField][V] value already implements ContextFieldSetter
+// implicitly — no explicit declaration needed at any call site.
+//
+//	var TraceIDField = middleware.NewContextField(codex.String())
+//	route.Use(mw.SetContextFieldFromIn(TraceIDField, func(in AuthIn) any { return in.TraceID }))
+type ContextFieldSetter interface {
+	// Set validates raw via the field's own codec and writes the decoded
+	// value into ctx's shared box — see [ContextField.Set]'s own doc
+	// comment for the full contract.
+	Set(ctx context.Context, raw any) error
+}
+
 // Get retrieves the value published by [ContextField.Set], from the SAME
 // shared box. ok is false if never Set, or if the box was never
 // pre-allocated (mirrors stats.ObserverFromContext's no-op-when-absent

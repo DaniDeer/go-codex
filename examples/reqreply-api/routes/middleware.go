@@ -95,7 +95,7 @@ var OAuthMwReqreply = reqreply.SecurityMiddleware("oauth2Compute",
 // REST — attached to a locally-declared REST route in
 // demo_cross_api_oauth2_sharing.go to prove the two specs render the
 // identical scheme, even though they are two distinct Go values.
-var OAuthMwREST = rest.SecurityMiddleware("oauth2Compute",
+var OAuthMwREST = rest.SecurityMiddleware[struct{}, struct{}]("oauth2Compute",
 	rest.SecurityScheme{SecurityScheme: oauthComputeScheme}.WithCodec(OAuthCodec), oauthComputeScopes)
 
 // ── Codec-declared enrichment middleware (docs/roadmap/reqreply-codec- ──

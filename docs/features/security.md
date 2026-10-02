@@ -292,6 +292,73 @@ Routes with `nil Security` (default) trigger enforcement when global security is
 
 `rest.CallWithTransport` (client-side) runs the SAME sequence, symmetrically, on the OUTGOING request before it is sent — see "HTTP client — credential-providing ClientMW" below. **`rest.Client.Call` (bound via `Client.Attach(nethttp.NewClientTransport(...))`) runs the SAME enforcement too** — it is full-featured: security/credential `ClientMW`, path/query/header/cookie params, per-call format override, and error-pattern decoding are all supported (see `adapters/nethttp/clienttransport.go`'s own doc comment for confirmation there is no remaining "v1 scope" limitation).
 
+### Codec-backed Security — `HandleMW`/`ClientMW`'s bound path + `GrantedScopes`
+
+A codec-backed `rest.Middleware[In, Out]` (built via `rest.SecurityMiddleware[In, Out]`,
+generic over In/Out since docs/roadmap/declarative-middleware-layering.md's
+Rollout Phase A) can ALSO carry a Security declaration and be attached via
+`Route.HandleMW`/`Route.ClientMW` — the SAME two methods used for the
+legacy shape above. `HandleMW`/`ClientMW` detect which shape `fn` is by
+its REFLECTED signature (not by `mw`'s type), so attaching either shape
+uses the identical method call:
+
+```go
+type APIKeyIn struct{ Key string }
+type APIKeyOut struct{ GrantedScopes map[string][]string }
+
+apiKeyMw := rest.SecurityMiddleware[APIKeyIn, APIKeyOut]("apiKeyAuth",
+    rest.SecurityScheme{SecurityScheme: route.APIKeyScheme("X-Api-Key", "header")}, nil,
+).WithRequestHeader(rest.NewRequiredHeaderParam("X-Api-Key", codex.String(),
+    func(in APIKeyIn) string { return in.Key },
+    func(in *APIKeyIn, v string) { in.Key = v },
+))
+
+route := createUser.Use(apiKeyMw).HandleMW(apiKeyMw,
+    func(ctx context.Context, req *CreateUserReq, in APIKeyIn) (APIKeyOut, error) {
+        if !validKey(in.Key) {
+            return APIKeyOut{}, errors.New("invalid API key")
+        }
+        return APIKeyOut{GrantedScopes: map[string][]string{"apiKeyAuth": nil}}, nil
+    })
+```
+
+`fn` gets `*Req` access (read/enrich, exactly like the generic middleware
+mechanism — see [Feature: Codec-Declared Middleware](codec-declared-middleware.md)),
+and `In`'s own header/cookie/query merge fields decode declaratively from
+the request — no manual `r.Header.Get(...)` anywhere. **`Out` carries the
+RESOLVED "conventional field" convention: a field named `GrantedScopes
+map[string][]string`**, read by the adapter via reflection and fed into
+the SAME `middleware.CheckScopes` call the legacy `SecurityFunc`/credential
+path already used — a route requiring specific scopes (not just scheme
+presence) checks them identically regardless of which attachment style
+supplied the grant. Returning an error from `fn` keeps Security's own
+distinct fallback (401, `rest.SecurityError`), not the generic 400
+ordinary middleware errors fall back to.
+
+On the CLIENT side, the identical shape detection applies to `ClientMW`:
+a credential-supplying `fn` shaped `func(ctx context.Context, req Req) (In, error)`
+(Req BY VALUE, matching the route's own Req type) is recognized as the
+bound path and dispatched through the SAME merge-field mechanism, instead
+of hand-building an `http.Header` value. **`rest.NewOmitEmptyHeaderParam`
+is the key building block for an anonymous-access credential Fn** — a
+field declared with it OMITS its header entirely when the current value
+is the zero value (e.g. an empty token), rather than sending an empty
+header value; see `examples/go-edge-models/app/registry/auth.go`'s
+`newAuthCredentialFunc` and `examples/go-edge-models/models/docker/registry/security.go`'s
+`BearerAuthDeclaration` for a complete, runnable, real-world example of
+this exact pattern (a registry client that may or may not need Bearer
+auth, decided per-call by whether an actual token was obtained).
+
+**Coverage note — `ports`-facing binding adapters (`IngestAdapter`,
+`LatestAdapter`, `SSEAdapter`, and `stream.go`'s `HandlerLatest`/
+`PipelineHandler`, both `nethttp` and `chi`) dispatch `HandleMW`-attached
+middleware/Security identically to `Server.Attach`.** A route's
+`MiddlewareHandlers` (Security-shaped or ordinary) run through the exact
+same unified sequence regardless of whether the route is wired via
+`b.Attach(...)` or bound directly to a `ports.SourceAdapter`/`SinkAdapter`/
+`LatestAdapter` — "declare once, works everywhere" holds across both
+consumption paths.
+
 ## Credential format validation
 
 Use `validate` constraints to validate raw credential strings before `SecurityFunc` runs:
@@ -713,11 +780,19 @@ channel), not a bug.
 
 ## Sharing a security SCHEME across REST/events/reqreply
 
-Each of `rest`/`events`/`reqreply` has its own `SecurityMiddleware(schemeName,
-scheme, scopes) Middleware[struct{}, struct{}]` constructor — the one, single
-vocabulary for declaring a security requirement in that pattern. These
-constructors are pattern-specific BY DESIGN (their return types differ:
-`rest.Middleware[struct{},struct{}]`, `events.Middleware[struct{},struct{}]`,
+Each of `rest`/`events`/`reqreply` has its own `SecurityMiddleware[In, Out
+any](schemeName, scheme, scopes) Middleware[In, Out]` constructor — the one,
+single vocabulary for declaring a security requirement in that pattern.
+`rest.SecurityMiddleware` is generic over In/Out (docs/roadmap/
+declarative-middleware-layering.md's Rollout Phase A — away from a
+hardcoded `Middleware[struct{}, struct{}]`), so a caller needing the
+credential-providing fn to ALSO decode request header/cookie/query merge
+fields can do so directly; the pure credential-carrier pattern (no
+merge fields) passes `[struct{}, struct{}]` explicitly (Go cannot infer
+In/Out here — no parameter is typed by them):
+`rest.SecurityMiddleware[struct{}, struct{}]("basicAuth", scheme, nil)`.
+These constructors are pattern-specific BY DESIGN (their return types
+differ: `rest.Middleware[In,Out]`, `events.Middleware[struct{},struct{}]`,
 `reqreply.Middleware[struct{},struct{}]` are three distinct Go types, and a
 value of one does NOT work if attached to another pattern's routes/channels —
 each pattern's internal dispatch only recognizes its own concrete type; a
@@ -744,7 +819,7 @@ var oauthScheme = route.OAuth2Scheme(route.OAuthFlows{
 var oauthScopes = []string{"compute:write"}
 
 // Three pattern-specific declarations, same underlying scheme + scopes:
-restMw     := rest.SecurityMiddleware("oauth2Compute", rest.SecurityScheme{SecurityScheme: oauthScheme}.WithCodec(oauthCodec), oauthScopes)
+restMw     := rest.SecurityMiddleware[struct{}, struct{}]("oauth2Compute", rest.SecurityScheme{SecurityScheme: oauthScheme}.WithCodec(oauthCodec), oauthScopes)
 eventsMw   := events.SecurityMiddleware("oauth2Compute", events.SecurityScheme{SecurityScheme: oauthScheme}.WithCodec(oauthCodec), oauthScopes)
 reqreplyMw := reqreply.SecurityMiddleware("oauth2Compute", reqreply.SecurityScheme{SecurityScheme: oauthScheme}.WithCodec(oauthCodec), oauthScopes)
 

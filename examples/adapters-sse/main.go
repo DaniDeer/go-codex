@@ -382,7 +382,7 @@ func main() {
 	// (client, further down) use — one declared route, one shared
 	// codec-backed middleware value, both roles.
 	bearerTokenCodec := codex.String().Refine(validate.BearerToken)
-	securedMw := rest.SecurityMiddleware("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT"), Codec: &bearerTokenCodec}, nil)
+	securedMw := rest.SecurityMiddleware[struct{}, struct{}]("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT"), Codec: &bearerTokenCodec}, nil)
 	const demoBearerToken = "demo-secret-token"
 	secureImplFn := func(_ context.Context, r *http.Request, _ *struct{}) (map[string][]string, error) {
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")

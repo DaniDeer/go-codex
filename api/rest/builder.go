@@ -703,20 +703,21 @@ type routeBuilder struct {
 	clientImpls []middleware.ClientImplementation
 
 	// middlewareHandlers holds every [MiddlewareHandler] attached via
-	// [Transform], in attachment order — the codec-backed-middleware
-	// counterpart to impls, built internally by Transform.
+	// [Route.HandleMW]'s bound path, in attachment order — the
+	// codec-backed-middleware counterpart to impls, built internally by
+	// HandleMW.
 	middlewareHandlers []MiddlewareHandler
 
 	// clientMiddlewareHandlers holds every [ClientMiddlewareHandler]
-	// attached via [ClientTransform], in attachment order — built
-	// internally by ClientTransform.
+	// attached via [Route.ClientMW]'s bound path, in attachment order —
+	// built internally by ClientMW.
 	clientMiddlewareHandlers []ClientMiddlewareHandler
 
 	// middlewareSpecContributions holds the spec-relevant param
 	// declarations (request header/cookie/query, response header/cookie)
 	// contributed by every codec-backed [Middleware] attached via
-	// [Transform]/[ClientTransform] (and, once route/channel-AGNOSTIC
-	// dispatch lands, plain .Use()) — converted to plain, Req/Resp-
+	// [Route.HandleMW]/[Route.ClientMW]'s bound path (and plain .Use()) —
+	// converted to plain, Req/Resp-
 	// agnostic spec types at the GENERIC call site where In/Out are still
 	// concrete, then fed into the SAME conflict-detection/layering pass in
 	// applyParamDeclarations that legacy middleware.Middleware values
@@ -882,14 +883,14 @@ type RouteHandle[Req, Resp any] struct {
 	ClientImplementations []middleware.ClientImplementation
 
 	// MiddlewareHandlers holds every [MiddlewareHandler] attached via
-	// [Transform], in attachment order — SERVER-side only (no
-	// [Route.ClientHandle] equivalent, mirroring Implementations).
-	// Populated by [Route.Register]/[Route.RegisterHandle].
+	// [Route.HandleMW]'s bound path, in attachment order — SERVER-side
+	// only (no [Route.ClientHandle] equivalent, mirroring
+	// Implementations). Populated by [Route.Register]/[Route.RegisterHandle].
 	MiddlewareHandlers []MiddlewareHandler
 
 	// ClientMiddlewareHandlers holds every [ClientMiddlewareHandler]
-	// attached via [ClientTransform], in attachment order — CLIENT-side,
-	// built internally by ClientTransform. Populated by BOTH
+	// attached via [Route.ClientMW]'s bound path, in attachment order —
+	// CLIENT-side, built internally by ClientMW. Populated by BOTH
 	// [Route.Register]/[Route.RegisterHandle] and [Route.ClientHandle].
 	ClientMiddlewareHandlers []ClientMiddlewareHandler
 
@@ -1053,19 +1054,19 @@ func (h *RouteHandle[Req, Resp]) EncodeVars(req Req) (map[string]string, error) 
 // EncodeQueryVars is [EncodeVars]'s query-param sibling, deriving from
 // [RouteHandle.QueryMergeFields].
 func (h *RouteHandle[Req, Resp]) EncodeQueryVars(req Req) (map[string]string, error) {
-	return codex.EncodeVars(req, h.queryMergeFields...)
+	return codex.EncodeMergeVars(req, h.queryMergeFields...)
 }
 
 // EncodeHeaderVars is [EncodeVars]'s header-param sibling, deriving from
 // [RouteHandle.HeaderMergeFields].
 func (h *RouteHandle[Req, Resp]) EncodeHeaderVars(req Req) (map[string]string, error) {
-	return codex.EncodeVars(req, h.headerMergeFields...)
+	return codex.EncodeMergeVars(req, h.headerMergeFields...)
 }
 
 // EncodeCookieVars is [EncodeVars]'s cookie-param sibling, deriving from
 // [RouteHandle.CookieMergeFields].
 func (h *RouteHandle[Req, Resp]) EncodeCookieVars(req Req) (map[string]string, error) {
-	return codex.EncodeVars(req, h.cookieMergeFields...)
+	return codex.EncodeMergeVars(req, h.cookieMergeFields...)
 }
 
 // DecodeMerged decodes body (if the route has a request body — pass nil
@@ -1168,12 +1169,12 @@ func (h *RouteHandle[Req, Resp]) EncodeMerged(resp Resp) (body []byte, headers, 
 // merge-capable params.
 func (h *RouteHandle[Req, Resp]) EncodeResponseMergeFields(resp Resp) (headers, cookies map[string]string, err error) {
 	if fields := h.ResponseHeaderMergeFields(); len(fields) > 0 {
-		if headers, err = codex.EncodeVars(resp, fields...); err != nil {
+		if headers, err = codex.EncodeMergeVars(resp, fields...); err != nil {
 			return nil, nil, err
 		}
 	}
 	if fields := h.ResponseCookieMergeFields(); len(fields) > 0 {
-		if cookies, err = codex.EncodeVars(resp, fields...); err != nil {
+		if cookies, err = codex.EncodeMergeVars(resp, fields...); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -1488,8 +1489,8 @@ func (h *RouteHandle[Req, Resp]) PathParamNames() []string {
 // HeaderParamNames returns the names of ALL registered header
 // parameters — BOTH plain [HeaderParam] route opts AND
 // middleware-declared header contributions (legacy [middleware.Middleware]
-// and D-0003 codec-backed [Middleware] via [Transform]/[ClientTransform]),
-// since [applyParamDeclarations] merges the latter directly into the
+// and D-0003 codec-backed [Middleware] via [Route.HandleMW]/[Route.ClientMW]'s
+// bound path), since [applyParamDeclarations] merges the latter directly into the
 // SAME h.headerParams list before this RouteHandle is constructed —
 // this method sees the FULL, POST-MERGE set, not just plain-opt
 // declarations. Mirrors [RouteHandle.PathParamNames]'s exact shape.
@@ -1936,6 +1937,32 @@ func NewOptionalQueryParam[T, V any](
 	}
 }
 
+// NewOmitEmptyQueryParam declares an OPTIONAL query parameter that is
+// merged into Req by [RouteHandle.DecodeMerged] exactly like
+// [NewOptionalQueryParam], but OMITS its key entirely from the ENCODE
+// direction (e.g. [RouteHandle.EncodeQueryVars], used by the client-side
+// Call/Consume vars derivation) whenever its current value is V's Go zero
+// value — see [codex.OmitEmptyFieldFunc]/[codex.IsZeroValue] for the full
+// "why not just change OptionalField" rationale. Use this when sending an
+// empty/zero query value and sending none at all have DIFFERENT meaning to
+// the server (e.g. a filter param that should be absent, not "?filter=",
+// when unset).
+//
+// V need not be string — see [codex.NewParam] for merging a query value
+// directly into an int/UUID/etc.
+func NewOmitEmptyQueryParam[T, V any](
+	name string,
+	codec codex.Codec[V],
+	get func(T) V,
+	set func(*T, V),
+) MergedQueryParam[T] {
+	strCodec := codex.StringValidatorFrom(codec)
+	return MergedQueryParam[T]{
+		QueryParam: QueryParam{Name: name, Codec: &strCodec, Required: false},
+		field:      codex.OmitEmptyFieldFunc(name, codec, get, set, codex.IsZeroValue),
+	}
+}
+
 // WithDescription sets the PARAMETER-level description and returns the
 // updated value, mirroring QueryParam.WithCodec's existing chain style.
 func (q MergedQueryParam[T]) WithDescription(desc string) MergedQueryParam[T] {
@@ -2031,6 +2058,28 @@ func NewOptionalCookieParam[T, V any](
 	return MergedCookieParam[T]{
 		CookieParam: CookieParam{Name: name, Codec: &strCodec, Required: false},
 		field:       codex.OptionalField(name, codec, get, set),
+	}
+}
+
+// NewOmitEmptyCookieParam declares an OPTIONAL cookie parameter that is
+// merged into Req by [RouteHandle.DecodeMerged] exactly like
+// [NewOptionalCookieParam], but OMITS its key entirely from the ENCODE
+// direction (e.g. [RouteHandle.EncodeCookieVars]) whenever its current
+// value is V's Go zero value — see [NewOmitEmptyQueryParam]'s doc comment
+// for the full rationale.
+//
+// V need not be string — see [codex.NewParam] for merging a cookie value
+// directly into an int/UUID/etc.
+func NewOmitEmptyCookieParam[T, V any](
+	name string,
+	codec codex.Codec[V],
+	get func(T) V,
+	set func(*T, V),
+) MergedCookieParam[T] {
+	strCodec := codex.StringValidatorFrom(codec)
+	return MergedCookieParam[T]{
+		CookieParam: CookieParam{Name: name, Codec: &strCodec, Required: false},
+		field:       codex.OmitEmptyFieldFunc(name, codec, get, set, codex.IsZeroValue),
 	}
 }
 
@@ -2133,6 +2182,31 @@ func NewOptionalHeaderParam[T, V any](
 	return MergedHeaderParam[T]{
 		HeaderParam: HeaderParam{Name: name, Codec: &strCodec, Required: false},
 		field:       codex.OptionalField(name, codec, get, set),
+	}
+}
+
+// NewOmitEmptyHeaderParam declares an OPTIONAL header parameter that is
+// merged into Req by [RouteHandle.DecodeMerged] exactly like
+// [NewOptionalHeaderParam], but OMITS its key entirely from the ENCODE
+// direction (e.g. [RouteHandle.EncodeHeaderVars]) whenever its current
+// value is V's Go zero value — see [NewOmitEmptyQueryParam]'s doc comment
+// for the full rationale. The motivating case: an anonymous-access
+// credential Fn that returns an empty-string token should send NO
+// Authorization-style header at all, not one with an empty value — see
+// examples/go-edge-models/app/registry/auth.go.
+//
+// V need not be string — see [codex.NewParam] for merging a header value
+// directly into an int/UUID/etc.
+func NewOmitEmptyHeaderParam[T, V any](
+	name string,
+	codec codex.Codec[V],
+	get func(T) V,
+	set func(*T, V),
+) MergedHeaderParam[T] {
+	strCodec := codex.StringValidatorFrom(codec)
+	return MergedHeaderParam[T]{
+		HeaderParam: HeaderParam{Name: name, Codec: &strCodec, Required: false},
+		field:       codex.OmitEmptyFieldFunc(name, codec, get, set, codex.IsZeroValue),
 	}
 }
 
@@ -2388,6 +2462,28 @@ func NewOptionalResponseHeaderParam[Resp, V any](
 	}
 }
 
+// NewOmitEmptyResponseHeaderParam declares an OPTIONAL response header that
+// is merged exactly like [NewOptionalResponseHeaderParam], but the SERVER's
+// own encode direction (via [RouteHandle.EncodeResponseMergeFields]) OMITS
+// the header entirely whenever its current value is V's Go zero value —
+// see [NewOmitEmptyQueryParam]'s doc comment for the full rationale, applied
+// to the response direction.
+//
+// V need not be string — see [codex.NewParam] for merging a response
+// header value directly into an int/UUID/etc.
+func NewOmitEmptyResponseHeaderParam[Resp, V any](
+	name string,
+	codec codex.Codec[V],
+	get func(Resp) V,
+	set func(*Resp, V),
+) MergedResponseHeaderParam[Resp] {
+	strCodec := codex.StringValidatorFrom(codec)
+	return MergedResponseHeaderParam[Resp]{
+		ResponseHeaderParam: ResponseHeaderParam{Name: name, Codec: &strCodec, Required: false},
+		field:               codex.OmitEmptyFieldFunc(name, codec, get, set, codex.IsZeroValue),
+	}
+}
+
 // WithDescription sets the PARAMETER-level description and returns the
 // updated value.
 func (p MergedResponseHeaderParam[Resp]) WithDescription(desc string) MergedResponseHeaderParam[Resp] {
@@ -2460,6 +2556,28 @@ func NewOptionalResponseCookieParam[Resp, V any](
 	return MergedResponseCookieParam[Resp]{
 		ResponseCookieParam: ResponseCookieParam{Name: name, Codec: &strCodec, Required: false},
 		field:               codex.OptionalField(name, codec, get, set),
+	}
+}
+
+// NewOmitEmptyResponseCookieParam declares an OPTIONAL response cookie that
+// is merged exactly like [NewOptionalResponseCookieParam], but the
+// SERVER's own encode direction (via [RouteHandle.EncodeResponseMergeFields])
+// OMITS the Set-Cookie entirely whenever its current value is V's Go zero
+// value — see [NewOmitEmptyQueryParam]'s doc comment for the full
+// rationale, applied to the response direction.
+//
+// V need not be string — see [codex.NewParam] for merging a response
+// cookie value directly into an int/UUID/etc.
+func NewOmitEmptyResponseCookieParam[Resp, V any](
+	name string,
+	codec codex.Codec[V],
+	get func(Resp) V,
+	set func(*Resp, V),
+) MergedResponseCookieParam[Resp] {
+	strCodec := codex.StringValidatorFrom(codec)
+	return MergedResponseCookieParam[Resp]{
+		ResponseCookieParam: ResponseCookieParam{Name: name, Codec: &strCodec, Required: false},
+		field:               codex.OmitEmptyFieldFunc(name, codec, get, set, codex.IsZeroValue),
 	}
 }
 
@@ -2587,16 +2705,51 @@ func FromSecurityScheme(schemeName string, scheme SecurityScheme, scopes []strin
 }
 
 // SecurityMiddleware is [FromSecurityScheme]'s codec-backed-family
-// equivalent — builds a [Middleware][struct{}, struct{}] carrying ONLY a
-// [middleware.SecurityDeclaration] (In=Out=struct{}, no var-boundary to
-// decode), attachable via the SAME .Use(...)/HandleMW(...)/ClientMW(...)
-// vocabulary as any other codec-backed middleware. Part of the
-// middleware-consolidation effort (docs/design/d-0003-codec-declared-middlewares.md)
-// folding Security into the codec-backed family instead of the legacy
-// [middleware.Middleware] type.
-func SecurityMiddleware(schemeName string, scheme SecurityScheme, scopes []string) Middleware[struct{}, struct{}] {
-	return NewMiddleware[struct{}, struct{}](middleware.Declaration[struct{}, struct{}]{
+// equivalent — builds a [Middleware][In, Out] carrying ONLY a
+// [middleware.SecurityDeclaration], attachable via the SAME
+// .Use(...)/HandleMW(...)/ClientMW(...) vocabulary as any other
+// codec-backed middleware. Part of the middleware-consolidation effort
+// (docs/design/d-0003-codec-declared-middlewares.md) folding Security
+// into the codec-backed family instead of the legacy [middleware.Middleware]
+// type.
+//
+// Generalized over In/Out (docs/roadmap/declarative-middleware-layering.md's
+// Rollout Phase A) — away from a hardcoded Middleware[struct{}, struct{}]
+// — so a caller needing the credential-providing fn to ALSO decode
+// request header/cookie/query merge fields (e.g. an API-key header
+// declared via [Middleware.WithRequestHeader]) can do so with the SAME
+// SecurityMiddleware call, instead of composing a separate codec-backed
+// Middleware by hand. Most callers — those using the PURE
+// credential-carrier pattern (a legacy-shaped fn, e.g. func(ctx,
+// *http.Request, *Req) (map[string][]string, error), attached via the
+// LEGACY path — see [Route.HandleMW]'s shape-detection doc comment) —
+// pass In=Out=struct{} explicitly:
+//
+//	var basicAuthMw = rest.SecurityMiddleware[struct{}, struct{}]("basicAuth", scheme, nil)
+//
+// Go cannot infer In/Out here (no parameter is typed by them) — every
+// caller must supply explicit type arguments; this is a deliberate,
+// one-time migration (every existing call site updated alongside this
+// change), not an inference gap left unresolved.
+//
+// InCodec/OutCodec default to [codex.Struct][In]()/[codex.Struct][Out]()
+// (a FIELDLESS struct codec — confirmed safe: Encode/Decode/Validate all
+// succeed as a no-op round-trip when zero fields are declared) rather
+// than a zero-value [codex.Codec], which would PANIC the first time
+// [Middleware]'s dispatch calls InCodec.Validate/OutCodec.Validate (a
+// zero-value Codec's Encode/Decode funcs are nil) — confirmed via an
+// actual panic caught migrating examples/go-edge-models' BearerAuthDeclaration
+// onto a REAL In type (BearerCredential) for the first time. A caller
+// wanting genuine In/Out validation beyond "didn't panic" declares real
+// fields via the ordinary [middleware.NewDeclaration]-based constructor
+// path instead — this default only needs to be SAFE, not meaningful,
+// for the PURE credential-carrier pattern (In=Out=struct{}) every
+// existing caller still uses.
+func SecurityMiddleware[In, Out any](schemeName string, scheme SecurityScheme, scopes []string) Middleware[In, Out] {
+	return NewMiddleware[In, Out](middleware.Declaration[In, Out]{
 		Name:     "declare-security:" + schemeName,
+		InCodec:  codex.Struct[In](),
+		OutCodec: codex.Struct[Out](),
 		Security: middleware.NewSecurityDeclaration(schemeName, scheme.SecurityScheme, scopes, scheme.Codec),
 	})
 }
@@ -3770,8 +3923,8 @@ type SSERouteHandle[Req, Event any] struct {
 
 	// MiddlewareHandlers/ClientMiddlewareHandlers hold every
 	// [MiddlewareHandler]/[ClientMiddlewareHandler] attached via
-	// [TransformSSE]/[ClientTransformSSE], in attachment order — the SSE
-	// counterpart to [RouteHandle.MiddlewareHandlers]/
+	// [SSERoute.HandleMW]/[SSERoute.ClientMW]'s bound path, in attachment
+	// order — the SSE counterpart to [RouteHandle.MiddlewareHandlers]/
 	// [RouteHandle.ClientMiddlewareHandlers]. MiddlewareHandlers is
 	// server-only (mirrors Implementations); ClientMiddlewareHandlers
 	// populates on BOTH registerHandle and ClientHandle (mirrors
@@ -3837,12 +3990,12 @@ func (h *SSERouteHandle[Req, Event]) ResponseCookieMergeFields() []codex.FieldCo
 // migration note for the exact dispatch timing.
 func (h *SSERouteHandle[Req, Event]) EncodeResponseMergeFields(event Event) (headers, cookies map[string]string, err error) {
 	if fields := h.ResponseHeaderMergeFields(); len(fields) > 0 {
-		if headers, err = codex.EncodeVars(event, fields...); err != nil {
+		if headers, err = codex.EncodeMergeVars(event, fields...); err != nil {
 			return nil, nil, err
 		}
 	}
 	if fields := h.ResponseCookieMergeFields(); len(fields) > 0 {
-		if cookies, err = codex.EncodeVars(event, fields...); err != nil {
+		if cookies, err = codex.EncodeMergeVars(event, fields...); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -3876,19 +4029,19 @@ func (h *SSERouteHandle[Req, Event]) EncodeVars(req Req) (map[string]string, err
 // EncodeQueryVars is [EncodeVars]'s query-param sibling, deriving from
 // [SSERouteHandle.QueryMergeFields].
 func (h *SSERouteHandle[Req, Event]) EncodeQueryVars(req Req) (map[string]string, error) {
-	return codex.EncodeVars(req, h.queryMergeFields...)
+	return codex.EncodeMergeVars(req, h.queryMergeFields...)
 }
 
 // EncodeHeaderVars is [EncodeVars]'s header-param sibling, deriving from
 // [SSERouteHandle.HeaderMergeFields].
 func (h *SSERouteHandle[Req, Event]) EncodeHeaderVars(req Req) (map[string]string, error) {
-	return codex.EncodeVars(req, h.headerMergeFields...)
+	return codex.EncodeMergeVars(req, h.headerMergeFields...)
 }
 
 // EncodeCookieVars is [EncodeVars]'s cookie-param sibling, deriving from
 // [SSERouteHandle.CookieMergeFields].
 func (h *SSERouteHandle[Req, Event]) EncodeCookieVars(req Req) (map[string]string, error) {
-	return codex.EncodeVars(req, h.cookieMergeFields...)
+	return codex.EncodeMergeVars(req, h.cookieMergeFields...)
 }
 
 // BuildPath substitutes {varName} placeholders in the route's path template

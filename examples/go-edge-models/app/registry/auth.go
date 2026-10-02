@@ -56,12 +56,16 @@ import (
 // zero manual HTTP request building, zero manual response parsing
 // anywhere in this file. The WWW-Authenticate challenge is decoded via
 // internal.WWWAuthenticateCodec (parseChallenge is a thin wrapper around
-// its Decode); the Bearer/Basic Authorization header values are built via
-// internal.BearerTokenCodec/internal.BasicAuthCodec (formatBearerToken/
-// formatBasicAuth are thin wrappers around their Encode direction); the
-// Docker Distribution auth-scope string is built via
-// internal.DockerScopeCodec (formatDockerScope). None of these require a
-// caller to import the internal package.
+// its Decode); the Bearer Authorization header value is built via
+// regmodels.BearerAuthDeclaration's own codec-declared merge field
+// (docs/roadmap/declarative-middleware-layering.md's Rollout Phase A —
+// no more hand-building an http.Header value directly), reusing
+// internal.BearerTokenCodec internally; Basic's Authorization header
+// value is built via internal.BasicAuthCodec (formatBasicAuth is a thin
+// wrapper around its Encode direction); the Docker Distribution
+// auth-scope string is built via internal.DockerScopeCodec
+// (formatDockerScope). None of these require a caller to import the
+// internal package.
 //
 // BOTH credential schemes this package uses (Bearer, on
 // GetTagsRoute/GetManifestRoute; Basic, on getTokenRoute's token-exchange
@@ -115,15 +119,6 @@ func formatDockerScope(resourceType, name string, actions []string) (string, err
 		return "", err
 	}
 	return raw.(string), nil
-}
-
-// formatBearerToken formats token as an "Authorization: Bearer <token>"
-// header value — a thin wrapper around internal.BearerTokenCodec.Encode,
-// which never fails for a plain string, so this returns just the
-// formatted string (no error) for ergonomic call sites.
-func formatBearerToken(token string) string {
-	raw, _ := internal.BearerTokenCodec.Encode(token)
-	return raw.(string)
 }
 
 // formatBasicAuth formats username/password as an "Authorization: Basic
@@ -316,7 +311,17 @@ func authenticate(ctx context.Context, httpClient *http.Client, registryHost, re
 // readability at call sites that need to store or pass one around
 // (newAuthCredentialFunc's return type, passed to .ClientMW(&mw, fn) as
 // fn) instead of repeating the full inline function type.
-type credentialFunc = func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error)
+// credentialFunc names the bound-ClientMW shape newAuthCredentialFunc
+// returns — func(ctx, req Req) (regmodels.BearerCredential, error). Req is
+// never referenced by the body (mirrors the PRIOR shape's ignored
+// []route.SecurityRequirement parameter exactly) — generic purely so the
+// SAME shape can be reused across GetTagsRoute (Req=regmodels.GetTagsReq)
+// and GetManifestRoute (Req=regmodels.GetManifestReq); ClientMW's bound-
+// path shape detection recognizes func(ctx, Req) (In, error) by its 2nd
+// param's type, so each call site instantiates newAuthCredentialFunc with
+// its OWN route's concrete Req (docs/roadmap/declarative-middleware-layering.md's
+// Rollout Phase A).
+type credentialFunc[Req any] = func(ctx context.Context, req Req) (regmodels.BearerCredential, error)
 
 // newAuthCredentialFunc returns a credentialFunc that authenticates
 // against registryHost for repository LAZILY — on first invocation by
@@ -333,18 +338,23 @@ type credentialFunc = func(ctx context.Context, reqs []route.SecurityRequirement
 // getimagemetadata.go's GetImageMetadata, which reuses one credentialFunc across two
 // GetManifestRoute calls while resolving a manifest list).
 //
-// Returns a nil header (no-op — the request goes out unauthenticated)
-// when the registry turns out to require no auth at all (authenticate
-// returns "" for a 2xx Ping). Returns any authentication error
-// (RegistryAuthChallengeError/RegistryAuthError) unchanged once observed --
-// matching authenticate's own error behavior, just deferred to first use.
+// Returns a zero-value BearerCredential (Token: "") when the registry
+// turns out to require no auth at all (authenticate returns "" for a 2xx
+// Ping) — regmodels.BearerAuthDeclaration's own
+// [rest.NewOmitEmptyHeaderParam]-declared merge field OMITS the
+// Authorization header entirely in that case (docs/roadmap/
+// declarative-middleware-layering.md's Rollout Phase A: no more
+// hand-building an http.Header value directly). Returns any
+// authentication error (RegistryAuthChallengeError/RegistryAuthError)
+// unchanged once observed — matching authenticate's own error behavior,
+// just deferred to first use.
 //
 // Unexported: newAuthCredentialFunc (above) is the only caller — GetTags/
 // GetImageMetadata (gettags.go/getimagemetadata.go) go through THAT,
 // never this directly. This package's public surface is deliberately
 // just routes + client functions + domain structs/codecs — a caller
 // never needs to build their own credentialFunc directly.
-func newAuthCredentialFunc(httpClient *http.Client, registryHost, repository string, opts ...Option) credentialFunc {
+func newAuthCredentialFunc[Req any](httpClient *http.Client, registryHost, repository string, opts ...Option) credentialFunc[Req] {
 	o := resolveOptions(opts)
 	// A single WithCredentials value is the more specific override and
 	// wins over WithCredentialsByRegistry when both are supplied. When
@@ -363,19 +373,14 @@ func newAuthCredentialFunc(httpClient *http.Client, registryHost, repository str
 		token   string
 		authErr error
 	)
-	return func(ctx context.Context, _ []route.SecurityRequirement) (http.Header, error) {
+	return func(ctx context.Context, _ Req) (regmodels.BearerCredential, error) {
 		once.Do(func() {
 			token, authErr = authenticate(ctx, httpClient, registryHost, repository, creds, o.observer)
 		})
 		if authErr != nil {
-			return nil, authErr
+			return regmodels.BearerCredential{}, authErr
 		}
-		if token == "" {
-			return nil, nil // registry requires no auth for this request.
-		}
-		h := make(http.Header, 1)
-		h.Set("Authorization", formatBearerToken(token))
-		return h, nil
+		return regmodels.BearerCredential{Token: token}, nil
 	}
 }
 
@@ -386,7 +391,7 @@ func newAuthCredentialFunc(httpClient *http.Client, registryHost, repository str
 // only supplies the credential, attached via .ClientMW(&regmodels.BearerAuthDeclaration, fn)
 // in gettags.go's GetTags and getimagemetadata.go's GetImageMetadata:
 //
-//	authFn := newAuthCredentialFunc(httpClient, ref.Registry, ref.Repository, opts...)
+//	authFn := newAuthCredentialFunc[regmodels.GetTagsReq](httpClient, ref.Registry, ref.Repository, opts...)
 //	route := regmodels.GetTagsRoute.ClientMW(&regmodels.BearerAuthDeclaration, authFn)
 //	handle := route.ClientHandle()
 //	baseURL := registryBaseURL(ref.Registry)
@@ -417,7 +422,7 @@ func newAuthCredentialFunc(httpClient *http.Client, registryHost, repository str
 // when creds is non-nil. Built via rest.SecurityMiddleware
 // (docs/design/d-0003-codec-declared-middlewares.md), not the legacy
 // middleware.SecurityScheme.
-var basicAuthMw = rest.SecurityMiddleware("basicAuth", rest.SecurityScheme{SecurityScheme: route.BasicScheme(), Codec: &basicAuthCredCodec}, nil)
+var basicAuthMw = rest.SecurityMiddleware[struct{}, struct{}]("basicAuth", rest.SecurityScheme{SecurityScheme: route.BasicScheme(), Codec: &basicAuthCredCodec}, nil)
 
 var basicAuthCredCodec = c.String().Refine(validate.NonEmptyString)
 

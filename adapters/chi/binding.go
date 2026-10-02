@@ -64,7 +64,7 @@ func (a *chiIngestAdapter[T]) Activate(ctx context.Context, dst chan<- T, errs c
 				Capacity: cap(ch),
 			}
 		}
-	}, wrappedOpts)
+	}, wrappedOpts, a.handle.Implementations...)
 	a.sh.h.Store(h) // atomically activate the route registered at construction
 
 	forwardDone := make(chan struct{})
@@ -159,7 +159,11 @@ func (a *chiSSEAdapter[Event]) Activate(ctx context.Context, src gstream.Stream[
 		sseOpts.Topic = a.handle.Descriptor.Path
 	}
 	fn := SSEFromHub[struct{}, Event](hub, sseOpts)
-	a.sh.h.Store(sseHandlerFunc(a.handle, fn, a.opts.Options)) // activate the route registered at construction
+	// Gap-1 review fix (docs/roadmap/declarative-middleware-layering.md's
+	// Rollout Phase A review): previously passed NO Implementations, and
+	// sseHandlerFunc itself never dispatched handle.MiddlewareHandlers
+	// either — see nethttp.SSEAdapter's identical fix/rationale.
+	a.sh.h.Store(sseHandlerFunc(a.handle, fn, a.opts.Options, a.handle.Implementations...)) // activate the route registered at construction
 	<-ctx.Done()
 }
 
@@ -251,7 +255,7 @@ func (a *chiLatestAdapter[Resp]) Serve(_ context.Context, latest func() (Resp, b
 			return zero, NoLatestValueError{Path: a.handle.Descriptor.Path}
 		}
 		return v, nil
-	}, wrappedOpts)
+	}, wrappedOpts, a.handle.Implementations...)
 	a.sh.h.Store(h) // atomically activate the route registered at construction
 	return nil      // registration-style Serve: returns immediately
 }

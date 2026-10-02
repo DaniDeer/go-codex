@@ -28,6 +28,47 @@ func TestNewOptionalPropertyParam_NotRequired(t *testing.T) {
 	}
 }
 
+func TestNewOmitEmptyPropertyParam_NotRequired(t *testing.T) {
+	p := events.NewOmitEmptyPropertyParam("tenantID", codex.String(),
+		func(s string) string { return s },
+		func(s *string, v string) { *s = v })
+	if p.Required {
+		t.Error("want Required false")
+	}
+}
+
+// TestNewOmitEmptyPropertyParam_OmitsWhenEmpty_IncludesWhenPresent proves
+// the sparse-encode behavior end-to-end via [codex.EncodeMergeVars] (NOT
+// [codex.EncodeVars], which never omits — see
+// [events.ChannelHandle.EncodePropertyVars]'s own internal call).
+func TestNewOmitEmptyPropertyParam_OmitsWhenEmpty_IncludesWhenPresent(t *testing.T) {
+	b := events.NewClient(events.WithInfo(testInfo))
+	h, err := events.NewChannel[userEvent]("user/created", userEventCodec,
+		events.NewOmitEmptyPropertyParam("tenantID", codex.String(),
+			func(e userEvent) string { return e.Name },
+			func(e *userEvent, v string) { e.Name = v }),
+	).WithSubscribe(events.Subscribe{}).Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	vars, err := h.EncodePropertyVars(userEvent{ID: "u1", Name: ""})
+	if err != nil {
+		t.Fatalf("EncodePropertyVars: %v", err)
+	}
+	if _, ok := vars["tenantID"]; ok {
+		t.Errorf("want tenantID omitted, got %q", vars["tenantID"])
+	}
+
+	vars, err = h.EncodePropertyVars(userEvent{ID: "u1", Name: "acme"})
+	if err != nil {
+		t.Fatalf("EncodePropertyVars: %v", err)
+	}
+	if vars["tenantID"] != "acme" {
+		t.Errorf("want tenantID %q, got %q", "acme", vars["tenantID"])
+	}
+}
+
 func TestPropertyParam_WithCodec(t *testing.T) {
 	c := codex.String()
 	p := events.PropertyParam{Param: codex.Param{Name: "x"}}.WithCodec(c)

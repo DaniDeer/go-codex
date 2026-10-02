@@ -423,7 +423,7 @@ func runMiddlewareErrorDemo() {
 	inRoute := rest.NewRoute[demoReq, demoResp]("POST", "/orders", demoReqCodec, demoRespCodec,
 		rest.RouteMeta{OperationID: "createOrderIn"},
 	)
-	inRoute = rest.Transform(inRoute, inMW, func(ctx context.Context, req *demoReq, in policyIn) (policyOut, error) {
+	inRoute = inRoute.HandleMW(inMW, func(ctx context.Context, req *demoReq, in policyIn) (policyOut, error) {
 		return policyOut{Ack: "ok"}, nil
 	})
 	inRoute = inRoute.WithHandler(func(_ context.Context, req demoReq) (demoResp, error) {
@@ -457,7 +457,7 @@ func runMiddlewareErrorDemo() {
 		rest.RouteMeta{OperationID: "createOrderFn"},
 		rest.ErrorPattern[insufficientCreditError, insufficientCreditError](http.StatusPaymentRequired, creditErrorCodec),
 	)
-	fnRoute = rest.Transform(fnRoute, fnMW, func(ctx context.Context, req *demoReq, in policyIn) (policyOut, error) {
+	fnRoute = fnRoute.HandleMW(fnMW, func(ctx context.Context, req *demoReq, in policyIn) (policyOut, error) {
 		return policyOut{}, insufficientCreditError{Available: 5}
 	})
 	fnRoute = fnRoute.WithHandler(func(_ context.Context, req demoReq) (demoResp, error) {
@@ -490,7 +490,7 @@ func runMiddlewareErrorDemo() {
 	outRoute := rest.NewRoute[demoReq, demoResp]("POST", "/orders", demoReqCodec, demoRespCodec,
 		rest.RouteMeta{OperationID: "createOrderOut"},
 	)
-	outRoute = rest.Transform(outRoute, outMW, func(ctx context.Context, req *demoReq, in policyEmptyIn) (policyOut, error) {
+	outRoute = outRoute.HandleMW(outMW, func(ctx context.Context, req *demoReq, in policyEmptyIn) (policyOut, error) {
 		// Empty Ack fails policyOutCodec's NonEmptyString refinement at
 		// EncodeOut/OutCodec.Validate time — NOT the fn itself.
 		return policyOut{Ack: ""}, nil

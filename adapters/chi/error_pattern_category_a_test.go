@@ -218,7 +218,7 @@ func TestErrorPattern_MiddlewareDecodeIn_Matched_RespondsTyped(t *testing.T) {
 		rest.ErrorPattern[rest.MiddlewareInputError, codexErrBody](http.StatusUnprocessableEntity, codexErrBodyCodec,
 			func(e rest.MiddlewareInputError) (codexErrBody, error) { return codexErrBody{Count: 1}, nil }),
 	)
-	route = rest.Transform(route, newDecodeInFailingMiddleware(), func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
+	route = route.HandleMW(newDecodeInFailingMiddleware(), func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
 		return tdOut{Value: "ok"}, nil
 	})
 	route = route.WithHandler(func(_ context.Context, req createReq) (userResp, error) {
@@ -240,7 +240,7 @@ func TestErrorPattern_MiddlewareDecodeIn_NoPattern_FallsBackUnchanged(t *testing
 	route := rest.NewRoute[createReq, userResp]("POST", "/errors/mw-decode-in-unmatched",
 		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "createUser"},
 	)
-	route = rest.Transform(route, newDecodeInFailingMiddleware(), func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
+	route = route.HandleMW(newDecodeInFailingMiddleware(), func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
 		return tdOut{Value: "ok"}, nil
 	})
 	route = route.WithHandler(func(_ context.Context, req createReq) (userResp, error) {
@@ -323,7 +323,7 @@ func TestErrorPattern_MiddlewareEncodeOut_Matched_RespondsTyped(t *testing.T) {
 		rest.ErrorPattern[rest.MiddlewareOutputError, codexErrBody](http.StatusUnprocessableEntity, codexErrBodyCodec,
 			func(e rest.MiddlewareOutputError) (codexErrBody, error) { return codexErrBody{Count: 1}, nil }),
 	)
-	route = rest.Transform(route, newEncodeOutTestMiddleware(), func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
+	route = route.HandleMW(newEncodeOutTestMiddleware(), func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
 		return tdOut{Value: "not-a-uuid"}, nil // deliberately fails the UUID refine on EncodeOut
 	})
 	route = route.WithHandler(func(_ context.Context, req createReq) (userResp, error) {
@@ -346,7 +346,7 @@ func TestErrorPattern_MiddlewareEncodeOut_NoPattern_FallsBackUnchanged(t *testin
 	route := rest.NewRoute[createReq, userResp]("POST", "/errors/mw-encode-out-unmatched",
 		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "createUser"},
 	)
-	route = rest.Transform(route, newEncodeOutTestMiddleware(), func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
+	route = route.HandleMW(newEncodeOutTestMiddleware(), func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
 		return tdOut{Value: "not-a-uuid"}, nil
 	})
 	route = route.WithHandler(func(_ context.Context, req createReq) (userResp, error) {

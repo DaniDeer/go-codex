@@ -42,7 +42,7 @@ Two structural rules hold identically across all 3 packages:
 - Attaching two `Middleware[In,Out]` values with the same `Declaration.Name` to one route/channel
   returns `DuplicateMiddlewareNameError{Route/Channel, Name}`.
 - Combining BOTH attachment styles on one `Middleware` value (bundled `WithReceive`/`WithSend` AND
-  attached via `Transform`/`ClientTransform`) returns `AmbiguousMiddlewareAttachmentError{Name}`.
+  attached via `HandleMW`/`ClientMW`'s bound path) returns `AmbiguousMiddlewareAttachmentError{Name}`.
 
 **Value precedence.** When a route's/channel's own merge (derived from `Req`/payload) and a
 middleware's own merge target the SAME var/header/property name, the middleware-derived value
@@ -61,7 +61,7 @@ apiKeyPolicy := rest.NewMiddleware(
     func(in *APIKeyIn, v string) { in.Key = v },
 ))
 
-route = rest.Transform(route, apiKeyPolicy,
+route = route.HandleMW(apiKeyPolicy,
     func(ctx context.Context, req *GetProfileReq, in APIKeyIn) (APIKeyOut, error) {
         return APIKeyOut{Validated: true}, nil
     })
@@ -70,8 +70,8 @@ route = rest.Transform(route, apiKeyPolicy,
 Merge fields reuse the SAME constructors a route's own `Req`/`Resp` already use:
 `WithRequestHeader`/`WithRequestCookie`/`WithRequestQuery` (decoding `In`) and
 `WithResponseHeader`/`WithResponseCookie` (encoding `Out`). SSE routes attach the identical
-mechanism via `TransformSSE`/`ClientTransformSSE`. See
-[Feature: REST API — Codec-backed middleware](rest-api.md#codec-backed-middleware-transformclienttransform)
+mechanism via `SSERoute.HandleMW`/`SSERoute.ClientMW`. See
+[Feature: REST API — Codec-backed middleware](rest-api.md#codec-backed-middleware-handlemwclientmw)
 for the full walkthrough, route-agnostic reuse example, and the REST-local error-type table.
 
 ## Events (`api/events`)
@@ -264,7 +264,7 @@ REP/ROUTER socket (which would violate REQ/REP's one-reply-per-request invariant
   [property vocabulary axis Addendum](../design/d-0003-codec-declared-middlewares.md#addendum-apireqreply-and-apievents-property-vocabulary-axis-bringing-both-up-to-full-parity-with-this-design)
 - [Guide: Error Handling — Middleware error paths](../guides/error-handling.md#middleware-error-paths--rest-events-reqreply-side-by-side) —
   the full 3-error-type reference table, side-by-side across all 3 APIs
-- [Feature: REST API — Codec-backed middleware](rest-api.md#codec-backed-middleware-transformclienttransform)
+- [Feature: REST API — Codec-backed middleware](rest-api.md#codec-backed-middleware-handlemwclientmw)
 - [Feature: Event Channels — Codec-backed middleware](events.md#codec-backed-middleware-transformclienttransform) ·
   [Feature: Event Channels — Dead-letter fallback](events.md#dead-letter-fallback--deadletter)
 - [Feature: Security & Auth](security.md) — the manual, call-time

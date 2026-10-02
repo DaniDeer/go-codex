@@ -44,11 +44,11 @@ var bearerAuthScheme = rest.SecurityScheme{SecurityScheme: route.BearerScheme("J
 // [rest.SecurityMiddleware] (docs/design/d-0003-codec-declared-middlewares.md),
 // not the legacy middleware.SecurityScheme — the migration representative
 // sample for the middleware-consolidation effort.
-var ProfileScopeMw = rest.SecurityMiddleware("bearerAuth", bearerAuthScheme, []string{"profile"})
+var ProfileScopeMw = rest.SecurityMiddleware[struct{}, struct{}]("bearerAuth", bearerAuthScheme, []string{"profile"})
 
 // AdminScopeMw declares the SAME "bearerAuth" scheme, requiring the
 // "admin" scope — attached via .Use(AdminScopeMw) on privileged routes.
-var AdminScopeMw = rest.SecurityMiddleware("bearerAuth", bearerAuthScheme, []string{"admin"})
+var AdminScopeMw = rest.SecurityMiddleware[struct{}, struct{}]("bearerAuth", bearerAuthScheme, []string{"admin"})
 
 // ── Middleware kind 2: observer ──────────────────────────────────────────────
 //

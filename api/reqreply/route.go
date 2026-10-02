@@ -1484,7 +1484,7 @@ func (h *RouteHandle[Req, Resp]) EncodePropertyVars(req Req) (map[string]string,
 	if len(h.propertyMergeFields) == 0 {
 		return nil, nil
 	}
-	return codex.EncodeVars(req, h.propertyMergeFields...)
+	return codex.EncodeMergeVars(req, h.propertyMergeFields...)
 }
 
 // EncodeVars derives topic variables FROM an already-built req, using the

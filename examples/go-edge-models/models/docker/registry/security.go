@@ -3,6 +3,7 @@ package registry
 import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	c "github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/examples/go-edge-models/internal/registry"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -36,17 +37,43 @@ const BearerAuthSchemeName = "bearerAuth"
 // credential-supplying Fn gets a genuine extra safety net for free from
 // this Codec: nethttp.Call validates its returned Authorization header's
 // bare token against it before sending, on top of (not instead of) the
-// fact that formatBearerToken/internal.BearerTokenCodec.Encode already
-// construct that header from a codec — this catches an empty token
-// specifically, which the encode-side codec alone does not.
+// fact that BearerCredential's own merge-field codec
+// (internal.BearerTokenCodec) already constructs that header value — this
+// catches an empty token specifically, which the encode-side codec alone
+// does not.
 var BearerAuthScheme = rest.SecurityScheme{
 	SecurityScheme: route.BearerScheme(""),
 }.WithCodec(c.String().Refine(validate.NonEmptyString))
 
-// BearerAuthDeclaration is the spec-only codec-backed middleware
-// GetTagsRoute/GetManifestRoute attach via [rest.Route.Use] — see
-// BearerAuthSchemeName's own doc comment for why this codebase declares
-// (but never enforces) this requirement. Built via rest.SecurityMiddleware
-// (docs/design/d-0003-codec-declared-middlewares.md), not the legacy
-// middleware.SecurityScheme.
-var BearerAuthDeclaration = rest.SecurityMiddleware(BearerAuthSchemeName, BearerAuthScheme, nil)
+// BearerCredential is the codec-declared merge-field carrier for
+// GetTagsRoute/GetManifestRoute's bearerAuth credential — docs/roadmap/
+// declarative-middleware-layering.md's Rollout Phase A: the "bearer token
+// -> Authorization header" transform, and the anonymous-access
+// (empty-token -> no header at all) case, are now BOTH declared via a
+// codec-backed [MergedHeaderParam] rather than app/registry's
+// newAuthCredentialFunc hand-building an http.Header value directly. Token
+// is the BARE token (no "Bearer " prefix) — internal.BearerTokenCodec
+// handles the wire-format transform directly (BearerAuthDeclaration's own
+// merge field below, replacing app/registry's prior formatBearerToken
+// helper).
+type BearerCredential struct {
+	Token string
+}
+
+// BearerAuthDeclaration is the codec-backed middleware GetTagsRoute/
+// GetManifestRoute attach via [rest.Route.Use] (spec-only there — no Fn
+// bundled) — see BearerAuthSchemeName's own doc comment for why this
+// codebase declares (but never enforces) this requirement. app/registry's
+// newAuthCredentialFunc supplies the credential CLIENT-side, attached via
+// [rest.Route.ClientMW] — its Fn's shape (func(ctx, Req) (BearerCredential,
+// error)) is recognized by ClientMW's bound-path shape detection
+// automatically, dispatching through the SAME merge-field mechanism this
+// declaration's WithRequestHeader registers below: an empty Token omits
+// the Authorization header entirely (the anonymous-access case,
+// [rest.NewOmitEmptyHeaderParam]'s own documented motivation), a non-empty
+// Token encodes it via internal.BearerTokenCodec.
+var BearerAuthDeclaration = rest.SecurityMiddleware[BearerCredential, struct{}](BearerAuthSchemeName, BearerAuthScheme, nil).
+	WithRequestHeader(rest.NewOmitEmptyHeaderParam("Authorization", internal.BearerTokenCodec,
+		func(cred BearerCredential) string { return cred.Token },
+		func(cred *BearerCredential, v string) { cred.Token = v },
+	))

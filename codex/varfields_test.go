@@ -172,6 +172,79 @@ func TestEncodeVars_DecodeVars_RoundTrip(t *testing.T) {
 	}
 }
 
+// ── EncodeMergeVars ─────────────────────────────────────────────────────────
+
+var varOmitNoteField = codex.OmitEmptyField("note", codex.String(),
+	func(r varTestReq) string { return r.Note },
+	func(r *varTestReq, v string) { r.Note = v })
+
+func TestEncodeMergeVars_HappyPath(t *testing.T) {
+	req := varTestReq{ID: "abc-123", Note: "hello"}
+	vars, err := codex.EncodeMergeVars(req, varIDField, varOmitNoteField)
+	if err != nil {
+		t.Fatalf("EncodeMergeVars: %v", err)
+	}
+	if vars["id"] != "abc-123" {
+		t.Errorf("vars[id]: want %q, got %q", "abc-123", vars["id"])
+	}
+	if vars["note"] != "hello" {
+		t.Errorf("vars[note]: want %q, got %q", "hello", vars["note"])
+	}
+}
+
+func TestEncodeMergeVars_SparseOmit(t *testing.T) {
+	req := varTestReq{ID: "abc-123", Note: ""}
+	vars, err := codex.EncodeMergeVars(req, varIDField, varOmitNoteField)
+	if err != nil {
+		t.Fatalf("EncodeMergeVars: %v", err)
+	}
+	if _, ok := vars["note"]; ok {
+		t.Errorf("vars[note]: want omitted, got %q", vars["note"])
+	}
+	if vars["id"] != "abc-123" {
+		t.Errorf("vars[id]: want %q, got %q", "abc-123", vars["id"])
+	}
+}
+
+func TestEncodeMergeVars_NonSparseFieldUnaffected(t *testing.T) {
+	req := varTestReq{ID: "abc-123", Amount: 7}
+	vars, err := codex.EncodeMergeVars(req, varIDField, varAmountField)
+	if err != nil {
+		t.Fatalf("EncodeMergeVars: %v", err)
+	}
+	if vars["amount"] != "7" {
+		t.Errorf("vars[amount]: want %q, got %q", "7", vars["amount"])
+	}
+}
+
+func TestEncodeMergeVars_NonStringCodec(t *testing.T) {
+	req := varTestReq{Amount: 7}
+	_, err := codex.EncodeMergeVars(req, nonStringField)
+	if err == nil {
+		t.Fatal("expected VarEncodeTypeError")
+	}
+	var vete codex.VarEncodeTypeError
+	if !errors.As(err, &vete) {
+		t.Fatalf("expected VarEncodeTypeError, got %T: %v", err, err)
+	}
+}
+
+// TestEncodeMergeVars_EncodeVarsUnaffected is a regression guard confirming
+// EncodeMergeVars's addition did not change EncodeVars's own "always write
+// every field" behavior (sparse fields are written unconditionally under
+// plain EncodeVars, matching OptionalField's convention -- see
+// sparseField.encode's own doc comment).
+func TestEncodeMergeVars_EncodeVarsUnaffected(t *testing.T) {
+	req := varTestReq{ID: "abc-123", Note: ""}
+	vars, err := codex.EncodeVars(req, varIDField, varOmitNoteField)
+	if err != nil {
+		t.Fatalf("EncodeVars: %v", err)
+	}
+	if v, ok := vars["note"]; !ok || v != "" {
+		t.Errorf("vars[note]: want present and empty, got ok=%v val=%q", ok, v)
+	}
+}
+
 func TestVarEncodeTypeError_LogValue(t *testing.T) {
 	err := codex.VarEncodeTypeError{Field: "amount", Got: "int"}
 	lv := err.LogValue()

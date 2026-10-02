@@ -12,6 +12,19 @@
 > shrunk to `{Name, Security}` (see Addendum 3 for the full reasoning and
 > what was deleted).
 >
+> **Addendum 4 below further UPDATES `api/rest` specifically**:
+> `Transform`/`ClientTransform`/`TransformSSE`/`ClientTransformSSE` (the
+> route/channel-BOUND attachment mechanism this doc's main body and
+> earlier addenda describe) were REMOVED — folded into
+> `HandleMW`/`ClientMW` via reflection-based shape detection
+> (`docs/roadmap/declarative-middleware-layering.md`'s Rollout Phase A).
+> Every `rest.Transform(...)`/`rest.ClientTransform(...)` code sample
+> below is HISTORICAL — accurate for `api/events`/`api/reqreply` (Phase
+> B/C, not yet implemented) but no longer for `api/rest`. See Addendum 4
+> for the current `api/rest` mechanism, the `GrantedScopes` Security
+> convention, and the `codex.EncodeMergeVars`/omit-empty constructor
+> family.
+>
 > **Forward-looking note (not a status change):**
 > [Feature](d-0006-protocol-native-capabilities.md) (a broader
 > roadmap-stage redesign, idea only, no code written — formerly titled
@@ -1956,3 +1969,159 @@ symbol (`FromHeaderParam`/`FromCookieParam`/`FromQueryParam`/
 `FromResponseHeaderParam`/`FromResponseCookieParam`/
 `FromUserPropertyParam`/`FromResponseUserPropertyParam`/
 `UnsupportedMiddlewareParamsError`).
+
+## Addendum 4: `api/rest`'s `Transform`/`ClientTransform` folded into `HandleMW`/`ClientMW` — unified reflection dispatch (Rollout Phase A)
+
+Absorbs the REST-specific outcome of
+`docs/roadmap/declarative-middleware-layering.md`'s Rollout Phase A (that
+roadmap doc stays in `docs/roadmap/` — Phase B/C, `api/events`/
+`api/reqreply`, remain open). **This addendum documents a REAL change to
+shipped `api/rest` code** — unlike Addendum 3's additive consolidation,
+this one REMOVES 4 previously-shipped free functions
+(`Transform`/`ClientTransform`/`TransformSSE`/`ClientTransformSSE`,
+documented throughout this doc's main body and Addendum 2/3 above as the
+route/channel-BOUND attachment mechanism). Every code sample above
+showing `rest.Transform(route, mw, fn)`/`rest.ClientTransform(route, mw,
+fn)` is now HISTORICAL — accurate as a description of the architecture
+AT THE TIME this doc's main body/earlier addenda were written, not of
+current code. The CONCEPT (route-BOUND, `*Req`-aware dispatch for a
+codec-backed `Middleware[In,Out]`) is unchanged; only the SURFACE moved.
+
+### What changed
+
+`Route.HandleMW`/`SSERoute.HandleMW`/`Route.ClientMW`/`SSERoute.ClientMW` —
+previously the LEGACY-only attachment methods (`middleware.Middleware`/
+`nil`, building a `middleware.ServerImplementation`/`ClientImplementation`
+unconditionally) — now ALSO recognize a codec-backed `Middleware[In,Out]`
+and dispatch it through the SAME route-BOUND mechanism `Transform`/
+`ClientTransform` used to provide, via `fn`'s REFLECTED signature (not
+`mw`'s type):
+
+- `HandleMW`'s bound shape: `func(ctx context.Context, req *Req, in In) (Out, error)` —
+  3-in/2-out, 2nd param type `*Req` (the route's OWN type). A legacy
+  credential shape (`func(ctx, *http.Request, *Req) (map[string][]string, error)`)
+  is ALSO 3-in/2-out but its 2nd param is `*http.Request`, not `*Req` —
+  the two are distinguished by that 2nd-param-type check alone,
+  confirmed NECESSARY (not merely sufficient) via a real bug this
+  phase's own migration work caught: `rest.SecurityMiddleware[In, Out]`
+  (see below) can ALSO return a codec-backed `Middleware[In,Out]` used
+  PURELY as a legacy credential-shape carrier — mw's TYPE alone cannot
+  distinguish the two cases.
+- `ClientMW`'s bound shape: `func(ctx context.Context, req Req) (In, error)` —
+  2-in/2-out, 2nd param type `Req` BY VALUE. The legacy credential shape
+  (`func(ctx, []route.SecurityRequirement) (http.Header, error)`) is ALSO
+  2-in/2-out, distinguished the same way (2nd param type `Req` vs.
+  `[]route.SecurityRequirement`).
+
+`MiddlewareHandler`/`ClientMiddlewareHandler` gained a `Satisfies
+[]string` field (mirroring `middleware.ServerImplementation.Satisfies`/
+`ClientImplementation.Satisfies` exactly), and `CheckCoverage` gained a
+4th parameter (`handlers []MiddlewareHandler`) to check BOTH lists —
+closing the gap where a codec-backed Security middleware's coverage was
+previously invisible to this check.
+
+### Security folded onto the SAME mechanism — the `GrantedScopes` convention
+
+Security-carrying codec-backed middleware (built via
+`rest.SecurityMiddleware[In, Out]`, now GENERALIZED over In/Out — away
+from a hardcoded `Middleware[struct{}, struct{}]`) dispatches through the
+IDENTICAL `HandleMW`/`ClientMW` mechanism as any other codec-backed
+middleware. `adapters/nethttp`/`adapters/chi`'s own separate
+`runSecurityMiddleware`/`httpsecurity.RunSecurityMiddlewareReflect` code
+path (which only ever consulted the legacy
+`middleware.ServerImplementation` shape) is RETIRED — replaced by:
+
+1. `httpsecurity.CollectGrantsReflect` — runs the legacy security-shaped
+   impls, returning merged grants WITHOUT calling `middleware.CheckScopes`
+   yet.
+2. `rest.DispatchMiddlewareHandlers` runs (as it already did for ordinary
+   middleware) — producing each handler's decoded `Out`.
+3. `httpsecurity.MergeMiddlewareHandlerGrants` merges `GrantedScopes` from
+   every Security-Satisfying handler's `Out` into the SAME grants map —
+   read via `elem.FieldByName("GrantedScopes")`, the RESOLVED "conventional
+   field" design (Option 3 from this roadmap's own design review): `Out`
+   keeps the EXACT uniform `func(ctx, In) (Out, error)` signature every
+   other middleware uses; a Security `Out` type is simply EXPECTED to
+   carry a field named `GrantedScopes map[string][]string`.
+4. ONE final `middleware.CheckScopes` call combines both sources.
+
+A FAILING Security-Satisfying handler's own `Fn` error keeps Security's
+distinct fallback (401, `rest.SecurityError`) — looked up via the failing
+handler's `Name`/`Satisfies`, NOT a separate dispatch path — an ordinary
+(non-Security) middleware `Fn` error keeps the generic fallback (400,
+`rest.MiddlewareError`).
+
+`adapters/nethttp/client.go`'s `mergeCredentialHeaders` (the CLIENT-side
+legacy-credential-shape dispatcher) was investigated for the SAME
+retirement and found NOT to need it: it has no separate early
+`CheckScopes`-style call to reorder/unify (the client never judges its
+own authorization), and its shape genuinely needs `secReqs` itself (to
+decide which scheme's credential to produce) — a capability the bound
+`ClientMW` shape (`func(ctx, Req) (In, error)`, no `secReqs`) does not
+provide and was never meant to replace. It composes correctly, side by
+side with the new bound `ClientMiddlewareHandler` dispatch, via the SAME
+D3 precedence chain (explicit > middleware-derived > route-own-derived).
+
+### `codex.EncodeMergeVars` + the omit-empty constructor family
+
+A NEW sibling of `codex.EncodeVars` — `codex.EncodeMergeVars` — omits a
+merge field's key entirely from the encoded map when the field (declared
+via `codex.OmitEmptyField`/`OmitEmptyFieldFunc`/`OmitDefaultField`)
+reports itself not present, rather than always writing it unconditionally
+(`EncodeVars`'s own, DELIBERATELY unchanged behavior — still used for
+path/topic/dotted-key building, where a missing segment would corrupt the
+structure). Every REST merge-field location gained an omit-empty
+constructor pairing its existing Required/Optional pair:
+`NewOmitEmptyQueryParam`/`CookieParam`/`HeaderParam` (request side),
+`NewOmitEmptyResponseHeaderParam`/`ResponseCookieParam` (response side) —
+plus `events`/`reqreply`'s own `NewOmitEmptyPropertyParam` (no topic-param
+equivalent — a topic template var is positional/structural, no "optional"
+concept at all).
+
+The motivating real case: `examples/go-edge-models/app/registry/auth.go`'s
+`newAuthCredentialFunc` previously hand-built an `http.Header` value
+directly, returning `nil` for the anonymous-access (no-token) case.
+Migrated onto `examples/go-edge-models/models/docker/registry/security.go`'s
+`BearerAuthDeclaration` (now `Middleware[BearerCredential, struct{}]`,
+generalized from `Middleware[struct{}, struct{}]`) — `BearerCredential`'s
+`Token` field is declared via `NewOmitEmptyHeaderParam`, so an empty
+token OMITS the Authorization header entirely, matching the prior
+hand-built behavior exactly, declaratively. This migration ALSO caught a
+real bug: `SecurityMiddleware[In, Out]`'s generalization left
+`InCodec`/`OutCodec` at their Go zero value, which PANICS the first time
+dispatch calls `InCodec.Validate` for any non-`struct{}` `In` (a
+zero-value `codex.Codec`'s `Encode`/`Decode` funcs are nil). Fixed:
+`InCodec`/`OutCodec` default to `codex.Struct[In]()`/`codex.Struct[Out]()`
+(a fieldless struct codec — confirmed safe, a no-op round trip) instead.
+
+### `middleware.ContextFieldSetter` — fixing a sketch that didn't compile
+
+The roadmap doc's own Phase 3 design review caught, via an ACTUAL compile
+check, that its original sketch —
+`func (m Middleware[In, Out]) SetContextFieldFromIn(field
+middleware.ContextField[V], get func(In) any) Middleware[In, Out]` — does
+NOT compile (`undefined: V`; Go forbids a method introducing a type
+parameter beyond its receiver's own). Fixed with a new exported interface,
+`middleware.ContextFieldSetter` (`{ Set(ctx context.Context, raw any)
+error }`), which every `ContextField[V]` already satisfies regardless of
+V (`Set`'s own signature never references V). `Middleware[In,Out]` gained
+`SetContextFieldFromIn`/`SetContextFieldFromOut`, dispatched automatically
+— `FromIn` right after `DecodeIn`/alongside client-side `EncodeIn`,
+`FromOut` alongside `EncodeOut`/client-side `DecodeOut` — publishing into
+the SAME `middleware.ContextField` box `middleware.EnsureContextFields`
+pre-allocates. `EnsureContextFields` is now ALSO called by
+`clienttransport.go`'s `Call`/`Consume` (previously server-adapter-only),
+closing the client-side gap this new mechanism would otherwise have hit
+immediately.
+
+### Validation
+
+`gofmt -l .` clean; `go build ./...`/`go vet ./...` clean; `go test
+./...` clean across every package (including the real
+`examples/go-edge-models` migration, which caught the `SecurityMiddleware`
+codec panic described above); every example under `examples/*/` re-run to
+exit 0; a repo-wide grep confirmed zero remaining non-historical
+references to `rest.Transform`/`rest.ClientTransform`/`rest.TransformSSE`/
+`rest.ClientTransformSSE` (this doc's own code samples above are the
+historical exception, left as-is per this doc's standing "frozen design
+record" convention).

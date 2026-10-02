@@ -6,9 +6,11 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 
+	"github.com/DaniDeer/go-codex/adapters/internal/httpsecurity"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
@@ -145,45 +147,6 @@ func applyGeneralMiddleware(h http.Handler, impls []middleware.ServerImplementat
 		h = fn(h)
 	}
 	return h
-}
-
-// runSecurityMiddleware runs every attached security-specific Fn IN
-// ATTACHMENT ORDER (fail-fast on the FIRST one whose OWN credential
-// extraction errors), merges their returned grants into ONE map, then
-// performs a SINGLE [middleware.CheckScopes] call. Each Fn does NOT
-// independently decide pass/fail against the route's full requirement
-// set — doing so would incorrectly reject an AND-combined requirement
-// spanning multiple schemes even when every Fn succeeds (see
-// [middleware.CheckScopes]'s own doc comment).
-//
-// An implementation with an EMPTY Satisfies (a pure presence/format check,
-// e.g. an API-key format validator, contributing no scope grants) ALWAYS
-// runs, regardless of whether the route declares any Security — that is
-// its whole design point (a middleware may contribute a header/cookie/
-// query param spec entry without also requiring a security scheme). An
-// implementation with a NON-EMPTY Satisfies (e.g. a scope-checking
-// implementation) only
-// runs when the route actually declares a security requirement — an
-// unsecured route must not authenticate credentials it never asked for.
-func runSecurityMiddleware[Req any](ctx context.Context, r *http.Request, req *Req, impls []middleware.ServerImplementation, secReqs []route.SecurityRequirement) error {
-	granted := make(map[string][]string)
-	for _, impl := range impls {
-		fn, ok := impl.Fn.(func(context.Context, *http.Request, *Req) (map[string][]string, error))
-		if !ok {
-			continue
-		}
-		if len(impl.Satisfies) > 0 && len(secReqs) == 0 {
-			continue
-		}
-		g, err := fn(ctx, r, req)
-		if err != nil {
-			return err
-		}
-		for k, v := range g {
-			granted[k] = v
-		}
-	}
-	return middleware.CheckScopes(secReqs, granted)
 }
 
 // handlerFunc wraps a [rest.RouteHandle] and a [HandlerFunc] into an
@@ -389,21 +352,70 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 				return
 			}
 		}
-		// Run every attached security-specific Fn, merge grants, ONE
-		// middleware.CheckScopes call. Called even when secReqs
-		// is empty: a middleware with an EMPTY Satisfies (a pure
-		// presence/format check, e.g. RequireAPIKey) must still run — see
-		// runSecurityMiddleware's own doc comment.
-		if err := runSecurityMiddleware(ctx, r, &req, impls, secReqs); err != nil {
+		// Gap-1 review fix (docs/roadmap/declarative-middleware-layering.md's
+		// Rollout Phase A review): this ports-facing handlerFunc previously
+		// never dispatched handle.MiddlewareHandlers at all (neither the
+		// pre-Phase-A agnostic .Use(mw)-attached codec-backed middleware NOR
+		// Phase A's new bound-HandleMW style) — only serve.go's Attach path
+		// did. Mirrors serve.go's EXACT unified dispatch sequence now:
+		// legacy security Fns' grants (CollectGrantsReflect, no CheckScopes
+		// yet) -> every codec-backed MiddlewareHandler (DispatchMiddlewareHandlers,
+		// which ALSO runs any Security-shaped middleware's Fn) -> merge
+		// GrantedScopes from both sources -> ONE middleware.CheckScopes call.
+		reqPtr := reflect.ValueOf(&req)
+		granted, grantErr := httpsecurity.CollectGrantsReflect(ctx, r, reqPtr, impls, secReqs)
+		if grantErr != nil {
 			// Security middleware Fn error IS ErrorPattern-eligible now
 			// (session-review finding H1, mirroring serve.go's own
 			// Category-A fix) — previously bypassed ErrorResponseFor
 			// entirely, always producing SecurityError.
-			var secErr error = rest.SecurityError{Err: err}
+			var secErr error = rest.SecurityError{Err: grantErr}
 			if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &secErr) {
 				return
 			}
 			errFn(sw, r, http.StatusUnauthorized, secErr)
+			return
+		}
+		middlewareOuts, mwErr := rest.DispatchMiddlewareHandlers(ctx, reqPtr, handle.MiddlewareHandlers, headerVars, cookieVars, queryVars)
+		if mwErr != nil {
+			dispatchErr, _ := rest.AsMiddlewareDispatchError(mwErr)
+			if !dispatchErr.IsFnError {
+				// Middleware DecodeIn failure IS ErrorPattern-eligible
+				// (Topic 1's Category A fix), already wrapped in
+				// MiddlewareInputError by DispatchMiddlewareHandlers.
+				if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &dispatchErr.Err) {
+					return
+				}
+				errFn(sw, r, http.StatusBadRequest, dispatchErr.Err)
+				return
+			}
+			// A FAILING handler whose OWN Satisfies is non-empty (i.e. a
+			// Security-paired MiddlewareHandler) keeps Security's own,
+			// DISTINCT fallback (401, rest.SecurityError) — mirrors
+			// runSecurityMiddleware's prior, established behavior exactly,
+			// even though both now dispatch through the SAME mechanism. An
+			// ordinary (non-Security) Fn error keeps the generic fallback
+			// (400, rest.MiddlewareError).
+			fnErr := dispatchErr.Err
+			if isSecuritySatisfyingHandler(handle.MiddlewareHandlers, dispatchErr.Name) {
+				if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &fnErr) {
+					return
+				}
+				errFn(sw, r, http.StatusUnauthorized, rest.SecurityError{Err: fnErr})
+				return
+			}
+			if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &fnErr) {
+				return
+			}
+			errFn(sw, r, http.StatusBadRequest, rest.MiddlewareError{Name: dispatchErr.Name, Err: fnErr})
+			return
+		}
+		httpsecurity.MergeMiddlewareHandlerGrants(granted, satisfiesPerHandler(handle.MiddlewareHandlers), middlewareOuts)
+		if err := middleware.CheckScopes(secReqs, granted); err != nil {
+			if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &err) {
+				return
+			}
+			errFn(sw, r, http.StatusUnauthorized, rest.SecurityError{Err: err})
 			return
 		}
 
@@ -440,7 +452,7 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 		// manual ResponseHeadersFromContext/WithResponseCookies escape
 		// hatch.
 		if headerFields := handle.ResponseHeaderMergeFields(); len(headerFields) > 0 {
-			values, encErr := codex.EncodeVars(resp, headerFields...)
+			values, encErr := codex.EncodeMergeVars(resp, headerFields...)
 			if encErr != nil {
 				rest.ReportResponseHeaderErrors(ctx, encErr)
 				if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &encErr) {
@@ -454,7 +466,7 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 			}
 		}
 		if cookieFields := handle.ResponseCookieMergeFields(); len(cookieFields) > 0 {
-			values, encErr := codex.EncodeVars(resp, cookieFields...)
+			values, encErr := codex.EncodeMergeVars(resp, cookieFields...)
 			if encErr != nil {
 				rest.ReportResponseCookieErrors(ctx, encErr)
 				if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &encErr) {
@@ -466,6 +478,41 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 			cookieAttrs := handle.EncodeResponseCookieAttributes(resp)
 			for k, v := range values {
 				pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v, Attrs: cookieAttrs[k]})
+			}
+		}
+
+		// Compose every middleware's OWN response header/cookie values
+		// (derived from its Out, already produced pre-handler above) —
+		// registration-order, last-applied-wins alongside the route's own
+		// values just merged above. Gap-1 review fix — mirrors serve.go's
+		// identical post-handler loop, previously missing here entirely.
+		for i, h := range handle.MiddlewareHandlers {
+			mwHeaders, mwCookies, encErr := h.EncodeOut(ctx, middlewareOuts[i])
+			if encErr != nil {
+				stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, "middleware:out", encErr)
+				if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &encErr) {
+					return
+				}
+				errFn(sw, r, http.StatusInternalServerError, encErr)
+				return
+			}
+			for k, v := range mwHeaders {
+				respHeaders.Set(k, v)
+			}
+			var mwCookieAttrs map[string]rest.CookieAttributes
+			if h.EncodeOutCookieAttrs != nil {
+				mwCookieAttrs, encErr = h.EncodeOutCookieAttrs(middlewareOuts[i])
+				if encErr != nil {
+					stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, "middleware:out", encErr)
+					if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &encErr) {
+						return
+					}
+					errFn(sw, r, http.StatusInternalServerError, encErr)
+					return
+				}
+			}
+			for k, v := range mwCookies {
+				pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v, Attrs: mwCookieAttrs[k]})
 			}
 		}
 
@@ -628,7 +675,8 @@ func sseHandlerFunc[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn 
 		ctx = context.WithValue(ctx, contextKey{}, r)
 		responseHeaders := make(http.Header)
 		ctx = context.WithValue(ctx, responseHeadersKey{}, responseHeaders)
-		ctx = context.WithValue(ctx, responseCookiesKey{}, &[]PendingCookie{})
+		pendingCookies := make([]PendingCookie, 0)
+		ctx = context.WithValue(ctx, responseCookiesKey{}, &pendingCookies)
 
 		// carrier is constructed ONCE and its extracted maps reused for
 		// BOTH the validation calls below AND the per-event MergeEvent
@@ -694,13 +742,63 @@ func sseHandlerFunc[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn 
 				return
 			}
 		}
-		// Called even when secReqs is empty — see runSecurityMiddleware's
-		// own doc comment (a middleware with an EMPTY Satisfies must still
-		// run).
-		if err := runSecurityMiddleware(ctx, r, &req, impls, secReqs); err != nil {
-			secErr := rest.SecurityError{Err: err}
-			opts.ErrorHandler(sw, r, http.StatusUnauthorized, secErr)
+		// Gap-1 review fix (docs/roadmap/declarative-middleware-layering.md's
+		// Rollout Phase A review): this ports-facing sseHandlerFunc
+		// previously never dispatched handle.MiddlewareHandlers at all —
+		// only serve_sse.go's Attach path did. Mirrors serve_sse.go's
+		// identical unified dispatch sequence (see handlerFunc's twin
+		// rewrite for the full rationale).
+		reqPtr := reflect.ValueOf(&req)
+		granted, grantErr := httpsecurity.CollectGrantsReflect(ctx, r, reqPtr, impls, secReqs)
+		if grantErr != nil {
+			opts.ErrorHandler(sw, r, http.StatusUnauthorized, rest.SecurityError{Err: grantErr})
 			return
+		}
+		middlewareOuts, mwErr := rest.DispatchMiddlewareHandlers(ctx, reqPtr, handle.MiddlewareHandlers, headerVars, cookieVars, queryVars)
+		if mwErr != nil {
+			dispatchErr, _ := rest.AsMiddlewareDispatchError(mwErr)
+			if !dispatchErr.IsFnError {
+				opts.ErrorHandler(sw, r, http.StatusBadRequest, dispatchErr.Err)
+				return
+			}
+			if isSecuritySatisfyingHandler(handle.MiddlewareHandlers, dispatchErr.Name) {
+				opts.ErrorHandler(sw, r, http.StatusUnauthorized, rest.SecurityError{Err: dispatchErr.Err})
+				return
+			}
+			opts.ErrorHandler(sw, r, http.StatusBadRequest, rest.MiddlewareError{Name: dispatchErr.Name, Err: dispatchErr.Err})
+			return
+		}
+		httpsecurity.MergeMiddlewareHandlerGrants(granted, satisfiesPerHandler(handle.MiddlewareHandlers), middlewareOuts)
+		if err := middleware.CheckScopes(secReqs, granted); err != nil {
+			opts.ErrorHandler(sw, r, http.StatusUnauthorized, rest.SecurityError{Err: err})
+			return
+		}
+		// Compose every middleware's OWN response header/cookie values
+		// (derived from its Out, already produced pre-handler above) —
+		// BEFORE SSE's own headers are committed below, mirroring
+		// serve_sse.go's identical "Out-side" composition point.
+		for i, h := range handle.MiddlewareHandlers {
+			mwHeaders, mwCookies, encErr := h.EncodeOut(ctx, middlewareOuts[i])
+			if encErr != nil {
+				stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, "middleware:out", encErr)
+				opts.ErrorHandler(sw, r, http.StatusInternalServerError, encErr)
+				return
+			}
+			for k, v := range mwHeaders {
+				responseHeaders.Set(k, v)
+			}
+			var mwCookieAttrs map[string]rest.CookieAttributes
+			if h.EncodeOutCookieAttrs != nil {
+				mwCookieAttrs, encErr = h.EncodeOutCookieAttrs(middlewareOuts[i])
+				if encErr != nil {
+					stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, "middleware:out", encErr)
+					opts.ErrorHandler(sw, r, http.StatusInternalServerError, encErr)
+					return
+				}
+			}
+			for k, v := range mwCookies {
+				pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v, Attrs: mwCookieAttrs[k]})
+			}
 		}
 
 		// SSE headers — must be set before WriteHeader.

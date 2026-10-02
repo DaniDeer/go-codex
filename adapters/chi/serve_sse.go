@@ -115,7 +115,7 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 	if coverageReqs == nil {
 		coverageReqs = globalSecurity
 	}
-	if err := rest.CheckCoverage(routeLabel, coverageReqs, impls); err != nil {
+	if err := rest.CheckCoverage(routeLabel, coverageReqs, impls, middlewareHandlers); err != nil {
 		return nil, err
 	}
 	// Tier 2 — mirrors [buildRouteHandler]'s identical block
@@ -201,8 +201,12 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 				return
 			}
 		}
-		if err := httpsecurity.RunSecurityMiddlewareReflect(ctx, r, reqPtr, impls, secReqs); err != nil {
-			errFn(sw, r, http.StatusUnauthorized, rest.SecurityError{Err: err})
+		// docs/roadmap/declarative-middleware-layering.md's Rollout Phase
+		// A: runSecurityMiddleware's separate code path is RETIRED — see
+		// serve.go's identical rewrite for the full rationale.
+		granted, grantErr := httpsecurity.CollectGrantsReflect(ctx, r, reqPtr, impls, secReqs)
+		if grantErr != nil {
+			errFn(sw, r, http.StatusUnauthorized, rest.SecurityError{Err: grantErr})
 			return
 		}
 
@@ -213,7 +217,9 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 		// ErrorResponseFor (no declared ErrorPattern concept exists for SSE
 		// at all today — mirrors how SSE's own handler errors below have
 		// never consulted one either), so a fn error always falls back to
-		// rest.MiddlewareError directly.
+		// rest.MiddlewareError directly (or rest.SecurityError, for a
+		// Security-Satisfying handler's own Fn failure — see serve.go's
+		// identical distinction).
 		middlewareOuts, mwErr := rest.DispatchMiddlewareHandlers(ctx, reqPtr, middlewareHandlers, headerVars, cookieVars, queryVars)
 		if mwErr != nil {
 			dispatchErr, _ := rest.AsMiddlewareDispatchError(mwErr)
@@ -221,7 +227,16 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 				errFn(sw, r, http.StatusBadRequest, dispatchErr.Err)
 				return
 			}
+			if isSecuritySatisfyingHandler(middlewareHandlers, dispatchErr.Name) {
+				errFn(sw, r, http.StatusUnauthorized, rest.SecurityError{Err: dispatchErr.Err})
+				return
+			}
 			errFn(sw, r, http.StatusBadRequest, rest.MiddlewareError{Name: dispatchErr.Name, Err: dispatchErr.Err})
+			return
+		}
+		httpsecurity.MergeMiddlewareHandlerGrants(granted, satisfiesPerHandler(middlewareHandlers), middlewareOuts)
+		if err := middleware.CheckScopes(secReqs, granted); err != nil {
+			errFn(sw, r, http.StatusUnauthorized, rest.SecurityError{Err: err})
 			return
 		}
 		// Compose every middleware's OWN response header/cookie values
@@ -230,7 +245,7 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 		// docs/design/d-0003-codec-declared-middlewares.md's "Out-side"
 		// SSE migration note.
 		for i, mh := range middlewareHandlers {
-			mwHeaders, mwCookies, encErr := mh.EncodeOut(middlewareOuts[i])
+			mwHeaders, mwCookies, encErr := mh.EncodeOut(ctx, middlewareOuts[i])
 			if encErr != nil {
 				stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, "middleware:out", encErr)
 				errFn(sw, r, http.StatusInternalServerError, encErr)

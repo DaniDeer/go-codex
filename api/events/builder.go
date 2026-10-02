@@ -773,7 +773,7 @@ func (h *ChannelHandle[T]) EncodePropertyVars(msg T) (map[string]string, error) 
 	if len(h.propertyMergeFields) == 0 {
 		return nil, nil
 	}
-	return codex.EncodeVars(msg, h.propertyMergeFields...)
+	return codex.EncodeMergeVars(msg, h.propertyMergeFields...)
 }
 
 // DispatchSubscribeMiddleware invokes [DispatchSubscribeMiddlewareHandlers]

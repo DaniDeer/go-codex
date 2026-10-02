@@ -25,7 +25,7 @@ import (
 // docs/design/d-0003-codec-declared-middlewares.md for the full design.
 //
 // Middleware supports TWO attachment styles:
-//   - Route/channel-BOUND: attached via [Transform]/[ClientTransform], whose
+//   - Route/channel-BOUND: attached via [Route.HandleMW]/[Route.ClientMW]'s bound path, whose
 //     fn additionally receives the route's own req *Req/req Req (read/
 //     enrich access) — for concerns whose fn genuinely needs that access.
 //   - Route/channel-AGNOSTIC: a Req/Resp-FREE fn bundled directly onto this
@@ -65,6 +65,32 @@ type Middleware[In, Out any] struct {
 	// rejected as ambiguous via [AmbiguousMiddlewareAttachmentError]).
 	receiveFn func(ctx context.Context, in In) (Out, error)
 	sendFn    func(ctx context.Context) (In, error)
+
+	// ctxFieldsFromIn/ctxFieldsFromOut hold every
+	// [Middleware.SetContextFieldFromIn]/[Middleware.SetContextFieldFromOut]
+	// registration — dispatched automatically by buildDecodeIn (right
+	// after decode+validate) and buildEncodeOut/buildEncodeIn (alongside
+	// the merge-field encode), publishing into the SAME
+	// [middleware.ContextField] box [middleware.EnsureContextFields]
+	// pre-allocated (docs/roadmap/declarative-middleware-layering.md's
+	// Rollout Phase A).
+	ctxFieldsFromIn  []contextFieldInSetter[In]
+	ctxFieldsFromOut []contextFieldOutSetter[Out]
+}
+
+// contextFieldInSetter pairs a [middleware.ContextFieldSetter] with the
+// getter that extracts its raw value from this middleware's decoded In —
+// one entry per [Middleware.SetContextFieldFromIn] call.
+type contextFieldInSetter[In any] struct {
+	field middleware.ContextFieldSetter
+	get   func(In) any
+}
+
+// contextFieldOutSetter is [contextFieldInSetter]'s Out-side mirror — one
+// entry per [Middleware.SetContextFieldFromOut] call.
+type contextFieldOutSetter[Out any] struct {
+	field middleware.ContextFieldSetter
+	get   func(Out) any
 }
 
 // NewMiddleware builds a [Middleware] from a [middleware.Declaration] —
@@ -159,7 +185,7 @@ func (m Middleware[In, Out]) WithResponseCookieSpec(p ResponseCookieParam) Middl
 // WithReceive attaches a route/channel-AGNOSTIC runtime Fn directly to m —
 // its signature never mentions Req/Resp, so the returned Middleware value
 // (fn included) can be passed to .Use(...) verbatim, on as many different
-// routes as needed. Use [Transform] instead when fn genuinely needs req
+// routes as needed. Use [Route.HandleMW]'s bound path instead when fn genuinely needs req
 // access.
 func (m Middleware[In, Out]) WithReceive(fn func(ctx context.Context, in In) (Out, error)) Middleware[In, Out] {
 	m.receiveFn = fn
@@ -168,9 +194,46 @@ func (m Middleware[In, Out]) WithReceive(fn func(ctx context.Context, in In) (Ou
 
 // WithSend is [Middleware.WithReceive]'s client/publish-side sibling — fn
 // produces an In value with no req access, attached via .Use(...). Use
-// [ClientTransform] instead when fn genuinely needs req access.
+// [Route.ClientMW]'s bound path instead when fn genuinely needs req access.
 func (m Middleware[In, Out]) WithSend(fn func(ctx context.Context) (In, error)) Middleware[In, Out] {
 	m.sendFn = fn
+	return m
+}
+
+// SetContextFieldFromIn registers field to be published (via
+// [middleware.ContextFieldSetter.Set]) from get(in)'s return value —
+// dispatched automatically right after this middleware's own In is
+// decoded+validated (DecodeIn), on EVERY attachment style (bound via
+// [Route.HandleMW]'s bound path, or agnostic via [Middleware.WithReceive]).
+// The handler (or any LATER-dispatched middleware, regardless of shape)
+// retrieves it fully-typed via [middleware.ContextField.Get] — see
+// [middleware.ContextField]'s own doc comment for the full cross-cutting-
+// data rationale.
+//
+// field takes [middleware.ContextFieldSetter], not a concrete
+// [middleware.ContextField][V] directly — V is NOT a type parameter this
+// method can introduce (Go forbids new type params on a method beyond the
+// receiver's own); every ContextField[V] already satisfies
+// ContextFieldSetter regardless of V, since Set's own signature never
+// references V (confirmed via an actual compile check — see
+// docs/roadmap/declarative-middleware-layering.md's Phase 3 design
+// review).
+//
+//	var TenantIDField = middleware.NewContextField(codex.String())
+//	authMw = authMw.SetContextFieldFromIn(TenantIDField, func(in AuthIn) any { return in.TenantID })
+func (m Middleware[In, Out]) SetContextFieldFromIn(field middleware.ContextFieldSetter, get func(In) any) Middleware[In, Out] {
+	m.ctxFieldsFromIn = append(slices.Clone(m.ctxFieldsFromIn), contextFieldInSetter[In]{field: field, get: get})
+	return m
+}
+
+// SetContextFieldFromOut is [Middleware.SetContextFieldFromIn]'s
+// response-side sibling — field is published from get(out)'s return
+// value, dispatched at whichever point this middleware's OWN Out becomes
+// concretely available: right after Fn returns it (EncodeOut, the
+// server/receiving role) or right after it is decoded from the response's
+// headers/cookies (DecodeOut, the client/sending role).
+func (m Middleware[In, Out]) SetContextFieldFromOut(field middleware.ContextFieldSetter, get func(Out) any) Middleware[In, Out] {
+	m.ctxFieldsFromOut = append(slices.Clone(m.ctxFieldsFromOut), contextFieldOutSetter[Out]{field: field, get: get})
 	return m
 }
 
@@ -206,7 +269,7 @@ func (m Middleware[In, Out]) MiddlewareName() string { return m.Declaration.Name
 // [routeMiddlewareOpt.applyRoute] for a .Use()-attached Middleware value.
 // In/Out are concrete here (m's own type parameters), so it can build the
 // SAME spec contribution and (when bundled) the SAME runtime dispatch
-// handler as [Transform]/[ClientTransform] produce for the route-BOUND
+// handler as [Route.HandleMW]/[Route.ClientMW]'s bound path produce for the route-BOUND
 // case — feeding both into the SAME rb fields, so downstream consumers
 // (applyParamDeclarations, adapters) treat both attachment styles
 // uniformly.
@@ -218,6 +281,35 @@ func (m Middleware[In, Out]) applyAgnosticRoute(rb *routeBuilder) {
 	if m.sendFn != nil {
 		rb.clientMiddlewareHandlers = append(rb.clientMiddlewareHandlers, buildAgnosticClientMiddlewareHandler(m))
 	}
+}
+
+// applyBoundRoute implements routeMiddlewareContributor — called by
+// [boundHandleMWOpt.applyRoute] for a [Route.HandleMW]/[SSERoute.HandleMW]
+// call whose mw is a codec-backed [Middleware][In, Out] (docs/roadmap/
+// declarative-middleware-layering.md's Rollout Phase A: the Architecture
+// revision this entire mechanism exists for). fn is UNTYPED here (already
+// `any` at HandleMW's own signature) — m's own In/Out type parameters are
+// ALL this method needs; Go's "no new type params on a method" rule is
+// satisfied because Req/Resp were always structurally vestigial in
+// [buildMiddlewareHandler] (confirmed via [buildMiddlewareHandlerAny]).
+// Populates BOTH rb.middlewareHandlers (fn, dispatched with *Req access —
+// the headline capability this phase adds over the agnostic case) AND
+// rb.middlewareSpecContributions (via [boundSpecContributionOf], so the
+// EXISTING D6(b)/D7 duplicate-name/ambiguous-attachment checks — see
+// [checkMiddlewareNameUniquenessAndAttachment] — keep working identically
+// for a HandleMW-attached middleware as they already do for
+// bound-HandleMW-attached ones.
+func (m Middleware[In, Out]) applyBoundRoute(rb *routeBuilder, fn any) {
+	rb.middlewareHandlers = append(rb.middlewareHandlers, buildMiddlewareHandlerAny(m, fn))
+	rb.middlewareSpecContributions = append(rb.middlewareSpecContributions, boundSpecContributionOf(m))
+}
+
+// applyBoundClientRoute is [applyBoundRoute]'s SENDING-role mirror —
+// called by [boundClientMWOpt.applyRoute] for a [Route.ClientMW]/
+// [SSERoute.ClientMW] call whose mw is a codec-backed [Middleware][In, Out].
+func (m Middleware[In, Out]) applyBoundClientRoute(rb *routeBuilder, fn any) {
+	rb.clientMiddlewareHandlers = append(rb.clientMiddlewareHandlers, buildClientMiddlewareHandlerAny(m, fn))
+	rb.middlewareSpecContributions = append(rb.middlewareSpecContributions, boundSpecContributionOf(m))
 }
 
 // MiddlewareInputError is returned when a [Middleware]'s In value fails to
@@ -249,7 +341,7 @@ func (e MiddlewareInputError) LogValue() slog.Value {
 	)
 }
 
-// MiddlewareError is returned when a [Transform]/[ClientTransform] fn's own
+// MiddlewareError is returned when a [Route.HandleMW]/[Route.ClientMW] fn's own
 // returned business error does not match any [ErrorPattern] declared on the
 // attaching route — the fallback for a codec-backed middleware's business
 // errors, distinct from [SecurityError] (reserved for the
@@ -317,7 +409,7 @@ func (e MiddlewareOutputError) LogValue() slog.Value {
 
 // DuplicateMiddlewareNameError is returned at Register/Handle time when two
 // [Middleware] values attached to the SAME route (via ANY combination of
-// .Use()/[Transform]/[ClientTransform]) share the same Declaration.Name —
+// .Use()/HandleMW/ClientMW) share the same Declaration.Name —
 // enforced to avoid ambiguous error/observability attribution.
 type DuplicateMiddlewareNameError struct {
 	Route string
@@ -339,7 +431,7 @@ func (e DuplicateMiddlewareNameError) LogValue() slog.Value {
 // AmbiguousMiddlewareAttachmentError is returned at Register/Handle time
 // when a SINGLE [Middleware] value carries a bundled
 // [Middleware.WithReceive]/[Middleware.WithSend] fn AND is ALSO passed to
-// [Transform]/[ClientTransform] (which supplies its own, separate fn) —
+// HandleMW's/ClientMW's bound path (which supplies its own, separate fn) —
 // ambiguous, since only one fn can run per role.
 type AmbiguousMiddlewareAttachmentError struct {
 	Name string

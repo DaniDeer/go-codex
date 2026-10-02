@@ -82,7 +82,7 @@ func DispatchMiddlewareHandlers(ctx context.Context, reqPtr reflect.Value, handl
 	}
 	outs := make([]any, len(handlers))
 	for i, h := range handlers {
-		in, err := h.DecodeIn(headerVars, cookieVars, queryVars)
+		in, err := h.DecodeIn(ctx, headerVars, cookieVars, queryVars)
 		if err != nil {
 			stats.ReportErrors(DiagnosticObserver{Ctx: ctx}, "middleware:in", err)
 			return nil, middlewareDispatchError{err: err, name: h.Name}

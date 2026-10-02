@@ -93,7 +93,7 @@ func (a *nethttpIngestAdapter[T]) Activate(ctx context.Context, dst chan<- T, er
 				Capacity: cap(ch),
 			}
 		}
-	}, wrappedOpts)
+	}, wrappedOpts, a.handle.Implementations...)
 	a.mux.Handle(a.handle.Descriptor.Method+" "+a.handle.Descriptor.Path, h)
 
 	forwardDone := make(chan struct{})
@@ -165,11 +165,17 @@ func (a *nethttpSSEAdapter[Event]) Activate(ctx context.Context, src gstream.Str
 		sseOpts.Topic = a.handle.Descriptor.Path
 	}
 	fn := SSEFromHub[struct{}, Event](hub, sseOpts)
-	// Calls sseHandlerFunc directly (not the deprecated RegisterSSE) —
-	// no middleware Fn-shape validation needed here since no middleware
-	// is attached at this call site.
+	// Calls sseHandlerFunc directly (not the deprecated RegisterSSE).
+	// Gap-1 review fix (docs/roadmap/declarative-middleware-layering.md's
+	// Rollout Phase A review): previously passed NO Implementations at
+	// all, and sseHandlerFunc itself never dispatched
+	// handle.MiddlewareHandlers either — any Security/codec-backed
+	// middleware declared on this route was silently dropped when served
+	// through SSEAdapter instead of Attach. sseHandlerFunc now dispatches
+	// handle.MiddlewareHandlers directly; Implementations is passed here
+	// too so legacy-shaped Security Fns are no longer silently skipped.
 	routeLabel := "GET " + a.handle.Descriptor.Path
-	a.mux.Handle(routeLabel, sseHandlerFunc(a.handle, fn, a.opts.Options))
+	a.mux.Handle(routeLabel, sseHandlerFunc(a.handle, fn, a.opts.Options, a.handle.Implementations...))
 	<-ctx.Done()
 }
 
@@ -533,7 +539,7 @@ func (a *nethttpLatestAdapter[Resp]) Serve(_ context.Context, latest func() (Res
 			return zero, NoLatestValueError{Path: a.handle.Descriptor.Path}
 		}
 		return v, nil
-	}, wrappedOpts)
+	}, wrappedOpts, a.handle.Implementations...)
 	a.mux.Handle(a.handle.Descriptor.Method+" "+a.handle.Descriptor.Path, h)
 	return nil // registration-style Serve: returns immediately
 }
@@ -697,17 +703,17 @@ func consumeSSEOnce[Req, Event any](
 		obs.RecordRequest(method, path, 0, time.Since(start))
 		return false, err
 	}
-	query, err := codex.EncodeVars(req, handle.QueryMergeFields()...)
+	query, err := codex.EncodeMergeVars(req, handle.QueryMergeFields()...)
 	if err != nil {
 		obs.RecordRequest(method, path, 0, time.Since(start))
 		return false, err
 	}
-	headers, err := codex.EncodeVars(req, handle.HeaderMergeFields()...)
+	headers, err := codex.EncodeMergeVars(req, handle.HeaderMergeFields()...)
 	if err != nil {
 		obs.RecordRequest(method, path, 0, time.Since(start))
 		return false, err
 	}
-	cookies, err := codex.EncodeVars(req, handle.CookieMergeFields()...)
+	cookies, err := codex.EncodeMergeVars(req, handle.CookieMergeFields()...)
 	if err != nil {
 		obs.RecordRequest(method, path, 0, time.Since(start))
 		return false, err

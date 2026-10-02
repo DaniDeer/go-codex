@@ -3,6 +3,7 @@ package nethttp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -583,6 +584,67 @@ func TestAttach_ClientCall_GeneralPurposeClientMW_Wraps(t *testing.T) {
 	}
 }
 
+// TestAttach_ClientCall_CodecBackedClientMW_EncodesInAndDecodesOut proves
+// [clientTransport.Call] (the Attach+Call workflow, reached via reflection
+// against *RouteHandle) dispatches a .Use()-attached codec-backed
+// Middleware[In,Out]'s OWN EncodeIn into the outgoing request's header AND
+// decodes its Out from the response header — a confirmed, previously
+// missing gap (docs/roadmap/declarative-middleware-layering.md's Rollout
+// Phase A): Call never dispatched handle.ClientMiddlewareHandlers at all,
+// only the legacy handle.ClientImplementations (credential/general-purpose
+// ClientMW).
+func TestAttach_ClientCall_CodecBackedClientMW_EncodesInAndDecodesOut(t *testing.T) {
+	mw := rest.NewMiddleware(newTDDeclaration("api-key-policy")).
+		WithRequestHeader(rest.NewRequiredHeaderParam("X-Api-Key", codex.String(),
+			func(in tdIn) string { return in.Key },
+			func(in *tdIn, v string) { in.Key = v },
+		)).
+		WithResponseHeader(rest.NewRequiredResponseHeaderParam("X-Policy-Version", codex.String(),
+			func(out tdOut) string { return out.Value },
+			func(out *tdOut, v string) { out.Value = v },
+		)).
+		WithSend(func(ctx context.Context) (tdIn, error) {
+			return tdIn{Key: "secret-abc"}, nil
+		})
+
+	route := rest.NewRoute[getReq, userResp]("GET", "/me", getReqCodec, userRespCodec).Use(mw)
+
+	var gotHeader string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeader = r.Header.Get("X-Api-Key")
+		w.Header().Set("X-Policy-Version", "v1")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"id":"me","name":""}`)
+	}))
+	defer srv.Close()
+
+	client := rest.NewClient()
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := WithClientMiddlewareOut(context.Background())
+	respAny, err := client.Call(ctx, route, getReq{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if respAny.(userResp).ID != "me" {
+		t.Errorf("unexpected response: %+v", respAny)
+	}
+	if gotHeader != "secret-abc" {
+		t.Errorf("want X-Api-Key %q sent, got %q", "secret-abc", gotHeader)
+	}
+
+	outs := ClientMiddlewareOutFromContext(ctx)
+	out, ok := outs["api-key-policy"].(tdOut)
+	if !ok {
+		t.Fatalf("want decoded tdOut for api-key-policy, got %+v", outs)
+	}
+	if out.Value != "v1" {
+		t.Errorf("want decoded Out.Value %q, got %q", "v1", out.Value)
+	}
+}
+
 func TestAttach_ClientCall_WithClientRequestResponseFormats_Overrides(t *testing.T) {
 	s := rest.NewServer(testInfo)
 	// Route declares JSON first (the default) AND YAML — the client-side
@@ -963,6 +1025,74 @@ func TestConsume_GlobalSecurityOnly_RawRoute_CredentialNotInvoked(t *testing.T) 
 	}
 	if got != 1 {
 		t.Fatalf("want 1, got %d", got)
+	}
+}
+
+// TestAttach_ClientConsume_CodecBackedClientMW_EncodesInAndDecodesOut is
+// [TestAttach_ClientCall_CodecBackedClientMW_EncodesInAndDecodesOut]'s SSE
+// sibling — proves [clientTransport.Consume] (the Attach+Consume workflow)
+// dispatches a .Use()-attached codec-backed Middleware[In,Out]'s EncodeIn
+// into the SSE connect request's header AND decodes its Out from the
+// response header at connection-open time — the identical, previously
+// missing gap confirmed for Consume too (Consume never dispatched
+// handle.ClientMiddlewareHandlers at all).
+func TestAttach_ClientConsume_CodecBackedClientMW_EncodesInAndDecodesOut(t *testing.T) {
+	mw := rest.NewMiddleware(newTDDeclaration("api-key-policy")).
+		WithRequestHeader(rest.NewRequiredHeaderParam("X-Api-Key", codex.String(),
+			func(in tdIn) string { return in.Key },
+			func(in *tdIn, v string) { in.Key = v },
+		)).
+		WithResponseHeader(rest.NewRequiredResponseHeaderParam("X-Policy-Version", codex.String(),
+			func(out tdOut) string { return out.Value },
+			func(out *tdOut, v string) { out.Value = v },
+		)).
+		WithSend(func(ctx context.Context) (tdIn, error) {
+			return tdIn{Key: "secret-xyz"}, nil
+		})
+
+	sseRoute := rest.NewSSERoute[getReq, counterSSEEvent]("/sse/counter", getReqCodec, counterSSEEventCodec).Use(mw)
+
+	var gotHeader string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeader = r.Header.Get("X-Api-Key")
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("X-Policy-Version", "v1")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "data: {\"count\":1}\n\n")
+	}))
+	defer srv.Close()
+
+	client := rest.NewClient()
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	ctx = WithClientMiddlewareOut(ctx)
+	var got int
+	err := client.Consume(ctx, sseRoute, getReq{}, func(_ context.Context, e counterSSEEvent) error {
+		got = e.Count
+		cancel()
+		return nil
+	})
+	if err != nil && ctx.Err() == nil {
+		t.Fatalf("Consume: %v", err)
+	}
+	if got != 1 {
+		t.Fatalf("want 1, got %d", got)
+	}
+	if gotHeader != "secret-xyz" {
+		t.Errorf("want X-Api-Key %q sent, got %q", "secret-xyz", gotHeader)
+	}
+
+	outs := ClientMiddlewareOutFromContext(ctx)
+	out, ok := outs["api-key-policy"].(tdOut)
+	if !ok {
+		t.Fatalf("want decoded tdOut for api-key-policy, got %+v", outs)
+	}
+	if out.Value != "v1" {
+		t.Errorf("want decoded Out.Value %q, got %q", "v1", out.Value)
 	}
 }
 

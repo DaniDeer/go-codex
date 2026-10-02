@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"slices"
 
 	"github.com/DaniDeer/go-codex/codex"
@@ -108,6 +109,18 @@ func (s SSERoute[Req, Event]) Use(mws ...middleware.RouteMiddleware) SSERoute[Re
 type routeMiddlewareContributor interface {
 	middleware.RouteMiddleware
 	applyAgnosticRoute(rb *routeBuilder)
+
+	// applyBoundRoute/applyBoundClientRoute (docs/roadmap/declarative-
+	// middleware-layering.md's Rollout Phase A) let [Route.HandleMW]/
+	// [Route.ClientMW] (and their [SSERoute] equivalents) apply a
+	// codec-backed [Middleware][In, Out]'s route-BOUND, *Req-aware
+	// dispatch handler + spec contribution WITHOUT the opt type itself
+	// needing to know In/Out — mirroring [applyAgnosticRoute]'s own
+	// established pattern, extended for the bound case. fn is the
+	// caller-supplied, still-untyped business Fn (*Req-aware for
+	// applyBoundRoute, Req-value-aware for applyBoundClientRoute).
+	applyBoundRoute(rb *routeBuilder, fn any)
+	applyBoundClientRoute(rb *routeBuilder, fn any)
 }
 
 // routeMiddlewareOpt is the [RouteOpt] returned by the widened [Route.Use]/
@@ -257,14 +270,84 @@ func buildServerImplementation(mw middleware.RouteMiddleware, fn any) middleware
 	return middleware.ServerImplementation{Name: "implement:general", Fn: fn}
 }
 
+// isBoundHandleMWShape reports whether fn's REFLECTED signature matches
+// the route-BOUND dispatch shape HandleMW's bound path uses — func(ctx
+// context.Context, req *Req, in In) (Out, error) — rather than one of
+// HandleMW's established LEGACY shapes (the general-purpose
+// func(http.Handler) http.Handler wrap, or the credential-style func(ctx,
+// *http.Request, *Req) (map[string][]string, error)).
+//
+// A codec-backed [Middleware][In, Out] satisfying [routeMiddlewareContributor]
+// is NOT by itself sufficient to pick the bound path — confirmed via an
+// actual test failure: [SecurityMiddleware] ALSO returns a
+// [Middleware][struct{}, struct{}] (used purely as a Security-declaration
+// carrier, paired with a LEGACY credential-shaped fn, e.g.
+// examples/go-edge-models/app/registry/auth.go's basicAuthMw), which also
+// satisfies routeMiddlewareContributor — fn's OWN shape is the only
+// reliable signal. api/rest stays transport-agnostic (no net/http
+// import): the legacy credential shape's 2nd param (*http.Request) is
+// distinguished from the bound shape's 2nd param (*Req, Route's own,
+// statically-known type) WITHOUT ever naming *http.Request directly —
+// "not *Req" is enough, since no OTHER 3-in/2-out shape exists today.
+func isBoundHandleMWShape[Req any](fn any) bool {
+	fnVal := reflect.ValueOf(fn)
+	if !fnVal.IsValid() {
+		return false
+	}
+	t := fnVal.Type()
+	if t.Kind() != reflect.Func || t.NumIn() != 3 || t.NumOut() != 2 {
+		return false
+	}
+	return t.In(1) == reflect.TypeOf((*Req)(nil))
+}
+
+// isBoundClientMWShape is [isBoundHandleMWShape]'s client-side mirror —
+// the bound shape is func(ctx context.Context, req Req) (In, error)
+// (Req BY VALUE, matching ClientMW's own bound fn parameter), vs.
+// ClientMW's legacy credential shape func(ctx, []route.SecurityRequirement)
+// (http.Header, error) — both 2-in/2-out, distinguished by the 2nd
+// param's type (Req vs []route.SecurityRequirement; [route] is already a
+// core, non-transport-specific dependency of api/rest, so naming it here
+// does not reintroduce a transport-specific import).
+func isBoundClientMWShape[Req any](fn any) bool {
+	fnVal := reflect.ValueOf(fn)
+	if !fnVal.IsValid() {
+		return false
+	}
+	t := fnVal.Type()
+	if t.Kind() != reflect.Func || t.NumIn() != 2 || t.NumOut() != 2 {
+		return false
+	}
+	return t.In(1) == reflect.TypeOf((*Req)(nil)).Elem()
+}
+
+// boundHandleMWOpt is the [RouteOpt] returned by [Route.HandleMW]/
+// [SSERoute.HandleMW] when mw is a codec-backed [Middleware][In, Out]
+// (docs/roadmap/declarative-middleware-layering.md's Rollout Phase A) —
+// dispatches to mw's own [routeMiddlewareContributor.applyBoundRoute],
+// giving fn *Req access via the SAME route-BOUND mechanism HandleMW's bound path
+// already provides, now reachable through the ordinary method-chain API.
+type boundHandleMWOpt struct {
+	mw routeMiddlewareContributor
+	fn any
+}
+
+func (o boundHandleMWOpt) applyRoute(rb *routeBuilder) { o.mw.applyBoundRoute(rb, o.fn) }
+
 // HandleMW is the ONLY server-side implementation-attachment method — mw
 // is NILABLE:
-//   - non-nil AND mw.Security != nil: PAIRED — fn is matched against a
-//     PREVIOUSLY-.Use()'d security declaration, mw being the SAME
-//     middleware.Middleware value (not a re-typed string) — matched
+//   - a codec-backed [Middleware][In, Out] (any Security state): BOUND —
+//     fn gets *Req access (mirrors HandleMW's own bound dispatch exactly,
+//     reached here through the ordinary method-chain API instead of the
+//     free function); mw.Security, when set, additionally PAIRS fn
+//     against a previously-.Use()'d security declaration (Satisfies
+//     derived from mw's own Security, checked by [CheckCoverage]).
+//   - a legacy [middleware.Middleware] (or nil): UNPAIRED/PAIRED exactly
+//     as before — fn is matched against a PREVIOUSLY-.Use()'d security
+//     declaration when mw.Security != nil (mw being the SAME
+//     middleware.Middleware value, not a re-typed string — matched
 //     internally by [Route.RegisterHandle]/[Route.Register]'s
-//     reverse-Satisfies check.
-//   - nil (or mw.Security == nil): UNPAIRED, general-purpose — fn runs
+//     reverse-Satisfies check), else UNPAIRED/general-purpose — fn runs
 //     unconditionally, nothing to satisfy (e.g. a raw
 //     func(http.Handler) http.Handler closure, or [nethttp.Transform]/
 //     [nethttp.Observability]'s output).
@@ -275,13 +358,21 @@ func buildServerImplementation(mw middleware.RouteMiddleware, fn any) middleware
 // wrong-shaped fn fails with a typed error at that point, never
 // silently.
 func (r Route[Req, Resp]) HandleMW(mw middleware.RouteMiddleware, fn any) Route[Req, Resp] {
+	if v, ok := mw.(routeMiddlewareContributor); ok && isBoundHandleMWShape[Req](fn) {
+		r.opts = append(slices.Clone(r.opts), boundHandleMWOpt{mw: v, fn: fn})
+		return r
+	}
 	r.opts = append(slices.Clone(r.opts), handleMWOpt{impl: buildServerImplementation(mw, fn)})
 	return r
 }
 
 // HandleMW is [SSERoute]'s equivalent of [Route.HandleMW] — identical
-// nilable-mw semantics.
+// nilable-mw semantics, including the codec-backed bound case.
 func (s SSERoute[Req, Event]) HandleMW(mw middleware.RouteMiddleware, fn any) SSERoute[Req, Event] {
+	if v, ok := mw.(routeMiddlewareContributor); ok && isBoundHandleMWShape[Req](fn) {
+		s.opts = append(slices.Clone(s.opts), boundHandleMWOpt{mw: v, fn: fn})
+		return s
+	}
 	s.opts = append(slices.Clone(s.opts), handleMWOpt{impl: buildServerImplementation(mw, fn)})
 	return s
 }
@@ -297,27 +388,53 @@ func (o clientMWOpt) applyRoute(rb *routeBuilder) {
 	rb.clientImpls = append(rb.clientImpls, o.impl)
 }
 
+// boundClientMWOpt is [boundHandleMWOpt]'s SENDING-role mirror — the
+// [RouteOpt] returned by [Route.ClientMW]/[SSERoute.ClientMW] when mw is a
+// codec-backed [Middleware][In, Out].
+type boundClientMWOpt struct {
+	mw routeMiddlewareContributor
+	fn any
+}
+
+func (o boundClientMWOpt) applyRoute(rb *routeBuilder) { o.mw.applyBoundClientRoute(rb, o.fn) }
+
 // ClientMW is the ONLY client-side implementation-attachment method — the
 // CLIENT-side mirror of [Route.HandleMW]. mw is NILABLE with the SAME
-// derivation rule: non-nil with Security set PAIRS fn against a
-// previously-.Use()'d declaration (Satisfies gates which implementations
-// [nethttp.Call] runs, vs. the route's declared security requirements);
-// nil (or Security nil) leaves Satisfies empty — general-purpose, always
-// runs.
+// derivation rule:
+//   - a codec-backed [Middleware][In, Out] (any Security state): BOUND —
+//     fn is dispatched via the SAME route-BOUND mechanism
+//     ClientMW's own bound path already provides (mw's own request merge fields
+//     encode fn's returned In, mw's own response merge fields decode
+//     Out), reached here through the ordinary method-chain API; mw's
+//     Security, when set, additionally gates which implementations run
+//     against the route's declared security requirements.
+//   - a legacy [middleware.Middleware] (or nil): non-nil with Security set
+//     PAIRS fn against a previously-.Use()'d declaration (Satisfies gates
+//     which implementations [nethttp.Call] runs, vs. the route's declared
+//     security requirements); nil (or Security nil) leaves Satisfies
+//     empty — general-purpose, always runs.
 //
 // fn is deliberately untyped (any) for the SAME reason as HandleMW's —
 // resolved by the client adapter (e.g. nethttp.Call's credential-
 // providing shape) at Call time.
 //
-// Name includes a per-route attachment-order index (e.g.
-// "fulfill:bearerAuth#1") so that TWO ClientMW calls attached for the
-// SAME scheme on the SAME route (an unusual but valid pattern — e.g.
+// For the legacy path, Name includes a per-route attachment-order index
+// (e.g. "fulfill:bearerAuth#1") so that TWO ClientMW calls attached for
+// the SAME scheme on the SAME route (an unusual but valid pattern — e.g.
 // A/B-testing two credential sources) still get DISTINCT Names. This
 // matters for [nethttp]'s ConflictingCredentialHeaderError: its "same
 // Name means same source, skip conflict check" heuristic would otherwise
 // incorrectly treat two same-scheme ClientMW attachments as one source,
-// silently picking a value instead of flagging a genuine conflict.
+// silently picking a value instead of flagging a genuine conflict. The
+// codec-backed path needs no such index — [ClientMiddlewareHandler.Name]
+// is mw.Name directly (already unique per declaration), and its dispatch
+// (EncodeIn/DecodeOut) composes across middlewares rather than merging
+// into ONE shared credential-header set, so no analogous conflict exists.
 func (r Route[Req, Resp]) ClientMW(mw middleware.RouteMiddleware, fn any) Route[Req, Resp] {
+	if v, ok := mw.(routeMiddlewareContributor); ok && isBoundClientMWShape[Req](fn) {
+		r.opts = append(slices.Clone(r.opts), boundClientMWOpt{mw: v, fn: fn})
+		return r
+	}
 	idx := 0
 	for _, o := range r.opts {
 		if _, ok := o.(clientMWOpt); ok {
@@ -336,13 +453,15 @@ func (r Route[Req, Resp]) ClientMW(mw middleware.RouteMiddleware, fn any) Route[
 }
 
 // ClientMW is [SSERoute]'s client-side implementation-attachment method —
-// identical Satisfies-gating mechanics to [Route.ClientMW]: mw non-nil
-// with Security set gates fn to run only when the route's declared
-// security requirements include that scheme; mw nil (or Security nil)
-// marks fn general-purpose (always runs). Consumed by
-// [Client.Consume]/[nethttp.CallSSEAdapter] the same way
-// [Client.Call] consumes [Route.ClientMW]'s attached implementations.
+// identical Satisfies-gating mechanics to [Route.ClientMW], including the
+// codec-backed bound case. Consumed by [Client.Consume]/
+// [nethttp.CallSSEAdapter] the same way [Client.Call] consumes
+// [Route.ClientMW]'s attached implementations.
 func (s SSERoute[Req, Event]) ClientMW(mw middleware.RouteMiddleware, fn any) SSERoute[Req, Event] {
+	if v, ok := mw.(routeMiddlewareContributor); ok && isBoundClientMWShape[Req](fn) {
+		s.opts = append(slices.Clone(s.opts), boundClientMWOpt{mw: v, fn: fn})
+		return s
+	}
 	idx := 0
 	for _, o := range s.opts {
 		if _, ok := o.(clientMWOpt); ok {
@@ -557,11 +676,16 @@ func sameScopeSet(a, b []string) bool {
 	return slices.Equal(as, bs)
 }
 
-// CheckCoverage verifies that every security scheme named
-// anywhere in secReqs has at least one [middleware.ServerImplementation] in
-// impls whose Satisfies names it — otherwise the route would enforce
-// nothing at runtime despite declaring a scheme in its spec. Returns
-// [MissingSecurityMiddlewareError] on the first uncovered scheme found.
+// CheckCoverage verifies that every security scheme named anywhere in
+// secReqs has at least one covering runtime dispatch unit — EITHER a
+// [middleware.ServerImplementation] in impls OR a [MiddlewareHandler] in
+// handlers (docs/roadmap/declarative-middleware-layering.md's Rollout
+// Phase A: a codec-backed Middleware attached via the bound
+// [Route.HandleMW] path populates handlers, not impls, so BOTH lists must
+// be checked for coverage to mean what it says) — whose Satisfies names
+// it, otherwise the route would enforce nothing at runtime despite
+// declaring a scheme in its spec. Returns [MissingSecurityMiddlewareError]
+// on the first uncovered scheme found.
 //
 // This is the RELOCATED coverage check — it used to run automatically
 // inside [Route.Register], back when [middleware.Middleware] still carried
@@ -573,9 +697,10 @@ func sameScopeSet(a, b []string) bool {
 // ServeSSE and their chi mirrors) call this explicitly from their reflect
 // dispatch (buildRouteHandler/buildSSERouteHandler), passing
 // handle.Descriptor.Security (falling back to handle.GlobalSecurity, same
-// resolution rule used everywhere else) and the route's attached
-// []middleware.ServerImplementation values.
-func CheckCoverage(routeLabel string, secReqs []route.SecurityRequirement, impls []middleware.ServerImplementation) error {
+// resolution rule used everywhere else), the route's attached
+// []middleware.ServerImplementation values, and its []MiddlewareHandler
+// values.
+func CheckCoverage(routeLabel string, secReqs []route.SecurityRequirement, impls []middleware.ServerImplementation, handlers []MiddlewareHandler) error {
 	for _, req := range secReqs {
 		for schemeName := range req {
 			satisfied := false
@@ -583,6 +708,14 @@ func CheckCoverage(routeLabel string, secReqs []route.SecurityRequirement, impls
 				if slices.Contains(impl.Satisfies, schemeName) {
 					satisfied = true
 					break
+				}
+			}
+			if !satisfied {
+				for _, h := range handlers {
+					if slices.Contains(h.Satisfies, schemeName) {
+						satisfied = true
+						break
+					}
 				}
 			}
 			if !satisfied {

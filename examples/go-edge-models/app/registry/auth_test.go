@@ -176,7 +176,7 @@ func TestNewAuthCredentialFunc_MemoizesAcrossMultipleCalls(t *testing.T) {
 	}
 	client := httpsToHTTPClient()
 
-	credFn := newAuthCredentialFunc(client, u.Host, "org/repo")
+	credFn := newAuthCredentialFunc[any](client, u.Host, "org/repo")
 
 	if _, err := credFn(context.Background(), nil); err != nil {
 		t.Fatalf("credFn (1st call): %v", err)
@@ -193,7 +193,14 @@ func TestNewAuthCredentialFunc_MemoizesAcrossMultipleCalls(t *testing.T) {
 	}
 }
 
-func TestNewAuthCredentialFunc_NoAuthNeeded_ReturnsNilHeader(t *testing.T) {
+// TestNewAuthCredentialFunc_NoAuthNeeded_ReturnsEmptyCredential proves the
+// anonymous-access case returns a zero-value BearerCredential (Token: "")
+// rather than hand-building a nil http.Header directly — docs/roadmap/
+// declarative-middleware-layering.md's Rollout Phase A:
+// regmodels.BearerAuthDeclaration's own NewOmitEmptyHeaderParam-declared
+// merge field is what actually omits the Authorization header downstream
+// from this zero value, not this function itself.
+func TestNewAuthCredentialFunc_NoAuthNeeded_ReturnsEmptyCredential(t *testing.T) {
 	registrySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{}`))
@@ -206,13 +213,13 @@ func TestNewAuthCredentialFunc_NoAuthNeeded_ReturnsNilHeader(t *testing.T) {
 	}
 	client := httpsToHTTPClient()
 
-	credFn := newAuthCredentialFunc(client, u.Host, "org/repo")
-	header, err := credFn(context.Background(), nil)
+	credFn := newAuthCredentialFunc[any](client, u.Host, "org/repo")
+	cred, err := credFn(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("credFn: %v", err)
 	}
-	if header != nil {
-		t.Errorf("header = %v, want nil (no auth required)", header)
+	if cred.Token != "" {
+		t.Errorf("Token = %q, want empty (no auth required)", cred.Token)
 	}
 }
 
@@ -228,7 +235,7 @@ func TestNewAuthCredentialFunc_PropagatesAuthError(t *testing.T) {
 	}
 	client := httpsToHTTPClient()
 
-	credFn := newAuthCredentialFunc(client, u.Host, "org/repo")
+	credFn := newAuthCredentialFunc[any](client, u.Host, "org/repo")
 	_, err = credFn(context.Background(), nil)
 	if err == nil {
 		t.Fatal("credFn: want error, got nil")
@@ -267,7 +274,7 @@ func TestWithCredentialsByRegistry_PicksCorrectEntryPerRegistry(t *testing.T) {
 	credsB := regmodels.Credentials{Username: "user-b", Password: "pass-b"}
 	byRegistry := regmodels.RegistryCredentials{uA.Host: credsA, uB.Host: credsB}
 
-	credFnA := newAuthCredentialFunc(client, uA.Host, "org/repo-a", WithCredentialsByRegistry(byRegistry))
+	credFnA := newAuthCredentialFunc[any](client, uA.Host, "org/repo-a", WithCredentialsByRegistry(byRegistry))
 	if _, err := credFnA(context.Background(), nil); err != nil {
 		t.Fatalf("credFnA: %v", err)
 	}
@@ -279,7 +286,7 @@ func TestWithCredentialsByRegistry_PicksCorrectEntryPerRegistry(t *testing.T) {
 		t.Errorf("Authorization sent for registry A = %q, want %q", gotAuthA, wantA)
 	}
 
-	credFnB := newAuthCredentialFunc(client, uB.Host, "org/repo-b", WithCredentialsByRegistry(byRegistry))
+	credFnB := newAuthCredentialFunc[any](client, uB.Host, "org/repo-b", WithCredentialsByRegistry(byRegistry))
 	if _, err := credFnB(context.Background(), nil); err != nil {
 		t.Fatalf("credFnB: %v", err)
 	}
@@ -305,7 +312,7 @@ func TestWithCredentialsByRegistry_NoMatchingEntry_FallsBackToAnonymous(t *testi
 	// The map has an entry, but not for THIS registry's host.
 	byRegistry := regmodels.RegistryCredentials{"some-other-host.example.com": {Username: "u", Password: "p"}}
 
-	credFn := newAuthCredentialFunc(client, u.Host, "org/repo", WithCredentialsByRegistry(byRegistry))
+	credFn := newAuthCredentialFunc[any](client, u.Host, "org/repo", WithCredentialsByRegistry(byRegistry))
 	if _, err := credFn(context.Background(), nil); err != nil {
 		t.Fatalf("credFn: %v", err)
 	}
@@ -327,7 +334,7 @@ func TestWithCredentials_WinsOverWithCredentialsByRegistry(t *testing.T) {
 	single := regmodels.Credentials{Username: "single-user", Password: "single-pass"}
 	byRegistry := regmodels.RegistryCredentials{u.Host: {Username: "map-user", Password: "map-pass"}}
 
-	credFn := newAuthCredentialFunc(client, u.Host, "org/repo",
+	credFn := newAuthCredentialFunc[any](client, u.Host, "org/repo",
 		WithCredentialsByRegistry(byRegistry), WithCredentials(single))
 	if _, err := credFn(context.Background(), nil); err != nil {
 		t.Fatalf("credFn: %v", err)

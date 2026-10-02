@@ -2,6 +2,7 @@ package chi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/middleware"
+	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -55,7 +57,7 @@ func TestTransform_HappyPath_EnrichesReqAndSetsResponseHeader(t *testing.T) {
 	route := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "createUser"},
 	)
-	route = rest.Transform(route, mw, func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
+	route = route.HandleMW(mw, func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
 		req.Name = req.Name + "-enriched" // enrichment visible to the handler
 		return tdOut{Value: "applied:" + in.Key}, nil
 	})
@@ -95,7 +97,7 @@ func TestTransform_InDecodeFailure_Returns400(t *testing.T) {
 	route := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "createUser"},
 	)
-	route = rest.Transform(route, mw, func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
+	route = route.HandleMW(mw, func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
 		return tdOut{Value: in.Key}, nil
 	})
 	route = route.WithHandler(func(_ context.Context, req createReq) (userResp, error) {
@@ -131,7 +133,7 @@ func TestTransform_FnError_FallsBackToMiddlewareError(t *testing.T) {
 	route := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "createUser"},
 	)
-	route = rest.Transform(route, mw, func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
+	route = route.HandleMW(mw, func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
 		return tdOut{}, errBadAPIKey
 	})
 	route = route.WithHandler(func(_ context.Context, req createReq) (userResp, error) {
@@ -185,7 +187,7 @@ func TestTransform_FnError_MatchingErrorPattern_UsesPatternResponse(t *testing.T
 		rest.RouteMeta{OperationID: "createUser"},
 		rest.ErrorPattern[invalidAPIKeyError, invalidAPIKeyError](422, invalidAPIKeyCodec),
 	)
-	route = rest.Transform(route, mw, func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
+	route = route.HandleMW(mw, func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
 		return tdOut{}, invalidAPIKeyError{Reason: "too short"}
 	})
 	route = route.WithHandler(func(_ context.Context, req createReq) (userResp, error) {
@@ -227,7 +229,7 @@ func TestTransform_InDecodeFailure_ReportsMiddlewareInLocation(t *testing.T) {
 	route := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "createUser"},
 	)
-	route = rest.Transform(route, mw, func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
+	route = route.HandleMW(mw, func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
 		return tdOut{Value: in.Key}, nil
 	})
 	spy := &spyValidationObserver{}
@@ -284,7 +286,7 @@ func TestTransform_OutEncodeFailure_ReportsMiddlewareOutLocation(t *testing.T) {
 	route := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "createUser"},
 	)
-	route = rest.Transform(route, mw, func(ctx context.Context, req *createReq, in tdEmpty) (tdOut, error) {
+	route = route.HandleMW(mw, func(ctx context.Context, req *createReq, in tdEmpty) (tdOut, error) {
 		// Empty Value fails tdOutCodec's NonEmptyString refinement at
 		// EncodeOut/OutCodec.Validate time — isolating the "middleware:out"
 		// location from "middleware:in"/"middleware:fn".
@@ -348,11 +350,11 @@ func TestTransform_TwoMiddlewaresEnrichSameField_LastAttachedWins(t *testing.T) 
 	route := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "createUser"},
 	)
-	route = rest.Transform(route, mwFirst, func(ctx context.Context, req *createReq, in tdEmpty) (tdEmpty, error) {
+	route = route.HandleMW(mwFirst, func(ctx context.Context, req *createReq, in tdEmpty) (tdEmpty, error) {
 		req.Name = "first"
 		return tdEmpty{}, nil
 	})
-	route = rest.Transform(route, mwSecond, func(ctx context.Context, req *createReq, in tdEmpty) (tdEmpty, error) {
+	route = route.HandleMW(mwSecond, func(ctx context.Context, req *createReq, in tdEmpty) (tdEmpty, error) {
 		req.Name = "second"
 		return tdEmpty{}, nil
 	})
@@ -424,5 +426,67 @@ func TestUse_AgnosticMiddleware_DispatchesOnBothRoutes(t *testing.T) {
 
 	if callCount != 2 {
 		t.Errorf("want mw's bundled receiveFn called once per route (2 total), got %d", callCount)
+	}
+}
+
+// ── docs/roadmap/declarative-middleware-layering.md's Rollout Phase A:
+// runSecurityMiddleware retirement — chi mirror of nethttp's identical
+// test (adapters/nethttp/transform_dispatch_test.go).
+
+// bearerAuthOut carries the RESOLVED "conventional field" GrantedScopes
+// convention — a Security Out type is simply EXPECTED to carry a field
+// named GrantedScopes, read by the adapter's dispatch via reflection.
+type bearerAuthOut struct {
+	GrantedScopes map[string][]string
+}
+
+var bearerAuthOutCodec = codex.Struct[bearerAuthOut]()
+
+// TestHandleMW_CodecBackedMiddleware_Satisfies_CoversGlobalSecurity proves
+// a codec-backed Middleware[In,Out] with a Security declaration, attached
+// via the bound HandleMW path ALONE, is recognized by [rest.CheckCoverage]
+// at REGISTRATION time AND fully ENFORCED at runtime — runSecurityMiddleware's
+// retired, separate code path is replaced by this SAME MiddlewareHandler
+// dispatch; Out's GrantedScopes field is read via reflection and fed into
+// the SAME middleware.CheckScopes call every other Security path uses.
+func TestHandleMW_CodecBackedMiddleware_Satisfies_CoversGlobalSecurity(t *testing.T) {
+	decl := middleware.NewDeclaration("bearer-handlemw-policy", tdInCodec, bearerAuthOutCodec)
+	decl.Security = middleware.NewSecurityDeclaration("bearerAuth", route.BearerScheme("JWT"), nil, nil)
+	mw := rest.NewMiddleware(decl).
+		WithRequestHeader(rest.NewRequiredHeaderParam("Authorization", codex.String(),
+			func(in tdIn) string { return in.Key },
+			func(in *tdIn, v string) { in.Key = v },
+		))
+
+	s := rest.NewServer(testInfo)
+	s.AddGlobalSecurity(route.Require("bearerAuth"))
+	r := rest.NewRoute[createReq, userResp]("POST", "/secure-users", createReqCodec, userRespCodec,
+		rest.RouteMeta{OperationID: "createSecureUser"},
+	).HandleMW(mw, func(ctx context.Context, req *createReq, in tdIn) (bearerAuthOut, error) {
+		if in.Key != "valid-token" {
+			return bearerAuthOut{}, errors.New("invalid bearer token")
+		}
+		return bearerAuthOut{GrantedScopes: map[string][]string{"bearerAuth": nil}}, nil
+	}).WithHandler(func(_ context.Context, req createReq) (userResp, error) {
+		return userResp{ID: "1", Name: req.Name}, nil
+	})
+	router := mustServe(t, r, s)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/secure-users", strings.NewReader(`{"name":"Alice"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "valid-token")
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("want 201 for a valid token, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodPost, "/secure-users", strings.NewReader(`{"name":"Alice"}`))
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("Authorization", "wrong-token")
+	router.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusUnauthorized {
+		t.Fatalf("want 401 for an invalid token, got %d: %s", rec2.Code, rec2.Body.String())
 	}
 }

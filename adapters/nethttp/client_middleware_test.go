@@ -15,20 +15,17 @@ import (
 // CallWithHandle-specific ClientTransform tests (HappyPath/FnError/
 // AgnosticMiddleware/D3Precedence — all 4 REMOVED, docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 5a): CallWithHandle's
-// OWN body was the ONLY reachable place on the plain-Call (non-SSE)
-// path that ever dispatched rest.ClientTransform/bundled `.Use()`
-// codec-backed middleware — confirmed via code that NEITHER the deleted
-// function's replacement ([rest.CallWithTransport]) NOR the established
-// [rest.Client.Attach]+[rest.Client.Call] workflow's own
-// [clientTransport.Call] dispatch ever called
-// dispatchClientMiddlewareIn/Out for the plain-Call direction (Consume/
-// SSE's OWN reflection dispatch has the identical, pre-existing gap —
-// this is now a SYMMETRIC limitation, not a new asymmetry). Confirmed
-// via repo-wide grep that no real (non-test) CallWithHandle caller used
-// rest.ClientTransform, so this is a known, accepted, zero-real-impact
-// capability gap, not a silent regression — see the roadmap doc's Phase
-// 5a Learnings. [TestConsumeSSE_ClientTransformSSE_EncodesInAndDecodesOutOnce]
-// below is UNCHANGED — it exercises consumeSSE directly, a separate,
+// OWN body was, at the time, the ONLY reachable place on the plain-Call
+// (non-SSE) path that ever dispatched rest.ClientTransform/bundled
+// `.Use()` codec-backed middleware. This gap (neither
+// [rest.CallWithTransport] nor [clientTransport.Call]/[clientTransport.Consume]
+// dispatched handle.ClientMiddlewareHandlers) was closed in
+// docs/roadmap/declarative-middleware-layering.md's Rollout Phase A —
+// see [TestAttach_ClientCall_CodecBackedClientMW_EncodesInAndDecodesOut]/
+// [TestAttach_ClientConsume_CodecBackedClientMW_EncodesInAndDecodesOut]
+// (clienttransport_test.go) for the current, passing coverage.
+// [TestConsumeSSE_ClientTransformSSE_EncodesInAndDecodesOutOnce] below is
+// UNCHANGED — it exercises consumeSSE directly, a separate,
 // still-fully-capable escape-hatch primitive this phase does not touch.
 
 // ── ClientTransformSSE: encodes In into the connect request, decodes Out
@@ -50,7 +47,7 @@ func TestConsumeSSE_ClientTransformSSE_EncodesInAndDecodesOutOnce(t *testing.T) 
 			func(r sseTestReq) string { return r.ID },
 			func(r *sseTestReq, v string) { r.ID = v }),
 	)
-	route = rest.ClientTransformSSE(route, mw, func(ctx context.Context, req sseTestReq) (tdIn, error) {
+	route = route.ClientMW(mw, func(ctx context.Context, req sseTestReq) (tdIn, error) {
 		return tdIn{Key: "secret-" + req.ID}, nil
 	})
 	handle := route.ClientHandle()

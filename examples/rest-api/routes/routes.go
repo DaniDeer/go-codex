@@ -141,7 +141,7 @@ var ConflictLogRoute = rest.NewRoute[CreateUserReq, User]("POST", "/users-action
 // Fn (see demo_error_pattern.go) that deliberately rejects every caller
 // with InsufficientScopeError, proving a declared ErrorPattern intercepts
 // a SECURITY-MIDDLEWARE Fn failure (not just a business-handler failure).
-var ErrorPatternScopeMw = rest.SecurityMiddleware("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT"), Codec: &BearerCodec}, []string{"billing"})
+var ErrorPatternScopeMw = rest.SecurityMiddleware[struct{}, struct{}]("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT"), Codec: &BearerCodec}, []string{"billing"})
 
 // SecuredConflictRoute demonstrates ErrorPattern matching a security
 // middleware Fn's returned error (InsufficientScopeError), NOT a handler

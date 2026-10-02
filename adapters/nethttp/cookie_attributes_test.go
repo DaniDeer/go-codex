@@ -129,7 +129,7 @@ func TestTransform_ResponseCookieWithAttributes_ReachesSetCookieHeader(t *testin
 	route := rest.NewRoute[createReq, userResp]("POST", "/users3", createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "createUser3"},
 	)
-	route = rest.Transform(route, mw, func(ctx context.Context, req *createReq, in tdEmpty) (tdEmpty, error) {
+	route = route.HandleMW(mw, func(ctx context.Context, req *createReq, in tdEmpty) (tdEmpty, error) {
 		return tdEmpty{}, nil
 	})
 	route = route.WithHandler(func(_ context.Context, req createReq) (userResp, error) {
@@ -175,7 +175,7 @@ func TestCookieAttributes_Precedence_LastAttachedWins(t *testing.T) {
 			return rest.CookieAttributes{MaxAge: 222}
 		}),
 	)
-	route = rest.Transform(route, mw, func(ctx context.Context, req *createReq, in tdEmpty) (tdEmpty, error) {
+	route = route.HandleMW(mw, func(ctx context.Context, req *createReq, in tdEmpty) (tdEmpty, error) {
 		return tdEmpty{}, nil
 	})
 	route = route.WithHandler(func(_ context.Context, req createReq) (userResp, error) {

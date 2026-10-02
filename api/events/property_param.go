@@ -99,3 +99,29 @@ func NewOptionalPropertyParam[T, V any](
 		Required: false,
 	}
 }
+
+// NewOmitEmptyPropertyParam declares a property that is validated AND
+// merge-capable into T IF PRESENT, exactly like [NewOptionalPropertyParam],
+// but OMITS its key entirely from the ENCODE direction (e.g.
+// [ChannelHandle.EncodePropertyVars]) whenever its current value is V's Go
+// zero value — see [rest.NewOmitEmptyHeaderParam]'s doc comment for the
+// full rationale, applied to the property-metadata axis (MQTT5 User
+// Properties today; a future AMQP adapter's native message headers would
+// realize the same concept). No topic-param equivalent exists — a topic
+// template var is positional/structural and has no "optional" or
+// "omit if empty" concept at all.
+func NewOmitEmptyPropertyParam[T, V any](
+	name string,
+	codec codex.Codec[V],
+	get func(T) V,
+	set func(*T, V),
+) MergedPropertyParam[T] {
+	strCodec := codex.StringValidatorFrom(codec)
+	return MergedPropertyParam[T]{
+		MergedParam: codex.MergedParam[T]{
+			Param: codex.Param{Name: name, Codec: &strCodec},
+			Field: codex.OmitEmptyFieldFunc(name, codec, get, set, codex.IsZeroValue),
+		},
+		Required: false,
+	}
+}

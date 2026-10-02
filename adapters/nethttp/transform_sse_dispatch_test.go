@@ -2,6 +2,7 @@ package nethttp
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/middleware"
+	"github.com/DaniDeer/go-codex/route"
 )
 
 // ── TransformSSE: happy path, response header composition ───────────────
@@ -28,7 +30,7 @@ func TestTransformSSE_HappyPath_SetsResponseHeader(t *testing.T) {
 	route := rest.NewSSERoute[createReq, sseEvent]("/events", createReqCodec, sseEventCodec,
 		rest.RouteMeta{OperationID: "streamEvents"},
 	)
-	route = rest.TransformSSE(route, mw, func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
+	route = route.HandleMW(mw, func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
 		return tdOut{Value: "applied:" + in.Key}, nil
 	})
 	route = route.WithHandler(func(ctx context.Context, _ createReq, send func(sseEvent) error) error {
@@ -65,7 +67,7 @@ func TestTransformSSE_InDecodeFailure_Returns400(t *testing.T) {
 	route := rest.NewSSERoute[createReq, sseEvent]("/events2", createReqCodec, sseEventCodec,
 		rest.RouteMeta{OperationID: "streamEvents2"},
 	)
-	route = rest.TransformSSE(route, mw, func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
+	route = route.HandleMW(mw, func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
 		return tdOut{Value: in.Key}, nil
 	})
 	route = route.WithHandler(func(ctx context.Context, _ createReq, send func(sseEvent) error) error {
@@ -100,7 +102,7 @@ func TestTransformSSE_FnError_FallsBackToMiddlewareError(t *testing.T) {
 	route := rest.NewSSERoute[createReq, sseEvent]("/events3", createReqCodec, sseEventCodec,
 		rest.RouteMeta{OperationID: "streamEvents3"},
 	)
-	route = rest.TransformSSE(route, mw, func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
+	route = route.HandleMW(mw, func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
 		return tdOut{}, errBadAPIKey
 	})
 	route = route.WithHandler(func(ctx context.Context, _ createReq, send func(sseEvent) error) error {
@@ -138,7 +140,7 @@ func TestTransformSSE_OutEncodeFailure_ReportsMiddlewareOutLocation(t *testing.T
 	route := rest.NewSSERoute[createReq, sseEvent]("/events-out-fail", createReqCodec, sseEventCodec,
 		rest.RouteMeta{OperationID: "streamEventsOutFail"},
 	)
-	route = rest.TransformSSE(route, mw, func(ctx context.Context, req *createReq, in tdEmpty) (tdOut, error) {
+	route = route.HandleMW(mw, func(ctx context.Context, req *createReq, in tdEmpty) (tdOut, error) {
 		// Empty Value fails tdOutCodec's NonEmptyString refinement at
 		// EncodeOut/OutCodec.Validate time.
 		return tdOut{Value: ""}, nil
@@ -182,11 +184,11 @@ func TestTransformSSE_TwoMiddlewaresEnrichSameField_LastAttachedWins(t *testing.
 	route := rest.NewSSERoute[createReq, sseEvent]("/events5", createReqCodec, sseEventCodec,
 		rest.RouteMeta{OperationID: "streamEvents5"},
 	)
-	route = rest.TransformSSE(route, mwFirst, func(ctx context.Context, req *createReq, in tdEmpty) (tdEmpty, error) {
+	route = route.HandleMW(mwFirst, func(ctx context.Context, req *createReq, in tdEmpty) (tdEmpty, error) {
 		req.Name = "first"
 		return tdEmpty{}, nil
 	})
-	route = rest.TransformSSE(route, mwSecond, func(ctx context.Context, req *createReq, in tdEmpty) (tdEmpty, error) {
+	route = route.HandleMW(mwSecond, func(ctx context.Context, req *createReq, in tdEmpty) (tdEmpty, error) {
 		req.Name = "second"
 		return tdEmpty{}, nil
 	})
@@ -293,5 +295,52 @@ func TestSSERoute_Use_AgnosticMiddleware_DispatchesOnBothRoutes(t *testing.T) {
 
 	if callCount != 2 {
 		t.Errorf("want mw's bundled receiveFn called once per SSERoute (2 total), got %d", callCount)
+	}
+}
+
+// ── docs/roadmap/declarative-middleware-layering.md's Rollout Phase A:
+// SSERoute.HandleMW's bound path + CheckCoverage + GrantedScopes end to
+// end — the SSE mirror of
+// TestHandleMW_CodecBackedMiddleware_Satisfies_CoversGlobalSecurity
+// (transform_dispatch_test.go).
+
+func TestSSERoute_HandleMW_CodecBackedMiddleware_Satisfies_CoversGlobalSecurity(t *testing.T) {
+	decl := middleware.NewDeclaration("bearer-handlemw-sse-policy", tdInCodec, bearerAuthOutCodec)
+	decl.Security = middleware.NewSecurityDeclaration("bearerAuth", route.BearerScheme("JWT"), nil, nil)
+	mw := rest.NewMiddleware(decl).
+		WithRequestHeader(rest.NewRequiredHeaderParam("Authorization", codex.String(),
+			func(in tdIn) string { return in.Key },
+			func(in *tdIn, v string) { in.Key = v },
+		))
+
+	s := rest.NewServer(testInfo)
+	s.AddGlobalSecurity(route.Require("bearerAuth"))
+	sseRoute := rest.NewSSERoute[getReq, counterSSEEvent]("/sse/secure-counter", getReqCodec, counterSSEEventCodec).
+		HandleMW(mw, func(ctx context.Context, req *getReq, in tdIn) (bearerAuthOut, error) {
+			if in.Key != "valid-token" {
+				return bearerAuthOut{}, errors.New("invalid bearer token")
+			}
+			return bearerAuthOut{GrantedScopes: map[string][]string{"bearerAuth": nil}}, nil
+		}).
+		WithHandler(func(ctx context.Context, req getReq, send func(counterSSEEvent) error) error {
+			return send(counterSSEEvent{Count: 1})
+		})
+
+	mux := mustServeSSE(t, sseRoute, s)
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/sse/secure-counter", nil)
+	r.Header.Set("Authorization", "valid-token")
+	mux.ServeHTTP(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200 for a valid token, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec2 := httptest.NewRecorder()
+	r2 := httptest.NewRequest(http.MethodGet, "/sse/secure-counter", nil)
+	r2.Header.Set("Authorization", "wrong-token")
+	mux.ServeHTTP(rec2, r2)
+	if rec2.Code != http.StatusUnauthorized {
+		t.Fatalf("want 401 for an invalid token, got %d: %s", rec2.Code, rec2.Body.String())
 	}
 }

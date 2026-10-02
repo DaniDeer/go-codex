@@ -14,7 +14,7 @@ type dispatchReq struct{ Val string }
 func TestDispatchMiddlewareHandlers_success(t *testing.T) {
 	h := rest.MiddlewareHandler{
 		Name: "mw",
-		DecodeIn: func(headerVars, cookieVars, queryVars map[string]string) (any, error) {
+		DecodeIn: func(ctx context.Context, headerVars, cookieVars, queryVars map[string]string) (any, error) {
 			return headerVars["X-Key"], nil
 		},
 		Fn: func(ctx context.Context, req *dispatchReq, in string) (string, error) {
@@ -43,7 +43,7 @@ func TestDispatchMiddlewareHandlers_decodeInFailure(t *testing.T) {
 	wantErr := errors.New("decode failed")
 	h := rest.MiddlewareHandler{
 		Name: "mw",
-		DecodeIn: func(headerVars, cookieVars, queryVars map[string]string) (any, error) {
+		DecodeIn: func(ctx context.Context, headerVars, cookieVars, queryVars map[string]string) (any, error) {
 			return nil, wantErr
 		},
 	}
@@ -59,7 +59,7 @@ func TestDispatchMiddlewareHandlers_fnFailure(t *testing.T) {
 	wantErr := errors.New("fn failed")
 	h := rest.MiddlewareHandler{
 		Name: "mw",
-		DecodeIn: func(headerVars, cookieVars, queryVars map[string]string) (any, error) {
+		DecodeIn: func(ctx context.Context, headerVars, cookieVars, queryVars map[string]string) (any, error) {
 			return "in", nil
 		},
 		Fn: func(ctx context.Context, req *dispatchReq, in string) (string, error) {

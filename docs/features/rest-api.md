@@ -719,8 +719,8 @@ createUser := rest.NewRoute[CreateUserReq, User]("POST", "/users", ...,
 No handler-side or adapter-specific `WithResponseCookies`/`PendingCookie.Opts`
 staging needed — both the cookie's value AND its attributes derive straight
 from the handler's returned `Resp`. `rest.Middleware[In,Out].WithResponseCookie(...).WithAttributes(...)`
-works identically when attached via `Transform`. See
-[Codec-Backed Middleware](#codec-backed-middleware-transformclienttransform)
+works identically when attached via `HandleMW`. See
+[Codec-Backed Middleware](#codec-backed-middleware-handlemwclientmw)
 above.
 
 ## Builder options
@@ -749,7 +749,7 @@ yamlBytes, _ := openapi.MarshalYAML(map[string]schema.Schema{
 })
 ```
 
-## Codec-backed middleware (`Transform`/`ClientTransform`)
+## Codec-backed middleware (`Route.HandleMW`/`Route.ClientMW`)
 
 A `Middleware[In, Out]` value declares a REUSABLE, codec-backed enrichment/
 enforcement concern independent of any one route's `Req`/`Resp` — its own
@@ -757,10 +757,12 @@ enforcement concern independent of any one route's `Req`/`Resp` — its own
 cookie/query merge fields (`WithRequestHeader`/`WithRequestCookie`/
 `WithRequestQuery`/`WithResponseHeader`/`WithResponseCookie`) reuse the SAME
 constructors a route's own `Req`/`Resp` already use — no new param
-vocabulary. Attached route-BOUND via `rest.Transform`/`rest.ClientTransform`
-(fn additionally receives the route's own already-decoded `req`) or
-route-AGNOSTIC via `Middleware.WithReceive`/`WithSend` + plain `.Use(mw)`
-(reusable verbatim across many routes):
+vocabulary. Attached route-BOUND via `Route.HandleMW`/`Route.ClientMW`
+(fn additionally receives the route's own already-decoded `req` — `HandleMW`/
+`ClientMW` detect a codec-backed `Middleware[In,Out]` automatically and
+dispatch it through this bound path) or route-AGNOSTIC via
+`Middleware.WithReceive`/`WithSend` + plain `.Use(mw)` (reusable verbatim
+across many routes):
 
 ```go
 apiKeyPolicy := rest.NewMiddleware(
@@ -770,14 +772,14 @@ apiKeyPolicy := rest.NewMiddleware(
     func(in *APIKeyIn, v string) { in.Key = v },
 ))
 
-route = rest.Transform(route, apiKeyPolicy,
+route = route.HandleMW(apiKeyPolicy,
     func(ctx context.Context, req *GetProfileReq, in APIKeyIn) (APIKeyOut, error) {
         return APIKeyOut{Validated: true}, nil
     })
 ```
 
-REST additionally has SSE-route counterparts `rest.TransformSSE`/
-`rest.ClientTransformSSE`. A middleware `fn`'s own business error is
+REST additionally has SSE-route counterparts `SSERoute.HandleMW`/
+`SSERoute.ClientMW`. A middleware `fn`'s own business error is
 `ErrorPattern`-eligible (matched the SAME way a handler error is) before
 falling back to `rest.MiddlewareError{Name, Err}` (status 400). This is the
 SAME mechanism `api/events`/`api/reqreply` implement for their own wire

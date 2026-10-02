@@ -293,6 +293,16 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 	}
 	start := time.Now()
 
+	// docs/roadmap/declarative-middleware-layering.md's Rollout Phase A:
+	// pre-allocate the shared ContextField box BEFORE any attached
+	// ClientMW's EncodeIn/DecodeOut runs (mirrors every server adapter's
+	// identical EnsureContextFields call) — a ClientMW using
+	// [rest.Middleware.SetContextFieldFromIn]/[SetContextFieldFromOut]
+	// needs this to be a no-op burden on the caller, not a documented
+	// prerequisite. Idempotent — safe even if the caller already prepared
+	// ctx themselves.
+	ctx = middleware.EnsureContextFields(ctx)
+
 	// docs/design/d-0006-protocol-native-capabilities.md's Phase 5a:
 	// ferry per-field validation errors (Class B) out via ctx, then
 	// drain them into obs.RecordValidationError exactly once before
@@ -391,13 +401,32 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 			return nil, err
 		}
 
+		// docs/design/declarative-middleware-layering.md's Rollout
+		// Phase A: dispatch every attached codec-backed ClientMW's
+		// EncodeIn, feeding its header/cookie/query contribution into
+		// the SAME D3 precedence chain [consumeOnce] already applies —
+		// a confirmed, previously-missing gap: Call never dispatched
+		// handle.ClientMiddlewareHandlers at all (only the legacy,
+		// general-purpose handle.ClientImplementations).
+		clientMWHandlers, _ := elem.FieldByName("ClientMiddlewareHandlers").Interface().([]rest.ClientMiddlewareHandler)
+		if len(clientMWHandlers) > 0 {
+			mwHeaders, mwCookies, mwQuery, mwErr := dispatchClientMiddlewareIn(ctx, reqAny, clientMWHandlers)
+			if mwErr != nil {
+				stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, "middleware:fn", mwErr)
+				obs.RecordRequest(method, path, 0, time.Since(start))
+				err = mwErr
+				return nil, err
+			}
+			queryVars = overrideDerived(queryVars, mwQuery)
+			headerVars = overrideDerived(headerVars, mwHeaders)
+			cookieVars = overrideDerived(cookieVars, mwCookies)
+		}
+
 		// docs/design/d-0006-protocol-native-capabilities.md's Phase
 		// 5a: an explicit opts.QueryParams/HeaderParams/CookieParams
 		// entry takes PRECEDENCE over the derived value for the same
 		// key — mirrors [callWithVars]'s own D3 precedence chain
-		// exactly (explicit > middleware-derived > route-own-derived —
-		// no middleware tier exists at THIS call site, so this is the
-		// 2-tier "explicit > derived" collapse of that same chain).
+		// exactly (explicit > middleware-derived > route-own-derived).
 		queryVars = overrideDerived(queryVars, opts.QueryParams)
 		headerVars = overrideDerived(headerVars, opts.HeaderParams)
 		cookieVars = overrideDerived(cookieVars, opts.CookieParams)
@@ -590,6 +619,20 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 			if errI, _ := applyResults[0].Interface().(error); errI != nil {
 				return []reflect.Value{reflect.Zero(respType), reflectErrValue(errI)}
 			}
+
+			// docs/design/declarative-middleware-layering.md's Rollout
+			// Phase A: decode every attached codec-backed ClientMW's OWN
+			// Out value from the SAME response headers/cookies —
+			// mirrors [callWithVars]'s identical step 13b exactly (a
+			// confirmed, previously-missing gap in this reflection
+			// dispatch: Call never dispatched
+			// handle.ClientMiddlewareHandlers's Out side at all).
+			if len(clientMWHandlers) > 0 {
+				if mwErr := dispatchClientMiddlewareOut(ctx, resp, clientMWHandlers); mwErr != nil {
+					rest.ReportBodyErrors(ctx, mwErr)
+					return []reflect.Value{reflect.Zero(respType), reflectErrValue(mwErr)}
+				}
+			}
 			return []reflect.Value{respPtr.Elem(), decodeResults[1]}
 		})
 
@@ -634,6 +677,11 @@ func (t *clientTransport) Consume(ctx context.Context, sseRouteAny, reqAny, fnAn
 		opts = optsVariadic[0]
 	}
 	obs := stats.ObserverFromContext(ctx)
+
+	// docs/roadmap/declarative-middleware-layering.md's Rollout Phase A:
+	// see [clientTransport.Call]'s identical EnsureContextFields call for
+	// the full rationale.
+	ctx = middleware.EnsureContextFields(ctx)
 
 	handleVal, elem, err := recoverClientSSERouteHandleValue(sseRouteAny)
 	if err != nil {
@@ -740,6 +788,24 @@ func (t *clientTransport) consumeOnce(
 		return false, err
 	}
 
+	// docs/design/declarative-middleware-layering.md's Rollout Phase A:
+	// dispatch every attached codec-backed ClientMW's EncodeIn, mirroring
+	// [binding.go]'s consumeOnce's identical D3 precedence chain — a
+	// confirmed, previously-missing gap: this reflection-based Consume
+	// never dispatched handle.ClientMiddlewareHandlers at all.
+	clientMWHandlers, _ := elem.FieldByName("ClientMiddlewareHandlers").Interface().([]rest.ClientMiddlewareHandler)
+	if len(clientMWHandlers) > 0 {
+		mwHeaders, mwCookies, mwQuery, mwErr := dispatchClientMiddlewareIn(ctx, reqVal.Interface(), clientMWHandlers)
+		if mwErr != nil {
+			stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, "middleware:fn", mwErr)
+			obs.RecordRequest(method, path, 0, time.Since(start))
+			return false, mwErr
+		}
+		queryVars = overrideDerived(queryVars, mwQuery)
+		headerVars = overrideDerived(headerVars, mwHeaders)
+		cookieVars = overrideDerived(cookieVars, mwCookies)
+	}
+
 	buildPathResults := handleVal.MethodByName("BuildPath").Call([]reflect.Value{reflect.ValueOf(pathVars)})
 	if errI, _ := buildPathResults[1].Interface().(error); errI != nil {
 		obs.RecordRequest(method, path, 0, time.Since(start))
@@ -813,6 +879,18 @@ func (t *clientTransport) consumeOnce(
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
 		return false, UnexpectedStatusError{Method: method, Path: path, StatusCode: resp.StatusCode, Body: body, Header: resp.Header}
+	}
+
+	// docs/design/declarative-middleware-layering.md's Rollout Phase A:
+	// decode every attached codec-backed ClientMW's OWN Out value from
+	// the connection's response headers/cookies ONCE, at connection-open
+	// time — mirrors [binding.go]'s consumeOnce's identical step 2b
+	// exactly (a confirmed, previously-missing gap: this reflection-based
+	// Consume never dispatched the Out side at all).
+	if len(clientMWHandlers) > 0 {
+		if mwErr := dispatchClientMiddlewareOut(ctx, resp, clientMWHandlers); mwErr != nil {
+			return false, mwErr
+		}
 	}
 
 	decode := resolveEventDecoderMethod.CallSlice([]reflect.Value{reflect.ValueOf(httpReq.Header.Get("Accept")), formatsVal})[0]
