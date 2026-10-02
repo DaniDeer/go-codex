@@ -296,6 +296,140 @@ middleware. **This directly resolves section 3's "Security is the ONE
 confirmed exception" finding as PART OF this architecture revision — not
 as a separate, later Phase 2.**
 
+### Confirmed mechanical details (found during Phase A's design review, before implementation)
+
+A dedicated review pass (per this doc's own per-phase workflow: design
+→ review → plan → implement), run before Phase A's implementation
+began, traced the Architecture revision down to the exact Go
+mechanics. Found 4 concrete, confirmed, all-mechanically-resolvable
+details that were previously unstated — documented here so
+implementation doesn't have to re-derive them.
+
+1. **Migration scale, precisely confirmed**: ~45 real test call sites
+   across `adapters/nethttp/*_test.go`/`adapters/chi/*_test.go`
+   (mirrored) PLUS `examples/error-types/main.go` (a real example, 3
+   call sites) use `rest.Transform`/`TransformSSE`/`ClientTransformSSE`
+   directly. The migration itself is MECHANICAL — a pure rename
+   (`rest.Transform(route, mw, fn)` → `route.HandleMW(mw, fn)`,
+   confirmed identical Fn signature, confirmed `SSERoute` already has
+   its own `HandleMW`/`ClientMW` methods for the SSE variants too) —
+   consistent with the already-resolved "mechanical,
+   representative-sample-then-full-sweep" Open design decision. See
+   "Files to create/modify" below for the now-explicit scope.
+2. **The type-erasure bridge mechanism — reuses an ALREADY-EXISTING
+   pattern, invents nothing new.** `HandleMW`'s `mw
+   middleware.RouteMiddleware` parameter is an INTERFACE — Go generics
+   cannot let it recover `Middleware[In,Out]`'s concrete `In`/`Out` to
+   build a `MiddlewareHandler` (the SAME "no new type params on a
+   method" limitation that originally forced `Transform` to be a free
+   function). Confirmed this EXACT problem is ALREADY solved, today, for
+   the AGNOSTIC case: `routeMiddlewareContributor`
+   (`api/rest/middleware.go`) — an unexported interface with
+   `applyAgnosticRoute(rb *routeBuilder)`, implemented by
+   `Middleware[In,Out]` using its OWN bound type parameters (zero NEW
+   type params needed on the method — Go's own rule is satisfied simply
+   because the METHOD's receiver already carries `In`/`Out`). `HandleMW`
+   needs the SAME pattern extended with a NEW, analogous bound-case
+   method (e.g. alongside `applyAgnosticRoute`) that builds a
+   `MiddlewareHandler` carrying `*Req`-accessing dispatch instead of the
+   agnostic shape. The legacy, non-codec `middleware.Middleware` (a bare
+   `{Name, Security}` struct, confirmed NO merge-field vocabulary at
+   all) needs NO such bridge at all — it stays on its existing, simpler
+   `ServerImplementation` path, unchanged — a separate branch, not a
+   conflict, since `HandleMW` can type-switch on `mw` itself before
+   deciding which path applies.
+
+   **Confirmed this round, with full precision**: `buildMiddlewareHandler[Req,
+   Resp, In, Out any](mw Middleware[In,Out], fn func(ctx, *Req, In) (Out,
+   error)) MiddlewareHandler` (Transform's own internal builder) —
+   traced its FULL body: `Req`/`Resp` are STRUCTURALLY VESTIGIAL. They
+   exist ONLY to type-check `fn`'s signature at Transform's OWN call
+   site; the function BODY never references `Req`/`Resp` again (it
+   stores `fn` directly into `MiddlewareHandler.Fn` as `any`, and builds
+   `DecodeIn`/`EncodeOut` purely from `mw`'s In/Out). This means the new
+   bound-case contributor method can be written with the EXACT same
+   signature shape as `applyAgnosticRoute` plus one parameter —
+   `applyBoundRoute(rb *routeBuilder, fn any)` — taking `fn` as `any`
+   (matching `HandleMW`'s OWN already-erased `fn any` parameter
+   precisely, zero adaptation needed at the call site) and ZERO new type
+   parameters, confirmed mechanically trivial, not just plausible.
+
+   **Also confirmed this round**: `HandleMW`'s CURRENT body
+   (`api/rest/middleware.go`) calls `buildServerImplementation(mw, fn)`
+   UNCONDITIONALLY — ZERO type-switch on `mw`'s concrete type exists
+   today. The fix needs `HandleMW` to gain a type-switch mirroring
+   `routeMiddlewareOpt.applyRoute`'s OWN EXISTING pattern exactly
+   (`switch v := mw.(type) { case middleware.Middleware: ...;  case
+   <new bound-contributor interface>: v.applyBoundRoute(&rb, fn); ...
+   }`) — reusing, again, an established dispatch technique already
+   proven elsewhere in the SAME file, not inventing a new one.
+
+   **`applyBoundRoute`'s full responsibility, now completely specified**:
+   confirmed via `checkMiddlewareNameUniquenessAndAttachment`'s own doc
+   comment — the D6(b)/D7 checks (duplicate-name, ambiguous-dual-
+   attachment) explicitly "cover BOTH attachment paths — plain `.Use()`
+   ... and Transform/ClientTransform — since both feed
+   `rb.middlewareSpecContributions`." Confirmed `boundSpecContributionOf[In,
+   Out any](mw Middleware[In,Out])` (the function Transform ALSO calls
+   today, separately from `buildMiddlewareHandler`) is EQUALLY Req/Resp-
+   agnostic — only needs In/Out. So `applyBoundRoute` must do BOTH of
+   Transform's 2 separate appends in one method: populate
+   `rb.middlewareHandlers` (the bound `MiddlewareHandler`, this item's
+   main subject) AND `rb.middlewareSpecContributions` (via
+   `boundSpecContributionOf(m)`, UNCHANGED) — otherwise D6(b)/D7's
+   existing, already-correct enforcement would silently stop covering
+   `HandleMW`-attached middleware once `Transform` is removed. Confirmed
+   mechanically complete — no remaining unknowns in this bridge.
+   **Same fix applies identically to `SSERoute.HandleMW`/`ClientMW`**
+   (confirmed via code: both call the SAME `buildServerImplementation`/
+   inline `ClientImplementation`-building logic as `Route`'s own
+   methods, zero SSE-specific divergence) — not a separate design, just
+   2 more call sites for the SAME fix.
+3. **Security's gating semantics need a new field to survive the
+   fold-in — confirmed to affect the ALREADY-SHIPPED agnostic path too,
+   not just the new bound case.** `MiddlewareHandler` (`Transform`'s
+   dispatch unit) has NO `Satisfies []string` field at all — confirmed
+   via grep — because it dispatches UNCONDITIONALLY (correct for its
+   original, non-Security, always-run purpose). Security's pairing
+   (matching `Satisfies` against the route's declared requirements)
+   lives on `ServerImplementation.Satisfies` today. **Confirmed via
+   code**: the EXISTING, ALREADY-SHIPPED `buildAgnosticMiddlewareHandler`/
+   `buildAgnosticClientMiddlewareHandler` (`api/rest/transform.go`) —
+   which "The pivot, concretely"'s OWN worked examples rely on, via
+   `.Use(BearerAuthDeclaration.WithSend(...))` — populate NO `Satisfies`
+   either, meaning THOSE examples, as currently written, would run their
+   credential Fn UNCONDITIONALLY on every call through the attached
+   route, regardless of whether that route actually declares the scheme
+   as required. Folding Security onto the unified mechanism needs a NEW
+   `Satisfies []string` field added to `MiddlewareHandler`/
+   `ClientMiddlewareHandler`, populated the SAME way
+   `buildServerImplementation` already populates it from `mw`'s Security
+   declaration (`securityDeclarationOf(mw)`) — in BOTH the existing
+   agnostic builders AND the new bound-case builder (item 2 above), not
+   just the latter.
+4. **`CheckCoverage` is hardcoded to `[]middleware.ServerImplementation`
+   — confirmed, needs updating. Resolution refined this round: a small
+   SIGNATURE change, NOT a storage merge.** Called from the ADAPTER
+   layer (`nethttp.Serve`/chi) at Serve time, not builder time (per its
+   own doc comment — this check can only run once BOTH the declaration
+   AND the implementation are known). Confirmed via code
+   (`api/rest/builder.go`): `RouteHandle` ALREADY carries
+   `Implementations []middleware.ServerImplementation` AND
+   `MiddlewareHandlers []MiddlewareHandler` as TWO SEPARATE, already-
+   coexisting exported fields — no merge needed, that would be an
+   unnecessarily invasive, public-API-breaking change. The precise fix:
+   extend `CheckCoverage`'s signature to accept BOTH lists (e.g. a 2nd
+   `handlers []MiddlewareHandler` parameter), checking `Satisfies`
+   across BOTH — so a route whose Security migrated onto the new
+   `MiddlewareHandler`-based path (item 2 above) is still correctly
+   recognized as covered, avoiding a false-positive
+   `MissingSecurityMiddlewareError`. Same fix needed in `events`'/
+   `reqreply`'s OWN separately-defined `CheckCoverage` functions
+   (confirmed near-identical duplicates, not shared code, per
+   `api/events/builder.go`/`api/reqreply/middleware.go`) — relevant to
+   Phase A for REST now, and to Phase B/C's own review passes later for
+   events/reqreply.
+
 ### Worked example — a Security-shaped middleware needing `*Req` access, attached via `HandleMW` directly
 
 ```go
@@ -329,10 +463,12 @@ for reqreply) — see "Implementation rollout" below, updated accordingly
 ### Scope confirmation
 
 This is a DESIGN-LEVEL decision this round — no code has been changed.
-See "Implementation rollout"'s Rollout Phase A/B/C bullets (updated
-below) for where this lands in the per-API rollout sequencing, and
-"Files to create/modify" (updated below) for the concrete file-level
-consequences.
+See "Confirmed mechanical details" above for the exact Go-level bridging
+mechanism (a dedicated design-review pass found and resolved 4 concrete
+gaps before implementation began), "Implementation rollout"'s Rollout
+Phase A/B/C bullets (updated below) for where this lands in the per-API
+rollout sequencing, and "Files to create/modify" (updated below) for the
+concrete file-level consequences.
 
 
 ## Confirmed via code: the general mechanism already exists, symmetrically, in all three packages
@@ -402,7 +538,10 @@ func DecodeLayer[T any](
 ) (T, error)
 
 // EncodeLayer is DecodeLayer's encode-side mirror — validates T first,
-// then derives each axis's wire-value map via codex.EncodeVars.
+// then derives each axis's wire-value map via codex.EncodeMergeVars (NOT
+// codex.EncodeVars — see "Phase 1 sub-item" above for why these are
+// deliberately separate functions), so every merge-field axis inherits
+// "omit if unset" support automatically.
 func EncodeLayer[T any](
     name string,
     codec codex.Codec[T],
@@ -432,7 +571,7 @@ extending Security to use the SAME mechanism becomes a natural
 consequence of the architecture, not a 4th hand-written variant to keep
 in sync.
 
-### Phase 1 sub-item: thread `codex`'s existing sparse-field capability through `EncodeVars`
+### Phase 1 sub-item: a NEW, separate `codex.EncodeMergeVars` function — NOT an extension of `EncodeVars` (corrected this round)
 
 Checked (via a "think outside the box" question about reusing
 `codex.PartialField`/`PartialStruct`'s layering — the mechanism
@@ -460,15 +599,38 @@ BUILT primitive:
   wire value entirely if unset" today — e.g. an optional
   `X-Idempotency-Key` header that should simply not be sent when unset.
 
-**Folded into Phase 1's scope**: extend `codex.EncodeVars` to also check
-for `sparseFieldCodec[T]`, mirroring `Struct`'s existing pattern exactly
-— zero new codec concept, reusing `OmitEmptyField`/`MaybeField` as-is.
-Once `middleware.EncodeLayer` is built on top of the now-extended
-`EncodeVars` (Phase 1's own main item), every merge-field axis in all 3
-packages inherits "omit if unset" support for free, including Security's
-own credential merge fields (Phase 2) — e.g. an optional credential
-sub-field that should be omitted from the wire entirely when the
-`.WithSend` Fn didn't set it.
+**CORRECTED this round — "extend `EncodeVars`" was WRONG, confirmed by
+actually attempting it during Phase A's implementation.** Extending
+`EncodeVars` itself to check `sparseFieldCodec[T]` breaks 2 EXISTING,
+deliberate tests (`codex/maybe_test.go`'s
+`TestMaybeField_EncodeVarsIgnoresSparseRule`,
+`codex/omitempty_test.go`'s
+`TestOmitEmptyField_EncodeVarsIgnoresSparseRule`) and contradicts
+`docs/concepts/codec.md`'s own documented rationale ("Interaction with
+`Template`/`DottedKeyCodec`/`DecodeVars`/`EncodeVars`" section):
+`EncodeVars` is ALSO used for PATH/TOPIC/DOTTED-KEY building (every
+`SinkAdapter`/`IOAdapter`/`SourceAdapter` constructor across
+`adapters/file`/`redis`/`mqtt`/`mqtt5`/`zeromq`, plus
+`DottedKeyCodec`/`Template`) — where a silently-omitted field would
+CORRUPT the built URI/topic/key structure. This is a deliberate,
+pre-existing safety guarantee this doc's original resolution would have
+broken.
+
+**Corrected resolution**: add a NEW, separate, exported function —
+`codex.EncodeMergeVars[T](v T, fields ...FieldCodec[T]) (map[string]string, error)`
+— identical to `EncodeVars` EXCEPT it honors `sparseFieldCodec[T]`,
+mirroring `Struct`'s own Encode loop exactly. `EncodeVars` itself stays
+COMPLETELY UNCHANGED, preserving its path/topic/dotted-key safety
+guarantee. `EncodeMergeVars` MUST live inside package `codex` (not
+`middleware`) since `sparseFieldCodec[T]` is unexported — confirmed via
+grep, no cross-package access possible. Once `middleware.EncodeLayer`
+is built on top of `EncodeMergeVars` (Phase 1's own main item), every
+merge-field axis in all 3 packages inherits "omit if unset" support for
+free, including Security's own credential merge fields (Phase 2) — e.g.
+an optional credential sub-field that should be omitted from the wire
+entirely when the `.WithSend` Fn didn't set it. Path/topic template
+building (an entirely separate, pre-existing mechanism) continues to
+use `EncodeVars`, untouched.
 
 ### Phase 1 sub-item: fail-fast vs. accumulate-all errors across stacked layers
 
@@ -1613,8 +1775,32 @@ func(Out) any)` method would silently be unusable for events'
 Subscribe** — there being no `Out` there at all — so the design splits
 into two methods instead of one, reflecting this honestly:
 
+**CRITICAL FIX this round — the sketch below's ORIGINAL signatures
+(`field middleware.ContextField[V]`) DO NOT COMPILE, confirmed by
+actually compiling the shape**: `V` appears nowhere else in either
+method's signature (`Middleware[In,Out]`'s receiver only binds `In`/
+`Out`) — Go requires every type parameter referenced in a method to be
+either the receiver's own or impossible to introduce new, exactly the
+SAME rule driving this whole doc's Architecture revision. The error is
+literal: `undefined: V`. **Fix, also confirmed by compiling**: `V` never
+actually appears in `ContextField[V].Set`'s OWN signature either
+(`Set(ctx context.Context, raw any) error` — `raw` is `any`, not `V`;
+decoding happens INSIDE `Set` via the field's own codec) — meaning
+EVERY `ContextField[V]`, regardless of `V`, ALREADY satisfies a tiny,
+V-free interface. Both methods take THAT interface instead of the
+generic struct directly:
+
 ```go
-// middleware — two new declarative methods on Middleware[In,Out].
+// middleware — a new, exported, V-free interface every ContextField[V]
+// already satisfies today, with zero changes to ContextField itself.
+type ContextFieldSetter interface {
+    Set(ctx context.Context, raw any) error
+}
+
+// api/rest (events/reqreply mirror) — two new declarative methods on
+// Middleware[In,Out]. field is middleware.ContextFieldSetter (NOT
+// middleware.ContextField[V] directly) — confirmed necessary, not
+// stylistic: see the CRITICAL FIX note above.
 
 // SetContextFieldFromIn declares that, after DecodeIn succeeds (BEFORE the Fn
 // runs), dispatch automatically calls field.Set(ctx, get(in)) — no
@@ -1626,7 +1812,7 @@ into two methods instead of one, reflecting this honestly:
 // credential field's OWN codec level (ordinary codex.Struct/Refine
 // composition, nothing new) — so by the time SetContextFieldFromIn runs, the
 // derived value is ALREADY part of In.
-func (m Middleware[In, Out]) SetContextFieldFromIn(field middleware.ContextField[V], get func(In) any) Middleware[In, Out]
+func (m Middleware[In, Out]) SetContextFieldFromIn(field middleware.ContextFieldSetter, get func(In) any) Middleware[In, Out]
 
 // SetContextFieldFromOut is SetContextFieldFromIn's sibling for the PRODUCED value —
 // Out for REST/reqreply's receive direction AND events' send
@@ -1634,8 +1820,16 @@ func (m Middleware[In, Out]) SetContextFieldFromIn(field middleware.ContextField
 // events' Subscribe (WithReceive) — there is no Out parameter to
 // reference there; Go's own type system means the method simply
 // doesn't type-check against that shape, not a runtime restriction.
-func (m Middleware[In, Out]) SetContextFieldFromOut(field middleware.ContextField[V], get func(Out) any) Middleware[In, Out]
+func (m Middleware[In, Out]) SetContextFieldFromOut(field middleware.ContextFieldSetter, get func(Out) any) Middleware[In, Out]
 ```
+
+A caller still passes a concrete `ContextField[string]{...}`/
+`ContextField[UserID]{...}` value directly at the call site — Go's
+ordinary implicit interface satisfaction means NOTHING changes about
+how `SetContextFieldFromIn`/`Out` are actually CALLED, only how they're
+DECLARED; this fix is invisible to every caller, confirmed via a
+compiling round-trip test (declare `ContextField[string]{}`, pass it to
+a `ContextFieldSetter`-typed parameter, build clean).
 
 Dispatch calls every declared link automatically — `SetContextFieldFromIn`
 right after `DecodeIn` succeeds (before the Fn runs), `SetContextFieldFromOut`
@@ -1963,36 +2157,55 @@ No NEW types are introduced beyond this signature change in each
 package — `.WithSend`/`.WithReceive`/the merge-field methods are ALL
 pre-existing `Middleware[In,Out]` methods, reused verbatim, per package.
 
-**One genuinely NEW constructor, confirmed needed** — found while
+**A genuinely NEW constructor FAMILY, confirmed needed** — found while
 re-evaluating `examples/go-edge-models/app/registry/auth.go`'s
 `newAuthCredentialFunc` (this doc's own motivating real case, see the
 worked example below) against Phase 1's own sub-item (the
-`sparseFieldCodec[T]`/`EncodeVars` "omit on encode" extension, already
-planned): once `EncodeVars` can check `sparseFieldCodec[T]`, THIS is
-needed to actually DECLARE a header merge field backed by it —
-confirmed via grep, zero `OmitEmptyField`/`MaybeField` usage exists
-anywhere in `api/rest` today, and `MergedHeaderParam.field` is
-unexported (buildable only via `NewRequiredHeaderParam`/
-`NewOptionalHeaderParam`, neither omit-capable).
+`codex.EncodeMergeVars` "omit on encode" function, corrected above):
+once `EncodeMergeVars` can check `sparseFieldCodec[T]`, a constructor is
+needed to actually DECLARE a merge field backed by it — confirmed via
+grep, zero `OmitEmptyField`/`MaybeField` usage exists anywhere in
+`api/rest`/`api/events`/`api/reqreply` today, and every
+`Merged*Param.field` is unexported (buildable only via each location's
+existing `NewRequired*Param`/`NewOptional*Param` pair, neither
+omit-capable).
+
+**Corrected this round — NOT header-only.** Every merge-field location
+ALREADY comes in Required/Optional PAIRS, confirmed via code:
+`NewRequiredQueryParam`/`NewOptionalQueryParam`,
+`NewRequiredCookieParam`/`NewOptionalCookieParam`,
+`NewRequiredHeaderParam`/`NewOptionalHeaderParam`,
+`NewRequiredResponseHeaderParam`/`NewOptionalResponseHeaderParam`,
+`NewRequiredResponseCookieParam`/`NewOptionalResponseCookieParam`
+(REST); `NewPropertyParam`/`NewOptionalPropertyParam` (events/reqreply,
+identical pair shape). An omit-empty tier must match this EXISTING
+symmetry, not single out headers — the FULL family:
 
 ```go
-// api/rest (same shape as NewRequiredHeaderParam/NewOptionalHeaderParam,
-// just backed by codex.OmitEmptyFieldFunc instead of plain Field) —
-// declares a header that is OMITTED FROM THE WIRE ENTIRELY (not sent as
-// an empty value) whenever isEmpty(get(in)) is true.
-func NewOmitEmptyHeaderParam[T, V any](
-    name string,
-    codec codex.Codec[V],
-    get func(T) V,
-    set func(*T, V),
-    isEmpty func(V) bool,
-) MergedHeaderParam[T]
+// api/rest — one per EXISTING Required/Optional pair, all built on
+// codex.EncodeMergeVars (NOT codex.EncodeVars), all backed by
+// codex.OmitEmptyFieldFunc instead of plain Field. Declares a merge
+// field that is OMITTED FROM THE WIRE ENTIRELY (not sent as an empty
+// value) whenever isEmpty(get(in)) is true.
+func NewOmitEmptyQueryParam[T, V any](name string, codec codex.Codec[V], get func(T) V, set func(*T, V), isEmpty func(V) bool) MergedQueryParam[T]
+func NewOmitEmptyCookieParam[T, V any](name string, codec codex.Codec[V], get func(T) V, set func(*T, V), isEmpty func(V) bool) MergedCookieParam[T]
+func NewOmitEmptyHeaderParam[T, V any](name string, codec codex.Codec[V], get func(T) V, set func(*T, V), isEmpty func(V) bool) MergedHeaderParam[T]
+func NewOmitEmptyResponseHeaderParam[Resp, V any](name string, codec codex.Codec[V], get func(Resp) V, set func(*Resp, V), isEmpty func(V) bool) MergedResponseHeaderParam[Resp]
+func NewOmitEmptyResponseCookieParam[Resp, V any](name string, codec codex.Codec[V], get func(Resp) V, set func(*Resp, V), isEmpty func(V) bool) MergedResponseCookieParam[Resp]
+
+// api/events, api/reqreply — one each, mirroring NewOptionalPropertyParam's
+// shape exactly. NO topic-param equivalent: confirmed via code,
+// NewTopicParam has no Required/Optional split at all (a topic template's
+// vars are positional/structural, not an optional-presence concept), so
+// "omit if unset" doesn't apply there.
+func NewOmitEmptyPropertyParam[T, V any](name string, codec codex.Codec[V], get func(T) V, set func(*T, V), isEmpty func(V) bool) MergedPropertyParam[T]
 ```
 
-The SAME pattern extends analogously to cookie/query constructors
-(REST) and topic/property constructors (events/reqreply) once Phase 1
-ships — not designed further here, since the motivating case (below)
-only needs the header variant.
+**Open question, not assumed**: whether `NewRequiredSSEEventParam`/
+`NewOptionalSSEEventParam` also need an omit-empty variant — less
+obviously motivated, since an SSE event is typically a full payload,
+not a scalar presence/absence case. Not designed further here; revisit
+during implementation if a real use case surfaces.
 
 **Granted-scopes convention (RESOLVED — Option 3, "conventional field"):**
 `Out` keeps the EXACT SAME uniform signature every other agnostic
@@ -2131,21 +2344,24 @@ regressed, by Phase 2.
 |---|---|---|
 | `adapters/nethttp/clienttransport.go` | **Prerequisite for Phase 2 (REST only)**: add `ClientMiddlewareHandlers` dispatch to `Call` AND `Consume` — mirroring `binding.go`/`client.go`'s existing `dispatchClientMiddlewareIn`/`Out` calls. Closes the confirmed, pre-existing gap blocking Security's migration AND SSE `Consume`'s client-side agnostic middleware support in one pass | Prereq |
 | `middleware/layer.go` (new) | `Axis[T]`/`AxisVars[T]`, `DecodeLayer`/`EncodeLayer` — the new shared mechanism | 1 |
-| `api/rest/transform.go` | Migrate `buildDecodeIn`/`buildEncodeIn`/`buildEncodeOut`/`buildDecodeOut` onto `middleware.DecodeLayer`/`EncodeLayer`; **REMOVE** `Transform`/`ClientTransform`/`TransformSSE`/`ClientTransformSSE` as separate free functions (Architecture revision) | 1 + Arch. revision |
+| `api/rest/transform.go` | Migrate `buildDecodeIn`/`buildEncodeIn`/`buildEncodeOut`/`buildDecodeOut` onto `middleware.DecodeLayer`/`EncodeLayer`; **REMOVE** `Transform`/`ClientTransform`/`TransformSSE`/`ClientTransformSSE` as separate free functions (Architecture revision) — ONLY after the test/example migration row below lands | 1 + Arch. revision |
+| `adapters/nethttp/*_test.go`, `adapters/chi/*_test.go` (mirrored), `examples/error-types/main.go` | **Confirmed via code review**: ~45 real test call sites + 1 real example use `rest.Transform`/`TransformSSE`/`ClientTransformSSE` directly — mechanical rename sweep (`rest.Transform(route, mw, fn)` → `route.HandleMW(mw, fn)`, confirmed identical Fn signature) BEFORE the functions themselves are removed | Arch. revision |
 | `api/events/transform.go` | Same migration, 2-axis (topic/property) | 1 |
 | `api/reqreply/transform.go` | Same migration, 2-axis (topic/property), fully duplex like REST | 1 |
 | `api/rest/middleware_declaration.go` | `SecurityMiddleware`'s generalized signature | 2 |
-| `api/rest/middleware.go` | `HandleMW`/`ClientMW` become the ONLY attachment methods — reflection-based Fn dispatch absorbing `Transform`'s former `*Req`-access capability (Architecture revision), replacing fixed-shape Fn type-assertions with dispatch through Phase 1's shared mechanism | 2 + Arch. revision |
+| `api/rest/middleware.go` | `HandleMW`/`ClientMW` become the ONLY attachment methods. **Confirmed mechanism** (see "Confirmed mechanical details" above): extend `routeMiddlewareContributor`/`applyAgnosticRoute` (today agnostic-only) with a new bound-case method for `*Req`-accessing dispatch; add `Satisfies []string` to `MiddlewareHandler`/`ClientMiddlewareHandler`; update `CheckCoverage` (and likely merge `rb.impls` with the `MiddlewareHandler`-populated field) to see the unified type's `Satisfies` | 2 + Arch. revision |
 | `adapters/nethttp/adapter.go` | **RETIRE** `runSecurityMiddleware`'s separate code path — folded into `HandleMW`'s now-unified reflection dispatch | Arch. revision |
 | `adapters/nethttp/binding.go`/`client.go` | **RETIRE** `mergeCredentialHeaders`'s separate code path — folded into `ClientMW`'s now-unified reflection dispatch | Arch. revision |
 | `api/events/middleware_declaration.go`, `api/events/builder.go` | Same generalization for events | 2 |
 | `api/reqreply/middleware_declaration.go`, `api/reqreply/route.go` | Same generalization for reqreply | 2 |
 | `adapters/mqtt5/{transport.go,transport_dispatch.go,reqreply_transport.go}`, `adapters/zeromq`, `adapters/mqtt` | Replace fixed-shape Fn type-assertions with dispatch through the mw's own handler | 2 |
-| `api/rest/builder.go` | Add `NewOmitEmptyHeaderParam[T,V]` (new, confirmed-needed constructor — see "API surface") alongside the existing `NewRequiredHeaderParam`/`NewOptionalHeaderParam` | 1 |
+| `codex/varfields.go` | Add `EncodeMergeVars[T]` (new, separate function — see "Phase 1 sub-item" above) — `EncodeVars` itself stays UNCHANGED | 1 |
+| `api/rest/builder.go` | Add the FULL omit-empty constructor family (`NewOmitEmptyQueryParam`/`NewOmitEmptyCookieParam`/`NewOmitEmptyHeaderParam`/`NewOmitEmptyResponseHeaderParam`/`NewOmitEmptyResponseCookieParam` — see "API surface") alongside each location's existing `NewRequired*Param`/`NewOptional*Param` pair, all built on `codex.EncodeMergeVars` | 1 |
+| `api/events/property_param.go`, `api/reqreply/property_param.go` | Add `NewOmitEmptyPropertyParam[T,V]` (mirrors `NewOptionalPropertyParam`'s shape) — no topic-param equivalent (topics have no Required/Optional split to begin with) | 1 |
 | `examples/go-edge-models/app/registry/auth.go` | Migrate `newAuthCredentialFunc`/`BearerAuthDeclaration` onto the new pattern — the motivating real case (REST), confirmed fully migratable via the agnostic `.Use(mw.WithSend(...))` style; DEPENDS on `NewOmitEmptyHeaderParam` (above) for the anonymous-access (empty-token) case — see the worked example in "The pivot, concretely" | 2 |
 | `docs/features/security.md` | Full rewrite of the credential-Fn sections to show the new declarative pattern, for all 3 packages | 2 |
 | `docs/design/d-0003-codec-declared-middlewares.md` | Add a new Addendum documenting `middleware.DecodeLayer`/`EncodeLayer` as the architectural embodiment of "middleware is a partial route/channel definition, stacked" — the mechanism itself is now the documentation, not just prose describing a convention | 1 |
-| `middleware/context_field.go` | Add `SetContextFieldFromIn`/`SetContextFieldFromOut` declarative link methods to `Middleware[In,Out]`; extend `EnsureContextFields` call sites | 3 |
+| `middleware/context_field.go` | Add the NEW `ContextFieldSetter` interface (confirmed REQUIRED, not optional — the original `ContextField[V]`-typed sketch does not compile, see "Proposed design" above); add `SetContextFieldFromIn`/`SetContextFieldFromOut` declarative link methods to `Middleware[In,Out]`, typed against `ContextFieldSetter`; extend `EnsureContextFields` call sites | 3 |
 | `adapters/nethttp/clienttransport.go` | Add `EnsureContextFields` + `SetContextFieldFromIn`/`Out` dispatch to the CLIENT side (currently server-only) | 3 |
 | `adapters/mqtt5/{transport.go,reqreply_transport.go}`, `adapters/zeromq`, `adapters/mqtt` | Greenfield `ContextField`/`SetContextFieldFromIn`/`Out` integration — confirmed zero existing usage in events/reqreply today | 3 |
 | `api/events/builder.go` | Add `Client.AddConnectSecurityScheme` | 4 |
@@ -2197,13 +2413,20 @@ pointer to a separate discussion) so this doc stays self-contained.
    `(T, error)` dispatch already IS this "railway" shape; no new
    mechanism (e.g. a formal `Either[Result,Error]` wrapper type) is
    introduced.
-2. **`codex.EncodeVars`/`sparseFieldCodec[T]` extension — RESOLVED:
-   yes, in scope for Phase 1.** Extend `EncodeVars` to check for the
+2. **`sparseFieldCodec[T]` support for merge fields — RESOLVED: a NEW,
+   separate `codex.EncodeMergeVars` function, NOT an extension of
+   `EncodeVars` (corrected during Phase A's design review — the
+   original "extend `EncodeVars`" resolution was factually wrong,
+   confirmed by actually attempting it: breaks 2 existing tests and
+   contradicts `docs/concepts/codec.md`'s documented path/topic/
+   dotted-key safety rationale).** `EncodeMergeVars` checks for the
    existing `sparseFieldCodec[T]` companion capability, mirroring
    `Struct`'s own `Encode` loop (`codex/object.go:150`) exactly — zero
-   new codec concept, reuses `OmitEmptyField`/`MaybeField` as-is. Small,
+   new codec concept, reuses `OmitEmptyField`/`MaybeField` as-is.
+   `EncodeVars` itself is explicitly UNCHANGED and UNTOUCHED. Small,
    additive, not a hard prerequisite for `DecodeLayer`/`EncodeLayer`'s
-   main work but bundled into the same phase.
+   main work but bundled into the same phase. See "Phase 1 sub-item"
+   above for the full corrected resolution.
 3. **`Axis[T]`/`AxisVars[T]` shape: positional vs. named — RESOLVED:
    positional.** Every current call site has a FIXED, compile-time-known
    axis count (REST: 3; events/reqreply: 2), declared once per package —
