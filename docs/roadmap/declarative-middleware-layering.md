@@ -39,6 +39,302 @@ This doc has two layers, by explicit user direction:
    general principle holds uniformly — not a security-only fix bolted on
    sideways.
 
+## Middleware mental model — In/Out/ContextField/Error, confirmed via code
+
+A reference section, added so future phases (and future readers) don't
+need to re-derive this — the full answer to "what role does each part of
+`Middleware[In,Out]` actually play," confirmed against the shipped code
+in `api/rest` (the other two packages reuse the identical model — see
+the closing note below).
+
+### 1. `In` is ALWAYS the request vocabulary, `Out` is ALWAYS the response vocabulary — only the encode/decode ROLE flips by direction
+
+Confirmed precisely against `MiddlewareHandler`/`ClientMiddlewareHandler`'s
+own doc comments (`api/rest/transform.go`) — **`In`/`Out` do NOT swap
+meaning by attachment side.** `In` is unconditionally the REQUEST-side
+wire vocabulary; `Out` is unconditionally the RESPONSE-side wire
+vocabulary. What genuinely differs between server and client is only
+whether each is being DECODED (read, by whichever role RECEIVES that
+message) or ENCODED (written, by whichever role SENDS it):
+
+| Direction | Attachment | Fn shape (bound) | `In` (request vocabulary) | `Out` (response vocabulary) |
+|---|---|---|---|---|
+| **Server** (RECEIVES the request, SENDS the response) | `HandleMW` (or `.Use()` + `WithReceive`, agnostic) | `func(ctx, *Req, In) (Out, error)` | **Decoded** from the incoming request's headers/cookies/query (`DecodeIn`), using the middleware's OWN merge-field declarations | **Encoded** into the outgoing response's headers/cookies (`EncodeOut`), from whatever Fn returns |
+| **Client** (SENDS the request, RECEIVES the response) | `ClientMW` (or `.Use()` + `WithSend`, agnostic) | `func(ctx, Req) (In, error)` | **Encoded** into the outgoing request's headers/cookies/query (`EncodeIn`), from whatever Fn returns | **Decoded** from the incoming response's headers/cookies (`DecodeOut`) — mechanical, no Fn involved |
+
+**Revised this round — see "Architecture revision" below**:
+`Transform`/`ClientTransform` no longer exist as separate call sites;
+`HandleMW`/`ClientMW` themselves now provide the `*Req`-accessing, bound
+Fn shape shown in this table, via reflection.
+
+The pattern: whoever RECEIVES a message DECODES its vocabulary;
+whoever SENDS a message ENCODES it. A server always receives requests
+and sends responses, so it always decodes `In`/encodes `Out`. A client
+always sends requests and receives responses, so it always encodes
+`In`/decodes `Out`. Neither role ever decodes/encodes the "wrong"
+struct — `In` is never read from a response, `Out` is never written
+into a request.
+
+This is also why a single `Middleware[In,Out]` value, attached on BOTH
+client and server for the same concern, is fully bidirectional without
+any duplication: the server's `Out` (encoded into its response) and the
+client's `Out` (decoded from that SAME response) share one declared
+vocabulary — produced on one side, consumed on the other.
+
+### 2. `ContextField` is separate and orthogonal to In/Out
+
+`middleware.ContextField[V]` (`middleware/context_field.go`) is NOT part
+of the In/Out merge-field vocabulary at all — it is a codec-typed
+context slot: `Set` by one middleware layer, `Get` by a LATER layer or
+by the route/channel handler, all sharing ONE mutable box pre-allocated
+once per request (`EnsureContextFields`). It deliberately does **not**
+feed spec rendering (confirmed via its own doc comment — "use this
+INSTEAD OF adding security-specific fields to every route's own Req
+type") — it exists for a DERIVED value with no natural wire location of
+its own (e.g. a `UserID` parsed out of a validated token), not for
+anything that should appear in an OpenAPI/AsyncAPI document.
+
+Confirmed scope today: wired server-side only
+(`adapters/nethttp`/`chi`'s dispatch calls `EnsureContextFields`) — never
+on REST's client side, never in `api/events`/`api/reqreply` at all. This
+doc's Phase 3 (folded into the per-API rollout phases below) extends
+`ContextField` to those missing surfaces via two new declarative link
+methods, `SetContextFieldFromIn`/`SetContextFieldFromOut`.
+
+### 3. Current implementation status: Security is the ONE confirmed exception to this model — RESOLVED by the Architecture revision below, not a future Phase 2
+
+Sections 1–2 above describe the GENERAL mechanism — confirmed via
+passing tests to be fully shipped today for ordinary, non-Security
+middleware. **Security specifically does NOT use this mechanism yet —
+confirmed via code, not assumed:**
+
+- **Dispatch**: `adapters/nethttp/adapter.go`'s `runSecurityMiddleware`
+  (server-side) dispatches the OLD `middleware.ServerImplementation.Fn`
+  — a FIXED shape, `func(ctx, *http.Request, *Req)
+  (map[string][]string, error)` — NOT `MiddlewareHandler`'s `In`/`Out`
+  shape from section 1 at all. Client-side,
+  `adapters/nethttp/binding.go`'s `mergeCredentialHeaders` dispatches
+  `middleware.ClientImplementation`s, NOT `ClientMiddlewareHandler`s.
+  This is this entire roadmap doc's starting premise (see
+  "Motivation" above) — restated here so section 1's table isn't
+  mistaken for something already true of Security today.
+- **Error fallback**: confirmed via code, Security's own Fn error today
+  wraps as `rest.SecurityError` (a DISTINCT type from the general
+  `rest.MiddlewareError` section 4 below describes) with a default
+  fallback status of **401** (`http.StatusUnauthorized`) — not the
+  generic 500 ordinary middleware falls back to. It IS
+  `ErrorPattern`-eligible today (confirmed via an existing code comment
+  citing an already-shipped fix) — but these fallback specifics are
+  Security-only, not the general case.
+
+**Closing this gap — making Security use the IDENTICAL mechanism as
+ordinary middleware, sections 1–2's table included — is resolved by the
+"Architecture revision: dropping `Transform`/`ClientTransform`" section
+below, as PART OF folding `HandleMW`/`ClientMW` onto a single,
+reflection-based dispatch — NOT a separate, later Phase 2.** Until that
+revision ships, read sections 1–2 as "how general-purpose middleware
+already works, and how Security will work once this revision ships" —
+not as Security's current behavior.
+
+### 4. Error mapping is a 2-tier fallback, plus a separate Fn-error classification
+
+**Tier 1 — declarative, checked first.** A route declares an
+`ErrorPattern` (an `errors.As`-matched response shape); server-side
+dispatch calls `RouteHandle.DispatchErrorResponse`, which checks this
+FIRST — on a match, it encodes the matched value's own response merge
+fields, validates them, and writes the declared status/body/headers onto
+the wire; the caller returns immediately (`handled == true`).
+
+**Tier 2 — generic fallback.** Unmatched (or a non-`Respond` action)
+falls through to the adapter's own plain, pre-existing error handling —
+confirmed via code: `errFn(w, r, http.StatusInternalServerError, err)` —
+an opaque, always-500, caller-configurable `ErrorHandler`. This is the
+"somehow mapped" catch-all: every error that isn't an explicitly declared
+pattern becomes a generic 500 by default.
+
+**A separate, independent classification governs a middleware's OWN Fn
+errors specifically** (confirmed via `transform_dispatch.go`'s
+`middlewareDispatchError`): a `DecodeIn` failure (the middleware's own
+merge-field decode/validation failing) is NEVER `ErrorPattern`-eligible —
+no business error exists yet at that point. A Fn's own RETURNED business
+error IS `ErrorPattern`-eligible, falling back to the package's own
+`MiddlewareError` type (e.g. `rest.MiddlewareError`) when no pattern
+matches it.
+
+**Client-side**, a returned error may wrap an `ErrorPatternValuer` value
+(reconstructed from whatever the server actually wrote for a matched
+pattern) — extracted in one call via `rest.ErrorPatternAs[T](err)` or
+dispatched via `rest.HandleErrorPattern(err, rest.Case(...), ...)`; an
+error with no such wrapped value is an ordinary, unstructured Go error
+(a network failure, a non-pattern-matched status, etc.).
+
+### 5. Client/server is a real, confirmed, structural distinction
+
+`HandleMW` (server-side implementation attachment) and `ClientMW`
+(client-side implementation attachment) are genuinely separate
+attachment points, each with its own Fn shape (table above) — not two
+names for the same mechanism. A single `Middleware[In,Out]` value (e.g.
+Security) can be attached via EITHER or BOTH on the same route, which is
+exactly how a service that is both a REST client (calling an upstream)
+and a REST server (serving its own callers) reuses one declared scheme
+for both roles.
+
+### `api/events`/`api/reqreply` reuse this identical model
+
+Confirmed: both packages follow the SAME 5-part model above, with their
+own package-specific wire vocabulary (topic/property merge fields
+instead of header/cookie/query) substituted in — including the same
+confirmed Security exception (section 3): events/reqreply's Security
+dispatch ALSO uses an old, fixed-shape Fn contract today
+(`[]UserProperty`/`*T`), not the `In`/`Out` shape, for the identical
+reason. The one confirmed, genuine asymmetry — `api/events`' Subscribe (`WithReceive`) produces NO
+`Out` at all, unlike REST/reqreply's fully symmetric shape — is covered
+in depth in the Phase 3 section below ("Package-by-package verdict").
+
+### 6. Summary: what goes where, what's codec-declared, what reaches spec
+
+A consolidated wrap-up of sections 1–5 above, for quick reference.
+
+| | `In` | `Out` | `ContextField` | Errors |
+|---|---|---|---|---|
+| **Role** | Request-side wire vocabulary — always, never flips | Response-side wire vocabulary — always, never flips | Orthogonal ctx-local slot, not wire vocabulary at all | 2-tier: declarative pattern + generic fallback |
+| **Wire location** | header/cookie/query (REST) · topic/property (events/reqreply) | header/cookie (REST) · publish topic/property (events) | **None** — purely in-process, never transmitted | `ErrorPattern`'s declared status/body/headers, or opaque adapter fallback |
+| **Server side** | **Decoded** from the incoming request (`DecodeIn`) | **Encoded** into the outgoing response (`EncodeOut`), from Fn's return | `Set` by an earlier layer, `Get` by a later layer/the handler | `DispatchErrorResponse`: pattern match → write; else generic fallback |
+| **Client side** | **Encoded** into the outgoing request (`EncodeIn`), from Fn's return | **Decoded** from the incoming response (`DecodeOut`) — mechanical, no Fn | Extended here by Phase 3 (not yet shipped) | `ErrorPatternAs`/`HandleErrorPattern` extract a typed payload |
+| **Codec-declared?** | Yes — `WithRequestHeader`/`Cookie`/`Query` (or topic/property equivalents), `FieldCodec[In]`-backed | Yes — `WithResponseHeader`/`Cookie` (or publish equivalents) | Partially — codec-typed for type safety, but deliberately opts OUT of spec rendering | The `ErrorPattern` payload type is codec/struct-backed (spec-rendered); the generic fallback is not |
+| **Goes to spec?** | Yes — request parameters | Yes — response parameters | No, by design (its own doc comment: "instead of adding security-specific fields to every route's Req") | Only the declared `ErrorPattern` shape; the generic 500/401 fallback is opaque |
+| **Body access?** | Raw `*Req` pointer only (via `HandleMW`/`ClientMW` directly, per the Architecture revision above) — manual Go mutation, ZERO codec, ZERO spec contribution (reuses the route's own already-rendered body schema) | None at all — Fn never receives `*Resp`; response body is EXCLUSIVELY the route handler's own job | N/A | N/A |
+
+**The short version:**
+
+- **`In`/`Out` are the codec-declared, spec-contributing halves** —
+  strictly header/cookie/query/topic/property, never body. This is
+  where the "declarative middleware" story lives: merge fields,
+  validated by a `FieldCodec`, rendered into OpenAPI/AsyncAPI
+  automatically.
+- **Full request body is reachable too — but as a raw pointer, not a
+  codec.** `Fn` gets `*Req` (already decoded by the route's own body
+  format) and can read/mutate it freely; this contributes nothing to
+  spec, since the route's own body schema already owns that once.
+  Response body has no equivalent at all — asymmetric, by design.
+- **`ContextField` is the one deliberately non-spec channel** — a
+  typed, in-process relay for values with no wire shape of their own
+  (a parsed `UserID`, not a new header).
+- **Errors split cleanly**: a DECLARED shape (`ErrorPattern`,
+  codec-backed, spec-visible) checked first, falling back to an OPAQUE
+  default (generic 500, or 401 for Security specifically) when nothing
+  matches.
+
+## Architecture revision: dropping `Transform`/`ClientTransform` — folded into `HandleMW`/`ClientMW` via reflection, Security unified in the SAME step
+
+A design decision reached this round, revising earlier sections of this
+doc (which still describe `Transform`/`ClientTransform` as a separate
+mechanism from `HandleMW`/`ClientMW` — those sections remain useful
+historical/research record, but this section is now authoritative on
+the attachment mechanism itself).
+
+### The decision
+
+**`Transform`/`ClientTransform` (and their SSE counterparts,
+`TransformSSE`/`ClientTransformSSE`) are REMOVED as separate free
+functions.** `HandleMW`/`ClientMW` become the ONLY server/client
+attachment methods — and they gain `Transform`'s `*Req`-access
+capability directly, dispatched via RUNTIME REFLECTION rather than a
+Go type parameter.
+
+**Why this is mechanically possible now, when it wasn't before**:
+`Transform` was ORIGINALLY forced to be a free function
+(`Transform[Req,Resp,In,Out](...)`, not a method) because Go disallows a
+method from introducing NEW type parameters beyond its receiver's own —
+`Middleware[In,Out]` only has 2 type parameters; attaching it to a
+concrete `Route[Req,Resp]` with `*Req` access needs 2 MORE (`Req`,
+`Resp`), which only a free function can supply. Reflection sidesteps
+this limitation entirely — confirmed via code, Security's EXISTING
+`ServerImplementation.Fn`/`ClientImplementation.Fn` ALREADY dispatch an
+untyped `any` Fn via `reflect.ValueOf(fn).Call(...)`, giving it
+effective `*Req` access with ZERO type parameters on the attaching
+method (`HandleMW`/`ClientMW` are already plain methods on
+`Route[Req,Resp]`, which DOES know its own concrete `Req`/`Resp` at the
+call site — reflection just needs to resolve the erased `any` back to
+the CONCRETE `*Req` the method's own receiver already carries).
+**Applying this SAME technique to `MiddlewareHandler`/
+`ClientMiddlewareHandler`'s dispatch (today split across `Transform` and
+`HandleMW`) unifies both into ONE method, ONE dispatch mechanism.**
+
+### What is preserved, unchanged
+
+- **The channel/route-AGNOSTIC, reusable style** (`WithReceive`/
+  `WithSend` + plain `.Use(mw)`, no `*Req` access, one middleware value
+  usable verbatim across many different `Req`-typed routes) is KEPT
+  exactly as it is today. `HandleMW`/`ClientMW` detect bound-vs-agnostic
+  via reflection, REUSING the EXISTING `Agnostic` bool-detection logic
+  `MiddlewareHandler`/`ClientMiddlewareHandler` already implement
+  (confirmed via `api/rest/transform.go`) — not a new mechanism, just a
+  single entry point instead of one split across 2 call sites.
+- **`DecodeLayer`/`EncodeLayer`** (Phase 1's shared merge-field codec
+  extraction) is UNAFFECTED — it governs HOW a middleware's own
+  header/cookie/query merge fields decode/encode, entirely independent
+  of WHICH method attaches the middleware.
+- **The granted-scopes/`CheckScopes` call**, and the **DecodeIn-vs-Fn
+  error classification** (section 3/4 of the Middleware mental model),
+  are UNAFFECTED — both operate on the ALREADY-DECODED `In`/the Fn's
+  OWN returned error, independent of the attachment mechanism.
+
+### The Security-unification consequence
+
+Because `HandleMW`'s/`ClientMW`'s Fn dispatch is now reflection-based
+for EVERY middleware (not uniquely for Security), Security's EXISTING Fn
+shapes — server: `func(ctx, *http.Request, *Req) (map[string][]string,
+error)`; client: `func(ctx, []route.SecurityRequirement) (http.Header,
+error)` — become recognizable as JUST ONE MORE shape the NOW-UNIFIED
+dispatch already handles. `adapters/nethttp/adapter.go`'s
+`runSecurityMiddleware` and `adapters/nethttp/binding.go`'s
+`mergeCredentialHeaders` — today's SEPARATE code paths, confirmed in the
+Middleware mental model's section 3 — are RETIRED, folded into the SAME
+unified dispatch `HandleMW`/`ClientMW` now use for every other
+middleware. **This directly resolves section 3's "Security is the ONE
+confirmed exception" finding as PART OF this architecture revision — not
+as a separate, later Phase 2.**
+
+### Worked example — a Security-shaped middleware needing `*Req` access, attached via `HandleMW` directly
+
+```go
+// No separate Transform call — HandleMW itself now gives fn *Req
+// access, exactly like Transform used to, via the SAME reflection
+// mechanism Security's OWN Fn already relied on internally.
+route = route.HandleMW(apiKeyAuth, func(ctx context.Context, req *Req, in APIKeyCredential) (struct{}, error) {
+    // fn can read/validate against req's ALREADY-DECODED fields here —
+    // e.g. cross-checking the credential against a tenant ID the
+    // route's own body already decoded — the SAME capability Transform
+    // provided, now via HandleMW directly.
+    return struct{}{}, validateAgainstTenant(req.TenantID, in)
+})
+```
+
+### This applies to all 3 packages, not just REST — same principle, different method names
+
+Written above in REST's terms (`HandleMW`/`ClientMW`/`Transform`/
+`ClientTransform`) for concreteness, but confirmed via code: `api/events`
+and `api/reqreply` have the IDENTICAL `Transform`/`ClientTransform` free
+functions (`api/events/transform.go`, `api/reqreply/transform.go`), for
+the EXACT SAME Go-generics reason. The SAME fold-via-reflection applies
+analogously, just onto each package's OWN existing attachment methods:
+`api/events.Subscriber.SubscribeMW`/`Publisher.PublishMW` (confirmed via
+`api/events/builder.go` — events uses this naming, not `HandleMW`), and
+`api/reqreply.Route.HandleMW`/`ClientMW` (confirmed identical naming to
+REST). Carried out in EACH package's OWN Rollout Phase (B for events, C
+for reqreply) — see "Implementation rollout" below, updated accordingly
+— mirroring Rollout Phase A's approach, not a REST-only change.
+
+### Scope confirmation
+
+This is a DESIGN-LEVEL decision this round — no code has been changed.
+See "Implementation rollout"'s Rollout Phase A/B/C bullets (updated
+below) for where this lands in the per-API rollout sequencing, and
+"Files to create/modify" (updated below) for the concrete file-level
+consequences.
+
+
 ## Confirmed via code: the general mechanism already exists, symmetrically, in all three packages
 
 | Package | Request/Subscribe-side (decode) | Response/Publish-side (encode) | Merge-field vocabulary |
@@ -220,6 +516,15 @@ typed, composed, short-circuiting steps), not code worth merging.
 
 ## The pivot, concretely — all three packages
 
+**Note — unaffected by the "Architecture revision" section above**: the
+examples below all use the channel/route-AGNOSTIC style (`.Use(mw.WithSend(...))`),
+which the Architecture revision explicitly preserves unchanged. These
+examples remain valid as written. For a Security-shaped middleware that
+instead needs `*Req` access (e.g. cross-checking a credential against an
+already-decoded body field), see the Architecture revision section's own
+worked example — attached via `HandleMW` directly, no separate
+`Transform` call.
+
 **Today (REST):**
 ```go
 var BearerAuthDeclaration = rest.SecurityMiddleware("bearerAuth", route.BearerScheme("JWT"), nil)
@@ -276,6 +581,82 @@ channel.Use(BearerAuthDeclaration.WithSend(func(ctx context.Context) (BearerCred
 (`api/reqreply` mirrors this identically via `WithRequestProperty`/
 `.WithSend(fn func(ctx) (In, error))`, matching its REST-like duplex
 shape rather than events' publish-only shape.)
+
+### Worked example: migrating the REAL motivating case (`newAuthCredentialFunc`)
+
+The illustrative example above is a simplified sketch. This doc's own
+"Files to create/modify" table has always named the ACTUAL motivating
+real case: `examples/go-edge-models/app/registry/auth.go`'s
+`newAuthCredentialFunc` — re-evaluated here, end to end, against the
+current design (confirmed fully migratable, modulo the ONE new
+constructor above).
+
+**Today:**
+```go
+return func(ctx context.Context, _ []route.SecurityRequirement) (http.Header, error) {
+    once.Do(func() {
+        token, authErr = authenticate(ctx, httpClient, registryHost, repository, creds, o.observer)
+    })
+    if authErr != nil {
+        return nil, authErr
+    }
+    if token == "" {
+        return nil, nil // registry requires no auth for this request.
+    }
+    h := make(http.Header, 1)
+    h.Set("Authorization", formatBearerToken(token)) // hand-built
+    return h, nil
+}
+```
+
+**Proposed — identical runtime behavior, declared instead of hand-built:**
+```go
+type BearerCredential struct{ Token string }
+
+// internal.BearerTokenCodec (ALREADY EXISTS, confirmed —
+// examples/go-edge-models/internal/registry/auth.go) already formats a
+// plain token string into "Bearer <token>" — reused UNCHANGED as the
+// header's own value-codec, no new formatting logic needed.
+var BearerAuthDeclaration = rest.SecurityMiddleware[BearerCredential, struct{}](
+    "bearerAuth", route.BearerScheme("JWT"), nil,
+).WithRequestHeader(rest.NewOmitEmptyHeaderParam("Authorization", internal.BearerTokenCodec,
+    func(c BearerCredential) string { return c.Token },
+    func(c *BearerCredential, v string) { c.Token = v },
+    func(token string) bool { return token == "" }, // omit entirely when empty — matches today's `return nil, nil`
+))
+
+func newAuthCredentialFunc(httpClient *http.Client, registryHost, repository string, opts ...Option) /* ... */ {
+    // ... o := resolveOptions(opts); creds := ...; identical setup ...
+    var (
+        once    sync.Once
+        token   string
+        authErr error
+    )
+    route = route.Use(BearerAuthDeclaration.WithSend(func(ctx context.Context) (BearerCredential, error) {
+        once.Do(func() {
+            token, authErr = authenticate(ctx, httpClient, registryHost, repository, creds, o.observer)
+        })
+        if authErr != nil {
+            return BearerCredential{}, authErr
+        }
+        return BearerCredential{Token: token}, nil // "" → header omitted entirely, via NewOmitEmptyHeaderParam
+    }))
+}
+```
+
+**Confirmed unchanged**: `sync.Once` memoization, the closed-over
+`token`/`authErr` state, and the lazy-on-first-call semantics are
+ORDINARY Go closure internals — entirely orthogonal to the attachment
+mechanism, migrated verbatim. The attachment itself moves from
+`.ClientMW(&BearerAuthDeclaration, authFn)` to
+`.Use(BearerAuthDeclaration.WithSend(authFn))` — the AGNOSTIC style,
+confirmed compatible since this Fn never needed `*Req` access (it only
+closes over `httpClient`/`registryHost`/`repository`/`creds`/`o.observer`,
+exactly like today). The ONLY genuinely new piece is
+`NewOmitEmptyHeaderParam` (declared above) — without it, an empty token
+would encode as a present-but-empty `Authorization:` header instead of
+omitting it entirely, a real behavior regression from today's anonymous-
+access path.
 
 ## Cross-protocol credential composition — a confirmed, already-supported capability
 
@@ -913,6 +1294,96 @@ classified `isFnError: false`, i.e. also NOT ErrorPattern-eligible. **This
 is the SAME classification as today, reached via a different code path**
 — confirmed consistent, not a behavior change to flag as a risk.
 
+**See also "Implementation rollout" below** — this section describes
+the 4 CONCERNS (Phase 1–4); the rollout section maps them onto the
+actual ORDER of implementation work, one API package at a time.
+
+## Implementation rollout: one API per phase, learnings carried forward
+
+The 4 phases above are organized by CONCERN (shared mechanism, Security,
+context propagation, connection-level auth) — each concern spans
+multiple API packages. Actual implementation instead proceeds API BY
+API, so that each package's rollout can be fully designed, reviewed,
+planned, implemented, and learned from BEFORE the next package starts —
+rather than attempting all 3 packages' version of one concern
+simultaneously.
+
+**Per-phase workflow (identical for A/B/C)**: design → review (a
+dedicated gaps/open-decisions pass, like the ones already run against
+this doc) → plan the implementation → implement → **document learnings
+relevant to the next phase** (a new subsection, added to this doc AFTER
+that phase ships, capturing anything the rollout revealed that wasn't
+visible from the prior phase(s) alone — so the next phase doesn't
+silently re-discover it).
+
+- **Rollout Phase A — `api/rest`.** Scope: Phase 1's shared
+  `DecodeLayer`/`EncodeLayer` mechanism is EXTRACTED AND PROVEN here
+  first — generalized in SHAPE, but only exercised against REST's own
+  `buildDecodeIn`/`buildEncodeIn`/`buildEncodeOut`/`buildDecodeOut` this
+  phase (events/reqreply's migration onto it is Phase B/C's job, not
+  this phase's). **Also in scope, as ONE COMBINED deliverable (not 2
+  sequential steps)**: the "Architecture revision" above — dropping
+  `Transform`/`ClientTransform` in favor of reflection-based `HandleMW`/
+  `ClientMW` — AND Security's generalization, unified in the SAME step
+  (Security's existing Fn shapes become just one more case the
+  now-unified dispatch recognizes, retiring `runSecurityMiddleware`/
+  `mergeCredentialHeaders` directly, rather than migrating Security onto
+  a still-separate Transform-based mechanism first). Also in scope:
+  Phase 3's context-propagation work, REST-only
+  (`SetContextFieldFromIn`/`SetContextFieldFromOut` + extending
+  `EnsureContextFields` to REST's client side); the REST-only
+  `Client.Call`/`Client.Consume` `ClientMiddlewareHandlers`-dispatch
+  prerequisite; SSE coverage. **Phase 4 does not apply to this phase** —
+  HTTP has no connection-level, broker-style auth concept for
+  `AddConnectSecurityScheme`/`mqtt5.Connect` to address.
+- **Rollout Phase B — `api/events`.** Scope: migrate events' own
+  `buildDecodeIn`/`buildEncodeIn`/`buildEncodeOut`/`buildDecodeOut` onto
+  Phase A's NOW-PROVEN shared mechanism — this is the mechanism's real
+  generality test (confirms it isn't "REST-shaped with mqtt5 bolted on"),
+  not a rubber-stamp. **Also, as ONE COMBINED deliverable (mirroring
+  Phase A)**: the "Architecture revision" applied to events' OWN
+  `Transform`/`ClientTransform` (`api/events/transform.go`) — folded
+  into `Subscriber.SubscribeMW`/`Publisher.PublishMW` via reflection
+  (events' own attachment-method names, not `HandleMW`/`ClientMW`) — AND
+  Security's generalization for events, unified in the SAME step. Also:
+  Phase 3's context-propagation for events (greenfield `ContextField`
+  integration, plus the confirmed `SetContextFieldFromIn`-only-on-Subscribe
+  asymmetry — `SetContextFieldFromOut` structurally cannot apply
+  there); ALL of Phase 4 (connection-level auth:
+  `Client.AddConnectSecurityScheme`, `mqtt5.Connect`'s
+  `ConnectError`/Observer extension) — Phase 4 was events-motivated, and
+  the "api/events middleware deep-dive" section (combining message-level
+  OAuth2/scopes with connection-level auth in one AsyncAPI rendering)
+  already lives here.
+- **Rollout Phase C — `api/reqreply`.** Scope: migrate reqreply's own
+  `buildDecodeIn`/etc. onto the shared mechanism (the 2nd confirming
+  consumer, after events). **Also, as ONE COMBINED deliverable
+  (mirroring Phase A)**: the "Architecture revision" applied to
+  reqreply's OWN `Transform`/`ClientTransform` (`api/reqreply/transform.go`)
+  — folded into `Route.HandleMW`/`ClientMW` via reflection (reqreply
+  uses the SAME method names as REST, confirmed via
+  `api/reqreply/middleware.go`) — AND Security's generalization for
+  reqreply, unified in the SAME step. Also: Phase 3's
+  context-propagation for reqreply (greenfield, confirmed structurally
+  IDENTICAL to REST's shape — fully symmetric, no events-style
+  asymmetry); Phase 4's connection-level auth APPLIED to reqreply
+  (`Builder.AddConnectSecurityScheme`, confirmed
+  `mqtt5.Connect`/`*mqtt5.SecuredClient` reuse with ZERO adapter code
+  change — the design already covers this from Phase B's work; Phase C
+  is where it actually ships for reqreply callers).
+
+### Learnings from Rollout Phase A (for Phase B/C)
+
+_Not yet started._
+
+### Learnings from Rollout Phase B (for Phase C)
+
+_Not yet started._
+
+### Learnings from Rollout Phase C
+
+_Not yet started._
+
 ## Phasing
 
 **Phase 4** (connection-level auth, `api/events` + `api/reqreply`) is independent of Phases 1–3 — a small, additive builder-level method (`AddConnectSecurityScheme`) with no dependency on `DecodeLayer`/`EncodeLayer`/`SetContextFieldFromIn`/`Out`. Can ship before, after, or alongside Phases 1–3.
@@ -1211,15 +1682,18 @@ trade-off (see new Open design decision below).
 
 ### Open design decisions for Phase 3 (NOT yet resolved — genuinely new, unlike Phase 1/2's)
 
-- **Sequencing: does Phase 2 need to ship Transform-based Security (not
-  just the agnostic style) if Phase 3 is deferred or ships later?** If
-  Phase 3 is NOT implemented alongside Phase 2, Security's agnostic-style
-  migration would regress today's `*Req`/`*T` enrichment capability (see
-  "What already works" above) until Phase 3 lands — needs an explicit
-  sequencing decision: ship Phase 3 together with Phase 2, OR have Phase
-  2 attach Security via `Transform`/`ClientTransform` as an interim
-  measure, OR accept the temporary regression with a documented
-  migration note. Not pre-decided.
+- **Sequencing: does Phase 2 need `*Req`/`*T` enrichment access for
+  Security if Phase 3 is deferred or ships later? — RESOLVED by the
+  "Architecture revision" above, not left open.** The original concern:
+  if Phase 3 (context propagation) is NOT implemented alongside Phase 2,
+  Security's agnostic-style migration would regress today's `*Req`/`*T`
+  enrichment capability until Phase 3 lands. Now moot — the Architecture
+  revision makes `HandleMW`/`ClientMW` themselves provide `*Req` access
+  directly (the SAME capability `Transform` used to be the only way to
+  get), with ZERO dependency on Phase 3 shipping first. A Security
+  middleware needing `*Req`/`*T` enrichment simply attaches via
+  `HandleMW`/`ClientMW` (not the agnostic `.Use(mw.WithSend(...))`
+  style) — no interim measure or accepted regression needed.
 - **Naming — RESOLVED: `SetContextFieldFromIn`/`SetContextFieldFromOut`,
   not `PublishFieldIn`/`PublishFieldOut`.** The original sketch used a
   `PublishField*` prefix, chosen to read as "publish this value into the
@@ -1252,6 +1726,89 @@ trade-off (see new Open design decision below).
   flagged as the more symmetric long-term alternative, worth a future,
   separate evaluation if the codec-level-derivation constraint proves
   too limiting in practice.
+
+## Cross-call client-side state (session/cookie-jar pattern) — confirmed already achievable, no new mechanism
+
+A natural follow-up question this doc's Phase 3 raises: Phase 3 covers
+WITHIN-call propagation (middleware → handler, same request/response
+lifecycle). What about CROSS-call persistence — the client-side
+equivalent of a browser's cookie jar, where a session value the server
+sent back on call N should automatically be available again on call
+N+1, without the caller manually threading it through? Server-side,
+this is straightforward (a Security/general Fn calls Redis or any store
+directly — ordinary Go code, zero go-codex involvement). Client-side,
+there's no browser-style automatic cookie jar — so is this a gap?
+
+**Confirmed: no — already fully achievable today, via the EXISTING
+`WithClientMiddlewareOut`/`ClientMiddlewareOutFromContext` mechanism**
+(`adapters/nethttp/client_middleware.go`). A call's decoded `Out` is
+already exposed, keyed by the middleware's own `Declaration.Name` —
+reusing the SAME ctx (decorated ONCE via `WithClientMiddlewareOut`)
+across multiple subsequent calls lets a caller read back a PRIOR call's
+decoded value and feed it into whatever state their OWN credential `Fn`
+reads from.
+
+### The settled conclusion: state storage stays 100% the implementer's job
+
+Exactly symmetric with the server side, not an exception to it: go-codex's
+role stops at decoding/encoding the DECLARED merge fields — what happens
+to that decoded value afterward (an in-memory variable, a local cache,
+Redis, memcached, whatever fits the deployment) is entirely up to the
+implementer, same as a server-side Fn's own already-unconstrained design
+(confirmed throughout this doc — e.g. "Cross-protocol credential
+composition"'s `auth.go` citation, which ALREADY makes a real REST call
+and caches the result via `sync.Once`, with zero go-codex-provided
+caching mechanism involved).
+
+### Worked example — using the EXISTING mechanism for session-token persistence
+
+```go
+// Decorate ctx ONCE, reuse it across every subsequent call — the sink
+// persists for as long as this ctx value does.
+ctx = rest.WithClientMiddlewareOut(ctx)
+
+// Call 1 — server issues a rotating session token via a declared
+// response merge field (mw's own Out).
+_, err := rest.CallWithTransport(ctx, transport, handle1, req1, opts)
+if out, ok := rest.ClientMiddlewareOutFromContext(ctx)["sessionAuth"].(SessionOut); ok {
+    // Entirely ordinary Go code — the SAME sync.Once/mutex pattern
+    // newAuthCredentialFunc already uses today. Could equally be a
+    // Redis SET call here instead of an in-memory variable — go-codex
+    // has no opinion either way.
+    sessionState.mu.Lock()
+    sessionState.token = out.Token
+    sessionState.mu.Unlock()
+}
+
+// Call 2 — the SAME middleware's WithSend Fn reads sessionState (its
+// own closed-over variable, or a Redis GET, or whatever the
+// implementer chose) to produce the next request's credential,
+// automatically resent via the ALREADY-declared merge field.
+_, err = rest.CallWithTransport(ctx, transport, handle2, req2, opts)
+```
+
+### Decision record: `OnReceive`/`LatestValue[V]` considered and REJECTED this round
+
+An earlier draft of this section proposed 2 new mechanisms — a
+`Middleware[In,Out].OnReceive(fn func(ctx, Out) error)` hook (automatic
+dispatch right after `DecodeOut`) and `middleware.LatestValue[V]` (a
+built-in, mutex-protected "remember the latest value" box). **Both
+REJECTED, with rationale recorded** so a future reader doesn't
+re-propose them without seeing why:
+
+- **`LatestValue[V]` crossed into caching-POLICY territory — the wrong
+  layer for go-codex.** It would only solve the single-process,
+  in-memory case — exactly the case that's often NOT the right answer
+  for real session state (multiple processes/pods needing to SHARE
+  state need Redis/memcached anyway, called directly inside the
+  implementer's own `Fn`, no go-codex abstraction warranted).
+- **`OnReceive` would only have removed boilerplate for a case the
+  EXISTING mechanism already unblocks** — not closed an actual
+  capability gap. The existing `ClientMiddlewareOutFromContext` pattern
+  requires more per-call-site code than other middleware hooks (which
+  all dispatch automatically), but the use case is NOT blocked today,
+  and introducing new dispatch plumbing purely to save a few lines of
+  caller code was judged not worth the added surface area.
 
 ## Relationship to sibling "declarative middleware" roadmap docs
 
@@ -1296,7 +1853,7 @@ assume they're the same thing or that one subsumes the other.
 |---|---|---|
 | Where declared | Adapter-owned (`mqtt5.QoS`, `zeromq.Conflate`, ...) | Core, protocol-agnostic (`middleware.Declaration[In,Out]`) |
 | Sealing mechanism | Unexported marker method per adapter (`isMQTT5Capability()`) — Go-compiler-enforced, zero cross-adapter mixing possible | Not sealed — `Middleware[In,Out]` is a plain generic value, usable with any adapter that dispatches `Middleware`'s shared mechanism |
-| Supplied at | DECLARE time, via `SubscribeOptions.Capabilities`/`PublishOptions.Capabilities` | DECLARE time too, but via `.Use(mw)`/`Transform`/`ClientTransform` on a channel/route — a different declare-time surface |
+| Supplied at | DECLARE time, via `SubscribeOptions.Capabilities`/`PublishOptions.Capabilities` | DECLARE time too, but via `.Use(mw)`/`HandleMW`/`ClientMW` on a channel/route — a different declare-time surface |
 | Dispatch mechanism | Direct method call — `Capability.Apply(wire *WireAttributes) (bool, error)`, NO reflection | Reflection-based — `reflect.ValueOf(h.Fn).Call(...)`, needed because `Fn`'s exact signature varies by attachment style (bound vs. agnostic, `In`/`Out` generic) |
 | Coverage/requirement check | `api/events.CapabilityRequirement` (Tier 3 — Explicit) + `CheckCapabilityCoverage`, adapter-agnostic declare-time hook resolved against whichever adapter's sealed value is actually supplied | `rest.CheckCoverage`-equivalent (Security-specific, pre-existing, unchanged by this doc) |
 | Spec rendering | Generic `"x-capabilities"` AsyncAPI vendor extension (one entry per `CapabilityRequirement`, adapter-agnostic by design) | The route/channel's own existing merge-field-driven spec rendering (headers/cookies/queries/topic-vars/properties) |
@@ -1354,6 +1911,7 @@ that future round ever happen.
 |---|---|
 | **Phase 1**: a shared `middleware.DecodeLayer`/`EncodeLayer` mechanism, with all 3 packages' existing `buildDecodeIn`/`buildEncodeIn`/`buildEncodeOut`/`buildDecodeOut` migrated onto it as thin wrappers | Changing `route.SecurityScheme`'s own shape — unchanged, in all 3 packages |
 | **Phase 2**: generalizing `SecurityMiddleware`'s signature in ALL THREE packages — `rest.SecurityMiddleware[In, Out any](...)`, `events.SecurityMiddleware[In, Out any](...)`, `reqreply.SecurityMiddleware[In, Out any](...)` — away from the hardcoded `struct{}, struct{}`, dispatched through Phase 1's shared mechanism | Inventing any new merge-field/codec type — explicitly rejected; the EXISTING per-package merge-field constructors are reused verbatim |
+| **Architecture revision**: dropping `Transform`/`ClientTransform`(+SSE) as separate free functions, folding their `*Req`-access capability directly into `HandleMW`/`ClientMW` via runtime reflection (the SAME technique Security's existing Fn dispatch already uses) — Security unified onto this SAME mechanism in the SAME step, not a later phase | Changing the Agnostic/reusable style's own existing contract (`WithReceive`/`WithSend` + plain `.Use(mw)`) — unaffected, preserved exactly as it is today |
 | Preserving each package's OWN error types (`rest.MiddlewareInputError` vs `events.MiddlewareInputError` vs `reqreply.MiddlewareInputError`) — Phase 1's shared mechanism takes an error CONSTRUCTOR callback, it does not unify the error TYPES themselves (`errors.As` callers must still distinguish which package failed) | Unifying `MiddlewareInputError`/`MiddlewareOutputError` into one cross-package type — explicitly rejected, would break existing `errors.As` call sites for no benefit |
 | Preserving the granted-scopes return value + `CheckScopes` call exactly as today, in all 3 packages (confirmed separable) | Changing `CheckScopes`'s own logic or signature |
 | `adapters/nethttp`/`chi` (HTTP: header/cookie/query) AND `adapters/mqtt5`/`zeromq`/`mqtt` (user-property) — Phase 2 only, once Phase 1's shared mechanism exists to dispatch Security through | A brand-new wire-location kind beyond header/cookie/query/property |
@@ -1404,6 +1962,37 @@ func SecurityMiddleware[In, Out any](schemeName string, scheme SecurityScheme, s
 No NEW types are introduced beyond this signature change in each
 package — `.WithSend`/`.WithReceive`/the merge-field methods are ALL
 pre-existing `Middleware[In,Out]` methods, reused verbatim, per package.
+
+**One genuinely NEW constructor, confirmed needed** — found while
+re-evaluating `examples/go-edge-models/app/registry/auth.go`'s
+`newAuthCredentialFunc` (this doc's own motivating real case, see the
+worked example below) against Phase 1's own sub-item (the
+`sparseFieldCodec[T]`/`EncodeVars` "omit on encode" extension, already
+planned): once `EncodeVars` can check `sparseFieldCodec[T]`, THIS is
+needed to actually DECLARE a header merge field backed by it —
+confirmed via grep, zero `OmitEmptyField`/`MaybeField` usage exists
+anywhere in `api/rest` today, and `MergedHeaderParam.field` is
+unexported (buildable only via `NewRequiredHeaderParam`/
+`NewOptionalHeaderParam`, neither omit-capable).
+
+```go
+// api/rest (same shape as NewRequiredHeaderParam/NewOptionalHeaderParam,
+// just backed by codex.OmitEmptyFieldFunc instead of plain Field) —
+// declares a header that is OMITTED FROM THE WIRE ENTIRELY (not sent as
+// an empty value) whenever isEmpty(get(in)) is true.
+func NewOmitEmptyHeaderParam[T, V any](
+    name string,
+    codec codex.Codec[V],
+    get func(T) V,
+    set func(*T, V),
+    isEmpty func(V) bool,
+) MergedHeaderParam[T]
+```
+
+The SAME pattern extends analogously to cookie/query constructors
+(REST) and topic/property constructors (events/reqreply) once Phase 1
+ships — not designed further here, since the motivating case (below)
+only needs the header variant.
 
 **Granted-scopes convention (RESOLVED — Option 3, "conventional field"):**
 `Out` keeps the EXACT SAME uniform signature every other agnostic
@@ -1542,15 +2131,18 @@ regressed, by Phase 2.
 |---|---|---|
 | `adapters/nethttp/clienttransport.go` | **Prerequisite for Phase 2 (REST only)**: add `ClientMiddlewareHandlers` dispatch to `Call` AND `Consume` — mirroring `binding.go`/`client.go`'s existing `dispatchClientMiddlewareIn`/`Out` calls. Closes the confirmed, pre-existing gap blocking Security's migration AND SSE `Consume`'s client-side agnostic middleware support in one pass | Prereq |
 | `middleware/layer.go` (new) | `Axis[T]`/`AxisVars[T]`, `DecodeLayer`/`EncodeLayer` — the new shared mechanism | 1 |
-| `api/rest/transform.go` | Migrate `buildDecodeIn`/`buildEncodeIn`/`buildEncodeOut`/`buildDecodeOut` onto `middleware.DecodeLayer`/`EncodeLayer` | 1 |
+| `api/rest/transform.go` | Migrate `buildDecodeIn`/`buildEncodeIn`/`buildEncodeOut`/`buildDecodeOut` onto `middleware.DecodeLayer`/`EncodeLayer`; **REMOVE** `Transform`/`ClientTransform`/`TransformSSE`/`ClientTransformSSE` as separate free functions (Architecture revision) | 1 + Arch. revision |
 | `api/events/transform.go` | Same migration, 2-axis (topic/property) | 1 |
 | `api/reqreply/transform.go` | Same migration, 2-axis (topic/property), fully duplex like REST | 1 |
 | `api/rest/middleware_declaration.go` | `SecurityMiddleware`'s generalized signature | 2 |
-| `api/rest/middleware.go`/`client.go`/`adapter.go` (nethttp/chi) | Replace fixed-shape Fn type-assertions with dispatch through Phase 1's shared mechanism | 2 |
+| `api/rest/middleware.go` | `HandleMW`/`ClientMW` become the ONLY attachment methods — reflection-based Fn dispatch absorbing `Transform`'s former `*Req`-access capability (Architecture revision), replacing fixed-shape Fn type-assertions with dispatch through Phase 1's shared mechanism | 2 + Arch. revision |
+| `adapters/nethttp/adapter.go` | **RETIRE** `runSecurityMiddleware`'s separate code path — folded into `HandleMW`'s now-unified reflection dispatch | Arch. revision |
+| `adapters/nethttp/binding.go`/`client.go` | **RETIRE** `mergeCredentialHeaders`'s separate code path — folded into `ClientMW`'s now-unified reflection dispatch | Arch. revision |
 | `api/events/middleware_declaration.go`, `api/events/builder.go` | Same generalization for events | 2 |
 | `api/reqreply/middleware_declaration.go`, `api/reqreply/route.go` | Same generalization for reqreply | 2 |
 | `adapters/mqtt5/{transport.go,transport_dispatch.go,reqreply_transport.go}`, `adapters/zeromq`, `adapters/mqtt` | Replace fixed-shape Fn type-assertions with dispatch through the mw's own handler | 2 |
-| `examples/go-edge-models/app/registry/auth.go` | Migrate `newAuthCredentialFunc`/`BearerAuthDeclaration` onto the new pattern — the motivating real case (REST) | 2 |
+| `api/rest/builder.go` | Add `NewOmitEmptyHeaderParam[T,V]` (new, confirmed-needed constructor — see "API surface") alongside the existing `NewRequiredHeaderParam`/`NewOptionalHeaderParam` | 1 |
+| `examples/go-edge-models/app/registry/auth.go` | Migrate `newAuthCredentialFunc`/`BearerAuthDeclaration` onto the new pattern — the motivating real case (REST), confirmed fully migratable via the agnostic `.Use(mw.WithSend(...))` style; DEPENDS on `NewOmitEmptyHeaderParam` (above) for the anonymous-access (empty-token) case — see the worked example in "The pivot, concretely" | 2 |
 | `docs/features/security.md` | Full rewrite of the credential-Fn sections to show the new declarative pattern, for all 3 packages | 2 |
 | `docs/design/d-0003-codec-declared-middlewares.md` | Add a new Addendum documenting `middleware.DecodeLayer`/`EncodeLayer` as the architectural embodiment of "middleware is a partial route/channel definition, stacked" — the mechanism itself is now the documentation, not just prose describing a convention | 1 |
 | `middleware/context_field.go` | Add `SetContextFieldFromIn`/`SetContextFieldFromOut` declarative link methods to `Middleware[In,Out]`; extend `EnsureContextFields` call sites | 3 |
@@ -1587,7 +2179,8 @@ regressed, by Phase 2.
 
 ## Open design decisions — ALL RESOLVED
 
-All 8 items below were open as of this doc's prior draft. Each is now
+All 10 items below were open across this doc's various drafts (items
+1–9 from earlier rounds, item 10 added this round). Each is now
 resolved, with the decision and rationale recorded directly (not just a
 pointer to a separate discussion) so this doc stays self-contained.
 
@@ -1684,3 +2277,14 @@ pointer to a separate discussion) so this doc stays self-contained.
    zeromq/mqtt add more — migrated mechanically, not via a transitional
    window. (Phase 1 itself has NO backward-compatibility concern — it is
    purely internal.)
+10. **Exact reflection-based signature-detection mechanics for the
+    now-unified `HandleMW`/`ClientMW` (Architecture revision) —
+    RESOLVED: mostly REUSE, not novel.** The bound-vs-agnostic detection
+    `HandleMW`/`ClientMW` need is the SAME `Agnostic` bool-detection
+    logic `MiddlewareHandler`/`ClientMiddlewareHandler` already
+    implement today (confirmed via `api/rest/transform.go`) — this
+    revision gives it ONE entry point instead of splitting it across
+    `Transform` vs `HandleMW`, it does not require inventing a new
+    detection mechanism. Flagged as low-risk, not a genuinely open
+    question, but worth stating explicitly for the implementation
+    round (Rollout Phase A).
