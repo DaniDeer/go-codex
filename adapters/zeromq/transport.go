@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/DaniDeer/go-codex/adapters/internal/scopesmerge"
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
@@ -397,7 +398,12 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 	events.ApplyCapabilities(caps, t.caller.sock, obs, topic)
 
 	secReqs := resolveSecReqsReflect(elem, "Subscribe")
-	middlewareHandlersLen := elem.FieldByName("MiddlewareHandlers").Len()
+	middlewareHandlers, _ := elem.FieldByName("MiddlewareHandlers").Interface().([]events.MiddlewareHandler)
+	middlewareHandlersLen := len(middlewareHandlers)
+	middlewareSatisfies := make([][]string, len(middlewareHandlers))
+	for i, h := range middlewareHandlers {
+		middlewareSatisfies[i] = h.Satisfies
+	}
 
 	// dispatchFailure is the shared ErrorChannel→DeadLetter→OnError
 	// fallback triplet every pipeline step below consults on failure —
@@ -437,6 +443,7 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 		}
 	}
 
+	ctx = middleware.EnsureContextFields(ctx)
 	ctxVal := reflect.ValueOf(ctx)
 	for {
 		select {
@@ -496,12 +503,19 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 		// Codec-backed middleware dispatch (Transform and bundled
 		// .Use()) — SAME pre-handler dispatch point the security
 		// Implementations check just ran at. zeromq has no property
-		// mechanism — supplies a nil property-value map.
+		// mechanism — supplies a nil property-value map. CORRECTED: a
+		// bound MiddlewareHandler's own GrantedScopes-carrying Out is now
+		// merged and checked — zeromq's legacy mechanism has NO grants
+		// concept (pure binary accept/reject), so the unified CheckScopes
+		// call is gated on scopesmerge.HasSatisfyingHandler, NOT on
+		// secReqs alone (mirrors adapter.go's own established zeromq
+		// gate).
 		if middlewareHandlersLen > 0 {
 			mwResults := dispatchSubscribeMiddlewareMethod.Call([]reflect.Value{
 				reflect.ValueOf(ctx), valuePtr, reflect.ValueOf(vars), reflect.Zero(reflect.TypeOf(map[string]string(nil))),
 			})
-			if mwErr, _ := mwResults[0].Interface().(error); mwErr != nil {
+			outs, _ := mwResults[0].Interface().([]any)
+			if mwErr, _ := mwResults[1].Interface().(error); mwErr != nil {
 				obs.RecordSubscribe(gotTopic, false, time.Since(start))
 				dispatchErr, _ := events.AsMiddlewareDispatchError(mwErr)
 				if dispatchErr.IsFnError {
@@ -512,6 +526,18 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 					dispatchFailure(KindDecode, gotTopic, payload, dispatchErr.Err)
 				}
 				continue
+			}
+			granted := make(map[string][]string)
+			scopesmerge.MergeHandlerGrants(granted, middlewareSatisfies, outs)
+			if len(secReqs) > 0 && scopesmerge.HasSatisfyingHandler(middlewareSatisfies) {
+				if err := middleware.CheckScopes(secReqs, granted); err != nil {
+					if secObs, ok := obs.(stats.SecurityObserver); ok {
+						secObs.RecordSecurityRejection(gotTopic, route.FirstSchemeName(secReqs))
+					}
+					obs.RecordSubscribe(gotTopic, false, time.Since(start))
+					dispatchFailure(KindSecurity, gotTopic, payload, events.SecurityError{Err: err})
+					continue
+				}
 			}
 		}
 

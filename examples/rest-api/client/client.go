@@ -117,3 +117,35 @@ var AdminActionRouteAsAlice = routes.AdminActionRoute.
 var AdminActionRouteAsAdmin = routes.AdminActionRoute.
 	ClientMW(&routes.AdminScopeMw, AdminCredFn).
 	ClientMW(nil, routes.TimingClientMW[routes.AdminActionReq, routes.AdminActionResp](timingLogger))
+
+// ── GrantedScopes + ContextField demo client variants ───────────────────
+//
+// Unlike AliceCredFn/AdminCredFn above (which supply a raw http.Header,
+// paired against the LEGACY [struct{},struct{}]-shaped scheme), these
+// supply routes.AuthIn DIRECTLY — the bound ClientMW shape
+// func(ctx, req Req) (In, error), detected via its own reflected
+// signature, dispatched through the SAME merge-field mechanism instead
+// of hand-building headers.
+
+// computeGSCredFn returns a bound ClientMW Fn supplying token as
+// routes.AuthIn.Token — GrantedScopesComputeMw's own declared
+// WithRequestHeader merge field encodes it into the real outgoing
+// Authorization header.
+func computeGSCredFn(token string) func(ctx context.Context, req routes.ComputeGSReq) (routes.AuthIn, error) {
+	return func(_ context.Context, _ routes.ComputeGSReq) (routes.AuthIn, error) {
+		return routes.AuthIn{Token: token}, nil
+	}
+}
+
+// ComputeGSRouteWithWriteScope supplies "valid-compute-token" — grants
+// "compute:write", matching the route's declared requirement — expected
+// to succeed.
+var ComputeGSRouteWithWriteScope = routes.ComputeGSRoute.
+	ClientMW(routes.GrantedScopesComputeMw, computeGSCredFn("valid-compute-token"))
+
+// ComputeGSRouteWithWrongScope supplies "valid-readonly-token" — a REAL,
+// known credential (so the Fn itself succeeds), but gs.TokenScopes grants
+// only "profile", never "compute:write" — proves middleware.CheckScopes
+// rejects an insufficient GRANT, not just an invalid credential.
+var ComputeGSRouteWithWrongScope = routes.ComputeGSRoute.
+	ClientMW(routes.GrantedScopesComputeMw, computeGSCredFn("valid-readonly-token"))

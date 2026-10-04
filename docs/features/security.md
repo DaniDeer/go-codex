@@ -294,6 +294,11 @@ Routes with `nil Security` (default) trigger enforcement when global security is
 
 ### Codec-backed Security — `HandleMW`/`ClientMW`'s bound path + `GrantedScopes`
 
+> Runnable demo: `examples/rest-api/demo_granted_scopes_context_field.go`
+> — a REAL `AuthIn`/`AuthOut` pair, bound `HandleMW`/`ClientMW`, correct-
+> vs-wrong-scope enforcement, and `SetContextFieldFromIn` propagating the
+> authenticated token to the handler with zero manual re-decoding.
+
 A codec-backed `rest.Middleware[In, Out]` (built via `rest.SecurityMiddleware[In, Out]`,
 generic over In/Out since docs/design/d-0007-declarative-middleware-layering.md's
 Rollout Phase A) can ALSO carry a Security declaration and be attached via
@@ -665,6 +670,12 @@ graduation policy).
 
 ### Codec-backed Security — `SubscribeMW`/`PublishMW`'s bound path + `GrantedScopes`
 
+> Runnable demo: `examples/events-api/demo_granted_scopes_context_field.go`
+> — a REAL `AuthIn`/`AuthOut` pair, `SubscribeMW`'s 2-return bound shape,
+> correct-vs-wrong-scope enforcement (mqtt5), and `SetContextFieldFromIn`
+> propagating the authenticated API key to the subscribe handler with
+> zero manual re-decoding.
+
 Mirrors `api/rest`'s identical Rollout Phase A mechanism (see "Codec-backed
 Security" under "Runtime enforcement" above), folded into events as Rollout
 Phase B: a codec-backed `events.Middleware[In, Out]` (built via
@@ -707,6 +718,10 @@ On the publish side, `PublishMW`'s bound shape is `func(ctx, msg T) (Out, error)
 merge-field mechanism instead of hand-building MQTT5 User Properties.
 
 ### Connection-level auth spec registration — `Client.AddConnectSecurityScheme`
+
+> Runnable demo: `examples/events-api/demo_connect_security_scheme_registration.go`
+> — a scheme referenced ONLY via `AddServer(...).Security`, proven to
+> appear in `components/securitySchemes` despite zero channels referencing it.
 
 A connection-level scheme (the broker's OWN CONNECT-time credential —
 see "Connection-level vs message-level security" above) referenced ONLY
@@ -883,6 +898,11 @@ channel), not a bug.
 
 ### Codec-backed Security — `HandleMW`/`ClientMW`'s bound path + `GrantedScopes`
 
+> Runnable demo: `examples/reqreply-api/demo_granted_scopes_context_field.go`
+> — a REAL `AuthIn`/`AuthOut` pair, bound `HandleMW` (zeromq), correct-
+> vs-wrong-scope enforcement, and `SetContextFieldFromOut` propagating
+> the authenticated identity to the handler with zero manual re-decoding.
+
 Mirrors `api/rest`/`api/events`'s identical mechanism, folded into reqreply
 as Rollout Phase C: a codec-backed `reqreply.Middleware[In, Out]` (built via
 `reqreply.SecurityMiddleware[In, Out]`, now generalized over In/Out — was
@@ -949,6 +969,9 @@ its gate is unconditional.
 > that path. Tracked as a follow-up design question, not yet fixed.
 
 ### Connection-level auth spec registration — `Server.AddConnectSecurityScheme`
+
+> Runnable demo: `examples/reqreply-api/demo_connect_security_scheme_registration.go`
+> — the same proof as events' demo above, for `reqreply.Server`.
 
 Mirrors `events.Client.AddConnectSecurityScheme` byte-for-byte (`Builder`
 is a deprecated alias for `Server` — the method lives on `Server`, both

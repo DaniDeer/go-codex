@@ -107,6 +107,8 @@ func main() {
 	demoSpecPrintingAsyncAPI(mqtt5Built.Server)
 	demoZeroMQDealerRouterVariant(ctx, obs)
 	demoCrossAPIOAuth2Sharing(ctx, zeromqBuilt)
+	demoGrantedScopesContextField(ctx, zeromqClient)
+	demoConnectSecuritySchemeRegistration()
 	demoObserverMiddleware(ctx, obs, mqtt5Built, mqtt5Client, zeromqClient)
 	demoErrorPatternDeclarationMechanisms(ctx)
 	demoErrorPatternClientMatchMechanisms(ctx, mqtt5Built)

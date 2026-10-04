@@ -158,6 +158,18 @@ func Build(store *handlers.UserStore, obs stats.Observer, logger *slog.Logger, a
 		return nil, err
 	}
 
+	// computeGSRoute demonstrates the GENERALIZED rest.SecurityMiddleware[In,
+	// Out] + GrantedScopes + ContextField mechanism (docs/design/
+	// d-0007-declarative-middleware-layering.md) — bound HandleMW directly,
+	// NO separate ScopesImpl wrapper needed; handlers.VerifyBearerGS decodes
+	// routes.AuthIn and returns a GrantedScopes-carrying routes.AuthOut.
+	computeGSRoute := routes.ComputeGSRoute.WithHandler(
+		handlers.MakeComputeGSHandler(),
+	).HandleMW(&routes.GrantedScopesComputeMw, handlers.VerifyBearerGS).HandleMW(nil, obsFn).HandleMW(nil, timingFn).WithOptions(opts)
+	if err := computeGSRoute.Register(b); err != nil {
+		return nil, err
+	}
+
 	router := gochi.NewRouter()
 
 	// GET /openapi.yaml — a hand-rolled, manual escape hatch: go-codex has

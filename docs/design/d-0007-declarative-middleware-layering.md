@@ -7,7 +7,7 @@
 > (0 issues)/every `examples/*/` clean; see "Learnings from Rollout
 > Phase A"/"B"/"C" below). All design decisions below (including
 > Phase 2-4's cross-API design) are resolved and reflect shipped code.
-> PROMOTED from `docs/design/d-0007-declarative-middleware-layering.md` —
+> PROMOTED from `docs/roadmap/declarative-middleware-layering.md` —
 > this doc establishes a pattern all 3 messaging APIs (`rest`/`events`/
 > `reqreply`) now follow (declare/implement middleware split,
 > `GrantedScopes`, `ContextField` linking, `AddConnectSecurityScheme`),
@@ -32,6 +32,17 @@
 > in both `api/rest` and `api/reqreply` (not `api/events`) — see
 > "Learnings from Rollout Phase C" below for the full finding and
 > workaround.
+>
+> **Post-ship regression found and FIXED while adding real examples**
+> (see "Post-ship regression found and fixed" section near the end of
+> this doc): `events.Client.Attach`+`ServeSubscribers` — the PRIMARY
+> recommended workflow for ALL 3 pub/sub adapters — never dispatched
+> bound `SubscribeMW` middleware (Security or general-purpose) AT ALL,
+> and never wired `ContextField` propagation either; only the
+> lower-level escape-hatch functions (exercised by unit tests, never by
+> `Client.Attach`) had the fix. Found via `examples/events-api/
+> demo_granted_scopes_context_field.go`, now fixed across `mqtt5`/
+> `mqtt`/`zeromq`, verified via the full test suite + the new example.
 > [← Back to Design Documents](index.md)
 
 ## Motivation
@@ -3230,3 +3241,77 @@ pointer to a separate discussion) so this doc stays self-contained.
     request/REPLY, never fire-and-forget) — Phase C's own reqreply
     work builds its OWN merge-and-enforce wiring afterward, reusing
     whatever helper shape item 11's patch establishes where it fits.
+
+## Post-ship regression found and fixed: `Client.Attach`'s PRIMARY workflow never dispatched bound `SubscribeMW` at all
+
+Found while writing `examples/events-api/demo_granted_scopes_context_field.go`
+— a NEW example added specifically to showcase this doc's own flagship
+capabilities (bound `HandleMW`/`SubscribeMW` + `GrantedScopes` + `ContextField`)
+across `api/rest`/`api/events`/`api/reqreply`'s real example projects, only to
+discover the capability silently did nothing when exercised through
+`events.Client.Attach`+`ServeSubscribers` — the PRIMARY, documented,
+recommended workflow every example/tutorial tells a user to use.
+
+**Root cause, confirmed via code tracing across all 3 pub/sub adapters**:
+events' Subscribe dispatch has THREE separate, independently-maintained
+implementations, not one:
+1. `adapter.go`'s generic `makeSubscribeMessageHandler[T]` — used ONLY by
+   the lower-level `subscribeWithHandle` escape hatch and unit tests.
+   Received the full GrantedScopes/ContextField fix during this doc's own
+   Phase B/C rollout.
+2. `transport.go`'s reflection-based `Subscribe` — the `ports.Pattern`
+   binding path. Dispatches `MiddlewareHandlers` via `ChannelHandle.
+   DispatchSubscribeMiddleware` but that method deliberately discarded
+   `outs` (kept a `func(...) error` signature), based on an INCORRECT
+   assumption (recorded in its own doc comment) that every "native"
+   consumer already used the `outs`-returning free function directly.
+   Also never called `middleware.EnsureContextFields`.
+3. `caller.go`'s (mqtt5/mqtt) / `serve_subscribers.go`'s (zeromq)
+   reflection-based `ServeSubscribers` — the ACTUAL implementation behind
+   `Client.Attach`+`ServeSubscribers`. Had NO `MiddlewareHandlers`
+   dispatch of ANY kind (not Security-specific — bound codec-backed
+   middleware, period, silently never ran), and likewise never called
+   `EnsureContextFields`.
+
+Path 1 was the ONLY one ever exercised by a unit test (`adapters/mqtt5/
+grantedscopes_test.go` calls `subscribeWithHandle` directly, not
+`Client.Attach`). Paths 2 and 3 — the ones every real example and the
+library's own documented workflow actually use — were never covered by
+any test or example until this one, for the ENTIRE lifetime of Rollout
+Phase B (the bound `SubscribeMW` mechanism) and its Phase C-adjacent
+GrantedScopes patch alike.
+
+**Fix** (all 3 adapters, `mqtt5`/`mqtt`/`zeromq`):
+- `ChannelHandle.DispatchSubscribeMiddleware`'s signature corrected to
+  `([]any, error)`, matching `DispatchSubscribeMiddlewareHandlers` exactly.
+- Both `transport.go` (path 2) and `caller.go`/`serve_subscribers.go`
+  (path 3) now: extract `MiddlewareHandlers`/`Satisfies`, dispatch via the
+  corrected method, merge any bound handler's `GrantedScopes` via
+  `adapters/internal/scopesmerge.MergeHandlerGrants`, and call ONE unified
+  `middleware.CheckScopes` — zeromq gated on `HasSatisfyingHandler`
+  (its legacy mechanism has no grants concept), mqtt5/mqtt unconditional
+  (their legacy mechanisms genuinely produce grants) — the SAME gating
+  rule already established for path 1.
+- `caller.go`/`serve_subscribers.go` (path 3) previously had NO
+  `MiddlewareHandlers` dispatch at all (not just missing the GrantedScopes
+  merge) — this fix is the FIRST time bound codec-backed `SubscribeMW`
+  (Security-shaped or general-purpose) has ever run through `Client.Attach`.
+- `middleware.EnsureContextFields` added to both paths — `ContextField`
+  propagation was equally broken through `Client.Attach` until now.
+
+**Verified via the full existing test suite (57/57 packages, zero
+regressions) AND the new example itself**, which — before the fix — failed
+with `ContextField.Set called before EnsureContextFields prepared ctx`
+and silently let a wrong-scope request through; after the fix, both the
+correct-scope and wrong-scope cases behave exactly as `GrantedScopes`'/
+`ContextField`'s own design intends.
+
+**Lesson, reinforcing this doc's own established theme**: a new mechanism
+is "shipped" only once a test or example exercises it through the SAME
+entry point real users are told to use — a passing unit test against a
+lower-level escape hatch does not verify the primary, documented workflow
+actually wires the mechanism in at all. This is the THIRD time this
+exact class of gap has surfaced in this doc's own history (see "Learnings
+from Rollout Phase A/B/C" above for the first two) — each time via
+writing a REAL example/test against the REAL recommended entry point, not
+via code review.

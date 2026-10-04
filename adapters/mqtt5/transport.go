@@ -9,6 +9,7 @@ import (
 
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 
+	"github.com/DaniDeer/go-codex/adapters/internal/scopesmerge"
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/middleware"
@@ -469,7 +470,12 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 
 	secReqs := resolveSecReqsReflect(elem, "Subscribe")
 	securitySchemes, _ := elem.FieldByName("SecuritySchemes").Interface().(map[string]events.SecurityScheme)
-	middlewareHandlersLen := elem.FieldByName("MiddlewareHandlers").Len()
+	middlewareHandlers, _ := elem.FieldByName("MiddlewareHandlers").Interface().([]events.MiddlewareHandler)
+	middlewareHandlersLen := len(middlewareHandlers)
+	middlewareSatisfies := make([][]string, len(middlewareHandlers))
+	for i, h := range middlewareHandlers {
+		middlewareSatisfies[i] = h.Satisfies
+	}
 	propertyMergeFieldsLen := handleVal.MethodByName("PropertyMergeFields").Call(nil)[0].Len()
 
 	// dispatchFailure is the shared ErrorChannel→DeadLetter→OnError
@@ -521,7 +527,7 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 		// [makeSubscribeMessageHandler]'s IDENTICAL, pre-decode placement
 		// exactly (a caller reading these inside its handler must see
 		// them regardless of which dispatch path decoded the message).
-		msgCtx := context.WithValue(ctx, contextKey{}, msg)
+		msgCtx := middleware.EnsureContextFields(context.WithValue(ctx, contextKey{}, msg))
 		if msg.Properties != nil && len(msg.Properties.User) > 0 {
 			msgCtx = context.WithValue(msgCtx, userPropsKey{}, msg.Properties.User)
 		}
@@ -592,8 +598,10 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 
 		// Implementations-based security check (from SubscribeMW) — runs
 		// UNCONDITIONALLY, mirroring [makeSubscribeMessageHandler].
+		granted := make(map[string][]string)
 		if len(implementations) > 0 {
-			if err := runSubscribeSecurityImplsReflect(msgCtx, msg, valuePtr, secReqs, implementations); err != nil {
+			g, err := runSubscribeSecurityImplsReflect(msgCtx, msg, valuePtr, secReqs, implementations)
+			if err != nil {
 				if secObs, ok := obs.(stats.SecurityObserver); ok {
 					secObs.RecordSecurityRejection(msg.Topic, route.FirstSchemeName(secReqs))
 				}
@@ -601,17 +609,25 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 				dispatchFailure(KindSecurity, msg.Topic, msg.Payload, events.SecurityError{Err: err})
 				return
 			}
+			granted = g
 		}
 
 		// Codec-backed middleware dispatch (Transform and bundled
 		// .Use()) — SAME pre-handler dispatch point the security
 		// Implementations check just ran at, reusing the SAME
-		// topicVars/propertyVars derived above.
+		// topicVars/propertyVars derived above. CORRECTED: a bound
+		// MiddlewareHandler's own GrantedScopes-carrying Out (via
+		// scopesmerge.MergeHandlerGrants) is now merged into the SAME
+		// `granted` map BEFORE the unified CheckScopes call below —
+		// previously discarded entirely (docs/design/
+		// d-0007-declarative-middleware-layering.md's belated fix,
+		// found via an end-to-end example).
 		if middlewareHandlersLen > 0 {
 			mwResults := dispatchSubscribeMiddlewareMethod.Call([]reflect.Value{
 				reflect.ValueOf(msgCtx), valuePtr, reflect.ValueOf(vars), reflect.ValueOf(propertyVars),
 			})
-			if mwErr, _ := mwResults[0].Interface().(error); mwErr != nil {
+			outs, _ := mwResults[0].Interface().([]any)
+			if mwErr, _ := mwResults[1].Interface().(error); mwErr != nil {
 				obs.RecordSubscribe(msg.Topic, false, time.Since(start))
 				dispatchErr, _ := events.AsMiddlewareDispatchError(mwErr)
 				if dispatchErr.IsFnError {
@@ -621,6 +637,22 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 					stats.ReportErrors(obs, "middleware:in", dispatchErr.Err)
 					dispatchFailure(KindDecode, msg.Topic, msg.Payload, dispatchErr.Err)
 				}
+				return
+			}
+			scopesmerge.MergeHandlerGrants(granted, middlewareSatisfies, outs)
+		}
+
+		// ONE unified CheckScopes call covering grants from BOTH the
+		// legacy Implementations path AND any bound MiddlewareHandler's
+		// own GrantedScopes (merged above) — mirrors
+		// adapter.go's/caller.go's identical fix.
+		if len(secReqs) > 0 {
+			if err := middleware.CheckScopes(secReqs, granted); err != nil {
+				if secObs, ok := obs.(stats.SecurityObserver); ok {
+					secObs.RecordSecurityRejection(msg.Topic, route.FirstSchemeName(secReqs))
+				}
+				obs.RecordSubscribe(msg.Topic, false, time.Since(start))
+				dispatchFailure(KindSecurity, msg.Topic, msg.Payload, events.SecurityError{Err: err})
 				return
 			}
 		}

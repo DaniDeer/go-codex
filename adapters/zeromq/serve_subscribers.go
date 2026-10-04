@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/DaniDeer/go-codex/adapters/internal/scopesmerge"
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/middleware"
 	asyncapi "github.com/DaniDeer/go-codex/render/asyncapi/v3"
@@ -66,6 +67,19 @@ type subscriberRoute struct {
 	// requirements holds the channel's declared [events.CapabilityRequirement]
 	// values, consulted by [events.CheckCapabilityCoverage].
 	requirements []events.CapabilityRequirement
+	// middlewareHandlers/dispatchSubscribeMiddleware/middlewareSatisfies —
+	// CORRECTED: this ServeSubscribers dispatch previously never ran
+	// bound codec-backed MiddlewareHandler dispatch at all (Security or
+	// general-purpose), only the legacy implSecurity list — see mqtt5's
+	// identical, belated fix for the full finding. zeromq's legacy
+	// security mechanism is PURE binary accept/reject (no grants
+	// concept — confirmed above, implSecurity's Fn shape returns only
+	// `error`), so the unified CheckScopes call this fix adds is gated
+	// on scopesmerge.HasSatisfyingHandler(middlewareSatisfies), NOT on
+	// secReqs alone, mirroring adapter.go's own established zeromq gate.
+	middlewareHandlers          []events.MiddlewareHandler
+	middlewareSatisfies         [][]string
+	dispatchSubscribeMiddleware reflect.Value
 }
 
 // buildSubscriberRoute compiles entry into a [subscriberRoute] via
@@ -136,19 +150,27 @@ func buildSubscriberRoute(entry events.SubscriberEntry) (*subscriberRoute, error
 	}
 
 	requirements, _ := elem.FieldByName("Requirements").Interface().([]events.CapabilityRequirement)
+	middlewareHandlers, _ := elem.FieldByName("MiddlewareHandlers").Interface().([]events.MiddlewareHandler)
+	middlewareSatisfies := make([][]string, len(middlewareHandlers))
+	for i, h := range middlewareHandlers {
+		middlewareSatisfies[i] = h.Satisfies
+	}
 
 	return &subscriberRoute{
-		topic:        topic,
-		filter:       filter,
-		handleVal:    hv,
-		next:         next,
-		securityFn:   resolved.securityFn,
-		implSecurity: securityImpls,
-		secReqs:      secReqs,
-		onError:      resolved.onError,
-		observer:     resolved.observer,
-		capabilities: resolved.capabilities,
-		requirements: requirements,
+		topic:                       topic,
+		filter:                      filter,
+		handleVal:                   hv,
+		next:                        next,
+		securityFn:                  resolved.securityFn,
+		implSecurity:                securityImpls,
+		secReqs:                     secReqs,
+		onError:                     resolved.onError,
+		observer:                    resolved.observer,
+		capabilities:                resolved.capabilities,
+		requirements:                requirements,
+		middlewareHandlers:          middlewareHandlers,
+		middlewareSatisfies:         middlewareSatisfies,
+		dispatchSubscribeMiddleware: hv.MethodByName("DispatchSubscribeMiddleware"),
 	}, nil
 }
 
@@ -375,7 +397,41 @@ func (r *subscriberRoute) processMessage(ctx context.Context, topic string, payl
 	// is proven end-to-end here for a future ack-capable adapter (e.g.
 	// AMQP) to consume without further core changes. See
 	// docs/design/d-0006-protocol-native-capabilities.md's §8.
-	spanCtx := middleware.EnsureDispositionBox(ctx)
+	spanCtx := middleware.EnsureContextFields(middleware.EnsureDispositionBox(ctx))
+
+	// Codec-backed bound MiddlewareHandler dispatch (SubscribeMW's bound
+	// path) — CORRECTED: this ServeSubscribers dispatch previously never
+	// ran this at all. No topic-var merge support here (a known,
+	// pre-existing simplification of this reflect dispatch path, same as
+	// mqtt5/mqtt); vars IS passed through since zeromq's topic vars are
+	// already available at this point.
+	if len(r.middlewareHandlers) > 0 {
+		msgPtr := reflect.New(valueVal.Type())
+		msgPtr.Elem().Set(valueVal)
+		mwResults := r.dispatchSubscribeMiddleware.Call([]reflect.Value{
+			reflect.ValueOf(spanCtx), msgPtr, reflect.ValueOf(vars), reflect.ValueOf(map[string]string(nil)),
+		})
+		outs, _ := mwResults[0].Interface().([]any)
+		if mwErr, _ := mwResults[1].Interface().(error); mwErr != nil {
+			obs.RecordSubscribe(topic, false, time.Since(start))
+			r.reportError(SubscribeError{Kind: KindDecode, Topic: topic, Err: mwErr})
+			return
+		}
+		valueVal = msgPtr.Elem()
+
+		granted := make(map[string][]string)
+		scopesmerge.MergeHandlerGrants(granted, r.middlewareSatisfies, outs)
+		if len(r.secReqs) > 0 && scopesmerge.HasSatisfyingHandler(r.middlewareSatisfies) {
+			if err := middleware.CheckScopes(r.secReqs, granted); err != nil {
+				if secObs, ok := obs.(stats.SecurityObserver); ok {
+					secObs.RecordSecurityRejection(topic, route.FirstSchemeName(r.secReqs))
+				}
+				obs.RecordSubscribe(topic, false, time.Since(start))
+				r.reportError(SubscribeError{Kind: KindSecurity, Topic: topic, Err: events.SecurityError{Err: err}})
+				return
+			}
+		}
+	}
 	if to, ok := obs.(stats.TraceObserver); ok {
 		spanCtx = to.StartSpan(spanCtx, "zmq.subscribe", topic)
 	}

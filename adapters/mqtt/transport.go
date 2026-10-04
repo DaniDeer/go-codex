@@ -9,6 +9,7 @@ import (
 
 	pahomqtt "github.com/eclipse/paho.mqtt.golang"
 
+	"github.com/DaniDeer/go-codex/adapters/internal/scopesmerge"
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
@@ -386,7 +387,12 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 
 	filter := deriveWildcardFilter(topic)
 	secReqs := resolveSecReqsReflect(elem, "Subscribe")
-	middlewareHandlersLen := elem.FieldByName("MiddlewareHandlers").Len()
+	middlewareHandlers, _ := elem.FieldByName("MiddlewareHandlers").Interface().([]events.MiddlewareHandler)
+	middlewareHandlersLen := len(middlewareHandlers)
+	middlewareSatisfies := make([][]string, len(middlewareHandlers))
+	for i, h := range middlewareHandlers {
+		middlewareSatisfies[i] = h.Satisfies
+	}
 
 	// dispatchFailure is the shared ErrorChannel→DeadLetter→OnError
 	// fallback triplet every pipeline step below consults on failure.
@@ -430,7 +436,7 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 		// [MessageFromContext] never worked through Client.Subscribe —
 		// mirrors [subscribeHandler][T]'s IDENTICAL, pre-decode placement
 		// exactly.
-		msgCtx := context.WithValue(ctx, contextKey{}, msg)
+		msgCtx := middleware.EnsureContextFields(context.WithValue(ctx, contextKey{}, msg))
 		ctxVal := reflect.ValueOf(msgCtx)
 		vars, matchErr := matchTopicTemplate(topic, msg.Topic())
 		if matchErr != nil {
@@ -450,8 +456,10 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 		// UNCONDITIONALLY, mirroring [subscribeHandler][T]. mqtt v3 has
 		// no built-in codec-based credential check — Implementations IS
 		// the entire security mechanism.
+		granted := make(map[string][]string)
 		if len(implementations) > 0 {
-			if secErr := runSubscribeSecurityImplsReflect(msgCtx, msg, valuePtr, secReqs, implementations); secErr != nil {
+			g, secErr := runSubscribeSecurityImplsReflect(msgCtx, msg, valuePtr, secReqs, implementations)
+			if secErr != nil {
 				if secObs, ok := obs.(stats.SecurityObserver); ok {
 					secObs.RecordSecurityRejection(msg.Topic(), route.FirstSchemeName(secReqs))
 				}
@@ -459,17 +467,22 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 				dispatchFailure(KindSecurity, msg.Topic(), msg.Payload(), events.SecurityError{Err: secErr})
 				return
 			}
+			granted = g
 		}
 
 		// Codec-backed middleware dispatch (Transform and bundled
 		// .Use()) — SAME pre-handler dispatch point the security
 		// Implementations check just ran at. mqtt v3 has no property
-		// mechanism — supplies a nil property-value map.
+		// mechanism — supplies a nil property-value map. CORRECTED: a
+		// bound MiddlewareHandler's own GrantedScopes-carrying Out is now
+		// merged into the SAME `granted` map before the unified
+		// CheckScopes call below (previously discarded entirely).
 		if middlewareHandlersLen > 0 {
 			mwResults := dispatchSubscribeMiddlewareMethod.Call([]reflect.Value{
 				reflect.ValueOf(msgCtx), valuePtr, reflect.ValueOf(vars), reflect.Zero(reflect.TypeOf(map[string]string(nil))),
 			})
-			if mwErr, _ := mwResults[0].Interface().(error); mwErr != nil {
+			outs, _ := mwResults[0].Interface().([]any)
+			if mwErr, _ := mwResults[1].Interface().(error); mwErr != nil {
 				obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
 				dispatchErr, _ := events.AsMiddlewareDispatchError(mwErr)
 				if dispatchErr.IsFnError {
@@ -479,6 +492,21 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 					stats.ReportErrors(obs, "middleware:in", dispatchErr.Err)
 					dispatchFailure(KindDecode, msg.Topic(), msg.Payload(), dispatchErr.Err)
 				}
+				return
+			}
+			scopesmerge.MergeHandlerGrants(granted, middlewareSatisfies, outs)
+		}
+
+		// ONE unified CheckScopes call covering grants from BOTH the
+		// legacy Implementations path AND any bound MiddlewareHandler's
+		// own GrantedScopes (merged above).
+		if len(secReqs) > 0 {
+			if err := middleware.CheckScopes(secReqs, granted); err != nil {
+				if secObs, ok := obs.(stats.SecurityObserver); ok {
+					secObs.RecordSecurityRejection(msg.Topic(), route.FirstSchemeName(secReqs))
+				}
+				obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
+				dispatchFailure(KindSecurity, msg.Topic(), msg.Payload(), events.SecurityError{Err: err})
 				return
 			}
 		}

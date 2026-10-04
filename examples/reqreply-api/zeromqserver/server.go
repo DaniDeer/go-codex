@@ -110,11 +110,26 @@ func Build(obs stats.Observer) (*Built, error) {
 		return nil, err
 	}
 
+	// ComputeGSRoute demonstrates the GENERALIZED reqreply.
+	// SecurityMiddleware[In, Out] + GrantedScopes + ContextField
+	// mechanism (docs/design/d-0007-declarative-middleware-layering.md)
+	// — bound HandleMW directly, NO separate legacy credential Fn
+	// needed; handlers.VerifyBearerGS returns a GrantedScopes-carrying
+	// routes.AuthOut.
+	if _, err := routes.ComputeGSRoute.
+		HandleMW(&routes.GrantedScopesComputeMw, handlers.VerifyBearerGS).
+		HandleMW(nil, reqreply.Observability[routes.ComputeGSReq, routes.ComputeResp](obs)).
+		WithHandler(handlers.MakeComputeGSHandler()).
+		Register(server); err != nil {
+		return nil, err
+	}
+
 	addRep, addReq := newChanSocketPair()
 	doubleRep, doubleReq := newChanSocketPair()
 	tripleRep, tripleReq := newChanSocketPair()
 	oauthRep, oauthReq := newChanSocketPair()
 	propertyAxisRep, propertyAxisReq := newChanSocketPair()
+	gsRep, gsReq := newChanSocketPair()
 
 	serverSockets := map[string]zeromq.FramedSocket{
 		"compute/add":               addRep,
@@ -122,6 +137,7 @@ func Build(obs stats.Observer) (*Built, error) {
 		"compute/triple":            tripleRep,
 		"compute/oauth-add":         oauthRep,
 		"compute/property-axis-add": propertyAxisRep,
+		"compute/gs":                gsRep,
 	}
 	if err := server.Attach(zeromq.NewServerTransport(zeromq.ServerTransportOptions{Sockets: serverSockets})); err != nil {
 		return nil, err
@@ -133,6 +149,7 @@ func Build(obs stats.Observer) (*Built, error) {
 		"compute/triple":            tripleReq,
 		"compute/oauth-add":         oauthReq,
 		"compute/property-axis-add": propertyAxisReq,
+		"compute/gs":                gsReq,
 	}
 	return &Built{
 		Server:             server,

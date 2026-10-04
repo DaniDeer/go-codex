@@ -8,6 +8,7 @@ import (
 
 	pahomqtt "github.com/eclipse/paho.mqtt.golang"
 
+	"github.com/DaniDeer/go-codex/adapters/internal/scopesmerge"
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/middleware"
@@ -409,6 +410,17 @@ func subscribeEntryReflect(ctx context.Context, client pahomqtt.Client, entry ev
 	descriptor, _ := elem.FieldByName("Descriptor").Interface().(asyncapi.ChannelItem)
 	globalSecurity, _ := elem.FieldByName("GlobalSecurity").Interface().([]route.SecurityRequirement)
 	impls, _ := elem.FieldByName("Implementations").Interface().([]middleware.ServerImplementation)
+	// middlewareHandlers/dispatchSubscribeMiddleware — CORRECTED: this
+	// ServeSubscribers dispatch previously never ran bound codec-backed
+	// MiddlewareHandler dispatch at all (Security or general-purpose),
+	// only the legacy Implementations list — see mqtt5's identical,
+	// belated fix for the full finding.
+	middlewareHandlers, _ := elem.FieldByName("MiddlewareHandlers").Interface().([]events.MiddlewareHandler)
+	middlewareSatisfies := make([][]string, len(middlewareHandlers))
+	for i, h := range middlewareHandlers {
+		middlewareSatisfies[i] = h.Satisfies
+	}
+	dispatchSubscribeMiddleware := hv.MethodByName("DispatchSubscribeMiddleware")
 	handlerOptsAny := elem.FieldByName("HandlerOpts").Interface()
 	handlerVal := elem.FieldByName("Handler")
 	if handlerVal.IsNil() {
@@ -492,7 +504,7 @@ func subscribeEntryReflect(ctx context.Context, client pahomqtt.Client, entry ev
 			return
 		}
 
-		msgCtx := context.WithValue(ctx, contextKey{}, msg)
+		msgCtx := middleware.EnsureContextFields(context.WithValue(ctx, contextKey{}, msg))
 		// EnsureDispositionBox is called unconditionally, at zero cost to
 		// adapters/callers that never call SetDisposition — mqtt v3 has
 		// no acknowledgement concept of its own today, but the plumbing
@@ -501,8 +513,39 @@ func subscribeEntryReflect(ctx context.Context, client pahomqtt.Client, entry ev
 		// docs/design/d-0006-protocol-native-capabilities.md's §8.
 		msgCtx = middleware.EnsureDispositionBox(msgCtx)
 
+		granted := make(map[string][]string)
+		if len(impls) > 0 {
+			g, err := runSubscribeSecurityImplsReflect(msgCtx, msg, valuePtr, secReqs, impls)
+			if err != nil {
+				if secObs, ok := obs.(stats.SecurityObserver); ok {
+					secObs.RecordSecurityRejection(msg.Topic(), route.FirstSchemeName(secReqs))
+				}
+				obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
+				if opts.OnError != nil {
+					opts.OnError(SubscribeError{Kind: KindSecurity, Topic: msg.Topic(), Err: err})
+				}
+				return
+			}
+			granted = g
+		}
+
+		if len(middlewareHandlers) > 0 {
+			mwResults := dispatchSubscribeMiddleware.Call([]reflect.Value{
+				reflect.ValueOf(msgCtx), valuePtr, reflect.ValueOf(map[string]string(nil)), reflect.ValueOf(map[string]string(nil)),
+			})
+			outs, _ := mwResults[0].Interface().([]any)
+			if mwErr, _ := mwResults[1].Interface().(error); mwErr != nil {
+				obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
+				if opts.OnError != nil {
+					opts.OnError(SubscribeError{Kind: KindDecode, Topic: msg.Topic(), Err: mwErr})
+				}
+				return
+			}
+			scopesmerge.MergeHandlerGrants(granted, middlewareSatisfies, outs)
+		}
+
 		if len(secReqs) > 0 {
-			if err := runSubscribeSecurityImplsReflect(msgCtx, msg, valuePtr, secReqs, impls); err != nil {
+			if err := middleware.CheckScopes(secReqs, granted); err != nil {
 				if secObs, ok := obs.(stats.SecurityObserver); ok {
 					secObs.RecordSecurityRejection(msg.Topic(), route.FirstSchemeName(secReqs))
 				}
@@ -537,8 +580,16 @@ func subscribeEntryReflect(ctx context.Context, client pahomqtt.Client, entry ev
 
 // runSubscribeSecurityImplsReflect is [runSubscribeSecurityImpls]'s
 // reflect-based equivalent — valuePtr is an addressable *T reflect.Value
-// (T erased).
-func runSubscribeSecurityImplsReflect(ctx context.Context, msg pahomqtt.Message, valuePtr reflect.Value, secReqs []route.SecurityRequirement, impls []middleware.ServerImplementation) error {
+// (T erased). Returns the merged grants map — it NO LONGER calls
+// [middleware.CheckScopes] itself (previously did, in isolation).
+// Callers (both `transport.go`'s ports.Pattern Subscribe AND
+// `caller.go`'s own [subscribeEntryReflect]) merge this return with any
+// bound MiddlewareHandler's own `GrantedScopes` (via
+// [scopesmerge.MergeHandlerGrants]) before a SINGLE, UNIFIED CheckScopes
+// call — mirrors mqtt5's identical, belated fix (docs/design/
+// d-0007-declarative-middleware-layering.md's "Prerequisite for Phase 2
+// (api/events)").
+func runSubscribeSecurityImplsReflect(ctx context.Context, msg pahomqtt.Message, valuePtr reflect.Value, secReqs []route.SecurityRequirement, impls []middleware.ServerImplementation) (map[string][]string, error) {
 	granted := make(map[string][]string)
 	expectedType := reflect.FuncOf(
 		[]reflect.Type{
@@ -562,14 +613,14 @@ func runSubscribeSecurityImplsReflect(ctx context.Context, msg pahomqtt.Message,
 		}
 		results := fnVal.Call([]reflect.Value{reflect.ValueOf(ctx), reflect.ValueOf(msg), valuePtr})
 		if err, _ := results[1].Interface().(error); err != nil {
-			return err
+			return nil, err
 		}
 		g, _ := results[0].Interface().(map[string][]string)
 		for k, v := range g {
 			granted[k] = v
 		}
 	}
-	return middleware.CheckScopes(secReqs, granted)
+	return granted, nil
 }
 
 // validateSubscribeImplementationShapesReflect is

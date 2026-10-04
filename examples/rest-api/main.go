@@ -86,6 +86,7 @@ func main() {
 	demoListUsers(chiClient, "http://"+chiAddr)
 	demoProfile(chiClient)
 	demoAdminAction(chiClient)
+	demoGrantedScopesContextField(chiClient)
 	demoResponseHeaderCookieViolation()
 	demoResponseBodyViolation()
 	demoErrorPatternDeclarationMechanisms()

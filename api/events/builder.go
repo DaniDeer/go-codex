@@ -800,19 +800,28 @@ func (h *ChannelHandle[T]) EncodePropertyVars(msg T) (map[string]string, error) 
 // [ChannelHandle.DecodeMergedWithFormats]'s SAME "generic helper gets a
 // thin per-T method wrapper for reflection callability" convention.
 //
-// Deliberately keeps its OWN `func(...) error` signature (does NOT surface
-// [DispatchSubscribeMiddlewareHandlers]'s newer `([]any, error)` return) —
-// this method is invoked via `reflect.Value.MethodByName(...).Call(...)`
-// by `adapters/mqtt5`/`mqtt`/`zeromq`'s ports.Pattern binding shim
-// (`handleVal.MethodByName("DispatchSubscribeMiddleware")`), which reads
-// `mwResults[0]` directly as the error — changing the return arity here
-// would silently break that reflection call site. The native (non-
-// ports.Pattern) adapter Subscribe dispatch calls
-// [DispatchSubscribeMiddlewareHandlers] directly instead, where the
-// `outs` return IS consumed (docs/design/d-0007-declarative-middleware-layering.md's "Prerequisite for Phase 2 (api/events)").
-func (h *ChannelHandle[T]) DispatchSubscribeMiddleware(ctx context.Context, msg *T, topicVars, propertyVars map[string]string) error {
-	_, err := DispatchSubscribeMiddlewareHandlers(ctx, msg, h.MiddlewareHandlers, topicVars, propertyVars)
-	return err
+// Returns `([]any, error)` — mirrors [DispatchSubscribeMiddlewareHandlers]'s
+// own return shape exactly, so a reflection caller can merge any bound
+// handler's decoded `Out.GrantedScopes` into its own unified
+// [middleware.CheckScopes] call (via `adapters/internal/scopesmerge`).
+// CORRECTED: a prior revision of this method deliberately discarded
+// `outs` (kept a `func(...) error` signature) believing ALL "native"
+// (non-ports.Pattern) Subscribe dispatch already consumed
+// [DispatchSubscribeMiddlewareHandlers] directly — found FALSE during a
+// later review: `adapters/mqtt5`/`mqtt`'s OWN separate, reflection-based
+// `Client.Attach`+`ServeSubscribers` dispatch path (a SECOND "native"
+// consumer, distinct from the generic `subscribeWithHandle`/
+// `makeSubscribeMessageHandler[T]` path) also reaches this method
+// reflectively and had the SAME `outs`-discarding gap — confirmed via an
+// end-to-end example that never actually enforced a bound Security
+// middleware's `GrantedScopes` through `Client.Attach`, the PRIMARY
+// recommended workflow, until this fix. All 3 adapters'
+// `MethodByName("DispatchSubscribeMiddleware").Call(...)` call sites
+// (`transport.go`'s ports.Pattern binding AND, now, `caller.go`'s/
+// `serve_subscribers.go`'s ServeSubscribers dispatch) were updated to
+// read `results[0]` as `[]any` and merge it, in the SAME pass.
+func (h *ChannelHandle[T]) DispatchSubscribeMiddleware(ctx context.Context, msg *T, topicVars, propertyVars map[string]string) ([]any, error) {
+	return DispatchSubscribeMiddlewareHandlers(ctx, msg, h.MiddlewareHandlers, topicVars, propertyVars)
 }
 
 // DispatchPublishMiddleware invokes [DispatchPublishMiddlewareHandlers]

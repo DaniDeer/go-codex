@@ -279,11 +279,38 @@ problem `docs/roadmap/protocol-native-features.md` set out to resolve:
   `mqtt5`, `mqtt` v3, `zeromq`).** `events.ChannelHandle[T]` gained 2
   thin, one-line wrapper methods —
   `DispatchSubscribeMiddleware(ctx, msg *T, topicVars, propertyVars)
-  error` / `DispatchPublishMiddleware(ctx, msg T) (topicVars,
+  ([]any, error)` (signature CORRECTED post-Rollout-Phase-C — see below)
+  / `DispatchPublishMiddleware(ctx, msg T) (topicVars,
   propertyVars, err)` — delegating to the pre-existing generic
   `DispatchSubscribeMiddlewareHandlers`/`DispatchPublishMiddlewareHandlers`,
   needed so each adapter's reflection shim can invoke them without a
-  compile-time T. `events.ClientPublishOptions{Formats any}`/
+  compile-time T. **Post-Rollout-Phase-C regression fix (found via an
+  end-to-end example, not a unit test)**: `DispatchSubscribeMiddleware`
+  originally kept a `func(...) error` signature (discarding `outs`),
+  wrongly believing this was safe because the "native" `subscribeWithHandle`/
+  `makeSubscribeMessageHandler[T]` path already consumed
+  `DispatchSubscribeMiddlewareHandlers`'s `outs` directly. Confirmed
+  FALSE: `adapters/mqtt5`/`mqtt`'s OWN separate, reflection-based
+  `Client.Attach`+`ServeSubscribers` dispatch (`caller.go`) — the PRIMARY
+  recommended workflow — reaches this method reflectively too, and
+  `adapters/mqtt5`/`mqtt`/`zeromq`'s `transport.go` (ports.Pattern
+  binding) ALSO discarded it. ALL 3 adapters' `caller.go`/
+  `serve_subscribers.go` additionally had NO `MiddlewareHandlers`
+  dispatch AT ALL (bound codec-backed `SubscribeMW`, Security or
+  general-purpose, silently never ran) and NO `middleware.
+  EnsureContextFields` call — meaning `SubscribeMW`'s entire bound
+  mechanism (GrantedScopes AND ContextField) was non-functional through
+  `Client.Attach`, the primary workflow, for ALL 3 adapters, until this
+  fix (found while writing `examples/events-api/
+  demo_granted_scopes_context_field.go` — no prior unit test exercised
+  this exact path). Fixed: `DispatchSubscribeMiddleware` now returns
+  `([]any, error)`; all 6 reflection call sites (3 adapters ×
+  `transport.go`/`caller.go` each) merge grants via `adapters/internal/
+  scopesmerge.MergeHandlerGrants` before ONE unified `middleware.
+  CheckScopes` call (zeromq gated on `HasSatisfyingHandler`, mqtt5/mqtt
+  unconditional — same established per-adapter gating as the
+  already-fixed generic path) and call `middleware.EnsureContextFields`.
+  `events.ClientPublishOptions{Formats any}`/
   `events.ClientSubscribeOptions{Formats any}` (mirrors
   `rest.ClientConsumeOptions`'s single-field shape) are NEW, OPTIONAL,
   PER-CALL trailing variadic params on `events.Transport.Publish`/

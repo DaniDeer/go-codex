@@ -9,6 +9,7 @@ import (
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/DaniDeer/go-codex/adapters/internal/scopesmerge"
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
@@ -240,6 +241,22 @@ type erasedSubscriberHandle struct {
 	// requirements holds the channel's declared [events.CapabilityRequirement]
 	// values, consulted by [events.CheckCapabilityCoverage].
 	requirements []events.CapabilityRequirement
+	// middlewareHandlers holds every attached codec-backed bound
+	// [events.MiddlewareHandler] (from [events.Subscriber.SubscribeMW]'s
+	// bound path) — CORRECTED: a prior revision of this struct had no
+	// field for these at all, meaning Client.Attach+ServeSubscribers (the
+	// PRIMARY recommended workflow) never dispatched bound codec-backed
+	// middleware (Security or general-purpose) through this path — only
+	// through the lower-level `subscribeWithHandle`/escape-hatch
+	// functions. Found via an end-to-end example exercising
+	// GrantedScopes through Client.Attach for the first time.
+	middlewareHandlers []events.MiddlewareHandler
+	// dispatchSubscribeMiddleware is handleVal's own
+	// [events.ChannelHandle.DispatchSubscribeMiddleware] method
+	// (reflect-bound once here, called per-message in
+	// [makeErasedSubscribeMessageHandler]) — mirrors `transport.go`'s
+	// identical reflection pattern.
+	dispatchSubscribeMiddleware reflect.Value
 }
 
 // extractErasedSubscriberHandle recovers an [erasedSubscriberHandle] from
@@ -259,17 +276,20 @@ func extractErasedSubscriberHandle(handleAny any) (erasedSubscriberHandle, error
 	globalSecurity, _ := elem.FieldByName("GlobalSecurity").Interface().([]route.SecurityRequirement)
 	implementations, _ := elem.FieldByName("Implementations").Interface().([]middleware.ServerImplementation)
 	requirements, _ := elem.FieldByName("Requirements").Interface().([]events.CapabilityRequirement)
+	middlewareHandlers, _ := elem.FieldByName("MiddlewareHandlers").Interface().([]events.MiddlewareHandler)
 	return erasedSubscriberHandle{
-		topic:           elem.FieldByName("Topic").String(),
-		descriptor:      descriptor,
-		securitySchemes: securitySchemes,
-		globalSecurity:  globalSecurity,
-		implementations: implementations,
-		handlerOptsAny:  elem.FieldByName("HandlerOpts").Interface(),
-		decodeFn:        elem.FieldByName("Decode"),
-		handlerFn:       handlerFn,
-		msgType:         handlerFn.Type().In(1),
-		requirements:    requirements,
+		topic:                       elem.FieldByName("Topic").String(),
+		descriptor:                  descriptor,
+		securitySchemes:             securitySchemes,
+		globalSecurity:              globalSecurity,
+		implementations:             implementations,
+		handlerOptsAny:              elem.FieldByName("HandlerOpts").Interface(),
+		decodeFn:                    elem.FieldByName("Decode"),
+		handlerFn:                   handlerFn,
+		msgType:                     handlerFn.Type().In(1),
+		requirements:                requirements,
+		middlewareHandlers:          middlewareHandlers,
+		dispatchSubscribeMiddleware: hv.MethodByName("DispatchSubscribeMiddleware"),
 	}, nil
 }
 
@@ -332,7 +352,17 @@ func validateSubscribeImplementationShapesReflect(msgType reflect.Type, impls []
 // runSubscribeSecurityImplsReflect is [runSubscribeSecurityImpls]'s
 // reflect-based equivalent — msgPtr is an addressable *T reflect.Value (T
 // erased).
-func runSubscribeSecurityImplsReflect(ctx context.Context, msg *pahomqtt5.Publish, msgPtr reflect.Value, secReqs []route.SecurityRequirement, impls []middleware.ServerImplementation) error {
+// runSubscribeSecurityImplsReflect runs every attached security-shaped
+// legacy Implementations Fn and returns the merged grants map — it NO
+// LONGER calls [middleware.CheckScopes] itself (previously did, in
+// isolation). Callers (both `transport.go`'s ports.Pattern Subscribe AND
+// `caller.go`'s own [makeErasedSubscribeMessageHandler]) merge this
+// return with any bound MiddlewareHandler's own `GrantedScopes` (via
+// [scopesmerge.MergeHandlerGrants]) before a SINGLE, UNIFIED CheckScopes
+// call — mirrors `adapter.go`'s already-fixed `runSubscribeSecurityImpls`
+// exactly (docs/design/d-0007-declarative-middleware-layering.md's
+// "Prerequisite for Phase 2 (api/events)", belatedly also applied here).
+func runSubscribeSecurityImplsReflect(ctx context.Context, msg *pahomqtt5.Publish, msgPtr reflect.Value, secReqs []route.SecurityRequirement, impls []middleware.ServerImplementation) (map[string][]string, error) {
 	granted := make(map[string][]string)
 	for _, impl := range impls {
 		fnVal := reflect.ValueOf(impl.Fn)
@@ -344,14 +374,14 @@ func runSubscribeSecurityImplsReflect(ctx context.Context, msg *pahomqtt5.Publis
 		}
 		results := fnVal.Call([]reflect.Value{reflect.ValueOf(ctx), reflect.ValueOf(msg), msgPtr})
 		if err, _ := results[1].Interface().(error); err != nil {
-			return err
+			return nil, err
 		}
 		g, _ := results[0].Interface().(map[string][]string)
 		for k, v := range g {
 			granted[k] = v
 		}
 	}
-	return middleware.CheckScopes(secReqs, granted)
+	return granted, nil
 }
 
 // wrapHandlerGeneralReflect is [wrapSubscribeGeneral]'s reflect-based
@@ -382,7 +412,7 @@ func wrapHandlerGeneralReflect(handlerVal reflect.Value, impls []middleware.Serv
 func makeErasedSubscribeMessageHandler(ctx context.Context, info erasedSubscriberHandle, obs stats.Observer, opts SubscribeOptions) pahomqtt5.MessageHandler {
 	return func(msg *pahomqtt5.Publish) {
 		start := time.Now()
-		msgCtx := context.WithValue(ctx, contextKey{}, msg)
+		msgCtx := middleware.EnsureContextFields(context.WithValue(ctx, contextKey{}, msg))
 		if msg.Properties != nil && len(msg.Properties.User) > 0 {
 			msgCtx = context.WithValue(msgCtx, userPropsKey{}, msg.Properties.User)
 		}
@@ -428,8 +458,58 @@ func makeErasedSubscribeMessageHandler(ctx context.Context, info erasedSubscribe
 			}
 		}
 
+		granted := make(map[string][]string)
 		if len(info.implementations) > 0 {
-			if err := runSubscribeSecurityImplsReflect(msgCtx, msg, valuePtr, secReqs, info.implementations); err != nil {
+			g, err := runSubscribeSecurityImplsReflect(msgCtx, msg, valuePtr, secReqs, info.implementations)
+			if err != nil {
+				if secObs, ok := obs.(stats.SecurityObserver); ok {
+					secObs.RecordSecurityRejection(msg.Topic, route.FirstSchemeName(secReqs))
+				}
+				obs.RecordSubscribe(msg.Topic, false, time.Since(start))
+				if opts.OnError != nil {
+					opts.OnError(SubscribeError{Kind: KindSecurity, Topic: msg.Topic, Err: events.SecurityError{Err: err}})
+				}
+				return
+			}
+			granted = g
+		}
+
+		// Codec-backed bound MiddlewareHandler dispatch (SubscribeMW's
+		// bound path) — CORRECTED: this reflect-based ServeSubscribers
+		// dispatch previously never ran this at all (see
+		// erasedSubscriberHandle.middlewareHandlers' own doc comment).
+		// Topic-var merge stays a known, pre-existing simplification of
+		// this dispatch path (no topic template vars supported here);
+		// property vars (MQTT5 User Properties) ARE extracted, so a
+		// property-backed Security credential (this package's own
+		// GrantedScopes demo) decodes correctly.
+		if len(info.middlewareHandlers) > 0 {
+			propertyVars := propertyVarsFromUserProperties(msg)
+			mwResults := info.dispatchSubscribeMiddleware.Call([]reflect.Value{
+				reflect.ValueOf(msgCtx), valuePtr, reflect.ValueOf(map[string]string(nil)), reflect.ValueOf(propertyVars),
+			})
+			outs, _ := mwResults[0].Interface().([]any)
+			if mwErr, _ := mwResults[1].Interface().(error); mwErr != nil {
+				obs.RecordSubscribe(msg.Topic, false, time.Since(start))
+				dispatchErr, _ := events.AsMiddlewareDispatchError(mwErr)
+				kind := KindDecode
+				if dispatchErr.IsFnError {
+					kind = KindHandler
+				}
+				if opts.OnError != nil {
+					opts.OnError(SubscribeError{Kind: kind, Topic: msg.Topic, Err: mwErr})
+				}
+				return
+			}
+			satisfies := make([][]string, len(info.middlewareHandlers))
+			for i, h := range info.middlewareHandlers {
+				satisfies[i] = h.Satisfies
+			}
+			scopesmerge.MergeHandlerGrants(granted, satisfies, outs)
+		}
+
+		if len(secReqs) > 0 {
+			if err := middleware.CheckScopes(secReqs, granted); err != nil {
 				if secObs, ok := obs.(stats.SecurityObserver); ok {
 					secObs.RecordSecurityRejection(msg.Topic, route.FirstSchemeName(secReqs))
 				}
