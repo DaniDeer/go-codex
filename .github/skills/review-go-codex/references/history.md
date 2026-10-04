@@ -1,6 +1,83 @@
-# go-codex Review History (R1–R147, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
+# go-codex Review History (R1–R148, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 148 (post-Rollout-Phase-C §14 sweep — stale `Transform`/`ClientTransform` docs + broken worked examples)
+
+Triggered by 3 successive user-requested re-reviews of the just-shipped Rollout Phase C
+(`api/reqreply`, `docs/design/d-0007-declarative-middleware-layering.md`, promoted from
+`docs/roadmap/` this same session). Each pass dug one layer deeper than the last — first the
+Go source/tests, then `docs/features/security.md`'s own code examples (actually compiled, not
+just traced), then the wider doc set reqreply's own page cross-references.
+
+- **G1 — stale roadmap→design-doc path survived its own promotion's bulk `sed` sweep**: the
+  promotion's line-based `sed` replacement of `docs/roadmap/declarative-middleware-layering.md` →
+  `docs/design/d-0007-declarative-middleware-layering.md` missed every occurrence where the path
+  string wrapped across two godoc comment lines. Fixed 8 such occurrences across 7 files
+  (`adapters/nethttp/gap1_ports_middleware_dispatch_test.go`, `api/events/{middleware_declaration,
+  builder,builder_test}.go`, `api/reqreply/{builder,transform,middleware}.go`).
+- **G2 — `reqreply.Builder.AppendTo`'s doc comment omitted the security-scheme exclusion**
+  `events.Client.AppendTo`'s identical, more complete wording already discloses. Fixed to match.
+- **G3 — no end-to-end reqreply `GrantedScopes` test existed for mqtt5** (only zeromq had one,
+  the riskier `HasSatisfyingHandler`-gated case). Added `adapters/mqtt5/
+  grantedscopes_reqreply_test.go` mirroring zeromq's structure (3 subtests, all pass), closing the
+  asymmetric coverage gap and independently confirming mqtt5's wiring is correct end-to-end.
+- **G4 — `docs/features/security.md`'s REST AND reqreply "Codec-backed Security" worked examples
+  both demonstrated a combination confirmed to throw `DuplicateMiddlewareNameError`**:
+  `.Use(mw).HandleMW(mw, boundFn)` for a Security-only `mw` — both `.Use()`'s agnostic path and
+  the bound `HandleMW`/`ClientMW` path unconditionally add a spec contribution under the same
+  name, and the name-uniqueness check (D6(b)) correctly flags this as a genuine duplicate (not
+  D7's distinct `dualAttached` case). REST's example had no warning at all; reqreply's had a
+  "Known gap" callout immediately below it that the example itself never applied. Rewrote both
+  examples to declare `RouteMeta.Security` directly instead of `.Use(mw)` (the documented
+  workaround — sufficient for `CheckCoverage`/`CheckScopes`, though `OpenAPISpec()`/`AsyncAPISpec()`
+  won't auto-register the scheme via that path) and added the missing callout to REST's section,
+  cross-referencing reqreply's. The underlying `DuplicateMiddlewareNameError` bug itself (confirmed
+  to ALSO affect `api/rest`, not reqreply-specific) remains tracked, not fixed — a nontrivial
+  design question (distinguishing a legitimate `.Use()`+bound combo from a genuine collision) out
+  of scope for a docs-correctness pass.
+- **G5 — found only by actually compiling the fixed reqreply example (not just tracing it)**:
+  `.WithRequestPropertySpec(reqreply.NewPropertyParam(...))` is a genuine type mismatch —
+  `WithRequestPropertySpec` takes a presence-only `PropertyParam`, but `NewPropertyParam[T,V]`
+  returns the merge-capable `MergedPropertyParam[T]`, a different type. Fixed to call
+  `.WithRequestProperty(...)` instead, since the example's `BearerIn.Token` is a real struct field
+  meant to be decoded (not just presence-checked). Re-verified via an actual scratch compile+
+  `Register()` call, not just by re-reading the code.
+- **G6 — `docs/features/events.md`'s "Codec-backed middleware" section (heading AND code example)
+  still described `events.Transform`/`events.ClientTransform`, which were REMOVED in Rollout
+  Phase B — a staleness predating even Phase C that Phase B's own docs pass never caught**.
+  The same stale `events.Transform(subscriber, mw, fn)` call pattern had been copy-pasted into 2
+  more files (`docs/features/codec-declared-middleware.md` — reqreply's own stated "primary
+  reference" page — and `docs/guides/error-handling.md`), plus 6 stale anchor-link references to
+  the old heading's slug across 3 files (`d-0006-protocol-native-capabilities.md` ×3, `error-
+  handling.md` ×1, `codec-declared-middleware.md` ×2). Renamed the heading to `SubscribeMW`/
+  `PublishMW`, fixed all 3 code examples to the current method-chain style
+  (`subscriber.SubscribeMW(mw, fn)`), and updated all 6 anchor references to the new slug
+  (`#codec-backed-middleware-subscribemwpublishmw`). Both fixed examples were independently
+  extracted into standalone scratch programs and compiled + `Register()`'d successfully before
+  cleanup — not just re-read. `docs/design/d-0003-codec-declared-middlewares.md`'s own 2
+  references to `events.Transform(...)` were re-confirmed intentionally HISTORICAL (this doc's
+  established "frozen design record" convention) and correctly left untouched.
+
+**Flagged but explicitly NOT fixed** (separate, pre-existing, REST-only, out of this round's
+scope): `docs/features/rest-api.md`'s own section heading (`## Codec-backed middleware
+(\`Route.HandleMW\`/\`Route.ClientMW\`)`) and EVERY reference to it (4, including the file's own
+internal self-link) use the anchor fragment `#codec-backed-middleware-handlemwclientmw`, which
+does not match the heading's actual generated slug (tracing the slugify algorithm: stripping
+backticks/parens/periods/slashes from the current heading text yields
+`routehandlemwrouteclientmw`, not `handlemwclientmw`) — strongly suggesting the heading was
+renamed (adding a `Route.` prefix) at some point without updating the anchors referencing it.
+Recommended as a dedicated follow-up pass, not bundled into this round's fixes.
+
+A fresh, additional targeted sweep for further `Transform`/`ClientTransform` staleness, dangling
+`[Symbol]` godoc links, missing test coverage, and example-build failures beyond the 6 findings
+above found nothing further.
+
+Full verification: `gofmt -l .` clean; `go build ./...`/`go vet ./...` clean; `go test ./...` — 57
+packages, zero failures; `just check` — 0 issues/503 files; every example under `examples/*/`
+confirmed to build/run clean.
 
 ---
 
