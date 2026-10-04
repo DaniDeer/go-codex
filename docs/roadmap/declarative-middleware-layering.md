@@ -7,6 +7,17 @@
 > (`api/reqreply`) remains NOT yet implemented — all other design
 > decisions below (including Phase 2-4's cross-API design) stay resolved
 > and current.
+>
+> **A Phase C review found a confirmed gap in Phase B's own shipped
+> code — tracked as a PREREQUISITE patch, scheduled BEFORE Phase C, not
+> folded into it**: `events.SecurityMiddleware[In,Out]`'s
+> `GrantedScopes`-on-`Out` convention (Open design decision 7) was never
+> actually wired into any adapter's dispatch (confirmed zero
+> `GrantedScopes` references in `adapters/mqtt5`/`mqtt`/`zeromq`), and
+> events' Subscribe-side bound Fn shape structurally cannot carry `Out`
+> at all. See Open design decisions 11-12 below for the full finding and
+> resolution (an additive, non-breaking Subscribe shape widening +
+> merge-and-enforce wiring, both directions, one events-only patch).
 > [← Back to Roadmap](index.md)
 
 ## Motivation
@@ -1834,9 +1845,59 @@ verification clean. Concrete findings for Phase C (`api/reqreply`):
    events' Connect helpers, so this may already be covered — verify,
    don't assume).
 
-### Learnings from Rollout Phase C
+### Learnings from the Phase C review (for Rollout Phase C itself)
 
-_Not yet started._
+**Phase C's own implementation has not started yet** — these are
+findings from REVIEWING the roadmap against Phase B's actual shipped
+code, found before Phase C begins (see Open design decisions 11-12 and
+this doc's status header for the concrete gap/resolution):
+
+1. **A doc comment's claim that something is "confirmed via" existing
+   code must be re-verified against that code directly, every time —
+   never trusted because it reads convincingly.** `events
+   .SecurityMiddleware[In,Out]`'s own doc comment asserted the
+   `GrantedScopes`-on-`Out` convention was "confirmed via adapters'
+   existing CheckScopes integration" — a specific, falsifiable, and
+   FALSE claim (that integration is the OLD legacy-Fn-only path, with
+   zero awareness of the new bound dispatch's `Out` values). This
+   wasn't caught during Phase B's own implementation or its review
+   rounds — only surfaced when Phase C's review traced the claim
+   through actual adapter code via grep. Apply the SAME "verify by
+   tracing, not by reading" discipline to every doc-comment claim
+   inherited from a prior phase before building on top of it.
+2. **A "RESOLVED" design decision can still hide a direction-specific
+   structural gap that isn't caught until a REAL, non-`struct{}`,
+   end-to-end case is exercised — not just a "doesn't panic" unit
+   test.** Open design decision 7 (Granted-scopes convention, Option
+   3) was written generically ("`Out`'s `GrantedScopes` field, read via
+   reflection") without being checked against events' OWN,
+   already-established asymmetry between Subscribe (no `Out` in its
+   bound Fn shape at all) and Publish (has `Out`). The one new test
+   written for this
+   (`TestSecurityMiddleware_RealInOutType_DoesNotPanicOnDispatch`)
+   exercised the builder-layer closures directly and confirmed no
+   panic — but never reached an adapter's real dispatch/`CheckScopes`
+   code, so it could not have caught the missing wiring OR the
+   structural Subscribe-side gap. This is the SAME "verify by
+   migration, not by review" lesson from
+   `docs/design/d-0001-rest-middleware-workflow-simplification.md`'s
+   own Lessons Learned, now confirmed a 2nd time for a DIFFERENT
+   mechanism (scopes enforcement, not dispatch removal) — a design
+   review or a shape-level unit test is not equivalent to exercising
+   the full, real, adapter-level path.
+3. **A roadmap's own "Files to create/modify" table can silently
+   conflate a DONE phase with a NOT-DONE one when both touch the same
+   adapter directory, and can list an adapter that doesn't even
+   support the feature at all.** Confirmed: two rows bundled events-
+   side work (shipped in Phase B, all 3 adapters) together with
+   reqreply-side work (not yet done, only 2 of 3 adapters even apply)
+   under one combined row, and both wrongly included `adapters/mqtt`
+   (v3) — which has ZERO reqreply support (no `reqreply.go`/
+   `reqreply_transport.go` exists for it at all). Before generating
+   Phase C's own implementation todos from this doc's table, re-verify
+   each row's adapter list against `find adapters -iname "*reqreply*"`
+   (or equivalent) rather than assuming a prior phase's row is still
+   accurate.
 
 ## Phasing
 
@@ -1942,6 +2003,91 @@ Phase 2 specifically (not Phase 1 — Phase 1 never touches dispatch call
 sites, only the axis decode/encode logic inside functions already being
 called) — tracked here as its own concrete migration step, not folded
 silently into Phase 2's description.
+
+## Prerequisite for Phase 2 (`api/events`): `GrantedScopes` merge-and-enforce wiring + Subscribe `Out`-widening
+
+**Found during a Phase C review — the SAME KIND of previously-missed,
+confirmed, blocking gap as the REST prerequisite above, not a
+hypothetical risk.** Traced `events.SecurityMiddleware[In,Out]`'s own
+doc comment, which claims the `GrantedScopes`-on-`Out` convention
+(Open design decision 7) is "confirmed via adapters/mqtt5/mqtt/
+zeromq's existing CheckScopes integration" — a specific, falsifiable
+claim. Confirmed via direct grep: ZERO occurrences of `GrantedScopes`
+anywhere in `adapters/mqtt5`/`mqtt`/`zeromq`. The "CheckScopes
+integration" that DOES exist
+(`runSubscribeSecurityImpls`/`runPublishSecurityImpls`) is the OLD,
+legacy-`ServerImplementation`/`ClientImplementation`-Fn-only path — it
+builds its OWN, separate `granted` map and calls `CheckScopes` BEFORE
+the new bound `MiddlewareHandler`/`ClientMiddlewareHandler` dispatch
+even runs, and never merges with it.
+
+**Why this was never caught**: the one new Phase B test touching this
+(`TestSecurityMiddleware_RealInOutType_DoesNotPanicOnDispatch`) only
+calls `DecodeIn`/`EncodeOut` directly (the builder-layer closures) — it
+never reaches an adapter's real dispatch/`CheckScopes` code. The real
+examples (`examples/api-events/main.go`,
+`examples/events-api/routes/routes.go`) exclusively use the OLD legacy
+Fn shape (`func(ctx, T) (map[string][]string, error)`, `In=Out=
+struct{}`), which `isBoundSubscribeMWShape`/`isBoundPublishMWShape`
+correctly detect as NOT the bound shape (arity differs) — so nobody
+has ever attached a REAL (non-`struct{}`) bound Security middleware
+carrying actual `GrantedScopes` end-to-end, through either direction.
+
+**A SECOND, structural wrinkle, found while tracing the first**:
+events' SUBSCRIBE bound Fn shape is `func(ctx, *T, In) error` — ONE
+return value, no `Out` slot at all (confirmed via
+`isBoundSubscribeMWShape`'s `t.NumOut() != 1` check), mirroring
+Subscribe's own real business-handler shape (`func(ctx, T) error` —
+pub/sub has no reply to a subscribe, so no `Out` exists there, by
+design). This means `GrantedScopes` is not merely unwired on
+Subscribe — it is STRUCTURALLY IMPOSSIBLE to express through the
+bound mechanism at all, until the shape itself changes.
+
+**Confirmed events-specific, NOT shared with REST or reqreply**:
+
+- REST already has this fully wired (`adapters/internal/httpsecurity`'s
+  `CollectGrantsReflect`/`MergeMiddlewareHandlerGrants`, confirmed via
+  code + its own adapter-level tests).
+- `api/reqreply` doesn't have a generalized `SecurityMiddleware
+  [In,Out]` yet (Phase C hasn't started) — N/A today, not a gap to
+  fix, just new work. Confirmed reqreply does NOT inherit Subscribe's
+  structural limitation: its receiving/Serve-side bound `Fn` already
+  returns `(Out, error)` (reqreply is always request/REPLY, never
+  fire-and-forget).
+
+**Required fix, scoped precisely — ONE pre-Phase-C events patch**
+(resolved via Open design decisions 11/12):
+
+1. Add a NEW, additively-detected `func(ctx, *T, In) (Out, error)`
+   bound Subscribe shape, alongside the EXISTING `func(ctx, *T, In)
+   error` shape (which keeps working completely unchanged for
+   general-purpose Subscribe middleware — logging, rate-limiting,
+   enrichment). Detected by return-arity (2 vs 1).
+2. `DispatchSubscribeMiddlewareHandlers`: when the 2-return shape is
+   used, call `mw.OutCodec.Validate(out)` (mirrors `EncodeOut`'s
+   existing validation step for Publish), then make `out` available to
+   step 3 below. NO wire-encoding — Subscribe's `Out` exists ONLY to
+   carry metadata like `GrantedScopes` through to enforcement.
+3. A NEW merge-and-enforce helper mirroring REST's
+   `CollectGrantsReflect`/`MergeMiddlewareHandlerGrants`: merges
+   `GrantedScopes` from BOTH the legacy `ServerImplementation`/
+   `ClientImplementation` grants AND any bound `MiddlewareHandler`/
+   `ClientMiddlewareHandler`'s decoded `Out`, into ONE `granted` map,
+   before the SINGLE existing `CheckScopes` call — wired into all 3
+   adapters (`adapters/mqtt5`/`mqtt`/`zeromq`), for BOTH Subscribe and
+   Publish dispatch.
+4. Regression tests proving: a bound Subscribe Security middleware's
+   `GrantedScopes` IS now consulted by `CheckScopes`; a bound Publish
+   Security middleware's `GrantedScopes` IS now consulted; existing
+   general-purpose (1-return-shape) Subscribe middleware is COMPLETELY
+   unaffected (no signature change required, same behavior as before).
+
+This is a BLOCKING PREREQUISITE tracked as its OWN schedulable unit of
+work, BEFORE Phase C begins (not folded into it) — Phase C's own
+Phase 2 step (reqreply) builds its OWN wiring afterward, reusing
+whatever merge-helper shape this patch establishes where it fits
+reqreply's own (already-symmetric, both-directions-have-`Out`)
+structure.
 
 ## SSE (`api/rest`) — partially covered already; the gap above closes the rest
 
@@ -2418,7 +2564,8 @@ that future round ever happen.
 | **Phase 2**: generalizing `SecurityMiddleware`'s signature in ALL THREE packages — `rest.SecurityMiddleware[In, Out any](...)`, `events.SecurityMiddleware[In, Out any](...)`, `reqreply.SecurityMiddleware[In, Out any](...)` — away from the hardcoded `struct{}, struct{}`, dispatched through Phase 1's shared mechanism | Inventing any new merge-field/codec type — explicitly rejected; the EXISTING per-package merge-field constructors are reused verbatim |
 | **Architecture revision**: dropping `Transform`/`ClientTransform`(+SSE) as separate free functions, folding their `*Req`-access capability directly into `HandleMW`/`ClientMW` via runtime reflection (the SAME technique Security's existing Fn dispatch already uses) — Security unified onto this SAME mechanism in the SAME step, not a later phase | Changing the Agnostic/reusable style's own existing contract (`WithReceive`/`WithSend` + plain `.Use(mw)`) — unaffected, preserved exactly as it is today |
 | Preserving each package's OWN error types (`rest.MiddlewareInputError` vs `events.MiddlewareInputError` vs `reqreply.MiddlewareInputError`) — Phase 1's shared mechanism takes an error CONSTRUCTOR callback, it does not unify the error TYPES themselves (`errors.As` callers must still distinguish which package failed) | Unifying `MiddlewareInputError`/`MiddlewareOutputError` into one cross-package type — explicitly rejected, would break existing `errors.As` call sites for no benefit |
-| Preserving the granted-scopes return value + `CheckScopes` call exactly as today, in all 3 packages (confirmed separable) | Changing `CheckScopes`'s own logic or signature |
+| Preserving `CheckScopes`'s own logic/signature exactly as today, in all 3 packages (confirmed separable) — the granted-scopes VALUE's SOURCE differs per package's CURRENT state, see below | Changing `CheckScopes`'s own logic or signature |
+| **Corrected this round (Phase C review) — the granted-scopes-into-`CheckScopes` WIRING is NOT uniformly "already there" across packages, confirmed via code.** REST: genuinely already wired end-to-end for the bound path (`adapters/internal/httpsecurity`'s `CollectGrantsReflect`/`MergeMiddlewareHandlerGrants`). Events: confirmed NOT wired for the bound `MiddlewareHandler`/`ClientMiddlewareHandler` path on EITHER direction (zero `GrantedScopes` references in any of `adapters/mqtt5`/`mqtt`/`zeromq` — only the OLD legacy-Fn path feeds `CheckScopes` today) — tracked as a dedicated pre-Phase-C patch, see "Prerequisite for Phase 2 (api/events)" below and Open design decisions 11/12. Reqreply: N/A today (package doesn't have a generalized `SecurityMiddleware[In,Out]` yet) — built FRESH as part of Phase C's own Phase 2 step, reusing whatever merge-helper shape the events patch establishes | N/A — this row corrects Phase B's own now-superseded scope-decision claim, not a new in/out-of-scope split |
 | `adapters/nethttp`/`chi` (HTTP: header/cookie/query) AND `adapters/mqtt5`/`zeromq`/`mqtt` (user-property) — Phase 2 only, once Phase 1's shared mechanism exists to dispatch Security through | A brand-new wire-location kind beyond header/cookie/query/property |
 | A breaking replacement of today's fixed-shape `ClientImplementation.Fn`/`ServerImplementation.Fn` signatures for Security specifically, in all 3 packages (Phase 2) | Changing the fixed-shape Fn contract for NON-Security general-purpose middleware — `WithReceive`/`WithSend`'s own existing contract is unchanged; Security adopts it, it doesn't change it |
 | N/A (pure cross-reference, no code change) | Any change to `adapters/*/capability.go`'s sealed `Capability` interface or `api/events/capability*.go`'s declare/Attach-time coverage-check mechanism (D-0006) — confirmed fully independent, zero files touched |
@@ -2563,6 +2710,38 @@ methods, unaffected by the `GrantedScopes` convention.
 // confirmed in adapters/mqtt5/reqreply_transport.go.
 ```
 
+**IMPORTANT — found missing during the Phase C review, NOT yet built
+for events or reqreply (see Open design decisions 11/12 and
+"Prerequisite for Phase 2 (api/events)" below for the full finding):**
+the paragraph above describes the dispatch CALL existing and running —
+it does NOT mean `GrantedScopes` is actually read from the dispatched
+`Out` and merged into `CheckScopes` anywhere. Confirmed via code: ZERO
+`GrantedScopes` references exist in `adapters/mqtt5`/`mqtt`/`zeromq`
+today. This is REST-only, currently (`adapters/internal/httpsecurity`'s
+`CollectGrantsReflect`/`MergeMiddlewareHandlerGrants`). Additionally,
+this "uniform `func(ctx, In) (Out, error)`" signature shown above is
+events' PUBLISH shape only — events' SUBSCRIBE bound shape is
+`func(ctx, *T, In) error` (confirmed via `isBoundSubscribeMWShape`,
+NO `Out` at all, by design — Subscribe has no reply to encode one
+into). A scope-granular Security check on Subscribe needs a NEW,
+ADDITIVELY-added shape:
+
+```go
+// api/events — NEW, additive bound Subscribe shape (alongside the
+// EXISTING func(ctx, *T, In) error shape, which keeps working
+// unchanged for general-purpose Subscribe middleware). Detected by
+// return-arity (2 vs 1), mirroring this codebase's existing
+// shape-detection idiom. Out is NEVER wire-encoded for Subscribe
+// (nothing to encode it into) — it exists ONLY so a Security-carrying
+// middleware can return GrantedScopes, read the SAME way Publish's Out
+// already is.
+func(ctx context.Context, msg *T, in In) (Out, error)
+```
+
+Both the merge-into-`CheckScopes` wiring AND this new Subscribe shape
+are scoped as ONE pre-Phase-C events patch (not part of Phase C
+itself) — see "Prerequisite for Phase 2 (api/events)" below.
+
 ## Structured errors (all implement `slog.LogValuer`)
 
 No NEW error type needed in any package for the credential-encoding
@@ -2616,7 +2795,13 @@ regressed, by Phase 2.
 |---|---|
 | `TestSecurityMiddleware_WithSend_MergeField_EncodesCredential` (×3 packages) | A `.WithSend` Fn returning `Cred{Token: "x"}` + a merge-field declaration results in the correctly-formatted wire value — reusing each package's NOW-SHARED `DecodeLayer`/`EncodeLayer`, not a new mechanism |
 | `TestSecurityMiddleware_WithReceive_DecodesCredentialBeforeFn` (×3) | An incoming message's declared field is decoded into `Cred` BEFORE the `.WithReceive` Fn runs |
-| `TestSecurityMiddleware_GrantedScopes_ReadViaReflectedField` (×3) | The RESOLVED `GrantedScopes` convention: dispatch reads `Out.GrantedScopes` via `elem.FieldByName("GrantedScopes")` and feeds it into an UNCHANGED `middleware.CheckScopes` call |
+| `TestSecurityMiddleware_GrantedScopes_ReadViaReflectedField` (REST only — ALREADY EXISTS, confirmed via `adapters/internal/httpsecurity`'s own tests) | The RESOLVED `GrantedScopes` convention: dispatch reads `Out.GrantedScopes` via `elem.FieldByName("GrantedScopes")` and feeds it into an UNCHANGED `middleware.CheckScopes` call — **corrected this round: this is NOT "(×3)" — events/reqreply need the NEW tests below instead, not a trivial port of this one** |
+| `TestSubscribeMW_BoundShapeWithOut_Detected` (events, pre-Phase-C patch) | The NEW additive `func(ctx, *T, In) (Out, error)` Subscribe shape is correctly detected (return-arity 2), distinct from the EXISTING 1-return shape |
+| `TestSubscribeMW_LegacyOneReturnShape_StillDispatchesUnchanged` (events, pre-Phase-C patch) | A general-purpose (non-Security, no `Out` needed) bound Subscribe middleware using the EXISTING 1-return shape is COMPLETELY unaffected by the new shape's addition — no signature change forced on it |
+| `TestSubscribeMW_GrantedScopes_MergedIntoCheckScopes` (events, pre-Phase-C patch, all 3 adapters) | A bound Subscribe Security middleware using the NEW 2-return shape, returning real `GrantedScopes`, has them ACTUALLY merged into the `CheckScopes` call — the core fix, end-to-end, not just a "doesn't panic" check |
+| `TestPublishMW_GrantedScopes_MergedIntoCheckScopes` (events, pre-Phase-C patch, all 3 adapters) | Same, for Publish's EXISTING `Out` shape — confirms the merge helper covers BOTH directions |
+| `TestMergeGrants_LegacyOnly_BoundOnly_Both_Neither` (events, pre-Phase-C patch) | The new merge-and-enforce helper's own unit tests: legacy-only grants, bound-only grants, both merged, neither present — mirrors REST's `MergeMiddlewareHandlerGrants` test matrix |
+| `TestSecurityMiddleware_GrantedScopes_MergedIntoCheckScopes` (reqreply, Phase C's own Phase 2) | Reqreply's OWN merge-and-enforce wiring, built fresh (not inherited from events) — both directions, since reqreply's receiving/Serve-side already has `Out` symmetrically with Publish |
 | `TestSecurityMiddleware_Out_CarriesAdditionalResponseFields` (×3) | A Security `Out` type with BOTH `GrantedScopes` AND a genuine response merge field (e.g. a declared response header) — confirms the convention doesn't foreclose real response data |
 | `TestSecurityMiddleware_CredentialCodecRejects_MiddlewareInputError` (×3) | A credential field's codec validation failure surfaces as the EXISTING, package-specific `MiddlewareInputError`, not a new or unified type |
 | `TestSecurityMiddleware_RawRouteVsRouteHandle_Unaffected` (REST only) | This redesign does not reintroduce or interact with the separate `GlobalSecurity` dual-mode dispatch gap (D-0001 Addendum 6) — independent concerns |
@@ -2663,9 +2848,10 @@ regressed, by Phase 2.
 | `api/rest/middleware.go` | `HandleMW`/`ClientMW` become the ONLY attachment methods. **Confirmed mechanism** (see "Confirmed mechanical details" above): extend `routeMiddlewareContributor`/`applyAgnosticRoute` (today agnostic-only) with a new bound-case method for `*Req`-accessing dispatch; add `Satisfies []string` to `MiddlewareHandler`/`ClientMiddlewareHandler`; update `CheckCoverage` (and likely merge `rb.impls` with the `MiddlewareHandler`-populated field) to see the unified type's `Satisfies` | 2 + Arch. revision |
 | `adapters/nethttp/adapter.go` | **RETIRE** `runSecurityMiddleware`'s separate code path — folded into `HandleMW`'s now-unified reflection dispatch | Arch. revision |
 | `adapters/nethttp/binding.go`/`client.go` | **RETIRE** `mergeCredentialHeaders`'s separate code path — folded into `ClientMW`'s now-unified reflection dispatch | Arch. revision |
-| `api/events/middleware_declaration.go`, `api/events/builder.go` | Same generalization for events | 2 |
-| `api/reqreply/middleware_declaration.go`, `api/reqreply/route.go` | Same generalization for reqreply | 2 |
-| `adapters/mqtt5/{transport.go,transport_dispatch.go,reqreply_transport.go}`, `adapters/zeromq`, `adapters/mqtt` | Replace fixed-shape Fn type-assertions with dispatch through the mw's own handler | 2 |
+| `api/events/middleware_declaration.go`, `api/events/builder.go` | Same generalization for events | 2 — **SHIPPED (Rollout Phase B)** |
+| `adapters/mqtt5/{transport.go,transport_dispatch.go}`, `adapters/zeromq`, `adapters/mqtt` | Replace fixed-shape Fn type-assertions with dispatch through the mw's own handler — EVENTS side only | 2 — **SHIPPED (Rollout Phase B)**, PLUS a confirmed follow-up gap found during Phase C review: the `GrantedScopes`-on-`Out` convention (Open design decision 7) was never actually wired into any of these 3 adapters' dispatch (zero `GrantedScopes` references in any of them) — no adapter merges a bound Security `MiddlewareHandler`'s `Out` into the `granted` map before `CheckScopes`. Needs a REST-style merge helper (mirrors `adapters/internal/httpsecurity.CollectGrantsReflect`/`MergeMiddlewareHandlerGrants`), planned for Phase C alongside reqreply's OWN build of the same mechanism (see below) |
+| `api/reqreply/middleware_declaration.go`, `api/reqreply/route.go` | Same generalization for reqreply | 2 — NOT YET DONE |
+| `adapters/mqtt5/reqreply_transport.go`, `adapters/zeromq` (reqreply-side files) | Replace fixed-shape Fn type-assertions with dispatch through the mw's own handler — REQREPLY side only; build the `GrantedScopes` merge-and-enforce wiring FROM SCRATCH here too (same gap as events' row above — do both in the SAME pass, do not repeat the omission a 3rd time). **`adapters/mqtt` (v3) has NO reqreply support at all — confirmed via code, no `reqreply.go`/`reqreply_transport.go` exists for it — do not add a row for it here** | 2 — NOT YET DONE |
 | `codex/varfields.go` | Add `EncodeMergeVars[T]` (new, separate function — see "Phase 1 sub-item" above) — `EncodeVars` itself stays UNCHANGED | 1 |
 | `api/rest/builder.go` | Add the FULL omit-empty constructor family (`NewOmitEmptyQueryParam`/`NewOmitEmptyCookieParam`/`NewOmitEmptyHeaderParam`/`NewOmitEmptyResponseHeaderParam`/`NewOmitEmptyResponseCookieParam` — see "API surface") alongside each location's existing `NewRequired*Param`/`NewOptional*Param` pair, all built on `codex.EncodeMergeVars` | 1 |
 | `api/events/property_param.go`, `api/reqreply/property_param.go` | Add `NewOmitEmptyPropertyParam[T,V]` (mirrors `NewOptionalPropertyParam`'s shape) — no topic-param equivalent (topics have no Required/Optional split to begin with) | 1 |
@@ -2674,7 +2860,8 @@ regressed, by Phase 2.
 | `docs/design/d-0003-codec-declared-middlewares.md` | Add a new Addendum documenting `middleware.DecodeLayer`/`EncodeLayer` as the architectural embodiment of "middleware is a partial route/channel definition, stacked" — the mechanism itself is now the documentation, not just prose describing a convention | 1 |
 | `middleware/context_field.go` | Add the NEW `ContextFieldSetter` interface (confirmed REQUIRED, not optional — the original `ContextField[V]`-typed sketch does not compile, see "Proposed design" above); add `SetContextFieldFromIn`/`SetContextFieldFromOut` declarative link methods to `Middleware[In,Out]`, typed against `ContextFieldSetter`; extend `EnsureContextFields` call sites | 3 |
 | `adapters/nethttp/clienttransport.go` | Add `EnsureContextFields` + `SetContextFieldFromIn`/`Out` dispatch to the CLIENT side (currently server-only) | 3 |
-| `adapters/mqtt5/{transport.go,reqreply_transport.go}`, `adapters/zeromq`, `adapters/mqtt` | Greenfield `ContextField`/`SetContextFieldFromIn`/`Out` integration — confirmed zero existing usage in events/reqreply today | 3 |
+| `adapters/mqtt5/transport.go`, `adapters/zeromq`, `adapters/mqtt` | Greenfield `ContextField`/`SetContextFieldFromIn`/`Out` integration — EVENTS side only | 3 — **SHIPPED (Rollout Phase B)** |
+| `adapters/mqtt5/reqreply_transport.go`, `adapters/zeromq` (reqreply-side files) | Greenfield `ContextField`/`SetContextFieldFromIn`/`Out` integration — REQREPLY side only; confirmed zero existing usage in reqreply today. **`adapters/mqtt` (v3) has no reqreply support — no row here**, same as the Phase 2 row above | 3 — NOT YET DONE |
 | `api/events/builder.go` | Add `Client.AddConnectSecurityScheme` | 4 |
 | `api/reqreply/builder.go` | Add `Builder.AddConnectSecurityScheme` | 4 |
 | `adapters/mqtt5/errors.go` | Extend `ConnectError` with `ReasonCode byte`/`ReasonString string`, populated from the `*Connack` paho already returns on a "connect"-stage failure (today discarded) | 4 |
@@ -2822,3 +3009,62 @@ pointer to a separate discussion) so this doc stays self-contained.
     detection mechanism. Flagged as low-risk, not a genuinely open
     question, but worth stating explicitly for the implementation
     round (Rollout Phase A).
+11. **`GrantedScopes`-on-`Out` enforcement wiring for events — found
+    missing during a Phase C review, RESOLVED: a SEPARATE, standalone
+    pre-Phase-C bugfix patch, not folded into Phase C.** Confirmed via
+    code: `adapters/internal/httpsecurity`'s `CollectGrantsReflect`/
+    `MergeMiddlewareHandlerGrants` (REST's fully-wired reference
+    implementation — merges a bound Security `MiddlewareHandler`'s
+    decoded `Out.GrantedScopes` into the SAME `granted` map the legacy
+    credential-Fn path populates, then ONE `CheckScopes` call) has NO
+    events equivalent — zero `GrantedScopes` references anywhere in
+    `adapters/mqtt5`/`mqtt`/`zeromq` today, confirmed via grep.
+    `events.SecurityMiddleware[In,Out]`'s own doc comment incorrectly
+    claims this is "confirmed via adapters' existing CheckScopes
+    integration" — that integration
+    (`runSubscribeSecurityImpls`/`runPublishSecurityImpls`) is the OLD,
+    legacy-Fn-only path; it never merges with the NEW bound dispatch's
+    `Out` values. This went undetected because the only new Phase B
+    test touching it
+    (`TestSecurityMiddleware_RealInOutType_DoesNotPanicOnDispatch`)
+    only calls `DecodeIn`/`EncodeOut` directly — it never reaches an
+    adapter's actual dispatch/`CheckScopes` code — and the real
+    examples/tests exclusively use the OLD legacy Fn shape (which
+    IS correctly wired), never the new bound shape with a real
+    `GrantedScopes`-carrying `Out`. Tracked as its own schedulable unit
+    of work, BEFORE Phase C, so it is not lost (see this doc's status
+    header).
+12. **Events' Subscribe-side `Out`/scope-granularity limitation — found
+    during the SAME Phase C review, RESOLVED: widen Subscribe's bound
+    Fn shape, ADDITIVELY (non-breaking), bundled into item 11's SAME
+    pre-Phase-C patch.** Confirmed via code: events' Subscribe bound Fn
+    shape is `func(ctx, *T, In) error` (1 return value, no `Out` slot
+    at all — confirmed via `isBoundSubscribeMWShape`'s `t.NumOut() != 1`
+    check and `MiddlewareHandler.Fn`'s own doc comment), mirroring
+    Subscribe's real business-handler shape (`func(ctx, T) error` —
+    pub/sub has no reply to a subscribe, so no `Out` exists there by
+    design, not a bug). This means `GrantedScopes` is not merely
+    unwired on Subscribe (item 11's gap) — it is STRUCTURALLY
+    IMPOSSIBLE to express through the bound mechanism at all, for
+    EITHER direction, until the shape itself changes. **Resolution**:
+    add a NEW, separately-detected `func(ctx, *T, In) (Out, error)`
+    (2-return) bound shape for Subscribe, ALONGSIDE the EXISTING
+    1-return shape (which keeps working completely unchanged for
+    general-purpose Subscribe middleware — logging, rate-limiting,
+    enrichment — that has nothing meaningful to return as `Out`).
+    Detected by return-arity, mirroring this codebase's existing
+    shape-detection idiom. When the 2-return shape is used,
+    `DispatchSubscribeMiddlewareHandlers` calls `mw.OutCodec.Validate
+    (out)` (mirrors `EncodeOut`'s existing validation step for
+    Publish) then makes `out` available to item 11's merge step — NO
+    wire-encoding is needed for Subscribe's `Out` (there is no
+    outgoing message to encode into; `Out` exists ONLY to carry
+    metadata like `GrantedScopes` through to the merge-and-enforce
+    step). Bundled into item 11's SAME patch because both are the
+    SAME underlying mechanism, now covering both directions — not a
+    3rd separate unit of work. `api/reqreply` does NOT inherit this
+    limitation (confirmed via code: its receiving/Serve-side bound
+    `Fn` already returns `(Out, error)`, since reqreply is always
+    request/REPLY, never fire-and-forget) — Phase C's own reqreply
+    work builds its OWN merge-and-enforce wiring afterward, reusing
+    whatever helper shape item 11's patch establishes where it fits.
