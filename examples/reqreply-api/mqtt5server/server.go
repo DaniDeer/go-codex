@@ -145,8 +145,7 @@ func Build() (*Built, error) {
 	// the route's own normal ComputeReq/ComputeResp handling (unaffected).
 	// See zeromqserver/server.go for the SAME declaration+implementation
 	// pair attached to a transport with NO property mechanism at all.
-	propertyAxisHandle, err := reqreply.Transform(
-		routes.PropertyAxisComputeRoute,
+	propertyAxisHandle, err := routes.PropertyAxisComputeRoute.HandleMW(
 		routes.TenantPropertyMw,
 		handlers.ProcessTenant,
 	).

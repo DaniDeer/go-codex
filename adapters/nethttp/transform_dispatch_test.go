@@ -420,7 +420,7 @@ func TestUse_AgnosticMiddleware_DispatchesOnBothRoutes(t *testing.T) {
 	}
 }
 
-// ── docs/roadmap/declarative-middleware-layering.md's Rollout Phase A:
+// ── docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase A:
 // Route.HandleMW now dispatches a codec-backed Middleware[In,Out] with
 // FULL *Req access, the SAME end-to-end behavior [Transform] already
 // provides — proven here by mirroring
@@ -468,7 +468,7 @@ func TestHandleMW_CodecBackedMiddleware_HappyPath_EnrichesReqAndSetsResponseHead
 }
 
 // bearerAuthOut carries the RESOLVED "conventional field" GrantedScopes
-// convention (docs/roadmap/declarative-middleware-layering.md's Rollout
+// convention (docs/design/d-0007-declarative-middleware-layering.md's Rollout
 // Phase A) — a Security Out type is simply EXPECTED to carry a field
 // named GrantedScopes, read by the adapter's dispatch via reflection.
 type bearerAuthOut struct {
@@ -483,7 +483,7 @@ var bearerAuthOutCodec = codex.Struct[bearerAuthOut]()
 // involved at all), is recognized by [rest.CheckCoverage] as covering a
 // route's GlobalSecurity requirement at REGISTRATION time, AND is fully
 // ENFORCED at runtime — runSecurityMiddleware's retired, separate code
-// path (docs/roadmap/declarative-middleware-layering.md's Rollout Phase
+// path (docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase
 // A) is replaced by this SAME MiddlewareHandler dispatch; Out's
 // GrantedScopes field (the RESOLVED "conventional field" design) is read
 // via reflection and fed into the SAME middleware.CheckScopes call every

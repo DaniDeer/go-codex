@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// docs/roadmap/declarative-middleware-layering.md's Rollout Phase B:
+// docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase B:
 // regression tests for ConnectError's new ReasonCode/ReasonString fields
 // and ConnectOptions.Observer's RecordSecurityRejection integration. No
 // live broker involved (mirrors this package's established "no real

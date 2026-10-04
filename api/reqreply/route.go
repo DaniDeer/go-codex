@@ -367,18 +367,29 @@ func WithSecurityScheme(name string, scheme SecurityScheme) RouteOpt {
 	return securitySchemeOpt{name: name, scheme: scheme}
 }
 
-// SecurityMiddleware builds a [Middleware][struct{}, struct{}] carrying
-// ONLY a [middleware.SecurityDeclaration] (In=Out=struct{}, no
-// var-boundary to decode), attachable via `.Use(...)`/`HandleMW(...)`/
-// `ClientMW(...)` — the codec-backed-family equivalent of
-// `.Use(middleware.SecurityScheme(...))`, the RECOMMENDED path per
-// [WithSecurityScheme]'s own deprecation note. Part of the
-// middleware-consolidation effort
-// (docs/design/d-0003-codec-declared-middlewares.md) folding Security into the
-// codec-backed family instead of the legacy [middleware.Middleware] type.
-func SecurityMiddleware(schemeName string, scheme SecurityScheme, scopes []string) Middleware[struct{}, struct{}] {
-	return NewMiddleware[struct{}, struct{}](middleware.Declaration[struct{}, struct{}]{
+// SecurityMiddleware is [FromSecurityScheme]'s codec-backed-family
+// equivalent, GENERALIZED over In/Out (docs/roadmap/declarative-
+// middleware-layering.md's Rollout Phase C, mirroring `rest`'s/`events`'
+// identical Phase A/B generalization) — builds a [Middleware][In, Out]
+// carrying a [middleware.SecurityDeclaration], attachable via the SAME
+// `.Use(...)`/`HandleMW(...)`/`ClientMW(...)` vocabulary as any other
+// codec-backed middleware. A non-`struct{}` In/Out lets a
+// Security-carrying middleware ALSO carry a real credential payload
+// (`In`) and/or a `GrantedScopes map[string][]string`-named conventional
+// field on `Out`, dispatched through the SAME bound `HandleMW`/`ClientMW`
+// path any other codec-backed middleware uses.
+//
+// InCodec/OutCodec default to [codex.Struct[In]()]/[codex.Struct[Out]()]
+// (a safe, zero-field no-op codec) when In/Out are NOT explicitly
+// codec-backed by the caller — confirmed, applied FROM THE START this
+// time (Phase A/B's own carried-forward learning: shipping the naive
+// generalization first, THEN discovering a nil-codec panic the first
+// time a non-`struct{}` In/Out is actually validated, is avoidable).
+func SecurityMiddleware[In, Out any](schemeName string, scheme SecurityScheme, scopes []string) Middleware[In, Out] {
+	return NewMiddleware[In, Out](middleware.Declaration[In, Out]{
 		Name:     "declare-security:" + schemeName,
+		InCodec:  codex.Struct[In](),
+		OutCodec: codex.Struct[Out](),
 		Security: middleware.NewSecurityDeclaration(schemeName, scheme.SecurityScheme, scopes, scheme.Codec),
 	})
 }
@@ -776,13 +787,13 @@ type routeBuilder struct {
 	// independent conflict-detection namespaces (Round 15).
 	propertyParams []PropertyParam
 	// middlewareSpecContributions holds one entry per attached codec-
-	// backed [Middleware][In,Out] (via [Transform]/[ClientTransform] or
+	// backed [Middleware][In,Out] (via [Route.HandleMW]/[Route.ClientMW] or
 	// plain .Use()) — fed into [applyParamDeclarations]'s unified
 	// conflict-detection/layering pass alongside Phase 1b's flat
 	// middlewares. See transform.go's middlewareSpecContribution.
 	middlewareSpecContributions []middlewareSpecContribution
 	// middlewareHandlers/clientMiddlewareHandlers accumulate the runtime
-	// dispatch units built by [Transform]/[ClientTransform] (route-BOUND)
+	// dispatch units built by [Route.HandleMW]/[Route.ClientMW] (route-BOUND)
 	// and plain .Use() (route-AGNOSTIC, bundled WithReceive/WithSend) —
 	// copied onto [RouteHandle.MiddlewareHandlers]/
 	// [RouteHandle.ClientMiddlewareHandlers] at Register/ClientHandle time.
@@ -1352,7 +1363,7 @@ type RouteHandle[Req, Resp any] struct {
 
 	// MiddlewareHandlers/ClientMiddlewareHandlers hold the codec-backed
 	// [Middleware][In,Out] runtime dispatch units attached via
-	// [Transform]/[ClientTransform] or plain [Route.Use] (bundled
+	// [Route.HandleMW]/[Route.ClientMW] or plain [Route.Use] (bundled
 	// WithReceive/WithSend) — docs/design/d-0003-codec-declared-
 	// middlewares.md. Consulted by the attached [ServerTransport]/
 	// [ClientTransport] (mqtt5/zeromq), dispatched AFTER the paired

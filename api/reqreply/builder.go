@@ -36,6 +36,13 @@ type Server struct {
 	securitySchemes map[string]SecurityScheme
 	globalSecurity  []route.SecurityRequirement
 	topicCodec      *codex.Codec[string]
+	// connectSecuritySchemes holds every [Server.AddConnectSecurityScheme]
+	// registration — a connection-level security scheme referenced ONLY
+	// via a [asyncapi.Server]'s Security list, never by any individual
+	// route's own WithSecurityScheme declaration (docs/roadmap/
+	// declarative-middleware-layering.md's Rollout Phase C — Phase 4,
+	// connection-level auth, mirrors events.Client's identical field).
+	connectSecuritySchemes map[string]route.SecurityScheme
 	// globalDeadLetter is the Server-level default [DeadLetter]
 	// declaration, set via [Server.AddGlobalDeadLetter]. nil when none is
 	// declared. Routes with no explicit DeadLetter opt inherit this.
@@ -131,9 +138,10 @@ func WithTopicConstraints(cons ...codex.Constraint[string]) BuilderOption {
 // NewServer returns a Server initialised with the given Info.
 func NewServer(info Info, opts ...ServerOption) *Server {
 	s := &Server{
-		docBuilder:      asyncapi.NewDocumentBuilder(info),
-		topics:          make(map[string]struct{}),
-		securitySchemes: make(map[string]SecurityScheme),
+		docBuilder:             asyncapi.NewDocumentBuilder(info),
+		topics:                 make(map[string]struct{}),
+		securitySchemes:        make(map[string]SecurityScheme),
+		connectSecuritySchemes: make(map[string]route.SecurityScheme),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -161,6 +169,30 @@ func NewBuilder(info Info, opts ...BuilderOption) *Builder {
 // security), set Security to an empty slice: Security: []route.SecurityRequirement{}.
 func (b *Builder) AddGlobalSecurity(reqs ...route.SecurityRequirement) *Builder {
 	b.globalSecurity = append(b.globalSecurity, reqs...)
+	return b
+}
+
+// AddConnectSecurityScheme registers name/scheme directly into
+// components/securitySchemes, independent of any route's own
+// WithSecurityScheme security requirement — for a scheme used ONLY via
+// an [asyncapi.Server]'s connection-level Security list, never
+// referenced by any individual route's own Request/Reply security
+// requirements (docs/design/d-0007-declarative-middleware-layering.md's
+// Rollout Phase C — Phase 4, connection-level auth, mirrors
+// `events.Client.AddConnectSecurityScheme` byte-for-byte). Collision
+// policy matches every other registration on Server: last-registered-
+// wins (no error returned).
+//
+// Reuse the SAME scheme's NAME, unchanged, when later supplying real
+// credentials via the adapter's own attach-time mechanism — e.g.
+// mqtt5.Connect(ctx, brokerURL, mqtt5.ConnectOptions{Username, Password})
+// — closing the spec/runtime link via one reused declared value, not a
+// new shared mechanism:
+//
+//	server.AddConnectSecurityScheme("brokerAuth", route.SecurityScheme{Type: route.SecuritySchemeHTTP, Scheme: "basic"})
+//	conn, router, err := mqtt5.Connect(ctx, "broker:8883", mqtt5.ConnectOptions{Username: user, Password: pass})
+func (b *Builder) AddConnectSecurityScheme(name string, scheme route.SecurityScheme) *Builder {
+	b.connectSecuritySchemes[name] = scheme
 	return b
 }
 
@@ -329,6 +361,13 @@ func buildCapabilityRequirements(reqs []CapabilityRequirement) []asyncapi.Capabi
 // AsyncAPISpec builds and returns the accumulated AsyncAPI 3.0 document.
 // Returns an error if any registered channel is invalid.
 func (b *Builder) AsyncAPISpec() (asyncapi.Document, error) {
+	// connectSecuritySchemes (docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase C — Phase 4, connection-level auth)
+	// registered FIRST, before the per-route loop below — a route
+	// re-registering the IDENTICAL name still wins on collision
+	// (unchanged last-registered-wins policy, now a 2nd contributor).
+	for name, s := range b.connectSecuritySchemes {
+		b.docBuilder.AddSecurityScheme(name, s)
+	}
 	// Aggregate SecuritySchemes from every registered route's own
 	// [WithSecurityScheme] declarations (there is no per-route entry list
 	// to iterate here, unlike rest/events — schemes are accumulated
@@ -342,8 +381,10 @@ func (b *Builder) AsyncAPISpec() (asyncapi.Document, error) {
 }
 
 // AppendTo writes all request-reply channels registered on this Builder into
-// db. Servers and schemas owned by this Builder are NOT written — the caller
-// is responsible for configuring those on db.
+// db. Servers, schemas, and security schemes (both per-route and any
+// registered via [Builder.AddConnectSecurityScheme]) owned by this Builder
+// are NOT written — the caller is responsible for configuring those on db,
+// mirroring [events.Client.AppendTo]'s identical scope limit exactly.
 //
 // Use AppendTo to combine request-reply channels with pub/sub channels from
 // [api/events.Client] in a single AsyncAPI 3.0 document:

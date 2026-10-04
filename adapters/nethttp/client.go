@@ -461,7 +461,7 @@ func wrapCallGeneral[Req, Resp any](
 // nil) — [validateClientImplementationShapes] rejects anything else EAGERLY,
 // at the top of [call], before this function is ever reached.
 //
-// NOT retired by docs/roadmap/declarative-middleware-layering.md's
+// NOT retired by docs/design/d-0007-declarative-middleware-layering.md's
 // Rollout Phase A (unlike the SERVER-side runSecurityMiddleware/
 // httpsecurity.RunSecurityMiddlewareReflect, which WAS retired) —
 // confirmed via investigation, not assumed: this function's legacy Fn

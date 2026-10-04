@@ -32,7 +32,7 @@ import (
 // MiddlewareHandlers available at all) — a thin wrapper over
 // [CollectGrantsReflect] + [middleware.CheckScopes], behavior UNCHANGED.
 // A caller that ALSO has MiddlewareHandler-dispatched Security to merge
-// (docs/roadmap/declarative-middleware-layering.md's Rollout Phase A)
+// (docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase A)
 // uses [CollectGrantsReflect]/[MergeMiddlewareHandlerGrants] directly
 // instead, calling [middleware.CheckScopes] itself ONCE after BOTH
 // sources are known.
@@ -84,7 +84,7 @@ func CollectGrantsReflect(ctx context.Context, r *http.Request, reqPtr reflect.V
 // handler's own Satisfies field. A handler with empty
 // Satisfies (no Security declared), or whose Out carries no field named
 // "GrantedScopes" at all, contributes nothing — both are safe no-ops,
-// implementing docs/roadmap/declarative-middleware-layering.md's RESOLVED
+// implementing docs/design/d-0007-declarative-middleware-layering.md's RESOLVED
 // "conventional field" design (Option 3): a Security Out type is simply
 // EXPECTED to carry `GrantedScopes map[string][]string`, read via
 // reflection — the SAME technique already used pervasively in this

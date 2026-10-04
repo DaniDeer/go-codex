@@ -16,8 +16,7 @@ import (
 	"github.com/DaniDeer/go-codex/route"
 )
 
-// Gap-1 review fix regression tests (docs/roadmap/declarative-middleware-
-// layering.md's Rollout Phase A review): handlerFunc/sseHandlerFunc
+// Gap-1 review fix regression tests (docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase A review): handlerFunc/sseHandlerFunc
 // (the shared implementation behind IngestAdapter/LatestAdapter/SSEAdapter/
 // stream.go's ports-facing handlers) previously NEVER dispatched
 // handle.MiddlewareHandlers at all — only Server.Attach's serve.go/

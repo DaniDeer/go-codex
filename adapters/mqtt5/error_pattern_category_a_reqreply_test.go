@@ -133,14 +133,13 @@ func TestErrorPattern_MiddlewareDecodeIn_Matched_Publishes_ReqReply(t *testing.T
 	handler := func(_ context.Context, _ computeReq) (computeResp, error) {
 		return computeResp{}, nil
 	}
-	rt := reqreply.Transform(
-		reqreply.NewRoute[computeReq, computeResp]("compute/mw-decode-in-ep", computeReqCodec, computeRespCodec,
-			reqreply.ErrorPattern[reqreply.MiddlewareInputError, serveErrPayload](serveErrPayloadCodec,
-				func(e reqreply.MiddlewareInputError) (serveErrPayload, error) {
-					return serveErrPayload{Code: "middleware_input", Message: e.Error()}, nil
-				},
-			),
+	rt := reqreply.NewRoute[computeReq, computeResp]("compute/mw-decode-in-ep", computeReqCodec, computeRespCodec,
+		reqreply.ErrorPattern[reqreply.MiddlewareInputError, serveErrPayload](serveErrPayloadCodec,
+			func(e reqreply.MiddlewareInputError) (serveErrPayload, error) {
+				return serveErrPayload{Code: "middleware_input", Message: e.Error()}, nil
+			},
 		),
+	).HandleMW(
 		mw,
 		func(ctx context.Context, req *computeReq, in mwDecodeFailIn) (mwPropOut, error) {
 			return mwPropOut{}, nil

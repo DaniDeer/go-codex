@@ -933,8 +933,7 @@ func TestAsyncAPISpec_SecuritySchemeCollision_LastRegisteredWins(t *testing.T) {
 // TestAddConnectSecurityScheme_AppearsInAsyncAPISpec proves a
 // connection-level scheme registered via AddConnectSecurityScheme is
 // aggregated into components/securitySchemes even with NO channel
-// referencing it directly (docs/roadmap/declarative-middleware-
-// layering.md's Rollout Phase B — Phase 4, connection-level auth).
+// referencing it directly (docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase B — Phase 4, connection-level auth).
 func TestAddConnectSecurityScheme_AppearsInAsyncAPISpec(t *testing.T) {
 	b := events.NewClient(events.WithInfo(testInfo))
 	b.AddConnectSecurityScheme("brokerAuth", route.SecurityScheme{Type: route.SecuritySchemeHTTP, Scheme: "basic"})

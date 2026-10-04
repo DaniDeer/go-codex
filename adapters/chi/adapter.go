@@ -438,7 +438,7 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 				return
 			}
 		}
-		// Gap-1 review fix (docs/roadmap/declarative-middleware-layering.md's
+		// Gap-1 review fix (docs/design/d-0007-declarative-middleware-layering.md's
 		// Rollout Phase A review): this ports-facing handlerFunc previously
 		// never dispatched handle.MiddlewareHandlers at all (neither the
 		// pre-Phase-A agnostic .Use(mw)-attached codec-backed middleware NOR
@@ -827,7 +827,7 @@ func sseHandlerFunc[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn 
 				return
 			}
 		}
-		// Gap-1 review fix (docs/roadmap/declarative-middleware-layering.md's
+		// Gap-1 review fix (docs/design/d-0007-declarative-middleware-layering.md's
 		// Rollout Phase A review): this ports-facing sseHandlerFunc
 		// previously never dispatched handle.MiddlewareHandlers at all —
 		// only serve_sse.go's Attach path did. Mirrors serve_sse.go's

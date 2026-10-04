@@ -11,7 +11,7 @@ import (
 )
 
 // ProcessTenant is routes.TenantPropertyMw's Transform fn — attached via
-// reqreply.Transform(routes.PropertyAxisComputeRoute, routes.TenantPropertyMw,
+// routes.PropertyAxisComputeRoute.HandleMW(routes.TenantPropertyMw,
 // ProcessTenant) in BOTH mqtt5server.Build and zeromqserver.Build.
 //
 // Deliberately ADAPTER-AGNOSTIC: unlike VerifyBearer above (whose PAIRED

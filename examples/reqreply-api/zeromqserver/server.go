@@ -90,7 +90,7 @@ func Build(obs stats.Observer) (*Built, error) {
 	}
 	// PropertyAxisComputeRoute — the SAME routes.TenantPropertyMw
 	// (declaration) + handlers.ProcessTenant (implementation) attached
-	// via reqreply.Transform in mqtt5server.Build, registered here
+	// via .HandleMW in mqtt5server.Build, registered here
 	// UNCHANGED against a transport with NO property mechanism at all.
 	// zeromq's REQ/REP frames carry only [status, payload] — there is
 	// no side channel to carry a User-Property-equivalent value, so
@@ -99,8 +99,7 @@ func Build(obs stats.Observer) (*Built, error) {
 	// routes/middleware.go) specifically so THIS registration succeeds
 	// rather than every zeromq call failing with
 	// reqreply.MiddlewareInputError.
-	propertyAxisHandle, err := reqreply.Transform(
-		routes.PropertyAxisComputeRoute,
+	propertyAxisHandle, err := routes.PropertyAxisComputeRoute.HandleMW(
 		routes.TenantPropertyMw,
 		handlers.ProcessTenant,
 	).

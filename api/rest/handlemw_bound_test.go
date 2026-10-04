@@ -11,7 +11,7 @@ import (
 	"github.com/DaniDeer/go-codex/route"
 )
 
-// ── docs/roadmap/declarative-middleware-layering.md's Rollout Phase A:
+// ── docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase A:
 // Route.HandleMW/SSERoute.HandleMW/Route.ClientMW/SSERoute.ClientMW now
 // support a codec-backed Middleware[In,Out] (BOUND, *Req-aware dispatch)
 // in addition to the legacy middleware.Middleware path — reached through
@@ -249,7 +249,7 @@ type credentialWithToken struct{ Token string }
 // TestSecurityMiddleware_RealInType_DoesNotPanicOnDispatch is a
 // REGRESSION GUARD for a confirmed, real bug this phase's own migration
 // work caught: SecurityMiddleware[In,Out] generalized over In/Out
-// (docs/roadmap/declarative-middleware-layering.md's Rollout Phase A) but
+// (docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase A) but
 // left InCodec/OutCodec at their Go ZERO VALUE — a zero-value codex.Codec
 // PANICS the first time Middleware dispatch calls InCodec.Validate (nil
 // Encode/Decode funcs) for any NON-struct{} In, confirmed via an actual

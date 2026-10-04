@@ -2713,7 +2713,7 @@ func FromSecurityScheme(schemeName string, scheme SecurityScheme, scopes []strin
 // into the codec-backed family instead of the legacy [middleware.Middleware]
 // type.
 //
-// Generalized over In/Out (docs/roadmap/declarative-middleware-layering.md's
+// Generalized over In/Out (docs/design/d-0007-declarative-middleware-layering.md's
 // Rollout Phase A) — away from a hardcoded Middleware[struct{}, struct{}]
 // — so a caller needing the credential-providing fn to ALSO decode
 // request header/cookie/query merge fields (e.g. an API-key header

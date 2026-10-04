@@ -183,7 +183,7 @@ var TenantAckCodec = codex.Struct[TenantAck](
 // declared-middleware.md's NEW property vocabulary axis
 // (WithRequestProperty/WithResponseProperty) — declared PRISTINE here,
 // exactly like HeaderParamComputeRoute above: `TenantPropertyMw`'s
-// attachment (via reqreply.Transform) happens separately, ONCE PER
+// attachment (via .HandleMW) happens separately, ONCE PER
 // ADAPTER (mqtt5server/server.go AND zeromqserver/server.go), from the
 // SAME declared Middleware value + handlers.ProcessTenant implementation
 // — this route is registered on BOTH transports to prove the

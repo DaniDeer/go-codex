@@ -167,7 +167,7 @@ func responseCookieFieldsOf[T any](ps []MergedResponseCookieParam[T]) []codex.Fi
 // (route-BOUND) and [buildAgnosticMiddlewareHandler] (route-AGNOSTIC) — the
 // decode logic itself never depends on Req, only on mw's own In/InCodec and
 // merge-field declarations. Internally a thin wrapper over
-// [middleware.DecodeLayer] (docs/roadmap/declarative-middleware-layering.md's
+// [middleware.DecodeLayer] (docs/design/d-0007-declarative-middleware-layering.md's
 // Rollout Phase A) — behavior is UNCHANGED: same 3-axis order
 // (header, cookie, query), same fail-fast-at-first-error semantics, same
 // [MiddlewareInputError] wrapping.

@@ -68,20 +68,32 @@ func AsMiddlewareDispatchError(err error) (MiddlewareDispatchInfo, bool) {
 // attached to a channel (via Transform or a bundled .Use()) at the SAME
 // pre-handler dispatch point an adapter's own security enforcement
 // already runs at (D1) — msg is the SAME already-decoded *T the handler
-// will also receive, so a bound mw's fn may read/enrich it (subscribe has
-// no Out to encode — see [Middleware]'s doc comment). propertyVars is the
-// property vocabulary axis's OWN, SEPARATE map (real MQTT5 User
+// will also receive, so a bound mw's fn may read/enrich it. propertyVars
+// is the property vocabulary axis's OWN, SEPARATE map (real MQTT5 User
 // Properties) — decoded independently from topicVars, never combined
 // (mirrors reqreply's/REST's own multi-map-never-combined pattern). Pass
 // nil for propertyVars on an adapter with no property mechanism (e.g.
 // MQTT v3, ZeroMQ) — a channel declaring a REQUIRED property still fails
 // naturally with the SAME [MiddlewareInputError] a missing topic var
 // would, no special-casing needed by the caller.
-func DispatchSubscribeMiddlewareHandlers[T any](ctx context.Context, msg *T, handlers []MiddlewareHandler, topicVars, propertyVars map[string]string) error {
-	for _, h := range handlers {
+//
+// Returns one `outs[i]` per handler — nil unless `handlers[i].HasOut`
+// (docs/design/d-0007-declarative-middleware-layering.md's "Prerequisite for
+// Phase 2 (api/events)": Subscribe originally had NO Out at all; a
+// HasOut handler's decoded, VALIDATED Out is surfaced here so a caller
+// can merge a Security-carrying middleware's `GrantedScopes` into its own
+// `CheckScopes` call — mirrors [DispatchMiddlewareHandlers]'s identical
+// REST precedent). Subscribe's Out is NEVER wire-encoded (there is no
+// outgoing message to encode into).
+func DispatchSubscribeMiddlewareHandlers[T any](ctx context.Context, msg *T, handlers []MiddlewareHandler, topicVars, propertyVars map[string]string) ([]any, error) {
+	if len(handlers) == 0 {
+		return nil, nil
+	}
+	outs := make([]any, len(handlers))
+	for i, h := range handlers {
 		in, err := h.DecodeIn(ctx, topicVars, propertyVars)
 		if err != nil {
-			return middlewareDispatchError{err: err, name: h.Name}
+			return nil, middlewareDispatchError{err: err, name: h.Name}
 		}
 		fnVal := reflect.ValueOf(h.Fn)
 		var results []reflect.Value
@@ -90,11 +102,24 @@ func DispatchSubscribeMiddlewareHandlers[T any](ctx context.Context, msg *T, han
 		} else {
 			results = fnVal.Call([]reflect.Value{reflect.ValueOf(ctx), reflect.ValueOf(msg), reflect.ValueOf(in)})
 		}
+		if h.HasOut {
+			if fnErr, _ := results[1].Interface().(error); fnErr != nil {
+				return nil, middlewareDispatchError{err: fnErr, isFnError: true, name: h.Name}
+			}
+			out := results[0].Interface()
+			if h.ValidateOut != nil {
+				if valErr := h.ValidateOut(out); valErr != nil {
+					return nil, middlewareDispatchError{err: valErr, name: h.Name}
+				}
+			}
+			outs[i] = out
+			continue
+		}
 		if fnErr, _ := results[0].Interface().(error); fnErr != nil {
-			return middlewareDispatchError{err: fnErr, isFnError: true, name: h.Name}
+			return nil, middlewareDispatchError{err: fnErr, isFnError: true, name: h.Name}
 		}
 	}
-	return nil
+	return outs, nil
 }
 
 // DispatchPublishMiddlewareHandlers dispatches every [ClientMiddlewareHandler]

@@ -12,7 +12,7 @@ import (
 	"github.com/DaniDeer/go-codex/middleware"
 )
 
-// ── docs/roadmap/declarative-middleware-layering.md's Rollout Phase A,
+// ── docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase A,
 // Phase 3: Middleware.SetContextFieldFromIn/SetContextFieldFromOut —
 // chi mirror of adapters/nethttp/contextfield_dispatch_test.go's 2
 // SERVER-side tests (Gap-2 review fix — this repo's established

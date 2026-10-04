@@ -25,7 +25,7 @@ var BearerCodec = codex.String().Refine(validate.NonEmptyString)
 // correct, single-vocabulary constructor; see OAuthMwReqreply/
 // OAuthMwREST below for the genuinely cross-API case and why it is
 // declared differently.
-var BearerAuthMw = reqreply.SecurityMiddleware("bearerAuth", reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(BearerCodec), nil)
+var BearerAuthMw = reqreply.SecurityMiddleware[struct{}, struct{}]("bearerAuth", reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(BearerCodec), nil)
 
 // OAuthCodec validates a raw OAuth2 bearer token string's FORMAT
 // (non-empty) — same role as BearerCodec above.
@@ -87,7 +87,7 @@ var oauthComputeScopes = []string{OAuthComputeWriteScope}
 // OAuthMwReqreply declares the "oauth2Compute" scheme for reqreply —
 // attached to OAuthComputeRoute via .Use()/HandleMW()/ClientMW() in
 // zeromqserver/server.go and demo_cross_api_oauth2_sharing.go.
-var OAuthMwReqreply = reqreply.SecurityMiddleware("oauth2Compute",
+var OAuthMwReqreply = reqreply.SecurityMiddleware[struct{}, struct{}]("oauth2Compute",
 	reqreply.SecurityScheme{SecurityScheme: oauthComputeScheme}.WithCodec(OAuthCodec), oauthComputeScopes)
 
 // OAuthMwREST declares the SAME "oauth2Compute" scheme (same
@@ -109,7 +109,7 @@ var OAuthMwREST = rest.SecurityMiddleware[struct{}, struct{}]("oauth2Compute",
 
 // TenantPropertyMw declares the property vocabulary axis
 // (WithRequestProperty/WithResponseProperty) attached to
-// PropertyAxisComputeRoute via reqreply.Transform in BOTH
+// PropertyAxisComputeRoute via .HandleMW in BOTH
 // mqtt5server.Build AND zeromqserver.Build — the SAME Go value,
 // registered against two completely different transports, with ZERO
 // adapter-specific changes to the declaration itself (see

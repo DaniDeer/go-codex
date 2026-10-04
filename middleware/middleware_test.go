@@ -230,7 +230,7 @@ func TestContextFieldNotPreparedError(t *testing.T) {
 }
 
 // TestContextField_SatisfiesContextFieldSetter is a COMPILE-LEVEL
-// confirmation (docs/roadmap/declarative-middleware-layering.md's Rollout
+// confirmation (docs/design/d-0007-declarative-middleware-layering.md's Rollout
 // Phase A) that [middleware.ContextField][V] satisfies
 // [middleware.ContextFieldSetter] regardless of V — the fix for a
 // confirmed, previously compile-verified design error

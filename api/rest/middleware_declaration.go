@@ -72,7 +72,7 @@ type Middleware[In, Out any] struct {
 	// after decode+validate) and buildEncodeOut/buildEncodeIn (alongside
 	// the merge-field encode), publishing into the SAME
 	// [middleware.ContextField] box [middleware.EnsureContextFields]
-	// pre-allocated (docs/roadmap/declarative-middleware-layering.md's
+	// pre-allocated (docs/design/d-0007-declarative-middleware-layering.md's
 	// Rollout Phase A).
 	ctxFieldsFromIn  []contextFieldInSetter[In]
 	ctxFieldsFromOut []contextFieldOutSetter[Out]
@@ -216,7 +216,7 @@ func (m Middleware[In, Out]) WithSend(fn func(ctx context.Context) (In, error)) 
 // receiver's own); every ContextField[V] already satisfies
 // ContextFieldSetter regardless of V, since Set's own signature never
 // references V (confirmed via an actual compile check — see
-// docs/roadmap/declarative-middleware-layering.md's Phase 3 design
+// docs/design/d-0007-declarative-middleware-layering.md's Phase 3 design
 // review).
 //
 //	var TenantIDField = middleware.NewContextField(codex.String())

@@ -58,7 +58,7 @@ import (
 // internal.WWWAuthenticateCodec (parseChallenge is a thin wrapper around
 // its Decode); the Bearer Authorization header value is built via
 // regmodels.BearerAuthDeclaration's own codec-declared merge field
-// (docs/roadmap/declarative-middleware-layering.md's Rollout Phase A —
+// (docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase A —
 // no more hand-building an http.Header value directly), reusing
 // internal.BearerTokenCodec internally; Basic's Authorization header
 // value is built via internal.BasicAuthCodec (formatBasicAuth is a thin
@@ -319,7 +319,7 @@ func authenticate(ctx context.Context, httpClient *http.Client, registryHost, re
 // and GetManifestRoute (Req=regmodels.GetManifestReq); ClientMW's bound-
 // path shape detection recognizes func(ctx, Req) (In, error) by its 2nd
 // param's type, so each call site instantiates newAuthCredentialFunc with
-// its OWN route's concrete Req (docs/roadmap/declarative-middleware-layering.md's
+// its OWN route's concrete Req (docs/design/d-0007-declarative-middleware-layering.md's
 // Rollout Phase A).
 type credentialFunc[Req any] = func(ctx context.Context, req Req) (regmodels.BearerCredential, error)
 

@@ -589,7 +589,7 @@ func TestAttach_ClientCall_GeneralPurposeClientMW_Wraps(t *testing.T) {
 // against *RouteHandle) dispatches a .Use()-attached codec-backed
 // Middleware[In,Out]'s OWN EncodeIn into the outgoing request's header AND
 // decodes its Out from the response header — a confirmed, previously
-// missing gap (docs/roadmap/declarative-middleware-layering.md's Rollout
+// missing gap (docs/design/d-0007-declarative-middleware-layering.md's Rollout
 // Phase A): Call never dispatched handle.ClientMiddlewareHandlers at all,
 // only the legacy handle.ClientImplementations (credential/general-purpose
 // ClientMW).

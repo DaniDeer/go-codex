@@ -166,7 +166,7 @@ func (a *nethttpSSEAdapter[Event]) Activate(ctx context.Context, src gstream.Str
 	}
 	fn := SSEFromHub[struct{}, Event](hub, sseOpts)
 	// Calls sseHandlerFunc directly (not the deprecated RegisterSSE).
-	// Gap-1 review fix (docs/roadmap/declarative-middleware-layering.md's
+	// Gap-1 review fix (docs/design/d-0007-declarative-middleware-layering.md's
 	// Rollout Phase A review): previously passed NO Implementations at
 	// all, and sseHandlerFunc itself never dispatched
 	// handle.MiddlewareHandlers either — any Security/codec-backed

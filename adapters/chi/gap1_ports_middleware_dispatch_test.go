@@ -21,7 +21,7 @@ import (
 // Gap-1 review fix regression tests — chi mirror of
 // adapters/nethttp/gap1_ports_middleware_dispatch_test.go. See that file's
 // doc comment for the full rationale
-// (docs/roadmap/declarative-middleware-layering.md's Rollout Phase A
+// (docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase A
 // review): handlerFunc/sseHandlerFunc previously never dispatched
 // handle.MiddlewareHandlers at all through chi's ports-facing binding
 // adapters (IngestAdapter/LatestAdapter/SSEAdapter/stream.go) — only

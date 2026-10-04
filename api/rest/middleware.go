@@ -323,7 +323,7 @@ func isBoundClientMWShape[Req any](fn any) bool {
 
 // boundHandleMWOpt is the [RouteOpt] returned by [Route.HandleMW]/
 // [SSERoute.HandleMW] when mw is a codec-backed [Middleware][In, Out]
-// (docs/roadmap/declarative-middleware-layering.md's Rollout Phase A) —
+// (docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase A) —
 // dispatches to mw's own [routeMiddlewareContributor.applyBoundRoute],
 // giving fn *Req access via the SAME route-BOUND mechanism HandleMW's bound path
 // already provides, now reachable through the ordinary method-chain API.
@@ -679,7 +679,7 @@ func sameScopeSet(a, b []string) bool {
 // CheckCoverage verifies that every security scheme named anywhere in
 // secReqs has at least one covering runtime dispatch unit — EITHER a
 // [middleware.ServerImplementation] in impls OR a [MiddlewareHandler] in
-// handlers (docs/roadmap/declarative-middleware-layering.md's Rollout
+// handlers (docs/design/d-0007-declarative-middleware-layering.md's Rollout
 // Phase A: a codec-backed Middleware attached via the bound
 // [Route.HandleMW] path populates handlers, not impls, so BOTH lists must
 // be checked for coverage to mean what it says) — whose Satisfies names

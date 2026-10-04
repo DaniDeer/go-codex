@@ -24,7 +24,7 @@ func TestDispatchSubscribeMiddlewareHandlers_success(t *testing.T) {
 		},
 	}
 	msg := &dispatchMsg{}
-	err := events.DispatchSubscribeMiddlewareHandlers(context.Background(), msg, []events.MiddlewareHandler{h}, map[string]string{"id": "42"}, nil)
+	_, err := events.DispatchSubscribeMiddlewareHandlers(context.Background(), msg, []events.MiddlewareHandler{h}, map[string]string{"id": "42"}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestDispatchSubscribeMiddlewareHandlers_decodeInError(t *testing.T) {
 		},
 	}
 	msg := &dispatchMsg{}
-	err := events.DispatchSubscribeMiddlewareHandlers(context.Background(), msg, []events.MiddlewareHandler{h}, nil, nil)
+	_, err := events.DispatchSubscribeMiddlewareHandlers(context.Background(), msg, []events.MiddlewareHandler{h}, nil, nil)
 	info, ok := events.AsMiddlewareDispatchError(err)
 	if !ok {
 		t.Fatalf("expected a dispatch error, got %v", err)
@@ -64,7 +64,7 @@ func TestDispatchSubscribeMiddlewareHandlers_fnError(t *testing.T) {
 		},
 	}
 	msg := &dispatchMsg{}
-	err := events.DispatchSubscribeMiddlewareHandlers(context.Background(), msg, []events.MiddlewareHandler{h}, nil, nil)
+	_, err := events.DispatchSubscribeMiddlewareHandlers(context.Background(), msg, []events.MiddlewareHandler{h}, nil, nil)
 	info, ok := events.AsMiddlewareDispatchError(err)
 	if !ok || !info.IsFnError || !errors.Is(info.Err, wantErr) {
 		t.Fatalf("unexpected dispatch info: %+v ok=%v", info, ok)
@@ -170,7 +170,7 @@ func TestDispatchSubscribeMiddlewareHandlers_FailFast_SecondHandlerNeverRuns(t *
 		Fn: func(ctx context.Context, msg *dispatchMsg, in string) error { return nil },
 	}
 	msg := &dispatchMsg{}
-	err := events.DispatchSubscribeMiddlewareHandlers(context.Background(), msg, []events.MiddlewareHandler{first, second}, nil, nil)
+	_, err := events.DispatchSubscribeMiddlewareHandlers(context.Background(), msg, []events.MiddlewareHandler{first, second}, nil, nil)
 	if err == nil {
 		t.Fatal("want an error from the first handler")
 	}

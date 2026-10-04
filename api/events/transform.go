@@ -69,6 +69,29 @@ type MiddlewareHandler struct {
 	// Security middleware as satisfying a declared requirement, the same
 	// way it already recognizes a legacy [middleware.ServerImplementation].
 	Satisfies []string
+
+	// HasOut is true when Fn uses the NEW, ADDITIVE, Out-carrying bound
+	// shape (func(ctx, *T, In) (Out, error), detected via
+	// [isBoundSubscribeMWShapeWithOut]) rather than the ORIGINAL,
+	// UNCHANGED shape (func(ctx, *T, In) error). docs/roadmap/
+	// declarative-middleware-layering.md's "Prerequisite for Phase 2
+	// (api/events)": Subscribe's bound Fn structurally had no way to
+	// return a value at all — this field distinguishes the two shapes so
+	// [DispatchSubscribeMiddlewareHandlers] knows how many return values
+	// to expect. False for EVERY pre-existing handler (general-purpose
+	// middleware never needs this) — fully additive, zero behavior change
+	// for the original shape.
+	HasOut bool
+
+	// ValidateOut validates a HasOut handler's decoded Out value via mw's
+	// OWN OutCodec (mirrors [ClientMiddlewareHandler.EncodeOut]'s
+	// identical validation step on the publish side) — nil when
+	// HasOut is false. Subscribe's Out is NEVER wire-encoded (there is no
+	// outgoing message to encode into); it exists ONLY so a
+	// Security-carrying middleware can return `GrantedScopes`, read the
+	// SAME way Publish's Out already is (see the merge-and-enforce
+	// mechanism this Out value feeds).
+	ValidateOut func(out any) error
 }
 
 // ClientMiddlewareHandler is the type-erased, SENDING-role (publish)
@@ -276,7 +299,7 @@ func buildAgnosticClientMiddlewareHandler[In, Out any](mw Middleware[In, Out]) C
 }
 
 // Transform/ClientTransform (the channel-BOUND, free-function attachment
-// point) were REMOVED (docs/roadmap/declarative-middleware-layering.md's
+// point) were REMOVED (docs/design/d-0007-declarative-middleware-layering.md's
 // Rollout Phase B — events' own Architecture revision, mirroring Phase
 // A's identical REST removal) — folded into [Subscriber.SubscribeMW]/
 // [Publisher.PublishMW] directly via reflection-based shape detection

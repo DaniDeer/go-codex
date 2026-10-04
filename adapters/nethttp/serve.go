@@ -455,7 +455,7 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 				return
 			}
 		}
-		// docs/roadmap/declarative-middleware-layering.md's Rollout Phase
+		// docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase
 		// A: runSecurityMiddleware's separate code path is RETIRED —
 		// Security now dispatches through the SAME unified
 		// MiddlewareHandler mechanism every other middleware uses.
@@ -826,7 +826,7 @@ func satisfiesPerHandler(handlers []rest.MiddlewareHandler) [][]string {
 
 // isSecuritySatisfyingHandler reports whether handlers contains an entry
 // named name with a non-empty Satisfies — i.e. a Security-paired
-// MiddlewareHandler (docs/roadmap/declarative-middleware-layering.md's
+// MiddlewareHandler (docs/design/d-0007-declarative-middleware-layering.md's
 // Rollout Phase A) — used to keep Security's OWN distinct error fallback
 // (401, rest.SecurityError) for a failing Security-gated Fn, even though
 // it now dispatches through the SAME mechanism as ordinary middleware.

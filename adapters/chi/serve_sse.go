@@ -201,7 +201,7 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 				return
 			}
 		}
-		// docs/roadmap/declarative-middleware-layering.md's Rollout Phase
+		// docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase
 		// A: runSecurityMiddleware's separate code path is RETIRED — see
 		// serve.go's identical rewrite for the full rationale.
 		granted, grantErr := httpsecurity.CollectGrantsReflect(ctx, r, reqPtr, impls, secReqs)

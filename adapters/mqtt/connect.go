@@ -59,7 +59,7 @@ type ConnectOptions struct {
 	// handshake itself. Defaults to [stats.NoopObserver] behavior when
 	// nil (never called).
 	//
-	// docs/roadmap/declarative-middleware-layering.md's Rollout Phase B
+	// docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase B
 	// follow-up: closes a confirmed mqtt-vs-mqtt5 parity gap.
 	Observer stats.Observer
 }
@@ -183,7 +183,7 @@ type ConnectError struct {
 	// "Accepted") — callers must not treat a zero ReturnCode alone as
 	// evidence of failure, only [Err] indicates that.
 	//
-	// docs/roadmap/declarative-middleware-layering.md's Rollout Phase B
+	// docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase B
 	// follow-up: closes a confirmed mqtt-vs-mqtt5 parity gap. Unlike
 	// [mqtt5.ConnectError], there is no ReasonString equivalent — MQTT
 	// 3.1.1's CONNACK carries no properties.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/DaniDeer/go-codex/adapters/internal/scopesmerge"
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
@@ -280,7 +281,7 @@ func makeSubscribeMessageHandler[T any](
 ) func(*pahomqtt5.Publish) {
 	return func(msg *pahomqtt5.Publish) {
 		start := time.Now()
-		// docs/roadmap/declarative-middleware-layering.md's Rollout Phase
+		// docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase
 		// B: pre-allocates the shared ContextField box (idempotent, mirrors
 		// adapters/nethttp/chi's identical per-request call) so a
 		// Subscribe-side Middleware.SetContextFieldFromIn link has
@@ -481,8 +482,10 @@ func makeSubscribeMessageHandler[T any](
 		// reading a User Property into *T) must run even on a channel with
 		// no declared security. Shapes were already validated eagerly by
 		// [subscribeWithHandle] before this handler was ever registered.
+		granted := make(map[string][]string)
 		if len(handle.Implementations) > 0 {
-			if err := runSubscribeSecurityImpls(msgCtx, msg, &value, secReqs, handle.Implementations); err != nil {
+			g, err := runSubscribeSecurityImpls(msgCtx, msg, &value, secReqs, handle.Implementations)
+			if err != nil {
 				if secObs, ok := obs.(stats.SecurityObserver); ok {
 					secObs.RecordSecurityRejection(msg.Topic, route.FirstSchemeName(secReqs))
 				}
@@ -504,6 +507,7 @@ func makeSubscribeMessageHandler[T any](
 				}
 				return
 			}
+			granted = g
 		}
 
 		// Codec-backed middleware dispatch (Transform and bundled .Use())
@@ -513,7 +517,8 @@ func makeSubscribeMessageHandler[T any](
 		// events.MiddlewareError when unmatched — mirrors REST's identical
 		// resolution.
 		if len(handle.MiddlewareHandlers) > 0 {
-			if err := events.DispatchSubscribeMiddlewareHandlers(msgCtx, &value, handle.MiddlewareHandlers, topicVars, propertyVars); err != nil {
+			outs, err := events.DispatchSubscribeMiddlewareHandlers(msgCtx, &value, handle.MiddlewareHandlers, topicVars, propertyVars)
+			if err != nil {
 				obs.RecordSubscribe(msg.Topic, false, time.Since(start))
 				dispatchErr, _ := events.AsMiddlewareDispatchError(err)
 				if dispatchErr.IsFnError {
@@ -542,6 +547,39 @@ func makeSubscribeMessageHandler[T any](
 				}
 				if opts.OnError != nil {
 					opts.OnError(SubscribeError{Kind: KindDecode, Topic: msg.Topic, Err: dispatchErr.Err})
+				}
+				return
+			}
+			satisfies := make([][]string, len(handle.MiddlewareHandlers))
+			for i, h := range handle.MiddlewareHandlers {
+				satisfies[i] = h.Satisfies
+			}
+			scopesmerge.MergeHandlerGrants(granted, satisfies, outs)
+		}
+
+		// docs/design/d-0007-declarative-middleware-layering.md's "Prerequisite
+		// for Phase 2 (api/events)": ONE, UNIFIED CheckScopes call
+		// covering grants from BOTH the legacy Implementations path
+		// (above) AND any bound MiddlewareHandler's own GrantedScopes
+		// (merged above) — previously, a channel with ONLY bound
+		// MiddlewareHandlers (no legacy Implementations) never had its
+		// scopes checked at all, a confirmed gap this closes.
+		if len(secReqs) > 0 {
+			if err := middleware.CheckScopes(secReqs, granted); err != nil {
+				if secObs, ok := obs.(stats.SecurityObserver); ok {
+					secObs.RecordSecurityRejection(msg.Topic, route.FirstSchemeName(secReqs))
+				}
+				obs.RecordSubscribe(msg.Topic, false, time.Since(start))
+				wrapped := events.SecurityError{Err: err}
+				if handled, matched := tryPublishErrorChannel(ctx, client, handle, obs, wrapped); handled {
+					return
+				} else if !matched {
+					if tryDeadLetter(ctx, client, handle, obs, msg.Topic, msg.Payload, wrapped) {
+						return
+					}
+				}
+				if opts.OnError != nil {
+					opts.OnError(SubscribeError{Kind: KindSecurity, Topic: msg.Topic, Err: wrapped})
 				}
 				return
 			}
@@ -578,13 +616,19 @@ func makeSubscribeMessageHandler[T any](
 // whose Fn matches the security shape
 // (func(context.Context, *pahomqtt5.Publish, *T) (map[string][]string, error))
 // IN ATTACHMENT ORDER (fail-fast on the first one whose OWN extraction
-// errors), merges their returned grants into ONE map, then performs a
-// SINGLE [middleware.CheckScopes] call — the mqtt5 mirror of
-// adapters/nethttp's runSecurityMiddlewareReflect, but using a plain type
-// assertion (not reflect.Value.Call) since T is concrete at this generic
-// call site. General-purpose wrapping-shaped Fns are silently skipped here
-// (consumed instead by [wrapSubscribeGeneral]).
-func runSubscribeSecurityImpls[T any](ctx context.Context, msg *pahomqtt5.Publish, value *T, secReqs []route.SecurityRequirement, impls []middleware.ServerImplementation) error {
+// errors), merges their returned grants into ONE map — the mqtt5 mirror
+// of adapters/nethttp's runSecurityMiddlewareReflect, but using a plain
+// type assertion (not reflect.Value.Call) since T is concrete at this
+// generic call site. General-purpose wrapping-shaped Fns are silently
+// skipped here (consumed instead by [wrapSubscribeGeneral]).
+//
+// docs/design/d-0007-declarative-middleware-layering.md's "Prerequisite for
+// Phase 2 (api/events)": this NO LONGER calls [middleware.CheckScopes]
+// itself (previously did, in isolation) — the caller now merges THIS
+// map with any bound [events.MiddlewareHandler]'s own `GrantedScopes`
+// (via [scopesmerge.MergeHandlerGrants]) before a SINGLE, UNIFIED
+// CheckScopes call covering BOTH mechanisms.
+func runSubscribeSecurityImpls[T any](ctx context.Context, msg *pahomqtt5.Publish, value *T, secReqs []route.SecurityRequirement, impls []middleware.ServerImplementation) (map[string][]string, error) {
 	granted := make(map[string][]string)
 	for _, impl := range impls {
 		fn, ok := impl.Fn.(func(context.Context, *pahomqtt5.Publish, *T) (map[string][]string, error))
@@ -596,13 +640,13 @@ func runSubscribeSecurityImpls[T any](ctx context.Context, msg *pahomqtt5.Publis
 		}
 		g, err := fn(ctx, msg, value)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		for k, v := range g {
 			granted[k] = v
 		}
 	}
-	return middleware.CheckScopes(secReqs, granted)
+	return granted, nil
 }
 
 // wrapSubscribeGeneral wraps fn with every general-purpose Fn found in
@@ -865,7 +909,7 @@ func publish[T any](
 	opts PublishOptions[T],
 	formats ...format.Format[T],
 ) error {
-	// docs/roadmap/declarative-middleware-layering.md's Rollout Phase B:
+	// docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase B:
 	// pre-allocates the shared ContextField box (idempotent, mirrors
 	// adapters/nethttp/chi's identical per-call site) so a Publish-side
 	// Middleware.SetContextFieldFromOut link has somewhere to publish

@@ -17,16 +17,28 @@ import (
 // ("fn", wraps as [MiddlewareError], D2's fallback) from an EncodeOut
 // failure ("out", building the REPLY's Out struct) — the caller reports
 // "middleware:in"/"middleware:fn"/"middleware:out" accordingly.
+//
+// Also returns outs[i] — handler i's decoded, VALIDATED Out (boxed `any`,
+// the SAME value passed to EncodeOut) — so a caller can merge a
+// Security-carrying handler's own `GrantedScopes` into its OWN
+// `CheckScopes` call (docs/design/d-0007-declarative-middleware-layering.md's
+// Rollout Phase C, mirroring events' identical Subscribe-side addition —
+// reqreply needs no NEW Fn shape for this, since its receiving/Serve side
+// ALREADY returns `(Out, error)` symmetrically with REST's `HandleMW`).
 func DispatchServerMiddlewareHandlers(
 	ctx context.Context,
 	reqPtr reflect.Value,
 	handlers []MiddlewareHandler,
 	topicVars, propertyVars map[string]string,
-) (outTopicVars, outPropertyVars map[string]string, name string, failKind string, err error) {
-	for _, h := range handlers {
-		inAny, decErr := h.DecodeIn(topicVars, propertyVars)
+) (outTopicVars, outPropertyVars map[string]string, outs []any, name string, failKind string, err error) {
+	if len(handlers) == 0 {
+		return nil, nil, nil, "", "", nil
+	}
+	outs = make([]any, len(handlers))
+	for i, h := range handlers {
+		inAny, decErr := h.DecodeIn(ctx, topicVars, propertyVars)
 		if decErr != nil {
-			return nil, nil, h.Name, "in", decErr
+			return nil, nil, nil, h.Name, "in", decErr
 		}
 		fnVal := reflect.ValueOf(h.Fn)
 		var results []reflect.Value
@@ -36,17 +48,18 @@ func DispatchServerMiddlewareHandlers(
 			results = fnVal.Call([]reflect.Value{reflect.ValueOf(ctx), reqPtr, reflect.ValueOf(inAny)})
 		}
 		if errI, _ := results[1].Interface().(error); errI != nil {
-			return nil, nil, h.Name, "fn", MiddlewareError{Name: h.Name, Err: errI}
+			return nil, nil, nil, h.Name, "fn", MiddlewareError{Name: h.Name, Err: errI}
 		}
 		outAny := results[0].Interface()
-		tVars, pVars, encErr := h.EncodeOut(outAny)
+		tVars, pVars, encErr := h.EncodeOut(ctx, outAny)
 		if encErr != nil {
-			return nil, nil, h.Name, "out", encErr
+			return nil, nil, nil, h.Name, "out", encErr
 		}
+		outs[i] = outAny
 		outTopicVars = MergeVarsOverride(outTopicVars, tVars)
 		outPropertyVars = MergeVarsOverride(outPropertyVars, pVars)
 	}
-	return outTopicVars, outPropertyVars, "", "", nil
+	return outTopicVars, outPropertyVars, outs, "", "", nil
 }
 
 // DispatchClientMiddlewareIn is [DispatchServerMiddlewareHandlers]'s
@@ -71,7 +84,7 @@ func DispatchClientMiddlewareIn(
 			return nil, nil, h.Name, MiddlewareError{Name: h.Name, Err: errI}
 		}
 		inAny := results[0].Interface()
-		tVars, pVars, encErr := h.EncodeIn(inAny)
+		tVars, pVars, encErr := h.EncodeIn(ctx, inAny)
 		if encErr != nil {
 			return nil, nil, h.Name, encErr
 		}
@@ -87,8 +100,11 @@ func DispatchClientMiddlewareIn(
 // topic/property vars, no Fn involved (mirrors `rest`'s identical
 // "no Fn, no reply-inspection Fn needed" design). Only the first decode
 // failure is reported — a malformed reply fails the call; the decoded
-// values themselves are not currently surfaced further.
+// values themselves are not currently surfaced further. ctx is needed for
+// [Middleware.SetContextFieldFromOut] on the client side (docs/roadmap/
+// declarative-middleware-layering.md's Rollout Phase C).
 func DispatchClientMiddlewareOut(
+	ctx context.Context,
 	topicVars, propertyVars map[string]string,
 	handlers []ClientMiddlewareHandler,
 ) error {
@@ -96,7 +112,7 @@ func DispatchClientMiddlewareOut(
 		// h.DecodeOut already returns a properly-wrapped
 		// MiddlewareOutputError on failure (see
 		// api/reqreply/transform.go's buildDecodeOut) — no re-wrap needed.
-		if _, err := h.DecodeOut(topicVars, propertyVars); err != nil {
+		if _, err := h.DecodeOut(ctx, topicVars, propertyVars); err != nil {
 			return err
 		}
 	}

@@ -295,7 +295,7 @@ Routes with `nil Security` (default) trigger enforcement when global security is
 ### Codec-backed Security — `HandleMW`/`ClientMW`'s bound path + `GrantedScopes`
 
 A codec-backed `rest.Middleware[In, Out]` (built via `rest.SecurityMiddleware[In, Out]`,
-generic over In/Out since docs/roadmap/declarative-middleware-layering.md's
+generic over In/Out since docs/design/d-0007-declarative-middleware-layering.md's
 Rollout Phase A) can ALSO carry a Security declaration and be attached via
 `Route.HandleMW`/`Route.ClientMW` — the SAME two methods used for the
 legacy shape above. `HandleMW`/`ClientMW` detect which shape `fn` is by
@@ -313,7 +313,14 @@ apiKeyMw := rest.SecurityMiddleware[APIKeyIn, APIKeyOut]("apiKeyAuth",
     func(in *APIKeyIn, v string) { in.Key = v },
 ))
 
-route := createUser.Use(apiKeyMw).HandleMW(apiKeyMw,
+// NOTE: skip .Use(apiKeyMw) here — pairing .Use() with a bound HandleMW
+// for the SAME mw currently throws DuplicateMiddlewareNameError (a
+// known, tracked gap — see the callout below). Declare the requirement
+// directly via RouteMeta.Security instead; CheckCoverage/CheckScopes
+// enforce it identically either way.
+route := rest.NewRoute[CreateUserReq, User]("POST", "/users", reqCodec, respCodec,
+    rest.RouteMeta{OperationID: "createUser", Security: []route.SecurityRequirement{route.Require("apiKeyAuth")}},
+).HandleMW(apiKeyMw,
     func(ctx context.Context, req *CreateUserReq, in APIKeyIn) (APIKeyOut, error) {
         if !validKey(in.Key) {
             return APIKeyOut{}, errors.New("invalid API key")
@@ -321,6 +328,18 @@ route := createUser.Use(apiKeyMw).HandleMW(apiKeyMw,
         return APIKeyOut{GrantedScopes: map[string][]string{"apiKeyAuth": nil}}, nil
     })
 ```
+
+> **Known gap**: `.Use(mw).HandleMW(mw, boundFn)` for a Security-only
+> `mw` (no merge fields) currently throws `DuplicateMiddlewareNameError` —
+> both `.Use()` and the bound path unconditionally add a spec
+> contribution under the same name. Confirmed to ALSO affect
+> `api/reqreply` identically (not REST-specific; `api/events` is
+> unaffected by its different spec-bundling architecture). Workaround:
+> declare `RouteMeta.Security` directly instead of `.Use(mw)` when
+> pairing with a bound `HandleMW`/`ClientMW` call, as shown above —
+> sufficient for `CheckCoverage`/`CheckScopes` correctness, though
+> `OpenAPISpec()` won't auto-register the scheme via that path. Tracked
+> as a follow-up design question, not yet fixed.
 
 `fn` gets `*Req` access (read/enrich, exactly like the generic middleware
 mechanism — see [Feature: Codec-Declared Middleware](codec-declared-middleware.md)),
@@ -861,6 +880,93 @@ The application's own domain `Req` struct must carry a credential field
 itself for zeromq's model to work (`Token string` above) — a documented,
 accepted transport limitation (zeromq has no property/header side
 channel), not a bug.
+
+### Codec-backed Security — `HandleMW`/`ClientMW`'s bound path + `GrantedScopes`
+
+Mirrors `api/rest`/`api/events`'s identical mechanism, folded into reqreply
+as Rollout Phase C: a codec-backed `reqreply.Middleware[In, Out]` (built via
+`reqreply.SecurityMiddleware[In, Out]`, now generalized over In/Out — was
+previously fixed to `Middleware[struct{},struct{}]`) can carry a real
+credential payload and be attached via `Route.HandleMW`/`ClientMW` — the
+SAME methods used for the legacy shape above. `HandleMW`/`ClientMW` detect
+which shape `fn` is by its REFLECTED signature (never `mw`'s type), so
+attaching either shape uses the identical method call. Since reqreply is
+fully duplex (unlike events' Subscribe/Publish asymmetry), BOTH `Serve`
+and `Call` directions carry an `Out`:
+
+```go
+type BearerIn struct{ Token string }
+type BearerOut struct{ GrantedScopes map[string][]string }
+
+bearerMw := reqreply.SecurityMiddleware[BearerIn, BearerOut]("bearerAuth",
+    bearerAuthScheme, nil,
+).WithRequestProperty(reqreply.NewPropertyParam("Authorization", codex.String(),
+    func(in BearerIn) string { return in.Token },
+    func(in *BearerIn, v string) { in.Token = v },
+))
+
+// NOTE: skip .Use(bearerMw) here — pairing .Use() with a bound HandleMW
+// for the SAME mw currently throws DuplicateMiddlewareNameError (a
+// known, tracked gap — see the callout below). Declare the requirement
+// directly via RouteMeta.Security instead; CheckCoverage/CheckScopes
+// enforce it identically either way.
+securedRoute := reqreply.NewRoute[ComputeReq, ComputeResp](
+    "compute/add", computeReqCodec, computeRespCodec,
+    reqreply.RouteMeta{OperationID: "computeAdd", Security: []route.SecurityRequirement{route.Require("bearerAuth")}},
+).HandleMW(bearerMw,
+    func(ctx context.Context, req *ComputeReq, in BearerIn) (BearerOut, error) {
+        if !validToken(in.Token) {
+            return BearerOut{}, errors.New("invalid bearer token")
+        }
+        return BearerOut{GrantedScopes: map[string][]string{"bearerAuth": nil}}, nil
+    })
+```
+
+`fn` gets `*Req` access (read/enrich, exactly like the generic middleware
+mechanism), and `In`'s own property merge fields decode declaratively from
+the incoming message — no manual extraction anywhere. `Out` carries the
+SAME conventional `GrantedScopes map[string][]string` field REST/events
+use, merged with any legacy Fn's own grants via
+`adapters/internal/scopesmerge.MergeHandlerGrants` and fed into ONE unified
+`middleware.CheckScopes` call — RECEIVING (`Serve`)-side only, mirroring
+events' Subscribe-side scoping exactly (`Call`/sending-side needs no merge
+wiring, same as `rest.ClientMW`). zeromq's legacy security mechanism is
+PURE binary accept/reject (no grants concept), so its `CheckScopes` call
+is additionally gated on at least one bound handler's `Satisfies` being
+populated, to avoid rejecting a legacy-Fn-only route that produces no
+map entries; mqtt5's legacy mechanism genuinely produces real grants, so
+its gate is unconditional.
+
+> **Known gap**: `.Use(mw).HandleMW(&mw, boundFn)` for a Security-only
+> `mw` (no merge fields) currently throws `DuplicateMiddlewareNameError` —
+> both `.Use()` and the bound path unconditionally add a spec contribution
+> under the same name. Confirmed to ALSO affect `api/rest` identically
+> (not reqreply-specific; `api/events` is unaffected by its different
+> spec-bundling architecture). Workaround: declare `RouteMeta.Security`
+> directly instead of `.Use(mw)` when pairing with a bound `HandleMW`/
+> `ClientMW` call — sufficient for `CheckCoverage`/`CheckScopes`
+> correctness, though `AsyncAPISpec()` won't auto-register the scheme via
+> that path. Tracked as a follow-up design question, not yet fixed.
+
+### Connection-level auth spec registration — `Server.AddConnectSecurityScheme`
+
+Mirrors `events.Client.AddConnectSecurityScheme` byte-for-byte (`Builder`
+is a deprecated alias for `Server` — the method lives on `Server`, both
+names pick it up):
+
+```go
+reqreplyServer.AddConnectSecurityScheme("brokerAuth", route.SecurityScheme{
+    Type: route.SecuritySchemeHTTP, Scheme: "basic",
+})
+reqreplyServer.AddServer("mqtt5", reqreply.ServerEntry{
+    URL: "mqtts://broker:8883", Protocol: "mqtt5",
+    Security: []route.SecurityRequirement{route.Require("brokerAuth")},
+})
+```
+
+Reuse the SAME scheme NAME at both call sites, same lifecycle as events'
+version above — see
+[D-0006](../design/d-0006-protocol-native-capabilities.md).
 
 ## Sharing a security SCHEME across REST/events/reqreply
 

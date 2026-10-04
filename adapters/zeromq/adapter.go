@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/DaniDeer/go-codex/adapters/internal/scopesmerge"
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
@@ -344,7 +345,7 @@ func subscribeWithHandle[T any](
 	opts SubscribeOptions[T],
 	formats ...format.Format[T],
 ) error {
-	// docs/roadmap/declarative-middleware-layering.md's Rollout Phase B:
+	// docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase B:
 	// pre-allocates the shared ContextField box ONCE for this
 	// subscription's whole lifetime (idempotent; zeromq's loop reuses ONE
 	// ctx across every received message already, unlike mqtt5/mqtt's
@@ -510,6 +511,18 @@ func subscribeWithHandle[T any](
 		// error is ErrorPattern-eligible (D2), falling back to
 		// events.MiddlewareError when unmatched — mirrors mqtt5's
 		// identical resolution.
+		//
+		// docs/design/d-0007-declarative-middleware-layering.md's "Prerequisite
+		// for Phase 2 (api/events)": zeromq's legacy
+		// runSubscribeSecurityImpls (above) has NO grants concept at all
+		// (plain error, no CheckScopes call ever existed here) — granted
+		// starts empty and is populated SOLELY by any bound
+		// MiddlewareHandler's own GrantedScopes, merged below.
+		granted := make(map[string][]string)
+		satisfies := make([][]string, len(handle.MiddlewareHandlers))
+		for i, h := range handle.MiddlewareHandlers {
+			satisfies[i] = h.Satisfies
+		}
 		if len(handle.MiddlewareHandlers) > 0 {
 			// zeromq has no property mechanism at all — supplies an
 			// empty property-value map (nil), mirroring mqtt5's
@@ -517,7 +530,8 @@ func subscribeWithHandle[T any](
 			// extraction (nothing to extract from). A channel declaring
 			// a REQUIRED property fails naturally with the SAME
 			// MiddlewareInputError a missing topic var would.
-			if mwErr := events.DispatchSubscribeMiddlewareHandlers(ctx, &value, handle.MiddlewareHandlers, topicVars, nil); mwErr != nil {
+			outs, mwErr := events.DispatchSubscribeMiddlewareHandlers(ctx, &value, handle.MiddlewareHandlers, topicVars, nil)
+			if mwErr != nil {
 				obs.RecordSubscribe(topic, false, time.Since(start))
 				dispatchErr, _ := events.AsMiddlewareDispatchError(mwErr)
 				if dispatchErr.IsFnError {
@@ -544,6 +558,48 @@ func subscribeWithHandle[T any](
 				}
 				if opts.OnError != nil {
 					opts.OnError(SubscribeError{Kind: KindDecode, Topic: topic, Err: dispatchErr.Err})
+				}
+				continue
+			}
+			scopesmerge.MergeHandlerGrants(granted, satisfies, outs)
+		}
+
+		// docs/design/d-0007-declarative-middleware-layering.md's "Prerequisite
+		// for Phase 2 (api/events)": CheckScopes now covers any bound
+		// MiddlewareHandler's GrantedScopes — gated on
+		// [scopesmerge.HasSatisfyingHandler] (at least one BOUND
+		// MiddlewareHandler is Security-shaped), NOT on secReqs alone.
+		// zeromq's legacy Fn shape (runSubscribeSecurityImpls) is PURE
+		// binary accept/reject — it has NO grants concept and NEVER adds
+		// a scheme-name key to granted, by design (confirmed via code).
+		// A channel relying SOLELY on that legacy mechanism (its own
+		// Satisfies-bearing Fn succeeding is ALREADY fully satisfying,
+		// by its own pre-existing contract) — or on a general-purpose
+		// (Satisfies-empty) bound middleware — must keep its EXISTING
+		// "Fn success = request proceeds" semantics UNCHANGED. Calling
+		// CheckScopes whenever ANY bound MiddlewareHandler exists
+		// (regardless of its OWN Satisfies) was a confirmed regression,
+		// caught via a real test failure during implementation
+		// (TestAttachServer_Transform_RunsAfterPairedSecurity: a
+		// general-purpose Transform-attached middleware alongside a
+		// legacy paired security Fn incorrectly triggered an empty-
+		// grants CheckScopes rejection).
+		if len(secReqs) > 0 && scopesmerge.HasSatisfyingHandler(satisfies) {
+			if err := middleware.CheckScopes(secReqs, granted); err != nil {
+				if secObs, ok := obs.(stats.SecurityObserver); ok {
+					secObs.RecordSecurityRejection(topic, route.FirstSchemeName(secReqs))
+				}
+				obs.RecordSubscribe(topic, false, time.Since(start))
+				wrapped := events.SecurityError{Err: err}
+				if handled, matched := tryPublishErrorChannel(ctx, sock, handle, obs, wrapped); handled {
+					continue
+				} else if !matched {
+					if tryDeadLetter(sock, handle, obs, topic, payload, wrapped) {
+						continue
+					}
+				}
+				if opts.OnError != nil {
+					opts.OnError(SubscribeError{Kind: KindSecurity, Topic: topic, Err: wrapped})
 				}
 				continue
 			}
@@ -754,7 +810,7 @@ func publish[T any](
 	opts PublishOptions[T],
 	formats ...format.Format[T],
 ) error {
-	// docs/roadmap/declarative-middleware-layering.md's Rollout Phase B:
+	// docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase B:
 	// pre-allocates the shared ContextField box (idempotent, mirrors
 	// adapters/nethttp/chi's identical per-call site) so a Publish-side
 	// Middleware.SetContextFieldFromOut link has somewhere to publish

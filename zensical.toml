@@ -79,6 +79,7 @@ repo_name = "DaniDeer/go-codex"
 "— D-0004: ReqReply Workflow Simplification" = "design/d-0004-reqreply-workflow-simplification.md"
 "— D-0005: Unified Error Handling" = "design/d-0005-error-handling.md"
 "— D-0006: Protocol-Native Capabilities" = "design/d-0006-protocol-native-capabilities.md"
+"— D-0007: Declarative Middleware Layering" = "design/d-0007-declarative-middleware-layering.md"
 
 [nav.Roadmap]
 "Overview" = "roadmap/index.md"
@@ -111,4 +112,3 @@ repo_name = "DaniDeer/go-codex"
 "— Design-Doc Compaction & Workflow-Model Narrative" = "roadmap/design-doc-compaction.md"
 "— Idea: Codec-Defined HATEOAS" = "roadmap/idea-codec-defined-hateoas.md"
 "— Declarative-Workflow Walkthrough & Tutorial Skills" = "roadmap/declarative-workflow-tutorials.md"
-"— Declarative Middleware Layering (Partial Route/Channel Definitions)" = "roadmap/declarative-middleware-layering.md"

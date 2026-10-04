@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// docs/roadmap/declarative-middleware-layering.md's Rollout Phase B
+// docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase B
 // follow-up: regression tests for ConnectError's new ReturnCode field and
 // ConnectOptions.Observer's RecordSecurityRejection integration — mirrors
 // adapters/mqtt5/connect_reasoncode_test.go's structure. No live broker

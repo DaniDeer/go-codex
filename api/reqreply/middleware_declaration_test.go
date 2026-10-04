@@ -88,9 +88,9 @@ func TestRoute_Use_SameMiddlewareValue_ReusedAcrossDifferentReqTypes(t *testing.
 // TestRoute_Register_DuplicateMiddlewareNameError covers D6(b): two
 // Middleware values sharing a Declaration.Name on one route.
 func TestRoute_Register_DuplicateMiddlewareNameError(t *testing.T) {
-	mw1 := reqreply.Transform(newMWTestRoute(), reqreply.NewMiddleware(newAuthDeclaration("dup-name")),
+	mw1 := newMWTestRoute().HandleMW(reqreply.NewMiddleware(newAuthDeclaration("dup-name")),
 		func(ctx context.Context, req *computeReq, in mdAuthIn) (mdAuthOut, error) { return mdAuthOut{}, nil })
-	r := reqreply.Transform(mw1, reqreply.NewMiddleware(newAuthDeclaration("dup-name")),
+	r := mw1.HandleMW(reqreply.NewMiddleware(newAuthDeclaration("dup-name")),
 		func(ctx context.Context, req *computeReq, in mdAuthIn) (mdAuthOut, error) { return mdAuthOut{}, nil })
 
 	b := newBuilder()
@@ -107,7 +107,7 @@ func TestRoute_Register_AmbiguousMiddlewareAttachmentError(t *testing.T) {
 	mw := reqreply.NewMiddleware(newAuthDeclaration("ambiguous")).
 		WithReceive(func(ctx context.Context, in mdAuthIn) (mdAuthOut, error) { return mdAuthOut{}, nil })
 
-	r := reqreply.Transform(newMWTestRoute(), mw,
+	r := newMWTestRoute().HandleMW(mw,
 		func(ctx context.Context, req *computeReq, in mdAuthIn) (mdAuthOut, error) { return mdAuthOut{}, nil })
 
 	b := newBuilder()
@@ -131,9 +131,9 @@ func TestRoute_Register_ConflictingParamContributionError(t *testing.T) {
 			func(v mdAuthIn) string { return v.Token },
 			func(v *mdAuthIn, s string) { v.Token = s }))
 
-	r := reqreply.Transform(newMWTestRoute(), mw1,
+	r := newMWTestRoute().HandleMW(mw1,
 		func(ctx context.Context, req *computeReq, in mdAuthIn) (mdAuthOut, error) { return mdAuthOut{}, nil })
-	r = reqreply.Transform(r, mw2,
+	r = r.HandleMW(mw2,
 		func(ctx context.Context, req *computeReq, in mdAuthIn) (mdAuthOut, error) { return mdAuthOut{}, nil })
 
 	b := newBuilder()
@@ -158,9 +158,9 @@ func TestRoute_Register_RequiredVsOptionalPropertyMismatchError(t *testing.T) {
 	mw1 := reqreply.NewMiddleware(newAuthDeclaration("req-mw")).WithRequestProperty(required)
 	mw2 := reqreply.NewMiddleware(newAuthDeclaration("opt-mw")).WithRequestProperty(optional)
 
-	r := reqreply.Transform(newMWTestRoute(), mw1,
+	r := newMWTestRoute().HandleMW(mw1,
 		func(ctx context.Context, req *computeReq, in mdAuthIn) (mdAuthOut, error) { return mdAuthOut{}, nil })
-	r = reqreply.Transform(r, mw2,
+	r = r.HandleMW(mw2,
 		func(ctx context.Context, req *computeReq, in mdAuthIn) (mdAuthOut, error) { return mdAuthOut{}, nil })
 
 	b := newBuilder()
@@ -184,9 +184,9 @@ func TestRoute_Register_ConflictingPropertyCodecSchemaError(t *testing.T) {
 			func(v mdAuthIn) int { return 0 },
 			func(v *mdAuthIn, i int) {}))
 
-	r := reqreply.Transform(newMWTestRoute(), mw1,
+	r := newMWTestRoute().HandleMW(mw1,
 		func(ctx context.Context, req *computeReq, in mdAuthIn) (mdAuthOut, error) { return mdAuthOut{}, nil })
-	r = reqreply.Transform(r, mw2,
+	r = r.HandleMW(mw2,
 		func(ctx context.Context, req *computeReq, in mdAuthIn) (mdAuthOut, error) { return mdAuthOut{}, nil })
 
 	b := newBuilder()
@@ -209,9 +209,9 @@ func TestRoute_Register_AgreeingParamContributions_DedupeWithoutError(t *testing
 	mw1 := reqreply.NewMiddleware(newAuthDeclaration("mw1")).WithRequestProperty(p())
 	mw2 := reqreply.NewMiddleware(newAuthDeclaration("mw2")).WithRequestProperty(p())
 
-	r := reqreply.Transform(newMWTestRoute(), mw1,
+	r := newMWTestRoute().HandleMW(mw1,
 		func(ctx context.Context, req *computeReq, in mdAuthIn) (mdAuthOut, error) { return mdAuthOut{}, nil })
-	r = reqreply.Transform(r, mw2,
+	r = r.HandleMW(mw2,
 		func(ctx context.Context, req *computeReq, in mdAuthIn) (mdAuthOut, error) { return mdAuthOut{}, nil })
 
 	b := newBuilder()
@@ -269,7 +269,7 @@ func TestRoute_Register_TopicAndPropertySameName_NoConflict(t *testing.T) {
 			func(v tvIn) string { return v.TenantID },
 			func(v *tvIn, s string) { v.TenantID = s }))
 
-	r := reqreply.Transform(route, tvMw, func(ctx context.Context, req *tvReq, in tvIn) (tvOut, error) { return tvOut{}, nil })
+	r := route.HandleMW(tvMw, func(ctx context.Context, req *tvReq, in tvIn) (tvOut, error) { return tvOut{}, nil })
 	b := newBuilder()
 	if _, err := r.Register(b); err != nil {
 		t.Fatalf("want no conflict between topic-var and property namespaces, got: %v", err)
@@ -282,7 +282,7 @@ func TestRoute_Register_OptionalProperty_NotInSchemaRequiredList(t *testing.T) {
 		WithRequestProperty(reqreply.NewOptionalPropertyParam("X-Optional", codex.String(),
 			func(v mdAuthIn) string { return v.Token },
 			func(v *mdAuthIn, s string) { v.Token = s }))
-	r := reqreply.Transform(newMWTestRoute(), mw,
+	r := newMWTestRoute().HandleMW(mw,
 		func(ctx context.Context, req *computeReq, in mdAuthIn) (mdAuthOut, error) { return mdAuthOut{}, nil })
 	b := newBuilder()
 	if _, err := r.Register(b); err != nil {
@@ -303,7 +303,7 @@ func TestRoute_Register_RequiredProperty_InSchemaRequiredList(t *testing.T) {
 		WithRequestProperty(reqreply.NewPropertyParam("X-Required", codex.String(),
 			func(v mdAuthIn) string { return v.Token },
 			func(v *mdAuthIn, s string) { v.Token = s }))
-	r := reqreply.Transform(newMWTestRoute(), mw,
+	r := newMWTestRoute().HandleMW(mw,
 		func(ctx context.Context, req *computeReq, in mdAuthIn) (mdAuthOut, error) { return mdAuthOut{}, nil })
 	b := newBuilder()
 	if _, err := r.Register(b); err != nil {

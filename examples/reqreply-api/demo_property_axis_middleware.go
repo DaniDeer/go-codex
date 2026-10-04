@@ -23,7 +23,7 @@ import (
 // The DECLARATION (routes.TenantPropertyMw) and IMPLEMENTATION
 // (handlers.ProcessTenant) are BOTH adapter-agnostic — see
 // routes/middleware.go and handlers/middleware.go. THIS demo shows the
-// SAME declaration+implementation pair, attached via reqreply.Transform
+// SAME declaration+implementation pair, attached via .HandleMW
 // to routes.PropertyAxisComputeRoute, registered against TWO completely
 // different transports (mqtt5server.Build, zeromqserver.Build) with ZERO
 // changes to either the declaration or the implementation — only the

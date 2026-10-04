@@ -799,8 +799,20 @@ func (h *ChannelHandle[T]) EncodePropertyVars(msg T) (map[string]string, error) 
 // function's type parameter itself; mirrors [ChannelHandle.MergePropertyVars]/
 // [ChannelHandle.DecodeMergedWithFormats]'s SAME "generic helper gets a
 // thin per-T method wrapper for reflection callability" convention.
+//
+// Deliberately keeps its OWN `func(...) error` signature (does NOT surface
+// [DispatchSubscribeMiddlewareHandlers]'s newer `([]any, error)` return) —
+// this method is invoked via `reflect.Value.MethodByName(...).Call(...)`
+// by `adapters/mqtt5`/`mqtt`/`zeromq`'s ports.Pattern binding shim
+// (`handleVal.MethodByName("DispatchSubscribeMiddleware")`), which reads
+// `mwResults[0]` directly as the error — changing the return arity here
+// would silently break that reflection call site. The native (non-
+// ports.Pattern) adapter Subscribe dispatch calls
+// [DispatchSubscribeMiddlewareHandlers] directly instead, where the
+// `outs` return IS consumed (docs/design/d-0007-declarative-middleware-layering.md's "Prerequisite for Phase 2 (api/events)").
 func (h *ChannelHandle[T]) DispatchSubscribeMiddleware(ctx context.Context, msg *T, topicVars, propertyVars map[string]string) error {
-	return DispatchSubscribeMiddlewareHandlers(ctx, msg, h.MiddlewareHandlers, topicVars, propertyVars)
+	_, err := DispatchSubscribeMiddlewareHandlers(ctx, msg, h.MiddlewareHandlers, topicVars, propertyVars)
+	return err
 }
 
 // DispatchPublishMiddleware invokes [DispatchPublishMiddlewareHandlers]
@@ -1187,8 +1199,7 @@ type Client struct {
 	// connectSecuritySchemes holds every [Client.AddConnectSecurityScheme]
 	// registration — a connection-level security scheme referenced ONLY
 	// via a [Server.Security] list, never by any individual channel's own
-	// WithSecurityScheme declaration (docs/roadmap/declarative-middleware-
-	// layering.md's Rollout Phase B — Phase 4, connection-level auth).
+	// WithSecurityScheme declaration (docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase B — Phase 4, connection-level auth).
 	connectSecuritySchemes map[string]route.SecurityScheme
 	// globalDeadLetter is the Client-level default [DeadLetter]
 	// declaration, set via [Client.AddGlobalDeadLetter]. nil when none is
@@ -1322,7 +1333,7 @@ func (c *Client) AddSchema(name string, s schema.Schema) *Client {
 // [Subscribe]/[Publish] security requirement — for a scheme used ONLY via
 // a [Server]'s connection-level [Server.Security] list (see [AddServer]),
 // never referenced by any individual channel's own Subscribe/Publish
-// requirements (docs/roadmap/declarative-middleware-layering.md's
+// requirements (docs/design/d-0007-declarative-middleware-layering.md's
 // Rollout Phase B — Phase 4, connection-level auth). Collision policy
 // matches every other registration on Client: last-registered-wins (no
 // error returned), consistent with [Client.AddSchema]/[Client.AddServer].
@@ -1711,7 +1722,7 @@ func applyEventsSecurityDeclarations(topic string, security *[]route.SecurityReq
 // attachment fails [Subscriber.Handle] with
 // [MissingSecurityMiddlewareError]; attaching a SubscribeMW whose
 // Satisfies names the scheme resolves it.
-// handlers (docs/roadmap/declarative-middleware-layering.md's Rollout
+// handlers (docs/design/d-0007-declarative-middleware-layering.md's Rollout
 // Phase B, mirroring rest.CheckCoverage's identical Phase A extension — a
 // SIGNATURE extension, not a storage merge: [ChannelHandle] already
 // carries Implementations and MiddlewareHandlers as two separate
@@ -2082,7 +2093,7 @@ func buildServerImplementation(mw middleware.RouteMiddleware, fn any) middleware
 // [ChannelHandle.Implementations] verbatim. Mirrors [rest.Route.HandleMW]
 // exactly.
 //
-// docs/roadmap/declarative-middleware-layering.md's Rollout Phase B
+// docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase B
 // (events' own Architecture-revision fold-in, mirroring Phase A's
 // identical REST change): when mw is a codec-backed [Middleware][In, Out]
 // AND fn matches the channel-BOUND shape (func(ctx, *T, In) error,
@@ -2091,10 +2102,24 @@ func buildServerImplementation(mw middleware.RouteMiddleware, fn any) middleware
 // be used purely as a legacy credential-shape carrier), dispatch is now
 // folded in here directly — [Transform] remains available as an
 // equivalent, explicit-type-parameter alternative, not the only path.
+//
+// "Prerequisite for Phase 2 (api/events)" (found during a Phase C
+// review): fn MAY ALSO match the NEW, ADDITIVE, Out-carrying bound shape
+// (func(ctx, *T, In) (Out, error), detected via
+// [isBoundSubscribeMWShapeWithOut]) — used by a Security-carrying
+// middleware that needs to return `GrantedScopes`. The ORIGINAL 1-return
+// shape keeps working completely unchanged for every other (general-
+// purpose) attachment.
 func (s Subscriber[T]) SubscribeMW(mw middleware.RouteMiddleware, fn any) Subscriber[T] {
-	if v, ok := mw.(eventsMiddlewareContributor); ok && isBoundSubscribeMWShape[T](fn) {
-		s.middlewareHandlers = append(slices.Clone(s.middlewareHandlers), v.applyBoundSubscriber(fn))
-		return s
+	if v, ok := mw.(eventsMiddlewareContributor); ok {
+		switch {
+		case isBoundSubscribeMWShapeWithOut[T](fn):
+			s.middlewareHandlers = append(slices.Clone(s.middlewareHandlers), v.applyBoundSubscriberWithOut(fn))
+			return s
+		case isBoundSubscribeMWShape[T](fn):
+			s.middlewareHandlers = append(slices.Clone(s.middlewareHandlers), v.applyBoundSubscriber(fn))
+			return s
+		}
 	}
 	s.impls = append(slices.Clone(s.impls), buildServerImplementation(mw, fn))
 	return s
@@ -2162,7 +2187,7 @@ func synthesizeLegacySecurity(mw middleware.RouteMiddleware) (middleware.Middlew
 // [ChannelHandle.ClientImplementations] verbatim. Mirrors
 // [rest.Route.ClientMW] exactly.
 //
-// docs/roadmap/declarative-middleware-layering.md's Rollout Phase B: when
+// docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase B: when
 // mw is a codec-backed [Middleware][In, Out] AND fn matches the
 // channel-BOUND shape (func(ctx, T) (Out, error), T BY VALUE — detected
 // via [isBoundPublishMWShape] on fn's OWN reflected signature, never mw's
@@ -3012,8 +3037,7 @@ func (b *Client) AsyncAPISpec() (asyncapi.Document, error) {
 	for name, s := range b.schemas {
 		ab.AddSchema(name, s)
 	}
-	// connectSecuritySchemes (docs/roadmap/declarative-middleware-
-	// layering.md's Rollout Phase B — Phase 4, connection-level auth)
+	// connectSecuritySchemes (docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase B — Phase 4, connection-level auth)
 	// registered FIRST, before the per-channel loop below — a channel
 	// re-registering the IDENTICAL name still wins on collision
 	// (unchanged last-registered-wins policy, now a 3rd contributor

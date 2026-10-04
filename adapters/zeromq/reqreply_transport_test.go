@@ -1122,7 +1122,7 @@ func TestAttachServer_Transform_RunsAfterPairedSecurity(t *testing.T) {
 		return nil
 	}
 	baseRoute := newSecuredComputeRoute().Use(zmqBearerAuthMw).HandleMW(&zmqBearerAuthMw, secFn)
-	rt := reqreply.Transform(baseRoute, mw,
+	rt := baseRoute.HandleMW(mw,
 		func(ctx context.Context, req *securedComputeReq, in zmwPropIn) (zmwPropOut, error) {
 			order = append(order, "middleware")
 			return zmwPropOut{}, nil
@@ -1171,8 +1171,7 @@ func TestAttachServer_MiddlewareError_WrapsAsKindMiddleware(t *testing.T) {
 	fn := func(_ context.Context, r computeReq) (computeResp, error) {
 		return computeResp{Sum: r.X + r.Y}, nil
 	}
-	rt := reqreply.Transform(
-		reqreply.NewRoute[computeReq, computeResp]("/mw-error-compute", computeReqCodec, computeRespCodec),
+	rt := reqreply.NewRoute[computeReq, computeResp]("/mw-error-compute", computeReqCodec, computeRespCodec).HandleMW(
 		mw,
 		func(ctx context.Context, req *computeReq, in zmwPropIn) (zmwPropOut, error) {
 			return zmwPropOut{}, errors.New("business failure")
@@ -1238,8 +1237,7 @@ func TestAttachServer_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
 	fn := func(_ context.Context, r computeReq) (computeResp, error) {
 		return computeResp{Sum: r.X + r.Y}, nil
 	}
-	rt := reqreply.Transform(
-		reqreply.NewRoute[computeReq, computeResp]("/obs-out-loc-compute", computeReqCodec, computeRespCodec),
+	rt := reqreply.NewRoute[computeReq, computeResp]("/obs-out-loc-compute", computeReqCodec, computeRespCodec).HandleMW(
 		mw,
 		func(ctx context.Context, req *computeReq, in zmwPropIn) (zmwPropOut, error) {
 			// Empty Ack fails the NonEmptyString refinement at
@@ -1323,8 +1321,7 @@ func TestAttachClient_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
 		WithResponseProperty(reqreply.NewPropertyParam("X-Ack", codex.String(),
 			func(v zmwPropOut) string { return v.Ack },
 			func(v *zmwPropOut, s string) { v.Ack = s }))
-	rt := reqreply.ClientTransform(
-		reqreply.NewRoute[computeReq, computeResp]("/obs-client-out-compute", computeReqCodec, computeRespCodec),
+	rt := reqreply.NewRoute[computeReq, computeResp]("/obs-client-out-compute", computeReqCodec, computeRespCodec).ClientMW(
 		clientMW,
 		func(ctx context.Context, req computeReq) (zmwPropIn, error) {
 			return zmwPropIn{}, nil

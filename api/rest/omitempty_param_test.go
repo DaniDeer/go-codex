@@ -7,7 +7,7 @@ import (
 	"github.com/DaniDeer/go-codex/codex"
 )
 
-// ── docs/roadmap/declarative-middleware-layering.md's Rollout Phase A:
+// ── docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase A:
 // the full omit-empty constructor family (one per existing Required/
 // Optional pair, matching the EXISTING symmetry every other merge-field
 // location already has) — NewOmitEmptyQueryParam/Cookie/Header (request

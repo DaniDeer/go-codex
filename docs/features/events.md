@@ -336,7 +336,7 @@ yamlBytes, _ := doc.MarshalYAML()
 
 AsyncAPI 3.0: separate `channels` and `operations` top-level keys, `action: receive` / `action: send`. The `render/asyncapi/v2` package generates AsyncAPI 2.6 for existing users.
 
-## Codec-backed middleware (`Transform`/`ClientTransform`)
+## Codec-backed middleware (`SubscribeMW`/`PublishMW`)
 
 `events.Middleware[In, Out]` mirrors `rest.Middleware[In, Out]` (see
 [Feature: REST API](rest-api.md)) for pub/sub's asymmetric shape: subscribe
@@ -344,7 +344,11 @@ is the RECEIVING role (`In` decoded from incoming topic vars, `Out`
 unused — no reply channel to encode into), publish is the SENDING role
 (`Out` encoded into outgoing topic vars via `WithPublishTopic`, `In`
 unused). Reuses the SAME `events.NewTopicParam[T,V]` constructor a
-channel's own `Item` already uses:
+channel's own `Item` already uses. `Transform`/`ClientTransform` (the
+former route/channel-BOUND, free-function attachment point) were REMOVED
+(Rollout Phase B) — folded directly into `Subscriber.SubscribeMW`/
+`Publisher.PublishMW`, which detect a codec-backed `Middleware[In,Out]`'s
+bound shape via `fn`'s own reflected signature:
 
 ```go
 regionPolicy := events.NewMiddleware(
@@ -354,7 +358,7 @@ regionPolicy := events.NewMiddleware(
     func(in *RegionIn, v string) { in.Region = v },
 ))
 
-subscriber = events.Transform(subscriber, regionPolicy,
+subscriber = subscriber.SubscribeMW(regionPolicy,
     func(ctx context.Context, msg *SensorReading, in RegionIn) error {
         msg.Region = in.Region
         return nil

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/DaniDeer/go-codex/adapters/internal/scopesmerge"
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
@@ -338,6 +339,15 @@ func NewServerTransport(opts ServerTransportOptions) reqreply.ServerTransport {
 // exactly (this is the confirmed non-blocking-transport branch
 // [reqreply.Server.Serve]'s concurrent dispatch relies on).
 func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) error {
+	// docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase C:
+	// pre-allocates the shared ContextField box ONCE for this Serve
+	// call's whole lifetime (idempotent; every per-message msgCtx below
+	// is derived FROM this SAME ctx via context.WithValue, so the box
+	// propagates to each — mirrors events' adapters/zeromq's identical
+	// "reuse across the whole subscription" pattern, proven safe since
+	// SetContextFieldFromIn/Out unconditionally overwrite their own key
+	// on every successfully-decoded message).
+	ctx = middleware.EnsureContextFields(ctx)
 	obs := t.opts.Observer
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
@@ -419,8 +429,9 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 	if err := validateServerImplementationShapes(path, impls); err != nil {
 		return err
 	}
+	middlewareHandlers, _ := elem.FieldByName("MiddlewareHandlers").Interface().([]reqreply.MiddlewareHandler)
 	coverageReqs, _, _ := effectiveSecurity(elem)
-	if err := reqreply.CheckCoverage(path, coverageReqs, impls); err != nil {
+	if err := reqreply.CheckCoverage(path, coverageReqs, impls, middlewareHandlers); err != nil {
 		return err
 	}
 
@@ -461,8 +472,8 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 	// Middleware[In,Out] dispatch (Transform-attached or bundled via
 	// plain .Use()) — dispatched AFTER the paired security Fn, mirroring
 	// D1's precedent exactly (see the dispatch call site inside
-	// baseHandler below).
-	middlewareHandlers, _ := elem.FieldByName("MiddlewareHandlers").Interface().([]reqreply.MiddlewareHandler)
+	// baseHandler below). middlewareHandlers ALREADY declared above (for
+	// the CheckCoverage call) — reused here verbatim.
 
 	baseHandler := func(msg *pahomqtt5.Publish) {
 		start := time.Now()
@@ -629,7 +640,8 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 		// mirrors adapters/nethttp's identical "runSecurityMiddlewareReflect
 		// runs regardless of secReqs" structure exactly. Replaces the OLD
 		// ServeOptions.SecurityFunc call (Phase 1, breaking removal).
-		if err := runServerSecurityMiddleware(msgCtx, msg, impls, secReqs); err != nil {
+		granted, err := runServerSecurityMiddleware(msgCtx, msg, impls, secReqs)
+		if err != nil {
 			if secObs, ok := obs.(stats.SecurityObserver); ok {
 				secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
 			}
@@ -662,7 +674,7 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 			reqPropVars := propertyVarsFromUserProperties(msg)
 			reqPtr := reflect.New(reqType)
 			reqPtr.Elem().Set(reqVal)
-			_, outPropVars, mwName, failKind, mwErr := reqreply.DispatchServerMiddlewareHandlers(spanCtx, reqPtr, middlewareHandlers, topicVars, reqPropVars)
+			_, outPropVars, outs, mwName, failKind, mwErr := reqreply.DispatchServerMiddlewareHandlers(spanCtx, reqPtr, middlewareHandlers, topicVars, reqPropVars)
 			if mwErr != nil {
 				kind := KindDecode
 				loc := "middleware:in"
@@ -690,6 +702,34 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 			}
 			reqVal = reqPtr.Elem()
 			middlewarePropertyVars = outPropVars
+			satisfies := make([][]string, len(middlewareHandlers))
+			for i, h := range middlewareHandlers {
+				satisfies[i] = h.Satisfies
+			}
+			scopesmerge.MergeHandlerGrants(granted, satisfies, outs)
+		}
+
+		// docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase
+		// C: ONE, UNIFIED CheckScopes call covering grants from BOTH the
+		// legacy Implementations path (above) AND any bound
+		// MiddlewareHandler's own GrantedScopes (merged above) —
+		// previously, a route with ONLY bound MiddlewareHandlers (no
+		// legacy Implementations) never had its scopes checked at all.
+		if len(secReqs) > 0 {
+			if err := middleware.CheckScopes(secReqs, granted); err != nil {
+				if secObs, ok := obs.(stats.SecurityObserver); ok {
+					secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
+				}
+				wrapped := reqreply.SecurityError{Err: err}
+				serveErr = wrapped
+				obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
+				publishHandlerErrorReplyReflect(spanCtx, t.client, observeErrorResponseForMethod, responseTopic, correlationData, wrapped, obs, nil, effectiveQoS, effectiveRetained)
+				tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, wrapped, effectiveQoS, effectiveRetained)
+				if t.opts.OnError != nil {
+					t.opts.OnError(ServeError{Kind: KindSecurity, Err: wrapped})
+				}
+				return
+			}
 		}
 
 		fnResults := fnVal.Call([]reflect.Value{reflect.ValueOf(spanCtx), reqVal})
@@ -852,6 +892,10 @@ func (t *clientTransport) Call(ctx context.Context, routeAny any, reqAny any, op
 // mirroring [Call]'s own `var callErr error` + assign-before-every-return
 // pattern with less repetition.
 func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, callOpts reqreply.ClientCallOptions) (result any, err error) {
+	// docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase C:
+	// pre-allocates the shared ContextField box for THIS call, before
+	// any attached ClientMiddlewareHandler runs.
+	ctx = middleware.EnsureContextFields(ctx)
 	obs := t.opts.Observer
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
@@ -1227,7 +1271,7 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 			}
 			if len(clientMiddlewareHandlers) > 0 {
 				replyPropertyVars := propertyVarsFromUserProperties(replyMsg)
-				if mwErr := reqreply.DispatchClientMiddlewareOut(nil, replyPropertyVars, clientMiddlewareHandlers); mwErr != nil {
+				if mwErr := reqreply.DispatchClientMiddlewareOut(ctx, nil, replyPropertyVars, clientMiddlewareHandlers); mwErr != nil {
 					// mwErr is UNAMBIGUOUSLY an Out-decode failure — no Fn
 					// involved in dispatchClientMiddlewareOut at all —
 					// reported as "middleware:out" (client-side decode of
@@ -1392,7 +1436,14 @@ func applyGeneralServerMiddleware(h func(*pahomqtt5.Publish), impls []middleware
 // when secReqs is non-empty (mirrors REST's identical gating rationale:
 // an unsecured route must not authenticate credentials it never asked
 // for).
-func runServerSecurityMiddleware(ctx context.Context, msg *pahomqtt5.Publish, impls []middleware.ServerImplementation, secReqs []route.SecurityRequirement) error {
+// docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase C: this
+// NO LONGER calls [middleware.CheckScopes] itself (previously did, in
+// isolation) — the caller now merges THIS map with any bound
+// [reqreply.MiddlewareHandler]'s own `GrantedScopes` (via
+// [scopesmerge.MergeHandlerGrants] — reused verbatim, the merge logic
+// is transport/package-agnostic) before a SINGLE, UNIFIED CheckScopes
+// call covering BOTH mechanisms.
+func runServerSecurityMiddleware(ctx context.Context, msg *pahomqtt5.Publish, impls []middleware.ServerImplementation, secReqs []route.SecurityRequirement) (map[string][]string, error) {
 	granted := make(map[string][]string)
 	for _, impl := range impls {
 		fn, ok := impl.Fn.(func(context.Context, *pahomqtt5.Publish, []route.SecurityRequirement) (map[string][]string, error))
@@ -1404,13 +1455,13 @@ func runServerSecurityMiddleware(ctx context.Context, msg *pahomqtt5.Publish, im
 		}
 		g, err := fn(ctx, msg, secReqs)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		for k, v := range g {
 			granted[k] = v
 		}
 	}
-	return middleware.CheckScopes(secReqs, granted)
+	return granted, nil
 }
 
 // clientCredentialFnType is the PAIRED client-side credential-supplying Fn

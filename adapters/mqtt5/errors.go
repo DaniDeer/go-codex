@@ -335,7 +335,7 @@ type ConnectError struct {
 	// before any CONNACK arrived) — callers must not treat a zero
 	// ReasonCode as "success", only as "no CONNACK reason available."
 	//
-	// docs/roadmap/declarative-middleware-layering.md's Rollout Phase B:
+	// docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase B:
 	// closes a confirmed gap where the structured CONNACK reason was
 	// silently discarded, leaving only a generic wrapped error string.
 	ReasonCode byte

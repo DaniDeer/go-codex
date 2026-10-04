@@ -159,7 +159,7 @@ func (a *chiSSEAdapter[Event]) Activate(ctx context.Context, src gstream.Stream[
 		sseOpts.Topic = a.handle.Descriptor.Path
 	}
 	fn := SSEFromHub[struct{}, Event](hub, sseOpts)
-	// Gap-1 review fix (docs/roadmap/declarative-middleware-layering.md's
+	// Gap-1 review fix (docs/design/d-0007-declarative-middleware-layering.md's
 	// Rollout Phase A review): previously passed NO Implementations, and
 	// sseHandlerFunc itself never dispatched handle.MiddlewareHandlers
 	// either — see nethttp.SSEAdapter's identical fix/rationale.

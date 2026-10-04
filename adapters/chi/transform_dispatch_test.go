@@ -429,7 +429,7 @@ func TestUse_AgnosticMiddleware_DispatchesOnBothRoutes(t *testing.T) {
 	}
 }
 
-// ── docs/roadmap/declarative-middleware-layering.md's Rollout Phase A:
+// ── docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase A:
 // runSecurityMiddleware retirement — chi mirror of nethttp's identical
 // test (adapters/nethttp/transform_dispatch_test.go).
 

@@ -84,7 +84,7 @@ regionPolicy := events.NewMiddleware(
     func(in *RegionIn, v string) { in.Region = v },
 ))
 
-subscriber = events.Transform(subscriber, regionPolicy,
+subscriber = subscriber.SubscribeMW(regionPolicy,
     func(ctx context.Context, msg *SensorReading, in RegionIn) error {
         msg.Region = in.Region
         return nil
@@ -95,7 +95,7 @@ Pub/sub's asymmetric shape means subscribe is the RECEIVING role (`In` decoded f
 vars, `Out` unused — no reply channel to encode into) while publish is the SENDING role (`Out`
 encoded into outgoing topic vars via `WithPublishTopic`, `In` unused). Reuses the SAME
 `events.NewTopicParam[T,V]` constructor a channel's own `Item` already uses. See
-[Feature: Event Channels — Codec-backed middleware](events.md#codec-backed-middleware-transformclienttransform)
+[Feature: Event Channels — Codec-backed middleware](events.md#codec-backed-middleware-subscribemwpublishmw)
 for the full walkthrough and the events-local error-type table.
 
 ## ReqReply (`api/reqreply`)
@@ -108,7 +108,7 @@ tenantPolicy := reqreply.NewMiddleware(
     func(in *TenantIn, v string) { in.TenantID = v },
 ))
 
-route = reqreply.Transform(route, tenantPolicy,
+route = route.HandleMW(tenantPolicy,
     func(ctx context.Context, req *ComputeReq, in TenantIn) (TenantAck, error) {
         return TenantAck{Ack: "processed-for-" + in.TenantID}, nil
     })
@@ -265,7 +265,7 @@ REP/ROUTER socket (which would violate REQ/REP's one-reply-per-request invariant
 - [Guide: Error Handling — Middleware error paths](../guides/error-handling.md#middleware-error-paths--rest-events-reqreply-side-by-side) —
   the full 3-error-type reference table, side-by-side across all 3 APIs
 - [Feature: REST API — Codec-backed middleware](rest-api.md#codec-backed-middleware-handlemwclientmw)
-- [Feature: Event Channels — Codec-backed middleware](events.md#codec-backed-middleware-transformclienttransform) ·
+- [Feature: Event Channels — Codec-backed middleware](events.md#codec-backed-middleware-subscribemwpublishmw) ·
   [Feature: Event Channels — Dead-letter fallback](events.md#dead-letter-fallback--deadletter)
 - [Feature: Security & Auth](security.md) — the manual, call-time
   `ServeOptions.UserPropertyParams`/`SubscribeOptions.UserPropertyParams` mechanism, unchanged,

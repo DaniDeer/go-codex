@@ -90,7 +90,7 @@ type Middleware[In, Out any] struct {
 	// ctxFieldsFromIn/ctxFieldsFromOut hold every
 	// [Middleware.SetContextFieldFromIn]/[Middleware.SetContextFieldFromOut]
 	// registration — mirrors [rest.Middleware]'s identical fields
-	// (docs/roadmap/declarative-middleware-layering.md's Rollout Phase
+	// (docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase
 	// B). ctxFieldsFromIn dispatches from [buildDecodeIn] (Subscribe side
 	// ONLY — Publish's Fn has no In parameter at all to source a value
 	// from); ctxFieldsFromOut dispatches from [buildEncodeOut] (Publish
@@ -309,7 +309,7 @@ func (m Middleware[In, Out]) applyAgnosticPublisher() (ClientMiddlewareHandler, 
 
 // applyBoundSubscriber implements [eventsMiddlewareContributor] — called by
 // [Subscriber.SubscribeMW] for a bound-shaped codec-backed [Middleware][In,
-// Out] (docs/roadmap/declarative-middleware-layering.md's Rollout Phase
+// Out] (docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase
 // B — events' own Architecture-revision fold-in, mirroring
 // [rest.Middleware.applyBoundRoute]). fn is UNTYPED here (already `any` at
 // SubscribeMW's own signature) — m's own In/Out type parameters are ALL
@@ -322,6 +322,27 @@ func (m Middleware[In, Out]) applyAgnosticPublisher() (ClientMiddlewareHandler, 
 func (m Middleware[In, Out]) applyBoundSubscriber(fn any) MiddlewareHandler {
 	h := buildMiddlewareHandlerAny(m, fn)
 	h.dualAttached = m.isBundled() // SubscribeMW is the BOUND path — D7 fires only here, mirrors Transform's identical rule.
+	return h
+}
+
+// applyBoundSubscriberWithOut is [applyBoundSubscriber]'s NEW, ADDITIVE
+// sibling for fn's matching [isBoundSubscribeMWShapeWithOut] (docs/
+// roadmap/declarative-middleware-layering.md's "Prerequisite for Phase 2
+// (api/events)") — sets [MiddlewareHandler.HasOut] and
+// [MiddlewareHandler.ValidateOut] so [DispatchSubscribeMiddlewareHandlers]
+// knows to expect TWO return values (Out, error) and to validate the
+// decoded Out via m's OWN OutCodec, mirroring [buildClientMiddlewareHandlerAny]'s
+// identical EncodeOut-validation step on the publish side — Subscribe's
+// Out is never wire-encoded, only validated and surfaced for the
+// GrantedScopes merge-and-enforce step.
+func (m Middleware[In, Out]) applyBoundSubscriberWithOut(fn any) MiddlewareHandler {
+	h := buildMiddlewareHandlerAny(m, fn)
+	h.dualAttached = m.isBundled()
+	h.HasOut = true
+	h.ValidateOut = func(out any) error {
+		o, _ := out.(Out)
+		return m.OutCodec.Validate(o)
+	}
 	return h
 }
 
@@ -342,8 +363,7 @@ func (m Middleware[In, Out]) isBundled() bool {
 }
 
 // isBoundSubscribeMWShape is [Subscriber.SubscribeMW]'s events-side mirror
-// of [rest.isBoundHandleMWShape] (docs/roadmap/declarative-middleware-
-// layering.md's Rollout Phase B) — detects the channel-BOUND shape
+// of [rest.isBoundHandleMWShape] (docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase B) — detects the channel-BOUND shape
 // (func(ctx, *T, In) error, arity 3-in/1-out) via fn's OWN REFLECTED
 // signature, never mw's dynamic type (same reasoning as REST: a
 // generalized [SecurityMiddleware][In, Out] can ALSO be used purely as a
@@ -372,6 +392,36 @@ func isBoundSubscribeMWShape[T any](fn any) bool {
 		return false
 	}
 	return t.In(2) != reflect.TypeOf([]route.SecurityRequirement(nil))
+}
+
+// isBoundSubscribeMWShapeWithOut is [isBoundSubscribeMWShape]'s NEW,
+// ADDITIVE sibling (docs/design/d-0007-declarative-middleware-layering.md's
+// "Prerequisite for Phase 2 (api/events)") — detects the ALSO-channel-
+// BOUND, Out-carrying shape (func(ctx, *T, In) (Out, error), arity
+// 3-in/2-out), alongside (NOT replacing) [isBoundSubscribeMWShape]'s
+// EXISTING 1-return shape. A Security-carrying middleware needing to
+// return GrantedScopes on Subscribe uses THIS shape instead; a
+// general-purpose middleware with nothing to return keeps using the
+// existing 1-return shape, completely unaffected.
+//
+// The 2nd-param-type check alone is sufficient to disambiguate from every
+// confirmed legacy shape: `adapters/mqtt`'s/`adapters/zeromq`'s legacy
+// subscribe-security Fn is 1-return (rejected outright by the
+// `NumOut() != 2` check below); `adapters/mqtt5`'s legacy subscribe-
+// security Fn IS 3-in/2-out (func(ctx, *pahomqtt5.Publish, *T)
+// (map[string][]string, error)), but its 2nd param is
+// `*pahomqtt5.Publish` — an adapter-specific concrete type, never equal
+// to `*T` for any real channel payload type.
+func isBoundSubscribeMWShapeWithOut[T any](fn any) bool {
+	fnVal := reflect.ValueOf(fn)
+	if !fnVal.IsValid() {
+		return false
+	}
+	t := fnVal.Type()
+	if t.Kind() != reflect.Func || t.NumIn() != 3 || t.NumOut() != 2 {
+		return false
+	}
+	return t.In(1) == reflect.TypeOf((*T)(nil))
 }
 
 // isBoundPublishMWShape is [Publisher.PublishMW]'s events-side mirror of
@@ -638,4 +688,10 @@ type eventsMiddlewareContributor interface {
 	// own signature).
 	applyBoundSubscriber(fn any) MiddlewareHandler
 	applyBoundPublisher(fn any) ClientMiddlewareHandler
+
+	// applyBoundSubscriberWithOut is [applyBoundSubscriber]'s NEW,
+	// ADDITIVE sibling (docs/design/d-0007-declarative-middleware-layering.md's
+	// "Prerequisite for Phase 2 (api/events)") for fn matching
+	// [isBoundSubscribeMWShapeWithOut] instead of [isBoundSubscribeMWShape].
+	applyBoundSubscriberWithOut(fn any) MiddlewareHandler
 }

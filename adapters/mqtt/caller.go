@@ -148,13 +148,19 @@ func subscribeHandle[T any](
 // [middleware.ServerImplementation] whose Fn matches the security shape
 // (func(context.Context, pahomqtt.Message, *T) (map[string][]string, error))
 // IN ATTACHMENT ORDER (fail-fast on the first one whose OWN extraction
-// errors), merges their returned grants into ONE map, then performs a
-// SINGLE [middleware.CheckScopes] call — the mqtt v3 mirror of
-// adapters/nethttp's runSecurityMiddlewareReflect/mqtt5's
+// errors), merges their returned grants into ONE map — the mqtt v3 mirror
+// of adapters/nethttp's runSecurityMiddlewareReflect/mqtt5's
 // runSubscribeSecurityImpls, via a plain type assertion (T is concrete at
 // this generic call site). General-purpose wrapping-shaped Fns are
 // silently skipped here (consumed instead by [wrapSubscribeGeneral]).
-func runSubscribeSecurityImpls[T any](ctx context.Context, msg pahomqtt.Message, value *T, secReqs []route.SecurityRequirement, impls []middleware.ServerImplementation) error {
+//
+// docs/design/d-0007-declarative-middleware-layering.md's "Prerequisite for
+// Phase 2 (api/events)": this NO LONGER calls [middleware.CheckScopes]
+// itself (previously did, in isolation) — the caller now merges THIS
+// map with any bound [events.MiddlewareHandler]'s own `GrantedScopes`
+// (via [scopesmerge.MergeHandlerGrants]) before a SINGLE, UNIFIED
+// CheckScopes call covering BOTH mechanisms.
+func runSubscribeSecurityImpls[T any](ctx context.Context, msg pahomqtt.Message, value *T, secReqs []route.SecurityRequirement, impls []middleware.ServerImplementation) (map[string][]string, error) {
 	granted := make(map[string][]string)
 	for _, impl := range impls {
 		fn, ok := impl.Fn.(func(context.Context, pahomqtt.Message, *T) (map[string][]string, error))
@@ -166,13 +172,13 @@ func runSubscribeSecurityImpls[T any](ctx context.Context, msg pahomqtt.Message,
 		}
 		g, err := fn(ctx, msg, value)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		for k, v := range g {
 			granted[k] = v
 		}
 	}
-	return middleware.CheckScopes(secReqs, granted)
+	return granted, nil
 }
 
 // wrapSubscribeGeneral wraps fn with every general-purpose Fn found in

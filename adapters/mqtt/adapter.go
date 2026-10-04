@@ -9,6 +9,7 @@ import (
 
 	pahomqtt "github.com/eclipse/paho.mqtt.golang"
 
+	"github.com/DaniDeer/go-codex/adapters/internal/scopesmerge"
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
@@ -260,7 +261,7 @@ func subscribeHandler[T any](
 	}
 	return func(_ pahomqtt.Client, msg pahomqtt.Message) {
 		start := time.Now()
-		// docs/roadmap/declarative-middleware-layering.md's Rollout Phase
+		// docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase
 		// B: pre-allocates the shared ContextField box (idempotent,
 		// mirrors adapters/nethttp/chi's identical per-request call) so a
 		// Subscribe-side Middleware.SetContextFieldFromIn link has
@@ -368,8 +369,10 @@ func subscribeHandler[T any](
 		// never ErrorChannel/DeadLetter-eligible under its own security
 		// classification). Mirrors mqtt5's/zeromq's identical placement
 		// and events.SecurityError wrapping exactly.
+		granted := make(map[string][]string)
 		if len(handle.Implementations) > 0 {
-			if err := runSubscribeSecurityImpls(ctx, msg, &value, secReqs, handle.Implementations); err != nil {
+			g, err := runSubscribeSecurityImpls(ctx, msg, &value, secReqs, handle.Implementations)
+			if err != nil {
 				if secObs, ok := obs.(stats.SecurityObserver); ok {
 					secObs.RecordSecurityRejection(msg.Topic(), route.FirstSchemeName(secReqs))
 				}
@@ -387,6 +390,7 @@ func subscribeHandler[T any](
 				}
 				return
 			}
+			granted = g
 		}
 
 		// Codec-backed middleware dispatch (Transform and bundled .Use())
@@ -398,7 +402,8 @@ func subscribeHandler[T any](
 		if len(handle.MiddlewareHandlers) > 0 {
 			// mqtt (v3) has no property mechanism at all — passes nil for
 			// propertyVars, mirroring zeromq's identical carve-out.
-			if mwErr := events.DispatchSubscribeMiddlewareHandlers(ctx, &value, handle.MiddlewareHandlers, topicVars, nil); mwErr != nil {
+			outs, mwErr := events.DispatchSubscribeMiddlewareHandlers(ctx, &value, handle.MiddlewareHandlers, topicVars, nil)
+			if mwErr != nil {
 				obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
 				dispatchErr, _ := events.AsMiddlewareDispatchError(mwErr)
 				if dispatchErr.IsFnError {
@@ -425,6 +430,37 @@ func subscribeHandler[T any](
 				}
 				if opts.OnError != nil {
 					opts.OnError(SubscribeError{Kind: KindDecode, Topic: msg.Topic(), Err: dispatchErr.Err})
+				}
+				return
+			}
+			satisfies := make([][]string, len(handle.MiddlewareHandlers))
+			for i, h := range handle.MiddlewareHandlers {
+				satisfies[i] = h.Satisfies
+			}
+			scopesmerge.MergeHandlerGrants(granted, satisfies, outs)
+		}
+
+		// docs/design/d-0007-declarative-middleware-layering.md's "Prerequisite
+		// for Phase 2 (api/events)": ONE, UNIFIED CheckScopes call
+		// covering grants from BOTH the legacy Implementations path
+		// (above) AND any bound MiddlewareHandler's own GrantedScopes
+		// (merged above).
+		if len(secReqs) > 0 {
+			if err := middleware.CheckScopes(secReqs, granted); err != nil {
+				if secObs, ok := obs.(stats.SecurityObserver); ok {
+					secObs.RecordSecurityRejection(msg.Topic(), route.FirstSchemeName(secReqs))
+				}
+				obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
+				wrapped := events.SecurityError{Err: err}
+				if handled, matched := tryPublishErrorChannel(ctx, client, handle, obs, wrapped); handled {
+					return
+				} else if !matched {
+					if tryDeadLetter(client, handle, obs, msg.Topic(), msg.Payload(), wrapped) {
+						return
+					}
+				}
+				if opts.OnError != nil {
+					opts.OnError(SubscribeError{Kind: KindSecurity, Topic: msg.Topic(), Err: wrapped})
 				}
 				return
 			}
@@ -552,7 +588,7 @@ type PublishOptions[T any] struct {
 // PublishMW-attached Fn add tracing, mutate/log msg, or implement retry
 // logic around the actual encode/publish call.
 func publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.ChannelHandle[T], msg T, vars map[string]string, opts PublishOptions[T], formats ...format.Format[T]) error {
-	// docs/roadmap/declarative-middleware-layering.md's Rollout Phase B:
+	// docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase B:
 	// pre-allocates the shared ContextField box (idempotent, mirrors
 	// adapters/nethttp/chi's identical per-call site) so a Publish-side
 	// Middleware.SetContextFieldFromOut link has somewhere to publish

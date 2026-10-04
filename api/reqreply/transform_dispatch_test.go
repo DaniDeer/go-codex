@@ -14,18 +14,18 @@ type dispatchReq struct{ Val string }
 func TestDispatchServerMiddlewareHandlers_success(t *testing.T) {
 	h := reqreply.MiddlewareHandler{
 		Name: "mw",
-		DecodeIn: func(topicVars, propertyVars map[string]string) (any, error) {
+		DecodeIn: func(_ context.Context, topicVars, propertyVars map[string]string) (any, error) {
 			return topicVars["id"], nil
 		},
 		Fn: func(ctx context.Context, req *dispatchReq, in string) (string, error) {
 			return "ack-" + in, nil
 		},
-		EncodeOut: func(out any) (topicVars, propertyVars map[string]string, err error) {
+		EncodeOut: func(_ context.Context, out any) (topicVars, propertyVars map[string]string, err error) {
 			return map[string]string{"ack": out.(string)}, nil, nil
 		},
 	}
 	reqPtr := reflect.ValueOf(&dispatchReq{Val: "x"})
-	outTopicVars, _, name, failKind, err := reqreply.DispatchServerMiddlewareHandlers(context.Background(), reqPtr, []reqreply.MiddlewareHandler{h}, map[string]string{"id": "7"}, nil)
+	outTopicVars, _, _, name, failKind, err := reqreply.DispatchServerMiddlewareHandlers(context.Background(), reqPtr, []reqreply.MiddlewareHandler{h}, map[string]string{"id": "7"}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -41,12 +41,12 @@ func TestDispatchServerMiddlewareHandlers_decodeInFailure(t *testing.T) {
 	wantErr := errors.New("decode failed")
 	h := reqreply.MiddlewareHandler{
 		Name: "mw",
-		DecodeIn: func(topicVars, propertyVars map[string]string) (any, error) {
+		DecodeIn: func(_ context.Context, topicVars, propertyVars map[string]string) (any, error) {
 			return nil, wantErr
 		},
 	}
 	reqPtr := reflect.ValueOf(&dispatchReq{})
-	_, _, name, failKind, err := reqreply.DispatchServerMiddlewareHandlers(context.Background(), reqPtr, []reqreply.MiddlewareHandler{h}, nil, nil)
+	_, _, _, name, failKind, err := reqreply.DispatchServerMiddlewareHandlers(context.Background(), reqPtr, []reqreply.MiddlewareHandler{h}, nil, nil)
 	if failKind != "in" || name != "mw" || !errors.Is(err, wantErr) {
 		t.Fatalf("unexpected result: name=%q failKind=%q err=%v", name, failKind, err)
 	}
@@ -56,7 +56,7 @@ func TestDispatchServerMiddlewareHandlers_fnFailureWrapsMiddlewareError(t *testi
 	wantErr := errors.New("boom")
 	h := reqreply.MiddlewareHandler{
 		Name: "mw",
-		DecodeIn: func(topicVars, propertyVars map[string]string) (any, error) {
+		DecodeIn: func(_ context.Context, topicVars, propertyVars map[string]string) (any, error) {
 			return "in", nil
 		},
 		Fn: func(ctx context.Context, req *dispatchReq, in string) (string, error) {
@@ -64,7 +64,7 @@ func TestDispatchServerMiddlewareHandlers_fnFailureWrapsMiddlewareError(t *testi
 		},
 	}
 	reqPtr := reflect.ValueOf(&dispatchReq{})
-	_, _, name, failKind, err := reqreply.DispatchServerMiddlewareHandlers(context.Background(), reqPtr, []reqreply.MiddlewareHandler{h}, nil, nil)
+	_, _, _, name, failKind, err := reqreply.DispatchServerMiddlewareHandlers(context.Background(), reqPtr, []reqreply.MiddlewareHandler{h}, nil, nil)
 	if failKind != "fn" || name != "mw" {
 		t.Fatalf("unexpected classification: name=%q failKind=%q", name, failKind)
 	}
@@ -78,18 +78,18 @@ func TestDispatchServerMiddlewareHandlers_encodeOutFailure(t *testing.T) {
 	wantErr := errors.New("encode failed")
 	h := reqreply.MiddlewareHandler{
 		Name: "mw",
-		DecodeIn: func(topicVars, propertyVars map[string]string) (any, error) {
+		DecodeIn: func(_ context.Context, topicVars, propertyVars map[string]string) (any, error) {
 			return "in", nil
 		},
 		Fn: func(ctx context.Context, req *dispatchReq, in string) (string, error) {
 			return "out", nil
 		},
-		EncodeOut: func(out any) (topicVars, propertyVars map[string]string, err error) {
+		EncodeOut: func(_ context.Context, out any) (topicVars, propertyVars map[string]string, err error) {
 			return nil, nil, wantErr
 		},
 	}
 	reqPtr := reflect.ValueOf(&dispatchReq{})
-	_, _, name, failKind, err := reqreply.DispatchServerMiddlewareHandlers(context.Background(), reqPtr, []reqreply.MiddlewareHandler{h}, nil, nil)
+	_, _, _, name, failKind, err := reqreply.DispatchServerMiddlewareHandlers(context.Background(), reqPtr, []reqreply.MiddlewareHandler{h}, nil, nil)
 	if failKind != "out" || name != "mw" || !errors.Is(err, wantErr) {
 		t.Fatalf("unexpected result: name=%q failKind=%q err=%v", name, failKind, err)
 	}
@@ -101,7 +101,7 @@ func TestDispatchClientMiddlewareIn_success(t *testing.T) {
 		Fn: func(ctx context.Context, req dispatchReq) (string, error) {
 			return req.Val, nil
 		},
-		EncodeIn: func(in any) (topicVars, propertyVars map[string]string, err error) {
+		EncodeIn: func(_ context.Context, in any) (topicVars, propertyVars map[string]string, err error) {
 			return map[string]string{"id": in.(string)}, nil, nil
 		},
 	}
@@ -118,11 +118,11 @@ func TestDispatchClientMiddlewareOut_decodeFailurePropagates(t *testing.T) {
 	wantErr := errors.New("decode out failed")
 	h := reqreply.ClientMiddlewareHandler{
 		Name: "mw",
-		DecodeOut: func(topicVars, propertyVars map[string]string) (any, error) {
+		DecodeOut: func(_ context.Context, topicVars, propertyVars map[string]string) (any, error) {
 			return nil, wantErr
 		},
 	}
-	err := reqreply.DispatchClientMiddlewareOut(nil, nil, []reqreply.ClientMiddlewareHandler{h})
+	err := reqreply.DispatchClientMiddlewareOut(context.Background(), nil, nil, []reqreply.ClientMiddlewareHandler{h})
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("expected wantErr, got %v", err)
 	}

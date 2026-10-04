@@ -152,7 +152,7 @@
 >   D-0003's `Middleware[In,Out]`) already covers this; the actual
 >   blocker was a merge-field registration bug in
 >   `MergedPropertyParam[T].applyChannel`/`applyRoute`, now fixed — see
->   [Feature: Event Channels](../features/events.md#codec-backed-middleware-transformclienttransform).
+>   [Feature: Event Channels](../features/events.md#codec-backed-middleware-subscribemwpublishmw).
 > - **Response Topic/Correlation Data — decided, closed.** Stays an
 >   IMPLICIT, always-on characteristic of `mqtt5`'s reqreply transport
 >   (every route needs it unconditionally, no opt-out scenario to gate),
@@ -832,7 +832,7 @@ is a VALIDATE-ONLY escape hatch, living entirely inside `adapters/mqtt5` (never
 User Properties. A MERGE-CAPABLE sibling for the adapter-agnostic case DOES
 now exist — `events.NewPropertyParam[T,V]`/`reqreply.NewPropertyParam[T,V]`,
 attached directly to `NewChannel`/`NewRoute` (see
-[Feature: Event Channels](../features/events.md#codec-backed-middleware-transformclienttransform)) —
+[Feature: Event Channels](../features/events.md#codec-backed-middleware-subscribemwpublishmw)) —
 but there is still no declarative "this channel REQUIRES User Property
 support" statement a caller can make at the `api/events.Channel` level for
 an mqtt(v3)-specific capability; today, a caller simply never attempts to
@@ -6125,7 +6125,7 @@ own "Lessons Learned" section warns is invisible to
 - `mqtt5-user-property-merge.md` (retired) — its own "registration
   surface... NOT resolved" question is answered by §5.2 above; its own
   motivating gap turned out to be a fixable bug in already-shipped code,
-  see [Feature: Event Channels](../features/events.md#codec-backed-middleware-transformclienttransform).
+  see [Feature: Event Channels](../features/events.md#codec-backed-middleware-subscribemwpublishmw).
 - [D-0004 — ReqReply Workflow Simplification](../design/d-0004-reqreply-workflow-simplification.md) — its
   `Client`/`Server`/`Attach` rework was the prerequisite this doc's
   original finding needed to re-evaluate Response Topic/Correlation Data

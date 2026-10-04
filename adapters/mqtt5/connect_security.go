@@ -25,7 +25,7 @@ import (
 // Connect() — it wraps an ALREADY-connected client for a FORMAT-only
 // pre-check, appropriate when the caller connects via their own means.
 //
-// Housekeeping correction (docs/roadmap/declarative-middleware-layering.md's
+// Housekeeping correction (docs/design/d-0007-declarative-middleware-layering.md's
 // Rollout Phase B): this file's own doc comment PREVIOUSLY claimed
 // "go-codex NEVER calls Connect() itself" at the PACKAGE level — that is
 // FALSE. [Connect] (in connect.go) is this package's own sibling function

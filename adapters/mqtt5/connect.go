@@ -136,7 +136,7 @@ func Connect(ctx context.Context, brokerURL string, opts ConnectOptions) (MQTTCl
 		// auth rejection (reason code >= 0x80) it returns BOTH a non-nil
 		// *paho.Connack AND a generic wrapped error; previously this
 		// struct reason was silently discarded, only the generic error
-		// string survived (docs/roadmap/declarative-middleware-layering.md's
+		// string survived (docs/design/d-0007-declarative-middleware-layering.md's
 		// Rollout Phase B).
 		if connack != nil {
 			connErr.ReasonCode = connack.ReasonCode

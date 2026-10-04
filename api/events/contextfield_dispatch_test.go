@@ -9,7 +9,7 @@ import (
 	"github.com/DaniDeer/go-codex/middleware"
 )
 
-// docs/roadmap/declarative-middleware-layering.md's Rollout Phase B,
+// docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase B,
 // Phase 3: Middleware.SetContextFieldFromIn/SetContextFieldFromOut —
 // events' mirror of adapters/nethttp/contextfield_dispatch_test.go's
 // dispatch-order tests. Confirmed design-closure Decision 1 (no
@@ -46,7 +46,7 @@ func TestSetContextFieldFromIn_DispatchOrder_BeforeFn(t *testing.T) {
 
 	ctx := middleware.EnsureContextFields(context.Background())
 	msg := userEvent{}
-	if err := events.DispatchSubscribeMiddlewareHandlers(ctx, &msg, h.MiddlewareHandlers, map[string]string{"userID": "acme-corp"}, nil); err != nil {
+	if _, err := events.DispatchSubscribeMiddlewareHandlers(ctx, &msg, h.MiddlewareHandlers, map[string]string{"userID": "acme-corp"}, nil); err != nil {
 		t.Fatalf("DispatchSubscribeMiddlewareHandlers: %v", err)
 	}
 	if fnSawUserID != "acme-corp" {

@@ -12,7 +12,7 @@ import (
 	"github.com/DaniDeer/go-codex/middleware"
 )
 
-// ── docs/roadmap/declarative-middleware-layering.md's Rollout Phase A,
+// ── docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase A,
 // Phase 3: Middleware.SetContextFieldFromIn/SetContextFieldFromOut —
 // end-to-end dispatch order, handler retrieval, and client-side round-trip.
 

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/DaniDeer/go-codex/adapters/internal/scopesmerge"
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
@@ -480,6 +481,12 @@ func (t *serverTransport) BindServer(s *reqreply.Server) error {
 // routeAny/fnAny — see [serverTransport]'s doc comment for this shim's
 // shipped capability parity and blocking contract.
 func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) error {
+	// docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase C:
+	// pre-allocates the shared ContextField box ONCE for this Serve
+	// call's whole lifetime, reused across every received message
+	// (mirrors events' adapters/zeromq's identical, already-proven-safe
+	// pattern).
+	ctx = middleware.EnsureContextFields(ctx)
 	rv, elem, err := recoverRouteHandleValue(routeAny)
 	if err != nil {
 		return err
@@ -545,8 +552,9 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 	if err := validateServerImplementationShapes(path, impls, securityFnType, generalDecoratorFnType); err != nil {
 		return err
 	}
+	middlewareHandlers, _ := elem.FieldByName("MiddlewareHandlers").Interface().([]reqreply.MiddlewareHandler)
 	secReqs := effectiveSecurity(elem)
-	if err := reqreply.CheckCoverage(path, secReqs, impls); err != nil {
+	if err := reqreply.CheckCoverage(path, secReqs, impls, middlewareHandlers); err != nil {
 		return err
 	}
 
@@ -578,7 +586,6 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 	// empty topic-var map (zeromq's REQ/REP wire carries no topic
 	// frame/template) — a route declaring a REQUIRED property fails
 	// naturally with [reqreply.MiddlewareInputError], no special-casing.
-	middlewareHandlers, _ := elem.FieldByName("MiddlewareHandlers").Interface().([]reqreply.MiddlewareHandler)
 
 	if err := sock.SetRecvTimeout(recvPollInterval); err != nil {
 		return SocketError{Op: "set_recv_timeout", Err: err}
@@ -677,10 +684,22 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 		// docs/design/d-0003-codec-declared-middlewares.md's Addendum: codec-
 		// backed Middleware[In,Out] dispatch — runs AFTER the paired
 		// security Fns above (D1), reading/enriching the SAME reqVal.
+		//
+		// docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase
+		// C: zeromq's legacy runPairedServerSecurity (above) has NO
+		// grants concept at all (plain error, no CheckScopes call ever
+		// existed here) — granted starts empty and is populated SOLELY
+		// by any bound MiddlewareHandler's own GrantedScopes, merged
+		// below.
+		granted := make(map[string][]string)
+		satisfies := make([][]string, len(middlewareHandlers))
+		for i, h := range middlewareHandlers {
+			satisfies[i] = h.Satisfies
+		}
 		if len(middlewareHandlers) > 0 {
 			reqPtr := reflect.New(reqType)
 			reqPtr.Elem().Set(reqVal)
-			_, _, mwName, failKind, mwErr := reqreply.DispatchServerMiddlewareHandlers(spanCtx, reqPtr, middlewareHandlers, nil, nil)
+			_, _, outs, mwName, failKind, mwErr := reqreply.DispatchServerMiddlewareHandlers(spanCtx, reqPtr, middlewareHandlers, nil, nil)
 			if mwErr != nil {
 				kind := KindDecode
 				loc := "middleware:in"
@@ -707,6 +726,35 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 				continue
 			}
 			reqVal = reqPtr.Elem()
+			scopesmerge.MergeHandlerGrants(granted, satisfies, outs)
+		}
+
+		// docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase
+		// C: CheckScopes now covers any bound MiddlewareHandler's
+		// GrantedScopes — gated on [scopesmerge.HasSatisfyingHandler]
+		// (at least one BOUND MiddlewareHandler is Security-shaped), NOT
+		// on secReqs alone. zeromq's legacy Fn shape
+		// (runPairedServerSecurity) is PURE binary accept/reject, with
+		// NO grants concept — a route relying SOLELY on it, or on a
+		// general-purpose bound middleware, must keep its EXISTING "Fn
+		// success = request proceeds" semantics UNCHANGED (confirmed via
+		// a real test regression caught during implementation).
+		if len(secReqs) > 0 && scopesmerge.HasSatisfyingHandler(satisfies) {
+			if err := middleware.CheckScopes(secReqs, granted); err != nil {
+				wrapped := reqreply.SecurityError{Err: err}
+				if secObs, ok := obs.(stats.SecurityObserver); ok {
+					secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
+				}
+				serveErr = wrapped
+				obs.RecordRequest("ZMQ-REP", path, 0, time.Since(start))
+				sendHandlerErrorReplyReflect(spanCtx, sock, observeErrorResponseForMethod, wrapped, obs)
+				tryDeadLetterReflect(t.sockets, deadLetterForMethod, obs, path, payload, wrapped)
+				endSpan()
+				if t.opts.OnError != nil {
+					t.opts.OnError(ServeError{Kind: KindSecurity, Err: wrapped})
+				}
+				continue
+			}
 		}
 
 		fnResults := dispatchFn.Call([]reflect.Value{reflect.ValueOf(spanCtx), reqVal})
@@ -832,6 +880,9 @@ func (t *clientTransport) Call(ctx context.Context, routeAny any, reqAny any, op
 // statement in this function without touching each one individually —
 // mirrors [adapters/mqtt5]'s identical pattern.
 func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, callOpts reqreply.ClientCallOptions) (result any, err error) {
+	// docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase C:
+	// pre-allocates the shared ContextField box for THIS call.
+	ctx = middleware.EnsureContextFields(ctx)
 	obs := t.opts.Observer
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
@@ -1107,7 +1158,7 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 			// mwErr is UNAMBIGUOUSLY an Out-decode failure — reported as
 			// "middleware:out", symmetric with "middleware:in" already
 			// covering the client-side ENCODE of the request's In struct.
-			if mwErr := reqreply.DispatchClientMiddlewareOut(nil, nil, clientMiddlewareHandlers); mwErr != nil {
+			if mwErr := reqreply.DispatchClientMiddlewareOut(ctx, nil, nil, clientMiddlewareHandlers); mwErr != nil {
 				stats.ReportErrors(obs, "middleware:out", mwErr)
 				obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
 				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: mwErr}).Convert(errType)}
@@ -1237,6 +1288,10 @@ func (t *routerServerTransport) BindServer(s *reqreply.Server) error {
 // goroutine → decode → call fn → encode → send identity-addressed
 // reply) via reflection against routeAny/fnAny.
 func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny any) error {
+	// docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase C:
+	// pre-allocates the shared ContextField box ONCE for this Serve
+	// call's whole lifetime, reused across every received message.
+	ctx = middleware.EnsureContextFields(ctx)
 	rv, elem, err := recoverRouteHandleValue(routeAny)
 	if err != nil {
 		return err
@@ -1291,8 +1346,9 @@ func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny a
 	if err := validateServerImplementationShapes(path, impls, securityFnType, generalDecoratorFnType); err != nil {
 		return err
 	}
+	middlewareHandlers, _ := elem.FieldByName("MiddlewareHandlers").Interface().([]reqreply.MiddlewareHandler)
 	secReqs := effectiveSecurity(elem)
-	if err := reqreply.CheckCoverage(path, secReqs, impls); err != nil {
+	if err := reqreply.CheckCoverage(path, secReqs, impls, middlewareHandlers); err != nil {
 		return err
 	}
 
@@ -1316,7 +1372,6 @@ func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny a
 	// ALWAYS-EMPTY property-value map and topic-var map (ROUTER frames
 	// carry no topic/property) — a route declaring a REQUIRED property
 	// fails naturally, no special-casing.
-	middlewareHandlers, _ := elem.FieldByName("MiddlewareHandlers").Interface().([]reqreply.MiddlewareHandler)
 
 	if err := sock.SetRecvTimeout(recvPollInterval); err != nil {
 		return SocketError{Op: "set_recv_timeout", Err: err}
@@ -1413,10 +1468,21 @@ func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny a
 			// docs/design/d-0003-codec-declared-middlewares.md's Addendum: codec-
 			// backed Middleware[In,Out] dispatch — runs AFTER the paired
 			// security Fns above (D1), reading/enriching the SAME reqVal.
+			//
+			// docs/design/d-0007-declarative-middleware-layering.md's Rollout
+			// Phase C: zeromq's legacy runPairedServerSecurity (above)
+			// has NO grants concept at all — granted starts empty and is
+			// populated SOLELY by any bound MiddlewareHandler's own
+			// GrantedScopes, merged below.
+			granted := make(map[string][]string)
+			satisfies := make([][]string, len(middlewareHandlers))
+			for i, h := range middlewareHandlers {
+				satisfies[i] = h.Satisfies
+			}
 			if len(middlewareHandlers) > 0 {
 				reqPtr := reflect.New(reqType)
 				reqPtr.Elem().Set(reqVal)
-				_, _, mwName, failKind, mwErr := reqreply.DispatchServerMiddlewareHandlers(spanCtx, reqPtr, middlewareHandlers, nil, nil)
+				_, _, outs, mwName, failKind, mwErr := reqreply.DispatchServerMiddlewareHandlers(spanCtx, reqPtr, middlewareHandlers, nil, nil)
 				if mwErr != nil {
 					kind := KindDecode
 					loc := "middleware:in"
@@ -1442,6 +1508,28 @@ func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny a
 					return
 				}
 				reqVal = reqPtr.Elem()
+				scopesmerge.MergeHandlerGrants(granted, satisfies, outs)
+			}
+
+			// docs/design/d-0007-declarative-middleware-layering.md's Rollout
+			// Phase C: CheckScopes now covers any bound MiddlewareHandler's
+			// GrantedScopes — gated on [scopesmerge.HasSatisfyingHandler]
+			// (same rationale as the non-ROUTER variant above).
+			if len(secReqs) > 0 && scopesmerge.HasSatisfyingHandler(satisfies) {
+				if err := middleware.CheckScopes(secReqs, granted); err != nil {
+					wrapped := reqreply.SecurityError{Err: err}
+					if secObs, ok := obs.(stats.SecurityObserver); ok {
+						secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
+					}
+					serveErr = wrapped
+					obs.RecordRequest("ZMQ-ROUTER", path, 0, time.Since(start))
+					sendRouterHandlerErrorReplyReflect(spanCtx, sock, id, observeErrorResponseForMethod, wrapped, obs)
+					tryDeadLetterReflect(t.sockets, deadLetterForMethod, obs, path, pl, wrapped)
+					if t.opts.OnError != nil {
+						t.opts.OnError(ServeError{Kind: KindSecurity, Err: wrapped})
+					}
+					return
+				}
 			}
 
 			fnResults := dispatchFn.Call([]reflect.Value{reflect.ValueOf(spanCtx), reqVal})
@@ -1554,6 +1642,9 @@ func (t *dealerClientTransport) Call(ctx context.Context, routeAny any, reqAny a
 // TraceObserver span-end observe the eventual error from EVERY return
 // statement — mirrors [clientTransport.call]'s identical pattern.
 func (t *dealerClientTransport) call(ctx context.Context, routeAny any, reqAny any, callOpts reqreply.ClientCallOptions) (result any, err error) {
+	// docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase C:
+	// pre-allocates the shared ContextField box for THIS call.
+	ctx = middleware.EnsureContextFields(ctx)
 	obs := t.opts.Observer
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
@@ -1785,7 +1876,7 @@ func (t *dealerClientTransport) call(ctx context.Context, routeAny any, reqAny a
 			// payload]) — both maps are always empty; mirrors the
 			// identical ZMQ-REQ variant's call. mwErr is UNAMBIGUOUSLY an
 			// Out-decode failure — reported as "middleware:out".
-			if mwErr := reqreply.DispatchClientMiddlewareOut(nil, nil, clientMiddlewareHandlers); mwErr != nil {
+			if mwErr := reqreply.DispatchClientMiddlewareOut(ctx, nil, nil, clientMiddlewareHandlers); mwErr != nil {
 				stats.ReportErrors(obs, "middleware:out", mwErr)
 				obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
 				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: mwErr}).Convert(errType)}

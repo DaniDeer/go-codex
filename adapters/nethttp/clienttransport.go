@@ -293,7 +293,7 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 	}
 	start := time.Now()
 
-	// docs/roadmap/declarative-middleware-layering.md's Rollout Phase A:
+	// docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase A:
 	// pre-allocate the shared ContextField box BEFORE any attached
 	// ClientMW's EncodeIn/DecodeOut runs (mirrors every server adapter's
 	// identical EnsureContextFields call) — a ClientMW using
@@ -678,7 +678,7 @@ func (t *clientTransport) Consume(ctx context.Context, sseRouteAny, reqAny, fnAn
 	}
 	obs := stats.ObserverFromContext(ctx)
 
-	// docs/roadmap/declarative-middleware-layering.md's Rollout Phase A:
+	// docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase A:
 	// see [clientTransport.Call]'s identical EnsureContextFields call for
 	// the full rationale.
 	ctx = middleware.EnsureContextFields(ctx)

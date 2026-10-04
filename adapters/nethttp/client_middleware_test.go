@@ -20,7 +20,7 @@ import (
 // `.Use()` codec-backed middleware. This gap (neither
 // [rest.CallWithTransport] nor [clientTransport.Call]/[clientTransport.Consume]
 // dispatched handle.ClientMiddlewareHandlers) was closed in
-// docs/roadmap/declarative-middleware-layering.md's Rollout Phase A —
+// docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase A —
 // see [TestAttach_ClientCall_CodecBackedClientMW_EncodesInAndDecodesOut]/
 // [TestAttach_ClientConsume_CodecBackedClientMW_EncodesInAndDecodesOut]
 // (clienttransport_test.go) for the current, passing coverage.
