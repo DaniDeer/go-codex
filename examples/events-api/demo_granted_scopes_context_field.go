@@ -12,17 +12,19 @@ import (
 	"github.com/DaniDeer/go-codex/examples/events-api/routes"
 )
 
-// demoGrantedScopesContextField exercises routes.GrantedScopesSub —
-// the GENERALIZED events.SecurityMiddleware[In,Out] (routes.
-// GrantedScopesSensorMw) dispatched through SubscribeMW's NEW additive
-// 2-return bound shape, with a REAL GrantedScopes-carrying Out enforced
-// by middleware.CheckScopes, AND the authenticated API key propagated to
+// demoGrantedScopesContextField exercises routes.GrantedScopesSub — the
+// channel-BOUND class (routes.NewGrantedScopesSensorMw, built via
+// events.BoundSecuritySubscribeMiddleware with handlers.VerifyAPIKeyGS
+// embedded at construction), attached via Subscriber.SubscribeBoundMW,
+// with a REAL GrantedScopes-carrying Out enforced by
+// middleware.CheckScopes, AND the authenticated API key propagated to
 // the real subscribe handler via middleware.ContextField (routes.
 // GrantedScopesUserIDField) — zero manual re-decoding inside the
-// handler. See docs/design/d-0007-declarative-middleware-layering.md
-// for the full design this demo exercises end-to-end.
+// handler. See docs/roadmap/bound-middleware-split.md's events/
+// BoundSubscribeMiddleware section for the full design this demo
+// exercises end-to-end.
 func demoGrantedScopesContextField(ctx context.Context) {
-	fmt.Println("--- Demo: GrantedScopes + ContextField (SubscribeMW bound 2-return shape) ---")
+	fmt.Println("--- Demo: GrantedScopes + ContextField (SubscribeBoundMW) ---")
 
 	runOnce := func(label, apiKey string, wantHandled bool) {
 		router := mqtt5broker.NewMockRouter()
@@ -36,7 +38,7 @@ func demoGrantedScopesContextField(ctx context.Context) {
 
 		var rejected error
 		sub := routes.GrantedScopesSub.
-			SubscribeMW(&routes.GrantedScopesSensorMw, handlers.VerifyAPIKeyGS).
+			SubscribeBoundMW(routes.NewGrantedScopesSensorMw(handlers.VerifyAPIKeyGS)).
 			WithHandler(handlers.PrintReadingGS(label)).
 			WithOptions(mqtt5adapter.SubscribeOptions{
 				OnError: func(e mqtt5adapter.SubscribeError) { rejected = e },

@@ -34,7 +34,7 @@ const (
 	KindSecurity
 
 	// KindMiddleware indicates a codec-backed [reqreply.Middleware]
-	// (Transform/ClientTransform-attached, or bundled via .Use()) fn's
+	// (SubscribeBoundMW/PublishBoundMW-attached, or bundled via .Use()) fn's
 	// own business error — [reqreply.MiddlewareError], D2's fallback for
 	// docs/design/d-0003-codec-declared-middlewares.md's Addendum's declared-
 	// middleware mechanism. Distinct from KindHandler (a real domain

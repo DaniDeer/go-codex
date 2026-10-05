@@ -184,14 +184,15 @@ func TestClientSubscribe_MiddlewareDispatch_RunsBeforeHandler(t *testing.T) {
 
 	var mu sync.Mutex
 	var order []string
-	emw := newTDEmptyDeclaration("full-pipeline-policy")
+	bm := events.NewBoundSubscribeMiddleware(newTDEmptyDeclaration("full-pipeline-policy"),
+		func(_ context.Context, _ *sensorReading, _ tdEmpty) (tdEmpty, error) {
+			mu.Lock()
+			order = append(order, "middleware")
+			mu.Unlock()
+			return tdEmpty{}, nil
+		})
 	sub := plainSensorChannel("sensors/readings").WithSubscribe(events.Subscribe{Summary: "test"})
-	sub = sub.SubscribeMW(emw, func(_ context.Context, _ *sensorReading, _ tdEmpty) error {
-		mu.Lock()
-		order = append(order, "middleware")
-		mu.Unlock()
-		return nil
-	})
+	sub = sub.SubscribeBoundMW(bm)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
@@ -397,12 +398,13 @@ func TestClientPublish_MiddlewareDispatch_RunsBeforeSend(t *testing.T) {
 	c := attachedTestClient(t, client)
 
 	mwCalled := false
-	emw := newTDEmptyDeclaration("full-pipeline-out-policy")
+	bm := events.NewBoundPublishMiddleware(newTDEmptyDeclaration("full-pipeline-out-policy"),
+		func(_ context.Context, _ sensorReading) (tdEmpty, error) {
+			mwCalled = true
+			return tdEmpty{}, nil
+		})
 	pub := plainSensorChannel("sensors/readings").WithPublish(events.Publish{Summary: "test"})
-	pub = pub.PublishMW(emw, func(_ context.Context, _ sensorReading) (tdEmpty, error) {
-		mwCalled = true
-		return tdEmpty{}, nil
-	})
+	pub = pub.PublishBoundMW(bm)
 
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
 	if err := c.Publish(context.Background(), pub, reading); err != nil {

@@ -47,16 +47,17 @@ func TestNewMiddleware_BuildsExpectedShape(t *testing.T) {
 	var _ middleware.RouteMiddleware = mw // compiles: RouteMiddlewareMarker is exported
 }
 
-// ── Transform: happy path, enrichment ────────────────────────────────────
+// ── BoundSubscribeMiddleware: happy path, enrichment ─────────────────────
 
-func TestTransform_HappyPath_EnrichesMsg(t *testing.T) {
-	mw := events.NewMiddleware(newTestDeclaration("region-policy"))
+func TestBoundSubscribeMiddleware_HappyPath_EnrichesMsg(t *testing.T) {
+	bm := events.NewBoundSubscribeMiddleware(newTestDeclaration("region-policy"),
+		func(ctx context.Context, msg *userEvent, in mdTestIn) (mdTestOut, error) {
+			msg.Name = msg.Name + "-enriched"
+			return mdTestOut{}, nil
+		})
 	subscriber := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithSubscribe(events.Subscribe{Summary: "User created"})
-	subscriber = subscriber.SubscribeMW(mw, func(ctx context.Context, msg *userEvent, in mdTestIn) error {
-		msg.Name = msg.Name + "-enriched"
-		return nil
-	})
+	subscriber = subscriber.SubscribeBoundMW(bm)
 	h, err := subscriber.Handle(nil)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -66,15 +67,16 @@ func TestTransform_HappyPath_EnrichesMsg(t *testing.T) {
 	}
 }
 
-// ── ClientTransform: registers a ClientMiddlewareHandler ─────────────────
+// ── BoundPublishMiddleware: registers a ClientMiddlewareHandler ──────────
 
-func TestClientTransform_PopulatesClientMiddlewareHandlers(t *testing.T) {
-	mw := events.NewMiddleware(newTestDeclaration("region-policy"))
+func TestBoundPublishMiddleware_PopulatesClientMiddlewareHandlers(t *testing.T) {
+	bm := events.NewBoundPublishMiddleware(newTestDeclaration("region-policy"),
+		func(ctx context.Context, msg userEvent) (mdTestOut, error) {
+			return mdTestOut{Value: "region-1"}, nil
+		})
 	publisher := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithPublish(events.Publish{Summary: "User created"})
-	publisher = publisher.PublishMW(mw, func(ctx context.Context, msg userEvent) (mdTestOut, error) {
-		return mdTestOut{Value: "region-1"}, nil
-	})
+	publisher = publisher.PublishBoundMW(bm)
 	h, err := publisher.Handle(nil)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -87,13 +89,13 @@ func TestClientTransform_PopulatesClientMiddlewareHandlers(t *testing.T) {
 // ── D6(b): duplicate middleware name on ONE channel is rejected ─────────
 
 func TestSubscriberHandle_DuplicateMiddlewareNameRejected(t *testing.T) {
-	mwA := events.NewMiddleware(newTestDeclaration("dup-policy"))
-	mwB := events.NewMiddleware(newTestDeclaration("dup-policy")) // SAME name
+	fn := func(ctx context.Context, msg *userEvent, in mdTestIn) (mdTestOut, error) { return mdTestOut{}, nil }
+	bmA := events.NewBoundSubscribeMiddleware(newTestDeclaration("dup-policy"), fn)
+	bmB := events.NewBoundSubscribeMiddleware(newTestDeclaration("dup-policy"), fn) // SAME name
 	subscriber := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithSubscribe(events.Subscribe{Summary: "User created"})
-	fn := func(ctx context.Context, msg *userEvent, in mdTestIn) error { return nil }
-	subscriber = subscriber.SubscribeMW(mwA, fn)
-	subscriber = subscriber.SubscribeMW(mwB, fn)
+	subscriber = subscriber.SubscribeBoundMW(bmA)
+	subscriber = subscriber.SubscribeBoundMW(bmB)
 
 	_, err := subscriber.Handle(nil)
 	var dupErr events.DuplicateMiddlewareNameError
@@ -105,9 +107,10 @@ func TestSubscriberHandle_DuplicateMiddlewareNameRejected(t *testing.T) {
 	}
 }
 
-// ── D7: combining bundled + bound attachment on ONE value is rejected ──
+// ── A codec-backed Middleware passed to SubscribeMW is rejected (the
+// legacy raw-adapter-Fn-pairing escape hatch is permanently closed) ─────
 
-func TestSubscriberHandle_AmbiguousDualAttachmentRejected(t *testing.T) {
+func TestSubscriberHandle_CodecBackedMiddlewarePassedToSubscribeMW_Rejected(t *testing.T) {
 	mw := events.NewMiddleware(newTestDeclaration("dual-policy")).
 		WithReceive(func(ctx context.Context, in mdTestIn) error { return nil })
 	subscriber := events.NewChannel[userEvent]("user/created", userEventCodec).
@@ -117,22 +120,21 @@ func TestSubscriberHandle_AmbiguousDualAttachmentRejected(t *testing.T) {
 	})
 
 	_, err := subscriber.Handle(nil)
-	var ambErr events.AmbiguousMiddlewareAttachmentError
-	if !errors.As(err, &ambErr) {
-		t.Fatalf("want AmbiguousMiddlewareAttachmentError, got %v", err)
+	var misErr events.MiddlewareMisattachedError
+	if !errors.As(err, &misErr) {
+		t.Fatalf("want MiddlewareMisattachedError, got %v", err)
 	}
-	if ambErr.Name != "dual-policy" {
-		t.Errorf("want Name %q, got %q", "dual-policy", ambErr.Name)
+	if misErr.Name != "dual-policy" {
+		t.Errorf("want Name %q, got %q", "dual-policy", misErr.Name)
 	}
 }
 
 func TestSubscriberHandle_SingleAttachmentStyleSucceeds(t *testing.T) {
-	mw := events.NewMiddleware(newTestDeclaration("single-policy"))
+	bm := events.NewBoundSubscribeMiddleware(newTestDeclaration("single-policy"),
+		func(ctx context.Context, msg *userEvent, in mdTestIn) (mdTestOut, error) { return mdTestOut{}, nil })
 	subscriber := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithSubscribe(events.Subscribe{Summary: "User created"})
-	subscriber = subscriber.SubscribeMW(mw, func(ctx context.Context, msg *userEvent, in mdTestIn) error {
-		return nil
-	})
+	subscriber = subscriber.SubscribeBoundMW(bm)
 	if _, err := subscriber.Handle(nil); err != nil {
 		t.Fatalf("want successful Handle, got %v", err)
 	}
@@ -237,8 +239,8 @@ func TestDuplicateMiddlewareNameError(t *testing.T) {
 	}
 }
 
-func TestAmbiguousMiddlewareAttachmentError(t *testing.T) {
-	err := events.AmbiguousMiddlewareAttachmentError{Name: "dual-policy"}
+func TestMiddlewareMisattachedError(t *testing.T) {
+	err := events.MiddlewareMisattachedError{Topic: "user/created", Name: "dual-policy"}
 	if err.Error() == "" {
 		t.Error("want non-empty Error() message")
 	}
@@ -267,21 +269,24 @@ func tenantPropertyParam(required bool) events.MergedPropertyParam[mdTestIn] {
 		func(in *mdTestIn, v string) { in.Key = v })
 }
 
+func boundFn() func(ctx context.Context, msg *userEvent, in mdTestIn) (mdTestOut, error) {
+	return func(ctx context.Context, msg *userEvent, in mdTestIn) (mdTestOut, error) { return mdTestOut{}, nil }
+}
+
 func TestChannel_Register_ConflictingParamContributionError(t *testing.T) {
-	mwA := events.NewMiddleware(newTestDeclaration("policy-a")).
+	bmA := events.NewBoundSubscribeMiddleware(newTestDeclaration("policy-a"), boundFn()).
 		WithSubscribeProperty(tenantPropertyParam(true))
 	// Force a genuine codec mismatch: policy-b declares tenantID with a
 	// DIFFERENT codec schema (plain String, no NonEmptyString refinement).
-	mwB := events.NewMiddleware(newTestDeclaration("policy-b")).
+	bmB := events.NewBoundSubscribeMiddleware(newTestDeclaration("policy-b"), boundFn()).
 		WithSubscribeProperty(events.NewPropertyParam("tenantID", codex.String(),
 			func(in mdTestIn) string { return in.Key },
 			func(in *mdTestIn, v string) { in.Key = v }))
 
-	fn := func(ctx context.Context, msg *userEvent, in mdTestIn) error { return nil }
 	subscriber := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithSubscribe(events.Subscribe{Summary: "User created"})
-	subscriber = subscriber.SubscribeMW(mwA, fn)
-	subscriber = subscriber.SubscribeMW(mwB, fn)
+	subscriber = subscriber.SubscribeBoundMW(bmA)
+	subscriber = subscriber.SubscribeBoundMW(bmB)
 
 	_, err := subscriber.Handle(nil)
 	var confErr events.ConflictingParamContributionError
@@ -294,16 +299,15 @@ func TestChannel_Register_ConflictingParamContributionError(t *testing.T) {
 }
 
 func TestChannel_Register_RequiredVsOptionalPropertyMismatchError(t *testing.T) {
-	mwA := events.NewMiddleware(newTestDeclaration("policy-a")).
+	bmA := events.NewBoundSubscribeMiddleware(newTestDeclaration("policy-a"), boundFn()).
 		WithSubscribeProperty(tenantPropertyParam(true))
-	mwB := events.NewMiddleware(newTestDeclaration("policy-b")).
+	bmB := events.NewBoundSubscribeMiddleware(newTestDeclaration("policy-b"), boundFn()).
 		WithSubscribeProperty(tenantPropertyParam(false))
 
-	fn := func(ctx context.Context, msg *userEvent, in mdTestIn) error { return nil }
 	subscriber := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithSubscribe(events.Subscribe{Summary: "User created"})
-	subscriber = subscriber.SubscribeMW(mwA, fn)
-	subscriber = subscriber.SubscribeMW(mwB, fn)
+	subscriber = subscriber.SubscribeBoundMW(bmA)
+	subscriber = subscriber.SubscribeBoundMW(bmB)
 
 	_, err := subscriber.Handle(nil)
 	var confErr events.ConflictingParamContributionError
@@ -313,16 +317,15 @@ func TestChannel_Register_RequiredVsOptionalPropertyMismatchError(t *testing.T) 
 }
 
 func TestChannel_Register_AgreeingParamContributions_DedupeWithoutError(t *testing.T) {
-	mwA := events.NewMiddleware(newTestDeclaration("policy-a")).
+	bmA := events.NewBoundSubscribeMiddleware(newTestDeclaration("policy-a"), boundFn()).
 		WithSubscribeProperty(tenantPropertyParam(true))
-	mwB := events.NewMiddleware(newTestDeclaration("policy-b")).
+	bmB := events.NewBoundSubscribeMiddleware(newTestDeclaration("policy-b"), boundFn()).
 		WithSubscribeProperty(tenantPropertyParam(true))
 
-	fn := func(ctx context.Context, msg *userEvent, in mdTestIn) error { return nil }
 	subscriber := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithSubscribe(events.Subscribe{Summary: "User created"})
-	subscriber = subscriber.SubscribeMW(mwA, fn)
-	subscriber = subscriber.SubscribeMW(mwB, fn)
+	subscriber = subscriber.SubscribeBoundMW(bmA)
+	subscriber = subscriber.SubscribeBoundMW(bmB)
 
 	h, err := subscriber.Handle(nil)
 	if err != nil {
@@ -343,17 +346,16 @@ func TestChannel_Register_AgreeingParamContributions_DedupeWithoutError(t *testi
 }
 
 func TestChannel_Register_TopicAndPropertySameName_NoConflict(t *testing.T) {
-	mw := events.NewMiddleware(newTestDeclaration("policy-a")).
+	bm := events.NewBoundSubscribeMiddleware(newTestDeclaration("policy-a"), boundFn()).
 		WithSubscribeProperty(tenantPropertyParam(true))
 
-	fn := func(ctx context.Context, msg *userEvent, in mdTestIn) error { return nil }
 	subscriber := events.NewChannel[userEvent](
 		"user/{tenantID}/created", userEventCodec,
 		events.NewTopicParam("tenantID", codex.String(),
 			func(e userEvent) string { return e.ID },
 			func(e *userEvent, v string) { e.ID = v }),
 	).WithSubscribe(events.Subscribe{Summary: "User created"})
-	subscriber = subscriber.SubscribeMW(mw, fn)
+	subscriber = subscriber.SubscribeBoundMW(bm)
 
 	if _, err := subscriber.Handle(nil); err != nil {
 		t.Fatalf("want no conflict between independent topic/property namespaces, got %v", err)
@@ -361,12 +363,11 @@ func TestChannel_Register_TopicAndPropertySameName_NoConflict(t *testing.T) {
 }
 
 func TestChannel_Register_OptionalProperty_NotInSchemaRequiredList(t *testing.T) {
-	mw := events.NewMiddleware(newTestDeclaration("policy-a")).
+	bm := events.NewBoundSubscribeMiddleware(newTestDeclaration("policy-a"), boundFn()).
 		WithSubscribeProperty(tenantPropertyParam(false))
-	fn := func(ctx context.Context, msg *userEvent, in mdTestIn) error { return nil }
 	subscriber := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithSubscribe(events.Subscribe{Summary: "User created"})
-	subscriber = subscriber.SubscribeMW(mw, fn)
+	subscriber = subscriber.SubscribeBoundMW(bm)
 
 	h, err := subscriber.Handle(nil)
 	if err != nil {
@@ -380,12 +381,11 @@ func TestChannel_Register_OptionalProperty_NotInSchemaRequiredList(t *testing.T)
 }
 
 func TestChannel_Register_RequiredProperty_InSchemaRequiredList(t *testing.T) {
-	mw := events.NewMiddleware(newTestDeclaration("policy-a")).
+	bm := events.NewBoundSubscribeMiddleware(newTestDeclaration("policy-a"), boundFn()).
 		WithSubscribeProperty(tenantPropertyParam(true))
-	fn := func(ctx context.Context, msg *userEvent, in mdTestIn) error { return nil }
 	subscriber := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithSubscribe(events.Subscribe{Summary: "User created"})
-	subscriber = subscriber.SubscribeMW(mw, fn)
+	subscriber = subscriber.SubscribeBoundMW(bm)
 
 	h, err := subscriber.Handle(nil)
 	if err != nil {
@@ -404,20 +404,22 @@ func TestChannel_Register_RequiredProperty_InSchemaRequiredList(t *testing.T) {
 
 // ── Round 12: multiple attachments accumulate, in registration order ────
 
-func TestSubscriber_MultipleTransformAttachments_DispatchInRegistrationOrder(t *testing.T) {
-	mwFirst := events.NewMiddleware(newTestDeclaration("first-policy"))
-	mwSecond := events.NewMiddleware(newTestDeclaration("second-policy"))
+func TestSubscriber_MultipleBoundAttachments_DispatchInRegistrationOrder(t *testing.T) {
+	bmFirst := events.NewBoundSubscribeMiddleware(newTestDeclaration("first-policy"),
+		func(ctx context.Context, msg *userEvent, in mdTestIn) (mdTestOut, error) {
+			msg.Name = "first"
+			return mdTestOut{}, nil
+		})
+	bmSecond := events.NewBoundSubscribeMiddleware(newTestDeclaration("second-policy"),
+		func(ctx context.Context, msg *userEvent, in mdTestIn) (mdTestOut, error) {
+			msg.Name = "second"
+			return mdTestOut{}, nil
+		})
 
 	subscriber := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithSubscribe(events.Subscribe{Summary: "User created"})
-	subscriber = subscriber.SubscribeMW(mwFirst, func(ctx context.Context, msg *userEvent, in mdTestIn) error {
-		msg.Name = "first"
-		return nil
-	})
-	subscriber = subscriber.SubscribeMW(mwSecond, func(ctx context.Context, msg *userEvent, in mdTestIn) error {
-		msg.Name = "second"
-		return nil
-	})
+	subscriber = subscriber.SubscribeBoundMW(bmFirst)
+	subscriber = subscriber.SubscribeBoundMW(bmSecond)
 
 	h, err := subscriber.Handle(nil)
 	if err != nil {
@@ -434,25 +436,25 @@ func TestSubscriber_MultipleTransformAttachments_DispatchInRegistrationOrder(t *
 
 // ── D6(c): two middlewares enriching the SAME *T field — last-applied wins ──
 
-func TestTransform_D6c_TwoMiddlewaresEnrichSameMsgField_LastAppliedWins(t *testing.T) {
+func TestBoundSubscribeMiddleware_D6c_TwoMiddlewaresEnrichSameMsgField_LastAppliedWins(t *testing.T) {
 	// propOptInCodec (no required fields) avoids mdTestInCodec's own
 	// NonEmptyString constraint tripping on a zero-value In — only
 	// attachment-order/last-write matters for this test.
 	decl := middleware.NewDeclaration("first-policy", propOptInCodec, mdTestOutCodec)
 	decl2 := middleware.NewDeclaration("second-policy", propOptInCodec, mdTestOutCodec)
-	mwFirst := events.NewMiddleware(decl)
-	mwSecond := events.NewMiddleware(decl2)
+	bmFirst := events.NewBoundSubscribeMiddleware(decl, func(ctx context.Context, msg *userEvent, in propOptIn) (mdTestOut, error) {
+		msg.Name = "first"
+		return mdTestOut{}, nil
+	})
+	bmSecond := events.NewBoundSubscribeMiddleware(decl2, func(ctx context.Context, msg *userEvent, in propOptIn) (mdTestOut, error) {
+		msg.Name = "second"
+		return mdTestOut{}, nil
+	})
 
 	subscriber := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithSubscribe(events.Subscribe{Summary: "User created"})
-	subscriber = subscriber.SubscribeMW(mwFirst, func(ctx context.Context, msg *userEvent, in propOptIn) error {
-		msg.Name = "first"
-		return nil
-	})
-	subscriber = subscriber.SubscribeMW(mwSecond, func(ctx context.Context, msg *userEvent, in propOptIn) error {
-		msg.Name = "second"
-		return nil
-	})
+	subscriber = subscriber.SubscribeBoundMW(bmFirst)
+	subscriber = subscriber.SubscribeBoundMW(bmSecond)
 	h, err := subscriber.Handle(nil)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -464,8 +466,8 @@ func TestTransform_D6c_TwoMiddlewaresEnrichSameMsgField_LastAppliedWins(t *testi
 		if err != nil {
 			t.Fatalf("DecodeIn: %v", err)
 		}
-		fn := mh.Fn.(func(context.Context, *userEvent, propOptIn) error)
-		if err := fn(context.Background(), &msg, in.(propOptIn)); err != nil {
+		fn := mh.Fn.(func(context.Context, *userEvent, propOptIn) (mdTestOut, error))
+		if _, err := fn(context.Background(), &msg, in.(propOptIn)); err != nil {
 			t.Fatalf("fn: %v", err)
 		}
 	}
@@ -540,20 +542,20 @@ func TestMiddleware_Use_SameValue_ReusedAcrossSubscriberAndPublisher(t *testing.
 	}
 }
 
-// ── SubscribeMW/PublishMW bound-dispatch fold-in (Rollout Phase B) ──────
+// ── SubscribeBoundMW/PublishBoundMW (bound-middleware-split) ────────────
 
-// TestSubscribeMW_BoundShape_DispatchesIdenticallyToTransform proves
-// SubscribeMW now recognizes the SAME channel-BOUND fn shape Transform
-// does, reaching the identical dispatch path (one MiddlewareHandler,
-// NOT Agnostic) without calling Transform directly.
-func TestSubscribeMW_BoundShape_DispatchesIdenticallyToTransform(t *testing.T) {
-	mw := events.NewMiddleware(newTestDeclaration("region-policy-mw"))
+// TestSubscribeBoundMW_DispatchesAsNonAgnosticHandler proves
+// SubscribeBoundMW reaches the channel-bound dispatch path (one
+// MiddlewareHandler, NOT Agnostic).
+func TestSubscribeBoundMW_DispatchesAsNonAgnosticHandler(t *testing.T) {
+	bm := events.NewBoundSubscribeMiddleware(newTestDeclaration("region-policy-mw"),
+		func(ctx context.Context, msg *userEvent, in mdTestIn) (mdTestOut, error) {
+			msg.Name = msg.Name + "-enriched"
+			return mdTestOut{}, nil
+		})
 	subscriber := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithSubscribe(events.Subscribe{Summary: "User created"}).
-		SubscribeMW(mw, func(ctx context.Context, msg *userEvent, in mdTestIn) error {
-			msg.Name = msg.Name + "-enriched"
-			return nil
-		})
+		SubscribeBoundMW(bm)
 	h, err := subscriber.Handle(nil)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -566,15 +568,16 @@ func TestSubscribeMW_BoundShape_DispatchesIdenticallyToTransform(t *testing.T) {
 	}
 }
 
-// TestPublishMW_BoundShape_DispatchesIdenticallyToClientTransform mirrors
-// the Subscribe-side test, for the publish (SENDING) role.
-func TestPublishMW_BoundShape_DispatchesIdenticallyToClientTransform(t *testing.T) {
-	mw := events.NewMiddleware(newTestDeclaration("region-policy-mw2"))
-	publisher := events.NewChannel[userEvent]("user/created", userEventCodec).
-		WithPublish(events.Publish{Summary: "User created"}).
-		PublishMW(mw, func(ctx context.Context, msg userEvent) (mdTestOut, error) {
+// TestPublishBoundMW_DispatchesAsNonAgnosticHandler mirrors the
+// Subscribe-side test, for the publish (SENDING) role.
+func TestPublishBoundMW_DispatchesAsNonAgnosticHandler(t *testing.T) {
+	bm := events.NewBoundPublishMiddleware(newTestDeclaration("region-policy-mw2"),
+		func(ctx context.Context, msg userEvent) (mdTestOut, error) {
 			return mdTestOut{Value: "region-1"}, nil
 		})
+	publisher := events.NewChannel[userEvent]("user/created", userEventCodec).
+		WithPublish(events.Publish{Summary: "User created"}).
+		PublishBoundMW(bm)
 	h, err := publisher.Handle(nil)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -588,12 +591,11 @@ func TestPublishMW_BoundShape_DispatchesIdenticallyToClientTransform(t *testing.
 }
 
 // TestSubscribeMW_LegacyCredentialShape_StillDispatchesViaLegacyPath
-// confirms the shape-detection fix (isBoundSubscribeMWShape) correctly
-// falls through to the UNCHANGED legacy path for a Fn matching
-// adapters/mqtt's/zeromq's own legacy security shape
-// (func(ctx, *T, []route.SecurityRequirement) error) — same arity AND
-// same 2nd-param type as the bound shape, distinguished ONLY by the 3rd
-// param's type (confirmed via this exact test, not just code review).
+// confirms SubscribeMW's rejection check (mw.(eventsMiddlewareContributor))
+// correctly falls through to the UNCHANGED legacy path for a bare
+// [middleware.Middleware] value, which does NOT implement
+// eventsMiddlewareContributor — only a codec-backed [Middleware][In, Out]
+// does.
 func TestSubscribeMW_LegacyCredentialShape_StillDispatchesViaLegacyPath(t *testing.T) {
 	legacyFn := func(ctx context.Context, msg *userEvent, reqs []route.SecurityRequirement) error { return nil }
 	subscriber := events.NewChannel[userEvent]("user/created", userEventCodec).
@@ -611,22 +613,24 @@ func TestSubscribeMW_LegacyCredentialShape_StillDispatchesViaLegacyPath(t *testi
 	}
 }
 
-// TestSecurityMiddleware_RealInOutType_DoesNotPanicOnDispatch is a
+// TestBoundSecurityMiddleware_RealInOutType_DoesNotPanicOnDispatch is a
 // REGRESSION GUARD mirroring rest.TestSecurityMiddleware_RealInType_
-// DoesNotPanicOnDispatch exactly — confirms events.SecurityMiddleware[In,
-// Out]'s generalization applies the InCodec/OutCodec zero-value-codec fix
-// FROM THE START (Phase A's own carried-forward learning), rather than
-// rediscovering the panic via a real migration the way REST's did.
-// Exercises the FULL dispatch path (DecodeIn on subscribe, EncodeOut on
-// publish) for a REAL (non-struct{}) In/Out pair — must NOT panic.
-func TestSecurityMiddleware_RealInOutType_DoesNotPanicOnDispatch(t *testing.T) {
-	mw := events.SecurityMiddleware[mdTestIn, mdTestOut]("apiKeyAuth",
+// DoesNotPanicOnDispatch exactly — confirms events.BoundSecuritySubscribeMiddleware/
+// BoundSecurityPublishMiddleware's generalization applies the InCodec/
+// OutCodec zero-value-codec fix FROM THE START (Phase A's own
+// carried-forward learning), rather than rediscovering the panic via a
+// real migration the way REST's did. Exercises the FULL dispatch path
+// (DecodeIn on subscribe, EncodeOut on publish) for a REAL
+// (non-struct{}) In/Out pair — must NOT panic.
+func TestBoundSecurityMiddleware_RealInOutType_DoesNotPanicOnDispatch(t *testing.T) {
+	bmSub := events.BoundSecuritySubscribeMiddleware[userEvent, mdTestIn, mdTestOut]("apiKeyAuth",
 		events.SecurityScheme{SecurityScheme: route.APIKeyScheme("X-Api-Key", "header")}, nil,
+		func(ctx context.Context, msg *userEvent, in mdTestIn) (mdTestOut, error) { return mdTestOut{}, nil },
 	)
 
 	sub := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithSubscribe(events.Subscribe{Summary: "sub"}).
-		SubscribeMW(mw, func(ctx context.Context, msg *userEvent, in mdTestIn) error { return nil })
+		SubscribeBoundMW(bmSub)
 	hSub, err := sub.Handle(nil)
 	if err != nil {
 		t.Fatalf("Subscriber Handle: %v", err)
@@ -640,11 +644,15 @@ func TestSecurityMiddleware_RealInOutType_DoesNotPanicOnDispatch(t *testing.T) {
 		t.Fatalf("DecodeIn: %v", err)
 	}
 
+	bmPub := events.BoundSecurityPublishMiddleware[userEvent, mdTestIn, mdTestOut]("apiKeyAuth",
+		events.SecurityScheme{SecurityScheme: route.APIKeyScheme("X-Api-Key", "header")}, nil,
+		func(ctx context.Context, msg userEvent) (mdTestOut, error) {
+			return mdTestOut{Value: "v1"}, nil
+		},
+	)
 	pub := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithPublish(events.Publish{Summary: "pub"}).
-		PublishMW(mw, func(ctx context.Context, msg userEvent) (mdTestOut, error) {
-			return mdTestOut{Value: "v1"}, nil
-		})
+		PublishBoundMW(bmPub)
 	hPub, err := pub.Handle(nil)
 	if err != nil {
 		t.Fatalf("Publisher Handle: %v", err)

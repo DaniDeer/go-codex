@@ -107,12 +107,16 @@ func main() {
 	// user/created — action: receive — this app RECEIVES events when users register.
 	// Security: requires bearerAuth — adapters (e.g. adapters/mqtt) enforce this via
 	// SubscribeOptions.SecurityFunc before calling the application handler.
-	// bearerAuthMW pairs with the SubscribeMW attachment below — CheckCoverage
-	// (run unconditionally by Subscriber.Handle) rejects a declared security
-	// scheme with no attached implementation satisfying it. The Fn here is a
-	// no-op placeholder: real deployments would parse the actual credential
-	// and return its granted scopes (or an error to reject the message).
-	bearerAuthMW := events.SecurityMiddleware[struct{}, struct{}]("bearerAuth", bearerAuth, nil)
+	// bearerAuthMW is the REUSABLE class (docs/roadmap/bound-middleware-
+	// split.md) — its Fn is bundled directly onto the value via
+	// .WithReceive, attached below via plain .Use(bearerAuthMW), with no
+	// separate SubscribeMW pairing needed. CheckCoverage (run
+	// unconditionally by Subscriber.Handle) rejects a declared security
+	// scheme with no attached implementation satisfying it. The Fn here is
+	// a no-op placeholder: real deployments would parse the actual
+	// credential and return an error to reject the message when invalid.
+	bearerAuthMW := events.SecurityMiddleware[struct{}, struct{}]("bearerAuth", bearerAuth, nil).
+		WithReceive(func(_ context.Context, _ struct{}) error { return nil })
 	userCreated, err := events.NewChannel[UserCreatedEvent]("user/created", userCreatedCodec,
 		events.ChannelMeta{Description: "User registration events consumed by the notification service."},
 	).WithSubscribe(events.Subscribe{
@@ -122,9 +126,6 @@ func main() {
 		// Security: requires bearerAuth on this operation.
 		Security: []route.SecurityRequirement{route.Require("bearerAuth")},
 	}).Use(bearerAuthMW).
-		SubscribeMW(&bearerAuthMW, func(_ context.Context, _ UserCreatedEvent) (map[string][]string, error) {
-			return map[string][]string{"bearerAuth": {}}, nil
-		}).
 		Handle(b)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "channel registration failed: %v\n", err)

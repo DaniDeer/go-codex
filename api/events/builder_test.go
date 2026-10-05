@@ -3030,12 +3030,13 @@ func TestCheckCoverage_fails_withoutMatchingSubscribeMW(t *testing.T) {
 // events.SecurityMiddleware[In,Out]) Security handler as satisfying a
 // declared requirement, not just the legacy ServerImplementation path.
 func TestCheckCoverage_passes_withBoundSubscribeMW(t *testing.T) {
-	mw := events.SecurityMiddleware[mdTestIn, mdTestOut]("bearerAuth",
-		events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, []string{"subscribe:sensors"})
+	bm := events.BoundSecuritySubscribeMiddleware[userEvent, mdTestIn, mdTestOut]("bearerAuth",
+		events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, []string{"subscribe:sensors"},
+		func(ctx context.Context, msg *userEvent, in mdTestIn) (mdTestOut, error) { return mdTestOut{}, nil })
 
 	sub := events.NewChannel[userEvent]("sensors/data", userEventCodec).
 		WithSubscribe(events.Subscribe{}).
-		SubscribeMW(mw, func(ctx context.Context, msg *userEvent, in mdTestIn) error { return nil })
+		SubscribeBoundMW(bm)
 
 	handle, err := sub.Handle(nil)
 	if err != nil {

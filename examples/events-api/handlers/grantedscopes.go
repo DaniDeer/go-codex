@@ -15,13 +15,15 @@ var gsAPIKeyScopes = map[string][]string{
 	"sensor-key-writeonly": {"write:sensors"}, // lacks "read:sensors" — proves rejection
 }
 
-// VerifyAPIKeyGS is GrantedScopesSensorMw's paired, BOUND SubscribeMW
-// Fn — func(ctx, *T, In) (Out, error), the NEW additive 2-return shape
-// (docs/design/d-0007-declarative-middleware-layering.md's "Prerequisite
-// for Phase 2 (api/events)"), detected via its own reflected signature.
-// Unlike MQTT5SecurityImpl above (which reads a raw *pahomqtt5.Publish),
-// this Fn receives routes.AuthIn ALREADY DECODED from the X-API-Key User
-// Property by the shared middleware.DecodeLayer mechanism.
+// VerifyAPIKeyGS is GrantedScopesSensorMw's embedded Fn — func(ctx, *T,
+// In) (Out, error), the shape [events.NewBoundSubscribeMiddleware]/
+// [events.BoundSecuritySubscribeMiddleware] require at construction
+// (docs/roadmap/bound-middleware-split.md's events/BoundSubscribeMiddleware
+// class), passed directly to the constructor rather than paired
+// separately at attachment time. Unlike MQTT5SecurityImpl above (which
+// has no *T access at all, the reusable class), this Fn receives
+// routes.AuthIn ALREADY DECODED from the X-API-Key User Property by the
+// shared middleware.DecodeLayer mechanism.
 func VerifyAPIKeyGS(_ context.Context, _ *routes.SensorReading, in routes.AuthIn) (routes.AuthOut, error) {
 	scopes, ok := gsAPIKeyScopes[in.Key]
 	if !ok {

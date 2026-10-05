@@ -1,6 +1,8 @@
 package routes
 
 import (
+	"context"
+
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/middleware"
@@ -8,17 +10,18 @@ import (
 )
 
 // ── GrantedScopes + ContextField demo (docs/design/d-0007-declarative-   ──
-// ── middleware-layering.md) — a DIFFERENT style of security declaration ──
-// ── than APIKeyAuthMW above. APIKeyAuthMW uses the LEGACY shape:        ──
-// ── events.SecurityMiddleware[struct{}, struct{}] paired with an        ──
-// ── adapter-specific implementation Fn (handlers.MQTT5SecurityImpl,     ──
-// ── reading a raw *paho.Publish's User Properties directly).            ──
-// ── GrantedScopesSensorMw below instead uses the GENERALIZED form — a   ──
-// ── REAL credential type (AuthIn) and a REAL GrantedScopes-carrying Out ──
-// ── (AuthOut) — dispatched through SubscribeMW's NEW additive 2-return  ──
-// ── bound shape (func(ctx, *T, In) (Out, error)), the flagship Rollout  ──
-// ── Phase B/pre-Phase-C capability no example in this repo had          ──
-// ── exercised until now.
+// ── middleware-layering.md) — a DIFFERENT CLASS of security attachment  ──
+// ── than APIKeyAuthMW above. APIKeyAuthMW is the REUSABLE class         ──
+// ── (events.SecurityMiddleware[In,Out].WithReceive(fn), attached via    ──
+// ── plain .Use(mw)) paired with an adapter-specific Fn that has NO      ──
+// ── access to the channel's own decoded *T at all. GrantedScopesSensorMw──
+// ── below instead uses the channel-BOUND class — a REAL credential type ──
+// ── (AuthIn) and a REAL GrantedScopes-carrying Out (AuthOut), its Fn    ──
+// ── (handlers.VerifyAPIKeyGS, func(ctx, *T, In) (Out, error)) EMBEDDED  ──
+// ── AT CONSTRUCTION via events.BoundSecuritySubscribeMiddleware and     ──
+// ── attached via the dedicated Subscriber.SubscribeBoundMW method —     ──
+// ── see docs/roadmap/bound-middleware-split.md's events/                ──
+// ── BoundSubscribeMiddleware section for the full class split.
 
 // AuthIn is GrantedScopesSensorMw's credential vocabulary — decoded from
 // the "X-API-Key" User Property via the required property merge field
@@ -41,15 +44,28 @@ type AuthOut struct {
 // meaningful here — the asymmetry events' own design doc documents.
 var GrantedScopesUserIDField = middleware.NewContextField(codex.String())
 
-// GrantedScopesSensorMw declares the "apiKeyGS" scheme, requiring
-// "read:sensors" — built via the GENERALIZED events.SecurityMiddleware[
-// In, Out] (not [struct{},struct{}] like APIKeyAuthMW above).
-var GrantedScopesSensorMw = events.SecurityMiddleware[AuthIn, AuthOut]("apiKeyGS",
-	events.SecurityScheme{SecurityScheme: route.APIKeyScheme("X-API-Key", "header")}, []string{"read:sensors"},
-).WithSubscribeProperty(events.NewPropertyParam("X-API-Key", codex.String(),
-	func(in AuthIn) string { return in.Key },
-	func(in *AuthIn, v string) { in.Key = v },
-)).SetContextFieldFromIn(GrantedScopesUserIDField, func(in AuthIn) any { return in.Key })
+// NewGrantedScopesSensorMw builds the channel-BOUND "apiKeyGS" security
+// middleware for GrantedScopesSub — via
+// [events.BoundSecuritySubscribeMiddleware], whose Fn is EMBEDDED AT
+// CONSTRUCTION (docs/roadmap/bound-middleware-split.md's events/
+// BoundSubscribeMiddleware class). fn is supplied by the CALLER (see
+// demo_granted_scopes_context_field.go, which passes
+// handlers.VerifyAPIKeyGS) rather than being a package-level value
+// embedded directly here: handlers.VerifyAPIKeyGS lives in the handlers
+// package, which itself imports routes (for routes.SensorReading/
+// routes.AuthIn/routes.AuthOut) — embedding it directly in THIS package
+// would create an import cycle. The declarative shape (scheme, scopes,
+// the "X-API-Key" property merge field, the ContextField wiring) still
+// lives entirely in routes, same as before.
+func NewGrantedScopesSensorMw(fn func(ctx context.Context, msg *SensorReading, in AuthIn) (AuthOut, error)) events.BoundSubscribeMiddleware[SensorReading, AuthIn, AuthOut] {
+	return events.BoundSecuritySubscribeMiddleware[SensorReading, AuthIn, AuthOut]("apiKeyGS",
+		events.SecurityScheme{SecurityScheme: route.APIKeyScheme("X-API-Key", "header")}, []string{"read:sensors"},
+		fn,
+	).WithSubscribeProperty(events.NewPropertyParam("X-API-Key", codex.String(),
+		func(in AuthIn) string { return in.Key },
+		func(in *AuthIn, v string) { in.Key = v },
+	)).SetContextFieldFromIn(GrantedScopesUserIDField, func(in AuthIn) any { return in.Key })
+}
 
 // GrantedScopesChannel is a dedicated channel (not SensorDataChannel
 // above) so this demo's Attach-time topology stays independent of the
@@ -62,18 +78,18 @@ var GrantedScopesChannel = events.NewChannel[SensorReading](
 )
 
 // GrantedScopesSub declares the "read:sensors" requirement directly on
-// Subscribe.Security — deliberately NOT via .Use(GrantedScopesSensorMw).
-// See the "Known gap" callout in docs/features/security.md's events
-// section... actually events does NOT have this gap (different
-// spec-bundling architecture, confirmed via docs/design/
-// d-0007-declarative-middleware-layering.md's own Learnings) — kept here
-// as .Use()+SubscribeMW anyway for parity with
-// adapters/mqtt5/grantedscopes_test.go's own precedent, which uses
-// exactly this combination safely.
+// Subscribe.Security — attachment of the actual "apiKeyGS" middleware
+// happens at the demo call site via
+// .SubscribeBoundMW(routes.NewGrantedScopesSensorMw(handlers.VerifyAPIKeyGS))
+// (see demo_granted_scopes_context_field.go), NOT via .Use(): a
+// [events.BoundSubscribeMiddleware] value deliberately does NOT satisfy
+// .Use()'s accepted [middleware.RouteMiddleware] interface — only
+// [Subscriber.SubscribeBoundMW] accepts it (docs/roadmap/
+// bound-middleware-split.md's events/BoundSubscribeMiddleware class).
 var GrantedScopesSub = GrantedScopesChannel.WithSubscribe(events.Subscribe{
 	Summary:  "GrantedScopes + ContextField demo subscribe",
 	Security: []route.SecurityRequirement{route.Require("apiKeyGS", "read:sensors")},
-}).Use(GrantedScopesSensorMw)
+})
 
 // GrantedScopesPub is the matching PLAIN publish declaration (no
 // credential-supplying PublishMW needed for this demo — the mock broker

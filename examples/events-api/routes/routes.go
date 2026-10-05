@@ -1,6 +1,8 @@
 package routes
 
 import (
+	"context"
+
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/route"
@@ -21,11 +23,56 @@ var APIKeyAuth = events.SecurityScheme{
 	SecurityScheme: route.APIKeyScheme("X-API-Key", "header"),
 }
 
-// APIKeyAuthMW pairs with a SubscribeMW/PublishMW attachment on any
-// channel declaring this security requirement — CheckCoverage (run
-// unconditionally at Subscriber/Publisher.Handle time) rejects a declared
-// scheme with no attached implementation satisfying it.
-var APIKeyAuthMW = events.SecurityMiddleware[struct{}, struct{}]("apiKeyAuth", APIKeyAuth, nil)
+// APIKeyAuthIn is NewAPIKeyAuthMW's credential vocabulary — decoded from
+// whatever transport-specific channel each adapter-specific attachment
+// site (mqttbroker/mqtt5broker/zeromqbroker) has available (mqtt5's User
+// Property via WithSubscribeProperty, mqtt v3's CONNECT-time closure,
+// zeromq leaving it zero) — see handlers/security.go.
+type APIKeyAuthIn struct{ Key string }
+
+// APIKeyAuthOut carries the conventional GrantedScopes field, populated
+// by every NewAPIKeyAuthMW-paired Fn on success (even though this scheme
+// declares zero specific scopes — see NewAPIKeyAuthMW's own doc comment
+// for why the map KEY's presence still matters at runtime).
+type APIKeyAuthOut struct {
+	GrantedScopes map[string][]string
+}
+
+// NewAPIKeyAuthMW builds the "apiKeyAuth" security middleware for
+// SensorDataSub/SecuredReadingsSub — via the channel-BOUND class
+// ([events.BoundSecuritySubscribeMiddleware]), DELIBERATELY NOT the
+// REUSABLE class ([events.SecurityMiddleware]+[events.Middleware.
+// WithReceive]) a first migration pass of this demo used.
+//
+// Why: every adapter's runtime scope-enforcement path
+// (middleware.CheckScopes, invoked unconditionally whenever a channel
+// declares Subscribe.Security — see adapters/mqtt5/adapter.go,
+// adapters/mqtt/adapter.go, adapters/zeromq/adapter.go) requires the
+// scheme name to be present as a KEY in the merged `granted` map — even
+// when, as here, zero specific scopes are required (route.Satisfied
+// still checks presence before checking an empty want-scopes list is
+// trivially satisfied). Only a HasOut-true dispatch handler can populate
+// that key (via adapters/internal/scopesmerge.MergeHandlerGrants reading
+// GrantedScopes off a handler's decoded Out) — and HasOut is ALWAYS true
+// for [events.BoundSubscribeMiddleware] (its Fn ALWAYS returns
+// `(Out, error)`), but ALWAYS false for the reusable class's
+// WithReceive-bundled Fn (`func(ctx, In) error`, no Out return at all —
+// events.Middleware's own doc comment confirms this structural
+// asymmetry). A reusable-class Security attachment can therefore only
+// ever be used for an UNPAIRED (no declared Subscribe.Security) general-
+// purpose presence check — never to satisfy a DECLARED requirement like
+// this channel's `Security: []route.SecurityRequirement{route.Require(
+// "apiKeyAuth")}`, confirmed via an actual end-to-end run regression
+// during this migration (see docs/roadmap/bound-middleware-split.md).
+//
+// fn is supplied by the caller (handlers.MQTTSecurityImpl/
+// MQTT5SecurityImpl/ZeromqSecurityImpl) — none of them need the *msg
+// parameter (no per-message credential in this demo's SensorReading),
+// they are attached via the bound mechanism purely to get a
+// GrantedScopes-carrying Out, not because they need *T access.
+func NewAPIKeyAuthMW(fn func(ctx context.Context, msg *SensorReading, in APIKeyAuthIn) (APIKeyAuthOut, error)) events.BoundSubscribeMiddleware[SensorReading, APIKeyAuthIn, APIKeyAuthOut] {
+	return events.BoundSecuritySubscribeMiddleware[SensorReading, APIKeyAuthIn, APIKeyAuthOut]("apiKeyAuth", APIKeyAuth, nil, fn)
+}
 
 // ── SensorData channel — secured, shared across all 3 adapters ───────────────
 //
@@ -41,11 +88,11 @@ var SensorDataChannel = events.NewChannel[SensorReading](
 )
 
 // SensorDataSub is declared PRISTINE (no Security baked into WithSubscribe
-// itself) — SubscribeMW attachment happens per-demo/per-broker via
-// .Use(APIKeyAuthMW).SubscribeMW(&APIKeyAuthMW, implFn), mirroring
-// examples/reqreply-api's own "pristine base, secured at the attachment
-// site" separation (see docs/design/d-0002-pubsub-workflow-simplification.md's
-// Addendum for the migration guidance).
+// itself) — attachment happens per-demo/per-broker via
+// .SubscribeBoundMW(NewAPIKeyAuthMW(implFn)), mirroring examples/reqreply-
+// api's own "pristine base, secured at the attachment site" separation
+// (see docs/design/d-0002-pubsub-workflow-simplification.md's Addendum
+// for the migration guidance).
 var SensorDataSub = SensorDataChannel.WithSubscribe(events.Subscribe{
 	OperationID: "receiveSensorReading",
 	Summary:     "Receive sensor reading",
@@ -412,12 +459,13 @@ var ActionLogSub = ActionLogChannel.WithSubscribe(events.Subscribe{
 
 // ── Security middleware + ErrorChannel combination ───────────────────────────
 
-// SecuredReadingsChannel pairs a SubscribeMW-attached security Fn (see
-// demo_error_pattern.go, which ALWAYS rejects) with a declared
+// SecuredReadingsChannel pairs a SubscribeBoundMW-attached security Fn
+// (see demo_error_pattern.go, which ALWAYS rejects by granting zero
+// scopes) with a declared
 // events.ErrorChannel[events.SecurityError, SecurityRejectedPayload] —
-// proving ErrorChannel intercepts a SECURITY-MIDDLEWARE Fn failure
-// (auto-wrapped in events.SecurityError by the adapter), not just a
-// subscribe-handler business error.
+// proving ErrorChannel intercepts the adapter's unified
+// middleware.CheckScopes failure (auto-wrapped in events.SecurityError),
+// not just a subscribe-handler business error.
 var SecuredReadingsChannel = events.NewChannel[SensorReading](
 	"sensors/{sensorID}/secured-errorchannel-demo",
 	SensorReadingCodec,
@@ -432,10 +480,20 @@ var SecuredReadingsChannel = events.NewChannel[SensorReading](
 
 // SecuredReadingsSub is declared PRISTINE (no Security baked in) — the
 // SAME pattern SensorDataSub uses — demo_error_pattern.go attaches
-// .Use(APIKeyAuthMW).SubscribeMW(&APIKeyAuthMW, alwaysRejectFn) per-demo.
+// .SubscribeBoundMW(NewAPIKeyAuthMW(alwaysRejectFn)) per-demo.
 var SecuredReadingsSub = SecuredReadingsChannel.WithSubscribe(events.Subscribe{
 	OperationID: "receiveSecuredReadingsDemo",
 	Summary:     "Receive a sensor reading (security-middleware ErrorChannel demo).",
+	// Security MUST be declared here (unlike SensorDataSub's identical-
+	// looking "pristine" comment above) — demo_error_pattern.go's
+	// alwaysRejectFn rejects by granting ZERO scopes (a nil error, empty
+	// GrantedScopes), which only the adapter's unified
+	// middleware.CheckScopes call can turn into a rejection — and
+	// CheckScopes only runs when Security is non-empty (see
+	// NewAPIKeyAuthMW's own doc comment for the full "why a BOUND Fn's
+	// OWN error wraps as events.MiddlewareError, never events.
+	// SecurityError" reasoning this declaration exists to route around).
+	Security: []route.SecurityRequirement{route.Require("apiKeyAuth")},
 })
 
 // ── zeromq PUB/SUB roundtrip channel ──────────────────────────────────────────

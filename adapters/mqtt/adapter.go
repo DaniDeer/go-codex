@@ -296,7 +296,7 @@ func subscribeHandler[T any](
 		// makeSubscribeMessageHandler wiring.
 		//
 		// topicVars is ALSO needed by codec-backed middleware dispatch
-		// below (Transform/bundled .Use()) — computed once here, unioned
+		// below (SubscribeBoundMW/bundled .Use()) — computed once here, unioned
 		// with the mergeFields>0 gate so it's derived whenever EITHER
 		// needs it.
 		var topicVars map[string]string
@@ -393,7 +393,7 @@ func subscribeHandler[T any](
 			granted = g
 		}
 
-		// Codec-backed middleware dispatch (Transform and bundled .Use())
+		// Codec-backed middleware dispatch (SubscribeBoundMW and bundled .Use())
 		// — SAME pre-handler dispatch point plain security enforcement
 		// above just ran at (D1), reusing the SAME topicVars derived
 		// above. A fn error is ErrorPattern-eligible (D2), falling back
@@ -618,7 +618,7 @@ func publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.
 		return err
 	}
 
-	// Codec-backed middleware dispatch (ClientTransform and bundled
+	// Codec-backed middleware dispatch (PublishBoundMW and bundled
 	// .Use()) — derived FIRST since a middleware's own Out may contribute
 	// ADDITIONAL topic vars BuildTopic needs. D3-equivalent precedence:
 	// explicit/channel-own vars (the vars param) wins over

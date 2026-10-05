@@ -43,17 +43,17 @@ func TestSubscribeMW_GrantedScopes_MergedIntoCheckScopes(t *testing.T) {
 			router := newMockRouter()
 			handlerCalled := false
 
-			mw := events.SecurityMiddleware[gsIn, gsOut]("bearer", gsBearerScheme, []string{"read:sensors"})
+			bm := events.BoundSecuritySubscribeMiddleware[sensorReading, gsIn, gsOut]("bearer", gsBearerScheme, []string{"read:sensors"},
+				func(_ context.Context, _ *sensorReading, _ gsIn) (gsOut, error) {
+					return gsOut{GrantedScopes: tc.grant}, nil
+				})
 			b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 			handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
 				WithSubscribe(events.Subscribe{
 					Summary:  "test",
 					Security: []route.SecurityRequirement{route.Require("bearer", "read:sensors")},
 				}).
-				Use(mw).
-				SubscribeMW(&mw, func(_ context.Context, _ *sensorReading, _ gsIn) (gsOut, error) {
-					return gsOut{GrantedScopes: tc.grant}, nil
-				}).
+				SubscribeBoundMW(bm).
 				Handle(b)
 			if err != nil {
 				t.Fatalf("Handle: %v", err)
@@ -86,14 +86,15 @@ func TestSubscribeMW_LegacyOneReturnShape_StillDispatchesUnchanged(t *testing.T)
 	mwCalled := false
 	handlerCalled := false
 
-	emw := events.NewMiddleware(newMqttMdDeclaration("general-purpose"))
+	bm := events.NewBoundSubscribeMiddleware(newMqttMdDeclaration("general-purpose"),
+		func(ctx context.Context, msg *sensorReading, in mqttMdIn) (mqttMdOut, error) {
+			mwCalled = true
+			return mqttMdOut{}, nil
+		})
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
 		WithSubscribe(events.Subscribe{Summary: "test"}).
-		SubscribeMW(emw, func(ctx context.Context, msg *sensorReading, in mqttMdIn) error {
-			mwCalled = true
-			return nil
-		}).
+		SubscribeBoundMW(bm).
 		Handle(b)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -130,14 +131,15 @@ func TestPublishMW_Unaffected_NoMergeWiringAdded(t *testing.T) {
 	client := &mockClient{}
 	fnCalled := false
 
-	mw := events.SecurityMiddleware[gsIn, gsOut]("bearer", gsBearerScheme, nil)
+	bm := events.BoundSecurityPublishMiddleware[sensorReading, gsIn, gsOut]("bearer", gsBearerScheme, nil,
+		func(_ context.Context, _ sensorReading) (gsOut, error) {
+			fnCalled = true
+			return gsOut{GrantedScopes: map[string][]string{"bearer": {"read:sensors"}}}, nil
+		})
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
 		WithPublish(events.Publish{Summary: "test"}).
-		PublishMW(&mw, func(_ context.Context, _ sensorReading) (gsOut, error) {
-			fnCalled = true
-			return gsOut{GrantedScopes: map[string][]string{"bearer": {"read:sensors"}}}, nil
-		}).
+		PublishBoundMW(bm).
 		Handle(b)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)

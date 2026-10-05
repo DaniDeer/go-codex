@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -492,10 +491,21 @@ func demoErrorChannelDeadLetterFallback(ctx context.Context) {
 }
 
 // demoErrorChannelMiddlewareCombo proves events.ErrorChannel intercepts a
-// SECURITY-MIDDLEWARE Fn failure — the security Fn below ALWAYS rejects,
-// and the adapter auto-wraps its returned error in events.SecurityError,
-// which is matched by routes.SecuredReadingsChannel's declared
-// ErrorChannel BEFORE the subscribe handler ever runs.
+// SECURITY-MIDDLEWARE Fn rejection — the security Fn below ALWAYS
+// grants ZERO scopes (an empty/nil GrantedScopes, no Fn error at all),
+// so the adapter's OWN unified middleware.CheckScopes call (which runs
+// AFTER a codec-backed middleware's Fn succeeds, covering BOTH the
+// legacy Implementations path and any BOUND MiddlewareHandler's
+// GrantedScopes) finds the declared "apiKeyAuth" requirement unsatisfied
+// and raises events.SecurityError itself — matched by
+// routes.SecuredReadingsChannel's declared ErrorChannel BEFORE the
+// subscribe handler ever runs. A Fn's OWN business error (returned
+// directly) would instead surface as events.MiddlewareError
+// (docs/roadmap/bound-middleware-split.md: a codec-backed middleware's
+// Fn failure is classified generically, regardless of whether it
+// carries a Security declaration) — NOT matched by this ErrorChannel's
+// declared E=events.SecurityError, which is why this demo rejects via a
+// zero grant rather than a returned error.
 //
 // SUBSCRIBE side ONLY, BY DESIGN — there is no publish-side equivalent to
 // demo: adapters/mqtt5's publish() function calls runPublishSecurityImpls
@@ -544,18 +554,25 @@ func demoErrorChannelMiddlewareCombo(ctx context.Context) {
 	}()
 	router.WaitHandler("sensors/{sensorID}/secured-errorchannel-demo/errors")
 
-	alwaysRejectFn := func(_ context.Context, _ *pahomqtt5.Publish, _ *routes.SensorReading) (map[string][]string, error) {
-		return nil, errors.New("access denied for demo")
+	alwaysRejectFn := func(_ context.Context, _ *routes.SensorReading, _ routes.APIKeyAuthIn) (routes.APIKeyAuthOut, error) {
+		// Zero GrantedScopes, nil error — "authenticates" but grants
+		// nothing, so the unified CheckScopes call below rejects (see
+		// this demo's own doc comment above for why this must be a
+		// zero-grant SUCCESS rather than a returned error).
+		return routes.APIKeyAuthOut{}, nil
 	}
-	securedSub := routes.SecuredReadingsSub.Use(routes.APIKeyAuthMW).SubscribeMW(&routes.APIKeyAuthMW, alwaysRejectFn).
+	// A demo-local BOUND middleware value (routes.NewAPIKeyAuthMW) —
+	// independent of any OTHER call site's own construction, so other
+	// demos/brokers are unaffected.
+	securedSub := routes.SecuredReadingsSub.SubscribeBoundMW(routes.NewAPIKeyAuthMW(alwaysRejectFn)).
 		WithOptions(mqtt5adapter.SubscribeOptions{Capabilities: []mqtt5adapter.Capability{mqtt5adapter.QoSAtLeastOnce}})
 	// Converted to Client.Attach+Client.Subscribe (docs/design/
 	// d-0006-protocol-native-capabilities.md's Phase 4e closed the gap
 	// this demo used to document — Client.Subscribe's reflection shim
-	// now runs Implementations-based SubscribeMW security enforcement,
-	// same as the escape hatch always did). Reuses the SAME evtClient/
-	// attached transport as the error-topic consumer above — one
-	// Client.Attach, many Client.Subscribe calls.
+	// now runs Implementations-based security enforcement, same as the
+	// escape hatch always did). Reuses the SAME evtClient/attached
+	// transport as the error-topic consumer above — one Client.Attach,
+	// many Client.Subscribe calls.
 	go func() {
 		_ = evtClient.Subscribe(handleCtx, securedSub,
 			func(_ context.Context, _ routes.SensorReading) error {

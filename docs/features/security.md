@@ -659,35 +659,8 @@ policy as REST.
 MQTT5 adapter — the server side runs a BUILT-IN codec-based credential
 check (extracting the "Authorization" MQTT5 User Property for `http`/`oauth2`/
 `openIdConnect` schemes, or the User Property named `scheme.Name` for
-`apiKey` schemes) BEFORE the optional custom `SubscribeMW`-attached
-security Fn — same two-step order as the nethttp/chi request pipeline:
-
-```go
-// client.Attach(mqtt5.NewTransport(...)) + events.Client.Subscribe is
-// FULL-FEATURED (docs/design/d-0006-protocol-native-capabilities.md's
-// Phase 4e closed the former "v1 scope" gap for this package — see
-// adapters/mqtt5/transport.go's NewTransport doc comment) — it enforces
-// SubscribeMW of both recognized shapes identically to the
-// events.SubscribeHandle + mqtt5.NewSubscribeTransport handle-based path
-// below, so either call surface works here.
-transport := mqtt5.NewSubscribeTransport[UserCreated](client, router, mqtt5.SubscribeOptions{})
-err := events.SubscribeHandle(ctx, userCreatedSub.SubscribeMW(&bearerAuth,
-    func(ctx context.Context, msg *paho.Publish, value *UserCreated) (map[string][]string, error) {
-        // Runs AFTER the built-in Codec check passes — add extra business
-        // logic here (e.g. a database revocation check) if needed. Write
-        // access to value lets a credential be embedded as an ordinary
-        // payload field too, if needed.
-        if err := checkNotRevoked(msg); err != nil {
-            return nil, err
-        }
-        return map[string][]string{"bearerAuth": nil}, nil
-    }), transport, handler)
-```
-
-The client (publish) side is symmetric via `PublishMW` — supplies the
-credential as MQTT5 User Properties, and the SAME built-in codec check runs
-BEFORE the message is actually published, mirroring
-`rest.CallWithTransport`'s `CredentialFunc` handling exactly.
+`apiKey` schemes) BEFORE any additionally-attached security Fn — same
+two-step order as the nethttp/chi request pipeline.
 
 MQTT 3.1.1 (`adapters/mqtt`) has no per-message metadata channel, so
 User-Property-style codec extraction only applies to MQTT5 — but message-level
@@ -696,109 +669,152 @@ security is NOT absent for MQTT 3.1.1. The OLD imperative
 hatch was **removed entirely** (BREAKING — see
 [D-0002](../design/d-0002-pubsub-workflow-simplification.md)'s own
 "Addendum: Observability Core Consolidation, `SecurityFunc` Retirement,
-and `examples/events-api`"): message-level security now lives ONLY in a
-security-shaped
-`SubscribeMW`/`PublishMW`-paired implementation Fn, the SAME declarative
-mechanism mqtt5 uses above:
-
-```go
-// mqtt v3's paired Fn shape: func(ctx, pahomqtt.Message, *T) (map[string][]string, error)
-// — receives the raw pahomqtt.Message directly, since MQTT 3.1.1 carries no
-// User Properties to extract a credential from automatically. The
-// credential itself is typically captured in a CLOSURE at CONNECT time
-// (recommended for Paho) or read from an in-payload field on *T (write
-// access lets it be embedded there too, if needed).
-mqttSecurityImpl := func(credential string) func(context.Context, pahomqtt.Message, *SensorReading) (map[string][]string, error) {
-    return func(_ context.Context, _ pahomqtt.Message, _ *SensorReading) (map[string][]string, error) {
-        if !validAPIKeys[credential] {
-            return nil, fmt.Errorf("unknown API key %q", credential)
-        }
-        return map[string][]string{"apiKeyAuth": {}}, nil
-    }
-}
-sub := sensorDataSub.Use(apiKeyAuthMW).SubscribeMW(&apiKeyAuthMW, mqttSecurityImpl("sensor-key-abc123"))
-```
+and `examples/events-api`"); message-level security now lives ONLY in the
+declarative `Middleware`/`BoundSubscribeMiddleware`/`BoundPublishMiddleware`
+mechanism documented below.
 
 Use connection-level `mqtt.SecuredClient` for connection-level (not
-message-level) enforcement. See
-[`examples/events-api/handlers/security.go`](https://github.com/DaniDeer/go-codex/blob/main/examples/events-api/handlers/security.go)'s
-`MQTTSecurityImpl` for the full runnable pattern (mirrors Pattern 1 —
-closure — from the now-retired `adapters-mqtt-security` example).
+message-level) enforcement.
 
 **ZeroMQ pub/sub (`adapters/zeromq`) has a message-level security
 mechanism too** — the OLD `SubscribeOptions.SecurityFunc`/
 `PublishOptions.CredentialFunc` fields were likewise **removed entirely**
-(same Phase 2 as above). The paired Fn shape is
-`func(ctx, *T, []route.SecurityRequirement) error` (plain error return, no
-scope-grant map, unlike mqtt/mqtt5's shape) — ZeroMQ's `[topic, payload]`
-frames carry nothing beyond what's already decoded into `T`, so a
-production route needs an in-payload credential field (e.g. a `Token
-string` field) for the implementation to read/write, since there's no
-raw-message parameter to extract one from. See
-[`examples/events-api/handlers/security.go`](https://github.com/DaniDeer/go-codex/blob/main/examples/events-api/handlers/security.go)'s
-`ZeromqSecurityImpl` for the shape demonstrated without a real credential
-field, and
+(same Phase 2 as above); ZeroMQ's `[topic, payload]` frames carry nothing
+beyond what's already decoded into `T`, so a production channel typically
+needs an in-payload credential field (e.g. a `Token string` field) for a
+bound middleware to read/write, since there's no header/property
+side-channel to extract one from instead — see
 [`examples/reqreply-api/routes/routes.go`](https://github.com/DaniDeer/go-codex/blob/main/examples/reqreply-api/routes/routes.go)'s
-`OAuthComputeReq` for the in-payload-field pattern applied for real (reqreply,
-not pub/sub, but the SAME shape). There is still no connection-level
-`SecuredClient` equivalent for ZeroMQ (its base REQ/REP/PUB/SUB patterns
-have no CONNECT-time credential handshake to validate) — a permanent,
-deliberate, researched exclusion (CURVE/ZAP is the caller's own concern),
-plus a CLOSED optional out-of-band frame-based mechanism question (no
-driver ever surfaced); see
+`OAuthComputeReq` for the in-payload-field pattern applied for real
+(reqreply, not pub/sub, but the SAME shape). There is still no
+connection-level `SecuredClient` equivalent for ZeroMQ (its base
+REQ/REP/PUB/SUB patterns have no CONNECT-time credential handshake to
+validate) — a permanent, deliberate, researched exclusion (CURVE/ZAP is
+the caller's own concern), plus a CLOSED optional out-of-band
+frame-based mechanism question (no driver ever surfaced); see
 [D-0004](../design/d-0004-reqreply-workflow-simplification.md)'s Addendum
 for the full rationale (the original tracking doc,
 `zeromq-security.md`, has since shipped and been deleted per its own
 graduation policy).
 
-### Codec-backed Security — `SubscribeMW`/`PublishMW`'s bound path + `GrantedScopes`
+### Codec-backed Security — `BoundSubscribeMiddleware`/`BoundPublishMiddleware` + `GrantedScopes`
 
 > Runnable demo: `examples/events-api/demo_granted_scopes_context_field.go`
-> — a REAL `AuthIn`/`AuthOut` pair, `SubscribeMW`'s 2-return bound shape,
-> correct-vs-wrong-scope enforcement (mqtt5), and `SetContextFieldFromIn`
-> propagating the authenticated API key to the subscribe handler with
-> zero manual re-decoding.
+> — a REAL `AuthIn`/`AuthOut` pair, `SubscribeBoundMW`, correct-vs-wrong-scope
+> enforcement (mqtt5), and `SetContextFieldFromIn` propagating the
+> authenticated API key to the subscribe handler with zero manual
+> re-decoding.
 
-Mirrors `api/rest`'s identical Rollout Phase A mechanism (see "Codec-backed
-Security" under "Runtime enforcement" above), folded into events as Rollout
-Phase B: a codec-backed `events.Middleware[In, Out]` (built via
-`events.SecurityMiddleware[In, Out]`, generalized over In/Out) can ALSO
-carry a real credential payload and be attached via `Subscriber.SubscribeMW`/
-`Publisher.PublishMW` — the SAME two methods used for the legacy shape above.
-`SubscribeMW`/`PublishMW` detect which shape `fn` is by its REFLECTED
-signature (never `mw`'s type), so attaching either shape uses the identical
-method call:
+Mirrors `api/rest`'s identical mechanism (see "Codec-backed Security"
+under "Runtime enforcement" above) — see
+`docs/roadmap/bound-middleware-split.md` for the full design this section
+documents. A codec-backed `events.Middleware[In, Out]` (built via
+`events.SecurityMiddleware[In, Out]`) can be attached in ONE of two ways,
+depending on whether the Fn needs access to the channel's own decoded
+message struct:
+
+**Reusable class — `Middleware[In, Out]`, attached via `.Use()`.** The
+Fn is embedded via `WithReceive`/`WithSend` and is `T`-free — usable
+whenever the credential check only needs a decoded topic/property value
+(or nothing), never the message struct itself.
+
+**IMPORTANT — this class can ONLY ever be used when the channel's
+`Subscribe.Security` is left UNDECLARED entirely.** events' Subscribe-side
+`WithReceive` Fn structurally has NO `Out` return at all (`func(ctx, In)
+error`) — a confirmed, genuine asymmetry with REST/reqreply's own
+`WithReceive` (which DOES return `(Out, error)`) — so it can NEVER
+populate `GrantedScopes`. Every adapter's unified `middleware.CheckScopes`
+call requires the scheme name to be PRESENT as a map key in the merged
+grants, which only a `GrantedScopes`-producing (bound-class) handler can
+ever supply — so a reusable-class attachment can NEVER satisfy a
+DECLARED `Subscribe.Security` requirement, EVEN ONE REQUIRING ZERO
+SPECIFIC SCOPES. Use it only as an unpaired, non-enforced presence/
+validity gate (fn's own returned error still rejects the message, it's
+just never tied to a formal scope grant):
+
+```go
+type APIKeyIn struct{ Key string }
+
+apiKeyMw := events.SecurityMiddleware[APIKeyIn, struct{}]("apiKeyAuth",
+    apiKeyAuthScheme, nil,
+).WithSubscribeProperty(events.NewPropertyParam("X-API-Key", codex.String(),
+    func(in APIKeyIn) string { return in.Key },
+    func(in *APIKeyIn, v string) { in.Key = v },
+)).WithReceive(func(ctx context.Context, in APIKeyIn) error {
+    if !validAPIKeys[in.Key] {
+        return fmt.Errorf("unknown API key %q", in.Key)
+    }
+    return nil
+})
+
+// sensorDataSub must NOT declare Subscribe.Security for this to work —
+// see the Bound class below for the declared-Security case.
+sensorDataSub = sensorDataSub.Use(apiKeyMw)
+```
+
+**Bound class — `BoundSubscribeMiddleware[T, In, Out]`/`BoundPublishMiddleware[T, In, Out]`,
+attached via `SubscribeBoundMW`/`PublishBoundMW`.** Fn additionally
+receives `*T` (subscribe) or `T` by value (publish) — use this when the
+credential (or any `GrantedScopes` grant) can ONLY be derived by reading/
+writing the channel's own decoded message struct directly (no property/
+topic side-channel available — e.g. an in-payload credential field), or
+when returning `GrantedScopes` from the SUBSCRIBE side specifically (the
+reusable class's structural limitation above):
 
 ```go
 type BearerIn struct{ Token string }
 type BearerOut struct{ GrantedScopes map[string][]string }
 
-bearerMw := events.SecurityMiddleware[BearerIn, BearerOut]("bearerAuth",
-    bearerAuthScheme, nil,
+bm := events.BoundSecuritySubscribeMiddleware[UserCreated, BearerIn, BearerOut](
+    "bearerAuth", bearerAuthScheme, nil,
+    func(ctx context.Context, msg *UserCreated, in BearerIn) (BearerOut, error) {
+        if !validToken(in.Token) {
+            return BearerOut{}, errors.New("invalid bearer token")
+        }
+        return BearerOut{GrantedScopes: map[string][]string{"bearerAuth": nil}}, nil
+    },
 ).WithSubscribeProperty(events.NewPropertyParam("Authorization", codex.String(),
     func(in BearerIn) string { return in.Token },
     func(in *BearerIn, v string) { in.Token = v },
 ))
 
-userCreatedSub = userCreatedSub.SubscribeMW(bearerMw,
-    func(ctx context.Context, msg *UserCreated, in BearerIn) error {
-        if !validToken(in.Token) {
-            return errors.New("invalid bearer token")
-        }
-        return nil
-    })
+userCreatedSub = userCreatedSub.SubscribeBoundMW(bm)
 ```
 
-`fn` gets `*T` access (read/enrich, exactly like the generic middleware
-mechanism), and `In`'s own topic/property merge fields decode declaratively
-from the incoming message — no manual extraction anywhere. `Out` carries the
-SAME conventional `GrantedScopes map[string][]string` field REST uses,
-read by the adapter via reflection and fed into the SAME `middleware.CheckScopes`
-call the legacy Fn path already used.
+`In`'s own topic/property merge fields decode declaratively from the
+incoming message in BOTH classes — no manual extraction anywhere. `Out`
+carries the SAME conventional `GrantedScopes map[string][]string` field
+REST uses, read by the adapter via reflection and fed into the SAME
+`middleware.CheckScopes` call the legacy Fn path used. **This field must
+be populated even when zero specific scopes are required** — an `Out{}`
+zero value (nil map) means NOTHING satisfies the scheme at all; return
+`Out{GrantedScopes: map[string][]string{"<schemeName>": nil}}` for a
+scheme with no scope requirements.
 
-On the publish side, `PublishMW`'s bound shape is `func(ctx, msg T) (Out, error)`
-(T BY VALUE) — recognized identically, dispatched through the SAME
-merge-field mechanism instead of hand-building MQTT5 User Properties.
+On the publish side, `BoundPublishMiddleware`'s Fn shape is
+`func(ctx, msg T) (Out, error)` (T BY VALUE) — recognized identically,
+dispatched through the SAME merge-field mechanism instead of hand-building
+MQTT5 User Properties.
+
+A `SubscribeBoundMW`+`PublishBoundMW` pairing for the SAME scheme name on
+ONE channel value is independent by construction (Subscriber/Publisher
+are already separate values returned by `Channel.WithSubscribe`/
+`WithPublish`) — no collision risk analogous to REST's own
+`HandleBoundMW`+`ClientBoundMW`-same-route constraint.
+
+**The legacy raw-adapter credential-pairing mode
+(`SubscribeMW(&mw, rawFn)`/`PublishMW(&mw, rawFn)` with a reflection-detected
+bound-shaped `fn`) is PERMANENTLY CLOSED** — `SubscribeMW`/`PublishMW`
+now reject any codec-backed `Middleware[In, Out]` value outright
+(`MiddlewareMisattachedError`), whether or not `fn`'s shape looks bound.
+mqtt v3's closure-captured-credential pattern re-expresses via the
+reusable class unchanged (the credential capture moves into the
+`WithReceive` closure, `in` simply goes unused since mqtt v3 has no
+property channel to decode it from); ZeroMQ's in-payload pattern
+re-expresses via the bound class. See
+[`examples/events-api/handlers/security.go`](https://github.com/DaniDeer/go-codex/blob/main/examples/events-api/handlers/security.go)
+and `docs/roadmap/bound-middleware-split.md`'s investigation for the
+case-by-case migration mapping.
 
 ### Connection-level auth spec registration — `Client.AddConnectSecurityScheme`
 

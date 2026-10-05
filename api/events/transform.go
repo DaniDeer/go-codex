@@ -8,11 +8,12 @@ import (
 )
 
 // MiddlewareHandler is the type-erased, RECEIVING-role (subscribe) runtime
-// dispatch unit built by [Transform] — the codec-backed-middleware
-// counterpart to [middleware.ServerImplementation], adapted for events'
-// asymmetric shape (no Out on subscribe — see [Middleware]'s doc comment).
-// Stored on [ChannelHandle.MiddlewareHandlers]; consumed by each adapter's
-// own subscribe dispatch — never constructed directly by callers.
+// dispatch unit built by [Subscriber.Use] (reusable, bundled) or
+// [Subscriber.SubscribeBoundMW] (channel-bound, via
+// [BoundSubscribeMiddleware]) — the codec-backed-middleware counterpart to
+// [middleware.ServerImplementation]. Stored on
+// [ChannelHandle.MiddlewareHandlers]; consumed by each adapter's own
+// subscribe dispatch — never constructed directly by callers.
 type MiddlewareHandler struct {
 	// Name identifies this middleware in errors and observability.
 	Name string
@@ -46,41 +47,30 @@ type MiddlewareHandler struct {
 
 	// Agnostic is true when this handler was built from a channel-AGNOSTIC
 	// attachment (plain .Use(mw), mw bundled via [Middleware.WithReceive])
-	// rather than [Transform] — in that case Fn's ACTUAL shape has no
-	// *T parameter at all. The adapter must branch on this flag when
-	// reflect-calling Fn.
+	// rather than [Subscriber.SubscribeBoundMW] — in that case Fn's
+	// ACTUAL shape has no *T parameter at all. The adapter must branch on
+	// this flag when reflect-calling Fn.
 	Agnostic bool
-
-	// dualAttached is true ONLY for a handler built by [Transform] whose mw
-	// ALSO carries a WithReceive Fn — exactly D7's ambiguous case (bound
-	// AND agnostic attachment styles combined on the SAME value). A
-	// handler built from the plain .Use() path never sets this — bundled
-	// there is the WHOLE POINT of that attachment style, not a conflict.
-	dualAttached bool
 
 	// Satisfies names the security scheme(s) this handler's Fn satisfies
 	// when it is Security-shaped (derived from mw's own
-	// [Middleware.SecurityDeclaration] via [satisfiesOf]) — empty for a
+	// [Middleware.SecurityDeclaration]/[BoundSubscribeMiddleware]'s own
+	// Security declaration via [satisfiesOf]) — empty for a
 	// general-purpose (non-Security) middleware, which always runs
 	// regardless of the channel's declared requirements. Mirrors
-	// [rest.MiddlewareHandler.Satisfies] exactly (docs/roadmap/
-	// declarative-middleware-layering.md's Rollout Phase B) — lets
-	// [CheckCoverage] recognize a bound-or-agnostic-attached codec-backed
-	// Security middleware as satisfying a declared requirement, the same
-	// way it already recognizes a legacy [middleware.ServerImplementation].
+	// [rest.MiddlewareHandler.Satisfies] exactly — lets [CheckCoverage]
+	// recognize a bound-or-agnostic-attached codec-backed Security
+	// middleware as satisfying a declared requirement, the same way it
+	// already recognizes a legacy [middleware.ServerImplementation].
 	Satisfies []string
 
-	// HasOut is true when Fn uses the NEW, ADDITIVE, Out-carrying bound
-	// shape (func(ctx, *T, In) (Out, error), detected via
-	// [isBoundSubscribeMWShapeWithOut]) rather than the ORIGINAL,
-	// UNCHANGED shape (func(ctx, *T, In) error). docs/roadmap/
-	// declarative-middleware-layering.md's "Prerequisite for Phase 2
-	// (api/events)": Subscribe's bound Fn structurally had no way to
-	// return a value at all — this field distinguishes the two shapes so
-	// [DispatchSubscribeMiddlewareHandlers] knows how many return values
-	// to expect. False for EVERY pre-existing handler (general-purpose
-	// middleware never needs this) — fully additive, zero behavior change
-	// for the original shape.
+	// HasOut is true for EVERY handler built by [BoundSubscribeMiddleware.applyBoundSubscriber]
+	// (its Fn ALWAYS returns (Out, error) — see that type's own doc
+	// comment) and false for a handler built by [Middleware.applyAgnosticSubscriber]
+	// (the reusable class's receiveFn has NO Out return at all — a
+	// confirmed, genuine asymmetry — see [Middleware]'s own doc comment).
+	// Distinguishes how many return values [DispatchSubscribeMiddlewareHandlers]
+	// expects when reflect-calling Fn.
 	HasOut bool
 
 	// ValidateOut validates a HasOut handler's decoded Out value via mw's
@@ -95,8 +85,9 @@ type MiddlewareHandler struct {
 }
 
 // ClientMiddlewareHandler is the type-erased, SENDING-role (publish)
-// runtime dispatch unit built by [ClientTransform] — the publish-side
-// mirror of [MiddlewareHandler]. Stored on
+// runtime dispatch unit built by [Publisher.Use] (reusable, bundled) or
+// [Publisher.PublishBoundMW] (channel-bound, via [BoundPublishMiddleware])
+// — the publish-side mirror of [MiddlewareHandler]. Stored on
 // [ChannelHandle.ClientMiddlewareHandlers]; consumed by each adapter's own
 // publish dispatch.
 type ClientMiddlewareHandler struct {
@@ -123,15 +114,10 @@ type ClientMiddlewareHandler struct {
 
 	// Agnostic is true when this handler was built from a channel-AGNOSTIC
 	// attachment (plain .Use(mw), mw bundled via [Middleware.WithSend])
-	// rather than [ClientTransform] — in that case Fn's ACTUAL shape has
-	// no T parameter at all. The adapter must branch on this flag when
-	// reflect-calling Fn.
+	// rather than [Publisher.PublishBoundMW] — in that case Fn's ACTUAL
+	// shape has no T parameter at all. The adapter must branch on this
+	// flag when reflect-calling Fn.
 	Agnostic bool
-
-	// dualAttached is true ONLY for a handler built by [ClientTransform]
-	// whose mw ALSO carries a WithSend Fn — D7's ambiguous case. See
-	// [MiddlewareHandler.dualAttached]'s identical rationale.
-	dualAttached bool
 
 	// Satisfies mirrors [MiddlewareHandler.Satisfies]'s identical
 	// rationale, for the SENDING (publish/client) role.
@@ -228,23 +214,13 @@ func satisfiesOf[In, Out any](mw Middleware[In, Out]) []string {
 }
 
 // buildMiddlewareHandlerAny builds a type-erased [MiddlewareHandler] from a
-// concrete [Middleware][In, Out] and an UNTYPED fn — the SOLE builder for
-// the channel-BOUND, RECEIVING role, used by both [Subscriber.SubscribeMW]'s
-// bound path (see [Middleware.applyBoundSubscriber]) and
-// [buildAgnosticMiddlewareHandler] (docs/roadmap/
-// declarative-middleware-layering.md's Rollout Phase B — events' own
-// Architecture-revision fold-in, mirroring api/rest's identical Phase A
-// consolidation): fn is already `any` on [MiddlewareHandler.Fn] itself, so
-// a single `any`-typed builder needs zero new type parameters beyond
-// In/Out (the receiver mw already carries).
-// dualAttached is DELIBERATELY NOT set here — this builder is shared by
-// BOTH the bound path (Transform/applyBoundSubscriber) AND
-// [buildAgnosticMiddlewareHandler]; mw.isBundled() is naturally true for
-// a LEGITIMATE agnostic-only attachment (bundled IS the whole point of
-// that style), so setting it unconditionally here would misfire D7's
-// ambiguous-attachment check against pure agnostic usage (confirmed via
-// an actual test failure — see git history). Only a BOUND call site may
-// set dualAttached, and only when mw is ALSO bundled.
+// concrete [Middleware][In, Out] and an UNTYPED fn — shared by
+// [BoundSubscribeMiddleware.applyBoundSubscriber] (channel-bound, passing
+// its own NAMED mw field) and [buildAgnosticMiddlewareHandler] (channel-
+// agnostic, passing mw.receiveFn): fn is already `any` on
+// [MiddlewareHandler.Fn] itself, so a single `any`-typed builder needs
+// zero new type parameters beyond In/Out (the receiver mw already
+// carries).
 func buildMiddlewareHandlerAny[In, Out any](mw Middleware[In, Out], fn any) MiddlewareHandler {
 	return MiddlewareHandler{
 		Name:           mw.Name,
@@ -270,11 +246,9 @@ func buildAgnosticMiddlewareHandler[In, Out any](mw Middleware[In, Out]) Middlew
 // buildClientMiddlewareHandlerAny builds a type-erased
 // [ClientMiddlewareHandler] from a concrete [Middleware][In, Out] and an
 // UNTYPED fn — the SENDING-role mirror of [buildMiddlewareHandlerAny],
-// used by both [Publisher.PublishMW]'s bound path (see
-// [Middleware.applyBoundPublisher]) and
-// [buildAgnosticClientMiddlewareHandler].
-// dualAttached is DELIBERATELY NOT set here — see [buildMiddlewareHandlerAny]'s
-// identical rationale.
+// shared by [BoundPublishMiddleware.applyBoundPublisher] (channel-bound)
+// and [buildAgnosticClientMiddlewareHandler] (channel-agnostic, passing
+// mw.sendFn).
 func buildClientMiddlewareHandlerAny[In, Out any](mw Middleware[In, Out], fn any) ClientMiddlewareHandler {
 	return ClientMiddlewareHandler{
 		Name:           mw.Name,
@@ -298,12 +272,11 @@ func buildAgnosticClientMiddlewareHandler[In, Out any](mw Middleware[In, Out]) C
 	return h
 }
 
-// Transform/ClientTransform (the channel-BOUND, free-function attachment
-// point) were REMOVED (docs/design/d-0007-declarative-middleware-layering.md's
-// Rollout Phase B — events' own Architecture revision, mirroring Phase
-// A's identical REST removal) — folded into [Subscriber.SubscribeMW]/
-// [Publisher.PublishMW] directly via reflection-based shape detection
-// ([isBoundSubscribeMWShape]/[isBoundPublishMWShape]). Use
-// `subscriber.SubscribeMW(mw, fn)`/`publisher.PublishMW(mw, fn)` instead —
-// identical Fn signatures, identical dispatch, reached through the
-// ordinary method-chain API instead of a separate free function.
+// Transform/ClientTransform (an EARLIER, free-function channel-bound
+// attachment point predating even the reflection-based
+// SubscribeMW/PublishMW mechanism) never existed in this package by this
+// name — any reference to them elsewhere is stale/aspirational. The
+// CURRENT channel-bound attachment point is
+// [Subscriber.SubscribeBoundMW]/[Publisher.PublishBoundMW], using the
+// dedicated [BoundSubscribeMiddleware]/[BoundPublishMiddleware] types
+// (see bound_middleware.go) — see docs/roadmap/bound-middleware-split.md.

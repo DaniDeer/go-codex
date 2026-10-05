@@ -337,7 +337,7 @@ func makeSubscribeMessageHandler[T any](
 		// request-merge wiring (see [rest.RouteHandle.DecodeMerged]).
 		//
 		// topicVars is ALSO needed by codec-backed middleware dispatch
-		// below (Transform/bundled .Use()) — computed once here, unioned
+		// below (SubscribeBoundMW/bundled .Use()) — computed once here, unioned
 		// with the mergeFields>0 gate so it's derived whenever EITHER
 		// needs it.
 		var topicVars map[string]string
@@ -382,7 +382,7 @@ func makeSubscribeMessageHandler[T any](
 
 		// Property vocabulary axis: extract the real MQTT5 User
 		// Properties into a plain map for codec-backed middleware dispatch
-		// below (Transform/bundled .Use()'s WithSubscribeProperty) AND for
+		// below (SubscribeBoundMW/bundled .Use()'s WithSubscribeProperty) AND for
 		// channel-level MergedPropertyParam merge fields declared DIRECTLY
 		// on NewChannel (no Middleware needed — see
 		// [ChannelHandle.PropertyMergeFields]) — the SAME extraction
@@ -478,7 +478,7 @@ func makeSubscribeMessageHandler[T any](
 		// [events.Subscriber.SubscribeMW]) — runs UNCONDITIONALLY,
 		// mirroring adapters/nethttp's runSecurityMiddlewareReflect being
 		// called outside the secReqs>0 gate: an UNPAIRED (general-purpose
-		// Satisfies-empty) security-shaped Fn (e.g. a Transform-equivalent
+		// Satisfies-empty) security-shaped Fn (e.g. a SubscribeBoundMW-equivalent
 		// reading a User Property into *T) must run even on a channel with
 		// no declared security. Shapes were already validated eagerly by
 		// [subscribeWithHandle] before this handler was ever registered.
@@ -510,7 +510,7 @@ func makeSubscribeMessageHandler[T any](
 			granted = g
 		}
 
-		// Codec-backed middleware dispatch (Transform and bundled .Use())
+		// Codec-backed middleware dispatch (SubscribeBoundMW and bundled .Use())
 		// — SAME pre-handler dispatch point runSubscribeSecurityImpls just
 		// ran at (D1), reusing the SAME topicVars derived above. A fn
 		// error is ErrorPattern-eligible (D2), falling back to
@@ -964,7 +964,7 @@ func publish[T any](
 		propertyVars = propVars
 	}
 
-	// Codec-backed middleware dispatch (ClientTransform and bundled
+	// Codec-backed middleware dispatch (PublishBoundMW and bundled
 	// .Use()) — SAME pre-publish dispatch point runPublishSecurityImpls
 	// runs at below, but derived FIRST since a middleware's own Out may
 	// contribute ADDITIONAL topic vars BuildTopic needs, plus property

@@ -24,16 +24,17 @@ var propOptInCodec = codex.Struct[propOptIn]()
 // ── property vocabulary axis: WithSubscribeProperty/WithPublishProperty ──
 
 func TestMiddleware_WithSubscribeProperty_MergesIn(t *testing.T) {
-	mw := events.NewMiddleware(newTestDeclaration("tenant-policy")).
+	bm := events.NewBoundSubscribeMiddleware(newTestDeclaration("tenant-policy"),
+		func(ctx context.Context, msg *userEvent, in mdTestIn) (mdTestOut, error) {
+			msg.Name = in.Key
+			return mdTestOut{}, nil
+		}).
 		WithSubscribeProperty(events.NewPropertyParam("tenantID", codex.String().Refine(validate.NonEmptyString),
 			func(in mdTestIn) string { return in.Key },
 			func(in *mdTestIn, v string) { in.Key = v }))
 	subscriber := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithSubscribe(events.Subscribe{Summary: "User created"})
-	subscriber = subscriber.SubscribeMW(mw, func(ctx context.Context, msg *userEvent, in mdTestIn) error {
-		msg.Name = in.Key
-		return nil
-	})
+	subscriber = subscriber.SubscribeBoundMW(bm)
 	h, err := subscriber.Handle(nil)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -55,15 +56,16 @@ func TestMiddleware_WithSubscribeProperty_MergesIn(t *testing.T) {
 }
 
 func TestMiddleware_WithPublishProperty_EncodesOutIntoMessage(t *testing.T) {
-	mw := events.NewMiddleware(newTestDeclaration("tenant-out-policy")).
+	bm := events.NewBoundPublishMiddleware(newTestDeclaration("tenant-out-policy"),
+		func(ctx context.Context, msg userEvent) (mdTestOut, error) {
+			return mdTestOut{Value: "acme"}, nil
+		}).
 		WithPublishProperty(events.NewPropertyParam("tenantID", codex.String().Refine(validate.NonEmptyString),
 			func(out mdTestOut) string { return out.Value },
 			func(out *mdTestOut, v string) { out.Value = v }))
 	publisher := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithPublish(events.Publish{Summary: "User created"})
-	publisher = publisher.PublishMW(mw, func(ctx context.Context, msg userEvent) (mdTestOut, error) {
-		return mdTestOut{Value: "acme"}, nil
-	})
+	publisher = publisher.PublishBoundMW(bm)
 	h, err := publisher.Handle(nil)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -85,13 +87,14 @@ func TestMiddleware_WithPublishProperty_EncodesOutIntoMessage(t *testing.T) {
 }
 
 func TestMiddleware_WithSubscribeProperty_RequiredButAdapterSuppliesNoPropertyMap(t *testing.T) {
-	mw := events.NewMiddleware(newTestDeclaration("tenant-policy")).
+	bm := events.NewBoundSubscribeMiddleware(newTestDeclaration("tenant-policy"),
+		func(ctx context.Context, msg *userEvent, in mdTestIn) (mdTestOut, error) { return mdTestOut{}, nil }).
 		WithSubscribeProperty(events.NewPropertyParam("tenantID", codex.String().Refine(validate.NonEmptyString),
 			func(in mdTestIn) string { return in.Key },
 			func(in *mdTestIn, v string) { in.Key = v }))
 	subscriber := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithSubscribe(events.Subscribe{Summary: "User created"})
-	subscriber = subscriber.SubscribeMW(mw, func(ctx context.Context, msg *userEvent, in mdTestIn) error { return nil })
+	subscriber = subscriber.SubscribeBoundMW(bm)
 	h, err := subscriber.Handle(nil)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -109,13 +112,14 @@ func TestMiddleware_WithSubscribeProperty_RequiredButAdapterSuppliesNoPropertyMa
 
 func TestMiddleware_WithOptionalSubscribeProperty_AbsentLeavesZeroValueNoError(t *testing.T) {
 	decl := middleware.NewDeclaration("tenant-optional-policy", propOptInCodec, mdTestOutCodec)
-	mw := events.NewMiddleware(decl).
+	bm := events.NewBoundSubscribeMiddleware(decl,
+		func(ctx context.Context, msg *userEvent, in propOptIn) (mdTestOut, error) { return mdTestOut{}, nil }).
 		WithSubscribeProperty(events.NewOptionalPropertyParam("tenantID", codex.String(),
 			func(in propOptIn) string { return in.TenantID },
 			func(in *propOptIn, v string) { in.TenantID = v }))
 	subscriber := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithSubscribe(events.Subscribe{Summary: "User created"})
-	subscriber = subscriber.SubscribeMW(mw, func(ctx context.Context, msg *userEvent, in propOptIn) error { return nil })
+	subscriber = subscriber.SubscribeBoundMW(bm)
 	h, err := subscriber.Handle(nil)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -143,14 +147,15 @@ func TestMiddleware_PropertyMergeComposesWithGobRequestFormat(t *testing.T) {
 	)
 	gobFmt := format.Gob(payloadCodec)
 
-	mw := events.NewMiddleware(newTestDeclaration("tenant-gob-policy")).
+	bm := events.NewBoundSubscribeMiddleware(newTestDeclaration("tenant-gob-policy"),
+		func(ctx context.Context, msg *payload, in mdTestIn) (mdTestOut, error) { return mdTestOut{}, nil }).
 		WithSubscribeProperty(events.NewPropertyParam("tenantID", codex.String().Refine(validate.NonEmptyString),
 			func(in mdTestIn) string { return in.Key },
 			func(in *mdTestIn, v string) { in.Key = v }))
 
 	subscriber := events.NewChannel[payload]("uploads/data", payloadCodec, events.Formats(gobFmt)).
 		WithSubscribe(events.Subscribe{Summary: "Upload received"})
-	subscriber = subscriber.SubscribeMW(mw, func(ctx context.Context, msg *payload, in mdTestIn) error { return nil })
+	subscriber = subscriber.SubscribeBoundMW(bm)
 	h, err := subscriber.Handle(nil)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)

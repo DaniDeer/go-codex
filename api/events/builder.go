@@ -150,19 +150,36 @@ func FromSecurityScheme(schemeName string, scheme SecurityScheme, scopes []strin
 }
 
 // SecurityMiddleware is [FromSecurityScheme]'s codec-backed-family
-// equivalent, GENERALIZED over In/Out (docs/roadmap/declarative-
-// middleware-layering.md's Rollout Phase B, mirroring
-// `rest.SecurityMiddleware`'s identical Phase A generalization) — builds a
-// [Middleware][In, Out] carrying a [middleware.SecurityDeclaration],
-// attachable via the SAME .Use(...)/SubscribeMW(...)/PublishMW(...)
-// vocabulary as any other codec-backed middleware. A non-`struct{}`
-// In/Out lets a Security-carrying middleware ALSO carry a real credential
-// payload (e.g. a Bearer token), dispatched through SubscribeMW/PublishMW's
-// bound path — NOT via a 3-tuple return, via the `GrantedScopes
-// map[string][]string`-named conventional field on Out instead (see
-// `adapters/internal/httpsecurity`'s identical REST convention — events'
-// OWN adapters read this the SAME way, confirmed via
-// `adapters/mqtt5`/`mqtt`/`zeromq`'s existing CheckScopes integration).
+// equivalent, GENERALIZED over In/Out — builds a [Middleware][In, Out]
+// carrying a [middleware.SecurityDeclaration], attachable ONLY via plain
+// .Use(...) (the REUSABLE class — see [Middleware.WithReceive]/
+// [Middleware.WithSend]). `SubscribeMW`/`PublishMW` do NOT accept a
+// codec-backed value anymore (they return [MiddlewareMisattachedError]);
+// for a channel-BOUND attachment (fn additionally receiving the
+// channel's own decoded `msg *T`/`msg T`), use
+// [BoundSecuritySubscribeMiddleware]/[BoundSecurityPublishMiddleware] +
+// [Subscriber.SubscribeBoundMW]/[Publisher.PublishBoundMW] instead.
+//
+// **A non-`struct{}` In/Out lets a Security-carrying middleware ALSO
+// carry a real credential payload** (e.g. a Bearer token), read/validated
+// via In's own topic/property merge fields (`WithSubscribeTopic`/
+// `WithSubscribeProperty`/etc.) rather than manual extraction. A
+// Security requirement is satisfied by populating the conventional
+// `GrantedScopes map[string][]string`-named field on Out, read by the
+// adapter via reflection and merged into the SAME `middleware.CheckScopes`
+// call every Security attachment uses (see `adapters/internal/scopesmerge`'s
+// identical REST/`httpsecurity` convention).
+//
+// **On the SUBSCRIBE side specifically, `GrantedScopes` can ONLY ever be
+// populated by the BOUND class** — [Middleware.WithReceive]'s Fn has NO
+// Out return at all (a confirmed, genuine, PRE-EXISTING structural
+// asymmetry vs. REST/reqreply's own `WithReceive`), so `.Use(mw)` can
+// NEVER satisfy a declared `Subscribe.Security` requirement, only ever
+// an UNPAIRED (undeclared-Security) presence/validity check. See
+// [Middleware.WithReceive]'s own doc comment for the full rationale —
+// this is NOT a limitation on the PUBLISH side (`Middleware.WithSend`
+// DOES return `(Out, error)`, though Publish never merges grants at all,
+// since there is nothing to authorize on the sending side).
 //
 // InCodec/OutCodec default to [codex.Struct[In]()]/[codex.Struct[Out]()]
 // (a safe, zero-field no-op codec) when In/Out are NOT explicitly
@@ -698,14 +715,14 @@ type ChannelHandle[T any] struct {
 	HandlerOpts any
 
 	// MiddlewareHandlers holds every [MiddlewareHandler] attached via
-	// [Transform] (or a bundled .Use(mw)), in attachment order —
-	// populated ONLY by [Subscriber.Handle] (never [Publisher.Handle]),
-	// mirroring [rest.RouteHandle.MiddlewareHandlers]'s server-only
-	// asymmetry.
+	// [Subscriber.SubscribeBoundMW] (or a bundled .Use(mw)), in
+	// attachment order — populated ONLY by [Subscriber.Handle] (never
+	// [Publisher.Handle]), mirroring [rest.RouteHandle.MiddlewareHandlers]'s
+	// server-only asymmetry.
 	MiddlewareHandlers []MiddlewareHandler
 
 	// ClientMiddlewareHandlers holds every [ClientMiddlewareHandler]
-	// attached via [ClientTransform] (or a bundled .Use(mw)), in
+	// attached via [Publisher.PublishBoundMW] (or a bundled .Use(mw)), in
 	// attachment order — populated ONLY by [Publisher.Handle] (never
 	// [Subscriber.Handle]), mirroring [rest.RouteHandle.ClientMiddlewareHandlers].
 	ClientMiddlewareHandlers []ClientMiddlewareHandler
@@ -1724,21 +1741,20 @@ func applyEventsSecurityDeclarations(topic string, security *[]route.SecurityReq
 // message actually be verified" question, which only ever applies to the
 // receiving/subscribing side).
 //
-// impls reflects whatever [Subscriber.SubscribeMW] calls were made on the
-// [Subscriber] before [Subscriber.Handle] built h — a [Subscriber]
+// impls reflects whatever legacy [Subscriber.SubscribeMW] calls (a bare
+// [middleware.Middleware] or general-purpose mw==nil decorator) were made
+// on the [Subscriber] before [Subscriber.Handle] built h; handlers
+// reflects whatever [Subscriber.Use] (reusable, bundled) or
+// [Subscriber.SubscribeBoundMW] (channel-bound, via
+// [BoundSecuritySubscribeMiddleware]) calls were made. A [Subscriber]
 // declaring a security scheme (via the manual Subscribe.Security field or
-// [FromSecurityScheme]+[Subscriber.Use]) WITHOUT a matching SubscribeMW
-// attachment fails [Subscriber.Handle] with
-// [MissingSecurityMiddlewareError]; attaching a SubscribeMW whose
-// Satisfies names the scheme resolves it.
-// handlers (docs/design/d-0007-declarative-middleware-layering.md's Rollout
-// Phase B, mirroring rest.CheckCoverage's identical Phase A extension — a
-// SIGNATURE extension, not a storage merge: [ChannelHandle] already
-// carries Implementations and MiddlewareHandlers as two separate
-// exported fields) checks the SAME declared requirement against a
-// SubscribeMW/PublishMW-attached codec-backed [MiddlewareHandler], so a
-// Security scheme migrated onto the bound path is still correctly
-// recognized as covered.
+// [FromSecurityScheme]+[Subscriber.Use]) WITHOUT a matching attachment in
+// EITHER list fails [Subscriber.Handle] with
+// [MissingSecurityMiddlewareError]; an attachment in either whose
+// Satisfies names the scheme resolves it — the two lists are checked
+// identically (docs/roadmap/bound-middleware-split.md), so a Security
+// scheme expressed via the bound class is recognized exactly like the
+// legacy/reusable paths.
 func CheckCoverage(topic string, secReqs []route.SecurityRequirement, impls []middleware.ServerImplementation, handlers []MiddlewareHandler) error {
 	for _, req := range secReqs {
 		for schemeName := range req {
@@ -1941,10 +1957,21 @@ type Subscriber[T any] struct {
 	// [rest.Route.HandleMW].
 	impls []middleware.ServerImplementation
 	// middlewareHandlers holds every [MiddlewareHandler] attached via
-	// [Transform], in attachment order — the codec-backed-middleware
-	// counterpart to impls, built internally by Transform. Copied onto
-	// [ChannelHandle.MiddlewareHandlers] by [Subscriber.Handle].
+	// [Middleware.Use] (reusable, agnostic) or [Subscriber.SubscribeBoundMW]
+	// (channel-bound), in attachment order — the codec-backed-middleware
+	// counterpart to impls. Copied onto [ChannelHandle.MiddlewareHandlers]
+	// by [Subscriber.Handle].
 	middlewareHandlers []MiddlewareHandler
+	// buildErr stashes a construction-time error from [Subscriber.SubscribeBoundMW]
+	// (a T-mismatched or wrong-class bm — see [BoundMiddlewareReqMismatchError])
+	// or [Subscriber.SubscribeMW] (a codec-backed [Middleware]/
+	// [BoundSubscribeMiddleware] value — see [MiddlewareMisattachedError]),
+	// checked and returned as a normal error at the top of
+	// [Subscriber.Handle]. Unlike REST's [Route.ClientHandle] (deliberately
+	// infallible, requiring a panic-based workaround for the equivalent
+	// case), events' [Subscriber.Handle] is ALREADY fallible on every call
+	// — no panic needed anywhere here.
+	buildErr error
 }
 
 // Publisher is a role-scoped builder for a channel's publish side, returned
@@ -1968,8 +1995,10 @@ type Publisher[T any] struct {
 	// [rest.Route.ClientMW].
 	clientImpls []middleware.ClientImplementation
 	// clientMiddlewareHandlers holds every [ClientMiddlewareHandler]
-	// attached via [ClientTransform], in attachment order — copied onto
-	// [ChannelHandle.ClientMiddlewareHandlers] by [Publisher.Handle].
+	// attached via [Middleware.Use] (reusable, agnostic) or
+	// [Publisher.PublishBoundMW] (channel-bound), in attachment order —
+	// copied onto [ChannelHandle.ClientMiddlewareHandlers] by
+	// [Publisher.Handle].
 	clientMiddlewareHandlers []ClientMiddlewareHandler
 	// opts holds the type-erased adapter options attached via
 	// [Publisher.WithOptions] — copied onto [ChannelHandle.HandlerOpts].
@@ -1978,6 +2007,9 @@ type Publisher[T any] struct {
 	// where only the subscribe side could declare per-channel adapter
 	// options such as Capabilities).
 	opts any
+	// buildErr mirrors [Subscriber.buildErr] for the publish/sending role
+	// — see that field's doc comment for the full rationale.
+	buildErr error
 }
 
 // WithSubscribe returns a [Subscriber] for this channel's subscribe side,
@@ -2078,22 +2110,30 @@ func buildServerImplementation(mw middleware.RouteMiddleware, fn any) middleware
 	return middleware.ServerImplementation{Name: "implement:general", Fn: fn}
 }
 
-// SubscribeMW is the ONLY server-side implementation-attachment method for
-// a [Subscriber] — mw is NILABLE:
-//   - non-nil AND mw.Security != nil: PAIRED — fn is matched against a
-//     PREVIOUSLY-.Use()'d security declaration, mw being the SAME
-//     middleware.Middleware value (not a re-typed string) — matched by
-//     [CheckCoverage] at [Subscriber.Handle] time.
-//   - nil (or mw.Security == nil): UNPAIRED, general-purpose — fn runs
+// NOTE: isBoundSubscribeMWShape/isBoundSubscribeMWShapeWithOut (the
+// reflection-based Fn-shape detectors SubscribeMW used to use to silently
+// promote a codec-backed [Middleware][In, Out] to the channel-BOUND
+// dispatch path) were REMOVED as part of docs/roadmap/bound-middleware-split.md
+// — the channel-bound case is now ALWAYS explicit, via the dedicated
+// [BoundSubscribeMiddleware][T, In, Out] type (see bound_middleware.go)
+// and [Subscriber.SubscribeBoundMW], never Fn-shape guessing.
+
+// SubscribeMW is the server-side GENERAL-PURPOSE implementation-attachment
+// method for a [Subscriber] — mw is NILABLE, and is REJECTED if it's a
+// codec-backed [Middleware][In, Out] or [BoundSubscribeMiddleware][T, In,
+// Out] (via [MiddlewareMisattachedError] — those attach ONLY via plain
+// .Use() and [Subscriber.SubscribeBoundMW] respectively, never
+// SubscribeMW; see docs/roadmap/bound-middleware-split.md):
+//   - a legacy [middleware.Middleware] (or nil): UNPAIRED/PAIRED exactly
+//     as before — fn is matched against a PREVIOUSLY-.Use()'d security
+//     declaration when mw.Security != nil, matched by [CheckCoverage] at
+//     [Subscriber.Handle] time; else UNPAIRED/general-purpose — fn runs
 //     unconditionally, nothing to satisfy.
 //
 // fn is deliberately untyped (any) — resolved by the SPECIFIC adapter
 // (adapters/mqtt5, adapters/mqtt, adapters/zeromq) at Register/Subscribe
 // time, mirroring [middleware.ServerImplementation.Fn]'s existing
-// type-erasure; recognizing "security-shaped" vs. "general-purpose
-// wrapping-shaped" Fn values is each adapter's OWN responsibility, not
-// this package's — see docs/design/d-0002-pubsub-workflow-simplification.md's
-// Decision 3. A wrong-shaped fn fails with a typed error at that point,
+// type-erasure. A wrong-shaped fn fails with a typed error at that point,
 // never silently.
 //
 // Every call appends to s's own implementations slice, in attachment
@@ -2101,34 +2141,12 @@ func buildServerImplementation(mw middleware.RouteMiddleware, fn any) middleware
 // another. [Subscriber.Handle] copies the accumulated slice onto
 // [ChannelHandle.Implementations] verbatim. Mirrors [rest.Route.HandleMW]
 // exactly.
-//
-// docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase B
-// (events' own Architecture-revision fold-in, mirroring Phase A's
-// identical REST change): when mw is a codec-backed [Middleware][In, Out]
-// AND fn matches the channel-BOUND shape (func(ctx, *T, In) error,
-// detected via [isBoundSubscribeMWShape] on fn's OWN reflected signature
-// — never mw's dynamic type, since a [SecurityMiddleware] value can ALSO
-// be used purely as a legacy credential-shape carrier), dispatch is now
-// folded in here directly — [Transform] remains available as an
-// equivalent, explicit-type-parameter alternative, not the only path.
-//
-// "Prerequisite for Phase 2 (api/events)" (found during a Phase C
-// review): fn MAY ALSO match the NEW, ADDITIVE, Out-carrying bound shape
-// (func(ctx, *T, In) (Out, error), detected via
-// [isBoundSubscribeMWShapeWithOut]) — used by a Security-carrying
-// middleware that needs to return `GrantedScopes`. The ORIGINAL 1-return
-// shape keeps working completely unchanged for every other (general-
-// purpose) attachment.
 func (s Subscriber[T]) SubscribeMW(mw middleware.RouteMiddleware, fn any) Subscriber[T] {
 	if v, ok := mw.(eventsMiddlewareContributor); ok {
-		switch {
-		case isBoundSubscribeMWShapeWithOut[T](fn):
-			s.middlewareHandlers = append(slices.Clone(s.middlewareHandlers), v.applyBoundSubscriberWithOut(fn))
-			return s
-		case isBoundSubscribeMWShape[T](fn):
-			s.middlewareHandlers = append(slices.Clone(s.middlewareHandlers), v.applyBoundSubscriber(fn))
-			return s
+		if s.buildErr == nil {
+			s.buildErr = MiddlewareMisattachedError{Topic: s.channel.topic, Name: v.MiddlewareName()}
 		}
+		return s
 	}
 	s.impls = append(slices.Clone(s.impls), buildServerImplementation(mw, fn))
 	return s
@@ -2178,8 +2196,12 @@ func synthesizeLegacySecurity(mw middleware.RouteMiddleware) (middleware.Middlew
 	return middleware.Middleware{Name: name, Security: sec}, true
 }
 
-// PublishMW is the ONLY client-side implementation-attachment method for a
-// [Publisher] — the CLIENT-side mirror of [Subscriber.SubscribeMW]. mw is
+// PublishMW is the client-side GENERAL-PURPOSE implementation-attachment
+// method for a [Publisher] — the CLIENT-side mirror of
+// [Subscriber.SubscribeMW], including its REJECTION of a codec-backed
+// [Middleware][In, Out] or [BoundPublishMiddleware][T, In, Out] (via
+// [MiddlewareMisattachedError] — those attach ONLY via plain .Use() and
+// [Publisher.PublishBoundMW] respectively, never PublishMW). mw is
 // NILABLE with the SAME derivation rule: non-nil with Security set PAIRS
 // fn against a previously-.Use()'d declaration (Satisfies gates which
 // implementations the adapter runs, vs. the channel's declared security
@@ -2195,17 +2217,11 @@ func synthesizeLegacySecurity(mw middleware.RouteMiddleware) (middleware.Middlew
 // another. [Publisher.Handle] copies the accumulated slice onto
 // [ChannelHandle.ClientImplementations] verbatim. Mirrors
 // [rest.Route.ClientMW] exactly.
-//
-// docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase B: when
-// mw is a codec-backed [Middleware][In, Out] AND fn matches the
-// channel-BOUND shape (func(ctx, T) (Out, error), T BY VALUE — detected
-// via [isBoundPublishMWShape] on fn's OWN reflected signature, never mw's
-// dynamic type, mirroring [Subscriber.SubscribeMW]'s identical rule),
-// dispatch is folded in here directly — [ClientTransform] remains
-// available as an equivalent, explicit-type-parameter alternative.
 func (p Publisher[T]) PublishMW(mw middleware.RouteMiddleware, fn any) Publisher[T] {
-	if v, ok := mw.(eventsMiddlewareContributor); ok && isBoundPublishMWShape[T](fn) {
-		p.clientMiddlewareHandlers = append(slices.Clone(p.clientMiddlewareHandlers), v.applyBoundPublisher(fn))
+	if v, ok := mw.(eventsMiddlewareContributor); ok {
+		if p.buildErr == nil {
+			p.buildErr = MiddlewareMisattachedError{Topic: p.channel.topic, Name: v.MiddlewareName()}
+		}
 		return p
 	}
 	idx := len(p.clientImpls)
@@ -2256,14 +2272,29 @@ func (p Publisher[T]) WithOptions(opts any) Publisher[T] {
 //
 // Every call returns its OWN freshly-built handle — never a shared or
 // mutated pointer, even on a dedup hit.
+//
+// Returns s.buildErr FIRST, unconditionally, if set — a construction-time
+// mistake from [Subscriber.SubscribeBoundMW] (T mismatch/wrong class) or
+// [Subscriber.SubscribeMW] (a codec-backed value passed where it doesn't
+// belong). Unlike REST's [Route.ClientHandle] (deliberately infallible,
+// requiring a panic for the equivalent case — docs/roadmap/
+// bound-middleware-split.md's Phase A Finding 1), Handle is ALREADY
+// fallible on every call, so this is just a normal, early-returned error.
 func (s Subscriber[T]) Handle(client *Client) (*ChannelHandle[T], error) {
+	if s.buildErr != nil {
+		return nil, s.buildErr
+	}
 	return buildChannelHandle(s.channel, client, roleSubscribe, s.mws, s.handler, s.opts, s.impls, nil, s.middlewareHandlers, nil)
 }
 
 // Handle builds a fresh, independent [ChannelHandle] for p's publish-side
 // declaration. See [Subscriber.Handle]'s doc comment for the shared
-// nil-client/dedup/unconditional-validation/fresh-handle contract.
+// nil-client/dedup/unconditional-validation/fresh-handle/buildErr
+// contract.
 func (p Publisher[T]) Handle(client *Client) (*ChannelHandle[T], error) {
+	if p.buildErr != nil {
+		return nil, p.buildErr
+	}
 	h, err := buildChannelHandle(p.channel, client, rolePublish, p.mws, nil, p.opts, nil, p.clientImpls, nil, p.clientMiddlewareHandlers)
 	if err != nil {
 		return nil, err

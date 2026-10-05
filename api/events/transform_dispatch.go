@@ -65,9 +65,9 @@ func AsMiddlewareDispatchError(err error) (MiddlewareDispatchInfo, bool) {
 }
 
 // DispatchSubscribeMiddlewareHandlers dispatches every [MiddlewareHandler]
-// attached to a channel (via Transform or a bundled .Use()) at the SAME
-// pre-handler dispatch point an adapter's own security enforcement
-// already runs at (D1) — msg is the SAME already-decoded *T the handler
+// attached to a channel (via [Subscriber.SubscribeBoundMW] or a bundled
+// .Use()) at the SAME pre-handler dispatch point an adapter's own
+// security enforcement already runs at (D1) — msg is the SAME already-decoded *T the handler
 // will also receive, so a bound mw's fn may read/enrich it. propertyVars
 // is the property vocabulary axis's OWN, SEPARATE map (real MQTT5 User
 // Properties) — decoded independently from topicVars, never combined
@@ -123,9 +123,9 @@ func DispatchSubscribeMiddlewareHandlers[T any](ctx context.Context, msg *T, han
 }
 
 // DispatchPublishMiddlewareHandlers dispatches every [ClientMiddlewareHandler]
-// attached to a channel (via ClientTransform or a bundled .Use()) at the
-// SAME pre-publish dispatch point an adapter's own security enforcement
-// already runs at — msg is the caller's OWN already-built value (VALUE,
+// attached to a channel (via [Publisher.PublishBoundMW] or a bundled
+// .Use()) at the SAME pre-publish dispatch point an adapter's own
+// security enforcement already runs at — msg is the caller's OWN already-built value (VALUE,
 // not pointer — mirrors REST client's req Req). Returns TWO SEPARATE
 // merged maps derived from every middleware's own Out (registration-
 // order, last-applied-wins, D6(c)): topicVars feeds

@@ -82,7 +82,7 @@ type TransportOptions struct {
 // property-merge, User-Property-param validation, codec-based AND
 // declarative SubscribeMW/PublishMW security enforcement (credential-
 // paired or general-purpose wrapping), and codec-backed Middleware/
-// Transform dispatch are ALL supported — there is no remaining "v1
+// SubscribeBoundMW/PublishBoundMW dispatch are ALL supported — there is no remaining "v1
 // scope" asterisk, mirroring [adapters/nethttp/clienttransport.go]'s
 // own "no remaining v1 scope asterisk" wording. [stats.Observer]
 // (RecordPublish/RecordSubscribe, TraceObserver) is fully wired,
@@ -147,7 +147,7 @@ func recoverHandle(kind string, anyAny any, client *events.Client) (reflect.Valu
 //
 // docs/design/d-0006-protocol-native-capabilities.md's Phase 4e: this
 // shim now runs the FULL [publish][T] pipeline, matched step-for-step
-// (property-merge → codec-Middleware/Transform dispatch → security
+// (property-merge → codec-Middleware/SubscribeBoundMW dispatch → security
 // credential resolution+validation → general-purpose PublishMW wrapping
 // around encode+transmit), not just Capabilities (Phase 4c) — closing
 // the "v1 scope" gap entirely. opts is an OPTIONAL, PER-CALL
@@ -223,7 +223,7 @@ func (t *transport) Publish(ctx context.Context, pubAny, msgAny any, optsVariadi
 		propertyVars, _ = propResults[0].Interface().(map[string]string)
 	}
 
-	// Codec-backed middleware dispatch (ClientTransform and bundled
+	// Codec-backed middleware dispatch (PublishBoundMW and bundled
 	// .Use()) — derived BEFORE security, mirroring [publish][T]'s own
 	// ordering (a middleware's own Out may contribute additional topic
 	// vars BuildTopic needs, plus property vars merged into userProps
@@ -399,7 +399,7 @@ func publishDeadLetterReflect(ctx context.Context, t *transport, handleVal refle
 // shim now runs the FULL [subscribeHandler][T] pipeline, matched
 // step-for-step (property-merge → user-property-param validation →
 // codec-based security credential check → Implementations-based security
-// Fn dispatch → codec-Middleware/Transform dispatch → general-purpose
+// Fn dispatch → codec-Middleware/PublishBoundMW dispatch → general-purpose
 // SubscribeMW wrapping around the handler call), not just Capabilities
 // (Phase 4c) — closing the "v1 scope" gap entirely. Every one of those
 // failure points consults a declared [events.ErrorChannel]/
@@ -612,7 +612,7 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 			granted = g
 		}
 
-		// Codec-backed middleware dispatch (Transform and bundled
+		// Codec-backed middleware dispatch (SubscribeBoundMW and bundled
 		// .Use()) — SAME pre-handler dispatch point the security
 		// Implementations check just ran at, reusing the SAME
 		// topicVars/propertyVars derived above. CORRECTED: a bound

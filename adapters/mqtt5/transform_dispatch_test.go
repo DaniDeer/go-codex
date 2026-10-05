@@ -33,8 +33,8 @@ var tdOutCodec = codex.Struct[tdOut](
 	),
 )
 
-func newTDDeclaration(name string) events.Middleware[tdIn, tdOut] {
-	return events.NewMiddleware(middleware.NewDeclaration(name, tdInCodec, tdOutCodec))
+func newTDDeclaration(name string) middleware.Declaration[tdIn, tdOut] {
+	return middleware.NewDeclaration(name, tdInCodec, tdOutCodec)
 }
 
 // tdEmpty is an In/Out shape with NO required fields — used where a test
@@ -45,8 +45,8 @@ type tdEmpty struct{}
 
 var tdEmptyCodec = codex.Struct[tdEmpty]()
 
-func newTDEmptyDeclaration(name string) events.Middleware[tdEmpty, tdEmpty] {
-	return events.NewMiddleware(middleware.NewDeclaration(name, tdEmptyCodec, tdEmptyCodec))
+func newTDEmptyDeclaration(name string) middleware.Declaration[tdEmpty, tdEmpty] {
+	return middleware.NewDeclaration(name, tdEmptyCodec, tdEmptyCodec)
 }
 
 func newSubscriberChannelHandle(subscriber events.Subscriber[sensorReading]) *events.ChannelHandle[sensorReading] {
@@ -60,7 +60,11 @@ func newSubscriberChannelHandle(subscriber events.Subscriber[sensorReading]) *ev
 // ── Transform: happy path, enrichment ─────────────────────────────────────
 
 func TestSubscribe_Transform_HappyPath_EnrichesMsg(t *testing.T) {
-	mw := newTDDeclaration("region-policy").
+	bm := events.NewBoundSubscribeMiddleware(newTDDeclaration("region-policy"),
+		func(ctx context.Context, msg *sensorReading, in tdIn) (tdOut, error) {
+			msg.SensorID = in.Key + "-enriched"
+			return tdOut{Value: "unused"}, nil
+		}).
 		WithSubscribeTopic(events.NewTopicParam("region", codex.String(),
 			func(in tdIn) string { return in.Key },
 			func(in *tdIn, v string) { in.Key = v },
@@ -70,10 +74,7 @@ func TestSubscribe_Transform_HappyPath_EnrichesMsg(t *testing.T) {
 	// claim.
 	subscriber := events.NewChannel[sensorReading]("sensors/{region}/readings", sensorCodec).
 		WithSubscribe(events.Subscribe{Summary: "test"})
-	subscriber = subscriber.SubscribeMW(mw, func(ctx context.Context, msg *sensorReading, in tdIn) error {
-		msg.SensorID = in.Key + "-enriched"
-		return nil
-	})
+	subscriber = subscriber.SubscribeBoundMW(bm)
 	handle := newSubscriberChannelHandle(subscriber)
 
 	client := &mockClient{}
@@ -100,18 +101,19 @@ func TestSubscribe_Transform_HappyPath_EnrichesMsg(t *testing.T) {
 // ── Transform: In-decode failure short-circuits, handler never called ───
 
 func TestSubscribe_Transform_InDecodeFailure_HandlerNotCalled(t *testing.T) {
-	mw := newTDDeclaration("region-policy").
+	handlerCalled := false
+	bm := events.NewBoundSubscribeMiddleware(newTDDeclaration("region-policy"),
+		func(ctx context.Context, msg *sensorReading, in tdIn) (tdOut, error) {
+			handlerCalled = true
+			return tdOut{Value: "unused"}, nil
+		}).
 		WithSubscribeTopic(events.NewTopicParam("region", codex.String().Refine(validate.NonEmptyString),
 			func(in tdIn) string { return in.Key },
 			func(in *tdIn, v string) { in.Key = v },
 		))
 	subscriber := events.NewChannel[sensorReading]("sensors/{region}/readings", sensorCodec).
 		WithSubscribe(events.Subscribe{Summary: "test"})
-	handlerCalled := false
-	subscriber = subscriber.SubscribeMW(mw, func(ctx context.Context, msg *sensorReading, in tdIn) error {
-		handlerCalled = true
-		return nil
-	})
+	subscriber = subscriber.SubscribeBoundMW(bm)
 	handle := newSubscriberChannelHandle(subscriber)
 
 	client := &mockClient{}
@@ -143,13 +145,14 @@ func TestSubscribe_Transform_InDecodeFailure_HandlerNotCalled(t *testing.T) {
 // ── Transform: fn error surfaces as events.MiddlewareError ──────────────
 
 func TestSubscribe_Transform_FnError_WrapsAsMiddlewareError(t *testing.T) {
-	mw := newTDEmptyDeclaration("region-policy")
+	handlerCalled := false
+	bm := events.NewBoundSubscribeMiddleware(newTDEmptyDeclaration("region-policy"),
+		func(ctx context.Context, msg *sensorReading, in tdEmpty) (tdEmpty, error) {
+			return tdEmpty{}, errors.New("boom")
+		})
 	subscriber := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
 		WithSubscribe(events.Subscribe{Summary: "test"})
-	handlerCalled := false
-	subscriber = subscriber.SubscribeMW(mw, func(ctx context.Context, msg *sensorReading, in tdEmpty) error {
-		return errors.New("boom")
-	})
+	subscriber = subscriber.SubscribeBoundMW(bm)
 	handle := newSubscriberChannelHandle(subscriber)
 
 	client := &mockClient{}
@@ -182,7 +185,7 @@ func TestSubscribe_Transform_FnError_WrapsAsMiddlewareError(t *testing.T) {
 
 func TestSubscribe_Use_AgnosticMiddleware_Dispatches(t *testing.T) {
 	callCount := 0
-	mw := newTDEmptyDeclaration("agnostic-policy").
+	mw := events.NewMiddleware(newTDEmptyDeclaration("agnostic-policy")).
 		WithReceive(func(ctx context.Context, in tdEmpty) error {
 			callCount++
 			return nil
@@ -214,16 +217,17 @@ func TestSubscribe_Use_AgnosticMiddleware_Dispatches(t *testing.T) {
 // ── ClientTransform (publish side): happy path, encodes Out into topic vars ──
 
 func TestPublish_ClientTransform_HappyPath_EncodesOutIntoTopicVars(t *testing.T) {
-	mw := newTDDeclaration("region-policy").
+	bm := events.NewBoundPublishMiddleware(newTDDeclaration("region-policy"),
+		func(ctx context.Context, msg sensorReading) (tdOut, error) {
+			return tdOut{Value: "us-west"}, nil
+		}).
 		WithPublishTopic(events.NewTopicParam("region", codex.String(),
 			func(out tdOut) string { return out.Value },
 			func(out *tdOut, v string) { out.Value = v },
 		))
 	publisher := events.NewChannel[sensorReading]("sensors/{region}/readings", sensorCodec).
 		WithPublish(events.Publish{Summary: "test"})
-	publisher = publisher.PublishMW(mw, func(ctx context.Context, msg sensorReading) (tdOut, error) {
-		return tdOut{Value: "us-west"}, nil
-	})
+	publisher = publisher.PublishBoundMW(bm)
 	handle, err := publisher.Handle(nil)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -245,12 +249,13 @@ func TestPublish_ClientTransform_HappyPath_EncodesOutIntoTopicVars(t *testing.T)
 // ── ClientTransform: fn error aborts before publish ──────────────────────
 
 func TestPublish_ClientTransform_FnError_AbortsBeforePublish(t *testing.T) {
-	mw := newTDDeclaration("region-policy")
+	bm := events.NewBoundPublishMiddleware(newTDDeclaration("region-policy"),
+		func(ctx context.Context, msg sensorReading) (tdOut, error) {
+			return tdOut{}, errors.New("boom")
+		})
 	publisher := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
 		WithPublish(events.Publish{Summary: "test"})
-	publisher = publisher.PublishMW(mw, func(ctx context.Context, msg sensorReading) (tdOut, error) {
-		return tdOut{}, errors.New("boom")
-	})
+	publisher = publisher.PublishBoundMW(bm)
 	handle, err := publisher.Handle(nil)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -270,16 +275,17 @@ func TestPublish_ClientTransform_FnError_AbortsBeforePublish(t *testing.T) {
 // ── D3: explicit vars > middleware-derived > channel-derived precedence ──
 
 func TestPublish_ClientTransform_D3Precedence_ExplicitVarsWinOverMiddleware(t *testing.T) {
-	mw := newTDDeclaration("region-policy").
+	bm := events.NewBoundPublishMiddleware(newTDDeclaration("region-policy"),
+		func(ctx context.Context, msg sensorReading) (tdOut, error) {
+			return tdOut{Value: "mw-region"}, nil
+		}).
 		WithPublishTopic(events.NewTopicParam("region", codex.String(),
 			func(out tdOut) string { return out.Value },
 			func(out *tdOut, v string) { out.Value = v },
 		))
 	publisher := events.NewChannel[sensorReading]("sensors/{region}/readings", sensorCodec).
 		WithPublish(events.Publish{Summary: "test"})
-	publisher = publisher.PublishMW(mw, func(ctx context.Context, msg sensorReading) (tdOut, error) {
-		return tdOut{Value: "mw-region"}, nil
-	})
+	publisher = publisher.PublishBoundMW(bm)
 	handle, err := publisher.Handle(nil)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -303,19 +309,21 @@ func TestPublish_ClientTransform_D3Precedence_ExplicitVarsWinOverMiddleware(t *t
 // attachment-order, last-applied-wins, NOT flagged as a conflict ──
 
 func TestSubscribe_TwoMiddlewaresEnrichSameField_LastAttachedWins(t *testing.T) {
-	mwFirst := newTDEmptyDeclaration("first-policy")
-	mwSecond := newTDEmptyDeclaration("second-policy")
+	bmFirst := events.NewBoundSubscribeMiddleware(newTDEmptyDeclaration("first-policy"),
+		func(ctx context.Context, msg *sensorReading, in tdEmpty) (tdEmpty, error) {
+			msg.SensorID = "first"
+			return tdEmpty{}, nil
+		})
+	bmSecond := events.NewBoundSubscribeMiddleware(newTDEmptyDeclaration("second-policy"),
+		func(ctx context.Context, msg *sensorReading, in tdEmpty) (tdEmpty, error) {
+			msg.SensorID = "second"
+			return tdEmpty{}, nil
+		})
 
 	subscriber := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
 		WithSubscribe(events.Subscribe{Summary: "test"})
-	subscriber = subscriber.SubscribeMW(mwFirst, func(ctx context.Context, msg *sensorReading, in tdEmpty) error {
-		msg.SensorID = "first"
-		return nil
-	})
-	subscriber = subscriber.SubscribeMW(mwSecond, func(ctx context.Context, msg *sensorReading, in tdEmpty) error {
-		msg.SensorID = "second"
-		return nil
-	})
+	subscriber = subscriber.SubscribeBoundMW(bmFirst)
+	subscriber = subscriber.SubscribeBoundMW(bmSecond)
 	handle := newSubscriberChannelHandle(subscriber)
 
 	client := &mockClient{}
@@ -349,7 +357,7 @@ func TestSubscribe_TwoMiddlewaresEnrichSameField_LastAttachedWins(t *testing.T) 
 // events/mqtt5.
 func TestSubscribe_Use_AgnosticMiddleware_DispatchesOnBothChannels(t *testing.T) {
 	callCount := 0
-	mw := newTDEmptyDeclaration("agnostic-reuse-policy").
+	mw := events.NewMiddleware(newTDEmptyDeclaration("agnostic-reuse-policy")).
 		WithReceive(func(ctx context.Context, in tdEmpty) error {
 			callCount++
 			return nil

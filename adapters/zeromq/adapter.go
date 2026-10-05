@@ -434,7 +434,7 @@ func subscribeWithHandle[T any](
 		// makeSubscribeMessageHandler wiring.
 		//
 		// topicVars is ALSO needed by codec-backed middleware dispatch
-		// below (Transform/bundled .Use()) — computed once here, unioned
+		// below (SubscribeBoundMW/bundled .Use()) — computed once here, unioned
 		// with the mergeFields>0 gate so it's derived whenever EITHER
 		// needs it.
 		var topicVars map[string]string
@@ -479,7 +479,7 @@ func subscribeWithHandle[T any](
 		// security-shaped Fn (populated by [events.Subscriber.SubscribeMW])
 		// runs UNCONDITIONALLY (mirrors mqtt5's ordering: an UNPAIRED,
 		// general-purpose Satisfies-empty Fn must run even on a channel
-		// with no declared security — e.g. a Transform-equivalent reading
+		// with no declared security — e.g. a SubscribeBoundMW-equivalent reading
 		// an in-payload field into *T before fn runs). Shapes were
 		// already validated eagerly above.
 		if len(handle.Implementations) > 0 {
@@ -505,7 +505,7 @@ func subscribeWithHandle[T any](
 			}
 		}
 
-		// Codec-backed middleware dispatch (Transform and bundled .Use())
+		// Codec-backed middleware dispatch (SubscribeBoundMW and bundled .Use())
 		// — SAME pre-handler dispatch point runSubscribeSecurityImpls just
 		// ran at (D1), reusing the SAME topicVars derived above. A fn
 		// error is ErrorPattern-eligible (D2), falling back to
@@ -581,7 +581,7 @@ func subscribeWithHandle[T any](
 		// (regardless of its OWN Satisfies) was a confirmed regression,
 		// caught via a real test failure during implementation
 		// (TestAttachServer_Transform_RunsAfterPairedSecurity: a
-		// general-purpose Transform-attached middleware alongside a
+		// general-purpose SubscribeBoundMW-attached middleware alongside a
 		// legacy paired security Fn incorrectly triggered an empty-
 		// grants CheckScopes rejection).
 		if len(secReqs) > 0 && scopesmerge.HasSatisfyingHandler(satisfies) {
@@ -833,7 +833,7 @@ func publish[T any](
 		defer func() { to.EndSpan(ctx, err) }()
 	}
 
-	// Codec-backed middleware dispatch (ClientTransform and bundled
+	// Codec-backed middleware dispatch (PublishBoundMW and bundled
 	// .Use()) — derived FIRST since a middleware's own Out may contribute
 	// ADDITIONAL topic vars BuildTopic needs. isExplicitVars distinguishes
 	// vars' OWN provenance (explicit PublishOptions.Vars vs. channel-own-

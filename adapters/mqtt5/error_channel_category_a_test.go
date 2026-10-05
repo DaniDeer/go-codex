@@ -117,7 +117,10 @@ func TestErrorChannel_TopicMismatch_Matched_Publishes(t *testing.T) {
 }
 
 func TestErrorChannel_MiddlewareDecodeIn_Matched_Publishes(t *testing.T) {
-	mw := newTDDeclaration("region-policy").
+	bm := events.NewBoundSubscribeMiddleware(newTDDeclaration("region-policy"),
+		func(ctx context.Context, msg *sensorReading, in tdIn) (tdOut, error) {
+			return tdOut{Value: "unused"}, nil
+		}).
 		WithSubscribeTopic(events.NewTopicParam("region", codex.String().Refine(validate.NonEmptyString),
 			func(in tdIn) string { return in.Key },
 			func(in *tdIn, v string) { in.Key = v },
@@ -130,9 +133,7 @@ func TestErrorChannel_MiddlewareDecodeIn_Matched_Publishes(t *testing.T) {
 			},
 		),
 	).WithSubscribe(events.Subscribe{Summary: "test"})
-	subscriber = subscriber.SubscribeMW(mw, func(ctx context.Context, msg *sensorReading, in tdIn) error {
-		return nil
-	})
+	subscriber = subscriber.SubscribeBoundMW(bm)
 	handle := newSubscriberChannelHandle(subscriber)
 
 	client := &mockClient{}

@@ -26,7 +26,16 @@ var cfEventsUserIDField = middleware.NewContextField(codex.String())
 // from Fn, unlike REST — the Fn itself IS the subscribe business logic).
 func TestSetContextFieldFromIn_DispatchOrder_BeforeFn(t *testing.T) {
 	var fnSawUserID string
-	mw := events.NewMiddleware(newTestDeclaration("userid-policy")).
+	bm := events.NewBoundSubscribeMiddleware(newTestDeclaration("userid-policy"),
+		func(ctx context.Context, msg *userEvent, in mdTestIn) (mdTestOut, error) {
+			fnSawUserID, _ = cfEventsUserIDField.Get(ctx)
+			// mdTestOutCodec requires a non-empty Value — this Fn's
+			// return value is never consulted by this test (ValidateOut
+			// just needs to pass), unlike TestSetContextFieldFromOut_*
+			// below, where the OTHER test's Out value IS the thing under
+			// test.
+			return mdTestOut{Value: "unused"}, nil
+		}).
 		WithSubscribeTopic(events.NewTopicParam("userID", codex.String(),
 			func(in mdTestIn) string { return in.Key },
 			func(in *mdTestIn, v string) { in.Key = v },
@@ -35,10 +44,7 @@ func TestSetContextFieldFromIn_DispatchOrder_BeforeFn(t *testing.T) {
 
 	sub := events.NewChannel[userEvent]("user/{userID}/created", userEventCodec).
 		WithSubscribe(events.Subscribe{Summary: "sub"}).
-		SubscribeMW(mw, func(ctx context.Context, msg *userEvent, in mdTestIn) error {
-			fnSawUserID, _ = cfEventsUserIDField.Get(ctx)
-			return nil
-		})
+		SubscribeBoundMW(bm)
 	h, err := sub.Handle(nil)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -64,7 +70,10 @@ func TestSetContextFieldFromIn_DispatchOrder_BeforeFn(t *testing.T) {
 // value from).
 func TestSetContextFieldFromOut_DispatchOrder_AfterFnReturns(t *testing.T) {
 	versionField := middleware.NewContextField(codex.String())
-	mw := events.NewMiddleware(newTestDeclaration("version-policy")).
+	bm := events.NewBoundPublishMiddleware(newTestDeclaration("version-policy"),
+		func(ctx context.Context, msg userEvent) (mdTestOut, error) {
+			return mdTestOut{Value: "v2"}, nil
+		}).
 		WithPublishTopic(events.NewTopicParam("version", codex.String(),
 			func(out mdTestOut) string { return out.Value },
 			func(out *mdTestOut, v string) { out.Value = v },
@@ -73,9 +82,7 @@ func TestSetContextFieldFromOut_DispatchOrder_AfterFnReturns(t *testing.T) {
 
 	pub := events.NewChannel[userEvent]("user/{version}/created", userEventCodec).
 		WithPublish(events.Publish{Summary: "pub"}).
-		PublishMW(mw, func(ctx context.Context, msg userEvent) (mdTestOut, error) {
-			return mdTestOut{Value: "v2"}, nil
-		})
+		PublishBoundMW(bm)
 	h, err := pub.Handle(nil)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)

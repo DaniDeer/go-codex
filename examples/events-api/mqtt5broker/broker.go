@@ -12,6 +12,7 @@ import (
 
 	mqtt5adapter "github.com/DaniDeer/go-codex/adapters/mqtt5"
 	"github.com/DaniDeer/go-codex/api/events"
+	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/examples/events-api/handlers"
 	"github.com/DaniDeer/go-codex/examples/events-api/routes"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
@@ -49,8 +50,11 @@ func Build() (*Built, error) {
 	}
 
 	sub := routes.SensorDataSub.
-		Use(routes.APIKeyAuthMW).
-		SubscribeMW(&routes.APIKeyAuthMW, handlers.MQTT5SecurityImpl).
+		SubscribeBoundMW(routes.NewAPIKeyAuthMW(handlers.MQTT5SecurityImpl).
+			WithSubscribeProperty(events.NewPropertyParam("X-API-Key", codex.String(),
+				func(in routes.APIKeyAuthIn) string { return in.Key },
+				func(in *routes.APIKeyAuthIn, v string) { in.Key = v },
+			))).
 		WithHandler(handlers.PrintReading("mqtt5"))
 	if err := sub.Register(client); err != nil {
 		return nil, err

@@ -4,7 +4,8 @@
 // Demonstrates: Client.Attach preferred workflow, the handle-based escape
 // hatch (OnError, wildcard subscription, multi-format), the domain-
 // boundary pipeline (MeasurementEvent → TimeSeriesRecord → AlertEvent),
-// and SubscribeMW-based security via handlers.MQTTSecurityImpl.
+// and channel-BOUND security (routes.NewAPIKeyAuthMW) via
+// handlers.MQTTSecurityImpl.
 package mqttbroker
 
 import (
@@ -53,8 +54,7 @@ func Build(credential string, store *handlers.TimeSeriesStore, threshold float64
 	}
 
 	sub := routes.SensorDataSub.
-		Use(routes.APIKeyAuthMW).
-		SubscribeMW(&routes.APIKeyAuthMW, handlers.MQTTSecurityImpl(credential)).
+		SubscribeBoundMW(routes.NewAPIKeyAuthMW(handlers.MQTTSecurityImpl(credential))).
 		WithHandler(handlers.PrintReading("mqtt"))
 	if err := sub.Register(eventsClient); err != nil {
 		return nil, err

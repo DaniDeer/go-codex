@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"reflect"
 	"slices"
 
 	"github.com/DaniDeer/go-codex/codex"
@@ -31,18 +30,19 @@ import (
 // hardcoded to a channel's own payload type). No new events-side param
 // constructor exists for this.
 //
-// Middleware supports TWO attachment styles, mirroring [rest.Middleware]
-// exactly:
-//   - Channel-BOUND: attached via [Transform]/[ClientTransform], whose fn
-//     additionally receives the channel's own msg *T/msg T (read/enrich
-//     access on subscribe; caller's own already-built value on publish) —
-//     for concerns whose fn genuinely needs that access.
-//   - Channel-AGNOSTIC: a T-FREE fn bundled directly onto this value via
-//     [Middleware.WithReceive]/[Middleware.WithSend], attached via plain
-//     .Use(mw) — reusable verbatim across many channels.
+// Middleware is the REUSABLE class ONLY (docs/roadmap/bound-middleware-split.md)
+// — attached via plain .Use(mw), always carrying a T-FREE Fn bundled
+// directly onto the value via [Middleware.WithReceive]/[Middleware.WithSend].
+// Reusable verbatim across many channels, since the Fn never inspects the
+// channel's own payload type.
 //
-// A single Middleware value must use EXACTLY ONE style, never both — see
-// [AmbiguousMiddlewareAttachmentError].
+// For a middleware whose Fn genuinely needs to read/write the channel's
+// own decoded msg *T/msg T, use the SEPARATE, distinct
+// [BoundSubscribeMiddleware]/[BoundPublishMiddleware] types instead
+// (bound_middleware.go), attached via [Subscriber.SubscribeBoundMW]/
+// [Publisher.PublishBoundMW] — Middleware[In,Out] itself has NO
+// channel-bound attachment path anymore; passing one to SubscribeMW/
+// PublishMW now returns [MiddlewareMisattachedError].
 type Middleware[In, Out any] struct {
 	middleware.Declaration[In, Out]
 
@@ -70,16 +70,16 @@ type Middleware[In, Out any] struct {
 
 	// receiveFn/sendFn, when set (via WithReceive/WithSend below), carry a
 	// T-FREE runtime Fn directly on the value itself — enabling
-	// channel-AGNOSTIC attachment via plain .Use(mw). Left nil for the
-	// channel-BOUND case, where Transform/ClientTransform supply a
-	// msg-accessing fn separately instead (never both — combining is
-	// rejected as ambiguous via [AmbiguousMiddlewareAttachmentError]).
+	// channel-AGNOSTIC attachment via plain .Use(mw). Middleware[In,Out]
+	// has no channel-bound counterpart anymore (see this type's own doc
+	// comment) — a Fn needing msg *T/msg T access uses
+	// [BoundSubscribeMiddleware]/[BoundPublishMiddleware] instead.
 	//
 	// sendFn deliberately returns (Out, error), NOT (In, error) — the
 	// roadmap doc's original draft showed WithSend producing In (a
 	// leftover mirroring rest.Middleware's own WithSend, not updated for
 	// events' In/Out role swap); corrected here for consistency with
-	// [ClientTransform]'s own (Out, error)-producing fn shape, since
+	// [BoundPublishMiddleware]'s own (Out, error)-producing fn shape, since
 	// publish's OWN Declaration.OutCodec is what validates and encodes
 	// whatever a publish-side Fn produces, regardless of attachment
 	// style. See docs/design/d-0003-codec-declared-middlewares.md's
@@ -118,9 +118,10 @@ type contextFieldOutSetter[Out any] struct {
 
 // NewMiddleware builds a [Middleware] from a [middleware.Declaration] —
 // chain [Middleware.WithSubscribeTopic]/[Middleware.WithPublishTopic] to
-// populate its topic merge-field vocabulary, then attach via
-// [Transform]/[ClientTransform] (channel-BOUND) or [Middleware.WithReceive]/
-// [Middleware.WithSend] + plain .Use(mw) (channel-AGNOSTIC).
+// populate its topic merge-field vocabulary, then attach its Fn via
+// [Middleware.WithReceive]/[Middleware.WithSend] and plain .Use(mw). For
+// a channel-bound Fn, use [BoundSubscribeMiddleware]/
+// [BoundPublishMiddleware] instead (bound_middleware.go).
 func NewMiddleware[In, Out any](decl middleware.Declaration[In, Out]) Middleware[In, Out] {
 	return Middleware[In, Out]{Declaration: decl}
 }
@@ -141,9 +142,8 @@ func (m Middleware[In, Out]) WithSubscribeTopic(p MergedTopicParam[In]) Middlewa
 
 // WithPublishTopic is [Middleware.WithSubscribeTopic]'s publish-side
 // sibling — registers one topic-var merge field into mw's OWN Out
-// vocabulary, encoded into the outgoing publish's topic vars once
-// [ClientTransform]'s (or a bundled [Middleware.WithSend]'s) fn produces
-// an Out value.
+// vocabulary, encoded into the outgoing publish's topic vars once a
+// bundled [Middleware.WithSend] fn produces an Out value.
 func (m Middleware[In, Out]) WithPublishTopic(p MergedTopicParam[Out]) Middleware[In, Out] {
 	m.topicMergeFieldsOut = append(cloneFieldCodecs(m.topicMergeFieldsOut), p.Field)
 	return m
@@ -162,9 +162,9 @@ func (m Middleware[In, Out]) WithSubscribeProperty(p MergedPropertyParam[In]) Mi
 
 // WithPublishProperty is [Middleware.WithSubscribeProperty]'s publish-side
 // sibling — registers one property merge field into mw's OWN Out
-// vocabulary, encoded into the outgoing publish's property vars once
-// [ClientTransform]'s (or a bundled [Middleware.WithSend]'s) fn produces an
-// Out value. Meaningful ONLY for Publish attachment.
+// vocabulary, encoded into the outgoing publish's property vars once a
+// bundled [Middleware.WithSend] fn produces an Out value. Meaningful ONLY
+// for Publish attachment.
 func (m Middleware[In, Out]) WithPublishProperty(p MergedPropertyParam[Out]) Middleware[In, Out] {
 	m.propertyMergeFieldsOut = append(cloneFieldCodecs(m.propertyMergeFieldsOut), p.Field)
 	m.propertyParamsOut = append(cloneParams(m.propertyParamsOut), PropertyParam{Param: p.Param, Required: p.Required})
@@ -215,17 +215,37 @@ func cloneFieldCodecs[T any](fs []codex.FieldCodec[T]) []codex.FieldCodec[T] {
 // WithReceive NOR WithSend below mentions T, so the returned
 // Middleware[In,Out] value (fn included) can be passed to .Use(...)
 // verbatim, on as many different channels as needed. Use
-// [Subscriber.SubscribeMW]'s bound path instead when fn genuinely needs
-// msg *T access.
+// [BoundSubscribeMiddleware] instead when fn genuinely needs msg *T
+// access.
+//
+// **CRITICAL LIMITATION — fn's signature has NO Out return at all**
+// (unlike REST's/reqreply's `WithReceive`, which DOES return `(Out,
+// error)`): a WithReceive-bundled Fn can therefore NEVER populate
+// `GrantedScopes`, since there is no Out value to read it from. This
+// means a Security-carrying mw attached via `.Use(mw)` can ONLY ever be
+// used when the channel's `Subscribe.Security` is left UNDECLARED
+// entirely (an unpaired, non-enforced presence/validity check — fn's own
+// returned error is still respected, just never merged into a formal
+// scope grant). The MOMENT a channel declares `Subscribe.Security` at
+// all (even requiring ZERO specific scopes), satisfying it requires
+// [BoundSecuritySubscribeMiddleware] instead — every adapter's unified
+// `middleware.CheckScopes` call requires the scheme name to be PRESENT
+// as a map key in the merged grants, which only a `HasOut=true`
+// (bound-class) dispatch handler can ever produce (see
+// `adapters/internal/scopesmerge.MergeHandlerGrants`, which silently
+// skips any handler with no decoded Out to read). Confirmed via a real
+// regression during this mechanism's own example migration — see
+// `examples/events-api/routes/routes.go`'s `NewAPIKeyAuthMW` doc comment
+// for the full account.
 func (m Middleware[In, Out]) WithReceive(fn func(ctx context.Context, in In) error) Middleware[In, Out] {
 	m.receiveFn = fn
 	return m
 }
 
 // WithSend is [Middleware.WithReceive]'s publish-side sibling — fn
-// produces mw's own Out value (the SAME shape [Publisher.PublishMW]'s
-// bound path produces — see [Middleware]'s doc comment for why this is
-// Out, not In).
+// produces mw's own Out value (the SAME shape [BoundPublishMiddleware]
+// produces — see [Middleware]'s doc comment for why this is Out, not
+// In).
 func (m Middleware[In, Out]) WithSend(fn func(ctx context.Context) (Out, error)) Middleware[In, Out] {
 	m.sendFn = fn
 	return m
@@ -290,7 +310,8 @@ func (m Middleware[In, Out]) MiddlewareName() string { return m.Declaration.Name
 // applyAgnosticSubscriber implements the events-side routeMiddlewareContributor
 // pattern — called by [Subscriber.Use] for a bundled Middleware value. In
 // is concrete here, so it can build the SAME runtime dispatch handler
-// [Transform] produces for the channel-BOUND case.
+// [BoundSubscribeMiddleware.applyBoundSubscriber] produces for the
+// channel-bound case.
 func (m Middleware[In, Out]) applyAgnosticSubscriber() (MiddlewareHandler, bool) {
 	if m.receiveFn == nil {
 		return MiddlewareHandler{}, false
@@ -305,143 +326,6 @@ func (m Middleware[In, Out]) applyAgnosticPublisher() (ClientMiddlewareHandler, 
 		return ClientMiddlewareHandler{}, false
 	}
 	return buildAgnosticClientMiddlewareHandler(m), true
-}
-
-// applyBoundSubscriber implements [eventsMiddlewareContributor] — called by
-// [Subscriber.SubscribeMW] for a bound-shaped codec-backed [Middleware][In,
-// Out] (docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase
-// B — events' own Architecture-revision fold-in, mirroring
-// [rest.Middleware.applyBoundRoute]). fn is UNTYPED here (already `any` at
-// SubscribeMW's own signature) — m's own In/Out type parameters are ALL
-// this method needs. **Simpler than REST's equivalent** (confirmed
-// Learning #10, this session's Phase B model-review round): events
-// already bundles spec metadata (propertyParams) DIRECTLY on
-// [MiddlewareHandler] itself — no separate middlewareSpecContribution-
-// style object to also populate, so this method need only build and
-// return ONE handler value; [Subscriber.SubscribeMW] appends it directly.
-func (m Middleware[In, Out]) applyBoundSubscriber(fn any) MiddlewareHandler {
-	h := buildMiddlewareHandlerAny(m, fn)
-	h.dualAttached = m.isBundled() // SubscribeMW is the BOUND path — D7 fires only here, mirrors Transform's identical rule.
-	return h
-}
-
-// applyBoundSubscriberWithOut is [applyBoundSubscriber]'s NEW, ADDITIVE
-// sibling for fn's matching [isBoundSubscribeMWShapeWithOut] (docs/
-// roadmap/declarative-middleware-layering.md's "Prerequisite for Phase 2
-// (api/events)") — sets [MiddlewareHandler.HasOut] and
-// [MiddlewareHandler.ValidateOut] so [DispatchSubscribeMiddlewareHandlers]
-// knows to expect TWO return values (Out, error) and to validate the
-// decoded Out via m's OWN OutCodec, mirroring [buildClientMiddlewareHandlerAny]'s
-// identical EncodeOut-validation step on the publish side — Subscribe's
-// Out is never wire-encoded, only validated and surfaced for the
-// GrantedScopes merge-and-enforce step.
-func (m Middleware[In, Out]) applyBoundSubscriberWithOut(fn any) MiddlewareHandler {
-	h := buildMiddlewareHandlerAny(m, fn)
-	h.dualAttached = m.isBundled()
-	h.HasOut = true
-	h.ValidateOut = func(out any) error {
-		o, _ := out.(Out)
-		return m.OutCodec.Validate(o)
-	}
-	return h
-}
-
-// applyBoundPublisher is [applyBoundSubscriber]'s publish-side mirror —
-// called by [Publisher.PublishMW] for a bound-shaped codec-backed
-// [Middleware][In, Out].
-func (m Middleware[In, Out]) applyBoundPublisher(fn any) ClientMiddlewareHandler {
-	h := buildClientMiddlewareHandlerAny(m, fn)
-	h.dualAttached = m.isBundled()
-	return h
-}
-
-// isBundled reports whether mw carries a WithReceive/WithSend Fn — used by
-// [checkMiddlewareNameUniquenessAndAttachment]'s D7 ambiguous-dual-attachment
-// check, mirroring rest's identical technique.
-func (m Middleware[In, Out]) isBundled() bool {
-	return m.receiveFn != nil || m.sendFn != nil
-}
-
-// isBoundSubscribeMWShape is [Subscriber.SubscribeMW]'s events-side mirror
-// of [rest.isBoundHandleMWShape] (docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase B) — detects the channel-BOUND shape
-// (func(ctx, *T, In) error, arity 3-in/1-out) via fn's OWN REFLECTED
-// signature, never mw's dynamic type (same reasoning as REST: a
-// generalized [SecurityMiddleware][In, Out] can ALSO be used purely as a
-// legacy credential-shape carrier).
-//
-// Arity alone is NOT sufficient here, unlike REST's 2nd-param check:
-// confirmed via code, `adapters/mqtt`'s/`adapters/zeromq`'s OWN legacy
-// subscribe-security Fn shape — func(ctx, *T, []route.SecurityRequirement)
-// error — shares the EXACT SAME 3-in/1-out arity AND the EXACT SAME 2nd
-// param type (*T) as the bound shape. The 3rd param is the only
-// differentiator: legacy's is always []route.SecurityRequirement; the
-// bound shape's is mw's own In (never that exact type in practice).
-// (`adapters/mqtt5`'s OWN legacy subscribe-security Fn — func(ctx,
-// *pahomqtt5.Publish, *T) (map[string][]string, error) — already differs
-// in both 2nd-param type AND arity, so needs no special-casing here.)
-func isBoundSubscribeMWShape[T any](fn any) bool {
-	fnVal := reflect.ValueOf(fn)
-	if !fnVal.IsValid() {
-		return false
-	}
-	t := fnVal.Type()
-	if t.Kind() != reflect.Func || t.NumIn() != 3 || t.NumOut() != 1 {
-		return false
-	}
-	if t.In(1) != reflect.TypeOf((*T)(nil)) {
-		return false
-	}
-	return t.In(2) != reflect.TypeOf([]route.SecurityRequirement(nil))
-}
-
-// isBoundSubscribeMWShapeWithOut is [isBoundSubscribeMWShape]'s NEW,
-// ADDITIVE sibling (docs/design/d-0007-declarative-middleware-layering.md's
-// "Prerequisite for Phase 2 (api/events)") — detects the ALSO-channel-
-// BOUND, Out-carrying shape (func(ctx, *T, In) (Out, error), arity
-// 3-in/2-out), alongside (NOT replacing) [isBoundSubscribeMWShape]'s
-// EXISTING 1-return shape. A Security-carrying middleware needing to
-// return GrantedScopes on Subscribe uses THIS shape instead; a
-// general-purpose middleware with nothing to return keeps using the
-// existing 1-return shape, completely unaffected.
-//
-// The 2nd-param-type check alone is sufficient to disambiguate from every
-// confirmed legacy shape: `adapters/mqtt`'s/`adapters/zeromq`'s legacy
-// subscribe-security Fn is 1-return (rejected outright by the
-// `NumOut() != 2` check below); `adapters/mqtt5`'s legacy subscribe-
-// security Fn IS 3-in/2-out (func(ctx, *pahomqtt5.Publish, *T)
-// (map[string][]string, error)), but its 2nd param is
-// `*pahomqtt5.Publish` — an adapter-specific concrete type, never equal
-// to `*T` for any real channel payload type.
-func isBoundSubscribeMWShapeWithOut[T any](fn any) bool {
-	fnVal := reflect.ValueOf(fn)
-	if !fnVal.IsValid() {
-		return false
-	}
-	t := fnVal.Type()
-	if t.Kind() != reflect.Func || t.NumIn() != 3 || t.NumOut() != 2 {
-		return false
-	}
-	return t.In(1) == reflect.TypeOf((*T)(nil))
-}
-
-// isBoundPublishMWShape is [Publisher.PublishMW]'s events-side mirror of
-// [rest.isBoundClientMWShape] — the bound shape is func(ctx, msg T)
-// (Out, error) (T BY VALUE, arity 2-in/2-out), vs. EVERY confirmed legacy
-// publish-security Fn shape (`adapters/mqtt5`: func(ctx, *T,
-// []route.SecurityRequirement) ([]UserProperty, error); `adapters/mqtt`/
-// `adapters/zeromq`: func(ctx, *T, []route.SecurityRequirement) error) —
-// all 3-in, distinguished from the bound shape's 2-in by arity ALONE, no
-// param-type inspection needed.
-func isBoundPublishMWShape[T any](fn any) bool {
-	fnVal := reflect.ValueOf(fn)
-	if !fnVal.IsValid() {
-		return false
-	}
-	t := fnVal.Type()
-	if t.Kind() != reflect.Func || t.NumIn() != 2 || t.NumOut() != 2 {
-		return false
-	}
-	return t.In(1) == reflect.TypeOf((*T)(nil)).Elem()
 }
 
 // MiddlewareInputError is returned when a [Middleware]'s In value fails to
@@ -473,10 +357,14 @@ func (e MiddlewareInputError) LogValue() slog.Value {
 	)
 }
 
-// MiddlewareError is returned when a [Transform]/[ClientTransform] fn
-// (or a bundled WithReceive/WithSend fn) returns its own business error
-// that does NOT match any declared [ErrorChannel] pattern — D2's fallback,
-// mirrors [rest.MiddlewareError] exactly.
+// MiddlewareError is returned when a bundled WithReceive/WithSend fn
+// (attached via plain .Use()) or a [BoundSubscribeMiddleware]/
+// [BoundPublishMiddleware] fn (attached via SubscribeBoundMW/PublishBoundMW)
+// returns its own business error that does NOT match any declared
+// [ErrorChannel] pattern — D2's fallback, mirrors [rest.MiddlewareError]
+// exactly. SubscribeMW/PublishMW never produce this error for a
+// codec-backed value anymore — they reject one outright via
+// [MiddlewareMisattachedError].
 type MiddlewareError struct {
 	Name string
 	Err  error
@@ -550,26 +438,6 @@ func (e DuplicateMiddlewareNameError) LogValue() slog.Value {
 	)
 }
 
-// AmbiguousMiddlewareAttachmentError is returned by [Subscriber.Handle]/
-// [Publisher.Handle] when a SINGLE [Middleware] value carries a bundled
-// WithReceive/WithSend Fn AND is ALSO passed to [Transform]/[ClientTransform]
-// on the SAME channel (D7) — mirrors
-// [rest.AmbiguousMiddlewareAttachmentError] exactly.
-type AmbiguousMiddlewareAttachmentError struct {
-	Name string
-}
-
-func (e AmbiguousMiddlewareAttachmentError) Error() string {
-	return fmt.Sprintf("api/events: middleware %q: attached via BOTH .Use() (bundled fn) and Transform/ClientTransform (separate fn) — ambiguous, use only one attachment style per value", e.Name)
-}
-
-// LogValue implements [slog.LogValuer] for structured logging.
-func (e AmbiguousMiddlewareAttachmentError) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("name", e.Name),
-	)
-}
-
 // ConflictingParamContributionError is returned when two DIFFERENT sources
 // (a manual [PropertyParam] channel declaration or a specific [Middleware]'s
 // Name) declare the SAME property name with a DIFFERENT Required value or
@@ -637,13 +505,20 @@ func checkEventsParamConflicts(topic string, contributions map[string][]eventsPa
 	return nil
 }
 
-// checkEventsMiddlewareNameUniquenessAndAttachment enforces D6(b) and D7
-// from docs/design/d-0003-codec-declared-middlewares.md — mirrors
-// api/rest's identical checkMiddlewareNameUniquenessAndAttachment exactly,
-// adapted for events' split subscribe/publish handler lists (a channel's
-// SAME topic can have independent Subscriber/Publisher declarations, so
-// names are checked separately per role, matching how [Subscriber.Handle]/
-// [Publisher.Handle] are themselves independent calls).
+// checkEventsMiddlewareNameUniquenessAndAttachment enforces D6(b) from
+// docs/design/d-0003-codec-declared-middlewares.md — mirrors api/rest's
+// identical checkMiddlewareNameUniquenessAndAttachment, adapted for
+// events' split subscribe/publish handler lists (a channel's SAME topic
+// can have independent Subscriber/Publisher declarations, so names are
+// checked separately per role, matching how [Subscriber.Handle]/
+// [Publisher.Handle] are themselves independent calls). D7 (the
+// ambiguous-dual-attachment check) is GONE — structurally impossible
+// since docs/roadmap/bound-middleware-split.md: a codec-backed
+// [Middleware][In, Out] can only ever be attached via .Use() now (the
+// bound attachment point is a SEPARATE, distinct type,
+// [BoundSubscribeMiddleware]/[BoundPublishMiddleware] — see
+// [Subscriber.SubscribeBoundMW]/[Publisher.PublishBoundMW]), so one value
+// can never satisfy both attachment styles at once.
 func checkEventsMiddlewareNameUniquenessAndAttachment(topic string, middlewareHandlers []MiddlewareHandler, clientMiddlewareHandlers []ClientMiddlewareHandler) error {
 	seen := make(map[string]bool, len(middlewareHandlers)+len(clientMiddlewareHandlers))
 	for _, h := range middlewareHandlers {
@@ -651,9 +526,6 @@ func checkEventsMiddlewareNameUniquenessAndAttachment(topic string, middlewareHa
 			return DuplicateMiddlewareNameError{Topic: topic, Name: h.Name}
 		}
 		seen[h.Name] = true
-		if h.dualAttached {
-			return AmbiguousMiddlewareAttachmentError{Name: h.Name}
-		}
 	}
 	seen = make(map[string]bool, len(clientMiddlewareHandlers))
 	for _, h := range clientMiddlewareHandlers {
@@ -661,9 +533,6 @@ func checkEventsMiddlewareNameUniquenessAndAttachment(topic string, middlewareHa
 			return DuplicateMiddlewareNameError{Topic: topic, Name: h.Name}
 		}
 		seen[h.Name] = true
-		if h.dualAttached {
-			return AmbiguousMiddlewareAttachmentError{Name: h.Name}
-		}
 	}
 	return nil
 }
@@ -673,25 +542,13 @@ func checkEventsMiddlewareNameUniquenessAndAttachment(topic string, middlewareHa
 // to let [Subscriber.Use]/[Publisher.Use] apply a channel-AGNOSTIC
 // codec-backed middleware's runtime dispatch handler WITHOUT Use itself
 // needing to know In/Out — mirrors api/rest's identical
-// routeMiddlewareContributor pattern.
+// routeMiddlewareContributor pattern. The channel-BOUND path no longer
+// lives on this interface — see [BoundSubscribeMiddleware]/
+// [BoundPublishMiddleware] (bound_middleware.go) and [boundContributor]/
+// [boundClientContributor].
 type eventsMiddlewareContributor interface {
 	middleware.RouteMiddleware
 	applyAgnosticSubscriber() (MiddlewareHandler, bool)
 	applyAgnosticPublisher() (ClientMiddlewareHandler, bool)
-
-	// applyBoundSubscriber/applyBoundPublisher (docs/roadmap/declarative-
-	// middleware-layering.md's Rollout Phase B) let [Subscriber.SubscribeMW]/
-	// [Publisher.PublishMW] apply a BOUND codec-backed middleware WITHOUT
-	// needing to know In/Out — mirrors api/rest's identical
-	// routeMiddlewareContributor extension (Rollout Phase A's Architecture
-	// revision). fn is `any` (already erased at SubscribeMW/PublishMW's
-	// own signature).
-	applyBoundSubscriber(fn any) MiddlewareHandler
-	applyBoundPublisher(fn any) ClientMiddlewareHandler
-
-	// applyBoundSubscriberWithOut is [applyBoundSubscriber]'s NEW,
-	// ADDITIVE sibling (docs/design/d-0007-declarative-middleware-layering.md's
-	// "Prerequisite for Phase 2 (api/events)") for fn matching
-	// [isBoundSubscribeMWShapeWithOut] instead of [isBoundSubscribeMWShape].
-	applyBoundSubscriberWithOut(fn any) MiddlewareHandler
+	MiddlewareName() string
 }

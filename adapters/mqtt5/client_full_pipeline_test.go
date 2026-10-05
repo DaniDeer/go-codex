@@ -269,13 +269,13 @@ func TestClientSubscribe_MiddlewareDispatch_RunsBeforeHandler(t *testing.T) {
 
 	var order []string
 	decl := middleware.NewDeclaration("full-pipeline-policy", mqttFullPipelineInCodec, mqttFullPipelineOutCodec)
-	emw := events.NewMiddleware(decl)
+	bm := events.NewBoundSubscribeMiddleware(decl, func(_ context.Context, _ *sensorReading, _ mqttFullPipelineIn) (mqttFullPipelineOut, error) {
+		order = append(order, "middleware")
+		return mqttFullPipelineOut{}, nil
+	})
 	sub := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
 		WithSubscribe(events.Subscribe{Summary: "test"})
-	sub = sub.SubscribeMW(emw, func(_ context.Context, _ *sensorReading, _ mqttFullPipelineIn) error {
-		order = append(order, "middleware")
-		return nil
-	})
+	sub = sub.SubscribeBoundMW(bm)
 
 	done := make(chan struct{})
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -599,15 +599,15 @@ func TestClientPublish_MiddlewareDispatch_ContributesPropertyVar(t *testing.T) {
 	c := attachedClientSubscribe(t, client, router)
 
 	decl := middleware.NewDeclaration("full-pipeline-out-policy", mqttFullPipelineInCodec, mqttFullPipelineOutCodec)
-	emw := events.NewMiddleware(decl).
+	bm := events.NewBoundPublishMiddleware(decl, func(_ context.Context, _ sensorReading) (mqttFullPipelineOut, error) {
+		return mqttFullPipelineOut{Marker: "from-middleware"}, nil
+	}).
 		WithPublishProperty(events.NewPropertyParam("mw-tenant", codex.String(),
 			func(o mqttFullPipelineOut) string { return o.Marker },
 			func(o *mqttFullPipelineOut, v string) { o.Marker = v }))
 	pub := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
 		WithPublish(events.Publish{Summary: "test"})
-	pub = pub.PublishMW(emw, func(_ context.Context, _ sensorReading) (mqttFullPipelineOut, error) {
-		return mqttFullPipelineOut{Marker: "from-middleware"}, nil
-	})
+	pub = pub.PublishBoundMW(bm)
 
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
 	if err := c.Publish(context.Background(), pub, reading); err != nil {

@@ -16,8 +16,11 @@ import (
 // guarded this invariant against a future regression.
 
 func TestPublish_ClientMiddlewareFnError_NeverConsultsErrorChannel(t *testing.T) {
-	mw := events.NewMiddleware(newMqttMdDeclaration("fn-error-policy"))
 	fnErr := errors.New("business rule violated")
+	bm := events.NewBoundPublishMiddleware(newMqttMdDeclaration("fn-error-policy"),
+		func(ctx context.Context, msg sensorReading) (mqttMdOut, error) {
+			return mqttMdOut{}, fnErr
+		})
 	pub := events.NewChannel[sensorReading]("sensors/readings", sensorCodec,
 		// Declares an ErrorChannel that WOULD match events.MiddlewareError
 		// (the wrapped shape the publish-side Fn error becomes) — if
@@ -31,9 +34,7 @@ func TestPublish_ClientMiddlewareFnError_NeverConsultsErrorChannel(t *testing.T)
 			},
 		),
 	).WithPublish(events.Publish{})
-	pub = pub.PublishMW(mw, func(ctx context.Context, msg sensorReading) (mqttMdOut, error) {
-		return mqttMdOut{}, fnErr
-	})
+	pub = pub.PublishBoundMW(bm)
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	handle, err := pub.Handle(b)
 	if err != nil {

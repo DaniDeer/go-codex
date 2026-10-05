@@ -104,7 +104,7 @@ type TransportOptions struct {
 // ([events.ClientPublishOptions]/[events.ClientSubscribeOptions]),
 // declarative SubscribeMW/PublishMW security enforcement (credential-
 // paired or general-purpose wrapping), and codec-backed Middleware/
-// Transform dispatch are ALL supported (mqtt v3 has no property-
+// SubscribeBoundMW/PublishBoundMW dispatch are ALL supported (mqtt v3 has no property-
 // vocabulary axis and no built-in codec-based credential check, unlike
 // mqtt5 — those 2 pipeline steps simply don't exist for this adapter) —
 // there is no remaining "v1 scope" asterisk.
@@ -160,7 +160,7 @@ func recoverHandle(kind string, anyAny any, client *events.Client) (reflect.Valu
 //
 // docs/design/d-0006-protocol-native-capabilities.md's Phase 4e: this
 // shim now runs the FULL [publish][T] pipeline, matched step-for-step
-// (codec-Middleware/Transform dispatch → Implementations-based
+// (codec-Middleware/SubscribeBoundMW dispatch → Implementations-based
 // PublishMW security → general-purpose PublishMW wrapping around the
 // send), not just Capabilities (Phase 4c) — closing the "v1 scope" gap
 // entirely. Capabilities resolution is now via [events.ApplyCapabilities]
@@ -214,7 +214,7 @@ func (t *transport) Publish(ctx context.Context, pubAny, msgAny any, optsVariadi
 	valuePtr := reflect.New(tType)
 	valuePtr.Elem().Set(msgVal)
 
-	// Codec-backed middleware dispatch (ClientTransform and bundled
+	// Codec-backed middleware dispatch (PublishBoundMW and bundled
 	// .Use()) — mirrors [publish][T]'s own ordering (derived BEFORE
 	// security). mqtt v3 has no property mechanism — supplies a nil
 	// property-value map.
@@ -324,7 +324,7 @@ func (t *transport) Publish(ctx context.Context, pubAny, msgAny any, optsVariadi
 // docs/design/d-0006-protocol-native-capabilities.md's Phase 4e: this
 // shim now runs the FULL [subscribeHandler][T] pipeline, matched
 // step-for-step (Implementations-based SubscribeMW security → codec-
-// Middleware/Transform dispatch → general-purpose SubscribeMW wrapping
+// Middleware/PublishBoundMW dispatch → general-purpose SubscribeMW wrapping
 // around the handler call), not just Capabilities (Phase 4c) — closing
 // the "v1 scope" gap entirely (mqtt v3 has no property-vocabulary axis
 // and no built-in codec-based credential check, unlike mqtt5). Every
@@ -470,7 +470,7 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 			granted = g
 		}
 
-		// Codec-backed middleware dispatch (Transform and bundled
+		// Codec-backed middleware dispatch (SubscribeBoundMW and bundled
 		// .Use()) — SAME pre-handler dispatch point the security
 		// Implementations check just ran at. mqtt v3 has no property
 		// mechanism — supplies a nil property-value map. CORRECTED: a

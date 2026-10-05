@@ -5,9 +5,6 @@ import (
 	"fmt"
 
 	"github.com/DaniDeer/go-codex/examples/events-api/routes"
-	"github.com/DaniDeer/go-codex/route"
-	pahomqtt5 "github.com/eclipse/paho.golang/paho"
-	pahomqtt "github.com/eclipse/paho.mqtt.golang"
 )
 
 // ValidAPIKeys is a mock set of trusted API keys — in production this
@@ -17,45 +14,46 @@ var ValidAPIKeys = map[string]bool{
 	"sensor-key-xyz789": true,
 }
 
-// MQTTSecurityImpl is the mqtt v3-shaped, SubscribeMW-paired security
-// implementation Fn. MQTT 3.1.1 carries no per-message credential
-// metadata, so credential is captured in a closure at CONNECT time
-// (Pattern 1 — see examples/adapters-mqtt-security's own migrated
-// docs). Returns granted scopes on success — attach via
-// routes.SensorDataSub.SubscribeMW(&routes.APIKeyAuthMW, MQTTSecurityImpl(credential)).
-func MQTTSecurityImpl(credential string) func(context.Context, pahomqtt.Message, *routes.SensorReading) (map[string][]string, error) {
-	return func(_ context.Context, _ pahomqtt.Message, _ *routes.SensorReading) (map[string][]string, error) {
+// MQTTSecurityImpl is the mqtt v3-shaped, channel-BOUND security Fn
+// (routes.NewAPIKeyAuthMW — docs/roadmap/bound-middleware-split.md),
+// returned as a closure since MQTT 3.1.1 carries no per-message
+// credential metadata at all (no property axis to decode
+// routes.APIKeyAuthIn.Key from), so credential is captured in a closure
+// at CONNECT time (Pattern 1 — see examples/adapters-mqtt-security's own
+// migrated docs) and routes.APIKeyAuthIn is left zero/unused. Attach via
+// routes.SensorDataSub.SubscribeBoundMW(routes.NewAPIKeyAuthMW(MQTTSecurityImpl(credential))).
+func MQTTSecurityImpl(credential string) func(context.Context, *routes.SensorReading, routes.APIKeyAuthIn) (routes.APIKeyAuthOut, error) {
+	return func(_ context.Context, _ *routes.SensorReading, _ routes.APIKeyAuthIn) (routes.APIKeyAuthOut, error) {
 		if !ValidAPIKeys[credential] {
-			return nil, fmt.Errorf("unknown API key %q", credential)
+			return routes.APIKeyAuthOut{}, fmt.Errorf("unknown API key %q", credential)
 		}
-		return map[string][]string{"apiKeyAuth": {}}, nil
+		return routes.APIKeyAuthOut{GrantedScopes: map[string][]string{"apiKeyAuth": {}}}, nil
 	}
 }
 
-// MQTT5SecurityImpl is the mqtt5-shaped, SubscribeMW-paired security
-// implementation Fn — MQTT 5 exposes User Properties, so the credential
-// is extracted directly from the raw *pahomqtt5.Publish (Pattern 2).
-func MQTT5SecurityImpl(_ context.Context, msg *pahomqtt5.Publish, _ *routes.SensorReading) (map[string][]string, error) {
-	var apiKey string
-	if msg.Properties != nil {
-		apiKey = msg.Properties.User.Get("X-API-Key")
+// MQTT5SecurityImpl is the mqtt5-shaped, channel-BOUND security Fn —
+// MQTT 5 exposes User Properties, so the credential is decoded into
+// routes.APIKeyAuthIn.Key via a property merge field
+// (routes.NewAPIKeyAuthMW(...).WithSubscribeProperty, mirroring
+// routes/grantedscopes_demo.go's own GrantedScopesSensorMw pattern)
+// instead of reading a raw *pahomqtt5.Publish directly.
+func MQTT5SecurityImpl(_ context.Context, _ *routes.SensorReading, in routes.APIKeyAuthIn) (routes.APIKeyAuthOut, error) {
+	if !ValidAPIKeys[in.Key] {
+		return routes.APIKeyAuthOut{}, fmt.Errorf("missing or unknown X-API-Key user property %q", in.Key)
 	}
-	if !ValidAPIKeys[apiKey] {
-		return nil, fmt.Errorf("missing or unknown X-API-Key user property %q", apiKey)
-	}
-	return map[string][]string{"apiKeyAuth": {}}, nil
+	return routes.APIKeyAuthOut{GrantedScopes: map[string][]string{"apiKeyAuth": {}}}, nil
 }
 
-// ZeromqSecurityImpl is the zeromq-shaped, SubscribeMW-paired security
-// implementation Fn — ZeroMQ's [topic, payload] frames carry nothing
-// beyond the decoded value, so the credential must be an in-payload
-// field. This demo's routes.SensorReading has no credential field, so
-// this implementation demonstrates the SHAPE (read/write access to *T,
-// plain error return — no scope-grant map, unlike mqtt/mqtt5's shape)
-// without a real credential check — a production zeromq channel would
-// add a Token-equivalent field to its message type (see
+// ZeromqSecurityImpl is the zeromq-shaped, channel-BOUND security Fn —
+// ZeroMQ's [topic, payload] frames carry nothing beyond the decoded
+// value, so there is no property/merge-field axis to decode a credential
+// from here either. This demo's routes.SensorReading has no credential
+// field, so this implementation demonstrates the SHAPE (always grants,
+// no real credential check) — a production zeromq channel would add a
+// Token-equivalent field to its message type (see
 // examples/reqreply-api/routes/routes.go's OAuthComputeReq for the
-// pattern) and validate it here.
-func ZeromqSecurityImpl(_ context.Context, _ *routes.SensorReading, _ []route.SecurityRequirement) error {
-	return nil
+// pattern) and validate it here, reading it off msg directly (the bound
+// class's Fn DOES have *T access, unlike the reusable class).
+func ZeromqSecurityImpl(_ context.Context, _ *routes.SensorReading, _ routes.APIKeyAuthIn) (routes.APIKeyAuthOut, error) {
+	return routes.APIKeyAuthOut{GrantedScopes: map[string][]string{"apiKeyAuth": {}}}, nil
 }

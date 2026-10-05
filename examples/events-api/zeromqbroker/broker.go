@@ -1,8 +1,8 @@
 // Package zeromqbroker assembles routes/+handlers/ onto an in-process
 // mock ZeroMQ PUB/SUB socket pair via zeromq.NewTransport+Client.Attach — the events analogue
 // of examples/reqreply-api's zeromqserver package. Demonstrates: ZeroMQ
-// PUB/SUB full roundtrip and SubscribeMW-based security via
-// handlers.ZeromqSecurityImpl.
+// PUB/SUB full roundtrip and channel-BOUND security
+// (routes.NewAPIKeyAuthMW) via handlers.ZeromqSecurityImpl.
 package zeromqbroker
 
 import (
@@ -59,8 +59,7 @@ func Build() (*Built, error) {
 	}
 
 	securedSub := routes.SensorDataSub.
-		Use(routes.APIKeyAuthMW).
-		SubscribeMW(&routes.APIKeyAuthMW, handlers.ZeromqSecurityImpl).
+		SubscribeBoundMW(routes.NewAPIKeyAuthMW(handlers.ZeromqSecurityImpl)).
 		WithHandler(handlers.PrintReading("zeromq-secured"))
 	if err := securedSub.Register(sub); err != nil {
 		return nil, err

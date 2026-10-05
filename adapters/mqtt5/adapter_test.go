@@ -1640,7 +1640,11 @@ func newMqttMdDeclaration(name string) middleware.Declaration[mqttMdIn, mqttMdOu
 // REST's/reqreply's established order.
 func TestSubscribe_MiddlewareDispatch_RunsAfterPairedSecurity(t *testing.T) {
 	var order []string
-	emw := events.NewMiddleware(newMqttMdDeclaration("order-policy"))
+	bm := events.NewBoundSubscribeMiddleware(newMqttMdDeclaration("order-policy"),
+		func(ctx context.Context, msg *sensorReading, in mqttMdIn) (mqttMdOut, error) {
+			order = append(order, "middleware")
+			return mqttMdOut{}, nil
+		})
 
 	sub := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
 		WithSubscribe(events.Subscribe{Summary: "test"}).
@@ -1648,10 +1652,7 @@ func TestSubscribe_MiddlewareDispatch_RunsAfterPairedSecurity(t *testing.T) {
 			order = append(order, "security")
 			return nil, nil
 		})
-	sub = sub.SubscribeMW(emw, func(ctx context.Context, msg *sensorReading, in mqttMdIn) error {
-		order = append(order, "middleware")
-		return nil
-	})
+	sub = sub.SubscribeBoundMW(bm)
 
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	handle, err := sub.Handle(b)
@@ -1681,7 +1682,10 @@ func TestSubscribe_MiddlewareDispatch_RunsAfterPairedSecurity(t *testing.T) {
 // CORRECTED order (previously backwards: channel-own beat middleware).
 func TestPublish_MiddlewareDispatch_ValuePrecedence_ExplicitBeatsMiddlewareBeatsChannelOwn(t *testing.T) {
 	uuidCodec := codex.String().Refine(validate.UUID)
-	emw := events.NewMiddleware(newMqttMdDeclaration("sensor-override-policy")).
+	bm := events.NewBoundPublishMiddleware(newMqttMdDeclaration("sensor-override-policy"),
+		func(ctx context.Context, msg sensorReading) (mqttMdOut, error) {
+			return mqttMdOut{TenantID: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"}, nil
+		}).
 		WithPublishTopic(events.NewTopicParam("sensorID", uuidCodec,
 			func(o mqttMdOut) string { return o.TenantID },
 			func(o *mqttMdOut, v string) { o.TenantID = v }))
@@ -1693,9 +1697,7 @@ func TestPublish_MiddlewareDispatch_ValuePrecedence_ExplicitBeatsMiddlewareBeats
 			func(r sensorReading) string { return r.SensorID },
 			func(r *sensorReading, v string) { r.SensorID = v }),
 	).WithPublish(events.Publish{})
-	pub = pub.PublishMW(emw, func(ctx context.Context, msg sensorReading) (mqttMdOut, error) {
-		return mqttMdOut{TenantID: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"}, nil
-	})
+	pub = pub.PublishBoundMW(bm)
 	handle, err := pub.Handle(b)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -1734,12 +1736,13 @@ func TestSubscribe_Observer_ReportsMiddlewareInAndFnLocations(t *testing.T) {
 
 	// "middleware:in": a REQUIRED WithSubscribeProperty absent from the
 	// message's real User Properties fails at DecodeIn time.
-	inMW := events.NewMiddleware(newMqttMdDeclaration("tenant-required-policy")).
+	inMW := events.NewBoundSubscribeMiddleware(newMqttMdDeclaration("tenant-required-policy"),
+		func(ctx context.Context, msg *sensorReading, in mqttMdIn) (mqttMdOut, error) { return mqttMdOut{}, nil }).
 		WithSubscribeProperty(events.NewPropertyParam("tenantID", codex.String().Refine(validate.NonEmptyString),
 			func(in mqttMdIn) string { return in.TenantID },
 			func(in *mqttMdIn, v string) { in.TenantID = v }))
 	subIn := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).WithSubscribe(events.Subscribe{Summary: "test"})
-	subIn = subIn.SubscribeMW(inMW, func(ctx context.Context, msg *sensorReading, in mqttMdIn) error { return nil })
+	subIn = subIn.SubscribeBoundMW(inMW)
 	bIn := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	handleIn, err := subIn.Handle(bIn)
 	if err != nil {
@@ -1768,11 +1771,12 @@ func TestSubscribe_Observer_ReportsMiddlewareInAndFnLocations(t *testing.T) {
 	// "middleware:fn": the fn's own business error, shaped as
 	// codex.ValidationErrors so it flows through stats.ReportErrors'
 	// walkErrors and is observable via RecordValidationError.
-	fnMW := events.NewMiddleware(newMqttMdDeclaration("fn-error-policy"))
+	fnMW := events.NewBoundSubscribeMiddleware(newMqttMdDeclaration("fn-error-policy"),
+		func(ctx context.Context, msg *sensorReading, in mqttMdIn) (mqttMdOut, error) {
+			return mqttMdOut{}, codex.ValidationErrors{{Field: "tenantID", Err: errors.New("boom")}}
+		})
 	subFn := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).WithSubscribe(events.Subscribe{Summary: "test"})
-	subFn = subFn.SubscribeMW(fnMW, func(ctx context.Context, msg *sensorReading, in mqttMdIn) error {
-		return codex.ValidationErrors{{Field: "tenantID", Err: errors.New("boom")}}
-	})
+	subFn = subFn.SubscribeBoundMW(fnMW)
 	bFn := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	handleFn, err := subFn.Handle(bFn)
 	if err != nil {
@@ -1806,11 +1810,12 @@ func TestSubscribe_Observer_ReportsMiddlewareInAndFnLocations(t *testing.T) {
 // (see docs/design/d-0003-codec-declared-middlewares.md's Addendum's "Observer
 // integration"), not a gap.
 func TestPublish_Observer_ReportsMiddlewareInAndFnLocations(t *testing.T) {
-	mw := events.NewMiddleware(newMqttMdDeclaration("fn-error-policy"))
+	bm := events.NewBoundPublishMiddleware(newMqttMdDeclaration("fn-error-policy"),
+		func(ctx context.Context, msg sensorReading) (mqttMdOut, error) {
+			return mqttMdOut{}, codex.ValidationErrors{{Field: "tenantID", Err: errors.New("boom")}}
+		})
 	pub := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).WithPublish(events.Publish{})
-	pub = pub.PublishMW(mw, func(ctx context.Context, msg sensorReading) (mqttMdOut, error) {
-		return mqttMdOut{}, codex.ValidationErrors{{Field: "tenantID", Err: errors.New("boom")}}
-	})
+	pub = pub.PublishBoundMW(bm)
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	handle, err := pub.Handle(b)
 	if err != nil {
@@ -1851,16 +1856,17 @@ func TestPublish_Observer_ReportsMiddlewareInAndFnLocations(t *testing.T) {
 // now reported as its own "middleware:out" location, symmetric with
 // REST's own "middleware:out".
 func TestPublish_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
-	mw := events.NewMiddleware(newMqttMdDeclaration("tenant-required-policy")).
+	bm := events.NewBoundPublishMiddleware(newMqttMdDeclaration("tenant-required-policy"),
+		func(ctx context.Context, msg sensorReading) (mqttMdOut, error) {
+			// Empty TenantID fails the NonEmptyString refinement at
+			// EncodeOut/OutCodec.Validate time, NOT the fn itself.
+			return mqttMdOut{TenantID: ""}, nil
+		}).
 		WithPublishProperty(events.NewPropertyParam("tenantID", codex.String().Refine(validate.NonEmptyString),
 			func(o mqttMdOut) string { return o.TenantID },
 			func(o *mqttMdOut, v string) { o.TenantID = v }))
 	pub := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).WithPublish(events.Publish{})
-	pub = pub.PublishMW(mw, func(ctx context.Context, msg sensorReading) (mqttMdOut, error) {
-		// Empty TenantID fails the NonEmptyString refinement at
-		// EncodeOut/OutCodec.Validate time, NOT the fn itself.
-		return mqttMdOut{TenantID: ""}, nil
-	})
+	pub = pub.PublishBoundMW(bm)
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	handle, err := pub.Handle(b)
 	if err != nil {
@@ -1901,7 +1907,10 @@ func TestPublish_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
 // dispatchPublishMiddlewareHandlers' 2-map split).
 func TestPublish_WithPublishProperty_WritesOutgoingUserProperty_SeparateFromTopicVars(t *testing.T) {
 	uuidCodec := codex.String().Refine(validate.UUID)
-	mw := events.NewMiddleware(newMqttMdDeclaration("tenant-policy")).
+	bm := events.NewBoundPublishMiddleware(newMqttMdDeclaration("tenant-policy"),
+		func(ctx context.Context, msg sensorReading) (mqttMdOut, error) {
+			return mqttMdOut{TenantID: "acme"}, nil
+		}).
 		WithPublishProperty(events.NewPropertyParam("tenantID", codex.String().Refine(validate.NonEmptyString),
 			func(o mqttMdOut) string { return o.TenantID },
 			func(o *mqttMdOut, v string) { o.TenantID = v }))
@@ -1913,9 +1922,7 @@ func TestPublish_WithPublishProperty_WritesOutgoingUserProperty_SeparateFromTopi
 			func(r sensorReading) string { return r.SensorID },
 			func(r *sensorReading, v string) { r.SensorID = v }),
 	).WithPublish(events.Publish{})
-	pub = pub.PublishMW(mw, func(ctx context.Context, msg sensorReading) (mqttMdOut, error) {
-		return mqttMdOut{TenantID: "acme"}, nil
-	})
+	pub = pub.PublishBoundMW(bm)
 	handle, err := pub.Handle(b)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)

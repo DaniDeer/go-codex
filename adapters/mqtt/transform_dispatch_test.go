@@ -31,8 +31,8 @@ var tdOutCodec = codex.Struct[tdOut](
 	),
 )
 
-func newTDDeclaration(name string) events.Middleware[tdIn, tdOut] {
-	return events.NewMiddleware(middleware.NewDeclaration(name, tdInCodec, tdOutCodec))
+func newTDDeclaration(name string) middleware.Declaration[tdIn, tdOut] {
+	return middleware.NewDeclaration(name, tdInCodec, tdOutCodec)
 }
 
 // tdEmpty is an In/Out shape with NO required fields — used where a test
@@ -41,8 +41,8 @@ type tdEmpty struct{}
 
 var tdEmptyCodec = codex.Struct[tdEmpty]()
 
-func newTDEmptyDeclaration(name string) events.Middleware[tdEmpty, tdEmpty] {
-	return events.NewMiddleware(middleware.NewDeclaration(name, tdEmptyCodec, tdEmptyCodec))
+func newTDEmptyDeclaration(name string) middleware.Declaration[tdEmpty, tdEmpty] {
+	return middleware.NewDeclaration(name, tdEmptyCodec, tdEmptyCodec)
 }
 
 func newSubscriberChannelHandle(subscriber events.Subscriber[userEvent]) *events.ChannelHandle[userEvent] {
@@ -56,17 +56,18 @@ func newSubscriberChannelHandle(subscriber events.Subscriber[userEvent]) *events
 // ── Transform: happy path, enrichment ────────────────────────────────────
 
 func TestSubscribeHandler_Transform_HappyPath_EnrichesMsg(t *testing.T) {
-	mw := newTDDeclaration("region-policy").
+	bm := events.NewBoundSubscribeMiddleware(newTDDeclaration("region-policy"),
+		func(ctx context.Context, msg *userEvent, in tdIn) (tdOut, error) {
+			msg.ID = in.Key + "-enriched"
+			return tdOut{Value: "unused"}, nil
+		}).
 		WithSubscribeTopic(events.NewTopicParam("region", codex.String(),
 			func(in tdIn) string { return in.Key },
 			func(in *tdIn, v string) { in.Key = v },
 		))
 	subscriber := events.NewChannel[userEvent]("user/{region}/created", userEventCodec).
 		WithSubscribe(events.Subscribe{Summary: "test"})
-	subscriber = subscriber.SubscribeMW(mw, func(ctx context.Context, msg *userEvent, in tdIn) error {
-		msg.ID = in.Key + "-enriched"
-		return nil
-	})
+	subscriber = subscriber.SubscribeBoundMW(bm)
 	handle := newSubscriberChannelHandle(subscriber)
 
 	var received userEvent
@@ -82,18 +83,19 @@ func TestSubscribeHandler_Transform_HappyPath_EnrichesMsg(t *testing.T) {
 // ── Transform: In-decode failure short-circuits, handler never called ───
 
 func TestSubscribeHandler_Transform_InDecodeFailure_HandlerNotCalled(t *testing.T) {
-	mw := newTDDeclaration("region-policy").
+	handlerCalled := false
+	bm := events.NewBoundSubscribeMiddleware(newTDDeclaration("region-policy"),
+		func(ctx context.Context, msg *userEvent, in tdIn) (tdOut, error) {
+			handlerCalled = true
+			return tdOut{Value: "unused"}, nil
+		}).
 		WithSubscribeTopic(events.NewTopicParam("region", codex.String().Refine(validate.NonEmptyString),
 			func(in tdIn) string { return in.Key },
 			func(in *tdIn, v string) { in.Key = v },
 		))
 	subscriber := events.NewChannel[userEvent]("user/{region}/created", userEventCodec).
 		WithSubscribe(events.Subscribe{Summary: "test"})
-	handlerCalled := false
-	subscriber = subscriber.SubscribeMW(mw, func(ctx context.Context, msg *userEvent, in tdIn) error {
-		handlerCalled = true
-		return nil
-	})
+	subscriber = subscriber.SubscribeBoundMW(bm)
 	handle := newSubscriberChannelHandle(subscriber)
 
 	var gotErr SubscribeError
@@ -116,13 +118,14 @@ func TestSubscribeHandler_Transform_InDecodeFailure_HandlerNotCalled(t *testing.
 // ── Transform: fn error surfaces as events.MiddlewareError ──────────────
 
 func TestSubscribeHandler_Transform_FnError_WrapsAsMiddlewareError(t *testing.T) {
-	mw := newTDEmptyDeclaration("region-policy")
 	subscriber := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithSubscribe(events.Subscribe{Summary: "test"})
 	handlerCalled := false
-	subscriber = subscriber.SubscribeMW(mw, func(ctx context.Context, msg *userEvent, in tdEmpty) error {
-		return errors.New("boom")
-	})
+	bm := events.NewBoundSubscribeMiddleware(newTDEmptyDeclaration("region-policy"),
+		func(ctx context.Context, msg *userEvent, in tdEmpty) (tdEmpty, error) {
+			return tdEmpty{}, errors.New("boom")
+		})
+	subscriber = subscriber.SubscribeBoundMW(bm)
 	handle := newSubscriberChannelHandle(subscriber)
 
 	var gotErr SubscribeError
@@ -147,7 +150,7 @@ func TestSubscribeHandler_Transform_FnError_WrapsAsMiddlewareError(t *testing.T)
 
 func TestSubscribeHandler_Use_AgnosticMiddleware_Dispatches(t *testing.T) {
 	callCount := 0
-	mw := newTDEmptyDeclaration("agnostic-policy").
+	mw := events.NewMiddleware(newTDEmptyDeclaration("agnostic-policy")).
 		WithReceive(func(ctx context.Context, in tdEmpty) error {
 			callCount++
 			return nil
@@ -168,16 +171,17 @@ func TestSubscribeHandler_Use_AgnosticMiddleware_Dispatches(t *testing.T) {
 // ── ClientTransform (publish side): happy path, encodes Out into topic vars ──
 
 func TestPublish_ClientTransform_HappyPath_EncodesOutIntoTopicVars(t *testing.T) {
-	mw := newTDDeclaration("region-policy").
+	bm := events.NewBoundPublishMiddleware(newTDDeclaration("region-policy"),
+		func(ctx context.Context, msg userEvent) (tdOut, error) {
+			return tdOut{Value: "us-west"}, nil
+		}).
 		WithPublishTopic(events.NewTopicParam("region", codex.String(),
 			func(out tdOut) string { return out.Value },
 			func(out *tdOut, v string) { out.Value = v },
 		))
 	publisher := events.NewChannel[userEvent]("user/{region}/created", userEventCodec).
 		WithPublish(events.Publish{Summary: "test"})
-	publisher = publisher.PublishMW(mw, func(ctx context.Context, msg userEvent) (tdOut, error) {
-		return tdOut{Value: "us-west"}, nil
-	})
+	publisher = publisher.PublishBoundMW(bm)
 	handle, err := publisher.Handle(nil)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -196,12 +200,13 @@ func TestPublish_ClientTransform_HappyPath_EncodesOutIntoTopicVars(t *testing.T)
 // ── ClientTransform: fn error aborts before publish ──────────────────────
 
 func TestPublish_ClientTransform_FnError_AbortsBeforePublish(t *testing.T) {
-	mw := newTDEmptyDeclaration("region-policy")
+	bm := events.NewBoundPublishMiddleware(newTDEmptyDeclaration("region-policy"),
+		func(ctx context.Context, msg userEvent) (tdEmpty, error) {
+			return tdEmpty{}, errors.New("boom")
+		})
 	publisher := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithPublish(events.Publish{Summary: "test"})
-	publisher = publisher.PublishMW(mw, func(ctx context.Context, msg userEvent) (tdEmpty, error) {
-		return tdEmpty{}, errors.New("boom")
-	})
+	publisher = publisher.PublishBoundMW(bm)
 	handle, err := publisher.Handle(nil)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -227,14 +232,15 @@ func TestPublish_ClientTransform_FnError_AbortsBeforePublish(t *testing.T) {
 // mqtt5/zeromq test patterns exactly.
 
 func TestSubscribeHandler_Observer_ReportsMiddlewareInLocation(t *testing.T) {
-	mw := newTDDeclaration("region-policy").
+	bm := events.NewBoundSubscribeMiddleware(newTDDeclaration("region-policy"),
+		func(ctx context.Context, msg *userEvent, in tdIn) (tdOut, error) { return tdOut{Value: "unused"}, nil }).
 		WithSubscribeTopic(events.NewTopicParam("region", codex.String().Refine(validate.NonEmptyString),
 			func(in tdIn) string { return in.Key },
 			func(in *tdIn, v string) { in.Key = v },
 		))
 	subscriber := events.NewChannel[userEvent]("user/{region}/created", userEventCodec).
 		WithSubscribe(events.Subscribe{Summary: "test"})
-	subscriber = subscriber.SubscribeMW(mw, func(ctx context.Context, msg *userEvent, in tdIn) error { return nil })
+	subscriber = subscriber.SubscribeBoundMW(bm)
 	handle := newSubscriberChannelHandle(subscriber)
 
 	obs := &mqttSpyObserver{}
@@ -256,12 +262,13 @@ func TestSubscribeHandler_Observer_ReportsMiddlewareInLocation(t *testing.T) {
 }
 
 func TestSubscribeHandler_Observer_ReportsMiddlewareFnLocation(t *testing.T) {
-	mw := newTDEmptyDeclaration("fn-error-policy")
+	bm := events.NewBoundSubscribeMiddleware(newTDEmptyDeclaration("fn-error-policy"),
+		func(ctx context.Context, msg *userEvent, in tdEmpty) (tdEmpty, error) {
+			return tdEmpty{}, codex.ValidationErrors{{Field: "region", Err: errors.New("boom")}}
+		})
 	subscriber := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithSubscribe(events.Subscribe{Summary: "test"})
-	subscriber = subscriber.SubscribeMW(mw, func(ctx context.Context, msg *userEvent, in tdEmpty) error {
-		return codex.ValidationErrors{{Field: "region", Err: errors.New("boom")}}
-	})
+	subscriber = subscriber.SubscribeBoundMW(bm)
 	handle := newSubscriberChannelHandle(subscriber)
 
 	obs := &mqttSpyObserver{}
@@ -282,12 +289,13 @@ func TestSubscribeHandler_Observer_ReportsMiddlewareFnLocation(t *testing.T) {
 }
 
 func TestPublish_Observer_ReportsMiddlewareFnLocation(t *testing.T) {
-	mw := newTDEmptyDeclaration("fn-error-policy")
+	bm := events.NewBoundPublishMiddleware(newTDEmptyDeclaration("fn-error-policy"),
+		func(ctx context.Context, msg userEvent) (tdEmpty, error) {
+			return tdEmpty{}, codex.ValidationErrors{{Field: "region", Err: errors.New("boom")}}
+		})
 	publisher := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithPublish(events.Publish{Summary: "test"})
-	publisher = publisher.PublishMW(mw, func(ctx context.Context, msg userEvent) (tdEmpty, error) {
-		return tdEmpty{}, codex.ValidationErrors{{Field: "region", Err: errors.New("boom")}}
-	})
+	publisher = publisher.PublishBoundMW(bm)
 	handle, err := publisher.Handle(nil)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -323,14 +331,15 @@ func TestPublish_Observer_ReportsMiddlewareFnLocation(t *testing.T) {
 // — distinct from "middleware:fn" (a real fn business error) — symmetric
 // with REST's own "middleware:out".
 func TestPublish_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
-	mw := newTDDeclaration("tenant-required-policy")
+	bm := events.NewBoundPublishMiddleware(newTDDeclaration("tenant-required-policy"),
+		func(ctx context.Context, msg userEvent) (tdOut, error) {
+			// Empty Value fails tdOutCodec's NonEmptyString refinement at
+			// EncodeOut/OutCodec.Validate time, NOT the fn itself.
+			return tdOut{Value: ""}, nil
+		})
 	publisher := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithPublish(events.Publish{Summary: "test"})
-	publisher = publisher.PublishMW(mw, func(ctx context.Context, msg userEvent) (tdOut, error) {
-		// Empty Value fails tdOutCodec's NonEmptyString refinement at
-		// EncodeOut/OutCodec.Validate time, NOT the fn itself.
-		return tdOut{Value: ""}, nil
-	})
+	publisher = publisher.PublishBoundMW(bm)
 	handle, err := publisher.Handle(nil)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
