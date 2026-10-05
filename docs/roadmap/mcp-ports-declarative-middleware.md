@@ -486,3 +486,17 @@ Reuse the 5 existing error types VERBATIM, scoped to the new packages
    (mirrors `forge-pipeline-middleware.md`'s own "idea only" status for
    a structurally similar reason: a real architectural gap with no
    concrete, demanded use case forcing a decision yet).
+4. **Whether `api/mcp`/`ports` ever want a Router-style grouping
+   mechanism** — [`declarative-router-groups.md`](declarative-router-groups.md)
+   designs a path/topic-PREFIX grouping construct (`rest.Router`/
+   `events.Router`/`reqreply.Router`) for REST/events/reqreply, explicitly
+   scoped OUT of `api/mcp` there, since tool names and resource URI
+   templates don't share REST/events/reqreply's hierarchical path shape.
+   If a concrete need ever surfaces (e.g. grouping a family of related
+   tools under a shared name-prefix convention + shared `Tool.Use(...)`
+   middleware, or a `ports` binding wanting to attach the same adapter
+   wiring to several declared patterns at once), that doc's resolved
+   `routable`-interface pattern (unexported interface + receiver-scoped
+   type parameters, since Go forbids new type parameters on a method) is
+   the reference design to start from — not a reflection-based or
+   ad hoc mechanism. No driver exists yet; not designed further here.
