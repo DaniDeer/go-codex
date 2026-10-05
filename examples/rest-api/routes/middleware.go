@@ -20,7 +20,7 @@ import (
 // type, and declare (routes.go)/implement (handlers/server.go)/fulfill
 // (client/client.go) deliberately live in SEPARATE files/packages — so
 // each attachment is built via [rest.BoundMiddleware]/
-// [rest.BoundClientMiddleware] (docs/roadmap/bound-middleware-split.md),
+// [rest.BoundClientMiddleware] (docs/design/d-0003-codec-declared-middlewares.md's Addendum 7),
 // generic over the attaching route's own Req type. BoundScopeServerMW/
 // BoundScopeClientMW below are the shared constructor helpers every
 // attachment site (nethttpserver/server.go, chiserver/server.go,

@@ -601,7 +601,7 @@ type RouteOpt interface{ applyRoute(*routeBuilder) }
 // routeBuilder accumulates RouteOpt values before building the route descriptor.
 type routeBuilder struct {
 	// buildErr is set by boundMismatchOpt/misattachedOpt's applyRoute
-	// (docs/roadmap/bound-middleware-split.md) when HandleBoundMW/
+	// (docs/design/d-0003-codec-declared-middlewares.md's Addendum 7) when HandleBoundMW/
 	// ClientBoundMW is called with a Req-mismatched or non-bound value,
 	// or when a codec-backed Middleware/BoundMiddleware is passed to
 	// HandleMW/ClientMW — checked early in registerHandle (returned as a
@@ -2739,7 +2739,7 @@ func FromSecurityScheme(schemeName string, scheme SecurityScheme, scopes []strin
 // which reject any codec-backed value outright (see
 // [MiddlewareMisattachedError]). For the route/channel-BOUND
 // counterpart, see [BoundSecurityMiddleware]/[Route.HandleBoundMW]
-// instead (docs/roadmap/bound-middleware-split.md). Part of the
+// instead (docs/design/d-0003-codec-declared-middlewares.md's Addendum 7). Part of the
 // middleware-consolidation effort
 // (docs/design/d-0003-codec-declared-middlewares.md) folding Security
 // into the codec-backed family instead of the legacy [middleware.Middleware]
@@ -3747,7 +3747,7 @@ func (r Route[Req, Resp]) ClientHandle() *RouteHandle[Req, Resp] {
 	// FormatOptError below in this same method (a confirmed, previously-
 	// silent bug: this check was missing entirely, so a Req-mismatched
 	// ClientBoundMW used to be dropped with ZERO error or panic anywhere
-	// — see docs/roadmap/bound-middleware-split.md's review findings).
+	// — see docs/design/d-0003-codec-declared-middlewares.md's Addendum 7's review findings).
 	if rb.buildErr != nil {
 		panic(fmt.Sprintf("api/rest: ClientHandle: %s", rb.buildErr.Error()))
 	}

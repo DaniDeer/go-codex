@@ -18,7 +18,7 @@ var gsAPIKeyScopes = map[string][]string{
 // VerifyAPIKeyGS is GrantedScopesSensorMw's embedded Fn — func(ctx, *T,
 // In) (Out, error), the shape [events.NewBoundSubscribeMiddleware]/
 // [events.BoundSecuritySubscribeMiddleware] require at construction
-// (docs/roadmap/bound-middleware-split.md's events/BoundSubscribeMiddleware
+// (docs/design/d-0003-codec-declared-middlewares.md's Addendum 7's events/BoundSubscribeMiddleware
 // class), passed directly to the constructor rather than paired
 // separately at attachment time. Unlike MQTT5SecurityImpl above (which
 // has no *T access at all, the reusable class), this Fn receives

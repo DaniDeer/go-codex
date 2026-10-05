@@ -10,7 +10,7 @@
 > This is the one place go-codex's security model is intentionally
 > asymmetric with REST/events/reqreply.
 
-go-codex documents security requirements in the spec and provides declarative hooks for runtime enforcement — **the library does not import any crypto or JWT library**. For REST, a security scheme is declared ONCE, via `middleware.SecurityScheme(schemeName, scheme, scopes, codec)`/`rest.FromSecurityScheme(schemeName, rest.SecurityScheme, scopes)` (bridging an existing `rest.SecurityScheme` value), attached to the route via `Route.Use(mw)` — there is no builder-level scheme registry, and `rest.WithSecurityScheme` was REMOVED (there is no metadata-only registration anymore; every declared scheme is a real requirement) — and the SAME declaration is consumed identically by both the server (`Route.Register`/`RegisterHandle`) and the client (`Route.ClientHandle`), so one route definition gets IDENTICAL credential-format enforcement on both ends. Runtime credential validation itself is attached per-route via ONE of two classes (`docs/roadmap/bound-middleware-split.md`): the REUSABLE class (`Middleware.WithReceive`/`WithSend`, attached via `.Use()`) for a `Req`-free check, or the BOUND class (`BoundMiddleware`/`BoundClientMiddleware`, attached via `Route.HandleBoundMW`/`Route.ClientBoundMW`) when the Fn needs the route's own decoded `Req` — see "Codec-backed Security" below.
+go-codex documents security requirements in the spec and provides declarative hooks for runtime enforcement — **the library does not import any crypto or JWT library**. For REST, a security scheme is declared ONCE, via `middleware.SecurityScheme(schemeName, scheme, scopes, codec)`/`rest.FromSecurityScheme(schemeName, rest.SecurityScheme, scopes)` (bridging an existing `rest.SecurityScheme` value), attached to the route via `Route.Use(mw)` — there is no builder-level scheme registry, and `rest.WithSecurityScheme` was REMOVED (there is no metadata-only registration anymore; every declared scheme is a real requirement) — and the SAME declaration is consumed identically by both the server (`Route.Register`/`RegisterHandle`) and the client (`Route.ClientHandle`), so one route definition gets IDENTICAL credential-format enforcement on both ends. Runtime credential validation itself is attached per-route via ONE of two classes (`docs/design/d-0003-codec-declared-middlewares.md's Addendum 7`): the REUSABLE class (`Middleware.WithReceive`/`WithSend`, attached via `.Use()`) for a `Req`-free check, or the BOUND class (`BoundMiddleware`/`BoundClientMiddleware`, attached via `Route.HandleBoundMW`/`Route.ClientBoundMW`) when the Fn needs the route's own decoded `Req` — see "Codec-backed Security" below.
 
 ## Connection-level vs message-level security
 
@@ -303,7 +303,7 @@ Routes with `nil Security` (default) trigger enforcement when global security is
 A codec-backed `rest.Middleware[In, Out]` (built via `rest.SecurityMiddleware[In, Out]`)
 can carry a Security declaration and be attached in ONE of two ways,
 depending on whether the Fn needs access to the route's own decoded
-`Req` (see `docs/roadmap/bound-middleware-split.md` for the full design
+`Req` (see `docs/design/d-0003-codec-declared-middlewares.md's Addendum 7` for the full design
 this section documents):
 
 **Reusable class — `Middleware[In, Out]`, attached via `.Use()`.** The
@@ -391,7 +391,7 @@ reject any codec-backed `Middleware[In, Out]` value outright
 (`MiddlewareMisattachedError`), whether or not `fn`'s shape looks bound.
 Every Security need expressible under the old mechanism re-expresses
 cleanly under the two classes above; see
-`docs/roadmap/bound-middleware-split.md`'s investigation for the
+`docs/design/d-0003-codec-declared-middlewares.md's Addendum 7`'s investigation for the
 case-by-case migration mapping.
 
 `fn` gets `*Req`/`Req` access in the bound class (read/enrich, exactly
@@ -707,7 +707,7 @@ graduation policy).
 
 Mirrors `api/rest`'s identical mechanism (see "Codec-backed Security"
 under "Runtime enforcement" above) — see
-`docs/roadmap/bound-middleware-split.md` for the full design this section
+`docs/design/d-0003-codec-declared-middlewares.md's Addendum 7` for the full design this section
 documents. A codec-backed `events.Middleware[In, Out]` (built via
 `events.SecurityMiddleware[In, Out]`) can be attached in ONE of two ways,
 depending on whether the Fn needs access to the channel's own decoded
@@ -813,7 +813,7 @@ reusable class unchanged (the credential capture moves into the
 property channel to decode it from); ZeroMQ's in-payload pattern
 re-expresses via the bound class. See
 [`examples/events-api/handlers/security.go`](https://github.com/DaniDeer/go-codex/blob/main/examples/events-api/handlers/security.go)
-and `docs/roadmap/bound-middleware-split.md`'s investigation for the
+and `docs/design/d-0003-codec-declared-middlewares.md's Addendum 7`'s investigation for the
 case-by-case migration mapping.
 
 ### Connection-level auth spec registration — `Client.AddConnectSecurityScheme`
@@ -865,7 +865,7 @@ declare/attach-time-supply lifecycle this capability follows.
 
 `api/reqreply` mirrors REST's exact declare-once, enforce-symmetrically
 model on BOTH transports it supports — see
-`docs/roadmap/bound-middleware-split.md` for the full design this
+`docs/design/d-0003-codec-declared-middlewares.md's Addendum 7` for the full design this
 section documents. A codec-backed `reqreply.Middleware[In, Out]` (built
 via `reqreply.SecurityMiddleware[In, Out]`) can be attached in ONE of two
 ways, depending on whether the Fn needs access to the route's own

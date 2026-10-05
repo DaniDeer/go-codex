@@ -43,6 +43,38 @@
 > `Client.Attach`) had the fix. Found via `examples/events-api/
 > demo_granted_scopes_context_field.go`, now fixed across `mqtt5`/
 > `mqtt`/`zeromq`, verified via the full test suite + the new example.
+>
+> **SUPERSEDED, in part, by `docs/design/d-0003-codec-declared-middlewares.md's Addendum 7`
+> (folded into [D-0003](d-0003-codec-declared-middlewares.md)'s
+> Addendum 7) — read this note before trusting any "bound"/"reflection-
+> detected" mechanism description below.** This doc's own "Current
+> state"/"API surface" sections, PLUS every "Learnings from Rollout
+> Phase A/B/C" mention of `isBoundHandleMWShape`/`isBoundClientMWShape`/
+> `isBoundSubscribeMWShape`/`isBoundPublishMWShape`, describe a LATER-
+> REPLACED mechanism: a SINGLE `Middleware[In,Out]` type whose
+> route/channel-BOUND attachment style was detected AT RUNTIME by
+> reflecting on the paired Fn's OWN parameter shape (3-in/2-out vs.
+> 2-in/2-out, etc.), silently promoting it to a different dispatch path.
+> This reflection-based detection was found (across this doc's OWN
+> "Learnings" sections) to cause real, shipped bugs — a
+> `DuplicateMiddlewareNameError` footgun, an exact-`Req`-type-match
+> requirement defeating generic reuse, and the `Client.Attach`
+> regression documented just above — and was subsequently REMOVED
+> OUTRIGHT, replaced by TWO explicit, compile-time-distinct Go types per
+> package: the UNCHANGED reusable `Middleware[In,Out]` (`.Use()`-only,
+> `Req`/`T`-free Fn) and a NEW, separate `BoundMiddleware[Req,In,Out]`/
+> `BoundClientMiddleware[Req,In,Out]` (REST/reqreply) or
+> `BoundSubscribeMiddleware[T,In,Out]`/`BoundPublishMiddleware[T,In,Out]`
+> (events) family, with the Fn embedded AT CONSTRUCTION and attached via
+> a DEDICATED method (`HandleBoundMW`/`ClientBoundMW`/`SubscribeBoundMW`/
+> `PublishBoundMW`) — never Fn-shape guessing. **This doc's historical
+> narrative below is preserved UNCHANGED, as the accurate record of how
+> this project arrived at that later redesign** (the bugs found here are
+> EXACTLY what motivated it) — but treat every reflection-detection
+> mechanism description below as HISTORICAL, not current, and consult
+> `BoundMiddleware`'s own godoc (`api/rest/bound_middleware.go`,
+> `api/events/bound_middleware.go`, `api/reqreply/bound_middleware.go`)
+> or D-0003's Addendum 7 for the CURRENT, shipped mechanism.
 > [← Back to Design Documents](index.md)
 
 ## Motivation
@@ -1624,6 +1656,19 @@ silently re-discover it).
 
 ### Learnings from Rollout Phase A (for Phase B/C)
 
+> **HISTORICAL note (applies to this section and every "Learnings from
+> Rollout Phase A/B/C" section below):** every `isBoundHandleMWShape`/
+> `isBoundClientMWShape`/`isBoundSubscribeMWShape`/`isBoundPublishMWShape`
+> mention in these "Learnings" sections describes the REFLECTION-BASED
+> bound-attachment mechanism these very Phases shipped — which was ITSELF
+> later found to cause real bugs (several are documented in these exact
+> sections) and was subsequently REPLACED by the explicit
+> `BoundMiddleware`/`BoundSubscribeMiddleware`/`BoundPublishMiddleware`
+> type family (see the SUPERSEDED callout at the top of this doc). Left
+> UNCHANGED below as the accurate historical record of what shipped and
+> what was learned at each phase — not a description of the current
+> mechanism.
+
 **Shipped.** `api/rest`'s `Transform`/`ClientTransform`/`TransformSSE`/
 `ClientTransformSSE` were removed and folded into `HandleMW`/`ClientMW`;
 Security now dispatches through the SAME unified mechanism via a new
@@ -2628,7 +2673,7 @@ discoverability, mirroring this session's established convention (e.g.
 `dynamic-port-rebinding.md` ↔ `mcp-ports-declarative-middleware.md`):
 
 - [WebSocket — should it gain a general-purpose declarative middleware
-  mechanism?](websocket-declarative-middleware.md) — confirmed OUT OF
+  mechanism?](../roadmap/websocket-declarative-middleware.md) — confirmed OUT OF
   SCOPE here: WebSocket is built on `ports.DuplexPort`/`SocketPattern`,
   not `api/events.Channel`, so there is no `Middleware[In,Out]`
   attachment point to generalize in the first place (confirmed via that
@@ -2637,7 +2682,7 @@ discoverability, mirroring this session's established convention (e.g.
   `EncodeLayer` mechanism is specific to `api/rest`/`api/events`/
   `api/reqreply`'s shared `Middleware[In,Out]` shape, which WebSocket
   does not have.
-- [MCP and Ports Declarative Middleware](mcp-ports-declarative-middleware.md)
+- [MCP and Ports Declarative Middleware](../roadmap/mcp-ports-declarative-middleware.md)
   — confirmed OUT OF SCOPE here: MCP/`ports` use a DIFFERENT,
   single-phase attachment model with no spec/two-phase declare-dispatch
   split (see this doc's own "Out of scope" section) — the two doc's
@@ -2731,6 +2776,16 @@ that future round ever happen.
 | **Phase 4**: `events.Client.AddConnectSecurityScheme`/`reqreply.Builder.AddConnectSecurityScheme` (standalone connection-level security-scheme spec registration, both packages) PLUS `mqtt5.Connect`'s error/Observer fidelity (`ConnectError.ReasonCode`/`ReasonString`, `ConnectOptions.Observer`) | A new shared/core-layer connection-security type unifying spec+runtime — explicitly rejected; `route.SecurityScheme` (already shared) plus a documented reuse convention is sufficient, no new type needed. Also out of scope: a sealed, marker-method `Capability`-style interface for connection auth — explicitly rejected, no corresponding safety gain (see "Reframed explicitly as a D-0006-pattern capability") |
 
 ## Current state (confirmed via code, for contrast — all three packages)
+
+> **HISTORICAL — superseded.** This section (and "API surface" below)
+> describes the state of the codebase BEFORE Phase 2's own
+> `isBoundHandleMWShape`-style reflection detection shipped, used here
+> as the "before" contrast this doc's Phase 2 design improves on. That
+> Phase 2 mechanism itself was LATER replaced by `BoundMiddleware`/
+> `BoundSubscribeMiddleware`/`BoundPublishMiddleware` (see the
+> SUPERSEDED callout at the top of this doc) — neither this section nor
+> "API surface" reflects the CURRENT, shipped mechanism. Kept verbatim
+> for historical accuracy.
 
 - **REST client-side** (`adapters/nethttp/clienttransport.go`'s
   `mergeCredentialHeaders`): `ClientImplementation.Fn` type-asserted to

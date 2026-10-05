@@ -18,7 +18,7 @@ import (
 // AND Out-side merge fields (topic AND property) are used together, on the
 // SAME Middleware value.
 //
-// Middleware is the REUSABLE class ONLY (docs/roadmap/bound-middleware-split.md)
+// Middleware is the REUSABLE class ONLY (docs/design/d-0003-codec-declared-middlewares.md's Addendum 7)
 // — attached via plain .Use(mw), always carrying a Req-FREE Fn bundled
 // directly onto the value via [Middleware.WithReceive]/[Middleware.WithSend].
 // Reusable verbatim across many routes, since the Fn never inspects the

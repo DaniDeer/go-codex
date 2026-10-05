@@ -365,7 +365,7 @@ flow (same pattern `adapters/mqtt5`/`adapters/zeromq`/`adapters/mqtt`
 already use) — the adapter-level dispatch wiring (mirroring those
 adapters' own `adapter.go`/`caller.go`) hasn't been designed yet. When it
 is, it should dispatch against whichever mechanism
-[`docs/roadmap/bound-middleware-split.md`](bound-middleware-split.md)
+[`docs/design/d-0003-codec-declared-middlewares.md's Addendum 7`](../design/d-0003-codec-declared-middlewares.md)
 describes as CURRENT at implementation time (`Middleware[In,Out]`
 reusable class, or its new `BoundMiddleware`/`BoundSubscribeMiddleware`/
 `BoundPublishMiddleware` bound classes) — not a hand-rolled, adapter-

@@ -279,4 +279,4 @@ func buildAgnosticClientMiddlewareHandler[In, Out any](mw Middleware[In, Out]) C
 // CURRENT channel-bound attachment point is
 // [Subscriber.SubscribeBoundMW]/[Publisher.PublishBoundMW], using the
 // dedicated [BoundSubscribeMiddleware]/[BoundPublishMiddleware] types
-// (see bound_middleware.go) — see docs/roadmap/bound-middleware-split.md.
+// (see bound_middleware.go) — see docs/design/d-0003-codec-declared-middlewares.md's Addendum 7.

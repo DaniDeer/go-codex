@@ -101,6 +101,7 @@ func main() {
 	demoErrorChannelMiddlewareCombo(ctx)
 	demoSecuritySubscribeMW(ctx, obs)
 	demoGrantedScopesContextField(ctx)
+	demoBoundMiddlewareSplit(ctx, obs)
 	demoZeromqPubSubRoundtrip(ctx)
 	demoObservabilityMiddleware(ctx, obs)
 	demoCapabilityMechanism(ctx)

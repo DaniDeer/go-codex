@@ -6,11 +6,10 @@ import (
 	"testing"
 
 	"github.com/DaniDeer/go-codex/api/events"
-	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/middleware"
 )
 
-// ── docs/roadmap/bound-middleware-split.md: BoundSubscribeMiddleware[T,
+// ── docs/design/d-0003-codec-declared-middlewares.md's Addendum 7: BoundSubscribeMiddleware[T,
 // In, Out]/BoundPublishMiddleware[T, In, Out] are the explicit, compile-
 // time-distinct channel-BOUND class for events — attached via
 // Subscriber.SubscribeBoundMW/Publisher.PublishBoundMW. These tests mirror
@@ -21,15 +20,12 @@ import (
 // regression coverage).
 
 // otherEventT is a SECOND payload type, deliberately different from
-// userEvent, used by the mismatch tests below.
+// userEvent, used by the mismatch tests below. No dedicated codec is
+// declared for it — every test constructing a
+// BoundSubscribeMiddleware[otherEventT, ...]/BoundPublishMiddleware[otherEventT, ...]
+// value below does so purely to exercise the boundReqWitness mismatch
+// path, never a real Handle()/dispatch round-trip that would need one.
 type otherEventT struct{ Foo string }
-
-var otherEventTCodec = codex.Struct[otherEventT](
-	codex.RequiredField("foo", codex.String(),
-		func(e otherEventT) string { return e.Foo },
-		func(e *otherEventT, v string) { e.Foo = v },
-	),
-)
 
 // TestSubscribeBoundMW_TMismatch_ReturnsTypedError confirms a
 // BoundSubscribeMiddleware[otherEventT, ...] (built for the WRONG T)

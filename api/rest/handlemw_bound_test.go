@@ -11,7 +11,7 @@ import (
 	"github.com/DaniDeer/go-codex/route"
 )
 
-// ── docs/roadmap/bound-middleware-split.md: BoundMiddleware[Req,In,Out]
+// ── docs/design/d-0003-codec-declared-middlewares.md's Addendum 7: BoundMiddleware[Req,In,Out]
 // is the explicit, compile-time-distinct route/channel-BOUND class —
 // attached via Route.HandleBoundMW/SSERoute.HandleBoundMW/
 // Route.ClientBoundMW/SSERoute.ClientBoundMW. These tests confirm:

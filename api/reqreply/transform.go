@@ -375,4 +375,4 @@ func specContributionOf[In, Out any](mw Middleware[In, Out]) middlewareSpecContr
 // to them elsewhere is stale/aspirational. The CURRENT route-bound
 // attachment point is [Route.HandleBoundMW]/[Route.ClientBoundMW], using
 // the dedicated [BoundMiddleware]/[BoundClientMiddleware] types (see
-// bound_middleware.go) — see docs/roadmap/bound-middleware-split.md.
+// bound_middleware.go) — see docs/design/d-0003-codec-declared-middlewares.md's Addendum 7.

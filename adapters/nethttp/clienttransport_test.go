@@ -1316,7 +1316,7 @@ func TestCallWithTransport_OnCredentialRejected_NotCalledWithoutEngagedCredentia
 
 // TestCallWithTransport_OnCredentialRejected_FiresOn401_CodecBackedClientMW
 // confirms a codec-backed [rest.Middleware.WithSend] credential middleware
-// (docs/roadmap/bound-middleware-split.md — the REPLACEMENT for the legacy
+// (docs/design/d-0003-codec-declared-middlewares.md's Addendum 7 — the REPLACEMENT for the legacy
 // ClientMW pairing [TestCallWithTransport_OnCredentialRejected_FiresOn401]
 // above exercises) also triggers [rest.ClientCallOptions.OnCredentialRejected]
 // on a 401 — regression test for a confirmed gap where credentialFnRan was

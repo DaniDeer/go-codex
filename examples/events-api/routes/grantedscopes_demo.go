@@ -20,7 +20,7 @@ import (
 // ── (handlers.VerifyAPIKeyGS, func(ctx, *T, In) (Out, error)) EMBEDDED  ──
 // ── AT CONSTRUCTION via events.BoundSecuritySubscribeMiddleware and     ──
 // ── attached via the dedicated Subscriber.SubscribeBoundMW method —     ──
-// ── see docs/roadmap/bound-middleware-split.md's events/                ──
+// ── see docs/design/d-0003-codec-declared-middlewares.md's Addendum 7's events/                ──
 // ── BoundSubscribeMiddleware section for the full class split.
 
 // AuthIn is GrantedScopesSensorMw's credential vocabulary — decoded from
@@ -47,7 +47,7 @@ var GrantedScopesUserIDField = middleware.NewContextField(codex.String())
 // NewGrantedScopesSensorMw builds the channel-BOUND "apiKeyGS" security
 // middleware for GrantedScopesSub — via
 // [events.BoundSecuritySubscribeMiddleware], whose Fn is EMBEDDED AT
-// CONSTRUCTION (docs/roadmap/bound-middleware-split.md's events/
+// CONSTRUCTION (docs/design/d-0003-codec-declared-middlewares.md's Addendum 7's events/
 // BoundSubscribeMiddleware class). fn is supplied by the CALLER (see
 // demo_granted_scopes_context_field.go, which passes
 // handlers.VerifyAPIKeyGS) rather than being a package-level value
@@ -84,8 +84,8 @@ var GrantedScopesChannel = events.NewChannel[SensorReading](
 // (see demo_granted_scopes_context_field.go), NOT via .Use(): a
 // [events.BoundSubscribeMiddleware] value deliberately does NOT satisfy
 // .Use()'s accepted [middleware.RouteMiddleware] interface — only
-// [Subscriber.SubscribeBoundMW] accepts it (docs/roadmap/
-// bound-middleware-split.md's events/BoundSubscribeMiddleware class).
+// [Subscriber.SubscribeBoundMW] accepts it (docs/design/d-0003-codec-
+// declared-middlewares.md's Addendum 7, events/BoundSubscribeMiddleware class).
 var GrantedScopesSub = GrantedScopesChannel.WithSubscribe(events.Subscribe{
 	Summary:  "GrantedScopes + ContextField demo subscribe",
 	Security: []route.SecurityRequirement{route.Require("apiKeyGS", "read:sensors")},

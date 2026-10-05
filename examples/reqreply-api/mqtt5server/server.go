@@ -93,7 +93,7 @@ func Build() (*Built, error) {
 	}
 	// SecuredComputeRoute/GlobalOnlyComputeRoute now declare+implement
 	// security via .Use(mw.WithReceive(fn)) (reusable class, Phase C of
-	// docs/roadmap/bound-middleware-split.md) — REPLACES the OLD
+	// docs/design/d-0003-codec-declared-middlewares.md's Addendum 7) — REPLACES the OLD
 	// imperative ServeOptions.SecurityFunc mechanism entirely (removed,
 	// breaking change). A paired implementation is now REQUIRED for
 	// every route with a non-empty effective security requirement —
@@ -117,6 +117,18 @@ func Build() (*Built, error) {
 		WithHandler(handlers.Add).
 		Register(server)
 	if err != nil {
+		return nil, err
+	}
+	// StackedDemoRoute attaches BOTH the reusable class ("bearerAuth",
+	// property-decoded) AND the bound class ("oauth2Compute", reused
+	// UNCHANGED from OAuthComputeRoute's own zeromq attachment) on ONE
+	// route — different scheme names, so no DuplicateMiddlewareNameError
+	// (docs/design/d-0003-codec-declared-middlewares.md's Addendum 7's Final Phase demo).
+	if _, err := routes.StackedDemoRoute.
+		Use(routes.BearerAuthMw.WithReceive(handlers.VerifyBearer)).
+		HandleBoundMW(routes.NewOAuthMwReqreply(handlers.VerifyOAuthComputeZeroMQ)).
+		WithHandler(handlers.AddOAuth).
+		Register(server); err != nil {
 		return nil, err
 	}
 	// HeaderParamComputeRoute demonstrates Phase 1b — NO .HandleMW()

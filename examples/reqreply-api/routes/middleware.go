@@ -19,7 +19,7 @@ var BearerCodec = codex.String().Refine(validate.NonEmptyString)
 // BearerAuthIn carries the raw "Authorization" MQTT5 User Property value
 // ("Bearer <token>"), merge-field-decoded via WithRequestProperty below —
 // REPLACES the OLD legacy-shaped (raw *pahomqtt5.Publish-reading) paired
-// Fn permanently closed by docs/roadmap/bound-middleware-split.md's
+// Fn permanently closed by docs/design/d-0003-codec-declared-middlewares.md's Addendum 7's
 // Phase C. The "Bearer " prefix is trimmed/added by each attachment's
 // OWN WithReceive/WithSend Fn (not the merge-field codec itself) —
 // mirrors handlers.VerifyBearer's existing trim logic, unchanged in

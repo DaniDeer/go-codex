@@ -209,7 +209,7 @@ is NOT optional, it's the same baseline every other REST/reqreply
 adapter already provides.
 
 **Cross-reference, sequencing-sensitive (added during a later design
-review)**: [`docs/roadmap/bound-middleware-split.md`](bound-middleware-split.md)
+review)**: [`docs/design/d-0003-codec-declared-middlewares.md's Addendum 7`](../design/d-0003-codec-declared-middlewares.md)
 REMOVES the legacy/raw-adapter Security-pairing mode this section's
 "paired-security-Fn shape check" wording refers to —
 `validateImplementationShapesReflect`'s job (checking a Security-paired
@@ -223,18 +223,20 @@ current bound-shape-detection mechanism does today — so the reflection
 APPROACH sketched above remains structurally valid. Only the
 DESCRIPTION above (and whatever `adapters/zeromqrest/transport.go` is
 eventually written against) needs to match whichever mechanism is
-CURRENT at implementation time:
-- If `bound-middleware-split` ships FIRST: update this section's
-  "paired-security-Fn shape check" wording to describe dispatching
-  against `BoundMiddleware`-populated fields instead, and implement
-  `adapters/zeromqrest/transport.go` against the NEW mechanism directly
-  — do not implement a mirror of the (by-then-removed) reflection-based
-  Security-pairing path.
-- If `zeromq-rest-adapter` ships FIRST: its implementation will
-  naturally mirror TODAY's mechanism (the only one that exists yet) —
-  add `adapters/zeromqrest/transport.go` (and its tests) to
-  `bound-middleware-split.md`'s own "Files to create/modify" migration
-  list when that doc is implemented later.
+CURRENT at implementation time.
+
+**Resolution (the sequencing question above is now settled)**: the
+bound-middleware-split redesign SHIPPED first (across `api/rest`,
+`api/events`, `api/reqreply`) — `adapters/zeromqrest` has NOT been
+implemented yet. This section's "paired-security-Fn shape check"
+wording is therefore ALREADY STALE and must be updated, as part of this
+adapter's own implementation, to describe dispatching against
+`BoundMiddleware`-populated `MiddlewareHandlers`/`Implementations`
+fields instead (see D-0003's Addendum 7 for the current mechanism) —
+implement `adapters/zeromqrest/transport.go` directly against this
+current mechanism; do NOT implement a mirror of the removed
+reflection-based Security-pairing path this section originally
+described.
 
 **Tier 2 coverage-check presence test, using the capability doc's newly
 added accessors** (`rv.MethodByName("CookieParamNames").Call(nil)`,

@@ -425,7 +425,7 @@ type middlewareSpecContribution struct {
 // point for call-site clarity/symmetry with the reusable class's own
 // applyAgnosticRoute call to specContributionOf directly, even though it
 // is now a plain passthrough: it used to ALSO compute a dualAttached
-// flag for D7's (now-deleted, docs/roadmap/bound-middleware-split.md)
+// flag for D7's (now-deleted, docs/design/d-0003-codec-declared-middlewares.md's Addendum 7)
 // ambiguous-dual-attachment check, which is structurally impossible
 // since BoundMiddleware/BoundClientMiddleware are different Go types
 // from Middleware and can never carry a WithReceive/WithSend Fn.

@@ -113,7 +113,7 @@ func buildServerImplementation(mw middleware.RouteMiddleware, fn any) middleware
 // NOTE: isBoundHandleMWShape/isBoundClientMWShape (the reflection-based
 // Fn-shape detectors HandleMW/ClientMW used to use to silently promote a
 // codec-backed [Middleware][In, Out] to the route-BOUND dispatch path)
-// were REMOVED as part of docs/roadmap/bound-middleware-split.md — the
+// were REMOVED as part of docs/design/d-0003-codec-declared-middlewares.md's Addendum 7 — the
 // route-BOUND case is now ALWAYS explicit, via the dedicated
 // [BoundMiddleware][Req, In, Out] type (see bound_middleware.go) and
 // [Route.HandleBoundMW]/[Route.ClientBoundMW], never Fn-shape guessing.
@@ -123,7 +123,7 @@ func buildServerImplementation(mw middleware.RouteMiddleware, fn any) middleware
 // [Middleware][In, Out] or [BoundMiddleware][Req, In, Out] (via
 // [MiddlewareMisattachedError] — those attach ONLY via plain .Use() and
 // [Route.HandleBoundMW] respectively, never HandleMW; see
-// docs/roadmap/bound-middleware-split.md):
+// docs/design/d-0003-codec-declared-middlewares.md's Addendum 7):
 //   - a legacy [middleware.Middleware] (or nil): UNPAIRED/PAIRED exactly
 //     as before — fn is matched against a PREVIOUSLY-.Use()'d security
 //     declaration when mw.Security != nil (mw being the SAME
@@ -395,7 +395,7 @@ func headerParamProperty(name, description string, codec *codex.Codec[string]) s
 // HandleBoundMW/ClientBoundMW/.Use() attachments) — returns
 // [DuplicateMiddlewareNameError] on the first repeat encountered. D7 (the
 // ambiguous-dual-attachment check) is GONE — structurally impossible
-// since docs/roadmap/bound-middleware-split.md: a codec-backed
+// since docs/design/d-0003-codec-declared-middlewares.md's Addendum 7: a codec-backed
 // [Middleware][In, Out] can only ever be attached via .Use() now (the
 // bound attachment point is a SEPARATE, distinct type,
 // [BoundMiddleware]/[BoundClientMiddleware] — see

@@ -44,7 +44,25 @@
 > generalized `SecurityMiddleware[In,Out]`, its fully-duplex
 > `ContextField` wiring, `Server.AddConnectSecurityScheme`, and a
 > confirmed cross-package `.Use()`+bound-`HandleMW` gap shared with
-> `api/rest` (tracked, not yet fixed).
+> `api/rest` (tracked at the time, FIXED by Addendum 7 below — see there).
+>
+> **Addendum 7 below REPLACES the reflection-based bound-attachment
+> mechanism Addenda 4/5/6 each describe, across ALL 3 APIs** — the SAME
+> `Middleware[In,Out]` type serving both the agnostic AND bound roles,
+> discriminated via `isBoundHandleMWShape`-style Fn-shape reflection, is
+> SUPERSEDED by two explicit, compile-time-distinct types per package
+> (the reusable `Middleware[In,Out]`, UNCHANGED, `.Use()`-only; a NEW
+> `BoundMiddleware`/`BoundSubscribeMiddleware`/`BoundPublishMiddleware`
+> family, Fn embedded at construction, attached via a dedicated method).
+> This ALSO fixes Addendum 6's own tracked `.Use()`+bound gap
+> (`DuplicateMiddlewareNameError`) — now structurally impossible, since
+> neither class can satisfy the other's attach-interface. **D7 (the
+> `AmbiguousMiddlewareAttachmentError` design decision referenced in the
+> status line above) is DELETED outright by Addendum 7, not merely
+> "shipped"** — it is now structurally unreachable, not a check that
+> still runs. Every `isBoundHandleMWShape`/`isBoundClientMWShape`/
+> `isBoundSubscribeMWShape`/`isBoundPublishMWShape` mention in Addenda
+> 4/5/6 below is HISTORICAL — see Addendum 7 for the current mechanism.
 >
 > **Forward-looking note (not a status change):**
 > [Feature](d-0006-protocol-native-capabilities.md) (a broader
@@ -2431,3 +2449,199 @@ convention); the real motivating examples
 (`examples/reqreply-api/routes/middleware.go`) were migrated onto the
 generalized `SecurityMiddleware[In, Out]` signature as part of pc-11,
 not deferred to last.
+
+## Addendum 7: splitting `Middleware[In,Out]`'s reusable/bound duality into two explicit, compile-time-distinct types — removing `isBoundHandleMWShape`-style reflection detection entirely (all 3 APIs)
+
+Absorbs `docs/design/d-0003-codec-declared-middlewares.md's Addendum 7`'s full design and
+rollout, folded in per this doc's own established "promote once shipped,
+retire the roadmap doc" convention. Addenda 4/5/6 (above) each documented
+a SINGLE `Middleware[In,Out]` type per package serving TWO roles —
+route/channel-AGNOSTIC (attached via `.Use()`, reusable across any
+number of routes/channels) and route/channel-BOUND (the SAME type,
+`fn`'s shape REFLECTED to detect which role applied, e.g.
+`isBoundHandleMWShape[Req]`/`isBoundClientMWShape[Req]`/
+`isBoundSubscribeMWShape`/`isBoundPublishMWShape`). This Addendum
+replaces that ENTIRE reflection-based mechanism with two separate,
+explicit Go types — see [D-0007](d-0007-declarative-middleware-layering.md)'s
+own SUPERSEDED callout (added alongside this Addendum) for the full
+historical narrative of the bugs that motivated this.
+
+### What changed
+
+The reusable class, `Middleware[In, Out]`, is UNCHANGED in public surface
+(`Declaration[In,Out]` + merge-field vocabulary +
+`WithReceive`/`WithSend`, attached via `.Use(...)` only) but internally
+simplified: `applyBoundRoute`/`applyBoundClientRoute`/
+`applyBoundSubscriber`/`applyBoundPublisher` methods and ALL
+`isBound*Shape` reflection detectors are REMOVED outright from all 3
+packages — confirmed via repo-wide grep, zero live code remains (only
+historical "NOTE: removed" doc comments). `HandleMW`/`ClientMW`/
+`SubscribeMW`/`PublishMW` now ACTIVELY REJECT a codec-backed
+`Middleware[In,Out]` value with a NEW `MiddlewareMisattachedError`,
+regardless of the paired `fn`'s shape — no more silent promotion to a
+different dispatch path based on guessing `fn`'s signature.
+
+A NEW, separate type family replaces the bound role, Fn embedded AT
+CONSTRUCTION (never supplied separately later):
+
+- **`api/rest`**: `BoundMiddleware[Req,In,Out]`/
+  `BoundClientMiddleware[Req,In,Out]`, via `NewBoundMiddleware`/
+  `BoundSecurityMiddleware`/`NewBoundClientMiddleware`/
+  `BoundSecurityClientMiddleware`, attached via `Route.HandleBoundMW`/
+  `Route.ClientBoundMW` (AND `SSERoute`'s own copies — `SSERoute` has its
+  OWN `HandleMW`/`ClientMW` methods, textually distinct from `Route`'s,
+  needing the identical treatment).
+- **`api/events`**: `BoundSubscribeMiddleware[T,In,Out]`/
+  `BoundPublishMiddleware[T,In,Out]`, via
+  `BoundSecuritySubscribeMiddleware`/similar, attached via
+  `Subscriber.SubscribeBoundMW`/`Publisher.PublishBoundMW`.
+- **`api/reqreply`**: `BoundMiddleware[Req,In,Out]`/
+  `BoundClientMiddleware[Req,In,Out]` (mirrors REST almost exactly,
+  since reqreply's `Route[Req,Resp]` carries BOTH server/client roles on
+  ONE shared value, like REST — NOT events' independent
+  Subscriber/Publisher split), attached via `Route.HandleBoundMW`/
+  `Route.ClientBoundMW`.
+
+**INTERNAL layout decision, found significant during implementation**:
+each bound type holds a NAMED (never embedded/anonymous) `mw
+Middleware[In,Out]` field. Embedding was the naive first instinct but is
+WRONG — Go promotes ALL of an embedded field's methods, including
+`Middleware`'s own `applyAgnosticRoute`, which would make the bound type
+ALSO (accidentally) satisfy the reusable class's own attach-interface,
+reintroducing the exact ambiguity this split exists to eliminate. A
+named field avoids this entirely while still letting the bound type's 12
+merge-field builder methods forward one-line onto the named field's own
+existing method, and letting `applyBoundRoute`/etc. call the EXISTING 9
+`transform.go` dispatch helpers UNCHANGED (passing `bm.mw`) — zero
+duplication of those helpers across the split.
+
+**A second significant internal-design bug found only via a FAILING
+TEST, not via 3 rounds of doc review**: the naive
+`boundContributor[Req] interface { applyBoundRoute(rb *routeBuilder) }`
+sketch is VACUOUS — its method signature never mentions `Req` at all, so
+EVERY `BoundMiddleware[X,...]` would satisfy `boundContributor[Y]` for
+ANY X,Y, completely defeating the Req-mismatch detection the whole
+mechanism exists to provide. Fixed by adding a deliberate, never-called
+`boundReqWitness(Req)` method to both the interface and every concrete
+bound type, forcing Go's interface satisfaction to actually discriminate
+on the generic parameter — applied retroactively to REST (where it was
+found), then proactively from the FIRST commit for events' and
+reqreply's own bound types.
+
+### New structured errors
+
+`BoundMiddlewareReqMismatchError{Route, Got}` (nil-`Got`-guarded
+`LogValue()` — found via a repro, `reflect.TypeOf(nil)` panics on
+`.String()` if not guarded) and `MiddlewareMisattachedError{Route, Name}`
+— both construction-time (`Register`/`ClientHandle`/`Handle`), never
+reaching Observer/ErrorPattern (confirmed structurally impossible to
+reach Serve-time dispatch). A `routeBuilder`/`Subscriber`/`Publisher`-
+level `buildErr error` field (new, since no prior mechanism stashed a
+configuration mistake for later surfacing this way) carries the error
+from the opt that detected it through to `Register`'s return — AND,
+confirmed as a REAL bug found in REST first (via a repro, not
+inspection) and fixed PROACTIVELY for reqreply, `ClientHandle()`'s own
+infallible-by-design signature (no error return, REST/reqreply only —
+events' `Subscriber.Handle`/`Publisher.Handle` are already fallible) now
+PANICS on a non-nil `buildErr` rather than silently swallowing it —
+reusing the exact `FormatOptError` panic convention already present.
+
+### Confirmed, via code: the legacy bare `middleware.Middleware{Name,Security}` type's raw-adapter-Fn PAIRING was deliberately KEPT, not dropped — do not confuse this with the removed reflection-detection mechanism
+
+`HandleMW`/`ClientMW`/`SubscribeMW`/`PublishMW` reject ONLY a
+codec-backed `Middleware[In,Out]`/`BoundMiddleware`/
+`BoundClientMiddleware` value (via the `routeMiddlewareContributor`-style
+interface check) — a BARE `middleware.Middleware{Name,Security}` value
+PAIRED with a raw-transport-shaped Fn (e.g. `func(ctx,
+*pahomqtt5.Publish, []route.SecurityRequirement) (map[string][]string,
+error)`) continues to be fully accepted and dispatched, UNCHANGED, via
+`buildServerImplementation`/`buildClientImplementation`-equivalent
+helpers — confirmed via this project's own preserved, passing legacy
+tests across all 3 patterns (`TestErrorPattern_SecurityMiddlewareFn_
+Matched_Publishes_ReqReply`, `TestErrorChannel_SecurityImplFn_Matched_
+Publishes_ViaSubscribeHandle`, etc.). This is the ONE remaining tool for
+a genuinely `Req`/`T`-type-generic Fn (reused across many different
+route/channel `Req`/`T` types via a free function, REST's
+`ScopesImpl[Req any]`-style) or a scheme shared across multiple
+patterns — kept permanently, by design, not an oversight. (An earlier
+draft of `docs/design/d-0003-codec-declared-middlewares.md's Addendum 7` itself overclaimed this
+closure as unconditional in two places; corrected there once the
+discrepancy against `HandleMW`'s own code/doc comment was found.)
+
+### Cross-pattern consistency fix found and shipped during this rollout: Security-carrying Fn failures now uniformly wrap as `SecurityError`, not `MiddlewareError`, across ALL 3 patterns' adapters
+
+REST's adapters (`nethttp`/`chi`) already had a deliberate, TESTED
+special case: a FAILING `MiddlewareHandler` whose own `Satisfies` is
+non-empty (Security-carrying) wraps its business error as
+`rest.SecurityError` (not the generic `rest.MiddlewareError`), via an
+`isSecuritySatisfyingHandler` helper, and records a `SecurityObserver`
+rejection. Confirmed via direct code comparison: BOTH `api/events` (all
+3 adapters: `mqtt`, `mqtt5`, `zeromq`) and `api/reqreply` (both adapters:
+`mqtt5`, `zeromq`, including zeromq's REQ/REP AND ROUTER/DEALER
+sub-variants) LACKED this special case entirely — always wrapping as the
+generic `MiddlewareError`, with no `RecordSecurityRejection` call for
+this specific failure mode. `examples/events-api`'s own shipped code had
+already discovered and documented this exact gap (a code comment
+explicitly described working around it via a "zero granted scopes"
+trick instead of a direct Fn error) — but the dispatch code itself was
+never fixed until this rollout. Fixed by adding
+`reqreply.IsSecuritySatisfyingHandler`/`events.IsSecuritySatisfyingHandler`
+(centralized per-package helpers, mirroring REST's own per-adapter
+`isSecuritySatisfyingHandler`) and wiring them into every adapter's
+dispatch error-handling (1 call site each for `mqtt`/`mqtt5`/events'
+`zeromq`, reqreply's `mqtt5`; 2 call sites for reqreply's `zeromq`,
+REQ/REP + ROUTER/DEALER) — all 3 patterns' adapters now share IDENTICAL
+Security-Fn-error-wrapping behavior, each independently verified via a
+dedicated regression test per adapter (proactively, for every adapter in
+one pass, once the gap was found for one).
+
+### Confirmed, via code: `BoundClientMiddleware`/`BoundPublishMiddleware` cannot write into the request/message BODY on any transport — only derive wire-level (topic/property) values from it
+
+Found while migrating `examples/reqreply-api`'s zeromq in-payload OAuth
+credential demo: the bound CLIENT-side type's Fn
+(`func(ctx, req Req) (In, error)`) only ever produces topic/property
+VARS via `EncodeIn` — there is no mechanism, on ANY transport, for the
+returned `In` to overlay/merge into the actual outgoing `Req`'s own
+payload fields. For a transport with a genuine property/header side
+channel (mqtt5), this is sufficient — credentials travel as wire
+properties. For zeromq's in-payload model (no side channel at all, the
+credential must live ON the request's own decoded struct), there is NO
+client-side bound-middleware equivalent — the caller simply sets the
+field directly as an ordinary part of the request value passed to
+`Call()`, no middleware involved. Corrected in `docs/features/security.md`
+and in `docs/design/d-0003-codec-declared-middlewares.md's Addendum 7`'s own text (both
+previously implied a `BoundClientMiddleware` attachment was the right
+pattern here) before this doc absorbed their content.
+
+### Final adapter-parity audit (all 3 APIs, confirmed via direct code comparison, not re-assertion)
+
+- **REST** (`nethttp` vs `chi`): byte-for-byte identical dispatch logic,
+  confirmed via diff.
+- **events** (`mqtt` v3 vs `mqtt5` vs `zeromq`): all 3 dispatch
+  `MiddlewareHandlers`/`ClientMiddlewareHandlers` (bound and agnostic
+  classes indistinguishable at this layer) identically; all 3 now share
+  the SAME Security-Fn-error-wrapping fix (above), each with its own
+  regression test.
+- **reqreply** (`mqtt5` vs `zeromq`, including zeromq's REQ/REP and
+  ROUTER/DEALER sub-variants): confirmed exactly 4 top-level Serve/Call
+  implementations exist repo-wide needing this mechanism, all 4
+  consistently fixed; client-side dispatch correctly has NO
+  Security-error special case on either adapter (matches REST's/events'
+  own client-side design — the client side only ever SUPPLIES
+  credentials, never REJECTS based on them).
+- D-0006's sealed `Capability` mechanism (QoS/Retained for mqtt-family,
+  HWM/Conflate for zeromq) remains fully orthogonal and unaffected by
+  this Addendum — its own per-protocol capability-set asymmetry is
+  separately confirmed intentional, unrelated to this split.
+
+### Validation
+
+`go build ./...`/`go vet ./...`/`gofmt -l .` clean across all packages;
+`go test ./...` clean, zero failures, across every round of this
+rollout (3 implementation phases + 7 cross-phase review rounds); every
+touched example (`examples/rest-api`, `examples/events-api`,
+`examples/api-events`, `examples/reqreply-api`, plus the Security-
+specific `examples/mutable-security-keys`/`adapters-nethttp-client`/
+`adapters-sse`/`go-edge-models`) re-run end-to-end with exit 0 at each
+phase's completion, confirming real security enforcement continues to
+be exercised (rejections, scope checks, credential errors) throughout.

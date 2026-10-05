@@ -63,7 +63,7 @@ type APIKeyAuthOut struct {
 // purpose presence check — never to satisfy a DECLARED requirement like
 // this channel's `Security: []route.SecurityRequirement{route.Require(
 // "apiKeyAuth")}`, confirmed via an actual end-to-end run regression
-// during this migration (see docs/roadmap/bound-middleware-split.md).
+// during this migration (see docs/design/d-0003-codec-declared-middlewares.md's Addendum 7).
 //
 // fn is supplied by the caller (handlers.MQTTSecurityImpl/
 // MQTT5SecurityImpl/ZeromqSecurityImpl) — none of them need the *msg

@@ -51,7 +51,7 @@
 // security requirement was declared with, attached client-side) — there
 // is no per-call credential override anymore (a deliberate design
 // tradeoff: WithSend mirrors the server side's declare-then-register
-// discipline exactly, see docs/roadmap/bound-middleware-split.md). Each
+// discipline exactly, see docs/design/d-0003-codec-declared-middlewares.md's Addendum 7). Each
 // distinct credential behavior demonstrated in section 4 below builds its
 // OWN middleware/route value via a fresh securedMw.WithSend(...) call.
 //
@@ -283,7 +283,7 @@ func main() {
 	const validToken = "secret-token"
 	// authIn/authOut are the REUSABLE class's declarative replacement for
 	// the OLD raw-*http.Request-Fn pairing (permanently closed,
-	// docs/roadmap/bound-middleware-split.md) — authIn carries the raw
+	// docs/design/d-0003-codec-declared-middlewares.md's Addendum 7) — authIn carries the raw
 	// Authorization header value (merged via WithRequestHeader below);
 	// authOut carries GrantedScopes, the convention every Security Out
 	// type follows so the adapter recognizes a call as having satisfied
@@ -351,8 +351,8 @@ func main() {
 	mustServe(profileRoute.Register(b), "register getProfile")
 
 	// GET /data — secured route; the server-side enforcement Fn is
-	// EMBEDDED into securedMw itself (via WithReceive, docs/roadmap/
-	// bound-middleware-split.md) and declared+attached together in ONE
+	// EMBEDDED into securedMw itself (via WithReceive, docs/design/d-0003-
+	// codec-declared-middlewares.md's Addendum 7) and declared+attached together in ONE
 	// GetSecuredData(...) call — no separate HandleMW pairing step needed.
 	securedServerMw := securedMw.WithReceive(func(_ context.Context, in authIn) (authOut, error) {
 		token := strings.TrimPrefix(in.Authorization, "Bearer ")
@@ -731,7 +731,7 @@ func main() {
 	// WithSend(func(ctx) (authIn, error)) shape — nethttp.
 	// NewCachingCredentialFunc is tied to the OLD raw CredentialFunc shape
 	// (func(ctx, []route.SecurityRequirement) (http.Header, error)),
-	// permanently closed (docs/roadmap/bound-middleware-split.md); this
+	// permanently closed (docs/design/d-0003-codec-declared-middlewares.md's Addendum 7); this
 	// example writes its own small equivalent instead of depending on
 	// adapter-specific infrastructure built for a different Fn shape.
 	cachedCredFn, invalidateCred := cachingAuthIn(innerCredFn, time.Hour)

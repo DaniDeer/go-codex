@@ -18,7 +18,7 @@ import (
 // for middleware logic that genuinely needs to read/write the route's
 // own request struct (not just a header/cookie/query merge field), e.g.
 // an in-payload credential field on a transport with no header/property
-// side channel at all. See docs/roadmap/bound-middleware-split.md for
+// side channel at all. See docs/design/d-0003-codec-declared-middlewares.md's Addendum 7 for
 // the full design this type implements.
 //
 // Attach via [Route.HandleBoundMW]/[SSERoute.HandleBoundMW] — NEVER via
@@ -173,7 +173,7 @@ func (m BoundMiddleware[Req, In, Out]) MiddlewareName() string { return m.mw.Mid
 // buildMiddlewareHandlerAny/boundSpecContributionOf helpers with the
 // named mw field, exactly as the (now-removed) reflection-detected bound
 // case used to, back when `Middleware[In,Out]` itself carried this
-// method (see docs/roadmap/bound-middleware-split.md).
+// method (see docs/design/d-0003-codec-declared-middlewares.md's Addendum 7).
 func (m BoundMiddleware[Req, In, Out]) applyBoundRoute(rb *routeBuilder) {
 	rb.middlewareHandlers = append(rb.middlewareHandlers, buildMiddlewareHandlerAny(m.mw, m.fn))
 	rb.middlewareSpecContributions = append(rb.middlewareSpecContributions, boundSpecContributionOf(m.mw))
@@ -471,7 +471,7 @@ func (e BoundMiddlewareReqMismatchError) Error() string {
 		// the right CLASS, just the wrong Req. The wording below
 		// therefore covers BOTH possibilities rather than asserting a
 		// Req mismatch specifically (a confirmed, previously-misleading
-		// wording — see docs/roadmap/bound-middleware-split.md's review
+		// wording — see docs/design/d-0003-codec-declared-middlewares.md's Addendum 7's review
 		// findings).
 		return fmt.Sprintf("api/rest: route %q: middleware %q: not attachable via HandleBoundMW/ClientBoundMW here — either its Req type parameter doesn't match this route's own, or it isn't a BoundMiddleware/BoundClientMiddleware value at all (got %T)", e.Route, e.Name, e.Got)
 	}
@@ -483,7 +483,7 @@ func (e BoundMiddlewareReqMismatchError) LogValue() slog.Value {
 	// Got may be nil (e.g. HandleBoundMW(nil)) — reflect.TypeOf(nil)
 	// returns a nil reflect.Type, and calling .String() on it panics;
 	// confirmed via a real crash this guard fixes (see
-	// docs/roadmap/bound-middleware-split.md's review findings).
+	// docs/design/d-0003-codec-declared-middlewares.md's Addendum 7's review findings).
 	gotType := "<nil>"
 	if e.Got != nil {
 		gotType = reflect.TypeOf(e.Got).String()
@@ -505,7 +505,7 @@ func (e BoundMiddlewareReqMismatchError) LogValue() slog.Value {
 // reserved for the general-purpose (mw == nil) decorator case and the
 // bare legacy [middleware.Middleware] type — this error enforces that
 // split structurally, closing the legacy raw-adapter-Fn-pairing escape
-// hatch for good (see docs/roadmap/bound-middleware-split.md's
+// hatch for good (see docs/design/d-0003-codec-declared-middlewares.md's Addendum 7's
 // Motivation).
 type MiddlewareMisattachedError struct {
 	Route string

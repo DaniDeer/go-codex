@@ -70,7 +70,7 @@ type GetManifestReq struct {
 // GetManifestRoute does NOT attach BearerAuthDeclaration itself — same
 // rationale as GetTagsRoute (see its own doc comment): a reusable
 // Middleware[In,Out]'s Fn travels EMBEDDED in the SAME .Use() call
-// (docs/roadmap/bound-middleware-split.md), so a caller chains
+// (docs/design/d-0003-codec-declared-middlewares.md's Addendum 7), so a caller chains
 // .Use(BearerAuthDeclaration.WithSend(credentialFn)) before calling
 // .ClientHandle() to both declare the "bearerAuth" requirement AND
 // authenticate outgoing calls.

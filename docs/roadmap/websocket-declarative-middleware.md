@@ -14,7 +14,7 @@
 > [← Back to Roadmap](index.md)
 >
 > **See also**: [Declarative Middleware as Partial Route/Channel
-> Definitions](declarative-middleware-layering.md) — that doc's shared
+> Definitions](../design/d-0007-declarative-middleware-layering.md) — that doc's shared
 > `middleware.DecodeLayer`/`EncodeLayer` mechanism is specific to
 > `api/rest`/`api/events`/`api/reqreply`'s shared `Middleware[In,Out]`
 > shape, which WebSocket does not have (confirmed below) — the two docs
@@ -101,7 +101,7 @@ none evaluated in depth yet:
   WebSocket AT ALL. Different category of question.
 
 **If this idea is ever greenlit, start from the RESOLVED reference
-design, don't reinvent it**: [`docs/roadmap/bound-middleware-split.md`](bound-middleware-split.md)
+design, don't reinvent it**: [`docs/design/d-0003-codec-declared-middlewares.md's Addendum 7`](../design/d-0003-codec-declared-middlewares.md)
 collapses `api/rest`/`api/events`/`api/reqreply`'s ORIGINAL single
 `Middleware[In,Out]` type (which entangled a reusable/declarative role
 with a route-bound role, distinguished only via runtime Fn-shape

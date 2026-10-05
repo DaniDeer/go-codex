@@ -185,7 +185,7 @@ func TestRegister_DuplicateMiddlewareNameRejected(t *testing.T) {
 }
 
 func TestRegister_CodecBackedMiddlewarePassedToHandleMW_Rejected(t *testing.T) {
-	// docs/roadmap/bound-middleware-split.md: a codec-backed Middleware[In,Out]
+	// docs/design/d-0003-codec-declared-middlewares.md's Addendum 7: a codec-backed Middleware[In,Out]
 	// (reusable-ONLY, regardless of whether it's also bundled via
 	// WithReceive) can no longer be attached via HandleMW at all — only
 	// .Use() (reusable) or HandleBoundMW (bound, a DIFFERENT type) work.

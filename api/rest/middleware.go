@@ -121,7 +121,7 @@ type routeMiddlewareContributor interface {
 // no Fn bundled at all, e.g. documenting an external requirement this
 // codebase never enforces — contributes spec but has no Fn to dispatch
 // here; this is a legitimate, non-ambiguous case, not a rejected one —
-// see docs/roadmap/bound-middleware-split.md's Motivation).
+// see docs/design/d-0003-codec-declared-middlewares.md's Addendum 7's Motivation).
 type routeMiddlewareOpt struct{ mws []middleware.RouteMiddleware }
 
 func (o routeMiddlewareOpt) applyRoute(rb *routeBuilder) {
@@ -263,7 +263,7 @@ func buildServerImplementation(mw middleware.RouteMiddleware, fn any) middleware
 // NOTE: isBoundHandleMWShape/isBoundClientMWShape (the reflection-based
 // Fn-shape detectors HandleMW/ClientMW used to use to silently promote a
 // codec-backed [Middleware][In, Out] to the route-BOUND dispatch path)
-// were REMOVED as part of docs/roadmap/bound-middleware-split.md — the
+// were REMOVED as part of docs/design/d-0003-codec-declared-middlewares.md's Addendum 7 — the
 // route/channel-BOUND case is now ALWAYS explicit, via the dedicated
 // [BoundMiddleware][Req, In, Out] type (see bound_middleware.go) and
 // [Route.HandleBoundMW]/[Route.ClientBoundMW], never Fn-shape guessing.
@@ -273,7 +273,7 @@ func buildServerImplementation(mw middleware.RouteMiddleware, fn any) middleware
 // [Middleware][In, Out] or [BoundMiddleware][Req, In, Out]/
 // [BoundClientMiddleware][Req, In, Out] (via [MiddlewareMisattachedError]
 // — those attach ONLY via plain .Use() and [Route.HandleBoundMW]
-// respectively, never HandleMW; see docs/roadmap/bound-middleware-split.md):
+// respectively, never HandleMW; see docs/design/d-0003-codec-declared-middlewares.md's Addendum 7):
 //   - a legacy [middleware.Middleware] (or nil): UNPAIRED/PAIRED exactly
 //     as before — fn is matched against a PREVIOUSLY-.Use()'d security
 //     declaration when mw.Security != nil (mw being the SAME
@@ -494,7 +494,7 @@ func applyMiddlewareDeclarations(rb *routeBuilder, routeLabel string) error {
 // satisfies the bound attachment path's interface at all, and
 // [BoundMiddleware][Req, In, Out] (the ONLY bound-attachable type) has no
 // .Use()-attachable WithReceive/WithSend surface — the two cannot be the
-// same Go value. See docs/roadmap/bound-middleware-split.md.
+// same Go value. See docs/design/d-0003-codec-declared-middlewares.md's Addendum 7.
 func checkMiddlewareNameUniquenessAndAttachment(rb *routeBuilder, routeLabel string) error {
 	seen := make(map[string]bool, len(rb.middlewareSpecContributions))
 	for _, mw := range rb.middlewareSpecContributions {
@@ -615,7 +615,7 @@ func sameScopeSet(a, b []string) bool {
 // [middleware.ServerImplementation] in impls OR a [MiddlewareHandler] in
 // handlers (a [BoundMiddleware] attached via [Route.HandleBoundMW]
 // populates handlers, not impls, so BOTH lists must be checked for
-// coverage to mean what it says — see docs/roadmap/bound-middleware-split.md)
+// coverage to mean what it says — see docs/design/d-0003-codec-declared-middlewares.md's Addendum 7)
 // — whose Satisfies names it, otherwise the route would enforce nothing
 // at runtime despite declaring a scheme in its spec. Returns
 // [MissingSecurityMiddlewareError] on the first uncovered scheme found.

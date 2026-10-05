@@ -71,8 +71,8 @@ func Build(obs stats.Observer) (*Built, error) {
 		return nil, err
 	}
 	// OAuthComputeRoute demonstrates zeromq's reqreply in-payload
-	// credential model — the BOUND class (docs/roadmap/
-	// bound-middleware-split.md's Phase C), since zeromq has no
+	// credential model — the BOUND class (docs/design/d-0003-codec-
+	// declared-middlewares.md's Addendum 7, Phase C), since zeromq has no
 	// property/header side channel to carry a credential merge field —
 	// AND the oauth2Compute scheme ALSO declared for REST from the SAME
 	// shared route.SecurityScheme config — see Demo 9

@@ -501,7 +501,7 @@ func demoErrorChannelDeadLetterFallback(ctx context.Context) {
 // routes.SecuredReadingsChannel's declared ErrorChannel BEFORE the
 // subscribe handler ever runs. A Fn's OWN business error (returned
 // directly) would instead surface as events.MiddlewareError
-// (docs/roadmap/bound-middleware-split.md: a codec-backed middleware's
+// (docs/design/d-0003-codec-declared-middlewares.md's Addendum 7: a codec-backed middleware's
 // Fn failure is classified generically, regardless of whether it
 // carries a Security declaration) — NOT matched by this ErrorChannel's
 // declared E=events.SecurityError, which is why this demo rejects via a

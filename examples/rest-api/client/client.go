@@ -3,7 +3,7 @@
 // declarations chiserver/ and nethttpserver/ assemble server-side:
 // per-identity credential-providing BoundClientMiddleware variants
 // (mirrors examples/adapters-sse's securedClientRoute/securedBase
-// pattern, docs/roadmap/bound-middleware-split.md), the SAME
+// pattern, docs/design/d-0003-codec-declared-middlewares.md's Addendum 7), the SAME
 // general-purpose timing middleware shown server-side (attached via
 // ClientMW instead of HandleMW), and a rest.Client attached via
 // Client.Attach(nethttp.NewClientTransport(...)) — deliberately the SAME adapters/nethttp client used to
@@ -117,8 +117,8 @@ var AdminActionRouteAsAdmin = routes.AdminActionRoute.
 // ── GrantedScopes + ContextField demo client variants ───────────────────
 //
 // These supply routes.AuthIn via routes.BoundScopeClientMW's sibling,
-// routes.GrantedScopesComputeClientMW (docs/roadmap/
-// bound-middleware-split.md) — the bound ClientBoundMW shape
+// routes.GrantedScopesComputeClientMW (docs/design/d-0003-codec-
+// declared-middlewares.md's Addendum 7) — the bound ClientBoundMW shape
 // func(ctx, req Req) (In, error), dispatched through the SAME merge-field
 // mechanism AliceCredFn/AdminCredFn above use, instead of hand-building
 // headers.
@@ -145,3 +145,18 @@ var ComputeGSRouteWithWriteScope = routes.ComputeGSRoute.
 // rejects an insufficient GRANT, not just an invalid credential.
 var ComputeGSRouteWithWrongScope = routes.ComputeGSRoute.
 	ClientBoundMW(routes.GrantedScopesComputeClientMW(computeGSCredFn("valid-readonly-token")))
+
+// ── Bound-middleware-split demo (docs/design/d-0003-codec-declared-middlewares.md's Addendum 7) ──
+
+// ReusableAloneRoute attaches ONLY the reusable class (.Use()) — no
+// credential middleware at all, since routes.ReusableAloneRoute declares
+// no security requirement.
+var ReusableAloneRoute = routes.ReusableAloneRoute.Use(routes.ReusableRequestIDMw)
+
+// StackedDemoRouteAsAlice attaches BOTH classes together: .Use(reusable)
+// (generic request-ID logging) then .ClientBoundMW(bound) (supplies the
+// "profile"-scoped credential) — Alice has "profile", so this is expected
+// to succeed.
+var StackedDemoRouteAsAlice = routes.StackedDemoRoute.
+	Use(routes.ReusableRequestIDMw).
+	ClientBoundMW(routes.BoundScopeClientMW[routes.StackedDemoReq](routes.ProfileScopes, aliceCredFn[routes.StackedDemoReq]))

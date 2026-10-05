@@ -312,7 +312,7 @@ func authenticate(ctx context.Context, httpClient *http.Client, registryHost, re
 // error). No Req type parameter at all anymore: the OLD bound-ClientMW
 // shape (func(ctx, Req) (In, error)) discarded Req entirely in its body
 // (confirmed never referenced), so the REUSABLE class
-// (docs/roadmap/bound-middleware-split.md) is the correct, simpler fit —
+// (docs/design/d-0003-codec-declared-middlewares.md's Addendum 7) is the correct, simpler fit —
 // the SAME credentialFunc value attaches to GetTagsRoute AND
 // GetManifestRoute unconditionally, with zero generic instantiation
 // needed at either call site.
@@ -415,7 +415,7 @@ func newAuthCredentialFunc(httpClient *http.Client, registryHost, repository str
 // value — basicAuthMw's real (non-struct{}) In type, declaratively merged
 // into the request header via WithRequestHeader below. Replaces the OLD
 // legacy raw-adapter-Fn pairing (returning an http.Header map directly),
-// now permanently closed — see docs/roadmap/bound-middleware-split.md.
+// now permanently closed — see docs/design/d-0003-codec-declared-middlewares.md's Addendum 7.
 type basicAuthIn struct{ Authorization string }
 
 // basicAuthMw is the DECLARE-TIME codec-backed middleware for

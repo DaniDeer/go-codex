@@ -25,7 +25,7 @@
 > [← Back to Roadmap](index.md)
 >
 > **See also**: [Declarative Middleware as Partial Route/Channel
-> Definitions](declarative-middleware-layering.md) — proposes a shared
+> Definitions](../design/d-0007-declarative-middleware-layering.md) — proposes a shared
 > `middleware.DecodeLayer`/`EncodeLayer` mechanism for
 > `api/rest`/`api/events`/`api/reqreply`'s EXISTING two-phase
 > declare-dispatch `Middleware[In,Out]` shape. Independent of this doc:
@@ -168,7 +168,7 @@ IF a bound/paired variant is EVER added to any of these types in the
 future (e.g. a `ToolMiddleware` needing access to the specific Tool's
 own input struct, mirroring a route-bound need), it should NOT embed
 `Middleware[In,Out]`-equivalent state anonymously — see
-[`docs/roadmap/bound-middleware-split.md`](bound-middleware-split.md)'s
+[`docs/design/d-0003-codec-declared-middlewares.md's Addendum 7`](../design/d-0003-codec-declared-middlewares.md)'s
 resolved internal-layout decision: anonymous embedding promotes ALL of
 the embedded type's methods, which would silently make the NEW bound
 type ALSO satisfy whatever interface its agnostic sibling uses for

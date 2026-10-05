@@ -19,7 +19,7 @@ import (
 // OWN half, separately. For the 6 "bearerAuth"-secured routes below, the
 // security declaration ITSELF also moves to those per-side attachment
 // sites (via [routes.BoundScopeServerMW]/[routes.BoundScopeClientMW],
-// docs/roadmap/bound-middleware-split.md) rather than living here — a
+// docs/design/d-0003-codec-declared-middlewares.md's Addendum 7) rather than living here — a
 // [rest.BoundMiddleware]'s Fn is embedded at construction, so "declare
 // here, implement there" (this file's own stated split) requires the
 // bound attach path, not .Use(). chiserver/ and nethttpserver/ each

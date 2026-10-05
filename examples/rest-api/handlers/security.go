@@ -44,8 +44,8 @@ func recordRejection(ctx context.Context, path string) {
 // [routes.BoundScopeServerMW] expects — generic over the attaching
 // route's own Req type, which this Fn discards entirely (the scope check
 // never needs to read the request body/path/query, only the decoded
-// credential). One instantiation per route (docs/roadmap/
-// bound-middleware-split.md).
+// credential). One instantiation per route (docs/design/d-0003-codec-
+// declared-middlewares.md's Addendum 7).
 func ScopesBoundFn[Req any](path string) func(ctx context.Context, req *Req, in routes.AuthIn) (routes.AuthOut, error) {
 	return func(ctx context.Context, _ *Req, in routes.AuthIn) (routes.AuthOut, error) {
 		return VerifyScopes(ctx, path, in)

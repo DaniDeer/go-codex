@@ -18,7 +18,7 @@ import (
 // mqtt5adapter.CallOptions.CredentialFunc entirely (Phase 1 of
 // docs/design/d-0004-reqreply-workflow-simplification.md's Addendum,
 // BREAKING removal) and the OLD legacy-shaped paired ClientMW Fn
-// permanently closed by docs/roadmap/bound-middleware-split.md's Phase
+// permanently closed by docs/design/d-0003-codec-declared-middlewares.md's Addendum 7's Phase
 // C. Two distinct Fns (rather than one parameterized function) mirror
 // examples/rest-api/client/client.go's AliceCredFn/AdminCredFn pattern —
 // each demonstrates a DIFFERENT credential outcome when attached via
@@ -43,7 +43,7 @@ func malformedBearerCredFn(context.Context) (routes.BearerAuthIn, error) {
 //
 // NOTE on a confirmed behavioral change from the OLD legacy
 // clientImpls-paired mechanism (permanently closed by
-// docs/roadmap/bound-middleware-split.md's Phase C): the OLD mechanism's
+// docs/design/d-0003-codec-declared-middlewares.md's Addendum 7's Phase C): the OLD mechanism's
 // credential-format pre-check ran CLIENT-SIDE (via
 // mergeCredentialUserProperties/validateSecurityCredentials,
 // request never published) — a capability that was NEVER available to

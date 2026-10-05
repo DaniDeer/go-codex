@@ -29,7 +29,7 @@
 //     [rest.Middleware.WithSend] client-side (supplies it) — the clearest
 //     illustration of this example's "declare once, fulfill from both
 //     roles" promise applied to security specifically, not just
-//     format/observability (docs/roadmap/bound-middleware-split.md).
+//     format/observability (docs/design/d-0003-codec-declared-middlewares.md's Addendum 7).
 package main
 
 import (
@@ -374,7 +374,7 @@ func main() {
 	// ONE rest.SecurityMiddleware declaration (securedMw — name, scheme,
 	// scopes, and the Authorization merge field) is built ONCE, then
 	// fulfilled independently on each role via [rest.Middleware.WithReceive]/
-	// [rest.Middleware.WithSend] (docs/roadmap/bound-middleware-split.md) —
+	// [rest.Middleware.WithSend] (docs/design/d-0003-codec-declared-middlewares.md's Addendum 7) —
 	// each produces its OWN middleware VALUE (server/client can't share one
 	// Go value, since a middleware's Fn is baked in at construction), but
 	// both share the SAME underlying name/scheme/merge-field spec:
@@ -621,7 +621,7 @@ func main() {
 	// server-registered route above — its securedClientMw (WithSend)
 	// supplies the SAME token secureServerMw (WithReceive) verifies
 	// server-side, both built from the SAME securedMw declaration
-	// (docs/roadmap/bound-middleware-split.md). client.Consume fully
+	// (docs/design/d-0003-codec-declared-middlewares.md's Addendum 7). client.Consume fully
 	// supports a credential-providing WithSend middleware (see
 	// docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 4).
 	consumeN("client.Consume /sse/secured (bearer credential supplied via WithSend)", 3, func(ctx context.Context, cancel context.CancelFunc) error {

@@ -15,7 +15,7 @@ var ValidAPIKeys = map[string]bool{
 }
 
 // MQTTSecurityImpl is the mqtt v3-shaped, channel-BOUND security Fn
-// (routes.NewAPIKeyAuthMW — docs/roadmap/bound-middleware-split.md),
+// (routes.NewAPIKeyAuthMW — docs/design/d-0003-codec-declared-middlewares.md's Addendum 7),
 // returned as a closure since MQTT 3.1.1 carries no per-message
 // credential metadata at all (no property axis to decode
 // routes.APIKeyAuthIn.Key from), so credential is captured in a closure

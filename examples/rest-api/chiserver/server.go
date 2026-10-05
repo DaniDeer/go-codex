@@ -6,6 +6,7 @@
 package chiserver
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -137,6 +138,36 @@ func Build(store *handlers.UserStore, obs stats.Observer, logger *slog.Logger, a
 		handlers.MakeComputeGSHandler(),
 	).HandleBoundMW(routes.GrantedScopesComputeServerMW(handlers.VerifyBearerGS)).HandleMW(nil, obsFn).HandleMW(nil, timingFn).WithOptions(opts)
 	if err := computeGSRoute.Register(b); err != nil {
+		return nil, err
+	}
+
+	// reusableAloneRoute demonstrates Class 1 (reusable) attached ALONE,
+	// via plain .Use() — no bound middleware, no security requirement
+	// (docs/design/d-0003-codec-declared-middlewares.md's Addendum 7's Final Phase demo).
+	reusableAloneRoute := routes.ReusableAloneRoute.WithHandler(
+		func(_ context.Context, req routes.StackedDemoReq) (routes.StackedDemoResp, error) {
+			return routes.StackedDemoResp{Doubled: req.Value * 2}, nil
+		},
+	).Use(routes.ReusableRequestIDMw).HandleMW(nil, obsFn).HandleMW(nil, timingFn).WithOptions(opts)
+	if err := reusableAloneRoute.Register(b); err != nil {
+		return nil, err
+	}
+
+	// stackedDemoRoute demonstrates the reusable AND bound classes
+	// attached TOGETHER on one route — .Use(reusable) runs first
+	// (generic request-ID logging), .HandleBoundMW(bound) runs second
+	// (the route-specific "profile" scope check, reusing the SAME
+	// BoundScopeServerMW helper the 6 bearerAuth-secured routes above
+	// already use) — see docs/design/d-0003-codec-declared-middlewares.md's Addendum 7's Final
+	// Phase demo.
+	stackedDemoRoute := routes.StackedDemoRoute.WithHandler(
+		func(_ context.Context, req routes.StackedDemoReq) (routes.StackedDemoResp, error) {
+			return routes.StackedDemoResp{Doubled: req.Value * 2}, nil
+		},
+	).Use(routes.ReusableRequestIDMw).
+		HandleBoundMW(routes.BoundScopeServerMW[routes.StackedDemoReq](routes.ProfileScopes, handlers.ScopesBoundFn[routes.StackedDemoReq]("/stacked-demo"))).
+		HandleMW(nil, obsFn).HandleMW(nil, timingFn).WithOptions(opts)
+	if err := stackedDemoRoute.Register(b); err != nil {
 		return nil, err
 	}
 

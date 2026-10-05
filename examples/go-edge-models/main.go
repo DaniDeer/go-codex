@@ -847,7 +847,7 @@ func runMCPBridgeDemo(client *http.Client, registryHost, fakeToken string) {
 	// go-codex (see adapters/mcprest's package doc).
 	//
 	// registry.GetTagsRoute does NOT declare its "bearerAuth" requirement
-	// itself anymore (docs/roadmap/bound-middleware-split.md) — a reusable
+	// itself anymore (docs/design/d-0003-codec-declared-middlewares.md's Addendum 7) — a reusable
 	// Middleware[In,Out]'s Fn travels EMBEDDED in the SAME .Use() call, so
 	// credFn both DECLARES the requirement and FULFILLS it in one
 	// .Use(registry.BearerAuthDeclaration.WithSend(credFn)) call. Declare

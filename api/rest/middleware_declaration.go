@@ -36,7 +36,7 @@ import (
 // type instead (bound_middleware.go), attached via
 // [Route.HandleBoundMW]/[Route.ClientBoundMW] — NEVER via .Use()/
 // HandleMW/ClientMW. Middleware[In,Out] deliberately has NO bound
-// attachment path at all anymore (see docs/roadmap/bound-middleware-split.md):
+// attachment path at all anymore (see docs/design/d-0003-codec-declared-middlewares.md's Addendum 7):
 // the former dual-attachment-style design (and its
 // AmbiguousMiddlewareAttachmentError ambiguity check) was replaced by
 // these two explicit, compile-time-distinct types — a single Middleware
@@ -295,7 +295,7 @@ func (m Middleware[In, Out]) applyAgnosticRoute(rb *routeBuilder) {
 
 // NOTE: applyBoundRoute/applyBoundClientRoute (the route/channel-BOUND
 // attachment methods Middleware[In,Out] used to carry) were REMOVED as
-// part of docs/roadmap/bound-middleware-split.md — Middleware[In,Out] is
+// part of docs/design/d-0003-codec-declared-middlewares.md's Addendum 7 — Middleware[In,Out] is
 // now reusable-ONLY (.Use() is its one attachment path); the route/
 // channel-BOUND case moved to the dedicated [BoundMiddleware][Req, In, Out]
 // type (see bound_middleware.go), attached via [Route.HandleBoundMW]/
@@ -426,4 +426,4 @@ func (e DuplicateMiddlewareNameError) LogValue() slog.Value {
 // NOTE: AmbiguousMiddlewareAttachmentError (D7) was REMOVED — the
 // dual-attachment ambiguity it caught is now structurally impossible, not
 // merely checked; see [checkMiddlewareNameUniquenessAndAttachment]'s doc
-// comment and docs/roadmap/bound-middleware-split.md.
+// comment and docs/design/d-0003-codec-declared-middlewares.md's Addendum 7.

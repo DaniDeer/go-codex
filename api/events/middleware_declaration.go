@@ -30,7 +30,7 @@ import (
 // hardcoded to a channel's own payload type). No new events-side param
 // constructor exists for this.
 //
-// Middleware is the REUSABLE class ONLY (docs/roadmap/bound-middleware-split.md)
+// Middleware is the REUSABLE class ONLY (docs/design/d-0003-codec-declared-middlewares.md's Addendum 7)
 // — attached via plain .Use(mw), always carrying a T-FREE Fn bundled
 // directly onto the value via [Middleware.WithReceive]/[Middleware.WithSend].
 // Reusable verbatim across many channels, since the Fn never inspects the
@@ -513,7 +513,7 @@ func checkEventsParamConflicts(topic string, contributions map[string][]eventsPa
 // checked separately per role, matching how [Subscriber.Handle]/
 // [Publisher.Handle] are themselves independent calls). D7 (the
 // ambiguous-dual-attachment check) is GONE — structurally impossible
-// since docs/roadmap/bound-middleware-split.md: a codec-backed
+// since docs/design/d-0003-codec-declared-middlewares.md's Addendum 7: a codec-backed
 // [Middleware][In, Out] can only ever be attached via .Use() now (the
 // bound attachment point is a SEPARATE, distinct type,
 // [BoundSubscribeMiddleware]/[BoundPublishMiddleware] — see

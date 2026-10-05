@@ -13,11 +13,12 @@ import (
 // ── middleware-layering.md) — a DIFFERENT style of security declaration ──
 // ── than the "bearerAuth" scheme in middleware.go. Both now use the     ──
 // ── SAME underlying mechanism — [rest.BoundMiddleware]/                 ──
-// ── [rest.BoundClientMiddleware] (docs/roadmap/bound-middleware-split.  ──
-// ── md) — a REAL credential type (AuthIn) and a REAL GrantedScopes-     ──
-// ── carrying Out (AuthOut), dispatched via HandleBoundMW/ClientBoundMW. ──
-// ── This demo additionally publishes the decoded token via a           ──
-// ── middleware.ContextField, which middleware.go's scheme doesn't need.──
+// ── [rest.BoundClientMiddleware] (docs/design/d-0003-codec-declared-    ──
+// ── middlewares.md's Addendum 7) — a REAL credential type (AuthIn) and  ──
+// ── a REAL GrantedScopes-carrying Out (AuthOut), dispatched via         ──
+// ── HandleBoundMW/ClientBoundMW. This demo additionally publishes the   ──
+// ── decoded token via a middleware.ContextField, which middleware.go's ──
+// ── scheme doesn't need.                                               ──
 
 // AuthIn is GrantedScopesComputeServerMW's credential vocabulary —
 // decoded from the raw "Authorization" header value via the required
@@ -90,8 +91,8 @@ var computeGSRespCodec = codex.Struct[ComputeGSResp](
 // ClientBoundMW (via GrantedScopesComputeServerMW/
 // GrantedScopesComputeClientMW, attached in server.go/client.go)
 // populate rb.meta.Security/rb.securitySchemes automatically on whichever
-// concrete route value they attach to (docs/roadmap/
-// bound-middleware-split.md's Finding: BoundMiddleware.applyBoundRoute
+// concrete route value they attach to (docs/design/d-0003-codec-declared-
+// middlewares.md's Addendum 7 — BoundMiddleware.applyBoundRoute
 // contributes to rb.middlewares, which both Register's
 // applySecurityDeclarations AND ClientHandle's
 // applyMiddlewareSecurityForClient already read) — the PRIOR manual

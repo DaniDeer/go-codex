@@ -110,6 +110,7 @@ func main() {
 	demoGrantedScopesContextField(ctx, zeromqClient)
 	demoConnectSecuritySchemeRegistration()
 	demoObserverMiddleware(ctx, obs, mqtt5Built, mqtt5Client, zeromqClient)
+	demoBoundMiddlewareSplit(ctx, obs, mqtt5Client)
 	demoErrorPatternDeclarationMechanisms(ctx)
 	demoErrorPatternClientMatchMechanisms(ctx, mqtt5Built)
 	demoErrorPatternDeadLetterFallback(ctx)

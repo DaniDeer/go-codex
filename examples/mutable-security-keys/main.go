@@ -114,7 +114,7 @@ func main() {
 	// request — never hoisted to a local outside the closure. ──────────
 	// authIn carries the raw Authorization header value — the REUSABLE
 	// class's declarative replacement for the OLD raw-*http.Request-Fn
-	// pairing (permanently closed, docs/roadmap/bound-middleware-split.md).
+	// pairing (permanently closed, docs/design/d-0003-codec-declared-middlewares.md's Addendum 7).
 	// authOut carries GrantedScopes — the GrantedScopes convention every
 	// Security Out type is expected to follow (a field NAMED GrantedScopes
 	// map[string][]string, read by the adapter's dispatch via reflection)

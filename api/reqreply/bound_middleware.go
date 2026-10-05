@@ -18,7 +18,7 @@ import (
 // for middleware logic that genuinely needs to read/write the route's
 // own request struct (not just a topic/property merge field), e.g. an
 // in-payload credential field on a transport with no property side
-// channel at all (zeromq). See docs/roadmap/bound-middleware-split.md
+// channel at all (zeromq). See docs/design/d-0003-codec-declared-middlewares.md's Addendum 7
 // for the full design this type implements (reqreply's Phase C).
 //
 // Attach via [Route.HandleBoundMW] — NEVER via plain .Use()
@@ -444,7 +444,7 @@ func (e BoundMiddlewareReqMismatchError) LogValue() slog.Value {
 // general-purpose (mw == nil) decorator case and the bare legacy
 // [middleware.Middleware] type — this error enforces that split
 // structurally, closing the legacy raw-adapter-Fn-pairing escape hatch
-// for good (see docs/roadmap/bound-middleware-split.md's Motivation).
+// for good (see docs/design/d-0003-codec-declared-middlewares.md's Addendum 7's Motivation).
 type MiddlewareMisattachedError struct {
 	Route string
 	Name  string

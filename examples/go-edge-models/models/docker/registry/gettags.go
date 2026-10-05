@@ -36,8 +36,8 @@ type GetTagsReq struct {
 //
 // GetTagsRoute does NOT attach BearerAuthDeclaration itself (unlike an
 // earlier version of this example) — a reusable Middleware[In,Out] value
-// attaches via .Use() with its Fn EMBEDDED (docs/roadmap/
-// bound-middleware-split.md), so spec declaration and credential-
+// attaches via .Use() with its Fn EMBEDDED (docs/design/d-0003-codec-
+// declared-middlewares.md's Addendum 7), so spec declaration and credential-
 // supplying Fn now travel together in ONE .Use() call, made by whichever
 // caller actually wants to authenticate. A caller chains
 // .Use(BearerAuthDeclaration.WithSend(credentialFn)) before calling

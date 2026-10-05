@@ -18,7 +18,7 @@ import (
 // and additionally receives the attaching channel's own decoded *T value
 // — for middleware logic that genuinely needs to read the channel's own
 // message struct (not just a topic/property merge field). See
-// docs/roadmap/bound-middleware-split.md for the full design this type
+// docs/design/d-0003-codec-declared-middlewares.md's Addendum 7 for the full design this type
 // implements (events' Phase B).
 //
 // Attach via [Subscriber.SubscribeBoundMW] — NEVER via plain .Use()
@@ -52,7 +52,7 @@ import (
 // [Middleware.applyAgnosticSubscriber] onto BoundSubscribeMiddleware too
 // — making it accidentally satisfy [eventsMiddlewareContributor] and
 // attachable via plain .Use(), exactly the bound/reusable ambiguity this
-// type exists to eliminate (see docs/roadmap/bound-middleware-split.md's
+// type exists to eliminate (see docs/design/d-0003-codec-declared-middlewares.md's Addendum 7's
 // REST "Finding A" for the full rationale, carried forward identically
 // here).
 //
@@ -153,6 +153,14 @@ func (m BoundSubscribeMiddleware[T, In, Out]) MiddlewareName() string { return m
 // isBoundSubscribeMWShapeWithOut-detected case did. Mutates s directly —
 // events' [Subscriber[T]] has no opts-deferral pattern to go through (see
 // [Subscriber.SubscribeBoundMW]'s own doc comment).
+//
+// Subscriber.SubscribeBoundMW's own type-asserted interface value —
+// staticcheck's U1000 cannot trace a generic interface's method called
+// through a runtime type assertion; confirmed via REAL dispatch in
+// TestSubscribeBoundMW_StackedWithUse_BothDispatch and every migrated
+// events example, not dead code)
+//
+//lint:ignore U1000 implements boundContributor interface (dispatched via
 func (m BoundSubscribeMiddleware[T, In, Out]) applyBoundSubscriber(s *Subscriber[T]) {
 	h := buildMiddlewareHandlerAny(m.mw, m.fn)
 	h.HasOut = true
@@ -170,6 +178,11 @@ func (m BoundSubscribeMiddleware[T, In, Out]) applyBoundSubscriber(s *Subscriber
 // would satisfy boundContributor[Y] for ANY X, Y (the exact bug Phase A's
 // REST implementation found and fixed via this SAME technique — carried
 // forward here from the start, not discovered via a failing test).
+//
+// applyBoundSubscriber above — required by the interface, invisible to
+// static reachability analysis through a runtime type assertion)
+//
+//lint:ignore U1000 implements boundContributor interface (same reason as
 func (m BoundSubscribeMiddleware[T, In, Out]) boundReqWitness(T) {}
 
 // BoundPublishMiddleware is [BoundSubscribeMiddleware]'s PUBLISH (SENDING)
@@ -241,6 +254,10 @@ func (m BoundPublishMiddleware[T, In, Out]) MiddlewareName() string { return m.m
 // applyBoundPublisher satisfies [boundClientContributor][T] —
 // BoundPublishMiddleware's ONLY attach path. Mutates p directly — see
 // [BoundSubscribeMiddleware.applyBoundSubscriber]'s identical rationale.
+//
+// reason as BoundSubscribeMiddleware.applyBoundSubscriber above)
+//
+//lint:ignore U1000 implements boundClientContributor interface (same
 func (m BoundPublishMiddleware[T, In, Out]) applyBoundPublisher(p *Publisher[T]) {
 	p.clientMiddlewareHandlers = append(slices.Clone(p.clientMiddlewareHandlers), buildClientMiddlewareHandlerAny(m.mw, m.fn))
 }
@@ -248,6 +265,10 @@ func (m BoundPublishMiddleware[T, In, Out]) applyBoundPublisher(p *Publisher[T])
 // boundReqWitness satisfies [boundClientContributor]'s type-level
 // witness — never called; see [BoundSubscribeMiddleware.boundReqWitness]'s
 // identical rationale.
+//
+// reason as BoundSubscribeMiddleware.boundReqWitness above)
+//
+//lint:ignore U1000 implements boundClientContributor interface (same
 func (m BoundPublishMiddleware[T, In, Out]) boundReqWitness(T) {}
 
 // boundContributor[T] is T-parameterized — [BoundSubscribeMiddleware][T,...]
@@ -329,7 +350,7 @@ func (e BoundMiddlewareReqMismatchError) LogValue() slog.Value {
 // SubscribeMW/PublishMW are reserved for the general-purpose (mw == nil)
 // decorator case and the bare legacy [middleware.Middleware] type — this
 // error enforces that split structurally, closing the legacy raw-adapter-
-// Fn-pairing escape hatch for good (see docs/roadmap/bound-middleware-split.md's
+// Fn-pairing escape hatch for good (see docs/design/d-0003-codec-declared-middlewares.md's Addendum 7's
 // Motivation).
 type MiddlewareMisattachedError struct {
 	Topic string

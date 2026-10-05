@@ -11,7 +11,7 @@ import (
 	"github.com/DaniDeer/go-codex/route"
 )
 
-// ── docs/roadmap/bound-middleware-split.md: BoundMiddleware[Req, In, Out]/
+// ── docs/design/d-0003-codec-declared-middlewares.md's Addendum 7: BoundMiddleware[Req, In, Out]/
 // BoundClientMiddleware[Req, In, Out] are the explicit, compile-time-
 // distinct route-BOUND class for reqreply — attached via
 // Route.HandleBoundMW/Route.ClientBoundMW. These tests mirror

@@ -121,7 +121,7 @@ func TestErrorPattern_SecurityMiddlewareFn_Matched_Publishes_ReqReply(t *testing
 // TestErrorPattern_SecurityMiddlewareFn_Matched_Publishes_ReqReply above,
 // which only exercises the LEGACY raw-adapter-Fn-pairing path (bare
 // middleware.Middleware + HandleMW(&mw, rawFn)), confirmed unaffected by
-// docs/roadmap/bound-middleware-split.md's Phase C. This test closes the
+// docs/design/d-0003-codec-declared-middlewares.md's Addendum 7's Phase C. This test closes the
 // blind spot that let a confirmed cross-pattern inconsistency (reqreply
 // wrapping a Security-carrying Middleware Fn's failure as the GENERIC
 // reqreply.MiddlewareError, rather than reqreply.SecurityError like

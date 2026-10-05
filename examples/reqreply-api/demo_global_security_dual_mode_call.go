@@ -15,7 +15,7 @@ import (
 // Fn (client side) — REPLACES the OLD mqtt5adapter.CallOptions.
 // CredentialFunc entirely (Phase 1 of docs/design/d-0004-reqreply-workflow-simplification.md's Addendum,
 // BREAKING removal) and the OLD legacy-shaped paired ClientMW Fn
-// permanently closed by docs/roadmap/bound-middleware-split.md's Phase
+// permanently closed by docs/design/d-0003-codec-declared-middlewares.md's Addendum 7's Phase
 // C. Attached via routes.BearerAuthMw.WithSend(...), itself attached via
 // .Use(...).
 func globalSecurityCredFn(context.Context) (routes.BearerAuthIn, error) {

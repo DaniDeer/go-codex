@@ -452,7 +452,7 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 				return nil, err
 			}
 			// Also count a codec-backed ClientMW (securedMw.WithSend,
-			// docs/roadmap/bound-middleware-split.md) matching one of
+			// docs/design/d-0003-codec-declared-middlewares.md's Addendum 7) matching one of
 			// secReqs' schemes as a credential Fn having run — confirmed
 			// gap: mergeCredentialHeaders only ever sees the LEGACY
 			// clientImpls list, so a 401 with ONLY a codec-backed

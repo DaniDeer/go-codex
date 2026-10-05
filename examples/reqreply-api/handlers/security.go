@@ -17,7 +17,7 @@ import (
 // into in.Token DECLARATIVELY (routes.BearerAuthMw's own
 // WithRequestProperty) rather than read off *pahomqtt5.Publish by hand —
 // REPLACES the OLD legacy-shaped paired Fn permanently closed by
-// docs/roadmap/bound-middleware-split.md's Phase C. Returns an
+// docs/design/d-0003-codec-declared-middlewares.md's Addendum 7's Phase C. Returns an
 // unconditional grant — this example has only ONE scope-less scheme, so
 // there is no scope-matching logic to demonstrate; a real implementation
 // would look the extracted token up against an identity provider/

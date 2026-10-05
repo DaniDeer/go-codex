@@ -1752,7 +1752,7 @@ func applyEventsSecurityDeclarations(topic string, security *[]route.SecurityReq
 // EITHER list fails [Subscriber.Handle] with
 // [MissingSecurityMiddlewareError]; an attachment in either whose
 // Satisfies names the scheme resolves it — the two lists are checked
-// identically (docs/roadmap/bound-middleware-split.md), so a Security
+// identically (docs/design/d-0003-codec-declared-middlewares.md's Addendum 7), so a Security
 // scheme expressed via the bound class is recognized exactly like the
 // legacy/reusable paths.
 func CheckCoverage(topic string, secReqs []route.SecurityRequirement, impls []middleware.ServerImplementation, handlers []MiddlewareHandler) error {
@@ -2136,7 +2136,7 @@ func buildServerImplementation(mw middleware.RouteMiddleware, fn any) middleware
 // NOTE: isBoundSubscribeMWShape/isBoundSubscribeMWShapeWithOut (the
 // reflection-based Fn-shape detectors SubscribeMW used to use to silently
 // promote a codec-backed [Middleware][In, Out] to the channel-BOUND
-// dispatch path) were REMOVED as part of docs/roadmap/bound-middleware-split.md
+// dispatch path) were REMOVED as part of docs/design/d-0003-codec-declared-middlewares.md's Addendum 7
 // — the channel-bound case is now ALWAYS explicit, via the dedicated
 // [BoundSubscribeMiddleware][T, In, Out] type (see bound_middleware.go)
 // and [Subscriber.SubscribeBoundMW], never Fn-shape guessing.
@@ -2146,7 +2146,7 @@ func buildServerImplementation(mw middleware.RouteMiddleware, fn any) middleware
 // codec-backed [Middleware][In, Out] or [BoundSubscribeMiddleware][T, In,
 // Out] (via [MiddlewareMisattachedError] — those attach ONLY via plain
 // .Use() and [Subscriber.SubscribeBoundMW] respectively, never
-// SubscribeMW; see docs/roadmap/bound-middleware-split.md):
+// SubscribeMW; see docs/design/d-0003-codec-declared-middlewares.md's Addendum 7):
 //   - a legacy [middleware.Middleware] (or nil): UNPAIRED/PAIRED exactly
 //     as before — fn is matched against a PREVIOUSLY-.Use()'d security
 //     declaration when mw.Security != nil, matched by [CheckCoverage] at
@@ -2300,8 +2300,8 @@ func (p Publisher[T]) WithOptions(opts any) Publisher[T] {
 // mistake from [Subscriber.SubscribeBoundMW] (T mismatch/wrong class) or
 // [Subscriber.SubscribeMW] (a codec-backed value passed where it doesn't
 // belong). Unlike REST's [Route.ClientHandle] (deliberately infallible,
-// requiring a panic for the equivalent case — docs/roadmap/
-// bound-middleware-split.md's Phase A Finding 1), Handle is ALREADY
+// requiring a panic for the equivalent case — docs/design/d-0003-codec-
+// declared-middlewares.md's Addendum 7, Phase A Finding 1), Handle is ALREADY
 // fallible on every call, so this is just a normal, early-returned error.
 func (s Subscriber[T]) Handle(client *Client) (*ChannelHandle[T], error) {
 	if s.buildErr != nil {

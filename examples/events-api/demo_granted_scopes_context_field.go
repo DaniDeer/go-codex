@@ -20,7 +20,7 @@ import (
 // middleware.CheckScopes, AND the authenticated API key propagated to
 // the real subscribe handler via middleware.ContextField (routes.
 // GrantedScopesUserIDField) — zero manual re-decoding inside the
-// handler. See docs/roadmap/bound-middleware-split.md's events/
+// handler. See docs/design/d-0003-codec-declared-middlewares.md's Addendum 7's events/
 // BoundSubscribeMiddleware section for the full design this demo
 // exercises end-to-end.
 func demoGrantedScopesContextField(ctx context.Context) {
