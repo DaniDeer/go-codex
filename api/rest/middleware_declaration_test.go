@@ -52,7 +52,10 @@ func TestNewMiddleware_BuildsExpectedShape(t *testing.T) {
 }
 
 func TestMiddleware_WithRequestHeader_PopulatesParam(t *testing.T) {
-	mw := rest.NewMiddleware(newTestDeclaration()).
+	bm := rest.NewBoundMiddleware[mwTestReq](newTestDeclaration(),
+		func(ctx context.Context, req *mwTestReq, in mdTestIn) (mdTestOut, error) {
+			return mdTestOut{Value: in.Key}, nil
+		}).
 		WithRequestHeader(rest.NewRequiredHeaderParam("X-API-Key", codex.String(),
 			func(in mdTestIn) string { return in.Key },
 			func(in *mdTestIn, v string) { in.Key = v },
@@ -60,9 +63,7 @@ func TestMiddleware_WithRequestHeader_PopulatesParam(t *testing.T) {
 	route := rest.NewRoute[mwTestReq, userResp]("GET", "/profile", mwTestReqCodec, userCodec,
 		rest.RouteMeta{OperationID: "getProfile"},
 	)
-	route = route.HandleMW(mw, func(ctx context.Context, req *mwTestReq, in mdTestIn) (mdTestOut, error) {
-		return mdTestOut{Value: in.Key}, nil
-	})
+	route = route.HandleBoundMW(bm)
 	h, err := route.RegisterHandle(rest.NewServer(testInfo))
 	if err != nil {
 		t.Fatalf("RegisterHandle: %v", err)
@@ -79,7 +80,10 @@ func TestMiddleware_WithRequestHeader_PopulatesParam(t *testing.T) {
 }
 
 func TestMiddleware_WithResponseCookie_PopulatesParam(t *testing.T) {
-	mw := rest.NewMiddleware(newTestDeclaration()).
+	bm := rest.NewBoundMiddleware[mwTestReq](newTestDeclaration(),
+		func(ctx context.Context, req *mwTestReq, in mdTestIn) (mdTestOut, error) {
+			return mdTestOut{Value: "sess-123"}, nil
+		}).
 		WithResponseCookie(rest.NewRequiredResponseCookieParam("session", codex.String(),
 			func(out mdTestOut) string { return out.Value },
 			func(out *mdTestOut, v string) { out.Value = v },
@@ -87,9 +91,7 @@ func TestMiddleware_WithResponseCookie_PopulatesParam(t *testing.T) {
 	route := rest.NewRoute[mwTestReq, userResp]("GET", "/profile", mwTestReqCodec, userCodec,
 		rest.RouteMeta{OperationID: "getProfile"},
 	)
-	route = route.HandleMW(mw, func(ctx context.Context, req *mwTestReq, in mdTestIn) (mdTestOut, error) {
-		return mdTestOut{Value: "sess-123"}, nil
-	})
+	route = route.HandleBoundMW(bm)
 	h, err := route.RegisterHandle(rest.NewServer(testInfo))
 	if err != nil {
 		t.Fatalf("RegisterHandle: %v", err)
@@ -115,7 +117,10 @@ func TestMiddleware_WithResponseCookie_PopulatesParam(t *testing.T) {
 // integration: WithAttributes declared on a middleware's response cookie
 // reaches the built MiddlewareHandler.EncodeOutCookieAttrs.
 func TestMiddleware_WithResponseCookie_WithAttributes_ReachesMiddlewareHandler(t *testing.T) {
-	mw := rest.NewMiddleware(newTestDeclaration()).
+	bm := rest.NewBoundMiddleware[mwTestReq](newTestDeclaration(),
+		func(ctx context.Context, req *mwTestReq, in mdTestIn) (mdTestOut, error) {
+			return mdTestOut{Value: "sess-123"}, nil
+		}).
 		WithResponseCookie(rest.NewRequiredResponseCookieParam("session", codex.String(),
 			func(out mdTestOut) string { return out.Value },
 			func(out *mdTestOut, v string) { out.Value = v },
@@ -125,9 +130,7 @@ func TestMiddleware_WithResponseCookie_WithAttributes_ReachesMiddlewareHandler(t
 	route := rest.NewRoute[mwTestReq, userResp]("GET", "/profile2", mwTestReqCodec, userCodec,
 		rest.RouteMeta{OperationID: "getProfile2"},
 	)
-	route = route.HandleMW(mw, func(ctx context.Context, req *mwTestReq, in mdTestIn) (mdTestOut, error) {
-		return mdTestOut{Value: "sess-123"}, nil
-	})
+	route = route.HandleBoundMW(bm)
 	h, err := route.RegisterHandle(rest.NewServer(testInfo))
 	if err != nil {
 		t.Fatalf("RegisterHandle: %v", err)
@@ -155,21 +158,21 @@ func TestMiddleware_WithResponseCookie_WithAttributes_ReachesMiddlewareHandler(t
 // ── D6(b)/D7: uniqueness + ambiguous-attachment checks ──────────────────
 
 func TestRegister_DuplicateMiddlewareNameRejected(t *testing.T) {
-	mwA := rest.NewMiddleware(newTestDeclaration()).
+	fn := func(ctx context.Context, req *mwTestReq, in mdTestIn) (mdTestOut, error) {
+		return mdTestOut{Value: in.Key}, nil
+	}
+	bmA := rest.NewBoundMiddleware[mwTestReq](newTestDeclaration(), fn).
 		WithRequestHeader(rest.NewRequiredHeaderParam("X-API-Key", codex.String(),
 			func(in mdTestIn) string { return in.Key },
 			func(in *mdTestIn, v string) { in.Key = v },
 		))
-	mwB := rest.NewMiddleware(newTestDeclaration()) // SAME Declaration.Name "test-policy"
+	bmB := rest.NewBoundMiddleware[mwTestReq](newTestDeclaration(), fn) // SAME Declaration.Name "test-policy"
 
 	route := rest.NewRoute[mwTestReq, userResp]("GET", "/dup", mwTestReqCodec, userCodec,
 		rest.RouteMeta{OperationID: "dup"},
 	)
-	fn := func(ctx context.Context, req *mwTestReq, in mdTestIn) (mdTestOut, error) {
-		return mdTestOut{Value: in.Key}, nil
-	}
-	route = route.HandleMW(mwA, fn)
-	route = route.HandleMW(mwB, fn)
+	route = route.HandleBoundMW(bmA)
+	route = route.HandleBoundMW(bmB)
 
 	err := route.Register(rest.NewServer(testInfo))
 	var dupErr rest.DuplicateMiddlewareNameError
@@ -181,7 +184,11 @@ func TestRegister_DuplicateMiddlewareNameRejected(t *testing.T) {
 	}
 }
 
-func TestRegister_AmbiguousDualAttachmentRejected(t *testing.T) {
+func TestRegister_CodecBackedMiddlewarePassedToHandleMW_Rejected(t *testing.T) {
+	// docs/roadmap/bound-middleware-split.md: a codec-backed Middleware[In,Out]
+	// (reusable-ONLY, regardless of whether it's also bundled via
+	// WithReceive) can no longer be attached via HandleMW at all — only
+	// .Use() (reusable) or HandleBoundMW (bound, a DIFFERENT type) work.
 	mw := rest.NewMiddleware(newTestDeclaration()).
 		WithReceive(func(ctx context.Context, in mdTestIn) (mdTestOut, error) {
 			return mdTestOut{Value: in.Key}, nil
@@ -195,24 +202,27 @@ func TestRegister_AmbiguousDualAttachmentRejected(t *testing.T) {
 	})
 
 	err := route.Register(rest.NewServer(testInfo))
-	var ambErr rest.AmbiguousMiddlewareAttachmentError
-	if !errors.As(err, &ambErr) {
-		t.Fatalf("want AmbiguousMiddlewareAttachmentError, got %v", err)
+	var misErr rest.MiddlewareMisattachedError
+	if !errors.As(err, &misErr) {
+		t.Fatalf("want MiddlewareMisattachedError, got %v", err)
 	}
-	if ambErr.Name != "test-policy" {
-		t.Errorf("want Name %q, got %q", "test-policy", ambErr.Name)
+	if misErr.Name != "test-policy" {
+		t.Errorf("want Name %q, got %q", "test-policy", misErr.Name)
 	}
 }
 
 func TestRegister_SingleAttachmentStyleSucceeds(t *testing.T) {
-	// A mw used ONLY via Transform (bound, not bundled) must NOT trip D7.
-	mw := rest.NewMiddleware(newTestDeclaration())
+	// A BoundMiddleware used ONLY via HandleBoundMW (bound, never bundled
+	// via .Use()) must register successfully — D7's ambiguity is now
+	// structurally impossible (see checkMiddlewareNameUniquenessAndAttachment).
+	bm := rest.NewBoundMiddleware[mwTestReq](newTestDeclaration(),
+		func(ctx context.Context, req *mwTestReq, in mdTestIn) (mdTestOut, error) {
+			return mdTestOut{Value: in.Key}, nil
+		})
 	route := rest.NewRoute[mwTestReq, userResp]("GET", "/single", mwTestReqCodec, userCodec,
 		rest.RouteMeta{OperationID: "single"},
 	)
-	route = route.HandleMW(mw, func(ctx context.Context, req *mwTestReq, in mdTestIn) (mdTestOut, error) {
-		return mdTestOut{Value: in.Key}, nil
-	})
+	route = route.HandleBoundMW(bm)
 	if err := route.Register(rest.NewServer(testInfo)); err != nil {
 		t.Fatalf("want successful Register, got %v", err)
 	}
@@ -221,7 +231,10 @@ func TestRegister_SingleAttachmentStyleSucceeds(t *testing.T) {
 // ── TransformSSE/ClientTransformSSE: spec layering + D6(b)/D7 apply to SSE too ──
 
 func TestSSERoute_TransformSSE_LayersHeaderIntoSpec(t *testing.T) {
-	mw := rest.NewMiddleware(newTestDeclaration()).
+	bm := rest.NewBoundMiddleware[mwTestReq](newTestDeclaration(),
+		func(ctx context.Context, req *mwTestReq, in mdTestIn) (mdTestOut, error) {
+			return mdTestOut{Value: "applied:" + in.Key}, nil
+		}).
 		WithRequestHeader(rest.NewRequiredHeaderParam("X-API-Key", codex.String(),
 			func(in mdTestIn) string { return in.Key },
 			func(in *mdTestIn, v string) { in.Key = v },
@@ -234,9 +247,7 @@ func TestSSERoute_TransformSSE_LayersHeaderIntoSpec(t *testing.T) {
 		mwTestReqCodec, sseEventCodec,
 		rest.RouteMeta{OperationID: "stream"},
 	)
-	sseRoute = sseRoute.HandleMW(mw, func(ctx context.Context, req *mwTestReq, in mdTestIn) (mdTestOut, error) {
-		return mdTestOut{Value: "applied:" + in.Key}, nil
-	})
+	sseRoute = sseRoute.HandleBoundMW(bm)
 	h, err := sseRoute.RegisterHandle(rest.NewServer(testInfo))
 	if err != nil {
 		t.Fatalf("RegisterHandle: %v", err)
@@ -273,7 +284,10 @@ func TestSSERoute_TransformSSE_LayersHeaderIntoSpec(t *testing.T) {
 }
 
 func TestSSERoute_ClientTransformSSE_PopulatesClientHandle(t *testing.T) {
-	mw := rest.NewMiddleware(newTestDeclaration()).
+	bm := rest.NewBoundClientMiddleware[mwTestReq](newTestDeclaration(),
+		func(ctx context.Context, req mwTestReq) (mdTestIn, error) {
+			return mdTestIn{Key: "secret"}, nil
+		}).
 		WithRequestHeader(rest.NewRequiredHeaderParam("X-API-Key", codex.String(),
 			func(in mdTestIn) string { return in.Key },
 			func(in *mdTestIn, v string) { in.Key = v },
@@ -282,9 +296,7 @@ func TestSSERoute_ClientTransformSSE_PopulatesClientHandle(t *testing.T) {
 		mwTestReqCodec, sseEventCodec,
 		rest.RouteMeta{OperationID: "stream2"},
 	)
-	sseRoute = sseRoute.ClientMW(mw, func(ctx context.Context, req mwTestReq) (mdTestIn, error) {
-		return mdTestIn{Key: "secret"}, nil
-	})
+	sseRoute = sseRoute.ClientBoundMW(bm)
 	h := sseRoute.ClientHandle()
 	if len(h.ClientMiddlewareHandlers) != 1 {
 		t.Errorf("want exactly one ClientMiddlewareHandler, got %d", len(h.ClientMiddlewareHandlers))
@@ -292,17 +304,17 @@ func TestSSERoute_ClientTransformSSE_PopulatesClientHandle(t *testing.T) {
 }
 
 func TestSSERoute_Register_DuplicateMiddlewareNameRejected(t *testing.T) {
-	mwA := rest.NewMiddleware(newTestDeclaration())
-	mwB := rest.NewMiddleware(newTestDeclaration()) // SAME Declaration.Name
+	fn := func(ctx context.Context, req *mwTestReq, in mdTestIn) (mdTestOut, error) {
+		return mdTestOut{Value: in.Key}, nil
+	}
+	bmA := rest.NewBoundMiddleware[mwTestReq](newTestDeclaration(), fn)
+	bmB := rest.NewBoundMiddleware[mwTestReq](newTestDeclaration(), fn) // SAME Declaration.Name
 	sseRoute := rest.NewSSERoute[mwTestReq, sseEvent]("/stream3",
 		mwTestReqCodec, sseEventCodec,
 		rest.RouteMeta{OperationID: "stream3"},
 	)
-	fn := func(ctx context.Context, req *mwTestReq, in mdTestIn) (mdTestOut, error) {
-		return mdTestOut{Value: in.Key}, nil
-	}
-	sseRoute = sseRoute.HandleMW(mwA, fn)
-	sseRoute = sseRoute.HandleMW(mwB, fn)
+	sseRoute = sseRoute.HandleBoundMW(bmA)
+	sseRoute = sseRoute.HandleBoundMW(bmB)
 
 	_, err := sseRoute.RegisterHandle(rest.NewServer(testInfo))
 	var dupErr rest.DuplicateMiddlewareNameError
@@ -443,8 +455,15 @@ func TestDuplicateMiddlewareNameError(t *testing.T) {
 	}
 }
 
-func TestAmbiguousMiddlewareAttachmentError(t *testing.T) {
-	err := rest.AmbiguousMiddlewareAttachmentError{Name: "api-key-policy"}
+func TestBoundMiddlewareReqMismatchError(t *testing.T) {
+	err := rest.BoundMiddlewareReqMismatchError{Route: "GET /profile", Got: 42, Name: "api-key-policy"}
+	if err.Error() == "" {
+		t.Error("want non-empty Error() message")
+	}
+}
+
+func TestMiddlewareMisattachedError(t *testing.T) {
+	err := rest.MiddlewareMisattachedError{Route: "GET /profile", Name: "api-key-policy"}
 	if err.Error() == "" {
 		t.Error("want non-empty Error() message")
 	}

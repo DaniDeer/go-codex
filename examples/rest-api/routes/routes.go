@@ -8,18 +8,23 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
 // Every route below is an UNATTACHED rest.Route SPEC value — method, path,
-// codecs, RouteMeta, params, formats, and (for secured routes) a .Use(...)
-// security declaration. NONE of them call .WithHandler/.HandleMW/.ClientMW
-// — that's handlers/ (server business logic + security enforcement) and
-// client/ (client-side credential + general-purpose middleware) attaching
-// their OWN half, separately, onto the SAME declared value. chiserver/ and
-// nethttpserver/ each import these same package-level vars and assemble
-// them onto a different adapter, unchanged.
+// codecs, RouteMeta, params, and formats. NONE of them call
+// .WithHandler/.HandleBoundMW/.ClientBoundMW — that's handlers/+server.go
+// (server business logic + security enforcement) and client/client.go
+// (client-side credential + general-purpose middleware) attaching their
+// OWN half, separately. For the 6 "bearerAuth"-secured routes below, the
+// security declaration ITSELF also moves to those per-side attachment
+// sites (via [routes.BoundScopeServerMW]/[routes.BoundScopeClientMW],
+// docs/roadmap/bound-middleware-split.md) rather than living here — a
+// [rest.BoundMiddleware]'s Fn is embedded at construction, so "declare
+// here, implement there" (this file's own stated split) requires the
+// bound attach path, not .Use(). chiserver/ and nethttpserver/ each
+// import these same package-level vars and assemble them onto a
+// different adapter, unchanged.
 
 var (
 	locationCodec = codex.String().Refine(validate.NonEmptyString)
@@ -136,12 +141,13 @@ var ConflictLogRoute = rest.NewRoute[CreateUserReq, User]("POST", "/users-action
 
 // ── Security middleware + ErrorPattern combination ───────────────────────────
 
-// ErrorPatternScopeMw declares a THIRD "bearerAuth" scope requirement
-// ("billing") — attached via .Use(...) below, paired against a security
-// Fn (see demo_error_pattern.go) that deliberately rejects every caller
-// with InsufficientScopeError, proving a declared ErrorPattern intercepts
-// a SECURITY-MIDDLEWARE Fn failure (not just a business-handler failure).
-var ErrorPatternScopeMw = rest.SecurityMiddleware[struct{}, struct{}]("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT"), Codec: &BearerCodec}, []string{"billing"})
+// BillingScopes declares a THIRD "bearerAuth" scope requirement
+// ("billing") — attached below via [BoundScopeServerMW]/[BoundScopeClientMW]
+// (see demo_error_pattern.go), paired against a security Fn that
+// deliberately rejects every caller with InsufficientScopeError, proving
+// a declared ErrorPattern intercepts a SECURITY-MIDDLEWARE Fn failure
+// (not just a business-handler failure).
+var BillingScopes = []string{"billing"}
 
 // SecuredConflictRoute demonstrates ErrorPattern matching a security
 // middleware Fn's returned error (InsufficientScopeError), NOT a handler
@@ -154,7 +160,7 @@ var SecuredConflictRoute = rest.NewRoute[CreateUserReq, User]("POST", "/users-se
 			return InsufficientScopePayload{Code: "insufficient_scope", RequiredScope: e.RequiredScope}, nil
 		},
 	),
-).Use(ErrorPatternScopeMw)
+)
 
 // IngestConflictRoute demonstrates that a declared rest.ErrorPattern is
 // now ALSO consulted through the port/stream-adapter dispatch path
@@ -209,7 +215,7 @@ var CreateUserRoute = rest.NewRoute[CreateUserReq, User]("POST", "/users",
 		format.JSON(CreateUserReqCodec),
 		format.YAML(CreateUserReqCodec),
 	),
-).Use(AdminScopeMw)
+)
 
 // GetUserRoute — GET /users/{id} — requires the "profile" scope.
 // NewPathParam declares BOTH the spec/validation Param AND a merge field
@@ -235,7 +241,7 @@ var GetUserRoute = rest.NewRoute[GetUserReq, User]("GET", "/users/{id}",
 		format.JSON(UserCodec),
 		format.YAML(UserCodec),
 	),
-).Use(ProfileScopeMw)
+)
 
 // UpdateUserRoute — PUT /users/{id} — requires the "admin" scope. MIXES a
 // path field (ID) with body fields (Name, Email) on the SAME
@@ -255,7 +261,7 @@ var UpdateUserRoute = rest.NewRoute[UpdateUserReq, User]("PUT", "/users/{id}",
 		func(r UpdateUserReq) string { return r.ID },
 		func(r *UpdateUserReq, v string) { r.ID = v },
 	).WithDescription("User UUID"),
-).Use(AdminScopeMw)
+)
 
 // ListUsersRoute — GET /users — requires the "profile" scope. "page" is
 // codec-validated (non-negative integer string) AND merged into
@@ -280,7 +286,7 @@ var ListUsersRoute = rest.NewRoute[ListUsersReq, PagedUsersResp]("GET", "/users"
 	rest.Formats(
 		format.JSON(PagedUsersRespCodec),
 	),
-).Use(ProfileScopeMw)
+)
 
 // ProfileRoute — GET /profile — requires the "profile" scope, LAYERED
 // with request-side cookie + header validation on the SAME route: a
@@ -307,7 +313,7 @@ var ProfileRoute = rest.NewRoute[ProfileReq, User]("GET", "/profile",
 	rest.Formats(
 		format.JSON(UserCodec),
 	),
-).Use(ProfileScopeMw)
+)
 
 // AdminActionRoute — POST /admin/action — requires the "admin" scope.
 // Pure scope-gated action, no other params.
@@ -318,4 +324,4 @@ var AdminActionRoute = rest.NewRoute[AdminActionReq, AdminActionResp]("POST", "/
 		Summary:     "Perform a privileged admin action",
 		Tags:        []string{"admin"},
 	},
-).Use(AdminScopeMw)
+)

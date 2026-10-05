@@ -6,7 +6,6 @@
 package chiserver
 
 import (
-	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -32,7 +31,7 @@ type Built struct {
 
 // Build assembles every route declared in routes/ onto a fresh chi router:
 // business logic from handlers/, security enforcement paired against
-// routes.ProfileScopeMw/AdminScopeMw, the shared Observer, and the
+// routes.BoundScopeServerMW, the shared Observer, and the
 // general-purpose timing middleware — then wires the router via
 // b.Attach(chiadapter.NewServerTransport(...)) and starts serving on addr (via the returned
 // Server.Serve(ctx), left for the caller to run).
@@ -72,100 +71,71 @@ func Build(store *handlers.UserStore, obs stats.Observer, logger *slog.Logger, a
 		return nil, err
 	}
 
-	createUserImpl := handlers.ScopesImpl[routes.CreateUserReq]("bearerAuth",
-		func(ctx context.Context, r *http.Request, _ *routes.CreateUserReq) (map[string][]string, error) {
-			return handlers.ExtractScopes(ctx, r, "/users")
-		},
-	)
 	createUserRoute := routes.CreateUserRoute.WithHandler(
 		handlers.WithDomainLogging("user.create", handlers.MakeCreateUserHandler(store), domainLogger,
 			func(_ routes.CreateUserReq, u routes.User) []slog.Attr {
 				return []slog.Attr{slog.String("id", u.ID), slog.String("name", u.Name), slog.String("email", u.Email)}
 			}),
-	).HandleMW(&routes.AdminScopeMw, createUserImpl.Fn).HandleMW(nil, obsFn).HandleMW(nil, timingFn).WithOptions(opts)
+	).HandleBoundMW(routes.BoundScopeServerMW[routes.CreateUserReq](routes.AdminScopes, handlers.ScopesBoundFn[routes.CreateUserReq]("/users"))).HandleMW(nil, obsFn).HandleMW(nil, timingFn).WithOptions(opts)
 	if err := createUserRoute.Register(b); err != nil {
 		return nil, err
 	}
 
-	getUserImpl := handlers.ScopesImpl[routes.GetUserReq]("bearerAuth",
-		func(ctx context.Context, r *http.Request, _ *routes.GetUserReq) (map[string][]string, error) {
-			return handlers.ExtractScopes(ctx, r, "/users/{id}")
-		},
-	)
 	getUserRoute := routes.GetUserRoute.WithHandler(
 		handlers.WithDomainLogging("user.get", handlers.MakeGetUserHandler(store), domainLogger,
 			func(_ routes.GetUserReq, u routes.User) []slog.Attr { return []slog.Attr{slog.String("id", u.ID)} }),
-	).HandleMW(&routes.ProfileScopeMw, getUserImpl.Fn).HandleMW(nil, obsFn).HandleMW(nil, timingFn).WithOptions(opts)
+	).HandleBoundMW(routes.BoundScopeServerMW[routes.GetUserReq](routes.ProfileScopes, handlers.ScopesBoundFn[routes.GetUserReq]("/users/{id}"))).HandleMW(nil, obsFn).HandleMW(nil, timingFn).WithOptions(opts)
 	getUserHandle, err := getUserRoute.RegisterHandle(b)
 	if err != nil {
 		return nil, err
 	}
 
-	updateUserImpl := handlers.ScopesImpl[routes.UpdateUserReq]("bearerAuth",
-		func(ctx context.Context, r *http.Request, _ *routes.UpdateUserReq) (map[string][]string, error) {
-			return handlers.ExtractScopes(ctx, r, "/users/{id}")
-		},
-	)
 	updateUserRoute := routes.UpdateUserRoute.WithHandler(
 		handlers.WithDomainLogging("user.update", handlers.MakeUpdateUserHandler(store), domainLogger,
 			func(req routes.UpdateUserReq, u routes.User) []slog.Attr {
 				return []slog.Attr{slog.String("id", req.ID), slog.String("name", u.Name)}
 			}),
-	).HandleMW(&routes.AdminScopeMw, updateUserImpl.Fn).HandleMW(nil, obsFn).HandleMW(nil, timingFn).WithOptions(opts)
+	).HandleBoundMW(routes.BoundScopeServerMW[routes.UpdateUserReq](routes.AdminScopes, handlers.ScopesBoundFn[routes.UpdateUserReq]("/users/{id}"))).HandleMW(nil, obsFn).HandleMW(nil, timingFn).WithOptions(opts)
 	updateUserHandle, err := updateUserRoute.RegisterHandle(b)
 	if err != nil {
 		return nil, err
 	}
 
-	listUsersImpl := handlers.ScopesImpl[routes.ListUsersReq]("bearerAuth",
-		func(ctx context.Context, r *http.Request, _ *routes.ListUsersReq) (map[string][]string, error) {
-			return handlers.ExtractScopes(ctx, r, "/users")
-		},
-	)
 	listUsersRoute := routes.ListUsersRoute.WithHandler(
 		handlers.WithDomainLogging("user.list", handlers.MakeListUsersHandler(), domainLogger,
 			func(_ routes.ListUsersReq, _ routes.PagedUsersResp) []slog.Attr { return nil }),
-	).HandleMW(&routes.ProfileScopeMw, listUsersImpl.Fn).HandleMW(nil, obsFn).HandleMW(nil, timingFn).WithOptions(opts)
+	).HandleBoundMW(routes.BoundScopeServerMW[routes.ListUsersReq](routes.ProfileScopes, handlers.ScopesBoundFn[routes.ListUsersReq]("/users"))).HandleMW(nil, obsFn).HandleMW(nil, timingFn).WithOptions(opts)
 	if err := listUsersRoute.Register(b); err != nil {
 		return nil, err
 	}
 
-	profileImpl := handlers.ScopesImpl[routes.ProfileReq]("bearerAuth",
-		func(ctx context.Context, r *http.Request, _ *routes.ProfileReq) (map[string][]string, error) {
-			return handlers.ExtractScopes(ctx, r, "/profile")
-		},
-	)
 	profileRoute := routes.ProfileRoute.WithHandler(
 		handlers.WithDomainLogging("user.profile", handlers.MakeProfileHandler(), domainLogger,
 			func(_ routes.ProfileReq, u routes.User) []slog.Attr { return []slog.Attr{slog.String("id", u.ID)} }),
-	).HandleMW(&routes.ProfileScopeMw, profileImpl.Fn).HandleMW(nil, obsFn).HandleMW(nil, timingFn).WithOptions(opts)
+	).HandleBoundMW(routes.BoundScopeServerMW[routes.ProfileReq](routes.ProfileScopes, handlers.ScopesBoundFn[routes.ProfileReq]("/profile"))).HandleMW(nil, obsFn).HandleMW(nil, timingFn).WithOptions(opts)
 	if err := profileRoute.Register(b); err != nil {
 		return nil, err
 	}
 
-	adminActionImpl := handlers.ScopesImpl[routes.AdminActionReq]("bearerAuth",
-		func(ctx context.Context, r *http.Request, _ *routes.AdminActionReq) (map[string][]string, error) {
-			return handlers.ExtractScopes(ctx, r, "/admin/action")
-		},
-	)
 	adminActionRoute := routes.AdminActionRoute.WithHandler(
 		handlers.WithDomainLogging("admin.action", handlers.MakeAdminActionHandler(), domainLogger,
 			func(_ routes.AdminActionReq, r routes.AdminActionResp) []slog.Attr {
 				return []slog.Attr{slog.String("result", r.Result)}
 			}),
-	).HandleMW(&routes.AdminScopeMw, adminActionImpl.Fn).HandleMW(nil, obsFn).HandleMW(nil, timingFn).WithOptions(opts)
+	).HandleBoundMW(routes.BoundScopeServerMW[routes.AdminActionReq](routes.AdminScopes, handlers.ScopesBoundFn[routes.AdminActionReq]("/admin/action"))).HandleMW(nil, obsFn).HandleMW(nil, timingFn).WithOptions(opts)
 	if err := adminActionRoute.Register(b); err != nil {
 		return nil, err
 	}
 
-	// computeGSRoute demonstrates the GENERALIZED rest.SecurityMiddleware[In,
-	// Out] + GrantedScopes + ContextField mechanism (docs/design/
-	// d-0007-declarative-middleware-layering.md) — bound HandleMW directly,
-	// NO separate ScopesImpl wrapper needed; handlers.VerifyBearerGS decodes
-	// routes.AuthIn and returns a GrantedScopes-carrying routes.AuthOut.
+	// computeGSRoute demonstrates the GrantedScopes + ContextField
+	// mechanism (docs/design/d-0007-declarative-middleware-layering.md) —
+	// HandleBoundMW attaches handlers.VerifyBearerGS directly (already
+	// shaped func(ctx, *routes.ComputeGSReq, routes.AuthIn) (routes.AuthOut,
+	// error), no wrapper needed); routes.GrantedScopesComputeServerMW
+	// supplies the merge field + ContextField wiring.
 	computeGSRoute := routes.ComputeGSRoute.WithHandler(
 		handlers.MakeComputeGSHandler(),
-	).HandleMW(&routes.GrantedScopesComputeMw, handlers.VerifyBearerGS).HandleMW(nil, obsFn).HandleMW(nil, timingFn).WithOptions(opts)
+	).HandleBoundMW(routes.GrantedScopesComputeServerMW(handlers.VerifyBearerGS)).HandleMW(nil, obsFn).HandleMW(nil, timingFn).WithOptions(opts)
 	if err := computeGSRoute.Register(b); err != nil {
 		return nil, err
 	}

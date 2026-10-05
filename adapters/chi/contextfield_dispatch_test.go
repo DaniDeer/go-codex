@@ -32,7 +32,11 @@ var chiCfTenantIDField = middleware.NewContextField(codex.String())
 // own handler run.
 func TestChiSetContextFieldFromIn_DispatchOrder_BeforeFnAndHandler(t *testing.T) {
 	var fnSawTenant, handlerSawTenant string
-	mw := rest.NewMiddleware(newTDDeclaration("tenant-policy")).
+	bm := rest.NewBoundMiddleware[createReq](newTDDeclaration("tenant-policy"),
+		func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
+			fnSawTenant, _ = chiCfTenantIDField.Get(ctx)
+			return tdOut{Value: "ok"}, nil
+		}).
 		WithRequestHeader(rest.NewRequiredHeaderParam("X-Tenant-Id", codex.String(),
 			func(in tdIn) string { return in.Key },
 			func(in *tdIn, v string) { in.Key = v },
@@ -41,10 +45,7 @@ func TestChiSetContextFieldFromIn_DispatchOrder_BeforeFnAndHandler(t *testing.T)
 
 	route := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "createUser"},
-	).HandleMW(mw, func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
-		fnSawTenant, _ = chiCfTenantIDField.Get(ctx)
-		return tdOut{Value: "ok"}, nil
-	}).WithHandler(func(ctx context.Context, req createReq) (userResp, error) {
+	).HandleBoundMW(bm).WithHandler(func(ctx context.Context, req createReq) (userResp, error) {
 		handlerSawTenant, _ = chiCfTenantIDField.Get(ctx)
 		return userResp{ID: "1", Name: req.Name}, nil
 	})
@@ -74,7 +75,10 @@ func TestChiSetContextFieldFromIn_DispatchOrder_BeforeFnAndHandler(t *testing.T)
 func TestChiSetContextFieldFromOut_DispatchOrder_AfterFnReturns(t *testing.T) {
 	var policyVersionField = middleware.NewContextField(codex.String())
 
-	mw := rest.NewMiddleware(middleware.NewDeclaration("policy-version-out", tdEmptyCodec, tdOutCodec)).
+	bm := rest.NewBoundMiddleware[createReq](middleware.NewDeclaration("policy-version-out", tdEmptyCodec, tdOutCodec),
+		func(ctx context.Context, req *createReq, in tdEmpty) (tdOut, error) {
+			return tdOut{Value: "v2"}, nil
+		}).
 		WithResponseHeader(rest.NewRequiredResponseHeaderParam("X-Policy-Version", codex.String(),
 			func(out tdOut) string { return out.Value },
 			func(out *tdOut, v string) { out.Value = v },
@@ -83,9 +87,7 @@ func TestChiSetContextFieldFromOut_DispatchOrder_AfterFnReturns(t *testing.T) {
 
 	route := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "createUser"},
-	).HandleMW(mw, func(ctx context.Context, req *createReq, in tdEmpty) (tdOut, error) {
-		return tdOut{Value: "v2"}, nil
-	}).WithHandler(func(ctx context.Context, req createReq) (userResp, error) {
+	).HandleBoundMW(bm).WithHandler(func(ctx context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
 	})
 	h := mustServeOne(t, route)

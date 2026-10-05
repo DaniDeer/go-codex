@@ -24,7 +24,11 @@ var cfTenantIDField = middleware.NewContextField(codex.String())
 // retrieve it via [middleware.ContextField.Get].
 func TestSetContextFieldFromIn_DispatchOrder_BeforeFnAndHandler(t *testing.T) {
 	var fnSawTenant, handlerSawTenant string
-	mw := rest.NewMiddleware(newTDDeclaration("tenant-policy")).
+	bm := rest.NewBoundMiddleware[createReq](newTDDeclaration("tenant-policy"),
+		func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
+			fnSawTenant, _ = cfTenantIDField.Get(ctx)
+			return tdOut{Value: "ok"}, nil
+		}).
 		WithRequestHeader(rest.NewRequiredHeaderParam("X-Tenant-Id", codex.String(),
 			func(in tdIn) string { return in.Key },
 			func(in *tdIn, v string) { in.Key = v },
@@ -33,10 +37,7 @@ func TestSetContextFieldFromIn_DispatchOrder_BeforeFnAndHandler(t *testing.T) {
 
 	route := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "createUser"},
-	).HandleMW(mw, func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
-		fnSawTenant, _ = cfTenantIDField.Get(ctx)
-		return tdOut{Value: "ok"}, nil
-	}).WithHandler(func(ctx context.Context, req createReq) (userResp, error) {
+	).HandleBoundMW(bm).WithHandler(func(ctx context.Context, req createReq) (userResp, error) {
 		handlerSawTenant, _ = cfTenantIDField.Get(ctx)
 		return userResp{ID: "1", Name: req.Name}, nil
 	})
@@ -66,7 +67,10 @@ func TestSetContextFieldFromOut_DispatchOrder_AfterFnReturns(t *testing.T) {
 	var policyVersionField = middleware.NewContextField(codex.String())
 	var handlerSawVersion string
 
-	mw := rest.NewMiddleware(middleware.NewDeclaration("policy-version-out", tdEmptyCodec, tdOutCodec)).
+	bm := rest.NewBoundMiddleware[createReq](middleware.NewDeclaration("policy-version-out", tdEmptyCodec, tdOutCodec),
+		func(ctx context.Context, req *createReq, in tdEmpty) (tdOut, error) {
+			return tdOut{Value: "v2"}, nil
+		}).
 		WithResponseHeader(rest.NewRequiredResponseHeaderParam("X-Policy-Version", codex.String(),
 			func(out tdOut) string { return out.Value },
 			func(out *tdOut, v string) { out.Value = v },
@@ -75,9 +79,7 @@ func TestSetContextFieldFromOut_DispatchOrder_AfterFnReturns(t *testing.T) {
 
 	route := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "createUser"},
-	).HandleMW(mw, func(ctx context.Context, req *createReq, in tdEmpty) (tdOut, error) {
-		return tdOut{Value: "v2"}, nil
-	}).WithHandler(func(ctx context.Context, req createReq) (userResp, error) {
+	).HandleBoundMW(bm).WithHandler(func(ctx context.Context, req createReq) (userResp, error) {
 		// NOT yet set here — Fn hasn't returned when the handler runs
 		// (handler and middleware Fn run at the SAME pre-response stage,
 		// but EncodeOut — where SetContextFieldFromOut fires — composes
@@ -111,7 +113,10 @@ func TestSetContextFieldFromOut_DispatchOrder_AfterFnReturns(t *testing.T) {
 // adapter already makes routine.
 func TestClientMW_SetContextFieldFromIn_RoundTrip(t *testing.T) {
 	var clientTenantField = middleware.NewContextField(codex.String())
-	mw := rest.NewMiddleware(newTDDeclaration("client-tenant-policy")).
+	bm := rest.NewBoundClientMiddleware[getReq](newTDDeclaration("client-tenant-policy"),
+		func(ctx context.Context, req getReq) (tdIn, error) {
+			return tdIn{Key: "acme-corp"}, nil
+		}).
 		WithRequestHeader(rest.NewRequiredHeaderParam("X-Tenant-Id", codex.String(),
 			func(in tdIn) string { return in.Key },
 			func(in *tdIn, v string) { in.Key = v },
@@ -128,9 +133,7 @@ func TestClientMW_SetContextFieldFromIn_RoundTrip(t *testing.T) {
 	defer srv.Close()
 
 	route := rest.NewRoute[getReq, userResp]("GET", "/me", getReqCodec, userRespCodec).
-		ClientMW(mw, func(ctx context.Context, req getReq) (tdIn, error) {
-			return tdIn{Key: "acme-corp"}, nil
-		})
+		ClientBoundMW(bm)
 
 	client := rest.NewClient()
 	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {

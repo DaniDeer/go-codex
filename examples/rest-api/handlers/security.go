@@ -2,12 +2,9 @@ package handlers
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"net/http"
-	"strings"
 
-	"github.com/DaniDeer/go-codex/middleware"
+	"github.com/DaniDeer/go-codex/examples/rest-api/routes"
 	"github.com/DaniDeer/go-codex/stats"
 )
 
@@ -18,24 +15,22 @@ var tokenScopes = map[string][]string{
 	"valid-admin-token": {"profile", "admin"},
 }
 
-// ExtractScopes is a PURE AUTHENTICATION step — the mechanical scope-match
+// VerifyScopes is a PURE AUTHENTICATION step — the mechanical scope-match
 // against the route's declared requirement is done ONCE by the adapter
 // (via middleware.CheckScopes), not here. path is used only for
-// SecurityObserver rejection reporting. Works identically whether nethttp
-// or chi supplies r — both give an ordinary *http.Request.
-func ExtractScopes(ctx context.Context, r *http.Request, path string) (map[string][]string, error) {
-	auth := r.Header.Get("Authorization")
-	token := strings.TrimPrefix(auth, "Bearer ")
-	if token == "" || token == auth {
-		recordRejection(ctx, path)
-		return nil, errors.New("missing or malformed Authorization header")
-	}
-	scopes, ok := tokenScopes[token]
+// SecurityObserver rejection reporting. in.Token is ALREADY decoded from
+// the Authorization header by routes.BoundScopeServerMW's merge field —
+// no manual r.Header.Get/TrimPrefix needed (mirrors VerifyBearerGS in
+// grantedscopes.go, the SAME convention). Required-header-missing cases
+// never reach this Fn at all — the merge field's own codec rejects those
+// before any attached middleware Fn runs.
+func VerifyScopes(ctx context.Context, path string, in routes.AuthIn) (routes.AuthOut, error) {
+	scopes, ok := tokenScopes[in.Token]
 	if !ok {
 		recordRejection(ctx, path)
-		return nil, fmt.Errorf("unknown or expired token %q", token)
+		return routes.AuthOut{}, fmt.Errorf("unknown or expired token %q", in.Token)
 	}
-	return map[string][]string{"bearerAuth": scopes}, nil
+	return routes.AuthOut{GrantedScopes: map[string][]string{"bearerAuth": scopes}}, nil
 }
 
 func recordRejection(ctx context.Context, path string) {
@@ -44,16 +39,15 @@ func recordRejection(ctx context.Context, path string) {
 	}
 }
 
-// ScopesImpl builds a security middleware.ServerImplementation wrapping
-// extract — the runtime counterpart to a route's declare-time
-// middleware.SecurityScheme (routes.ProfileScopeMw/AdminScopeMw), matched
-// by schemeName. Passed to Route.HandleMW(&declMw, ScopesImpl(...).Fn),
-// which pairs it against the matching .Use()-declared scheme (see
-// docs/design/d-0001-rest-middleware-workflow-simplification.md).
-func ScopesImpl[Req any](schemeName string, extract func(ctx context.Context, r *http.Request, req *Req) (map[string][]string, error)) middleware.ServerImplementation {
-	return middleware.ServerImplementation{
-		Name:      "implement-scopes:" + schemeName,
-		Satisfies: []string{schemeName},
-		Fn:        extract,
+// ScopesBoundFn adapts [VerifyScopes] into the
+// func(ctx, *Req, routes.AuthIn) (routes.AuthOut, error) shape
+// [routes.BoundScopeServerMW] expects — generic over the attaching
+// route's own Req type, which this Fn discards entirely (the scope check
+// never needs to read the request body/path/query, only the decoded
+// credential). One instantiation per route (docs/roadmap/
+// bound-middleware-split.md).
+func ScopesBoundFn[Req any](path string) func(ctx context.Context, req *Req, in routes.AuthIn) (routes.AuthOut, error) {
+	return func(ctx context.Context, _ *Req, in routes.AuthIn) (routes.AuthOut, error) {
+		return VerifyScopes(ctx, path, in)
 	}
 }

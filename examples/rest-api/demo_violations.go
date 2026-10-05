@@ -18,13 +18,13 @@ import (
 	"github.com/DaniDeer/go-codex/validate"
 )
 
-// alwaysGrantAdmin is a trivial ServerImplementation Fn for the ISOLATED
+// alwaysGrantAdmin is a trivial bound Security Fn for the ISOLATED
 // scratch servers below — these demos test RESPONSE-side codec
 // enforcement (header/cookie/body), not security, so authentication is
 // bypassed by always granting the "admin" scope regardless of the
 // incoming request.
-func alwaysGrantAdmin(_ context.Context, _ *http.Request, _ *routes.CreateUserReq) (map[string][]string, error) {
-	return map[string][]string{"bearerAuth": {"admin"}}, nil
+func alwaysGrantAdmin(_ context.Context, _ *routes.CreateUserReq, _ routes.AuthIn) (routes.AuthOut, error) {
+	return routes.AuthOut{GrantedScopes: map[string][]string{"bearerAuth": {"admin"}}}, nil
 }
 
 // violationLocationCodec/violationSessionCodec mirror routes.go's own
@@ -56,7 +56,7 @@ func demoResponseHeaderCookieViolation() {
 		rest.RouteMeta{OperationID: "createUserViolation"},
 		rest.ResponseHeaderParam{Name: "Location", Required: true}.WithCodec(violationLocationCodec),
 		rest.ResponseCookieParam{Name: "session", Required: true}.WithCodec(violationSessionCodec),
-	).Use(routes.AdminScopeMw).WithHandler(
+	).WithHandler(
 		func(ctx context.Context, _ routes.CreateUserReq) (routes.User, error) {
 			h := make(http.Header)
 			h.Set("Location", "") // empty → fails NonEmptyString → 500
@@ -68,7 +68,7 @@ func demoResponseHeaderCookieViolation() {
 			})
 			return routes.User{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Name: "Carol", Email: "carol@example.com"}, nil
 		},
-	).HandleMW(&routes.AdminScopeMw, alwaysGrantAdmin)
+	).HandleBoundMW(routes.BoundScopeServerMW[routes.CreateUserReq](routes.AdminScopes, alwaysGrantAdmin))
 
 	b := rest.NewServer(rest.Info{Title: "violation demo", Version: "1.0.0"})
 	must(violationRoute.Register(b), "register violation route")
@@ -119,7 +119,7 @@ func demoResponseBodyViolation() {
 				Email: "not-an-email", // fails Email constraint
 			}, nil
 		},
-	).HandleMW(&routes.AdminScopeMw, alwaysGrantAdmin)
+	).HandleBoundMW(routes.BoundScopeServerMW[routes.CreateUserReq](routes.AdminScopes, alwaysGrantAdmin))
 
 	handler, err := nethttp.ServeOne(violationRoute)
 	must(err, "ServeOne body-violation route")

@@ -14,41 +14,68 @@ import (
 
 // ── Middleware kind 1: security ──────────────────────────────────────────────
 //
-// A middleware.Middleware carrying a SecurityDeclaration is the DECLARE-TIME
-// half of a security requirement — pure spec data, no runtime behavior.
-// Every secured route below attaches ONE of these via .Use(...). The
-// RUNTIME half (server-side verification, client-side credential supply)
-// is built SEPARATELY: handlers/security.go builds the server
-// ServerImplementation, client/client.go builds the client credential Fn —
-// both PAIRED against the SAME middleware.Middleware value declared here,
-// so a scheme-name typo is caught at Register time
+// The "bearerAuth" scheme requires a GENUINE cross-Req-type attachment —
+// 6 different routes (CreateUserReq/GetUserReq/UpdateUserReq/ListUsersReq/
+// ProfileReq/AdminActionReq) share ONE scheme but differ in their own Req
+// type, and declare (routes.go)/implement (handlers/server.go)/fulfill
+// (client/client.go) deliberately live in SEPARATE files/packages — so
+// each attachment is built via [rest.BoundMiddleware]/
+// [rest.BoundClientMiddleware] (docs/roadmap/bound-middleware-split.md),
+// generic over the attaching route's own Req type. BoundScopeServerMW/
+// BoundScopeClientMW below are the shared constructor helpers every
+// attachment site (nethttpserver/server.go, chiserver/server.go,
+// client/client.go, demo_violations.go) calls — one line per route,
+// delegating to the SAME handlers.VerifyScopes helper underneath, so a
+// scheme-name/scope typo is caught at Register time
 // (UnknownMiddlewareImplementationError), never silently.
 //
 // Two scopes are used across this example: "profile" (read one's own
 // profile/user data) and "admin" (privileged actions). BearerCodec
-// format-validates the raw credential BEFORE any ServerImplementation Fn
-// runs, on both server and client (the client-side check mirrors the
-// server's, per docs/design/d-0001-rest-middleware-workflow-simplification.md).
+// format-validates the raw credential BEFORE any Fn runs, on both server
+// and client.
 
 // BearerCodec validates a raw bearer token string's FORMAT (non-empty,
 // well-formed) — shared by every security declaration below so the check
 // is defined once.
 var BearerCodec = codex.String().Refine(validate.BearerToken)
 
-// bearerAuthScheme is shared by both scope declarations below.
-var bearerAuthScheme = rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT"), Codec: &BearerCodec}
+// BearerAuthScheme is shared by both scope attachments below.
+var BearerAuthScheme = rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT"), Codec: &BearerCodec}
 
-// ProfileScopeMw declares the "bearerAuth" scheme, requiring the
-// "profile" scope — attached via .Use(ProfileScopeMw) on routes any
-// authenticated user may call. Built via the codec-backed
-// [rest.SecurityMiddleware] (docs/design/d-0003-codec-declared-middlewares.md),
-// not the legacy middleware.SecurityScheme — the migration representative
-// sample for the middleware-consolidation effort.
-var ProfileScopeMw = rest.SecurityMiddleware[struct{}, struct{}]("bearerAuth", bearerAuthScheme, []string{"profile"})
+// ProfileScopes/AdminScopes are the scope requirements
+// BoundScopeServerMW/BoundScopeClientMW attach the "bearerAuth" scheme
+// with — "profile" for any authenticated user, "admin" for privileged
+// routes.
+var (
+	ProfileScopes = []string{"profile"}
+	AdminScopes   = []string{"admin"}
+)
 
-// AdminScopeMw declares the SAME "bearerAuth" scheme, requiring the
-// "admin" scope — attached via .Use(AdminScopeMw) on privileged routes.
-var AdminScopeMw = rest.SecurityMiddleware[struct{}, struct{}]("bearerAuth", bearerAuthScheme, []string{"admin"})
+// authHeaderParam is the Authorization merge field shared by every
+// "bearerAuth" attachment below — decodes the raw header value directly
+// into AuthIn.Token (see routes/grantedscopes_demo.go for AuthIn/AuthOut).
+func authHeaderParam() rest.MergedHeaderParam[AuthIn] {
+	return rest.NewRequiredHeaderParam("Authorization", BearerCodec,
+		func(in AuthIn) string { return in.Token },
+		func(in *AuthIn, v string) { in.Token = v },
+	)
+}
+
+// BoundScopeServerMW builds the SERVER-side bound "bearerAuth" Security
+// middleware, generic over the attaching route's own Req type — fn is
+// wrapped with the shared Authorization merge field automatically. scopes
+// is the route's own required-scope list (ProfileScopes or AdminScopes).
+func BoundScopeServerMW[Req any](scopes []string, fn func(ctx context.Context, req *Req, in AuthIn) (AuthOut, error)) rest.BoundMiddleware[Req, AuthIn, AuthOut] {
+	return rest.BoundSecurityMiddleware[Req, AuthIn, AuthOut]("bearerAuth", BearerAuthScheme, scopes, fn).
+		WithRequestHeader(authHeaderParam())
+}
+
+// BoundScopeClientMW is [BoundScopeServerMW]'s client/credential-supplying
+// sibling.
+func BoundScopeClientMW[Req any](scopes []string, fn func(ctx context.Context, req Req) (AuthIn, error)) rest.BoundClientMiddleware[Req, AuthIn, AuthOut] {
+	return rest.BoundSecurityClientMiddleware[Req, AuthIn, AuthOut]("bearerAuth", BearerAuthScheme, scopes, fn).
+		WithRequestHeader(authHeaderParam())
+}
 
 // ── Middleware kind 2: observer ──────────────────────────────────────────────
 //

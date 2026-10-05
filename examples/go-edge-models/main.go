@@ -47,7 +47,6 @@ import (
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/ports"
 	"github.com/DaniDeer/go-codex/render/openapi"
-	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/schema"
 	"github.com/DaniDeer/go-codex/stats"
 	gstream "github.com/DaniDeer/go-codex/stream"
@@ -847,20 +846,18 @@ func runMCPBridgeDemo(client *http.Client, registryHost, fakeToken string) {
 	// tool handler, matching every other client-adapter binding in
 	// go-codex (see adapters/mcprest's package doc).
 	//
-	// registry.GetTagsRoute already declares its "bearerAuth" requirement
-	// itself (registry.BearerAuthDeclaration, attached via .Use(...) — see
-	// the route's own doc comment) — credFn only needs to FULFILL it, via
-	// .ClientMW(&registry.BearerAuthDeclaration, credFn), paired against
-	// that SAME declaration. Declare (GetTagsRoute) → chain (ClientMW) →
-	// build (ClientHandle) — the same pattern app/registry's GetTags
-	// itself uses.
-	credFn := func(context.Context, []route.SecurityRequirement) (http.Header, error) {
-		h := make(http.Header)
-		h.Set("Authorization", "Bearer "+fakeToken)
-		return h, nil
+	// registry.GetTagsRoute does NOT declare its "bearerAuth" requirement
+	// itself anymore (docs/roadmap/bound-middleware-split.md) — a reusable
+	// Middleware[In,Out]'s Fn travels EMBEDDED in the SAME .Use() call, so
+	// credFn both DECLARES the requirement and FULFILLS it in one
+	// .Use(registry.BearerAuthDeclaration.WithSend(credFn)) call. Declare
+	// + fulfill (Use) → build (ClientHandle) — the same pattern
+	// app/registry's GetTags itself uses.
+	credFn := func(context.Context) (registry.BearerCredential, error) {
+		return registry.BearerCredential{Token: fakeToken}, nil
 	}
 	callOpts := rest.ClientCallOptions{}
-	restHandle := registry.GetTagsRoute.ClientMW(&registry.BearerAuthDeclaration, credFn).ClientHandle()
+	restHandle := registry.GetTagsRoute.Use(registry.BearerAuthDeclaration.WithSend(credFn)).ClientHandle()
 
 	mcpBuilder := mcp.NewBuilder(mcp.Info{Name: "go-edge-models MCP bridge demo", Version: "1.0.0"})
 

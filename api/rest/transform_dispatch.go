@@ -69,7 +69,8 @@ func AsMiddlewareDispatchError(err error) (MiddlewareDispatchInfo, bool) {
 }
 
 // DispatchMiddlewareHandlers dispatches every [MiddlewareHandler] attached
-// to a route (via Transform/ClientTransform OR a bundled .Use(mw)) at the
+// to a route (via [Route.HandleBoundMW] (bound class) OR a bundled
+// .Use(mw) (reusable class)) at the
 // SAME pre-handler dispatch point an adapter's own security enforcement
 // already runs at (D1) — reqPtr is the SAME already-decoded *Req the
 // handler will also receive, so a bound mw's fn may read/enrich it.

@@ -44,7 +44,11 @@ func newTDDeclaration(name string) middleware.Declaration[tdIn, tdOut] {
 
 func TestTransform_HappyPath_EnrichesReqAndSetsResponseHeader(t *testing.T) {
 	var receivedReqName string
-	mw := rest.NewMiddleware(newTDDeclaration("api-key-policy")).
+	bm := rest.NewBoundMiddleware[createReq](newTDDeclaration("api-key-policy"),
+		func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
+			req.Name = req.Name + "-enriched" // enrichment visible to the handler
+			return tdOut{Value: "applied:" + in.Key}, nil
+		}).
 		WithRequestHeader(rest.NewRequiredHeaderParam("X-Api-Key", codex.String(),
 			func(in tdIn) string { return in.Key },
 			func(in *tdIn, v string) { in.Key = v },
@@ -57,10 +61,7 @@ func TestTransform_HappyPath_EnrichesReqAndSetsResponseHeader(t *testing.T) {
 	route := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "createUser"},
 	)
-	route = route.HandleMW(mw, func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
-		req.Name = req.Name + "-enriched" // enrichment visible to the handler
-		return tdOut{Value: "applied:" + in.Key}, nil
-	})
+	route = route.HandleBoundMW(bm)
 	route = route.WithHandler(func(_ context.Context, req createReq) (userResp, error) {
 		receivedReqName = req.Name
 		return userResp{ID: "1", Name: req.Name}, nil
@@ -87,19 +88,20 @@ func TestTransform_HappyPath_EnrichesReqAndSetsResponseHeader(t *testing.T) {
 // ── Transform: In-decode failure short-circuits with 400 ────────────────
 
 func TestTransform_InDecodeFailure_Returns400(t *testing.T) {
-	mw := rest.NewMiddleware(newTDDeclaration("api-key-policy")).
+	handlerCalled := false
+	bm := rest.NewBoundMiddleware[createReq](newTDDeclaration("api-key-policy"),
+		func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
+			return tdOut{Value: in.Key}, nil
+		}).
 		WithRequestHeader(rest.NewRequiredHeaderParam("X-Api-Key", codex.String(),
 			func(in tdIn) string { return in.Key },
 			func(in *tdIn, v string) { in.Key = v },
 		))
 
-	handlerCalled := false
 	route := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "createUser"},
 	)
-	route = route.HandleMW(mw, func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
-		return tdOut{Value: in.Key}, nil
-	})
+	route = route.HandleBoundMW(bm)
 	route = route.WithHandler(func(_ context.Context, req createReq) (userResp, error) {
 		handlerCalled = true
 		return userResp{ID: "1", Name: req.Name}, nil
@@ -123,19 +125,20 @@ func TestTransform_InDecodeFailure_Returns400(t *testing.T) {
 // ── Transform: fn error falls back to rest.MiddlewareError (no ErrorPattern) ──
 
 func TestTransform_FnError_FallsBackToMiddlewareError(t *testing.T) {
-	mw := rest.NewMiddleware(newTDDeclaration("api-key-policy")).
+	handlerCalled := false
+	bm := rest.NewBoundMiddleware[createReq](newTDDeclaration("api-key-policy"),
+		func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
+			return tdOut{}, errBadAPIKey
+		}).
 		WithRequestHeader(rest.NewRequiredHeaderParam("X-Api-Key", codex.String(),
 			func(in tdIn) string { return in.Key },
 			func(in *tdIn, v string) { in.Key = v },
 		))
 
-	handlerCalled := false
 	route := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "createUser"},
 	)
-	route = route.HandleMW(mw, func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
-		return tdOut{}, errBadAPIKey
-	})
+	route = route.HandleBoundMW(bm)
 	route = route.WithHandler(func(_ context.Context, req createReq) (userResp, error) {
 		handlerCalled = true
 		return userResp{ID: "1", Name: req.Name}, nil
@@ -177,7 +180,10 @@ var invalidAPIKeyCodec = codex.Struct[invalidAPIKeyError](
 )
 
 func TestTransform_FnError_MatchingErrorPattern_UsesPatternResponse(t *testing.T) {
-	mw := rest.NewMiddleware(newTDDeclaration("api-key-policy")).
+	bm := rest.NewBoundMiddleware[createReq](newTDDeclaration("api-key-policy"),
+		func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
+			return tdOut{}, invalidAPIKeyError{Reason: "too short"}
+		}).
 		WithRequestHeader(rest.NewRequiredHeaderParam("X-Api-Key", codex.String(),
 			func(in tdIn) string { return in.Key },
 			func(in *tdIn, v string) { in.Key = v },
@@ -187,9 +193,7 @@ func TestTransform_FnError_MatchingErrorPattern_UsesPatternResponse(t *testing.T
 		rest.RouteMeta{OperationID: "createUser"},
 		rest.ErrorPattern[invalidAPIKeyError, invalidAPIKeyError](422, invalidAPIKeyCodec),
 	)
-	route = route.HandleMW(mw, func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
-		return tdOut{}, invalidAPIKeyError{Reason: "too short"}
-	})
+	route = route.HandleBoundMW(bm)
 	route = route.WithHandler(func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
 	})
@@ -221,7 +225,10 @@ func (s *spyValidationObserver) RecordValidationError(location, constraintName, 
 }
 
 func TestTransform_InDecodeFailure_ReportsMiddlewareInLocation(t *testing.T) {
-	mw := rest.NewMiddleware(newTDDeclaration("api-key-policy")).
+	bm := rest.NewBoundMiddleware[createReq](newTDDeclaration("api-key-policy"),
+		func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
+			return tdOut{Value: in.Key}, nil
+		}).
 		WithRequestHeader(rest.NewRequiredHeaderParam("X-Api-Key", codex.String(),
 			func(in tdIn) string { return in.Key },
 			func(in *tdIn, v string) { in.Key = v },
@@ -229,9 +236,7 @@ func TestTransform_InDecodeFailure_ReportsMiddlewareInLocation(t *testing.T) {
 	route := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "createUser"},
 	)
-	route = route.HandleMW(mw, func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
-		return tdOut{Value: in.Key}, nil
-	})
+	route = route.HandleBoundMW(bm)
 	spy := &spyValidationObserver{}
 	route = route.WithHandler(func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
@@ -271,7 +276,13 @@ func TestTransform_OutEncodeFailure_ReportsMiddlewareOutLocation(t *testing.T) {
 	// In is tdEmpty (no required fields, so DecodeIn/InCodec.Validate
 	// always succeeds) — isolating the failure to Out's EncodeOut path.
 	decl := middleware.NewDeclaration("api-key-policy", tdEmptyCodec, tdOutCodec)
-	mw := rest.NewMiddleware(decl).
+	bm := rest.NewBoundMiddleware[createReq](decl,
+		func(ctx context.Context, req *createReq, in tdEmpty) (tdOut, error) {
+			// Empty Value fails tdOutCodec's NonEmptyString refinement at
+			// EncodeOut/OutCodec.Validate time — isolating the "middleware:out"
+			// location from "middleware:in"/"middleware:fn".
+			return tdOut{Value: ""}, nil
+		}).
 		WithResponseHeader(rest.NewRequiredResponseHeaderParam("X-Policy-Applied", codex.String(),
 			func(out tdOut) string { return out.Value },
 			func(out *tdOut, v string) { out.Value = v },
@@ -279,12 +290,7 @@ func TestTransform_OutEncodeFailure_ReportsMiddlewareOutLocation(t *testing.T) {
 	route := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "createUser"},
 	)
-	route = route.HandleMW(mw, func(ctx context.Context, req *createReq, in tdEmpty) (tdOut, error) {
-		// Empty Value fails tdOutCodec's NonEmptyString refinement at
-		// EncodeOut/OutCodec.Validate time — isolating the "middleware:out"
-		// location from "middleware:in"/"middleware:fn".
-		return tdOut{Value: ""}, nil
-	})
+	route = route.HandleBoundMW(bm)
 	spy := &spyValidationObserver{}
 	route = route.WithHandler(func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
@@ -335,20 +341,22 @@ func newTDEmptyDeclaration(name string) middleware.Declaration[tdEmpty, tdEmpty]
 }
 
 func TestTransform_TwoMiddlewaresEnrichSameField_LastAttachedWins(t *testing.T) {
-	mwFirst := rest.NewMiddleware(newTDEmptyDeclaration("first-policy"))
-	mwSecond := rest.NewMiddleware(newTDEmptyDeclaration("second-policy"))
+	bmFirst := rest.NewBoundMiddleware[createReq](newTDEmptyDeclaration("first-policy"),
+		func(ctx context.Context, req *createReq, in tdEmpty) (tdEmpty, error) {
+			req.Name = "first"
+			return tdEmpty{}, nil
+		})
+	bmSecond := rest.NewBoundMiddleware[createReq](newTDEmptyDeclaration("second-policy"),
+		func(ctx context.Context, req *createReq, in tdEmpty) (tdEmpty, error) {
+			req.Name = "second"
+			return tdEmpty{}, nil
+		})
 
 	route := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "createUser"},
 	)
-	route = route.HandleMW(mwFirst, func(ctx context.Context, req *createReq, in tdEmpty) (tdEmpty, error) {
-		req.Name = "first"
-		return tdEmpty{}, nil
-	})
-	route = route.HandleMW(mwSecond, func(ctx context.Context, req *createReq, in tdEmpty) (tdEmpty, error) {
-		req.Name = "second"
-		return tdEmpty{}, nil
-	})
+	route = route.HandleBoundMW(bmFirst)
+	route = route.HandleBoundMW(bmSecond)
 
 	var receivedName string
 	route = route.WithHandler(func(_ context.Context, req createReq) (userResp, error) {
@@ -429,7 +437,11 @@ func TestUse_AgnosticMiddleware_DispatchesOnBothRoutes(t *testing.T) {
 
 func TestHandleMW_CodecBackedMiddleware_HappyPath_EnrichesReqAndSetsResponseHeader(t *testing.T) {
 	var receivedReqName string
-	mw := rest.NewMiddleware(newTDDeclaration("api-key-policy-handlemw")).
+	bm := rest.NewBoundMiddleware[createReq](newTDDeclaration("api-key-policy-handlemw"),
+		func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
+			req.Name = req.Name + "-enriched" // enrichment visible to the handler — proves *Req access
+			return tdOut{Value: "applied:" + in.Key}, nil
+		}).
 		WithRequestHeader(rest.NewRequiredHeaderParam("X-Api-Key", codex.String(),
 			func(in tdIn) string { return in.Key },
 			func(in *tdIn, v string) { in.Key = v },
@@ -441,10 +453,7 @@ func TestHandleMW_CodecBackedMiddleware_HappyPath_EnrichesReqAndSetsResponseHead
 
 	route := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "createUser"},
-	).HandleMW(mw, func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
-		req.Name = req.Name + "-enriched" // enrichment visible to the handler — proves *Req access
-		return tdOut{Value: "applied:" + in.Key}, nil
-	}).WithHandler(func(_ context.Context, req createReq) (userResp, error) {
+	).HandleBoundMW(bm).WithHandler(func(_ context.Context, req createReq) (userResp, error) {
 		receivedReqName = req.Name
 		return userResp{ID: "1", Name: req.Name}, nil
 	})
@@ -491,7 +500,13 @@ var bearerAuthOutCodec = codex.Struct[bearerAuthOut]()
 func TestHandleMW_CodecBackedMiddleware_Satisfies_CoversGlobalSecurity(t *testing.T) {
 	decl := middleware.NewDeclaration("bearer-handlemw-policy", tdInCodec, bearerAuthOutCodec)
 	decl.Security = middleware.NewSecurityDeclaration("bearerAuth", route.BearerScheme("JWT"), nil, nil)
-	mw := rest.NewMiddleware(decl).
+	bm := rest.NewBoundMiddleware[createReq](decl,
+		func(ctx context.Context, req *createReq, in tdIn) (bearerAuthOut, error) {
+			if in.Key != "valid-token" {
+				return bearerAuthOut{}, errors.New("invalid bearer token")
+			}
+			return bearerAuthOut{GrantedScopes: map[string][]string{"bearerAuth": nil}}, nil
+		}).
 		WithRequestHeader(rest.NewRequiredHeaderParam("Authorization", codex.String(),
 			func(in tdIn) string { return in.Key },
 			func(in *tdIn, v string) { in.Key = v },
@@ -501,12 +516,7 @@ func TestHandleMW_CodecBackedMiddleware_Satisfies_CoversGlobalSecurity(t *testin
 	s.AddGlobalSecurity(route.Require("bearerAuth"))
 	route := rest.NewRoute[createReq, userResp]("POST", "/secure-users", createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "createSecureUser"},
-	).HandleMW(mw, func(ctx context.Context, req *createReq, in tdIn) (bearerAuthOut, error) {
-		if in.Key != "valid-token" {
-			return bearerAuthOut{}, errors.New("invalid bearer token")
-		}
-		return bearerAuthOut{GrantedScopes: map[string][]string{"bearerAuth": nil}}, nil
-	}).WithHandler(func(_ context.Context, req createReq) (userResp, error) {
+	).HandleBoundMW(bm).WithHandler(func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
 	})
 	if err := route.Register(s); err != nil {

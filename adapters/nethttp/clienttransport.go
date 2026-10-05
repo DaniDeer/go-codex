@@ -451,6 +451,16 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 				obs.RecordRequest(method, path, 0, time.Since(start))
 				return nil, err
 			}
+			// Also count a codec-backed ClientMW (securedMw.WithSend,
+			// docs/roadmap/bound-middleware-split.md) matching one of
+			// secReqs' schemes as a credential Fn having run — confirmed
+			// gap: mergeCredentialHeaders only ever sees the LEGACY
+			// clientImpls list, so a 401 with ONLY a codec-backed
+			// credential middleware attached never triggered
+			// opts.OnCredentialRejected before this fix.
+			if !credentialFnRan && clientMiddlewareSatisfiesAny(clientMWHandlers, secReqs) {
+				credentialFnRan = true
+			}
 		}
 
 		// 3. Per-call format override resolution (opts.RequestFormats/

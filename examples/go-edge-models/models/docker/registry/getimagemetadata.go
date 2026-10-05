@@ -67,11 +67,13 @@ type GetManifestReq struct {
 // constant, not a caller-supplied value — see app/registry's
 // acceptManifestTypes.
 //
-// GetManifestRoute declares its "bearerAuth" requirement via
-// .Use(BearerAuthDeclaration) below — same mechanism as GetTagsRoute (see
-// its own doc comment): a caller MUST separately chain a
-// credential-SUPPLYING middleware.ClientImplementation via .ClientMW(...)
-// before calling .ClientHandle() to actually authenticate outgoing calls.
+// GetManifestRoute does NOT attach BearerAuthDeclaration itself — same
+// rationale as GetTagsRoute (see its own doc comment): a reusable
+// Middleware[In,Out]'s Fn travels EMBEDDED in the SAME .Use() call
+// (docs/roadmap/bound-middleware-split.md), so a caller chains
+// .Use(BearerAuthDeclaration.WithSend(credentialFn)) before calling
+// .ClientHandle() to both declare the "bearerAuth" requirement AND
+// authenticate outgoing calls.
 var GetManifestRoute = rest.NewRoute[GetManifestReq, internal.ManifestEnvelope](
 	"GET", "/v2/{name}/manifests/{reference}",
 	c.Struct[GetManifestReq](), internal.ManifestEnvelopeCodec,
@@ -95,7 +97,7 @@ var GetManifestRoute = rest.NewRoute[GetManifestReq, internal.ManifestEnvelope](
 		func(e internal.ManifestEnvelope) string { return e.Digest },
 		func(e *internal.ManifestEnvelope, v string) { e.Digest = v },
 	).WithDescription("The manifest's own content digest"),
-).Use(BearerAuthDeclaration)
+)
 
 // ── GetImageMetadata's own request/response contract ─────────────────────────
 //

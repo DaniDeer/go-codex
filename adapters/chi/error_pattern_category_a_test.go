@@ -207,8 +207,8 @@ func TestErrorPattern_SecurityMiddlewareFn_NoPattern_FallsBackUnchanged(t *testi
 // .WithRequestHeader here would instead register a route-level header
 // param contribution, whose OWN validation runs BEFORE middleware
 // dispatch and would intercept a missing-header case first.
-func newDecodeInFailingMiddleware() rest.Middleware[tdIn, tdOut] {
-	return rest.NewMiddleware(newTDDeclaration("api-key-policy"))
+func newDecodeInFailingMiddleware(fn func(ctx context.Context, req *createReq, in tdIn) (tdOut, error)) rest.BoundMiddleware[createReq, tdIn, tdOut] {
+	return rest.NewBoundMiddleware[createReq](newTDDeclaration("api-key-policy"), fn)
 }
 
 func TestErrorPattern_MiddlewareDecodeIn_Matched_RespondsTyped(t *testing.T) {
@@ -218,9 +218,9 @@ func TestErrorPattern_MiddlewareDecodeIn_Matched_RespondsTyped(t *testing.T) {
 		rest.ErrorPattern[rest.MiddlewareInputError, codexErrBody](http.StatusUnprocessableEntity, codexErrBodyCodec,
 			func(e rest.MiddlewareInputError) (codexErrBody, error) { return codexErrBody{Count: 1}, nil }),
 	)
-	route = route.HandleMW(newDecodeInFailingMiddleware(), func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
+	route = route.HandleBoundMW(newDecodeInFailingMiddleware(func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
 		return tdOut{Value: "ok"}, nil
-	})
+	}))
 	route = route.WithHandler(func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
 	})
@@ -240,9 +240,9 @@ func TestErrorPattern_MiddlewareDecodeIn_NoPattern_FallsBackUnchanged(t *testing
 	route := rest.NewRoute[createReq, userResp]("POST", "/errors/mw-decode-in-unmatched",
 		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "createUser"},
 	)
-	route = route.HandleMW(newDecodeInFailingMiddleware(), func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
+	route = route.HandleBoundMW(newDecodeInFailingMiddleware(func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
 		return tdOut{Value: "ok"}, nil
-	})
+	}))
 	route = route.WithHandler(func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
 	})
@@ -295,7 +295,7 @@ func TestErrorPattern_ResponseMergeFieldEncode_Matched_RespondsTyped(t *testing.
 
 // ── Row 10: middleware EncodeOut failure ──────────────────────────────────
 
-func newEncodeOutTestMiddleware() rest.Middleware[tdIn, tdOut] {
+func newEncodeOutTestMiddleware(fn func(ctx context.Context, req *createReq, in tdIn) (tdOut, error)) rest.BoundMiddleware[createReq, tdIn, tdOut] {
 	// WithRequestHeader ensures DecodeIn succeeds (tdIn.Key is populated
 	// from a real request header) so the deliberate failure below is
 	// ISOLATED to EncodeOut, not accidentally a DecodeIn failure.
@@ -305,7 +305,7 @@ func newEncodeOutTestMiddleware() rest.Middleware[tdIn, tdOut] {
 	// would make writeErrorPatternResponseReflect's own unconditional
 	// ValidateResponseHeaders check fail — a self-defeating scenario,
 	// not a bug.
-	return rest.NewMiddleware(newTDDeclaration("api-key-policy")).
+	return rest.NewBoundMiddleware[createReq](newTDDeclaration("api-key-policy"), fn).
 		WithRequestHeader(rest.NewRequiredHeaderParam("X-Api-Key", codex.String().Refine(validate.NonEmptyString),
 			func(in tdIn) string { return in.Key },
 			func(in *tdIn, v string) { in.Key = v },
@@ -323,9 +323,9 @@ func TestErrorPattern_MiddlewareEncodeOut_Matched_RespondsTyped(t *testing.T) {
 		rest.ErrorPattern[rest.MiddlewareOutputError, codexErrBody](http.StatusUnprocessableEntity, codexErrBodyCodec,
 			func(e rest.MiddlewareOutputError) (codexErrBody, error) { return codexErrBody{Count: 1}, nil }),
 	)
-	route = route.HandleMW(newEncodeOutTestMiddleware(), func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
+	route = route.HandleBoundMW(newEncodeOutTestMiddleware(func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
 		return tdOut{Value: "not-a-uuid"}, nil // deliberately fails the UUID refine on EncodeOut
-	})
+	}))
 	route = route.WithHandler(func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
 	})
@@ -346,9 +346,9 @@ func TestErrorPattern_MiddlewareEncodeOut_NoPattern_FallsBackUnchanged(t *testin
 	route := rest.NewRoute[createReq, userResp]("POST", "/errors/mw-encode-out-unmatched",
 		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "createUser"},
 	)
-	route = route.HandleMW(newEncodeOutTestMiddleware(), func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
+	route = route.HandleBoundMW(newEncodeOutTestMiddleware(func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
 		return tdOut{Value: "not-a-uuid"}, nil
-	})
+	}))
 	route = route.WithHandler(func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
 	})

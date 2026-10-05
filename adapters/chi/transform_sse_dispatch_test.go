@@ -16,7 +16,10 @@ import (
 // ── TransformSSE: happy path, response header composition ───────────────
 
 func TestTransformSSE_HappyPath_SetsResponseHeader(t *testing.T) {
-	mw := rest.NewMiddleware(newTDDeclaration("api-key-policy")).
+	bm := rest.NewBoundMiddleware[createReq](newTDDeclaration("api-key-policy"),
+		func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
+			return tdOut{Value: "applied:" + in.Key}, nil
+		}).
 		WithRequestHeader(rest.NewRequiredHeaderParam("X-Api-Key", codex.String(),
 			func(in tdIn) string { return in.Key },
 			func(in *tdIn, v string) { in.Key = v },
@@ -29,9 +32,7 @@ func TestTransformSSE_HappyPath_SetsResponseHeader(t *testing.T) {
 	route := rest.NewSSERoute[createReq, sseEvent]("/events", createReqCodec, sseEventCodec,
 		rest.RouteMeta{OperationID: "streamEvents"},
 	)
-	route = route.HandleMW(mw, func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
-		return tdOut{Value: "applied:" + in.Key}, nil
-	})
+	route = route.HandleBoundMW(bm)
 	route = route.WithHandler(func(ctx context.Context, _ createReq, send func(sseEvent) error) error {
 		return send(sseEvent{Message: "hello"})
 	})
@@ -56,19 +57,20 @@ func TestTransformSSE_HappyPath_SetsResponseHeader(t *testing.T) {
 // ── TransformSSE: In-decode failure short-circuits with 400 ──────────────
 
 func TestTransformSSE_InDecodeFailure_Returns400(t *testing.T) {
-	mw := rest.NewMiddleware(newTDDeclaration("api-key-policy")).
+	handlerCalled := false
+	bm := rest.NewBoundMiddleware[createReq](newTDDeclaration("api-key-policy"),
+		func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
+			return tdOut{Value: in.Key}, nil
+		}).
 		WithRequestHeader(rest.NewRequiredHeaderParam("X-Api-Key", codex.String(),
 			func(in tdIn) string { return in.Key },
 			func(in *tdIn, v string) { in.Key = v },
 		))
 
-	handlerCalled := false
 	route := rest.NewSSERoute[createReq, sseEvent]("/events2", createReqCodec, sseEventCodec,
 		rest.RouteMeta{OperationID: "streamEvents2"},
 	)
-	route = route.HandleMW(mw, func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
-		return tdOut{Value: in.Key}, nil
-	})
+	route = route.HandleBoundMW(bm)
 	route = route.WithHandler(func(ctx context.Context, _ createReq, send func(sseEvent) error) error {
 		handlerCalled = true
 		return send(sseEvent{Message: "hello"})
@@ -91,19 +93,20 @@ func TestTransformSSE_InDecodeFailure_Returns400(t *testing.T) {
 // ── TransformSSE: fn error falls back to rest.MiddlewareError ───────────
 
 func TestTransformSSE_FnError_FallsBackToMiddlewareError(t *testing.T) {
-	mw := rest.NewMiddleware(newTDDeclaration("api-key-policy")).
+	handlerCalled := false
+	bm := rest.NewBoundMiddleware[createReq](newTDDeclaration("api-key-policy"),
+		func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
+			return tdOut{}, errBadAPIKey
+		}).
 		WithRequestHeader(rest.NewRequiredHeaderParam("X-Api-Key", codex.String(),
 			func(in tdIn) string { return in.Key },
 			func(in *tdIn, v string) { in.Key = v },
 		))
 
-	handlerCalled := false
 	route := rest.NewSSERoute[createReq, sseEvent]("/events3", createReqCodec, sseEventCodec,
 		rest.RouteMeta{OperationID: "streamEvents3"},
 	)
-	route = route.HandleMW(mw, func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
-		return tdOut{}, errBadAPIKey
-	})
+	route = route.HandleBoundMW(bm)
 	route = route.WithHandler(func(ctx context.Context, _ createReq, send func(sseEvent) error) error {
 		handlerCalled = true
 		return send(sseEvent{Message: "hello"})
@@ -127,20 +130,22 @@ func TestTransformSSE_FnError_FallsBackToMiddlewareError(t *testing.T) {
 // attachment-order, last-applied-wins ──
 
 func TestTransformSSE_TwoMiddlewaresEnrichSameField_LastAttachedWins(t *testing.T) {
-	mwFirst := rest.NewMiddleware(newTDEmptyDeclaration("first-sse-policy"))
-	mwSecond := rest.NewMiddleware(newTDEmptyDeclaration("second-sse-policy"))
+	bmFirst := rest.NewBoundMiddleware[createReq](newTDEmptyDeclaration("first-sse-policy"),
+		func(ctx context.Context, req *createReq, in tdEmpty) (tdEmpty, error) {
+			req.Name = "first"
+			return tdEmpty{}, nil
+		})
+	bmSecond := rest.NewBoundMiddleware[createReq](newTDEmptyDeclaration("second-sse-policy"),
+		func(ctx context.Context, req *createReq, in tdEmpty) (tdEmpty, error) {
+			req.Name = "second"
+			return tdEmpty{}, nil
+		})
 
 	route := rest.NewSSERoute[createReq, sseEvent]("/events5", createReqCodec, sseEventCodec,
 		rest.RouteMeta{OperationID: "streamEvents5"},
 	)
-	route = route.HandleMW(mwFirst, func(ctx context.Context, req *createReq, in tdEmpty) (tdEmpty, error) {
-		req.Name = "first"
-		return tdEmpty{}, nil
-	})
-	route = route.HandleMW(mwSecond, func(ctx context.Context, req *createReq, in tdEmpty) (tdEmpty, error) {
-		req.Name = "second"
-		return tdEmpty{}, nil
-	})
+	route = route.HandleBoundMW(bmFirst)
+	route = route.HandleBoundMW(bmSecond)
 
 	var receivedName string
 	route = route.WithHandler(func(ctx context.Context, req createReq, send func(sseEvent) error) error {
@@ -169,7 +174,12 @@ func TestTransformSSE_OutEncodeFailure_ReportsMiddlewareOutLocation(t *testing.T
 	// In is tdEmpty (no required fields, so DecodeIn/InCodec.Validate
 	// always succeeds) — isolating the failure to Out's EncodeOut path.
 	decl := middleware.NewDeclaration("api-key-policy", tdEmptyCodec, tdOutCodec)
-	mw := rest.NewMiddleware(decl).
+	bm := rest.NewBoundMiddleware[createReq](decl,
+		func(ctx context.Context, req *createReq, in tdEmpty) (tdOut, error) {
+			// Empty Value fails tdOutCodec's NonEmptyString refinement at
+			// EncodeOut/OutCodec.Validate time.
+			return tdOut{Value: ""}, nil
+		}).
 		WithResponseHeader(rest.NewRequiredResponseHeaderParam("X-Policy-Applied", codex.String(),
 			func(out tdOut) string { return out.Value },
 			func(out *tdOut, v string) { out.Value = v },
@@ -177,11 +187,7 @@ func TestTransformSSE_OutEncodeFailure_ReportsMiddlewareOutLocation(t *testing.T
 	route := rest.NewSSERoute[createReq, sseEvent]("/events-out-fail", createReqCodec, sseEventCodec,
 		rest.RouteMeta{OperationID: "streamEventsOutFail"},
 	)
-	route = route.HandleMW(mw, func(ctx context.Context, req *createReq, in tdEmpty) (tdOut, error) {
-		// Empty Value fails tdOutCodec's NonEmptyString refinement at
-		// EncodeOut/OutCodec.Validate time.
-		return tdOut{Value: ""}, nil
-	})
+	route = route.HandleBoundMW(bm)
 	spy := &spyValidationObserver{}
 	route = route.WithHandler(func(ctx context.Context, _ createReq, send func(sseEvent) error) error {
 		return send(sseEvent{Message: "hello"})

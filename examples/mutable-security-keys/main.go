@@ -39,7 +39,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"net/http/httptest"
 	"strings"
 	"time"
@@ -47,7 +46,6 @@ import (
 	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -66,6 +64,14 @@ func (o reloadObserver) RecordReload(location string, success bool, _ time.Durat
 func (o reloadObserver) RecordInvalidate(location string) {
 	fmt.Printf("  [observer:%s] invalidate %q\n", o.name, location)
 }
+
+// authIn carries the raw Authorization header value — secureDeclMw's real
+// (non-struct{}) In type, declaratively merged via WithRequestHeader.
+type authIn struct{ Authorization string }
+
+// authOut carries GrantedScopes — see secureDeclMw's own doc comment for
+// why this field is required even though no specific scopes are checked.
+type authOut struct{ GrantedScopes map[string][]string }
 
 // secureResp is the response body of the demo's one secured route.
 type secureResp struct{ Message string }
@@ -106,29 +112,36 @@ func main() {
 	// inline below) is supplied SEPARATELY, at Register time — its
 	// extraction Fn calls keys.Get() INSIDE the closure body, on every
 	// request — never hoisted to a local outside the closure. ──────────
-	secureDeclMw := rest.SecurityMiddleware[struct{}, struct{}]("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT"), Codec: &keyCodec}, nil)
+	// authIn carries the raw Authorization header value — the REUSABLE
+	// class's declarative replacement for the OLD raw-*http.Request-Fn
+	// pairing (permanently closed, docs/roadmap/bound-middleware-split.md).
+	// authOut carries GrantedScopes — the GrantedScopes convention every
+	// Security Out type is expected to follow (a field NAMED GrantedScopes
+	// map[string][]string, read by the adapter's dispatch via reflection)
+	// — required for the adapter to recognize this call as having
+	// actually satisfied the "bearerAuth" requirement at all, even though
+	// no SPECIFIC scopes are required here (scopes: nil below).
+	secureDeclMw := rest.SecurityMiddleware[authIn, authOut]("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT"), Codec: &keyCodec}, nil).
+		WithRequestHeader(rest.NewRequiredHeaderParam("Authorization", codex.String(),
+			func(in authIn) string { return in.Authorization },
+			func(in *authIn, v string) { in.Authorization = v },
+		))
 
 	secureRoute := rest.NewRoute[struct{}, secureResp]("GET", "/secure",
 		codex.Empty, secureRespCodec,
 		rest.RouteMeta{OperationID: "secureEndpoint"},
-	).Use(secureDeclMw)
-
-	secureImplMw := middleware.ServerImplementation{
-		Name:      "implement-scopes:bearerAuth",
-		Satisfies: []string{"bearerAuth"},
-		Fn: func(_ context.Context, r *http.Request, _ *struct{}) (map[string][]string, error) {
-			current := keys.Get() // ← read fresh on EVERY request, not hoisted
-			token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-			if token != current {
-				return nil, errors.New("signing key mismatch")
-			}
-			return map[string][]string{"bearerAuth": nil}, nil
-		},
-	}
+	)
 
 	servedRoute := secureRoute.WithHandler(func(_ context.Context, _ struct{}) (secureResp, error) {
 		return secureResp{Message: "welcome"}, nil
-	}).HandleMW(&secureDeclMw, secureImplMw.Fn)
+	}).Use(secureDeclMw.WithReceive(func(_ context.Context, in authIn) (authOut, error) {
+		current := keys.Get() // ← read fresh on EVERY request, not hoisted
+		token := strings.TrimPrefix(in.Authorization, "Bearer ")
+		if token != current {
+			return authOut{}, errors.New("signing key mismatch")
+		}
+		return authOut{GrantedScopes: map[string][]string{"bearerAuth": nil}}, nil
+	}))
 	mux, err := nethttp.ServeOne(servedRoute)
 	if err != nil {
 		panic(err)
@@ -143,23 +156,20 @@ func main() {
 	// single-process, network-free example.
 	fetchFreshCredential := func() string { return keys.Get() }
 
-	// ── Client: the credential-providing Fn, attached via
-	// Route.ClientMW (paired against secureDeclMw), calls cred.Get()
-	// INSIDE the closure body on every call, refreshing via Set() when
-	// stale — never hoisted. ──
-	securedClientRoute := secureRoute.ClientMW(&secureDeclMw,
-		func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
+	// ── Client: the credential-providing Fn, attached via .Use()
+	// (secureDeclMw.WithSend), calls cred.Get() INSIDE the closure body
+	// on every call, refreshing via Set() when stale — never hoisted. ──
+	securedClientRoute := secureRoute.Use(secureDeclMw.WithSend(
+		func(_ context.Context) (authIn, error) {
 			val, fresh := cred.Get() // ← the bool MUST be handled explicitly; Cacheable never hides it
 			if !fresh {
 				val = fetchFreshCredential()
 				if err := cred.Set(val); err != nil {
-					return nil, err
+					return authIn{}, err
 				}
 			}
-			h := make(http.Header)
-			h.Set("Authorization", "Bearer "+val)
-			return h, nil
-		})
+			return authIn{Authorization: "Bearer " + val}, nil
+		}))
 	// handle is built ONCE and reused by every call below — the
 	// recommended pattern for many calls to the same route.
 	handle := securedClientRoute.ClientHandle()

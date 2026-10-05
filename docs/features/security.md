@@ -10,7 +10,7 @@
 > This is the one place go-codex's security model is intentionally
 > asymmetric with REST/events/reqreply.
 
-go-codex documents security requirements in the spec and provides declarative hooks for runtime enforcement — **the library does not import any crypto or JWT library**. For REST, a security scheme is declared ONCE, via `middleware.SecurityScheme(schemeName, scheme, scopes, codec)`/`rest.FromSecurityScheme(schemeName, rest.SecurityScheme, scopes)` (bridging an existing `rest.SecurityScheme` value), attached to the route via `Route.Use(mw)` — there is no builder-level scheme registry, and `rest.WithSecurityScheme` was REMOVED (there is no metadata-only registration anymore; every declared scheme is a real requirement) — and the SAME declaration is consumed identically by both the server (`Route.Register`/`RegisterHandle`) and the client (`Route.ClientHandle`), so one route definition gets IDENTICAL credential-format enforcement on both ends. Runtime credential validation itself is attached PER-ROUTE, paired against the declared `middleware.Middleware`: server-side via `Route.HandleMW(mw, fn)`, client-side via `Route.ClientMW(mw, fn)` (see "HTTP client — credential-providing ClientMW" below).
+go-codex documents security requirements in the spec and provides declarative hooks for runtime enforcement — **the library does not import any crypto or JWT library**. For REST, a security scheme is declared ONCE, via `middleware.SecurityScheme(schemeName, scheme, scopes, codec)`/`rest.FromSecurityScheme(schemeName, rest.SecurityScheme, scopes)` (bridging an existing `rest.SecurityScheme` value), attached to the route via `Route.Use(mw)` — there is no builder-level scheme registry, and `rest.WithSecurityScheme` was REMOVED (there is no metadata-only registration anymore; every declared scheme is a real requirement) — and the SAME declaration is consumed identically by both the server (`Route.Register`/`RegisterHandle`) and the client (`Route.ClientHandle`), so one route definition gets IDENTICAL credential-format enforcement on both ends. Runtime credential validation itself is attached per-route via ONE of two classes (`docs/roadmap/bound-middleware-split.md`): the REUSABLE class (`Middleware.WithReceive`/`WithSend`, attached via `.Use()`) for a `Req`-free check, or the BOUND class (`BoundMiddleware`/`BoundClientMiddleware`, attached via `Route.HandleBoundMW`/`Route.ClientBoundMW`) when the Fn needs the route's own decoded `Req` — see "Codec-backed Security" below.
 
 ## Connection-level vs message-level security
 
@@ -292,20 +292,24 @@ Routes with `nil Security` (default) trigger enforcement when global security is
 
 `rest.CallWithTransport` (client-side) runs the SAME sequence, symmetrically, on the OUTGOING request before it is sent — see "HTTP client — credential-providing ClientMW" below. **`rest.Client.Call` (bound via `Client.Attach(nethttp.NewClientTransport(...))`) runs the SAME enforcement too** — it is full-featured: security/credential `ClientMW`, path/query/header/cookie params, per-call format override, and error-pattern decoding are all supported (see `adapters/nethttp/clienttransport.go`'s own doc comment for confirmation there is no remaining "v1 scope" limitation).
 
-### Codec-backed Security — `HandleMW`/`ClientMW`'s bound path + `GrantedScopes`
+### Codec-backed Security — `BoundMiddleware`/`BoundClientMiddleware` + `GrantedScopes`
 
 > Runnable demo: `examples/rest-api/demo_granted_scopes_context_field.go`
-> — a REAL `AuthIn`/`AuthOut` pair, bound `HandleMW`/`ClientMW`, correct-
-> vs-wrong-scope enforcement, and `SetContextFieldFromIn` propagating the
-> authenticated token to the handler with zero manual re-decoding.
+> — a REAL `AuthIn`/`AuthOut` pair, `HandleBoundMW`/`ClientBoundMW`,
+> correct-vs-wrong-scope enforcement, and `SetContextFieldFromIn`
+> propagating the authenticated token to the handler with zero manual
+> re-decoding.
 
-A codec-backed `rest.Middleware[In, Out]` (built via `rest.SecurityMiddleware[In, Out]`,
-generic over In/Out since docs/design/d-0007-declarative-middleware-layering.md's
-Rollout Phase A) can ALSO carry a Security declaration and be attached via
-`Route.HandleMW`/`Route.ClientMW` — the SAME two methods used for the
-legacy shape above. `HandleMW`/`ClientMW` detect which shape `fn` is by
-its REFLECTED signature (not by `mw`'s type), so attaching either shape
-uses the identical method call:
+A codec-backed `rest.Middleware[In, Out]` (built via `rest.SecurityMiddleware[In, Out]`)
+can carry a Security declaration and be attached in ONE of two ways,
+depending on whether the Fn needs access to the route's own decoded
+`Req` (see `docs/roadmap/bound-middleware-split.md` for the full design
+this section documents):
+
+**Reusable class — `Middleware[In, Out]`, attached via `.Use()`.** The
+Fn is embedded via `WithReceive`/`WithSend` and is `Req`-free — the
+default choice whenever the credential check only needs the decoded
+header/cookie/query value, never the request body/path itself:
 
 ```go
 type APIKeyIn struct{ Key string }
@@ -316,68 +320,117 @@ apiKeyMw := rest.SecurityMiddleware[APIKeyIn, APIKeyOut]("apiKeyAuth",
 ).WithRequestHeader(rest.NewRequiredHeaderParam("X-Api-Key", codex.String(),
     func(in APIKeyIn) string { return in.Key },
     func(in *APIKeyIn, v string) { in.Key = v },
-))
+)).WithReceive(func(ctx context.Context, in APIKeyIn) (APIKeyOut, error) {
+    if !validKey(in.Key) {
+        return APIKeyOut{}, errors.New("invalid API key")
+    }
+    return APIKeyOut{GrantedScopes: map[string][]string{"apiKeyAuth": nil}}, nil
+})
 
-// NOTE: skip .Use(apiKeyMw) here — pairing .Use() with a bound HandleMW
-// for the SAME mw currently throws DuplicateMiddlewareNameError (a
-// known, tracked gap — see the callout below). Declare the requirement
-// directly via RouteMeta.Security instead; CheckCoverage/CheckScopes
-// enforce it identically either way.
 route := rest.NewRoute[CreateUserReq, User]("POST", "/users", reqCodec, respCodec,
-    rest.RouteMeta{OperationID: "createUser", Security: []route.SecurityRequirement{route.Require("apiKeyAuth")}},
-).HandleMW(apiKeyMw,
+    rest.RouteMeta{OperationID: "createUser"},
+).Use(apiKeyMw)
+```
+
+**Bound class — `BoundMiddleware[Req, In, Out]`, attached via
+`HandleBoundMW`/`ClientBoundMW`.** Fn additionally receives `*Req` (server)
+or `Req` by value (client) — use this when the declare-time spec (route
+path/codec) and the runtime implementation genuinely need to live in
+SEPARATE files/packages (the common case when routes/ declares a scheme
+reused across SEVERAL different `Req` types, e.g.
+`examples/rest-api/routes/middleware.go`'s `BoundScopeServerMW`/
+`BoundScopeClientMW` helpers), or when the credential itself must be
+read from/written to the decoded `Req` struct directly (no header/cookie/
+property side-channel available at all — e.g. an in-payload credential
+field):
+
+```go
+route := rest.NewRoute[CreateUserReq, User]("POST", "/users", reqCodec, respCodec,
+    rest.RouteMeta{OperationID: "createUser"},
+).HandleBoundMW(rest.BoundSecurityMiddleware[CreateUserReq, APIKeyIn, APIKeyOut](
+    "apiKeyAuth", rest.SecurityScheme{SecurityScheme: route.APIKeyScheme("X-Api-Key", "header")}, nil,
     func(ctx context.Context, req *CreateUserReq, in APIKeyIn) (APIKeyOut, error) {
         if !validKey(in.Key) {
             return APIKeyOut{}, errors.New("invalid API key")
         }
         return APIKeyOut{GrantedScopes: map[string][]string{"apiKeyAuth": nil}}, nil
-    })
+    },
+).WithRequestHeader(rest.NewRequiredHeaderParam("X-Api-Key", codex.String(),
+    func(in APIKeyIn) string { return in.Key },
+    func(in *APIKeyIn, v string) { in.Key = v },
+)))
 ```
 
-> **Known gap**: `.Use(mw).HandleMW(mw, boundFn)` for a Security-only
-> `mw` (no merge fields) currently throws `DuplicateMiddlewareNameError` —
-> both `.Use()` and the bound path unconditionally add a spec
-> contribution under the same name. Confirmed to ALSO affect
-> `api/reqreply` identically (not REST-specific; `api/events` is
-> unaffected by its different spec-bundling architecture). Workaround:
-> declare `RouteMeta.Security` directly instead of `.Use(mw)` when
-> pairing with a bound `HandleMW`/`ClientMW` call, as shown above —
-> sufficient for `CheckCoverage`/`CheckScopes` correctness, though
-> `OpenAPISpec()` won't auto-register the scheme via that path. Tracked
-> as a follow-up design question, not yet fixed.
+`HandleBoundMW` populates `rb.meta.Security`/`rb.securitySchemes`
+automatically — no separate `.Use()` call is needed (and attempting one
+for the SAME scheme name on the SAME route is a `DuplicateMiddlewareNameError`,
+same as attaching two Security declarations any other way). The prior
+"Known gap" documented in earlier revisions of this page (`.Use(mw)` +
+a bound `HandleMW`/`ClientMW` pairing throwing `DuplicateMiddlewareNameError`)
+is now structurally impossible — `BoundMiddleware` is a DIFFERENT Go type
+from `Middleware`, with its own dedicated attach methods, so the two
+styles can never collide on one value.
 
-`fn` gets `*Req` access (read/enrich, exactly like the generic middleware
-mechanism — see [Feature: Codec-Declared Middleware](codec-declared-middleware.md)),
-and `In`'s own header/cookie/query merge fields decode declaratively from
-the request — no manual `r.Header.Get(...)` anywhere. **`Out` carries the
-RESOLVED "conventional field" convention: a field named `GrantedScopes
-map[string][]string`**, read by the adapter via reflection and fed into
-the SAME `middleware.CheckScopes` call the legacy `SecurityFunc`/credential
-path already used — a route requiring specific scopes (not just scheme
-presence) checks them identically regardless of which attachment style
-supplied the grant. Returning an error from `fn` keeps Security's own
-distinct fallback (401, `rest.SecurityError`), not the generic 400
-ordinary middleware errors fall back to.
+**A server-side `BoundMiddleware` and a client-side `BoundClientMiddleware`
+for the SAME scheme name CANNOT be attached to one shared route value
+either**, for the identical reason — unlike `Middleware[In,Out]` (which
+can carry both a `WithReceive` and a `WithSend` Fn and be `.Use()`'d ONCE
+for both roles), `HandleBoundMW`/`ClientBoundMW` each independently
+contribute a spec entry under the scheme's declaration name, so combining
+them on one route also trips `DuplicateMiddlewareNameError`. Build TWO
+SEPARATE route values instead — one per role, exactly like every example
+in this repo does (see `examples/adapters-sse`'s `secureServerMw`/
+`securedClientMw` split, or `examples/rest-api/client/client.go`'s
+pattern of deriving a fresh client-side route from the shared spec-only
+base).
 
-On the CLIENT side, the identical shape detection applies to `ClientMW`:
-a credential-supplying `fn` shaped `func(ctx context.Context, req Req) (In, error)`
-(Req BY VALUE, matching the route's own Req type) is recognized as the
-bound path and dispatched through the SAME merge-field mechanism, instead
-of hand-building an `http.Header` value. **`rest.NewOmitEmptyHeaderParam`
+**The legacy raw-adapter credential-pairing mode
+(`HandleMW(&mw, rawFn)`/`ClientMW(&mw, rawFn)` with a reflection-detected
+bound-shaped `fn`) is PERMANENTLY CLOSED** — `HandleMW`/`ClientMW` now
+reject any codec-backed `Middleware[In, Out]` value outright
+(`MiddlewareMisattachedError`), whether or not `fn`'s shape looks bound.
+Every Security need expressible under the old mechanism re-expresses
+cleanly under the two classes above; see
+`docs/roadmap/bound-middleware-split.md`'s investigation for the
+case-by-case migration mapping.
+
+`fn` gets `*Req`/`Req` access in the bound class (read/enrich, exactly
+like the generic middleware mechanism — see
+[Feature: Codec-Declared Middleware](codec-declared-middleware.md)), and
+`In`'s own header/cookie/query merge fields decode declaratively from the
+request in BOTH classes — no manual `r.Header.Get(...)` anywhere.
+**`Out` carries the RESOLVED "conventional field" convention: a field
+named `GrantedScopes map[string][]string`**, read by the adapter via
+reflection and fed into the SAME `middleware.CheckScopes` call the legacy
+`SecurityFunc`/credential path already used — a route requiring specific
+scopes (not just scheme presence) checks them identically regardless of
+which class supplied the grant. **This field must be populated even when
+zero specific scopes are required** — an `Out{}` zero value (nil map)
+means NOTHING satisfies the scheme at all, causing an otherwise-successful
+Fn to still be treated as a rejection; return
+`Out{GrantedScopes: map[string][]string{"<schemeName>": nil}}` for a
+scheme with no scope requirements.
+
+On the CLIENT side, `WithSend` (reusable) / `ClientBoundMW` (bound) are
+the credential-SUPPLYING counterparts — a Fn shaped
+`func(ctx context.Context) (In, error)` (reusable) or
+`func(ctx context.Context, req Req) (In, error)` (bound, Req BY VALUE)
+returns the declarative `In` value to merge into the request, instead of
+hand-building an `http.Header` value. **`rest.NewOmitEmptyHeaderParam`
 is the key building block for an anonymous-access credential Fn** — a
 field declared with it OMITS its header entirely when the current value
 is the zero value (e.g. an empty token), rather than sending an empty
 header value; see `examples/go-edge-models/app/registry/auth.go`'s
 `newAuthCredentialFunc` and `examples/go-edge-models/models/docker/registry/security.go`'s
 `BearerAuthDeclaration` for a complete, runnable, real-world example of
-this exact pattern (a registry client that may or may not need Bearer
-auth, decided per-call by whether an actual token was obtained).
+this exact pattern (a registry client that may or may not need a
+credential, decided per-call by whether an actual token was obtained).
 
 **Coverage note — `ports`-facing binding adapters (`IngestAdapter`,
 `LatestAdapter`, `SSEAdapter`, and `stream.go`'s `HandlerLatest`/
-`PipelineHandler`, both `nethttp` and `chi`) dispatch `HandleMW`-attached
-middleware/Security identically to `Server.Attach`.** A route's
-`MiddlewareHandlers` (Security-shaped or ordinary) run through the exact
+`PipelineHandler`, both `nethttp` and `chi`) dispatch
+`HandleBoundMW`/`.Use()`-attached middleware/Security identically to
+`Server.Attach`.** A route's `MiddlewareHandlers` run through the exact
 same unified sequence regardless of whether the route is wired via
 `b.Attach(...)` or bound directly to a `ports.SourceAdapter`/`SinkAdapter`/
 `LatestAdapter` — "declare once, works everywhere" holds across both
@@ -385,7 +438,8 @@ consumption paths.
 
 ## Credential format validation
 
-Use `validate` constraints to validate raw credential strings before `SecurityFunc` runs:
+Use `validate` constraints to validate raw credential strings before a
+Security `Fn` runs:
 
 ```go
 // Bearer token: non-empty, no leading/trailing whitespace
@@ -398,46 +452,49 @@ codex.String().Refine(validate.UUID)
 codex.String().Refine(validate.NonEmptyString)
 ```
 
-## HTTP client — credential-providing `ClientMW`
+## HTTP client — credential-providing `WithSend`/`ClientBoundMW`
 
 For `rest.CallWithTransport` and `rest.Client.Call` alike (both are
 full-featured — see the "Runtime enforcement" section above), provide
-credentials via a credential-providing
-implementation attached with [`Route.ClientMW`](../features/http-client.md),
-PAIRED against the SAME `middleware.Middleware` value the route's security
-requirement was declared with (via `.Use(mw)`). The Fn matches
-[`CredentialFunc`](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/nethttp#CredentialFunc)'s
-shape (`func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error)`).
-There is no per-call override anymore — a route's `ClientMW`-declared
-credential fulfillment applies to EVERY call made through that route
-value; a caller needing a genuinely different credential for one call
-builds a DIFFERENT `Route` value via a fresh `.ClientMW(...)`:
+credentials via `Middleware.WithSend` (reusable class) or
+`BoundClientMiddleware` attached via `Route.ClientBoundMW` (bound class —
+see "Codec-backed Security" above for when to choose which). There is no
+per-call override anymore — a route's credential-supplying middleware
+applies to EVERY call made through that route value; a caller needing a
+genuinely different credential for one call builds a DIFFERENT `Route`
+value via a fresh `.Use(mw.WithSend(...))`/`.ClientBoundMW(...)` call:
 
 ```go
-securedMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
+type AuthIn struct{ Token string }
+type AuthOut struct{ GrantedScopes map[string][]string }
+
+bearerMw := rest.SecurityMiddleware[AuthIn, AuthOut]("bearerAuth",
+    rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+).WithRequestHeader(rest.NewRequiredHeaderParam("Authorization", codex.String(),
+    func(in AuthIn) string { return in.Token },
+    func(in *AuthIn, v string) { in.Token = v },
+))
 
 securedRoute := rest.NewRoute[GetDataReq, Data]("GET", "/data",
     reqCodec, respCodec, rest.RouteMeta{OperationID: "getSecuredData"},
-).Use(securedMw).ClientMW(&securedMw, func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
-    h := make(http.Header)
-    h.Set("Authorization", "Bearer "+getToken(ctx))
-    return h, nil
-})
+).Use(bearerMw.WithSend(func(ctx context.Context) (AuthIn, error) {
+    return AuthIn{Token: getToken(ctx)}, nil
+}))
 
 handle := securedRoute.ClientHandle()
 transport := nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: http.DefaultClient, BaseURL: serverURL})
 data, err := rest.CallWithTransport(ctx, transport, handle, GetDataReq{}, rest.ClientCallOptions{})
 ```
 
-The credential-providing `Fn` is GATED by `Satisfies` (derived from
-`mw.Security.SchemeName`) vs. the route's declared requirements — it only
-runs when the route actually declares that scheme. For static
-credentials, use `ClientCallOptions.ExtraHeaders` instead.
+The credential-providing `Fn` is GATED by the Security declaration's own
+scheme name vs. the route's declared requirements — it only runs when the
+route actually declares that scheme. For static credentials, use
+`ClientCallOptions.ExtraHeaders` instead.
 
-**Symmetric credential-format validation.** If `securedRoute`'s declared
+**Symmetric credential-format validation.** If `bearerMw`'s declared
 scheme carries a non-nil `Codec` — populated identically on BOTH
 `Route.Register`/`RegisterHandle` and `Route.ClientHandle` — `Call`
-validates the credential-providing `Fn`'s returned header against that
+validates the credential-providing `Fn`'s returned value against that
 SAME `Codec` before sending, reusing the identical extraction/validation
 logic the server `Handler` uses on an incoming request. A malformed
 credential returns `rest.SecurityCredentialError` locally, before any
@@ -445,48 +502,76 @@ network call, and fires `stats.SecurityObserver.RecordSecurityRejection`
 — catching a credential bug immediately instead of after a round trip and
 a generic 401.
 
-This does NOT require a credential-providing `ClientMW` to be attached at
-all on a secured route, and the check only fires when one actually returns
-something: no `ClientMW` attached, or one that deliberately returns
-`(nil, nil)` to mean "this call needs no credential" (e.g. an auth flow
-that first probes whether the specific server instance requires auth at
-all — see `examples/go-edge-models/app/registry`'s
+This does NOT require a credential-providing Fn to be attached at all on
+a secured route, and the check only fires when one actually returns
+something: no `WithSend`/`ClientBoundMW` attached, or one that
+deliberately returns a zero `In` to mean "this call needs no credential"
+(e.g. an auth flow that first probes whether the specific server instance
+requires auth at all — see `examples/go-edge-models/app/registry`'s
 `newAuthCredentialFunc`), remains a deliberate non-error. The request is
 simply sent without the credential, and it's up to the server to accept or
-reject it — symmetric with server-side `SecurityFunc`.
+reject it — symmetric with server-side enforcement.
 
 ### Caching a credential-providing Fn
 
 Re-authenticating on every call is wasteful when the underlying `inner`
 credential fetch is itself an HTTP round trip (e.g. an OAuth2 token
 endpoint, or `examples/go-edge-models/app/registry`'s registry token
-exchange). `nethttp.NewCachingCredentialFunc` wraps any
-[`CredentialFunc`](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/nethttp#CredentialFunc)-shaped
-function with TTL-based caching:
+exchange). `nethttp.NewCachingCredentialFunc` wraps the OLD, now-closed
+raw `CredentialFunc` shape
+(`func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error)`)
+with TTL-based caching — it does NOT apply to the current
+`WithSend`/`ClientBoundMW` Fn shape
+(`func(ctx context.Context) (In, error)`/`func(ctx context.Context, req Req) (In, error)`).
+Write a small, equivalent TTL-cache wrapper for the current shape
+instead — `examples/adapters-nethttp-client/main.go`'s `cachingAuthIn`
+is a complete, runnable reference (TTL-based, single-credential cache,
+`invalidate func()` returned for wiring into `OnCredentialRejected`):
 
 ```go
-credFn, invalidate := nethttp.NewCachingCredentialFunc(inner, nethttp.CachingCredentialFuncOptions{
-    TTL: time.Hour,
-})
-securedRoute := contract.GetSecuredData(securedMw).ClientMW(&securedMw, credFn)
+func cachingAuthIn(inner func(context.Context) (AuthIn, error), ttl time.Duration) (fn func(context.Context) (AuthIn, error), invalidate func()) {
+    var mu sync.Mutex
+    var cached AuthIn
+    var expiresAt time.Time
+    fn = func(ctx context.Context) (AuthIn, error) {
+        mu.Lock()
+        defer mu.Unlock()
+        if time.Now().Before(expiresAt) {
+            return cached, nil
+        }
+        v, err := inner(ctx)
+        if err != nil {
+            return AuthIn{}, err
+        }
+        cached, expiresAt = v, time.Now().Add(ttl)
+        return cached, nil
+    }
+    invalidate = func() {
+        mu.Lock()
+        defer mu.Unlock()
+        expiresAt = time.Time{}
+    }
+    return fn, invalidate
+}
 ```
 
-- `inner` is invoked at most once per TTL window; concurrent callers during
-  a cache miss share the SAME in-flight call (hand-rolled single-flight —
-  no thundering herd on the auth server, no external dependency).
+- `inner` is invoked at most once per TTL window.
 - The returned `invalidate func()` immediately expires the cached
-  credential. `NewCachingCredentialFunc` does NOT know when a credential is
+  credential. A cache wrapper does NOT know when a credential is
   rejected — the server only reveals that via a 401 response, which is
-  observed by `Call`, not by the credential Fn (which runs before
-  the network call). Wire `invalidate` to `ClientCallOptions.OnCredentialRejected`
+  observed by `Call`, not by the credential Fn (which runs before the
+  network call). Wire `invalidate` to `ClientCallOptions.OnCredentialRejected`
   and retry once, explicitly:
 
 ```go
+cachedFn, invalidate := cachingAuthIn(inner, time.Hour)
 callOpts := rest.ClientCallOptions{
     OnCredentialRejected: invalidate, // purges the cache; does NOT retry
 }
+securedRoute := rest.NewRoute[GetDataReq, Data]("GET", "/data",
+    reqCodec, respCodec, rest.RouteMeta{OperationID: "getSecuredData"},
+).Use(bearerMw.WithSend(cachedFn))
 handle := securedRoute.ClientHandle()
-transport := nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: http.DefaultClient, BaseURL: serverURL})
 resp, err := rest.CallWithTransport(ctx, transport, handle, req, callOpts)
 
 var statusErr nethttp.UnexpectedStatusError
@@ -497,17 +582,15 @@ if errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusUnauthorized
 
 `OnCredentialRejected` is purely a notification hook — `CallWithTransport`
 never retries automatically, keeping control flow explicit and in the
-caller's hands.
+caller's hands. `OnCredentialRejected` fires correctly whether the
+credential came from the reusable class's `WithSend` or the bound
+class's `ClientBoundMW` — both are recognized by
+`clientMiddlewareSatisfiesAny` (`adapters/nethttp/client_middleware.go`),
+not just the legacy `ClientImplementations` path.
 
-`CachingCredentialFuncOptions.Observer`, when set, receives
-`stats.CredentialCacheObserver` hit/refresh events
-(`RecordCredentialCacheHit`/`RecordCredentialCacheRefresh`), each including a
-`location` string derived from the security scheme names of the request's
-`[]route.SecurityRequirement`.
-
-One `NewCachingCredentialFunc` instance is one cache entry — construct a
-separate instance per credential scope (e.g. per host/registry) when
-different routes need independently-cached credentials.
+One cache wrapper instance is one cache entry — construct a separate
+instance per credential scope (e.g. per host/registry) when different
+routes need independently-cached credentials.
 
 ### Live-reloadable credentials — `codex.Mutable[T]`/`codex.Cacheable[T]`
 

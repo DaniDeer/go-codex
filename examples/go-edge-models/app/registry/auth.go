@@ -282,15 +282,15 @@ func authenticate(ctx context.Context, httpClient *http.Client, registryHost, re
 	tokenOpts := rest.ClientCallOptions{Observer: obs}
 	tokenRoute := getTokenRoute
 	if creds != nil {
-		tokenRoute = tokenRoute.ClientMW(&basicAuthMw, func(context.Context, []route.SecurityRequirement) (http.Header, error) {
+		tokenRoute = tokenRoute.Use(basicAuthMw.WithSend(func(context.Context) (basicAuthIn, error) {
 			basicAuth, err := formatBasicAuth(creds.Username, creds.Password)
 			if err != nil {
-				return nil, err
+				return basicAuthIn{}, err
 			}
-			h := make(http.Header, 1)
-			h.Set("Authorization", basicAuth)
-			return h, nil
-		})
+			return basicAuthIn{Authorization: basicAuth}, nil
+		}))
+	} else {
+		tokenRoute = tokenRoute.Use(basicAuthMw) // spec-only — declares the scheme without an implementation
 	}
 
 	tokenHandle := tokenRoute.ClientHandle()
@@ -307,21 +307,16 @@ func authenticate(ctx context.Context, httpClient *http.Client, registryHost, re
 	return tr.AccessToken, nil
 }
 
-// credentialFunc names nethttp.CredentialFunc's function type for
-// readability at call sites that need to store or pass one around
-// (newAuthCredentialFunc's return type, passed to .ClientMW(&mw, fn) as
-// fn) instead of repeating the full inline function type.
-// credentialFunc names the bound-ClientMW shape newAuthCredentialFunc
-// returns — func(ctx, req Req) (regmodels.BearerCredential, error). Req is
-// never referenced by the body (mirrors the PRIOR shape's ignored
-// []route.SecurityRequirement parameter exactly) — generic purely so the
-// SAME shape can be reused across GetTagsRoute (Req=regmodels.GetTagsReq)
-// and GetManifestRoute (Req=regmodels.GetManifestReq); ClientMW's bound-
-// path shape detection recognizes func(ctx, Req) (In, error) by its 2nd
-// param's type, so each call site instantiates newAuthCredentialFunc with
-// its OWN route's concrete Req (docs/design/d-0007-declarative-middleware-layering.md's
-// Rollout Phase A).
-type credentialFunc[Req any] = func(ctx context.Context, req Req) (regmodels.BearerCredential, error)
+// credentialFunc names the REUSABLE class's WithSend shape
+// newAuthCredentialFunc returns — func(ctx) (regmodels.BearerCredential,
+// error). No Req type parameter at all anymore: the OLD bound-ClientMW
+// shape (func(ctx, Req) (In, error)) discarded Req entirely in its body
+// (confirmed never referenced), so the REUSABLE class
+// (docs/roadmap/bound-middleware-split.md) is the correct, simpler fit —
+// the SAME credentialFunc value attaches to GetTagsRoute AND
+// GetManifestRoute unconditionally, with zero generic instantiation
+// needed at either call site.
+type credentialFunc = func(ctx context.Context) (regmodels.BearerCredential, error)
 
 // newAuthCredentialFunc returns a credentialFunc that authenticates
 // against registryHost for repository LAZILY — on first invocation by
@@ -354,7 +349,7 @@ type credentialFunc[Req any] = func(ctx context.Context, req Req) (regmodels.Bea
 // never this directly. This package's public surface is deliberately
 // just routes + client functions + domain structs/codecs — a caller
 // never needs to build their own credentialFunc directly.
-func newAuthCredentialFunc[Req any](httpClient *http.Client, registryHost, repository string, opts ...Option) credentialFunc[Req] {
+func newAuthCredentialFunc(httpClient *http.Client, registryHost, repository string, opts ...Option) credentialFunc {
 	o := resolveOptions(opts)
 	// A single WithCredentials value is the more specific override and
 	// wins over WithCredentialsByRegistry when both are supplied. When
@@ -373,7 +368,7 @@ func newAuthCredentialFunc[Req any](httpClient *http.Client, registryHost, repos
 		token   string
 		authErr error
 	)
-	return func(ctx context.Context, _ Req) (regmodels.BearerCredential, error) {
+	return func(ctx context.Context) (regmodels.BearerCredential, error) {
 		once.Do(func() {
 			token, authErr = authenticate(ctx, httpClient, registryHost, repository, creds, o.observer)
 		})
@@ -416,13 +411,24 @@ func newAuthCredentialFunc[Req any](httpClient *http.Client, registryHost, repos
 // credentialFunc on a secured route is never an error (see auth.go) — the
 // request simply goes out without a Basic-auth header in that case,
 // exactly as it always has.
-// basicAuthMw is the DECLARE-TIME-ONLY codec-backed middleware for
-// getTokenRoute's "basicAuth" scheme, attached via .Use() below and
-// paired against by authenticate()'s .ClientMW(&basicAuthMw, ...) call
-// when creds is non-nil. Built via rest.SecurityMiddleware
-// (docs/design/d-0003-codec-declared-middlewares.md), not the legacy
-// middleware.SecurityScheme.
-var basicAuthMw = rest.SecurityMiddleware[struct{}, struct{}]("basicAuth", rest.SecurityScheme{SecurityScheme: route.BasicScheme(), Codec: &basicAuthCredCodec}, nil)
+// basicAuthIn carries the formatted "Authorization: Basic <base64>" header
+// value — basicAuthMw's real (non-struct{}) In type, declaratively merged
+// into the request header via WithRequestHeader below. Replaces the OLD
+// legacy raw-adapter-Fn pairing (returning an http.Header map directly),
+// now permanently closed — see docs/roadmap/bound-middleware-split.md.
+type basicAuthIn struct{ Authorization string }
+
+// basicAuthMw is the DECLARE-TIME codec-backed middleware for
+// getTokenRoute's "basicAuth" scheme — attached via .Use() UNCONDITIONALLY
+// (spec-only, no Fn) when anonymous, or with a WithSend-bundled Fn when
+// authenticate() supplies creds (see its own call site below). Built via
+// rest.SecurityMiddleware (docs/design/d-0003-codec-declared-middlewares.md),
+// not the legacy middleware.SecurityScheme.
+var basicAuthMw = rest.SecurityMiddleware[basicAuthIn, struct{}]("basicAuth", rest.SecurityScheme{SecurityScheme: route.BasicScheme(), Codec: &basicAuthCredCodec}, nil).
+	WithRequestHeader(rest.NewRequiredHeaderParam("Authorization", c.String(),
+		func(in basicAuthIn) string { return in.Authorization },
+		func(in *basicAuthIn, v string) { in.Authorization = v },
+	))
 
 var basicAuthCredCodec = c.String().Refine(validate.NonEmptyString)
 
@@ -463,7 +469,14 @@ var getTokenRoute = rest.NewRoute[getTokenReq, internal.TokenResponse](
 		func(r getTokenReq) string { return r.Scope },
 		func(r *getTokenReq, v string) { r.Scope = v },
 	),
-).Use(basicAuthMw)
+)
+
+// NOTE: basicAuthMw is NOT attached here unconditionally anymore — a
+// reusable Middleware[In,Out] value can only be attached via .Use() ONCE
+// per route (two .Use() calls for the SAME Declaration.Name trip
+// DuplicateMiddlewareNameError). authenticate() below attaches it exactly
+// once per call — spec-only (anonymous) or WithSend-bundled (creds
+// present) — see its own call site.
 
 // ── Auth errors ────────────────────────────────────────────────────────────────────
 

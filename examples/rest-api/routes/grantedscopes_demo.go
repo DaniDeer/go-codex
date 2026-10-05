@@ -1,6 +1,8 @@
 package routes
 
 import (
+	"context"
+
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/middleware"
@@ -9,51 +11,66 @@ import (
 
 // ── GrantedScopes + ContextField demo (docs/design/d-0007-declarative-   ──
 // ── middleware-layering.md) — a DIFFERENT style of security declaration ──
-// ── than ProfileScopeMw/AdminScopeMw above. Those use the LEGACY shape: ──
-// ── rest.SecurityMiddleware[struct{}, struct{}] + a separate            ──
-// ── middleware.ServerImplementation (handlers.ScopesImpl) paired via    ──
-// ── HandleMW(&mw, impl.Fn). GrantedScopesComputeMw below instead uses   ──
-// ── the GENERALIZED form — a REAL credential type (AuthIn) and a REAL   ──
-// ── GrantedScopes-carrying Out (AuthOut) — dispatched through the SAME  ──
-// ── HandleMW/ClientMW methods via fn's own reflected signature. This is ──
-// ── the flagship capability Rollout Phase A's "Security generalization" ──
-// ── shipped but no example in this repo had exercised until now.
+// ── than the "bearerAuth" scheme in middleware.go. Both now use the     ──
+// ── SAME underlying mechanism — [rest.BoundMiddleware]/                 ──
+// ── [rest.BoundClientMiddleware] (docs/roadmap/bound-middleware-split.  ──
+// ── md) — a REAL credential type (AuthIn) and a REAL GrantedScopes-     ──
+// ── carrying Out (AuthOut), dispatched via HandleBoundMW/ClientBoundMW. ──
+// ── This demo additionally publishes the decoded token via a           ──
+// ── middleware.ContextField, which middleware.go's scheme doesn't need.──
 
-// AuthIn is GrantedScopesComputeMw's credential vocabulary — decoded from
-// the raw "Authorization" header value via the required header merge
-// field below (WithRequestHeader), exactly like any other codec-declared
-// middleware's In.
+// AuthIn is GrantedScopesComputeServerMW's credential vocabulary —
+// decoded from the raw "Authorization" header value via the required
+// header merge field below, exactly like any other codec-declared
+// middleware's In. Shared by the "bearerAuth" scheme in middleware.go
+// too (same vocabulary, different scheme name).
 type AuthIn struct{ Token string }
 
 // AuthOut carries the conventional GrantedScopes map[string][]string
 // field the adapter reads via reflection and merges into the SAME
-// middleware.CheckScopes call the legacy ServerImplementation path above
-// already uses — see docs/features/security.md's "Codec-backed Security"
-// section.
+// middleware.CheckScopes call every Security attachment in this example
+// uses — see docs/features/security.md's "Codec-backed Security" section.
 type AuthOut struct {
 	GrantedScopes map[string][]string
 }
 
 // GrantedScopesUserIDField is a middleware.ContextField[string] — the
-// authenticated token published by GrantedScopesComputeMw's paired
-// HandleMW Fn (handlers.VerifyBearerGS) and consumed by
+// authenticated token published by GrantedScopesComputeServerMW's
+// embedded Fn (handlers.VerifyBearerGS) and consumed by
 // handlers.MakeComputeGSHandler via Get(ctx), with ZERO manual
 // re-decoding inside the business handler. Declared once, shared by
 // every producer/consumer that needs this same piece of cross-cutting
 // data (docs/design/d-0007-declarative-middleware-layering.md's Phase 3).
 var GrantedScopesUserIDField = middleware.NewContextField(codex.String())
 
-// GrantedScopesComputeMw declares the "bearerAuthGS" scheme, requiring
-// "compute:write" — built via the GENERALIZED rest.SecurityMiddleware[In,
-// Out] (not [struct{},struct{}] like ProfileScopeMw/AdminScopeMw above).
-// SetContextFieldFromIn publishes the decoded token so the real handler
-// can read it without touching the header itself.
-var GrantedScopesComputeMw = rest.SecurityMiddleware[AuthIn, AuthOut]("bearerAuthGS",
-	rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT"), Codec: &BearerCodec}, []string{"compute:write"},
-).WithRequestHeader(rest.NewRequiredHeaderParam("Authorization", BearerCodec,
-	func(in AuthIn) string { return in.Token },
-	func(in *AuthIn, v string) { in.Token = v },
-)).SetContextFieldFromIn(GrantedScopesUserIDField, func(in AuthIn) any { return in.Token })
+// grantedScopesGSScheme is shared by both bound constructors below.
+var grantedScopesGSScheme = rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT"), Codec: &BearerCodec}
+
+// GrantedScopesComputeServerMW builds the SERVER-side bound "bearerAuthGS"
+// Security middleware for POST /compute-gs — fn is supplied by the
+// CALLER (handlers.VerifyBearerGS) rather than embedded here, keeping
+// routes/ free of a dependency on handlers/ (handlers/ already imports
+// routes/, the opposite direction). SetContextFieldFromIn publishes the
+// decoded token so the real handler can read it without touching the
+// header itself.
+func GrantedScopesComputeServerMW(fn func(ctx context.Context, req *ComputeGSReq, in AuthIn) (AuthOut, error)) rest.BoundMiddleware[ComputeGSReq, AuthIn, AuthOut] {
+	return rest.BoundSecurityMiddleware[ComputeGSReq, AuthIn, AuthOut]("bearerAuthGS", grantedScopesGSScheme, []string{"compute:write"}, fn).
+		WithRequestHeader(rest.NewRequiredHeaderParam("Authorization", BearerCodec,
+			func(in AuthIn) string { return in.Token },
+			func(in *AuthIn, v string) { in.Token = v },
+		)).
+		SetContextFieldFromIn(GrantedScopesUserIDField, func(in AuthIn) any { return in.Token })
+}
+
+// GrantedScopesComputeClientMW is [GrantedScopesComputeServerMW]'s
+// client/credential-supplying sibling.
+func GrantedScopesComputeClientMW(fn func(ctx context.Context, req ComputeGSReq) (AuthIn, error)) rest.BoundClientMiddleware[ComputeGSReq, AuthIn, AuthOut] {
+	return rest.BoundSecurityClientMiddleware[ComputeGSReq, AuthIn, AuthOut]("bearerAuthGS", grantedScopesGSScheme, []string{"compute:write"}, fn).
+		WithRequestHeader(rest.NewRequiredHeaderParam("Authorization", BearerCodec,
+			func(in AuthIn) string { return in.Token },
+			func(in *AuthIn, v string) { in.Token = v },
+		))
+}
 
 // ComputeGSReq/ComputeGSResp are deliberately trivial — this demo's
 // entire point is the security/ContextField mechanism, not the business
@@ -69,23 +86,24 @@ var computeGSRespCodec = codex.Struct[ComputeGSResp](
 	codex.RequiredField("sum", codex.Int(), func(r ComputeGSResp) int { return r.Sum }, func(r *ComputeGSResp, v int) { r.Sum = v }),
 )
 
-// ComputeGSRoute declares its security requirement via RouteMeta.Security
-// DIRECTLY — deliberately NOT via .Use(GrantedScopesComputeMw) — see the
-// "Known gap" callout in docs/features/security.md's "Codec-backed
-// Security" section: pairing .Use(mw) with a bound HandleMW(mw, fn) for
-// the SAME Security-only mw currently throws DuplicateMiddlewareNameError
-// (confirmed cross-package, also affects api/reqreply, tracked not yet
-// fixed). Declaring RouteMeta.Security directly is the documented
-// workaround — sufficient for CheckCoverage/CheckScopes correctness
-// (which is all a route needs for runtime enforcement), though
-// OpenAPISpec() won't auto-register the scheme via this path (a
-// separate, spec-rendering-only concern, irrelevant to this demo).
+// ComputeGSRoute declares NO security requirement itself — HandleBoundMW/
+// ClientBoundMW (via GrantedScopesComputeServerMW/
+// GrantedScopesComputeClientMW, attached in server.go/client.go)
+// populate rb.meta.Security/rb.securitySchemes automatically on whichever
+// concrete route value they attach to (docs/roadmap/
+// bound-middleware-split.md's Finding: BoundMiddleware.applyBoundRoute
+// contributes to rb.middlewares, which both Register's
+// applySecurityDeclarations AND ClientHandle's
+// applyMiddlewareSecurityForClient already read) — the PRIOR manual
+// RouteMeta.Security workaround (documented in an earlier revision of
+// this file) is no longer needed; declare-here/implement-there no longer
+// requires choosing between .Use() and a manual RouteMeta.Security escape
+// hatch.
 var ComputeGSRoute = rest.NewRoute[ComputeGSReq, ComputeGSResp]("POST", "/compute-gs",
 	computeGSReqCodec, computeGSRespCodec,
 	rest.RouteMeta{
 		OperationID: "computeGS",
 		Summary:     "Compute (GrantedScopes + ContextField demo)",
 		Tags:        []string{"granted-scopes"},
-		Security:    []route.SecurityRequirement{route.Require("bearerAuthGS", "compute:write")},
 	},
 )

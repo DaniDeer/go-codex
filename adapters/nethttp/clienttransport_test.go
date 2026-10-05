@@ -1314,6 +1314,58 @@ func TestCallWithTransport_OnCredentialRejected_NotCalledWithoutEngagedCredentia
 	}
 }
 
+// TestCallWithTransport_OnCredentialRejected_FiresOn401_CodecBackedClientMW
+// confirms a codec-backed [rest.Middleware.WithSend] credential middleware
+// (docs/roadmap/bound-middleware-split.md — the REPLACEMENT for the legacy
+// ClientMW pairing [TestCallWithTransport_OnCredentialRejected_FiresOn401]
+// above exercises) also triggers [rest.ClientCallOptions.OnCredentialRejected]
+// on a 401 — regression test for a confirmed gap where credentialFnRan was
+// derived ONLY from the legacy mergeCredentialHeaders/clientImpls path,
+// never from handle.ClientMiddlewareHandlers.
+func TestCallWithTransport_OnCredentialRejected_FiresOn401_CodecBackedClientMW(t *testing.T) {
+	type authIn struct{ Authorization string }
+	type authOut struct{ GrantedScopes map[string][]string }
+
+	mw := rest.SecurityMiddleware[authIn, authOut]("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil).
+		WithRequestHeader(rest.NewRequiredHeaderParam("Authorization", codex.String(),
+			func(in authIn) string { return in.Authorization },
+			func(in *authIn, v string) { in.Authorization = v },
+		)).
+		WithSend(func(_ context.Context) (authIn, error) {
+			return authIn{Authorization: "test-bearer-token"}, nil
+		})
+
+	// ClientHandle (not RegisterHandle) — mirrors the real client-side
+	// usage pattern (contract.GetSecuredData(mw).ClientHandle() in
+	// examples/adapters-nethttp-client): ClientHandle intentionally
+	// never runs applyParamDeclarations (see its own doc comment), so
+	// mw's required Authorization header param is NOT layered into
+	// h.headerParams — ValidateHeaders(opts.HeaderParams) has nothing to
+	// require, and the value is supplied entirely via WithSend's merge
+	// field at clientMW-dispatch time instead.
+	handle := rest.NewRoute[getReq, userResp]("GET", "/me",
+		getReqCodec, userRespCodec,
+	).Use(mw).ClientHandle()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	rejectedCalls := 0
+	transport := NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})
+	_, err := rest.CallWithTransport(context.Background(), transport, handle, getReq{},
+		rest.ClientCallOptions{OnCredentialRejected: func() { rejectedCalls++ }})
+
+	var statusErr UnexpectedStatusError
+	if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected UnexpectedStatusError{StatusCode:401}, got %v", err)
+	}
+	if rejectedCalls != 1 {
+		t.Errorf("want OnCredentialRejected called exactly once for a codec-backed WithSend credential middleware, got %d", rejectedCalls)
+	}
+}
+
 func TestCallWithTransport_Observer_PerCallOverride(t *testing.T) {
 	handle := rest.NewRoute[getReq, userResp]("GET", "/me",
 		getReqCodec, userRespCodec).ClientHandle()

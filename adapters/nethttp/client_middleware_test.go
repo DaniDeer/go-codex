@@ -32,7 +32,10 @@ import (
 // ONCE at connection-open time ──
 
 func TestConsumeSSE_ClientTransformSSE_EncodesInAndDecodesOutOnce(t *testing.T) {
-	mw := rest.NewMiddleware(newTDDeclaration("api-key-policy")).
+	bm := rest.NewBoundClientMiddleware[sseTestReq](newTDDeclaration("api-key-policy"),
+		func(ctx context.Context, req sseTestReq) (tdIn, error) {
+			return tdIn{Key: "secret-" + req.ID}, nil
+		}).
 		WithRequestHeader(rest.NewRequiredHeaderParam("X-Api-Key", codex.String(),
 			func(in tdIn) string { return in.Key },
 			func(in *tdIn, v string) { in.Key = v },
@@ -47,9 +50,7 @@ func TestConsumeSSE_ClientTransformSSE_EncodesInAndDecodesOutOnce(t *testing.T) 
 			func(r sseTestReq) string { return r.ID },
 			func(r *sseTestReq, v string) { r.ID = v }),
 	)
-	route = route.ClientMW(mw, func(ctx context.Context, req sseTestReq) (tdIn, error) {
-		return tdIn{Key: "secret-" + req.ID}, nil
-	})
+	route = route.ClientBoundMW(bm)
 	handle := route.ClientHandle()
 
 	var gotHeader string

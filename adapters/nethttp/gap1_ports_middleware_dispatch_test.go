@@ -29,7 +29,13 @@ import (
 func TestIngestAdapter_HandleMWSecurity_EnforcesCredential(t *testing.T) {
 	decl := middleware.NewDeclaration("bearer-ingest-policy", tdInCodec, bearerAuthOutCodec)
 	decl.Security = middleware.NewSecurityDeclaration("bearerAuth", route.BearerScheme("JWT"), nil, nil)
-	mw := rest.NewMiddleware(decl).
+	bm := rest.NewBoundMiddleware[createReq](decl,
+		func(ctx context.Context, req *createReq, in tdIn) (bearerAuthOut, error) {
+			if in.Key != "valid-token" {
+				return bearerAuthOut{}, errors.New("invalid bearer token")
+			}
+			return bearerAuthOut{GrantedScopes: map[string][]string{"bearerAuth": nil}}, nil
+		}).
 		WithRequestHeader(rest.NewRequiredHeaderParam("Authorization", codex.String(),
 			func(in tdIn) string { return in.Key },
 			func(in *tdIn, v string) { in.Key = v },
@@ -39,12 +45,7 @@ func TestIngestAdapter_HandleMWSecurity_EnforcesCredential(t *testing.T) {
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
 	handle, err := rest.NewRoute[createReq, struct{}]("POST", "/secure-ingest",
 		createReqCodec, codex.Struct[struct{}](), rest.RouteMeta{OperationID: "secureIngest"},
-	).HandleMW(mw, func(ctx context.Context, req *createReq, in tdIn) (bearerAuthOut, error) {
-		if in.Key != "valid-token" {
-			return bearerAuthOut{}, errors.New("invalid bearer token")
-		}
-		return bearerAuthOut{GrantedScopes: map[string][]string{"bearerAuth": nil}}, nil
-	}).RegisterHandle(b)
+	).HandleBoundMW(bm).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("RegisterHandle: %v", err)
 	}
@@ -106,7 +107,10 @@ func TestIngestAdapter_HandleMWSecurity_EnforcesCredential(t *testing.T) {
 // ── LatestAdapter + ordinary (non-Security) HandleMW ────────────────────────
 
 func TestLatestAdapter_HandleMW_OrdinaryMiddleware_SetsResponseHeader(t *testing.T) {
-	mw := rest.NewMiddleware(newTDDeclaration("latest-policy")).
+	bm := rest.NewBoundMiddleware[struct{}](newTDDeclaration("latest-policy"),
+		func(ctx context.Context, req *struct{}, in tdIn) (tdOut, error) {
+			return tdOut{Value: "applied:" + in.Key}, nil
+		}).
 		WithRequestHeader(rest.NewRequiredHeaderParam("X-Api-Key", codex.String(),
 			func(in tdIn) string { return in.Key },
 			func(in *tdIn, v string) { in.Key = v },
@@ -119,9 +123,7 @@ func TestLatestAdapter_HandleMW_OrdinaryMiddleware_SetsResponseHeader(t *testing
 	b := rest.NewServer(testInfo)
 	handle, err := rest.NewRoute[struct{}, userResp]("GET", "/latest-mw",
 		codex.Struct[struct{}](), userRespCodec, rest.RouteMeta{OperationID: "latestMW"},
-	).HandleMW(mw, func(ctx context.Context, req *struct{}, in tdIn) (tdOut, error) {
-		return tdOut{Value: "applied:" + in.Key}, nil
-	}).RegisterHandle(b)
+	).HandleBoundMW(bm).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("RegisterHandle: %v", err)
 	}

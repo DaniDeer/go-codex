@@ -60,8 +60,8 @@ const defaultPlatform = "linux/amd64"
 // chain (ClientMW, paired against the SAME declaration) — authFn
 // supplies the credential; see newAuthCredentialFunc's own doc comment
 // (auth.go).
-func fetchManifest(ctx context.Context, httpClient *http.Client, baseURL, repository, reference string, authFn credentialFunc[regmodels.GetManifestReq], obs stats.Observer) (internal.ManifestEnvelope, error) {
-	route := regmodels.GetManifestRoute.ClientMW(&regmodels.BearerAuthDeclaration, authFn)
+func fetchManifest(ctx context.Context, httpClient *http.Client, baseURL, repository, reference string, authFn credentialFunc, obs stats.Observer) (internal.ManifestEnvelope, error) {
+	route := regmodels.GetManifestRoute.Use(regmodels.BearerAuthDeclaration.WithSend(authFn))
 	handle := route.ClientHandle()
 	opts := rest.ClientCallOptions{
 		ExtraHeaders: map[string][]string{"Accept": {acceptManifestTypes}},
@@ -160,7 +160,7 @@ func GetImageMetadata(ctx context.Context, httpClient *http.Client, req regmodel
 	// return value memoizes its own Ping/token-exchange work, so reusing
 	// this single value means that work happens at most once per
 	// GetImageMetadata call.
-	authFn := newAuthCredentialFunc[regmodels.GetManifestReq](httpClient, ref.Registry, ref.Repository, opts...)
+	authFn := newAuthCredentialFunc(httpClient, ref.Registry, ref.Repository, opts...)
 	env, err := fetchManifest(ctx, httpClient, baseURL, ref.Repository, ref.Reference, authFn, o.observer)
 	if err != nil {
 		return regmodels.ManifestMetadata{}, err

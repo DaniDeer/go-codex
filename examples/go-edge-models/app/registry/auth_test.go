@@ -176,12 +176,12 @@ func TestNewAuthCredentialFunc_MemoizesAcrossMultipleCalls(t *testing.T) {
 	}
 	client := httpsToHTTPClient()
 
-	credFn := newAuthCredentialFunc[any](client, u.Host, "org/repo")
+	credFn := newAuthCredentialFunc(client, u.Host, "org/repo")
 
-	if _, err := credFn(context.Background(), nil); err != nil {
+	if _, err := credFn(context.Background()); err != nil {
 		t.Fatalf("credFn (1st call): %v", err)
 	}
-	if _, err := credFn(context.Background(), nil); err != nil {
+	if _, err := credFn(context.Background()); err != nil {
 		t.Fatalf("credFn (2nd call): %v", err)
 	}
 
@@ -213,8 +213,8 @@ func TestNewAuthCredentialFunc_NoAuthNeeded_ReturnsEmptyCredential(t *testing.T)
 	}
 	client := httpsToHTTPClient()
 
-	credFn := newAuthCredentialFunc[any](client, u.Host, "org/repo")
-	cred, err := credFn(context.Background(), nil)
+	credFn := newAuthCredentialFunc(client, u.Host, "org/repo")
+	cred, err := credFn(context.Background())
 	if err != nil {
 		t.Fatalf("credFn: %v", err)
 	}
@@ -235,8 +235,8 @@ func TestNewAuthCredentialFunc_PropagatesAuthError(t *testing.T) {
 	}
 	client := httpsToHTTPClient()
 
-	credFn := newAuthCredentialFunc[any](client, u.Host, "org/repo")
-	_, err = credFn(context.Background(), nil)
+	credFn := newAuthCredentialFunc(client, u.Host, "org/repo")
+	_, err = credFn(context.Background())
 	if err == nil {
 		t.Fatal("credFn: want error, got nil")
 	}
@@ -247,7 +247,7 @@ func TestNewAuthCredentialFunc_PropagatesAuthError(t *testing.T) {
 
 	// Second invocation must return the SAME memoized error, not attempt
 	// the request again.
-	_, err2 := credFn(context.Background(), nil)
+	_, err2 := credFn(context.Background())
 	if !errors.As(err2, &authErr) {
 		t.Errorf("credFn (2nd call) error = %v, want RegistryAuthError", err2)
 	}
@@ -274,8 +274,8 @@ func TestWithCredentialsByRegistry_PicksCorrectEntryPerRegistry(t *testing.T) {
 	credsB := regmodels.Credentials{Username: "user-b", Password: "pass-b"}
 	byRegistry := regmodels.RegistryCredentials{uA.Host: credsA, uB.Host: credsB}
 
-	credFnA := newAuthCredentialFunc[any](client, uA.Host, "org/repo-a", WithCredentialsByRegistry(byRegistry))
-	if _, err := credFnA(context.Background(), nil); err != nil {
+	credFnA := newAuthCredentialFunc(client, uA.Host, "org/repo-a", WithCredentialsByRegistry(byRegistry))
+	if _, err := credFnA(context.Background()); err != nil {
 		t.Fatalf("credFnA: %v", err)
 	}
 	wantA, err := formatBasicAuth(credsA.Username, credsA.Password)
@@ -286,8 +286,8 @@ func TestWithCredentialsByRegistry_PicksCorrectEntryPerRegistry(t *testing.T) {
 		t.Errorf("Authorization sent for registry A = %q, want %q", gotAuthA, wantA)
 	}
 
-	credFnB := newAuthCredentialFunc[any](client, uB.Host, "org/repo-b", WithCredentialsByRegistry(byRegistry))
-	if _, err := credFnB(context.Background(), nil); err != nil {
+	credFnB := newAuthCredentialFunc(client, uB.Host, "org/repo-b", WithCredentialsByRegistry(byRegistry))
+	if _, err := credFnB(context.Background()); err != nil {
 		t.Fatalf("credFnB: %v", err)
 	}
 	wantB, err := formatBasicAuth(credsB.Username, credsB.Password)
@@ -312,8 +312,8 @@ func TestWithCredentialsByRegistry_NoMatchingEntry_FallsBackToAnonymous(t *testi
 	// The map has an entry, but not for THIS registry's host.
 	byRegistry := regmodels.RegistryCredentials{"some-other-host.example.com": {Username: "u", Password: "p"}}
 
-	credFn := newAuthCredentialFunc[any](client, u.Host, "org/repo", WithCredentialsByRegistry(byRegistry))
-	if _, err := credFn(context.Background(), nil); err != nil {
+	credFn := newAuthCredentialFunc(client, u.Host, "org/repo", WithCredentialsByRegistry(byRegistry))
+	if _, err := credFn(context.Background()); err != nil {
 		t.Fatalf("credFn: %v", err)
 	}
 	if gotAuth != "" {
@@ -334,9 +334,9 @@ func TestWithCredentials_WinsOverWithCredentialsByRegistry(t *testing.T) {
 	single := regmodels.Credentials{Username: "single-user", Password: "single-pass"}
 	byRegistry := regmodels.RegistryCredentials{u.Host: {Username: "map-user", Password: "map-pass"}}
 
-	credFn := newAuthCredentialFunc[any](client, u.Host, "org/repo",
+	credFn := newAuthCredentialFunc(client, u.Host, "org/repo",
 		WithCredentialsByRegistry(byRegistry), WithCredentials(single))
-	if _, err := credFn(context.Background(), nil); err != nil {
+	if _, err := credFn(context.Background()); err != nil {
 		t.Fatalf("credFn: %v", err)
 	}
 	want, err := formatBasicAuth(single.Username, single.Password)

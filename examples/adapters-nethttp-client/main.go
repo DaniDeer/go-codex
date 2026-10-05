@@ -41,18 +41,19 @@
 // interface [rest.Client.Call] itself uses, mirroring events/reqreply's
 // own api-layer-owned verb). Each distinct contract.Route value builds
 // its own *rest.RouteHandle ONCE, right after the server starts (or right
-// after a fresh .ClientMW(...) call for the security scenarios in section
-// 4, since ClientMW produces a distinct route value each time), and every
-// call against that route reuses the SAME handle — no repeating
-// httpClient/baseURL boilerplate at each call site.
+// after a fresh securedMw.WithSend(...) call for the security scenarios in
+// section 4, since WithSend produces a distinct middleware value each
+// time), and every call against that route reuses the SAME handle — no
+// repeating httpClient/baseURL boilerplate at each call site.
 //
-// Credential fulfillment is declared PER-ROUTE via [rest.Route.ClientMW]
-// (paired against the SAME [middleware.Middleware] the route's security
-// requirement was declared with) — there is no per-call credential
-// override anymore (a deliberate design tradeoff: ClientMW mirrors the
-// server side's declare-then-register discipline exactly). Each distinct
-// credential behavior demonstrated in section 4 below builds its OWN
-// route value via a fresh .ClientMW(...) call.
+// Credential fulfillment is declared PER-ROUTE via [rest.Middleware.WithSend]
+// (the SAME declarative [rest.SecurityMiddleware] value the route's
+// security requirement was declared with, attached client-side) — there
+// is no per-call credential override anymore (a deliberate design
+// tradeoff: WithSend mirrors the server side's declare-then-register
+// discipline exactly, see docs/roadmap/bound-middleware-split.md). Each
+// distinct credential behavior demonstrated in section 4 below builds its
+// OWN middleware/route value via a fresh securedMw.WithSend(...) call.
 //
 // The example covers all CallOptions fields in five sections:
 //
@@ -75,13 +76,13 @@
 //     request+response, single-call story)
 //  3. Cookies + headers — GET /profile (CookieParam + HeaderParam validation)
 //  4. Security — GET /data (a credential-providing Fn attached via
-//     [rest.Route.ClientMW], paired against the route's declared
-//     middleware.Middleware, injects the bearer Authorization header)
-//     4b. Caching a credential-providing Fn — nethttp.NewCachingCredentialFunc
-//     wraps any [nethttp.CredentialFunc] with TTL-based caching, then the
-//     result is attached via ClientMW; CallOptions.OnCredentialRejected +
-//     the returned invalidate func implement the explicit
-//     retry-once-on-401 pattern (Call never retries automatically)
+//     [rest.Middleware.WithSend] on the route's declared security
+//     middleware, injects the bearer Authorization header)
+//     4b. Caching a credential-providing Fn — a small TTL-based cache
+//     wrapper (cachingAuthIn, example-local) wraps the WithSend Fn;
+//     CallOptions.OnCredentialRejected + the returned invalidate func
+//     implement the explicit retry-once-on-401 pattern (Call never
+//     retries automatically)
 //  5. Structured error logging — errors.As + slog for all typed error types
 //
 // Run with: go run ./examples/adapters-nethttp-client
@@ -103,8 +104,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/examples/adapters-nethttp-client/contract"
-	"github.com/DaniDeer/go-codex/middleware"
-	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 )
 
@@ -204,6 +203,46 @@ func (s *userStore) get(id string) (contract.User, bool) {
 	return u, ok
 }
 
+// authIn carries the raw Authorization header value — securedMw's real
+// (non-struct{}) In type, declaratively merged via WithRequestHeader.
+type authIn struct{ Authorization string }
+
+// authOut carries GrantedScopes — see securedMw's own doc comment for why
+// this field is required even though no specific scopes are checked.
+type authOut struct{ GrantedScopes map[string][]string }
+
+// cachingAuthIn wraps inner with simple TTL-based caching — a minimal,
+// example-local equivalent of nethttp.NewCachingCredentialFunc for the
+// WithSend(func(ctx) (authIn, error)) shape (see this function's own call
+// site for why the adapter-level helper doesn't apply here anymore).
+func cachingAuthIn(inner func(context.Context) (authIn, error), ttl time.Duration) (fn func(context.Context) (authIn, error), invalidate func()) {
+	var (
+		mu        sync.Mutex
+		cached    authIn
+		expiresAt time.Time
+	)
+	fn = func(ctx context.Context) (authIn, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if time.Now().Before(expiresAt) {
+			return cached, nil
+		}
+		v, err := inner(ctx)
+		if err != nil {
+			return authIn{}, err
+		}
+		cached = v
+		expiresAt = time.Now().Add(ttl)
+		return cached, nil
+	}
+	invalidate = func() {
+		mu.Lock()
+		defer mu.Unlock()
+		expiresAt = time.Time{}
+	}
+	return fn, invalidate
+}
+
 func main() {
 	// logger is the structured logger for all HTTP client-side events.
 	// In production attach trace IDs, tenant, or user via logger.With(...).
@@ -235,24 +274,25 @@ func main() {
 	// The bearer security scheme (contract.BearerAuthScheme/BearerCredentialCodec)
 	// is shared spec metadata; the actual verification logic lives HERE, in
 	// the server's own runtime implementation — the contract package stays
-	// adapter-agnostic. securedMw is the DECLARE-TIME-ONLY half (chained via
-	// .Use(mw) inside contract.GetSecuredData) — it declares the Security
-	// requirement but cannot run anything. securedImplMw is the SEPARATE
-	// runtime enforcement half, attached below via Route.HandleMW, paired
-	// against this same securedMw value.
+	// adapter-agnostic. securedMw itself is the SPEC-ONLY declaration (no Fn
+	// attached) — the server attaches its own enforcement Fn below via
+	// securedMw.WithReceive(...), producing a separate, server-specific
+	// securedServerMw value; the client attaches ITS OWN Fn via
+	// securedMw.WithSend(...) further down. Both share the same underlying
+	// spec (name/scheme/scopes/merge fields) without sharing one Go value.
 	const validToken = "secret-token"
-	securedMw := rest.SecurityMiddleware[struct{}, struct{}]("bearerAuth", rest.SecurityScheme{SecurityScheme: contract.BearerAuthScheme, Codec: &contract.BearerCredentialCodec}, nil)
-	securedImplMw := middleware.ServerImplementation{
-		Name:      "implement-scopes:bearerAuth",
-		Satisfies: []string{"bearerAuth"},
-		Fn: func(_ context.Context, r *http.Request, _ *struct{}) (map[string][]string, error) {
-			token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-			if token != validToken {
-				return nil, fmt.Errorf("invalid token")
-			}
-			return map[string][]string{"bearerAuth": nil}, nil
-		},
-	}
+	// authIn/authOut are the REUSABLE class's declarative replacement for
+	// the OLD raw-*http.Request-Fn pairing (permanently closed,
+	// docs/roadmap/bound-middleware-split.md) — authIn carries the raw
+	// Authorization header value (merged via WithRequestHeader below);
+	// authOut carries GrantedScopes, the convention every Security Out
+	// type follows so the adapter recognizes a call as having satisfied
+	// the scheme at all, even with zero specific scopes required.
+	securedMw := rest.SecurityMiddleware[authIn, authOut]("bearerAuth", rest.SecurityScheme{SecurityScheme: contract.BearerAuthScheme, Codec: &contract.BearerCredentialCodec}, nil).
+		WithRequestHeader(rest.NewRequiredHeaderParam("Authorization", codex.String(),
+			func(in authIn) string { return in.Authorization },
+			func(in *authIn, v string) { in.Authorization = v },
+		))
 
 	createRoute := contract.CreateUser.WithHandler(func(ctx context.Context, req contract.CreateUserReq) (contract.User, error) {
 		u, err := db.create(req)
@@ -310,12 +350,20 @@ func main() {
 	})
 	mustServe(profileRoute.Register(b), "register getProfile")
 
-	// GET /data — secured route; securedImplMw's Fn runs after codec
-	// validation. HandleMW pairs the runtime enforcement half against the
-	// same securedMw value declared (via .Use) inside GetSecuredData.
-	securedRoute := contract.GetSecuredData(securedMw).WithHandler(func(_ context.Context, _ struct{}) (contract.Profile, error) {
+	// GET /data — secured route; the server-side enforcement Fn is
+	// EMBEDDED into securedMw itself (via WithReceive, docs/roadmap/
+	// bound-middleware-split.md) and declared+attached together in ONE
+	// GetSecuredData(...) call — no separate HandleMW pairing step needed.
+	securedServerMw := securedMw.WithReceive(func(_ context.Context, in authIn) (authOut, error) {
+		token := strings.TrimPrefix(in.Authorization, "Bearer ")
+		if token != validToken {
+			return authOut{}, fmt.Errorf("invalid token")
+		}
+		return authOut{GrantedScopes: map[string][]string{"bearerAuth": nil}}, nil
+	})
+	securedRoute := contract.GetSecuredData(securedServerMw).WithHandler(func(_ context.Context, _ struct{}) (contract.Profile, error) {
 		return contract.Profile{ID: "p1", Name: "Alice", Email: "alice@example.com", Role: "admin"}, nil
-	}).HandleMW(&securedMw, securedImplMw.Fn)
+	})
 	mustServe(securedRoute.Register(b), "register getSecuredData")
 
 	mux := http.NewServeMux()
@@ -564,38 +612,34 @@ func main() {
 	}
 	fmt.Println()
 
-	// ── 4. Security — GET /data (credential-providing ClientMW) ──────────────
+	// ── 4. Security — GET /data (credential-providing WithSend) ───────────────
 	//
-	// Route.ClientMW(mw, fn) declares the CLIENT-side fulfillment of a
-	// security requirement, PAIRED against the SAME middleware.Middleware
-	// value (securedMw, built above with contract.BearerAuthScheme/
-	// BearerCredentialCodec) that also declares it server-side — fn
-	// receives the resolved []route.SecurityRequirement and must return
-	// headers to merge into the request. An error from fn aborts the call
-	// before any network activity.
+	// securedMw.WithSend(fn) declares the CLIENT-side fulfillment of the
+	// SAME Security requirement (name/scheme/scopes/merge fields) securedMw
+	// was built with above — fn returns the declarative In value (authIn)
+	// to merge into the request; its Authorization field is encoded via the
+	// WithRequestHeader merge field already declared on securedMw. An error
+	// from fn aborts the call before any network activity.
 	//
-	// Server declares, client fulfills: contract.GetSecuredData(securedMw)
-	// attaches securedMw via .Use(...) INSIDE the contract package — the
-	// SAME Security requirement then applies to BOTH Register (server) and
-	// ClientHandle (client, called internally by Call). Since there is NO
-	// per-call credential override anymore (a deliberate design tradeoff —
-	// ClientMW declares fulfillment on the ROUTE itself, mirroring the
-	// server side's declare-then-register discipline exactly), each
-	// distinct credential behavior below builds its OWN route value via a
-	// fresh .ClientMW(...) call rather than overriding at the call site.
-	fmt.Println("=== 4. Security: GET /data (credential-providing ClientMW) ===")
+	// Server declares, client fulfills: contract.GetSecuredData(mw) attaches
+	// mw via .Use(...) INSIDE the contract package — the SAME Security
+	// requirement then applies to BOTH Register (server) and ClientHandle
+	// (client, called internally by Call). Since there is no per-call
+	// credential override (a deliberate design tradeoff — WithSend bakes
+	// fulfillment into the route VALUE itself, mirroring the server side's
+	// declare-then-register discipline exactly), each distinct credential
+	// behavior below builds its OWN route value via a fresh
+	// securedMw.WithSend(...) call rather than overriding at the call site.
+	fmt.Println("=== 4. Security: GET /data (credential-providing WithSend) ===")
 
-	securedRouteWithAuth := contract.GetSecuredData(securedMw).ClientMW(&securedMw,
-		func(_ context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
-			// reqs contains the declared security requirements from the route spec.
+	securedRouteWithAuth := contract.GetSecuredData(securedMw.WithSend(
+		func(_ context.Context) (authIn, error) {
 			// In production: look up the token from a token store / refresh if expired.
-			h := make(http.Header)
-			h.Set("Authorization", "Bearer "+validToken)
-			return h, nil
-		})
+			return authIn{Authorization: "Bearer " + validToken}, nil
+		}))
 	securedRouteWithAuthHandle := securedRouteWithAuth.ClientHandle()
 
-	// Happy path: the credential fn declared via ClientMW runs automatically.
+	// Happy path: the credential fn declared via WithSend runs automatically.
 	data, err := rest.CallWithTransport(clientCtx, transport, securedRouteWithAuthHandle, struct{}{}, rest.ClientCallOptions{})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "get secured data:", err)
@@ -603,7 +647,7 @@ func main() {
 	}
 	fmt.Printf("secured data: %+v\n", data)
 
-	// No credential-providing ClientMW attached: request is sent without
+	// No credential-providing WithSend attached: request is sent without
 	// Authorization → server returns 401. This is NOT itself a client-side
 	// error — the credential-format codec check only activates when a
 	// credential mechanism actually supplies something (see the malformed
@@ -623,18 +667,16 @@ func main() {
 		}
 	}
 
-	// The credential-providing ClientMW returns a MALFORMED credential
+	// The credential-providing WithSend returns a MALFORMED credential
 	// (empty after the "Bearer " prefix is stripped): contract.GetSecuredData's
 	// declared Codec now rejects this LOCALLY, before any request is sent —
 	// the same rest.SecurityCredentialError the SERVER would otherwise have
 	// returned (401) is now caught client-side too, symmetric with the
 	// server check.
-	securedRouteMalformed := contract.GetSecuredData(securedMw).ClientMW(&securedMw,
-		func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
-			h := make(http.Header)
-			h.Set("Authorization", "Bearer ") // strips to an empty credential
-			return h, nil
-		})
+	securedRouteMalformed := contract.GetSecuredData(securedMw.WithSend(
+		func(_ context.Context) (authIn, error) {
+			return authIn{Authorization: "Bearer "}, nil // strips to an empty credential
+		}))
 	securedRouteMalformedHandle := securedRouteMalformed.ClientHandle()
 	_, err = rest.CallWithTransport(clientCtx, transport, securedRouteMalformedHandle, struct{}{}, rest.ClientCallOptions{})
 	if err != nil {
@@ -647,13 +689,13 @@ func main() {
 		}
 	}
 
-	// The credential-providing ClientMW itself returns an error: aborts
+	// The credential-providing WithSend itself returns an error: aborts
 	// the call client-side.
 	tokenExpiredErr := fmt.Errorf("token expired")
-	securedRouteErrCred := contract.GetSecuredData(securedMw).ClientMW(&securedMw,
-		func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
-			return nil, tokenExpiredErr
-		})
+	securedRouteErrCred := contract.GetSecuredData(securedMw.WithSend(
+		func(_ context.Context) (authIn, error) {
+			return authIn{}, tokenExpiredErr
+		}))
 	securedRouteErrCredHandle := securedRouteErrCred.ClientHandle()
 	_, err = rest.CallWithTransport(clientCtx, transport, securedRouteErrCredHandle, struct{}{}, rest.ClientCallOptions{})
 	if err != nil {
@@ -678,26 +720,28 @@ func main() {
 	// Simulates a token store that returns a STALE token once (already
 	// rotated server-side) before refreshing to the current valid one —
 	// demonstrating OnCredentialRejected forcing exactly one extra inner call.
-	innerCredFn := func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
+	innerCredFn := func(_ context.Context) (authIn, error) {
 		innerCalls++
-		h := make(http.Header)
 		if innerCalls == 1 {
-			h.Set("Authorization", "stale-token")
-		} else {
-			h.Set("Authorization", "Bearer "+validToken)
+			return authIn{Authorization: "stale-token"}, nil
 		}
-		return h, nil
+		return authIn{Authorization: "Bearer " + validToken}, nil
 	}
-	cachedCredFn, invalidateCred := nethttp.NewCachingCredentialFunc(innerCredFn, nethttp.CachingCredentialFuncOptions{
-		TTL: time.Hour,
-	})
+	// cachingAuthIn is a MINIMAL, TTL-based cache wrapper for the
+	// WithSend(func(ctx) (authIn, error)) shape — nethttp.
+	// NewCachingCredentialFunc is tied to the OLD raw CredentialFunc shape
+	// (func(ctx, []route.SecurityRequirement) (http.Header, error)),
+	// permanently closed (docs/roadmap/bound-middleware-split.md); this
+	// example writes its own small equivalent instead of depending on
+	// adapter-specific infrastructure built for a different Fn shape.
+	cachedCredFn, invalidateCred := cachingAuthIn(innerCredFn, time.Hour)
 	cachedCallOpts := rest.ClientCallOptions{
 		OnCredentialRejected: invalidateCred,
 	}
-	// Declared ONCE via .ClientMW(...) — every Call below reuses the SAME
-	// route value, so the cached credential function is shared across
-	// calls automatically.
-	securedRouteCached := contract.GetSecuredData(securedMw).ClientMW(&securedMw, cachedCredFn)
+	// Declared ONCE via .Use(securedMw.WithSend(...)) — every Call below
+	// reuses the SAME route value, so the cached credential function is
+	// shared across calls automatically.
+	securedRouteCached := contract.GetSecuredData(securedMw.WithSend(cachedCredFn))
 	securedRouteCachedHandle := securedRouteCached.ClientHandle()
 
 	// First call: the stale cached token is rejected (401). OnCredentialRejected

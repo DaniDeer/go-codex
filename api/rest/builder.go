@@ -600,6 +600,22 @@ type RouteOpt interface{ applyRoute(*routeBuilder) }
 
 // routeBuilder accumulates RouteOpt values before building the route descriptor.
 type routeBuilder struct {
+	// buildErr is set by boundMismatchOpt/misattachedOpt's applyRoute
+	// (docs/roadmap/bound-middleware-split.md) when HandleBoundMW/
+	// ClientBoundMW is called with a Req-mismatched or non-bound value,
+	// or when a codec-backed Middleware/BoundMiddleware is passed to
+	// HandleMW/ClientMW — checked early in registerHandle (returned as a
+	// normal error, mirroring InvalidPathError's own early-return
+	// pattern) AND in ClientHandle (PANICS — ClientHandle has no error
+	// return at all, so a construction-time misconfiguration here is
+	// reported the SAME way FormatOptError already is a few lines below
+	// in this same method — a confirmed, previously-silent bug: without
+	// this check, ClientHandle silently built a handle with the
+	// mismatched middleware simply missing, zero error or panic
+	// anywhere). First error wins (a configuration mistake, not an
+	// accumulation scenario).
+	buildErr error
+
 	meta         RouteMeta
 	pathParams   []PathParam
 	queryParams  []QueryParam
@@ -703,25 +719,30 @@ type routeBuilder struct {
 	clientImpls []middleware.ClientImplementation
 
 	// middlewareHandlers holds every [MiddlewareHandler] attached via
-	// [Route.HandleMW]'s bound path, in attachment order — the
-	// codec-backed-middleware counterpart to impls, built internally by
-	// HandleMW.
+	// [Route.HandleBoundMW] (bound class) or a plain .Use()'d
+	// [Middleware] carrying a [Middleware.WithReceive] Fn (reusable
+	// class), in attachment order — the codec-backed-middleware
+	// counterpart to impls, built internally by those attach paths
+	// (never by HandleMW, which rejects a codec-backed value outright).
 	middlewareHandlers []MiddlewareHandler
 
 	// clientMiddlewareHandlers holds every [ClientMiddlewareHandler]
-	// attached via [Route.ClientMW]'s bound path, in attachment order —
-	// built internally by ClientMW.
+	// attached via [Route.ClientBoundMW] (bound class) or a plain
+	// .Use()'d [Middleware] carrying a [Middleware.WithSend] Fn
+	// (reusable class), in attachment order — built internally by those
+	// attach paths (never by ClientMW, same rejection rule as HandleMW).
 	clientMiddlewareHandlers []ClientMiddlewareHandler
 
 	// middlewareSpecContributions holds the spec-relevant param
 	// declarations (request header/cookie/query, response header/cookie)
-	// contributed by every codec-backed [Middleware] attached via
-	// [Route.HandleMW]/[Route.ClientMW]'s bound path (and plain .Use()) —
-	// converted to plain, Req/Resp-
-	// agnostic spec types at the GENERIC call site where In/Out are still
-	// concrete, then fed into the SAME conflict-detection/layering pass in
-	// applyParamDeclarations that legacy middleware.Middleware values
-	// already use (D4).
+	// contributed by every codec-backed middleware value attached —
+	// either class (plain .Use() for the reusable [Middleware], or
+	// [Route.HandleBoundMW]/[Route.ClientBoundMW] for
+	// [BoundMiddleware]/[BoundClientMiddleware]) — converted to plain,
+	// Req/Resp-agnostic spec types at the GENERIC call site where In/Out
+	// are still concrete, then fed into the SAME conflict-detection/
+	// layering pass in applyParamDeclarations that legacy
+	// middleware.Middleware values already use (D4).
 	middlewareSpecContributions []middlewareSpecContribution
 }
 
@@ -883,15 +904,19 @@ type RouteHandle[Req, Resp any] struct {
 	ClientImplementations []middleware.ClientImplementation
 
 	// MiddlewareHandlers holds every [MiddlewareHandler] attached via
-	// [Route.HandleMW]'s bound path, in attachment order — SERVER-side
-	// only (no [Route.ClientHandle] equivalent, mirroring
-	// Implementations). Populated by [Route.Register]/[Route.RegisterHandle].
+	// [Route.HandleBoundMW] (bound class) or a plain .Use()'d
+	// [Middleware] carrying a [Middleware.WithReceive] Fn (reusable
+	// class), in attachment order — SERVER-side only (no
+	// [Route.ClientHandle] equivalent, mirroring Implementations).
+	// Populated by [Route.Register]/[Route.RegisterHandle].
 	MiddlewareHandlers []MiddlewareHandler
 
 	// ClientMiddlewareHandlers holds every [ClientMiddlewareHandler]
-	// attached via [Route.ClientMW]'s bound path, in attachment order —
-	// CLIENT-side, built internally by ClientMW. Populated by BOTH
-	// [Route.Register]/[Route.RegisterHandle] and [Route.ClientHandle].
+	// attached via [Route.ClientBoundMW] (bound class) or a plain
+	// .Use()'d [Middleware] carrying a [Middleware.WithSend] Fn
+	// (reusable class), in attachment order — CLIENT-side. Populated by
+	// BOTH [Route.Register]/[Route.RegisterHandle] and
+	// [Route.ClientHandle].
 	ClientMiddlewareHandlers []ClientMiddlewareHandler
 
 	// Requirements holds this route's own [CapabilityRequirement]
@@ -1489,8 +1514,10 @@ func (h *RouteHandle[Req, Resp]) PathParamNames() []string {
 // HeaderParamNames returns the names of ALL registered header
 // parameters — BOTH plain [HeaderParam] route opts AND
 // middleware-declared header contributions (legacy [middleware.Middleware]
-// and D-0003 codec-backed [Middleware] via [Route.HandleMW]/[Route.ClientMW]'s
-// bound path), since [applyParamDeclarations] merges the latter directly into the
+// and D-0003 codec-backed [Middleware]/[BoundMiddleware]/
+// [BoundClientMiddleware], attached via plain .Use()/[Route.HandleBoundMW]/
+// [Route.ClientBoundMW] respectively), since [applyParamDeclarations]
+// merges the latter directly into the
 // SAME h.headerParams list before this RouteHandle is constructed —
 // this method sees the FULL, POST-MERGE set, not just plain-opt
 // declarations. Mirrors [RouteHandle.PathParamNames]'s exact shape.
@@ -2706,31 +2733,62 @@ func FromSecurityScheme(schemeName string, scheme SecurityScheme, scopes []strin
 
 // SecurityMiddleware is [FromSecurityScheme]'s codec-backed-family
 // equivalent — builds a [Middleware][In, Out] carrying ONLY a
-// [middleware.SecurityDeclaration], attachable via the SAME
-// .Use(...)/HandleMW(...)/ClientMW(...) vocabulary as any other
-// codec-backed middleware. Part of the middleware-consolidation effort
+// [middleware.SecurityDeclaration]. Attached EXCLUSIVELY via plain
+// .Use(...) (paired with [Middleware.WithReceive]/[Middleware.WithSend]
+// for the reusable class) — NEVER via [Route.HandleMW]/[Route.ClientMW],
+// which reject any codec-backed value outright (see
+// [MiddlewareMisattachedError]). For the route/channel-BOUND
+// counterpart, see [BoundSecurityMiddleware]/[Route.HandleBoundMW]
+// instead (docs/roadmap/bound-middleware-split.md). Part of the
+// middleware-consolidation effort
 // (docs/design/d-0003-codec-declared-middlewares.md) folding Security
 // into the codec-backed family instead of the legacy [middleware.Middleware]
 // type.
 //
 // Generalized over In/Out (docs/design/d-0007-declarative-middleware-layering.md's
 // Rollout Phase A) — away from a hardcoded Middleware[struct{}, struct{}]
-// — so a caller needing the credential-providing fn to ALSO decode
-// request header/cookie/query merge fields (e.g. an API-key header
+// — so a caller needing the credential-checking Fn to ALSO decode
+// request header/cookie/query merge fields (e.g. a bearer token header
 // declared via [Middleware.WithRequestHeader]) can do so with the SAME
 // SecurityMiddleware call, instead of composing a separate codec-backed
-// Middleware by hand. Most callers — those using the PURE
-// credential-carrier pattern (a legacy-shaped fn, e.g. func(ctx,
-// *http.Request, *Req) (map[string][]string, error), attached via the
-// LEGACY path — see [Route.HandleMW]'s shape-detection doc comment) —
-// pass In=Out=struct{} explicitly:
+// Middleware by hand. The common pattern is a REAL In/Out pair — In
+// decodes the credential, Out carries the grant:
+//
+//	type AuthIn struct{ Token string }
+//	type AuthOut struct{ GrantedScopes map[string][]string }
+//
+//	var bearerMw = rest.SecurityMiddleware[AuthIn, AuthOut]("bearerAuth", scheme, nil).
+//	    WithRequestHeader(rest.NewRequiredHeaderParam("Authorization", codex.String(),
+//	        func(in AuthIn) string { return in.Token },
+//	        func(in *AuthIn, v string) { in.Token = v },
+//	    )).
+//	    WithReceive(func(ctx context.Context, in AuthIn) (AuthOut, error) {
+//	        if !valid(in.Token) {
+//	            return AuthOut{}, errors.New("invalid token")
+//	        }
+//	        return AuthOut{GrantedScopes: map[string][]string{"bearerAuth": nil}}, nil
+//	    })
+//
+// **`Out` MUST carry a field literally named `GrantedScopes
+// map[string][]string`**, read by the adapter via reflection and merged
+// into the SAME [middleware.CheckScopes] call every Security attachment
+// uses — REQUIRED even when zero specific scopes are declared. An
+// `Out{}` zero value (nil map) means NOTHING satisfies the scheme at
+// all, silently turning an otherwise-successful Fn into a REJECTION
+// (every call returns 401). This is a confirmed, non-obvious gotcha that
+// cost real debugging time migrating `examples/mutable-security-keys` —
+// see docs/features/security.md's "Codec-backed Security" section for
+// the full writeup.
+//
+// `In=Out=struct{}` remains valid for the rarer SPEC-ONLY declaration
+// case — documenting an external requirement this codebase never
+// enforces, with NO Fn ever attached at all (e.g.
+// examples/go-edge-models's Docker-registry-client pattern):
 //
 //	var basicAuthMw = rest.SecurityMiddleware[struct{}, struct{}]("basicAuth", scheme, nil)
 //
 // Go cannot infer In/Out here (no parameter is typed by them) — every
-// caller must supply explicit type arguments; this is a deliberate,
-// one-time migration (every existing call site updated alongside this
-// change), not an inference gap left unresolved.
+// caller must supply explicit type arguments.
 //
 // InCodec/OutCodec default to [codex.Struct][In]()/[codex.Struct][Out]()
 // (a FIELDLESS struct codec — confirmed safe: Encode/Decode/Validate all
@@ -2743,8 +2801,7 @@ func FromSecurityScheme(schemeName string, scheme SecurityScheme, scopes []strin
 // wanting genuine In/Out validation beyond "didn't panic" declares real
 // fields via the ordinary [middleware.NewDeclaration]-based constructor
 // path instead — this default only needs to be SAFE, not meaningful,
-// for the PURE credential-carrier pattern (In=Out=struct{}) every
-// existing caller still uses.
+// for the spec-only (In=Out=struct{}) case shown above.
 func SecurityMiddleware[In, Out any](schemeName string, scheme SecurityScheme, scopes []string) Middleware[In, Out] {
 	return NewMiddleware[In, Out](middleware.Declaration[In, Out]{
 		Name:     "declare-security:" + schemeName,
@@ -3551,6 +3608,10 @@ func (r Route[Req, Resp]) registerHandle(b *Server) (*RouteHandle[Req, Resp], er
 		opt.applyRoute(&rb)
 	}
 
+	if rb.buildErr != nil {
+		return nil, rb.buildErr
+	}
+
 	if err := applyMiddlewareDeclarations(&rb, r.method+" "+r.path); err != nil {
 		return nil, err
 	}
@@ -3678,6 +3739,17 @@ func (r Route[Req, Resp]) ClientHandle() *RouteHandle[Req, Resp] {
 	var rb routeBuilder
 	for _, opt := range r.opts {
 		opt.applyRoute(&rb)
+	}
+	// A HandleBoundMW/ClientBoundMW Req-mismatch (or a codec-backed
+	// Middleware/BoundMiddleware misattached to HandleMW/ClientMW) is a
+	// construction-time programmer error — ClientHandle has no error
+	// return to report it through normally, so it panics here, same as
+	// FormatOptError below in this same method (a confirmed, previously-
+	// silent bug: this check was missing entirely, so a Req-mismatched
+	// ClientBoundMW used to be dropped with ZERO error or panic anywhere
+	// — see docs/roadmap/bound-middleware-split.md's review findings).
+	if rb.buildErr != nil {
+		panic(fmt.Sprintf("api/rest: ClientHandle: %s", rb.buildErr.Error()))
 	}
 	// Merge any middleware-declared Security into rb.securitySchemes/
 	// rb.meta.Security — the SAME mechanism Register uses (see
@@ -3923,7 +3995,8 @@ type SSERouteHandle[Req, Event any] struct {
 
 	// MiddlewareHandlers/ClientMiddlewareHandlers hold every
 	// [MiddlewareHandler]/[ClientMiddlewareHandler] attached via
-	// [SSERoute.HandleMW]/[SSERoute.ClientMW]'s bound path, in attachment
+	// [SSERoute.HandleBoundMW]/[SSERoute.ClientBoundMW] (bound class) or
+	// a plain .Use()'d [Middleware] (reusable class), in attachment
 	// order — the SSE counterpart to [RouteHandle.MiddlewareHandlers]/
 	// [RouteHandle.ClientMiddlewareHandlers]. MiddlewareHandlers is
 	// server-only (mirrors Implementations); ClientMiddlewareHandlers
@@ -4467,6 +4540,14 @@ func (s SSERoute[Req, Event]) ClientHandle() *SSERouteHandle[Req, Event] {
 	for _, opt := range s.opts {
 		opt.applyRoute(&rb)
 	}
+	// See [Route.ClientHandle]'s identical check for the full rationale —
+	// a Req-mismatched ClientBoundMW/HandleBoundMW (or a misattached
+	// codec-backed Middleware/BoundMiddleware) is a construction-time
+	// programmer error; ClientHandle has no error return, so it panics
+	// here rather than silently dropping the attachment.
+	if rb.buildErr != nil {
+		panic(fmt.Sprintf("api/rest: SSERoute.ClientHandle: %s", rb.buildErr.Error()))
+	}
 	applyMiddlewareSecurityForClient(&rb)
 
 	frozen := buildDescriptor("GET", s.path, s.reqCodec.Schema, s.eventCodec.Schema, rb, []string{"text/event-stream"})
@@ -4523,6 +4604,10 @@ func (s SSERoute[Req, Event]) registerHandle(b *Server) (*SSERouteHandle[Req, Ev
 	var rb routeBuilder
 	for _, opt := range s.opts {
 		opt.applyRoute(&rb)
+	}
+
+	if rb.buildErr != nil {
+		return nil, rb.buildErr
 	}
 
 	// SSE has no declared-error-response concept — ErrorPattern/ErrorStatus

@@ -23,13 +23,13 @@
 //     [ports.SourcePort] pipelines, or when a caller already holds a
 //     handle, or needs [ConsumeOptions.OnError] which Client.Consume
 //     does not expose)
-//   - Bearer-secured SSE — a single [rest.SecurityMiddleware] value,
-//     [rest.SSERoute.Use]-declared ONCE, then paired on BOTH roles of
-//     the SAME [rest.SSERoute] value: server-side via
-//     [rest.SSERoute.HandleMW] (verifies the credential), client-side via
-//     [rest.SSERoute.ClientMW] (supplies it) — the clearest illustration
-//     of this example's "declare once, consume from both roles" promise
-//     applied to security specifically, not just format/observability.
+//   - Bearer-secured SSE — a shared [rest.SecurityMiddleware] declaration
+//     (name/scheme/scopes/merge fields), attached via [rest.Middleware.
+//     WithReceive] server-side (verifies the credential) and
+//     [rest.Middleware.WithSend] client-side (supplies it) — the clearest
+//     illustration of this example's "declare once, fulfill from both
+//     roles" promise applied to security specifically, not just
+//     format/observability (docs/roadmap/bound-middleware-split.md).
 package main
 
 import (
@@ -97,6 +97,15 @@ type readingEvent struct {
 	Meta    readingMeta
 	Payload readingPayload
 }
+
+// authIn carries the raw Authorization header value — securedMw's real
+// (non-struct{}) In type, declaratively merged via WithRequestHeader.
+type authIn struct{ Authorization string }
+
+// authOut carries GrantedScopes, the convention every Security Out type
+// follows so the adapter recognizes a call as having satisfied the scheme
+// at all, even when zero specific scopes are required.
+type authOut struct{ GrantedScopes map[string][]string }
 
 // ── Codecs ────────────────────────────────────────────────────────────────────
 
@@ -360,55 +369,59 @@ func main() {
 		log.Fatalf("NewSSERoute with-headers: %v", err)
 	}
 
-	// ── Bearer-secured SSE: declare-once middleware, both roles ─────────────
+	// ── Bearer-secured SSE: shared declaration, both roles ───────────────────
 	//
-	// ONE rest.SecurityMiddleware value (securedMw) is declared ONCE via
-	// .Use(securedMw) on securedBase — this is the SAME declaration
-	// mechanism REST's plain routes use (see examples/mutable-security-keys),
-	// applied here to an SSERoute. Two INDEPENDENT chains are then derived
-	// from securedBase, each supplying its OWN half of "how do I fulfill
-	// this declared requirement":
-	//   - securedRoute (server): .HandleMW(&securedMw, secureImplFn) VERIFIES
-	//     the credential against the fixed demo token, PLUS the general-
-	//     purpose observability hook every other route here also attaches.
-	//   - unauthenticatedConsumeRoute (client, negative demo): securedBase
-	//     itself, reused UNCHANGED with no .ClientMW attached at all —
-	//     demonstrates the server correctly REJECTING an unauthenticated
-	//     request (a route need not be re-declared or re-registered to
-	//     demonstrate this; Consume only needs a value whose ClientHandle()
-	//     resolves the same path).
-	// securedRoute (WITH .ClientMW(&securedMw, credFn) chained on, below)
-	// is the value BOTH .Register(bHTTP) (server) AND nethttp.Consume
-	// (client, further down) use — one declared route, one shared
-	// codec-backed middleware value, both roles.
+	// ONE rest.SecurityMiddleware declaration (securedMw — name, scheme,
+	// scopes, and the Authorization merge field) is built ONCE, then
+	// fulfilled independently on each role via [rest.Middleware.WithReceive]/
+	// [rest.Middleware.WithSend] (docs/roadmap/bound-middleware-split.md) —
+	// each produces its OWN middleware VALUE (server/client can't share one
+	// Go value, since a middleware's Fn is baked in at construction), but
+	// both share the SAME underlying name/scheme/merge-field spec:
+	//   - secureServerMw (server): WithReceive verifies the credential
+	//     against the fixed demo token.
+	//   - securedClientMw (client): WithSend supplies it.
+	//   - securedBase (negative demo): the SPEC-ONLY securedMw itself,
+	//     attached with NO Fn at all — demonstrates the server correctly
+	//     REJECTING an unauthenticated request.
 	bearerTokenCodec := codex.String().Refine(validate.BearerToken)
-	securedMw := rest.SecurityMiddleware[struct{}, struct{}]("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT"), Codec: &bearerTokenCodec}, nil)
 	const demoBearerToken = "demo-secret-token"
-	secureImplFn := func(_ context.Context, r *http.Request, _ *struct{}) (map[string][]string, error) {
-		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	securedMw := rest.SecurityMiddleware[authIn, authOut]("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT"), Codec: &bearerTokenCodec}, nil).
+		WithRequestHeader(rest.NewRequiredHeaderParam("Authorization", codex.String(),
+			func(in authIn) string { return in.Authorization },
+			func(in *authIn, v string) { in.Authorization = v },
+		))
+	secureServerMw := securedMw.WithReceive(func(_ context.Context, in authIn) (authOut, error) {
+		token := strings.TrimPrefix(in.Authorization, "Bearer ")
 		if token != demoBearerToken {
-			return nil, fmt.Errorf("invalid bearer token")
+			return authOut{}, fmt.Errorf("invalid bearer token")
 		}
-		return map[string][]string{"bearerAuth": nil}, nil
-	}
-	credFn := func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
-		h := make(http.Header)
-		h.Set("Authorization", "Bearer "+demoBearerToken)
-		return h, nil
-	}
+		return authOut{GrantedScopes: map[string][]string{"bearerAuth": nil}}, nil
+	})
+	securedClientMw := securedMw.WithSend(func(_ context.Context) (authIn, error) {
+		return authIn{Authorization: "Bearer " + demoBearerToken}, nil
+	})
 	securedBase := rest.NewSSERoute[struct{}, counterEvent]("/sse/secured",
 		codex.Empty, counterEventCodec,
 		rest.RouteMeta{OperationID: "streamSecured", Summary: "Bearer-secured SSE stream"},
 	).Use(securedMw)
-	securedRoute := securedBase.
+	if err := rest.NewSSERoute[struct{}, counterEvent]("/sse/secured",
+		codex.Empty, counterEventCodec,
+		rest.RouteMeta{OperationID: "streamSecured", Summary: "Bearer-secured SSE stream"},
+	).Use(secureServerMw).
 		WithHandler(handleCounter).
-		HandleMW(&securedMw, secureImplFn).
 		HandleMW(nil, obsFn).
-		ClientMW(&securedMw, credFn).
-		WithOptions(opts)
-	if err := securedRoute.Register(bHTTP); err != nil {
+		WithOptions(opts).
+		Register(bHTTP); err != nil {
 		log.Fatalf("NewSSERoute secured: %v", err)
 	}
+	// securedClientRoute is the value nethttp.Consume uses further down —
+	// same path/codec/scheme as the server-registered route above, fulfilled
+	// with the CLIENT's own credential-supplying middleware value.
+	securedClientRoute := rest.NewSSERoute[struct{}, counterEvent]("/sse/secured",
+		codex.Empty, counterEventCodec,
+		rest.RouteMeta{OperationID: "streamSecured", Summary: "Bearer-secured SSE stream"},
+	).Use(securedClientMw)
 
 	// Both routes below now declare a Req-side merge-capable NewPathParam
 	// (sensorPathReq, same type sensorRoute uses) — this is what lets the
@@ -603,17 +616,17 @@ func main() {
 			})
 	})
 
-	// ── Bearer-secured SSE: same route value, both roles ────────────────────
-	// securedRoute is the SAME value .Register(bHTTP) used above — its
-	// ClientMW(&securedMw, credFn) supplies the SAME token secureImplFn
-	// verifies server-side, both PAIRED against the SAME securedMw value
-	// via .Use()/.HandleMW()/.ClientMW() — one declaration, one shared
-	// credential, no separate client-side re-declaration. client.Consume
-	// fully supports credential-providing ClientMW (see
+	// ── Bearer-secured SSE: same declaration, both roles ────────────────────
+	// securedClientRoute shares the SAME path/codec/scheme as the
+	// server-registered route above — its securedClientMw (WithSend)
+	// supplies the SAME token secureServerMw (WithReceive) verifies
+	// server-side, both built from the SAME securedMw declaration
+	// (docs/roadmap/bound-middleware-split.md). client.Consume fully
+	// supports a credential-providing WithSend middleware (see
 	// docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 4).
-	consumeN("client.Consume /sse/secured (bearer credential supplied via ClientMW)", 3, func(ctx context.Context, cancel context.CancelFunc) error {
+	consumeN("client.Consume /sse/secured (bearer credential supplied via WithSend)", 3, func(ctx context.Context, cancel context.CancelFunc) error {
 		n := 0
-		return client.Consume(ctx, securedRoute, struct{}{},
+		return client.Consume(ctx, securedClientRoute, struct{}{},
 			func(_ context.Context, e counterEvent) error {
 				fmt.Printf("  event: {count:%d}\n", e.Count)
 				n++
@@ -624,14 +637,14 @@ func main() {
 			})
 	})
 
-	// Negative demo: securedBase (the pre-ClientMW value) proves the SAME
-	// server enforcement rejects a request with NO credential attached —
-	// the server's HandleMW pairing is doing real work, not just spec
-	// decoration. client.Consume has no OnError hook (it retries
-	// indefinitely on a connect failure, exactly like the escape hatch
-	// does) — use CallSSEAdapter's OnError instead to observe the
-	// rejection directly, one attempt, no retry needed for this demo.
-	fmt.Println("=== CallSSEAdapter /sse/secured with NO ClientMW attached (expect rejection) ===")
+	// Negative demo: securedBase (the spec-only, no-Fn-attached value)
+	// proves the SAME server enforcement rejects a request with NO
+	// credential attached — the server's WithReceive verification is doing
+	// real work, not just spec decoration. client.Consume has no OnError
+	// hook (it retries indefinitely on a connect failure, exactly like the
+	// escape hatch does) — use CallSSEAdapter's OnError instead to observe
+	// the rejection directly, one attempt, no retry needed for this demo.
+	fmt.Println("=== CallSSEAdapter /sse/secured with NO credential middleware attached (expect rejection) ===")
 	func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 		defer cancel()

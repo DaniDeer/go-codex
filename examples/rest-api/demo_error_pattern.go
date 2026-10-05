@@ -16,7 +16,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/examples/rest-api/routes"
 	"github.com/DaniDeer/go-codex/ports"
-	"github.com/DaniDeer/go-codex/route"
 )
 
 // This file is the comprehensive rest.ErrorPattern/ErrorStatus showcase —
@@ -100,11 +99,11 @@ func buildErrorPatternDemoServer() (*rest.Server, *rest.Client, string) {
 	// Security-middleware + ErrorPattern combo: securityFn ALWAYS rejects
 	// with InsufficientScopeError — proving ErrorPattern intercepts a
 	// security-middleware Fn failure, never reaching conflictHandler at all.
-	securityFn := func(_ context.Context, _ *http.Request, _ *routes.CreateUserReq) (map[string][]string, error) {
-		return nil, routes.InsufficientScopeError{RequiredScope: "billing"}
+	securityFn := func(_ context.Context, _ *routes.CreateUserReq, _ routes.AuthIn) (routes.AuthOut, error) {
+		return routes.AuthOut{}, routes.InsufficientScopeError{RequiredScope: "billing"}
 	}
 	must(routes.SecuredConflictRoute.WithHandler(conflictHandler).
-		HandleMW(&routes.ErrorPatternScopeMw, securityFn).Register(b), "register secured-conflict route")
+		HandleBoundMW(routes.BoundScopeServerMW[routes.CreateUserReq](routes.BillingScopes, securityFn)).Register(b), "register secured-conflict route")
 
 	router := gochi.NewRouter()
 	addr := mustFreeAddr()
@@ -248,12 +247,12 @@ func demoErrorPatternMiddlewareCombo() {
 	// credential FORMAT check (BearerCodec) passes and the server's
 	// securityFn (which ALWAYS rejects) is actually reached — mirrors
 	// demo_violations.go's alwaysGrantAdmin pattern.
-	securedRoute := routes.SecuredConflictRoute.ClientMW(&routes.ErrorPatternScopeMw,
-		func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
-			h := make(http.Header)
-			h.Set("Authorization", "Bearer fake-token-for-demo")
-			return h, nil
-		},
+	securedRoute := routes.SecuredConflictRoute.ClientBoundMW(
+		routes.BoundScopeClientMW[routes.CreateUserReq](routes.BillingScopes,
+			func(_ context.Context, _ routes.CreateUserReq) (routes.AuthIn, error) {
+				return routes.AuthIn{Token: "valid-billing-token"}, nil
+			},
+		),
 	)
 	_, err := client.Call(ctx, securedRoute, routes.CreateUserReq{Name: "Carol", Email: "carol@example.com"})
 	if payload, ok := rest.ErrorPatternAs[routes.InsufficientScopePayload](err); ok {

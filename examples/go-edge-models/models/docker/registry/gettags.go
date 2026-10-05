@@ -34,15 +34,18 @@ type GetTagsReq struct {
 // GetTagsReq, whose Name field merges into {name} automatically via
 // nethttp.Call/rest.CallWithTransport — no manual vars map needed.
 //
-// GetTagsRoute declares its "bearerAuth" requirement via .Use(BearerAuthDeclaration)
-// below — a spec-only declaration (see BearerAuthSchemeName's doc comment):
-// this codebase documents the requirement but never enforces it, since the
-// real server is an external registry. A caller MUST separately chain a
-// credential-SUPPLYING middleware.ClientImplementation via .ClientMW(...)
-// before calling .ClientHandle() to actually authenticate outgoing calls;
-// see app/registry's GetTags for the batteries-included client (auth flow
-// via app/registry's own newAuthCredentialFunc, image-URL parsing) built
-// this way on top of this route.
+// GetTagsRoute does NOT attach BearerAuthDeclaration itself (unlike an
+// earlier version of this example) — a reusable Middleware[In,Out] value
+// attaches via .Use() with its Fn EMBEDDED (docs/roadmap/
+// bound-middleware-split.md), so spec declaration and credential-
+// supplying Fn now travel together in ONE .Use() call, made by whichever
+// caller actually wants to authenticate. A caller chains
+// .Use(BearerAuthDeclaration.WithSend(credentialFn)) before calling
+// .ClientHandle() to both declare the "bearerAuth" requirement AND
+// authenticate outgoing calls; see app/registry's GetTags for the
+// batteries-included client (auth flow via app/registry's own
+// newAuthCredentialFunc, image-URL parsing) built this way on top of this
+// route.
 var GetTagsRoute = rest.NewRoute[GetTagsReq, TagsList](
 	"GET", "/v2/{name}/tags/list",
 	c.Struct[GetTagsReq](), TagsListCodec,
@@ -56,7 +59,7 @@ var GetTagsRoute = rest.NewRoute[GetTagsReq, TagsList](
 		func(r GetTagsReq) string { return r.Name },
 		func(r *GetTagsReq, v string) { r.Name = v },
 	).WithDescription("Repository path"),
-).Use(BearerAuthDeclaration)
+)
 
 // ── TagsList ──────────────────────────────────────────────────────────────────
 

@@ -118,7 +118,10 @@ func TestSSEHandler_ResponseCookieMerge_WithAttributes(t *testing.T) {
 // exercises a Middleware[In,Out]-declared response cookie's attributes,
 // attached via Transform, reaching the actual Set-Cookie header.
 func TestTransform_ResponseCookieWithAttributes_ReachesSetCookieHeader(t *testing.T) {
-	mw := rest.NewMiddleware(newTDEmptyDeclaration("cookie-attrs-policy")).
+	bm := rest.NewBoundMiddleware[createReq](newTDEmptyDeclaration("cookie-attrs-policy"),
+		func(ctx context.Context, req *createReq, in tdEmpty) (tdEmpty, error) {
+			return tdEmpty{}, nil
+		}).
 		WithResponseCookie(rest.NewRequiredResponseCookieParam("policy-session", codex.String(),
 			func(out tdEmpty) string { return "policy-value" },
 			func(out *tdEmpty, v string) {},
@@ -129,9 +132,7 @@ func TestTransform_ResponseCookieWithAttributes_ReachesSetCookieHeader(t *testin
 	route := rest.NewRoute[createReq, userResp]("POST", "/users3", createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "createUser3"},
 	)
-	route = route.HandleMW(mw, func(ctx context.Context, req *createReq, in tdEmpty) (tdEmpty, error) {
-		return tdEmpty{}, nil
-	})
+	route = route.HandleBoundMW(bm)
 	route = route.WithHandler(func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
 	})
@@ -158,7 +159,10 @@ func TestTransform_ResponseCookieWithAttributes_ReachesSetCookieHeader(t *testin
 // response cookie AND a Transform-attached middleware's cookie both
 // declare attributes for the SAME cookie name.
 func TestCookieAttributes_Precedence_LastAttachedWins(t *testing.T) {
-	mw := rest.NewMiddleware(newTDEmptyDeclaration("precedence-policy")).
+	bm := rest.NewBoundMiddleware[createReq](newTDEmptyDeclaration("precedence-policy"),
+		func(ctx context.Context, req *createReq, in tdEmpty) (tdEmpty, error) {
+			return tdEmpty{}, nil
+		}).
 		WithResponseCookie(rest.NewRequiredResponseCookieParam("session", codex.String(),
 			func(out tdEmpty) string { return "mw-value" },
 			func(out *tdEmpty, v string) {},
@@ -175,9 +179,7 @@ func TestCookieAttributes_Precedence_LastAttachedWins(t *testing.T) {
 			return rest.CookieAttributes{MaxAge: 222}
 		}),
 	)
-	route = route.HandleMW(mw, func(ctx context.Context, req *createReq, in tdEmpty) (tdEmpty, error) {
-		return tdEmpty{}, nil
-	})
+	route = route.HandleBoundMW(bm)
 	route = route.WithHandler(func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
 	})

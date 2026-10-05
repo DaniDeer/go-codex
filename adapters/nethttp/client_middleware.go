@@ -6,6 +6,7 @@ import (
 	"reflect"
 
 	"github.com/DaniDeer/go-codex/api/rest"
+	"github.com/DaniDeer/go-codex/route"
 )
 
 // clientMiddlewareOutKey is the context key for client-side middleware Out
@@ -98,6 +99,38 @@ func dispatchClientMiddlewareIn[Req any](ctx context.Context, req Req, handlers 
 		}
 	}
 	return headers, cookies, query, nil
+}
+
+// clientMiddlewareSatisfiesAny reports whether at least one of handlers
+// declares a Satisfies scheme name matching one of secReqs' schemes — OR
+// declares no Satisfies at all (mirrors [mergeCredentialHeaders]'s own
+// "empty Satisfies always matches" convention exactly). Used by
+// [clientTransport.Call] to decide whether a codec-backed ClientMW
+// (attached via [rest.Middleware.WithSend]) counts as "a credential Fn
+// ran" for [rest.ClientCallOptions.OnCredentialRejected] purposes, since
+// [dispatchClientMiddlewareIn] itself (unlike [mergeCredentialHeaders])
+// runs every handler unconditionally and has no notion of "ran".
+func clientMiddlewareSatisfiesAny(handlers []rest.ClientMiddlewareHandler, secReqs []route.SecurityRequirement) bool {
+	if len(handlers) == 0 || len(secReqs) == 0 {
+		return false
+	}
+	reqSchemes := make(map[string]bool, len(secReqs))
+	for _, req := range secReqs {
+		for scheme := range req {
+			reqSchemes[scheme] = true
+		}
+	}
+	for _, h := range handlers {
+		if len(h.Satisfies) == 0 {
+			return true
+		}
+		for _, s := range h.Satisfies {
+			if reqSchemes[s] {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // dispatchClientMiddlewareOut runs every [rest.ClientMiddlewareHandler]'s
