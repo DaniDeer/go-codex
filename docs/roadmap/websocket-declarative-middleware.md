@@ -100,5 +100,21 @@ none evaluated in depth yet:
   mechanism; this doc is about whether the mechanism should exist for
   WebSocket AT ALL. Different category of question.
 
+**If this idea is ever greenlit, start from the RESOLVED reference
+design, don't reinvent it**: [`docs/roadmap/bound-middleware-split.md`](bound-middleware-split.md)
+collapses `api/rest`/`api/events`/`api/reqreply`'s ORIGINAL single
+`Middleware[In,Out]` type (which entangled a reusable/declarative role
+with a route-bound role, distinguished only via runtime Fn-shape
+reflection) into two explicit, compile-time-distinct classes. Any future
+WebSocket declarative-middleware design should adopt that TWO-CLASS
+split from day one — a reusable, `Req`/`T`-free class attached via
+`.Use()`, and (only if a genuine bound need is ever found — WebSocket's
+per-session `Framed[In]`/`Session` shape may or may not need one) a
+separate, explicitly-typed bound class — rather than organically growing
+into the same single-type-with-reflection design that doc exists to
+correct for the 3rd time. This is a design-pattern pointer only; it does
+not pre-answer whether WebSocket needs this at all (see candidate 1,
+above).
+
 Not implemented — investigation/planning only. No committed scope, no
 priority assigned, no driver/concrete use case identified yet.

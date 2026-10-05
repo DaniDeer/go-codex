@@ -357,6 +357,26 @@ Trace operations (type-asserted `stats.TraceObserver`):
 - PUB/SUB: `"amqp.subscribe"`, `"amqp.publish"`
 - Request/Reply: `"amqp.serve"`, `"amqp.call"`
 
+### Security/Middleware dispatch — not yet designed; forward-looking note
+
+This doc has no Security/Middleware section today because AMQP plugs
+into `api/events`/`api/reqreply`'s EXISTING `Channel`/`Route` `Register`
+flow (same pattern `adapters/mqtt5`/`adapters/zeromq`/`adapters/mqtt`
+already use) — the adapter-level dispatch wiring (mirroring those
+adapters' own `adapter.go`/`caller.go`) hasn't been designed yet. When it
+is, it should dispatch against whichever mechanism
+[`docs/roadmap/bound-middleware-split.md`](bound-middleware-split.md)
+describes as CURRENT at implementation time (`Middleware[In,Out]`
+reusable class, or its new `BoundMiddleware`/`BoundSubscribeMiddleware`/
+`BoundPublishMiddleware` bound classes) — not a hand-rolled, adapter-
+specific mechanism. AMQP 0.9.1's `BasicProperties.Headers` is a genuine
+property/header side-channel (unlike ZeroMQ's complete absence of one),
+so AMQP's real Security needs almost certainly resolve via the REUSABLE
+class alone (a property-decoded `In`, discarding `*T`) — mirroring
+`adapters/mqtt5`'s pattern, not `adapters/zeromq`'s narrow in-payload
+credential case (the one confirmed genuine use for the bound class
+today).
+
 ### AsyncAPI spec
 
 The AsyncAPI AMQP binding spec (v0.3.0) uses a `bindings.amqp` block on channels:

@@ -158,6 +158,23 @@ func (m ToolMiddleware[In, Out]) WithSend(fn func(ctx context.Context) (In, erro
 func (ToolMiddleware[In, Out]) RouteMiddlewareMarker() {}
 ```
 
+**Forward-looking footnote (added during a later, unrelated design
+review)**: `ToolMiddleware[In,Out]` (and `FileMiddleware`/
+`CacheMiddleware`/`DirMiddleware[In,Out]` below) safely embed
+`middleware.Declaration[In,Out]` ANONYMOUSLY here because there is no
+second, "bound" role to accidentally conflict with — this doc's design
+is agnostic-only by choice (see "Merge-field vocabulary: NONE," above).
+IF a bound/paired variant is EVER added to any of these types in the
+future (e.g. a `ToolMiddleware` needing access to the specific Tool's
+own input struct, mirroring a route-bound need), it should NOT embed
+`Middleware[In,Out]`-equivalent state anonymously — see
+[`docs/roadmap/bound-middleware-split.md`](bound-middleware-split.md)'s
+resolved internal-layout decision: anonymous embedding promotes ALL of
+the embedded type's methods, which would silently make the NEW bound
+type ALSO satisfy whatever interface its agnostic sibling uses for
+`.Use()` attachment — reintroducing the exact ambiguity bug that doc
+exists to eliminate. Use a NAMED field instead.
+
 **Attachment — mirrors `rest.Route.Use`/`events.Channel`'s declare-time
 shape literally, not the superseded doc's call-time variadic sketch:**
 

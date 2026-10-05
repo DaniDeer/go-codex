@@ -208,6 +208,34 @@ declarations would silently never execute against this adapter — this
 is NOT optional, it's the same baseline every other REST/reqreply
 adapter already provides.
 
+**Cross-reference, sequencing-sensitive (added during a later design
+review)**: [`docs/roadmap/bound-middleware-split.md`](bound-middleware-split.md)
+REMOVES the legacy/raw-adapter Security-pairing mode this section's
+"paired-security-Fn shape check" wording refers to —
+`validateImplementationShapesReflect`'s job (checking a Security-paired
+`impls[i]`'s Fn shape) becomes vestigial once that mode is gone, since
+`impls`/`Implementations` can then only ever carry general-purpose
+(`mw == nil`) decorator entries. The underlying FIELDS this section
+reflects on (`MiddlewareHandlers`, `Implementations`) stay stable either
+way — `BoundMiddleware`-based dispatch populates the SAME
+`rb.middlewareHandlers`/`rb.middlewareSpecContributions` fields the
+current bound-shape-detection mechanism does today — so the reflection
+APPROACH sketched above remains structurally valid. Only the
+DESCRIPTION above (and whatever `adapters/zeromqrest/transport.go` is
+eventually written against) needs to match whichever mechanism is
+CURRENT at implementation time:
+- If `bound-middleware-split` ships FIRST: update this section's
+  "paired-security-Fn shape check" wording to describe dispatching
+  against `BoundMiddleware`-populated fields instead, and implement
+  `adapters/zeromqrest/transport.go` against the NEW mechanism directly
+  — do not implement a mirror of the (by-then-removed) reflection-based
+  Security-pairing path.
+- If `zeromq-rest-adapter` ships FIRST: its implementation will
+  naturally mirror TODAY's mechanism (the only one that exists yet) —
+  add `adapters/zeromqrest/transport.go` (and its tests) to
+  `bound-middleware-split.md`'s own "Files to create/modify" migration
+  list when that doc is implemented later.
+
 **Tier 2 coverage-check presence test, using the capability doc's newly
 added accessors** (`rv.MethodByName("CookieParamNames").Call(nil)`,
 etc. — see the capability-composition doc's Phase 3 section for why
