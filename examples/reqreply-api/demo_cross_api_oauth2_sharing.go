@@ -10,57 +10,42 @@ import (
 	reqreplyapiclient "github.com/DaniDeer/go-codex/examples/reqreply-api/client"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/routes"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/zeromqserver"
-	"github.com/DaniDeer/go-codex/route"
 )
-
-// validOAuthCredFn/invalidOAuthCredFn are PAIRED client-side credential
-// Fns for routes.OAuthMwReqreply, zeromq-shaped (writes the token INTO
-// the decoded *OAuthComputeReq — zeromq has no raw-message side channel,
-// unlike mqtt5's User Properties) — mirrors
-// demo_route_level_security_credential_error.go's validBearerCredFn/
-// malformedBearerCredFn pattern, adapted to zeromq's in-payload model.
-func validOAuthCredFn(_ context.Context, req *routes.OAuthComputeReq, _ []route.SecurityRequirement) error {
-	req.Token = "valid-compute-write-token"
-	return nil
-}
-
-func invalidOAuthCredFn(_ context.Context, req *routes.OAuthComputeReq, _ []route.SecurityRequirement) error {
-	req.Token = "expired-token"
-	return nil
-}
 
 // demoCrossAPIOAuth2Sharing is the concrete answer to "can a REST OAuth2
 // scheme and a zeromq reqreply OAuth2 scheme come from the SAME source
-// of truth?": YES — routes.OAuthMwReqreply and routes.OAuthMwREST are
-// two DISTINCT Go values (reqreply.Middleware[struct{},struct{}] and
-// rest.Middleware[struct{},struct{}] respectively — not the same type,
-// cannot be the same value), but both are built from the SAME shared
-// route.SecurityScheme (routes.oauthComputeScheme, via
-// route.OAuth2Scheme) and the SAME shared credential codec
+// of truth?": YES — routes.NewOAuthMwReqreply(...) and routes.OAuthMwREST
+// are two DISTINCT Go values (reqreply.BoundMiddleware[OAuthComputeReq,
+// struct{},OAuthOut] and rest.Middleware[struct{},struct{}] respectively
+// — not the same type, cannot be the same value), but both are built
+// from the SAME shared route.SecurityScheme (routes.oauthComputeScheme,
+// via route.OAuth2Scheme) and the SAME shared credential codec
 // (routes.OAuthCodec) — see routes/middleware.go's doc comments for why
 // true single-value sharing across api/rest and api/reqreply isn't
 // achievable with the codec-backed Middleware[In,Out] family (each
 // pattern's internal dispatch only recognizes its OWN concrete type) and
 // why "one shared config, one declaration per pattern" is the
-// replacement guarantee. routes.OAuthMwReqreply attaches to a zeromq
-// reqreply route (already registered in zeromqserver.Build,
-// real/served/called below); routes.OAuthMwREST attaches to a
-// throwaway, LOCALLY-declared REST route (spec-only — no HTTP server
-// needed to prove the point; examples/rest-api already fully covers
-// real REST serving). What CANNOT be shared, same as before, is the
-// paired implementation Fn itself: REST's shape needs *http.Request
-// access, zeromq's needs *OAuthComputeReq access — each transport gets
-// its OWN THIN wrapper Fn, both delegating to the SAME shared
-// handlers.VerifyOAuth2Scopes helper. See docs/features/security.md's
-// "Sharing a security SCHEME across REST/events/reqreply" section for
-// the full write-up this demo backs.
+// replacement guarantee. routes.OAuthComputeRoute (already registered,
+// security attached, in zeromqserver.Build) is called below with the
+// credential supplied directly as an ordinary OAuthComputeReq.Token field
+// — zeromq has no property/header side channel, so there is no
+// declarative client-side credential-supply step to demonstrate here
+// (unlike routes.BearerAuthMw's mqtt5 property-merge-field case); the
+// caller simply sets the field like any other request value.
+// routes.OAuthMwREST attaches to a throwaway, LOCALLY-declared REST
+// route (spec-only — no HTTP server needed to prove the point;
+// examples/rest-api already fully covers real REST serving). What CANNOT
+// be shared is the paired SERVER implementation Fn itself: REST's shape
+// needs *http.Request access, zeromq's needs *OAuthComputeReq access —
+// each transport gets its OWN THIN wrapper Fn, both delegating to the
+// SAME shared handlers.VerifyOAuth2Scopes helper. See
+// docs/features/security.md's "Sharing a security SCHEME across
+// REST/events/reqreply" section for the full write-up this demo backs.
 func demoCrossAPIOAuth2Sharing(ctx context.Context, zeromqBuilt *zeromqserver.Built) {
 	fmt.Println("\n── Demo 9: cross-API OAuth2 scheme sharing (REST + zeromq reqreply) ──")
 
 	// A dedicated client (independent of the other demos' shared zeromq
-	// client) attached to the SAME zeromqserver.Built.ClientSockets map —
-	// its ClientMW-attached Route variants below don't interfere with
-	// any other demo's calls.
+	// client) attached to the SAME zeromqserver.Built.ClientSockets map.
 	zClient, err := reqreplyapiclient.BuildZeroMQ(zeromqBuilt.ClientSockets)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "unexpected error building zeromq client: %v\n", err)
@@ -69,8 +54,7 @@ func demoCrossAPIOAuth2Sharing(ctx context.Context, zeromqBuilt *zeromqserver.Bu
 
 	// ── zeromq side: real, served, called ───────────────────────────────
 	fmt.Println("\n  → zeromq reqreply call WITHOUT a valid OAuth2 token:")
-	invalidRoute := routes.OAuthComputeRoute.Use(routes.OAuthMwReqreply).ClientMW(&routes.OAuthMwReqreply, invalidOAuthCredFn)
-	_, err = zClient.Call(ctx, invalidRoute, routes.OAuthComputeReq{X: 3, Y: 4})
+	_, err = zClient.Call(ctx, routes.OAuthComputeRoute, routes.OAuthComputeReq{X: 3, Y: 4, Token: "expired-token"})
 	if err == nil || !strings.Contains(err.Error(), "not recognized") {
 		fmt.Fprintf(os.Stderr, "expected a rejection mentioning an unrecognized token, got: %v\n", err)
 		os.Exit(1)
@@ -78,8 +62,7 @@ func demoCrossAPIOAuth2Sharing(ctx context.Context, zeromqBuilt *zeromqserver.Bu
 	fmt.Printf("  ✓ rejected: %v\n", err)
 
 	fmt.Println("\n  → zeromq reqreply call WITH a valid OAuth2 token:")
-	validRoute := routes.OAuthComputeRoute.Use(routes.OAuthMwReqreply).ClientMW(&routes.OAuthMwReqreply, validOAuthCredFn)
-	respAny, err := zClient.Call(ctx, validRoute, routes.OAuthComputeReq{X: 3, Y: 4})
+	respAny, err := zClient.Call(ctx, routes.OAuthComputeRoute, routes.OAuthComputeReq{X: 3, Y: 4, Token: "valid-compute-write-token"})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "unexpected error: %v\n", err)
 		os.Exit(1)

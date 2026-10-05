@@ -20,10 +20,10 @@ import (
 // Phase 1b's flat mqtt5adapter.FromUserPropertyParam bridge shown in
 // Demo 6.
 //
-// The DECLARATION (routes.TenantPropertyMw) and IMPLEMENTATION
+// The DECLARATION (routes.NewTenantPropertyMw) and IMPLEMENTATION
 // (handlers.ProcessTenant) are BOTH adapter-agnostic — see
 // routes/middleware.go and handlers/middleware.go. THIS demo shows the
-// SAME declaration+implementation pair, attached via .HandleMW
+// SAME declaration+implementation pair, attached via .HandleBoundMW
 // to routes.PropertyAxisComputeRoute, registered against TWO completely
 // different transports (mqtt5server.Build, zeromqserver.Build) with ZERO
 // changes to either the declaration or the implementation — only the
@@ -87,7 +87,7 @@ func demoPropertyAxisMQTT5(ctx context.Context, built *mqtt5server.Built) {
 // carry only [status, payload], no side channel of any kind). There is
 // no way for a zeromq caller to supply "X-Tenant-Id" at all.
 //
-// Because routes.TenantPropertyMw declares that property OPTIONAL (not
+// Because routes.NewTenantPropertyMw declares that property OPTIONAL (not
 // required — see routes/middleware.go's own reasoning), this call
 // SUCCEEDS anyway: TenantIn.TenantID is simply left at its zero value,
 // and handlers.ProcessTenant — the EXACT SAME implementation mqtt5 used

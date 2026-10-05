@@ -371,13 +371,45 @@ func WithSecurityScheme(name string, scheme SecurityScheme) RouteOpt {
 // equivalent, GENERALIZED over In/Out (docs/roadmap/declarative-
 // middleware-layering.md's Rollout Phase C, mirroring `rest`'s/`events`'
 // identical Phase A/B generalization) — builds a [Middleware][In, Out]
-// carrying a [middleware.SecurityDeclaration], attachable via the SAME
-// `.Use(...)`/`HandleMW(...)`/`ClientMW(...)` vocabulary as any other
-// codec-backed middleware. A non-`struct{}` In/Out lets a
-// Security-carrying middleware ALSO carry a real credential payload
-// (`In`) and/or a `GrantedScopes map[string][]string`-named conventional
-// field on `Out`, dispatched through the SAME bound `HandleMW`/`ClientMW`
-// path any other codec-backed middleware uses.
+// carrying a [middleware.SecurityDeclaration]. Attached ONLY via
+// `.Use(...)` (the REUSABLE class — a `Req`-free Fn supplied via
+// [Middleware.WithReceive]/[Middleware.WithSend], reusable verbatim
+// across any number of routes sharing the same scheme). `HandleMW`/
+// `ClientMW` REJECT any codec-backed `Middleware[In, Out]` value outright
+// (`MiddlewareMisattachedError`) — when a Fn genuinely needs the route's
+// own decoded `*Req`/`Req` (e.g. an in-payload credential field, no
+// property channel available), use [BoundSecurityMiddleware] instead,
+// attached via `HandleBoundMW`/`ClientBoundMW`. The common pattern is a
+// REAL In/Out pair — In decodes the credential (often via
+// [Middleware.WithRequestProperty]), Out carries the grant:
+//
+//	type AuthIn struct{ Token string }
+//	type AuthOut struct{ GrantedScopes map[string][]string }
+//
+//	var bearerMw = reqreply.SecurityMiddleware[AuthIn, AuthOut]("bearerAuth", scheme, nil).
+//	    WithRequestProperty(reqreply.NewPropertyParam("Authorization", codex.String(),
+//	        func(in AuthIn) string { return in.Token },
+//	        func(in *AuthIn, v string) { in.Token = v },
+//	    )).
+//	    WithReceive(func(ctx context.Context, in AuthIn) (AuthOut, error) {
+//	        if !valid(in.Token) {
+//	            return AuthOut{}, errors.New("invalid token")
+//	        }
+//	        return AuthOut{GrantedScopes: map[string][]string{"bearerAuth": nil}}, nil
+//	    })
+//
+// **`Out` MUST carry a field literally named `GrantedScopes
+// map[string][]string`**, read by the adapter via reflection and merged
+// into the SAME [middleware.CheckScopes] call every Security attachment
+// uses — REQUIRED even when zero specific scopes are declared. An
+// `Out{}` zero value (nil map) means NOTHING satisfies the scheme at
+// all, silently turning an otherwise-successful Fn into a REJECTION.
+//
+// `In=Out=struct{}` remains valid for the rarer SPEC-ONLY declaration
+// case — documenting an external requirement this codebase never
+// enforces, with NO Fn ever attached at all. Go cannot infer In/Out here
+// (no parameter is typed by them) — every caller must supply explicit
+// type arguments.
 //
 // InCodec/OutCodec default to [codex.Struct[In]()]/[codex.Struct[Out]()]
 // (a safe, zero-field no-op codec) when In/Out are NOT explicitly
@@ -395,8 +427,17 @@ func SecurityMiddleware[In, Out any](schemeName string, scheme SecurityScheme, s
 }
 
 // SecurityCredentialError is returned when credential format validation via
-// SecurityScheme.Codec fails (MQTT5 only). It is distinct from [SecurityError],
-// which wraps rejections from ServeOptions.SecurityFunc.
+// SecurityScheme.Codec fails. It is distinct from [SecurityError], which
+// wraps a REJECTION from a legacy raw-adapter-shaped security Fn paired
+// via `HandleMW`/`ClientMW` (see [MiddlewareError] for the equivalent
+// rejection from a Middleware-dispatched — `.Use()`/`HandleBoundMW`/
+// `ClientBoundMW`-attached — Fn). This format check runs SERVER-side
+// always; CLIENT-side (pre-publish) it ONLY runs for a legacy
+// `HandleMW`/`ClientMW`-paired attachment — a `.Use()`/`WithSend`-
+// attached (reusable or bound class) credential Fn has no client-side
+// format pre-check equivalent, surfacing a malformed credential as a
+// SERVER-side rejection instead (see docs/features/security.md's
+// reqreply section).
 //
 // Use [errors.As] to extract the scheme name and underlying constraint error:
 //
@@ -424,10 +465,15 @@ func (e SecurityCredentialError) LogValue() slog.Value {
 	)
 }
 
-// SecurityError is returned when ServeOptions.SecurityFunc rejects a request.
-// It is distinct from [SecurityCredentialError], which covers codec format failures.
+// SecurityError is returned when a legacy raw-adapter-shaped security Fn
+// (paired via `HandleMW`/`ClientMW` against a bare `middleware.Middleware`
+// value — the ONLY attachment style those two methods accept now; a
+// codec-backed `Middleware[In,Out]`/`BoundMiddleware`'s own rejection
+// surfaces as [MiddlewareError] instead, via `.Use()`/`HandleBoundMW`/
+// `ClientBoundMW`) rejects a request. It is distinct from
+// [SecurityCredentialError], which covers codec format failures.
 //
-// Use [errors.As] to extract the underlying error from SecurityFunc:
+// Use [errors.As] to extract the underlying error from the rejecting Fn:
 //
 //	var secErr reqreply.SecurityError
 //	if errors.As(err, &secErr) {
@@ -848,6 +894,16 @@ type routeBuilder struct {
 	// [RouteHandle]'s Implementations/ClientImplementations fields.
 	impls       []middleware.ServerImplementation
 	clientImpls []middleware.ClientImplementation
+	// buildErr stashes a construction-time error from [Route.HandleBoundMW]/
+	// [Route.ClientBoundMW] (a Req-mismatched or wrong-class bm — see
+	// [BoundMiddlewareReqMismatchError]) or [Route.HandleMW]/[Route.ClientMW]
+	// (a codec-backed [Middleware]/[BoundMiddleware] value — see
+	// [MiddlewareMisattachedError]), checked early in
+	// [Route.Register]/[Route.RegisterHandle] (returned as a normal
+	// error) and in [Route.ClientHandle] (PANICS, since ClientHandle has
+	// no error return at all — mirrors [rest.routeBuilder.buildErr]/
+	// [rest.Route.ClientHandle]'s identical, confirmed-necessary fix).
+	buildErr error
 }
 
 // Topic is a reusable topic template + [TopicParam] shape, for the rare case
@@ -1026,6 +1082,14 @@ func (r Route[Req, Resp]) ClientHandle() *RouteHandle[Req, Resp] {
 	for _, opt := range r.opts {
 		opt.applyRoute(&rb)
 	}
+	if rb.buildErr != nil {
+		// ClientHandle has no error return at all — PANIC rather than
+		// silently dropping the mismatched/misattached bound middleware,
+		// mirroring rest.Route.ClientHandle's identical, confirmed-
+		// necessary fix (a Req-mismatched/misattached attachment used to
+		// be silently swallowed here with ZERO error or panic anywhere).
+		panic(fmt.Sprintf("api/reqreply: ClientHandle: %s", rb.buildErr.Error()))
+	}
 	// Merge Route.Use-attached middleware Security into rb.meta.Security/
 	// rb.securitySchemes — mirrors rest.Route.ClientHandle's identical
 	// call to applyMiddlewareSecurityForClient. No conflict detection, no
@@ -1061,7 +1125,7 @@ func (r Route[Req, Resp]) ClientHandle() *RouteHandle[Req, Resp] {
 		RequestHeaderParams:   reqHeaderParams,
 		ResponseHeaderParams:  respHeaderParams,
 		// MiddlewareHandlers/ClientMiddlewareHandlers copied WITHOUT the
-		// D6(b)/D7/conflict checks Register runs — ClientHandle stays
+		// D6(b)/conflict checks Register runs — ClientHandle stays
 		// infallible, mirroring rest.Route.ClientHandle exactly.
 		MiddlewareHandlers:       rb.middlewareHandlers,
 		ClientMiddlewareHandlers: rb.clientMiddlewareHandlers,
@@ -1121,6 +1185,9 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 	for _, opt := range r.opts {
 		opt.applyRoute(&rb)
 	}
+	if rb.buildErr != nil {
+		return nil, rb.buildErr
+	}
 
 	if err := codex.ValidateDeclaredParams(r.topic, toCodexParams(rb.topicParams)); err != nil {
 		return nil, err
@@ -1136,9 +1203,11 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 		return nil, err
 	}
 
-	// D6(b)/D7: attached codec-backed Middleware[In,Out] name uniqueness
-	// + ambiguous-attachment check — see
-	// docs/design/d-0003-codec-declared-middlewares.md's Addendum.
+	// D6(b): attached codec-backed Middleware[In,Out] name uniqueness
+	// check — see docs/design/d-0003-codec-declared-middlewares.md's
+	// Addendum. D7 (ambiguous-attachment) is structurally impossible now
+	// — see [checkMiddlewareNameUniquenessAndAttachment]'s own doc
+	// comment.
 	if err := checkMiddlewareNameUniquenessAndAttachment(&rb, r.topic); err != nil {
 		return nil, err
 	}

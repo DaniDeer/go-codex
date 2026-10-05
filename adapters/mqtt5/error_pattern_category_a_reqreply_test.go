@@ -115,6 +115,76 @@ func TestErrorPattern_SecurityMiddlewareFn_Matched_Publishes_ReqReply(t *testing
 	}
 }
 
+// TestErrorPattern_BoundSecurityMiddlewareFn_Matched_Publishes_ReqReply
+// covers the Middleware-dispatched (`.Use()`-attached, reusable class)
+// Security Fn failure case — distinct from
+// TestErrorPattern_SecurityMiddlewareFn_Matched_Publishes_ReqReply above,
+// which only exercises the LEGACY raw-adapter-Fn-pairing path (bare
+// middleware.Middleware + HandleMW(&mw, rawFn)), confirmed unaffected by
+// docs/roadmap/bound-middleware-split.md's Phase C. This test closes the
+// blind spot that let a confirmed cross-pattern inconsistency (reqreply
+// wrapping a Security-carrying Middleware Fn's failure as the GENERIC
+// reqreply.MiddlewareError, rather than reqreply.SecurityError like
+// REST's own `isSecuritySatisfyingHandler`-gated behavior) go unnoticed
+// across 3 prior Phase C review rounds — see this session's 4th Phase C
+// review round for the full writeup. Also asserts the previously-missing
+// stats.SecurityObserver.RecordSecurityRejection call now fires for this
+// specific failure mode.
+func TestErrorPattern_BoundSecurityMiddlewareFn_Matched_Publishes_ReqReply(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	handler := func(_ context.Context, _ computeReq) (computeResp, error) {
+		return computeResp{}, nil
+	}
+	rejectingMw := reqreply.SecurityMiddleware[struct{}, struct{}]("bearer3",
+		reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+	).WithReceive(func(context.Context, struct{}) (struct{}, error) {
+		return struct{}{}, errSecurityRejected
+	})
+	epRoute := reqreply.NewRoute[computeReq, computeResp]("compute/bound-security-mw-ep", computeReqCodec, computeRespCodec,
+		reqreply.RouteMeta{OperationID: "computeBoundSecurityMw", Security: []route.SecurityRequirement{route.Require("bearer3")}},
+		reqreply.ErrorPattern[reqreply.SecurityError, serveErrPayload](serveErrPayloadCodec,
+			func(e reqreply.SecurityError) (serveErrPayload, error) {
+				return serveErrPayload{Code: "security_rejected", Message: e.Error()}, nil
+			},
+		),
+	).Use(rejectingMw)
+	if _, err := epRoute.WithHandler(handler).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	serverClient := &mockClient{}
+	serverRouter := newMockRouter()
+	obs := &testObserver{}
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter, Serve: ServeOptions{Observer: obs}})); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	go func() { _ = server.Serve(ctx) }()
+	serverRouter.waitHandler("compute/bound-security-mw-ep")
+
+	serverRouter.dispatch("compute/bound-security-mw-ep", &pahomqtt5.Publish{
+		Topic:   "compute/bound-security-mw-ep",
+		Payload: []byte(validComputeJSON),
+		Properties: &pahomqtt5.PublishProperties{
+			ResponseTopic:   "replies/client-1",
+			CorrelationData: []byte("corr-bound-security"),
+		},
+	})
+	time.Sleep(50 * time.Millisecond)
+
+	pub := serverClient.lastPublished()
+	if pub == nil {
+		t.Fatal("expected reply to be published")
+	}
+	if !strings.Contains(string(pub.Payload), `"code":"security_rejected"`) {
+		t.Errorf("want typed payload with code=security_rejected, got: %s", pub.Payload)
+	}
+	if len(obs.secRejections) != 1 {
+		t.Errorf("want 1 RecordSecurityRejection call, got %d", len(obs.secRejections))
+	}
+}
+
 type mwDecodeFailIn struct{ TenantID string }
 
 var mwDecodeFailInCodec = codex.Struct[mwDecodeFailIn](
@@ -129,7 +199,10 @@ func TestErrorPattern_MiddlewareDecodeIn_Matched_Publishes_ReqReply(t *testing.T
 	// source attached — DecodeIn always sees the zero value, which
 	// always fails validation, isolating a genuine middleware DecodeIn
 	// failure (mirrors events' newDecodeInFailingMiddleware).
-	mw := reqreply.NewMiddleware(middleware.NewDeclaration("tenant-policy", mwDecodeFailInCodec, mwPropOutCodec))
+	mw := reqreply.NewBoundMiddleware[computeReq](middleware.NewDeclaration("tenant-policy", mwDecodeFailInCodec, mwPropOutCodec),
+		func(ctx context.Context, req *computeReq, in mwDecodeFailIn) (mwPropOut, error) {
+			return mwPropOut{}, nil
+		})
 	handler := func(_ context.Context, _ computeReq) (computeResp, error) {
 		return computeResp{}, nil
 	}
@@ -139,12 +212,7 @@ func TestErrorPattern_MiddlewareDecodeIn_Matched_Publishes_ReqReply(t *testing.T
 				return serveErrPayload{Code: "middleware_input", Message: e.Error()}, nil
 			},
 		),
-	).HandleMW(
-		mw,
-		func(ctx context.Context, req *computeReq, in mwDecodeFailIn) (mwPropOut, error) {
-			return mwPropOut{}, nil
-		},
-	)
+	).HandleBoundMW(mw)
 
 	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	if _, err := rt.WithHandler(handler).Register(server); err != nil {

@@ -92,30 +92,28 @@ func Build() (*Built, error) {
 		return nil, err
 	}
 	// SecuredComputeRoute/GlobalOnlyComputeRoute now declare+implement
-	// security via .Use()+.HandleMW() (Phase 1, see
-	// docs/design/d-0004-reqreply-workflow-simplification.md's Addendum)
-	// — REPLACES the OLD imperative
-	// ServeOptions.SecurityFunc mechanism entirely (removed, breaking
-	// change). A paired implementation is now REQUIRED for every route
-	// with a non-empty effective security requirement — mqtt5.
-	// NewServerTransport's CheckCoverage enforces this at Serve time, closing a
-	// latent gap the old SecurityFunc-optional design silently allowed
-	// (a route could declare a security scheme with NO enforcing
-	// implementation attached anywhere and nothing would ever catch it).
-	// The general-purpose observer HandleMW(nil, ...) attaches ALONGSIDE
-	// the paired security HandleMW(&routes.BearerAuthMw, ...) below —
-	// proving the two mechanisms compose freely on the same route.
+	// security via .Use(mw.WithReceive(fn)) (reusable class, Phase C of
+	// docs/roadmap/bound-middleware-split.md) — REPLACES the OLD
+	// imperative ServeOptions.SecurityFunc mechanism entirely (removed,
+	// breaking change). A paired implementation is now REQUIRED for
+	// every route with a non-empty effective security requirement —
+	// mqtt5.NewServerTransport's CheckCoverage enforces this at Serve
+	// time, closing a latent gap the old SecurityFunc-optional design
+	// silently allowed (a route could declare a security scheme with NO
+	// enforcing implementation attached anywhere and nothing would ever
+	// catch it). The general-purpose observer HandleMW(nil, ...) (used
+	// elsewhere in this file) attaches ALONGSIDE a .Use()-attached
+	// security Fn freely — see demo_observer_middleware.go for a
+	// dedicated demonstration of the two composing on one route.
 	securedHandle, err := routes.SecuredComputeRoute.
-		Use(routes.BearerAuthMw).
-		HandleMW(&routes.BearerAuthMw, handlers.VerifyBearer).
+		Use(routes.BearerAuthMw.WithReceive(handlers.VerifyBearer)).
 		WithHandler(handlers.Add).
 		Register(server)
 	if err != nil {
 		return nil, err
 	}
 	globalHandle, err := routes.GlobalOnlyComputeRoute.
-		Use(routes.BearerAuthMw).
-		HandleMW(&routes.BearerAuthMw, handlers.VerifyBearer).
+		Use(routes.BearerAuthMw.WithReceive(handlers.VerifyBearer)).
 		WithHandler(handlers.Add).
 		Register(server)
 	if err != nil {
@@ -145,9 +143,8 @@ func Build() (*Built, error) {
 	// the route's own normal ComputeReq/ComputeResp handling (unaffected).
 	// See zeromqserver/server.go for the SAME declaration+implementation
 	// pair attached to a transport with NO property mechanism at all.
-	propertyAxisHandle, err := routes.PropertyAxisComputeRoute.HandleMW(
-		routes.TenantPropertyMw,
-		handlers.ProcessTenant,
+	propertyAxisHandle, err := routes.PropertyAxisComputeRoute.HandleBoundMW(
+		routes.NewTenantPropertyMw(handlers.ProcessTenant),
 	).
 		WithHandler(handlers.Add).
 		Register(server)

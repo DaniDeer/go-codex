@@ -29,13 +29,14 @@ type gsReqreplyOut struct {
 
 var gsReqreplyBearerScheme = reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}
 
-// NOTE — the SAME confirmed, pre-existing cross-package
-// `.Use(mw).HandleMW(&mw, fn)` DuplicateMiddlewareNameError gap
-// documented in adapters/zeromq/grantedscopes_reqreply_test.go applies
-// here too (api/rest has the identical structure; not reqreply- or
-// adapter-specific). WORKAROUND used below, identical to zeromq's: declare
-// RouteMeta.Security directly, skip `.Use(mw)` — sufficient for
-// CheckCoverage/CheckScopes correctness, which is all this test needs.
+// Phase C's BoundMiddleware embeds fn at construction, so ONE
+// HandleBoundMW call does both — no separate .Use(mw) needed, and the
+// FORMER DuplicateMiddlewareNameError workaround (declaring
+// RouteMeta.Security directly, documented in
+// adapters/zeromq/grantedscopes_reqreply_test.go's own identical
+// scenario) is no longer required: applyBoundRoute synthesizes the
+// legacy Security entry into rb.middlewares itself, which
+// applySecurityDeclarations merges into rb.meta.Security automatically.
 func TestAttachServer_HandleMW_GrantedScopes_MergedIntoCheckScopes(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -47,7 +48,10 @@ func TestAttachServer_HandleMW_GrantedScopes_MergedIntoCheckScopes(t *testing.T)
 		{"no scopes granted", map[string][]string{"bearer": {}}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			mw := reqreply.SecurityMiddleware[gsReqreplyIn, gsReqreplyOut]("bearer", gsReqreplyBearerScheme, []string{"compute:write"})
+			mw := reqreply.BoundSecurityMiddleware[computeReq, gsReqreplyIn, gsReqreplyOut]("bearer", gsReqreplyBearerScheme, []string{"compute:write"},
+				func(_ context.Context, req *computeReq, _ gsReqreplyIn) (gsReqreplyOut, error) {
+					return gsReqreplyOut{GrantedScopes: tc.grant}, nil
+				})
 			handlerCalled := false
 			handler := func(_ context.Context, req computeReq) (computeResp, error) {
 				handlerCalled = true
@@ -57,15 +61,8 @@ func TestAttachServer_HandleMW_GrantedScopes_MergedIntoCheckScopes(t *testing.T)
 			rt := reqreply.NewRoute[computeReq, computeResp](
 				"compute/gs-mqtt5",
 				computeReqCodec, computeRespCodec,
-				reqreply.RouteMeta{
-					OperationID: "computeGSMqtt5",
-					Security:    []route.SecurityRequirement{route.Require("bearer", "compute:write")},
-				},
-			).HandleMW(&mw,
-				func(_ context.Context, req *computeReq, _ gsReqreplyIn) (gsReqreplyOut, error) {
-					return gsReqreplyOut{GrantedScopes: tc.grant}, nil
-				},
-			).WithHandler(handler)
+				reqreply.RouteMeta{OperationID: "computeGSMqtt5"},
+			).HandleBoundMW(mw).WithHandler(handler)
 
 			server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 			if _, err := rt.Register(server); err != nil {

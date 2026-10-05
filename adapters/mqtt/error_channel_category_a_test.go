@@ -122,3 +122,72 @@ func newSecuredHandleWithErrorChannel(impl func(context.Context, pahomqtt.Messag
 		SubscribeMW(&mw, impl).
 		Handle(b)
 }
+
+// TestErrorChannel_BoundSecurityMiddlewareFn_Matched_Publishes covers the
+// Middleware-dispatched (`SubscribeBoundMW`-attached bound class)
+// Security Fn failure case — distinct from
+// TestErrorChannel_SecurityImplFn_Matched_Publishes_ViaSubscribeHandle
+// above, which only exercises the LEGACY Implementations-based path
+// (bare middleware.Middleware + SubscribeMW(&mw, rawFn)). This test
+// closes mqtt v3's own version of the blind spot that let a confirmed
+// cross-pattern inconsistency (events wrapping a Security-carrying
+// Middleware Fn's failure as the GENERIC events.MiddlewareError, rather
+// than events.SecurityError like REST's own isSecuritySatisfyingHandler-
+// gated behavior) go undetected — see this session's cross-phase review
+// round for the full writeup. Also asserts the previously-missing
+// stats.SecurityObserver.RecordSecurityRejection call now fires for this
+// specific failure mode on mqtt v3 too.
+func TestErrorChannel_BoundSecurityMiddlewareFn_Matched_Publishes(t *testing.T) {
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	rejectingMw := events.BoundSecuritySubscribeMiddleware[userEvent, struct{}, struct{}](
+		"bearerAuth2", events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+		func(context.Context, *userEvent, struct{}) (struct{}, error) {
+			return struct{}{}, errors.New("rejected by security impl")
+		},
+	)
+	handle, err := events.NewChannel[userEvent]("user/created-bound-security", userEventCodec,
+		events.ErrorChannel[events.SecurityError, userErrPayload](
+			"user/created-bound-security/errors", userErrPayloadCodec,
+			func(e events.SecurityError) (userErrPayload, error) {
+				return userErrPayload{Code: "security_rejected", Message: e.Error()}, nil
+			},
+		),
+	).
+		WithSubscribe(events.Subscribe{
+			Summary:  "User created (bound security demo)",
+			Security: []route.SecurityRequirement{route.Require("bearerAuth2")},
+		}).
+		SubscribeBoundMW(rejectingMw).
+		Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	client := &mockClient{token: newCompletedToken(nil)}
+	caller := newCaller(client, nil)
+	obs := &mockSecurityObserver{}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := subscribeHandle(ctx, caller.client, handle,
+		func(_ context.Context, _ userEvent) error {
+			t.Fatal("handler must not be called when the security Fn rejects")
+			return nil
+		},
+		SubscribeOptions{Observer: obs}); err != nil {
+		t.Fatalf("subscribeHandle: %v", err)
+	}
+
+	handler := client.subscribedHandlerSnapshot()
+	if handler == nil {
+		t.Fatal("expected client.Subscribe to have been called with a handler")
+	}
+	handler(client, &mockMessage{topic: "user/created-bound-security", payload: []byte(validPayload)})
+
+	if client.publishedTopicSnapshot() != "user/created-bound-security/errors" {
+		t.Fatalf("published topic = %q, want user/created-bound-security/errors", client.publishedTopicSnapshot())
+	}
+	if obs.scheme == "" {
+		t.Error("want RecordSecurityRejection to have been called")
+	}
+}

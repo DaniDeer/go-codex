@@ -10,9 +10,9 @@ import (
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/routes"
 )
 
-// ProcessTenant is routes.TenantPropertyMw's Transform fn — attached via
-// routes.PropertyAxisComputeRoute.HandleMW(routes.TenantPropertyMw,
-// ProcessTenant) in BOTH mqtt5server.Build and zeromqserver.Build.
+// ProcessTenant is routes.NewTenantPropertyMw's embedded Fn — attached via
+// routes.PropertyAxisComputeRoute.HandleBoundMW(routes.NewTenantPropertyMw(ProcessTenant))
+// in BOTH mqtt5server.Build and zeromqserver.Build.
 //
 // Deliberately ADAPTER-AGNOSTIC: unlike VerifyBearer above (whose PAIRED
 // security Fn shape is mqtt5-specific, reading *pahomqtt5.Publish

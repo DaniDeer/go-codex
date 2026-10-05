@@ -5,39 +5,39 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/DaniDeer/go-codex/route"
-	pahomqtt5 "github.com/eclipse/paho.golang/paho"
+	"github.com/DaniDeer/go-codex/examples/reqreply-api/routes"
 )
 
-// VerifyBearer is the mqtt5-shaped PAIRED security implementation Fn —
-// attached via reqreply.Route.HandleMW(&routes.BearerAuthMw, VerifyBearer).
-// The credential's FORMAT (non-empty) is already validated by the
-// built-in codec-based check (via reqreply.SecurityScheme.Codec) BEFORE
-// this Fn ever runs — mirrors adapters/mqtt5's OLD ServeOptions.
-// SecurityFunc ordering exactly, now reached via the declarative
-// mechanism instead of a per-Attach option. Returns an unconditional
-// grant — this example has only ONE scope-less scheme, so there is no
-// scope-matching logic to demonstrate; a real implementation would look
-// the extracted token up against an identity provider/database, mirroring
-// examples/rest-api/handlers/security.go's ExtractScopes.
-func VerifyBearer(_ context.Context, msg *pahomqtt5.Publish, _ []route.SecurityRequirement) (map[string][]string, error) {
-	var token string
-	if msg.Properties != nil {
-		for _, p := range msg.Properties.User {
-			if p.Key == "Authorization" {
-				token = strings.TrimPrefix(p.Value, "Bearer ")
-			}
-		}
-	}
+// VerifyBearer is routes.BearerAuthMw's reusable-class WithReceive Fn —
+// attached via routes.BearerAuthMw.WithReceive(VerifyBearer), itself
+// attached to a route via plain .Use(...). The credential's FORMAT
+// (non-empty) is already validated by the built-in codec-based check
+// (via reqreply.SecurityScheme.Codec) BEFORE this Fn ever runs; the raw
+// "Authorization" MQTT5 User Property value is now merge-field-decoded
+// into in.Token DECLARATIVELY (routes.BearerAuthMw's own
+// WithRequestProperty) rather than read off *pahomqtt5.Publish by hand —
+// REPLACES the OLD legacy-shaped paired Fn permanently closed by
+// docs/roadmap/bound-middleware-split.md's Phase C. Returns an
+// unconditional grant — this example has only ONE scope-less scheme, so
+// there is no scope-matching logic to demonstrate; a real implementation
+// would look the extracted token up against an identity provider/
+// database, mirroring examples/rest-api/handlers/security.go's
+// ExtractScopes.
+func VerifyBearer(_ context.Context, in routes.BearerAuthIn) (routes.BearerAuthOut, error) {
+	token := strings.TrimPrefix(in.Token, "Bearer ")
 	_ = token // format already validated upstream; nothing further to check for this demo
-	return map[string][]string{"bearerAuth": nil}, nil
+	return routes.BearerAuthOut{GrantedScopes: map[string][]string{"bearerAuth": nil}}, nil
 }
 
-// AlwaysRejectSecurityImpl is a security implementation Fn that ALWAYS
+// AlwaysRejectSecurityImpl is a reusable-class WithReceive Fn that ALWAYS
 // rejects — used by demo_error_pattern.go's security-middleware +
 // ErrorPattern combination demo to prove a declared
 // reqreply.ErrorPattern[reqreply.SecurityError, ...] intercepts a
-// SECURITY-MIDDLEWARE Fn failure (not just a handler failure).
-func AlwaysRejectSecurityImpl(_ context.Context, _ *pahomqtt5.Publish, _ []route.SecurityRequirement) (map[string][]string, error) {
-	return nil, errors.New("access denied for demo")
+// SECURITY-MIDDLEWARE Fn failure (not just a handler failure). Attached
+// via .Use(routes.BearerAuthMw.WithReceive(AlwaysRejectSecurityImpl)),
+// not routes.BearerAuthMw directly — Middleware is immutable, so this
+// derived value shares the "bearerAuth" scheme name without ever
+// mutating the shared base.
+func AlwaysRejectSecurityImpl(_ context.Context, _ routes.BearerAuthIn) (routes.BearerAuthOut, error) {
+	return routes.BearerAuthOut{}, errors.New("access denied for demo")
 }

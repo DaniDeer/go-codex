@@ -26,11 +26,12 @@ import (
 //     attached, called through BOTH the mqtt5 AND zeromq clients —
 //     proving [reqreply.Observability]'s ONE generic implementation is
 //     reused, unchanged, across adapters (mirrors its own doc comment).
-//  2. SecuredComputeRoute with BOTH a paired security ClientMW
+//  2. SecuredComputeRoute with BOTH a reusable-class security Fn
 //     (validBearerCredFn, reused from demo_route_level_security_
-//     credential_error.go) AND the general-purpose observer ClientMW
-//     attached together — proving the two mechanisms compose freely on
-//     the client side exactly as they already do server-side.
+//     credential_error.go, via .Use(routes.BearerAuthMw.WithSend(...)))
+//     AND the general-purpose observer ClientMW attached together —
+//     proving the two mechanisms compose freely on the client side
+//     exactly as they already do server-side.
 //  3. Printing the shared [observability.DemoObserver]'s accumulated
 //     Summary() — confirming events recorded by the ADAPTER layer
 //     (adapters/mqtt5's/adapters/zeromq's own existing RecordRequest
@@ -62,8 +63,7 @@ func demoObserverMiddleware(ctx context.Context, obs *observability.DemoObserver
 
 	fmt.Println("\n  → SecuredComputeRoute: security ClientMW + observer ClientMW composed together:")
 	securedObservedRoute := routes.SecuredComputeRoute.
-		Use(routes.BearerAuthMw).
-		ClientMW(&routes.BearerAuthMw, validBearerCredFn).
+		Use(routes.BearerAuthMw.WithSend(validBearerCredFn)).
 		ClientMW(nil, reqreply.Observability[routes.ComputeReq, routes.ComputeResp](obs))
 	securedClient := reqreply.NewClient()
 	if err := securedClient.Attach(mqtt5adapter.NewClientTransport(mqtt5adapter.ClientTransportOptions{Client: mqtt5Built.Broker, Router: mqtt5Built.Router})); err != nil {

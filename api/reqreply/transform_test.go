@@ -17,22 +17,31 @@ type tfOut struct{ Echo string }
 var tfInCodec = codex.Struct[tfIn]()
 var tfOutCodec = codex.Struct[tfOut]()
 
-func newTenantMiddleware(name string) reqreply.Middleware[tfIn, tfOut] {
-	return reqreply.NewMiddleware(middleware.NewDeclaration(name, tfInCodec, tfOutCodec))
+// newBoundTenantMiddleware is [newTenantMiddleware]'s route-BOUND
+// counterpart — fn is embedded at construction (per [reqreply.BoundMiddleware]'s
+// shape), With* merge-field chaining happens afterward.
+func newBoundTenantMiddleware(name string, fn func(ctx context.Context, req *computeReq, in tfIn) (tfOut, error)) reqreply.BoundMiddleware[computeReq, tfIn, tfOut] {
+	return reqreply.NewBoundMiddleware[computeReq](middleware.NewDeclaration(name, tfInCodec, tfOutCodec), fn)
+}
+
+// newBoundTenantClientMiddleware mirrors [newBoundTenantMiddleware] for
+// the client/sending role, attached via Route.ClientBoundMW.
+func newBoundTenantClientMiddleware(name string, fn func(ctx context.Context, req computeReq) (tfIn, error)) reqreply.BoundClientMiddleware[computeReq, tfIn, tfOut] {
+	return reqreply.NewBoundClientMiddleware[computeReq](middleware.NewDeclaration(name, tfInCodec, tfOutCodec), fn)
 }
 
 // TestMiddleware_WithRequestTopic_MergesIn confirms Transform's fn
 // receives correctly-decoded In from request topic vars.
 func TestMiddleware_WithRequestTopic_MergesIn(t *testing.T) {
-	mw := newTenantMiddleware("with-req-topic").
+	mw := newBoundTenantMiddleware("with-req-topic",
+		func(ctx context.Context, req *computeReq, in tfIn) (tfOut, error) {
+			return tfOut{Echo: in.TenantID}, nil
+		}).
 		WithRequestTopic(reqreply.NewTopicParam("tenantID", codex.String(),
 			func(v tfIn) string { return v.TenantID },
 			func(v *tfIn, s string) { v.TenantID = s }))
 
-	r := newMWTestRoute().HandleMW(mw,
-		func(ctx context.Context, req *computeReq, in tfIn) (tfOut, error) {
-			return tfOut{Echo: in.TenantID}, nil
-		})
+	r := newMWTestRoute().HandleBoundMW(mw)
 	b := newBuilder()
 	h, err := r.Register(b)
 	if err != nil {
@@ -53,15 +62,15 @@ func TestMiddleware_WithRequestTopic_MergesIn(t *testing.T) {
 // Transform's returned Out correctly encodes into the reply's topic vars
 // (server-side EncodeOut).
 func TestMiddleware_WithResponseTopic_EncodesOutIntoReply(t *testing.T) {
-	mw := newTenantMiddleware("with-resp-topic").
+	mw := newBoundTenantMiddleware("with-resp-topic",
+		func(ctx context.Context, req *computeReq, in tfIn) (tfOut, error) {
+			return tfOut{Echo: "hello"}, nil
+		}).
 		WithResponseTopic(reqreply.NewTopicParam("echo", codex.String(),
 			func(v tfOut) string { return v.Echo },
 			func(v *tfOut, s string) { v.Echo = s }))
 
-	r := newMWTestRoute().HandleMW(mw,
-		func(ctx context.Context, req *computeReq, in tfIn) (tfOut, error) {
-			return tfOut{Echo: "hello"}, nil
-		})
+	r := newMWTestRoute().HandleBoundMW(mw)
 	b := newBuilder()
 	h, err := r.Register(b)
 	if err != nil {
@@ -81,13 +90,13 @@ func TestMiddleware_WithResponseTopic_EncodesOutIntoReply(t *testing.T) {
 // ClientTransform's DecodeOut mechanically decodes Out from the actual
 // reply's topic vars, no Fn involved.
 func TestMiddleware_WithResponseTopic_DecodesOutFromReply(t *testing.T) {
-	mw := newTenantMiddleware("client-resp-topic").
+	mw := newBoundTenantClientMiddleware("client-resp-topic",
+		func(ctx context.Context, req computeReq) (tfIn, error) { return tfIn{}, nil }).
 		WithResponseTopic(reqreply.NewTopicParam("echo", codex.String(),
 			func(v tfOut) string { return v.Echo },
 			func(v *tfOut, s string) { v.Echo = s }))
 
-	r := newMWTestRoute().ClientMW(mw,
-		func(ctx context.Context, req computeReq) (tfIn, error) { return tfIn{}, nil })
+	r := newMWTestRoute().ClientBoundMW(mw)
 	h := r.ClientHandle()
 	cmwh := h.ClientMiddlewareHandlers[0]
 	outAny, err := cmwh.DecodeOut(context.Background(), map[string]string{"echo": "world"}, nil)
@@ -103,12 +112,12 @@ func TestMiddleware_WithResponseTopic_DecodesOutFromReply(t *testing.T) {
 // TestTransform_EnrichesReqPointer confirms Transform's fn can both READ
 // and WRITE *Req.
 func TestTransform_EnrichesReqPointer(t *testing.T) {
-	mw := newTenantMiddleware("enrich-req")
-	r := newMWTestRoute().HandleMW(mw,
+	mw := newBoundTenantMiddleware("enrich-req",
 		func(ctx context.Context, req *computeReq, in tfIn) (tfOut, error) {
 			req.X = 100
 			return tfOut{}, nil
 		})
+	r := newMWTestRoute().HandleBoundMW(mw)
 	b := newBuilder()
 	h, err := r.Register(b)
 	if err != nil {
@@ -127,11 +136,11 @@ func TestTransform_EnrichesReqPointer(t *testing.T) {
 // TestClientTransform_ProducesInFromReq confirms ClientTransform's fn
 // receives the caller's own Req value and produces In.
 func TestClientTransform_ProducesInFromReq(t *testing.T) {
-	mw := newTenantMiddleware("client-produce-in")
-	r := newMWTestRoute().ClientMW(mw,
+	mw := newBoundTenantClientMiddleware("client-produce-in",
 		func(ctx context.Context, req computeReq) (tfIn, error) {
 			return tfIn{TenantID: "from-req"}, nil
 		})
+	r := newMWTestRoute().ClientBoundMW(mw)
 	h := r.ClientHandle()
 	fn := h.ClientMiddlewareHandlers[0].Fn.(func(context.Context, computeReq) (tfIn, error))
 	in, err := fn(context.Background(), computeReq{X: 1, Y: 2})
@@ -148,18 +157,18 @@ func TestClientTransform_ProducesInFromReq(t *testing.T) {
 // both dispatch, in registration order.
 func TestRoute_MultipleTransformAttachments_DispatchInRegistrationOrder(t *testing.T) {
 	var order []string
-	mw1 := newTenantMiddleware("first")
-	mw2 := newTenantMiddleware("second")
-	r := newMWTestRoute().HandleMW(mw1,
+	mw1 := newBoundTenantMiddleware("first",
 		func(ctx context.Context, req *computeReq, in tfIn) (tfOut, error) {
 			order = append(order, "first")
 			return tfOut{}, nil
 		})
-	r = r.HandleMW(mw2,
+	mw2 := newBoundTenantMiddleware("second",
 		func(ctx context.Context, req *computeReq, in tfIn) (tfOut, error) {
 			order = append(order, "second")
 			return tfOut{}, nil
 		})
+	r := newMWTestRoute().HandleBoundMW(mw1)
+	r = r.HandleBoundMW(mw2)
 	b := newBuilder()
 	h, err := r.Register(b)
 	if err != nil {
@@ -185,18 +194,18 @@ func TestRoute_MultipleTransformAttachments_DispatchInRegistrationOrder(t *testi
 // the SAME *Req field — attachment-order, last-applied-wins, NOT an
 // error.
 func TestTransform_D6c_TwoMiddlewaresEnrichSameReqField_LastAppliedWins(t *testing.T) {
-	mw1 := newTenantMiddleware("enrich-1")
-	mw2 := newTenantMiddleware("enrich-2")
-	r := newMWTestRoute().HandleMW(mw1,
+	mw1 := newBoundTenantMiddleware("enrich-1",
 		func(ctx context.Context, req *computeReq, in tfIn) (tfOut, error) {
 			req.X = 1
 			return tfOut{}, nil
 		})
-	r = r.HandleMW(mw2,
+	mw2 := newBoundTenantMiddleware("enrich-2",
 		func(ctx context.Context, req *computeReq, in tfIn) (tfOut, error) {
 			req.X = 2
 			return tfOut{}, nil
 		})
+	r := newMWTestRoute().HandleBoundMW(mw1)
+	r = r.HandleBoundMW(mw2)
 	b := newBuilder()
 	h, err := r.Register(b)
 	if err != nil {
@@ -224,15 +233,15 @@ func TestMiddleware_PropertyMergeComposesWithGobRequestFormat(t *testing.T) {
 		"compute/gob-mw-test", mwTestReqCodec, mwTestRespCodec,
 		reqreply.RequestFormats(format.Gob(mwTestReqCodec)),
 	)
-	mw := newTenantMiddleware("gob-compose").
+	mw := newBoundTenantMiddleware("gob-compose",
+		func(ctx context.Context, req *computeReq, in tfIn) (tfOut, error) {
+			return tfOut{Echo: in.TenantID}, nil
+		}).
 		WithRequestProperty(reqreply.NewPropertyParam("tenantID", codex.String(),
 			func(v tfIn) string { return v.TenantID },
 			func(v *tfIn, s string) { v.TenantID = s }))
 
-	r := gobRoute.HandleMW(mw,
-		func(ctx context.Context, req *computeReq, in tfIn) (tfOut, error) {
-			return tfOut{Echo: in.TenantID}, nil
-		})
+	r := gobRoute.HandleBoundMW(mw)
 	b := newBuilder()
 	h, err := r.Register(b)
 	if err != nil {
@@ -254,12 +263,12 @@ func TestMiddleware_PropertyMergeComposesWithGobRequestFormat(t *testing.T) {
 // receives correctly-decoded In, decoded from its OWN separate
 // property-value map, alongside (never combined with) any topic vars.
 func TestMiddleware_WithRequestProperty_MergesIn(t *testing.T) {
-	mw := newTenantMiddleware("prop-merge").
+	mw := newBoundTenantMiddleware("prop-merge",
+		func(ctx context.Context, req *computeReq, in tfIn) (tfOut, error) { return tfOut{}, nil }).
 		WithRequestProperty(reqreply.NewPropertyParam("X-Tenant", codex.String(),
 			func(v tfIn) string { return v.TenantID },
 			func(v *tfIn, s string) { v.TenantID = s }))
-	r := newMWTestRoute().HandleMW(mw,
-		func(ctx context.Context, req *computeReq, in tfIn) (tfOut, error) { return tfOut{}, nil })
+	r := newMWTestRoute().HandleBoundMW(mw)
 	b := newBuilder()
 	h, err := r.Register(b)
 	if err != nil {
@@ -280,12 +289,12 @@ func TestMiddleware_WithRequestProperty_MergesIn(t *testing.T) {
 // property mechanism (simulated empty map) fails with the SAME
 // MiddlewareInputError a missing topic var would.
 func TestMiddleware_WithRequestProperty_RequiredButAdapterSuppliesNoPropertyMap(t *testing.T) {
-	mw := newTenantMiddleware("prop-required").
+	mw := newBoundTenantMiddleware("prop-required",
+		func(ctx context.Context, req *computeReq, in tfIn) (tfOut, error) { return tfOut{}, nil }).
 		WithRequestProperty(reqreply.NewPropertyParam("X-Tenant", codex.String(),
 			func(v tfIn) string { return v.TenantID },
 			func(v *tfIn, s string) { v.TenantID = s }))
-	r := newMWTestRoute().HandleMW(mw,
-		func(ctx context.Context, req *computeReq, in tfIn) (tfOut, error) { return tfOut{}, nil })
+	r := newMWTestRoute().HandleBoundMW(mw)
 	b := newBuilder()
 	h, err := r.Register(b)
 	if err != nil {
@@ -300,12 +309,12 @@ func TestMiddleware_WithRequestProperty_RequiredButAdapterSuppliesNoPropertyMap(
 
 // TestMiddleware_WithOptionalRequestProperty_PresentMergesCorrectly.
 func TestMiddleware_WithOptionalRequestProperty_PresentMergesCorrectly(t *testing.T) {
-	mw := newTenantMiddleware("prop-optional-present").
+	mw := newBoundTenantMiddleware("prop-optional-present",
+		func(ctx context.Context, req *computeReq, in tfIn) (tfOut, error) { return tfOut{}, nil }).
 		WithRequestProperty(reqreply.NewOptionalPropertyParam("X-Tenant", codex.String(),
 			func(v tfIn) string { return v.TenantID },
 			func(v *tfIn, s string) { v.TenantID = s }))
-	r := newMWTestRoute().HandleMW(mw,
-		func(ctx context.Context, req *computeReq, in tfIn) (tfOut, error) { return tfOut{}, nil })
+	r := newMWTestRoute().HandleBoundMW(mw)
 	b := newBuilder()
 	h, err := r.Register(b)
 	if err != nil {
@@ -322,12 +331,12 @@ func TestMiddleware_WithOptionalRequestProperty_PresentMergesCorrectly(t *testin
 
 // TestMiddleware_WithOptionalRequestProperty_AbsentLeavesZeroValueNoError.
 func TestMiddleware_WithOptionalRequestProperty_AbsentLeavesZeroValueNoError(t *testing.T) {
-	mw := newTenantMiddleware("prop-optional-absent").
+	mw := newBoundTenantMiddleware("prop-optional-absent",
+		func(ctx context.Context, req *computeReq, in tfIn) (tfOut, error) { return tfOut{}, nil }).
 		WithRequestProperty(reqreply.NewOptionalPropertyParam("X-Tenant", codex.String(),
 			func(v tfIn) string { return v.TenantID },
 			func(v *tfIn, s string) { v.TenantID = s }))
-	r := newMWTestRoute().HandleMW(mw,
-		func(ctx context.Context, req *computeReq, in tfIn) (tfOut, error) { return tfOut{}, nil })
+	r := newMWTestRoute().HandleBoundMW(mw)
 	b := newBuilder()
 	h, err := r.Register(b)
 	if err != nil {
@@ -361,14 +370,15 @@ func TestClientTransform_ValueConflict_MiddlewareDerivedWins(t *testing.T) {
 	)
 	type tvIn struct{ TenantID string }
 	type tvOut struct{}
-	tvMw := reqreply.NewMiddleware(middleware.NewDeclaration("tv-conflict", codex.Struct[tvIn](), codex.Struct[tvOut]())).
+	tvMw := reqreply.NewBoundClientMiddleware[tvReq](middleware.NewDeclaration("tv-conflict", codex.Struct[tvIn](), codex.Struct[tvOut]()),
+		func(ctx context.Context, req tvReq) (tvIn, error) {
+			return tvIn{TenantID: "mw-derived"}, nil
+		}).
 		WithRequestTopic(reqreply.NewTopicParam("tenantID", codex.String(),
 			func(v tvIn) string { return v.TenantID },
 			func(v *tvIn, s string) { v.TenantID = s }))
 
-	r := route.ClientMW(tvMw, func(ctx context.Context, req tvReq) (tvIn, error) {
-		return tvIn{TenantID: "mw-derived"}, nil
-	})
+	r := route.ClientBoundMW(tvMw)
 	h := r.ClientHandle()
 
 	routeOwnVars, err := h.EncodeVars(tvReq{TenantID: "route-own"})
@@ -411,15 +421,15 @@ func TestTransform_ValueConflict_MiddlewareDerivedWins(t *testing.T) {
 			func(r *tvResp, v string) { r.Echo = v }),
 	)
 	type tvOut struct{ Echo string }
-	tvMw := reqreply.NewMiddleware(middleware.NewDeclaration("tv-resp-conflict", codex.Struct[tfIn](), codex.Struct[tvOut]())).
+	tvMw := reqreply.NewBoundMiddleware[computeReq](middleware.NewDeclaration("tv-resp-conflict", codex.Struct[tfIn](), codex.Struct[tvOut]()),
+		func(ctx context.Context, req *computeReq, in tfIn) (tvOut, error) {
+			return tvOut{Echo: "mw-derived"}, nil
+		}).
 		WithResponseTopic(reqreply.NewTopicParam("echo", codex.String(),
 			func(v tvOut) string { return v.Echo },
 			func(v *tvOut, s string) { v.Echo = s }))
 
-	r := newMWTestRoute2(tvRespCodec).HandleMW(tvMw,
-		func(ctx context.Context, req *computeReq, in tfIn) (tvOut, error) {
-			return tvOut{Echo: "mw-derived"}, nil
-		})
+	r := newMWTestRoute2(tvRespCodec).HandleBoundMW(tvMw)
 	b := newBuilder()
 	h, err := r.Register(b)
 	if err != nil {

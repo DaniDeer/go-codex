@@ -25,26 +25,13 @@ type gsReqreplyOut struct {
 
 var gsReqreplyBearerScheme = reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}
 
-// NOTE — a confirmed, PRE-EXISTING cross-package gap found while writing
-// this test, NOT fixed here (out of this phase's scope, affects REST
-// too): the roadmap doc's own worked examples show
-// `.Use(mw).HandleMW(&mw, fn)` for a bound Security middleware, but this
-// combination FAILS with DuplicateMiddlewareNameError when mw carries
-// ONLY a Security declaration (no merge fields) — both `.Use(mw)`
-// (applyAgnosticRoute) and the bound `.HandleMW(&mw, fn)` path
-// (applyBoundRoute) unconditionally append a middlewareSpecContribution
-// under the SAME mw.Name, and checkMiddlewareNameUniquenessAndAttachment
-// treats this as a genuine duplicate. Confirmed via code that
-// `api/rest`'s identical checkMiddlewareNameUniquenessAndAttachment has
-// the SAME structure — this is NOT reqreply-specific. events does NOT
-// have this issue (it bundles spec metadata directly on the handler, no
-// separate spec-contribution list). WORKAROUND used below: declare
-// RouteMeta.Security directly (skip `.Use(mw)` entirely) — sufficient
-// for CheckCoverage/CheckScopes correctness, though it means
-// AsyncAPISpec() won't auto-register mw's securitySchemes entry this
-// way (a separate, spec-rendering-only concern, irrelevant to THIS
-// test). Flagged for separate follow-up resolution.
-
+// Phase C's BoundMiddleware embeds fn at construction, so ONE
+// HandleBoundMW call does both — no separate .Use(mw) needed, and the
+// FORMER DuplicateMiddlewareNameError workaround (declaring
+// RouteMeta.Security directly, skipping `.Use(mw)`) is no longer
+// required: applyBoundRoute synthesizes the legacy Security entry into
+// rb.middlewares itself, which applySecurityDeclarations merges into
+// rb.meta.Security automatically.
 func TestHandleMW_GrantedScopes_MergedIntoCheckScopes(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -56,7 +43,10 @@ func TestHandleMW_GrantedScopes_MergedIntoCheckScopes(t *testing.T) {
 		{"no scopes granted", map[string][]string{"bearer": {}}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			mw := reqreply.SecurityMiddleware[gsReqreplyIn, gsReqreplyOut]("bearer", gsReqreplyBearerScheme, []string{"compute:write"})
+			mw := reqreply.BoundSecurityMiddleware[securedComputeReq, gsReqreplyIn, gsReqreplyOut]("bearer", gsReqreplyBearerScheme, []string{"compute:write"},
+				func(_ context.Context, req *securedComputeReq, _ gsReqreplyIn) (gsReqreplyOut, error) {
+					return gsReqreplyOut{GrantedScopes: tc.grant}, nil
+				})
 			handlerCalled := false
 			fn := func(_ context.Context, r securedComputeReq) (securedComputeResp, error) {
 				handlerCalled = true
@@ -66,15 +56,8 @@ func TestHandleMW_GrantedScopes_MergedIntoCheckScopes(t *testing.T) {
 			route := reqreply.NewRoute[securedComputeReq, securedComputeResp](
 				"/secured-compute-gs",
 				securedComputeReqCodec, securedComputeRespCodec,
-				reqreply.RouteMeta{
-					OperationID: "securedComputeGS",
-					Security:    []route.SecurityRequirement{route.Require("bearer", "compute:write")},
-				},
-			).HandleMW(&mw,
-				func(_ context.Context, req *securedComputeReq, _ gsReqreplyIn) (gsReqreplyOut, error) {
-					return gsReqreplyOut{GrantedScopes: tc.grant}, nil
-				},
-			).WithHandler(fn)
+				reqreply.RouteMeta{OperationID: "securedComputeGS"},
+			).HandleBoundMW(mw).WithHandler(fn)
 
 			server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 			if _, err := route.Register(server); err != nil {

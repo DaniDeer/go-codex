@@ -1065,17 +1065,16 @@ var mwPropOutCodec = codex.Struct[mwPropOut]()
 // value actually appears in the outgoing REQUEST's real MQTT5 User
 // Properties.
 func TestAttachClient_WithRequestProperty_WritesOutgoingUserProperty(t *testing.T) {
-	mw := reqreply.NewMiddleware(middleware.NewDeclaration("req-prop", mwPropInCodec, mwPropOutCodec)).
+	mw := reqreply.NewBoundClientMiddleware[computeReq](middleware.NewDeclaration("req-prop", mwPropInCodec, mwPropOutCodec),
+		func(ctx context.Context, req computeReq) (mwPropIn, error) {
+			return mwPropIn{TenantID: "acme"}, nil
+		}).
 		WithRequestProperty(reqreply.NewPropertyParam("X-Tenant", codex.String(),
 			func(v mwPropIn) string { return v.TenantID },
 			func(v *mwPropIn, s string) { v.TenantID = s }))
 
-	rt := reqreply.NewRoute[computeReq, computeResp]("compute/req-prop-test", computeReqCodec, computeRespCodec).ClientMW(
-		mw,
-		func(ctx context.Context, req computeReq) (mwPropIn, error) {
-			return mwPropIn{TenantID: "acme"}, nil
-		},
-	)
+	rt := reqreply.NewRoute[computeReq, computeResp]("compute/req-prop-test", computeReqCodec, computeRespCodec).
+		ClientBoundMW(mw)
 
 	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	handler := func(ctx context.Context, req computeReq) (computeResp, error) {
@@ -1134,7 +1133,10 @@ func TestAttachClient_WithRequestProperty_WritesOutgoingUserProperty(t *testing.
 // WithResponseProperty-declared value actually appears in the outgoing
 // REPLY's real MQTT5 User Properties.
 func TestAttachServer_WithResponseProperty_WritesOutgoingUserProperty(t *testing.T) {
-	mw := reqreply.NewMiddleware(middleware.NewDeclaration("resp-prop", mwPropInCodec, mwPropOutCodec)).
+	mw := reqreply.NewBoundMiddleware[computeReq](middleware.NewDeclaration("resp-prop", mwPropInCodec, mwPropOutCodec),
+		func(ctx context.Context, req *computeReq, in mwPropIn) (mwPropOut, error) {
+			return mwPropOut{Ack: "confirmed"}, nil
+		}).
 		WithResponseProperty(reqreply.NewPropertyParam("X-Ack", codex.String(),
 			func(v mwPropOut) string { return v.Ack },
 			func(v *mwPropOut, s string) { v.Ack = s }))
@@ -1142,12 +1144,8 @@ func TestAttachServer_WithResponseProperty_WritesOutgoingUserProperty(t *testing
 	handler := func(ctx context.Context, req computeReq) (computeResp, error) {
 		return computeResp{Sum: req.X + req.Y}, nil
 	}
-	rt := reqreply.NewRoute[computeReq, computeResp]("compute/resp-prop-test", computeReqCodec, computeRespCodec).HandleMW(
-		mw,
-		func(ctx context.Context, req *computeReq, in mwPropIn) (mwPropOut, error) {
-			return mwPropOut{Ack: "confirmed"}, nil
-		},
-	)
+	rt := reqreply.NewRoute[computeReq, computeResp]("compute/resp-prop-test", computeReqCodec, computeRespCodec).
+		HandleBoundMW(mw)
 
 	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	if _, err := rt.WithHandler(handler).Register(server); err != nil {
@@ -1203,7 +1201,10 @@ func TestAttachServer_WithResponseProperty_WritesOutgoingUserProperty(t *testing
 // confirms the fix covers the ERROR-reply publish path too, not just the
 // success path.
 func TestAttachServer_WithResponseProperty_ErrorReplyAlsoWritesUserProperty(t *testing.T) {
-	mw := reqreply.NewMiddleware(middleware.NewDeclaration("resp-prop-err", mwPropInCodec, mwPropOutCodec)).
+	mw := reqreply.NewBoundMiddleware[computeReq](middleware.NewDeclaration("resp-prop-err", mwPropInCodec, mwPropOutCodec),
+		func(ctx context.Context, req *computeReq, in mwPropIn) (mwPropOut, error) {
+			return mwPropOut{Ack: "err-ack"}, nil
+		}).
 		WithResponseProperty(reqreply.NewPropertyParam("X-Ack", codex.String(),
 			func(v mwPropOut) string { return v.Ack },
 			func(v *mwPropOut, s string) { v.Ack = s }))
@@ -1217,10 +1218,7 @@ func TestAttachServer_WithResponseProperty_ErrorReplyAlsoWritesUserProperty(t *t
 			func(e businessError) (string, error) { return e.msg, nil },
 		),
 	)
-	rt := baseRoute.HandleMW(mw,
-		func(ctx context.Context, req *computeReq, in mwPropIn) (mwPropOut, error) {
-			return mwPropOut{Ack: "err-ack"}, nil
-		})
+	rt := baseRoute.HandleBoundMW(mw)
 
 	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	if _, err := rt.WithHandler(handler).Register(server); err != nil {
@@ -1282,7 +1280,11 @@ var errBusinessFailure = businessError{msg: "business failure"}
 func TestAttachServer_Transform_RunsAfterPairedSecurity(t *testing.T) {
 	var order []string
 	secMw := middleware.SecurityScheme("bearer2", route.BearerScheme("JWT"), nil, &bearerAuthTestCodec)
-	mw := reqreply.NewMiddleware(middleware.NewDeclaration("order-check", mwPropInCodec, mwPropOutCodec))
+	mw := reqreply.NewBoundMiddleware[computeReq](middleware.NewDeclaration("order-check", mwPropInCodec, mwPropOutCodec),
+		func(ctx context.Context, req *computeReq, in mwPropIn) (mwPropOut, error) {
+			order = append(order, "middleware")
+			return mwPropOut{}, nil
+		})
 	handler := func(ctx context.Context, req computeReq) (computeResp, error) {
 		order = append(order, "handler")
 		return computeResp{Sum: req.X + req.Y}, nil
@@ -1293,11 +1295,7 @@ func TestAttachServer_Transform_RunsAfterPairedSecurity(t *testing.T) {
 			order = append(order, "security")
 			return map[string][]string{"bearer2": nil}, nil
 		})
-	rt := baseRoute.HandleMW(mw,
-		func(ctx context.Context, req *computeReq, in mwPropIn) (mwPropOut, error) {
-			order = append(order, "middleware")
-			return mwPropOut{}, nil
-		})
+	rt := baseRoute.HandleBoundMW(mw)
 
 	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	if _, err := rt.WithHandler(handler).Register(server); err != nil {
@@ -1343,16 +1341,15 @@ func TestAttachServer_Transform_RunsAfterPairedSecurity(t *testing.T) {
 // decision #6: a Transform-attached fn's own business error surfaces
 // through ServeError{Kind: KindMiddleware}, NOT KindHandler.
 func TestAttachServer_MiddlewareError_WrapsAsKindMiddleware(t *testing.T) {
-	mw := reqreply.NewMiddleware(middleware.NewDeclaration("fn-error", mwPropInCodec, mwPropOutCodec))
+	mw := reqreply.NewBoundMiddleware[computeReq](middleware.NewDeclaration("fn-error", mwPropInCodec, mwPropOutCodec),
+		func(ctx context.Context, req *computeReq, in mwPropIn) (mwPropOut, error) {
+			return mwPropOut{}, errBusinessFailure
+		})
 	handler := func(ctx context.Context, req computeReq) (computeResp, error) {
 		return computeResp{Sum: req.X + req.Y}, nil
 	}
-	rt := reqreply.NewRoute[computeReq, computeResp]("compute/mw-error-test", computeReqCodec, computeRespCodec).HandleMW(
-		mw,
-		func(ctx context.Context, req *computeReq, in mwPropIn) (mwPropOut, error) {
-			return mwPropOut{}, errBusinessFailure
-		},
-	)
+	rt := reqreply.NewRoute[computeReq, computeResp]("compute/mw-error-test", computeReqCodec, computeRespCodec).
+		HandleBoundMW(mw)
 
 	var gotKind ErrorKind
 	var kindSet bool
@@ -1411,7 +1408,10 @@ func TestAttachServer_MiddlewareError_WrapsAsKindMiddleware(t *testing.T) {
 // scenario, but for the middleware axis instead of the route's own
 // handler.
 func TestTransform_MiddlewareError_FallsBackWhenNoErrorPatternMatch(t *testing.T) {
-	mw := reqreply.NewMiddleware(middleware.NewDeclaration("fn-error-nomatch", mwPropInCodec, mwPropOutCodec))
+	mw := reqreply.NewBoundMiddleware[computeReq](middleware.NewDeclaration("fn-error-nomatch", mwPropInCodec, mwPropOutCodec),
+		func(ctx context.Context, req *computeReq, in mwPropIn) (mwPropOut, error) {
+			return mwPropOut{}, errBusinessFailure
+		})
 	handler := func(ctx context.Context, req computeReq) (computeResp, error) {
 		return computeResp{Sum: req.X + req.Y}, nil
 	}
@@ -1421,12 +1421,7 @@ func TestTransform_MiddlewareError_FallsBackWhenNoErrorPatternMatch(t *testing.T
 				return serveErrPayload{Code: "conflict", Message: e.msg}, nil
 			},
 		),
-	).HandleMW(
-		mw,
-		func(ctx context.Context, req *computeReq, in mwPropIn) (mwPropOut, error) {
-			return mwPropOut{}, errBusinessFailure
-		},
-	)
+	).HandleBoundMW(mw)
 
 	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	if _, err := rt.WithHandler(handler).Register(server); err != nil {
@@ -1476,19 +1471,18 @@ func TestTransform_MiddlewareError_FallsBackWhenNoErrorPatternMatch(t *testing.T
 // distinguishing it from the flat mechanism's existing "topic_var"
 // string.
 func TestAttachServer_Observer_ReportsMiddlewareInAndFnLocations(t *testing.T) {
-	mw := reqreply.NewMiddleware(middleware.NewDeclaration("obs-loc", mwPropInCodec, mwPropOutCodec)).
+	mw := reqreply.NewBoundMiddleware[computeReq](middleware.NewDeclaration("obs-loc", mwPropInCodec, mwPropOutCodec),
+		func(ctx context.Context, req *computeReq, in mwPropIn) (mwPropOut, error) {
+			return mwPropOut{}, nil
+		}).
 		WithRequestProperty(reqreply.NewPropertyParam("X-Required", codex.String(),
 			func(v mwPropIn) string { return v.TenantID },
 			func(v *mwPropIn, s string) { v.TenantID = s }))
 	handler := func(ctx context.Context, req computeReq) (computeResp, error) {
 		return computeResp{Sum: req.X + req.Y}, nil
 	}
-	rt := reqreply.NewRoute[computeReq, computeResp]("compute/obs-loc-test", computeReqCodec, computeRespCodec).HandleMW(
-		mw,
-		func(ctx context.Context, req *computeReq, in mwPropIn) (mwPropOut, error) {
-			return mwPropOut{}, nil
-		},
-	)
+	rt := reqreply.NewRoute[computeReq, computeResp]("compute/obs-loc-test", computeReqCodec, computeRespCodec).
+		HandleBoundMW(mw)
 
 	obs := &testObserver{}
 	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
@@ -1542,21 +1536,20 @@ func TestAttachServer_Observer_ReportsMiddlewareInAndFnLocations(t *testing.T) {
 // WithResponseProperty) was previously collapsed into "middleware:in" —
 // now reported distinctly as "middleware:out".
 func TestAttachServer_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
-	mw := reqreply.NewMiddleware(middleware.NewDeclaration("obs-out-loc", mwPropInCodec, mwPropOutCodec)).
+	mw := reqreply.NewBoundMiddleware[computeReq](middleware.NewDeclaration("obs-out-loc", mwPropInCodec, mwPropOutCodec),
+		func(ctx context.Context, req *computeReq, in mwPropIn) (mwPropOut, error) {
+			// Empty Ack fails the NonEmptyString refinement at
+			// EncodeOut/OutCodec.Validate time, building the reply.
+			return mwPropOut{Ack: ""}, nil
+		}).
 		WithResponseProperty(reqreply.NewPropertyParam("X-Ack", codex.String().Refine(validate.NonEmptyString),
 			func(v mwPropOut) string { return v.Ack },
 			func(v *mwPropOut, s string) { v.Ack = s }))
 	handler := func(ctx context.Context, req computeReq) (computeResp, error) {
 		return computeResp{Sum: req.X + req.Y}, nil
 	}
-	rt := reqreply.NewRoute[computeReq, computeResp]("compute/obs-out-loc-test", computeReqCodec, computeRespCodec).HandleMW(
-		mw,
-		func(ctx context.Context, req *computeReq, in mwPropIn) (mwPropOut, error) {
-			// Empty Ack fails the NonEmptyString refinement at
-			// EncodeOut/OutCodec.Validate time, building the reply.
-			return mwPropOut{Ack: ""}, nil
-		},
-	)
+	rt := reqreply.NewRoute[computeReq, computeResp]("compute/obs-out-loc-test", computeReqCodec, computeRespCodec).
+		HandleBoundMW(mw)
 
 	obs := &testObserver{}
 	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
@@ -1631,16 +1624,15 @@ func TestAttachClient_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
 	go func() { errCh <- server.Serve(ctx) }()
 	serverRouter.waitHandler("compute/obs-client-out-test")
 
-	clientMW := reqreply.NewMiddleware(middleware.NewDeclaration("obs-client-out-loc", mwPropInCodec, mwPropOutCodec)).
+	clientMW := reqreply.NewBoundClientMiddleware[computeReq](middleware.NewDeclaration("obs-client-out-loc", mwPropInCodec, mwPropOutCodec),
+		func(ctx context.Context, req computeReq) (mwPropIn, error) {
+			return mwPropIn{}, nil
+		}).
 		WithResponseProperty(reqreply.NewPropertyParam("X-Ack", codex.String(),
 			func(v mwPropOut) string { return v.Ack },
 			func(v *mwPropOut, s string) { v.Ack = s }))
-	rt := reqreply.NewRoute[computeReq, computeResp]("compute/obs-client-out-test", computeReqCodec, computeRespCodec).ClientMW(
-		clientMW,
-		func(ctx context.Context, req computeReq) (mwPropIn, error) {
-			return mwPropIn{}, nil
-		},
-	)
+	rt := reqreply.NewRoute[computeReq, computeResp]("compute/obs-client-out-test", computeReqCodec, computeRespCodec).
+		ClientBoundMW(clientMW)
 
 	obs := &testObserver{}
 	client := reqreply.NewClient()

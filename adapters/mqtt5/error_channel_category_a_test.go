@@ -224,6 +224,71 @@ func TestErrorChannel_SecurityMiddlewareFn_Matched_Publishes(t *testing.T) {
 	}
 }
 
+// TestErrorChannel_BoundSecurityMiddlewareFn_Matched_Publishes covers the
+// Middleware-dispatched (`.Use()`-attached reusable class, OR
+// `SubscribeBoundMW`-attached bound class) Security Fn failure case —
+// distinct from TestErrorChannel_SecurityMiddlewareFn_Matched_Publishes
+// above, which only exercises the LEGACY raw-adapter-Fn-pairing path
+// (bare middleware.Middleware + SubscribeMW(&mw, rawFn)). This test
+// closes the blind spot that let a confirmed cross-pattern inconsistency
+// (events wrapping a Security-carrying Middleware Fn's failure as the
+// GENERIC events.MiddlewareError, rather than events.SecurityError like
+// REST's own isSecuritySatisfyingHandler-gated behavior) go undetected —
+// see this session's cross-phase review round for the full writeup.
+// Also asserts the previously-missing
+// stats.SecurityObserver.RecordSecurityRejection call now fires for this
+// specific failure mode.
+func TestErrorChannel_BoundSecurityMiddlewareFn_Matched_Publishes(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	rejectingMw := events.BoundSecuritySubscribeMiddleware[sensorReading, struct{}, struct{}](
+		"bearer2", events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+		func(context.Context, *sensorReading, struct{}) (struct{}, error) {
+			return struct{}{}, errSecurityRejected
+		},
+	)
+	obs := &testObserver{}
+	handle, err := events.NewChannel[sensorReading]("sensors/readings-bound-security", sensorCodec,
+		events.ErrorChannel[events.SecurityError, sensorErrPayload](
+			"sensors/readings-bound-security/errors", sensorErrPayloadCodec,
+			func(e events.SecurityError) (sensorErrPayload, error) {
+				return sensorErrPayload{Code: "security_rejected", Message: e.Error()}, nil
+			},
+		),
+	).
+		WithSubscribe(events.Subscribe{Summary: "test", Security: []route.SecurityRequirement{route.Require("bearer2")}}).
+		SubscribeBoundMW(rejectingMw).
+		Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	_ = subscribeWithHandle(ctx, client, router, handle, func(_ context.Context, _ sensorReading) error { return nil },
+		SubscribeOptions{Observer: obs})
+
+	router.dispatch("sensors/readings-bound-security", &pahomqtt5.Publish{
+		Topic: "sensors/readings-bound-security", Payload: []byte(validSensorJSON),
+	})
+
+	found := false
+	for _, p := range client.published {
+		if p.Topic == "sensors/readings-bound-security/errors" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("want a publish to the declared error-output topic")
+	}
+	if len(obs.secRejections) != 1 {
+		t.Errorf("want 1 RecordSecurityRejection call, got %d", len(obs.secRejections))
+	}
+}
+
 // TestErrorChannel_UserPropertyParam_Matched_Publishes tests F3's fix
 // (session review finding): User Property param validation failures are
 // now ErrorChannel/DeadLetter-eligible, closing an asymmetry with REST's

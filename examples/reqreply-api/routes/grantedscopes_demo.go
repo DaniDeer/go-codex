@@ -1,6 +1,8 @@
 package routes
 
 import (
+	"context"
+
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/middleware"
@@ -9,17 +11,13 @@ import (
 
 // ── GrantedScopes + ContextField demo (docs/design/d-0007-declarative-   ──
 // ── middleware-layering.md) — a DIFFERENT style of security declaration ──
-// ── than BearerAuthMw/OAuthMwReqreply above. Those use the LEGACY shape: ──
-// ── reqreply.SecurityMiddleware[struct{}, struct{}] paired with an      ──
-// ── adapter-shaped implementation Fn (handlers.VerifyBearer/            ──
-// ── VerifyOAuthComputeZeroMQ). GrantedScopesComputeMw below instead uses ──
-// ── the GENERALIZED form — a REAL credential type (AuthIn) and a REAL   ──
-// ── GrantedScopes-carrying Out (AuthOut) — dispatched through HandleMW's ──
-// ── bound path, with SetContextFieldFromIn propagating the authenticated ──
-// ── token to the real handler (reqreply is fully duplex, unlike events' ──
-// ── Subscribe/Publish asymmetry — SetContextFieldFromOut is ALSO        ──
-// ── available symmetrically, just not needed by this simple demo, since ──
-// ── AuthOut carries nothing beyond GrantedScopes itself).
+// ── than BearerAuthMw above (reusable-class, property-decoded). This    ──
+// ── demo's credential lives IN-PAYLOAD (ComputeGSReq.Token — zeromq has  ──
+// ── no property/header side channel), so NewGrantedScopesComputeMw below ──
+// ── uses the BOUND class instead — a REAL credential type (AuthIn) and a ──
+// ── REAL GrantedScopes-carrying Out (AuthOut), dispatched through        ──
+// ── HandleBoundMW, with SetContextFieldFromOut propagating the           ──
+// ── authenticated identity to the real handler.                         ──
 
 // AuthIn is GrantedScopesComputeMw's credential vocabulary — EMPTY here
 // because zeromq has no property/header side channel to decode a merge
@@ -54,13 +52,19 @@ type AuthOut struct {
 // unlike events' Subscribe-only asymmetry.
 var GrantedScopesUserIDField = middleware.NewContextField(codex.String())
 
-// GrantedScopesComputeMw declares the "bearerAuthGS" scheme, requiring
-// "compute:write" — built via the GENERALIZED reqreply.SecurityMiddleware[
-// In, Out] (not [struct{},struct{}] like BearerAuthMw/OAuthMwReqreply
-// above).
-var GrantedScopesComputeMw = reqreply.SecurityMiddleware[AuthIn, AuthOut]("bearerAuthGS",
-	reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, []string{"compute:write"},
-).SetContextFieldFromOut(GrantedScopesUserIDField, func(out AuthOut) any { return out.Subject })
+// NewGrantedScopesComputeMw builds the "bearerAuthGS" BOUND scheme,
+// requiring "compute:write" — fn is supplied as a PARAMETER (not baked in
+// here) to avoid an import cycle, mirroring NewOAuthMwReqreply's/
+// NewTenantPropertyMw's identical rationale: fn's real implementation
+// (handlers.VerifyBearerGS) lives in the handlers package, which already
+// imports routes.
+func NewGrantedScopesComputeMw(fn func(ctx context.Context, req *ComputeGSReq, in AuthIn) (AuthOut, error)) reqreply.BoundMiddleware[ComputeGSReq, AuthIn, AuthOut] {
+	return reqreply.BoundSecurityMiddleware[ComputeGSReq, AuthIn, AuthOut](
+		"bearerAuthGS",
+		reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, []string{"compute:write"},
+		fn,
+	).SetContextFieldFromOut(GrantedScopesUserIDField, func(out AuthOut) any { return out.Subject })
+}
 
 // ComputeGSReq embeds a Token field directly (zeromq's in-payload
 // credential model, like OAuthComputeReq above) — ComputeResp is reused
@@ -76,19 +80,14 @@ var ComputeGSReqCodec = codex.Struct[ComputeGSReq](
 	codex.RequiredField("token", codex.String(), func(r ComputeGSReq) string { return r.Token }, func(r *ComputeGSReq, v string) { r.Token = v }),
 )
 
-// ComputeGSRoute declares its security requirement via RouteMeta.Security
-// DIRECTLY — deliberately NOT via .Use(GrantedScopesComputeMw). See the
-// "Known gap" callout in docs/features/security.md's reqreply section:
-// pairing .Use(mw) with a bound HandleMW(mw, fn) for the SAME
-// Security-only mw currently throws DuplicateMiddlewareNameError
-// (confirmed cross-package, also affects api/rest, tracked not yet
-// fixed). Declaring RouteMeta.Security directly is the documented
-// workaround — sufficient for CheckCoverage/CheckScopes correctness.
+// ComputeGSRoute is declared PRISTINE — .HandleBoundMW(NewGrantedScopesComputeMw(...))
+// at the attachment site (zeromqserver.Build) synthesizes the
+// "bearerAuthGS" security spec entry automatically, no separate
+// RouteMeta.Security/.Use() declaration needed.
 var ComputeGSRoute = reqreply.NewRoute[ComputeGSReq, ComputeResp]("compute/gs",
 	ComputeGSReqCodec, ComputeRespCodec,
 	reqreply.RouteMeta{
 		OperationID: "computeGS",
 		Summary:     "Compute (GrantedScopes + ContextField demo)",
-		Security:    []route.SecurityRequirement{route.Require("bearerAuthGS", "compute:write")},
 	},
 )

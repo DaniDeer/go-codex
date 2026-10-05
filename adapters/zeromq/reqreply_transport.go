@@ -712,15 +712,28 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 					loc = "middleware:out"
 				}
 				stats.ReportErrors(obs, loc, mwErr)
-				serveErr = mwErr
+				// A FAILING handler whose OWN Satisfies is non-empty
+				// (i.e. a Security-carrying MiddlewareHandler, confirmed
+				// via Name lookup) keeps Security's own, DISTINCT
+				// fallback (reqreply.SecurityError) — mirrors REST's
+				// isSecuritySatisfyingHandler precedent exactly.
+				effErr := mwErr
+				if me, ok := mwErr.(reqreply.MiddlewareError); ok && failKind == "fn" &&
+					reqreply.IsSecuritySatisfyingHandler(middlewareHandlers, mwName) {
+					if secObs, ok := obs.(stats.SecurityObserver); ok {
+						secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
+					}
+					effErr = reqreply.SecurityError{Err: me.Err}
+				}
+				serveErr = effErr
 				obs.RecordRequest("ZMQ-REP", path, 0, time.Since(start))
 				// Middleware DecodeIn/Fn/EncodeOut errors are ALL
 				// ErrorPattern-eligible now (Topic 1's Category A fix).
-				sendHandlerErrorReplyReflect(spanCtx, sock, observeErrorResponseForMethod, mwErr, obs)
-				tryDeadLetterReflect(t.sockets, deadLetterForMethod, obs, path, payload, mwErr)
+				sendHandlerErrorReplyReflect(spanCtx, sock, observeErrorResponseForMethod, effErr, obs)
+				tryDeadLetterReflect(t.sockets, deadLetterForMethod, obs, path, payload, effErr)
 				endSpan()
 				if t.opts.OnError != nil {
-					t.opts.OnError(ServeError{Kind: kind, Err: mwErr})
+					t.opts.OnError(ServeError{Kind: kind, Err: effErr})
 				}
 				_ = mwName
 				continue
@@ -1495,14 +1508,28 @@ func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny a
 						loc = "middleware:out"
 					}
 					stats.ReportErrors(obs, loc, mwErr)
-					serveErr = mwErr
+					// A FAILING handler whose OWN Satisfies is non-empty
+					// (i.e. a Security-carrying MiddlewareHandler,
+					// confirmed via Name lookup) keeps Security's own,
+					// DISTINCT fallback (reqreply.SecurityError) —
+					// mirrors REST's isSecuritySatisfyingHandler
+					// precedent exactly.
+					effErr := mwErr
+					if me, ok := mwErr.(reqreply.MiddlewareError); ok && failKind == "fn" &&
+						reqreply.IsSecuritySatisfyingHandler(middlewareHandlers, mwName) {
+						if secObs, ok := obs.(stats.SecurityObserver); ok {
+							secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
+						}
+						effErr = reqreply.SecurityError{Err: me.Err}
+					}
+					serveErr = effErr
 					obs.RecordRequest("ZMQ-ROUTER", path, 0, time.Since(start))
 					// Middleware DecodeIn/Fn/EncodeOut errors are ALL
 					// ErrorPattern-eligible now (Topic 1's Category A fix).
-					sendRouterHandlerErrorReplyReflect(spanCtx, sock, id, observeErrorResponseForMethod, mwErr, obs)
-					tryDeadLetterReflect(t.sockets, deadLetterForMethod, obs, path, pl, mwErr)
+					sendRouterHandlerErrorReplyReflect(spanCtx, sock, id, observeErrorResponseForMethod, effErr, obs)
+					tryDeadLetterReflect(t.sockets, deadLetterForMethod, obs, path, pl, effErr)
 					if t.opts.OnError != nil {
-						t.opts.OnError(ServeError{Kind: kind, Err: mwErr})
+						t.opts.OnError(ServeError{Kind: kind, Err: effErr})
 					}
 					_ = mwName
 					return

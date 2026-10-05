@@ -536,15 +536,31 @@ func subscribeWithHandle[T any](
 				dispatchErr, _ := events.AsMiddlewareDispatchError(mwErr)
 				if dispatchErr.IsFnError {
 					stats.ReportErrors(obs, "middleware:fn", dispatchErr.Err)
-					if handled, matched := tryPublishErrorChannel(ctx, sock, handle, obs, dispatchErr.Err); handled {
+					// A FAILING handler whose OWN Satisfies is non-empty
+					// (i.e. a Security-carrying MiddlewareHandler,
+					// confirmed via Name lookup) keeps Security's own,
+					// DISTINCT fallback (events.SecurityError) — mirrors
+					// REST's/reqreply's isSecuritySatisfyingHandler
+					// precedent exactly, even though both now dispatch
+					// through the SAME mechanism. An ordinary
+					// (non-Security) Fn error keeps the generic fallback
+					// (events.MiddlewareError).
+					var fnErr error = events.MiddlewareError{Name: dispatchErr.Name, Err: dispatchErr.Err}
+					if events.IsSecuritySatisfyingHandler(handle.MiddlewareHandlers, dispatchErr.Name) {
+						if secObs, ok := obs.(stats.SecurityObserver); ok {
+							secObs.RecordSecurityRejection(topic, route.FirstSchemeName(secReqs))
+						}
+						fnErr = events.SecurityError{Err: dispatchErr.Err}
+					}
+					if handled, matched := tryPublishErrorChannel(ctx, sock, handle, obs, fnErr); handled {
 						continue
 					} else if !matched {
-						if tryDeadLetter(sock, handle, obs, topic, payload, dispatchErr.Err) {
+						if tryDeadLetter(sock, handle, obs, topic, payload, fnErr) {
 							continue
 						}
 					}
 					if opts.OnError != nil {
-						opts.OnError(SubscribeError{Kind: KindHandler, Topic: topic, Err: events.MiddlewareError{Name: dispatchErr.Name, Err: dispatchErr.Err}})
+						opts.OnError(SubscribeError{Kind: KindHandler, Topic: topic, Err: fnErr})
 					}
 					continue
 				}

@@ -24,17 +24,17 @@ var cfReqreplyTenantField = middleware.NewContextField(codex.String())
 // runs.
 func TestSetContextFieldFromIn_DispatchOrder_BeforeFn(t *testing.T) {
 	var fnSawTenant string
-	mw := newTenantMiddleware("tenant-ctx-policy").
+	mw := newBoundTenantMiddleware("tenant-ctx-policy",
+		func(ctx context.Context, req *computeReq, in tfIn) (tfOut, error) {
+			fnSawTenant, _ = cfReqreplyTenantField.Get(ctx)
+			return tfOut{}, nil
+		}).
 		WithRequestTopic(reqreply.NewTopicParam("tenantID", codex.String(),
 			func(v tfIn) string { return v.TenantID },
 			func(v *tfIn, s string) { v.TenantID = s })).
 		SetContextFieldFromIn(cfReqreplyTenantField, func(in tfIn) any { return in.TenantID })
 
-	r := newMWTestRoute().HandleMW(mw,
-		func(ctx context.Context, req *computeReq, in tfIn) (tfOut, error) {
-			fnSawTenant, _ = cfReqreplyTenantField.Get(ctx)
-			return tfOut{}, nil
-		})
+	r := newMWTestRoute().HandleBoundMW(mw)
 	b := newBuilder()
 	h, err := r.Register(b)
 	if err != nil {
@@ -61,13 +61,13 @@ func TestSetContextFieldFromIn_DispatchOrder_BeforeFn(t *testing.T) {
 // AFTER Fn returns (the server/receiving role — EncodeOut).
 func TestSetContextFieldFromOut_DispatchOrder_AfterFnReturns(t *testing.T) {
 	echoField := middleware.NewContextField(codex.String())
-	mw := newTenantMiddleware("echo-ctx-policy").
-		SetContextFieldFromOut(echoField, func(out tfOut) any { return out.Echo })
-
-	r := newMWTestRoute().HandleMW(mw,
+	mw := newBoundTenantMiddleware("echo-ctx-policy",
 		func(ctx context.Context, req *computeReq, in tfIn) (tfOut, error) {
 			return tfOut{Echo: "processed"}, nil
-		})
+		}).
+		SetContextFieldFromOut(echoField, func(out tfOut) any { return out.Echo })
+
+	r := newMWTestRoute().HandleBoundMW(mw)
 	b := newBuilder()
 	h, err := r.Register(b)
 	if err != nil {

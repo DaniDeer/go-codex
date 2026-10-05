@@ -182,12 +182,12 @@ var TenantAckCodec = codex.Struct[TenantAck](
 // PropertyAxisComputeRoute demonstrates docs/roadmap/reqreply-codec-
 // declared-middleware.md's NEW property vocabulary axis
 // (WithRequestProperty/WithResponseProperty) — declared PRISTINE here,
-// exactly like HeaderParamComputeRoute above: `TenantPropertyMw`'s
-// attachment (via .HandleMW) happens separately, ONCE PER
+// exactly like HeaderParamComputeRoute above: `routes.NewTenantPropertyMw`'s
+// attachment (via .HandleBoundMW) happens separately, ONCE PER
 // ADAPTER (mqtt5server/server.go AND zeromqserver/server.go), from the
-// SAME declared Middleware value + handlers.ProcessTenant implementation
-// — this route is registered on BOTH transports to prove the
-// declaration is genuinely portable, not mqtt5-specific. Explicitly
+// SAME declaration + handlers.ProcessTenant implementation — this route
+// is registered on BOTH transports to prove the declaration is genuinely
+// portable, not mqtt5-specific. Explicitly
 // opts OUT of mqtt5server's Server.AddGlobalSecurity ("bearerAuth") via
 // an empty Security slice, same rationale as HeaderParamComputeRoute.
 var PropertyAxisComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
@@ -320,9 +320,16 @@ var DeadLetterComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 // SecurityRejectedPayload is the typed reply payload published when a
 // security middleware Fn rejects a call — matched via
 // reqreply.ErrorPattern[reqreply.SecurityError, SecurityRejectedPayload]
-// on SecuredErrorPatternRoute, proving ErrorPattern intercepts a SECURITY
-// MIDDLEWARE Fn failure (auto-wrapped in reqreply.SecurityError by the
-// adapter), not just a handler business error.
+// on SecuredErrorPatternRoute, proving ErrorPattern intercepts a
+// Middleware-dispatched (`.Use()`-attached) Security Fn's OWN business
+// error, auto-wrapped in reqreply.SecurityError by the adapter — a
+// FAILING [MiddlewareHandler] whose own Satisfies is non-empty (i.e. a
+// Security-carrying attachment) keeps this SAME distinct error type an
+// ordinary (non-Security) Middleware Fn failure would NOT get (that
+// case wraps as reqreply.MiddlewareError instead) — mirrors REST's own
+// `isSecuritySatisfyingHandler` precedent exactly, confirmed and fixed
+// for reqreply's dispatch code (`adapters/mqtt5`/`adapters/zeromq`'s
+// reqreply transports) during this session's own Phase C review.
 type SecurityRejectedPayload struct {
 	Code string
 }
@@ -334,9 +341,13 @@ var SecurityRejectedPayloadCodec = codex.Struct[SecurityRejectedPayload](
 	),
 )
 
-// SecuredErrorPatternRoute pairs a HandleMW-attached security Fn (see
-// demo_error_pattern.go, which ALWAYS rejects) with a declared
+// SecuredErrorPatternRoute pairs a security Fn (see demo_error_pattern.go,
+// which attaches BearerAuthMw.WithReceive(handlers.AlwaysRejectSecurityImpl)
+// — ALWAYS rejects) with a declared
 // reqreply.ErrorPattern[reqreply.SecurityError, SecurityRejectedPayload].
+// Declared PRISTINE here (no .Use() baked in) — the demo-specific Fn is
+// attached at the demo's own registration site instead, since this route
+// is used by exactly ONE demo.
 var SecuredErrorPatternRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 	"compute/add-security-errorpattern-demo",
 	ComputeReqCodec, ComputeRespCodec,
@@ -346,7 +357,7 @@ var SecuredErrorPatternRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 			return SecurityRejectedPayload{Code: "security_rejected"}, nil
 		},
 	),
-).Use(BearerAuthMw)
+)
 
 // OAuthComputeReq/OAuthComputeResp carry an in-payload Token field —
 // zeromq's reqreply security Fn-shape (docs/design/d-0004-reqreply-workflow-simplification.md's Addendum,
@@ -385,16 +396,16 @@ var OAuthComputeRespCodec = codex.Struct[OAuthComputeResp](
 	),
 )
 
-// OAuthComputeRoute demonstrates the OAuthMwReqreply declaration (see
-// middleware.go) attached to a zeromq reqreply route, via .Use()+
-// HandleMW()/ClientMW() — Demo 9 (demo_cross_api_oauth2_sharing.go) also
+// OAuthComputeRoute demonstrates the routes.NewOAuthMwReqreply BOUND
+// declaration (see middleware.go) attached to a zeromq reqreply route,
+// via .HandleBoundMW() — Demo 9 (demo_cross_api_oauth2_sharing.go) also
 // attaches OAuthMwREST (the SAME oauth2Compute route.SecurityScheme
 // config, declared through rest.SecurityMiddleware instead) to a
 // locally-declared REST route, proving the SCHEME is shareable across
 // BOTH APIs even though each pattern gets its own declared Go value —
-// see middleware.go's OAuthMwReqreply/OAuthMwREST doc comments for why.
-// Declared PRISTINE here (no Security baked in, no GlobalSecurity to
-// opt out of on the zeromq server) — mirrors HeaderParamComputeRoute/
+// see middleware.go's NewOAuthMwReqreply/OAuthMwREST doc comments for
+// why. Declared PRISTINE here (no Security baked in, no GlobalSecurity
+// to opt out of on the zeromq server) — mirrors HeaderParamComputeRoute/
 // SecuredComputeRoute's own
 // "pristine base, secured at the attachment site" separation.
 var OAuthComputeRoute = reqreply.NewRoute[OAuthComputeReq, OAuthComputeResp](

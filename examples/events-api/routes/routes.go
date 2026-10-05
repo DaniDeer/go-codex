@@ -463,9 +463,15 @@ var ActionLogSub = ActionLogChannel.WithSubscribe(events.Subscribe{
 // (see demo_error_pattern.go, which ALWAYS rejects by granting zero
 // scopes) with a declared
 // events.ErrorChannel[events.SecurityError, SecurityRejectedPayload] —
-// proving ErrorChannel intercepts the adapter's unified
-// middleware.CheckScopes failure (auto-wrapped in events.SecurityError),
-// not just a subscribe-handler business error.
+// proving ErrorChannel intercepts a Security-carrying Fn's rejection
+// (auto-wrapped in events.SecurityError — a FAILING MiddlewareHandler
+// whose own Satisfies is non-empty keeps this distinct error type an
+// ordinary Middleware Fn failure would NOT get, mirroring REST's/
+// reqreply's own isSecuritySatisfyingHandler precedent), not just a
+// subscribe-handler business error. This now holds for BOTH the Fn
+// returning an error DIRECTLY and the unified middleware.CheckScopes
+// failure path (zero granted scopes) — see alwaysRejectFn's own doc
+// comment below for why this demo exercises the latter specifically.
 var SecuredReadingsChannel = events.NewChannel[SensorReading](
 	"sensors/{sensorID}/secured-errorchannel-demo",
 	SensorReadingCodec,
@@ -489,10 +495,13 @@ var SecuredReadingsSub = SecuredReadingsChannel.WithSubscribe(events.Subscribe{
 	// alwaysRejectFn rejects by granting ZERO scopes (a nil error, empty
 	// GrantedScopes), which only the adapter's unified
 	// middleware.CheckScopes call can turn into a rejection — and
-	// CheckScopes only runs when Security is non-empty (see
-	// NewAPIKeyAuthMW's own doc comment for the full "why a BOUND Fn's
-	// OWN error wraps as events.MiddlewareError, never events.
-	// SecurityError" reasoning this declaration exists to route around).
+	// CheckScopes only runs when Security is non-empty. A BOUND Fn's OWN
+	// DIRECT error return ALSO wraps as events.SecurityError now (a
+	// Satisfies-gated fix applied to all 3 events adapters — confirmed
+	// via the SAME isSecuritySatisfyingHandler mechanism REST/reqreply
+	// already use), so the zero-scopes trick is no longer the ONLY way
+	// to exercise this ErrorChannel — it remains a valid, demonstrated
+	// path in its own right (not a required workaround anymore).
 	Security: []route.SecurityRequirement{route.Require("apiKeyAuth")},
 })
 

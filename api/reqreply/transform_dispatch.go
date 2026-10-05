@@ -8,8 +8,8 @@ import (
 // DispatchServerMiddlewareHandlers runs every attached [MiddlewareHandler]
 // in registration order — AFTER the paired security Fn, mirroring D1's
 // dispatch order. reqPtr is the route's own decoded *Req (addressable) —
-// read AND potentially enriched by each bound handler's fn (Transform-
-// attached; an Agnostic/bundled handler's fn never sees it). Returns the
+// read AND potentially enriched by each HandleBoundMW-attached handler's
+// fn (an Agnostic/`.Use()`-bundled handler's fn never sees it). Returns the
 // accumulated reply-side topic/property vars every handler's EncodeOut
 // produced (later handlers win on a name conflict — D6(c),
 // "last-applied-wins"). failKind distinguishes a DecodeIn failure ("in",

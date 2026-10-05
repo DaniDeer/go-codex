@@ -1781,6 +1781,29 @@ func CheckCoverage(topic string, secReqs []route.SecurityRequirement, impls []mi
 	return nil
 }
 
+// IsSecuritySatisfyingHandler reports whether handlers contains an entry
+// named name with a non-empty Satisfies — i.e. a Security-carrying
+// [MiddlewareHandler] (populated by either `.Use()`, the reusable class,
+// or `SubscribeBoundMW`, the bound class). Consuming adapters (mqtt,
+// mqtt5, zeromq) call this from their own
+// `DispatchSubscribeMiddlewareHandlers` error-handling to keep
+// Security's OWN distinct error fallback ([SecurityError], not the
+// generic [MiddlewareError]) for a FAILING Security-gated Fn, even
+// though it dispatches through the SAME mechanism every other
+// Middleware-attached Fn uses — mirrors
+// `rest.isSecuritySatisfyingHandler`/`reqreply.IsSecuritySatisfyingHandler`
+// exactly, centralized HERE (not duplicated per events adapter) since
+// all 3 consuming adapters operate on events' own [MiddlewareHandler]
+// type directly.
+func IsSecuritySatisfyingHandler(handlers []MiddlewareHandler, name string) bool {
+	for _, h := range handlers {
+		if h.Name == name {
+			return len(h.Satisfies) > 0
+		}
+	}
+	return false
+}
+
 // MissingSecurityMiddlewareError is returned by [Subscriber.Handle] when a
 // declared security scheme has no attached [middleware.ServerImplementation]
 // satisfying it — see [CheckCoverage].

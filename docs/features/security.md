@@ -863,89 +863,150 @@ declare/attach-time-supply lifecycle this capability follows.
 
 ## Security for request-reply routes (reqreply)
 
-`api/reqreply` now mirrors REST/events' exact declare-once,
-enforce-symmetrically model on BOTH transports it supports, via the SAME
-`.Use()`/`HandleMW`/`ClientMW` declare/implement split — shipped for
-mqtt5 first, then zeromq (see
-[D-0004](../design/d-0004-reqreply-workflow-simplification.md)'s own
-Addendum for the full record; both source roadmap docs,
-`reqreply-middleware.md` and `zeromq-security.md`, have since shipped and
-been deleted) — REPLACES the older `reqreply.WithSecurityScheme`-only
-mechanism, kept only as a deprecated-but-functional alias. The paired
-implementation Fn's SHAPE differs per adapter (mqtt5: scope-grant
-`(map[string][]string, error)`, reading the raw `*pahomqtt5.Publish`;
-zeromq: plain `error`, reading/writing the decoded `*Req` directly — no
-raw-message equivalent exists for zeromq) — each adapter mirrors its OWN
-established precedent, not a shared shape. See "Sharing a security
-scheme declaration across REST/events/reqreply" below for how the
-SAME scheme DECLARATION (not the Fn) can still be reused across all
-three APIs regardless of this per-adapter Fn-shape difference.
+`api/reqreply` mirrors REST's exact declare-once, enforce-symmetrically
+model on BOTH transports it supports — see
+`docs/roadmap/bound-middleware-split.md` for the full design this
+section documents. A codec-backed `reqreply.Middleware[In, Out]` (built
+via `reqreply.SecurityMiddleware[In, Out]`) can be attached in ONE of two
+ways, depending on whether the Fn needs access to the route's own
+decoded request struct:
+
+**Reusable class — `Middleware[In, Out]`, attached via `.Use()`.** The
+Fn is embedded via `WithReceive`/`WithSend` and is `Req`-free — the
+default choice whenever the credential check only needs a decoded
+topic/property value, never the request/response struct itself.
+Unlike `api/events`, reqreply's `WithReceive` ALREADY returns `(Out,
+error)` (symmetric with REST) — so this class CAN populate
+`GrantedScopes` normally; no `api/events`-style structural limitation
+exists here:
 
 ```go
 var bearerAuthCodec = codex.String().Refine(validate.BearerToken)
-var bearerAuth = middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, &bearerAuthCodec)
 
-var ComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
+type BearerIn struct{ Token string }
+type BearerOut struct{ GrantedScopes map[string][]string }
+
+bearerMw := reqreply.SecurityMiddleware[BearerIn, BearerOut]("bearerAuth",
+    reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(bearerAuthCodec), nil,
+).WithRequestProperty(reqreply.NewPropertyParam("Authorization", codex.String(),
+    func(in BearerIn) string { return in.Token },
+    func(in *BearerIn, v string) { in.Token = v },
+)).WithReceive(func(ctx context.Context, in BearerIn) (BearerOut, error) {
+    if !validToken(in.Token) {
+        return BearerOut{}, errors.New("invalid bearer token")
+    }
+    return BearerOut{GrantedScopes: map[string][]string{"bearerAuth": nil}}, nil
+})
+
+securedRoute := reqreply.NewRoute[ComputeReq, ComputeResp](
     "compute/add", computeReqCodec, computeRespCodec,
     reqreply.RouteMeta{OperationID: "computeAdd"},
-)
+).Use(bearerMw)
 ```
 
-Server side — `.Use(bearerAuth)` declares the requirement; `HandleMW`
-attaches the PAIRED implementation Fn (`func(ctx, msg *paho.Publish, reqs)
-(map[string][]string, error)` — the SAME scope-grant shape REST's
-`HandleMW` uses), consulted by mqtt5's server-transport dispatch (built via `mqtt5.NewServerTransport`). A route
-declaring a scheme with no attached implementation fails loudly at
-Serve time with `reqreply.
-MissingSecurityMiddlewareError` (`reqreply.CheckCoverage`, mirrors
-`rest.CheckCoverage` exactly) — never a silent no-op:
+**Bound class — `BoundMiddleware[Req, In, Out]`/`BoundClientMiddleware[Req, In, Out]`,
+attached via `HandleBoundMW`/`ClientBoundMW`.** Fn additionally receives
+`*Req` (server) or `Req` by value (client) — use this when a credential
+check genuinely needs to READ the route's own decoded request struct
+directly — mqtt5 has a property side channel (User Properties), so this
+is rarely needed there; **zeromq has NO property/header side channel at
+all**, so its credential model is ALWAYS in-payload, making the SERVER
+side of `BoundMiddleware` the genuinely necessary mechanism for zeromq
+Security, not merely a convenience:
 
 ```go
-securedRoute := ComputeRoute.Use(bearerAuth).
-    HandleMW(&bearerAuth, func(ctx context.Context, msg *paho.Publish, reqs []route.SecurityRequirement) (map[string][]string, error) {
-        return map[string][]string{"bearerAuth": nil}, checkNotRevoked(msg, reqs)
-    })
-handle, err := securedRoute.Register(server)
+type ComputeReq struct{ X, Y int; Token string }
+
+securedRoute := reqreply.NewRoute[ComputeReq, ComputeResp](
+    "compute/add", computeReqCodec, computeRespCodec,
+    reqreply.RouteMeta{OperationID: "computeAdd"},
+).HandleBoundMW(reqreply.BoundSecurityMiddleware[ComputeReq, struct{}, struct{}](
+    "bearerAuth", reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+    func(ctx context.Context, req *ComputeReq, in struct{}) (struct{}, error) {
+        return struct{}{}, checkNotRevoked(req.Token)
+    },
+))
 ```
 
-Client side — `ClientMW` attaches the PAIRED credential-supplying Fn
-(`func(ctx, reqs) ([]mqtt5.UserProperty, error)` — replaces the OLD
-`CallOptions.CredentialFunc`, removed entirely as a breaking change),
-consulted by mqtt5's client-transport dispatch (built via `mqtt5.NewClientTransport`), validated client-side
-before the request is ever published:
+**`BoundClientMiddleware`'s CLIENT-side limitation (confirmed, not a
+bug):** `BoundClientMiddleware`'s Fn (`func(ctx, req Req) (In, error)`)
+can only DERIVE a wire-level topic/property value FROM `req` (its
+returned `In` is encoded into topic/property vars only, same as the
+reusable class) — it has NO mechanism to write a value back into `req`'s
+own body/payload fields, on ANY transport. For zeromq's in-payload
+credential model specifically, this means there is nothing useful for a
+client-side `BoundClientMiddleware`/`BoundSecurityClientMiddleware`
+attachment to do — the credential field is simply part of the ordinary
+request the caller constructs, exactly like any other field:
 
 ```go
-callRoute := ComputeRoute.Use(bearerAuth).
-    ClientMW(&bearerAuth, func(ctx context.Context, reqs []route.SecurityRequirement) ([]mqtt5.UserProperty, error) {
-        token, err := fetchToken(ctx)
-        if err != nil {
-            return nil, err
-        }
-        return []mqtt5.UserProperty{{Key: "Authorization", Value: "Bearer " + token}}, nil
-    })
-resp, err := client.Call(ctx, callRoute, req)
+resp, err := client.Call(ctx, securedRoute, ComputeReq{X: 3, Y: 4, Token: "the-bearer-token"})
 ```
 
-A `HandleMW`/`ClientMW` implementation naming a scheme never `.Use()`'d on
-the same route fails at `Route.Register`/`ClientHandle` time with
-`reqreply.UnknownMiddlewareImplementationError` — the reverse-direction
-sibling of `MissingSecurityMiddlewareError` above.
+No client-side middleware is needed or useful for this case — `Call`'s
+caller supplies the credential the same way it supplies `X`/`Y`. Reserve
+`BoundClientMiddleware` for cases where a wire-level value genuinely
+needs to be COMPUTED from `req` (e.g. a signature derived from `req.X`/
+`req.Y`, sent as an MQTT5 User Property) — mirroring
+`NewTenantPropertyMw`'s real pattern (see `examples/reqreply-api`), not
+an in-payload credential.
+
+The application's own domain `Req` struct must carry a credential field
+itself for zeromq's model to work (`Token string` above) — a documented,
+accepted transport limitation (zeromq has no property/header side
+channel), not a bug.
+
+`In`'s own topic/property merge fields decode declaratively from the
+incoming request in BOTH classes — no manual extraction anywhere. `Out`
+carries the SAME conventional `GrantedScopes map[string][]string` field
+REST/events use, read by the adapter via reflection and fed into the
+SAME `middleware.CheckScopes` call — RECEIVING (`Serve`)-side only
+(`Call`/sending-side needs no merge wiring, same as REST's `ClientMW`).
+**This field must be populated even when zero specific scopes are
+required** — an `Out{}` zero value (nil map) means NOTHING satisfies the
+scheme at all; return `Out{GrantedScopes: map[string][]string{"<schemeName>": nil}}`
+for a scheme with no scope requirements.
+
+A `HandleBoundMW`+`ClientBoundMW` pairing for the SAME scheme name on
+ONE shared `Route` value CANNOT be attached — reqreply's `Route[Req,Resp]`
+is ONE shared value carrying BOTH server and client attachments, exactly
+like REST (unlike `api/events`' independent `Subscriber`/`Publisher`
+values) — attempting this fails with `DuplicateMiddlewareNameError`
+(the SAME constraint REST's own `BoundMiddleware`/`BoundClientMiddleware`
+documents). Build TWO SEPARATE route values instead — one per role.
+
+**The legacy raw-adapter credential-pairing mode
+(`HandleMW(&mw, rawFn)`/`ClientMW(&mw, rawFn)` with a reflection-detected
+bound-shaped `fn`) is PERMANENTLY CLOSED** — `HandleMW`/`ClientMW` now
+reject any codec-backed `Middleware[In, Out]` value outright
+(`MiddlewareMisattachedError`), whether or not `fn`'s shape looks bound.
+mqtt5's raw-message-reading pattern re-expresses via the reusable class
+(property-decoded `In`, discarding `*Req` entirely); zeromq's in-payload
+pattern re-expresses via the bound class, the ONE genuine case this
+mechanism exists for.
 
 `Server.AddGlobalSecurity(reqs...)` and per-route `RouteMeta.Security`
 (nil=inherit global, empty=no auth) work identically to REST/events.
 `reqreply.SecurityCredentialError`/`reqreply.SecurityError` are the
 request-reply analogues of REST's error types — same fields, same
-`errors.As`/`slog.LogValuer` shape.
+`errors.As`/`slog.LogValuer` shape. A route declaring a scheme with no
+attached implementation satisfying it fails loudly at Register/Serve time
+with `reqreply.MissingSecurityMiddlewareError` (`reqreply.CheckCoverage`,
+mirrors `rest.CheckCoverage` exactly) — never a silent no-op; a
+`HandleMW`/`HandleBoundMW` implementation naming a scheme never `.Use()`'d
+on the same route fails with `reqreply.UnknownMiddlewareImplementationError`
+— the reverse-direction sibling.
 
 **User Property param-as-middleware**: `reqreply.Middleware[In,Out]`'s
-`WithRequestPropertySpec`/`WithResponsePropertySpec` declare a
-presence-only (non-merged) User Property param — a header-like param
-declaration with no corresponding `In`/`Out` struct field to decode
-into. No `HandleMW`/`ClientMW` pairing needed (unlike security schemes,
-header params aren't gated behind `CheckCoverage`) — declaring
-`.Use(...)` is enough for mqtt5's server-transport dispatch to validate
-the real MQTT5 User Property automatically, and for the property to
-render into the request/reply message's AsyncAPI `headers` schema:
+`WithRequestPropertySpec`/`WithResponsePropertySpec` (also available on
+`BoundMiddleware`/`BoundClientMiddleware`) declare a presence-only
+(non-merged) User Property param — a header-like param declaration with
+no corresponding `In`/`Out` struct field to decode into. No
+`HandleBoundMW`/`ClientBoundMW` pairing needed (unlike security schemes,
+header params aren't gated behind `CheckCoverage`) — declaring `.Use(...)`
+is enough for mqtt5's server-transport dispatch to validate the real
+MQTT5 User Property automatically, and for the property to render into
+the request/reply message's AsyncAPI `headers` schema:
 
 ```go
 var apiKeyParam = reqreply.PropertyParam{Param: codex.Param{Name: "X-API-Key"}, Required: true}
@@ -963,109 +1024,6 @@ axis is this mechanism's MERGE-capable sibling — required vs. optional
 properties are a first-class choice there too
 (`NewPropertyParam`/`NewOptionalPropertyParam`), the difference being
 whether a decoded `In`/`Out` struct field exists to merge into.
-
-**zeromq** — same `.Use()`/`HandleMW`/`ClientMW` declare/implement split,
-but the paired Fn shape reads/writes the decoded `*Req` directly (no raw
-message exists to operate on instead, unlike mqtt5's `*pahomqtt5.
-Publish`) — mirrors zeromq's OWN pub/sub security-shaped
-`SubscribeMW`/`PublishMW` Fn shape exactly (plain `error`, no scope-grant
-map):
-
-```go
-type ComputeReq struct{ X, Y int; Token string }
-
-securedRoute := ComputeRoute.Use(bearerAuth).
-    HandleMW(&bearerAuth, func(ctx context.Context, req *ComputeReq, reqs []route.SecurityRequirement) error {
-        return checkNotRevoked(req.Token, reqs)
-    })
-
-callRoute := ComputeRoute.Use(bearerAuth).
-    ClientMW(&bearerAuth, func(ctx context.Context, req *ComputeReq, reqs []route.SecurityRequirement) error {
-        token, err := fetchToken(ctx)
-        if err != nil {
-            return err
-        }
-        req.Token = token // written directly into the request payload
-        return nil
-    })
-```
-
-The application's own domain `Req` struct must carry a credential field
-itself for zeromq's model to work (`Token string` above) — a documented,
-accepted transport limitation (zeromq has no property/header side
-channel), not a bug.
-
-### Codec-backed Security — `HandleMW`/`ClientMW`'s bound path + `GrantedScopes`
-
-> Runnable demo: `examples/reqreply-api/demo_granted_scopes_context_field.go`
-> — a REAL `AuthIn`/`AuthOut` pair, bound `HandleMW` (zeromq), correct-
-> vs-wrong-scope enforcement, and `SetContextFieldFromOut` propagating
-> the authenticated identity to the handler with zero manual re-decoding.
-
-Mirrors `api/rest`/`api/events`'s identical mechanism, folded into reqreply
-as Rollout Phase C: a codec-backed `reqreply.Middleware[In, Out]` (built via
-`reqreply.SecurityMiddleware[In, Out]`, now generalized over In/Out — was
-previously fixed to `Middleware[struct{},struct{}]`) can carry a real
-credential payload and be attached via `Route.HandleMW`/`ClientMW` — the
-SAME methods used for the legacy shape above. `HandleMW`/`ClientMW` detect
-which shape `fn` is by its REFLECTED signature (never `mw`'s type), so
-attaching either shape uses the identical method call. Since reqreply is
-fully duplex (unlike events' Subscribe/Publish asymmetry), BOTH `Serve`
-and `Call` directions carry an `Out`:
-
-```go
-type BearerIn struct{ Token string }
-type BearerOut struct{ GrantedScopes map[string][]string }
-
-bearerMw := reqreply.SecurityMiddleware[BearerIn, BearerOut]("bearerAuth",
-    bearerAuthScheme, nil,
-).WithRequestProperty(reqreply.NewPropertyParam("Authorization", codex.String(),
-    func(in BearerIn) string { return in.Token },
-    func(in *BearerIn, v string) { in.Token = v },
-))
-
-// NOTE: skip .Use(bearerMw) here — pairing .Use() with a bound HandleMW
-// for the SAME mw currently throws DuplicateMiddlewareNameError (a
-// known, tracked gap — see the callout below). Declare the requirement
-// directly via RouteMeta.Security instead; CheckCoverage/CheckScopes
-// enforce it identically either way.
-securedRoute := reqreply.NewRoute[ComputeReq, ComputeResp](
-    "compute/add", computeReqCodec, computeRespCodec,
-    reqreply.RouteMeta{OperationID: "computeAdd", Security: []route.SecurityRequirement{route.Require("bearerAuth")}},
-).HandleMW(bearerMw,
-    func(ctx context.Context, req *ComputeReq, in BearerIn) (BearerOut, error) {
-        if !validToken(in.Token) {
-            return BearerOut{}, errors.New("invalid bearer token")
-        }
-        return BearerOut{GrantedScopes: map[string][]string{"bearerAuth": nil}}, nil
-    })
-```
-
-`fn` gets `*Req` access (read/enrich, exactly like the generic middleware
-mechanism), and `In`'s own property merge fields decode declaratively from
-the incoming message — no manual extraction anywhere. `Out` carries the
-SAME conventional `GrantedScopes map[string][]string` field REST/events
-use, merged with any legacy Fn's own grants via
-`adapters/internal/scopesmerge.MergeHandlerGrants` and fed into ONE unified
-`middleware.CheckScopes` call — RECEIVING (`Serve`)-side only, mirroring
-events' Subscribe-side scoping exactly (`Call`/sending-side needs no merge
-wiring, same as `rest.ClientMW`). zeromq's legacy security mechanism is
-PURE binary accept/reject (no grants concept), so its `CheckScopes` call
-is additionally gated on at least one bound handler's `Satisfies` being
-populated, to avoid rejecting a legacy-Fn-only route that produces no
-map entries; mqtt5's legacy mechanism genuinely produces real grants, so
-its gate is unconditional.
-
-> **Known gap**: `.Use(mw).HandleMW(&mw, boundFn)` for a Security-only
-> `mw` (no merge fields) currently throws `DuplicateMiddlewareNameError` —
-> both `.Use()` and the bound path unconditionally add a spec contribution
-> under the same name. Confirmed to ALSO affect `api/rest` identically
-> (not reqreply-specific; `api/events` is unaffected by its different
-> spec-bundling architecture). Workaround: declare `RouteMeta.Security`
-> directly instead of `.Use(mw)` when pairing with a bound `HandleMW`/
-> `ClientMW` call — sufficient for `CheckCoverage`/`CheckScopes`
-> correctness, though `AsyncAPISpec()` won't auto-register the scheme via
-> that path. Tracked as a follow-up design question, not yet fixed.
 
 ### Connection-level auth spec registration — `Server.AddConnectSecurityScheme`
 

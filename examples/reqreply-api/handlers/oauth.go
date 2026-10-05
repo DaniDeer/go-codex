@@ -42,19 +42,25 @@ func VerifyOAuth2Scopes(token string) (map[string][]string, error) {
 	}
 }
 
-// VerifyOAuthComputeZeroMQ is the THIN, zeromq-shaped paired security Fn —
-// attached via reqreply.Route.HandleMW(&routes.OAuthMw, VerifyOAuthComputeZeroMQ).
+// VerifyOAuthComputeZeroMQ is the THIN, zeromq-shaped BOUND security Fn —
+// attached via reqreply.Route.HandleBoundMW(routes.NewOAuthMwReqreply(VerifyOAuthComputeZeroMQ)).
 // It ONLY extracts the raw token from zeromq's own transport shape (the
 // decoded *OAuthComputeReq's Token field — zeromq has no raw-message side
 // channel, unlike mqtt5's User Properties) and delegates the REAL
 // verification work to the SHARED VerifyOAuth2Scopes helper above —
 // mirrors handlers/security.go's VerifyBearer (mqtt5-shaped) in spirit,
 // but demonstrates the shared-helper factoring VerifyBearer's own
-// (deliberately simple, unconditional-grant) demo didn't need.
-func VerifyOAuthComputeZeroMQ(_ context.Context, req *routes.OAuthComputeReq, _ []route.SecurityRequirement) error {
+// (deliberately simple, unconditional-grant) demo didn't need. Returns a
+// GrantedScopes-carrying routes.OAuthOut, merged into the SAME
+// middleware.CheckScopes call every Security attachment uses (see
+// reqreply.BoundSecurityMiddleware's own godoc for the convention).
+func VerifyOAuthComputeZeroMQ(_ context.Context, req *routes.OAuthComputeReq, _ struct{}) (routes.OAuthOut, error) {
 	scopes, err := VerifyOAuth2Scopes(req.Token)
 	if err != nil {
-		return err
+		return routes.OAuthOut{}, err
 	}
-	return middleware.CheckScopes([]route.SecurityRequirement{{"oauth2Compute": {routes.OAuthComputeWriteScope}}}, scopes)
+	if err := middleware.CheckScopes([]route.SecurityRequirement{{"oauth2Compute": {routes.OAuthComputeWriteScope}}}, scopes); err != nil {
+		return routes.OAuthOut{}, err
+	}
+	return routes.OAuthOut{GrantedScopes: scopes}, nil
 }

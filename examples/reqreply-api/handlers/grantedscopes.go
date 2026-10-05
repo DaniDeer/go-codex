@@ -15,15 +15,16 @@ var gsTokenScopes = map[string][]string{
 	"valid-readonly-token": {"profile"}, // lacks "compute:write" — proves rejection
 }
 
-// VerifyBearerGS is GrantedScopesComputeMw's paired, BOUND HandleMW Fn —
-// func(ctx, *Req, In) (Out, error), detected via its own reflected
-// signature. Unlike the generic merge-field case, zeromq has no
-// property/header side channel for In to decode FROM (routes.AuthIn is
-// deliberately empty — see its own doc comment), so this Fn reads the
-// credential directly off its OWN *Req parameter instead — the SAME
-// established pattern VerifyOAuthComputeZeroMQ uses. Returns a
-// GrantedScopes-carrying routes.AuthOut, PLUS Subject (the authenticated
-// identity, propagated to the real handler via SetContextFieldFromOut).
+// VerifyBearerGS is routes.NewGrantedScopesComputeMw's embedded Fn —
+// func(ctx, *Req, In) (Out, error), attached via
+// routes.ComputeGSRoute.HandleBoundMW(routes.NewGrantedScopesComputeMw(VerifyBearerGS)).
+// Unlike the generic merge-field case, zeromq has no property/header
+// side channel for In to decode FROM (routes.AuthIn is deliberately
+// empty — see its own doc comment), so this Fn reads the credential
+// directly off its OWN *Req parameter instead — the SAME established
+// pattern VerifyOAuthComputeZeroMQ uses. Returns a GrantedScopes-carrying
+// routes.AuthOut, PLUS Subject (the authenticated identity, propagated to
+// the real handler via SetContextFieldFromOut).
 func VerifyBearerGS(_ context.Context, req *routes.ComputeGSReq, _ routes.AuthIn) (routes.AuthOut, error) {
 	scopes, ok := gsTokenScopes[req.Token]
 	if !ok {

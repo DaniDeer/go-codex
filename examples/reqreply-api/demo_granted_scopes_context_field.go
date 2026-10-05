@@ -9,8 +9,8 @@ import (
 )
 
 // demoGrantedScopesContextField exercises routes.ComputeGSRoute — the
-// GENERALIZED reqreply.SecurityMiddleware[In,Out] (routes.
-// GrantedScopesComputeMw) dispatched through the bound HandleMW path,
+// BOUND reqreply.BoundMiddleware[Req,In,Out] (routes.
+// NewGrantedScopesComputeMw) dispatched through HandleBoundMW,
 // with a REAL GrantedScopes-carrying Out enforced by
 // middleware.CheckScopes, AND the authenticated identity propagated to
 // the real handler via middleware.ContextField (routes.

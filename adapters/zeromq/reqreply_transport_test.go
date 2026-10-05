@@ -1112,7 +1112,11 @@ var zmwPropOutCodec = codex.Struct[zmwPropOut]()
 // specific work beyond consulting the same RouteHandle field mqtt5 does.
 func TestAttachServer_Transform_RunsAfterPairedSecurity(t *testing.T) {
 	var order []string
-	mw := reqreply.NewMiddleware(middleware.NewDeclaration("zmq-order-check", zmwPropInCodec, zmwPropOutCodec))
+	mw := reqreply.NewBoundMiddleware[securedComputeReq](middleware.NewDeclaration("zmq-order-check", zmwPropInCodec, zmwPropOutCodec),
+		func(ctx context.Context, req *securedComputeReq, in zmwPropIn) (zmwPropOut, error) {
+			order = append(order, "middleware")
+			return zmwPropOut{}, nil
+		})
 	fn := func(_ context.Context, r securedComputeReq) (securedComputeResp, error) {
 		order = append(order, "handler")
 		return securedComputeResp{Sum: r.X + r.Y}, nil
@@ -1122,11 +1126,7 @@ func TestAttachServer_Transform_RunsAfterPairedSecurity(t *testing.T) {
 		return nil
 	}
 	baseRoute := newSecuredComputeRoute().Use(zmqBearerAuthMw).HandleMW(&zmqBearerAuthMw, secFn)
-	rt := baseRoute.HandleMW(mw,
-		func(ctx context.Context, req *securedComputeReq, in zmwPropIn) (zmwPropOut, error) {
-			order = append(order, "middleware")
-			return zmwPropOut{}, nil
-		})
+	rt := baseRoute.HandleBoundMW(mw)
 	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	if _, err := rt.WithHandler(fn).Register(server); err != nil {
 		t.Fatalf("Register: %v", err)
@@ -1167,16 +1167,15 @@ func TestAttachServer_Transform_RunsAfterPairedSecurity(t *testing.T) {
 // confirms decision #6: a Transform-attached fn's own business error
 // surfaces through ServeError{Kind: KindMiddleware}, NOT KindHandler.
 func TestAttachServer_MiddlewareError_WrapsAsKindMiddleware(t *testing.T) {
-	mw := reqreply.NewMiddleware(middleware.NewDeclaration("zmq-fn-error", zmwPropInCodec, zmwPropOutCodec))
+	mw := reqreply.NewBoundMiddleware[computeReq](middleware.NewDeclaration("zmq-fn-error", zmwPropInCodec, zmwPropOutCodec),
+		func(ctx context.Context, req *computeReq, in zmwPropIn) (zmwPropOut, error) {
+			return zmwPropOut{}, errors.New("business failure")
+		})
 	fn := func(_ context.Context, r computeReq) (computeResp, error) {
 		return computeResp{Sum: r.X + r.Y}, nil
 	}
-	rt := reqreply.NewRoute[computeReq, computeResp]("/mw-error-compute", computeReqCodec, computeRespCodec).HandleMW(
-		mw,
-		func(ctx context.Context, req *computeReq, in zmwPropIn) (zmwPropOut, error) {
-			return zmwPropOut{}, errors.New("business failure")
-		},
-	)
+	rt := reqreply.NewRoute[computeReq, computeResp]("/mw-error-compute", computeReqCodec, computeRespCodec).
+		HandleBoundMW(mw)
 	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	if _, err := rt.WithHandler(fn).Register(server); err != nil {
 		t.Fatalf("Register: %v", err)
@@ -1230,21 +1229,20 @@ func TestAttachServer_MiddlewareError_WrapsAsKindMiddleware(t *testing.T) {
 // previously collapsed into "middleware:in" — now reported distinctly as
 // "middleware:out". Mirrors adapters/mqtt5's identical test.
 func TestAttachServer_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
-	mw := reqreply.NewMiddleware(middleware.NewDeclaration("zmq-obs-out-loc", zmwPropInCodec, zmwPropOutCodec)).
+	mw := reqreply.NewBoundMiddleware[computeReq](middleware.NewDeclaration("zmq-obs-out-loc", zmwPropInCodec, zmwPropOutCodec),
+		func(ctx context.Context, req *computeReq, in zmwPropIn) (zmwPropOut, error) {
+			// Empty Ack fails the NonEmptyString refinement at
+			// EncodeOut/OutCodec.Validate time, building the reply.
+			return zmwPropOut{Ack: ""}, nil
+		}).
 		WithResponseProperty(reqreply.NewPropertyParam("X-Ack", codex.String().Refine(validate.NonEmptyString),
 			func(v zmwPropOut) string { return v.Ack },
 			func(v *zmwPropOut, s string) { v.Ack = s }))
 	fn := func(_ context.Context, r computeReq) (computeResp, error) {
 		return computeResp{Sum: r.X + r.Y}, nil
 	}
-	rt := reqreply.NewRoute[computeReq, computeResp]("/obs-out-loc-compute", computeReqCodec, computeRespCodec).HandleMW(
-		mw,
-		func(ctx context.Context, req *computeReq, in zmwPropIn) (zmwPropOut, error) {
-			// Empty Ack fails the NonEmptyString refinement at
-			// EncodeOut/OutCodec.Validate time, building the reply.
-			return zmwPropOut{Ack: ""}, nil
-		},
-	)
+	rt := reqreply.NewRoute[computeReq, computeResp]("/obs-out-loc-compute", computeReqCodec, computeRespCodec).
+		HandleBoundMW(mw)
 	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	if _, err := rt.WithHandler(fn).Register(server); err != nil {
 		t.Fatalf("Register: %v", err)
@@ -1317,16 +1315,15 @@ func TestAttachClient_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
 	serveErrCh := make(chan error, 1)
 	go func() { serveErrCh <- server.Serve(ctx) }()
 
-	clientMW := reqreply.NewMiddleware(middleware.NewDeclaration("zmq-obs-client-out-loc", zmwPropInCodec, zmwPropOutCodec)).
+	clientMW := reqreply.NewBoundClientMiddleware[computeReq](middleware.NewDeclaration("zmq-obs-client-out-loc", zmwPropInCodec, zmwPropOutCodec),
+		func(ctx context.Context, req computeReq) (zmwPropIn, error) {
+			return zmwPropIn{}, nil
+		}).
 		WithResponseProperty(reqreply.NewPropertyParam("X-Ack", codex.String(),
 			func(v zmwPropOut) string { return v.Ack },
 			func(v *zmwPropOut, s string) { v.Ack = s }))
-	rt := reqreply.NewRoute[computeReq, computeResp]("/obs-client-out-compute", computeReqCodec, computeRespCodec).ClientMW(
-		clientMW,
-		func(ctx context.Context, req computeReq) (zmwPropIn, error) {
-			return zmwPropIn{}, nil
-		},
-	)
+	rt := reqreply.NewRoute[computeReq, computeResp]("/obs-client-out-compute", computeReqCodec, computeRespCodec).
+		ClientBoundMW(clientMW)
 
 	obs := &testObserver{}
 	client := reqreply.NewClient()

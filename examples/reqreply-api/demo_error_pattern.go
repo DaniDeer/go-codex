@@ -12,7 +12,6 @@ import (
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/mqtt5server"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/routes"
 	"github.com/DaniDeer/go-codex/ports"
-	"github.com/DaniDeer/go-codex/route"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 )
 
@@ -215,8 +214,13 @@ func demoErrorPatternDeadLetterFallback(ctx context.Context) {
 // demoErrorPatternMiddlewareCombo proves reqreply.ErrorPattern intercepts
 // a SECURITY-MIDDLEWARE Fn failure — routes.SecuredErrorPatternRoute's
 // securityFn ALWAYS rejects, and the adapter auto-wraps its returned
-// error in reqreply.SecurityError, which is matched by the route's
-// declared ErrorPattern BEFORE the business handler ever runs.
+// error in reqreply.SecurityError — a FAILING Middleware-dispatched
+// (`.Use()`-attached) Fn whose OWN Satisfies is non-empty (i.e. a
+// Security-carrying attachment) keeps this SAME distinct error type an
+// ordinary Middleware Fn failure would NOT get (that case wraps as
+// reqreply.MiddlewareError instead, mirroring REST's own
+// `isSecuritySatisfyingHandler` precedent) — which is matched by the
+// route's declared ErrorPattern BEFORE the business handler ever runs.
 func demoErrorPatternMiddlewareCombo(ctx context.Context) {
 	fmt.Println("\n── Demo: reqreply.ErrorPattern + security middleware Fn combo ──")
 
@@ -228,7 +232,7 @@ func demoErrorPatternMiddlewareCombo(ctx context.Context) {
 			fmt.Println("  ✗ handler ran (unexpected — security Fn should have rejected first)")
 			return routes.ComputeResp{Sum: req.X + req.Y}, nil
 		}).
-		HandleMW(&routes.BearerAuthMw, handlers.AlwaysRejectSecurityImpl).
+		Use(routes.BearerAuthMw.WithReceive(handlers.AlwaysRejectSecurityImpl)).
 		Register(server); err != nil {
 		fmt.Fprintf(os.Stderr, "unexpected error registering route: %v\n", err)
 		os.Exit(1)
@@ -251,16 +255,17 @@ func demoErrorPatternMiddlewareCombo(ctx context.Context) {
 	// credential FORMAT check passes and the server's securityFn (which
 	// ALWAYS rejects) is actually reached — mirrors REST's
 	// demo_error_pattern.go's identical pattern.
-	securedRoute := routes.SecuredErrorPatternRoute.ClientMW(&routes.BearerAuthMw,
-		func(context.Context, []route.SecurityRequirement) ([]mqtt5adapter.UserProperty, error) {
-			return []mqtt5adapter.UserProperty{{Key: "Authorization", Value: "Bearer fake-token-for-demo"}}, nil
+	securedRoute := routes.SecuredErrorPatternRoute.Use(routes.BearerAuthMw.WithSend(
+		func(context.Context) (routes.BearerAuthIn, error) {
+			return routes.BearerAuthIn{Token: "Bearer ******"}, nil
 		},
-	)
+	))
 	_, err := client.Call(ctx, securedRoute, routes.ComputeReq{X: 1, Y: 2})
 	if payload, ok := reqreply.ErrorPatternAs[routes.SecurityRejectedPayload](err); ok {
 		fmt.Printf("  ✓ security-middleware Fn error matched by ErrorPattern (handler NEVER ran): code=%q\n", payload.Code)
 	} else {
-		fmt.Printf("  ✗ expected SecurityRejectedPayload, got: %v\n", err)
+		fmt.Fprintf(os.Stderr, "expected SecurityRejectedPayload, got: %v\n", err)
+		os.Exit(1)
 	}
 }
 

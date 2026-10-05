@@ -313,10 +313,10 @@ func buildAgnosticClientMiddlewareHandler[In, Out any](mw Middleware[In, Out]) C
 
 // middlewareSpecContribution captures the spec-relevant param
 // declarations from ONE attached codec-backed [Middleware] — converted to
-// plain, Req/Resp-agnostic spec types at the GENERIC call site (Transform/
-// ClientTransform) where In/Out are still concrete. Fed into
-// [applyParamDeclarations]'s conflict-detection/layering pass, unified
-// with Phase 1b's flat mechanism.
+// plain, Req/Resp-agnostic spec types at the GENERIC call site
+// ([specContributionOf]/[boundSpecContributionOf]) where In/Out are still
+// concrete. Fed into [applyParamDeclarations]'s conflict-detection/
+// layering pass, unified with Phase 1b's flat mechanism.
 type middlewareSpecContribution struct {
 	name string
 
@@ -336,20 +336,15 @@ type middlewareSpecContribution struct {
 	// closed by docs/design/d-0003-codec-declared-middlewares.md's Phase D0.
 	presencePropertyParamsIn  []PropertyParam
 	presencePropertyParamsOut []PropertyParam
-
-	// dualAttached is true ONLY for a contribution built from [Route.HandleMW]/
-	// [Route.ClientMW] whose mw ALSO carries a WithReceive/WithSend Fn —
-	// exactly D7's ambiguous case. A contribution built from the plain
-	// .Use() path (applyAgnosticRoute) never sets this.
-	dualAttached bool
 }
 
-// boundSpecContributionOf is [specContributionOf] plus D7's dualAttached
-// flag — used ONLY by [Route.HandleMW]/[Route.ClientMW].
+// boundSpecContributionOf is [specContributionOf]'s passthrough, used by
+// [BoundMiddleware.applyBoundRoute]/[BoundClientMiddleware.applyBoundClientRoute]
+// — kept as a separate named function (rather than inlining
+// specContributionOf at both call sites) purely for call-site symmetry
+// with the agnostic path's own [specContributionOf] call.
 func boundSpecContributionOf[In, Out any](mw Middleware[In, Out]) middlewareSpecContribution {
-	c := specContributionOf(mw)
-	c.dualAttached = mw.receiveFn != nil || mw.sendFn != nil
-	return c
+	return specContributionOf(mw)
 }
 
 // specContributionOf extracts mw's plain spec Param values (discarding
@@ -374,12 +369,10 @@ func specContributionOf[In, Out any](mw Middleware[In, Out]) middlewareSpecContr
 	return c
 }
 
-// Transform/ClientTransform (the route-BOUND, free-function attachment
-// point) were REMOVED (docs/design/d-0007-declarative-middleware-layering.md's
-// Rollout Phase C — reqreply's own Architecture revision, mirroring
-// Phase A's/B's identical REST/events removal) — folded into
-// [Route.HandleMW]/[Route.ClientMW] directly via reflection-based shape
-// detection ([isBoundHandleMWShape]/[isBoundClientMWShape]). Use
-// `route.HandleMW(mw, fn)`/`route.ClientMW(mw, fn)` instead — identical
-// Fn signatures, identical dispatch, reached through the ordinary
-// method-chain API instead of a free function.
+// Transform/ClientTransform (an EARLIER, free-function route-bound
+// attachment point predating even the reflection-based HandleMW/ClientMW
+// mechanism) never existed in this package by this name — any reference
+// to them elsewhere is stale/aspirational. The CURRENT route-bound
+// attachment point is [Route.HandleBoundMW]/[Route.ClientBoundMW], using
+// the dedicated [BoundMiddleware]/[BoundClientMiddleware] types (see
+// bound_middleware.go) — see docs/roadmap/bound-middleware-split.md.

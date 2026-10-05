@@ -80,11 +80,21 @@ is **not** a narrow escape hatch kept around apologetically — it is THE
 dedicated, declarative mechanism for any middleware need (Security or
 general) that requires reading/writing the full CODEC-DECODED `Req`/`T`
 struct. It fully and permanently replaces the old raw-adapter-Fn pairing
-mode: `isBoundHandleMWShape`/`isBoundClientMWShape`-style reflection
-detection is deleted outright, and `HandleMW`/`ClientMW` will NEVER
-again accept a raw-transport-shaped Fn (`func(ctx, *http.Request, *Req)
-(...)`) for Security pairing, under any circumstance. This is a clean,
-closed design, not a placeholder for a mode that might return.
+mode FOR A CODEC-BACKED `Middleware[In,Out]` VALUE SPECIFICALLY:
+`isBoundHandleMWShape`/`isBoundClientMWShape`-style reflection detection
+is deleted outright, and `HandleMW`/`ClientMW` will NEVER again accept a
+*codec-backed* `Middleware[In,Out]` (or `BoundMiddleware`/
+`BoundClientMiddleware`) paired with a raw-transport-shaped Fn
+(`func(ctx, *http.Request, *Req) (...)`) for Security pairing, under any
+circumstance — this is a clean, closed design for that type, not a
+placeholder for a mode that might return. **This closure does NOT extend
+to the bare, non-codec-backed `middleware.Middleware{Name,Security}`
+type** — its own raw-adapter-Fn pairing via `HandleMW`/`ClientMW`/
+`SubscribeMW`/`PublishMW` is deliberately, permanently KEPT (see the
+Scope-decisions table below) as the one remaining tool for a genuinely
+`Req`/`T`-type-generic Fn or a scheme shared across multiple patterns —
+confirmed still fully functional and exercised by this redesign's own
+preserved legacy tests across all 3 patterns.
 
 **Where the boundary sits, explicitly**: `BoundMiddleware`'s `*Req`/`*T`
 parameter is always the CODEC-DECODED struct — the SAME type the
@@ -127,7 +137,7 @@ context value), never a reopening of this closed Fn-pairing mode.
 | `api/rest` (`Route`, `SSERoute`) | `api/mcp` (no `Middleware[In,Out]` mechanism at all) |
 | `api/events` (`Subscriber`, `Publisher`) | `ports` binding layer (continues working via whichever dispatch its `Pattern` plumbing already uses — a non-goal to touch here) |
 | `api/reqreply` (`Route`) | General-purpose (non-Security) decorator pairing — confirmed orthogonal, unchanged |
-| Dropping the legacy/raw-adapter Security-pairing dispatch mode entirely | The bare `middleware.Middleware{Name,Security}` type itself (stays, for spec-only declarations with no implementation) |
+| Dropping the legacy/raw-adapter Security-pairing dispatch mode FOR CODEC-BACKED `Middleware[In,Out]`/`BoundMiddleware`/`BoundClientMiddleware` specifically | The bare `middleware.Middleware{Name,Security}` type itself (stays — INCLUDING its paired, Fn-attached raw-adapter use via `HandleMW`/`ClientMW`/`SubscribeMW`/`PublishMW`, not merely the no-Fn spec-only declaration case; confirmed unaffected and still the recommended tool for a genuinely `Req`/`T`-type-generic Fn or a cross-pattern-shared scheme) |
 | Migrating every current example/test consumer of the dropped mode or the old bound-shape-detection mechanism | `rest.FromSecurityScheme`/`events.FromSecurityScheme` bridges (unaffected — they build spec-only declarations, no Fn pairing) |
 
 ## API surface
@@ -530,7 +540,7 @@ since this doc touches the SAME dispatch code paths D-0007 did):
 | `api/reqreply/route.go` | Same `buildErr`-equivalent field addition as REST — reqreply's `routeBuilder` struct lives in `route.go`, NOT `builder.go` (confirmed via code; differs from REST's/events' package layout, where the equivalent struct IS in `builder.go`) |
 | `adapters/mqtt5`/`adapters/mqtt`/`adapters/zeromq` (production code) | **NONE — confirmed via exhaustive grep, corrected from an earlier draft's overstatement.** `isBoundHandleMWShape`/`isBoundClientMWShape`/`isBoundSubscribeMWShape`/`isBoundSubscribeMWShapeWithOut`/`isBoundPublishMWShape` exist ONLY in `api/rest/middleware.go`, `api/events/middleware_declaration.go`, `api/reqreply/middleware.go` — zero matches anywhere under `adapters/`. Every adapter calls already-generic CORE dispatch functions (`events.DispatchSubscribeMiddlewareHandlers`/`events.DispatchPublishMiddlewareHandlers`) with the handle's `MiddlewareHandlers`/`ClientMiddlewareHandlers` list — these functions are fully insulated from however that list got populated (bound vs. agnostic vs., today, legacy), exactly mirroring how `adapters/nethttp`/`adapters/chi` consume REST's `RouteHandle.MiddlewareHandlers`. No adapter dispatch code needs to change for this split at all. |
 | `adapters/mqtt5/grantedscopes_test.go`, `adapters/zeromq/grantedscopes_reqreply_test.go`, `adapters/mqtt5/grantedscopes_reqreply_test.go` (test files ONLY) | These 3 adapter-level regression tests directly construct the OLD reflection-detected bound Fn shapes (`SubscribeMW(&mw, fn)`/`HandleMW(&mw, fn)` with a raw bound-shaped `fn`) — migrate to construct `BoundSubscribeMiddleware`/`BoundMiddleware` values instead, same mechanical change as any other test/example consumer. This is the ONLY adapter-package surface this split actually touches. |
-| `examples/rest-api/{routes,handlers,chiserver,nethttpserver}/*`, `examples/events-api/{routes,handlers,mqtt5broker,mqttbroker,zeromqbroker}/*`, `examples/reqreply-api/{routes,handlers,mqtt5server,zeromqserver}/*` | Migrate every legacy-Security-pairing usage to the reusable class (`SecurityMiddleware[AuthIn,AuthOut].WithReceive(fn)`), except reqreply's zeromq OAuth case → `BoundSecurityMiddleware`/`BoundSecurityClientMiddleware` |
+| `examples/rest-api/{routes,handlers,chiserver,nethttpserver}/*`, `examples/events-api/{routes,handlers,mqtt5broker,mqttbroker,zeromqbroker}/*`, `examples/reqreply-api/{routes,handlers,mqtt5server,zeromqserver}/*` | Migrate every legacy-Security-pairing usage to the reusable class (`SecurityMiddleware[AuthIn,AuthOut].WithReceive(fn)`), except reqreply's zeromq OAuth case → `BoundSecurityMiddleware` (SERVER side only — **confirmed via actual implementation**: `BoundSecurityClientMiddleware`/`BoundClientMiddleware` cannot write a credential into the route's own request body on any transport, since its Fn only ever produces wire-level topic/property values, never a body-field overlay; the CLIENT side of the zeromq in-payload case needs NO middleware at all — the caller supplies the credential as an ordinary request field, same as any other field) |
 | `examples/go-edge-models/app/registry/auth.go`, `examples/adapters-nethttp-client/main.go`, `examples/adapters-sse/main.go`, `examples/mutable-security-keys/main.go`, `examples/api-events/main.go` | Same migration to the reusable class |
 | `docs/features/security.md` | Rewrite the "Codec-backed Security"/"Choosing `[struct{},struct{}]` vs a real `[In,Out]`" sections entirely — there is no longer a `[struct{},struct{}]` choice to make for Security, only reusable-vs-bound |
 | `.github/instructions/go-codex.instructions.md` | Update `middleware`/`api/rest`/`api/events`/`api/reqreply` rows |
@@ -564,7 +574,7 @@ things, not just two:
 |---|---|---|---|
 | `examples/rest-api/demo_bound_middleware_split.go` | `SecurityMiddleware[AuthIn,AuthOut].WithReceive(fn)` (existing GrantedScopes pattern) | `BoundSecurityMiddleware[Req_i, AuthIn, AuthOut]` — migrated `ProfileScopeMw`/`AdminScopeMw`, reused across 2+ DIFFERENT route `Req` types sharing one `verifyScopes` helper (today's genuine cross-`Req`-type case) | ONE route (reusing `ProfileReq`/`AdminActionReq`) with `.Use(reusable).HandleBoundMW(bound)` — generic bearer-token presence/validity check layered with a route-specific scope check reading that route's own `Req` |
 | `examples/events-api/demo_bound_middleware_split.go` | Existing GrantedScopes `Middleware[In,Out]` pattern | `BoundSubscribeMiddleware[T,In,Out]` reused across 2+ subscribers sharing one `T` — **doc comment must note this is a structural/API-parity demo, not bug-motivated**: no current events usage genuinely needs Class 2 (confirmed during the original investigation) | ONE subscriber with `.Use(reusable).SubscribeBoundMW(bound)` |
-| `examples/reqreply-api/demo_bound_middleware_split.go` | mqtt5 bearer-token pattern (property-decoded, `*Req` discarded) | `BoundMiddleware[OAuthComputeReq,In,Out]`/`BoundClientMiddleware[OAuthComputeReq,In,Out]` — migrated zeromq in-payload OAuth credential pattern (`VerifyOAuthComputeZeroMQ`/`validOAuthCredFn`/`invalidOAuthCredFn`), **the one genuine Class-2-necessary case found in this repo today** | ONE route (the zeromq OAuth route) with `.Use(reusable).HandleBoundMW(bound)` — a generic cross-cutting concern (e.g. observability/rate-limit) layered with the in-payload credential check |
+| `examples/reqreply-api/demo_bound_middleware_split.go` | mqtt5 bearer-token pattern (property-decoded, `*Req` discarded) | `BoundMiddleware[OAuthComputeReq,In,Out]` — migrated zeromq in-payload OAuth credential pattern, SERVER side only (`VerifyOAuthComputeZeroMQ`), **the one genuine Class-2-necessary case found in this repo today**. **No `BoundClientMiddleware` for this case** (confirmed via actual implementation — it cannot write into the request body on any transport; the client simply sets `OAuthComputeReq.Token` directly as an ordinary field before calling, no middleware needed) | ONE route (the zeromq OAuth route) with `.Use(reusable).HandleBoundMW(bound)` — a generic cross-cutting concern (e.g. observability/rate-limit) layered with the in-payload credential check |
 
 **Layering composes today, structurally — no new mechanism required**:
 `Route`'s (and `Subscriber`'s/`Publisher`'s) `opts` slice accumulates

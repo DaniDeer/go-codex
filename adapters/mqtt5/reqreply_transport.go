@@ -469,7 +469,7 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 	requestHeaderParams := userPropertyParamsFromHeaderSpecs(requestHeaderSpecs)
 
 	// docs/design/d-0003-codec-declared-middlewares.md's Addendum: codec-backed
-	// Middleware[In,Out] dispatch (Transform-attached or bundled via
+	// Middleware[In,Out] dispatch (HandleBoundMW-attached or bundled via
 	// plain .Use()) — dispatched AFTER the paired security Fn, mirroring
 	// D1's precedent exactly (see the dispatch call site inside
 	// baseHandler below). middlewareHandlers ALREADY declared above (for
@@ -662,8 +662,8 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 
 		// docs/design/d-0003-codec-declared-middlewares.md's Addendum: codec-backed
 		// Middleware[In,Out] dispatch — runs AFTER the paired security Fn
-		// above (D1), reading (Transform-bound handlers) AND potentially
-		// enriching the route's own decoded *Req via a fresh, addressable
+		// above (D1), reading (HandleBoundMW-attached handlers) AND
+		// potentially enriching the route's own decoded *Req via a fresh, addressable
 		// pointer copy — reqVal is re-read afterward to pick up any
 		// mutation, mirroring zeromq's identical paired-security pattern.
 		// middlewarePropertyVars accumulates every handler's own
@@ -687,15 +687,32 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 					loc = "middleware:out"
 				}
 				stats.ReportErrors(obs, loc, mwErr)
-				serveErr = mwErr
+				// A FAILING handler whose OWN Satisfies is non-empty
+				// (i.e. a Security-carrying MiddlewareHandler, confirmed
+				// via Name lookup) keeps Security's own, DISTINCT
+				// fallback (reqreply.SecurityError) — mirrors REST's
+				// isSecuritySatisfyingHandler precedent exactly, even
+				// though both now dispatch through the SAME mechanism.
+				// An ordinary (non-Security) Fn error keeps the generic
+				// fallback (reqreply.MiddlewareError, already `mwErr`'s
+				// own concrete type from DispatchServerMiddlewareHandlers).
+				effErr := mwErr
+				if me, ok := mwErr.(reqreply.MiddlewareError); ok && failKind == "fn" &&
+					reqreply.IsSecuritySatisfyingHandler(middlewareHandlers, mwName) {
+					if secObs, ok := obs.(stats.SecurityObserver); ok {
+						secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
+					}
+					effErr = reqreply.SecurityError{Err: me.Err}
+				}
+				serveErr = effErr
 				obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
 				// Middleware DecodeIn/Fn/EncodeOut errors are ALL
 				// ErrorPattern-eligible now (Topic 1's Category A fix) —
 				// previously only the Fn case consulted ErrorResponseFor.
-				publishHandlerErrorReplyReflect(spanCtx, t.client, observeErrorResponseForMethod, responseTopic, correlationData, mwErr, obs, nil, effectiveQoS, effectiveRetained)
-				tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, mwErr, effectiveQoS, effectiveRetained)
+				publishHandlerErrorReplyReflect(spanCtx, t.client, observeErrorResponseForMethod, responseTopic, correlationData, effErr, obs, nil, effectiveQoS, effectiveRetained)
+				tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, effErr, effectiveQoS, effectiveRetained)
 				if t.opts.OnError != nil {
-					t.opts.OnError(ServeError{Kind: kind, Err: mwErr})
+					t.opts.OnError(ServeError{Kind: kind, Err: effErr})
 				}
 				_ = mwName
 				return
@@ -980,7 +997,7 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 	}
 
 	// docs/design/d-0003-codec-declared-middlewares.md's Addendum: codec-backed
-	// ClientMiddlewareHandler dispatch (ClientTransform-attached or
+	// ClientMiddlewareHandler dispatch (ClientBoundMW-attached or
 	// bundled via plain .Use()) — produces In (via Fn), encoded into
 	// topic/property vars. Middleware-derived values ALWAYS override
 	// route-own-derived ones for the SAME name (D3 mirror, "Value

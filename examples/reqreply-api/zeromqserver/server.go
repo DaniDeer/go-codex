@@ -70,18 +70,19 @@ func Build(obs stats.Observer) (*Built, error) {
 		Register(server); err != nil {
 		return nil, err
 	}
-	// OAuthComputeRoute demonstrates zeromq's reqreply security Fn-shape
-	// (docs/design/d-0004-reqreply-workflow-simplification.md's Addendum, SHIPPED) AND the
-	// oauth2Compute scheme ALSO declared for REST from the SAME shared
-	// route.SecurityScheme config — see Demo 9
-	// (demo_cross_api_oauth2_sharing.go) and routes.OAuthMwReqreply/
+	// OAuthComputeRoute demonstrates zeromq's reqreply in-payload
+	// credential model — the BOUND class (docs/roadmap/
+	// bound-middleware-split.md's Phase C), since zeromq has no
+	// property/header side channel to carry a credential merge field —
+	// AND the oauth2Compute scheme ALSO declared for REST from the SAME
+	// shared route.SecurityScheme config — see Demo 9
+	// (demo_cross_api_oauth2_sharing.go) and routes.NewOAuthMwReqreply/
 	// routes.OAuthMwREST's doc comments. The general-purpose observer
-	// HandleMW(nil, ...) attaches ALONGSIDE the paired security
-	// HandleMW(&routes.OAuthMwReqreply, ...) below — proving the two mechanisms
-	// compose freely on the same route.
+	// HandleMW(nil, ...) attaches ALONGSIDE the bound security
+	// HandleBoundMW(...) below — proving the two mechanisms compose
+	// freely on the same route.
 	oauthHandle, err := routes.OAuthComputeRoute.
-		Use(routes.OAuthMwReqreply).
-		HandleMW(&routes.OAuthMwReqreply, handlers.VerifyOAuthComputeZeroMQ).
+		HandleBoundMW(routes.NewOAuthMwReqreply(handlers.VerifyOAuthComputeZeroMQ)).
 		HandleMW(nil, reqreply.Observability[routes.OAuthComputeReq, routes.OAuthComputeResp](obs)).
 		WithHandler(handlers.AddOAuth).
 		Register(server)
@@ -99,9 +100,8 @@ func Build(obs stats.Observer) (*Built, error) {
 	// routes/middleware.go) specifically so THIS registration succeeds
 	// rather than every zeromq call failing with
 	// reqreply.MiddlewareInputError.
-	propertyAxisHandle, err := routes.PropertyAxisComputeRoute.HandleMW(
-		routes.TenantPropertyMw,
-		handlers.ProcessTenant,
+	propertyAxisHandle, err := routes.PropertyAxisComputeRoute.HandleBoundMW(
+		routes.NewTenantPropertyMw(handlers.ProcessTenant),
 	).
 		HandleMW(nil, reqreply.Observability[routes.ComputeReq, routes.ComputeResp](obs)).
 		WithHandler(handlers.Add).
@@ -117,7 +117,7 @@ func Build(obs stats.Observer) (*Built, error) {
 	// needed; handlers.VerifyBearerGS returns a GrantedScopes-carrying
 	// routes.AuthOut.
 	if _, err := routes.ComputeGSRoute.
-		HandleMW(&routes.GrantedScopesComputeMw, handlers.VerifyBearerGS).
+		HandleBoundMW(routes.NewGrantedScopesComputeMw(handlers.VerifyBearerGS)).
 		HandleMW(nil, reqreply.Observability[routes.ComputeGSReq, routes.ComputeResp](obs)).
 		WithHandler(handlers.MakeComputeGSHandler()).
 		Register(server); err != nil {
