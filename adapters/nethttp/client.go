@@ -971,17 +971,17 @@ func callWithVars[Req, Resp any](
 //	transport := nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: client, BaseURL: baseURL})
 //	resp, err := rest.CallWithTransport(ctx, transport, handle, req)
 //
-// One pre-existing, KNOWN, unchanged limitation carries over unchanged:
-// neither this deleted function's replacement NOR [rest.Client.Call]
-// dispatch declared [rest.Route.ClientTransform]/bundled `.Use()`
-// codec-backed middleware today (confirmed via code — [clientTransport.
-// Call] never called dispatchClientMiddlewareIn/Out) — CallWithHandle
-// itself DID dispatch it, a capability [rest.CallWithTransport] does NOT
-// carry over (it mirrors [rest.Client.Call]'s existing ceiling exactly,
-// not CallWithHandle's superset of it). Confirmed via repo-wide grep: no
-// real (non-test) CallWithHandle caller used [rest.Route.ClientTransform]
-// — this is a known, accepted gap, not a regression affecting any
-// migrated caller.
+// A gap noted here at the time of this removal — neither this deleted
+// function's replacement nor [rest.Client.Call] dispatched a
+// codec-backed [Middleware][In, Out] attached via `.Use()`/
+// `ClientBoundMW` — has since been CLOSED: [clientTransport.Call] (this
+// file, the SAME function [rest.CallWithTransport]/[rest.Client.Call]
+// both delegate to) now calls dispatchClientMiddlewareIn/
+// dispatchClientMiddlewareOut whenever handle.ClientMiddlewareHandlers
+// is non-empty (populated by `.Use()` or [rest.Route.ClientBoundMW] —
+// see docs/design/d-0003-codec-declared-middlewares.md's Addendum 7),
+// so BOTH entry points share identical, full middleware dispatch today —
+// no remaining ceiling difference between them on this axis.
 
 // overrideDerived merges derived (from codex.EncodeVars) and explicit (from
 // caller-supplied CallOptions) maps, with explicit taking precedence on key

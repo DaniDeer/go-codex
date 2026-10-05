@@ -1,6 +1,84 @@
-# go-codex Review History (R1–R149, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
+# go-codex Review History (R1–R152, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 152 (api/reqreply + mqtt5/zeromq adapters — deep dive on the declarative middleware mechanism)
+
+User explicitly scoped this round to "the api/reqreply layer and its adapter implementation for the
+whole declarative middleware" — the reqreply-side mirror of Round 150 (REST) and Round 151 (events),
+applying the same methodology across reqreply's 2 adapters (mqtt5, zeromq). Found the SAME class of
+stale "Transform"/"ClientTransform" naming (from the mechanism bound-middleware-split's Addendum 7
+replaced) in `api/reqreply`'s own `transform_test.go`/`middleware_declaration_test.go` and both
+adapters' `reqreply_transport_test.go`/`property_direct_attach_reqreply_test.go` files — these were
+explicitly flagged as "out of scope" during Round 151's events-focused pass and deferred here. Also
+found one confirmed cross-adapter test-coverage gap: zeromq's production code fully implements the
+Handler Disposition mechanism (`EnsureDispositionBox`/`ResolveDisposition`/`DispositionObserver`,
+shared with `api/events` via `middleware/disposition.go`) but had ZERO dedicated test coverage for
+it anywhere, while mqtt5 has 2 dedicated tests.
+
+- **G1 — 11 stale `Transform`/`ClientTransform` test names/doc comments in `api/reqreply/transform_test.go`**: renamed to the `HandleBoundMW`/`ClientBoundMW` family (e.g. `TestTransform_EnrichesReqPointer` → `TestHandleBoundMW_EnrichesReqPointer`, `TestClientTransform_ProducesInFromReq` → `TestClientBoundMW_ProducesInFromReq`), including doc-comment prose references and a cross-reference inside a helper's own doc comment.
+- **G2 — stale "without needing Transform" mention in `api/reqreply/middleware_declaration_test.go`**: reworded to "without needing HandleBoundMW".
+- **G3 — 4 stale test names/doc comments in `adapters/mqtt5/reqreply_transport_test.go`**: renamed `TestAttachServer_Transform_RunsAfterPairedSecurity` → `TestAttachServer_HandleBoundMW_RunsAfterPairedSecurity` and `TestTransform_MiddlewareError_FallsBackWhenNoErrorPatternMatch` → `TestHandleBoundMW_MiddlewareError_FallsBackWhenNoErrorPatternMatch`, plus 2 stale doc-comment mentions. Confirmed via grep this is the SAME test Round 151's G5 finding (in `adapters/zeromq/adapter.go`, events-scoped) had WRONGLY cited by name — that fix remains valid regardless of this round's rename, since it was a cross-package miscitation correction, not a naming dependency.
+- **G4 — matching 2 stale test names/doc comments in `adapters/zeromq/reqreply_transport_test.go`**: same rename pattern, zeromq's own copy of the same 2 tests.
+- **G5 — stale "Middleware/Transform" paired mention in `adapters/mqtt5/property_direct_attach_reqreply_test.go`**: simplified to just "Middleware" (Transform never existed in this package by this name, per `api/reqreply/transform.go`'s own correct, pre-existing disclaimer).
+- **G6 — confirmed cross-adapter test-coverage gap**: `adapters/zeromq`'s REQ/REP dispatch path fully implements Handler Disposition (confirmed via code: `EnsureDispositionBox`/`ResolveDisposition`/`DispositionObserver` calls present) but had zero test coverage anywhere in the package, while `adapters/mqtt5` has 2 dedicated tests (`TestAttachServer_Disposition_ExplicitSignalResolvedAndObserved`/`TestAttachServer_Disposition_DefaultFallback_NilError`). Ported both tests to zeromq verbatim, adapted to its own `newChanSocketPair`/`ServerTransportOptions{Sockets:...}` wiring (confirmed via reading its existing REQ/REP test fixtures before porting, not assumed). Both pass. (zeromq's SEPARATE ROUTER/DEALER dispatch path also implements Disposition with no mqtt5 equivalent to compare against — noted but not in this round's cross-adapter-parity scope, since there's no parity gap to close there.)
+
+Verification: `gofmt -l .`/`go build ./...`/`go vet ./...` clean repo-wide; `go test ./...` zero failures (including both newly-ported Disposition tests, confirmed passing standalone); `staticcheck ./...` zero findings; `gosec` unchanged at the same 2 pre-existing findings documented in Rounds 149-151 (not introduced, not regressed); `examples/reqreply-api` re-run to exit 0.
+
+---
+
+## Round 151 (api/events + mqtt/mqtt5/zeromq adapters — deep dive on the declarative middleware mechanism)
+
+User explicitly scoped this round to "the api/event layer and its adapter implementation for the
+whole declarative middleware" — the events-side mirror of Round 150's REST-focused pass, applying
+the exact same methodology across events' 3 adapters (mqtt v3, mqtt5, zeromq) instead of REST's 2.
+Found the SAME class of stale "Transform"/"ClientTransform" naming (from the mechanism
+bound-middleware-split's Addendum 7 replaced) across all 3 adapters' own `transform_dispatch_test.go`/
+`client_full_pipeline_test.go` files, PLUS 2 confirmed cross-adapter test-coverage gaps and one
+genuinely wrong cross-reference (citing the wrong test name across packages).
+
+- **G1 — 12 stale `Transform`/`ClientTransform` test names/headers in `adapters/mqtt/transform_dispatch_test.go`**: renamed to the `SubscribeBoundMW`/`PublishBoundMW` family (e.g. `TestSubscribeHandler_Transform_HappyPath_EnrichesMsg` → `TestSubscribeHandler_SubscribeBoundMW_HappyPath_EnrichesMsg`).
+- **G2 — 13 stale test names/headers in `adapters/mqtt5/transform_dispatch_test.go`**: same rename pattern, including the `D3Precedence` test.
+- **G3 — 12 stale test names/headers + 1 stale inline D1 comment in `adapters/zeromq/transform_dispatch_test.go`**: same rename pattern.
+- **G4 — stale `(Transform)` parenthetical in `adapters/mqtt5/adapter_test.go`'s D1 doc comment**: reworded to `(SubscribeBoundMW)`.
+- **G5 — a genuinely WRONG cross-reference in `adapters/zeromq/adapter.go`**: a comment explaining a regression fix cited `TestAttachServer_Transform_RunsAfterPairedSecurity` (a DIFFERENT, reqreply-side test in `adapters/mqtt5/reqreply_transport_test.go`) instead of the actual events-side regression test that exists in BOTH `adapters/zeromq`'s and `adapters/mqtt5`'s own test files, `TestSubscribe_MiddlewareDispatch_RunsAfterPairedSecurity`. Fixed the citation.
+- **G6 — stale `Transform`/`ClientTransform` parentheticals in all 3 `client_full_pipeline_test.go` files** (mqtt, mqtt5, zeromq): reworded to accurately describe `.Use()`/`SubscribeBoundMW`/`PublishBoundMW` dispatch.
+- **G7 — 2 confusing "Middleware/Transform"-paired mentions in `adapters/mqtt5/property_direct_attach_test.go`**: implied Transform was ever a valid alternative name for Middleware attachment (it never existed in this package, per `api/events/transform.go`'s own correct disclaimer) — simplified to just "Middleware".
+- **G8 — confirmed cross-adapter test-coverage gap**: mqtt5 alone had `TestPublish_PublishBoundMW_D3Precedence_ExplicitVarsWinOverMiddleware` (explicit vars beat middleware-derived vars on a key collision) — zeromq and mqtt v3 lacked an equivalent. Ported `TestPublish_PublishBoundMW_D3Precedence_ExplicitVarsWinOverMiddleware` to zeromq verbatim (same 3-tier `isExplicitVars` precedence), and `TestPublish_PublishBoundMW_VarsParamWinsOverMiddleware` to mqtt v3 (adapted — mqtt v3's own `publish` has only ONE vars-precedence tier, no separate `isExplicitVars` bool, confirmed via reading its actual dispatch code before porting). Both pass.
+- **G9 — confirmed cross-adapter test-coverage gap**: mqtt5 and zeromq both had `TestSubscribe_MiddlewareDispatch_RunsAfterPairedSecurity` (dispatch-order guarantee: legacy paired security Fn runs BEFORE bound middleware) — mqtt v3 lacked it entirely. Ported `TestSubscribeHandler_MiddlewareDispatch_RunsAfterPairedSecurity` to mqtt v3, adapted to its own `subscribeHandler`-direct test idiom (confirmed `subscribeHandler` itself — not a separate higher-level function — handles both legacy `Implementations` security dispatch and `MiddlewareHandlers` dispatch in this package, unlike the initial assumption). Passes.
+
+Verification: `gofmt -l .`/`go build ./...`/`go vet ./...` clean repo-wide; `go test ./...` zero failures (including all 3 newly-ported tests, each confirmed passing standalone); `staticcheck ./...` zero findings; `gosec` unchanged at the same 2 pre-existing findings documented in Round 149/150 (not introduced, not regressed); `examples/events-api`/`examples/api-events` re-run to exit 0.
+
+---
+
+## Round 150 (api/rest + nethttp/chi adapters — deep dive on the declarative middleware mechanism)
+
+User explicitly scoped this round to "the api/rest layer and its adapter implementation for the
+whole declarative middleware" — the 4th dedicated review pass over this exact area this session
+(after Phase A's own 3 review rounds). Found a substantial, previously-uncaught cluster of stale
+"Transform"/"ClientTransform"/"TransformSSE"/"ClientTransformSSE" references (names from the
+mechanism bound-middleware-split's Addendum 7 replaced) still embedded in test names/comments
+across BOTH adapters — missed by prior rounds because those rounds' greps targeted
+`middleware.go`/`middleware_declaration.go`/`transform.go`/`transform_dispatch.go`/`builder.go`
+specifically, never the SSE-specific dispatch/test files (`serve_sse.go`,
+`transform_sse_dispatch_test.go`, `client_middleware_test.go`, `cookie_attributes_test.go`) or the
+non-SSE `transform_dispatch_test.go`'s OWN test names (only its dangling godoc LINKS were swept
+previously, not plain-word test names). Also found a genuine cross-adapter test-coverage gap.
+
+- **G1 — stale `TransformSSE`/`ClientTransformSSE` test names in `api/rest/middleware_declaration_test.go`**: a section header + 2 test functions (`TestSSERoute_TransformSSE_LayersHeaderIntoSpec`, `TestSSERoute_ClientTransformSSE_PopulatesClientHandle`) tested the CURRENT `HandleBoundMW`/`ClientBoundMW` mechanism under the OLD mechanism's name. Renamed to `TestSSERoute_HandleBoundMW_LayersHeaderIntoSpec`/`TestSSERoute_ClientBoundMW_PopulatesClientHandle`.
+- **G2 — same stale naming in `adapters/nethttp/client_middleware_test.go`**: a doc comment, section header, and test name (`TestConsumeSSE_ClientTransformSSE_EncodesInAndDecodesOutOnce`) for a test exercising the current `BoundClientMiddleware`-dispatched SSE client consume path. Renamed to `TestConsumeSSE_BoundClientMiddleware_EncodesInAndDecodesOutOnce`.
+- **G3 — 6 stale test names + 3 section headers in BOTH `adapters/{nethttp,chi}/transform_sse_dispatch_test.go`** (mirror pair, kept file names per established precedent of not renaming files post-mechanism-removal): renamed identically in both to the `TestHandleBoundMW_SSE_*` family.
+- **G4 — stale inline dispatch comments in BOTH `adapters/{nethttp,chi}/serve_sse.go`** (2 each): "(TransformSSE/ClientTransformSSE and bundled .Use())" → "(HandleBoundMW/ClientBoundMW and bundled .Use())"; a second stale "not via TransformSSE" → "not via HandleBoundMW".
+- **G5 — stale inline comment in `adapters/nethttp/binding.go`**: "ClientTransformSSE's/" → "ClientBoundMW's/".
+- **G6 — 9-11 stale test names/section headers in BOTH `adapters/{nethttp,chi}/transform_dispatch_test.go`**, plus a dangling `[Transform]` godoc link and a stale "bound HandleMW path" phrase (should say `HandleBoundMW`) in both files: renamed to the `TestHandleMW_CodecBackedMiddleware_*` family, fixed the dangling link's surrounding prose to accurately describe the (now-removed) `rest.Transform` function instead of linking to it, and clarified why 2 near-duplicate tests exist (one migrated from the old `Transform`-era test, one purpose-written later — both independently still cover real ground).
+- **G7 — stale test name + 2 doc mentions in BOTH `adapters/{nethttp,chi}/cookie_attributes_test.go`**: `TestTransform_ResponseCookieWithAttributes_ReachesSetCookieHeader` tested the current `HandleBoundMW`-dispatched cookie-attribute mechanism under the old name. Renamed to `TestHandleBoundMW_ResponseCookieWithAttributes_ReachesSetCookieHeader`.
+- **G8 — stale AND factually-incorrect comment in `adapters/nethttp/client.go`**: a historical note about `CallWithHandle`'s removal claimed `rest.Client.Call`/`rest.CallWithTransport` still don't dispatch codec-backed `.Use()`/`ClientBoundMW` middleware today — confirmed FALSE by reading the same function's own code 10 lines above the comment (`dispatchClientMiddlewareOut` is called unconditionally whenever `ClientMiddlewareHandlers` is non-empty). Rewrote the comment to state the gap was closed, not an ongoing limitation, plus fixed the dangling `[rest.Route.ClientTransform]` link.
+- **G9 — confirmed cross-adapter test-coverage gap**: `adapters/nethttp/transform_dispatch_test.go` has `TestHandleMW_CodecBackedMiddleware_HappyPath_EnrichesReqAndSetsResponseHeader` (proving `HandleBoundMW`'s full `*Req`-access + response-header round trip) with NO chi equivalent — chi's file had only an ORPHANED comment promising "chi mirror of nethttp's identical test" with no actual test following it, breaking this project's own extensively-established nethttp/chi byte-for-byte parity precedent. Ported the missing test to chi verbatim (adjusted only for the already-renamed helper names), confirmed passing.
+- **Flagged, NOT fixed (judgment call, not auto-executed)**: `adapters/nethttp.Transform[Req any](fn) any` — a real, differently-purposed, still-exported general-purpose `HandleMW(nil, fn)`-building helper (unrelated to the removed `rest.Transform`/`rest.ClientTransform` mechanism, just an unfortunate name collision) — confirmed via grep to have ZERO test coverage, ZERO real usages anywhere in the repo (examples, demos, or elsewhere), and no chi equivalent. Left for the user to decide: add a test + chi port (if intentionally kept), or deprecate/remove (if vestigial) — a public API removal/addition judgment call, not auto-executed per this skill's "do not invent new API surface" guidance (cuts both ways on removal too).
+
+Verification: `gofmt -l .`/`go build ./...`/`go vet ./...` clean repo-wide; `go test ./...` zero failures (including the newly-ported chi test, confirmed passing standalone); `staticcheck ./...` zero findings; `gosec` unchanged at the same 2 pre-existing findings documented in Round 149 (not introduced, not regressed); `examples/rest-api`/`adapters-sse`/`adapters-nethttp-client` re-run to exit 0.
 
 ---
 

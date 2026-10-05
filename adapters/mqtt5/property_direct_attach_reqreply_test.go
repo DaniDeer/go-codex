@@ -14,8 +14,8 @@ import (
 // dispatch — the symmetry-bug fix's reqreply adapter-level proof. Mirrors
 // TestAttachClient_WithRequestProperty_WritesOutgoingUserProperty/
 // TestAttachServer_WithResponseProperty_WritesOutgoingUserProperty's
-// shape, but with NO reqreply.Middleware/Transform involved — only a
-// plain reqreply.NewPropertyParam attached directly to NewRoute.
+// shape, but with NO reqreply.Middleware involved — only a plain
+// reqreply.NewPropertyParam attached directly to NewRoute.
 
 type tenantComputeReqProp struct {
 	TenantID string

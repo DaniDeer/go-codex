@@ -718,7 +718,7 @@ func consumeSSEOnce[Req, Event any](
 		obs.RecordRequest(method, path, 0, time.Since(start))
 		return false, err
 	}
-	// D3: explicit ConsumeOptions > middleware-derived (ClientTransformSSE's/
+	// D3: explicit ConsumeOptions > middleware-derived (ClientBoundMW's/
 	// bundled .Use()'s In) > route-own-derived — mirrors
 	// [rest.CallWithTransport]'s identical precedence for plain Route.
 	if len(handle.ClientMiddlewareHandlers) > 0 {

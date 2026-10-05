@@ -596,7 +596,7 @@ func subscribeWithHandle[T any](
 		// CheckScopes whenever ANY bound MiddlewareHandler exists
 		// (regardless of its OWN Satisfies) was a confirmed regression,
 		// caught via a real test failure during implementation
-		// (TestAttachServer_Transform_RunsAfterPairedSecurity: a
+		// (TestSubscribe_MiddlewareDispatch_RunsAfterPairedSecurity: a
 		// general-purpose SubscribeBoundMW-attached middleware alongside a
 		// legacy paired security Fn incorrectly triggered an empty-
 		// grants CheckScopes rejection).

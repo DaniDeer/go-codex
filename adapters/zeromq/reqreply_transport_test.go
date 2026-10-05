@@ -11,6 +11,7 @@ import (
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
+	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -1106,11 +1107,12 @@ type zmwPropOut struct{ Ack string }
 var zmwPropInCodec = codex.Struct[zmwPropIn]()
 var zmwPropOutCodec = codex.Struct[zmwPropOut]()
 
-// TestAttachServer_Transform_RunsAfterPairedSecurity confirms D1 for
-// zeromq: Transform's declared middleware runs AFTER the paired security
-// Fn — the mechanism is genuinely transport-agnostic, zero adapter-
-// specific work beyond consulting the same RouteHandle field mqtt5 does.
-func TestAttachServer_Transform_RunsAfterPairedSecurity(t *testing.T) {
+// TestAttachServer_HandleBoundMW_RunsAfterPairedSecurity confirms D1
+// for zeromq: HandleBoundMW's declared middleware runs AFTER the paired
+// security Fn — the mechanism is genuinely transport-agnostic, zero
+// adapter-specific work beyond consulting the same RouteHandle field
+// mqtt5 does.
+func TestAttachServer_HandleBoundMW_RunsAfterPairedSecurity(t *testing.T) {
 	var order []string
 	mw := reqreply.NewBoundMiddleware[securedComputeReq](middleware.NewDeclaration("zmq-order-check", zmwPropInCodec, zmwPropOutCodec),
 		func(ctx context.Context, req *securedComputeReq, in zmwPropIn) (zmwPropOut, error) {
@@ -1164,7 +1166,7 @@ func TestAttachServer_Transform_RunsAfterPairedSecurity(t *testing.T) {
 }
 
 // TestAttachServer_MiddlewareError_WrapsAsKindMiddleware (zeromq)
-// confirms decision #6: a Transform-attached fn's own business error
+// confirms decision #6: a HandleBoundMW-attached fn's own business error
 // surfaces through ServeError{Kind: KindMiddleware}, NOT KindHandler.
 func TestAttachServer_MiddlewareError_WrapsAsKindMiddleware(t *testing.T) {
 	mw := reqreply.NewBoundMiddleware[computeReq](middleware.NewDeclaration("zmq-fn-error", zmwPropInCodec, zmwPropOutCodec),
@@ -1363,5 +1365,131 @@ func TestAttachClient_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Serve did not return after ctx cancellation")
+	}
+}
+
+// mockDispositionObserver spies on RecordDisposition calls — mirrors
+// adapters/mqtt5's identical test double (ported during a dedicated
+// cross-adapter parity review round — mqtt5 already had Disposition
+// test coverage, zeromq's production code implements the SAME
+// EnsureDispositionBox/ResolveDisposition/DispositionObserver mechanism
+// but had ZERO dedicated tests for it).
+type mockDispositionObserver struct {
+	stats.NoopObserver
+	dispositions []middleware.Disposition
+}
+
+func (o *mockDispositionObserver) RecordDisposition(_ string, d middleware.Disposition) {
+	o.dispositions = append(o.dispositions, d)
+}
+
+// TestAttachServer_Disposition_ExplicitSignalResolvedAndObserved confirms
+// a handler's middleware.SetDisposition call is resolved via
+// middleware.ResolveDisposition and reported via
+// stats.DispositionObserver, end-to-end through AttachServer's real
+// REQ/REP dispatch path — mirrors mqtt5's identical test.
+func TestAttachServer_Disposition_ExplicitSignalResolvedAndObserved(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	obs := &mockDispositionObserver{}
+	handler := func(ctx context.Context, req computeReq) (computeResp, error) {
+		middleware.SetDisposition(ctx, middleware.DispositionNackRequeue)
+		return computeResp{Sum: req.X + req.Y}, nil
+	}
+	route := reqreply.NewRoute[computeReq, computeResp](
+		"/compute-disposition-explicit",
+		computeReqCodec, computeRespCodec,
+		reqreply.RouteMeta{OperationID: "computeDispositionExplicit"},
+	)
+	if _, err := route.WithHandler(handler).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	repSock, reqSock := newChanSocketPair()
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{
+		Sockets: map[string]FramedSocket{"/compute-disposition-explicit": repSock},
+		Serve:   ServeOptions{Observer: obs},
+	})); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	client := reqreply.NewClient()
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Sockets: map[string]FramedSocket{"/compute-disposition-explicit": reqSock}})); err != nil {
+		t.Fatalf("AttachClient: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveErrCh := make(chan error, 1)
+	go func() { serveErrCh <- server.Serve(ctx) }()
+
+	if _, err := client.Call(context.Background(), route, computeReq{X: 1, Y: 2}); err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+
+	cancel()
+	select {
+	case err := <-serveErrCh:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not return after ctx cancellation")
+	}
+
+	if len(obs.dispositions) != 1 || obs.dispositions[0] != middleware.DispositionNackRequeue {
+		t.Errorf("want [DispositionNackRequeue], got %v", obs.dispositions)
+	}
+}
+
+// TestAttachServer_Disposition_DefaultFallback_NilError confirms a
+// handler that never calls SetDisposition resolves to
+// middleware.DispositionAck on success — mirrors mqtt5's identical test.
+func TestAttachServer_Disposition_DefaultFallback_NilError(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	obs := &mockDispositionObserver{}
+	handler := func(ctx context.Context, req computeReq) (computeResp, error) {
+		return computeResp{Sum: req.X + req.Y}, nil
+	}
+	route := reqreply.NewRoute[computeReq, computeResp](
+		"/compute-disposition-default",
+		computeReqCodec, computeRespCodec,
+		reqreply.RouteMeta{OperationID: "computeDispositionDefault"},
+	)
+	if _, err := route.WithHandler(handler).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	repSock, reqSock := newChanSocketPair()
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{
+		Sockets: map[string]FramedSocket{"/compute-disposition-default": repSock},
+		Serve:   ServeOptions{Observer: obs},
+	})); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	client := reqreply.NewClient()
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Sockets: map[string]FramedSocket{"/compute-disposition-default": reqSock}})); err != nil {
+		t.Fatalf("AttachClient: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveErrCh := make(chan error, 1)
+	go func() { serveErrCh <- server.Serve(ctx) }()
+
+	if _, err := client.Call(context.Background(), route, computeReq{X: 1, Y: 2}); err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+
+	cancel()
+	select {
+	case err := <-serveErrCh:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not return after ctx cancellation")
+	}
+
+	if len(obs.dispositions) != 1 || obs.dispositions[0] != middleware.DispositionAck {
+		t.Errorf("want [DispositionAck], got %v", obs.dispositions)
 	}
 }

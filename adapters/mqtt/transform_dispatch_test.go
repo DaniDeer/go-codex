@@ -5,9 +5,12 @@ import (
 	"errors"
 	"testing"
 
+	pahomqtt "github.com/eclipse/paho.mqtt.golang"
+
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/middleware"
+	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -36,7 +39,7 @@ func newTDDeclaration(name string) middleware.Declaration[tdIn, tdOut] {
 }
 
 // tdEmpty is an In/Out shape with NO required fields — used where a test
-// needs a Transform-attached middleware whose fn ignores In/Out entirely.
+// needs a SubscribeBoundMW-attached middleware whose fn ignores In/Out entirely.
 type tdEmpty struct{}
 
 var tdEmptyCodec = codex.Struct[tdEmpty]()
@@ -53,9 +56,9 @@ func newSubscriberChannelHandle(subscriber events.Subscriber[userEvent]) *events
 	return h
 }
 
-// ── Transform: happy path, enrichment ────────────────────────────────────
+// ── SubscribeBoundMW: happy path, enrichment ─────────────────────────────
 
-func TestSubscribeHandler_Transform_HappyPath_EnrichesMsg(t *testing.T) {
+func TestSubscribeHandler_SubscribeBoundMW_HappyPath_EnrichesMsg(t *testing.T) {
 	bm := events.NewBoundSubscribeMiddleware(newTDDeclaration("region-policy"),
 		func(ctx context.Context, msg *userEvent, in tdIn) (tdOut, error) {
 			msg.ID = in.Key + "-enriched"
@@ -80,9 +83,9 @@ func TestSubscribeHandler_Transform_HappyPath_EnrichesMsg(t *testing.T) {
 	}
 }
 
-// ── Transform: In-decode failure short-circuits, handler never called ───
+// ── SubscribeBoundMW: In-decode failure short-circuits, handler never called ──
 
-func TestSubscribeHandler_Transform_InDecodeFailure_HandlerNotCalled(t *testing.T) {
+func TestSubscribeHandler_SubscribeBoundMW_InDecodeFailure_HandlerNotCalled(t *testing.T) {
 	handlerCalled := false
 	bm := events.NewBoundSubscribeMiddleware(newTDDeclaration("region-policy"),
 		func(ctx context.Context, msg *userEvent, in tdIn) (tdOut, error) {
@@ -115,9 +118,9 @@ func TestSubscribeHandler_Transform_InDecodeFailure_HandlerNotCalled(t *testing.
 	}
 }
 
-// ── Transform: fn error surfaces as events.MiddlewareError ──────────────
+// ── SubscribeBoundMW: fn error surfaces as events.MiddlewareError ───────
 
-func TestSubscribeHandler_Transform_FnError_WrapsAsMiddlewareError(t *testing.T) {
+func TestSubscribeHandler_SubscribeBoundMW_FnError_WrapsAsMiddlewareError(t *testing.T) {
 	subscriber := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithSubscribe(events.Subscribe{Summary: "test"})
 	handlerCalled := false
@@ -168,9 +171,9 @@ func TestSubscribeHandler_Use_AgnosticMiddleware_Dispatches(t *testing.T) {
 	}
 }
 
-// ── ClientTransform (publish side): happy path, encodes Out into topic vars ──
+// ── PublishBoundMW: happy path, encodes Out into topic vars ─────────────
 
-func TestPublish_ClientTransform_HappyPath_EncodesOutIntoTopicVars(t *testing.T) {
+func TestPublish_PublishBoundMW_HappyPath_EncodesOutIntoTopicVars(t *testing.T) {
 	bm := events.NewBoundPublishMiddleware(newTDDeclaration("region-policy"),
 		func(ctx context.Context, msg userEvent) (tdOut, error) {
 			return tdOut{Value: "us-west"}, nil
@@ -197,9 +200,9 @@ func TestPublish_ClientTransform_HappyPath_EncodesOutIntoTopicVars(t *testing.T)
 	}
 }
 
-// ── ClientTransform: fn error aborts before publish ──────────────────────
+// ── PublishBoundMW: fn error aborts before publish ───────────────────────
 
-func TestPublish_ClientTransform_FnError_AbortsBeforePublish(t *testing.T) {
+func TestPublish_PublishBoundMW_FnError_AbortsBeforePublish(t *testing.T) {
 	bm := events.NewBoundPublishMiddleware(newTDEmptyDeclaration("region-policy"),
 		func(ctx context.Context, msg userEvent) (tdEmpty, error) {
 			return tdEmpty{}, errors.New("boom")
@@ -216,7 +219,7 @@ func TestPublish_ClientTransform_FnError_AbortsBeforePublish(t *testing.T) {
 	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
 	pubErr := publish(context.Background(), client, handle, event, nil, PublishOptions[userEvent]{})
 	if pubErr == nil {
-		t.Fatal("want error from ClientTransform fn")
+		t.Fatal("want error from PublishBoundMW fn")
 	}
 	if client.publishedTopicSnapshot() != "" {
 		t.Error("want no message published when middleware fn errors")
@@ -366,5 +369,78 @@ func TestPublish_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
 	}
 	if outputErr.Name != "tenant-required-policy" {
 		t.Errorf("want Name %q, got %q", "tenant-required-policy", outputErr.Name)
+	}
+}
+
+// D1: codec-backed middleware dispatch (SubscribeBoundMW) runs AFTER the
+// paired security Fn, both pre-handler — confirms mqtt v3's dispatch
+// order matches mqtt5's/zeromq's/REST's established order (ported during
+// a dedicated cross-adapter parity review round — mqtt5/zeromq already
+// had this exact test, mqtt v3 did not).
+func TestSubscribeHandler_MiddlewareDispatch_RunsAfterPairedSecurity(t *testing.T) {
+	var order []string
+	bm := events.NewBoundSubscribeMiddleware(newTDEmptyDeclaration("order-policy"),
+		func(ctx context.Context, msg *userEvent, in tdEmpty) (tdEmpty, error) {
+			order = append(order, "middleware")
+			return tdEmpty{}, nil
+		})
+
+	mw := events.FromSecurityScheme("bearerAuth", events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil)
+	subscriber := events.NewChannel[userEvent]("user/created", userEventCodec).
+		WithSubscribe(events.Subscribe{
+			Summary:  "test",
+			Security: []route.SecurityRequirement{route.Require("bearerAuth")},
+		}).
+		Use(mw).
+		SubscribeMW(&mw, func(_ context.Context, _ pahomqtt.Message, _ *userEvent) (map[string][]string, error) {
+			order = append(order, "security")
+			return map[string][]string{"bearerAuth": nil}, nil
+		})
+	subscriber = subscriber.SubscribeBoundMW(bm)
+	handle := newSubscriberChannelHandle(subscriber)
+
+	handler := subscribeHandler(context.Background(), nil, handle,
+		func(_ context.Context, _ userEvent) error { return nil }, SubscribeOptions{})
+	handler(nil, &mockMessage{topic: "user/created", payload: []byte(validPayload)})
+
+	if len(order) != 2 || order[0] != "security" || order[1] != "middleware" {
+		t.Errorf("want dispatch order [security, middleware], got %v", order)
+	}
+}
+
+// D3-equivalent precedence verification: when publish is called with a
+// non-nil vars map containing "region" AND a middleware that would ALSO
+// derive "region", the vars-param value wins (events.OverrideDerivedVars
+// in adapter.go's own publish — "explicit/channel-own vars... wins over
+// middleware-derived vars on a key collision"). mqtt v3's own publish has
+// no separate isExplicitVars bool (unlike mqtt5/zeromq) — this test
+// exercises the ONE precedence tier it does have. Ported during a
+// dedicated cross-adapter parity review round — mqtt5 already had this
+// test (as D3Precedence), mqtt v3 did not.
+func TestPublish_PublishBoundMW_VarsParamWinsOverMiddleware(t *testing.T) {
+	bm := events.NewBoundPublishMiddleware(newTDDeclaration("region-policy"),
+		func(ctx context.Context, msg userEvent) (tdOut, error) {
+			return tdOut{Value: "mw-region"}, nil
+		}).
+		WithPublishTopic(events.NewTopicParam("region", codex.String(),
+			func(out tdOut) string { return out.Value },
+			func(out *tdOut, v string) { out.Value = v },
+		))
+	publisher := events.NewChannel[userEvent]("user/{region}/created", userEventCodec).
+		WithPublish(events.Publish{Summary: "test"})
+	publisher = publisher.PublishBoundMW(bm)
+	handle, err := publisher.Handle(nil)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	client := &mockClient{token: newCompletedToken(nil)}
+	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
+	if err := publish(context.Background(), client, handle, event,
+		map[string]string{"region": "explicit-region"}, PublishOptions[userEvent]{}); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if got := client.publishedTopicSnapshot(); got != "user/explicit-region/created" {
+		t.Errorf("want explicit vars to win, got topic %q", got)
 	}
 }

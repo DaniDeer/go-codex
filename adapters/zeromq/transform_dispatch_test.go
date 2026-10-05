@@ -61,9 +61,9 @@ func runSubscribeWithHandle(handle *events.ChannelHandle[sensorReading], sock *m
 	return subscribeWithHandle(ctx, sock, handle, fn, opts)
 }
 
-// ── Transform: happy path, enrichment ─────────────────────────────────────
+// ── SubscribeBoundMW: happy path, enrichment ─────────────────────────────
 
-func TestSubscribe_Transform_HappyPath_EnrichesMsg(t *testing.T) {
+func TestSubscribe_SubscribeBoundMW_HappyPath_EnrichesMsg(t *testing.T) {
 	bm := events.NewBoundSubscribeMiddleware(newTDDeclaration("region-policy"),
 		func(ctx context.Context, msg *sensorReading, in tdIn) (tdOut, error) {
 			msg.SensorID = in.Key + "-enriched"
@@ -94,9 +94,9 @@ func TestSubscribe_Transform_HappyPath_EnrichesMsg(t *testing.T) {
 	}
 }
 
-// ── Transform: In-decode failure short-circuits, handler never called ───
+// ── SubscribeBoundMW: In-decode failure short-circuits, handler never called ──
 
-func TestSubscribe_Transform_InDecodeFailure_HandlerNotCalled(t *testing.T) {
+func TestSubscribe_SubscribeBoundMW_InDecodeFailure_HandlerNotCalled(t *testing.T) {
 	handlerCalled := false
 	bm := events.NewBoundSubscribeMiddleware(newTDDeclaration("region-policy"),
 		func(ctx context.Context, msg *sensorReading, in tdIn) (tdOut, error) {
@@ -132,9 +132,9 @@ func TestSubscribe_Transform_InDecodeFailure_HandlerNotCalled(t *testing.T) {
 	}
 }
 
-// ── Transform: fn error surfaces as events.MiddlewareError ──────────────
+// ── SubscribeBoundMW: fn error surfaces as events.MiddlewareError ───────
 
-func TestSubscribe_Transform_FnError_WrapsAsMiddlewareError(t *testing.T) {
+func TestSubscribe_SubscribeBoundMW_FnError_WrapsAsMiddlewareError(t *testing.T) {
 	handlerCalled := false
 	bm := events.NewBoundSubscribeMiddleware(newTDEmptyDeclaration("region-policy"),
 		func(ctx context.Context, msg *sensorReading, in tdEmpty) (tdEmpty, error) {
@@ -191,9 +191,9 @@ func TestSubscribe_Use_AgnosticMiddleware_Dispatches(t *testing.T) {
 	}
 }
 
-// ── ClientTransform (publish side): happy path, encodes Out into topic vars ──
+// ── PublishBoundMW: happy path, encodes Out into topic vars ─────────────
 
-func TestPublish_ClientTransform_HappyPath_EncodesOutIntoTopicVars(t *testing.T) {
+func TestPublish_PublishBoundMW_HappyPath_EncodesOutIntoTopicVars(t *testing.T) {
 	bm := events.NewBoundPublishMiddleware(newTDDeclaration("region-policy"),
 		func(ctx context.Context, msg sensorReading) (tdOut, error) {
 			return tdOut{Value: "us-west"}, nil
@@ -223,9 +223,9 @@ func TestPublish_ClientTransform_HappyPath_EncodesOutIntoTopicVars(t *testing.T)
 	}
 }
 
-// ── ClientTransform: fn error aborts before publish ──────────────────────
+// ── PublishBoundMW: fn error aborts before publish ───────────────────────
 
-func TestPublish_ClientTransform_FnError_AbortsBeforePublish(t *testing.T) {
+func TestPublish_PublishBoundMW_FnError_AbortsBeforePublish(t *testing.T) {
 	bm := events.NewBoundPublishMiddleware(newTDEmptyDeclaration("region-policy"),
 		func(ctx context.Context, msg sensorReading) (tdEmpty, error) {
 			return tdEmpty{}, errors.New("boom")
@@ -242,7 +242,7 @@ func TestPublish_ClientTransform_FnError_AbortsBeforePublish(t *testing.T) {
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
 	pubErr := publish(context.Background(), sock, handle, reading, nil, false, PublishOptions[sensorReading]{})
 	if pubErr == nil {
-		t.Fatal("want error from ClientTransform fn")
+		t.Fatal("want error from PublishBoundMW fn")
 	}
 	if len(sock.sentFrames) != 0 {
 		t.Error("want no message published when middleware fn errors")
@@ -251,10 +251,10 @@ func TestPublish_ClientTransform_FnError_AbortsBeforePublish(t *testing.T) {
 
 // ── Phase 10: events property vocabulary axis + Bug 1/Bug 2 side-track ──
 
-// D1: codec-backed middleware dispatch (Transform) runs AFTER the paired
-// security Fn, both pre-handler — confirms zeromq's dispatch order matches
-// mqtt5's/REST's established order, confirming the mechanism is genuinely
-// transport-agnostic.
+// D1: codec-backed middleware dispatch (SubscribeBoundMW) runs AFTER the
+// paired security Fn, both pre-handler — confirms zeromq's dispatch order
+// matches mqtt5's/REST's established order, confirming the mechanism is
+// genuinely transport-agnostic.
 func TestSubscribe_MiddlewareDispatch_RunsAfterPairedSecurity(t *testing.T) {
 	var order []string
 	bm := events.NewBoundSubscribeMiddleware(newTDEmptyDeclaration("order-policy"),
@@ -343,7 +343,7 @@ func TestSubscribe_Observer_ReportsMiddlewareInAndFnLocations(t *testing.T) {
 	// TestMiddleware_WithSubscribeProperty_RequiredButAdapterSuppliesNoPropertyMap
 	// at the api/events level) — either axis exercises the SAME DecodeIn
 	// failure path this test targets. Mirrors
-	// TestSubscribe_Transform_InDecodeFailure_HandlerNotCalled's own
+	// TestSubscribe_SubscribeBoundMW_InDecodeFailure_HandlerNotCalled's own
 	// "well-formed segment, fails mw's stricter codec" technique.
 	inMW := events.NewBoundSubscribeMiddleware(newTDDeclaration("region-required-policy"),
 		func(ctx context.Context, msg *sensorReading, in tdIn) (tdOut, error) {
@@ -483,5 +483,44 @@ func TestPublish_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
 	}
 	if outputErr.Name != "tenant-required-policy" {
 		t.Errorf("want Name %q, got %q", "tenant-required-policy", outputErr.Name)
+	}
+}
+
+// Bug 1 fix verification (D3 precedence): with explicit vars AND a
+// Middleware's WithPublishTopic BOTH present on the SAME var name, the
+// explicit value wins — mirrors mqtt5's identical
+// TestPublish_PublishBoundMW_D3Precedence_ExplicitVarsWinOverMiddleware
+// (ported during a dedicated cross-adapter parity review round — mqtt5
+// already had this test, zeromq did not).
+func TestPublish_PublishBoundMW_D3Precedence_ExplicitVarsWinOverMiddleware(t *testing.T) {
+	bm := events.NewBoundPublishMiddleware(newTDDeclaration("region-policy"),
+		func(ctx context.Context, msg sensorReading) (tdOut, error) {
+			return tdOut{Value: "mw-region"}, nil
+		}).
+		WithPublishTopic(events.NewTopicParam("region", codex.String(),
+			func(out tdOut) string { return out.Value },
+			func(out *tdOut, v string) { out.Value = v },
+		))
+	publisher := events.NewChannel[sensorReading]("sensors/{region}/readings", sensorCodec).
+		WithPublish(events.Publish{Summary: "test"})
+	publisher = publisher.PublishBoundMW(bm)
+	handle, err := publisher.Handle(nil)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	sock := &mockSocket{}
+	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1.5}
+	// Explicit vars (isExplicitVars=true) supplies its OWN "region" —
+	// must win over the middleware-derived value.
+	if err := publish(context.Background(), sock, handle, reading,
+		map[string]string{"region": "explicit-region"}, true, PublishOptions[sensorReading]{}); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if len(sock.sentFrames) != 1 {
+		t.Fatalf("want 1 send, got %d", len(sock.sentFrames))
+	}
+	if got := string(sock.sentFrames[0][0]); got != "sensors/explicit-region/readings" {
+		t.Errorf("want explicit vars to win, got topic %q", got)
 	}
 }

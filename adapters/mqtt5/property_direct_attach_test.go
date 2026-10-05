@@ -16,7 +16,7 @@ import (
 // symmetry-bug fix's adapter-level proof. Mirrors
 // TestSubscribe_Observer_ReportsMiddlewareInAndFnLocations/
 // TestPublish_WithPublishProperty_WritesOutgoingUserProperty_SeparateFromTopicVars's
-// shape, but with NO events.Middleware/Transform involved — only a plain
+// shape, but with NO events.Middleware involved — only a plain
 // events.NewPropertyParam attached directly to NewChannel.
 
 type tenantReading struct {
@@ -76,7 +76,7 @@ func TestSubscribe_DirectPropertyAttachment_MergesRealUserProperty(t *testing.T)
 // TestPublish_DirectPropertyAttachment_WritesRealUserProperty proves a
 // MergedPropertyParam attached DIRECTLY to NewChannel derives its value
 // FROM the outgoing message and writes it as a real MQTT5 User Property —
-// no Middleware/ClientTransform needed.
+// no Middleware needed.
 func TestPublish_DirectPropertyAttachment_WritesRealUserProperty(t *testing.T) {
 	pub := events.NewChannel[tenantReading]("sensors/readings", tenantReadingCodec,
 		events.NewPropertyParam("tenantID", codex.String(),

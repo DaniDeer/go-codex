@@ -13,9 +13,9 @@ import (
 	"github.com/DaniDeer/go-codex/stats"
 )
 
-// ── TransformSSE: happy path, response header composition ───────────────
+// ── HandleBoundMW (SSE): happy path, response header composition ────────
 
-func TestTransformSSE_HappyPath_SetsResponseHeader(t *testing.T) {
+func TestHandleBoundMW_SSE_HappyPath_SetsResponseHeader(t *testing.T) {
 	bm := rest.NewBoundMiddleware[createReq](newTDDeclaration("api-key-policy"),
 		func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
 			return tdOut{Value: "applied:" + in.Key}, nil
@@ -54,9 +54,9 @@ func TestTransformSSE_HappyPath_SetsResponseHeader(t *testing.T) {
 	}
 }
 
-// ── TransformSSE: In-decode failure short-circuits with 400 ──────────────
+// ── HandleBoundMW (SSE): In-decode failure short-circuits with 400 ──────
 
-func TestTransformSSE_InDecodeFailure_Returns400(t *testing.T) {
+func TestHandleBoundMW_SSE_InDecodeFailure_Returns400(t *testing.T) {
 	handlerCalled := false
 	bm := rest.NewBoundMiddleware[createReq](newTDDeclaration("api-key-policy"),
 		func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
@@ -90,9 +90,9 @@ func TestTransformSSE_InDecodeFailure_Returns400(t *testing.T) {
 	}
 }
 
-// ── TransformSSE: fn error falls back to rest.MiddlewareError ───────────
+// ── HandleBoundMW (SSE): fn error falls back to rest.MiddlewareError ────
 
-func TestTransformSSE_FnError_FallsBackToMiddlewareError(t *testing.T) {
+func TestHandleBoundMW_SSE_FnError_FallsBackToMiddlewareError(t *testing.T) {
 	handlerCalled := false
 	bm := rest.NewBoundMiddleware[createReq](newTDDeclaration("api-key-policy"),
 		func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
@@ -129,7 +129,7 @@ func TestTransformSSE_FnError_FallsBackToMiddlewareError(t *testing.T) {
 // ── D6(c): two SSE middlewares both writing the SAME *Req field —
 // attachment-order, last-applied-wins ──
 
-func TestTransformSSE_TwoMiddlewaresEnrichSameField_LastAttachedWins(t *testing.T) {
+func TestHandleBoundMW_SSE_TwoMiddlewaresEnrichSameField_LastAttachedWins(t *testing.T) {
 	bmFirst := rest.NewBoundMiddleware[createReq](newTDEmptyDeclaration("first-sse-policy"),
 		func(ctx context.Context, req *createReq, in tdEmpty) (tdEmpty, error) {
 			req.Name = "first"
@@ -170,7 +170,7 @@ func TestTransformSSE_TwoMiddlewaresEnrichSameField_LastAttachedWins(t *testing.
 // middleware output-encode (EncodeOut) failure path now reports
 // "middleware:out" via stats.ReportErrors, mirroring
 // adapters/chi/transform_dispatch_test.go's non-SSE equivalent.
-func TestTransformSSE_OutEncodeFailure_ReportsMiddlewareOutLocation(t *testing.T) {
+func TestHandleBoundMW_SSE_OutEncodeFailure_ReportsMiddlewareOutLocation(t *testing.T) {
 	// In is tdEmpty (no required fields, so DecodeIn/InCodec.Validate
 	// always succeeds) — isolating the failure to Out's EncodeOut path.
 	decl := middleware.NewDeclaration("api-key-policy", tdEmptyCodec, tdOutCodec)

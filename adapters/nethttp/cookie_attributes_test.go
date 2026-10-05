@@ -114,10 +114,10 @@ func TestSSEHandler_ResponseCookieMerge_WithAttributes(t *testing.T) {
 	}
 }
 
-// TestTransform_ResponseCookieWithAttributes_ReachesSetCookieHeader
+// TestHandleBoundMW_ResponseCookieWithAttributes_ReachesSetCookieHeader
 // exercises a Middleware[In,Out]-declared response cookie's attributes,
-// attached via Transform, reaching the actual Set-Cookie header.
-func TestTransform_ResponseCookieWithAttributes_ReachesSetCookieHeader(t *testing.T) {
+// attached via HandleBoundMW, reaching the actual Set-Cookie header.
+func TestHandleBoundMW_ResponseCookieWithAttributes_ReachesSetCookieHeader(t *testing.T) {
 	bm := rest.NewBoundMiddleware[createReq](newTDEmptyDeclaration("cookie-attrs-policy"),
 		func(ctx context.Context, req *createReq, in tdEmpty) (tdEmpty, error) {
 			return tdEmpty{}, nil
@@ -156,7 +156,7 @@ func TestTransform_ResponseCookieWithAttributes_ReachesSetCookieHeader(t *testin
 // TestCookieAttributes_Precedence_LastAttachedWins exercises the
 // registration-order, last-applied-wins precedence rule (mirrors the
 // existing header/cookie VALUE composition rule) when a route's own
-// response cookie AND a Transform-attached middleware's cookie both
+// response cookie AND a HandleBoundMW-attached middleware's cookie both
 // declare attributes for the SAME cookie name.
 func TestCookieAttributes_Precedence_LastAttachedWins(t *testing.T) {
 	bm := rest.NewBoundMiddleware[createReq](newTDEmptyDeclaration("precedence-policy"),

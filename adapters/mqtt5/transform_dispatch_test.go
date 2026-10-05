@@ -38,7 +38,7 @@ func newTDDeclaration(name string) middleware.Declaration[tdIn, tdOut] {
 }
 
 // tdEmpty is an In/Out shape with NO required fields — used where a test
-// needs a Transform-attached middleware whose fn ignores In/Out entirely
+// needs a SubscribeBoundMW-attached middleware whose fn ignores In/Out entirely
 // (only enrichment or a deliberate fn error matters), so
 // InCodec.Validate never fails on a zero value.
 type tdEmpty struct{}
@@ -57,9 +57,9 @@ func newSubscriberChannelHandle(subscriber events.Subscriber[sensorReading]) *ev
 	return h
 }
 
-// ── Transform: happy path, enrichment ─────────────────────────────────────
+// ── SubscribeBoundMW: happy path, enrichment ─────────────────────────────
 
-func TestSubscribe_Transform_HappyPath_EnrichesMsg(t *testing.T) {
+func TestSubscribe_SubscribeBoundMW_HappyPath_EnrichesMsg(t *testing.T) {
 	bm := events.NewBoundSubscribeMiddleware(newTDDeclaration("region-policy"),
 		func(ctx context.Context, msg *sensorReading, in tdIn) (tdOut, error) {
 			msg.SensorID = in.Key + "-enriched"
@@ -98,9 +98,9 @@ func TestSubscribe_Transform_HappyPath_EnrichesMsg(t *testing.T) {
 	}
 }
 
-// ── Transform: In-decode failure short-circuits, handler never called ───
+// ── SubscribeBoundMW: In-decode failure short-circuits, handler never called ──
 
-func TestSubscribe_Transform_InDecodeFailure_HandlerNotCalled(t *testing.T) {
+func TestSubscribe_SubscribeBoundMW_InDecodeFailure_HandlerNotCalled(t *testing.T) {
 	handlerCalled := false
 	bm := events.NewBoundSubscribeMiddleware(newTDDeclaration("region-policy"),
 		func(ctx context.Context, msg *sensorReading, in tdIn) (tdOut, error) {
@@ -142,9 +142,9 @@ func TestSubscribe_Transform_InDecodeFailure_HandlerNotCalled(t *testing.T) {
 	}
 }
 
-// ── Transform: fn error surfaces as events.MiddlewareError ──────────────
+// ── SubscribeBoundMW: fn error surfaces as events.MiddlewareError ───────
 
-func TestSubscribe_Transform_FnError_WrapsAsMiddlewareError(t *testing.T) {
+func TestSubscribe_SubscribeBoundMW_FnError_WrapsAsMiddlewareError(t *testing.T) {
 	handlerCalled := false
 	bm := events.NewBoundSubscribeMiddleware(newTDEmptyDeclaration("region-policy"),
 		func(ctx context.Context, msg *sensorReading, in tdEmpty) (tdEmpty, error) {
@@ -214,9 +214,9 @@ func TestSubscribe_Use_AgnosticMiddleware_Dispatches(t *testing.T) {
 	}
 }
 
-// ── ClientTransform (publish side): happy path, encodes Out into topic vars ──
+// ── PublishBoundMW: happy path, encodes Out into topic vars ─────────────
 
-func TestPublish_ClientTransform_HappyPath_EncodesOutIntoTopicVars(t *testing.T) {
+func TestPublish_PublishBoundMW_HappyPath_EncodesOutIntoTopicVars(t *testing.T) {
 	bm := events.NewBoundPublishMiddleware(newTDDeclaration("region-policy"),
 		func(ctx context.Context, msg sensorReading) (tdOut, error) {
 			return tdOut{Value: "us-west"}, nil
@@ -246,9 +246,9 @@ func TestPublish_ClientTransform_HappyPath_EncodesOutIntoTopicVars(t *testing.T)
 	}
 }
 
-// ── ClientTransform: fn error aborts before publish ──────────────────────
+// ── PublishBoundMW: fn error aborts before publish ───────────────────────
 
-func TestPublish_ClientTransform_FnError_AbortsBeforePublish(t *testing.T) {
+func TestPublish_PublishBoundMW_FnError_AbortsBeforePublish(t *testing.T) {
 	bm := events.NewBoundPublishMiddleware(newTDDeclaration("region-policy"),
 		func(ctx context.Context, msg sensorReading) (tdOut, error) {
 			return tdOut{}, errors.New("boom")
@@ -265,7 +265,7 @@ func TestPublish_ClientTransform_FnError_AbortsBeforePublish(t *testing.T) {
 	reading := sensorReading{SensorID: "11111111-1111-1111-1111-111111111111", Value: 1.5}
 	pubErr := publish(context.Background(), client, handle, reading, nil, false, PublishOptions[sensorReading]{})
 	if pubErr == nil {
-		t.Fatal("want error from ClientTransform fn")
+		t.Fatal("want error from PublishBoundMW fn")
 	}
 	if len(client.published) != 0 {
 		t.Error("want no message published when middleware fn errors")
@@ -274,7 +274,7 @@ func TestPublish_ClientTransform_FnError_AbortsBeforePublish(t *testing.T) {
 
 // ── D3: explicit vars > middleware-derived > channel-derived precedence ──
 
-func TestPublish_ClientTransform_D3Precedence_ExplicitVarsWinOverMiddleware(t *testing.T) {
+func TestPublish_PublishBoundMW_D3Precedence_ExplicitVarsWinOverMiddleware(t *testing.T) {
 	bm := events.NewBoundPublishMiddleware(newTDDeclaration("region-policy"),
 		func(ctx context.Context, msg sensorReading) (tdOut, error) {
 			return tdOut{Value: "mw-region"}, nil

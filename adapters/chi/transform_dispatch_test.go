@@ -40,9 +40,9 @@ func newTDDeclaration(name string) middleware.Declaration[tdIn, tdOut] {
 	return middleware.NewDeclaration(name, tdInCodec, tdOutCodec)
 }
 
-// ── Transform: happy path, enrichment, response-header composition ──────
+// ── HandleMW (codec-backed): happy path, enrichment, response-header composition ──
 
-func TestTransform_HappyPath_EnrichesReqAndSetsResponseHeader(t *testing.T) {
+func TestHandleMW_CodecBackedMiddleware_EnrichesReqAndSetsResponseHeader_MigratedFromTransform(t *testing.T) {
 	var receivedReqName string
 	bm := rest.NewBoundMiddleware[createReq](newTDDeclaration("api-key-policy"),
 		func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
@@ -85,9 +85,9 @@ func TestTransform_HappyPath_EnrichesReqAndSetsResponseHeader(t *testing.T) {
 	}
 }
 
-// ── Transform: In-decode failure short-circuits with 400 ────────────────
+// ── HandleMW (codec-backed): In-decode failure short-circuits with 400 ──
 
-func TestTransform_InDecodeFailure_Returns400(t *testing.T) {
+func TestHandleMW_CodecBackedMiddleware_InDecodeFailure_Returns400(t *testing.T) {
 	handlerCalled := false
 	bm := rest.NewBoundMiddleware[createReq](newTDDeclaration("api-key-policy"),
 		func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
@@ -122,9 +122,9 @@ func TestTransform_InDecodeFailure_Returns400(t *testing.T) {
 	}
 }
 
-// ── Transform: fn error falls back to rest.MiddlewareError (no ErrorPattern) ──
+// ── HandleMW (codec-backed): fn error falls back to rest.MiddlewareError (no ErrorPattern) ──
 
-func TestTransform_FnError_FallsBackToMiddlewareError(t *testing.T) {
+func TestHandleMW_CodecBackedMiddleware_FnError_FallsBackToMiddlewareError(t *testing.T) {
 	handlerCalled := false
 	bm := rest.NewBoundMiddleware[createReq](newTDDeclaration("api-key-policy"),
 		func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
@@ -179,7 +179,7 @@ var invalidAPIKeyCodec = codex.Struct[invalidAPIKeyError](
 	),
 )
 
-func TestTransform_FnError_MatchingErrorPattern_UsesPatternResponse(t *testing.T) {
+func TestHandleMW_CodecBackedMiddleware_FnError_MatchingErrorPattern_UsesPatternResponse(t *testing.T) {
 	bm := rest.NewBoundMiddleware[createReq](newTDDeclaration("api-key-policy"),
 		func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
 			return tdOut{}, invalidAPIKeyError{Reason: "too short"}
@@ -224,7 +224,7 @@ func (s *spyValidationObserver) RecordValidationError(location, constraintName, 
 	s.locations = append(s.locations, location)
 }
 
-func TestTransform_InDecodeFailure_ReportsMiddlewareInLocation(t *testing.T) {
+func TestHandleMW_CodecBackedMiddleware_InDecodeFailure_ReportsMiddlewareInLocation(t *testing.T) {
 	bm := rest.NewBoundMiddleware[createReq](newTDDeclaration("api-key-policy"),
 		func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
 			return tdOut{Value: in.Key}, nil
@@ -279,7 +279,7 @@ func TestTransform_InDecodeFailure_ReportsMiddlewareInLocation(t *testing.T) {
 // middleware output-encode (EncodeOut) failure path now reports
 // "middleware:out" via stats.ReportErrors, mirroring the "middleware:in"/
 // "middleware:fn" calls above.
-func TestTransform_OutEncodeFailure_ReportsMiddlewareOutLocation(t *testing.T) {
+func TestHandleMW_CodecBackedMiddleware_OutEncodeFailure_ReportsMiddlewareOutLocation(t *testing.T) {
 	// In is tdEmpty (no required fields, so DecodeIn/InCodec.Validate
 	// always succeeds) — isolating the failure to Out's EncodeOut path.
 	decl := middleware.NewDeclaration("api-key-policy", tdEmptyCodec, tdOutCodec)
@@ -338,7 +338,7 @@ func TestTransform_OutEncodeFailure_ReportsMiddlewareOutLocation(t *testing.T) {
 // order, last-applied-wins, not flagged as a conflict ──
 
 // tdEmpty is an In/Out shape with NO required fields — used where a test
-// needs a Transform-attached middleware whose fn ignores In/Out entirely
+// needs a HandleBoundMW-attached middleware whose fn ignores In/Out entirely
 // (only enrichment matters), so DecodeIn's InCodec.Validate never fails on
 // a zero value.
 type tdEmpty struct{}
@@ -349,7 +349,7 @@ func newTDEmptyDeclaration(name string) middleware.Declaration[tdEmpty, tdEmpty]
 	return middleware.NewDeclaration(name, tdEmptyCodec, tdEmptyCodec)
 }
 
-func TestTransform_TwoMiddlewaresEnrichSameField_LastAttachedWins(t *testing.T) {
+func TestHandleMW_CodecBackedMiddleware_TwoMiddlewaresEnrichSameField_LastAttachedWins(t *testing.T) {
 	bmFirst := rest.NewBoundMiddleware[createReq](newTDEmptyDeclaration("first-policy"),
 		func(ctx context.Context, req *createReq, in tdEmpty) (tdEmpty, error) {
 			req.Name = "first"
@@ -438,8 +438,55 @@ func TestUse_AgnosticMiddleware_DispatchesOnBothRoutes(t *testing.T) {
 }
 
 // ── docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase A:
-// runSecurityMiddleware retirement — chi mirror of nethttp's identical
-// test (adapters/nethttp/transform_dispatch_test.go).
+// Route.HandleMW now dispatches a codec-backed Middleware[In,Out] with
+// FULL *Req access, the SAME end-to-end behavior the now-removed
+// rest.Transform function used to provide — proven here by mirroring
+// nethttp's identical test
+// (adapters/nethttp/transform_dispatch_test.go's
+// TestHandleMW_CodecBackedMiddleware_HappyPath_EnrichesReqAndSetsResponseHeader)
+// — this chi equivalent was missing entirely until a dedicated
+// nethttp/chi parity review round found and ported it.
+
+func TestHandleMW_CodecBackedMiddleware_HappyPath_EnrichesReqAndSetsResponseHeader(t *testing.T) {
+	var receivedReqName string
+	bm := rest.NewBoundMiddleware[createReq](newTDDeclaration("api-key-policy-handlemw"),
+		func(ctx context.Context, req *createReq, in tdIn) (tdOut, error) {
+			req.Name = req.Name + "-enriched" // enrichment visible to the handler — proves *Req access
+			return tdOut{Value: "applied:" + in.Key}, nil
+		}).
+		WithRequestHeader(rest.NewRequiredHeaderParam("X-Api-Key", codex.String(),
+			func(in tdIn) string { return in.Key },
+			func(in *tdIn, v string) { in.Key = v },
+		)).
+		WithResponseHeader(rest.NewRequiredResponseHeaderParam("X-Policy-Applied", codex.String(),
+			func(out tdOut) string { return out.Value },
+			func(out *tdOut, v string) { out.Value = v },
+		))
+
+	route := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userRespCodec,
+		rest.RouteMeta{OperationID: "createUser"},
+	).HandleBoundMW(bm).WithHandler(func(_ context.Context, req createReq) (userResp, error) {
+		receivedReqName = req.Name
+		return userResp{ID: "1", Name: req.Name}, nil
+	})
+	h := mustServeOne(t, route)
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("X-Api-Key", "secret123")
+	h.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if receivedReqName != "Alice-enriched" {
+		t.Errorf("want handler to see enriched req, got %q", receivedReqName)
+	}
+	if got := rec.Header().Get("X-Policy-Applied"); got != "applied:secret123" {
+		t.Errorf("want X-Policy-Applied %q, got %q", "applied:secret123", got)
+	}
+}
 
 // bearerAuthOut carries the RESOLVED "conventional field" GrantedScopes
 // convention — a Security Out type is simply EXPECTED to carry a field
@@ -452,7 +499,7 @@ var bearerAuthOutCodec = codex.Struct[bearerAuthOut]()
 
 // TestHandleMW_CodecBackedMiddleware_Satisfies_CoversGlobalSecurity proves
 // a codec-backed Middleware[In,Out] with a Security declaration, attached
-// via the bound HandleMW path ALONE, is recognized by [rest.CheckCoverage]
+// via HandleBoundMW ALONE, is recognized by [rest.CheckCoverage]
 // at REGISTRATION time AND fully ENFORCED at runtime — runSecurityMiddleware's
 // retired, separate code path is replaced by this SAME MiddlewareHandler
 // dispatch; Out's GrantedScopes field is read via reflection and fed into

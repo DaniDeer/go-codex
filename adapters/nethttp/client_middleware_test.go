@@ -24,14 +24,14 @@ import (
 // see [TestAttach_ClientCall_CodecBackedClientMW_EncodesInAndDecodesOut]/
 // [TestAttach_ClientConsume_CodecBackedClientMW_EncodesInAndDecodesOut]
 // (clienttransport_test.go) for the current, passing coverage.
-// [TestConsumeSSE_ClientTransformSSE_EncodesInAndDecodesOutOnce] below is
+// [TestConsumeSSE_BoundClientMiddleware_EncodesInAndDecodesOutOnce] below is
 // UNCHANGED — it exercises consumeSSE directly, a separate,
 // still-fully-capable escape-hatch primitive this phase does not touch.
 
-// ── ClientTransformSSE: encodes In into the connect request, decodes Out
-// ONCE at connection-open time ──
+// ── BoundClientMiddleware (SSE): encodes In into the connect request,
+// decodes Out ONCE at connection-open time ──
 
-func TestConsumeSSE_ClientTransformSSE_EncodesInAndDecodesOutOnce(t *testing.T) {
+func TestConsumeSSE_BoundClientMiddleware_EncodesInAndDecodesOutOnce(t *testing.T) {
 	bm := rest.NewBoundClientMiddleware[sseTestReq](newTDDeclaration("api-key-policy"),
 		func(ctx context.Context, req sseTestReq) (tdIn, error) {
 			return tdIn{Key: "secret-" + req.ID}, nil

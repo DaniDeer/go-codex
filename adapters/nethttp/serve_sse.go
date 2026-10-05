@@ -213,7 +213,7 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 			return
 		}
 
-		// Codec-backed middleware dispatch (TransformSSE/ClientTransformSSE
+		// Codec-backed middleware dispatch (HandleBoundMW/ClientBoundMW
 		// and bundled .Use()) — SAME pre-handler dispatch point plain Route
 		// uses (D1), reusing rest.DispatchMiddlewareHandlers/
 		// rest.AsMiddlewareDispatchError verbatim from serve.go. SSE has no
@@ -354,7 +354,7 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 				// Derive the SSE route's OWN response header/cookie
 				// merge-field values (NewRequiredResponseHeaderParam/
 				// NewRequiredResponseCookieParam declared directly on the
-				// route, not via TransformSSE) from the FIRST event sent —
+				// route, not via HandleBoundMW) from the FIRST event sent —
 				// mirrors plain Route's EncodeResponseMergeFields dispatch,
 				// composing alongside (registration-order, before) the
 				// middleware-derived values already gathered above.

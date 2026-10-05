@@ -1275,9 +1275,9 @@ func (e businessError) Error() string { return e.msg }
 
 var errBusinessFailure = businessError{msg: "business failure"}
 
-// TestAttachServer_Transform_RunsAfterPairedSecurity confirms D1:
-// Transform's declared middleware runs AFTER the paired security Fn.
-func TestAttachServer_Transform_RunsAfterPairedSecurity(t *testing.T) {
+// TestAttachServer_HandleBoundMW_RunsAfterPairedSecurity confirms D1:
+// HandleBoundMW's declared middleware runs AFTER the paired security Fn.
+func TestAttachServer_HandleBoundMW_RunsAfterPairedSecurity(t *testing.T) {
 	var order []string
 	secMw := middleware.SecurityScheme("bearer2", route.BearerScheme("JWT"), nil, &bearerAuthTestCodec)
 	mw := reqreply.NewBoundMiddleware[computeReq](middleware.NewDeclaration("order-check", mwPropInCodec, mwPropOutCodec),
@@ -1338,7 +1338,7 @@ func TestAttachServer_Transform_RunsAfterPairedSecurity(t *testing.T) {
 }
 
 // TestAttachServer_MiddlewareError_WrapsAsKindMiddleware confirms
-// decision #6: a Transform-attached fn's own business error surfaces
+// decision #6: a HandleBoundMW-attached fn's own business error surfaces
 // through ServeError{Kind: KindMiddleware}, NOT KindHandler.
 func TestAttachServer_MiddlewareError_WrapsAsKindMiddleware(t *testing.T) {
 	mw := reqreply.NewBoundMiddleware[computeReq](middleware.NewDeclaration("fn-error", mwPropInCodec, mwPropOutCodec),
@@ -1396,7 +1396,7 @@ func TestAttachServer_MiddlewareError_WrapsAsKindMiddleware(t *testing.T) {
 	<-errCh
 }
 
-// TestTransform_MiddlewareError_FallsBackWhenNoErrorPatternMatch (D2):
+// TestHandleBoundMW_MiddlewareError_FallsBackWhenNoErrorPatternMatch (D2):
 // a route DOES declare an ErrorPattern (for a DIFFERENT error type than
 // the middleware's own fn returns) — confirming the fn's business error,
 // which does NOT match that pattern, still falls back to a plain-text
@@ -1407,7 +1407,7 @@ func TestAttachServer_MiddlewareError_WrapsAsKindMiddleware(t *testing.T) {
 // TestAttachServer_ErrorPattern_NoMatch_FallsBackToPlainText's identical
 // scenario, but for the middleware axis instead of the route's own
 // handler.
-func TestTransform_MiddlewareError_FallsBackWhenNoErrorPatternMatch(t *testing.T) {
+func TestHandleBoundMW_MiddlewareError_FallsBackWhenNoErrorPatternMatch(t *testing.T) {
 	mw := reqreply.NewBoundMiddleware[computeReq](middleware.NewDeclaration("fn-error-nomatch", mwPropInCodec, mwPropOutCodec),
 		func(ctx context.Context, req *computeReq, in mwPropIn) (mwPropOut, error) {
 			return mwPropOut{}, errBusinessFailure

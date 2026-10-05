@@ -19,7 +19,8 @@ import (
 // Phase 4e (Stage D): [events.Client.Subscribe]/[events.Client.Publish]'s
 // reflection shim (transport.go) now runs the FULL [subscribeHandler][T]/
 // [publish][T] pipeline (Implementations-based SubscribeMW/PublishMW
-// security, codec-backed Middleware/Transform dispatch, general-purpose
+// security, codec-backed Middleware dispatch (via .Use()/SubscribeBoundMW/
+// PublishBoundMW), general-purpose
 // wrapping, per-call format overrides) — not just Capabilities
 // (Phase 4c). mqtt v3 has NO property-vocabulary axis and NO built-in
 // codec-based credential check (unlike mqtt5) — those 2 pipeline steps
@@ -176,7 +177,7 @@ func TestClientSubscribe_GeneralPurposeMW_WrapsHandler(t *testing.T) {
 }
 
 // TestClientSubscribe_MiddlewareDispatch_RunsBeforeHandler proves a
-// codec-backed Middleware (Transform) attached via .Use() now dispatches
+// codec-backed Middleware attached via .Use()/SubscribeBoundMW now dispatches
 // through Client.Subscribe, before the handler runs.
 func TestClientSubscribe_MiddlewareDispatch_RunsBeforeHandler(t *testing.T) {
 	client := &mockClient{token: newCompletedToken(nil)}
@@ -391,7 +392,7 @@ func TestClientPublish_GeneralPurposeMW_WrapsEncodeAndTransmit(t *testing.T) {
 }
 
 // TestClientPublish_MiddlewareDispatch_RunsBeforeSend proves a
-// codec-backed Middleware (ClientTransform) attached via .Use() now
+// codec-backed Middleware attached via .Use()/PublishBoundMW now
 // dispatches through Client.Publish.
 func TestClientPublish_MiddlewareDispatch_RunsBeforeSend(t *testing.T) {
 	client := &mockClient{token: newCompletedToken(nil)}

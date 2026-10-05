@@ -19,7 +19,8 @@ import (
 // reflection shim (transport.go) now runs the FULL [subscribeHandler][T]/
 // [publish][T] pipeline (property-merge, User-Property-param validation,
 // codec-based AND declarative SubscribeMW/PublishMW security, codec-
-// backed Middleware/Transform dispatch, general-purpose wrapping,
+// backed Middleware dispatch (via .Use()/SubscribeBoundMW/PublishBoundMW),
+// general-purpose wrapping,
 // per-call format overrides) — not just Capabilities (Phase 4c). Each
 // test exercises ONE pipeline step via the real Client.Attach +
 // Client.Subscribe/Publish path (never the lower [subscribeWithHandle]/
@@ -260,7 +261,7 @@ type mqttFullPipelineOut struct{ Marker string }
 var mqttFullPipelineOutCodec = codex.Struct[mqttFullPipelineOut]()
 
 // TestClientSubscribe_MiddlewareDispatch_RunsBeforeHandler proves a
-// codec-backed Middleware (Transform) attached via .Use() now dispatches
+// codec-backed Middleware attached via .Use()/SubscribeBoundMW now dispatches
 // through Client.Subscribe, before the handler runs.
 func TestClientSubscribe_MiddlewareDispatch_RunsBeforeHandler(t *testing.T) {
 	client := &mockClient{}
@@ -590,7 +591,7 @@ func TestClientPublish_GeneralPurposeMW_WrapsEncodeAndTransmit(t *testing.T) {
 }
 
 // TestClientPublish_MiddlewareDispatch_ContributesPropertyVar proves a
-// codec-backed Middleware (ClientTransform) attached via .Use() now
+// codec-backed Middleware attached via .Use()/PublishBoundMW now
 // dispatches through Client.Publish, contributing a real MQTT5 User
 // Property.
 func TestClientPublish_MiddlewareDispatch_ContributesPropertyVar(t *testing.T) {

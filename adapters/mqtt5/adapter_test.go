@@ -1635,9 +1635,9 @@ func newMqttMdDeclaration(name string) middleware.Declaration[mqttMdIn, mqttMdOu
 	return middleware.NewDeclaration(name, mqttMdInCodec, mqttMdOutCodec)
 }
 
-// D1: codec-backed middleware dispatch (Transform) runs AFTER the paired
-// security Fn, both pre-handler — confirms mqtt5's dispatch order matches
-// REST's/reqreply's established order.
+// D1: codec-backed middleware dispatch (SubscribeBoundMW) runs AFTER the
+// paired security Fn, both pre-handler — confirms mqtt5's dispatch order
+// matches REST's/reqreply's established order.
 func TestSubscribe_MiddlewareDispatch_RunsAfterPairedSecurity(t *testing.T) {
 	var order []string
 	bm := events.NewBoundSubscribeMiddleware(newMqttMdDeclaration("order-policy"),

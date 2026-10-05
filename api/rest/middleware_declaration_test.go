@@ -228,9 +228,9 @@ func TestRegister_SingleAttachmentStyleSucceeds(t *testing.T) {
 	}
 }
 
-// ── TransformSSE/ClientTransformSSE: spec layering + D6(b)/D7 apply to SSE too ──
+// ── HandleBoundMW/ClientBoundMW (SSE): spec layering + D6(b)/D7 apply to SSE too ──
 
-func TestSSERoute_TransformSSE_LayersHeaderIntoSpec(t *testing.T) {
+func TestSSERoute_HandleBoundMW_LayersHeaderIntoSpec(t *testing.T) {
 	bm := rest.NewBoundMiddleware[mwTestReq](newTestDeclaration(),
 		func(ctx context.Context, req *mwTestReq, in mdTestIn) (mdTestOut, error) {
 			return mdTestOut{Value: "applied:" + in.Key}, nil
@@ -283,7 +283,7 @@ func TestSSERoute_TransformSSE_LayersHeaderIntoSpec(t *testing.T) {
 	}
 }
 
-func TestSSERoute_ClientTransformSSE_PopulatesClientHandle(t *testing.T) {
+func TestSSERoute_ClientBoundMW_PopulatesClientHandle(t *testing.T) {
 	bm := rest.NewBoundClientMiddleware[mwTestReq](newTestDeclaration(),
 		func(ctx context.Context, req mwTestReq) (mdTestIn, error) {
 			return mdTestIn{Key: "secret"}, nil

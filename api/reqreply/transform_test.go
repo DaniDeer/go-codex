@@ -30,7 +30,7 @@ func newBoundTenantClientMiddleware(name string, fn func(ctx context.Context, re
 	return reqreply.NewBoundClientMiddleware[computeReq](middleware.NewDeclaration(name, tfInCodec, tfOutCodec), fn)
 }
 
-// TestMiddleware_WithRequestTopic_MergesIn confirms Transform's fn
+// TestMiddleware_WithRequestTopic_MergesIn confirms HandleBoundMW's fn
 // receives correctly-decoded In from request topic vars.
 func TestMiddleware_WithRequestTopic_MergesIn(t *testing.T) {
 	mw := newBoundTenantMiddleware("with-req-topic",
@@ -59,8 +59,8 @@ func TestMiddleware_WithRequestTopic_MergesIn(t *testing.T) {
 }
 
 // TestMiddleware_WithResponseTopic_EncodesOutIntoReply confirms
-// Transform's returned Out correctly encodes into the reply's topic vars
-// (server-side EncodeOut).
+// HandleBoundMW's returned Out correctly encodes into the reply's topic
+// vars (server-side EncodeOut).
 func TestMiddleware_WithResponseTopic_EncodesOutIntoReply(t *testing.T) {
 	mw := newBoundTenantMiddleware("with-resp-topic",
 		func(ctx context.Context, req *computeReq, in tfIn) (tfOut, error) {
@@ -87,7 +87,7 @@ func TestMiddleware_WithResponseTopic_EncodesOutIntoReply(t *testing.T) {
 }
 
 // TestMiddleware_WithResponseTopic_DecodesOutFromReply confirms
-// ClientTransform's DecodeOut mechanically decodes Out from the actual
+// ClientBoundMW's DecodeOut mechanically decodes Out from the actual
 // reply's topic vars, no Fn involved.
 func TestMiddleware_WithResponseTopic_DecodesOutFromReply(t *testing.T) {
 	mw := newBoundTenantClientMiddleware("client-resp-topic",
@@ -109,9 +109,9 @@ func TestMiddleware_WithResponseTopic_DecodesOutFromReply(t *testing.T) {
 	}
 }
 
-// TestTransform_EnrichesReqPointer confirms Transform's fn can both READ
-// and WRITE *Req.
-func TestTransform_EnrichesReqPointer(t *testing.T) {
+// TestHandleBoundMW_EnrichesReqPointer confirms HandleBoundMW's fn can
+// both READ and WRITE *Req.
+func TestHandleBoundMW_EnrichesReqPointer(t *testing.T) {
 	mw := newBoundTenantMiddleware("enrich-req",
 		func(ctx context.Context, req *computeReq, in tfIn) (tfOut, error) {
 			req.X = 100
@@ -133,9 +133,9 @@ func TestTransform_EnrichesReqPointer(t *testing.T) {
 	}
 }
 
-// TestClientTransform_ProducesInFromReq confirms ClientTransform's fn
+// TestClientBoundMW_ProducesInFromReq confirms ClientBoundMW's fn
 // receives the caller's own Req value and produces In.
-func TestClientTransform_ProducesInFromReq(t *testing.T) {
+func TestClientBoundMW_ProducesInFromReq(t *testing.T) {
 	mw := newBoundTenantClientMiddleware("client-produce-in",
 		func(ctx context.Context, req computeReq) (tfIn, error) {
 			return tfIn{TenantID: "from-req"}, nil
@@ -152,10 +152,10 @@ func TestClientTransform_ProducesInFromReq(t *testing.T) {
 	}
 }
 
-// TestRoute_MultipleTransformAttachments_DispatchInRegistrationOrder
-// (Round 12): TWO SEPARATE Transform calls chained onto the SAME route
+// TestRoute_MultipleHandleBoundMWAttachments_DispatchInRegistrationOrder
+// (Round 12): TWO SEPARATE HandleBoundMW calls chained onto the SAME route
 // both dispatch, in registration order.
-func TestRoute_MultipleTransformAttachments_DispatchInRegistrationOrder(t *testing.T) {
+func TestRoute_MultipleHandleBoundMWAttachments_DispatchInRegistrationOrder(t *testing.T) {
 	var order []string
 	mw1 := newBoundTenantMiddleware("first",
 		func(ctx context.Context, req *computeReq, in tfIn) (tfOut, error) {
@@ -189,11 +189,11 @@ func TestRoute_MultipleTransformAttachments_DispatchInRegistrationOrder(t *testi
 	}
 }
 
-// TestTransform_D6c_TwoMiddlewaresEnrichSameReqField_LastAppliedWins
-// (Round 12): two Transform-attached middlewares' own fns BOTH write to
-// the SAME *Req field — attachment-order, last-applied-wins, NOT an
+// TestHandleBoundMW_D6c_TwoMiddlewaresEnrichSameReqField_LastAppliedWins
+// (Round 12): two HandleBoundMW-attached middlewares' own fns BOTH write
+// to the SAME *Req field — attachment-order, last-applied-wins, NOT an
 // error.
-func TestTransform_D6c_TwoMiddlewaresEnrichSameReqField_LastAppliedWins(t *testing.T) {
+func TestHandleBoundMW_D6c_TwoMiddlewaresEnrichSameReqField_LastAppliedWins(t *testing.T) {
 	mw1 := newBoundTenantMiddleware("enrich-1",
 		func(ctx context.Context, req *computeReq, in tfIn) (tfOut, error) {
 			req.X = 1
@@ -259,8 +259,8 @@ func TestMiddleware_PropertyMergeComposesWithGobRequestFormat(t *testing.T) {
 	}
 }
 
-// TestMiddleware_WithRequestProperty_MergesIn confirms Transform's fn
-// receives correctly-decoded In, decoded from its OWN separate
+// TestMiddleware_WithRequestProperty_MergesIn confirms HandleBoundMW's
+// fn receives correctly-decoded In, decoded from its OWN separate
 // property-value map, alongside (never combined with) any topic vars.
 func TestMiddleware_WithRequestProperty_MergesIn(t *testing.T) {
 	mw := newBoundTenantMiddleware("prop-merge",
@@ -351,11 +351,11 @@ func TestMiddleware_WithOptionalRequestProperty_AbsentLeavesZeroValueNoError(t *
 	}
 }
 
-// TestClientTransform_ValueConflict_MiddlewareDerivedWins mirrors D3:
+// TestClientBoundMW_ValueConflict_MiddlewareDerivedWins mirrors D3:
 // when the route's OWN topic merge (from Req) and a Middleware's
 // WithRequestTopic (from In) both target the SAME var name with
 // DIFFERING runtime values, the middleware-derived value wins.
-func TestClientTransform_ValueConflict_MiddlewareDerivedWins(t *testing.T) {
+func TestClientBoundMW_ValueConflict_MiddlewareDerivedWins(t *testing.T) {
 	type tvReq struct{ TenantID string }
 	tvReqCodec := codex.Struct[tvReq](
 		codex.RequiredField("tenantID", codex.String(),
@@ -409,11 +409,11 @@ func TestClientTransform_ValueConflict_MiddlewareDerivedWins(t *testing.T) {
 	}
 }
 
-// TestTransform_ValueConflict_MiddlewareDerivedWins applies D3's
-// precedence rule to Transform's reply-side encode: a Middleware's
+// TestHandleBoundMW_ValueConflict_MiddlewareDerivedWins applies D3's
+// precedence rule to HandleBoundMW's reply-side encode: a Middleware's
 // WithResponseTopic value overrides the route's own Resp-derived value
 // for the SAME var name.
-func TestTransform_ValueConflict_MiddlewareDerivedWins(t *testing.T) {
+func TestHandleBoundMW_ValueConflict_MiddlewareDerivedWins(t *testing.T) {
 	type tvResp struct{ Echo string }
 	tvRespCodec := codex.Struct[tvResp](
 		codex.RequiredField("echo", codex.String(),
@@ -460,7 +460,7 @@ func TestTransform_ValueConflict_MiddlewareDerivedWins(t *testing.T) {
 }
 
 // newMWTestRoute2 mirrors newMWTestRoute but with a caller-supplied Resp
-// codec, so TestTransform_ValueConflict_MiddlewareDerivedWins can declare
+// codec, so TestHandleBoundMW_ValueConflict_MiddlewareDerivedWins can declare
 // its own tvOut-based Middleware sharing computeReq as the route's Req.
 func newMWTestRoute2[Resp any](respCodec codex.Codec[Resp]) reqreply.Route[computeReq, Resp] {
 	return reqreply.NewRoute[computeReq, Resp](

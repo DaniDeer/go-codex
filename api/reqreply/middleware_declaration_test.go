@@ -24,7 +24,7 @@ func newAuthDeclaration(name string) middleware.Declaration[mdAuthIn, mdAuthOut]
 
 // TestRoute_Use_BundledWithReceive_AgnosticAttachment confirms a
 // Middleware with WithReceive set, attached via plain .Use(), dispatches
-// without needing Transform.
+// without needing HandleBoundMW.
 func TestRoute_Use_BundledWithReceive_AgnosticAttachment(t *testing.T) {
 	mw := reqreply.NewMiddleware(newAuthDeclaration("bundled-auth")).
 		WithReceive(func(ctx context.Context, in mdAuthIn) (mdAuthOut, error) {
