@@ -31,6 +31,14 @@
 		{
 			"path": "adapters/chi/adapter.go",
 			"rules": ["G124", "G705"]
+		},
+		{
+			"path": "examples/reqreply-api/demo_cross_api_oauth2_sharing.go",
+			"rules": ["G101"]
+		},
+		{
+			"path": "examples/reqreply-api/demo_bound_middleware_split.go",
+			"rules": ["G101"]
 		}
 	]
 }
