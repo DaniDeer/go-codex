@@ -117,6 +117,61 @@ func TestRouter_Use_DeclarationOrderIsDispatchOrder(t *testing.T) {
 	}
 }
 
+func TestRouter_Use_NestedMountAccumulatesOuterToInner(t *testing.T) {
+	outer := middleware.Middleware{Name: "outer"}
+	middleMw := middleware.Middleware{Name: "middle"}
+	inner := middleware.Middleware{Name: "inner"}
+	sub := newRouterTestSubscriber("x").Use(middleware.Middleware{Name: "leaf-own"})
+
+	innerRouter := events.NewRouter("inner").Use(inner).Route(sub)
+	middleRouter := events.NewRouter("middle").Use(middleMw).Mount(innerRouter)
+	outerRouter := events.NewRouter("outer").Use(outer).Mount(middleRouter)
+
+	entries := outerRouter.Routes()
+	if len(entries) != 1 {
+		t.Fatalf("want 1 entry, got %d", len(entries))
+	}
+	wantNames := []string{"outer", "middle", "inner", "leaf-own"}
+	names := entries[0].MiddlewareNames
+	if len(names) != len(wantNames) {
+		t.Fatalf("want %v, got %v", wantNames, names)
+	}
+	for i, want := range wantNames {
+		if names[i] != want {
+			t.Errorf("want middleware order %v, got %v", wantNames, names)
+			break
+		}
+	}
+}
+
+func TestRouter_DuplicateMiddlewareName_ReturnsTypedError(t *testing.T) {
+	// Uses the codec-backed events.Middleware[In,Out] family (via
+	// events.NewMiddleware), WITH a .WithReceive() fn attached: events'
+	// dedup check (checkEventsMiddlewareNameUniquenessAndAttachment) walks
+	// middlewareHandlers/clientMiddlewareHandlers, which are only
+	// populated when a receive/send fn is attached — unlike api/rest's
+	// equivalent check (scoped to middlewareSpecContributions, populated
+	// unconditionally). A bare, fn-less Declaration-only Middleware (as
+	// api/rest's test uses) would NOT trigger this check here.
+	noopReceive := func(context.Context, struct{}) error { return nil }
+	dup := events.NewMiddleware(middleware.Declaration[struct{}, struct{}]{Name: "dup"}).WithReceive(noopReceive)
+	sub := newRouterTestSubscriber("x").Use(
+		events.NewMiddleware(middleware.Declaration[struct{}, struct{}]{Name: "dup"}).WithReceive(noopReceive),
+	)
+	rt := events.NewRouter("api").Use(dup).Route(sub)
+
+	client := events.NewClient()
+	err := rt.Register(client)
+	var dupErr events.DuplicateMiddlewareNameError
+	if !errors.As(err, &dupErr) {
+		t.Fatalf("want DuplicateMiddlewareNameError, got %v (%T)", err, err)
+	}
+	var prefixErr events.RouterPrefixError
+	if errors.As(err, &prefixErr) {
+		t.Errorf("want DuplicateMiddlewareNameError to propagate unwrapped, got it wrapped in RouterPrefixError")
+	}
+}
+
 func TestRouter_Group_SharesPrefixAddsScopedMiddlewareOnly(t *testing.T) {
 	scoped := middleware.Middleware{Name: "scoped"}
 	rt := events.NewRouter("api").
@@ -272,6 +327,54 @@ func TestRouter_Register_IndistinguishableFromDirectRegister(t *testing.T) {
 	entriesA := clientA.SubscriberEntries()
 	if len(entriesA) != 1 || entriesA[0].Topic() != routedHandle.Topic {
 		t.Errorf("want same topic registered via Router as via direct Register")
+	}
+
+	// Beyond spec (topic) equality: verify the two handles actually
+	// DISPATCH identically — same decode/encode round trip for a success
+	// case, and the same decode failure for an invalid payload. directSub's
+	// own ChannelHandle isn't captured above, so build an equivalent one
+	// via WithHandleCallback for a fair, direct comparison.
+	var directHandle *events.ChannelHandle[routerTestPayload]
+	directSub2 := events.NewChannel[routerTestPayload]("users2", routerTestPayloadCodec,
+		events.WithHandleCallback(func(h *events.ChannelHandle[routerTestPayload]) { directHandle = h }),
+	).WithSubscribe(events.Subscribe{}).WithHandler(routerTestHandler)
+	if err := directSub2.Register(clientA); err != nil {
+		t.Fatalf("direct Register (2): %v", err)
+	}
+	if directHandle == nil {
+		t.Fatal("want WithHandleCallback to fire for direct registration")
+	}
+
+	payloadBytes := []byte(`{"name":"ada"}`)
+	directPayload, err := directHandle.Decode(payloadBytes)
+	if err != nil {
+		t.Fatalf("direct Decode: %v", err)
+	}
+	routedPayload, err := routedHandle.Decode(payloadBytes)
+	if err != nil {
+		t.Fatalf("routed Decode: %v", err)
+	}
+	if directPayload != routedPayload {
+		t.Errorf("want identical decode result, got %+v vs %+v", directPayload, routedPayload)
+	}
+
+	directOut, err := directHandle.Encode(directPayload)
+	if err != nil {
+		t.Fatalf("direct Encode: %v", err)
+	}
+	routedOut, err := routedHandle.Encode(routedPayload)
+	if err != nil {
+		t.Fatalf("routed Encode: %v", err)
+	}
+	if string(directOut) != string(routedOut) {
+		t.Errorf("want identical encode output, got %q vs %q", directOut, routedOut)
+	}
+
+	badBytes := []byte(`{"name":123}`)
+	_, directDecodeErr := directHandle.Decode(badBytes)
+	_, routedDecodeErr := routedHandle.Decode(badBytes)
+	if (directDecodeErr == nil) != (routedDecodeErr == nil) {
+		t.Errorf("want same error presence for invalid payload, direct=%v routed=%v", directDecodeErr, routedDecodeErr)
 	}
 }
 

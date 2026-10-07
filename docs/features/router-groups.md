@@ -270,7 +270,7 @@ See `examples/reqreply-api/demo_router_groups.go` for a runnable version.
 | Second axis | HTTP method | role (subscribe/publish) | **none** — a Route is already the complete leaf |
 | `RouterEntry` fields | `Method`, `Path`, `MiddlewareNames`, `Tags` | `Role`, `Path`, `MiddlewareNames`, `Tags` | `Path`, `MiddlewareNames`, `Tags` |
 | `Group`'s scoping criterion | method-adjacent (chi precedent) | role-adjacent (naming convention) | chi's ORIGINAL baseline — any user-chosen subset sharing a prefix |
-| `Register` target | `*rest.Server` | `*events.Client` | `*reqreply.Builder` (alias of `*reqreply.Server`) |
+| `Register` target | `*rest.Server` | `*events.Client` | `*reqreply.Server` |
 | `WithHandleCallback` | fires once | fires per role (3-way split) | fires once (same shape as REST) |
 | `WithRouter` opt | Yes (`ClientHandle`) | Yes (`Subscriber.Handle`/`Publisher.Handle`) | Yes (`ClientHandle`, same shape as REST) |
 

@@ -9,6 +9,7 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/route"
 )
 
 type specTestReading struct{ Value int }
@@ -131,6 +132,51 @@ func TestServeSpec_EmptyTopic_Error(t *testing.T) {
 	}
 	if got := topicErr.LogValue().Kind().String(); got != "Group" {
 		t.Errorf("LogValue kind = %q, want Group", got)
+	}
+}
+
+// TestServeSpec_OptsOutOfGlobalSecurity guards a real, confirmed
+// regression class (see api/rest's own equivalent test): ServeSpec's
+// internal publish declares an explicit, non-nil EMPTY Security slice
+// specifically so it does NOT inherit a Client-level AddGlobalSecurity
+// requirement the way a channel with nil Security would.
+func TestServeSpec_OptsOutOfGlobalSecurity(t *testing.T) {
+	c := events.NewClient(events.WithInfo(events.Info{Title: "Test API", Version: "1.0.0"}))
+	c.AddGlobalSecurity(route.Require("bearerAuth"))
+	ft := &recordingPublishTransport{}
+	if err := c.Attach(ft); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	if err := c.ServeSpec(context.Background(), "spec/yaml"); err != nil {
+		t.Fatalf("ServeSpec: %v", err)
+	}
+	if len(ft.calls) != 1 {
+		t.Fatalf("want exactly 1 Publish call, got %d", len(ft.calls))
+	}
+	handle, ok := ft.calls[0].pub.(*events.ChannelHandle[[]byte])
+	if !ok {
+		t.Fatalf("pub has unexpected type %T", ft.calls[0].pub)
+	}
+
+	// GlobalSecurity still reflects the Client's own declaration (proving
+	// AddGlobalSecurity really was set) ...
+	if len(handle.GlobalSecurity) != 1 {
+		t.Fatalf("want Client.GlobalSecurity to carry 1 requirement, got %d", len(handle.GlobalSecurity))
+	}
+	// ... but the publish operation's own Security is a non-nil EMPTY
+	// slice, NOT nil — the adapter-level resolution (`if reqs == nil {
+	// reqs = GlobalSecurity }`) only falls back to GlobalSecurity when
+	// Security is nil. A nil slice here would silently re-inherit the
+	// global requirement; this is the exact bug this test exists to catch.
+	if handle.Descriptor.Publish == nil {
+		t.Fatalf("ServeSpec's channel has no Publish operation descriptor")
+	}
+	if handle.Descriptor.Publish.Security == nil {
+		t.Fatal("ServeSpec's Publish.Security is nil — it will INHERIT AddGlobalSecurity instead of opting out")
+	}
+	if len(handle.Descriptor.Publish.Security) != 0 {
+		t.Errorf("want Publish.Security to be empty (opt-out), got %d requirement(s)", len(handle.Descriptor.Publish.Security))
 	}
 }
 

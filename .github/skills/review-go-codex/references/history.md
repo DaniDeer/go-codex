@@ -1,6 +1,148 @@
-# go-codex Review History (R1–R152, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
+# go-codex Review History (R1–R156, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 156 (Router implementation vs. d-0008 design doc — deep dive + error handling)
+
+User asked to "review the router implementation in depth against the design document to find
+implementation gaps and bugs. Also review how errors are handled correctly throughout middlewares
+and routes" — a 4th, final Router round after the 3 per-API rounds (153/154/155), cross-checking
+`api/{rest,events,reqreply}/router.go` against `docs/design/d-0008-declarative-router-groups.md`'s
+own explicit code sketches and "Unit test plan" table.
+
+- **G1 — `api/reqreply/router.go` spelled its builder param `*Builder` instead of `*Server`**: the
+  design doc's own code sketch explicitly calls for the current, non-deprecated `*Server` name in
+  this NEW code (contrasting with `Route.Register`'s own pre-existing `*Builder` usage) — the
+  shipped code used `*Builder` in all 4 places (`routable.registerAny`, `Router.Register`,
+  `Router.register`, `Route.registerAny`). Renamed all 4 to `*Server` (`Builder = Server` is a true
+  Go type alias — zero functional/behavioral change, purely cosmetic). Also updated
+  `docs/features/router-groups.md`'s comparison table entry to match.
+- **G2 — missing `TestRouter_Use_NestedMountAccumulatesOuterToInner`**: the design doc's test plan
+  requires verifying middleware ordering accumulates correctly across 2+ levels of nested `Mount`
+  (not just one level); absent from all 3 packages. Added one per package: a 3-level `Mount` nest
+  (outer/middle/inner), each level plus the leaf itself contributing a named middleware, asserting
+  `RouterEntry.MiddlewareNames` is `[outer, middle, inner, leaf-own]` in that exact order. Manually
+  traced `walk`'s recursive `mws := append(cloneMws(ancestorMws), rt.mws...)` accumulation first —
+  confirmed already correct, so this was a pure test-coverage gap, not a functional bug.
+- **G3 — missing `TestRouter_DuplicateMiddlewareName_ReturnsTypedError`**: also required by the
+  design doc's test plan; absent from all 3 packages. Added one per package — discovered along the
+  way that the existing `DuplicateMiddlewareNameError` dedup check is scoped differently per
+  package: `api/rest`/`api/reqreply` walk `middlewareSpecContributions` (populated unconditionally
+  by ANY codec-backed `Middleware[In,Out]`, with or without a receive/send fn attached), while
+  `api/events` walks `middlewareHandlers`/`clientMiddlewareHandlers` (populated ONLY when a
+  `.WithReceive`/`.WithSend` fn is attached) — a bare, fn-less `Middleware[In,Out]` triggers the
+  check in rest/reqreply but NOT in events. Each new test uses the construction that DOES trigger
+  its own package's check (documented inline in each test); this asymmetry itself is a pre-existing
+  property of `d-0003-codec-declared-middlewares.md`'s Addendum, not a Router-introduced gap, so it
+  was documented rather than filed as a separate finding.
+- **G4 — `TestRouter_Register_IndistinguishableFromDirectRegister` only compared Path/Topic
+  strings**: the test's name and the design doc's own claim ("same dispatch behavior...
+  indistinguishable") were not actually verified by the test body in any of the 3 packages.
+  Strengthened all 3 to also perform an actual Decode→handler→Encode round trip for a success case
+  and a Decode failure for an invalid payload, comparing results between the directly-registered
+  and Router-registered handles.
+
+Also reviewed, found correct (no finding): `RouterPrefixError`'s wrap-only-prefix-failures scope
+(re-confirmed via `TestRouter_NonPrefixErrors_PropagateUnwrapped` + the `InvalidComposedPath/Topic`
+tests, all 3 packages); `Router.Walk`'s short-circuit-on-first-error behavior (re-confirmed via
+`TestRouter_Walk_StopsOnFirstError` + manual trace of the recursive `if err := c.sub.walk(...);
+err != nil { return err }` pattern — no swallowing possible at any nesting level); the 6-item Phase
+C deferred-item review (all still correctly out of scope); `events.WithSubscribeHandleCallback`/
+`WithPublishHandleCallback`, `adapters/mqtt`'s `recoverHandle` dual-mode acceptance, and all 3
+`examples/*/demo_router_groups.go` + both spun-off roadmap docs (all confirmed present and
+consistent with the design doc).
+
+---
+
+## Round 155 (api/reqreply — Router/ServeSpec review)
+
+User explicitly scoped this round to "api/reqreply for the new router capabilities, the reworked
+examples and the newly added spec endpoint/channel" — the third and final per-API round, after
+Round 153 (`api/rest`) and Round 154 (`api/events`), reviewing `api/reqreply/router.go`'s `d-0008`
+Mount/Group/Tags machinery, the new `ServeSpec`/`SpecOpt`/`SpecReq` feature, and
+`examples/reqreply-api`'s `mqtt5server`/`demo_spec_printing_asyncapi.go` wiring.
+
+- **G1 — no regression test for `ServeSpec`'s global-security opt-out**: same finding class as
+  Rounds 153/154 — rated `bug` here (not `small`) since `api/reqreply` is the EXACT package where
+  this bug class was first found and fixed by hand (a real 30s `Call` hang) during this session's
+  implementation, and `examples/reqreply-api/mqtt5server` genuinely calls
+  `AddGlobalSecurity(route.Require("bearerAuth"))` — a LIVE, exercised path. Added
+  `TestServeSpec_OptsOutOfGlobalSecurity`, confirmed it fails if the opt-out line is removed.
+- **G2 — `ServeSpec`'s "cached thereafter" claim was actually FALSE**: writing the planned
+  lazy-cache regression test (`TestServeSpec_LazyCache_ReflectsLaterRoutes`) surfaced a genuine bug,
+  not just a missing test — `Server.AsyncAPISpec()` returns an `asyncapi.Document` whose
+  `channels`/`schemas`/`securitySchemes` maps ALIAS `Server`'s own persistent, ever-growing
+  `docBuilder` by reference (`DocumentBuilder.Build()` assigns them directly, no copy); caching
+  that `Document` value (as `ServeSpec` originally did) and re-marshaling it per request meant a
+  route registered on the server AFTER the cache was filled silently leaked into an already-
+  "cached" response. Fixed by pre-marshaling BOTH YAML and JSON to bytes ONCE, inside the same
+  `sync.Once`, and caching the bytes instead of the `Document` — freezing the actual output
+  regardless of later mutations to the shared `docBuilder` maps.
+
+Also confirmed (no finding): `Router`'s single leaf kind has thorough test coverage; no bare
+errors anywhere in `ServeSpec`; `ServeSpec` correctly bypasses `Router`; `ServeSpec` already has a
+duplicate-topic regression test (`reqreply.Route.Register` detects duplicates natively, unlike
+REST/events); `examples/reqreply-api/mqtt5server/server.go` correctly does NOT attach
+`reqreply.WithSpecMiddleware` to `ServeSpec` — initially suspected as a Round 154/G2-style parity
+gap, but is actually CORRECT: that file's own doc comment documents attaching ZERO per-route
+general-purpose middleware anywhere (relying solely on the ctx-ambient Observer), so adding it only
+to `ServeSpec` would have been the real inconsistency.
+
+---
+
+## Round 154 (api/events — Router/ServeSpec review)
+
+User explicitly scoped this round to "api/events for the new router capabilities, the reworked
+examples and the newly added spec endpoint/channel" — the events-side mirror of Round 153,
+reviewing `api/events/router.go`'s `d-0008` Mount/Group/Tags/`WithRouter`/`HandleOpt` machinery, the
+new `ServeSpec`/`SpecOpt`/`WithSpecFormat` feature, and `examples/events-api`'s
+`mqtt5broker`/`auth`/`observer`/`tracing`/`demo_serve_spec.go` wiring.
+
+- **G1 — no regression test for `ServeSpec`'s global-security opt-out**: same finding class as
+  Round 153/G2 — `ServeSpec`'s internal publish declares an explicit, non-nil EMPTY `Security`
+  slice specifically so it does not inherit `Client.AddGlobalSecurity`, with zero test coverage.
+  Added `TestServeSpec_OptsOutOfGlobalSecurity`, confirmed it fails if the opt-out line is removed.
+- **G2 — events-api's `ServeSpec` demo never exercised `events.WithSpecMiddleware`**: asymmetric
+  with `rest-api`'s real `WithSpecMiddleware(nil, timingFn)` wiring — the "middleware capability"
+  half of the original ask was under-demonstrated for the pub/sub pattern. Threaded `obs` into
+  `demoServeSpecPublish` and attached `events.WithSpecMiddleware(nil,
+  events.Observability[[]byte](obs))` to the YAML `ServeSpec` call.
+
+Also confirmed (no finding, notably BETTER than REST's round here): `Router`'s two leaf kinds
+(`Subscriber`/`Publisher`) both have thorough, symmetric test coverage already (unlike
+`api/rest`'s `SSERoute` gap from Round 153/G3); `ServeSpec` has no bare/unstructured error
+anywhere (Round 153/G1 has no events equivalent — there is no decode-placeholder closure at all).
+
+---
+
+## Round 153 (api/rest — Router/ServeSpec review)
+
+User explicitly scoped this round to "api/rest for the new router capabilities, the reworked
+examples and the newly added spec endpoint/channel" — reviewing `api/rest/router.go`'s `d-0008`
+Mount/Group/Tags machinery, the new `ServeSpec`/`SpecOpt` feature, and `examples/rest-api`'s
+`chiserver`/`nethttpserver`/`auth`/`observer`/`requestid`/`demo_spec.go` wiring, all shipped in
+this session's earlier rounds.
+
+- **G1 — `ServeSpec` not-decodable placeholder used a bare error**: `yamlFormat`/`jsonFormat`'s
+  unmarshal closures returned `fmt.Errorf(...)` instead of a structured, `slog.LogValuer`-
+  implementing type. Added `SpecDocumentNotDecodableError{Format string}` and wired it into both
+  closures, plus a test exercising it via `Format.Unmarshal`.
+- **G2 — no regression test for `ServeSpec`'s global-security opt-out**: `ServeSpec`'s internal
+  route declares an explicit, non-nil EMPTY `Security` slice specifically so it does not inherit
+  `Server.AddGlobalSecurity` — the exact same class of bug this guards against was found and fixed
+  by hand (a 30s hang) during `api/reqreply`'s own `ServeSpec` implementation, with zero test
+  coverage anywhere for `api/rest`'s equivalent opt-out. Added
+  `TestServeSpec_OptsOutOfGlobalSecurity`, confirmed it fails if the opt-out line is removed.
+- **G3 — `SSERoute`'s `routable` (Router) implementation had zero test coverage**: `Router`
+  supports two leaf kinds (`Route`, `SSERoute`) but every existing `router_test.go` test only
+  exercised `Route`. Added `TestRouter_Mount_ComposesSSERoute` and
+  `TestRouter_Group_ComposesSSERouteAlongsideRoute` (mixed-kind Group), confirming SSERoute's
+  `withRouterPrefix`/`routeMethod`/`middlewareNames`/`tags`/`registerAny` all compose correctly.
+- **G4 — `demoSpecEndpoint` used `http.NewRequest` instead of `http.NewRequestWithContext`**:
+  inconsistent with go-codex's ctx-first convention elsewhere. Switched to
+  `http.NewRequestWithContext(context.Background(), ...)`.
 
 ---
 

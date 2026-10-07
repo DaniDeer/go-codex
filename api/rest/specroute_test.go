@@ -9,6 +9,7 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/render/openapi"
+	"github.com/DaniDeer/go-codex/route"
 )
 
 // specTestRoute registers one plain route on b, for ServeSpec's own
@@ -106,6 +107,44 @@ func TestServeSpec_HappyPath_BothFormats(t *testing.T) {
 	}
 }
 
+func TestServeSpec_Formats_NotDecodable(t *testing.T) {
+	b := rest.NewServer(testInfo)
+	if err := b.ServeSpec("/openapi.yaml"); err != nil {
+		t.Fatalf("ServeSpec: %v", err)
+	}
+
+	entries := b.RouteEntries()
+	var handle *rest.RouteHandle[struct{}, openapi.Document]
+	for _, e := range entries {
+		if e.Path() == "/openapi.yaml" {
+			if h, ok := e.Handle().(*rest.RouteHandle[struct{}, openapi.Document]); ok {
+				handle = h
+			}
+		}
+	}
+	if handle == nil {
+		t.Fatalf("ServeSpec route not found among RouteEntries")
+	}
+
+	wantFormats := []string{"yaml", "json"}
+	for i, f := range handle.Formats {
+		_, err := f.Unmarshal([]byte("irrelevant"))
+		if err == nil {
+			t.Fatalf("Formats[%d].Unmarshal: want error, got nil", i)
+		}
+		var notDecodable rest.SpecDocumentNotDecodableError
+		if !errors.As(err, &notDecodable) {
+			t.Fatalf("Formats[%d].Unmarshal: want SpecDocumentNotDecodableError, got %T: %v", i, err, err)
+		}
+		if notDecodable.Format != wantFormats[i] {
+			t.Errorf("Formats[%d]: Format = %q, want %q", i, notDecodable.Format, wantFormats[i])
+		}
+		if got := notDecodable.LogValue().Kind().String(); got != "Group" {
+			t.Errorf("Formats[%d]: LogValue kind = %q, want Group", i, got)
+		}
+	}
+}
+
 func TestServeSpec_EmptyPath_Error(t *testing.T) {
 	b := rest.NewServer(testInfo)
 	err := b.ServeSpec("")
@@ -177,6 +216,52 @@ func TestServeSpec_LazyCache_ReflectsLaterRoutes(t *testing.T) {
 	}
 	if strings.Contains(string(jsonBytes2), "/users/{id}") {
 		t.Error("spec document was recomputed after being cached — ServeSpec must cache on first call")
+	}
+}
+
+// TestServeSpec_OptsOutOfGlobalSecurity guards a real, confirmed
+// regression class: ServeSpec's internal route declares an explicit,
+// non-nil EMPTY Security slice specifically so it does NOT inherit a
+// Server-level AddGlobalSecurity requirement the way a route with nil
+// Security would. This exact gap (forgetting the opt-out) caused a real
+// end-to-end hang in api/reqreply's own ServeSpec during development —
+// this test exists so the equivalent regression in api/rest is caught
+// immediately, not rediscovered by hand.
+func TestServeSpec_OptsOutOfGlobalSecurity(t *testing.T) {
+	b := rest.NewServer(testInfo)
+	b.AddGlobalSecurity(route.Require("bearerAuth"))
+	if err := b.ServeSpec("/openapi.yaml"); err != nil {
+		t.Fatalf("ServeSpec: %v", err)
+	}
+
+	entries := b.RouteEntries()
+	var handle *rest.RouteHandle[struct{}, openapi.Document]
+	for _, e := range entries {
+		if e.Path() == "/openapi.yaml" {
+			if h, ok := e.Handle().(*rest.RouteHandle[struct{}, openapi.Document]); ok {
+				handle = h
+			}
+		}
+	}
+	if handle == nil {
+		t.Fatalf("ServeSpec route not found among RouteEntries")
+	}
+
+	// GlobalSecurity still reflects the Server's own declaration (proving
+	// AddGlobalSecurity really was set) ...
+	if len(handle.GlobalSecurity) != 1 {
+		t.Fatalf("want Server.GlobalSecurity to carry 1 requirement, got %d", len(handle.GlobalSecurity))
+	}
+	// ... but Descriptor.Security is a non-nil EMPTY slice, NOT nil — the
+	// adapter-level resolution (`if reqs == nil { reqs = GlobalSecurity }`)
+	// only falls back to GlobalSecurity when Security is nil. A nil slice
+	// here would silently re-inherit the global requirement; this is the
+	// exact bug this test exists to catch.
+	if handle.Descriptor.Security == nil {
+		t.Fatal("ServeSpec's route has nil Descriptor.Security — it will INHERIT AddGlobalSecurity instead of opting out")
+	}
+	if len(handle.Descriptor.Security) != 0 {
+		t.Errorf("want Descriptor.Security to be empty (opt-out), got %d requirement(s)", len(handle.Descriptor.Security))
 	}
 }
 

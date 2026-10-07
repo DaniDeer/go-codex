@@ -115,6 +115,58 @@ func TestRouter_Use_DeclarationOrderIsDispatchOrder(t *testing.T) {
 	}
 }
 
+func TestRouter_Use_NestedMountAccumulatesOuterToInner(t *testing.T) {
+	outer := middleware.Middleware{Name: "outer"}
+	middle := middleware.Middleware{Name: "middle"}
+	inner := middleware.Middleware{Name: "inner"}
+	route := newRouterTestRoute("GET", "/x").Use(middleware.Middleware{Name: "leaf-own"})
+
+	innerRouter := rest.NewRouter("/inner").Use(inner).Route(route)
+	middleRouter := rest.NewRouter("/middle").Use(middle).Mount(innerRouter)
+	outerRouter := rest.NewRouter("/outer").Use(outer).Mount(middleRouter)
+
+	entries := outerRouter.Routes()
+	if len(entries) != 1 {
+		t.Fatalf("want 1 entry, got %d", len(entries))
+	}
+	wantNames := []string{"outer", "middle", "inner", "leaf-own"}
+	names := entries[0].MiddlewareNames
+	if len(names) != len(wantNames) {
+		t.Fatalf("want %v, got %v", wantNames, names)
+	}
+	for i, want := range wantNames {
+		if names[i] != want {
+			t.Errorf("want middleware order %v, got %v", wantNames, names)
+			break
+		}
+	}
+}
+
+func TestRouter_DuplicateMiddlewareName_ReturnsTypedError(t *testing.T) {
+	// Uses the codec-backed rest.Middleware[In,Out] family (via
+	// rest.NewMiddleware) rather than the bare legacy middleware.Middleware
+	// marker type: only codec-backed middleware values contribute a
+	// middlewareSpecContribution, which is what the existing dedup check
+	// (checkMiddlewareNameUniquenessAndAttachment) actually walks. Router's
+	// .Use()/the leaf's own .Use() accept either via the shared
+	// middleware.RouteMiddleware interface, but the dedup check is scoped
+	// to the codec-backed family — see docs/design/d-0003-codec-declared-middlewares.md.
+	dup := rest.NewMiddleware(middleware.Declaration[struct{}, struct{}]{Name: "dup"})
+	route := newRouterTestRoute("GET", "/x").Use(rest.NewMiddleware(middleware.Declaration[struct{}, struct{}]{Name: "dup"}))
+	rt := rest.NewRouter("/api").Use(dup).Route(route)
+
+	server := rest.NewServer(rest.Info{Title: "t", Version: "1"})
+	err := rt.Register(server)
+	var dupErr rest.DuplicateMiddlewareNameError
+	if !errors.As(err, &dupErr) {
+		t.Fatalf("want DuplicateMiddlewareNameError, got %v (%T)", err, err)
+	}
+	var prefixErr rest.RouterPrefixError
+	if errors.As(err, &prefixErr) {
+		t.Errorf("want DuplicateMiddlewareNameError to propagate unwrapped, got it wrapped in RouterPrefixError")
+	}
+}
+
 func TestRouter_Group_SharesPrefixAddsScopedMiddlewareOnly(t *testing.T) {
 	scoped := middleware.Middleware{Name: "scoped"}
 	rt := rest.NewRouter("/api").
@@ -273,6 +325,46 @@ func TestRouter_Register_IndistinguishableFromDirectRegister(t *testing.T) {
 	}
 	if directHandle.Descriptor.Path != routedHandle.Descriptor.Path {
 		t.Errorf("want same path, got %q vs %q", directHandle.Descriptor.Path, routedHandle.Descriptor.Path)
+	}
+
+	// Beyond spec (path) equality: verify the two handles actually DISPATCH
+	// identically — same decode/encode round trip for a success case, and
+	// the same decode failure for an invalid request body.
+	reqBytes := []byte(`{"name":"ada"}`)
+	directReq, err := directHandle.Decode(reqBytes)
+	if err != nil {
+		t.Fatalf("direct Decode: %v", err)
+	}
+	routedReq, err := routedHandle.Decode(reqBytes)
+	if err != nil {
+		t.Fatalf("routed Decode: %v", err)
+	}
+	if directReq != routedReq {
+		t.Errorf("want identical decode result, got %+v vs %+v", directReq, routedReq)
+	}
+
+	directResp, directErr := routerTestHandler(context.Background(), directReq)
+	routedResp, routedErr := routerTestHandler(context.Background(), routedReq)
+	if directErr != nil || routedErr != nil {
+		t.Fatalf("handler errors: direct=%v routed=%v", directErr, routedErr)
+	}
+	directOut, err := directHandle.Encode(directResp)
+	if err != nil {
+		t.Fatalf("direct Encode: %v", err)
+	}
+	routedOut, err := routedHandle.Encode(routedResp)
+	if err != nil {
+		t.Fatalf("routed Encode: %v", err)
+	}
+	if string(directOut) != string(routedOut) {
+		t.Errorf("want identical encode output, got %q vs %q", directOut, routedOut)
+	}
+
+	badBytes := []byte(`{"name":123}`)
+	_, directDecodeErr := directHandle.Decode(badBytes)
+	_, routedDecodeErr := routedHandle.Decode(badBytes)
+	if (directDecodeErr == nil) != (routedDecodeErr == nil) {
+		t.Errorf("want same error presence for invalid body, direct=%v routed=%v", directDecodeErr, routedDecodeErr)
 	}
 }
 
@@ -478,5 +570,88 @@ func TestRouter_Tags_RoutesEquivalentToWalk(t *testing.T) {
 	routes := rt.Routes()
 	if len(walked[0].Tags) != len(routes[0].Tags) || walked[0].Tags[0] != routes[0].Tags[0] {
 		t.Errorf("Walk and Routes disagree on Tags: %v vs %v", walked[0].Tags, routes[0].Tags)
+	}
+}
+
+// ── SSERoute composition ─────────────────────────────────────────────────
+//
+// [SSERoute] is [Router]'s SECOND [routable] implementer (alongside
+// [Route]) — these tests exercise the SAME Mount/Group/Tags/middleware
+// composition the Route-based tests above already cover extensively, to
+// confirm SSERoute's own withRouterPrefix/routeMethod/middlewareNames/
+// tags/registerAny implementation behaves identically, not just Route's.
+
+func newRouterTestSSERoute(path string) rest.SSERoute[routerTestReq, routerTestResp] {
+	return rest.NewSSERoute[routerTestReq, routerTestResp](path, routerTestReqCodec, routerTestRespCodec).
+		WithHandler(func(_ context.Context, _ routerTestReq, send func(routerTestResp) error) error {
+			return send(routerTestResp{Greeting: "hello"})
+		})
+}
+
+func TestRouter_Mount_ComposesSSERoute(t *testing.T) {
+	sseRoute := newRouterTestSSERoute("/stream")
+	rt := rest.NewRouter("/api/v1").
+		Use(middleware.Middleware{Name: "sse-mw"}).
+		Tags("sse-tag").
+		Route(sseRoute)
+
+	entries := rt.Routes()
+	if len(entries) != 1 {
+		t.Fatalf("want 1 entry, got %d", len(entries))
+	}
+	entry := entries[0]
+	if entry.Path != "/api/v1/stream" {
+		t.Errorf("want composed path %q, got %q", "/api/v1/stream", entry.Path)
+	}
+	// SSE routes are always GET — routeMethod() must report this
+	// regardless of Router involvement.
+	if entry.Method != "GET" {
+		t.Errorf("want method GET, got %q", entry.Method)
+	}
+	if len(entry.MiddlewareNames) != 1 || entry.MiddlewareNames[0] != "sse-mw" {
+		t.Errorf("want [sse-mw], got %v", entry.MiddlewareNames)
+	}
+	if len(entry.Tags) != 1 || entry.Tags[0] != "sse-tag" {
+		t.Errorf("want [sse-tag], got %v", entry.Tags)
+	}
+
+	// registerAny must actually delegate to SSERoute.Register — a Router-
+	// grouped SSE route must register onto a Server exactly like a
+	// directly-registered one would.
+	server := rest.NewServer(rest.Info{Title: "t", Version: "1"})
+	if err := rt.Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	sseEntries := server.SSEEntries()
+	if len(sseEntries) != 1 {
+		t.Fatalf("want 1 registered SSE route, got %d", len(sseEntries))
+	}
+	if sseEntries[0].Path() != "/api/v1/stream" {
+		t.Errorf("want registered SSE path %q, got %q", "/api/v1/stream", sseEntries[0].Path())
+	}
+}
+
+func TestRouter_Group_ComposesSSERouteAlongsideRoute(t *testing.T) {
+	// A Group mixing BOTH leaf kinds under one scoped middleware set —
+	// confirms the routable interface dispatches correctly per-leaf, not
+	// just for a Router holding only one kind.
+	rt := rest.NewRouter("/api").Group(func(sub rest.Router) rest.Router {
+		return sub.
+			Use(middleware.Middleware{Name: "shared-mw"}).
+			Route(newRouterTestRoute("GET", "/users")).
+			Route(newRouterTestSSERoute("/stream"))
+	})
+
+	entries := rt.Routes()
+	if len(entries) != 2 {
+		t.Fatalf("want 2 entries, got %d", len(entries))
+	}
+	for _, e := range entries {
+		if len(e.MiddlewareNames) != 1 || e.MiddlewareNames[0] != "shared-mw" {
+			t.Errorf("entry %q: want [shared-mw], got %v", e.Path, e.MiddlewareNames)
+		}
+	}
+	if entries[0].Path != "/api/users" || entries[1].Path != "/api/stream" {
+		t.Errorf("want [/api/users /api/stream] in declaration order, got [%q %q]", entries[0].Path, entries[1].Path)
 	}
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -25,7 +26,7 @@ func demoSpecEndpoint(chiAddr, nethttpAddr string) {
 	accepts := []string{"application/yaml", "application/json"}
 	for _, t := range targets {
 		for _, accept := range accepts {
-			req, err := http.NewRequest(http.MethodGet, "http://"+t.addr+"/openapi.yaml", nil)
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://"+t.addr+"/openapi.yaml", nil)
 			if err != nil {
 				fmt.Printf("  [%s %s] request build error: %v\n", t.label, accept, err)
 				continue

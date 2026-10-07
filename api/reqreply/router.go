@@ -40,7 +40,7 @@ type routable interface {
 	// discarding the returned *RouteHandle — a caller needing the handle
 	// back attaches [WithHandleCallback] to the leaf directly instead;
 	// Router itself never exposes one.
-	registerAny(b *Builder) error
+	registerAny(b *Server) error
 }
 
 // middlewareNameOf extracts a human-readable name from mw for
@@ -282,11 +282,11 @@ func (rt Router) Routes() []RouterEntry {
 // return (DuplicateRouteError, security coverage failures, etc.)
 // propagates COMPLETELY UNWRAPPED, exactly as it would from a direct,
 // Router-less call.
-func (rt Router) Register(b *Builder) error {
+func (rt Router) Register(b *Server) error {
 	return rt.register("", nil, nil, b)
 }
 
-func (rt Router) register(ancestorPrefix string, ancestorMws []middleware.RouteMiddleware, ancestorTags []string, b *Builder) error {
+func (rt Router) register(ancestorPrefix string, ancestorMws []middleware.RouteMiddleware, ancestorTags []string, b *Server) error {
 	prefix := joinRouterTopic(ancestorPrefix, rt.prefix)
 	mws := append(cloneMws(ancestorMws), rt.mws...)
 	tags := append(cloneTags(ancestorTags), rt.tags...)
@@ -509,7 +509,7 @@ func (r Route[Req, Resp]) tags() []string {
 
 // registerAny implements [routable] for [Route] — delegates to
 // [Route.Register], discarding the returned handle.
-func (r Route[Req, Resp]) registerAny(b *Builder) error {
+func (r Route[Req, Resp]) registerAny(b *Server) error {
 	_, err := r.Register(b)
 	return err
 }

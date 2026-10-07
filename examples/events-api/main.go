@@ -120,7 +120,7 @@ func main() {
 	demoObservabilityMiddleware(ctx, obs)
 	demoCapabilityMechanism(ctx)
 	demoSpecPrintingAsyncAPI()
-	demoServeSpecPublish(ctx)
+	demoServeSpecPublish(ctx, obs)
 	demoEventsRouterGroups()
 	demoSensorsStaticPrefixGroup()
 

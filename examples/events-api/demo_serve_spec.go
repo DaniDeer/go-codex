@@ -9,6 +9,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/examples/events-api/mqtt5broker"
+	"github.com/DaniDeer/go-codex/examples/events-api/observer"
 	"github.com/DaniDeer/go-codex/format"
 )
 
@@ -31,8 +32,13 @@ var specSubscribeFormats = []format.Format[[]byte]{format.Binary(codex.Bytes())}
 // TWICE, with two different topics — this demo SUBSCRIBES to both
 // topics first, then publishes, then prints what was actually received
 // on each, proving the spec reaches a real subscriber, not just "was
-// published without error".
-func demoServeSpecPublish(ctx context.Context) {
+// published without error". The YAML publish ALSO attaches
+// [events.WithSpecMiddleware] (the shared [events.Observability] general-
+// purpose decorator every other demo's `.PublishMW(nil, ...)` already
+// uses) — demonstrating the spec endpoint composes with the SAME
+// middleware capabilities as any other channel, mirroring
+// examples/rest-api's real `rest.WithSpecMiddleware(nil, timingFn)` wiring.
+func demoServeSpecPublish(ctx context.Context, obs *observer.DemoObserver) {
 	fmt.Println("--- Demo: ServeSpec — self-serving AsyncAPI spec (pub/sub, two formats, two topics) ---")
 
 	built, err := mqtt5broker.Build()
@@ -70,7 +76,8 @@ func demoServeSpecPublish(ctx context.Context) {
 	built.Router.WaitHandler("sensor/spec")
 	built.Router.WaitHandler("sensor/spec-json")
 
-	if err := built.Client.ServeSpec(ctx, "sensor/spec"); err != nil {
+	if err := built.Client.ServeSpec(ctx, "sensor/spec",
+		events.WithSpecMiddleware(nil, events.Observability[[]byte](obs))); err != nil {
 		fmt.Printf("  [error] ServeSpec (yaml): %v\n", err)
 		return
 	}

@@ -120,7 +120,7 @@ func (b *Server) ServeSpec(topic string, opts ...SpecOpt) (*RouteHandle[SpecReq,
 	specFormat := format.Binary(codex.Bytes())
 
 	var once sync.Once
-	var cached asyncapi.Document
+	var cachedYAML, cachedJSON []byte
 	var cacheErr error
 
 	r := NewRoute[SpecReq, []byte](topic, specReqCodec, codex.Bytes(),
@@ -138,14 +138,36 @@ func (b *Server) ServeSpec(topic string, opts ...SpecOpt) (*RouteHandle[SpecReq,
 			Security: []route.SecurityRequirement{},
 		},
 	).WithHandler(func(_ context.Context, req SpecReq) ([]byte, error) {
-		once.Do(func() { cached, cacheErr = b.AsyncAPISpec() })
+		// Pre-marshal BOTH formats once, inside the SAME once.Do, rather
+		// than caching the asyncapi.Document value and re-marshaling it
+		// per request: Document.MarshalYAML/MarshalJSON read channels/
+		// schemas maps that ALIAS b's own internal, persistent
+		// docBuilder (asyncapi.DocumentBuilder.Build() assigns its maps
+		// by reference, never copies them) — a route registered on b
+		// AFTER this cache is filled would otherwise silently leak into
+		// a "cached" response, contradicting this method's own "cached
+		// thereafter" contract. Marshaling immediately, once, freezes
+		// the OUTPUT bytes rather than relying on the Document staying
+		// unmutated.
+		once.Do(func() {
+			var doc asyncapi.Document
+			doc, cacheErr = b.AsyncAPISpec()
+			if cacheErr != nil {
+				return
+			}
+			cachedYAML, cacheErr = doc.MarshalYAML()
+			if cacheErr != nil {
+				return
+			}
+			cachedJSON, cacheErr = doc.MarshalJSON()
+		})
 		if cacheErr != nil {
 			return nil, cacheErr
 		}
 		if req.Format == "json" {
-			return cached.MarshalJSON()
+			return cachedJSON, nil
 		}
-		return cached.MarshalYAML()
+		return cachedYAML, nil
 	})
 	for _, m := range so.middlewares {
 		r = r.HandleMW(m.mw, m.fn)

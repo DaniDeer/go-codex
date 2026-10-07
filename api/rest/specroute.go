@@ -28,6 +28,24 @@ func (e SpecPathRequiredError) LogValue() slog.Value {
 	return slog.GroupValue(slog.String("op", "ServeSpec"))
 }
 
+// SpecDocumentNotDecodableError is returned by the [format.Format] values
+// [Server.ServeSpec] registers when something attempts to DECODE a spec
+// document from bytes (e.g. as a request body) — the spec endpoint is
+// serve-only, there is no supported reverse direction.
+type SpecDocumentNotDecodableError struct {
+	// Format is the wire format that was attempted ("yaml" or "json").
+	Format string
+}
+
+func (e SpecDocumentNotDecodableError) Error() string {
+	return fmt.Sprintf("rest: spec document is not decodable from %s", e.Format)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e SpecDocumentNotDecodableError) LogValue() slog.Value {
+	return slog.GroupValue(slog.String("format", e.Format))
+}
+
 // SpecOpt configures [Server.ServeSpec].
 type SpecOpt interface{ applySpecOpt(*specOptions) }
 
@@ -114,14 +132,14 @@ func (b *Server) ServeSpec(path string, opts ...SpecOpt) error {
 	yamlFormat := format.NewTyped(docCodec,
 		func(d openapi.Document) ([]byte, error) { return d.MarshalYAML() },
 		func([]byte) (openapi.Document, error) {
-			return openapi.Document{}, fmt.Errorf("rest: spec document is not decodable from YAML")
+			return openapi.Document{}, SpecDocumentNotDecodableError{Format: "yaml"}
 		},
 		"application/yaml",
 	)
 	jsonFormat := format.NewTyped(docCodec,
 		func(d openapi.Document) ([]byte, error) { return d.MarshalJSON() },
 		func([]byte) (openapi.Document, error) {
-			return openapi.Document{}, fmt.Errorf("rest: spec document is not decodable from JSON")
+			return openapi.Document{}, SpecDocumentNotDecodableError{Format: "json"}
 		},
 		"application/json",
 	)

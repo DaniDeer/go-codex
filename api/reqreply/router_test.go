@@ -118,6 +118,56 @@ func TestRouter_Use_DeclarationOrderIsDispatchOrder(t *testing.T) {
 	}
 }
 
+func TestRouter_Use_NestedMountAccumulatesOuterToInner(t *testing.T) {
+	outer := middleware.Middleware{Name: "outer"}
+	middleMw := middleware.Middleware{Name: "middle"}
+	inner := middleware.Middleware{Name: "inner"}
+	route := newRouterTestRoute("x").Use(middleware.Middleware{Name: "leaf-own"})
+
+	innerRouter := reqreply.NewRouter("inner").Use(inner).Route(route)
+	middleRouter := reqreply.NewRouter("middle").Use(middleMw).Mount(innerRouter)
+	outerRouter := reqreply.NewRouter("outer").Use(outer).Mount(middleRouter)
+
+	entries := outerRouter.Routes()
+	if len(entries) != 1 {
+		t.Fatalf("want 1 entry, got %d", len(entries))
+	}
+	wantNames := []string{"outer", "middle", "inner", "leaf-own"}
+	names := entries[0].MiddlewareNames
+	if len(names) != len(wantNames) {
+		t.Fatalf("want %v, got %v", wantNames, names)
+	}
+	for i, want := range wantNames {
+		if names[i] != want {
+			t.Errorf("want middleware order %v, got %v", wantNames, names)
+			break
+		}
+	}
+}
+
+func TestRouter_DuplicateMiddlewareName_ReturnsTypedError(t *testing.T) {
+	// Uses the codec-backed reqreply.Middleware[In,Out] family (via
+	// reqreply.NewMiddleware) rather than the bare legacy
+	// middleware.Middleware marker type — mirrors api/rest's identical
+	// scoping (checkMiddlewareNameUniquenessAndAttachment walks
+	// middlewareSpecContributions, populated unconditionally regardless
+	// of whether a receive/send fn is attached).
+	dup := reqreply.NewMiddleware(middleware.Declaration[struct{}, struct{}]{Name: "dup"})
+	route := newRouterTestRoute("x").Use(reqreply.NewMiddleware(middleware.Declaration[struct{}, struct{}]{Name: "dup"}))
+	rt := reqreply.NewRouter("compute").Use(dup).Route(route)
+
+	server := reqreply.NewServer(reqreply.Info{Title: "t", Version: "1"})
+	err := rt.Register(server)
+	var dupErr reqreply.DuplicateMiddlewareNameError
+	if !errors.As(err, &dupErr) {
+		t.Fatalf("want DuplicateMiddlewareNameError, got %v (%T)", err, err)
+	}
+	var prefixErr reqreply.RouterPrefixError
+	if errors.As(err, &prefixErr) {
+		t.Errorf("want DuplicateMiddlewareNameError to propagate unwrapped, got it wrapped in RouterPrefixError")
+	}
+}
+
 func TestRouter_Group_SharesPrefixAddsScopedMiddlewareOnly(t *testing.T) {
 	scoped := middleware.Middleware{Name: "scoped"}
 	rt := reqreply.NewRouter("compute").
@@ -273,6 +323,46 @@ func TestRouter_Register_IndistinguishableFromDirectRegister(t *testing.T) {
 	}
 	if directHandle.Topic != routedHandle.Topic {
 		t.Errorf("want same topic, got %q vs %q", directHandle.Topic, routedHandle.Topic)
+	}
+
+	// Beyond spec (topic) equality: verify the two handles actually
+	// DISPATCH identically — same decode/encode round trip for a success
+	// case, and the same decode failure for an invalid payload.
+	reqBytes := []byte(`{"x":21}`)
+	directReq, err := directHandle.Decode(reqBytes)
+	if err != nil {
+		t.Fatalf("direct Decode: %v", err)
+	}
+	routedReq, err := routedHandle.Decode(reqBytes)
+	if err != nil {
+		t.Fatalf("routed Decode: %v", err)
+	}
+	if directReq != routedReq {
+		t.Errorf("want identical decode result, got %+v vs %+v", directReq, routedReq)
+	}
+
+	directResp, directErr := routerTestHandler(context.Background(), directReq)
+	routedResp, routedErr := routerTestHandler(context.Background(), routedReq)
+	if directErr != nil || routedErr != nil {
+		t.Fatalf("handler errors: direct=%v routed=%v", directErr, routedErr)
+	}
+	directOut, err := directHandle.Encode(directResp)
+	if err != nil {
+		t.Fatalf("direct Encode: %v", err)
+	}
+	routedOut, err := routedHandle.Encode(routedResp)
+	if err != nil {
+		t.Fatalf("routed Encode: %v", err)
+	}
+	if string(directOut) != string(routedOut) {
+		t.Errorf("want identical encode output, got %q vs %q", directOut, routedOut)
+	}
+
+	badBytes := []byte(`{"x":"not-a-number"}`)
+	_, directDecodeErr := directHandle.Decode(badBytes)
+	_, routedDecodeErr := routedHandle.Decode(badBytes)
+	if (directDecodeErr == nil) != (routedDecodeErr == nil) {
+		t.Errorf("want same error presence for invalid payload, direct=%v routed=%v", directDecodeErr, routedDecodeErr)
 	}
 }
 
