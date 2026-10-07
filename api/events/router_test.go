@@ -363,6 +363,76 @@ func TestWithHandleCallback_FiresOnBothRoles(t *testing.T) {
 	}
 }
 
+func TestHandle_WithRouter_MatchesRegisteredTopic_Subscribe(t *testing.T) {
+	sub := newRouterTestSubscriber("users")
+	rt := events.NewRouter("api/v1")
+
+	handle, err := sub.Handle(nil, events.WithRouter(rt))
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	const want = "api/v1/users"
+	if handle.Topic != want {
+		t.Errorf("want topic %q, got %q", want, handle.Topic)
+	}
+
+	// Confirm this EXACTLY matches what rt.Route(sub)+rt.Register(client)
+	// would have composed, server-side.
+	client := events.NewClient(events.WithInfo(events.Info{Title: "t", Version: "1"}))
+	if err := rt.Route(newRouterTestSubscriber("users")).Register(client); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	entries := rt.Route(newRouterTestSubscriber("users")).Routes()
+	if entries[len(entries)-1].Path != want {
+		t.Errorf("want registered path %q, got %q", want, entries[len(entries)-1].Path)
+	}
+}
+
+func TestHandle_WithRouter_MatchesRegisteredTopic_Publish(t *testing.T) {
+	pub := newRouterTestPublisher("alerts")
+	rt := events.NewRouter("sensor")
+
+	handle, err := pub.Handle(nil, events.WithRouter(rt))
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	const want = "sensor/alerts"
+	if handle.Topic != want {
+		t.Errorf("want topic %q, got %q", want, handle.Topic)
+	}
+}
+
+func TestHandle_WithRouter_DoesNotMutateOriginal(t *testing.T) {
+	// [Subscriber]/[Publisher] are immutable value types; WithRouter must
+	// never mutate the original (unrouted) value — mirrors every other
+	// decoration method's (.Use, .SubscribeMW, ...) existing guarantee.
+	sub := newRouterTestSubscriber("users")
+	rt := events.NewRouter("api/v1")
+
+	if _, err := sub.Handle(nil, events.WithRouter(rt)); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	plain, err := sub.Handle(nil)
+	if err != nil {
+		t.Fatalf("Handle (original): %v", err)
+	}
+	if plain.Topic != "users" {
+		t.Errorf("original Subscriber must remain untouched — want topic %q, got %q", "users", plain.Topic)
+	}
+}
+
+func TestHandle_ZeroArgs_StillCompilesAndWorks(t *testing.T) {
+	sub := newRouterTestSubscriber("plain")
+	handle, err := sub.Handle(nil)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if handle.Topic != "plain" {
+		t.Errorf("want topic %q, got %q", "plain", handle.Topic)
+	}
+}
+
 func TestWithSubscribeHandleCallback_FiresOnlyForSubscribe(t *testing.T) {
 	fired := false
 	sub := events.NewChannel[routerTestPayload]("a", routerTestPayloadCodec,
@@ -408,5 +478,56 @@ func TestWithPublishHandleCallback_FiresOnlyForPublish(t *testing.T) {
 	}
 	if fired {
 		t.Error("WithPublishHandleCallback must NOT fire for subscribe role")
+	}
+}
+
+func TestRouter_Tags_AccumulateNotOverwrite(t *testing.T) {
+	rt := events.NewRouter("api").Tags("a").Tags("b").Route(newRouterTestSubscriber("x"))
+	entries := rt.Routes()
+	tags := entries[0].Tags
+	if len(tags) != 2 || tags[0] != "a" || tags[1] != "b" {
+		t.Errorf("want both tags accumulated, got %v", tags)
+	}
+}
+
+func TestRouter_Tags_SurviveLeafsOwnChannelMeta(t *testing.T) {
+	sub := events.NewChannel[routerTestPayload]("x", routerTestPayloadCodec,
+		events.ChannelMeta{Tags: []string{"own-tag"}},
+	).WithSubscribe(events.Subscribe{}).WithHandler(routerTestHandler)
+	rt := events.NewRouter("api").Tags("router-tag").Route(sub)
+
+	entries := rt.Routes()
+	tags := entries[0].Tags
+	if len(tags) != 2 || tags[0] != "router-tag" || tags[1] != "own-tag" {
+		t.Errorf("want [router-tag own-tag] (Router's own first, then the leaf's), got %v", tags)
+	}
+
+	client := events.NewClient()
+	if err := rt.Register(client); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+}
+
+func TestRouter_Tags_AccumulateAcrossMount(t *testing.T) {
+	inner := events.NewRouter("users").Tags("users").Route(newRouterTestSubscriber("created"))
+	outer := events.NewRouter("api").Tags("api").Mount(inner)
+
+	entries := outer.Routes()
+	tags := entries[0].Tags
+	if len(tags) != 2 || tags[0] != "api" || tags[1] != "users" {
+		t.Errorf("want [api users] (outermost ancestor first), got %v", tags)
+	}
+}
+
+func TestRouter_Tags_RoutesEquivalentToWalk(t *testing.T) {
+	rt := events.NewRouter("api").Tags("t1").Route(newRouterTestSubscriber("a"))
+	var walked []events.RouterEntry
+	_ = rt.Walk(func(e events.RouterEntry) error {
+		walked = append(walked, e)
+		return nil
+	})
+	routes := rt.Routes()
+	if len(walked[0].Tags) != len(routes[0].Tags) || walked[0].Tags[0] != routes[0].Tags[0] {
+		t.Errorf("Walk and Routes disagree on Tags: %v vs %v", walked[0].Tags, routes[0].Tags)
 	}
 }

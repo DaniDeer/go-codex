@@ -52,6 +52,43 @@ func TestAttach_ClientPublish_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestAttach_ClientPublish_AcceptsPreBuiltHandle_WithRouter confirms
+// recoverHandle's dual-mode acceptance (api/events.WithRouter's own
+// closed gap, docs/design/d-0008-declarative-router-groups.md): a
+// caller who composed a Router-Mounted topic THEMSELVES, via
+// pub.Handle(nil, events.WithRouter(rt)), can pass the resulting
+// *events.ChannelHandle[T] straight to Client.Publish.
+func TestAttach_ClientPublish_AcceptsPreBuiltHandle_WithRouter(t *testing.T) {
+	sock := &mockSocket{}
+	client := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	if err := client.Attach(NewTransport(TransportOptions{Socket: sock})); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	pub := events.NewChannel[sensorReading]("readings", sensorCodec).WithPublish(events.Publish{})
+	rt := events.NewRouter("sensors")
+	handle, err := pub.Handle(nil, events.WithRouter(rt))
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
+	if err := client.Publish(context.Background(), handle, reading); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	sock.mu.Lock()
+	defer sock.mu.Unlock()
+	if len(sock.sentFrames) != 1 {
+		t.Fatalf("want 1 sent message, got %d", len(sock.sentFrames))
+	}
+	gotTopic := string(sock.sentFrames[0][0])
+	const wantTopic = "sensors/readings"
+	if gotTopic != wantTopic {
+		t.Errorf("topic = %q, want %q (WithRouter composition not honored)", gotTopic, wantTopic)
+	}
+}
+
 // TestAttach_ClientPublish_HonorsDeclaredCapabilities confirms Phase 4c
 // (docs/design/d-0006-protocol-native-capabilities.md): a Capabilities
 // value declared via [events.Publisher.WithOptions] is resolved and

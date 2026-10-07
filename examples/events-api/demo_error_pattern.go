@@ -7,6 +7,7 @@ import (
 
 	mqtt5adapter "github.com/DaniDeer/go-codex/adapters/mqtt5"
 	"github.com/DaniDeer/go-codex/api/events"
+	"github.com/DaniDeer/go-codex/examples/events-api/auth"
 	"github.com/DaniDeer/go-codex/examples/events-api/mqtt5broker"
 	"github.com/DaniDeer/go-codex/examples/events-api/routes"
 	"github.com/DaniDeer/go-codex/format"
@@ -554,17 +555,17 @@ func demoErrorChannelMiddlewareCombo(ctx context.Context) {
 	}()
 	router.WaitHandler("sensors/{sensorID}/secured-errorchannel-demo/errors")
 
-	alwaysRejectFn := func(_ context.Context, _ *routes.SensorReading, _ routes.APIKeyAuthIn) (routes.APIKeyAuthOut, error) {
+	alwaysRejectFn := func(_ context.Context, _ *routes.SensorReading, _ auth.APIKeyAuthIn) (auth.APIKeyAuthOut, error) {
 		// Zero GrantedScopes, nil error — "authenticates" but grants
 		// nothing, so the unified CheckScopes call below rejects (see
 		// this demo's own doc comment above for why this must be a
 		// zero-grant SUCCESS rather than a returned error).
-		return routes.APIKeyAuthOut{}, nil
+		return auth.APIKeyAuthOut{}, nil
 	}
-	// A demo-local BOUND middleware value (routes.NewAPIKeyAuthMW) —
+	// A demo-local BOUND middleware value (auth.NewAPIKeyAuthMW) —
 	// independent of any OTHER call site's own construction, so other
 	// demos/brokers are unaffected.
-	securedSub := routes.SecuredReadingsSub.SubscribeBoundMW(routes.NewAPIKeyAuthMW(alwaysRejectFn)).
+	securedSub := routes.SecuredReadingsSub.SubscribeBoundMW(auth.NewAPIKeyAuthMW(alwaysRejectFn)).
 		WithOptions(mqtt5adapter.SubscribeOptions{Capabilities: []mqtt5adapter.Capability{mqtt5adapter.QoSAtLeastOnce}})
 	// Converted to Client.Attach+Client.Subscribe (docs/design/
 	// d-0006-protocol-native-capabilities.md's Phase 4e closed the gap

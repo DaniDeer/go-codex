@@ -21,15 +21,20 @@ import (
 func demoConcurrentMultiRouteDispatch(ctx context.Context, zeromqClient *reqreply.Client) {
 	fmt.Println("\n── Demo 4: concurrent multi-route dispatch (zeromq, blocking transport) ──")
 
+	// All 3 routes are Mounted under zeromqserver.Build's shared
+	// "compute" Router (docs/design/d-0008-declarative-router-groups.md)
+	// — compose each RELATIVE topic ("add"/"double"/"triple") back to
+	// its full "compute/..." topic via ClientHandle(WithRouter(...)).
+	computeRouter := reqreply.NewRouter("compute")
 	type call struct {
-		name  string
-		route reqreply.Route[routes.ComputeReq, routes.ComputeResp]
-		req   routes.ComputeReq
+		name   string
+		handle *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]
+		req    routes.ComputeReq
 	}
 	calls := []call{
-		{"compute/add", routes.ComputeRoute, routes.ComputeReq{X: 1, Y: 2}},
-		{"compute/double", routes.DoubleRoute, routes.ComputeReq{X: 3, Y: 4}},
-		{"compute/triple", routes.TripleRoute, routes.ComputeReq{X: 5, Y: 6}},
+		{"compute/add", routes.ComputeRoute.ClientHandle(reqreply.WithRouter(computeRouter)), routes.ComputeReq{X: 1, Y: 2}},
+		{"compute/double", routes.DoubleRoute.ClientHandle(reqreply.WithRouter(computeRouter)), routes.ComputeReq{X: 3, Y: 4}},
+		{"compute/triple", routes.TripleRoute.ClientHandle(reqreply.WithRouter(computeRouter)), routes.ComputeReq{X: 5, Y: 6}},
 	}
 
 	var wg sync.WaitGroup
@@ -38,7 +43,7 @@ func demoConcurrentMultiRouteDispatch(ctx context.Context, zeromqClient *reqrepl
 		wg.Add(1)
 		go func(i int, c call) {
 			defer wg.Done()
-			respAny, err := zeromqClient.Call(ctx, c.route, c.req)
+			respAny, err := zeromqClient.Call(ctx, c.handle, c.req)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "call error (%s): %v\n", c.name, err)
 				os.Exit(1)

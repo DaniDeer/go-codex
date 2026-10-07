@@ -2,7 +2,7 @@
 // mock ZeroMQ PUB/SUB socket pair via zeromq.NewTransport+Client.Attach — the events analogue
 // of examples/reqreply-api's zeromqserver package. Demonstrates: ZeroMQ
 // PUB/SUB full roundtrip and channel-BOUND security
-// (routes.NewAPIKeyAuthMW) via handlers.ZeromqSecurityImpl.
+// (auth.NewAPIKeyAuthMW) via auth.ZeromqSecurityImpl.
 package zeromqbroker
 
 import (
@@ -12,6 +12,7 @@ import (
 
 	zeromqadapter "github.com/DaniDeer/go-codex/adapters/zeromq"
 	"github.com/DaniDeer/go-codex/api/events"
+	"github.com/DaniDeer/go-codex/examples/events-api/auth"
 	"github.com/DaniDeer/go-codex/examples/events-api/handlers"
 	"github.com/DaniDeer/go-codex/examples/events-api/routes"
 )
@@ -28,7 +29,7 @@ type Built struct {
 }
 
 // Build attaches routes.ZeromqReadingsPub/Sub onto a fresh PipeSocket
-// pair, and routes.SensorDataSub (secured, via handlers.ZeromqSecurityImpl)
+// pair, and routes.SensorDataSub (secured, via auth.ZeromqSecurityImpl)
 // onto the subscriber side.
 func Build() (*Built, error) {
 	pubSock, subSock := NewPipe()
@@ -41,7 +42,14 @@ func Build() (*Built, error) {
 	if err := pub.Attach(zeromqadapter.NewTransport(zeromqadapter.TransportOptions{Socket: pubSock})); err != nil {
 		return nil, err
 	}
-	if _, err := routes.ZeromqReadingsPub.Handle(pub); err != nil {
+	// routes.ZeromqReadingsChannel declares a RELATIVE topic
+	// ("zeromq/readings") — Mounted under a REAL Mount
+	// (events.NewRouter("sensor")), the SAME Router prefix
+	// routes.SensorDataSub Mounts under below, composing back to the
+	// SAME, byte-identical absolute topic ("sensor/zeromq/readings")
+	// this broker has always used.
+	sensorRouter := events.NewRouter("sensor")
+	if _, err := routes.ZeromqReadingsPub.Handle(pub, events.WithRouter(sensorRouter)); err != nil {
 		return nil, err
 	}
 
@@ -54,14 +62,19 @@ func Build() (*Built, error) {
 		return nil, err
 	}
 	roundtripSub := routes.ZeromqReadingsSub.WithHandler(handlers.PrintReading("zeromq"))
-	if err := roundtripSub.Register(sub); err != nil {
-		return nil, err
-	}
 
+	// routes.SensorDataSub declares a RELATIVE topic ("data") — Mounted
+	// below under a REAL docs/design/d-0008-declarative-router-groups.md
+	// Mount (events.NewRouter("sensor")), composing back to the SAME,
+	// byte-identical absolute topic ("sensor/data") this broker has
+	// always used (mirrors mqtt5broker/broker.go's own identical Mount).
+	// roundtripSub (routes.ZeromqReadingsSub) shares the SAME "sensor"
+	// Mount, Grouped alongside — both leaves registered via ONE Router
+	// value on this subscriber client.
 	securedSub := routes.SensorDataSub.
-		SubscribeBoundMW(routes.NewAPIKeyAuthMW(handlers.ZeromqSecurityImpl)).
+		SubscribeBoundMW(auth.NewAPIKeyAuthMW(auth.ZeromqSecurityImpl)).
 		WithHandler(handlers.PrintReading("zeromq-secured"))
-	if err := securedSub.Register(sub); err != nil {
+	if err := sensorRouter.Route(roundtripSub).Route(securedSub).Register(sub); err != nil {
 		return nil, err
 	}
 

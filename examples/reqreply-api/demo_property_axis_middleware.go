@@ -20,8 +20,8 @@ import (
 // Phase 1b's flat mqtt5adapter.FromUserPropertyParam bridge shown in
 // Demo 6.
 //
-// The DECLARATION (routes.NewTenantPropertyMw) and IMPLEMENTATION
-// (handlers.ProcessTenant) are BOTH adapter-agnostic — see
+// The DECLARATION (propertyaxis.NewTenantPropertyMw) and IMPLEMENTATION
+// (propertyaxis.ProcessTenant) are BOTH adapter-agnostic — see
 // routes/middleware.go and handlers/middleware.go. THIS demo shows the
 // SAME declaration+implementation pair, attached via .HandleBoundMW
 // to routes.PropertyAxisComputeRoute, registered against TWO completely
@@ -87,10 +87,10 @@ func demoPropertyAxisMQTT5(ctx context.Context, built *mqtt5server.Built) {
 // carry only [status, payload], no side channel of any kind). There is
 // no way for a zeromq caller to supply "X-Tenant-Id" at all.
 //
-// Because routes.NewTenantPropertyMw declares that property OPTIONAL (not
+// Because propertyaxis.NewTenantPropertyMw declares that property OPTIONAL (not
 // required — see routes/middleware.go's own reasoning), this call
 // SUCCEEDS anyway: TenantIn.TenantID is simply left at its zero value,
-// and handlers.ProcessTenant — the EXACT SAME implementation mqtt5 used
+// and propertyaxis.ProcessTenant — the EXACT SAME implementation mqtt5 used
 // above — runs unmodified, producing TenantAck{Ack: "processed-for-"}.
 // This is the honest, correct behavior for a transport that structurally
 // cannot carry the property: graceful degradation, not a wire mechanism

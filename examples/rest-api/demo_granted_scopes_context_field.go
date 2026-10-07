@@ -5,8 +5,8 @@ import (
 	"fmt"
 
 	"github.com/DaniDeer/go-codex/api/rest"
+	"github.com/DaniDeer/go-codex/examples/rest-api/auth"
 	restapiclient "github.com/DaniDeer/go-codex/examples/rest-api/client"
-	"github.com/DaniDeer/go-codex/examples/rest-api/routes"
 )
 
 // demoGrantedScopesContextField exercises POST /compute-gs — the
@@ -22,16 +22,16 @@ func demoGrantedScopesContextField(chiClient *rest.Client) {
 	ctx := context.Background()
 
 	fmt.Println("=== POST /compute-gs — correct scope granted (compute:write) ===")
-	resp, err := chiClient.Call(ctx, restapiclient.ComputeGSRouteWithWriteScope, routes.ComputeGSReq{X: 3, Y: 4})
+	resp, err := chiClient.Call(ctx, restapiclient.ComputeGSRouteWithWriteScope, auth.ComputeGSReq{X: 3, Y: 4})
 	if err != nil {
 		fmt.Printf("  error: %v\n", err)
 	} else {
-		fmt.Printf("  result: %+v\n", resp.(routes.ComputeGSResp))
+		fmt.Printf("  result: %+v\n", resp.(auth.ComputeGSResp))
 	}
 	fmt.Println()
 
 	fmt.Println("=== POST /compute-gs — known credential, WRONG scope granted (profile, not compute:write) ===")
-	_, err = chiClient.Call(ctx, restapiclient.ComputeGSRouteWithWrongScope, routes.ComputeGSReq{X: 3, Y: 4})
+	_, err = chiClient.Call(ctx, restapiclient.ComputeGSRouteWithWrongScope, auth.ComputeGSReq{X: 3, Y: 4})
 	printStatusErr(err)
 	fmt.Println()
 }

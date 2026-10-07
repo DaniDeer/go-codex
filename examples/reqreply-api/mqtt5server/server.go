@@ -10,7 +10,9 @@ import (
 	mqtt5adapter "github.com/DaniDeer/go-codex/adapters/mqtt5"
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/examples/reqreply-api/auth"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/handlers"
+	"github.com/DaniDeer/go-codex/examples/reqreply-api/propertyaxis"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/routes"
 	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
@@ -33,6 +35,12 @@ type Built struct {
 	HeaderParamHandle  *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]
 	PropertyAxisHandle *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]
 	CapabilityHandle   *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]
+
+	// SpecHandle is the handle [reqreply.Server.ServeSpec] returns —
+	// reused directly by demo_spec_printing_asyncapi.go's Call
+	// demonstration (reqreply's handle-reuse convention; see
+	// [reqreply.Server.ServeSpec]'s own doc comment).
+	SpecHandle *reqreply.RouteHandle[reqreply.SpecReq, []byte]
 }
 
 // LastReplyUserProperties returns the MQTT5 User Properties on the most
@@ -86,95 +94,148 @@ func Build() (*Built, error) {
 	server.AddServer("mqtt5", reqreply.ServerEntry{URL: "mqtt://broker:1883", Protocol: "mqtt5"})
 	server.AddGlobalSecurity(route.Require("bearerAuth"))
 
-	if _, err := routes.ComputeRoute.
+	// EVERY route below shares the literal "compute/" topic prefix —
+	// grouped under ONE REAL docs/design/d-0008-declarative-router-groups.md
+	// Mount (`reqreply.NewRouter("compute")`), composing each leaf's own
+	// RELATIVE topic ("add", "secured-add", ...) back to the SAME,
+	// byte-identical absolute topic ("compute/add", "compute/secured-add",
+	// ...) this server has always registered — a genuine, not just
+	// Group-style, prefix restructuring (unlike the Phase B/C example
+	// integrations, which deliberately stayed Group-only to avoid any
+	// topic change). zeromqserver.Build mounts a SEPARATE but
+	// consistent "compute" Router over its OWN subset of these same
+	// routes — see that file's own doc comment.
+	//
+	// SecuredComputeRoute/GlobalOnlyComputeRoute/StackedDemoRoute
+	// declare+implement security via .Use(mw.WithReceive(fn)) (reusable
+	// class, Phase C of docs/design/d-0003-codec-declared-middlewares.md's
+	// Addendum 7) — REPLACES the OLD imperative ServeOptions.SecurityFunc
+	// mechanism entirely (removed, breaking change). A paired
+	// implementation is now REQUIRED for every route with a non-empty
+	// effective security requirement — mqtt5.NewServerTransport's
+	// CheckCoverage enforces this at Serve time, closing a latent gap the
+	// old SecurityFunc-optional design silently allowed (a route could
+	// declare a security scheme with NO enforcing implementation attached
+	// anywhere and nothing would ever catch it). The general-purpose
+	// observer HandleMW(nil, ...) (used elsewhere in this file) attaches
+	// ALONGSIDE a .Use()-attached security Fn freely — see
+	// demo_observer_middleware.go for a dedicated demonstration of the
+	// two composing on one route.
+	//
+	// All 3 of those routes used to repeat `.Use(auth.BearerAuthMw.
+	// WithReceive(auth.VerifyBearer))` separately — shared ONCE at the
+	// Router level instead, via .Use(...) + .Tags("compute").
+	// securedHandle/globalHandle/headerParamHandle/propertyAxisHandle/
+	// capabilityHandle are recovered via WithOpt(WithHandleCallback(...))
+	// — the Router-agnostic way to get a leaf's typed handle back when
+	// grouped — since all are consumed later in this same function
+	// (ComputeRoute's/StackedDemoRoute's handles stay discarded, as
+	// before). StackedDemoRoute ALSO attaches a bound-class middleware
+	// (HandleBoundMW) — untouched by Router, which only ever composes
+	// reusable-class middleware.
+	var securedHandle, globalHandle, headerParamHandle, propertyAxisHandle, capabilityHandle *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]
+
+	computeRoute := routes.ComputeRoute.WithHandler(handlers.Add)
+
+	securedRoute := routes.SecuredComputeRoute.
 		WithHandler(handlers.Add).
-		Register(server); err != nil {
-		return nil, err
-	}
-	// SecuredComputeRoute/GlobalOnlyComputeRoute now declare+implement
-	// security via .Use(mw.WithReceive(fn)) (reusable class, Phase C of
-	// docs/design/d-0003-codec-declared-middlewares.md's Addendum 7) — REPLACES the OLD
-	// imperative ServeOptions.SecurityFunc mechanism entirely (removed,
-	// breaking change). A paired implementation is now REQUIRED for
-	// every route with a non-empty effective security requirement —
-	// mqtt5.NewServerTransport's CheckCoverage enforces this at Serve
-	// time, closing a latent gap the old SecurityFunc-optional design
-	// silently allowed (a route could declare a security scheme with NO
-	// enforcing implementation attached anywhere and nothing would ever
-	// catch it). The general-purpose observer HandleMW(nil, ...) (used
-	// elsewhere in this file) attaches ALONGSIDE a .Use()-attached
-	// security Fn freely — see demo_observer_middleware.go for a
-	// dedicated demonstration of the two composing on one route.
-	securedHandle, err := routes.SecuredComputeRoute.
-		Use(routes.BearerAuthMw.WithReceive(handlers.VerifyBearer)).
+		WithOpt(reqreply.WithHandleCallback(func(h *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]) {
+			securedHandle = h
+		}))
+	globalRoute := routes.GlobalOnlyComputeRoute.
 		WithHandler(handlers.Add).
-		Register(server)
-	if err != nil {
-		return nil, err
-	}
-	globalHandle, err := routes.GlobalOnlyComputeRoute.
-		Use(routes.BearerAuthMw.WithReceive(handlers.VerifyBearer)).
-		WithHandler(handlers.Add).
-		Register(server)
-	if err != nil {
-		return nil, err
-	}
-	// StackedDemoRoute attaches BOTH the reusable class ("bearerAuth",
-	// property-decoded) AND the bound class ("oauth2Compute", reused
-	// UNCHANGED from OAuthComputeRoute's own zeromq attachment) on ONE
-	// route — different scheme names, so no DuplicateMiddlewareNameError
-	// (docs/design/d-0003-codec-declared-middlewares.md's Addendum 7's Final Phase demo).
-	if _, err := routes.StackedDemoRoute.
-		Use(routes.BearerAuthMw.WithReceive(handlers.VerifyBearer)).
-		HandleBoundMW(routes.NewOAuthMwReqreply(handlers.VerifyOAuthComputeZeroMQ)).
-		WithHandler(handlers.AddOAuth).
-		Register(server); err != nil {
-		return nil, err
-	}
+		WithOpt(reqreply.WithHandleCallback(func(h *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]) {
+			globalHandle = h
+		}))
+	stackedRoute := routes.StackedDemoRoute.
+		HandleBoundMW(auth.NewOAuthMwReqreply(auth.VerifyOAuthComputeZeroMQ)).
+		WithHandler(handlers.AddOAuth)
+
 	// HeaderParamComputeRoute demonstrates Phase 1b — NO .HandleMW()
 	// pairing needed (unlike security schemes): RequestHeaderParams/
 	// ResponseHeaderParams are validated automatically by
-	// mqtt5adapter.NewServerTransport/NewClientTransport's dispatch, not gated behind
-	// [reqreply.CheckCoverage] (that check is security-scheme-specific).
-	headerParamHandle, err := routes.HeaderParamComputeRoute.
+	// mqtt5adapter.NewServerTransport/NewClientTransport's dispatch, not
+	// gated behind [reqreply.CheckCoverage] (that check is
+	// security-scheme-specific).
+	headerParamRoute := routes.HeaderParamComputeRoute.
 		Use(headerParamMw).
 		WithHandler(handlers.Add).
-		Register(server)
-	if err != nil {
-		return nil, err
-	}
-	// PropertyAxisComputeRoute demonstrates the NEW property vocabulary
-	// axis (docs/design/d-0003-codec-declared-middlewares.md's Addendum) —
-	// routes.TenantPropertyMw (the DECLARATION) + handlers.ProcessTenant
-	// (the IMPLEMENTATION) are both adapter-agnostic; THIS is the only
-	// mqtt5-specific step — attaching them to a route and registering on
-	// THIS server. handlers.ProcessTenant reads the merged
-	// TenantIn.TenantID (from the request's "X-Tenant-Id" User Property,
-	// carried as a real MQTT5 User Property here) and produces a
-	// TenantAck merged into the reply's "X-Ack" User Property, ALONGSIDE
-	// the route's own normal ComputeReq/ComputeResp handling (unaffected).
-	// See zeromqserver/server.go for the SAME declaration+implementation
+		WithOpt(reqreply.WithHandleCallback(func(h *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]) {
+			headerParamHandle = h
+		}))
+
+	// PropertyAxisComputeRoute demonstrates the property vocabulary axis
+	// (docs/design/d-0003-codec-declared-middlewares.md's Addendum) —
+	// propertyaxis.NewTenantPropertyMw (the DECLARATION) +
+	// propertyaxis.ProcessTenant (the IMPLEMENTATION), both bundled
+	// together in the self-contained propertyaxis/ package, are both
+	// adapter-agnostic; THIS is the only mqtt5-specific step — attaching
+	// them to a route and registering on THIS server.
+	// propertyaxis.ProcessTenant reads the merged TenantIn.TenantID
+	// (from the request's "X-Tenant-Id" User Property, carried as a real
+	// MQTT5 User Property here) and produces a TenantAck merged into the
+	// reply's "X-Ack" User Property, ALONGSIDE the route's own normal
+	// ComputeReq/ComputeResp handling (unaffected). See
+	// zeromqserver/server.go for the SAME declaration+implementation
 	// pair attached to a transport with NO property mechanism at all.
-	propertyAxisHandle, err := routes.PropertyAxisComputeRoute.HandleBoundMW(
-		routes.NewTenantPropertyMw(handlers.ProcessTenant),
-	).
+	propertyAxisRoute := routes.PropertyAxisComputeRoute.
+		HandleBoundMW(propertyaxis.NewTenantPropertyMw(propertyaxis.ProcessTenant)).
 		WithHandler(handlers.Add).
-		Register(server)
-	if err != nil {
+		WithOpt(reqreply.WithHandleCallback(func(h *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]) {
+			propertyAxisHandle = h
+		}))
+
+	// CapabilityRoute demonstrates Phase 2 of docs/design/
+	// d-0006-protocol-native-capabilities.md — see demo_capability_mechanism.go.
+	capabilityRoute := routes.CapabilityRoute.
+		WithHandler(handlers.Add).
+		WithOpt(reqreply.WithHandleCallback(func(h *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]) {
+			capabilityHandle = h
+		}))
+
+	// auth.BearerAuthMw.WithReceive(...) is scoped to ONLY
+	// securedRoute/globalRoute/stackedRoute via a NESTED, empty-prefix
+	// Group (SAME "compute" topic segment, no new one) — NOT shared at
+	// the top-level computeRouter.Use(...), which would apply it to
+	// EVERY leaf, including computeRoute/headerParamRoute/
+	// propertyAxisRoute/capabilityRoute — all of which explicitly
+	// declare EITHER no Security at all (ComputeRoute's own empty,
+	// non-nil Security slice) or a mechanism unrelated to bearerAuth.
+	computeRouter := reqreply.NewRouter("compute").
+		Tags("compute").
+		Route(computeRoute).
+		Group(func(sub reqreply.Router) reqreply.Router {
+			return sub.
+				Use(auth.BearerAuthMw.WithReceive(auth.VerifyBearer)).
+				Route(securedRoute).
+				Route(globalRoute).
+				Route(stackedRoute)
+		}).
+		Route(headerParamRoute).
+		Route(propertyAxisRoute).
+		Route(capabilityRoute)
+	if err := computeRouter.Register(server); err != nil {
 		return nil, err
 	}
+
 	// ErrorPatternComputeRoute demonstrates the client-side ErrorPattern
-	// decode workflow — see demo_error_pattern_client_decode.go.
+	// decode workflow — see demo_error_pattern_client_decode.go. Stays
+	// OUTSIDE the "compute" Mount above: it's ALSO independently
+	// registered on demo_error_pattern.go's own, fully isolated scratch
+	// server (a DIFFERENT demo entirely) — keeping its topic absolute
+	// here avoids any ambiguity about which registration is
+	// authoritative.
 	if _, err := routes.ErrorPatternComputeRoute.
 		WithHandler(handlers.AddOrConflict).
 		Register(server); err != nil {
 		return nil, err
 	}
-	// CapabilityRoute demonstrates Phase 2 of docs/design/
-	// d-0006-protocol-native-capabilities.md — see demo_capability_mechanism.go.
-	capabilityHandle, err := routes.CapabilityRoute.
-		WithHandler(handlers.Add).
-		Register(server)
+
+	// ServeSpec registers this Server's own self-serving AsyncAPI spec
+	// topic — natively, via the core library (no hand-rolled handler).
+	// Stays OUTSIDE the "compute" Mount too — an absolute topic, like
+	// ErrorPatternComputeRoute above.
+	specHandle, err := server.ServeSpec("spec")
 	if err != nil {
 		return nil, err
 	}
@@ -202,6 +263,7 @@ func Build() (*Built, error) {
 		HeaderParamHandle:  headerParamHandle,
 		PropertyAxisHandle: propertyAxisHandle,
 		CapabilityHandle:   capabilityHandle,
+		SpecHandle:         specHandle,
 	}, nil
 }
 

@@ -14,6 +14,7 @@ import (
 	"github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/examples/rest-api/auth"
 	"github.com/DaniDeer/go-codex/examples/rest-api/routes"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -23,8 +24,8 @@ import (
 // enforcement (header/cookie/body), not security, so authentication is
 // bypassed by always granting the "admin" scope regardless of the
 // incoming request.
-func alwaysGrantAdmin(_ context.Context, _ *routes.CreateUserReq, _ routes.AuthIn) (routes.AuthOut, error) {
-	return routes.AuthOut{GrantedScopes: map[string][]string{"bearerAuth": {"admin"}}}, nil
+func alwaysGrantAdmin(_ context.Context, _ *routes.CreateUserReq, _ auth.AuthIn) (auth.AuthOut, error) {
+	return auth.AuthOut{GrantedScopes: map[string][]string{"bearerAuth": {"admin"}}}, nil
 }
 
 // violationLocationCodec/violationSessionCodec mirror routes.go's own
@@ -68,7 +69,7 @@ func demoResponseHeaderCookieViolation() {
 			})
 			return routes.User{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Name: "Carol", Email: "carol@example.com"}, nil
 		},
-	).HandleBoundMW(routes.BoundScopeServerMW[routes.CreateUserReq](routes.AdminScopes, alwaysGrantAdmin))
+	).HandleBoundMW(auth.BoundScopeServerMW[routes.CreateUserReq](auth.AdminScopes, alwaysGrantAdmin))
 
 	b := rest.NewServer(rest.Info{Title: "violation demo", Version: "1.0.0"})
 	must(violationRoute.Register(b), "register violation route")
@@ -105,11 +106,23 @@ func demoResponseHeaderCookieViolation() {
 // not a silently-corrupted response. Uses nethttp.ServeOne (the sugar
 // wrapper around a scratch, single-route Server — see
 // docs/design/d-0001-rest-middleware-workflow-simplification.md's
-// "Decision: Serve is the only public server-side entry point").
+// "Decision: Serve is the only public server-side entry point"), which
+// takes a RAW [rest.Route] (no Router support) — this demo therefore
+// declares its OWN, standalone "/users" route (same codecs/security as
+// routes.CreateUserRoute, reused directly) rather than the shared
+// routes.CreateUserRoute var, which now declares a RELATIVE path ("")
+// for composition under chiserver/nethttpserver's real "/users" Mount
+// (docs/design/d-0008-declarative-router-groups.md) — mirrors
+// examples/reqreply-api's own "isolated scratch server stays absolute"
+// convention for routes that are ALSO independently registered outside
+// the shared Mount.
 func demoResponseBodyViolation() {
 	fmt.Println("=== Response body encode violation — symmetric validation (net/http) ===")
 
-	violationRoute := routes.CreateUserRoute.WithHandler(
+	violationRoute := rest.NewRoute[routes.CreateUserReq, routes.User]("POST", "/users",
+		routes.CreateUserReqCodec, routes.UserCodec,
+		rest.RouteMeta{OperationID: "createUserBodyViolation"},
+	).WithHandler(
 		func(_ context.Context, _ routes.CreateUserReq) (routes.User, error) {
 			// Deliberately returns a User with invalid field values to
 			// demonstrate that handle.Encode now validates the response body.
@@ -119,7 +132,7 @@ func demoResponseBodyViolation() {
 				Email: "not-an-email", // fails Email constraint
 			}, nil
 		},
-	).HandleBoundMW(routes.BoundScopeServerMW[routes.CreateUserReq](routes.AdminScopes, alwaysGrantAdmin))
+	).HandleBoundMW(auth.BoundScopeServerMW[routes.CreateUserReq](auth.AdminScopes, alwaysGrantAdmin))
 
 	handler, err := nethttp.ServeOne(violationRoute)
 	must(err, "ServeOne body-violation route")

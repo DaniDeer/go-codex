@@ -18,7 +18,7 @@ import (
 // (client-side credential + general-purpose middleware) attaching their
 // OWN half, separately. For the 6 "bearerAuth"-secured routes below, the
 // security declaration ITSELF also moves to those per-side attachment
-// sites (via [routes.BoundScopeServerMW]/[routes.BoundScopeClientMW],
+// sites (via [auth.BoundScopeServerMW]/[auth.BoundScopeClientMW],
 // docs/design/d-0003-codec-declared-middlewares.md's Addendum 7) rather than living here — a
 // [rest.BoundMiddleware]'s Fn is embedded at construction, so "declare
 // here, implement there" (this file's own stated split) requires the
@@ -31,24 +31,9 @@ var (
 	sessionCodec  = codex.String().Refine(validate.MinLen(8))
 )
 
-// LoginRoute — POST /login — PUBLIC, no security declaration. Issues a
-// mock bearer token for a valid username/password pair. The declared
-// rest.ErrorPattern below replaces a FORMER hand-rolled errors.As
-// dispatch that used to live inside chiserver/nethttpserver's shared
-// adapter ErrorHandler — invalid credentials now get a typed,
-// OpenAPI-documented 401 body instead of the generic {"error": "..."}
-// envelope, with zero imperative dispatch code in the adapter layer. See
-// demo_login.go's negative-path call, which recovers the payload
-// client-side via rest.ErrorPatternAs.
-var LoginRoute = rest.NewRoute[LoginReq, TokenResp]("POST", "/login",
-	LoginReqCodec, TokenRespCodec,
-	rest.RouteMeta{OperationID: "login", Summary: "Authenticate and receive a bearer token", Tags: []string{"auth"}},
-	rest.ErrorPattern[InvalidCredentialsError, LoginErrorPayload](http.StatusUnauthorized, LoginErrorPayloadCodec,
-		func(e InvalidCredentialsError) (LoginErrorPayload, error) {
-			return LoginErrorPayload{Message: e.Error()}, nil
-		},
-	),
-)
+// LoginRoute now lives in auth.LoginRoute — see examples/rest-api/auth/
+// route.go (an auth-flow demo route, moved together with its
+// codecs/handler/ErrorPattern per this project's auth/ package design).
 
 // CreateUserConflictRoute demonstrates rest.ErrorPattern end-to-end — a
 // SCRATCH route (separate from CreateUserRoute, which stays untouched)
@@ -142,7 +127,7 @@ var ConflictLogRoute = rest.NewRoute[CreateUserReq, User]("POST", "/users-action
 // ── Security middleware + ErrorPattern combination ───────────────────────────
 
 // BillingScopes declares a THIRD "bearerAuth" scope requirement
-// ("billing") — attached below via [BoundScopeServerMW]/[BoundScopeClientMW]
+// ("billing") — attached below via [auth.BoundScopeServerMW]/[auth.BoundScopeClientMW]
 // (see demo_error_pattern.go), paired against a security Fn that
 // deliberately rejects every caller with InsufficientScopeError, proving
 // a declared ErrorPattern intercepts a SECURITY-MIDDLEWARE Fn failure
@@ -181,13 +166,26 @@ var IngestConflictRoute = rest.NewRoute[CreateUserReq, struct{}]("POST", "/users
 	),
 )
 
+// CreateUserRoute/GetUserRoute/UpdateUserRoute/ListUsersRoute declare
+// RELATIVE paths ("", "/{id}") — ALL 4 are Mounted under a REAL
+// docs/design/d-0008-declarative-router-groups.md Mount
+// (rest.NewRouter("/users")) in chiserver/server.go and
+// nethttpserver/server.go, composing each back to its SAME,
+// byte-identical absolute path ("/users", "/users/{id}") this example
+// has always served — a genuine prefix restructuring (unlike
+// demo_router_groups.go's own empty-prefix Group, which shares
+// middleware with NO path change). client/client.go's
+// GetUserRouteAsAlice/UpdateUserRouteAsAdmin (and friends) compose the
+// SAME "/users" Router via ClientHandle(WithRouter(...)) to reach the
+// correct absolute path client-side.
+//
 // CreateUserRoute — POST /users — requires the "admin" scope. Demonstrates
 // the full three-layer codec pipeline, multi-format request/response
 // bodies (JSON + YAML), and a FULLY DECLARATIVE response header + cookie
 // (value AND Set-Cookie attributes) — both derived straight from the
 // handler's returned User, no adapter-specific ResponseDepositor escape
 // hatch needed.
-var CreateUserRoute = rest.NewRoute[CreateUserReq, User]("POST", "/users",
+var CreateUserRoute = rest.NewRoute[CreateUserReq, User]("POST", "",
 	CreateUserReqCodec, UserCodec,
 	rest.RouteMeta{
 		OperationID:    "createUser",
@@ -224,7 +222,7 @@ var CreateUserRoute = rest.NewRoute[CreateUserReq, User]("POST", "/users",
 // RouteHandle.EncodeVars — see client/client.go).
 // codex.TextCodec[uuid.UUID]() merges the path segment directly into a
 // uuid.UUID field instead of a validated-but-still-string codec.
-var GetUserRoute = rest.NewRoute[GetUserReq, User]("GET", "/users/{id}",
+var GetUserRoute = rest.NewRoute[GetUserReq, User]("GET", "/{id}",
 	GetUserReqCodec, UserCodec,
 	rest.RouteMeta{
 		OperationID:    "getUser",
@@ -248,7 +246,7 @@ var GetUserRoute = rest.NewRoute[GetUserReq, User]("GET", "/users/{id}",
 // UpdateUserReq struct — RouteHandle.DecodeMerged (server) and
 // RouteHandle.EncodeVars+EncodeRequestWithFormats (client) both derive
 // from/to the SAME struct in one call.
-var UpdateUserRoute = rest.NewRoute[UpdateUserReq, User]("PUT", "/users/{id}",
+var UpdateUserRoute = rest.NewRoute[UpdateUserReq, User]("PUT", "/{id}",
 	UpdateUserReqCodec, UserCodec,
 	rest.RouteMeta{
 		OperationID:    "updateUser",
@@ -266,7 +264,7 @@ var UpdateUserRoute = rest.NewRoute[UpdateUserReq, User]("PUT", "/users/{id}",
 // ListUsersRoute — GET /users — requires the "profile" scope. "page" is
 // codec-validated (non-negative integer string) AND merged into
 // ListUsersReq.Page; "search" is a plain, unvalidated merge field.
-var ListUsersRoute = rest.NewRoute[ListUsersReq, PagedUsersResp]("GET", "/users",
+var ListUsersRoute = rest.NewRoute[ListUsersReq, PagedUsersResp]("GET", "",
 	ListUsersReqCodec, PagedUsersRespCodec,
 	rest.RouteMeta{
 		OperationID: "listUsers",

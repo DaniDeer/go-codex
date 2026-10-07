@@ -350,6 +350,39 @@ func TestWithHandleCallback_FiresOnRegister(t *testing.T) {
 	}
 }
 
+func TestRoute_WithOpt_AttachesHandleCallbackToAlreadyDeclaredRoute(t *testing.T) {
+	// Mirrors the real examples/reqreply-api/mqtt5server scenario:
+	// a route declared ONCE in a shared, transport-agnostic var (no
+	// WithHandleCallback at declaration time) later needs a
+	// server-local handle-recovery hook attached — without
+	// re-declaring its topic/codecs/RouteMeta from scratch.
+	declared := newRouterTestRoute("x")
+
+	var got *reqreply.RouteHandle[routerTestReq, routerTestResp]
+	decorated := declared.WithOpt(reqreply.WithHandleCallback(
+		func(h *reqreply.RouteHandle[routerTestReq, routerTestResp]) { got = h },
+	))
+
+	server := reqreply.NewServer(reqreply.Info{Title: "t", Version: "1"})
+	if _, err := decorated.Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if got == nil {
+		t.Fatal("want WithHandleCallback (attached via WithOpt) to fire")
+	}
+
+	// The ORIGINAL, undecorated value must remain untouched — Route is
+	// immutable, same guarantee every other decoration method provides.
+	server2 := reqreply.NewServer(reqreply.Info{Title: "t2", Version: "1"})
+	got = nil
+	if _, err := declared.Register(server2); err != nil {
+		t.Fatalf("Register (original): %v", err)
+	}
+	if got != nil {
+		t.Error("original, undecorated Route must NOT have the callback attached")
+	}
+}
+
 func TestClientHandle_WithRouter_MatchesRegisteredPath(t *testing.T) {
 	route := newRouterTestRoute("add")
 	rt := reqreply.NewRouter("compute")
@@ -385,5 +418,56 @@ func TestClientHandle_ZeroArgs_StillCompilesAndWorks(t *testing.T) {
 	handle := route.ClientHandle()
 	if handle == nil {
 		t.Fatal("want non-nil handle")
+	}
+}
+
+func TestRouter_Tags_AccumulateNotOverwrite(t *testing.T) {
+	rt := reqreply.NewRouter("compute").Tags("a").Tags("b").Route(newRouterTestRoute("x"))
+	entries := rt.Routes()
+	tags := entries[0].Tags
+	if len(tags) != 2 || tags[0] != "a" || tags[1] != "b" {
+		t.Errorf("want both tags accumulated, got %v", tags)
+	}
+}
+
+func TestRouter_Tags_SurviveLeafsOwnRouteMeta(t *testing.T) {
+	route := reqreply.NewRoute[routerTestReq, routerTestResp]("x", routerTestReqCodec, routerTestRespCodec,
+		reqreply.RouteMeta{OperationID: "x", Tags: []string{"own-tag"}},
+	).WithHandler(routerTestHandler)
+	rt := reqreply.NewRouter("compute").Tags("router-tag").Route(route)
+
+	entries := rt.Routes()
+	tags := entries[0].Tags
+	if len(tags) != 2 || tags[0] != "router-tag" || tags[1] != "own-tag" {
+		t.Errorf("want [router-tag own-tag] (Router's own first, then the leaf's), got %v", tags)
+	}
+
+	server := reqreply.NewServer(reqreply.Info{Title: "t", Version: "1"})
+	if err := rt.Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+}
+
+func TestRouter_Tags_AccumulateAcrossMount(t *testing.T) {
+	inner := reqreply.NewRouter("v1").Tags("v1").Route(newRouterTestRoute("add"))
+	outer := reqreply.NewRouter("compute").Tags("compute").Mount(inner)
+
+	entries := outer.Routes()
+	tags := entries[0].Tags
+	if len(tags) != 2 || tags[0] != "compute" || tags[1] != "v1" {
+		t.Errorf("want [compute v1] (outermost ancestor first), got %v", tags)
+	}
+}
+
+func TestRouter_Tags_RoutesEquivalentToWalk(t *testing.T) {
+	rt := reqreply.NewRouter("compute").Tags("t1").Route(newRouterTestRoute("a"))
+	var walked []reqreply.RouterEntry
+	_ = rt.Walk(func(e reqreply.RouterEntry) error {
+		walked = append(walked, e)
+		return nil
+	})
+	routes := rt.Routes()
+	if len(walked[0].Tags) != len(routes[0].Tags) || walked[0].Tags[0] != routes[0].Tags[0] {
+		t.Errorf("Walk and Routes disagree on Tags: %v vs %v", walked[0].Tags, routes[0].Tags)
 	}
 }

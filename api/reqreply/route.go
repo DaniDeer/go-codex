@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -1058,6 +1059,23 @@ func NewRouteFromTopic[Req, Resp any](
 // superseded by this fluent method).
 func (r Route[Req, Resp]) WithHandler(fn func(context.Context, Req) (Resp, error)) Route[Req, Resp] {
 	r.handler = fn
+	return r
+}
+
+// WithOpt returns a NEW Route with opt appended to its own accumulated
+// opts list — a general escape hatch for attaching any [RouteOpt] (e.g.
+// [WithHandleCallback]) to an ALREADY-DECLARED Route value, after
+// construction. Every other decoration method here (.Use, .HandleMW,
+// .HandleBoundMW) already follows this "declare once, decorate more via
+// chained methods" shape for its OWN specific opt kind; WithOpt
+// generalizes it to any [RouteOpt] — most useful for a route declared
+// ONCE in a shared, transport-agnostic package (e.g. a project's own
+// routes/ package) that a SPECIFIC server-assembly package later wants to
+// attach a server-local [WithHandleCallback] closure to, without
+// re-declaring the route's topic/codecs/RouteMeta from scratch. [Route]
+// is an immutable value; WithOpt never mutates the receiver.
+func (r Route[Req, Resp]) WithOpt(opt RouteOpt) Route[Req, Resp] {
+	r.opts = append(slices.Clone(r.opts), opt)
 	return r
 }
 

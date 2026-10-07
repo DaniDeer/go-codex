@@ -39,7 +39,11 @@ func demoCapabilityMechanism(ctx context.Context, built *mqtt5server.Built) {
 	// Capabilities below satisfy it. This SAME check runs AUTOMATICALLY
 	// inside NewServerTransport/NewClientTransport; called here too just to show it
 	// explicitly.
-	reqHandle := routes.CapabilityRoute.ClientHandle()
+	// CapabilityRoute is Mounted under mqtt5server.Build's shared
+	// "compute" Router (docs/design/d-0008-declarative-router-groups.md)
+	// — compose its RELATIVE topic ("capability-add") back to
+	// "compute/capability-add" via ClientHandle(WithRouter(...)).
+	reqHandle := routes.CapabilityRoute.ClientHandle(reqreply.WithRouter(reqreply.NewRouter("compute")))
 	if err := reqreply.CheckCapabilityCoverage(reqHandle.Topic,
 		reqHandle.Requirements,
 		[]any{mqtt5adapter.QoSAtLeastOnce},

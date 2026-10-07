@@ -91,6 +91,44 @@ func TestAttach_ClientPublish_HonorsDeclaredCapabilities(t *testing.T) {
 	}
 }
 
+// TestAttach_ClientPublish_AcceptsPreBuiltHandle_WithRouter confirms
+// recoverHandle's dual-mode acceptance (api/events.WithRouter's own
+// closed gap, docs/design/d-0008-declarative-router-groups.md): a
+// caller who composed a Router-Mounted topic THEMSELVES, via
+// pub.Handle(nil, events.WithRouter(rt)), can pass the resulting
+// *events.ChannelHandle[T] straight to Client.Publish — no second
+// Handle() call, no topic re-derivation, no WithRouter support needed
+// inside Client.Publish itself.
+func TestAttach_ClientPublish_AcceptsPreBuiltHandle_WithRouter(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+	c := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	if err := c.Attach(NewTransport(TransportOptions{Client: client, Router: router})); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	pub := plainSensorChannel("readings").WithPublish(events.Publish{})
+	rt := events.NewRouter("sensors")
+	handle, err := pub.Handle(nil, events.WithRouter(rt))
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
+	if err := c.Publish(context.Background(), handle, reading); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	got := client.lastPublished()
+	if got == nil {
+		t.Fatal("want 1 published message, got none")
+	}
+	const wantTopic = "sensors/readings"
+	if got.Topic != wantTopic {
+		t.Errorf("topic = %q, want %q (WithRouter composition not honored)", got.Topic, wantTopic)
+	}
+}
+
 func TestAttach_ClientPublish_WrongPubType_ReturnsTransportTypeMismatchError(t *testing.T) {
 	client := &mockClient{}
 	router := newMockRouter()

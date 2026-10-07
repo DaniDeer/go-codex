@@ -354,7 +354,7 @@ go-codex/
     │   │                         # handlers/, chiserver/, nethttpserver/, client/ packages;
     │   │                         # three-layer pipeline, multi-format bodies, bearer JWT +
     │   │                         # scopes, observer, general-purpose middleware, both chi
-    │   │                         # and net/http server adapters, hand-rolled spec endpoint
+    │   │                         # and net/http server adapters, ServeSpec endpoint
     │   ├── routes/                 #   declare: domain codecs, middleware, unattached Route values
     │   ├── handlers/                #   implement: adapter-agnostic business logic + security
     │   ├── chiserver/                #   assemble (chi): AttachRouter + full route wiring

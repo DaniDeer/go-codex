@@ -1,8 +1,6 @@
 package routes
 
 import (
-	"context"
-
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/route"
@@ -11,68 +9,13 @@ import (
 
 // ── Security scheme ───────────────────────────────────────────────────────────
 //
-// Declared once — referenced via events.FromSecurityScheme + Subscriber/
-// Publisher.Use on any channel that needs it. The Codec field is omitted
-// (nil): none of the 3 pub/sub adapters can extract a credential purely
-// from message metadata in a protocol-agnostic way (mqtt v3 has none at
-// all; mqtt5's User Properties and zeromq's in-payload field are both
-// adapter-specific extraction mechanisms), so codec-level FORMAT
-// validation of the extracted credential happens per-adapter instead (see
-// handlers/security.go).
-var APIKeyAuth = events.SecurityScheme{
-	SecurityScheme: route.APIKeyScheme("X-API-Key", "header"),
-}
-
-// APIKeyAuthIn is NewAPIKeyAuthMW's credential vocabulary — decoded from
-// whatever transport-specific channel each adapter-specific attachment
-// site (mqttbroker/mqtt5broker/zeromqbroker) has available (mqtt5's User
-// Property via WithSubscribeProperty, mqtt v3's CONNECT-time closure,
-// zeromq leaving it zero) — see handlers/security.go.
-type APIKeyAuthIn struct{ Key string }
-
-// APIKeyAuthOut carries the conventional GrantedScopes field, populated
-// by every NewAPIKeyAuthMW-paired Fn on success (even though this scheme
-// declares zero specific scopes — see NewAPIKeyAuthMW's own doc comment
-// for why the map KEY's presence still matters at runtime).
-type APIKeyAuthOut struct {
-	GrantedScopes map[string][]string
-}
-
-// NewAPIKeyAuthMW builds the "apiKeyAuth" security middleware for
-// SensorDataSub/SecuredReadingsSub — via the channel-BOUND class
-// ([events.BoundSecuritySubscribeMiddleware]), DELIBERATELY NOT the
-// REUSABLE class ([events.SecurityMiddleware]+[events.Middleware.
-// WithReceive]) a first migration pass of this demo used.
-//
-// Why: every adapter's runtime scope-enforcement path
-// (middleware.CheckScopes, invoked unconditionally whenever a channel
-// declares Subscribe.Security — see adapters/mqtt5/adapter.go,
-// adapters/mqtt/adapter.go, adapters/zeromq/adapter.go) requires the
-// scheme name to be present as a KEY in the merged `granted` map — even
-// when, as here, zero specific scopes are required (route.Satisfied
-// still checks presence before checking an empty want-scopes list is
-// trivially satisfied). Only a HasOut-true dispatch handler can populate
-// that key (via adapters/internal/scopesmerge.MergeHandlerGrants reading
-// GrantedScopes off a handler's decoded Out) — and HasOut is ALWAYS true
-// for [events.BoundSubscribeMiddleware] (its Fn ALWAYS returns
-// `(Out, error)`), but ALWAYS false for the reusable class's
-// WithReceive-bundled Fn (`func(ctx, In) error`, no Out return at all —
-// events.Middleware's own doc comment confirms this structural
-// asymmetry). A reusable-class Security attachment can therefore only
-// ever be used for an UNPAIRED (no declared Subscribe.Security) general-
-// purpose presence check — never to satisfy a DECLARED requirement like
-// this channel's `Security: []route.SecurityRequirement{route.Require(
-// "apiKeyAuth")}`, confirmed via an actual end-to-end run regression
-// during this migration (see docs/design/d-0003-codec-declared-middlewares.md's Addendum 7).
-//
-// fn is supplied by the caller (handlers.MQTTSecurityImpl/
-// MQTT5SecurityImpl/ZeromqSecurityImpl) — none of them need the *msg
-// parameter (no per-message credential in this demo's SensorReading),
-// they are attached via the bound mechanism purely to get a
-// GrantedScopes-carrying Out, not because they need *T access.
-func NewAPIKeyAuthMW(fn func(ctx context.Context, msg *SensorReading, in APIKeyAuthIn) (APIKeyAuthOut, error)) events.BoundSubscribeMiddleware[SensorReading, APIKeyAuthIn, APIKeyAuthOut] {
-	return events.BoundSecuritySubscribeMiddleware[SensorReading, APIKeyAuthIn, APIKeyAuthOut]("apiKeyAuth", APIKeyAuth, nil, fn)
-}
+// auth.APIKeyAuth/auth.APIKeyAuthIn/auth.APIKeyAuthOut/auth.NewAPIKeyAuthMW
+// now live in examples/events-api/auth — this project's SELF-CONTAINED
+// auth module (codecs + middleware declarations + verifier
+// implementations + auth-flow demo channels all together). SensorDataSub
+// below ATTACHES auth.NewAPIKeyAuthMW at the attachment site
+// (mqtt5broker/mqttbroker/zeromqbroker), importing auth.X — a one-way
+// dependency, routes/ never imports auth/.
 
 // ── SensorData channel — secured, shared across all 3 adapters ───────────────
 //
@@ -81,8 +24,21 @@ func NewAPIKeyAuthMW(fn func(ctx context.Context, msg *SensorReading, in APIKeyA
 // subscribemw.go), events.Observability[T] (demo_observability_
 // middleware.go), AsyncAPI spec printing proving zero-drift across all 3
 // transports (demo_spec_printing_asyncapi.go).
+//
+// Declares a RELATIVE topic ("data") — Mounted under a REAL
+// docs/design/d-0008-declarative-router-groups.md Mount
+// (events.NewRouter("sensor")) in mqtt5broker/mqttbroker/zeromqbroker's
+// own Build() functions, composing back to the SAME, byte-identical
+// absolute topic ("sensor/data") this example has always used. Standalone
+// callers OUTSIDE those brokers' own Build() (e.g.
+// demo_security_subscribemw.go's bare Client.Publish(ctx,
+// routes.SensorDataPub, ...) calls) compose the SAME "sensor" Router via
+// .Handle(nil, events.WithRouter(...)) — see that file's own doc
+// comment for the full rationale (events.WithRouter closed this exact
+// gap this session, mirroring api/rest's/api/reqreply's own identical
+// mechanism).
 var SensorDataChannel = events.NewChannel[SensorReading](
-	"sensor/data",
+	"data",
 	SensorReadingCodec,
 	events.ChannelMeta{Description: "Sensor readings received from the sensor network."},
 )
@@ -138,10 +94,15 @@ var PlainReadingsPub = PlainReadingsChannel.WithPublish(events.Publish{
 // already attaches PlainReadingsSub to (first-registered-wins would
 // otherwise dispatch twice for one message) ─────────────────────────────────
 
+// ObservedTopic is the FINAL, absolute wire topic — ObservedChannel
+// below declares a RELATIVE topic ("observed"), Mounted under a REAL
+// docs/design/d-0008-declarative-router-groups.md Mount
+// (events.NewRouter("sensor")) in demo_observability_middleware.go,
+// composing back to this SAME, byte-identical absolute value.
 const ObservedTopic = "sensor/observed"
 
 var ObservedChannel = events.NewChannel[SensorReading](
-	ObservedTopic,
+	"observed",
 	SensorReadingCodec,
 	events.ChannelMeta{Description: "Sensor readings — events.Observability[T] middleware demo."},
 )
@@ -168,10 +129,14 @@ var ObservedPub = ObservedChannel.WithPublish(events.Publish{
 // demonstrated below WITHOUT a declared requirement — CapabilityRequirement
 // is opt-in, not a gate on which Capabilities may be supplied. ─────────────
 
+// CapabilityTopic is the FINAL, absolute wire topic — CapabilityChannel
+// below declares a RELATIVE topic ("capability"), Mounted under a REAL
+// Mount (events.NewRouter("sensor")) in demo_capability_mechanism.go,
+// composing back to this SAME, byte-identical absolute value.
 const CapabilityTopic = "sensor/capability"
 
 var CapabilityChannel = events.NewChannel[SensorReading](
-	CapabilityTopic,
+	"capability",
 	SensorReadingCodec,
 	events.ChannelMeta{Description: "Sensor readings — protocol-native Capability mechanism demo."},
 	// RequireQoS is sugar over events.CapabilityRequirement{Name: "QoS", ...}
@@ -194,10 +159,15 @@ var CapabilityPub = CapabilityChannel.WithPublish(events.Publish{
 // direct (Middleware-free) attachment demo (mqtt5 User Properties merged
 // straight into TenantSensorReading, no Middleware wrapper needed) ─────────
 
+// PropertyMergeTopic is the FINAL, absolute wire topic —
+// PropertyMergeChannel below declares a RELATIVE topic
+// ("tenant-property"), Mounted under a REAL Mount
+// (events.NewRouter("sensor")) in demo_property_merge_direct_attachment.go,
+// composing back to this SAME, byte-identical absolute value.
 const PropertyMergeTopic = "sensor/tenant-property"
 
 var PropertyMergeChannel = events.NewChannel[TenantSensorReading](
-	PropertyMergeTopic,
+	"tenant-property",
 	TenantSensorReadingCodec,
 	events.NewPropertyParam("tenantID", codex.String(),
 		func(r TenantSensorReading) string { return r.TenantID },
@@ -507,8 +477,16 @@ var SecuredReadingsSub = SecuredReadingsChannel.WithSubscribe(events.Subscribe{
 
 // ── zeromq PUB/SUB roundtrip channel ──────────────────────────────────────────
 
+// ZeromqReadingsChannel declares a RELATIVE topic ("zeromq/readings") —
+// Mounted under a REAL Mount (events.NewRouter("sensor")) in
+// zeromqbroker/broker.go (the SAME Router routes.SensorDataSub already
+// Mounts under in that package) and composed consistently at its
+// standalone bare-Publish call site in
+// demo_zeromq_pubsub_roundtrip.go via events.WithRouter — composing
+// back to the SAME, byte-identical absolute topic
+// ("sensor/zeromq/readings") this example has always used.
 var ZeromqReadingsChannel = events.NewChannel[SensorReading](
-	"sensor/zeromq/readings",
+	"zeromq/readings",
 	SensorReadingCodec,
 	events.ChannelMeta{Description: "Sensor readings over ZeroMQ PUB/SUB."},
 )

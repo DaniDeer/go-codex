@@ -26,8 +26,15 @@ import (
 func demoCallAsyncFuture(ctx context.Context, mqtt5Client *reqreply.Client) {
 	fmt.Println("\n── Demo 5: CallAsync + Future — send here, resolve elsewhere ──")
 
+	// ComputeRoute is Mounted under mqtt5server.Build's shared "compute"
+	// Router (docs/design/d-0008-declarative-router-groups.md) — build
+	// ONE client handle up front, composing its RELATIVE topic ("add")
+	// back to "compute/add", and reuse it for all 3 CallAsync calls
+	// below (same route, same handle, no need to rebuild per call).
+	computeHandle := routes.ComputeRoute.ClientHandle(reqreply.WithRouter(reqreply.NewRouter("compute")))
+
 	// Issue TWO independent async calls, back to back, before awaiting either.
-	future1Any, err := mqtt5Client.CallAsync(ctx, routes.ComputeRoute, routes.ComputeReq{X: 1, Y: 1})
+	future1Any, err := mqtt5Client.CallAsync(ctx, computeHandle, routes.ComputeReq{X: 1, Y: 1})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "CallAsync #1 error: %v\n", err)
 		os.Exit(1)
@@ -36,7 +43,7 @@ func demoCallAsyncFuture(ctx context.Context, mqtt5Client *reqreply.Client) {
 
 	fmt.Println("  → CallAsync #1 issued, doing other independent work before awaiting it...")
 
-	future2Any, err := mqtt5Client.CallAsync(ctx, routes.ComputeRoute, routes.ComputeReq{X: 2, Y: 2})
+	future2Any, err := mqtt5Client.CallAsync(ctx, computeHandle, routes.ComputeReq{X: 2, Y: 2})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "CallAsync #2 error: %v\n", err)
 		os.Exit(1)
@@ -63,7 +70,7 @@ func demoCallAsyncFuture(ctx context.Context, mqtt5Client *reqreply.Client) {
 
 	// Timeout scenario: Future.Wait against an already-cancelled ctx.
 	fmt.Println("\n  → Future.Wait against an already-cancelled ctx:")
-	future3Any, err := mqtt5Client.CallAsync(ctx, routes.ComputeRoute, routes.ComputeReq{X: 3, Y: 3})
+	future3Any, err := mqtt5Client.CallAsync(ctx, computeHandle, routes.ComputeReq{X: 3, Y: 3})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "CallAsync #3 error: %v\n", err)
 		os.Exit(1)

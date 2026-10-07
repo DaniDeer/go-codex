@@ -13,7 +13,9 @@ import (
 
 	"github.com/DaniDeer/go-codex/adapters/zeromq"
 	"github.com/DaniDeer/go-codex/api/reqreply"
+	"github.com/DaniDeer/go-codex/examples/reqreply-api/auth"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/handlers"
+	"github.com/DaniDeer/go-codex/examples/reqreply-api/propertyaxis"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/routes"
 	"github.com/DaniDeer/go-codex/stats"
 )
@@ -52,75 +54,86 @@ func Build(obs stats.Observer) (*Built, error) {
 	server := reqreply.NewServer(reqreply.Info{Title: "Compute API (zeromq REQ/REP)", Version: "1.0.0"})
 	server.AddServer("zmq", reqreply.ServerEntry{URL: "tcp://localhost:5556", Protocol: "zmq"})
 
-	if _, err := routes.ComputeRoute.
+	// EVERY route below shares the literal "compute/" topic prefix —
+	// grouped under ONE REAL docs/design/d-0008-declarative-router-groups.md
+	// Mount (`reqreply.NewRouter("compute")`), composing each leaf's own
+	// RELATIVE topic ("add", "double", ...) back to the SAME,
+	// byte-identical absolute topic ("compute/add", "compute/double",
+	// ...) this server has always registered. mqtt5server.Build mounts a
+	// SEPARATE but consistent "compute" Router over ITS OWN subset of
+	// these same routes (ComputeRoute/PropertyAxisComputeRoute are
+	// registered on BOTH servers) — see that file's own doc comment.
+	var oauthHandle *reqreply.RouteHandle[routes.OAuthComputeReq, routes.OAuthComputeResp]
+	var propertyAxisHandle *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]
+
+	computeRoute := routes.ComputeRoute.
 		HandleMW(nil, reqreply.Observability[routes.ComputeReq, routes.ComputeResp](obs)).
-		WithHandler(handlers.Add).
-		Register(server); err != nil {
-		return nil, err
-	}
-	if _, err := routes.DoubleRoute.
+		WithHandler(handlers.Add)
+	doubleRoute := routes.DoubleRoute.
 		HandleMW(nil, reqreply.Observability[routes.ComputeReq, routes.ComputeResp](obs)).
-		WithHandler(handlers.Double).
-		Register(server); err != nil {
-		return nil, err
-	}
-	if _, err := routes.TripleRoute.
+		WithHandler(handlers.Double)
+	tripleRoute := routes.TripleRoute.
 		HandleMW(nil, reqreply.Observability[routes.ComputeReq, routes.ComputeResp](obs)).
-		WithHandler(handlers.Triple).
-		Register(server); err != nil {
-		return nil, err
-	}
+		WithHandler(handlers.Triple)
 	// OAuthComputeRoute demonstrates zeromq's reqreply in-payload
 	// credential model — the BOUND class (docs/design/d-0003-codec-
 	// declared-middlewares.md's Addendum 7, Phase C), since zeromq has no
 	// property/header side channel to carry a credential merge field —
 	// AND the oauth2Compute scheme ALSO declared for REST from the SAME
 	// shared route.SecurityScheme config — see Demo 9
-	// (demo_cross_api_oauth2_sharing.go) and routes.NewOAuthMwReqreply/
-	// routes.OAuthMwREST's doc comments. The general-purpose observer
+	// (demo_cross_api_oauth2_sharing.go) and auth.NewOAuthMwReqreply/
+	// auth.OAuthMwREST's doc comments. The general-purpose observer
 	// HandleMW(nil, ...) attaches ALONGSIDE the bound security
 	// HandleBoundMW(...) below — proving the two mechanisms compose
 	// freely on the same route.
-	oauthHandle, err := routes.OAuthComputeRoute.
-		HandleBoundMW(routes.NewOAuthMwReqreply(handlers.VerifyOAuthComputeZeroMQ)).
+	oauthRoute := routes.OAuthComputeRoute.
+		HandleBoundMW(auth.NewOAuthMwReqreply(auth.VerifyOAuthComputeZeroMQ)).
 		HandleMW(nil, reqreply.Observability[routes.OAuthComputeReq, routes.OAuthComputeResp](obs)).
 		WithHandler(handlers.AddOAuth).
-		Register(server)
-	if err != nil {
-		return nil, err
-	}
-	// PropertyAxisComputeRoute — the SAME routes.TenantPropertyMw
-	// (declaration) + handlers.ProcessTenant (implementation) attached
-	// via .HandleMW in mqtt5server.Build, registered here
-	// UNCHANGED against a transport with NO property mechanism at all.
-	// zeromq's REQ/REP frames carry only [status, payload] — there is
-	// no side channel to carry a User-Property-equivalent value, so
-	// TenantIn.TenantID is always absent here; TenantPropertyMw
-	// deliberately declares that property OPTIONAL (see
-	// routes/middleware.go) specifically so THIS registration succeeds
-	// rather than every zeromq call failing with
-	// reqreply.MiddlewareInputError.
-	propertyAxisHandle, err := routes.PropertyAxisComputeRoute.HandleBoundMW(
-		routes.NewTenantPropertyMw(handlers.ProcessTenant),
-	).
+		WithOpt(reqreply.WithHandleCallback(func(h *reqreply.RouteHandle[routes.OAuthComputeReq, routes.OAuthComputeResp]) {
+			oauthHandle = h
+		}))
+	// PropertyAxisComputeRoute — the SAME propertyaxis.NewTenantPropertyMw
+	// (declaration) + propertyaxis.ProcessTenant (implementation),
+	// bundled together in the propertyaxis/ package, attached via
+	// .HandleMW in mqtt5server.Build, registered here UNCHANGED against
+	// a transport with NO property mechanism at all. zeromq's REQ/REP
+	// frames carry only [status, payload] — there is no side channel to
+	// carry a User-Property-equivalent value, so TenantIn.TenantID is
+	// always absent here; NewTenantPropertyMw deliberately declares that
+	// property OPTIONAL (see propertyaxis/middleware.go) specifically so
+	// THIS registration succeeds rather than every zeromq call failing
+	// with reqreply.MiddlewareInputError.
+	propertyAxisRoute := routes.PropertyAxisComputeRoute.
+		HandleBoundMW(propertyaxis.NewTenantPropertyMw(propertyaxis.ProcessTenant)).
 		HandleMW(nil, reqreply.Observability[routes.ComputeReq, routes.ComputeResp](obs)).
 		WithHandler(handlers.Add).
-		Register(server)
-	if err != nil {
-		return nil, err
-	}
-
-	// ComputeGSRoute demonstrates the GENERALIZED reqreply.
+		WithOpt(reqreply.WithHandleCallback(func(h *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]) {
+			propertyAxisHandle = h
+		}))
+	// auth.ComputeGSRoute demonstrates the GENERALIZED reqreply.
 	// SecurityMiddleware[In, Out] + GrantedScopes + ContextField
 	// mechanism (docs/design/d-0007-declarative-middleware-layering.md)
 	// — bound HandleMW directly, NO separate legacy credential Fn
-	// needed; handlers.VerifyBearerGS returns a GrantedScopes-carrying
-	// routes.AuthOut.
-	if _, err := routes.ComputeGSRoute.
-		HandleBoundMW(routes.NewGrantedScopesComputeMw(handlers.VerifyBearerGS)).
-		HandleMW(nil, reqreply.Observability[routes.ComputeGSReq, routes.ComputeResp](obs)).
-		WithHandler(handlers.MakeComputeGSHandler()).
-		Register(server); err != nil {
+	// needed; auth.VerifyBearerGS returns a GrantedScopes-carrying
+	// auth.GrantedScopesAuthOut. This is an AUTH-FLOW demo route (lives
+	// in auth/, not routes/) — still Router-groupable alongside
+	// routes/-declared leaves in the SAME Mount, since Router doesn't
+	// care which package a leaf comes from.
+	gsRoute := auth.ComputeGSRoute.
+		HandleBoundMW(auth.NewGrantedScopesComputeMw(auth.VerifyBearerGS)).
+		HandleMW(nil, reqreply.Observability[auth.ComputeGSReq, routes.ComputeResp](obs)).
+		WithHandler(auth.MakeComputeGSHandler())
+
+	computeRouter := reqreply.NewRouter("compute").
+		Tags("compute").
+		Route(computeRoute).
+		Route(doubleRoute).
+		Route(tripleRoute).
+		Route(oauthRoute).
+		Route(propertyAxisRoute).
+		Route(gsRoute)
+	if err := computeRouter.Register(server); err != nil {
 		return nil, err
 	}
 

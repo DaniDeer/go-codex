@@ -101,3 +101,64 @@ func demoEventsRouterGroups() {
 	fmt.Println("-- Registered successfully; every leaf above is now live on client --")
 	fmt.Println()
 }
+
+// demoSensorsStaticPrefixGroup demonstrates a NEW-GROUND finding from
+// this project's own router-review round: a Router prefix must be
+// STATIC (docs/design/d-0008-declarative-router-groups.md — no `{var}`
+// placeholders in the Router's OWN prefix string), but that constraint
+// is ONLY about the Router's own prefix — NOT about every leaf grouped
+// under it. A leaf is free to declare its OWN relative topic containing
+// a "{var}" segment (e.g. "{sensorID}/measurements") — Router composes
+// prefix+leaf with a plain string join, with ZERO awareness of (or
+// interference with) any "{var}" placeholder inside the leaf's OWN
+// topic. This has NEVER been exercised anywhere in this codebase before.
+//
+// NOTE: routes.MeasurementChannel/WildcardChannel/ReadingsWithErrorsChannel/
+// etc. (this project's REAL "sensors/{sensorID}/..." family) each embed
+// the "sensors/" segment directly in their OWN declared topic (NOT
+// relative to any Router) — grouping those AS-IS under a NEW
+// events.NewRouter("sensors") would DOUBLE the prefix
+// ("sensors/sensors/..."). Proving THIS demo's point without that bug,
+// or without the invasive topic-string rename those real channels would
+// need (explicitly out of scope — large, pre-existing blast radius
+// across mqttbroker/demo_error_pattern.go/demo_wildcard_subscription.go),
+// requires FRESH, LOCALLY-DECLARED fixture leaves with a genuinely
+// RELATIVE, "{sensorID}"-containing topic — mirroring
+// demoEventsRouterGroups' own established synthetic-fixture precedent
+// above, extended here with a VARIABLE (not just static) leaf topic.
+func demoSensorsStaticPrefixGroup() {
+	fmt.Println("=== Router: static \"sensors\" prefix Group over a variable-suffix {sensorID} leaf ===")
+
+	measurementSub := events.NewChannel[routerDemoSensorReading]("{sensorID}/measurements", routerDemoSensorReadingCodec,
+		events.TopicParam{Name: "sensorID"},
+		events.ChannelMeta{Description: "Per-sensor measurements (variable-suffix leaf topic)."},
+	).WithSubscribe(events.Subscribe{Summary: "Receive a per-sensor measurement"}).
+		WithHandler(routerDemoOnReading)
+
+	alertsSub := events.NewChannel[routerDemoSensorReading]("{sensorID}/alerts", routerDemoSensorReadingCodec,
+		events.TopicParam{Name: "sensorID"},
+		events.ChannelMeta{Description: "Per-sensor alerts (variable-suffix leaf topic)."},
+	).WithSubscribe(events.Subscribe{Summary: "Receive a per-sensor alert"}).
+		WithHandler(routerDemoOnReading)
+
+	auditMiddleware := middleware.Middleware{Name: "audit-log"}
+
+	sensorsRouter := events.NewRouter("sensors").
+		Use(auditMiddleware).
+		Tags("variable-suffix-demo").
+		Route(measurementSub).
+		Route(alertsSub)
+
+	fmt.Println("-- Routes() — holistic, pre-registration view (each leaf's OWN {sensorID} segment composes untouched) --")
+	for _, e := range sensorsRouter.Routes() {
+		fmt.Printf("  %-10s %-32s middleware=%v tags=%v\n", e.Role, e.Path, e.MiddlewareNames, e.Tags)
+	}
+
+	client := events.NewClient(events.WithInfo(events.Info{Title: "Sensors Static-Prefix Group Demo", Version: "1.0.0"}))
+	if err := sensorsRouter.Register(client); err != nil {
+		fmt.Printf("  register error: %v\n", err)
+		return
+	}
+	fmt.Println("-- Registered successfully — a STATIC Router prefix composes cleanly over a variable-suffix leaf --")
+	fmt.Println()
+}

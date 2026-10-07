@@ -188,3 +188,4 @@ schemes are not copied. See the [AsyncAPI guide](../guides/asyncapi.md#combining
 - [Guide: AsyncAPI — combining pub/sub + request-reply](../guides/asyncapi.md#combining-pubsub-and-request-reply-in-one-asyncapi-spec)
 - [examples/api-events](https://github.com/DaniDeer/go-codex/tree/main/examples/api-events) — event channel builder + AsyncAPI spec
 - [examples/event-driven](https://github.com/DaniDeer/go-codex/tree/main/examples/event-driven) — full AsyncAPI 2.6 document
+- [Self-Serving Spec Endpoint (ServeSpec)](spec-endpoint.md) — serve this document natively, no hand-rolled handler

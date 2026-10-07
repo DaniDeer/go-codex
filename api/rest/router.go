@@ -19,16 +19,23 @@ import (
 // EXISTING receiver (Req/Resp are already in scope there).
 type routable interface {
 	// withRouterPrefix returns a NEW leaf value (same concrete type) with
-	// prefix prepended to its own path string and mws PREPENDED to its own
+	// prefix prepended to its own path string, mws PREPENDED to its own
 	// accumulated opts (so Router-contributed middleware dispatches BEFORE
-	// the leaf's own) — plus the leaf's resulting, fully-composed path, so
-	// callers never need a second accessor to learn it.
-	withRouterPrefix(prefix string, mws []middleware.RouteMiddleware) (routable, string)
+	// the leaf's own), and tags APPENDED as a merge-opt (so Router-
+	// contributed tags combine with, rather than being overwritten by, the
+	// leaf's own RouteMeta.Tags — see [Router.Tags]'s doc comment for why
+	// tags must be appended, not prepended, unlike mws) — plus the leaf's
+	// resulting, fully-composed path, so callers never need a second
+	// accessor to learn it.
+	withRouterPrefix(prefix string, mws []middleware.RouteMiddleware, tags []string) (routable, string)
 	// routeMethod reports this leaf's HTTP method, for RouterEntry.Method.
 	routeMethod() string
 	// middlewareNames reports the leaf's OWN (directly .Use()-attached,
 	// pre-Router) reusable-class middleware names, in attachment order.
 	middlewareNames() []string
+	// tags reports the leaf's OWN (directly RouteMeta-declared,
+	// pre-Router) tags, for RouterEntry.Tags.
+	tags() []string
 	// registerAny performs the SAME work Register(b) would, discarding any
 	// returned *RouteHandle — a caller needing the handle back attaches
 	// WithHandleCallback to the leaf directly instead (see that function's
@@ -127,6 +134,7 @@ type Router struct {
 	prefix     string
 	mws        []middleware.RouteMiddleware
 	pendingMws []middleware.RouteMiddleware
+	tags       []string
 	children   []routerChild
 }
 
@@ -148,6 +156,26 @@ func NewRouter(prefix string, opts ...RouterOpt) Router {
 // nested [Router.Mount]/[Router.Group] child's own mws.
 func (rt Router) Use(mws ...middleware.RouteMiddleware) Router {
 	rt.mws = append(cloneMws(rt.mws), mws...)
+	return rt
+}
+
+// Tags returns a NEW Router with tags appended to its own accumulated,
+// permanent tag list — merged into every grouped leaf's OWN
+// [RouteMeta.Tags] at [Router.Walk]/[Router.Register] time (Router's own
+// tags first, then the leaf's own — same ordering convention as
+// [Router.Use]'s middleware). Repeated `.Tags(a).Tags(b)` calls
+// ACCUMULATE, mirroring [Router.Use]'s identical semantics — no
+// one-shot/[Router.With]-equivalent exists for tags in this first pass.
+//
+// Unlike middleware (dispatch-order-sensitive, so Router-contributed mws
+// must run BEFORE the leaf's own via a PREPENDED opt), tags are merged
+// AFTER the leaf's own [RouteMeta] opt resolves — [RouteMeta.applyRoute]
+// is a whole-struct overwrite (`rb.meta = m`), so a prepended tags opt
+// would be silently discarded by a leaf's own [RouteMeta]; an APPENDED
+// merge-opt (see withRouterPrefix) reads the already-resolved
+// `rb.meta.Tags` and safely combines instead.
+func (rt Router) Tags(tags ...string) Router {
+	rt.tags = append(cloneTags(rt.tags), tags...)
 	return rt
 }
 
@@ -225,6 +253,10 @@ type RouterEntry struct {
 	// apply to this leaf, in dispatch order — Router-contributed names
 	// first (outermost ancestor first), then the leaf's own.
 	MiddlewareNames []string
+	// Tags lists every tag that will apply to this leaf's spec entry —
+	// Router-contributed tags first (outermost ancestor first), then the
+	// leaf's own [RouteMeta.Tags].
+	Tags []string
 }
 
 // WalkFunc is called once per LEAF (never per intermediate Router/Group),
@@ -237,30 +269,33 @@ type WalkFunc func(entry RouterEntry) error
 // composing prefixes and middleware exactly as [Router.Register] would,
 // calling fn once per leaf, in declaration order.
 func (rt Router) Walk(fn WalkFunc) error {
-	return rt.walk("", nil, fn)
+	return rt.walk("", nil, nil, fn)
 }
 
-func (rt Router) walk(ancestorPrefix string, ancestorMws []middleware.RouteMiddleware, fn WalkFunc) error {
+func (rt Router) walk(ancestorPrefix string, ancestorMws []middleware.RouteMiddleware, ancestorTags []string, fn WalkFunc) error {
 	prefix := joinRouterPath(ancestorPrefix, rt.prefix)
 	mws := append(cloneMws(ancestorMws), rt.mws...)
+	tags := append(cloneTags(ancestorTags), rt.tags...)
 	for _, c := range rt.children {
 		if c.sub != nil {
-			if err := c.sub.walk(prefix, mws, fn); err != nil {
+			if err := c.sub.walk(prefix, mws, tags, fn); err != nil {
 				return err
 			}
 			continue
 		}
 		allMws := append(cloneMws(mws), c.leafMws...)
-		transformed, composedPath := c.leaf.withRouterPrefix(prefix, allMws)
+		transformed, composedPath := c.leaf.withRouterPrefix(prefix, allMws, tags)
 		names := make([]string, 0, len(allMws)+len(c.leaf.middlewareNames()))
 		for _, mw := range allMws {
 			names = append(names, middlewareNameOf(mw))
 		}
 		names = append(names, c.leaf.middlewareNames()...)
+		entryTags := append(cloneTags(tags), c.leaf.tags()...)
 		entry := RouterEntry{
 			Method:          transformed.routeMethod(),
 			Path:            composedPath,
 			MiddlewareNames: names,
+			Tags:            entryTags,
 		}
 		if err := fn(entry); err != nil {
 			return err
@@ -296,21 +331,22 @@ func (rt Router) Routes() []RouterEntry {
 // DuplicateRouteError, etc.) propagates COMPLETELY UNWRAPPED, exactly as
 // it would from a direct, Router-less call.
 func (rt Router) Register(b *Server) error {
-	return rt.register("", nil, b)
+	return rt.register("", nil, nil, b)
 }
 
-func (rt Router) register(ancestorPrefix string, ancestorMws []middleware.RouteMiddleware, b *Server) error {
+func (rt Router) register(ancestorPrefix string, ancestorMws []middleware.RouteMiddleware, ancestorTags []string, b *Server) error {
 	prefix := joinRouterPath(ancestorPrefix, rt.prefix)
 	mws := append(cloneMws(ancestorMws), rt.mws...)
+	tags := append(cloneTags(ancestorTags), rt.tags...)
 	for _, c := range rt.children {
 		if c.sub != nil {
-			if err := c.sub.register(prefix, mws, b); err != nil {
+			if err := c.sub.register(prefix, mws, tags, b); err != nil {
 				return err
 			}
 			continue
 		}
 		allMws := append(cloneMws(mws), c.leafMws...)
-		transformed, composedPath := c.leaf.withRouterPrefix(prefix, allMws)
+		transformed, composedPath := c.leaf.withRouterPrefix(prefix, allMws, tags)
 		if err := transformed.registerAny(b); err != nil {
 			var pathErr InvalidPathError
 			if asInvalidPathError(err, &pathErr) {
@@ -452,7 +488,7 @@ func WithRouter(rt Router) ClientHandleOpt { return withRouterOpt{rt: rt} }
 type withRouterOpt struct{ rt Router }
 
 func (o withRouterOpt) applyClientHandle(r routable) routable {
-	transformed, _ := r.withRouterPrefix(o.rt.prefix, o.rt.mws)
+	transformed, _ := r.withRouterPrefix(o.rt.prefix, o.rt.mws, o.rt.tags)
 	return transformed
 }
 
@@ -474,11 +510,33 @@ func cloneChildren(children []routerChild) []routerChild {
 	return out
 }
 
+func cloneTags(tags []string) []string {
+	if len(tags) == 0 {
+		return nil
+	}
+	out := make([]string, len(tags))
+	copy(out, tags)
+	return out
+}
+
+// routerTagsOpt is the RouteOpt a [Router] APPENDS (never prepends) to a
+// leaf's own opts list via [Router.Tags] — see that method's doc comment
+// for why tags must be merged AFTER the leaf's own [RouteMeta] opt
+// resolves, unlike middleware (which is prepended to run BEFORE).
+type routerTagsOpt struct{ tags []string }
+
+func (o routerTagsOpt) applyRoute(rb *routeBuilder) {
+	rb.meta.Tags = append(append([]string{}, o.tags...), rb.meta.Tags...)
+}
+
 // withRouterPrefix implements [routable] for [Route].
-func (r Route[Req, Resp]) withRouterPrefix(prefix string, mws []middleware.RouteMiddleware) (routable, string) {
+func (r Route[Req, Resp]) withRouterPrefix(prefix string, mws []middleware.RouteMiddleware, tags []string) (routable, string) {
 	r.path = joinRouterPath(prefix, r.path)
 	if len(mws) > 0 {
 		r.opts = append([]RouteOpt{routeMiddlewareOpt{mws: mws}}, r.opts...)
+	}
+	if len(tags) > 0 {
+		r.opts = append(r.opts, routerTagsOpt{tags: tags})
 	}
 	return r, r.path
 }
@@ -504,14 +562,29 @@ func (r Route[Req, Resp]) middlewareNames() []string {
 	return names
 }
 
+// tags implements [routable] for [Route] — reports r's OWN,
+// directly-declared [RouteMeta.Tags], BEFORE any Router involvement.
+func (r Route[Req, Resp]) tags() []string {
+	var tags []string
+	for _, opt := range r.opts {
+		if rm, ok := opt.(RouteMeta); ok {
+			tags = append(tags, rm.Tags...)
+		}
+	}
+	return tags
+}
+
 // registerAny implements [routable] for [Route].
 func (r Route[Req, Resp]) registerAny(b *Server) error { return r.Register(b) }
 
 // withRouterPrefix implements [routable] for [SSERoute].
-func (s SSERoute[Req, Event]) withRouterPrefix(prefix string, mws []middleware.RouteMiddleware) (routable, string) {
+func (s SSERoute[Req, Event]) withRouterPrefix(prefix string, mws []middleware.RouteMiddleware, tags []string) (routable, string) {
 	s.path = joinRouterPath(prefix, s.path)
 	if len(mws) > 0 {
 		s.opts = append([]RouteOpt{routeMiddlewareOpt{mws: mws}}, s.opts...)
+	}
+	if len(tags) > 0 {
+		s.opts = append(s.opts, routerTagsOpt{tags: tags})
 	}
 	return s, s.path
 }
@@ -530,6 +603,18 @@ func (s SSERoute[Req, Event]) middlewareNames() []string {
 		}
 	}
 	return names
+}
+
+// tags implements [routable] for [SSERoute] — reports s's OWN,
+// directly-declared [RouteMeta.Tags], BEFORE any Router involvement.
+func (s SSERoute[Req, Event]) tags() []string {
+	var tags []string
+	for _, opt := range s.opts {
+		if rm, ok := opt.(RouteMeta); ok {
+			tags = append(tags, rm.Tags...)
+		}
+	}
+	return tags
 }
 
 // registerAny implements [routable] for [SSERoute].

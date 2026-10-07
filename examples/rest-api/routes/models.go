@@ -183,42 +183,6 @@ type ProfileReq struct {
 // exclusively via cookie/header-var merge.
 var ProfileReqCodec = codex.Struct[ProfileReq]()
 
-// ── Auth boundary: login ─────────────────────────────────────────────────────
-
-// LoginReq is what an HTTP client sends to authenticate.
-type LoginReq struct {
-	Username string
-	Password string
-}
-
-// LoginReqCodec enforces non-empty username/password.
-var LoginReqCodec = codex.Struct[LoginReq](
-	codex.RequiredField("username",
-		codex.String().Refine(validate.NonEmptyString).WithDescription("Username."),
-		func(r LoginReq) string { return r.Username },
-		func(r *LoginReq, v string) { r.Username = v },
-	),
-	codex.RequiredField("password",
-		codex.String().Refine(validate.NonEmptyString).WithDescription("Password."),
-		func(r LoginReq) string { return r.Password },
-		func(r *LoginReq, v string) { r.Password = v },
-	),
-)
-
-// TokenResp carries the issued bearer token.
-type TokenResp struct {
-	Token string
-}
-
-// TokenRespCodec describes the login response.
-var TokenRespCodec = codex.Struct[TokenResp](
-	codex.RequiredField("token",
-		codex.String().WithDescription("****** for subsequent requests."),
-		func(r TokenResp) string { return r.Token },
-		func(r *TokenResp, v string) { r.Token = v },
-	),
-)
-
 // ── Auth boundary: admin action ──────────────────────────────────────────────
 
 // AdminActionReq is a privileged admin request.
@@ -299,34 +263,6 @@ var ValidationPayloadCodec = codex.Struct[ValidationPayload](
 		func(p *ValidationPayload, v string) { p.Code = v },
 	),
 )
-
-// LoginErrorPayload is the typed response body for LoginRoute's invalid-
-// credentials case — replaces the former hand-rolled errors.As dispatch
-// inside chiserver/nethttpserver's shared adapter ErrorHandler.
-type LoginErrorPayload struct {
-	Message string
-}
-
-// LoginErrorPayloadCodec describes LoginErrorPayload.
-var LoginErrorPayloadCodec = codex.Struct[LoginErrorPayload](
-	codex.RequiredField("message",
-		codex.String().WithDescription("Why the login attempt was rejected."),
-		func(p LoginErrorPayload) string { return p.Message },
-		func(p *LoginErrorPayload, v string) { p.Message = v },
-	),
-)
-
-// InvalidCredentialsError is returned by handlers.MakeLoginHandler when
-// the username or password is wrong — matched by LoginRoute's declared
-// rest.ErrorPattern (see routes.go), which replaces the FORMER hand-rolled
-// errors.As dispatch inside chiserver/nethttpserver's shared adapter
-// ErrorHandler. Lives here (not in handlers/) so LoginRoute's own
-// rest.ErrorPattern declaration can reference it without an
-// otherwise-circular routes→handlers import.
-type InvalidCredentialsError struct{ Err error }
-
-func (e InvalidCredentialsError) Error() string { return e.Err.Error() }
-func (e InvalidCredentialsError) Unwrap() error { return e.Err }
 
 // ── ErrorPattern Direct mode + ErrorStatus (the OTHER 2 of REST's 3
 // declaration mechanisms — Mapped mode is ConflictError/ConflictPayload

@@ -8,6 +8,7 @@ import (
 
 	mqtt5adapter "github.com/DaniDeer/go-codex/adapters/mqtt5"
 	"github.com/DaniDeer/go-codex/api/reqreply"
+	"github.com/DaniDeer/go-codex/examples/reqreply-api/auth"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/handlers"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/mqtt5server"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/routes"
@@ -43,20 +44,41 @@ import (
 // distinct B) — on its OWN scratch broker/server (routes.RateLimitComputeRoute
 // is a Direct-mode demo route not registered on the shared mqtt5Built
 // server).
+//
+// routes.RateLimitComputeRoute declares a RELATIVE topic
+// ("add-ratelimit-demo") — Mounted below under a REAL docs/design/
+// d-0008-declarative-router-groups.md Mount (reqreply.NewRouter("compute")),
+// composing back to the SAME, byte-identical absolute topic
+// ("compute/add-ratelimit-demo") this demo has always used, now ALSO
+// tagged "error-pattern" and visible via Routes()'s holistic
+// pre-registration view. routes.ErrorPatternComputeRoute stays OUTSIDE
+// this Mount, registered directly with its topic UNCHANGED (absolute
+// "compute/add-error-pattern") — it is ALSO independently registered on
+// the real mqtt5server.Build() server, so its topic must stay in sync
+// across BOTH registration points (mirrors mqtt5server/server.go's own
+// identical "stays outside the Mount" treatment of this exact route).
 func demoErrorPatternDeclarationMechanisms(ctx context.Context) {
 	fmt.Println("\n── Demo: reqreply.ErrorPattern declaration mechanisms: Direct vs Mapped ──")
 
 	broker, router := mqtt5server.NewMockBrokerRouter()
 	server := reqreply.NewServer(reqreply.Info{Title: "Declaration mechanisms demo", Version: "1.0.0"})
 
-	if _, err := routes.RateLimitComputeRoute.WithHandler(
+	rateLimitRoute := routes.RateLimitComputeRoute.WithHandler(
 		func(_ context.Context, req routes.ComputeReq) (routes.ComputeResp, error) {
 			if req.X < 0 {
 				return routes.ComputeResp{}, routes.RateLimitError{RetryAfterSeconds: 30}
 			}
 			return routes.ComputeResp{Sum: req.X + req.Y}, nil
 		},
-	).Register(server); err != nil {
+	)
+	computeRouter := reqreply.NewRouter("compute").
+		Tags("error-pattern").
+		Route(rateLimitRoute)
+	fmt.Println("  -- Routes() — holistic, pre-registration view --")
+	for _, e := range computeRouter.Routes() {
+		fmt.Printf("    %-28s tags=%v\n", e.Path, e.Tags)
+	}
+	if err := computeRouter.Register(server); err != nil {
 		fmt.Fprintf(os.Stderr, "unexpected error registering rate-limit route: %v\n", err)
 		os.Exit(1)
 	}
@@ -78,7 +100,11 @@ func demoErrorPatternDeclarationMechanisms(ctx context.Context) {
 	}
 
 	// 1) ErrorPattern Direct mode — RateLimitError itself IS the payload.
-	_, err := client.Call(ctx, routes.RateLimitComputeRoute, routes.ComputeReq{X: -1, Y: 4})
+	// routes.RateLimitComputeRoute is Mounted (see above) — compose the
+	// SAME "compute" Router via ClientHandle(WithRouter(...)) to reach
+	// the correct absolute topic.
+	rateLimitHandle := routes.RateLimitComputeRoute.ClientHandle(reqreply.WithRouter(reqreply.NewRouter("compute")))
+	_, err := client.Call(ctx, rateLimitHandle, routes.ComputeReq{X: -1, Y: 4})
 	if payload, ok := reqreply.ErrorPatternAs[routes.RateLimitError](err); ok {
 		fmt.Printf("  ✓ Direct mode: retry_after_seconds=%d (E itself IS B, no mapFn)\n", payload.RetryAfterSeconds)
 	} else {
@@ -158,17 +184,34 @@ func demoErrorPatternClientMatchMechanisms(ctx context.Context, built *mqtt5serv
 // error reply (the caller ALWAYS gets a reply either way) AND is
 // ADDITIONALLY published to the dead-letter topic for a durable ops
 // record — DeadLetter is complementary, not an alternative to the reply.
+//
+// routes.DeadLetterComputeRoute declares a RELATIVE topic
+// ("add-deadletter-demo") — Mounted below under a REAL
+// reqreply.NewRouter("compute") Mount, composing back to the SAME,
+// byte-identical absolute topic ("compute/add-deadletter-demo") this
+// demo has always used, tagged "error-pattern" and visible via
+// Routes()'s holistic pre-registration view (isolated-only on this
+// scratch server, so a real Mount is unambiguous here — unlike
+// ErrorPatternComputeRoute).
 func demoErrorPatternDeadLetterFallback(ctx context.Context) {
 	fmt.Println("\n── Demo: reqreply.DeadLetter — undeclared error → generic reply + durable DLQ record ──")
 
 	broker, router := mqtt5server.NewMockBrokerRouter()
 
 	server := reqreply.NewServer(reqreply.Info{Title: "DeadLetter demo", Version: "1.0.0"})
-	if _, err := routes.DeadLetterComputeRoute.WithHandler(
+	deadLetterRoute := routes.DeadLetterComputeRoute.WithHandler(
 		func(_ context.Context, _ routes.ComputeReq) (routes.ComputeResp, error) {
 			return routes.ComputeResp{}, routes.TimeoutError{}
 		},
-	).Register(server); err != nil {
+	)
+	computeRouter := reqreply.NewRouter("compute").
+		Tags("error-pattern").
+		Route(deadLetterRoute)
+	fmt.Println("  -- Routes() — holistic, pre-registration view --")
+	for _, e := range computeRouter.Routes() {
+		fmt.Printf("    %-28s tags=%v\n", e.Path, e.Tags)
+	}
+	if err := computeRouter.Register(server); err != nil {
 		fmt.Fprintf(os.Stderr, "unexpected error registering route: %v\n", err)
 		os.Exit(1)
 	}
@@ -196,7 +239,8 @@ func demoErrorPatternDeadLetterFallback(ctx context.Context) {
 		os.Exit(1)
 	}
 
-	_, err := client.Call(ctx, routes.DeadLetterComputeRoute, routes.ComputeReq{X: 1, Y: 2})
+	deadLetterHandle := routes.DeadLetterComputeRoute.ClientHandle(reqreply.WithRouter(reqreply.NewRouter("compute")))
+	_, err := client.Call(ctx, deadLetterHandle, routes.ComputeReq{X: 1, Y: 2})
 	if err == nil {
 		fmt.Println("  ✗ expected an error reply, got none")
 		return
@@ -221,19 +265,35 @@ func demoErrorPatternDeadLetterFallback(ctx context.Context) {
 // reqreply.MiddlewareError instead, mirroring REST's own
 // `isSecuritySatisfyingHandler` precedent) — which is matched by the
 // route's declared ErrorPattern BEFORE the business handler ever runs.
+//
+// routes.SecuredErrorPatternRoute declares a RELATIVE topic
+// ("add-security-errorpattern-demo") — Mounted below under a REAL
+// reqreply.NewRouter("compute") Mount, composing back to the SAME,
+// byte-identical absolute topic
+// ("compute/add-security-errorpattern-demo") this demo has always used,
+// tagged "error-pattern" and visible via Routes()'s holistic
+// pre-registration view (isolated-only on this scratch server, so a
+// real Mount is unambiguous here).
 func demoErrorPatternMiddlewareCombo(ctx context.Context) {
 	fmt.Println("\n── Demo: reqreply.ErrorPattern + security middleware Fn combo ──")
 
 	broker, router := mqtt5server.NewMockBrokerRouter()
 
 	server := reqreply.NewServer(reqreply.Info{Title: "Security combo demo", Version: "1.0.0"})
-	if _, err := routes.SecuredErrorPatternRoute.
+	securedErrorPatternRoute := routes.SecuredErrorPatternRoute.
 		WithHandler(func(_ context.Context, req routes.ComputeReq) (routes.ComputeResp, error) {
 			fmt.Println("  ✗ handler ran (unexpected — security Fn should have rejected first)")
 			return routes.ComputeResp{Sum: req.X + req.Y}, nil
 		}).
-		Use(routes.BearerAuthMw.WithReceive(handlers.AlwaysRejectSecurityImpl)).
-		Register(server); err != nil {
+		Use(auth.BearerAuthMw.WithReceive(auth.AlwaysRejectSecurityImpl))
+	computeRouter := reqreply.NewRouter("compute").
+		Tags("error-pattern").
+		Route(securedErrorPatternRoute)
+	fmt.Println("  -- Routes() — holistic, pre-registration view --")
+	for _, e := range computeRouter.Routes() {
+		fmt.Printf("    %-28s middleware=%v tags=%v\n", e.Path, e.MiddlewareNames, e.Tags)
+	}
+	if err := computeRouter.Register(server); err != nil {
 		fmt.Fprintf(os.Stderr, "unexpected error registering route: %v\n", err)
 		os.Exit(1)
 	}
@@ -255,12 +315,12 @@ func demoErrorPatternMiddlewareCombo(ctx context.Context) {
 	// credential FORMAT check passes and the server's securityFn (which
 	// ALWAYS rejects) is actually reached — mirrors REST's
 	// demo_error_pattern.go's identical pattern.
-	securedRoute := routes.SecuredErrorPatternRoute.Use(routes.BearerAuthMw.WithSend(
-		func(context.Context) (routes.BearerAuthIn, error) {
-			return routes.BearerAuthIn{Token: "Bearer ******"}, nil
+	securedHandle := routes.SecuredErrorPatternRoute.Use(auth.BearerAuthMw.WithSend(
+		func(context.Context) (auth.BearerAuthIn, error) {
+			return auth.BearerAuthIn{Token: "Bearer ******"}, nil
 		},
-	))
-	_, err := client.Call(ctx, securedRoute, routes.ComputeReq{X: 1, Y: 2})
+	)).ClientHandle(reqreply.WithRouter(reqreply.NewRouter("compute")))
+	_, err := client.Call(ctx, securedHandle, routes.ComputeReq{X: 1, Y: 2})
 	if payload, ok := reqreply.ErrorPatternAs[routes.SecurityRejectedPayload](err); ok {
 		fmt.Printf("  ✓ security-middleware Fn error matched by ErrorPattern (handler NEVER ran): code=%q\n", payload.Code)
 	} else {

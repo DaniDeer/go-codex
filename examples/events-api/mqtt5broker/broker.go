@@ -13,6 +13,7 @@ import (
 	mqtt5adapter "github.com/DaniDeer/go-codex/adapters/mqtt5"
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/examples/events-api/auth"
 	"github.com/DaniDeer/go-codex/examples/events-api/handlers"
 	"github.com/DaniDeer/go-codex/examples/events-api/routes"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
@@ -28,7 +29,7 @@ type Built struct {
 }
 
 // Build attaches routes.SensorDataSub (secured, via
-// handlers.MQTT5SecurityImpl) and routes.ReadingsWithErrorsPub (error-path
+// auth.MQTT5SecurityImpl) and routes.ReadingsWithErrorsPub (error-path
 // ergonomics demo) onto a fresh in-process mock broker.
 func Build() (*Built, error) {
 	router := NewMockRouter()
@@ -50,22 +51,38 @@ func Build() (*Built, error) {
 	}
 
 	sub := routes.SensorDataSub.
-		SubscribeBoundMW(routes.NewAPIKeyAuthMW(handlers.MQTT5SecurityImpl).
+		SubscribeBoundMW(auth.NewAPIKeyAuthMW(auth.MQTT5SecurityImpl).
 			WithSubscribeProperty(events.NewPropertyParam("X-API-Key", codex.String(),
-				func(in routes.APIKeyAuthIn) string { return in.Key },
-				func(in *routes.APIKeyAuthIn, v string) { in.Key = v },
+				func(in auth.APIKeyAuthIn) string { return in.Key },
+				func(in *auth.APIKeyAuthIn, v string) { in.Key = v },
 			))).
 		WithHandler(handlers.PrintReading("mqtt5"))
-	if err := sub.Register(client); err != nil {
-		return nil, err
-	}
 
 	plainSub := routes.PlainReadingsSub.WithHandler(handlers.PrintReading("mqtt5-plain"))
-	if err := plainSub.Register(client); err != nil {
-		return nil, err
-	}
 
-	if _, err := routes.ReadingsWithErrorsPub.Handle(client); err != nil {
+	// sub/plainSub/ReadingsWithErrorsPub are 3 real, already-shipped
+	// leaves sharing ONE client. sub (routes.SensorDataSub) declares a
+	// RELATIVE topic ("data") — Mounted below under a REAL
+	// docs/design/d-0008-declarative-router-groups.md Mount
+	// (events.NewRouter("sensor")), composing back to the SAME,
+	// byte-identical absolute topic ("sensor/data") this broker has
+	// always used — a genuine prefix restructuring (unlike the Group-
+	// only integration this Router replaced). plainSub/
+	// ReadingsWithErrorsPub stay Group'd ALONGSIDE the Mount in the SAME
+	// tree (empty outer prefix — their own topics are unrelated,
+	// "sensor/plain"/"sensors/{sensorID}/readings" respectively, so they
+	// are NOT Mounted themselves) — demonstrating a REAL mix of BOTH
+	// roles (subscribe, subscribe, publish) via RouterEntry.Role, and
+	// proving SubscribeBoundMW-attached bound-class middleware (sub's
+	// API-key security) composes UNTOUCHED under a Router — Router only
+	// ever composes reusable-class middleware, never bound-class.
+	// .Tags(...) groups all 3 visibly in the AsyncAPI spec.
+	sensorRouter := events.NewRouter("").
+		Tags("sensor-network").
+		Mount(events.NewRouter("sensor").Route(sub)).
+		Route(plainSub).
+		Route(routes.ReadingsWithErrorsPub)
+	if err := sensorRouter.Register(client); err != nil {
 		return nil, err
 	}
 

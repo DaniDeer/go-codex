@@ -4,8 +4,8 @@
 // Demonstrates: Client.Attach preferred workflow, the handle-based escape
 // hatch (OnError, wildcard subscription, multi-format), the domain-
 // boundary pipeline (MeasurementEvent → TimeSeriesRecord → AlertEvent),
-// and channel-BOUND security (routes.NewAPIKeyAuthMW) via
-// handlers.MQTTSecurityImpl.
+// and channel-BOUND security (auth.NewAPIKeyAuthMW) via
+// auth.MQTTSecurityImpl.
 package mqttbroker
 
 import (
@@ -16,6 +16,7 @@ import (
 
 	adaptermqtt "github.com/DaniDeer/go-codex/adapters/mqtt"
 	"github.com/DaniDeer/go-codex/api/events"
+	"github.com/DaniDeer/go-codex/examples/events-api/auth"
 	"github.com/DaniDeer/go-codex/examples/events-api/handlers"
 	"github.com/DaniDeer/go-codex/examples/events-api/routes"
 	pahomqtt "github.com/eclipse/paho.mqtt.golang"
@@ -30,11 +31,11 @@ type Built struct {
 }
 
 // Build attaches routes.SensorDataSub (secured, via
-// handlers.MQTTSecurityImpl closed over a credential), routes.
+// auth.MQTTSecurityImpl closed over a credential), routes.
 // MeasurementSub+MeasurementAlertPub (domain-boundary pipeline), and
 // routes.WildcardSub (wildcard subscription) onto a fresh in-process mock
 // client. credential is the API key this "connection" authenticates with
-// (see handlers.MQTTSecurityImpl's own closure-pattern doc comment).
+// (see auth.MQTTSecurityImpl's own closure-pattern doc comment).
 func Build(credential string, store *handlers.TimeSeriesStore, threshold float64) (*Built, error) {
 	client := NewMockClient()
 
@@ -53,10 +54,15 @@ func Build(credential string, store *handlers.TimeSeriesStore, threshold float64
 		return nil, err
 	}
 
+	// routes.SensorDataSub declares a RELATIVE topic ("data") — Mounted
+	// below under a REAL docs/design/d-0008-declarative-router-groups.md
+	// Mount (events.NewRouter("sensor")), composing back to the SAME,
+	// byte-identical absolute topic ("sensor/data") this broker has
+	// always used (mirrors mqtt5broker/broker.go's own identical Mount).
 	sub := routes.SensorDataSub.
-		SubscribeBoundMW(routes.NewAPIKeyAuthMW(handlers.MQTTSecurityImpl(credential))).
+		SubscribeBoundMW(auth.NewAPIKeyAuthMW(auth.MQTTSecurityImpl(credential))).
 		WithHandler(handlers.PrintReading("mqtt"))
-	if err := sub.Register(eventsClient); err != nil {
+	if err := events.NewRouter("sensor").Route(sub).Register(eventsClient); err != nil {
 		return nil, err
 	}
 

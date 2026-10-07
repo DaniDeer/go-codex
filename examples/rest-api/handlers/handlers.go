@@ -118,22 +118,6 @@ func MakeProfileHandler() func(context.Context, routes.ProfileReq) (routes.User,
 	}
 }
 
-// MakeLoginHandler issues a mock bearer token for a known username/password
-// pair — "alice"/"secret" gets a profile-scoped token, "admin"/"secret"
-// gets a profile+admin-scoped token.
-func MakeLoginHandler() func(context.Context, routes.LoginReq) (routes.TokenResp, error) {
-	return func(_ context.Context, req routes.LoginReq) (routes.TokenResp, error) {
-		switch {
-		case req.Username == "alice" && req.Password == "secret":
-			return routes.TokenResp{Token: "valid-user-token"}, nil
-		case req.Username == "admin" && req.Password == "secret":
-			return routes.TokenResp{Token: "valid-admin-token"}, nil
-		default:
-			return routes.TokenResp{}, routes.InvalidCredentialsError{Err: fmt.Errorf("invalid credentials")}
-		}
-	}
-}
-
 // MakeAdminActionHandler performs a mock privileged action.
 func MakeAdminActionHandler() func(context.Context, routes.AdminActionReq) (routes.AdminActionResp, error) {
 	return func(_ context.Context, req routes.AdminActionReq) (routes.AdminActionResp, error) {

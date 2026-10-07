@@ -7,8 +7,9 @@ import (
 
 	mqtt5adapter "github.com/DaniDeer/go-codex/adapters/mqtt5"
 	"github.com/DaniDeer/go-codex/api/reqreply"
+	"github.com/DaniDeer/go-codex/examples/reqreply-api/auth"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/mqtt5server"
-	"github.com/DaniDeer/go-codex/examples/reqreply-api/observability"
+	"github.com/DaniDeer/go-codex/examples/reqreply-api/observer"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/routes"
 )
 
@@ -28,23 +29,31 @@ import (
 //     reused, unchanged, across adapters (mirrors its own doc comment).
 //  2. SecuredComputeRoute with BOTH a reusable-class security Fn
 //     (validBearerCredFn, reused from demo_route_level_security_
-//     credential_error.go, via .Use(routes.BearerAuthMw.WithSend(...)))
+//     credential_error.go, via .Use(auth.BearerAuthMw.WithSend(...)))
 //     AND the general-purpose observer ClientMW attached together —
 //     proving the two mechanisms compose freely on the client side
 //     exactly as they already do server-side.
-//  3. Printing the shared [observability.DemoObserver]'s accumulated
+//  3. Printing the shared [observer.DemoObserver]'s accumulated
 //     Summary() — confirming events recorded by the ADAPTER layer
 //     (adapters/mqtt5's/adapters/zeromq's own existing RecordRequest
 //     calls, already reachable because [reqreply.Observability] injects
 //     the SAME obs into ctx) landed in the SAME Observer value
 //     [reqreply.Observability] itself was constructed with.
-func demoObserverMiddleware(ctx context.Context, obs *observability.DemoObserver, mqtt5Built *mqtt5server.Built, mqtt5Client, zeromqClient *reqreply.Client) {
+func demoObserverMiddleware(ctx context.Context, obs *observer.DemoObserver, mqtt5Built *mqtt5server.Built, mqtt5Client, zeromqClient *reqreply.Client) {
 	fmt.Println("\n── Demo 11: general-purpose observer middleware (.HandleMW/.ClientMW) ──")
 
+	// ComputeRoute is Mounted under the shared "compute" Router (docs/
+	// design/d-0008-declarative-router-groups.md) on both mqtt5server
+	// and zeromqserver — compose the SAME relative topic ("add") back
+	// to "compute/add" via ClientHandle(WithRouter(...)) once, reused
+	// for BOTH clients below.
+	computeRouter := reqreply.NewRouter("compute")
+
 	fmt.Println("\n  → ComputeRoute + .ClientMW(nil, reqreply.Observability) via mqtt5:")
-	observedRoute := routes.ComputeRoute.
-		ClientMW(nil, reqreply.Observability[routes.ComputeReq, routes.ComputeResp](obs))
-	respAny, err := mqtt5Client.Call(ctx, observedRoute, routes.ComputeReq{X: 3, Y: 4})
+	observedHandle := routes.ComputeRoute.
+		ClientMW(nil, reqreply.Observability[routes.ComputeReq, routes.ComputeResp](obs)).
+		ClientHandle(reqreply.WithRouter(computeRouter))
+	respAny, err := mqtt5Client.Call(ctx, observedHandle, routes.ComputeReq{X: 3, Y: 4})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "unexpected error: %v\n", err)
 		os.Exit(1)
@@ -53,7 +62,7 @@ func demoObserverMiddleware(ctx context.Context, obs *observability.DemoObserver
 	fmt.Printf("  ✓ compute(3 + 4) = %d (mqtt5, logged via shared Observer)\n", resp.Sum)
 
 	fmt.Println("\n  → the SAME reqreply.Observability[Req,Resp] implementation, via zeromq:")
-	respAny, err = zeromqClient.Call(ctx, observedRoute, routes.ComputeReq{X: 5, Y: 6})
+	respAny, err = zeromqClient.Call(ctx, observedHandle, routes.ComputeReq{X: 5, Y: 6})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "unexpected error: %v\n", err)
 		os.Exit(1)
@@ -62,15 +71,16 @@ func demoObserverMiddleware(ctx context.Context, obs *observability.DemoObserver
 	fmt.Printf("  ✓ compute(5 + 6) = %d (zeromq, same decorator reused unchanged)\n", resp.Sum)
 
 	fmt.Println("\n  → SecuredComputeRoute: security ClientMW + observer ClientMW composed together:")
-	securedObservedRoute := routes.SecuredComputeRoute.
-		Use(routes.BearerAuthMw.WithSend(validBearerCredFn)).
-		ClientMW(nil, reqreply.Observability[routes.ComputeReq, routes.ComputeResp](obs))
+	securedObservedHandle := routes.SecuredComputeRoute.
+		Use(auth.BearerAuthMw.WithSend(validBearerCredFn)).
+		ClientMW(nil, reqreply.Observability[routes.ComputeReq, routes.ComputeResp](obs)).
+		ClientHandle(reqreply.WithRouter(computeRouter))
 	securedClient := reqreply.NewClient()
 	if err := securedClient.Attach(mqtt5adapter.NewClientTransport(mqtt5adapter.ClientTransportOptions{Client: mqtt5Built.Broker, Router: mqtt5Built.Router})); err != nil {
 		fmt.Fprintf(os.Stderr, "unexpected error attaching client: %v\n", err)
 		os.Exit(1)
 	}
-	respAny, err = securedClient.Call(ctx, securedObservedRoute, routes.ComputeReq{X: 9, Y: 10})
+	respAny, err = securedClient.Call(ctx, securedObservedHandle, routes.ComputeReq{X: 9, Y: 10})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "unexpected error: %v\n", err)
 		os.Exit(1)

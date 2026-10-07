@@ -2421,7 +2421,19 @@ func (p Publisher[T]) WithOptions(opts any) Publisher[T] {
 // requiring a panic for the equivalent case — docs/design/d-0003-codec-
 // declared-middlewares.md's Addendum 7, Phase A Finding 1), Handle is ALREADY
 // fallible on every call, so this is just a normal, early-returned error.
-func (s Subscriber[T]) Handle(client *Client) (*ChannelHandle[T], error) {
+//
+// opts is OPTIONAL — currently only [WithRouter], for a channel Mounted
+// under a REAL (non-empty) [Router] prefix elsewhere, so a standalone
+// Handle call outside that Router composes the SAME absolute topic the
+// Router's own Register would have produced.
+func (s Subscriber[T]) Handle(client *Client, opts ...HandleOpt) (*ChannelHandle[T], error) {
+	if len(opts) > 0 {
+		var r routable = s
+		for _, o := range opts {
+			r = o.applyHandle(r)
+		}
+		s = r.(Subscriber[T])
+	}
 	if s.buildErr != nil {
 		return nil, s.buildErr
 	}
@@ -2430,9 +2442,16 @@ func (s Subscriber[T]) Handle(client *Client) (*ChannelHandle[T], error) {
 
 // Handle builds a fresh, independent [ChannelHandle] for p's publish-side
 // declaration. See [Subscriber.Handle]'s doc comment for the shared
-// nil-client/dedup/unconditional-validation/fresh-handle/buildErr
+// nil-client/dedup/unconditional-validation/fresh-handle/buildErr/opts
 // contract.
-func (p Publisher[T]) Handle(client *Client) (*ChannelHandle[T], error) {
+func (p Publisher[T]) Handle(client *Client, opts ...HandleOpt) (*ChannelHandle[T], error) {
+	if len(opts) > 0 {
+		var r routable = p
+		for _, o := range opts {
+			r = o.applyHandle(r)
+		}
+		p = r.(Publisher[T])
+	}
 	if p.buildErr != nil {
 		return nil, p.buildErr
 	}

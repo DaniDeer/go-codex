@@ -15,17 +15,31 @@
 //	                       declarations across all three transports
 //	                       simultaneously (see demo_spec_printing_asyncapi.go,
 //	                       which makes this concrete).
-//	handlers/            — SERVER-side business logic (subscribe
-//	                       handlers, domain transforms, security
-//	                       implementations), adapter-agnostic — except
-//	                       handlers/security.go, which necessarily has ONE
+//	auth/                — a SELF-CONTAINED auth module: codecs +
+//	                       middleware declarations + verifier/handler
+//	                       IMPLEMENTATIONS + auth-flow demo channels
+//	                       (GrantedScopesChannel/Sub/Pub) all together —
+//	                       models how a real service would factor out a
+//	                       reusable auth library. Has ONE verifier
 //	                       function PER ADAPTER since each pub/sub
 //	                       adapter's SubscribeMW-recognized security shape
 //	                       is genuinely different (mqtt v3's raw
 //	                       pahomqtt.Message vs. mqtt5's *pahomqtt5.Publish
-//	                       vs. zeromq's no-raw-message-at-all).
-//	observability/       — this example's OWN [stats.Observer]
-//	                       implementation ([observability.DemoObserver]),
+//	                       vs. zeromq's no-raw-message-at-all). routes/
+//	                       imports auth.X to ATTACH its middleware to
+//	                       plain business channels (one-way dependency,
+//	                       no cycle).
+//	tracing/             — a SELF-CONTAINED, generic (T-agnostic)
+//	                       reusable-class middleware module
+//	                       (ReusablePresenceMw) — logs an optional
+//	                       "X-Demo-Trace-Id" User Property, attachable to
+//	                       ANY channel without per-channel wrapping, the
+//	                       pub/sub analogue of examples/rest-api's
+//	                       requestid/ package.
+//	handlers/            — SERVER-side business logic (subscribe
+//	                       handlers, domain transforms), adapter-agnostic.
+//	observer/             — this example's OWN [stats.Observer]
+//	                       implementation ([observer.DemoObserver]),
 //	                       kept separate from handlers/ (per-channel
 //	                       business logic) — the shipped, library-owned
 //	                       [events.Observability] (core)/thinned
@@ -68,13 +82,13 @@ import (
 	"os"
 	"time"
 
-	"github.com/DaniDeer/go-codex/examples/events-api/observability"
+	"github.com/DaniDeer/go-codex/examples/events-api/observer"
 	"github.com/DaniDeer/go-codex/stats"
 )
 
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	obs := observability.NewDemoObserver(logger)
+	obs := observer.NewDemoObserver(logger)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -106,7 +120,9 @@ func main() {
 	demoObservabilityMiddleware(ctx, obs)
 	demoCapabilityMechanism(ctx)
 	demoSpecPrintingAsyncAPI()
+	demoServeSpecPublish(ctx)
 	demoEventsRouterGroups()
+	demoSensorsStaticPrefixGroup()
 
 	subCount, pubCount, rejCount, capCount := obs.Summary()
 	fmt.Println("═══════════════════════════════════════════════════════")

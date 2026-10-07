@@ -359,6 +359,39 @@ func TestWithHandleCallback_FiresOnRegister(t *testing.T) {
 	}
 }
 
+func TestRoute_WithOpt_AttachesHandleCallbackToAlreadyDeclaredRoute(t *testing.T) {
+	// Mirrors the real examples/rest-api/chiserver scenario: a route
+	// declared ONCE in a shared, transport-agnostic var (no
+	// WithHandleCallback at declaration time) later needs a
+	// server-local handle-recovery hook attached — without
+	// re-declaring its method/path/codecs/RouteMeta from scratch.
+	declared := newRouterTestRoute("GET", "/x").WithHandler(routerTestHandler)
+
+	var got *rest.RouteHandle[routerTestReq, routerTestResp]
+	decorated := declared.WithOpt(rest.WithHandleCallback(
+		func(h *rest.RouteHandle[routerTestReq, routerTestResp]) { got = h },
+	))
+
+	server := rest.NewServer(rest.Info{Title: "t", Version: "1"})
+	if err := decorated.Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if got == nil {
+		t.Fatal("want WithHandleCallback (attached via WithOpt) to fire")
+	}
+
+	// The ORIGINAL, undecorated value must remain untouched — Route is
+	// immutable, same guarantee every other decoration method provides.
+	server2 := rest.NewServer(rest.Info{Title: "t2", Version: "1"})
+	got = nil
+	if err := declared.Register(server2); err != nil {
+		t.Fatalf("Register (original): %v", err)
+	}
+	if got != nil {
+		t.Error("original, undecorated Route must NOT have the callback attached")
+	}
+}
+
 func TestClientHandle_WithRouter_MatchesRegisteredPath(t *testing.T) {
 	route := newRouterTestRoute("GET", "/users")
 	rt := rest.NewRouter("/api/v1")
@@ -394,5 +427,56 @@ func TestClientHandle_ZeroArgs_StillCompilesAndWorks(t *testing.T) {
 	handle := route.ClientHandle()
 	if handle == nil {
 		t.Fatal("want non-nil handle")
+	}
+}
+
+func TestRouter_Tags_AccumulateNotOverwrite(t *testing.T) {
+	rt := rest.NewRouter("/api").Tags("a").Tags("b").Route(newRouterTestRoute("GET", "/x"))
+	entries := rt.Routes()
+	tags := entries[0].Tags
+	if len(tags) != 2 || tags[0] != "a" || tags[1] != "b" {
+		t.Errorf("want both tags accumulated, got %v", tags)
+	}
+}
+
+func TestRouter_Tags_SurviveLeafsOwnRouteMeta(t *testing.T) {
+	route := rest.NewRoute[routerTestReq, routerTestResp]("GET", "/x", routerTestReqCodec, routerTestRespCodec,
+		rest.RouteMeta{OperationID: "x", Tags: []string{"own-tag"}},
+	).WithHandler(routerTestHandler)
+	rt := rest.NewRouter("/api").Tags("router-tag").Route(route)
+
+	entries := rt.Routes()
+	tags := entries[0].Tags
+	if len(tags) != 2 || tags[0] != "router-tag" || tags[1] != "own-tag" {
+		t.Errorf("want [router-tag own-tag] (Router's own first, then the leaf's), got %v", tags)
+	}
+
+	server := rest.NewServer(rest.Info{Title: "t", Version: "1"})
+	if err := rt.Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+}
+
+func TestRouter_Tags_AccumulateAcrossMount(t *testing.T) {
+	inner := rest.NewRouter("/users").Tags("users").Route(newRouterTestRoute("GET", "/{id}"))
+	outer := rest.NewRouter("/api").Tags("api").Mount(inner)
+
+	entries := outer.Routes()
+	tags := entries[0].Tags
+	if len(tags) != 2 || tags[0] != "api" || tags[1] != "users" {
+		t.Errorf("want [api users] (outermost ancestor first), got %v", tags)
+	}
+}
+
+func TestRouter_Tags_RoutesEquivalentToWalk(t *testing.T) {
+	rt := rest.NewRouter("/api").Tags("t1").Route(newRouterTestRoute("GET", "/a"))
+	var walked []rest.RouterEntry
+	_ = rt.Walk(func(e rest.RouterEntry) error {
+		walked = append(walked, e)
+		return nil
+	})
+	routes := rt.Routes()
+	if len(walked[0].Tags) != len(routes[0].Tags) || walked[0].Tags[0] != routes[0].Tags[0] {
+		t.Errorf("Walk and Routes disagree on Tags: %v vs %v", walked[0].Tags, routes[0].Tags)
 	}
 }

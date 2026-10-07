@@ -5,8 +5,8 @@ import (
 	"fmt"
 
 	"github.com/DaniDeer/go-codex/api/rest"
+	"github.com/DaniDeer/go-codex/examples/rest-api/auth"
 	restapiclient "github.com/DaniDeer/go-codex/examples/rest-api/client"
-	"github.com/DaniDeer/go-codex/examples/rest-api/routes"
 )
 
 // demoLogin exercises POST /login (public, no security) against BOTH
@@ -22,12 +22,12 @@ func demoLogin(chiClient, nethttpClient *rest.Client) {
 		{"net/http", nethttpClient},
 	}
 	for _, cl := range clients {
-		respAny, err := cl.c.Call(context.Background(), restapiclient.LoginRoute, routes.LoginReq{Username: "alice", Password: "secret"})
+		respAny, err := cl.c.Call(context.Background(), restapiclient.LoginRoute, auth.LoginReq{Username: "alice", Password: "secret"})
 		if err != nil {
 			fmt.Printf("  [%s] login (alice) error: %v\n", cl.label, err)
 			continue
 		}
-		fmt.Printf("  [%s] login (alice) → token=%q\n", cl.label, respAny.(routes.TokenResp).Token)
+		fmt.Printf("  [%s] login (alice) → token=%q\n", cl.label, respAny.(auth.TokenResp).Token)
 	}
 	fmt.Println()
 
@@ -39,14 +39,14 @@ func demoLogin(chiClient, nethttpClient *rest.Client) {
 	// before this fix.
 	fmt.Println("=== POST /login (invalid credentials — rest.ErrorPattern) ===")
 	for _, cl := range clients {
-		_, err := cl.c.Call(context.Background(), restapiclient.LoginRoute, routes.LoginReq{Username: "alice", Password: "wrong"})
+		_, err := cl.c.Call(context.Background(), restapiclient.LoginRoute, auth.LoginReq{Username: "alice", Password: "wrong"})
 		if err == nil {
 			fmt.Printf("  [%s] ✗ expected an error, got none\n", cl.label)
 			continue
 		}
-		payload, ok := rest.ErrorPatternAs[routes.LoginErrorPayload](err)
+		payload, ok := rest.ErrorPatternAs[auth.LoginErrorPayload](err)
 		if !ok {
-			fmt.Printf("  [%s] ✗ expected routes.LoginErrorPayload, got: %v\n", cl.label, err)
+			fmt.Printf("  [%s] ✗ expected auth.LoginErrorPayload, got: %v\n", cl.label, err)
 			continue
 		}
 		fmt.Printf("  [%s] ✓ recovered typed 401 payload client-side: message=%q\n", cl.label, payload.Message)

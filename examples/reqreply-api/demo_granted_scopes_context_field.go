@@ -5,10 +5,11 @@ import (
 	"fmt"
 
 	"github.com/DaniDeer/go-codex/api/reqreply"
+	"github.com/DaniDeer/go-codex/examples/reqreply-api/auth"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/routes"
 )
 
-// demoGrantedScopesContextField exercises routes.ComputeGSRoute — the
+// demoGrantedScopesContextField exercises auth.ComputeGSRoute — the
 // BOUND reqreply.BoundMiddleware[Req,In,Out] (routes.
 // NewGrantedScopesComputeMw) dispatched through HandleBoundMW,
 // with a REAL GrantedScopes-carrying Out enforced by
@@ -22,8 +23,14 @@ import (
 func demoGrantedScopesContextField(ctx context.Context, zeromqClient *reqreply.Client) {
 	fmt.Println("\n── Demo: GrantedScopes + ContextField (reqreply, zeromq, bound HandleMW) ──")
 
+	// auth.ComputeGSRoute is Mounted under zeromqserver.Build's shared
+	// "compute" Router (docs/design/d-0008-declarative-router-groups.md)
+	// — its declared topic is now the RELATIVE "gs", composed back to
+	// "compute/gs" only via ClientHandle(WithRouter(...)).
+	gsHandle := auth.ComputeGSRoute.ClientHandle(reqreply.WithRouter(reqreply.NewRouter("compute")))
+
 	fmt.Println("  → correct scope granted (compute:write):")
-	resp, err := zeromqClient.Call(ctx, routes.ComputeGSRoute, routes.ComputeGSReq{X: 3, Y: 4, Token: "valid-compute-token"})
+	resp, err := zeromqClient.Call(ctx, gsHandle, auth.ComputeGSReq{X: 3, Y: 4, Token: "valid-compute-token"})
 	if err != nil {
 		fmt.Printf("  error: %v\n", err)
 	} else {
@@ -31,7 +38,7 @@ func demoGrantedScopesContextField(ctx context.Context, zeromqClient *reqreply.C
 	}
 
 	fmt.Println("  → known token, WRONG scope granted (profile, not compute:write):")
-	_, err = zeromqClient.Call(ctx, routes.ComputeGSRoute, routes.ComputeGSReq{X: 3, Y: 4, Token: "valid-readonly-token"})
+	_, err = zeromqClient.Call(ctx, gsHandle, auth.ComputeGSReq{X: 3, Y: 4, Token: "valid-readonly-token"})
 	if err != nil {
 		fmt.Printf("  rejected as expected: %v\n", err)
 	} else {

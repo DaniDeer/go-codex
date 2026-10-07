@@ -3,14 +3,32 @@
 // route/middleware declarations, business logic, and server assembly are
 // genuinely separable, adapter-agnostic concerns:
 //
-//	routes/         — domain models, codecs, and THREE middleware kinds
-//	                  (security, observer, general-purpose timing) — every
-//	                  rest.Route is an UNATTACHED spec value here, no
-//	                  handler/HandleMW/ClientMW yet.
-//	handlers/       — SERVER-side business logic + security enforcement,
-//	                  adapter-agnostic (works identically whether nethttp
-//	                  or chi supplies the *http.Request).
-//	chiserver/      — assembles routes/+handlers/ onto adapters/chi.
+//	routes/         — domain models, codecs, and PLAIN business route
+//	                  declarations — every rest.Route is an UNATTACHED
+//	                  spec value here, no handler/HandleMW/ClientMW yet.
+//	auth/           — a SELF-CONTAINED auth module: codecs + middleware
+//	                  declarations + verifier/handler IMPLEMENTATIONS +
+//	                  auth-flow demo ROUTES (LoginRoute, ComputeGSRoute)
+//	                  all together — models how a real service would
+//	                  factor out a reusable auth library. routes/ imports
+//	                  auth.X to ATTACH its middleware to plain business
+//	                  routes (one-way dependency, no cycle).
+//	observer/       — a reusable, "standardized" observer/timing
+//	                  middleware module (general-purpose timing Fn +
+//	                  CountingObserver) — this example's own mock stands
+//	                  in for what would be a real OTEL integration reused
+//	                  across services.
+//	requestid/      — a SELF-CONTAINED, generic (Req-agnostic) reusable-
+//	                  class middleware module (ReusableRequestIDMw) —
+//	                  logs an optional "X-Demo-Request-Id" header,
+//	                  attachable to ANY route without per-route wrapping,
+//	                  demonstrating Class 1 (reusable) of the bound-
+//	                  middleware split alongside auth/'s Class 2 (bound)
+//	                  examples.
+//	handlers/       — SERVER-side business logic, adapter-agnostic (works
+//	                  identically whether nethttp or chi supplies the
+//	                  *http.Request).
+//	chiserver/      — assembles routes/+auth/+handlers/ onto adapters/chi.
 //	nethttpserver/  — assembles the SAME routes/+handlers/ onto
 //	                  adapters/nethttp — proving the declarations
 //	                  themselves are adapter-agnostic.
@@ -42,6 +60,7 @@ import (
 	restapiclient "github.com/DaniDeer/go-codex/examples/rest-api/client"
 	"github.com/DaniDeer/go-codex/examples/rest-api/handlers"
 	"github.com/DaniDeer/go-codex/examples/rest-api/nethttpserver"
+	"github.com/DaniDeer/go-codex/examples/rest-api/observer"
 	"github.com/DaniDeer/go-codex/stats"
 )
 
@@ -50,7 +69,7 @@ func main() {
 	slog.SetDefault(logger)
 
 	store := handlers.NewUserStore()
-	metrics := &CountingObserver{}
+	metrics := &observer.CountingObserver{}
 	obs := stats.NewFanout(metrics, stats.NewLoggingObserver(logger.With("component", "http")))
 
 	// ── Build both servers — SAME routes/handlers, different adapters ──────

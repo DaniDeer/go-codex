@@ -30,7 +30,7 @@ import (
 //     not just name-matched (see the second demonstration below).
 //   - stats.CapabilityObserver.RecordCapabilityApplied reports each
 //     exercised capability through the SAME shared Observer this example's
-//     other demos already use (see observability.DemoObserver).
+//     other demos already use (see observer.DemoObserver).
 //
 // A zeromq.Capability (e.g. zeromq.HWM) cannot be supplied to
 // mqtt5.SubscribeOptions.Capabilities — the Go compiler rejects the
@@ -41,12 +41,21 @@ func demoCapabilityMechanism(ctx context.Context) {
 	router := mqtt5broker.NewMockRouter()
 	broker := mqtt5broker.NewMockBroker(router)
 
+	// routes.CapabilityChannel declares a RELATIVE topic ("capability")
+	// — Mounted below under a REAL docs/design/
+	// d-0008-declarative-router-groups.md Mount
+	// (events.NewRouter("sensor")), composing back to the SAME,
+	// byte-identical absolute topic ("sensor/capability") this demo has
+	// always used (isolated-only on this scratch client, so a real Mount
+	// is unambiguous here).
+	sensorRouter := events.NewRouter("sensor")
+
 	// Coverage check: the channel declares a requirement for "QoS" (see
 	// routes.CapabilityChannel's events.RequireQoS) — the subscribe side's
 	// supplied Capabilities (below) satisfies it. This SAME check runs
 	// AUTOMATICALLY inside ServeSubscribers; called here too just to show
 	// it explicitly.
-	reqHandle, err := routes.CapabilitySub.Handle(nil)
+	reqHandle, err := routes.CapabilitySub.Handle(nil, events.WithRouter(sensorRouter))
 	if err != nil {
 		fmt.Printf("  [error] Handle: %v\n", err)
 		return
@@ -85,7 +94,7 @@ func demoCapabilityMechanism(ctx context.Context) {
 	}).WithOptions(mqtt5adapter.SubscribeOptions{
 		Capabilities: []mqtt5adapter.Capability{mqtt5adapter.QoSAtLeastOnce},
 	})
-	if err := sub.Register(evClient); err != nil {
+	if err := sensorRouter.Route(sub).Register(evClient); err != nil {
 		fmt.Printf("  [error] Register: %v\n", err)
 		return
 	}
@@ -104,10 +113,14 @@ func demoCapabilityMechanism(ctx context.Context) {
 	// NewPublishTransport/events.PublishHandle escape hatch needed here
 	// anymore — the api-layer-owned Client is the ONLY thing this demo
 	// touches for both directions.
-	pub := routes.CapabilityPub.WithOptions(mqtt5adapter.PublishOptions[routes.SensorReading]{
+	pubHandle, err := routes.CapabilityPub.WithOptions(mqtt5adapter.PublishOptions[routes.SensorReading]{
 		Capabilities: []mqtt5adapter.Capability{mqtt5adapter.Retained(true)},
-	})
-	if err := evClient.Publish(ctx, pub,
+	}).Handle(nil, events.WithRouter(sensorRouter))
+	if err != nil {
+		fmt.Printf("  [error] building capability publish handle: %v\n", err)
+		return
+	}
+	if err := evClient.Publish(ctx, pubHandle,
 		routes.SensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5},
 	); err != nil {
 		fmt.Printf("  [error] Publish: %v\n", err)

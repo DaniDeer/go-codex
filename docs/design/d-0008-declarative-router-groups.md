@@ -6,7 +6,14 @@
 > correctly deferred, zero new work promoted; item 3 spun off a separate
 > idea-stage doc, [`typed-router-groups.md`](../roadmap/typed-router-groups.md))
 > — see `api/rest/router.go`/`api/events/router.go`/`api/reqreply/router.go`,
-> `docs/features/router-groups.md`.
+> `docs/features/router-groups.md`. **`Router.Tags`/`WithRouterTags`
+> (deferred-item 4) was LATER implemented** once a concrete driver (a
+> pass retrofitting Router into 3 real, already-shipped example
+> registration call sites) surfaced — see item 4 below for the shipped
+> design (simpler than originally assessed) and `api/reqreply.Route.WithOpt`
+> (a small, separately-motivated general escape hatch for attaching any
+> `RouteOpt`, e.g. `WithHandleCallback`, to an already-declared Route
+> value — found necessary during that same pass).
 > PROMOTED from `docs/roadmap/declarative-router-groups.md` — this doc
 > establishes a pattern all 3 messaging APIs (`rest`/`events`/`reqreply`)
 > now follow (declarative, chi-inspired path/topic-prefix grouping +
@@ -855,13 +862,70 @@ Register(client)` once. Nothing about declaring a channel's topic, codec,
 or handler changes; Router is purely an additive, optional grouping/
 assembly layer on top of an unchanged declaration step.
 
-**No `ClientHandle`/`WithRouter` equivalent needed for `api/events`** (see
-`api/rest`'s own section above for the full problem/resolution) —
-confirmed N/A: events has no bare, zero-argument accessor the way REST's/
-reqreply's `.ClientHandle()` is. `Subscriber.Handle(client)`/
-`Publisher.Handle(client)` ALREADY take a builder/client argument, so
-there is no "zero external input, can never reflect a Router's prefix"
-accessor for this specific gap to apply to.
+**UPDATE (superseded this round) — `events.WithRouter` IS needed, and now
+ships.** The original finding above ("No `ClientHandle`/`WithRouter`
+equivalent needed for `api/events`") assumed `Subscriber.Handle(client)`/
+`Publisher.Handle(client)` already taking a builder/client argument was
+sufficient protection — but this missed a REAL gap, found during
+`examples/events-api`'s own Router stress-test (retrofitting a genuine
+Mount, not just a Group, onto `routes.SensorDataChannel`): a bare
+`Publisher[T]`/`Subscriber[T]` value passed DIRECTLY to
+`Client.Publish`/`Client.Subscribe` (or `.Handle(client)` with NO
+Router-awareness) still only ever rebuilds from the LEAF's OWN declared
+topic — exactly REST's/reqreply's already-solved
+`ClientHandle`/`WithRouter` problem, just reached through a different
+call shape (`Client.Publish(ctx, pub, msg)` instead of
+`Client.Call(ctx, route, req)`).
+
+**Resolution — `events.HandleOpt`/`events.WithRouter`, mirroring REST's/
+reqreply's shape exactly:**
+
+```go
+// HandleOpt configures a Subscriber.Handle/Publisher.Handle call —
+// currently only WithRouter.
+type HandleOpt interface{ applyHandle(r routable) routable }
+
+// WithRouter tells Subscriber.Handle/Publisher.Handle to apply rt's
+// CURRENT accumulated prefix+middleware before building the handle.
+func WithRouter(rt Router) HandleOpt
+```
+
+`Subscriber.Handle`/`Publisher.Handle` both gained a variadic
+`opts ...HandleOpt` parameter (backward compatible — existing
+zero-opt callers are unaffected). A caller who needs a Router-composed
+topic for a STANDALONE `Client.Publish`/`Client.Subscribe` call now does:
+
+```go
+handle, err := routes.SensorDataPub.Handle(nil, events.WithRouter(sensorRouter))
+// handle.Topic == "sensor/data", matching whatever rt.Route(pub) +
+// rt.Register(client) would have registered server-side.
+err = client.Publish(ctx, handle, msg) // pre-built *ChannelHandle[T], not the bare Publisher
+```
+
+**A second, equally-necessary fix**: all 3 adapters'
+(`adapters/mqtt5`, `adapters/mqtt`, `adapters/zeromq`) internal
+`recoverHandle` helper — which `Client.Publish`/`Client.Subscribe`
+delegate to via their attached `Transport` — ONLY ever accepted a bare
+`Subscriber[T]`/`Publisher[T]` (calling `.Handle(client)` on it with ZERO
+opts, discarding any pre-built handle's Router composition entirely).
+Fixed to dual-mode accept EITHER a bare `Subscriber[T]`/`Publisher[T]`
+(unchanged, calls `.Handle(client)` itself) OR an ALREADY-BUILT
+`*events.ChannelHandle[T]` (used directly — the caller already composed
+it via `.Handle(client, events.WithRouter(rt))`) — mirroring
+`adapters/nethttp`'s own `recoverClientRouteHandleValue`'s identical
+dual-mode acceptance for `api/rest`'s `Route`/`*RouteHandle` pair.
+Without this adapter-side fix, `events.WithRouter` alone would have been
+inert: the pre-built handle's composed topic would have been silently
+discarded and re-derived from the bare, un-composed declaration.
+
+Confirmed via `TestHandle_WithRouter_MatchesRegisteredTopic_Subscribe`/
+`_Publish`/`_DoesNotMutateOriginal` (`api/events/router_test.go`) plus
+one `TestAttach_ClientPublish_AcceptsPreBuiltHandle_WithRouter` test per
+adapter (`adapters/mqtt5`, `adapters/mqtt`, `adapters/zeromq`),
+end-to-end verified via `examples/events-api`'s own "sensor" Mount
+(`routes.SensorDataChannel`, shared across `mqtt5broker`/`mqttbroker`/
+`zeromqbroker`) and `demo_security_subscribemw.go`'s 3
+previously-bare-Publisher Publish call sites.
 
 ## Design decisions — resolved for `api/reqreply` (closed this round, via `ask_user`)
 
@@ -1036,33 +1100,34 @@ decisions below:
    not an incremental addition to today's Router, so it does NOT belong
    as a bullet in this doc. Flagged instead as its own, separate idea-
    stage roadmap doc: [`typed-router-groups.md`](../roadmap/typed-router-groups.md).
-4. **Spec-rendering auto-tagging (`WithRouterTags`) — STAYS DEFERRED,
-   now with a concrete design sketch AND a found gotcha that raises the
-   effort estimate from LOW to MEDIUM.** All 3 shipped `RouterOpt`
-   interfaces are confirmed real, reserved extension points sitting
-   unused, and `RouteMeta.Tags`/`ChannelMeta.Tags`/`Subscribe.Tags`/
-   `Publish.Tags`/reqreply's `RouteMeta.Tags` already exist and already
-   render into each pattern's spec — so the RENDERING target is ready.
-   But: `RouteMeta.applyRoute` is confirmed a WHOLE-STRUCT OVERWRITE
-   (`rb.meta = m`, `api/rest/builder.go` line ~270), NOT an incremental
-   merge — meaning the existing middleware-style trick (Router PREPENDS
-   its own opt into the leaf's `opts`, so it runs BEFORE the leaf's own)
-   does NOT generalize to Tags: if the leaf's OWN `RouteMeta{Tags: [...]}`
-   opt runs afterward in the same opts loop, it would OVERWRITE
-   `rb.meta` entirely, silently discarding the Router's contribution.
-   Correct design direction (for a future implementer): Router-
-   contributed tags must be merged AFTER the leaf's own opts loop fully
-   resolves `rb.meta` — either a NEW `routable` interface method (e.g.
-   `withRouterTags(tags []string) routable`) invoked separately from
-   `withRouterPrefix` and consulted by each leaf's own `Register`/
-   `Handle` body, or an extension to `withRouterPrefix`'s existing
-   signature with the leaf appending tags post-opts-loop. Either way,
-   this touches `Route.Register`/`Subscriber.Handle`/`Publisher.Handle`
-   in all 3 packages, not just `router.go`. Accumulate semantics (Router
-   tags + leaf's own, never replace) — consistent with `Use`/`With`.
-   Still no concrete driving use case to build against, so NOT
-   implemented this round — but the next attempt starts from this sketch,
-   not from zero.
+4. **Spec-rendering auto-tagging (`WithRouterTags`) — IMPLEMENTED, in a
+   LATER round, once a concrete driver (an example-integration pass)
+   surfaced.** Originally deferred here with a design sketch assessing
+   the effort as MEDIUM (assuming a NEW `routable` interface method or a
+   `Route.Register`/`Subscriber.Handle`/`Publisher.Handle` body change
+   would be needed to avoid `RouteMeta.applyRoute`'s whole-struct-
+   overwrite gotcha). The ACTUAL fix shipped turned out simpler than that
+   assessment: APPEND (never prepend) a dedicated `routerTagsOpt`/
+   `channelTagsOpt` to the END of the leaf's own opts list — by the time
+   its `applyRoute`/`applyChannel` runs, the leaf's own (possibly-absent)
+   `RouteMeta`/`ChannelMeta` opt has ALREADY resolved `rb.meta`/
+   `cb.meta`, so the appended opt reads the CURRENT `.Tags`, prepends the
+   Router's own tags, and writes the merged result back — entirely
+   contained inside each package's `router.go` + the `withRouterPrefix`
+   signature (which gained a 3rd `tags []string` parameter), with ZERO
+   changes to `Register`/`Handle` BODIES in any package. Shipped:
+   `Router.Tags(tags ...string) Router` (accumulating, mirrors `.Use()`),
+   `routable.tags() []string` (mirrors `middlewareNames()`),
+   `RouterEntry.Tags`. Events targets `ChannelMeta.Tags` (channel-item
+   level) only, not `Subscribe.Tags`/`Publish.Tags`. `SSERoute` (REST)
+   gained the signature change (interface compliance) but its own
+   `tags()`/merge-opt still work identically, since `SSERoute` shares the
+   SAME `RouteOpt`/`routeBuilder` plumbing as `Route`. Verified against 3
+   REAL example integrations (not just unit tests) — see `examples/rest-api/chiserver/server.go`,
+   `examples/reqreply-api/mqtt5server/server.go`,
+   `examples/events-api/mqtt5broker/broker.go` — each prints a real,
+   merged Router+leaf tag list in its own live AsyncAPI/OpenAPI spec
+   output.
 5. **`ports.Pattern` integration — STAYS a future question, with a
    CORRECTED (less optimistic) framing and a found blocker.** The prior
    pass's wording overstated this: "`ports.RESTPattern`/`EventPattern`/

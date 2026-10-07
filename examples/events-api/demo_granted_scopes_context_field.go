@@ -7,14 +7,14 @@ import (
 
 	mqtt5adapter "github.com/DaniDeer/go-codex/adapters/mqtt5"
 	"github.com/DaniDeer/go-codex/api/events"
-	"github.com/DaniDeer/go-codex/examples/events-api/handlers"
+	"github.com/DaniDeer/go-codex/examples/events-api/auth"
 	"github.com/DaniDeer/go-codex/examples/events-api/mqtt5broker"
 	"github.com/DaniDeer/go-codex/examples/events-api/routes"
 )
 
-// demoGrantedScopesContextField exercises routes.GrantedScopesSub — the
-// channel-BOUND class (routes.NewGrantedScopesSensorMw, built via
-// events.BoundSecuritySubscribeMiddleware with handlers.VerifyAPIKeyGS
+// demoGrantedScopesContextField exercises auth.GrantedScopesSub — the
+// channel-BOUND class (auth.NewGrantedScopesSensorMw, built via
+// events.BoundSecuritySubscribeMiddleware with auth.VerifyAPIKeyGS
 // embedded at construction), attached via Subscriber.SubscribeBoundMW,
 // with a REAL GrantedScopes-carrying Out enforced by
 // middleware.CheckScopes, AND the authenticated API key propagated to
@@ -37,9 +37,9 @@ func demoGrantedScopesContextField(ctx context.Context) {
 		}
 
 		var rejected error
-		sub := routes.GrantedScopesSub.
-			SubscribeBoundMW(routes.NewGrantedScopesSensorMw(handlers.VerifyAPIKeyGS)).
-			WithHandler(handlers.PrintReadingGS(label)).
+		sub := auth.GrantedScopesSub.
+			SubscribeBoundMW(auth.NewGrantedScopesSensorMw(auth.VerifyAPIKeyGS)).
+			WithHandler(auth.PrintReadingGS(label)).
 			WithOptions(mqtt5adapter.SubscribeOptions{
 				OnError: func(e mqtt5adapter.SubscribeError) { rejected = e },
 			})
@@ -53,7 +53,7 @@ func demoGrantedScopesContextField(ctx context.Context) {
 		go func() { _ = client.ServeSubscribers(subCtx) }()
 		router.WaitHandler("sensor/data-gs")
 
-		pub := routes.GrantedScopesPub.WithOptions(mqtt5adapter.PublishOptions[routes.SensorReading]{
+		pub := auth.GrantedScopesPub.WithOptions(mqtt5adapter.PublishOptions[routes.SensorReading]{
 			UserProperties: []mqtt5adapter.UserProperty{{Key: "X-API-Key", Value: apiKey}},
 		})
 		if err := client.Publish(ctx, pub, routes.SensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 19.5}); err != nil {

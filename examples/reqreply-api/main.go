@@ -2,13 +2,26 @@
 // assemble workflow as a small, real, multi-package project — not one big
 // file — mirroring examples/rest-api's own layout:
 //
-//	routes/              — domain models, codecs, and route declarations
-//	                       (plain routes, route-level security, global-
-//	                       security-only) — every reqreply.Route is an
+//	routes/              — domain models, codecs, and PLAIN business route
+//	                       declarations — every reqreply.Route is an
 //	                       UNATTACHED spec value here, no handler yet.
+//	auth/                — a SELF-CONTAINED auth module: codecs +
+//	                       middleware declarations + verifier/handler
+//	                       IMPLEMENTATIONS + auth-flow demo routes
+//	                       (ComputeGSRoute) all together — models how a
+//	                       real service would factor out a reusable auth
+//	                       library. routes/ imports auth.X to ATTACH its
+//	                       middleware to plain business routes (one-way
+//	                       dependency, no cycle).
+//	propertyaxis/        — a SELF-CONTAINED, non-security property-
+//	                       vocabulary-axis module (NewTenantPropertyMw +
+//	                       its In/Out vocabulary/codecs + ProcessTenant
+//	                       implementation) — the enrichment-middleware
+//	                       analogue of auth/, kept separate since it is
+//	                       NOT a credential/security concern.
 //	handlers/            — SERVER-side business logic, adapter-agnostic.
-//	observability/        — this example's [stats.Observer] implementation
-//	                       ([observability.DemoObserver]), kept out of
+//	observer/             — this example's [stats.Observer] implementation
+//	                       ([observer.DemoObserver]), kept out of
 //	                       routes/ (pure declaration) and handlers/
 //	                       (per-route business logic) — the shipped,
 //	                       library-owned [reqreply.Observability] general-
@@ -48,7 +61,7 @@ import (
 
 	reqreplyapiclient "github.com/DaniDeer/go-codex/examples/reqreply-api/client"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/mqtt5server"
-	"github.com/DaniDeer/go-codex/examples/reqreply-api/observability"
+	"github.com/DaniDeer/go-codex/examples/reqreply-api/observer"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/zeromqserver"
 	"github.com/DaniDeer/go-codex/stats"
 )
@@ -66,7 +79,7 @@ func main() {
 	// here, before any server/demo runs; mqtt5server.Build in particular
 	// relies SOLELY on this ctx injection (see its own doc comment for
 	// why it attaches no per-route observer helper).
-	obs := observability.NewDemoObserver(slog.Default())
+	obs := observer.NewDemoObserver(slog.Default())
 	ctx = stats.WithObserver(ctx, obs)
 
 	// ── Build every server ──────────────────────────────────────────────
@@ -105,6 +118,7 @@ func main() {
 	demoUserPropertyParamMiddleware(ctx, mqtt5Built)
 	demoPropertyAxisMiddleware(ctx, mqtt5Built, zeromqBuilt)
 	demoSpecPrintingAsyncAPI(mqtt5Built.Server)
+	demoServeSpecCall(ctx, mqtt5Client, mqtt5Built.SpecHandle)
 	demoRouterGroups()
 	demoZeroMQDealerRouterVariant(ctx, obs)
 	demoCrossAPIOAuth2Sharing(ctx, zeromqBuilt)

@@ -58,7 +58,7 @@ var ComputeRespCodec = codex.Struct[ComputeResp](
 // surfaces as a hard MissingSecurityMiddlewareError instead of silently
 // ignoring it.
 var ComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
-	"compute/add",
+	"add",
 	ComputeReqCodec, ComputeRespCodec,
 	reqreply.RouteMeta{OperationID: "computeAdd", Summary: "Add two integers.", Security: []route.SecurityRequirement{}},
 )
@@ -74,7 +74,7 @@ var ComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 // time too, and also demonstrates CheckCapabilityCoverage rejecting an
 // INSUFFICIENT level (via mqtt5.QoS's Level() method).
 var CapabilityRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
-	"compute/capability-add",
+	"capability-add",
 	ComputeReqCodec, ComputeRespCodec,
 	reqreply.RouteMeta{OperationID: "computeCapabilityAdd", Summary: "Add two integers, requiring at-least-once QoS.", Security: []route.SecurityRequirement{}},
 	reqreply.RequireQoS(reqreply.AtLeastOnce),
@@ -84,13 +84,13 @@ var CapabilityRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 // Demo 4 (concurrent multi-route dispatch) 3+ distinct routes registered
 // against ONE Server, each independently answering calls concurrently.
 var DoubleRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
-	"compute/double",
+	"double",
 	ComputeReqCodec, ComputeRespCodec,
 	reqreply.RouteMeta{OperationID: "computeDouble", Summary: "Double the sum of two integers."},
 )
 
 var TripleRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
-	"compute/triple",
+	"triple",
 	ComputeReqCodec, ComputeRespCodec,
 	reqreply.RouteMeta{OperationID: "computeTriple", Summary: "Triple the sum of two integers."},
 )
@@ -109,7 +109,7 @@ var TripleRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 // reqreply.WithSecurityScheme pattern, which cannot be paired against a
 // HandleMW/ClientMW implementation).
 var SecuredComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
-	"compute/secured-add",
+	"secured-add",
 	ComputeReqCodec, ComputeRespCodec,
 	reqreply.RouteMeta{OperationID: "securedComputeAdd", Summary: "Add two integers — requires a bearer token."},
 )
@@ -126,7 +126,7 @@ var SecuredComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 // Security here is nil AND never declared via .Use() either) — while a
 // SEPARATE .Use()+.ClientMW()'d variant (built in the demo itself) does.
 var GlobalOnlyComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
-	"compute/global-secured-add",
+	"global-secured-add",
 	ComputeReqCodec, ComputeRespCodec,
 	reqreply.RouteMeta{OperationID: "globalSecuredComputeAdd", Summary: "Add two integers — secured only via Server.AddGlobalSecurity."},
 )
@@ -147,51 +147,25 @@ var GlobalOnlyComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 // security, and declares no HandleMW implementation for "bearerAuth" (it
 // would otherwise fail [reqreply.CheckCoverage] at Serve time).
 var HeaderParamComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
-	"compute/header-param-add",
+	"header-param-add",
 	ComputeReqCodec, ComputeRespCodec,
 	reqreply.RouteMeta{OperationID: "headerParamComputeAdd", Summary: "Add two integers — requires an X-API-Key User Property.", Security: []route.SecurityRequirement{}},
 )
 
-// TenantIn/TenantAck are the property-axis Middleware's own In/Out types
-// (docs/design/d-0003-codec-declared-middlewares.md's Addendum) — INDEPENDENT of
-// ComputeReq/ComputeResp, mirroring how a declared Middleware[In,Out]
-// carries its OWN vocabulary alongside (not instead of) the route's own
-// request/response types.
-type TenantIn struct {
-	TenantID string
-}
-
-type TenantAck struct {
-	Ack string
-}
-
-var TenantInCodec = codex.Struct[TenantIn](
-	codex.RequiredField("tenantId", codex.String(),
-		func(v TenantIn) string { return v.TenantID },
-		func(v *TenantIn, s string) { v.TenantID = s },
-	),
-)
-
-var TenantAckCodec = codex.Struct[TenantAck](
-	codex.RequiredField("ack", codex.String(),
-		func(v TenantAck) string { return v.Ack },
-		func(v *TenantAck, s string) { v.Ack = s },
-	),
-)
-
-// PropertyAxisComputeRoute demonstrates docs/roadmap/reqreply-codec-
-// declared-middleware.md's NEW property vocabulary axis
+// PropertyAxisComputeRoute demonstrates docs/design/d-0003-codec-
+// declared-middlewares.md's Addendum's property vocabulary axis
 // (WithRequestProperty/WithResponseProperty) — declared PRISTINE here,
-// exactly like HeaderParamComputeRoute above: `routes.NewTenantPropertyMw`'s
+// exactly like HeaderParamComputeRoute above: `propertyaxis.NewTenantPropertyMw`'s
 // attachment (via .HandleBoundMW) happens separately, ONCE PER
 // ADAPTER (mqtt5server/server.go AND zeromqserver/server.go), from the
-// SAME declaration + handlers.ProcessTenant implementation — this route
-// is registered on BOTH transports to prove the declaration is genuinely
-// portable, not mqtt5-specific. Explicitly
-// opts OUT of mqtt5server's Server.AddGlobalSecurity ("bearerAuth") via
-// an empty Security slice, same rationale as HeaderParamComputeRoute.
+// SAME declaration + implementation (both now bundled in the
+// propertyaxis/ package) — this route is registered on BOTH transports
+// to prove the declaration is genuinely portable, not mqtt5-specific.
+// Explicitly opts OUT of mqtt5server's Server.AddGlobalSecurity
+// ("bearerAuth") via an empty Security slice, same rationale as
+// HeaderParamComputeRoute.
 var PropertyAxisComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
-	"compute/property-axis-add",
+	"property-axis-add",
 	ComputeReqCodec, ComputeRespCodec,
 	reqreply.RouteMeta{OperationID: "propertyAxisComputeAdd", Summary: "Add two integers — demonstrates the property vocabulary axis (WithRequestProperty/WithResponseProperty).", Security: []route.SecurityRequirement{}},
 )
@@ -286,8 +260,17 @@ var RateLimitErrorCodec = codex.Struct[RateLimitError](
 )
 
 // RateLimitComputeRoute demonstrates reqreply.ErrorPattern's Direct mode.
+// Declares a RELATIVE topic ("add-ratelimit-demo") — Mounted under a REAL
+// docs/design/d-0008-declarative-router-groups.md Mount
+// (reqreply.NewRouter("compute")) in demo_error_pattern.go's own
+// isolated scratch server, composing back to the SAME, byte-identical
+// absolute topic ("compute/add-ratelimit-demo") this demo has always
+// used — safe for a real Mount since this route is registered ONLY on
+// that one isolated scratch server (never shared with mqtt5server.Build
+// or any other registration point, unlike ErrorPatternComputeRoute
+// below).
 var RateLimitComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
-	"compute/add-ratelimit-demo",
+	"add-ratelimit-demo",
 	ComputeReqCodec, ComputeRespCodec,
 	reqreply.RouteMeta{OperationID: "computeAddRateLimitDemo", Summary: "Add two integers (ErrorPattern Direct-mode demo).", Security: []route.SecurityRequirement{}},
 	reqreply.ErrorPattern[RateLimitError, RateLimitError](RateLimitErrorCodec),
@@ -307,9 +290,15 @@ func (TimeoutError) Error() string { return "downstream call timed out" }
 // DeadLetterComputeRoute declares ONLY reqreply.DeadLetter (no
 // ErrorPattern) — see demo_error_pattern.go's DLQ demo, which contrasts
 // this route's undeclared-error-type behavior against
-// ErrorPatternComputeRoute's matched-type behavior.
+// ErrorPatternComputeRoute's matched-type behavior. Declares a RELATIVE
+// topic ("add-deadletter-demo") — Mounted under a REAL Router in its own
+// isolated scratch server (same rationale as RateLimitComputeRoute
+// above). reqreply.DeadLetter's OWN topic string is a SEPARATE,
+// independently-declared literal (unaffected by Mount composition,
+// which only transforms the ROUTE's own topic field) — stays the SAME
+// absolute "compute/add-deadletter-demo/dlq" either way.
 var DeadLetterComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
-	"compute/add-deadletter-demo",
+	"add-deadletter-demo",
 	ComputeReqCodec, ComputeRespCodec,
 	reqreply.RouteMeta{OperationID: "computeAddDeadLetterDemo", Summary: "Add two integers (DeadLetter demo).", Security: []route.SecurityRequirement{}},
 	reqreply.DeadLetter("compute/add-deadletter-demo/dlq"),
@@ -347,9 +336,12 @@ var SecurityRejectedPayloadCodec = codex.Struct[SecurityRejectedPayload](
 // reqreply.ErrorPattern[reqreply.SecurityError, SecurityRejectedPayload].
 // Declared PRISTINE here (no .Use() baked in) — the demo-specific Fn is
 // attached at the demo's own registration site instead, since this route
-// is used by exactly ONE demo.
+// is used by exactly ONE demo. Declares a RELATIVE topic
+// ("add-security-errorpattern-demo") — Mounted under a REAL Router in
+// its own isolated scratch server (same rationale as RateLimitComputeRoute
+// above).
 var SecuredErrorPatternRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
-	"compute/add-security-errorpattern-demo",
+	"add-security-errorpattern-demo",
 	ComputeReqCodec, ComputeRespCodec,
 	reqreply.RouteMeta{OperationID: "computeAddSecurityErrorPatternDemo", Summary: "Add two integers (security-middleware ErrorPattern demo)."},
 	reqreply.ErrorPattern[reqreply.SecurityError, SecurityRejectedPayload](SecurityRejectedPayloadCodec,
@@ -409,7 +401,7 @@ var OAuthComputeRespCodec = codex.Struct[OAuthComputeResp](
 // SecuredComputeRoute's own
 // "pristine base, secured at the attachment site" separation.
 var OAuthComputeRoute = reqreply.NewRoute[OAuthComputeReq, OAuthComputeResp](
-	"compute/oauth-add",
+	"oauth-add",
 	OAuthComputeReqCodec, OAuthComputeRespCodec,
 	reqreply.RouteMeta{OperationID: "oauthComputeAdd", Summary: "Add two integers — requires an OAuth2 compute:write scope."},
 )

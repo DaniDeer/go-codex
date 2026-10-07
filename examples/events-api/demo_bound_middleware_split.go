@@ -8,10 +8,12 @@ import (
 	mqtt5adapter "github.com/DaniDeer/go-codex/adapters/mqtt5"
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/examples/events-api/auth"
 	"github.com/DaniDeer/go-codex/examples/events-api/handlers"
 	"github.com/DaniDeer/go-codex/examples/events-api/mqtt5broker"
-	"github.com/DaniDeer/go-codex/examples/events-api/observability"
+	"github.com/DaniDeer/go-codex/examples/events-api/observer"
 	"github.com/DaniDeer/go-codex/examples/events-api/routes"
+	"github.com/DaniDeer/go-codex/examples/events-api/tracing"
 )
 
 // demoBoundMiddlewareSplit exercises routes/bound_middleware_split_demo.go
@@ -23,7 +25,7 @@ import (
 //     via plain .Use(). No declared Subscribe.Security at all.
 //  2. BOUND ALONE (Class 2) — already fully exercised by
 //     demoSecuritySubscribeMW/demoGrantedScopesContextField above, where
-//     [routes.NewAPIKeyAuthMW] is reused UNCHANGED across BOTH
+//     [auth.NewAPIKeyAuthMW] is reused UNCHANGED across BOTH
 //     [routes.SensorDataSub] AND [routes.SecuredReadingsSub] — not
 //     repeated here.
 //  3. StackedDemoSub — reusable AND bound attached TOGETHER on ONE
@@ -34,7 +36,7 @@ import (
 //     mirrors demoObservabilityMiddleware's own attachment exactly) —
 //     injecting obs (the SAME Observer instance used throughout this
 //     example) into ctx BEFORE either the reusable or bound Fn runs, so
-//     routes.ReusablePresenceMw/routes.NewAPIKeyAuthMW's own rejection
+//     tracing.ReusablePresenceMw/auth.NewAPIKeyAuthMW's own rejection
 //     path (if it were to reject) would report through the identical
 //     stats.ObserverFromContext mechanism. Attach order on
 //     StackedDemoSub is `.SubscribeMW(nil, observability).Use(reusable).
@@ -43,7 +45,7 @@ import (
 //     (route/channel-specific) — proving all THREE attachment KINDS
 //     (unpaired general-purpose, reusable Class 1, bound Class 2)
 //     compose on one subscriber, in declaration order.
-func demoBoundMiddlewareSplit(ctx context.Context, obs *observability.DemoObserver) {
+func demoBoundMiddlewareSplit(ctx context.Context, obs *observer.DemoObserver) {
 	fmt.Println("--- Demo: bound-middleware-split — reusable alone / bound alone / stacked ---")
 
 	// ── 1. Reusable class ALONE ──────────────────────────────────────────
@@ -58,7 +60,7 @@ func demoBoundMiddlewareSplit(ctx context.Context, obs *observability.DemoObserv
 
 		sub := routes.ReusableAloneSub.
 			SubscribeMW(nil, events.Observability[routes.SensorReading](obs)).
-			Use(routes.ReusablePresenceMw).
+			Use(tracing.ReusablePresenceMw).
 			WithHandler(handlers.PrintReading("mqtt5-reusable-alone"))
 		if err := sub.Register(client); err != nil {
 			fmt.Printf("  [error] Register: %v\n", err)
@@ -95,11 +97,11 @@ func demoBoundMiddlewareSplit(ctx context.Context, obs *observability.DemoObserv
 		var rejected error
 		sub := routes.StackedDemoSub.
 			SubscribeMW(nil, events.Observability[routes.SensorReading](obs)).
-			Use(routes.ReusablePresenceMw).
-			SubscribeBoundMW(routes.NewAPIKeyAuthMW(handlers.MQTT5SecurityImpl).
+			Use(tracing.ReusablePresenceMw).
+			SubscribeBoundMW(auth.NewAPIKeyAuthMW(auth.MQTT5SecurityImpl).
 				WithSubscribeProperty(events.NewPropertyParam("X-API-Key", codex.String(),
-					func(in routes.APIKeyAuthIn) string { return in.Key },
-					func(in *routes.APIKeyAuthIn, v string) { in.Key = v },
+					func(in auth.APIKeyAuthIn) string { return in.Key },
+					func(in *auth.APIKeyAuthIn, v string) { in.Key = v },
 				))).
 			WithHandler(handlers.PrintReading("mqtt5-stacked")).
 			WithOptions(mqtt5adapter.SubscribeOptions{

@@ -31,7 +31,7 @@ Key patterns:
 - A general-purpose timing middleware (`routes.TimingServerMW`/`routes.TimingClientMW`) shown on BOTH server (`HandleMW(nil, ...)`) and client (`ClientMW(nil, ...)`) roles — the general-purpose `ClientMW` hook (via `reflect.MakeFunc`)
 - `CountingObserver` — in-memory metrics (swap for Prometheus in production), wired via `nethttp.Observability`/`chiadapter.Observability`
 - `handlers.WithDomainLogging` decorator — separates logging concern from handler body
-- A hand-rolled `GET /openapi.yaml` endpoint on both servers — go-codex has no declarative "serve my own spec" convenience yet (see `docs/roadmap/openapi-spec-endpoint.md`)
+- `GET /openapi.yaml` on both servers via `rest.Server.ServeSpec` — go-codex's native self-serving spec endpoint, see [Self-Serving Spec Endpoint (ServeSpec)](../features/spec-endpoint.md)
 
 → [examples/rest-api](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-api)
 

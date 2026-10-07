@@ -62,6 +62,7 @@ See `examples/rest-api/demo_router_groups.go` for a runnable version.
 |---|---|
 | `NewRouter(prefix string, opts ...RouterOpt) Router` | Declares a Router with a STATIC path prefix (no `{var}` placeholders for v1). |
 | `Use(mws ...middleware.RouteMiddleware) Router` | Appends to the Router's own PERMANENT middleware list — dispatched BEFORE every grouped leaf's own middleware (Router-first ordering). |
+| `Tags(tags ...string) Router` | Appends to the Router's own PERMANENT tag list — merged into every grouped leaf's OWN spec tags (Router's own first, then the leaf's own). Accumulates like `Use`; no one-shot variant. |
 | `With(mws ...middleware.RouteMiddleware) Router` | One-shot: applies ONLY to the NEXT `.Route()` call, never leaks to a subsequent sibling. |
 | `Route(r routable) Router` | Attaches a leaf (`Route[Req,Resp]`/`SSERoute[Req,Event]`). |
 | `Mount(sub Router) Router` | Attaches a nested sub-Router — a NEW path segment + a fresh middleware stack for everything under it. |
@@ -88,6 +89,32 @@ listRoute := rest.NewRoute[ListReq, []Item]("GET", "", listReqCodec, itemsCodec,
 ).WithHandler(listItems)
 ```
 
+## Grouping spec tags with `Router.Tags`
+
+`Router.Tags` merges INTO each grouped leaf's own spec tags, rather than
+replacing them — Router-contributed tags appear first, then the leaf's
+own:
+
+```go
+itemsRouter := rest.NewRouter("/items").
+    Use(authMiddleware).
+    Tags("items").
+    Route(listRoute). // leaf's own RouteMeta.Tags: []string{"inventory"}
+    Route(createRoute)
+
+// Rendered spec tags for listRoute: ["items", "inventory"]
+```
+
+This works even though a leaf's own `RouteMeta`/`ChannelMeta` opt
+OVERWRITES its tags field wholesale (`rb.meta = m`) — `Router.Tags` is
+applied as a merge-opt APPENDED after the leaf's own opts resolve, not a
+naive prepend, so neither side's tags get silently discarded. `Routes()`/
+`Walk()`'s `RouterEntry.Tags` shows the same fully-merged list, for
+inspection before registering anything.
+
+`api/events` targets `ChannelMeta.Tags` (channel-item level) only, not the
+separate `Subscribe.Tags`/`Publish.Tags` (operation level) fields.
+
 ## Client-side: avoiding a silent path mismatch
 
 `Route.ClientHandle()` is a bare accessor — it has no way to know a Router
@@ -100,6 +127,26 @@ handle, so client and server never disagree about the final path:
 // registers through.
 handle := route.ClientHandle(rest.WithRouter(serverSideRouterVar))
 ```
+
+`api/events`'s `Subscriber.Handle(client)`/`Publisher.Handle(client)` has
+the IDENTICAL gap for a bare Publisher/Subscriber passed DIRECTLY to
+`Client.Publish`/`Client.Subscribe` (or `.Handle(client)` with no Router
+awareness) — fixed the SAME way, via a variadic `events.HandleOpt`:
+
+```go
+// sensorRouter is the SAME Router the broker package Mounts
+// routes.SensorDataSub under.
+handle, err := routes.SensorDataPub.Handle(nil, events.WithRouter(sensorRouter))
+// handle.Topic == "sensor/data"
+err = client.Publish(ctx, handle, reading) // pre-built handle, not the bare Publisher
+```
+
+`adapters/mqtt5`/`adapters/mqtt`/`adapters/zeromq`'s `Client.Publish`/
+`Client.Subscribe` all accept EITHER a bare `Subscriber[T]`/`Publisher[T]`
+(unchanged — calls `.Handle(client)` internally) OR an already-built
+`*events.ChannelHandle[T]` (used directly, as above) — mirroring
+`api/rest`'s/`api/reqreply`'s identical `Route`/`*RouteHandle` dual-mode
+acceptance.
 
 ## Errors
 
@@ -155,7 +202,7 @@ See `examples/events-api/demo_router_groups.go` for a runnable version.
 | `RouterPrefixError` field | `ComposedPath` | `ComposedTopic` |
 | `registerAny` delegates to | `Route.Register`/`RegisterHandle` | `Subscriber.Register` (NOT `Handle` — Register is the handler-requiring, `Client.SubscriberEntries`-populating path) / `Publisher.Handle` (no `Register` method exists for `Publisher`) |
 | Handle-callback opts | `WithHandleCallback[Req,Resp]` only | `WithHandleCallback[T]` (both roles) **+** `WithSubscribeHandleCallback[T]`/`WithPublishHandleCallback[T]` (role-targeted) — mirrors `Formats`/`SubscribeFormats`/`PublishFormats`' additive 3-way split |
-| `ClientHandle`'s `WithRouter` opt | Yes (`Route.ClientHandle(rest.WithRouter(rt))`) | N/A — no bare zero-argument accessor exists (`Subscriber.Handle(client)`/`Publisher.Handle(client)` already take a builder argument) |
+| `WithRouter` opt | Yes (`Route.ClientHandle(rest.WithRouter(rt))`) | Yes (`Subscriber.Handle(client, events.WithRouter(rt))`/`Publisher.Handle(client, events.WithRouter(rt))` — closes the SAME gap REST's `ClientHandle(WithRouter(...))` does, for a bare Publisher/Subscriber passed directly to `Client.Publish`/`Client.Subscribe`; `adapters/mqtt5`/`adapters/mqtt`/`adapters/zeromq` accept the resulting `*events.ChannelHandle[T]` directly) |
 
 ### Role-targeted handle callbacks
 
@@ -221,11 +268,35 @@ See `examples/reqreply-api/demo_router_groups.go` for a runnable version.
 |---|---|---|---|
 | Leaf type | `Route[Req,Resp]`/`SSERoute[Req,Event]` | `Subscriber[T]`/`Publisher[T]` | `Route[Req,Resp]` |
 | Second axis | HTTP method | role (subscribe/publish) | **none** — a Route is already the complete leaf |
-| `RouterEntry` fields | `Method`, `Path`, `MiddlewareNames` | `Role`, `Path`, `MiddlewareNames` | `Path`, `MiddlewareNames` only |
+| `RouterEntry` fields | `Method`, `Path`, `MiddlewareNames`, `Tags` | `Role`, `Path`, `MiddlewareNames`, `Tags` | `Path`, `MiddlewareNames`, `Tags` |
 | `Group`'s scoping criterion | method-adjacent (chi precedent) | role-adjacent (naming convention) | chi's ORIGINAL baseline — any user-chosen subset sharing a prefix |
 | `Register` target | `*rest.Server` | `*events.Client` | `*reqreply.Builder` (alias of `*reqreply.Server`) |
 | `WithHandleCallback` | fires once | fires per role (3-way split) | fires once (same shape as REST) |
-| `ClientHandle`'s `WithRouter` opt | Yes | N/A | Yes (same shape as REST) |
+| `WithRouter` opt | Yes (`ClientHandle`) | Yes (`Subscriber.Handle`/`Publisher.Handle`) | Yes (`ClientHandle`, same shape as REST) |
+
+### Attaching `WithHandleCallback` to an already-declared `Route` via `WithOpt`
+
+`WithHandleCallback` (and every other `RouteOpt`) is normally passed to
+`NewRoute(...)`'s variadic opts at DECLARATION time. A route declared
+ONCE in a shared, transport-agnostic package (e.g. a project's own
+`routes/` package, reused by multiple server-assembly packages) often
+can't know a specific server's handle-recovery closure in advance.
+`Route.WithOpt(opt RouteOpt) Route[Req, Resp]` is a general escape hatch
+for attaching any `RouteOpt` to an ALREADY-DECLARED value, after the
+fact — without re-declaring its topic/codecs/`RouteMeta` from scratch:
+
+```go
+// routes.ComputeRoute is declared ONCE, shared across transports.
+var securedHandle *reqreply.RouteHandle[ComputeReq, ComputeResp]
+decorated := routes.SecuredComputeRoute.
+    WithHandler(handlers.Add).
+    WithOpt(reqreply.WithHandleCallback(func(h *reqreply.RouteHandle[ComputeReq, ComputeResp]) {
+        securedHandle = h
+    }))
+```
+
+See `examples/reqreply-api/mqtt5server/server.go` for the real,
+motivating use case.
 
 ### `WithRouter` and multi-level `Mount` — a known limitation (shared with `api/rest`)
 

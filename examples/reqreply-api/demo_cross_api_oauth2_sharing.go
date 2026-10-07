@@ -6,7 +6,9 @@ import (
 	"os"
 	"strings"
 
+	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/api/rest"
+	"github.com/DaniDeer/go-codex/examples/reqreply-api/auth"
 	reqreplyapiclient "github.com/DaniDeer/go-codex/examples/reqreply-api/client"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/routes"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/zeromqserver"
@@ -14,13 +16,13 @@ import (
 
 // demoCrossAPIOAuth2Sharing is the concrete answer to "can a REST OAuth2
 // scheme and a zeromq reqreply OAuth2 scheme come from the SAME source
-// of truth?": YES — routes.NewOAuthMwReqreply(...) and routes.OAuthMwREST
+// of truth?": YES — auth.NewOAuthMwReqreply(...) and auth.OAuthMwREST
 // are two DISTINCT Go values (reqreply.BoundMiddleware[OAuthComputeReq,
 // struct{},OAuthOut] and rest.Middleware[struct{},struct{}] respectively
 // — not the same type, cannot be the same value), but both are built
 // from the SAME shared route.SecurityScheme (routes.oauthComputeScheme,
 // via route.OAuth2Scheme) and the SAME shared credential codec
-// (routes.OAuthCodec) — see routes/middleware.go's doc comments for why
+// (auth.OAuthCodec) — see routes/middleware.go's doc comments for why
 // true single-value sharing across api/rest and api/reqreply isn't
 // achievable with the codec-backed Middleware[In,Out] family (each
 // pattern's internal dispatch only recognizes its OWN concrete type) and
@@ -30,15 +32,15 @@ import (
 // credential supplied directly as an ordinary OAuthComputeReq.Token field
 // — zeromq has no property/header side channel, so there is no
 // declarative client-side credential-supply step to demonstrate here
-// (unlike routes.BearerAuthMw's mqtt5 property-merge-field case); the
+// (unlike auth.BearerAuthMw's mqtt5 property-merge-field case); the
 // caller simply sets the field like any other request value.
-// routes.OAuthMwREST attaches to a throwaway, LOCALLY-declared REST
+// auth.OAuthMwREST attaches to a throwaway, LOCALLY-declared REST
 // route (spec-only — no HTTP server needed to prove the point;
 // examples/rest-api already fully covers real REST serving). What CANNOT
 // be shared is the paired SERVER implementation Fn itself: REST's shape
 // needs *http.Request access, zeromq's needs *OAuthComputeReq access —
 // each transport gets its OWN THIN wrapper Fn, both delegating to the
-// SAME shared handlers.VerifyOAuth2Scopes helper. See
+// SAME shared auth.VerifyOAuth2Scopes helper. See
 // docs/features/security.md's "Sharing a security SCHEME across
 // REST/events/reqreply" section for the full write-up this demo backs.
 func demoCrossAPIOAuth2Sharing(ctx context.Context, zeromqBuilt *zeromqserver.Built) {
@@ -52,9 +54,15 @@ func demoCrossAPIOAuth2Sharing(ctx context.Context, zeromqBuilt *zeromqserver.Bu
 		os.Exit(1)
 	}
 
+	// OAuthComputeRoute is Mounted under zeromqserver.Build's shared
+	// "compute" Router (docs/design/d-0008-declarative-router-groups.md)
+	// — its declared topic is now the RELATIVE "oauth-add", composed
+	// back to "compute/oauth-add" only via ClientHandle(WithRouter(...)).
+	oauthHandle := routes.OAuthComputeRoute.ClientHandle(reqreply.WithRouter(reqreply.NewRouter("compute")))
+
 	// ── zeromq side: real, served, called ───────────────────────────────
 	fmt.Println("\n  → zeromq reqreply call WITHOUT a valid OAuth2 token:")
-	_, err = zClient.Call(ctx, routes.OAuthComputeRoute, routes.OAuthComputeReq{X: 3, Y: 4, Token: "expired-token"})
+	_, err = zClient.Call(ctx, oauthHandle, routes.OAuthComputeReq{X: 3, Y: 4, Token: "expired-token"})
 	if err == nil || !strings.Contains(err.Error(), "not recognized") {
 		fmt.Fprintf(os.Stderr, "expected a rejection mentioning an unrecognized token, got: %v\n", err)
 		os.Exit(1)
@@ -62,7 +70,7 @@ func demoCrossAPIOAuth2Sharing(ctx context.Context, zeromqBuilt *zeromqserver.Bu
 	fmt.Printf("  ✓ rejected: %v\n", err)
 
 	fmt.Println("\n  → zeromq reqreply call WITH a valid OAuth2 token:")
-	respAny, err := zClient.Call(ctx, routes.OAuthComputeRoute, routes.OAuthComputeReq{X: 3, Y: 4, Token: "valid-compute-write-token"})
+	respAny, err := zClient.Call(ctx, oauthHandle, routes.OAuthComputeReq{X: 3, Y: 4, Token: "valid-compute-write-token"})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "unexpected error: %v\n", err)
 		os.Exit(1)
@@ -70,14 +78,14 @@ func demoCrossAPIOAuth2Sharing(ctx context.Context, zeromqBuilt *zeromqserver.Bu
 	resp := respAny.(routes.OAuthComputeResp)
 	fmt.Printf("  ✓ compute(3 + 4) = %d (oauth2 compute:write scope granted)\n", resp.Sum)
 
-	// ── REST side: routes.OAuthMwREST, same SCHEME config, declare + register only ──
-	fmt.Println("\n  → routes.OAuthMwREST (same oauth2Compute scheme config as above), attached to a locally-declared REST route:")
+	// ── REST side: auth.OAuthMwREST, same SCHEME config, declare + register only ──
+	fmt.Println("\n  → auth.OAuthMwREST (same oauth2Compute scheme config as above), attached to a locally-declared REST route:")
 	restServer := rest.NewServer(rest.Info{Title: "Compute API (REST, spec-only demo)", Version: "1.0.0"})
 	if err := rest.NewRoute[routes.OAuthComputeReq, routes.OAuthComputeResp](
 		"POST", "/compute/oauth-add",
 		routes.OAuthComputeReqCodec, routes.OAuthComputeRespCodec,
 		rest.RouteMeta{OperationID: "oauthComputeAddREST"},
-	).Use(routes.OAuthMwREST).Register(restServer); err != nil {
+	).Use(auth.OAuthMwREST).Register(restServer); err != nil {
 		fmt.Fprintf(os.Stderr, "unexpected error registering REST route: %v\n", err)
 		os.Exit(1)
 	}

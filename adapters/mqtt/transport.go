@@ -135,22 +135,41 @@ func (t *transport) BindClient(c *events.Client) error {
 	return nil
 }
 
-// recoverHandle calls anyAny's Handle(client) method via reflection —
-// mirrors [adapters/zeromq]'s/[adapters/mqtt5]'s identical helper.
+// recoverHandle accepts EITHER a bare events.Subscriber[T]/
+// events.Publisher[T] (calls its Handle(client) method via reflection) OR
+// an already-built *events.ChannelHandle[T] (used directly, no further
+// Handle() call — the caller already composed it themselves, e.g. via
+// .Handle(client, events.WithRouter(rt))).
 func recoverHandle(kind string, anyAny any, client *events.Client) (reflect.Value, reflect.Value, error) {
 	v := reflect.ValueOf(anyAny)
-	if !v.IsValid() || v.Type().PkgPath() != eventsPkgPath || !strings.HasPrefix(v.Type().Name(), kind+"[") {
+	if !v.IsValid() {
 		return reflect.Value{}, reflect.Value{}, events.TransportTypeMismatchError{
-			Want: fmt.Sprintf("events.%s[T]", kind), Got: fmt.Sprintf("%T", anyAny),
+			Want: fmt.Sprintf("events.%s[T] or *events.ChannelHandle[T]", kind), Got: fmt.Sprintf("%T", anyAny),
 		}
 	}
-	handleMethod := v.MethodByName("Handle")
-	results := handleMethod.Call([]reflect.Value{reflect.ValueOf(client)})
-	if errI, _ := results[1].Interface().(error); errI != nil {
-		return reflect.Value{}, reflect.Value{}, errI
+	t := v.Type()
+	switch {
+	case t.PkgPath() == eventsPkgPath && strings.HasPrefix(t.Name(), kind+"["):
+		handleMethod := v.MethodByName("Handle")
+		results := handleMethod.Call([]reflect.Value{reflect.ValueOf(client)})
+		if errI, _ := results[1].Interface().(error); errI != nil {
+			return reflect.Value{}, reflect.Value{}, errI
+		}
+		handleVal := results[0]
+		return handleVal, handleVal.Elem(), nil
+	case t.Kind() == reflect.Pointer && t.Elem().PkgPath() == eventsPkgPath && strings.HasPrefix(t.Elem().Name(), "ChannelHandle["):
+		// Already a pre-built *events.ChannelHandle[T] (e.g. from
+		// Subscriber.Handle/Publisher.Handle(client, events.WithRouter(rt))
+		// — the caller already composed the Router's prefix themselves) —
+		// use it directly, no re-Handle() call (mirrors
+		// adapters/nethttp.recoverClientRouteHandleValue's identical
+		// dual-mode acceptance for api/rest).
+		return v, v.Elem(), nil
+	default:
+		return reflect.Value{}, reflect.Value{}, events.TransportTypeMismatchError{
+			Want: fmt.Sprintf("events.%s[T] or *events.ChannelHandle[T]", kind), Got: fmt.Sprintf("%T", anyAny),
+		}
 	}
-	handleVal := results[0]
-	return handleVal, handleVal.Elem(), nil
 }
 
 // Publish implements [events.Transport]. Resolves [stats.Observer] from

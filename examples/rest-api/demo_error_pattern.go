@@ -14,6 +14,8 @@ import (
 	chiadapter "github.com/DaniDeer/go-codex/adapters/chi"
 	"github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/api/rest"
+	"github.com/DaniDeer/go-codex/examples/rest-api/auth"
+	"github.com/DaniDeer/go-codex/examples/rest-api/requestid"
 	"github.com/DaniDeer/go-codex/examples/rest-api/routes"
 	"github.com/DaniDeer/go-codex/ports"
 )
@@ -65,7 +67,7 @@ func buildErrorPatternDemoServer() (*rest.Server, *rest.Client, string) {
 		return routes.User{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Name: req.Name, Email: req.Email}, nil
 	}
 
-	must(routes.CreateUserConflictRoute.WithHandler(conflictHandler).Register(b), "register conflict route (Mapped mode)")
+	conflictRoute := routes.CreateUserConflictRoute.WithHandler(conflictHandler)
 
 	rateLimitHandler := func(_ context.Context, req routes.CreateUserReq) (routes.User, error) {
 		if req.Email == "dave@example.com" {
@@ -73,7 +75,7 @@ func buildErrorPatternDemoServer() (*rest.Server, *rest.Client, string) {
 		}
 		return routes.User{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Name: req.Name, Email: req.Email}, nil
 	}
-	must(routes.RateLimitDirectRoute.WithHandler(rateLimitHandler).Register(b), "register rate-limit route (Direct mode)")
+	rateLimitRoute := routes.RateLimitDirectRoute.WithHandler(rateLimitHandler)
 
 	throttledHandler := func(_ context.Context, req routes.CreateUserReq) (routes.User, error) {
 		if req.Email == "eve@example.com" {
@@ -81,29 +83,56 @@ func buildErrorPatternDemoServer() (*rest.Server, *rest.Client, string) {
 		}
 		return routes.User{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Name: req.Name, Email: req.Email}, nil
 	}
-	must(routes.ThrottledStatusRoute.WithHandler(throttledHandler).Register(b), "register throttled route (ErrorStatus)")
+	throttledRoute := routes.ThrottledStatusRoute.WithHandler(throttledHandler)
 
 	// 3 action variants (Respond/Handle/Log) — SAME conflictHandler.
-	must(routes.ConflictRespondRoute.WithHandler(conflictHandler).Register(b), "register conflict-respond route")
+	conflictRespondRoute := routes.ConflictRespondRoute.WithHandler(conflictHandler)
 
 	handleActionErrorHandler := func(w http.ResponseWriter, _ *http.Request, status int, err error) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(`{"handled_by":"Options.ErrorHandler","error":"` + err.Error() + `"}`))
 	}
-	must(routes.ConflictHandleRoute.WithHandler(conflictHandler).
-		WithOptions(chiadapter.Options{ErrorHandler: handleActionErrorHandler}).Register(b), "register conflict-handle route")
-	must(routes.ConflictLogRoute.WithHandler(conflictHandler).
-		WithOptions(chiadapter.Options{ErrorHandler: handleActionErrorHandler}).Register(b), "register conflict-log route")
+	conflictHandleRoute := routes.ConflictHandleRoute.WithHandler(conflictHandler).
+		WithOptions(chiadapter.Options{ErrorHandler: handleActionErrorHandler})
+	conflictLogRoute := routes.ConflictLogRoute.WithHandler(conflictHandler).
+		WithOptions(chiadapter.Options{ErrorHandler: handleActionErrorHandler})
 
 	// Security-middleware + ErrorPattern combo: securityFn ALWAYS rejects
 	// with InsufficientScopeError — proving ErrorPattern intercepts a
 	// security-middleware Fn failure, never reaching conflictHandler at all.
-	securityFn := func(_ context.Context, _ *routes.CreateUserReq, _ routes.AuthIn) (routes.AuthOut, error) {
-		return routes.AuthOut{}, routes.InsufficientScopeError{RequiredScope: "billing"}
+	securityFn := func(_ context.Context, _ *routes.CreateUserReq, _ auth.AuthIn) (auth.AuthOut, error) {
+		return auth.AuthOut{}, routes.InsufficientScopeError{RequiredScope: "billing"}
 	}
-	must(routes.SecuredConflictRoute.WithHandler(conflictHandler).
-		HandleBoundMW(routes.BoundScopeServerMW[routes.CreateUserReq](routes.BillingScopes, securityFn)).Register(b), "register secured-conflict route")
+	securedConflictRoute := routes.SecuredConflictRoute.WithHandler(conflictHandler).
+		HandleBoundMW(auth.BoundScopeServerMW[routes.CreateUserReq](routes.BillingScopes, securityFn))
+
+	// All 7 routes above are intentionally INDEPENDENT, self-descriptive
+	// demo scenarios (flat "/users-*-demo" paths, NOT a true "/users"
+	// sub-resource) — a REAL path-prefix Mount here would be a cosmetic,
+	// meaningless rename (already decided against in an earlier design
+	// round). Still a natural fit for an EMPTY-prefix Router GROUP
+	// though: sharing requestid.ReusableRequestIDMw (a generic,
+	// Req-agnostic reusable-class middleware — see requestid/middleware.go)
+	// and a "error-pattern-demo" Tag ONCE across all 7, plus a Routes()
+	// holistic pre-registration view, rather than registering each route
+	// individually with zero cross-cutting composition shown.
+	errorPatternRouter := rest.NewRouter("").
+		Use(requestid.ReusableRequestIDMw).
+		Tags("error-pattern-demo").
+		Route(conflictRoute).
+		Route(rateLimitRoute).
+		Route(throttledRoute).
+		Route(conflictRespondRoute).
+		Route(conflictHandleRoute).
+		Route(conflictLogRoute).
+		Route(securedConflictRoute)
+
+	fmt.Println("  -- Routes() — holistic, pre-registration view --")
+	for _, e := range errorPatternRouter.Routes() {
+		fmt.Printf("    %-6s %-26s middleware=%v tags=%v\n", e.Method, e.Path, e.MiddlewareNames, e.Tags)
+	}
+	must(errorPatternRouter.Register(b), "register error-pattern-demo Router group")
 
 	router := gochi.NewRouter()
 	addr := mustFreeAddr()
@@ -213,7 +242,7 @@ func demoErrorPatternClientMatchMechanisms() {
 
 	// 2) HandleErrorPattern + Case — switch-like dispatch, first match wins.
 	handled := rest.HandleErrorPattern(err,
-		rest.Case(func(p routes.LoginErrorPayload) { fmt.Println("  ✗ (2) matched wrong Case (LoginErrorPayload)") }),
+		rest.Case(func(p auth.LoginErrorPayload) { fmt.Println("  ✗ (2) matched wrong Case (LoginErrorPayload)") }),
 		rest.Case(func(p routes.ConflictPayload) {
 			fmt.Printf("  ✓ (2) rest.HandleErrorPattern+Case: code=%q\n", p.Code)
 		}),
@@ -248,9 +277,9 @@ func demoErrorPatternMiddlewareCombo() {
 	// securityFn (which ALWAYS rejects) is actually reached — mirrors
 	// demo_violations.go's alwaysGrantAdmin pattern.
 	securedRoute := routes.SecuredConflictRoute.ClientBoundMW(
-		routes.BoundScopeClientMW[routes.CreateUserReq](routes.BillingScopes,
-			func(_ context.Context, _ routes.CreateUserReq) (routes.AuthIn, error) {
-				return routes.AuthIn{Token: "valid-billing-token"}, nil
+		auth.BoundScopeClientMW[routes.CreateUserReq](routes.BillingScopes,
+			func(_ context.Context, _ routes.CreateUserReq) (auth.AuthIn, error) {
+				return auth.AuthIn{Token: "valid-billing-token"}, nil
 			},
 		),
 	)

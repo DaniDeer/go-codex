@@ -1,7 +1,7 @@
 // Package handlers holds SERVER-side business logic (subscribe handlers,
 // domain transforms) — adapter-agnostic, imported by every broker package
 // and demo file. Kept separate from routes/ (pure spec declarations) and
-// observability/ (this example's own stats.Observer implementation),
+// observer/ (this example's own stats.Observer implementation),
 // mirroring examples/reqreply-api's own package layout.
 package handlers
 

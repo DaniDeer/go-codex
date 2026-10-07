@@ -6,7 +6,8 @@ import (
 	"os"
 
 	"github.com/DaniDeer/go-codex/api/reqreply"
-	"github.com/DaniDeer/go-codex/examples/reqreply-api/observability"
+	"github.com/DaniDeer/go-codex/examples/reqreply-api/auth"
+	"github.com/DaniDeer/go-codex/examples/reqreply-api/observer"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/routes"
 )
 
@@ -18,10 +19,10 @@ import (
 //
 //  1. REUSABLE ALONE (Class 1) — already fully exercised by
 //     demoRouteLevelSecurityCredentialError/demoObserverMiddleware above
-//     ([routes.BearerAuthMw], mqtt5's property-decoded credential) — not
+//     ([auth.BearerAuthMw], mqtt5's property-decoded credential) — not
 //     repeated here.
 //  2. BOUND ALONE (Class 2) — already fully exercised by
-//     demoCrossAPIOAuth2Sharing above ([routes.NewOAuthMwReqreply]
+//     demoCrossAPIOAuth2Sharing above ([auth.NewOAuthMwReqreply]
 //     attached to [routes.OAuthComputeRoute], zeromq's in-payload
 //     credential — SERVER-side only, confirmed: there is deliberately NO
 //     BoundClientMiddleware for this case) — not repeated here.
@@ -38,14 +39,19 @@ import (
 //     mirroring demoObserverMiddleware's own 3-way composition, to show
 //     all THREE attachment kinds — reusable, bound, and general-purpose
 //     — working together on one call.
-func demoBoundMiddlewareSplit(ctx context.Context, obs *observability.DemoObserver, mqtt5Client *reqreply.Client) {
+func demoBoundMiddlewareSplit(ctx context.Context, obs *observer.DemoObserver, mqtt5Client *reqreply.Client) {
 	fmt.Println("\n── Demo: bound-middleware-split — reusable + bound STACKED on one route ──")
 
-	stackedRoute := routes.StackedDemoRoute.
-		Use(routes.BearerAuthMw.WithSend(validBearerCredFn)).
-		ClientMW(nil, reqreply.Observability[routes.OAuthComputeReq, routes.OAuthComputeResp](obs))
+	// StackedDemoRoute is Mounted under mqtt5server.Build's shared
+	// "compute" Router (docs/design/d-0008-declarative-router-groups.md)
+	// — compose its RELATIVE topic ("stacked-demo") back to
+	// "compute/stacked-demo" via ClientHandle(WithRouter(...)).
+	stackedHandle := routes.StackedDemoRoute.
+		Use(auth.BearerAuthMw.WithSend(validBearerCredFn)).
+		ClientMW(nil, reqreply.Observability[routes.OAuthComputeReq, routes.OAuthComputeResp](obs)).
+		ClientHandle(reqreply.WithRouter(reqreply.NewRouter("compute")))
 
-	respAny, err := mqtt5Client.Call(ctx, stackedRoute, routes.OAuthComputeReq{X: 11, Y: 12, Token: "valid-compute-write-token"})
+	respAny, err := mqtt5Client.Call(ctx, stackedHandle, routes.OAuthComputeReq{X: 11, Y: 12, Token: "valid-compute-write-token"})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "unexpected error: %v\n", err)
 		os.Exit(1)
@@ -54,7 +60,7 @@ func demoBoundMiddlewareSplit(ctx context.Context, obs *observability.DemoObserv
 	fmt.Printf("  ✓ compute(11 + 12) = %d (bearerAuth property credential + oauth2Compute in-payload credential + observer, all composed)\n", resp.Sum)
 
 	fmt.Println("  → same route, WRONG oauth2 token (expect rejection from the BOUND half):")
-	_, err = mqtt5Client.Call(ctx, stackedRoute, routes.OAuthComputeReq{X: 1, Y: 1, Token: "expired-token"})
+	_, err = mqtt5Client.Call(ctx, stackedHandle, routes.OAuthComputeReq{X: 1, Y: 1, Token: "expired-token"})
 	if err == nil {
 		fmt.Fprintln(os.Stderr, "unexpected success — expected a security rejection")
 		os.Exit(1)

@@ -188,3 +188,4 @@ doc, err := openapi.NewDocumentBuilder(openapi.Info{
 - [examples/rest-schema-docs](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-schema-docs) — components/schemas generation
 - [examples/rest-api](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-api) — full OpenAPI 3.1 document
 - [examples/rest-builder](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-builder) — REST builder + spec
+- [Self-Serving Spec Endpoint (ServeSpec)](spec-endpoint.md) — serve this document natively, no hand-rolled handler

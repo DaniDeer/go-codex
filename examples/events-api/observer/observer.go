@@ -1,4 +1,4 @@
-// Package observability holds this example's OWN [stats.Observer]
+// Package observer holds this example's OWN [stats.Observer]
 // implementation ([DemoObserver]) — kept as its own package (not folded
 // into handlers/) because it is a cross-cutting concern shared across
 // every channel/adapter in this example, not domain business logic for
@@ -25,7 +25,7 @@
 // [events.Observability]'s own per-attachment ctx injection) — one
 // Observer value, one consistent story across the handler and adapter
 // layers.
-package observability
+package observer
 
 import (
 	"log/slog"

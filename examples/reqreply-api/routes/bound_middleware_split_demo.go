@@ -33,7 +33,7 @@ import "github.com/DaniDeer/go-codex/api/reqreply"
 //     NewOAuthMwReqreply's Fn reads req.Token directly, so it works
 //     identically regardless of transport.
 var StackedDemoRoute = reqreply.NewRoute[OAuthComputeReq, OAuthComputeResp](
-	"compute/stacked-demo",
+	"stacked-demo",
 	OAuthComputeReqCodec, OAuthComputeRespCodec,
 	reqreply.RouteMeta{
 		OperationID: "stackedDemoAdd",
