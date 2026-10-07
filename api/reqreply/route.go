@@ -894,6 +894,12 @@ type routeBuilder struct {
 	// [RouteHandle]'s Implementations/ClientImplementations fields.
 	impls       []middleware.ServerImplementation
 	clientImpls []middleware.ClientImplementation
+	// handleCallback holds a type-erased func(*RouteHandle[Req, Resp]) set
+	// by [WithHandleCallback] — invoked at the end of [Route.Register],
+	// once Req/Resp are concrete. Mirrors [rest.routeBuilder.handleCallback]
+	// exactly, SIMPLER than [events.channelBuilder]'s 3-way split (fires
+	// EXACTLY ONCE — reqreply has no second role/method axis to fork on).
+	handleCallback any
 	// buildErr stashes a construction-time error from [Route.HandleBoundMW]/
 	// [Route.ClientBoundMW] (a Req-mismatched or wrong-class bm — see
 	// [BoundMiddlewareReqMismatchError]) or [Route.HandleMW]/[Route.ClientMW]
@@ -1077,7 +1083,14 @@ func (r Route[Req, Resp]) WithHandler(fn func(context.Context, Req) (Resp, error
 //	resp, err := mqtt5adapter.Call(ctx, client, router, handle, req, mqtt5adapter.CallOptions{})
 //
 // Mirrors [rest.Route.ClientHandle].
-func (r Route[Req, Resp]) ClientHandle() *RouteHandle[Req, Resp] {
+func (r Route[Req, Resp]) ClientHandle(opts ...ClientHandleOpt) *RouteHandle[Req, Resp] {
+	if len(opts) > 0 {
+		var rt routable = r
+		for _, o := range opts {
+			rt = o.applyClientHandle(rt)
+		}
+		r = rt.(Route[Req, Resp])
+	}
 	var rb routeBuilder
 	for _, opt := range r.opts {
 		opt.applyRoute(&rb)
@@ -1309,6 +1322,14 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 	// the Server's dispatch registry — read later by [Server.Serve].
 	if r.handler != nil {
 		b.registerDispatch(r.topic, h, r.handler)
+	}
+	if rb.handleCallback != nil {
+		cb, ok := rb.handleCallback.(func(*RouteHandle[Req, Resp]))
+		if !ok {
+			return nil, HandleCallbackTypeError{
+				Err: fmt.Errorf("want func(*RouteHandle[%T, %T]), got %T", *new(Req), *new(Resp), rb.handleCallback)}
+		}
+		cb(h)
 	}
 	return h, nil
 }

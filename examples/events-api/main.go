@@ -106,6 +106,7 @@ func main() {
 	demoObservabilityMiddleware(ctx, obs)
 	demoCapabilityMechanism(ctx)
 	demoSpecPrintingAsyncAPI()
+	demoEventsRouterGroups()
 
 	subCount, pubCount, rejCount, capCount := obs.Summary()
 	fmt.Println("═══════════════════════════════════════════════════════")

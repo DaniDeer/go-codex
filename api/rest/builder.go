@@ -635,6 +635,15 @@ type routeBuilder struct {
 	// in [Route.Register] where Req/Resp are concrete. See [FormatOptError].
 	requestFormats any
 	respFormats    any
+	// handleCallback holds a type-erased func(*RouteHandle[Req, Resp]) set
+	// by [WithHandleCallback], resolved generically in [Route.Register]/
+	// [Route.RegisterHandle] where Req/Resp are concrete — mirrors
+	// requestFormats/respFormats' own type-erasure precedent exactly. Runs
+	// immediately after a *RouteHandle is successfully constructed,
+	// regardless of whether Register was called directly or via a
+	// [Router]'s registerAny (which just calls the SAME unchanged
+	// registerHandle through the routable interface).
+	handleCallback any
 	// pathMergeFields/queryMergeFields/headerMergeFields/cookieMergeFields
 	// hold type-erased codex.FieldCodec[Req] values registered via
 	// NewPathParam/NewRequiredQueryParam/etc., kept SEPARATE per role.
@@ -3706,6 +3715,15 @@ func (r Route[Req, Resp]) registerHandle(b *Server) (*RouteHandle[Req, Resp], er
 	b.mu.Lock()
 	b.entries = append(b.entries, entry)
 	b.mu.Unlock()
+
+	if rb.handleCallback != nil {
+		cb, ok := rb.handleCallback.(func(*RouteHandle[Req, Resp]))
+		if !ok {
+			return nil, HandleCallbackTypeError{
+				Err: fmt.Errorf("want func(*RouteHandle[%T, %T]), got %T", *new(Req), *new(Resp), rb.handleCallback)}
+		}
+		cb(h)
+	}
 	return h, nil
 }
 
@@ -3735,7 +3753,27 @@ func (r Route[Req, Resp]) registerHandle(b *Server) (*RouteHandle[Req, Resp], er
 //	handle := getUser.ClientHandle()
 //	user, err := nethttp.Call(ctx, http.DefaultClient, "https://api.example.com",
 //	    handle, GetUserReq{}, map[string]string{"id": userID}, nethttp.CallOptions{})
-func (r Route[Req, Resp]) ClientHandle() *RouteHandle[Req, Resp] {
+//
+// ClientHandle is variadic (opts ...[ClientHandleOpt]) — every EXISTING
+// zero-argument call site keeps compiling unchanged, since variadic
+// parameters are backward compatible. Pass [WithRouter] when r was (or
+// will be) grouped under a [Router]: `route.ClientHandle(rest.
+// WithRouter(serverSideRouterVar))` applies that Router's CURRENT
+// accumulated prefix+middleware before building the handle — the SAME
+// composition `rt.Route(route)` + `rt.Register(b)` would have produced
+// for route's SERVER side — so a client-side package never needs to
+// separately track, reconstruct, or hand-type the Router's own prefix.
+// Without this, a route grouped under a Router on the server side but
+// accessed via a bare `route.ClientHandle()` on the client side would
+// silently call the WRONG (pre-prefix) path.
+func (r Route[Req, Resp]) ClientHandle(opts ...ClientHandleOpt) *RouteHandle[Req, Resp] {
+	if len(opts) > 0 {
+		var rt routable = r
+		for _, o := range opts {
+			rt = o.applyClientHandle(rt)
+		}
+		r = rt.(Route[Req, Resp])
+	}
 	var rb routeBuilder
 	for _, opt := range r.opts {
 		opt.applyRoute(&rb)

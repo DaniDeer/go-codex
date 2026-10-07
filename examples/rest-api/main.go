@@ -88,6 +88,7 @@ func main() {
 	demoAdminAction(chiClient)
 	demoGrantedScopesContextField(chiClient)
 	demoBoundMiddlewareSplit(chiClient)
+	demoRouterGroups()
 	demoResponseHeaderCookieViolation()
 	demoResponseBodyViolation()
 	demoErrorPatternDeclarationMechanisms()

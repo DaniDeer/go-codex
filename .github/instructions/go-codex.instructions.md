@@ -2416,6 +2416,35 @@ Key rules:
   - `location` values by adapter: `"body"` (nethttp/chi body decode/encode), `"query"` (nethttp/chi query), `"cookie"` (nethttp/chi request cookie), `"header"` (nethttp/chi request header), `"response_header"` (nethttp/chi response header), `"response_cookie"` (nethttp/chi response cookie), `"payload"` (mqtt payload), `"topic_var"` (mqtt per-variable codec failure), `"topic"` (mqtt topic-level codec or structural mismatch), user-defined string (codec-only).
   - `Registry.WithObserver` accepts `PipelineObserver`; the concrete observer is also type-asserted to `TraceObserver` for forge apply spans.
 
+### Declarative Router Groups (`api/rest`, `api/events`, `api/reqreply`) — Phases A+B+C shipped
+
+A THIRD, group-level construct (distinct from `middleware.Middleware`), modeled on chi's own `Router`/`Mount`/`Group`/`With`/`Routes`/`Walk` — groups independently-declared leaf values under a shared path/topic PREFIX, optionally attaching reusable-class middleware to every leaf under it in one declaration, instead of repeating `.Use(mw)` per route/channel. Shipped for `api/rest` (Phase A, leaves = `Route[Req,Resp]`/`SSERoute[Req,Event]`), `api/events` (Phase B, leaves = `Subscriber[T]`/`Publisher[T]`), and `api/reqreply` (Phase C, leaves = `Route[Req,Resp]`, simplest variant — no second axis). See `docs/roadmap/declarative-router-groups.md` for the full design (deferred-item review + documentation graduation to `docs/design/` pending).
+
+```go
+// Router is a fully IMMUTABLE VALUE type — matching Route/Channel exactly.
+// Every method returns a NEW value; concurrent reads need no synchronization.
+// Per-package (api/rest.Router, api/events.Router, api/reqreply.Router) — NOT literally shared.
+type Router struct { /* unexported */ }
+
+func NewRouter(prefix string, opts ...RouterOpt) Router
+func (rt Router) Use(mws ...middleware.RouteMiddleware) Router
+func (rt Router) With(mws ...middleware.RouteMiddleware) Router   // one-shot, NEXT .Route() call only
+func (rt Router) Route(r routable) Router                        // attach a leaf
+func (rt Router) Mount(sub Router) Router                         // nested sub-Router, NEW prefix segment
+func (rt Router) Group(fn func(sub Router) Router) Router         // SAME prefix, scoped mw subset; fn MUST return
+func (rt Router) Register(b *Server) error                        // (api/events: Register(c *Client); api/reqreply: Register(b *Builder)) walk the tree, register every leaf
+func (rt Router) Routes() []RouterEntry                            // flat, pre-registration inspection
+func (rt Router) Walk(fn WalkFunc) error                           // the one true primitive; Routes() wraps it
+```
+
+- `routable` is the unexported, package-private attach interface every leaf type implements — the SAME `d-0007` BoundMiddleware resolution for "no new type params on a method." Per-package, separately compiled: `api/rest`'s exposes `routeMethod() string` (renamed from `method()` — `Route` already has an unexported `method` field, and Go forbids a method/field name collision); `api/events`'s exposes `role() string` ("subscribe"/"publish") instead — disambiguates multiple leaves sharing one path/topic (REST's HTTP methods, events' subscribe/publish roles); `api/reqreply`'s has NEITHER — a single `Route[Req,Resp]` is already the complete, final leaf (topic + both codecs + handler, one `Register` call), so there is no second axis to disambiguate. `RouterEntry` mirrors this: REST's has `Method`/`Path`/`MiddlewareNames`; events' has `Role`/`Path`/`MiddlewareNames` (no `Method`); reqreply's has only `Path`/`MiddlewareNames` (no second-axis field at all).
+- `RouterPrefixError{Prefix, ComposedPath, Err}` (`api/events`/`api/reqreply`: `ComposedTopic` instead of `ComposedPath`) is returned by `Register` ONLY when a leaf's FINAL, prefix-composed path/topic fails the same validation standalone `Register`/`Handle` would apply — every OTHER leaf error (`DuplicateMiddlewareNameError`, `BoundMiddlewareReqMismatchError`, `ChannelTypeConflictError`, `MissingHandlerError`, `DuplicateRouteError`, etc.) propagates completely UNWRAPPED.
+- `api/events`'s `routable.registerAny` delegates to `Subscriber.Register` (NOT `Subscriber.Handle` — Register is the primary, handler-requiring path that also populates `Client.SubscriberEntries` for a future whole-client `ServeSubscribers`) and to `Publisher.Handle` (`Publisher` has no `Register` method — a Publisher never needs a declare-time handler to dispatch). `api/reqreply`'s `registerAny` simply delegates to `Route.Register`, discarding the returned handle (reqreply has only one Register path, no role split).
+- `api/events`/`api/reqreply`'s `joinRouterTopic` (unlike REST's `joinRouterPath`) NEVER forces a leading `/` — MQTT/ZeroMQ-style topics don't use a leading separator.
+- `WithHandleCallback[Req, Resp any](fn func(*RouteHandle[Req, Resp])) RouteOpt` (`api/events`: `WithHandleCallback[T any](fn func(*ChannelHandle[T])) ChannelOpt`, plus role-targeted `WithSubscribeHandleCallback[T]`/`WithPublishHandleCallback[T]` — mirrors `channelBuilder`'s existing `Formats`/`SubscribeFormats`/`PublishFormats` 3-way, ADDITIVE split: the general one fires for both roles, each role-targeted one fires ONLY for its own role; `api/reqreply`: same shape as REST's — fires EXACTLY ONCE, no role split, since reqreply has no second axis) — fires inside `Register`/`RegisterHandle`/`Handle` regardless of whether it was called directly or via a `Router`; the Router-agnostic way to recover the typed handle when a leaf is grouped.
+- `Route.ClientHandle` is now variadic: `ClientHandle(opts ...ClientHandleOpt) *RouteHandle[Req, Resp]` — every existing zero-arg call site keeps compiling unchanged, for BOTH `api/rest` and `api/reqreply`. `WithRouter(rt Router) ClientHandleOpt` applies `rt`'s CURRENT accumulated prefix+middleware before building the handle, so a client-side package never needs to separately reconstruct a Router's own prefix — avoids a silent client/server path mismatch when a route is grouped under a Router on the server side. N/A for `api/events` — no bare zero-argument accessor exists there (`Subscriber.Handle(client)`/`Publisher.Handle(client)` already take a builder argument). **Known limitation (both `api/rest`/`api/reqreply`):** `WithRouter(rt)` applies ONLY `rt`'s OWN prefix/mws fields, never an ancestor `Router.Mount`'s contribution — for a multi-level `Mount` hierarchy, keep the Router FLAT (one `NewRouter("compute/v1")` call) when a client-side handle via `WithRouter` is also needed, rather than nesting via `Mount`.
+- `api/reqreply`'s `Router.Group` keeps chi's ORIGINAL, baseline semantics (no second axis to target, unlike REST's method-scoped or events' role-scoped Group) — an arbitrary, user-chosen subset of routes sharing a topic-prefix needing extra scoped middleware.
+
 ### Package import table (updated)
 
 | Package              | Imports allowed from                                                  |

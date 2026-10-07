@@ -468,6 +468,112 @@ func PublishFormats[T any](fmts ...format.Format[T]) ChannelOpt {
 	return publishFormatsOpt[T]{fmts: fmts}
 }
 
+// handleCallbackOpt / subscribeHandleCallbackOpt / publishHandleCallbackOpt
+// are unexported ChannelOpt implementations backing [WithHandleCallback]/
+// [WithSubscribeHandleCallback]/[WithPublishHandleCallback] — see those
+// constructors.
+type handleCallbackOpt struct{ fn any }
+
+func (o handleCallbackOpt) applyChannel(cb *channelBuilder) { cb.handleCallback = o.fn }
+
+// WithHandleCallback registers fn to run immediately after a
+// [Subscriber.Handle] OR [Publisher.Handle] call successfully builds its
+// *[ChannelHandle] — fires for BOTH roles (unlike
+// [WithSubscribeHandleCallback]/[WithPublishHandleCallback], which fire for
+// only one). Declared inline in [NewChannel]'s variadic opts, mirroring
+// [Formats]'s own both-roles convenience.
+//
+// A channel declared with this opt needs NO special [Router]-aware
+// handling — composes for free with Router.Route(leaf) because
+// Router.register always delegates to the leaf's own, unchanged Handle/
+// Register through [routable.registerAny]. The overwhelmingly common case
+// (discard the handle) needs zero opt at all, unchanged.
+//
+// A free function (not a method) — Go forbids new type parameters on a
+// method; mirrors [api/rest.WithHandleCallback]'s identical resolution.
+func WithHandleCallback[T any](fn func(*ChannelHandle[T])) ChannelOpt {
+	return handleCallbackOpt{fn: fn}
+}
+
+type subscribeHandleCallbackOpt struct{ fn any }
+
+func (o subscribeHandleCallbackOpt) applyChannel(cb *channelBuilder) {
+	cb.subscribeHandleCallback = o.fn
+}
+
+// WithSubscribeHandleCallback registers fn to run immediately after a
+// [Subscriber.Handle] call successfully builds its *[ChannelHandle] —
+// fires ONLY for the subscribe role. See [WithHandleCallback].
+func WithSubscribeHandleCallback[T any](fn func(*ChannelHandle[T])) ChannelOpt {
+	return subscribeHandleCallbackOpt{fn: fn}
+}
+
+type publishHandleCallbackOpt struct{ fn any }
+
+func (o publishHandleCallbackOpt) applyChannel(cb *channelBuilder) {
+	cb.publishHandleCallback = o.fn
+}
+
+// WithPublishHandleCallback registers fn to run immediately after a
+// [Publisher.Handle] call successfully builds its *[ChannelHandle] —
+// fires ONLY for the publish role. See [WithHandleCallback].
+func WithPublishHandleCallback[T any](fn func(*ChannelHandle[T])) ChannelOpt {
+	return publishHandleCallbackOpt{fn: fn}
+}
+
+// HandleCallbackTypeError is returned by [Subscriber.Handle]/
+// [Publisher.Handle] when a [WithHandleCallback]/[WithSubscribeHandleCallback]/
+// [WithPublishHandleCallback] value's type doesn't match the channel's own
+// T — a caller programming error (mixing a callback built for one
+// Channel's T into a different Channel).
+type HandleCallbackTypeError struct{ Err error }
+
+func (e HandleCallbackTypeError) Error() string {
+	return fmt.Sprintf("api/events: handle callback: %v", e.Err)
+}
+
+// Unwrap allows errors.Is/errors.As to reach the underlying error.
+func (e HandleCallbackTypeError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e HandleCallbackTypeError) LogValue() slog.Value {
+	return slog.GroupValue(slog.Any("err", e.Err))
+}
+
+// invokeChannelHandleCallback invokes whichever of
+// cb.handleCallback/cb.subscribeHandleCallback/cb.publishHandleCallback
+// apply to role, in that order — mirrors formats/subscribeFormats/
+// publishFormats' own additive (not mutually-exclusive) resolution:
+// handleCallback always fires (both roles); the role-specific one fires
+// ONLY when role matches.
+func invokeChannelHandleCallback[T any](cb channelBuilder, role channelRole, h *ChannelHandle[T]) error {
+	if cb.handleCallback != nil {
+		fn, ok := cb.handleCallback.(func(*ChannelHandle[T]))
+		if !ok {
+			return HandleCallbackTypeError{
+				Err: fmt.Errorf("want func(*ChannelHandle[%T]), got %T", *new(T), cb.handleCallback)}
+		}
+		fn(h)
+	}
+	if role == roleSubscribe && cb.subscribeHandleCallback != nil {
+		fn, ok := cb.subscribeHandleCallback.(func(*ChannelHandle[T]))
+		if !ok {
+			return HandleCallbackTypeError{
+				Err: fmt.Errorf("want func(*ChannelHandle[%T]), got %T", *new(T), cb.subscribeHandleCallback)}
+		}
+		fn(h)
+	}
+	if role == rolePublish && cb.publishHandleCallback != nil {
+		fn, ok := cb.publishHandleCallback.(func(*ChannelHandle[T]))
+		if !ok {
+			return HandleCallbackTypeError{
+				Err: fmt.Errorf("want func(*ChannelHandle[%T]), got %T", *new(T), cb.publishHandleCallback)}
+		}
+		fn(h)
+	}
+	return nil
+}
+
 // FormatOptError is returned by [Subscriber.Handle]/[Publisher.Handle] when [Formats],
 // [SubscribeFormats], or [PublishFormats] was declared with formats for a
 // type that does not match the channel's actual payload type parameter.
@@ -563,6 +669,18 @@ type channelBuilder struct {
 	formats          any
 	subscribeFormats any
 	publishFormats   any
+	// handleCallback/subscribeHandleCallback/publishHandleCallback hold
+	// func(*ChannelHandle[T]) type-erased (any) — set by
+	// [WithHandleCallback]/[WithSubscribeHandleCallback]/
+	// [WithPublishHandleCallback], resolved generically in
+	// [Subscriber.Handle]/[Publisher.Handle] where T is concrete. Mirrors
+	// formats/subscribeFormats/publishFormats' own 3-way, additive
+	// resolution (handleCallback fires for BOTH roles, the role-specific
+	// ones fire only for their own role) — see
+	// [invokeChannelHandleCallback].
+	handleCallback          any
+	subscribeHandleCallback any
+	publishHandleCallback   any
 	// mergeFields holds type-erased codex.FieldCodec[T] values registered
 	// via [NewTopicParam] — resolved to []codex.FieldCodec[T] in
 	// [Subscriber.Handle]/[Publisher.Handle]. Unlike REST's four
@@ -2535,6 +2653,9 @@ func buildChannelHandle[T any](ch Channel[T], client *Client, role channelRole, 
 	}
 
 	if client == nil {
+		if err := invokeChannelHandleCallback(cb, role, h); err != nil {
+			return nil, err
+		}
 		return h, nil
 	}
 
@@ -2552,6 +2673,9 @@ func buildChannelHandle[T any](ch Channel[T], client *Client, role channelRole, 
 		// Hit, same T: first-registered-wins on descriptor content — do not
 		// append a duplicate spec entry. The freshly-built handle above is
 		// still returned to the caller unchanged.
+		if err := invokeChannelHandleCallback(cb, role, h); err != nil {
+			return nil, err
+		}
 		return h, nil
 	}
 
@@ -2561,6 +2685,9 @@ func buildChannelHandle[T any](ch Channel[T], client *Client, role channelRole, 
 	}
 	client.specByTopic[ch.topic] = specDedupEntry{typeName: typeName, entry: entry}
 	client.entries = append(client.entries, entry)
+	if err := invokeChannelHandleCallback(cb, role, h); err != nil {
+		return nil, err
+	}
 	return h, nil
 }
 

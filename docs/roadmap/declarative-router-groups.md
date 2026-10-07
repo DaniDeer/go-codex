@@ -1,8 +1,13 @@
 # Declarative Router Groups — `api/rest`, `api/events`, `api/reqreply`
 
 > **Status:** Design CLOSED for all 3 patterns — `api/rest`, `api/events`,
-> AND `api/reqreply` (every open decision resolved, ready for
-> implementation). Not yet implemented.
+> AND `api/reqreply` (every open decision resolved). **Implementation:**
+> Phases A/B/C fully SHIPPED (`api/rest`, `api/events`, `api/reqreply` +
+> the deferred-item review, see "Phase C, sub-step 2" below — all 6 items
+> confirmed correctly deferred, zero new work promoted) — see
+> `api/rest/router.go`/`api/events/router.go`/`api/reqreply/router.go`,
+> `docs/features/router-groups.md`. Only Phase D (documentation graduation
+> to `docs/design/`) remains.
 > [← Back to Roadmap](index.md)
 
 ## Motivation
@@ -967,6 +972,73 @@ resolved as of this round. No pattern remains deferred. The next step for
 this roadmap is implementation (Mode 3 of the `plan-a-new-codex-feature`
 skill), triggered by a future explicit "implement it" request — not
 assumed or started in this round.
+
+## Phase C, sub-step 2 — deferred-item review (post-implementation)
+
+Per the user's explicit direction, this review happens AFTER all 3
+patterns' implementations shipped (Phases A/B/C sub-step 1), as a clean,
+separate sub-step — not interleaved with reqreply's own implementation.
+Each of the 6 "Out of scope (Phase 2+)" bullets above gets an explicit,
+reasoned ship-now-vs-stay-deferred decision, re-examined against what
+Phases A/B/C actually shipped/learned:
+
+1. **Variable prefixes (`{tenantID}`-style Router prefixes) — STAYS
+   DEFERRED.** No concrete need surfaced across any of the 3 shipped
+   phases; every example/test used static prefixes exclusively. The
+   underlying problem (composing Router-contributed vars into a leaf's
+   OWN codec-declared merge-field vocabulary, across `codex.ValidateParams`/
+   `BuildFromParams`) is unchanged and still genuinely harder than
+   anything else this doc solved — no implementation learning reduced
+   its scope.
+2. **`api/mcp` Router — STAYS OUT OF SCOPE**, unchanged. Confirmed still
+   correctly tracked as an open item in `mcp-ports-declarative-middleware.md`
+   instead, not this doc — tool names/resource URIs genuinely don't share
+   REST/events/reqreply's hierarchical path shape, confirmed again having
+   now seen all 3 real implementations (none of their `routable`/
+   `RouterEntry` shapes transfer to MCP's tool-registration model).
+3. **Bound-class middleware at the Router level — PERMANENTLY OUT OF
+   SCOPE, not re-evaluated.** Structurally impossible by construction
+   (confirmed across all 3 implementations: `withRouterPrefix` only ever
+   prepends `middleware.RouteMiddleware` values into a leaf's reusable-
+   class storage — REST's `routeMiddlewareOpt`, events' `.Use()`-replay,
+   reqreply's `routeMiddlewareOpt` — never a `BoundMiddleware[Req,...]`,
+   which is tied to one concrete `Req`/`T` a Router's own leaves don't
+   share). No new information changes this.
+4. **Spec-rendering auto-tagging (`WithRouterTags`) — STAYS DEFERRED, NOT
+   implemented this round.** All 3 shipped `RouterOpt` interfaces
+   (`api/rest`, `api/events`, `api/reqreply`) are confirmed real, reserved
+   extension points sitting unused — but implementing `WithRouterTags` now
+   would require deciding its exact OpenAPI/AsyncAPI rendering shape (does
+   a Router-level tag MERGE with or REPLACE a leaf's own `RouteMeta.Tags`?
+   does it apply per-Mount-level or only the outermost?) with zero driving
+   use case to validate the choice against — the same "no concrete need
+   yet" reasoning that deferred it originally still applies; the hook
+   existing unused costs nothing and keeps the door open.
+5. **`ports.Pattern` integration — STAYS a future question, not designed
+   this round.** All 3 Phases shipped with ZERO changes to `ports/`
+   — `Router.Register` always delegates to each leaf's own existing,
+   unchanged `Register`/`Handle` through `registerAny`, meaning
+   `ports.RESTPattern`/`EventPattern`/`ReqReplyPattern`'s existing
+   `PluginXxxPattern` methods already work UNCHANGED for any
+   Router-grouped leaf (a Router is purely a PRE-registration assembly
+   convenience; by the time `ports` touches a handle, Router's job is
+   already done). No concrete driver for a Router-AWARE `ports` variant
+   surfaced during implementation — confirms this stays deferred.
+6. **Router-scoped fallback handler (`WithRouterNotFound`) — STAYS
+   DEFERRED.** No implementation-time need surfaced in any of the 3
+   phases' examples/tests. Confirmed again: this is a genuinely distinct,
+   UNMATCHED-request concern (adapter/transport-level), structurally
+   unrelated to anything `Router`/`RouterEntry`/`RouterPrefixError` model
+   (all 3 of which only ever describe REGISTERED, matched leaves) —
+   `reqreply`'s existing `DeadLetter` mechanism (and REST's/events' own
+   `ErrorPattern`/`ErrorChannel` conventions) remain the adjacent, already-
+   adequate answer for the DIFFERENT "matched but failed" case; "nothing
+   matched any topic/path at all" remains unaddressed at the `api/*` layer
+   for all 3 patterns alike, unchanged by this review.
+
+**Net outcome: all 6 items confirmed correctly deferred — zero new work
+promoted into Phase C.** The deferred-item review itself is now closed;
+Phase D (documentation graduation) is the only remaining step.
 
 ## See also
 

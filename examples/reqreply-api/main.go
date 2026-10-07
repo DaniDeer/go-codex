@@ -105,6 +105,7 @@ func main() {
 	demoUserPropertyParamMiddleware(ctx, mqtt5Built)
 	demoPropertyAxisMiddleware(ctx, mqtt5Built, zeromqBuilt)
 	demoSpecPrintingAsyncAPI(mqtt5Built.Server)
+	demoRouterGroups()
 	demoZeroMQDealerRouterVariant(ctx, obs)
 	demoCrossAPIOAuth2Sharing(ctx, zeromqBuilt)
 	demoGrantedScopesContextField(ctx, zeromqClient)
