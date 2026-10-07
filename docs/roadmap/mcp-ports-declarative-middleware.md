@@ -486,17 +486,43 @@ Reuse the 5 existing error types VERBATIM, scoped to the new packages
    (mirrors `forge-pipeline-middleware.md`'s own "idea only" status for
    a structurally similar reason: a real architectural gap with no
    concrete, demanded use case forcing a decision yet).
-4. **Whether `api/mcp`/`ports` ever want a Router-style grouping
-   mechanism** — [`declarative-router-groups.md`](declarative-router-groups.md)
-   designs a path/topic-PREFIX grouping construct (`rest.Router`/
-   `events.Router`/`reqreply.Router`) for REST/events/reqreply, explicitly
-   scoped OUT of `api/mcp` there, since tool names and resource URI
-   templates don't share REST/events/reqreply's hierarchical path shape.
-   If a concrete need ever surfaces (e.g. grouping a family of related
-   tools under a shared name-prefix convention + shared `Tool.Use(...)`
-   middleware, or a `ports` binding wanting to attach the same adapter
-   wiring to several declared patterns at once), that doc's resolved
-   `routable`-interface pattern (unexported interface + receiver-scoped
-   type parameters, since Go forbids new type parameters on a method) is
-   the reference design to start from — not a reflection-based or
-   ad hoc mechanism. No driver exists yet; not designed further here.
+4. **A prefix-LESS `ToolGroup` grouping mechanism for `api/mcp`** —
+   [`d-0008-declarative-router-groups.md`](../design/d-0008-declarative-router-groups.md)
+   (formerly `declarative-router-groups.md`) designs a path/topic-PREFIX
+   grouping construct (`rest.Router`/`events.Router`/`reqreply.Router`)
+   for REST/events/reqreply, explicitly scoped OUT of `api/mcp` there —
+   confirmed again during that doc's own Phase C deferred-item review:
+   `mcp.Tool[In,Out]` has a flat `Name string`, no hierarchical path, so
+   a prefix-COMPOSING "Router" genuinely doesn't fit. A SMALLER, adjacent
+   idea surfaced during that same review and is sketched here instead: a
+   prefix-LESS middleware-grouping convenience — attach ONE middleware
+   set to N tools in a single declaration, with NO path/name composition
+   at all (structurally simpler than `d-0008`'s Router, since there is no
+   prefix, `Mount`, or `Walk`-style tree to compose):
+
+   ```go
+   // ToolGroup (name TBD) — groups tools for SHARED middleware only;
+   // no prefix/Mount/Walk concept, unlike d-0008's Router.
+   func NewToolGroup() ToolGroup
+   func (g ToolGroup) Use(mws ...middleware.RouteMiddleware) ToolGroup
+   func (g ToolGroup) Tool(t routable) ToolGroup   // routable: minimal
+                                                    // middlewareNames()/
+                                                    // registerAny() only —
+                                                    // NO withRouterPrefix,
+                                                    // unlike d-0008's leaves
+   func (g ToolGroup) Register(b *Builder) error
+   ```
+
+   **Verification checkpoint, already checked:** confirmed via
+   `api/mcp/builder.go` that `Tool[In,Out]` has NO `.Use()` method at all
+   today (only `Register`/`ClientHandle` exist) — `api/mcp` has no
+   declarative/reusable-class middleware mechanism for tools yet,
+   structurally unlike `rest.Route`/`events.Subscriber`/`reqreply.Route`.
+   This means the `ToolGroup` sketch above has a genuine PREREQUISITE:
+   `api/mcp.Tool` would need its OWN `.Use(mws
+   ...middleware.RouteMiddleware)` mechanism designed and shipped FIRST
+   — already anticipated (but not yet decided or shipped) as open design
+   decision #2 above (`Tool.Use(...)` vs. a `ToolOpt`-conforming value) —
+   before a `ToolGroup` grouping it would have anything to attach. No
+   driver exists yet beyond this sketch; not designed further or
+   implemented in this round.

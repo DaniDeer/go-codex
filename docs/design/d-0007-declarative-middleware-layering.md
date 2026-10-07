@@ -15,7 +15,12 @@
 > roadmap. See [D-0003](d-0003-codec-declared-middlewares.md)'s
 > Addenda 4/5/6 for the compact per-phase shipped-changelog summary;
 > this doc remains the fuller design record (rationale, rejected
-> alternatives, Phase 2-4 cross-API design).
+> alternatives, Phase 2-4 cross-API design). See also
+> [D-0008](d-0008-declarative-router-groups.md), which composes
+> directly on top of this doc's `BoundMiddleware`/reusable-class
+> middleware mechanism — its own `Router` construct reuses this doc's
+> unexported-interface-plus-receiver-scoped-type-parameters resolution
+> for the identical "no new type params on a method" constraint.
 >
 > **Phase C's own implementation found and fixed the SAME
 > `GrantedScopes` prerequisite gap in Phase B's shipped code** (now

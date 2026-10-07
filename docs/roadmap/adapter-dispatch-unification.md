@@ -12,7 +12,7 @@ route/channel shape → attach middleware → now Router) produced clean
 fundamentals, or accumulated "layers of cope" along the way. The honest,
 evidence-grounded answer: the `api/*` declaration layer (codecs, builders,
 opts) has stayed comparatively clean — proven by how fast
-[`declarative-router-groups.md`](declarative-router-groups.md)'s own design
+[`d-0008-declarative-router-groups.md`](../design/d-0008-declarative-router-groups.md)'s own design
 closed, reusing already-validated primitives at every step. The recurring,
 EXPENSIVE failure mode in this project's history has instead been in the
 ADAPTER-layer dispatch plumbing — confirmed by re-reading this project's
@@ -60,9 +60,9 @@ investigates.
 | **AUDIT ONLY**: catalog the exact count and location of independent dispatch implementations per capability (Security, bound `Middleware`, `GrantedScopes`, `ContextField`, Capabilities/Disposition, ErrorPattern/DeadLetter), per adapter (`mqtt`, `mqtt5`, `zeromq`), per pattern (events Publish — unaudited; reqreply Call/Serve — unaudited) | Any actual consolidation/redesign of the dispatch mechanism itself — deferred to a follow-up round once the audit's true scope is known |
 | Producing a literal audit table (capability × adapter × pattern → implementation count + file:line) so a future round can SEE the full blast radius before committing to a design | Redesigning reflection vs. codegen vs. any other dispatch TECHNIQUE — this doc does not take a position on reflection itself being the problem (REST's own converged, single-path design ALSO uses reflection — confirmed above — so reflection per se is not the issue) |
 | Confirming/denying whether REST's OWN convergence pattern (one reflection path, calling into the handle's own generic methods) is a viable template events/reqreply could converge toward | Touching `api/*` — confirmed clean in this round's own retrospective; this is adapter-layer only |
-| Cross-referencing [`declarative-router-groups.md`](declarative-router-groups.md) to confirm Router is UNAFFECTED (see below) | `adapters/websocket`/`adapters/redis`/`adapters/file`/`adapters/sql` — out of scope, no evidence yet that they share this shape (would need their own audit if a driver appears) |
+| Cross-referencing [`d-0008-declarative-router-groups.md`](../design/d-0008-declarative-router-groups.md) to confirm Router is UNAFFECTED (see below) | `adapters/websocket`/`adapters/redis`/`adapters/file`/`adapters/sql` — out of scope, no evidence yet that they share this shape (would need their own audit if a driver appears) |
 
-## Why `declarative-router-groups.md`'s Router is NOT at risk of this regression class
+## Why `d-0008-declarative-router-groups.md`'s Router is NOT at risk of this regression class
 
 Confirmed structurally, not just asserted: Router (all 3 patterns, fully
 designed) is PURELY an `api/*`-layer, spec-ASSEMBLY-time construct — its own

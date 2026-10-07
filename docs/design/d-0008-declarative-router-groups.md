@@ -1,14 +1,19 @@
-# Declarative Router Groups — `api/rest`, `api/events`, `api/reqreply`
+# D-0008 — Declarative Router Groups — `api/rest`, `api/events`, `api/reqreply`
 
-> **Status:** Design CLOSED for all 3 patterns — `api/rest`, `api/events`,
-> AND `api/reqreply` (every open decision resolved). **Implementation:**
-> Phases A/B/C fully SHIPPED (`api/rest`, `api/events`, `api/reqreply` +
-> the deferred-item review, see "Phase C, sub-step 2" below — all 6 items
-> confirmed correctly deferred, zero new work promoted) — see
-> `api/rest/router.go`/`api/events/router.go`/`api/reqreply/router.go`,
-> `docs/features/router-groups.md`. Only Phase D (documentation graduation
-> to `docs/design/`) remains.
-> [← Back to Roadmap](index.md)
+> **Status:** Implemented — architectural foundation. Phases A/B/C fully
+> SHIPPED (`api/rest`, `api/events`, `api/reqreply` + the deferred-item
+> review, see "Phase C, sub-step 2" below — all 6 items confirmed
+> correctly deferred, zero new work promoted; item 3 spun off a separate
+> idea-stage doc, [`typed-router-groups.md`](../roadmap/typed-router-groups.md))
+> — see `api/rest/router.go`/`api/events/router.go`/`api/reqreply/router.go`,
+> `docs/features/router-groups.md`.
+> PROMOTED from `docs/roadmap/declarative-router-groups.md` — this doc
+> establishes a pattern all 3 messaging APIs (`rest`/`events`/`reqreply`)
+> now follow (declarative, chi-inspired path/topic-prefix grouping +
+> group-wide middleware), qualifying it as architectural foundation
+> rather than a single-feature roadmap, mirroring
+> [D-0007](d-0007-declarative-middleware-layering.md)'s own identical
+> promotion precedent.
 
 ## Motivation
 
@@ -87,7 +92,7 @@ MQTT5/ZeroMQ have no router concept of their own at all).
 
 | In scope | Out of scope (this doc) |
 |---|---|
-| `rest.Router` (path prefixes), `events.Router` (topic prefixes), `reqreply.Router` (topic prefixes) — all 3 patterns designed now, mirroring `d-0007-declarative-middleware-layering.md`'s own all-3-patterns precedent | `api/mcp` — tool names/resource URI templates don't have the same hierarchical-path shape; flagged as an **open item** in [`mcp-ports-declarative-middleware.md`](mcp-ports-declarative-middleware.md)'s "Open design decisions" instead (see that doc's update, not designed here) |
+| `rest.Router` (path prefixes), `events.Router` (topic prefixes), `reqreply.Router` (topic prefixes) — all 3 patterns designed now, mirroring `d-0007-declarative-middleware-layering.md`'s own all-3-patterns precedent | `api/mcp` — tool names/resource URI templates don't have the same hierarchical-path shape; flagged as an **open item** in [`mcp-ports-declarative-middleware.md`](../roadmap/mcp-ports-declarative-middleware.md)'s "Open design decisions" instead (see that doc's update, not designed here) |
 | Nesting — a Router may `Mount` sub-Routers (prefixes compose: parent + child) | Dynamic/runtime router mutation after `Register()` — mirrors the existing "no hot-adding routes to an already-`Serve`'d mux" limitation (`docs/roadmap/dynamic-port-rebinding.md`'s own scope) |
 | STATIC prefixes only (e.g. `"/api/v1"`, `"tenants/eu"`) — no `{var}` placeholders in a Router's own prefix for v1 | Variable prefixes (e.g. `"/tenants/{tenantID}"`) merging into every grouped route's own `Req`/`T` — deferred; see "Out of scope (Phase 2+)" |
 | Reusable-class `Middleware[In,Out]`/`Declaration[In,Out]` attachment at the Router level (`.Use(mw)`-equivalent, group-wide) | Bound-class (`BoundMiddleware[Req,...]`) attachment at the Router level — structurally impossible to express group-wide (a `BoundMiddleware` is tied to ONE concrete `Req`/`T` type; a Router groups routes of DIFFERENT `Req`/`T` types) — bound middlewares stay route-specific, unchanged |
@@ -979,75 +984,165 @@ Per the user's explicit direction, this review happens AFTER all 3
 patterns' implementations shipped (Phases A/B/C sub-step 1), as a clean,
 separate sub-step — not interleaved with reqreply's own implementation.
 Each of the 6 "Out of scope (Phase 2+)" bullets above gets an explicit,
-reasoned ship-now-vs-stay-deferred decision, re-examined against what
-Phases A/B/C actually shipped/learned:
+reasoned ship-now-vs-stay-deferred decision. A FIRST pass re-examined
+these against what Phases A/B/C actually shipped/learned; a SECOND,
+item-by-item discussion round (explicitly requested before closing to
+Phase D) went deeper still — considering concrete alternative designs,
+not just re-stating conclusions — and corrected one overstatement. Final
+decisions below:
 
 1. **Variable prefixes (`{tenantID}`-style Router prefixes) — STAYS
-   DEFERRED.** No concrete need surfaced across any of the 3 shipped
-   phases; every example/test used static prefixes exclusively. The
-   underlying problem (composing Router-contributed vars into a leaf's
-   OWN codec-declared merge-field vocabulary, across `codex.ValidateParams`/
-   `BuildFromParams`) is unchanged and still genuinely harder than
-   anything else this doc solved — no implementation learning reduced
-   its scope.
-2. **`api/mcp` Router — STAYS OUT OF SCOPE**, unchanged. Confirmed still
-   correctly tracked as an open item in `mcp-ports-declarative-middleware.md`
-   instead, not this doc — tool names/resource URIs genuinely don't share
-   REST/events/reqreply's hierarchical path shape, confirmed again having
-   now seen all 3 real implementations (none of their `routable`/
-   `RouterEntry` shapes transfer to MCP's tool-registration model).
+   DEFERRED, as a DELIBERATE simplicity-over-capability tradeoff, not
+   just "no driver yet."** Would require `NewRouter` to accept a prefix
+   TEMPLATE (not a static string) + param declarations (mirrors
+   `PathParam`/`TopicParam`). The hard part: a Router-level `{tenantID}`
+   var must ALSO exist as a field on EVERY grouped leaf's `Req`/`T` (via
+   a merge field) for `BuildPath`/`BuildTopic` to populate it — but
+   Router-level param registration and each leaf's own
+   `codex.ValidateParams`/merge-field registration are currently two
+   fully separate, non-communicating construction paths. Making them
+   compose would mean threading a NEW param source into
+   `codex.ValidateDeclaredParams`/`BuildFromParams`, which don't know
+   about "Router" at all today — a change reaching into `codex/` itself,
+   not just `api/*`. Explicitly decided: this would add real complexity
+   to the CORE codec-declaration layer to support a feature with no
+   concrete driver — directly against the "simple, declarative,
+   consistent workflow" goal this whole effort exists for.
+2. **`api/mcp` Router — STAYS OUT OF SCOPE**, but with a more precise
+   follow-on: confirmed `mcp.Tool[In,Out]` has a flat `Name string` — no
+   hierarchical path, so a prefix-COMPOSING "Router" genuinely doesn't
+   fit. The adjacent, smaller idea — a prefix-LESS middleware-grouping
+   convenience (attach one middleware set to N tools in one declaration,
+   no path composition at all) — is a structurally DIFFERENT, simpler
+   mechanism than this doc's "Router," and now has a concrete design
+   sketch recorded in `mcp-ports-declarative-middleware.md` instead of
+   this doc (keeps this doc's scope to the 3 patterns sharing the
+   hierarchical-path/topic shape).
 3. **Bound-class middleware at the Router level — PERMANENTLY OUT OF
-   SCOPE, not re-evaluated.** Structurally impossible by construction
-   (confirmed across all 3 implementations: `withRouterPrefix` only ever
-   prepends `middleware.RouteMiddleware` values into a leaf's reusable-
-   class storage — REST's `routeMiddlewareOpt`, events' `.Use()`-replay,
-   reqreply's `routeMiddlewareOpt` — never a `BoundMiddleware[Req,...]`,
-   which is tied to one concrete `Req`/`T` a Router's own leaves don't
-   share). No new information changes this.
-4. **Spec-rendering auto-tagging (`WithRouterTags`) — STAYS DEFERRED, NOT
-   implemented this round.** All 3 shipped `RouterOpt` interfaces
-   (`api/rest`, `api/events`, `api/reqreply`) are confirmed real, reserved
-   extension points sitting unused — but implementing `WithRouterTags` now
-   would require deciding its exact OpenAPI/AsyncAPI rendering shape (does
-   a Router-level tag MERGE with or REPLACE a leaf's own `RouteMeta.Tags`?
-   does it apply per-Mount-level or only the outermost?) with zero driving
-   use case to validate the choice against — the same "no concrete need
-   yet" reasoning that deferred it originally still applies; the hook
-   existing unused costs nothing and keeps the door open.
-5. **`ports.Pattern` integration — STAYS a future question, not designed
-   this round.** All 3 Phases shipped with ZERO changes to `ports/`
-   — `Router.Register` always delegates to each leaf's own existing,
-   unchanged `Register`/`Handle` through `registerAny`, meaning
-   `ports.RESTPattern`/`EventPattern`/`ReqReplyPattern`'s existing
-   `PluginXxxPattern` methods already work UNCHANGED for any
-   Router-grouped leaf (a Router is purely a PRE-registration assembly
-   convenience; by the time `ports` touches a handle, Router's job is
-   already done). No concrete driver for a Router-AWARE `ports` variant
-   surfaced during implementation — confirms this stays deferred.
+   SCOPE for today's Router, confirmed via actually considering (and
+   rejecting) alternatives, not just restating "structurally
+   impossible."** The core conflict: `Router` is deliberately TYPE-
+   ERASED/heterogeneous (one Router groups leaves of different
+   `Req`/`Resp`/`T` pairs), but `BoundMiddleware[Req,Resp,...]` is tied
+   to ONE concrete type pair by construction. Two alternatives were
+   considered and rejected: (a) a reflection-based runtime type-check
+   that applies a bound middleware only to matching leaves, silently
+   skipping others — rejected because it would be the ONE place in this
+   entire mechanism where a type mismatch becomes a silent skip instead
+   of a loud, typed error, contradicting the `HandleCallbackTypeError`/
+   `BoundMiddlewareReqMismatchError` precedent everywhere else in this
+   doc; (b) a strongly-typed `Router[Req,Resp]` that only groups same-
+   typed leaves — this is a fundamentally different, PARALLEL construct,
+   not an incremental addition to today's Router, so it does NOT belong
+   as a bullet in this doc. Flagged instead as its own, separate idea-
+   stage roadmap doc: [`typed-router-groups.md`](../roadmap/typed-router-groups.md).
+4. **Spec-rendering auto-tagging (`WithRouterTags`) — STAYS DEFERRED,
+   now with a concrete design sketch AND a found gotcha that raises the
+   effort estimate from LOW to MEDIUM.** All 3 shipped `RouterOpt`
+   interfaces are confirmed real, reserved extension points sitting
+   unused, and `RouteMeta.Tags`/`ChannelMeta.Tags`/`Subscribe.Tags`/
+   `Publish.Tags`/reqreply's `RouteMeta.Tags` already exist and already
+   render into each pattern's spec — so the RENDERING target is ready.
+   But: `RouteMeta.applyRoute` is confirmed a WHOLE-STRUCT OVERWRITE
+   (`rb.meta = m`, `api/rest/builder.go` line ~270), NOT an incremental
+   merge — meaning the existing middleware-style trick (Router PREPENDS
+   its own opt into the leaf's `opts`, so it runs BEFORE the leaf's own)
+   does NOT generalize to Tags: if the leaf's OWN `RouteMeta{Tags: [...]}`
+   opt runs afterward in the same opts loop, it would OVERWRITE
+   `rb.meta` entirely, silently discarding the Router's contribution.
+   Correct design direction (for a future implementer): Router-
+   contributed tags must be merged AFTER the leaf's own opts loop fully
+   resolves `rb.meta` — either a NEW `routable` interface method (e.g.
+   `withRouterTags(tags []string) routable`) invoked separately from
+   `withRouterPrefix` and consulted by each leaf's own `Register`/
+   `Handle` body, or an extension to `withRouterPrefix`'s existing
+   signature with the leaf appending tags post-opts-loop. Either way,
+   this touches `Route.Register`/`Subscriber.Handle`/`Publisher.Handle`
+   in all 3 packages, not just `router.go`. Accumulate semantics (Router
+   tags + leaf's own, never replace) — consistent with `Use`/`With`.
+   Still no concrete driving use case to build against, so NOT
+   implemented this round — but the next attempt starts from this sketch,
+   not from zero.
+5. **`ports.Pattern` integration — STAYS a future question, with a
+   CORRECTED (less optimistic) framing and a found blocker.** The prior
+   pass's wording overstated this: "`ports.RESTPattern`/`EventPattern`/
+   `ReqReplyPattern`'s existing `PluginXxxPattern` methods already work
+   UNCHANGED for any Router-grouped leaf" is NOT accurate — verified via
+   `ports/handle.go`'s pattern-building functions
+   (`buildEventPatternHandles` and siblings): `Pattern` ALWAYS builds a
+   brand-new leaf internally from `Method`/`Path`/`Opts` and registers
+   THAT; there is no field or mechanism to pass in an EXISTING, already-
+   Router-composed leaf, or a `Router` itself, at all. The accurate
+   statement: `ports.Pattern` and `Router` are two fully INDEPENDENT,
+   non-composable mechanisms today — using one doesn't break the other,
+   but a caller cannot get BOTH Router-grouping AND `ports.Pattern`'s
+   one-call convenience for the SAME route. A real blocker found this
+   round: `Router.withRouterPrefix` (the mechanism that would need to
+   compose a Pattern-built leaf with a Router's prefix+mws) is
+   UNEXPORTED/package-private — `ports` is a different package and
+   cannot call it directly. Implementing this would require Router to
+   expose a NEW, EXPORTED composition hook (e.g. `Router.Prefix()
+   string` + `Router.Middlewares() []middleware.RouteMiddleware`
+   accessors, or a dedicated `Router.Apply(leaf) (composed, path)`
+   method) in ALL 3 packages, BEFORE `ports` could consume it at all —
+   genuine new public API surface, not internal wiring. Design
+   direction: add a `Router *rest.Router`/`*events.Router`/
+   `*reqreply.Router` field to each `Pattern` struct; when set, the
+   pattern-building function composes the freshly-built leaf through the
+   Router's (newly-exported) apply hook before registering. No concrete
+   driver surfaced during implementation to justify building this now —
+   stays deferred, with this corrected, more precise reasoning replacing
+   the prior overstatement.
 6. **Router-scoped fallback handler (`WithRouterNotFound`) — STAYS
-   DEFERRED.** No implementation-time need surfaced in any of the 3
-   phases' examples/tests. Confirmed again: this is a genuinely distinct,
-   UNMATCHED-request concern (adapter/transport-level), structurally
-   unrelated to anything `Router`/`RouterEntry`/`RouterPrefixError` model
-   (all 3 of which only ever describe REGISTERED, matched leaves) —
-   `reqreply`'s existing `DeadLetter` mechanism (and REST's/events' own
-   `ErrorPattern`/`ErrorChannel` conventions) remain the adjacent, already-
-   adequate answer for the DIFFERENT "matched but failed" case; "nothing
-   matched any topic/path at all" remains unaddressed at the `api/*` layer
-   for all 3 patterns alike, unchanged by this review.
+   DEFERRED, with a materially STRONGER finding than "no driver yet."**
+   Investigated each pattern's REAL dispatch mechanism rather than
+   restating the prior "adjacent DeadLetter/ErrorPattern" answer:
+   **REST** — confirmed via `adapters/nethttp`/`adapters/chi`: go-codex
+   NEVER owns the mux; the caller always constructs their own
+   `*http.ServeMux`/`chi.Router` externally and go-codex's adapters just
+   BIND registered routes onto it. The underlying mux's OWN
+   NotFound/MethodNotAllowed mechanism (`chi.Router.NotFound(h)`, or a
+   catch-all `"/"` pattern on `http.ServeMux`) is ALREADY fully available
+   to every caller TODAY, with ZERO new go-codex code — wrapping it in
+   `api/rest.Router` would be pure, redundant duplication of a mechanism
+   the caller already owns directly. **Events** — confirmed via
+   `examples/events-api/demo_wildcard_subscription.go`: a wildcard-topic
+   `Subscriber` (MQTT `#`/`+`) is ALREADY just an ordinary,
+   Router-groupable leaf — "catch everything unmatched" already has a
+   direct, existing answer, no gap. **Reqreply** — confirmed via
+   `api/reqreply/builder.go`'s `Server.Serve`: dispatch is NOT a single,
+   central mux lookup; `Serve` spins up ONE GOROUTINE PER REGISTERED
+   TOPIC, each independently bound to the transport — there is
+   structurally NOWHERE for an "unmatched topic" concept to even reach
+   in the `api/reqreply` layer; it's answered entirely below this layer,
+   per transport. **Net finding:** this isn't "nobody asked for it yet"
+   — it's "the 3 patterns' OWN existing architectures already make a
+   Router-level version either redundant (REST/events) or structurally
+   impossible (reqreply)," a materially different and more conclusive
+   finding than the original review's wording.
 
 **Net outcome: all 6 items confirmed correctly deferred — zero new work
-promoted into Phase C.** The deferred-item review itself is now closed;
-Phase D (documentation graduation) is the only remaining step.
+promoted into Phase C.** Item 3 spun off a separate idea-stage roadmap
+doc (`typed-router-groups.md`); item 2's adjacent idea is now sketched in
+`mcp-ports-declarative-middleware.md`; items 4 and 5 now carry concrete
+design sketches (including found gotchas/blockers) for a future
+implementer to start from, instead of a bare "deferred." The
+deferred-item review itself is now closed; Phase D (documentation
+graduation) is the only remaining step.
 
 ## See also
 
-- [`d-0007-declarative-middleware-layering.md`](../design/d-0007-declarative-middleware-layering.md) — the declarative
+- [`d-0007-declarative-middleware-layering.md`](d-0007-declarative-middleware-layering.md) — the declarative
   middleware mechanism this Router composes with (unchanged); its
   `BoundMiddleware`/`BoundSubscribeMiddleware`/`BoundPublishMiddleware`
   attachment resolution (unexported interface + receiver-scoped type
   parameters, since Go forbids new type parameters on a method) is the
   direct precedent this doc's `routable` interface reuses.
-- [`mcp-ports-declarative-middleware.md`](mcp-ports-declarative-middleware.md) —
-  flagged with a forward-looking open item for whether `api/mcp`/`ports`
-  ever wants an equivalent grouping mechanism.
+- [`mcp-ports-declarative-middleware.md`](../roadmap/mcp-ports-declarative-middleware.md) —
+  now carries a concrete, prefix-less `ToolGroup` design sketch (spun out
+  of this doc's Phase C deferred-item review, item 2) for whether
+  `api/mcp` ever wants an equivalent grouping mechanism.
+- [`typed-router-groups.md`](../roadmap/typed-router-groups.md) — the
+  strongly-typed `Router[Req,Resp]` idea spun out of this doc's Phase C
+  deferred-item review (item 3), as a PARALLEL construct to this doc's
+  heterogeneous `Router`, not a replacement for it.

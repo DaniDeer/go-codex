@@ -1,10 +1,9 @@
-# Declarative Router Groups — `api/rest`, `api/events`, `api/reqreply` (Phases A+B+C)
+# Declarative Router Groups — `api/rest`, `api/events`, `api/reqreply`
 
-> **Status:** `api/rest`, `api/events`, and `api/reqreply` all shipped. A
-> deferred-item review and documentation graduation to `docs/design/`
-> remain — see
-> [`docs/roadmap/declarative-router-groups.md`](../roadmap/declarative-router-groups.md)
-> for the full cross-pattern design.
+> **Status:** Fully shipped across all 3 patterns — see
+> [`D-0008 — Declarative Router Groups`](../design/d-0008-declarative-router-groups.md)
+> for the full cross-pattern design record (rationale, rejected
+> alternatives, the deferred-item review).
 >
 > See also: [API Builder](api-builder.md) · [Codec-Declared Middleware](codec-declared-middleware.md)
 
