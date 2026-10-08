@@ -1,6 +1,38 @@
-# go-codex Review History (R1–R158, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
+# go-codex Review History (R1–R159, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 159 (api/rest full lifecycle sweep — ValidateRoute preview accuracy)
+
+User asked for a full in-depth sweep of `api/rest`'s declaration → middleware → registration
+lifecycle (not just Router), covering every middleware-attachment mechanism and both resolution
+paths (`registerHandle`/`Register` and `ClientHandle`). Investigated and RULED OUT (via direct
+repro, not just reasoning) 2 hypotheses before confirming 1 real, substantial finding:
+
+- Ruled out: `registerHandle` vs `ClientHandle` field asymmetries (`responseHeaderParams`,
+  `HandlerFn`, `Implementations`, `MiddlewareHandlers` absent from `ClientHandle`'s handle) —
+  confirmed all server-dispatch-only concerns (`ValidateResponseHeaders`/`ValidateResponseCookies`
+  only ever called by server-side adapter dispatch) — correct by design.
+- Ruled out: `checkImplementationsDeclared`/`applySecurityDeclarations` only reading
+  `rb.middlewares` (not `rb.middlewareSpecContributions`) for a codec-backed, `.Use()`-attached
+  `SecurityMiddleware` — confirmed `routeMiddlewareOpt.applyRoute` already has an explicit
+  synthesis step copying a codec-backed Security declaration into `rb.middlewares` specifically so
+  this pipeline still sees it. Working as designed.
+
+- **K1 — `ValidateRoute` didn't call `checkDuplicateErrorStatuses`**: the function's own doc
+  comment claims it "runs the IDENTICAL validation [Route.Register] would run," but it only ever
+  called `applyMiddlewareDeclarations`. Confirmed via repro: a route declaring 2 `ErrorPattern`
+  opts sharing the same HTTP status (a realistic copy-paste mistake) passed `ValidateRoute` with a
+  `nil` error, while `Register()`/`RegisterHandle()` correctly rejected it with
+  `DuplicateErrorStatusError` — directly undermining `ValidateRoute`'s documented purpose (a
+  pre-registration dry-run for a domain package that doesn't own the `Server`). Fixed by adding
+  the missing `checkDuplicateErrorStatuses` call in the same position `registerHandle` calls it;
+  also documented (doc comment) that `checkImplementationsDeclared`'s check is NOT independently
+  reachable via `ValidateRoute`'s public API (its opt is unexported, only producible via a
+  concrete `Route` chain call) — not a gap to fix, an inherent scope boundary. Added 1 regression
+  test (verified to fail without the fix).
 
 ---
 

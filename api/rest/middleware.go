@@ -1030,7 +1030,13 @@ func (e ConflictingParamContributionError) LogValue() slog.Value {
 // Does NOT catch a missing security implementation — that check
 // ([CheckCoverage]) only runs once a [middleware.ServerImplementation] has
 // actually been supplied, which happens at adapter Register/Handler time,
-// not here.
+// not here. Also does NOT catch an [UnknownMiddlewareImplementationError]
+// (the [HandleMW]/[ClientMW] reverse-Satisfies check) — that check needs
+// an actual implementation attached via [Route.HandleMW]/[Route.ClientMW],
+// which produces an opt only reachable through a concrete Route chain
+// call, never as a bare [RouteOpt] this function could be handed; a
+// caller validating opts destined for HandleMW/ClientMW must rely on
+// [Route.Register]/[Route.RegisterHandle] itself for that check.
 func ValidateRoute[Req, Resp any](meta RouteMeta, opts ...RouteOpt) error {
 	var rb routeBuilder
 	meta.applyRoute(&rb)
@@ -1040,5 +1046,15 @@ func ValidateRoute[Req, Resp any](meta RouteMeta, opts ...RouteOpt) error {
 	if rb.buildErr != nil {
 		return rb.buildErr
 	}
-	return applyMiddlewareDeclarations(&rb, "")
+	if err := applyMiddlewareDeclarations(&rb, ""); err != nil {
+		return err
+	}
+	// checkDuplicateErrorStatuses is the SAME check [Route.registerHandle]
+	// runs — a confirmed, previously-real gap: a route declaring 2+
+	// [ErrorPattern] opts sharing the same HTTP status (a realistic
+	// copy-paste mistake) used to pass ValidateRoute silently, only to
+	// fail LATER at the actual Register() call this function's own doc
+	// comment promises to make unnecessary for exactly this class of
+	// mistake.
+	return checkDuplicateErrorStatuses(rb.errorPatternRules, "")
 }

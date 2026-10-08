@@ -388,6 +388,30 @@ func TestValidateRoute_NoErrorForValidDeclaration(t *testing.T) {
 	}
 }
 
+// TestValidateRoute_CatchesDuplicateErrorStatus confirms ValidateRoute
+// catches the SAME [rest.DuplicateErrorStatusError] [Route.RegisterHandle]
+// would — 2 ErrorPattern opts sharing the same HTTP status, a realistic
+// copy-paste mistake. Previously, ValidateRoute silently accepted this
+// (never called checkDuplicateErrorStatuses), contradicting its own doc
+// comment's claim to run "the IDENTICAL validation Route.Register would
+// run" — a confirmed, previously-real gap.
+func TestValidateRoute_CatchesDuplicateErrorStatus(t *testing.T) {
+	err := rest.ValidateRoute[mwTestReq, userResp](rest.RouteMeta{},
+		rest.ErrorPattern[directPatternError, directPatternError](409, directPatternCodec),
+		rest.ErrorPattern[mappedPatternError, mappedPatternPayload](409, mappedPatternCodec,
+			func(e mappedPatternError) (mappedPatternPayload, error) {
+				return mappedPatternPayload{Kind: e.Msg}, nil
+			}),
+	)
+	var dupErr rest.DuplicateErrorStatusError
+	if !errors.As(err, &dupErr) {
+		t.Fatalf("want DuplicateErrorStatusError, got %v (%T)", err, err)
+	}
+	if dupErr.Status != 409 {
+		t.Errorf("want Status=409, got %d", dupErr.Status)
+	}
+}
+
 // ── ClientHandle picks up middleware-declared Security (server/client symmetry) ──
 
 func TestClientHandle_PicksUpMiddlewareDeclaredSecurity(t *testing.T) {
