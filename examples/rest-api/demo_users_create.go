@@ -14,51 +14,76 @@ import (
 	"github.com/DaniDeer/go-codex/format"
 )
 
-// demoCreateUser exercises POST /users (requires the "admin" scope)
-// against chiClient — security gating (both "no credential" and "wrong
-// scope" resolve to 401 in go-codex — there's no separate 403 concept;
-// see middleware.CheckScopes/rest.SecurityError), multi-format
+// demoCreateUser exercises POST /users (requires the "admin" scope) —
+// against BOTH chiClient AND nethttpClient (the SAME usersRouter-grouped
+// declaration, assembled onto EITHER adapter, per examples/rest-api's own
+// stated goal — see nethttpserver's package doc comment) — security
+// gating (both "no credential" and "wrong scope" resolve to 401 in
+// go-codex — there's no separate 403 concept; see
+// middleware.CheckScopes/rest.SecurityError), multi-format
 // request/response bodies, codec-validated response header + cookie, and
-// a client-side pre-flight body-constraint rejection.
-func demoCreateUser(chiClient *rest.Client, baseURL string) {
+// a client-side pre-flight body-constraint rejection. chiClient and
+// nethttpClient share ONE underlying handlers.UserStore (see main.go), so
+// running the SAME create calls against both is idempotent, not
+// duplicative.
+func demoCreateUser(chiClient, nethttpClient *rest.Client, chiBaseURL, nethttpBaseURL string) {
 	ctx := context.Background()
+	clients := []struct {
+		label string
+		c     *rest.Client
+	}{
+		{"chi", chiClient},
+		{"net/http", nethttpClient},
+	}
 
 	fmt.Println("=== POST /users — unauthenticated (expect 401) ===")
-	_, err := chiClient.Call(ctx, restapiclient.CreateUserRouteUnauthenticated, routes.CreateUserReq{Name: "Dave", Email: "dave@example.com"})
-	printStatusErr(err)
+	for _, cl := range clients {
+		_, err := cl.c.Call(ctx, restapiclient.CreateUserRouteUnauthenticated, routes.CreateUserReq{Name: "Dave", Email: "dave@example.com"})
+		fmt.Printf("  [%s]", cl.label)
+		printStatusErr(err)
+	}
 	fmt.Println()
 
 	fmt.Println("=== POST /users — wrong scope (Alice lacks admin, expect 401 — go-codex has no separate 403) ===")
-	_, err = chiClient.Call(ctx, restapiclient.CreateUserRouteAsAlice, routes.CreateUserReq{Name: "Dave", Email: "dave@example.com"})
-	printStatusErr(err)
+	for _, cl := range clients {
+		_, err := cl.c.Call(ctx, restapiclient.CreateUserRouteAsAlice, routes.CreateUserReq{Name: "Dave", Email: "dave@example.com"})
+		fmt.Printf("  [%s]", cl.label)
+		printStatusErr(err)
+	}
 	fmt.Println()
 
 	fmt.Println("=== POST /users — admin, JSON (expect 201) ===")
-	respAny, err := chiClient.Call(ctx, restapiclient.CreateUserRouteAsAdmin, routes.CreateUserReq{Name: "Alice", Email: "alice@example.com"})
-	if err != nil {
-		fmt.Printf("  error: %v\n", err)
-	} else {
-		fmt.Printf("  user: %+v\n", respAny.(routes.User))
+	for _, cl := range clients {
+		respAny, err := cl.c.Call(ctx, restapiclient.CreateUserRouteAsAdmin, routes.CreateUserReq{Name: "Alice", Email: "alice@example.com"})
+		if err != nil {
+			fmt.Printf("  [%s] error: %v\n", cl.label, err)
+		} else {
+			fmt.Printf("  [%s] user: %+v\n", cl.label, respAny.(routes.User))
+		}
 	}
 	fmt.Println()
 
 	fmt.Println("=== POST /users — admin, YAML response (ClientCallOptions.ResponseFormats) ===")
-	respAny, err = chiClient.Call(ctx, restapiclient.CreateUserRouteAsAdmin, routes.CreateUserReq{Name: "Bob", Email: "bob@example.com"},
-		rest.ClientCallOptions{ResponseFormats: []format.Format[routes.User]{format.YAML(routes.UserCodec)}})
-	if err != nil {
-		fmt.Printf("  error: %v\n", err)
-	} else {
-		fmt.Printf("  user (decoded from YAML response): %+v\n", respAny.(routes.User))
+	for _, cl := range clients {
+		respAny, err := cl.c.Call(ctx, restapiclient.CreateUserRouteAsAdmin, routes.CreateUserReq{Name: "Bob", Email: "bob@example.com"},
+			rest.ClientCallOptions{ResponseFormats: []format.Format[routes.User]{format.YAML(routes.UserCodec)}})
+		if err != nil {
+			fmt.Printf("  [%s] error: %v\n", cl.label, err)
+		} else {
+			fmt.Printf("  [%s] user (decoded from YAML response): %+v\n", cl.label, respAny.(routes.User))
+		}
 	}
 	fmt.Println()
 
 	fmt.Println("=== POST /users — admin, YAML request body (ClientCallOptions.RequestFormats) ===")
-	respAny, err = chiClient.Call(ctx, restapiclient.CreateUserRouteAsAdmin, routes.CreateUserReq{Name: "Carol", Email: "carol@example.com"},
-		rest.ClientCallOptions{RequestFormats: []format.Format[routes.CreateUserReq]{format.YAML(routes.CreateUserReqCodec)}})
-	if err != nil {
-		fmt.Printf("  error: %v\n", err)
-	} else {
-		fmt.Printf("  user: %+v\n", respAny.(routes.User))
+	for _, cl := range clients {
+		respAny, err := cl.c.Call(ctx, restapiclient.CreateUserRouteAsAdmin, routes.CreateUserReq{Name: "Carol", Email: "carol@example.com"},
+			rest.ClientCallOptions{RequestFormats: []format.Format[routes.CreateUserReq]{format.YAML(routes.CreateUserReqCodec)}})
+		if err != nil {
+			fmt.Printf("  [%s] error: %v\n", cl.label, err)
+		} else {
+			fmt.Printf("  [%s] user: %+v\n", cl.label, respAny.(routes.User))
+		}
 	}
 	fmt.Println()
 
@@ -67,8 +92,10 @@ func demoCreateUser(chiClient *rest.Client, baseURL string) {
 	// go-codex client never even sends this: CreateUserReqCodec's Refine
 	// constraints fail during EncodeRequestWithFormats, LOCALLY, before
 	// any network call is made.
-	_, err = chiClient.Call(ctx, restapiclient.CreateUserRouteAsAdmin, routes.CreateUserReq{Name: "", Email: "bad"})
-	fmt.Printf("  client-side rejection (never reached the network): %v\n", err)
+	for _, cl := range clients {
+		_, err := cl.c.Call(ctx, restapiclient.CreateUserRouteAsAdmin, routes.CreateUserReq{Name: "", Email: "bad"})
+		fmt.Printf("  [%s] client-side rejection (never reached the network): %v\n", cl.label, err)
+	}
 	fmt.Println()
 
 	fmt.Println("=== POST /users — unsupported Content-Type (raw, non-go-codex client → 415) ===")
@@ -76,18 +103,27 @@ func demoCreateUser(chiClient *rest.Client, baseURL string) {
 	// at all — this demo uses a RAW http.Client to show what happens when
 	// a non-go-codex caller (curl, another language) sends something the
 	// route doesn't accept.
-	func() {
-		req, _ := http.NewRequest(http.MethodPost, baseURL+"/users", strings.NewReader(`<name>Dave</name>`)) //nolint:noctx
-		req.Header.Set("Content-Type", "application/xml")
-		req.Header.Set("Authorization", "Bearer valid-admin-token")
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			fmt.Printf("  error: %v\n", err)
-			return
-		}
-		defer resp.Body.Close()
-		fmt.Printf("  Status: %s\n", resp.Status)
-	}()
+	baseURLs := []struct {
+		label string
+		url   string
+	}{
+		{"chi", chiBaseURL},
+		{"net/http", nethttpBaseURL},
+	}
+	for _, b := range baseURLs {
+		func() {
+			req, _ := http.NewRequest(http.MethodPost, b.url+"/users", strings.NewReader(`<name>Dave</name>`)) //nolint:noctx
+			req.Header.Set("Content-Type", "application/xml")
+			req.Header.Set("Authorization", "******")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				fmt.Printf("  [%s] error: %v\n", b.label, err)
+				return
+			}
+			defer resp.Body.Close()
+			fmt.Printf("  [%s] Status: %s\n", b.label, resp.Status)
+		}()
+	}
 	fmt.Println()
 }
 
