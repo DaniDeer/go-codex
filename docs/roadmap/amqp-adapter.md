@@ -357,17 +357,15 @@ Trace operations (type-asserted `stats.TraceObserver`):
 - PUB/SUB: `"amqp.subscribe"`, `"amqp.publish"`
 - Request/Reply: `"amqp.serve"`, `"amqp.call"`
 
-### Security/Middleware dispatch — not yet designed; forward-looking note
+### Security/Middleware dispatch
 
-This doc has no Security/Middleware section today because AMQP plugs
-into `api/events`/`api/reqreply`'s EXISTING `Channel`/`Route` `Register`
-flow (same pattern `adapters/mqtt5`/`adapters/zeromq`/`adapters/mqtt`
-already use) — the adapter-level dispatch wiring (mirroring those
-adapters' own `adapter.go`/`caller.go`) hasn't been designed yet. When it
-is, it should dispatch against whichever mechanism
+AMQP plugs into `api/events`/`api/reqreply`'s EXISTING `Channel`/`Route`
+`Register` flow (same pattern `adapters/mqtt5`/`adapters/zeromq`/
+`adapters/mqtt` already use). It should dispatch against whichever
+mechanism
 [`docs/design/d-0003-codec-declared-middlewares.md's Addendum 7`](../design/d-0003-codec-declared-middlewares.md)
 describes as CURRENT at implementation time (`Middleware[In,Out]`
-reusable class, or its new `BoundMiddleware`/`BoundSubscribeMiddleware`/
+reusable class, or its `BoundMiddleware`/`BoundSubscribeMiddleware`/
 `BoundPublishMiddleware` bound classes) — not a hand-rolled, adapter-
 specific mechanism. AMQP 0.9.1's `BasicProperties.Headers` is a genuine
 property/header side-channel (unlike ZeroMQ's complete absence of one),
@@ -376,6 +374,56 @@ class alone (a property-decoded `In`, discarding `*T`) — mirroring
 `adapters/mqtt5`'s pattern, not `adapters/zeromq`'s narrow in-payload
 credential case (the one confirmed genuine use for the bound class
 today).
+
+#### Credential-format validation — build the shared `api/events`/`api/reqreply` core AMQP needs, don't hand-roll a 3rd private copy
+
+A cross-cutting review (`docs/roadmap/shared-api-layer-mechanics.md`'s Phase 5 investigation)
+found that `api/rest` has a shared, transport-agnostic credential-format-validation core
+(`rest.ValidateSecurityCredentials` + a `CredentialExtractor func(location, name string) string`
+abstraction in `api/rest/security_dispatch.go`) that EVERY REST adapter (nethttp/chi/websocket/
+mcprest) reuses for free — but `api/events`/`api/reqreply` have NO equivalent. `adapters/mqtt5/
+security.go` has its OWN private `validateSecurityCredentials`, built directly around
+`pahomqtt5.UserProperties` with no extractor-interface abstraction — fine for mqtt5 alone, but
+AMQP would otherwise have to write a THIRD, independently-hand-rolled copy of the same
+format-validation logic (mirroring exactly the kind of "same thing reinvented per adapter"
+pattern `docs/roadmap/adapter-dispatch-unification.md` already warns about in a related context).
+
+**This roadmap now explicitly includes building that shared core as part of AMQP's OWN security
+design** — not deferred to a separate, generic-first roadmap with no concrete consumer to
+validate it against (the sequencing the maintainer explicitly chose: design this unification
+AS PART OF the AMQP adapter work, where it has a real second data point — mqtt5's user-properties
+model plus AMQP's `BasicProperties.Headers` model — rather than generalizing from mqtt5 alone).
+
+Sketch (to be finalized once AMQP's own credential-location conventions are settled):
+
+```go
+package events // or reqreply — same shape, two packages, like REST's own split
+
+// PropertyExtractor supplies a raw credential string from wherever an
+// adapter's concrete message type stores it — name is the user-property/
+// header key to read. Returns "" when absent. Mirrors rest.CredentialExtractor's
+// role exactly: this abstraction is what lets ValidateSecurityCredentials
+// live in api/events/api/reqreply with ZERO transport-specific import,
+// the same way rest.ValidateSecurityCredentials has zero net/http import.
+type PropertyExtractor func(name string) string
+
+// ValidateSecurityCredentials extracts credentials via extract and
+// validates them against the registered SecurityScheme codecs for the
+// declared requirements — same contract as rest.ValidateSecurityCredentials.
+func ValidateSecurityCredentials(extract PropertyExtractor, reqs []route.SecurityRequirement, schemes map[string]SecurityScheme) error
+```
+
+`adapters/amqp` would build its `PropertyExtractor` from `amqp091.Delivery.Headers`/
+`amqp091.Publishing.Headers` (AMQP's own property/header side-channel, directly analogous to
+mqtt5's `UserProperties`); `adapters/mqtt5` COULD be migrated onto the same shared core in the
+same change (low risk — it already has full test coverage) or left as-is and migrated later,
+whichever is lower-friction when this work actually starts. The tiny, confirmed 3-way-duplicate
+`SecurityScheme{route.SecurityScheme; Codec}` struct (`rest`/`events`/`reqreply` all have a
+byte-identical copy) should be folded into whichever shared location this work settles on, at
+the same time — too small to deserve its own design effort.
+
+This section supersedes `docs/roadmap/shared-api-layer-mechanics.md`'s own Phase 5, which now
+just cross-references here rather than duplicating this design.
 
 ### AsyncAPI spec
 

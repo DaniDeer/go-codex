@@ -1,6 +1,43 @@
-# go-codex Review History (R1–R165, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
+# go-codex Review History (R1–R166, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 166 (api/events — Bound-security spec-population bug, found while closing shared-api-layer-mechanics.md's open design decisions)
+
+While investigating `docs/roadmap/shared-api-layer-mechanics.md`'s Phase 2 open question (whether
+a narrow `BoundRouteBuilder` interface could generalize `applyBoundRoute`/`applyBoundSubscriber`/
+`applyBoundPublisher`'s builder-touchpoint footprint across `api/rest`/`api/events`/`api/reqreply`),
+a direct side-by-side code read found `api/events`'s `BoundSubscribeMiddleware`/
+`BoundPublishMiddleware` (`applyBoundSubscriber`/`applyBoundPublisher` in
+`api/events/bound_middleware.go`) were MISSING the Security-declaration append step that
+`api/rest`'s/`api/reqreply`'s equivalent `applyBoundRoute` both have.
+
+- **Bug**: a `SubscribeBoundMW`/`PublishBoundMW`-only attachment of a Security-carrying Bound
+  middleware (no companion `.Use()` call) left `ChannelHandle.Descriptor.Subscribe.Security`/
+  `Descriptor.Publish.Security` as `nil` and `SecuritySchemes` as an empty map — even though the
+  attached Fn actually ran and enforced scopes at dispatch time (`MiddlewareHandlers`/
+  `ClientMiddlewareHandlers` WAS populated). A spec/documentation-accuracy bug: the published
+  AsyncAPI document silently omitted a security requirement the channel actually enforced.
+  Confirmed via live repro contrasting all 3 packages: REST and reqreply both correctly populate
+  `Descriptor.Security`/`SecuritySchemes` from a Bound-only attach; events did not.
+- **Fix**: `applyBoundSubscriber`/`applyBoundPublisher` now also append
+  `middleware.Middleware{Name: m.mw.MiddlewareName(), Security: sec}` to `s.mws`/`p.mws` when the
+  attached middleware carries a Security declaration — mirrors `rest.BoundMiddleware.applyBoundRoute`/
+  `reqreply.BoundMiddleware.applyBoundRoute`'s existing, proven line exactly.
+- **Tests**: added `TestSubscribeBoundMW_populatesDescriptorSecurity` and
+  `TestPublishBoundMW_populatesDescriptorSecurity` (both verified to FAIL without the fix, PASS
+  with it); strengthened `TestCheckCoverage_passes_withBoundSubscribeMW`'s own assertions to check
+  `Descriptor.Subscribe.Security` is actually populated — previously this test passed trivially
+  (nothing was ever required) despite its doc comment claiming to prove CheckCoverage recognizes
+  a Bound-attached handler as satisfying a real declared requirement.
+- Also closed `shared-api-layer-mechanics.md`'s remaining open design decisions: Phase 1's 3 items
+  (exported leaf-method names, type-alias-vs-wrapper, per-package `RouterPrefixError`) all locked
+  in as SETTLED; Phase 2's builder-generalization question marked RESOLVED with a concrete
+  `BoundRouteBuilder` interface design (implementation still not scheduled); Phase 3's
+  `DecodeIn`/`EncodeOut`-shareability question resolved as "NOT shareable" (confirmed arity
+  mismatch: REST is 3-in/2-out, events is 2-in/2-out).
 
 ---
 
