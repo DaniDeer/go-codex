@@ -5,8 +5,6 @@ import (
 	"errors"
 	"testing"
 
-	pahomqtt "github.com/eclipse/paho.mqtt.golang"
-
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/middleware"
@@ -379,24 +377,32 @@ func TestPublish_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
 // had this exact test, mqtt v3 did not).
 func TestSubscribeHandler_MiddlewareDispatch_RunsAfterPairedSecurity(t *testing.T) {
 	var order []string
+	// Security-carrying attachment migrated to the Bound mechanism per
+	// docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8 — SubscribeMW now
+	// rejects a Security-carrying mw; BoundSecuritySubscribeMiddleware +
+	// SubscribeBoundMW fuses declare+implement into one call (no raw
+	// pahomqtt.Message access in its Fn, unlike the legacy mechanism —
+	// not needed here, this test only checks dispatch ORDER).
+	type secOut struct{ GrantedScopes map[string][]string }
+	secBm := events.BoundSecuritySubscribeMiddleware[userEvent, tdEmpty, secOut]("bearerAuth",
+		events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+		func(ctx context.Context, msg *userEvent, in tdEmpty) (secOut, error) {
+			order = append(order, "security")
+			return secOut{}, nil
+		})
 	bm := events.NewBoundSubscribeMiddleware(newTDEmptyDeclaration("order-policy"),
 		func(ctx context.Context, msg *userEvent, in tdEmpty) (tdEmpty, error) {
 			order = append(order, "middleware")
 			return tdEmpty{}, nil
 		})
 
-	mw := events.FromSecurityScheme("bearerAuth", events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil)
 	subscriber := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithSubscribe(events.Subscribe{
 			Summary:  "test",
 			Security: []route.SecurityRequirement{route.Require("bearerAuth")},
 		}).
-		Use(mw).
-		SubscribeMW(&mw, func(_ context.Context, _ pahomqtt.Message, _ *userEvent) (map[string][]string, error) {
-			order = append(order, "security")
-			return map[string][]string{"bearerAuth": nil}, nil
-		})
-	subscriber = subscriber.SubscribeBoundMW(bm)
+		SubscribeBoundMW(secBm).
+		SubscribeBoundMW(bm)
 	handle := newSubscriberChannelHandle(subscriber)
 
 	handler := subscribeHandler(context.Background(), nil, handle,

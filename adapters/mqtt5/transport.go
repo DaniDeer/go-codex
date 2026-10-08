@@ -304,7 +304,20 @@ func (t *transport) Publish(ctx context.Context, pubAny, msgAny any, optsVariadi
 	for k, v := range propertyVars {
 		userProps = append(userProps, UserProperty{Key: k, Value: v})
 	}
-	var credentialRan bool
+	// hasSecurityClientMW signals a Security-carrying PublishBoundMW-
+	// attached handler (the Bound class, docs/roadmap/retire-legacy-
+	// security-middleware.md) is present — counted toward credentialRan
+	// below alongside the legacy clientImplementations path, mirroring
+	// [publish][T]'s own identical fix.
+	var hasSecurityClientMW bool
+	clientMWHandlersVal := elem.FieldByName("ClientMiddlewareHandlers")
+	for i := 0; i < clientMWHandlersVal.Len(); i++ {
+		if clientMWHandlersVal.Index(i).FieldByName("Satisfies").Len() > 0 {
+			hasSecurityClientMW = true
+			break
+		}
+	}
+	credentialRan := hasSecurityClientMW && len(propertyVars) > 0
 	if len(clientImplementations) > 0 {
 		implProps, secErr := runPublishSecurityImplsReflect(reflect.ValueOf(ctx), valuePtr, secReqs, clientImplementations, secFnType)
 		if secErr != nil {

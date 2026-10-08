@@ -551,3 +551,67 @@ func (e MiddlewareMisattachedError) LogValue() slog.Value {
 		slog.String("name", e.Name),
 	)
 }
+
+// LegacySecurityClientMWRemovedError is returned (via rb.buildErr) when a
+// legacy [middleware.Middleware] carrying a Security declaration (built
+// via [middleware.SecurityScheme]/[FromSecurityScheme]) is passed to
+// [Route.ClientMW]/[SSERoute.ClientMW] — the legacy client-side
+// credential-SUPPLYING mechanism this error retires for good (a review
+// round's finding: it could only naturally express HEADER-location
+// credentials, had no client-side codec-format validation path reaching
+// it for the bound mechanism, and its "empty return means no credential
+// needed" convention made genuine gaps structurally indistinguishable
+// from intentional opt-outs). Supply a security credential via
+// [Route.ClientBoundMW] + [BoundSecurityClientMiddleware] instead — it
+// embeds the SAME Security declaration directly (no separate .Use() call
+// needed) and correctly expresses header/cookie/query-location
+// credentials alike via WithRequestHeader/WithRequestCookie/
+// WithRequestQuery. ClientMW's GENERAL-PURPOSE (non-security) use is
+// UNCHANGED — this error fires only for a Security-carrying mw.
+type LegacySecurityClientMWRemovedError struct {
+	Route string
+	Name  string
+}
+
+func (e LegacySecurityClientMWRemovedError) Error() string {
+	return fmt.Sprintf("api/rest: route %q: middleware %q: a Security-carrying middleware.Middleware can no longer be attached via ClientMW — use ClientBoundMW with BoundSecurityClientMiddleware instead", e.Route, e.Name)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e LegacySecurityClientMWRemovedError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("route", e.Route),
+		slog.String("name", e.Name),
+	)
+}
+
+// LegacySecurityHandleMWRemovedError is [LegacySecurityClientMWRemovedError]'s
+// SERVER-side mirror — returned (via rb.buildErr) when a legacy
+// [middleware.Middleware] carrying a Security declaration (built via
+// [middleware.SecurityScheme]/[FromSecurityScheme]) is passed to
+// [Route.HandleMW]/[SSERoute.HandleMW]. Retired per
+// docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8: a full-repo search
+// found zero uses of this mechanism's one distinguishing feature — a
+// single declared scheme shared, by VALUE, across REST/events/reqreply
+// — so security-scheme declaration is now a concrete, per-api-layer
+// concern exclusively. Declare and implement a SERVER-side security
+// scheme via [Route.HandleBoundMW] + [BoundSecurityMiddleware] instead —
+// it embeds the Security declaration directly (no separate .Use() call
+// needed). HandleMW's GENERAL-PURPOSE (non-security) use is UNCHANGED —
+// this error fires only for a Security-carrying mw.
+type LegacySecurityHandleMWRemovedError struct {
+	Route string
+	Name  string
+}
+
+func (e LegacySecurityHandleMWRemovedError) Error() string {
+	return fmt.Sprintf("api/rest: route %q: middleware %q: a Security-carrying middleware.Middleware can no longer be attached via HandleMW — use HandleBoundMW with BoundSecurityMiddleware instead", e.Route, e.Name)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e LegacySecurityHandleMWRemovedError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("route", e.Route),
+		slog.String("name", e.Name),
+	)
+}

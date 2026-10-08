@@ -703,6 +703,7 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 						secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
 					}
 					effErr = reqreply.SecurityError{Err: me.Err}
+					kind = KindSecurity
 				}
 				serveErr = effErr
 				obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
@@ -1041,6 +1042,19 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 		vars = reqreply.MergeVarsOverride(vars, mwTopicVars)
 		middlewarePropertyVarsOut = reqreply.MergeVarsOverride(middlewarePropertyVarsOut, mwPropertyVars)
 	}
+	// hasSecurityClientMW signals a Security-carrying ClientBoundMW-
+	// attached handler (the Bound class, docs/roadmap/retire-legacy-
+	// security-middleware.md) is present — used below (innerCall) to
+	// ALSO count toward the built-in credential-format check's "ran"
+	// gate, mirroring mergeCredentialUserProperties' legacy ran signal
+	// for the now-retired raw-adapter-Fn-pairing path.
+	var hasSecurityClientMW bool
+	for _, h := range clientMiddlewareHandlers {
+		if len(h.Satisfies) > 0 {
+			hasSecurityClientMW = true
+			break
+		}
+	}
 	// NOTE: t.opts.Vars != nil (not len(...) > 0) — an explicit, even
 	// EMPTY, Vars map must still trigger BuildTopic below, so a route
 	// with an unresolved template var (e.g. "{tenantID}") surfaces
@@ -1227,6 +1241,7 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 			return []reflect.Value{zeroResp, reflect.ValueOf(credErr).Convert(errType)}
 		}
 		userProps = append(userProps, credProps...)
+		ran = ran || (hasSecurityClientMW && len(middlewarePropertyVarsOut) > 0)
 		if len(secReqs) > 0 && ran {
 			if name, credErr := validateSecurityCredentials(userProps, secReqs, schemeTypes, schemeCodecs); credErr != nil {
 				if secObs, ok := obs.(stats.SecurityObserver); ok {

@@ -9,7 +9,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/route"
-	pahomqtt "github.com/eclipse/paho.mqtt.golang"
 )
 
 // This file tests Topic 1's Category A full enumeration fix for events
@@ -63,8 +62,8 @@ func TestErrorChannel_PayloadDecode_Matched_Publishes(t *testing.T) {
 // security classification) because the check lived inside caller.go's
 // fn-wrapping instead of adapter.go's subscribeHandler dispatch.
 func TestErrorChannel_SecurityImplFn_Matched_Publishes_ViaSubscribeHandle(t *testing.T) {
-	handle, err := newSecuredHandleWithErrorChannel(func(_ context.Context, _ pahomqtt.Message, _ *userEvent) (map[string][]string, error) {
-		return nil, errors.New("rejected by security impl")
+	handle, err := newSecuredHandleWithErrorChannel(func(_ context.Context, _ *userEvent) (mqttSecOut, error) {
+		return mqttSecOut{}, errors.New("rejected by security impl")
 	})
 	if err != nil {
 		t.Fatalf("newSecuredHandleWithErrorChannel: %v", err)
@@ -102,10 +101,15 @@ func TestErrorChannel_SecurityImplFn_Matched_Publishes_ViaSubscribeHandle(t *tes
 // newSecuredHandleWithErrorChannel mirrors newSecuredHandle but ALSO
 // declares an events.ErrorChannel[events.SecurityError, B] — proving the
 // rejection is wrapped in events.SecurityError (not a bare error) all
-// the way through subscribeHandle's dispatch.
-func newSecuredHandleWithErrorChannel(impl func(context.Context, pahomqtt.Message, *userEvent) (map[string][]string, error)) (*events.ChannelHandle[userEvent], error) {
+// the way through subscribeHandle's dispatch. Security-carrying
+// attachment migrated to the Bound mechanism per
+// docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8 — SubscribeMW now
+// rejects a Security-carrying mw.
+func newSecuredHandleWithErrorChannel(impl func(context.Context, *userEvent) (mqttSecOut, error)) (*events.ChannelHandle[userEvent], error) {
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	mw := events.FromSecurityScheme("bearerAuth", events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil)
+	bm := events.BoundSecuritySubscribeMiddleware[userEvent, tdEmpty, mqttSecOut]("bearerAuth",
+		events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+		func(ctx context.Context, msg *userEvent, in tdEmpty) (mqttSecOut, error) { return impl(ctx, msg) })
 	return events.NewChannel[userEvent]("user/created", userEventCodec,
 		events.ErrorChannel[events.SecurityError, userErrPayload](
 			"user/created/security-errors", userErrPayloadCodec,
@@ -118,8 +122,7 @@ func newSecuredHandleWithErrorChannel(impl func(context.Context, pahomqtt.Messag
 			Summary:  "User created",
 			Security: []route.SecurityRequirement{route.Require("bearerAuth")},
 		}).
-		Use(mw).
-		SubscribeMW(&mw, impl).
+		SubscribeBoundMW(bm).
 		Handle(b)
 }
 

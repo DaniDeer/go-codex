@@ -536,8 +536,27 @@ func subscribeEntryReflect(ctx context.Context, client pahomqtt.Client, entry ev
 			outs, _ := mwResults[0].Interface().([]any)
 			if mwErr, _ := mwResults[1].Interface().(error); mwErr != nil {
 				obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
+				// A FAILING handler whose OWN Satisfies is non-empty (a
+				// Security-carrying MiddlewareHandler, confirmed via Name
+				// lookup) must still call RecordSecurityRejection and
+				// report KindSecurity — mirrors adapter.go's non-reflect
+				// subscribeHandler's identical handling exactly; this
+				// reflect-based dispatch (ServeSubscribers' primary
+				// workflow) was missing it entirely (found via this
+				// round's Bound-mechanism test migration surfacing the
+				// gap, not a static read — same class of
+				// legacy-path-only gate this session has found 4 times
+				// already in mqtt5/zeromq's own code).
+				kind := KindDecode
+				if dispatchErr, ok := events.AsMiddlewareDispatchError(mwErr); ok && dispatchErr.IsFnError &&
+					events.IsSecuritySatisfyingHandler(middlewareHandlers, dispatchErr.Name) {
+					if secObs, ok := obs.(stats.SecurityObserver); ok {
+						secObs.RecordSecurityRejection(msg.Topic(), route.FirstSchemeName(secReqs))
+					}
+					kind = KindSecurity
+				}
 				if opts.OnError != nil {
-					opts.OnError(SubscribeError{Kind: KindDecode, Topic: msg.Topic(), Err: mwErr})
+					opts.OnError(SubscribeError{Kind: kind, Topic: msg.Topic(), Err: mwErr})
 				}
 				return
 			}

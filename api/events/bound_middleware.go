@@ -369,6 +369,44 @@ func (e MiddlewareMisattachedError) LogValue() slog.Value {
 	)
 }
 
+// LegacySecurityMWRemovedError is returned (via s.buildErr/p.buildErr) when
+// a legacy [middleware.Middleware] carrying a Security declaration (built
+// via [middleware.SecurityScheme]/[FromSecurityScheme]) is passed to
+// [Subscriber.SubscribeMW]/[Publisher.PublishMW]. Retired per
+// docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8: a full-repo search
+// found zero uses of this mechanism's one distinguishing feature — a
+// single declared scheme shared, by VALUE, across REST/events/reqreply —
+// so security-scheme declaration is now a concrete, per-api-layer concern
+// exclusively. Declare and implement a security scheme via
+// [Subscriber.SubscribeBoundMW]/[Publisher.PublishBoundMW] +
+// [BoundSecuritySubscribeMiddleware]/[BoundSecurityPublishMiddleware]
+// instead — it embeds the Security declaration directly (no separate
+// .Use() call needed). SubscribeMW/PublishMW's GENERAL-PURPOSE
+// (non-security) use is UNCHANGED — this error fires only for a
+// Security-carrying mw.
+type LegacySecurityMWRemovedError struct {
+	Topic string
+	Name  string
+	Op    string // "SubscribeMW" or "PublishMW"
+}
+
+func (e LegacySecurityMWRemovedError) Error() string {
+	boundOp, boundCtor := "SubscribeBoundMW", "BoundSecuritySubscribeMiddleware"
+	if e.Op == "PublishMW" {
+		boundOp, boundCtor = "PublishBoundMW", "BoundSecurityPublishMiddleware"
+	}
+	return fmt.Sprintf("api/events: topic %q: middleware %q: a Security-carrying middleware.Middleware can no longer be attached via %s — use %s with %s instead", e.Topic, e.Name, e.Op, boundOp, boundCtor)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e LegacySecurityMWRemovedError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("topic", e.Topic),
+		slog.String("name", e.Name),
+		slog.String("op", e.Op),
+	)
+}
+
 // SubscribeBoundMW attaches bm — a [BoundSubscribeMiddleware][T, In, Out]
 // value whose T matches THIS Subscriber's own T type parameter — giving
 // its embedded Fn *T access via the SAME channel-BOUND mechanism as the

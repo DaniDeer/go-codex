@@ -179,10 +179,12 @@ func TestErrorChannel_SecurityMiddlewareFn_Matched_Publishes(t *testing.T) {
 	// exercise (isolating the security MIDDLEWARE Fn failure from the
 	// unrelated built-in credential check).
 	bareBearerScheme := events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}
-	mw := events.FromSecurityScheme("bearer", bareBearerScheme, nil)
-	impl := func(_ context.Context, _ *pahomqtt5.Publish, _ *sensorReading) (map[string][]string, error) {
-		return nil, errSecurityRejected
-	}
+	mw := events.BoundSecuritySubscribeMiddleware[sensorReading, struct{}, struct{}](
+		"bearer", bareBearerScheme, nil,
+		func(context.Context, *sensorReading, struct{}) (struct{}, error) {
+			return struct{}{}, errSecurityRejected
+		},
+	)
 	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec,
 		events.ErrorChannel[events.SecurityError, sensorErrPayload](
 			"sensors/readings/errors", sensorErrPayloadCodec,
@@ -192,8 +194,7 @@ func TestErrorChannel_SecurityMiddlewareFn_Matched_Publishes(t *testing.T) {
 		),
 	).
 		WithSubscribe(events.Subscribe{Summary: "test", Security: []route.SecurityRequirement{route.Require("bearer")}}).
-		Use(mw).
-		SubscribeMW(&mw, impl).
+		SubscribeBoundMW(mw).
 		Handle(b)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -228,9 +229,13 @@ func TestErrorChannel_SecurityMiddlewareFn_Matched_Publishes(t *testing.T) {
 // Middleware-dispatched (`.Use()`-attached reusable class, OR
 // `SubscribeBoundMW`-attached bound class) Security Fn failure case —
 // distinct from TestErrorChannel_SecurityMiddlewareFn_Matched_Publishes
-// above, which only exercises the LEGACY raw-adapter-Fn-pairing path
-// (bare middleware.Middleware + SubscribeMW(&mw, rawFn)). This test
-// closes the blind spot that let a confirmed cross-pattern inconsistency
+// above only in SCHEME NAME ("bearer2" here vs "bearer" above) — both now
+// exercise the SAME SubscribeBoundMW mechanism (per docs/roadmap/retire-
+// legacy-security-middleware.md, the test above was migrated from the
+// now-rejected legacy raw-adapter-Fn-pairing path, bare
+// middleware.Middleware + SubscribeMW(&mw, rawFn), with NO change to the
+// behavior under test). This test closes the blind spot that let a
+// confirmed cross-pattern inconsistency
 // (events wrapping a Security-carrying Middleware Fn's failure as the
 // GENERIC events.MiddlewareError, rather than events.SecurityError like
 // REST's own isSecuritySatisfyingHandler-gated behavior) go undetected —

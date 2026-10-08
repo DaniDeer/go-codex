@@ -489,3 +489,40 @@ func (e MiddlewareMisattachedError) LogValue() slog.Value {
 		slog.String("name", e.Name),
 	)
 }
+
+// LegacySecurityMWRemovedError is returned (via rb.buildErr) when a
+// legacy [middleware.Middleware] carrying a Security declaration (built
+// via [middleware.SecurityScheme]/[FromSecurityScheme]) is passed to
+// [Route.HandleMW]/[Route.ClientMW]. Retired per
+// docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8: a full-repo search
+// found zero uses of this mechanism's one distinguishing feature — a
+// single declared scheme shared, by VALUE, across REST/events/reqreply —
+// so security-scheme declaration is now a concrete, per-api-layer concern
+// exclusively. Declare and implement a security scheme via
+// [Route.HandleBoundMW]/[Route.ClientBoundMW] +
+// [BoundSecurityMiddleware]/[BoundSecurityClientMiddleware] instead — it
+// embeds the Security declaration directly (no separate .Use() call
+// needed). HandleMW/ClientMW's GENERAL-PURPOSE (non-security) use is
+// UNCHANGED — this error fires only for a Security-carrying mw.
+type LegacySecurityMWRemovedError struct {
+	Route string
+	Name  string
+	Op    string // "HandleMW" or "ClientMW"
+}
+
+func (e LegacySecurityMWRemovedError) Error() string {
+	boundOp, boundCtor := "HandleBoundMW", "BoundSecurityMiddleware"
+	if e.Op == "ClientMW" {
+		boundOp, boundCtor = "ClientBoundMW", "BoundSecurityClientMiddleware"
+	}
+	return fmt.Sprintf("api/reqreply: route %q: middleware %q: a Security-carrying middleware.Middleware can no longer be attached via %s — use %s with %s instead", e.Route, e.Name, e.Op, boundOp, boundCtor)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e LegacySecurityMWRemovedError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("route", e.Route),
+		slog.String("name", e.Name),
+		slog.String("op", e.Op),
+	)
+}

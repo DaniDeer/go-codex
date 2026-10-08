@@ -70,10 +70,16 @@ func TestErrorPattern_SecurityMiddlewareFn_Matched_Publishes_ReqReply(t *testing
 	handler := func(_ context.Context, _ computeReq) (computeResp, error) {
 		return computeResp{}, nil
 	}
-	bearerMw := middleware.SecurityScheme("bearer", route.BearerScheme("JWT"), nil, nil)
-	rejectingImpl := func(context.Context, *pahomqtt5.Publish, []route.SecurityRequirement) (map[string][]string, error) {
-		return nil, errSecurityRejected
+	// NO Codec attached to this scheme (unlike bearerSecBoundMw's shared
+	// bearerAuthTestCodec) — deliberately, so the built-in codec-based
+	// pre-check (which runs BEFORE any paired Fn) stays a no-op here and
+	// this test exercises ONLY the paired Fn's OWN rejection.
+	rejectingImpl := func(context.Context, *computeReq, mwSecIn) (mwSecOut, error) {
+		return mwSecOut{}, errSecurityRejected
 	}
+	rejectingMw := reqreply.BoundSecurityMiddleware[computeReq, mwSecIn, mwSecOut](
+		"bearer", reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil, rejectingImpl,
+	)
 	epRoute := reqreply.NewRoute[computeReq, computeResp]("compute/security-mw-ep", computeReqCodec, computeRespCodec,
 		reqreply.RouteMeta{OperationID: "computeSecurityMw", Security: []route.SecurityRequirement{route.Require("bearer")}},
 		reqreply.ErrorPattern[reqreply.SecurityError, serveErrPayload](serveErrPayloadCodec,
@@ -81,7 +87,7 @@ func TestErrorPattern_SecurityMiddlewareFn_Matched_Publishes_ReqReply(t *testing
 				return serveErrPayload{Code: "security_rejected", Message: e.Error()}, nil
 			},
 		),
-	).Use(bearerMw).HandleMW(&bearerMw, rejectingImpl)
+	).HandleBoundMW(rejectingMw)
 	if _, err := epRoute.WithHandler(handler).Register(server); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -119,9 +125,12 @@ func TestErrorPattern_SecurityMiddlewareFn_Matched_Publishes_ReqReply(t *testing
 // covers the Middleware-dispatched (`.Use()`-attached, reusable class)
 // Security Fn failure case — distinct from
 // TestErrorPattern_SecurityMiddlewareFn_Matched_Publishes_ReqReply above,
-// which only exercises the LEGACY raw-adapter-Fn-pairing path (bare
-// middleware.Middleware + HandleMW(&mw, rawFn)), confirmed unaffected by
-// docs/design/d-0003-codec-declared-middlewares.md's Addendum 7's Phase C. This test closes the
+// which exercises the BOUND class's own Security Fn failure path
+// (HandleBoundMW-attached, per docs/roadmap/retire-legacy-security-
+// middleware.md — the test's own fn was migrated from the now-rejected
+// legacy raw-adapter-Fn-pairing path, HandleMW(&mw, rawFn), to
+// HandleBoundMW(bearerSecBoundMw(fn)), with NO change to the behavior
+// under test). This test closes the
 // blind spot that let a confirmed cross-pattern inconsistency (reqreply
 // wrapping a Security-carrying Middleware Fn's failure as the GENERIC
 // reqreply.MiddlewareError, rather than reqreply.SecurityError like

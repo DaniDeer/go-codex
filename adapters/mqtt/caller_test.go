@@ -284,17 +284,19 @@ func TestServeSubscribers_SecurityRejection_CallsSecurityObserver(t *testing.T) 
 	ev := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	caller := newCaller(client, ev)
 
-	rejectingMW := events.FromSecurityScheme("apiKeyAuth",
-		events.SecurityScheme{SecurityScheme: route.APIKeyScheme("X-API-Key", "header")}, nil)
-	securityFn := func(_ context.Context, _ pahomqtt.Message, _ *sensorReading) (map[string][]string, error) {
-		return nil, errors.New("unauthorized")
-	}
+	// Security-carrying attachment migrated to the Bound mechanism per
+	// docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8 — SubscribeMW now
+	// rejects a Security-carrying mw.
+	rejectingBm := events.BoundSecuritySubscribeMiddleware[sensorReading, tdEmpty, mqttSecOut]("apiKeyAuth",
+		events.SecurityScheme{SecurityScheme: route.APIKeyScheme("X-API-Key", "header")}, nil,
+		func(ctx context.Context, msg *sensorReading, in tdEmpty) (mqttSecOut, error) {
+			return mqttSecOut{}, errors.New("unauthorized")
+		})
 
 	ch := events.NewChannel[sensorReading]("sensors/secured", sensorCodec)
 	sub := ch.WithSubscribe(events.Subscribe{
 		Security: []route.SecurityRequirement{route.Require("apiKeyAuth")},
-	}).Use(rejectingMW).
-		SubscribeMW(&rejectingMW, securityFn).
+	}).SubscribeBoundMW(rejectingBm).
 		WithHandler(func(context.Context, sensorReading) error {
 			t.Fatal("handler must not be called when security rejects")
 			return nil

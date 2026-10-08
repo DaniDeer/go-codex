@@ -239,26 +239,46 @@ func newChannelHandle() *events.ChannelHandle[sensorReading] {
 var securedBearerScheme = events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.
 	WithCodec(codex.String().Refine(validate.NonEmptyString))
 
+// subSecIn/subSecOut are the events Bound-mechanism In/Out shape used by
+// newSecuredSubscribeChannelHandle below — a Security-carrying
+// events.Middleware can no longer be attached via SubscribeMW (events'
+// own analogous retirement of the legacy pairing mechanism);
+// events.BoundSecuritySubscribeMiddleware + Subscriber.SubscribeBoundMW
+// is the replacement.
+type subSecIn struct{}
+type subSecOut struct{ GrantedScopes map[string][]string }
+
 // newSecuredSubscribeChannelHandle returns a channel handle whose Subscribe
 // operation requires the "bearer" scheme declared above — used to test the
 // built-in codec-based credential check + SecurityFunc ordering.
 func newSecuredSubscribeChannelHandle() *events.ChannelHandle[sensorReading] {
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	// CheckCoverage (unconditional at Subscriber.Handle time) requires a
-	// paired SubscribeMW implementation for every declared scheme. The
-	// attached Fn is a no-op, always-granted implementation (correctly
-	// shaped per mqtt5's own runSubscribeSecurityImpls) — it exists ONLY to
-	// satisfy CheckCoverage's bookkeeping; the actual credential
-	// enforcement this test exercises runs through the codec-based
-	// built-in check / SubscribeOptions.SecurityFunc instead.
-	mw := events.FromSecurityScheme("bearer", securedBearerScheme, nil)
-	noopImpl := func(_ context.Context, _ *pahomqtt5.Publish, _ *sensorReading) (map[string][]string, error) {
-		return map[string][]string{"bearer": {}}, nil
+	// paired SubscribeBoundMW implementation for every declared scheme.
+	// The attached Fn is a no-op, always-granted implementation — it
+	// exists ONLY to satisfy CheckCoverage's bookkeeping; the actual
+	// credential enforcement this test exercises runs through the
+	// codec-based built-in check / SubscribeOptions.SecurityFunc instead.
+	noopImpl := func(_ context.Context, _ *sensorReading, _ subSecIn) (subSecOut, error) {
+		return subSecOut{GrantedScopes: map[string][]string{"bearer": {}}}, nil
 	}
+	mw := events.BoundSecuritySubscribeMiddleware[sensorReading, subSecIn, subSecOut](
+		"bearer", securedBearerScheme, nil, noopImpl,
+	)
+	// events.FromSecurityScheme (the legacy, spec-only Security
+	// declaration) is STILL attached via .Use() here — unlike reqreply's
+	// Bound mechanism, events' SubscribeBoundMW does not itself populate
+	// [events.ChannelHandle.SecuritySchemes] (the source mqtt5's own
+	// built-in codec-based credential check reads its scheme Codec from),
+	// so the codec is declared here while SubscribeBoundMW supplies
+	// CheckCoverage's actual implementation. This is still legal: only
+	// PAIRING a Security-carrying mw with SubscribeMW/PublishMW is
+	// rejected now, not a bare .Use() declaration.
+	legacyMw := events.FromSecurityScheme("bearer", securedBearerScheme, nil)
 	h, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
 		WithSubscribe(events.Subscribe{Summary: "test", Security: []route.SecurityRequirement{route.Require("bearer")}}).
-		Use(mw).
-		SubscribeMW(&mw, noopImpl).
+		Use(legacyMw).
+		SubscribeBoundMW(mw).
 		Handle(b)
 	if err != nil {
 		panic(err)
@@ -279,40 +299,81 @@ func newRouteHandle() *reqreply.RouteHandle[computeReq, computeResp] {
 // (non-empty) — shared by every security declaration below.
 var bearerAuthTestCodec = codex.String().Refine(validate.NonEmptyString)
 
-// bearerAuthMw declares the "bearer" scheme via .Use() (Phase 1 of
-// docs/design/d-0004-reqreply-workflow-simplification.md's Addendum) — REPLACES the OLD manual
-// RouteMeta.Security + reqreply.WithSecurityScheme declaration pattern,
-// which is incompatible with pairing a HandleMW/ClientMW implementation
-// against it (checkImplementationsDeclared only recognizes schemes
-// declared via .Use()).
-var bearerAuthMw = middleware.SecurityScheme("bearer", route.BearerScheme("JWT"), nil, &bearerAuthTestCodec)
+// mwSecIn/mwSecOut are the Bound-mechanism In/Out shape used by every
+// migrated HandleMW/ClientMW-pairing test in this package (per
+// docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8 — HandleMW/ClientMW
+// now reject a Security-carrying mw; BoundSecurityMiddleware/
+// BoundSecurityClientMiddleware + HandleBoundMW/ClientBoundMW is the one
+// remaining way to declare+implement a security scheme). Authorization
+// carries the SAME "Authorization" User Property merge field both
+// directions (decode server-side, encode client-side) so tests asserting
+// the actual propagated credential value (e.g.
+// pub.Properties.User.Get("Authorization")) still pass.
+type mwSecIn struct{ Authorization string }
+type mwSecOut struct{ GrantedScopes map[string][]string }
+
+// bearerSecBoundMw/bearerSecBoundMwNamed build a server-side
+// BoundSecurityMiddleware for the "bearer" scheme (or schemeName, for
+// tests needing a DIFFERENT name to avoid a same-scheme HandleBoundMW +
+// ClientBoundMW name clash on one route — see
+// docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8).
+func bearerSecBoundMw(fn func(ctx context.Context, req *computeReq, in mwSecIn) (mwSecOut, error)) reqreply.BoundMiddleware[computeReq, mwSecIn, mwSecOut] {
+	return bearerSecBoundMwNamed("bearer", fn)
+}
+
+func bearerSecBoundMwNamed(schemeName string, fn func(ctx context.Context, req *computeReq, in mwSecIn) (mwSecOut, error)) reqreply.BoundMiddleware[computeReq, mwSecIn, mwSecOut] {
+	return reqreply.BoundSecurityMiddleware[computeReq, mwSecIn, mwSecOut](
+		schemeName, reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(bearerAuthTestCodec), nil, fn,
+	).WithRequestProperty(reqreply.NewOptionalPropertyParam("Authorization", codex.String(),
+		func(in mwSecIn) string { return in.Authorization },
+		func(in *mwSecIn, v string) { in.Authorization = v },
+	))
+}
+
+// bearerSecBoundClientMw/bearerSecBoundClientMwNamed mirror
+// bearerSecBoundMw/bearerSecBoundMwNamed for the client/sending role.
+func bearerSecBoundClientMw(fn func(ctx context.Context, req computeReq) (mwSecIn, error)) reqreply.BoundClientMiddleware[computeReq, mwSecIn, mwSecOut] {
+	return bearerSecBoundClientMwNamed("bearer", fn)
+}
+
+func bearerSecBoundClientMwNamed(schemeName string, fn func(ctx context.Context, req computeReq) (mwSecIn, error)) reqreply.BoundClientMiddleware[computeReq, mwSecIn, mwSecOut] {
+	return reqreply.BoundSecurityClientMiddleware[computeReq, mwSecIn, mwSecOut](
+		schemeName, reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(bearerAuthTestCodec), nil, fn,
+	).WithRequestProperty(reqreply.NewOptionalPropertyParam("Authorization", codex.String(),
+		func(in mwSecIn) string { return in.Authorization },
+		func(in *mwSecIn, v string) { in.Authorization = v },
+	))
+}
 
 // acceptingSecurityImpl is a PAIRED server-side security Fn that always
 // grants — used by tests that need [reqreply.CheckCoverage] to pass
 // without exercising rejection behavior themselves (e.g. the built-in
 // codec-format-check test, which rejects BEFORE this Fn is ever
 // reached).
-func acceptingSecurityImpl(context.Context, *pahomqtt5.Publish, []route.SecurityRequirement) (map[string][]string, error) {
-	return map[string][]string{"bearer": nil}, nil
+func acceptingSecurityImpl(context.Context, *computeReq, mwSecIn) (mwSecOut, error) {
+	return mwSecOut{GrantedScopes: map[string][]string{"bearer": nil}}, nil
 }
 
-// securedComputeRoute requires the "bearer" scheme declared via .Use() —
-// used to test reqreply's built-in codec check, HandleMW, and ClientMW.
-// A NEW variant is built per test via .HandleMW/.ClientMW (Route is
-// immutable) where a test needs different Fn behavior.
+// securedComputeRoute requires the "bearer" scheme (declared explicitly
+// via RouteMeta.Security, since no implementation is attached at package
+// scope anymore — HandleBoundMW fuses declare+implement into ONE call,
+// done per-test below) — used to test reqreply's built-in codec check,
+// HandleBoundMW, and ClientBoundMW. A NEW variant is built per test via
+// .HandleBoundMW/.ClientBoundMW (Route is immutable) where a test needs
+// different Fn behavior.
 var securedComputeRoute = reqreply.NewRoute[computeReq, computeResp](
 	"compute/secured-add",
 	computeReqCodec, computeRespCodec,
-	reqreply.RouteMeta{OperationID: "securedCompute"},
-).Use(bearerAuthMw)
+	reqreply.RouteMeta{OperationID: "securedCompute", Security: []route.SecurityRequirement{route.Require("bearer")}},
+)
 
 func newSecuredRouteHandle() *reqreply.RouteHandle[computeReq, computeResp] {
 	return newSecuredRouteHandleWithImpl(acceptingSecurityImpl)
 }
 
-func newSecuredRouteHandleWithImpl(fn func(context.Context, *pahomqtt5.Publish, []route.SecurityRequirement) (map[string][]string, error)) *reqreply.RouteHandle[computeReq, computeResp] {
+func newSecuredRouteHandleWithImpl(fn func(context.Context, *computeReq, mwSecIn) (mwSecOut, error)) *reqreply.RouteHandle[computeReq, computeResp] {
 	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
-	h, err := securedComputeRoute.HandleMW(&bearerAuthMw, fn).Register(b)
+	h, err := securedComputeRoute.HandleBoundMW(bearerSecBoundMw(fn)).Register(b)
 	if err != nil {
 		panic(err)
 	}
@@ -320,7 +381,7 @@ func newSecuredRouteHandleWithImpl(fn func(context.Context, *pahomqtt5.Publish, 
 }
 
 // newSecuredRouteHandleNoImpl returns a handle for securedComputeRoute
-// with NO HandleMW attached — used to test
+// with NO HandleBoundMW attached — used to test
 // [reqreply.CheckCoverage]/[reqreply.MissingSecurityMiddlewareError].
 func newSecuredRouteHandleNoImpl() *reqreply.RouteHandle[computeReq, computeResp] {
 	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
@@ -538,15 +599,18 @@ func TestSubscribe_SecurityImpl_StillRunsAfterBuiltInCheck_OnValidCredential(t *
 	fnCalled := false
 
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	mw := events.FromSecurityScheme("bearer", securedBearerScheme, nil)
-	impl := func(_ context.Context, _ *pahomqtt5.Publish, _ *sensorReading) (map[string][]string, error) {
+	legacyMw := events.FromSecurityScheme("bearer", securedBearerScheme, nil)
+	impl := func(_ context.Context, _ *sensorReading, _ subSecIn) (subSecOut, error) {
 		implCalled = true
-		return map[string][]string{"bearer": {}}, nil
+		return subSecOut{GrantedScopes: map[string][]string{"bearer": {}}}, nil
 	}
+	mw := events.BoundSecuritySubscribeMiddleware[sensorReading, subSecIn, subSecOut](
+		"bearer", securedBearerScheme, nil, impl,
+	)
 	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
 		WithSubscribe(events.Subscribe{Summary: "test", Security: []route.SecurityRequirement{route.Require("bearer")}}).
-		Use(mw).
-		SubscribeMW(&mw, impl).
+		Use(legacyMw).
+		SubscribeBoundMW(mw).
 		Handle(b)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -868,23 +932,60 @@ func TestPublish_UserProperties(t *testing.T) {
 	}
 }
 
+// pubSecOut is the events Bound-mechanism Out shape used by the migrated
+// Publish security tests below — a Security-carrying events.Middleware
+// can no longer be attached via PublishMW; events.
+// BoundSecurityPublishMiddleware + Publisher.PublishBoundMW is the
+// replacement. Authorization is merged into the published "Authorization"
+// User Property via WithPublishProperty so tests asserting the actual
+// propagated credential value still pass.
+type pubSecOut struct {
+	GrantedScopes map[string][]string
+	Authorization string
+}
+
+func pubSecBoundMw(fn func(ctx context.Context, msg sensorReading) (pubSecOut, error)) events.BoundPublishMiddleware[sensorReading, struct{}, pubSecOut] {
+	return events.BoundSecurityPublishMiddleware[sensorReading, struct{}, pubSecOut](
+		"bearer", securedBearerScheme, nil, fn,
+	).WithPublishProperty(events.NewPropertyParam("Authorization", codex.String(),
+		func(out pubSecOut) string { return out.Authorization },
+		func(out *pubSecOut, v string) { out.Authorization = v },
+	))
+}
+
+// pubSecBoundMwOmitEmpty mirrors pubSecBoundMw but OMITS the
+// "Authorization" property entirely when the Fn's returned value is
+// empty — used by TestPublish_SecurityImpl_ReturnsNilProperties_
+// SkipsValidation below to reproduce the OLD legacy raw-adapter-Fn's
+// "returned (nil, nil) -> no properties at all -> built-in check has
+// nothing to validate" behavior.
+func pubSecBoundMwOmitEmpty(fn func(ctx context.Context, msg sensorReading) (pubSecOut, error)) events.BoundPublishMiddleware[sensorReading, struct{}, pubSecOut] {
+	return events.BoundSecurityPublishMiddleware[sensorReading, struct{}, pubSecOut](
+		"bearer", securedBearerScheme, nil, fn,
+	).WithPublishProperty(events.NewOmitEmptyPropertyParam("Authorization", codex.String(),
+		func(out pubSecOut) string { return out.Authorization },
+		func(out *pubSecOut, v string) { out.Authorization = v },
+	))
+}
+
 func TestPublish_SecurityImpl_ValidFormat_Passes(t *testing.T) {
 	// REPLACES the OLD TestPublish_CredentialFunc_ValidFormat_Passes
 	// (PublishOptions.CredentialFunc was removed entirely, Phase 2 of
 	// docs/design/d-0002-pubsub-workflow-simplification.md's Addendum) -- the SAME scenario now
-	// runs through a real PublishMW-paired security implementation Fn.
+	// runs through a real PublishBoundMW-paired security implementation Fn
+	// (per docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8).
 	client := &mockClient{}
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
 
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	mw := events.FromSecurityScheme("bearer", securedBearerScheme, nil)
-	impl := func(context.Context, *sensorReading, []route.SecurityRequirement) ([]UserProperty, error) {
-		return []UserProperty{{Key: "Authorization", Value: "x"}}, nil
-	}
+	legacyMw := events.FromSecurityScheme("bearer", securedBearerScheme, nil)
+	mw := pubSecBoundMw(func(context.Context, sensorReading) (pubSecOut, error) {
+		return pubSecOut{GrantedScopes: map[string][]string{"bearer": {}}, Authorization: "x"}, nil
+	})
 	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
 		WithPublish(events.Publish{Summary: "test", Security: []route.SecurityRequirement{route.Require("bearer")}}).
-		Use(mw).
-		PublishMW(&mw, impl).
+		Use(legacyMw).
+		PublishBoundMW(mw).
 		Handle(b)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -914,15 +1015,15 @@ func TestPublish_SecurityImpl_MalformedFormat_ReturnsSecurityCredentialError(t *
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
 
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	mw := events.FromSecurityScheme("bearer", securedBearerScheme, nil)
-	impl := func(context.Context, *sensorReading, []route.SecurityRequirement) ([]UserProperty, error) {
+	legacyMw := events.FromSecurityScheme("bearer", securedBearerScheme, nil)
+	mw := pubSecBoundMw(func(context.Context, sensorReading) (pubSecOut, error) {
 		// Empty credential value -> fails the non-empty-string Codec.
-		return []UserProperty{{Key: "Authorization", Value: ""}}, nil
-	}
+		return pubSecOut{GrantedScopes: map[string][]string{"bearer": {}}, Authorization: ""}, nil
+	})
 	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
 		WithPublish(events.Publish{Summary: "test", Security: []route.SecurityRequirement{route.Require("bearer")}}).
-		Use(mw).
-		PublishMW(&mw, impl).
+		Use(legacyMw).
+		PublishBoundMW(mw).
 		Handle(b)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -957,14 +1058,14 @@ func TestPublish_SecurityImpl_ReturnsNilProperties_SkipsValidation(t *testing.T)
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
 
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	mw := events.FromSecurityScheme("bearer", securedBearerScheme, nil)
-	impl := func(context.Context, *sensorReading, []route.SecurityRequirement) ([]UserProperty, error) {
-		return nil, nil
-	}
+	legacyMw := events.FromSecurityScheme("bearer", securedBearerScheme, nil)
+	mw := pubSecBoundMwOmitEmpty(func(context.Context, sensorReading) (pubSecOut, error) {
+		return pubSecOut{GrantedScopes: map[string][]string{"bearer": {}}}, nil
+	})
 	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
 		WithPublish(events.Publish{Summary: "test", Security: []route.SecurityRequirement{route.Require("bearer")}}).
-		Use(mw).
-		PublishMW(&mw, impl).
+		Use(legacyMw).
+		PublishBoundMW(mw).
 		Handle(b)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)

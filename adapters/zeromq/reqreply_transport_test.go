@@ -579,14 +579,41 @@ var securedComputeRespCodec = codex.Struct[securedComputeResp](
 		func(r *securedComputeResp, v int) { r.Sum = v }),
 )
 
-var zmqBearerAuthCodec = codex.String().Refine(validate.NonEmptyString)
-var zmqBearerAuthMw = middleware.SecurityScheme("zmqBearer", route.BearerScheme("JWT"), nil, &zmqBearerAuthCodec)
+// zmwSecIn/zmwSecOut are the Bound-mechanism In/Out shape used by every
+// migrated HandleMW/ClientMW security-pairing test in this file (per
+// docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8 — HandleMW/ClientMW
+// now reject a Security-carrying mw; BoundSecurityMiddleware/
+// BoundSecurityClientMiddleware + HandleBoundMW/ClientBoundMW is the one
+// remaining way to declare+implement a security scheme). Unlike mqtt5
+// (which merges a credential into a User Property), zeromq's paired
+// security/credential Fn reads/writes the route's own *Req directly (no
+// property side channel exists at all) — zmwSecIn/zmwSecOut stay
+// trivial, empty shapes; the Fn itself is given *Req access by
+// BoundSecurityMiddleware's own fn shape.
+type zmwSecIn struct{}
+type zmwSecOut struct{ GrantedScopes map[string][]string }
+
+// zmqBearerBoundMw builds a server-side BoundSecurityMiddleware for the
+// "zmqBearer" scheme, attached via HandleBoundMW.
+func zmqBearerBoundMw(fn func(ctx context.Context, req *securedComputeReq, in zmwSecIn) (zmwSecOut, error)) reqreply.BoundMiddleware[securedComputeReq, zmwSecIn, zmwSecOut] {
+	return reqreply.BoundSecurityMiddleware[securedComputeReq, zmwSecIn, zmwSecOut](
+		"zmqBearer", reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil, fn,
+	)
+}
+
+// zmqBearerBoundClientMw builds a client-side BoundSecurityClientMiddleware
+// for the "zmqBearer" scheme, attached via ClientBoundMW.
+func zmqBearerBoundClientMw(fn func(ctx context.Context, req securedComputeReq) (zmwSecIn, error)) reqreply.BoundClientMiddleware[securedComputeReq, zmwSecIn, zmwSecOut] {
+	return reqreply.BoundSecurityClientMiddleware[securedComputeReq, zmwSecIn, zmwSecOut](
+		"zmqBearer", reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil, fn,
+	)
+}
 
 func newSecuredComputeRoute() reqreply.Route[securedComputeReq, securedComputeResp] {
 	return reqreply.NewRoute[securedComputeReq, securedComputeResp](
 		"/secured-compute",
 		securedComputeReqCodec, securedComputeRespCodec,
-		reqreply.RouteMeta{OperationID: "securedCompute"},
+		reqreply.RouteMeta{OperationID: "securedCompute", Security: []route.SecurityRequirement{route.Require("zmqBearer")}},
 	)
 }
 
@@ -594,11 +621,11 @@ func newSecuredComputeRoute() reqreply.Route[securedComputeReq, securedComputeRe
 // grants (reads req.Token, accepts any non-empty value — format already
 // validated by declaring the scheme, so this Fn just simulates a
 // revocation check).
-func acceptingSecurityFn(_ context.Context, req *securedComputeReq, _ []route.SecurityRequirement) error {
+func acceptingSecurityFn(_ context.Context, req *securedComputeReq, _ zmwSecIn) (zmwSecOut, error) {
 	if req.Token == "" {
-		return errors.New("token required")
+		return zmwSecOut{}, errors.New("token required")
 	}
-	return nil
+	return zmwSecOut{GrantedScopes: map[string][]string{"zmqBearer": nil}}, nil
 }
 
 func TestAttachServer_HandleMW_PairedSecurityFn_Verifies(t *testing.T) {
@@ -606,8 +633,8 @@ func TestAttachServer_HandleMW_PairedSecurityFn_Verifies(t *testing.T) {
 	fn := func(_ context.Context, r securedComputeReq) (securedComputeResp, error) {
 		return securedComputeResp{Sum: r.X + r.Y}, nil
 	}
-	if _, err := newSecuredComputeRoute().Use(zmqBearerAuthMw).
-		HandleMW(&zmqBearerAuthMw, acceptingSecurityFn).
+	if _, err := newSecuredComputeRoute().
+		HandleBoundMW(zmqBearerBoundMw(acceptingSecurityFn)).
 		WithHandler(fn).Register(server); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -660,12 +687,12 @@ func TestAttachServer_HandleMW_PairedSecurityFn_MutatesReq(t *testing.T) {
 	// The security Fn WRITES an enrichment field (here: forces Y to a
 	// fixed value) — proving the WRITE half of *Req access, not just
 	// read/reject, mirrors pub/sub's identical read/write contract.
-	enrichFn := func(_ context.Context, req *securedComputeReq, _ []route.SecurityRequirement) error {
+	enrichFn := func(_ context.Context, req *securedComputeReq, _ zmwSecIn) (zmwSecOut, error) {
 		if req.Token == "" {
-			return errors.New("token required")
+			return zmwSecOut{}, errors.New("token required")
 		}
 		req.Y = 100 // enrichment — handler must observe THIS value, not the wire value
-		return nil
+		return zmwSecOut{GrantedScopes: map[string][]string{"zmqBearer": nil}}, nil
 	}
 
 	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
@@ -674,8 +701,8 @@ func TestAttachServer_HandleMW_PairedSecurityFn_MutatesReq(t *testing.T) {
 		gotY = r.Y
 		return securedComputeResp{Sum: r.X + r.Y}, nil
 	}
-	if _, err := newSecuredComputeRoute().Use(zmqBearerAuthMw).
-		HandleMW(&zmqBearerAuthMw, enrichFn).
+	if _, err := newSecuredComputeRoute().
+		HandleBoundMW(zmqBearerBoundMw(enrichFn)).
 		WithHandler(fn).Register(server); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -704,8 +731,8 @@ func TestAttachRouterServer_HandleMW_PairedSecurityFn_Verifies(t *testing.T) {
 	fn := func(_ context.Context, r securedComputeReq) (securedComputeResp, error) {
 		return securedComputeResp{Sum: r.X + r.Y}, nil
 	}
-	if _, err := newSecuredComputeRoute().Use(zmqBearerAuthMw).
-		HandleMW(&zmqBearerAuthMw, acceptingSecurityFn).
+	if _, err := newSecuredComputeRoute().
+		HandleBoundMW(zmqBearerBoundMw(acceptingSecurityFn)).
 		WithHandler(fn).Register(server); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -746,8 +773,9 @@ func TestAttachServer_CheckCoverage_MissingSecurityMiddlewareError(t *testing.T)
 	fn := func(_ context.Context, r securedComputeReq) (securedComputeResp, error) {
 		return securedComputeResp{Sum: r.X + r.Y}, nil
 	}
-	// Declares the scheme via .Use() but attaches NO HandleMW implementation.
-	if _, err := newSecuredComputeRoute().Use(zmqBearerAuthMw).
+	// Declares the scheme via RouteMeta.Security (newSecuredComputeRoute)
+	// but attaches NO HandleBoundMW implementation.
+	if _, err := newSecuredComputeRoute().
 		WithHandler(fn).Register(server); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -767,7 +795,7 @@ func TestAttachRouterServer_CheckCoverage_MissingSecurityMiddlewareError(t *test
 	fn := func(_ context.Context, r securedComputeReq) (securedComputeResp, error) {
 		return securedComputeResp{Sum: r.X + r.Y}, nil
 	}
-	if _, err := newSecuredComputeRoute().Use(zmqBearerAuthMw).
+	if _, err := newSecuredComputeRoute().
 		WithHandler(fn).Register(server); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -782,57 +810,30 @@ func TestAttachRouterServer_CheckCoverage_MissingSecurityMiddlewareError(t *test
 	}
 }
 
-// acceptingCredentialFn is a PAIRED client-side credential Fn that always
-// writes a valid token.
-func acceptingCredentialFn(_ context.Context, req *securedComputeReq, _ []route.SecurityRequirement) error {
-	req.Token = "valid-token"
-	return nil
-}
-
 // rejectingCredentialFn is a PAIRED client-side credential Fn that always
 // fails BEFORE anything is sent.
-func rejectingCredentialFn(_ context.Context, _ *securedComputeReq, _ []route.SecurityRequirement) error {
-	return errors.New("credential unavailable")
+func rejectingCredentialFn(_ context.Context, _ securedComputeReq) (zmwSecIn, error) {
+	return zmwSecIn{}, errors.New("credential unavailable")
 }
 
-func TestAttachClient_ClientMW_PairedCredentialFn_WritesReq(t *testing.T) {
-	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
-	fn := func(_ context.Context, r securedComputeReq) (securedComputeResp, error) {
-		if r.Token != "valid-token" {
-			return securedComputeResp{}, errors.New("missing/invalid token")
-		}
-		return securedComputeResp{Sum: r.X + r.Y}, nil
-	}
-	if _, err := newSecuredComputeRoute().Use(zmqBearerAuthMw).
-		HandleMW(&zmqBearerAuthMw, acceptingSecurityFn).
-		WithHandler(fn).Register(server); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-
-	repSock, reqSock := newChanSocketPair()
-	if err := server.Attach(NewServerTransport(ServerTransportOptions{Sockets: map[string]FramedSocket{"/secured-compute": repSock}})); err != nil {
-		t.Fatalf("AttachServer: %v", err)
-	}
-	client := reqreply.NewClient()
-	if err := client.Attach(NewClientTransport(ClientTransportOptions{Sockets: map[string]FramedSocket{"/secured-compute": reqSock}})); err != nil {
-		t.Fatalf("AttachClient: %v", err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() { _ = server.Serve(ctx) }()
-
-	callRoute := newSecuredComputeRoute().Use(zmqBearerAuthMw).ClientMW(&zmqBearerAuthMw, acceptingCredentialFn)
-	callCtx, callCancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer callCancel()
-	respAny, err := client.Call(callCtx, callRoute, securedComputeReq{X: 2, Y: 3})
-	if err != nil {
-		t.Fatalf("Call: %v", err)
-	}
-	resp, ok := respAny.(securedComputeResp)
-	if !ok || resp.Sum != 5 {
-		t.Fatalf("expected securedComputeResp{Sum:5}, got %#v", respAny)
-	}
-}
+// NOTE: TestAttachClient_ClientMW_PairedCredentialFn_WritesReq and
+// TestAttachDealerClient_ClientMW_PairedCredentialFn_WritesReq (a PAIRED
+// client-side credential Fn WRITING a token directly into *Req, via the
+// legacy ClientMW(&mw, rawFn) pairing's Req-pointer-mutation shape) were
+// REMOVED — this scenario is now STRUCTURALLY IMPOSSIBLE for its
+// replacement, ClientBoundMW/BoundSecurityClientMiddleware: the Bound
+// class's client-side Fn shape is `func(ctx, req Req) (In, error)` — Req
+// BY VALUE, matching [reqreply.BoundClientMiddleware]'s documented
+// "mirrors ClientMW's existing bound-shape convention" rationale — so a
+// Fn can no longer mutate the route's own Req at all. Worse, for zeromq
+// specifically (confirmed in adapters/zeromq/reqreply_transport.go's
+// client dispatch), the derived In/property vars DispatchClientMiddlewareIn
+// produces are discarded entirely (zeromq has no property side channel
+// to merge them into, unlike mqtt5's User Properties) — there is no
+// longer ANY path, direct or indirect, for a ClientBoundMW-attached Fn
+// to influence the outgoing wire payload for a transport with no
+// property channel. Deleted per docs/roadmap/retire-legacy-security-
+// middleware.md.
 
 func TestAttachClient_ClientMW_PairedCredentialFn_RejectsBeforeSend(t *testing.T) {
 	client := reqreply.NewClient()
@@ -840,49 +841,22 @@ func TestAttachClient_ClientMW_PairedCredentialFn_RejectsBeforeSend(t *testing.T
 	if err := client.Attach(NewClientTransport(ClientTransportOptions{Sockets: map[string]FramedSocket{"/secured-compute": reqSock}})); err != nil {
 		t.Fatalf("AttachClient: %v", err)
 	}
-	callRoute := newSecuredComputeRoute().Use(zmqBearerAuthMw).ClientMW(&zmqBearerAuthMw, rejectingCredentialFn)
+	callRoute := newSecuredComputeRoute().ClientBoundMW(zmqBearerBoundClientMw(rejectingCredentialFn))
 	_, err := client.Call(context.Background(), callRoute, securedComputeReq{X: 1, Y: 1})
-	var credErr reqreply.SecurityCredentialError
-	if !errors.As(err, &credErr) {
-		t.Fatalf("expected reqreply.SecurityCredentialError, got %v (%T)", err, err)
-	}
-}
-
-func TestAttachDealerClient_ClientMW_PairedCredentialFn_WritesReq(t *testing.T) {
-	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
-	fn := func(_ context.Context, r securedComputeReq) (securedComputeResp, error) {
-		if r.Token != "valid-token" {
-			return securedComputeResp{}, errors.New("missing/invalid token")
-		}
-		return securedComputeResp{Sum: r.X + r.Y}, nil
-	}
-	if _, err := newSecuredComputeRoute().Use(zmqBearerAuthMw).
-		HandleMW(&zmqBearerAuthMw, acceptingSecurityFn).
-		WithHandler(fn).Register(server); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-	dealerSock, routerSock := newDealerRouterPair([]byte("client-1"))
-	if err := server.Attach(NewRouterServerTransport(RouterServerTransportOptions{Sockets: map[string]FramedSocket{"/secured-compute": routerSock}})); err != nil {
-		t.Fatalf("AttachRouterServer: %v", err)
-	}
-	client := reqreply.NewClient()
-	if err := client.Attach(NewDealerClientTransport(DealerClientTransportOptions{Sockets: map[string]FramedSocket{"/secured-compute": dealerSock}})); err != nil {
-		t.Fatalf("AttachDealerClient: %v", err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() { _ = server.Serve(ctx) }()
-
-	callRoute := newSecuredComputeRoute().Use(zmqBearerAuthMw).ClientMW(&zmqBearerAuthMw, acceptingCredentialFn)
-	callCtx, callCancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer callCancel()
-	respAny, err := client.Call(callCtx, callRoute, securedComputeReq{X: 2, Y: 3})
-	if err != nil {
-		t.Fatalf("Call: %v", err)
-	}
-	resp, ok := respAny.(securedComputeResp)
-	if !ok || resp.Sum != 5 {
-		t.Fatalf("expected securedComputeResp{Sum:5}, got %#v", respAny)
+	// The legacy raw-adapter-Fn-pairing path always wrapped a PAIRED
+	// client credential Fn's own error as reqreply.SecurityCredentialError
+	// (a zeromq-specific convention, confirmed via runPairedClientCredential
+	// in adapters/zeromq/reqreply_transport.go) — a cross-pattern
+	// inconsistency with mqtt5/REST's own convention (a Security-carrying
+	// handler's OWN Fn rejection surfaces as reqreply.SecurityError,
+	// SecurityCredentialError being reserved for the BUILT-IN codec
+	// format check). The Bound mechanism's client dispatch now matches
+	// that convention (see adapters/zeromq/reqreply_transport.go's
+	// DispatchClientMiddlewareIn error-handling, mirroring the SERVER
+	// side's identical isSecuritySatisfyingHandler-gated fallback).
+	var secErr reqreply.SecurityError
+	if !errors.As(err, &secErr) {
+		t.Fatalf("expected reqreply.SecurityError, got %v (%T)", err, err)
 	}
 }
 
@@ -1024,8 +998,8 @@ func TestAttachServer_HandleMW_SecurityRejection_CallsSecurityObserver(t *testin
 	fn := func(_ context.Context, r securedComputeReq) (securedComputeResp, error) {
 		return securedComputeResp{Sum: r.X + r.Y}, nil
 	}
-	if _, err := newSecuredComputeRoute().Use(zmqBearerAuthMw).
-		HandleMW(&zmqBearerAuthMw, acceptingSecurityFn).
+	if _, err := newSecuredComputeRoute().
+		HandleBoundMW(zmqBearerBoundMw(acceptingSecurityFn)).
 		WithHandler(fn).Register(server); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -1070,9 +1044,9 @@ func TestAttachClient_ClientMW_ContextMutationPropagatesIntoInnerCall(t *testing
 	}
 
 	var observedValue any
-	credFn := func(ctx context.Context, _ *securedComputeReq, _ []route.SecurityRequirement) error {
+	credFn := func(ctx context.Context, _ securedComputeReq) (zmwSecIn, error) {
 		observedValue = ctx.Value(testCtxKey)
-		return nil
+		return zmwSecIn{}, nil
 	}
 	ctxInjectingMw := func(next func(context.Context, securedComputeReq) (securedComputeResp, error)) func(context.Context, securedComputeReq) (securedComputeResp, error) {
 		return func(ctx context.Context, req securedComputeReq) (securedComputeResp, error) {
@@ -1082,8 +1056,8 @@ func TestAttachClient_ClientMW_ContextMutationPropagatesIntoInnerCall(t *testing
 	}
 
 	baseRoute := reqreply.NewRoute[securedComputeReq, securedComputeResp]("/ctx-propagation", securedComputeReqCodec, securedComputeRespCodec)
-	clientRoute := baseRoute.Use(zmqBearerAuthMw).
-		ClientMW(&zmqBearerAuthMw, credFn).
+	clientRoute := baseRoute.
+		ClientBoundMW(zmqBearerBoundClientMw(credFn)).
 		ClientMW(nil, ctxInjectingMw)
 
 	// No server wiring needed — the credential Fn runs and records
@@ -1123,11 +1097,11 @@ func TestAttachServer_HandleBoundMW_RunsAfterPairedSecurity(t *testing.T) {
 		order = append(order, "handler")
 		return securedComputeResp{Sum: r.X + r.Y}, nil
 	}
-	secFn := func(_ context.Context, req *securedComputeReq, _ []route.SecurityRequirement) error {
+	secFn := func(_ context.Context, req *securedComputeReq, _ zmwSecIn) (zmwSecOut, error) {
 		order = append(order, "security")
-		return nil
+		return zmwSecOut{GrantedScopes: map[string][]string{"zmqBearer": nil}}, nil
 	}
-	baseRoute := newSecuredComputeRoute().Use(zmqBearerAuthMw).HandleMW(&zmqBearerAuthMw, secFn)
+	baseRoute := newSecuredComputeRoute().HandleBoundMW(zmqBearerBoundMw(secFn))
 	rt := baseRoute.HandleBoundMW(mw)
 	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	if _, err := rt.WithHandler(fn).Register(server); err != nil {

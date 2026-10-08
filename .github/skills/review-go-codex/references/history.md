@@ -1,6 +1,149 @@
-# go-codex Review History (R1–R163, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
+# go-codex Review History (R1–R165, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 165 (middleware/api/rest/api/events/api/reqreply — extending the legacy security retirement to HandleMW/SubscribeMW/PublishMW, across all 3 api packages)
+
+Follow-up to Round 164: user asked whether `middleware.SecurityScheme` could be dropped entirely,
+and whether the runtime-check approach could be avoided. Investigation (documented in full in
+`docs/roadmap/retire-legacy-security-middleware.md`) found:
+
+- `middleware.SecurityScheme`'s ONE remaining distinguishing feature (after Round 164 retired its
+  client-supply role) is letting ONE Go value be `.Use()`'d identically across `api/rest`,
+  `api/events`, AND `api/reqreply` in the same program — a full-repo search found **zero** actual
+  uses of this capability anywhere.
+- Despite that, `middleware.SecurityScheme`/`rest.FromSecurityScheme` (and events/reqreply's
+  equivalents) could NOT be deleted outright: they have a SECOND, independent, actively-used
+  purpose — pure DECLARE-ONLY `.Use()` (no pairing at all), confirmed via many existing tests
+  across all 3 api packages plus `adapters/mqtt5`/`adapters/mqtt`. **Scope correction made
+  mid-implementation**: these constructors are KEPT, unchanged; only the PAIRING mechanism
+  (`HandleMW`/`ClientMW`/`SubscribeMW`/`PublishMW` accepting a Security-carrying value) was
+  retired, extending Round 164's `api/rest` `ClientMW`-only retirement to ALL FOUR
+  attachment points, across ALL THREE api packages.
+- **`Route.HandleMW`/`SSERoute.HandleMW` (`api/rest`)** now reject a Security-carrying `mw` via a
+  new `LegacySecurityHandleMWRemovedError` (mirrors `LegacySecurityClientMWRemovedError`'s shape).
+  Migrated ~30 test call sites across `api/rest/{middleware_test,handlemw_bound_test}.go`,
+  `adapters/nethttp/{capability,adapter,error_pattern_category_a,clienttransport}_test.go`,
+  `adapters/chi/{capability,adapter,error_pattern_category_a}_test.go` to
+  `HandleBoundMW`/`BoundSecurityMiddleware` (the `adapters/chi` half delegated to and verified
+  from a background agent run, following the `adapters/nethttp` migration as the reference
+  pattern). Deleted (with explanatory NOTE comments, not silently) the tests whose exact legacy
+  scenario is now structurally impossible — "a Satisfies-bearing impl attached against an
+  undeclared scheme" can no longer happen since `HandleBoundMW` always auto-declares its own
+  scheme, fusing declare+implement into one call.
+- **`Subscriber.SubscribeMW`/`Publisher.PublishMW` (`api/events`)** now reject a Security-carrying
+  `mw` via a new `LegacySecurityMWRemovedError`. Confirmed **zero** production or test call sites
+  exercised this legacy pairing shape in `api/events`'s OWN test suite before this round — its
+  retirement there was closer to a pure deletion. Migrated the 7 tests in `api/events/builder_test.go`
+  that DID use it (`TestSubscribeMW_paired_derivesSatisfiesFromSecurity`,
+  `TestPublishMW_paired_derivesSatisfiesFromSecurity`, `TestCheckCoverage_fails_withoutMatchingSubscribeMW`,
+  etc.) to `SubscribeBoundMW`/`PublishBoundMW` + `BoundSecuritySubscribeMiddleware`/
+  `BoundSecurityPublishMiddleware`; deleted 3 with NOTE comments (structurally impossible now).
+- **`Route.HandleMW`/`Route.ClientMW` (`api/reqreply`)** now reject a Security-carrying `mw` via a
+  new `LegacySecurityMWRemovedError`. Migrated `api/reqreply/middleware_test.go`'s 8 affected
+  tests to `HandleBoundMW`/`ClientBoundMW` + `BoundSecurityMiddleware`/`BoundSecurityClientMiddleware`
+  — discovered along the way that a Security-carrying `HandleBoundMW` and `ClientBoundMW` for the
+  SAME scheme name cannot share ONE route value (both default to the same auto-generated
+  Declaration Name, rejected as a duplicate) — worked around via a differently-named
+  server-coverage-satisfying attachment when only the client half was under test. Deleted 1 test
+  with a NOTE (two `ClientMW` calls for the same scheme getting distinct auto-generated names is
+  now impossible — a second same-scheme Bound attachment is rejected as a duplicate, not renamed).
+- **A ~57-MINUTE background-agent migration of `adapters/mqtt5`/`adapters/zeromq`'s reqreply
+  tests** (delegated, independently re-verified) found and fixed a REAL, pre-existing production
+  bug while migrating: `reqreply_transport.go`/`adapter.go`/`transport.go` (mqtt5) had a `kind`
+  variable never upgraded to `KindSecurity` on a Bound Fn's rejection, plus `credentialRan`/
+  `hasSecurityClientMW` gating in `publish`/`Publish` that ignored Bound client handlers entirely
+  — the SAME class of gap Round 163/164 already found 3 times in `adapters/nethttp`. zeromq got
+  the identical `kind`/`KindSecurity` fix plus a missing `SecurityError` upgrade client-side.
+  Deleted 3 tests with NOTEs where the Bound mechanism's by-value `Req`/no-property-channel
+  constraints made the legacy scenario structurally impossible (e.g. a client Fn mutating `Req`,
+  or writing a credential into zeromq's payload when zeromq has no property channel at all).
+- **A FOURTH occurrence of the gap, missed initially by an imprecise grep (`\.SubscribeMW(&`
+  requires the `.` on the SAME line, which multi-line method chains don't have) and only caught
+  by a subsequent, careful full repo-wide re-sweep**: `adapters/mqtt` (v3, separate from mqtt5)
+  had 4 test files using the exact same legacy `SubscribeMW`/`PublishMW` pairing, entirely missed
+  by the original scoping investigation. Migrated all of them
+  (`adapter_test.go`/`caller_test.go`/`error_channel_category_a_test.go`/`transform_dispatch_test.go`)
+  to the Bound mechanism directly. **Found and fixed a genuine production bug while migrating**:
+  `caller.go`'s reflect-based `subscribeEntryReflect` (backing `ServeSubscribers`, the package's
+  PRIMARY documented workflow) never called `RecordSecurityRejection` nor classified a Bound
+  Security Fn's rejection as `KindSecurity` at all — it fell through to the generic `KindDecode`
+  path unconditionally, unlike the already-correct non-reflect `subscribeHandler` dispatch in
+  `adapter.go`. Fixed by checking `events.AsMiddlewareDispatchError`/`events.IsSecuritySatisfyingHandler`
+  before falling back to the generic classification, mirroring `adapter.go`'s existing, correct
+  logic exactly. Also caught and fixed a self-inflicted test bug during this same migration: a
+  migrated `Out` value omitting `GrantedScopes` entirely (vs. the original `map[string][]string{
+  "bearerAuth": nil}`) silently fails `CheckScopes` via `scopesmerge.MergeHandlerGrants`'s
+  no-op-on-absent-key contract — NOT a production bug, a lesson that the `GrantedScopes` map's
+  KEY must be explicitly present (even mapped to `nil`) to signal "this requirement was granted
+  with no specific scopes," not merely "the Fn didn't error."
+- **One example fix required**: `examples/reqreply-api/demo_route_level_security_credential_error.go`
+  asserted a malformed credential supplied via `auth.BearerAuthMw.WithSend(...)` (an "agnostic"
+  `.Use()`-attached, Security-carrying middleware) is rejected SERVER-SIDE, wrapped in
+  `mqtt5adapter.CallError` — this was itself evidence of the SAME gap the mqtt5 production fix
+  above closed: before the fix, this attachment style wasn't recognized by the client-side "did a
+  Security-carrying attachment run" signal, so its credential-format check never ran client-side
+  at all, letting a malformed credential incorrectly reach the server first. Fixed the example to
+  assert the NOW-correct behavior: client-side rejection via `reqreply.SecurityCredentialError`,
+  before the request is ever published — consistent with Round 163/164's original client-side
+  codec-validation fix for REST.
+- `middleware.Middleware`'s package-level doc comment and `SecurityScheme`'s own constructor doc
+  comment were both rewritten to describe the CURRENT (post-retirement) state accurately, rather
+  than leaving stale "pair it with a ServerImplementation supplied separately" language that no
+  longer describes a working mechanism.
+- Checked for a server-side analogue of Round 164's "no Satisfies-gating/conflict-detection in
+  the replacement" gap: NONE found — `adapters/internal/httpsecurity.MergeMiddlewareHandlerGrants`
+  already runs both the legacy and Bound-mechanism paths through the SAME Satisfies-gated merge
+  before a single `CheckScopes` call, confirmed by direct re-reading, not re-derived from scratch.
+
+**Verified**: `gofmt`/`go build ./...`/`go test ./...`/`just check`/all ~53 top-level examples all
+green (re-run AFTER the example fix above, not just before it). `docs/roadmap/
+retire-legacy-security-middleware.md` and `docs/roadmap/shared-router-module.md` (a SEPARATE,
+not-yet-implemented roadmap spun off from a side discussion this round about Router's own
+3-way code duplication across api packages) both added to `docs/roadmap/index.md` + `zensical.toml`
+nav. `docs/design/d-0001-rest-middleware-workflow-simplification.md` gained a new Addendum 8.
+`.github/instructions/go-codex.instructions.md` updated (`middleware`/`api/rest`/`api/events`/
+`api/reqreply` rows).
+
+## Round 164 (api/rest — retiring the legacy client-side security-credential-supply mechanism)
+
+Follow-up to Round 163: user (sole maintainer, no external compatibility obligation) asked to
+retire the legacy client-side credential-SUPPLY mechanism Round 163 found limited/gapped, rather
+than keep it indefinitely alongside its replacement. Scoped to `api/rest` only, and to the
+SECURITY-PAIRING use specifically (general-purpose, non-security `ClientMW`/`HandleMW` usage is
+unaffected; `api/events`/`api/reqreply` have the identical pattern but were left untouched).
+
+- **`Route.ClientMW`/`SSERoute.ClientMW` now reject a Security-carrying `mw`** via a new
+  `LegacySecurityClientMWRemovedError` (mirrors `MiddlewareMisattachedError`'s existing shape) —
+  supplying a client-side credential now goes exclusively through `Route.ClientBoundMW` +
+  `BoundSecurityClientMiddleware`. `Route.HandleMW` (server-side credential verification) was
+  deliberately NOT touched — the header-only/nil-ambiguity problems Round 163 found are
+  client-supply-specific.
+- Migrated ~20 test call sites across `api/rest/middleware_test.go` and
+  `adapters/nethttp/{caller,client,clienttransport,binding}_test.go` to
+  `ClientBoundMW`/`BoundSecurityClientMiddleware`, preserving their original behavioral coverage
+  (credential invoked every call, re-derived per SSE reconnect, `OnCredentialRejected` fires on
+  401, client-side codec-format validation rejects a malformed credential).
+- **Found and fixed a THIRD occurrence of Round 163's `credentialProduced` gap**:
+  `adapters/nethttp/binding.go`'s own, separate `consumeSSE` dispatch (used by `ports`' binding
+  adapters, distinct from `clienttransport.go`'s `consumeOnce`) had the exact same
+  `len(credHeaders) > 0`-only gate blind to the modern `ClientMiddlewareHandler` axis — found via
+  a migrated test's genuine failure, not a static read. Fixed identically (`credentialProduced`
+  signal, `clientMiddlewareSatisfiesAny` for `credentialFnRan`).
+- **Flagged, not fixed (out of scope for a removal)**: the modern `ClientBoundMW` dispatch
+  mechanism (`dispatchClientMiddlewareIn`) has no equivalent of the legacy mechanism's
+  Satisfies-based filtering or same-key conflict detection — it runs every attached handler
+  unconditionally and silently lets the last one win on a shared key. 2 tests whose exact
+  scenario has no bound-mechanism equivalent were deleted (with an explanatory note) rather than
+  misleadingly "migrated": `TestCall_ClientMWSatisfiesGating_UnrelatedImplNotRun`,
+  `TestCall_CredentialFunc_ReturnsNilHeader_SkipsValidation`.
+- Caught, mid-migration, a terminal-display artifact: a prior round's test used literal
+  `"Bearer token-a"`/`"Bearer token-b"` header values, but a display layer had redacted both to
+  `"******"` in every view — a naive copy-paste migration would have silently broken the
+  differing-values-conflict test it was meant to preserve. Confirmed via raw byte inspection
+  (`git show` + `od -c`) before finalizing the migrated test.
 
 ---
 

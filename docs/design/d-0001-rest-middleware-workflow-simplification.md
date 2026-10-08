@@ -3162,3 +3162,178 @@ bug class:
 
 **Verified**: `gofmt`/`go build`/`go vet`/`go test ./adapters/nethttp/...
 ./api/rest/...` (then full `go test ./...`)/`just check` all green.
+
+## Addendum 7: retiring the legacy client-side SECURITY-pairing mechanism
+
+A review round investigating `api/rest`'s security schemes found
+`Route.ClientMW`'s legacy Security-pairing path (a bare
+`middleware.Middleware` carrying a `Security` declaration, paired via
+`.Use(declMw).ClientMW(&declMw, func(ctx, secReqs) (http.Header, error))`)
+had real, structural limitations the newer, bound mechanism
+(`Route.ClientBoundMW` + `BoundSecurityClientMiddleware`, from
+`d-0003-codec-declared-middlewares.md`'s Addendum 7) does not share: it
+can only naturally express HEADER-location credentials (a Cookie-location
+credential requires an undocumented manual `"Cookie: name=value"`
+header-string construction; a Query-location credential is structurally
+impossible via its `http.Header`-only return type), and — found in the
+SAME investigation — its "empty return means no credential needed"
+convention made a genuine client-side codec-validation gap (an invalid
+credential supplied via the newer bound axis was never checked at all)
+structurally indistinguishable from an intentional opt-out.
+
+Given this project has exactly one user/maintainer and no external
+compatibility obligation, the decision this round was to retire the
+legacy SECURITY-pairing path OUTRIGHT, rather than carry it forward
+alongside its replacement indefinitely:
+
+- `Route.ClientMW`/`SSERoute.ClientMW` now REJECT a Security-carrying
+  `mw` via a new `LegacySecurityClientMWRemovedError` (mirroring
+  `MiddlewareMisattachedError`'s existing shape/precedent exactly) —
+  supplying a client-side credential now goes exclusively through
+  `Route.ClientBoundMW` + `BoundSecurityClientMiddleware`.
+- `Route.HandleMW`/`SSERoute.HandleMW` (the SERVER-side mirror,
+  credential VERIFICATION rather than supply) were explicitly NOT
+  touched — the header-only limitation and the nil/empty-ambiguity gap
+  are both CLIENT-SUPPLY-specific concerns; the server-side legacy
+  pairing has no analogous structural problem, so it remains a fully
+  valid, supported mechanism alongside `HandleBoundMW`.
+- `ClientMW`'s GENERAL-PURPOSE (non-security, `mw == nil`) use is
+  completely UNCHANGED — `mergeCredentialHeaders`/`ConflictingCredentialHeaderError`
+  remain exactly as they were; only the Security-pairing BRANCH inside
+  `ClientMW` was removed.
+- **Scope**: `api/rest` only — `api/events`/`api/reqreply` have the
+  identical legacy pattern (`SubscribeMW`/`PublishMW`,
+  `HandleMW`/`ClientMW` respectively) but were explicitly left untouched
+  this round; retiring their own legacy mechanisms (if ever desired) is a
+  SEPARATE, independent decision.
+- **A genuine, pre-existing gap surfaced by this investigation, NOT
+  fixed**: the replacement mechanism (`dispatchClientMiddlewareIn`,
+  backing `ClientBoundMW`) has NO equivalent of the legacy mechanism's
+  Satisfies-based filtering (an implementation paired against an
+  unrelated scheme is correctly skipped) OR its same-key conflict
+  detection (`ConflictingCredentialHeaderError`) — it runs every attached
+  `ClientMiddlewareHandler` unconditionally and silently lets the LAST
+  one win on a shared header/cookie/query key. This is flagged as a
+  follow-up finding, out of scope for "retire the legacy mechanism"
+  specifically (fixing it is an ADDITIVE feature change to the bound
+  dispatch, not a removal) — two tests whose exact scenario has no
+  bound-mechanism equivalent
+  (`TestCall_ClientMWSatisfiesGating_UnrelatedImplNotRun`,
+  `TestCall_CredentialFunc_ReturnsNilHeader_SkipsValidation`) were
+  deleted rather than misleadingly "migrated."
+
+**Migration summary**: ~20 test call sites across
+`api/rest/middleware_test.go`, `adapters/nethttp/{caller,client,
+clienttransport,binding}_test.go` either migrated to
+`ClientBoundMW`/`BoundSecurityClientMiddleware` (preserving their
+original behavioral coverage: credential invoked every call, re-derived
+per SSE reconnect, `OnCredentialRejected` fires on 401, client-side
+codec-format validation rejects a malformed credential) or deleted with
+an explanatory note (where the exact legacy behavior has no bound-
+mechanism equivalent, per the gap above). `adapters/nethttp/binding.go`'s
+own, separate `consumeSSE` dispatch function (used by `ports`' binding
+adapters, distinct from `clienttransport.go`'s `consumeOnce`) needed the
+SAME `credentialProduced`-based fix a prior round applied to
+`clienttransport.go` — found via this migration surfacing a test failure,
+not a static read.
+
+**Verified**: `gofmt`/`go build`/`go test ./...`/`just check` all green;
+every regression test confirmed to genuinely exercise its claimed
+scenario (not just compile) by tracing raw byte content back to the
+pre-change file for 2 tests whose header values a terminal-display layer
+had redacted to look like `"******"`.
+
+## Addendum 8: extending the retirement to `HandleMW`'s server-side pairing, across all 3 api packages
+
+A follow-up question — "can `middleware.SecurityScheme` be dropped
+entirely?" — revisited Addendum 7's explicit scoping decision to leave
+`Route.HandleMW`'s server-side legacy pairing untouched. Investigation
+(originally tracked in a roadmap doc, `docs/roadmap/
+retire-legacy-security-middleware.md` — fully implemented and removed
+once this addendum absorbed its full design rationale and final,
+as-implemented summary, per this repo's roadmap-doc lifecycle policy)
+found:
+
+- `middleware.SecurityScheme`'s ONE remaining distinguishing feature
+  (after Addendum 7 retired its client-supply role) is letting ONE Go
+  value be `.Use()`'d identically across `api/rest`, `api/events`, AND
+  `api/reqreply` in the same program. A full-repo search found **zero**
+  actual uses of this capability — every `.Use(middleware.SecurityScheme(...))`
+  call site declares and consumes its scheme within exactly ONE api
+  package.
+- Despite that, `middleware.SecurityScheme`/`rest.FromSecurityScheme`
+  (and events/reqreply's equivalents) could NOT simply be deleted: they
+  have a SECOND, independent, perfectly valid use — pure DECLARE-ONLY
+  `.Use()` (no `HandleMW`/`ClientMW`/`SubscribeMW`/`PublishMW` pairing at
+  all), confirmed in active use by many existing tests across all 3 api
+  packages and `adapters/mqtt5`/`adapters/mqtt`. Deleting these bridge
+  functions would have broken all of that legitimate, unrelated usage
+  for zero benefit.
+
+**Decision**: extend Addendum 7's retirement to the SERVER side (`HandleMW`
+in `api/rest`/`api/reqreply`, `SubscribeMW` in `api/events`), across all
+3 api packages — but KEEP `middleware.SecurityScheme`/`FromSecurityScheme`
+(and the underlying `middleware.Middleware`/`Security` field) exactly as
+they are, since they remain the only way to express the declare-only and
+cross-pattern-value-sharing use cases.
+
+- `Route.HandleMW`/`SSERoute.HandleMW` (`api/rest`),
+  `Subscriber.SubscribeMW`/`Publisher.PublishMW` (`api/events`),
+  `Route.HandleMW`/`Route.ClientMW` (`api/reqreply`) now ALL reject a
+  Security-carrying `mw` via a new, per-package error type
+  (`LegacySecurityHandleMWRemovedError` in `api/rest`,
+  `LegacySecurityMWRemovedError` in `api/events`/`api/reqreply` — naming
+  differs slightly per package's own existing convention, same shape as
+  `MiddlewareMisattachedError`/`LegacySecurityClientMWRemovedError`).
+  `mw == nil` general-purpose use is completely UNCHANGED in all 3
+  packages.
+- Declaring AND implementing a security scheme now goes exclusively
+  through each package's already-shipped Bound mechanism:
+  `HandleBoundMW`/`ClientBoundMW` + `BoundSecurityMiddleware`/
+  `BoundSecurityClientMiddleware` (`api/rest`/`api/reqreply`),
+  `SubscribeBoundMW`/`PublishBoundMW` + `BoundSecuritySubscribeMiddleware`/
+  `BoundSecurityPublishMiddleware` (`api/events`) — these fuse
+  declare+implement into ONE call, eliminating the
+  "paired against an undeclared scheme" failure mode entirely (it is now
+  structurally impossible, not merely checked-for).
+- A Security-carrying Bound SERVER attachment and a Security-carrying
+  Bound CLIENT attachment for the SAME scheme name cannot share ONE
+  route/channel value (both default to the same auto-generated
+  Declaration Name) — this was already true for the general Bound
+  mechanism (documented on `BoundMiddleware`'s own doc comment) and is
+  now exercised more widely by this round's test migrations; build two
+  separate route/channel values (or use a differently-named scheme for
+  whichever side merely satisfies server-side coverage) when a test
+  needs both roles.
+- `api/events` had ZERO production or test call sites exercising its
+  legacy `SubscribeMW`/`PublishMW` Security-pairing shape before this
+  round — its retirement was closer to a pure deletion than a migration.
+  `api/rest` (~30 test call sites) and `api/reqreply` (4 test files, plus
+  `adapters/mqtt5`/`adapters/zeromq`) required substantive test
+  migration, following Addendum 7's exact discipline: migrate genuinely
+  valuable coverage to the Bound mechanism; delete-with-an-explanatory-
+  note any test whose EXACT legacy-only semantics (e.g. two `ClientMW`
+  calls for the same scheme getting distinct auto-generated names — now
+  impossible, since a second same-scheme Bound attachment is rejected as
+  a duplicate rather than renamed) has no Bound-mechanism equivalent.
+- Checked for a server-side analogue of Addendum 7's "no Satisfies-
+  gating/conflict-detection in the replacement" gap: NONE found — the
+  server-side grant-merging helper (`adapters/internal/httpsecurity.
+  MergeMiddlewareHandlerGrants`) already runs BOTH the legacy
+  `ServerImplementation`-based path (`CollectGrantsReflect`) and the
+  Bound-mechanism path (`handle.MiddlewareHandlers`) through the SAME
+  Satisfies-gated merge and a single `CheckScopes` call — this was
+  already correct before this round, confirmed by re-reading rather than
+  re-derived from scratch.
+
+**Scope correction, made mid-implementation**: the original plan proposed
+deleting `middleware.SecurityScheme`/`FromSecurityScheme` entirely — this
+was revised once the declare-only use case's real, active callers were
+found (see above). `middleware.Middleware`'s own package doc comment and
+`SecurityScheme`'s constructor doc comment were both updated to describe
+the CURRENT (post-Addendum-8) state accurately, rather than leaving stale
+"pair it with a ServerImplementation supplied separately" language that
+no longer describes a working mechanism.
+
+**Verified**: `gofmt`/`go build ./...`/`go test ./...`/`just check`/all
+examples all green, per this doc's standing verification checklist.

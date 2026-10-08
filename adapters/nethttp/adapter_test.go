@@ -16,7 +16,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
@@ -24,30 +23,53 @@ import (
 
 // --- shared test types and codecs ---
 
-// scopesImpl reproduces the removed middleware.Scopes/Scopes
-// constructors' exact behavior — kept test-local since HandleMW now
-// builds this shape internally (see
-// docs/design/d-0001-rest-middleware-workflow-simplification.md's "Decision:
-// HandleMW/ClientMW unification"); these tests exercise the OLD, still-
-// present Handler/Register directly (not HandleMW), so they still need a
-// raw middleware.ServerImplementation value to pass.
-func scopesImpl[Req any](schemeName string, extract func(context.Context, *http.Request, *Req) (map[string][]string, error)) middleware.ServerImplementation {
-	return middleware.ServerImplementation{
-		Name:      "implement-scopes:" + schemeName,
-		Satisfies: []string{schemeName},
-		Fn:        extract,
-	}
+// boundBearerAuthIn/boundBearerAuthOut/boundBearerAuthMw replace the
+// removed scopesImpl helper's "single Authorization-header bearer
+// credential, scope grant" shape, now expressed via the Bound mechanism
+// (docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8 retired HandleMW's
+// legacy Security-pairing — middleware.SecurityScheme +
+// .Use(declMw).HandleMW(&declMw, fn) is gone; BoundSecurityMiddleware +
+// HandleBoundMW is the one remaining way to declare+implement a SERVER
+// security scheme). verify receives the raw Authorization header value,
+// merged into In by HandleBoundMW's own dispatch — mirroring the legacy
+// mechanism's r.Header.Get("Authorization") read, just without raw
+// *http.Request access (BoundMiddleware's fn only ever sees the route's
+// own *Req, by design — see bound_middleware.go). The header is
+// OPTIONAL, not required — a MISSING Authorization header must still
+// reach verify (so it can reject with its own 401), exactly like the
+// legacy r.Header.Get read (empty string, no error) did; a REQUIRED
+// header param would instead fail header validation BEFORE verify ever
+// runs, changing the missing-credential case's status code to 400.
+type boundBearerAuthIn struct{ Authorization string }
+type boundBearerAuthOut struct{ GrantedScopes map[string][]string }
+
+func boundBearerAuthMw[Req any](schemeName string, verify func(ctx context.Context, authHeader string) (map[string][]string, error)) rest.BoundMiddleware[Req, boundBearerAuthIn, boundBearerAuthOut] {
+	return rest.BoundSecurityMiddleware[Req, boundBearerAuthIn, boundBearerAuthOut](
+		schemeName, rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+		func(ctx context.Context, _ *Req, in boundBearerAuthIn) (boundBearerAuthOut, error) {
+			granted, err := verify(ctx, in.Authorization)
+			return boundBearerAuthOut{GrantedScopes: granted}, err
+		},
+	).WithRequestHeader(rest.NewOptionalHeaderParam("Authorization", codex.String(),
+		func(in boundBearerAuthIn) string { return in.Authorization },
+		func(in *boundBearerAuthIn, v string) { in.Authorization = v },
+	))
 }
 
-// apiKeyImpl reproduces the removed APIKey constructor's exact
-// behavior — same rationale as [scopesImpl].
-func apiKeyImpl[Req any](headerName string, verify func(ctx context.Context, key string) error) middleware.ServerImplementation {
-	return middleware.ServerImplementation{
-		Name: "implement-api-key:" + headerName,
-		Fn: func(ctx context.Context, r *http.Request, req *Req) (map[string][]string, error) {
-			return nil, verify(ctx, r.Header.Get(headerName))
+// boundBearerAuthMwCodec is [boundBearerAuthMw] with an explicit credential
+// codec (for codec-format-validation tests — the legacy mechanism's
+// middleware.SecurityScheme(..., codec) 4th arg equivalent).
+func boundBearerAuthMwCodec[Req any](schemeName string, credCodec codex.Codec[string], verify func(ctx context.Context, authHeader string) (map[string][]string, error)) rest.BoundMiddleware[Req, boundBearerAuthIn, boundBearerAuthOut] {
+	return rest.BoundSecurityMiddleware[Req, boundBearerAuthIn, boundBearerAuthOut](
+		schemeName, rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT"), Codec: &credCodec}, nil,
+		func(ctx context.Context, _ *Req, in boundBearerAuthIn) (boundBearerAuthOut, error) {
+			granted, err := verify(ctx, in.Authorization)
+			return boundBearerAuthOut{GrantedScopes: granted}, err
 		},
-	}
+	).WithRequestHeader(rest.NewOptionalHeaderParam("Authorization", codex.String(),
+		func(in boundBearerAuthIn) string { return in.Authorization },
+		func(in *boundBearerAuthIn, v string) { in.Authorization = v },
+	))
 }
 
 type createReq struct{ Name string }
@@ -1686,29 +1708,27 @@ func (o *mockSecurityObserver) RecordSecurityRejection(location, scheme string) 
 	o.scheme = scheme
 }
 
-func newSecuredRoute(mw middleware.Middleware) rest.Route[createReq, userResp] {
+// newSecuredRouteBase is a helper declaring a bare POST /users route (no
+// security attached yet — call .HandleBoundMW(bm) to attach one).
+func newSecuredRouteBase() rest.Route[createReq, userResp] {
 	return rest.NewRoute[createReq, userResp]("POST", "/users",
 		createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "createUser"},
-		rest.WithMiddleware(mw),
 	)
 }
 
 func TestHandler_SecurityFunc_calledForSecuredRoute(t *testing.T) {
 	secFuncCalled := false
-	declMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
-	implMw := scopesImpl[createReq]("bearerAuth",
-		func(_ context.Context, r *http.Request, _ *createReq) (map[string][]string, error) {
-			secFuncCalled = true
-			if r.Header.Get("Authorization") != "test-bearer-token" {
-				return nil, errors.New("unauthorized")
-			}
-			return map[string][]string{"bearerAuth": nil}, nil
-		},
-	)
-	route := newSecuredRoute(declMw).WithHandler(func(_ context.Context, req createReq) (userResp, error) {
+	bm := boundBearerAuthMw[createReq]("bearerAuth", func(_ context.Context, auth string) (map[string][]string, error) {
+		secFuncCalled = true
+		if auth != "test-bearer-token" {
+			return nil, errors.New("unauthorized")
+		}
+		return map[string][]string{"bearerAuth": nil}, nil
+	})
+	route := newSecuredRouteBase().WithHandler(func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
-	}).HandleMW(&declMw, implMw.Fn)
+	}).HandleBoundMW(bm)
 	h := mustServeOne(t, route)
 
 	rec := httptest.NewRecorder()
@@ -1726,16 +1746,13 @@ func TestHandler_SecurityFunc_calledForSecuredRoute(t *testing.T) {
 }
 
 func TestHandler_SecurityFunc_rejectsRequest(t *testing.T) {
-	declMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
-	implMw := scopesImpl[createReq]("bearerAuth",
-		func(_ context.Context, _ *http.Request, _ *createReq) (map[string][]string, error) {
-			return nil, errors.New("unauthorized")
-		},
-	)
-	route := newSecuredRoute(declMw).WithHandler(func(_ context.Context, req createReq) (userResp, error) {
+	bm := boundBearerAuthMw[createReq]("bearerAuth", func(_ context.Context, _ string) (map[string][]string, error) {
+		return nil, errors.New("unauthorized")
+	})
+	route := newSecuredRouteBase().WithHandler(func(_ context.Context, req createReq) (userResp, error) {
 		t.Fatal("handler must not be called when security rejects")
 		return userResp{}, nil
-	}).HandleMW(&declMw, implMw.Fn)
+	}).HandleBoundMW(bm)
 	h := mustServeOne(t, route)
 
 	rec := httptest.NewRecorder()
@@ -1749,53 +1766,36 @@ func TestHandler_SecurityFunc_rejectsRequest(t *testing.T) {
 	}
 }
 
-// TestHandler_SecurityFunc_notCalledForUnsecuredRoute (renamed from its
-// original Handler/impls-based form): under HandleMW's reverse-Satisfies
-// pairing check (see api/rest's checkImplementationsDeclared), attaching a
-// Satisfies-bearing implementation WITHOUT a matching .Use() declaration
-// is no longer a silent no-op at runtime — it is now REJECTED outright at
-// Register/ServeOne time via UnknownMiddlewareImplementationError. This
-// is a strictly SAFER replacement for the old "attach a mismatched impl,
-// verify it silently never fires" behavior this test used to lock in —
-// the mistake it protects against can no longer even compile past
-// registration, let alone reach runtime.
-func TestHandler_SecurityFunc_UnpairedImplRejectedAtServeOne(t *testing.T) {
-	implMw := scopesImpl[createReq]("bearerAuth",
-		func(_ context.Context, _ *http.Request, _ *createReq) (map[string][]string, error) {
-			t.Fatal("Fn must never be called — ServeOne should reject before wiring")
-			return nil, nil
-		},
-	)
-	unrelatedMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
-	route := newCreateRoute().WithHandler(func(_ context.Context, req createReq) (userResp, error) {
-		return userResp{ID: "1", Name: req.Name}, nil
-	}).HandleMW(&unrelatedMw, implMw.Fn) // "bearerAuth" was never .Use()'d on this route
+// NOTE: TestHandler_SecurityFunc_UnpairedImplRejectedAtServeOne (originally
+// "a Satisfies-bearing impl attached via HandleMW(&unrelatedMw, ...) with NO
+// matching .Use() declaration is rejected via UnknownMiddlewareImplementationError")
+// has NO BoundSecurityMiddleware equivalent, because the scenario it tested
+// is now STRUCTURALLY IMPOSSIBLE: HandleBoundMW's attached
+// BoundSecurityMiddleware ALWAYS synthesizes its OWN matching declaration
+// (applyBoundRoute appends {Name, Security} to rb.middlewares directly) —
+// there is no longer any way to attach an implementation whose Satisfies
+// has no matching declaration at all; declare and implement are fused into
+// ONE call now. Deleted per docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8
+// (mirrors Round 164's "D7 now structurally impossible" precedent for the
+// analogous dual-attachment case).
 
-	_, err := ServeOne(route)
-	var unknownErr rest.UnknownMiddlewareImplementationError
-	if !errors.As(err, &unknownErr) {
-		t.Fatalf("want UnknownMiddlewareImplementationError, got %v (%T)", err, err)
-	}
-}
-
-// TestServeOne_MissingSecurityCoverage_RejectedAtServeTime is
-// [TestHandler_SecurityFunc_UnpairedImplRejectedAtServeOne]'s FORWARD-direction
-// sibling: a route that DECLARES a security scheme via .Use() but never
-// attaches ANY implementation for it (no .HandleMW() call at all) must be
-// REJECTED at ServeOne/Serve time via rest.MissingSecurityMiddlewareError —
-// not silently wired, which would leave every request to the route failing
+// TestServeOne_MissingSecurityCoverage_RejectedAtServeTime: a route that
+// DECLARES a security scheme via .Use() but never attaches ANY
+// implementation for it (no .HandleBoundMW() call at all) must be REJECTED
+// at ServeOne/Serve time via rest.MissingSecurityMiddlewareError — not
+// silently wired, which would leave every request to the route failing
 // closed at runtime with no clear signal why the route is broken. Regression
 // test: Serve's reflect dispatch originally lost this check when
 // Register/RegisterSSE (which used to call rest.CheckCoverage before
 // wiring) were deleted — buildRouteHandler now calls CheckCoverage directly.
 func TestServeOne_MissingSecurityCoverage_RejectedAtServeTime(t *testing.T) {
-	secMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
+	secMw := rest.SecurityMiddleware[struct{}, struct{}]("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil)
 	route := newCreateRoute().
 		Use(secMw). // declares "bearerAuth" is required...
 		WithHandler(func(_ context.Context, req createReq) (userResp, error) {
 			return userResp{ID: "1", Name: req.Name}, nil
 		})
-	// ...but NO .HandleMW() call ever attaches an implementation for it.
+	// ...but NO .HandleBoundMW() call ever attaches an implementation for it.
 
 	_, err := ServeOne(route)
 	var missingErr rest.MissingSecurityMiddlewareError
@@ -1808,7 +1808,7 @@ func TestServeOne_MissingSecurityCoverage_RejectedAtServeTime(t *testing.T) {
 // [TestServeOne_MissingSecurityCoverage_RejectedAtServeTime]'s SSE sibling —
 // ServeSSE's reflect dispatch (buildSSERouteHandler) had the identical gap.
 func TestServeSSE_MissingSecurityCoverage_RejectedAtServeTime(t *testing.T) {
-	secMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
+	secMw := rest.SecurityMiddleware[struct{}, struct{}]("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil)
 	sseRoute := rest.NewSSERoute[createReq, sseEvent]("/events",
 		createReqCodec, sseEventCodec, rest.RouteMeta{OperationID: "streamEvents"},
 	).Use(secMw).WithHandler(func(_ context.Context, _ createReq, send func(sseEvent) error) error {
@@ -1839,16 +1839,21 @@ func TestServeSSE_MissingSecurityCoverage_RejectedAtServeTime(t *testing.T) {
 // this package's design review).
 func TestHandler_RequireAPIKey_RunsWithoutRouteSecurity(t *testing.T) {
 	verifyCalled := false
-	implMw := apiKeyImpl[createReq]("X-API-Key", func(_ context.Context, key string) error {
+	// mw==nil is HandleMW's GENERAL-PURPOSE path — UNCHANGED by the
+	// legacy Security-pairing retirement (only a Security-carrying mw is
+	// rejected now); a raw func(ctx, *http.Request, *Req) (map[string][]string, error)
+	// Fn with no Satisfies still attaches exactly as before.
+	apiKeyFn := func(_ context.Context, r *http.Request, _ *createReq) (map[string][]string, error) {
 		verifyCalled = true
+		key := r.Header.Get("X-API-Key")
 		if key != "secret" {
-			return errors.New("invalid api key")
+			return nil, errors.New("invalid api key")
 		}
-		return nil
-	})
+		return nil, nil
+	}
 	route := newCreateRoute().WithHandler(func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
-	}).HandleMW(nil, implMw.Fn) // implMw's Satisfies is empty — no .Use() pairing needed
+	}).HandleMW(nil, apiKeyFn) // no Security declared — no .Use() pairing needed
 	h := mustServeOne(t, route)
 
 	// Missing/invalid key is rejected.
@@ -1882,21 +1887,14 @@ func TestHandler_RequireAPIKey_RunsWithoutRouteSecurity(t *testing.T) {
 
 func TestHandler_SecurityFunc_codecValidationFailure(t *testing.T) {
 	jwtCodec := codex.String().Refine(validate.JWT)
-	declMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, &jwtCodec)
-	implMw := scopesImpl[createReq]("bearerAuth",
-		func(_ context.Context, _ *http.Request, _ *createReq) (map[string][]string, error) {
-			t.Fatal("Fn must not be called when credential fails codec format validation")
-			return nil, nil
-		},
-	)
-	route := rest.NewRoute[createReq, userResp]("POST", "/users",
-		createReqCodec, userRespCodec,
-		rest.RouteMeta{OperationID: "createUser"},
-		rest.WithMiddleware(declMw),
-	).WithHandler(func(_ context.Context, req createReq) (userResp, error) {
+	bm := boundBearerAuthMwCodec[createReq]("bearerAuth", jwtCodec, func(_ context.Context, _ string) (map[string][]string, error) {
+		t.Fatal("Fn must not be called when credential fails codec format validation")
+		return nil, nil
+	})
+	route := newSecuredRouteBase().WithHandler(func(_ context.Context, req createReq) (userResp, error) {
 		t.Fatal("handler must not be called when credential fails codec")
 		return userResp{}, nil
-	}).HandleMW(&declMw, implMw.Fn)
+	}).HandleBoundMW(bm)
 	h := mustServeOne(t, route)
 
 	rec := httptest.NewRecorder()
@@ -1919,22 +1917,19 @@ func TestHandler_SecurityFunc_codecValidationFailure(t *testing.T) {
 
 func TestHandler_SecurityObserver_calledOnRejection(t *testing.T) {
 	obs := &mockSecurityObserver{}
-	declMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
-	implMw := scopesImpl[createReq]("bearerAuth",
-		func(ctx context.Context, _ *http.Request, _ *createReq) (map[string][]string, error) {
-			// Fn-driven rejection recording is now the Fn author's own
-			// responsibility (Class A moved into Fn) — the adapter no
-			// longer calls RecordSecurityRejection automatically for
-			// authorization (as opposed to credential-format) failures.
-			if secObs, ok := stats.ObserverFromContext(ctx).(stats.SecurityObserver); ok {
-				secObs.RecordSecurityRejection("/users", "bearerAuth")
-			}
-			return nil, errors.New("unauthorized")
-		},
-	)
-	route := newSecuredRoute(declMw).WithHandler(func(_ context.Context, req createReq) (userResp, error) {
+	bm := boundBearerAuthMw[createReq]("bearerAuth", func(ctx context.Context, _ string) (map[string][]string, error) {
+		// Fn-driven rejection recording is now the Fn author's own
+		// responsibility (Class A moved into Fn) — the adapter no
+		// longer calls RecordSecurityRejection automatically for
+		// authorization (as opposed to credential-format) failures.
+		if secObs, ok := stats.ObserverFromContext(ctx).(stats.SecurityObserver); ok {
+			secObs.RecordSecurityRejection("/users", "bearerAuth")
+		}
+		return nil, errors.New("unauthorized")
+	})
+	route := newSecuredRouteBase().WithHandler(func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{}, nil
-	}).HandleMW(&declMw, implMw.Fn)
+	}).HandleBoundMW(bm)
 	h := mustServeOne(t, route)
 
 	withObsMiddleware := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1962,11 +1957,12 @@ func TestHandler_SecurityObserver_calledOnRejection(t *testing.T) {
 func newGlobalSecuredRoute() (rest.Route[createReq, userResp], *rest.Server) {
 	b := rest.NewServer(testInfo)
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
-	// No per-route Security — inherits global.
+	// No per-route Security — inherits global. HandleBoundMW's attached
+	// BoundSecurityMiddleware (added by each test below) supplies its own
+	// "bearerAuth" declaration — no separate pre-declaration needed.
 	r := rest.NewRoute[createReq, userResp]("POST", "/users",
 		createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "createUser"},
-		rest.WithMiddleware(rest.FromSecurityScheme("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil)),
 	)
 	return r, b
 }
@@ -1974,19 +1970,16 @@ func newGlobalSecuredRoute() (rest.Route[createReq, userResp], *rest.Server) {
 func TestHandler_GlobalSecurity_enforcedWhenNoPerRouteSecurity(t *testing.T) {
 	r, b := newGlobalSecuredRoute()
 	secFuncCalled := false
-	declMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
-	implMw := scopesImpl[createReq]("bearerAuth",
-		func(_ context.Context, req *http.Request, _ *createReq) (map[string][]string, error) {
-			secFuncCalled = true
-			if req.Header.Get("Authorization") != "test-bearer-token" {
-				return nil, errors.New("unauthorized")
-			}
-			return map[string][]string{"bearerAuth": nil}, nil
-		},
-	)
+	bm := boundBearerAuthMw[createReq]("bearerAuth", func(_ context.Context, auth string) (map[string][]string, error) {
+		secFuncCalled = true
+		if auth != "test-bearer-token" {
+			return nil, errors.New("unauthorized")
+		}
+		return map[string][]string{"bearerAuth": nil}, nil
+	})
 	r = r.WithHandler(func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
-	}).HandleMW(&declMw, implMw.Fn)
+	}).HandleBoundMW(bm)
 	mux := mustServe(t, r, b)
 
 	rec := httptest.NewRecorder()
@@ -2005,15 +1998,12 @@ func TestHandler_GlobalSecurity_enforcedWhenNoPerRouteSecurity(t *testing.T) {
 
 func TestHandler_GlobalSecurity_rejectsWhenNoToken(t *testing.T) {
 	r, b := newGlobalSecuredRoute()
-	declMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
-	implMw := scopesImpl[createReq]("bearerAuth",
-		func(_ context.Context, _ *http.Request, _ *createReq) (map[string][]string, error) {
-			return nil, errors.New("missing token")
-		},
-	)
+	bm := boundBearerAuthMw[createReq]("bearerAuth", func(_ context.Context, _ string) (map[string][]string, error) {
+		return nil, errors.New("missing token")
+	})
 	r = r.WithHandler(func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{}, nil
-	}).HandleMW(&declMw, implMw.Fn)
+	}).HandleBoundMW(bm)
 	mux := mustServe(t, r, b)
 
 	rec := httptest.NewRecorder()
@@ -2070,10 +2060,12 @@ func TestHandler_GlobalSecurity_notCalledWhenExplicitlyEmpty(t *testing.T) {
 func newGlobalSecuredSSERoute() (rest.SSERoute[createReq, sseEvent], *rest.Server) {
 	b := rest.NewServer(testInfo)
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
+	// No per-route Security — inherits global; HandleBoundMW's attached
+	// BoundSecurityMiddleware (added by each test below) supplies its own
+	// "bearerAuth" declaration.
 	r := rest.NewSSERoute[createReq, sseEvent]("/stream",
 		createReqCodec, sseEventCodec,
 		rest.RouteMeta{OperationID: "streamSecured"},
-		rest.WithMiddleware(rest.FromSecurityScheme("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil)),
 	)
 	return r, b
 }
@@ -2081,19 +2073,16 @@ func newGlobalSecuredSSERoute() (rest.SSERoute[createReq, sseEvent], *rest.Serve
 func TestSSEHandler_GlobalSecurity_enforced(t *testing.T) {
 	r, b := newGlobalSecuredSSERoute()
 	secFuncCalled := false
-	declMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
-	implMw := scopesImpl[createReq]("bearerAuth",
-		func(_ context.Context, req *http.Request, _ *createReq) (map[string][]string, error) {
-			secFuncCalled = true
-			if req.Header.Get("Authorization") != "test-bearer-token" {
-				return nil, errors.New("unauthorized")
-			}
-			return map[string][]string{"bearerAuth": nil}, nil
-		},
-	)
+	bm := boundBearerAuthMw[createReq]("bearerAuth", func(_ context.Context, auth string) (map[string][]string, error) {
+		secFuncCalled = true
+		if auth != "test-bearer-token" {
+			return nil, errors.New("unauthorized")
+		}
+		return map[string][]string{"bearerAuth": nil}, nil
+	})
 	r = r.WithHandler(func(_ context.Context, _ createReq, _ func(sseEvent) error) error {
 		return nil
-	}).HandleMW(&declMw, implMw.Fn)
+	}).HandleBoundMW(bm)
 	mux := mustServeSSE(t, r, b)
 
 	rec := httptest.NewRecorder()
@@ -2111,15 +2100,12 @@ func TestSSEHandler_GlobalSecurity_enforced(t *testing.T) {
 
 func TestSSEHandler_GlobalSecurity_rejectsWhenNoToken(t *testing.T) {
 	r, b := newGlobalSecuredSSERoute()
-	declMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
-	implMw := scopesImpl[createReq]("bearerAuth",
-		func(_ context.Context, _ *http.Request, _ *createReq) (map[string][]string, error) {
-			return nil, errors.New("missing token")
-		},
-	)
+	bm := boundBearerAuthMw[createReq]("bearerAuth", func(_ context.Context, _ string) (map[string][]string, error) {
+		return nil, errors.New("missing token")
+	})
 	r = r.WithHandler(func(_ context.Context, _ createReq, _ func(sseEvent) error) error {
 		return nil
-	}).HandleMW(&declMw, implMw.Fn)
+	}).HandleBoundMW(bm)
 	mux := mustServeSSE(t, r, b)
 
 	rec := httptest.NewRecorder()

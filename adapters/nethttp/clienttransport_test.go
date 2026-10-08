@@ -12,7 +12,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
@@ -386,24 +385,36 @@ func TestAttach_ClientCall_DerivesPathVars(t *testing.T) {
 func TestAttach_ClientCall_CredentialClientMW_Invoked(t *testing.T) {
 	s := rest.NewServer(testInfo)
 	s.AddGlobalSecurity(route.Require("bearerAuth"))
-	declMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
 	credCalled := false
-	r := rest.NewRoute[getReq, userResp]("GET", "/me", getReqCodec, userRespCodec).Use(declMw).HandleMW(&declMw, func(_ context.Context, req *http.Request, _ *getReq) (map[string][]string, error) {
-		if req.Header.Get("Authorization") != "test-bearer-token" {
+	boundMW := rest.BoundSecurityClientMiddleware[getReq, securedAuthIn, securedAuthOut](
+		"bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+		func(ctx context.Context, req getReq) (securedAuthIn, error) {
+			credCalled = true
+			return securedAuthIn{Token: "test-bearer-token"}, nil
+		},
+	).WithRequestHeader(rest.NewRequiredHeaderParam("Authorization", codex.String(),
+		func(in securedAuthIn) string { return in.Token },
+		func(in *securedAuthIn, v string) { in.Token = v },
+	))
+	serverBm := boundBearerAuthMw[getReq]("bearerAuth", func(_ context.Context, auth string) (map[string][]string, error) {
+		if auth != "test-bearer-token" {
 			return nil, errors.New("unauthorized")
 		}
 		return map[string][]string{"bearerAuth": nil}, nil
-	}).ClientMW(&declMw, func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
-		credCalled = true
-		h := make(http.Header)
-		h.Set("Authorization", "test-bearer-token")
-		return h, nil
-	}).WithHandler(func(ctx context.Context, req getReq) (userResp, error) {
+	})
+	// TWO SEPARATE route values, same path/method — a Security-carrying
+	// HandleBoundMW (server) and BoundClientMiddleware (client) for the
+	// SAME scheme name cannot share ONE route value (both default to the
+	// SAME auto-generated Declaration.Name "declare-security:bearerAuth",
+	// and D6(b)'s name-uniqueness check rejects the resulting duplicate)
+	// — see bound_middleware.go's [BoundMiddleware] doc comment.
+	serverRoute := rest.NewRoute[getReq, userResp]("GET", "/me", getReqCodec, userRespCodec).HandleBoundMW(serverBm).WithHandler(func(ctx context.Context, req getReq) (userResp, error) {
 		return userResp{ID: "me"}, nil
 	})
-	if err := r.Register(s); err != nil {
+	if err := serverRoute.Register(s); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
+	clientRoute := rest.NewRoute[getReq, userResp]("GET", "/me", getReqCodec, userRespCodec).ClientBoundMW(boundMW)
 
 	mux := http.NewServeMux()
 	if err := serve(mux, s); err != nil {
@@ -416,7 +427,7 @@ func TestAttach_ClientCall_CredentialClientMW_Invoked(t *testing.T) {
 	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
-	respAny, err := client.Call(context.Background(), r, getReq{})
+	respAny, err := client.Call(context.Background(), clientRoute, getReq{})
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
@@ -867,24 +878,32 @@ func TestAttach_ClientConsume_WrongRouteType_ReturnsTransportTypeMismatchError(t
 func TestAttach_ClientConsume_CredentialClientMW_Invoked(t *testing.T) {
 	s := rest.NewServer(testInfo)
 	s.AddGlobalSecurity(route.Require("bearerAuth"))
-	declMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
 	credCalled := false
-	sseRoute := rest.NewSSERoute[getReq, counterSSEEvent]("/sse/secured-counter", getReqCodec, counterSSEEventCodec).Use(declMw).HandleMW(&declMw, func(_ context.Context, req *http.Request, _ *getReq) (map[string][]string, error) {
-		if req.Header.Get("Authorization") != "test-bearer-token" {
+	boundMW := rest.BoundSecurityClientMiddleware[getReq, securedAuthIn, securedAuthOut](
+		"bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+		func(ctx context.Context, req getReq) (securedAuthIn, error) {
+			credCalled = true
+			return securedAuthIn{Token: "test-bearer-token"}, nil
+		},
+	).WithRequestHeader(rest.NewRequiredHeaderParam("Authorization", codex.String(),
+		func(in securedAuthIn) string { return in.Token },
+		func(in *securedAuthIn, v string) { in.Token = v },
+	))
+	serverBm := boundBearerAuthMw[getReq]("bearerAuth", func(_ context.Context, auth string) (map[string][]string, error) {
+		if auth != "test-bearer-token" {
 			return nil, errors.New("unauthorized")
 		}
 		return map[string][]string{"bearerAuth": nil}, nil
-	}).ClientMW(&declMw, func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
-		credCalled = true
-		h := make(http.Header)
-		h.Set("Authorization", "test-bearer-token")
-		return h, nil
-	}).WithHandler(func(ctx context.Context, _ getReq, send func(counterSSEEvent) error) error {
+	})
+	// TWO SEPARATE route values, same path — see
+	// TestAttach_ClientCall_CredentialClientMW_Invoked's identical note.
+	serverSSERoute := rest.NewSSERoute[getReq, counterSSEEvent]("/sse/secured-counter", getReqCodec, counterSSEEventCodec).HandleBoundMW(serverBm).WithHandler(func(ctx context.Context, _ getReq, send func(counterSSEEvent) error) error {
 		return send(counterSSEEvent{Count: 1})
 	})
-	if err := sseRoute.Register(s); err != nil {
+	if err := serverSSERoute.Register(s); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
+	sseRoute := rest.NewSSERoute[getReq, counterSSEEvent]("/sse/secured-counter", getReqCodec, counterSSEEventCodec).ClientBoundMW(boundMW)
 
 	mux := http.NewServeMux()
 	if err := serveSSE(mux, s); err != nil {
@@ -1260,14 +1279,18 @@ func TestCallWithTransport_ExtraHeaders_Sent(t *testing.T) {
 func TestCallWithTransport_OnCredentialRejected_FiresOn401(t *testing.T) {
 	b := rest.NewServer(testInfo)
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
-	declMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
+	boundMW := rest.BoundSecurityClientMiddleware[getReq, securedAuthIn, securedAuthOut](
+		"bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+		func(ctx context.Context, req getReq) (securedAuthIn, error) {
+			return securedAuthIn{Token: "test-bearer-token"}, nil
+		},
+	).WithRequestHeader(rest.NewRequiredHeaderParam("Authorization", codex.String(),
+		func(in securedAuthIn) string { return in.Token },
+		func(in *securedAuthIn, v string) { in.Token = v },
+	))
 	handle, err := rest.NewRoute[getReq, userResp]("GET", "/me",
 		getReqCodec, userRespCodec,
-	).Use(declMw).ClientMW(&declMw, func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
-		h := make(http.Header)
-		h.Set("Authorization", "test-bearer-token")
-		return h, nil
-	}).RegisterHandle(b)
+	).ClientBoundMW(boundMW).RegisterHandle(b)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -721,6 +721,7 @@ func consumeSSEOnce[Req, Event any](
 	// D3: explicit ConsumeOptions > middleware-derived (ClientBoundMW's/
 	// bundled .Use()'s In) > route-own-derived — mirrors
 	// [rest.CallWithTransport]'s identical precedence for plain Route.
+	var mwContributed bool
 	if len(handle.ClientMiddlewareHandlers) > 0 {
 		mwHeaders, mwCookies, mwQuery, mwErr := dispatchClientMiddlewareIn(ctx, req, handle.ClientMiddlewareHandlers)
 		if mwErr != nil {
@@ -728,6 +729,7 @@ func consumeSSEOnce[Req, Event any](
 			obs.RecordRequest(method, path, 0, time.Since(start))
 			return false, mwErr
 		}
+		mwContributed = len(mwHeaders) > 0 || len(mwCookies) > 0 || len(mwQuery) > 0
 		query = overrideDerived(query, mwQuery)
 		headers = overrideDerived(headers, mwHeaders)
 		cookies = overrideDerived(cookies, mwCookies)
@@ -766,7 +768,17 @@ func consumeSSEOnce[Req, Event any](
 			obs.RecordRequest(method, path, 0, time.Since(start))
 			return false, err
 		}
+		if !credentialFnRan && clientMiddlewareSatisfiesAny(handle.ClientMiddlewareHandlers, secReqs) {
+			credentialFnRan = true
+		}
 	}
+	// credentialProduced is a SEPARATE signal from credentialFnRan — see
+	// [clientTransport.Call]'s identical rationale: gates
+	// [rest.ValidateSecurityCredentials] specifically, true only when a
+	// mechanism ACTUALLY produced a value (preserving the legacy "(nil,
+	// nil) means no credential needed" escape hatch for general-purpose,
+	// non-security ClientMW Fns using this same Fn shape).
+	credentialProduced := len(credHeaders) > 0 || mwContributed
 
 	// Resolve per-call format override (opts.Formats), falling back to
 	// the route-declared handle.Formats when no override was given for
@@ -808,7 +820,11 @@ func consumeSSEOnce[Req, Event any](
 		httpReq.AddCookie(&http.Cookie{Name: k, Value: v})
 	}
 
-	if len(secReqs) > 0 && len(credHeaders) > 0 {
+	// See [clientTransport.Call]'s identical gate — credentialProduced
+	// (not len(credHeaders) > 0) correctly reflects a mechanism having
+	// ACTUALLY PRODUCED a credential value via EITHER the legacy or
+	// modern ClientMiddlewareHandler mechanism.
+	if len(secReqs) > 0 && credentialProduced {
 		if credErr := rest.ValidateSecurityCredentials(credentialExtractorFor(httpReq), secReqs, handle.SecuritySchemes); credErr != nil {
 			if secObs, ok := obs.(stats.SecurityObserver); ok {
 				secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))

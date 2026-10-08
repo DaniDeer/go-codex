@@ -800,12 +800,20 @@ func TestConsume_NilObserver_NoPanic(t *testing.T) {
 		ConsumeOptions{Observer: nil})
 }
 
-// TestConsume_CredentialReDerivedPerReconnect (S11): a ClientMW Fn
-// returning a DIFFERENT value on each call sends a NEW value on every
+// reconnectCredAuthIn/Out carry the Bound SSE credential tests' request
+// header merge field — replaces the removed legacy ClientMW security
+// pairing (func(ctx, secReqs) (http.Header, error)) with
+// [rest.BoundSecurityClientMiddleware] + WithRequestHeader, this review
+// round's retirement of that mechanism (see
+// [rest.LegacySecurityClientMWRemovedError]).
+type reconnectCredAuthIn struct{ Token string }
+type reconnectCredAuthOut struct{}
+
+// TestConsume_CredentialReDerivedPerReconnect (S11): a BoundClientMiddleware
+// Fn returning a DIFFERENT value on each call sends a NEW value on every
 // reconnect attempt — proves no caching/memoization happens inside
 // Consume itself.
 func TestConsume_CredentialReDerivedPerReconnect(t *testing.T) {
-	declMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
 	var mu sync.Mutex
 	var seen []string
 	attempt := 0
@@ -824,13 +832,17 @@ func TestConsume_CredentialReDerivedPerReconnect(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	sseRoute := newSSETestRoute().Use(declMw).ClientMW(&declMw,
-		func(context.Context, []route.SecurityRequirement) (http.Header, error) {
+	boundMW := rest.BoundSecurityClientMiddleware[sseTestReq, reconnectCredAuthIn, reconnectCredAuthOut](
+		"bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+		func(context.Context, sseTestReq) (reconnectCredAuthIn, error) {
 			attempt++
-			h := make(http.Header)
-			h.Set("Authorization", fmt.Sprintf("token-%d", attempt))
-			return h, nil
-		})
+			return reconnectCredAuthIn{Token: fmt.Sprintf("token-%d", attempt)}, nil
+		},
+	).WithRequestHeader(rest.NewRequiredHeaderParam("Authorization", codex.String(),
+		func(in reconnectCredAuthIn) string { return in.Token },
+		func(in *reconnectCredAuthIn, v string) { in.Token = v },
+	))
+	sseRoute := newSSETestRoute().ClientBoundMW(boundMW)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -850,18 +862,21 @@ func TestConsume_CredentialReDerivedPerReconnect(t *testing.T) {
 
 // TestConsume_OnCredentialRejected_FiresOn401 (S12).
 func TestConsume_OnCredentialRejected_FiresOn401(t *testing.T) {
-	declMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	defer srv.Close()
 
-	sseRoute := newSSETestRoute().Use(declMw).ClientMW(&declMw,
-		func(context.Context, []route.SecurityRequirement) (http.Header, error) {
-			h := make(http.Header)
-			h.Set("Authorization", "bad-token")
-			return h, nil
-		})
+	boundMW := rest.BoundSecurityClientMiddleware[sseTestReq, reconnectCredAuthIn, reconnectCredAuthOut](
+		"bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+		func(context.Context, sseTestReq) (reconnectCredAuthIn, error) {
+			return reconnectCredAuthIn{Token: "bad-token"}, nil
+		},
+	).WithRequestHeader(rest.NewRequiredHeaderParam("Authorization", codex.String(),
+		func(in reconnectCredAuthIn) string { return in.Token },
+		func(in *reconnectCredAuthIn, v string) { in.Token = v },
+	))
+	sseRoute := newSSETestRoute().ClientBoundMW(boundMW)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()

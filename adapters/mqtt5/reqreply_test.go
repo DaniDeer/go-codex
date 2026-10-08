@@ -192,8 +192,8 @@ func TestServe_HandleMW_PairedSecurityFn_Verifies(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	rejectingImpl := func(context.Context, *pahomqtt5.Publish, []route.SecurityRequirement) (map[string][]string, error) {
-		return nil, secErr
+	rejectingImpl := func(context.Context, *computeReq, mwSecIn) (mwSecOut, error) {
+		return mwSecOut{}, secErr
 	}
 	_ = testServe(ctx, client, router, newSecuredRouteHandleWithImpl(rejectingImpl),
 		func(_ context.Context, _ computeReq) (computeResp, error) {
@@ -251,18 +251,46 @@ func TestAttachServer_CheckCoverage_MissingSecurityMiddlewareError(t *testing.T)
 	}
 }
 
+// serverOnlyCoverageMw is the server-coverage-only HandleBoundMW
+// attachment newSecuredRouteHandleWithClientImpl uses below — a
+// DIFFERENT scheme name ("bearerServerOnly") from the CLIENT-under-test
+// scheme ("bearer"), purely to satisfy Register's fused declare+
+// implement bookkeeping (a Security-carrying HandleBoundMW and
+// ClientBoundMW for the SAME scheme name cannot share ONE route value,
+// see docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8). Deliberately
+// built WITHOUT bearerSecBoundMw's shared Codec (unlike "bearer" itself)
+// — both "bearerServerOnly" and "bearer" end up merged into the SAME
+// route's h.Security list, and a Codec on "bearerServerOnly" would make
+// the client-side built-in credential check ALSO validate it (no
+// credential for it is ever supplied), nondeterministically reporting
+// IT as the failing scheme instead of "bearer" depending on map
+// iteration order.
+func serverOnlyCoverageMw() reqreply.BoundMiddleware[computeReq, mwSecIn, mwSecOut] {
+	return reqreply.BoundSecurityMiddleware[computeReq, mwSecIn, mwSecOut](
+		"bearerServerOnly", reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil, acceptingSecurityImpl,
+	)
+}
+
 // newSecuredRouteHandleWithClientImpl builds a securedComputeRoute
-// variant with BOTH a server-side HandleMW (accepting, unconditional —
-// these tests exercise CLIENT-side ClientMW behavior, not server
-// rejection) and a client-side ClientMW attached, registered against a
-// FRESH server so [Call] (the escape hatch, which delegates to
-// clientTransport.call since Phase 0b) can dispatch through
-// handle.ClientImplementations.
-func newSecuredRouteHandleWithClientImpl(clientFn func(context.Context, []route.SecurityRequirement) ([]UserProperty, error)) *reqreply.RouteHandle[computeReq, computeResp] {
+// variant with BOTH a server-side HandleBoundMW (accepting,
+// unconditional — these tests exercise CLIENT-side ClientBoundMW
+// behavior, not server rejection) and a client-side ClientBoundMW
+// attached, registered against a FRESH server so [Call] (the escape
+// hatch, which delegates to clientTransport.call since Phase 0b) can
+// dispatch through handle.ClientImplementations. Only the CLIENT half
+// ("bearer") is actually under test here — see serverOnlyCoverageMw's
+// own doc comment for why the server half uses a separate scheme name
+// AND no Codec.
+func newSecuredRouteHandleWithClientImpl(clientFn func(ctx context.Context, req computeReq) (mwSecIn, error)) *reqreply.RouteHandle[computeReq, computeResp] {
 	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
-	h, err := securedComputeRoute.
-		HandleMW(&bearerAuthMw, acceptingSecurityImpl).
-		ClientMW(&bearerAuthMw, clientFn).
+	freshRoute := reqreply.NewRoute[computeReq, computeResp](
+		"compute/secured-add",
+		computeReqCodec, computeRespCodec,
+		reqreply.RouteMeta{OperationID: "securedCompute", Security: []route.SecurityRequirement{route.Require("bearer")}},
+	)
+	h, err := freshRoute.
+		HandleBoundMW(serverOnlyCoverageMw()).
+		ClientBoundMW(bearerSecBoundClientMw(clientFn)).
 		Register(b)
 	if err != nil {
 		panic(err)
@@ -297,8 +325,8 @@ func TestCall_ClientMW_PairedCredentialFn_Supplies(t *testing.T) {
 		})
 	}()
 
-	handle := newSecuredRouteHandleWithClientImpl(func(context.Context, []route.SecurityRequirement) ([]UserProperty, error) {
-		return []UserProperty{{Key: "Authorization", Value: "******"}}, nil
+	handle := newSecuredRouteHandleWithClientImpl(func(context.Context, computeReq) (mwSecIn, error) {
+		return mwSecIn{Authorization: "******"}, nil
 	})
 	resp, err := testCall(ctx, client, router, handle, computeReq{X: 3, Y: 4}, CallOptions{})
 	if err != nil {
@@ -324,9 +352,9 @@ func TestCall_ClientMW_MalformedCredentialFormat_ReturnsSecurityCredentialError(
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	handle := newSecuredRouteHandleWithClientImpl(func(context.Context, []route.SecurityRequirement) ([]UserProperty, error) {
+	handle := newSecuredRouteHandleWithClientImpl(func(context.Context, computeReq) (mwSecIn, error) {
 		// Empty ****** -> fails the non-empty-string Codec.
-		return []UserProperty{{Key: "Authorization", Value: "Bearer "}}, nil
+		return mwSecIn{Authorization: "Bearer "}, nil
 	})
 	_, err := testCall(ctx, client, router, handle, computeReq{X: 3, Y: 4}, CallOptions{Observer: obs})
 	var credErr reqreply.SecurityCredentialError

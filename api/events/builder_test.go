@@ -2745,104 +2745,50 @@ func TestSubscriberServer_InterfaceCompliance(t *testing.T) {
 
 // ── Subscriber.SubscribeMW / Publisher.PublishMW (Phase 4) ─────────────────
 
+// TestSubscribeMW_paired_derivesSatisfiesFromSecurity migrated to the
+// Bound mechanism per docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8 —
+// SubscribeMW now rejects a Security-carrying mw outright
+// ([LegacySecurityMWRemovedError]); SubscribeBoundMW +
+// BoundSecuritySubscribeMiddleware is the one remaining way to
+// declare+implement a security scheme, fusing both into one call.
 func TestSubscribeMW_paired_derivesSatisfiesFromSecurity(t *testing.T) {
-	scheme := events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}
-	mw := events.FromSecurityScheme("bearerAuth", scheme, []string{"subscribe:sensors"})
+	bm := events.BoundSecuritySubscribeMiddleware[userEvent, mdTestIn, mdTestOut]("bearerAuth",
+		events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, []string{"subscribe:sensors"},
+		func(ctx context.Context, msg *userEvent, in mdTestIn) (mdTestOut, error) { return mdTestOut{}, nil })
 
 	sub := events.NewChannel[userEvent]("sensors/data", userEventCodec).
 		WithSubscribe(events.Subscribe{}).
-		Use(mw).
-		SubscribeMW(&mw, func() {})
+		SubscribeBoundMW(bm)
 
 	handle, err := sub.Handle(nil)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
-	if len(handle.Implementations) != 1 {
-		t.Fatalf("len(Implementations) = %d, want 1", len(handle.Implementations))
+	if len(handle.MiddlewareHandlers) != 1 {
+		t.Fatalf("len(MiddlewareHandlers) = %d, want 1", len(handle.MiddlewareHandlers))
 	}
-	impl := handle.Implementations[0]
-	if len(impl.Satisfies) != 1 || impl.Satisfies[0] != "bearerAuth" {
-		t.Errorf("Satisfies = %v, want [bearerAuth]", impl.Satisfies)
-	}
-	if impl.Fn == nil {
-		t.Error("expected Fn to be preserved")
+	mh := handle.MiddlewareHandlers[0]
+	if len(mh.Satisfies) != 1 || mh.Satisfies[0] != "bearerAuth" {
+		t.Errorf("Satisfies = %v, want [bearerAuth]", mh.Satisfies)
 	}
 }
 
-// TestSubscribeMW_PairedAgainstUndeclaredScheme_ReturnsUnknownMiddlewareImplementationError
-// is a regression test for a finding from a post-implementation
-// consistency audit: Decision 1 explicitly promised a
-// checkImplementationsDeclared-equivalent check (mirroring
-// rest.UnknownMiddlewareImplementationError) but it was never actually
-// implemented — mismatches like this used to be silently accepted.
-func TestSubscribeMW_PairedAgainstUndeclaredScheme_ReturnsUnknownMiddlewareImplementationError(t *testing.T) {
-	// declMw declares "bearerAuth" but the channel below pairs its
-	// SubscribeMW implementation against a DIFFERENT scheme name
-	// ("otherAuth") that was never .Use()'d on this channel — a
-	// copy-paste mistake reusing a different channel's
-	// middleware.Middleware. checkImplementationsDeclared must catch
-	// this at Handle/Register time, not silently accept it.
-	declMw := events.FromSecurityScheme("bearerAuth", events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil)
-	mismatchedMw := events.FromSecurityScheme("otherAuth", events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil)
-
-	sub := events.NewChannel[userEvent]("sensors/data", userEventCodec).
-		WithSubscribe(events.Subscribe{}).
-		Use(declMw).
-		SubscribeMW(&mismatchedMw, func() {})
-
-	_, err := sub.Handle(nil)
-	var unknownErr events.UnknownMiddlewareImplementationError
-	if !errors.As(err, &unknownErr) {
-		t.Fatalf("want UnknownMiddlewareImplementationError, got %v (%T)", err, err)
-	}
-	if unknownErr.Scheme != "otherAuth" {
-		t.Errorf("want Scheme %q, got %q", "otherAuth", unknownErr.Scheme)
-	}
-}
-
-// TestSubscribeMW_PairedAgainstDeclaredScheme_NoError is the mirror-image
-// happy path: SubscribeMW paired against a scheme that WAS .Use()'d must
-// NOT trigger UnknownMiddlewareImplementationError.
-func TestSubscribeMW_PairedAgainstDeclaredScheme_NoError(t *testing.T) {
-	mw := events.FromSecurityScheme("bearerAuth", events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil)
-
-	sub := events.NewChannel[userEvent]("sensors/data", userEventCodec).
-		WithSubscribe(events.Subscribe{}).
-		Use(mw).
-		SubscribeMW(&mw, func() {})
-
-	if _, err := sub.Handle(nil); err != nil {
-		t.Fatalf("Handle: unexpected error: %v", err)
-	}
-}
-
+// NOTE: TestSubscribeMW_PairedAgainstUndeclaredScheme_ReturnsUnknownMiddlewareImplementationError,
+// TestSubscribeMW_PairedAgainstDeclaredScheme_NoError, and
 // TestPublishMW_PairedAgainstUndeclaredScheme_ReturnsUnknownMiddlewareImplementationError
-// is the CLIENT-side (publish) mirror of
-// TestSubscribeMW_PairedAgainstUndeclaredScheme_ReturnsUnknownMiddlewareImplementationError
-// — a regression test for a finding from a review-go-codex consistency
-// audit: checkImplementationsDeclared used to run subscribe-side only,
-// so a PublishMW call paired against an undeclared scheme silently never
-// ran its Fn (gated out by the adapter's Satisfies-vs-declared-security
-// check) with no error anywhere.
-func TestPublishMW_PairedAgainstUndeclaredScheme_ReturnsUnknownMiddlewareImplementationError(t *testing.T) {
-	declMw := events.FromSecurityScheme("bearerAuth", events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil)
-	mismatchedMw := events.FromSecurityScheme("otherAuth", events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil)
-
-	pub := events.NewChannel[userEvent]("sensors/data", userEventCodec).
-		WithPublish(events.Publish{}).
-		Use(declMw).
-		PublishMW(&mismatchedMw, func() {})
-
-	_, err := pub.Handle(nil)
-	var unknownErr events.UnknownMiddlewareImplementationError
-	if !errors.As(err, &unknownErr) {
-		t.Fatalf("want UnknownMiddlewareImplementationError, got %v (%T)", err, err)
-	}
-	if unknownErr.Scheme != "otherAuth" {
-		t.Errorf("want Scheme %q, got %q", "otherAuth", unknownErr.Scheme)
-	}
-}
+// (which tested checkImplementationsDeclared's mismatch-detection via the
+// legacy SubscribeMW/PublishMW security-pairing path) were ALL REMOVED
+// per docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8 — SubscribeMW/
+// PublishMW now reject a Security-carrying mw before ever reaching
+// checkImplementationsDeclared (see [events.LegacySecurityMWRemovedError]).
+// This failure mode is structurally IMPOSSIBLE for the replacement,
+// [Subscriber.SubscribeBoundMW]/[Publisher.PublishBoundMW] +
+// [BoundSecuritySubscribeMiddleware]/[BoundSecurityPublishMiddleware]: the
+// bound mechanism auto-contributes its OWN Security declaration directly
+// (no separate .Use() call that could drift out of sync), so there is no
+// equivalent "paired against an undeclared scheme" scenario to test — not
+// a coverage gap, a structural non-issue. The happy-path equivalent is
+// already covered by TestCheckCoverage_passes_withBoundSubscribeMW below.
 
 func TestSubscribeMW_unpaired_generalPurpose_emptySatisfies(t *testing.T) {
 	sub := events.NewChannel[userEvent]("user/created", userEventCodec).
@@ -2900,28 +2846,31 @@ func TestSubscribeMW_doesNotMutateOriginal(t *testing.T) {
 	}
 }
 
+// TestPublishMW_paired_derivesSatisfiesFromSecurity migrated to the Bound
+// mechanism per docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8 —
+// PublishMW now rejects a Security-carrying mw outright
+// ([LegacySecurityMWRemovedError]); PublishBoundMW +
+// BoundSecurityPublishMiddleware is the one remaining way to
+// declare+implement a security scheme on the publish/sending role.
 func TestPublishMW_paired_derivesSatisfiesFromSecurity(t *testing.T) {
-	scheme := events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}
-	mw := events.FromSecurityScheme("bearerAuth", scheme, []string{"publish:sensors"})
+	bm := events.BoundSecurityPublishMiddleware[userEvent, mdTestIn, mdTestOut]("bearerAuth",
+		events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, []string{"publish:sensors"},
+		func(ctx context.Context, msg userEvent) (mdTestOut, error) { return mdTestOut{}, nil })
 
 	pub := events.NewChannel[userEvent]("sensors/data", userEventCodec).
 		WithPublish(events.Publish{}).
-		Use(mw).
-		PublishMW(&mw, func() {})
+		PublishBoundMW(bm)
 
 	handle, err := pub.Handle(nil)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
-	if len(handle.ClientImplementations) != 1 {
-		t.Fatalf("len(ClientImplementations) = %d, want 1", len(handle.ClientImplementations))
+	if len(handle.ClientMiddlewareHandlers) != 1 {
+		t.Fatalf("len(ClientMiddlewareHandlers) = %d, want 1", len(handle.ClientMiddlewareHandlers))
 	}
-	impl := handle.ClientImplementations[0]
-	if len(impl.Satisfies) != 1 || impl.Satisfies[0] != "bearerAuth" {
-		t.Errorf("Satisfies = %v, want [bearerAuth]", impl.Satisfies)
-	}
-	if impl.Fn == nil {
-		t.Error("expected Fn to be preserved")
+	mh := handle.ClientMiddlewareHandlers[0]
+	if len(mh.Satisfies) != 1 || mh.Satisfies[0] != "bearerAuth" {
+		t.Errorf("Satisfies = %v, want [bearerAuth]", mh.Satisfies)
 	}
 }
 
@@ -2957,66 +2906,39 @@ func TestPublishMW_multipleCalls_accumulate(t *testing.T) {
 	}
 }
 
-// TestCheckCoverage_passes_withMatchingSubscribeMW is the key Phase 4
-// regression test: Phase 2 proved ONLY the failure case (Implementations
-// was always empty, so any declared security scheme was unconditionally a
-// coverage failure). Now that Subscriber.SubscribeMW attaches a REAL
-// middleware.ServerImplementation, a declared security scheme WITH a
-// matching SubscribeMW attachment must PASS.
-func TestCheckCoverage_passes_withMatchingSubscribeMW(t *testing.T) {
-	scheme := events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}
-	mw := events.FromSecurityScheme("bearerAuth", scheme, []string{"subscribe:sensors"})
+// NOTE: TestCheckCoverage_passes_withMatchingSubscribeMW (the legacy-
+// SubscribeMW-pairing happy path) was REMOVED per
+// docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8 — SubscribeMW now
+// rejects a Security-carrying mw outright. Its exact coverage is already
+// provided by TestCheckCoverage_passes_withBoundSubscribeMW below (the
+// Bound-mechanism equivalent, pre-existing from Rollout Phase B).
 
-	sub := events.NewChannel[userEvent]("sensors/data", userEventCodec).
-		WithSubscribe(events.Subscribe{}).
-		Use(mw).
-		SubscribeMW(&mw, func(ctx context.Context, raw string) (map[string][]string, error) {
-			return map[string][]string{"bearerAuth": {"subscribe:sensors"}}, nil
-		})
-
-	handle, err := sub.Handle(nil)
-	if err != nil {
-		t.Fatalf("expected Handle to succeed with matching SubscribeMW attached, got error: %v", err)
-	}
-	if len(handle.Implementations) != 1 {
-		t.Fatalf("len(Implementations) = %d, want 1", len(handle.Implementations))
-	}
-
-	// Also verify against a non-nil client — coverage runs regardless of
-	// client's nilness, and the pass case must hold there too.
-	client := events.NewClient(events.WithInfo(testInfo))
-	if _, err := sub.Handle(client); err != nil {
-		t.Fatalf("expected Handle(client) to succeed too, got error: %v", err)
-	}
-}
-
-// TestCheckCoverage_fails_withoutMatchingSubscribeMW proves the CONVERSE:
-// a declared scheme with an ATTACHED-BUT-NON-MATCHING SubscribeMW (wrong
-// Satisfies) still fails coverage — attachment alone is not enough, the
-// Satisfies name must actually match the declared scheme.
+// TestCheckCoverage_fails_withoutMatchingSubscribeMW migrated to the
+// Bound mechanism — proves the CONVERSE of
+// TestCheckCoverage_passes_withBoundSubscribeMW: a declared-and-attached
+// scheme whose Satisfies does NOT match a SECOND, separately-declared
+// scheme still fails coverage for that second scheme — attachment alone
+// is not enough, the Satisfies name must actually match each declared
+// requirement.
 func TestCheckCoverage_fails_withoutMatchingSubscribeMW(t *testing.T) {
-	schemeA := events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}
-	mwA := events.FromSecurityScheme("bearerAuth", schemeA, []string{"subscribe:sensors"})
-	schemeB := events.SecurityScheme{SecurityScheme: route.APIKeyScheme("X-API-Key", "header")}
-	mwB := events.FromSecurityScheme("apiKey", schemeB, []string{"subscribe:sensors"})
+	bmAPIKey := events.BoundSecuritySubscribeMiddleware[userEvent, mdTestIn, mdTestOut]("apiKey",
+		events.SecurityScheme{SecurityScheme: route.APIKeyScheme("X-API-Key", "header")}, []string{"subscribe:sensors"},
+		func(ctx context.Context, msg *userEvent, in mdTestIn) (mdTestOut, error) { return mdTestOut{}, nil })
+	// bearerAuthDeclOnly declares "bearerAuth" via .Use() (spec-only, no
+	// Fn attached at all) — left deliberately UNCOVERED alongside
+	// bmAPIKey's "apiKey", which IS implemented.
+	bearerAuthDeclOnly := events.SecurityMiddleware[struct{}, struct{}]("bearerAuth",
+		events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, []string{"subscribe:sensors"})
 
-	// Two DECLARED schemes (bearerAuth, apiKey), but SubscribeMW only
-	// attaches an implementation satisfying apiKey — bearerAuth is left
-	// uncovered, so CheckCoverage must fail for it specifically, even
-	// though the attached implementation's scheme name (apiKey) IS one of
-	// the ones declared via .Use() (so checkImplementationsDeclared alone
-	// would pass).
 	sub := events.NewChannel[userEvent]("sensors/data", userEventCodec).
 		WithSubscribe(events.Subscribe{}).
-		Use(mwA, mwB).
-		SubscribeMW(&mwB, func(ctx context.Context, raw string) (map[string][]string, error) {
-			return map[string][]string{"apiKey": {"subscribe:sensors"}}, nil
-		})
+		Use(bearerAuthDeclOnly).
+		SubscribeBoundMW(bmAPIKey)
 
 	_, err := sub.Handle(nil)
 	var covErr events.MissingSecurityMiddlewareError
 	if !errors.As(err, &covErr) {
-		t.Fatalf("expected MissingSecurityMiddlewareError for non-matching SubscribeMW, got %T: %v", err, err)
+		t.Fatalf("expected MissingSecurityMiddlewareError for uncovered bearerAuth, got %T: %v", err, err)
 	}
 	if covErr.Scheme != "bearerAuth" {
 		t.Errorf("Scheme = %q, want %q", covErr.Scheme, "bearerAuth")

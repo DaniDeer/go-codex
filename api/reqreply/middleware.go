@@ -140,8 +140,29 @@ func (r Route[Req, Resp]) HandleMW(mw middleware.RouteMiddleware, fn any) Route[
 		r.opts = append(slices.Clone(r.opts), misattachedOpt{route: r.topic, name: v.MiddlewareName()})
 		return r
 	}
+	if sc, ok := mw.(middleware.SecurityCarrier); ok {
+		if sec := sc.SecurityDeclaration(); sec != nil {
+			r.opts = append(slices.Clone(r.opts), legacySecurityMWOpt{route: r.topic, name: sec.SchemeName, op: "HandleMW"})
+			return r
+		}
+	}
 	r.opts = append(slices.Clone(r.opts), handleMWOpt{impl: buildServerImplementation(mw, fn)})
 	return r
+}
+
+// legacySecurityMWOpt stashes a [LegacySecurityMWRemovedError] onto rb
+// when a Security-carrying legacy [middleware.Middleware] is passed to
+// [Route.HandleMW]/[Route.ClientMW] — see that error's doc comment.
+type legacySecurityMWOpt struct {
+	route string
+	name  string
+	op    string
+}
+
+func (o legacySecurityMWOpt) applyRoute(rb *routeBuilder) {
+	if rb.buildErr == nil {
+		rb.buildErr = LegacySecurityMWRemovedError{Route: o.route, Name: o.name, Op: o.op}
+	}
 }
 
 // misattachedOpt stashes a [MiddlewareMisattachedError] onto rb when a
@@ -191,6 +212,12 @@ func (r Route[Req, Resp]) ClientMW(mw middleware.RouteMiddleware, fn any) Route[
 	if v, ok := mw.(routeMiddlewareContributor); ok {
 		r.opts = append(slices.Clone(r.opts), misattachedOpt{route: r.topic, name: v.MiddlewareName()})
 		return r
+	}
+	if sc, ok := mw.(middleware.SecurityCarrier); ok {
+		if sec := sc.SecurityDeclaration(); sec != nil {
+			r.opts = append(slices.Clone(r.opts), legacySecurityMWOpt{route: r.topic, name: sec.SchemeName, op: "ClientMW"})
+			return r
+		}
 	}
 	idx := 0
 	for _, o := range r.opts {

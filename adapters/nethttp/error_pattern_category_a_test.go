@@ -9,8 +9,6 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/middleware"
-	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -142,7 +140,6 @@ func newSecMiddlewareRoute(pattern ...rest.RouteOpt) (rest.Route[createReq, user
 	b := rest.NewServer(testInfo)
 	opts := append([]rest.RouteOpt{
 		rest.RouteMeta{OperationID: "createUserSecured"},
-		rest.WithMiddleware(rest.FromSecurityScheme("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil)),
 	}, pattern...)
 	r := rest.NewRoute[createReq, userResp]("POST", "/errors/security-mw", createReqCodec, userRespCodec, opts...)
 	return r, b
@@ -152,15 +149,12 @@ func TestErrorPattern_SecurityMiddlewareFn_Matched_RespondsTyped(t *testing.T) {
 	r, b := newSecMiddlewareRoute(
 		rest.ErrorPattern[secRejectedError, secRejectedError](http.StatusForbidden, secRejectedCodec),
 	)
-	declMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
-	implMw := scopesImpl[createReq]("bearerAuth",
-		func(_ context.Context, _ *http.Request, _ *createReq) (map[string][]string, error) {
-			return nil, secRejectedError{Reason: "bad token"}
-		},
-	)
+	bm := boundBearerAuthMw[createReq]("bearerAuth", func(_ context.Context, _ string) (map[string][]string, error) {
+		return nil, secRejectedError{Reason: "bad token"}
+	})
 	r = r.WithHandler(func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
-	}).HandleMW(&declMw, implMw.Fn)
+	}).HandleBoundMW(bm)
 	mux := mustServe(t, r, b)
 
 	rec := httptest.NewRecorder()
@@ -175,15 +169,12 @@ func TestErrorPattern_SecurityMiddlewareFn_Matched_RespondsTyped(t *testing.T) {
 
 func TestErrorPattern_SecurityMiddlewareFn_NoPattern_FallsBackUnchanged(t *testing.T) {
 	r, b := newSecMiddlewareRoute()
-	declMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
-	implMw := scopesImpl[createReq]("bearerAuth",
-		func(_ context.Context, _ *http.Request, _ *createReq) (map[string][]string, error) {
-			return nil, secRejectedError{Reason: "bad token"}
-		},
-	)
+	bm := boundBearerAuthMw[createReq]("bearerAuth", func(_ context.Context, _ string) (map[string][]string, error) {
+		return nil, secRejectedError{Reason: "bad token"}
+	})
 	r = r.WithHandler(func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
-	}).HandleMW(&declMw, implMw.Fn)
+	}).HandleBoundMW(bm)
 	mux := mustServe(t, r, b)
 
 	rec := httptest.NewRecorder()

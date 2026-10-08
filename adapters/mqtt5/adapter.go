@@ -1062,7 +1062,23 @@ func publish[T any](
 	for k, v := range propertyVars {
 		userProps = append(userProps, UserProperty{Key: k, Value: v})
 	}
-	var credentialRan bool
+	// A Security-carrying PublishBoundMW-attached handler (the Bound
+	// class, docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8) ALSO
+	// counts toward credentialRan below — mirroring
+	// runPublishSecurityImpls' legacy implProps != nil signal ("ran AND
+	// produced at least one property") for the now-retired raw-adapter-
+	// Fn-pairing path: a Security-satisfying handler attached but whose
+	// own OmitEmpty-declared property ended up empty (len(propertyVars)
+	// == 0) stays "didn't run" for this signal, same as the legacy Fn
+	// deliberately returning (nil, nil).
+	var hasSecurityClientHandler bool
+	for _, h := range handle.ClientMiddlewareHandlers {
+		if len(h.Satisfies) > 0 {
+			hasSecurityClientHandler = true
+			break
+		}
+	}
+	credentialRan := hasSecurityClientHandler && len(propertyVars) > 0
 	if len(handle.ClientImplementations) > 0 {
 		var implProps []UserProperty
 		implProps, err = runPublishSecurityImpls(ctx, &msg, secReqs, handle.ClientImplementations)

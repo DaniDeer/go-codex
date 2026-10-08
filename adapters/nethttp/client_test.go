@@ -389,16 +389,20 @@ func TestCall_HeaderParamValidation(t *testing.T) {
 func TestCall_CredentialFunc_Invoked(t *testing.T) {
 	b := rest.NewServer(testInfo)
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
-	declMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
 	credCalled := false
+	boundMW := rest.BoundSecurityClientMiddleware[getReq, securedAuthIn, securedAuthOut](
+		"bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+		func(ctx context.Context, req getReq) (securedAuthIn, error) {
+			credCalled = true
+			return securedAuthIn{Token: "test-bearer-token"}, nil
+		},
+	).WithRequestHeader(rest.NewRequiredHeaderParam("Authorization", codex.String(),
+		func(in securedAuthIn) string { return in.Token },
+		func(in *securedAuthIn, v string) { in.Token = v },
+	))
 	handle, err := rest.NewRoute[getReq, userResp]("GET", "/me",
 		getReqCodec, userRespCodec,
-	).Use(declMw).ClientMW(&declMw, func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
-		credCalled = true
-		h := make(http.Header)
-		h.Set("Authorization", "test-bearer-token")
-		return h, nil
-	}).RegisterHandle(b)
+	).ClientBoundMW(boundMW).RegisterHandle(b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -431,13 +435,19 @@ func TestCall_CredentialFunc_Invoked(t *testing.T) {
 func TestCall_CredentialFunc_Error(t *testing.T) {
 	b := rest.NewServer(testInfo)
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
-	declMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
 	credErr := errors.New("token expired")
+	boundMW := rest.BoundSecurityClientMiddleware[getReq, securedAuthIn, securedAuthOut](
+		"bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+		func(ctx context.Context, req getReq) (securedAuthIn, error) {
+			return securedAuthIn{}, credErr
+		},
+	).WithRequestHeader(rest.NewRequiredHeaderParam("Authorization", codex.String(),
+		func(in securedAuthIn) string { return in.Token },
+		func(in *securedAuthIn, v string) { in.Token = v },
+	))
 	handle, err := rest.NewRoute[getReq, userResp]("GET", "/me",
 		getReqCodec, userRespCodec,
-	).Use(declMw).ClientMW(&declMw, func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
-		return nil, credErr
-	}).RegisterHandle(b)
+	).ClientBoundMW(boundMW).RegisterHandle(b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -562,15 +572,19 @@ func TestCall_GeneralShape_MultipleFns_OuterToInner_AttachmentOrder(t *testing.T
 func TestCall_GeneralAndCredential_Coexist(t *testing.T) {
 	b := rest.NewServer(testInfo)
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
-	declMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
 	var wrapperRan bool
+	boundMW := rest.BoundSecurityClientMiddleware[getReq, securedAuthIn, securedAuthOut](
+		"bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+		func(ctx context.Context, req getReq) (securedAuthIn, error) {
+			return securedAuthIn{Token: "test-bearer-token"}, nil
+		},
+	).WithRequestHeader(rest.NewRequiredHeaderParam("Authorization", codex.String(),
+		func(in securedAuthIn) string { return in.Token },
+		func(in *securedAuthIn, v string) { in.Token = v },
+	))
 	handle, err := rest.NewRoute[getReq, userResp]("GET", "/me",
 		getReqCodec, userRespCodec,
-	).Use(declMw).ClientMW(&declMw, func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
-		h := make(http.Header)
-		h.Set("Authorization", "test-bearer-token")
-		return h, nil
-	}).ClientMW(nil, func(next func(context.Context, getReq) (userResp, error)) func(context.Context, getReq) (userResp, error) {
+	).ClientBoundMW(boundMW).ClientMW(nil, func(next func(context.Context, getReq) (userResp, error)) func(context.Context, getReq) (userResp, error) {
 		return func(ctx context.Context, req getReq) (userResp, error) {
 			wrapperRan = true
 			return next(ctx, req)
@@ -659,20 +673,27 @@ func TestCall_GeneralShape_TraceObserver_SeesFinalError(t *testing.T) {
 // ConflictingCredentialHeaderError — the client never silently picks one
 // over the other.
 func TestCall_TwoCredentialMiddlewares_DifferingHeaderValuesConflict(t *testing.T) {
+	// Migrated to TWO GENERAL-PURPOSE ClientMW attachments (mw=nil)
+	// sharing the legacy http.Header-returning Fn shape, rather than two
+	// Security-paired ones - ConflictingCredentialHeaderError itself is
+	// NOT retired (it is mergeCredentialHeaders's own, still-valid
+	// conflict rule for ANY two implementations setting the same header
+	// key, security or not); only the SECURITY-PAIRING half of the
+	// legacy mechanism was removed (see
+	// rest.LegacySecurityClientMWRemovedError). AddGlobalSecurity (with
+	// no matching .Use()'d scheme) is kept so mergeCredentialHeaders
+	// still runs at all - it is gated on len(secReqs) > 0 regardless of
+	// Satisfies. Name is index-suffixed ("fulfill:general#0"/"#1") the
+	// same way.
 	b := rest.NewServer(testInfo)
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
-	declMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
-	// Two ClientMW calls for the SAME scheme on the SAME route — an
-	// unusual but valid pattern; Name is index-suffixed
-	// ("fulfill:bearerAuth#0"/"#1") so the conflict detection below can
-	// still tell them apart as distinct sources.
 	handle, err := rest.NewRoute[getReq, userResp]("GET", "/me",
 		getReqCodec, userRespCodec,
-	).Use(declMw).ClientMW(&declMw, func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
+	).ClientMW(nil, func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
 		h := make(http.Header)
 		h.Set("Authorization", "Bearer token-a")
 		return h, nil
-	}).ClientMW(&declMw, func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
+	}).ClientMW(nil, func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
 		h := make(http.Header)
 		h.Set("Authorization", "Bearer token-b")
 		return h, nil
@@ -691,8 +712,8 @@ func TestCall_TwoCredentialMiddlewares_DifferingHeaderValuesConflict(t *testing.
 	if conflictErr.Header != "Authorization" {
 		t.Errorf("want Header %q, got %q", "Authorization", conflictErr.Header)
 	}
-	if conflictErr.FirstSource != "fulfill:bearerAuth#0" || conflictErr.SecondSource != "fulfill:bearerAuth#1" {
-		t.Errorf("want sources fulfill:bearerAuth#0/#1, got %q/%q", conflictErr.FirstSource, conflictErr.SecondSource)
+	if conflictErr.FirstSource != "fulfill:general#0" || conflictErr.SecondSource != "fulfill:general#1" {
+		t.Errorf("want sources fulfill:general#0/#1, got %q/%q", conflictErr.FirstSource, conflictErr.SecondSource)
 	}
 }
 
@@ -700,9 +721,11 @@ func TestCall_TwoCredentialMiddlewares_DifferingHeaderValuesConflict(t *testing.
 // confirms the "identical values are allowed silently" half of the same
 // rule — only DIFFERING values for the same key conflict.
 func TestCall_TwoCredentialMiddlewares_IdenticalHeaderValuesMergeSilently(t *testing.T) {
+	// Migrated to two general-purpose ClientMW attachments, same reason
+	// as its sibling above (AddGlobalSecurity kept so
+	// mergeCredentialHeaders still runs at all).
 	b := rest.NewServer(testInfo)
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
-	declMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
 	credFn := func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
 		h := make(http.Header)
 		h.Set("Authorization", "test-bearer-token")
@@ -710,7 +733,7 @@ func TestCall_TwoCredentialMiddlewares_IdenticalHeaderValuesMergeSilently(t *tes
 	}
 	handle, err := rest.NewRoute[getReq, userResp]("GET", "/me",
 		getReqCodec, userRespCodec,
-	).Use(declMw).ClientMW(&declMw, credFn).ClientMW(&declMw, credFn).RegisterHandle(b)
+	).ClientMW(nil, credFn).ClientMW(nil, credFn).RegisterHandle(b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -738,14 +761,18 @@ func TestCall_TwoCredentialMiddlewares_IdenticalHeaderValuesMergeSilently(t *tes
 func TestCall_OnCredentialRejected_FiresOn401(t *testing.T) {
 	b := rest.NewServer(testInfo)
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
-	declMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
+	boundMW := rest.BoundSecurityClientMiddleware[getReq, securedAuthIn, securedAuthOut](
+		"bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+		func(ctx context.Context, req getReq) (securedAuthIn, error) {
+			return securedAuthIn{Token: "test-bearer-token"}, nil
+		},
+	).WithRequestHeader(rest.NewRequiredHeaderParam("Authorization", codex.String(),
+		func(in securedAuthIn) string { return in.Token },
+		func(in *securedAuthIn, v string) { in.Token = v },
+	))
 	handle, err := rest.NewRoute[getReq, userResp]("GET", "/me",
 		getReqCodec, userRespCodec,
-	).Use(declMw).ClientMW(&declMw, func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
-		h := make(http.Header)
-		h.Set("Authorization", "test-bearer-token")
-		return h, nil
-	}).RegisterHandle(b)
+	).ClientBoundMW(boundMW).RegisterHandle(b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -800,14 +827,18 @@ func TestCall_OnCredentialRejected_NotCalledWhenCredentialFuncNil(t *testing.T) 
 func TestCall_OnCredentialRejected_NotCalledOnNon401Status(t *testing.T) {
 	b := rest.NewServer(testInfo)
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
-	declMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
+	boundMW := rest.BoundSecurityClientMiddleware[getReq, securedAuthIn, securedAuthOut](
+		"bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+		func(ctx context.Context, req getReq) (securedAuthIn, error) {
+			return securedAuthIn{Token: "test-bearer-token"}, nil
+		},
+	).WithRequestHeader(rest.NewRequiredHeaderParam("Authorization", codex.String(),
+		func(in securedAuthIn) string { return in.Token },
+		func(in *securedAuthIn, v string) { in.Token = v },
+	))
 	handle, err := rest.NewRoute[getReq, userResp]("GET", "/me",
 		getReqCodec, userRespCodec,
-	).Use(declMw).ClientMW(&declMw, func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
-		h := make(http.Header)
-		h.Set("Authorization", "test-bearer-token")
-		return h, nil
-	}).RegisterHandle(b)
+	).ClientBoundMW(boundMW).RegisterHandle(b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1325,25 +1356,42 @@ func TestErrorPatternResponse_LogValue(t *testing.T) {
 
 // --- Client-side credential FORMAT validation (symmetric with server) ---
 
+// securedAuthIn/Out carry the credential-FORMAT-validation tests' request
+// header merge field — replaces the removed legacy ClientMW security
+// pairing (func(ctx, secReqs) (http.Header, error)) with
+// [rest.BoundSecurityClientMiddleware] + WithRequestHeader, this review
+// round's retirement of that mechanism (see
+// [rest.LegacySecurityClientMWRemovedError]).
+type securedAuthIn struct{ Token string }
+type securedAuthOut struct{}
+
 // newSecuredClientHandle returns a GET /me RouteHandle via ClientHandle
-// (no Builder) with a "bearerAuth" scheme declared via
-// middleware.SecurityScheme (attached via .Use(), which also populates
-// RouteMeta.Security) — the credential Codec requires a non-empty
-// string. credFn is attached via .ClientMW, paired against the SAME
-// declared scheme.
-func newSecuredClientHandle(credFn func(context.Context, []route.SecurityRequirement) (http.Header, error)) *rest.RouteHandle[getReq, userResp] {
+// (no Builder) with a "bearerAuth" scheme — the credential Codec requires
+// a non-empty string. tokenFn supplies the raw token value, attached via
+// [rest.BoundSecurityClientMiddleware] + [Route.ClientBoundMW] (no
+// separate .Use() call needed — the bound mechanism embeds its OWN
+// Security declaration).
+func newSecuredClientHandle(tokenFn func(context.Context, getReq) (string, error)) *rest.RouteHandle[getReq, userResp] {
 	credCodec := codex.String().Refine(validate.NonEmptyString)
-	declMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, &credCodec)
+	scheme := rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(credCodec)
+	boundMW := rest.BoundSecurityClientMiddleware[getReq, securedAuthIn, securedAuthOut](
+		"bearerAuth", scheme, nil,
+		func(ctx context.Context, req getReq) (securedAuthIn, error) {
+			token, err := tokenFn(ctx, req)
+			return securedAuthIn{Token: token}, err
+		},
+	).WithRequestHeader(rest.NewRequiredHeaderParam("Authorization", codex.String(),
+		func(in securedAuthIn) string { return in.Token },
+		func(in *securedAuthIn, v string) { in.Token = v },
+	))
 	return rest.NewRoute[getReq, userResp]("GET", "/me",
 		getReqCodec, userRespCodec,
-	).Use(declMw).ClientMW(&declMw, credFn).ClientHandle()
+	).ClientBoundMW(boundMW).ClientHandle()
 }
 
 func TestCall_CredentialFunc_ValidFormat_Passes(t *testing.T) {
-	handle := newSecuredClientHandle(func(context.Context, []route.SecurityRequirement) (http.Header, error) {
-		h := make(http.Header)
-		h.Set("Authorization", "test-bearer-token")
-		return h, nil
+	handle := newSecuredClientHandle(func(context.Context, getReq) (string, error) {
+		return "test-bearer-token", nil
 	})
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1364,10 +1412,8 @@ func TestCall_CredentialFunc_ValidFormat_Passes(t *testing.T) {
 
 func TestCall_CredentialFunc_MalformedFormat_ReturnsSecurityCredentialError(t *testing.T) {
 	called := false
-	handle := newSecuredClientHandle(func(context.Context, []route.SecurityRequirement) (http.Header, error) {
-		h := make(http.Header)
-		h.Set("Authorization", "Bearer ") // strips to an empty credential -> fails NonEmptyString
-		return h, nil
+	handle := newSecuredClientHandle(func(context.Context, getReq) (string, error) {
+		return "Bearer ", nil // strips to an empty credential -> fails NonEmptyString
 	})
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1392,10 +1438,8 @@ func TestCall_CredentialFunc_MalformedFormat_ReturnsSecurityCredentialError(t *t
 }
 
 func TestCall_CredentialFunc_MalformedFormat_RecordsSecurityRejection(t *testing.T) {
-	handle := newSecuredClientHandle(func(context.Context, []route.SecurityRequirement) (http.Header, error) {
-		h := make(http.Header)
-		h.Set("Authorization", "Bearer ")
-		return h, nil
+	handle := newSecuredClientHandle(func(context.Context, getReq) (string, error) {
+		return "Bearer ", nil
 	})
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1471,31 +1515,18 @@ func TestCall_NoCredentialFunc_SecuredRoute_StillNotAnError(t *testing.T) {
 	}
 }
 
-// TestCall_CredentialFunc_ReturnsNilHeader_SkipsValidation guards against a
-// real bug: a CredentialFunc that deliberately returns (nil, nil) to signal
-// "this call needs no credential" (e.g. an auth flow that first probes
-// whether the specific server instance requires auth at all) must NOT be
-// rejected by the client-side codec check just because the resulting
-// (absent) Authorization header extracts as an empty string — that would
-// wrongly treat "no credential needed" the same as "malformed credential".
-func TestCall_CredentialFunc_ReturnsNilHeader_SkipsValidation(t *testing.T) {
-	// Codec requires non-empty string; credFn deliberately returns (nil, nil).
-	handle := newSecuredClientHandle(func(context.Context, []route.SecurityRequirement) (http.Header, error) {
-		return nil, nil // deliberately "no credential needed"
-	})
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"id": "me", "name": "Alice"}) //nolint:errcheck
-	}))
-	defer srv.Close()
-
-	_, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
-		handle, getReq{}, CallOptions{})
-	if err != nil {
-		t.Fatalf("CredentialFunc returning (nil, nil) must not be rejected by the codec check: %v", err)
-	}
-}
+// NOTE: TestCall_CredentialFunc_ReturnsNilHeader_SkipsValidation (which
+// proved the legacy ClientMW mechanism's "a CredentialFunc deliberately
+// returning (nil, nil) means no credential needed" escape hatch) was
+// REMOVED, not migrated — this exact convention has NO equivalent in the
+// replacement, [rest.BoundSecurityClientMiddleware]: its Fn ALWAYS
+// produces an In value (no nil-means-skip sentinel), and a Required
+// WithRequestHeader field rejects an empty value as a genuine validation
+// failure, not a deliberate opt-out. This is an intentional, accepted
+// consequence of retiring the legacy mechanism (see
+// [rest.LegacySecurityClientMWRemovedError]) — a route needing "probe
+// first, no credential on the first attempt" semantics should declare the
+// header as OPTIONAL (NewOptionalHeaderParam) instead.
 
 // ── CallOptions.RequestFormats / ResponseFormats per-call override ────────
 

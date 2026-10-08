@@ -19,21 +19,26 @@
 //     value.
 //   - [ServerImplementation] is a REGISTER-TIME-ONLY, SERVER-side value —
 //     pure runtime behavior, no spec fields at all. Callers never
-//     construct one directly: rest.Route.HandleMW(mw, fn) builds it
-//     internally from whatever mw/fn it receives — mw non-nil with
-//     Security set PAIRS fn against a previously-.Use()'d declaration
-//     (Satisfies derived from mw.Security.SchemeName); mw nil (or
-//     Security nil) marks a general-purpose implementation (logging,
-//     rate limiting, observability, request enrichment) with an empty
-//     Satisfies that always runs regardless of the route's declared
-//     Security.
+//     construct one directly: rest.Route.HandleMW(mw, fn)/
+//     events.Subscriber.SubscribeMW/reqreply.Route.HandleMW build it
+//     internally from whatever mw/fn they receive. mw nil marks a
+//     GENERAL-PURPOSE implementation (logging, rate limiting,
+//     observability, request enrichment) with an empty Satisfies that
+//     always runs regardless of the route's declared Security — this is
+//     the ONLY remaining accepted shape for a non-nil mw's Security field
+//     too: a Security-carrying mw is now REJECTED outright (see
+//     docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8) — the former
+//     "mw non-nil with Security set PAIRS fn against a previously-
+//     .Use()'d declaration" mechanism was retired in favor of
+//     BoundSecurityMiddleware/HandleBoundMW (and its SubscribeBoundMW/
+//     reqreply equivalents), which fuse declare+implement into one call.
 //   - [ClientImplementation] is a REGISTER-TIME, CLIENT-side value — the
-//     client-side mirror of ServerImplementation. Callers never construct
-//     one directly either: rest.Route.ClientMW(mw, fn) builds it
-//     internally, with the SAME mw-derived Satisfies-gating discipline —
-//     "how does THIS calling application fulfill an already-declared
-//     requirement" (e.g. supply a credential), gated to run only when its
-//     Satisfies matches the route's declared security requirements.
+//     client-side mirror of ServerImplementation, with the IDENTICAL
+//     retirement: rest.Route.ClientMW/events.Publisher.PublishMW/
+//     reqreply.Route.ClientMW accept ONLY a nil-mw, general-purpose
+//     implementation now — a Security-carrying mw is rejected; supply a
+//     client-side credential via BoundSecurityClientMiddleware +
+//     ClientBoundMW (and its PublishBoundMW/reqreply equivalent) instead.
 //
 // See docs/design/d-0001-rest-middleware-workflow-simplification.md for the full
 // design rationale and resolution history (supersedes the earlier,
@@ -237,22 +242,34 @@ func NewSecurityDeclaration(schemeName string, scheme route.SecurityScheme, scop
 
 // SecurityScheme builds a Middleware carrying ONLY a [SecurityDeclaration]
 // — no runtime behavior at all. This is the declare-time half of a
-// security requirement; pair it with a [ServerImplementation] (e.g. one
-// built by an adapter's Scopes constructor) supplied SEPARATELY, at
-// Register/Handler time, to actually enforce it.
+// security requirement, attached via a route/channel's own `.Use(...)`.
 //
-// Use this directly (with no matching ServerImplementation ever supplied)
-// for a route that documents a security requirement WITHOUT an enforcement
-// mechanism this codebase provides — typically a route describing an
-// EXTERNAL system's API (e.g. a Docker registry) that this codebase calls
-// as a client but never implements/serves itself. If such a route is ever
-// passed to an adapter's Register/Handler-equivalent WITH NO matching
-// ServerImplementation supplied, the adapter's drift-closing coverage
-// check correctly rejects it with a MissingSecurityMiddlewareError — this
-// is the safety net that makes "declared but not enforced" a loud failure,
-// not a silent one, exactly where it can first be detected: at Register
-// time, once both the declaration AND the (absent) implementation are
-// known.
+// Per docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8, there is no
+// longer a way to PAIR this declaration with a server/client
+// implementation via HandleMW/ClientMW/SubscribeMW/PublishMW — those now
+// reject a Security-carrying value outright. Use
+// BoundSecurityMiddleware/BoundSecurityClientMiddleware (each api
+// pattern's own) + HandleBoundMW/ClientBoundMW/SubscribeBoundMW/
+// PublishBoundMW instead, which fuse declare+implement into ONE call —
+// or `rest.SecurityMiddleware`/`events.SecurityMiddleware`/
+// `reqreply.SecurityMiddleware` (the per-pattern, codec-backed
+// equivalent of THIS constructor) for the reusable, `.Use()`-only
+// declare-time style.
+//
+// This constructor's own remaining purpose is purely a route/channel that
+// documents a security requirement WITHOUT any enforcement mechanism this
+// codebase provides — typically describing an EXTERNAL system's API
+// (e.g. a Docker registry) that this codebase calls as a client but never
+// implements/serves itself — AND the rarer case of a single declared
+// value genuinely needing to be `.Use()`'d across MULTIPLE different api
+// patterns in the same program (the one thing a per-pattern
+// SecurityMiddleware[In,Out] value structurally cannot do, since each
+// pattern's own generic type is foreign to every other pattern's `.Use()`
+// — see this package's own doc comment for [RouteMiddleware]). If such a
+// route is ever passed to an adapter's Register/Handler-equivalent with
+// no matching implementation supplied, the adapter's drift-closing
+// coverage check correctly rejects it with a
+// MissingSecurityMiddlewareError.
 func SecurityScheme(schemeName string, scheme route.SecurityScheme, scopes []string, codec *codex.Codec[string]) Middleware {
 	return Middleware{
 		Name:     "declare-security:" + schemeName,

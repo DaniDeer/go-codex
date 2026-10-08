@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/DaniDeer/go-codex/api/rest"
+	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/route"
 )
 
@@ -98,19 +99,26 @@ func TestServe_CapabilityCoverage_APIKeyCookieScheme_StillPasses(t *testing.T) {
 	// CookieParam) must ALSO pass — RequiredParamKinds scans
 	// SecuritySchemes' In field too, and nethttp supports Cookie either
 	// way.
-	mw := rest.FromSecurityScheme("apiKeyCookie",
-		rest.SecurityScheme{SecurityScheme: route.APIKeyScheme("X-Session", "cookie")}, nil)
+	type apiKeyCookieIn struct{ Session string }
+	type apiKeyCookieOut struct{ GrantedScopes map[string][]string }
+	bm := rest.BoundSecurityMiddleware[createReq, apiKeyCookieIn, apiKeyCookieOut](
+		"apiKeyCookie", rest.SecurityScheme{SecurityScheme: route.APIKeyScheme("X-Session", "cookie")}, nil,
+		func(ctx context.Context, _ *createReq, in apiKeyCookieIn) (apiKeyCookieOut, error) {
+			if in.Session == "" {
+				return apiKeyCookieOut{}, errors.New("missing X-Session cookie")
+			}
+			return apiKeyCookieOut{}, nil
+		},
+	).WithRequestCookie(rest.NewRequiredCookieParam("X-Session", codex.String(),
+		func(in apiKeyCookieIn) string { return in.Session },
+		func(in *apiKeyCookieIn, v string) { in.Session = v },
+	))
 	b := rest.NewServer(testInfo)
 	err := rest.NewRoute[createReq, userResp]("POST", "/users-with-apikey-cookie",
 		createReqCodec, userRespCodec, rest.RouteMeta{OperationID: "createUserWithAPIKeyCookie"},
-	).Use(mw).WithHandler(func(ctx context.Context, req createReq) (userResp, error) {
+	).WithHandler(func(ctx context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
-	}).HandleMW(&mw, func(ctx context.Context, r *http.Request, req *createReq) (map[string][]string, error) {
-		if _, err := r.Cookie("X-Session"); err != nil {
-			return nil, err
-		}
-		return nil, nil
-	}).Register(b)
+	}).HandleBoundMW(bm).Register(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}

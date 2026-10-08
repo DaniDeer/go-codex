@@ -480,6 +480,18 @@ func wrapCallGeneral[Req, Resp any](
 // both contribute to the SAME outgoing header/cookie/query D3 precedence
 // chain in [clienttransport.Call]/[clienttransport.Consume] — confirmed
 // via [TestAttach_ClientCall_CodecBackedClientMW_EncodesInAndDecodesOut].
+//
+// ADDENDUM (review round) — this function's SECURITY-PAIRING use (a
+// Satisfies-populated [middleware.ClientImplementation]) is now
+// UNREACHABLE for routes attached via [rest.Route.ClientMW]: ClientMW
+// rejects a Security-carrying mw outright (see
+// [rest.LegacySecurityClientMWRemovedError]), so every
+// [middleware.ClientImplementation] it produces has an empty Satisfies
+// from now on. This function keeps the Satisfies-gating logic unchanged
+// (it is generic, not REST-specific, and remains structurally correct —
+// simply never exercised by the Satisfies-non-empty branch for REST
+// anymore) because it ALSO still serves genuinely general-purpose use of
+// this exact legacy Fn shape, independent of any security pairing.
 func mergeCredentialHeaders(ctx context.Context, secReqs []route.SecurityRequirement, impls []middleware.ClientImplementation) (combined http.Header, ran bool, err error) {
 	combined = make(http.Header)
 	setBy := make(map[string]string)

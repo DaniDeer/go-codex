@@ -312,6 +312,10 @@ func (r Route[Req, Resp]) HandleMW(mw middleware.RouteMiddleware, fn any) Route[
 		r.opts = append(slices.Clone(r.opts), misattachedOpt{route: r.method + " " + r.path, name: v.MiddlewareName()})
 		return r
 	}
+	if sec := securityDeclarationOf(mw); sec != nil {
+		r.opts = append(slices.Clone(r.opts), legacySecurityHandleMWOpt{route: r.method + " " + r.path, name: sec.SchemeName})
+		return r
+	}
 	r.opts = append(slices.Clone(r.opts), handleMWOpt{impl: buildServerImplementation(mw, fn)})
 	return r
 }
@@ -321,6 +325,10 @@ func (r Route[Req, Resp]) HandleMW(mw middleware.RouteMiddleware, fn any) Route[
 func (s SSERoute[Req, Event]) HandleMW(mw middleware.RouteMiddleware, fn any) SSERoute[Req, Event] {
 	if v, ok := mw.(routeMiddlewareContributor); ok {
 		s.opts = append(slices.Clone(s.opts), misattachedOpt{route: "GET " + s.path, name: v.MiddlewareName()})
+		return s
+	}
+	if sec := securityDeclarationOf(mw); sec != nil {
+		s.opts = append(slices.Clone(s.opts), legacySecurityHandleMWOpt{route: "GET " + s.path, name: sec.SchemeName})
 		return s
 	}
 	s.opts = append(slices.Clone(s.opts), handleMWOpt{impl: buildServerImplementation(mw, fn)})
@@ -340,6 +348,36 @@ type misattachedOpt struct {
 func (o misattachedOpt) applyRoute(rb *routeBuilder) {
 	if rb.buildErr == nil {
 		rb.buildErr = MiddlewareMisattachedError{Route: o.route, Name: o.name}
+	}
+}
+
+// legacySecurityClientMWOpt stashes a [LegacySecurityClientMWRemovedError]
+// onto rb when a Security-carrying legacy [middleware.Middleware] is
+// passed to [Route.ClientMW]/[SSERoute.ClientMW] — see that error's doc
+// comment.
+type legacySecurityClientMWOpt struct {
+	route string
+	name  string
+}
+
+func (o legacySecurityClientMWOpt) applyRoute(rb *routeBuilder) {
+	if rb.buildErr == nil {
+		rb.buildErr = LegacySecurityClientMWRemovedError{Route: o.route, Name: o.name}
+	}
+}
+
+// legacySecurityHandleMWOpt stashes a [LegacySecurityHandleMWRemovedError]
+// onto rb when a Security-carrying legacy [middleware.Middleware] is
+// passed to [Route.HandleMW]/[SSERoute.HandleMW] — see that error's doc
+// comment.
+type legacySecurityHandleMWOpt struct {
+	route string
+	name  string
+}
+
+func (o legacySecurityHandleMWOpt) applyRoute(rb *routeBuilder) {
+	if rb.buildErr == nil {
+		rb.buildErr = LegacySecurityHandleMWRemovedError{Route: o.route, Name: o.name}
 	}
 }
 
@@ -364,35 +402,32 @@ func (o clientMWOpt) applyRoute(rb *routeBuilder) {
 
 // ClientMW is the client-side GENERAL-PURPOSE implementation-attachment
 // method — the CLIENT-side mirror of [Route.HandleMW]. mw is NILABLE, and
-// is REJECTED (via [MiddlewareMisattachedError]) if it's a codec-backed
-// [Middleware][In, Out] or [BoundMiddleware][Req, In, Out]/
-// [BoundClientMiddleware][Req, In, Out] — those attach ONLY via plain
-// .Use() and [Route.ClientBoundMW] respectively, never ClientMW:
-//   - a legacy [middleware.Middleware] (or nil): non-nil with Security set
-//     PAIRS fn against a previously-.Use()'d declaration (Satisfies gates
-//     which implementations [nethttp.Call] runs, vs. the route's declared
-//     security requirements); nil (or Security nil) leaves Satisfies
-//     empty — general-purpose, always runs.
+// is REJECTED if it's a codec-backed [Middleware][In, Out] or
+// [BoundMiddleware][Req, In, Out]/[BoundClientMiddleware][Req, In, Out]
+// (via [MiddlewareMisattachedError] — those attach ONLY via plain .Use()
+// and [Route.ClientBoundMW] respectively), OR a legacy
+// [middleware.Middleware] carrying a Security declaration (via
+// [LegacySecurityClientMWRemovedError] — a review round's finding
+// retired this client-side credential-SUPPLYING mechanism for good: it
+// could only naturally express HEADER-location credentials and had no
+// client-side codec-format validation path reaching it; supply a
+// credential via [Route.ClientBoundMW] + [BoundSecurityClientMiddleware]
+// instead, which handles header/cookie/query-location credentials alike
+// and embeds its OWN Security declaration, no separate .Use() needed).
+// ClientMW itself now accepts ONLY nil or a non-Security-carrying
+// [middleware.Middleware] — always general-purpose, Satisfies always
+// empty, fn always runs unconditionally.
 //
 // fn is deliberately untyped (any) for the SAME reason as HandleMW's —
-// resolved by the client adapter (e.g. nethttp.Call's credential-
-// providing shape) at Call time.
-//
-// For the legacy path, Name includes a per-route attachment-order index
-// (e.g. "fulfill:bearerAuth#1") so that TWO ClientMW calls attached for
-// the SAME scheme on the SAME route (an unusual but valid pattern — e.g.
-// A/B-testing two credential sources) still get DISTINCT Names. This
-// matters for [nethttp]'s ConflictingCredentialHeaderError: its "same
-// Name means same source, skip conflict check" heuristic would otherwise
-// incorrectly treat two same-scheme ClientMW attachments as one source,
-// silently picking a value instead of flagging a genuine conflict. The
-// codec-backed path needs no such index — [ClientMiddlewareHandler.Name]
-// is mw.Name directly (already unique per declaration), and its dispatch
-// (EncodeIn/DecodeOut) composes across middlewares rather than merging
-// into ONE shared credential-header set, so no analogous conflict exists.
+// resolved by the client adapter (e.g. nethttp.Call's general-purpose
+// decorator shape) at Call time.
 func (r Route[Req, Resp]) ClientMW(mw middleware.RouteMiddleware, fn any) Route[Req, Resp] {
 	if v, ok := mw.(routeMiddlewareContributor); ok {
 		r.opts = append(slices.Clone(r.opts), misattachedOpt{route: r.method + " " + r.path, name: v.MiddlewareName()})
+		return r
+	}
+	if sec := securityDeclarationOf(mw); sec != nil {
+		r.opts = append(slices.Clone(r.opts), legacySecurityClientMWOpt{route: r.method + " " + r.path, name: sec.SchemeName})
 		return r
 	}
 	idx := 0
@@ -401,25 +436,24 @@ func (r Route[Req, Resp]) ClientMW(mw middleware.RouteMiddleware, fn any) Route[
 			idx++
 		}
 	}
-	impl := middleware.ClientImplementation{Fn: fn}
-	if sec := securityDeclarationOf(mw); sec != nil {
-		impl.Name = fmt.Sprintf("fulfill:%s#%d", sec.SchemeName, idx)
-		impl.Satisfies = []string{sec.SchemeName}
-	} else {
-		impl.Name = fmt.Sprintf("fulfill:general#%d", idx)
-	}
+	impl := middleware.ClientImplementation{Fn: fn, Name: fmt.Sprintf("fulfill:general#%d", idx)}
 	r.opts = append(slices.Clone(r.opts), clientMWOpt{impl: impl})
 	return r
 }
 
 // ClientMW is [SSERoute]'s client-side implementation-attachment method —
-// identical Satisfies-gating mechanics to [Route.ClientMW] (general-
-// purpose only; a codec-backed value is rejected the same way). Consumed
-// by [Client.Consume]/[nethttp.CallSSEAdapter] the same way [Client.Call]
-// consumes [Route.ClientMW]'s attached implementations.
+// identical general-purpose-only mechanics to [Route.ClientMW] (a
+// codec-backed value, OR a Security-carrying legacy value, is rejected
+// the same way). Consumed by [Client.Consume]/[nethttp.CallSSEAdapter]
+// the same way [Client.Call] consumes [Route.ClientMW]'s attached
+// implementations.
 func (s SSERoute[Req, Event]) ClientMW(mw middleware.RouteMiddleware, fn any) SSERoute[Req, Event] {
 	if v, ok := mw.(routeMiddlewareContributor); ok {
 		s.opts = append(slices.Clone(s.opts), misattachedOpt{route: "GET " + s.path, name: v.MiddlewareName()})
+		return s
+	}
+	if sec := securityDeclarationOf(mw); sec != nil {
+		s.opts = append(slices.Clone(s.opts), legacySecurityClientMWOpt{route: "GET " + s.path, name: sec.SchemeName})
 		return s
 	}
 	idx := 0
@@ -428,13 +462,7 @@ func (s SSERoute[Req, Event]) ClientMW(mw middleware.RouteMiddleware, fn any) SS
 			idx++
 		}
 	}
-	impl := middleware.ClientImplementation{Fn: fn}
-	if sec := securityDeclarationOf(mw); sec != nil {
-		impl.Name = fmt.Sprintf("fulfill:%s#%d", sec.SchemeName, idx)
-		impl.Satisfies = []string{sec.SchemeName}
-	} else {
-		impl.Name = fmt.Sprintf("fulfill:general#%d", idx)
-	}
+	impl := middleware.ClientImplementation{Fn: fn, Name: fmt.Sprintf("fulfill:general#%d", idx)}
 	s.opts = append(slices.Clone(s.opts), clientMWOpt{impl: impl})
 	return s
 }

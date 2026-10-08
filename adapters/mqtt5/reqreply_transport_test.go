@@ -108,31 +108,34 @@ func TestAttachClient_DualMode_GlobalSecurity(t *testing.T) {
 	handler := func(ctx context.Context, req computeReq) (computeResp, error) {
 		return computeResp{Sum: req.X + req.Y}, nil
 	}
-	// bearerMw declares the "bearer" scheme via .Use() (Phase 1 of
-	// docs/design/d-0004-reqreply-workflow-simplification.md's Addendum) — REPLACES the OLD manual
-	// WithSecurityScheme declaration, which cannot be paired against a
-	// HandleMW/ClientMW implementation.
-	bearerCodec := codex.String().Refine(validate.NonEmptyString)
-	bearerMw := middleware.SecurityScheme("bearer", route.BearerScheme("JWT"), nil, &bearerCodec)
-	acceptingImpl := func(context.Context, *pahomqtt5.Publish, []route.SecurityRequirement) (map[string][]string, error) {
-		return map[string][]string{"bearer": nil}, nil
+	// acceptingImpl declares+implements the "bearer" scheme via
+	// HandleBoundMW (per docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8
+	// — HandleMW/ClientMW now reject a Security-carrying mw outright).
+	acceptingImpl := func(context.Context, *computeReq, mwSecIn) (mwSecOut, error) {
+		return mwSecOut{GrantedScopes: map[string][]string{"bearer": nil}}, nil
 	}
-	// pristineRoute (never .Use()'d) is used for the raw-Route dual-mode
+	// pristineRoute (never attached) is used for the raw-Route dual-mode
 	// call below — GlobalSecurity stays invisible to it, unaffected by
-	// the SEPARATE registeredVariant's own .Use() declaration (Route is
-	// immutable; .Use() returns a NEW value).
+	// the SEPARATE serverRoute/clientRoute's own HandleBoundMW/
+	// ClientBoundMW declarations (Route is immutable; each attachment
+	// returns a NEW value).
 	pristineRoute := reqreply.NewRoute[computeReq, computeResp](
 		"compute/add-secured-attach",
 		computeReqCodec, computeRespCodec,
 		reqreply.RouteMeta{OperationID: "computeSecuredAttach"},
 	)
-	registeredVariant := pristineRoute.
-		Use(bearerMw).
-		HandleMW(&bearerMw, acceptingImpl).
-		ClientMW(&bearerMw, func(context.Context, []route.SecurityRequirement) ([]UserProperty, error) {
-			return []UserProperty{{Key: "Authorization", Value: "******"}}, nil
-		})
-	handle, err := registeredVariant.WithHandler(handler).Register(server)
+	// serverRoute/clientRoute are TWO SEPARATE route values sharing the
+	// SAME topic — a Security-carrying HandleBoundMW (server) and
+	// BoundClientMiddleware (client) for the SAME scheme name ("bearer",
+	// required by GlobalSecurity above) cannot share ONE route value
+	// (see docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8). serverRoute
+	// is Registered+Served below; clientRoute is used directly
+	// (unregistered) for the declarative-credential-supply Call below.
+	serverRoute := pristineRoute.HandleBoundMW(bearerSecBoundMw(acceptingImpl))
+	clientRoute := pristineRoute.ClientBoundMW(bearerSecBoundClientMw(func(context.Context, computeReq) (mwSecIn, error) {
+		return mwSecIn{Authorization: "******"}, nil
+	}))
+	handle, err := serverRoute.WithHandler(handler).Register(server)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -172,10 +175,8 @@ func TestAttachClient_DualMode_GlobalSecurity(t *testing.T) {
 		t.Fatalf("Call error = %v (%T), want a security-related error", err, err)
 	}
 
-	// Already-registered *RouteHandle — its ClientImplementations
-	// (populated by the SAME .ClientMW() call chained above, before
-	// Register) supplies the credential declaratively, no CallOptions
-	// needed at Attach time at all.
+	// clientRoute's own ClientBoundMW attachment supplies the credential
+	// declaratively, no CallOptions needed at Attach time at all.
 	client2 := reqreply.NewClient()
 	clientClient2 := &mockClient{}
 	clientRouter2 := newMockRouter()
@@ -185,7 +186,7 @@ func TestAttachClient_DualMode_GlobalSecurity(t *testing.T) {
 	wireBrokers(t, clientClient2, serverRouter)
 	wireBrokers(t, serverClient, clientRouter2)
 
-	respAny, err := client2.Call(context.Background(), handle, computeReq{X: 2, Y: 3})
+	respAny, err := client2.Call(context.Background(), clientRoute, computeReq{X: 2, Y: 3})
 	if err != nil {
 		t.Fatalf("Call with registered handle + credential: %v", err)
 	}
@@ -1001,56 +1002,21 @@ func TestAttachClient_ClientMW_AppliesToCallAsyncToo(t *testing.T) {
 	}
 }
 
-// testCtxKeyType/testCtxKey is a private context key for
-// TestAttachClient_ClientMW_ContextMutationPropagatesIntoInnerCall below —
-// proves a general-purpose ClientMW decorator's context mutation reaches
-// the reflect.MakeFunc-built innerCall closure's OWN body (specifically
-// the paired credential Fn), not just the decorator chain itself. A
-// prior revision's innerCall ignored args[0] (the ctx actually passed by
-// the decorator calling next) and used the STALE, pre-decorator ctx
-// captured from the enclosing call — silently discarding any such
-// mutation. Fixed by reading ctx from args[0] inside the closure.
-type testCtxKeyType struct{}
-
-var testCtxKey = testCtxKeyType{}
-
-func TestAttachClient_ClientMW_ContextMutationPropagatesIntoInnerCall(t *testing.T) {
-	client := reqreply.NewClient()
-	clientClient := &mockClient{}
-	clientRouter := newMockRouter()
-	if err := client.Attach(NewClientTransport(ClientTransportOptions{Client: clientClient, Router: clientRouter})); err != nil {
-		t.Fatalf("AttachClient: %v", err)
-	}
-
-	var observedValue any
-	credFn := func(ctx context.Context, _ []route.SecurityRequirement) ([]UserProperty, error) {
-		observedValue = ctx.Value(testCtxKey)
-		return nil, nil
-	}
-	ctxInjectingMw := func(next func(context.Context, computeReq) (computeResp, error)) func(context.Context, computeReq) (computeResp, error) {
-		return func(ctx context.Context, req computeReq) (computeResp, error) {
-			ctx = context.WithValue(ctx, testCtxKey, "injected")
-			return next(ctx, req)
-		}
-	}
-
-	baseRoute := reqreply.NewRoute[computeReq, computeResp]("compute/ctx-propagation", computeReqCodec, computeRespCodec)
-	clientRoute := baseRoute.Use(bearerAuthMw).
-		ClientMW(&bearerAuthMw, credFn).
-		ClientMW(nil, ctxInjectingMw)
-
-	// No server/broker wiring needed — the credential Fn runs and
-	// records observedValue BEFORE publish is ever attempted; a timeout
-	// waiting for a reply (since no server answers) is expected and
-	// ignored, only observedValue is asserted.
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	_, _ = client.Call(ctx, clientRoute, computeReq{X: 1, Y: 2})
-
-	if observedValue != "injected" {
-		t.Fatalf("expected the ClientMW decorator's context mutation to propagate into the paired credential Fn, got %v", observedValue)
-	}
-}
+// NOTE: TestAttachClient_ClientMW_ContextMutationPropagatesIntoInnerCall
+// (a general-purpose ClientMW decorator's context mutation reaching a
+// PAIRED credential Fn, attached via the legacy ClientMW(&mw, rawFn)
+// pairing) was REMOVED — this scenario is now STRUCTURALLY IMPOSSIBLE
+// for its replacement, ClientBoundMW: a ClientBoundMW-attached handler's
+// Fn dispatches via reqreply.DispatchClientMiddlewareIn BEFORE
+// wrappedCall/innerCall is even constructed (let alone wrapped by any
+// attached general-purpose ClientMW(nil, decorator)), using the ORIGINAL
+// pre-decorator ctx captured at Call() setup time — unlike the legacy
+// raw-adapter-Fn-paired credential Fn this test exercised, which ran
+// INSIDE innerCall's own closure body (reading ctx from args[0], the
+// decorator-supplied value). There is no longer any ordering under which
+// a LATER-attached decorator's context mutation could reach an
+// EARLIER-dispatched ClientBoundMW handler. Deleted per
+// docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8.
 
 // ── docs/design/d-0003-codec-declared-middlewares.md's Addendum adapter wiring ──────
 
@@ -1279,7 +1245,6 @@ var errBusinessFailure = businessError{msg: "business failure"}
 // HandleBoundMW's declared middleware runs AFTER the paired security Fn.
 func TestAttachServer_HandleBoundMW_RunsAfterPairedSecurity(t *testing.T) {
 	var order []string
-	secMw := middleware.SecurityScheme("bearer2", route.BearerScheme("JWT"), nil, &bearerAuthTestCodec)
 	mw := reqreply.NewBoundMiddleware[computeReq](middleware.NewDeclaration("order-check", mwPropInCodec, mwPropOutCodec),
 		func(ctx context.Context, req *computeReq, in mwPropIn) (mwPropOut, error) {
 			order = append(order, "middleware")
@@ -1290,11 +1255,10 @@ func TestAttachServer_HandleBoundMW_RunsAfterPairedSecurity(t *testing.T) {
 		return computeResp{Sum: req.X + req.Y}, nil
 	}
 	baseRoute := reqreply.NewRoute[computeReq, computeResp]("compute/order-test", computeReqCodec, computeRespCodec).
-		Use(secMw).
-		HandleMW(&secMw, func(context.Context, *pahomqtt5.Publish, []route.SecurityRequirement) (map[string][]string, error) {
+		HandleBoundMW(bearerSecBoundMwNamed("bearer2", func(ctx context.Context, req *computeReq, in mwSecIn) (mwSecOut, error) {
 			order = append(order, "security")
-			return map[string][]string{"bearer2": nil}, nil
-		})
+			return mwSecOut{GrantedScopes: map[string][]string{"bearer2": nil}}, nil
+		}))
 	rt := baseRoute.HandleBoundMW(mw)
 
 	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
@@ -1322,10 +1286,9 @@ func TestAttachServer_HandleBoundMW_RunsAfterPairedSecurity(t *testing.T) {
 	wireBrokers(t, clientClient, serverRouter)
 
 	authedRoute := reqreply.NewRoute[computeReq, computeResp]("compute/order-test", computeReqCodec, computeRespCodec).
-		Use(secMw).
-		ClientMW(&secMw, func(ctx context.Context, _ []route.SecurityRequirement) ([]UserProperty, error) {
-			return []UserProperty{{Key: "Authorization", Value: "Bearer tok"}}, nil
-		})
+		ClientBoundMW(bearerSecBoundClientMwNamed("bearer2", func(ctx context.Context, req computeReq) (mwSecIn, error) {
+			return mwSecIn{Authorization: "Bearer tok"}, nil
+		}))
 	if _, err := client.Call(context.Background(), authedRoute, computeReq{X: 1, Y: 2}); err != nil {
 		t.Fatalf("Call: %v", err)
 	}

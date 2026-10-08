@@ -2289,6 +2289,14 @@ func (s Subscriber[T]) SubscribeMW(mw middleware.RouteMiddleware, fn any) Subscr
 		}
 		return s
 	}
+	if sc, ok := mw.(middleware.SecurityCarrier); ok {
+		if sec := sc.SecurityDeclaration(); sec != nil {
+			if s.buildErr == nil {
+				s.buildErr = LegacySecurityMWRemovedError{Topic: s.channel.topic, Name: sec.SchemeName, Op: "SubscribeMW"}
+			}
+			return s
+		}
+	}
 	s.impls = append(slices.Clone(s.impls), buildServerImplementation(mw, fn))
 	return s
 }
@@ -2365,17 +2373,16 @@ func (p Publisher[T]) PublishMW(mw middleware.RouteMiddleware, fn any) Publisher
 		}
 		return p
 	}
-	idx := len(p.clientImpls)
-	impl := middleware.ClientImplementation{Fn: fn}
 	if sc, ok := mw.(middleware.SecurityCarrier); ok {
 		if sec := sc.SecurityDeclaration(); sec != nil {
-			impl.Name = fmt.Sprintf("fulfill:%s#%d", sec.SchemeName, idx)
-			impl.Satisfies = []string{sec.SchemeName}
+			if p.buildErr == nil {
+				p.buildErr = LegacySecurityMWRemovedError{Topic: p.channel.topic, Name: sec.SchemeName, Op: "PublishMW"}
+			}
+			return p
 		}
 	}
-	if impl.Name == "" {
-		impl.Name = fmt.Sprintf("fulfill:general#%d", idx)
-	}
+	idx := len(p.clientImpls)
+	impl := middleware.ClientImplementation{Fn: fn, Name: fmt.Sprintf("fulfill:general#%d", idx)}
 	p.clientImpls = append(slices.Clone(p.clientImpls), impl)
 	return p
 }

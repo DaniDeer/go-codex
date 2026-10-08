@@ -984,16 +984,25 @@ func (o *mockSecurityObserver) RecordSecurityRejection(location, scheme string) 
 	o.scheme = scheme
 }
 
-func newSecuredHandle(impl func(context.Context, pahomqtt.Message, *userEvent) (map[string][]string, error)) (*events.ChannelHandle[userEvent], error) {
+// mqttSecOut is the Bound-mechanism Out shape used by this file's
+// migrated security tests (per
+// docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8 — SubscribeMW now
+// rejects a Security-carrying mw; BoundSecuritySubscribeMiddleware +
+// SubscribeBoundMW is the one remaining way to declare+implement a
+// security scheme, fusing both into one call).
+type mqttSecOut struct{ GrantedScopes map[string][]string }
+
+func newSecuredHandle(impl func(context.Context, *userEvent) (mqttSecOut, error)) (*events.ChannelHandle[userEvent], error) {
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	mw := events.FromSecurityScheme("bearerAuth", events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil)
+	bm := events.BoundSecuritySubscribeMiddleware[userEvent, tdEmpty, mqttSecOut]("bearerAuth",
+		events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+		func(ctx context.Context, msg *userEvent, in tdEmpty) (mqttSecOut, error) { return impl(ctx, msg) })
 	return events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithSubscribe(events.Subscribe{
 			Summary:  "User created",
 			Security: []route.SecurityRequirement{route.Require("bearerAuth")},
 		}).
-		Use(mw).
-		SubscribeMW(&mw, impl).
+		SubscribeBoundMW(bm).
 		Handle(b)
 }
 
@@ -1007,9 +1016,9 @@ func TestSubscribe_SecurityImpl_calledForSecuredChannel(t *testing.T) {
 	// directly.
 	implCalled := false
 	handlerCalled := false
-	handle, err := newSecuredHandle(func(_ context.Context, _ pahomqtt.Message, _ *userEvent) (map[string][]string, error) {
+	handle, err := newSecuredHandle(func(_ context.Context, _ *userEvent) (mqttSecOut, error) {
 		implCalled = true
-		return map[string][]string{"bearerAuth": nil}, nil
+		return mqttSecOut{GrantedScopes: map[string][]string{"bearerAuth": nil}}, nil
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1044,8 +1053,8 @@ func TestSubscribe_SecurityImpl_rejectsMessage(t *testing.T) {
 	// REPLACES the OLD TestSubscribeHandler_SecurityFunc_rejectsMessage
 	// (SubscribeOptions.SecurityFunc was removed entirely, Phase 2 of
 	// docs/design/d-0002-pubsub-workflow-simplification.md's Addendum).
-	handle, err := newSecuredHandle(func(_ context.Context, _ pahomqtt.Message, _ *userEvent) (map[string][]string, error) {
-		return nil, errors.New("unauthorized")
+	handle, err := newSecuredHandle(func(_ context.Context, _ *userEvent) (mqttSecOut, error) {
+		return mqttSecOut{}, errors.New("unauthorized")
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1122,8 +1131,8 @@ func TestSubscribe_SecurityImpl_notCalledForUnsecuredChannel(t *testing.T) {
 }
 
 func TestSubscribe_SecurityObserver_calledOnRejection(t *testing.T) {
-	handle, err := newSecuredHandle(func(_ context.Context, _ pahomqtt.Message, _ *userEvent) (map[string][]string, error) {
-		return nil, errors.New("unauthorized")
+	handle, err := newSecuredHandle(func(_ context.Context, _ *userEvent) (mqttSecOut, error) {
+		return mqttSecOut{}, errors.New("unauthorized")
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1155,17 +1164,18 @@ func TestSubscribe_SecurityObserver_calledOnRejection(t *testing.T) {
 	}
 }
 
-func newGlobalSecuredMQTTHandle(impl func(context.Context, pahomqtt.Message, *userEvent) (map[string][]string, error)) (*events.ChannelHandle[userEvent], error) {
+func newGlobalSecuredMQTTHandle(impl func(context.Context, *userEvent) (mqttSecOut, error)) (*events.ChannelHandle[userEvent], error) {
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	b.AddGlobalSecurity(route.Require("bearerAuth"))
-	// No per-operation Security -- inherits global.
-	mw := events.FromSecurityScheme("bearerAuth", events.SecurityScheme{
-		SecurityScheme: route.BearerScheme("JWT"),
-	}, nil)
+	// No per-operation Security -- inherits global; SubscribeBoundMW's
+	// attached BoundSecuritySubscribeMiddleware supplies its own
+	// "bearerAuth" declaration.
+	bm := events.BoundSecuritySubscribeMiddleware[userEvent, tdEmpty, mqttSecOut]("bearerAuth",
+		events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+		func(ctx context.Context, msg *userEvent, in tdEmpty) (mqttSecOut, error) { return impl(ctx, msg) })
 	return events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithSubscribe(events.Subscribe{Summary: "User created"}).
-		Use(mw).
-		SubscribeMW(&mw, impl).
+		SubscribeBoundMW(bm).
 		Handle(b)
 }
 
@@ -1177,9 +1187,9 @@ func TestSubscribeHandler_GlobalSecurity_enforcedWhenNoPerChannelSecurity(t *tes
 	// works correctly through a SubscribeMW-paired implementation, not
 	// just per-channel security.
 	implCalled := false
-	handle, err := newGlobalSecuredMQTTHandle(func(_ context.Context, _ pahomqtt.Message, _ *userEvent) (map[string][]string, error) {
+	handle, err := newGlobalSecuredMQTTHandle(func(_ context.Context, _ *userEvent) (mqttSecOut, error) {
 		implCalled = true
-		return map[string][]string{"bearerAuth": nil}, nil
+		return mqttSecOut{GrantedScopes: map[string][]string{"bearerAuth": nil}}, nil
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1208,8 +1218,8 @@ func TestSubscribeHandler_GlobalSecurity_enforcedWhenNoPerChannelSecurity(t *tes
 }
 
 func TestSubscribeHandler_GlobalSecurity_rejectsMessage(t *testing.T) {
-	handle, err := newGlobalSecuredMQTTHandle(func(_ context.Context, _ pahomqtt.Message, _ *userEvent) (map[string][]string, error) {
-		return nil, errors.New("missing api key")
+	handle, err := newGlobalSecuredMQTTHandle(func(_ context.Context, _ *userEvent) (mqttSecOut, error) {
+		return mqttSecOut{}, errors.New("missing api key")
 	})
 	if err != nil {
 		t.Fatal(err)

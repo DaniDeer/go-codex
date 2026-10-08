@@ -1,9 +1,7 @@
 package rest_test
 
 import (
-	"context"
 	"errors"
-	"net/http"
 	"testing"
 
 	"github.com/DaniDeer/go-codex/api/rest"
@@ -575,24 +573,15 @@ func TestRouteClientMW_PopulatesClientImplementationsOnClientHandle(t *testing.T
 	}
 }
 
-func TestRouteClientMW_CombinesWithServerDeclaredSecurity(t *testing.T) {
-	scheme := route.BearerScheme("")
-	declareMw := middleware.SecurityScheme("bearerAuth", scheme, nil, nil)
-
-	h := rest.NewRoute[mwTestReq, userResp]("GET", "/profile", mwTestReqCodec, userCodec,
-		rest.RouteMeta{OperationID: "getProfile"},
-	).Use(declareMw).ClientMW(&declareMw, func() {}).ClientHandle()
-
-	if _, ok := h.SecuritySchemes["bearerAuth"]; !ok {
-		t.Fatalf("want SecuritySchemes populated by the server-side Use(SecurityScheme(...)) declaration, got %+v", h.SecuritySchemes)
-	}
-	if len(h.ClientImplementations) != 1 {
-		t.Fatalf("want ClientImplementations populated by ClientMW, got %+v", h.ClientImplementations)
-	}
-	if len(h.ClientImplementations[0].Satisfies) != 1 || h.ClientImplementations[0].Satisfies[0] != "bearerAuth" {
-		t.Fatalf("want ClientMW to derive Satisfies from the paired mw, got %+v", h.ClientImplementations[0].Satisfies)
-	}
-}
+// NOTE: TestRouteClientMW_CombinesWithServerDeclaredSecurity (which tested
+// ClientMW pairing a legacy Security-carrying middleware.Middleware and
+// deriving Satisfies from it) was REMOVED — this review round retired
+// that mechanism for good (see [LegacySecurityClientMWRemovedError]);
+// ClientMW now REJECTS a Security-carrying mw outright. Supplying a
+// client-side credential now goes exclusively through
+// [Route.ClientBoundMW] + [BoundSecurityClientMiddleware] — see
+// capability_test.go / adapters/nethttp's bound-middleware credential
+// tests for the current coverage.
 
 // ── SSERoute.ClientMW / ClientHandle (mirrors Route.ClientMW/ClientHandle) ──
 
@@ -610,33 +599,13 @@ func TestSSERouteClientMW_PopulatesClientImplementationsOnClientHandle(t *testin
 	}
 }
 
-// TestSSERouteClientMW_SatisfiesGating is C2: a ClientMW paired against a
-// scheme the route did NOT declare via Use must still carry a Satisfies
-// value — mirrors nethttp's TestCall_ClientMWSatisfiesGating_UnrelatedImplNotRun
-// rationale at the api/rest layer (the actual "does NOT run" behavior is
-// nethttp.Consume's job to enforce at call time; this test only confirms
-// SSERoute.ClientHandle correctly derives and carries Satisfies).
-func TestSSERouteClientMW_SatisfiesGating(t *testing.T) {
-	declareMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme(""), nil, nil)
-	otherMw := middleware.SecurityScheme("apiKey", route.APIKeyScheme("X-API-Key", "header"), nil, nil)
-
-	h := rest.NewSSERoute[struct{}, userResp]("/stream", codex.Empty, userCodec,
-		rest.RouteMeta{OperationID: "streamUsers"},
-	).Use(declareMw).
-		ClientMW(&declareMw, func() {}).
-		ClientMW(&otherMw, func() {}).
-		ClientHandle()
-
-	if len(h.ClientImplementations) != 2 {
-		t.Fatalf("want both ClientMW attachments carried, got %+v", h.ClientImplementations)
-	}
-	if len(h.ClientImplementations[0].Satisfies) != 1 || h.ClientImplementations[0].Satisfies[0] != "bearerAuth" {
-		t.Fatalf("want first ClientMW's Satisfies to be [bearerAuth], got %+v", h.ClientImplementations[0].Satisfies)
-	}
-	if len(h.ClientImplementations[1].Satisfies) != 1 || h.ClientImplementations[1].Satisfies[0] != "apiKey" {
-		t.Fatalf("want second ClientMW's Satisfies to be [apiKey], got %+v", h.ClientImplementations[1].Satisfies)
-	}
-}
+// NOTE: TestSSERouteClientMW_SatisfiesGating (C2 — Satisfies-gating via
+// the legacy ClientMW security-pairing path) was REMOVED — ClientMW now
+// rejects a Security-carrying mw outright (see
+// [LegacySecurityClientMWRemovedError]); Satisfies-gating for a
+// client-side credential now lives entirely in
+// [BoundClientMiddleware]/[ClientMiddlewareHandler.Satisfies] (the bound
+// mechanism), unaffected by this removal.
 
 func TestSecurityScheme_AloneIsALegitimateIntermediateStateAtRegister(t *testing.T) {
 	// A route using ONLY middleware.SecurityScheme (no ServerImplementation
@@ -658,116 +627,24 @@ func TestSecurityScheme_AloneIsALegitimateIntermediateStateAtRegister(t *testing
 
 // ── UnknownMiddlewareImplementationError (reverse-Satisfies check) ──────────
 
-func TestRoute_HandleMW_PairedAgainstUndeclaredScheme_ReturnsUnknownMiddlewareImplementationError(t *testing.T) {
-	// declMw declares "bearerAuth" but the route below pairs its HandleMW
-	// implementation against a DIFFERENT scheme name ("otherAuth") that was
-	// never .Use()'d on this route — a copy-paste mistake reusing a
-	// different route's middleware.Middleware. checkImplementationsDeclared
-	// must catch this at Register/RegisterHandle time, not silently accept it.
-	declMw := requireScopesMW("bearerAuth", nil)
-	mismatchedMw := requireScopesMW("otherAuth", nil)
-
-	_, err := rest.NewRoute[mwTestReq, userResp]("GET", "/profile", mwTestReqCodec, userCodec,
-		rest.RouteMeta{OperationID: "getProfile"},
-	).Use(declMw).HandleMW(&mismatchedMw, func(_ context.Context, _ *http.Request, _ *mwTestReq) (map[string][]string, error) {
-		return nil, nil
-	}).RegisterHandle(rest.NewServer(testInfo))
-
-	var unknownErr rest.UnknownMiddlewareImplementationError
-	if !errors.As(err, &unknownErr) {
-		t.Fatalf("want UnknownMiddlewareImplementationError, got %v (%T)", err, err)
-	}
-	if unknownErr.Scheme != "otherAuth" {
-		t.Errorf("want Scheme %q, got %q", "otherAuth", unknownErr.Scheme)
-	}
-}
-
-func TestRoute_HandleMW_PairedAgainstDeclaredScheme_NoError(t *testing.T) {
-	// The mirror-image happy path: HandleMW paired against a scheme that
-	// WAS .Use()'d on the same route must succeed.
-	declMw := requireScopesMW("bearerAuth", nil)
-
-	_, err := rest.NewRoute[mwTestReq, userResp]("GET", "/profile", mwTestReqCodec, userCodec,
-		rest.RouteMeta{OperationID: "getProfile"},
-	).Use(declMw).HandleMW(&declMw, func(_ context.Context, _ *http.Request, _ *mwTestReq) (map[string][]string, error) {
-		return nil, nil
-	}).RegisterHandle(rest.NewServer(testInfo))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestSSERoute_HandleMW_PairedAgainstUndeclaredScheme_ReturnsUnknownMiddlewareImplementationError(t *testing.T) {
-	declMw := requireScopesMW("bearerAuth", nil)
-	mismatchedMw := requireScopesMW("otherAuth", nil)
-
-	_, err := rest.NewSSERoute[mwTestReq, sseEvent]("/stream", mwTestReqCodec, sseEventCodec).Use(declMw).HandleMW(&mismatchedMw, func(_ context.Context, _ *http.Request, _ *mwTestReq) (map[string][]string, error) {
-		return nil, nil
-	}).RegisterHandle(rest.NewServer(testInfo))
-
-	var unknownErr rest.UnknownMiddlewareImplementationError
-	if !errors.As(err, &unknownErr) {
-		t.Fatalf("want UnknownMiddlewareImplementationError, got %v (%T)", err, err)
-	}
-	if unknownErr.Scheme != "otherAuth" {
-		t.Errorf("want Scheme %q, got %q", "otherAuth", unknownErr.Scheme)
-	}
-}
-
-func TestRoute_ClientMW_PairedAgainstUndeclaredScheme_ReturnsUnknownMiddlewareImplementationError(t *testing.T) {
-	// The CLIENT-side mirror of TestRoute_HandleMW_PairedAgainstUndeclaredScheme:
-	// declMw declares "bearerAuth" but ClientMW is paired against a
-	// DIFFERENT, never-.Use()'d scheme name ("otherAuth") — a copy-paste
-	// mistake. Before checkImplementationsDeclared checked clientImpls
-	// too, this silently succeeded at Register time and the attached
-	// credential Fn simply never ran at Call time, with no error anywhere.
-	declMw := requireScopesMW("bearerAuth", nil)
-	mismatchedMw := requireScopesMW("otherAuth", nil)
-
-	_, err := rest.NewRoute[mwTestReq, userResp]("GET", "/profile", mwTestReqCodec, userCodec,
-		rest.RouteMeta{OperationID: "getProfile"},
-	).Use(declMw).ClientMW(&mismatchedMw, func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
-		return nil, nil
-	}).RegisterHandle(rest.NewServer(testInfo))
-
-	var unknownErr rest.UnknownMiddlewareImplementationError
-	if !errors.As(err, &unknownErr) {
-		t.Fatalf("want UnknownMiddlewareImplementationError, got %v (%T)", err, err)
-	}
-	if unknownErr.Scheme != "otherAuth" {
-		t.Errorf("want Scheme %q, got %q", "otherAuth", unknownErr.Scheme)
-	}
-}
-
-func TestRoute_ClientMW_PairedAgainstDeclaredScheme_NoError(t *testing.T) {
-	declMw := requireScopesMW("bearerAuth", nil)
-
-	_, err := rest.NewRoute[mwTestReq, userResp]("GET", "/profile", mwTestReqCodec, userCodec,
-		rest.RouteMeta{OperationID: "getProfile"},
-	).Use(declMw).ClientMW(&declMw, func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
-		return nil, nil
-	}).RegisterHandle(rest.NewServer(testInfo))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestSSERoute_ClientMW_PairedAgainstUndeclaredScheme_ReturnsUnknownMiddlewareImplementationError(t *testing.T) {
-	declMw := requireScopesMW("bearerAuth", nil)
-	mismatchedMw := requireScopesMW("otherAuth", nil)
-
-	_, err := rest.NewSSERoute[mwTestReq, sseEvent]("/stream", mwTestReqCodec, sseEventCodec).Use(declMw).ClientMW(&mismatchedMw, func(_ context.Context, _ []route.SecurityRequirement) (http.Header, error) {
-		return nil, nil
-	}).RegisterHandle(rest.NewServer(testInfo))
-
-	var unknownErr rest.UnknownMiddlewareImplementationError
-	if !errors.As(err, &unknownErr) {
-		t.Fatalf("want UnknownMiddlewareImplementationError, got %v (%T)", err, err)
-	}
-	if unknownErr.Scheme != "otherAuth" {
-		t.Errorf("want Scheme %q, got %q", "otherAuth", unknownErr.Scheme)
-	}
-}
+// NOTE: TestRoute_HandleMW_PairedAgainstUndeclaredScheme_ReturnsUnknownMiddlewareImplementationError,
+// TestRoute_HandleMW_PairedAgainstDeclaredScheme_NoError,
+// TestSSERoute_HandleMW_PairedAgainstUndeclaredScheme_ReturnsUnknownMiddlewareImplementationError,
+// TestRoute_ClientMW_PairedAgainstUndeclaredScheme_ReturnsUnknownMiddlewareImplementationError,
+// TestRoute_ClientMW_PairedAgainstDeclaredScheme_NoError, and
+// TestSSERoute_ClientMW_PairedAgainstUndeclaredScheme_ReturnsUnknownMiddlewareImplementationError
+// (which tested checkImplementationsDeclared's mismatch-detection via the
+// legacy HandleMW/ClientMW security-pairing path) were ALL REMOVED per
+// docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8 — HandleMW/ClientMW now
+// reject a Security-carrying mw before ever reaching
+// checkImplementationsDeclared (see [LegacySecurityHandleMWRemovedError]/
+// [LegacySecurityClientMWRemovedError]). This failure mode is structurally
+// IMPOSSIBLE for the replacement, [Route.HandleBoundMW]/[Route.ClientBoundMW]
+// + [BoundSecurityMiddleware]/[BoundSecurityClientMiddleware]: the bound
+// mechanism auto-contributes its OWN Security declaration directly (no
+// separate .Use() call that could drift out of sync), so there is no
+// equivalent "paired against an undeclared scheme" scenario to test — not a
+// coverage gap, a structural non-issue.
 
 func TestUnknownMiddlewareImplementationError_LogValue(t *testing.T) {
 	e := rest.UnknownMiddlewareImplementationError{Route: "GET /profile", Scheme: "otherAuth"}

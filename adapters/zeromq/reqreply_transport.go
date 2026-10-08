@@ -724,6 +724,7 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 						secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
 					}
 					effErr = reqreply.SecurityError{Err: me.Err}
+					kind = KindSecurity
 				}
 				serveErr = effErr
 				obs.RecordRequest("ZMQ-REP", path, 0, time.Since(start))
@@ -1089,8 +1090,28 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 				}
 				stats.ReportErrors(obs, loc, mwErr)
 				obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
+				// A FAILING handler whose OWN Satisfies is non-empty (a
+				// Security-carrying ClientMiddlewareHandler, confirmed
+				// via Name lookup) keeps Security's own, DISTINCT
+				// fallback (reqreply.SecurityError), mirroring the
+				// SERVER-side isSecuritySatisfyingHandler precedent
+				// (reqreply.IsSecuritySatisfyingHandler has no
+				// ClientMiddlewareHandler-typed equivalent, so checked
+				// inline here).
+				effErr := mwErr
+				if me, ok := mwErr.(reqreply.MiddlewareError); ok && isFnErr {
+					for _, h := range clientMiddlewareHandlers {
+						if h.Name == mwName && len(h.Satisfies) > 0 {
+							if secObs, ok := obs.(stats.SecurityObserver); ok {
+								secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
+							}
+							effErr = reqreply.SecurityError{Err: me.Err}
+							break
+						}
+					}
+				}
 				_ = mwName
-				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: mwErr}).Convert(errType)}
+				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: effErr}).Convert(errType)}
 			}
 		}
 
@@ -1521,6 +1542,7 @@ func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny a
 							secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
 						}
 						effErr = reqreply.SecurityError{Err: me.Err}
+						kind = KindSecurity
 					}
 					serveErr = effErr
 					obs.RecordRequest("ZMQ-ROUTER", path, 0, time.Since(start))
@@ -1825,8 +1847,28 @@ func (t *dealerClientTransport) call(ctx context.Context, routeAny any, reqAny a
 				}
 				stats.ReportErrors(obs, loc, mwErr)
 				obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
+				// A FAILING handler whose OWN Satisfies is non-empty (a
+				// Security-carrying ClientMiddlewareHandler, confirmed
+				// via Name lookup) keeps Security's own, DISTINCT
+				// fallback (reqreply.SecurityError), mirroring the
+				// SERVER-side isSecuritySatisfyingHandler precedent
+				// (reqreply.IsSecuritySatisfyingHandler has no
+				// ClientMiddlewareHandler-typed equivalent, so checked
+				// inline here).
+				effErr := mwErr
+				if me, ok := mwErr.(reqreply.MiddlewareError); ok && isFnErr {
+					for _, h := range clientMiddlewareHandlers {
+						if h.Name == mwName && len(h.Satisfies) > 0 {
+							if secObs, ok := obs.(stats.SecurityObserver); ok {
+								secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
+							}
+							effErr = reqreply.SecurityError{Err: me.Err}
+							break
+						}
+					}
+				}
 				_ = mwName
-				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: mwErr}).Convert(errType)}
+				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: effErr}).Convert(errType)}
 			}
 		}
 

@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/DaniDeer/go-codex/api/rest"
-	"github.com/DaniDeer/go-codex/middleware"
+	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/route"
 )
 
@@ -37,17 +37,24 @@ func TestCall_HappyPath(t *testing.T) {
 // ClientMW-declared credential implementation runs on EVERY Call
 // invocation through the SAME route value — the new design's per-route
 // (not per-Caller) credential declaration.
+type callerTestAuthIn struct{ Token string }
+type callerTestAuthOut struct{}
+
 func TestCall_ClientMWAppliedEveryCall(t *testing.T) {
-	declMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
 	credCallCount := 0
+	boundMW := rest.BoundSecurityClientMiddleware[getReq, callerTestAuthIn, callerTestAuthOut](
+		"bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+		func(ctx context.Context, req getReq) (callerTestAuthIn, error) {
+			credCallCount++
+			return callerTestAuthIn{Token: "shared-token"}, nil
+		},
+	).WithRequestHeader(rest.NewRequiredHeaderParam("Authorization", codex.String(),
+		func(in callerTestAuthIn) string { return in.Token },
+		func(in *callerTestAuthIn, v string) { in.Token = v },
+	))
 	r := rest.NewRoute[getReq, userResp]("GET", "/me", getReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "getMe"},
-	).Use(declMw).ClientMW(&declMw, func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
-		credCallCount++
-		h := make(http.Header)
-		h.Set("Authorization", "shared-token")
-		return h, nil
-	})
+	).ClientBoundMW(boundMW)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "shared-token" {
@@ -74,46 +81,22 @@ func TestCall_ClientMWAppliedEveryCall(t *testing.T) {
 	}
 }
 
-// TestCall_ClientMWSatisfiesGating_UnrelatedImplNotRun locks in the
-// Satisfies-gating correctness improvement: a ClientMW paired against a
-// DIFFERENT security scheme than the route declares must NOT run.
-func TestCall_ClientMWSatisfiesGating_UnrelatedImplNotRun(t *testing.T) {
-	declMw := middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), nil, nil)
-	otherMw := middleware.SecurityScheme("apiKey", route.APIKeyScheme("X-API-Key", "header"), nil, nil)
-	unrelatedRan := false
-
-	r := rest.NewRoute[getReq, userResp]("GET", "/me", getReqCodec, userRespCodec,
-		rest.RouteMeta{OperationID: "getMe"},
-	).Use(declMw).
-		ClientMW(&declMw, func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
-			h := make(http.Header)
-			h.Set("Authorization", "shared-token")
-			return h, nil
-		}).
-		ClientMW(&otherMw, func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
-			unrelatedRan = true
-			h := make(http.Header)
-			h.Set("X-API-Key", "should-not-be-sent")
-			return h, nil
-		})
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("X-API-Key") != "" {
-			t.Errorf("unrelated ClientMW's header leaked into the request: %q", r.Header.Get("X-API-Key"))
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"id": "me", "name": "Alice"}) //nolint:errcheck
-	}))
-	defer srv.Close()
-
-	caller := newCaller(srv.Client(), srv.URL)
-	if _, err := call(context.Background(), caller, r, getReq{}, CallOptions{}); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if unrelatedRan {
-		t.Error("want the apiKey-satisfying ClientMW to NOT run for a route declaring only bearerAuth")
-	}
-}
+// NOTE: TestCall_ClientMWSatisfiesGating_UnrelatedImplNotRun (which
+// proved the legacy ClientMW mechanism's Satisfies-based filtering — an
+// implementation paired against a scheme the route doesn't declare is
+// skipped) was REMOVED, not migrated — this review round's investigation
+// found [dispatchClientMiddlewareIn] (the modern ClientBoundMW dispatch
+// mechanism this test would need to migrate to) has NO equivalent
+// Satisfies-gating at all: it runs EVERY attached
+// [rest.ClientMiddlewareHandler] unconditionally, regardless of
+// [rest.ClientMiddlewareHandler.Satisfies]. This is a genuine,
+// pre-existing gap in the replacement mechanism (not introduced by this
+// round's removal) — flagged as a follow-up finding, out of scope for
+// "retire the legacy escape hatch" specifically, since fixing it is an
+// ADDITIVE feature change to the bound mechanism, not a removal. A
+// faithful migration of this exact test is not possible until that gap
+// is addressed; writing a test that doesn't actually test gating would
+// be misleading, so it was deleted rather than migrated.
 
 // ── Caller.WithBaseURL (ergonomic rebase convenience) ───────────────────────
 

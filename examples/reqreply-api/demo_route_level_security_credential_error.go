@@ -42,24 +42,24 @@ func malformedBearerCredFn(context.Context) (auth.BearerAuthIn, error) {
 // topic, exactly mirroring examples/rest-api's AliceCredFn/AdminCredFn
 // dual-variant pattern.
 //
-// NOTE on a confirmed behavioral change from the OLD legacy
-// clientImpls-paired mechanism (permanently closed by
-// docs/design/d-0003-codec-declared-middlewares.md's Addendum 7's Phase C): the OLD mechanism's
-// credential-format pre-check ran CLIENT-SIDE (via
-// mergeCredentialUserProperties/validateSecurityCredentials,
-// request never published) — a capability that was NEVER available to
-// Middleware-dispatched (clientMiddlewareHandlers) attachments, bound or
-// agnostic, even before this redesign. Migrating auth.BearerAuthMw's
-// client-side credential supply onto the declarative .WithSend()
-// mechanism therefore means a malformed credential is now caught
-// SERVER-SIDE instead (the SAME server-side format check
-// SecuredComputeRoute's own security scheme always enforced), surfacing
-// to the caller as a generic reqreply.CallError wrapping the server's
-// error reply text — NOT a client-side-typed reqreply.
-// SecurityCredentialError anymore, since Go error TYPES are not
-// preserved across the wire without a declared reqreply.ErrorPattern
-// (see demo_error_pattern.go's own ErrorPattern + security combo demo
-// for how to recover a TYPED error from a security rejection reply).
+// NOTE on the current, correct behavior (docs/design/
+// d-0001-rest-middleware-workflow-simplification.md's Addendum 8 mqtt5
+// adapter fix closed a genuine gap here): a malformed credential produced by a Security-
+// carrying middleware/sending attachment (bound OR agnostic — any
+// attachment whose own Satisfies is non-empty) is now caught CLIENT-SIDE,
+// via the SAME validateSecurityCredentials codec-format check the
+// server independently also enforces — the request is never even
+// published. This surfaces to the caller as a client-side-typed
+// reqreply.SecurityCredentialError directly (not wrapped in
+// mqtt5adapter.CallError, which only wraps SERVER reply errors — the
+// client-side check short-circuits before a reply round-trip ever
+// happens). Before this round's fix, `auth.BearerAuthMw`'s "agnostic"
+// (`.Use()` + `.WithSend()`) attachment style was NOT recognized by the
+// client-side "did a Security-carrying attachment actually run"
+// signal — only the legacy clientImpls path was — so a malformed
+// credential supplied this way silently reached the server instead,
+// masking the SAME bug Round 163/164 already found and fixed for
+// `api/rest`'s client dispatch.
 func demoRouteLevelSecurityCredentialError(ctx context.Context, built *mqtt5server.Built) {
 	fmt.Println("\n── Demo 3: route-level security — SecurityCredentialError ──")
 
@@ -88,11 +88,11 @@ func demoRouteLevelSecurityCredentialError(ctx context.Context, built *mqtt5serv
 	fmt.Println("\n  → call with a malformed (empty) bearer token:")
 	malformedHandle := routes.SecuredComputeRoute.Use(auth.BearerAuthMw.WithSend(malformedBearerCredFn)).ClientHandle(reqreply.WithRouter(computeRouter))
 	_, err = client.Call(ctx, malformedHandle, routes.ComputeReq{X: 1, Y: 2})
-	var callErr mqtt5adapter.CallError
-	if errors.As(err, &callErr) && strings.Contains(callErr.Error(), "invalid credential") {
-		fmt.Printf("  ✓ rejected server-side (credential format invalid): %v\n", callErr)
+	var credErr reqreply.SecurityCredentialError
+	if errors.As(err, &credErr) && strings.Contains(credErr.Error(), "invalid credential") {
+		fmt.Printf("  ✓ rejected client-side (credential format invalid, never published): %v\n", credErr)
 	} else {
-		fmt.Fprintf(os.Stderr, "expected a server-side credential-format rejection, got: %v\n", err)
+		fmt.Fprintf(os.Stderr, "expected a client-side credential-format rejection, got: %v\n", err)
 		os.Exit(1)
 	}
 }

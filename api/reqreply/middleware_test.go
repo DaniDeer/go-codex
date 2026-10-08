@@ -1,6 +1,7 @@
 package reqreply_test
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -28,6 +29,39 @@ var mwTestRespCodec = codex.Struct[computeResp](
 var bearerCodecForMWTest = codex.String()
 var bearerAuthTestMw = middleware.SecurityScheme("bearerAuth", route.BearerScheme("JWT"), []string{"read"}, &bearerCodecForMWTest)
 
+// mwSecIn/mwSecOut are the Bound-mechanism In/Out shape used by the
+// migrated HandleMW/ClientMW-pairing tests below (per
+// docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8 — HandleMW/ClientMW
+// now reject a Security-carrying mw; BoundSecurityMiddleware/
+// BoundSecurityClientMiddleware + HandleBoundMW/ClientBoundMW is the one
+// remaining way to declare+implement a security scheme). These tests only
+// check Satisfies/Name population, not actual credential VALUES, so a
+// trivial always-empty In/Out suffices.
+type mwSecIn struct{}
+type mwSecOut struct{ GrantedScopes map[string][]string }
+
+func bearerAuthBoundMw() reqreply.BoundMiddleware[computeReq, mwSecIn, mwSecOut] {
+	return bearerAuthBoundMwNamed("bearerAuth")
+}
+
+func bearerAuthBoundMwNamed(schemeName string) reqreply.BoundMiddleware[computeReq, mwSecIn, mwSecOut] {
+	return reqreply.BoundSecurityMiddleware[computeReq, mwSecIn, mwSecOut](
+		schemeName, reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, []string{"read"},
+		func(ctx context.Context, req *computeReq, in mwSecIn) (mwSecOut, error) { return mwSecOut{}, nil },
+	)
+}
+
+func bearerAuthBoundClientMw() reqreply.BoundClientMiddleware[computeReq, mwSecIn, mwSecOut] {
+	return bearerAuthBoundClientMwNamed("bearerAuth")
+}
+
+func bearerAuthBoundClientMwNamed(schemeName string) reqreply.BoundClientMiddleware[computeReq, mwSecIn, mwSecOut] {
+	return reqreply.BoundSecurityClientMiddleware[computeReq, mwSecIn, mwSecOut](
+		schemeName, reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, []string{"read"},
+		func(ctx context.Context, req computeReq) (mwSecIn, error) { return mwSecIn{}, nil },
+	)
+}
+
 func newMWTestRoute() reqreply.Route[computeReq, computeResp] {
 	return reqreply.NewRoute[computeReq, computeResp](
 		"compute/mw-test",
@@ -38,22 +72,22 @@ func newMWTestRoute() reqreply.Route[computeReq, computeResp] {
 
 func TestRoute_Use_Chainable(t *testing.T) {
 	base := newMWTestRoute()
-	r1 := base.Use(bearerAuthTestMw)
-	r2 := base.Use(bearerAuthTestMw).Use(bearerAuthTestMw)
+	r1 := base.HandleBoundMW(bearerAuthBoundMw())
+	r2 := base.HandleBoundMW(bearerAuthBoundMw())
 
 	b := reqreply.NewServer(reqreply.Info{Title: "t", Version: "1.0.0"})
-	h1, err := r1.HandleMW(&bearerAuthTestMw, func() (map[string][]string, error) { return nil, nil }).Register(b)
+	h1, err := r1.Register(b)
 	if err != nil {
 		t.Fatalf("Register r1: %v", err)
 	}
 	if len(h1.Security) == 0 {
-		t.Fatalf("r1: want Security declared via .Use(), got empty")
+		t.Fatalf("r1: want Security declared via HandleBoundMW, got empty")
 	}
 
 	b2 := reqreply.NewServer(reqreply.Info{Title: "t2", Version: "1.0.0"})
-	h2, err := r2.HandleMW(&bearerAuthTestMw, func() (map[string][]string, error) { return nil, nil }).Register(b2)
+	h2, err := r2.Register(b2)
 	if err != nil {
-		t.Fatalf("Register r2 (.Use(mw1, mw2) equivalent): %v", err)
+		t.Fatalf("Register r2: %v", err)
 	}
 	if len(h2.Security) == 0 {
 		t.Fatalf("r2: want Security declared, got empty")
@@ -75,18 +109,17 @@ func TestRoute_Use_DoesNotMutateOriginal(t *testing.T) {
 }
 
 func TestHandleMW_Paired_DerivesSatisfiesFromSecurity(t *testing.T) {
-	r := newMWTestRoute().Use(bearerAuthTestMw).
-		HandleMW(&bearerAuthTestMw, func() (map[string][]string, error) { return nil, nil })
+	r := newMWTestRoute().HandleBoundMW(bearerAuthBoundMw())
 	b := reqreply.NewServer(reqreply.Info{Title: "t", Version: "1.0.0"})
 	h, err := r.Register(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	if len(h.Implementations) != 1 {
-		t.Fatalf("want 1 Implementation, got %d", len(h.Implementations))
+	if len(h.MiddlewareHandlers) != 1 {
+		t.Fatalf("want 1 MiddlewareHandler, got %d", len(h.MiddlewareHandlers))
 	}
-	if len(h.Implementations[0].Satisfies) != 1 || h.Implementations[0].Satisfies[0] != "bearerAuth" {
-		t.Fatalf("want Satisfies=[bearerAuth], got %v", h.Implementations[0].Satisfies)
+	if len(h.MiddlewareHandlers[0].Satisfies) != 1 || h.MiddlewareHandlers[0].Satisfies[0] != "bearerAuth" {
+		t.Fatalf("want Satisfies=[bearerAuth], got %v", h.MiddlewareHandlers[0].Satisfies)
 	}
 }
 
@@ -106,89 +139,70 @@ func TestHandleMW_Unpaired_GeneralPurpose_EmptySatisfies(t *testing.T) {
 }
 
 func TestClientMW_Paired_DerivesSatisfiesFromSecurity(t *testing.T) {
-	r := newMWTestRoute().Use(bearerAuthTestMw).
-		HandleMW(&bearerAuthTestMw, func() (map[string][]string, error) { return nil, nil }).
-		ClientMW(&bearerAuthTestMw, func() {})
+	// A Security-carrying HandleBoundMW (server) and BoundClientMiddleware
+	// (client) for the SAME scheme name cannot share ONE route value (both
+	// default to the SAME auto-generated Declaration.Name) — use a
+	// DIFFERENT scheme name for the server-side coverage-satisfying
+	// attachment than the one under test (client-side "bearerAuth").
+	r := newMWTestRoute().HandleBoundMW(bearerAuthBoundMwNamed("serverOnly")).ClientBoundMW(bearerAuthBoundClientMw())
 	b := reqreply.NewServer(reqreply.Info{Title: "t", Version: "1.0.0"})
 	h, err := r.Register(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	if len(h.ClientImplementations) != 1 {
-		t.Fatalf("want 1 ClientImplementation, got %d", len(h.ClientImplementations))
+	if len(h.ClientMiddlewareHandlers) != 1 {
+		t.Fatalf("want 1 ClientMiddlewareHandler, got %d", len(h.ClientMiddlewareHandlers))
 	}
-	if len(h.ClientImplementations[0].Satisfies) != 1 || h.ClientImplementations[0].Satisfies[0] != "bearerAuth" {
-		t.Fatalf("want Satisfies=[bearerAuth], got %v", h.ClientImplementations[0].Satisfies)
+	if len(h.ClientMiddlewareHandlers[0].Satisfies) != 1 || h.ClientMiddlewareHandlers[0].Satisfies[0] != "bearerAuth" {
+		t.Fatalf("want Satisfies=[bearerAuth], got %v", h.ClientMiddlewareHandlers[0].Satisfies)
 	}
 }
 
-func TestClientMW_MultipleCallsForSameScheme_DistinctNames(t *testing.T) {
-	r := newMWTestRoute().Use(bearerAuthTestMw).
-		HandleMW(&bearerAuthTestMw, func() (map[string][]string, error) { return nil, nil }).
-		ClientMW(&bearerAuthTestMw, func() { /* #0 */ }).
-		ClientMW(&bearerAuthTestMw, func() { /* #1 */ })
-	b := reqreply.NewServer(reqreply.Info{Title: "t", Version: "1.0.0"})
-	h, err := r.Register(b)
-	if err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-	if len(h.ClientImplementations) != 2 {
-		t.Fatalf("want 2 ClientImplementations, got %d", len(h.ClientImplementations))
-	}
-	if h.ClientImplementations[0].Name == h.ClientImplementations[1].Name {
-		t.Fatalf("want distinct Names for two ClientMW calls attached to the same scheme, got %q twice", h.ClientImplementations[0].Name)
-	}
-}
+// NOTE: TestClientMW_MultipleCallsForSameScheme_DistinctNames (two
+// legacy ClientMW calls attached to the SAME scheme, on the SAME route,
+// checking their auto-generated Names differ) has NO BoundClientMiddleware
+// equivalent: [Route.ClientBoundMW] for a Security-carrying
+// BoundClientMiddleware can only be attached ONCE per scheme name per
+// route (a second attempt for the SAME scheme is rejected as a duplicate
+// middleware name — see bound_middleware.go's [BoundMiddleware] doc
+// comment) — the "two distinct Names for the same scheme" scenario this
+// test covered is structurally impossible with the Bound mechanism, by
+// design. Deleted per docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8.
 
 func TestRoute_Register_PopulatesImplementations(t *testing.T) {
-	r := newMWTestRoute().Use(bearerAuthTestMw).
-		HandleMW(&bearerAuthTestMw, func() (map[string][]string, error) { return nil, nil }).
-		ClientMW(&bearerAuthTestMw, func() {})
+	// SAME two-scheme-names rationale as
+	// TestClientMW_Paired_DerivesSatisfiesFromSecurity above.
+	r := newMWTestRoute().HandleBoundMW(bearerAuthBoundMwNamed("serverOnly")).ClientBoundMW(bearerAuthBoundClientMw())
 	b := reqreply.NewServer(reqreply.Info{Title: "t", Version: "1.0.0"})
 	h, err := r.Register(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	if len(h.Implementations) != 1 || len(h.ClientImplementations) != 1 {
-		t.Fatalf("want 1 Implementation and 1 ClientImplementation, got %d/%d", len(h.Implementations), len(h.ClientImplementations))
+	if len(h.MiddlewareHandlers) != 1 || len(h.ClientMiddlewareHandlers) != 1 {
+		t.Fatalf("want 1 MiddlewareHandler and 1 ClientMiddlewareHandler, got %d/%d", len(h.MiddlewareHandlers), len(h.ClientMiddlewareHandlers))
 	}
 }
 
 func TestRoute_ClientHandle_PopulatesImplementations(t *testing.T) {
-	r := newMWTestRoute().Use(bearerAuthTestMw).
-		ClientMW(&bearerAuthTestMw, func() {})
+	r := newMWTestRoute().ClientBoundMW(bearerAuthBoundClientMw())
 	h := r.ClientHandle()
-	if len(h.ClientImplementations) != 1 {
-		t.Fatalf("want 1 ClientImplementation from ClientHandle(), got %d", len(h.ClientImplementations))
+	if len(h.ClientMiddlewareHandlers) != 1 {
+		t.Fatalf("want 1 ClientMiddlewareHandler from ClientHandle(), got %d", len(h.ClientMiddlewareHandlers))
 	}
 	if len(h.Security) == 0 {
-		t.Fatalf("want Security populated from .Use() via ClientHandle(), got empty")
+		t.Fatalf("want Security populated from ClientBoundMW via ClientHandle(), got empty")
 	}
 }
 
-func TestRoute_Register_UnknownMiddlewareImplementationError(t *testing.T) {
-	// HandleMW paired against "bearerAuth", but the route never .Use()'d
-	// it — must fail loudly, not silently no-op.
-	r := newMWTestRoute().
-		HandleMW(&bearerAuthTestMw, func() (map[string][]string, error) { return nil, nil })
-	b := reqreply.NewServer(reqreply.Info{Title: "t", Version: "1.0.0"})
-	_, err := r.Register(b)
-	var unknownErr reqreply.UnknownMiddlewareImplementationError
-	if !isUnknownMiddlewareImplementationError(err, &unknownErr) {
-		t.Fatalf("want reqreply.UnknownMiddlewareImplementationError, got %v", err)
-	}
-	if unknownErr.Scheme != "bearerAuth" {
-		t.Fatalf("want Scheme=bearerAuth, got %q", unknownErr.Scheme)
-	}
-}
-
-func isUnknownMiddlewareImplementationError(err error, target *reqreply.UnknownMiddlewareImplementationError) bool {
-	e, ok := err.(reqreply.UnknownMiddlewareImplementationError)
-	if ok {
-		*target = e
-	}
-	return ok
-}
+// NOTE: TestRoute_Register_UnknownMiddlewareImplementationError (HandleMW
+// paired against "bearerAuth" without a matching .Use() declaration) was
+// REMOVED — this scenario is now STRUCTURALLY IMPOSSIBLE:
+// HandleBoundMW's attached BoundSecurityMiddleware ALWAYS synthesizes its
+// OWN matching declaration — there is no longer any way to attach an
+// implementation whose Satisfies has no matching declaration at all;
+// declare and implement are fused into ONE call now. Deleted per
+// docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8 (mirrors the
+// analogous rest/events deletions).
 
 // ── Phase 1b: header-param-as-middleware ────────────────────────────────────
 
