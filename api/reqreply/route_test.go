@@ -1,6 +1,7 @@
 package reqreply_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -706,6 +707,47 @@ func TestFormats_TypeMismatch(t *testing.T) {
 	var fe reqreply.FormatOptError
 	if !errors.As(err, &fe) || fe.Direction != "response" {
 		t.Fatalf("want FormatOptError{response}, got %v", err)
+	}
+}
+
+// TestRegister_FailedHandleCallback_DoesNotOrphanRoute is a regression
+// test for a confirmed, previously-real bug: the WithHandleCallback type
+// assertion used to run LAST in Register — AFTER b.registerRoute/
+// b.securitySchemes/b.registerDispatch had ALREADY mutated b. A
+// type-mismatched callback's HandleCallbackTypeError therefore left b in
+// a "successfully registered" state (the route fully live, with its real
+// handler already wired into the dispatch table) despite Register()
+// returning a non-nil error. Register() must be atomic: either it fully
+// succeeds, or it has NO observable side effect on b at all.
+func TestRegister_FailedHandleCallback_DoesNotOrphanRoute(t *testing.T) {
+	b := reqreply.NewServer(reqreply.Info{Title: "t", Version: "1"})
+	// A callback built for the WRONG Resp type (string instead of
+	// computeResp) -- a type-erased `any` mismatch only caught via a
+	// runtime type assertion at Register time.
+	wrongCB := reqreply.WithHandleCallback(func(h *reqreply.RouteHandle[computeReq, string]) {})
+
+	route := reqreply.NewRoute[computeReq, computeResp]("compute/add", reqCodec, respCodec).
+		WithHandler(func(_ context.Context, req computeReq) (computeResp, error) {
+			return computeResp{}, nil
+		}).
+		WithOpt(wrongCB)
+
+	_, err := route.Register(b)
+	var cbErr reqreply.HandleCallbackTypeError
+	if !errors.As(err, &cbErr) {
+		t.Fatalf("want HandleCallbackTypeError, got %v", err)
+	}
+
+	spec, err := b.AsyncAPISpec()
+	if err != nil {
+		t.Fatalf("AsyncAPISpec: %v", err)
+	}
+	y, err := spec.MarshalYAML()
+	if err != nil {
+		t.Fatalf("MarshalYAML: %v", err)
+	}
+	if strings.Contains(string(y), "compute/add") {
+		t.Errorf("want NO orphaned compute/add route after a failed Register(), got:\n%s", y)
 	}
 }
 

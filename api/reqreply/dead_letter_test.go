@@ -6,8 +6,42 @@ import (
 	"testing"
 
 	"github.com/DaniDeer/go-codex/api/reqreply"
+	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/stats"
 )
+
+// TestRegister_FailedRegistration_DoesNotOrphanDeadLetterChannel is a
+// regression test for a confirmed, previously-real bug: registering a
+// DeadLetter channel used to happen BEFORE checkReqReplyParamConflicts/
+// the RequestFormats/Formats type-assertion checks — so a route failing
+// one of THOSE later checks still left an orphaned DeadLetter channel
+// spec entry behind, despite Register() returning a non-nil error.
+// Register() must be atomic: either it fully succeeds, or it has NO
+// observable side effect on b at all.
+func TestRegister_FailedRegistration_DoesNotOrphanDeadLetterChannel(t *testing.T) {
+	b := reqreply.NewServer(reqreply.Info{Title: "t", Version: "1"})
+	route := reqreply.NewRoute[computeReq, computeResp]("compute/add", reqCodec, respCodec,
+		reqreply.DeadLetter("compute/dlq"),
+		reqreply.RequestFormats(format.Binary(reqreplyPngCodec)), // type-mismatched -> FormatOptError
+	)
+	_, err := route.Register(b)
+	var fe reqreply.FormatOptError
+	if !errors.As(err, &fe) {
+		t.Fatalf("want FormatOptError, got %v", err)
+	}
+
+	spec, err := b.AsyncAPISpec()
+	if err != nil {
+		t.Fatalf("AsyncAPISpec: %v", err)
+	}
+	y, err := spec.MarshalYAML()
+	if err != nil {
+		t.Fatalf("MarshalYAML: %v", err)
+	}
+	if strings.Contains(string(y), "compute/dlq") {
+		t.Errorf("want NO orphaned compute/dlq channel after a failed Register(), got:\n%s", y)
+	}
+}
 
 func TestDeadLetterFor_UndeclaredHandle_ReturnsFalse(t *testing.T) {
 	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})

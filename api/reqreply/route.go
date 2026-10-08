@@ -1220,6 +1220,25 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 		return nil, rb.buildErr
 	}
 
+	// Validate (but do not yet INVOKE) a [WithHandleCallback] type
+	// assertion as early as possible — a confirmed, previously-real bug:
+	// this check used to run LAST, AFTER b.registerRoute/
+	// b.securitySchemes/b.registerDispatch had ALREADY mutated b, so a
+	// type-mismatched callback's HandleCallbackTypeError left b in a
+	// "successfully registered" state (the route fully live and
+	// dispatching) despite Register() returning an error. Resolving the
+	// assertion up front, before any mutation, and deferring only the
+	// CALL itself to the end (once h is fully built) closes that gap.
+	var handleCallback func(*RouteHandle[Req, Resp])
+	if rb.handleCallback != nil {
+		var ok bool
+		handleCallback, ok = rb.handleCallback.(func(*RouteHandle[Req, Resp]))
+		if !ok {
+			return nil, HandleCallbackTypeError{
+				Err: fmt.Errorf("want func(*RouteHandle[%T, %T]), got %T", *new(Req), *new(Resp), rb.handleCallback)}
+		}
+	}
+
 	if err := codex.ValidateDeclaredParams(r.topic, toCodexParams(rb.topicParams)); err != nil {
 		return nil, err
 	}
@@ -1266,7 +1285,6 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 	if effectiveDeadLetter == nil {
 		effectiveDeadLetter = b.globalDeadLetter
 	}
-	registerDeadLetterChannel(b, effectiveDeadLetter)
 
 	h := &RouteHandle[Req, Resp]{
 		Topic:                    r.topic,
@@ -1327,6 +1345,19 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 		return nil, mergeErr
 	}
 
+	// Every fallible check above has now passed — from here on, Register
+	// is "point of no return": ALL remaining steps are pure builder
+	// mutations with no error return, restoring the same atomicity
+	// guarantee DuplicateRouteError/InvalidTopicError already provide
+	// (either Register fully succeeds, or it has NO observable side
+	// effect on b at all). registerDeadLetterChannel previously ran much
+	// earlier (before checkReqReplyParamConflicts/the format checks
+	// above) — a confirmed, previously-real bug: a LATER failure still
+	// left an orphaned dead-letter channel spec entry in b despite
+	// Register() returning an error. Mirrors [api/events]'s own
+	// buildChannelHandle, which already places its equivalent call here.
+	registerDeadLetterChannel(b, effectiveDeadLetter)
+
 	b.registerRoute(r.topic, r.reqCodec.Schema, r.respCodec.Schema, reqHeadersSchema, respHeadersSchema, rb.meta, rb.errorReplies, rb.topicParams, rb.requirements)
 	// Merge this route's own WithSecurityScheme declarations into the
 	// builder's aggregate — last-registered-wins on name collision,
@@ -1341,13 +1372,8 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 	if r.handler != nil {
 		b.registerDispatch(r.topic, h, r.handler)
 	}
-	if rb.handleCallback != nil {
-		cb, ok := rb.handleCallback.(func(*RouteHandle[Req, Resp]))
-		if !ok {
-			return nil, HandleCallbackTypeError{
-				Err: fmt.Errorf("want func(*RouteHandle[%T, %T]), got %T", *new(Req), *new(Resp), rb.handleCallback)}
-		}
-		cb(h)
+	if handleCallback != nil {
+		handleCallback(h)
 	}
 	return h, nil
 }

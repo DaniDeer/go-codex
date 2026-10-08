@@ -1,6 +1,48 @@
-# go-codex Review History (R1–R159, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
+# go-codex Review History (R1–R160, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 160 (api/reqreply full lifecycle sweep — Register atomicity)
+
+User asked for a full in-depth sweep of `api/reqreply`'s declare → middleware → registration
+lifecycle. Unlike `api/events` (shared `buildChannelHandle` builder, no bug found in the prior
+round), `api/reqreply` has the SAME `Register`/`ClientHandle`-duplication shape as `api/rest` —
+field population between the two was confirmed symmetric and correct (no `ValidateRoute`-
+equivalent exists in this package, so Round 159's exact bug class had nothing to audit) — but
+tracing `Register`'s side-effect ORDERING (not just field population) surfaced two confirmed,
+substantial bugs, both empirically verified via repro against the real module:
+
+- **L1 — `registerDeadLetterChannel` ran before later fallible checks**: called BEFORE
+  `checkReqReplyParamConflicts` and the `RequestFormats`/`Formats` type-assertion checks, all of
+  which can still fail AFTER it runs. Repro: a route with `DeadLetter("compute/dlq")` plus a
+  type-mismatched `RequestFormats` opt — `Register()` correctly returned `FormatOptError`, but
+  `Builder.AsyncAPISpec()` afterward still showed a full, live "compute/dlq" dead-letter channel,
+  as if registration had succeeded.
+- **L2 — the `WithHandleCallback` type-assertion ran LAST** (more severe): AFTER
+  `b.registerRoute`/`b.securitySchemes[...]=s`/`b.registerDispatch` had ALL already mutated `b`.
+  Repro: a route with a type-mismatched handle callback — `Register()` correctly returned
+  `HandleCallbackTypeError`, but the spec showed the COMPLETE route registered **and** the real
+  handler was already wired into the live dispatch table, meaning the route would actually
+  respond to requests despite the caller being told registration failed.
+
+Confirmed `api/events`' equivalent code (`buildChannelHandle`) does NOT have this bug — it
+correctly defers its dead-letter/entry registration until after every fallible check has already
+passed, providing the reference ordering restored here. Fixed by validating (but not invoking) the
+`handleCallback` type assertion immediately after the `rb.buildErr` check, near the top of
+`Register`, before any `b.*` mutation — invoking the validated closure only at the very end,
+unchanged on the success path — and moving `registerDeadLetterChannel`'s call to immediately
+before `b.registerRoute`, after every fallible check (`checkReqReplyParamConflicts`, the 2 format
+checks, the 2 merge-field assertions) has passed. `Register()` is now atomic for every checked
+path: either it fully succeeds, or it has zero observable side effects on the `*Builder` — the
+same guarantee `DuplicateRouteError`/`InvalidTopicError` already provided. Added 2 regression
+tests (verified each fails without its fix).
+
+(Noted but intentionally out of scope this round: `api/rest`'s `registerHandle` has the same
+root-cause shape for its OWN `handleCallback` check — `b.entries = append(...)` runs before the
+type-assertion — confirmed via code reading but not yet repro'd/fixed; flagged as a candidate for
+a future `api/rest`-scoped round.)
 
 ---
 
