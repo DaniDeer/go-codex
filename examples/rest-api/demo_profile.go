@@ -16,7 +16,10 @@ import (
 // invalid-cookie demo is ANOTHER client-side pre-flight rejection (the
 // SAME codec that validates server-side also validates the merge-field
 // encode client-side) — the unauthenticated demo shows the SERVER-side
-// 401 instead, since that's a security gate, not a codec constraint.
+// 400 instead (a missing required "Authorization" header, caught by the
+// server's own ValidateHeaders — a codec/param-shape rejection, not a
+// 401 credential rejection, since no credential was sent for the server
+// to reject in the first place).
 func demoProfile(chiClient *rest.Client) {
 	ctx := context.Background()
 

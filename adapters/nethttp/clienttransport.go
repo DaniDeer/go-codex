@@ -374,33 +374,6 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 		}
 		concretePath, _ := buildPathResults[0].Interface().(string)
 
-		// docs/design/d-0006-protocol-native-capabilities.md's Phase
-		// 5a: validate the EXPLICIT opts.QueryParams/CookieParams/
-		// HeaderParams against each param's registered codec (if any)
-		// — mirrors [callWithVars]'s identical steps 2-4 exactly (a
-		// confirmed, previously-missing gap in this reflection
-		// dispatch). Derived values are NOT re-validated here — each
-		// contributing field's own codec already ran during
-		// EncodeQueryVars/EncodeHeaderVars/EncodeCookieVars above.
-		if errI, _ := handleVal.MethodByName("ValidateQuery").Call([]reflect.Value{reflect.ValueOf(opts.QueryParams)})[0].Interface().(error); errI != nil {
-			rest.ReportQueryErrors(ctx, errI)
-			obs.RecordRequest(method, path, 0, time.Since(start))
-			err = errI
-			return nil, err
-		}
-		if errI, _ := handleVal.MethodByName("ValidateCookies").Call([]reflect.Value{reflect.ValueOf(opts.CookieParams)})[0].Interface().(error); errI != nil {
-			rest.ReportCookieErrors(ctx, errI)
-			obs.RecordRequest(method, path, 0, time.Since(start))
-			err = errI
-			return nil, err
-		}
-		if errI, _ := handleVal.MethodByName("ValidateHeaders").Call([]reflect.Value{reflect.ValueOf(opts.HeaderParams)})[0].Interface().(error); errI != nil {
-			rest.ReportHeaderErrors(ctx, errI)
-			obs.RecordRequest(method, path, 0, time.Since(start))
-			err = errI
-			return nil, err
-		}
-
 		// docs/design/declarative-middleware-layering.md's Rollout
 		// Phase A: dispatch every attached codec-backed ClientMW's
 		// EncodeIn, feeding its header/cookie/query contribution into
@@ -409,6 +382,7 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 		// handle.ClientMiddlewareHandlers at all (only the legacy,
 		// general-purpose handle.ClientImplementations).
 		clientMWHandlers, _ := elem.FieldByName("ClientMiddlewareHandlers").Interface().([]rest.ClientMiddlewareHandler)
+		var mwContributed bool
 		if len(clientMWHandlers) > 0 {
 			mwHeaders, mwCookies, mwQuery, mwErr := dispatchClientMiddlewareIn(ctx, reqAny, clientMWHandlers)
 			if mwErr != nil {
@@ -417,6 +391,7 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 				err = mwErr
 				return nil, err
 			}
+			mwContributed = len(mwHeaders) > 0 || len(mwCookies) > 0 || len(mwQuery) > 0
 			queryVars = overrideDerived(queryVars, mwQuery)
 			headerVars = overrideDerived(headerVars, mwHeaders)
 			cookieVars = overrideDerived(cookieVars, mwCookies)
@@ -430,6 +405,40 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 		queryVars = overrideDerived(queryVars, opts.QueryParams)
 		headerVars = overrideDerived(headerVars, opts.HeaderParams)
 		cookieVars = overrideDerived(cookieVars, opts.CookieParams)
+
+		// Validate the FINAL, fully-merged query/cookie/header vars —
+		// NOT the raw opts.QueryParams/CookieParams/HeaderParams (a
+		// confirmed, severe bug this review round found and fixed: the
+		// previous code validated ONLY the caller's explicit overrides,
+		// so a Required merge-field-derived or ClientMiddlewareHandler-
+		// derived value — the FLAGSHIP "auto-derive from Req, one
+		// struct, one call" convenience this package advertises — was
+		// REJECTED as "required parameter missing" unless the caller
+		// ALSO redundantly passed the identical value via opts, which
+		// defeats the entire point of auto-derivation. Validating here,
+		// AFTER both the middleware-dispatch merge and the opts-
+		// override merge, checks each declared param's codec/
+		// Required-ness against its TRUE final value regardless of
+		// which of the three sources (Req merge field, middleware,
+		// explicit opts override) produced it.
+		if errI, _ := handleVal.MethodByName("ValidateQuery").Call([]reflect.Value{reflect.ValueOf(queryVars)})[0].Interface().(error); errI != nil {
+			rest.ReportQueryErrors(ctx, errI)
+			obs.RecordRequest(method, path, 0, time.Since(start))
+			err = errI
+			return nil, err
+		}
+		if errI, _ := handleVal.MethodByName("ValidateCookies").Call([]reflect.Value{reflect.ValueOf(cookieVars)})[0].Interface().(error); errI != nil {
+			rest.ReportCookieErrors(ctx, errI)
+			obs.RecordRequest(method, path, 0, time.Since(start))
+			err = errI
+			return nil, err
+		}
+		if errI, _ := handleVal.MethodByName("ValidateHeaders").Call([]reflect.Value{reflect.ValueOf(headerVars)})[0].Interface().(error); errI != nil {
+			rest.ReportHeaderErrors(ctx, errI)
+			obs.RecordRequest(method, path, 0, time.Since(start))
+			err = errI
+			return nil, err
+		}
 
 		rawURL := strings.TrimRight(t.caller.baseURL, "/") + concretePath
 		if len(queryVars) > 0 {
@@ -462,6 +471,17 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 				credentialFnRan = true
 			}
 		}
+		// credentialProduced is DELIBERATELY a separate signal from
+		// credentialFnRan (which only tracks "did a credential Fn run,
+		// regardless of what it returned" for opts.OnCredentialRejected
+		// purposes): it gates [rest.ValidateSecurityCredentials] below,
+		// and must stay false when a credential Fn deliberately ran but
+		// returned (nil, nil)/empty merge fields to mean "no credential
+		// needed for this call" (see
+		// TestCall_CredentialFunc_ReturnsNilHeader_SkipsValidation) —
+		// true only when EITHER mechanism actually PRODUCED at least
+		// one header/cookie/query value.
+		credentialProduced := len(credHeaders) > 0 || mwContributed
 
 		// 3. Per-call format override resolution (opts.RequestFormats/
 		// ResponseFormats) — a nil override resolves to the reflected
@@ -556,7 +576,26 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 				httpReq.AddCookie(&http.Cookie{Name: k, Value: v})
 			}
 
-			if len(secReqs) > 0 && len(credHeaders) > 0 {
+			// Gated on credentialProduced (true when EITHER the legacy
+			// http.Header-returning ClientMW OR a ClientMiddlewareHandler
+			// actually PRODUCED at least one header/cookie/query value —
+			// see its computation above), NOT len(credHeaders) > 0 alone
+			// — a confirmed, severe bug this review round found and
+			// fixed: len(credHeaders) > 0 only ever reflected the
+			// LEGACY mechanism's own contribution, so a credential
+			// supplied EXCLUSIVELY via the modern ClientBoundMW/
+			// BoundSecurityClientMiddleware axis (dispatchClientMiddlewareIn,
+			// merged into headerVars/cookieVars/queryVars, never into
+			// credHeaders) never reached this check at all — an invalid
+			// credential failing its OWN declared SecurityScheme codec
+			// was silently sent to the server with zero client-side
+			// pre-flight validation. credentialProduced correctly
+			// reflects BOTH mechanisms' ACTUAL contributions, while
+			// still preserving the legacy mechanism's own "deliberately
+			// returns (nil, nil)/empty to mean no credential needed"
+			// escape hatch (a credential Fn that RAN but produced
+			// nothing stays a non-error, same as before this fix).
+			if len(secReqs) > 0 && credentialProduced {
 				if credErr := rest.ValidateSecurityCredentials(credentialExtractorFor(httpReq), secReqs, secSchemes); credErr != nil {
 					if secObs, ok := obs.(stats.SecurityObserver); ok {
 						secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
@@ -804,6 +843,7 @@ func (t *clientTransport) consumeOnce(
 	// confirmed, previously-missing gap: this reflection-based Consume
 	// never dispatched handle.ClientMiddlewareHandlers at all.
 	clientMWHandlers, _ := elem.FieldByName("ClientMiddlewareHandlers").Interface().([]rest.ClientMiddlewareHandler)
+	var mwContributed bool
 	if len(clientMWHandlers) > 0 {
 		mwHeaders, mwCookies, mwQuery, mwErr := dispatchClientMiddlewareIn(ctx, reqVal.Interface(), clientMWHandlers)
 		if mwErr != nil {
@@ -811,6 +851,7 @@ func (t *clientTransport) consumeOnce(
 			obs.RecordRequest(method, path, 0, time.Since(start))
 			return false, mwErr
 		}
+		mwContributed = len(mwHeaders) > 0 || len(mwCookies) > 0 || len(mwQuery) > 0
 		queryVars = overrideDerived(queryVars, mwQuery)
 		headerVars = overrideDerived(headerVars, mwHeaders)
 		cookieVars = overrideDerived(cookieVars, mwCookies)
@@ -834,13 +875,23 @@ func (t *clientTransport) consumeOnce(
 
 	secReqs, clientImpls, secSchemes := resolveClientSecurity(elem, descriptor)
 	var credHeaders http.Header
+	var credentialFnRan bool
 	if len(secReqs) > 0 {
-		credHeaders, _, err = mergeCredentialHeaders(ctx, secReqs, clientImpls)
+		credHeaders, credentialFnRan, err = mergeCredentialHeaders(ctx, secReqs, clientImpls)
 		if err != nil {
 			obs.RecordRequest(method, path, 0, time.Since(start))
 			return false, err
 		}
+		if !credentialFnRan && clientMiddlewareSatisfiesAny(clientMWHandlers, secReqs) {
+			credentialFnRan = true
+		}
 	}
+	// See [clientTransport.Call]'s identical credentialProduced — a
+	// SEPARATE signal from credentialFnRan, gating ValidateSecurityCredentials
+	// specifically (true only when a mechanism actually PRODUCED a
+	// value, preserving the legacy "(nil,nil) means no credential
+	// needed" escape hatch).
+	credentialProduced := len(credHeaders) > 0 || mwContributed
 
 	httpReq, err := http.NewRequestWithContext(ctx, method, rawURL, nil)
 	if err != nil {
@@ -868,7 +919,11 @@ func (t *clientTransport) consumeOnce(
 		httpReq.AddCookie(&http.Cookie{Name: k, Value: v})
 	}
 
-	if len(secReqs) > 0 && len(credHeaders) > 0 {
+	// See [clientTransport.Call]'s identical gate for the full
+	// rationale — credentialProduced (not len(credHeaders) > 0) correctly
+	// reflects a mechanism having ACTUALLY PRODUCED a credential value
+	// via EITHER the legacy or modern ClientMiddlewareHandler mechanism.
+	if len(secReqs) > 0 && credentialProduced {
 		if credErr := rest.ValidateSecurityCredentials(credentialExtractorFor(httpReq), secReqs, secSchemes); credErr != nil {
 			if secObs, ok := obs.(stats.SecurityObserver); ok {
 				secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))

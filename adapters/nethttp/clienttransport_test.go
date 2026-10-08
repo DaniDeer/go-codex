@@ -1388,6 +1388,126 @@ func TestCallWithTransport_Observer_PerCallOverride(t *testing.T) {
 	}
 }
 
+// reqWithRequiredHeader carries a header merge field for
+// TestCallWithTransport_RequiredHeaderMergeField_NotFalselyRejected.
+type reqWithRequiredHeader struct{ Token string }
+
+var reqWithRequiredHeaderCodec = codex.Struct[reqWithRequiredHeader]()
+
+// TestCallWithTransport_RequiredHeaderMergeField_NotFalselyRejected is a
+// regression test for a confirmed, severe bug this review round found:
+// [clientTransport.Call] validated ONLY the caller's explicit
+// opts.HeaderParams/CookieParams/QueryParams overrides — NOT the
+// merge-field-DERIVED values (from EncodeHeaderVars/EncodeCookieVars/
+// EncodeQueryVars, called earlier in the SAME function) — so a route
+// declaring a REQUIRED header/cookie/query merge field (the FLAGSHIP
+// "auto-derive from Req, one struct, one call" convenience this package
+// advertises) was ALWAYS rejected with a false "required parameter
+// missing" error, UNLESS the caller ALSO redundantly passed the
+// identical value via opts, defeating the entire point of
+// auto-derivation. Confirmed broken in the shipped
+// examples/rest-api (demoProfile's "valid cookie+header (auto-derived)"
+// assertion). Covers BOTH RegisterHandle- and ClientHandle-derived
+// handles — both exhibited the bug identically.
+func TestCallWithTransport_RequiredHeaderMergeField_NotFalselyRejected(t *testing.T) {
+	route := rest.NewRoute[reqWithRequiredHeader, userResp]("GET", "/with-required-header",
+		reqWithRequiredHeaderCodec, userRespCodec,
+		rest.NewRequiredHeaderParam("X-Token", codex.String(),
+			func(r reqWithRequiredHeader) string { return r.Token },
+			func(r *reqWithRequiredHeader, v string) { r.Token = v },
+		),
+	)
+
+	var gotToken string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotToken = r.Header.Get("X-Token")
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"me"}`)) //nolint:errcheck
+	}))
+	defer srv.Close()
+	transport := NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})
+
+	b := rest.NewServer(testInfo)
+	registerHandle, err := route.RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("RegisterHandle: %v", err)
+	}
+	if _, err := rest.CallWithTransport(context.Background(), transport, registerHandle,
+		reqWithRequiredHeader{Token: "valid-token"}); err != nil {
+		t.Fatalf("CallWithTransport (RegisterHandle-derived): %v", err)
+	}
+	if gotToken != "valid-token" {
+		t.Errorf("server received X-Token = %q, want %q (RegisterHandle-derived)", gotToken, "valid-token")
+	}
+
+	gotToken = ""
+	clientHandle := route.ClientHandle()
+	if _, err := rest.CallWithTransport(context.Background(), transport, clientHandle,
+		reqWithRequiredHeader{Token: "valid-token"}); err != nil {
+		t.Fatalf("CallWithTransport (ClientHandle-derived): %v", err)
+	}
+	if gotToken != "valid-token" {
+		t.Errorf("server received X-Token = %q, want %q (ClientHandle-derived)", gotToken, "valid-token")
+	}
+}
+
+// TestCallWithTransport_BoundClientMW_InvalidCredential_RejectedClientSide
+// is a regression test for a second confirmed, severe bug found the SAME
+// round: [rest.ValidateSecurityCredentials] (the SecurityScheme's OWN
+// credential-FORMAT codec check) was gated on len(credHeaders) > 0, which
+// ONLY ever reflected the LEGACY http.Header-returning ClientMW
+// mechanism's contribution — NEVER the modern
+// [rest.BoundSecurityClientMiddleware]/ClientBoundMW axis
+// (dispatchClientMiddlewareIn). A credential failing its OWN declared
+// SecurityScheme codec was silently sent to the server with ZERO
+// client-side pre-flight validation when supplied exclusively via the
+// modern, documented, recommended mechanism.
+func TestCallWithTransport_BoundClientMW_InvalidCredential_RejectedClientSide(t *testing.T) {
+	type authIn struct{ Token string }
+	type authOut struct{}
+
+	requestReachedServer := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestReachedServer = true
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"me"}`)) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	bearerScheme := rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}
+	bearerScheme = bearerScheme.WithCodec(codex.String().Refine(validate.MinLen(10)))
+
+	boundMW := rest.BoundSecurityClientMiddleware[getReq, authIn, authOut](
+		"bearerAuth", bearerScheme, nil,
+		func(ctx context.Context, req getReq) (authIn, error) {
+			return authIn{Token: "short"}, nil // fails MinLen(10)
+		},
+	).WithRequestHeader(rest.NewRequiredHeaderParam("Authorization", codex.String(),
+		func(in authIn) string { return in.Token },
+		func(in *authIn, v string) { in.Token = v },
+	))
+
+	b := rest.NewServer(testInfo)
+	b.AddGlobalSecurity(route.Require("bearerAuth"))
+	route := rest.NewRoute[getReq, userResp]("GET", "/bound-mw-invalid-cred", getReqCodec, userRespCodec).
+		ClientBoundMW(boundMW)
+
+	registerHandle, err := route.RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("RegisterHandle: %v", err)
+	}
+	transport := NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})
+
+	_, err = rest.CallWithTransport(context.Background(), transport, registerHandle, getReq{})
+	var credErr rest.SecurityCredentialError
+	if !errors.As(err, &credErr) {
+		t.Fatalf("want rest.SecurityCredentialError (invalid credential rejected client-side), got %v", err)
+	}
+	if requestReachedServer {
+		t.Error("want no network call when the credential fails its scheme codec, but the server was hit")
+	}
+}
+
 // callWithHandle mirrors the exact signature of the now-DELETED
 // CallWithHandle (docs/design/d-0006-protocol-native-capabilities.md's
 // Phase 5a) — a thin, test-only shim reducing this package's existing

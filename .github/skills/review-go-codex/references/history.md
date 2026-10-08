@@ -1,6 +1,63 @@
-# go-codex Review History (R1–R162, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
+# go-codex Review History (R1–R163, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 163 (api/rest security schemes — client-side merge-field validation severely broken)
+
+User asked for an in-depth, full-path review of `api/rest`'s security schemes (declare →
+credential validation → dispatch → server + client adapter enforcement), starting a planned
+concept-by-concept sweep of the whole `api/rest` surface. Investigating `BoundSecurityClientMiddleware`
+uncovered a MUCH broader, severe bug in `adapters/nethttp/clienttransport.go`'s reflection-based
+`clientTransport.Call`/`consumeOnce` (backing `rest.Client.Call`/`rest.CallWithTransport`/
+`rest.Client.Consume` — the package's PRIMARY client dispatch path):
+
+- **S1 — client-side `ValidateQuery`/`ValidateCookies`/`ValidateHeaders` validated the WRONG map,
+  at the WRONG time (bug, severe)**: these 3 calls ran immediately after `EncodeQueryVars`/
+  `EncodeHeaderVars`/`EncodeCookieVars` derived values from `Req`, but validated ONLY
+  `opts.QueryParams`/`CookieParams`/`HeaderParams` (the caller's EXPLICIT overrides) — NOT the
+  derived values themselves, and BEFORE `dispatchClientMiddlewareIn` (the `ClientBoundMW`/`.Use()`
+  axis) even ran. Any route with a REQUIRED header/cookie/query merge field — the FLAGSHIP
+  "auto-derive from Req, one struct, one call" convenience this package advertises — was
+  unconditionally rejected with a false "required parameter missing" error unless the caller ALSO
+  redundantly passed the identical value via `opts`. **Confirmed ALREADY BROKEN in the shipped
+  `examples/rest-api`'s `demoProfile` demo** (its very first, flagship "valid cookie+header
+  (auto-derived)" assertion was silently failing — missed by every previous "run all examples,
+  check exit code" verification pass this whole review series, since a printed error doesn't fail
+  the process). Fixed by moving the 3 `Validate*` calls to run AFTER both the
+  `dispatchClientMiddlewareIn` merge and the `opts.*` override merge, validating the FINAL,
+  fully-merged `queryVars`/`cookieVars`/`headerVars` instead of raw `opts.*`.
+- **S2 — `ValidateSecurityCredentials` never ran for a credential supplied via the modern
+  `ClientBoundMW`/`BoundSecurityClientMiddleware` axis (bug, severe)**: the gate
+  (`len(secReqs) > 0 && len(credHeaders) > 0`) only ever reflected the LEGACY
+  `http.Header`-returning `ClientMW` mechanism's own contribution — `dispatchClientMiddlewareIn`'s
+  contribution (merged into `headerVars`/`cookieVars`/`queryVars`, never into `credHeaders`) was
+  invisible to it. A credential failing its own declared `SecurityScheme` codec was silently sent
+  to the server with zero client-side pre-flight validation when supplied via the modern,
+  documented, recommended mechanism. Fixed by introducing `credentialProduced` (true when EITHER
+  mechanism ACTUALLY produced a non-empty value), replacing the `len(credHeaders) > 0` gate —
+  carefully preserving the legacy mechanism's existing "deliberately returns (nil, nil)/empty to
+  mean no credential needed" escape hatch (verified via the pre-existing
+  `TestCall_CredentialFunc_ReturnsNilHeader_SkipsValidation`, which regressed under a simpler,
+  first-attempt fix using `credentialFnRan` directly, then passed once narrowed to
+  `credentialProduced`). Both fixes applied symmetrically to `Call` and `consumeOnce` (SSE
+  Consume's equivalent dispatch).
+- **S3 — documented, NOT fixed (accepted limitation)**: the legacy `http.Header`-only-returning
+  `ClientMW` mechanism can only naturally express HEADER-location security scheme credentials — a
+  Cookie-location credential requires an undocumented manual `"Cookie: name=value"` header-string
+  construction; a Query-location credential is structurally impossible to express via this
+  mechanism at all (its return type is `http.Header`, nothing else). Because "produced nothing" is
+  structurally indistinguishable from "deliberately decided no credential is needed" (the
+  established, tested escape hatch S2 preserves), this cannot be fixed without breaking that
+  escape hatch. Guidance: use `BoundSecurityClientMiddleware`+`WithRequestQuery`/`WithRequestCookie`
+  for Query/Cookie-location security scheme credentials instead of the legacy mechanism.
+
+Added 2 regression tests to `adapters/nethttp/clienttransport_test.go`, each verified to fail
+(reproducing the exact pre-fix error) without its fix. Fixed a stale doc comment in
+`examples/rest-api/demo_profile.go` (claimed 401 for an unauthenticated demo; actual, correct
+behavior is 400 — a missing required header is a param-shape rejection, not a credential
+rejection — unrelated to this round's fix, already present before it).
 
 ---
 
