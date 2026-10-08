@@ -449,23 +449,40 @@ func (s Subscriber[T]) role() string { return "subscribe" }
 
 // middlewareNames implements [routable] for [Subscriber].
 func (s Subscriber[T]) middlewareNames() []string {
-	names := make([]string, 0, len(s.mws))
+	// s.mws covers every legacy/codec-backed .Use()-attached middleware.
+	// s.middlewareHandlers ALSO needs including — [Subscriber.SubscribeBoundMW]
+	// attaches bound middleware there DIRECTLY (never touching s.mws at
+	// all), so omitting it would silently drop every bound middleware's
+	// name from [RouterEntry.MiddlewareNames] — a confirmed, previously-real
+	// gap (SubscribeBoundMW is a documented, actively-used feature, not an
+	// obscure corner). MiddlewareHandler already carries its own Name field,
+	// so no new plumbing is needed here, unlike api/rest/api/reqreply's
+	// bound opt types.
+	names := make([]string, 0, len(s.mws)+len(s.middlewareHandlers))
 	for _, mw := range s.mws {
 		names = append(names, mw.Name)
+	}
+	for _, h := range s.middlewareHandlers {
+		names = append(names, h.Name)
 	}
 	return names
 }
 
 // tags implements [routable] for [Subscriber] — reports s's OWN,
 // directly-declared [ChannelMeta.Tags], BEFORE any Router involvement.
+// Resolves s.channel's own opts through a scratch [channelBuilder]
+// (read-only; never mutates s) — NOT a naive per-opt iteration — because
+// [ChannelMeta.applyChannel] is a WHOLE-STRUCT OVERWRITE (`cb.meta = m`):
+// if a channel declares 2+ separate ChannelMeta opts, only the LAST one's
+// Tags survive into the real registered spec. Replaying through a scratch
+// channelBuilder guarantees this accessor reports EXACTLY what Register
+// will produce. Mirrors [api/reqreply]'s identical mechanism.
 func (s Subscriber[T]) tags() []string {
-	var tags []string
+	var cb channelBuilder
 	for _, opt := range s.channel.opts {
-		if m, ok := opt.(ChannelMeta); ok {
-			tags = append(tags, m.Tags...)
-		}
+		opt.applyChannel(&cb)
 	}
-	return tags
+	return cb.meta.Tags
 }
 
 // registerAny implements [routable] for [Subscriber] — delegates to
@@ -500,9 +517,15 @@ func (p Publisher[T]) role() string { return "publish" }
 
 // middlewareNames implements [routable] for [Publisher].
 func (p Publisher[T]) middlewareNames() []string {
-	names := make([]string, 0, len(p.mws))
+	// See [Subscriber.middlewareNames]'s identical comment above —
+	// p.clientMiddlewareHandlers holds [Publisher.PublishBoundMW]-attached
+	// bound middleware, never touching p.mws.
+	names := make([]string, 0, len(p.mws)+len(p.clientMiddlewareHandlers))
 	for _, mw := range p.mws {
 		names = append(names, mw.Name)
+	}
+	for _, h := range p.clientMiddlewareHandlers {
+		names = append(names, h.Name)
 	}
 	return names
 }
@@ -510,13 +533,13 @@ func (p Publisher[T]) middlewareNames() []string {
 // tags implements [routable] for [Publisher] — reports p's OWN,
 // directly-declared [ChannelMeta.Tags], BEFORE any Router involvement.
 func (p Publisher[T]) tags() []string {
-	var tags []string
+	// See [Subscriber.tags]'s identical doc comment above — same
+	// scratch-channelBuilder-replay rationale applies unchanged.
+	var cb channelBuilder
 	for _, opt := range p.channel.opts {
-		if m, ok := opt.(ChannelMeta); ok {
-			tags = append(tags, m.Tags...)
-		}
+		opt.applyChannel(&cb)
 	}
-	return tags
+	return cb.meta.Tags
 }
 
 // registerAny implements [routable] for [Publisher] — [Publisher] has no

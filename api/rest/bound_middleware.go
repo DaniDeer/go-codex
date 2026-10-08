@@ -353,14 +353,42 @@ type boundNamed interface {
 // RouteOpt itself cannot be generic over Req, so by the time this opt is
 // constructed, the Req match has ALREADY been verified; nothing further
 // needs Req at this point.
-type boundHandleMWOpt struct{ fn func(rb *routeBuilder) }
+//
+// name is captured HERE (via [boundNamed], at the SAME call site fn is
+// built) rather than read back out of rb later — a non-security-carrying
+// bound middleware never touches rb.middlewares (only
+// rb.middlewareSpecContributions, which [Router.middlewareNames] does
+// NOT consult either), so without storing name directly on the opt
+// itself, a Router-grouped leaf's [RouterEntry.MiddlewareNames] would
+// silently omit every bound middleware with no Security declaration —
+// a confirmed, previously-real gap (HandleBoundMW is a documented,
+// actively-used feature, not an obscure corner).
+type boundHandleMWOpt struct {
+	name string
+	fn   func(rb *routeBuilder)
+}
 
 func (o boundHandleMWOpt) applyRoute(rb *routeBuilder) { o.fn(rb) }
 
-// boundClientAttachOpt mirrors boundHandleMWOpt for the client/sending role.
-type boundClientAttachOpt struct{ fn func(rb *routeBuilder) }
+// boundClientAttachOpt mirrors boundHandleMWOpt for the client/sending
+// role — see that type's doc comment for why name is captured here.
+type boundClientAttachOpt struct {
+	name string
+	fn   func(rb *routeBuilder)
+}
 
 func (o boundClientAttachOpt) applyRoute(rb *routeBuilder) { o.fn(rb) }
+
+// boundNameOf extracts bm's name via the Req-free [boundNamed] interface,
+// returning "" when bm doesn't implement it — used at HandleBoundMW/
+// ClientBoundMW construction time to populate boundHandleMWOpt/
+// boundClientAttachOpt's own name field.
+func boundNameOf(bm any) string {
+	if n, ok := bm.(boundNamed); ok {
+		return n.MiddlewareName()
+	}
+	return ""
+}
 
 // boundMismatchOpt is the [RouteOpt] returned by [Route.HandleBoundMW]/
 // [ClientBoundMW] when bm's concrete Req did NOT match the route's own
@@ -400,7 +428,7 @@ func (o boundMismatchOpt) applyRoute(rb *routeBuilder) {
 // mis-dispatched.
 func (r Route[Req, Resp]) HandleBoundMW(bm any) Route[Req, Resp] {
 	if v, ok := bm.(boundContributor[Req]); ok {
-		r.opts = append(slices.Clone(r.opts), boundHandleMWOpt{fn: v.applyBoundRoute})
+		r.opts = append(slices.Clone(r.opts), boundHandleMWOpt{name: boundNameOf(bm), fn: v.applyBoundRoute})
 		return r
 	}
 	r.opts = append(slices.Clone(r.opts), boundMismatchOpt{route: r.path, got: bm})
@@ -410,7 +438,7 @@ func (r Route[Req, Resp]) HandleBoundMW(bm any) Route[Req, Resp] {
 // HandleBoundMW is [SSERoute]'s equivalent of [Route.HandleBoundMW].
 func (s SSERoute[Req, Event]) HandleBoundMW(bm any) SSERoute[Req, Event] {
 	if v, ok := bm.(boundContributor[Req]); ok {
-		s.opts = append(slices.Clone(s.opts), boundHandleMWOpt{fn: v.applyBoundRoute})
+		s.opts = append(slices.Clone(s.opts), boundHandleMWOpt{name: boundNameOf(bm), fn: v.applyBoundRoute})
 		return s
 	}
 	s.opts = append(slices.Clone(s.opts), boundMismatchOpt{route: s.path, got: bm})
@@ -422,7 +450,7 @@ func (s SSERoute[Req, Event]) HandleBoundMW(bm any) SSERoute[Req, Event] {
 // [Route.HandleBoundMW] for the sending role.
 func (r Route[Req, Resp]) ClientBoundMW(bm any) Route[Req, Resp] {
 	if v, ok := bm.(boundClientContributor[Req]); ok {
-		r.opts = append(slices.Clone(r.opts), boundClientAttachOpt{fn: v.applyBoundClientRoute})
+		r.opts = append(slices.Clone(r.opts), boundClientAttachOpt{name: boundNameOf(bm), fn: v.applyBoundClientRoute})
 		return r
 	}
 	r.opts = append(slices.Clone(r.opts), boundMismatchOpt{route: r.path, got: bm})
@@ -432,7 +460,7 @@ func (r Route[Req, Resp]) ClientBoundMW(bm any) Route[Req, Resp] {
 // ClientBoundMW is [SSERoute]'s equivalent of [Route.ClientBoundMW].
 func (s SSERoute[Req, Event]) ClientBoundMW(bm any) SSERoute[Req, Event] {
 	if v, ok := bm.(boundClientContributor[Req]); ok {
-		s.opts = append(slices.Clone(s.opts), boundClientAttachOpt{fn: v.applyBoundClientRoute})
+		s.opts = append(slices.Clone(s.opts), boundClientAttachOpt{name: boundNameOf(bm), fn: v.applyBoundClientRoute})
 		return s
 	}
 	s.opts = append(slices.Clone(s.opts), boundMismatchOpt{route: s.path, got: bm})

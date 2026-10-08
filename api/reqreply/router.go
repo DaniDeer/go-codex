@@ -502,13 +502,28 @@ func (r Route[Req, Resp]) withRouterPrefix(prefix string, mws []middleware.Route
 // opts through a scratch [routeBuilder] (read-only; never mutates r), the
 // SAME mechanism [ValidateRoute] already uses.
 func (r Route[Req, Resp]) middlewareNames() []string {
-	var rb routeBuilder
+	// A direct type-switch over r's own opts — NOT a scratch-routeBuilder
+	// replay (unlike [Route.tags] below) — because rb.middlewares is only
+	// conditionally populated for bound middleware (ONLY when it carries
+	// a Security declaration — see [BoundMiddleware.applyBoundRoute]) and
+	// rb.middlewareSpecContributions (populated unconditionally for
+	// bound/codec-backed middleware) has no comparable per-leaf accessor
+	// here; reading each opt's OWN captured name directly (routeMiddlewareOpt's
+	// mws, boundHandleMWOpt/boundClientAttachOpt's name field) is simpler
+	// and complete for every attachment class, without depending on which
+	// rb field a given middleware happens to touch.
+	var names []string
 	for _, opt := range r.opts {
-		opt.applyRoute(&rb)
-	}
-	names := make([]string, 0, len(rb.middlewares))
-	for _, mw := range rb.middlewares {
-		names = append(names, mw.Name)
+		switch o := opt.(type) {
+		case routeMiddlewareOpt:
+			for _, mw := range o.mws {
+				names = append(names, middlewareNameOf(mw))
+			}
+		case boundHandleMWOpt:
+			names = append(names, o.name)
+		case boundClientAttachOpt:
+			names = append(names, o.name)
+		}
 	}
 	return names
 }

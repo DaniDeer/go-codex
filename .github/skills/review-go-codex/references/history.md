@@ -1,6 +1,41 @@
-# go-codex Review History (R1–R157, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
+# go-codex Review History (R1–R158, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 158 (Router api/ layer deep dive #2 — Routes()/Walk() preview accuracy)
+
+User asked for ANOTHER deep dive into the Router api/ layer after Round 157's substantial
+`.With()`/`Mount()` bug, this time testing whether `Router.Routes()`/`Walk()`'s preview
+(`RouterEntry.MiddlewareNames`/`Tags`) actually matches what `Register()` produces — the
+feature's own headline promise. Both findings empirically verified via throwaway
+`replace`-directive verification modules against the real packages before being accepted.
+
+- **J1 — `RouterEntry.MiddlewareNames` completely omitted bound-middleware names**: confirmed via
+  repro in ALL 3 packages — a route/channel with `.HandleBoundMW(bm)`/`.SubscribeBoundMW(bm)`/
+  `.PublishBoundMW(bm)`/`.ClientBoundMW(bm)` and no `.Use()` at all reported `MiddlewareNames=[]`,
+  even though the bound middleware genuinely dispatches once registered. Root cause: `api/rest`/
+  `api/reqreply`'s bound-attachment opts (`boundHandleMWOpt`/`boundClientAttachOpt`) stored only a
+  closure, no name, and `middlewareNames()`'s type-switch didn't recognize them; `api/events`'
+  bound attachment mutates `middlewareHandlers`/`clientMiddlewareHandlers` directly (which DO
+  carry a `Name` field) but `middlewareNames()` only ever read `mws`. Fixed: rest/reqreply now
+  capture `name` on the opt itself at `HandleBoundMW`/`ClientBoundMW` construction time (via the
+  existing `boundNamed`/`MiddlewareName()` interface) and `middlewareNames()`'s type-switch
+  recognizes both opt types; events' `middlewareNames()` now also appends every
+  `middlewareHandlers[].Name`/`clientMiddlewareHandlers[].Name`. Added 1 regression test per
+  package (verified each fails without its fix).
+- **J2 — `tags()` could report tags that don't match the actual registered spec**: when a leaf
+  declares 2+ separate `RouteMeta`/`ChannelMeta` opts (legal, if unusual), the real `Register()`
+  keeps only the LAST one's Tags (`RouteMeta.applyRoute`/`ChannelMeta.applyChannel` are both
+  whole-struct overwrites), but `api/rest`/`api/events`'s naive opt-iteration `tags()` MERGED
+  every declared opt's Tags together — confirmed via repro: `Routes()` reported
+  `tags=[ancestor a b]` while the actual registered OpenAPI spec only had `tags: [ancestor, b]`.
+  `api/reqreply`'s `tags()` was already correct (resolves via a scratch `routeBuilder` replay,
+  exactly matching Register's own resolution). Fixed `api/rest`'s `Route`/`SSERoute.tags()` and
+  `api/events`'s `Subscriber`/`Publisher.tags()` to use the SAME scratch-builder-replay pattern.
+  Added 1 regression test per package (rest, events — reqreply already correct, no test needed),
+  each comparing `Routes()`'s preview against the actually-registered spec's marshaled output.
 
 ---
 

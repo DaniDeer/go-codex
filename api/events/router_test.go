@@ -3,6 +3,7 @@ package events_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -169,6 +170,30 @@ func TestRouter_DuplicateMiddlewareName_ReturnsTypedError(t *testing.T) {
 	var prefixErr events.RouterPrefixError
 	if errors.As(err, &prefixErr) {
 		t.Errorf("want DuplicateMiddlewareNameError to propagate unwrapped, got it wrapped in RouterPrefixError")
+	}
+}
+
+func TestRouter_Routes_IncludesBoundMiddlewareNames(t *testing.T) {
+	bm := events.NewBoundSubscribeMiddleware(
+		middleware.Declaration[struct{}, struct{}]{Name: "bound-audit"},
+		func(_ context.Context, _ *routerTestPayload, _ struct{}) (struct{}, error) { return struct{}{}, nil },
+	)
+	sub := newRouterTestSubscriber("bound").SubscribeBoundMW(bm)
+	rt := events.NewRouter("api").Route(sub)
+
+	entries := rt.Routes()
+	if len(entries) != 1 {
+		t.Fatalf("want 1 entry, got %d", len(entries))
+	}
+	names := entries[0].MiddlewareNames
+	found := false
+	for _, n := range names {
+		if n == "bound-audit" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want MiddlewareNames to include bound middleware name %q, got %v", "bound-audit", names)
 	}
 }
 
@@ -626,6 +651,52 @@ func TestRouter_Tags_SurviveLeafsOwnChannelMeta(t *testing.T) {
 	client := events.NewClient()
 	if err := rt.Register(client); err != nil {
 		t.Fatalf("Register: %v", err)
+	}
+}
+
+func TestRouter_Tags_PreviewMatchesRegisteredSpec_WithMultipleChannelMetaOpts(t *testing.T) {
+	// A channel declaring 2+ SEPARATE ChannelMeta opts is unusual but
+	// legal (variadic ChannelOpt list) — ChannelMeta.applyChannel is a
+	// WHOLE-STRUCT OVERWRITE, so only the LAST one's Tags survive into
+	// the real registered spec. Routes()'s preview must match that
+	// exactly, not incorrectly merge every declared ChannelMeta's Tags.
+	sub := events.NewChannel[routerTestPayload]("x", routerTestPayloadCodec,
+		events.ChannelMeta{Tags: []string{"a"}},
+		events.ChannelMeta{Tags: []string{"b"}},
+	).WithSubscribe(events.Subscribe{}).WithHandler(routerTestHandler)
+	rt := events.NewRouter("api").Tags("ancestor").Route(sub)
+
+	entries := rt.Routes()
+	previewTags := entries[0].Tags
+	wantTags := []string{"ancestor", "b"}
+	if len(previewTags) != len(wantTags) {
+		t.Fatalf("want preview tags %v, got %v", wantTags, previewTags)
+	}
+	for i, want := range wantTags {
+		if previewTags[i] != want {
+			t.Errorf("want preview tags %v, got %v", wantTags, previewTags)
+			break
+		}
+	}
+
+	client := events.NewClient()
+	if err := rt.Register(client); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	spec, err := client.AsyncAPISpec()
+	if err != nil {
+		t.Fatalf("AsyncAPISpec: %v", err)
+	}
+	y, err := spec.MarshalYAML()
+	if err != nil {
+		t.Fatalf("MarshalYAML: %v", err)
+	}
+	got := string(y)
+	if !strings.Contains(got, "name: ancestor") || !strings.Contains(got, "name: b") {
+		t.Errorf("want registered spec to contain tags [ancestor b], got:\n%s", got)
+	}
+	if strings.Contains(got, "name: a\n") {
+		t.Errorf("want registered spec to NOT contain the overwritten ChannelMeta's tag \"a\" (preview must match reality), got:\n%s", got)
 	}
 }
 

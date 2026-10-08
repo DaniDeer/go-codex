@@ -3,6 +3,7 @@ package rest_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -164,6 +165,30 @@ func TestRouter_DuplicateMiddlewareName_ReturnsTypedError(t *testing.T) {
 	var prefixErr rest.RouterPrefixError
 	if errors.As(err, &prefixErr) {
 		t.Errorf("want DuplicateMiddlewareNameError to propagate unwrapped, got it wrapped in RouterPrefixError")
+	}
+}
+
+func TestRouter_Routes_IncludesBoundMiddlewareNames(t *testing.T) {
+	bm := rest.NewBoundMiddleware[routerTestReq](
+		middleware.Declaration[mdTestIn, mdTestOut]{Name: "bound-audit"},
+		func(_ context.Context, _ *routerTestReq, _ mdTestIn) (mdTestOut, error) { return mdTestOut{}, nil },
+	)
+	route := newRouterTestRoute("GET", "/bound").HandleBoundMW(bm)
+	rt := rest.NewRouter("/api").Route(route)
+
+	entries := rt.Routes()
+	if len(entries) != 1 {
+		t.Fatalf("want 1 entry, got %d", len(entries))
+	}
+	names := entries[0].MiddlewareNames
+	found := false
+	for _, n := range names {
+		if n == "bound-audit" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want MiddlewareNames to include bound middleware name %q, got %v", "bound-audit", names)
 	}
 }
 
@@ -564,6 +589,52 @@ func TestRouter_Tags_SurviveLeafsOwnRouteMeta(t *testing.T) {
 	server := rest.NewServer(rest.Info{Title: "t", Version: "1"})
 	if err := rt.Register(server); err != nil {
 		t.Fatalf("Register: %v", err)
+	}
+}
+
+func TestRouter_Tags_PreviewMatchesRegisteredSpec_WithMultipleRouteMetaOpts(t *testing.T) {
+	// A route declaring 2+ SEPARATE RouteMeta opts is unusual but legal
+	// (variadic RouteOpt list) — RouteMeta.applyRoute is a WHOLE-STRUCT
+	// OVERWRITE, so only the LAST one's Tags survive into the real
+	// registered spec. Routes()'s preview must match that exactly, not
+	// incorrectly merge every declared RouteMeta's Tags together.
+	route := rest.NewRoute[routerTestReq, routerTestResp]("GET", "/x", routerTestReqCodec, routerTestRespCodec,
+		rest.RouteMeta{OperationID: "x", Tags: []string{"a"}},
+		rest.RouteMeta{OperationID: "x", Tags: []string{"b"}},
+	).WithHandler(routerTestHandler)
+	rt := rest.NewRouter("/api").Tags("ancestor").Route(route)
+
+	entries := rt.Routes()
+	previewTags := entries[0].Tags
+	wantTags := []string{"ancestor", "b"}
+	if len(previewTags) != len(wantTags) {
+		t.Fatalf("want preview tags %v, got %v", wantTags, previewTags)
+	}
+	for i, want := range wantTags {
+		if previewTags[i] != want {
+			t.Errorf("want preview tags %v, got %v", wantTags, previewTags)
+			break
+		}
+	}
+
+	server := rest.NewServer(rest.Info{Title: "t", Version: "1"})
+	if err := rt.Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	spec, err := server.OpenAPISpec()
+	if err != nil {
+		t.Fatalf("OpenAPISpec: %v", err)
+	}
+	y, err := spec.MarshalYAML()
+	if err != nil {
+		t.Fatalf("MarshalYAML: %v", err)
+	}
+	got := string(y)
+	if !strings.Contains(got, "- ancestor") || !strings.Contains(got, "- b") {
+		t.Errorf("want registered spec to contain tags [ancestor b], got:\n%s", got)
+	}
+	if strings.Contains(got, "- a\n") {
+		t.Errorf("want registered spec to NOT contain the overwritten RouteMeta's tag \"a\" (preview must match reality), got:\n%s", got)
 	}
 }
 

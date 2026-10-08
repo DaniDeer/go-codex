@@ -168,6 +168,30 @@ func TestRouter_DuplicateMiddlewareName_ReturnsTypedError(t *testing.T) {
 	}
 }
 
+func TestRouter_Routes_IncludesBoundMiddlewareNames(t *testing.T) {
+	bm := reqreply.NewBoundMiddleware[routerTestReq](
+		middleware.Declaration[struct{}, struct{}]{Name: "bound-audit"},
+		func(_ context.Context, _ *routerTestReq, _ struct{}) (struct{}, error) { return struct{}{}, nil },
+	)
+	route := newRouterTestRoute("bound").HandleBoundMW(bm)
+	rt := reqreply.NewRouter("compute").Route(route)
+
+	entries := rt.Routes()
+	if len(entries) != 1 {
+		t.Fatalf("want 1 entry, got %d", len(entries))
+	}
+	names := entries[0].MiddlewareNames
+	found := false
+	for _, n := range names {
+		if n == "bound-audit" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want MiddlewareNames to include bound middleware name %q, got %v", "bound-audit", names)
+	}
+}
+
 func TestRouter_Group_SharesPrefixAddsScopedMiddlewareOnly(t *testing.T) {
 	scoped := middleware.Middleware{Name: "scoped"}
 	rt := reqreply.NewRouter("compute").

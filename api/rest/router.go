@@ -576,10 +576,15 @@ func (r Route[Req, Resp]) routeMethod() string { return r.method }
 func (r Route[Req, Resp]) middlewareNames() []string {
 	var names []string
 	for _, opt := range r.opts {
-		if rmo, ok := opt.(routeMiddlewareOpt); ok {
-			for _, mw := range rmo.mws {
+		switch o := opt.(type) {
+		case routeMiddlewareOpt:
+			for _, mw := range o.mws {
 				names = append(names, middlewareNameOf(mw))
 			}
+		case boundHandleMWOpt:
+			names = append(names, o.name)
+		case boundClientAttachOpt:
+			names = append(names, o.name)
 		}
 	}
 	return names
@@ -588,13 +593,21 @@ func (r Route[Req, Resp]) middlewareNames() []string {
 // tags implements [routable] for [Route] — reports r's OWN,
 // directly-declared [RouteMeta.Tags], BEFORE any Router involvement.
 func (r Route[Req, Resp]) tags() []string {
-	var tags []string
+	// Resolves r's own opts through a scratch [routeBuilder] (read-only;
+	// never mutates r) — NOT a naive per-opt iteration — because
+	// [RouteMeta.applyRoute] is a WHOLE-STRUCT OVERWRITE (`rb.meta = m`):
+	// if a route declares 2+ separate RouteMeta opts, only the LAST one's
+	// Tags survive into the real registered spec. Replaying through a
+	// scratch routeBuilder guarantees this accessor reports EXACTLY what
+	// Register will produce, instead of incorrectly merging every
+	// declared RouteMeta's Tags together — a confirmed, previously-real
+	// discrepancy between Router's Routes()/Walk() preview and the actual
+	// registered result. Mirrors [api/reqreply]'s identical mechanism.
+	var rb routeBuilder
 	for _, opt := range r.opts {
-		if rm, ok := opt.(RouteMeta); ok {
-			tags = append(tags, rm.Tags...)
-		}
+		opt.applyRoute(&rb)
 	}
-	return tags
+	return rb.meta.Tags
 }
 
 // registerAny implements [routable] for [Route].
@@ -620,10 +633,15 @@ func (s SSERoute[Req, Event]) routeMethod() string { return "GET" }
 func (s SSERoute[Req, Event]) middlewareNames() []string {
 	var names []string
 	for _, opt := range s.opts {
-		if rmo, ok := opt.(routeMiddlewareOpt); ok {
-			for _, mw := range rmo.mws {
+		switch o := opt.(type) {
+		case routeMiddlewareOpt:
+			for _, mw := range o.mws {
 				names = append(names, middlewareNameOf(mw))
 			}
+		case boundHandleMWOpt:
+			names = append(names, o.name)
+		case boundClientAttachOpt:
+			names = append(names, o.name)
 		}
 	}
 	return names
@@ -632,13 +650,13 @@ func (s SSERoute[Req, Event]) middlewareNames() []string {
 // tags implements [routable] for [SSERoute] — reports s's OWN,
 // directly-declared [RouteMeta.Tags], BEFORE any Router involvement.
 func (s SSERoute[Req, Event]) tags() []string {
-	var tags []string
+	// See [Route.tags]'s identical doc comment above — same
+	// scratch-routeBuilder-replay rationale applies unchanged.
+	var rb routeBuilder
 	for _, opt := range s.opts {
-		if rm, ok := opt.(RouteMeta); ok {
-			tags = append(tags, rm.Tags...)
-		}
+		opt.applyRoute(&rb)
 	}
-	return tags
+	return rb.meta.Tags
 }
 
 // registerAny implements [routable] for [SSERoute].
