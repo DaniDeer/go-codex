@@ -120,6 +120,7 @@ func main() {
 	demoSpecPrintingAsyncAPI(mqtt5Built.Server)
 	demoServeSpecCall(ctx, mqtt5Client, mqtt5Built.SpecHandle)
 	demoRouterGroups()
+	demoRouterWithScoping()
 	demoZeroMQDealerRouterVariant(ctx, obs)
 	demoCrossAPIOAuth2Sharing(ctx, zeromqBuilt)
 	demoGrantedScopesContextField(ctx, zeromqClient)

@@ -162,3 +162,77 @@ func demoSensorsStaticPrefixGroup() {
 	fmt.Println("-- Registered successfully — a STATIC Router prefix composes cleanly over a variable-suffix leaf --")
 	fmt.Println()
 }
+
+// demoEventsRouterWithScoping shows [events.Router.With]'s one-shot
+// middleware scoping in both its CORRECT use (scoped to exactly one
+// channel within a group) and its documented BOUNDARY (discarded, not
+// leaked, across an [events.Router.Mount]/[events.Router.Group] call) —
+// see this project's own Round 157 review
+// (.github/skills/review-go-codex/references/history.md), which fixed a
+// real bug where `.With(mw).Mount(sub).Route(leaf)` used to silently
+// leak mw onto the UNRELATED leaf instead of discarding it.
+func demoEventsRouterWithScoping() {
+	fmt.Println("=== Router.With(): one-shot middleware, scoped to ONE channel — and its Mount boundary ===")
+
+	sharedAudit := middleware.Middleware{Name: "audit-log"}
+	oneShotTrace := middleware.Middleware{Name: "trace-sample"}
+
+	// Part 1 — the CORRECT, intended use: a group-wide, PERMANENT
+	// .Use(sharedAudit) applies to every leaf, while
+	// .With(oneShotTrace) applies ONLY to the temperature subscriber
+	// (the very next .Route() call) — the humidity subscriber right
+	// after it does NOT receive it.
+	temperatureSub := events.NewChannel[routerDemoSensorReading]("with-demo/temperature", routerDemoSensorReadingCodec).
+		WithSubscribe(events.Subscribe{Summary: "Receive temperature (With demo)"}).
+		WithHandler(routerDemoOnReading)
+
+	humiditySub := events.NewChannel[routerDemoSensorReading]("with-demo/humidity", routerDemoSensorReadingCodec).
+		WithSubscribe(events.Subscribe{Summary: "Receive humidity (With demo)"}).
+		WithHandler(routerDemoOnReading)
+
+	scopedRouter := events.NewRouter("readings-v2").
+		Use(sharedAudit).
+		With(oneShotTrace).Route(temperatureSub).
+		Route(humiditySub)
+
+	fmt.Println("-- one-shot .With(oneShotTrace) applies ONLY to the temperature subscriber, not humidity --")
+	for _, e := range scopedRouter.Routes() {
+		fmt.Printf("  %-10s %-32s middleware=%v\n", e.Role, e.Path, e.MiddlewareNames)
+	}
+
+	// Part 2 — the Mount boundary: .With() pairs ONLY with the
+	// immediately next .Route() call, never a .Mount()/.Group(). Fresh,
+	// isolated fixtures below (NOT reusing scopedRouter from Part 1,
+	// which already legitimately carries oneShotTrace on its temperature
+	// leaf) — keeping this check unambiguous. The CORRECT way to scope
+	// middleware to an entire sub-router is .Use() ON the sub-router
+	// itself, BEFORE mounting it (see demoEventsRouterGroups's
+	// readingsRouter above).
+	oneShotForMount := middleware.Middleware{Name: "rate-limit-strict"}
+
+	archiveSub := events.NewRouter("archive").
+		Route(events.NewChannel[routerDemoSensorReading]("with-demo/archive-status", routerDemoSensorReadingCodec).
+			WithSubscribe(events.Subscribe{Summary: "Archive status (With demo)"}).
+			WithHandler(routerDemoOnReading))
+
+	healthSub := events.NewChannel[routerDemoSensorReading]("with-demo/health", routerDemoSensorReadingCodec).
+		WithSubscribe(events.Subscribe{Summary: "Health check (With demo)"}).
+		WithHandler(routerDemoOnReading)
+
+	misplacedRouter := events.NewRouter("api-v2").
+		With(oneShotForMount). // (incorrectly) intended for archiveSub below
+		Mount(archiveSub).
+		Route(healthSub) // an UNRELATED channel declared after the Mount
+
+	fmt.Println("-- .With() before .Mount() is DISCARDED: absent from the mounted sub's leaves AND from the later, unrelated channel --")
+	for _, e := range misplacedRouter.Routes() {
+		hasOneShot := false
+		for _, n := range e.MiddlewareNames {
+			if n == "rate-limit-strict" {
+				hasOneShot = true
+			}
+		}
+		fmt.Printf("  %-10s %-32s middleware=%v  (leaked rate-limit-strict=%v)\n", e.Role, e.Path, e.MiddlewareNames, hasOneShot)
+	}
+	fmt.Println()
+}

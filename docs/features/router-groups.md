@@ -63,7 +63,7 @@ See `examples/rest-api/demo_router_groups.go` for a runnable version.
 | `NewRouter(prefix string, opts ...RouterOpt) Router` | Declares a Router with a STATIC path prefix (no `{var}` placeholders for v1). |
 | `Use(mws ...middleware.RouteMiddleware) Router` | Appends to the Router's own PERMANENT middleware list — dispatched BEFORE every grouped leaf's own middleware (Router-first ordering). |
 | `Tags(tags ...string) Router` | Appends to the Router's own PERMANENT tag list — merged into every grouped leaf's OWN spec tags (Router's own first, then the leaf's own). Accumulates like `Use`; no one-shot variant. |
-| `With(mws ...middleware.RouteMiddleware) Router` | One-shot: applies ONLY to the NEXT `.Route()` call, never leaks to a subsequent sibling. |
+| `With(mws ...middleware.RouteMiddleware) Router` | One-shot: applies ONLY to the NEXT `.Route()` call, never leaks to a subsequent sibling. Route-call-SCOPED ONLY — a `.With(mw).Mount(sub)`/`.With(mw).Group(fn)` call DISCARDS mw at the Mount/Group (never applies it to `sub`'s leaves, and never leaks it onto some later, unrelated `.Route()` call either). |
 | `Route(r routable) Router` | Attaches a leaf (`Route[Req,Resp]`/`SSERoute[Req,Event]`). |
 | `Mount(sub Router) Router` | Attaches a nested sub-Router — a NEW path segment + a fresh middleware stack for everything under it. |
 | `Group(fn func(sub Router) Router) Router` | SAME prefix, scoped middleware subset for a SUBSET of routes (e.g. "auth only on POST/PUT/DELETE, GET stays open") — no new path segment. `fn` must explicitly `return` its built-up value. |
@@ -75,6 +75,45 @@ See `examples/rest-api/demo_router_groups.go` for a runnable version.
 value, matching `Route`/`Channel`/`Subscriber`/`Publisher` exactly.
 Concurrent reads/derivations of the same `Router` value need no
 synchronization at all.
+
+## One-shot middleware with `Router.With`
+
+`Router.With(mws...)` attaches middleware to exactly ONE route — the very
+next `.Route()` call — in addition to (never replacing) the Router's own
+permanent `.Use()` middleware:
+
+```go
+itemsRouter := rest.NewRouter("/items").
+    Use(authMiddleware).           // permanent — every leaf gets it
+    With(strictValidation).Route(createRoute). // one-shot — ONLY createRoute gets it
+    Route(listRoute)               // does NOT get strictValidation
+
+for _, e := range itemsRouter.Routes() {
+    fmt.Printf("%-7s %-20s %v\n", e.Method, e.Path, e.MiddlewareNames)
+}
+// POST    /items/create        [bearer-auth strict-validation]
+// GET     /items/list          [bearer-auth]
+```
+
+`With` is **Route-call-scoped only** — it does NOT pair with `Mount`/
+`Group`. A `.With(mw).Mount(sub)` call discards `mw` at the `Mount`
+(nothing under `sub` receives it, and `mw` does NOT leak forward onto some
+later, unrelated `.Route()` call either). To scope middleware to an entire
+sub-Router, attach it with `.Use()` ON the sub-Router itself, BEFORE
+mounting it:
+
+```go
+// CORRECT — middleware scoped to the whole sub-Router:
+itemsRouter := rest.NewRouter("/items").Use(authMiddleware).Route(createRoute)
+apiRouter := rest.NewRouter("/api/v1").Mount(itemsRouter)
+
+// INCORRECT (discarded, not applied) — .With() does not reach into Mount:
+apiRouter := rest.NewRouter("/api/v1").With(authMiddleware).Mount(itemsRouter)
+```
+
+See `examples/rest-api/demo_router_groups.go`'s `demoRouterWithScoping`
+(and the `api/events`/`api/reqreply` equivalents) for a runnable version of
+both halves of this contract.
 
 ## Recovering a typed handle
 

@@ -240,6 +240,24 @@ func TestRouter_With_RepeatedCallsAccumulateNotOverwrite(t *testing.T) {
 	}
 }
 
+func TestRouter_With_DiscardedByIntervalMount_NotLeakedToLaterRoute(t *testing.T) {
+	suspicious := middleware.Middleware{Name: "suspicious-oneshot"}
+	inner := rest.NewRouter("/inner").Route(newRouterTestRoute("GET", "/a"))
+	rt := rest.NewRouter("/api").With(suspicious).Mount(inner).Route(newRouterTestRoute("GET", "/b"))
+
+	entries := rt.Routes()
+	if len(entries) != 2 {
+		t.Fatalf("want 2 entries, got %d", len(entries))
+	}
+	for _, e := range entries {
+		for _, name := range e.MiddlewareNames {
+			if name == "suspicious-oneshot" {
+				t.Errorf("path %q: want .With() before Mount() to be discarded, not leaked, got middleware %q", e.Path, name)
+			}
+		}
+	}
+}
+
 func TestRouter_Immutability_OriginalValueUnaffectedByChaining(t *testing.T) {
 	rt := rest.NewRouter("/api")
 	mw := middleware.Middleware{Name: "mw"}

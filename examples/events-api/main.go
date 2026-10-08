@@ -123,6 +123,7 @@ func main() {
 	demoServeSpecPublish(ctx, obs)
 	demoEventsRouterGroups()
 	demoSensorsStaticPrefixGroup()
+	demoEventsRouterWithScoping()
 
 	subCount, pubCount, rejCount, capCount := obs.Summary()
 	fmt.Println("═══════════════════════════════════════════════════════")

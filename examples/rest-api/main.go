@@ -108,6 +108,7 @@ func main() {
 	demoGrantedScopesContextField(chiClient)
 	demoBoundMiddlewareSplit(chiClient)
 	demoRouterGroups()
+	demoRouterWithScoping()
 	demoResponseHeaderCookieViolation()
 	demoResponseBodyViolation()
 	demoErrorPatternDeclarationMechanisms()

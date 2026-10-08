@@ -1,6 +1,42 @@
-# go-codex Review History (R1–R156, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
+# go-codex Review History (R1–R157, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 157 (Router api/ layer deep dive — internal state-machine correctness)
+
+User asked to "review the router design and implementation in depth, first focus on the api/
+layer" — a 5th Router round, this time auditing the Router's own internal state machine
+(immutability/aliasing correctness, `.With()`/`.Route()`/`.Mount()`/`.Group()` interaction edge
+cases) rather than comparing against the design doc. Both findings were empirically verified
+against the real `api/rest` package via a throwaway `replace`-directive verification module
+before being accepted as real (not just reasoned about theoretically).
+
+- **H1 — `Router.With()`'s one-shot middleware silently leaked across an intervening
+  `Router.Mount()`/`Group()` call onto a later, UNRELATED `Router.Route()` call**: `With(mws...)`
+  sets `pendingMws`, documented as applying to "the next `.Route()` call" — but `Mount`/`Group`
+  never consumed or cleared it. `rt.With(mw).Mount(sub).Route(leafB)` dropped `mw` from `sub`'s
+  leaves (where arguably intended) and instead attached it to the unrelated `leafB` with no error
+  or warning. Confirmed reproducible identically in `api/rest`, `api/events`, `api/reqreply`
+  (byte-identical `Router` logic in all 3). Fixed by clearing `rt.pendingMws` in `Mount` (mirroring
+  `Route`'s own clear) in all 3 packages, updating `With`'s doc comment to state the
+  Route-call-scoped-only restriction explicitly, and adding
+  `TestRouter_With_DiscardedByIntervalMount_NotLeakedToLaterRoute` to all 3 `router_test.go` files
+  (verified each catches the regression by temporarily reverting the fix).
+- **H2 — latent slice-aliasing hazard in the Router→Tags merge step (hardening, not a currently
+  observable bug)**: `api/rest`'s `Route`/`SSERoute.withRouterPrefix` and `api/reqreply`'s
+  `Route.withRouterPrefix` appended the Router-contributed `routerTagsOpt` directly onto the
+  leaf's own opts slice without cloning first when no Router-level middleware applied
+  (`len(mws)==0`, a common case — e.g. a prefix+Tags-only grouping). Confirmed via a targeted
+  repro that a leaf with 1+ prior `.Use()` calls can have spare opts-slice capacity (Go's
+  append-growth heuristic), making this an unguarded write onto a potentially-shared backing
+  array — but ALSO confirmed via a realistic end-to-end repro that this causes NO observable
+  corruption today, since `Register`/`ClientHandle` both resolve/copy Tags synchronously
+  immediately after `withRouterPrefix`, before any later conflicting append can land.
+  `api/events`'s equivalent code already defensively cloned (`slices.Clone`) — fixed `api/rest`/
+  `api/reqreply` to match, closing the latent hazard and the cross-package inconsistency. No
+  behavior change, no new test (the fix doesn't alter any currently-observable output).
 
 ---
 

@@ -109,3 +109,76 @@ func demoRouterGroups() {
 	fmt.Printf("-- ClientHandle(WithRouter(...)).Topic = %q (matches the registered topic) --\n", addHandle.Topic)
 	fmt.Println()
 }
+
+// demoRouterWithScoping shows [reqreply.Router.With]'s one-shot
+// middleware scoping in both its CORRECT use (scoped to exactly one
+// route within a group) and its documented BOUNDARY (discarded, not
+// leaked, across a [reqreply.Router.Mount]/[reqreply.Router.Group]
+// call) — see this project's own Round 157 review
+// (.github/skills/review-go-codex/references/history.md), which fixed a
+// real bug where `.With(mw).Mount(sub).Route(leaf)` used to silently
+// leak mw onto the UNRELATED leaf instead of discarding it.
+func demoRouterWithScoping() {
+	fmt.Println("=== Router.With(): one-shot middleware, scoped to ONE route — and its Mount boundary ===")
+
+	sharedAudit := middleware.Middleware{Name: "audit-log"}
+	oneShotTrace := middleware.Middleware{Name: "trace-sample"}
+
+	// Part 1 — the CORRECT, intended use: a group-wide, PERMANENT
+	// .Use(sharedAudit) applies to every leaf, while .With(oneShotTrace)
+	// applies ONLY to the add route (the very next .Route() call) — the
+	// subtract route right after it does NOT receive it.
+	addRouteV2 := reqreply.NewRoute[routerDemoAddReq, routerDemoResult]("with-demo/add",
+		routerDemoAddReqCodec, routerDemoResultCodec,
+	).WithHandler(routerDemoAdd)
+
+	subtractRouteV2 := reqreply.NewRoute[routerDemoAddReq, routerDemoResult]("with-demo/subtract",
+		routerDemoAddReqCodec, routerDemoResultCodec,
+	).WithHandler(routerDemoSubtract)
+
+	scopedRouter := reqreply.NewRouter("compute/v2").
+		Use(sharedAudit).
+		With(oneShotTrace).Route(addRouteV2).
+		Route(subtractRouteV2)
+
+	fmt.Println("-- one-shot .With(oneShotTrace) applies ONLY to the add route, not subtract --")
+	for _, e := range scopedRouter.Routes() {
+		fmt.Printf("  %-24s middleware=%v\n", e.Path, e.MiddlewareNames)
+	}
+
+	// Part 2 — the Mount boundary: .With() pairs ONLY with the
+	// immediately next .Route() call, never a .Mount()/.Group(). Fresh,
+	// isolated fixtures below (NOT reusing scopedRouter from Part 1,
+	// which already legitimately carries oneShotTrace on its add route)
+	// — keeping this check unambiguous. The CORRECT way to scope
+	// middleware to an entire sub-router is .Use() ON the sub-router
+	// itself, BEFORE mounting it (see demoRouterGroups's computeRouter
+	// above, had it been nested).
+	oneShotForMount := middleware.Middleware{Name: "rate-limit-strict"}
+
+	archiveSub := reqreply.NewRouter("archive").
+		Route(reqreply.NewRoute[routerDemoAddReq, routerDemoResult]("with-demo/status",
+			routerDemoAddReqCodec, routerDemoResultCodec,
+		).WithHandler(routerDemoAdd))
+
+	healthRoute := reqreply.NewRoute[routerDemoAddReq, routerDemoResult]("with-demo/health",
+		routerDemoAddReqCodec, routerDemoResultCodec,
+	).WithHandler(routerDemoAdd)
+
+	misplacedRouter := reqreply.NewRouter("api/v2").
+		With(oneShotForMount). // (incorrectly) intended for archiveSub below
+		Mount(archiveSub).
+		Route(healthRoute) // an UNRELATED route declared after the Mount
+
+	fmt.Println("-- .With() before .Mount() is DISCARDED: absent from the mounted sub's leaves AND from the later, unrelated route --")
+	for _, e := range misplacedRouter.Routes() {
+		hasOneShot := false
+		for _, n := range e.MiddlewareNames {
+			if n == "rate-limit-strict" {
+				hasOneShot = true
+			}
+		}
+		fmt.Printf("  %-28s middleware=%v  (leaked rate-limit-strict=%v)\n", e.Path, e.MiddlewareNames, hasOneShot)
+	}
+	fmt.Println()
+}

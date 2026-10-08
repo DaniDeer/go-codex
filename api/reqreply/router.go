@@ -3,6 +3,7 @@ package reqreply
 import (
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 
 	"github.com/DaniDeer/go-codex/middleware"
@@ -158,7 +159,10 @@ func (rt Router) Tags(tags ...string) Router {
 // With returns a NEW Router whose NEXT [Router.Route] call ONLY receives
 // mws, in addition to (never in place of) rt's own permanent middleware —
 // one-shot, not permanent. See [api/rest.Router.With]'s doc comment for
-// the full accumulate-semantics contract (identical here).
+// the full accumulate-semantics contract (identical here), including the
+// Route-SCOPED-ONLY restriction — With does NOT pair with [Router.Mount]/
+// [Router.Group]; a preceding .With(mw) is silently DROPPED at Mount time
+// rather than leaking onto a later, unrelated .Route() call.
 func (rt Router) With(mws ...middleware.RouteMiddleware) Router {
 	rt.pendingMws = append(cloneMws(rt.pendingMws), mws...)
 	return rt
@@ -181,7 +185,12 @@ func (rt Router) Route(leaf routable) Router {
 // Mount returns a NEW Router with sub attached as a nested child — a NEW
 // topic segment (rt's prefix + sub's own prefix) and a FRESH middleware
 // stack for everything under sub.
+//
+// Any still-pending [Router.With] mws on rt are DISCARDED here, exactly
+// as [Router.Route] would consume (clear) them — see [Router.With]'s doc
+// comment.
 func (rt Router) Mount(sub Router) Router {
+	rt.pendingMws = nil
 	rt.children = append(cloneChildren(rt.children), routerChild{sub: &sub})
 	return rt
 }
@@ -476,7 +485,15 @@ func (r Route[Req, Resp]) withRouterPrefix(prefix string, mws []middleware.Route
 		r.opts = append([]RouteOpt{routeMiddlewareOpt{mws: mws}}, r.opts...)
 	}
 	if len(tags) > 0 {
-		r.opts = append(r.opts, routerTagsOpt{tags: tags})
+		// Clone first — r.opts may still be the leaf's ORIGINAL slice
+		// (unreallocated, when the mws branch above didn't fire) with
+		// spare capacity from a prior .Use() call's append-growth; an
+		// unguarded append could write into that shared backing array.
+		// Harmless today (every caller resolves Tags synchronously right
+		// after this call, before any conflicting append could land) but
+		// defensive against any future deferred-resolution path — mirrors
+		// [api/events]'s already-defensive equivalent.
+		r.opts = append(slices.Clone(r.opts), routerTagsOpt{tags: tags})
 	}
 	return r, r.topic
 }

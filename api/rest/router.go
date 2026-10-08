@@ -3,6 +3,7 @@ package rest
 import (
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 
 	"github.com/DaniDeer/go-codex/middleware"
@@ -188,6 +189,13 @@ func (rt Router) Tags(tags ...string) Router {
 // NEVER mutated, so `rt.Route(otherLeaf)` called on the ORIGINAL rt still
 // never sees mws either. Repeated `.With(mw1).With(mw2)` calls ACCUMULATE
 // (never silently overwrite) — rt.With(mw1).With(mw2) pends BOTH.
+//
+// With is [Router.Route]-SCOPED ONLY — it pairs with the IMMEDIATELY NEXT
+// .Route() call, never a [Router.Mount]/[Router.Group]. `.With(mw).
+// Mount(sub)` does NOT apply mw to sub's leaves; [Router.Mount] discards
+// any still-pending mws at that point (same as .Route() consuming them),
+// so they are silently DROPPED rather than leaking forward onto whatever
+// unrelated .Route() call happens to follow later in the chain.
 func (rt Router) With(mws ...middleware.RouteMiddleware) Router {
 	rt.pendingMws = append(cloneMws(rt.pendingMws), mws...)
 	return rt
@@ -211,7 +219,14 @@ func (rt Router) Route(r routable) Router {
 // path segment (rt's prefix + sub's own prefix) and a FRESH middleware
 // stack for everything under sub (rt's own mws run first, then sub's own,
 // then each leaf's own — outer-to-inner, outermost-declared-first).
+//
+// Any still-pending [Router.With] mws on rt are DISCARDED here, exactly
+// as [Router.Route] would consume (clear) them — Mount has no single leaf
+// to attach a one-shot middleware to, so a preceding `.With(mw)` is
+// simply dropped rather than silently leaking onto a later, unrelated
+// `.Route()` call (see [Router.With]'s doc comment).
 func (rt Router) Mount(sub Router) Router {
+	rt.pendingMws = nil
 	rt.children = append(cloneChildren(rt.children), routerChild{sub: &sub})
 	return rt
 }
@@ -536,7 +551,15 @@ func (r Route[Req, Resp]) withRouterPrefix(prefix string, mws []middleware.Route
 		r.opts = append([]RouteOpt{routeMiddlewareOpt{mws: mws}}, r.opts...)
 	}
 	if len(tags) > 0 {
-		r.opts = append(r.opts, routerTagsOpt{tags: tags})
+		// Clone first — r.opts may still be the leaf's ORIGINAL slice
+		// (unreallocated, when the mws branch above didn't fire) with
+		// spare capacity from a prior .Use() call's append-growth; an
+		// unguarded append could write into that shared backing array.
+		// Harmless today (every caller resolves Tags synchronously right
+		// after this call, before any conflicting append could land) but
+		// defensive against any future deferred-resolution path — mirrors
+		// [api/events]'s already-defensive equivalent.
+		r.opts = append(slices.Clone(r.opts), routerTagsOpt{tags: tags})
 	}
 	return r, r.path
 }
@@ -584,7 +607,8 @@ func (s SSERoute[Req, Event]) withRouterPrefix(prefix string, mws []middleware.R
 		s.opts = append([]RouteOpt{routeMiddlewareOpt{mws: mws}}, s.opts...)
 	}
 	if len(tags) > 0 {
-		s.opts = append(s.opts, routerTagsOpt{tags: tags})
+		// See [Route.withRouterPrefix]'s identical comment above.
+		s.opts = append(slices.Clone(s.opts), routerTagsOpt{tags: tags})
 	}
 	return s, s.path
 }

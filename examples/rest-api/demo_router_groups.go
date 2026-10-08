@@ -118,3 +118,83 @@ func demoRouterGroups() {
 	fmt.Println("-- Registered successfully; every leaf above is now live on server --")
 	fmt.Println()
 }
+
+// demoRouterWithScoping shows [rest.Router.With]'s one-shot middleware
+// scoping in both its CORRECT use (scoped to exactly one route within a
+// group) and its documented BOUNDARY (discarded, not leaked, across a
+// [rest.Router.Mount]/[rest.Router.Group] call) — see this project's own
+// Round 157 review (.github/skills/review-go-codex/references/history.md),
+// which fixed a real bug where `.With(mw).Mount(sub).Route(leaf)` used to
+// silently leak mw onto the UNRELATED leaf instead of discarding it.
+func demoRouterWithScoping() {
+	fmt.Println("=== Router.With(): one-shot middleware, scoped to ONE route — and its Mount boundary ===")
+
+	strictValidation := middleware.Middleware{Name: "strict-validation"}
+	sharedAuth := middleware.Middleware{Name: "bearer-auth"}
+
+	// Part 1 — the CORRECT, intended use: a group-wide, PERMANENT
+	// .Use(sharedAuth) applies to every leaf, while .With(strictValidation)
+	// applies ONLY to the create route (the very next .Route() call) —
+	// the list route right after it does NOT receive it.
+	listRoute := rest.NewRoute[routerDemoEmpty, []routerDemoItem]("GET", "/with-demo",
+		routerDemoEmptyCodec, routerDemoListItemsCodec(),
+		rest.RouteMeta{OperationID: "listItemsWithDemo", Summary: "List items (With demo)"},
+	).WithHandler(routerDemoListItems)
+
+	createRoute := rest.NewRoute[routerDemoItem, routerDemoItem]("POST", "/with-demo",
+		routerDemoItemCodec, routerDemoItemCodec,
+		rest.RouteMeta{OperationID: "createItemWithDemo", Summary: "Create an item (With demo)"},
+	).WithHandler(routerDemoCreateItem)
+
+	scopedRouter := rest.NewRouter("/items").
+		Use(sharedAuth).
+		With(strictValidation).Route(createRoute).
+		Route(listRoute)
+
+	fmt.Println("-- one-shot .With(strictValidation) applies ONLY to the create route, not list --")
+	for _, e := range scopedRouter.Routes() {
+		fmt.Printf("  %-7s %-24s middleware=%v\n", e.Method, e.Path, e.MiddlewareNames)
+	}
+
+	// Part 2 — the Mount boundary: .With() pairs ONLY with the immediately
+	// next .Route() call, never a .Mount()/.Group(). A `.With(mw).
+	// Mount(sub)` call DISCARDS mw at the Mount — it is silently dropped,
+	// never leaked onto some later, unrelated .Route() call either. The
+	// CORRECT way to scope middleware to an entire sub-router is .Use()
+	// ON the sub-router itself, BEFORE mounting it (see demoRouterGroups's
+	// itemsRouter above).
+	//
+	// Fresh, isolated fixtures below (NOT reusing scopedRouter from Part 1,
+	// which already legitimately carries strictValidation on its create
+	// route) — keeping this check unambiguous: NEITHER leaf here has ever
+	// been associated with oneShotForMount by any OTHER, correct path.
+	oneShotForMount := middleware.Middleware{Name: "rate-limit-strict"}
+
+	archiveSub := rest.NewRouter("/archive").
+		Route(rest.NewRoute[routerDemoEmpty, routerDemoEmpty]("GET", "/status",
+			routerDemoEmptyCodec, routerDemoEmptyCodec,
+			rest.RouteMeta{OperationID: "archiveStatusWithDemo", Summary: "Archive status (With demo)"},
+		).WithHandler(routerDemoDeleteItem))
+
+	pingRoute := rest.NewRoute[routerDemoEmpty, routerDemoEmpty]("GET", "/ping",
+		routerDemoEmptyCodec, routerDemoEmptyCodec,
+		rest.RouteMeta{OperationID: "pingWithDemo", Summary: "Health check (With demo)"},
+	).WithHandler(routerDemoDeleteItem)
+
+	misplacedRouter := rest.NewRouter("/api/v2").
+		With(oneShotForMount). // (incorrectly) intended for archiveSub below
+		Mount(archiveSub).
+		Route(pingRoute) // an UNRELATED route declared after the Mount
+
+	fmt.Println("-- .With() before .Mount() is DISCARDED: absent from the mounted sub's leaves AND from the later, unrelated route --")
+	for _, e := range misplacedRouter.Routes() {
+		hasOneShot := false
+		for _, n := range e.MiddlewareNames {
+			if n == "rate-limit-strict" {
+				hasOneShot = true
+			}
+		}
+		fmt.Printf("  %-7s %-28s middleware=%v  (leaked rate-limit-strict=%v)\n", e.Method, e.Path, e.MiddlewareNames, hasOneShot)
+	}
+	fmt.Println()
+}
