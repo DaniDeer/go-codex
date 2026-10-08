@@ -106,6 +106,48 @@ func TestServe_DuplicateRoute(t *testing.T) {
 	}
 }
 
+// TestServe_PathShapeConflict locks in the additional, complementary
+// check alongside Part 3's literal-duplicate detection: two
+// handler-bearing routes with the SAME Method and the SAME structural
+// path shape but DIFFERENT variable names (e.g. "/users/{id}" vs
+// "/users/{name}") fail Serve with a PathShapeConflictError, wiring
+// NEITHER — this is the class of conflict *http.ServeMux itself would
+// otherwise panic on at registration time (see wireRoutes's recover()).
+func TestServe_PathShapeConflict(t *testing.T) {
+	b := rest.NewServer(testInfo)
+	if err := rest.NewRoute[createReq, userResp]("GET", "/users/{id}",
+		createReqCodec, userRespCodec,
+	).WithHandler(func(ctx context.Context, req createReq) (userResp, error) {
+		return userResp{}, nil
+	}).Register(b); err != nil {
+		t.Fatal(err)
+	}
+	if err := rest.NewRoute[createReq, userResp]("GET", "/users/{name}",
+		createReqCodec, userRespCodec,
+	).WithHandler(func(ctx context.Context, req createReq) (userResp, error) {
+		return userResp{}, nil
+	}).Register(b); err != nil {
+		t.Fatal(err)
+	}
+
+	mux := http.NewServeMux()
+	err := serve(mux, b)
+	if err == nil {
+		t.Fatal("want error for path shape conflict, got nil")
+	}
+	var multiErr MultiRouteError
+	if !errors.As(err, &multiErr) {
+		t.Fatalf("want MultiRouteError, got %T: %v", err, err)
+	}
+	var shapeErr PathShapeConflictError
+	if !errors.As(err, &shapeErr) {
+		t.Fatalf("want PathShapeConflictError inside MultiRouteError, got %v", err)
+	}
+	if shapeErr.ConflictsWith != "/users/{id}" {
+		t.Errorf("ConflictsWith = %q, want /users/{id}", shapeErr.ConflictsWith)
+	}
+}
+
 // --- ServeOne ---
 
 func TestServeOne_HappyPath(t *testing.T) {
@@ -203,5 +245,40 @@ func TestServeSSE_SkipsSpecOnlyRoutes(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("want 404 for a spec-only SSE route never wired, got %d", rec.Code)
+	}
+}
+
+// TestServeSSE_PathShapeConflict mirrors TestServe_PathShapeConflict for
+// SSE routes: two handler-bearing SSE routes sharing the same structural
+// path shape but different variable names fail ServeSSE with a
+// PathShapeConflictError.
+func TestServeSSE_PathShapeConflict(t *testing.T) {
+	b := rest.NewServer(testInfo)
+	mk := func(path string) error {
+		return rest.NewSSERoute[createReq, sseEvent](path,
+			createReqCodec, sseEventCodec,
+		).WithHandler(func(ctx context.Context, req createReq, send func(sseEvent) error) error {
+			return send(sseEvent{Message: "hello"})
+		}).Register(b)
+	}
+	if err := mk("/events/{id}"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mk("/events/{name}"); err != nil {
+		t.Fatal(err)
+	}
+
+	mux := http.NewServeMux()
+	err := serveSSE(mux, b)
+	if err == nil {
+		t.Fatal("want error for path shape conflict, got nil")
+	}
+	var multiErr MultiRouteError
+	if !errors.As(err, &multiErr) {
+		t.Fatalf("want MultiRouteError, got %T: %v", err, err)
+	}
+	var shapeErr PathShapeConflictError
+	if !errors.As(err, &shapeErr) {
+		t.Fatalf("want PathShapeConflictError inside MultiRouteError, got %v", err)
 	}
 }

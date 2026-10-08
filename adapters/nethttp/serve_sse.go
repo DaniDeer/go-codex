@@ -56,6 +56,7 @@ func serveSSE(mux *http.ServeMux, b *rest.Server) error {
 	var routeErrs []RouteError
 	var toWire []wiredRoute
 	seen := make(map[string]bool, len(entries))
+	seenShapes := make(map[string]string, len(entries))
 
 	for _, e := range entries {
 		if !e.HasHandler() {
@@ -68,6 +69,14 @@ func serveSSE(mux *http.ServeMux, b *rest.Server) error {
 			continue
 		}
 		seen[method+" "+path] = true
+
+		shapeKey := method + " " + rest.PathShape(path)
+		if conflictsWith, ok := seenShapes[shapeKey]; ok {
+			routeErrs = append(routeErrs, RouteError{Method: method, Path: path,
+				Err: PathShapeConflictError{Method: method, Path: path, ConflictsWith: conflictsWith}})
+			continue
+		}
+		seenShapes[shapeKey] = path
 
 		h, err := buildSSERouteHandler(e.Handle())
 		if err != nil {

@@ -101,6 +101,49 @@ func TestChiServe_DuplicateRoute(t *testing.T) {
 	}
 }
 
+// TestChiServe_PathShapeConflict locks in the additional,
+// complementary check alongside the literal-duplicate detection above:
+// two handler-bearing routes with the SAME Method and the SAME
+// structural path shape but DIFFERENT variable names (e.g. "/users/{id}"
+// vs "/users/{name}") fail Serve with a PathShapeConflictError, wiring
+// NEITHER — without this check, chi's own router silently accepts both
+// and dispatches every matching request to whichever was registered
+// last, permanently shadowing the other with no diagnostic at all.
+func TestChiServe_PathShapeConflict(t *testing.T) {
+	b := rest.NewServer(testInfo)
+	if err := rest.NewRoute[createReq, userResp]("GET", "/users/{id}",
+		createReqCodec, userRespCodec,
+	).WithHandler(func(ctx context.Context, req createReq) (userResp, error) {
+		return userResp{}, nil
+	}).Register(b); err != nil {
+		t.Fatal(err)
+	}
+	if err := rest.NewRoute[createReq, userResp]("GET", "/users/{name}",
+		createReqCodec, userRespCodec,
+	).WithHandler(func(ctx context.Context, req createReq) (userResp, error) {
+		return userResp{}, nil
+	}).Register(b); err != nil {
+		t.Fatal(err)
+	}
+
+	r := gochi.NewRouter()
+	err := serve(r, b)
+	if err == nil {
+		t.Fatal("want error for path shape conflict, got nil")
+	}
+	var multiErr MultiRouteError
+	if !errors.As(err, &multiErr) {
+		t.Fatalf("want MultiRouteError, got %T: %v", err, err)
+	}
+	var shapeErr PathShapeConflictError
+	if !errors.As(err, &shapeErr) {
+		t.Fatalf("want PathShapeConflictError inside MultiRouteError, got %v", err)
+	}
+	if shapeErr.ConflictsWith != "/users/{id}" {
+		t.Errorf("ConflictsWith = %q, want /users/{id}", shapeErr.ConflictsWith)
+	}
+}
+
 // --- ServeOne ---
 
 func TestChiServeOne_HappyPath(t *testing.T) {
@@ -196,5 +239,40 @@ func TestChiServeSSE_SkipsSpecOnlyRoutes(t *testing.T) {
 	r.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("want 404 for a spec-only SSE route never wired, got %d", rec.Code)
+	}
+}
+
+// TestChiServeSSE_PathShapeConflict mirrors TestChiServe_PathShapeConflict
+// for SSE routes: two handler-bearing SSE routes sharing the same
+// structural path shape but different variable names fail ServeSSE with a
+// PathShapeConflictError.
+func TestChiServeSSE_PathShapeConflict(t *testing.T) {
+	b := rest.NewServer(testInfo)
+	mk := func(path string) error {
+		return rest.NewSSERoute[createReq, sseEvent](path,
+			createReqCodec, sseEventCodec,
+		).WithHandler(func(ctx context.Context, req createReq, send func(sseEvent) error) error {
+			return send(sseEvent{Message: "hello"})
+		}).Register(b)
+	}
+	if err := mk("/events/{id}"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mk("/events/{name}"); err != nil {
+		t.Fatal(err)
+	}
+
+	r := gochi.NewRouter()
+	err := serveSSE(r, b)
+	if err == nil {
+		t.Fatal("want error for path shape conflict, got nil")
+	}
+	var multiErr MultiRouteError
+	if !errors.As(err, &multiErr) {
+		t.Fatalf("want MultiRouteError, got %T: %v", err, err)
+	}
+	var shapeErr PathShapeConflictError
+	if !errors.As(err, &shapeErr) {
+		t.Fatalf("want PathShapeConflictError inside MultiRouteError, got %v", err)
 	}
 }

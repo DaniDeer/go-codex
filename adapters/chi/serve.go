@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"reflect"
 	"strings"
@@ -68,6 +69,33 @@ type DuplicateRouteError struct {
 
 func (e DuplicateRouteError) Error() string {
 	return fmt.Sprintf("duplicate route: %s %s already registered", e.Method, e.Path)
+}
+
+// PathShapeConflictError is returned (wrapped in a [RouteError] inside a
+// [MultiRouteError]) when two handler-bearing routes declare the SAME
+// Method and the SAME structural path shape (see [rest.PathShape]) but
+// DIFFERENT variable names — e.g. "/users/{id}" and "/users/{name}". This
+// is not a literal [DuplicateRouteError]: chi's own router accepts both
+// registrations silently and dispatches every matching request to
+// whichever was registered last, permanently shadowing the other with no
+// diagnostic at all. This check surfaces it as a typed error instead.
+type PathShapeConflictError struct {
+	Method        string
+	Path          string
+	ConflictsWith string
+}
+
+func (e PathShapeConflictError) Error() string {
+	return fmt.Sprintf("route %s %s has the same structural shape as already-registered %s %s",
+		e.Method, e.Path, e.Method, e.ConflictsWith)
+}
+
+func (e PathShapeConflictError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("method", e.Method),
+		slog.String("path", e.Path),
+		slog.String("conflicts_with", e.ConflictsWith),
+	)
 }
 
 // OptionsShapeError is returned when a [rest.Route.WithOptions]/
@@ -136,6 +164,7 @@ func serve(r gochi.Router, b *rest.Server) error {
 	var routeErrs []RouteError
 	var toWire []wiredRoute
 	seen := make(map[string]bool, len(entries))
+	seenShapes := make(map[string]string, len(entries))
 
 	for _, e := range entries {
 		if !e.HasHandler() {
@@ -148,6 +177,14 @@ func serve(r gochi.Router, b *rest.Server) error {
 			continue
 		}
 		seen[method+" "+path] = true
+
+		shapeKey := method + " " + rest.PathShape(path)
+		if conflictsWith, ok := seenShapes[shapeKey]; ok {
+			routeErrs = append(routeErrs, RouteError{Method: method, Path: path,
+				Err: PathShapeConflictError{Method: method, Path: path, ConflictsWith: conflictsWith}})
+			continue
+		}
+		seenShapes[shapeKey] = path
 
 		h, err := buildRouteHandler(e.Handle())
 		if err != nil {

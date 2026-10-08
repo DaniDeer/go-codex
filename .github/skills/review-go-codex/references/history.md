@@ -1,6 +1,34 @@
-# go-codex Review History (R1–R160, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
+# go-codex Review History (R1–R161, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 161 (adapters/nethttp vs adapters/chi — path-shape routing conflicts)
+
+User asked to compare `adapters/nethttp` against `adapters/chi` for middleware/routing
+consistency, specifically whether `api/rest` truly "handles [routing] entirely" or leaves gaps
+that let the two adapters diverge. Confirmed both adapters already had a symmetric, correct
+LITERAL-duplicate check (`DuplicateRouteError`, keyed on exact `method+" "+path`) — but neither
+adapter (nor `api/rest` itself) detected two routes sharing the same method and the same
+STRUCTURAL path shape but different variable names (e.g. `/users/{id}` vs `/users/{name}`).
+
+- **M1 — path-shape routing conflicts handled inconsistently per adapter (bug)**: confirmed via
+  live repro against both real frameworks that this class of conflict produces completely
+  different, both-undesirable outcomes: Go 1.22+ `net/http.ServeMux` PANICS at registration
+  (caught by `adapters/nethttp`'s `wireRoutes` `recover()`, but converted into a bare, untyped
+  `fmt.Errorf` — a Structured Errors Guardrail violation), while chi silently accepts BOTH
+  registrations with no error at all and dispatches every matching request to whichever handler
+  was registered LAST, permanently and silently shadowing the other. Fixed by adding one small,
+  shared, exported helper, `rest.PathShape(path string) string` (a thin wrapper around the
+  existing `api/internal.StripTemplateVars`, which adapters cannot import directly), and extending
+  each adapter's existing duplicate-detection loop (`nethttp/serve.go`, `nethttp/serve_sse.go`,
+  `chi/serve.go`, `chi/serve_sse.go`) with a second shape-keyed `seenShapes` map that raises a new,
+  per-adapter `PathShapeConflictError` (mirroring each adapter's existing `DuplicateRouteError`
+  convention) before any wiring is attempted. Both adapters now reject the identical scenario with
+  the same typed, `errors.As`-navigable error, instead of one silently corrupting routing and the
+  other hard-failing with an unstructured string. Added regression tests to both adapters' regular
+  and SSE route suites (verified to fail — undefined symbol — without the fix).
 
 ---
 
