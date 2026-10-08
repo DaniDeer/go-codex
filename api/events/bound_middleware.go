@@ -169,6 +169,18 @@ func (m BoundSubscribeMiddleware[T, In, Out]) applyBoundSubscriber(s *Subscriber
 		return m.mw.OutCodec.Validate(o)
 	}
 	s.middlewareHandlers = append(slices.Clone(s.middlewareHandlers), h)
+	// A Security-carrying attachment must also land in s.mws — the ONLY
+	// place [applyEventsSecurityDeclarations] (called from
+	// [buildChannelHandle]) reads to populate
+	// [ChannelHandle.Descriptor.Subscribe.Security]/[ChannelHandle.SecuritySchemes].
+	// Without this, a Bound-only Security attachment (no companion .Use()
+	// call) silently enforces scopes at dispatch time (middlewareHandlers
+	// IS populated) while the published AsyncAPI spec omits the
+	// requirement entirely — mirrors [rest.BoundMiddleware.applyBoundRoute]/
+	// [reqreply.BoundMiddleware.applyBoundRoute]'s identical, existing line.
+	if sec := m.mw.SecurityDeclaration(); sec != nil {
+		s.mws = append(slices.Clone(s.mws), middleware.Middleware{Name: m.mw.MiddlewareName(), Security: sec})
+	}
 }
 
 // boundReqWitness satisfies [boundContributor]'s type-level witness —
@@ -260,6 +272,12 @@ func (m BoundPublishMiddleware[T, In, Out]) MiddlewareName() string { return m.m
 //lint:ignore U1000 implements boundClientContributor interface (same
 func (m BoundPublishMiddleware[T, In, Out]) applyBoundPublisher(p *Publisher[T]) {
 	p.clientMiddlewareHandlers = append(slices.Clone(p.clientMiddlewareHandlers), buildClientMiddlewareHandlerAny(m.mw, m.fn))
+	// See [BoundSubscribeMiddleware.applyBoundSubscriber]'s identical
+	// rationale — without this, Publish.Security/SecuritySchemes is
+	// silently left unpopulated for a Bound-only Security attachment.
+	if sec := m.mw.SecurityDeclaration(); sec != nil {
+		p.mws = append(slices.Clone(p.mws), middleware.Middleware{Name: m.mw.MiddlewareName(), Security: sec})
+	}
 }
 
 // boundReqWitness satisfies [boundClientContributor]'s type-level

@@ -2951,6 +2951,14 @@ func TestCheckCoverage_fails_withoutMatchingSubscribeMW(t *testing.T) {
 // SubscribeMW's new codec-backed dispatch path, built from a generalized
 // events.SecurityMiddleware[In,Out]) Security handler as satisfying a
 // declared requirement, not just the legacy ServerImplementation path.
+//
+// This also now exercises the Bound attach's OWN declared requirement
+// (see TestSubscribeBoundMW_populatesDescriptorSecurity below for the
+// previously-missing spec-population bug this requirement depends on) —
+// before that fix, Subscribe.Security was never populated by a Bound-only
+// attach, so CheckCoverage's secReqs ended up empty and this test passed
+// trivially (nothing to cover), not because the Bound handler was
+// recognized as satisfying a real requirement.
 func TestCheckCoverage_passes_withBoundSubscribeMW(t *testing.T) {
 	bm := events.BoundSecuritySubscribeMiddleware[userEvent, mdTestIn, mdTestOut]("bearerAuth",
 		events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, []string{"subscribe:sensors"},
@@ -2966,5 +2974,83 @@ func TestCheckCoverage_passes_withBoundSubscribeMW(t *testing.T) {
 	}
 	if len(handle.MiddlewareHandlers) != 1 {
 		t.Fatalf("len(MiddlewareHandlers) = %d, want 1", len(handle.MiddlewareHandlers))
+	}
+	if handle.Descriptor.Subscribe == nil || len(handle.Descriptor.Subscribe.Security) != 1 {
+		t.Fatalf("Descriptor.Subscribe.Security = %+v, want 1 requirement", handle.Descriptor.Subscribe)
+	}
+	if _, ok := handle.Descriptor.Subscribe.Security[0]["bearerAuth"]; !ok {
+		t.Errorf("Security[0] = %+v, want key %q", handle.Descriptor.Subscribe.Security[0], "bearerAuth")
+	}
+}
+
+// TestSubscribeBoundMW_populatesDescriptorSecurity is a REGRESSION test
+// for a confirmed bug: a Security-carrying BoundSubscribeMiddleware
+// attached via SubscribeBoundMW WITHOUT a companion .Use() call used to
+// leave Descriptor.Subscribe.Security nil and SecuritySchemes empty, even
+// though the attached Fn actually runs and enforces scopes at dispatch
+// time (MiddlewareHandlers IS populated) — a spec/documentation-accuracy
+// bug: the published AsyncAPI document would silently omit a security
+// requirement the channel actually enforces. Fixed by making
+// [events.BoundSubscribeMiddleware]'s applyBoundSubscriber also append to
+// the Subscriber's own mws (mirrors [rest.BoundMiddleware.applyBoundRoute]/
+// [reqreply.BoundMiddleware.applyBoundRoute]'s existing, equivalent line).
+func TestSubscribeBoundMW_populatesDescriptorSecurity(t *testing.T) {
+	bm := events.BoundSecuritySubscribeMiddleware[userEvent, mdTestIn, mdTestOut]("bearerAuth",
+		events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, []string{"subscribe:sensors"},
+		func(ctx context.Context, msg *userEvent, in mdTestIn) (mdTestOut, error) { return mdTestOut{}, nil })
+
+	sub := events.NewChannel[userEvent]("sensors/data", userEventCodec).
+		WithSubscribe(events.Subscribe{}).
+		SubscribeBoundMW(bm)
+
+	handle, err := sub.Handle(nil)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if handle.Descriptor.Subscribe == nil {
+		t.Fatalf("Descriptor.Subscribe is nil")
+	}
+	if len(handle.Descriptor.Subscribe.Security) != 1 {
+		t.Fatalf("Descriptor.Subscribe.Security = %+v, want 1 requirement", handle.Descriptor.Subscribe.Security)
+	}
+	if _, ok := handle.Descriptor.Subscribe.Security[0]["bearerAuth"]; !ok {
+		t.Errorf("Security[0] = %+v, want key %q", handle.Descriptor.Subscribe.Security[0], "bearerAuth")
+	}
+	scheme, ok := handle.SecuritySchemes["bearerAuth"]
+	if !ok {
+		t.Fatalf("SecuritySchemes missing %q, got %+v", "bearerAuth", handle.SecuritySchemes)
+	}
+	if scheme.SecurityScheme.Type == "" {
+		t.Errorf("SecuritySchemes[%q].Type is empty, want a populated scheme", "bearerAuth")
+	}
+}
+
+// TestPublishBoundMW_populatesDescriptorSecurity is
+// TestSubscribeBoundMW_populatesDescriptorSecurity's publish/sending-role
+// mirror — same bug, same fix, applied to applyBoundPublisher/p.mws.
+func TestPublishBoundMW_populatesDescriptorSecurity(t *testing.T) {
+	bm := events.BoundSecurityPublishMiddleware[userEvent, mdTestIn, mdTestOut]("bearerAuth",
+		events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, []string{"publish:sensors"},
+		func(ctx context.Context, msg userEvent) (mdTestOut, error) { return mdTestOut{}, nil })
+
+	pub := events.NewChannel[userEvent]("sensors/data", userEventCodec).
+		WithPublish(events.Publish{}).
+		PublishBoundMW(bm)
+
+	handle, err := pub.Handle(nil)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if handle.Descriptor.Publish == nil {
+		t.Fatalf("Descriptor.Publish is nil")
+	}
+	if len(handle.Descriptor.Publish.Security) != 1 {
+		t.Fatalf("Descriptor.Publish.Security = %+v, want 1 requirement", handle.Descriptor.Publish.Security)
+	}
+	if _, ok := handle.Descriptor.Publish.Security[0]["bearerAuth"]; !ok {
+		t.Errorf("Security[0] = %+v, want key %q", handle.Descriptor.Publish.Security[0], "bearerAuth")
+	}
+	if _, ok := handle.SecuritySchemes["bearerAuth"]; !ok {
+		t.Fatalf("SecuritySchemes missing %q, got %+v", "bearerAuth", handle.SecuritySchemes)
 	}
 }
