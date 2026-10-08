@@ -4042,6 +4042,14 @@ type SSERouteHandle[Req, Event any] struct {
 	// ClientImplementations).
 	MiddlewareHandlers       []MiddlewareHandler
 	ClientMiddlewareHandlers []ClientMiddlewareHandler
+
+	// Requirements holds this route's own [CapabilityRequirement]
+	// declarations (docs/design/d-0006-protocol-native-capabilities.md's
+	// Phase 3) — consulted by an attached adapter via
+	// [VerifyCapabilityCoverage] before dispatch. Populated by
+	// [SSERoute.Register]/[SSERoute.RegisterHandle]/[SSERoute.ClientHandle],
+	// mirroring [RouteHandle.Requirements] exactly.
+	Requirements []CapabilityRequirement
 }
 
 // PathMergeFields returns the Req-side merge-capable fields registered via
@@ -4615,6 +4623,7 @@ func (s SSERoute[Req, Event]) ClientHandle() *SSERouteHandle[Req, Event] {
 		responseHeaderMergeFields: mustAssertMergeFields[Event]("SSERoute.ClientHandle", rb.responseHeaderMergeFields),
 		responseCookieMergeFields: mustAssertMergeFields[Event]("SSERoute.ClientHandle", rb.responseCookieMergeFields),
 		responseCookieAttrs:       assertCookieAttrs[Event](rb.responseCookieAttrs),
+		Requirements:              slices.Clone(rb.requirements),
 	}
 	// Apply any inline Formats RouteOpt declared on the SSERoute -- the
 	// SAME rb.respFormats field registerHandle applies server-side.
@@ -4701,6 +4710,7 @@ func (s SSERoute[Req, Event]) registerHandle(b *Server) (*SSERouteHandle[Req, Ev
 		responseHeaderParams:     rb.respHeaders,
 		responseCookieParams:     rb.respCookies,
 		mergeFields:              eventMergeFields,
+		Requirements:             slices.Clone(rb.requirements),
 	}
 	h.pathMergeFields, err = assertMergeFields[Req](rb.pathMergeFields)
 	if err != nil {

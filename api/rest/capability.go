@@ -5,6 +5,20 @@ import (
 	"log/slog"
 )
 
+// Response status (Tier 1 — Baseline, not a marker interface): every
+// REST response, on every REST-eligible transport (HTTP today; a future
+// ZeroMQ REQ/REP adapter per docs/roadmap/zeromq-rest-adapter.md), always
+// conveys an integer outcome status, reusing HTTP's own numeric
+// status-code space as a de-facto standard even on a non-HTTP wire. This
+// is mandatory, not opt-in — unlike Tier 2's [HeaderCapableTransport]/
+// [CookieCapableTransport]/[QueryCapableTransport] (legitimately omittable
+// per adapter) or Tier 3a's [CapabilityRequirement] (a standalone,
+// user-declared-by-name opt-in) — so it has no corresponding marker
+// interface or coverage check here: there is nothing to assert, because
+// there is no valid "doesn't support it" outcome for a REST adapter to
+// express. See docs/design/d-0006-protocol-native-capabilities.md's Tier 1
+// section for the full classification.
+
 // CapabilityRequirement declares one adapter-defined protocol-native
 // capability requirement (Tier 3a — Explicit, Sealed, per docs/design/
 // d-0006-protocol-native-capabilities.md's three-tier vocabulary) at the

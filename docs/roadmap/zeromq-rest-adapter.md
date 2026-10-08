@@ -108,6 +108,19 @@ header frame:
   fallback, when no pattern matches (mirrors reqreply's unmatched
   fallback shape exactly, minus the `code` frame).
 
+**Note (review round):** the `status` frame present in EVERY reply above
+is not a design choice this adapter is free to drop or make optional —
+it is a **Tier 1 (Baseline)** requirement per
+`docs/design/d-0006-protocol-native-capabilities.md`'s capability
+taxonomy, same tier as Route/Path-matching itself. Every REST response,
+on every REST-eligible transport, must convey an integer outcome status
+(reusing HTTP's own numeric status-code space as the de-facto standard,
+exactly as this frame design already does) — unlike Tier 2's
+Header/Cookie/Query (legitimately omittable per adapter, see Open Design
+Decision #1's Cookie omission above) or Tier 3a's `CapabilityRequirement`
+(standalone, opt-in), there is no valid "this adapter doesn't support
+status" outcome for a REST adapter to express.
+
 ## Proposed API surface
 
 ```go

@@ -74,6 +74,36 @@ func TestCapabilityRequirement_appliesRouteAndRendersSpec(t *testing.T) {
 	}
 }
 
+// TestCapabilityRequirement_appliesSSERouteAndRendersSpec closes a
+// confirmed gap: [SSERouteHandle] previously had no Requirements field at
+// all, so a [CapabilityRequirement] declared via [NewSSERoute] was
+// silently accumulated into the OpenAPI spec's x-codex-capabilities
+// vendor extension (Descriptor.Capabilities, via buildDescriptor) but
+// NEVER exposed on the handle for an adapter's capability-coverage check
+// to consult — mirrors TestCapabilityRequirement_appliesRouteAndRendersSpec
+// for SSE routes, verifying BOTH RegisterHandle and ClientHandle.
+func TestCapabilityRequirement_appliesSSERouteAndRendersSpec(t *testing.T) {
+	sr := NewSSERoute[capTestReq, capTestResp]("/cap/spec-sse", capTestReqCodec, capTestRespCodec,
+		CapabilityRequirement{Name: "QoS", Description: "MQTT-style quality-of-service level"})
+
+	clientHandle := sr.ClientHandle()
+	if len(clientHandle.Requirements) != 1 || clientHandle.Requirements[0].Name != "QoS" {
+		t.Fatalf("ClientHandle: want Requirements=[{QoS ...}], got %+v", clientHandle.Requirements)
+	}
+
+	b := NewServer(Info{Title: "t", Version: "1"})
+	handle, err := sr.RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("RegisterHandle: %v", err)
+	}
+	if len(handle.Requirements) != 1 || handle.Requirements[0].Name != "QoS" {
+		t.Fatalf("RegisterHandle: want Requirements=[{QoS ...}], got %+v", handle.Requirements)
+	}
+	if len(handle.Descriptor.Capabilities) != 1 || handle.Descriptor.Capabilities[0].Name != "QoS" {
+		t.Fatalf("want Descriptor.Capabilities to carry the spec, got %+v", handle.Descriptor.Capabilities)
+	}
+}
+
 func TestBuildCapabilityRequirements_empty(t *testing.T) {
 	if got := buildCapabilityRequirements(nil); got != nil {
 		t.Errorf("want nil for empty input, got %+v", got)

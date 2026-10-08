@@ -61,6 +61,35 @@ func TestServe_CapabilityCoverage_RequireQoS_RejectedAtServeTime(t *testing.T) {
 	}
 }
 
+// TestServeSSE_CapabilityCoverage_RequireQoS_RejectedAtServeTime mirrors
+// TestServe_CapabilityCoverage_RequireQoS_RejectedAtServeTime for SSE
+// routes — closes a confirmed gap where [rest.SSERouteHandle] carried no
+// Requirements field at all, so a declared [rest.CapabilityRequirement]
+// was silently accumulated into the OpenAPI spec but NEVER enforced at
+// ServeSSE/Attach time.
+func TestServeSSE_CapabilityCoverage_RequireQoS_RejectedAtServeTime(t *testing.T) {
+	b := rest.NewServer(testInfo)
+	err := rest.NewSSERoute[createReq, sseEvent]("/events-with-qos",
+		createReqCodec, sseEventCodec, rest.RouteMeta{OperationID: "streamEventsWithQoS"},
+		rest.RequireQoS(rest.AtLeastOnce),
+	).WithHandler(func(ctx context.Context, req createReq, send func(sseEvent) error) error {
+		return send(sseEvent{Message: "hi"})
+	}).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	r := gochi.NewRouter()
+	err = serveSSE(r, b)
+	var cce *rest.CapabilityCoverageError
+	if !errors.As(err, &cce) {
+		t.Fatalf("want *rest.CapabilityCoverageError (chi cannot supply QoS), got %v", err)
+	}
+	if len(cce.Missing) != 1 || cce.Missing[0] != "QoS" {
+		t.Errorf("want Missing=[QoS], got %v", cce.Missing)
+	}
+}
+
 func TestServe_CapabilityCoverage_APIKeyCookieScheme_StillPasses(t *testing.T) {
 	mw := rest.FromSecurityScheme("apiKeyCookie",
 		rest.SecurityScheme{SecurityScheme: route.APIKeyScheme("X-Session", "cookie")}, nil)

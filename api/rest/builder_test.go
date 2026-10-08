@@ -2752,6 +2752,39 @@ func TestClientEncode_RoleAwareMergeFields_NoLeakage(t *testing.T) {
 	}
 }
 
+// TestCallWithTransport_CapabilityCoverage_RejectsUnmetRequirement closes a
+// confirmed gap: a [rest.CapabilityRequirement] declared on a [Route] was
+// verified server-side (each adapter's buildRouteHandler) but NEVER
+// client-side — [CallWithTransport] now rejects an unmet requirement
+// BEFORE any network call, mirroring reqreply/mqtt5/zeromq's symmetric
+// client-side check.
+func TestCallWithTransport_CapabilityCoverage_RejectsUnmetRequirement(t *testing.T) {
+	h := rest.NewRoute[createReq, userResp]("POST", "/cap/client-qos",
+		createReqCodec, userCodec,
+		rest.RequireQoS(rest.AtLeastOnce),
+	).ClientHandle()
+
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	transport := nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})
+	_, err := rest.CallWithTransport(t.Context(), transport, h, createReq{Name: "Alice"})
+	var cce *rest.CapabilityCoverageError
+	if !errors.As(err, &cce) {
+		t.Fatalf("want *rest.CapabilityCoverageError (nethttp cannot supply QoS), got %v", err)
+	}
+	if len(cce.Missing) != 1 || cce.Missing[0] != "QoS" {
+		t.Errorf("want Missing=[QoS], got %v", cce.Missing)
+	}
+	if called {
+		t.Error("want no network call when capability coverage fails, but the server was hit")
+	}
+}
+
 // ── Response merge fields (Round 3) ──────────────────────────────────────
 
 // userRespWithMeta carries response header/cookie merge fields alongside

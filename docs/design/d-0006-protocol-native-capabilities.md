@@ -2097,6 +2097,29 @@ it — this symmetry is the actual point, not a side note:
   explicit) is complete and adapter authors have a term for "the floor
   every one of my capability decisions sits on top of."
 
+- **Addendum (review round) — REST's response STATUS is ALSO Tier 1,
+  not a Tier 2/3 capability.** Raised as a design question: should HTTP
+  status codes be a Tier 2-style marker interface a future
+  `adapters/zeromqrest` "must implement," the way Header/Cookie/Query
+  got one? Resolved by elimination against this section's own
+  definitions: NOT Tier 2 (Implicit) — Tier 2 capabilities legitimately
+  go UNSATISFIED by some adapters (ZeroMQ REQ/REP correctly, permanently
+  omits Cookie support) — there is no such "may legitimately omit"
+  shape for status; every REST response, on every REST-eligible
+  transport, always conveys an outcome. NOT Tier 3 (Explicit) either —
+  Tier 3 capabilities are standalone, user-declared-by-name opt-ins
+  (`RequireQoS`); a user never writes `RequireStatus()`, there is
+  nothing to opt into. Status IS Tier 1: as intrinsic to a REST
+  RESPONSE as Route/Path-matching is to a REST REQUEST — "the single
+  most basic thing a [REST response] IS." `docs/roadmap/
+  zeromq-rest-adapter.md`'s own wire-framing draft already gets this
+  right in practice (baking a `status` int frame into EVERY reply,
+  `[status, params, body]`/`[status, code, body]`/`[status, body]`,
+  reusing HTTP's own numeric status-code space as a de-facto standard)
+  — it was simply never named against this tier taxonomy before. No new
+  Go type or marker interface follows from this — exactly like Tier 1's
+  `PathParam` precedent above, this tier's contribution is NAMING only.
+
 #### Tier 2 — Implicit capability
 - **What it is:** a requirement that ARISES as a side effect of declaring
   a codec-backed field on the route/channel/reqreply-route. The declaring

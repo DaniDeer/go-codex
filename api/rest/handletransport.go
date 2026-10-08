@@ -35,6 +35,21 @@ func CallWithTransport[Req, Resp any](
 	opts ...ClientCallOptions,
 ) (Resp, error) {
 	var zero Resp
+	// Tier 3a — mirrors each server adapter's buildRouteHandler's
+	// identical check (docs/design/d-0006-protocol-native-capabilities.md's
+	// Phase 3): a [CapabilityRequirement] declared on a [Route] must be
+	// verified client-side too, not just server-side — a [Route] used
+	// ONLY via a client (e.g. calling a remote REST API never served by
+	// this codebase) previously got ZERO enforcement at all, unlike
+	// reqreply/mqtt5/zeromq's symmetric client-side check. No REST
+	// adapter supplies any concrete Capability today, so this currently
+	// only ever fires for a mistakenly-declared requirement — exactly
+	// the intended "fail fast" outcome, not a behavior change for any
+	// route that declares none.
+	routeLabel := handle.Descriptor.Method + " " + handle.Descriptor.Path
+	if err := VerifyCapabilityCoverage[CapabilityName](routeLabel, handle.Requirements, nil); err != nil {
+		return zero, err
+	}
 	respAny, err := transport.Call(ctx, handle, req, opts...)
 	if err != nil {
 		return zero, err

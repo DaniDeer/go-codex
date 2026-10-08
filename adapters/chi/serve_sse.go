@@ -127,6 +127,17 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 	if err := rest.CheckCoverage(routeLabel, coverageReqs, impls, middlewareHandlers); err != nil {
 		return nil, err
 	}
+
+	// Tier 3a — mirrors [buildRouteHandler]'s identical block (this check
+	// was previously MISSING entirely for SSE routes: [rest.SSERouteHandle]
+	// had no Requirements field at all, so a [rest.CapabilityRequirement]
+	// declared via [rest.NewSSERoute] was silently accumulated into the
+	// OpenAPI spec's x-codex-capabilities vendor extension but NEVER
+	// enforced at Attach time — a confirmed gap, now closed).
+	requirements, _ := elem.FieldByName("Requirements").Interface().([]rest.CapabilityRequirement)
+	if err := rest.VerifyCapabilityCoverage[rest.CapabilityName](routeLabel, requirements, nil); err != nil {
+		return nil, err
+	}
 	// Tier 2 — mirrors [buildRouteHandler]'s identical block
 	// (docs/design/d-0006-protocol-native-capabilities.md's Phase 6a —
 	// this check was previously MISSING entirely for SSE routes, a real

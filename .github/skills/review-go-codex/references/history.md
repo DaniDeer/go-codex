@@ -1,6 +1,45 @@
-# go-codex Review History (R1–R161, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
+# go-codex Review History (R1–R162, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 162 (adapters/nethttp + adapters/chi — SSE/client-side capability-coverage gaps, d-0005/d-0006)
+
+User asked for an in-depth review of the REST adapters against `docs/design/d-0005-error-handling.md`
+and `docs/design/d-0006-protocol-native-capabilities.md`'s capability interfaces (routing,
+middleware, Observer pattern, Error-pattern integration). Ruled out: ErrorPattern/Category-A wiring
+(20 symmetric `tryRespondErrorPattern` call sites per adapter), Tier 2
+(`HeaderCapableTransport`/`CookieCapableTransport`/`QueryCapableTransport`) coverage, and Tier 3a
+capability coverage for regular routes — all fully symmetric between nethttp and chi already.
+
+- **M2 — Tier 3a capability-coverage check silently never ran for SSE routes, in BOTH adapters
+  (bug)**: `rest.CapabilityRequirement` shares the SAME `RouteOpt` interface `NewRoute` and
+  `NewSSERoute` both accept, and even correctly rendered into the OpenAPI spec's
+  `x-codex-capabilities` extension for SSE routes — but `SSERouteHandle` had no `Requirements`
+  field at all, so neither adapter's `buildSSERouteHandler` had any equivalent of
+  `buildRouteHandler`'s `VerifyCapabilityCoverage` call. Confirmed via live repro: an SSE route
+  declaring an unmet `RequireQoS` `Attach`ed successfully with no error, while the identical
+  requirement on a regular route correctly, eagerly failed. Fixed by adding
+  `SSERouteHandle.Requirements []CapabilityRequirement` (populated by both `registerHandle` and
+  `ClientHandle`, mirroring `RouteHandle.Requirements`), and adding the matching
+  `VerifyCapabilityCoverage` call to both `adapters/nethttp/serve_sse.go` and
+  `adapters/chi/serve_sse.go`'s `buildSSERouteHandler`.
+- **M3 — Tier 3a capability coverage was never checked client-side for REST at all (bug)**: unlike
+  reqreply/mqtt5/zeromq's symmetric client-side `VerifyCapabilityCoverage` check, `rest.
+  CallWithTransport` never consulted `handle.Requirements` — a `Route` with an unmet
+  `CapabilityRequirement`, used only via a client, got zero enforcement. Fixed by adding the same
+  `VerifyCapabilityCoverage` check to `CallWithTransport`, run before any network call.
+- **Status-code classification (documentation-only, no code change)**: classified HTTP/REST status
+  codes as a **Tier 1 (Baseline)** capability (mandatory, same tier as Path-matching), NOT a Tier 2
+  marker interface like Header/Cookie/Query — every REST response, on every adapter, always
+  conveys an outcome, unlike Header/Cookie/Query which are legitimately omittable per adapter.
+  Documented in `d-0006`, `api/rest/capability.go`, and `docs/roadmap/zeromq-rest-adapter.md`
+  (whose existing `[status, ...]` wire-frame design already complied, just never named against the
+  tier taxonomy).
+
+Added regression tests for M2 (both adapters' `capability_test.go`, regular+SSE) and M3
+(`api/rest/builder_test.go`), each verified to fail without its fix.
 
 ---
 
