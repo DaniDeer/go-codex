@@ -10,7 +10,6 @@ import (
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/examples/events-api/mqtt5broker"
 	"github.com/DaniDeer/go-codex/examples/events-api/routes"
-	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -19,7 +18,7 @@ import (
 // MESSAGE-level SubscribeMW/PublishMW security demonstrated by
 // demo_security_subscribemw.go. See docs/features/security.md's
 // "Connection-level vs message-level security".
-var connectBearerAuth = mqtt5adapter.ConnectSecurityScheme{SecurityScheme: route.BasicScheme()}.
+var connectBearerAuth = mqtt5adapter.ConnectSecurityScheme{SecurityScheme: events.BasicScheme().SecurityScheme}.
 	WithCodec(codex.String().Refine(validate.MinLen(3)))
 
 // demoConnectLevelSecurity demonstrates mqtt5.NewSecuredClient: the

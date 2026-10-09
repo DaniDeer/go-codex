@@ -3375,3 +3375,17 @@ exact class of gap has surfaced in this doc's own history (see "Learnings
 from Rollout Phase A/B/C" above for the first two) — each time via
 writing a REAL example/test against the REAL recommended entry point, not
 via code review.
+
+## Addendum: `middleware` package relocated under `internal/middleware` (`docs/design/d-0009-internalize-shared-mechanics.md`)
+
+Every `middleware.X` reference throughout this document describes
+vocabulary since relocated from the public top-level `middleware`
+package to `internal/middleware` — the package NAME is unchanged, only
+its import path (now uninstallable by an external go-codex consumer, per
+Go's `internal/` import rule). Each pattern package (`api/rest`/
+`api/events`/`api/reqreply`) exposes the identical vocabulary under its
+own name via a thin wrapper — see
+`docs/design/d-0003-codec-declared-middlewares.md`'s Addendum 8 and
+`docs/concepts/ports-and-adapters.md`'s "Guardrail: shared cross-pattern
+MECHANICS belong in `internal/`, not a public package" section for the
+full write-up.

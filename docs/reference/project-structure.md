@@ -42,24 +42,30 @@ go-codex/
 │   ├── doc.go              # package overview — why config is not format or ports
 │   └── env.go              # FromEnv[T], FromEnvVar[T], EnvVarError
 │
-├── route/                  # HTTP route descriptors (no renderer logic)
-│   └── route.go            # Route, Param, Body, Response, SecurityScheme, SecurityRequirement
-│
-├── middleware/             # declarative, composable enrichment/enforcement vocabulary — shared
-│   │                       #   across api/rest, api/events, api/reqreply (security schemes,
-│   │                       #   codec-declared Transform middleware, general-purpose wrapping)
-│   ├── middleware.go       # Middleware, Declaration[In,Out], NewDeclaration, SecurityScheme,
-│   │                       #   ServerImplementation, ClientImplementation, RouteMiddleware,
-│   │                       #   MiddlewareShapeError, CheckScopes, UnsatisfiedScopesError
-│   ├── disposition.go      # Disposition, EnsureDispositionBox, SetDisposition,
-│   │                       #   DispositionFromContext, ResolveDisposition
-│   ├── context_field.go    # ContextField[V], NewContextField, EnsureContextFields,
-│   │                       #   ContextFieldNotPreparedError
-│   └── params.go           # HeaderParamSpec, CookieParamSpec, QueryParamSpec,
-│                           #   ResponseHeaderParamSpec, ResponseCookieParamSpec
-│
 ├── internal/               # module-wide shared helpers (not public API; importable from
-│   │                       #   anywhere in the module, unlike api/internal below)
+│   │                       #   anywhere in the module, unlike api/internal below) — see
+│   │                       #   docs/design/d-0009-internalize-shared-mechanics.md: shared cross-pattern
+│   │                       #   MECHANICS (not a single adapter's IO) live here, never in a public
+│   │                       #   top-level package; each api/* pattern exposes its own thin public
+│   │                       #   wrapper (type alias + forwarding constructor) around these
+│   ├── router/             # shared, pattern-agnostic Router/Mount/Group/Walk mechanics
+│   │   └── router.go       # Router[Target], Routable[Target], MethodReporter, JoinFunc,
+│   │                       #   PrefixErrorFunc, RouterEntry — consolidated out of
+│   │                       #   api/rest/api/events/api/reqreply's own hand-copied implementations
+│   ├── route/              # HTTP/pub-sub-agnostic route descriptors (no renderer logic) —
+│   │   │                   #   formerly the public `route` package; relocated here
+│   │   └── route.go        # Route, Param, Body, Response, SecurityScheme, SecurityRequirement
+│   ├── middleware/         # declarative, composable enrichment/enforcement vocabulary — shared
+│   │   │                   #   across api/rest, api/events, api/reqreply (security schemes,
+│   │   │                   #   codec-declared Transform middleware, general-purpose wrapping) —
+│   │   │                   #   formerly the public `middleware` package; relocated here
+│   │   ├── middleware.go   # Middleware, Declaration[In,Out], NewDeclaration, SecurityScheme,
+│   │   │                   #   ServerImplementation, ClientImplementation, RouteMiddleware,
+│   │   │                   #   MiddlewareShapeError, CheckScopes, UnsatisfiedScopesError
+│   │   ├── context_field.go # ContextField[V], NewContextField, EnsureContextFields,
+│   │   │                   #   ContextFieldNotPreparedError
+│   │   └── params.go       # HeaderParamSpec, CookieParamSpec, QueryParamSpec,
+│   │                       #   ResponseHeaderParamSpec, ResponseCookieParamSpec
 │   └── templatematch/      # shared {varName}-template matching core
 │       └── templatematch.go  # MatchNonWildcard (REST/file/MCP/ZeroMQ), MatchMQTTWildcard (mqtt/mqtt5)
 │
@@ -80,7 +86,7 @@ go-codex/
 │   │   ├── builder.go      # Client/NewClient(opts ...ClientOption), WithInfo(Info) ClientOption
 │   │   │                   #   (Info optional since Decision 7), Channel[T]/NewChannel, ChannelHandle,
 │   │   │                   #   BuildTopic, WithSubscribe/WithPublish → Subscriber[T]/Publisher[T]
-│   │   │                   #   (role-scoped, Use/SubscribeMW/PublishMW/Handle), FromSecurityScheme,
+│   │   │                   #   (role-scoped, Use/SubscribeMW/PublishMW/Handle), SecurityMiddleware,
 │   │   │                   #   CheckCoverage, SubscriberServer, AddServer,
 │   │   │                   #   AddSchema, AddGlobalSecurity, TopicParam, ChannelMeta, Subscribe,
 │   │   │                   #   Publish, SecurityScheme
@@ -327,9 +333,13 @@ go-codex/
 │   └── string.go           # string constraints: NonEmptyString, MinLen, MaxLen, Pattern, OneOf
 │
 ├── stats/                  # dependency-free metrics observer interfaces
-│   └── observer.go         # ValidationObserver, Observer, PipelineObserver, SecurityObserver,
-│                           #   FileObserver, SQLObserver, TraceObserver,
-│                           #   NoopObserver (all seven), LoggingObserver, NewFanout
+│   ├── observer.go         # ValidationObserver, Observer, PipelineObserver, SecurityObserver,
+│   │                       #   FileObserver, SQLObserver, TraceObserver, DispositionObserver,
+│   │                       #   NoopObserver (all eight), LoggingObserver, NewFanout
+│   └── disposition.go      # Disposition, EnsureDispositionBox, SetDisposition,
+│                           #   DispositionFromContext, ResolveDisposition — relocated from the
+│                           #   (now-internal) middleware package since stats.DispositionObserver,
+│                           #   a PUBLIC extensibility interface, references Disposition by name
 │
 └── examples/               # usage demonstrations — not importable by library packages
     │

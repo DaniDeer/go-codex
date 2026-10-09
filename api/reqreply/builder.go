@@ -10,8 +10,8 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/internal"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/internal/route"
 	asyncapi "github.com/DaniDeer/go-codex/render/asyncapi/v3"
-	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/schema"
 )
 

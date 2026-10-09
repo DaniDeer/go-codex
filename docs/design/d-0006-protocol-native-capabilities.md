@@ -93,7 +93,7 @@
 > own transport dispatch has the real per-protocol status/duration data;
 > see `docs/features/observer.md`.
 >
-> Handler Disposition (`middleware.Disposition`/`EnsureDispositionBox`/
+> Handler Disposition (`stats.Disposition`/`EnsureDispositionBox`/
 > `SetDisposition`/`DispositionFromContext`/`ResolveDisposition`) is
 > shipped in `middleware` (not `api/events`, so `api/reqreply` reuses it
 > with no `api/events` dependency), wired into all 3 event adapters and
@@ -2761,7 +2761,7 @@ test files, not assumed — closes the last ambiguity before Implement):
     speculation:** Phase 1 confirms `CapabilityRequirement`'s shape
     (`Name string`, `Description string`, `MinLevel *int`) is simple
     enough to duplicate cheaply into a reqreply-local type with zero
-    `api/events` dependency (mirroring `middleware.Disposition`'s
+    `api/events` dependency (mirroring `stats.Disposition`'s
     placement rationale) — no evidence emerged that a SHARED type across
     packages would save meaningful duplication, since the whole struct is
     3 fields. Leading answer for Phase 2's Design step: own
@@ -2794,7 +2794,7 @@ subsection for what carries forward to Phase 3.
 
 Chosen second
 because reqreply is structurally closest to events (both are
-dispatch-loop-shaped; `middleware.Disposition` is existing precedent for
+dispatch-loop-shaped; `stats.Disposition` is existing precedent for
 a shared mechanism reqreply already consumes without an `api/events`
 dependency). **Phase 1's cataloged-breakage sub-step is MOOT** — Phase 1's
 Learnings confirmed ZERO collateral `api/reqreply` breakage occurred, so
@@ -2818,7 +2818,7 @@ capability VALUES needed.**
 ```go
 // api/reqreply/capability.go — NEW, own package, ZERO api/events import
 // (resolves Open Design Decision #1: the struct is small enough to
-// duplicate cheaply — mirrors middleware.Disposition's D-0004 placement
+// duplicate cheaply — mirrors stats.Disposition's D-0004 placement
 // precedent). Byte-identical SHAPE to events' capability.go — see Phase
 // 1's subsection above for the full rationale behind each piece; not
 // re-derived here.
@@ -5882,7 +5882,7 @@ func PresetReliableWithHeaders() SubscribeOptions
   shape).
 - **ReqReply (Phase 2, FINALIZED):** own `reqreply.CapabilityCoverageError`/
   `LevelMismatch` — a `reqreply`-local type (no `api/events` dependency —
-  mirrors why `middleware.Disposition` was placed outside `api/events`
+  mirrors why `stats.Disposition` was placed outside `api/events`
   specifically so `api/reqreply` could reuse it without importing
   `api/events`), same shape/`Error()`/`LogValue()` convention as events'.
 
@@ -5937,7 +5937,7 @@ still open:
    type live?** Own package-local type in `api/reqreply`
    (`CapabilityRequirement`/`CheckCapabilityCoverage`/etc., full
    independent duplication, zero `api/events` dependency) — mirrors
-   `middleware.Disposition`'s placement rationale. Decided WITH a
+   `stats.Disposition`'s placement rationale. Decided WITH a
    concrete driver, not speculatively: Phase 2 found both reqreply
    transports (`mqtt5`, `zeromq`) can reuse their EXISTING events-side
    capability VALUES (`QoS`/`Retained`/`HWM`/`Conflate`) immediately, so
@@ -6012,7 +6012,7 @@ still open:
 - [D-0006 §3 — "Relationship to D-0003"](../design/d-0006-protocol-native-capabilities.md#3-relationship-to-d-0003--resolved-via-a-4-stage-lifecycle-model-confirmed-via-a-fifth-throwaway-go-prototype) — the prototyped 4-stage lifecycle model (declare → capability-declare → handler-attach → adapter-attach) this doc's "cross-cutting alignment" note (under "Implementation approach" above) re-applies to Phases 2 and 3, not just events
 - [D-0003 — Codec-Declared Middlewares](../design/d-0003-codec-declared-middlewares.md) — `Middleware[In,Out]`/`Transform`/`ClientTransform`/`.Use(mw)`, already shipped for all 3 APIs this doc's phases touch
 - [`docs/features/capabilities.md`](../features/capabilities.md) — the current, shipped-only reference page
-- [D-0004 — ReqReply Workflow Simplification](../design/d-0004-reqreply-workflow-simplification.md) — precedent for placing a shared mechanism (`middleware.Disposition`) outside `api/events` specifically so `api/reqreply` can reuse it dependency-free
+- [D-0004 — ReqReply Workflow Simplification](../design/d-0004-reqreply-workflow-simplification.md) — precedent for placing a shared mechanism (`stats.Disposition`) outside `api/events` specifically so `api/reqreply` can reuse it dependency-free
 - `.github/skills/add-a-new-adapter/SKILL.md`'s Step 5e — the existing MANDATORY sealed-`Capability` requirement for adapter authors, which this doc's Tier 3 (explicit) adapter-author framing builds directly on top of
 
 ## Test plan (once implementation begins)

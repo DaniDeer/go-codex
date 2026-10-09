@@ -17,8 +17,8 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/ports"
-	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 	gstream "github.com/DaniDeer/go-codex/stream"
 	"github.com/DaniDeer/go-codex/validate"
@@ -1373,8 +1373,8 @@ func TestRegisterMCP_AddsToolToBuilder(t *testing.T) {
 func TestEventPattern_WithBuilder_PopulatesSecuritySchemes(t *testing.T) {
 	// EventPattern.Opts carries no way to attach a channel-level security
 	// scheme declaration post-migration (events.WithSecurityScheme was
-	// removed in favor of Subscriber/Publisher.Use(events.FromSecurityScheme)
-	// — see api/events/builder_test.go's TestFromSecurityScheme_* coverage
+	// removed in favor of Subscriber/Publisher.Use(events.SecurityMiddleware)
+	// — see api/events/builder_test.go's TestSecurityMiddleware_* coverage
 	// for the scheme-population assertions). This test now only exercises
 	// what EventPattern CAN propagate from a shared EventClient: global
 	// security requirements declared via [events.Client.AddGlobalSecurity].

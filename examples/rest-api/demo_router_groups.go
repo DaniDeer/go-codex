@@ -6,14 +6,21 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/middleware"
-	"github.com/DaniDeer/go-codex/route"
 )
 
 // ── fixtures for demoRouterGroups — self-contained, no dependency on the
 // routes/handlers/chiserver/nethttpserver/client sub-packages the rest of
 // this project uses, since Router's own value is in PATH/MIDDLEWARE
 // ASSEMBLY, independent of any live transport. ───────────────────────────
+
+// namedMiddleware builds a NAME-ONLY, Security-less, general-purpose
+// [rest.Middleware] — used below purely to demonstrate [rest.Router]'s
+// own middleware-NAME bookkeeping (`.Use()`/`.With()`'s attachment-order
+// tracking, surfaced via `Routes()`'s MiddlewareNames), independent of
+// any real behavior (no Fn ever bundled via WithReceive/WithSend).
+func namedMiddleware(name string) rest.Middleware[struct{}, struct{}] {
+	return rest.NewMiddleware(rest.NewDeclaration[struct{}, struct{}](name, codex.Struct[struct{}](), codex.Struct[struct{}]()))
+}
 
 type routerDemoItem struct {
 	ID   string
@@ -88,14 +95,8 @@ func demoRouterGroups() {
 	// A reusable-class Security middleware, attached ONCE at the Router
 	// level — every leaf grouped under it (list/create/delete) gets it,
 	// with ZERO repetition across 3 separate .Use() calls.
-	authMiddleware := middleware.Middleware{
-		Name: "bearer-auth",
-		Security: &middleware.SecurityDeclaration{
-			SchemeName: "bearerAuth",
-			Scheme:     route.BearerScheme("JWT"),
-			Scopes:     []string{"items:write"},
-		},
-	}
+	authMiddleware := rest.SecurityMiddleware[struct{}, struct{}]("bearerAuth",
+		rest.BearerScheme("JWT"), []string{"items:write"})
 
 	itemsRouter := rest.NewRouter("/items").
 		Use(authMiddleware).
@@ -129,8 +130,8 @@ func demoRouterGroups() {
 func demoRouterWithScoping() {
 	fmt.Println("=== Router.With(): one-shot middleware, scoped to ONE route — and its Mount boundary ===")
 
-	strictValidation := middleware.Middleware{Name: "strict-validation"}
-	sharedAuth := middleware.Middleware{Name: "bearer-auth"}
+	strictValidation := namedMiddleware("strict-validation")
+	sharedAuth := namedMiddleware("bearer-auth")
 
 	// Part 1 — the CORRECT, intended use: a group-wide, PERMANENT
 	// .Use(sharedAuth) applies to every leaf, while .With(strictValidation)
@@ -168,7 +169,7 @@ func demoRouterWithScoping() {
 	// which already legitimately carries strictValidation on its create
 	// route) — keeping this check unambiguous: NEITHER leaf here has ever
 	// been associated with oneShotForMount by any OTHER, correct path.
-	oneShotForMount := middleware.Middleware{Name: "rate-limit-strict"}
+	oneShotForMount := namedMiddleware("rate-limit-strict")
 
 	archiveSub := rest.NewRouter("/archive").
 		Route(rest.NewRoute[routerDemoEmpty, routerDemoEmpty]("GET", "/status",

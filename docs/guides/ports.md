@@ -568,7 +568,7 @@ path/topic format constraints, shared spec accumulation); when you don't,
 `ports` registers against a private, single-use `Builder` instead — same
 zero-ceremony default, identical code path. For REST, security SCHEMES are
 declared directly on the `RESTPattern`'s own `Opts` via
-`rest.WithMiddleware(rest.FromSecurityScheme(...))` (no builder-level scheme
+`rest.WithMiddleware(rest.SecurityMiddleware[struct{}, struct{}](...))` (no builder-level scheme
 registry for REST):
 
 ```go
@@ -582,7 +582,7 @@ _, err := oeeTool.PluginRESTPattern(ports.RESTPattern{
     Method: "POST",
     Path:   "/oee/calc",
     Opts: []rest.RouteOpt{
-        rest.WithMiddleware(rest.FromSecurityScheme("bearerAuth", bearerAuth, nil)),
+        rest.WithMiddleware(rest.SecurityMiddleware[struct{}, struct{}]("bearerAuth", bearerAuth, nil)),
     },
 })
 if err != nil {
@@ -606,7 +606,7 @@ spec, _ := restBuilder.OpenAPISpec()
 > skips unknown scheme names rather than rejecting), so any `RouteMeta.Security`/
 > `Subscribe.Security`/`Publish.Security` requirement declared on a `Pattern`-based
 > port had no effect. For REST, declare
-> `rest.WithMiddleware(rest.FromSecurityScheme(...))` in the `RESTPattern`'s
+> `rest.WithMiddleware(rest.SecurityMiddleware[struct{}, struct{}](...))` in the `RESTPattern`'s
 > `Opts` (plus a `Builder` with `AddGlobalSecurity`); for events, supply a
 > `Builder` with `AddSecurityScheme`/`AddGlobalSecurity` — either fixes this
 > for a given port.

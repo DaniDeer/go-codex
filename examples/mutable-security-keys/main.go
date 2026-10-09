@@ -46,7 +46,6 @@ import (
 	nethttp "github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -121,7 +120,7 @@ func main() {
 	// — required for the adapter to recognize this call as having
 	// actually satisfied the "bearerAuth" requirement at all, even though
 	// no SPECIFIC scopes are required here (scopes: nil below).
-	secureDeclMw := rest.SecurityMiddleware[authIn, authOut]("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT"), Codec: &keyCodec}, nil).
+	secureDeclMw := rest.SecurityMiddleware[authIn, authOut]("bearerAuth", rest.BearerScheme("JWT").WithCodec(keyCodec), nil).
 		WithRequestHeader(rest.NewRequiredHeaderParam("Authorization", codex.String(),
 			func(in authIn) string { return in.Authorization },
 			func(in *authIn, v string) { in.Authorization = v },

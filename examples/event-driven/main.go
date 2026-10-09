@@ -10,7 +10,7 @@
 //   - operations: link operations to channels via $ref (action: receive/send)
 //
 // Security schemes are declared once in components/securitySchemes and
-// referenced per-operation via Security []route.SecurityRequirement.
+// referenced per-operation via Security []events.SecurityRequirement.
 //
 // Run with: go run ./examples/event-driven
 package main
@@ -19,9 +19,9 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	v3 "github.com/DaniDeer/go-codex/render/asyncapi/v3"
-	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -156,10 +156,10 @@ func main() {
 			Description: "Production message broker",
 			// Server-level security: all channels on this server require bearerAuth
 			// unless a per-operation security field overrides it.
-			Security: []route.SecurityRequirement{route.Require("bearerAuth")},
+			Security: []events.SecurityRequirement{events.Require("bearerAuth")},
 		}).
 		// bearerAuth scheme: JWT Bearer token, format-validated.
-		AddSecurityScheme("bearerAuth", route.BearerScheme("JWT")).
+		AddSecurityScheme("bearerAuth", events.BearerScheme("JWT").SecurityScheme).
 		// action: receive — this app RECEIVES user created events.
 		// In AsyncAPI 3.0 the channel key is a logical identifier; Address is the topic.
 		AddChannel("userCreated", v3.ChannelItem{
@@ -170,7 +170,7 @@ func main() {
 				Description: "Triggered after the user service completes registration.",
 				Tags:        []string{"user", "registration"},
 				// Per-operation security: same as server default here, but explicit.
-				Security: []route.SecurityRequirement{route.Require("bearerAuth")},
+				Security: []events.SecurityRequirement{events.Require("bearerAuth")},
 				Message: v3.Message{
 					Name:       "UserCreatedEvent",
 					Schema:     UserCreatedEventCodec.Schema,
@@ -186,7 +186,7 @@ func main() {
 				Summary:     "Receive order placed event",
 				Description: "Triggered after the order service completes checkout.",
 				Tags:        []string{"order"},
-				Security:    []route.SecurityRequirement{route.Require("bearerAuth")},
+				Security:    []events.SecurityRequirement{events.Require("bearerAuth")},
 				Message: v3.Message{
 					Name:       "OrderPlacedEvent",
 					Schema:     OrderPlacedEventCodec.Schema,
@@ -204,7 +204,7 @@ func main() {
 				Summary:     "Send notification command",
 				Description: "Dispatched to the notification delivery worker.",
 				Tags:        []string{"notification"},
-				Security:    []route.SecurityRequirement{}, // explicitly unsecured
+				Security:    []events.SecurityRequirement{}, // explicitly unsecured
 				Message: v3.Message{
 					Name:       "NotificationCommand",
 					Schema:     NotificationCommandCodec.Schema,

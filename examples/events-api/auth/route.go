@@ -3,7 +3,6 @@ package auth
 import (
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/examples/events-api/routes"
-	"github.com/DaniDeer/go-codex/route"
 )
 
 // GrantedScopesChannel is a dedicated channel (not routes.SensorDataChannel)
@@ -21,12 +20,12 @@ var GrantedScopesChannel = events.NewChannel[routes.SensorReading](
 // .SubscribeBoundMW(auth.NewGrantedScopesSensorMw(auth.VerifyAPIKeyGS))
 // (see demo_granted_scopes_context_field.go), NOT via .Use(): a
 // [events.BoundSubscribeMiddleware] value deliberately does NOT satisfy
-// .Use()'s accepted [middleware.RouteMiddleware] interface — only
+// .Use()'s accepted [events.RouteMiddleware] interface — only
 // [Subscriber.SubscribeBoundMW] accepts it (docs/design/d-0003-codec-
 // declared-middlewares.md's Addendum 7, events/BoundSubscribeMiddleware class).
 var GrantedScopesSub = GrantedScopesChannel.WithSubscribe(events.Subscribe{
 	Summary:  "GrantedScopes + ContextField demo subscribe",
-	Security: []route.SecurityRequirement{route.Require("apiKeyGS", "read:sensors")},
+	Security: []events.SecurityRequirement{events.Require("apiKeyGS", "read:sensors")},
 })
 
 // GrantedScopesPub is the matching PLAIN publish declaration (no

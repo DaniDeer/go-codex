@@ -8,7 +8,7 @@ import (
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 
 	"github.com/DaniDeer/go-codex/api/events"
-	"github.com/DaniDeer/go-codex/route"
+	"github.com/DaniDeer/go-codex/internal/route"
 )
 
 // docs/design/d-0007-declarative-middleware-layering.md's "Prerequisite for

@@ -375,18 +375,21 @@ class alone (a property-decoded `In`, discarding `*T`) — mirroring
 credential case (the one confirmed genuine use for the bound class
 today).
 
-#### Credential-format validation — build the shared `api/events`/`api/reqreply` core AMQP needs, don't hand-roll a 3rd private copy
+#### Credential-format validation — build the shared `internal/middleware` core AMQP needs, don't hand-roll a 3rd private copy
 
-A cross-cutting review (`docs/roadmap/shared-api-layer-mechanics.md`'s Phase 5 investigation)
-found that `api/rest` has a shared, transport-agnostic credential-format-validation core
-(`rest.ValidateSecurityCredentials` + a `CredentialExtractor func(location, name string) string`
-abstraction in `api/rest/security_dispatch.go`) that EVERY REST adapter (nethttp/chi/websocket/
-mcprest) reuses for free — but `api/events`/`api/reqreply` have NO equivalent. `adapters/mqtt5/
-security.go` has its OWN private `validateSecurityCredentials`, built directly around
-`pahomqtt5.UserProperties` with no extractor-interface abstraction — fine for mqtt5 alone, but
-AMQP would otherwise have to write a THIRD, independently-hand-rolled copy of the same
-format-validation logic (mirroring exactly the kind of "same thing reinvented per adapter"
-pattern `docs/roadmap/adapter-dispatch-unification.md` already warns about in a related context).
+A cross-cutting review (originally the now-retired `shared-api-layer-mechanics.md` roadmap's
+Phase 5 investigation — its full record, including this finding, was folded into
+[`docs/design/d-0009-internalize-shared-mechanics.md`](../design/d-0009-internalize-shared-mechanics.md)'s
+Addendum when that roadmap doc was retired) found that `api/rest` has a shared,
+transport-agnostic credential-format-validation core (`rest.ValidateSecurityCredentials` + a
+`CredentialExtractor func(location, name string) string` abstraction in
+`api/rest/security_dispatch.go`) that EVERY REST adapter (nethttp/chi/websocket/mcprest) reuses
+for free — but `api/events`/`api/reqreply` have NO equivalent. `adapters/mqtt5/security.go` has
+its OWN private `validateSecurityCredentials`, built directly around `pahomqtt5.UserProperties`
+with no extractor-interface abstraction — fine for mqtt5 alone, but AMQP would otherwise have to
+write a THIRD, independently-hand-rolled copy of the same format-validation logic (mirroring
+exactly the kind of "same thing reinvented per adapter" pattern
+`docs/roadmap/adapter-dispatch-unification.md` already warns about in a related context).
 
 **This roadmap now explicitly includes building that shared core as part of AMQP's OWN security
 design** — not deferred to a separate, generic-first roadmap with no concrete consumer to
@@ -394,23 +397,40 @@ validate it against (the sequencing the maintainer explicitly chose: design this
 AS PART OF the AMQP adapter work, where it has a real second data point — mqtt5's user-properties
 model plus AMQP's `BasicProperties.Headers` model — rather than generalizing from mqtt5 alone).
 
+Per [D-0009](../design/d-0009-internalize-shared-mechanics.md)'s now-established convention
+(a mechanism genuinely shared across 2+ of `api/rest`/`api/events`/`api/reqreply` that is pure
+MECHANICS, not a pattern-specific concern, belongs in `internal/middleware` with each pattern
+exposing a thin forwarding wrapper — exactly how `CheckScopes`/`SecurityDeclaration` and the
+Error-Pattern client helpers already shipped), `events`' and `reqreply`'s validation logic would
+be genuinely identical (both just need a `PropertyExtractor` abstraction over their own
+message-property side-channel) — so this is designed as ONE `internal/middleware` core, not two
+independently-hand-written copies:
+
 Sketch (to be finalized once AMQP's own credential-location conventions are settled):
 
 ```go
-package events // or reqreply — same shape, two packages, like REST's own split
+package middleware // internal/middleware
 
 // PropertyExtractor supplies a raw credential string from wherever an
 // adapter's concrete message type stores it — name is the user-property/
 // header key to read. Returns "" when absent. Mirrors rest.CredentialExtractor's
 // role exactly: this abstraction is what lets ValidateSecurityCredentials
-// live in api/events/api/reqreply with ZERO transport-specific import,
-// the same way rest.ValidateSecurityCredentials has zero net/http import.
+// live in internal/middleware with ZERO transport-specific import, the
+// same way rest.ValidateSecurityCredentials has zero net/http import.
 type PropertyExtractor func(name string) string
 
 // ValidateSecurityCredentials extracts credentials via extract and
 // validates them against the registered SecurityScheme codecs for the
 // declared requirements — same contract as rest.ValidateSecurityCredentials.
 func ValidateSecurityCredentials(extract PropertyExtractor, reqs []route.SecurityRequirement, schemes map[string]SecurityScheme) error
+```
+
+```go
+package events // thin forwarding wrapper — reqreply gets the same shape
+
+func ValidateSecurityCredentials(extract middleware.PropertyExtractor, reqs []SecurityRequirement, schemes map[string]SecurityScheme) error {
+    return middleware.ValidateSecurityCredentials(extract, reqs, schemes)
+}
 ```
 
 `adapters/amqp` would build its `PropertyExtractor` from `amqp091.Delivery.Headers`/
@@ -422,8 +442,10 @@ whichever is lower-friction when this work actually starts. The tiny, confirmed 
 byte-identical copy) should be folded into whichever shared location this work settles on, at
 the same time — too small to deserve its own design effort.
 
-This section supersedes `docs/roadmap/shared-api-layer-mechanics.md`'s own Phase 5, which now
-just cross-references here rather than duplicating this design.
+This section supersedes the now-retired `shared-api-layer-mechanics.md`'s own Phase 5, which
+is documented in full (alongside Phases 1-4) in
+[D-0009's Addendum](../design/d-0009-internalize-shared-mechanics.md) rather than duplicated
+here.
 
 ### AsyncAPI spec
 

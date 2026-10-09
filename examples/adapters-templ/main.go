@@ -35,7 +35,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/middleware"
+
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -215,7 +215,7 @@ func main() {
 		}, nil
 	}
 
-	obsMw := middleware.ServerImplementation{Name: "observability", Fn: nethttp.Observability(obs)}
+	obsMw := rest.ServerImplementation{Name: "observability", Fn: nethttp.Observability(obs)}
 	articleRoute = articleRoute.WithHandler(handler).HandleMW(nil, obsMw.Fn).WithOptions(nethttp.Options{})
 	mustServe(articleRoute.Register(b), "register /article")
 

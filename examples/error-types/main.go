@@ -39,7 +39,7 @@ import (
 	"github.com/DaniDeer/go-codex/adapters/nethttp"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/middleware"
+
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -414,7 +414,7 @@ func runMiddlewareErrorDemo() {
 	//
 	// The middleware requires "X-Tenant-Id"; the request omits it, so the
 	// middleware's OWN InCodec validation fails before the handler ever runs.
-	inMW := rest.NewMiddleware(middleware.NewDeclaration("tenant-policy", policyInCodec, policyOutCodec)).
+	inMW := rest.NewMiddleware(rest.NewDeclaration("tenant-policy", policyInCodec, policyOutCodec)).
 		WithRequestHeader(rest.NewRequiredHeaderParam("X-Tenant-Id", codex.String(),
 			func(in policyIn) string { return in.TenantID },
 			func(in *policyIn, v string) { in.TenantID = v },
@@ -448,7 +448,7 @@ func runMiddlewareErrorDemo() {
 	//
 	// The SAME ErrorPattern mechanism a HANDLER error uses also matches a
 	// middleware Fn's own business error — declared once, catches both.
-	fnMW := rest.NewMiddleware(middleware.NewDeclaration("credit-policy", policyInCodec, policyOutCodec)).
+	fnMW := rest.NewMiddleware(rest.NewDeclaration("credit-policy", policyInCodec, policyOutCodec)).
 		WithRequestHeader(rest.NewRequiredHeaderParam("X-Tenant-Id", codex.String(),
 			func(in policyIn) string { return in.TenantID },
 			func(in *policyIn, v string) { in.TenantID = v },
@@ -482,7 +482,7 @@ func runMiddlewareErrorDemo() {
 	// OutCodec validation while being encoded into the response — a
 	// DIFFERENT failure point from 10a/10b, reported with its own
 	// observer location ("middleware:out") and its own error type.
-	outMW := rest.NewMiddleware(middleware.NewDeclaration("ack-policy", policyEmptyInCodec, policyOutCodec)).
+	outMW := rest.NewMiddleware(rest.NewDeclaration("ack-policy", policyEmptyInCodec, policyOutCodec)).
 		WithResponseHeader(rest.NewRequiredResponseHeaderParam("X-Ack", codex.String(),
 			func(out policyOut) string { return out.Ack },
 			func(out *policyOut, v string) { out.Ack = v },

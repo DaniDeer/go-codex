@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"slices"
 
-	"github.com/DaniDeer/go-codex/middleware"
+	"github.com/DaniDeer/go-codex/internal/middleware"
 )
 
 // Middleware is a codec-backed, reqreply-specific middleware declaration —
@@ -239,7 +239,7 @@ func (m Middleware[In, Out]) MiddlewareName() string { return m.Declaration.Name
 // [routeMiddlewareOpt.applyRoute] for a .Use()-attached Middleware value.
 // In/Out are concrete here (m's own type parameters), so it can build the
 // SAME spec contribution and (when bundled) the SAME runtime dispatch
-// handler [BoundMiddleware.applyBoundRoute] produces for the route-bound
+// handler [BoundMiddleware.ApplyBoundRoute] produces for the route-bound
 // case — feeding both into the SAME rb fields, so downstream consumers
 // (applyParamDeclarations, adapters) treat both attachment styles
 // uniformly.

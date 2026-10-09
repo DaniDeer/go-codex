@@ -4,7 +4,7 @@ import (
 	"strings"
 
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/route"
+	"github.com/DaniDeer/go-codex/internal/route"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 )
 

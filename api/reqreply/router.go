@@ -6,43 +6,26 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/DaniDeer/go-codex/middleware"
+	"github.com/DaniDeer/go-codex/internal/middleware"
+	"github.com/DaniDeer/go-codex/internal/router"
 )
 
-// routable is satisfied by [Route] — reqreply's own, separately compiled
-// copy of [api/rest]'s identical resolution (see that package's router.go
-// doc comment for the shared rationale: Go forbids a method from
-// introducing new type parameters beyond its receiver's own, so
-// Router.Route cannot itself be generic over Req/Resp).
+// routable is an internal alias for [router.Routable][*Server] — kept
+// under its pre-consolidation unexported name so every existing call site
+// in this package (ClientHandleOpt, Route.ClientHandle, etc.) keeps
+// compiling unchanged. See docs/design/d-0009-internalize-shared-mechanics.md's
+// Phase 1 for the full consolidation this package's Router now sits on
+// top of.
 //
-// Unlike REST (`routeMethod() string`, HTTP method axis) and events
-// (`role() string`, subscribe/publish axis), reqreply's routable has
-// NEITHER — a single Route[Req,Resp] IS ALREADY the complete, final leaf
-// (topic + both codecs + handler, one Register call); there is no second
-// axis to disambiguate multiple leaves sharing one topic.
-type routable interface {
-	// withRouterPrefix returns a NEW leaf value (same concrete type) with
-	// prefix prepended to its own topic string, mws PREPENDED to its own
-	// accumulated opts (so Router-contributed middleware dispatches
-	// BEFORE the leaf's own), and tags APPENDED as a merge-opt (so
-	// Router-contributed tags combine with, rather than being overwritten
-	// by, the leaf's own RouteMeta.Tags — see [Router.Tags]'s doc comment
-	// for why tags must be appended, not prepended, unlike mws) — plus
-	// the leaf's resulting, fully-composed topic, so callers never need a
-	// second accessor to learn it.
-	withRouterPrefix(prefix string, mws []middleware.RouteMiddleware, tags []string) (routable, string)
-	// middlewareNames reports the leaf's OWN (directly .Use()-attached,
-	// pre-Router) reusable-class middleware names, in attachment order.
-	middlewareNames() []string
-	// tags reports the leaf's OWN (directly RouteMeta-declared,
-	// pre-Router) tags, for RouterEntry.Tags.
-	tags() []string
-	// registerAny performs the SAME work [Route.Register] would,
-	// discarding the returned *RouteHandle — a caller needing the handle
-	// back attaches [WithHandleCallback] to the leaf directly instead;
-	// Router itself never exposes one.
-	registerAny(b *Server) error
-}
+// Unlike REST (RouteMethod() string, HTTP method axis) and events
+// (RouteMethod() string, subscribe/publish axis), reqreply's [Route]
+// does NOT implement [router.MethodReporter] at all — a single
+// Route[Req,Resp] IS ALREADY the complete, final leaf (topic + both
+// codecs + handler, one Register call); there is no second axis to
+// disambiguate multiple leaves sharing one topic. See
+// docs/design/d-0009-internalize-shared-mechanics.md's Phase 1 Design Decision #4
+// for the full investigation that confirmed this.
+type routable = router.Routable[*Server]
 
 // middlewareNameOf extracts a human-readable name from mw for
 // RouterEntry.MiddlewareNames — reqreply's own copy of [api/rest]'s
@@ -81,27 +64,15 @@ func joinRouterTopic(prefix, topic string) string {
 	}
 }
 
-// RouterOpt configures a [Router] at construction time — reserved for
-// future extension; no concrete RouterOpt implementations ship yet. See
-// [api/rest.RouterOpt]'s doc comment for the shared rationale.
-type RouterOpt interface{ applyRouter(*Router) }
-
-// routerChild is one entry in a [Router]'s accumulated children — EITHER a
-// leaf (via [Router.Route]) OR a nested [Router] (via [Router.Mount] or
-// [Router.Group], which share this SAME representation).
-type routerChild struct {
-	leaf    routable
-	leafMws []middleware.RouteMiddleware // this Router's own + any .With() one-shot mws, captured at .Route() time
-	sub     *Router
-}
-
 // Router declares a topic PREFIX once and groups any number of
 // independently-declared [Route] values under it, optionally attaching
 // reusable-class [middleware.RouteMiddleware] to every leaf registered
-// under it in one declaration — reqreply's own copy of [api/rest.Router],
-// adapted for request/reply's SINGLE-leaf shape (no method/role axis). See
-// that type's doc comment for the shared rationale (chi-inspired, fully
-// immutable value type).
+// under it in one declaration — reqreply's own thin wrapper around the
+// shared [router.Router][*Server] core (not a type alias — see
+// docs/design/d-0009-internalize-shared-mechanics.md's Phase 1 Design Decision #2
+// for why a pure alias is incompatible with RouterEntry's per-package
+// Method/Role/neither field shape), adapted for request/reply's
+// SINGLE-leaf shape (no method/role axis).
 //
 // [Router.Group] keeps chi's ORIGINAL, baseline semantics here (no special
 // structural axis to target, unlike REST's method-scoped or events'
@@ -113,20 +84,19 @@ type routerChild struct {
 //	    Route(addRoute).
 //	    Route(subtractRoute)
 //	handle, err := rt.Register(builder) // NOTE: see Router.Register's doc comment
-type Router struct {
-	prefix     string
-	mws        []middleware.RouteMiddleware
-	pendingMws []middleware.RouteMiddleware
-	tags       []string
-	children   []routerChild
-}
+type Router struct{ inner router.Router[*Server] }
+
+// RouterOpt configures a [Router] at construction time — reserved for
+// future extension; no concrete RouterOpt implementations ship yet. See
+// [api/rest.RouterOpt]'s doc comment for the shared rationale.
+type RouterOpt interface{ applyRouter(*Router) }
 
 // NewRouter declares a Router with a STATIC topic prefix (no `{var}`
 // placeholders for v1 — see docs/roadmap/declarative-router-groups.md's
 // "Out of scope (Phase 2+)"). opts is reserved for future extension; no
 // concrete [RouterOpt] implementations ship yet.
 func NewRouter(prefix string, opts ...RouterOpt) Router {
-	rt := Router{prefix: prefix}
+	rt := Router{inner: router.NewRouter[*Server](prefix, joinRouterTopic, wrapRouterPrefixError)}
 	for _, o := range opts {
 		o.applyRouter(&rt)
 	}
@@ -138,8 +108,7 @@ func NewRouter(prefix string, opts ...RouterOpt) Router {
 // middleware (Router-first, outer-to-inner ordering), and before any
 // nested [Router.Mount]/[Router.Group] child's own mws.
 func (rt Router) Use(mws ...middleware.RouteMiddleware) Router {
-	rt.mws = append(cloneMws(rt.mws), mws...)
-	return rt
+	return Router{inner: rt.inner.Use(mws...)}
 }
 
 // Tags returns a NEW Router with tags appended to its own accumulated,
@@ -152,8 +121,7 @@ func (rt Router) Use(mws ...middleware.RouteMiddleware) Router {
 // the leaf's own opts resolve (an append, not a prepend, unlike mws) —
 // identical rationale, identical mechanism here.
 func (rt Router) Tags(tags ...string) Router {
-	rt.tags = append(cloneTags(rt.tags), tags...)
-	return rt
+	return Router{inner: rt.inner.Tags(tags...)}
 }
 
 // With returns a NEW Router whose NEXT [Router.Route] call ONLY receives
@@ -164,35 +132,22 @@ func (rt Router) Tags(tags ...string) Router {
 // [Router.Group]; a preceding .With(mw) is silently DROPPED at Mount time
 // rather than leaking onto a later, unrelated .Route() call.
 func (rt Router) With(mws ...middleware.RouteMiddleware) Router {
-	rt.pendingMws = append(cloneMws(rt.pendingMws), mws...)
-	return rt
+	return Router{inner: rt.inner.With(mws...)}
 }
 
 // Route returns a NEW Router with leaf attached — leaf's own prefix/
 // middleware composition happens later, during [Router.Walk]/
 // [Router.Register], once every ancestor [Router.Mount]/[Router.Group]'s
-// own contribution is known. Only rt's own PENDING (one-shot, from
-// [Router.With]) mws are captured here — rt's own PERMANENT mws (from
-// [Router.Use]) are applied later, once per level, during the walk
-// itself.
+// own contribution is known.
 func (rt Router) Route(leaf routable) Router {
-	pending := rt.pendingMws
-	rt.pendingMws = nil
-	rt.children = append(cloneChildren(rt.children), routerChild{leaf: leaf, leafMws: pending})
-	return rt
+	return Router{inner: rt.inner.Route(leaf)}
 }
 
 // Mount returns a NEW Router with sub attached as a nested child — a NEW
 // topic segment (rt's prefix + sub's own prefix) and a FRESH middleware
 // stack for everything under sub.
-//
-// Any still-pending [Router.With] mws on rt are DISCARDED here, exactly
-// as [Router.Route] would consume (clear) them — see [Router.With]'s doc
-// comment.
 func (rt Router) Mount(sub Router) Router {
-	rt.pendingMws = nil
-	rt.children = append(cloneChildren(rt.children), routerChild{sub: &sub})
-	return rt
+	return Router{inner: rt.inner.Mount(sub.inner)}
 }
 
 // Group returns a NEW Router with fn's built-up child incorporated — SAME
@@ -203,8 +158,9 @@ func (rt Router) Mount(sub Router) Router {
 // shared rationale, including why rt.Group(fn) returns rt ITSELF (the
 // parent), not the child.
 func (rt Router) Group(fn func(sub Router) Router) Router {
-	child := fn(Router{})
-	return rt.Mount(child)
+	return Router{inner: rt.inner.Group(func(sub router.Router[*Server]) router.Router[*Server] {
+		return fn(Router{inner: sub}).inner
+	})}
 }
 
 // RouterEntry describes one leaf's FINAL, fully-assembled view, returned
@@ -234,38 +190,13 @@ type WalkFunc func(entry RouterEntry) error
 // composing prefixes and middleware exactly as [Router.Register] would,
 // calling fn once per leaf, in declaration order.
 func (rt Router) Walk(fn WalkFunc) error {
-	return rt.walk("", nil, nil, fn)
-}
-
-func (rt Router) walk(ancestorPrefix string, ancestorMws []middleware.RouteMiddleware, ancestorTags []string, fn WalkFunc) error {
-	prefix := joinRouterTopic(ancestorPrefix, rt.prefix)
-	mws := append(cloneMws(ancestorMws), rt.mws...)
-	tags := append(cloneTags(ancestorTags), rt.tags...)
-	for _, c := range rt.children {
-		if c.sub != nil {
-			if err := c.sub.walk(prefix, mws, tags, fn); err != nil {
-				return err
-			}
-			continue
-		}
-		allMws := append(cloneMws(mws), c.leafMws...)
-		_, composedTopic := c.leaf.withRouterPrefix(prefix, allMws, tags)
-		names := make([]string, 0, len(allMws)+len(c.leaf.middlewareNames()))
-		for _, mw := range allMws {
-			names = append(names, middlewareNameOf(mw))
-		}
-		names = append(names, c.leaf.middlewareNames()...)
-		entryTags := append(cloneTags(tags), c.leaf.tags()...)
-		entry := RouterEntry{
-			Path:            composedTopic,
-			MiddlewareNames: names,
-			Tags:            entryTags,
-		}
-		if err := fn(entry); err != nil {
-			return err
-		}
-	}
-	return nil
+	return rt.inner.Walk(func(e router.RouterEntry) error {
+		return fn(RouterEntry{
+			Path:            e.Path,
+			MiddlewareNames: e.MiddlewareNames,
+			Tags:            e.Tags,
+		})
+	})
 }
 
 // Routes is a convenience wrapper over [Router.Walk] — collects every leaf
@@ -292,36 +223,24 @@ func (rt Router) Routes() []RouterEntry {
 // propagates COMPLETELY UNWRAPPED, exactly as it would from a direct,
 // Router-less call.
 func (rt Router) Register(b *Server) error {
-	return rt.register("", nil, nil, b)
+	return rt.inner.Register(b)
 }
 
-func (rt Router) register(ancestorPrefix string, ancestorMws []middleware.RouteMiddleware, ancestorTags []string, b *Server) error {
-	prefix := joinRouterTopic(ancestorPrefix, rt.prefix)
-	mws := append(cloneMws(ancestorMws), rt.mws...)
-	tags := append(cloneTags(ancestorTags), rt.tags...)
-	for _, child := range rt.children {
-		if child.sub != nil {
-			if err := child.sub.register(prefix, mws, tags, b); err != nil {
-				return err
-			}
-			continue
-		}
-		allMws := append(cloneMws(mws), child.leafMws...)
-		transformed, composedTopic := child.leaf.withRouterPrefix(prefix, allMws, tags)
-		if err := transformed.registerAny(b); err != nil {
-			var topicErr InvalidTopicError
-			if asInvalidTopicError(err, &topicErr) {
-				return RouterPrefixError{Prefix: prefix, ComposedTopic: composedTopic, Err: err}
-			}
-			return err
-		}
+// wrapRouterPrefixError is the [router.PrefixErrorFunc] supplied to
+// [router.NewRouter] — does exactly what this package's inline
+// asInvalidTopicError + RouterPrefixError{...} construction did before
+// this consolidation, now relocated into a closure.
+func wrapRouterPrefixError(prefix, composed string, err error) (error, bool) {
+	var topicErr InvalidTopicError
+	if asInvalidTopicError(err, &topicErr) {
+		return RouterPrefixError{Prefix: prefix, ComposedTopic: composed, Err: err}, true
 	}
-	return nil
+	return nil, false
 }
 
 // asInvalidTopicError reports whether err is (or wraps) an
-// [InvalidTopicError] — a tiny local helper so [Router.register] doesn't
-// need to import "errors" solely for one errors.As call.
+// [InvalidTopicError] — a tiny local helper so [wrapRouterPrefixError]
+// doesn't need to import "errors" solely for one errors.As call.
 func asInvalidTopicError(err error, target *InvalidTopicError) bool {
 	type unwrapper interface{ Unwrap() error }
 	for {
@@ -430,35 +349,8 @@ func WithRouter(rt Router) ClientHandleOpt { return withRouterOpt{rt: rt} }
 type withRouterOpt struct{ rt Router }
 
 func (o withRouterOpt) applyClientHandle(r routable) routable {
-	transformed, _ := r.withRouterPrefix(o.rt.prefix, o.rt.mws, o.rt.tags)
+	transformed, _ := r.WithRouterPrefix(o.rt.inner.Prefix(), o.rt.inner.OwnMiddleware(), o.rt.inner.OwnTags())
 	return transformed
-}
-
-func cloneMws(mws []middleware.RouteMiddleware) []middleware.RouteMiddleware {
-	if len(mws) == 0 {
-		return nil
-	}
-	out := make([]middleware.RouteMiddleware, len(mws))
-	copy(out, mws)
-	return out
-}
-
-func cloneChildren(children []routerChild) []routerChild {
-	if len(children) == 0 {
-		return nil
-	}
-	out := make([]routerChild, len(children))
-	copy(out, children)
-	return out
-}
-
-func cloneTags(tags []string) []string {
-	if len(tags) == 0 {
-		return nil
-	}
-	out := make([]string, len(tags))
-	copy(out, tags)
-	return out
 }
 
 // routerTagsOpt is the RouteOpt a [Router] APPENDS (never prepends) to a
@@ -472,14 +364,14 @@ func (o routerTagsOpt) applyRoute(rb *routeBuilder) {
 	rb.meta.Tags = append(append([]string{}, o.tags...), rb.meta.Tags...)
 }
 
-// withRouterPrefix implements [routable] for [Route]. mws are PREPENDED
-// into r's own opts list, ahead of r's own existing opts — mirrors
-// [api/rest]'s Route.withRouterPrefix exactly (reqreply's Route stores
-// everything via opts, same as REST's, unlike events' Subscriber/
+// WithRouterPrefix implements [router.Routable] for [Route]. mws are
+// PREPENDED into r's own opts list, ahead of r's own existing opts —
+// mirrors [api/rest]'s Route.WithRouterPrefix exactly (reqreply's Route
+// stores everything via opts, same as REST's, unlike events' Subscriber/
 // Publisher's direct mws field). tags are APPENDED to the END of r's own
 // opts list instead — see [routerTagsOpt]'s doc comment for why tags
 // merge differently than mws.
-func (r Route[Req, Resp]) withRouterPrefix(prefix string, mws []middleware.RouteMiddleware, tags []string) (routable, string) {
+func (r Route[Req, Resp]) WithRouterPrefix(prefix string, mws []middleware.RouteMiddleware, tags []string) (routable, string) {
 	r.topic = joinRouterTopic(prefix, r.topic)
 	if len(mws) > 0 {
 		r.opts = append([]RouteOpt{routeMiddlewareOpt{mws: mws}}, r.opts...)
@@ -498,20 +390,21 @@ func (r Route[Req, Resp]) withRouterPrefix(prefix string, mws []middleware.Route
 	return r, r.topic
 }
 
-// middlewareNames implements [routable] for [Route] — resolves r's own
-// opts through a scratch [routeBuilder] (read-only; never mutates r), the
-// SAME mechanism [ValidateRoute] already uses.
-func (r Route[Req, Resp]) middlewareNames() []string {
+// MiddlewareNames implements [router.Routable] for [Route] — resolves r's
+// own opts through a direct type-switch, the SAME mechanism
+// [ValidateRoute] already uses.
+func (r Route[Req, Resp]) MiddlewareNames() []string {
 	// A direct type-switch over r's own opts — NOT a scratch-routeBuilder
-	// replay (unlike [Route.tags] below) — because rb.middlewares is only
-	// conditionally populated for bound middleware (ONLY when it carries
-	// a Security declaration — see [BoundMiddleware.applyBoundRoute]) and
-	// rb.middlewareSpecContributions (populated unconditionally for
-	// bound/codec-backed middleware) has no comparable per-leaf accessor
-	// here; reading each opt's OWN captured name directly (routeMiddlewareOpt's
-	// mws, boundHandleMWOpt/boundClientAttachOpt's name field) is simpler
-	// and complete for every attachment class, without depending on which
-	// rb field a given middleware happens to touch.
+	// replay (unlike [Route.RouteTags] below) — because rb.middlewares is
+	// only conditionally populated for bound middleware (ONLY when it
+	// carries a Security declaration — see
+	// [BoundMiddleware.ApplyBoundRoute]) and rb.middlewareSpecContributions
+	// (populated unconditionally for bound/codec-backed middleware) has
+	// no comparable per-leaf accessor here; reading each opt's OWN
+	// captured name directly (routeMiddlewareOpt's mws,
+	// boundHandleMWOpt/boundClientAttachOpt's name field) is simpler and
+	// complete for every attachment class, without depending on which rb
+	// field a given middleware happens to touch.
 	var names []string
 	for _, opt := range r.opts {
 		switch o := opt.(type) {
@@ -528,10 +421,11 @@ func (r Route[Req, Resp]) middlewareNames() []string {
 	return names
 }
 
-// tags implements [routable] for [Route] — resolves r's own opts through
-// a scratch [routeBuilder] (read-only; never mutates r), reporting r's
-// OWN, directly-declared [RouteMeta.Tags], BEFORE any Router involvement.
-func (r Route[Req, Resp]) tags() []string {
+// RouteTags implements [router.Routable] for [Route] — resolves r's own
+// opts through a scratch [routeBuilder] (read-only; never mutates r),
+// reporting r's OWN, directly-declared [RouteMeta.Tags], BEFORE any
+// Router involvement.
+func (r Route[Req, Resp]) RouteTags() []string {
 	var rb routeBuilder
 	for _, opt := range r.opts {
 		opt.applyRoute(&rb)
@@ -539,9 +433,9 @@ func (r Route[Req, Resp]) tags() []string {
 	return rb.meta.Tags
 }
 
-// registerAny implements [routable] for [Route] — delegates to
+// RegisterAny implements [router.Routable] for [Route] — delegates to
 // [Route.Register], discarding the returned handle.
-func (r Route[Req, Resp]) registerAny(b *Server) error {
+func (r Route[Req, Resp]) RegisterAny(b *Server) error {
 	_, err := r.Register(b)
 	return err
 }

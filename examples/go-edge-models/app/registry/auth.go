@@ -13,7 +13,6 @@ import (
 	c "github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/internal/registry"
 	regmodels "github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker/registry"
-	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -70,7 +69,7 @@ import (
 // BOTH credential schemes this package uses (Bearer, on
 // GetTagsRoute/GetManifestRoute; Basic, on getTokenRoute's token-exchange
 // call) flow through the IDENTICAL declarative mechanism — a
-// middleware.Middleware whose Security field declares the scheme
+// rest.SecurityMiddleware whose Security field declares the scheme
 // (regmodels.BearerAuthDeclaration, built from regmodels.BearerAuthScheme/
 // BearerAuthSchemeName, for Bearer; getTokenRoute's own basicAuthMw below
 // for Basic) chained onto its route via .Use(...), paired with a
@@ -227,7 +226,7 @@ func parseChallenge(header http.Header) (internal.Challenge, error) {
 // see Credentials' doc comment (credentials.go) for when this is needed. Both
 // the Basic-auth credential here and the Bearer token GetTags/
 // GetImageMetadata use afterward flow through the SAME credentialFunc-shaped Fn +
-// Security-declaring middleware.Middleware mechanism (this file's own
+// Security-declaring rest.SecurityMiddleware mechanism (this file's own
 // basicAuthScheme below / newAuthCredentialFunc's regmodels.BearerAuthScheme
 // above) — no CallOptions.ExtraHeaders injection anywhere in this
 // package.
@@ -269,7 +268,7 @@ func authenticate(ctx context.Context, httpClient *http.Client, registryHost, re
 	}
 
 	// Basic-auth credentials (when supplied) flow through a
-	// credential-providing middleware.Middleware, the SAME declarative
+	// credential-providing rest.SecurityMiddleware, the SAME declarative
 	// mechanism newAuthCredentialFunc's Bearer credential uses below on
 	// GetTagsRoute/GetManifestRoute — not a manual CallOptions.ExtraHeaders
 	// injection. getTokenRoute declares Security unconditionally (this
@@ -423,8 +422,8 @@ type basicAuthIn struct{ Authorization string }
 // (spec-only, no Fn) when anonymous, or with a WithSend-bundled Fn when
 // authenticate() supplies creds (see its own call site below). Built via
 // rest.SecurityMiddleware (docs/design/d-0003-codec-declared-middlewares.md),
-// not the legacy middleware.SecurityScheme.
-var basicAuthMw = rest.SecurityMiddleware[basicAuthIn, struct{}]("basicAuth", rest.SecurityScheme{SecurityScheme: route.BasicScheme(), Codec: &basicAuthCredCodec}, nil).
+// not the legacy internal/route.SecurityScheme.
+var basicAuthMw = rest.SecurityMiddleware[basicAuthIn, struct{}]("basicAuth", rest.BasicScheme().WithCodec(basicAuthCredCodec), nil).
 	WithRequestHeader(rest.NewRequiredHeaderParam("Authorization", c.String(),
 		func(in basicAuthIn) string { return in.Authorization },
 		func(in *basicAuthIn, v string) { in.Authorization = v },

@@ -16,7 +16,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/route"
+	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -2022,7 +2022,7 @@ func TestHandler_GlobalSecurity_notCalledWhenExplicitlyEmpty(t *testing.T) {
 	// with an explicit RouteMeta.Security opt-out, AND with a mismatched
 	// Satisfies-bearing impl attached anyway (silently never firing,
 	// since Satisfies-vs-secReqs gating skipped it). Its replacement,
-	// rest.FromSecurityScheme (attached via .Use()), is a REAL
+	// rest.SecurityMiddleware (attached via .Use()), is a REAL
 	// declaration that ALWAYS merges into the route's security
 	// requirement — there is no metadata-only equivalent anymore, AND
 	// attaching a Satisfies-bearing impl with no matching .Use() is now

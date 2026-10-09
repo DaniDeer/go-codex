@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/middleware"
+	"github.com/DaniDeer/go-codex/internal/middleware"
 )
 
 // MiddlewareHandler is the type-erased, SERVER-side runtime dispatch unit
@@ -194,7 +194,7 @@ func buildEncodeOut[In, Out any](mw Middleware[In, Out]) func(ctx context.Contex
 // buildMiddlewareHandlerAny builds a type-erased [MiddlewareHandler] from a
 // concrete [Middleware][In, Out] and an UNTYPED fn — the SOLE builder for
 // the route-BOUND, RECEIVING role, used by both [Route.HandleMW]'s bound
-// path (see [Middleware.applyBoundRoute]) and
+// path (see [BoundMiddleware.ApplyBoundRoute]) and
 // [buildAgnosticMiddlewareHandler] (docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase C, mirroring rest's/events' identical DRY
 // consolidation): fn is already `any` on [MiddlewareHandler.Fn] itself,
 // so a SEPARATE `any`-typed builder needs zero new type parameters beyond
@@ -286,7 +286,7 @@ func buildDecodeOut[In, Out any](mw Middleware[In, Out]) func(ctx context.Contex
 // [ClientMiddlewareHandler] from a concrete [Middleware][In, Out] and an
 // UNTYPED fn — the SENDING-role mirror of [buildMiddlewareHandlerAny],
 // used by both [Route.ClientMW]'s bound path (see
-// [Middleware.applyBoundClientRoute]) and
+// [BoundClientMiddleware.ApplyBoundClientRoute]) and
 // [buildAgnosticClientMiddlewareHandler].
 func buildClientMiddlewareHandlerAny[In, Out any](mw Middleware[In, Out], fn any) ClientMiddlewareHandler {
 	return ClientMiddlewareHandler{
@@ -339,7 +339,7 @@ type middlewareSpecContribution struct {
 }
 
 // boundSpecContributionOf is [specContributionOf]'s passthrough, used by
-// [BoundMiddleware.applyBoundRoute]/[BoundClientMiddleware.applyBoundClientRoute]
+// [BoundMiddleware.ApplyBoundRoute]/[BoundClientMiddleware.ApplyBoundClientRoute]
 // — kept as a separate named function (rather than inlining
 // specContributionOf at both call sites) purely for call-site symmetry
 // with the agnostic path's own [specContributionOf] call.

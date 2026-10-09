@@ -8,7 +8,7 @@ import (
 	"slices"
 
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/middleware"
+	"github.com/DaniDeer/go-codex/internal/middleware"
 )
 
 // BoundSubscribeMiddleware is the channel-BOUND counterpart to
@@ -45,7 +45,7 @@ import (
 // holds a [Middleware][In, Out]-shaped merge-field/Declaration value
 // giving BoundSubscribeMiddleware the EXACT SAME topic/property
 // merge-field vocabulary as [Middleware] for free, letting
-// [BoundSubscribeMiddleware.applyBoundSubscriber] call the EXISTING
+// [BoundSubscribeMiddleware.ApplyBoundRoute] call the EXISTING
 // [buildMiddlewareHandlerAny] helper UNCHANGED, passing mw. Using a NAMED
 // field (never anonymous/embedded) is DELIBERATE: Go promotes ALL methods
 // of an embedded field, which would silently promote
@@ -145,7 +145,7 @@ func (m BoundSubscribeMiddleware[T, In, Out]) SetContextFieldFromIn(field middle
 // [Subscriber.SubscribeBoundMW]'s error-message enrichment.
 func (m BoundSubscribeMiddleware[T, In, Out]) MiddlewareName() string { return m.mw.MiddlewareName() }
 
-// applyBoundSubscriber satisfies [boundContributor][T] — BoundSubscribeMiddleware's
+// ApplyBoundRoute satisfies [boundContributor][T] — BoundSubscribeMiddleware's
 // ONLY attach path. Calls the EXISTING, UNCHANGED [buildMiddlewareHandlerAny]
 // helper with the named mw field, then sets HasOut/ValidateOut directly
 // (BoundSubscribeMiddleware ALWAYS carries an Out-returning Fn — see this
@@ -161,14 +161,14 @@ func (m BoundSubscribeMiddleware[T, In, Out]) MiddlewareName() string { return m
 // events example, not dead code)
 //
 //lint:ignore U1000 implements boundContributor interface (dispatched via
-func (m BoundSubscribeMiddleware[T, In, Out]) applyBoundSubscriber(s *Subscriber[T]) {
+func (m BoundSubscribeMiddleware[T, In, Out]) ApplyBoundRoute(rb middleware.BoundRouteBuilder) {
 	h := buildMiddlewareHandlerAny(m.mw, m.fn)
 	h.HasOut = true
 	h.ValidateOut = func(out any) error {
 		o, _ := out.(Out)
 		return m.mw.OutCodec.Validate(o)
 	}
-	s.middlewareHandlers = append(slices.Clone(s.middlewareHandlers), h)
+	rb.AppendMiddlewareHandler(h)
 	// A Security-carrying attachment must also land in s.mws — the ONLY
 	// place [applyEventsSecurityDeclarations] (called from
 	// [buildChannelHandle]) reads to populate
@@ -176,26 +176,26 @@ func (m BoundSubscribeMiddleware[T, In, Out]) applyBoundSubscriber(s *Subscriber
 	// Without this, a Bound-only Security attachment (no companion .Use()
 	// call) silently enforces scopes at dispatch time (middlewareHandlers
 	// IS populated) while the published AsyncAPI spec omits the
-	// requirement entirely — mirrors [rest.BoundMiddleware.applyBoundRoute]/
-	// [reqreply.BoundMiddleware.applyBoundRoute]'s identical, existing line.
+	// requirement entirely — mirrors [rest.BoundMiddleware.ApplyBoundRoute]/
+	// [reqreply.BoundMiddleware.ApplyBoundRoute]'s identical, existing line.
 	if sec := m.mw.SecurityDeclaration(); sec != nil {
-		s.mws = append(slices.Clone(s.mws), middleware.Middleware{Name: m.mw.MiddlewareName(), Security: sec})
+		rb.AppendSecurityDeclaration(m.mw.MiddlewareName(), sec)
 	}
 }
 
-// boundReqWitness satisfies [boundContributor]'s type-level witness —
+// BoundReqWitness satisfies [boundContributor]'s type-level witness —
 // never called; see that interface's doc comment. The purpose is making
-// T appear in a method SIGNATURE — without it, applyBoundSubscriber's
+// T appear in a method SIGNATURE — without it, ApplyBoundRoute's
 // signature never mentions T at all, so EVERY BoundSubscribeMiddleware[X,...]
 // would satisfy boundContributor[Y] for ANY X, Y (the exact bug Phase A's
 // REST implementation found and fixed via this SAME technique — carried
 // forward here from the start, not discovered via a failing test).
 //
-// applyBoundSubscriber above — required by the interface, invisible to
+// ApplyBoundRoute above — required by the interface, invisible to
 // static reachability analysis through a runtime type assertion)
 //
 //lint:ignore U1000 implements boundContributor interface (same reason as
-func (m BoundSubscribeMiddleware[T, In, Out]) boundReqWitness(T) {}
+func (m BoundSubscribeMiddleware[T, In, Out]) BoundReqWitness(T) {}
 
 // BoundPublishMiddleware is [BoundSubscribeMiddleware]'s PUBLISH (SENDING)
 // role sibling, attached via [Publisher.PublishBoundMW]. Fn shape differs
@@ -263,64 +263,97 @@ func (m BoundPublishMiddleware[T, In, Out]) SetContextFieldFromOut(field middlew
 // MiddlewareName mirrors [BoundSubscribeMiddleware.MiddlewareName].
 func (m BoundPublishMiddleware[T, In, Out]) MiddlewareName() string { return m.mw.MiddlewareName() }
 
-// applyBoundPublisher satisfies [boundClientContributor][T] —
-// BoundPublishMiddleware's ONLY attach path. Mutates p directly — see
-// [BoundSubscribeMiddleware.applyBoundSubscriber]'s identical rationale.
+// ApplyBoundClientRoute satisfies [boundClientContributor][T] —
+// BoundPublishMiddleware's ONLY attach path. rb is the narrow
+// [middleware.BoundRouteBuilder] interface — see
+// [BoundSubscribeMiddleware.ApplyBoundRoute]'s identical rationale.
 //
-// reason as BoundSubscribeMiddleware.applyBoundSubscriber above)
+// reason as BoundSubscribeMiddleware.ApplyBoundRoute above)
 //
 //lint:ignore U1000 implements boundClientContributor interface (same
-func (m BoundPublishMiddleware[T, In, Out]) applyBoundPublisher(p *Publisher[T]) {
-	p.clientMiddlewareHandlers = append(slices.Clone(p.clientMiddlewareHandlers), buildClientMiddlewareHandlerAny(m.mw, m.fn))
-	// See [BoundSubscribeMiddleware.applyBoundSubscriber]'s identical
+func (m BoundPublishMiddleware[T, In, Out]) ApplyBoundClientRoute(rb middleware.BoundRouteBuilder) {
+	rb.AppendClientMiddlewareHandler(buildClientMiddlewareHandlerAny(m.mw, m.fn))
+	// See [BoundSubscribeMiddleware.ApplyBoundRoute]'s identical
 	// rationale — without this, Publish.Security/SecuritySchemes is
 	// silently left unpopulated for a Bound-only Security attachment.
 	if sec := m.mw.SecurityDeclaration(); sec != nil {
-		p.mws = append(slices.Clone(p.mws), middleware.Middleware{Name: m.mw.MiddlewareName(), Security: sec})
+		rb.AppendSecurityDeclaration(m.mw.MiddlewareName(), sec)
 	}
 }
 
-// boundReqWitness satisfies [boundClientContributor]'s type-level
-// witness — never called; see [BoundSubscribeMiddleware.boundReqWitness]'s
+// BoundReqWitness satisfies [boundClientContributor]'s type-level
+// witness — never called; see [BoundSubscribeMiddleware.BoundReqWitness]'s
 // identical rationale.
 //
-// reason as BoundSubscribeMiddleware.boundReqWitness above)
+// reason as BoundSubscribeMiddleware.BoundReqWitness above)
 //
 //lint:ignore U1000 implements boundClientContributor interface (same
-func (m BoundPublishMiddleware[T, In, Out]) boundReqWitness(T) {}
+func (m BoundPublishMiddleware[T, In, Out]) BoundReqWitness(T) {}
 
-// boundContributor[T] is T-parameterized — [BoundSubscribeMiddleware][T,...]
-// satisfies it FOR ITS OWN T only. Go's own generic interface
-// satisfaction does the matching; no Fn-shape reflection anywhere.
+// boundContributor/boundClientContributor/boundNamed are internal
+// aliases for the shared, EXPORTED [middleware.BoundContributor]/
+// [middleware.BoundClientContributor]/[middleware.BoundNamed] —
+// consolidated per docs/design/d-0009-internalize-shared-mechanics.md's Phase 2
+// (kept under their pre-consolidation unexported names so every existing
+// call site in this file keeps compiling unchanged). [BoundSubscribeMiddleware]/
+// [BoundPublishMiddleware] satisfy them for their own T only — Go's own
+// generic interface satisfaction does the matching; no Fn-shape
+// reflection anywhere. See [middleware.BoundContributor]'s own doc
+// comment for the BoundReqWitness discriminator-trick rationale (ported
+// directly from REST's Phase A implementation, found there via an actual
+// failing test — applied here from the start).
 //
-// boundReqWitness is a DELIBERATE, never-called no-op method whose SOLE
-// purpose is making T appear in a method SIGNATURE — see
-// [BoundSubscribeMiddleware.boundReqWitness]'s doc comment for the full
-// rationale (ported directly from REST's Phase A implementation, found
-// there via an actual failing test — applied here from the start).
-//
-// applyBoundSubscriber mutates *Subscriber[T] DIRECTLY — events'
-// [Subscriber[T]] has no routeBuilder-style opts-deferral pattern (unlike
-// REST's [Route[Req,Resp]]) — see [Subscriber.SubscribeBoundMW]'s own doc
-// comment for the full rationale.
-type boundContributor[T any] interface {
-	applyBoundSubscriber(s *Subscriber[T])
-	boundReqWitness(T)
+// ApplyBoundRoute/ApplyBoundClientRoute take the narrow
+// [middleware.BoundRouteBuilder] interface, implemented below by
+// *Subscriber[T]/*Publisher[T] via pointer receiver — events' Subscriber/
+// Publisher have no routeBuilder-style opts-deferral pattern (unlike
+// REST's [Route[Req,Resp]]), so the interface's methods mutate the
+// pointee DIRECTLY — see [Subscriber.SubscribeBoundMW]'s own doc comment
+// for the full rationale.
+type boundContributor[T any] = middleware.BoundContributor[T]
+type boundClientContributor[T any] = middleware.BoundClientContributor[T]
+type boundNamed = middleware.BoundNamed
+
+// Subscriber[T]'s 2 meaningful [middleware.BoundRouteBuilder] methods
+// (pointer receiver — mutates the pointee directly, since Subscriber has
+// no routeBuilder-style deferred-opts pattern); AppendClientMiddlewareHandler/
+// AppendSpecContribution are no-ops — Subscriber has no client/sending
+// role and no spec-contribution concept of its own (see
+// [Publisher.AppendSpecContribution]'s doc comment for the latter's full
+// rationale).
+func (s *Subscriber[T]) AppendMiddlewareHandler(h any) {
+	s.middlewareHandlers = append(slices.Clone(s.middlewareHandlers), h.(MiddlewareHandler))
 }
 
-// boundClientContributor is [boundContributor]'s sending-role mirror —
-// [BoundPublishMiddleware][T, ...] satisfies it for its own T only.
-type boundClientContributor[T any] interface {
-	applyBoundPublisher(p *Publisher[T])
-	boundReqWitness(T)
+func (s *Subscriber[T]) AppendClientMiddlewareHandler(any) {}
+
+func (s *Subscriber[T]) AppendSpecContribution(any) {}
+
+func (s *Subscriber[T]) AppendSecurityDeclaration(name string, sec *middleware.SecurityDeclaration) {
+	s.mws = append(slices.Clone(s.mws), middleware.Middleware{Name: name, Security: sec})
 }
 
-// boundNamed is a T-FREE interface a bound middleware's name can be
-// extracted through even when it's the WRONG T (so
-// [BoundMiddlewareReqMismatchError]'s message can still name the
-// middleware, when possible).
-type boundNamed interface {
-	MiddlewareName() string
+// Publisher[T]'s [middleware.BoundRouteBuilder] methods — mirrors
+// [Subscriber]'s identical rationale. AppendMiddlewareHandler is a no-op
+// — Publisher has no server/receiving role.
+//
+// AppendSpecContribution is a no-op: events has NO spec-contribution
+// concept of its own at all (unlike api/rest/api/reqreply's separate
+// middlewareSpecContribution list) — events' [MiddlewareHandler]/
+// [ClientMiddlewareHandler] already carry every spec-relevant field
+// directly (see docs/design/d-0009-internalize-shared-mechanics.md's Phase 2 for
+// the full investigation that confirmed this difference is a genuine,
+// not-yet-resolved vocabulary gap, not an oversight).
+func (p *Publisher[T]) AppendMiddlewareHandler(any) {}
+
+func (p *Publisher[T]) AppendClientMiddlewareHandler(h any) {
+	p.clientMiddlewareHandlers = append(slices.Clone(p.clientMiddlewareHandlers), h.(ClientMiddlewareHandler))
+}
+
+func (p *Publisher[T]) AppendSpecContribution(any) {}
+
+func (p *Publisher[T]) AppendSecurityDeclaration(name string, sec *middleware.SecurityDeclaration) {
+	p.mws = append(slices.Clone(p.mws), middleware.Middleware{Name: name, Security: sec})
 }
 
 // BoundMiddlewareReqMismatchError is returned when [Subscriber.SubscribeBoundMW]/
@@ -387,44 +420,6 @@ func (e MiddlewareMisattachedError) LogValue() slog.Value {
 	)
 }
 
-// LegacySecurityMWRemovedError is returned (via s.buildErr/p.buildErr) when
-// a legacy [middleware.Middleware] carrying a Security declaration (built
-// via [middleware.SecurityScheme]/[FromSecurityScheme]) is passed to
-// [Subscriber.SubscribeMW]/[Publisher.PublishMW]. Retired per
-// docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8: a full-repo search
-// found zero uses of this mechanism's one distinguishing feature — a
-// single declared scheme shared, by VALUE, across REST/events/reqreply —
-// so security-scheme declaration is now a concrete, per-api-layer concern
-// exclusively. Declare and implement a security scheme via
-// [Subscriber.SubscribeBoundMW]/[Publisher.PublishBoundMW] +
-// [BoundSecuritySubscribeMiddleware]/[BoundSecurityPublishMiddleware]
-// instead — it embeds the Security declaration directly (no separate
-// .Use() call needed). SubscribeMW/PublishMW's GENERAL-PURPOSE
-// (non-security) use is UNCHANGED — this error fires only for a
-// Security-carrying mw.
-type LegacySecurityMWRemovedError struct {
-	Topic string
-	Name  string
-	Op    string // "SubscribeMW" or "PublishMW"
-}
-
-func (e LegacySecurityMWRemovedError) Error() string {
-	boundOp, boundCtor := "SubscribeBoundMW", "BoundSecuritySubscribeMiddleware"
-	if e.Op == "PublishMW" {
-		boundOp, boundCtor = "PublishBoundMW", "BoundSecurityPublishMiddleware"
-	}
-	return fmt.Sprintf("api/events: topic %q: middleware %q: a Security-carrying middleware.Middleware can no longer be attached via %s — use %s with %s instead", e.Topic, e.Name, e.Op, boundOp, boundCtor)
-}
-
-// LogValue implements [slog.LogValuer] for structured logging.
-func (e LegacySecurityMWRemovedError) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("topic", e.Topic),
-		slog.String("name", e.Name),
-		slog.String("op", e.Op),
-	)
-}
-
 // SubscribeBoundMW attaches bm — a [BoundSubscribeMiddleware][T, In, Out]
 // value whose T matches THIS Subscriber's own T type parameter — giving
 // its embedded Fn *T access via the SAME channel-BOUND mechanism as the
@@ -447,7 +442,7 @@ func (e LegacySecurityMWRemovedError) LogValue() slog.Value {
 // workaround (see [Subscriber.Handle]'s own doc comment).
 func (s Subscriber[T]) SubscribeBoundMW(bm any) Subscriber[T] {
 	if v, ok := bm.(boundContributor[T]); ok {
-		v.applyBoundSubscriber(&s)
+		v.ApplyBoundRoute(&s)
 		return s
 	}
 	if s.buildErr == nil {
@@ -465,7 +460,7 @@ func (s Subscriber[T]) SubscribeBoundMW(bm any) Subscriber[T] {
 // [Subscriber.SubscribeBoundMW] for the sending role.
 func (p Publisher[T]) PublishBoundMW(bm any) Publisher[T] {
 	if v, ok := bm.(boundClientContributor[T]); ok {
-		v.applyBoundPublisher(&p)
+		v.ApplyBoundClientRoute(&p)
 		return p
 	}
 	if p.buildErr == nil {

@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/middleware"
+	"github.com/DaniDeer/go-codex/internal/middleware"
 )
 
 // MiddlewareHandler is the type-erased, RECEIVING-role runtime dispatch
@@ -71,9 +71,9 @@ type MiddlewareHandler struct {
 	Agnostic bool
 
 	// Satisfies names the security scheme(s) this handler PAIRS against,
-	// derived from mw's own Security declaration (see
-	// [securityDeclarationOf]) — empty for a general-purpose (no Security)
-	// middleware, which [CheckCoverage] always treats as non-covering.
+	// derived from mw's own Security declaration (see [satisfiesOf]) —
+	// empty for a general-purpose (no Security) middleware, which
+	// [CheckCoverage] always treats as non-covering.
 	// Mirrors [middleware.ServerImplementation.Satisfies] exactly, so
 	// [CheckCoverage] can check BOTH lists uniformly.
 	Satisfies []string
@@ -262,11 +262,12 @@ func buildEncodeOutCookieAttrs[In, Out any](mw Middleware[In, Out]) func(outAny 
 
 // satisfiesOf derives the Satisfies slice shared by every
 // MiddlewareHandler/ClientMiddlewareHandler builder (bound AND agnostic,
-// both roles) — mirrors [buildServerImplementation]'s own
-// [securityDeclarationOf]-based derivation exactly, so [CheckCoverage] can
-// treat a codec-backed Middleware's dispatch handler identically to a
-// legacy [middleware.ServerImplementation]/[middleware.ClientImplementation]
-// regardless of which attachment style produced it.
+// both roles) from mw's own [middleware.SecurityCarrier]-derived Security
+// declaration — empty for a general-purpose (no Security) middleware, so
+// [CheckCoverage] can treat a codec-backed Middleware's dispatch handler
+// identically to a general-purpose [middleware.ServerImplementation]/
+// [middleware.ClientImplementation] regardless of which attachment style
+// produced it.
 func satisfiesOf[In, Out any](mw Middleware[In, Out]) []string {
 	if sec := mw.SecurityDeclaration(); sec != nil {
 		return []string{sec.SchemeName}
@@ -276,7 +277,7 @@ func satisfiesOf[In, Out any](mw Middleware[In, Out]) []string {
 
 // buildMiddlewareHandlerAny builds a type-erased [MiddlewareHandler] from
 // a concrete [Middleware][In, Out] and an UNTYPED fn — the SOLE builder
-// for the RECEIVING role, used by both [BoundMiddleware.applyBoundRoute]
+// for the RECEIVING role, used by both [BoundMiddleware.ApplyBoundRoute]
 // (bound class, attached via [Route.HandleBoundMW]) and
 // [buildAgnosticMiddlewareHandler] (reusable class): fn is already `any`
 // on [MiddlewareHandler.Fn] itself, so a SEPARATE `any`-typed builder
@@ -296,7 +297,7 @@ func buildMiddlewareHandlerAny[In, Out any](mw Middleware[In, Out], fn any) Midd
 // buildAgnosticMiddlewareHandler builds a type-erased [MiddlewareHandler]
 // from a route/channel-AGNOSTIC [Middleware][In, Out] — one attached via
 // plain .Use(mw), bundled via [Middleware.WithReceive] — mirroring the
-// bound class's [BoundMiddleware.applyBoundRoute] except Fn is mw's OWN
+// bound class's [BoundMiddleware.ApplyBoundRoute] except Fn is mw's OWN
 // bundled receiveFn (func(ctx, In) (Out, error), no *Req) and
 // [MiddlewareHandler.Agnostic] is set so the adapter reflect-calls Fn
 // with the matching arity.
@@ -374,7 +375,7 @@ func buildDecodeOut[In, Out any](mw Middleware[In, Out]) func(ctx context.Contex
 // buildClientMiddlewareHandlerAny builds a type-erased
 // [ClientMiddlewareHandler] from a concrete [Middleware][In, Out] and an
 // UNTYPED fn — the SENDING-role mirror of [buildMiddlewareHandlerAny],
-// used by both [BoundClientMiddleware.applyBoundClientRoute] (bound
+// used by both [BoundClientMiddleware.ApplyBoundClientRoute] (bound
 // class, attached via [Route.ClientBoundMW]) and
 // [buildAgnosticClientMiddlewareHandler] (reusable class).
 func buildClientMiddlewareHandlerAny[In, Out any](mw Middleware[In, Out], fn any) ClientMiddlewareHandler {
@@ -391,7 +392,7 @@ func buildClientMiddlewareHandlerAny[In, Out any](mw Middleware[In, Out], fn any
 // [ClientMiddlewareHandler] from a route/channel-AGNOSTIC
 // [Middleware][In, Out] — one attached via plain .Use(mw), bundled via
 // [Middleware.WithSend] — mirroring the bound class's
-// [BoundClientMiddleware.applyBoundClientRoute] except Fn is mw's OWN
+// [BoundClientMiddleware.ApplyBoundClientRoute] except Fn is mw's OWN
 // bundled sendFn (func(ctx) (In, error), no Req) and
 // [ClientMiddlewareHandler.Agnostic] is set so the adapter reflect-calls
 // Fn with the matching arity.
@@ -405,7 +406,7 @@ func buildAgnosticClientMiddlewareHandler[In, Out any](mw Middleware[In, Out]) C
 // declarations from ONE attached codec-backed middleware value — either
 // class (the reusable [Middleware], via its own applyAgnosticRoute
 // method, or the bound [BoundMiddleware]/[BoundClientMiddleware], via
-// their own applyBoundRoute/applyBoundClientRoute methods) — converted
+// their own ApplyBoundRoute/ApplyBoundClientRoute methods) — converted
 // to plain, Req/Resp-agnostic spec types at the GENERIC call site where
 // In/Out are still concrete. Fed into applyParamDeclarations'
 // conflict-detection/layering pass, the SAME one legacy
@@ -420,7 +421,7 @@ type middlewareSpecContribution struct {
 }
 
 // boundSpecContributionOf is [specContributionOf], called from the bound
-// class's own applyBoundRoute/applyBoundClientRoute methods
+// class's own ApplyBoundRoute/ApplyBoundClientRoute methods
 // (bound_middleware.go) — kept as a separate, identically-named entry
 // point for call-site clarity/symmetry with the reusable class's own
 // applyAgnosticRoute call to specContributionOf directly, even though it

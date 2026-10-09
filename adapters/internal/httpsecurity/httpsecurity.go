@@ -20,8 +20,8 @@ import (
 	"net/http"
 	"reflect"
 
-	"github.com/DaniDeer/go-codex/middleware"
-	"github.com/DaniDeer/go-codex/route"
+	"github.com/DaniDeer/go-codex/internal/middleware"
+	"github.com/DaniDeer/go-codex/internal/route"
 )
 
 // RunSecurityMiddlewareReflect is adapters/nethttp's generic

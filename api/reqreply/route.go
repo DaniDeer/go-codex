@@ -12,8 +12,8 @@ import (
 	"github.com/DaniDeer/go-codex/api/internal"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/middleware"
-	"github.com/DaniDeer/go-codex/route"
+	"github.com/DaniDeer/go-codex/internal/middleware"
+	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/schema"
 )
 
@@ -368,10 +368,9 @@ func WithSecurityScheme(name string, scheme SecurityScheme) RouteOpt {
 	return securitySchemeOpt{name: name, scheme: scheme}
 }
 
-// SecurityMiddleware is [FromSecurityScheme]'s codec-backed-family
-// equivalent, GENERALIZED over In/Out (docs/roadmap/declarative-
+// SecurityMiddleware, GENERALIZED over In/Out (docs/roadmap/declarative-
 // middleware-layering.md's Rollout Phase C, mirroring `rest`'s/`events`'
-// identical Phase A/B generalization) — builds a [Middleware][In, Out]
+// identical Phase A/B generalization), builds a [Middleware][In, Out]
 // carrying a [middleware.SecurityDeclaration]. Attached ONLY via
 // `.Use(...)` (the REUSABLE class — a `Req`-free Fn supplied via
 // [Middleware.WithReceive]/[Middleware.WithSend], reusable verbatim
@@ -559,12 +558,10 @@ type ErrorPatternResponse struct {
 // extract the decoded typed payload via [errors.As] WITHOUT
 // `api/reqreply` importing the adapter package (which would invert the
 // module's layering). Mirrors [rest.ErrorPatternValuer] exactly. See
-// docs/design/d-0005-error-handling.md's Topic 6.
-type ErrorPatternValuer interface {
-	// ErrorPatternValue returns the decoded typed payload — the SAME
-	// value the adapter's own ErrorPatternResponse.Value field carries.
-	ErrorPatternValue() any
-}
+// docs/design/d-0005-error-handling.md's Topic 6. Defined in
+// error_pattern_client.go (a type alias to
+// [internal/middleware.ErrorPatternValuer], consolidated per
+// docs/design/d-0009-internalize-shared-mechanics.md's Phase 4).
 
 // errorPatternRule is the type-erased runtime form of a declared
 // [ErrorPattern], stored on [routeBuilder]/[RouteHandle].

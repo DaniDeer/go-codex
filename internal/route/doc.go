@@ -1,6 +1,19 @@
 // Package route holds spec descriptors shared by the OpenAPI and AsyncAPI
 // renderers: HTTP operation shapes and the security-scheme vocabulary.
 //
+// DELIBERATELY scoped under internal/ (not the repo root) — this package
+// is pure cross-pattern MECHANICS/vocabulary, never meant to be imported
+// by an end user of go-codex directly. An end user declaring a security
+// scheme uses rest.BearerScheme/BasicScheme/APIKeyScheme/OAuth2Scheme/
+// OpenIDConnectScheme/Require (events/reqreply have the SAME functions) —
+// thin, per-pattern wrappers around this package's own constructors,
+// returning each pattern's OWN SecurityScheme/SecurityRequirement type.
+// Go's own internal/ import rule enforces this structurally: nothing
+// outside the go-codex module tree can import this package at all,
+// regardless of documentation/convention. See
+// .github/instructions/go-codex.instructions.md's Design Philosophy
+// section for the general rule this package is a reference example of.
+//
 // A Route is a transport-agnostic descriptor for a single HTTP operation:
 // method, path, parameters, request body, and responses. Codecs supply the
 // schemas; renderers (such as render/openapi) consume routes to emit specs.

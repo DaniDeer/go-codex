@@ -5,8 +5,10 @@
 > review, see "Phase C, sub-step 2" below — all 6 items confirmed
 > correctly deferred, zero new work promoted; item 3 spun off a separate
 > idea-stage doc, [`typed-router-groups.md`](../roadmap/typed-router-groups.md))
-> — see `api/rest/router.go`/`api/events/router.go`/`api/reqreply/router.go`,
-> `docs/features/router-groups.md`. **`Router.Tags`/`WithRouterTags`
+> — see `api/rest/router.go`/`api/events/router.go`/`api/reqreply/router.go`
+> (each now a thin wrapper around the shared `router` package — see this
+> doc's own "Addendum — consolidated onto the shared `router` package"
+> below), `docs/features/router-groups.md`. **`Router.Tags`/`WithRouterTags`
 > (deferred-item 4) was LATER implemented** once a concrete driver (a
 > pass retrofitting Router into 3 real, already-shipped example
 > registration call sites) surfaced — see item 4 below for the shipped
@@ -1194,6 +1196,63 @@ design sketches (including found gotchas/blockers) for a future
 implementer to start from, instead of a bare "deferred." The
 deferred-item review itself is now closed; Phase D (documentation
 graduation) is the only remaining step.
+
+## Addendum — consolidated onto the shared `router` package (`docs/design/d-0009-internalize-shared-mechanics.md`'s Phase 1)
+
+The 3 independently-shipped implementations this doc designed (`api/rest`/`api/events`/
+`api/reqreply`'s own `Router`/`Mount`/`Group`/`Walk`/`Routes`/`Register`/`RouterPrefixError`
+mechanics, ~1800 lines combined, confirmed near-identical by direct code comparison) were
+consolidated into a new shared `router` package (later relocated to `internal/router` — see
+`docs/design/d-0009-internalize-shared-mechanics.md` — the package name itself is unchanged, only its
+import path). This was a PURE internal-implementation consolidation — zero behavior change for
+any existing caller; every pre-consolidation `router_test.go` in all 3 packages passed UNCHANGED
+against the new implementation, with 2 new regression tests added per package confirming the
+`MethodReporter` boundary (see below).
+
+What moved to `router.Router[Target]`/`router.Routable[Target]`:
+- The full state machine: prefix/mws/tags accumulation, `routerChild[Target]`, `Mount`/`Group`
+  tree structure, `Walk`/`Routes` traversal, `Register`/`register`.
+- `Routable[Target]`'s 4 genuinely-uniform leaf methods: `WithRouterPrefix`/`MiddlewareNames`/
+  `RouteTags`/`RegisterAny` (promoted from this doc's original unexported `withRouterPrefix`/
+  `middlewareNames`/`tags`/`registerAny`).
+- `cloneMws`/`cloneChildren`/`cloneTags`/`middlewareNameOf` — identical in all 3 packages.
+
+What a **new, previously-undesigned `MethodReporter` interface** resolves — found during
+implementation planning, not anticipated by this doc's original design: this doc's own
+`routable` already noted REST's `routeMethod()`/events' `role()`/reqreply's NEITHER as a
+structural difference (see the "per-package" callouts throughout this doc), but never gave it
+its own name or resolved HOW a shared core should handle it. `router.MethodReporter`
+(`RouteMethod() string`) is a SEPARATE, OPTIONAL interface `router.Router[Target].Walk`/`Routes`
+type-asserts for, falling back to `""` when a leaf doesn't implement it — mirrors this
+codebase's existing optional-extension convention (`stats.FileObserver`/`SQLObserver`/etc.)
+rather than forcing reqreply's `Route` to implement a method it has no meaningful answer for.
+
+What a **new `PrefixErrorFunc` hook** resolves: each package's `RouterPrefixError` stays a
+PER-PACKAGE type (matching `MiddlewareMisattachedError`'s precedent) — but the shared
+`register()` still needs to know WHETHER/HOW to wrap a leaf's registration failure into it.
+`PrefixErrorFunc func(prefix, composed string, err error) (wrapped error, ok bool)`, supplied
+once at `NewRouter` time alongside `JoinFunc`, does exactly what each package's former inline
+`asInvalidPathError`/`asInvalidTopicError` check did — pure relocation into a closure.
+
+**A real design conflict found and resolved during implementation planning**: the original plan
+was a pure type ALIAS (`type Router = router.Router[*Server]`) for each package's own `Router` —
+simpler, 100% automatic method-set compatibility. This turned out to be INCOMPATIBLE with keeping
+each package's own, unchanged `RouterEntry` field names (`Method` for rest, `Role` for events,
+absent for reqreply): Go only lets the package defining a named type add methods to it (even a
+generic instantiation), so a pure alias would force `Walk`/`Routes` to return the verbatim shared
+`router.RouterEntry` with ONE shared field name — there would be no way for `events.Router{}.
+Routes()[i].Role` to coexist with `rest.Router{}.Routes()[i].Method`. Resolved: each package's
+`Router` is a thin WRAPPER (`type Router struct { inner router.Router[*Server] }`), not an alias —
+every method except `Walk`/`Routes` is a trivial 1-3 line forward (re-wrapping the inner result
+back into the outer type for fluent chaining); `Walk`/`Routes` map the shared `router.RouterEntry`
+into each package's own, unchanged shape. `Router.Prefix()`/`OwnMiddleware()`/`OwnTags()` were
+added to `router.Router[Target]` to expose a Router's own, single-level accumulated state — needed
+by each package's `WithRouter`-style `ClientHandleOpt`/`HandleOpt`, which previously reached
+directly into now-cross-package-inaccessible unexported fields.
+
+See [`docs/design/d-0009-internalize-shared-mechanics.md`](d-0009-internalize-shared-mechanics.md)'s
+Phase 1 for the full design history (confidence review, all 4 design decisions, rejected
+alternatives) that produced this addendum.
 
 ## See also
 

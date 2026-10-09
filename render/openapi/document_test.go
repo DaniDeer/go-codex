@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/render/openapi"
-	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/schema"
 )
 

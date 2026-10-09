@@ -937,7 +937,7 @@ here so future review rounds don't re-flag any of this as a gap (see checklist.m
 - **P3 — Observer integration**: `stats.CapabilityObserver`/`stats.DispositionObserver`, both
   optional/type-asserted (mirror `SecurityObserver`), implemented by `LoggingObserver`/`fanout`/
   `NoopObserver`.
-- **P4 — Handler Disposition**: `middleware.Disposition`/`EnsureDispositionBox`/`SetDisposition`/
+- **P4 — Handler Disposition**: `stats.Disposition`/`EnsureDispositionBox`/`SetDisposition`/
   `DispositionFromContext`/`ResolveDisposition` (ctx-mutable-sink, mirrors `ContextField`/
   `nethttp.WithResponseHeaders`), wired into all 3 event adapters (mqtt/mqtt5/zeromq) and both
   reqreply adapters (mqtt5, zeromq) — each resolves to a no-op-equivalent default today.

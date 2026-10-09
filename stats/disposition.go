@@ -1,4 +1,4 @@
-package middleware
+package stats
 
 import "context"
 
@@ -58,8 +58,8 @@ func EnsureDispositionBox(ctx context.Context) context.Context {
 // when ctx was never prepared via [EnsureDispositionBox] (mirrors
 // [stats.ObserverFromContext]'s no-op-when-absent safety: never panics or
 // errors). Call from inside a handler body to signal a non-default
-// outcome, e.g. `middleware.SetDisposition(ctx,
-// middleware.DispositionNackRequeue)`.
+// outcome, e.g. `stats.SetDisposition(ctx,
+// stats.DispositionNackRequeue)`.
 func SetDisposition(ctx context.Context, d Disposition) {
 	box, ok := ctx.Value(dispositionBoxKey{}).(*dispositionBox)
 	if !ok {

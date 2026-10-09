@@ -11,9 +11,9 @@ import (
 	"github.com/DaniDeer/go-codex/adapters/internal/scopesmerge"
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/middleware"
+	"github.com/DaniDeer/go-codex/internal/middleware"
+	"github.com/DaniDeer/go-codex/internal/route"
 	asyncapi "github.com/DaniDeer/go-codex/render/asyncapi/v3"
-	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 )
 
@@ -511,7 +511,7 @@ func subscribeEntryReflect(ctx context.Context, client pahomqtt.Client, entry ev
 		// is proven end-to-end here for a future ack-capable adapter
 		// (e.g. AMQP) to consume without further core changes. See
 		// docs/design/d-0006-protocol-native-capabilities.md's §8.
-		msgCtx = middleware.EnsureDispositionBox(msgCtx)
+		msgCtx = stats.EnsureDispositionBox(msgCtx)
 
 		granted := make(map[string][]string)
 		if len(impls) > 0 {
@@ -578,7 +578,7 @@ func subscribeEntryReflect(ctx context.Context, client pahomqtt.Client, entry ev
 
 		results := wrapped.Call([]reflect.Value{reflect.ValueOf(msgCtx), valuePtr.Elem()})
 		handlerErr, _ := results[0].Interface().(error)
-		disposition := middleware.ResolveDisposition(msgCtx, handlerErr)
+		disposition := stats.ResolveDisposition(msgCtx, handlerErr)
 		if dispObs, ok := obs.(stats.DispositionObserver); ok {
 			dispObs.RecordDisposition(msg.Topic(), disposition)
 		}

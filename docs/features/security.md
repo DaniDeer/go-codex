@@ -1,6 +1,6 @@
 # Security & Authentication
 
-> See also: [`route` package on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/route)
+> See also: [`api/rest` package on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/rest) (security-scheme vocabulary is re-exported identically by `api/events`/`api/reqreply`)
 >
 > Runnable demos: [`examples/rest-api`](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-api) (bearer JWT + scopes, both chi and net/http servers) · [`examples/events-api`](https://github.com/DaniDeer/go-codex/tree/main/examples/events-api) (`demo_security_subscribemw.go`: message-level security across mqtt v3/mqtt5/zeromq; `demo_connect_level_security.go`: connect-level `SecuredClient`)
 >
@@ -10,7 +10,7 @@
 > This is the one place go-codex's security model is intentionally
 > asymmetric with REST/events/reqreply.
 
-go-codex documents security requirements in the spec and provides declarative hooks for runtime enforcement — **the library does not import any crypto or JWT library**. For REST, a security scheme is declared ONCE, via `middleware.SecurityScheme(schemeName, scheme, scopes, codec)`/`rest.FromSecurityScheme(schemeName, rest.SecurityScheme, scopes)` (bridging an existing `rest.SecurityScheme` value), attached to the route via `Route.Use(mw)` — there is no builder-level scheme registry, and `rest.WithSecurityScheme` was REMOVED (there is no metadata-only registration anymore; every declared scheme is a real requirement) — and the SAME declaration is consumed identically by both the server (`Route.Register`/`RegisterHandle`) and the client (`Route.ClientHandle`), so one route definition gets IDENTICAL credential-format enforcement on both ends. Runtime credential validation itself is attached per-route via ONE of two classes (`docs/design/d-0003-codec-declared-middlewares.md's Addendum 7`): the REUSABLE class (`Middleware.WithReceive`/`WithSend`, attached via `.Use()`) for a `Req`-free check, or the BOUND class (`BoundMiddleware`/`BoundClientMiddleware`, attached via `Route.HandleBoundMW`/`Route.ClientBoundMW`) when the Fn needs the route's own decoded `Req` — see "Codec-backed Security" below.
+go-codex documents security requirements in the spec and provides declarative hooks for runtime enforcement — **the library does not import any crypto or JWT library**. For REST, a security scheme is declared ONCE, via `rest.SecurityMiddleware[In, Out](schemeName, rest.SecurityScheme, scopes)` (building from an existing `rest.SecurityScheme` value), attached to the route via `Route.Use(mw)` — there is no builder-level scheme registry, and `rest.WithSecurityScheme` was REMOVED (there is no metadata-only registration anymore; every declared scheme is a real requirement) — and the SAME declaration is consumed identically by both the server (`Route.Register`/`RegisterHandle`) and the client (`Route.ClientHandle`), so one route definition gets IDENTICAL credential-format enforcement on both ends. Runtime credential validation itself is attached per-route via ONE of two classes (`docs/design/d-0003-codec-declared-middlewares.md's Addendum 7`): the REUSABLE class (`Middleware.WithReceive`/`WithSend`, attached via `.Use()`) for a `Req`-free check, or the BOUND class (`BoundMiddleware`/`BoundClientMiddleware`, attached via `Route.HandleBoundMW`/`Route.ClientBoundMW`) when the Fn needs the route's own decoded `Req` — see "Codec-backed Security" below.
 
 ## Connection-level vs message-level security
 
@@ -41,7 +41,7 @@ security layers exist:
    ONCE, synchronously, at construction — never per message:
 
    ```go
-   var connectBearerAuth = mqtt5.ConnectSecurityScheme{SecurityScheme: route.BasicScheme()}.
+   var connectBearerAuth = mqtt5.ConnectSecurityScheme{SecurityScheme: events.BasicScheme().SecurityScheme}.
        WithCodec(codex.String().Refine(validate.MinLen(8)))
 
    client := paho.NewClient(...)
@@ -122,23 +122,21 @@ touches go-codex's security-scheme model. Confirmed per transport:
 ```go
 import (
     "github.com/DaniDeer/go-codex/api/rest"
-    "github.com/DaniDeer/go-codex/middleware"
-    "github.com/DaniDeer/go-codex/route"
     "github.com/DaniDeer/go-codex/validate"
 )
 
 // Declare each scheme ONCE as a shared value — Go's ordinary "declare once,
 // reference everywhere" idiom, no builder-level registry needed.
 var bearerAuthScheme = rest.SecurityScheme{
-    SecurityScheme: route.BearerScheme("JWT"),
+    SecurityScheme: rest.BearerScheme("JWT"),
 }.WithCodec(codex.String().Refine(validate.BearerToken)) // format check before HandleMW/before send
 
-var bearerAuth = rest.FromSecurityScheme("bearerAuth", bearerAuthScheme, []string{"write:users"})
+var bearerAuth = rest.SecurityMiddleware[struct{}, struct{}]("bearerAuth", bearerAuthScheme, []string{"write:users"})
 
 var apiKeyAuthScheme = rest.SecurityScheme{
-    SecurityScheme: route.APIKeyScheme("X-API-Key", "header"),
+    SecurityScheme: rest.APIKeyScheme("X-API-Key", "header"),
 }
-var apiKeyAuth = rest.FromSecurityScheme("apiKey", apiKeyAuthScheme, nil)
+var apiKeyAuth = rest.SecurityMiddleware[struct{}, struct{}]("apiKey", apiKeyAuthScheme, nil)
 
 b := rest.NewServer(rest.Info{Title: "User API", Version: "1.0.0"})
 
@@ -155,21 +153,21 @@ err := createUser.Register(b) // error only — see "Runtime enforcement" below 
 Built-in scheme constructors:
 
 ```go
-route.BearerScheme("JWT")                          // Authorization: Bearer <token>
-route.BasicScheme()                                 // Authorization: Basic <base64>
-route.APIKeyScheme("X-API-Key", "header")           // header-based API key
-route.APIKeyScheme("api_key", "query")              // query param API key
-route.OAuth2Scheme(route.OAuthFlows{...})           // OAuth 2.0
-route.OpenIDConnectScheme("https://.../.well-known")// OIDC discovery
+rest.BearerScheme("JWT")                          // Authorization: Bearer <token>
+rest.BasicScheme()                                 // Authorization: Basic <base64>
+rest.APIKeyScheme("X-API-Key", "header")           // header-based API key
+rest.APIKeyScheme("api_key", "query")              // query param API key
+rest.OAuth2Scheme(rest.OAuthFlows{...})           // OAuth 2.0
+rest.OpenIDConnectScheme("https://.../.well-known")// OIDC discovery
 ```
 
 ## Global and per-route security
 
-`Server.AddGlobalSecurity`/`RouteMeta.Security` answer "which routes require auth" — a SEPARATE, unchanged concern from a `.Use()`-attached scheme declaration ("what does a named scheme look like"). `RouteMeta.Security`'s `nil` (inherit global) and `[]route.SecurityRequirement{}` (explicit opt-out) states are UNCHANGED by the security-declaration redesign — only the THIRD state (a non-empty, MANUALLY-set `Security` paired with metadata-only registration) was removed, since `middleware.SecurityScheme`/`rest.FromSecurityScheme` now populate `RouteMeta.Security` automatically as part of `.Use()`:
+`Server.AddGlobalSecurity`/`RouteMeta.Security` answer "which routes require auth" — a SEPARATE, unchanged concern from a `.Use()`-attached scheme declaration ("what does a named scheme look like"). `RouteMeta.Security`'s `nil` (inherit global) and `[]rest.SecurityRequirement{}` (explicit opt-out) states are UNCHANGED by the security-declaration redesign — only the THIRD state (a non-empty, MANUALLY-set `Security` paired with metadata-only registration) was removed, since `rest.SecurityMiddleware` now populates `RouteMeta.Security` automatically as part of `.Use()`:
 
 ```go
 // Global security — applies to all operations by default.
-b.AddGlobalSecurity(route.Require("bearerAuth"))
+b.AddGlobalSecurity(rest.Require("bearerAuth"))
 
 // Per-route: bearerAuth is the SAME shared Middleware value from the
 // section above — .Use() populates RouteMeta.Security automatically.
@@ -184,7 +182,7 @@ err := createUser.Register(b)
 publicRoute := rest.NewRoute[struct{}, Info]("GET", "/health",
     codex.Empty, infoCodec,
     rest.RouteMeta{
-        Security: []route.SecurityRequirement{}, // no auth required
+        Security: []rest.SecurityRequirement{}, // no auth required
     },
 )
 err = publicRoute.Register(b)
@@ -192,7 +190,7 @@ err = publicRoute.Register(b)
 
 ## Security requirement shapes — single, OR, AND, opt-out, inherit
 
-`route.SecurityRequirement` is `map[string][]string` (scheme name → required
+`rest.SecurityRequirement` is `map[string][]string` (scheme name → required
 OAuth2 scopes) — a single map can hold MULTIPLE scheme names as keys, and
 `RouteMeta.Security` is a SLICE of these maps. This gives two independent
 axes of combination:
@@ -200,8 +198,8 @@ axes of combination:
 - **Within one map**: every key (scheme name) must be satisfied together — **AND**.
 - **Across the slice**: any one map fully satisfied is enough — **OR**.
 
-`route.Require(name, scopes...)` builds a SINGLE-KEY map. Each
-`middleware.SecurityScheme`/`rest.FromSecurityScheme` value, attached via
+`rest.Require(name, scopes...)` builds a SINGLE-KEY map. Each
+`rest.SecurityMiddleware` value, attached via
 `.Use()`, contributes exactly ONE scheme-name key, merged AND-wise into
 `RouteMeta.Security`'s FIRST map entry — calling `.Use()` twice with two
 DIFFERENT scheme declarations naturally produces the **AND** case (shape
@@ -212,7 +210,7 @@ DIFFERENT scheme declarations naturally produces the **AND** case (shape
 ```go
 route := rest.NewRoute[CreateUserReq, User]("POST", "/users",
     reqCodec, respCodec, rest.RouteMeta{OperationID: "createUser"},
-).Use(bearerAuth) // bearerAuth = rest.FromSecurityScheme("bearerAuth", ..., []string{"write:users"})
+).Use(bearerAuth) // bearerAuth = rest.SecurityMiddleware[struct{}, struct{}]("bearerAuth", ..., []string{"write:users"})
 ```
 
 **2. AND — both required together** (two `.Use()` calls, each declaring a
@@ -230,7 +228,7 @@ route := rest.NewRoute[CreateUserReq, User]("POST", "/users",
 for just this route; no `.Use()` call needed):
 
 ```go
-rest.RouteMeta{Security: []route.SecurityRequirement{}},
+rest.RouteMeta{Security: []rest.SecurityRequirement{}},
 ```
 
 **4. Inherit global** (omit `Security` entirely — the default):
@@ -240,15 +238,15 @@ rest.RouteMeta{OperationID: "health"}, // no Security field at all
 ```
 
 **5. Same scheme, different scopes per route** — each route builds its
-OWN `middleware.Middleware` value from the SAME shared `rest.SecurityScheme`
+OWN `rest.Middleware[In, Out]` value from the SAME shared `rest.SecurityScheme`
 (the scheme's SPEC metadata is reusable; the SCOPES are per-declaration):
 
 ```go
 // route A — needs the "profile" scope:
-routeA := rest.NewRoute[...](...).Use(rest.FromSecurityScheme("bearerAuth", bearerAuthScheme, []string{"profile"}))
+routeA := rest.NewRoute[...](...).Use(rest.SecurityMiddleware[struct{}, struct{}]("bearerAuth", bearerAuthScheme, []string{"profile"}))
 
 // route B — needs the "admin" scope:
-routeB := rest.NewRoute[...](...).Use(rest.FromSecurityScheme("bearerAuth", bearerAuthScheme, []string{"admin"}))
+routeB := rest.NewRoute[...](...).Use(rest.SecurityMiddleware[struct{}, struct{}]("bearerAuth", bearerAuthScheme, []string{"admin"}))
 ```
 
 > **Known limitation — OR across TWO scheme-declaring `.Use()` calls is
@@ -273,12 +271,12 @@ routeB := rest.NewRoute[...](...).Use(rest.FromSecurityScheme("bearerAuth", bear
 route := createUser.WithHandler(handler).WithOptions(nethttp.Options{
     // SecurityFunc is called after Codec format validation passes.
     // Receives the *http.Request and the route's declared security requirements.
-    SecurityFunc: func(ctx context.Context, r *http.Request, reqs []route.SecurityRequirement) error {
+    SecurityFunc: func(ctx context.Context, r *http.Request, reqs []rest.SecurityRequirement) error {
         token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
         return jwtlib.VerifyScopes(token, reqs)
     },
 })
-route.Register(b)
+rest.Register(b)
 b.Attach(nethttp.NewServerTransport(nethttp.ServerTransportOptions{Mux: mux, Addr: addr}))
 go func() { _ = b.Serve(ctx) }()
 ```
@@ -316,7 +314,7 @@ type APIKeyIn struct{ Key string }
 type APIKeyOut struct{ GrantedScopes map[string][]string }
 
 apiKeyMw := rest.SecurityMiddleware[APIKeyIn, APIKeyOut]("apiKeyAuth",
-    rest.SecurityScheme{SecurityScheme: route.APIKeyScheme("X-Api-Key", "header")}, nil,
+    rest.SecurityScheme{SecurityScheme: rest.APIKeyScheme("X-Api-Key", "header")}, nil,
 ).WithRequestHeader(rest.NewRequiredHeaderParam("X-Api-Key", codex.String(),
     func(in APIKeyIn) string { return in.Key },
     func(in *APIKeyIn, v string) { in.Key = v },
@@ -348,7 +346,7 @@ field):
 route := rest.NewRoute[CreateUserReq, User]("POST", "/users", reqCodec, respCodec,
     rest.RouteMeta{OperationID: "createUser"},
 ).HandleBoundMW(rest.BoundSecurityMiddleware[CreateUserReq, APIKeyIn, APIKeyOut](
-    "apiKeyAuth", rest.SecurityScheme{SecurityScheme: route.APIKeyScheme("X-Api-Key", "header")}, nil,
+    "apiKeyAuth", rest.SecurityScheme{SecurityScheme: rest.APIKeyScheme("X-Api-Key", "header")}, nil,
     func(ctx context.Context, req *CreateUserReq, in APIKeyIn) (APIKeyOut, error) {
         if !validKey(in.Key) {
             return APIKeyOut{}, errors.New("invalid API key")
@@ -401,7 +399,7 @@ like the generic middleware mechanism — see
 request in BOTH classes — no manual `r.Header.Get(...)` anywhere.
 **`Out` carries the RESOLVED "conventional field" convention: a field
 named `GrantedScopes map[string][]string`**, read by the adapter via
-reflection and fed into the SAME `middleware.CheckScopes` call the legacy
+reflection and fed into the SAME `rest.CheckScopes` call the legacy
 `SecurityFunc`/credential path already used — a route requiring specific
 scopes (not just scheme presence) checks them identically regardless of
 which class supplied the grant. **This field must be populated even when
@@ -469,7 +467,7 @@ type AuthIn struct{ Token string }
 type AuthOut struct{ GrantedScopes map[string][]string }
 
 bearerMw := rest.SecurityMiddleware[AuthIn, AuthOut]("bearerAuth",
-    rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+    rest.SecurityScheme{SecurityScheme: rest.BearerScheme("JWT")}, nil,
 ).WithRequestHeader(rest.NewRequiredHeaderParam("Authorization", codex.String(),
     func(in AuthIn) string { return in.Token },
     func(in *AuthIn, v string) { in.Token = v },
@@ -519,7 +517,7 @@ credential fetch is itself an HTTP round trip (e.g. an OAuth2 token
 endpoint, or `examples/go-edge-models/app/registry`'s registry token
 exchange). `nethttp.NewCachingCredentialFunc` wraps the OLD, now-closed
 raw `CredentialFunc` shape
-(`func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error)`)
+(`func(ctx context.Context, reqs []rest.SecurityRequirement) (http.Header, error)`)
 with TTL-based caching — it does NOT apply to the current
 `WithSend`/`ClientBoundMW` Fn shape
 (`func(ctx context.Context) (In, error)`/`func(ctx context.Context, req Req) (In, error)`).
@@ -613,21 +611,20 @@ both containers into real `nethttp` server/client hooks.
 
 Just like REST, an events security scheme is declared ONCE and attached to
 a channel's subscribe/publish role via `.Use()` — mirroring
-`middleware.SecurityScheme`/`rest.FromSecurityScheme`/`Route.Use` exactly:
+`rest.SecurityMiddleware`/`Route.Use` exactly:
 
 ```go
 import (
     "github.com/DaniDeer/go-codex/api/events"
-    "github.com/DaniDeer/go-codex/route"
     "github.com/DaniDeer/go-codex/validate"
 )
 
 // Declare each scheme ONCE as a shared value.
 var bearerAuthScheme = events.SecurityScheme{
-    SecurityScheme: route.BearerScheme("JWT"),
+    SecurityScheme: events.BearerScheme("JWT"),
 }.WithCodec(codex.String().Refine(validate.BearerToken))
 
-var bearerAuth = events.FromSecurityScheme("bearerAuth", bearerAuthScheme, nil)
+var bearerAuth = events.SecurityMiddleware[struct{}, struct{}]("bearerAuth", bearerAuthScheme, nil)
 
 eventsClient := events.NewClient(events.WithInfo(events.Info{Title: "User Events", Version: "1.0.0"}))
 eventsClient.AddServer("production", events.Server{
@@ -643,7 +640,7 @@ userCreatedSub := events.NewChannel[UserCreated]("user/created", codec,
     events.ChannelMeta{Description: "A user was created"},
 ).WithSubscribe(events.Subscribe{
     Summary:  "Receive user created events",
-    Security: []route.SecurityRequirement{route.Require("bearerAuth")},
+    Security: []events.SecurityRequirement{events.Require("bearerAuth")},
 }).Use(bearerAuth)
 ```
 
@@ -654,7 +651,7 @@ policy as REST.
 
 `events.WithSecurityScheme` is a DEPRECATED, older declaration mechanism
 (kept only for backward-compat regression coverage) — new code should use
-`FromSecurityScheme` + `.Use()` as shown above.
+`SecurityMiddleware` + `.Use()` as shown above.
 
 MQTT5 adapter — the server side runs a BUILT-IN codec-based credential
 check (extracting the "Authorization" MQTT5 User Property for `http`/`oauth2`/
@@ -723,7 +720,7 @@ whenever the credential check only needs a decoded topic/property value
 `WithReceive` Fn structurally has NO `Out` return at all (`func(ctx, In)
 error`) — a confirmed, genuine asymmetry with REST/reqreply's own
 `WithReceive` (which DOES return `(Out, error)`) — so it can NEVER
-populate `GrantedScopes`. Every adapter's unified `middleware.CheckScopes`
+populate `GrantedScopes`. Every adapter's unified `events.CheckScopes`
 call requires the scheme name to be PRESENT as a map key in the merged
 grants, which only a `GrantedScopes`-producing (bound-class) handler can
 ever supply — so a reusable-class attachment can NEVER satisfy a
@@ -785,7 +782,7 @@ userCreatedSub = userCreatedSub.SubscribeBoundMW(bm)
 incoming message in BOTH classes — no manual extraction anywhere. `Out`
 carries the SAME conventional `GrantedScopes map[string][]string` field
 REST uses, read by the adapter via reflection and fed into the SAME
-`middleware.CheckScopes` call the legacy Fn path used. **This field must
+`events.CheckScopes` call the legacy Fn path used. **This field must
 be populated even when zero specific scopes are required** — an `Out{}`
 zero value (nil map) means NOTHING satisfies the scheme at all; return
 `Out{GrantedScopes: map[string][]string{"<schemeName>": nil}}` for a
@@ -830,12 +827,12 @@ at all (`components/securitySchemes` was aggregated ONLY from
 per-channel declarations). `Client.AddConnectSecurityScheme` closes this:
 
 ```go
-eventsClient.AddConnectSecurityScheme("brokerAuth", route.SecurityScheme{
-    Type: route.SecuritySchemeHTTP, Scheme: "basic",
+eventsClient.AddConnectSecurityScheme("brokerAuth", events.SecurityScheme{
+    Type: events.SecuritySchemeHTTP, Scheme: "basic",
 })
 eventsClient.AddServer("mqtt5", events.Server{
     URL: "mqtts://broker:8883", Protocol: "mqtt5",
-    Security: []route.SecurityRequirement{route.Require("brokerAuth")},
+    Security: []events.SecurityRequirement{events.Require("brokerAuth")},
 })
 
 // ... later, at ATTACH time — real credentials handed to the adapter,
@@ -887,7 +884,7 @@ type BearerIn struct{ Token string }
 type BearerOut struct{ GrantedScopes map[string][]string }
 
 bearerMw := reqreply.SecurityMiddleware[BearerIn, BearerOut]("bearerAuth",
-    reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(bearerAuthCodec), nil,
+    reqreply.SecurityScheme{SecurityScheme: reqreply.BearerScheme("JWT")}.WithCodec(bearerAuthCodec), nil,
 ).WithRequestProperty(reqreply.NewPropertyParam("Authorization", codex.String(),
     func(in BearerIn) string { return in.Token },
     func(in *BearerIn, v string) { in.Token = v },
@@ -921,7 +918,7 @@ securedRoute := reqreply.NewRoute[ComputeReq, ComputeResp](
     "compute/add", computeReqCodec, computeRespCodec,
     reqreply.RouteMeta{OperationID: "computeAdd"},
 ).HandleBoundMW(reqreply.BoundSecurityMiddleware[ComputeReq, struct{}, struct{}](
-    "bearerAuth", reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+    "bearerAuth", reqreply.SecurityScheme{SecurityScheme: reqreply.BearerScheme("JWT")}, nil,
     func(ctx context.Context, req *ComputeReq, in struct{}) (struct{}, error) {
         return struct{}{}, checkNotRevoked(req.Token)
     },
@@ -960,7 +957,7 @@ channel), not a bug.
 incoming request in BOTH classes — no manual extraction anywhere. `Out`
 carries the SAME conventional `GrantedScopes map[string][]string` field
 REST/events use, read by the adapter via reflection and fed into the
-SAME `middleware.CheckScopes` call — RECEIVING (`Serve`)-side only
+SAME `reqreply.CheckScopes` call — RECEIVING (`Serve`)-side only
 (`Call`/sending-side needs no merge wiring, same as REST's `ClientMW`).
 **This field must be populated even when zero specific scopes are
 required** — an `Out{}` zero value (nil map) means NOTHING satisfies the
@@ -1012,7 +1009,7 @@ the request/reply message's AsyncAPI `headers` schema:
 var apiKeyParam = reqreply.PropertyParam{Param: codex.Param{Name: "X-API-Key"}, Required: true}
 
 route := ComputeRoute.Use(
-    reqreply.NewMiddleware[struct{}, struct{}](middleware.Declaration[struct{}, struct{}]{
+    reqreply.NewMiddleware[struct{}, struct{}](reqreply.Declaration[struct{}, struct{}]{
         Name: "declare-api-key-property",
     }).WithRequestPropertySpec(apiKeyParam),
 )
@@ -1035,12 +1032,12 @@ is a deprecated alias for `Server` — the method lives on `Server`, both
 names pick it up):
 
 ```go
-reqreplyServer.AddConnectSecurityScheme("brokerAuth", route.SecurityScheme{
-    Type: route.SecuritySchemeHTTP, Scheme: "basic",
+reqreplyServer.AddConnectSecurityScheme("brokerAuth", reqreply.SecurityScheme{
+    Type: reqreply.SecuritySchemeHTTP, Scheme: "basic",
 })
 reqreplyServer.AddServer("mqtt5", reqreply.ServerEntry{
     URL: "mqtts://broker:8883", Protocol: "mqtt5",
-    Security: []route.SecurityRequirement{route.Require("brokerAuth")},
+    Security: []reqreply.SecurityRequirement{reqreply.Require("brokerAuth")},
 })
 ```
 
@@ -1070,28 +1067,32 @@ foreign-pattern value would compile but be silently dropped, contributing
 nothing to that pattern's spec).
 
 What genuinely IS shared, and is the actual mechanism behind "one OAuth2
-scheme, usable everywhere": the underlying `route.SecurityScheme` value
+scheme, usable everywhere": the underlying security-scheme spec value
 (`BearerScheme`/`BasicScheme`/`APIKeyScheme`/`OAuth2Scheme`/
-`OpenIDConnectScheme`) and the credential-format `codex.Codec[string]`, both
-of which are already protocol-agnostic, ordinary Go values with no
-per-pattern type at all. Declare these ONCE, then pass the SAME values into
-each pattern's own `SecurityMiddleware` constructor — "one shared config,
-one declaration per pattern":
+`OpenIDConnectScheme` — identically-aliased across `rest`/`events`/
+`reqreply`, so any one pattern's constructor works) and the
+credential-format `codex.Codec[string]`, both of which are already
+protocol-agnostic, ordinary Go values with no per-pattern type at all.
+Declare these ONCE, then pass the SAME values into each pattern's own
+`SecurityMiddleware` constructor — "one shared config, one declaration
+per pattern":
 
 ```go
-// ONE shared, protocol-agnostic config — not pattern-specific.
-var oauthScheme = route.OAuth2Scheme(route.OAuthFlows{
-    ClientCredentials: &route.OAuthFlow{
+// ONE shared, protocol-agnostic config — not pattern-specific (rest/
+// events/reqreply's own OAuth2Scheme/OAuthFlows/OAuthFlow are identical
+// aliases, so using rest's here is an arbitrary, interchangeable choice).
+var oauthScheme = rest.OAuth2Scheme(rest.OAuthFlows{
+    ClientCredentials: &rest.OAuthFlow{
         TokenURL: "https://auth.example.com/oauth2/token",
         Scopes:   map[string]string{"compute:write": "Submit compute requests"},
     },
-})
+}).SecurityScheme
 var oauthScopes = []string{"compute:write"}
 
 // Three pattern-specific declarations, same underlying scheme + scopes:
 restMw     := rest.SecurityMiddleware[struct{}, struct{}]("oauth2Compute", rest.SecurityScheme{SecurityScheme: oauthScheme}.WithCodec(oauthCodec), oauthScopes)
-eventsMw   := events.SecurityMiddleware("oauth2Compute", events.SecurityScheme{SecurityScheme: oauthScheme}.WithCodec(oauthCodec), oauthScopes)
-reqreplyMw := reqreply.SecurityMiddleware("oauth2Compute", reqreply.SecurityScheme{SecurityScheme: oauthScheme}.WithCodec(oauthCodec), oauthScopes)
+eventsMw   := events.SecurityMiddleware[struct{}, struct{}]("oauth2Compute", events.SecurityScheme{SecurityScheme: oauthScheme}.WithCodec(oauthCodec), oauthScopes)
+reqreplyMw := reqreply.SecurityMiddleware[struct{}, struct{}]("oauth2Compute", reqreply.SecurityScheme{SecurityScheme: oauthScheme}.WithCodec(oauthCodec), oauthScopes)
 
 restRoute := rest.NewRoute[Req, Resp]("POST", "/compute", reqCodec, respCodec, meta).Use(restMw)
 channel := events.NewChannel[Msg]("compute/events", codec, meta).WithSubscribe(events.Subscribe{}).Use(eventsMw)
@@ -1106,7 +1107,7 @@ declarations were built from the SAME `oauthScheme`/`oauthScopes`/
 `Middleware[struct{},struct{}]` instance. `examples/reqreply-api`'s Demo 9
 (`demo_cross_api_oauth2_sharing.go`) demonstrates this concretely:
 `routes.OAuthMwReqreply` is attached to a REAL, served, called zeromq
-reqreply route, and `routes.OAuthMwREST` (same `route.SecurityScheme`
+reqreply route, and `routes.OAuthMwREST` (same `rest.SecurityScheme`
 config) is attached to a locally-declared REST route (registered just to
 print its `OpenAPISpec()` output) — the demo then prints both specs'
 `oauth2Compute` entries side by side to show they're byte-for-byte
@@ -1134,12 +1135,12 @@ helper:
 func VerifyOAuth2Scopes(token string) (map[string][]string, error) { /* ... */ }
 
 // THIN, zeromq-shaped wrapper — extracts the token from *Req, delegates.
-func zeromqOAuthFn(_ context.Context, req *ComputeReq, _ []route.SecurityRequirement) error {
+func zeromqOAuthFn(_ context.Context, req *ComputeReq, _ []reqreply.SecurityRequirement) error {
     scopes, err := VerifyOAuth2Scopes(req.Token)
     if err != nil {
         return err
     }
-    return middleware.CheckScopes(reqs, scopes)
+    return reqreply.CheckScopes(reqs, scopes)
 }
 
 // THIN, REST-shaped wrapper — extracts the token from *http.Request, delegates.
@@ -1171,7 +1172,7 @@ func (o *TelemetryObserver) RecordSecurityRejection(location, scheme string) {
 
 ## OpenAPI / AsyncAPI output
 
-Security schemes appear in `components/securitySchemes`; global security at document root (REST only — AsyncAPI 3.0 has no document-level global security field); per-operation security overrides inline — all generated automatically from each route/channel's own security declaration (REST: `middleware.SecurityScheme`/`rest.FromSecurityScheme` attached via `Route.Use()`; events: `events.FromSecurityScheme` attached via `Subscriber.Use()`/`Publisher.Use()` — mirrors REST exactly (`events.WithSecurityScheme` is the older, deprecated, channel-level mechanism, kept only for backward compatibility); reqreply: `middleware.SecurityScheme(...)` attached via `Route.Use()` — mirrors REST/events exactly (`reqreply.WithSecurityScheme` is the older, deprecated, route-level mechanism, kept only for backward compatibility, same treatment as `events.WithSecurityScheme`); aggregated by `Server.OpenAPISpec`/`Client.AsyncAPISpec`, last-registered-wins on name collision) / `AddGlobalSecurity` / `RouteMeta.Security` / `Subscribe.Security` / `Publish.Security`. No manual YAML needed.
+Security schemes appear in `components/securitySchemes`; global security at document root (REST only — AsyncAPI 3.0 has no document-level global security field); per-operation security overrides inline — all generated automatically from each route/channel's own security declaration (REST: `rest.SecurityMiddleware` attached via `Route.Use()`; events: `events.SecurityMiddleware` attached via `Subscriber.Use()`/`Publisher.Use()` — mirrors REST exactly (`events.WithSecurityScheme` is the older, deprecated, channel-level mechanism, kept only for backward compatibility); reqreply: `reqreply.SecurityMiddleware(...)` attached via `Route.Use()` — mirrors REST/events exactly (`reqreply.WithSecurityScheme` is the older, deprecated, route-level mechanism, kept only for backward compatibility, same treatment as `events.WithSecurityScheme`); aggregated by `Server.OpenAPISpec`/`Client.AsyncAPISpec`, last-registered-wins on name collision) / `AddGlobalSecurity` / `RouteMeta.Security` / `Subscribe.Security` / `Publish.Security`. No manual YAML needed.
 
 ## See also
 
@@ -1179,4 +1180,4 @@ Security schemes appear in `components/securitySchemes`; global security at docu
 - [Guide: HTTP Client](../guides/http-client.md) — `CredentialFunc` for client-side credentials
 - [Guide: Observer](../guides/observer.md) — `SecurityObserver` metrics
 - [examples/rest-api](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-api) — bearer JWT + scopes + observer, both chi and net/http adapters
-- [examples/reqreply-api](https://github.com/DaniDeer/go-codex/tree/main/examples/reqreply-api) — Demo 9 (`demo_cross_api_oauth2_sharing.go`) shows ONE `middleware.SecurityScheme` (OAuth2) declaration shared across a zeromq reqreply route AND a locally-declared REST route
+- [examples/reqreply-api](https://github.com/DaniDeer/go-codex/tree/main/examples/reqreply-api) — Demo 9 (`demo_cross_api_oauth2_sharing.go`) shows ONE `SecurityScheme` (OAuth2) config shared, declared twice, across a zeromq reqreply route AND a locally-declared REST route

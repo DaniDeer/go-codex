@@ -1,8 +1,8 @@
 package v3
 
 import (
+	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/render/internal/schemarender"
-	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/schema"
 )
 

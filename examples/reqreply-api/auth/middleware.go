@@ -7,7 +7,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/routes"
-	"github.com/DaniDeer/go-codex/route"
 )
 
 // BearerAuthIn carries the raw "Authorization" MQTT5 User Property value
@@ -45,7 +44,7 @@ type BearerAuthOut struct {
 // and why it is declared differently.
 var BearerAuthMw = reqreply.SecurityMiddleware[BearerAuthIn, BearerAuthOut](
 	"bearerAuth",
-	reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(BearerCodec),
+	reqreply.BearerScheme("JWT").WithCodec(BearerCodec),
 	nil,
 ).WithRequestProperty(reqreply.NewOptionalPropertyParam("Authorization", codex.String(),
 	func(v BearerAuthIn) string { return v.Token },
@@ -66,7 +65,7 @@ const oauthComputeWriteScopeDescription = "Submit compute requests"
 // grant-endpoint URL below (deliberately NAMED to avoid the substring
 // "token" entirely — gosec's G101 hardcoded-credential heuristic matches
 // on IDENTIFIERS containing that substring assigned a string literal,
-// regardless of the string's actual content; [route.OAuthFlow.TokenURL]
+// regardless of the string's actual content; [reqreply.OAuthFlow.TokenURL]
 // itself is a PUBLIC, non-secret discovery URL, mirroring any OAuth2
 // provider's own published endpoint, e.g. Google/Auth0/Okta's — not a
 // credential, hence the naming workaround here rather than a
@@ -75,7 +74,7 @@ const oauthAuthServerBaseURL = "https://auth.example.com"
 const oauthGrantEndpointPath = "/oauth2/token"
 
 // oauthComputeFlows is the ONE shared, protocol-agnostic OAuth2 scheme
-// config (a plain [route.SecurityScheme] value, no attachment semantics
+// config (a plain [internal/route.SecurityScheme] value, no attachment semantics
 // of its own) — the true single source of truth for both declarations
 // below. NewOAuthMwReqreply/OAuthMwREST are each built from THIS SAME
 // scheme + OAuthCodec, through their own API's own vocabulary
@@ -84,13 +83,13 @@ const oauthGrantEndpointPath = "/oauth2/token"
 //
 // See docs/features/security.md's "Sharing a security SCHEME across
 // REST/events/reqreply" section for the full write-up this backs.
-var oauthComputeFlows = route.OAuthFlows{
-	ClientCredentials: &route.OAuthFlow{
+var oauthComputeFlows = reqreply.OAuthFlows{
+	ClientCredentials: &reqreply.OAuthFlow{
 		TokenURL: oauthAuthServerBaseURL + oauthGrantEndpointPath,
 		Scopes:   map[string]string{OAuthComputeWriteScope: oauthComputeWriteScopeDescription},
 	},
 }
-var oauthComputeScheme = route.OAuth2Scheme(oauthComputeFlows)
+var oauthComputeScheme = reqreply.OAuth2Scheme(oauthComputeFlows).SecurityScheme
 var oauthComputeScopes = []string{OAuthComputeWriteScope}
 
 // OAuthOut carries the conventional GrantedScopes map[string][]string

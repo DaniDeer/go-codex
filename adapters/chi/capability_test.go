@@ -12,7 +12,7 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/route"
+	"github.com/DaniDeer/go-codex/internal/route"
 )
 
 // This file closes docs/design/d-0006-protocol-native-capabilities.md's

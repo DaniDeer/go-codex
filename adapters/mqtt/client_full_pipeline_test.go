@@ -11,8 +11,8 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/middleware"
-	"github.com/DaniDeer/go-codex/route"
+	"github.com/DaniDeer/go-codex/internal/middleware"
+	"github.com/DaniDeer/go-codex/internal/route"
 )
 
 // This file tests docs/design/d-0006-protocol-native-capabilities.md's

@@ -7,7 +7,7 @@
 //   - Publish   (action: send):    this app SENDS messages on the channel (producer)
 //   - Both:      bidirectional — pass both events.Subscribe and events.Publish to one AddChannel call
 //
-// Security schemes are declared once per channel via events.FromSecurityScheme
+// Security schemes are declared once per channel via events.SecurityMiddleware
 // (attached with Subscriber/Publisher.Use) and referenced via
 // Subscribe.Security / Publish.Security. The spec output includes
 // components/securitySchemes and per-operation security requirements.
@@ -25,7 +25,6 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -100,9 +99,7 @@ func main() {
 	// Declare a Bearer JWT security scheme once — referenced by subscribe channels.
 	// The Codec field is optional; set it to validate the credential format at the
 	// adapter layer (e.g. validate.JWT constraint) before calling SecurityFunc.
-	bearerAuth := events.SecurityScheme{
-		SecurityScheme: route.BearerScheme("JWT"),
-	}
+	bearerAuth := events.BearerScheme("JWT")
 
 	// user/created — action: receive — this app RECEIVES events when users register.
 	// Security: requires bearerAuth — adapters (e.g. adapters/mqtt) enforce this via
@@ -124,7 +121,7 @@ func main() {
 		Tags:       []string{"user", "registration"},
 		SchemaName: "UserCreatedEvent",
 		// Security: requires bearerAuth on this operation.
-		Security: []route.SecurityRequirement{route.Require("bearerAuth")},
+		Security: []events.SecurityRequirement{events.Require("bearerAuth")},
 	}).Use(bearerAuthMW).
 		Handle(b)
 	if err != nil {
@@ -147,7 +144,7 @@ func main() {
 	}
 
 	// Bidirectional example (both directions on one channel):
-	// events.Subscribe{Summary: "Receive command result", Security: []route.SecurityRequirement{route.Require("bearerAuth")}},
+	// events.Subscribe{Summary: "Receive command result", Security: []events.SecurityRequirement{events.Require("bearerAuth")}},
 	// events.Publish{Summary: "Send command"},
 
 	// --- events.Topic: reusing a template+params shape (opt-in, NOT the default) ---

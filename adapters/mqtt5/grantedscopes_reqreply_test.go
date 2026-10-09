@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/DaniDeer/go-codex/api/reqreply"
-	"github.com/DaniDeer/go-codex/route"
+	"github.com/DaniDeer/go-codex/internal/route"
 )
 
 // docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase C:

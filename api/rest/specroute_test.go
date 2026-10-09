@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"github.com/DaniDeer/go-codex/api/rest"
+	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/render/openapi"
-	"github.com/DaniDeer/go-codex/route"
 )
 
 // specTestRoute registers one plain route on b, for ServeSpec's own

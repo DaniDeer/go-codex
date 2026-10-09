@@ -252,6 +252,59 @@ DELETED entirely, closing that gap; see
 goal: zero backdoor" section. There is no legacy path anymore — new
 protocol-specific toggles use ONLY the `Capability` mechanism.
 
+## Guardrail: shared cross-pattern MECHANICS belong in `internal/`, not a public package
+
+The two guardrails above are about keeping a USER's entire vocabulary
+inside `api/*`/`ports`. This one is the mirror-image rule for go-codex's
+OWN maintainers: a mechanism genuinely SHARED across 2+ of `api/rest`/
+`api/events`/`api/reqreply` (or a future `ports` pattern) that is pure
+MECHANICS — not a single adapter's protocol IO — belongs in a
+repo-root `internal/` package, never a public top-level one, with each
+pattern package exposing its own thin, same-named public wrapper
+(type aliases + forwarding constructors) around it.
+
+> **Why `internal/`, not just a docs convention**: Go's own compiler
+> enforces "importable only by code rooted at the parent of `internal/`"
+> — here, that parent is the whole go-codex module, so every in-module
+> consumer (`api/*`, `adapters/*`, `ports`, `render/*`) keeps importing
+> it unchanged, while an EXTERNAL user who imports go-codex as a
+> dependency cannot reach it at all. This is strictly stronger than "the
+> docs say don't import this directly" — exactly the same reasoning this
+> page's other two guardrails rely on docs/convention for, applied where
+> the compiler can do the enforcement instead.
+
+**Shipped reference implementation** (`docs/design/d-0009-internalize-shared-mechanics.md`):
+`internal/router` (Router/Mount/Group/Walk mechanics), `internal/route`
+(HTTP/pub-sub-agnostic route + security-scheme descriptors), and
+`internal/middleware` (declarative, composable enrichment/enforcement
+vocabulary) were all relocated from public top-level packages (`router`/
+`route`/`middleware`) under `internal/`. Each pattern package now
+exposes the identical vocabulary under its own name — e.g.
+`rest.BearerScheme`/`events.BearerScheme`/`reqreply.BearerScheme` each
+thinly wrap `internal/route.BearerScheme`; `rest.SharedMiddleware`/
+`events.SharedMiddleware`/`reqreply.SharedMiddleware` are IDENTICAL type
+aliases to `internal/middleware.Middleware` (a type alias is still ONE
+type at the compiler level, so a value built via any one pattern's
+wrapper remains attachable to any of the 3 patterns' `.Use()` — the
+entire reason this type is shared rather than per-pattern).
+
+**The one documented exception**: a pattern-AGNOSTIC concept with no
+natural per-pattern home that is ALSO referenced by a PUBLIC,
+user-implementable extensibility interface does NOT get the `internal/`
+treatment — it is relocated to the package OWNING that public interface
+instead. `Disposition`/`ResolveDisposition` moved from `middleware` into
+`stats` (not into `internal/middleware`) for exactly this reason: an
+external user implementing `stats.DispositionObserver` must be able to
+even spell the `Disposition` type in their own method signature, which
+an `internal/` type would make impossible.
+
+**When adding a new cross-pattern mechanic**, ask: "could an external
+go-codex user ever construct/import this type directly, bypassing
+`api/*`/`ports`?" If the honest answer is "they shouldn't need to, and
+doing so would only let them bypass our own constructors," it belongs in
+`internal/`, with a per-pattern wrapper — not a new public top-level
+package.
+
 ## Interface inventory: what adapters implement against
 
 A durable reference for "does adapter-side function X implement a real,

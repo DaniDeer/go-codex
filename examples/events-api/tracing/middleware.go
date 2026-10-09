@@ -15,7 +15,6 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/middleware"
 )
 
 // In/Out are [ReusablePresenceMw]'s vocabulary — a generic, NON-Security
@@ -42,7 +41,7 @@ var (
 // .Use()'d on any subscriber without per-channel wrapping — unlike the
 // bound class, which needs one instantiation per T.
 var ReusablePresenceMw = events.NewMiddleware(
-	middleware.NewDeclaration[In, Out]("logTraceID", inCodec, outCodec),
+	events.NewDeclaration[In, Out]("logTraceID", inCodec, outCodec),
 ).
 	WithSubscribeProperty(events.NewPropertyParam("X-Demo-Trace-Id", codex.String(),
 		func(in In) string { return in.TraceID },

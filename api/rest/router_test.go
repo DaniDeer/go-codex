@@ -9,7 +9,7 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/middleware"
+	"github.com/DaniDeer/go-codex/internal/middleware"
 )
 
 // ── fixtures ─────────────────────────────────────────────────────────────
@@ -742,5 +742,22 @@ func TestRouter_Group_ComposesSSERouteAlongsideRoute(t *testing.T) {
 	}
 	if entries[0].Path != "/api/users" || entries[1].Path != "/api/stream" {
 		t.Errorf("want [/api/users /api/stream] in declaration order, got [%q %q]", entries[0].Path, entries[1].Path)
+	}
+}
+
+// TestRoute_ImplementsMethodReporter is the positive-case regression test
+// for docs/design/d-0009-internalize-shared-mechanics.md's Phase 1 Design
+// Decision #4 (the RouterEntry Method/Role/neither mismatch): rest.Route
+// DOES have a method concept (the HTTP verb) and must report it via
+// RouteMethod(), confirming RouterEntry.Method is populated from a real
+// MethodReporter implementation, not a coincidence.
+func TestRoute_ImplementsMethodReporter(t *testing.T) {
+	route := newRouterTestRoute("POST", "/users")
+	reporter, ok := any(route).(interface{ RouteMethod() string })
+	if !ok {
+		t.Fatalf("rest.Route does not implement RouteMethod() string (MethodReporter)")
+	}
+	if got := reporter.RouteMethod(); got != "POST" {
+		t.Errorf("RouteMethod() = %q, want %q", got, "POST")
 	}
 }

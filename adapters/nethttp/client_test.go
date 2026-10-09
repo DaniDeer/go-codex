@@ -16,8 +16,8 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/middleware"
-	"github.com/DaniDeer/go-codex/route"
+	"github.com/DaniDeer/go-codex/internal/middleware"
+	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -679,8 +679,8 @@ func TestCall_TwoCredentialMiddlewares_DifferingHeaderValuesConflict(t *testing.
 	// NOT retired (it is mergeCredentialHeaders's own, still-valid
 	// conflict rule for ANY two implementations setting the same header
 	// key, security or not); only the SECURITY-PAIRING half of the
-	// legacy mechanism was removed (see
-	// rest.LegacySecurityClientMWRemovedError). AddGlobalSecurity (with
+	// legacy mechanism was removed (docs/design/d-0009-internalize-shared-mechanics.md).
+	// AddGlobalSecurity (with
 	// no matching .Use()'d scheme) is kept so mergeCredentialHeaders
 	// still runs at all - it is gated on len(secReqs) > 0 regardless of
 	// Satisfies. Name is index-suffixed ("fulfill:general#0"/"#1") the
@@ -1359,9 +1359,8 @@ func TestErrorPatternResponse_LogValue(t *testing.T) {
 // securedAuthIn/Out carry the credential-FORMAT-validation tests' request
 // header merge field — replaces the removed legacy ClientMW security
 // pairing (func(ctx, secReqs) (http.Header, error)) with
-// [rest.BoundSecurityClientMiddleware] + WithRequestHeader, this review
-// round's retirement of that mechanism (see
-// [rest.LegacySecurityClientMWRemovedError]).
+// [rest.BoundSecurityClientMiddleware] + WithRequestHeader, per that
+// mechanism's permanent retirement (docs/design/d-0009-internalize-shared-mechanics.md).
 type securedAuthIn struct{ Token string }
 type securedAuthOut struct{}
 
@@ -1523,8 +1522,8 @@ func TestCall_NoCredentialFunc_SecuredRoute_StillNotAnError(t *testing.T) {
 // produces an In value (no nil-means-skip sentinel), and a Required
 // WithRequestHeader field rejects an empty value as a genuine validation
 // failure, not a deliberate opt-out. This is an intentional, accepted
-// consequence of retiring the legacy mechanism (see
-// [rest.LegacySecurityClientMWRemovedError]) — a route needing "probe
+// consequence of retiring the legacy mechanism entirely
+// (docs/design/d-0009-internalize-shared-mechanics.md) — a route needing "probe
 // first, no credential on the first attempt" semantics should declare the
 // header as OPTIONAL (NewOptionalHeaderParam) instead.
 

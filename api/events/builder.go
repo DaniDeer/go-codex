@@ -12,9 +12,9 @@ import (
 	"github.com/DaniDeer/go-codex/api/internal"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/middleware"
+	"github.com/DaniDeer/go-codex/internal/middleware"
+	"github.com/DaniDeer/go-codex/internal/route"
 	asyncapi "github.com/DaniDeer/go-codex/render/asyncapi/v3"
-	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/schema"
 )
 
@@ -29,9 +29,9 @@ type Server = asyncapi.Server
 // runtime credential validation for message broker adapters.
 //
 // A channel declares a SecurityScheme in one of two ways: the modern,
-// preferred path is [FromSecurityScheme] + [Subscriber.Use]/[Publisher.Use]
+// preferred path is [SecurityMiddleware] + [Subscriber.Use]/[Publisher.Use]
 // (attached per-role, mirrors REST's own current
-// `middleware.SecurityScheme`/`rest.FromSecurityScheme` + `Route.Use`
+// `rest.SecurityMiddleware` + `Route.Use`
 // mechanism); [WithSecurityScheme] is the older, deprecated, channel-level
 // declaration kept for backward compatibility — see its own doc comment.
 // There is no builder-level equivalent for either. The spec fields flow into
@@ -89,8 +89,8 @@ func (o securitySchemeOpt) applyChannel(cb *channelBuilder) {
 // handle and a publish-side handle with IDENTICAL credential-format
 // enforcement on both sides. Mirrored REST's OWN identically-named,
 // now-removed `rest.WithSecurityScheme` mechanism before REST's Revision 2
-// replaced it with `middleware.SecurityScheme`/`rest.FromSecurityScheme` +
-// `Route.Use` — see [FromSecurityScheme] for this package's equivalent
+// replaced it with `rest.SecurityMiddleware` +
+// `Route.Use` — see [SecurityMiddleware] for this package's equivalent
 // modern replacement.
 //
 // Define a scheme once as a package-level value and reuse it across every
@@ -109,14 +109,14 @@ func (o securitySchemeOpt) applyChannel(cb *channelBuilder) {
 // error) — define the scheme once as a shared value (as above) to avoid this
 // entirely.
 //
-// Deprecated: WithSecurityScheme duplicates what [FromSecurityScheme] +
+// Deprecated: WithSecurityScheme duplicates what [SecurityMiddleware] +
 // [Subscriber.Use]/[Publisher.Use] now express (mirrors REST's OWN Revision 2
-// removal of rest.WithSecurityScheme in favor of rest.FromSecurityScheme).
+// removal of rest.WithSecurityScheme in favor of rest.SecurityMiddleware).
 // New code declaring security through [Channel.WithSubscribe]/
-// [Channel.WithPublish] should use [FromSecurityScheme] instead:
+// [Channel.WithPublish] should use [SecurityMiddleware] instead:
 //
 //	sub := channel.WithSubscribe(events.Subscribe{...}).
-//	    Use(events.FromSecurityScheme("bearerAuth", bearerAuth, []string{"subscribe:sensors"}))
+//	    Use(events.SecurityMiddleware[struct{}, struct{}]("bearerAuth", bearerAuth, []string{"subscribe:sensors"}))
 //
 // WithSecurityScheme is kept, unremoved, ONLY because this package's OWN
 // regression test suite still exercises it as a legitimate backward-compat
@@ -131,28 +131,10 @@ func WithSecurityScheme(name string, scheme SecurityScheme) ChannelOpt {
 	return securitySchemeOpt{name: name, scheme: scheme}
 }
 
-// FromSecurityScheme bridges an existing [SecurityScheme] value (e.g. a
-// package-level var shared across several channels) into a real
-// [middleware.Middleware], usable with [Subscriber.Use]/[Publisher.Use] —
-// the SOLE way to declare a channel's security scheme going forward. Mirrors
-// [rest.FromSecurityScheme] exactly (found during a critical review:
-// [middleware.SecurityDeclaration] already carries a strict superset of
-// [SecurityScheme]'s fields, so there is nothing [WithSecurityScheme] could
-// express that this bridge cannot).
-//
-//	var bearerAuth = events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.
-//	    WithCodec(codex.String().Refine(validate.BearerToken))
-//
-//	sub := channel.WithSubscribe(events.Subscribe{...}).
-//	    Use(events.FromSecurityScheme("bearerAuth", bearerAuth, []string{"subscribe:sensors"}))
-func FromSecurityScheme(schemeName string, scheme SecurityScheme, scopes []string) middleware.Middleware {
-	return middleware.SecurityScheme(schemeName, scheme.SecurityScheme, scopes, scheme.Codec)
-}
-
-// SecurityMiddleware is [FromSecurityScheme]'s codec-backed-family
-// equivalent, GENERALIZED over In/Out — builds a [Middleware][In, Out]
-// carrying a [middleware.SecurityDeclaration], attachable ONLY via plain
-// .Use(...) (the REUSABLE class — see [Middleware.WithReceive]/
+// SecurityMiddleware builds a [Middleware][In, Out] carrying a
+// [middleware.SecurityDeclaration] — the SOLE way to declare a channel's
+// security scheme going forward, GENERALIZED over In/Out, attachable
+// ONLY via plain .Use(...) (the REUSABLE class — see [Middleware.WithReceive]/
 // [Middleware.WithSend]). `SubscribeMW`/`PublishMW` do NOT accept a
 // codec-backed value anymore (they return [MiddlewareMisattachedError]);
 // for a channel-BOUND attachment (fn additionally receiving the
@@ -1866,7 +1848,7 @@ func applyEventsSecurityDeclarations(topic string, security *[]route.SecurityReq
 // [Subscriber.SubscribeBoundMW] (channel-bound, via
 // [BoundSecuritySubscribeMiddleware]) calls were made. A [Subscriber]
 // declaring a security scheme (via the manual Subscribe.Security field or
-// [FromSecurityScheme]+[Subscriber.Use]) WITHOUT a matching attachment in
+// [SecurityMiddleware]+[Subscriber.Use]) WITHOUT a matching attachment in
 // EITHER list fails [Subscriber.Handle] with
 // [MissingSecurityMiddlewareError]; an attachment in either whose
 // Satisfies names the scheme resolves it — the two lists are checked
@@ -2232,22 +2214,17 @@ func (s Subscriber[T]) WithOptions(opts any) Subscriber[T] {
 	return s
 }
 
-// buildServerImplementation builds a [middleware.ServerImplementation] from
-// mw/fn — mw non-nil with Security set derives Satisfies from
-// mw.Security.SchemeName (the PAIRED, security-verifying case, matched
-// against a previously-.Use()'d declaration); mw nil (or Security nil)
-// leaves Satisfies empty (UNPAIRED, general-purpose — runs
-// unconditionally). Mirrors [api/rest]'s buildServerImplementation exactly.
-func buildServerImplementation(mw middleware.RouteMiddleware, fn any) middleware.ServerImplementation {
-	if sc, ok := mw.(middleware.SecurityCarrier); ok {
-		if sec := sc.SecurityDeclaration(); sec != nil {
-			return middleware.ServerImplementation{
-				Name:      "implement:" + sec.SchemeName,
-				Satisfies: []string{sec.SchemeName},
-				Fn:        fn,
-			}
-		}
-	}
+// buildServerImplementation always builds a GENERAL-PURPOSE
+// [middleware.ServerImplementation] (Satisfies empty) — mw is only ever
+// non-Security-carrying by the time this runs: the earlier
+// [eventsMiddlewareContributor] check in [Subscriber.SubscribeMW]/
+// [Publisher.PublishMW] already intercepts the one type
+// ([Middleware][In, Out]) that can carry a Security declaration, routing
+// it to [MiddlewareMisattachedError] instead. A Security-carrying scheme
+// is PAIRED exclusively via [Subscriber.SubscribeBoundMW]/
+// [BoundSecuritySubscribeMiddleware] now. Mirrors [api/rest]'s
+// buildServerImplementation exactly.
+func buildServerImplementation(fn any) middleware.ServerImplementation {
 	return middleware.ServerImplementation{Name: "implement:general", Fn: fn}
 }
 
@@ -2264,12 +2241,12 @@ func buildServerImplementation(mw middleware.RouteMiddleware, fn any) middleware
 // codec-backed [Middleware][In, Out] or [BoundSubscribeMiddleware][T, In,
 // Out] (via [MiddlewareMisattachedError] — those attach ONLY via plain
 // .Use() and [Subscriber.SubscribeBoundMW] respectively, never
-// SubscribeMW; see docs/design/d-0003-codec-declared-middlewares.md's Addendum 7):
-//   - a legacy [middleware.Middleware] (or nil): UNPAIRED/PAIRED exactly
-//     as before — fn is matched against a PREVIOUSLY-.Use()'d security
-//     declaration when mw.Security != nil, matched by [CheckCoverage] at
-//     [Subscriber.Handle] time; else UNPAIRED/general-purpose — fn runs
-//     unconditionally, nothing to satisfy.
+// SubscribeMW; see docs/design/d-0003-codec-declared-middlewares.md's Addendum 7).
+// mw is otherwise always GENERAL-PURPOSE — fn runs unconditionally,
+// nothing to satisfy. A Security scheme is declared and PAIRED
+// exclusively via [Subscriber.SubscribeBoundMW] +
+// [BoundSecuritySubscribeMiddleware] now — SubscribeMW never carries a
+// Security declaration.
 //
 // fn is deliberately untyped (any) — resolved by the SPECIFIC adapter
 // (adapters/mqtt5, adapters/mqtt, adapters/zeromq) at Register/Subscribe
@@ -2289,15 +2266,7 @@ func (s Subscriber[T]) SubscribeMW(mw middleware.RouteMiddleware, fn any) Subscr
 		}
 		return s
 	}
-	if sc, ok := mw.(middleware.SecurityCarrier); ok {
-		if sec := sc.SecurityDeclaration(); sec != nil {
-			if s.buildErr == nil {
-				s.buildErr = LegacySecurityMWRemovedError{Topic: s.channel.topic, Name: sec.SchemeName, Op: "SubscribeMW"}
-			}
-			return s
-		}
-	}
-	s.impls = append(slices.Clone(s.impls), buildServerImplementation(mw, fn))
+	s.impls = append(slices.Clone(s.impls), buildServerImplementation(fn))
 	return s
 }
 
@@ -2351,11 +2320,10 @@ func synthesizeLegacySecurity(mw middleware.RouteMiddleware) (middleware.Middlew
 // [Middleware][In, Out] or [BoundPublishMiddleware][T, In, Out] (via
 // [MiddlewareMisattachedError] — those attach ONLY via plain .Use() and
 // [Publisher.PublishBoundMW] respectively, never PublishMW). mw is
-// NILABLE with the SAME derivation rule: non-nil with Security set PAIRS
-// fn against a previously-.Use()'d declaration (Satisfies gates which
-// implementations the adapter runs, vs. the channel's declared security
-// requirements); nil (or Security nil) leaves Satisfies empty —
-// general-purpose, always runs.
+// otherwise always GENERAL-PURPOSE — fn runs unconditionally, nothing to
+// satisfy. A Security scheme is declared and PAIRED exclusively via
+// [Publisher.PublishBoundMW] + [BoundSecurityPublishMiddleware] now —
+// PublishMW never carries a Security declaration.
 //
 // fn is deliberately untyped (any) for the SAME reason as SubscribeMW's —
 // resolved by the specific client adapter (e.g. an mqtt5 credential-
@@ -2372,14 +2340,6 @@ func (p Publisher[T]) PublishMW(mw middleware.RouteMiddleware, fn any) Publisher
 			p.buildErr = MiddlewareMisattachedError{Topic: p.channel.topic, Name: v.MiddlewareName()}
 		}
 		return p
-	}
-	if sc, ok := mw.(middleware.SecurityCarrier); ok {
-		if sec := sc.SecurityDeclaration(); sec != nil {
-			if p.buildErr == nil {
-				p.buildErr = LegacySecurityMWRemovedError{Topic: p.channel.topic, Name: sec.SchemeName, Op: "PublishMW"}
-			}
-			return p
-		}
 	}
 	idx := len(p.clientImpls)
 	impl := middleware.ClientImplementation{Fn: fn, Name: fmt.Sprintf("fulfill:general#%d", idx)}

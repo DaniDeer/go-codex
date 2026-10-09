@@ -3,7 +3,6 @@ package routes
 import (
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -54,7 +53,7 @@ var SensorDataSub = SensorDataChannel.WithSubscribe(events.Subscribe{
 	Summary:     "Receive sensor reading",
 	Tags:        []string{"sensor", "iot"},
 	SchemaName:  "SensorReading",
-	Security:    []route.SecurityRequirement{route.Require("apiKeyAuth")},
+	Security:    []events.SecurityRequirement{events.Require("apiKeyAuth")},
 })
 
 // SensorDataPub is the unsecured publish role of the SAME channel — used
@@ -472,7 +471,7 @@ var SecuredReadingsSub = SecuredReadingsChannel.WithSubscribe(events.Subscribe{
 	// already use), so the zero-scopes trick is no longer the ONLY way
 	// to exercise this ErrorChannel — it remains a valid, demonstrated
 	// path in its own right (not a required workaround anymore).
-	Security: []route.SecurityRequirement{route.Require("apiKeyAuth")},
+	Security: []events.SecurityRequirement{events.Require("apiKeyAuth")},
 })
 
 // ── zeromq PUB/SUB roundtrip channel ──────────────────────────────────────────

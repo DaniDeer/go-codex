@@ -20,9 +20,9 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/middleware"
+	"github.com/DaniDeer/go-codex/internal/middleware"
+	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/ports"
-	"github.com/DaniDeer/go-codex/route"
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
 
@@ -803,9 +803,8 @@ func TestConsume_NilObserver_NoPanic(t *testing.T) {
 // reconnectCredAuthIn/Out carry the Bound SSE credential tests' request
 // header merge field — replaces the removed legacy ClientMW security
 // pairing (func(ctx, secReqs) (http.Header, error)) with
-// [rest.BoundSecurityClientMiddleware] + WithRequestHeader, this review
-// round's retirement of that mechanism (see
-// [rest.LegacySecurityClientMWRemovedError]).
+// [rest.BoundSecurityClientMiddleware] + WithRequestHeader, per that
+// mechanism's permanent retirement (docs/design/d-0009-internalize-shared-mechanics.md).
 type reconnectCredAuthIn struct{ Token string }
 type reconnectCredAuthOut struct{}
 

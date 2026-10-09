@@ -5,8 +5,6 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/middleware"
-	"github.com/DaniDeer/go-codex/route"
 )
 
 // ── "bearerAuth" scheme ───────────────────────────────────────────────────
@@ -42,14 +40,14 @@ type AuthIn struct{ Token string }
 
 // AuthOut carries the conventional GrantedScopes map[string][]string
 // field the adapter reads via reflection and merges into the SAME
-// middleware.CheckScopes call every Security attachment in this example
+// rest.CheckScopes call every Security attachment in this example
 // uses — see docs/features/security.md's "Codec-backed Security" section.
 type AuthOut struct {
 	GrantedScopes map[string][]string
 }
 
 // BearerAuthScheme is shared by both scope attachments below.
-var BearerAuthScheme = rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT"), Codec: &BearerCodec}
+var BearerAuthScheme = rest.BearerScheme("JWT").WithCodec(BearerCodec)
 
 // ProfileScopes/AdminScopes are the scope requirements
 // BoundScopeServerMW/BoundScopeClientMW attach the "bearerAuth" scheme
@@ -94,20 +92,20 @@ func BoundScopeClientMW[Req any](scopes []string, fn func(ctx context.Context, r
 // ── a REAL credential type (AuthIn) and a REAL GrantedScopes-carrying   ──
 // ── Out (AuthOut), dispatched via HandleBoundMW/ClientBoundMW. This     ──
 // ── demo additionally publishes the decoded token via a                ──
-// ── middleware.ContextField, which the "bearerAuth" scheme doesn't     ──
+// ── rest.ContextField, which the "bearerAuth" scheme doesn't     ──
 // ── need. See route.go for ComputeGSRoute itself.                       ──
 
-// GrantedScopesUserIDField is a middleware.ContextField[string] — the
+// GrantedScopesUserIDField is a rest.ContextField[string] — the
 // authenticated token published by GrantedScopesComputeServerMW's
 // embedded Fn (VerifyBearerGS, handler.go) and consumed by
 // MakeComputeGSHandler via Get(ctx), with ZERO manual re-decoding inside
 // the business handler. Declared once, shared by every producer/consumer
 // that needs this same piece of cross-cutting data (docs/design/
 // d-0007-declarative-middleware-layering.md's Phase 3).
-var GrantedScopesUserIDField = middleware.NewContextField(codex.String())
+var GrantedScopesUserIDField = rest.NewContextField(codex.String())
 
 // grantedScopesGSScheme is shared by both bound constructors below.
-var grantedScopesGSScheme = rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT"), Codec: &BearerCodec}
+var grantedScopesGSScheme = rest.BearerScheme("JWT").WithCodec(BearerCodec)
 
 // GrantedScopesComputeServerMW builds the SERVER-side bound "bearerAuthGS"
 // Security middleware for POST /compute-gs — fn is supplied by the

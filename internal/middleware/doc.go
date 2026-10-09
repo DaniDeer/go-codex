@@ -4,6 +4,19 @@
 // `CallOptions.CredentialFunc` escape-hatch fields with ONE codec-backed
 // declaration pattern every transport understands identically.
 //
+// DELIBERATELY scoped under internal/ (not the repo root) — this package
+// is shared cross-pattern MECHANICS/vocabulary, never meant to be imported
+// by an end user of go-codex directly. A user of api/rest/api/events/
+// api/reqreply uses that pattern's OWN public wrapper around this
+// vocabulary instead — e.g. rest.Middleware/rest.NewDeclaration/
+// rest.SecurityDeclaration/rest.ContextField (events/reqreply have the
+// SAME names) are thin, same-named aliases/forwarding constructors around
+// this package's own types. Go's own internal/ import rule enforces this
+// structurally: nothing outside the go-codex module tree can import this
+// package at all, regardless of documentation/convention. See
+// .github/instructions/go-codex.instructions.md's Design Philosophy
+// section for the general rule this package is a reference example of.
+//
 // # Middleware — codec-declared Transform
 //
 // [Declaration] pairs a name with an In/Out codec pair (built via
@@ -26,10 +39,15 @@
 //
 // # Disposition — retry/requeue signaling
 //
-// [Disposition] is a small, transport-agnostic enum (declared via
-// [SetDisposition], read via [DispositionFromContext]/[ResolveDisposition])
-// letting a handler signal "retry this message" or "dead-letter this
-// message" back to its adapter without a transport-specific escape hatch.
+// Disposition (a small, transport-agnostic enum letting a handler signal
+// "retry this message" or "dead-letter this message" back to its adapter
+// without a transport-specific escape hatch) lives in [stats] now, not
+// here — stats.Disposition/stats.SetDisposition/stats.DispositionFromContext/
+// stats.ResolveDisposition. Relocated because it's consumed by
+// stats.DispositionObserver, a PUBLIC, user-implementable extensibility
+// interface with no per-pattern home — keeping it here would have blocked
+// this package's own internal/ move (an external user implementing a
+// custom Observer could no longer have named the type at all).
 //
 // # Context fields
 //

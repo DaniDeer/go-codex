@@ -119,7 +119,7 @@ yamlBytes, _ := doc.MarshalYAML()
 ## Security schemes
 
 `middleware.SecurityScheme(schemeName, scheme, scopes, codec)`/
-`rest.FromSecurityScheme(schemeName, rest.SecurityScheme, scopes)`, attached
+`rest.SecurityMiddleware[struct{}, struct{}](schemeName, rest.SecurityScheme, scopes)`, attached
 via `Route.Use(mw)`, is the ONLY way to declare a security scheme — directly
 on the route, no builder-level registry (`rest.WithSecurityScheme` was
 REMOVED — there is no metadata-only registration anymore). `Server.OpenAPISpec()`
@@ -140,7 +140,7 @@ createUser, _ := rest.NewRoute[CreateUserReq, User]("POST", "/users", ...,
             route.Require("bearerAuth", "write:users"),
         },
     },
-).Use(rest.FromSecurityScheme("bearerAuth", bearerAuth, []string{"write:users"})).RegisterHandle(b)
+).Use(rest.SecurityMiddleware[struct{}, struct{}]("bearerAuth", bearerAuth, []string{"write:users"})).RegisterHandle(b)
 ```
 
 Security schemes appear in `components/securitySchemes`; global security at document root; per-operation security overrides inline — all generated automatically.

@@ -395,6 +395,34 @@ mirror their pattern exactly if you ever touch that code, since
 here when a `BindServer` implementation called back into a
 `RLock`-guarded method while `Attach` still held the write lock).
 
+## Step 5g — Shared cross-pattern MECHANICS (not your adapter's IO) belong in `internal/`, never a public package
+
+**Distinct from Step 5d above**: Step 5d governs a convenience helper that
+touches only core `api/*` TYPES — it belongs in `api/*`. This step
+governs the rarer case where your adapter (or a future one) would need a
+mechanism genuinely SHARED across 2+ of `api/rest`/`api/events`/
+`api/reqreply` that is pure dispatch/state-machine MECHANICS, not a single
+adapter's protocol IO. That mechanism belongs in a repo-root
+`internal/<name>` package, never a new public top-level one — each
+pattern package then exposes its own thin, same-named public wrapper
+(type aliases + forwarding constructors) around it, so your adapter (and
+any end user) keeps importing `api/rest`/`api/events`/`api/reqreply`
+only, never the `internal/` package directly. Go's own `internal/`
+import rule makes this a COMPILER-enforced fact (importable only from
+code rooted at `internal/`'s parent directory — here, the whole module),
+not just a documented convention. See
+`docs/concepts/ports-and-adapters.md`'s "Guardrail: shared cross-pattern
+MECHANICS belong in `internal/`, not a public package" section and
+`docs/design/d-0009-internalize-shared-mechanics.md` for the full worked
+example (`internal/router`/`internal/route`/`internal/middleware`).
+
+**The one documented exception**: a pattern-agnostic concept referenced
+by a PUBLIC, user-implementable `stats.Observer` extension (e.g.
+`Disposition`, used by `stats.DispositionObserver`) is relocated to the
+package OWNING that interface (`stats`) instead of `internal/`, since an
+external implementer must be able to spell the type in their own method
+signature — an `internal/` type would make that impossible.
+
 ## Step 6 — Use the checklist
 
 Work through [references/checklist.md](references/checklist.md) — a

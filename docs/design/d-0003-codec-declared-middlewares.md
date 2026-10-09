@@ -2645,3 +2645,34 @@ specific `examples/mutable-security-keys`/`adapters-nethttp-client`/
 `adapters-sse`/`go-edge-models`) re-run end-to-end with exit 0 at each
 phase's completion, confirming real security enforcement continues to
 be exercised (rejections, scope checks, credential errors) throughout.
+
+## Addendum 8: `middleware` package relocated under `internal/middleware` (`docs/design/d-0009-internalize-shared-mechanics.md`)
+
+Every `middleware.X` reference throughout this document (`Middleware`,
+`Declaration[In,Out]`, `SecurityDeclaration`, `ContextField[V]`,
+`RouteMiddleware`, `ServerImplementation`, `ClientImplementation`,
+`CheckScopes`, etc.) describes vocabulary that has since been relocated
+from the public top-level `middleware` package to `internal/middleware`
+— the package NAME is unchanged (still `package middleware`, so code
+examples above spelling `middleware.X` remain byte-accurate for
+maintainers working inside the go-codex module), only its import path
+changed, and Go's `internal/` import rule now makes it uninstallable by
+an external consumer of go-codex. Each pattern package (`api/rest`/
+`api/events`/`api/reqreply`) exposes the identical vocabulary under its
+own name via a thin wrapper. **UPDATE**: the `SharedMiddleware` public
+alias (`rest.SharedMiddleware`/`events.SharedMiddleware`/
+`reqreply.SharedMiddleware`, IDENTICAL type aliases to
+`internal/middleware.Middleware`) and `FromSecurityScheme` were
+subsequently REMOVED entirely — a from-scratch investigation found zero
+real callers needing a literal shared Go value across patterns (see
+Addendum 9 of `docs/design/d-0001-rest-middleware-workflow-simplification.md`
+and `docs/design/d-0009-internalize-shared-mechanics.md`); the underlying
+`internal/middleware.Middleware` TYPE remains, unchanged, as internal-only
+bridging currency. `Disposition`/`ResolveDisposition`/`EnsureDispositionBox`/
+`SetDisposition`/`DispositionFromContext` moved OUT to `stats` instead
+(not `internal/middleware`), since `stats.DispositionObserver` is a
+PUBLIC, user-implementable extensibility interface that must be able to
+reference `Disposition` by name. See
+`docs/concepts/ports-and-adapters.md`'s "Guardrail: shared cross-pattern
+MECHANICS belong in `internal/`, not a public package" section for the
+general rule this establishes for future shared mechanics.

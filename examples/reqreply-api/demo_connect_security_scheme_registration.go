@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/DaniDeer/go-codex/api/reqreply"
-	"github.com/DaniDeer/go-codex/route"
 )
 
 // demoConnectSecuritySchemeRegistration demonstrates
@@ -19,10 +18,10 @@ func demoConnectSecuritySchemeRegistration() {
 	fmt.Println("\n── Demo: Server.AddConnectSecurityScheme (connection-level spec registration) ──")
 
 	server := reqreply.NewServer(reqreply.Info{Title: "Connect-scheme registration demo", Version: "1.0.0"})
-	server.AddConnectSecurityScheme("brokerAuth", route.SecurityScheme{Type: route.SecuritySchemeHTTP, Scheme: "basic"})
+	server.AddConnectSecurityScheme("brokerAuth", reqreply.BasicScheme().SecurityScheme)
 	server.AddServer("production", reqreply.ServerEntry{
 		URL: "mqtts://broker.example.com:8883", Protocol: "mqtt5",
-		Security: []route.SecurityRequirement{route.Require("brokerAuth")},
+		Security: []reqreply.SecurityRequirement{reqreply.Require("brokerAuth")},
 	})
 
 	doc, err := server.AsyncAPISpec()

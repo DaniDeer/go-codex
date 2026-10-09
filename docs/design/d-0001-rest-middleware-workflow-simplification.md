@@ -3337,3 +3337,34 @@ no longer describes a working mechanism.
 
 **Verified**: `gofmt`/`go build ./...`/`go test ./...`/`just check`/all
 examples all green, per this doc's standing verification checklist.
+
+## Addendum 9: `FromSecurityScheme`/`SharedMiddleware` fully removed (supersedes Addendum 8's "scope correction")
+
+Addendum 8 above kept `middleware.SecurityScheme`/`FromSecurityScheme` (the
+declare-only legacy type's public constructors) because a prior round
+found what it believed were real, active callers needing the declare-only/
+no-enforcement use case. A LATER, independent, from-scratch investigation
+(`docs/design/d-0009-internalize-shared-mechanics.md`) found this was no longer
+true: by that point, EVERY real caller (including `examples/go-edge-models`,
+the originally-cited motivating case) had migrated to the FUSED,
+codec-backed `rest.SecurityMiddleware`/`events.SecurityMiddleware`/
+`reqreply.SecurityMiddleware` constructors used `.Use()`-only with no Fn —
+which already fully covers the "declare a requirement, enforce nothing in
+this codebase" case. The ONLY remaining references to `rest.SharedMiddleware`
+anywhere in the repo were STALE COMMENT PROSE (artifacts of an earlier,
+unrelated mechanical rename), not real code.
+
+Given this, `rest.SharedMiddleware`/`events.SharedMiddleware`/
+`reqreply.SharedMiddleware` (the per-pattern public aliases) and
+`rest.FromSecurityScheme`/`events.FromSecurityScheme` were REMOVED
+entirely — along with the now-fully-unreachable legacy HandleMW/ClientMW/
+SubscribeMW/PublishMW security-rejection path (`LegacySecurityHandleMWRemovedError`/
+`LegacySecurityClientMWRemovedError`/`LegacySecurityMWRemovedError` and
+their RouteOpt wrappers) and a provably-dead branch inside each pattern's
+`buildServerImplementation`. The underlying `internal/middleware.Middleware{Name,
+Security}` type itself is UNCHANGED and NOT removed — it remains essential
+INTERNAL bridging/synthesis currency every pattern's own `.Use()` path
+constructs internally from a codec-backed `Middleware[In,Out]`'s Security
+declaration; only the PUBLIC door letting an external user construct one
+directly was closed. See `docs/design/d-0009-internalize-shared-mechanics.md`
+for the full investigation and removal record.

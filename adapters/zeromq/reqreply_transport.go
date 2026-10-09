@@ -12,8 +12,8 @@ import (
 
 	"github.com/DaniDeer/go-codex/adapters/internal/scopesmerge"
 	"github.com/DaniDeer/go-codex/api/reqreply"
-	"github.com/DaniDeer/go-codex/middleware"
-	"github.com/DaniDeer/go-codex/route"
+	"github.com/DaniDeer/go-codex/internal/middleware"
+	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/stats"
 )
 
@@ -626,7 +626,7 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 		// the plumbing is proven end-to-end here for a future
 		// ack-capable adapter (e.g. AMQP) to consume without further core
 		// changes. See docs/design/d-0006-protocol-native-capabilities.md's §8.
-		spanCtx := middleware.EnsureDispositionBox(ctx)
+		spanCtx := stats.EnsureDispositionBox(ctx)
 		var serveErr error
 		if to, ok := obs.(stats.TraceObserver); ok {
 			spanCtx = to.StartSpan(spanCtx, "zmq.serve", path)
@@ -773,7 +773,7 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 
 		fnResults := dispatchFn.Call([]reflect.Value{reflect.ValueOf(spanCtx), reqVal})
 		handlerErr, _ := fnResults[1].Interface().(error)
-		disposition := middleware.ResolveDisposition(spanCtx, handlerErr)
+		disposition := stats.ResolveDisposition(spanCtx, handlerErr)
 		if dispObs, ok := obs.(stats.DispositionObserver); ok {
 			dispObs.RecordDisposition(path, disposition)
 		}
@@ -1450,7 +1450,7 @@ func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny a
 			// EnsureDispositionBox — see this file's serverTransport.Serve
 			// wiring for the full rationale (§8 of
 			// docs/design/d-0006-protocol-native-capabilities.md).
-			spanCtx := middleware.EnsureDispositionBox(ctx)
+			spanCtx := stats.EnsureDispositionBox(ctx)
 			var serveErr error
 			if to, ok := obs.(stats.TraceObserver); ok {
 				spanCtx = to.StartSpan(spanCtx, "zmq.serve", path)
@@ -1583,7 +1583,7 @@ func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny a
 
 			fnResults := dispatchFn.Call([]reflect.Value{reflect.ValueOf(spanCtx), reqVal})
 			handlerErr, _ := fnResults[1].Interface().(error)
-			disposition := middleware.ResolveDisposition(spanCtx, handlerErr)
+			disposition := stats.ResolveDisposition(spanCtx, handlerErr)
 			if dispObs, ok := obs.(stats.DispositionObserver); ok {
 				dispObs.RecordDisposition(path, disposition)
 			}

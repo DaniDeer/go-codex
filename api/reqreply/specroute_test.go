@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/DaniDeer/go-codex/api/reqreply"
-	"github.com/DaniDeer/go-codex/route"
+	"github.com/DaniDeer/go-codex/internal/route"
 )
 
 // capturingServerTransport records the fn passed to Serve for each

@@ -8,7 +8,7 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/middleware"
+	"github.com/DaniDeer/go-codex/internal/middleware"
 )
 
 // ── fixtures ─────────────────────────────────────────────────────────────
@@ -601,5 +601,18 @@ func TestRouter_Tags_RoutesEquivalentToWalk(t *testing.T) {
 	routes := rt.Routes()
 	if len(walked[0].Tags) != len(routes[0].Tags) || walked[0].Tags[0] != routes[0].Tags[0] {
 		t.Errorf("Walk and Routes disagree on Tags: %v vs %v", walked[0].Tags, routes[0].Tags)
+	}
+}
+
+// TestRoute_DoesNotImplementMethodReporter is a regression test for
+// docs/design/d-0009-internalize-shared-mechanics.md's Phase 1 Design Decision #4
+// (the RouterEntry Method/Role/neither mismatch): reqreply.Route
+// genuinely has no method/role-equivalent concept — it must NOT satisfy
+// [router.MethodReporter] at all, confirming RouterEntry's absent method
+// field reflects a real structural absence, not an oversight.
+func TestRoute_DoesNotImplementMethodReporter(t *testing.T) {
+	route := newRouterTestRoute("a")
+	if _, ok := any(route).(interface{ RouteMethod() string }); ok {
+		t.Fatalf("reqreply.Route unexpectedly implements RouteMethod() string (MethodReporter) — it should have no method/role concept at all")
 	}
 }

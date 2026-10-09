@@ -11,7 +11,7 @@ import (
 // Baseline/Implicit/Explicit) at the route level — the reqreply-side
 // counterpart of [events.CapabilityRequirement]. Own type, in its own
 // package, deliberately NOT shared with api/events (mirrors
-// [middleware.Disposition]'s own D-0004 placement precedent — cheap to
+// [stats.Disposition]'s own D-0004 placement precedent — cheap to
 // duplicate, avoids an api/reqreply → api/events import that would
 // otherwise exist for no other reason than this one small struct).
 //

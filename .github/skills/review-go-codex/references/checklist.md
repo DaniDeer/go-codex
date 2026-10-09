@@ -18,7 +18,7 @@ format specified in SKILL.md.
 | Builder naming | `rest.Server`, `events.Client`, `reqreply.Server`, `forge.Registry` — consistent fluent builder pattern (`events.Builder` was renamed to `events.Client` by Decision 1 of `docs/design/d-0002-pubsub-workflow-simplification.md`; `reqreply.Server` is the NEWEST addition, unifying what a separate, now-deprecated `reqreply.Builder` did with dispatch/transport — mirrors `rest.Server`'s asymmetric role shape, not `events.Client`'s symmetric one, since reqreply's server/client roles are genuinely asymmetric like REST's, unlike pub/sub's) |
 | MCP Builder | `mcp.Builder` with `NewBuilder(info)`, `Info()`, `MCPSpec()` — analogous to `OpenAPISpec()`/`AsyncAPISpec()` |
 | `AddServer` | `rest.Server.AddServer(name, Server)`, `events.Client.AddServer(name, Server)`, AND `reqreply.Server.AddServer(name, ServerEntry)` all exist; description fallback on all three (`reqreply.ServerEntry` is the renamed AsyncAPI-entry alias — see `docs/design/d-0004-reqreply-workflow-simplification.md` — do not confuse with the dispatch-owning `reqreply.Server` type itself) |
-| Security scheme declaration | REST and events CONVERGED on the same route/channel-level pattern (no longer a divergence): REST: `middleware.SecurityScheme(schemeName, scheme, scopes, codec) middleware.Middleware` / `rest.FromSecurityScheme(schemeName, rest.SecurityScheme, scopes) middleware.Middleware`, attached via `Route.Use(mw)` (`rest.WithSecurityScheme` was REMOVED by `docs/design/d-0001-rest-middleware-workflow-simplification.md` — no metadata-only registration exists anymore); events: `events.FromSecurityScheme(schemeName, events.SecurityScheme, scopes) middleware.Middleware`, attached via `Subscriber.Use(mw)`/`Publisher.Use(mw)` (`events.WithSecurityScheme` is deprecated-but-kept for backward-compat regression coverage, mirrors REST's OLD mechanism before its own Revision 2 removal — see `events.WithSecurityScheme`'s own doc comment). Neither package has a BUILDER-level security-scheme declaration anymore — do not look for `events.Client.AddSecurityScheme`, it does not exist |
+| Security scheme declaration | REST and events CONVERGED on the same route/channel-level pattern (no longer a divergence): REST: `rest.SecurityMiddleware[In, Out any](schemeName, rest.SecurityScheme, scopes) Middleware[In, Out]`, attached via `Route.Use(mw)` (`rest.WithSecurityScheme` was REMOVED by `docs/design/d-0001-rest-middleware-workflow-simplification.md` — no metadata-only registration exists anymore; `rest.FromSecurityScheme`/`rest.SharedMiddleware` were ALSO subsequently removed entirely, see `docs/design/d-0009-internalize-shared-mechanics.md`); events: `events.SecurityMiddleware[In, Out any](schemeName, events.SecurityScheme, scopes) Middleware[In, Out]`, attached via `Subscriber.Use(mw)`/`Publisher.Use(mw)` (`events.WithSecurityScheme` is deprecated-but-kept for backward-compat regression coverage, mirrors REST's OLD mechanism before its own Revision 2 removal — see `events.WithSecurityScheme`'s own doc comment). Neither package has a BUILDER-level security-scheme declaration anymore — do not look for `events.Client.AddSecurityScheme`, it does not exist |
 | `AddGlobalSecurity` | Both builders have `AddGlobalSecurity(reqs...)` |
 | Server description fallback | Both builders fall back `Server.Description = name` when empty |
 
@@ -49,7 +49,7 @@ format specified in SKILL.md.
 | Method | rest.Server | events.Client | reqreply.Server |
 |--------|-------------|----------------|------------------|
 | `AddServer` | ✓ | ✓ | ✓ (`AddServer(name, ServerEntry)`) |
-| `AddSecurityScheme` | ✗ (removed — see `middleware.SecurityScheme`/`rest.FromSecurityScheme` + `Route.Use`, route-level) | ✗ (removed on this side too — see `events.FromSecurityScheme` + `Subscriber.Use`/`Publisher.Use`, channel-level; both packages CONVERGED on the same declaration-level pattern, no longer a divergence) | ✗ (route-level only — `reqreply.WithSecurityScheme` is the ONLY declaration mechanism, mirroring reqreply's own never-had-a-builder-level-scheme history, not a regression) |
+| `AddSecurityScheme` | ✗ (removed — see `rest.SecurityMiddleware` + `Route.Use`, route-level) | ✗ (removed on this side too — see `events.SecurityMiddleware` + `Subscriber.Use`/`Publisher.Use`, channel-level; both packages CONVERGED on the same declaration-level pattern, no longer a divergence) | ✗ (route-level only — `reqreply.WithSecurityScheme` is the ONLY declaration mechanism, mirroring reqreply's own never-had-a-builder-level-scheme history, not a regression) |
 | `AddGlobalSecurity` | ✓ | ✓ | ✓ |
 | `Attach`/`Serve` (dispatch) | n/a — `rest.Server` is spec-accumulation only, dispatch lives in `Server.Attach(nethttp.NewServerTransport(...))`/`Server.Attach(chi.NewServerTransport(...))` + `Server.Serve(ctx)` | n/a — `events.Client.Attach` + `Publish`/`Subscribe`/`ServeSubscribers` (dispatch IS on the same value) | ✓ `Server.Attach(ServerTransport)` + `Server.Serve(ctx)` — dispatch IS on the same value, mirrors `events.Client`'s unification more than `rest.Server`'s split (see `docs/design/d-0004-reqreply-workflow-simplification.md`) |
 | `RegisteredTopics()`/`Topical` | n/a | n/a | ✓ reqreply-specific — used by `zeromq.AttachServer`/`AttachRouterServer` to validate topic/socket coverage upfront, before `Serve` |
@@ -72,7 +72,7 @@ If a method exists on `RouteHandle` and has a natural equivalent on `ChannelHand
 |---------|---------------------|-------------|
 | Spec generation | `OpenAPISpec()` / `AsyncAPISpec()` | `MCPSpec()` → `*MCPSpec{Name, Version, Tools, Resources, Prompts}` |
 | Server info | `NewBuilder(Info{Title, Version})` | `NewBuilder(Info{Name, Version})` — Name per MCP protocol |
-| Security | REST: `middleware.SecurityScheme`/`rest.FromSecurityScheme` + `Route.Use` (route-level); events: `events.FromSecurityScheme` + `Subscriber.Use`/`Publisher.Use` (channel-level); both + `AddGlobalSecurity` (builder-level) | n/a — MCP security outside builder |
+| Security | REST: `rest.SecurityMiddleware` + `Route.Use` (route-level); events: `events.SecurityMiddleware` + `Subscriber.Use`/`Publisher.Use` (channel-level); both + `AddGlobalSecurity` (builder-level) | n/a — MCP security outside builder |
 
 ### mcp Handle parity
 
@@ -724,9 +724,9 @@ inventing an ad-hoc option. See `docs/design/d-0006-protocol-native-capabilities
 | Sealed `Capability` interface | Each adapter package exposing a protocol-native toggle (MQTT QoS/Retained, ZeroMQ HWM/Conflate, ...) defines its OWN `type Capability interface{ isXxxCapability() }` — never shared across adapter packages, never a plain `any`/string-keyed map |
 | `Capabilities` field placement | Concrete `Capability` values are supplied via a `Capabilities []<pkg>.Capability` field on that adapter's EXISTING `SubscribeOptions`/`PublishOptions` struct (events) OR `ServeOptions`/`CallOptions` struct (reqreply, since Phase 2 of `docs/design/d-0006-protocol-native-capabilities.md`) — attached at DECLARE time via `events.Subscriber.WithOptions`/`events.Publisher.WithOptions`, or passed directly to `Serve`/`Call`/`AttachServer`/`AttachClient` for reqreply. Flag any new `Attach`/`Bind`-time `caps ...Capability` parameter as a design regression (superseded shape) |
 | No `api/*`-level leakage | A new protocol-specific field/type must NOT be added to `events.Channel`/`events.Subscribe`/`events.Publish`/`reqreply.Route`/`rest.Route`/etc. — only to the adapter's own `Options` struct. `api/events/mqtt_qos.go` (`MQTTQoS`/`Subscribe.QoS`) is the one grandfathered, ADDITIVE legacy exception — not a precedent to extend |
-| `CapabilityRequirement` + coverage | If a channel/route declares `events.CapabilityRequirement`/`reqreply.CapabilityRequirement` values (renamed from `CapabilitySpec`; `reqreply`'s own package-local mirror, NOT imported from `events` — mirrors `middleware.Disposition`'s placement), the adapter's `ServeSubscribers`/`Serve`/`AttachServer` (or equivalent bulk dispatch) calls `events.CheckCapabilityCoverage`/`reqreply.VerifyCapabilityCoverage` automatically — a caller should never have to remember to invoke it by hand. Returns `*events.CapabilityCoverageError`/`*reqreply.CapabilityCoverageError` (renamed from `MissingCapabilityError`), now value-aware via the optional `events.LeveledCapability`/`reqreply.LeveledCapability` interface. For reqreply specifically, verify the resolved QoS/Retained values are threaded through EVERY server-side reply publish path (success, error-pattern-matched, dead-letter), not just one — and, for zeromq, across ALL 4 real dispatch implementations (`serverTransport`/`routerServerTransport`/`clientTransport`/`dealerClientTransport` — REQ/REP and ROUTER/DEALER don't delegate to each other) |
+| `CapabilityRequirement` + coverage | If a channel/route declares `events.CapabilityRequirement`/`reqreply.CapabilityRequirement` values (renamed from `CapabilitySpec`; `reqreply`'s own package-local mirror, NOT imported from `events` — mirrors `stats.Disposition`'s placement), the adapter's `ServeSubscribers`/`Serve`/`AttachServer` (or equivalent bulk dispatch) calls `events.CheckCapabilityCoverage`/`reqreply.VerifyCapabilityCoverage` automatically — a caller should never have to remember to invoke it by hand. Returns `*events.CapabilityCoverageError`/`*reqreply.CapabilityCoverageError` (renamed from `MissingCapabilityError`), now value-aware via the optional `events.LeveledCapability`/`reqreply.LeveledCapability` interface. For reqreply specifically, verify the resolved QoS/Retained values are threaded through EVERY server-side reply publish path (success, error-pattern-matched, dead-letter), not just one — and, for zeromq, across ALL 4 real dispatch implementations (`serverTransport`/`routerServerTransport`/`clientTransport`/`dealerClientTransport` — REQ/REP and ROUTER/DEALER don't delegate to each other) |
 | `CapabilityObserver` reporting | Each capability actually exercised during dispatch reports once via `stats.CapabilityObserver.RecordCapabilityApplied` (guarded by a type assertion — never assume the configured `Observer` implements it) |
-| Handler Disposition wiring | An adapter with no acknowledgement concept still calls `middleware.EnsureDispositionBox`/`middleware.ResolveDisposition` around its dispatch loop (zero-cost when no handler ever calls `SetDisposition`) — proves the plumbing for a future ack-capable adapter without requiring one to exist yet. Report the resolved disposition via `stats.DispositionObserver.RecordDisposition` (guarded) |
+| Handler Disposition wiring | An adapter with no acknowledgement concept still calls `stats.EnsureDispositionBox`/`stats.ResolveDisposition` around its dispatch loop (zero-cost when no handler ever calls `SetDisposition`) — proves the plumbing for a future ack-capable adapter without requiring one to exist yet. Report the resolved disposition via `stats.DispositionObserver.RecordDisposition` (guarded) |
 
 ### Rules
 
@@ -739,7 +739,7 @@ inventing an ad-hoc option. See `docs/design/d-0006-protocol-native-capabilities
   flag the coexistence of both fields as duplication, and do not propose deprecating the legacy
   field (additive, not breaking, per D-0006's own explicit decision).
 - **Disposition is a DISTINCT axis from Capability — do not conflate them in a finding.**
-  `Capability` is declare-time, static configuration; `middleware.Disposition` is a handler's
+  `Capability` is declare-time, static configuration; `stats.Disposition` is a handler's
   per-message runtime outcome signal. A capability-shaped review finding that also touches
   Disposition should be split into two findings.
 - **`events.Address`/`events.TopicAddress` are standalone additive types, NOT a retrofit of
@@ -750,3 +750,29 @@ inventing an ad-hoc option. See `docs/design/d-0006-protocol-native-capabilities
   area if a NEW adapter reintroduces the exact rejected pattern (a bespoke, adapter-owned address
   type bypassing `events.Address` entirely, when `events.Address`/`events.TopicAddress` would have
   worked).
+
+## 16. Shared Cross-Pattern Mechanics Stay Under `internal/`
+
+Verify no new cross-pattern mechanics-only package is public when it should be `internal/`. See
+`docs/concepts/ports-and-adapters.md`'s "Guardrail: shared cross-pattern MECHANICS belong in
+`internal/`, not a public package" section and `docs/design/d-0009-internalize-shared-mechanics.md` for
+the shipped reference implementation (`internal/router`/`internal/route`/`internal/middleware`,
+each with `rest`/`events`/`reqreply`-side wrappers).
+
+| Check | Expected |
+|-------|----------|
+| New shared mechanic placement | A mechanism genuinely shared across 2+ of `api/rest`/`api/events`/`api/reqreply` (or a future `ports` pattern) that is pure dispatch/state-machine MECHANICS — not a single adapter's protocol IO — lives in a repo-root `internal/<name>` package, never a new public top-level one |
+| Per-pattern wrapper exists | Each consuming pattern package (`rest`/`events`/`reqreply`) exposes the internal package's vocabulary under its own name via a thin wrapper (type aliases + forwarding constructors) — a user of `api/*` never needs to import the `internal/` package directly |
+| Cross-pattern-shared VALUE types stay one alias | A type whose entire purpose is being attachable identically across multiple patterns is the SAME underlying type via alias in all 3 packages, not 3 independently-defined structs that happen to look similar (precedent: `rest.SharedMiddleware`/`events.SharedMiddleware`/`reqreply.SharedMiddleware`, since REMOVED entirely once zero real callers needing this were found — see `docs/design/d-0009-internalize-shared-mechanics.md` — "shared config, declared twice" is the surviving pattern) |
+| Public-interface exception respected | A pattern-agnostic concept referenced by a PUBLIC, user-implementable `stats.Observer` extension (e.g. `Disposition`, used by `stats.DispositionObserver`) is relocated to the package OWNING that interface (`stats`), not `internal/` — flag a NEW observer-interface method referencing an `internal/`-only type as a regression (external implementers could not spell the signature) |
+
+### Rules
+
+- **A genuinely new top-level public package whose only consumers are `api/rest`/`api/events`/
+  `api/reqreply` (or a future `ports` pattern) themselves — never an end user directly — is a
+  review finding**, not a style nitpick: propose relocating it under `internal/` with per-pattern
+  wrappers, citing the shipped `internal/router`/`internal/route`/`internal/middleware` precedent.
+- **Do not flag `internal/templatematch`/`adapters/internal/httpsecurity`/`api/internal` as
+  violations of this rule** — they already follow it (and `adapters/internal/httpsecurity` is
+  correctly scoped under `adapters/internal/`, not the repo-root `internal/`, since it is
+  net/http-family-only).

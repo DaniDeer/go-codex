@@ -3,7 +3,7 @@ package route_test
 import (
 	"testing"
 
-	"github.com/DaniDeer/go-codex/route"
+	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/schema"
 )
 

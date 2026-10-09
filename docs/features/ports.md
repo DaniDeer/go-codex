@@ -608,7 +608,7 @@ Supply your own `*Builder` via `PortOptions` to get full parity with a
 hand-registered route — global security and whole-path/topic format
 constraints become available, and the port's route/channel/tool accumulates
 directly into *your* spec document. Security SCHEMES themselves are declared
-on the `RESTPattern`'s own `Opts` via `rest.WithMiddleware(rest.FromSecurityScheme(...))`
+on the `RESTPattern`'s own `Opts` via `rest.WithMiddleware(rest.SecurityMiddleware[struct{}, struct{}](...))`
 (there is no builder-level scheme registry for REST — see
 [Security & Authentication](security.md)):
 
@@ -625,7 +625,7 @@ _, err := oeeTool.PluginRESTPattern(ports.RESTPattern{
     Method: "POST",
     Path:   "/oee/calc",
     Opts: []rest.RouteOpt{
-        rest.WithMiddleware(rest.FromSecurityScheme("bearerAuth", bearerAuth, nil)),
+        rest.WithMiddleware(rest.SecurityMiddleware[struct{}, struct{}]("bearerAuth", bearerAuth, nil)),
     },
 })
 if err != nil {
@@ -653,7 +653,7 @@ instead of a shared one).
 > `SecuritySchemes` map and `nil` `GlobalSecurity` — any `RouteMeta.Security`/
 > `Subscribe.Security`/`Publish.Security` requirement on a `Pattern`-based port was
 > silently unenforced (the credential check simply skips unknown scheme names).
-> For REST, declaring `rest.WithMiddleware(rest.FromSecurityScheme(...))` in
+> For REST, declaring `rest.WithMiddleware(rest.SecurityMiddleware[struct{}, struct{}](...))` in
 > the `RESTPattern`'s own `Opts` (no `Builder` needed for that part) plus
 > supplying a `Builder` with `AddGlobalSecurity` fixes this; for events,
 > supplying a `Builder` with `AddSecurityScheme`/`AddGlobalSecurity` fixes

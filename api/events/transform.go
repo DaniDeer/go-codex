@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/middleware"
+	"github.com/DaniDeer/go-codex/internal/middleware"
 )
 
 // MiddlewareHandler is the type-erased, RECEIVING-role (subscribe) runtime
@@ -64,7 +64,7 @@ type MiddlewareHandler struct {
 	// already recognizes a legacy [middleware.ServerImplementation].
 	Satisfies []string
 
-	// HasOut is true for EVERY handler built by [BoundSubscribeMiddleware.applyBoundSubscriber]
+	// HasOut is true for EVERY handler built by [BoundSubscribeMiddleware.ApplyBoundRoute]
 	// (its Fn ALWAYS returns (Out, error) — see that type's own doc
 	// comment) and false for a handler built by [Middleware.applyAgnosticSubscriber]
 	// (the reusable class's receiveFn has NO Out return at all — a
@@ -215,7 +215,7 @@ func satisfiesOf[In, Out any](mw Middleware[In, Out]) []string {
 
 // buildMiddlewareHandlerAny builds a type-erased [MiddlewareHandler] from a
 // concrete [Middleware][In, Out] and an UNTYPED fn — shared by
-// [BoundSubscribeMiddleware.applyBoundSubscriber] (channel-bound, passing
+// [BoundSubscribeMiddleware.ApplyBoundRoute] (channel-bound, passing
 // its own NAMED mw field) and [buildAgnosticMiddlewareHandler] (channel-
 // agnostic, passing mw.receiveFn): fn is already `any` on
 // [MiddlewareHandler.Fn] itself, so a single `any`-typed builder needs
@@ -246,7 +246,7 @@ func buildAgnosticMiddlewareHandler[In, Out any](mw Middleware[In, Out]) Middlew
 // buildClientMiddlewareHandlerAny builds a type-erased
 // [ClientMiddlewareHandler] from a concrete [Middleware][In, Out] and an
 // UNTYPED fn — the SENDING-role mirror of [buildMiddlewareHandlerAny],
-// shared by [BoundPublishMiddleware.applyBoundPublisher] (channel-bound)
+// shared by [BoundPublishMiddleware.ApplyBoundClientRoute] (channel-bound)
 // and [buildAgnosticClientMiddlewareHandler] (channel-agnostic, passing
 // mw.sendFn).
 func buildClientMiddlewareHandlerAny[In, Out any](mw Middleware[In, Out], fn any) ClientMiddlewareHandler {

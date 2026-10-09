@@ -13,9 +13,9 @@ import (
 	"github.com/DaniDeer/go-codex/api/internal"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/middleware"
+	"github.com/DaniDeer/go-codex/internal/middleware"
+	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/render/openapi"
-	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/schema"
 	"github.com/DaniDeer/go-codex/stats"
 )
@@ -322,12 +322,10 @@ type ErrorPatternResponse struct {
 // — it lets [ErrorPatternOpt.Match] extract the decoded typed payload via
 // [errors.As] WITHOUT `api/rest` importing the adapter package (which
 // would invert the module's layering). See
-// docs/design/d-0005-error-handling.md's Topic 6.
-type ErrorPatternValuer interface {
-	// ErrorPatternValue returns the decoded typed payload — the SAME
-	// value the adapter's own ErrorPatternResponse.Value field carries.
-	ErrorPatternValue() any
-}
+// docs/design/d-0005-error-handling.md's Topic 6. Defined in
+// error_pattern_client.go (a type alias to
+// [internal/middleware.ErrorPatternValuer], consolidated per
+// docs/design/d-0009-internalize-shared-mechanics.md's Phase 4).
 
 type errorPatternRule struct {
 	status int
@@ -689,7 +687,7 @@ type routeBuilder struct {
 	// [ErrorPattern]. Adapters may emit these directly before ErrorHandler.
 	errorPatternRules []errorPatternRule
 	// securitySchemes holds per-route security scheme declarations from
-	// [Route.Use] (via [middleware.SecurityScheme]/[FromSecurityScheme]) —
+	// [Route.Use] (via [SecurityMiddleware]) —
 	// the ONLY source of RouteHandle.SecuritySchemes; there is no
 	// builder-level equivalent. Consumed identically by [Route.Register]
 	// and [Route.ClientHandle].
@@ -821,7 +819,7 @@ type RouteHandle[Req, Resp any] struct {
 
 	// SecuritySchemes maps scheme name to SecurityScheme (with runtime Codec).
 	// Populated from the route's own [Route.Use] declarations (via
-	// [middleware.SecurityScheme]/[FromSecurityScheme]) — this is the ONLY
+	// [SecurityMiddleware]) — this is the ONLY
 	// way to declare a security scheme; there is no builder-level
 	// equivalent. Both [Route.Register] and
 	// [Route.ClientHandle] populate this field identically, so the SAME
@@ -2665,9 +2663,8 @@ func assertCookieAttrs[Resp any](raw []any) map[string]func(Resp) CookieAttribut
 // SecurityScheme combines [route.SecurityScheme] spec metadata with optional
 // runtime credential extraction and format validation.
 //
-// [middleware.SecurityScheme]/[FromSecurityScheme], attached via
-// [Route.Use], is the ONLY way to declare one; there is no builder-level
-// equivalent. The spec fields flow into the OpenAPI document (aggregated
+// [SecurityMiddleware], attached via [Route.Use], is the ONLY way to
+// declare one; there is no builder-level equivalent. The spec fields flow into the OpenAPI document (aggregated
 // from all registered routes by [Server.OpenAPISpec]); Codec, when
 // non-nil, is used by adapters to
 // validate the raw credential string before SecurityFunc is called
@@ -2699,7 +2696,7 @@ type SecurityScheme struct {
 //	    SecurityScheme: route.BearerScheme("JWT"),
 //	}.WithCodec(codex.String().Refine(validate.BearerToken))
 //
-// Pass the result to [FromSecurityScheme] to build a [middleware.Middleware],
+// Pass the result to [SecurityMiddleware] to build a [Middleware][In, Out],
 // attached via [Route.Use].
 func (s SecurityScheme) WithCodec(c codex.Codec[string]) SecurityScheme {
 	s.Codec = &c
@@ -2709,45 +2706,20 @@ func (s SecurityScheme) WithCodec(c codex.Codec[string]) SecurityScheme {
 // NOTE: WithSecurityScheme (the RouteOpt pairing RouteMeta.Security's
 // manual, non-empty state with a scheme's spec metadata) was REMOVED —
 // every route that wants an actual security requirement now goes through
-// [middleware.SecurityScheme] (building a [middleware.Middleware] from
-// scratch) or [FromSecurityScheme] (bridging an existing [SecurityScheme]
-// value), attached via [Route.Use]. RouteMeta.Security's OTHER two states
-// — nil (inherit global security) and []route.SecurityRequirement{}
-// (explicit opt-out) — are UNRELATED to scheme declaration and remain
-// unchanged. See docs/design/d-0001-rest-middleware-workflow-simplification.md's
+// [SecurityMiddleware], attached via [Route.Use]. RouteMeta.Security's
+// OTHER two states — nil (inherit global security) and
+// []route.SecurityRequirement{} (explicit opt-out) — are UNRELATED to
+// scheme declaration and remain unchanged. See
+// docs/design/d-0001-rest-middleware-workflow-simplification.md's
 // "Decision: eliminate manual per-route security declaration".
 
-// FromSecurityScheme bridges an existing [SecurityScheme] value (e.g. a
-// package-level var shared across several routes) into a real
-// [middleware.Middleware], usable with [Route.Use]/[Route.HandleMW]
-// exactly like one built via [middleware.SecurityScheme] directly.
-//
-// Lives in api/rest, NOT middleware — [SecurityScheme] (which bundles
-// [route.SecurityScheme] + an optional Codec) is an api/rest-only type;
-// middleware cannot import api/rest without a cycle (api/rest already
-// imports middleware for [middleware.Middleware]/etc.).
-//
-//	var bearerAuth = rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.
-//	    WithCodec(codex.String().Refine(validate.BearerToken))
-//
-//	var GetTagsRoute = rest.NewRoute[GetTagsReq, TagsList](
-//	    "GET", "/v2/{name}/tags/list",
-//	    c.Struct[GetTagsReq](), TagsListCodec,
-//	    rest.RouteMeta{OperationID: "getTags"},
-//	    rest.NewPathParam("name", ...),
-//	).Use(rest.FromSecurityScheme("bearerAuth", bearerAuth, nil))
-func FromSecurityScheme(schemeName string, scheme SecurityScheme, scopes []string) middleware.Middleware {
-	return middleware.SecurityScheme(schemeName, scheme.SecurityScheme, scopes, scheme.Codec)
-}
-
-// SecurityMiddleware is [FromSecurityScheme]'s codec-backed-family
-// equivalent — builds a [Middleware][In, Out] carrying ONLY a
-// [middleware.SecurityDeclaration]. Attached EXCLUSIVELY via plain
-// .Use(...) (paired with [Middleware.WithReceive]/[Middleware.WithSend]
-// for the reusable class) — NEVER via [Route.HandleMW]/[Route.ClientMW],
-// which reject any codec-backed value outright (see
-// [MiddlewareMisattachedError]). For the route/channel-BOUND
-// counterpart, see [BoundSecurityMiddleware]/[Route.HandleBoundMW]
+// SecurityMiddleware builds a [Middleware][In, Out] carrying ONLY a
+// [SecurityDeclaration]. Attached EXCLUSIVELY via plain .Use(...) (paired
+// with [Middleware.WithReceive]/[Middleware.WithSend] for the reusable
+// class) — NEVER via [Route.HandleMW]/[Route.ClientMW], which reject any
+// codec-backed value outright (see [MiddlewareMisattachedError]). For
+// the route/channel-BOUND counterpart, see
+// [BoundSecurityMiddleware]/[Route.HandleBoundMW]
 // instead (docs/design/d-0003-codec-declared-middlewares.md's Addendum 7). Part of the
 // middleware-consolidation effort
 // (docs/design/d-0003-codec-declared-middlewares.md) folding Security
@@ -4757,12 +4729,11 @@ func (s SSERoute[Req, Event]) registerHandle(b *Server) (*SSERouteHandle[Req, Ev
 // be present in components/schemas (a dangling $ref).
 //
 // components.securitySchemes is aggregated from every registered route's own
-// security declarations (via [Route.Use]/[middleware.SecurityScheme]/
-// [FromSecurityScheme] — there is no builder-level security scheme
-// store) — when two routes declare the same scheme name with different values,
-// the LAST-registered route wins, with no error; define the scheme once as a
-// shared package-level value (see [FromSecurityScheme]'s example) to avoid
-// relying on this.
+// security declarations (via [Route.Use]/[SecurityMiddleware] — there is
+// no builder-level security scheme store) — when two routes declare the
+// same scheme name with different values, the LAST-registered route
+// wins, with no error; define the scheme once as a shared package-level
+// value (see [SecurityMiddleware]'s example) to avoid relying on this.
 func (b *Server) OpenAPISpec() (openapi.Document, error) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()

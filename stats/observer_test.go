@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/middleware"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -1038,10 +1037,10 @@ func TestNewFanout_CapabilityObserver_OnlyToImplementors(t *testing.T) {
 
 type fanoutDispSpy struct {
 	fanoutSpy
-	dispositions []middleware.Disposition
+	dispositions []stats.Disposition
 }
 
-func (s *fanoutDispSpy) RecordDisposition(_ string, d middleware.Disposition) {
+func (s *fanoutDispSpy) RecordDisposition(_ string, d stats.Disposition) {
 	s.dispositions = append(s.dispositions, d)
 }
 
@@ -1053,8 +1052,8 @@ func TestNewFanout_DispositionObserver_OnlyToImplementors(t *testing.T) {
 	if !ok {
 		t.Fatal("fanout must implement DispositionObserver")
 	}
-	do.RecordDisposition("sensors/x", middleware.DispositionNackRequeue)
-	if len(disp.dispositions) != 1 || disp.dispositions[0] != middleware.DispositionNackRequeue {
+	do.RecordDisposition("sensors/x", stats.DispositionNackRequeue)
+	if len(disp.dispositions) != 1 || disp.dispositions[0] != stats.DispositionNackRequeue {
 		t.Errorf("DispositionObserver not delegated: %v", disp.dispositions)
 	}
 }

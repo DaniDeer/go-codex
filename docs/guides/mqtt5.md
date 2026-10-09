@@ -403,7 +403,7 @@ security-shaped Fn via `Subscriber.SubscribeMW` for runtime authentication
 ```go
 scheme := route.SecurityScheme{Type: "http", Scheme: "bearer"}
 sub := contract.ReadingsChannel.WithSubscribe(events.Subscribe{}).
-    SubscribeMW(events.FromSecurityScheme("bearerAuth", scheme, nil),
+    SubscribeMW(events.SecurityMiddleware[struct{}, struct{}]("bearerAuth", scheme, nil),
         func(ctx context.Context, msg *paho.Publish, r *SensorReading) (map[string][]string, error) {
             for _, p := range msg.Properties.User {
                 if p.Key == "Authorization" {

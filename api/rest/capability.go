@@ -25,7 +25,7 @@ import (
 // route level — the REST-side counterpart of [events.CapabilityRequirement]/
 // [reqreply.CapabilityRequirement]. Own type, in its own package,
 // deliberately NOT shared with api/events/api/reqreply (mirrors
-// [middleware.Disposition]'s own D-0004 placement precedent — cheap to
+// [stats.Disposition]'s own D-0004 placement precedent — cheap to
 // duplicate, avoids an api/rest → api/events import that would otherwise
 // exist for no other reason than this one small struct).
 //

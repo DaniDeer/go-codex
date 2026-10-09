@@ -6,8 +6,8 @@ import (
 	"slices"
 
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/middleware"
-	"github.com/DaniDeer/go-codex/route"
+	"github.com/DaniDeer/go-codex/internal/middleware"
+	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/schema"
 )
 
@@ -97,16 +97,15 @@ func (o handleMWOpt) applyRoute(rb *routeBuilder) {
 	rb.impls = append(rb.impls, o.impl)
 }
 
-func buildServerImplementation(mw middleware.RouteMiddleware, fn any) middleware.ServerImplementation {
-	if sc, ok := mw.(middleware.SecurityCarrier); ok {
-		if sec := sc.SecurityDeclaration(); sec != nil {
-			return middleware.ServerImplementation{
-				Name:      "implement:" + sec.SchemeName,
-				Satisfies: []string{sec.SchemeName},
-				Fn:        fn,
-			}
-		}
-	}
+// buildServerImplementation always builds a GENERAL-PURPOSE
+// [middleware.ServerImplementation] (Satisfies empty) — mw is only ever
+// non-Security-carrying by the time this runs: the earlier
+// [routeMiddlewareContributor] check in [Route.HandleMW] already
+// intercepts the one type ([Middleware][In, Out]) that can carry a
+// Security declaration, routing it to [MiddlewareMisattachedError]
+// instead. A Security-carrying scheme is PAIRED exclusively via
+// [Route.HandleBoundMW]/[BoundSecurityMiddleware] now.
+func buildServerImplementation(fn any) middleware.ServerImplementation {
 	return middleware.ServerImplementation{Name: "implement:general", Fn: fn}
 }
 
@@ -124,12 +123,11 @@ func buildServerImplementation(mw middleware.RouteMiddleware, fn any) middleware
 // [MiddlewareMisattachedError] — those attach ONLY via plain .Use() and
 // [Route.HandleBoundMW] respectively, never HandleMW; see
 // docs/design/d-0003-codec-declared-middlewares.md's Addendum 7):
-//   - a legacy [middleware.Middleware] (or nil): UNPAIRED/PAIRED exactly
-//     as before — fn is matched against a PREVIOUSLY-.Use()'d security
-//     declaration when mw.Security != nil (mw being the SAME
-//     middleware.Middleware value, not a re-typed string), else
-//     UNPAIRED/general-purpose — fn runs unconditionally, nothing to
-//     satisfy.
+//   - nil (or any other non-codec-backed value): always GENERAL-PURPOSE —
+//     fn runs unconditionally, nothing to satisfy. A Security scheme is
+//     declared and PAIRED exclusively via [Route.HandleBoundMW] +
+//     [BoundSecurityMiddleware] now — HandleMW never carries a Security
+//     declaration.
 //
 // fn is deliberately untyped (any) — resolved by the attached adapter
 // (e.g. mqtt5's `NewServerTransport`) via a type-switch/reflection, mirroring
@@ -140,29 +138,8 @@ func (r Route[Req, Resp]) HandleMW(mw middleware.RouteMiddleware, fn any) Route[
 		r.opts = append(slices.Clone(r.opts), misattachedOpt{route: r.topic, name: v.MiddlewareName()})
 		return r
 	}
-	if sc, ok := mw.(middleware.SecurityCarrier); ok {
-		if sec := sc.SecurityDeclaration(); sec != nil {
-			r.opts = append(slices.Clone(r.opts), legacySecurityMWOpt{route: r.topic, name: sec.SchemeName, op: "HandleMW"})
-			return r
-		}
-	}
-	r.opts = append(slices.Clone(r.opts), handleMWOpt{impl: buildServerImplementation(mw, fn)})
+	r.opts = append(slices.Clone(r.opts), handleMWOpt{impl: buildServerImplementation(fn)})
 	return r
-}
-
-// legacySecurityMWOpt stashes a [LegacySecurityMWRemovedError] onto rb
-// when a Security-carrying legacy [middleware.Middleware] is passed to
-// [Route.HandleMW]/[Route.ClientMW] — see that error's doc comment.
-type legacySecurityMWOpt struct {
-	route string
-	name  string
-	op    string
-}
-
-func (o legacySecurityMWOpt) applyRoute(rb *routeBuilder) {
-	if rb.buildErr == nil {
-		rb.buildErr = LegacySecurityMWRemovedError{Route: o.route, Name: o.name, Op: o.op}
-	}
 }
 
 // misattachedOpt stashes a [MiddlewareMisattachedError] onto rb when a
@@ -197,27 +174,20 @@ func (o clientMWOpt) applyRoute(rb *routeBuilder) {
 // REJECTION of a codec-backed [Middleware][In, Out] or
 // [BoundClientMiddleware][Req, In, Out] (via [MiddlewareMisattachedError]
 // — those attach ONLY via plain .Use() and [Route.ClientBoundMW]
-// respectively, never ClientMW). mw is NILABLE with the SAME derivation
-// rule: non-nil with Security set PAIRS fn against a previously-.Use()'d
-// declaration (Satisfies gates which implementations the attached
-// [ClientTransport] runs, vs. the route's declared security
-// requirements); nil (or Security nil) leaves Satisfies empty —
-// general-purpose, always runs.
+// respectively, never ClientMW). mw is otherwise always GENERAL-PURPOSE —
+// Satisfies always empty, fn always runs unconditionally. A Security
+// scheme is supplied exclusively via [Route.ClientBoundMW] +
+// [BoundSecurityClientMiddleware] now — ClientMW never carries a Security
+// declaration.
 //
 // Name includes a per-route attachment-order index (e.g.
-// "fulfill:bearerAuth#1") so that TWO ClientMW calls attached for the
-// SAME scheme on the SAME route still get DISTINCT Names — mirrors
-// [rest.Route.ClientMW]'s identical rationale.
+// "fulfill:general#1") so that TWO ClientMW calls attached on the SAME
+// route still get DISTINCT Names — mirrors [rest.Route.ClientMW]'s
+// identical rationale.
 func (r Route[Req, Resp]) ClientMW(mw middleware.RouteMiddleware, fn any) Route[Req, Resp] {
 	if v, ok := mw.(routeMiddlewareContributor); ok {
 		r.opts = append(slices.Clone(r.opts), misattachedOpt{route: r.topic, name: v.MiddlewareName()})
 		return r
-	}
-	if sc, ok := mw.(middleware.SecurityCarrier); ok {
-		if sec := sc.SecurityDeclaration(); sec != nil {
-			r.opts = append(slices.Clone(r.opts), legacySecurityMWOpt{route: r.topic, name: sec.SchemeName, op: "ClientMW"})
-			return r
-		}
 	}
 	idx := 0
 	for _, o := range r.opts {
@@ -225,16 +195,7 @@ func (r Route[Req, Resp]) ClientMW(mw middleware.RouteMiddleware, fn any) Route[
 			idx++
 		}
 	}
-	impl := middleware.ClientImplementation{Fn: fn}
-	if sc, ok := mw.(middleware.SecurityCarrier); ok {
-		if sec := sc.SecurityDeclaration(); sec != nil {
-			impl.Name = fmt.Sprintf("fulfill:%s#%d", sec.SchemeName, idx)
-			impl.Satisfies = []string{sec.SchemeName}
-		}
-	}
-	if impl.Name == "" {
-		impl.Name = fmt.Sprintf("fulfill:general#%d", idx)
-	}
+	impl := middleware.ClientImplementation{Fn: fn, Name: fmt.Sprintf("fulfill:general#%d", idx)}
 	r.opts = append(slices.Clone(r.opts), clientMWOpt{impl: impl})
 	return r
 }
@@ -558,7 +519,7 @@ func checkImplementationsDeclared(routeLabel string, mws []middleware.Middleware
 // [middleware.ServerImplementation] in impls (the legacy raw-adapter-Fn
 // path) whose Satisfies names it, OR a [MiddlewareHandler] in handlers
 // (populated by BOTH `.Use()`, the reusable class, AND `HandleBoundMW`,
-// the bound class — see [BoundMiddleware.applyBoundRoute]) whose own
+// the bound class — see [BoundMiddleware.ApplyBoundRoute]) whose own
 // Satisfies names it — otherwise the route would enforce nothing at
 // runtime despite declaring a scheme in its spec. Returns
 // [MissingSecurityMiddlewareError] on the first uncovered scheme found.

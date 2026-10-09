@@ -46,7 +46,7 @@ registration, requires a handler):
 ```go
 handle, err := sensorMeasurement.
     WithSubscribe(events.Subscribe{OperationID: "receiveMeasurement"}).
-    Use(events.FromSecurityScheme("apiKey", scheme, nil)).
+    Use(events.SecurityMiddleware[struct{}, struct{}]("apiKey", scheme, nil)).
     Handle(client)
 ```
 

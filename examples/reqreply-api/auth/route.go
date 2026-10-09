@@ -6,8 +6,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/routes"
-	"github.com/DaniDeer/go-codex/middleware"
-	"github.com/DaniDeer/go-codex/route"
 )
 
 // ── GrantedScopes + ContextField demo (docs/design/d-0007-declarative-   ──
@@ -36,7 +34,7 @@ import (
 type GrantedScopesAuthIn struct{}
 
 // GrantedScopesAuthOut carries the conventional GrantedScopes
-// map[string][]string field, merged into the SAME middleware.CheckScopes
+// map[string][]string field, merged into the SAME reqreply.CheckScopes
 // call every Security attachment uses, PLUS a genuine, non-GrantedScopes
 // response field (Subject) — proving the convention doesn't foreclose
 // real response data on the SAME Out value.
@@ -45,7 +43,7 @@ type GrantedScopesAuthOut struct {
 	Subject       string
 }
 
-// GrantedScopesUserIDField is a middleware.ContextField[string] — the
+// GrantedScopesUserIDField is a reqreply.ContextField[string] — the
 // authenticated identity published by NewGrantedScopesComputeMw's paired
 // HandleMW Fn (VerifyBearerGS) and consumed by MakeComputeGSHandler via
 // Get(ctx), with ZERO manual re-decoding (docs/design/
@@ -55,7 +53,7 @@ type GrantedScopesAuthOut struct {
 // GrantedScopesAuthIn's own doc comment); reqreply's full duplex symmetry
 // means Out works as the propagation source just as well, unlike events'
 // Subscribe-only asymmetry.
-var GrantedScopesUserIDField = middleware.NewContextField(codex.String())
+var GrantedScopesUserIDField = reqreply.NewContextField(codex.String())
 
 // NewGrantedScopesComputeMw builds the "bearerAuthGS" BOUND scheme,
 // requiring "compute:write" — fn is supplied as a PARAMETER (not baked in
@@ -64,7 +62,7 @@ var GrantedScopesUserIDField = middleware.NewContextField(codex.String())
 func NewGrantedScopesComputeMw(fn func(ctx context.Context, req *ComputeGSReq, in GrantedScopesAuthIn) (GrantedScopesAuthOut, error)) reqreply.BoundMiddleware[ComputeGSReq, GrantedScopesAuthIn, GrantedScopesAuthOut] {
 	return reqreply.BoundSecurityMiddleware[ComputeGSReq, GrantedScopesAuthIn, GrantedScopesAuthOut](
 		"bearerAuthGS",
-		reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, []string{"compute:write"},
+		reqreply.BearerScheme("JWT"), []string{"compute:write"},
 		fn,
 	).SetContextFieldFromOut(GrantedScopesUserIDField, func(out GrantedScopesAuthOut) any { return out.Subject })
 }

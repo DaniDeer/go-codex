@@ -6,9 +6,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/routes"
-	"github.com/DaniDeer/go-codex/middleware"
-	"github.com/DaniDeer/go-codex/route"
 )
 
 // VerifyBearer is BearerAuthMw's reusable-class WithReceive Fn —
@@ -80,7 +79,7 @@ func VerifyOAuth2Scopes(token string) (map[string][]string, error) {
 // above — mirrors VerifyBearer (mqtt5-shaped) in spirit, but demonstrates
 // the shared-helper factoring VerifyBearer's own (deliberately simple,
 // unconditional-grant) demo didn't need. Returns a GrantedScopes-carrying
-// OAuthOut, merged into the SAME middleware.CheckScopes call every
+// OAuthOut, merged into the SAME reqreply.CheckScopes call every
 // Security attachment uses (see reqreply.BoundSecurityMiddleware's own
 // godoc for the convention).
 func VerifyOAuthComputeZeroMQ(_ context.Context, req *routes.OAuthComputeReq, _ struct{}) (OAuthOut, error) {
@@ -88,7 +87,7 @@ func VerifyOAuthComputeZeroMQ(_ context.Context, req *routes.OAuthComputeReq, _ 
 	if err != nil {
 		return OAuthOut{}, err
 	}
-	if err := middleware.CheckScopes([]route.SecurityRequirement{{"oauth2Compute": {OAuthComputeWriteScope}}}, scopes); err != nil {
+	if err := reqreply.CheckScopes([]reqreply.SecurityRequirement{{"oauth2Compute": {OAuthComputeWriteScope}}}, scopes); err != nil {
 		return OAuthOut{}, err
 	}
 	return OAuthOut{GrantedScopes: scopes}, nil

@@ -17,7 +17,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/route"
+	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/schema"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -971,12 +971,12 @@ func TestSecurityScheme_WithCodec_returnsDistinctCopy(t *testing.T) {
 	}
 }
 
-func TestFromSecurityScheme_Register_PopulatesSecuritySchemes(t *testing.T) {
+func TestSecurityMiddleware_Register_PopulatesSecuritySchemes(t *testing.T) {
 	b := rest.NewServer(testInfo)
 	c := codex.String().Refine(validate.NonEmptyString)
 
 	handle, err := rest.NewRoute[createReq, userResp]("GET", "/secure", createReqCodec, userCodec,
-		rest.WithMiddleware(rest.FromSecurityScheme("bearer", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(c), nil)),
+		rest.WithMiddleware(rest.SecurityMiddleware[struct{}, struct{}]("bearer", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(c), nil)),
 	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
@@ -989,15 +989,15 @@ func TestFromSecurityScheme_Register_PopulatesSecuritySchemes(t *testing.T) {
 	}
 }
 
-func TestFromSecurityScheme_ClientHandle_PopulatesSecuritySchemes(t *testing.T) {
+func TestSecurityMiddleware_ClientHandle_PopulatesSecuritySchemes(t *testing.T) {
 	c := codex.String().Refine(validate.NonEmptyString)
 
 	handle := rest.NewRoute[createReq, userResp]("GET", "/secure", createReqCodec, userCodec,
-		rest.WithMiddleware(rest.FromSecurityScheme("bearer", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(c), nil)),
+		rest.WithMiddleware(rest.SecurityMiddleware[struct{}, struct{}]("bearer", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(c), nil)),
 	).ClientHandle()
 
 	if _, ok := handle.SecuritySchemes["bearer"]; !ok {
-		t.Fatal("expected ClientHandle to populate SecuritySchemes from route-level FromSecurityScheme, with NO Server involved")
+		t.Fatal("expected ClientHandle to populate SecuritySchemes from route-level SecurityMiddleware, with NO Server involved")
 	}
 	if handle.SecuritySchemes["bearer"].Codec == nil {
 		t.Fatal("expected Codec to be propagated to the client RouteHandle")
@@ -1008,13 +1008,13 @@ func TestOpenAPISpec_AggregatesSecuritySchemesFromRoutes(t *testing.T) {
 	b := rest.NewServer(testInfo)
 
 	_, err := rest.NewRoute[createReq, userResp]("GET", "/secure-a", createReqCodec, userCodec,
-		rest.WithMiddleware(rest.FromSecurityScheme("bearer", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil)),
+		rest.WithMiddleware(rest.SecurityMiddleware[struct{}, struct{}]("bearer", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil)),
 	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register /secure-a: %v", err)
 	}
 	_, err = rest.NewRoute[createReq, userResp]("GET", "/secure-b", createReqCodec, userCodec,
-		rest.WithMiddleware(rest.FromSecurityScheme("apiKey", rest.SecurityScheme{SecurityScheme: route.APIKeyScheme("X-API-Key", "header")}, nil)),
+		rest.WithMiddleware(rest.SecurityMiddleware[struct{}, struct{}]("apiKey", rest.SecurityScheme{SecurityScheme: route.APIKeyScheme("X-API-Key", "header")}, nil)),
 	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("Register /secure-b: %v", err)
@@ -1042,7 +1042,7 @@ func TestBuilder_AddGlobalSecurity_appearsInOpenAPISpec(t *testing.T) {
 
 	b.AddGlobalSecurity(route.Require("bearer"))
 	_, err := rest.NewRoute[createReq, userResp]("GET", "/secure", createReqCodec, userCodec,
-		rest.WithMiddleware(rest.FromSecurityScheme("bearer", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil)),
+		rest.WithMiddleware(rest.SecurityMiddleware[struct{}, struct{}]("bearer", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil)),
 	).RegisterHandle(b)
 	if err != nil {
 		t.Fatalf("AddRoute: %v", err)
@@ -1226,7 +1226,7 @@ func TestSSERouteHandle_GlobalSecurity_populated(t *testing.T) {
 
 	h, err := rest.NewSSERoute[createReq, sseEvent]("/stream",
 		createReqCodec, sseEventCodec,
-		rest.WithMiddleware(rest.FromSecurityScheme("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil)),
+		rest.WithMiddleware(rest.SecurityMiddleware[struct{}, struct{}]("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil)),
 	).RegisterHandle(b)
 	if err != nil {
 		t.Fatal(err)

@@ -9,8 +9,8 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/middleware"
-	"github.com/DaniDeer/go-codex/route"
+	"github.com/DaniDeer/go-codex/internal/middleware"
+	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -1350,23 +1350,23 @@ func TestAttachClient_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
 // but had ZERO dedicated tests for it).
 type mockDispositionObserver struct {
 	stats.NoopObserver
-	dispositions []middleware.Disposition
+	dispositions []stats.Disposition
 }
 
-func (o *mockDispositionObserver) RecordDisposition(_ string, d middleware.Disposition) {
+func (o *mockDispositionObserver) RecordDisposition(_ string, d stats.Disposition) {
 	o.dispositions = append(o.dispositions, d)
 }
 
 // TestAttachServer_Disposition_ExplicitSignalResolvedAndObserved confirms
-// a handler's middleware.SetDisposition call is resolved via
-// middleware.ResolveDisposition and reported via
+// a handler's stats.SetDisposition call is resolved via
+// stats.ResolveDisposition and reported via
 // stats.DispositionObserver, end-to-end through AttachServer's real
 // REQ/REP dispatch path — mirrors mqtt5's identical test.
 func TestAttachServer_Disposition_ExplicitSignalResolvedAndObserved(t *testing.T) {
 	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	obs := &mockDispositionObserver{}
 	handler := func(ctx context.Context, req computeReq) (computeResp, error) {
-		middleware.SetDisposition(ctx, middleware.DispositionNackRequeue)
+		stats.SetDisposition(ctx, stats.DispositionNackRequeue)
 		return computeResp{Sum: req.X + req.Y}, nil
 	}
 	route := reqreply.NewRoute[computeReq, computeResp](
@@ -1409,14 +1409,14 @@ func TestAttachServer_Disposition_ExplicitSignalResolvedAndObserved(t *testing.T
 		t.Fatal("Serve did not return after ctx cancellation")
 	}
 
-	if len(obs.dispositions) != 1 || obs.dispositions[0] != middleware.DispositionNackRequeue {
+	if len(obs.dispositions) != 1 || obs.dispositions[0] != stats.DispositionNackRequeue {
 		t.Errorf("want [DispositionNackRequeue], got %v", obs.dispositions)
 	}
 }
 
 // TestAttachServer_Disposition_DefaultFallback_NilError confirms a
 // handler that never calls SetDisposition resolves to
-// middleware.DispositionAck on success — mirrors mqtt5's identical test.
+// stats.DispositionAck on success — mirrors mqtt5's identical test.
 func TestAttachServer_Disposition_DefaultFallback_NilError(t *testing.T) {
 	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	obs := &mockDispositionObserver{}
@@ -1463,7 +1463,7 @@ func TestAttachServer_Disposition_DefaultFallback_NilError(t *testing.T) {
 		t.Fatal("Serve did not return after ctx cancellation")
 	}
 
-	if len(obs.dispositions) != 1 || obs.dispositions[0] != middleware.DispositionAck {
+	if len(obs.dispositions) != 1 || obs.dispositions[0] != stats.DispositionAck {
 		t.Errorf("want [DispositionAck], got %v", obs.dispositions)
 	}
 }

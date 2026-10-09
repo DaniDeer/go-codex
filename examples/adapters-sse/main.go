@@ -53,7 +53,6 @@ import (
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/ports"
-	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -386,7 +385,7 @@ func main() {
 	//     REJECTING an unauthenticated request.
 	bearerTokenCodec := codex.String().Refine(validate.BearerToken)
 	const demoBearerToken = "demo-secret-token"
-	securedMw := rest.SecurityMiddleware[authIn, authOut]("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT"), Codec: &bearerTokenCodec}, nil).
+	securedMw := rest.SecurityMiddleware[authIn, authOut]("bearerAuth", rest.BearerScheme("JWT").WithCodec(bearerTokenCodec), nil).
 		WithRequestHeader(rest.NewRequiredHeaderParam("Authorization", codex.String(),
 			func(in authIn) string { return in.Authorization },
 			func(in *authIn, v string) { in.Authorization = v },

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/DaniDeer/go-codex/api/reqreply"
-	"github.com/DaniDeer/go-codex/route"
+	"github.com/DaniDeer/go-codex/internal/route"
 )
 
 // ── shared routes/security for Server/Client tests ──────────────────────────

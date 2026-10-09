@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/middleware"
-	"github.com/DaniDeer/go-codex/route"
+	"github.com/DaniDeer/go-codex/internal/middleware"
+	"github.com/DaniDeer/go-codex/internal/route"
 )
 
 type fakeCapabilityWithName struct{}
@@ -200,7 +200,7 @@ func TestHeaderParamNames_IncludesMiddlewareDeclaredHeader(t *testing.T) {
 func TestRequiredParamKinds_ScansPlainParamsAndSecuritySchemeIn(t *testing.T) {
 	rt := NewRoute[capTestReq, capTestResp]("GET", "/cap/scopes", capTestReqCodec, capTestRespCodec,
 		QueryParam{Name: "q"},
-	).Use(FromSecurityScheme("apiKeyCookie", SecurityScheme{SecurityScheme: route.APIKeyScheme("X-Session", "cookie")}, nil))
+	).Use(SecurityMiddleware[struct{}, struct{}]("apiKeyCookie", SecurityScheme{SecurityScheme: route.APIKeyScheme("X-Session", "cookie")}, nil))
 	handle := rt.ClientHandle()
 	kinds := RequiredParamKinds(handle.HeaderParamNames(), handle.CookieParamNames(), handle.QueryParamNames(), handle.SecuritySchemes)
 	if !kinds["Query"] {

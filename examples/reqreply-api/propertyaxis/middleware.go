@@ -17,7 +17,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/routes"
-	"github.com/DaniDeer/go-codex/middleware"
 )
 
 // TenantIn/TenantAck are the property-axis Middleware's own In/Out types
@@ -72,7 +71,7 @@ var TenantAckCodec = codex.Struct[TenantAck](
 // get a valid response, with TenantIn.TenantID left at its zero value.
 func NewTenantPropertyMw(fn func(ctx context.Context, req *routes.ComputeReq, in TenantIn) (TenantAck, error)) reqreply.BoundMiddleware[routes.ComputeReq, TenantIn, TenantAck] {
 	return reqreply.NewBoundMiddleware[routes.ComputeReq](
-		middleware.NewDeclaration("tenant-property-axis", TenantInCodec, TenantAckCodec),
+		reqreply.NewDeclaration("tenant-property-axis", TenantInCodec, TenantAckCodec),
 		fn,
 	).
 		WithRequestProperty(reqreply.NewOptionalPropertyParam("X-Tenant-Id", codex.String(),

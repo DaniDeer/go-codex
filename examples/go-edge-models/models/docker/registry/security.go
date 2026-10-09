@@ -4,7 +4,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	c "github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/internal/registry"
-	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -41,9 +40,7 @@ const BearerAuthSchemeName = "bearerAuth"
 // (internal.BearerTokenCodec) already constructs that header value — this
 // catches an empty token specifically, which the encode-side codec alone
 // does not.
-var BearerAuthScheme = rest.SecurityScheme{
-	SecurityScheme: route.BearerScheme(""),
-}.WithCodec(c.String().Refine(validate.NonEmptyString))
+var BearerAuthScheme = rest.BearerScheme("").WithCodec(c.String().Refine(validate.NonEmptyString))
 
 // BearerCredential is the codec-declared merge-field carrier for
 // GetTagsRoute/GetManifestRoute's bearerAuth credential — docs/roadmap/

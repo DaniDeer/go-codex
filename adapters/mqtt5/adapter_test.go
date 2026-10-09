@@ -16,8 +16,8 @@ import (
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/middleware"
-	"github.com/DaniDeer/go-codex/route"
+	"github.com/DaniDeer/go-codex/internal/middleware"
+	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/validate"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 )
@@ -265,7 +265,7 @@ func newSecuredSubscribeChannelHandle() *events.ChannelHandle[sensorReading] {
 	mw := events.BoundSecuritySubscribeMiddleware[sensorReading, subSecIn, subSecOut](
 		"bearer", securedBearerScheme, nil, noopImpl,
 	)
-	// events.FromSecurityScheme (the legacy, spec-only Security
+	// events.SecurityMiddleware (the declare-only, spec-only Security
 	// declaration) is STILL attached via .Use() here — unlike reqreply's
 	// Bound mechanism, events' SubscribeBoundMW does not itself populate
 	// [events.ChannelHandle.SecuritySchemes] (the source mqtt5's own
@@ -274,10 +274,10 @@ func newSecuredSubscribeChannelHandle() *events.ChannelHandle[sensorReading] {
 	// CheckCoverage's actual implementation. This is still legal: only
 	// PAIRING a Security-carrying mw with SubscribeMW/PublishMW is
 	// rejected now, not a bare .Use() declaration.
-	legacyMw := events.FromSecurityScheme("bearer", securedBearerScheme, nil)
+	declMw := events.SecurityMiddleware[struct{}, struct{}]("bearer", securedBearerScheme, nil)
 	h, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
 		WithSubscribe(events.Subscribe{Summary: "test", Security: []route.SecurityRequirement{route.Require("bearer")}}).
-		Use(legacyMw).
+		Use(declMw).
 		SubscribeBoundMW(mw).
 		Handle(b)
 	if err != nil {
@@ -599,7 +599,7 @@ func TestSubscribe_SecurityImpl_StillRunsAfterBuiltInCheck_OnValidCredential(t *
 	fnCalled := false
 
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	legacyMw := events.FromSecurityScheme("bearer", securedBearerScheme, nil)
+	declMw := events.SecurityMiddleware[struct{}, struct{}]("bearer", securedBearerScheme, nil)
 	impl := func(_ context.Context, _ *sensorReading, _ subSecIn) (subSecOut, error) {
 		implCalled = true
 		return subSecOut{GrantedScopes: map[string][]string{"bearer": {}}}, nil
@@ -609,7 +609,7 @@ func TestSubscribe_SecurityImpl_StillRunsAfterBuiltInCheck_OnValidCredential(t *
 	)
 	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
 		WithSubscribe(events.Subscribe{Summary: "test", Security: []route.SecurityRequirement{route.Require("bearer")}}).
-		Use(legacyMw).
+		Use(declMw).
 		SubscribeBoundMW(mw).
 		Handle(b)
 	if err != nil {
@@ -978,13 +978,13 @@ func TestPublish_SecurityImpl_ValidFormat_Passes(t *testing.T) {
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
 
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	legacyMw := events.FromSecurityScheme("bearer", securedBearerScheme, nil)
+	declMw := events.SecurityMiddleware[struct{}, struct{}]("bearer", securedBearerScheme, nil)
 	mw := pubSecBoundMw(func(context.Context, sensorReading) (pubSecOut, error) {
 		return pubSecOut{GrantedScopes: map[string][]string{"bearer": {}}, Authorization: "x"}, nil
 	})
 	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
 		WithPublish(events.Publish{Summary: "test", Security: []route.SecurityRequirement{route.Require("bearer")}}).
-		Use(legacyMw).
+		Use(declMw).
 		PublishBoundMW(mw).
 		Handle(b)
 	if err != nil {
@@ -1015,14 +1015,14 @@ func TestPublish_SecurityImpl_MalformedFormat_ReturnsSecurityCredentialError(t *
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
 
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	legacyMw := events.FromSecurityScheme("bearer", securedBearerScheme, nil)
+	declMw := events.SecurityMiddleware[struct{}, struct{}]("bearer", securedBearerScheme, nil)
 	mw := pubSecBoundMw(func(context.Context, sensorReading) (pubSecOut, error) {
 		// Empty credential value -> fails the non-empty-string Codec.
 		return pubSecOut{GrantedScopes: map[string][]string{"bearer": {}}, Authorization: ""}, nil
 	})
 	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
 		WithPublish(events.Publish{Summary: "test", Security: []route.SecurityRequirement{route.Require("bearer")}}).
-		Use(legacyMw).
+		Use(declMw).
 		PublishBoundMW(mw).
 		Handle(b)
 	if err != nil {
@@ -1058,13 +1058,13 @@ func TestPublish_SecurityImpl_ReturnsNilProperties_SkipsValidation(t *testing.T)
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
 
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	legacyMw := events.FromSecurityScheme("bearer", securedBearerScheme, nil)
+	declMw := events.SecurityMiddleware[struct{}, struct{}]("bearer", securedBearerScheme, nil)
 	mw := pubSecBoundMwOmitEmpty(func(context.Context, sensorReading) (pubSecOut, error) {
 		return pubSecOut{GrantedScopes: map[string][]string{"bearer": {}}}, nil
 	})
 	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
 		WithPublish(events.Publish{Summary: "test", Security: []route.SecurityRequirement{route.Require("bearer")}}).
-		Use(legacyMw).
+		Use(declMw).
 		PublishBoundMW(mw).
 		Handle(b)
 	if err != nil {

@@ -8,7 +8,7 @@ import (
 	"slices"
 
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/middleware"
+	"github.com/DaniDeer/go-codex/internal/middleware"
 )
 
 // BoundMiddleware is the route/channel-BOUND counterpart to [Middleware] —
@@ -41,7 +41,7 @@ import (
 // INTERNAL LAYOUT — a NAMED field, not an embedded one, by design: mw
 // holds a [Middleware][Req, In, Out]-shaped merge-field/Declaration value
 // giving BoundMiddleware the EXACT SAME merge-field vocabulary as
-// [Middleware] for free, letting [BoundMiddleware.applyBoundRoute] call
+// [Middleware] for free, letting [BoundMiddleware.ApplyBoundRoute] call
 // the EXISTING [buildMiddlewareHandlerAny]/[boundSpecContributionOf]
 // helpers UNCHANGED, passing mw. Using a NAMED field (never anonymous/
 // embedded) is DELIBERATE: Go promotes ALL methods of an embedded field,
@@ -168,23 +168,26 @@ func (m BoundMiddleware[Req, In, Out]) SetContextFieldFromOut(field middleware.C
 // by [Route.HandleBoundMW]'s error-message enrichment.
 func (m BoundMiddleware[Req, In, Out]) MiddlewareName() string { return m.mw.MiddlewareName() }
 
-// applyBoundRoute satisfies [boundContributor][Req] — BoundMiddleware's
-// ONLY attach path. Calls the EXISTING, UNCHANGED
+// ApplyBoundRoute satisfies [middleware.BoundContributor][Req] —
+// BoundMiddleware's ONLY attach path. Calls the EXISTING, UNCHANGED
 // buildMiddlewareHandlerAny/boundSpecContributionOf helpers with the
 // named mw field, exactly as the (now-removed) reflection-detected bound
 // case used to, back when `Middleware[In,Out]` itself carried this
-// method (see docs/design/d-0003-codec-declared-middlewares.md's Addendum 7).
-func (m BoundMiddleware[Req, In, Out]) applyBoundRoute(rb *routeBuilder) {
-	rb.middlewareHandlers = append(rb.middlewareHandlers, buildMiddlewareHandlerAny(m.mw, m.fn))
-	rb.middlewareSpecContributions = append(rb.middlewareSpecContributions, boundSpecContributionOf(m.mw))
+// method (see docs/design/d-0003-codec-declared-middlewares.md's Addendum 7). rb is the
+// narrow [middleware.BoundRouteBuilder] interface (docs/roadmap/
+// shared-api-layer-mechanics.md's Phase 2) — [*routeBuilder] implements
+// it below.
+func (m BoundMiddleware[Req, In, Out]) ApplyBoundRoute(rb middleware.BoundRouteBuilder) {
+	rb.AppendMiddlewareHandler(buildMiddlewareHandlerAny(m.mw, m.fn))
+	rb.AppendSpecContribution(boundSpecContributionOf(m.mw))
 	if sec := m.mw.SecurityDeclaration(); sec != nil {
-		rb.middlewares = append(rb.middlewares, middleware.Middleware{Name: m.mw.MiddlewareName(), Security: sec})
+		rb.AppendSecurityDeclaration(m.mw.MiddlewareName(), sec)
 	}
 }
 
-// boundReqWitness satisfies [boundContributor]'s type-level witness —
-// never called; see that interface's doc comment.
-func (m BoundMiddleware[Req, In, Out]) boundReqWitness(Req) {}
+// BoundReqWitness satisfies [middleware.BoundContributor]'s type-level
+// witness — never called; see that interface's doc comment.
+func (m BoundMiddleware[Req, In, Out]) BoundReqWitness(Req) {}
 
 // BoundClientMiddleware is [BoundMiddleware]'s SENDING-role sibling,
 // attached via [Route.ClientBoundMW]/[SSERoute.ClientBoundMW]. Fn shape
@@ -300,50 +303,52 @@ func (m BoundClientMiddleware[Req, In, Out]) SetContextFieldFromOut(field middle
 // MiddlewareName mirrors [BoundMiddleware.MiddlewareName].
 func (m BoundClientMiddleware[Req, In, Out]) MiddlewareName() string { return m.mw.MiddlewareName() }
 
-// applyBoundClientRoute satisfies [boundClientContributor][Req] —
-// BoundClientMiddleware's ONLY attach path.
-func (m BoundClientMiddleware[Req, In, Out]) applyBoundClientRoute(rb *routeBuilder) {
-	rb.clientMiddlewareHandlers = append(rb.clientMiddlewareHandlers, buildClientMiddlewareHandlerAny(m.mw, m.fn))
-	rb.middlewareSpecContributions = append(rb.middlewareSpecContributions, boundSpecContributionOf(m.mw))
+// ApplyBoundClientRoute satisfies [middleware.BoundClientContributor][Req]
+// — BoundClientMiddleware's ONLY attach path.
+func (m BoundClientMiddleware[Req, In, Out]) ApplyBoundClientRoute(rb middleware.BoundRouteBuilder) {
+	rb.AppendClientMiddlewareHandler(buildClientMiddlewareHandlerAny(m.mw, m.fn))
+	rb.AppendSpecContribution(boundSpecContributionOf(m.mw))
 	if sec := m.mw.SecurityDeclaration(); sec != nil {
-		rb.middlewares = append(rb.middlewares, middleware.Middleware{Name: m.mw.MiddlewareName(), Security: sec})
+		rb.AppendSecurityDeclaration(m.mw.MiddlewareName(), sec)
 	}
 }
 
-// boundReqWitness satisfies [boundClientContributor]'s type-level
-// witness — never called; see that interface's doc comment.
-func (m BoundClientMiddleware[Req, In, Out]) boundReqWitness(Req) {}
+// BoundReqWitness satisfies [middleware.BoundClientContributor]'s
+// type-level witness — never called; see that interface's doc comment.
+func (m BoundClientMiddleware[Req, In, Out]) BoundReqWitness(Req) {}
 
-// boundContributor is Req-parameterized — [BoundMiddleware][Req, ...]
-// satisfies it FOR ITS OWN Req only. Go's own generic interface
-// satisfaction does the matching; no Fn-shape reflection anywhere.
-//
-// boundReqWitness is a DELIBERATE, never-called no-op method whose SOLE
-// purpose is making Req appear in a method SIGNATURE — without it,
-// applyBoundRoute's signature (func(rb *routeBuilder)) never mentions Req
-// at all, so EVERY BoundMiddleware[X,...] would satisfy
-// boundContributor[Y] for ANY X, Y (a real bug caught only by an actual
-// mismatch test — see TestHandleBoundMW_ReqMismatch_ReturnsTypedError).
-// The witness forces Go's interface satisfaction to actually discriminate
-// on Req.
-type boundContributor[Req any] interface {
-	applyBoundRoute(rb *routeBuilder)
-	boundReqWitness(Req)
+// boundContributor/boundClientContributor/boundNamed are internal
+// aliases for the shared, EXPORTED [middleware.BoundContributor]/
+// [middleware.BoundClientContributor]/[middleware.BoundNamed] —
+// consolidated per docs/design/d-0009-internalize-shared-mechanics.md's Phase 2
+// (kept under their pre-consolidation unexported names so every existing
+// call site in this file keeps compiling unchanged). [BoundMiddleware]/
+// [BoundClientMiddleware] satisfy them for their own Req only — Go's own
+// generic interface satisfaction does the matching; no Fn-shape
+// reflection anywhere. See [middleware.BoundContributor]'s own doc
+// comment for the BoundReqWitness discriminator-trick rationale.
+type boundContributor[Req any] = middleware.BoundContributor[Req]
+type boundClientContributor[Req any] = middleware.BoundClientContributor[Req]
+type boundNamed = middleware.BoundNamed
+
+// routeBuilder's 4 [middleware.BoundRouteBuilder] methods — one-line
+// appends to its EXISTING internal slices, unchanged from what
+// ApplyBoundRoute/ApplyBoundClientRoute did inline before this
+// consolidation.
+func (rb *routeBuilder) AppendMiddlewareHandler(h any) {
+	rb.middlewareHandlers = append(rb.middlewareHandlers, h.(MiddlewareHandler))
 }
 
-// boundClientContributor is [boundContributor]'s sending-role mirror —
-// [BoundClientMiddleware][Req, ...] satisfies it for its own Req only.
-type boundClientContributor[Req any] interface {
-	applyBoundClientRoute(rb *routeBuilder)
-	boundReqWitness(Req)
+func (rb *routeBuilder) AppendClientMiddlewareHandler(h any) {
+	rb.clientMiddlewareHandlers = append(rb.clientMiddlewareHandlers, h.(ClientMiddlewareHandler))
 }
 
-// boundNamed is a Req-FREE interface a bound middleware's name can be
-// extracted through even when it's the WRONG Req (so
-// [BoundMiddlewareReqMismatchError]'s message can still name the
-// middleware, when possible).
-type boundNamed interface {
-	MiddlewareName() string
+func (rb *routeBuilder) AppendSpecContribution(c any) {
+	rb.middlewareSpecContributions = append(rb.middlewareSpecContributions, c.(middlewareSpecContribution))
+}
+
+func (rb *routeBuilder) AppendSecurityDeclaration(name string, sec *middleware.SecurityDeclaration) {
+	rb.middlewares = append(rb.middlewares, middleware.Middleware{Name: name, Security: sec})
 }
 
 // boundHandleMWOpt is the [RouteOpt] returned by [Route.HandleBoundMW]/
@@ -365,7 +370,7 @@ type boundNamed interface {
 // actively-used feature, not an obscure corner).
 type boundHandleMWOpt struct {
 	name string
-	fn   func(rb *routeBuilder)
+	fn   func(rb middleware.BoundRouteBuilder)
 }
 
 func (o boundHandleMWOpt) applyRoute(rb *routeBuilder) { o.fn(rb) }
@@ -374,7 +379,7 @@ func (o boundHandleMWOpt) applyRoute(rb *routeBuilder) { o.fn(rb) }
 // role — see that type's doc comment for why name is captured here.
 type boundClientAttachOpt struct {
 	name string
-	fn   func(rb *routeBuilder)
+	fn   func(rb middleware.BoundRouteBuilder)
 }
 
 func (o boundClientAttachOpt) applyRoute(rb *routeBuilder) { o.fn(rb) }
@@ -382,13 +387,11 @@ func (o boundClientAttachOpt) applyRoute(rb *routeBuilder) { o.fn(rb) }
 // boundNameOf extracts bm's name via the Req-free [boundNamed] interface,
 // returning "" when bm doesn't implement it — used at HandleBoundMW/
 // ClientBoundMW construction time to populate boundHandleMWOpt/
-// boundClientAttachOpt's own name field.
-func boundNameOf(bm any) string {
-	if n, ok := bm.(boundNamed); ok {
-		return n.MiddlewareName()
-	}
-	return ""
-}
+// boundClientAttachOpt's own name field. Forwards to the shared
+// [middleware.BoundNameOf] (docs/design/d-0009-internalize-shared-mechanics.md's
+// Phase 2) — kept as a thin, same-named local wrapper so every existing
+// call site in this file keeps compiling unchanged.
+func boundNameOf(bm any) string { return middleware.BoundNameOf(bm) }
 
 // boundMismatchOpt is the [RouteOpt] returned by [Route.HandleBoundMW]/
 // [ClientBoundMW] when bm's concrete Req did NOT match the route's own
@@ -428,7 +431,7 @@ func (o boundMismatchOpt) applyRoute(rb *routeBuilder) {
 // mis-dispatched.
 func (r Route[Req, Resp]) HandleBoundMW(bm any) Route[Req, Resp] {
 	if v, ok := bm.(boundContributor[Req]); ok {
-		r.opts = append(slices.Clone(r.opts), boundHandleMWOpt{name: boundNameOf(bm), fn: v.applyBoundRoute})
+		r.opts = append(slices.Clone(r.opts), boundHandleMWOpt{name: boundNameOf(bm), fn: v.ApplyBoundRoute})
 		return r
 	}
 	r.opts = append(slices.Clone(r.opts), boundMismatchOpt{route: r.path, got: bm})
@@ -438,7 +441,7 @@ func (r Route[Req, Resp]) HandleBoundMW(bm any) Route[Req, Resp] {
 // HandleBoundMW is [SSERoute]'s equivalent of [Route.HandleBoundMW].
 func (s SSERoute[Req, Event]) HandleBoundMW(bm any) SSERoute[Req, Event] {
 	if v, ok := bm.(boundContributor[Req]); ok {
-		s.opts = append(slices.Clone(s.opts), boundHandleMWOpt{name: boundNameOf(bm), fn: v.applyBoundRoute})
+		s.opts = append(slices.Clone(s.opts), boundHandleMWOpt{name: boundNameOf(bm), fn: v.ApplyBoundRoute})
 		return s
 	}
 	s.opts = append(slices.Clone(s.opts), boundMismatchOpt{route: s.path, got: bm})
@@ -450,7 +453,7 @@ func (s SSERoute[Req, Event]) HandleBoundMW(bm any) SSERoute[Req, Event] {
 // [Route.HandleBoundMW] for the sending role.
 func (r Route[Req, Resp]) ClientBoundMW(bm any) Route[Req, Resp] {
 	if v, ok := bm.(boundClientContributor[Req]); ok {
-		r.opts = append(slices.Clone(r.opts), boundClientAttachOpt{name: boundNameOf(bm), fn: v.applyBoundClientRoute})
+		r.opts = append(slices.Clone(r.opts), boundClientAttachOpt{name: boundNameOf(bm), fn: v.ApplyBoundClientRoute})
 		return r
 	}
 	r.opts = append(slices.Clone(r.opts), boundMismatchOpt{route: r.path, got: bm})
@@ -460,7 +463,7 @@ func (r Route[Req, Resp]) ClientBoundMW(bm any) Route[Req, Resp] {
 // ClientBoundMW is [SSERoute]'s equivalent of [Route.ClientBoundMW].
 func (s SSERoute[Req, Event]) ClientBoundMW(bm any) SSERoute[Req, Event] {
 	if v, ok := bm.(boundClientContributor[Req]); ok {
-		s.opts = append(slices.Clone(s.opts), boundClientAttachOpt{name: boundNameOf(bm), fn: v.applyBoundClientRoute})
+		s.opts = append(slices.Clone(s.opts), boundClientAttachOpt{name: boundNameOf(bm), fn: v.ApplyBoundClientRoute})
 		return s
 	}
 	s.opts = append(slices.Clone(s.opts), boundMismatchOpt{route: s.path, got: bm})
@@ -546,70 +549,6 @@ func (e MiddlewareMisattachedError) Error() string {
 
 // LogValue implements [slog.LogValuer] for structured logging.
 func (e MiddlewareMisattachedError) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("route", e.Route),
-		slog.String("name", e.Name),
-	)
-}
-
-// LegacySecurityClientMWRemovedError is returned (via rb.buildErr) when a
-// legacy [middleware.Middleware] carrying a Security declaration (built
-// via [middleware.SecurityScheme]/[FromSecurityScheme]) is passed to
-// [Route.ClientMW]/[SSERoute.ClientMW] — the legacy client-side
-// credential-SUPPLYING mechanism this error retires for good (a review
-// round's finding: it could only naturally express HEADER-location
-// credentials, had no client-side codec-format validation path reaching
-// it for the bound mechanism, and its "empty return means no credential
-// needed" convention made genuine gaps structurally indistinguishable
-// from intentional opt-outs). Supply a security credential via
-// [Route.ClientBoundMW] + [BoundSecurityClientMiddleware] instead — it
-// embeds the SAME Security declaration directly (no separate .Use() call
-// needed) and correctly expresses header/cookie/query-location
-// credentials alike via WithRequestHeader/WithRequestCookie/
-// WithRequestQuery. ClientMW's GENERAL-PURPOSE (non-security) use is
-// UNCHANGED — this error fires only for a Security-carrying mw.
-type LegacySecurityClientMWRemovedError struct {
-	Route string
-	Name  string
-}
-
-func (e LegacySecurityClientMWRemovedError) Error() string {
-	return fmt.Sprintf("api/rest: route %q: middleware %q: a Security-carrying middleware.Middleware can no longer be attached via ClientMW — use ClientBoundMW with BoundSecurityClientMiddleware instead", e.Route, e.Name)
-}
-
-// LogValue implements [slog.LogValuer] for structured logging.
-func (e LegacySecurityClientMWRemovedError) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("route", e.Route),
-		slog.String("name", e.Name),
-	)
-}
-
-// LegacySecurityHandleMWRemovedError is [LegacySecurityClientMWRemovedError]'s
-// SERVER-side mirror — returned (via rb.buildErr) when a legacy
-// [middleware.Middleware] carrying a Security declaration (built via
-// [middleware.SecurityScheme]/[FromSecurityScheme]) is passed to
-// [Route.HandleMW]/[SSERoute.HandleMW]. Retired per
-// docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8: a full-repo search
-// found zero uses of this mechanism's one distinguishing feature — a
-// single declared scheme shared, by VALUE, across REST/events/reqreply
-// — so security-scheme declaration is now a concrete, per-api-layer
-// concern exclusively. Declare and implement a SERVER-side security
-// scheme via [Route.HandleBoundMW] + [BoundSecurityMiddleware] instead —
-// it embeds the Security declaration directly (no separate .Use() call
-// needed). HandleMW's GENERAL-PURPOSE (non-security) use is UNCHANGED —
-// this error fires only for a Security-carrying mw.
-type LegacySecurityHandleMWRemovedError struct {
-	Route string
-	Name  string
-}
-
-func (e LegacySecurityHandleMWRemovedError) Error() string {
-	return fmt.Sprintf("api/rest: route %q: middleware %q: a Security-carrying middleware.Middleware can no longer be attached via HandleMW — use HandleBoundMW with BoundSecurityMiddleware instead", e.Route, e.Name)
-}
-
-// LogValue implements [slog.LogValuer] for structured logging.
-func (e LegacySecurityHandleMWRemovedError) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.String("route", e.Route),
 		slog.String("name", e.Name),

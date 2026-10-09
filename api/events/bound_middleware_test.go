@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/DaniDeer/go-codex/api/events"
-	"github.com/DaniDeer/go-codex/middleware"
+	"github.com/DaniDeer/go-codex/internal/middleware"
 )
 
 // ── docs/design/d-0003-codec-declared-middlewares.md's Addendum 7: BoundSubscribeMiddleware[T,
@@ -248,7 +248,7 @@ func TestPublishMW_PlainMiddleware_ReturnsTypedError(t *testing.T) {
 }
 
 // TestSubscribeBoundMWPlusPublishBoundMW_SameScheme_IndependentValues_NoConflict
-// confirms [BoundSubscribeMiddleware.applyBoundSubscriber]'s own doc
+// confirms [BoundSubscribeMiddleware.ApplyBoundRoute]'s own doc
 // comment claim: a Security-carrying BoundSubscribeMiddleware (subscribe)
 // and a BoundPublishMiddleware (publish) for the SAME scheme name are
 // attached to INDEPENDENT [Subscriber]/[Publisher] values to begin with

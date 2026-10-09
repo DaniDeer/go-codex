@@ -9,7 +9,7 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/middleware"
+	"github.com/DaniDeer/go-codex/internal/middleware"
 )
 
 // ── fixtures ─────────────────────────────────────────────────────────────
@@ -721,5 +721,32 @@ func TestRouter_Tags_RoutesEquivalentToWalk(t *testing.T) {
 	routes := rt.Routes()
 	if len(walked[0].Tags) != len(routes[0].Tags) || walked[0].Tags[0] != routes[0].Tags[0] {
 		t.Errorf("Walk and Routes disagree on Tags: %v vs %v", walked[0].Tags, routes[0].Tags)
+	}
+}
+
+// TestSubscriberPublisher_ImplementMethodReporter is the events-side
+// positive-case regression test for
+// docs/design/d-0009-internalize-shared-mechanics.md's Phase 1 Design Decision #4
+// (the RouterEntry Method/Role/neither mismatch): Subscriber/Publisher
+// DO have a role concept (subscribe/publish) and must report it via
+// RouteMethod(), confirming RouterEntry.Role is populated from a real
+// MethodReporter implementation, not a coincidence.
+func TestSubscriberPublisher_ImplementMethodReporter(t *testing.T) {
+	sub := newRouterTestSubscriber("a")
+	reporter, ok := any(sub).(interface{ RouteMethod() string })
+	if !ok {
+		t.Fatalf("events.Subscriber does not implement RouteMethod() string (MethodReporter)")
+	}
+	if got := reporter.RouteMethod(); got != "subscribe" {
+		t.Errorf("Subscriber.RouteMethod() = %q, want %q", got, "subscribe")
+	}
+
+	pub := newRouterTestPublisher("b")
+	reporter, ok = any(pub).(interface{ RouteMethod() string })
+	if !ok {
+		t.Fatalf("events.Publisher does not implement RouteMethod() string (MethodReporter)")
+	}
+	if got := reporter.RouteMethod(); got != "publish" {
+		t.Errorf("Publisher.RouteMethod() = %q, want %q", got, "publish")
 	}
 }

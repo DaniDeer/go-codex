@@ -17,13 +17,11 @@ import (
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/examples/events-api/routes"
-	"github.com/DaniDeer/go-codex/middleware"
-	"github.com/DaniDeer/go-codex/route"
 )
 
 // ── "apiKeyAuth" scheme ───────────────────────────────────────────────────
 //
-// Declared once — referenced via events.FromSecurityScheme + Subscriber/
+// Declared once — referenced via events.SecurityMiddleware + Subscriber/
 // Publisher.Use on any channel that needs it. The Codec field is omitted
 // (nil): none of the 3 pub/sub adapters can extract a credential purely
 // from message metadata in a protocol-agnostic way (mqtt v3 has none at
@@ -31,9 +29,7 @@ import (
 // adapter-specific extraction mechanisms), so codec-level FORMAT
 // validation of the extracted credential happens per-adapter instead (see
 // handler.go).
-var APIKeyAuth = events.SecurityScheme{
-	SecurityScheme: route.APIKeyScheme("X-API-Key", "header"),
-}
+var APIKeyAuth = events.APIKeyScheme("X-API-Key", "header")
 
 // APIKeyAuthIn is NewAPIKeyAuthMW's credential vocabulary — decoded from
 // whatever transport-specific channel each adapter-specific attachment
@@ -57,11 +53,11 @@ type APIKeyAuthOut struct {
 // WithReceive]) a first migration pass of this demo used.
 //
 // Why: every adapter's runtime scope-enforcement path
-// (middleware.CheckScopes, invoked unconditionally whenever a channel
+// (events.CheckScopes, invoked unconditionally whenever a channel
 // declares Subscribe.Security — see adapters/mqtt5/adapter.go,
 // adapters/mqtt/adapter.go, adapters/zeromq/adapter.go) requires the
 // scheme name to be present as a KEY in the merged `granted` map — even
-// when, as here, zero specific scopes are required (route.Satisfied
+// when, as here, zero specific scopes are required (events.Satisfied
 // still checks presence before checking an empty want-scopes list is
 // trivially satisfied). Only a HasOut-true dispatch handler can populate
 // that key (via adapters/internal/scopesmerge.MergeHandlerGrants reading
@@ -73,7 +69,7 @@ type APIKeyAuthOut struct {
 // asymmetry). A reusable-class Security attachment can therefore only
 // ever be used for an UNPAIRED (no declared Subscribe.Security) general-
 // purpose presence check — never to satisfy a DECLARED requirement like
-// SensorDataSub's own `Security: []route.SecurityRequirement{route.
+// SensorDataSub's own `Security: []events.SecurityRequirement{events.
 // Require("apiKeyAuth")}`, confirmed via an actual end-to-end run
 // regression during this migration (see docs/design/
 // d-0003-codec-declared-middlewares.md's Addendum 7).
@@ -107,20 +103,20 @@ func NewAPIKeyAuthMW(fn func(ctx context.Context, msg *routes.SensorReading, in 
 type AuthIn struct{ Key string }
 
 // AuthOut carries the conventional GrantedScopes map[string][]string
-// field, merged into the SAME middleware.CheckScopes call the legacy
+// field, merged into the SAME events.CheckScopes call the legacy
 // SubscribeMW path above already uses.
 type AuthOut struct {
 	GrantedScopes map[string][]string
 }
 
-// GrantedScopesUserIDField is a middleware.ContextField[string] — the
+// GrantedScopesUserIDField is a events.ContextField[string] — the
 // authenticated API key published by GrantedScopesSensorMw's paired
 // SubscribeMW Fn and consumed by the real subscribe handler via Get(ctx),
 // with ZERO manual re-decoding (docs/design/
 // d-0007-declarative-middleware-layering.md's Phase 3). Subscribe has no
 // reply/Out direction of its own, so only SetContextFieldFromIn is
 // meaningful here — the asymmetry events' own design doc documents.
-var GrantedScopesUserIDField = middleware.NewContextField(codex.String())
+var GrantedScopesUserIDField = events.NewContextField(codex.String())
 
 // NewGrantedScopesSensorMw builds the channel-BOUND "apiKeyGS" security
 // middleware for GrantedScopesSub — via
@@ -131,7 +127,7 @@ var GrantedScopesUserIDField = middleware.NewContextField(codex.String())
 // VerifyAPIKeyGS, handler.go).
 func NewGrantedScopesSensorMw(fn func(ctx context.Context, msg *routes.SensorReading, in AuthIn) (AuthOut, error)) events.BoundSubscribeMiddleware[routes.SensorReading, AuthIn, AuthOut] {
 	return events.BoundSecuritySubscribeMiddleware[routes.SensorReading, AuthIn, AuthOut]("apiKeyGS",
-		events.SecurityScheme{SecurityScheme: route.APIKeyScheme("X-API-Key", "header")}, []string{"read:sensors"},
+		events.APIKeyScheme("X-API-Key", "header"), []string{"read:sensors"},
 		fn,
 	).WithSubscribeProperty(events.NewPropertyParam("X-API-Key", codex.String(),
 		func(in AuthIn) string { return in.Key },

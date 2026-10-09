@@ -12,9 +12,9 @@ import (
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/middleware"
+	"github.com/DaniDeer/go-codex/internal/middleware"
+	"github.com/DaniDeer/go-codex/internal/route"
 	asyncapiv3 "github.com/DaniDeer/go-codex/render/asyncapi/v3"
-	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -2273,15 +2273,15 @@ func TestPublisherHandle_unconditionalValidation_mergeFieldTypeMismatch_nilClien
 	}
 }
 
-// ── FromSecurityScheme / ConflictingSecurityDeclarationError /
+// ── SecurityMiddleware / ConflictingSecurityDeclarationError /
 // CheckCoverage (Phase 2) ───────────────
 
-func TestFromSecurityScheme_producesUsableMiddleware(t *testing.T) {
+func TestSecurityMiddleware_producesUsableMiddleware(t *testing.T) {
 	scheme := events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}
-	mw := events.FromSecurityScheme("bearerAuth", scheme, []string{"subscribe:sensors"})
+	mw := events.SecurityMiddleware[struct{}, struct{}]("bearerAuth", scheme, []string{"subscribe:sensors"})
 
 	if mw.Security == nil {
-		t.Fatal("expected FromSecurityScheme to produce a middleware.Middleware with non-nil Security")
+		t.Fatal("expected SecurityMiddleware to produce a Middleware[In,Out] with non-nil Security")
 	}
 	if mw.Security.SchemeName != "bearerAuth" {
 		t.Errorf("SchemeName = %q, want %q", mw.Security.SchemeName, "bearerAuth")
@@ -2306,20 +2306,20 @@ func TestFromSecurityScheme_producesUsableMiddleware(t *testing.T) {
 	}
 }
 
-func TestFromSecurityScheme_Publisher_populatesSecuritySchemes_noCoverageCheck(t *testing.T) {
+func TestSecurityMiddleware_Publisher_populatesSecuritySchemes_noCoverageCheck(t *testing.T) {
 	// Publisher.Handle never runs CheckCoverage — a declared scheme with no
 	// implementation must NOT error on the publish side.
 	scheme := events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}
 	pub := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithPublish(events.Publish{}).
-		Use(events.FromSecurityScheme("bearerAuth", scheme, []string{"publish:sensors"}))
+		Use(events.SecurityMiddleware[struct{}, struct{}]("bearerAuth", scheme, []string{"publish:sensors"}))
 
 	handle, err := pub.Handle(nil)
 	if err != nil {
 		t.Fatalf("Publisher.Handle: %v", err)
 	}
 	if _, ok := handle.SecuritySchemes["bearerAuth"]; !ok {
-		t.Fatal("expected SecuritySchemes to be populated from .Use(FromSecurityScheme(...))")
+		t.Fatal("expected SecuritySchemes to be populated from .Use(SecurityMiddleware(...))")
 	}
 }
 
@@ -2329,7 +2329,7 @@ func TestSubscriberHandle_ConflictingSecurityDeclaration_manualVsMiddleware(t *t
 		WithSubscribe(events.Subscribe{
 			Security: []route.SecurityRequirement{route.Require("bearerAuth", "read:manual")},
 		}).
-		Use(events.FromSecurityScheme("bearerAuth", scheme, []string{"read:middleware"}))
+		Use(events.SecurityMiddleware[struct{}, struct{}]("bearerAuth", scheme, []string{"read:middleware"}))
 
 	_, err := sub.Handle(nil)
 	var conflictErr events.ConflictingSecurityDeclarationError
@@ -2349,8 +2349,8 @@ func TestPublisherHandle_ConflictingSecurityDeclaration_middlewareVsMiddleware(t
 	pub := events.NewChannel[userEvent]("user/published", userEventCodec).
 		WithPublish(events.Publish{}).
 		Use(
-			events.FromSecurityScheme("bearerAuth", schemeA, []string{"write:a"}),
-			events.FromSecurityScheme("bearerAuth", schemeA, []string{"write:b"}),
+			events.SecurityMiddleware[struct{}, struct{}]("bearerAuth", schemeA, []string{"write:a"}),
+			events.SecurityMiddleware[struct{}, struct{}]("bearerAuth", schemeA, []string{"write:b"}),
 		)
 
 	_, err := pub.Handle(nil)
@@ -2747,8 +2747,9 @@ func TestSubscriberServer_InterfaceCompliance(t *testing.T) {
 
 // TestSubscribeMW_paired_derivesSatisfiesFromSecurity migrated to the
 // Bound mechanism per docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8 —
-// SubscribeMW now rejects a Security-carrying mw outright
-// ([LegacySecurityMWRemovedError]); SubscribeBoundMW +
+// SubscribeMW's legacy Security-pairing path (and the error it once
+// returned) have since been retired entirely
+// (docs/design/d-0009-internalize-shared-mechanics.md); SubscribeBoundMW +
 // BoundSecuritySubscribeMiddleware is the one remaining way to
 // declare+implement a security scheme, fusing both into one call.
 func TestSubscribeMW_paired_derivesSatisfiesFromSecurity(t *testing.T) {
@@ -2780,7 +2781,9 @@ func TestSubscribeMW_paired_derivesSatisfiesFromSecurity(t *testing.T) {
 // legacy SubscribeMW/PublishMW security-pairing path) were ALL REMOVED
 // per docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8 — SubscribeMW/
 // PublishMW now reject a Security-carrying mw before ever reaching
-// checkImplementationsDeclared (see [events.LegacySecurityMWRemovedError]).
+// checkImplementationsDeclared — that legacy pairing path (and the error
+// it once returned) have since been retired entirely
+// (docs/design/d-0009-internalize-shared-mechanics.md).
 // This failure mode is structurally IMPOSSIBLE for the replacement,
 // [Subscriber.SubscribeBoundMW]/[Publisher.PublishBoundMW] +
 // [BoundSecuritySubscribeMiddleware]/[BoundSecurityPublishMiddleware]: the
@@ -2849,7 +2852,7 @@ func TestSubscribeMW_doesNotMutateOriginal(t *testing.T) {
 // TestPublishMW_paired_derivesSatisfiesFromSecurity migrated to the Bound
 // mechanism per docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8 —
 // PublishMW now rejects a Security-carrying mw outright
-// ([LegacySecurityMWRemovedError]); PublishBoundMW +
+// (retired entirely, docs/design/d-0009-internalize-shared-mechanics.md); PublishBoundMW +
 // BoundSecurityPublishMiddleware is the one remaining way to
 // declare+implement a security scheme on the publish/sending role.
 func TestPublishMW_paired_derivesSatisfiesFromSecurity(t *testing.T) {
@@ -2991,7 +2994,7 @@ func TestCheckCoverage_passes_withBoundSubscribeMW(t *testing.T) {
 // time (MiddlewareHandlers IS populated) — a spec/documentation-accuracy
 // bug: the published AsyncAPI document would silently omit a security
 // requirement the channel actually enforces. Fixed by making
-// [events.BoundSubscribeMiddleware]'s applyBoundSubscriber also append to
+// [events.BoundSubscribeMiddleware]'s ApplyBoundRoute also append to
 // the Subscriber's own mws (mirrors [rest.BoundMiddleware.applyBoundRoute]/
 // [reqreply.BoundMiddleware.applyBoundRoute]'s existing, equivalent line).
 func TestSubscribeBoundMW_populatesDescriptorSecurity(t *testing.T) {
@@ -3027,7 +3030,7 @@ func TestSubscribeBoundMW_populatesDescriptorSecurity(t *testing.T) {
 
 // TestPublishBoundMW_populatesDescriptorSecurity is
 // TestSubscribeBoundMW_populatesDescriptorSecurity's publish/sending-role
-// mirror — same bug, same fix, applied to applyBoundPublisher/p.mws.
+// mirror — same bug, same fix, applied to ApplyBoundClientRoute/p.mws.
 func TestPublishBoundMW_populatesDescriptorSecurity(t *testing.T) {
 	bm := events.BoundSecurityPublishMiddleware[userEvent, mdTestIn, mdTestOut]("bearerAuth",
 		events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, []string{"publish:sensors"},

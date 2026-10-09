@@ -20,8 +20,7 @@ import "github.com/DaniDeer/go-codex/codex"
 // api/rest (rest.FromHeaderParam/FromCookieParam/FromQueryParam/
 // FromResponseHeaderParam/FromResponseCookieParam) wrap an EXISTING
 // rest.XParam value into the matching spec type, for callers that already
-// have one (mirrors [SecurityScheme]/FromSecurityScheme's own "build from
-// scratch" vs. "bridge an existing value" split).
+// have one (mirrors [SecurityScheme]'s own "build from scratch" role).
 type HeaderParamSpec struct {
 	Name, Description string
 	Required          bool

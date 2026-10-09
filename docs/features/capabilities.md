@@ -271,7 +271,7 @@ requirements against the capabilities actually supplied.
 has its OWN, byte-for-byte-identical-in-shape `CapabilityRequirement`/
 `CheckCapabilityCoverage`/`CapabilityCoverageError`/
 `VerifyCapabilityCoverage`/`LeveledCapability` types, mirroring
-`middleware.Disposition`'s own D-0004 placement precedent (cheap to
+`stats.Disposition`'s own D-0004 placement precedent (cheap to
 duplicate a small struct + a handful of functions, rather than introduce
 a cross-API import for it). The GENERIC helpers
 `events.ResolveCapabilityValue`/`events.RecordCapabilityApplied` ARE
@@ -403,7 +403,7 @@ carry it — decides whether something becomes a sealed, adapter-owned
   Addendum 3: presence-only params fully folded in; Security
   permanently stays on its own dedicated type.)
 - **`api/reqreply`** ALSO shares **Handler Disposition**
-  (`middleware.Disposition`/`SetDisposition`/`ResolveDisposition`) with
+  (`stats.Disposition`/`SetDisposition`/`ResolveDisposition`) with
   `api/events` — Disposition lives in `middleware`, not `api/events`,
   specifically so `api/reqreply` can reuse it with no `api/events`
   dependency. Unlike Disposition, `reqreply.CapabilityRequirement` and

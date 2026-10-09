@@ -14,8 +14,6 @@ import (
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/handlers"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/propertyaxis"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/routes"
-	"github.com/DaniDeer/go-codex/middleware"
-	"github.com/DaniDeer/go-codex/route"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 )
 
@@ -70,7 +68,7 @@ var traceUserProp = reqreply.PropertyParam{Param: codex.Param{Name: "X-Trace-Id"
 // traceUserProp (response-side) on ONE codec-backed Middleware value —
 // In=Out=struct{} since neither side merges a value, only validates
 // presence/format.
-var headerParamMw = reqreply.NewMiddleware[struct{}, struct{}](middleware.Declaration[struct{}, struct{}]{Name: "declare-header-params"}).
+var headerParamMw = reqreply.NewMiddleware[struct{}, struct{}](reqreply.Declaration[struct{}, struct{}]{Name: "declare-header-params"}).
 	WithRequestPropertySpec(apiKeyUserProp).
 	WithResponsePropertySpec(traceUserProp)
 
@@ -92,7 +90,7 @@ var headerParamMw = reqreply.NewMiddleware[struct{}, struct{}](middleware.Declar
 func Build() (*Built, error) {
 	server := reqreply.NewServer(reqreply.Info{Title: "Compute API (mqtt5)", Version: "1.0.0"})
 	server.AddServer("mqtt5", reqreply.ServerEntry{URL: "mqtt://broker:1883", Protocol: "mqtt5"})
-	server.AddGlobalSecurity(route.Require("bearerAuth"))
+	server.AddGlobalSecurity(reqreply.Require("bearerAuth"))
 
 	// EVERY route below shares the literal "compute/" topic prefix —
 	// grouped under ONE REAL docs/design/d-0008-declarative-router-groups.md

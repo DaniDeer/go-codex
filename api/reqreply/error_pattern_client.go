@@ -1,27 +1,36 @@
 package reqreply
 
-import "errors"
+import "github.com/DaniDeer/go-codex/internal/middleware"
 
-// This file's 3 functions were ORIGINALLY placed identically (byte for
-// byte) in BOTH adapters/mqtt5 and adapters/zeromq (Topic 6's initial
-// decision) under the reasoning "near-identical copies, one per client
-// package, mirroring the existing precedent that each adapter keeps its
-// own ErrorPatternResponse type." That reasoning conflated two different
-// things: it's correct that the CONCRETE response type
-// (mqtt5.ErrorPatternResponse, zeromq.ErrorPatternResponse) legitimately
-// differs per adapter (protocol-specific fields like Code/Body) — but
-// these 3 helper functions touch ONLY the shared, already-core-layer
-// [ErrorPatternValuer] interface (the SAME interface
-// [ErrorPatternOpt.Match] already uses) and have ZERO protocol-specific
-// logic. Per this library's "thin adapter" design guardrail
-// (docs/design/d-0005-error-handling.md's Topic 6 "Design
-// guardrail" subsection): a user-facing convenience helper that only
-// touches core api/* types belongs in api/*, never in adapters/*, even
-// when multiple adapters happen to implement that boundary today. Moved
-// here (from BOTH adapters/mqtt5 and adapters/zeromq, closing a genuine
-// byte-for-byte code duplication in the process) for that reason — a
-// confirmed, fixed design mistake, not a reinterpretation of new
-// requirements.
+// This file is api/reqreply's own, PUBLIC front door onto the shared,
+// internal-only ErrorPatternAs/HandleErrorPattern/Case vocabulary
+// (internal/middleware) — these 3 functions were ORIGINALLY placed
+// identically (byte for byte) in BOTH adapters/mqtt5 and adapters/zeromq
+// (Topic 6's initial decision), moved into api/reqreply directly (a
+// confirmed, fixed design mistake, closing a genuine byte-for-byte code
+// duplication — see docs/design/d-0005-error-handling.md's Topic 6
+// "Design guardrail" subsection), and have now been consolidated once
+// more into internal/middleware alongside api/rest's byte-for-byte-
+// identical copy (docs/design/d-0009-internalize-shared-mechanics.md's Phase 4)
+// — part of go-codex's "shared cross-pattern MECHANICS live in
+// internal/, pattern-specific access lives in the api/port layer"
+// design rule (see docs/design/d-0009-internalize-shared-mechanics.md).
+// A user of api/reqreply NEVER imports internal/middleware directly —
+// everything below is a thin, same-named alias/forwarding constructor
+// around it.
+//
+// api/events correctly has NO equivalent — pub/sub's Publish is a
+// ONE-WAY, fire-and-forget operation with no reply channel to decode a
+// typed payload from, so there is nothing for an
+// ErrorPatternAs/HandleErrorPattern-shaped helper to do on that side — a
+// structural non-issue, not a gap.
+
+// ErrorPatternValuer is implemented by any transport's own
+// ErrorPatternResponse type (e.g. mqtt5.ErrorPatternResponse,
+// zeromq.ErrorPatternResponse) carrying a matched ErrorPattern's typed
+// payload — see [internal/middleware.ErrorPatternValuer] for the full
+// doc comment.
+type ErrorPatternValuer = middleware.ErrorPatternValuer
 
 // ErrorPatternAs extracts a matched [ErrorPattern]'s typed payload in one
 // call, collapsing the errors.As + type-switch dance
@@ -38,40 +47,20 @@ import "errors"
 // since both implement [ErrorPatternValuer] — this function never needs
 // to know which one.
 func ErrorPatternAs[B any](err error) (B, bool) {
-	var target ErrorPatternValuer
-	if !errors.As(err, &target) {
-		var zero B
-		return zero, false
-	}
-	b, ok := target.ErrorPatternValue().(B)
-	return b, ok
+	return middleware.ErrorPatternAs[B](err)
 }
 
-// errorCase is the internal, type-erased interface each [Case] value
-// implements — this is what makes a slice of heterogeneous typed cases
-// possible in [HandleErrorPattern] without reflect.
-type errorCase interface {
-	tryHandle(value any) bool
-}
-
-type typedCase[T any] struct {
-	fn func(T)
-}
+// ErrorCase is the type-erased interface each [Case] value implements —
+// this is what makes a slice of heterogeneous typed cases possible in
+// [HandleErrorPattern] without reflect. See
+// [internal/middleware.ErrorCase] for the full doc comment.
+type ErrorCase = middleware.ErrorCase
 
 // Case declares one typed handler for [HandleErrorPattern] — T is
 // inferred from fn's own parameter type, so no explicit [T] instantiation
 // is needed at the call site.
-func Case[T any](fn func(T)) errorCase {
-	return typedCase[T]{fn: fn}
-}
-
-func (c typedCase[T]) tryHandle(value any) bool {
-	v, ok := value.(T)
-	if !ok {
-		return false
-	}
-	c.fn(v)
-	return true
+func Case[T any](fn func(T)) ErrorCase {
+	return middleware.Case(fn)
 }
 
 // HandleErrorPattern extracts a matched [ErrorPattern]'s typed payload
@@ -91,15 +80,6 @@ func (c typedCase[T]) tryHandle(value any) bool {
 // an interface T), the FIRST matching Case (in argument order) wins —
 // mirrors this library's established first-declared-wins precedent
 // elsewhere.
-func HandleErrorPattern(err error, cases ...errorCase) bool {
-	var target ErrorPatternValuer
-	if !errors.As(err, &target) {
-		return false
-	}
-	for _, c := range cases {
-		if c.tryHandle(target.ErrorPatternValue()) {
-			return true
-		}
-	}
-	return false
+func HandleErrorPattern(err error, cases ...ErrorCase) bool {
+	return middleware.HandleErrorPattern(err, cases...)
 }

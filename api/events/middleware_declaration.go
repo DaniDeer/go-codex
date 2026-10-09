@@ -7,8 +7,8 @@ import (
 	"slices"
 
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/middleware"
-	"github.com/DaniDeer/go-codex/route"
+	"github.com/DaniDeer/go-codex/internal/middleware"
+	"github.com/DaniDeer/go-codex/internal/route"
 )
 
 // Middleware is a codec-backed, events-specific middleware declaration —
@@ -310,7 +310,7 @@ func (m Middleware[In, Out]) MiddlewareName() string { return m.Declaration.Name
 // applyAgnosticSubscriber implements the events-side routeMiddlewareContributor
 // pattern — called by [Subscriber.Use] for a bundled Middleware value. In
 // is concrete here, so it can build the SAME runtime dispatch handler
-// [BoundSubscribeMiddleware.applyBoundSubscriber] produces for the
+// [BoundSubscribeMiddleware.ApplyBoundRoute] produces for the
 // channel-bound case.
 func (m Middleware[In, Out]) applyAgnosticSubscriber() (MiddlewareHandler, bool) {
 	if m.receiveFn == nil {

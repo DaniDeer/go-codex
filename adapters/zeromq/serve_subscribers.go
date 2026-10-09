@@ -10,9 +10,9 @@ import (
 
 	"github.com/DaniDeer/go-codex/adapters/internal/scopesmerge"
 	"github.com/DaniDeer/go-codex/api/events"
-	"github.com/DaniDeer/go-codex/middleware"
+	"github.com/DaniDeer/go-codex/internal/middleware"
+	"github.com/DaniDeer/go-codex/internal/route"
 	asyncapi "github.com/DaniDeer/go-codex/render/asyncapi/v3"
-	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/stats"
 )
 
@@ -397,7 +397,7 @@ func (r *subscriberRoute) processMessage(ctx context.Context, topic string, payl
 	// is proven end-to-end here for a future ack-capable adapter (e.g.
 	// AMQP) to consume without further core changes. See
 	// docs/design/d-0006-protocol-native-capabilities.md's §8.
-	spanCtx := middleware.EnsureContextFields(middleware.EnsureDispositionBox(ctx))
+	spanCtx := middleware.EnsureContextFields(stats.EnsureDispositionBox(ctx))
 
 	// Codec-backed bound MiddlewareHandler dispatch (SubscribeMW's bound
 	// path) — CORRECTED: this ServeSubscribers dispatch previously never
@@ -440,7 +440,7 @@ func (r *subscriberRoute) processMessage(ctx context.Context, topic string, payl
 	if to, ok := obs.(stats.TraceObserver); ok {
 		to.EndSpan(spanCtx, fnErr)
 	}
-	disposition := middleware.ResolveDisposition(spanCtx, fnErr)
+	disposition := stats.ResolveDisposition(spanCtx, fnErr)
 	if dispObs, ok := obs.(stats.DispositionObserver); ok {
 		dispObs.RecordDisposition(topic, disposition)
 	}

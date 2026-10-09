@@ -6,13 +6,21 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/middleware"
 )
 
 // ── fixtures for demoEventsRouterGroups — self-contained, no dependency
 // on the routes/handlers/mqtt5broker/zeromqbroker/client sub-packages the
 // rest of this project uses, since Router's own value is in TOPIC/
 // MIDDLEWARE ASSEMBLY, independent of any live transport. ────────────────
+
+// namedMiddleware builds a NAME-ONLY, Security-less, general-purpose
+// [events.Middleware] — used below purely to demonstrate [events.Router]'s
+// own middleware-NAME bookkeeping (`.Use()`/`.With()`'s attachment-order
+// tracking, surfaced via `Routes()`'s MiddlewareNames), independent of
+// any real behavior (no Fn ever bundled via WithReceive/WithSend).
+func namedMiddleware(name string) events.Middleware[struct{}, struct{}] {
+	return events.NewMiddleware(events.NewDeclaration[struct{}, struct{}](name, codex.Struct[struct{}](), codex.Struct[struct{}]()))
+}
 
 type routerDemoSensorReading struct {
 	SensorID string
@@ -78,7 +86,7 @@ func demoEventsRouterGroups() {
 	// [events.CheckCoverage] — Router-contributed middleware only ever
 	// reaches each leaf's spec-level mws/middlewareHandlers, never its
 	// impls list; see [api/events.Router]'s doc comment.)
-	auditMiddleware := middleware.Middleware{Name: "audit-log"}
+	auditMiddleware := namedMiddleware("audit-log")
 
 	readingsRouter := events.NewRouter("readings").
 		Use(auditMiddleware).
@@ -141,7 +149,7 @@ func demoSensorsStaticPrefixGroup() {
 	).WithSubscribe(events.Subscribe{Summary: "Receive a per-sensor alert"}).
 		WithHandler(routerDemoOnReading)
 
-	auditMiddleware := middleware.Middleware{Name: "audit-log"}
+	auditMiddleware := namedMiddleware("audit-log")
 
 	sensorsRouter := events.NewRouter("sensors").
 		Use(auditMiddleware).
@@ -174,8 +182,8 @@ func demoSensorsStaticPrefixGroup() {
 func demoEventsRouterWithScoping() {
 	fmt.Println("=== Router.With(): one-shot middleware, scoped to ONE channel — and its Mount boundary ===")
 
-	sharedAudit := middleware.Middleware{Name: "audit-log"}
-	oneShotTrace := middleware.Middleware{Name: "trace-sample"}
+	sharedAudit := namedMiddleware("audit-log")
+	oneShotTrace := namedMiddleware("trace-sample")
 
 	// Part 1 — the CORRECT, intended use: a group-wide, PERMANENT
 	// .Use(sharedAudit) applies to every leaf, while
@@ -208,7 +216,7 @@ func demoEventsRouterWithScoping() {
 	// middleware to an entire sub-router is .Use() ON the sub-router
 	// itself, BEFORE mounting it (see demoEventsRouterGroups's
 	// readingsRouter above).
-	oneShotForMount := middleware.Middleware{Name: "rate-limit-strict"}
+	oneShotForMount := namedMiddleware("rate-limit-strict")
 
 	archiveSub := events.NewRouter("archive").
 		Route(events.NewChannel[routerDemoSensorReading]("with-demo/archive-status", routerDemoSensorReadingCodec).

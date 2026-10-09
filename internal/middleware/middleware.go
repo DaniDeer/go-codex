@@ -11,12 +11,14 @@
 // business handler supplied only later, at Register time):
 //
 //   - [Middleware] is a DECLARE-TIME-ONLY value — pure data, no Fn field at
-//     all. Attached via a route's own declaration (e.g. rest.Route.Use).
-//     It is the ONLY type that can contribute to a route's spec
-//     (Security/RequestParams/ResponseParams) — "the server declares the
-//     contract." [SecurityScheme] builds one from scratch;
-//     rest.FromSecurityScheme bridges an existing rest.SecurityScheme
-//     value.
+//     all. This is purely an INTERNAL bridging representation now — every
+//     api/rest/api/events/api/reqreply route/channel attaches a security
+//     declaration through its own PUBLIC, codec-backed
+//     Middleware[In,Out] instead (e.g. rest.SecurityMiddleware), which
+//     each pattern internally synthesizes into this shape so
+//     applySecurityDeclarations-equivalent spec-building code has one
+//     uniform currency to consume. [SecurityScheme] builds one from
+//     scratch.
 //   - [ServerImplementation] is a REGISTER-TIME-ONLY, SERVER-side value —
 //     pure runtime behavior, no spec fields at all. Callers never
 //     construct one directly: rest.Route.HandleMW(mw, fn)/
@@ -52,7 +54,7 @@ import (
 	"log/slog"
 
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/route"
+	"github.com/DaniDeer/go-codex/internal/route"
 )
 
 // RouteMiddleware is a marker interface any attach-time middleware value

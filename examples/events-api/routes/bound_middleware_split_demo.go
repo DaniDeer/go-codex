@@ -2,7 +2,6 @@ package routes
 
 import (
 	"github.com/DaniDeer/go-codex/api/events"
-	"github.com/DaniDeer/go-codex/route"
 )
 
 // ── Bound-middleware-split demo (docs/design/d-0003-codec-declared-middlewares.md's Addendum 7) ──
@@ -72,7 +71,7 @@ var StackedDemoChannel = events.NewChannel[SensorReading](
 
 var StackedDemoSub = StackedDemoChannel.WithSubscribe(events.Subscribe{
 	Summary:  "Reusable + bound middleware STACKED on one subscriber (docs/design/d-0003-codec-declared-middlewares.md's Addendum 7)",
-	Security: []route.SecurityRequirement{route.Require("apiKeyAuth")},
+	Security: []events.SecurityRequirement{events.Require("apiKeyAuth")},
 })
 
 // StackedDemoPub is the matching PLAIN publish declaration for

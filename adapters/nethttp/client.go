@@ -14,8 +14,8 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/middleware"
-	"github.com/DaniDeer/go-codex/route"
+	"github.com/DaniDeer/go-codex/internal/middleware"
+	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/stats"
 )
 
@@ -483,9 +483,9 @@ func wrapCallGeneral[Req, Resp any](
 //
 // ADDENDUM (review round) — this function's SECURITY-PAIRING use (a
 // Satisfies-populated [middleware.ClientImplementation]) is now
-// UNREACHABLE for routes attached via [rest.Route.ClientMW]: ClientMW
-// rejects a Security-carrying mw outright (see
-// [rest.LegacySecurityClientMWRemovedError]), so every
+// UNREACHABLE for routes attached via [rest.Route.ClientMW]: ClientMW's
+// legacy Security-pairing path has since been retired entirely
+// (docs/design/d-0009-internalize-shared-mechanics.md), so every
 // [middleware.ClientImplementation] it produces has an empty Satisfies
 // from now on. This function keeps the Satisfies-gating logic unchanged
 // (it is generic, not REST-specific, and remains structurally correct —

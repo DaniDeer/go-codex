@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/DaniDeer/go-codex/api/events"
-	"github.com/DaniDeer/go-codex/route"
 )
 
 // demoConnectSecuritySchemeRegistration demonstrates
@@ -22,10 +21,10 @@ func demoConnectSecuritySchemeRegistration() {
 	fmt.Println("--- Demo: Client.AddConnectSecurityScheme (connection-level spec registration) ---")
 
 	client := events.NewClient(events.WithInfo(events.Info{Title: "Connect-scheme registration demo", Version: "1.0.0"}))
-	client.AddConnectSecurityScheme("brokerAuth", route.SecurityScheme{Type: route.SecuritySchemeHTTP, Scheme: "basic"})
+	client.AddConnectSecurityScheme("brokerAuth", events.BasicScheme().SecurityScheme)
 	client.AddServer("production", events.Server{
 		URL: "mqtts://broker.example.com:8883", Protocol: "mqtt5",
-		Security: []route.SecurityRequirement{route.Require("brokerAuth")},
+		Security: []events.SecurityRequirement{events.Require("brokerAuth")},
 	})
 
 	doc, err := client.AsyncAPISpec()

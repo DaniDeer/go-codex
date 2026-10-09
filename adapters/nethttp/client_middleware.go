@@ -6,7 +6,7 @@ import (
 	"reflect"
 
 	"github.com/DaniDeer/go-codex/api/rest"
-	"github.com/DaniDeer/go-codex/route"
+	"github.com/DaniDeer/go-codex/internal/route"
 )
 
 // clientMiddlewareOutKey is the context key for client-side middleware Out

@@ -9,8 +9,8 @@ import (
 	"testing"
 
 	"github.com/DaniDeer/go-codex/adapters/internal/httpsecurity"
-	"github.com/DaniDeer/go-codex/middleware"
-	"github.com/DaniDeer/go-codex/route"
+	"github.com/DaniDeer/go-codex/internal/middleware"
+	"github.com/DaniDeer/go-codex/internal/route"
 )
 
 type req struct{ Name string }

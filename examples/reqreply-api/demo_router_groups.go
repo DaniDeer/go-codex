@@ -6,13 +6,22 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/middleware"
 )
 
 // ── fixtures for demoRouterGroups — self-contained, no dependency on the
 // routes/handlers/mqtt5server/zeromqserver/client sub-packages the rest of
 // this project uses, since Router's own value is in TOPIC/MIDDLEWARE
 // ASSEMBLY, independent of any live transport. ────────────────────────────
+
+// namedMiddleware builds a NAME-ONLY, Security-less, general-purpose
+// [reqreply.Middleware] — used below purely to demonstrate
+// [reqreply.Router]'s own middleware-NAME bookkeeping (`.Use()`/
+// `.With()`'s attachment-order tracking, surfaced via `Routes()`'s
+// MiddlewareNames), independent of any real behavior (no Fn ever bundled
+// via WithReceive/WithSend).
+func namedMiddleware(name string) reqreply.Middleware[struct{}, struct{}] {
+	return reqreply.NewMiddleware(reqreply.NewDeclaration[struct{}, struct{}](name, codex.Struct[struct{}](), codex.Struct[struct{}]()))
+}
 
 type routerDemoAddReq struct{ X, Y int }
 
@@ -76,7 +85,7 @@ func demoRouterGroups() {
 	// A reusable-class, spec-only middleware, attached ONCE at the
 	// Router level — every leaf grouped under it (add/subtract) gets it,
 	// with ZERO repetition across 2 separate .Use() calls.
-	auditMiddleware := middleware.Middleware{Name: "audit-log"}
+	auditMiddleware := namedMiddleware("audit-log")
 
 	// A single, flat Router — not nested via Mount — so the SAME Router
 	// value can also drive WithRouter below. [reqreply.WithRouter] applies
@@ -121,8 +130,8 @@ func demoRouterGroups() {
 func demoRouterWithScoping() {
 	fmt.Println("=== Router.With(): one-shot middleware, scoped to ONE route — and its Mount boundary ===")
 
-	sharedAudit := middleware.Middleware{Name: "audit-log"}
-	oneShotTrace := middleware.Middleware{Name: "trace-sample"}
+	sharedAudit := namedMiddleware("audit-log")
+	oneShotTrace := namedMiddleware("trace-sample")
 
 	// Part 1 — the CORRECT, intended use: a group-wide, PERMANENT
 	// .Use(sharedAudit) applies to every leaf, while .With(oneShotTrace)
@@ -154,7 +163,7 @@ func demoRouterWithScoping() {
 	// middleware to an entire sub-router is .Use() ON the sub-router
 	// itself, BEFORE mounting it (see demoRouterGroups's computeRouter
 	// above, had it been nested).
-	oneShotForMount := middleware.Middleware{Name: "rate-limit-strict"}
+	oneShotForMount := namedMiddleware("rate-limit-strict")
 
 	archiveSub := reqreply.NewRouter("archive").
 		Route(reqreply.NewRoute[routerDemoAddReq, routerDemoResult]("with-demo/status",

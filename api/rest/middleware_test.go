@@ -6,8 +6,8 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/middleware"
-	"github.com/DaniDeer/go-codex/route"
+	"github.com/DaniDeer/go-codex/internal/middleware"
+	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -575,9 +575,10 @@ func TestRouteClientMW_PopulatesClientImplementationsOnClientHandle(t *testing.T
 
 // NOTE: TestRouteClientMW_CombinesWithServerDeclaredSecurity (which tested
 // ClientMW pairing a legacy Security-carrying middleware.Middleware and
-// deriving Satisfies from it) was REMOVED — this review round retired
-// that mechanism for good (see [LegacySecurityClientMWRemovedError]);
-// ClientMW now REJECTS a Security-carrying mw outright. Supplying a
+// deriving Satisfies from it) was REMOVED — ClientMW's legacy
+// Security-pairing path (and the error it once returned when misused)
+// has since been retired entirely (docs/design/d-0009-internalize-shared-mechanics.md);
+// ClientMW now treats EVERY attached mw as general-purpose. Supplying a
 // client-side credential now goes exclusively through
 // [Route.ClientBoundMW] + [BoundSecurityClientMiddleware] — see
 // capability_test.go / adapters/nethttp's bound-middleware credential
@@ -600,10 +601,9 @@ func TestSSERouteClientMW_PopulatesClientImplementationsOnClientHandle(t *testin
 }
 
 // NOTE: TestSSERouteClientMW_SatisfiesGating (C2 — Satisfies-gating via
-// the legacy ClientMW security-pairing path) was REMOVED — ClientMW now
-// rejects a Security-carrying mw outright (see
-// [LegacySecurityClientMWRemovedError]); Satisfies-gating for a
-// client-side credential now lives entirely in
+// the legacy ClientMW security-pairing path) was REMOVED — ClientMW's
+// legacy security-pairing path no longer exists at all; Satisfies-gating
+// for a client-side credential now lives entirely in
 // [BoundClientMiddleware]/[ClientMiddlewareHandler.Satisfies] (the bound
 // mechanism), unaffected by this removal.
 
@@ -635,10 +635,11 @@ func TestSecurityScheme_AloneIsALegitimateIntermediateStateAtRegister(t *testing
 // TestSSERoute_ClientMW_PairedAgainstUndeclaredScheme_ReturnsUnknownMiddlewareImplementationError
 // (which tested checkImplementationsDeclared's mismatch-detection via the
 // legacy HandleMW/ClientMW security-pairing path) were ALL REMOVED per
-// docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8 — HandleMW/ClientMW now
-// reject a Security-carrying mw before ever reaching
-// checkImplementationsDeclared (see [LegacySecurityHandleMWRemovedError]/
-// [LegacySecurityClientMWRemovedError]). This failure mode is structurally
+// docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8 — HandleMW/ClientMW
+// treat EVERY attached mw as general-purpose now (the legacy
+// Security-pairing path, and the rejection error it once returned, have
+// both since been retired entirely, docs/design/d-0009-internalize-shared-mechanics.md).
+// This failure mode is structurally
 // IMPOSSIBLE for the replacement, [Route.HandleBoundMW]/[Route.ClientBoundMW]
 // + [BoundSecurityMiddleware]/[BoundSecurityClientMiddleware]: the bound
 // mechanism auto-contributes its OWN Security declaration directly (no

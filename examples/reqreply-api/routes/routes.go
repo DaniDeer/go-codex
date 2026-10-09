@@ -8,7 +8,6 @@ package routes
 import (
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/route"
 )
 
 // ComputeReq/ComputeResp are the shared request/response types for every
@@ -60,7 +59,7 @@ var ComputeRespCodec = codex.Struct[ComputeResp](
 var ComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 	"add",
 	ComputeReqCodec, ComputeRespCodec,
-	reqreply.RouteMeta{OperationID: "computeAdd", Summary: "Add two integers.", Security: []route.SecurityRequirement{}},
+	reqreply.RouteMeta{OperationID: "computeAdd", Summary: "Add two integers.", Security: []reqreply.SecurityRequirement{}},
 )
 
 // CapabilityRoute demonstrates Phase 2 of docs/design/
@@ -76,7 +75,7 @@ var ComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 var CapabilityRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 	"capability-add",
 	ComputeReqCodec, ComputeRespCodec,
-	reqreply.RouteMeta{OperationID: "computeCapabilityAdd", Summary: "Add two integers, requiring at-least-once QoS.", Security: []route.SecurityRequirement{}},
+	reqreply.RouteMeta{OperationID: "computeCapabilityAdd", Summary: "Add two integers, requiring at-least-once QoS.", Security: []reqreply.SecurityRequirement{}},
 	reqreply.RequireQoS(reqreply.AtLeastOnce),
 )
 
@@ -149,7 +148,7 @@ var GlobalOnlyComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 var HeaderParamComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 	"header-param-add",
 	ComputeReqCodec, ComputeRespCodec,
-	reqreply.RouteMeta{OperationID: "headerParamComputeAdd", Summary: "Add two integers — requires an X-API-Key User Property.", Security: []route.SecurityRequirement{}},
+	reqreply.RouteMeta{OperationID: "headerParamComputeAdd", Summary: "Add two integers — requires an X-API-Key User Property.", Security: []reqreply.SecurityRequirement{}},
 )
 
 // PropertyAxisComputeRoute demonstrates docs/design/d-0003-codec-
@@ -167,7 +166,7 @@ var HeaderParamComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 var PropertyAxisComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 	"property-axis-add",
 	ComputeReqCodec, ComputeRespCodec,
-	reqreply.RouteMeta{OperationID: "propertyAxisComputeAdd", Summary: "Add two integers — demonstrates the property vocabulary axis (WithRequestProperty/WithResponseProperty).", Security: []route.SecurityRequirement{}},
+	reqreply.RouteMeta{OperationID: "propertyAxisComputeAdd", Summary: "Add two integers — demonstrates the property vocabulary axis (WithRequestProperty/WithResponseProperty).", Security: []reqreply.SecurityRequirement{}},
 )
 
 // RouterComputeRoute is dispatched over a ZMQ ROUTER/DEALER socket pair in
@@ -235,7 +234,7 @@ var ConflictErrorPattern = reqreply.ErrorPattern[ConflictError, ConflictPayload]
 var ErrorPatternComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 	"compute/add-error-pattern",
 	ComputeReqCodec, ComputeRespCodec,
-	reqreply.RouteMeta{OperationID: "computeAddErrorPattern", Summary: "Add two integers; rejects negative X with a typed ConflictError.", Security: []route.SecurityRequirement{}},
+	reqreply.RouteMeta{OperationID: "computeAddErrorPattern", Summary: "Add two integers; rejects negative X with a typed ConflictError.", Security: []reqreply.SecurityRequirement{}},
 	ConflictErrorPattern,
 )
 
@@ -272,7 +271,7 @@ var RateLimitErrorCodec = codex.Struct[RateLimitError](
 var RateLimitComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 	"add-ratelimit-demo",
 	ComputeReqCodec, ComputeRespCodec,
-	reqreply.RouteMeta{OperationID: "computeAddRateLimitDemo", Summary: "Add two integers (ErrorPattern Direct-mode demo).", Security: []route.SecurityRequirement{}},
+	reqreply.RouteMeta{OperationID: "computeAddRateLimitDemo", Summary: "Add two integers (ErrorPattern Direct-mode demo).", Security: []reqreply.SecurityRequirement{}},
 	reqreply.ErrorPattern[RateLimitError, RateLimitError](RateLimitErrorCodec),
 )
 
@@ -300,7 +299,7 @@ func (TimeoutError) Error() string { return "downstream call timed out" }
 var DeadLetterComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 	"add-deadletter-demo",
 	ComputeReqCodec, ComputeRespCodec,
-	reqreply.RouteMeta{OperationID: "computeAddDeadLetterDemo", Summary: "Add two integers (DeadLetter demo).", Security: []route.SecurityRequirement{}},
+	reqreply.RouteMeta{OperationID: "computeAddDeadLetterDemo", Summary: "Add two integers (DeadLetter demo).", Security: []reqreply.SecurityRequirement{}},
 	reqreply.DeadLetter("compute/add-deadletter-demo/dlq"),
 )
 

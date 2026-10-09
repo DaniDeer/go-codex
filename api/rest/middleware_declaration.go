@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"slices"
 
-	"github.com/DaniDeer/go-codex/middleware"
+	"github.com/DaniDeer/go-codex/internal/middleware"
 )
 
 // Middleware is a codec-backed, REST-specific middleware declaration — the
@@ -280,7 +280,7 @@ func (m Middleware[In, Out]) MiddlewareName() string { return m.Declaration.Name
 // [routeMiddlewareOpt.applyRoute] for a .Use()-attached Middleware value.
 // In/Out are concrete here (m's own type parameters), so it can build the
 // SAME spec contribution and (when bundled) the SAME runtime dispatch
-// handler shape [BoundMiddleware.applyBoundRoute] produces for the bound
+// handler shape [BoundMiddleware.ApplyBoundRoute] produces for the bound
 // class — feeding both into the SAME rb fields, so downstream consumers
 // (applyParamDeclarations, adapters) treat both classes uniformly.
 func (m Middleware[In, Out]) applyAgnosticRoute(rb *routeBuilder) {
@@ -293,7 +293,7 @@ func (m Middleware[In, Out]) applyAgnosticRoute(rb *routeBuilder) {
 	}
 }
 
-// NOTE: applyBoundRoute/applyBoundClientRoute (the route/channel-BOUND
+// NOTE: ApplyBoundRoute/ApplyBoundClientRoute (the route/channel-BOUND
 // attachment methods Middleware[In,Out] used to carry) were REMOVED as
 // part of docs/design/d-0003-codec-declared-middlewares.md's Addendum 7 — Middleware[In,Out] is
 // now reusable-ONLY (.Use() is its one attachment path); the route/

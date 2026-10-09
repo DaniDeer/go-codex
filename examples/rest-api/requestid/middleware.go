@@ -14,7 +14,6 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/middleware"
 )
 
 // In/Out are [ReusableRequestIDMw]'s vocabulary — a generic, NON-Security
@@ -43,7 +42,7 @@ var (
 // any per-route wrapping (unlike the bound class, which needs one
 // instantiation per Req type) — the headline "reusable" property.
 var ReusableRequestIDMw = rest.NewMiddleware(
-	middleware.NewDeclaration[In, Out]("logRequestID", inCodec, outCodec),
+	rest.NewDeclaration[In, Out]("logRequestID", inCodec, outCodec),
 ).
 	WithRequestHeader(rest.NewOptionalHeaderParam("X-Demo-Request-Id", codex.String(),
 		func(in In) string { return in.RequestID },

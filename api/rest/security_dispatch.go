@@ -3,7 +3,7 @@ package rest
 import (
 	"strings"
 
-	"github.com/DaniDeer/go-codex/route"
+	"github.com/DaniDeer/go-codex/internal/route"
 )
 
 // CredentialExtractor supplies a raw credential string from wherever an

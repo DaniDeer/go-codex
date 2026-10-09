@@ -132,7 +132,7 @@
 // its OWN, byte-for-byte-identical-in-shape [CapabilityRequirement]/
 // [CheckCapabilityCoverage]/[CapabilityCoverageError]/
 // [VerifyCapabilityCoverage]/[LeveledCapability] types (mirrors
-// [middleware.Disposition]'s own placement rationale: cheap to duplicate
+// [stats.Disposition]'s own placement rationale: cheap to duplicate
 // a small type, rather than introduce a cross-API import for it). The
 // generic adapter-side helpers `events.ResolveCapabilityValue`/
 // `events.RecordCapabilityApplied` ARE reused as-is by reqreply's adapter

@@ -6,7 +6,7 @@ import (
 	"sort"
 	"unicode"
 
-	"github.com/DaniDeer/go-codex/route"
+	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/schema"
 	"gopkg.in/yaml.v3"
 )

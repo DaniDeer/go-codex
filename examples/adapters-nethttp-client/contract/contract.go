@@ -18,8 +18,6 @@ package contract
 import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/middleware"
-	"github.com/DaniDeer/go-codex/route"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -276,17 +274,17 @@ var EmailConflictCodec = codex.Struct[EmailConflictError](
 
 // BearerAuthScheme declares the "bearerAuth" security scheme's spec
 // metadata and credential-format codec ONCE, for use by main.go's
-// middleware.SecurityScheme-built declaration — exported so main.go (which
+// rest.SecurityScheme-built declaration — exported so main.go (which
 // owns the actual token-verification logic, an adapter/application concern
 // this adapter-agnostic contract package deliberately stays free of) can
 // build that declaration with the IDENTICAL scheme metadata/codec used
 // here.
-var BearerAuthScheme = route.BearerScheme("JWT")
+var BearerAuthScheme = rest.BearerScheme("JWT").SecurityScheme
 
 // BearerCredentialCodec validates the raw credential format (non-empty) —
 // shared by both the server's verification middleware and the client's
 // credential-format pre-flight check, both via the SAME
-// middleware.SecurityDeclaration this route's attached middleware carries.
+// rest.SecurityDeclaration this route's attached middleware carries.
 var BearerCredentialCodec = codex.String().Refine(validate.NonEmptyString)
 
 // GetSecuredData is the route spec for GET /data — a FUNCTION, not a bare
@@ -296,9 +294,9 @@ var BearerCredentialCodec = codex.String().Refine(validate.NonEmptyString)
 // (Security + SecuritySchemes, identical on server Register AND client
 // ClientHandle) — see main.go for how it's built via
 // rest.SecurityMiddleware, and separately, how the runtime enforcement
-// (a middleware.ServerImplementation server-side, or a credential-providing
+// (a rest.ServerImplementation server-side, or a credential-providing
 // Fn attached via rest.Route.ClientMW client-side) is supplied.
-func GetSecuredData(mw middleware.RouteMiddleware) rest.Route[struct{}, Profile] {
+func GetSecuredData(mw rest.RouteMiddleware) rest.Route[struct{}, Profile] {
 	return rest.NewRoute[struct{}, Profile](
 		"GET", "/data",
 		codex.Empty, ProfileCodec,

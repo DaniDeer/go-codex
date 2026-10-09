@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/middleware"
 )
 
 // ValidationObserver is the codec-level observability hook.
@@ -123,21 +122,21 @@ type CapabilityObserver interface {
 }
 
 // DispositionObserver is an optional extension to [Observer] for Handler
-// Disposition resolution events (see middleware.ResolveDisposition).
+// Disposition resolution events (see ResolveDisposition).
 // Adapters type-assert the configured Observer to DispositionObserver
 // before calling RecordDisposition, so implementing this interface is
 // purely additive — existing Observer implementations need not change.
 //
 //	type MyObserver struct{ ... }
-//	func (o *MyObserver) RecordDisposition(location string, disposition middleware.Disposition) {
+//	func (o *MyObserver) RecordDisposition(location string, disposition Disposition) {
 //	    // increment a Prometheus counter, emit a log line, etc.
 //	}
 type DispositionObserver interface {
 	// RecordDisposition is called once per message/request dispatch with
-	// the FINAL, resolved [middleware.Disposition] (see
-	// middleware.ResolveDisposition) — location is the topic (or route
+	// the FINAL, resolved [Disposition] (see
+	// ResolveDisposition) — location is the topic (or route
 	// path).
-	RecordDisposition(location string, disposition middleware.Disposition)
+	RecordDisposition(location string, disposition Disposition)
 }
 
 // TraceObserver is an optional extension to [Observer] for distributed tracing.
@@ -480,7 +479,7 @@ func (o *LoggingObserver) RecordCapabilityApplied(location, capability string) {
 	o.logger.Debug("capability applied", "location", location, "capability", capability)
 }
 
-func (o *LoggingObserver) RecordDisposition(location string, disposition middleware.Disposition) {
+func (o *LoggingObserver) RecordDisposition(location string, disposition Disposition) {
 	o.logger.Debug("disposition resolved", "location", location, "disposition", disposition)
 }
 
@@ -636,7 +635,7 @@ func (f *fanout) RecordCapabilityApplied(location, capability string) {
 }
 
 // RecordDisposition implements [DispositionObserver].
-func (f *fanout) RecordDisposition(location string, disposition middleware.Disposition) {
+func (f *fanout) RecordDisposition(location string, disposition Disposition) {
 	for _, o := range f.observers {
 		if do, ok := o.(DispositionObserver); ok {
 			do.RecordDisposition(location, disposition)
@@ -804,7 +803,7 @@ func (NoopObserver) RecordPublish(_ string, _ bool, _ time.Duration)            
 func (NoopObserver) RecordApply(_, _ string, _ bool, _ time.Duration)               {}
 func (NoopObserver) RecordSecurityRejection(_, _ string)                            {}
 func (NoopObserver) RecordCapabilityApplied(_, _ string)                            {}
-func (NoopObserver) RecordDisposition(_ string, _ middleware.Disposition)           {}
+func (NoopObserver) RecordDisposition(_ string, _ Disposition)                      {}
 func (NoopObserver) RecordErrorPatternMatch(_, _, _ string)                         {}
 func (NoopObserver) RecordErrorPatternMiss(_ string)                                {}
 func (NoopObserver) TagSpan(_ context.Context, _, _ string)                         {}
