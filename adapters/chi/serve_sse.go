@@ -174,7 +174,8 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 		pathVars := pathValues(r, pathNames)
 		carrier := httpCarrier{r}
 		queryVars := carrier.ExtractQuery()
-		headerVars := carrier.ExtractHeaders()
+		headerNames := elem.Addr().MethodByName("HeaderParamNames").Call(nil)[0].Interface().([]string)
+		headerVars := rest.NormalizeHeaderVars(carrier.ExtractHeaders(), headerNames)
 		cookieVars := carrier.ExtractCookies()
 
 		if opts.MultiValueQueryParams {
@@ -392,7 +393,8 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 				for k, v := range ownCookies {
 					pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v, Attrs: ownCookieAttrs[k]})
 				}
-				if errV := callErr(elem.Addr(), "ValidateResponseHeaders", reflect.ValueOf(responseHeaderValues(responseHeaders))); errV != nil {
+				respHeaderNames := elem.Addr().MethodByName("ResponseHeaderParamNames").Call(nil)[0].Interface().([]string)
+				if errV := callErr(elem.Addr(), "ValidateResponseHeaders", reflect.ValueOf(rest.NormalizeHeaderVars(responseHeaderValues(responseHeaders), respHeaderNames))); errV != nil {
 					rest.ReportResponseHeaderErrors(ctx, errV)
 					return retErr(errV)
 				}
@@ -460,7 +462,8 @@ func negotiateFormatReflect(formatsVal reflect.Value, accept string) (reflect.Va
 		for i := 0; i < formatsVal.Len(); i++ {
 			f := formatsVal.Index(i)
 			ct := f.MethodByName("ContentType").Call(nil)[0].String()
-			if ct == want {
+			ct, _, _ = strings.Cut(ct, ";")
+			if strings.TrimSpace(ct) == want {
 				return f, true
 			}
 		}

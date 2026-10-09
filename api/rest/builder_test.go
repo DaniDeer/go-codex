@@ -4106,3 +4106,109 @@ func TestBuilder_SSEEntries_ExcludesRegularRoutes(t *testing.T) {
 		t.Errorf("want /stream, got %q", entries[0].Path())
 	}
 }
+
+// ── NormalizeHeaderVars (REGRESSION GUARD) ────────────────────────────────
+//
+// Go's net/http canonicalizes parsed header keys to MIME-style Title-Case
+// (e.g. "X-Request-ID" becomes "X-Request-Id") — a literal, case-sensitive
+// map lookup keyed by a declared HeaderParam.Name written with different
+// casing (very natural to write, e.g. "X-Request-ID") would otherwise
+// silently miss a well-formed request/response. These tests exercise
+// [rest.NormalizeHeaderVars] directly; see adapters/nethttp's/adapters/chi's
+// own end-to-end dispatch tests for the full-stack reproduction.
+
+func TestNormalizeHeaderVars_CaseInsensitiveMatch_ReKeysToDeclaredName(t *testing.T) {
+	headers := map[string]string{"X-Request-Id": "abc123"}
+	got := rest.NormalizeHeaderVars(headers, []string{"X-Request-ID"})
+	if got["X-Request-ID"] != "abc123" {
+		t.Errorf("want re-keyed value %q under %q, got %q", "abc123", "X-Request-ID", got["X-Request-ID"])
+	}
+}
+
+func TestNormalizeHeaderVars_ExactMatch_NoOp(t *testing.T) {
+	headers := map[string]string{"Authorization": "Bearer abc"}
+	got := rest.NormalizeHeaderVars(headers, []string{"Authorization"})
+	// Exact match already present for every declared name: must return the
+	// SAME map (no copy), per the documented no-op contract.
+	if len(got) != 1 || got["Authorization"] != "Bearer abc" {
+		t.Errorf("want unchanged map, got %v", got)
+	}
+}
+
+func TestNormalizeHeaderVars_GenuinelyAbsent_LeftAlone(t *testing.T) {
+	headers := map[string]string{"Content-Type": "application/json"}
+	got := rest.NormalizeHeaderVars(headers, []string{"X-Missing"})
+	if _, ok := got["X-Missing"]; ok {
+		t.Errorf("want X-Missing to remain absent, got present: %v", got)
+	}
+	if got["Content-Type"] != "application/json" {
+		t.Errorf("want Content-Type preserved, got %v", got)
+	}
+}
+
+func TestNormalizeHeaderVars_EmptyInputs_NoPanic(t *testing.T) {
+	if got := rest.NormalizeHeaderVars(nil, []string{"X-Request-ID"}); got != nil {
+		t.Errorf("want nil for nil headers, got %v", got)
+	}
+	headers := map[string]string{"X-Request-Id": "abc"}
+	if got := rest.NormalizeHeaderVars(headers, nil); len(got) != 1 {
+		t.Errorf("want unchanged map for nil declaredNames, got %v", got)
+	}
+}
+
+// ── Route.ClientHandle: responseHeaderParams/responseCookieParams (REGRESSION GUARD) ──
+//
+// Route.ClientHandle's struct literal used to NEVER copy responseHeaderParams/
+// responseCookieParams (the Param-level Required/Codec declarations) — only
+// the merge-FIELD codecs were copied. A client-built handle's
+// ValidateResponseHeaders/ValidateResponseCookies/ResponseHeaderParamNames
+// silently saw an EMPTY set regardless of what was declared.
+
+func TestClientHandle_ResponseHeaderParamNames_PopulatedFromDeclaration(t *testing.T) {
+	uuidCodec := codex.String().Refine(validate.UUID)
+	h := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec,
+		rest.ResponseHeaderParam{Name: "X-Request-ID", Required: true, Codec: &uuidCodec},
+	).ClientHandle()
+
+	names := h.ResponseHeaderParamNames()
+	if len(names) != 1 || names[0] != "X-Request-ID" {
+		t.Fatalf("want [\"X-Request-ID\"], got %v", names)
+	}
+	// ValidateResponseHeaders must now actually ENFORCE Required (previously
+	// a silent no-op on a ClientHandle-built handle, since the backing field
+	// was never populated).
+	err := h.ValidateResponseHeaders(map[string]string{})
+	if !errors.Is(err, rest.ErrRequiredParam) {
+		t.Errorf("want ErrRequiredParam (Required header missing), got %v", err)
+	}
+}
+
+func TestClientHandle_ValidateResponseCookies_EnforcesRequired(t *testing.T) {
+	nonEmpty := codex.String().Refine(validate.NonEmptyString)
+	h := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userCodec,
+		rest.ResponseCookieParam{Name: "session", Required: true, Codec: &nonEmpty},
+	).ClientHandle()
+
+	err := h.ValidateResponseCookies(map[string]string{})
+	if !errors.Is(err, rest.ErrRequiredParam) {
+		t.Errorf("want ErrRequiredParam (Required cookie missing), got %v", err)
+	}
+	if err := h.ValidateResponseCookies(map[string]string{"session": "abc"}); err != nil {
+		t.Errorf("want nil for a valid, present cookie, got %v", err)
+	}
+}
+
+func TestSSERouteClientHandle_ResponseHeaderParamNames_PopulatedFromDeclaration(t *testing.T) {
+	nonEmpty := codex.String().Refine(validate.NonEmptyString)
+	h := rest.NewSSERoute[createReq, sseEvent]("/stream", createReqCodec, sseEventCodec,
+		rest.ResponseHeaderParam{Name: "X-Trace-Id", Required: true, Codec: &nonEmpty},
+	).ClientHandle()
+
+	names := h.ResponseHeaderParamNames()
+	if len(names) != 1 || names[0] != "X-Trace-Id" {
+		t.Fatalf("want [\"X-Trace-Id\"], got %v", names)
+	}
+	if err := h.ValidateResponseHeaders(map[string]string{}); !errors.Is(err, rest.ErrRequiredParam) {
+		t.Errorf("want ErrRequiredParam, got %v", err)
+	}
+}

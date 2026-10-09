@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -1722,4 +1723,130 @@ func Example() {
 	fmt.Println(resp.StatusCode)
 	// Output:
 	// 201
+}
+
+// TestHandler_HeaderValidation_DeclaredCasingMismatch_StillMatches is the
+// chi mirror of adapters/nethttp's identical regression test: a REQUIRED
+// [rest.HeaderParam] declared with a very natural all-caps-acronym casing
+// ("X-Request-ID") used to be silently treated as ABSENT — Go's net/http
+// canonicalizes the actual wire header to "X-Request-Id", and dispatch did
+// a literal, case-sensitive map lookup keyed by the AS-DECLARED name.
+// Fixed via [rest.NormalizeHeaderVars].
+func TestHandler_HeaderValidation_DeclaredCasingMismatch_StillMatches(t *testing.T) {
+	uuidCodec := codex.String().Refine(validate.UUID)
+	route := rest.NewRoute[getReq, userResp]("GET", "/items", getReqCodec, userRespCodec, rest.HeaderParam{Name: "X-Request-ID", Required: true, Codec: &uuidCodec}).WithHandler(func(_ context.Context, _ getReq) (userResp, error) {
+		return userResp{ID: "1", Name: "Alice"}, nil
+	})
+	handler := mustServeOne(t, route)
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/items", nil)
+	r.Header.Set("X-Request-ID", "f47ac10b-58cc-4372-a567-0e02b2c3d479")
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestHandler_ResponseMergeFields_DeclaredCasingMismatch_StillValidates is
+// the chi mirror of adapters/nethttp's identical regression test: a
+// REQUIRED [rest.ResponseHeaderParam]/[rest.NewRequiredResponseHeaderParam]
+// declared with a very natural all-caps-acronym casing ("X-Request-ID")
+// used to make [rest.RouteHandle.ValidateResponseHeaders] silently see the
+// value as ABSENT — a perfectly well-formed handler response was rejected
+// with a spurious 500. Fixed via [rest.NormalizeHeaderVars].
+func TestHandler_ResponseMergeFields_DeclaredCasingMismatch_StillValidates(t *testing.T) {
+	route := rest.NewRoute[createReq, userRespWithMeta]("POST", "/users", createReqCodec, userRespWithMetaBodyCodec,
+		rest.NewRequiredResponseHeaderParam("X-Request-ID", codex.String().Refine(validate.NonEmptyString),
+			func(u userRespWithMeta) string { return u.RequestID },
+			func(u *userRespWithMeta, v string) { u.RequestID = v }),
+	).WithHandler(func(_ context.Context, req createReq) (userRespWithMeta, error) {
+		return userRespWithMeta{ID: "1", Name: req.Name, RequestID: "req-999"}, nil
+	})
+	handler := mustServeOne(t, route)
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
+	r.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusCreated {
+		t.Errorf("want 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestNegotiateFormatReflect_ContentTypeWithParameters_StillMatches is a
+// REGRESSION GUARD: chi's negotiateFormatReflect (used by the reflect-based
+// SSE dispatch in serve.go/serve_sse.go) compared a format's own
+// ContentType() value against the Accept header's media type WITHOUT
+// stripping any ";"-suffixed parameters first — unlike the generic
+// negotiateFormat (and nethttp's identical negotiateFormatReflect), both of
+// which already strip parameters on BOTH sides. A format declared via
+// format.JSON(codec).WithContentType("application/json; charset=utf-8")
+// would fail to match a plain "application/json" Accept header. Fixed by
+// applying the SAME strings.Cut the sibling functions already use.
+func TestNegotiateFormatReflect_ContentTypeWithParameters_StillMatches(t *testing.T) {
+	f := format.JSON(codex.String()).WithContentType("application/json; charset=utf-8")
+	formats := []format.Format[string]{f}
+	formatsVal := reflect.ValueOf(formats)
+
+	got, ok := negotiateFormatReflect(formatsVal, "application/json")
+	if !ok {
+		t.Fatal("want a match, got none")
+	}
+	gotFormat := got.Interface().(format.Format[string])
+	if gotFormat.ContentType() != f.ContentType() {
+		t.Errorf("want the SAME format returned, got a different ContentType: %q", gotFormat.ContentType())
+	}
+}
+
+// TestServeSpec_EndToEnd_AcceptHeaderNegotiation is the chi mirror of
+// adapters/nethttp's identical end-to-end test — proves
+// [rest.Server.ServeSpec]'s Accept-header content negotiation actually
+// works through chi's own dispatch (including its reflect-based
+// negotiateFormatReflect, just fixed for parity with nethttp earlier this
+// round).
+func TestServeSpec_EndToEnd_AcceptHeaderNegotiation(t *testing.T) {
+	b := rest.NewServer(testInfo)
+	if err := b.ServeSpec("/openapi.spec"); err != nil {
+		t.Fatalf("ServeSpec: %v", err)
+	}
+	route := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userRespCodec).WithHandler(
+		func(_ context.Context, req createReq) (userResp, error) {
+			return userResp{ID: "1", Name: req.Name}, nil
+		},
+	)
+	router := mustServe(t, route, b)
+
+	t.Run("default (no Accept header) is YAML", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, "/openapi.spec", nil)
+		router.ServeHTTP(rec, r)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("want 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if ct := rec.Header().Get("Content-Type"); ct != "application/yaml" {
+			t.Errorf("want Content-Type application/yaml, got %q", ct)
+		}
+		if !strings.Contains(rec.Body.String(), "openapi:") {
+			t.Errorf("want YAML body containing \"openapi:\", got: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("explicit Accept: application/json", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, "/openapi.spec", nil)
+		r.Header.Set("Accept", "application/json")
+		router.ServeHTTP(rec, r)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("want 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+			t.Errorf("want Content-Type application/json, got %q", ct)
+		}
+		if !strings.Contains(rec.Body.String(), `"openapi"`) {
+			t.Errorf("want JSON body containing \"openapi\", got: %s", rec.Body.String())
+		}
+	})
 }

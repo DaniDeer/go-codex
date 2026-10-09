@@ -2,6 +2,7 @@ package nethttp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,26 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 )
+
+// TestClientMiddlewareErrorLocation_ClassifiesFnVsInputFailure is a
+// REGRESSION GUARD: dispatchClientMiddlewareIn's caller (binding.go's
+// consumeOnce, clienttransport.go's Call/Consume) used to report EVERY
+// failure as "middleware:fn" via stats.ReportErrors, even an EncodeIn
+// (input-derivation) failure that never touched Fn at all — unlike the
+// server-side DispatchMiddlewareHandlers' own clean "middleware:in" vs
+// "middleware:fn" split. clientMiddlewareErrorLocation now classifies by
+// error type, mirroring that split.
+func TestClientMiddlewareErrorLocation_ClassifiesFnVsInputFailure(t *testing.T) {
+	fnErr := rest.MiddlewareError{Name: "x", Err: errors.New("boom")}
+	if got := clientMiddlewareErrorLocation(fnErr); got != "middleware:fn" {
+		t.Errorf("want %q for a MiddlewareError, got %q", "middleware:fn", got)
+	}
+
+	inputErr := rest.MiddlewareInputError{Name: "x", Err: errors.New("boom")}
+	if got := clientMiddlewareErrorLocation(inputErr); got != "middleware:in" {
+		t.Errorf("want %q for a MiddlewareInputError, got %q", "middleware:in", got)
+	}
+}
 
 // CallWithHandle-specific ClientTransform tests (HappyPath/FnError/
 // AgnosticMiddleware/D3Precedence — all 4 REMOVED, docs/design/

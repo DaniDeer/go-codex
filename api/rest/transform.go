@@ -121,6 +121,15 @@ type ClientMiddlewareHandler struct {
 	// see [MiddlewareHandler.Satisfies]'s doc comment for the full
 	// rationale, applied identically to the client/SENDING role.
 	Satisfies []string
+
+	// ResponseHeaderNames lists this middleware's own declared response
+	// header field names — the SAME set [DecodeOut] reads from. Adapters
+	// pass this to [NormalizeHeaderVars] before building the headers map
+	// [DecodeOut] consumes, so a declared name whose casing differs from
+	// the wire's canonicalized form (e.g. "X-Request-ID" vs Go's
+	// "X-Request-Id") still resolves correctly — the client-side
+	// counterpart of [RouteHandle.ResponseHeaderParamNames].
+	ResponseHeaderNames []string
 }
 
 // middlewareFieldsToDecodeVarsFields converts a slice of Merged*Param
@@ -310,24 +319,32 @@ func buildAgnosticMiddlewareHandler[In, Out any](mw Middleware[In, Out]) Middlew
 // buildEncodeIn builds the EncodeIn closure shared by
 // [buildClientMiddlewareHandler] (route-BOUND) and
 // [buildAgnosticClientMiddlewareHandler] (route-AGNOSTIC). Internally a
-// thin wrapper over [middleware.EncodeLayer] — behavior is UNCHANGED: same
-// 3-axis order (header, cookie, query), same fail-fast semantics, same
-// raw (unwrapped) error return.
+// thin wrapper over [middleware.EncodeLayer] — wraps every failure in
+// [MiddlewareInputError] (named after the VALUE being processed — mw's
+// own In — matching [buildDecodeIn]'s identical convention, not the
+// encode/decode DIRECTION), so a client-side codec-backed Middleware's
+// own InCodec.Validate/ContextField-set/merge-field-encode failure is
+// `errors.As`-navigable to the failing middleware's Name — previously a
+// bare, unwrapped error with no way to recover which middleware failed
+// (the SAME class of gap [MiddlewareOutputError]'s own doc comment
+// describes as already fixed for [buildEncodeOut]; this was the one
+// sibling of the DecodeIn/EncodeOut/DecodeOut/EncodeIn family that had
+// not received the same fix).
 func buildEncodeIn[In, Out any](mw Middleware[In, Out]) func(ctx context.Context, inAny any) (map[string]string, map[string]string, map[string]string, error) {
 	reqHeaderFields := headerFieldsOf(mw.reqHeaderParams)
 	reqCookieFields := cookieFieldsOf(mw.reqCookieParams)
 	reqQueryFields := queryFieldsOf(mw.reqQueryParams)
-	wrapErr := func(err error) error { return err }
+	wrapErr := func(err error) error { return MiddlewareInputError{Name: mw.Name, Err: err} }
 	ctxFieldsFromIn := mw.ctxFieldsFromIn
 
 	return func(ctx context.Context, inAny any) (map[string]string, map[string]string, map[string]string, error) {
 		in, _ := inAny.(In)
 		if err := mw.InCodec.Validate(in); err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, MiddlewareInputError{Name: mw.Name, Err: err}
 		}
 		for _, cf := range ctxFieldsFromIn {
 			if err := cf.field.Set(ctx, cf.get(in)); err != nil {
-				return nil, nil, nil, err
+				return nil, nil, nil, MiddlewareInputError{Name: mw.Name, Err: err}
 			}
 		}
 		vars, err := middleware.EncodeLayer(in, [][]codex.FieldCodec[In]{
@@ -379,12 +396,17 @@ func buildDecodeOut[In, Out any](mw Middleware[In, Out]) func(ctx context.Contex
 // class, attached via [Route.ClientBoundMW]) and
 // [buildAgnosticClientMiddlewareHandler] (reusable class).
 func buildClientMiddlewareHandlerAny[In, Out any](mw Middleware[In, Out], fn any) ClientMiddlewareHandler {
+	respHeaderNames := make([]string, len(mw.respHeaderParams))
+	for i, p := range mw.respHeaderParams {
+		respHeaderNames[i] = p.Name
+	}
 	return ClientMiddlewareHandler{
-		Name:      mw.Name,
-		Fn:        fn,
-		EncodeIn:  buildEncodeIn(mw),
-		DecodeOut: buildDecodeOut(mw),
-		Satisfies: satisfiesOf(mw),
+		Name:                mw.Name,
+		Fn:                  fn,
+		EncodeIn:            buildEncodeIn(mw),
+		DecodeOut:           buildDecodeOut(mw),
+		Satisfies:           satisfiesOf(mw),
+		ResponseHeaderNames: respHeaderNames,
 	}
 }
 

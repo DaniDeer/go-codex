@@ -725,7 +725,7 @@ func consumeSSEOnce[Req, Event any](
 	if len(handle.ClientMiddlewareHandlers) > 0 {
 		mwHeaders, mwCookies, mwQuery, mwErr := dispatchClientMiddlewareIn(ctx, req, handle.ClientMiddlewareHandlers)
 		if mwErr != nil {
-			stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, "middleware:fn", mwErr)
+			stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, clientMiddlewareErrorLocation(mwErr), mwErr)
 			obs.RecordRequest(method, path, 0, time.Since(start))
 			return false, mwErr
 		}

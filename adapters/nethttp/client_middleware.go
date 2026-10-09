@@ -2,6 +2,7 @@ package nethttp
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"reflect"
 
@@ -101,6 +102,23 @@ func dispatchClientMiddlewareIn[Req any](ctx context.Context, req Req, handlers 
 	return headers, cookies, query, nil
 }
 
+// clientMiddlewareErrorLocation classifies a [dispatchClientMiddlewareIn]
+// failure for [stats.ReportErrors]'s location argument, mirroring
+// [DispatchMiddlewareHandlers]'s (server-side) own clean "middleware:in"
+// vs "middleware:fn" split — a [rest.MiddlewareError] means a middleware's
+// own Fn returned a business error; anything else (notably
+// [rest.MiddlewareInputError], from [rest.Middleware]'s EncodeIn) is an
+// input-derivation failure, reported as "middleware:in". Previously every
+// [dispatchClientMiddlewareIn] failure was unconditionally reported as
+// "middleware:fn", even an EncodeIn failure that never touched Fn at all.
+func clientMiddlewareErrorLocation(err error) string {
+	var fnErr rest.MiddlewareError
+	if errors.As(err, &fnErr) {
+		return "middleware:fn"
+	}
+	return "middleware:in"
+}
+
 // clientMiddlewareSatisfiesAny reports whether at least one of handlers
 // declares a Satisfies scheme name matching one of secReqs' schemes — OR
 // declares no Satisfies at all (mirrors [mergeCredentialHeaders]'s own
@@ -144,15 +162,16 @@ func dispatchClientMiddlewareOut(ctx context.Context, resp *http.Response, handl
 	if len(handlers) == 0 {
 		return nil
 	}
-	headers := make(map[string]string, len(resp.Header))
+	rawHeaders := make(map[string]string, len(resp.Header))
 	for k := range resp.Header {
-		headers[k] = resp.Header.Get(k)
+		rawHeaders[k] = resp.Header.Get(k)
 	}
 	cookies := make(map[string]string, len(resp.Cookies()))
 	for _, c := range resp.Cookies() {
 		cookies[c.Name] = c.Value
 	}
 	for _, h := range handlers {
+		headers := rest.NormalizeHeaderVars(rawHeaders, h.ResponseHeaderNames)
 		out, err := h.DecodeOut(ctx, headers, cookies)
 		if err != nil {
 			return err

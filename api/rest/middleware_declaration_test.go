@@ -468,3 +468,38 @@ func TestMiddlewareMisattachedError(t *testing.T) {
 		t.Error("want non-empty Error() message")
 	}
 }
+
+// TestClientMiddlewareHandler_EncodeIn_InvalidOut_WrapsMiddlewareInputError
+// is a REGRESSION GUARD: [ClientMiddlewareHandler.EncodeIn] (the client-
+// side/SENDING-role sibling of DecodeIn/EncodeOut/DecodeOut) used to
+// return mw.InCodec.Validate's failure completely UNWRAPPED — the only
+// one of the 4 DecodeIn/EncodeOut/DecodeOut/EncodeIn functions with no
+// typed error wrapper, breaking errors.As-navigability and the
+// "which middleware failed" recovery every sibling provides. Fixed:
+// EncodeIn now wraps every failure in [rest.MiddlewareInputError] (named
+// after the In VALUE being processed, mirroring DecodeIn's own
+// convention — not the encode/decode direction).
+func TestClientMiddlewareHandler_EncodeIn_InvalidOut_WrapsMiddlewareInputError(t *testing.T) {
+	mw := rest.NewMiddleware(newTestDeclaration()).
+		WithSend(func(ctx context.Context) (mdTestIn, error) {
+			// Violates mdTestInCodec's NonEmptyString constraint on Key.
+			return mdTestIn{Key: ""}, nil
+		})
+
+	h := rest.NewRoute[mwTestReq, userResp]("GET", "/invalid-send", mwTestReqCodec, userCodec,
+		rest.RouteMeta{OperationID: "invalidSend"},
+	).Use(mw).ClientHandle()
+
+	if len(h.ClientMiddlewareHandlers) != 1 {
+		t.Fatalf("want 1 ClientMiddlewareHandler, got %d", len(h.ClientMiddlewareHandlers))
+	}
+
+	_, _, _, err := h.ClientMiddlewareHandlers[0].EncodeIn(context.Background(), mdTestIn{Key: ""})
+	var inputErr rest.MiddlewareInputError
+	if !errors.As(err, &inputErr) {
+		t.Fatalf("want rest.MiddlewareInputError, got %#v", err)
+	}
+	if inputErr.Name != "test-policy" {
+		t.Errorf("want Name %q, got %q", "test-policy", inputErr.Name)
+	}
+}

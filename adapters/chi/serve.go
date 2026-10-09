@@ -392,7 +392,8 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 		pathVars := pathValues(r, pathNames)
 		carrier := httpCarrier{r}
 		queryVars := carrier.ExtractQuery()
-		headerVars := carrier.ExtractHeaders()
+		headerNames := elem.Addr().MethodByName("HeaderParamNames").Call(nil)[0].Interface().([]string)
+		headerVars := rest.NormalizeHeaderVars(carrier.ExtractHeaders(), headerNames)
 		cookieVars := carrier.ExtractCookies()
 
 		if opts.MultiValueQueryParams {
@@ -654,7 +655,8 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 				}
 				respCT = chosen.MethodByName("ContentType").Call(nil)[0].String()
 
-				if errV := callErr(elem.Addr(), "ValidateResponseHeaders", reflect.ValueOf(responseHeaderValues(respHeaders))); errV != nil {
+				respHeaderNames := elem.Addr().MethodByName("ResponseHeaderParamNames").Call(nil)[0].Interface().([]string)
+				if errV := callErr(elem.Addr(), "ValidateResponseHeaders", reflect.ValueOf(rest.NormalizeHeaderVars(responseHeaderValues(respHeaders), respHeaderNames))); errV != nil {
 					rest.ReportResponseHeaderErrors(ctx, errV)
 					errFn(sw, r, http.StatusInternalServerError, errV)
 					return
@@ -712,7 +714,8 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 			}
 		}
 
-		if errV := callErr(elem.Addr(), "ValidateResponseHeaders", reflect.ValueOf(responseHeaderValues(respHeaders))); errV != nil {
+		respHeaderNames := elem.Addr().MethodByName("ResponseHeaderParamNames").Call(nil)[0].Interface().([]string)
+		if errV := callErr(elem.Addr(), "ValidateResponseHeaders", reflect.ValueOf(rest.NormalizeHeaderVars(responseHeaderValues(respHeaders), respHeaderNames))); errV != nil {
 			rest.ReportResponseHeaderErrors(ctx, errV)
 			errFn(sw, r, http.StatusInternalServerError, errV)
 			return

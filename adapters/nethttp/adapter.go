@@ -251,7 +251,7 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 		// Phase 6 "Decision A" — eliminates the former double extraction).
 		carrier := httpCarrier{r}
 		queryVars := carrier.ExtractQuery()
-		headerVars := carrier.ExtractHeaders()
+		headerVars := rest.NormalizeHeaderVars(carrier.ExtractHeaders(), handle.HeaderParamNames())
 		cookieVars := carrier.ExtractCookies()
 
 		// Validate query parameters against their registered codecs (if any).
@@ -545,7 +545,7 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 				respCT = chosen.ContentType()
 
 				// Validate and write response headers/cookies before streaming.
-				if err := handle.ValidateResponseHeaders(responseHeaderValues(respHeaders)); err != nil {
+				if err := handle.ValidateResponseHeaders(rest.NormalizeHeaderVars(responseHeaderValues(respHeaders), handle.ResponseHeaderParamNames())); err != nil {
 					rest.ReportResponseHeaderErrors(ctx, err)
 					errFn(sw, r, http.StatusInternalServerError, err)
 					return
@@ -604,7 +604,7 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 		}
 
 		// Validate response headers against registered ResponseHeaderParam codecs.
-		if err := handle.ValidateResponseHeaders(responseHeaderValues(respHeaders)); err != nil {
+		if err := handle.ValidateResponseHeaders(rest.NormalizeHeaderVars(responseHeaderValues(respHeaders), handle.ResponseHeaderParamNames())); err != nil {
 			rest.ReportResponseHeaderErrors(ctx, err)
 			errFn(sw, r, http.StatusInternalServerError, err)
 			return
@@ -685,7 +685,7 @@ func sseHandlerFunc[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn 
 		// — eliminates the former double extraction).
 		carrier := httpCarrier{r}
 		queryVars := carrier.ExtractQuery()
-		headerVars := carrier.ExtractHeaders()
+		headerVars := rest.NormalizeHeaderVars(carrier.ExtractHeaders(), handle.HeaderParamNames())
 		cookieVars := carrier.ExtractCookies()
 
 		// Validate query parameters against their registered codecs (if any).
@@ -851,7 +851,7 @@ func sseHandlerFunc[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn 
 				headersCommitted = true
 				// Commit staged response headers/cookies on first send, before
 				// any data is written (headers are not yet sent to the client).
-				if err := handle.ValidateResponseHeaders(responseHeaderValues(responseHeaders)); err != nil {
+				if err := handle.ValidateResponseHeaders(rest.NormalizeHeaderVars(responseHeaderValues(responseHeaders), handle.ResponseHeaderParamNames())); err != nil {
 					rest.ReportResponseHeaderErrors(ctx, err)
 					return err
 				}

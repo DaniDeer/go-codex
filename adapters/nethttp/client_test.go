@@ -1083,6 +1083,41 @@ func TestCall_ResponseMergeFields_DecodesIntoResp(t *testing.T) {
 	}
 }
 
+// TestCall_ResponseMergeFields_DeclaredCasingMismatch_StillDecodes is a
+// REGRESSION GUARD: a response header merge field declared with a very
+// natural all-caps-acronym casing ("X-Request-ID") used to silently fail
+// to decode — Go's net/http canonicalizes the wire header to
+// "X-Request-Id", and the client's response-merge map lookup was keyed by
+// the AS-DECLARED name verbatim. Fixed via [rest.NormalizeHeaderVars],
+// applied in adapters/nethttp/client.go right after raw header extraction.
+func TestCall_ResponseMergeFields_DeclaredCasingMismatch_StillDecodes(t *testing.T) {
+	handle := rest.NewRoute[getUserActivityReq, userRespWithMeta]("GET", "/users/{id}/activity",
+		codex.Struct[getUserActivityReq](), userRespWithMetaBodyCodec,
+		rest.NewPathParam("id", codex.String().Refine(validate.NonEmptyString),
+			func(r getUserActivityReq) string { return r.ID },
+			func(r *getUserActivityReq, v string) { r.ID = v }),
+		rest.NewRequiredResponseHeaderParam("X-Request-ID", codex.String().Refine(validate.NonEmptyString),
+			func(u userRespWithMeta) string { return u.RequestID },
+			func(u *userRespWithMeta, v string) { u.RequestID = v }),
+	).ClientHandle()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Request-ID", "req-888")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"u1","name":"Alice"}`))
+	}))
+	defer srv.Close()
+
+	resp, err := callWithHandle(context.Background(), srv.Client(), srv.URL,
+		handle, getUserActivityReq{ID: "u1"}, CallOptions{})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if resp.RequestID != "req-888" {
+		t.Errorf("RequestID: want %q, got %q", "req-888", resp.RequestID)
+	}
+}
+
 // R9: CallWithHandle happy path — a route with path+query merge
 // fields on Req derives BOTH the path var and the query param from ONE
 // call, with no cross-role leakage (mirrors

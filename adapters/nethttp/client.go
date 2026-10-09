@@ -929,12 +929,17 @@ func callWithVars[Req, Resp any](
 		headerFields := handle.ResponseHeaderMergeFields()
 		cookieFields := handle.ResponseCookieMergeFields()
 		if len(headerFields)+len(cookieFields) > 0 {
-			vars := make(map[string]string, len(headerFields)+len(cookieFields))
+			rawHeaders := make(map[string]string, len(resp.Header))
+			for k := range resp.Header {
+				rawHeaders[k] = resp.Header.Get(k)
+			}
+			rawHeaders = rest.NormalizeHeaderVars(rawHeaders, handle.ResponseHeaderParamNames())
+			vars := make(map[string]string, len(rawHeaders)+len(resp.Cookies()))
 			for _, c := range resp.Cookies() {
 				vars[c.Name] = c.Value
 			}
-			for k := range resp.Header {
-				vars[k] = resp.Header.Get(k)
+			for k, v := range rawHeaders {
+				vars[k] = v
 			}
 			mergeFields := make([]codex.FieldCodec[Resp], 0, len(headerFields)+len(cookieFields))
 			mergeFields = append(mergeFields, headerFields...)

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -597,6 +598,32 @@ func TestHandler_HeaderValidation_valid(t *testing.T) {
 	rec := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/items", nil)
 	r.Header.Set("X-Request-Id", "f47ac10b-58cc-4372-a567-0e02b2c3d479")
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestHandler_HeaderValidation_DeclaredCasingMismatch_StillMatches is a
+// REGRESSION GUARD: a REQUIRED [rest.HeaderParam] declared with a VERY
+// natural all-caps-acronym casing ("X-Request-ID") used to be silently
+// treated as ABSENT — Go's net/http canonicalizes the actual wire header
+// to "X-Request-Id" (capital I, lowercase d), and the adapter's dispatch
+// did a literal, case-sensitive map lookup keyed by the AS-DECLARED name.
+// A perfectly well-formed request with the header present was rejected
+// with a spurious 400 "required parameter missing". Fixed via
+// [rest.NormalizeHeaderVars], applied once right after header extraction.
+func TestHandler_HeaderValidation_DeclaredCasingMismatch_StillMatches(t *testing.T) {
+	uuidCodec := codex.String().Refine(validate.UUID)
+	route := rest.NewRoute[getReq, userResp]("GET", "/items", getReqCodec, userRespCodec, rest.HeaderParam{Name: "X-Request-ID", Required: true, Codec: &uuidCodec}).WithHandler(func(_ context.Context, _ getReq) (userResp, error) {
+		return userResp{ID: "1", Name: "Alice"}, nil
+	})
+	handler := mustServeOne(t, route)
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/items", nil)
+	r.Header.Set("X-Request-ID", "f47ac10b-58cc-4372-a567-0e02b2c3d479")
 	handler.ServeHTTP(rec, r)
 
 	if rec.Code != http.StatusOK {
@@ -1244,6 +1271,39 @@ func TestHandler_ResponseMergeFields_NoneDeclaredIsUnaffected(t *testing.T) {
 	}
 	if got.ID != "1" || got.Name != "Alice" {
 		t.Errorf("unexpected body: %+v", got)
+	}
+}
+
+// TestHandler_ResponseMergeFields_DeclaredCasingMismatch_StillValidates is a
+// REGRESSION GUARD: a REQUIRED [rest.ResponseHeaderParam]/
+// [rest.NewRequiredResponseHeaderParam] declared with a very natural
+// all-caps-acronym casing ("X-Request-ID") used to make
+// [rest.RouteHandle.ValidateResponseHeaders] silently see the value as
+// ABSENT — Go's net/http canonicalizes the header actually WRITTEN (via
+// the SAME declared name) to "X-Request-Id" internally, and the adapter's
+// response-validation dispatch did a literal, case-sensitive lookup keyed
+// by the AS-DECLARED name. A perfectly well-formed handler response was
+// rejected with a spurious 500 "required parameter missing" — WORSE than
+// the request-side symptom, since it broke the SERVER'S OWN successful
+// response. Fixed via [rest.NormalizeHeaderVars], applied to
+// `responseHeaderValues`'s output at every ValidateResponseHeaders call site.
+func TestHandler_ResponseMergeFields_DeclaredCasingMismatch_StillValidates(t *testing.T) {
+	route := rest.NewRoute[createReq, userRespWithMeta]("POST", "/users", createReqCodec, userRespWithMetaBodyCodec,
+		rest.NewRequiredResponseHeaderParam("X-Request-ID", codex.String().Refine(validate.NonEmptyString),
+			func(u userRespWithMeta) string { return u.RequestID },
+			func(u *userRespWithMeta, v string) { u.RequestID = v }),
+	).WithHandler(func(_ context.Context, req createReq) (userRespWithMeta, error) {
+		return userRespWithMeta{ID: "1", Name: req.Name, RequestID: "req-999"}, nil
+	})
+	handler := mustServeOne(t, route)
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(`{"name":"Alice"}`))
+	r.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusCreated {
+		t.Errorf("want 201, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -2661,4 +2721,78 @@ func (s *testSpyObserver) RecordRequest(_, _ string, _ int, _ time.Duration) {
 	if s.onRequest != nil {
 		s.onRequest()
 	}
+}
+
+// TestNegotiateFormatReflect_ContentTypeWithParameters_StillMatches mirrors
+// adapters/chi's identical regression test — proves nethttp's
+// negotiateFormatReflect already correctly strips ";"-suffixed parameters
+// from a format's own ContentType() before comparing against the Accept
+// header's media type (chi's copy was MISSING this and has been fixed to
+// match).
+func TestNegotiateFormatReflect_ContentTypeWithParameters_StillMatches(t *testing.T) {
+	f := format.JSON(codex.String()).WithContentType("application/json; charset=utf-8")
+	formats := []format.Format[string]{f}
+	formatsVal := reflect.ValueOf(formats)
+
+	got, ok := negotiateFormatReflect(formatsVal, "application/json")
+	if !ok {
+		t.Fatal("want a match, got none")
+	}
+	gotFormat := got.Interface().(format.Format[string])
+	if gotFormat.ContentType() != f.ContentType() {
+		t.Errorf("want the SAME format returned, got a different ContentType: %q", gotFormat.ContentType())
+	}
+}
+
+// TestServeSpec_EndToEnd_AcceptHeaderNegotiation is a genuine END-TO-END
+// test of [rest.Server.ServeSpec]'s Accept-header content negotiation —
+// `api/rest`'s own TestServeSpec_HappyPath_BothFormats only exercises the
+// handler function and Format.Marshal directly, never real HTTP dispatch
+// through an adapter. ServeSpec is documented as "just another route,"
+// dispatched through the SAME reflect-based serve path (and its
+// negotiateFormatReflect) every other multi-format route uses — this test
+// proves that claim live, for both the default (YAML) and explicit JSON
+// Accept header, via a real registered *rest.Server + mux dispatch.
+func TestServeSpec_EndToEnd_AcceptHeaderNegotiation(t *testing.T) {
+	b := rest.NewServer(testInfo)
+	if err := b.ServeSpec("/openapi.spec"); err != nil {
+		t.Fatalf("ServeSpec: %v", err)
+	}
+	route := rest.NewRoute[createReq, userResp]("POST", "/users", createReqCodec, userRespCodec).WithHandler(
+		func(_ context.Context, req createReq) (userResp, error) {
+			return userResp{ID: "1", Name: req.Name}, nil
+		},
+	)
+	mux := mustServe(t, route, b)
+
+	t.Run("default (no Accept header) is YAML", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, "/openapi.spec", nil)
+		mux.ServeHTTP(rec, r)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("want 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if ct := rec.Header().Get("Content-Type"); ct != "application/yaml" {
+			t.Errorf("want Content-Type application/yaml, got %q", ct)
+		}
+		if !strings.Contains(rec.Body.String(), "openapi:") {
+			t.Errorf("want YAML body containing \"openapi:\", got: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("explicit Accept: application/json", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, "/openapi.spec", nil)
+		r.Header.Set("Accept", "application/json")
+		mux.ServeHTTP(rec, r)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("want 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+			t.Errorf("want Content-Type application/json, got %q", ct)
+		}
+		if !strings.Contains(rec.Body.String(), `"openapi"`) {
+			t.Errorf("want JSON body containing \"openapi\", got: %s", rec.Body.String())
+		}
+	})
 }

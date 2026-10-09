@@ -1,6 +1,271 @@
-# go-codex Review History (R1–R166, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
+# go-codex Review History (R1–R174, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 174 (api/rest — deep dive #9 (final): spec endpoint content negotiation — closed a real end-to-end test gap)
+
+Ninth and final round of this `api/rest` deep-dive series. Traced `Server.ServeSpec`'s Accept-header
+YAML/JSON negotiation — confirmed it is genuinely "just another route" (zero `ServeSpec`-specific
+code in either adapter), dispatched through the SAME `negotiateFormatReflect`/`WithFormats`
+machinery already deeply reviewed (and fixed for chi) in Round 171.
+
+- **Trivial (test-coverage gap, now closed)** — `api/rest`'s own `TestServeSpec_HappyPath_BothFormats`
+  only ever exercised the handler function and `Format.Marshal` directly; ZERO existing test
+  dispatched a REAL HTTP request with an actual `Accept` header through `adapters/nethttp`/
+  `adapters/chi`'s own mux/router to prove ServeSpec's documented content negotiation actually
+  works end-to-end. Given Round 171 found and fixed a REAL bug in exactly this negotiation
+  mechanism, this gap mattered. Added
+  `TestServeSpec_EndToEnd_AcceptHeaderNegotiation` to BOTH adapters (default-YAML and
+  explicit-`Accept: application/json` subtests, via a real registered `*rest.Server` + mux/router
+  dispatch) — both PASS, confirming ServeSpec's negotiation is correct on both adapters today
+  (including after Round 171's chi fix).
+
+This concludes the `api/rest` deep-dive series (Rounds 167-174): `concept-transform` (foundational
+substrate), `concept-path-params`, `concept-query-params`, `concept-header-params` (2 real bugs:
+request+response header casing, plus a silently-dropped `ClientHandle` field), `concept-cookie-params`
+(covered by the same `ClientHandle` fix), `concept-response-merge` (the response-side casing bug),
+`concept-formats` (1 real nethttp/chi parity bug), `concept-status-codes` (clean), `concept-callwithtransport`
+(clean, 1 trivial dormant note), `concept-spec-endpoint` (clean, 1 test-coverage gap closed). Combined
+with the already-completed `concept-security-schemes` (Rounds 163-166), every `api/rest` concept the
+user asked to trace end-to-end — declaration → middleware → router → handler → adapter attach →
+adapter dispatch — has now been audited at this depth.
+
+Verification (this round): `gofmt -l .` clean; `go build ./...`/`go vet ./...` clean; `go test ./...`
+zero failures repo-wide; `just check` (staticcheck + gosec) zero findings; every example under
+`examples/*/` re-run to exit 0.
+
+---
+
+## Round 173 (api/rest — deep dive #8: `handletransport.go`/`client.go`/`clienttransport.go` sweep beyond capability coverage)
+
+Eighth round of the `api/rest` deep dive. Confirmed `rest.CallWithTransport`'s Tier 3a
+`VerifyCapabilityCoverage` check lives ONLY at the `api/rest` layer (not duplicated in
+`adapters/nethttp`'s `clientTransport.Call`/`Consume`) — correct, checked-once architecture, not
+a gap. Traced the OTHER client-dispatch primitive, `adapters/nethttp.callWithVars` (the
+explicit-vars primitive used exclusively by `ports`-binding adapters' `CallAdapter`/
+`DrainCallAdapter`, confirmed via its own doc comment to deliberately NOT share
+`rest.CallWithTransport`'s path).
+
+- **Trivial (documented, not fixed) — `callWithVars`'s port-binding callers bypass the Tier 3a
+  `VerifyCapabilityCoverage` check** `rest.CallWithTransport`'s own main path performs. Currently
+  100% inert — confirmed via `CallWithTransport`'s own doc comment that NO REST adapter supplies
+  any concrete `Capability` today, so this check "currently only ever fires for a mistakenly-
+  declared requirement" even on the path that DOES have it. Not fixed: no reproducible failing
+  scenario exists to validate a fix against (the check has zero live effect for REST today), and
+  speculatively wiring it into a THIRD call path for a mechanism with no current REST consumer
+  risks adding dead code the next genuine REST Capability would need to re-verify anyway. Flagged
+  for whoever adds the first concrete REST Tier 3a Capability to revisit.
+
+No other findings — `client.go`'s typed error family (`RequestBuildError`/`RequestError`/
+`ResponseBodyError`/`UnexpectedStatusError`) is used consistently; the reflect-based
+`clienttransport.go` path shares the SAME error construction, not a separate copy.
+
+---
+
+## Round 172 (api/rest — deep dive #7: success-path status codes — clean, single source of truth confirmed)
+
+Seventh round of the `api/rest` deep dive. Traced `RouteMeta.RespStatus` (success-path status,
+defaults "201"/POST, "200"/other) through `buildDescriptor` into `adapters/nethttp`/`adapters/chi`'s
+`primaryStatusFor(descriptor route.Route)`, and `ResponseMeta` (documentation-only extra
+responses — errors/redirects, never runtime-enforced by design, distinct from `ErrorStatus`/
+`ErrorPattern`'s own independently-confirmed-correct enforcement mechanism).
+
+**No new findings** — `primaryStatusFor` is byte-for-byte identical between both adapters
+(confirmed via direct diff), parses the SAME descriptor string the OpenAPI spec itself renders
+(`strconv.Atoi(descriptor.Responses[0].Status)`, graceful `http.StatusOK` fallback on parse
+failure) — a single source of truth with zero spec/runtime drift risk. No runtime success-status
+override mechanism exists (deliberate — a route has ONE declared success status; status
+variation is handled via `ErrorStatus`/`ErrorPattern` instead, already confirmed correct in prior
+rounds), consistent with REST's declarative philosophy.
+
+---
+
+## Round 171 (api/rest — deep dive #6: formats/content-negotiation — chi's SSE reflect dispatch missing a parameter-stripping step nethttp already had)
+
+Sixth round of the `api/rest` deep dive. Traced `RequestFormats`/`Formats`/`WithFormats`
+resolution through `Register`/`ClientHandle` (confirmed already fixed in a prior round — both
+construction paths apply declared formats identically, per this skill's own Gotchas) into the
+actual Accept/Content-Type negotiation functions in both adapters.
+
+- **G1 (small) — `adapters/chi`'s `negotiateFormatReflect` (the reflect-based SSE dispatch's
+  Accept-header matcher, shared by `serve.go`/`serve_sse.go`) compared a format's own
+  `ContentType()` value against the Accept header's media type WITHOUT stripping any
+  `";"`-suffixed parameters first** — unlike the GENERIC `negotiateFormat` (confirmed
+  byte-for-byte identical between both adapters) and nethttp's OWN `negotiateFormatReflect`,
+  both of which already strip parameters on BOTH sides via `strings.Cut`. A format declared via
+  `format.JSON(codec).WithContentType("application/json; charset=utf-8")` (a legitimate, exported
+  `Format.WithContentType` usage) would fail to match a plain `"application/json"` Accept header
+  on chi's reflect-based SSE path only — currently dormant (no shipped format uses a parameterized
+  `ContentType()`), but a confirmed, real nethttp/chi parity gap consistent with this project's
+  own extensively-established byte-for-byte-parity precedent. **Fix**: added the same
+  `strings.Cut(ct, ";")` + `strings.TrimSpace` chi was missing, now identical to nethttp's.
+  Zero prior test coverage existed for either adapter's `negotiateFormatReflect` — added
+  `TestNegotiateFormatReflect_ContentTypeWithParameters_StillMatches` to BOTH adapters (chi's
+  proves the fix; nethttp's proves the already-correct behavior, for symmetric coverage).
+
+Verification: `gofmt -l .` clean; `go build ./...`/`go vet ./...` clean; `go test ./...` zero
+failures repo-wide; `just check` (staticcheck + gosec) zero findings; every example under
+`examples/*/` re-run to exit 0.
+
+---
+
+## Round 170 (api/rest — deep dives #4+#5: header params + response merge — a REAL, confirmed, significant header-casing bug (request AND response sides) + a silently-dropped ClientHandle field)
+
+Fourth and fifth rounds of the `api/rest` deep dive (merged into one entry — the response-merge
+round's own finding, G3, is the SAME bug class G1 already fixed, just a second manifestation the
+first pass missed). Traced `HeaderParam`/`NewRequiredHeaderParam`/`NewOptionalHeaderParam`/
+`NewOmitEmptyHeaderParam` through `ValidateHeaders`/`ApplyMergeFields` into
+`adapters/nethttp`/`adapters/chi`'s `httpCarrier.ExtractHeaders`, then `ResponseHeaderParam`/
+`NewRequiredResponseHeaderParam`/etc. through `ValidateResponseHeaders`/`EncodeMerged` — and found
+three real, reproducible bugs (confirmed via a live `httptest` repro BEFORE fixing, per this
+project's own established discipline), not just doc-staleness.
+
+- **G1 (bug) — header-name CASING mismatch silently treated a well-formed, REQUIRED header as
+  absent.** Go's `net/http` canonicalizes every parsed header key to MIME-style Title-Case (e.g.
+  `"X-Request-ID"` becomes `"X-Request-Id"` — capital I, lowercase d). Every dispatch call site
+  (`ValidateHeaders`, merge-field decode, and the equivalent client-side response-header paths)
+  did a literal, case-sensitive map lookup keyed by the declared `HeaderParam.Name` EXACTLY as
+  written — a very natural way to write this name (used throughout `api/rest`'s OWN unit tests
+  and its own `ValidateHeaders` godoc example!) silently failed to match, returning a spurious
+  400 `ErrRequiredParam` for a request that DID carry the header. Reproduced live via
+  `httptest.NewRequest` + `r.Header.Set("X-Request-ID", ...)` against a route declaring
+  `HeaderParam{Name: "X-Request-ID", Required: true}` — confirmed 400 before the fix, 200 after.
+  **Fix**: new exported `rest.NormalizeHeaderVars(headers map[string]string, declaredNames []string) map[string]string`
+  (api/rest/builder.go) — re-keys a case-insensitive match to the declared name, no-op when every
+  name already matches exactly. Wired into ALL 10 affected call sites: `adapters/nethttp`'s
+  `adapter.go` (×2, regular+SSE), `serve.go`, `serve_sse.go` (server request-header dispatch,
+  reflect-based), `client.go`, `client_middleware.go`'s `dispatchClientMiddlewareOut`,
+  `clienttransport.go` (client response-header decode); `adapters/chi`'s `adapter.go` (×2),
+  `serve.go`, `serve_sse.go` (server request-header dispatch, chi mirror). New
+  `RouteHandle.ResponseHeaderParamNames()`/`SSERouteHandle.ResponseHeaderParamNames()` accessors
+  (mirroring the existing request-side `HeaderParamNames`) and a new
+  `ClientMiddlewareHandler.ResponseHeaderNames []string` field supply the "declared names" input
+  for the client-side response-decode call sites.
+- **G2 (bug, found WHILE fixing G1) — `Route.ClientHandle()`/`SSERoute.ClientHandle()` silently
+  NEVER copied `responseHeaderParams`/`responseCookieParams`** (the Param-level Required/Codec
+  declarations) into the built handle — only the merge-FIELD codecs
+  (`responseHeaderMergeFields`/`responseCookieMergeFields`) were ever copied. Confirmed via a
+  live test failure: `ResponseHeaderParamNames()` returned an empty slice for a route that DID
+  declare a required response header, because the backing field was simply absent from
+  `ClientHandle()`'s struct literal (present in `registerHandle`'s, confirming this was an
+  omission, not a design choice — same class of bug as the adjacent, already-fixed "ClientHandle
+  silently ignored declared Formats" comment in the same function). Previously benign (no
+  client-side code ever called `ValidateResponseHeaders`/`ValidateResponseCookies` before this
+  round), but would have silently no-op'd those methods for any future caller, and directly
+  blocked G1's fix from working client-side until found and fixed. **Fix**: added
+  `responseHeaderParams: rb.respHeaders`/`responseCookieParams: rb.respCookies` to both
+  `ClientHandle()` struct literals.
+- **G3 (bug, found during the immediately-following response-merge round) — the SAME casing
+  mismatch, SERVER-SIDE, on the RESPONSE direction — WORSE than G1's symptom, since it broke the
+  server's OWN successful response.** A handler returning a value for a declared
+  `NewRequiredResponseHeaderParam("X-Request-ID", ...)` writes the header via the SAME declared
+  name (Go's `http.ResponseWriter.Header().Set` canonicalizes it to `"X-Request-Id"` on write,
+  same as the request side), but `adapters/{nethttp,chi}`'s `responseHeaderValues(h http.Header)`
+  blanket-extracts using Go's already-canonical keys with zero normalization, and
+  `ValidateResponseHeaders` looked it up by the AS-DECLARED name — a perfectly well-formed
+  handler response was rejected with a spurious 500 `ErrRequiredParam`. Reproduced live
+  (confirmed 500 before the fix, 201 after) with the exact `TestHandler_ResponseMergeFields_*`
+  pattern already proven for the happy path, just with `"X-Request-ID"` casing. **Fix**: wrapped
+  `responseHeaderValues(...)`'s result in `rest.NormalizeHeaderVars(..., handle.ResponseHeaderParamNames())`
+  (or the reflect-based `elem.Addr().MethodByName("ResponseHeaderParamNames")` equivalent) at
+  all 12 call sites: `adapters/nethttp`'s `adapter.go` (×3), `serve.go` (×2), `serve_sse.go` (×1);
+  `adapters/chi`'s identical 6-call-site mirror.
+
+Verification: 4 new unit tests for `NormalizeHeaderVars` (case-insensitive match/exact-match
+no-op/genuinely-absent/nil-input safety) in `api/rest/builder_test.go`; server-side end-to-end
+regression tests (`TestHandler_HeaderValidation_DeclaredCasingMismatch_StillMatches` for G1,
+`TestHandler_ResponseMergeFields_DeclaredCasingMismatch_StillValidates` for G3) added to BOTH
+`adapters/nethttp/adapter_test.go` and `adapters/chi/adapter_test.go` (byte-for-byte mirror
+pairs); a client-side end-to-end regression test
+(`TestCall_ResponseMergeFields_DeclaredCasingMismatch_StillDecodes`) in
+`adapters/nethttp/client_test.go`; 3 direct `api/rest`-level regression tests proving G2's fix
+(`TestClientHandle_ResponseHeaderParamNames_PopulatedFromDeclaration`,
+`TestClientHandle_ValidateResponseCookies_EnforcesRequired`,
+`TestSSERouteClientHandle_ResponseHeaderParamNames_PopulatedFromDeclaration`). `gofmt -l .`
+clean; `go build ./...`/`go vet ./...` clean; `go test ./...` zero failures repo-wide;
+`just check` (staticcheck + gosec) zero findings; every example under `examples/*/` re-run to
+exit 0.
+
+---
+
+## Round 169 (api/rest — deep dive #3: query params, multi-value toggle, full path declare → ValidateQuery/ValidateQueryMulti → nethttp/chi extraction)
+
+Third round of the `api/rest` deep dive. Traced `QueryParam`/`NewRequiredQueryParam`/
+`NewOptionalQueryParam`/`NewOmitEmptyQueryParam` through `ValidateQuery`/`ValidateQueryMulti`/
+`EncodeQueryVars`/`ApplyMergeFields`, and the Tier 2 `QueryCapableTransport` (`ExtractQuery`/
+`ExtractQueryMulti`) into `adapters/nethttp`/`adapters/chi`'s `httpCarrier` implementations.
+
+**No new findings** — confirmed `Options.MultiValueQueryParams` toggle is wired identically in
+both adapters (regular + SSE dispatch, both the reflect-based and direct serve paths);
+`httpCarrier.ExtractQuery`/`ExtractQueryMulti` are byte-for-byte identical between nethttp/chi;
+`ValidateQueryMulti`'s "first value per key" scope limit (multi-value is VALIDATE-ONLY — it does
+NOT extend to `DecodeMerged`/`ApplyMergeFields`, which remain single-value-per-key) is honestly
+documented at all 4 reference points (`QueryParam`'s own godoc, `ValidateQueryMulti`'s godoc,
+`go-codex.instructions.md`, `docs/features/rest-api.md`'s options table) — a deliberate,
+consistently-described scope boundary, not an undocumented gap.
+
+---
+
+## Round 168 (api/rest — deep dive #2: path params, full path declare → BuildPath/ValidatePathParams → nethttp/chi/websocket/mcprest dispatch)
+
+Second round of the `api/rest` deep dive. Traced `PathParam`/`NewPathParam[T,V]` from
+declaration (`api/rest/builder.go`) through `RouteHandle.BuildPath`/`ValidatePathParams`/
+`PathParamNames` (shared `codex.BuildFromParams`/`ValidateParams`/`ValidateDeclaredParams`,
+also reused by `events`/`reqreply`'s own topic-var equivalents) into every REST-touching
+adapter's dispatch: `adapters/nethttp` and `adapters/chi` (confirmed byte-for-byte parity —
+both call `PathParamNames`/`ValidatePathParams`/`pathValues`/`rest.PathShape` identically,
+consistent with Round 161's already-completed path-shape-conflict review, not re-derived here),
+`adapters/websocket` (confirmed intentional: upgrade extracts ALL template vars for
+`Hub.SessionInfo` but validates only the declared `PathParam` subset — an already-documented
+Gotcha, not a gap), and `adapters/mcprest` (confirmed it never touches path params directly —
+it only maps `rest.PathParamError` into an MCP tool error payload via `ErrorPattern`, delegating
+actual dispatch to the REST client it wraps).
+
+**No new findings** — `PathParamError`/`MissingPathVarError`/`InvalidPathParamError` are clean
+type aliases over `codex.ParamError`/`MissingParamError`/`InvalidParamError` (shared,
+well-tested core); `path.go`'s `PathShape` is a thin, correct delegation to
+`internal.StripTemplateVars`; `codex.BuildFromParams`/`ValidateParams` have correct
+missing/invalid precedence (first-failing-placeholder-wins, left-to-right template order).
+
+---
+
+## Round 167 (api/rest — deep dive #1: transform.go/transform_dispatch.go, the merge-field substrate every param concept dispatches through)
+
+First round of a dedicated, concept-by-concept `api/rest` deep dive (user-requested: trace every
+REST concept's full path — declare → middleware → router → handler → adapter attach → adapter
+dispatch). This round covered the FOUNDATIONAL substrate (`transform.go`'s
+`DecodeIn`/`EncodeOut`/`DecodeOut`/`EncodeIn` closure-builder family + `transform_dispatch.go`'s
+server-side dispatch loop) that every later param-concept round (path/query/header/cookie) will
+build on.
+
+- **G1 — `buildEncodeIn` (client-side `ClientMiddlewareHandler.EncodeIn`) returned every failure
+  completely UNWRAPPED, the only one of its 4-function family with no typed error.** `buildDecodeIn`
+  wraps in `MiddlewareInputError`, `buildEncodeOut` wraps in `MiddlewareOutputError` (whose own doc
+  comment describes fixing this exact class of gap), and `buildDecodeOut` wraps in
+  `MiddlewareInputError` too — but `buildEncodeIn`'s `wrapErr` was a bare identity function, and its
+  `mw.InCodec.Validate`/`ctxFieldsFromIn.Set` failure branches returned the raw error directly. A
+  client-side codec-backed `Middleware[In,Out]`'s own InCodec constraint violation (e.g. a
+  `.WithSend`-bundled Fn returning an invalid In) reached the caller (via all 3
+  `dispatchClientMiddlewareIn` call sites in `adapters/nethttp/{binding,clienttransport}.go`) with
+  zero `errors.As`-navigability and no way to recover which middleware failed. Fixed: `buildEncodeIn`
+  now wraps every failure in `MiddlewareInputError{Name: mw.Name, Err: err}` — named after the In
+  VALUE being processed, matching `buildDecodeIn`'s own convention (not the encode/decode direction).
+- **G2 — client-side middleware-dispatch failures were ALWAYS reported to `stats.ReportErrors` as
+  `"middleware:fn"`, even an EncodeIn (input-derivation) failure that never touched Fn at all** —
+  unlike the server-side `DispatchMiddlewareHandlers`' own clean `"middleware:in"` vs `"middleware:fn"`
+  split. Fixed: added `clientMiddlewareErrorLocation(err)` in `adapters/nethttp/client_middleware.go`,
+  classifying via `errors.As` against `rest.MiddlewareError` (→ `"middleware:fn"`) vs. anything else
+  (→ `"middleware:in"`); wired into all 3 call sites (`binding.go:728`, `clienttransport.go:389,850`).
+
+Verification: new regression tests
+`TestClientMiddlewareHandler_EncodeIn_InvalidOut_WrapsMiddlewareInputError` (api/rest) and
+`TestClientMiddlewareErrorLocation_ClassifiesFnVsInputFailure` (adapters/nethttp), both confirmed to
+exercise the fixed paths; `gofmt -l .` clean; `go build ./...`/`go vet ./...` clean; `go test ./...`
+zero failures repo-wide; `just check` (staticcheck + gosec) zero findings; `examples/rest-api`,
+`rest-builder`, `rest-nested-binary`, `rest-schema-docs`, `adapters-nethttp-client`, `adapters-sse`,
+`adapters-templ` all re-run to exit 0.
 
 ---
 

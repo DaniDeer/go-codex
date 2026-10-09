@@ -386,7 +386,7 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 		if len(clientMWHandlers) > 0 {
 			mwHeaders, mwCookies, mwQuery, mwErr := dispatchClientMiddlewareIn(ctx, reqAny, clientMWHandlers)
 			if mwErr != nil {
-				stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, "middleware:fn", mwErr)
+				stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, clientMiddlewareErrorLocation(mwErr), mwErr)
 				obs.RecordRequest(method, path, 0, time.Since(start))
 				err = mwErr
 				return nil, err
@@ -659,6 +659,8 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 			for k := range resp.Header {
 				respHeaders[k] = resp.Header.Get(k)
 			}
+			respHeaderNames, _ := handleVal.MethodByName("ResponseHeaderParamNames").Call(nil)[0].Interface().([]string)
+			respHeaders = rest.NormalizeHeaderVars(respHeaders, respHeaderNames)
 			respCookies := make(map[string]string)
 			for _, c := range resp.Cookies() {
 				respCookies[c.Name] = c.Value
@@ -847,7 +849,7 @@ func (t *clientTransport) consumeOnce(
 	if len(clientMWHandlers) > 0 {
 		mwHeaders, mwCookies, mwQuery, mwErr := dispatchClientMiddlewareIn(ctx, reqVal.Interface(), clientMWHandlers)
 		if mwErr != nil {
-			stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, "middleware:fn", mwErr)
+			stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, clientMiddlewareErrorLocation(mwErr), mwErr)
 			obs.RecordRequest(method, path, 0, time.Since(start))
 			return false, mwErr
 		}

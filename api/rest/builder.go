@@ -1560,6 +1560,82 @@ func (h *RouteHandle[Req, Resp]) QueryParamNames() []string {
 	return names
 }
 
+// ResponseHeaderParamNames returns the names of all registered
+// [ResponseHeaderParam] entries (plain opts; [ResponseHeaderMergeFields]
+// covers the merge-capable declarations' own names via their embedded
+// Param) — mirrors [RouteHandle.HeaderParamNames]'s shape for the
+// response direction. Adapters use this (alongside [NormalizeHeaderVars])
+// to re-key a response's raw header map before
+// [RouteHandle.ValidateResponseHeaders]/response merge-field decode, the
+// client-side counterpart of the request-side normalization
+// [HeaderParamNames] already enabled.
+func (h *RouteHandle[Req, Resp]) ResponseHeaderParamNames() []string {
+	names := make([]string, len(h.responseHeaderParams))
+	for i := range h.responseHeaderParams {
+		names[i] = h.responseHeaderParams[i].Name
+	}
+	return names
+}
+
+// NormalizeHeaderVars re-keys headers so case-insensitive HTTP header-name
+// matching (RFC 7230 — header field names are case-insensitive) works even
+// though every REST header lookup (ValidateHeaders/ValidateResponseHeaders/
+// merge-field decode, and a codec-backed [Middleware]'s own header
+// merge-fields) uses an EXACT map-key match internally. Go's net/http
+// canonicalizes every parsed header key to MIME-style Title-Case (e.g. a
+// declared `HeaderParam{Name: "X-Request-ID"}` is canonicalized on the wire
+// to "X-Request-Id") — a literal, case-sensitive map lookup keyed by the
+// AS-DECLARED name would otherwise silently miss a perfectly well-formed
+// request/response, previously surfacing as a spurious
+// [ErrRequiredParam]/zero-value-merge for any header name containing a
+// multi-letter run of capitals that doesn't already match Go's own
+// canonicalization (e.g. "ID", "API", "URL").
+//
+// For every name in declaredNames absent from headers under its EXACT
+// casing, NormalizeHeaderVars looks for a case-insensitive match and
+// re-keys it under the declared name, leaving every other entry untouched.
+// Returns headers UNCHANGED (same map, no copy) when every declared name
+// already matches exactly — the common case for already-canonical names
+// like "Authorization"/"Content-Type". Adapters call this ONCE, immediately
+// after extracting a request's/response's raw header map (e.g.
+// [HeaderCapableTransport.ExtractHeaders]), before passing the result to
+// [RouteHandle.ValidateHeaders]/[RouteHandle.ApplyMergeFields]/
+// [DispatchMiddlewareHandlers]/[RouteHandle.ValidateResponseHeaders], using
+// [RouteHandle.HeaderParamNames]/[RouteHandle.ResponseHeaderParamNames] as
+// declaredNames.
+func NormalizeHeaderVars(headers map[string]string, declaredNames []string) map[string]string {
+	if len(headers) == 0 || len(declaredNames) == 0 {
+		return headers
+	}
+	out := headers
+	copied := false
+	var foldIndex map[string]string // lowercase(key) -> original key, built lazily
+	for _, name := range declaredNames {
+		if _, ok := headers[name]; ok {
+			continue // exact match already present — nothing to do
+		}
+		if foldIndex == nil {
+			foldIndex = make(map[string]string, len(headers))
+			for k := range headers {
+				foldIndex[strings.ToLower(k)] = k
+			}
+		}
+		orig, ok := foldIndex[strings.ToLower(name)]
+		if !ok {
+			continue // genuinely absent — let the caller's own Required handling decide
+		}
+		if !copied {
+			out = make(map[string]string, len(headers))
+			for k, v := range headers {
+				out[k] = v
+			}
+			copied = true
+		}
+		out[name] = headers[orig]
+	}
+	return out
+}
+
 // ValidateQuery validates query parameter values against their registered codecs.
 //
 // For each [QueryParam] that has a non-nil Codec, the corresponding value in
@@ -3778,15 +3854,26 @@ func (r Route[Req, Resp]) ClientHandle(opts ...ClientHandleOpt) *RouteHandle[Req
 	jsonResp := format.JSON(r.respCodec)
 
 	h := &RouteHandle[Req, Resp]{
-		Descriptor:                frozen,
-		Decode:                    func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
-		Encode:                    func(resp Resp) ([]byte, error) { return jsonResp.Marshal(resp) },
-		EncodeRequest:             func(req Req) ([]byte, error) { return jsonReq.Marshal(req) },
-		DecodeResponse:            func(body []byte) (Resp, error) { return jsonResp.Unmarshal(body) },
-		pathParams:                rb.pathParams,
-		queryParams:               rb.queryParams,
-		cookieParams:              rb.cookieParams,
-		headerParams:              rb.headerParams,
+		Descriptor:     frozen,
+		Decode:         func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
+		Encode:         func(resp Resp) ([]byte, error) { return jsonResp.Marshal(resp) },
+		EncodeRequest:  func(req Req) ([]byte, error) { return jsonReq.Marshal(req) },
+		DecodeResponse: func(body []byte) (Resp, error) { return jsonResp.Unmarshal(body) },
+		pathParams:     rb.pathParams,
+		queryParams:    rb.queryParams,
+		cookieParams:   rb.cookieParams,
+		headerParams:   rb.headerParams,
+		// responseHeaderParams/responseCookieParams: the Param-level
+		// (Name/Required/Codec) response declarations — previously
+		// MISSING entirely from ClientHandle's struct literal, a
+		// confirmed bug: [RouteHandle.ValidateResponseHeaders]/
+		// [ValidateResponseCookies]/[ResponseHeaderParamNames] silently
+		// saw an EMPTY set on any client-built handle, even though
+		// responseHeaderMergeFields/responseCookieMergeFields (the merge
+		// FIELD codecs, below) were always copied correctly — same class
+		// of silently-dropped-field bug as the Formats fix just below.
+		responseHeaderParams:      rb.respHeaders,
+		responseCookieParams:      rb.respCookies,
 		errorStatusRules:          slices.Clone(rb.errorStatusRules),
 		errorPatternRules:         slices.Clone(rb.errorPatternRules),
 		pathMergeFields:           mustAssertMergeFields[Req]("ClientHandle", rb.pathMergeFields),
@@ -4325,6 +4412,16 @@ func (h *SSERouteHandle[Req, Event]) QueryParamNames() []string {
 	return names
 }
 
+// ResponseHeaderParamNames mirrors [RouteHandle.ResponseHeaderParamNames]
+// for SSE routes — see its doc comment for the full rationale.
+func (h *SSERouteHandle[Req, Event]) ResponseHeaderParamNames() []string {
+	names := make([]string, len(h.responseHeaderParams))
+	for i := range h.responseHeaderParams {
+		names[i] = h.responseHeaderParams[i].Name
+	}
+	return names
+}
+
 // ValidateQuery validates query parameter values against their registered codecs.
 // Mirrors [RouteHandle.ValidateQuery] for SSE routes.
 func (h *SSERouteHandle[Req, Event]) ValidateQuery(params map[string]string) error {
@@ -4574,15 +4671,21 @@ func (s SSERoute[Req, Event]) ClientHandle() *SSERouteHandle[Req, Event] {
 	jsonEvent := format.JSON(s.eventCodec)
 
 	h := &SSERouteHandle[Req, Event]{
-		Descriptor:               frozen,
-		Decode:                   func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
-		EncodeEvent:              func(e Event) ([]byte, error) { return jsonEvent.Marshal(e) },
-		DecodeEvent:              func(data []byte) (Event, error) { return jsonEvent.Unmarshal(data) },
-		ValidateEvent:            func(e Event) error { return jsonEvent.Validate(e) },
-		pathParams:               rb.pathParams,
-		queryParams:              rb.queryParams,
-		cookieParams:             rb.cookieParams,
-		headerParams:             rb.headerParams,
+		Descriptor:    frozen,
+		Decode:        func(body []byte) (Req, error) { return jsonReq.Unmarshal(body) },
+		EncodeEvent:   func(e Event) ([]byte, error) { return jsonEvent.Marshal(e) },
+		DecodeEvent:   func(data []byte) (Event, error) { return jsonEvent.Unmarshal(data) },
+		ValidateEvent: func(e Event) error { return jsonEvent.Validate(e) },
+		pathParams:    rb.pathParams,
+		queryParams:   rb.queryParams,
+		cookieParams:  rb.cookieParams,
+		headerParams:  rb.headerParams,
+		// responseHeaderParams/responseCookieParams — see
+		// [Route.ClientHandle]'s identical fix's doc comment for the
+		// full rationale (same previously-missing-field bug, SSE
+		// sibling).
+		responseHeaderParams:     rb.respHeaders,
+		responseCookieParams:     rb.respCookies,
 		SecuritySchemes:          rb.securitySchemes,
 		Middlewares:              slices.Clone(rb.middlewares),
 		ClientImplementations:    slices.Clone(rb.clientImpls),
