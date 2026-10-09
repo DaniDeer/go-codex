@@ -17,18 +17,29 @@ Design review alone (the `review-go-codex`/`review-docs` rounds this
 session ran) catches API-surface bugs and stale docs, but it does not catch
 **workflow friction** — the awkward pauses, the "which method do I call
 next" hesitations, the steps a static guide glosses over because its author
-already knows the answer. Only walking the real declare → capability →
-attach → run journey, live, surfaces that. This doc plans both the
+already knows the answer. Only walking the real declare → group →
+capability → attach → run journey, live, surfaces that. This doc plans both the
 walkthrough itself (a one-time session activity, not a code change) and the
 tutorial skills it feeds (a durable, repeatable artifact — `.github/skills/`
 content other sessions can load).
+
+**Updated during a later review pass**: this doc originally predated both
+[D-0008](../design/d-0008-declarative-router-groups.md) (the declarative
+`Router`/`Mount`/`Group`/`Walk` feature) and
+[D-0009](../design/d-0009-internalize-shared-mechanics.md) (the `router`/
+`route`/`middleware` → `internal/` relocation) — the maintainer flagged
+that the walkthrough's step shape was missing the routing feature
+entirely; this revision adds it as Step 3 and folds in D-0009's
+per-pattern-wrapper teaching requirement throughout.
 
 ## Scope decisions
 
 | In scope | Out of scope |
 |---|---|
 | A structured walkthrough SCRIPT (not a transcript) — exact steps, decision points, and "what friction to watch for" prompts for each of the 3 APIs | Actually running every step with a live broker/socket connection — the walkthrough uses the same in-process mock clients `examples/{rest,events,reqreply}-api` already use; no new infrastructure |
-| Three tutorial `SKILL.md` files, one per API, each teaching the FULL declare → register/attach capability → run workflow live | A combined single tutorial skill — explicitly rejected per the main roadmap doc's "split rather than combined" preference, same reasoning as the 1.1/1.2/1.3 and 2.1-2.4 per-API review splits this session already established |
+| Three tutorial `SKILL.md` files, one per API, each teaching the FULL declare → group → register/attach capability → run workflow live | A combined single tutorial skill — explicitly rejected per the main roadmap doc's "split rather than combined" preference, same reasoning as the 1.1/1.2/1.3 and 2.1-2.4 per-API review splits this session already established |
+| **Router/Group declaration (`Mount`/`Group`/`Use`/`With`, [D-0008](../design/d-0008-declarative-router-groups.md))** as an explicit Step 3 of the walkthrough and every tutorial skill — ADDED during a later review pass; the original draft (written before D-0008 shipped) omitted this entirely, a gap the maintainer flagged directly | A dedicated 4th "routing" tutorial skill, or a separate roadmap doc for it — Router/Group is ONE step within the existing per-API tutorials, not a standalone teaching surface of its own |
+| Seeding ONE common-pitfall entry per tutorial skill, independent of the walkthrough's own Learnings, for the D-0009 `internal/`-relocation + per-pattern-public-wrapper convention (`rest.BearerScheme`/etc., never `route.X`/`middleware.X` directly) — a known, structural gotcha, not something that needs discovering live | Re-litigating or re-explaining D-0009's own design rationale inside this doc — it's cross-referenced, not duplicated |
 | Capturing walkthrough findings as roadmap-doc Learnings entries (in THIS doc, not the now-closed `d-0006-protocol-native-capabilities.md`) or spinning out a new follow-on roadmap doc if a finding is substantial | Fixing every friction point found — a genuinely substantial fix (e.g. a missing convenience method) gets its OWN follow-on roadmap doc per the `plan-a-new-codex-feature` skill's own rule, not folded in here silently |
 | Referencing/building on the existing flagship examples (`examples/rest-api`, `examples/events-api`, `examples/reqreply-api`, `examples/sensor-service`) rather than inventing new demo code | Writing brand-new example programs — the walkthrough and tutorials should point at and walk through EXISTING, already-verified-green examples, not duplicate them |
 | Deciding each tutorial skill's "teaching style" (does it generate real files in the user's workspace, or talk through the `examples/*-api` source read-only?) | Authoring any skill content before the walkthrough runs — tutorials must reflect the POLISHED workflow the walkthrough validates, not a guess at one |
@@ -68,18 +79,33 @@ API — each following the IDENTICAL shape so friction patterns common to all
 2. **Route/channel declaration** — `rest.NewRoute`/`events.NewChannel`/
    `reqreply.NewRoute`, including at least one path/topic variable (so
    `PathParam`/`TopicParam`/merge-field ergonomics get exercised, not just
-   the flat/no-vars happy path).
-3. **Capability requirement declaration** — a `RequireX`/explicit
+   the flat/no-vars happy path). Declare at least 2-3 routes/channels
+   (not just one) so Step 3 below has something real to group.
+3. **Router/Group declaration** — group the routes/channels declared in
+   Step 2 under a shared `rest.NewRouter`/`events.NewRouter`/
+   `reqreply.NewRouter` prefix, narrating the `.Use(mw)` (persistent,
+   applies to every leaf registered afterward, including through a later
+   `.Mount()`/`.Group()`) vs. `.With(mw)` (one-shot, applies ONLY to the
+   single next `.Route()`/`.Channel()` call) distinction — this is the
+   single most commonly mis-used pair in the whole workflow (see
+   `examples/rest-api/demo_router_groups.go`'s own `.With()`-before-
+   `.Mount()`-is-discarded demonstration). Exercise at least one `Mount`
+   (nesting a sub-router under a parent prefix) so the walkthrough proves
+   prefix/middleware/tag accumulation actually composes across a nesting
+   level, not just a flat single-level group — see
+   [D-0008](../design/d-0008-declarative-router-groups.md) for the full
+   `Router`/`Mount`/`Group`/`Walk` design this step exercises.
+4. **Capability requirement declaration** — a `RequireX`/explicit
    `Capability` value declared on the route/channel (e.g. `RequireQoS` for
    events, a REST `HeaderParam`-implied Tier 2 requirement) — the step
    [D-0006](../design/d-0006-protocol-native-capabilities.md)'s whole
    capability-requirement-composition rework built (now merged into that
    doc as its §9), and the one most likely to surface fresh friction
    since it's the newest, least-polished part of the workflow.
-4. **Adapter attachment** — `Client.Attach`/`Server.Attach` with a real
+5. **Adapter attachment** — `Client.Attach`/`Server.Attach` with a real
    adapter's `New*Transport` constructor (the in-process mock client/socket
    each flagship example already wires up — no new infrastructure).
-5. **Run it** — dispatch one request/message/call end-to-end and observe
+6. **Run it** — dispatch one request/message/call end-to-end and observe
    the result.
 
 **At every step, narrate (and record) 3 things:** what the next call should
@@ -109,10 +135,10 @@ say next" is not reliably honored under autopilot/auto-approval runtime
 modes — a tool call that returns a structured choice is a real, enforced
 stop.
 
-**Mechanism**: every tutorial-mode step (the SAME 5-step shape the
-walkthrough validates: struct+codec → route/channel → capability
-requirement → adapter attach → run) ends with an `ask_user` call — never a
-plain text question. The call presents, at minimum:
+**Mechanism**: every tutorial-mode step (the SAME 6-step shape the
+walkthrough validates: struct+codec → route/channel → router/group →
+capability requirement → adapter attach → run) ends with an `ask_user`
+call — never a plain text question. The call presents, at minimum:
 - `continue` — "Continue to next step"
 - `redo` — "Redo this step" (with a freeform field for what to change)
 - `go_back` — "Go back to an earlier step" (paired with a freeform field:
@@ -147,8 +173,9 @@ guessing.
 
 **In developer mode**, the skill does NOT walk the user through
 pre-scripted tutorial steps. Instead, the user drives their OWN real
-implementation (their own struct/codec, route/channel, capability
-requirement, adapter attachment, run) and the skill's job is to: (a)
+implementation (their own struct/codec, route/channel, router/group,
+capability requirement, adapter attachment, run) and the skill's job is
+to: (a)
 observe/assist as needed, (b) capture each step's concrete decisions as
 they're made (what was declared, why, any alternatives considered), and
 (c) at the end of the session (or on explicit request), draft a NEW
@@ -178,12 +205,12 @@ skill):
 
 | Section | Content |
 |---|---|
-| Frontmatter | `name: tutorial-api-<rest\|events\|reqreply>`; `description` naming the API, the keywords a user would say ("teach me api/events", "walk me through declaring a REST route", "how do I set up MQTT capabilities"), and explicitly mentioning the declare → capability → attach → run shape |
+| Frontmatter | `name: tutorial-api-<rest\|events\|reqreply>`; `description` naming the API, the keywords a user would say ("teach me api/events", "walk me through declaring a REST route", "how do I set up MQTT capabilities"), and explicitly mentioning the declare → group → capability → attach → run shape |
 | `## Step 0 — mode selection` | Shared by both modes: short explanation of what the skill does + an `ask_user` 2-way choice between Tutorial mode and Developer mode (see the dedicated section above) — always asked, never inferred |
 | `## When to Use This Skill` | Concrete trigger phrases, mirrored from the description |
-| `## Tutorial mode — the workflow, step by step` | The SAME 5-step shape the walkthrough used (struct+codec → route/channel → capability → attach → run), each step pointing at the REAL current API surface (not frozen at drafting time — the skill should read current source if uncertain, same discipline this session applied throughout its review rounds), each step ending in the `ask_user` gate described above |
+| `## Tutorial mode — the workflow, step by step` | The SAME 6-step shape the walkthrough used (struct+codec → route/channel → router/group → capability → attach → run), each step pointing at the REAL current API surface (not frozen at drafting time — the skill should read current source if uncertain, same discipline this session applied throughout its review rounds), each step ending in the `ask_user` gate described above |
 | `## Tutorial mode — worked example` | Walks through (not duplicates) the relevant flagship example — `examples/rest-api`/`examples/events-api`/`examples/reqreply-api` — pointing at specific files/line ranges rather than re-pasting large code blocks that can drift out of sync |
-| `## Tutorial mode — common pitfalls` | Directly seeded from the walkthrough's own Learnings entries for that API — this is the whole reason the walkthrough runs BEFORE the skills are authored |
+| `## Tutorial mode — common pitfalls` | Directly seeded from the walkthrough's own Learnings entries for that API — this is the whole reason the walkthrough runs BEFORE the skills are authored. ONE pitfall is pre-seeded independent of the walkthrough, since it's a known, structural gotcha rather than something the walkthrough needs to discover: a user must construct a security scheme/middleware via their OWN pattern's public wrapper (`rest.BearerScheme`/`events.SecurityMiddleware`/`reqreply.BearerScheme`, etc.), never the old `route.X`/`middleware.X` packages directly — those moved under `internal/` and are now compiler-inaccessible outside the go-codex module ([D-0009](../design/d-0009-internalize-shared-mechanics.md)); anyone recalling the pre-D-0009 package names will hit this immediately |
 | `## Developer mode — document-as-you-build` | The mode described in the dedicated section above: observe the user's own real implementation, capture decisions, draft a new roadmap doc at the end via the `plan-a-new-codex-feature` Explore-mode template |
 | `## References` | Link to that API's `docs/features/*.md`/`docs/guides/*.md` pages, so the skill teaches the LIVE workflow while guides stay the static reference |
 
@@ -212,9 +239,9 @@ Not applicable in the usual sense (no Go code). Verification instead:
 | File | Responsibility |
 |---|---|
 | `docs/roadmap/declarative-workflow-tutorials.md` (this file) | Design doc; gains a "Learnings" section once the walkthrough runs |
-| `.github/skills/tutorial-api-rest/SKILL.md` | Live tutorial: declare → capability → attach → run for `api/rest` |
-| `.github/skills/tutorial-api-events/SKILL.md` | Live tutorial: declare → capability → attach → run for `api/events` |
-| `.github/skills/tutorial-api-reqreply/SKILL.md` | Live tutorial: declare → capability → attach → run for `api/reqreply` |
+| `.github/skills/tutorial-api-rest/SKILL.md` | Live tutorial: declare → group → capability → attach → run for `api/rest` |
+| `.github/skills/tutorial-api-events/SKILL.md` | Live tutorial: declare → group → capability → attach → run for `api/events` |
+| `.github/skills/tutorial-api-reqreply/SKILL.md` | Live tutorial: declare → group → capability → attach → run for `api/reqreply` |
 
 No `docs/features/`/`docs/guides/` page additions are anticipated — these
 skills are a NEW surface (live, interactive teaching) distinct from the
@@ -279,9 +306,18 @@ direction; see Scope decisions above).
 - [Composable Capability Requirements](../design/d-0006-protocol-native-capabilities.md) —
   Phase 8's review that raised this need; the two-step declare/capability
   model this walkthrough exercises end-to-end.
+- [D-0008 — Declarative Router Groups](../design/d-0008-declarative-router-groups.md) —
+  the `Router`/`Mount`/`Group`/`Walk` design Step 3 of the walkthrough exercises
+  (added to this doc's step shape during a later review pass — see Motivation).
+- [D-0009 — Internalizing Shared Cross-Pattern Mechanics](../design/d-0009-internalize-shared-mechanics.md) —
+  the `router`/`route`/`middleware` → `internal/` relocation + per-pattern
+  public wrapper convention (`rest.BearerScheme`/`events.SecurityMiddleware`/
+  etc.) every tutorial skill must teach as the CURRENT way to construct a
+  security scheme/middleware value, and the source of the pre-seeded
+  common-pitfall note above.
 - [`docs/concepts/declaring-apis-and-ports.md`](../concepts/declaring-apis-and-ports.md) —
-  the durable narrative home for the declare → capability → attach model
-  this walkthrough and these tutorials teach live.
+  the durable narrative home for the declare → group → capability → attach
+  model this walkthrough and these tutorials teach live.
 - [`.github/instructions/agent-skills.instructions.md`](../../.github/instructions/agent-skills.instructions.md) —
   skill-authoring conventions the 3 new `SKILL.md` files must follow.
 - `examples/rest-api`, `examples/events-api`, `examples/reqreply-api`,
