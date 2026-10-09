@@ -22,9 +22,9 @@ const (
 	// or the outgoing payload failed codec validation (publish side).
 	KindEncode
 
-	// KindSecurity indicates a [SubscribeOptions.SecurityFunc] or an
-	// attached security-shaped [events.Subscriber.SubscribeMW] Fn rejected
-	// the message. NEW this pass — zeromq previously had NO message-level
+	// KindSecurity indicates an attached security-shaped
+	// [events.Subscriber.SubscribeMW]/[events.BoundSecuritySubscribeMiddleware]
+	// Fn rejected the message. NEW this pass — zeromq previously had NO message-level
 	// security mechanism at any layer (confirmed via
 	// docs/design/d-0002-pubsub-workflow-simplification.md's escape-hatch #5
 	// discussion); the wrapped Err is reused directly from api/events'

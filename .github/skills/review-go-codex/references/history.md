@@ -1,6 +1,333 @@
-# go-codex Review History (R1–R174, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
+# go-codex Review History (R1–R184, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 184 (api/events — deep dive #10 (final): spec-endpoint — confirmed clean, closed a real-adapter test-coverage gap)
+
+Tenth and final round of the `api/events` deep dive. `Client.ServeSpec` (AsyncAPI content
+publishing — events' equivalent of REST's `ServeSpec` content-negotiation, though pub/sub has no
+Accept-header equivalent: `WithSpecFormat` is a static per-call choice, not runtime negotiation)
+was already covered by 7 tests in `api/events/specroute_test.go` (happy path, JSON format, called
+twice, empty topic, global-security opt-out, spec middleware, no-transport-attached) — but ALL of
+them exercise a fake `events.Transport`, never a REAL adapter's `Transport.Publish` end-to-end.
+Confirmed via grep that no test anywhere in `adapters/mqtt5`/`adapters/mqtt`/`adapters/zeromq`
+calls `ServeSpec` against a real adapter Transport — the exact class of coverage gap the `api/rest`
+series' own final round found and closed for REST's content negotiation.
+
+- **No bug found** — `ServeSpec`'s dispatch (`NewChannel`+`Publish`+
+  `WithFormats(format.Binary(codex.Bytes()))`) goes through the SAME `Client.Publish`→
+  `Transport.Publish` path already deep-dived and hardened in Rounds 178 (QoS/Retained coverage)
+  and 181 (ErrorChannel/DeadLetter wiring) — there was no reason to expect a NEW bug here, and
+  none was found.
+- Added `TestServeSpec_RealTransport_PublishesRawSpecBytes` (`adapters/mqtt5/transport_test.go`):
+  calls `ServeSpec` with `WithSpecFormat(SpecFormatJSON)` through a REAL `mqtt5.NewTransport`
+  bound to a mock broker client, confirming the published payload is the raw, un-wrapped JSON
+  spec document text (not JSON-base64-wrapped []byte) and reaches the correct topic — closing the
+  test-coverage gap. Confirmed passing.
+- Full repo verification clean: `gofmt -l .`, `go build ./...`, `go test ./...`, `just check`
+  (0 issues), full `examples/*/` sweep — all clean.
+- **This closes the `api/events` deep-dive series** (10/10 `concept-events-*` rounds done):
+  transform (175, clean), topic-params (176, clean), user-properties (177, REAL BUG — direct
+  PropertyParam never merged on mqtt v3/zeromq), QoS (178, REAL BUG — publish-side capability
+  coverage never checked on 14 call sites across all 3 adapters), retained (179, confirmed
+  covered by 178's fix), security-schemes (180, stale godoc + dead reflection code from
+  SecurityFunc retirement), dead-letter (181, REAL BUG — ErrorChannel/DeadLetter fallback
+  entirely unwired on the PRIMARY Client.Attach+ServeSubscribers workflow), address (182, clean —
+  zero consumers, intentional placeholder), handletransport (183, clean — thin delegation
+  inherits every prior fix), spec-endpoint (184, clean — closed a real-adapter test-coverage gap).
+
+---
+
+## Round 183 (api/events — deep dive #9: handletransport (client-path sweep) — confirmed clean, no findings)
+
+Ninth round of the `api/events` deep dive — the planned "sweep handletransport.go for every
+concept above on the CLIENT/publish path" round. `api/events/handletransport.go`'s
+`PublishTransport[T]`/`SubscribeTransport[T]` interfaces + `PublishHandle`/`SubscribeHandle` free
+functions (Decision 7's handle-based inversion) are implemented, per adapter, by a dedicated
+`adapters/{mqtt,mqtt5,zeromq}/handletransport.go` — all 3 confirmed to be THIN, CORRECT
+delegations (Rule B1 compliance: "adapter must use the underlying adapter function, not
+hand-roll IO") straight to the SAME already-fixed escape-hatch functions
+(`publishHandle`/`subscribeWithHandle`/`subscribeHandle`) this deep dive series already hardened
+in Rounds 177 (property-merge), 178 (QoS/Retained coverage), and 181 (ErrorChannel/DeadLetter
+wiring) — zero duplicated logic, zero separate bug surface. Every one of those fixes is therefore
+ALREADY live on this client-path surface with no additional work needed. Test coverage confirmed
+present for all 3 adapters' `NewPublishTransport`/`NewSubscribeTransport` constructors. No code
+changes.
+
+---
+
+## Round 182 (api/events — deep dive #8: address — confirmed clean, no findings)
+
+Eighth round of the `api/events` deep dive. `events.Address`/`events.TopicAddress`
+(`api/events/address.go`, 27 lines) was confirmed to have ZERO consumers anywhere in the
+codebase outside its own file and `address_test.go` — a deliberate, forward-looking,
+purely-additive placeholder type for a future AMQP-shaped address (exchange + routing key +
+queue), per `docs/design/d-0006-protocol-native-capabilities.md`'s §7 Address-parameterization
+discussion (do not flag its lack of retrofit onto `Channel`/`NewChannel` — this is a documented,
+intentional design decision, not a gap). With no dispatch path at all, there is nothing to find:
+no adapter consults `Address`/`TopicAddress`, so no 3-way parity check, no bug class from prior
+rounds (casing, merge-field drops, capability coverage, dead-letter wiring) applies. No code
+changes.
+
+---
+
+## Round 181 (api/events — deep dive #7: dead-letter — a REAL, confirmed, significant bug: the ENTIRE ErrorChannel→DeadLetter→OnError fallback mechanism was unwired on the PRIMARY recommended Client.Attach + ServeSubscribers workflow, across all 3 adapters)
+
+Seventh round of the `api/events` deep dive (user-requested headline concept: "dead letter").
+Traced `events.DeadLetter`/`ChannelHandle.DeadLetterFor` (Topic 4's two-tier fallback,
+`docs/design/d-0005-error-handling.md`) through every subscribe dispatch path across all 3
+adapters.
+
+- **Bug — the `Client.Attach` + `ServeSubscribers` dispatch path (explicitly documented
+  in-code as "the PRIMARY recommended workflow") never consulted EITHER a declared
+  `events.ErrorChannel` OR `events.DeadLetter` at ANY failure point, on ANY of the 3 adapters**
+  (`adapters/mqtt5`'s `makeErasedSubscribeMessageHandler`, `adapters/mqtt`'s
+  `subscribeEntryReflect`'s inner handler closure, `adapters/zeromq`'s `processMessage`) — every
+  failure branch (decode, topic/topic-var validation, user-property validation, built-in security
+  credential check, security-implementation Fn, codec-backed bound middleware dispatch, handler
+  error) fell straight to `opts.OnError` only. The escape-hatch functions
+  (`subscribeWithHandle`/`subscribeHandler`) and the `ports.Pattern` reflection path
+  (`transport.go`'s `Subscribe`) BOTH already had the full fallback triplet wired in correctly —
+  only this ONE dispatch path, used by every `Client.Attach`-based application, lacked it
+  entirely. Confirmed via a LIVE reproduction test (a channel declaring `events.DeadLetter(...)`
+  whose handler always errors, served via `ServeSubscribers`, never published anything to the
+  dead-letter topic) on all 3 adapters before fixing.
+- Fixed by adding a `dispatchFailure` closure (mirroring `transport.go`'s own identical
+  reflection-based closure byte-for-byte: `ErrorResponseFor` → `ErrorRespond` action short-circuit
+  → `DeadLetterFor` → `opts.OnError` fallback, in that order) to all 3 adapters' `ServeSubscribers`
+  dispatch, and rewiring every one of the 6-7 failure branches per adapter to call it instead of
+  `opts.OnError` directly:
+  - `adapters/mqtt5/caller.go`: added `errorResponseForMethod`/`deadLetterForMethod` fields to
+    `erasedSubscriberHandle`, threaded `client MQTTClient` into
+    `makeErasedSubscribeMessageHandler` (via `serveOneEntry`), added the `dispatchFailure`
+    closure, rewired all 5 failure branches.
+  - `adapters/mqtt/caller.go`: added the same 2 reflect-bound methods + `dispatchFailure` closure
+    directly inside `subscribeEntryReflect` (which already had `client` in scope), rewired all 5
+    failure branches.
+  - `adapters/zeromq/serve_subscribers.go`: added `errorResponseForMethod`/`deadLetterForMethod`
+    fields to `subscriberRoute`, threaded `sock FramedSocket` through `dispatchToRoute`/
+    `processMessage` (previously only carried `ctx`/topic/payload/vars), added a
+    `(*subscriberRoute).dispatchFailure` method, rewired all 6 failure branches.
+- **Tests**: 3 new regression tests, one per adapter, each confirming a `DeadLetter`-declared
+  channel's handler failure now publishes the envelope via `ServeSubscribers` (previously
+  confirmed failing before the fix, passing after):
+  `TestServeSubscribers_HandlerError_WithDeadLetter_PublishesDeadLetter` (mqtt5, mqtt v3,
+  zeromq — same name, 3 separate files/packages).
+- Full repo verification clean: `gofmt -l .`, `go build ./...`, `go test ./...` (including full
+  `adapters/mqtt5`/`adapters/mqtt`/`adapters/zeromq` runs, all passing), `just check` (0 issues),
+  and a full `examples/*/` sweep — all clean.
+- This fix ALSO closes the identical gap for `events.ErrorChannel` on this same dispatch path
+  (found as a necessary companion fix while tracing DeadLetter's own fallback-order dependency on
+  it — the two mechanisms share one ordered fallback, so fixing DeadLetter without ErrorChannel
+  would have been an incomplete, inconsistent half-fix) — no separate round needed for
+  ErrorChannel's own coverage on this path.
+
+---
+
+## Round 180 (api/events — deep dive #6: security schemes — stale godoc referencing REMOVED `SecurityFunc`/`CredentialFunc` fields, plus dead reflection code left over from their retirement)
+
+Sixth round of the `api/events` deep dive (user-requested headline concept: "security
+schemes"). Traced `SecurityScheme`/`SecurityMiddleware`/`WithSecurityScheme` (spec + runtime
+credential validation) through both the connect-level (`NewSecuredClient`) and message-level
+(declarative `SecurityMiddleware`/`BoundSecuritySubscribeMiddleware`/
+`BoundSecurityPublishMiddleware`) mechanisms, across all 3 adapters' subscribe AND publish
+dispatch. Round 166 already fixed one Bound-security spec-population bug here; this round found
+two NEW, DIFFERENT issues — both checklist §14 (Godoc & Documentation-Site Reference Integrity)
+class, not functional regressions, but genuinely confirmed and worth fixing:
+
+- **Stale godoc — `api/events/builder.go`'s `SecurityScheme` doc comment (and `SecurityError`/
+  `SecurityCredentialError`'s) still described the OLD, fully-REMOVED imperative
+  `SubscribeOptions.SecurityFunc`/`PublishOptions.CredentialFunc` fields as the current
+  mechanism**, even though `docs/design/d-0002-pubsub-workflow-simplification.md`'s own
+  "SecurityFunc Retirement" addendum (and matching test-comment evidence in
+  `adapters/mqtt5/adapter_test.go`/`adapters/mqtt/caller_test.go`: "PublishOptions.CredentialFunc
+  was removed entirely, Phase 2") confirm neither field exists anywhere in `adapters/mqtt`,
+  `adapters/mqtt5`, or `adapters/zeromq`'s pub/sub `SubscribeOptions`/`PublishOptions` structs
+  today — the sole mechanism is the declarative `SecurityMiddleware`/
+  `BoundSecuritySubscribeMiddleware`/`BoundSecurityPublishMiddleware` family. Fixed: rewrote the
+  affected doc comments in `api/events/builder.go` (5 sites) and `adapters/mqtt5/connect_security.go`
+  (1 site) to name the actual current mechanism and explicitly note the old fields' removal, so a
+  reader following the godoc link trail is never pointed at non-existent API.
+- **Dead code — `adapters/zeromq/serve_subscribers.go`'s `resolveSubscribeOptsReflect` still
+  reflected for a `SecurityFunc` field on `SubscribeOptions[T]` that no longer exists** (confirmed:
+  the field was removed from the struct itself, but this reflection-based extraction code, the
+  `resolvedSubscribeOpts.securityFn`/`subscriberRoute.securityFn` fields carrying it, and the
+  `if r.securityFn.IsValid() { ... }` dispatch branch consuming it were never cleaned up — unlike
+  `adapters/mqtt5`/`adapters/mqtt`'s equivalent `caller.go`, which have NO such leftover). Because
+  `FieldByName` on a nonexistent field returns an invalid zero `reflect.Value`, this was always a
+  silent no-op (never a live bug — `IsValid()` was always false, so the branch never executed) but
+  was genuinely confusing, misleading dead code. Fixed: removed the field from both structs, the
+  struct-literal assignment, the reflection extraction block, and the entire dead dispatch branch;
+  updated the adjacent `KindSecurity` doc comment in `adapters/zeromq/errors.go` to match.
+- Full repo verification clean: `gofmt -l .`, `go build ./...`, `go vet ./api/events/...
+  ./adapters/mqtt5/... ./adapters/zeromq/...`, `go test ./...` (including a full `adapters/zeromq`
+  run, 30.9s, all passing), `just check` (0 issues).
+- No new tests needed — this round fixed documentation staleness and removed genuinely
+  unreachable code, not a behavioral bug; existing test coverage for the declarative security
+  mechanism (already exercised across many pre-existing tests) is unaffected.
+
+---
+
+## Round 179 (api/events — deep dive #5: retained messages — confirmation pass, no new fix needed)
+
+Fifth round of the `api/events` deep dive (user-requested headline concept: "retained
+messages"). `RequireRetained()` goes through the IDENTICAL `Requirements`/
+`VerifyCapabilityCoverage` mechanism as `RequireQoS` (same `ChannelHandle.Requirements` field,
+same dispatch call sites) — Round 178's fix already covers it across all 14 call sites in all 3
+adapters. Added one confirmation test, `TestPublish_RequireRetained_NoCapabilitySupplied_FailsCoverage`
+(mqtt5), proving a channel declaring `events.RequireRetained()` correctly fails coverage when
+published to with zero matching `Capability` supplied — confirmed PASSING with no further code
+changes required. No new bug; this round closes out `concept-events-retained` as already fixed.
+
+---
+
+## Round 178 (api/events — deep dive #4: QoS/Retained capability coverage — a REAL, confirmed, widespread bug: publish-side `VerifyCapabilityCoverage` never checked, anywhere, across all 3 adapters)
+
+Fourth round of the `api/events` deep dive (user-requested headline concepts: "QoS" and
+"retained messages"). Traced `RequireQoS`/`RequireRetained`/`RequireHWM`/`RequireConflate`
+(Tier 1 sealed-`Capability` declarations, stored as `ChannelHandle.Requirements`) through
+`events.VerifyCapabilityCoverage` into every subscribe AND publish dispatch path, across all 3
+adapters (`adapters/mqtt`, `adapters/mqtt5`, `adapters/zeromq`).
+
+- **Bug — publish-side capability coverage was NEVER verified, anywhere, for ANY adapter.** A
+  channel declaring e.g. `events.RequireQoS(AtLeastOnce)` could be published to with zero
+  matching `Capability` supplied, and the message published successfully with no error — the
+  declared Tier 1 requirement was silently unenforced. Investigation (via grep across all 3
+  adapters' dispatch implementations) found the subscribe side had PARTIAL coverage (present only
+  in the `Client.Attach`/reflection-based `ServeSubscribers`/`subscribeEntryReflect` path per
+  adapter) while the publish side, and 2 additional subscribe dispatch paths per adapter (the
+  escape-hatch generic functions and the `ports.Pattern`/`Transport` reflection-based binding),
+  had NO check at all. Confirmed via a LIVE reproduction test (publish succeeding with zero
+  capability supplied against a `RequireQoS`-declared channel) before fixing. Fixed by adding
+  `events.VerifyCapabilityCoverage` calls (direct for concrete-`T` call sites, reflection-based
+  via `elem.FieldByName("Requirements")` for type-erased `ports.Pattern` call sites) at all 14
+  previously-missing call sites across the 3 adapters:
+  - `adapters/mqtt5`: `adapter.go`'s `subscribeWithHandle` and `publish[T]` (escape hatches);
+    `transport.go`'s `transport.Publish` and `transport.Subscribe` (`ports.Pattern` reflection);
+    `binding.go`'s `mqtt5SubscribeAdapter.Activate` (`ports.SourceAdapter`, with
+    `router.UnregisterHandler` cleanup on failure).
+  - `adapters/mqtt` (v3): `adapter.go`'s `publish[T]`; `caller.go`'s `subscribeHandle[T]`;
+    `binding.go`'s `mqttSubscribeAdapter.Activate`; `transport.go`'s `transport.Publish` and
+    `transport.Subscribe`.
+  - `adapters/zeromq`: `adapter.go`'s `subscribeWithHandle` and `publish[T]`; `transport.go`'s
+    `transport.Publish` and `transport.Subscribe`.
+  - Confirmed `zeromq` has NO `QoS`/`Retained` capability type at all (only `HWM`/`Conflate`) —
+    a channel declaring `RequireQoS`/`RequireRetained` and attached to a zeromq adapter now
+    CORRECTLY fails coverage (a structural impossibility, previously silently never caught).
+- **Tests**: 6 new regression tests confirming the fix across both publish AND subscribe escape
+  hatches on all 3 adapters: `TestPublish_RequireQoS_NoCapabilitySupplied_FailsCoverage` +
+  `TestPublish_RequireQoS_SuppliedCapability_Passes` (mqtt5),
+  `TestSubscribeWithHandle_RequireQoS_NoCapabilitySupplied_FailsCoverage` (mqtt5),
+  `TestPublish_RequireQoS_NoCapabilitySupplied_FailsCoverage` (mqtt v3),
+  `TestSubscribeHandle_RequireQoS_NoCapabilitySupplied_FailsCoverage` (mqtt v3),
+  `TestPublish_RequireHWM_NoCapabilitySupplied_FailsCoverage` +
+  `TestSubscribeWithHandle_RequireHWM_NoCapabilitySupplied_FailsCoverage` (zeromq, using
+  `RequireHWM` since zeromq has no `QoS` type). All confirmed failing before the fix, passing
+  after. Full repo verification clean: `gofmt -l .`, `go build ./...`, `go test ./...`,
+  `just check` (0 issues), and a full `examples/*/` sweep — all clean.
+- This fix also fully covers `concept-events-retained` (same `Requirements`/
+  `VerifyCapabilityCoverage` mechanism, same call sites) — no separate round needed for it.
+
+---
+
+## Round 177 (api/events — deep dive #3: user properties — a REAL, confirmed bug: direct channel-level PropertyParam silently never enforced on mqtt v3/zeromq)
+
+Third round of the `api/events` deep dive (user-requested headline concept: "user properties").
+Traced `PropertyParam`/`NewPropertyParam`/`NewOptionalPropertyParam` through BOTH of its two
+coexisting attachment styles — (a) via a codec-backed `Middleware`'s `WithSubscribeProperty`/
+`WithPublishProperty` (dispatched through `DispatchSubscribeMiddlewareHandlers`/
+`DispatchPublishMiddlewareHandlers`, confirmed clean in Round 175), and (b) DIRECTLY on
+`NewChannel(...)` via `MergedPropertyParam` (the channel-level declarative mechanism, requiring
+an EXPLICIT adapter call to `ChannelHandle.MergePropertyVars`/`EncodePropertyVars`) — across all
+3 adapters, confirmed via a LIVE reproduction (`httptest`-equivalent mock dispatch) before fixing.
+
+- **Bug — a channel-level, DIRECTLY-declared `PropertyParam` (Required by default via
+  `NewPropertyParam`) was SILENTLY NEVER merged or enforced on `adapters/mqtt` (v3) or
+  `adapters/zeromq`.** `adapters/mqtt5`'s subscribe dispatch already has a dedicated step calling
+  `codex.DecodeVars(&value, propertyVars, propertyMergeFields...)` against its own real
+  `pahomqtt5.Publish.Properties.User` map — but `adapters/mqtt`'s and `adapters/zeromq`'s
+  equivalent dispatch functions NEVER called `ChannelHandle.MergePropertyVars` (or any
+  equivalent) at all, for either adapter. Reproduced live: a channel declaring
+  `events.NewPropertyParam("trace", ...)` directly, subscribed via `adapters/mqtt`, received a
+  message with no error and the `Trace` field silently left at its zero value — even though the
+  property is Required by default. This is a DIFFERENT, more severe gap than the
+  ALREADY-CORRECT middleware-attached axis (which passes `nil` for `propertyVars` on these same
+  2 adapters and lets `MiddlewareInputError` fire naturally) — the direct channel-level axis had
+  NO equivalent call at all, so even that natural-failure fallback never triggered.
+  **Fix**: both `adapters/mqtt/adapter.go`'s `subscribeHandler` and
+  `adapters/zeromq/adapter.go`'s `subscribeWithHandle` now call
+  `handle.MergePropertyVars(&value, nil)` whenever `handle.PropertyMergeFields()` is non-empty —
+  mirroring the ALREADY-ESTABLISHED, documented contract the middleware axis uses: a nil
+  propertyVars map makes a Required property fail naturally via `codex`'s own missing-field
+  error, with zero special-casing needed by the adapter. Confirmed both adapters have exactly
+  ONE subscribe-dispatch implementation each (`binding.go`/`caller.go`/`handletransport.go` all
+  delegate to the SAME fixed function) — a single-point fix, not N call sites.
+  Publish-side `EncodePropertyVars` was deliberately NOT added to either adapter — encoding
+  cannot fail for a Required field (no "missing" concept on the encode direction), and both
+  adapters already discard any computed property values for lack of a wire destination, so
+  calling it would be a no-op with zero observable difference.
+
+Verification: new regression tests `TestSubscribeHandler_DirectPropertyParam_RequiredMissing_FailsNaturally`
+(`adapters/mqtt`) and `TestSubscribeWithHandle_DirectPropertyParam_RequiredMissing_FailsNaturally`
+(`adapters/zeromq`), both confirmed to reproduce the bug before the fix and pass after; `gofmt -l .`
+clean; `go build ./...`/`go vet ./...` clean; `go test ./...` zero failures repo-wide; `just check`
+(staticcheck + gosec) zero findings; every example under `examples/*/` re-run to exit 0.
+
+---
+
+## Round 176 (api/events — deep dive #2: topic params, full path declare → BuildTopic/ValidateTopicVars → mqtt/mqtt5/zeromq extraction)
+
+Second round of the `api/events` deep dive. Traced `TopicParam`/`NewTopicParam[T,V]` through
+`ChannelHandle.BuildTopic`/`ValidateTopicVars` (reusing the SAME shared, already-proven
+`codex.BuildFromParams`/`ValidateParams` core the `api/rest` deep dive's path-params round
+confirmed clean) into each adapter's own `TopicVarsFromMessage` (subscribe-side) and `BuildTopic`
+(publish-side) call sites.
+
+**No new findings** — `adapters/mqtt` and `adapters/mqtt5`'s `TopicVarsFromMessage`/
+`matchTopicTemplate` are byte-for-byte identical (both delegate to the shared
+`templatematch.MatchMQTTWildcard`, correctly supporting `+`/`#` MQTT wildcards);
+`adapters/zeromq`'s own version correctly and intentionally differs (delegates to
+`templatematch.MatchNonWildcard` — ZeroMQ PUB/SUB topic filtering is prefix-based, no MQTT
+wildcard syntax, well-documented as a deliberate difference, not a gap). All 3 adapters'
+publish-side dispatch consistently call `handle.BuildTopic(vars)` at the same point. Topic
+segments are case-SENSITIVE by protocol convention (both MQTT and ZeroMQ) — the header-casing
+bug class found in the `api/rest` series structurally does not apply here.
+
+---
+
+## Round 175 (api/events — deep dive #1: transform.go/transform_dispatch.go, the merge-field substrate — clean, better-architected than REST's initial state)
+
+First round of a dedicated, concept-by-concept `api/events` deep dive (mirroring the `api/rest`
+series, Rounds 167-174 — user-requested: user properties, QoS, retained messages, security
+schemes, full path declare → middleware → router → adapter attach → adapter dispatch across
+`adapters/mqtt`/`adapters/mqtt5`/`adapters/zeromq`). This round covered the FOUNDATIONAL
+substrate every later concept round builds on.
+
+**No new findings — and confirmed structurally IMMUNE to 2 of the `api/rest` series' own bug
+classes:**
+- `buildDecodeIn`/`buildEncodeOut` (events' 2-function family — pub/sub's one-way semantics need
+  no `EncodeIn`/`DecodeOut` equivalent, unlike REST's request/response 4-function family) both
+  ALREADY correctly wrap every failure in `MiddlewareInputError`/`MiddlewareOutputError` — no
+  analogue of REST's G1 (bare unwrapped client-side encode error) exists here.
+- `DispatchPublishMiddlewareHandlers` already has a proper 3-way error classification
+  (`IsFnError`/`IsEncodeErr`/plain decode) via `middlewareDispatchError`, and ALL 3 adapters
+  (`mqtt`/`mqtt5`/`zeromq`) correctly consult `dispatchErr.IsEncodeErr` to report
+  `"middleware:out"` vs `"middleware:fn"` — confirmed byte-for-byte identical across all 3
+  adapters' publish dispatch blocks. No analogue of REST's G2 (hardcoded, unclassified observer
+  location) exists here.
+- Confirmed via direct source read: `api/events` has exactly ONE `*ChannelHandle[T]{...}`
+  construction site in the entire package (`builder.go`, parameterized by `role` for
+  subscribe-vs-publish), shared by BOTH `Subscriber.Register`/`Publisher.Register` — structurally
+  RULING OUT the dual-construction-path "silently drops a field" bug class that dominated the
+  `api/rest` series (`Route.ClientHandle()` vs `registerHandle()` diverging). There is no second
+  construction path to diverge.
+- `nil`-vs-real `propertyVars` contract (adapters with no property mechanism pass `nil`,
+  `MiddlewareInputError` still fires naturally for a declared-but-missing-property) confirmed
+  honored identically by all 3 adapters' `DispatchSubscribeMiddlewareHandlers` call sites.
+
+Verification: read-only round, no code changes — `go build`/`go test`/`just check` unaffected.
 
 ---
 

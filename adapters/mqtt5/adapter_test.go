@@ -2053,3 +2053,131 @@ func TestPublish_WithPublishProperty_WritesOutgoingUserProperty_SeparateFromTopi
 		t.Errorf("want tenantID User Property %q, got %q (all: %d props)", "acme", gotTenant, userPropCount)
 	}
 }
+
+// TestPublish_RequireQoS_NoCapabilitySupplied_FailsCoverage is a
+// REGRESSION GUARD: a channel declaring events.RequireQoS (Tier 1 sealed
+// Capability) could be published to with ZERO matching Capability
+// supplied — the declared "subscribers/publishers need at least this
+// QoS" requirement was silently NEVER enforced on the publish side,
+// across all 3 event adapters (only the subscribe side's
+// ServeSubscribers/subscribeEntryReflect had the check). Fixed: publish[T]
+// now calls events.VerifyCapabilityCoverage before ApplyCapabilities,
+// mirroring the subscribe side's identical check.
+func TestPublish_RequireQoS_NoCapabilitySupplied_FailsCoverage(t *testing.T) {
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec,
+		events.RequireQoS(events.AtLeastOnce),
+	).WithPublish(events.Publish{Summary: "test"}).Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	client := &mockClient{}
+	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
+
+	err = publish(context.Background(), client, handle, reading, nil, true,
+		PublishOptions[sensorReading]{})
+	if err == nil {
+		t.Fatal("want a capability coverage error, got nil")
+	}
+	var covErr *events.CapabilityCoverageError
+	if !errors.As(err, &covErr) {
+		t.Fatalf("want events.CapabilityCoverageError, got %T: %v", err, err)
+	}
+	if len(client.published) != 0 {
+		t.Errorf("want 0 published messages, got %d", len(client.published))
+	}
+}
+
+// TestPublish_RequireQoS_SuppliedCapability_Passes confirms the fix is
+// NOT a regression — supplying a matching QoS Capability still publishes
+// successfully.
+func TestPublish_RequireQoS_SuppliedCapability_Passes(t *testing.T) {
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec,
+		events.RequireQoS(events.AtLeastOnce),
+	).WithPublish(events.Publish{Summary: "test"}).Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	client := &mockClient{}
+	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
+
+	err = publish(context.Background(), client, handle, reading, nil, true,
+		PublishOptions[sensorReading]{Capabilities: []Capability{QoS(1)}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(client.published) != 1 {
+		t.Errorf("want 1 published message, got %d", len(client.published))
+	}
+}
+
+// TestSubscribeWithHandle_RequireQoS_NoCapabilitySupplied_FailsCoverage is
+// a REGRESSION GUARD: a channel declaring events.RequireQoS could be
+// subscribed to via the escape-hatch subscribeWithHandle with ZERO
+// matching Capability supplied — unlike ServeSubscribers (which already
+// had this check), subscribeWithHandle itself never verified coverage.
+// Fixed: subscribeWithHandle now calls events.VerifyCapabilityCoverage
+// before registering the broker subscription.
+func TestSubscribeWithHandle_RequireQoS_NoCapabilitySupplied_FailsCoverage(t *testing.T) {
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec,
+		events.RequireQoS(events.AtLeastOnce),
+	).WithSubscribe(events.Subscribe{Summary: "test"}).Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	client := &mockClient{}
+	router := newMockRouter()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	subErr := subscribeWithHandle(ctx, client, router, handle,
+		func(_ context.Context, _ sensorReading) error {
+			t.Fatal("handler must not be registered when coverage fails")
+			return nil
+		}, SubscribeOptions{})
+
+	if subErr == nil {
+		t.Fatal("want a capability coverage error, got nil")
+	}
+	var covErr *events.CapabilityCoverageError
+	if !errors.As(subErr, &covErr) {
+		t.Fatalf("want events.CapabilityCoverageError, got %T: %v", subErr, subErr)
+	}
+}
+
+// TestPublish_RequireRetained_NoCapabilitySupplied_FailsCoverage confirms
+// RequireRetained goes through the SAME events.VerifyCapabilityCoverage
+// mechanism fixed for RequireQoS in publish[T] — a channel declaring
+// events.RequireRetained() must fail to publish without a matching
+// Capability supplied.
+func TestPublish_RequireRetained_NoCapabilitySupplied_FailsCoverage(t *testing.T) {
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec,
+		events.RequireRetained(),
+	).WithPublish(events.Publish{Summary: "test"}).Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	client := &mockClient{}
+	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1}
+
+	pubErr := publish(context.Background(), client, handle, reading, nil, true,
+		PublishOptions[sensorReading]{})
+
+	if pubErr == nil {
+		t.Fatal("want a capability coverage error, got nil")
+	}
+	var covErr *events.CapabilityCoverageError
+	if !errors.As(pubErr, &covErr) {
+		t.Fatalf("want events.CapabilityCoverageError, got %T: %v", pubErr, pubErr)
+	}
+	if len(client.published) != 0 {
+		t.Errorf("want 0 published messages, got %d", len(client.published))
+	}
+}

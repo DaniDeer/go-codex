@@ -337,6 +337,35 @@ func subscribeHandler[T any](
 			}
 		}
 
+		// Channel-level MergedPropertyParam merge fields declared DIRECTLY
+		// on NewChannel (no Middleware needed) — mqtt (v3) has no property
+		// wire mechanism at all, so MergePropertyVars is called with a nil
+		// propertyVars map, same as the codec-backed middleware dispatch
+		// below already does for ITS OWN property axis: a declared
+		// REQUIRED property still fails naturally via codex's own
+		// missing-field error (no special-casing needed) — confirmed, PREVIOUSLY-MISSING
+		// gap: this direct channel-level axis was never merged/enforced
+		// on mqtt (v3) at all (silently left T's field at its zero value,
+		// even for a Required property), unlike adapters/mqtt5, which
+		// already performs this exact step for its own real property map.
+		if propertyMergeFields := handle.PropertyMergeFields(); len(propertyMergeFields) > 0 {
+			if propErr := handle.MergePropertyVars(&value, nil); propErr != nil {
+				stats.ReportErrors(obs, "property_var", propErr)
+				obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
+				if handled, matched := tryPublishErrorChannel(ctx, client, handle, obs, propErr); handled {
+					return
+				} else if !matched {
+					if tryDeadLetter(client, handle, obs, msg.Topic(), msg.Payload(), propErr) {
+						return
+					}
+				}
+				if opts.OnError != nil {
+					opts.OnError(SubscribeError{Kind: KindDecode, Topic: msg.Topic(), Err: propErr})
+				}
+				return
+			}
+		}
+
 		// Enforce security: per-operation requirements take precedence; nil falls
 		// back to global security declared via Builder.AddGlobalSecurity.
 		var secReqs []route.SecurityRequirement
@@ -613,6 +642,17 @@ func publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.
 	obs := opts.Observer
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
+	}
+	// Tier 1 coverage check — a channel's own declared [events.RequireQoS]/
+	// [events.RequireRetained] (handle.Requirements) must be verified on
+	// the PUBLISH side too — confirmed, PREVIOUSLY-MISSING gap: a publish
+	// call supplying ZERO matching Capability silently succeeded despite
+	// the channel's own declared requirement. Mirrors the subscribe
+	// side's identical check.
+	if len(handle.Requirements) > 0 {
+		if covErr := events.VerifyCapabilityCoverage(handle.Topic, handle.Requirements, opts.Capabilities); covErr != nil {
+			return covErr
+		}
 	}
 	// docs/design/d-0006-protocol-native-capabilities.md's Phase 5:
 	// Capabilities is now the ONLY mechanism for QoS/Retained — the

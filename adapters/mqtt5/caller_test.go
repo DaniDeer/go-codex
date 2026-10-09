@@ -541,3 +541,55 @@ func ExampleSubscribe() {
 	// Output:
 	// received reading from f47ac10b-58cc-4372-a567-0e02b2c3d479: 22.5
 }
+
+// TestServeSubscribers_HandlerError_WithDeadLetter_PublishesDeadLetter is
+// a REGRESSION GUARD: makeErasedSubscribeMessageHandler (ServeSubscribers'
+// per-message dispatch — the PRIMARY recommended Client.Attach workflow)
+// never consulted a declared events.DeadLetter on ANY failure path,
+// unlike subscribeWithHandle (the escape hatch) and transport.Subscribe
+// (the ports.Pattern reflection path), both of which already call
+// tryDeadLetter/DeadLetterFor. A channel declaring DeadLetter whose
+// handler fails should publish a DeadLetterEnvelope to the dead-letter
+// topic — confirmed this never happened via ServeSubscribers before the
+// fix.
+func TestServeSubscribers_HandlerError_WithDeadLetter_PublishesDeadLetter(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+	evtClient := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+
+	handlerErr := errors.New("handler boom")
+	ch := events.NewChannel[sensorReading]("sensors/dl", sensorCodec,
+		events.DeadLetter("sensors/dead-letter"),
+	)
+	sub := ch.WithSubscribe(events.Subscribe{}).WithHandler(
+		func(context.Context, sensorReading) error { return handlerErr })
+
+	if err := sub.Register(evtClient); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	caller := newCaller(client, router, evtClient)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- caller.ServeSubscribers(ctx) }()
+
+	router.waitHandler("sensors/dl")
+	router.dispatch("sensors/dl", &pahomqtt5.Publish{Topic: "sensors/dl", Payload: []byte(validSensorJSON)})
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	<-done
+
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	var found bool
+	var gotTopics []string
+	for _, p := range client.published {
+		gotTopics = append(gotTopics, p.Topic)
+		if p.Topic == "sensors/dead-letter" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want a dead-letter message published to sensors/dead-letter, got published topics: %+v", gotTopics)
+	}
+}

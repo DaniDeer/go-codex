@@ -348,6 +348,21 @@ func (t *transport) Publish(ctx context.Context, pubAny, msgAny any, optsVariadi
 		}
 	}
 
+	// Publish-side Tier 1 coverage check — confirmed, PREVIOUSLY-MISSING
+	// gap: a channel's own declared [events.RequireQoS]/[events.RequireRetained]
+	// (handle.Requirements) was verified on the SUBSCRIBE side
+	// (ServeSubscribers/subscribeEntryReflect) but NEVER on the PUBLISH
+	// side, across all 3 event adapters — a publish call supplying ZERO
+	// matching Capability silently succeeded despite the channel's own
+	// declared requirement. Mirrors the subscribe side's identical
+	// VerifyCapabilityCoverage call exactly.
+	if requirements, ok := elem.FieldByName("Requirements").Interface().([]events.CapabilityRequirement); ok {
+		if covErr := events.VerifyCapabilityCoverage(finalTopic, requirements, caps); covErr != nil {
+			obs.RecordPublish(finalTopic, false, time.Since(start))
+			return covErr
+		}
+	}
+
 	// docs/design/d-0006-protocol-native-capabilities.md's Phase 4c: a
 	// declared [Publisher.WithOptions]([PublishOptions][T]{Capabilities:
 	// ...}) value is resolved and applied via [events.ApplyCapabilities].
@@ -496,6 +511,17 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 	fnVal = wrapHandlerGeneralReflect(fnVal, implementations)
 
 	filter := deriveWildcardFilter(topic)
+
+	// Subscribe-side Tier 1 coverage check — this ports.Pattern-binding
+	// reflection path (Transport.Subscribe) is a SEPARATE dispatch path
+	// from ServeSubscribers/subscribeEntryReflect (the Client.Attach
+	// workflow, which already has this check) and had the SAME
+	// confirmed-missing gap. Mirrors Transport.Publish's identical fix.
+	if requirements, ok := elem.FieldByName("Requirements").Interface().([]events.CapabilityRequirement); ok {
+		if covErr := events.VerifyCapabilityCoverage(topic, requirements, caps); covErr != nil {
+			return covErr
+		}
+	}
 
 	var wire WireAttributes
 	events.ApplyCapabilities(caps, &wire, obs, topic)

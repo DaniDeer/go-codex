@@ -131,6 +131,16 @@ func subscribeHandle[T any](
 		filter = deriveWildcardFilter(handle.Topic)
 	}
 
+	// Tier 1 coverage check — a channel's own declared [events.RequireQoS]/
+	// [events.RequireRetained] (handle.Requirements) must be verified here
+	// too, mirroring ServeSubscribers'/Transport.Subscribe's identical
+	// check — confirmed, PREVIOUSLY-MISSING on this escape-hatch path.
+	if len(handle.Requirements) > 0 {
+		if covErr := events.VerifyCapabilityCoverage(handle.Topic, handle.Requirements, opts.Capabilities); covErr != nil {
+			return covErr
+		}
+	}
+
 	// docs/design/d-0006-protocol-native-capabilities.md's Phase 5:
 	// Capabilities is now the ONLY mechanism for QoS — the former
 	// SubscribeOptions.QoS plain field/call-time qos parameter escape
@@ -421,6 +431,14 @@ func subscribeEntryReflect(ctx context.Context, client pahomqtt.Client, entry ev
 		middlewareSatisfies[i] = h.Satisfies
 	}
 	dispatchSubscribeMiddleware := hv.MethodByName("DispatchSubscribeMiddleware")
+	// errorResponseForMethod/deadLetterForMethod — CORRECTED: this
+	// ServeSubscribers dispatch previously consulted NEITHER a declared
+	// [events.ErrorChannel] NOR [events.DeadLetter] at ANY failure point,
+	// unlike [subscribeHandle] (the escape hatch), which already wires
+	// the full ErrorChannel→DeadLetter→OnError fallback triplet. Mirrors
+	// mqtt5's identical, belated fix.
+	errorResponseForMethod := hv.MethodByName("ErrorResponseFor")
+	deadLetterForMethod := hv.MethodByName("DeadLetterFor")
 	handlerOptsAny := elem.FieldByName("HandlerOpts").Interface()
 	handlerVal := elem.FieldByName("Handler")
 	if handlerVal.IsNil() {
@@ -486,6 +504,39 @@ func subscribeEntryReflect(ctx context.Context, client pahomqtt.Client, entry ev
 		filter = deriveWildcardFilter(topic)
 	}
 
+	// dispatchFailure is the shared ErrorChannel→DeadLetter→OnError
+	// fallback triplet every pipeline step below consults on failure —
+	// mirrors adapter.go's [tryPublishErrorChannel]/[tryDeadLetter]/
+	// opts.OnError exact fallback order, and mqtt5's identical
+	// reflection-based dispatchFailure closure.
+	dispatchFailure := func(kind ErrorKind, sourceTopic string, payload []byte, failErr error) {
+		errResults := errorResponseForMethod.Call([]reflect.Value{reflect.ValueOf(&failErr).Elem()})
+		resp, _ := errResults[0].Interface().(events.ErrorChannelResponse)
+		matched, _ := errResults[1].Interface().(bool)
+		matchErrI, _ := errResults[2].Interface().(error)
+		if matched && matchErrI == nil && resp.Action == events.ErrorRespond {
+			token := client.Publish(resp.Topic, 0, false, resp.Body)
+			token.Wait()
+			return
+		}
+		if !matched {
+			dlResults := deadLetterForMethod.Call([]reflect.Value{
+				reflect.ValueOf(obs), reflect.ValueOf(sourceTopic), reflect.ValueOf(payload), reflect.ValueOf(&failErr).Elem(),
+			})
+			dlTopic, _ := dlResults[0].Interface().(string)
+			dlBody, _ := dlResults[1].Interface().([]byte)
+			dlOk, _ := dlResults[2].Interface().(bool)
+			if dlOk {
+				token := client.Publish(dlTopic, 0, false, dlBody)
+				token.Wait()
+				return
+			}
+		}
+		if opts.OnError != nil {
+			opts.OnError(SubscribeError{Kind: kind, Topic: sourceTopic, Err: failErr})
+		}
+	}
+
 	handler := func(_ pahomqtt.Client, msg pahomqtt.Message) {
 		start := time.Now()
 		var decodeResults []reflect.Value
@@ -498,9 +549,7 @@ func subscribeEntryReflect(ctx context.Context, client pahomqtt.Client, entry ev
 		valuePtr.Elem().Set(decodeResults[0])
 		if errI, _ := decodeResults[1].Interface().(error); errI != nil {
 			obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
-			if opts.OnError != nil {
-				opts.OnError(SubscribeError{Kind: KindDecode, Topic: msg.Topic(), Err: errI})
-			}
+			dispatchFailure(KindDecode, msg.Topic(), msg.Payload(), errI)
 			return
 		}
 
@@ -521,9 +570,7 @@ func subscribeEntryReflect(ctx context.Context, client pahomqtt.Client, entry ev
 					secObs.RecordSecurityRejection(msg.Topic(), route.FirstSchemeName(secReqs))
 				}
 				obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
-				if opts.OnError != nil {
-					opts.OnError(SubscribeError{Kind: KindSecurity, Topic: msg.Topic(), Err: err})
-				}
+				dispatchFailure(KindSecurity, msg.Topic(), msg.Payload(), events.SecurityError{Err: err})
 				return
 			}
 			granted = g
@@ -555,9 +602,7 @@ func subscribeEntryReflect(ctx context.Context, client pahomqtt.Client, entry ev
 					}
 					kind = KindSecurity
 				}
-				if opts.OnError != nil {
-					opts.OnError(SubscribeError{Kind: kind, Topic: msg.Topic(), Err: mwErr})
-				}
+				dispatchFailure(kind, msg.Topic(), msg.Payload(), mwErr)
 				return
 			}
 			scopesmerge.MergeHandlerGrants(granted, middlewareSatisfies, outs)
@@ -569,9 +614,7 @@ func subscribeEntryReflect(ctx context.Context, client pahomqtt.Client, entry ev
 					secObs.RecordSecurityRejection(msg.Topic(), route.FirstSchemeName(secReqs))
 				}
 				obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
-				if opts.OnError != nil {
-					opts.OnError(SubscribeError{Kind: KindSecurity, Topic: msg.Topic(), Err: err})
-				}
+				dispatchFailure(KindSecurity, msg.Topic(), msg.Payload(), events.SecurityError{Err: err})
 				return
 			}
 		}
@@ -584,9 +627,7 @@ func subscribeEntryReflect(ctx context.Context, client pahomqtt.Client, entry ev
 		}
 		if handlerErr != nil {
 			obs.RecordSubscribe(msg.Topic(), false, time.Since(start))
-			if opts.OnError != nil {
-				opts.OnError(SubscribeError{Kind: KindHandler, Topic: msg.Topic(), Err: handlerErr})
-			}
+			dispatchFailure(KindHandler, msg.Topic(), msg.Payload(), handlerErr)
 			return
 		}
 		obs.RecordSubscribe(msg.Topic(), true, time.Since(start))

@@ -768,6 +768,16 @@ func subscribeWithHandle[T any](
 	}
 	fn = wrapSubscribeGeneral(fn, handle.Implementations)
 
+	// Tier 1 coverage check — a channel's own declared [events.RequireQoS]/
+	// [events.RequireRetained] (handle.Requirements) must be verified here
+	// too, mirroring ServeSubscribers'/Transport.Subscribe's identical
+	// check — confirmed, PREVIOUSLY-MISSING on this escape-hatch path.
+	if len(handle.Requirements) > 0 {
+		if covErr := events.VerifyCapabilityCoverage(handle.Topic, handle.Requirements, opts.Capabilities); covErr != nil {
+			return covErr
+		}
+	}
+
 	// The channel's OWN declaration (WithFormats/WithSubscribeFormats) is
 	// the single source of truth for which formats apply — resolved here
 	// via the canonical method, never duplicated inline.
@@ -934,6 +944,17 @@ func publish[T any](
 	obs := opts.Observer
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
+	}
+	// Tier 1 coverage check — a channel's own declared [events.RequireQoS]/
+	// [events.RequireRetained] (handle.Requirements) must be verified on
+	// the PUBLISH side too — confirmed, PREVIOUSLY-MISSING gap: a publish
+	// call supplying ZERO matching Capability silently succeeded despite
+	// the channel's own declared requirement. Mirrors the subscribe
+	// side's identical check.
+	if len(handle.Requirements) > 0 {
+		if covErr := events.VerifyCapabilityCoverage(handle.Topic, handle.Requirements, opts.Capabilities); covErr != nil {
+			return covErr
+		}
 	}
 	// docs/design/d-0006-protocol-native-capabilities.md's Phase 4:
 	// Capabilities is now the ONLY mechanism for QoS/Retained — the

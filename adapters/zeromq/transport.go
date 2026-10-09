@@ -273,6 +273,16 @@ func (t *transport) Publish(ctx context.Context, pubAny, msgAny any, optsVariadi
 	// ...}) value is resolved and applied via [events.ApplyCapabilities]
 	// against t.caller.sock.
 	caps := publishHandlerOptsFields(elem.FieldByName("HandlerOpts"))
+	// Publish-side Tier 1 coverage check — confirmed, PREVIOUSLY-MISSING
+	// gap: a channel's own declared Requirements was verified on the
+	// SUBSCRIBE side (ServeSubscribers) but never on this ports.Pattern
+	// binding's PUBLISH side. Mirrors Transport.Subscribe's identical fix.
+	if requirements, ok := elem.FieldByName("Requirements").Interface().([]events.CapabilityRequirement); ok {
+		if covErr := events.VerifyCapabilityCoverage(finalTopic, requirements, caps); covErr != nil {
+			obs.RecordPublish(finalTopic, false, time.Since(start))
+			return covErr
+		}
+	}
 	events.ApplyCapabilities(caps, t.caller.sock, obs, finalTopic)
 
 	// transmit is wrapped via [reflect.MakeFunc] so every attached
@@ -401,6 +411,16 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 	}
 	if err := t.caller.sock.SetRecvTimeout(recvPollInterval); err != nil {
 		return SocketError{Op: "set_recv_timeout", Err: err}
+	}
+
+	// Subscribe-side Tier 1 coverage check — this ports.Pattern-binding
+	// reflection path (Transport.Subscribe) is a SEPARATE dispatch path
+	// from ServeSubscribers (which already has this check) and had the
+	// SAME confirmed-missing gap. Mirrors Transport.Publish's identical fix.
+	if requirements, ok := elem.FieldByName("Requirements").Interface().([]events.CapabilityRequirement); ok {
+		if covErr := events.VerifyCapabilityCoverage(topic, requirements, caps); covErr != nil {
+			return covErr
+		}
 	}
 
 	// docs/design/d-0006-protocol-native-capabilities.md's Phase 4c: a

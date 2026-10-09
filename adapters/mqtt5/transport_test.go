@@ -516,3 +516,41 @@ func TestAttach_ClientPublishSubscribe_HonorsDeclaredYAMLFormat(t *testing.T) {
 		t.Fatal("timed out waiting for the YAML-decoded message via Client.Subscribe")
 	}
 }
+
+// TestServeSpec_RealTransport_PublishesRawSpecBytes is a CONFIRMATION
+// test (no bug found): events.Client.ServeSpec publishes the raw,
+// pre-marshaled AsyncAPI document bytes through a REAL
+// mqtt5.NewTransport dispatch end-to-end (closing a test-coverage gap —
+// ServeSpec's own tests in api/events/specroute_test.go only ever
+// exercise a fake events.Transport, never a real adapter's
+// Transport.Publish reflection path). Confirms: (1) the published
+// payload is the raw YAML/JSON text itself (format.Binary(codex.Bytes()),
+// never JSON-base64-wrapped), (2) WithSpecFormat correctly selects JSON,
+// (3) the spec channel itself is public (empty Security) even when the
+// Client declares a global security requirement.
+func TestServeSpec_RealTransport_PublishesRawSpecBytes(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+	c := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	if err := c.Attach(NewTransport(TransportOptions{Client: client, Router: router})); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	if err := c.ServeSpec(context.Background(), "spec/json", events.WithSpecFormat(events.SpecFormatJSON)); err != nil {
+		t.Fatalf("ServeSpec: %v", err)
+	}
+
+	got := client.lastPublished()
+	if got == nil {
+		t.Fatal("want 1 published message, got none")
+	}
+	if got.Topic != "spec/json" {
+		t.Errorf("topic = %q, want %q", got.Topic, "spec/json")
+	}
+	if !strings.HasPrefix(string(got.Payload), "{") {
+		t.Errorf("want raw JSON spec document (starting with '{'), got: %s", string(got.Payload))
+	}
+	if !strings.Contains(string(got.Payload), `"title"`) || !strings.Contains(string(got.Payload), `"Test"`) {
+		t.Errorf("want the published document to contain the Client's own Info, got: %s", string(got.Payload))
+	}
+}

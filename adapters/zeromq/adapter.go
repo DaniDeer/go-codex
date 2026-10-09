@@ -363,6 +363,20 @@ func subscribeWithHandle[T any](
 	}
 	fn = wrapSubscribeGeneral(fn, handle.Implementations)
 
+	// Tier 1 coverage check — a channel's own declared [events.RequireQoS]/
+	// [events.RequireRetained]/[events.RequireHWM] (handle.Requirements)
+	// must be verified here too, mirroring ServeSubscribers' identical
+	// check — confirmed, PREVIOUSLY-MISSING on this escape-hatch path. For
+	// zeromq specifically, a declared RequireQoS/RequireRetained (neither
+	// structurally supported) correctly fails here as "not covered" —
+	// the intended fail-fast outcome, not a behavior change for any
+	// channel that declares no requirements.
+	if len(handle.Requirements) > 0 {
+		if covErr := events.VerifyCapabilityCoverage(handle.Topic, handle.Requirements, opts.Capabilities); covErr != nil {
+			return covErr
+		}
+	}
+
 	filter := opts.TopicFilter
 	if filter == "" {
 		filter = deriveTopicPrefix(handle.Topic)
@@ -470,6 +484,35 @@ func subscribeWithHandle[T any](
 				}
 				if opts.OnError != nil {
 					opts.OnError(SubscribeError{Kind: KindDecode, Topic: topic, Err: mergeErr})
+				}
+				continue
+			}
+		}
+
+		// Channel-level MergedPropertyParam merge fields declared DIRECTLY
+		// on NewChannel (no Middleware needed) — zeromq has no property
+		// wire mechanism at all, so MergePropertyVars is called with a nil
+		// propertyVars map, same as the codec-backed middleware dispatch
+		// below already does for ITS OWN property axis: a declared
+		// REQUIRED property still fails naturally via codex's own
+		// missing-field error (no special-casing needed) — confirmed, PREVIOUSLY-MISSING
+		// gap: this direct channel-level axis was never merged/enforced
+		// on zeromq at all (silently left T's field at its zero value,
+		// even for a Required property), unlike adapters/mqtt5, which
+		// already performs this exact step for its own real property map.
+		if propertyMergeFields := handle.PropertyMergeFields(); len(propertyMergeFields) > 0 {
+			if propErr := handle.MergePropertyVars(&value, nil); propErr != nil {
+				stats.ReportErrors(obs, "property_var", propErr)
+				obs.RecordSubscribe(topic, false, time.Since(start))
+				if handled, matched := tryPublishErrorChannel(ctx, sock, handle, obs, propErr); handled {
+					continue
+				} else if !matched {
+					if tryDeadLetter(sock, handle, obs, topic, payload, propErr) {
+						continue
+					}
+				}
+				if opts.OnError != nil {
+					opts.OnError(SubscribeError{Kind: KindDecode, Topic: topic, Err: propErr})
 				}
 				continue
 			}
@@ -835,6 +878,17 @@ func publish[T any](
 	obs := opts.Observer
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
+	}
+	// Tier 1 coverage check — a channel's own declared [events.RequireQoS]/
+	// [events.RequireRetained]/[events.RequireHWM] (handle.Requirements)
+	// must be verified on the PUBLISH side too — confirmed,
+	// PREVIOUSLY-MISSING gap: a publish call supplying ZERO matching
+	// Capability silently succeeded despite the channel's own declared
+	// requirement. Mirrors the subscribe side's identical check.
+	if len(handle.Requirements) > 0 {
+		if covErr := events.VerifyCapabilityCoverage(handle.Topic, handle.Requirements, opts.Capabilities); covErr != nil {
+			return covErr
+		}
 	}
 	applyCapabilities(sock, opts.Capabilities, obs, handle.Topic)
 

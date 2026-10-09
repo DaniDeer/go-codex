@@ -179,7 +179,7 @@ func (c *caller) serveOneEntry(ctx context.Context, filter string, qos byte, opt
 		obs = stats.ObserverFromContext(ctx)
 	}
 
-	handler := makeErasedSubscribeMessageHandler(ctx, info, obs, opts)
+	handler := makeErasedSubscribeMessageHandler(ctx, c.client, info, obs, opts)
 	c.router.RegisterHandler(filter, handler)
 
 	_, err := c.client.Subscribe(ctx, &pahomqtt5.Subscribe{
@@ -257,6 +257,18 @@ type erasedSubscriberHandle struct {
 	// [makeErasedSubscribeMessageHandler]) — mirrors `transport.go`'s
 	// identical reflection pattern.
 	dispatchSubscribeMiddleware reflect.Value
+	// errorResponseForMethod/deadLetterForMethod are handleVal's own
+	// [events.ChannelHandle.ErrorResponseFor]/[events.ChannelHandle.DeadLetterFor]
+	// methods (reflect-bound once here) — CORRECTED: this
+	// ServeSubscribers dispatch previously consulted NEITHER mechanism
+	// at ANY failure point, unlike [subscribeWithHandle] (the escape
+	// hatch) and `transport.go`'s Subscribe (the ports.Pattern reflection
+	// path), both of which already wire the full ErrorChannel→
+	// DeadLetter→OnError fallback triplet. Mirrors `transport.go`'s
+	// identical reflection pattern — see [makeErasedSubscribeMessageHandler]'s
+	// dispatchFailure closure.
+	errorResponseForMethod reflect.Value
+	deadLetterForMethod    reflect.Value
 }
 
 // extractErasedSubscriberHandle recovers an [erasedSubscriberHandle] from
@@ -290,6 +302,8 @@ func extractErasedSubscriberHandle(handleAny any) (erasedSubscriberHandle, error
 		requirements:                requirements,
 		middlewareHandlers:          middlewareHandlers,
 		dispatchSubscribeMiddleware: hv.MethodByName("DispatchSubscribeMiddleware"),
+		errorResponseForMethod:      hv.MethodByName("ErrorResponseFor"),
+		deadLetterForMethod:         hv.MethodByName("DeadLetterFor"),
 	}, nil
 }
 
@@ -409,7 +423,41 @@ func wrapHandlerGeneralReflect(handlerVal reflect.Value, impls []middleware.Serv
 // does NOT support [events.ChannelHandle.MergeFields]-based topic-var
 // auto-merge (a known simplification of this reflect dispatch path — see
 // this package's doc.go/the accompanying roadmap phase notes).
-func makeErasedSubscribeMessageHandler(ctx context.Context, info erasedSubscriberHandle, obs stats.Observer, opts SubscribeOptions) pahomqtt5.MessageHandler {
+func makeErasedSubscribeMessageHandler(ctx context.Context, client MQTTClient, info erasedSubscriberHandle, obs stats.Observer, opts SubscribeOptions) pahomqtt5.MessageHandler {
+	// dispatchFailure is the shared ErrorChannel→DeadLetter→OnError
+	// fallback triplet every pipeline step below consults on failure —
+	// mirrors [tryPublishErrorChannel]/[tryDeadLetter]/opts.OnError's
+	// exact fallback order (adapter.go), and `transport.go`'s identical
+	// reflection-based dispatchFailure closure. CORRECTED: this
+	// ServeSubscribers dispatch previously consulted NEITHER mechanism —
+	// a declared [events.ErrorChannel]/[events.DeadLetter] silently never
+	// fired on the PRIMARY recommended Client.Attach workflow.
+	dispatchFailure := func(kind ErrorKind, sourceTopic string, payload []byte, failErr error) {
+		errResults := info.errorResponseForMethod.Call([]reflect.Value{reflect.ValueOf(&failErr).Elem()})
+		resp, _ := errResults[0].Interface().(events.ErrorChannelResponse)
+		matched, _ := errResults[1].Interface().(bool)
+		matchErrI, _ := errResults[2].Interface().(error)
+		if matched && matchErrI == nil && resp.Action == events.ErrorRespond {
+			_, _ = client.Publish(ctx, &pahomqtt5.Publish{Topic: resp.Topic, QoS: defaultQoS, Payload: resp.Body})
+			return
+		}
+		if !matched {
+			dlResults := info.deadLetterForMethod.Call([]reflect.Value{
+				reflect.ValueOf(obs), reflect.ValueOf(sourceTopic), reflect.ValueOf(payload), reflect.ValueOf(&failErr).Elem(),
+			})
+			dlTopic, _ := dlResults[0].Interface().(string)
+			dlBody, _ := dlResults[1].Interface().([]byte)
+			dlOk, _ := dlResults[2].Interface().(bool)
+			if dlOk {
+				_, _ = client.Publish(ctx, &pahomqtt5.Publish{Topic: dlTopic, QoS: defaultQoS, Payload: dlBody})
+				return
+			}
+		}
+		if opts.OnError != nil {
+			opts.OnError(SubscribeError{Kind: kind, Topic: sourceTopic, Err: failErr})
+		}
+	}
+
 	return func(msg *pahomqtt5.Publish) {
 		start := time.Now()
 		msgCtx := middleware.EnsureContextFields(context.WithValue(ctx, contextKey{}, msg))
@@ -422,9 +470,7 @@ func makeErasedSubscribeMessageHandler(ctx context.Context, info erasedSubscribe
 		if err, _ := decodeResults[1].Interface().(error); err != nil {
 			stats.ReportErrors(obs, "payload", err)
 			obs.RecordSubscribe(msg.Topic, false, time.Since(start))
-			if opts.OnError != nil {
-				opts.OnError(SubscribeError{Kind: KindDecode, Topic: msg.Topic, Err: err})
-			}
+			dispatchFailure(KindDecode, msg.Topic, msg.Payload, err)
 			return
 		}
 		valuePtr.Elem().Set(decodeResults[0])
@@ -432,9 +478,7 @@ func makeErasedSubscribeMessageHandler(ctx context.Context, info erasedSubscribe
 		if propErr := validateUserProperties(msg, opts.UserPropertyParams); propErr != nil {
 			obs.RecordValidationError("user_property", stats.ConstraintName(propErr), userPropertyName(propErr))
 			obs.RecordSubscribe(msg.Topic, false, time.Since(start))
-			if opts.OnError != nil {
-				opts.OnError(SubscribeError{Kind: KindSecurity, Topic: msg.Topic, Err: propErr})
-			}
+			dispatchFailure(KindSecurity, msg.Topic, msg.Payload, propErr)
 			return
 		}
 
@@ -451,9 +495,7 @@ func makeErasedSubscribeMessageHandler(ctx context.Context, info erasedSubscribe
 					secObs.RecordSecurityRejection(msg.Topic, route.FirstSchemeName(secReqs))
 				}
 				obs.RecordSubscribe(msg.Topic, false, time.Since(start))
-				if opts.OnError != nil {
-					opts.OnError(SubscribeError{Kind: KindSecurity, Topic: msg.Topic, Err: err})
-				}
+				dispatchFailure(KindSecurity, msg.Topic, msg.Payload, err)
 				return
 			}
 		}
@@ -466,9 +508,7 @@ func makeErasedSubscribeMessageHandler(ctx context.Context, info erasedSubscribe
 					secObs.RecordSecurityRejection(msg.Topic, route.FirstSchemeName(secReqs))
 				}
 				obs.RecordSubscribe(msg.Topic, false, time.Since(start))
-				if opts.OnError != nil {
-					opts.OnError(SubscribeError{Kind: KindSecurity, Topic: msg.Topic, Err: events.SecurityError{Err: err}})
-				}
+				dispatchFailure(KindSecurity, msg.Topic, msg.Payload, events.SecurityError{Err: err})
 				return
 			}
 			granted = g
@@ -496,9 +536,7 @@ func makeErasedSubscribeMessageHandler(ctx context.Context, info erasedSubscribe
 				if dispatchErr.IsFnError {
 					kind = KindHandler
 				}
-				if opts.OnError != nil {
-					opts.OnError(SubscribeError{Kind: kind, Topic: msg.Topic, Err: mwErr})
-				}
+				dispatchFailure(kind, msg.Topic, msg.Payload, mwErr)
 				return
 			}
 			satisfies := make([][]string, len(info.middlewareHandlers))
@@ -514,9 +552,7 @@ func makeErasedSubscribeMessageHandler(ctx context.Context, info erasedSubscribe
 					secObs.RecordSecurityRejection(msg.Topic, route.FirstSchemeName(secReqs))
 				}
 				obs.RecordSubscribe(msg.Topic, false, time.Since(start))
-				if opts.OnError != nil {
-					opts.OnError(SubscribeError{Kind: KindSecurity, Topic: msg.Topic, Err: events.SecurityError{Err: err}})
-				}
+				dispatchFailure(KindSecurity, msg.Topic, msg.Payload, events.SecurityError{Err: err})
 				return
 			}
 		}
@@ -544,9 +580,7 @@ func makeErasedSubscribeMessageHandler(ctx context.Context, info erasedSubscribe
 		if fnErr != nil {
 			stats.ReportErrors(obs, "topic_var", fnErr)
 			obs.RecordSubscribe(msg.Topic, false, time.Since(start))
-			if opts.OnError != nil {
-				opts.OnError(SubscribeError{Kind: KindHandler, Topic: msg.Topic, Err: fnErr})
-			}
+			dispatchFailure(KindHandler, msg.Topic, msg.Payload, fnErr)
 			return
 		}
 		obs.RecordSubscribe(msg.Topic, true, time.Since(start))

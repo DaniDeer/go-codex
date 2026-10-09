@@ -1345,3 +1345,119 @@ func TestSubscribeError_As_NoMatch_ReturnsFalse(t *testing.T) {
 		t.Error("want As to return false when no wrapped value matches target's type")
 	}
 }
+
+// TestSubscribeHandler_DirectPropertyParam_RequiredMissing_FailsNaturally is
+// a REGRESSION GUARD: a channel-level, DIRECTLY-declared (no Middleware)
+// events.NewPropertyParam (a Required-by-default property merge field) was
+// silently NEVER merged or enforced on adapters/mqtt (v3) — the decoded
+// value's property field stayed at its Go zero value with ZERO error, even
+// though mqtt v3 has no property wire mechanism at all (unlike adapters/
+// mqtt5, which already performs this exact merge against its own real User
+// Properties). Fixed: subscribeHandler now calls handle.MergePropertyVars
+// with a nil propertyVars map whenever the channel declares property merge
+// fields — mirrors the ALREADY-ESTABLISHED, documented contract the
+// codec-backed middleware dispatch axis uses (nil map → a Required field
+// fails naturally, no special-casing needed by the adapter).
+func TestSubscribeHandler_DirectPropertyParam_RequiredMissing_FailsNaturally(t *testing.T) {
+	type withProp struct {
+		ID    string
+		Trace string
+	}
+	propCodec := codex.Struct[withProp](
+		codex.RequiredField("id", codex.String(),
+			func(e withProp) string { return e.ID },
+			func(e *withProp, v string) { e.ID = v }),
+	)
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	handle, err := events.NewChannel[withProp]("users/events", propCodec,
+		events.NewPropertyParam("trace", codex.String(),
+			func(e withProp) string { return e.Trace },
+			func(e *withProp, v string) { e.Trace = v }),
+	).WithSubscribe(events.Subscribe{}).Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	var receivedErr error
+	handler := subscribeHandler(context.Background(), nil, handle,
+		func(_ context.Context, e withProp) error {
+			t.Fatal("handler must not be called when a Required property is missing")
+			return nil
+		}, SubscribeOptions{OnError: func(e SubscribeError) { receivedErr = e.Err }})
+
+	handler(nil, &mockMessage{
+		topic:   "users/events",
+		payload: []byte(`{"id":"u1"}`),
+	})
+
+	if receivedErr == nil {
+		t.Fatal("want an error for the missing Required property 'trace', got nil")
+	}
+}
+
+// TestPublish_RequireQoS_NoCapabilitySupplied_FailsCoverage is the mqtt
+// (v3) mirror of adapters/mqtt5's identical regression test: a channel
+// declaring events.RequireQoS (Tier 1 sealed Capability) could be
+// published to with ZERO matching Capability supplied — the declared
+// requirement was silently never enforced on the publish side. Fixed:
+// publish[T] now calls events.VerifyCapabilityCoverage before
+// ApplyCapabilities.
+func TestPublish_RequireQoS_NoCapabilitySupplied_FailsCoverage(t *testing.T) {
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	handle, err := events.NewChannel[userEvent]("user/created", userEventCodec,
+		events.RequireQoS(events.AtLeastOnce),
+	).WithPublish(events.Publish{Summary: "test"}).Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	client := &mockClient{token: newCompletedToken(nil)}
+	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
+
+	err = publish(context.Background(), client, handle, event, nil, PublishOptions[userEvent]{})
+	if err == nil {
+		t.Fatal("want a capability coverage error, got nil")
+	}
+	var covErr *events.CapabilityCoverageError
+	if !errors.As(err, &covErr) {
+		t.Fatalf("want events.CapabilityCoverageError, got %T: %v", err, err)
+	}
+	if topics := client.publishedTopicsSnapshot(); len(topics) != 0 {
+		t.Errorf("want 0 published messages, got %d", len(topics))
+	}
+}
+
+// TestSubscribeHandle_RequireQoS_NoCapabilitySupplied_FailsCoverage is a
+// REGRESSION GUARD: a channel declaring events.RequireQoS could be
+// subscribed to via the escape-hatch subscribeHandle with ZERO matching
+// Capability supplied — the declared requirement was silently never
+// enforced. Fixed: subscribeHandle now calls
+// events.VerifyCapabilityCoverage before registering the broker
+// subscription.
+func TestSubscribeHandle_RequireQoS_NoCapabilitySupplied_FailsCoverage(t *testing.T) {
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	handle, err := events.NewChannel[userEvent]("user/created", userEventCodec,
+		events.RequireQoS(events.AtLeastOnce),
+	).WithSubscribe(events.Subscribe{Summary: "test"}).Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	client := &mockClient{token: newCompletedToken(nil)}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	subErr := subscribeHandle(ctx, client, handle,
+		func(_ context.Context, _ userEvent) error {
+			t.Fatal("handler must not be registered when coverage fails")
+			return nil
+		}, SubscribeOptions{})
+
+	if subErr == nil {
+		t.Fatal("want a capability coverage error, got nil")
+	}
+	var covErr *events.CapabilityCoverageError
+	if !errors.As(subErr, &covErr) {
+		t.Fatalf("want events.CapabilityCoverageError, got %T: %v", subErr, subErr)
+	}
+}

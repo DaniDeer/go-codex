@@ -46,20 +46,27 @@ import (
 // [middleware.ServerImplementation] Fn fails loudly at ServeSubscribers
 // construction time, never silently at message time.
 type subscriberRoute struct {
-	topic      string // the channel's topic template, e.g. "sensors/{sensorID}/data"
-	filter     string // the resolved ZMQ subscription prefix filter
-	handleVal  reflect.Value
-	next       reflect.Value // func(context.Context, T) error — Handler wrapped with general-purpose MW
-	securityFn reflect.Value // opts.SecurityFunc equivalent extracted from HandlerOpts; may be invalid (zero Value)
+	topic     string // the channel's topic template, e.g. "sensors/{sensorID}/data"
+	filter    string // the resolved ZMQ subscription prefix filter
+	handleVal reflect.Value
+	next      reflect.Value // func(context.Context, T) error — Handler wrapped with general-purpose MW
 	// implSecurity holds every attached security-shaped
 	// [middleware.ServerImplementation] (from [events.Subscriber.SubscribeMW]),
-	// run in attachment order after securityFn, mirroring
-	// [runSubscribeSecurityImpls]'s ordering on the generic
-	// [subscribeWithHandle] path.
+	// run in attachment order, mirroring [runSubscribeSecurityImpls]'s
+	// ordering on the generic [subscribeWithHandle] path.
 	implSecurity []middleware.ServerImplementation
-	secReqs      []route.SecurityRequirement
-	onError      func(SubscribeError)
-	observer     stats.Observer
+	// errorResponseForMethod/deadLetterForMethod are handleVal's own
+	// [events.ChannelHandle.ErrorResponseFor]/[events.ChannelHandle.DeadLetterFor]
+	// methods (reflect-bound once here) — CORRECTED: this ServeSubscribers
+	// dispatch previously consulted NEITHER mechanism at ANY failure
+	// point, unlike [subscribeWithHandle] (the escape hatch), which
+	// already wires the full ErrorChannel→DeadLetter→OnError fallback
+	// triplet. Mirrors mqtt5's/mqtt's identical, belated fix.
+	errorResponseForMethod reflect.Value
+	deadLetterForMethod    reflect.Value
+	secReqs                []route.SecurityRequirement
+	onError                func(SubscribeError)
+	observer               stats.Observer
 	// capabilities holds this route's declared [SubscribeOptions.Capabilities]
 	// — applied to the socket once, via [applyCapabilities], right after
 	// [FramedSocket.SetSubscription] in [(*caller).ServeSubscribers].
@@ -161,7 +168,6 @@ func buildSubscriberRoute(entry events.SubscriberEntry) (*subscriberRoute, error
 		filter:                      filter,
 		handleVal:                   hv,
 		next:                        next,
-		securityFn:                  resolved.securityFn,
 		implSecurity:                securityImpls,
 		secReqs:                     secReqs,
 		onError:                     resolved.onError,
@@ -171,6 +177,8 @@ func buildSubscriberRoute(entry events.SubscriberEntry) (*subscriberRoute, error
 		middlewareHandlers:          middlewareHandlers,
 		middlewareSatisfies:         middlewareSatisfies,
 		dispatchSubscribeMiddleware: hv.MethodByName("DispatchSubscribeMiddleware"),
+		errorResponseForMethod:      hv.MethodByName("ErrorResponseFor"),
+		deadLetterForMethod:         hv.MethodByName("DeadLetterFor"),
 	}, nil
 }
 
@@ -224,7 +232,6 @@ type resolvedSubscribeOpts struct {
 	topicFilter  string
 	onError      func(SubscribeError)
 	observer     stats.Observer
-	securityFn   reflect.Value // func(context.Context, *T, []route.SecurityRequirement) error; invalid (zero Value) if unset
 	capabilities []Capability
 }
 
@@ -270,9 +277,6 @@ func resolveSubscribeOptsReflect(topic string, handlerOptsAny any) (resolvedSubs
 			out.observer = obs
 		}
 	}
-	if f := v.FieldByName("SecurityFunc"); f.IsValid() && f.Kind() == reflect.Func && !f.IsNil() {
-		out.securityFn = f
-	}
 	if f := v.FieldByName("Capabilities"); f.IsValid() {
 		if caps, ok := f.Interface().([]Capability); ok {
 			out.capabilities = caps
@@ -295,13 +299,13 @@ func resolveSubscribeOptsReflect(topic string, handlerOptsAny any) (resolvedSubs
 // docs/design/d-0002-pubsub-workflow-simplification.md's bug-fix subsection —
 // the SAME reasoning [subscribeWithHandle]'s own merge-field mismatch
 // handling already relies on).
-func dispatchToRoute(ctx context.Context, routes []*subscriberRoute, topic string, payload []byte) {
+func dispatchToRoute(ctx context.Context, sock FramedSocket, routes []*subscriberRoute, topic string, payload []byte) {
 	for _, r := range routes {
 		vars, err := matchTopicTemplate(r.topic, topic)
 		if err != nil {
 			continue
 		}
-		r.processMessage(ctx, topic, payload, vars)
+		r.processMessage(ctx, sock, topic, payload, vars)
 		return
 	}
 }
@@ -323,11 +327,40 @@ func (r *subscriberRoute) reportError(se SubscribeError) {
 	}
 }
 
+// dispatchFailure is the shared ErrorChannel→DeadLetter→OnError fallback
+// triplet every pipeline step in [(*subscriberRoute).processMessage]
+// consults on failure — mirrors adapter.go's [tryPublishErrorChannel]/
+// [tryDeadLetter]/opts.OnError exact fallback order, and mqtt5's/mqtt's
+// identical reflection-based dispatchFailure closure.
+func (r *subscriberRoute) dispatchFailure(sock FramedSocket, obs stats.Observer, kind ErrorKind, sourceTopic string, payload []byte, failErr error) {
+	errResults := r.errorResponseForMethod.Call([]reflect.Value{reflect.ValueOf(&failErr).Elem()})
+	resp, _ := errResults[0].Interface().(events.ErrorChannelResponse)
+	matched, _ := errResults[1].Interface().(bool)
+	matchErrI, _ := errResults[2].Interface().(error)
+	if matched && matchErrI == nil && resp.Action == events.ErrorRespond {
+		_ = sock.SendFrames([][]byte{[]byte(resp.Topic), resp.Body})
+		return
+	}
+	if !matched {
+		dlResults := r.deadLetterForMethod.Call([]reflect.Value{
+			reflect.ValueOf(obs), reflect.ValueOf(sourceTopic), reflect.ValueOf(payload), reflect.ValueOf(&failErr).Elem(),
+		})
+		dlTopic, _ := dlResults[0].Interface().(string)
+		dlBody, _ := dlResults[1].Interface().([]byte)
+		dlOk, _ := dlResults[2].Interface().(bool)
+		if dlOk {
+			_ = sock.SendFrames([][]byte{[]byte(dlTopic), dlBody})
+			return
+		}
+	}
+	r.reportError(SubscribeError{Kind: kind, Topic: sourceTopic, Err: failErr})
+}
+
 // processMessage runs the full decode → merge → security → handler
 // pipeline for one incoming message on this route — the ServeSubscribers
 // mirror of [subscribeWithHandle]'s inline per-message logic, expressed
 // via reflect since T is erased here.
-func (r *subscriberRoute) processMessage(ctx context.Context, topic string, payload []byte, vars map[string]string) {
+func (r *subscriberRoute) processMessage(ctx context.Context, sock FramedSocket, topic string, payload []byte, vars map[string]string) {
 	obs := r.observer
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
@@ -337,13 +370,13 @@ func (r *subscriberRoute) processMessage(ctx context.Context, topic string, payl
 	if err := callErrMethod(r.handleVal, "ValidateTopic", topic); err != nil {
 		stats.ReportErrors(obs, "topic", err)
 		obs.RecordSubscribe(topic, false, time.Since(start))
-		r.reportError(SubscribeError{Kind: KindDecode, Topic: topic, Err: err})
+		r.dispatchFailure(sock, obs, KindDecode, topic, payload, err)
 		return
 	}
 	if err := callErrMethod(r.handleVal, "ValidateTopicVars", vars); err != nil {
 		stats.ReportErrors(obs, "topic_var", err)
 		obs.RecordSubscribe(topic, false, time.Since(start))
-		r.reportError(SubscribeError{Kind: KindDecode, Topic: topic, Err: err})
+		r.dispatchFailure(sock, obs, KindDecode, topic, payload, err)
 		return
 	}
 
@@ -353,25 +386,11 @@ func (r *subscriberRoute) processMessage(ctx context.Context, topic string, payl
 	if decErr, _ := decodeResults[1].Interface().(error); decErr != nil {
 		stats.ReportErrors(obs, "payload", decErr)
 		obs.RecordSubscribe(topic, false, time.Since(start))
-		r.reportError(SubscribeError{Kind: KindDecode, Topic: topic, Err: decErr})
+		r.dispatchFailure(sock, obs, KindDecode, topic, payload, decErr)
 		return
 	}
 	valueVal := decodeResults[0]
 
-	if r.securityFn.IsValid() {
-		msgPtr := reflect.New(valueVal.Type())
-		msgPtr.Elem().Set(valueVal)
-		out := r.securityFn.Call([]reflect.Value{reflect.ValueOf(ctx), msgPtr, reflect.ValueOf(r.secReqs)})
-		if secErr, _ := out[0].Interface().(error); secErr != nil {
-			if secObs, ok := obs.(stats.SecurityObserver); ok {
-				secObs.RecordSecurityRejection(topic, route.FirstSchemeName(r.secReqs))
-			}
-			obs.RecordSubscribe(topic, false, time.Since(start))
-			r.reportError(SubscribeError{Kind: KindSecurity, Topic: topic, Err: events.SecurityError{Err: secErr}})
-			return
-		}
-		valueVal = msgPtr.Elem()
-	}
 	for _, impl := range r.implSecurity {
 		fnVal := reflect.ValueOf(impl.Fn)
 		if len(impl.Satisfies) > 0 && len(r.secReqs) == 0 {
@@ -385,7 +404,7 @@ func (r *subscriberRoute) processMessage(ctx context.Context, topic string, payl
 				secObs.RecordSecurityRejection(topic, route.FirstSchemeName(r.secReqs))
 			}
 			obs.RecordSubscribe(topic, false, time.Since(start))
-			r.reportError(SubscribeError{Kind: KindSecurity, Topic: topic, Err: events.SecurityError{Err: secErr}})
+			r.dispatchFailure(sock, obs, KindSecurity, topic, payload, events.SecurityError{Err: secErr})
 			return
 		}
 		valueVal = msgPtr.Elem()
@@ -414,7 +433,7 @@ func (r *subscriberRoute) processMessage(ctx context.Context, topic string, payl
 		outs, _ := mwResults[0].Interface().([]any)
 		if mwErr, _ := mwResults[1].Interface().(error); mwErr != nil {
 			obs.RecordSubscribe(topic, false, time.Since(start))
-			r.reportError(SubscribeError{Kind: KindDecode, Topic: topic, Err: mwErr})
+			r.dispatchFailure(sock, obs, KindDecode, topic, payload, mwErr)
 			return
 		}
 		valueVal = msgPtr.Elem()
@@ -427,7 +446,7 @@ func (r *subscriberRoute) processMessage(ctx context.Context, topic string, payl
 					secObs.RecordSecurityRejection(topic, route.FirstSchemeName(r.secReqs))
 				}
 				obs.RecordSubscribe(topic, false, time.Since(start))
-				r.reportError(SubscribeError{Kind: KindSecurity, Topic: topic, Err: events.SecurityError{Err: err}})
+				r.dispatchFailure(sock, obs, KindSecurity, topic, payload, events.SecurityError{Err: err})
 				return
 			}
 		}
@@ -446,7 +465,7 @@ func (r *subscriberRoute) processMessage(ctx context.Context, topic string, payl
 	}
 	if fnErr != nil {
 		obs.RecordSubscribe(topic, false, time.Since(start))
-		r.reportError(SubscribeError{Kind: KindHandler, Topic: topic, Err: fnErr})
+		r.dispatchFailure(sock, obs, KindHandler, topic, payload, fnErr)
 		return
 	}
 	obs.RecordSubscribe(topic, true, time.Since(start))
@@ -527,7 +546,7 @@ func (c *caller) ServeSubscribers(ctx context.Context) error {
 		if len(frames) < 2 {
 			continue // malformed: expect [topic, payload]
 		}
-		dispatchToRoute(ctx, routes, string(frames[0]), frames[1])
+		dispatchToRoute(ctx, c.sock, routes, string(frames[0]), frames[1])
 	}
 }
 

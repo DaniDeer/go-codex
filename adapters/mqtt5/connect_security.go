@@ -12,8 +12,12 @@ import (
 // This file holds CONNECTION-LEVEL security — a codec-validated CONNECT-time
 // (username/password) credential check, distinct from the MESSAGE-LEVEL
 // security in adapter.go/reqreply.go (events.WithSecurityScheme/
-// reqreply.WithSecurityScheme + SubscribeOptions.SecurityFunc/
-// PublishOptions.CredentialFunc/ServeOptions.SecurityFunc/CallOptions.CredentialFunc).
+// reqreply.WithSecurityScheme + the declarative SecurityMiddleware/
+// BoundSecuritySubscribeMiddleware/BoundSecurityPublishMiddleware mechanism
+// for pub/sub, reqreply's own equivalent for request/reply — the OLD
+// imperative SubscribeOptions.SecurityFunc/PublishOptions.CredentialFunc/
+// ServeOptions.SecurityFunc/CallOptions.CredentialFunc fields this comment
+// used to reference were REMOVED).
 // See docs/features/security.md's "Connection-level vs message-level
 // security" section for when to use which.
 //

@@ -1657,3 +1657,122 @@ func TestCallDealer_RequestFormats_OverridesRouteDeclaredFormat(t *testing.T) {
 		t.Errorf("want YAML-encoded payload (override), got %q", sent[0][1])
 	}
 }
+
+// TestSubscribeWithHandle_DirectPropertyParam_RequiredMissing_FailsNaturally
+// is the zeromq mirror of adapters/mqtt's identical regression test: a
+// channel-level, DIRECTLY-declared (no Middleware) events.NewPropertyParam
+// (Required by default) was silently NEVER merged or enforced on
+// adapters/zeromq — the decoded value's property field stayed at its Go
+// zero value with ZERO error, even though zeromq has no property wire
+// mechanism at all (unlike adapters/mqtt5, which performs this merge
+// against its own real User Properties). Fixed: subscribeWithHandle now
+// calls handle.MergePropertyVars with a nil propertyVars map whenever the
+// channel declares property merge fields — mirrors the ALREADY-
+// ESTABLISHED, documented contract the codec-backed middleware dispatch
+// axis uses (nil map → a Required field fails naturally).
+func TestSubscribeWithHandle_DirectPropertyParam_RequiredMissing_FailsNaturally(t *testing.T) {
+	type withProp struct {
+		ID    string `json:"-"`
+		Trace string `json:"-"`
+	}
+	propCodec := codex.Struct[withProp](
+		codex.RequiredField("id", codex.String(),
+			func(e withProp) string { return e.ID },
+			func(e *withProp, v string) { e.ID = v }),
+	)
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	handle, err := events.NewChannel[withProp]("users/events", propCodec,
+		events.NewPropertyParam("trace", codex.String(),
+			func(e withProp) string { return e.Trace },
+			func(e *withProp, v string) { e.Trace = v }),
+	).WithSubscribe(events.Subscribe{}).Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	var gotErr SubscribeError
+	sock := &mockSocket{
+		inFrames: [][][]byte{
+			{[]byte("users/events"), []byte(`{"id":"u1"}`)},
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	_ = subscribeWithHandle(ctx, sock, handle,
+		func(_ context.Context, _ withProp) error {
+			t.Fatal("handler must not be called when a Required property is missing")
+			return nil
+		}, SubscribeOptions[withProp]{
+			OnError: func(e SubscribeError) { gotErr = e },
+		})
+
+	if gotErr.Err == nil {
+		t.Fatal("want an error for the missing Required property 'trace', got nil")
+	}
+}
+
+// TestPublish_RequireHWM_NoCapabilitySupplied_FailsCoverage is the zeromq
+// mirror of adapters/mqtt's/adapters/mqtt5's identical regression test: a
+// channel declaring events.RequireHWM (Tier 1 sealed Capability) could be
+// published to with ZERO matching Capability supplied — the declared
+// requirement was silently never enforced on the publish side. Fixed:
+// publish[T] now calls events.VerifyCapabilityCoverage before
+// applyCapabilities.
+func TestPublish_RequireHWM_NoCapabilitySupplied_FailsCoverage(t *testing.T) {
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec,
+		events.RequireHWM(10),
+	).WithPublish(events.Publish{Summary: "test"}).Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	sock := &mockSocket{}
+	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
+
+	err = publish(context.Background(), sock, handle, reading, nil, true, PublishOptions[sensorReading]{})
+	if err == nil {
+		t.Fatal("want a capability coverage error, got nil")
+	}
+	var covErr *events.CapabilityCoverageError
+	if !errors.As(err, &covErr) {
+		t.Fatalf("want events.CapabilityCoverageError, got %T: %v", err, err)
+	}
+	if len(sock.sentFrames) != 0 {
+		t.Errorf("want 0 sent frames, got %d", len(sock.sentFrames))
+	}
+}
+
+// TestSubscribeWithHandle_RequireHWM_NoCapabilitySupplied_FailsCoverage is
+// a REGRESSION GUARD: a channel declaring events.RequireHWM could be
+// subscribed to via the escape-hatch subscribeWithHandle with ZERO
+// matching Capability supplied — the declared requirement was silently
+// never enforced. Fixed: subscribeWithHandle now calls
+// events.VerifyCapabilityCoverage before calling SetSubscription.
+func TestSubscribeWithHandle_RequireHWM_NoCapabilitySupplied_FailsCoverage(t *testing.T) {
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec,
+		events.RequireHWM(10),
+	).WithSubscribe(events.Subscribe{Summary: "test"}).Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	sock := &mockSocket{}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	subErr := subscribeWithHandle(ctx, sock, handle,
+		func(_ context.Context, _ sensorReading) error {
+			t.Fatal("handler must not be registered when coverage fails")
+			return nil
+		}, SubscribeOptions[sensorReading]{})
+
+	if subErr == nil {
+		t.Fatal("want a capability coverage error, got nil")
+	}
+	var covErr *events.CapabilityCoverageError
+	if !errors.As(subErr, &covErr) {
+		t.Fatalf("want events.CapabilityCoverageError, got %T: %v", subErr, subErr)
+	}
+}

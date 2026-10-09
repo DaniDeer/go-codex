@@ -124,6 +124,22 @@ func (a *mqtt5SubscribeAdapter[T]) Activate(ctx context.Context, dst chan<- T, e
 	}
 	a.router.RegisterHandler(filter, handler)
 
+	// Tier 1 coverage check — a channel's own declared [events.RequireQoS]/
+	// [events.RequireRetained] (a.handle.Requirements) must be verified
+	// here too — this ports.SourceAdapter binding is a SEPARATE dispatch
+	// path from subscribeWithHandle/ServeSubscribers and had the SAME
+	// confirmed-missing gap.
+	if len(a.handle.Requirements) > 0 {
+		if covErr := events.VerifyCapabilityCoverage(a.handle.Topic, a.handle.Requirements, a.opts.Capabilities); covErr != nil {
+			a.router.UnregisterHandler(filter)
+			select {
+			case errs <- covErr:
+			case <-ctx.Done():
+			}
+			return
+		}
+	}
+
 	// docs/design/d-0006-protocol-native-capabilities.md's Phase 4b:
 	// Capabilities is the SOLE mechanism — events.ApplyCapabilities is
 	// the API-LAYER-OWNED dispatch loop; this adapter contributes only

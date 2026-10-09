@@ -560,3 +560,44 @@ func ExampleSubscribe() {
 	// Output:
 	// received reading from f47ac10b-58cc-4372-a567-0e02b2c3d479: 22.5
 }
+
+// TestServeSubscribers_HandlerError_WithDeadLetter_PublishesDeadLetter is
+// a REGRESSION GUARD: processMessage (ServeSubscribers' per-message
+// dispatch — the PRIMARY recommended Client.Attach workflow) never
+// consulted a declared events.DeadLetter on ANY failure path, unlike
+// subscribeWithHandle (the escape hatch), which already wires the full
+// ErrorChannel→DeadLetter→OnError fallback triplet. A channel declaring
+// DeadLetter whose handler fails should publish a DeadLetterEnvelope to
+// the dead-letter topic via ServeSubscribers too.
+func TestServeSubscribers_HandlerError_WithDeadLetter_PublishesDeadLetter(t *testing.T) {
+	sock := &mockSocket{
+		inFrames: [][][]byte{{[]byte("sensors/dl"), []byte(validSensorJSON)}},
+	}
+	ev := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	handlerErr := errors.New("handler boom")
+	sub := events.NewChannel[sensorReading]("sensors/dl", sensorCodec,
+		events.DeadLetter("sensors/dead-letter"),
+	).WithSubscribe(events.Subscribe{}).WithHandler(
+		func(context.Context, sensorReading) error { return handlerErr })
+	if err := sub.Register(ev); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	caller := newCaller(sock, ev)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if err := caller.ServeSubscribers(ctx); err != nil {
+		t.Fatalf("ServeSubscribers: %v", err)
+	}
+
+	sock.mu.Lock()
+	defer sock.mu.Unlock()
+	var found bool
+	for _, frames := range sock.sentFrames {
+		if len(frames) > 0 && string(frames[0]) == "sensors/dead-letter" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want a dead-letter message published to sensors/dead-letter, got sent frames: %+v", sock.sentFrames)
+	}
+}

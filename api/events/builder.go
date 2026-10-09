@@ -38,21 +38,32 @@ type Server = asyncapi.Server
 // the AsyncAPI document (aggregated from all registered channels by
 // [Client.AsyncAPISpec]); Codec, when non-nil, is used by MQTT5 adapters to
 // validate the raw credential string extracted from a message's User
-// Properties before SecurityFunc is called (server-side subscribe) or
-// before the message is published (client-side publish) — see
-// adapters/mqtt5's `SubscribeOptions.SecurityFunc`/`PublishOptions.CredentialFunc`.
+// Properties before the declarative security implementation (a
+// [SecurityMiddleware]-attached [Subscriber.Use]/[BoundSecuritySubscribeMiddleware]-
+// attached [Subscriber.SubscribeBoundMW] Fn) runs (server-side subscribe), or
+// before the message is published (client-side publish, gated on a
+// [BoundSecurityPublishMiddleware]-attached [Publisher.PublishBoundMW] Fn
+// having actually produced a credential). The OLD imperative
+// `SubscribeOptions.SecurityFunc`/`PublishOptions.CredentialFunc` fields this
+// comment used to reference were REMOVED (docs/design/d-0002-pubsub-workflow-simplification.md's
+// "SecurityFunc Retirement" addendum) — the declarative mechanism above is
+// the sole replacement.
 //
 // MQTT 3.1.1 ([adapters/mqtt]) and ZeroMQ ([adapters/zeromq]) pub/sub have no
 // per-message metadata channel — Codec-level extraction only applies to MQTT5
-// ([adapters/mqtt5]); use SecurityFunc + closure (credentials passed at
-// connect time) for runtime enforcement on those transports instead.
+// ([adapters/mqtt5]); for MQTT 3.1.1, use [adapters/mqtt.NewSecuredClient]'s
+// connect-time credential supply (credentials passed once, at connect time)
+// for runtime enforcement instead. ZeroMQ has no go-codex-level connect-time
+// credential mechanism — CURVE/ZAP security, if needed, is configured
+// directly on the underlying [adapters/zeromq.FramedSocket] implementation.
 //
 // Use [SecurityScheme.WithCodec] to set the Codec field inline without a temporary
 // variable: events.SecurityScheme{SecurityScheme: route.APIKeyScheme(...)}.WithCodec(c)
 type SecurityScheme struct {
 	route.SecurityScheme
 	// Codec, when non-nil, validates the extracted raw credential string.
-	// Nil means no format validation; SecurityFunc receives the message as-is.
+	// Nil means no format validation; the declarative security
+	// implementation receives the message as-is.
 	Codec *codex.Codec[string]
 }
 
@@ -181,7 +192,9 @@ func SecurityMiddleware[In, Out any](schemeName string, scheme SecurityScheme, s
 // SecurityCredentialError is returned when credential format validation via
 // SecurityScheme.Codec fails (MQTT5 only — MQTT 3.1.1 and ZeroMQ have no
 // per-message credential extraction). It is distinct from [SecurityError],
-// which wraps rejections from SecurityFunc.
+// which wraps rejections from a declarative security implementation (a
+// [SecurityMiddleware]/[BoundSecuritySubscribeMiddleware]/
+// [BoundSecurityPublishMiddleware]-attached Fn).
 //
 // Use [errors.As] to extract the scheme name and underlying constraint error:
 //
@@ -209,10 +222,12 @@ func (e SecurityCredentialError) LogValue() slog.Value {
 	)
 }
 
-// SecurityError is returned when SecurityFunc rejects a message.
+// SecurityError is returned when a declarative security implementation (a
+// [SecurityMiddleware]/[BoundSecuritySubscribeMiddleware]/
+// [BoundSecurityPublishMiddleware]-attached Fn) rejects a message.
 // It is distinct from [SecurityCredentialError], which covers codec format failures.
 //
-// Use [errors.As] to extract the underlying error from SecurityFunc:
+// Use [errors.As] to extract the underlying error:
 //
 //	var secErr events.SecurityError
 //	if errors.As(err, &secErr) {
@@ -226,7 +241,7 @@ func (e SecurityError) Error() string {
 	return fmt.Sprintf("security check failed: %s", e.Err)
 }
 
-// Unwrap allows errors.As and errors.Is to traverse the underlying SecurityFunc error.
+// Unwrap allows errors.As and errors.Is to traverse the underlying security-implementation error.
 func (e SecurityError) Unwrap() error { return e.Err }
 
 // LogValue implements [slog.LogValuer] for structured logging.

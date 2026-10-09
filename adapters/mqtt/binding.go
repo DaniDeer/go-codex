@@ -114,6 +114,20 @@ func (a *mqttSubscribeAdapter[T]) Activate(ctx context.Context, dst chan<- T, er
 	if filter == "" {
 		filter = deriveWildcardFilter(a.handle.Topic)
 	}
+	// Tier 1 coverage check — a channel's own declared [events.RequireQoS]/
+	// [events.RequireRetained] (a.handle.Requirements) must be verified
+	// here too — this ports.SourceAdapter binding is a SEPARATE dispatch
+	// path from subscribeHandle/ServeSubscribers and had the SAME
+	// confirmed-missing gap.
+	if len(a.handle.Requirements) > 0 {
+		if covErr := events.VerifyCapabilityCoverage(a.handle.Topic, a.handle.Requirements, a.opts.Capabilities); covErr != nil {
+			select {
+			case errs <- covErr:
+			case <-ctx.Done():
+			}
+			return
+		}
+	}
 	// docs/design/d-0006-protocol-native-capabilities.md's Phase 5:
 	// Capabilities is the SOLE mechanism — events.ApplyCapabilities is
 	// the API-LAYER-OWNED dispatch loop; this adapter contributes only
