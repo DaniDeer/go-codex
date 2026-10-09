@@ -225,23 +225,30 @@ func buildAgnosticMiddlewareHandler[In, Out any](mw Middleware[In, Out]) Middlew
 // buildEncodeIn builds the EncodeIn closure shared by
 // [buildClientMiddlewareHandler] and [buildAgnosticClientMiddlewareHandler]
 // — a thin wrapper over [middleware.EncodeLayer], mirroring [buildEncodeOut]'s
-// identical migration.
+// identical migration. Wraps every failure in [MiddlewareInputError] — the
+// "In"-side counterpart of [buildDecodeIn]'s identical wrapping (deep-dive
+// review round fix: this was previously the ONLY one of the 4 build*
+// functions in this file returning a bare, unwrapped error, leaving a
+// caller with no way to recover the failing middleware's Name via
+// errors.As — buildDecodeIn/buildEncodeOut/buildDecodeOut all already
+// wrapped their own failures).
 func buildEncodeIn[In, Out any](mw Middleware[In, Out]) func(ctx context.Context, inAny any) (map[string]string, map[string]string, error) {
 	topicFields := topicFieldsOf(mw.topicMergeFieldsIn)
 	propertyFields := propertyFieldsOf(mw.propertyMergeFieldsIn)
+	wrapErr := func(err error) error { return MiddlewareInputError{Name: mw.Name, Err: err} }
 	ctxFieldsFromIn := mw.ctxFieldsFromIn
 
 	return func(ctx context.Context, inAny any) (map[string]string, map[string]string, error) {
 		in, _ := inAny.(In)
 		if err := mw.InCodec.Validate(in); err != nil {
-			return nil, nil, err
+			return nil, nil, MiddlewareInputError{Name: mw.Name, Err: err}
 		}
 		for _, cf := range ctxFieldsFromIn {
 			if err := cf.field.Set(ctx, cf.get(in)); err != nil {
-				return nil, nil, err
+				return nil, nil, MiddlewareInputError{Name: mw.Name, Err: err}
 			}
 		}
-		vars, err := middleware.EncodeLayer(in, [][]codex.FieldCodec[In]{topicFields, propertyFields}, func(err error) error { return err })
+		vars, err := middleware.EncodeLayer(in, [][]codex.FieldCodec[In]{topicFields, propertyFields}, wrapErr)
 		if err != nil {
 			return nil, nil, err
 		}

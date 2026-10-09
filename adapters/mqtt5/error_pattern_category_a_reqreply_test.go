@@ -311,3 +311,74 @@ func TestErrorPattern_UserPropertyParam_Matched_Publishes(t *testing.T) {
 		t.Errorf("want typed payload with code=missing_user_property, got: %s", pub.Payload)
 	}
 }
+
+// TestErrorPattern_SecurityCredentialFormat_Matched_Publishes is a
+// REGRESSION GUARD: the built-in codec-based credential FORMAT check
+// (validateSecurityCredentials, gating on SecurityScheme.Codec) was the
+// ONLY Category-A failure branch in this file's dispatch loop that used
+// the plain, non-reflect publishErrorReply (bypassing
+// ObserveErrorResponseFor entirely) AND never consulted DeadLetter —
+// every OTHER failure branch (decode, SecurityMiddlewareFn,
+// BoundSecurityMiddlewareFn, MiddlewareDecodeIn, UserPropertyParam) is
+// already wired to both. A malformed credential (failing
+// SecurityScheme.Codec.Validate) should be just as ErrorPattern/
+// DeadLetter-eligible as any other Category-A failure.
+func TestErrorPattern_SecurityCredentialFormat_Matched_Publishes(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	handler := func(_ context.Context, _ computeReq) (computeResp, error) {
+		return computeResp{}, nil
+	}
+	bearerScheme := reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.
+		WithCodec(codex.String().Refine(validate.NonEmptyString))
+	// An ALWAYS-ACCEPTING paired implementation satisfies the Register/
+	// Serve-time coverage check (a declared Security scheme with no
+	// attached middleware is a hard Serve-time error) — this test
+	// exercises ONLY the built-in Codec-based credential FORMAT check,
+	// which runs BEFORE this paired Fn ever gets a chance to run.
+	acceptingImpl := func(context.Context, *computeReq, mwSecIn) (mwSecOut, error) {
+		return mwSecOut{GrantedScopes: map[string][]string{"bearerAuth": nil}}, nil
+	}
+	acceptingMw := reqreply.BoundSecurityMiddleware[computeReq, mwSecIn, mwSecOut](
+		"bearerAuth", bearerScheme, nil, acceptingImpl,
+	)
+	epRoute := reqreply.NewRoute[computeReq, computeResp]("compute/cred-format-ep", computeReqCodec, computeRespCodec,
+		reqreply.RouteMeta{Security: []route.SecurityRequirement{route.Require("bearerAuth")}},
+		reqreply.ErrorPattern[reqreply.SecurityCredentialError, serveErrPayload](serveErrPayloadCodec,
+			func(e reqreply.SecurityCredentialError) (serveErrPayload, error) {
+				return serveErrPayload{Code: "bad_credential", Message: e.Error()}, nil
+			},
+		),
+	).HandleBoundMW(acceptingMw)
+	if _, err := epRoute.WithHandler(handler).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	serverClient := &mockClient{}
+	serverRouter := newMockRouter()
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter})); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	go func() { _ = server.Serve(ctx) }()
+	serverRouter.waitHandler("compute/cred-format-ep")
+
+	serverRouter.dispatch("compute/cred-format-ep", &pahomqtt5.Publish{
+		Topic:   "compute/cred-format-ep",
+		Payload: []byte(`{"x":1,"y":2}`),
+		Properties: &pahomqtt5.PublishProperties{
+			ResponseTopic:   "replies/client-1",
+			CorrelationData: []byte("corr-credformat"),
+			User:            pahomqtt5.UserProperties{{Key: "Authorization", Value: "Bearer "}}, // empty token fails NonEmptyString
+		},
+	})
+	time.Sleep(50 * time.Millisecond)
+
+	pub := serverClient.lastPublished()
+	if pub == nil {
+		t.Fatal("expected reply to be published")
+	}
+	if !strings.Contains(string(pub.Payload), `"code":"bad_credential"`) {
+		t.Errorf("want typed payload with code=bad_credential (ErrorPattern-matched), got plain-text reply: %s", pub.Payload)
+	}
+}

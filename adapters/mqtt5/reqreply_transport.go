@@ -627,7 +627,17 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 				wrapped := reqreply.SecurityCredentialError{Scheme: name, Err: credErr}
 				serveErr = wrapped
 				obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
-				publishErrorReply(spanCtx, t.client, responseTopic, correlationData, wrapped, effectiveQoS, effectiveRetained)
+				// Deep-dive review round fix: this branch was the ONLY
+				// Category-A failure point still using the plain,
+				// non-reflect publishErrorReply (bypassing
+				// ObserveErrorResponseFor entirely) and never consulting
+				// DeadLetter — every OTHER branch in this function
+				// already uses publishHandlerErrorReplyReflect +
+				// tryDeadLetterReflect. A malformed credential is just
+				// as ErrorPattern/DeadLetter-eligible as any other
+				// Category-A failure.
+				publishHandlerErrorReplyReflect(spanCtx, t.client, observeErrorResponseForMethod, responseTopic, correlationData, wrapped, obs, nil, effectiveQoS, effectiveRetained)
+				tryDeadLetterReflect(spanCtx, t.client, deadLetterForMethod, obs, msg.Topic, msg.Payload, wrapped, effectiveQoS, effectiveRetained)
 				if t.opts.OnError != nil {
 					t.opts.OnError(ServeError{Kind: KindSecurity, Err: wrapped})
 				}
@@ -1102,6 +1112,21 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 	wire := WireAttributes{QoS: qos}
 	events.ApplyCapabilities(t.opts.Capabilities, &wire, obs, path)
 	qos, retained := wire.QoS, wire.Retained
+
+	// Client-side Tier 1 coverage check — deep-dive review round fix:
+	// t.opts.Capabilities was applied to the outgoing request's wire
+	// attributes above, but never verified against the route's own
+	// declared Requirements, mirroring api/events' identical, previously-
+	// confirmed publish-side capability-coverage gap (Round 178). A
+	// route declaring reqreply.RequireQoS/RequireRetained could be
+	// Called with zero matching Capability configured, succeeding
+	// silently.
+	if requirements, ok := elem.FieldByName("Requirements").Interface().([]reqreply.CapabilityRequirement); ok {
+		if covErr := reqreply.VerifyCapabilityCoverage(path, requirements, t.opts.Capabilities); covErr != nil {
+			obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
+			return nil, covErr
+		}
+	}
 
 	var replyTopic, subscribeFilter string
 	if t.opts.ReplyTopicBuilder != nil {

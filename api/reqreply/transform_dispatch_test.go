@@ -7,6 +7,9 @@ import (
 	"testing"
 
 	"github.com/DaniDeer/go-codex/api/reqreply"
+	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/internal/middleware"
+	"github.com/DaniDeer/go-codex/validate"
 )
 
 type dispatchReq struct{ Val string }
@@ -137,5 +140,45 @@ func TestMergeVarsOverride(t *testing.T) {
 	}
 	if got := reqreply.MergeVarsOverride(dst, nil); got["a"] != "1" || got["b"] != "2" {
 		t.Fatalf("expected dst unchanged when src is empty, got %v", got)
+	}
+}
+
+// TestDispatchClientMiddlewareIn_EncodeInFailure_WrapsMiddlewareInputError
+// is a REGRESSION GUARD: buildEncodeIn (transform.go) — the client-side,
+// request-ENCODE-direction sibling of buildDecodeIn/buildEncodeOut/
+// buildDecodeOut — was the ONLY one of the 4 build* functions that did
+// NOT wrap its errors in a typed reqreply.Middleware*Error. A failing
+// InCodec.Validate (or merge-field encode failure) on the client's own
+// middleware-contributed In value propagated as a bare, unwrapped error,
+// with no way for a caller to recover which middleware failed via
+// errors.As — unlike buildDecodeIn (wraps MiddlewareInputError),
+// buildEncodeOut/buildDecodeOut (both wrap MiddlewareOutputError).
+func TestDispatchClientMiddlewareIn_EncodeInFailure_WrapsMiddlewareInputError(t *testing.T) {
+	type mdIn struct{ Val string }
+	mw := reqreply.NewMiddleware(middleware.Declaration[mdIn, struct{}]{
+		Name:    "mw",
+		InCodec: codex.Struct[mdIn](codex.RequiredField("val", codex.String().Refine(validate.NonEmptyString), func(i mdIn) string { return i.Val }, func(i *mdIn, v string) { i.Val = v })),
+	}).WithSend(func(ctx context.Context) (mdIn, error) { return mdIn{Val: ""}, nil })
+
+	r := newMWTestRoute().Use(mw)
+	b := reqreply.NewServer(reqreply.Info{Title: "t", Version: "1.0.0"})
+	h, err := r.Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if len(h.ClientMiddlewareHandlers) != 1 {
+		t.Fatalf("want 1 ClientMiddlewareHandler, got %d", len(h.ClientMiddlewareHandlers))
+	}
+
+	_, _, name, dispatchErr := reqreply.DispatchClientMiddlewareIn(context.Background(), reflect.ValueOf(computeReq{}), h.ClientMiddlewareHandlers)
+	if dispatchErr == nil {
+		t.Fatal("want an error from the failing InCodec.Validate, got nil")
+	}
+	var inputErr reqreply.MiddlewareInputError
+	if !errors.As(dispatchErr, &inputErr) {
+		t.Fatalf("want errors.As to reqreply.MiddlewareInputError, got %T: %v", dispatchErr, dispatchErr)
+	}
+	if inputErr.Name != "mw" || name != "mw" {
+		t.Errorf("want middleware name %q, got inputErr.Name=%q name=%q", "mw", inputErr.Name, name)
 	}
 }

@@ -1467,3 +1467,256 @@ func TestAttachServer_Disposition_DefaultFallback_NilError(t *testing.T) {
 		t.Errorf("want [DispositionAck], got %v", obs.dispositions)
 	}
 }
+
+// propReq carries a REQUIRED, DIRECTLY-declared property merge field
+// (reqreply.NewPropertyParam) — used by
+// TestAttachServer_DirectPropertyParam_RequiredMissing_FailsNaturally
+// below, a REGRESSION GUARD for zeromq's reqreply server dispatch.
+type propReq struct {
+	X     int
+	Token string
+}
+
+var propReqCodec = codex.Struct[propReq](
+	codex.RequiredField("x", codex.Int(),
+		func(r propReq) int { return r.X },
+		func(r *propReq, v int) { r.X = v }),
+)
+
+// TestAttachServer_DirectPropertyParam_RequiredMissing_FailsNaturally is a
+// REGRESSION GUARD: adapters/mqtt5's reqreply Serve dispatch correctly
+// calls RouteHandle.MergePropertyVars for a DIRECTLY-declared (non-
+// Middleware) reqreply.MergedPropertyParam, but adapters/zeromq's
+// reqreply Serve dispatch NEVER did — zeromq has no property wire
+// channel at all, so the correct behavior (mirroring the SAME "nil
+// propertyVars -> natural failure" contract the codec-backed Middleware
+// axis already established here, see this file's own "zeromq has
+// neither a reply-topic nor a property mechanism" comments) is for a
+// Required direct PropertyParam to FAIL LOUDLY via
+// reqreply.MissingRouteParamError, not silently leave the field at its
+// zero value with no error at all.
+func TestAttachServer_DirectPropertyParam_RequiredMissing_FailsNaturally(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	handlerCalled := false
+	fn := func(_ context.Context, r propReq) (computeResp, error) {
+		handlerCalled = true
+		return computeResp{Sum: r.X}, nil
+	}
+	route := reqreply.NewRoute[propReq, computeResp](
+		"/compute-prop",
+		propReqCodec, computeRespCodec,
+		reqreply.RouteMeta{OperationID: "computeProp"},
+		reqreply.NewPropertyParam("token", codex.String(),
+			func(r propReq) string { return r.Token },
+			func(r *propReq, v string) { r.Token = v },
+		),
+	)
+	if _, err := route.WithHandler(fn).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	repSock, reqSock := newChanSocketPair()
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Sockets: map[string]FramedSocket{"/compute-prop": repSock}})); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	client := reqreply.NewClient()
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Sockets: map[string]FramedSocket{"/compute-prop": reqSock}})); err != nil {
+		t.Fatalf("AttachClient: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveErrCh := make(chan error, 1)
+	go func() { serveErrCh <- server.Serve(ctx) }()
+
+	callCtx, callCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer callCancel()
+	_, err := client.Call(callCtx, route, propReq{X: 5})
+
+	cancel()
+	<-serveErrCh
+
+	if handlerCalled {
+		t.Fatal("handler must NOT be called when a Required direct PropertyParam is missing — it was silently merged/skipped instead of failing")
+	}
+	if err == nil {
+		t.Fatal("want an error (Required property missing), got nil")
+	}
+}
+
+// TestAttachRouterServer_DirectPropertyParam_RequiredMissing_FailsNaturally
+// is the ROUTER/DEALER-variant twin of
+// TestAttachServer_DirectPropertyParam_RequiredMissing_FailsNaturally —
+// confirming the SAME fix applies to zeromq's other reqreply dispatch
+// path.
+func TestAttachRouterServer_DirectPropertyParam_RequiredMissing_FailsNaturally(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	handlerCalled := false
+	fn := func(_ context.Context, r propReq) (computeResp, error) {
+		handlerCalled = true
+		return computeResp{Sum: r.X}, nil
+	}
+	route := reqreply.NewRoute[propReq, computeResp](
+		"/compute-prop-router",
+		propReqCodec, computeRespCodec,
+		reqreply.RouteMeta{OperationID: "computePropRouter"},
+		reqreply.NewPropertyParam("token", codex.String(),
+			func(r propReq) string { return r.Token },
+			func(r *propReq, v string) { r.Token = v },
+		),
+	)
+	if _, err := route.WithHandler(fn).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	dealerSock, routerSock := newDealerRouterPair([]byte("client-1"))
+	if err := server.Attach(NewRouterServerTransport(RouterServerTransportOptions{Sockets: map[string]FramedSocket{"/compute-prop-router": routerSock}})); err != nil {
+		t.Fatalf("AttachRouterServer: %v", err)
+	}
+	client := reqreply.NewClient()
+	if err := client.Attach(NewDealerClientTransport(DealerClientTransportOptions{Sockets: map[string]FramedSocket{"/compute-prop-router": dealerSock}})); err != nil {
+		t.Fatalf("AttachDealerClient: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveErrCh := make(chan error, 1)
+	go func() { serveErrCh <- server.Serve(ctx) }()
+
+	callCtx, callCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer callCancel()
+	_, err := client.Call(callCtx, route, propReq{X: 5})
+
+	cancel()
+	<-serveErrCh
+
+	if handlerCalled {
+		t.Fatal("handler must NOT be called when a Required direct PropertyParam is missing")
+	}
+	if err == nil {
+		t.Fatal("want an error (Required property missing), got nil")
+	}
+}
+
+// TestAttachClient_Call_RequireHWM_NoCapabilitySupplied_FailsCoverage is a
+// REGRESSION GUARD: the client-side Call/CallAsync dispatch
+// (clientTransport.call, REQ/REP variant) applied declared Capabilities
+// to the socket via applyCapabilities but NEVER verified them against
+// the route's own declared Requirements — a route declaring
+// reqreply.RequireHWM could be Called with ZERO matching Capability
+// configured, succeeding silently. Mirrors api/events' identical,
+// previously-confirmed publish-side capability-coverage gap (Round 178),
+// and the file's own pre-existing "No coverage check on the client/Call
+// side" comment, confirming this was a KNOWN, documented gap.
+func TestAttachClient_Call_RequireHWM_NoCapabilitySupplied_FailsCoverage(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	handlerCalled := false
+	fn := func(_ context.Context, r computeReq) (computeResp, error) {
+		handlerCalled = true
+		return computeResp{Sum: r.X + r.Y}, nil
+	}
+	hwmRoute := reqreply.NewRoute[computeReq, computeResp](
+		"/compute-hwm",
+		computeReqCodec, computeRespCodec,
+		reqreply.RouteMeta{OperationID: "computeHWM"},
+		reqreply.RequireHWM(10),
+	)
+	if _, err := hwmRoute.WithHandler(fn).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	repSock, reqSock := newChanSocketPair()
+	// Server side supplies sufficient Capabilities so Serve succeeds —
+	// isolating the bug to the CLIENT side's missing coverage check.
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{
+		Sockets: map[string]FramedSocket{"/compute-hwm": repSock},
+		Serve:   ServeOptions{Capabilities: []Capability{HWM(10)}},
+	})); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	// NO Capabilities configured on this ClientTransport.
+	client := reqreply.NewClient()
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Sockets: map[string]FramedSocket{"/compute-hwm": reqSock}})); err != nil {
+		t.Fatalf("AttachClient: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveErrCh := make(chan error, 1)
+	go func() { serveErrCh <- server.Serve(ctx) }()
+
+	callCtx, callCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer callCancel()
+	_, callErr := client.Call(callCtx, hwmRoute, computeReq{X: 1, Y: 2})
+
+	cancel()
+	<-serveErrCh
+
+	if callErr == nil {
+		t.Fatal("want a capability coverage error, got nil")
+	}
+	var covErr *reqreply.CapabilityCoverageError
+	if !errors.As(callErr, &covErr) {
+		t.Fatalf("want reqreply.CapabilityCoverageError, got %T: %v", callErr, callErr)
+	}
+	if handlerCalled {
+		t.Fatal("handler must NOT be invoked when client-side capability coverage fails")
+	}
+}
+
+// TestAttachDealerClient_Call_RequireHWM_NoCapabilitySupplied_FailsCoverage
+// is the DEALER-variant twin of
+// TestAttachClient_Call_RequireHWM_NoCapabilitySupplied_FailsCoverage —
+// confirming the SAME fix applies to zeromq's other client dispatch path.
+func TestAttachDealerClient_Call_RequireHWM_NoCapabilitySupplied_FailsCoverage(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	handlerCalled := false
+	fn := func(_ context.Context, r computeReq) (computeResp, error) {
+		handlerCalled = true
+		return computeResp{Sum: r.X + r.Y}, nil
+	}
+	hwmRoute := reqreply.NewRoute[computeReq, computeResp](
+		"/compute-hwm-dealer",
+		computeReqCodec, computeRespCodec,
+		reqreply.RouteMeta{OperationID: "computeHWMDealer"},
+		reqreply.RequireHWM(10),
+	)
+	if _, err := hwmRoute.WithHandler(fn).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	dealerSock, routerSock := newDealerRouterPair([]byte("client-1"))
+	if err := server.Attach(NewRouterServerTransport(RouterServerTransportOptions{
+		Sockets: map[string]FramedSocket{"/compute-hwm-dealer": routerSock},
+		Serve:   ServeOptions{Capabilities: []Capability{HWM(10)}},
+	})); err != nil {
+		t.Fatalf("AttachRouterServer: %v", err)
+	}
+	client := reqreply.NewClient()
+	if err := client.Attach(NewDealerClientTransport(DealerClientTransportOptions{Sockets: map[string]FramedSocket{"/compute-hwm-dealer": dealerSock}})); err != nil {
+		t.Fatalf("AttachDealerClient: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveErrCh := make(chan error, 1)
+	go func() { serveErrCh <- server.Serve(ctx) }()
+
+	callCtx, callCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer callCancel()
+	_, callErr := client.Call(callCtx, hwmRoute, computeReq{X: 1, Y: 2})
+
+	cancel()
+	<-serveErrCh
+
+	if callErr == nil {
+		t.Fatal("want a capability coverage error, got nil")
+	}
+	var covErr *reqreply.CapabilityCoverageError
+	if !errors.As(callErr, &covErr) {
+		t.Fatalf("want reqreply.CapabilityCoverageError, got %T: %v", callErr, callErr)
+	}
+	if handlerCalled {
+		t.Fatal("handler must NOT be invoked when client-side capability coverage fails")
+	}
+}

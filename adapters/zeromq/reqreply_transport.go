@@ -526,6 +526,18 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 	// DecodeVars either.
 	decodeWithFormatsMethod := rv.MethodByName("DecodeWithFormats")
 	encodeWithFormatsMethod := rv.MethodByName("EncodeWithFormats")
+	// hasPropertyMergeFields/MergePropertyVars — deep-dive review round
+	// fix: a DIRECTLY-declared (non-Middleware) reqreply.MergedPropertyParam
+	// was silently NEVER merged or enforced here (unlike mqtt5, which
+	// already calls MergePropertyVars with the real incoming User
+	// Properties). zeromq has no property wire channel at all, so the
+	// correct fix (mirroring the codec-backed Middleware axis's own
+	// already-correct "nil propertyVars -> natural failure" contract,
+	// see this file's "ALWAYS-EMPTY property-value map" comment below)
+	// is to call MergePropertyVars with nil — a Required property merge
+	// field now fails loudly via MissingRouteParamError instead of
+	// silently leaving the field at its zero value.
+	hasPropertyMergeFields := rv.MethodByName("PropertyMergeFields").Call(nil)[0].Len() > 0
 	// observeErrorResponseForMethod is *RouteHandle[Req,Resp].
 	// ObserveErrorResponseFor(ctx, obs, err) — closes Phase 0 work item 2
 	// (server-side), now the RECOMMENDED observability-aware call (see
@@ -653,6 +665,29 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 			continue
 		}
 		reqVal := decodeResults[0]
+
+		// Route-level (Middleware-free) property merge — see this
+		// function's own hasPropertyMergeFields doc comment above.
+		// zeromq has no property wire channel, so vars is always nil —
+		// a Required direct PropertyParam fails naturally here.
+		if hasPropertyMergeFields {
+			reqPtr := reflect.New(reqType)
+			reqPtr.Elem().Set(reqVal)
+			mergeResults := rv.MethodByName("MergePropertyVars").Call([]reflect.Value{reqPtr, reflect.ValueOf(map[string]string(nil))})
+			if errI, _ := mergeResults[0].Interface().(error); errI != nil {
+				stats.ReportErrors(obs, "property_var", errI)
+				serveErr = errI
+				obs.RecordRequest("ZMQ-REP", path, 0, time.Since(start))
+				sendHandlerErrorReplyReflect(spanCtx, sock, observeErrorResponseForMethod, errI, obs)
+				tryDeadLetterReflect(t.sockets, deadLetterForMethod, obs, path, payload, errI)
+				endSpan()
+				if t.opts.OnError != nil {
+					t.opts.OnError(ServeError{Kind: KindDecode, Err: errI})
+				}
+				continue
+			}
+			reqVal = reqPtr.Elem()
+		}
 
 		// Paired security Fns (docs/design/d-0004-reqreply-workflow-simplification.md's Addendum) run
 		// BETWEEN decode and dispatch, reading/optionally enriching the
@@ -919,8 +954,19 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 	// this call's supplied [CallOptions.Capabilities] to the socket via
 	// the EXISTING [applyCapabilities] helper (re-application on every
 	// call is idempotent — a minor, accepted inefficiency, not a
-	// correctness issue). No coverage check on the client/Call side.
+	// correctness issue).
 	applyCapabilities(sock, t.opts.Capabilities, obs, path)
+	// Client-side Tier 1 coverage check — deep-dive review round fix:
+	// closes the "No coverage check on the client/Call side" gap this
+	// file's own comment used to flag — mirrors api/events' identical,
+	// previously-confirmed publish-side capability-coverage gap
+	// (Round 178) and adapters/mqtt5's identical fix.
+	if requirements, ok := elem.FieldByName("Requirements").Interface().([]reqreply.CapabilityRequirement); ok {
+		if covErr := reqreply.VerifyCapabilityCoverage(path, requirements, t.opts.Capabilities); covErr != nil {
+			obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
+			return nil, covErr
+		}
+	}
 
 	reqType := elem.FieldByName("EncodeRequest").Type().In(0)
 	reqVal := reflect.ValueOf(reqAny)
@@ -1368,6 +1414,11 @@ func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny a
 	// ObserveErrorResponseFor at every Category-A failure site, mirroring
 	// the pub/sub adapters' collapsed single-rule wiring exactly.
 	deadLetterForMethod := rv.MethodByName("DeadLetterFor")
+	// hasPropertyMergeFields — see [serverTransport.Serve]'s identical
+	// doc comment (deep-dive review round fix): ROUTER frames carry no
+	// property channel either, so a Required direct PropertyParam must
+	// fail naturally via a nil-vars MergePropertyVars call.
+	hasPropertyMergeFields := rv.MethodByName("PropertyMergeFields").Call(nil)[0].Len() > 0
 
 	// Security Fn-shape dispatch (docs/design/d-0004-reqreply-workflow-simplification.md's Addendum) — same
 	// mechanism as [serverTransport.Serve], duplicated for the ROUTER
@@ -1474,6 +1525,29 @@ func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny a
 				return
 			}
 			reqVal := decodeResults[0]
+
+			// Route-level (Middleware-free) property merge — see this
+			// function's own hasPropertyMergeFields doc comment above.
+			// ROUTER frames carry no property channel, so vars is
+			// always nil — a Required direct PropertyParam fails
+			// naturally here.
+			if hasPropertyMergeFields {
+				reqPtr := reflect.New(reqType)
+				reqPtr.Elem().Set(reqVal)
+				mergeResults := rv.MethodByName("MergePropertyVars").Call([]reflect.Value{reqPtr, reflect.ValueOf(map[string]string(nil))})
+				if errI, _ := mergeResults[0].Interface().(error); errI != nil {
+					stats.ReportErrors(obs, "property_var", errI)
+					serveErr = errI
+					obs.RecordRequest("ZMQ-ROUTER", path, 0, time.Since(start))
+					sendRouterHandlerErrorReplyReflect(spanCtx, sock, id, observeErrorResponseForMethod, errI, obs)
+					tryDeadLetterReflect(t.sockets, deadLetterForMethod, obs, path, pl, errI)
+					if t.opts.OnError != nil {
+						t.opts.OnError(ServeError{Kind: KindDecode, Err: errI})
+					}
+					return
+				}
+				reqVal = reqPtr.Elem()
+			}
 
 			// Paired security Fns run BETWEEN decode and dispatch —
 			// mirrors [serverTransport.Serve]'s identical mechanism.
@@ -1717,6 +1791,15 @@ func (t *dealerClientTransport) call(ctx context.Context, routeAny any, reqAny a
 	// variant (see the established 4-transport duplication precedent
 	// cited on [routerServerTransport.Serve]).
 	applyCapabilities(sock, t.opts.Capabilities, obs, path)
+	// Client-side Tier 1 coverage check — deep-dive review round fix,
+	// duplicated for the DEALER variant — see [clientTransport.call]'s
+	// identical fix.
+	if requirements, ok := elem.FieldByName("Requirements").Interface().([]reqreply.CapabilityRequirement); ok {
+		if covErr := reqreply.VerifyCapabilityCoverage(path, requirements, t.opts.Capabilities); covErr != nil {
+			obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
+			return nil, covErr
+		}
+	}
 
 	reqType := elem.FieldByName("EncodeRequest").Type().In(0)
 	reqVal := reflect.ValueOf(reqAny)

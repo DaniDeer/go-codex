@@ -1,6 +1,305 @@
-# go-codex Review History (R1–R184, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
+# go-codex Review History (R1–R194, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 194 (api/reqreply — deep dive #9 (final): spec-endpoint — closed a real-adapter test-coverage gap, mirroring api/events' Round 184)
+
+Ninth and final round of the `api/reqreply` deep dive. `Server.ServeSpec` — reqreply's own
+AsyncAPI content endpoint (body-field format selection via `SpecReq.Format`, since reqreply has
+no `Accept`-header equivalent; lazy `sync.Once`-cached document, re-marshaled per format,
+correctly avoiding a map-aliasing staleness bug by freezing the marshaled BYTES rather than the
+`Document` value) — was already covered by 6 tests in `api/reqreply/specroute_test.go` (happy
+path both formats, lazy-cache-reflects-later-routes, empty topic, duplicate topic, global-security
+opt-out, spec middleware), all confirmed clean on read. But ALL of them exercise a fake
+`capturingServerTransport`, never a real adapter's `Serve`/`Call` dispatch — the exact same
+test-coverage gap `api/events`' own Round 184 found and closed for `ServeSpec`.
+
+- **No bug found** — `ServeSpec`'s registered route dispatches through the SAME
+  `serverTransport.Serve`/`clientTransport.call` already deep-dived and hardened across Rounds
+  185-190; no reason to expect a NEW bug here, and none was found.
+- Added `TestReqReplyServeSpec_RealTransport_PublishesRawSpecBytes`
+  (`adapters/mqtt5/reqreply_transport_test.go`): registers a real route alongside `ServeSpec`,
+  attaches REAL `ServerTransport`/`ClientTransport` (mock broker client+router), and calls the
+  spec route via `client.Call(ctx, specHandle, reqreply.SpecReq{Format: "json"})` end-to-end,
+  confirming the published payload is the raw, un-wrapped JSON spec document text containing the
+  Server's own `Info` — closing the test-coverage gap. Confirmed passing.
+- Full repo verification clean: `gofmt -l .`, `go build ./...`, `go test ./...`, `just check`
+  (0 issues), full `examples/*/` sweep — all clean.
+- **This closes the `api/reqreply` deep-dive series** (9/9 `concept-reqreply-*` rounds done,
+  applying the newly-codified `deep-dive-bug-hunt` skill for the first time): transform (185,
+  REAL BUG — `buildEncodeIn` unwrapped errors), topic-params (186, clean), property axis (187,
+  REAL BUG — direct `PropertyParam` never merged on zeromq), QoS/Retained/HWM (188, REAL BUG —
+  client-side capability coverage never checked across all 3 client dispatch implementations),
+  security schemes (189, stale godoc + 190, REAL BUG — credential-format check bypassed
+  ErrorPattern/DeadLetter), error-pattern client ergonomics (191, clean), Future/CallAsync (192,
+  clean), handletransport (193, clean — thin delegation inherits every prior fix), spec-endpoint
+  (194, clean — closed a real-adapter test-coverage gap). **4 real, confirmed bugs found and
+  fixed** across this series, plus 1 documentation-drift fix and 1 new integration test closing
+  a coverage gap.
+
+---
+
+## Round 193 (api/reqreply — deep dive #8: handletransport (client-path sweep) — confirmed clean)
+
+Eighth round of the `api/reqreply` deep dive — the planned "sweep handletransport.go for every
+concept above" round. `api/reqreply/handletransport.go`'s `ServeWithTransport`/`CallWithTransport`
+free functions are confirmed, by their own doc comments, to be a "PURE RELOCATION, not a
+redesign" — thin delegations straight to `transport.Serve`/`transport.Call`, the EXACT SAME
+`serverTransport.Serve`/`clientTransport.call` functions already deep-dived and hardened in
+Rounds 185 (buildEncodeIn wrapping), 187 (property merge), 188 (capability coverage), and 190
+(credential-format ErrorPattern/DeadLetter wiring). Every one of those fixes is therefore already
+live on this client/server-handle-based surface with zero additional work needed — mirrors
+`api/events`' identical Round 183 finding exactly. Test coverage confirmed present across
+`adapters/mqtt5`, `adapters/zeromq`, and `api/reqreply` itself. No code changes.
+
+---
+
+## Round 192 (api/reqreply — deep dive #7: Future/CallAsync — confirmed clean)
+
+Seventh round of the `api/reqreply` deep dive. `Future[T]`/`FutureFactory`/`RouteHandle.NewFutureAny`
+— the reqreply-only async-reply correlation mechanism (no REST/events equivalent) — confirmed
+clean: write-once `resolve` semantics correctly mutex-guarded (a double-resolve is a safe no-op,
+not a panic or data race); `Wait`'s ctx-cancellation path correctly returns a typed
+`FutureTimeoutError`; `NewFutureAny`'s type-erasure-crossing resolve closure correctly handles a
+type-assertion mismatch via `TransportTypeMismatchError` rather than panicking, exactly matching
+its own doc comment's claim. Confirmed `CallAsync`'s spawned goroutine has no leak risk (bounded
+by the same `ctx` `Call`/`t.call` already respects; `resolve` tolerates being called after an
+abandoned `Wait`). No new findings. No code changes.
+
+---
+
+## Round 191 (api/reqreply — deep dive #6: error-pattern client ergonomics — confirmed clean)
+
+Sixth round of the `api/reqreply` deep dive. `error_pattern_client.go`'s `ErrorPatternAs`/
+`HandleErrorPattern`/`Case` are already thin, correct forwarding wrappers around
+`internal/middleware`'s consolidated implementation (confirmed via its own doc comment: moved
+out of `adapters/mqtt5`/`adapters/zeromq` directly into `api/reqreply` after a confirmed
+byte-for-byte duplication mistake, then consolidated once more into `internal/middleware`
+alongside `api/rest`'s identical copy — `docs/design/d-0009-internalize-shared-mechanics.md`'s
+Phase 4). Confirmed 3-way parity on the client-side `ErrorPatternResponse` decode wiring across
+all 3 client dispatch implementations (`adapters/mqtt5`'s `clientTransport.call`,
+`adapters/zeromq`'s REQ `clientTransport.call` and DEALER `dealerClientTransport.call`) — all 3
+correctly decode a matched `ErrorPattern` reply into the typed `CallError{Err: ErrorPatternResponse{...}}`
+shape. Confirmed `CallAsync` delegates to the SAME inner `call` function in all 3 cases (no
+separate implementation needing its own check). 19 existing test references confirm solid
+coverage. No new findings beyond Round 190's credential-format fix (same concept area). No code
+changes.
+
+---
+
+## Round 190 (api/reqreply — deep dive #5b: security schemes continued — a REAL, confirmed bug: the built-in codec-based credential FORMAT check was the ONLY Category-A failure branch in mqtt5's server dispatch still bypassing ErrorPattern/DeadLetter)
+
+A closer look at `adapters/mqtt5/reqreply_transport.go`'s server `Serve` dispatch (continuing
+Round 189's security-schemes concept), prompted by a line-count mismatch between
+`tryDeadLetterReflect` call sites (11) and `t.opts.OnError != nil` call sites (12) in the same
+function — one failure branch was missing dead-letter wiring.
+
+- **Bug — the built-in, codec-based credential FORMAT check (`validateSecurityCredentials`,
+  gating on `SecurityScheme.Codec`) was the ONLY Category-A failure branch in this dispatch
+  loop still using the plain, non-reflect `publishErrorReply` (bypassing
+  `ObserveErrorResponseFor`/`ErrorPattern` entirely) AND never consulting `DeadLetter`** — every
+  OTHER failure branch in the SAME function (decode, topic-var/property-var merge, paired
+  security Fn, codec-backed middleware dispatch, handler error) already consistently used
+  `publishHandlerErrorReplyReflect` + `tryDeadLetterReflect`. A malformed credential (e.g. an
+  empty bearer token failing a declared `NonEmptyString` constraint) would always get the
+  generic plain-text `err.Error()` reply, NEVER a declared `ErrorPattern`-matched typed payload,
+  and NEVER reach a declared `DeadLetter` destination. Confirmed via LIVE reproduction (a route
+  declaring `ErrorPattern[reqreply.SecurityCredentialError, ...]` + a malformed credential
+  received a plain-text reply instead of the typed payload) before fixing. Fixed: this branch
+  now calls `publishHandlerErrorReplyReflect` + `tryDeadLetterReflect`, mirroring every sibling
+  branch exactly.
+- **Test**: `TestErrorPattern_SecurityCredentialFormat_Matched_Publishes` (new,
+  `adapters/mqtt5/error_pattern_category_a_reqreply_test.go`) — confirmed failing before the fix
+  (plain-text reply), passing after. Required pairing an always-accepting
+  `BoundSecurityMiddleware` implementation to satisfy reqreply's Serve-time coverage check
+  ("route declares security scheme ... with no attached middleware satisfying it") — a
+  structural prerequisite discovered while debugging this test, not a separate bug.
+- Confirmed via grep: `adapters/zeromq`'s reqreply dispatch has NO equivalent codec-based
+  credential check at all (zeromq has no property channel to extract a credential from,
+  consistent with Round 187's property-axis finding) — this gap is mqtt5-only.
+- **A parallel, structurally-identical gap exists in `api/events`' own mqtt5 subscribe dispatch**
+  (`adapters/mqtt5/adapter.go`'s built-in credential check, same `validateSecurityCredentials`
+  pattern) — found during this investigation but OUT OF SCOPE for this `api/reqreply`-focused
+  round (would require reopening the already-closed `api/events` deep dive). Flagged here for a
+  future dedicated round; not fixed in this session.
+- Full repo verification clean: `gofmt -l .`, `go build ./...`, `go test ./...` (including full
+  `api/reqreply`/`adapters/mqtt5`/`adapters/zeromq` runs — one zeromq test
+  (`TestAttachServer_MiddlewareError_WrapsAsKindMiddleware`) showed a transient, confirmed
+  flaky failure unrelated to this round's changes, passing consistently on repeated isolated and
+  full-suite re-runs), `just check` (0 issues — also fixed a `staticcheck` SA1019 deprecation
+  warning introduced by the new test's initial use of the deprecated `WithSecurityScheme`,
+  resolved by relying on `BoundSecurityMiddleware`'s own scheme argument instead), full
+  `examples/*/` sweep — all clean.
+
+---
+
+## Round 189 (api/reqreply — deep dive #5: security schemes — stale godoc referencing REMOVED `SecurityFunc`/`CredentialFunc` fields, mirroring api/events' Round 180)
+
+Fifth round of the `api/reqreply` deep dive. `SecurityScheme`'s own doc comment (`route.go`)
+still described the OLD, fully-REMOVED imperative `ServeOptions.SecurityFunc`/
+`CallOptions.CredentialFunc` fields as the current mechanism — confirmed via grep that NEITHER
+field exists anywhere in `adapters/mqtt5`'s reqreply `ServeOptions`/`CallOptions` structs today
+(both adapter files correctly document the removal itself with explicit "REMOVED (Phase 1...)"
+markers — only `route.go`'s OWN doc comment had drifted). Fixed: rewrote `SecurityScheme`'s doc
+comment and its `Codec` field comment, plus `SecurityError`'s `Unwrap` comment, to name the
+actual current mechanism (`SecurityMiddleware`/`BoundSecurityMiddleware`/
+`BoundSecurityClientMiddleware`, attached via `.Use`/`HandleBoundMW`/`ClientBoundMW`) and
+explicitly note the old fields' removal — mirrors `api/events`' identical Round 180 fix exactly.
+Confirmed via grep: unlike `api/events`' zeromq pub/sub (`serve_subscribers.go`), reqreply's
+adapter dispatch code has NO leftover dead reflection code referencing the removed fields — the
+doc drift was isolated to `route.go` alone. No functional/behavioral changes — documentation
+clarity only. Full repo verification clean: `gofmt -l .`, `go build ./...`, `go test ./...`
+(including full `api/reqreply`/`adapters/mqtt5`/`adapters/zeromq` runs, all passing),
+`just check` (0 issues).
+
+---
+
+## Round 188 (api/reqreply — deep dive #4: QoS/Retained/HWM capability coverage — a REAL, confirmed bug: client-side `Call`/`CallAsync` never verified capability coverage against declared Requirements, across all 3 client dispatch implementations)
+
+Fourth round of the `api/reqreply` deep dive (user-requested headline concept: "QoS"). Traced
+`RequireQoS`/`RequireRetained`/`RequireHWM`/`RequireConflate` (reqreply's own package-local
+`CapabilityRequirement`/`VerifyCapabilityCoverage` mirror, deliberately NOT imported from
+`api/events`) through all server AND client dispatch paths across both adapters.
+
+- **Server side confirmed clean** — all 3 server dispatch implementations
+  (`adapters/mqtt5/reqreply_transport.go`'s `serverTransport.Serve`,
+  `adapters/zeromq/reqreply_transport.go`'s `serverTransport.Serve` (REQ/REP) and
+  `routerServerTransport.Serve` (ROUTER/DEALER)) already call
+  `reqreply.VerifyCapabilityCoverage` right after applying capabilities — no gap.
+- **Bug — the CLIENT side (`Call`/`CallAsync`) NEVER verified capability coverage against the
+  route's declared `Requirements`, across all 3 client dispatch implementations**
+  (`adapters/mqtt5/reqreply_transport.go`'s `(*clientTransport).call`,
+  `adapters/zeromq/reqreply_transport.go`'s `(*clientTransport).call` (REQ) and
+  `(*dealerClientTransport).call` (DEALER)) — all 3 called `events.ApplyCapabilities`/
+  `applyCapabilities` to set the outgoing request's wire attributes, but never consulted
+  coverage. A route declaring `RequireQoS(AtLeastOnce)`/`RequireHWM(n)` could be `Call`ed with
+  ZERO matching `Capability` configured on the `ClientTransport`, succeeding silently.
+  zeromq's own `applyCapabilities` call sites had a pre-existing comment explicitly flagging
+  this as a KNOWN gap ("No coverage check on the client/Call side"). Confirmed via LIVE
+  reproduction (server side supplied sufficient capabilities so `Serve` itself succeeded,
+  isolating the bug to the client side only) before fixing. Fixed by adding
+  `reqreply.VerifyCapabilityCoverage(path, requirements, t.opts.Capabilities)` calls
+  (reflection-derived `requirements` via `elem.FieldByName("Requirements")`) right after each
+  `ApplyCapabilities`/`applyCapabilities` call, mirroring the server side's identical pattern,
+  to all 3 client dispatch implementations.
+- **Tests**: 3 new regression tests, one per client dispatch implementation, all confirmed
+  failing before the fix (the call succeeded silently with no capability supplied) and passing
+  after: `TestAttachClient_Call_RequireQoS_NoCapabilitySupplied_FailsCoverage` (mqtt5),
+  `TestAttachClient_Call_RequireHWM_NoCapabilitySupplied_FailsCoverage` (zeromq REQ/REP),
+  `TestAttachDealerClient_Call_RequireHWM_NoCapabilitySupplied_FailsCoverage` (zeromq
+  ROUTER/DEALER).
+- Full repo verification clean: `gofmt -l .`, `go build ./...`, `go test ./...` (including full
+  `api/reqreply`/`adapters/mqtt5`/`adapters/zeromq` runs, all passing), `just check` (0 issues),
+  full `examples/*/` sweep — all clean.
+- This fix also fully covers `RequireRetained`/`RequireConflate` (same `Requirements`/
+  `VerifyCapabilityCoverage` mechanism, same call sites) — no separate round needed.
+
+---
+
+## Round 187 (api/reqreply — deep dive #3: property axis — a REAL, confirmed bug: direct route-level PropertyParam silently never enforced on zeromq's reqreply server dispatch)
+
+Third round of the `api/reqreply` deep dive. Traced `PropertyParam`/`MergedPropertyParam`/
+`NewPropertyParam`/`NewOptionalPropertyParam` through both of its coexisting attachment styles —
+(a) via the codec-backed `Middleware`'s `WithRequestProperty`/`WithResponseProperty` (dispatched
+through `DispatchServerMiddlewareHandlers`, confirmed clean — correctly passes `nil`/empty
+property-var maps on zeromq, causing a Required property to fail naturally via
+`MiddlewareInputError`, matching the explicitly-documented "no property mechanism exists here"
+contract already established at every zeromq reqreply call site), and (b) DIRECTLY on
+`NewRoute(...)` via `MergedPropertyParam`, requiring an adapter to explicitly call
+`RouteHandle.MergePropertyVars`/`PropertyMergeFields` — mirroring `api/events`' own Round 177
+investigation exactly.
+
+- **Bug — a route-level, DIRECTLY-declared `PropertyParam` (Required by default via
+  `NewPropertyParam`) was SILENTLY NEVER merged or enforced on `adapters/zeromq`'s reqreply
+  server dispatch (BOTH the REQ/REP `serverTransport.Serve` and the ROUTER/DEALER
+  `routerServerTransport.Serve` variants).** `adapters/mqtt5`'s reqreply `Serve` already calls
+  `MergePropertyVars` correctly against its real `pahomqtt5.Publish.Properties.User` map, but
+  `adapters/zeromq` — which has NO property wire channel at all — never called it either,
+  leaving a Required direct `PropertyParam`'s destination field at zero value with ZERO error
+  (confirmed via a LIVE reproduction test: the handler ran successfully despite the Required
+  property never being supplied). Fixed by adding `rv.MethodByName("MergePropertyVars").Call(...,
+  nil)` reflection calls (mirroring the codec-backed Middleware axis's own already-correct
+  "nil propertyVars → natural failure" contract) to both
+  `adapters/zeromq/reqreply_transport.go`'s `serverTransport.Serve` (REQ/REP) and
+  `routerServerTransport.Serve` (ROUTER/DEALER) dispatch loops, right after decode, before
+  security — mirroring mqtt5's exact placement.
+- **Tests**: `TestAttachServer_DirectPropertyParam_RequiredMissing_FailsNaturally` (REQ/REP) and
+  `TestAttachRouterServer_DirectPropertyParam_RequiredMissing_FailsNaturally` (ROUTER/DEALER),
+  both confirmed failing before the fix (handler ran successfully with the Required property
+  silently unmerged) and passing after.
+- Full repo verification clean: `gofmt -l .`, `go build ./...`, `go test ./...` (including full
+  `api/reqreply`/`adapters/mqtt5`/`adapters/zeromq` runs, all passing), `just check` (0 issues),
+  full `examples/*/` sweep — all clean.
+- Also confirmed clean during this round: reqreply's TOPIC-var merge mechanism (`NewTopicParam`)
+  mirrors `api/events`' own already-proven-clean core exactly, with zeromq's structural
+  non-applicability (no topic frame on the wire at all) EXPLICITLY documented and cross-checked
+  against the pre-consolidation escape hatch's own identical behavior — not a bug, a genuinely
+  different (correctly divergent) concept from the property-axis gap found above.
+
+---
+
+## Round 185 (api/reqreply — deep dive #1: transform/merge substrate + dual-construction-path check — a REAL, confirmed bug: client-side `buildEncodeIn` was the ONLY one of 4 sibling build functions returning bare, unwrapped errors)
+
+First round of a NEW `api/reqreply` deep dive (applying the newly-codified `deep-dive-bug-hunt`
+skill), mirroring the `api/events`/`api/rest` deep-dive series. Confirmed via history.md that
+middleware (Round 152), Router/ServeSpec (Round 155), and the full lifecycle/Register-atomicity
+sweep (Round 160) are already covered — excluded from fresh review. Confirmed `api/reqreply` is
+implemented by exactly 2 adapters (`adapters/mqtt5`, `adapters/zeromq` — no mqtt v3), and that its
+escape hatches were ALREADY consolidated (docs/design/d-0006-protocol-native-capabilities.md's
+Phase 5a: `mqtt5.Serve`/`Call`/`zeromq.Serve`/`ServeRouter`/`Call`/`CallHandle`/`CallDealer` were
+DELETED and relocated into `ServerTransport.Serve`/`ClientTransport.Call`), structurally ruling
+out the "multiple independent reflection dispatch paths per concern" bug class `api/events` had.
+
+- **`Route.ClientHandle`/`Route.Register`'s dual `*RouteHandle{...}` construction sites,
+  diffed field-by-field — confirmed clean, no drift.** The only 2 fields present in Register's
+  literal but absent from ClientHandle's (`topicCodec`, `GlobalSecurity`) are BOTH
+  structurally impossible for ClientHandle to populate (it takes no `*Builder` argument at
+  all, so there is no `b.topicCodec`/`b.globalSecurity` to read) — confirmed identical to
+  `rest.Route.ClientHandle`'s own established precedent (grepped: REST's `ClientHandle` also
+  never sets `pathCodec`). Not a bug — a structural limitation shared identically across both
+  packages. No code changes.
+- **Bug — `buildEncodeIn` (`transform.go`, the client-side request-ENCODE-direction sibling of
+  `buildDecodeIn`/`buildEncodeOut`/`buildDecodeOut`) was the ONLY one of these 4 functions that
+  did NOT wrap its failures in a typed `reqreply.Middleware*Error`.** A client-attached
+  general-purpose `Middleware[In,Out]` (via `.Use(mw.WithSend(fn))`) whose `InCodec.Validate`
+  (or a merge-field encode) failed propagated a bare, unwrapped error (confirmed via live
+  reproduction: a raw `codex.ValidationErrors` leaked through `DispatchClientMiddlewareIn`) —
+  with NO way for a caller to `errors.As` into any `Middleware*Error` type to recover which
+  middleware failed, unlike its 3 siblings (`buildDecodeIn` wraps `MiddlewareInputError`;
+  `buildEncodeOut`/`buildDecodeOut` both wrap `MiddlewareOutputError`, per
+  `docs/design/d-0003-codec-declared-middlewares.md`'s Addendum 2, which explicitly added
+  `MiddlewareOutputError` "for symmetry" but never mentioned this 4th function). Fixed:
+  `buildEncodeIn` now wraps every failure point (`InCodec.Validate`, `ContextField.Set`, and
+  `middleware.EncodeLayer` via a `wrapErr` closure) in `MiddlewareInputError{Name: mw.Name, Err:
+  err}` — the "In"-side counterpart of `buildDecodeIn`'s identical wrapping, closing the
+  asymmetry.
+- **Test**: `TestDispatchClientMiddlewareIn_EncodeInFailure_WrapsMiddlewareInputError` (new,
+  `api/reqreply/transform_dispatch_test.go`) — confirmed failing before the fix (raw
+  `codex.ValidationErrors` surfaced, not `errors.As`-navigable to `MiddlewareInputError`),
+  passing after.
+- Full repo verification clean: `gofmt -l .`, `go build ./...`, `go test ./...` (including full
+  `api/reqreply`/`adapters/mqtt5`/`adapters/zeromq` runs, all passing), `just check` (0 issues),
+  full `examples/*/` sweep — all clean.
+
+---
+
+## Round 186 (api/reqreply — deep dive #2: topic params — confirmed clean)
+
+Second round of the `api/reqreply` deep dive. `TopicParam`/`MergedTopicParam`/`NewTopicParam`
+through `RouteHandle.BuildTopic`/`ValidateTopicVars` use the SAME shared `codex.BuildFromParams`/
+`codex.ValidateParams` core already proven clean for REST/events (Round 176). Confirmed
+`adapters/mqtt5`'s `matchTopicTemplate` delegates to `templatematch.MatchMQTTWildcard` (real
+topic-var extraction, since MQTT5 carries a real topic frame per request) and the client-side
+`Call` correctly derives vars via `RouteHandle.EncodeVars`/rebuilds via `BuildTopic`. Confirmed
+`adapters/zeromq`'s structural non-support for topic-var templates (ZeroMQ REQ/REP's wire format
+carries NO topic frame at all — routing is entirely socket-based, one socket per concrete topic,
+never a template) is EXPLICITLY documented at every relevant call site AND cross-checked against
+the pre-consolidation escape hatch's own identical behavior ("`reqreply.NewTopicParam`
+merge-field decode was never applicable here, confirmed via the escape hatch's own `Serve`, which
+never called MergeFields/DecodeVars either") — not a bug, a genuine, well-documented structural
+divergence. No code changes.
 
 ---
 

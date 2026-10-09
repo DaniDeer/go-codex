@@ -1743,3 +1743,132 @@ func TestAttachServer_Disposition_DefaultFallback_NilError(t *testing.T) {
 		t.Errorf("want [DispositionAck], got %v", obs.dispositions)
 	}
 }
+
+// TestAttachClient_Call_RequireQoS_NoCapabilitySupplied_FailsCoverage is a
+// REGRESSION GUARD: the client-side Call/CallAsync dispatch
+// (clientTransport.call) applies declared Capabilities to the outgoing
+// request's wire attributes (via events.ApplyCapabilities) but NEVER
+// verified them against the route's own declared Requirements — a route
+// declaring reqreply.RequireQoS(AtLeastOnce) could be Called with ZERO
+// matching Capability configured on the ClientTransport, succeeding
+// silently at QoS 0. Mirrors api/events' identical, previously-confirmed
+// publish-side capability-coverage gap (Round 178).
+func TestAttachClient_Call_RequireQoS_NoCapabilitySupplied_FailsCoverage(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	qosRoute := reqreply.NewRoute[computeReq, computeResp](
+		"compute/qos",
+		computeReqCodec, computeRespCodec,
+		reqreply.RouteMeta{OperationID: "computeQoS"},
+		reqreply.RequireQoS(reqreply.AtLeastOnce),
+	)
+	handlerCalled := false
+	handler := func(ctx context.Context, req computeReq) (computeResp, error) {
+		handlerCalled = true
+		return computeResp{Sum: req.X + req.Y}, nil
+	}
+	if _, err := qosRoute.WithHandler(handler).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	serverClient := &mockClient{}
+	serverRouter := newMockRouter()
+	// Server side supplies sufficient Capabilities so Serve itself
+	// succeeds and actually registers a handler — isolating the bug to
+	// the CLIENT side's missing coverage check (the server side's own
+	// coverage check, at Serve setup, is a separate, already-correct
+	// mechanism, confirmed clean earlier in this round).
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{
+		Client: serverClient, Router: serverRouter,
+		Serve: ServeOptions{Capabilities: []Capability{QoS(1)}},
+	})); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- server.Serve(ctx) }()
+	serverRouter.waitHandler("compute/qos")
+
+	client := reqreply.NewClient()
+	clientClient := &mockClient{}
+	clientRouter := newMockRouter()
+	// NO Capabilities configured on this ClientTransport's CallOptions —
+	// the route declares RequireQoS, so the Call below must fail
+	// coverage, never reach the broker.
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Client: clientClient, Router: clientRouter})); err != nil {
+		t.Fatalf("AttachClient: %v", err)
+	}
+	wireBrokers(t, serverClient, clientRouter)
+	wireBrokers(t, clientClient, serverRouter)
+
+	callCtx, callCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer callCancel()
+	_, callErr := client.Call(callCtx, qosRoute, computeReq{X: 1, Y: 2})
+	if callErr == nil {
+		t.Fatal("want a capability coverage error, got nil")
+	}
+	var covErr *reqreply.CapabilityCoverageError
+	if !errors.As(callErr, &covErr) {
+		t.Fatalf("want reqreply.CapabilityCoverageError, got %T: %v", callErr, callErr)
+	}
+	if handlerCalled {
+		t.Fatal("handler must NOT be invoked when client-side capability coverage fails")
+	}
+}
+
+// TestReqReplyServeSpec_RealTransport_PublishesRawSpecBytes is a CONFIRMATION
+// test (no bug found): reqreply.Server.ServeSpec's registered route
+// serves the raw, pre-marshaled AsyncAPI document bytes through a REAL
+// mqtt5 ServerTransport/ClientTransport round trip end-to-end — closing
+// a test-coverage gap (ServeSpec's own tests in
+// api/reqreply/specroute_test.go only ever exercise a fake
+// capturingServerTransport, never a real adapter's Serve/Call dispatch)
+// — mirrors api/events' identical TestServeSpec_RealTransport_
+// PublishesRawSpecBytes (Round 184) finding/fix exactly, applied here
+// for api/reqreply.
+func TestReqReplyServeSpec_RealTransport_PublishesRawSpecBytes(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	if _, err := computeRoute.WithHandler(func(ctx context.Context, req computeReq) (computeResp, error) {
+		return computeResp{Sum: req.X + req.Y}, nil
+	}).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	specHandle, err := server.ServeSpec("spec")
+	if err != nil {
+		t.Fatalf("ServeSpec: %v", err)
+	}
+
+	serverClient := &mockClient{}
+	serverRouter := newMockRouter()
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter})); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	go func() { _ = server.Serve(ctx) }()
+	serverRouter.waitHandler("spec")
+	serverRouter.waitHandler("compute/add")
+
+	client := reqreply.NewClient()
+	clientClient := &mockClient{}
+	clientRouter := newMockRouter()
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Client: clientClient, Router: clientRouter})); err != nil {
+		t.Fatalf("AttachClient: %v", err)
+	}
+	wireBrokers(t, serverClient, clientRouter)
+	wireBrokers(t, clientClient, serverRouter)
+
+	respAny, callErr := client.Call(context.Background(), specHandle, reqreply.SpecReq{Format: "json"})
+	if callErr != nil {
+		t.Fatalf("Call: %v", callErr)
+	}
+	body, ok := respAny.([]byte)
+	if !ok {
+		t.Fatalf("resp type = %T, want []byte", respAny)
+	}
+	if !strings.HasPrefix(string(body), "{") {
+		t.Errorf("want raw JSON spec document (starting with '{'), got: %s", string(body))
+	}
+	if !strings.Contains(string(body), `"title"`) || !strings.Contains(string(body), `"Test"`) {
+		t.Errorf("want the published document to contain the Server's own Info, got: %s", string(body))
+	}
+}

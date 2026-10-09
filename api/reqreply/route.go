@@ -288,8 +288,16 @@ func (m RouteMeta) applyRoute(rb *routeBuilder) { rb.meta = m }
 // registered routes by [Builder.AsyncAPISpec]); Codec, when non-nil, is used
 // by MQTT5 adapters ([adapters/mqtt5/reqreply.Serve]/[adapters/mqtt5/reqreply.Call])
 // to validate the raw credential string extracted from a message's User
-// Properties before ServeOptions.SecurityFunc is called (server) or before
-// the request is published (client, CallOptions.CredentialFunc).
+// Properties before the declarative security implementation (a
+// [SecurityMiddleware]-attached [Route.Use]/[BoundSecurityMiddleware]-attached
+// [Route.HandleBoundMW] Fn) runs (server), or before the request is
+// published (client, gated on a [BoundSecurityClientMiddleware]-attached
+// [Route.ClientBoundMW] Fn having actually produced a credential). The OLD
+// imperative `ServeOptions.SecurityFunc`/`CallOptions.CredentialFunc` fields
+// this comment used to reference were REMOVED (Phase 1, breaking removal,
+// mirroring `api/events`' identical `SubscribeOptions.SecurityFunc`/
+// `PublishOptions.CredentialFunc` retirement) — the declarative mechanism
+// above is the sole replacement.
 //
 // ZeroMQ's reqreply adapters ([adapters/zeromq]) have no per-message
 // metadata channel (raw multipart frames only) — Codec-level extraction only
@@ -301,7 +309,8 @@ func (m RouteMeta) applyRoute(rb *routeBuilder) { rb.meta = m }
 type SecurityScheme struct {
 	route.SecurityScheme
 	// Codec, when non-nil, validates the extracted raw credential string.
-	// Nil means no format validation; SecurityFunc receives the message as-is.
+	// Nil means no format validation; the declarative security
+	// implementation receives the message as-is.
 	Codec *codex.Codec[string]
 }
 
@@ -487,7 +496,7 @@ func (e SecurityError) Error() string {
 	return fmt.Sprintf("security check failed: %s", e.Err)
 }
 
-// Unwrap allows errors.As and errors.Is to traverse the underlying SecurityFunc error.
+// Unwrap allows errors.As and errors.Is to traverse the underlying security-implementation error.
 func (e SecurityError) Unwrap() error { return e.Err }
 
 // LogValue implements [slog.LogValuer] for structured logging.
