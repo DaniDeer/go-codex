@@ -312,6 +312,31 @@ see "Files to create" below for the full file list):
   narration style, in a realistic, multi-route, dual-adapter,
   already-secured-and-observed context.
 
+**Forward-looking note — do NOT extract a shared `internal/registry` package now.** The
+question was evaluated explicitly (go-codex already has precedent for consolidating
+cross-pattern mechanics into `internal/<name>` packages — `internal/middleware`,
+`internal/route`, `internal/router`). Conclusion: premature today. `events.Client` already has
+5 registry-shaped maps (`specByTopic`, `subscriberByTopic`, `deadLetterTopicsRegistered`,
+`schemas`, `connectSecuritySchemes`), but each has bespoke dedup semantics not duplicated with
+each other (type-conflict-checked first-wins, last-wins, plain existence-check, plain
+overwrite) — consolidating them today would mostly add indirection, not remove real
+duplication. This planned `rest.Client` registry needs genuinely harder REVERSE PATTERN
+MATCHING (concrete `Location` → best-matching registered template, via
+`templatematch.MatchNonWildcard`) that none of `events.Client`'s maps need (they only ever do
+exact-string key lookups) — structurally different enough that designing a shared abstraction
+AHEAD of a real, working `rest.Client` implementation risks guessing the wrong boundary.
+`internal/router` itself was only extracted after the SAME mechanics were independently,
+near-identically implemented 3 TIMES across rest/events/reqreply — proven duplication, not
+speculation; today there is 1 real registry (events') + 1 structurally-different plan (this
+one) — not yet that bar. **Action**: once this registry ships, a FOLLOW-UP round should compare
+it against `events.Client`'s maps and decide THEN whether `internal/registry` consolidation is
+warranted. (A related idea — multiple registered operations/codecs per `ports.File`/`Cache`,
+e.g. full-reads vs. partial-reads vs. partial-updates — was also evaluated and found to be a
+SEPARATE, PRIOR, unresolved design question: `ports.File`/`Cache` have no `Client`/`Server`-like
+registry-bearing object at all today, confirmed via `docs/roadmap/
+mcp-ports-declarative-middleware.md`'s existing investigation — a registry question doesn't
+even apply until that prerequisite is designed. Not pursued further here.)
+
 ## Proposed API surface (tentative — sketch only, not final)
 
 ```go
