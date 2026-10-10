@@ -3319,6 +3319,49 @@ type ClientTransport interface {
 type Client struct {
 	mu        sync.RWMutex
 	transport ClientTransport
+	// routes/sseRoutes are c's redirect-target registry (docs/roadmap/
+	// rest-typed-redirects.md's "Client-side route registry") — TWO
+	// parallel maps, keyed by [routeKey] (Method+PathTemplate): routes
+	// holds Call-decodable targets, sseRoutes holds Consume-streamable
+	// ones. Populated automatically on first [Client.Call]/
+	// [Client.Consume] against a given route, or explicitly via
+	// [Client.RegisterRoute] for a route that's only ever a redirect
+	// target. First-registered-wins on re-registration (mirrors
+	// [events.Client]'s own specByTopic dedup policy) — including the
+	// SAME routeKey registered via a DIFFERENT credential-bound
+	// ClientHandle variant of the identical route, which MUST be a safe
+	// no-op (every variant decodes the identical Resp/Event type; only
+	// the credential plumbing differs, irrelevant to this registry's own
+	// job of "what does an incoming path decode as").
+	routes    map[routeKey]*registeredRoute
+	sseRoutes map[routeKey]*registeredRoute
+	// routesOrder/sseRoutesOrder preserve REGISTRATION order (append-only,
+	// appended only when a key is NEWLY added to routes/sseRoutes) — a
+	// plain Go map has no defined iteration order, but ambiguous-match
+	// resolution (two DIFFERENT routeKeys whose templates both match the
+	// same concrete Location+Method) requires deterministic
+	// first-registered-wins, so matching iterates these slices, not the
+	// maps directly.
+	routesOrder    []routeKey
+	sseRoutesOrder []routeKey
+}
+
+// routeKey identifies one registered route/SSE route in [Client]'s
+// redirect-target registry — Method+PathTemplate, the REST-side
+// equivalent of [events.Client]'s own topic-string registry key.
+type routeKey struct {
+	Method string
+	Path   string // the route's own {var}-templated path, not a concrete path
+}
+
+// registeredRoute is one entry in [Client]'s redirect-target registry.
+// Handle is `any` (dynamic type *RouteHandle[Req,Resp] or
+// *SSERouteHandle[Req,Event], matching which map it's stored in) —
+// recovered via reflection at auto-follow time, the SAME established
+// idiom [ClientTransport] implementations already use throughout this
+// package.
+type registeredRoute struct {
+	Handle any
 }
 
 // NewClient returns an unattached [Client]. Call [Client.Attach] with a
@@ -3417,6 +3460,11 @@ func (c *Client) Call(ctx context.Context, route any, req any, opts ...ClientCal
 	if t == nil {
 		return nil, NoClientTransportAttachedError{}
 	}
+	// Auto-populate the redirect-target registry (docs/roadmap/
+	// rest-typed-redirects.md's "Client-side route registry") — best-
+	// effort, never blocks/errors this call; see registerAutoFromCall's
+	// own doc comment.
+	c.registerAutoFromCall(route)
 	return t.Call(ctx, route, req, opts...)
 }
 
@@ -3447,6 +3495,9 @@ func (c *Client) Consume(ctx context.Context, sseRoute any, req any, fn any, opt
 	if t == nil {
 		return NoClientTransportAttachedError{}
 	}
+	// Auto-populate the redirect-target registry — see Call's identical
+	// step and registerAutoFromCall's own doc comment.
+	c.registerAutoFromCall(sseRoute)
 	return t.Consume(ctx, sseRoute, req, fn, opts...)
 }
 
