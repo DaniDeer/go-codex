@@ -1,10 +1,15 @@
 # Typed HTTP Redirects — `api/rest`
 
 > **Status:** Design draft — no code written yet, but critically
-> re-reviewed against the actual code TWICE (not just the initial
-> sketch) — see "Resolved design decisions" and "Round 2 critical
-> review" below. Every design decision raised across both rounds is now
-> resolved; nothing is left genuinely open in this doc. (The
+> re-reviewed against the actual code THREE TIMES (not just the initial
+> sketch) — see "Resolved design decisions", "Round 2 critical review",
+> and "Round 3 critical review" below. Every design decision raised
+> across all three rounds is now resolved; nothing is left genuinely
+> open in this doc. Round 3 specifically re-scrutinized round 2's OWN
+> resolutions (not a fresh sweep) and found one confirmed correction
+> (render/openapi needs no changes after all) plus 3 refined mechanisms
+> (credential-copy details, redirect-chain depth tracking, Consume
+> reconnect-loop interaction). (The
 > `internal/registry` extraction question and the `api/reqreply.Client`
 > registry question were ALSO evaluated during this process and
 > deliberately deferred/spun out — see the "Client-side route registry"
@@ -454,16 +459,64 @@ no real decision needed, 4 (A, C, D, F) were genuine design decisions confirmed 
    // ResponseMeta status — deliberately minimal (description + whether
    // it's required), not a full param/codec declaration: a non-primary
    // response's headers are documentation-only, never merge-field-decoded
-   // the way the PRIMARY response's ResponseHeaderParam is.
+   // the way the PRIMARY response's ResponseHeaderParam is. Schema is
+   // REQUIRED (round 3, finding G4 — route.Param.Schema is a non-pointer
+   // value render/openapi's buildResponses always reads, not optional);
+   // the common case (a Location header is just a URL string) can use a
+   // sensible default — see G4 below.
    type ResponseMetaHeader struct {
        Description string
        Required    bool
+       Schema      schema.Schema
    }
    ```
-   `render/openapi/document.go`'s `buildResponses` gains a small extension to also emit a
-   `headers:` object per response entry when `Headers` is non-empty. A redirect's own
-   `ResponseMeta{Status: "303", Headers: map[string]ResponseMetaHeader{"Location":
-   {Description: "...", Required: true}}}` now fully documents the expected header in the spec.
+   **Correction (round 3, finding G4)**: `render/openapi/document.go`'s `buildResponses`
+   needs **ZERO changes** — confirmed via code, it ALREADY iterates `r.Headers` generically
+   inside its existing per-response loop (not primary-response-only code). The ENTIRE gap is at
+   the `api/rest` layer: `ResponseMeta`/`buildExtraResponses` converting `Headers` into
+   `route.Response.Headers []route.Param` entries (the EXISTING mechanism, already used for the
+   primary response's `ResponseHeaderParam`). A redirect's own `ResponseMeta{Status: "303",
+   Headers: map[string]ResponseMetaHeader{"Location": {Description: "...", Required: true}}}`
+   (with `Schema` defaulting internally to a plain string schema when left unset, since the
+   overwhelmingly common case — a `Location` header — is just a URL string) now fully documents
+   the expected header in the spec.
+
+## Round 3 critical review — scrutinizing Round 2's OWN resolutions, 4 more findings
+
+Per the pattern of this doc ("every review finds more gaps"), this round deliberately
+re-checked Round 2's 6 resolutions THEMSELVES rather than sweeping the whole doc fresh again.
+Found 4 more findings — G4 above is a confirmed, evidence-based CORRECTION; G1-G3 below are
+genuine design alternatives, now resolved with the user.
+
+1. **(G1) Credential reuse (refines A) — concrete mechanism specified.** Round 2 resolved
+   "reuse the originating call's own credentials" in principle, without saying HOW. **Resolved:
+   copy the ORIGINAL outgoing `*http.Request`'s headers (`Authorization`, `Cookie`, any custom
+   headers) verbatim onto the follow-up request** — the only coherent option (re-invoking the
+   originating route's `ClientMW`/credential `Fn` a second time doesn't make sense; nothing
+   defines "derive credentials again" for a follow-up). This surfaces a companion requirement
+   round 2 missed entirely: **for 307/308 (method+body preserved per RFC 9110), the follow-up
+   request must replay the SAME body bytes as the original** — the original request's
+   already-encoded body must be BUFFERED (an `*http.Request.Body` is normally a single-read
+   stream) so it can be resent.
+2. **(G2) Chain-depth tracking mechanism and configurability (refines C) — both specified.**
+   Round 2 resolved "cap chain depth, mirroring net/http's 10-hop default" without saying HOW
+   depth is tracked or whether the cap is tunable. **Resolved**:
+   - **Tracking**: a `context.Context` value threads the current depth through repeated
+     follow-up calls, invisible to the public `Call`/`Consume` signatures — mirrors how
+     `stats.WithObserver` already attaches cross-cutting state via context, not a new idiom.
+   - **Configurability**: `ClientCallOptions` gains a new `MaxRedirects int` field (`0` means
+     "use the default" — a fixed constant of `10`, mirroring `net/http`'s own precedent, when
+     left unset) — the user chose configurable over a hardcoded constant.
+3. **(G3) `Consume`'s reconnect loop must ALSO re-check for redirects on every attempt (refines
+   D) — scope clarified.** Round 2 scoped `Consume`'s redirect-following to "before the stream
+   starts," implicitly meaning only the FIRST connection attempt. Never addressed: `Consume`
+   has (or, per `docs/roadmap/sse-resume-and-retry-policy.md`, may gain) its OWN, SEPARATE
+   reconnect loop for ordinary network-drop retries — a reconnect attempt is structurally
+   identical to an initial connection attempt (a fresh HTTP request that could just as easily
+   receive a 3xx). **Resolved, confirmed with the user: every reconnect attempt re-runs the
+   SAME redirect-detection logic**, not just connection #1 — for structural consistency between
+   the two mechanisms, rather than an inconsistency where a redirect is honored on attempt 1 but
+   silently mishandled on attempt 2+.
 
 ## Proposed API surface (tentative — sketch only, not final)
 
@@ -538,14 +591,29 @@ type RedirectTargetNotStreamableError struct {
     Location string
 }
 
-// RedirectChainTooDeepError (round 2, finding C) is returned by
-// Client.Call/Client.Consume when auto-following a redirect chain
-// exceeds a depth cap (mirrors net/http's own 10-hop default) — covers
-// both unreasonably long chains and cycles (A redirects to B redirects
-// to A) with one mechanism, no separate cycle detector.
+// RedirectChainTooDeepError (round 2, finding C; mechanism + configurability
+// specified in round 3, finding G2) is returned by Client.Call/Client.Consume
+// when auto-following a redirect chain exceeds a depth cap — covers both
+// unreasonably long chains and cycles (A redirects to B redirects to A)
+// with one mechanism, no separate cycle detector. Depth is tracked via a
+// context.Context value threaded through repeated follow-up calls,
+// invisible to this signature.
 type RedirectChainTooDeepError struct {
     Location string
     Depth    int
+}
+```
+
+`ClientCallOptions` (existing type) gains one new field (round 3, finding G2):
+
+```go
+type ClientCallOptions struct {
+    // ... existing fields unchanged ...
+
+    // MaxRedirects caps how many redirects Call/Consume will
+    // transparently auto-follow before returning RedirectChainTooDeepError.
+    // 0 means "use the default" (10, mirroring net/http's own precedent).
+    MaxRedirects int
 }
 ```
 
@@ -614,6 +682,10 @@ both registry resolution points are concretely identified above.
 | Client | `Client.Call` auto-following into a registered `SSERoute`-only target returns `RedirectToStreamUnsupportedError` (round 2, finding D) |
 | Client (SSE) | `Client.Consume` auto-follows a redirect to a new SSE location and continues streaming without caller-visible interruption (round 2, finding D) |
 | Client (SSE) | `Client.Consume` auto-following into a registered plain-`Route`-only target returns `RedirectTargetNotStreamableError` (round 2, finding D) |
+| Client | For a 307/308 auto-follow, the ORIGINAL request's body bytes are replayed verbatim on the follow-up request (round 3, finding G1) |
+| Client | Auto-follow copies the original outgoing request's headers (`Authorization`, `Cookie`, custom headers) verbatim onto the follow-up request (round 3, finding G1) |
+| Client | `ClientCallOptions.MaxRedirects` overrides the default 10-hop cap when set; `0` uses the default (round 3, finding G2) |
+| Client (SSE) | A redirect is honored on a `Consume` RECONNECT attempt (attempt 2+), not just the initial connection (round 3, finding G3) |
 | chi/nethttp parity | Server-side behavior (RedirectError recognition, Location + status, no body) is identical in both adapters |
 
 ## Files to create (once approved for implementation)
@@ -622,9 +694,8 @@ both registry resolution points are concretely identified above.
 |---|---|
 | `api/rest/redirect.go` + `redirect_test.go` | `RedirectError`, `RedirectTargetVarError`, `RedirectMethodMismatchError`, `RedirectChainTooDeepError` (round 2), `Redirect`, `RedirectToSSE` (both returning a single `error`, round 2 finding B) |
 | `api/rest/client_registry.go` (or inline in `builder.go`) + test | `Client`'s TWO parallel Method+PathTemplate registries — `routes` (Call-decodable) and `sseRoutes` (Consume-streamable, round 2 finding D) — `RegisterRoute` (type-discriminating both kinds), auto-populate-on-Call/Consume, `UnrecognizedRedirectError`, `RedirectToStreamUnsupportedError`, `RedirectTargetNotStreamableError`, same-routeKey-reregistration idempotency |
-| `api/rest/builder.go` (extend) + test | `ResponseMeta.Headers map[string]ResponseMetaHeader` (round 2, finding F) — purely additive |
-| `render/openapi/document.go` (extend) + test | `buildResponses` emits a `headers:` object per response entry when `ResponseMeta.Headers` is non-empty (round 2, finding F) |
-| `adapters/nethttp/redirect.go` (or inline in `adapter.go`/`clienttransport.go`) + test | Server dispatch recognition (REST + SSE, gated on `headersCommitted` for SSE per round 2 finding E) + `Location` rendering; `CheckRedirect` shallow-copy override; registry-driven auto-follow/decode in BOTH `clientTransport.Call` and `clientTransport.Consume` (round 2 finding D), reusing the originating call's own credentials (round 2 finding A), chain-depth-capped (round 2 finding C) |
+| `api/rest/builder.go` (extend) + test | `ResponseMeta.Headers map[string]ResponseMetaHeader` (round 2 finding F; `Schema` field + default added in round 3 finding G4) — purely additive. **`render/openapi/document.go` needs NO changes** (round 3, finding G4 — `buildResponses` already renders `Headers` generically for every response entry). |
+| `adapters/nethttp/redirect.go` (or inline in `adapter.go`/`clienttransport.go`) + test | Server dispatch recognition (REST + SSE, gated on `headersCommitted` for SSE per round 2 finding E) + `Location` rendering; `CheckRedirect` shallow-copy override; registry-driven auto-follow/decode in BOTH `clientTransport.Call` and `clientTransport.Consume` (round 2 finding D) AND on every `Consume` reconnect attempt (round 3 finding G3); auto-follow copies the originating request's headers and replays its body for 307/308 (round 3 finding G1); chain depth tracked via a context value and capped via `ClientCallOptions.MaxRedirects` (round 3 finding G2) |
 | `adapters/chi/redirect.go` (or inline) + test | Server-side behavior only (no client transport exists in chi) |
 | `examples/rest-redirect/main.go` | Minimal, standalone, self-contained worked example — demonstrates the auto-populate-via-`Call` registry path (see "Client-side route registry" above) |
 | `examples/rest-api/demo_redirect.go` + rework of `examples/rest-api/client`'s `Build()` | Richer demo in the existing dual-adapter (chi/nethttp) flagship example — `Build()` reworked to explicitly `Client.RegisterRoute` every distinct route at construction time; the demo itself shows primary (auto-follow via the construction-time-populated registry) + secondary (`CallWithTransport`, manual follow-up) in one file, mirroring `examples/adapters-nethttp-client`'s Section-0-then-escape-hatch style (see "Client-side route registry" above) |
