@@ -17,7 +17,6 @@ import (
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/internal/middleware"
-	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/validate"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 )
@@ -236,7 +235,7 @@ func newChannelHandle() *events.ChannelHandle[sensorReading] {
 // securedBearerScheme is a shared bearer scheme with a non-empty-string
 // format Codec, used by both the Subscribe built-in check and the Publish
 // CredentialFunc tests below.
-var securedBearerScheme = events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.
+var securedBearerScheme = events.BearerScheme("JWT").
 	WithCodec(codex.String().Refine(validate.NonEmptyString))
 
 // subSecIn/subSecOut are the events Bound-mechanism In/Out shape used by
@@ -276,7 +275,7 @@ func newSecuredSubscribeChannelHandle() *events.ChannelHandle[sensorReading] {
 	// rejected now, not a bare .Use() declaration.
 	declMw := events.SecurityMiddleware[struct{}, struct{}]("bearer", securedBearerScheme, nil)
 	h, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
-		WithSubscribe(events.Subscribe{Summary: "test", Security: []route.SecurityRequirement{route.Require("bearer")}}).
+		WithSubscribe(events.Subscribe{Summary: "test", Security: []events.SecurityRequirement{events.Require("bearer")}}).
 		Use(declMw).
 		SubscribeBoundMW(mw).
 		Handle(b)
@@ -323,7 +322,7 @@ func bearerSecBoundMw(fn func(ctx context.Context, req *computeReq, in mwSecIn) 
 
 func bearerSecBoundMwNamed(schemeName string, fn func(ctx context.Context, req *computeReq, in mwSecIn) (mwSecOut, error)) reqreply.BoundMiddleware[computeReq, mwSecIn, mwSecOut] {
 	return reqreply.BoundSecurityMiddleware[computeReq, mwSecIn, mwSecOut](
-		schemeName, reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(bearerAuthTestCodec), nil, fn,
+		schemeName, reqreply.BearerScheme("JWT").WithCodec(bearerAuthTestCodec), nil, fn,
 	).WithRequestProperty(reqreply.NewOptionalPropertyParam("Authorization", codex.String(),
 		func(in mwSecIn) string { return in.Authorization },
 		func(in *mwSecIn, v string) { in.Authorization = v },
@@ -338,7 +337,7 @@ func bearerSecBoundClientMw(fn func(ctx context.Context, req computeReq) (mwSecI
 
 func bearerSecBoundClientMwNamed(schemeName string, fn func(ctx context.Context, req computeReq) (mwSecIn, error)) reqreply.BoundClientMiddleware[computeReq, mwSecIn, mwSecOut] {
 	return reqreply.BoundSecurityClientMiddleware[computeReq, mwSecIn, mwSecOut](
-		schemeName, reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(bearerAuthTestCodec), nil, fn,
+		schemeName, reqreply.BearerScheme("JWT").WithCodec(bearerAuthTestCodec), nil, fn,
 	).WithRequestProperty(reqreply.NewOptionalPropertyParam("Authorization", codex.String(),
 		func(in mwSecIn) string { return in.Authorization },
 		func(in *mwSecIn, v string) { in.Authorization = v },
@@ -364,7 +363,7 @@ func acceptingSecurityImpl(context.Context, *computeReq, mwSecIn) (mwSecOut, err
 var securedComputeRoute = reqreply.NewRoute[computeReq, computeResp](
 	"compute/secured-add",
 	computeReqCodec, computeRespCodec,
-	reqreply.RouteMeta{OperationID: "securedCompute", Security: []route.SecurityRequirement{route.Require("bearer")}},
+	reqreply.RouteMeta{OperationID: "securedCompute", Security: []reqreply.SecurityRequirement{reqreply.Require("bearer")}},
 )
 
 func newSecuredRouteHandle() *reqreply.RouteHandle[computeReq, computeResp] {
@@ -608,7 +607,7 @@ func TestSubscribe_SecurityImpl_StillRunsAfterBuiltInCheck_OnValidCredential(t *
 		"bearer", securedBearerScheme, nil, impl,
 	)
 	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
-		WithSubscribe(events.Subscribe{Summary: "test", Security: []route.SecurityRequirement{route.Require("bearer")}}).
+		WithSubscribe(events.Subscribe{Summary: "test", Security: []events.SecurityRequirement{events.Require("bearer")}}).
 		Use(declMw).
 		SubscribeBoundMW(mw).
 		Handle(b)
@@ -983,7 +982,7 @@ func TestPublish_SecurityImpl_ValidFormat_Passes(t *testing.T) {
 		return pubSecOut{GrantedScopes: map[string][]string{"bearer": {}}, Authorization: "x"}, nil
 	})
 	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
-		WithPublish(events.Publish{Summary: "test", Security: []route.SecurityRequirement{route.Require("bearer")}}).
+		WithPublish(events.Publish{Summary: "test", Security: []events.SecurityRequirement{events.Require("bearer")}}).
 		Use(declMw).
 		PublishBoundMW(mw).
 		Handle(b)
@@ -1021,7 +1020,7 @@ func TestPublish_SecurityImpl_MalformedFormat_ReturnsSecurityCredentialError(t *
 		return pubSecOut{GrantedScopes: map[string][]string{"bearer": {}}, Authorization: ""}, nil
 	})
 	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
-		WithPublish(events.Publish{Summary: "test", Security: []route.SecurityRequirement{route.Require("bearer")}}).
+		WithPublish(events.Publish{Summary: "test", Security: []events.SecurityRequirement{events.Require("bearer")}}).
 		Use(declMw).
 		PublishBoundMW(mw).
 		Handle(b)
@@ -1063,7 +1062,7 @@ func TestPublish_SecurityImpl_ReturnsNilProperties_SkipsValidation(t *testing.T)
 		return pubSecOut{GrantedScopes: map[string][]string{"bearer": {}}}, nil
 	})
 	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
-		WithPublish(events.Publish{Summary: "test", Security: []route.SecurityRequirement{route.Require("bearer")}}).
+		WithPublish(events.Publish{Summary: "test", Security: []events.SecurityRequirement{events.Require("bearer")}}).
 		Use(declMw).
 		PublishBoundMW(mw).
 		Handle(b)
@@ -2179,5 +2178,67 @@ func TestPublish_RequireRetained_NoCapabilitySupplied_FailsCoverage(t *testing.T
 	}
 	if len(client.published) != 0 {
 		t.Errorf("want 0 published messages, got %d", len(client.published))
+	}
+}
+
+// TestSubscribe_BuiltInCredentialCheck_MatchedErrorChannel_PublishesTypedPayload
+// is a REGRESSION GUARD: the built-in codec-based credential FORMAT check
+// (validateSecurityCredentials, gating on SecurityScheme.Codec) was the
+// ONLY Category-A failure branch in this dispatch loop still bypassing
+// tryPublishErrorChannel/tryDeadLetter entirely (straight to opts.OnError)
+// — every OTHER failure branch (handler error, Implementations-based
+// security check, codec-backed middleware dispatch) already consults
+// both. Found via api/reqreply's Round 190 investigation (same bug class,
+// confirmed to ALSO affect api/events' own mqtt5 subscribe dispatch, but
+// deferred to a dedicated round at the time). A malformed credential
+// should be just as ErrorChannel/DeadLetter-eligible as any other
+// Category-A failure.
+func TestSubscribe_BuiltInCredentialCheck_MatchedErrorChannel_PublishesTypedPayload(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	noopImpl := func(_ context.Context, _ *sensorReading, _ subSecIn) (subSecOut, error) {
+		return subSecOut{GrantedScopes: map[string][]string{"bearer": {}}}, nil
+	}
+	mw := events.BoundSecuritySubscribeMiddleware[sensorReading, subSecIn, subSecOut](
+		"bearer", securedBearerScheme, nil, noopImpl,
+	)
+	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec,
+		events.Subscribe{Security: []events.SecurityRequirement{events.Require("bearer")}},
+		events.ErrorChannel[events.SecurityCredentialError, sensorErrPayload](
+			"sensors/readings/errors", sensorErrPayloadCodec,
+			func(e events.SecurityCredentialError) (sensorErrPayload, error) {
+				return sensorErrPayload{Code: "bad_credential", Message: e.Error()}, nil
+			},
+		),
+	).WithSubscribe(events.Subscribe{}).SubscribeBoundMW(mw).Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_ = subscribeWithHandle(ctx, client, router, handle,
+		func(_ context.Context, _ sensorReading) error { t.Fatal("fn must not be called"); return nil },
+		SubscribeOptions{})
+
+	// No "Authorization" User Property at all -> extracted credential is
+	// "" -> fails the non-empty-string Codec.
+	router.dispatch("sensors/readings", &pahomqtt5.Publish{
+		Topic:      "sensors/readings",
+		Payload:    []byte(validSensorJSON),
+		Properties: &pahomqtt5.PublishProperties{},
+	})
+
+	pub := client.lastPublished()
+	if pub == nil {
+		t.Fatal("expected a reply to be published")
+	}
+	if pub.Topic != "sensors/readings/errors" {
+		t.Fatalf("want publish to sensors/readings/errors, got topic %q (payload: %s)", pub.Topic, pub.Payload)
+	}
+	if !strings.Contains(string(pub.Payload), `"code":"bad_credential"`) {
+		t.Errorf("want typed payload with code=bad_credential (ErrorChannel-matched), got: %s", pub.Payload)
 	}
 }

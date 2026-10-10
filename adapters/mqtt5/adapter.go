@@ -467,6 +467,21 @@ func makeSubscribeMessageHandler[T any](
 				}
 				obs.RecordSubscribe(msg.Topic, false, time.Since(start))
 				wrapped := events.SecurityCredentialError{Scheme: name, Err: credErr}
+				// Deep-dive review round fix (found via api/reqreply's
+				// Round 190 investigation, deferred here at the time):
+				// this branch was the ONLY Category-A failure point
+				// still bypassing tryPublishErrorChannel/tryDeadLetter
+				// entirely — every OTHER failure branch in this function
+				// already consults both. A malformed credential is just
+				// as ErrorChannel/DeadLetter-eligible as any other
+				// Category-A failure.
+				if handled, matched := tryPublishErrorChannel(ctx, client, handle, obs, wrapped); handled {
+					return
+				} else if !matched {
+					if tryDeadLetter(ctx, client, handle, obs, msg.Topic, msg.Payload, wrapped) {
+						return
+					}
+				}
 				if opts.OnError != nil {
 					opts.OnError(SubscribeError{Kind: KindSecurity, Topic: msg.Topic, Err: wrapped})
 				}
@@ -1133,6 +1148,14 @@ func publish[T any](
 			}
 			obs.RecordPublish(topic, false, time.Since(start))
 			err = events.SecurityCredentialError{Scheme: name, Err: credErr}
+			// Topic 4: a failed publish (never reached the broker) is
+			// ALSO dead-letterable, alongside the synchronous error
+			// returned to the caller — this credential-FORMAT check was
+			// the only publish-side Category-A failure branch in this
+			// function still missing this call (mirrors the Subscribe-
+			// side ErrorChannel/DeadLetter fix above).
+			bestEffortPayload, _ := handle.Encode(msg)
+			tryDeadLetter(ctx, client, handle, obs, topic, bestEffortPayload, err)
 			return err
 		}
 	}

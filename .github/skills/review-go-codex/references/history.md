@@ -1,6 +1,57 @@
-# go-codex Review History (R1–R195, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
+# go-codex Review History (R1–R196, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 196 (api/events — deep dive revisited: mqtt5 built-in credential FORMAT check bypassing `ErrorChannel`/`DeadLetter`, closing the item deferred at `api/reqreply` Round 190)
+
+Invoked explicitly via the formalized `deep-dive-bug-hunt` skill (`ARGUMENTS: "api/evets"`, a
+typo for `api/events`). `api/reqreply` Round 190 had found and fixed the SAME bug class in
+reqreply's mqtt5 adapter, and explicitly flagged (but deferred, as out of scope at the time) a
+structurally-identical gap in `api/events`' OWN mqtt5 subscribe dispatch. This round closes that
+deferred item, then extends the same scrutiny to the PUBLISH side (not previously checked) and
+to zeromq (confirmed clean/inapplicable).
+
+- **Bug — `adapters/mqtt5/adapter.go`'s SUBSCRIBE-side built-in credential FORMAT check
+  (`validateSecurityCredentials`, gating on `SecurityScheme.Codec`) was the ONLY Category-A
+  failure branch in that dispatch loop still bypassing `tryPublishErrorChannel`/`tryDeadLetter`
+  entirely**, going straight to `opts.OnError` — every OTHER failure branch in the same function
+  (handler error, the sibling `Implementations`-based security check, codec-backed middleware
+  dispatch) already consulted both. Reproduced live first
+  (`TestSubscribe_BuiltInCredentialCheck_MatchedErrorChannel_PublishesTypedPayload`, confirmed
+  failing — nothing published at all — before the fix), then fixed by wrapping the existing
+  `opts.OnError` call in the same `tryPublishErrorChannel` → `tryDeadLetter` → `OnError` fallback
+  triplet the sibling branch already uses. The pre-existing
+  `TestSubscribe_BuiltInCredentialCheck_RejectsMalformedCredential` test (a channel with NO
+  declared `ErrorChannel`) still passes unchanged, confirming the `OnError` fallback itself is
+  intact.
+- **Bug — `adapters/mqtt5/adapter.go`'s PUBLISH-side mirror of the same check (client-side,
+  before sending) was ALSO missing its sibling's `tryDeadLetter` call.** Every OTHER publish-side
+  failure branch in the same function (property-var merge, middleware dispatch) already dead-
+  letters per "Topic 4: a failed publish (never reached the broker) is ALSO dead-letterable,
+  alongside the synchronous error returned to the caller" — this credential-FORMAT branch alone
+  returned the error directly with no dead-letter attempt. Reproduced live first
+  (`TestPublish_SecurityImpl_MalformedFormat_WithDeadLetter_Published`, confirmed failing before
+  the fix), then fixed by adding the same `tryDeadLetter` call used by every sibling branch. The
+  pre-existing `TestPublish_SecurityImpl_MalformedFormat_ReturnsSecurityCredentialError` test (no
+  `DeadLetter` declared) still passes unchanged.
+- **Checked but NOT changed — `runPublishSecurityImpls`'s own error branch** (the
+  `ClientImplementations` Fn itself erroring, a different failure class than a credential-format
+  rejection) was deliberately left out of scope for this round — it was not the deferred item,
+  and expanding Category-A/dead-letter-eligibility classification to it needs its own dedicated
+  round, not a drive-by extension here.
+- **Checked, confirmed clean/inapplicable — zeromq's events pub/sub.** Unlike mqtt5, zeromq's
+  events transport has no built-in credential-format check at all (no `validateSecurityCredentials`/
+  `SecurityCredentialError` reference outside `reqreply_transport.go`, already fixed at Round
+  190) — consistent with Round 187's finding that zeromq's events pub/sub has no property
+  channel to extract a credential from in the first place. Not a gap, by design.
+- Full repo verification clean: `gofmt -l .`, `go build ./...`, `go test ./...` (58/58 packages
+  passing, no failures observed this run — the pre-existing flaky
+  `TestAttachServer_MiddlewareError_WrapsAsKindMiddleware` (zeromq) did not trip), `just check`
+  (staticcheck/gosec clean after removing a now-redundant deprecated `events.WithSecurityScheme`
+  call the new subscribe-side test initially included), and a full `examples/*/` build sweep (all
+  example binaries with a `main.go` build clean).
 
 ---
 
