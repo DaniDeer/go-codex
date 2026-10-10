@@ -1,12 +1,18 @@
 # Typed HTTP Redirects — `api/rest`
 
-> **Status:** Design draft — no code written yet. Spun out of a direct
-> user question ("how do I send HTTP 3xx responses, especially a 303 See
-> Other redirect?") that exposed a genuine gap, not a documentation gap.
-> Critically re-reviewed against the actual code once (not just the
-> initial sketch) — see "Resolved design decisions" below; only 3 small
-> items remain genuinely open, all in one subsection (the client-side
-> route registry).
+> **Status:** Design draft — no code written yet, but critically
+> re-reviewed against the actual code TWICE (not just the initial
+> sketch) — see "Resolved design decisions" and "Round 2 critical
+> review" below. Every design decision raised across both rounds is now
+> resolved; nothing is left genuinely open in this doc. (The
+> `internal/registry` extraction question and the `api/reqreply.Client`
+> registry question were ALSO evaluated during this process and
+> deliberately deferred/spun out — see the "Client-side route registry"
+> section and [`reqreply-client-registry.md`](reqreply-client-registry.md)
+> — those are follow-up items for AFTER this doc ships, not blockers to
+> implementing this doc itself.) Spun out of a direct user question ("how
+> do I send HTTP 3xx responses, especially a 303 See Other redirect?")
+> that exposed a genuine gap, not a documentation gap.
 > [← Back to Roadmap](index.md)
 
 ## Why this exists
@@ -346,6 +352,119 @@ now tracked separately in
 explicitly sequenced to start only after this doc's registry ships, with 3
 candidate motivations recorded and deliberately left unresolved there.
 
+## Round 2 critical review — 6 new findings, all resolved
+
+A second critical re-review (re-verifying claims against the actual code rather than trusting
+this doc's own prior conclusions — same discipline as Round 1) found 6 substantial NEW gaps,
+none raised in Round 1. All 6 are now resolved; 2 (B, E) were clear-cut engineering fixes with
+no real decision needed, 4 (A, C, D, F) were genuine design decisions confirmed with the user —
+2 of those (D, F) expanded this doc's scope beyond the minimal/deferred option.
+
+1. **(A) Client-side auto-follow credential ambiguity, RESOLVED.** The registry's idempotency
+   rule (a routeKey may be registered more than once via different credential-bound
+   `ClientHandle` variants, e.g. `CreateUserRouteAsAlice`/`AsAdmin`, as a safe no-op) left
+   unresolved WHICH variant's credentials get used to actually ISSUE the auto-follow HTTP
+   request. Left to "whatever happens to be registered," this risks silently sending the WRONG
+   identity's credentials on a redirect (e.g. Admin's token on Alice's behalf). **Resolution,
+   confirmed with the user**: auto-follow NEVER re-derives credentials from the registered
+   handle — it reuses the ORIGINATING call's own already-resolved request (the SAME
+   `*http.Client`, the SAME explicit per-call `ClientCallOptions`/headers/credentials the
+   original caller supplied). The registry is consulted ONLY to pick which `*RouteHandle`'s
+   `Resp` type/decode logic applies — never which credentials to send. This rule applies
+   identically to `Client.Consume`'s own redirect-following (see finding D below).
+2. **(B) `Redirect`/`RedirectToSSE`'s 2-return-value shape, RESOLVED (engineering fix, no
+   decision needed).** The original sketch, `func Redirect[...](...) (RedirectError, error)`,
+   forced 3-line handler code (`redirErr, err := rest.Redirect(...); if err != nil { return
+   zero, err }; return zero, redirErr`) despite `RedirectError` already implementing `error`.
+   **Fixed**: both functions now return a single `error` — either the `RedirectError` itself on
+   success, or a `RedirectTargetVarError`/`RedirectMethodMismatchError` on construction failure
+   (all 3 already implement `error`) — collapsing handler code to one line:
+   `return zero, rest.Redirect(http.StatusSeeOther, targetRoute, vars)`.
+3. **(C) Redirect chain depth, RESOLVED.** Neither chains (A redirects to B, which ALSO
+   redirects to C) nor cycles (A→B→A) were addressed anywhere — unlike `net/http`'s own
+   10-hop default auto-follow cap. **Resolution, confirmed with the user**: cap auto-follow
+   chain depth, mirroring `net/http`'s own 10-hop precedent, with a new typed
+   `RedirectChainTooDeepError` returned if exceeded — ONE mechanism covers both long chains AND
+   cycles (a cycle simply hits the depth cap rather than looping forever), no separate cycle
+   detector needed. Applies identically to `Client.Call` and `Client.Consume` (finding D).
+4. **(D) `Client.Consume` (SSE client) redirect behavior, RESOLVED — user chose the
+   BIGGER-SCOPE option.** `RedirectToSSE` exists in the API surface (an SSE route can be a
+   redirect TARGET), but the entire client-side auto-follow design was scoped only to
+   `Client.Call` — leaving `Client.Consume`'s own redirect behavior, and what `Call` should do
+   if it resolves to a registered SSE target, completely undefined. **Resolved**:
+   - `Client.Call` auto-following INTO a registered `SSERoute` target still errors distinctly
+     (`RedirectToStreamUnsupportedError`) — `Call`'s single-decode contract is fundamentally
+     incompatible with a stream; this was never in question.
+   - **`Client.Consume` gets its OWN full redirect-following design**, newly in scope this
+     round: when an SSE endpoint has moved and responds with a 3xx before the stream starts,
+     `Consume` transparently reconnects against the target instead, exactly mirroring `Call`'s
+     own auto-follow.
+   - **The registry can no longer be ONE map** — it splits into two parallel maps: `routes`
+     (Call-decodable, populated by `Call`/`RegisterRoute` given a `Route`) and `sseRoutes`
+     (Consume-streamable, populated by `Consume`/`RegisterRoute` given an `SSERoute` —
+     `RegisterRoute(route any)`'s existing `any` signature already accommodates this via the
+     SAME type-discrimination reflection `recoverClientRouteHandleValue`/
+     `recoverClientSSERouteHandleValue` already use elsewhere). Keeping them separate is what
+     lets `Call` correctly reject a stream target and `Consume` correctly reject a non-stream
+     target (new `RedirectTargetNotStreamableError`), instead of either silently using the
+     wrong decode/stream shape.
+   - `clientTransport.Consume` detects a 3xx via the SAME overridden `CheckRedirect` `Call`
+     uses (`clientTransport` already wraps ONE `*caller`/ONE `*http.Client` shared by both —
+     confirmed via code, no separate transport-level change needed beyond Resolved Decision #6).
+     On a match in `sseRoutes`: transparent reconnect, reusing the originating call's own
+     credentials (finding A). On a match in `routes` only: `RedirectTargetNotStreamableError`.
+     On no match: the existing `UnrecognizedRedirectError` (mirrors `Call`'s own fallback).
+   - Chain depth cap (finding C) applies identically to `Consume`'s own follow-chain.
+5. **(E) `RedirectToSSE`'s server-side hook-point reliability, RESOLVED (engineering fix, no
+   decision needed).** `adapters/nethttp/adapter.go`'s `sseHandlerFunc` has exactly ONE
+   post-handler error path, gated on `if sw.code == http.StatusOK`. **Confirmed via code**:
+   `sw.code` is initialized to `http.StatusOK` and is populated ONLY by an explicit
+   `sw.WriteHeader(...)` call — but `writeSSEData` (the only place real SSE bytes are written)
+   calls the embedded `io.Writer`'s plain `Write` directly, which triggers `net/http`'s own
+   IMPLICIT `WriteHeader(200)` on the underlying `http.ResponseWriter`, never going through
+   `statusResponseWriter`'s override. **This means `sw.code` never changes from its initial
+   value for the entire life of an SSE connection, regardless of whether real events already
+   streamed** — a genuinely unreliable "has anything been sent yet" signal (a PRE-EXISTING
+   characteristic of the current codebase, not introduced by this feature, but directly
+   relevant to whether a LATE `RedirectError` can be safely recognized at all). **Fixed**: the
+   dispatch code surfaces the ALREADY-TRACKED `headersCommitted` bool (declared inside the SSE
+   send closure) to the post-`fn` error-handling branch instead of trusting `sw.code` — a
+   `RedirectError` is only honored if `fn` returned it BEFORE `headersCommitted` ever became
+   true; after that point, it's treated as an ordinary (unactionable, log-only) late error,
+   same as today.
+6. **(F) `ResponseMeta` can't document the `Location` response header, RESOLVED — user chose to
+   EXTEND scope.** `ResponseMeta` (`api/rest/builder.go`) has no field for documenting response
+   HEADERS for any non-primary status entry, not just redirects — a pre-existing gap, newly
+   surfaced by this feature needing it for the first time. **Resolved**: `ResponseMeta` gains a
+   new, purely ADDITIVE optional field:
+   ```go
+   type ResponseMeta struct {
+       Status      string
+       Description string
+       Schema      *schema.Schema
+       SchemaName  string
+       // Headers documents response headers for THIS status entry in the
+       // generated spec (e.g. {"Location": {...}} for a redirect).
+       // Optional — nil for every existing caller, fully backward
+       // compatible.
+       Headers map[string]ResponseMetaHeader
+   }
+
+   // ResponseMetaHeader documents one response header entry for a
+   // ResponseMeta status — deliberately minimal (description + whether
+   // it's required), not a full param/codec declaration: a non-primary
+   // response's headers are documentation-only, never merge-field-decoded
+   // the way the PRIMARY response's ResponseHeaderParam is.
+   type ResponseMetaHeader struct {
+       Description string
+       Required    bool
+   }
+   ```
+   `render/openapi/document.go`'s `buildResponses` gains a small extension to also emit a
+   `headers:` object per response entry when `Headers` is non-empty. A redirect's own
+   `ResponseMeta{Status: "303", Headers: map[string]ResponseMetaHeader{"Location":
+   {Description: "...", Required: true}}}` now fully documents the expected header in the spec.
+
 ## Proposed API surface (tentative — sketch only, not final)
 
 ```go
@@ -363,49 +482,100 @@ func (e RedirectError) Error() string
 func (e RedirectError) LogValue() slog.Value
 
 // Redirect resolves target's path template against vars (via
-// target.ClientHandle().BuildPath) and returns a RedirectError a handler
-// can return as its error value. Fails with a typed
-// RedirectTargetVarError if a var is missing or fails the target
-// route's own codec constraint, or RedirectMethodMismatchError if status
-// is 307/308 and target's Method differs from the originating route's.
-func Redirect[TReq, TResp any](status int, target Route[TReq, TResp], vars map[string]string) (RedirectError, error)
+// target.ClientHandle().BuildPath) and returns a single error a handler
+// returns as its own error value: the RedirectError itself on success
+// (round 2, finding B — collapsed from the original 2-return-value
+// sketch), or a typed RedirectTargetVarError if a var is missing or
+// fails the target route's own codec constraint, or
+// RedirectMethodMismatchError if status is 307/308 and target's Method
+// differs from the originating route's.
+//
+//	func(ctx context.Context, req Req) (Resp, error) {
+//	    var zero Resp
+//	    return zero, rest.Redirect(http.StatusSeeOther, targetRoute, vars)
+//	}
+func Redirect[TReq, TResp any](status int, target Route[TReq, TResp], vars map[string]string) error
 
 // RedirectToSSE mirrors Redirect for an SSERoute target.
-func RedirectToSSE[TReq, TEvent any](status int, target SSERoute[TReq, TEvent], vars map[string]string) (RedirectError, error)
+func RedirectToSSE[TReq, TEvent any](status int, target SSERoute[TReq, TEvent], vars map[string]string) error
 
 // RegisterRoute warms Client's redirect-target registry with route
 // without making a live call against it — for a route that is only
 // ever reached as a redirect target. Routes called directly via
-// Client.Call are indexed automatically; this is only needed for
-// targets never called directly.
+// Client.Call/Consume are indexed automatically; this is only needed
+// for targets never called directly. route may be a Route (indexed
+// into the Call-decodable registry) or an SSERoute (indexed into the
+// Consume-streamable registry, round 2 finding D) — discriminated via
+// the same reflection recoverClientRouteHandleValue/
+// recoverClientSSERouteHandleValue already use.
 func (c *Client) RegisterRoute(route any) error
 
-// UnrecognizedRedirectError is returned by Client.Call when a received
-// redirect's Location does not match any route registered on c (via a
-// prior Call or RegisterRoute) — carries the raw Location+Status so a
-// caller can fall back to a manual follow-up.
+// UnrecognizedRedirectError is returned by Client.Call/Client.Consume
+// when a received redirect's Location does not match any route
+// registered on c (via a prior Call/Consume or RegisterRoute) — carries
+// the raw Location+Status so a caller can fall back to a manual
+// follow-up.
 type UnrecognizedRedirectError struct {
     Location string
     Status   int
+}
+
+// RedirectToStreamUnsupportedError is returned by Client.Call (round 2,
+// finding D) when an auto-followed redirect resolves to a route
+// registered ONLY as an SSERoute (a streaming target) — Call's
+// single-decode contract cannot service a stream; use Client.Consume
+// against the target directly instead.
+type RedirectToStreamUnsupportedError struct {
+    Location string
+}
+
+// RedirectTargetNotStreamableError is Client.Consume's mirror-image of
+// RedirectToStreamUnsupportedError (round 2, finding D): returned when
+// an auto-followed redirect resolves to a route registered ONLY as a
+// plain Route (a non-streaming target) — Consume cannot decode a single
+// value as an event stream.
+type RedirectTargetNotStreamableError struct {
+    Location string
+}
+
+// RedirectChainTooDeepError (round 2, finding C) is returned by
+// Client.Call/Client.Consume when auto-following a redirect chain
+// exceeds a depth cap (mirrors net/http's own 10-hop default) — covers
+// both unreasonably long chains and cycles (A redirects to B redirects
+// to A) with one mechanism, no separate cycle detector.
+type RedirectChainTooDeepError struct {
+    Location string
+    Depth    int
 }
 ```
 
 - Adapter dispatch (`nethttp`, `chi`) recognizes `RedirectError` via
   `errors.As`, BEFORE `ErrorPattern`/`ErrorStatus` matching — this
   mirrors the already-established sentinel-error convention elsewhere in
-  the codebase, not a new dispatch shape.
+  the codebase, not a new dispatch shape. For SSE (`sseHandlerFunc`),
+  this check is gated on the existing `headersCommitted` bool (round 2,
+  finding E) rather than the unreliable `sw.code` check.
 - `adapters/nethttp`'s client transport construction overrides
   `http.Client.CheckRedirect` (on a shallow copy of the caller-supplied
   client) to `http.ErrUseLastResponse` by default, so `net/http`'s own
-  auto-follow never fires underneath go-codex's explicit handling.
+  auto-follow never fires underneath go-codex's explicit handling. The
+  SAME shallow-copied client/override serves both `Client.Call` and
+  `Client.Consume` (round 2, finding D) — `clientTransport` already wraps
+  one `*caller`/one `*http.Client` shared by both.
+- Auto-follow (both `Call` and `Consume`) always reuses the ORIGINATING
+  call's own resolved credentials/headers for the follow-up request —
+  never the registered target handle's own baked-in `ClientMW` (round 2,
+  finding A). The registry is consulted ONLY to select which
+  `*RouteHandle`/`*SSERouteHandle`'s `Resp`/`Event` decode logic applies.
 
 ## Structured errors
 
 Every new error type (`RedirectError`, `RedirectTargetVarError`,
-`RedirectMethodMismatchError`, `UnrecognizedRedirectError`) MUST
-implement `slog.LogValuer` per the repo's standing structured-errors
-rule — no exception for this feature. Per the also-standing
-internal-package-error-aliasing rule
+`RedirectMethodMismatchError`, `UnrecognizedRedirectError`,
+`RedirectToStreamUnsupportedError`, `RedirectTargetNotStreamableError`,
+`RedirectChainTooDeepError`) MUST implement `slog.LogValuer` per the
+repo's standing structured-errors rule — no exception for this feature.
+Per the also-standing internal-package-error-aliasing rule
 (`.github/instructions/go-codex.instructions.md`), if any of these are
 built on a shared `internal/*` mechanism (e.g. `templatematch`'s own
 mismatch errors), the SAME-named public alias must exist in `api/rest`'s
@@ -413,12 +583,13 @@ own vocabulary from day one — not retrofitted later.
 
 ## Observer integration
 
-A redirect taken (server-side) and a redirect followed (client-side) are
-both candidate `stats.Observer`-style events — exact hook names/shapes
-not yet decided; should be designed alongside implementation now that
-the dispatch hook point (the existing `if err != nil` branch) and the
-registry resolution point (`clientTransport.Call`) are both concretely
-identified above.
+A redirect taken (server-side) and a redirect followed (client-side, via
+EITHER `clientTransport.Call` or `clientTransport.Consume` — round 2,
+finding D) are both candidate `stats.Observer`-style events — exact hook
+names/shapes not yet decided; should be designed alongside
+implementation now that the dispatch hook point (the existing `if err !=
+nil` branch, SSE-gated on `headersCommitted` per round 2 finding E) and
+both registry resolution points are concretely identified above.
 
 ## Unit test plan (sketch, to refine during implementation)
 
@@ -428,6 +599,9 @@ identified above.
 | Server | `Redirect` with a missing/invalid var returns `RedirectTargetVarError`, not a panic |
 | Server | `Redirect` with status 307/308 and a mismatched target Method returns `RedirectMethodMismatchError` |
 | Server | `ResponseMeta{Status: "303", ...}` on a redirect-capable route renders correctly in the generated OpenAPI spec alongside the primary response |
+| Server | `ResponseMeta.Headers{"Location": {...}}` (round 2, finding F) renders a `headers:` object for that status entry in the generated spec |
+| Server (SSE) | A `RedirectError` returned by an SSE handler BEFORE its first `send()` call is honored (headers/status/Location, no stream started) |
+| Server (SSE) | A `RedirectError` returned by an SSE handler AFTER `headersCommitted` is true is treated as an ordinary late error, NOT a redirect (round 2, finding E — confirms the fix, since the stream has already committed to 200 + event-stream) |
 | Client | `Client.Call` auto-follows a recognized redirect (registered via a prior `Call`) and decodes the TARGET route's `Resp` |
 | Client | `Client.Call` auto-follows a recognized redirect registered ONLY via `Client.RegisterRoute` (never called directly) |
 | Client | Two routes with overlapping templates matching the same Location+Method — first-registered-wins |
@@ -435,15 +609,22 @@ identified above.
 | Client | `http.Client.CheckRedirect` is confirmed disabled by default on the shallow-copied client (no silent double-follow), and the CALLER's own `*http.Client` is confirmed unmutated |
 | Client | `CallWithTransport` returns a typed `RedirectError` (no auto-follow) on receiving a redirect |
 | Client | Registering (or auto-populating) the SAME routeKey twice via two DIFFERENT credential-bound `ClientHandle` variants of the identical route is a safe no-op, not an error |
+| Client | Auto-follow (`Call` and `Consume`) reuses the ORIGINATING call's own credentials/headers for the follow-up request, confirmed NOT the registered target handle's own baked-in `ClientMW` (round 2, finding A) |
+| Client | A redirect chain exceeding the depth cap (`Call` and `Consume`) returns `RedirectChainTooDeepError`; a cycle (A→B→A) is confirmed to hit the SAME cap rather than looping forever (round 2, finding C) |
+| Client | `Client.Call` auto-following into a registered `SSERoute`-only target returns `RedirectToStreamUnsupportedError` (round 2, finding D) |
+| Client (SSE) | `Client.Consume` auto-follows a redirect to a new SSE location and continues streaming without caller-visible interruption (round 2, finding D) |
+| Client (SSE) | `Client.Consume` auto-following into a registered plain-`Route`-only target returns `RedirectTargetNotStreamableError` (round 2, finding D) |
 | chi/nethttp parity | Server-side behavior (RedirectError recognition, Location + status, no body) is identical in both adapters |
 
 ## Files to create (once approved for implementation)
 
 | File | Purpose |
 |---|---|
-| `api/rest/redirect.go` + `redirect_test.go` | `RedirectError`, `RedirectTargetVarError`, `RedirectMethodMismatchError`, `Redirect`, `RedirectToSSE` |
-| `api/rest/client_registry.go` (or inline in `builder.go`) + test | `Client`'s Method+PathTemplate registry, `RegisterRoute`, auto-populate-on-Call, `UnrecognizedRedirectError`, same-routeKey-reregistration idempotency |
-| `adapters/nethttp/redirect.go` (or inline in `adapter.go`/`clienttransport.go`) + test | Server dispatch recognition + `Location` rendering; `CheckRedirect` shallow-copy override; registry-driven auto-follow/decode in `clientTransport.Call` |
+| `api/rest/redirect.go` + `redirect_test.go` | `RedirectError`, `RedirectTargetVarError`, `RedirectMethodMismatchError`, `RedirectChainTooDeepError` (round 2), `Redirect`, `RedirectToSSE` (both returning a single `error`, round 2 finding B) |
+| `api/rest/client_registry.go` (or inline in `builder.go`) + test | `Client`'s TWO parallel Method+PathTemplate registries — `routes` (Call-decodable) and `sseRoutes` (Consume-streamable, round 2 finding D) — `RegisterRoute` (type-discriminating both kinds), auto-populate-on-Call/Consume, `UnrecognizedRedirectError`, `RedirectToStreamUnsupportedError`, `RedirectTargetNotStreamableError`, same-routeKey-reregistration idempotency |
+| `api/rest/builder.go` (extend) + test | `ResponseMeta.Headers map[string]ResponseMetaHeader` (round 2, finding F) — purely additive |
+| `render/openapi/document.go` (extend) + test | `buildResponses` emits a `headers:` object per response entry when `ResponseMeta.Headers` is non-empty (round 2, finding F) |
+| `adapters/nethttp/redirect.go` (or inline in `adapter.go`/`clienttransport.go`) + test | Server dispatch recognition (REST + SSE, gated on `headersCommitted` for SSE per round 2 finding E) + `Location` rendering; `CheckRedirect` shallow-copy override; registry-driven auto-follow/decode in BOTH `clientTransport.Call` and `clientTransport.Consume` (round 2 finding D), reusing the originating call's own credentials (round 2 finding A), chain-depth-capped (round 2 finding C) |
 | `adapters/chi/redirect.go` (or inline) + test | Server-side behavior only (no client transport exists in chi) |
 | `examples/rest-redirect/main.go` | Minimal, standalone, self-contained worked example — demonstrates the auto-populate-via-`Call` registry path (see "Client-side route registry" above) |
 | `examples/rest-api/demo_redirect.go` + rework of `examples/rest-api/client`'s `Build()` | Richer demo in the existing dual-adapter (chi/nethttp) flagship example — `Build()` reworked to explicitly `Client.RegisterRoute` every distinct route at construction time; the demo itself shows primary (auto-follow via the construction-time-populated registry) + secondary (`CallWithTransport`, manual follow-up) in one file, mirroring `examples/adapters-nethttp-client`'s Section-0-then-escape-hatch style (see "Client-side route registry" above) |
