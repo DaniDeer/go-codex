@@ -337,6 +337,31 @@ registry-bearing object at all today, confirmed via `docs/roadmap/
 mcp-ports-declarative-middleware.md`'s existing investigation — a registry question doesn't
 even apply until that prerequisite is designed. Not pursued further here.)
 
+**Flagged, genuinely UNRESOLVED follow-up — `api/reqreply.Client`** raised during this same
+evaluation: its own doc comment currently states *"Client accumulates NO spec state — it is
+purely a dispatch handle... mirroring rest.Client/events.Client's identical shape"* — a claim
+that stops being accurate the moment `rest.Client`'s registry ships (rest.Client will no longer
+be "purely a dispatch handle"; reqreply.Client still will be). Investigated whether reqreply
+has a structural analog to an HTTP redirect that would motivate giving it the SAME registry:
+confirmed it does NOT — `Call`/`CallAsync` always know their own `Resp` type at the call site
+(even the returned `*Future[Resp]` is typed at construction), so there is no "decode an unknown
+target's response type" problem the way a 3xx creates for REST. **What's left genuinely open,
+not yet resolved, is WHY reqreply would want a registry at all** — 3 candidate motivations were
+identified, none confirmed:
+
+1. A NEW, reqreply-native "forward/bounce" concept — a handler responds "actually, route X
+   should handle this," and the caller auto-follows to THAT route's typed response (the true
+   reqreply analog of a redirect, not yet designed anywhere).
+2. Pure structural symmetry — every `api/*` `Client` should have the same registry shape,
+   independent of any concrete reqreply feature need right now.
+3. Tied to dead-letter/error handling — resolving a failed call's retry/requeue target via a
+   known route.
+
+**Do not design or implement any of these without first resolving which (if any) is the actual
+goal** — they lead to materially different APIs (a new sentinel-error-driven dispatch mechanism
+vs. a no-op symmetry change vs. extending the existing `DeadLetter` mechanism). Recorded here,
+unresolved, for explicit direction before any further work on this specific question.
+
 ## Proposed API surface (tentative — sketch only, not final)
 
 ```go
