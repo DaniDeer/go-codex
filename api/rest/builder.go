@@ -826,9 +826,9 @@ type RouteHandle[Req, Resp any] struct {
 	// route value builds a server-side handle and a client-side handle
 	// with IDENTICAL credential-format enforcement on both sides: the
 	// server adapter's Handler validates an INCOMING credential against
-	// Codec before calling SecurityFunc; [nethttp.Call] validates an
-	// OUTGOING credential (the header CredentialFunc returned) against the
-	// SAME Codec before sending.
+	// Codec before the declarative security implementation runs;
+	// [nethttp.Call] validates an OUTGOING credential (the header
+	// CredentialFunc returned) against the SAME Codec before sending.
 	SecuritySchemes map[string]SecurityScheme
 
 	// GlobalSecurity holds the builder-level security requirements that apply
@@ -2743,8 +2743,10 @@ func assertCookieAttrs[Resp any](raw []any) map[string]func(Resp) CookieAttribut
 // declare one; there is no builder-level equivalent. The spec fields flow into the OpenAPI document (aggregated
 // from all registered routes by [Server.OpenAPISpec]); Codec, when
 // non-nil, is used by adapters to
-// validate the raw credential string before SecurityFunc is called
-// (server-side) or before the request is sent (client-side, [nethttp.Call]).
+// validate the raw credential string before the declarative security
+// implementation (a [SecurityMiddleware]/[BoundSecurityMiddleware]-attached
+// [Route.Use]/[Route.HandleBoundMW] Fn) runs (server-side) or before the
+// request is sent (client-side, [nethttp.Call]).
 //
 // The adapter extracts the raw credential from the request based on the scheme
 // Type and location fields:
@@ -2754,11 +2756,13 @@ func assertCookieAttrs[Resp any](raw []any) map[string]func(Resp) CookieAttribut
 //
 // A codec validation failure causes the adapter to return a [SecurityCredentialError]
 // with HTTP 401 (server), or the same error type client-side before any
-// network call is sent, without invoking SecurityFunc.
+// network call is sent, without ever reaching the declarative security
+// implementation.
 type SecurityScheme struct {
 	route.SecurityScheme
 	// Codec, when non-nil, validates the extracted raw credential string.
-	// Nil means no format validation; SecurityFunc receives the request as-is.
+	// Nil means no format validation; the declarative security
+	// implementation receives the request as-is.
 	//
 	// Use [SecurityScheme.WithCodec] to set this field inline without a temporary
 	// variable: rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(c)
@@ -2870,7 +2874,8 @@ func SecurityMiddleware[In, Out any](schemeName string, scheme SecurityScheme, s
 
 // SecurityCredentialError is returned when credential format validation via
 // SecurityScheme.Codec fails. It is distinct from [SecurityError], which wraps
-// rejections from SecurityFunc.
+// rejections from a declarative security implementation (a
+// [SecurityMiddleware]/[BoundSecurityMiddleware]-attached Fn).
 //
 // Use [errors.As] to extract the scheme name and underlying constraint error:
 //
@@ -2890,10 +2895,11 @@ func (e SecurityCredentialError) Error() string {
 // Unwrap allows errors.As and errors.Is to traverse the underlying constraint error.
 func (e SecurityCredentialError) Unwrap() error { return e.Err }
 
-// SecurityError is returned when SecurityFunc rejects a request.
+// SecurityError is returned when a declarative security implementation (a
+// [SecurityMiddleware]/[BoundSecurityMiddleware]-attached Fn) rejects a request.
 // It is distinct from [SecurityCredentialError], which covers codec format failures.
 //
-// Use [errors.As] to extract the underlying error from SecurityFunc:
+// Use [errors.As] to extract the underlying error:
 //
 //	var secErr rest.SecurityError
 //	if errors.As(err, &secErr) {
@@ -2907,7 +2913,7 @@ func (e SecurityError) Error() string {
 	return fmt.Sprintf("security check failed: %s", e.Err)
 }
 
-// Unwrap allows errors.As and errors.Is to traverse the underlying SecurityFunc error.
+// Unwrap allows errors.As and errors.Is to traverse the underlying security-implementation error.
 func (e SecurityError) Unwrap() error { return e.Err }
 
 // UnsupportedMediaTypeError is returned by the net/http adapter when the
@@ -4004,9 +4010,9 @@ type SSERouteHandle[Req, Event any] struct {
 	// route value builds a server-side handle and a client-side handle
 	// with IDENTICAL credential-format enforcement on both sides: the
 	// server adapter's Handler validates an INCOMING credential against
-	// Codec before calling SecurityFunc; [nethttp.Call] validates an
-	// OUTGOING credential (the header CredentialFunc returned) against the
-	// SAME Codec before sending.
+	// Codec before the declarative security implementation runs;
+	// [nethttp.Call] validates an OUTGOING credential (the header
+	// CredentialFunc returned) against the SAME Codec before sending.
 	SecuritySchemes map[string]SecurityScheme
 
 	// GlobalSecurity holds the builder-level security requirements that apply

@@ -121,7 +121,7 @@ type PipelineHandlerFunc[Req, Resp any] func(ctx context.Context, req Req) gstre
 // Before fn is called, the request pipeline has already validated and decoded:
 //   - Request body (→ req Req)
 //   - Query, cookie, header, path params (all registered [rest.Param] codecs)
-//   - Security credentials + SecurityFunc
+//   - Security credentials + the declarative security implementation
 //
 // After fn returns, the request pipeline validates:
 //   - Response body (handle.Encode)

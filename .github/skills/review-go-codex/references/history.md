@@ -1,6 +1,49 @@
-# go-codex Review History (R1–R194, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
+# go-codex Review History (R1–R195, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 195 (api/rest — deep dive revisited: security schemes — stale godoc referencing REMOVED `SecurityFunc`, found via cross-package pattern-matching against api/events Round 180 and api/reqreply Round 189)
+
+The `api/rest` deep-dive series (Rounds 167-174) was already declared complete, and its own
+security-scheme rounds (163-164) predate this. Invoked explicitly again via the formalized
+`deep-dive-bug-hunt` skill (`ARGUMENTS: api/rest`): since every concept was already covered,
+this round instead applied the SPECIFIC bug-class lessons learned from the `api/events` (Round
+180) and `api/reqreply` (Round 189) deep dives — both found stale godoc still describing a
+REMOVED `SecurityFunc` mechanism as current — to check whether `api/rest` had the SAME
+cross-package pattern. It did.
+
+- **Bug — `api/rest/builder.go`'s `SecurityScheme`/`SecurityCredentialError`/`SecurityError`
+  doc comments (9 occurrences) and `adapters/nethttp/stream.go`'s codec-coverage bullet list
+  all still described the OLD, fully-REMOVED imperative `SecurityFunc` mechanism as current**,
+  even though `adapters/nethttp/adapter.go`/`adapters/chi/adapter.go` both correctly document
+  its removal with explicit "BREAKING: ... SecurityFunc are REMOVED" markers — only
+  `builder.go`'s OWN doc comments (predating that removal) had drifted. **Confirmed important
+  distinction from the events/reqreply case: unlike `SubscribeOptions.SecurityFunc`/
+  `PublishOptions.CredentialFunc` (events) and `ServeOptions.SecurityFunc`/
+  `CallOptions.CredentialFunc` (reqreply), which were BOTH fully removed, REST's own
+  `nethttp.CredentialFunc` type alias is STILL LIVE and current** (client-side credential-header
+  supply, e.g. `nethttp.NewCachingCredentialFunc`) — only `SecurityFunc` (the server-side
+  imperative hook) was removed in REST; every `CredentialFunc` mention in the affected doc
+  comments was left untouched as still-accurate.
+- Fixed: rewrote all 9 `SecurityFunc` references in `api/rest/builder.go` (the `SecurityScheme`
+  type doc, its `Codec` field doc, both duplicated `SecuritySchemes` field docs on
+  `RouteHandle`/`routeBuilder`, `SecurityCredentialError`'s doc, and `SecurityError`'s doc +
+  `Unwrap` comment) to name the actual current mechanism (`SecurityMiddleware`/
+  `BoundSecurityMiddleware`, attached via `Route.Use`/`Route.HandleBoundMW`), plus one bullet in
+  `adapters/nethttp/stream.go`'s codec-coverage list. Confirmed via grep: no dead reflection
+  code referencing a removed `SecurityFunc` field exists anywhere in `adapters/nethttp`/
+  `adapters/chi` (unlike `api/events`' zeromq pub/sub, which DID have leftover dead code —
+  REST's adapters never had this gap). No functional/behavioral changes — documentation clarity
+  only.
+- Full repo verification clean: `gofmt -l .`, `go build ./...`, `go test ./...` (including full
+  `api/rest`/`adapters/nethttp`/`adapters/chi` runs, all passing), `just check` (0 issues), full
+  `examples/*/` sweep — all clean.
+- **This confirms the value of the skill's Phase B-adjacent cross-package check**: a bug class
+  found in a LATER deep dive (events/reqreply) can reveal an unexamined instance in an EARLIER,
+  already-"complete" deep dive (REST) — re-applying lessons learned backwards across layers is
+  as valuable as the forward concept-by-concept sweep itself.
 
 ---
 
