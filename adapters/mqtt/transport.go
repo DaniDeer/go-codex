@@ -221,7 +221,7 @@ func (t *transport) Publish(ctx context.Context, pubAny, msgAny any, optsVariadi
 		return err
 	}
 
-	clientImplementations, _ := elem.FieldByName("ClientImplementations").Interface().([]middleware.ClientImplementation)
+	clientImplementations, _ := elem.FieldByName("ClientImplementations").Interface().([]events.ClientImplementation)
 	wantHandlerFnType := reflect.FuncOf([]reflect.Type{dispatchCtxType, tType}, []reflect.Type{dispatchErrType}, false)
 	secFnType := buildPublishSecurityFnType(tType)
 	generalFnType := buildGeneralDecoratorFnType(wantHandlerFnType)
@@ -405,7 +405,7 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 	// Every attached [events.ChannelHandle.Implementations] Fn (from
 	// [Subscriber.SubscribeMW]) is shape-validated EAGERLY here, before
 	// the broker subscription is made.
-	implementations, _ := elem.FieldByName("Implementations").Interface().([]middleware.ServerImplementation)
+	implementations, _ := elem.FieldByName("Implementations").Interface().([]events.ServerImplementation)
 	generalFnType := buildGeneralDecoratorFnType(wantFnType)
 	if err := validateSubscribeImplementationShapesReflect(topic, tType, implementations); err != nil {
 		return err
@@ -530,7 +530,7 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 		// legacy Implementations path AND any bound MiddlewareHandler's
 		// own GrantedScopes (merged above).
 		if len(secReqs) > 0 {
-			if err := middleware.CheckScopes(secReqs, granted); err != nil {
+			if err := events.CheckScopes(secReqs, granted); err != nil {
 				if secObs, ok := obs.(stats.SecurityObserver); ok {
 					secObs.RecordSecurityRejection(msg.Topic(), route.FirstSchemeName(secReqs))
 				}

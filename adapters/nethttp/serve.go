@@ -153,7 +153,7 @@ type wiredRoute struct {
 // collection of routes with different Req/Resp per route — building each
 // one's http.Handler uses reflect.Value.Call against the route's
 // ALREADY-CONCRETE exported closures (Decode/Encode/HandlerFn/each
-// [middleware.ServerImplementation.Fn]), never reflective generic
+// [rest.ServerImplementation.Fn]), never reflective generic
 // instantiation (which Go does not support) — see "Decision: serve's
 // generic dispatch mechanism" in the roadmap doc for the full rationale.
 func serve(mux *http.ServeMux, b *rest.Server) error {
@@ -244,7 +244,7 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 	descriptor, _ := elem.FieldByName("Descriptor").Interface().(route.Route)
 	secSchemes, _ := elem.FieldByName("SecuritySchemes").Interface().(map[string]rest.SecurityScheme)
 	globalSecurity, _ := elem.FieldByName("GlobalSecurity").Interface().([]route.SecurityRequirement)
-	impls, _ := elem.FieldByName("Implementations").Interface().([]middleware.ServerImplementation)
+	impls, _ := elem.FieldByName("Implementations").Interface().([]rest.ServerImplementation)
 	middlewareHandlers, _ := elem.FieldByName("MiddlewareHandlers").Interface().([]rest.MiddlewareHandler)
 	handlerOptsAny := elem.FieldByName("HandlerOpts").Interface()
 	handlerFnVal := elem.FieldByName("HandlerFn")
@@ -497,7 +497,7 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 		// Security now dispatches through the SAME unified
 		// MiddlewareHandler mechanism every other middleware uses.
 		// CollectGrantsReflect runs the legacy security-shaped impls
-		// WITHOUT calling middleware.CheckScopes yet (that now happens
+		// WITHOUT calling rest.CheckScopes yet (that now happens
 		// ONCE, below, after merging in any GrantedScopes a
 		// MiddlewareHandler-dispatched Security middleware contributes —
 		// its Out only becomes available once DispatchMiddlewareHandlers
@@ -551,7 +551,7 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 			return
 		}
 		httpsecurity.MergeMiddlewareHandlerGrants(granted, satisfiesPerHandler(middlewareHandlers), middlewareOuts)
-		if err := middleware.CheckScopes(secReqs, granted); err != nil {
+		if err := rest.CheckScopes(secReqs, granted); err != nil {
 			if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &err) {
 				return
 			}
@@ -878,7 +878,7 @@ func isSecuritySatisfyingHandler(handlers []rest.MiddlewareHandler, name string)
 	return false
 }
 
-func validateImplementationShapesReflect(routeLabel string, reqType reflect.Type, impls []middleware.ServerImplementation) error {
+func validateImplementationShapesReflect(routeLabel string, reqType reflect.Type, impls []rest.ServerImplementation) error {
 	generalType := reflect.TypeOf((func(http.Handler) http.Handler)(nil))
 	securityType := reflect.FuncOf(
 		[]reflect.Type{
@@ -900,7 +900,7 @@ func validateImplementationShapesReflect(routeLabel string, reqType reflect.Type
 		if fnType == generalType || fnType == securityType {
 			continue
 		}
-		return middleware.MiddlewareShapeError{
+		return rest.MiddlewareShapeError{
 			Name:     impl.Name,
 			Expected: "func(http.Handler) http.Handler or func(context.Context, *http.Request, *Req) (map[string][]string, error)",
 			Got:      fmt.Sprintf("%T", impl.Fn),

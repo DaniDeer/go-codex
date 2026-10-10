@@ -213,17 +213,17 @@ func sendRouterHandlerErrorReplyReflect(ctx context.Context, sock FramedSocket, 
 // consultation) — the paired Fn is the ONLY enforcement mechanism,
 // mirroring zeromq's OWN pub/sub security-shaped SubscribeMW/PublishMW
 // precedent (custom Fn only, no built-in check to run first).
-func effectiveSecurity(elem reflect.Value) []route.SecurityRequirement {
-	reqs, _ := elem.FieldByName("Security").Interface().([]route.SecurityRequirement)
+func effectiveSecurity(elem reflect.Value) []reqreply.SecurityRequirement {
+	reqs, _ := elem.FieldByName("Security").Interface().([]reqreply.SecurityRequirement)
 	if reqs == nil {
-		reqs, _ = elem.FieldByName("GlobalSecurity").Interface().([]route.SecurityRequirement)
+		reqs, _ = elem.FieldByName("GlobalSecurity").Interface().([]reqreply.SecurityRequirement)
 	}
 	return reqs
 }
 
 // buildPairedSecurityFnType returns the expected paired security/
 // credential Fn shape for a route whose decoded request type is reqType:
-// func(context.Context, *Req, []route.SecurityRequirement) error — used
+// func(context.Context, *Req, []reqreply.SecurityRequirement) error — used
 // for BOTH the server-side security Fn (HandleMW) and the client-side
 // credential-supplying Fn (ClientMW); the shapes are IDENTICAL (mirrors
 // zeromq pub/sub's security-shaped SubscribeMW/PublishMW Fn, which also
@@ -235,7 +235,7 @@ func buildPairedSecurityFnType(reqType reflect.Type) reflect.Type {
 		[]reflect.Type{
 			reflect.TypeOf((*context.Context)(nil)).Elem(),
 			reflect.PointerTo(reqType),
-			reflect.TypeOf([]route.SecurityRequirement(nil)),
+			reflect.TypeOf([]reqreply.SecurityRequirement(nil)),
 		},
 		[]reflect.Type{reflect.TypeOf((*error)(nil)).Elem()},
 		false,
@@ -261,11 +261,11 @@ func buildGeneralDecoratorFnType(reqType, respType reflect.Type) reflect.Type {
 }
 
 // validateServerImplementationShapes checks every attached
-// [middleware.ServerImplementation]'s Fn against the two shapes this
+// [reqreply.ServerImplementation]'s Fn against the two shapes this
 // package recognizes for THIS route's concrete Req/Resp types, EAGERLY
 // at Serve construction time (once per route, not per message) —
 // mirrors [adapters/mqtt5]'s identical eager-validation discipline.
-func validateServerImplementationShapes(routeLabel string, impls []middleware.ServerImplementation, securityFnType, generalDecoratorFnType reflect.Type) error {
+func validateServerImplementationShapes(routeLabel string, impls []reqreply.ServerImplementation, securityFnType, generalDecoratorFnType reflect.Type) error {
 	for _, impl := range impls {
 		if impl.Fn == nil {
 			continue
@@ -274,9 +274,9 @@ func validateServerImplementationShapes(routeLabel string, impls []middleware.Se
 		if fnType == securityFnType || fnType == generalDecoratorFnType {
 			continue
 		}
-		return middleware.MiddlewareShapeError{
+		return reqreply.MiddlewareShapeError{
 			Name:     impl.Name,
-			Expected: "func(context.Context, *Req, []route.SecurityRequirement) error or func(func(context.Context, Req) (Resp, error)) func(context.Context, Req) (Resp, error)",
+			Expected: "func(context.Context, *Req, []reqreply.SecurityRequirement) error or func(func(context.Context, Req) (Resp, error)) func(context.Context, Req) (Resp, error)",
 			Got:      fmt.Sprintf("%T", impl.Fn),
 		}
 	}
@@ -285,8 +285,8 @@ func validateServerImplementationShapes(routeLabel string, impls []middleware.Se
 
 // validateClientImplementationShapes is
 // [validateServerImplementationShapes]'s client-side mirror, for
-// [middleware.ClientImplementation] values.
-func validateClientImplementationShapes(impls []middleware.ClientImplementation, credentialFnType, generalDecoratorFnType reflect.Type) error {
+// [reqreply.ClientImplementation] values.
+func validateClientImplementationShapes(impls []reqreply.ClientImplementation, credentialFnType, generalDecoratorFnType reflect.Type) error {
 	for _, impl := range impls {
 		if impl.Fn == nil {
 			continue
@@ -295,9 +295,9 @@ func validateClientImplementationShapes(impls []middleware.ClientImplementation,
 		if fnType == credentialFnType || fnType == generalDecoratorFnType {
 			continue
 		}
-		return middleware.MiddlewareShapeError{
+		return reqreply.MiddlewareShapeError{
 			Name:     impl.Name,
-			Expected: "func(context.Context, *Req, []route.SecurityRequirement) error or func(func(context.Context, Req) (Resp, error)) func(context.Context, Req) (Resp, error)",
+			Expected: "func(context.Context, *Req, []reqreply.SecurityRequirement) error or func(func(context.Context, Req) (Resp, error)) func(context.Context, Req) (Resp, error)",
 			Got:      fmt.Sprintf("%T", impl.Fn),
 		}
 	}
@@ -313,7 +313,7 @@ func validateClientImplementationShapes(impls []middleware.ClientImplementation,
 // implementation (read/write access to *Req, matching pub/sub's
 // identical contract) — the caller re-reads reqPtr.Elem() afterward to
 // pick up any enrichment.
-func runPairedServerSecurity(ctx context.Context, reqPtr reflect.Value, impls []middleware.ServerImplementation, secReqs []route.SecurityRequirement) error {
+func runPairedServerSecurity(ctx context.Context, reqPtr reflect.Value, impls []reqreply.ServerImplementation, secReqs []reqreply.SecurityRequirement) error {
 	ctxVal := reflect.ValueOf(ctx)
 	secReqsVal := reflect.ValueOf(secReqs)
 	for _, impl := range impls {
@@ -330,9 +330,9 @@ func runPairedServerSecurity(ctx context.Context, reqPtr reflect.Value, impls []
 }
 
 // runPairedClientCredential is [runPairedServerSecurity]'s client-side
-// mirror, for [middleware.ClientImplementation] values — writes a
+// mirror, for [reqreply.ClientImplementation] values — writes a
 // credential field INTO reqPtr rather than merely reading it.
-func runPairedClientCredential(ctx context.Context, reqPtr reflect.Value, impls []middleware.ClientImplementation, secReqs []route.SecurityRequirement) error {
+func runPairedClientCredential(ctx context.Context, reqPtr reflect.Value, impls []reqreply.ClientImplementation, secReqs []reqreply.SecurityRequirement) error {
 	ctxVal := reflect.ValueOf(ctx)
 	secReqsVal := reflect.ValueOf(secReqs)
 	for _, impl := range impls {
@@ -356,7 +356,7 @@ func runPairedClientCredential(ctx context.Context, reqPtr reflect.Value, impls 
 // simpler dispatch: the decorator IS the same shape as fnVal itself, so
 // no reflect.MakeFunc bridging is needed server-side (unlike the client
 // side, which has no pre-existing single Fn value to wrap this way).
-func applyGeneralServerMiddleware(fnVal reflect.Value, impls []middleware.ServerImplementation) reflect.Value {
+func applyGeneralServerMiddleware(fnVal reflect.Value, impls []reqreply.ServerImplementation) reflect.Value {
 	for i := len(impls) - 1; i >= 0; i-- {
 		if len(impls[i].Satisfies) > 0 {
 			continue
@@ -560,7 +560,7 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 	respType := encodeField.Type().In(0)
 	securityFnType := buildPairedSecurityFnType(reqType)
 	generalDecoratorFnType := buildGeneralDecoratorFnType(reqType, respType)
-	impls, _ := elem.FieldByName("Implementations").Interface().([]middleware.ServerImplementation)
+	impls, _ := elem.FieldByName("Implementations").Interface().([]reqreply.ServerImplementation)
 	if err := validateServerImplementationShapes(path, impls, securityFnType, generalDecoratorFnType); err != nil {
 		return err
 	}
@@ -789,7 +789,7 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 		// success = request proceeds" semantics UNCHANGED (confirmed via
 		// a real test regression caught during implementation).
 		if len(secReqs) > 0 && scopesmerge.HasSatisfyingHandler(satisfies) {
-			if err := middleware.CheckScopes(secReqs, granted); err != nil {
+			if err := reqreply.CheckScopes(secReqs, granted); err != nil {
 				wrapped := reqreply.SecurityError{Err: err}
 				if secObs, ok := obs.(stats.SecurityObserver); ok {
 					secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
@@ -1058,7 +1058,7 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 	// let this reflection-only dispatcher recognize the general-purpose
 	// decorator shape without knowing Req/Resp at compile time.
 	respType := elem.FieldByName("DecodeResponse").Type().Out(0)
-	clientImpls, _ := elem.FieldByName("ClientImplementations").Interface().([]middleware.ClientImplementation)
+	clientImpls, _ := elem.FieldByName("ClientImplementations").Interface().([]reqreply.ClientImplementation)
 	credentialFnType := buildPairedSecurityFnType(reqType)
 	generalDecoratorFnType := buildGeneralDecoratorFnType(reqType, respType)
 	if err := validateClientImplementationShapes(clientImpls, credentialFnType, generalDecoratorFnType); err != nil {
@@ -1427,7 +1427,7 @@ func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny a
 	respType := encodeField.Type().In(0)
 	securityFnType := buildPairedSecurityFnType(reqType)
 	generalDecoratorFnType := buildGeneralDecoratorFnType(reqType, respType)
-	impls, _ := elem.FieldByName("Implementations").Interface().([]middleware.ServerImplementation)
+	impls, _ := elem.FieldByName("Implementations").Interface().([]reqreply.ServerImplementation)
 	if err := validateServerImplementationShapes(path, impls, securityFnType, generalDecoratorFnType); err != nil {
 		return err
 	}
@@ -1639,7 +1639,7 @@ func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny a
 			// GrantedScopes — gated on [scopesmerge.HasSatisfyingHandler]
 			// (same rationale as the non-ROUTER variant above).
 			if len(secReqs) > 0 && scopesmerge.HasSatisfyingHandler(satisfies) {
-				if err := middleware.CheckScopes(secReqs, granted); err != nil {
+				if err := reqreply.CheckScopes(secReqs, granted); err != nil {
 					wrapped := reqreply.SecurityError{Err: err}
 					if secObs, ok := obs.(stats.SecurityObserver); ok {
 						secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
@@ -1871,7 +1871,7 @@ func (t *dealerClientTransport) call(ctx context.Context, routeAny any, reqAny a
 	// variant (mirrors how Phase 0's capability-parity work was ALSO
 	// duplicated, not shared, across these same 4 transports).
 	respType := elem.FieldByName("DecodeResponse").Type().Out(0)
-	clientImpls, _ := elem.FieldByName("ClientImplementations").Interface().([]middleware.ClientImplementation)
+	clientImpls, _ := elem.FieldByName("ClientImplementations").Interface().([]reqreply.ClientImplementation)
 	credentialFnType := buildPairedSecurityFnType(reqType)
 	generalDecoratorFnType := buildGeneralDecoratorFnType(reqType, respType)
 	if err := validateClientImplementationShapes(clientImpls, credentialFnType, generalDecoratorFnType); err != nil {

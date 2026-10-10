@@ -7,8 +7,6 @@ import (
 
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/internal/middleware"
-	"github.com/DaniDeer/go-codex/internal/route"
 	asyncapi "github.com/DaniDeer/go-codex/render/asyncapi/v3"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -56,7 +54,7 @@ type specOptions struct {
 }
 
 type specMiddleware struct {
-	mw middleware.RouteMiddleware
+	mw RouteMiddleware
 	fn any
 }
 
@@ -69,7 +67,7 @@ func (o specMiddlewareOpt) applySpecOpt(so *specOptions) {
 // WithSpecMiddleware attaches a general-purpose (unpaired) middleware
 // implementation to the internal route [Server.ServeSpec] registers —
 // identical nilable-mw semantics as [Route.HandleMW].
-func WithSpecMiddleware(mw middleware.RouteMiddleware, fn any) SpecOpt {
+func WithSpecMiddleware(mw RouteMiddleware, fn any) SpecOpt {
 	return specMiddlewareOpt{mw: mw, fn: fn}
 }
 
@@ -135,7 +133,7 @@ func (b *Server) ServeSpec(topic string, opts ...SpecOpt) (*RouteHandle[SpecReq,
 			// every other route (nil Security would otherwise INHERIT
 			// that global requirement, like any other route — see
 			// [RouteMeta.Security]'s doc comment).
-			Security: []route.SecurityRequirement{},
+			Security: []SecurityRequirement{},
 		},
 	).WithHandler(func(_ context.Context, req SpecReq) ([]byte, error) {
 		// Pre-marshal BOTH formats once, inside the SAME once.Do, rather

@@ -5,12 +5,10 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
-
-	"github.com/DaniDeer/go-codex/internal/middleware"
 )
 
 // Middleware is a codec-backed, reqreply-specific middleware declaration —
-// the per-pattern counterpart to [middleware.Declaration], adding
+// the per-pattern counterpart to [Declaration], adding
 // reqreply's own topic-var AND property merge vocabularies. Unlike events
 // (whose Subscribe/Publish roles are asymmetric — only one of In/Out is
 // ever used per role), reqreply's SINGLE [Route] sees BOTH directions in
@@ -32,7 +30,7 @@ import (
 // attachment path anymore; passing one to HandleMW/ClientMW now returns
 // [MiddlewareMisattachedError].
 type Middleware[In, Out any] struct {
-	middleware.Declaration[In, Out]
+	Declaration[In, Out]
 
 	topicMergeFieldsIn     []MergedTopicParam[In]
 	topicMergeFieldsOut    []MergedTopicParam[Out]
@@ -45,7 +43,7 @@ type Middleware[In, Out any] struct {
 	// needs validating and rendering into the AsyncAPI spec, but has no
 	// corresponding struct field). Replaces the former, now-deleted
 	// adapters/mqtt5.FromUserPropertyParam, which built this same
-	// declaration from the legacy middleware.Middleware type's
+	// declaration from the legacy AttachedMiddleware type's
 	// RequestHeaderParams/ResponseHeaderParams fields (removed along with
 	// it). Part of the middleware-consolidation effort
 	// (docs/design/d-0003-codec-declared-middlewares.md) closing the one real gap
@@ -67,7 +65,7 @@ type Middleware[In, Out any] struct {
 	// registration — dispatched automatically by buildDecodeIn (right
 	// after decode+validate) and buildEncodeOut/buildEncodeIn (alongside
 	// the merge-field encode), publishing into the SAME
-	// [middleware.ContextField] box [middleware.EnsureContextFields]
+	// [ContextField] box [middleware.EnsureContextFields]
 	// pre-allocated (docs/design/d-0007-declarative-middleware-layering.md's
 	// Rollout Phase C, mirroring rest's identical Phase A mechanism —
 	// reqreply is fully symmetric with REST, unlike events' asymmetric
@@ -77,27 +75,27 @@ type Middleware[In, Out any] struct {
 	ctxFieldsFromOut []contextFieldOutSetter[Out]
 }
 
-// contextFieldInSetter pairs a [middleware.ContextFieldSetter] with the
+// contextFieldInSetter pairs a [ContextFieldSetter] with the
 // getter that extracts its raw value from this middleware's decoded In —
 // one entry per [Middleware.SetContextFieldFromIn] call.
 type contextFieldInSetter[In any] struct {
-	field middleware.ContextFieldSetter
+	field ContextFieldSetter
 	get   func(In) any
 }
 
 // contextFieldOutSetter is [contextFieldInSetter]'s Out-side mirror — one
 // entry per [Middleware.SetContextFieldFromOut] call.
 type contextFieldOutSetter[Out any] struct {
-	field middleware.ContextFieldSetter
+	field ContextFieldSetter
 	get   func(Out) any
 }
 
-// NewMiddleware builds a [Middleware] from a [middleware.Declaration] —
+// NewMiddleware builds a [Middleware] from a [Declaration] —
 // chain [Middleware.WithRequestTopic]/[Middleware.WithRequestProperty]/etc.
 // to populate its merge-field vocabulary, or
 // [Middleware.WithReceive]/[Middleware.WithSend] for the route-agnostic
 // attachment style.
-func NewMiddleware[In, Out any](decl middleware.Declaration[In, Out]) Middleware[In, Out] {
+func NewMiddleware[In, Out any](decl Declaration[In, Out]) Middleware[In, Out] {
 	return Middleware[In, Out]{Declaration: decl}
 }
 
@@ -141,7 +139,7 @@ func (m Middleware[In, Out]) WithResponseProperty(p MergedPropertyParam[Out]) Mi
 // side property declaration — p is validated and rendered into the
 // route's AsyncAPI spec, but has NO corresponding In struct field to
 // decode into. Use [Middleware.WithRequestProperty] instead when a merge
-// field is wanted. Mirrors legacy middleware.Middleware's
+// field is wanted. Mirrors legacy AttachedMiddleware's
 // RequestHeaderParams shape (see adapters/mqtt5.FromUserPropertyParam).
 func (m Middleware[In, Out]) WithRequestPropertySpec(p PropertyParam) Middleware[In, Out] {
 	m.propertySpecsIn = append(slices.Clone(m.propertySpecsIn), p)
@@ -149,7 +147,7 @@ func (m Middleware[In, Out]) WithRequestPropertySpec(p PropertyParam) Middleware
 }
 
 // WithResponsePropertySpec is [Middleware.WithRequestPropertySpec]'s
-// REPLY-side sibling — mirrors legacy middleware.Middleware's
+// REPLY-side sibling — mirrors legacy AttachedMiddleware's
 // ResponseHeaderParams shape (see
 // adapters/mqtt5.FromResponseUserPropertyParam).
 func (m Middleware[In, Out]) WithResponsePropertySpec(p PropertyParam) Middleware[In, Out] {
@@ -176,23 +174,23 @@ func (m Middleware[In, Out]) WithSend(fn func(ctx context.Context) (In, error)) 
 }
 
 // SetContextFieldFromIn registers field to be published (via
-// [middleware.ContextFieldSetter.Set]) from get(in)'s return value —
+// [ContextFieldSetter.Set]) from get(in)'s return value —
 // dispatched automatically right after this middleware's own In is
 // decoded+validated (DecodeIn), on EVERY attachment style (bound via
 // [Route.HandleBoundMW], or agnostic via [Middleware.WithReceive] + plain
 // .Use()). The handler (or any LATER-dispatched middleware, regardless of
-// shape) retrieves it fully-typed via [middleware.ContextField.Get].
+// shape) retrieves it fully-typed via [ContextField.Get].
 //
-// field takes [middleware.ContextFieldSetter], not a concrete
-// [middleware.ContextField][V] directly — V is NOT a type parameter this
+// field takes [ContextFieldSetter], not a concrete
+// [ContextField][V] directly — V is NOT a type parameter this
 // method can introduce (Go forbids new type params on a method beyond the
 // receiver's own); every ContextField[V] already satisfies
 // ContextFieldSetter regardless of V, since Set's own signature never
 // references V.
 //
-//	var TenantIDField = middleware.NewContextField(codex.String())
+//	var TenantIDField = NewContextField(codex.String())
 //	authMw = authMw.SetContextFieldFromIn(TenantIDField, func(in AuthIn) any { return in.TenantID })
-func (m Middleware[In, Out]) SetContextFieldFromIn(field middleware.ContextFieldSetter, get func(In) any) Middleware[In, Out] {
+func (m Middleware[In, Out]) SetContextFieldFromIn(field ContextFieldSetter, get func(In) any) Middleware[In, Out] {
 	m.ctxFieldsFromIn = append(slices.Clone(m.ctxFieldsFromIn), contextFieldInSetter[In]{field: field, get: get})
 	return m
 }
@@ -203,13 +201,13 @@ func (m Middleware[In, Out]) SetContextFieldFromIn(field middleware.ContextField
 // concretely available: right after Fn returns it (EncodeOut, the
 // server/receiving role) or right after it is decoded from the reply's
 // topic/property vars (DecodeOut, the client/sending role).
-func (m Middleware[In, Out]) SetContextFieldFromOut(field middleware.ContextFieldSetter, get func(Out) any) Middleware[In, Out] {
+func (m Middleware[In, Out]) SetContextFieldFromOut(field ContextFieldSetter, get func(Out) any) Middleware[In, Out] {
 	m.ctxFieldsFromOut = append(slices.Clone(m.ctxFieldsFromOut), contextFieldOutSetter[Out]{field: field, get: get})
 	return m
 }
 
 // RouteMiddlewareMarker makes Middleware[In,Out] satisfy
-// [middleware.RouteMiddleware] — EXPORTED (unlike [ports.Pattern]'s
+// [RouteMiddleware] — EXPORTED (unlike [ports.Pattern]'s
 // unexported-method sealing) because Go's unexported-method interface
 // satisfaction is scoped per package: a type declared in api/reqreply can
 // never satisfy an interface whose method is unexported in package
@@ -224,8 +222,8 @@ func (Middleware[In, Out]) RouteMiddlewareMarker() {}
 // (docs/design/d-0003-codec-declared-middlewares.md) folding Security into the
 // codec-backed family: [Route.HandleMW]/[Route.ClientMW] extract Security
 // via this method UNIFORMLY, regardless of whether the attached value is
-// this type or the legacy [middleware.Middleware].
-func (m Middleware[In, Out]) SecurityDeclaration() *middleware.SecurityDeclaration {
+// this type or the legacy [AttachedMiddleware].
+func (m Middleware[In, Out]) SecurityDeclaration() *SecurityDeclaration {
 	return m.Declaration.Security
 }
 

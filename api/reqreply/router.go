@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/DaniDeer/go-codex/internal/middleware"
 	"github.com/DaniDeer/go-codex/internal/router"
 )
 
@@ -31,9 +30,9 @@ type routable = router.Routable[*Server]
 // RouterEntry.MiddlewareNames — reqreply's own copy of [api/rest]'s
 // identical helper (not shared across packages — see [routable]'s doc
 // comment).
-func middlewareNameOf(mw middleware.RouteMiddleware) string {
+func middlewareNameOf(mw RouteMiddleware) string {
 	switch v := mw.(type) {
-	case middleware.Middleware:
+	case AttachedMiddleware:
 		return v.Name
 	default:
 		if named, ok := mw.(interface{ MiddlewareName() string }); ok {
@@ -66,7 +65,7 @@ func joinRouterTopic(prefix, topic string) string {
 
 // Router declares a topic PREFIX once and groups any number of
 // independently-declared [Route] values under it, optionally attaching
-// reusable-class [middleware.RouteMiddleware] to every leaf registered
+// reusable-class [RouteMiddleware] to every leaf registered
 // under it in one declaration — reqreply's own thin wrapper around the
 // shared [router.Router][*Server] core (not a type alias — see
 // docs/design/d-0009-internalize-shared-mechanics.md's Phase 1 Design Decision #2
@@ -107,7 +106,7 @@ func NewRouter(prefix string, opts ...RouterOpt) Router {
 // permanent middleware list — dispatched BEFORE every grouped leaf's own
 // middleware (Router-first, outer-to-inner ordering), and before any
 // nested [Router.Mount]/[Router.Group] child's own mws.
-func (rt Router) Use(mws ...middleware.RouteMiddleware) Router {
+func (rt Router) Use(mws ...RouteMiddleware) Router {
 	return Router{inner: rt.inner.Use(mws...)}
 }
 
@@ -131,7 +130,7 @@ func (rt Router) Tags(tags ...string) Router {
 // Route-SCOPED-ONLY restriction — With does NOT pair with [Router.Mount]/
 // [Router.Group]; a preceding .With(mw) is silently DROPPED at Mount time
 // rather than leaking onto a later, unrelated .Route() call.
-func (rt Router) With(mws ...middleware.RouteMiddleware) Router {
+func (rt Router) With(mws ...RouteMiddleware) Router {
 	return Router{inner: rt.inner.With(mws...)}
 }
 
@@ -371,7 +370,7 @@ func (o routerTagsOpt) applyRoute(rb *routeBuilder) {
 // Publisher's direct mws field). tags are APPENDED to the END of r's own
 // opts list instead — see [routerTagsOpt]'s doc comment for why tags
 // merge differently than mws.
-func (r Route[Req, Resp]) WithRouterPrefix(prefix string, mws []middleware.RouteMiddleware, tags []string) (routable, string) {
+func (r Route[Req, Resp]) WithRouterPrefix(prefix string, mws []RouteMiddleware, tags []string) (routable, string) {
 	r.topic = joinRouterTopic(prefix, r.topic)
 	if len(mws) > 0 {
 		r.opts = append([]RouteOpt{routeMiddlewareOpt{mws: mws}}, r.opts...)

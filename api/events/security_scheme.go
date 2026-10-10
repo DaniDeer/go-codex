@@ -77,3 +77,17 @@ func OpenIDConnectScheme(url string) SecurityScheme {
 func Require(scheme string, scopes ...string) SecurityRequirement {
 	return route.Require(scheme, scopes...)
 }
+
+// ConnectSecurityScheme is the bare spec-metadata-only scheme shape
+// [Client.AddConnectSecurityScheme] takes — see [internal/route.SecurityScheme]
+// for the full doc comment. Named "ConnectSecurityScheme", not the bare
+// "SecurityScheme", because [SecurityScheme] is already taken by this
+// package's own composite (which ALSO carries an optional runtime
+// [codex.Codec]) — AddConnectSecurityScheme declares connection-level
+// spec metadata only, with no channel-level credential-format validation
+// to carry, so the bare vocabulary type is the right shape here, not the
+// composite. Construct one directly (e.g.
+// `events.ConnectSecurityScheme{Type: events.SecuritySchemeHTTP, Scheme:
+// "basic"}`) or via [BasicScheme]/[BearerScheme]/etc.'s own
+// `.SecurityScheme` field (every [SecurityScheme] embeds one).
+type ConnectSecurityScheme = route.SecurityScheme

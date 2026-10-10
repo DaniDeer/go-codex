@@ -42,7 +42,7 @@ type Server struct {
 	// route's own WithSecurityScheme declaration (docs/roadmap/
 	// declarative-middleware-layering.md's Rollout Phase C — Phase 4,
 	// connection-level auth, mirrors events.Client's identical field).
-	connectSecuritySchemes map[string]route.SecurityScheme
+	connectSecuritySchemes map[string]ConnectSecurityScheme
 	// globalDeadLetter is the Server-level default [DeadLetter]
 	// declaration, set via [Server.AddGlobalDeadLetter]. nil when none is
 	// declared. Routes with no explicit DeadLetter opt inherit this.
@@ -141,7 +141,7 @@ func NewServer(info Info, opts ...ServerOption) *Server {
 		docBuilder:             asyncapi.NewDocumentBuilder(info),
 		topics:                 make(map[string]struct{}),
 		securitySchemes:        make(map[string]SecurityScheme),
-		connectSecuritySchemes: make(map[string]route.SecurityScheme),
+		connectSecuritySchemes: make(map[string]ConnectSecurityScheme),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -189,9 +189,9 @@ func (b *Builder) AddGlobalSecurity(reqs ...route.SecurityRequirement) *Builder 
 // — closing the spec/runtime link via one reused declared value, not a
 // new shared mechanism:
 //
-//	server.AddConnectSecurityScheme("brokerAuth", route.SecurityScheme{Type: route.SecuritySchemeHTTP, Scheme: "basic"})
+//	server.AddConnectSecurityScheme("brokerAuth", reqreply.ConnectSecurityScheme{Type: reqreply.SecuritySchemeHTTP, Scheme: "basic"})
 //	conn, router, err := mqtt5.Connect(ctx, "broker:8883", mqtt5.ConnectOptions{Username: user, Password: pass})
-func (b *Builder) AddConnectSecurityScheme(name string, scheme route.SecurityScheme) *Builder {
+func (b *Builder) AddConnectSecurityScheme(name string, scheme ConnectSecurityScheme) *Builder {
 	b.connectSecuritySchemes[name] = scheme
 	return b
 }

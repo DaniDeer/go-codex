@@ -1,6 +1,56 @@
-# go-codex Review History (R1–R197, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
+# go-codex Review History (R1–R198, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 198 (internal-package-alias usage extended from tests to PRODUCTION code, across api/events/api/reqreply/api/rest AND all 5 adapters — raised directly by the user as a follow-up to Round 197's test rework)
+
+User asked whether the "use the public per-pattern alias, not `internal/*` directly" principle,
+just applied to TEST files (Round 197 and the preceding `internal/route` test rework), also
+applies to the actual PRODUCTION code implementing `api/events`/`api/reqreply`/`api/rest` and the
+adapters consuming them. A critical, evidence-based review (not an assumption) confirmed: YES,
+with a tiered justification.
+
+- **Confirmed via `go doc` — a REAL exported-field/signature godoc leak, not just style**:
+  `ChannelHandle.Implementations []middleware.ServerImplementation`,
+  `ClientImplementations []middleware.ClientImplementation`, `GlobalSecurity
+  []route.SecurityRequirement` (all 3 packages), `reqreply.RouteHandle.RequestHeaderParams
+  []middleware.HeaderParamSpec`/`ResponseHeaderParams []middleware.ResponseHeaderParamSpec`
+  (previously wrongly classified as "internal-only" in Round 197 — being exposed via an exported
+  field makes them part of the public surface regardless), and
+  `events.Client.AddConnectSecurityScheme`'s own PARAMETER TYPE `scheme route.SecurityScheme` (its
+  documented usage EXAMPLE literally showed `route.SecurityScheme{...}` construction, which
+  cannot compile for a real external caller) all rendered the unimportable internal package name
+  directly in generated godoc. Fixed all of these with same-named aliases.
+- **2 cases needed a NEW type name** (the obvious same-named alias collides with an existing
+  public type): `rest.RouteHandle.Descriptor route.Route` → new `rest.RouteDescriptor` (collides
+  with the fluent builder `rest.Route[Req,Resp]`); `rest.RouteHandle.Middlewares
+  []middleware.Middleware` → new `rest.AttachedMiddleware` (collides with the generic composite
+  `rest.Middleware[In,Out]`), added to `events`/`reqreply` too for cross-pattern consistency; and
+  `events.Client.AddConnectSecurityScheme`/`reqreply.Builder.AddConnectSecurityScheme`'s parameter
+  type → new `events.ConnectSecurityScheme`/`reqreply.ConnectSecurityScheme` (collides with each
+  package's own composite `SecurityScheme`, which carries an extra Codec field this bare
+  spec-only parameter doesn't need).
+- **Production call-site funneling**: calls to `middleware.NewDeclaration`/`CheckScopes`/
+  `NewSecurityDeclaration`/`NewContextField` within unexported production code, where the SAME
+  package already has a public wrapper FUNCTION performing the IDENTICAL 1:1 forward, were
+  switched to call the package's own wrapper — consolidates all internal dispatch onto one code
+  path (protects against future silent divergence if the wrapper ever gains real logic).
+- **Full consistency sweep**: bare type references in unexported contexts (local vars, unexported
+  struct fields, parameter types) across 25 `api/*` production files and 22 adapter production
+  files (chi/nethttp/mqtt5/mqtt/zeromq) switched to the local/domain-qualified alias wherever one
+  exists.
+- **Left correctly untouched** (same internal-only judgment call as Round 197, re-confirmed file
+  by file): `EnsureContextFields`, `route.FirstSchemeName`/`Satisfied`, `route.CodecSchemaMismatch`,
+  the raw `middleware.SecurityScheme(...)` legacy constructor, `DecodeLayer`/`EncodeLayer`/`Axis`,
+  the `Bound*` dispatch-plumbing family (`BoundRouteBuilder`/`BoundContributor`/
+  `BoundClientContributor`/`BoundNamed`/`BoundNameOf`), `SecurityCarrier` — none have (or should
+  get) a public alias; genuine dispatch-internal plumbing no user ever touches.
+- Full repo verification clean: gofmt, `go build ./...`, `go vet ./...`, `go test ./...` (58/58
+  packages passing, fresh cache), `just check` (staticcheck/gosec clean), full `examples/*/` build
+  sweep (one transient disk-space exhaustion mid-sweep, resolved via `go clean -cache`,
+  re-confirmed 0 failures on retry — unrelated to the code changes).
 
 ---
 

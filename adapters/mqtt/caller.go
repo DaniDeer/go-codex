@@ -156,7 +156,7 @@ func subscribeHandle[T any](
 }
 
 // runSubscribeSecurityImpls runs every attached
-// [middleware.ServerImplementation] whose Fn matches the security shape
+// [events.ServerImplementation] whose Fn matches the security shape
 // (func(context.Context, pahomqtt.Message, *T) (map[string][]string, error))
 // IN ATTACHMENT ORDER (fail-fast on the first one whose OWN extraction
 // errors), merges their returned grants into ONE map — the mqtt v3 mirror
@@ -166,12 +166,12 @@ func subscribeHandle[T any](
 // silently skipped here (consumed instead by [wrapSubscribeGeneral]).
 //
 // docs/design/d-0007-declarative-middleware-layering.md's "Prerequisite for
-// Phase 2 (api/events)": this NO LONGER calls [middleware.CheckScopes]
+// Phase 2 (api/events)": this NO LONGER calls [events.CheckScopes]
 // itself (previously did, in isolation) — the caller now merges THIS
 // map with any bound [events.MiddlewareHandler]'s own `GrantedScopes`
 // (via [scopesmerge.MergeHandlerGrants]) before a SINGLE, UNIFIED
 // CheckScopes call covering BOTH mechanisms.
-func runSubscribeSecurityImpls[T any](ctx context.Context, msg pahomqtt.Message, value *T, secReqs []route.SecurityRequirement, impls []middleware.ServerImplementation) (map[string][]string, error) {
+func runSubscribeSecurityImpls[T any](ctx context.Context, msg pahomqtt.Message, value *T, secReqs []events.SecurityRequirement, impls []events.ServerImplementation) (map[string][]string, error) {
 	granted := make(map[string][]string)
 	for _, impl := range impls {
 		fn, ok := impl.Fn.(func(context.Context, pahomqtt.Message, *T) (map[string][]string, error))
@@ -196,7 +196,7 @@ func runSubscribeSecurityImpls[T any](ctx context.Context, msg pahomqtt.Message,
 // impls (shape func(next func(context.Context, T) error) func(context.Context,
 // T) error), OUTERMOST-in, in attachment order (impls[0] is outermost —
 // the first .SubscribeMW call wraps everything else).
-func wrapSubscribeGeneral[T any](fn func(context.Context, T) error, impls []middleware.ServerImplementation) func(context.Context, T) error {
+func wrapSubscribeGeneral[T any](fn func(context.Context, T) error, impls []events.ServerImplementation) func(context.Context, T) error {
 	for i := len(impls) - 1; i >= 0; i-- {
 		wrap, ok := impls[i].Fn.(func(func(context.Context, T) error) func(context.Context, T) error)
 		if !ok {
@@ -217,7 +217,7 @@ func wrapSubscribeGeneral[T any](fn func(context.Context, T) error, impls []midd
 // adapters/nethttp's validateImplementationShapesReflect (via a plain type
 // switch here since T is concrete at this generic call site — no reflect
 // needed).
-func validateSubscribeImplementationShapes[T any](impls []middleware.ServerImplementation) error {
+func validateSubscribeImplementationShapes[T any](impls []events.ServerImplementation) error {
 	for _, impl := range impls {
 		if impl.Fn == nil {
 			continue
@@ -226,7 +226,7 @@ func validateSubscribeImplementationShapes[T any](impls []middleware.ServerImple
 		case func(context.Context, pahomqtt.Message, *T) (map[string][]string, error):
 		case func(func(context.Context, T) error) func(context.Context, T) error:
 		default:
-			return middleware.MiddlewareShapeError{
+			return events.MiddlewareShapeError{
 				Name:     impl.Name,
 				Expected: "func(context.Context, pahomqtt.Message, *T) (map[string][]string, error) or func(func(context.Context, T) error) func(context.Context, T) error",
 				Got:      fmt.Sprintf("%T", impl.Fn),
@@ -418,8 +418,8 @@ func subscribeEntryReflect(ctx context.Context, client pahomqtt.Client, entry ev
 
 	topic := elem.FieldByName("Topic").String()
 	descriptor, _ := elem.FieldByName("Descriptor").Interface().(asyncapi.ChannelItem)
-	globalSecurity, _ := elem.FieldByName("GlobalSecurity").Interface().([]route.SecurityRequirement)
-	impls, _ := elem.FieldByName("Implementations").Interface().([]middleware.ServerImplementation)
+	globalSecurity, _ := elem.FieldByName("GlobalSecurity").Interface().([]events.SecurityRequirement)
+	impls, _ := elem.FieldByName("Implementations").Interface().([]events.ServerImplementation)
 	// middlewareHandlers/dispatchSubscribeMiddleware — CORRECTED: this
 	// ServeSubscribers dispatch previously never ran bound codec-backed
 	// MiddlewareHandler dispatch at all (Security or general-purpose),
@@ -469,7 +469,7 @@ func subscribeEntryReflect(ctx context.Context, client pahomqtt.Client, entry ev
 		return err
 	}
 
-	var secReqs []route.SecurityRequirement
+	var secReqs []events.SecurityRequirement
 	if descriptor.Subscribe != nil {
 		secReqs = descriptor.Subscribe.Security
 	}
@@ -609,7 +609,7 @@ func subscribeEntryReflect(ctx context.Context, client pahomqtt.Client, entry ev
 		}
 
 		if len(secReqs) > 0 {
-			if err := middleware.CheckScopes(secReqs, granted); err != nil {
+			if err := events.CheckScopes(secReqs, granted); err != nil {
 				if secObs, ok := obs.(stats.SecurityObserver); ok {
 					secObs.RecordSecurityRejection(msg.Topic(), route.FirstSchemeName(secReqs))
 				}
@@ -641,7 +641,7 @@ func subscribeEntryReflect(ctx context.Context, client pahomqtt.Client, entry ev
 // runSubscribeSecurityImplsReflect is [runSubscribeSecurityImpls]'s
 // reflect-based equivalent — valuePtr is an addressable *T reflect.Value
 // (T erased). Returns the merged grants map — it NO LONGER calls
-// [middleware.CheckScopes] itself (previously did, in isolation).
+// [events.CheckScopes] itself (previously did, in isolation).
 // Callers (both `transport.go`'s ports.Pattern Subscribe AND
 // `caller.go`'s own [subscribeEntryReflect]) merge this return with any
 // bound MiddlewareHandler's own `GrantedScopes` (via
@@ -649,7 +649,7 @@ func subscribeEntryReflect(ctx context.Context, client pahomqtt.Client, entry ev
 // call — mirrors mqtt5's identical, belated fix (docs/design/
 // d-0007-declarative-middleware-layering.md's "Prerequisite for Phase 2
 // (api/events)").
-func runSubscribeSecurityImplsReflect(ctx context.Context, msg pahomqtt.Message, valuePtr reflect.Value, secReqs []route.SecurityRequirement, impls []middleware.ServerImplementation) (map[string][]string, error) {
+func runSubscribeSecurityImplsReflect(ctx context.Context, msg pahomqtt.Message, valuePtr reflect.Value, secReqs []events.SecurityRequirement, impls []events.ServerImplementation) (map[string][]string, error) {
 	granted := make(map[string][]string)
 	expectedType := reflect.FuncOf(
 		[]reflect.Type{
@@ -688,7 +688,7 @@ func runSubscribeSecurityImplsReflect(ctx context.Context, msg pahomqtt.Message,
 // mirroring adapters/nethttp's validateImplementationShapesReflect exactly
 // — valueType is the channel's payload type T, recovered at runtime via
 // reflect (see [subscribeEntryReflect]).
-func validateSubscribeImplementationShapesReflect(topic string, valueType reflect.Type, impls []middleware.ServerImplementation) error {
+func validateSubscribeImplementationShapesReflect(topic string, valueType reflect.Type, impls []events.ServerImplementation) error {
 	generalType := reflect.FuncOf([]reflect.Type{
 		reflect.FuncOf([]reflect.Type{
 			reflect.TypeOf((*context.Context)(nil)).Elem(), valueType,
@@ -718,7 +718,7 @@ func validateSubscribeImplementationShapesReflect(topic string, valueType reflec
 		if fnType == generalType || fnType == securityType {
 			continue
 		}
-		return middleware.MiddlewareShapeError{
+		return events.MiddlewareShapeError{
 			Name:     impl.Name,
 			Expected: "func(context.Context, pahomqtt.Message, *T) (map[string][]string, error) or func(func(context.Context, T) error) func(context.Context, T) error",
 			Got:      fmt.Sprintf("%T", impl.Fn),

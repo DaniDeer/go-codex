@@ -233,7 +233,7 @@ type erasedSubscriberHandle struct {
 	descriptor      asyncapi.ChannelItem
 	securitySchemes map[string]events.SecurityScheme
 	globalSecurity  []route.SecurityRequirement
-	implementations []middleware.ServerImplementation
+	implementations []events.ServerImplementation
 	handlerOptsAny  any
 	decodeFn        reflect.Value
 	handlerFn       reflect.Value
@@ -286,7 +286,7 @@ func extractErasedSubscriberHandle(handleAny any) (erasedSubscriberHandle, error
 	descriptor, _ := elem.FieldByName("Descriptor").Interface().(asyncapi.ChannelItem)
 	securitySchemes, _ := elem.FieldByName("SecuritySchemes").Interface().(map[string]events.SecurityScheme)
 	globalSecurity, _ := elem.FieldByName("GlobalSecurity").Interface().([]route.SecurityRequirement)
-	implementations, _ := elem.FieldByName("Implementations").Interface().([]middleware.ServerImplementation)
+	implementations, _ := elem.FieldByName("Implementations").Interface().([]events.ServerImplementation)
 	requirements, _ := elem.FieldByName("Requirements").Interface().([]events.CapabilityRequirement)
 	middlewareHandlers, _ := elem.FieldByName("MiddlewareHandlers").Interface().([]events.MiddlewareHandler)
 	return erasedSubscriberHandle{
@@ -343,7 +343,7 @@ func generalWrapFnType(msgType reflect.Type) reflect.Type {
 // validateSubscribeImplementationShapesReflect is
 // [validateSubscribeImplementationShapes]'s reflect-based equivalent, used
 // by [(*caller).ServeSubscribers] where T is erased.
-func validateSubscribeImplementationShapesReflect(msgType reflect.Type, impls []middleware.ServerImplementation) error {
+func validateSubscribeImplementationShapesReflect(msgType reflect.Type, impls []events.ServerImplementation) error {
 	secT := subscribeSecurityFnType(msgType)
 	genT := generalWrapFnType(msgType)
 	for _, impl := range impls {
@@ -354,7 +354,7 @@ func validateSubscribeImplementationShapesReflect(msgType reflect.Type, impls []
 		if fnType == secT || fnType == genT {
 			continue
 		}
-		return middleware.MiddlewareShapeError{
+		return events.MiddlewareShapeError{
 			Name:     impl.Name,
 			Expected: "func(context.Context, *pahomqtt5.Publish, *T) (map[string][]string, error) or func(func(context.Context, T) error) func(context.Context, T) error",
 			Got:      fmt.Sprintf("%T", impl.Fn),
@@ -368,7 +368,7 @@ func validateSubscribeImplementationShapesReflect(msgType reflect.Type, impls []
 // erased).
 // runSubscribeSecurityImplsReflect runs every attached security-shaped
 // legacy Implementations Fn and returns the merged grants map — it NO
-// LONGER calls [middleware.CheckScopes] itself (previously did, in
+// LONGER calls [events.CheckScopes] itself (previously did, in
 // isolation). Callers (both `transport.go`'s ports.Pattern Subscribe AND
 // `caller.go`'s own [makeErasedSubscribeMessageHandler]) merge this
 // return with any bound MiddlewareHandler's own `GrantedScopes` (via
@@ -376,7 +376,7 @@ func validateSubscribeImplementationShapesReflect(msgType reflect.Type, impls []
 // call — mirrors `adapter.go`'s already-fixed `runSubscribeSecurityImpls`
 // exactly (docs/design/d-0007-declarative-middleware-layering.md's
 // "Prerequisite for Phase 2 (api/events)", belatedly also applied here).
-func runSubscribeSecurityImplsReflect(ctx context.Context, msg *pahomqtt5.Publish, msgPtr reflect.Value, secReqs []route.SecurityRequirement, impls []middleware.ServerImplementation) (map[string][]string, error) {
+func runSubscribeSecurityImplsReflect(ctx context.Context, msg *pahomqtt5.Publish, msgPtr reflect.Value, secReqs []route.SecurityRequirement, impls []events.ServerImplementation) (map[string][]string, error) {
 	granted := make(map[string][]string)
 	for _, impl := range impls {
 		fnVal := reflect.ValueOf(impl.Fn)
@@ -401,7 +401,7 @@ func runSubscribeSecurityImplsReflect(ctx context.Context, msg *pahomqtt5.Publis
 // wrapHandlerGeneralReflect is [wrapSubscribeGeneral]'s reflect-based
 // equivalent — handlerVal is a func(context.Context, T) error reflect.Value
 // (T erased).
-func wrapHandlerGeneralReflect(handlerVal reflect.Value, impls []middleware.ServerImplementation) reflect.Value {
+func wrapHandlerGeneralReflect(handlerVal reflect.Value, impls []events.ServerImplementation) reflect.Value {
 	h := handlerVal
 	for i := len(impls) - 1; i >= 0; i-- {
 		fnVal := reflect.ValueOf(impls[i].Fn)
@@ -547,7 +547,7 @@ func makeErasedSubscribeMessageHandler(ctx context.Context, client MQTTClient, i
 		}
 
 		if len(secReqs) > 0 {
-			if err := middleware.CheckScopes(secReqs, granted); err != nil {
+			if err := events.CheckScopes(secReqs, granted); err != nil {
 				if secObs, ok := obs.(stats.SecurityObserver); ok {
 					secObs.RecordSecurityRejection(msg.Topic, route.FirstSchemeName(secReqs))
 				}

@@ -14,13 +14,12 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/internal/middleware"
 	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/stats"
 )
 
 // CredentialFunc names the credential-providing shape [call]
-// recognize on an attached [middleware.ClientImplementation.Fn] — a type ALIAS
+// recognize on an attached [rest.ClientImplementation.Fn] — a type ALIAS
 // (not a new defined type). Lets callers (and [NewCachingCredentialFunc])
 // name the shape instead of repeating the inline function type everywhere;
 // attach it to a route via [rest.Route.ClientMW] — examples/go-edge-models/
@@ -45,7 +44,7 @@ type CallOptions struct {
 	// before the request is sent.
 	//
 	// Do not pass the Authorization header here — use [CallOptions.ExtraHeaders] or
-	// a credential-providing [middleware.ClientImplementation] for security credentials.
+	// a credential-providing [rest.ClientImplementation] for security credentials.
 	HeaderParams map[string]string
 
 	// ExtraHeaders adds arbitrary HTTP headers to the outgoing request without
@@ -54,7 +53,7 @@ type CallOptions struct {
 	ExtraHeaders http.Header
 
 	// OnCredentialRejected, when non-nil, is called when the server responds
-	// with HTTP 401 AND at least one credential-providing [middleware.ClientImplementation]
+	// with HTTP 401 AND at least one credential-providing [rest.ClientImplementation]
 	// was attached to this call (mirrors the "only if the credential mechanism
 	// actually engaged" gating used for the symmetric client-side format check
 	// below). Purely a notification hook — call does NOT retry the request
@@ -357,7 +356,7 @@ func (e ConflictingCredentialHeaderError) LogValue() slog.Value {
 // ONE concrete shape [consumeSSE] recognizes ([CredentialFunc]'s shape),
 // EAGERLY before any network activity rather than letting
 // [mergeCredentialHeaders] silently skip a malformed Fn — a
-// [middleware.ClientImplementation] built for the wrong adapter (e.g. a Fn
+// [rest.ClientImplementation] built for the wrong adapter (e.g. a Fn
 // shape meant for a different transport, passed here by mistake) fails
 // loudly and immediately instead.
 //
@@ -369,7 +368,7 @@ func (e ConflictingCredentialHeaderError) LogValue() slog.Value {
 // function would let a general-purpose Fn silently pass validation on an
 // SSE route while never actually being invoked anywhere. See
 // docs/design/d-0001-rest-middleware-workflow-simplification.md's scope table.
-func validateClientImplementationShapes(impls []middleware.ClientImplementation) error {
+func validateClientImplementationShapes(impls []rest.ClientImplementation) error {
 	for _, impl := range impls {
 		switch impl.Fn.(type) {
 		case nil:
@@ -377,7 +376,7 @@ func validateClientImplementationShapes(impls []middleware.ClientImplementation)
 		case func(context.Context, []route.SecurityRequirement) (http.Header, error):
 			continue
 		default:
-			return middleware.MiddlewareShapeError{
+			return rest.MiddlewareShapeError{
 				Name:     impl.Name,
 				Expected: "func(context.Context, []route.SecurityRequirement) (http.Header, error)",
 				Got:      fmt.Sprintf("%T", impl.Fn),
@@ -397,7 +396,7 @@ func validateClientImplementationShapes(impls []middleware.ClientImplementation)
 // extended with the second, general-purpose shape (unlike SSE's
 // [validateClientImplementationShapes], which recognizes only the
 // credential shape — see that function's own doc comment for why).
-func validateCallImplementationShapes[Req, Resp any](impls []middleware.ClientImplementation) error {
+func validateCallImplementationShapes[Req, Resp any](impls []rest.ClientImplementation) error {
 	for _, impl := range impls {
 		switch impl.Fn.(type) {
 		case nil:
@@ -407,7 +406,7 @@ func validateCallImplementationShapes[Req, Resp any](impls []middleware.ClientIm
 		case func(func(context.Context, Req) (Resp, error)) func(context.Context, Req) (Resp, error):
 			continue
 		default:
-			return middleware.MiddlewareShapeError{
+			return rest.MiddlewareShapeError{
 				Name:     impl.Name,
 				Expected: "func(context.Context, []route.SecurityRequirement) (http.Header, error) or func(next func(context.Context, Req) (Resp, error)) func(context.Context, Req) (Resp, error)",
 				Got:      fmt.Sprintf("%T", impl.Fn),
@@ -427,7 +426,7 @@ func validateCallImplementationShapes[Req, Resp any](impls []middleware.ClientIm
 // [callWithVars]).
 func wrapCallGeneral[Req, Resp any](
 	fn func(context.Context, Req) (Resp, error),
-	impls []middleware.ClientImplementation,
+	impls []rest.ClientImplementation,
 ) func(context.Context, Req) (Resp, error) {
 	for i := len(impls) - 1; i >= 0; i-- {
 		wrap, ok := impls[i].Fn.(func(func(context.Context, Req) (Resp, error)) func(context.Context, Req) (Resp, error))
@@ -482,17 +481,17 @@ func wrapCallGeneral[Req, Resp any](
 // via [TestAttach_ClientCall_CodecBackedClientMW_EncodesInAndDecodesOut].
 //
 // ADDENDUM (review round) — this function's SECURITY-PAIRING use (a
-// Satisfies-populated [middleware.ClientImplementation]) is now
+// Satisfies-populated [rest.ClientImplementation]) is now
 // UNREACHABLE for routes attached via [rest.Route.ClientMW]: ClientMW's
 // legacy Security-pairing path has since been retired entirely
 // (docs/design/d-0009-internalize-shared-mechanics.md), so every
-// [middleware.ClientImplementation] it produces has an empty Satisfies
+// [rest.ClientImplementation] it produces has an empty Satisfies
 // from now on. This function keeps the Satisfies-gating logic unchanged
 // (it is generic, not REST-specific, and remains structurally correct —
 // simply never exercised by the Satisfies-non-empty branch for REST
 // anymore) because it ALSO still serves genuinely general-purpose use of
 // this exact legacy Fn shape, independent of any security pairing.
-func mergeCredentialHeaders(ctx context.Context, secReqs []route.SecurityRequirement, impls []middleware.ClientImplementation) (combined http.Header, ran bool, err error) {
+func mergeCredentialHeaders(ctx context.Context, secReqs []route.SecurityRequirement, impls []rest.ClientImplementation) (combined http.Header, ran bool, err error) {
 	combined = make(http.Header)
 	setBy := make(map[string]string)
 	reqSchemes := make(map[string]bool, len(secReqs))
@@ -568,7 +567,7 @@ func equalHeaderValues(a, b []string) bool {
 //
 // Security requirements: if the route declares non-nil Security (or
 // inherits global security), every attached credential-providing
-// [middleware.ClientImplementation] (declared via [rest.Route.ClientMW],
+// [rest.ClientImplementation] (declared via [rest.Route.ClientMW],
 // GATED by Satisfies vs the route's declared security requirements) is
 // called to obtain the Authorization headers. No credential-providing
 // implementation attached to a secured route is not an error — the
@@ -659,7 +658,7 @@ func callWithVars[Req, Resp any](
 	// this package recognizes client-side, EAGERLY before any network
 	// activity; a malformed Fn fails loudly here instead of being
 	// silently ignored by mergeCredentialHeaders below (see
-	// middleware.ClientImplementation.Fn's own doc comment: "fails
+	// rest.ClientImplementation.Fn's own doc comment: "fails
 	// LOUDLY... never silently").
 	allImpls := handle.ClientImplementations
 	if err := validateCallImplementationShapes[Req, Resp](allImpls); err != nil {

@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/DaniDeer/go-codex/internal/middleware"
 	"github.com/DaniDeer/go-codex/internal/router"
 )
 
@@ -46,7 +45,7 @@ func joinRouterTopic(prefix, topic string) string {
 
 // Router declares a topic PREFIX once and groups any number of
 // independently-declared [Subscriber]/[Publisher] values under it,
-// optionally attaching reusable-class [middleware.RouteMiddleware] to
+// optionally attaching reusable-class [RouteMiddleware] to
 // every leaf registered under it in one declaration — events' own thin
 // wrapper around the shared [router.Router][*Client] core (not a type
 // alias — see docs/design/d-0009-internalize-shared-mechanics.md's Phase 1 Design
@@ -82,7 +81,7 @@ func NewRouter(prefix string, opts ...RouterOpt) Router {
 // permanent middleware list — dispatched BEFORE every grouped leaf's own
 // middleware (Router-first, outer-to-inner ordering), and before any
 // nested [Router.Mount]/[Router.Group] child's own mws.
-func (rt Router) Use(mws ...middleware.RouteMiddleware) Router {
+func (rt Router) Use(mws ...RouteMiddleware) Router {
 	return Router{inner: rt.inner.Use(mws...)}
 }
 
@@ -111,7 +110,7 @@ func (rt Router) Tags(tags ...string) Router {
 // Route-SCOPED-ONLY restriction — With does NOT pair with [Router.Mount]/
 // [Router.Group]; a preceding .With(mw) is silently DROPPED at Mount time
 // rather than leaking onto a later, unrelated .Route() call.
-func (rt Router) With(mws ...middleware.RouteMiddleware) Router {
+func (rt Router) With(mws ...RouteMiddleware) Router {
 	return Router{inner: rt.inner.With(mws...)}
 }
 
@@ -298,7 +297,7 @@ func (o channelTagsOpt) applyChannel(cb *channelBuilder) {
 // s.channel.opts (a distinct mutation point from mws/middlewareHandlers
 // above — see [channelTagsOpt]'s doc comment for why tags merge
 // differently than mws).
-func (s Subscriber[T]) WithRouterPrefix(prefix string, mws []middleware.RouteMiddleware, tags []string) (routable, string) {
+func (s Subscriber[T]) WithRouterPrefix(prefix string, mws []RouteMiddleware, tags []string) (routable, string) {
 	s.channel.topic = joinRouterTopic(prefix, s.channel.topic)
 	if len(mws) > 0 {
 		var pre Subscriber[T]
@@ -371,7 +370,7 @@ func (s Subscriber[T]) RegisterAny(c *Client) error {
 // WithRouterPrefix implements [router.Routable] for [Publisher]. See
 // [Subscriber.WithRouterPrefix]'s doc comment for the shared
 // prepend-via-fresh-value rationale (mws) and tags-merge rationale.
-func (p Publisher[T]) WithRouterPrefix(prefix string, mws []middleware.RouteMiddleware, tags []string) (routable, string) {
+func (p Publisher[T]) WithRouterPrefix(prefix string, mws []RouteMiddleware, tags []string) (routable, string) {
 	p.channel.topic = joinRouterTopic(prefix, p.channel.topic)
 	if len(mws) > 0 {
 		var pre Publisher[T]

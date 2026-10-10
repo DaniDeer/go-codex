@@ -107,7 +107,7 @@ func ResponseCookiesFromContext(ctx context.Context) ([]PendingCookie, bool) {
 //
 // BREAKING: Observer and SecurityFunc are REMOVED — replaced by
 // [middleware.Middleware] (declare-time, attached via [rest.WithMiddleware]/
-// [rest.Route.Use]) paired with a [middleware.ServerImplementation]
+// [rest.Route.Use]) paired with a [rest.ServerImplementation]
 // (register-time, attached via [rest.Route.HandleMW]). See
 // [Observability] for the observer replacement.
 type Options struct {
@@ -138,7 +138,7 @@ type Options struct {
 // applyGeneralMiddleware wraps h with every general-purpose Fn found in
 // impls, OUTERMOST-in, in attachment order (impls[0] is outermost — the
 // first attached implementation runs first and returns last).
-func applyGeneralMiddleware(h http.Handler, impls []middleware.ServerImplementation) http.Handler {
+func applyGeneralMiddleware(h http.Handler, impls []rest.ServerImplementation) http.Handler {
 	for i := len(impls) - 1; i >= 0; i-- {
 		fn, ok := impls[i].Fn.(func(http.Handler) http.Handler)
 		if !ok {
@@ -164,7 +164,7 @@ func applyGeneralMiddleware(h http.Handler, impls []middleware.ServerImplementat
 //
 // Pass a zero-value [Options]{} for default behaviour (JSON error envelope, 1 MiB
 // body limit, application/json Content-Type check, no-op observer).
-func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[Req, Resp], opts Options, impls ...middleware.ServerImplementation) http.Handler {
+func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[Req, Resp], opts Options, impls ...rest.ServerImplementation) http.Handler {
 	errFn := opts.ErrorHandler
 	if errFn == nil {
 		errFn = defaultErrorHandler
@@ -361,7 +361,7 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 		// legacy security Fns' grants (CollectGrantsReflect, no CheckScopes
 		// yet) -> every codec-backed MiddlewareHandler (DispatchMiddlewareHandlers,
 		// which ALSO runs any Security-shaped middleware's Fn) -> merge
-		// GrantedScopes from both sources -> ONE middleware.CheckScopes call.
+		// GrantedScopes from both sources -> ONE rest.CheckScopes call.
 		reqPtr := reflect.ValueOf(&req)
 		granted, grantErr := httpsecurity.CollectGrantsReflect(ctx, r, reqPtr, impls, secReqs)
 		if grantErr != nil {
@@ -411,7 +411,7 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 			return
 		}
 		httpsecurity.MergeMiddlewareHandlerGrants(granted, satisfiesPerHandler(handle.MiddlewareHandlers), middlewareOuts)
-		if err := middleware.CheckScopes(secReqs, granted); err != nil {
+		if err := rest.CheckScopes(secReqs, granted); err != nil {
 			if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &err) {
 				return
 			}
@@ -663,7 +663,7 @@ type SSEHandlerFunc[Req, Event any] func(ctx context.Context, req Req, send func
 // validation, send returns an error without writing anything.
 //
 // fn should honour ctx.Done() for clean client-disconnect handling.
-func sseHandlerFunc[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn SSEHandlerFunc[Req, Event], opts Options, impls ...middleware.ServerImplementation) http.Handler {
+func sseHandlerFunc[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn SSEHandlerFunc[Req, Event], opts Options, impls ...rest.ServerImplementation) http.Handler {
 	if opts.ErrorHandler == nil {
 		opts.ErrorHandler = defaultErrorHandler
 	}
@@ -769,7 +769,7 @@ func sseHandlerFunc[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn 
 			return
 		}
 		httpsecurity.MergeMiddlewareHandlerGrants(granted, satisfiesPerHandler(handle.MiddlewareHandlers), middlewareOuts)
-		if err := middleware.CheckScopes(secReqs, granted); err != nil {
+		if err := rest.CheckScopes(secReqs, granted); err != nil {
 			opts.ErrorHandler(sw, r, http.StatusUnauthorized, rest.SecurityError{Err: err})
 			return
 		}

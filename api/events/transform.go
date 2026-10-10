@@ -11,7 +11,7 @@ import (
 // dispatch unit built by [Subscriber.Use] (reusable, bundled) or
 // [Subscriber.SubscribeBoundMW] (channel-bound, via
 // [BoundSubscribeMiddleware]) — the codec-backed-middleware counterpart to
-// [middleware.ServerImplementation]. Stored on
+// [ServerImplementation]. Stored on
 // [ChannelHandle.MiddlewareHandlers]; consumed by each adapter's own
 // subscribe dispatch — never constructed directly by callers.
 type MiddlewareHandler struct {
@@ -28,7 +28,7 @@ type MiddlewareHandler struct {
 	// separately, only touching the fields THAT AXIS declared. Returns the
 	// decoded In boxed as `any` (its concrete type is recovered by the
 	// adapter via reflection, mirroring how
-	// [middleware.ServerImplementation.Fn] is already reflect-called).
+	// [ServerImplementation.Fn] is already reflect-called).
 	DecodeIn func(ctx context.Context, topicVars, propertyVars map[string]string) (any, error)
 
 	// propertyParams holds this handler's OWN property-param declarations
@@ -61,7 +61,7 @@ type MiddlewareHandler struct {
 	// [rest.MiddlewareHandler.Satisfies] exactly — lets [CheckCoverage]
 	// recognize a bound-or-agnostic-attached codec-backed Security
 	// middleware as satisfying a declared requirement, the same way it
-	// already recognizes a legacy [middleware.ServerImplementation].
+	// already recognizes a legacy [ServerImplementation].
 	Satisfies []string
 
 	// HasOut is true for EVERY handler built by [BoundSubscribeMiddleware.ApplyBoundRoute]
@@ -204,7 +204,7 @@ func buildEncodeOut[In, Out any](mw Middleware[In, Out]) func(ctx context.Contex
 // shared by EVERY handler-building function below (bound AND agnostic,
 // both roles), so [CheckCoverage] can treat a codec-backed Middleware's
 // dispatch handler identically to a legacy
-// [middleware.ServerImplementation]/[middleware.ClientImplementation]
+// [ServerImplementation]/[ClientImplementation]
 // regardless of which attachment style produced it.
 func satisfiesOf[In, Out any](mw Middleware[In, Out]) []string {
 	if sec := mw.SecurityDeclaration(); sec != nil {

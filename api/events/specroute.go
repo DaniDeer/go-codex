@@ -6,8 +6,6 @@ import (
 
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/internal/middleware"
-	"github.com/DaniDeer/go-codex/internal/route"
 )
 
 // SpecTopicRequiredError is returned by [Client.ServeSpec] when topic is
@@ -43,7 +41,7 @@ type specOptions struct {
 }
 
 type specMiddleware struct {
-	mw middleware.RouteMiddleware
+	mw RouteMiddleware
 	fn any
 }
 
@@ -67,7 +65,7 @@ func (o specMiddlewareOpt) applySpecOpt(so *specOptions) {
 // WithSpecMiddleware attaches a general-purpose (unpaired) middleware
 // implementation to the internal publish [Client.ServeSpec] performs —
 // identical nilable-mw semantics as [Publisher.PublishMW].
-func WithSpecMiddleware(mw middleware.RouteMiddleware, fn any) SpecOpt {
+func WithSpecMiddleware(mw RouteMiddleware, fn any) SpecOpt {
 	return specMiddlewareOpt{mw: mw, fn: fn}
 }
 
@@ -149,7 +147,7 @@ func (c *Client) ServeSpec(ctx context.Context, topic string, opts ...SpecOpt) e
 		// a [Client.AddGlobalSecurity] requirement for every other
 		// channel (nil Security would otherwise INHERIT that global
 		// requirement, like any other channel).
-		Security: []route.SecurityRequirement{},
+		Security: []SecurityRequirement{},
 	})
 	for _, m := range so.middlewares {
 		pub = pub.PublishMW(m.mw, m.fn)

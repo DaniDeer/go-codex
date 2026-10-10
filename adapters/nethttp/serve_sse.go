@@ -105,7 +105,7 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 	descriptor, _ := elem.FieldByName("Descriptor").Interface().(route.Route)
 	secSchemes, _ := elem.FieldByName("SecuritySchemes").Interface().(map[string]rest.SecurityScheme)
 	globalSecurity, _ := elem.FieldByName("GlobalSecurity").Interface().([]route.SecurityRequirement)
-	impls, _ := elem.FieldByName("Implementations").Interface().([]middleware.ServerImplementation)
+	impls, _ := elem.FieldByName("Implementations").Interface().([]rest.ServerImplementation)
 	middlewareHandlers, _ := elem.FieldByName("MiddlewareHandlers").Interface().([]rest.MiddlewareHandler)
 	handlerOptsAny := elem.FieldByName("HandlerOpts").Interface()
 	handlerFnVal := elem.FieldByName("HandlerFn")
@@ -259,7 +259,7 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 			return
 		}
 		httpsecurity.MergeMiddlewareHandlerGrants(granted, satisfiesPerHandler(middlewareHandlers), middlewareOuts)
-		if err := middleware.CheckScopes(secReqs, granted); err != nil {
+		if err := rest.CheckScopes(secReqs, granted); err != nil {
 			errFn(sw, r, http.StatusUnauthorized, rest.SecurityError{Err: err})
 			return
 		}

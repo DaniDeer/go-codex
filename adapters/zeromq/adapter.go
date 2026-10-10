@@ -174,24 +174,24 @@ type CallOptions struct {
 // validateSubscribeImplementationShapes checks every attached impl.Fn
 // against the two shapes [events.Subscriber.SubscribeMW] recognizes for T
 // — the security shape (func(context.Context, *T,
-// []route.SecurityRequirement) error) or the general-purpose wrapping
+// []events.SecurityRequirement) error) or the general-purpose wrapping
 // shape (func(next func(context.Context, T) error) func(context.Context,
 // T) error) — EAGERLY at [subscribeWithHandle] construction time rather
 // than deferring to the first incoming message. Mirrors
 // adapters/mqtt5.validateSubscribeImplementationShapes, adapted for
 // zeromq's simpler (no-grants) security shape.
-func validateSubscribeImplementationShapes[T any](impls []middleware.ServerImplementation) error {
+func validateSubscribeImplementationShapes[T any](impls []events.ServerImplementation) error {
 	for _, impl := range impls {
 		if impl.Fn == nil {
 			continue
 		}
 		switch impl.Fn.(type) {
-		case func(context.Context, *T, []route.SecurityRequirement) error:
+		case func(context.Context, *T, []events.SecurityRequirement) error:
 		case func(func(context.Context, T) error) func(context.Context, T) error:
 		default:
-			return middleware.MiddlewareShapeError{
+			return events.MiddlewareShapeError{
 				Name:     impl.Name,
-				Expected: "func(context.Context, *T, []route.SecurityRequirement) error or func(func(context.Context, T) error) func(context.Context, T) error",
+				Expected: "func(context.Context, *T, []events.SecurityRequirement) error or func(func(context.Context, T) error) func(context.Context, T) error",
 				Got:      fmt.Sprintf("%T", impl.Fn),
 			}
 		}
@@ -200,8 +200,8 @@ func validateSubscribeImplementationShapes[T any](impls []middleware.ServerImple
 }
 
 // runSubscribeSecurityImpls runs every attached
-// [middleware.ServerImplementation] whose Fn matches the security shape
-// (func(context.Context, *T, []route.SecurityRequirement) error) IN
+// [events.ServerImplementation] whose Fn matches the security shape
+// (func(context.Context, *T, []events.SecurityRequirement) error) IN
 // ATTACHMENT ORDER, fail-fast on the first error — the zeromq mirror of
 // [adapters/mqtt5.runSubscribeSecurityImpls], simplified: zeromq's Fn
 // shape returns a plain error (no grants map to merge/CheckScopes,
@@ -209,9 +209,9 @@ func validateSubscribeImplementationShapes[T any](impls []middleware.ServerImple
 // built-in credential-extraction mechanism of its own. General-purpose
 // wrapping-shaped Fns are silently skipped here (consumed instead by
 // [wrapSubscribeGeneral]).
-func runSubscribeSecurityImpls[T any](ctx context.Context, msg *T, secReqs []route.SecurityRequirement, impls []middleware.ServerImplementation) error {
+func runSubscribeSecurityImpls[T any](ctx context.Context, msg *T, secReqs []events.SecurityRequirement, impls []events.ServerImplementation) error {
 	for _, impl := range impls {
-		fn, ok := impl.Fn.(func(context.Context, *T, []route.SecurityRequirement) error)
+		fn, ok := impl.Fn.(func(context.Context, *T, []events.SecurityRequirement) error)
 		if !ok {
 			continue // general-purpose or nil
 		}
@@ -231,7 +231,7 @@ func runSubscribeSecurityImpls[T any](ctx context.Context, msg *T, secReqs []rou
 // [adapters/mqtt5.wrapSubscribeGeneral] exactly. This is the mechanism
 // [Observability] uses. Security-shaped Fns are silently skipped here
 // (consumed instead by [runSubscribeSecurityImpls]).
-func wrapSubscribeGeneral[T any](fn func(context.Context, T) error, impls []middleware.ServerImplementation) func(context.Context, T) error {
+func wrapSubscribeGeneral[T any](fn func(context.Context, T) error, impls []events.ServerImplementation) func(context.Context, T) error {
 	for i := len(impls) - 1; i >= 0; i-- {
 		wrap, ok := impls[i].Fn.(func(func(context.Context, T) error) func(context.Context, T) error)
 		if !ok {
@@ -387,7 +387,7 @@ func subscribeWithHandle[T any](
 	if err := sock.SetRecvTimeout(recvPollInterval); err != nil {
 		return SocketError{Op: "set_recv_timeout", Err: err}
 	}
-	var secReqs []route.SecurityRequirement
+	var secReqs []events.SecurityRequirement
 	if handle.Descriptor.Subscribe != nil {
 		secReqs = handle.Descriptor.Subscribe.Security
 	}
@@ -644,7 +644,7 @@ func subscribeWithHandle[T any](
 		// legacy paired security Fn incorrectly triggered an empty-
 		// grants CheckScopes rejection).
 		if len(secReqs) > 0 && scopesmerge.HasSatisfyingHandler(satisfies) {
-			if err := middleware.CheckScopes(secReqs, granted); err != nil {
+			if err := events.CheckScopes(secReqs, granted); err != nil {
 				if secObs, ok := obs.(stats.SecurityObserver); ok {
 					secObs.RecordSecurityRejection(topic, route.FirstSchemeName(secReqs))
 				}
@@ -747,23 +747,23 @@ func subscribe[T any](
 // validatePublishImplementationShapes checks every attached impl.Fn
 // against the two shapes [events.Publisher.PublishMW] recognizes for T —
 // the revised security shape (func(context.Context, *T,
-// []route.SecurityRequirement) error) or the general-purpose wrapping
+// []events.SecurityRequirement) error) or the general-purpose wrapping
 // shape (func(next func(context.Context, T) error) func(context.Context, T) error)
 // — EAGERLY at the top of every [Publish] call. Mirrors
 // [adapters/mqtt5.validatePublishImplementationShapes], adapted for
 // zeromq's simpler (no-UserProperty) credential shape.
-func validatePublishImplementationShapes[T any](impls []middleware.ClientImplementation) error {
+func validatePublishImplementationShapes[T any](impls []events.ClientImplementation) error {
 	for _, impl := range impls {
 		if impl.Fn == nil {
 			continue
 		}
 		switch impl.Fn.(type) {
-		case func(context.Context, *T, []route.SecurityRequirement) error:
+		case func(context.Context, *T, []events.SecurityRequirement) error:
 		case func(func(context.Context, T) error) func(context.Context, T) error:
 		default:
-			return middleware.MiddlewareShapeError{
+			return events.MiddlewareShapeError{
 				Name:     impl.Name,
-				Expected: "func(context.Context, *T, []route.SecurityRequirement) error or func(func(context.Context, T) error) func(context.Context, T) error",
+				Expected: "func(context.Context, *T, []events.SecurityRequirement) error or func(func(context.Context, T) error) func(context.Context, T) error",
 				Got:      fmt.Sprintf("%T", impl.Fn),
 			}
 		}
@@ -772,8 +772,8 @@ func validatePublishImplementationShapes[T any](impls []middleware.ClientImpleme
 }
 
 // runPublishSecurityImpls runs every attached
-// [middleware.ClientImplementation] whose Fn matches the revised security
-// shape (func(context.Context, *T, []route.SecurityRequirement) error) —
+// [events.ClientImplementation] whose Fn matches the revised security
+// shape (func(context.Context, *T, []events.SecurityRequirement) error) —
 // GATED by Satisfies vs secReqs, mirroring
 // [adapters/mqtt5.runPublishSecurityImpls] (an implementation with a
 // NON-EMPTY Satisfies only runs when at least one of its scheme names is
@@ -782,7 +782,7 @@ func validatePublishImplementationShapes[T any](impls []middleware.ClientImpleme
 // it (in-payload credential embedding). General-purpose wrapping-shaped
 // Fns are silently skipped here (consumed instead by
 // [wrapPublishGeneral]).
-func runPublishSecurityImpls[T any](ctx context.Context, msg *T, secReqs []route.SecurityRequirement, impls []middleware.ClientImplementation) error {
+func runPublishSecurityImpls[T any](ctx context.Context, msg *T, secReqs []events.SecurityRequirement, impls []events.ClientImplementation) error {
 	reqSchemes := make(map[string]bool, len(secReqs))
 	for _, req := range secReqs {
 		for scheme := range req {
@@ -790,7 +790,7 @@ func runPublishSecurityImpls[T any](ctx context.Context, msg *T, secReqs []route
 		}
 	}
 	for _, impl := range impls {
-		fn, ok := impl.Fn.(func(context.Context, *T, []route.SecurityRequirement) error)
+		fn, ok := impl.Fn.(func(context.Context, *T, []events.SecurityRequirement) error)
 		if !ok {
 			continue // general-purpose or nil
 		}
@@ -821,7 +821,7 @@ func runPublishSecurityImpls[T any](ctx context.Context, msg *T, secReqs []route
 // and [adapters/mqtt5.wrapPublishGeneral]. Security-shaped Fns are
 // silently skipped here (consumed instead by [runPublishSecurityImpls]).
 // This is the mechanism [Observability] uses on the publish side.
-func wrapPublishGeneral[T any](fn func(context.Context, T) error, impls []middleware.ClientImplementation) func(context.Context, T) error {
+func wrapPublishGeneral[T any](fn func(context.Context, T) error, impls []events.ClientImplementation) func(context.Context, T) error {
 	for i := len(impls) - 1; i >= 0; i-- {
 		wrap, ok := impls[i].Fn.(func(func(context.Context, T) error) func(context.Context, T) error)
 		if !ok {
@@ -967,7 +967,7 @@ func publish[T any](
 	// Security/credential resolution — every attached
 	// handle.ClientImplementations security-shaped Fn runs, mirroring
 	// SubscribeWithHandle's ordering on the subscribe side.
-	var secReqs []route.SecurityRequirement
+	var secReqs []events.SecurityRequirement
 	if handle.Descriptor.Publish != nil {
 		secReqs = handle.Descriptor.Publish.Security
 	}

@@ -5,12 +5,10 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
-
-	"github.com/DaniDeer/go-codex/internal/middleware"
 )
 
 // Middleware is a codec-backed, REST-specific middleware declaration — the
-// per-pattern counterpart to [middleware.Declaration], adding REST's own
+// per-pattern counterpart to [Declaration], adding REST's own
 // header/cookie/query merge-field vocabulary on both the request (In) and
 // response (Out) side. Built via [NewMiddleware], populated via
 // [Middleware.WithRequestHeader]/[Middleware.WithRequestCookie]/
@@ -43,7 +41,7 @@ import (
 // value can never be bound, so the two styles can never collide on one
 // value.
 type Middleware[In, Out any] struct {
-	middleware.Declaration[In, Out]
+	Declaration[In, Out]
 
 	reqHeaderParams  []MergedHeaderParam[In]
 	reqCookieParams  []MergedCookieParam[In]
@@ -55,7 +53,7 @@ type Middleware[In, Out any] struct {
 	// respCookieSpecs carry PRESENCE-ONLY (non-merged) param
 	// declarations — pure spec+validation entries with NO corresponding
 	// In/Out struct field to decode into, mirroring legacy
-	// [middleware.Middleware]'s RequestHeaderParams/etc. shape. Part of
+	// [AttachedMiddleware]'s RequestHeaderParams/etc. shape. Part of
 	// the middleware-consolidation effort
 	// (docs/design/d-0003-codec-declared-middlewares.md) closing the one real gap
 	// the codec-backed family had relative to the legacy type.
@@ -81,40 +79,40 @@ type Middleware[In, Out any] struct {
 	// registration — dispatched automatically by buildDecodeIn (right
 	// after decode+validate) and buildEncodeOut/buildEncodeIn (alongside
 	// the merge-field encode), publishing into the SAME
-	// [middleware.ContextField] box [middleware.EnsureContextFields]
+	// [ContextField] box [middleware.EnsureContextFields]
 	// pre-allocated (docs/design/d-0007-declarative-middleware-layering.md's
 	// Rollout Phase A).
 	ctxFieldsFromIn  []contextFieldInSetter[In]
 	ctxFieldsFromOut []contextFieldOutSetter[Out]
 }
 
-// contextFieldInSetter pairs a [middleware.ContextFieldSetter] with the
+// contextFieldInSetter pairs a [ContextFieldSetter] with the
 // getter that extracts its raw value from this middleware's decoded In —
 // one entry per [Middleware.SetContextFieldFromIn] call.
 type contextFieldInSetter[In any] struct {
-	field middleware.ContextFieldSetter
+	field ContextFieldSetter
 	get   func(In) any
 }
 
 // contextFieldOutSetter is [contextFieldInSetter]'s Out-side mirror — one
 // entry per [Middleware.SetContextFieldFromOut] call.
 type contextFieldOutSetter[Out any] struct {
-	field middleware.ContextFieldSetter
+	field ContextFieldSetter
 	get   func(Out) any
 }
 
-// NewMiddleware builds a [Middleware] from a [middleware.Declaration] —
+// NewMiddleware builds a [Middleware] from a [Declaration] —
 // chain [Middleware.WithRequestHeader]/etc. to populate its merge-field
 // vocabulary, or [Middleware.WithReceive]/[Middleware.WithSend] for the
 // route/channel-agnostic attachment style.
-func NewMiddleware[In, Out any](decl middleware.Declaration[In, Out]) Middleware[In, Out] {
+func NewMiddleware[In, Out any](decl Declaration[In, Out]) Middleware[In, Out] {
 	return Middleware[In, Out]{Declaration: decl}
 }
 
 // WithRequestHeader registers p (built via [NewRequiredHeaderParam]/
 // [NewOptionalHeaderParam]) so its value is merged into this middleware's
 // decoded In at dispatch time, and layered into the attaching route's spec
-// (the SAME conflict-detection pass legacy middleware.Middleware values
+// (the SAME conflict-detection pass legacy AttachedMiddleware values
 // already feed) — and returns the updated Middleware.
 func (m Middleware[In, Out]) WithRequestHeader(p MergedHeaderParam[In]) Middleware[In, Out] {
 	m.reqHeaderParams = append(slices.Clone(m.reqHeaderParams), p)
@@ -158,7 +156,7 @@ func (m Middleware[In, Out]) WithResponseCookie(p MergedResponseCookieParam[Out]
 // header declaration — p is validated and rendered into the route's spec,
 // but has NO corresponding In struct field to decode into. Use
 // [Middleware.WithRequestHeader] instead when a merge field is wanted.
-// Mirrors legacy middleware.Middleware's RequestHeaderParams shape.
+// Mirrors legacy AttachedMiddleware's RequestHeaderParams shape.
 func (m Middleware[In, Out]) WithRequestHeaderSpec(p HeaderParam) Middleware[In, Out] {
 	m.reqHeaderSpecs = append(slices.Clone(m.reqHeaderSpecs), p)
 	return m
@@ -212,17 +210,17 @@ func (m Middleware[In, Out]) WithSend(fn func(ctx context.Context) (In, error)) 
 }
 
 // SetContextFieldFromIn registers field to be published (via
-// [middleware.ContextFieldSetter.Set]) from get(in)'s return value —
+// [ContextFieldSetter.Set]) from get(in)'s return value —
 // dispatched automatically right after this middleware's own In is
 // decoded+validated (DecodeIn). [BoundMiddleware] has its OWN identical
 // forwarder (bound_middleware.go) for the bound attachment class, so a
 // handler (or any LATER-dispatched middleware, regardless of class)
 // retrieves the published value the SAME way, fully-typed, via
-// [middleware.ContextField.Get] — see [middleware.ContextField]'s own
+// [ContextField.Get] — see [ContextField]'s own
 // doc comment for the full cross-cutting-data rationale.
 //
-// field takes [middleware.ContextFieldSetter], not a concrete
-// [middleware.ContextField][V] directly — V is NOT a type parameter this
+// field takes [ContextFieldSetter], not a concrete
+// [ContextField][V] directly — V is NOT a type parameter this
 // method can introduce (Go forbids new type params on a method beyond the
 // receiver's own); every ContextField[V] already satisfies
 // ContextFieldSetter regardless of V, since Set's own signature never
@@ -230,9 +228,9 @@ func (m Middleware[In, Out]) WithSend(fn func(ctx context.Context) (In, error)) 
 // docs/design/d-0007-declarative-middleware-layering.md's Phase 3 design
 // review).
 //
-//	var TenantIDField = middleware.NewContextField(codex.String())
+//	var TenantIDField = NewContextField(codex.String())
 //	authMw = authMw.SetContextFieldFromIn(TenantIDField, func(in AuthIn) any { return in.TenantID })
-func (m Middleware[In, Out]) SetContextFieldFromIn(field middleware.ContextFieldSetter, get func(In) any) Middleware[In, Out] {
+func (m Middleware[In, Out]) SetContextFieldFromIn(field ContextFieldSetter, get func(In) any) Middleware[In, Out] {
 	m.ctxFieldsFromIn = append(slices.Clone(m.ctxFieldsFromIn), contextFieldInSetter[In]{field: field, get: get})
 	return m
 }
@@ -243,17 +241,17 @@ func (m Middleware[In, Out]) SetContextFieldFromIn(field middleware.ContextField
 // concretely available: right after Fn returns it (EncodeOut, the
 // server/receiving role) or right after it is decoded from the response's
 // headers/cookies (DecodeOut, the client/sending role).
-func (m Middleware[In, Out]) SetContextFieldFromOut(field middleware.ContextFieldSetter, get func(Out) any) Middleware[In, Out] {
+func (m Middleware[In, Out]) SetContextFieldFromOut(field ContextFieldSetter, get func(Out) any) Middleware[In, Out] {
 	m.ctxFieldsFromOut = append(slices.Clone(m.ctxFieldsFromOut), contextFieldOutSetter[Out]{field: field, get: get})
 	return m
 }
 
 // RouteMiddlewareMarker makes Middleware[In,Out] satisfy
-// [middleware.RouteMiddleware] — EXPORTED (unlike [ports.Pattern]'s
+// [RouteMiddleware] — EXPORTED (unlike [ports.Pattern]'s
 // unexported-method sealing) because Go's unexported-method interface
 // satisfaction is scoped per package: a type declared in api/rest can
 // never satisfy an interface whose method is unexported in package
-// middleware, no matter the name — see [middleware.RouteMiddleware]'s doc
+// middleware, no matter the name — see [RouteMiddleware]'s doc
 // comment. So a route/channel's plain .Use(...) can recognize and
 // dispatch a route/channel-agnostic Middleware value carrying a
 // WithReceive/WithSend fn.
@@ -265,8 +263,8 @@ func (Middleware[In, Out]) RouteMiddlewareMarker() {}
 // (docs/design/d-0003-codec-declared-middlewares.md) folding Security into the
 // codec-backed family: [Route.HandleMW]/[Route.ClientMW] extract Security
 // via this method UNIFORMLY, regardless of whether the attached value is
-// this type or the legacy [middleware.Middleware].
-func (m Middleware[In, Out]) SecurityDeclaration() *middleware.SecurityDeclaration {
+// this type or the legacy [AttachedMiddleware].
+func (m Middleware[In, Out]) SecurityDeclaration() *SecurityDeclaration {
 	return m.Declaration.Security
 }
 
@@ -338,7 +336,7 @@ func (e MiddlewareInputError) LogValue() slog.Value {
 // declared on the attaching route. NEVER returned for [Route.HandleMW]/
 // [Route.ClientMW], which reject a codec-backed value outright (see
 // [MiddlewareMisattachedError]) and otherwise only ever carry the legacy,
-// non-codec-backed [middleware.Middleware] shape. Distinct from
+// non-codec-backed [AttachedMiddleware] shape. Distinct from
 // [SecurityError] (reserved for the [middleware.SecurityScheme]
 // mechanism specifically).
 //

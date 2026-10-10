@@ -8,8 +8,6 @@ import (
 
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/internal/middleware"
-	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/render/openapi"
 	"github.com/DaniDeer/go-codex/schema"
 )
@@ -54,7 +52,7 @@ type specOptions struct {
 }
 
 type specMiddleware struct {
-	mw middleware.RouteMiddleware
+	mw RouteMiddleware
 	fn any
 }
 
@@ -70,7 +68,7 @@ func (o specMiddlewareOpt) applySpecOpt(so *specOptions) {
 // an observer/timing middleware to the spec route exactly as you would
 // to any other route). Demonstrates that the spec endpoint is "just
 // another route" — it composes with the same middleware capabilities.
-func WithSpecMiddleware(mw middleware.RouteMiddleware, fn any) SpecOpt {
+func WithSpecMiddleware(mw RouteMiddleware, fn any) SpecOpt {
 	return specMiddlewareOpt{mw: mw, fn: fn}
 }
 
@@ -162,7 +160,7 @@ func (b *Server) ServeSpec(path string, opts ...SpecOpt) error {
 			// every other route (nil Security would otherwise INHERIT
 			// that global requirement, like any other route — see
 			// [RouteMeta.Security]'s doc comment).
-			Security: []route.SecurityRequirement{},
+			Security: []SecurityRequirement{},
 		},
 	)
 	for _, m := range so.middlewares {

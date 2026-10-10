@@ -206,7 +206,7 @@ func (t *transport) Publish(ctx context.Context, pubAny, msgAny any, optsVariadi
 		return err
 	}
 
-	clientImplementations, _ := elem.FieldByName("ClientImplementations").Interface().([]middleware.ClientImplementation)
+	clientImplementations, _ := elem.FieldByName("ClientImplementations").Interface().([]events.ClientImplementation)
 	wantHandlerFnType := reflect.FuncOf([]reflect.Type{dispatchCtxType, tType}, []reflect.Type{dispatchErrType}, false)
 	secFnType := buildPublishSecurityFnType(tType)
 	generalFnType := generalWrapFnType(tType)
@@ -502,7 +502,7 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 	// fails loudly and immediately" timing (docs/design/
 	// d-0006-protocol-native-capabilities.md's Phase 4e design decision:
 	// per-call, not Attach-time, validation).
-	implementations, _ := elem.FieldByName("Implementations").Interface().([]middleware.ServerImplementation)
+	implementations, _ := elem.FieldByName("Implementations").Interface().([]events.ServerImplementation)
 	if err := validateSubscribeImplementationShapesReflect(tType, implementations); err != nil {
 		return err
 	}
@@ -705,7 +705,7 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 		// own GrantedScopes (merged above) — mirrors
 		// adapter.go's/caller.go's identical fix.
 		if len(secReqs) > 0 {
-			if err := middleware.CheckScopes(secReqs, granted); err != nil {
+			if err := events.CheckScopes(secReqs, granted); err != nil {
 				if secObs, ok := obs.(stats.SecurityObserver); ok {
 					secObs.RecordSecurityRejection(msg.Topic, route.FirstSchemeName(secReqs))
 				}

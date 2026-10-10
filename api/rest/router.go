@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/DaniDeer/go-codex/internal/middleware"
 	"github.com/DaniDeer/go-codex/internal/router"
 )
 
@@ -20,7 +19,7 @@ type routable = router.Routable[*Server]
 
 // Router declares a path PREFIX once and groups any number of
 // independently-declared [Route]/[SSERoute] values under it, optionally
-// attaching reusable-class [middleware.RouteMiddleware] to every leaf
+// attaching reusable-class [RouteMiddleware] to every leaf
 // registered under it in one declaration — a THIRD, group-level construct
 // distinct from [Middleware], modeled on chi's own Router/Mount/Group/With/
 // Routes/Walk (go-chi/chi/v5, the strongest available prior art for this
@@ -72,7 +71,7 @@ type RouterOpt interface{ applyRouter(*Router) }
 // permanent middleware list — dispatched BEFORE every grouped leaf's own
 // middleware (Router-first, outer-to-inner ordering), and before any
 // nested [Router.Mount]/[Router.Group] child's own mws.
-func (rt Router) Use(mws ...middleware.RouteMiddleware) Router {
+func (rt Router) Use(mws ...RouteMiddleware) Router {
 	return Router{inner: rt.inner.Use(mws...)}
 }
 
@@ -88,7 +87,7 @@ func (rt Router) Tags(tags ...string) Router {
 // call only; a following [Router.Mount]/[Router.Group] call DISCARDS any
 // still-pending mws rather than silently leaking them onto a later,
 // unrelated `.Route()` call.
-func (rt Router) With(mws ...middleware.RouteMiddleware) Router {
+func (rt Router) With(mws ...RouteMiddleware) Router {
 	return Router{inner: rt.inner.With(mws...)}
 }
 
@@ -195,12 +194,12 @@ func (rt Router) Register(b *Server) error {
 // middlewareNameOf extracts a human-readable name from mw for
 // RouterEntry.MiddlewareNames — mirrors the SAME extraction
 // [routeMiddlewareOpt.applyRoute] already performs for legacy
-// [middleware.Middleware] values (a plain Name field) and codec-backed
+// [AttachedMiddleware] values (a plain Name field) and codec-backed
 // ones (a MiddlewareName() string method), falling back to a type name
 // for anything else so the list is never silently incomplete.
-func middlewareNameOf(mw middleware.RouteMiddleware) string {
+func middlewareNameOf(mw RouteMiddleware) string {
 	switch v := mw.(type) {
-	case middleware.Middleware:
+	case AttachedMiddleware:
 		return v.Name
 	default:
 		if named, ok := mw.(interface{ MiddlewareName() string }); ok {
@@ -395,7 +394,7 @@ func (o routerTagsOpt) applyRoute(rb *routeBuilder) {
 }
 
 // WithRouterPrefix implements [router.Routable] for [Route].
-func (r Route[Req, Resp]) WithRouterPrefix(prefix string, mws []middleware.RouteMiddleware, tags []string) (routable, string) {
+func (r Route[Req, Resp]) WithRouterPrefix(prefix string, mws []RouteMiddleware, tags []string) (routable, string) {
 	r.path = joinRouterPath(prefix, r.path)
 	if len(mws) > 0 {
 		r.opts = append([]RouteOpt{routeMiddlewareOpt{mws: mws}}, r.opts...)
@@ -464,7 +463,7 @@ func (r Route[Req, Resp]) RouteTags() []string {
 func (r Route[Req, Resp]) RegisterAny(b *Server) error { return r.Register(b) }
 
 // WithRouterPrefix implements [router.Routable] for [SSERoute].
-func (s SSERoute[Req, Event]) WithRouterPrefix(prefix string, mws []middleware.RouteMiddleware, tags []string) (routable, string) {
+func (s SSERoute[Req, Event]) WithRouterPrefix(prefix string, mws []RouteMiddleware, tags []string) (routable, string) {
 	s.path = joinRouterPath(prefix, s.path)
 	if len(mws) > 0 {
 		s.opts = append([]RouteOpt{routeMiddlewareOpt{mws: mws}}, s.opts...)

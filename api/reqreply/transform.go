@@ -9,7 +9,7 @@ import (
 
 // MiddlewareHandler is the type-erased, SERVER-side runtime dispatch unit
 // built by [Route.HandleMW] — the codec-backed-middleware counterpart to
-// [middleware.ServerImplementation]. Stored on
+// [ServerImplementation]. Stored on
 // [RouteHandle.MiddlewareHandlers]; consumed by each adapter's own
 // reflect-based Serve dispatch (mqtt5/zeromq).
 //
@@ -56,7 +56,7 @@ type MiddlewareHandler struct {
 	// Phase C) — lets [CheckCoverage] recognize a bound-or-agnostic-
 	// attached codec-backed Security middleware as satisfying a declared
 	// requirement, the same way it already recognizes a legacy
-	// [middleware.ServerImplementation].
+	// [ServerImplementation].
 	Satisfies []string
 }
 
@@ -96,7 +96,7 @@ type ClientMiddlewareHandler struct {
 
 // satisfiesOf derives mw's security scheme name(s) for [MiddlewareHandler.Satisfies]/
 // [ClientMiddlewareHandler.Satisfies] — empty when mw carries no
-// [middleware.SecurityDeclaration] (a general-purpose, non-Security
+// [SecurityDeclaration] (a general-purpose, non-Security
 // middleware). Mirrors [events.satisfiesOf]/[rest]'s identical helper.
 func satisfiesOf[In, Out any](mw Middleware[In, Out]) []string {
 	if sec := mw.SecurityDeclaration(); sec != nil {

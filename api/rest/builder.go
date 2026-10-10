@@ -264,7 +264,7 @@ type RouteMeta struct {
 	// Security, when non-nil, overrides global security for this operation.
 	// Pass an empty slice to declare "no auth required" for this route.
 	// nil (default) inherits global security declared via Server.AddGlobalSecurity.
-	Security []route.SecurityRequirement
+	Security []SecurityRequirement
 }
 
 func (m RouteMeta) applyRoute(rb *routeBuilder) { rb.meta = m }
@@ -693,14 +693,14 @@ type routeBuilder struct {
 	// and [Route.ClientHandle].
 	securitySchemes map[string]SecurityScheme
 
-	// middlewares holds every [middleware.Middleware] attached via
+	// middlewares holds every [AttachedMiddleware] attached via
 	// [WithMiddleware], in attachment order. Security/RequestParams/
 	// ResponseParams contributions are NOT applied here — they are applied
 	// ONCE, order-independently, by [applyMiddlewareDeclarations] at
 	// Register/ValidateRoute time (order-independence and per-name
 	// conflict detection are what make this safe regardless of how many
-	// [middleware.Middleware] values are attached, in what order).
-	middlewares []middleware.Middleware
+	// [AttachedMiddleware] values are attached, in what order).
+	middlewares []AttachedMiddleware
 
 	// handlerFn holds the type-erased business handler attached via
 	// [Route.WithHandler]/[SSERoute.WithHandler]. Resolved to the
@@ -715,12 +715,12 @@ type routeBuilder struct {
 	// Serve time, returning OptionsShapeError on mismatch.
 	handlerOpts any
 
-	// impls holds every [middleware.ServerImplementation] attached via
+	// impls holds every [ServerImplementation] attached via
 	// [Route.HandleMW]/[SSERoute.HandleMW], in attachment order — built
 	// internally by HandleMW from whatever mw/fn it receives.
 	impls []middleware.ServerImplementation
 
-	// clientImpls holds every [middleware.ClientImplementation] attached
+	// clientImpls holds every [ClientImplementation] attached
 	// via [Route.ClientMW], in attachment order — built internally by
 	// ClientMW.
 	clientImpls []middleware.ClientImplementation
@@ -749,7 +749,7 @@ type routeBuilder struct {
 	// Req/Resp-agnostic spec types at the GENERIC call site where In/Out
 	// are still concrete, then fed into the SAME conflict-detection/
 	// layering pass in applyParamDeclarations that legacy
-	// middleware.Middleware values already use (D4).
+	// AttachedMiddleware values already use (D4).
 	middlewareSpecContributions []middlewareSpecContribution
 }
 
@@ -760,10 +760,10 @@ type routeBuilder struct {
 // DELETE), Decode can still be called if the request carries a body, but
 // typical REST usage will not call it.
 type RouteHandle[Req, Resp any] struct {
-	// Descriptor is the live route.Route descriptor. It is updated in place
+	// Descriptor is the live [RouteDescriptor]. It is updated in place
 	// by [WithRequestFormats] and [WithFormats] so that spec generation
 	// always reflects the latest configuration.
-	Descriptor route.Route
+	Descriptor RouteDescriptor
 
 	// Decode deserialises and validates a JSON request body into Req.
 	// All Refine constraints on the request codec run automatically.
@@ -841,7 +841,7 @@ type RouteHandle[Req, Resp any] struct {
 	// "which routes require auth by default" (spec-wide), not "what does a
 	// scheme look like" — and has no [Route.ClientHandle] equivalent (always
 	// nil there, unchanged).
-	GlobalSecurity []route.SecurityRequirement
+	GlobalSecurity []SecurityRequirement
 
 	// pathMergeFields/queryMergeFields/headerMergeFields/cookieMergeFields
 	// hold the merge-capable fields registered via NewPathParam/
@@ -880,11 +880,11 @@ type RouteHandle[Req, Resp any] struct {
 	// [ErrorPattern].
 	errorPatternRules []errorPatternRule
 
-	// Middlewares holds every [middleware.Middleware] attached via
+	// Middlewares holds every [AttachedMiddleware] attached via
 	// [WithMiddleware]/[Route.Use], in attachment order — SERVER-side
 	// declarations. Populated by both [Route.Register]/[Route.RegisterHandle]
 	// and [Route.ClientHandle].
-	Middlewares []middleware.Middleware
+	Middlewares []AttachedMiddleware
 
 	// HandlerFn holds the type-erased business handler attached via
 	// [Route.WithHandler]/[SSERoute.WithHandler] — nil if never called
@@ -897,18 +897,18 @@ type RouteHandle[Req, Resp any] struct {
 	// (the adapter uses its own zero-value Options).
 	HandlerOpts any
 
-	// Implementations holds every [middleware.ServerImplementation]
+	// Implementations holds every [ServerImplementation]
 	// attached via [Route.HandleMW]/[SSERoute.HandleMW], in attachment
 	// order — the runtime counterpart to Middlewares, built internally by
 	// HandleMW.
-	Implementations []middleware.ServerImplementation
+	Implementations []ServerImplementation
 
-	// ClientImplementations holds every [middleware.ClientImplementation]
+	// ClientImplementations holds every [ClientImplementation]
 	// attached via [Route.ClientMW], in attachment order — CLIENT-side
 	// runtime fulfillment, built internally by ClientMW. Populated by
 	// BOTH [Route.Register]/[Route.RegisterHandle] and
 	// [Route.ClientHandle].
-	ClientImplementations []middleware.ClientImplementation
+	ClientImplementations []ClientImplementation
 
 	// MiddlewareHandlers holds every [MiddlewareHandler] attached via
 	// [Route.HandleBoundMW] (bound class) or a plain .Use()'d
@@ -1520,7 +1520,7 @@ func (h *RouteHandle[Req, Resp]) PathParamNames() []string {
 
 // HeaderParamNames returns the names of ALL registered header
 // parameters — BOTH plain [HeaderParam] route opts AND
-// middleware-declared header contributions (legacy [middleware.Middleware]
+// middleware-declared header contributions (legacy [AttachedMiddleware]
 // and D-0003 codec-backed [Middleware]/[BoundMiddleware]/
 // [BoundClientMiddleware], attached via plain .Use()/[Route.HandleBoundMW]/
 // [Route.ClientBoundMW] respectively), since [applyParamDeclarations]
@@ -1826,7 +1826,7 @@ func (rh *RouteHandle[Req, Resp]) ValidateResponseCookies(cookies map[string]str
 }
 
 type routeEntry interface {
-	descriptor() route.Route
+	descriptor() RouteDescriptor
 	// securitySchemes returns the route's own security scheme declarations
 	// (from [Route.Use]) so [Server.OpenAPISpec] can aggregate
 	// components.securitySchemes across all registered routes — there is no
@@ -1883,7 +1883,7 @@ type typedRouteEntry[Req, Resp any] struct {
 	handle *RouteHandle[Req, Resp]
 }
 
-func (e *typedRouteEntry[Req, Resp]) descriptor() route.Route { return e.handle.Descriptor }
+func (e *typedRouteEntry[Req, Resp]) descriptor() RouteDescriptor { return e.handle.Descriptor }
 func (e *typedRouteEntry[Req, Resp]) securitySchemes() map[string]SecurityScheme {
 	return e.handle.SecuritySchemes
 }
@@ -1902,7 +1902,7 @@ type typedSSEEntry[Req, Event any] struct {
 	handle *SSERouteHandle[Req, Event]
 }
 
-func (e *typedSSEEntry[Req, Event]) descriptor() route.Route { return e.handle.Descriptor }
+func (e *typedSSEEntry[Req, Event]) descriptor() RouteDescriptor { return e.handle.Descriptor }
 func (e *typedSSEEntry[Req, Event]) securitySchemes() map[string]SecurityScheme {
 	return e.handle.SecuritySchemes
 }
@@ -2803,7 +2803,7 @@ func (s SecurityScheme) WithCodec(c codex.Codec[string]) SecurityScheme {
 // instead (docs/design/d-0003-codec-declared-middlewares.md's Addendum 7). Part of the
 // middleware-consolidation effort
 // (docs/design/d-0003-codec-declared-middlewares.md) folding Security
-// into the codec-backed family instead of the legacy [middleware.Middleware]
+// into the codec-backed family instead of the legacy [AttachedMiddleware]
 // type.
 //
 // Generalized over In/Out (docs/design/d-0007-declarative-middleware-layering.md's
@@ -3215,12 +3215,12 @@ type ClientCallOptions struct {
 	//
 	// Do not pass the Authorization header via [HeaderParams] — use
 	// ExtraHeaders or a credential-providing
-	// [middleware.ClientImplementation] for security credentials.
+	// [ClientImplementation] for security credentials.
 	ExtraHeaders map[string][]string
 
 	// OnCredentialRejected, when non-nil, is called when the server
 	// responds with HTTP 401 AND at least one credential-providing
-	// [middleware.ClientImplementation] was attached to this call.
+	// [ClientImplementation] was attached to this call.
 	// Purely a notification hook — the attached [ClientTransport] does
 	// NOT retry the request automatically.
 	OnCredentialRejected func()
@@ -3960,8 +3960,8 @@ func mustAssertMergeFields[Req any](caller string, raw []any) []codex.FieldCodec
 // When Formats is non-empty the adapter may use an explicit format for
 // event data serialisation (e.g. JSON or YAML inside the data field).
 type SSERouteHandle[Req, Event any] struct {
-	// Descriptor is the live route.Route descriptor.
-	Descriptor route.Route
+	// Descriptor is the live [RouteDescriptor].
+	Descriptor RouteDescriptor
 
 	// Decode deserialises and validates a JSON request body into Req.
 	// For SSE (GET) routes, this is rarely called — read path and query
@@ -4025,12 +4025,12 @@ type SSERouteHandle[Req, Event any] struct {
 	// "which routes require auth by default" (spec-wide), not "what does a
 	// scheme look like" — and has no [Route.ClientHandle] equivalent (always
 	// nil there, unchanged).
-	GlobalSecurity []route.SecurityRequirement
+	GlobalSecurity []SecurityRequirement
 
-	// Middlewares holds every [middleware.Middleware] attached via
+	// Middlewares holds every [AttachedMiddleware] attached via
 	// [WithMiddleware]/[SSERoute.Use], in attachment order — mirrors
 	// [RouteHandle.Middlewares].
-	Middlewares []middleware.Middleware
+	Middlewares []AttachedMiddleware
 
 	// HandlerFn holds the type-erased SSE handler attached via
 	// [SSERoute.WithHandler] — nil if never called (spec-only; see
@@ -4041,10 +4041,10 @@ type SSERouteHandle[Req, Event any] struct {
 	// [SSERoute.WithOptions] — nil if never called.
 	HandlerOpts any
 
-	// Implementations holds every [middleware.ServerImplementation]
+	// Implementations holds every [ServerImplementation]
 	// attached via [SSERoute.HandleMW], in attachment order — mirrors
 	// [RouteHandle.Implementations].
-	Implementations []middleware.ServerImplementation
+	Implementations []ServerImplementation
 
 	// responseHeaderParams holds per-header entries registered via ResponseHeaderParam options.
 	responseHeaderParams []ResponseHeaderParam
@@ -4068,12 +4068,12 @@ type SSERouteHandle[Req, Event any] struct {
 	headerMergeFields []codex.FieldCodec[Req]
 	cookieMergeFields []codex.FieldCodec[Req]
 
-	// ClientImplementations holds every [middleware.ClientImplementation]
+	// ClientImplementations holds every [ClientImplementation]
 	// attached via [SSERoute.ClientMW], in attachment order — mirrors
 	// [RouteHandle.ClientImplementations] exactly; consumed by
 	// [Client.Consume]/[nethttp.CallSSEAdapter] the same way
 	// [Client.Call] consumes RouteHandle's field.
-	ClientImplementations []middleware.ClientImplementation
+	ClientImplementations []ClientImplementation
 
 	// responseHeaderMergeFields/responseCookieMergeFields hold the
 	// Event-side merge-capable fields registered via
@@ -4950,14 +4950,14 @@ func (b *Server) checkDanglingRefs() error {
 	return nil
 }
 
-// buildDescriptor constructs a route.Route from method, path, schemas, and the
+// buildDescriptor constructs a RouteDescriptor from method, path, schemas, and the
 // accumulated routeBuilder options. respContentTypes overrides the content types
 // for the primary response (used by SSE routes to force text/event-stream).
 //
 // Path params are converted from []PathParam to []route.Param entries for
 // OpenAPI spec output. A minimal entry is auto-added for any {varName}
 // placeholder in the path that has no explicit PathParam declaration.
-func buildDescriptor(method, path string, reqSchema, respSchema schema.Schema, rb routeBuilder, respContentTypes []string) route.Route {
+func buildDescriptor(method, path string, reqSchema, respSchema schema.Schema, rb routeBuilder, respContentTypes []string) RouteDescriptor {
 	status := rb.meta.RespStatus
 	if status == "" {
 		if strings.ToUpper(method) == "POST" {
@@ -4967,7 +4967,7 @@ func buildDescriptor(method, path string, reqSchema, respSchema schema.Schema, r
 		}
 	}
 
-	r := route.Route{
+	r := RouteDescriptor{
 		Method:       method,
 		Path:         path,
 		OperationID:  rb.meta.OperationID,

@@ -596,7 +596,7 @@ func makeSubscribeMessageHandler[T any](
 		// MiddlewareHandlers (no legacy Implementations) never had its
 		// scopes checked at all, a confirmed gap this closes.
 		if len(secReqs) > 0 {
-			if err := middleware.CheckScopes(secReqs, granted); err != nil {
+			if err := events.CheckScopes(secReqs, granted); err != nil {
 				if secObs, ok := obs.(stats.SecurityObserver); ok {
 					secObs.RecordSecurityRejection(msg.Topic, route.FirstSchemeName(secReqs))
 				}
@@ -643,7 +643,7 @@ func makeSubscribeMessageHandler[T any](
 	}
 }
 
-// runSubscribeSecurityImpls runs every attached [middleware.ServerImplementation]
+// runSubscribeSecurityImpls runs every attached [events.ServerImplementation]
 // whose Fn matches the security shape
 // (func(context.Context, *pahomqtt5.Publish, *T) (map[string][]string, error))
 // IN ATTACHMENT ORDER (fail-fast on the first one whose OWN extraction
@@ -654,12 +654,12 @@ func makeSubscribeMessageHandler[T any](
 // skipped here (consumed instead by [wrapSubscribeGeneral]).
 //
 // docs/design/d-0007-declarative-middleware-layering.md's "Prerequisite for
-// Phase 2 (api/events)": this NO LONGER calls [middleware.CheckScopes]
+// Phase 2 (api/events)": this NO LONGER calls [events.CheckScopes]
 // itself (previously did, in isolation) — the caller now merges THIS
 // map with any bound [events.MiddlewareHandler]'s own `GrantedScopes`
 // (via [scopesmerge.MergeHandlerGrants]) before a SINGLE, UNIFIED
 // CheckScopes call covering BOTH mechanisms.
-func runSubscribeSecurityImpls[T any](ctx context.Context, msg *pahomqtt5.Publish, value *T, secReqs []route.SecurityRequirement, impls []middleware.ServerImplementation) (map[string][]string, error) {
+func runSubscribeSecurityImpls[T any](ctx context.Context, msg *pahomqtt5.Publish, value *T, secReqs []route.SecurityRequirement, impls []events.ServerImplementation) (map[string][]string, error) {
 	granted := make(map[string][]string)
 	for _, impl := range impls {
 		fn, ok := impl.Fn.(func(context.Context, *pahomqtt5.Publish, *T) (map[string][]string, error))
@@ -687,7 +687,7 @@ func runSubscribeSecurityImpls[T any](ctx context.Context, msg *pahomqtt5.Publis
 // adapters/nethttp's applyGeneralMiddleware. Security-shaped Fns are
 // silently skipped here (consumed instead by [runSubscribeSecurityImpls]).
 // This is the mechanism [Observability] uses.
-func wrapSubscribeGeneral[T any](fn func(context.Context, T) error, impls []middleware.ServerImplementation) func(context.Context, T) error {
+func wrapSubscribeGeneral[T any](fn func(context.Context, T) error, impls []events.ServerImplementation) func(context.Context, T) error {
 	for i := len(impls) - 1; i >= 0; i-- {
 		wrap, ok := impls[i].Fn.(func(func(context.Context, T) error) func(context.Context, T) error)
 		if !ok {
@@ -707,7 +707,7 @@ func wrapSubscribeGeneral[T any](fn func(context.Context, T) error, impls []midd
 // deferring to the first incoming message. Mirrors adapters/nethttp's
 // validateImplementationShapesReflect, but via a plain type switch (T is
 // concrete here, no reflect.FuncOf needed).
-func validateSubscribeImplementationShapes[T any](impls []middleware.ServerImplementation) error {
+func validateSubscribeImplementationShapes[T any](impls []events.ServerImplementation) error {
 	for _, impl := range impls {
 		if impl.Fn == nil {
 			continue
@@ -716,7 +716,7 @@ func validateSubscribeImplementationShapes[T any](impls []middleware.ServerImple
 		case func(context.Context, *pahomqtt5.Publish, *T) (map[string][]string, error):
 		case func(func(context.Context, T) error) func(context.Context, T) error:
 		default:
-			return middleware.MiddlewareShapeError{
+			return events.MiddlewareShapeError{
 				Name:     impl.Name,
 				Expected: "func(context.Context, *pahomqtt5.Publish, *T) (map[string][]string, error) or func(func(context.Context, T) error) func(context.Context, T) error",
 				Got:      fmt.Sprintf("%T", impl.Fn),
@@ -826,7 +826,7 @@ func subscribeWithHandle[T any](
 	return nil
 }
 
-// runPublishSecurityImpls runs every attached [middleware.ClientImplementation]
+// runPublishSecurityImpls runs every attached [events.ClientImplementation]
 // whose Fn matches the revised security shape
 // (func(context.Context, *T, []route.SecurityRequirement) ([]UserProperty, error))
 // — GATED by Satisfies vs secReqs, mirroring adapters/nethttp's
@@ -837,7 +837,7 @@ func subscribeWithHandle[T any](
 // embedding); returned UserProperty slices are merged, in attachment
 // order. General-purpose wrapping-shaped Fns are silently skipped here
 // (consumed instead by [wrapPublishGeneral]).
-func runPublishSecurityImpls[T any](ctx context.Context, msg *T, secReqs []route.SecurityRequirement, impls []middleware.ClientImplementation) ([]UserProperty, error) {
+func runPublishSecurityImpls[T any](ctx context.Context, msg *T, secReqs []route.SecurityRequirement, impls []events.ClientImplementation) ([]UserProperty, error) {
 	reqSchemes := make(map[string]bool, len(secReqs))
 	for _, req := range secReqs {
 		for scheme := range req {
@@ -878,7 +878,7 @@ func runPublishSecurityImpls[T any](ctx context.Context, msg *T, secReqs []route
 // subscribe-side sibling, deliberately symmetric. Security-shaped Fns are
 // silently skipped here (consumed instead by [runPublishSecurityImpls]).
 // This is the mechanism [Observability] uses on the publish side.
-func wrapPublishGeneral[T any](fn func(context.Context, T) error, impls []middleware.ClientImplementation) func(context.Context, T) error {
+func wrapPublishGeneral[T any](fn func(context.Context, T) error, impls []events.ClientImplementation) func(context.Context, T) error {
 	for i := len(impls) - 1; i >= 0; i-- {
 		wrap, ok := impls[i].Fn.(func(func(context.Context, T) error) func(context.Context, T) error)
 		if !ok {
@@ -900,7 +900,7 @@ func wrapPublishGeneral[T any](fn func(context.Context, T) error, impls []middle
 // ClientMW, which recognizes only one — see
 // docs/design/d-0002-pubsub-workflow-simplification.md's "General-purpose
 // (non-spec) Fn shapes" subsection for why pub/sub's PublishMW gets both).
-func validatePublishImplementationShapes[T any](impls []middleware.ClientImplementation) error {
+func validatePublishImplementationShapes[T any](impls []events.ClientImplementation) error {
 	for _, impl := range impls {
 		if impl.Fn == nil {
 			continue
@@ -909,7 +909,7 @@ func validatePublishImplementationShapes[T any](impls []middleware.ClientImpleme
 		case func(context.Context, *T, []route.SecurityRequirement) ([]UserProperty, error):
 		case func(func(context.Context, T) error) func(context.Context, T) error:
 		default:
-			return middleware.MiddlewareShapeError{
+			return events.MiddlewareShapeError{
 				Name:     impl.Name,
 				Expected: "func(context.Context, *T, []route.SecurityRequirement) ([]UserProperty, error) or func(func(context.Context, T) error) func(context.Context, T) error",
 				Got:      fmt.Sprintf("%T", impl.Fn),

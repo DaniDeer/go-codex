@@ -5,8 +5,7 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/DaniDeer/go-codex/internal/middleware"
-	"github.com/DaniDeer/go-codex/internal/route"
+	"github.com/DaniDeer/go-codex/api/events"
 )
 
 // This file holds the reflection-only mirrors of adapter.go's generic
@@ -32,7 +31,7 @@ import (
 // publish[T] pipeline exactly.
 //
 // Per docs/design/d-0006-protocol-native-capabilities.md's Phase 4e:
-// middleware.ServerImplementation/ClientImplementation are ALREADY
+// events.ServerImplementation/ClientImplementation are ALREADY
 // non-generic (Fn any) — impl.Fn's boxed value is ALREADY a concretely-T
 // Go closure built at declare time, reachable via
 // reflect.ValueOf(impl.Fn).Call(...) without this package ever needing
@@ -41,13 +40,13 @@ import (
 var (
 	dispatchCtxType = reflect.TypeOf((*context.Context)(nil)).Elem()
 	dispatchErrType = reflect.TypeOf((*error)(nil)).Elem()
-	dispatchSecReqs = reflect.TypeOf([]route.SecurityRequirement(nil))
+	dispatchSecReqs = reflect.TypeOf([]events.SecurityRequirement(nil))
 )
 
 // buildSubscribeSecurityFnType returns the reflect.Type every
-// security-shaped [middleware.ServerImplementation.Fn] must match for a
+// security-shaped [events.ServerImplementation.Fn] must match for a
 // channel whose decoded payload type is tType —
-// func(context.Context, *T, []route.SecurityRequirement) error.
+// func(context.Context, *T, []events.SecurityRequirement) error.
 func buildSubscribeSecurityFnType(tType reflect.Type) reflect.Type {
 	return reflect.FuncOf(
 		[]reflect.Type{dispatchCtxType, reflect.PointerTo(tType), dispatchSecReqs},
@@ -57,9 +56,9 @@ func buildSubscribeSecurityFnType(tType reflect.Type) reflect.Type {
 }
 
 // buildPublishSecurityFnType returns the reflect.Type every
-// security-shaped [middleware.ClientImplementation.Fn] must match for a
+// security-shaped [events.ClientImplementation.Fn] must match for a
 // channel whose payload type is tType —
-// func(context.Context, *T, []route.SecurityRequirement) error — the
+// func(context.Context, *T, []events.SecurityRequirement) error — the
 // SAME shape as the subscribe side (zeromq's simpler, no-grants design,
 // unlike mqtt5's User-Property-driven shape).
 func buildPublishSecurityFnType(tType reflect.Type) reflect.Type {
@@ -80,11 +79,11 @@ func buildPubSubGeneralDecoratorFnType(handlerFnType reflect.Type) reflect.Type 
 
 // validateClientImplementationShapesReflect is the reflection-only
 // mirror of [validatePublishImplementationShapes][T] — every attached
-// [middleware.ClientImplementation.Fn] must match EITHER secFnType or
+// [events.ClientImplementation.Fn] must match EITHER secFnType or
 // generalFnType, checked EAGERLY (once, before any network activity) —
-// a malformed Fn fails loudly via [middleware.MiddlewareShapeError],
+// a malformed Fn fails loudly via [events.MiddlewareShapeError],
 // never silently.
-func validateClientImplementationShapesReflect(impls []middleware.ClientImplementation, secFnType, generalFnType reflect.Type) error {
+func validateClientImplementationShapesReflect(impls []events.ClientImplementation, secFnType, generalFnType reflect.Type) error {
 	for _, impl := range impls {
 		if impl.Fn == nil {
 			continue
@@ -93,7 +92,7 @@ func validateClientImplementationShapesReflect(impls []middleware.ClientImplemen
 		if fnVal.Type() == secFnType || fnVal.Type() == generalFnType {
 			continue
 		}
-		return middleware.MiddlewareShapeError{
+		return events.MiddlewareShapeError{
 			Name:     impl.Name,
 			Expected: fmt.Sprintf("%s or %s", secFnType, generalFnType),
 			Got:      fmt.Sprintf("%T", impl.Fn),
@@ -108,7 +107,7 @@ func validateClientImplementationShapesReflect(impls []middleware.ClientImplemen
 // in attachment order — the reflection-only mirror of
 // [wrapSubscribeGeneral][T]. Security-shaped Fns are silently skipped
 // (consumed instead by [runSubscribeSecurityImplsReflect]).
-func wrapServerGeneralDecoratorReflect(fn reflect.Value, impls []middleware.ServerImplementation, generalFnType reflect.Type) reflect.Value {
+func wrapServerGeneralDecoratorReflect(fn reflect.Value, impls []events.ServerImplementation, generalFnType reflect.Type) reflect.Value {
 	for i := len(impls) - 1; i >= 0; i-- {
 		fnVal := reflect.ValueOf(impls[i].Fn)
 		if !fnVal.IsValid() || fnVal.Type() != generalFnType {
@@ -122,7 +121,7 @@ func wrapServerGeneralDecoratorReflect(fn reflect.Value, impls []middleware.Serv
 // wrapClientGeneralDecoratorReflect is
 // [wrapServerGeneralDecoratorReflect]'s publish-side sibling — the
 // reflection-only mirror of [wrapPublishGeneral][T].
-func wrapClientGeneralDecoratorReflect(fn reflect.Value, impls []middleware.ClientImplementation, generalFnType reflect.Type) reflect.Value {
+func wrapClientGeneralDecoratorReflect(fn reflect.Value, impls []events.ClientImplementation, generalFnType reflect.Type) reflect.Value {
 	for i := len(impls) - 1; i >= 0; i-- {
 		fnVal := reflect.ValueOf(impls[i].Fn)
 		if !fnVal.IsValid() || fnVal.Type() != generalFnType {
@@ -137,7 +136,7 @@ func wrapClientGeneralDecoratorReflect(fn reflect.Value, impls []middleware.Clie
 // [runSubscribeSecurityImpls][T]. ctxVal/valuePtr are reflect.Value
 // wrappers around (context.Context, *T) — valuePtr MUST be addressable
 // (a security Fn may write into it).
-func runSubscribeSecurityImplsReflect(ctxVal, valuePtr reflect.Value, secReqs []route.SecurityRequirement, impls []middleware.ServerImplementation, secFnType reflect.Type) error {
+func runSubscribeSecurityImplsReflect(ctxVal, valuePtr reflect.Value, secReqs []events.SecurityRequirement, impls []events.ServerImplementation, secFnType reflect.Type) error {
 	secReqsVal := reflect.ValueOf(secReqs)
 	for _, impl := range impls {
 		fnVal := reflect.ValueOf(impl.Fn)
@@ -159,7 +158,7 @@ func runSubscribeSecurityImplsReflect(ctxVal, valuePtr reflect.Value, secReqs []
 // publish-side sibling — the reflection-only mirror of
 // [runPublishSecurityImpls][T]. GATED by Satisfies vs secReqs, mirroring
 // adapter.go's own gating.
-func runPublishSecurityImplsReflect(ctxVal, valuePtr reflect.Value, secReqs []route.SecurityRequirement, impls []middleware.ClientImplementation, secFnType reflect.Type) error {
+func runPublishSecurityImplsReflect(ctxVal, valuePtr reflect.Value, secReqs []events.SecurityRequirement, impls []events.ClientImplementation, secFnType reflect.Type) error {
 	reqSchemes := make(map[string]bool, len(secReqs))
 	for _, req := range secReqs {
 		for scheme := range req {
@@ -235,23 +234,23 @@ func publishHandlerOptsFields(handlerOptsField reflect.Value) (caps []Capability
 	return caps
 }
 
-// resolveSecReqsReflect resolves the effective [route.SecurityRequirement]
+// resolveSecReqsReflect resolves the effective [events.SecurityRequirement]
 // slice for a channel's Subscribe or Publish operation (opField is
 // "Subscribe" or "Publish"), falling back to GlobalSecurity. elem is the
 // [events.ChannelHandle] struct value (NOT a pointer) recovered via
 // [recoverHandle].
-func resolveSecReqsReflect(elem reflect.Value, opField string) []route.SecurityRequirement {
+func resolveSecReqsReflect(elem reflect.Value, opField string) []events.SecurityRequirement {
 	descriptor := elem.FieldByName("Descriptor")
 	opPtr := descriptor.FieldByName(opField)
 	if opPtr.IsValid() && !opPtr.IsNil() {
 		secField := opPtr.Elem().FieldByName("Security")
 		if secField.IsValid() {
-			if secReqs, _ := secField.Interface().([]route.SecurityRequirement); secReqs != nil {
+			if secReqs, _ := secField.Interface().([]events.SecurityRequirement); secReqs != nil {
 				return secReqs
 			}
 		}
 	}
-	global, _ := elem.FieldByName("GlobalSecurity").Interface().([]route.SecurityRequirement)
+	global, _ := elem.FieldByName("GlobalSecurity").Interface().([]events.SecurityRequirement)
 	return global
 }
 

@@ -185,12 +185,12 @@ func callVarsMethod(handleVal, reqVal reflect.Value, methodName string) (map[str
 // CALL [mergeCredentialHeaders]/[rest.ValidateSecurityCredentials] themselves
 // (both are already non-generic), only to REACH these plain-typed struct
 // fields on a type-erased handle value.
-func resolveClientSecurity(elem, descriptor reflect.Value) (secReqs []route.SecurityRequirement, clientImpls []middleware.ClientImplementation, secSchemes map[string]rest.SecurityScheme) {
+func resolveClientSecurity(elem, descriptor reflect.Value) (secReqs []route.SecurityRequirement, clientImpls []rest.ClientImplementation, secSchemes map[string]rest.SecurityScheme) {
 	secReqs, _ = descriptor.FieldByName("Security").Interface().([]route.SecurityRequirement)
 	if secReqs == nil {
 		secReqs, _ = elem.FieldByName("GlobalSecurity").Interface().([]route.SecurityRequirement)
 	}
-	clientImpls, _ = elem.FieldByName("ClientImplementations").Interface().([]middleware.ClientImplementation)
+	clientImpls, _ = elem.FieldByName("ClientImplementations").Interface().([]rest.ClientImplementation)
 	secSchemes, _ = elem.FieldByName("SecuritySchemes").Interface().(map[string]rest.SecurityScheme)
 	return secReqs, clientImpls, secSchemes
 }
@@ -222,7 +222,7 @@ func resolveFormatsArg(overrideAny any, expectedType reflect.Type, direction str
 // shared contract via reflection instead of a static generic type
 // assertion (Req/Resp/Event are runtime-only here). Credential-shaped Fns
 // (non-empty Satisfies) are skipped — consumed elsewhere.
-func wrapGeneralPurposeFn(impls []middleware.ClientImplementation, wrapType reflect.Type, next reflect.Value) reflect.Value {
+func wrapGeneralPurposeFn(impls []rest.ClientImplementation, wrapType reflect.Type, next reflect.Value) reflect.Value {
 	for i := len(impls) - 1; i >= 0; i-- {
 		impl := impls[i]
 		if len(impl.Satisfies) > 0 {
@@ -246,7 +246,7 @@ func wrapGeneralPurposeFn(impls []middleware.ClientImplementation, wrapType refl
 // wrapType, Req/Resp-concrete at THIS call site even though this
 // function itself never learns Req/Resp by name) — a nil Fn (spec-only/
 // no-op implementation) is always allowed.
-func validateClientImplementationShapesReflect(impls []middleware.ClientImplementation, wrapType reflect.Type) error {
+func validateClientImplementationShapesReflect(impls []rest.ClientImplementation, wrapType reflect.Type) error {
 	credType := reflect.TypeOf(func(context.Context, []route.SecurityRequirement) (http.Header, error) { return nil, nil })
 	for _, impl := range impls {
 		if impl.Fn == nil {
@@ -256,7 +256,7 @@ func validateClientImplementationShapesReflect(impls []middleware.ClientImplemen
 		if fnType == credType || fnType == wrapType {
 			continue
 		}
-		return middleware.MiddlewareShapeError{
+		return rest.MiddlewareShapeError{
 			Name:     impl.Name,
 			Expected: "func(context.Context, []route.SecurityRequirement) (http.Header, error) or func(next func(context.Context, Req) (Resp, error)) func(context.Context, Req) (Resp, error)",
 			Got:      fmt.Sprintf("%T", impl.Fn),

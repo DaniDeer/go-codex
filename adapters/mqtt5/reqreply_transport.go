@@ -425,7 +425,7 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 	// per message) and coverage-checked against the route's declared
 	// security requirements, mirroring adapters/nethttp's identical
 	// build-time checks.
-	impls, _ := elem.FieldByName("Implementations").Interface().([]middleware.ServerImplementation)
+	impls, _ := elem.FieldByName("Implementations").Interface().([]reqreply.ServerImplementation)
 	if err := validateServerImplementationShapes(path, impls); err != nil {
 		return err
 	}
@@ -465,7 +465,7 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 	// [validateUserProperties]/[MissingUserPropertyError]/
 	// [UserPropertyError] machinery the old mechanism already uses — the
 	// failure MODE is identical, only the attachment surface differs.
-	requestHeaderSpecs, _ := elem.FieldByName("RequestHeaderParams").Interface().([]middleware.HeaderParamSpec)
+	requestHeaderSpecs, _ := elem.FieldByName("RequestHeaderParams").Interface().([]reqreply.HeaderParamSpec)
 	requestHeaderParams := userPropertyParamsFromHeaderSpecs(requestHeaderSpecs)
 
 	// docs/design/d-0003-codec-declared-middlewares.md's Addendum: codec-backed
@@ -744,7 +744,7 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 		// previously, a route with ONLY bound MiddlewareHandlers (no
 		// legacy Implementations) never had its scopes checked at all.
 		if len(secReqs) > 0 {
-			if err := middleware.CheckScopes(secReqs, granted); err != nil {
+			if err := reqreply.CheckScopes(secReqs, granted); err != nil {
 				if secObs, ok := obs.(stats.SecurityObserver); ok {
 					secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
 				}
@@ -1186,7 +1186,7 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 	// (func(next func(ctx,Req)(Resp,error)) func(ctx,Req)(Resp,error))
 	// used elsewhere in the codebase, without knowing Req/Resp at compile
 	// time.
-	clientImpls, _ := elem.FieldByName("ClientImplementations").Interface().([]middleware.ClientImplementation)
+	clientImpls, _ := elem.FieldByName("ClientImplementations").Interface().([]reqreply.ClientImplementation)
 	respType := elem.FieldByName("DecodeResponse").Type().Out(0)
 	wantGeneralFnType := reflect.FuncOf(
 		[]reflect.Type{reflect.TypeOf((*context.Context)(nil)).Elem(), reqType},
@@ -1208,7 +1208,7 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 	// validated against the reply message's User Properties inside
 	// innerCall below, reusing the SAME [validateUserProperties]
 	// machinery the request side (and the OLD escape hatch) already use.
-	responseHeaderSpecs, _ := elem.FieldByName("ResponseHeaderParams").Interface().([]middleware.ResponseHeaderParamSpec)
+	responseHeaderSpecs, _ := elem.FieldByName("ResponseHeaderParams").Interface().([]reqreply.ResponseHeaderParamSpec)
 	responseHeaderParams := userPropertyParamsFromResponseHeaderSpecs(responseHeaderSpecs)
 
 	// innerCall is the "encode → security/credential → publish → await
@@ -1433,7 +1433,7 @@ var _ reqreply.ClientTransport = (*clientTransport)(nil)
 // verifies credentials (already codec-format-validated by
 // validateSecurityCredentials before this runs) and returns a scope-grant
 // map, combined across every attached paired implementation via
-// [middleware.CheckScopes] — mirrors [adapters/nethttp]'s identical
+// [reqreply.CheckScopes] — mirrors [adapters/nethttp]'s identical
 // scope-grant model (Decision #4 of docs/design/d-0004-reqreply-workflow-simplification.md's Addendum),
 // NOT zeromq's own in-payload *Req shape (each transport adapter mirrors
 // its OWN precedent, an intentional per-adapter difference, not an
@@ -1451,7 +1451,7 @@ var serverGeneralFnType = reflect.TypeOf((func(func(*pahomqtt5.Publish)) func(*p
 // construction time (once per route, not per message) — a malformed Fn
 // fails loudly and immediately, mirroring
 // [adapters/nethttp]'s validateImplementationShapesReflect.
-func validateServerImplementationShapes(routeLabel string, impls []middleware.ServerImplementation) error {
+func validateServerImplementationShapes(routeLabel string, impls []reqreply.ServerImplementation) error {
 	for _, impl := range impls {
 		if impl.Fn == nil {
 			continue
@@ -1460,7 +1460,7 @@ func validateServerImplementationShapes(routeLabel string, impls []middleware.Se
 		if fnType == serverSecurityFnType || fnType == serverGeneralFnType {
 			continue
 		}
-		return middleware.MiddlewareShapeError{
+		return reqreply.MiddlewareShapeError{
 			Name:     impl.Name,
 			Expected: "func(context.Context, *pahomqtt5.Publish, []route.SecurityRequirement) (map[string][]string, error) or func(func(*pahomqtt5.Publish)) func(*pahomqtt5.Publish)",
 			Got:      fmt.Sprintf("%T", impl.Fn),
@@ -1473,7 +1473,7 @@ func validateServerImplementationShapes(routeLabel string, impls []middleware.Se
 // in impls, OUTERMOST-in, in attachment order — mirrors
 // [adapters/nethttp]'s applyGeneralMiddleware exactly, adapted to mqtt5's
 // per-message handler shape.
-func applyGeneralServerMiddleware(h func(*pahomqtt5.Publish), impls []middleware.ServerImplementation) func(*pahomqtt5.Publish) {
+func applyGeneralServerMiddleware(h func(*pahomqtt5.Publish), impls []reqreply.ServerImplementation) func(*pahomqtt5.Publish) {
 	for i := len(impls) - 1; i >= 0; i-- {
 		fn, ok := impls[i].Fn.(func(func(*pahomqtt5.Publish)) func(*pahomqtt5.Publish))
 		if !ok {
@@ -1487,20 +1487,20 @@ func applyGeneralServerMiddleware(h func(*pahomqtt5.Publish), impls []middleware
 // runServerSecurityMiddleware runs every attached paired security Fn IN
 // ATTACHMENT ORDER (fail-fast on the first one whose OWN verification
 // errors), merges their returned grants into ONE map, then performs a
-// SINGLE [middleware.CheckScopes] call — mirrors
+// SINGLE [reqreply.CheckScopes] call — mirrors
 // [adapters/nethttp]'s runSecurityMiddleware exactly. An implementation
 // with an EMPTY Satisfies always runs; a NON-EMPTY Satisfies only runs
 // when secReqs is non-empty (mirrors REST's identical gating rationale:
 // an unsecured route must not authenticate credentials it never asked
 // for).
 // docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase C: this
-// NO LONGER calls [middleware.CheckScopes] itself (previously did, in
+// NO LONGER calls [reqreply.CheckScopes] itself (previously did, in
 // isolation) — the caller now merges THIS map with any bound
 // [reqreply.MiddlewareHandler]'s own `GrantedScopes` (via
 // [scopesmerge.MergeHandlerGrants] — reused verbatim, the merge logic
 // is transport/package-agnostic) before a SINGLE, UNIFIED CheckScopes
 // call covering BOTH mechanisms.
-func runServerSecurityMiddleware(ctx context.Context, msg *pahomqtt5.Publish, impls []middleware.ServerImplementation, secReqs []route.SecurityRequirement) (map[string][]string, error) {
+func runServerSecurityMiddleware(ctx context.Context, msg *pahomqtt5.Publish, impls []reqreply.ServerImplementation, secReqs []route.SecurityRequirement) (map[string][]string, error) {
 	granted := make(map[string][]string)
 	for _, impl := range impls {
 		fn, ok := impl.Fn.(func(context.Context, *pahomqtt5.Publish, []route.SecurityRequirement) (map[string][]string, error))
@@ -1534,7 +1534,7 @@ var clientCredentialFnType = reflect.TypeOf((func(context.Context, []route.Secur
 // [adapters/nethttp]'s validateCallImplementationShapes. generalFnType is
 // built by the caller (reflect-only, since Req/Resp are erased at this
 // dispatcher's call site).
-func validateClientImplementationShapes(impls []middleware.ClientImplementation, generalFnType reflect.Type) error {
+func validateClientImplementationShapes(impls []reqreply.ClientImplementation, generalFnType reflect.Type) error {
 	for _, impl := range impls {
 		if impl.Fn == nil {
 			continue
@@ -1543,7 +1543,7 @@ func validateClientImplementationShapes(impls []middleware.ClientImplementation,
 		if fnType == clientCredentialFnType || fnType == generalFnType {
 			continue
 		}
-		return middleware.MiddlewareShapeError{
+		return reqreply.MiddlewareShapeError{
 			Name:     impl.Name,
 			Expected: fmt.Sprintf("func(context.Context, []route.SecurityRequirement) ([]mqtt5.UserProperty, error) or %s", generalFnType),
 			Got:      fmt.Sprintf("%T", impl.Fn),
@@ -1559,7 +1559,7 @@ func validateClientImplementationShapes(impls []middleware.ClientImplementation,
 // the client never judges its own authorization, only the server does).
 // GATED by Satisfies vs secReqs, the SAME correctness rule
 // mergeCredentialHeaders applies.
-func mergeCredentialUserProperties(ctx context.Context, secReqs []route.SecurityRequirement, impls []middleware.ClientImplementation) (combined []UserProperty, ran bool, err error) {
+func mergeCredentialUserProperties(ctx context.Context, secReqs []route.SecurityRequirement, impls []reqreply.ClientImplementation) (combined []UserProperty, ran bool, err error) {
 	reqSchemes := make(map[string]bool, len(secReqs))
 	for _, req := range secReqs {
 		for scheme := range req {
@@ -1594,13 +1594,13 @@ func mergeCredentialUserProperties(ctx context.Context, secReqs []route.Security
 }
 
 // userPropertyParamsFromHeaderSpecs converts declared
-// [middleware.HeaderParamSpec] values (attached via
+// [reqreply.HeaderParamSpec] values (attached via
 // [reqreply.Route.Use]/[reqreply.Middleware.WithRequestPropertySpec])
 // back into [UserPropertyParam] values — field-for-field identical
 // shapes (Name, Description, Required, Codec *codex.Codec[string]) — so
 // [validateUserProperties] can be reused unchanged for this request-side
 // attachment surface.
-func userPropertyParamsFromHeaderSpecs(specs []middleware.HeaderParamSpec) []UserPropertyParam {
+func userPropertyParamsFromHeaderSpecs(specs []reqreply.HeaderParamSpec) []UserPropertyParam {
 	if len(specs) == 0 {
 		return nil
 	}
@@ -1613,10 +1613,10 @@ func userPropertyParamsFromHeaderSpecs(specs []middleware.HeaderParamSpec) []Use
 
 // userPropertyParamsFromResponseHeaderSpecs is
 // [userPropertyParamsFromHeaderSpecs]'s reply/response-side sibling —
-// converts [middleware.ResponseHeaderParamSpec] values (attached via
+// converts [reqreply.ResponseHeaderParamSpec] values (attached via
 // [reqreply.Middleware.WithResponsePropertySpec]) into [UserPropertyParam]
 // values for [NewClientTransport]'s reply-message validation.
-func userPropertyParamsFromResponseHeaderSpecs(specs []middleware.ResponseHeaderParamSpec) []UserPropertyParam {
+func userPropertyParamsFromResponseHeaderSpecs(specs []reqreply.ResponseHeaderParamSpec) []UserPropertyParam {
 	if len(specs) == 0 {
 		return nil
 	}
@@ -1638,6 +1638,6 @@ func userPropertyParamsFromResponseHeaderSpecs(specs []middleware.ResponseHeader
 //	var authProp = reqreply.PropertyParam{Param: codex.Param{Name: "Authorization"}, Required: true}
 //
 //	route := reqreply.NewRoute[Req, Resp]("compute/add", reqCodec, respCodec,
-//	).Use(reqreply.NewMiddleware[struct{}, struct{}](middleware.Declaration[struct{}, struct{}]{
+//	).Use(reqreply.NewMiddleware[struct{}, struct{}](reqreply.Declaration[struct{}, struct{}]{
 //	    Name: "declare-authorization-property",
 //	}).WithRequestPropertySpec(authProp))

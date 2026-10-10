@@ -43,7 +43,7 @@ import (
 // subscriberRoute holds one compiled, ready-to-dispatch
 // [events.SubscriberEntry] — built once by [buildSubscriberRoute] before
 // the shared receive loop starts, so a malformed attached
-// [middleware.ServerImplementation] Fn fails loudly at ServeSubscribers
+// [events.ServerImplementation] Fn fails loudly at ServeSubscribers
 // construction time, never silently at message time.
 type subscriberRoute struct {
 	topic     string // the channel's topic template, e.g. "sensors/{sensorID}/data"
@@ -51,10 +51,10 @@ type subscriberRoute struct {
 	handleVal reflect.Value
 	next      reflect.Value // func(context.Context, T) error — Handler wrapped with general-purpose MW
 	// implSecurity holds every attached security-shaped
-	// [middleware.ServerImplementation] (from [events.Subscriber.SubscribeMW]),
+	// [events.ServerImplementation] (from [events.Subscriber.SubscribeMW]),
 	// run in attachment order, mirroring [runSubscribeSecurityImpls]'s
 	// ordering on the generic [subscribeWithHandle] path.
-	implSecurity []middleware.ServerImplementation
+	implSecurity []events.ServerImplementation
 	// errorResponseForMethod/deadLetterForMethod are handleVal's own
 	// [events.ChannelHandle.ErrorResponseFor]/[events.ChannelHandle.DeadLetterFor]
 	// methods (reflect-bound once here) — CORRECTED: this ServeSubscribers
@@ -64,7 +64,7 @@ type subscriberRoute struct {
 	// triplet. Mirrors mqtt5's/mqtt's identical, belated fix.
 	errorResponseForMethod reflect.Value
 	deadLetterForMethod    reflect.Value
-	secReqs                []route.SecurityRequirement
+	secReqs                []events.SecurityRequirement
 	onError                func(SubscribeError)
 	observer               stats.Observer
 	// capabilities holds this route's declared [SubscribeOptions.Capabilities]
@@ -110,14 +110,14 @@ func buildSubscriberRoute(entry events.SubscriberEntry) (*subscriberRoute, error
 	}
 	msgType := handlerVal.Type().In(1) // T
 
-	impls, _ := elem.FieldByName("Implementations").Interface().([]middleware.ServerImplementation)
+	impls, _ := elem.FieldByName("Implementations").Interface().([]events.ServerImplementation)
 	if err := validateSubscribeImplementationShapesReflect(topic, msgType, impls); err != nil {
 		return nil, err
 	}
 
 	descriptor, _ := elem.FieldByName("Descriptor").Interface().(asyncapi.ChannelItem)
-	globalSecurity, _ := elem.FieldByName("GlobalSecurity").Interface().([]route.SecurityRequirement)
-	var secReqs []route.SecurityRequirement
+	globalSecurity, _ := elem.FieldByName("GlobalSecurity").Interface().([]events.SecurityRequirement)
+	var secReqs []events.SecurityRequirement
 	if descriptor.Subscribe != nil {
 		secReqs = descriptor.Subscribe.Security
 	}
@@ -148,7 +148,7 @@ func buildSubscriberRoute(entry events.SubscriberEntry) (*subscriberRoute, error
 	// Every security-shaped impl.Fn (NumIn == 3) is collected separately
 	// from the general-purpose ones already folded into next above — see
 	// [subscriberRoute.implSecurity]'s doc comment.
-	var securityImpls []middleware.ServerImplementation
+	var securityImpls []events.ServerImplementation
 	for _, impl := range impls {
 		fnVal := reflect.ValueOf(impl.Fn)
 		if fnVal.IsValid() && fnVal.Kind() == reflect.Func && fnVal.Type().NumIn() == 3 {
@@ -189,12 +189,12 @@ func buildSubscriberRoute(entry events.SubscriberEntry) (*subscriberRoute, error
 // expected security/general-purpose Fn shapes dynamically instead of via
 // a static type parameter. Mirrors
 // [adapters/nethttp.validateImplementationShapesReflect].
-func validateSubscribeImplementationShapesReflect(topic string, msgType reflect.Type, impls []middleware.ServerImplementation) error {
+func validateSubscribeImplementationShapesReflect(topic string, msgType reflect.Type, impls []events.ServerImplementation) error {
 	securityType := reflect.FuncOf(
 		[]reflect.Type{
 			reflect.TypeOf((*context.Context)(nil)).Elem(),
 			reflect.PointerTo(msgType),
-			reflect.TypeOf([]route.SecurityRequirement(nil)),
+			reflect.TypeOf([]events.SecurityRequirement(nil)),
 		},
 		[]reflect.Type{reflect.TypeOf((*error)(nil)).Elem()},
 		false,
@@ -214,9 +214,9 @@ func validateSubscribeImplementationShapesReflect(topic string, msgType reflect.
 		if fnType == securityType || fnType == generalType {
 			continue
 		}
-		return middleware.MiddlewareShapeError{
+		return events.MiddlewareShapeError{
 			Name:     impl.Name,
-			Expected: "func(context.Context, *T, []route.SecurityRequirement) error or func(func(context.Context, T) error) func(context.Context, T) error",
+			Expected: "func(context.Context, *T, []events.SecurityRequirement) error or func(func(context.Context, T) error) func(context.Context, T) error",
 			Got:      fmt.Sprintf("%T", impl.Fn),
 		}
 	}
@@ -441,7 +441,7 @@ func (r *subscriberRoute) processMessage(ctx context.Context, sock FramedSocket,
 		granted := make(map[string][]string)
 		scopesmerge.MergeHandlerGrants(granted, r.middlewareSatisfies, outs)
 		if len(r.secReqs) > 0 && scopesmerge.HasSatisfyingHandler(r.middlewareSatisfies) {
-			if err := middleware.CheckScopes(r.secReqs, granted); err != nil {
+			if err := events.CheckScopes(r.secReqs, granted); err != nil {
 				if secObs, ok := obs.(stats.SecurityObserver); ok {
 					secObs.RecordSecurityRejection(topic, route.FirstSchemeName(r.secReqs))
 				}

@@ -12,7 +12,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/internal"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/internal/middleware"
 	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/schema"
 )
@@ -272,7 +271,7 @@ type RouteMeta struct {
 	// Security, when non-nil, overrides global security for this route.
 	// Pass an empty slice to declare "no auth required" for this route.
 	// nil (default) inherits global security declared via [Builder.AddGlobalSecurity].
-	Security []route.SecurityRequirement
+	Security []SecurityRequirement
 }
 
 func (m RouteMeta) applyRoute(rb *routeBuilder) { rb.meta = m }
@@ -305,7 +304,7 @@ func (m RouteMeta) applyRoute(rb *routeBuilder) { rb.meta = m }
 //
 // Use [SecurityScheme.WithCodec] to set the Codec field inline without a
 // temporary variable:
-// reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(c)
+// reqreply.SecurityScheme{SecurityScheme: BearerScheme("JWT")}.WithCodec(c)
 type SecurityScheme struct {
 	route.SecurityScheme
 	// Codec, when non-nil, validates the extracted raw credential string.
@@ -318,7 +317,7 @@ type SecurityScheme struct {
 // temporary-variable + address-of pattern required when setting Codec inline:
 //
 //	reqreply.WithSecurityScheme("bearerAuth", reqreply.SecurityScheme{
-//	    SecurityScheme: route.BearerScheme("JWT"),
+//	    SecurityScheme: BearerScheme("JWT"),
 //	}.WithCodec(codex.String().Refine(validate.BearerToken)))
 func (s SecurityScheme) WithCodec(c codex.Codec[string]) SecurityScheme {
 	s.Codec = &c
@@ -360,12 +359,12 @@ func (o securitySchemeOpt) applyRoute(rb *routeBuilder) {
 // Define a scheme once as a package-level value and reuse it across every
 // route that shares it:
 //
-//	var bearerAuth = reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.
+//	var bearerAuth = reqreply.SecurityScheme{SecurityScheme: BearerScheme("JWT")}.
 //	    WithCodec(codex.String().Refine(validate.BearerToken))
 //
 //	var ComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 //	    "compute/add", computeReqCodec, computeRespCodec,
-//	    reqreply.RouteMeta{Security: []route.SecurityRequirement{route.Require("bearerAuth")}},
+//	    reqreply.RouteMeta{Security: []SecurityRequirement{Require("bearerAuth")}},
 //	    reqreply.WithSecurityScheme("bearerAuth", bearerAuth),
 //	)
 //
@@ -380,7 +379,7 @@ func WithSecurityScheme(name string, scheme SecurityScheme) RouteOpt {
 // SecurityMiddleware, GENERALIZED over In/Out (docs/roadmap/declarative-
 // middleware-layering.md's Rollout Phase C, mirroring `rest`'s/`events`'
 // identical Phase A/B generalization), builds a [Middleware][In, Out]
-// carrying a [middleware.SecurityDeclaration]. Attached ONLY via
+// carrying a [SecurityDeclaration]. Attached ONLY via
 // `.Use(...)` (the REUSABLE class — a `Req`-free Fn supplied via
 // [Middleware.WithReceive]/[Middleware.WithSend], reusable verbatim
 // across any number of routes sharing the same scheme). `HandleMW`/
@@ -409,7 +408,7 @@ func WithSecurityScheme(name string, scheme SecurityScheme) RouteOpt {
 //
 // **`Out` MUST carry a field literally named `GrantedScopes
 // map[string][]string`**, read by the adapter via reflection and merged
-// into the SAME [middleware.CheckScopes] call every Security attachment
+// into the SAME [CheckScopes] call every Security attachment
 // uses — REQUIRED even when zero specific scopes are declared. An
 // `Out{}` zero value (nil map) means NOTHING satisfies the scheme at
 // all, silently turning an otherwise-successful Fn into a REJECTION.
@@ -427,11 +426,11 @@ func WithSecurityScheme(name string, scheme SecurityScheme) RouteOpt {
 // generalization first, THEN discovering a nil-codec panic the first
 // time a non-`struct{}` In/Out is actually validated, is avoidable).
 func SecurityMiddleware[In, Out any](schemeName string, scheme SecurityScheme, scopes []string) Middleware[In, Out] {
-	return NewMiddleware[In, Out](middleware.Declaration[In, Out]{
+	return NewMiddleware[In, Out](Declaration[In, Out]{
 		Name:     "declare-security:" + schemeName,
 		InCodec:  codex.Struct[In](),
 		OutCodec: codex.Struct[Out](),
-		Security: middleware.NewSecurityDeclaration(schemeName, scheme.SecurityScheme, scopes, scheme.Codec),
+		Security: NewSecurityDeclaration(schemeName, scheme, scopes),
 	})
 }
 
@@ -475,7 +474,7 @@ func (e SecurityCredentialError) LogValue() slog.Value {
 }
 
 // SecurityError is returned when a legacy raw-adapter-shaped security Fn
-// (paired via `HandleMW`/`ClientMW` against a bare `middleware.Middleware`
+// (paired via `HandleMW`/`ClientMW` against a bare `AttachedMiddleware`
 // value — the ONLY attachment style those two methods accept now; a
 // codec-backed `Middleware[In,Out]`/`BoundMiddleware`'s own rejection
 // surfaces as [MiddlewareError] instead, via `.Use()`/`HandleBoundMW`/
@@ -891,16 +890,16 @@ type routeBuilder struct {
 	// (there is no builder-level equivalent; mirrors rest's/events'
 	// routeBuilder/channelBuilder.securitySchemes).
 	securitySchemes map[string]SecurityScheme
-	// middlewares holds [middleware.Middleware] values attached via
+	// middlewares holds [AttachedMiddleware] values attached via
 	// [Route.Use] — merged into meta.Security/securitySchemes by
 	// [applySecurityDeclarations] at Register/ClientHandle time.
-	middlewares []middleware.Middleware
-	// impls/clientImpls hold [middleware.ServerImplementation]/
-	// [middleware.ClientImplementation] values attached via
+	middlewares []AttachedMiddleware
+	// impls/clientImpls hold [ServerImplementation]/
+	// [ClientImplementation] values attached via
 	// [Route.HandleMW]/[Route.ClientMW] — copied onto the returned
 	// [RouteHandle]'s Implementations/ClientImplementations fields.
-	impls       []middleware.ServerImplementation
-	clientImpls []middleware.ClientImplementation
+	impls       []ServerImplementation
+	clientImpls []ClientImplementation
 	// handleCallback holds a type-erased func(*RouteHandle[Req, Resp]) set
 	// by [WithHandleCallback] — invoked at the end of [Route.Register],
 	// once Req/Resp are concrete. Mirrors [rest.routeBuilder.handleCallback]
@@ -1306,7 +1305,7 @@ func (r Route[Req, Resp]) Register(b *Builder) (*RouteHandle[Req, Resp], error) 
 		ClientImplementations:    rb.clientImpls,
 		Security:                 rb.meta.Security,
 		SecuritySchemes:          schemes,
-		GlobalSecurity:           append([]route.SecurityRequirement(nil), b.globalSecurity...),
+		GlobalSecurity:           append([]SecurityRequirement(nil), b.globalSecurity...),
 		MiddlewareHandlers:       rb.middlewareHandlers,
 		ClientMiddlewareHandlers: rb.clientMiddlewareHandlers,
 		Requirements:             rb.requirements,
@@ -1458,7 +1457,7 @@ type RouteHandle[Req, Resp any] struct {
 	// Adapters resolve the effective requirements as:
 	//   reqs := handle.Security
 	//   if reqs == nil { reqs = handle.GlobalSecurity }
-	Security []route.SecurityRequirement
+	Security []SecurityRequirement
 
 	// SecuritySchemes maps scheme name to SecurityScheme (with runtime Codec).
 	// Populated from the route's own [WithSecurityScheme] declarations — the
@@ -1471,7 +1470,7 @@ type RouteHandle[Req, Resp any] struct {
 	// via [Builder.AddGlobalSecurity]. nil when no global security is
 	// declared, or when the handle came from [Route.ClientHandle] (no
 	// Builder to source it from).
-	GlobalSecurity []route.SecurityRequirement
+	GlobalSecurity []SecurityRequirement
 
 	// Implementations are the server-side middleware implementations
 	// attached via [Route.HandleMW], consulted by the attached
@@ -1479,7 +1478,7 @@ type RouteHandle[Req, Resp any] struct {
 	// per-call/per-Attach `SecurityFunc` option. Populated by
 	// [Route.Register]/[Route.ClientHandle]. Mirrors
 	// [rest.RouteHandle.Implementations].
-	Implementations []middleware.ServerImplementation
+	Implementations []ServerImplementation
 
 	// ClientImplementations are the client-side middleware
 	// implementations attached via [Route.ClientMW], consulted by the
@@ -1487,7 +1486,7 @@ type RouteHandle[Req, Resp any] struct {
 	// a per-call/per-Attach `CredentialFunc` option. Populated by
 	// [Route.Register]/[Route.ClientHandle]. Mirrors
 	// [rest.RouteHandle.ClientImplementations].
-	ClientImplementations []middleware.ClientImplementation
+	ClientImplementations []ClientImplementation
 
 	// RequestHeaderParams/ResponseHeaderParams are the header-param-as-
 	// middleware declarations attached via [Route.Use] (e.g.
@@ -1498,8 +1497,8 @@ type RouteHandle[Req, Resp any] struct {
 	// declared params, in ADDITION to being rendered into the AsyncAPI
 	// request/reply message "headers" schema by [Route.Register].
 	// Populated by [Route.Register]/[Route.ClientHandle].
-	RequestHeaderParams  []middleware.HeaderParamSpec
-	ResponseHeaderParams []middleware.ResponseHeaderParamSpec
+	RequestHeaderParams  []HeaderParamSpec
+	ResponseHeaderParams []ResponseHeaderParamSpec
 
 	// MiddlewareHandlers/ClientMiddlewareHandlers hold the codec-backed
 	// [Middleware][In,Out] runtime dispatch units attached via

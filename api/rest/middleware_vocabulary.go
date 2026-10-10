@@ -63,6 +63,19 @@ type ContextFieldSetter = middleware.ContextFieldSetter
 // [internal/middleware.RouteMiddleware] for the full doc comment.
 type RouteMiddleware = middleware.RouteMiddleware
 
+// AttachedMiddleware is the raw, non-generic marker value — just a Name
+// and an optional Security declaration — satisfying [RouteMiddleware] in
+// its simplest form, as attached via `.Use(...)` and recorded in
+// [RouteHandle.Middlewares]/[SSERouteHandle.Middlewares]. Named
+// "AttachedMiddleware", not the bare "Middleware", because [Middleware]
+// is already taken by this package's own typed GENERIC composite
+// ([Middleware][In, Out]) — the two are unrelated: [Middleware][In, Out]
+// is what a caller BUILDS via [NewMiddleware]; AttachedMiddleware is the
+// type-erased value the router/dispatch machinery actually stores once
+// attached. See [internal/middleware.Middleware] for the full doc
+// comment.
+type AttachedMiddleware = middleware.Middleware
+
 // ServerImplementation is a REGISTER-TIME-ONLY, SERVER-side implementation
 // value — see [internal/middleware.ServerImplementation] for the full doc
 // comment.

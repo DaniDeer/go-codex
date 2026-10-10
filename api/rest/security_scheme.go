@@ -77,3 +77,13 @@ func OpenIDConnectScheme(url string) SecurityScheme {
 func Require(scheme string, scopes ...string) SecurityRequirement {
 	return route.Require(scheme, scopes...)
 }
+
+// RouteDescriptor is the live, protocol-agnostic route descriptor backing
+// [RouteHandle.Descriptor]/[SSERouteHandle.Descriptor] — see
+// [internal/route.Route] for the full doc comment. Named "RouteDescriptor",
+// not the bare "Route", because [Route] is already taken by this
+// package's own fluent BUILDER type ([Route][Req, Resp]) — the two are
+// unrelated: [Route][Req, Resp] is what a caller constructs a route WITH;
+// RouteDescriptor is the resulting spec/metadata snapshot [RouteHandle]
+// carries.
+type RouteDescriptor = route.Route

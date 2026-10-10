@@ -68,12 +68,12 @@ type BoundSubscribeMiddleware[T, In, Out any] struct {
 }
 
 // NewBoundSubscribeMiddleware builds a [BoundSubscribeMiddleware] from a
-// [middleware.Declaration] and its Fn — fn's shape is checked by the
+// [Declaration] and its Fn — fn's shape is checked by the
 // ordinary Go compiler at this call, zero reflection needed to verify
 // arity/types (contrast with the now-removed isBoundSubscribeMWShape/
 // isBoundSubscribeMWShapeWithOut runtime detectors).
 func NewBoundSubscribeMiddleware[T, In, Out any](
-	decl middleware.Declaration[In, Out],
+	decl Declaration[In, Out],
 	fn func(ctx context.Context, msg *T, in In) (Out, error),
 ) BoundSubscribeMiddleware[T, In, Out] {
 	return BoundSubscribeMiddleware[T, In, Out]{mw: NewMiddleware[In, Out](decl), fn: fn}
@@ -85,7 +85,7 @@ func NewBoundSubscribeMiddleware[T, In, Out any](
 //
 // **`Out` MUST carry a field literally named `GrantedScopes
 // map[string][]string`**, read by the adapter via reflection and merged
-// into the SAME [middleware.CheckScopes] call every Security attachment
+// into the SAME [CheckScopes] call every Security attachment
 // uses — REQUIRED even when zero specific scopes are declared. An
 // `Out{}` zero value (nil map) means NOTHING satisfies the scheme at
 // all, silently turning an otherwise-successful Fn into a REJECTION. See
@@ -105,11 +105,11 @@ func BoundSecuritySubscribeMiddleware[T, In, Out any](
 	fn func(ctx context.Context, msg *T, in In) (Out, error),
 ) BoundSubscribeMiddleware[T, In, Out] {
 	return BoundSubscribeMiddleware[T, In, Out]{
-		mw: NewMiddleware[In, Out](middleware.Declaration[In, Out]{
+		mw: NewMiddleware[In, Out](Declaration[In, Out]{
 			Name:     "declare-security:" + schemeName,
 			InCodec:  codex.Struct[In](),
 			OutCodec: codex.Struct[Out](),
-			Security: middleware.NewSecurityDeclaration(schemeName, scheme.SecurityScheme, scopes, scheme.Codec),
+			Security: NewSecurityDeclaration(schemeName, scheme, scopes),
 		}),
 		fn: fn,
 	}
@@ -135,7 +135,7 @@ func (m BoundSubscribeMiddleware[T, In, Out]) WithSubscribePropertySpec(p Proper
 }
 
 // SetContextFieldFromIn mirrors [Middleware.SetContextFieldFromIn].
-func (m BoundSubscribeMiddleware[T, In, Out]) SetContextFieldFromIn(field middleware.ContextFieldSetter, get func(In) any) BoundSubscribeMiddleware[T, In, Out] {
+func (m BoundSubscribeMiddleware[T, In, Out]) SetContextFieldFromIn(field ContextFieldSetter, get func(In) any) BoundSubscribeMiddleware[T, In, Out] {
 	m.mw = m.mw.SetContextFieldFromIn(field, get)
 	return m
 }
@@ -211,9 +211,9 @@ type BoundPublishMiddleware[T, In, Out any] struct {
 }
 
 // NewBoundPublishMiddleware builds a [BoundPublishMiddleware] from a
-// [middleware.Declaration] and its Fn.
+// [Declaration] and its Fn.
 func NewBoundPublishMiddleware[T, In, Out any](
-	decl middleware.Declaration[In, Out],
+	decl Declaration[In, Out],
 	fn func(ctx context.Context, msg T) (Out, error),
 ) BoundPublishMiddleware[T, In, Out] {
 	return BoundPublishMiddleware[T, In, Out]{mw: NewMiddleware[In, Out](decl), fn: fn}
@@ -226,11 +226,11 @@ func BoundSecurityPublishMiddleware[T, In, Out any](
 	fn func(ctx context.Context, msg T) (Out, error),
 ) BoundPublishMiddleware[T, In, Out] {
 	return BoundPublishMiddleware[T, In, Out]{
-		mw: NewMiddleware[In, Out](middleware.Declaration[In, Out]{
+		mw: NewMiddleware[In, Out](Declaration[In, Out]{
 			Name:     "declare-security:" + schemeName,
 			InCodec:  codex.Struct[In](),
 			OutCodec: codex.Struct[Out](),
-			Security: middleware.NewSecurityDeclaration(schemeName, scheme.SecurityScheme, scopes, scheme.Codec),
+			Security: NewSecurityDeclaration(schemeName, scheme, scopes),
 		}),
 		fn: fn,
 	}
@@ -255,7 +255,7 @@ func (m BoundPublishMiddleware[T, In, Out]) WithPublishPropertySpec(p PropertyPa
 }
 
 // SetContextFieldFromOut mirrors [Middleware.SetContextFieldFromOut].
-func (m BoundPublishMiddleware[T, In, Out]) SetContextFieldFromOut(field middleware.ContextFieldSetter, get func(Out) any) BoundPublishMiddleware[T, In, Out] {
+func (m BoundPublishMiddleware[T, In, Out]) SetContextFieldFromOut(field ContextFieldSetter, get func(Out) any) BoundPublishMiddleware[T, In, Out] {
 	m.mw = m.mw.SetContextFieldFromOut(field, get)
 	return m
 }
@@ -329,8 +329,8 @@ func (s *Subscriber[T]) AppendClientMiddlewareHandler(any) {}
 
 func (s *Subscriber[T]) AppendSpecContribution(any) {}
 
-func (s *Subscriber[T]) AppendSecurityDeclaration(name string, sec *middleware.SecurityDeclaration) {
-	s.mws = append(slices.Clone(s.mws), middleware.Middleware{Name: name, Security: sec})
+func (s *Subscriber[T]) AppendSecurityDeclaration(name string, sec *SecurityDeclaration) {
+	s.mws = append(slices.Clone(s.mws), AttachedMiddleware{Name: name, Security: sec})
 }
 
 // Publisher[T]'s [middleware.BoundRouteBuilder] methods — mirrors
@@ -352,8 +352,8 @@ func (p *Publisher[T]) AppendClientMiddlewareHandler(h any) {
 
 func (p *Publisher[T]) AppendSpecContribution(any) {}
 
-func (p *Publisher[T]) AppendSecurityDeclaration(name string, sec *middleware.SecurityDeclaration) {
-	p.mws = append(slices.Clone(p.mws), middleware.Middleware{Name: name, Security: sec})
+func (p *Publisher[T]) AppendSecurityDeclaration(name string, sec *SecurityDeclaration) {
+	p.mws = append(slices.Clone(p.mws), AttachedMiddleware{Name: name, Security: sec})
 }
 
 // BoundMiddlewareReqMismatchError is returned when [Subscriber.SubscribeBoundMW]/
@@ -399,7 +399,7 @@ func (e BoundMiddlewareReqMismatchError) LogValue() slog.Value {
 // ONLY via .Use(); [BoundSubscribeMiddleware]/[BoundPublishMiddleware]
 // attach ONLY via [Subscriber.SubscribeBoundMW]/[Publisher.PublishBoundMW].
 // SubscribeMW/PublishMW are reserved for the general-purpose (mw == nil)
-// decorator case and the bare legacy [middleware.Middleware] type — this
+// decorator case and the bare legacy [AttachedMiddleware] type — this
 // error enforces that split structurally, closing the legacy raw-adapter-
 // Fn-pairing escape hatch for good (see docs/design/d-0003-codec-declared-middlewares.md's Addendum 7's
 // Motivation).

@@ -17,16 +17,16 @@ import (
 // ONCE, at Register/ClientHandle time, via [applySecurityDeclarations] —
 // order-independent regardless of where Use appears among a route's other
 // RouteOpts. Mirrors [rest.routeMiddlewareOpt]'s core mechanism, scoped
-// down to plain [middleware.Middleware] only — reqreply does not (yet)
-// support D-0003's codec-declared [middleware.Middleware[In,Out]]
-// bundling; every [middleware.RouteMiddleware] value attached here is
-// expected to be a plain [middleware.Middleware].
-type routeMiddlewareOpt struct{ mws []middleware.RouteMiddleware }
+// down to plain [AttachedMiddleware] only — reqreply does not (yet)
+// support D-0003's codec-declared [AttachedMiddleware[In,Out]]
+// bundling; every [RouteMiddleware] value attached here is
+// expected to be a plain [AttachedMiddleware].
+type routeMiddlewareOpt struct{ mws []RouteMiddleware }
 
 func (o routeMiddlewareOpt) applyRoute(rb *routeBuilder) {
 	for _, mw := range o.mws {
 		switch v := mw.(type) {
-		case middleware.Middleware:
+		case AttachedMiddleware:
 			rb.middlewares = append(rb.middlewares, v)
 		case routeMiddlewareContributor:
 			// A codec-backed Middleware[In,Out] (this doc's SECOND
@@ -36,7 +36,7 @@ func (o routeMiddlewareOpt) applyRoute(rb *routeBuilder) {
 			// handler is registered ONLY when bundled via
 			// WithReceive/WithSend (see Middleware.applyAgnosticRoute).
 			v.applyAgnosticRoute(rb)
-			// Its Security declaration (folded into middleware.Declaration
+			// Its Security declaration (folded into Declaration
 			// per the middleware-consolidation effort,
 			// docs/design/d-0003-codec-declared-middlewares.md) is NOT visible to
 			// applyAgnosticRoute's spec contribution — synthesize a
@@ -49,7 +49,7 @@ func (o routeMiddlewareOpt) applyRoute(rb *routeBuilder) {
 					if named, ok := mw.(interface{ MiddlewareName() string }); ok {
 						name = named.MiddlewareName()
 					}
-					rb.middlewares = append(rb.middlewares, middleware.Middleware{Name: name, Security: sec})
+					rb.middlewares = append(rb.middlewares, AttachedMiddleware{Name: name, Security: sec})
 				}
 			}
 		}
@@ -81,16 +81,16 @@ type routeMiddlewareContributor interface {
 // Chainable — `.Use(mw1).Use(mw2)` and `.Use(mw1, mw2)` are equivalent, in
 // attachment order. [Route] is an immutable value; Use never mutates the
 // receiver.
-func (r Route[Req, Resp]) Use(mws ...middleware.RouteMiddleware) Route[Req, Resp] {
+func (r Route[Req, Resp]) Use(mws ...RouteMiddleware) Route[Req, Resp] {
 	r.opts = append(slices.Clone(r.opts), routeMiddlewareOpt{mws: mws})
 	return r
 }
 
 // handleMWOpt is the [RouteOpt] returned by [Route.HandleMW]. Builds a
-// [middleware.ServerImplementation] internally from mw/fn — mirrors
+// [ServerImplementation] internally from mw/fn — mirrors
 // [rest.handleMWOpt] exactly.
 type handleMWOpt struct {
-	impl middleware.ServerImplementation
+	impl ServerImplementation
 }
 
 func (o handleMWOpt) applyRoute(rb *routeBuilder) {
@@ -98,15 +98,15 @@ func (o handleMWOpt) applyRoute(rb *routeBuilder) {
 }
 
 // buildServerImplementation always builds a GENERAL-PURPOSE
-// [middleware.ServerImplementation] (Satisfies empty) — mw is only ever
+// [ServerImplementation] (Satisfies empty) — mw is only ever
 // non-Security-carrying by the time this runs: the earlier
 // [routeMiddlewareContributor] check in [Route.HandleMW] already
 // intercepts the one type ([Middleware][In, Out]) that can carry a
 // Security declaration, routing it to [MiddlewareMisattachedError]
 // instead. A Security-carrying scheme is PAIRED exclusively via
 // [Route.HandleBoundMW]/[BoundSecurityMiddleware] now.
-func buildServerImplementation(fn any) middleware.ServerImplementation {
-	return middleware.ServerImplementation{Name: "implement:general", Fn: fn}
+func buildServerImplementation(fn any) ServerImplementation {
+	return ServerImplementation{Name: "implement:general", Fn: fn}
 }
 
 // NOTE: isBoundHandleMWShape/isBoundClientMWShape (the reflection-based
@@ -131,9 +131,9 @@ func buildServerImplementation(fn any) middleware.ServerImplementation {
 //
 // fn is deliberately untyped (any) — resolved by the attached adapter
 // (e.g. mqtt5's `NewServerTransport`) via a type-switch/reflection, mirroring
-// [middleware.ServerImplementation.Fn]'s existing type-erasure. A
+// [ServerImplementation.Fn]'s existing type-erasure. A
 // wrong-shaped fn fails with a typed error at Serve time, never silently.
-func (r Route[Req, Resp]) HandleMW(mw middleware.RouteMiddleware, fn any) Route[Req, Resp] {
+func (r Route[Req, Resp]) HandleMW(mw RouteMiddleware, fn any) Route[Req, Resp] {
 	if v, ok := mw.(routeMiddlewareContributor); ok {
 		r.opts = append(slices.Clone(r.opts), misattachedOpt{route: r.topic, name: v.MiddlewareName()})
 		return r
@@ -159,10 +159,10 @@ func (o misattachedOpt) applyRoute(rb *routeBuilder) {
 }
 
 // clientMWOpt is the [RouteOpt] returned by [Route.ClientMW]. Builds a
-// [middleware.ClientImplementation] internally from mw/fn, mirroring
+// [ClientImplementation] internally from mw/fn, mirroring
 // [handleMWOpt]'s server-side derivation exactly.
 type clientMWOpt struct {
-	impl middleware.ClientImplementation
+	impl ClientImplementation
 }
 
 func (o clientMWOpt) applyRoute(rb *routeBuilder) {
@@ -184,7 +184,7 @@ func (o clientMWOpt) applyRoute(rb *routeBuilder) {
 // "fulfill:general#1") so that TWO ClientMW calls attached on the SAME
 // route still get DISTINCT Names — mirrors [rest.Route.ClientMW]'s
 // identical rationale.
-func (r Route[Req, Resp]) ClientMW(mw middleware.RouteMiddleware, fn any) Route[Req, Resp] {
+func (r Route[Req, Resp]) ClientMW(mw RouteMiddleware, fn any) Route[Req, Resp] {
 	if v, ok := mw.(routeMiddlewareContributor); ok {
 		r.opts = append(slices.Clone(r.opts), misattachedOpt{route: r.topic, name: v.MiddlewareName()})
 		return r
@@ -195,7 +195,7 @@ func (r Route[Req, Resp]) ClientMW(mw middleware.RouteMiddleware, fn any) Route[
 			idx++
 		}
 	}
-	impl := middleware.ClientImplementation{Fn: fn, Name: fmt.Sprintf("fulfill:general#%d", idx)}
+	impl := ClientImplementation{Fn: fn, Name: fmt.Sprintf("fulfill:general#%d", idx)}
 	r.opts = append(slices.Clone(r.opts), clientMWOpt{impl: impl})
 	return r
 }
@@ -217,7 +217,7 @@ func applySecurityDeclarations(rb *routeBuilder) {
 			continue
 		}
 		if len(rb.meta.Security) == 0 {
-			rb.meta.Security = []route.SecurityRequirement{{}}
+			rb.meta.Security = []SecurityRequirement{{}}
 		}
 		rb.meta.Security[0][mw.Security.SchemeName] = mw.Security.Scopes
 		if rb.securitySchemes == nil {
@@ -235,7 +235,7 @@ func applySecurityDeclarations(rb *routeBuilder) {
 // applyParamDeclarations collects every property param contributed via
 // [Route.Use] (the codec-backed [Middleware.WithRequestPropertySpec]/
 // [Middleware.WithResponsePropertySpec] axis — the legacy
-// [middleware.Middleware] type is Security-only now, see
+// [AttachedMiddleware] type is Security-only now, see
 // docs/design/d-0006-protocol-native-capabilities.md's
 // middleware-consolidation effort) and renders them into two AsyncAPI
 // "headers" schemas — one for the request message, one for the reply
@@ -256,7 +256,7 @@ func applySecurityDeclarations(rb *routeBuilder) {
 // Implementations]/[RouteHandle.ClientImplementations] carry the
 // SECURITY-side middleware for the SAME "spec AND runtime both consult
 // what .Use() declared" reason.
-func applyParamDeclarations(rb *routeBuilder) (reqParams []middleware.HeaderParamSpec, respParams []middleware.ResponseHeaderParamSpec, reqHeaders, respHeaders schema.Schema) {
+func applyParamDeclarations(rb *routeBuilder) (reqParams []HeaderParamSpec, respParams []ResponseHeaderParamSpec, reqHeaders, respHeaders schema.Schema) {
 	seenReq := make(map[string]bool)
 	var reqProps []schema.Property
 	var reqRequired []string
@@ -312,7 +312,7 @@ func applyParamDeclarations(rb *routeBuilder) (reqParams []middleware.HeaderPara
 		// mechanism, closing docs/design/d-0003-codec-declared-middlewares.md's
 		// Phase D0 gap.
 		for _, p := range c.presencePropertyParamsIn {
-			spec := middleware.HeaderParamSpec{Name: p.Name, Description: p.Description, Required: p.Required, Codec: p.Codec}
+			spec := HeaderParamSpec{Name: p.Name, Description: p.Description, Required: p.Required, Codec: p.Codec}
 			if seenReq[p.Name] {
 				continue
 			}
@@ -324,7 +324,7 @@ func applyParamDeclarations(rb *routeBuilder) (reqParams []middleware.HeaderPara
 			}
 		}
 		for _, p := range c.presencePropertyParamsOut {
-			spec := middleware.ResponseHeaderParamSpec{Name: p.Name, Description: p.Description, Required: p.Required, Codec: p.Codec}
+			spec := ResponseHeaderParamSpec{Name: p.Name, Description: p.Description, Required: p.Required, Codec: p.Codec}
 			if seenResp[p.Name] {
 				continue
 			}
@@ -418,7 +418,7 @@ type reqreplyParamContribution struct {
 // contributions alike, regardless of which mechanism declared them (the
 // codec-backed Middleware[In,Out] axis's WithRequestTopic/
 // WithRequestProperty/WithRequestPropertySpec/etc. — the legacy
-// middleware.Middleware type is Security-only now, see
+// AttachedMiddleware type is Security-only now, see
 // docs/design/d-0006-protocol-native-capabilities.md's
 // middleware-consolidation effort).
 //
@@ -490,7 +490,7 @@ func checkReqReplyContributionMap(routeLabel string, contributions map[string][]
 // never [Route.Use]'d on the SAME route. Mirrors
 // [rest.checkImplementationsDeclared] exactly. Called by
 // [Route.Register]/[Route.ClientHandle] — runs UNCONDITIONALLY.
-func checkImplementationsDeclared(routeLabel string, mws []middleware.Middleware, impls []middleware.ServerImplementation, clientImpls []middleware.ClientImplementation) error {
+func checkImplementationsDeclared(routeLabel string, mws []AttachedMiddleware, impls []ServerImplementation, clientImpls []ClientImplementation) error {
 	declared := make(map[string]bool, len(mws))
 	for _, mw := range mws {
 		if mw.Security != nil {
@@ -516,7 +516,7 @@ func checkImplementationsDeclared(routeLabel string, mws []middleware.Middleware
 
 // CheckCoverage verifies that every security scheme named anywhere in
 // secReqs has at least one covering attachment — either a
-// [middleware.ServerImplementation] in impls (the legacy raw-adapter-Fn
+// [ServerImplementation] in impls (the legacy raw-adapter-Fn
 // path) whose Satisfies names it, OR a [MiddlewareHandler] in handlers
 // (populated by BOTH `.Use()`, the reusable class, AND `HandleBoundMW`,
 // the bound class — see [BoundMiddleware.ApplyBoundRoute]) whose own
@@ -527,9 +527,9 @@ func checkImplementationsDeclared(routeLabel string, mws []middleware.Middleware
 // attached [ServerTransport] (e.g. mqtt5's `NewServerTransport`-built
 // `serverTransport.Serve`) at Serve time, the point where the route's
 // declared security requirements AND its attached
-// []middleware.ServerImplementation/[]MiddlewareHandler values are BOTH
+// []ServerImplementation/[]MiddlewareHandler values are BOTH
 // known.
-func CheckCoverage(routeLabel string, secReqs []route.SecurityRequirement, impls []middleware.ServerImplementation, handlers []MiddlewareHandler) error {
+func CheckCoverage(routeLabel string, secReqs []SecurityRequirement, impls []ServerImplementation, handlers []MiddlewareHandler) error {
 	for _, req := range secReqs {
 		for schemeName := range req {
 			satisfied := false

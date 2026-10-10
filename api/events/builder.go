@@ -58,7 +58,7 @@ type Server = asyncapi.Server
 // directly on the underlying [adapters/zeromq.FramedSocket] implementation.
 //
 // Use [SecurityScheme.WithCodec] to set the Codec field inline without a temporary
-// variable: events.SecurityScheme{SecurityScheme: route.APIKeyScheme(...)}.WithCodec(c)
+// variable: events.SecurityScheme{SecurityScheme: APIKeyScheme(...)}.WithCodec(c)
 type SecurityScheme struct {
 	route.SecurityScheme
 	// Codec, when non-nil, validates the extracted raw credential string.
@@ -71,7 +71,7 @@ type SecurityScheme struct {
 // temporary-variable + address-of pattern required when setting Codec inline:
 //
 //	events.WithSecurityScheme("apiKey", events.SecurityScheme{
-//	    SecurityScheme: route.APIKeyScheme("X-API-Key", "header"),
+//	    SecurityScheme: APIKeyScheme("X-API-Key", "header"),
 //	}.WithCodec(codex.String().Refine(validate.NonEmptyString)))
 func (s SecurityScheme) WithCodec(c codex.Codec[string]) SecurityScheme {
 	s.Codec = &c
@@ -107,11 +107,11 @@ func (o securitySchemeOpt) applyChannel(cb *channelBuilder) {
 // Define a scheme once as a package-level value and reuse it across every
 // channel that shares it:
 //
-//	var bearerAuth = events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.
+//	var bearerAuth = events.SecurityScheme{SecurityScheme: BearerScheme("JWT")}.
 //	    WithCodec(codex.String().Refine(validate.BearerToken))
 //
 //	var UserCreated = events.NewChannel[UserCreated]("user/created", userCreatedCodec,
-//	    events.Subscribe{Security: []route.SecurityRequirement{route.Require("bearerAuth")}},
+//	    events.Subscribe{Security: []SecurityRequirement{Require("bearerAuth")}},
 //	    events.WithSecurityScheme("bearerAuth", bearerAuth),
 //	)
 //
@@ -143,7 +143,7 @@ func WithSecurityScheme(name string, scheme SecurityScheme) ChannelOpt {
 }
 
 // SecurityMiddleware builds a [Middleware][In, Out] carrying a
-// [middleware.SecurityDeclaration] — the SOLE way to declare a channel's
+// [SecurityDeclaration] — the SOLE way to declare a channel's
 // security scheme going forward, GENERALIZED over In/Out, attachable
 // ONLY via plain .Use(...) (the REUSABLE class — see [Middleware.WithReceive]/
 // [Middleware.WithSend]). `SubscribeMW`/`PublishMW` do NOT accept a
@@ -159,7 +159,7 @@ func WithSecurityScheme(name string, scheme SecurityScheme) ChannelOpt {
 // `WithSubscribeProperty`/etc.) rather than manual extraction. A
 // Security requirement is satisfied by populating the conventional
 // `GrantedScopes map[string][]string`-named field on Out, read by the
-// adapter via reflection and merged into the SAME `middleware.CheckScopes`
+// adapter via reflection and merged into the SAME `CheckScopes`
 // call every Security attachment uses (see `adapters/internal/scopesmerge`'s
 // identical REST/`httpsecurity` convention).
 //
@@ -181,11 +181,11 @@ func WithSecurityScheme(name string, scheme SecurityScheme) ChannelOpt {
 // generalization first, THEN discovering a nil-codec panic the first time
 // a non-`struct{}` In/Out is actually validated, is avoidable).
 func SecurityMiddleware[In, Out any](schemeName string, scheme SecurityScheme, scopes []string) Middleware[In, Out] {
-	return NewMiddleware[In, Out](middleware.Declaration[In, Out]{
+	return NewMiddleware[In, Out](Declaration[In, Out]{
 		Name:     "declare-security:" + schemeName,
 		InCodec:  codex.Struct[In](),
 		OutCodec: codex.Struct[Out](),
-		Security: middleware.NewSecurityDeclaration(schemeName, scheme.SecurityScheme, scopes, scheme.Codec),
+		Security: NewSecurityDeclaration(schemeName, scheme, scopes),
 	})
 }
 
@@ -268,7 +268,7 @@ type Subscribe struct {
 	// Security, when non-nil, overrides global security for this operation.
 	// Pass an empty slice to declare "no auth required" for this subscription.
 	// nil (default) inherits global security declared via [Client.AddGlobalSecurity].
-	Security []route.SecurityRequirement
+	Security []SecurityRequirement
 }
 
 func (s Subscribe) applyChannel(cb *channelBuilder) { cb.subscribe = &s }
@@ -292,7 +292,7 @@ type Publish struct {
 	// Security, when non-nil, overrides global security for this operation.
 	// Pass an empty slice to declare "no auth required" for this publish operation.
 	// nil (default) inherits global security declared via [Client.AddGlobalSecurity].
-	Security []route.SecurityRequirement
+	Security []SecurityRequirement
 }
 
 func (p Publish) applyChannel(cb *channelBuilder) { cb.publish = &p }
@@ -770,7 +770,7 @@ type ChannelHandle[T any] struct {
 	//   reqs := handle.Descriptor.Subscribe.Security
 	//   if reqs == nil { reqs = handle.GlobalSecurity }
 	// Set via [Client.AddGlobalSecurity]. nil when no global security is declared.
-	GlobalSecurity []route.SecurityRequirement
+	GlobalSecurity []SecurityRequirement
 
 	// mergeFields holds the merge-capable fields registered via
 	// [NewTopicParam] — see [MergeFields] and [DecodeMerged].
@@ -800,14 +800,14 @@ type ChannelHandle[T any] struct {
 	// [Subscriber.Handle] (never [Publisher.Handle]), reflecting whatever [Subscriber.SubscribeMW]
 	// calls were made on the [Subscriber] before Handle() was called; see
 	// [CheckCoverage]'s doc comment.
-	Implementations []middleware.ServerImplementation
+	Implementations []ServerImplementation
 
 	// ClientImplementations holds client-side credential-supplying
 	// implementations for the PUBLISH side — populated ONLY by
 	// [Publisher.Handle] (never [Subscriber.Handle]), reflecting whatever
 	// [Publisher.PublishMW] calls were made on the [Publisher] before
 	// Handle() was called.
-	ClientImplementations []middleware.ClientImplementation
+	ClientImplementations []ClientImplementation
 
 	// Handler holds the declare-time handler attached via
 	// [Subscriber.WithHandler], populated ONLY on the SUBSCRIBE side (nil
@@ -935,7 +935,7 @@ func (h *ChannelHandle[T]) EncodePropertyVars(msg T) (map[string]string, error) 
 // Returns `([]any, error)` — mirrors [DispatchSubscribeMiddlewareHandlers]'s
 // own return shape exactly, so a reflection caller can merge any bound
 // handler's decoded `Out.GrantedScopes` into its own unified
-// [middleware.CheckScopes] call (via `adapters/internal/scopesmerge`).
+// [CheckScopes] call (via `adapters/internal/scopesmerge`).
 // CORRECTED: a prior revision of this method deliberately discarded
 // `outs` (kept a `func(...) error` signature) believing ALL "native"
 // (non-ports.Pattern) Subscribe dispatch already consumed
@@ -1336,12 +1336,12 @@ type Client struct {
 	entries        []channelEntry
 	schemas        map[string]schema.Schema
 	topicCodec     *codex.Codec[string]
-	globalSecurity []route.SecurityRequirement
+	globalSecurity []SecurityRequirement
 	// connectSecuritySchemes holds every [Client.AddConnectSecurityScheme]
 	// registration — a connection-level security scheme referenced ONLY
 	// via a [Server.Security] list, never by any individual channel's own
 	// WithSecurityScheme declaration (docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase B — Phase 4, connection-level auth).
-	connectSecuritySchemes map[string]route.SecurityScheme
+	connectSecuritySchemes map[string]ConnectSecurityScheme
 	// globalDeadLetter is the Client-level default [DeadLetter]
 	// declaration, set via [Client.AddGlobalDeadLetter]. nil when none is
 	// declared. Channels with no explicit DeadLetter opt inherit this.
@@ -1442,7 +1442,7 @@ func WithInfo(info Info) ClientOption {
 func NewClient(opts ...ClientOption) *Client {
 	c := &Client{
 		schemas:                make(map[string]schema.Schema),
-		connectSecuritySchemes: make(map[string]route.SecurityScheme),
+		connectSecuritySchemes: make(map[string]ConnectSecurityScheme),
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -1485,11 +1485,11 @@ func (c *Client) AddSchema(name string, s schema.Schema) *Client {
 // — closing the spec/runtime link via one reused declared value, not a
 // new shared mechanism:
 //
-//	client.AddConnectSecurityScheme("brokerAuth", route.SecurityScheme{Type: route.SecuritySchemeHTTP, Scheme: "basic"})
+//	client.AddConnectSecurityScheme("brokerAuth", events.ConnectSecurityScheme{Type: events.SecuritySchemeHTTP, Scheme: "basic"})
 //	client.AddServer("mqtt5", events.Server{URL: "mqtts://broker:8883", Protocol: "mqtt5",
-//	    Security: []route.SecurityRequirement{route.Require("brokerAuth")}})
+//	    Security: []events.SecurityRequirement{events.Require("brokerAuth")}})
 //	conn, router, err := mqtt5.Connect(ctx, "broker:8883", mqtt5.ConnectOptions{Username: user, Password: pass})
-func (c *Client) AddConnectSecurityScheme(name string, scheme route.SecurityScheme) *Client {
+func (c *Client) AddConnectSecurityScheme(name string, scheme ConnectSecurityScheme) *Client {
 	c.connectSecuritySchemes[name] = scheme
 	return c
 }
@@ -1504,8 +1504,8 @@ func (c *Client) AddConnectSecurityScheme(name string, scheme route.SecuritySche
 // the spec, set [Subscribe.Security] or [Publish.Security] explicitly.
 //
 // To mark a specific channel as explicitly unsecured (exempt from global
-// security), set Security to an empty slice: Security: []route.SecurityRequirement{}.
-func (c *Client) AddGlobalSecurity(reqs ...route.SecurityRequirement) *Client {
+// security), set Security to an empty slice: Security: []SecurityRequirement{}.
+func (c *Client) AddGlobalSecurity(reqs ...SecurityRequirement) *Client {
 	c.globalSecurity = append(c.globalSecurity, reqs...)
 	return c
 }
@@ -1656,7 +1656,7 @@ func NewChannelFromTopic[T any](
 // api/rest/middleware.go's securityContribution exactly.
 type eventsSecurityContribution struct {
 	source     string // "manual" or a middleware's Name
-	schemeType route.SecuritySchemeType
+	schemeType SecuritySchemeType
 	scopes     []string
 }
 
@@ -1752,7 +1752,7 @@ func propertyParamProperty(p PropertyParam) schema.Property {
 	return schema.Property{Name: p.Name, Schema: propSchema}
 }
 
-// applyEventsSecurityDeclarations merges every mws' [middleware.Middleware.Security]
+// applyEventsSecurityDeclarations merges every mws' [AttachedMiddleware.Security]
 // contribution into *security (the role's own manual Subscribe.Security or
 // Publish.Security field, mutated in place) and schemes (this role's
 // [ChannelHandle.SecuritySchemes]), detecting a conflict whenever the SAME
@@ -1778,12 +1778,12 @@ func propertyParamProperty(p PropertyParam) schema.Property {
 // name only contribute their scopes to the requirement merge above, never
 // overriding the stored scheme metadata) — this is the missing "populate
 // SecuritySchemes" half of the port, not a separate mechanism.
-func applyEventsSecurityDeclarations(topic string, security *[]route.SecurityRequirement, mws []middleware.Middleware, schemes map[string]SecurityScheme) (map[string]SecurityScheme, error) {
+func applyEventsSecurityDeclarations(topic string, security *[]SecurityRequirement, mws []AttachedMiddleware, schemes map[string]SecurityScheme) (map[string]SecurityScheme, error) {
 	contributions := map[string][]eventsSecurityContribution{}
 
 	for _, req := range *security {
 		for schemeName, scopes := range req {
-			var schemeType route.SecuritySchemeType
+			var schemeType SecuritySchemeType
 			if s, ok := schemes[schemeName]; ok {
 				schemeType = s.Type
 			}
@@ -1830,7 +1830,7 @@ func applyEventsSecurityDeclarations(topic string, security *[]route.SecurityReq
 			continue
 		}
 		if len(*security) == 0 {
-			*security = []route.SecurityRequirement{{}}
+			*security = []SecurityRequirement{{}}
 		}
 		(*security)[0][mw.Security.SchemeName] = mw.Security.Scopes
 		if _, exists := merged[mw.Security.SchemeName]; !exists {
@@ -1844,7 +1844,7 @@ func applyEventsSecurityDeclarations(topic string, security *[]route.SecurityReq
 }
 
 // CheckCoverage verifies that every security scheme named anywhere in
-// secReqs has at least one [middleware.ServerImplementation] in impls whose
+// secReqs has at least one [ServerImplementation] in impls whose
 // Satisfies names it — otherwise the channel would enforce nothing at
 // runtime despite declaring a scheme in its spec. Returns
 // [MissingSecurityMiddlewareError] on the first uncovered scheme found.
@@ -1857,7 +1857,7 @@ func applyEventsSecurityDeclarations(topic string, security *[]route.SecurityReq
 // receiving/subscribing side).
 //
 // impls reflects whatever legacy [Subscriber.SubscribeMW] calls (a bare
-// [middleware.Middleware] or general-purpose mw==nil decorator) were made
+// [AttachedMiddleware] or general-purpose mw==nil decorator) were made
 // on the [Subscriber] before [Subscriber.Handle] built h; handlers
 // reflects whatever [Subscriber.Use] (reusable, bundled) or
 // [Subscriber.SubscribeBoundMW] (channel-bound, via
@@ -1870,7 +1870,7 @@ func applyEventsSecurityDeclarations(topic string, security *[]route.SecurityReq
 // identically (docs/design/d-0003-codec-declared-middlewares.md's Addendum 7), so a Security
 // scheme expressed via the bound class is recognized exactly like the
 // legacy/reusable paths.
-func CheckCoverage(topic string, secReqs []route.SecurityRequirement, impls []middleware.ServerImplementation, handlers []MiddlewareHandler) error {
+func CheckCoverage(topic string, secReqs []SecurityRequirement, impls []ServerImplementation, handlers []MiddlewareHandler) error {
 	for _, req := range secReqs {
 		for schemeName := range req {
 			satisfied := false
@@ -1920,7 +1920,7 @@ func IsSecuritySatisfyingHandler(handlers []MiddlewareHandler, name string) bool
 }
 
 // MissingSecurityMiddlewareError is returned by [Subscriber.Handle] when a
-// declared security scheme has no attached [middleware.ServerImplementation]
+// declared security scheme has no attached [ServerImplementation]
 // satisfying it — see [CheckCoverage].
 type MissingSecurityMiddlewareError struct {
 	Topic  string
@@ -1946,7 +1946,7 @@ func (e MissingSecurityMiddlewareError) LogValue() slog.Value {
 // [Publisher.PublishMW] call PAIRED against a security scheme name that
 // was never `.Use()`'d on the SAME [Subscriber]/[Publisher] (e.g. a
 // copy-paste mistake reusing a different channel's
-// [middleware.Middleware]). Called UNCONDITIONALLY by
+// [AttachedMiddleware]). Called UNCONDITIONALLY by
 // [Subscriber.Handle]/[Subscriber.Register]/[Publisher.Handle] — mirrors
 // [rest.Route.Register]'s identically-named helper exactly (a gap found
 // during a post-implementation audit: this doc's own Decision 1
@@ -1964,7 +1964,7 @@ func (e MissingSecurityMiddlewareError) LogValue() slog.Value {
 // anywhere — exactly the silent misconfiguration this check exists to
 // catch loudly instead, now for both directions. Mirrors
 // [rest.checkImplementationsDeclared]'s identical extension.
-func checkImplementationsDeclared(topic string, mws []middleware.Middleware, impls []middleware.ServerImplementation, clientImpls []middleware.ClientImplementation) error {
+func checkImplementationsDeclared(topic string, mws []AttachedMiddleware, impls []ServerImplementation, clientImpls []ClientImplementation) error {
 	declared := make(map[string]bool, len(mws))
 	for _, mw := range mws {
 		if mw.Security != nil {
@@ -2054,24 +2054,24 @@ func (e ConflictingSecurityDeclarationError) LogValue() slog.Value {
 }
 
 // NOTE: UnsupportedMiddlewareParamsError (returned when a [.Use]-attached
-// [middleware.Middleware] carried a REST-only RequestHeaderParams/etc.
+// [AttachedMiddleware] carried a REST-only RequestHeaderParams/etc.
 // field) was REMOVED — the middleware-consolidation effort
 // (docs/design/d-0006-protocol-native-capabilities.md) removed those
-// fields from [middleware.Middleware] entirely (it is now Security-only),
+// fields from [AttachedMiddleware] entirely (it is now Security-only),
 // so the condition this error guarded against can no longer occur.
 
 // Subscriber is a role-scoped builder for a channel's subscribe side,
 // returned by [Channel.WithSubscribe]. It carries the underlying [Channel]
 // declaration (topic, codec, and every other [ChannelOpt], INCLUDING the
 // [Subscribe] value passed to WithSubscribe) plus its OWN, independent
-// [middleware.Middleware] declarations attached via [Subscriber.Use] — a
+// [AttachedMiddleware] declarations attached via [Subscriber.Use] — a
 // [Publisher] for the SAME channel declares its middleware completely
 // separately, never shared with a Subscriber's.
 //
 // Build the runtime handle with [Subscriber.Handle].
 type Subscriber[T any] struct {
 	channel Channel[T]
-	// mws holds every [middleware.Middleware] attached via [Subscriber.Use].
+	// mws holds every [AttachedMiddleware] attached via [Subscriber.Use].
 	// [Subscriber.Handle] merges these declarations' Security with the
 	// channel's own Subscribe.Security (conflict-checked via
 	// applyEventsSecurityDeclarations, mirrors REST's
@@ -2079,7 +2079,7 @@ type Subscriber[T any] struct {
 	// from them; it also rejects unsupported middleware params
 	// (checkUnsupportedMiddlewareParams) and enforces security coverage
 	// (CheckCoverage) — see those functions' doc comments.
-	mws []middleware.Middleware
+	mws []AttachedMiddleware
 	// handler holds the declare-time handler attached via
 	// [Subscriber.WithHandler] — copied onto [ChannelHandle.Handler] by
 	// [Subscriber.Handle]. Distinct from, and never read by,
@@ -2088,12 +2088,12 @@ type Subscriber[T any] struct {
 	// opts holds the type-erased adapter options attached via
 	// [Subscriber.WithOptions] — copied onto [ChannelHandle.HandlerOpts].
 	opts any
-	// impls holds every [middleware.ServerImplementation] attached via
+	// impls holds every [ServerImplementation] attached via
 	// [Subscriber.SubscribeMW], in attachment order — copied onto
 	// [ChannelHandle.Implementations] by [Subscriber.Handle]. Mirrors
 	// [api/rest]'s routeBuilder.impls field, populated by
 	// [rest.Route.HandleMW].
-	impls []middleware.ServerImplementation
+	impls []ServerImplementation
 	// middlewareHandlers holds every [MiddlewareHandler] attached via
 	// [Middleware.Use] (reusable, agnostic) or [Subscriber.SubscribeBoundMW]
 	// (channel-bound), in attachment order — the codec-backed-middleware
@@ -2119,19 +2119,19 @@ type Subscriber[T any] struct {
 // Build the runtime handle with [Publisher.Handle].
 type Publisher[T any] struct {
 	channel Channel[T]
-	// mws holds every [middleware.Middleware] attached via [Publisher.Use].
+	// mws holds every [AttachedMiddleware] attached via [Publisher.Use].
 	// [Publisher.Handle] runs the SAME merge/conflict-detection
 	// responsibility as [Subscriber.mws], independently against the
 	// channel's own Publish.Security — see [Subscriber.mws]'s doc comment.
 	// [Publisher.Handle] never runs [CheckCoverage] (subscribe-side-only
 	// asymmetry, mirrors REST/reqreply).
-	mws []middleware.Middleware
-	// clientImpls holds every [middleware.ClientImplementation] attached
+	mws []AttachedMiddleware
+	// clientImpls holds every [ClientImplementation] attached
 	// via [Publisher.PublishMW], in attachment order — copied onto
 	// [ChannelHandle.ClientImplementations] by [Publisher.Handle]. Mirrors
 	// [api/rest]'s routeBuilder.clientImpls field, populated by
 	// [rest.Route.ClientMW].
-	clientImpls []middleware.ClientImplementation
+	clientImpls []ClientImplementation
 	// clientMiddlewareHandlers holds every [ClientMiddlewareHandler]
 	// attached via [Middleware.Use] (reusable, agnostic) or
 	// [Publisher.PublishBoundMW] (channel-bound), in attachment order —
@@ -2178,17 +2178,17 @@ func (c Channel[T]) WithPublish(p Publish) Publisher[T] {
 // from the SAME underlying channel. There is no channel-level Use(): a
 // requirement shared by both roles is declared once per role.
 //
-// mws accepts [middleware.RouteMiddleware] — both the legacy
-// [middleware.Middleware] (spec-only, unchanged) AND the codec-backed
+// mws accepts [RouteMiddleware] — both the legacy
+// [AttachedMiddleware] (spec-only, unchanged) AND the codec-backed
 // [Middleware] mechanism, when bundled via [Middleware.WithReceive] for
 // channel-AGNOSTIC reuse (see docs/design/d-0003-codec-declared-middlewares.md).
-// Every existing call site passing a [middleware.Middleware] value keeps
+// Every existing call site passing a [AttachedMiddleware] value keeps
 // compiling unchanged — RouteMiddleware is a strict widening, not a
 // breaking change.
-func (s Subscriber[T]) Use(mws ...middleware.RouteMiddleware) Subscriber[T] {
+func (s Subscriber[T]) Use(mws ...RouteMiddleware) Subscriber[T] {
 	for _, mw := range mws {
 		switch v := mw.(type) {
-		case middleware.Middleware:
+		case AttachedMiddleware:
 			s.mws = append(slices.Clone(s.mws), v)
 		case eventsMiddlewareContributor:
 			if h, ok := v.applyAgnosticSubscriber(); ok {
@@ -2230,7 +2230,7 @@ func (s Subscriber[T]) WithOptions(opts any) Subscriber[T] {
 }
 
 // buildServerImplementation always builds a GENERAL-PURPOSE
-// [middleware.ServerImplementation] (Satisfies empty) — mw is only ever
+// [ServerImplementation] (Satisfies empty) — mw is only ever
 // non-Security-carrying by the time this runs: the earlier
 // [eventsMiddlewareContributor] check in [Subscriber.SubscribeMW]/
 // [Publisher.PublishMW] already intercepts the one type
@@ -2239,8 +2239,8 @@ func (s Subscriber[T]) WithOptions(opts any) Subscriber[T] {
 // is PAIRED exclusively via [Subscriber.SubscribeBoundMW]/
 // [BoundSecuritySubscribeMiddleware] now. Mirrors [api/rest]'s
 // buildServerImplementation exactly.
-func buildServerImplementation(fn any) middleware.ServerImplementation {
-	return middleware.ServerImplementation{Name: "implement:general", Fn: fn}
+func buildServerImplementation(fn any) ServerImplementation {
+	return ServerImplementation{Name: "implement:general", Fn: fn}
 }
 
 // NOTE: isBoundSubscribeMWShape/isBoundSubscribeMWShapeWithOut (the
@@ -2265,7 +2265,7 @@ func buildServerImplementation(fn any) middleware.ServerImplementation {
 //
 // fn is deliberately untyped (any) — resolved by the SPECIFIC adapter
 // (adapters/mqtt5, adapters/mqtt, adapters/zeromq) at Register/Subscribe
-// time, mirroring [middleware.ServerImplementation.Fn]'s existing
+// time, mirroring [ServerImplementation.Fn]'s existing
 // type-erasure. A wrong-shaped fn fails with a typed error at that point,
 // never silently.
 //
@@ -2274,7 +2274,7 @@ func buildServerImplementation(fn any) middleware.ServerImplementation {
 // another. [Subscriber.Handle] copies the accumulated slice onto
 // [ChannelHandle.Implementations] verbatim. Mirrors [rest.Route.HandleMW]
 // exactly.
-func (s Subscriber[T]) SubscribeMW(mw middleware.RouteMiddleware, fn any) Subscriber[T] {
+func (s Subscriber[T]) SubscribeMW(mw RouteMiddleware, fn any) Subscriber[T] {
 	if v, ok := mw.(eventsMiddlewareContributor); ok {
 		if s.buildErr == nil {
 			s.buildErr = MiddlewareMisattachedError{Topic: s.channel.topic, Name: v.MiddlewareName()}
@@ -2287,11 +2287,11 @@ func (s Subscriber[T]) SubscribeMW(mw middleware.RouteMiddleware, fn any) Subscr
 
 // Use returns a copy of p with mws appended to its own, independent
 // middleware declarations. See [Subscriber.Use]'s doc comment for the
-// shared rationale, including the [middleware.RouteMiddleware] widening.
-func (p Publisher[T]) Use(mws ...middleware.RouteMiddleware) Publisher[T] {
+// shared rationale, including the [RouteMiddleware] widening.
+func (p Publisher[T]) Use(mws ...RouteMiddleware) Publisher[T] {
 	for _, mw := range mws {
 		switch v := mw.(type) {
-		case middleware.Middleware:
+		case AttachedMiddleware:
 			p.mws = append(slices.Clone(p.mws), v)
 		case eventsMiddlewareContributor:
 			if h, ok := v.applyAgnosticPublisher(); ok {
@@ -2306,27 +2306,27 @@ func (p Publisher[T]) Use(mws ...middleware.RouteMiddleware) Publisher[T] {
 }
 
 // synthesizeLegacySecurity extracts mw's Security declaration (folded into
-// middleware.Declaration per the middleware-consolidation effort,
+// Declaration per the middleware-consolidation effort,
 // docs/design/d-0003-codec-declared-middlewares.md) and wraps it into a
-// legacy-shaped middleware.Middleware{Name, Security} entry — so the
+// legacy-shaped AttachedMiddleware{Name, Security} entry — so the
 // EXISTING Security/spec-rendering + coverage-check pipeline (which only
 // reads s.mws/p.mws) sees a codec-backed value's Security exactly like a
-// real legacy middleware.Middleware would, with ZERO changes to that
+// real legacy AttachedMiddleware would, with ZERO changes to that
 // pipeline. Returns ok=false when mw carries no Security at all.
-func synthesizeLegacySecurity(mw middleware.RouteMiddleware) (middleware.Middleware, bool) {
+func synthesizeLegacySecurity(mw RouteMiddleware) (AttachedMiddleware, bool) {
 	sc, ok := mw.(middleware.SecurityCarrier)
 	if !ok {
-		return middleware.Middleware{}, false
+		return AttachedMiddleware{}, false
 	}
 	sec := sc.SecurityDeclaration()
 	if sec == nil {
-		return middleware.Middleware{}, false
+		return AttachedMiddleware{}, false
 	}
 	name := "declare-security:" + sec.SchemeName
 	if named, ok := mw.(interface{ MiddlewareName() string }); ok {
 		name = named.MiddlewareName()
 	}
-	return middleware.Middleware{Name: name, Security: sec}, true
+	return AttachedMiddleware{Name: name, Security: sec}, true
 }
 
 // PublishMW is the client-side GENERAL-PURPOSE implementation-attachment
@@ -2349,7 +2349,7 @@ func synthesizeLegacySecurity(mw middleware.RouteMiddleware) (middleware.Middlew
 // another. [Publisher.Handle] copies the accumulated slice onto
 // [ChannelHandle.ClientImplementations] verbatim. Mirrors
 // [rest.Route.ClientMW] exactly.
-func (p Publisher[T]) PublishMW(mw middleware.RouteMiddleware, fn any) Publisher[T] {
+func (p Publisher[T]) PublishMW(mw RouteMiddleware, fn any) Publisher[T] {
 	if v, ok := mw.(eventsMiddlewareContributor); ok {
 		if p.buildErr == nil {
 			p.buildErr = MiddlewareMisattachedError{Topic: p.channel.topic, Name: v.MiddlewareName()}
@@ -2357,7 +2357,7 @@ func (p Publisher[T]) PublishMW(mw middleware.RouteMiddleware, fn any) Publisher
 		return p
 	}
 	idx := len(p.clientImpls)
-	impl := middleware.ClientImplementation{Fn: fn, Name: fmt.Sprintf("fulfill:general#%d", idx)}
+	impl := ClientImplementation{Fn: fn, Name: fmt.Sprintf("fulfill:general#%d", idx)}
 	p.clientImpls = append(slices.Clone(p.clientImpls), impl)
 	return p
 }
@@ -2470,7 +2470,7 @@ const (
 // declaration, running the full validation suite unconditionally, then —
 // only when client is non-nil — dedups the topic's spec entry against
 // client's registry.
-func buildChannelHandle[T any](ch Channel[T], client *Client, role channelRole, mws []middleware.Middleware, handler func(context.Context, T) error, opts any, impls []middleware.ServerImplementation, clientImpls []middleware.ClientImplementation, middlewareHandlers []MiddlewareHandler, clientMiddlewareHandlers []ClientMiddlewareHandler) (*ChannelHandle[T], error) {
+func buildChannelHandle[T any](ch Channel[T], client *Client, role channelRole, mws []AttachedMiddleware, handler func(context.Context, T) error, opts any, impls []ServerImplementation, clientImpls []ClientImplementation, middlewareHandlers []MiddlewareHandler, clientMiddlewareHandlers []ClientMiddlewareHandler) (*ChannelHandle[T], error) {
 	var cb channelBuilder
 	for _, opt := range ch.opts {
 		opt.applyChannel(&cb)
@@ -2534,7 +2534,7 @@ func buildChannelHandle[T any](ch Channel[T], client *Client, role channelRole, 
 	// [Publisher.Handle] each hold a Subscribe/Publish set as the LAST opt
 	// applied by [Channel.WithSubscribe]/[Channel.WithPublish], so
 	// cb.subscribe/cb.publish is guaranteed non-nil for the matching role.
-	var securityField *[]route.SecurityRequirement
+	var securityField *[]SecurityRequirement
 	switch role {
 	case roleSubscribe:
 		securityField = &cb.subscribe.Security
@@ -2548,7 +2548,7 @@ func buildChannelHandle[T any](ch Channel[T], client *Client, role channelRole, 
 	cb.securitySchemes = mergedSchemes
 
 	var topicCodec *codex.Codec[string]
-	var globalSecurity []route.SecurityRequirement
+	var globalSecurity []SecurityRequirement
 	if client != nil {
 		if client.topicCodec != nil {
 			if err := client.topicCodec.Validate(internal.StripTemplateVars(ch.topic)); err != nil {

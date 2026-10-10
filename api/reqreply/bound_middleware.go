@@ -59,12 +59,12 @@ type BoundMiddleware[Req, In, Out any] struct {
 }
 
 // NewBoundMiddleware builds a [BoundMiddleware] from a
-// [middleware.Declaration] and its Fn — fn's shape is checked by the
+// [Declaration] and its Fn — fn's shape is checked by the
 // ordinary Go compiler at this call, zero reflection needed to verify
 // arity/types (contrast with the now-removed isBoundHandleMWShape
 // runtime detector).
 func NewBoundMiddleware[Req, In, Out any](
-	decl middleware.Declaration[In, Out],
+	decl Declaration[In, Out],
 	fn func(ctx context.Context, req *Req, in In) (Out, error),
 ) BoundMiddleware[Req, In, Out] {
 	return BoundMiddleware[Req, In, Out]{mw: NewMiddleware[In, Out](decl), fn: fn}
@@ -77,7 +77,7 @@ func NewBoundMiddleware[Req, In, Out any](
 //
 // **`Out` MUST carry a field literally named `GrantedScopes
 // map[string][]string`**, read by the adapter via reflection and merged
-// into the SAME [middleware.CheckScopes] call every Security attachment
+// into the SAME [CheckScopes] call every Security attachment
 // uses — REQUIRED even when zero specific scopes are declared. An
 // `Out{}` zero value (nil map) means NOTHING satisfies the scheme at
 // all, silently turning an otherwise-successful Fn into a REJECTION.
@@ -93,11 +93,11 @@ func BoundSecurityMiddleware[Req, In, Out any](
 	fn func(ctx context.Context, req *Req, in In) (Out, error),
 ) BoundMiddleware[Req, In, Out] {
 	return BoundMiddleware[Req, In, Out]{
-		mw: NewMiddleware[In, Out](middleware.Declaration[In, Out]{
+		mw: NewMiddleware[In, Out](Declaration[In, Out]{
 			Name:     "declare-security:" + schemeName,
 			InCodec:  codex.Struct[In](),
 			OutCodec: codex.Struct[Out](),
-			Security: middleware.NewSecurityDeclaration(schemeName, scheme.SecurityScheme, scopes, scheme.Codec),
+			Security: NewSecurityDeclaration(schemeName, scheme, scopes),
 		}),
 		fn: fn,
 	}
@@ -141,13 +141,13 @@ func (m BoundMiddleware[Req, In, Out]) WithResponsePropertySpec(p PropertyParam)
 }
 
 // SetContextFieldFromIn mirrors [Middleware.SetContextFieldFromIn].
-func (m BoundMiddleware[Req, In, Out]) SetContextFieldFromIn(field middleware.ContextFieldSetter, get func(In) any) BoundMiddleware[Req, In, Out] {
+func (m BoundMiddleware[Req, In, Out]) SetContextFieldFromIn(field ContextFieldSetter, get func(In) any) BoundMiddleware[Req, In, Out] {
 	m.mw = m.mw.SetContextFieldFromIn(field, get)
 	return m
 }
 
 // SetContextFieldFromOut mirrors [Middleware.SetContextFieldFromOut].
-func (m BoundMiddleware[Req, In, Out]) SetContextFieldFromOut(field middleware.ContextFieldSetter, get func(Out) any) BoundMiddleware[Req, In, Out] {
+func (m BoundMiddleware[Req, In, Out]) SetContextFieldFromOut(field ContextFieldSetter, get func(Out) any) BoundMiddleware[Req, In, Out] {
 	m.mw = m.mw.SetContextFieldFromOut(field, get)
 	return m
 }
@@ -161,7 +161,7 @@ func (m BoundMiddleware[Req, In, Out]) MiddlewareName() string { return m.mw.Mid
 // BoundMiddleware's ONLY attach path. Calls the EXISTING, UNCHANGED
 // buildMiddlewareHandlerAny/boundSpecContributionOf helpers with the
 // named mw field. Additionally synthesizes a legacy-shaped
-// middleware.Middleware{Name, Security} entry (via
+// AttachedMiddleware{Name, Security} entry (via
 // rb.AppendSecurityDeclaration) when mw carries a Security declaration,
 // so [applySecurityDeclarations] renders the scheme into the spec with
 // ZERO changes to that function — REQUIRED because, unlike the
@@ -198,9 +198,9 @@ type BoundClientMiddleware[Req, In, Out any] struct {
 }
 
 // NewBoundClientMiddleware builds a [BoundClientMiddleware] from a
-// [middleware.Declaration] and its Fn.
+// [Declaration] and its Fn.
 func NewBoundClientMiddleware[Req, In, Out any](
-	decl middleware.Declaration[In, Out],
+	decl Declaration[In, Out],
 	fn func(ctx context.Context, req Req) (In, error),
 ) BoundClientMiddleware[Req, In, Out] {
 	return BoundClientMiddleware[Req, In, Out]{mw: NewMiddleware[In, Out](decl), fn: fn}
@@ -213,11 +213,11 @@ func BoundSecurityClientMiddleware[Req, In, Out any](
 	fn func(ctx context.Context, req Req) (In, error),
 ) BoundClientMiddleware[Req, In, Out] {
 	return BoundClientMiddleware[Req, In, Out]{
-		mw: NewMiddleware[In, Out](middleware.Declaration[In, Out]{
+		mw: NewMiddleware[In, Out](Declaration[In, Out]{
 			Name:     "declare-security:" + schemeName,
 			InCodec:  codex.Struct[In](),
 			OutCodec: codex.Struct[Out](),
-			Security: middleware.NewSecurityDeclaration(schemeName, scheme.SecurityScheme, scopes, scheme.Codec),
+			Security: NewSecurityDeclaration(schemeName, scheme, scopes),
 		}),
 		fn: fn,
 	}
@@ -260,13 +260,13 @@ func (m BoundClientMiddleware[Req, In, Out]) WithResponsePropertySpec(p Property
 }
 
 // SetContextFieldFromIn mirrors [BoundMiddleware.SetContextFieldFromIn].
-func (m BoundClientMiddleware[Req, In, Out]) SetContextFieldFromIn(field middleware.ContextFieldSetter, get func(In) any) BoundClientMiddleware[Req, In, Out] {
+func (m BoundClientMiddleware[Req, In, Out]) SetContextFieldFromIn(field ContextFieldSetter, get func(In) any) BoundClientMiddleware[Req, In, Out] {
 	m.mw = m.mw.SetContextFieldFromIn(field, get)
 	return m
 }
 
 // SetContextFieldFromOut mirrors [BoundMiddleware.SetContextFieldFromOut].
-func (m BoundClientMiddleware[Req, In, Out]) SetContextFieldFromOut(field middleware.ContextFieldSetter, get func(Out) any) BoundClientMiddleware[Req, In, Out] {
+func (m BoundClientMiddleware[Req, In, Out]) SetContextFieldFromOut(field ContextFieldSetter, get func(Out) any) BoundClientMiddleware[Req, In, Out] {
 	m.mw = m.mw.SetContextFieldFromOut(field, get)
 	return m
 }
@@ -323,8 +323,8 @@ func (rb *routeBuilder) AppendSpecContribution(c any) {
 	rb.middlewareSpecContributions = append(rb.middlewareSpecContributions, c.(middlewareSpecContribution))
 }
 
-func (rb *routeBuilder) AppendSecurityDeclaration(name string, sec *middleware.SecurityDeclaration) {
-	rb.middlewares = append(rb.middlewares, middleware.Middleware{Name: name, Security: sec})
+func (rb *routeBuilder) AppendSecurityDeclaration(name string, sec *SecurityDeclaration) {
+	rb.middlewares = append(rb.middlewares, AttachedMiddleware{Name: name, Security: sec})
 }
 
 // boundHandleMWOpt is the [RouteOpt] returned by [Route.HandleBoundMW]
@@ -477,7 +477,7 @@ func (e BoundMiddlewareReqMismatchError) LogValue() slog.Value {
 // [BoundClientMiddleware] attach ONLY via [Route.HandleBoundMW]/
 // [Route.ClientBoundMW]. HandleMW/ClientMW are reserved for the
 // general-purpose (mw == nil) decorator case and the bare legacy
-// [middleware.Middleware] type — this error enforces that split
+// [AttachedMiddleware] type — this error enforces that split
 // structurally, closing the legacy raw-adapter-Fn-pairing escape hatch
 // for good (see docs/design/d-0003-codec-declared-middlewares.md's Addendum 7's Motivation).
 type MiddlewareMisattachedError struct {

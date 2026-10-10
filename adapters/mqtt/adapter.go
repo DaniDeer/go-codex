@@ -368,7 +368,7 @@ func subscribeHandler[T any](
 
 		// Enforce security: per-operation requirements take precedence; nil falls
 		// back to global security declared via Builder.AddGlobalSecurity.
-		var secReqs []route.SecurityRequirement
+		var secReqs []events.SecurityRequirement
 		if handle.Descriptor.Subscribe != nil {
 			secReqs = handle.Descriptor.Subscribe.Security
 		}
@@ -491,7 +491,7 @@ func subscribeHandler[T any](
 		// (above) AND any bound MiddlewareHandler's own GrantedScopes
 		// (merged above).
 		if len(secReqs) > 0 {
-			if err := middleware.CheckScopes(secReqs, granted); err != nil {
+			if err := events.CheckScopes(secReqs, granted); err != nil {
 				if secObs, ok := obs.(stats.SecurityObserver); ok {
 					secObs.RecordSecurityRejection(msg.Topic(), route.FirstSchemeName(secReqs))
 				}
@@ -626,7 +626,7 @@ type PublishOptions[T any] struct {
 // [events.Publisher.PublishMW]) is validated EAGERLY here, before any
 // encoding or network activity, via [validatePublishImplementationShapes] —
 // a malformed Fn fails loudly and immediately. Security-shaped
-// implementations (func(context.Context, *T, []route.SecurityRequirement)
+// implementations (func(context.Context, *T, []events.SecurityRequirement)
 // error) run in attachment order, mutating msg. General-purpose Fns
 // (func(func(context.Context, T) error) func(context.Context, T) error)
 // wrap the internal "encode + transmit" step, outermost-in — this lets a
@@ -730,7 +730,7 @@ func publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.
 	// global), then run security-shaped implementations — they grant
 	// write-access to msg, mirroring subscribeHandler's server-side
 	// security-shaped read/write access.
-	var secReqs []route.SecurityRequirement
+	var secReqs []events.SecurityRequirement
 	if handle.Descriptor.Publish != nil {
 		secReqs = handle.Descriptor.Publish.Security
 	}
@@ -782,16 +782,16 @@ func publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.
 }
 
 // runPublishSecurityImpls runs every attached
-// [middleware.ClientImplementation] whose Fn matches the security shape
-// (func(context.Context, *T, []route.SecurityRequirement) error) IN
+// [events.ClientImplementation] whose Fn matches the security shape
+// (func(context.Context, *T, []events.SecurityRequirement) error) IN
 // ATTACHMENT ORDER, fail-fast on the first error — the mqtt v3 mirror of
 // subscribeHandler's server-side security-shaped implementation check, but
 // client-side and generic over T (concrete at this call site). General-purpose
 // wrapping-shaped Fns are silently skipped here (consumed instead by
 // [wrapPublishGeneral]).
-func runPublishSecurityImpls[T any](ctx context.Context, msg *T, secReqs []route.SecurityRequirement, impls []middleware.ClientImplementation) error {
+func runPublishSecurityImpls[T any](ctx context.Context, msg *T, secReqs []events.SecurityRequirement, impls []events.ClientImplementation) error {
 	for _, impl := range impls {
-		fn, ok := impl.Fn.(func(context.Context, *T, []route.SecurityRequirement) error)
+		fn, ok := impl.Fn.(func(context.Context, *T, []events.SecurityRequirement) error)
 		if !ok {
 			continue // general-purpose or nil
 		}
@@ -809,7 +809,7 @@ func runPublishSecurityImpls[T any](ctx context.Context, msg *T, secReqs []route
 // general-purpose Fn found in impls (shape func(next func(context.Context, T)
 // error) func(context.Context, T) error), OUTERMOST-in, in attachment order
 // (impls[0] is outermost) — deliberate symmetry with [wrapSubscribeGeneral].
-func wrapPublishGeneral[T any](fn func(context.Context, T) error, impls []middleware.ClientImplementation) func(context.Context, T) error {
+func wrapPublishGeneral[T any](fn func(context.Context, T) error, impls []events.ClientImplementation) func(context.Context, T) error {
 	for i := len(impls) - 1; i >= 0; i-- {
 		wrap, ok := impls[i].Fn.(func(func(context.Context, T) error) func(context.Context, T) error)
 		if !ok {
@@ -822,23 +822,23 @@ func wrapPublishGeneral[T any](fn func(context.Context, T) error, impls []middle
 
 // validatePublishImplementationShapes checks every attached impl.Fn against
 // the two shapes [events.Publisher.PublishMW] recognizes for T — the
-// security shape (func(context.Context, *T, []route.SecurityRequirement)
+// security shape (func(context.Context, *T, []events.SecurityRequirement)
 // error) or the general-purpose wrapping shape (func(next
 // func(context.Context, T) error) func(context.Context, T) error) — EAGERLY
 // at [publish] construction time rather than deferring to the first
 // outgoing message. Mirrors [validateSubscribeImplementationShapes].
-func validatePublishImplementationShapes[T any](impls []middleware.ClientImplementation) error {
+func validatePublishImplementationShapes[T any](impls []events.ClientImplementation) error {
 	for _, impl := range impls {
 		if impl.Fn == nil {
 			continue
 		}
 		switch impl.Fn.(type) {
-		case func(context.Context, *T, []route.SecurityRequirement) error:
+		case func(context.Context, *T, []events.SecurityRequirement) error:
 		case func(func(context.Context, T) error) func(context.Context, T) error:
 		default:
-			return middleware.MiddlewareShapeError{
+			return events.MiddlewareShapeError{
 				Name:     impl.Name,
-				Expected: "func(context.Context, *T, []route.SecurityRequirement) error or func(func(context.Context, T) error) func(context.Context, T) error",
+				Expected: "func(context.Context, *T, []events.SecurityRequirement) error or func(func(context.Context, T) error) func(context.Context, T) error",
 				Got:      fmt.Sprintf("%T", impl.Fn),
 			}
 		}
@@ -885,7 +885,7 @@ func publishHandle[T any](
 // no-op and Codec validation is deliberately skipped. Use a security-shaped
 // SubscribeMW-paired implementation with MessageFromContext for runtime
 // credential inspection instead.
-func validateSecurityCredentials(_ pahomqtt.Message, _ []route.SecurityRequirement, _ map[string]events.SecurityScheme) error {
+func validateSecurityCredentials(_ pahomqtt.Message, _ []events.SecurityRequirement, _ map[string]events.SecurityScheme) error {
 	// Codec validation skipped: pahomqtt.Message (MQTT 3.1.1) does not expose
 	// per-message credentials. Use a security-shaped SubscribeMW-paired
 	// implementation for runtime enforcement instead.

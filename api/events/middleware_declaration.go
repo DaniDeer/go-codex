@@ -7,12 +7,11 @@ import (
 	"slices"
 
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/internal/middleware"
 	"github.com/DaniDeer/go-codex/internal/route"
 )
 
 // Middleware is a codec-backed, events-specific middleware declaration —
-// the per-pattern counterpart to [middleware.Declaration], adding events'
+// the per-pattern counterpart to [Declaration], adding events'
 // own topic-var merge vocabulary. Unlike [rest.Middleware][In, Out] (which
 // has independent request AND response merge vocabularies, since REST has
 // header/cookie/query on BOTH sides), events has only ONE wire location
@@ -44,7 +43,7 @@ import (
 // channel-bound attachment path anymore; passing one to SubscribeMW/
 // PublishMW now returns [MiddlewareMisattachedError].
 type Middleware[In, Out any] struct {
-	middleware.Declaration[In, Out]
+	Declaration[In, Out]
 
 	topicMergeFieldsIn  []codex.FieldCodec[In]
 	topicMergeFieldsOut []codex.FieldCodec[Out]
@@ -101,28 +100,28 @@ type Middleware[In, Out any] struct {
 }
 
 // contextFieldInSetter mirrors [rest]'s identical type — pairs a
-// [middleware.ContextFieldSetter] with the getter that extracts its raw
+// [ContextFieldSetter] with the getter that extracts its raw
 // value from this middleware's decoded In — one entry per
 // [Middleware.SetContextFieldFromIn] call.
 type contextFieldInSetter[In any] struct {
-	field middleware.ContextFieldSetter
+	field ContextFieldSetter
 	get   func(In) any
 }
 
 // contextFieldOutSetter is [contextFieldInSetter]'s Out-side mirror — one
 // entry per [Middleware.SetContextFieldFromOut] call.
 type contextFieldOutSetter[Out any] struct {
-	field middleware.ContextFieldSetter
+	field ContextFieldSetter
 	get   func(Out) any
 }
 
-// NewMiddleware builds a [Middleware] from a [middleware.Declaration] —
+// NewMiddleware builds a [Middleware] from a [Declaration] —
 // chain [Middleware.WithSubscribeTopic]/[Middleware.WithPublishTopic] to
 // populate its topic merge-field vocabulary, then attach its Fn via
 // [Middleware.WithReceive]/[Middleware.WithSend] and plain .Use(mw). For
 // a channel-bound Fn, use [BoundSubscribeMiddleware]/
 // [BoundPublishMiddleware] instead (bound_middleware.go).
-func NewMiddleware[In, Out any](decl middleware.Declaration[In, Out]) Middleware[In, Out] {
+func NewMiddleware[In, Out any](decl Declaration[In, Out]) Middleware[In, Out] {
 	return Middleware[In, Out]{Declaration: decl}
 }
 
@@ -175,7 +174,7 @@ func (m Middleware[In, Out]) WithPublishProperty(p MergedPropertyParam[Out]) Mid
 // SUBSCRIBE-side property declaration — p is validated and rendered into
 // the channel's AsyncAPI spec, but has NO corresponding In struct field
 // to decode into. Use [Middleware.WithSubscribeProperty] instead when a
-// merge field is wanted. Mirrors legacy middleware.Middleware's
+// merge field is wanted. Mirrors legacy AttachedMiddleware's
 // RequestHeaderParams shape (see adapters/mqtt5.FromUserPropertyParam).
 // Part of the middleware-consolidation effort
 // (docs/design/d-0003-codec-declared-middlewares.md) closing the one real gap
@@ -186,7 +185,7 @@ func (m Middleware[In, Out]) WithSubscribePropertySpec(p PropertyParam) Middlewa
 }
 
 // WithPublishPropertySpec is [Middleware.WithSubscribePropertySpec]'s
-// publish-side sibling — mirrors legacy middleware.Middleware's
+// publish-side sibling — mirrors legacy AttachedMiddleware's
 // ResponseHeaderParams shape (see
 // adapters/mqtt5.FromResponseUserPropertyParam).
 func (m Middleware[In, Out]) WithPublishPropertySpec(p PropertyParam) Middleware[In, Out] {
@@ -229,7 +228,7 @@ func cloneFieldCodecs[T any](fs []codex.FieldCodec[T]) []codex.FieldCodec[T] {
 // scope grant). The MOMENT a channel declares `Subscribe.Security` at
 // all (even requiring ZERO specific scopes), satisfying it requires
 // [BoundSecuritySubscribeMiddleware] instead — every adapter's unified
-// `middleware.CheckScopes` call requires the scheme name to be PRESENT
+// `CheckScopes` call requires the scheme name to be PRESENT
 // as a map key in the merged grants, which only a `HasOut=true`
 // (bound-class) dispatch handler can ever produce (see
 // `adapters/internal/scopesmerge.MergeHandlerGrants`, which silently
@@ -262,7 +261,7 @@ func (m Middleware[In, Out]) WithSend(fn func(ctx context.Context) (Out, error))
 // (see [Middleware.SetContextFieldFromOut]'s doc comment for why).
 //
 //	authMw = authMw.SetContextFieldFromIn(UserIDField, func(in BearerCred) any { return in.UserID })
-func (m Middleware[In, Out]) SetContextFieldFromIn(field middleware.ContextFieldSetter, get func(In) any) Middleware[In, Out] {
+func (m Middleware[In, Out]) SetContextFieldFromIn(field ContextFieldSetter, get func(In) any) Middleware[In, Out] {
 	m.ctxFieldsFromIn = append(slices.Clone(m.ctxFieldsFromIn), contextFieldInSetter[In]{field: field, get: get})
 	return m
 }
@@ -275,29 +274,31 @@ func (m Middleware[In, Out]) SetContextFieldFromIn(field middleware.ContextField
 // asymmetry vs. REST/reqreply); Go's own type system means this method
 // simply isn't reachable there in practice, not a runtime restriction —
 // it is only ever meaningfully called on a Publish-side [Middleware].
-func (m Middleware[In, Out]) SetContextFieldFromOut(field middleware.ContextFieldSetter, get func(Out) any) Middleware[In, Out] {
+func (m Middleware[In, Out]) SetContextFieldFromOut(field ContextFieldSetter, get func(Out) any) Middleware[In, Out] {
 	m.ctxFieldsFromOut = append(slices.Clone(m.ctxFieldsFromOut), contextFieldOutSetter[Out]{field: field, get: get})
 	return m
 }
 
 // RouteMiddlewareMarker makes Middleware[In,Out] satisfy
-// [middleware.RouteMiddleware] — EXPORTED (unlike [ports.Pattern]'s
+// [RouteMiddleware] — EXPORTED (unlike [ports.Pattern]'s
 // unexported-method sealing) because Go's unexported-method interface
 // satisfaction is scoped per package: a type declared in api/events can
 // never satisfy an interface whose method is unexported in package
-// middleware, no matter the name — see [middleware.RouteMiddleware]'s doc
+// middleware, no matter the name — see [RouteMiddleware]'s doc
 // comment. So a channel's plain .Use(...) can recognize and dispatch a
 // channel-agnostic Middleware value carrying a WithReceive/WithSend fn.
 func (Middleware[In, Out]) RouteMiddlewareMarker() {}
 
 // SecurityDeclaration makes Middleware[In,Out] satisfy
-// [middleware.SecurityCarrier] — returns the embedded Declaration's own
-// Security field directly. Part of the middleware-consolidation effort
+// internal/middleware's own SecurityCarrier interface (dispatch-internal,
+// no public alias — not part of this package's own vocabulary) — returns
+// the embedded Declaration's own Security field directly. Part of the
+// middleware-consolidation effort
 // (docs/design/d-0003-codec-declared-middlewares.md) folding Security into the
 // codec-backed family: [Subscriber.SubscribeMW]/[Publisher.PublishMW]
 // extract Security via this method UNIFORMLY, regardless of whether the
-// attached value is this type or the legacy [middleware.Middleware].
-func (m Middleware[In, Out]) SecurityDeclaration() *middleware.SecurityDeclaration {
+// attached value is this type or the legacy [AttachedMiddleware].
+func (m Middleware[In, Out]) SecurityDeclaration() *SecurityDeclaration {
 	return m.Declaration.Security
 }
 
@@ -547,7 +548,7 @@ func checkEventsMiddlewareNameUniquenessAndAttachment(topic string, middlewareHa
 // [BoundPublishMiddleware] (bound_middleware.go) and [boundContributor]/
 // [boundClientContributor].
 type eventsMiddlewareContributor interface {
-	middleware.RouteMiddleware
+	RouteMiddleware
 	applyAgnosticSubscriber() (MiddlewareHandler, bool)
 	applyAgnosticPublisher() (ClientMiddlewareHandler, bool)
 	MiddlewareName() string

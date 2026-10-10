@@ -11,7 +11,7 @@ import (
 // unit built by [Route.HandleBoundMW] (bound class) or a plain .Use()'d
 // [Middleware] carrying a [Middleware.WithReceive] Fn (reusable class) —
 // the codec-backed-middleware counterpart to
-// [middleware.ServerImplementation]. Stored on [RouteHandle.MiddlewareHandlers];
+// [ServerImplementation]. Stored on [RouteHandle.MiddlewareHandlers];
 // consumed by each server adapter's own dispatch (nethttp/chi) via its
 // reflect-based route serving — never constructed directly by callers.
 //
@@ -30,7 +30,7 @@ type MiddlewareHandler struct {
 	// uses — independent of Req, using ONLY this middleware's own
 	// merge-field declarations and the middleware's own InCodec. Returns
 	// the decoded In boxed as `any` (its concrete type is recovered by the
-	// adapter via reflection, mirroring how [middleware.ServerImplementation.Fn]
+	// adapter via reflection, mirroring how [ServerImplementation.Fn]
 	// is already reflect-called against a concrete Req). ctx is the
 	// SAME request-scoped ctx [DispatchMiddlewareHandlers] was called
 	// with — needed so an attached [Middleware.SetContextFieldFromIn]
@@ -41,7 +41,7 @@ type MiddlewareHandler struct {
 
 	// Fn is the type-erased business Fn — concretely
 	// func(ctx context.Context, req *Req, in In) (Out, error) — reflect-
-	// called by the adapter, mirroring [middleware.ServerImplementation.Fn]'s
+	// called by the adapter, mirroring [ServerImplementation.Fn]'s
 	// existing type-erasure technique exactly.
 	Fn any
 
@@ -74,7 +74,7 @@ type MiddlewareHandler struct {
 	// derived from mw's own Security declaration (see [satisfiesOf]) —
 	// empty for a general-purpose (no Security) middleware, which
 	// [CheckCoverage] always treats as non-covering.
-	// Mirrors [middleware.ServerImplementation.Satisfies] exactly, so
+	// Mirrors [ServerImplementation.Satisfies] exactly, so
 	// [CheckCoverage] can check BOTH lists uniformly.
 	Satisfies []string
 }
@@ -274,8 +274,8 @@ func buildEncodeOutCookieAttrs[In, Out any](mw Middleware[In, Out]) func(outAny 
 // both roles) from mw's own [middleware.SecurityCarrier]-derived Security
 // declaration — empty for a general-purpose (no Security) middleware, so
 // [CheckCoverage] can treat a codec-backed Middleware's dispatch handler
-// identically to a general-purpose [middleware.ServerImplementation]/
-// [middleware.ClientImplementation] regardless of which attachment style
+// identically to a general-purpose [ServerImplementation]/
+// [ClientImplementation] regardless of which attachment style
 // produced it.
 func satisfiesOf[In, Out any](mw Middleware[In, Out]) []string {
 	if sec := mw.SecurityDeclaration(); sec != nil {
@@ -432,7 +432,7 @@ func buildAgnosticClientMiddlewareHandler[In, Out any](mw Middleware[In, Out]) C
 // to plain, Req/Resp-agnostic spec types at the GENERIC call site where
 // In/Out are still concrete. Fed into applyParamDeclarations'
 // conflict-detection/layering pass, the SAME one legacy
-// middleware.Middleware values already use (D4).
+// AttachedMiddleware values already use (D4).
 type middlewareSpecContribution struct {
 	name             string
 	reqHeaderParams  []HeaderParam
