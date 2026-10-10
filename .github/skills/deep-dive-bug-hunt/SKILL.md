@@ -120,6 +120,18 @@ drift, not code bugs):
 - **Sequencing matters for avoiding wasted rework**: if the foundational merge/transform round
   (first in Phase A) turns up a bug, every later concept round would have silently inherited it
   — always do that round FIRST and get it clean before fanning out to named concepts.
+- **A concept round should also check whether the CONCEPT'S OWN TEST FILES reach into a shared
+  `internal/<name>` package directly instead of the consuming pattern's public alias** — this is
+  a distinct finding from a dispatch-path code bug (no runtime behavior changes), but it's the
+  SAME root-cause class and was found TWICE in one session only because the user separately
+  prompted for it afterward, not because a concept round's own methodology surfaced it
+  proactively. While tracing a concept's declare-time source (step 4), also grep its test file(s)
+  for `internal/route`/`internal/middleware`/etc. imports — a bare internal-package reference in
+  test code is a signal EITHER that the test should use the public alias instead (if one exists)
+  OR that a production-code public alias is itself missing (see
+  `.github/skills/review-go-codex/references/checklist.md`'s §16 "Exported error types are
+  aliased too" / "Test files use the public alias too" rows) — the SAME investigation that led to
+  the Round 196/197 fixes and the subsequent 80-test-file rework.
 
 ## References
 

@@ -423,6 +423,29 @@ package OWNING that interface (`stats`) instead of `internal/`, since an
 external implementer must be able to spell the type in their own method
 signature — an `internal/` type would make that impossible.
 
+**Your new adapter's OWN test files must follow this same convention from
+day one** — not just your adapter's production code. When your adapter's
+tests declare routes/channels/security schemes/context fields/middleware
+the way a real caller would, import and use the per-pattern public alias
+(`events.`/`reqreply.`/`rest.`), never the underlying `internal/<name>`
+package directly, even though a test file, being inside the module,
+technically COULD. This is exactly the convention ~80 existing test
+files across 5 adapters were retroactively reworked to follow (see
+`docs/design/d-0009-internalize-shared-mechanics.md`'s error-aliasing
+Addendum and `.github/skills/review-go-codex/references/checklist.md`'s
+§16) — starting your new adapter's tests on the public alias avoids that
+rework later. The only legitimate exceptions: a test white-box-testing
+`internal/<name>` itself, a symbol with no public alias yet (raise this
+as a gap in the consuming `api/*` package, don't work around it in the
+test), or an adapter-local type with no cross-pattern equivalent (e.g. a
+CONNECT-packet credential type specific to your protocol).
+
+Also check whether any error type your adapter's production code
+constructs from a shared `internal/<name>` package (rather than your own
+adapter-local error types) is missing its public `api/*`-side alias — see
+the Six Mandatory Requirements' `plan-a-new-codex-feature` skill §1 for
+the exact rule and judgment call ("is this error useful to the user").
+
 ## Step 6 — Use the checklist
 
 Work through [references/checklist.md](references/checklist.md) — a

@@ -159,6 +159,14 @@ Deviation from this pattern = trivial finding.
 
 All error returns must be typed — not bare `fmt.Errorf` strings without a typed wrapper.
 
+**While reviewing any error type below, also check §16's "Exported error types are aliased
+too" row** — if the type (or one it wraps/unwraps to) is defined in an `internal/<name>`
+package, confirm a same-named public alias exists in every consuming `api/*` package. This
+is a distinct, easy-to-miss check from "is it typed/structured" (the concern THIS section
+covers) — a type can be perfectly structured (`Error`/`Unwrap`/`LogValue` all present) and
+still be completely unreachable to an external caller's `errors.As` if it's never aliased
+out of `internal/`.
+
 ### rest package
 
 | Error type | When to use |
@@ -766,6 +774,7 @@ each with `rest`/`events`/`reqreply`-side wrappers).
 | Exported error types are aliased too | Every EXPORTED ERROR TYPE an `internal/<name>` package defines (not just its constructors/value types) has a same-named `type XError = internal.XError` alias in each consuming pattern package — otherwise a caller cannot `errors.As(err, &shapeErr)` on an error an adapter returns bare, since `internal/*` is unimportable from outside the module (found via `internal/middleware`'s `MiddlewareShapeError`/`ContextFieldNotPreparedError`/`UnsatisfiedScopesError` missing this aliasing — see `docs/design/d-0009-internalize-shared-mechanics.md`'s "3 error types aliased publicly" Addendum) |
 | Cross-pattern-shared VALUE types stay one alias | A type whose entire purpose is being attachable identically across multiple patterns is the SAME underlying type via alias in all 3 packages, not 3 independently-defined structs that happen to look similar (precedent: `rest.SharedMiddleware`/`events.SharedMiddleware`/`reqreply.SharedMiddleware`, since REMOVED entirely once zero real callers needing this were found — see `docs/design/d-0009-internalize-shared-mechanics.md` — "shared config, declared twice" is the surviving pattern) |
 | Public-interface exception respected | A pattern-agnostic concept referenced by a PUBLIC, user-implementable `stats.Observer` extension (e.g. `Disposition`, used by `stats.DispositionObserver`) is relocated to the package OWNING that interface (`stats`), not `internal/` — flag a NEW observer-interface method referencing an `internal/`-only type as a regression (external implementers could not spell the signature) |
+| Test files use the public alias too | A test in `api/*`/`adapters/*` exercising the public declarative vocabulary (declaring routes/channels, security schemes, context fields, middleware, etc.) uses the SAME per-pattern alias (`events.`/`reqreply.`/`rest.`) a real caller would, never `internal/<name>` directly — even though the test file, being inside the module, technically COULD import `internal/*`. Shipped precedent: an 80-test-file rework across `internal/route` (37 files) and `internal/middleware` (43 files), all converted to the public alias with ZERO production-code changes (Go aliases are the literal same type). Documented exceptions, NOT findings: (a) a test genuinely WHITE-BOX testing `internal/<name>`'s own behavior directly; (b) the symbol has no public alias yet — that IS a finding, but fix the missing alias (previous row), not the test; (c) an adapter-local type with no cross-pattern equivalent (e.g. `ConnectSecurityScheme`'s CONNECT-packet credential type in `adapters/mqtt5`/`adapters/mqtt`, which embeds a raw `internal/route` type with no `events`/`reqreply` counterpart) |
 
 ### Rules
 

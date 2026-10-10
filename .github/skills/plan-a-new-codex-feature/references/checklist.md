@@ -63,6 +63,8 @@ For every new error type:
 | `LogValue() slog.Value` | Always present; returns `slog.GroupValue(...)` |
 | Group attributes match fields | `slog.String("boundary", ...)`, `slog.Any("err", ...)` |
 | `errors.As`-navigable | Can be extracted from wrapper errors |
+| Internal-package error aliased, if user-useful | An error type defined in `internal/<name>` that reaches a user-callable `api/*` function has a same-named `type XError = internal.XError` alias in each consuming `api/*` package — unless it's deliberately inert from the user's perspective (see `plan-a-new-codex-feature/SKILL.md`'s §1) |
+| New tests use the public alias, not `internal/*` | A test exercising this feature's public declarative vocabulary imports `events.`/`reqreply.`/`rest.`, never `internal/*` directly — unless white-box-testing `internal/*` itself, no public alias exists yet (fix the gap, not the test), or the symbol is adapter-local with no cross-pattern equivalent |
 
 **Standard attribute names:**
 - `table`, `op` — SQL adapter context

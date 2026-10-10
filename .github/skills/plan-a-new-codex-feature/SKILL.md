@@ -188,6 +188,38 @@ slog.Error("operation failed", "error", myErr)  // LogValue fires automatically
 **`errors.As` chain**: callers must be able to reach the inner error. `Unwrap()` is
 mandatory whenever `Err error` is a field.
 
+**Internal-package errors must be aliased publicly, when useful to the user.** If this
+feature's error type is defined in (or the feature ADDS a new error type to) a repo-root
+`internal/<name>` package — shared cross-pattern mechanics per Step 5g/`d-0009` — and that
+error reaches a user-callable `api/*` function (returned directly, or reachable via
+`errors.As` through an existing public wrapper's `Unwrap()`), add a same-named
+`type XError = internal.XError` alias to each consuming `api/*` package's own vocabulary
+file (e.g. `middleware_vocabulary.go`), NOT just the constructors/value types that package
+already aliases. `internal/*` is unimportable from outside the module, so skipping this
+makes the error type permanently unreachable to `errors.As` for any real external caller.
+Found and fixed retroactively for `internal/middleware`'s `MiddlewareShapeError`/
+`ContextFieldNotPreparedError`/`UnsatisfiedScopesError` — see
+`docs/design/d-0009-internalize-shared-mechanics.md`'s "3 error types aliased publicly"
+Addendum for the worked example and the exact alias pattern. **Not every internal error
+needs this** — skip it for an error type that is deliberately inert from the user's
+perspective (e.g. one only ever constructed by a raw/legacy internal-only code path a real
+caller cannot reach or meaningfully branch on); ask "would a real external caller have a
+plausible reason to `errors.As` on THIS SPECIFIC type to branch their own code?" — if yes,
+alias it.
+
+**New tests exercising this feature's public vocabulary use the public alias, never
+`internal/*` directly.** A test file in `api/*`/`adapters/*` that declares routes/channels,
+security schemes, context fields, or middleware the way a REAL caller would must import and
+use the same per-pattern public alias (`events.`/`reqreply.`/`rest.`) a real caller would —
+even though the test file, being inside the module, technically COULD import `internal/*`.
+The only legitimate reasons to reach into `internal/*` from a test: the test is WHITE-BOX
+testing `internal/<name>`'s own behavior directly, the symbol has no public alias (an
+instance of the GAP this very rule closes — fix the gap instead of the test), or the symbol
+is adapter-local with no cross-pattern equivalent (e.g. a CONNECT-packet credential type
+embedding a raw `internal/route` type with no `events`/`reqreply` counterpart). See
+`.github/skills/review-go-codex/references/checklist.md`'s §16 for the full worked precedent
+(an 80-test-file rework across `internal/route` and `internal/middleware`).
+
 #### 2. Observer Pattern
 
 Determine which `stats.Observer` extension applies:
