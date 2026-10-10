@@ -3249,6 +3249,12 @@ type ClientCallOptions struct {
 	// THIS call only, overriding [stats.ObserverFromContext](ctx).
 	// Defaults to ctx's own observer (or [stats.NoopObserver]) when nil.
 	Observer stats.Observer
+
+	// MaxRedirects caps how many redirects [Client.Call] will
+	// transparently auto-follow (docs/roadmap/rest-typed-redirects.md)
+	// before returning [RedirectChainTooDeepError]. 0 means "use the
+	// default" (10, mirroring net/http's own precedent).
+	MaxRedirects int
 }
 
 // ClientConsumeOptions is [ClientCallOptions]'s SSE-consumption sibling,
@@ -3258,6 +3264,11 @@ type ClientConsumeOptions struct {
 	// format for THIS Consume call only ([]format.Format[Event]) —
 	// mirrors [ConsumeOptions.Formats] exactly.
 	Formats any
+
+	// MaxRedirects is [ClientCallOptions.MaxRedirects]'s Consume-side
+	// sibling — applies to every reconnect attempt, not just the
+	// initial connection (docs/roadmap/rest-typed-redirects.md).
+	MaxRedirects int
 }
 
 // ClientTransport is implemented by each adapter's internal, unexported

@@ -426,6 +426,17 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 
 		resp, err = fn(ctx, req)
 		if err != nil {
+			// docs/roadmap/rest-typed-redirects.md: a RedirectError
+			// (constructed via rest.Redirect/rest.RedirectToSSE) is
+			// recognized BEFORE ErrorPattern/ErrorStatus matching —
+			// renders status + Location, no body, mirroring the
+			// already-established sentinel-error convention elsewhere
+			// in this dispatch (not a new shape).
+			if redirErr, ok := asRedirectError(err); ok {
+				sw.Header().Set("Location", redirErr.Location)
+				sw.WriteHeader(redirErr.Status)
+				return
+			}
 			// H1: upgraded from the bare ErrorResponseFor this branch
 			// used before to tryRespondErrorPatternGeneric/
 			// ObserveErrorResponseFor — now ALSO reports match/miss/

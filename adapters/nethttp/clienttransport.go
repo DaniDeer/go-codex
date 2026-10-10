@@ -101,6 +101,25 @@ func recoverClientSSERouteHandleValue(sseRouteAny any) (reflect.Value, reflect.V
 // calls).
 type clientTransport struct {
 	caller *caller
+	// client, once [rest.ClientAwareTransport.BindClient] is called by
+	// [rest.Client.Attach], is the attached *rest.Client — retained so
+	// the redirect auto-follow path (Phase 4/5) can consult its
+	// MatchRedirectRoute/MatchRedirectSSERoute registry accessors. nil
+	// until BindClient runs (meaning this transport was never attached
+	// via rest.Client.Attach — e.g. used directly with
+	// rest.CallWithTransport, which deliberately stays registry-free per
+	// docs/roadmap/rest-typed-redirects.md's Resolved design decision
+	// #5 — auto-follow is skipped entirely in that case, a typed
+	// RedirectError is returned instead).
+	client *rest.Client
+}
+
+// BindClient implements [rest.ClientAwareTransport] — called by
+// [rest.Client.Attach] immediately after storing this transport, giving
+// the redirect auto-follow path read access to c's registry.
+func (t *clientTransport) BindClient(c *rest.Client) error {
+	t.client = c
+	return nil
 }
 
 // ClientTransportOptions configures [NewClientTransport] — the SOLE
@@ -142,7 +161,29 @@ type ClientTransportOptions struct {
 //	respAny, err := client.Call(ctx, getUserRoute, GetUserReq{ID: "f47ac10b"})
 //	resp := respAny.(GetUserResp)
 func NewClientTransport(opts ClientTransportOptions) rest.ClientTransport {
-	return &clientTransport{caller: newCaller(opts.HTTPClient, opts.BaseURL)}
+	return &clientTransport{caller: newCaller(redirectAwareHTTPClient(opts.HTTPClient), opts.BaseURL)}
+}
+
+// redirectAwareHTTPClient returns a SHALLOW COPY of client (round 2,
+// Resolved design decision #6) with CheckRedirect overridden to
+// http.ErrUseLastResponse, so a 3xx response is returned directly to
+// the caller (clientTransport.Call/Consume) instead of net/http silently
+// auto-following it. http.Client's fields (Transport, Jar, Timeout,
+// CheckRedirect) are all directly copyable — this does NOT mutate the
+// caller's own client (safe even if they reuse it elsewhere for
+// unrelated, non-go-codex-managed calls). If client already set its own
+// CheckRedirect, it is intentionally overridden: go-codex's own redirect
+// handling needs every 3xx surfaced explicitly, every time, for THIS
+// transport's calls.
+func redirectAwareHTTPClient(client *http.Client) *http.Client {
+	if client == nil {
+		return nil
+	}
+	redirectAware := *client
+	redirectAware.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return &redirectAware
 }
 
 var (
@@ -530,6 +571,16 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 			return nil, err
 		}
 
+		// lastBodyBytes/lastContentType are assigned INSIDE networkStep's
+		// closure below, right after the request body is encoded —
+		// captured here (in Call's own enclosing scope, not the
+		// closure's per-invocation one) so a redirect's 307/308
+		// follow-up (round 4 finding H1b) can replay the SAME
+		// already-encoded bytes without re-encoding or buffering a
+		// stream a second time.
+		var lastBodyBytes []byte
+		var lastContentType string
+
 		networkStep := reflect.MakeFunc(nextType, func(args []reflect.Value) []reflect.Value {
 			stepCtx, _ := args[0].Interface().(context.Context)
 			stepReqVal := args[1]
@@ -545,6 +596,8 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 				bodyBytes, _ := encodeResults[0].Interface().([]byte)
 				contentType, _ = encodeResults[1].Interface().(string)
 				body = bytes.NewReader(bodyBytes)
+				lastBodyBytes = bodyBytes
+				lastContentType = contentType
 			}
 
 			httpReq, buildErr := http.NewRequestWithContext(stepCtx, method, rawURL, body)
@@ -614,6 +667,22 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 
 			statusCode := resp.StatusCode
 			obs.RecordRequest(method, path, statusCode, time.Since(start))
+
+			// docs/roadmap/rest-typed-redirects.md: the overridden
+			// CheckRedirect (NewClientTransport) means net/http never
+			// auto-follows a 3xx — it's surfaced here, exactly like any
+			// other status, for Call's own outer code (after finalStep
+			// returns) to recognize via errors.As and hand off to
+			// followRedirect. respType's zero value is always valid
+			// here regardless of what the EVENTUAL auto-followed
+			// target's own Resp type turns out to be — that decode
+			// happens in a SEPARATE, parallel path (round 4 finding H2),
+			// never through this reflect-typed return slot.
+			if isRedirectStatus(statusCode) {
+				return []reflect.Value{reflect.Zero(respType), reflectErrValue(rest.RedirectError{
+					Status: statusCode, Location: resp.Header.Get("Location"),
+				})}
+			}
 
 			respBody, readErr := io.ReadAll(resp.Body)
 			if readErr != nil {
@@ -691,6 +760,20 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 
 		results := finalStep.Call([]reflect.Value{reflect.ValueOf(ctx), reqVal})
 		if errI, _ := results[1].Interface().(error); errI != nil {
+			if redirErr, ok := asRedirectError(errI); ok {
+				maxRedirects := opts.MaxRedirects
+				info := redirectFollowUpInfo{
+					method:       method,
+					credHeaders:  credHeaders,
+					cookieVars:   cookieVars,
+					extraHeaders: opts.ExtraHeaders,
+					bodyBytes:    lastBodyBytes,
+					contentType:  lastContentType,
+				}
+				result, followErr := followRedirect(ctx, t.client, t.caller.client, t.caller.baseURL, redirErr, info, maxRedirects)
+				err = followErr
+				return result, err
+			}
 			err = errI
 			return nil, err
 		}
