@@ -15,7 +15,13 @@
 > auto-follow needs its own parallel request-construction path rather
 > than recursing through the normal `Call`/`Consume` dispatch pipeline.
 > Round 4 is explicitly the LAST critical-review pass before
-> implementation planning. (The
+> implementation planning. A phased implementation plan now exists
+> (session workspace), with 3 additional plumbing questions resolved
+> while mapping this doc to concrete phases — see "Implementation wiring
+> decisions" below (`rest.ClientAwareTransport`, no new Observer
+> interface, and confirmation this feature is Tier 1 + ordinary
+> response-header writing per `d-0006`, NOT a Tier 3a
+> `CapabilityRequirement`). (The
 > `internal/registry` extraction question and the `api/reqreply.Client`
 > registry question were ALSO evaluated during this process and
 > deliberately deferred/spun out — see the "Client-side route registry"
@@ -574,6 +580,50 @@ implementation planning, not another review round.
    symmetrically to `Client.Consume`'s own auto-follow (finding D/G3) — a parallel reconnect path
    reusing the ORIGINAL `Consume` call's credentials, not a recursive `Consume` call against the
    target.
+
+## Implementation wiring decisions (resolved while translating this doc into a phased plan)
+
+Three plumbing questions surfaced while mapping this doc to concrete implementation phases —
+not new critical-review findings (every BEHAVIOR was already decided across rounds 1-4), just
+answers an implementer needs that a reviewer wouldn't normally flag.
+
+1. **How does `adapters/nethttp`'s client transport get read access to `*rest.Client`'s
+   registry?** The registry must live ON `*Client` (so the exported `Client.RegisterRoute` can
+   mutate it), but the HTTP-level auto-follow logic is inherently nethttp-specific. **Resolved**:
+   add `rest.ClientAwareTransport` — a new, OPTIONAL extension interface
+   (`{ ClientTransport; BindClient(c *Client) error }`), called from `Client.Attach` immediately
+   after storing the transport. This is NOT a novel pattern: `api/events` already has
+   `ClientAwareTransport` for the identical reason, and `rest.ServerAwareTransport`'s own
+   existing doc comment explicitly says it "mirrors `events.ClientAwareTransport`" — `api/rest`
+   itself simply never had a client-side equivalent before this feature needed one.
+   `adapters/nethttp.NewClientTransport`'s returned value implements it, retaining the `*Client`
+   reference for later registry reads.
+2. **Observer integration — no new interface.** Confirmed: a redirect (server-side taken,
+   client-side followed) is reported via the EXISTING `stats.Observer.RecordRequest` call, whose
+   existing arguments already surface the 3xx status on the redirect leg(s) — no
+   redirect-specific hook/interface is needed, unlike `stats.FileObserver`/`SecurityObserver`'s
+   genuinely new optional extensions for THEIR features.
+3. **Protocol-native capability classification (per `docs/design/d-0006-protocol-native-capabilities.md`)
+   — redirect is Tier 1 + ordinary response-header writing, explicitly NOT Tier 3a.** Checked
+   directly against `api/rest/capability.go`'s own existing classification before answering:
+   that file ALREADY classifies plain HTTP status codes as **Tier 1 — Baseline**
+   ("every REST response, on every REST-eligible transport... always conveys an integer outcome
+   status... mandatory, not opt-in... no corresponding marker interface or coverage check"). A
+   3xx status is just more of that SAME already-classified status-code space — not a new,
+   separate thing needing classification of its own. Tier 3a's `CapabilityRequirement`/
+   `CheckCapabilityCoverage` (used for QoS/HWM/Retained in events/reqreply) exists specifically
+   for capabilities that VARY MEANINGFULLY by adapter and might genuinely be unsupported by a
+   given one — redirect has no such variability: every current REST-eligible adapter
+   (`nethttp`/`chi`), and per `docs/roadmap/zeromq-rest-adapter.md`'s own design, the planned
+   future ZeroMQ REST adapter too, can all trivially render an arbitrary status code + response
+   header — there is no scenario where an attached adapter genuinely "doesn't support" a 3xx +
+   `Location`. The `Location` header itself doesn't need Tier 2 (`HeaderCapableTransport`)
+   either — that interface is about EXTRACTING incoming request headers/cookies/query (used for
+   declared `HeaderParam`/`CookieParam`/`QueryParam` route params), not about WRITING response
+   headers, which are already universally, unconditionally writable by every current adapter (no
+   coverage-check mechanism exists for them today, and redirect doesn't need to invent one). Net
+   effect: no redesign — `RedirectError`/`Redirect()`/the registry/`ResponseMeta.Headers` as
+   already designed across rounds 1-4 remain correct as-is.
 
 ## Proposed API surface (tentative — sketch only, not final)
 
