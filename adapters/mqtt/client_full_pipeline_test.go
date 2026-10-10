@@ -12,7 +12,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/internal/middleware"
-	"github.com/DaniDeer/go-codex/internal/route"
 )
 
 // This file tests docs/design/d-0006-protocol-native-capabilities.md's
@@ -323,7 +322,7 @@ func TestClientPublish_PublishMW_SecurityImpl_ValidFormat_Passes(t *testing.T) {
 	implCalled := false
 	pub := plainSensorChannel("sensors/readings").
 		WithPublish(events.Publish{Summary: "test"}).
-		PublishMW(nil, func(_ context.Context, _ *sensorReading, _ []route.SecurityRequirement) error {
+		PublishMW(nil, func(_ context.Context, _ *sensorReading, _ []events.SecurityRequirement) error {
 			implCalled = true
 			return nil
 		})
@@ -348,7 +347,7 @@ func TestClientPublish_PublishMW_SecurityImpl_Reject(t *testing.T) {
 
 	pub := plainSensorChannel("sensors/readings").
 		WithPublish(events.Publish{Summary: "test"}).
-		PublishMW(nil, func(_ context.Context, _ *sensorReading, _ []route.SecurityRequirement) error {
+		PublishMW(nil, func(_ context.Context, _ *sensorReading, _ []events.SecurityRequirement) error {
 			return errors.New("denied")
 		})
 

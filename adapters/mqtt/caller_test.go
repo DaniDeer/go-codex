@@ -14,7 +14,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/internal/middleware"
-	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -288,14 +287,14 @@ func TestServeSubscribers_SecurityRejection_CallsSecurityObserver(t *testing.T) 
 	// docs/design/d-0001-rest-middleware-workflow-simplification.md's Addendum 8 — SubscribeMW now
 	// rejects a Security-carrying mw.
 	rejectingBm := events.BoundSecuritySubscribeMiddleware[sensorReading, tdEmpty, mqttSecOut]("apiKeyAuth",
-		events.SecurityScheme{SecurityScheme: route.APIKeyScheme("X-API-Key", "header")}, nil,
+		events.APIKeyScheme("X-API-Key", "header"), nil,
 		func(ctx context.Context, msg *sensorReading, in tdEmpty) (mqttSecOut, error) {
 			return mqttSecOut{}, errors.New("unauthorized")
 		})
 
 	ch := events.NewChannel[sensorReading]("sensors/secured", sensorCodec)
 	sub := ch.WithSubscribe(events.Subscribe{
-		Security: []route.SecurityRequirement{route.Require("apiKeyAuth")},
+		Security: []events.SecurityRequirement{events.Require("apiKeyAuth")},
 	}).SubscribeBoundMW(rejectingBm).
 		WithHandler(func(context.Context, sensorReading) error {
 			t.Fatal("handler must not be called when security rejects")
@@ -386,7 +385,7 @@ func TestPublish_SecurityImpl_WritesIntoPayload(t *testing.T) {
 	client := &mockClient{token: newCompletedToken(nil)}
 
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	impl := func(_ context.Context, msg *userEvent, reqs []route.SecurityRequirement) error {
+	impl := func(_ context.Context, msg *userEvent, reqs []events.SecurityRequirement) error {
 		if len(reqs) == 0 {
 			t.Fatal("want non-empty security requirements passed to the implementation")
 		}
@@ -396,7 +395,7 @@ func TestPublish_SecurityImpl_WritesIntoPayload(t *testing.T) {
 		return nil
 	}
 	handle, err := events.NewChannel[userEvent]("user/created", userEventCodec).
-		WithPublish(events.Publish{Security: []route.SecurityRequirement{route.Require("apiKey")}}).
+		WithPublish(events.Publish{Security: []events.SecurityRequirement{events.Require("apiKey")}}).
 		PublishMW(nil, impl).
 		Handle(b)
 	if err != nil {
@@ -420,11 +419,11 @@ func TestPublish_SecurityImpl_ErrorAborts(t *testing.T) {
 
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	wantErr := errors.New("bad credential")
-	impl := func(context.Context, *userEvent, []route.SecurityRequirement) error {
+	impl := func(context.Context, *userEvent, []events.SecurityRequirement) error {
 		return wantErr
 	}
 	handle, err := events.NewChannel[userEvent]("user/created", userEventCodec).
-		WithPublish(events.Publish{Security: []route.SecurityRequirement{route.Require("apiKey")}}).
+		WithPublish(events.Publish{Security: []events.SecurityRequirement{events.Require("apiKey")}}).
 		PublishMW(nil, impl).
 		Handle(b)
 	if err != nil {

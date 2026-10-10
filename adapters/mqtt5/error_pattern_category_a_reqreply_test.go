@@ -9,7 +9,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/internal/middleware"
-	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/validate"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 )
@@ -78,10 +77,10 @@ func TestErrorPattern_SecurityMiddlewareFn_Matched_Publishes_ReqReply(t *testing
 		return mwSecOut{}, errSecurityRejected
 	}
 	rejectingMw := reqreply.BoundSecurityMiddleware[computeReq, mwSecIn, mwSecOut](
-		"bearer", reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil, rejectingImpl,
+		"bearer", reqreply.BearerScheme("JWT"), nil, rejectingImpl,
 	)
 	epRoute := reqreply.NewRoute[computeReq, computeResp]("compute/security-mw-ep", computeReqCodec, computeRespCodec,
-		reqreply.RouteMeta{OperationID: "computeSecurityMw", Security: []route.SecurityRequirement{route.Require("bearer")}},
+		reqreply.RouteMeta{OperationID: "computeSecurityMw", Security: []reqreply.SecurityRequirement{reqreply.Require("bearer")}},
 		reqreply.ErrorPattern[reqreply.SecurityError, serveErrPayload](serveErrPayloadCodec,
 			func(e reqreply.SecurityError) (serveErrPayload, error) {
 				return serveErrPayload{Code: "security_rejected", Message: e.Error()}, nil
@@ -145,12 +144,12 @@ func TestErrorPattern_BoundSecurityMiddlewareFn_Matched_Publishes_ReqReply(t *te
 		return computeResp{}, nil
 	}
 	rejectingMw := reqreply.SecurityMiddleware[struct{}, struct{}]("bearer3",
-		reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+		reqreply.BearerScheme("JWT"), nil,
 	).WithReceive(func(context.Context, struct{}) (struct{}, error) {
 		return struct{}{}, errSecurityRejected
 	})
 	epRoute := reqreply.NewRoute[computeReq, computeResp]("compute/bound-security-mw-ep", computeReqCodec, computeRespCodec,
-		reqreply.RouteMeta{OperationID: "computeBoundSecurityMw", Security: []route.SecurityRequirement{route.Require("bearer3")}},
+		reqreply.RouteMeta{OperationID: "computeBoundSecurityMw", Security: []reqreply.SecurityRequirement{reqreply.Require("bearer3")}},
 		reqreply.ErrorPattern[reqreply.SecurityError, serveErrPayload](serveErrPayloadCodec,
 			func(e reqreply.SecurityError) (serveErrPayload, error) {
 				return serveErrPayload{Code: "security_rejected", Message: e.Error()}, nil
@@ -328,7 +327,7 @@ func TestErrorPattern_SecurityCredentialFormat_Matched_Publishes(t *testing.T) {
 	handler := func(_ context.Context, _ computeReq) (computeResp, error) {
 		return computeResp{}, nil
 	}
-	bearerScheme := reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.
+	bearerScheme := reqreply.BearerScheme("JWT").
 		WithCodec(codex.String().Refine(validate.NonEmptyString))
 	// An ALWAYS-ACCEPTING paired implementation satisfies the Register/
 	// Serve-time coverage check (a declared Security scheme with no
@@ -342,7 +341,7 @@ func TestErrorPattern_SecurityCredentialFormat_Matched_Publishes(t *testing.T) {
 		"bearerAuth", bearerScheme, nil, acceptingImpl,
 	)
 	epRoute := reqreply.NewRoute[computeReq, computeResp]("compute/cred-format-ep", computeReqCodec, computeRespCodec,
-		reqreply.RouteMeta{Security: []route.SecurityRequirement{route.Require("bearerAuth")}},
+		reqreply.RouteMeta{Security: []reqreply.SecurityRequirement{reqreply.Require("bearerAuth")}},
 		reqreply.ErrorPattern[reqreply.SecurityCredentialError, serveErrPayload](serveErrPayloadCodec,
 			func(e reqreply.SecurityCredentialError) (serveErrPayload, error) {
 				return serveErrPayload{Code: "bad_credential", Message: e.Error()}, nil

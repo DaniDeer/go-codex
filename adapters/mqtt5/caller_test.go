@@ -10,7 +10,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/internal/middleware"
-	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
@@ -387,9 +386,9 @@ func TestPublishMW_SecurityShape_WritesIntoPayload(t *testing.T) {
 	client := &mockClient{}
 
 	ch := events.NewChannel[sensorReading]("sensors/readings", sensorCodec)
-	pub := ch.WithPublish(events.Publish{Security: []route.SecurityRequirement{route.Require("bearer")}}).
+	pub := ch.WithPublish(events.Publish{Security: []events.SecurityRequirement{events.Require("bearer")}}).
 		PublishMW(nil, // unpaired, general-purpose — runs unconditionally
-			func(_ context.Context, msg *sensorReading, _ []route.SecurityRequirement) ([]UserProperty, error) {
+			func(_ context.Context, msg *sensorReading, _ []events.SecurityRequirement) ([]UserProperty, error) {
 				msg.SensorID = "f47ac10b-58cc-4372-a567-0e02b2c3d479" // in-payload write
 				return nil, nil
 			})

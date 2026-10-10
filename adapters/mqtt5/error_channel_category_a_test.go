@@ -8,7 +8,6 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/validate"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 )
@@ -178,7 +177,7 @@ func TestErrorChannel_SecurityMiddlewareFn_Matched_Publishes(t *testing.T) {
 	// Implementations-based impl below, which is what this test needs to
 	// exercise (isolating the security MIDDLEWARE Fn failure from the
 	// unrelated built-in credential check).
-	bareBearerScheme := events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}
+	bareBearerScheme := events.BearerScheme("JWT")
 	mw := events.BoundSecuritySubscribeMiddleware[sensorReading, struct{}, struct{}](
 		"bearer", bareBearerScheme, nil,
 		func(context.Context, *sensorReading, struct{}) (struct{}, error) {
@@ -193,7 +192,7 @@ func TestErrorChannel_SecurityMiddlewareFn_Matched_Publishes(t *testing.T) {
 			},
 		),
 	).
-		WithSubscribe(events.Subscribe{Summary: "test", Security: []route.SecurityRequirement{route.Require("bearer")}}).
+		WithSubscribe(events.Subscribe{Summary: "test", Security: []events.SecurityRequirement{events.Require("bearer")}}).
 		SubscribeBoundMW(mw).
 		Handle(b)
 	if err != nil {
@@ -249,7 +248,7 @@ func TestErrorChannel_BoundSecurityMiddlewareFn_Matched_Publishes(t *testing.T) 
 
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	rejectingMw := events.BoundSecuritySubscribeMiddleware[sensorReading, struct{}, struct{}](
-		"bearer2", events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+		"bearer2", events.BearerScheme("JWT"), nil,
 		func(context.Context, *sensorReading, struct{}) (struct{}, error) {
 			return struct{}{}, errSecurityRejected
 		},
@@ -263,7 +262,7 @@ func TestErrorChannel_BoundSecurityMiddlewareFn_Matched_Publishes(t *testing.T) 
 			},
 		),
 	).
-		WithSubscribe(events.Subscribe{Summary: "test", Security: []route.SecurityRequirement{route.Require("bearer2")}}).
+		WithSubscribe(events.Subscribe{Summary: "test", Security: []events.SecurityRequirement{events.Require("bearer2")}}).
 		SubscribeBoundMW(rejectingMw).
 		Handle(b)
 	if err != nil {

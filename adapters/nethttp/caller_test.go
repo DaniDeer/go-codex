@@ -10,7 +10,6 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/internal/route"
 )
 
 func TestCall_HappyPath(t *testing.T) {
@@ -43,7 +42,7 @@ type callerTestAuthOut struct{}
 func TestCall_ClientMWAppliedEveryCall(t *testing.T) {
 	credCallCount := 0
 	boundMW := rest.BoundSecurityClientMiddleware[getReq, callerTestAuthIn, callerTestAuthOut](
-		"bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+		"bearerAuth", rest.BearerScheme("JWT"), nil,
 		func(ctx context.Context, req getReq) (callerTestAuthIn, error) {
 			credCallCount++
 			return callerTestAuthIn{Token: "shared-token"}, nil

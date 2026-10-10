@@ -8,7 +8,6 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/internal/route"
 )
 
 // This file tests Topic 1's Category A full enumeration fix for events
@@ -82,7 +81,7 @@ func TestErrorChannel_BoundSecurityMiddlewareFn_Matched_Publishes(t *testing.T) 
 	}
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	rejectingMw := events.BoundSecuritySubscribeMiddleware[sensorReading, struct{}, struct{}](
-		"bearer4", events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+		"bearer4", events.BearerScheme("JWT"), nil,
 		func(context.Context, *sensorReading, struct{}) (struct{}, error) {
 			return struct{}{}, errors.New("rejected by security impl")
 		},
@@ -95,7 +94,7 @@ func TestErrorChannel_BoundSecurityMiddlewareFn_Matched_Publishes(t *testing.T) 
 			},
 		),
 	).
-		WithSubscribe(events.Subscribe{Summary: "test", Security: []route.SecurityRequirement{route.Require("bearer4")}}).
+		WithSubscribe(events.Subscribe{Summary: "test", Security: []events.SecurityRequirement{events.Require("bearer4")}}).
 		SubscribeBoundMW(rejectingMw).
 		Handle(b)
 	if err != nil {

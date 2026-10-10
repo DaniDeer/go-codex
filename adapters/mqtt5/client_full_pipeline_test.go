@@ -10,7 +10,6 @@ import (
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/internal/middleware"
-	"github.com/DaniDeer/go-codex/internal/route"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 )
 
@@ -134,7 +133,7 @@ func TestClientSubscribe_BuiltinSecurityCredential_Reject(t *testing.T) {
 		"bearer", securedBearerScheme, nil, noopImpl,
 	)
 	sub := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
-		WithSubscribe(events.Subscribe{Summary: "test", Security: []route.SecurityRequirement{route.Require("bearer")}}).
+		WithSubscribe(events.Subscribe{Summary: "test", Security: []events.SecurityRequirement{events.Require("bearer")}}).
 		Use(declMw).
 		SubscribeBoundMW(mw).
 		WithOptions(SubscribeOptions{OnError: func(e SubscribeError) { gotErr = e }})
@@ -182,7 +181,7 @@ func TestClientSubscribe_SubscribeMW_SecurityImpl_RunsAfterBuiltinCheck(t *testi
 		"bearer", securedBearerScheme, nil, impl,
 	)
 	sub := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
-		WithSubscribe(events.Subscribe{Summary: "test", Security: []route.SecurityRequirement{route.Require("bearer")}}).
+		WithSubscribe(events.Subscribe{Summary: "test", Security: []events.SecurityRequirement{events.Require("bearer")}}).
 		Use(declMw).
 		SubscribeBoundMW(mw)
 
@@ -518,7 +517,7 @@ func TestClientPublish_ClientImplementations_CredentialMerge_ValidFormat_Passes(
 		return pubSecOut{GrantedScopes: map[string][]string{"bearer": {}}, Authorization: "x"}, nil
 	})
 	pub := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
-		WithPublish(events.Publish{Summary: "test", Security: []route.SecurityRequirement{route.Require("bearer")}}).
+		WithPublish(events.Publish{Summary: "test", Security: []events.SecurityRequirement{events.Require("bearer")}}).
 		Use(declMw).
 		PublishBoundMW(mw)
 
@@ -548,7 +547,7 @@ func TestClientPublish_ClientImplementations_MalformedCredential_ReturnsSecurity
 		return pubSecOut{GrantedScopes: map[string][]string{"bearer": {}}, Authorization: ""}, nil // empty -> fails non-empty-string codec
 	})
 	pub := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
-		WithPublish(events.Publish{Summary: "test", Security: []route.SecurityRequirement{route.Require("bearer")}}).
+		WithPublish(events.Publish{Summary: "test", Security: []events.SecurityRequirement{events.Require("bearer")}}).
 		Use(declMw).
 		PublishBoundMW(mw)
 

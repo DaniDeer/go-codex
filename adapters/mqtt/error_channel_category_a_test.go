@@ -8,7 +8,6 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/internal/route"
 )
 
 // This file tests Topic 1's Category A full enumeration fix for events
@@ -108,7 +107,7 @@ func TestErrorChannel_SecurityImplFn_Matched_Publishes_ViaSubscribeHandle(t *tes
 func newSecuredHandleWithErrorChannel(impl func(context.Context, *userEvent) (mqttSecOut, error)) (*events.ChannelHandle[userEvent], error) {
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	bm := events.BoundSecuritySubscribeMiddleware[userEvent, tdEmpty, mqttSecOut]("bearerAuth",
-		events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+		events.BearerScheme("JWT"), nil,
 		func(ctx context.Context, msg *userEvent, in tdEmpty) (mqttSecOut, error) { return impl(ctx, msg) })
 	return events.NewChannel[userEvent]("user/created", userEventCodec,
 		events.ErrorChannel[events.SecurityError, userErrPayload](
@@ -120,7 +119,7 @@ func newSecuredHandleWithErrorChannel(impl func(context.Context, *userEvent) (mq
 	).
 		WithSubscribe(events.Subscribe{
 			Summary:  "User created",
-			Security: []route.SecurityRequirement{route.Require("bearerAuth")},
+			Security: []events.SecurityRequirement{events.Require("bearerAuth")},
 		}).
 		SubscribeBoundMW(bm).
 		Handle(b)
@@ -143,7 +142,7 @@ func newSecuredHandleWithErrorChannel(impl func(context.Context, *userEvent) (mq
 func TestErrorChannel_BoundSecurityMiddlewareFn_Matched_Publishes(t *testing.T) {
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	rejectingMw := events.BoundSecuritySubscribeMiddleware[userEvent, struct{}, struct{}](
-		"bearerAuth2", events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+		"bearerAuth2", events.BearerScheme("JWT"), nil,
 		func(context.Context, *userEvent, struct{}) (struct{}, error) {
 			return struct{}{}, errors.New("rejected by security impl")
 		},
@@ -158,7 +157,7 @@ func TestErrorChannel_BoundSecurityMiddlewareFn_Matched_Publishes(t *testing.T) 
 	).
 		WithSubscribe(events.Subscribe{
 			Summary:  "User created (bound security demo)",
-			Security: []route.SecurityRequirement{route.Require("bearerAuth2")},
+			Security: []events.SecurityRequirement{events.Require("bearerAuth2")},
 		}).
 		SubscribeBoundMW(rejectingMw).
 		Handle(b)

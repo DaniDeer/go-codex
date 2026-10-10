@@ -11,7 +11,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/internal/middleware"
-	"github.com/DaniDeer/go-codex/internal/route"
 )
 
 // ── HandleBoundMW (SSE): happy path, response header composition ────────
@@ -312,7 +311,7 @@ func TestSSERoute_Use_AgnosticMiddleware_DispatchesOnBothRoutes(t *testing.T) {
 
 func TestSSERoute_HandleMW_CodecBackedMiddleware_Satisfies_CoversGlobalSecurity(t *testing.T) {
 	decl := middleware.NewDeclaration("bearer-handlemw-sse-policy", tdInCodec, bearerAuthOutCodec)
-	decl.Security = middleware.NewSecurityDeclaration("bearerAuth", route.BearerScheme("JWT"), nil, nil)
+	decl.Security = middleware.NewSecurityDeclaration("bearerAuth", rest.BearerScheme("JWT").SecurityScheme, nil, nil)
 	bm := rest.NewBoundMiddleware[getReq](decl,
 		func(ctx context.Context, req *getReq, in tdIn) (bearerAuthOut, error) {
 			if in.Key != "valid-token" {
@@ -326,7 +325,7 @@ func TestSSERoute_HandleMW_CodecBackedMiddleware_Satisfies_CoversGlobalSecurity(
 		))
 
 	s := rest.NewServer(testInfo)
-	s.AddGlobalSecurity(route.Require("bearerAuth"))
+	s.AddGlobalSecurity(rest.Require("bearerAuth"))
 	sseRoute := rest.NewSSERoute[getReq, counterSSEEvent]("/sse/secure-counter", getReqCodec, counterSSEEventCodec).
 		HandleBoundMW(bm).
 		WithHandler(func(ctx context.Context, req getReq, send func(counterSSEEvent) error) error {

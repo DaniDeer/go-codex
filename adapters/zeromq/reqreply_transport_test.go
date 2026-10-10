@@ -10,7 +10,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/internal/middleware"
-	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -597,7 +596,7 @@ type zmwSecOut struct{ GrantedScopes map[string][]string }
 // "zmqBearer" scheme, attached via HandleBoundMW.
 func zmqBearerBoundMw(fn func(ctx context.Context, req *securedComputeReq, in zmwSecIn) (zmwSecOut, error)) reqreply.BoundMiddleware[securedComputeReq, zmwSecIn, zmwSecOut] {
 	return reqreply.BoundSecurityMiddleware[securedComputeReq, zmwSecIn, zmwSecOut](
-		"zmqBearer", reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil, fn,
+		"zmqBearer", reqreply.BearerScheme("JWT"), nil, fn,
 	)
 }
 
@@ -605,7 +604,7 @@ func zmqBearerBoundMw(fn func(ctx context.Context, req *securedComputeReq, in zm
 // for the "zmqBearer" scheme, attached via ClientBoundMW.
 func zmqBearerBoundClientMw(fn func(ctx context.Context, req securedComputeReq) (zmwSecIn, error)) reqreply.BoundClientMiddleware[securedComputeReq, zmwSecIn, zmwSecOut] {
 	return reqreply.BoundSecurityClientMiddleware[securedComputeReq, zmwSecIn, zmwSecOut](
-		"zmqBearer", reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil, fn,
+		"zmqBearer", reqreply.BearerScheme("JWT"), nil, fn,
 	)
 }
 
@@ -613,7 +612,7 @@ func newSecuredComputeRoute() reqreply.Route[securedComputeReq, securedComputeRe
 	return reqreply.NewRoute[securedComputeReq, securedComputeResp](
 		"/secured-compute",
 		securedComputeReqCodec, securedComputeRespCodec,
-		reqreply.RouteMeta{OperationID: "securedCompute", Security: []route.SecurityRequirement{route.Require("zmqBearer")}},
+		reqreply.RouteMeta{OperationID: "securedCompute", Security: []reqreply.SecurityRequirement{reqreply.Require("zmqBearer")}},
 	)
 }
 

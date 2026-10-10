@@ -17,7 +17,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -46,7 +45,7 @@ type boundBearerAuthOut struct{ GrantedScopes map[string][]string }
 
 func boundBearerAuthMw[Req any](schemeName string, verify func(ctx context.Context, authHeader string) (map[string][]string, error)) rest.BoundMiddleware[Req, boundBearerAuthIn, boundBearerAuthOut] {
 	return rest.BoundSecurityMiddleware[Req, boundBearerAuthIn, boundBearerAuthOut](
-		schemeName, rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+		schemeName, rest.BearerScheme("JWT"), nil,
 		func(ctx context.Context, _ *Req, in boundBearerAuthIn) (boundBearerAuthOut, error) {
 			granted, err := verify(ctx, in.Authorization)
 			return boundBearerAuthOut{GrantedScopes: granted}, err
@@ -62,7 +61,7 @@ func boundBearerAuthMw[Req any](schemeName string, verify func(ctx context.Conte
 // middleware.SecurityScheme(..., codec) 4th arg equivalent).
 func boundBearerAuthMwCodec[Req any](schemeName string, credCodec codex.Codec[string], verify func(ctx context.Context, authHeader string) (map[string][]string, error)) rest.BoundMiddleware[Req, boundBearerAuthIn, boundBearerAuthOut] {
 	return rest.BoundSecurityMiddleware[Req, boundBearerAuthIn, boundBearerAuthOut](
-		schemeName, rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT"), Codec: &credCodec}, nil,
+		schemeName, rest.BearerScheme("JWT").WithCodec(credCodec), nil,
 		func(ctx context.Context, _ *Req, in boundBearerAuthIn) (boundBearerAuthOut, error) {
 			granted, err := verify(ctx, in.Authorization)
 			return boundBearerAuthOut{GrantedScopes: granted}, err
@@ -1129,7 +1128,7 @@ func TestHandler_SecurityFunc_rejectsRequest(t *testing.T) {
 // test for buildRouteHandler losing this check when Register/RegisterSSE
 // were deleted).
 func TestServeOne_MissingSecurityCoverage_RejectedAtServeTime(t *testing.T) {
-	secMw := rest.SecurityMiddleware[struct{}, struct{}]("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil)
+	secMw := rest.SecurityMiddleware[struct{}, struct{}]("bearerAuth", rest.BearerScheme("JWT"), nil)
 	route := newCreateRoute().
 		Use(secMw).
 		WithHandler(func(_ context.Context, req createReq) (userResp, error) {
@@ -1147,7 +1146,7 @@ func TestServeOne_MissingSecurityCoverage_RejectedAtServeTime(t *testing.T) {
 // adapters/nethttp's identically-purposed test — see its own doc comment
 // for the full rationale.
 func TestServeSSE_MissingSecurityCoverage_RejectedAtServeTime(t *testing.T) {
-	secMw := rest.SecurityMiddleware[struct{}, struct{}]("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil)
+	secMw := rest.SecurityMiddleware[struct{}, struct{}]("bearerAuth", rest.BearerScheme("JWT"), nil)
 	sseRoute := rest.NewSSERoute[createReq, sseEvent]("/events",
 		createReqCodec, sseEventCodec, rest.RouteMeta{OperationID: "streamEvents"},
 	).Use(secMw).WithHandler(func(_ context.Context, _ createReq, send func(sseEvent) error) error {
@@ -1280,7 +1279,7 @@ func TestHandler_SecurityObserver_calledOnRejection(t *testing.T) {
 
 func newGlobalSecuredChiRoute() (rest.Route[createReq, userResp], *rest.Server) {
 	b := rest.NewServer(testInfo)
-	b.AddGlobalSecurity(route.Require("bearerAuth"))
+	b.AddGlobalSecurity(rest.Require("bearerAuth"))
 	// No per-route Security — inherits global. HandleBoundMW's attached
 	// BoundSecurityMiddleware (added by each test below) supplies its own
 	// "bearerAuth" declaration — no separate pre-declaration needed.
@@ -1348,12 +1347,12 @@ func TestChiHandler_GlobalSecurity_notCalledWhenExplicitlyEmpty(t *testing.T) {
 	// implementation at all — its actual assertion, that explicit empty
 	// Security wins over inherited global security, needs neither).
 	b := rest.NewServer(testInfo)
-	b.AddGlobalSecurity(route.Require("bearerAuth"))
+	b.AddGlobalSecurity(rest.Require("bearerAuth"))
 	r := rest.NewRoute[createReq, userResp]("POST", "/users",
 		createReqCodec, userRespCodec,
 		rest.RouteMeta{
 			OperationID: "createUser",
-			Security:    []route.SecurityRequirement{},
+			Security:    []rest.SecurityRequirement{},
 		},
 	).WithHandler(func(_ context.Context, req createReq) (userResp, error) {
 		return userResp{ID: "1", Name: req.Name}, nil
@@ -1374,7 +1373,7 @@ func TestChiHandler_GlobalSecurity_notCalledWhenExplicitlyEmpty(t *testing.T) {
 
 func newGlobalSecuredSSERoute() (rest.SSERoute[createReq, sseEvent], *rest.Server) {
 	b := rest.NewServer(testInfo)
-	b.AddGlobalSecurity(route.Require("bearerAuth"))
+	b.AddGlobalSecurity(rest.Require("bearerAuth"))
 	// No per-route Security — inherits global; HandleBoundMW's attached
 	// BoundSecurityMiddleware (added by each test below) supplies its own
 	// "bearerAuth" declaration.

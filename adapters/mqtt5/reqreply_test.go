@@ -11,7 +11,6 @@ import (
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/internal/middleware"
-	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/validate"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 )
@@ -267,7 +266,7 @@ func TestAttachServer_CheckCoverage_MissingSecurityMiddlewareError(t *testing.T)
 // iteration order.
 func serverOnlyCoverageMw() reqreply.BoundMiddleware[computeReq, mwSecIn, mwSecOut] {
 	return reqreply.BoundSecurityMiddleware[computeReq, mwSecIn, mwSecOut](
-		"bearerServerOnly", reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil, acceptingSecurityImpl,
+		"bearerServerOnly", reqreply.BearerScheme("JWT"), nil, acceptingSecurityImpl,
 	)
 }
 
@@ -286,7 +285,7 @@ func newSecuredRouteHandleWithClientImpl(clientFn func(ctx context.Context, req 
 	freshRoute := reqreply.NewRoute[computeReq, computeResp](
 		"compute/secured-add",
 		computeReqCodec, computeRespCodec,
-		reqreply.RouteMeta{OperationID: "securedCompute", Security: []route.SecurityRequirement{route.Require("bearer")}},
+		reqreply.RouteMeta{OperationID: "securedCompute", Security: []reqreply.SecurityRequirement{reqreply.Require("bearer")}},
 	)
 	h, err := freshRoute.
 		HandleBoundMW(serverOnlyCoverageMw()).

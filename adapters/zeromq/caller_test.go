@@ -10,7 +10,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/internal/middleware"
-	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/stats"
 )
 
@@ -456,7 +455,7 @@ func TestSubscribeWithHandle_SecurityImpl_Rejects(t *testing.T) {
 		inFrames: [][][]byte{{[]byte("sensors/readings"), []byte(validSensorJSON)}},
 	}
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	impl := func(_ context.Context, _ *sensorReading, _ []route.SecurityRequirement) error {
+	impl := func(_ context.Context, _ *sensorReading, _ []events.SecurityRequirement) error {
 		return errors.New("rejected")
 	}
 	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).

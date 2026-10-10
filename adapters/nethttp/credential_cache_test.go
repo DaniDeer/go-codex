@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/DaniDeer/go-codex/internal/route"
+	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/stats"
 )
 
@@ -46,7 +46,7 @@ func makeCredentialHeader(v string) http.Header {
 
 func TestNewCachingCredentialFunc_CachesWithinTTL(t *testing.T) {
 	var calls int32
-	inner := func(context.Context, []route.SecurityRequirement) (http.Header, error) {
+	inner := func(context.Context, []rest.SecurityRequirement) (http.Header, error) {
 		atomic.AddInt32(&calls, 1)
 		return makeCredentialHeader("Bearer token-1"), nil
 	}
@@ -68,7 +68,7 @@ func TestNewCachingCredentialFunc_CachesWithinTTL(t *testing.T) {
 
 func TestNewCachingCredentialFunc_RefreshesAfterTTL(t *testing.T) {
 	var calls int32
-	inner := func(context.Context, []route.SecurityRequirement) (http.Header, error) {
+	inner := func(context.Context, []rest.SecurityRequirement) (http.Header, error) {
 		n := atomic.AddInt32(&calls, 1)
 		return makeCredentialHeader("Bearer token-" + string(rune('0'+n))), nil
 	}
@@ -89,7 +89,7 @@ func TestNewCachingCredentialFunc_RefreshesAfterTTL(t *testing.T) {
 func TestNewCachingCredentialFunc_ConcurrentCallsDuringMiss_SingleInnerInvocation(t *testing.T) {
 	var calls int32
 	release := make(chan struct{})
-	inner := func(context.Context, []route.SecurityRequirement) (http.Header, error) {
+	inner := func(context.Context, []rest.SecurityRequirement) (http.Header, error) {
 		atomic.AddInt32(&calls, 1)
 		<-release
 		return makeCredentialHeader("Bearer shared-token"), nil
@@ -131,7 +131,7 @@ func TestNewCachingCredentialFunc_ConcurrentCallsDuringMiss_SingleInnerInvocatio
 func TestNewCachingCredentialFunc_InnerError_NotCached(t *testing.T) {
 	var calls int32
 	wantErr := errors.New("auth server unavailable")
-	inner := func(context.Context, []route.SecurityRequirement) (http.Header, error) {
+	inner := func(context.Context, []rest.SecurityRequirement) (http.Header, error) {
 		atomic.AddInt32(&calls, 1)
 		return nil, wantErr
 	}
@@ -150,7 +150,7 @@ func TestNewCachingCredentialFunc_InnerError_NotCached(t *testing.T) {
 
 func TestNewCachingCredentialFunc_Invalidate_ForcesRefreshOnNextCall(t *testing.T) {
 	var calls int32
-	inner := func(context.Context, []route.SecurityRequirement) (http.Header, error) {
+	inner := func(context.Context, []rest.SecurityRequirement) (http.Header, error) {
 		atomic.AddInt32(&calls, 1)
 		return makeCredentialHeader("Bearer token"), nil
 	}
@@ -169,7 +169,7 @@ func TestNewCachingCredentialFunc_Invalidate_ForcesRefreshOnNextCall(t *testing.
 }
 
 func TestNewCachingCredentialFunc_Observer_RecordsHitAndRefresh(t *testing.T) {
-	inner := func(context.Context, []route.SecurityRequirement) (http.Header, error) {
+	inner := func(context.Context, []rest.SecurityRequirement) (http.Header, error) {
 		return makeCredentialHeader("Bearer token"), nil
 	}
 	spy := &credentialCacheObserverSpy{}
@@ -177,7 +177,7 @@ func TestNewCachingCredentialFunc_Observer_RecordsHitAndRefresh(t *testing.T) {
 		TTL:      time.Hour,
 		Observer: spy,
 	})
-	reqs := []route.SecurityRequirement{{"bearerAuth": nil}}
+	reqs := []rest.SecurityRequirement{{"bearerAuth": nil}}
 
 	if _, err := fn(context.Background(), reqs); err != nil {
 		t.Fatalf("first call: unexpected error: %v", err)
@@ -205,7 +205,7 @@ func TestNewCachingCredentialFunc_Observer_RecordsHitAndRefresh(t *testing.T) {
 }
 
 func TestNewCachingCredentialFunc_NilObserver_NoPanic(t *testing.T) {
-	inner := func(context.Context, []route.SecurityRequirement) (http.Header, error) {
+	inner := func(context.Context, []rest.SecurityRequirement) (http.Header, error) {
 		return makeCredentialHeader("Bearer token"), nil
 	}
 	fn, invalidate := NewCachingCredentialFunc(inner, CachingCredentialFuncOptions{TTL: time.Hour})

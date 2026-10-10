@@ -10,7 +10,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/internal/middleware"
-	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -265,7 +264,7 @@ func TestSubscribe_MiddlewareDispatch_RunsAfterPairedSecurity(t *testing.T) {
 
 	subscriber := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
 		WithSubscribe(events.Subscribe{Summary: "test"}).
-		SubscribeMW(nil, func(_ context.Context, _ *sensorReading, _ []route.SecurityRequirement) error {
+		SubscribeMW(nil, func(_ context.Context, _ *sensorReading, _ []events.SecurityRequirement) error {
 			order = append(order, "security")
 			return nil
 		})

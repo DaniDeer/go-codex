@@ -14,7 +14,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -995,12 +994,12 @@ type mqttSecOut struct{ GrantedScopes map[string][]string }
 func newSecuredHandle(impl func(context.Context, *userEvent) (mqttSecOut, error)) (*events.ChannelHandle[userEvent], error) {
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
 	bm := events.BoundSecuritySubscribeMiddleware[userEvent, tdEmpty, mqttSecOut]("bearerAuth",
-		events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+		events.BearerScheme("JWT"), nil,
 		func(ctx context.Context, msg *userEvent, in tdEmpty) (mqttSecOut, error) { return impl(ctx, msg) })
 	return events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithSubscribe(events.Subscribe{
 			Summary:  "User created",
-			Security: []route.SecurityRequirement{route.Require("bearerAuth")},
+			Security: []events.SecurityRequirement{events.Require("bearerAuth")},
 		}).
 		SubscribeBoundMW(bm).
 		Handle(b)
@@ -1166,12 +1165,12 @@ func TestSubscribe_SecurityObserver_calledOnRejection(t *testing.T) {
 
 func newGlobalSecuredMQTTHandle(impl func(context.Context, *userEvent) (mqttSecOut, error)) (*events.ChannelHandle[userEvent], error) {
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	b.AddGlobalSecurity(route.Require("bearerAuth"))
+	b.AddGlobalSecurity(events.Require("bearerAuth"))
 	// No per-operation Security -- inherits global; SubscribeBoundMW's
 	// attached BoundSecuritySubscribeMiddleware supplies its own
 	// "bearerAuth" declaration.
 	bm := events.BoundSecuritySubscribeMiddleware[userEvent, tdEmpty, mqttSecOut]("bearerAuth",
-		events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+		events.BearerScheme("JWT"), nil,
 		func(ctx context.Context, msg *userEvent, in tdEmpty) (mqttSecOut, error) { return impl(ctx, msg) })
 	return events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithSubscribe(events.Subscribe{Summary: "User created"}).
@@ -1245,7 +1244,7 @@ func TestSubscribeHandler_GlobalSecurity_rejectsMessage(t *testing.T) {
 
 func TestSubscribeHandler_GlobalSecurity_notCalledWhenExplicitlyEmpty(t *testing.T) {
 	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
-	b.AddGlobalSecurity(route.Require("bearerAuth"))
+	b.AddGlobalSecurity(events.Require("bearerAuth"))
 	// Explicitly empty Security = no auth on this channel. No .Use()/scheme
 	// declaration here -- attaching one would itself contribute a security
 	// requirement (Subscriber.Use's OWN declared purpose), defeating the
@@ -1253,7 +1252,7 @@ func TestSubscribeHandler_GlobalSecurity_notCalledWhenExplicitlyEmpty(t *testing
 	handle, err := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithSubscribe(events.Subscribe{
 			Summary:  "User created",
-			Security: []route.SecurityRequirement{},
+			Security: []events.SecurityRequirement{},
 		}).
 		Handle(b)
 	if err != nil {

@@ -21,7 +21,6 @@ import (
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/internal/middleware"
-	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/ports"
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
@@ -832,7 +831,7 @@ func TestConsume_CredentialReDerivedPerReconnect(t *testing.T) {
 	defer srv.Close()
 
 	boundMW := rest.BoundSecurityClientMiddleware[sseTestReq, reconnectCredAuthIn, reconnectCredAuthOut](
-		"bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+		"bearerAuth", rest.BearerScheme("JWT"), nil,
 		func(context.Context, sseTestReq) (reconnectCredAuthIn, error) {
 			attempt++
 			return reconnectCredAuthIn{Token: fmt.Sprintf("token-%d", attempt)}, nil
@@ -867,7 +866,7 @@ func TestConsume_OnCredentialRejected_FiresOn401(t *testing.T) {
 	defer srv.Close()
 
 	boundMW := rest.BoundSecurityClientMiddleware[sseTestReq, reconnectCredAuthIn, reconnectCredAuthOut](
-		"bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+		"bearerAuth", rest.BearerScheme("JWT"), nil,
 		func(context.Context, sseTestReq) (reconnectCredAuthIn, error) {
 			return reconnectCredAuthIn{Token: "bad-token"}, nil
 		},

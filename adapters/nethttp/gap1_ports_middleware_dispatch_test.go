@@ -12,7 +12,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/internal/middleware"
-	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/ports"
 )
 
@@ -28,7 +27,7 @@ import (
 
 func TestIngestAdapter_HandleMWSecurity_EnforcesCredential(t *testing.T) {
 	decl := middleware.NewDeclaration("bearer-ingest-policy", tdInCodec, bearerAuthOutCodec)
-	decl.Security = middleware.NewSecurityDeclaration("bearerAuth", route.BearerScheme("JWT"), nil, nil)
+	decl.Security = middleware.NewSecurityDeclaration("bearerAuth", rest.BearerScheme("JWT").SecurityScheme, nil, nil)
 	bm := rest.NewBoundMiddleware[createReq](decl,
 		func(ctx context.Context, req *createReq, in tdIn) (bearerAuthOut, error) {
 			if in.Key != "valid-token" {
@@ -42,7 +41,7 @@ func TestIngestAdapter_HandleMWSecurity_EnforcesCredential(t *testing.T) {
 		))
 
 	b := rest.NewServer(testInfo)
-	b.AddGlobalSecurity(route.Require("bearerAuth"))
+	b.AddGlobalSecurity(rest.Require("bearerAuth"))
 	handle, err := rest.NewRoute[createReq, struct{}]("POST", "/secure-ingest",
 		createReqCodec, codex.Struct[struct{}](), rest.RouteMeta{OperationID: "secureIngest"},
 	).HandleBoundMW(bm).RegisterHandle(b)

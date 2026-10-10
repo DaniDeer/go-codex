@@ -11,7 +11,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/internal/middleware"
-	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -503,7 +502,7 @@ var bearerAuthOutCodec = codex.Struct[bearerAuthOut]()
 // other Security path already used.
 func TestHandleMW_CodecBackedMiddleware_Satisfies_CoversGlobalSecurity(t *testing.T) {
 	decl := middleware.NewDeclaration("bearer-handlemw-policy", tdInCodec, bearerAuthOutCodec)
-	decl.Security = middleware.NewSecurityDeclaration("bearerAuth", route.BearerScheme("JWT"), nil, nil)
+	decl.Security = middleware.NewSecurityDeclaration("bearerAuth", rest.BearerScheme("JWT").SecurityScheme, nil, nil)
 	bm := rest.NewBoundMiddleware[createReq](decl,
 		func(ctx context.Context, req *createReq, in tdIn) (bearerAuthOut, error) {
 			if in.Key != "valid-token" {
@@ -517,7 +516,7 @@ func TestHandleMW_CodecBackedMiddleware_Satisfies_CoversGlobalSecurity(t *testin
 		))
 
 	s := rest.NewServer(testInfo)
-	s.AddGlobalSecurity(route.Require("bearerAuth"))
+	s.AddGlobalSecurity(rest.Require("bearerAuth"))
 	route := rest.NewRoute[createReq, userResp]("POST", "/secure-users", createReqCodec, userRespCodec,
 		rest.RouteMeta{OperationID: "createSecureUser"},
 	).HandleBoundMW(bm).WithHandler(func(_ context.Context, req createReq) (userResp, error) {

@@ -12,7 +12,6 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/internal/route"
 )
 
 // This file closes docs/design/d-0006-protocol-native-capabilities.md's
@@ -99,7 +98,7 @@ func TestServe_CapabilityCoverage_APIKeyCookieScheme_StillPasses(t *testing.T) {
 	type apiKeyCookieIn struct{ Session string }
 	type apiKeyCookieOut struct{ GrantedScopes map[string][]string }
 	bm := rest.BoundSecurityMiddleware[createReq, apiKeyCookieIn, apiKeyCookieOut](
-		"apiKeyCookie", rest.SecurityScheme{SecurityScheme: route.APIKeyScheme("X-Session", "cookie")}, nil,
+		"apiKeyCookie", rest.APIKeyScheme("X-Session", "cookie"), nil,
 		func(ctx context.Context, _ *createReq, in apiKeyCookieIn) (apiKeyCookieOut, error) {
 			if in.Session == "" {
 				return apiKeyCookieOut{}, errors.New("missing X-Session cookie")

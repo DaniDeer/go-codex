@@ -8,7 +8,6 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/internal/route"
 )
 
 // This file tests Topic 1's Category A full enumeration fix for reqreply
@@ -87,12 +86,12 @@ func TestErrorPattern_BoundSecurityMiddlewareFn_Matched_Publishes_ReqReply(t *te
 		return computeResp{}, nil
 	}
 	rejectingMw := reqreply.SecurityMiddleware[struct{}, struct{}]("bearer3",
-		reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+		reqreply.BearerScheme("JWT"), nil,
 	).WithReceive(func(context.Context, struct{}) (struct{}, error) {
 		return struct{}{}, errors.New("rejected by security impl")
 	})
 	epRoute := reqreply.NewRoute[computeReq, computeResp]("/compute-bound-security-mw-ep", computeReqCodec, computeRespCodec,
-		reqreply.RouteMeta{OperationID: "computeBoundSecurityMwZmq", Security: []route.SecurityRequirement{route.Require("bearer3")}},
+		reqreply.RouteMeta{OperationID: "computeBoundSecurityMwZmq", Security: []reqreply.SecurityRequirement{reqreply.Require("bearer3")}},
 		reqreply.ErrorPattern[reqreply.SecurityError, serveZmqErrPayload](serveZmqErrPayloadCodec,
 			func(e reqreply.SecurityError) (serveZmqErrPayload, error) {
 				return serveZmqErrPayload{Code: "security_rejected", Message: e.Error()}, nil

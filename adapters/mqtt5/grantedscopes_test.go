@@ -8,7 +8,6 @@ import (
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 
 	"github.com/DaniDeer/go-codex/api/events"
-	"github.com/DaniDeer/go-codex/internal/route"
 )
 
 // docs/design/d-0007-declarative-middleware-layering.md's "Prerequisite for
@@ -21,7 +20,7 @@ type gsIn struct{ Token string }
 
 type gsOut struct{ GrantedScopes map[string][]string }
 
-var gsBearerScheme = events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}
+var gsBearerScheme = events.BearerScheme("JWT")
 
 // TestSubscribeMW_GrantedScopes_MergedIntoCheckScopes proves the core fix
 // end-to-end: a bound Subscribe Security middleware using the NEW
@@ -51,7 +50,7 @@ func TestSubscribeMW_GrantedScopes_MergedIntoCheckScopes(t *testing.T) {
 			handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec).
 				WithSubscribe(events.Subscribe{
 					Summary:  "test",
-					Security: []route.SecurityRequirement{route.Require("bearer", "read:sensors")},
+					Security: []events.SecurityRequirement{events.Require("bearer", "read:sensors")},
 				}).
 				SubscribeBoundMW(bm).
 				Handle(b)

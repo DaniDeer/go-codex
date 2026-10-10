@@ -8,7 +8,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/internal/middleware"
-	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -385,7 +384,7 @@ func TestSubscribeHandler_MiddlewareDispatch_RunsAfterPairedSecurity(t *testing.
 	// not needed here, this test only checks dispatch ORDER).
 	type secOut struct{ GrantedScopes map[string][]string }
 	secBm := events.BoundSecuritySubscribeMiddleware[userEvent, tdEmpty, secOut]("bearerAuth",
-		events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+		events.BearerScheme("JWT"), nil,
 		func(ctx context.Context, msg *userEvent, in tdEmpty) (secOut, error) {
 			order = append(order, "security")
 			return secOut{}, nil
@@ -399,7 +398,7 @@ func TestSubscribeHandler_MiddlewareDispatch_RunsAfterPairedSecurity(t *testing.
 	subscriber := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithSubscribe(events.Subscribe{
 			Summary:  "test",
-			Security: []route.SecurityRequirement{route.Require("bearerAuth")},
+			Security: []events.SecurityRequirement{events.Require("bearerAuth")},
 		}).
 		SubscribeBoundMW(secBm).
 		SubscribeBoundMW(bm)
