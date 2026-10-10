@@ -2765,16 +2765,15 @@ type SecurityScheme struct {
 	// implementation receives the request as-is.
 	//
 	// Use [SecurityScheme.WithCodec] to set this field inline without a temporary
-	// variable: rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(c)
+	// variable: rest.BearerScheme("JWT").WithCodec(c)
 	Codec *codex.Codec[string]
 }
 
 // WithCodec returns a copy of s with Codec set to c. It avoids the
 // temporary-variable + address-of pattern required when setting Codec inline:
 //
-//	var bearerAuth = rest.SecurityScheme{
-//	    SecurityScheme: route.BearerScheme("JWT"),
-//	}.WithCodec(codex.String().Refine(validate.BearerToken))
+//	var bearerAuth = rest.BearerScheme("JWT").
+//	    WithCodec(codex.String().Refine(validate.BearerToken))
 //
 // Pass the result to [SecurityMiddleware] to build a [Middleware][In, Out],
 // attached via [Route.Use].
@@ -3497,8 +3496,8 @@ func (b *Server) AddSchema(name string, s schema.Schema) *Server {
 //     requirements at the adapter layer via [RouteHandle.GlobalSecurity].
 //
 // To mark a specific route as explicitly unsecured (exempt from global security),
-// set Security to an empty slice in [RouteMeta]: Security: []route.SecurityRequirement{}.
-func (b *Server) AddGlobalSecurity(reqs ...route.SecurityRequirement) *Server {
+// set Security to an empty slice in [RouteMeta]: Security: []SecurityRequirement{}.
+func (b *Server) AddGlobalSecurity(reqs ...SecurityRequirement) *Server {
 	b.mu.Lock()
 	b.globalSecurity = append(b.globalSecurity, reqs...)
 	b.mu.Unlock()

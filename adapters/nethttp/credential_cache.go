@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/DaniDeer/go-codex/internal/route"
+	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/stats"
 )
 
@@ -46,7 +46,7 @@ type credentialCacheCall struct {
 // no thundering herd on the auth server, no external dependency).
 //
 // Returns (fn, invalidate): fn is a [CredentialFunc] — attach it to a route
-// via [rest.Route.ClientMW], paired against the SAME [middleware.Middleware]
+// via [rest.Route.ClientMW], paired against the SAME [rest.AttachedMiddleware]
 // the route's security requirement was declared with; invalidate immediately
 // expires the cached credential — wire it to [CallOptions.OnCredentialRejected]
 // so a 401 causes the NEXT call to fetch a fresh credential:
@@ -76,7 +76,7 @@ func NewCachingCredentialFunc(inner CredentialFunc, opts CachingCredentialFuncOp
 		inflight *credentialCacheCall
 	)
 
-	fn = func(ctx context.Context, reqs []route.SecurityRequirement) (http.Header, error) {
+	fn = func(ctx context.Context, reqs []rest.SecurityRequirement) (http.Header, error) {
 		start := time.Now()
 		location := credentialCacheLocation(reqs)
 
@@ -137,7 +137,7 @@ func NewCachingCredentialFunc(inner CredentialFunc, opts CachingCredentialFuncOp
 // observer events from the security scheme names in reqs — there is no
 // dedicated "location" option, since the caller already identifies the
 // credential scope by choosing which route(s)/reqs use this cache instance.
-func credentialCacheLocation(reqs []route.SecurityRequirement) string {
+func credentialCacheLocation(reqs []rest.SecurityRequirement) string {
 	names := make(map[string]struct{})
 	for _, req := range reqs {
 		for name := range req {

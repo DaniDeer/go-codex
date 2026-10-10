@@ -17,7 +17,7 @@ import (
 // ONLY place in adapters/nethttp that calls into stats.Observer for
 // request-lifecycle events.
 //
-// Returns the BARE closure, not a middleware.ServerImplementation —
+// Returns the BARE closure, not a rest.ServerImplementation —
 // [rest.Route.HandleMW] builds that internally from whatever fn it
 // receives (see docs/design/d-0001-rest-middleware-workflow-simplification.md's
 // "Decision: HandleMW/ClientMW unification"). Observability never

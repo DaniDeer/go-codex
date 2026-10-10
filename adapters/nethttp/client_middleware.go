@@ -7,7 +7,6 @@ import (
 	"reflect"
 
 	"github.com/DaniDeer/go-codex/api/rest"
-	"github.com/DaniDeer/go-codex/internal/route"
 )
 
 // clientMiddlewareOutKey is the context key for client-side middleware Out
@@ -128,7 +127,7 @@ func clientMiddlewareErrorLocation(err error) string {
 // ran" for [rest.ClientCallOptions.OnCredentialRejected] purposes, since
 // [dispatchClientMiddlewareIn] itself (unlike [mergeCredentialHeaders])
 // runs every handler unconditionally and has no notion of "ran".
-func clientMiddlewareSatisfiesAny(handlers []rest.ClientMiddlewareHandler, secReqs []route.SecurityRequirement) bool {
+func clientMiddlewareSatisfiesAny(handlers []rest.ClientMiddlewareHandler, secReqs []rest.SecurityRequirement) bool {
 	if len(handlers) == 0 || len(secReqs) == 0 {
 		return false
 	}

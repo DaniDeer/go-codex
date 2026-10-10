@@ -2,8 +2,6 @@ package rest
 
 import (
 	"strings"
-
-	"github.com/DaniDeer/go-codex/internal/route"
 )
 
 // CredentialExtractor supplies a raw credential string from wherever an
@@ -21,7 +19,7 @@ type CredentialExtractor func(location, name string) string
 // validates them against the registered SecurityScheme codecs for the
 // declared requirements. Returns a [SecurityCredentialError] if any codec
 // check fails.
-func ValidateSecurityCredentials(extract CredentialExtractor, reqs []route.SecurityRequirement, schemes map[string]SecurityScheme) error {
+func ValidateSecurityCredentials(extract CredentialExtractor, reqs []SecurityRequirement, schemes map[string]SecurityScheme) error {
 	for _, req := range reqs {
 		for name := range req {
 			s, ok := schemes[name]
@@ -41,7 +39,7 @@ func ValidateSecurityCredentials(extract CredentialExtractor, reqs []route.Secur
 // on the scheme's type and location.
 func extractCredential(extract CredentialExtractor, s SecurityScheme) string {
 	switch s.Type {
-	case route.SecuritySchemeHTTP:
+	case SecuritySchemeHTTP:
 		auth := extract("header", "Authorization")
 		switch strings.ToLower(s.Scheme) {
 		case "bearer":
@@ -57,13 +55,13 @@ func extractCredential(extract CredentialExtractor, s SecurityScheme) string {
 			return auth
 		}
 		return auth
-	case route.SecuritySchemeOAuth2, route.SecuritySchemeOpenIDConnect:
+	case SecuritySchemeOAuth2, SecuritySchemeOpenIDConnect:
 		auth := extract("header", "Authorization")
 		if len(auth) >= 7 && strings.EqualFold(auth[:7], "Bearer ") {
 			return auth[7:]
 		}
 		return auth
-	case route.SecuritySchemeAPIKey:
+	case SecuritySchemeAPIKey:
 		switch strings.ToLower(s.In) {
 		case "header":
 			return extract("header", s.Name)

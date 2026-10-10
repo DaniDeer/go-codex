@@ -1,6 +1,75 @@
-# go-codex Review History (R1–R198, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
+# go-codex Review History (R1–R199, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 199 (`deep-dive-bug-hunt` applied to `api/rest` + `adapters/{chi,nethttp}` specifically to verify Round 198's production-code alias sweep — ARGUMENTS: "After these changes made. Begin with api/rest")
+
+Explicitly invoked to re-trace `api/rest` concept-by-concept in light of Round 198's mechanical
+production-code alias rework, rather than assuming the prior round's own file enumeration was
+exhaustive. **It was not** — this round found 2 genuine gaps Round 198 missed entirely, plus
+several lower-priority doc-comment staleness instances, by re-deriving the file list from
+`ls api/rest/*.go`/`ls adapters/{chi,nethttp}/*.go` directly instead of trusting Round 198's own
+recorded file count.
+
+### Phase A findings
+
+- **`api/rest/security_dispatch.go` was not in Round 198's file list at all.** Its EXPORTED
+  `ValidateSecurityCredentials(extract CredentialExtractor, reqs []route.SecurityRequirement,
+  schemes map[string]SecurityScheme) error` leaked `route.SecurityRequirement` directly in public
+  godoc — confirmed via `go doc`, the exact same bug CLASS Round 198 was supposed to close,
+  simply in a file that round never examined. Its unexported `extractCredential` helper also used
+  4 `route.SecuritySchemeX` constants directly; fixed for the same consistency reasoning. Import
+  dropped entirely (file now has zero `internal/route` dependency).
+- **`api/rest/builder.go`'s own `(*Server) AddGlobalSecurity(reqs ...route.SecurityRequirement)
+  *Server`** — an EXPORTED method Round 198 missed even though it DID touch this file (the
+  mechanical regex pass evidently didn't catch every occurrence) — same leak, same fix
+  (`SecurityRequirement`, bare). Also fixed 2 STALE doc-comment examples in the same file still
+  showing the pre-Round-198 `rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}`
+  verbose pattern instead of the now-idiomatic `rest.BearerScheme("JWT")`.
+- **5 `adapters/nethttp` files Round 198 never examined** (`caller.go`, `client_middleware.go`,
+  `credential_cache.go`, `observability.go`, `transform.go`) — `client_middleware.go`'s unexported
+  `clientMiddlewareSatisfiesAny(..., secReqs []route.SecurityRequirement) bool` and
+  `credential_cache.go`'s unexported `credentialCacheLocation`/its inner closure (both `[]route.
+  SecurityRequirement`) got real code fixes (now `rest.SecurityRequirement`, import swapped from
+  `internal/route` to `api/rest`); the other 3 files only had doc-comment prose mentions
+  (`middleware.ServerImplementation`/`middleware.Middleware` as plain text or inside a `[...]`
+  godoc link, no actual code), fixed for consistency.
+- **`adapters/chi`**: re-verified exhaustively (`binding.go`/`capability.go`/`servertransport.go`/
+  `socket.go`/`stream_errors.go`/`stream.go`) — genuinely clean, zero remaining references of any
+  kind; Round 198's chi coverage was actually complete.
+- **Confirmed clean (re-verified, not just trusted)**: every file Round 198 DID examine in
+  `api/rest` (`bound_middleware.go`, `middleware.go`, `middleware_declaration.go`, `router.go`,
+  `specroute.go`, `transform.go`) — full diff re-read end to end, zero logic changes found beyond
+  the claimed pure 1:1 renames; every reflection-based `elem.FieldByName(...).Interface().
+  ([]rest.X)` cast in `adapters/{chi,nethttp}` confirmed safe (a Go type alias produces the
+  IDENTICAL runtime type, so the type assertion succeeds under exactly the same conditions as
+  before the rename — traced explicitly, not assumed).
+- **Correction to Round 198's own claim**: its "47 files (25 api/* + 22 adapters)" count was
+  INCOMPLETE — per this skill's own Gotchas ("history.md is append-only... a new entry, not a
+  rewrite"), this is recorded here as a new finding, not a retroactive edit to Round 198's entry.
+
+### Phase B — design-doc re-review
+
+| Round | Doc(s) cross-checked | Verdict |
+|-------|----------------------|---------|
+| 198 + 199 (api/rest alias fixes) | `docs/design/d-0009-internalize-shared-mechanics.md` (Standing design rule + its 3-error-types Addendum) | **Aligned** — every fix follows the EXACT established `type X = internal.Y` alias pattern the doc already specifies; no reinterpretation, no reintroduction of anything the doc retired (`SharedMiddleware`/`FromSecurityScheme` stay retired, untouched by this round) |
+| 198 + 199 (new types `RouteDescriptor`/`AttachedMiddleware`) | Same doc's Standing design rule | **Aligned, but doc has no dedicated Addendum for these 2 specific new names** (unlike the 3-error-types Addendum) — the naming rationale lives only in `go-codex.instructions.md`'s Design Philosophy bullet and the type's own godoc; acceptable given both are small, self-documenting, same-pattern additions, but flagged here for discoverability — a future reader of `d-0009` alone would not learn these 2 names exist |
+
+No code/design misalignment found — every fix this round is the SAME bug class as Round 198,
+just in files that round's own (incomplete) sweep missed. Not reopening Phase A for a new
+concept; this closes out Round 198's unfinished scope for `api/rest`/`chi`/`nethttp` specifically.
+`api/events`/`api/reqreply`/`adapters/{mqtt5,mqtt,zeromq}` likely have the SAME class of
+missed-file gap (Round 198's file-enumeration method was identical across all 3 patterns) —
+flagged as a follow-up, not yet verified; do not assume clean without the same exhaustive
+`ls`-derived re-check this round applied to `api/rest`.
+
+Full repo verification clean: gofmt, `go build ./...`, `go vet ./...`, `go test ./...` (58/58
+packages passing, fresh cache), `just check` (staticcheck/gosec clean), targeted REST-example
+build sweep clean (`rest-api`/`rest-builder`/`rest-nested-binary`/`rest-schema-docs`).
+
+---
 
 ---
 

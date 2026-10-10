@@ -18,7 +18,7 @@ import (
 // to [call] exactly like the underlying *http.Client, just without
 // repeating client/baseURL at every call site. Client-side credential
 // fulfillment is declared PER-ROUTE via [rest.Route.ClientMW] (paired
-// against the SAME [middleware.Middleware] the route's security
+// against the SAME [rest.AttachedMiddleware] the route's security
 // requirement was declared with) — there is no caller-level default
 // slot anymore; a route needing a shared credential across many calls
 // declares it ONCE via ClientMW, not per-caller.

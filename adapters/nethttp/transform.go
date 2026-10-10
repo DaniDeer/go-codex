@@ -14,7 +14,7 @@ import (
 // not to authenticate).
 //
 // Returns `any` (the bare wrapped closure), NOT a
-// middleware.ServerImplementation — [rest.Route.HandleMW] builds that
+// rest.ServerImplementation — [rest.Route.HandleMW] builds that
 // internally. Transform never contributes to a route's spec, so pass nil
 // as HandleMW's mw:
 //
