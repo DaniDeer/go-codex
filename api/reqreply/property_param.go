@@ -19,7 +19,7 @@ import "github.com/DaniDeer/go-codex/codex"
 type PropertyParam struct {
 	codex.Param
 	// Required, when true, causes a missing property to fail decode with
-	// [MiddlewareInputError] — mirrors [middleware.HeaderParamSpec.Required].
+	// [MiddlewareInputError] — mirrors [HeaderParamSpec.Required].
 	// Set by which constructor built the owning [MergedPropertyParam]
 	// ([NewPropertyParam]: true; [NewOptionalPropertyParam]: false).
 	Required bool

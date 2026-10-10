@@ -1,6 +1,62 @@
-# go-codex Review History (R1–R199, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
+# go-codex Review History (R1–R200, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 200 (closing Round 199's flagged follow-up: the SAME exhaustive re-check extended to `api/events`/`api/reqreply` + `adapters/{mqtt5,mqtt,zeromq}`)
+
+Direct continuation of Round 199 (same invocation, "begin with api/rest" implying more layers
+follow) — re-derived EVERY production file list for `api/events`/`api/reqreply` and all 3
+remaining adapters via `ls` directly, exactly as Round 199 did for `api/rest`/`chi`/`nethttp`,
+rather than trusting Round 198's recorded file count.
+
+- **`api/reqreply`**: 10 files Round 198 never examined
+  (`capability.go`/`capability_require.go`/`client.go`/`dead_letter.go`/`future.go`/
+  `handletransport.go`/`observability.go`/`property_param.go`/`transform_dispatch.go`/`types.go`).
+  Found only 2 minor doc-comment-only staleness instances (`dead_letter.go`'s
+  `[route.SecurityRequirement]` → `[SecurityRequirement]`; `property_param.go`'s
+  `[middleware.HeaderParamSpec.Required]` → `[HeaderParamSpec.Required]`, now that the
+  Round-196-era `HeaderParamSpec` alias exists) — no real code gaps, unlike `api/rest`.
+- **`api/events`**: 9 files Round 198 never examined
+  (`address.go`/`capability.go`/`capability_require.go`/`dead_letter.go`/`error_pattern.go`/
+  `handletransport.go`/`observability.go`/`property_param.go`/`transform_dispatch.go`). Found
+  only 1 doc-comment staleness (`dead_letter.go`'s `[route.SecurityRequirement]` →
+  `[SecurityRequirement]`) — otherwise genuinely clean.
+- **`adapters/mqtt5`**: 10 files Round 198 never examined
+  (`binding.go`/`capability.go`/`connect.go`/`connect_security.go`/`errors.go`/
+  `handletransport.go`/`reqreply.go`/`security.go`/`stream.go`/`topicvars.go`). Found ZERO
+  fixable gaps — `connect_security.go`'s raw `route.SecurityScheme` (×2, the adapter-level
+  `ConnectSecurityScheme` CONNECT-packet type) and `security.go`'s raw
+  `route.SecurityRequirement`/`SecurityScheme`/`SecuritySchemeX` constants (the shared
+  `validateSecurityCredentials`/`extractUserPropertyCredential` helpers) are BOTH legitimate,
+  explicitly-documented exceptions — a THIRD exception class beyond the 2 already catalogued in
+  `review-go-codex`'s checklist §16: **a helper genuinely SHARED across 2+ domains within the
+  SAME adapter** (here, `security.go` serves BOTH `adapter.go`'s events Subscribe/Publish AND
+  `reqreply.go`'s Serve/Call) is deliberately kept at the lowest-common-denominator
+  `internal/route` raw type, since using either `events.SecurityScheme` or
+  `reqreply.SecurityScheme` would create an arbitrary, asymmetric dependency on one pattern over
+  the other — `security.go`'s own doc comment already explains this exactly. Both functions are
+  unexported (no godoc exposure either). Not a gap; correctly left untouched.
+- **`adapters/mqtt`**: 6 files Round 198 never examined — only `connect_security.go`'s raw
+  `route.SecurityScheme` found, same legitimate adapter-level-type exception as mqtt5's.
+- **`adapters/zeromq`**: 7 files Round 198 never examined
+  (`binding.go`/`capability.go`/`errors.go`/`handletransport.go`/`socket.go`/`stream.go`/
+  `topicvars.go`) — genuinely clean, zero references of any kind. zeromq's events pub/sub has no
+  built-in credential-format check at all (confirmed in earlier rounds), so it has no
+  `security.go`-equivalent file to even raise the question.
+
+**New standing-rule refinement for `review-go-codex` checklist §16** (recorded here, not yet
+back-filled into the checklist file itself — flagged for the next docs-touching round): a helper
+function genuinely shared across 2+ domain patterns WITHIN THE SAME adapter (not cross-adapter,
+not cross-pattern-package) is a 3rd legitimate exception to the alias-everything rule, alongside
+(a) genuine internal-only dispatch plumbing and (b) adapter-local types with no cross-pattern
+equivalent.
+
+Full repo verification clean: gofmt, `go build ./...`, `go vet ./...`, `go test ./...` (58/58
+packages passing, fresh cache). This closes Round 199's flagged follow-up in full — Round 198's
+alias sweep is now confirmed exhaustively complete across all 3 `api/*` packages and all 5
+adapters, modulo the documented, intentional exceptions catalogued above.
 
 ---
 

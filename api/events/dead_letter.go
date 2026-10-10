@@ -53,7 +53,7 @@ var deadLetterEnvelopeFormat = format.JSON(deadLetterEnvelopeCodec)
 // DeadLetter declaration. A nil *deadLetterRule (channel-level) means
 // "not declared at this channel — inherit the Client-level global
 // default, if any." An explicit empty Topic ("") means "opted out" —
-// mirrors [route.SecurityRequirement]'s own nil-inherit/empty-override
+// mirrors [SecurityRequirement]'s own nil-inherit/empty-override
 // convention for [Client.AddGlobalSecurity].
 type deadLetterRule struct {
 	topic       string
