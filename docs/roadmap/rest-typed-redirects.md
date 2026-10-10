@@ -1,15 +1,21 @@
 # Typed HTTP Redirects — `api/rest`
 
 > **Status:** Design draft — no code written yet, but critically
-> re-reviewed against the actual code THREE TIMES (not just the initial
+> re-reviewed against the actual code FOUR TIMES (not just the initial
 > sketch) — see "Resolved design decisions", "Round 2 critical review",
-> and "Round 3 critical review" below. Every design decision raised
-> across all three rounds is now resolved; nothing is left genuinely
-> open in this doc. Round 3 specifically re-scrutinized round 2's OWN
-> resolutions (not a fresh sweep) and found one confirmed correction
-> (render/openapi needs no changes after all) plus 3 refined mechanisms
-> (credential-copy details, redirect-chain depth tracking, Consume
-> reconnect-loop interaction). (The
+> "Round 3 critical review", and "Round 4 critical review (FINAL)"
+> below. Every design decision raised across all four rounds is now
+> resolved; nothing is left genuinely open in this doc. Rounds 3 and 4
+> each re-scrutinized the PRIOR round's own resolutions rather than
+> sweeping the whole doc fresh — round 3 found one confirmed correction
+> (render/openapi needs no changes after all) plus 3 refined mechanisms;
+> round 4 found that the credential-reuse mechanism needed a further,
+> code-verified correction (reuse the already-computed credential/
+> cookie/extra-header values, not a verbatim header-map clone) and that
+> auto-follow needs its own parallel request-construction path rather
+> than recursing through the normal `Call`/`Consume` dispatch pipeline.
+> Round 4 is explicitly the LAST critical-review pass before
+> implementation planning. (The
 > `internal/registry` extraction question and the `api/reqreply.Client`
 > registry question were ALSO evaluated during this process and
 > deliberately deferred/spun out — see the "Client-side route registry"
@@ -488,16 +494,14 @@ re-checked Round 2's 6 resolutions THEMSELVES rather than sweeping the whole doc
 Found 4 more findings — G4 above is a confirmed, evidence-based CORRECTION; G1-G3 below are
 genuine design alternatives, now resolved with the user.
 
-1. **(G1) Credential reuse (refines A) — concrete mechanism specified.** Round 2 resolved
-   "reuse the originating call's own credentials" in principle, without saying HOW. **Resolved:
-   copy the ORIGINAL outgoing `*http.Request`'s headers (`Authorization`, `Cookie`, any custom
-   headers) verbatim onto the follow-up request** — the only coherent option (re-invoking the
-   originating route's `ClientMW`/credential `Fn` a second time doesn't make sense; nothing
-   defines "derive credentials again" for a follow-up). This surfaces a companion requirement
-   round 2 missed entirely: **for 307/308 (method+body preserved per RFC 9110), the follow-up
-   request must replay the SAME body bytes as the original** — the original request's
-   already-encoded body must be BUFFERED (an `*http.Request.Body` is normally a single-read
-   stream) so it can be resent.
+1. **(G1) Credential reuse (refines A) — concrete mechanism specified (further corrected in
+   Round 4, finding H1 below — see there for the precise, code-verified mechanism).** Round 2
+   resolved "reuse the originating call's own credentials" in principle, without saying HOW.
+   Initially resolved as "copy the original outgoing request's headers verbatim" — **Round 4's
+   H1 found this wording imprecise and corrected it; see below, do not implement from this
+   paragraph alone.** This also surfaces a companion requirement round 2 missed entirely: for
+   307/308 (method+body preserved per RFC 9110), the follow-up request must replay the SAME body
+   as the original (confirmed CHEAP, not a new buffering burden — see Round 4's H1b).
 2. **(G2) Chain-depth tracking mechanism and configurability (refines C) — both specified.**
    Round 2 resolved "cap chain depth, mirroring net/http's 10-hop default" without saying HOW
    depth is tracked or whether the cap is tunable. **Resolved**:
@@ -517,6 +521,59 @@ genuine design alternatives, now resolved with the user.
    SAME redirect-detection logic**, not just connection #1 — for structural consistency between
    the two mechanisms, rather than an inconsistency where a redirect is honored on attempt 1 but
    silently mishandled on attempt 2+.
+
+## Round 4 critical review (FINAL) — scrutinizing Round 3's OWN resolutions
+
+Per the user's explicit framing ("the last time") — this round re-checked Round 3's 4
+resolutions (G1-G4) against the ACTUAL request-construction code
+(`adapters/nethttp/clienttransport.go`'s `networkStep` closure), rather than re-trusting Round
+3's own wording. Found 2 more findings — both are CORRECTIONS/CLARIFICATIONS of already-approved
+principles via a closer code read (not new alternatives requiring a fresh decision), resolved
+directly. This is the closing pass of the critical-review phase — the next step is
+implementation planning, not another review round.
+
+1. **(H1) Corrects G1: "copy headers verbatim" was an oversimplification.** Read
+   `clienttransport.go`'s actual `networkStep` closure (the code that builds the real outgoing
+   `*http.Request`) directly. **Confirmed**: headers are NEVER assembled as one wholesale map to
+   clone — they're set PIECE BY PIECE from distinct, already-separately-computed sources:
+   `Content-Type` (derived fresh from encoding the body), `Accept`, `headerVars` (from declared
+   `HeaderParam` merge-fields), `opts.ExtraHeaders`, `credHeaders` (from the credential `Fn`),
+   and cookies via `cookieVars`. "Copy the original request's headers verbatim" is wrong in a
+   subtle, important way: it would ALSO carry over `Content-Type`/`Accept` computed for the
+   ORIGINAL request/body — incorrect for a 301/302/303 follow-up that drops the body and
+   switches to GET. **Corrected mechanism**: auto-follow reuses the SAME already-computed
+   `credHeaders`/`cookieVars`/`opts.ExtraHeaders` values from the ORIGINAL call (exactly the
+   "identity" parts finding A actually cares about) when building the follow-up request, and
+   lets `Content-Type`/`Accept`/body be freshly (re)computed for the follow-up the SAME way any
+   normal call would (nothing carried over for 301/302/303; the same body + Content-Type
+   replayed for 307/308 — see H1b).
+2. **(H1b) Confirms, rather than complicates, the body-replay requirement.** `bodyBytes` is
+   ALREADY a plain `[]byte` in memory (from encoding, BEFORE `http.NewRequestWithContext` is
+   even called) at exactly the point a follow-up would need it. Round 3's framing ("the body
+   must be BUFFERED... an `http.Request.Body` is normally a single-read stream") made this sound
+   like a new engineering burden — it is NOT. The already-encoded bytes are simply reused for
+   the follow-up request's body on 307/308; no new buffering machinery needed.
+3. **(H2) A genuine implementation-scope clarification: auto-follow needs its OWN request path,
+   not a recursive re-invocation of `Call`.** Round 2/3's wording ("reusing the matched
+   `*RouteHandle`'s own Call path") implied the auto-follow could simply recurse into
+   `clientTransport.Call` again against the target handle. **This cannot work as stated**:
+   `Call`'s full pipeline RE-DERIVES `credHeaders`/`cookieVars` from the TARGET route's OWN
+   declared `ClientMW`/credential `Fn` — exactly the behavior finding A (and H1's correction)
+   explicitly rejected (using the registered target's own baked-in credentials instead of the
+   originating call's). A naive recursive `Call` would silently reintroduce the SAME
+   credential-identity bug finding A was meant to close. **Resolution (clarifying scope, not
+   reversing any decision)**: auto-follow is its OWN, PARALLEL low-level code path — it builds
+   the follow-up `*http.Request` directly (reusing the originating call's `credHeaders`/
+   `cookieVars`/`opts.ExtraHeaders` per H1, the target's `BuildPath` for the URL) and decodes the
+   response via the target `*RouteHandle`'s own ALREADY-EXISTING `DecodeMergedResponse`/
+   `DecodeResponseWithFormats` methods (confirmed present, exactly what's needed) — rather than
+   recursing through the full `Call`/`Consume` dispatch pipeline a second time. This is real,
+   non-trivial implementation work (more code than "just call Call again"), but does NOT change
+   any already-approved behavior — it correctly maps "reuse the target's decode logic" onto the
+   actual, already-existing method surface instead of a full pipeline re-entry. Applies
+   symmetrically to `Client.Consume`'s own auto-follow (finding D/G3) — a parallel reconnect path
+   reusing the ORIGINAL `Consume` call's credentials, not a recursive `Consume` call against the
+   target.
 
 ## Proposed API surface (tentative — sketch only, not final)
 
@@ -695,7 +752,7 @@ both registry resolution points are concretely identified above.
 | `api/rest/redirect.go` + `redirect_test.go` | `RedirectError`, `RedirectTargetVarError`, `RedirectMethodMismatchError`, `RedirectChainTooDeepError` (round 2), `Redirect`, `RedirectToSSE` (both returning a single `error`, round 2 finding B) |
 | `api/rest/client_registry.go` (or inline in `builder.go`) + test | `Client`'s TWO parallel Method+PathTemplate registries — `routes` (Call-decodable) and `sseRoutes` (Consume-streamable, round 2 finding D) — `RegisterRoute` (type-discriminating both kinds), auto-populate-on-Call/Consume, `UnrecognizedRedirectError`, `RedirectToStreamUnsupportedError`, `RedirectTargetNotStreamableError`, same-routeKey-reregistration idempotency |
 | `api/rest/builder.go` (extend) + test | `ResponseMeta.Headers map[string]ResponseMetaHeader` (round 2 finding F; `Schema` field + default added in round 3 finding G4) — purely additive. **`render/openapi/document.go` needs NO changes** (round 3, finding G4 — `buildResponses` already renders `Headers` generically for every response entry). |
-| `adapters/nethttp/redirect.go` (or inline in `adapter.go`/`clienttransport.go`) + test | Server dispatch recognition (REST + SSE, gated on `headersCommitted` for SSE per round 2 finding E) + `Location` rendering; `CheckRedirect` shallow-copy override; registry-driven auto-follow/decode in BOTH `clientTransport.Call` and `clientTransport.Consume` (round 2 finding D) AND on every `Consume` reconnect attempt (round 3 finding G3); auto-follow copies the originating request's headers and replays its body for 307/308 (round 3 finding G1); chain depth tracked via a context value and capped via `ClientCallOptions.MaxRedirects` (round 3 finding G2) |
+| `adapters/nethttp/redirect.go` (new, PARALLEL to `clienttransport.go`'s normal dispatch, round 4 finding H2 — NOT a recursive call into `Call`/`Consume`) + test | Server dispatch recognition (REST + SSE, gated on `headersCommitted` for SSE per round 2 finding E) + `Location` rendering; `CheckRedirect` shallow-copy override; the auto-follow path itself — builds the follow-up request directly from the ORIGINATING call's already-computed `credHeaders`/`cookieVars`/`opts.ExtraHeaders` (round 4 finding H1, NOT a verbatim header clone) + the target's `BuildPath`, replaying the already-in-memory encoded body for 307/308 (round 4 finding H1b — no new buffering needed), decoding via the target `*RouteHandle`'s existing `DecodeMergedResponse`/`DecodeResponseWithFormats`; triggered from BOTH `clientTransport.Call` and `clientTransport.Consume` (round 2 finding D) AND on every `Consume` reconnect attempt (round 3 finding G3); chain depth tracked via a context value and capped via `ClientCallOptions.MaxRedirects` (round 3 finding G2) |
 | `adapters/chi/redirect.go` (or inline) + test | Server-side behavior only (no client transport exists in chi) |
 | `examples/rest-redirect/main.go` | Minimal, standalone, self-contained worked example — demonstrates the auto-populate-via-`Call` registry path (see "Client-side route registry" above) |
 | `examples/rest-api/demo_redirect.go` + rework of `examples/rest-api/client`'s `Build()` | Richer demo in the existing dual-adapter (chi/nethttp) flagship example — `Build()` reworked to explicitly `Client.RegisterRoute` every distinct route at construction time; the demo itself shows primary (auto-follow via the construction-time-populated registry) + secondary (`CallWithTransport`, manual follow-up) in one file, mirroring `examples/adapters-nethttp-client`'s Section-0-then-escape-hatch style (see "Client-side route registry" above) |
