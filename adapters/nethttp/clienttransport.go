@@ -864,11 +864,20 @@ func (t *clientTransport) Consume(ctx context.Context, sseRouteAny, reqAny, fnAn
 		}
 		attempt++
 		hadTraffic, connectErr := t.consumeOnce(ctx, handleVal, elem, descriptor, reqVal, path, method,
-			resolveEventDecoderMethod, effectiveFormatsMethod, formatsVal, eventType, dispatchFn, obs)
+			resolveEventDecoderMethod, effectiveFormatsMethod, formatsVal, eventType, dispatchFn, obs, opts.MaxRedirects)
 		if ctx.Err() != nil {
 			return nil
 		}
-		_ = connectErr // no OnError override in v1 — a caller needing one uses CallSSEAdapter directly.
+		// Redirect-resolution errors are TERMINAL, not transient
+		// connection failures — looping/retrying them forever would
+		// silently swallow the typed error until ctx eventually
+		// cancels (returning nil, never surfacing the real cause).
+		// Every other connectErr is still silently retried (no
+		// OnError override in v1 — a caller needing one uses
+		// CallSSEAdapter directly).
+		if isTerminalRedirectError(connectErr) {
+			return connectErr
+		}
 		if hadTraffic {
 			backoff = sseInitialBackoff
 			attempt = 0
@@ -898,6 +907,7 @@ func (t *clientTransport) consumeOnce(
 	eventType reflect.Type,
 	dispatchFn reflect.Value,
 	obs stats.Observer,
+	maxRedirectsOpt int,
 ) (hadTraffic bool, connectErr error) {
 	start := time.Now()
 
@@ -1026,6 +1036,28 @@ func (t *clientTransport) consumeOnce(
 	defer resp.Body.Close()
 	obs.RecordRequest(method, path, resp.StatusCode, time.Since(start))
 
+	// docs/roadmap/rest-typed-redirects.md round 2 finding D + round 3
+	// finding G3: a 3xx is resolved against c.sseRoutes (Consume's own
+	// redirect-following, transparent to the caller's fn) EVERY
+	// reconnect attempt — consumeOnce itself runs fresh on each
+	// reconnect, so no separate reconnect-loop wiring is needed beyond
+	// this check. Reuses the ORIGINATING request's own credHeaders/
+	// cookieVars/Accept header (finding A) — never re-derived from the
+	// matched target.
+	if isRedirectStatus(resp.StatusCode) {
+		location := resp.Header.Get("Location")
+		info := sseRedirectFollowUpInfo{
+			credHeaders: credHeaders,
+			cookieVars:  cookieVars,
+			accept:      httpReq.Header.Get("Accept"),
+		}
+		maxRedirects := maxRedirectsOpt
+		if maxRedirects <= 0 {
+			maxRedirects = defaultMaxRedirects
+		}
+		return t.followSSERedirect(ctx, rest.RedirectError{Status: resp.StatusCode, Location: location}, info, eventType, dispatchFn, maxRedirects, maxRedirects)
+	}
+
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(resp.Body)
 		return false, UnexpectedStatusError{Method: method, Path: path, StatusCode: resp.StatusCode, Body: body, Header: resp.Header}
@@ -1045,7 +1077,20 @@ func (t *clientTransport) consumeOnce(
 
 	decode := resolveEventDecoderMethod.CallSlice([]reflect.Value{reflect.ValueOf(httpReq.Header.Get("Accept")), formatsVal})[0]
 
-	scanner := bufio.NewScanner(resp.Body)
+	return scanAndDispatchSSE(ctx, resp.Body, decode, dispatchFn), nil
+}
+
+// scanAndDispatchSSE reads `data:`-framed SSE events off body (a plain
+// `net/http` response/redirect-follow-up body), decoding each via decode
+// (func([]byte) (Event, error)) and dispatching via dispatchFn (func(ctx,
+// Event) error) — the shared tail both [clientTransport.consumeOnce]'s
+// initial connection AND [clientTransport.followSSERedirect]'s
+// transparent-reconnect hop use, so a redirected SSE stream is scanned
+// identically to a direct one. Returns whether at least one event was
+// successfully decoded+dispatched (consumeOnce's own reconnect-backoff
+// reset signal).
+func scanAndDispatchSSE(ctx context.Context, body io.Reader, decode, dispatchFn reflect.Value) (hadTraffic bool) {
+	scanner := bufio.NewScanner(body)
 	var dataLines []string
 	dispatch := func() {
 		if len(dataLines) == 0 {
@@ -1065,7 +1110,7 @@ func (t *clientTransport) consumeOnce(
 	}
 	for scanner.Scan() {
 		if ctx.Err() != nil {
-			return hadTraffic, nil
+			return hadTraffic
 		}
 		line := scanner.Text()
 		if data, ok := strings.CutPrefix(line, "data: "); ok {
@@ -1078,7 +1123,7 @@ func (t *clientTransport) consumeOnce(
 		}
 	}
 	dispatch()
-	return hadTraffic, nil
+	return hadTraffic
 }
 
 var _ rest.ClientTransport = (*clientTransport)(nil)

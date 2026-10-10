@@ -512,6 +512,16 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 
 		resp, err = fn(ctx, req)
 		if err != nil {
+			// docs/roadmap/rest-typed-redirects.md: a RedirectError
+			// (constructed via rest.Redirect/rest.RedirectToSSE) is
+			// recognized BEFORE ErrorPattern/ErrorStatus matching —
+			// renders status + Location, no body — mirrors
+			// adapters/nethttp's identical handlerFunc check.
+			if redirErr, ok := asRedirectError(err); ok {
+				sw.Header().Set("Location", redirErr.Location)
+				sw.WriteHeader(redirErr.Status)
+				return
+			}
 			// H1: upgraded from the bare ErrorResponseFor this branch
 			// used before to tryRespondErrorPatternGeneric/
 			// ObserveErrorResponseFor — now ALSO reports match/miss/
@@ -976,6 +986,16 @@ func sseHandlerFunc[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn 
 		}
 
 		if err := fn(ctx, req, send); err != nil {
+			// docs/roadmap/rest-typed-redirects.md round 2 finding E:
+			// gated on headersCommitted, not sw.code — mirrors
+			// adapters/nethttp's identical sseHandlerFunc check.
+			if !headersCommitted {
+				if redirErr, ok := asRedirectError(err); ok {
+					sw.Header().Set("Location", redirErr.Location)
+					sw.WriteHeader(redirErr.Status)
+					return
+				}
+			}
 			if sw.code == http.StatusOK {
 				opts.ErrorHandler(sw, r, http.StatusInternalServerError, err)
 			}

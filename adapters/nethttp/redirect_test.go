@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
@@ -413,5 +414,134 @@ func TestClientTransport_CheckRedirectOverride_Integration(t *testing.T) {
 	}
 	if loc := resp.Header.Get("Location"); loc != target.URL+"/final" {
 		t.Errorf("Location: want %q, got %q", target.URL+"/final", loc)
+	}
+}
+
+// ── Phase 5: Client.Consume auto-follow (SSE redirect-following) ──
+
+// setupSSERedirectServer builds a server with an SSE "GET /orders-sse"
+// route whose handler ALWAYS redirects (303) to "GET /sse/counter2" (a
+// second, DISTINCT SSE route emitting 2 counter events) — returns the
+// started httptest.Server and both SSERoute values.
+func setupSSERedirectServer(t *testing.T) (*httptest.Server, rest.SSERoute[getReq, counterSSEEvent], rest.SSERoute[getReq, counterSSEEvent]) {
+	t.Helper()
+	s := rest.NewServer(testInfo)
+
+	targetRoute := rest.NewSSERoute[getReq, counterSSEEvent]("/sse/counter2", getReqCodec, counterSSEEventCodec,
+		rest.RouteMeta{OperationID: "streamCounter2"})
+	targetRoute = targetRoute.WithHandler(func(ctx context.Context, _ getReq, send func(counterSSEEvent) error) error {
+		for i := 1; i <= 2; i++ {
+			if err := send(counterSSEEvent{Count: i}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err := targetRoute.Register(s); err != nil {
+		t.Fatalf("Register targetRoute: %v", err)
+	}
+
+	var bounceRoute rest.SSERoute[getReq, counterSSEEvent]
+	bounceRoute = rest.NewSSERoute[getReq, counterSSEEvent]("/orders-sse", getReqCodec, counterSSEEventCodec,
+		rest.RouteMeta{OperationID: "streamOrdersBounce"})
+	bounceRoute = bounceRoute.WithHandler(func(ctx context.Context, _ getReq, send func(counterSSEEvent) error) error {
+		return rest.RedirectToSSE(http.StatusSeeOther, bounceRoute, targetRoute, nil)
+	})
+	if err := bounceRoute.Register(s); err != nil {
+		t.Fatalf("Register bounceRoute: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	if err := serveSSE(mux, s); err != nil {
+		t.Fatalf("serveSSE: %v", err)
+	}
+	return httptest.NewServer(mux), bounceRoute, targetRoute
+}
+
+func TestClientConsume_AutoFollowsRedirect_ContinuesStreaming(t *testing.T) {
+	srv, bounceRoute, targetRoute := setupSSERedirectServer(t)
+	defer srv.Close()
+
+	client := rest.NewClient()
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	if err := client.RegisterRoute(targetRoute); err != nil {
+		t.Fatalf("RegisterRoute(targetRoute): %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var got []int
+	err := client.Consume(ctx, bounceRoute, getReq{}, func(_ context.Context, e counterSSEEvent) error {
+		got = append(got, e.Count)
+		if len(got) >= 2 {
+			cancel()
+		}
+		return nil
+	})
+	if err != nil && ctx.Err() == nil {
+		t.Fatalf("Consume: want transparent auto-follow + continued streaming, got error: %v", err)
+	}
+	if len(got) != 2 || got[0] != 1 || got[1] != 2 {
+		t.Fatalf("want [1 2] (events from the REDIRECT TARGET), got %v", got)
+	}
+}
+
+func TestClientConsume_AutoFollowIntoRouteOnlyTarget_ReturnsRedirectTargetNotStreamableError(t *testing.T) {
+	s := rest.NewServer(testInfo)
+
+	// targetRoute is a plain (non-SSE) Route — registered into the
+	// Call-decodable registry only.
+	targetRoute := rest.NewRoute[getUserReq, userResp]("GET", "/users/{id}",
+		getUserReqCodec, userRespCodec,
+		rest.NewPathParam("id", codex.String(),
+			func(r getUserReq) string { return r.ID },
+			func(r *getUserReq, v string) { r.ID = v }))
+	targetRoute = targetRoute.WithHandler(func(ctx context.Context, req getUserReq) (userResp, error) {
+		return userResp{ID: req.ID, Name: "Alice"}, nil
+	})
+	if err := targetRoute.Register(s); err != nil {
+		t.Fatalf("Register targetRoute: %v", err)
+	}
+
+	var bounceRoute rest.SSERoute[getReq, counterSSEEvent]
+	bounceRoute = rest.NewSSERoute[getReq, counterSSEEvent]("/orders-sse", getReqCodec, counterSSEEventCodec,
+		rest.RouteMeta{OperationID: "streamOrdersBounceToRoute"})
+	bounceRoute = bounceRoute.WithHandler(func(ctx context.Context, _ getReq, send func(counterSSEEvent) error) error {
+		// targetRoute is a plain Route (not an SSERoute) — use
+		// rest.Redirect, not RedirectToSSE.
+		return rest.Redirect(http.StatusSeeOther, bounceRoute, targetRoute, map[string]string{"id": "f47ac10b"})
+	})
+	if err := bounceRoute.Register(s); err != nil {
+		t.Fatalf("Register bounceRoute: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	if err := serveSSE(mux, s); err != nil {
+		t.Fatalf("serveSSE: %v", err)
+	}
+	if err := serve(mux, s); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := rest.NewClient()
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	if err := client.RegisterRoute(targetRoute); err != nil {
+		t.Fatalf("RegisterRoute(targetRoute): %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err := client.Consume(ctx, bounceRoute, getReq{}, func(_ context.Context, e counterSSEEvent) error {
+		return nil
+	})
+	var notStreamableErr rest.RedirectTargetNotStreamableError
+	if !errors.As(err, &notStreamableErr) {
+		t.Fatalf("Consume: want RedirectTargetNotStreamableError, got %T: %v", err, err)
 	}
 }

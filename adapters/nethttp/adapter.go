@@ -903,6 +903,20 @@ func sseHandlerFunc[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn 
 		}
 
 		if err := fn(ctx, req, send); err != nil {
+			// docs/roadmap/rest-typed-redirects.md round 2 finding E: a
+			// RedirectError (rest.RedirectToSSE) is only honored BEFORE
+			// the stream has committed to 200 + event-stream — gated on
+			// headersCommitted (NOT sw.code, which writeSSEData never
+			// updates since it writes the embedded io.Writer directly).
+			// A RedirectError returned AFTER commit is an ordinary late
+			// error, handled by the existing fallback below.
+			if !headersCommitted {
+				if redirErr, ok := asRedirectError(err); ok {
+					sw.Header().Set("Location", redirErr.Location)
+					sw.WriteHeader(redirErr.Status)
+					return
+				}
+			}
 			// If headers not yet written (first call failed before any send),
 			// we can still emit an error response.
 			if sw.code == http.StatusOK {

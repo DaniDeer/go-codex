@@ -436,8 +436,19 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 
 		handlerResults := handlerFn.Call([]reflect.Value{reflect.ValueOf(ctx), reqPtr.Elem(), send})
 		if errI := handlerResults[0].Interface(); errI != nil {
+			err, _ := errI.(error)
+			// docs/roadmap/rest-typed-redirects.md round 2 finding E:
+			// gated on headersCommitted, mirrors adapters/nethttp's
+			// identical reflect-based SSE check.
+			if !headersCommitted {
+				if redirErr, ok := asRedirectError(err); ok {
+					sw.Header().Set("Location", redirErr.Location)
+					sw.WriteHeader(redirErr.Status)
+					return
+				}
+			}
 			if sw.code == http.StatusOK {
-				errFn(sw, r, http.StatusInternalServerError, errI.(error))
+				errFn(sw, r, http.StatusInternalServerError, err)
 			}
 		}
 		_ = eventType

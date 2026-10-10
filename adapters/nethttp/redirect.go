@@ -198,3 +198,19 @@ func asRedirectError(err error) (rest.RedirectError, bool) {
 	ok := errors.As(err, &redirErr)
 	return redirErr, ok
 }
+
+// isTerminalRedirectError reports whether err is one of the redirect-
+// resolution errors [clientTransport.Consume]'s reconnect loop must
+// return IMMEDIATELY rather than silently retry — a mismatched/missing
+// registry entry or an exceeded chain depth is a configuration problem,
+// not a transient connection failure, and retrying it forever would
+// hide the real cause until ctx eventually cancels (returning nil).
+func isTerminalRedirectError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var unrecognized rest.UnrecognizedRedirectError
+	var notStreamable rest.RedirectTargetNotStreamableError
+	var tooDeep rest.RedirectChainTooDeepError
+	return errors.As(err, &unrecognized) || errors.As(err, &notStreamable) || errors.As(err, &tooDeep)
+}
