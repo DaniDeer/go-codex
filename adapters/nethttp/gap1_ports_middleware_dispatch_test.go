@@ -11,7 +11,6 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/internal/middleware"
 	"github.com/DaniDeer/go-codex/ports"
 )
 
@@ -26,8 +25,8 @@ import (
 // ── IngestAdapter + Security-shaped HandleMW ────────────────────────────────
 
 func TestIngestAdapter_HandleMWSecurity_EnforcesCredential(t *testing.T) {
-	decl := middleware.NewDeclaration("bearer-ingest-policy", tdInCodec, bearerAuthOutCodec)
-	decl.Security = middleware.NewSecurityDeclaration("bearerAuth", rest.BearerScheme("JWT").SecurityScheme, nil, nil)
+	decl := rest.NewDeclaration("bearer-ingest-policy", tdInCodec, bearerAuthOutCodec)
+	decl.Security = rest.NewSecurityDeclaration("bearerAuth", rest.BearerScheme("JWT"), nil)
 	bm := rest.NewBoundMiddleware[createReq](decl,
 		func(ctx context.Context, req *createReq, in tdIn) (bearerAuthOut, error) {
 			if in.Key != "valid-token" {

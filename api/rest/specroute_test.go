@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/DaniDeer/go-codex/api/rest"
-	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/render/openapi"
 )
 
@@ -229,7 +228,7 @@ func TestServeSpec_LazyCache_ReflectsLaterRoutes(t *testing.T) {
 // immediately, not rediscovered by hand.
 func TestServeSpec_OptsOutOfGlobalSecurity(t *testing.T) {
 	b := rest.NewServer(testInfo)
-	b.AddGlobalSecurity(route.Require("bearerAuth"))
+	b.AddGlobalSecurity(rest.Require("bearerAuth"))
 	if err := b.ServeSpec("/openapi.yaml"); err != nil {
 		t.Fatalf("ServeSpec: %v", err)
 	}

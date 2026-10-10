@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/DaniDeer/go-codex/api/reqreply"
-	"github.com/DaniDeer/go-codex/internal/route"
 )
 
 // ── shared routes/security for Server/Client tests ──────────────────────────
@@ -22,7 +21,7 @@ var (
 	ComputeRoute4 = reqreply.NewRoute[computeReq, computeResp]("compute/add4", reqCodec, respCodec)
 	ComputeRoute5 = reqreply.NewRoute[computeReq, computeResp]("compute/add5", reqCodec, respCodec)
 
-	bearerReq = route.Require("bearer")
+	bearerReq = reqreply.Require("bearer")
 )
 
 // ── fake ServerTransport/ClientTransport test doubles ─────────────────────

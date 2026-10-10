@@ -9,7 +9,6 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/internal/route"
 )
 
 type specTestReading struct{ Value int }
@@ -142,7 +141,7 @@ func TestServeSpec_EmptyTopic_Error(t *testing.T) {
 // requirement the way a channel with nil Security would.
 func TestServeSpec_OptsOutOfGlobalSecurity(t *testing.T) {
 	c := events.NewClient(events.WithInfo(events.Info{Title: "Test API", Version: "1.0.0"}))
-	c.AddGlobalSecurity(route.Require("bearerAuth"))
+	c.AddGlobalSecurity(events.Require("bearerAuth"))
 	ft := &recordingPublishTransport{}
 	if err := c.Attach(ft); err != nil {
 		t.Fatalf("Attach: %v", err)

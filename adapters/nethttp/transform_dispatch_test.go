@@ -10,7 +10,6 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/internal/middleware"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -35,8 +34,8 @@ var tdOutCodec = codex.Struct[tdOut](
 	),
 )
 
-func newTDDeclaration(name string) middleware.Declaration[tdIn, tdOut] {
-	return middleware.NewDeclaration(name, tdInCodec, tdOutCodec)
+func newTDDeclaration(name string) rest.Declaration[tdIn, tdOut] {
+	return rest.NewDeclaration(name, tdInCodec, tdOutCodec)
 }
 
 // ── HandleMW (codec-backed): happy path, enrichment, response-header composition ──
@@ -274,7 +273,7 @@ func TestHandleMW_CodecBackedMiddleware_InDecodeFailure_ReportsMiddlewareInLocat
 func TestHandleMW_CodecBackedMiddleware_OutEncodeFailure_ReportsMiddlewareOutLocation(t *testing.T) {
 	// In is tdEmpty (no required fields, so DecodeIn/InCodec.Validate
 	// always succeeds) — isolating the failure to Out's EncodeOut path.
-	decl := middleware.NewDeclaration("api-key-policy", tdEmptyCodec, tdOutCodec)
+	decl := rest.NewDeclaration("api-key-policy", tdEmptyCodec, tdOutCodec)
 	bm := rest.NewBoundMiddleware[createReq](decl,
 		func(ctx context.Context, req *createReq, in tdEmpty) (tdOut, error) {
 			// Empty Value fails tdOutCodec's NonEmptyString refinement at
@@ -335,8 +334,8 @@ type tdEmpty struct{}
 
 var tdEmptyCodec = codex.Struct[tdEmpty]()
 
-func newTDEmptyDeclaration(name string) middleware.Declaration[tdEmpty, tdEmpty] {
-	return middleware.NewDeclaration(name, tdEmptyCodec, tdEmptyCodec)
+func newTDEmptyDeclaration(name string) rest.Declaration[tdEmpty, tdEmpty] {
+	return rest.NewDeclaration(name, tdEmptyCodec, tdEmptyCodec)
 }
 
 func TestHandleMW_CodecBackedMiddleware_TwoMiddlewaresEnrichSameField_LastAttachedWins(t *testing.T) {
@@ -501,8 +500,8 @@ var bearerAuthOutCodec = codex.Struct[bearerAuthOut]()
 // via reflection and fed into the SAME middleware.CheckScopes call every
 // other Security path already used.
 func TestHandleMW_CodecBackedMiddleware_Satisfies_CoversGlobalSecurity(t *testing.T) {
-	decl := middleware.NewDeclaration("bearer-handlemw-policy", tdInCodec, bearerAuthOutCodec)
-	decl.Security = middleware.NewSecurityDeclaration("bearerAuth", rest.BearerScheme("JWT").SecurityScheme, nil, nil)
+	decl := rest.NewDeclaration("bearer-handlemw-policy", tdInCodec, bearerAuthOutCodec)
+	decl.Security = rest.NewSecurityDeclaration("bearerAuth", rest.BearerScheme("JWT"), nil)
 	bm := rest.NewBoundMiddleware[createReq](decl,
 		func(ctx context.Context, req *createReq, in tdIn) (bearerAuthOut, error) {
 			if in.Key != "valid-token" {

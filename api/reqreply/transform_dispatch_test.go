@@ -8,7 +8,6 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/internal/middleware"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -155,7 +154,7 @@ func TestMergeVarsOverride(t *testing.T) {
 // buildEncodeOut/buildDecodeOut (both wrap MiddlewareOutputError).
 func TestDispatchClientMiddlewareIn_EncodeInFailure_WrapsMiddlewareInputError(t *testing.T) {
 	type mdIn struct{ Val string }
-	mw := reqreply.NewMiddleware(middleware.Declaration[mdIn, struct{}]{
+	mw := reqreply.NewMiddleware(reqreply.Declaration[mdIn, struct{}]{
 		Name:    "mw",
 		InCodec: codex.Struct[mdIn](codex.RequiredField("val", codex.String().Refine(validate.NonEmptyString), func(i mdIn) string { return i.Val }, func(i *mdIn, v string) { i.Val = v })),
 	}).WithSend(func(ctx context.Context) (mdIn, error) { return mdIn{Val: ""}, nil })

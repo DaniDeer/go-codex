@@ -9,7 +9,6 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/internal/middleware"
 )
 
 // ── docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase A,
@@ -24,7 +23,7 @@ import (
 // (a gochi.Router wrapper), so there is no chi-specific client behavior
 // to test.
 
-var chiCfTenantIDField = middleware.NewContextField(codex.String())
+var chiCfTenantIDField = rest.NewContextField(codex.String())
 
 // TestChiSetContextFieldFromIn_DispatchOrder_BeforeFnAndHandler mirrors
 // nethttp's identical test — proves the field is published DURING
@@ -73,9 +72,9 @@ func TestChiSetContextFieldFromIn_DispatchOrder_BeforeFnAndHandler(t *testing.T)
 // middleware's OWN returned Out value, available by the time EncodeOut
 // composes the response (after Fn returns).
 func TestChiSetContextFieldFromOut_DispatchOrder_AfterFnReturns(t *testing.T) {
-	var policyVersionField = middleware.NewContextField(codex.String())
+	var policyVersionField = rest.NewContextField(codex.String())
 
-	bm := rest.NewBoundMiddleware[createReq](middleware.NewDeclaration("policy-version-out", tdEmptyCodec, tdOutCodec),
+	bm := rest.NewBoundMiddleware[createReq](rest.NewDeclaration("policy-version-out", tdEmptyCodec, tdOutCodec),
 		func(ctx context.Context, req *createReq, in tdEmpty) (tdOut, error) {
 			return tdOut{Value: "v2"}, nil
 		}).

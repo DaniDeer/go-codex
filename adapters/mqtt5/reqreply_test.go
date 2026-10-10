@@ -10,7 +10,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/internal/middleware"
 	"github.com/DaniDeer/go-codex/validate"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 )
@@ -1503,7 +1502,7 @@ var codecBackedPropertySpecRoute = reqreply.NewRoute[computeReq, computeResp](
 	"compute/codec-backed-property-spec-add",
 	computeReqCodec, computeRespCodec,
 	reqreply.RouteMeta{OperationID: "codecBackedPropertySpecCompute"},
-).Use(reqreply.NewMiddleware[struct{}, struct{}](middleware.Declaration[struct{}, struct{}]{Name: "declare-api-key-property"}).
+).Use(reqreply.NewMiddleware[struct{}, struct{}](reqreply.Declaration[struct{}, struct{}]{Name: "declare-api-key-property"}).
 	WithRequestPropertySpec(reqreply.PropertyParam{Param: codex.Param{Name: "X-API-Key"}, Required: true}))
 
 func newCodecBackedPropertySpecRouteHandle() *reqreply.RouteHandle[computeReq, computeResp] {
@@ -1600,7 +1599,7 @@ var codecBackedResponsePropertySpecRoute = reqreply.NewRoute[computeReq, compute
 	"compute/codec-backed-response-property-spec-add",
 	computeReqCodec, computeRespCodec,
 	reqreply.RouteMeta{OperationID: "codecBackedResponsePropertySpecCompute"},
-).Use(reqreply.NewMiddleware[struct{}, struct{}](middleware.Declaration[struct{}, struct{}]{Name: "declare-trace-id-response-property"}).
+).Use(reqreply.NewMiddleware[struct{}, struct{}](reqreply.Declaration[struct{}, struct{}]{Name: "declare-trace-id-response-property"}).
 	WithResponsePropertySpec(reqreply.PropertyParam{Param: codex.Param{Name: "X-Trace-Id"}, Required: true}))
 
 func newCodecBackedResponsePropertySpecRouteHandle() *reqreply.RouteHandle[computeReq, computeResp] {

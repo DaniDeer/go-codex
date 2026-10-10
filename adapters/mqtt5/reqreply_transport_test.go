@@ -11,7 +11,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/internal/middleware"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
@@ -1030,7 +1029,7 @@ var mwPropOutCodec = codex.Struct[mwPropOut]()
 // value actually appears in the outgoing REQUEST's real MQTT5 User
 // Properties.
 func TestAttachClient_WithRequestProperty_WritesOutgoingUserProperty(t *testing.T) {
-	mw := reqreply.NewBoundClientMiddleware[computeReq](middleware.NewDeclaration("req-prop", mwPropInCodec, mwPropOutCodec),
+	mw := reqreply.NewBoundClientMiddleware[computeReq](reqreply.NewDeclaration("req-prop", mwPropInCodec, mwPropOutCodec),
 		func(ctx context.Context, req computeReq) (mwPropIn, error) {
 			return mwPropIn{TenantID: "acme"}, nil
 		}).
@@ -1098,7 +1097,7 @@ func TestAttachClient_WithRequestProperty_WritesOutgoingUserProperty(t *testing.
 // WithResponseProperty-declared value actually appears in the outgoing
 // REPLY's real MQTT5 User Properties.
 func TestAttachServer_WithResponseProperty_WritesOutgoingUserProperty(t *testing.T) {
-	mw := reqreply.NewBoundMiddleware[computeReq](middleware.NewDeclaration("resp-prop", mwPropInCodec, mwPropOutCodec),
+	mw := reqreply.NewBoundMiddleware[computeReq](reqreply.NewDeclaration("resp-prop", mwPropInCodec, mwPropOutCodec),
 		func(ctx context.Context, req *computeReq, in mwPropIn) (mwPropOut, error) {
 			return mwPropOut{Ack: "confirmed"}, nil
 		}).
@@ -1166,7 +1165,7 @@ func TestAttachServer_WithResponseProperty_WritesOutgoingUserProperty(t *testing
 // confirms the fix covers the ERROR-reply publish path too, not just the
 // success path.
 func TestAttachServer_WithResponseProperty_ErrorReplyAlsoWritesUserProperty(t *testing.T) {
-	mw := reqreply.NewBoundMiddleware[computeReq](middleware.NewDeclaration("resp-prop-err", mwPropInCodec, mwPropOutCodec),
+	mw := reqreply.NewBoundMiddleware[computeReq](reqreply.NewDeclaration("resp-prop-err", mwPropInCodec, mwPropOutCodec),
 		func(ctx context.Context, req *computeReq, in mwPropIn) (mwPropOut, error) {
 			return mwPropOut{Ack: "err-ack"}, nil
 		}).
@@ -1244,7 +1243,7 @@ var errBusinessFailure = businessError{msg: "business failure"}
 // HandleBoundMW's declared middleware runs AFTER the paired security Fn.
 func TestAttachServer_HandleBoundMW_RunsAfterPairedSecurity(t *testing.T) {
 	var order []string
-	mw := reqreply.NewBoundMiddleware[computeReq](middleware.NewDeclaration("order-check", mwPropInCodec, mwPropOutCodec),
+	mw := reqreply.NewBoundMiddleware[computeReq](reqreply.NewDeclaration("order-check", mwPropInCodec, mwPropOutCodec),
 		func(ctx context.Context, req *computeReq, in mwPropIn) (mwPropOut, error) {
 			order = append(order, "middleware")
 			return mwPropOut{}, nil
@@ -1303,7 +1302,7 @@ func TestAttachServer_HandleBoundMW_RunsAfterPairedSecurity(t *testing.T) {
 // decision #6: a HandleBoundMW-attached fn's own business error surfaces
 // through ServeError{Kind: KindMiddleware}, NOT KindHandler.
 func TestAttachServer_MiddlewareError_WrapsAsKindMiddleware(t *testing.T) {
-	mw := reqreply.NewBoundMiddleware[computeReq](middleware.NewDeclaration("fn-error", mwPropInCodec, mwPropOutCodec),
+	mw := reqreply.NewBoundMiddleware[computeReq](reqreply.NewDeclaration("fn-error", mwPropInCodec, mwPropOutCodec),
 		func(ctx context.Context, req *computeReq, in mwPropIn) (mwPropOut, error) {
 			return mwPropOut{}, errBusinessFailure
 		})
@@ -1370,7 +1369,7 @@ func TestAttachServer_MiddlewareError_WrapsAsKindMiddleware(t *testing.T) {
 // scenario, but for the middleware axis instead of the route's own
 // handler.
 func TestHandleBoundMW_MiddlewareError_FallsBackWhenNoErrorPatternMatch(t *testing.T) {
-	mw := reqreply.NewBoundMiddleware[computeReq](middleware.NewDeclaration("fn-error-nomatch", mwPropInCodec, mwPropOutCodec),
+	mw := reqreply.NewBoundMiddleware[computeReq](reqreply.NewDeclaration("fn-error-nomatch", mwPropInCodec, mwPropOutCodec),
 		func(ctx context.Context, req *computeReq, in mwPropIn) (mwPropOut, error) {
 			return mwPropOut{}, errBusinessFailure
 		})
@@ -1433,7 +1432,7 @@ func TestHandleBoundMW_MiddlewareError_FallsBackWhenNoErrorPatternMatch(t *testi
 // distinguishing it from the flat mechanism's existing "topic_var"
 // string.
 func TestAttachServer_Observer_ReportsMiddlewareInAndFnLocations(t *testing.T) {
-	mw := reqreply.NewBoundMiddleware[computeReq](middleware.NewDeclaration("obs-loc", mwPropInCodec, mwPropOutCodec),
+	mw := reqreply.NewBoundMiddleware[computeReq](reqreply.NewDeclaration("obs-loc", mwPropInCodec, mwPropOutCodec),
 		func(ctx context.Context, req *computeReq, in mwPropIn) (mwPropOut, error) {
 			return mwPropOut{}, nil
 		}).
@@ -1498,7 +1497,7 @@ func TestAttachServer_Observer_ReportsMiddlewareInAndFnLocations(t *testing.T) {
 // WithResponseProperty) was previously collapsed into "middleware:in" —
 // now reported distinctly as "middleware:out".
 func TestAttachServer_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
-	mw := reqreply.NewBoundMiddleware[computeReq](middleware.NewDeclaration("obs-out-loc", mwPropInCodec, mwPropOutCodec),
+	mw := reqreply.NewBoundMiddleware[computeReq](reqreply.NewDeclaration("obs-out-loc", mwPropInCodec, mwPropOutCodec),
 		func(ctx context.Context, req *computeReq, in mwPropIn) (mwPropOut, error) {
 			// Empty Ack fails the NonEmptyString refinement at
 			// EncodeOut/OutCodec.Validate time, building the reply.
@@ -1586,7 +1585,7 @@ func TestAttachClient_Observer_ReportsMiddlewareOutLocation(t *testing.T) {
 	go func() { errCh <- server.Serve(ctx) }()
 	serverRouter.waitHandler("compute/obs-client-out-test")
 
-	clientMW := reqreply.NewBoundClientMiddleware[computeReq](middleware.NewDeclaration("obs-client-out-loc", mwPropInCodec, mwPropOutCodec),
+	clientMW := reqreply.NewBoundClientMiddleware[computeReq](reqreply.NewDeclaration("obs-client-out-loc", mwPropInCodec, mwPropOutCodec),
 		func(ctx context.Context, req computeReq) (mwPropIn, error) {
 			return mwPropIn{}, nil
 		}).

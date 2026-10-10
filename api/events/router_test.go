@@ -155,9 +155,9 @@ func TestRouter_DuplicateMiddlewareName_ReturnsTypedError(t *testing.T) {
 	// unconditionally). A bare, fn-less Declaration-only Middleware (as
 	// api/rest's test uses) would NOT trigger this check here.
 	noopReceive := func(context.Context, struct{}) error { return nil }
-	dup := events.NewMiddleware(middleware.Declaration[struct{}, struct{}]{Name: "dup"}).WithReceive(noopReceive)
+	dup := events.NewMiddleware(events.Declaration[struct{}, struct{}]{Name: "dup"}).WithReceive(noopReceive)
 	sub := newRouterTestSubscriber("x").Use(
-		events.NewMiddleware(middleware.Declaration[struct{}, struct{}]{Name: "dup"}).WithReceive(noopReceive),
+		events.NewMiddleware(events.Declaration[struct{}, struct{}]{Name: "dup"}).WithReceive(noopReceive),
 	)
 	rt := events.NewRouter("api").Use(dup).Route(sub)
 
@@ -175,7 +175,7 @@ func TestRouter_DuplicateMiddlewareName_ReturnsTypedError(t *testing.T) {
 
 func TestRouter_Routes_IncludesBoundMiddlewareNames(t *testing.T) {
 	bm := events.NewBoundSubscribeMiddleware(
-		middleware.Declaration[struct{}, struct{}]{Name: "bound-audit"},
+		events.Declaration[struct{}, struct{}]{Name: "bound-audit"},
 		func(_ context.Context, _ *routerTestPayload, _ struct{}) (struct{}, error) { return struct{}{}, nil },
 	)
 	sub := newRouterTestSubscriber("bound").SubscribeBoundMW(bm)

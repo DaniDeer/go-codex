@@ -10,7 +10,6 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/internal/middleware"
 )
 
 // ── HandleBoundMW (SSE): happy path, response header composition ────────
@@ -133,7 +132,7 @@ func TestHandleBoundMW_SSE_FnError_FallsBackToMiddlewareError(t *testing.T) {
 func TestHandleBoundMW_SSE_OutEncodeFailure_ReportsMiddlewareOutLocation(t *testing.T) {
 	// In is tdEmpty (no required fields, so DecodeIn/InCodec.Validate
 	// always succeeds) — isolating the failure to Out's EncodeOut path.
-	decl := middleware.NewDeclaration("api-key-policy", tdEmptyCodec, tdOutCodec)
+	decl := rest.NewDeclaration("api-key-policy", tdEmptyCodec, tdOutCodec)
 	bm := rest.NewBoundMiddleware[createReq](decl,
 		func(ctx context.Context, req *createReq, in tdEmpty) (tdOut, error) {
 			// Empty Value fails tdOutCodec's NonEmptyString refinement at
@@ -310,8 +309,8 @@ func TestSSERoute_Use_AgnosticMiddleware_DispatchesOnBothRoutes(t *testing.T) {
 // (transform_dispatch_test.go).
 
 func TestSSERoute_HandleMW_CodecBackedMiddleware_Satisfies_CoversGlobalSecurity(t *testing.T) {
-	decl := middleware.NewDeclaration("bearer-handlemw-sse-policy", tdInCodec, bearerAuthOutCodec)
-	decl.Security = middleware.NewSecurityDeclaration("bearerAuth", rest.BearerScheme("JWT").SecurityScheme, nil, nil)
+	decl := rest.NewDeclaration("bearer-handlemw-sse-policy", tdInCodec, bearerAuthOutCodec)
+	decl.Security = rest.NewSecurityDeclaration("bearerAuth", rest.BearerScheme("JWT"), nil)
 	bm := rest.NewBoundMiddleware[getReq](decl,
 		func(ctx context.Context, req *getReq, in tdIn) (bearerAuthOut, error) {
 			if in.Key != "valid-token" {

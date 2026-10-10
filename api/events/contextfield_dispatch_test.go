@@ -18,7 +18,7 @@ import (
 // that claim directly via DispatchSubscribeMiddlewareHandlers/
 // DispatchPublishMiddlewareHandlers.
 
-var cfEventsUserIDField = middleware.NewContextField(codex.String())
+var cfEventsUserIDField = events.NewContextField(codex.String())
 
 // TestSetContextFieldFromIn_DispatchOrder_BeforeFn proves the field is
 // published DURING DecodeIn — before the attached middleware's own Fn
@@ -69,7 +69,7 @@ func TestSetContextFieldFromIn_DispatchOrder_BeforeFn(t *testing.T) {
 // AFTER Fn returns (Publish side — the only side with an Out to source a
 // value from).
 func TestSetContextFieldFromOut_DispatchOrder_AfterFnReturns(t *testing.T) {
-	versionField := middleware.NewContextField(codex.String())
+	versionField := events.NewContextField(codex.String())
 	bm := events.NewBoundPublishMiddleware(newTestDeclaration("version-policy"),
 		func(ctx context.Context, msg userEvent) (mdTestOut, error) {
 			return mdTestOut{Value: "v2"}, nil

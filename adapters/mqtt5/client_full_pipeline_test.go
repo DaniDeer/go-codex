@@ -274,7 +274,7 @@ func TestClientSubscribe_MiddlewareDispatch_RunsBeforeHandler(t *testing.T) {
 	c := attachedClientSubscribe(t, client, router)
 
 	var order []string
-	decl := middleware.NewDeclaration("full-pipeline-policy", mqttFullPipelineInCodec, mqttFullPipelineOutCodec)
+	decl := events.NewDeclaration("full-pipeline-policy", mqttFullPipelineInCodec, mqttFullPipelineOutCodec)
 	bm := events.NewBoundSubscribeMiddleware(decl, func(_ context.Context, _ *sensorReading, _ mqttFullPipelineIn) (mqttFullPipelineOut, error) {
 		order = append(order, "middleware")
 		return mqttFullPipelineOut{}, nil
@@ -604,7 +604,7 @@ func TestClientPublish_MiddlewareDispatch_ContributesPropertyVar(t *testing.T) {
 	router := newMockRouter()
 	c := attachedClientSubscribe(t, client, router)
 
-	decl := middleware.NewDeclaration("full-pipeline-out-policy", mqttFullPipelineInCodec, mqttFullPipelineOutCodec)
+	decl := events.NewDeclaration("full-pipeline-out-policy", mqttFullPipelineInCodec, mqttFullPipelineOutCodec)
 	bm := events.NewBoundPublishMiddleware(decl, func(_ context.Context, _ sensorReading) (mqttFullPipelineOut, error) {
 		return mqttFullPipelineOut{Marker: "from-middleware"}, nil
 	}).

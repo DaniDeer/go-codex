@@ -9,7 +9,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/internal/middleware"
-	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -33,8 +32,8 @@ var mdTestOutCodec = codex.Struct[mdTestOut](
 	),
 )
 
-func newTestDeclaration(name string) middleware.Declaration[mdTestIn, mdTestOut] {
-	return middleware.NewDeclaration(name, mdTestInCodec, mdTestOutCodec)
+func newTestDeclaration(name string) events.Declaration[mdTestIn, mdTestOut] {
+	return events.NewDeclaration(name, mdTestInCodec, mdTestOutCodec)
 }
 
 // ── events.Middleware[In,Out] construction ───────────────────────────────
@@ -44,7 +43,7 @@ func TestNewMiddleware_BuildsExpectedShape(t *testing.T) {
 	if mw.Name != "test-policy" {
 		t.Errorf("want Name %q, got %q", "test-policy", mw.Name)
 	}
-	var _ middleware.RouteMiddleware = mw // compiles: RouteMiddlewareMarker is exported
+	var _ events.RouteMiddleware = mw // compiles: RouteMiddlewareMarker is exported
 }
 
 // ── BoundSubscribeMiddleware: happy path, enrichment ─────────────────────
@@ -440,8 +439,8 @@ func TestBoundSubscribeMiddleware_D6c_TwoMiddlewaresEnrichSameMsgField_LastAppli
 	// propOptInCodec (no required fields) avoids mdTestInCodec's own
 	// NonEmptyString constraint tripping on a zero-value In — only
 	// attachment-order/last-write matters for this test.
-	decl := middleware.NewDeclaration("first-policy", propOptInCodec, mdTestOutCodec)
-	decl2 := middleware.NewDeclaration("second-policy", propOptInCodec, mdTestOutCodec)
+	decl := events.NewDeclaration("first-policy", propOptInCodec, mdTestOutCodec)
+	decl2 := events.NewDeclaration("second-policy", propOptInCodec, mdTestOutCodec)
 	bmFirst := events.NewBoundSubscribeMiddleware(decl, func(ctx context.Context, msg *userEvent, in propOptIn) (mdTestOut, error) {
 		msg.Name = "first"
 		return mdTestOut{}, nil
@@ -597,7 +596,7 @@ func TestPublishBoundMW_DispatchesAsNonAgnosticHandler(t *testing.T) {
 // eventsMiddlewareContributor — only a codec-backed [Middleware][In, Out]
 // does.
 func TestSubscribeMW_LegacyCredentialShape_StillDispatchesViaLegacyPath(t *testing.T) {
-	legacyFn := func(ctx context.Context, msg *userEvent, reqs []route.SecurityRequirement) error { return nil }
+	legacyFn := func(ctx context.Context, msg *userEvent, reqs []events.SecurityRequirement) error { return nil }
 	subscriber := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithSubscribe(events.Subscribe{Summary: "User created"}).
 		SubscribeMW(middleware.Middleware{Name: "legacy"}, legacyFn)
@@ -624,7 +623,7 @@ func TestSubscribeMW_LegacyCredentialShape_StillDispatchesViaLegacyPath(t *testi
 // (non-struct{}) In/Out pair — must NOT panic.
 func TestBoundSecurityMiddleware_RealInOutType_DoesNotPanicOnDispatch(t *testing.T) {
 	bmSub := events.BoundSecuritySubscribeMiddleware[userEvent, mdTestIn, mdTestOut]("apiKeyAuth",
-		events.SecurityScheme{SecurityScheme: route.APIKeyScheme("X-Api-Key", "header")}, nil,
+		events.APIKeyScheme("X-Api-Key", "header"), nil,
 		func(ctx context.Context, msg *userEvent, in mdTestIn) (mdTestOut, error) { return mdTestOut{}, nil },
 	)
 
@@ -645,7 +644,7 @@ func TestBoundSecurityMiddleware_RealInOutType_DoesNotPanicOnDispatch(t *testing
 	}
 
 	bmPub := events.BoundSecurityPublishMiddleware[userEvent, mdTestIn, mdTestOut]("apiKeyAuth",
-		events.SecurityScheme{SecurityScheme: route.APIKeyScheme("X-Api-Key", "header")}, nil,
+		events.APIKeyScheme("X-Api-Key", "header"), nil,
 		func(ctx context.Context, msg userEvent) (mdTestOut, error) {
 			return mdTestOut{Value: "v1"}, nil
 		},

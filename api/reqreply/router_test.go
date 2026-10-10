@@ -152,8 +152,8 @@ func TestRouter_DuplicateMiddlewareName_ReturnsTypedError(t *testing.T) {
 	// scoping (checkMiddlewareNameUniquenessAndAttachment walks
 	// middlewareSpecContributions, populated unconditionally regardless
 	// of whether a receive/send fn is attached).
-	dup := reqreply.NewMiddleware(middleware.Declaration[struct{}, struct{}]{Name: "dup"})
-	route := newRouterTestRoute("x").Use(reqreply.NewMiddleware(middleware.Declaration[struct{}, struct{}]{Name: "dup"}))
+	dup := reqreply.NewMiddleware(reqreply.Declaration[struct{}, struct{}]{Name: "dup"})
+	route := newRouterTestRoute("x").Use(reqreply.NewMiddleware(reqreply.Declaration[struct{}, struct{}]{Name: "dup"}))
 	rt := reqreply.NewRouter("compute").Use(dup).Route(route)
 
 	server := reqreply.NewServer(reqreply.Info{Title: "t", Version: "1"})
@@ -170,7 +170,7 @@ func TestRouter_DuplicateMiddlewareName_ReturnsTypedError(t *testing.T) {
 
 func TestRouter_Routes_IncludesBoundMiddlewareNames(t *testing.T) {
 	bm := reqreply.NewBoundMiddleware[routerTestReq](
-		middleware.Declaration[struct{}, struct{}]{Name: "bound-audit"},
+		reqreply.Declaration[struct{}, struct{}]{Name: "bound-audit"},
 		func(_ context.Context, _ *routerTestReq, _ struct{}) (struct{}, error) { return struct{}{}, nil },
 	)
 	route := newRouterTestRoute("bound").HandleBoundMW(bm)

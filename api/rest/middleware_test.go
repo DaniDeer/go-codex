@@ -148,7 +148,7 @@ func TestRegister_ManualSecurityWithNoMiddlewareNoLongerFailsAtRegister(t *testi
 	// where the drift-closing check now happens.
 	b := rest.NewServer(testInfo)
 	_, err := rest.NewRoute[mwTestReq, userResp]("GET", "/secure", mwTestReqCodec, userCodec,
-		rest.RouteMeta{Security: []route.SecurityRequirement{{"bearerAuth": nil}}},
+		rest.RouteMeta{Security: []rest.SecurityRequirement{{"bearerAuth": nil}}},
 		// No WithMiddleware attached at all.
 	).RegisterHandle(b)
 	if err != nil {
@@ -160,7 +160,7 @@ func TestRegister_ManualSecurityWithAttachedMiddlewareOK(t *testing.T) {
 	b := rest.NewServer(testInfo)
 	mw := requireScopesMW("bearerAuth", nil)
 	_, err := rest.NewRoute[mwTestReq, userResp]("GET", "/secure", mwTestReqCodec, userCodec,
-		rest.RouteMeta{Security: []route.SecurityRequirement{{"bearerAuth": nil}}},
+		rest.RouteMeta{Security: []rest.SecurityRequirement{{"bearerAuth": nil}}},
 		rest.WithMiddleware(mw),
 	).RegisterHandle(b)
 	if err != nil {
@@ -366,7 +366,7 @@ func TestValidateRoute_CatchesManualVsMiddlewareConflict(t *testing.T) {
 	mw := requireScopesMW("oauth2", []string{"profile:admin"})
 
 	err := rest.ValidateRoute[mwTestReq, userResp](
-		rest.RouteMeta{Security: []route.SecurityRequirement{{"oauth2": {"profile:read"}}}},
+		rest.RouteMeta{Security: []rest.SecurityRequirement{{"oauth2": {"profile:read"}}}},
 		rest.WithMiddleware(mw),
 	)
 	var conflictErr rest.ConflictingSecurityDeclarationError
@@ -430,7 +430,7 @@ func TestValidateRoute_NoLongerCatchesMissingSecurityMiddleware(t *testing.T) {
 	// Same rationale as TestRegister_ManualSecurityWithNoMiddlewareNoLongerFailsAtRegister:
 	// ValidateRoute runs the identical (coverage-free) validation Route.Register does.
 	err := rest.ValidateRoute[mwTestReq, userResp](
-		rest.RouteMeta{Security: []route.SecurityRequirement{{"bearerAuth": nil}}},
+		rest.RouteMeta{Security: []rest.SecurityRequirement{{"bearerAuth": nil}}},
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -666,7 +666,7 @@ func TestUnknownMiddlewareImplementationError_LogValue(t *testing.T) {
 //    value into the LEGACY middleware.Middleware type.)
 
 func presenceOnlyMW(name string) rest.Middleware[struct{}, struct{}] {
-	return rest.NewMiddleware(middleware.Declaration[struct{}, struct{}]{Name: name})
+	return rest.NewMiddleware(rest.Declaration[struct{}, struct{}]{Name: name})
 }
 
 func TestWithRequestHeaderSpec_Register_ContributesHeaderParamToSpec(t *testing.T) {

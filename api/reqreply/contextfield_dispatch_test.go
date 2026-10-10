@@ -17,7 +17,7 @@ import (
 // have Out — so this is a more direct port of REST's exact pattern than
 // events' asymmetric Subscribe-has-no-Out case was).
 
-var cfReqreplyTenantField = middleware.NewContextField(codex.String())
+var cfReqreplyTenantField = reqreply.NewContextField(codex.String())
 
 // TestSetContextFieldFromIn_DispatchOrder_BeforeFn proves the field is
 // published DURING DecodeIn — before the attached middleware's own Fn
@@ -60,7 +60,7 @@ func TestSetContextFieldFromIn_DispatchOrder_BeforeFn(t *testing.T) {
 // side publishes from the middleware's OWN returned Out value, available
 // AFTER Fn returns (the server/receiving role — EncodeOut).
 func TestSetContextFieldFromOut_DispatchOrder_AfterFnReturns(t *testing.T) {
-	echoField := middleware.NewContextField(codex.String())
+	echoField := reqreply.NewContextField(codex.String())
 	mw := newBoundTenantMiddleware("echo-ctx-policy",
 		func(ctx context.Context, req *computeReq, in tfIn) (tfOut, error) {
 			return tfOut{Echo: "processed"}, nil

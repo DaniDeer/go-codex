@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/DaniDeer/go-codex/api/events"
-	"github.com/DaniDeer/go-codex/internal/middleware"
 )
 
 // ── docs/design/d-0003-codec-declared-middlewares.md's Addendum 7: BoundSubscribeMiddleware[T,
@@ -182,8 +181,8 @@ func TestSubscribeBoundMW_StackedWithUse_BothDispatch(t *testing.T) {
 	// constraint tripping on a zero-value In when no merge fields are
 	// declared (irrelevant to what this test actually checks: dispatch
 	// ORDER, not decoded content).
-	genericDecl := middleware.NewDeclaration("generic-policy", propOptInCodec, mdTestOutCodec)
-	specificDecl := middleware.NewDeclaration("specific-policy", propOptInCodec, mdTestOutCodec)
+	genericDecl := events.NewDeclaration("generic-policy", propOptInCodec, mdTestOutCodec)
+	specificDecl := events.NewDeclaration("specific-policy", propOptInCodec, mdTestOutCodec)
 
 	reusable := events.NewMiddleware(genericDecl).
 		WithReceive(func(ctx context.Context, in propOptIn) error {

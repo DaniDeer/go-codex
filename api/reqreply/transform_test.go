@@ -8,7 +8,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/internal/middleware"
 )
 
 type tfIn struct{ TenantID string }
@@ -21,13 +20,13 @@ var tfOutCodec = codex.Struct[tfOut]()
 // counterpart — fn is embedded at construction (per [reqreply.BoundMiddleware]'s
 // shape), With* merge-field chaining happens afterward.
 func newBoundTenantMiddleware(name string, fn func(ctx context.Context, req *computeReq, in tfIn) (tfOut, error)) reqreply.BoundMiddleware[computeReq, tfIn, tfOut] {
-	return reqreply.NewBoundMiddleware[computeReq](middleware.NewDeclaration(name, tfInCodec, tfOutCodec), fn)
+	return reqreply.NewBoundMiddleware[computeReq](reqreply.NewDeclaration(name, tfInCodec, tfOutCodec), fn)
 }
 
 // newBoundTenantClientMiddleware mirrors [newBoundTenantMiddleware] for
 // the client/sending role, attached via Route.ClientBoundMW.
 func newBoundTenantClientMiddleware(name string, fn func(ctx context.Context, req computeReq) (tfIn, error)) reqreply.BoundClientMiddleware[computeReq, tfIn, tfOut] {
-	return reqreply.NewBoundClientMiddleware[computeReq](middleware.NewDeclaration(name, tfInCodec, tfOutCodec), fn)
+	return reqreply.NewBoundClientMiddleware[computeReq](reqreply.NewDeclaration(name, tfInCodec, tfOutCodec), fn)
 }
 
 // TestMiddleware_WithRequestTopic_MergesIn confirms HandleBoundMW's fn
@@ -370,7 +369,7 @@ func TestClientBoundMW_ValueConflict_MiddlewareDerivedWins(t *testing.T) {
 	)
 	type tvIn struct{ TenantID string }
 	type tvOut struct{}
-	tvMw := reqreply.NewBoundClientMiddleware[tvReq](middleware.NewDeclaration("tv-conflict", codex.Struct[tvIn](), codex.Struct[tvOut]()),
+	tvMw := reqreply.NewBoundClientMiddleware[tvReq](reqreply.NewDeclaration("tv-conflict", codex.Struct[tvIn](), codex.Struct[tvOut]()),
 		func(ctx context.Context, req tvReq) (tvIn, error) {
 			return tvIn{TenantID: "mw-derived"}, nil
 		}).
@@ -421,7 +420,7 @@ func TestHandleBoundMW_ValueConflict_MiddlewareDerivedWins(t *testing.T) {
 			func(r *tvResp, v string) { r.Echo = v }),
 	)
 	type tvOut struct{ Echo string }
-	tvMw := reqreply.NewBoundMiddleware[computeReq](middleware.NewDeclaration("tv-resp-conflict", codex.Struct[tfIn](), codex.Struct[tvOut]()),
+	tvMw := reqreply.NewBoundMiddleware[computeReq](reqreply.NewDeclaration("tv-resp-conflict", codex.Struct[tfIn](), codex.Struct[tvOut]()),
 		func(ctx context.Context, req *computeReq, in tfIn) (tvOut, error) {
 			return tvOut{Echo: "mw-derived"}, nil
 		}).

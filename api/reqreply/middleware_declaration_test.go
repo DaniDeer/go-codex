@@ -9,7 +9,6 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/internal/middleware"
 )
 
 type mdAuthIn struct{ Token string }
@@ -18,8 +17,8 @@ type mdAuthOut struct{ OK bool }
 var mdAuthInCodec = codex.Struct[mdAuthIn]()
 var mdAuthOutCodec = codex.Struct[mdAuthOut]()
 
-func newAuthDeclaration(name string) middleware.Declaration[mdAuthIn, mdAuthOut] {
-	return middleware.NewDeclaration(name, mdAuthInCodec, mdAuthOutCodec)
+func newAuthDeclaration(name string) reqreply.Declaration[mdAuthIn, mdAuthOut] {
+	return reqreply.NewDeclaration(name, mdAuthInCodec, mdAuthOutCodec)
 }
 
 // TestRoute_Use_BundledWithReceive_AgnosticAttachment confirms a
@@ -241,9 +240,9 @@ func TestRoute_Register_AgreeingParamContributions_DedupeWithoutError(t *testing
 // for the same property name must now FAIL.
 func TestRoute_Register_TwoPhase1bOnlyContributions_MismatchNowErrors(t *testing.T) {
 	strCodec := codex.String()
-	mw1 := reqreply.NewMiddleware[struct{}, struct{}](middleware.Declaration[struct{}, struct{}]{Name: "flat-mw-1"}).
+	mw1 := reqreply.NewMiddleware[struct{}, struct{}](reqreply.Declaration[struct{}, struct{}]{Name: "flat-mw-1"}).
 		WithRequestPropertySpec(reqreply.PropertyParam{Param: codex.Param{Name: "X-Region", Codec: &strCodec}, Required: true})
-	mw2 := reqreply.NewMiddleware[struct{}, struct{}](middleware.Declaration[struct{}, struct{}]{Name: "flat-mw-2"}).
+	mw2 := reqreply.NewMiddleware[struct{}, struct{}](reqreply.Declaration[struct{}, struct{}]{Name: "flat-mw-2"}).
 		WithRequestPropertySpec(reqreply.PropertyParam{Param: codex.Param{Name: "X-Region"}, Required: false})
 	r := newMWTestRoute().Use(mw1, mw2)
 	b := newBuilder()
@@ -275,7 +274,7 @@ func TestRoute_Register_TopicAndPropertySameName_NoConflict(t *testing.T) {
 
 	type tvIn struct{ TenantID string }
 	type tvOut struct{}
-	tvMw := reqreply.NewBoundMiddleware[tvReq](middleware.NewDeclaration("tv-mw", codex.Struct[tvIn](), codex.Struct[tvOut]()),
+	tvMw := reqreply.NewBoundMiddleware[tvReq](reqreply.NewDeclaration("tv-mw", codex.Struct[tvIn](), codex.Struct[tvOut]()),
 		func(ctx context.Context, req *tvReq, in tvIn) (tvOut, error) { return tvOut{}, nil }).
 		WithRequestProperty(reqreply.NewPropertyParam("tenantID", codex.String(),
 			func(v tvIn) string { return v.TenantID },

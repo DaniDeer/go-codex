@@ -9,7 +9,6 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/internal/middleware"
 	"github.com/DaniDeer/go-codex/stats"
 )
 
@@ -173,7 +172,7 @@ func TestHandleBoundMW_SSE_TwoMiddlewaresEnrichSameField_LastAttachedWins(t *tes
 func TestHandleBoundMW_SSE_OutEncodeFailure_ReportsMiddlewareOutLocation(t *testing.T) {
 	// In is tdEmpty (no required fields, so DecodeIn/InCodec.Validate
 	// always succeeds) — isolating the failure to Out's EncodeOut path.
-	decl := middleware.NewDeclaration("api-key-policy", tdEmptyCodec, tdOutCodec)
+	decl := rest.NewDeclaration("api-key-policy", tdEmptyCodec, tdOutCodec)
 	bm := rest.NewBoundMiddleware[createReq](decl,
 		func(ctx context.Context, req *createReq, in tdEmpty) (tdOut, error) {
 			// Empty Value fails tdOutCodec's NonEmptyString refinement at

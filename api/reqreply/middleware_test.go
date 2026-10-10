@@ -46,7 +46,7 @@ func bearerAuthBoundMw() reqreply.BoundMiddleware[computeReq, mwSecIn, mwSecOut]
 
 func bearerAuthBoundMwNamed(schemeName string) reqreply.BoundMiddleware[computeReq, mwSecIn, mwSecOut] {
 	return reqreply.BoundSecurityMiddleware[computeReq, mwSecIn, mwSecOut](
-		schemeName, reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, []string{"read"},
+		schemeName, reqreply.BearerScheme("JWT"), []string{"read"},
 		func(ctx context.Context, req *computeReq, in mwSecIn) (mwSecOut, error) { return mwSecOut{}, nil },
 	)
 }
@@ -57,7 +57,7 @@ func bearerAuthBoundClientMw() reqreply.BoundClientMiddleware[computeReq, mwSecI
 
 func bearerAuthBoundClientMwNamed(schemeName string) reqreply.BoundClientMiddleware[computeReq, mwSecIn, mwSecOut] {
 	return reqreply.BoundSecurityClientMiddleware[computeReq, mwSecIn, mwSecOut](
-		schemeName, reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, []string{"read"},
+		schemeName, reqreply.BearerScheme("JWT"), []string{"read"},
 		func(ctx context.Context, req computeReq) (mwSecIn, error) { return mwSecIn{}, nil },
 	)
 }
@@ -207,11 +207,11 @@ func TestRoute_ClientHandle_PopulatesImplementations(t *testing.T) {
 // ── Phase 1b: header-param-as-middleware ────────────────────────────────────
 
 var apiKeyHeaderCodec = codex.String()
-var apiKeyHeaderMw = reqreply.NewMiddleware[struct{}, struct{}](middleware.Declaration[struct{}, struct{}]{
+var apiKeyHeaderMw = reqreply.NewMiddleware[struct{}, struct{}](reqreply.Declaration[struct{}, struct{}]{
 	Name: "declare-user-property-param:X-API-Key",
 }).WithRequestPropertySpec(reqreply.PropertyParam{Param: codex.Param{Name: "X-API-Key", Description: "API key", Codec: &apiKeyHeaderCodec}, Required: true})
 
-var traceHeaderMw = reqreply.NewMiddleware[struct{}, struct{}](middleware.Declaration[struct{}, struct{}]{
+var traceHeaderMw = reqreply.NewMiddleware[struct{}, struct{}](reqreply.Declaration[struct{}, struct{}]{
 	Name: "declare-response-user-property-param:X-Trace-Id",
 }).WithResponsePropertySpec(reqreply.PropertyParam{Param: codex.Param{Name: "X-Trace-Id", Description: "Trace correlation id"}, Required: false})
 
@@ -272,7 +272,7 @@ func TestRoute_Register_DedupsHeaderParamsByName(t *testing.T) {
 	// declarations; only AGREEING declarations dedupe without error now
 	// (see TestRoute_Register_TwoPhase1bOnlyContributions_MismatchNowErrors
 	// for the mismatched-declaration regression case).
-	dup := reqreply.NewMiddleware[struct{}, struct{}](middleware.Declaration[struct{}, struct{}]{
+	dup := reqreply.NewMiddleware[struct{}, struct{}](reqreply.Declaration[struct{}, struct{}]{
 		Name: "declare-user-property-param:X-API-Key-dup",
 	}).WithRequestPropertySpec(reqreply.PropertyParam{Param: codex.Param{Name: "X-API-Key", Codec: &apiKeyHeaderCodec}, Required: true})
 	b := newBuilder()

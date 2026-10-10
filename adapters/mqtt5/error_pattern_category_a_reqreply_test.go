@@ -8,7 +8,6 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/internal/middleware"
 	"github.com/DaniDeer/go-codex/validate"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 )
@@ -207,7 +206,7 @@ func TestErrorPattern_MiddlewareDecodeIn_Matched_Publishes_ReqReply(t *testing.T
 	// source attached — DecodeIn always sees the zero value, which
 	// always fails validation, isolating a genuine middleware DecodeIn
 	// failure (mirrors events' newDecodeInFailingMiddleware).
-	mw := reqreply.NewBoundMiddleware[computeReq](middleware.NewDeclaration("tenant-policy", mwDecodeFailInCodec, mwPropOutCodec),
+	mw := reqreply.NewBoundMiddleware[computeReq](reqreply.NewDeclaration("tenant-policy", mwDecodeFailInCodec, mwPropOutCodec),
 		func(ctx context.Context, req *computeReq, in mwDecodeFailIn) (mwPropOut, error) {
 			return mwPropOut{}, nil
 		})

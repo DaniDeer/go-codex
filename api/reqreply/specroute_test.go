@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/DaniDeer/go-codex/api/reqreply"
-	"github.com/DaniDeer/go-codex/internal/route"
 )
 
 // capturingServerTransport records the fn passed to Serve for each
@@ -184,7 +183,7 @@ func TestServeSpec_DuplicateTopic_Error(t *testing.T) {
 // this test exists so the equivalent regression is caught immediately.
 func TestServeSpec_OptsOutOfGlobalSecurity(t *testing.T) {
 	s := reqreply.NewServer(reqreply.Info{Title: "Test API", Version: "1.0.0"})
-	s.AddGlobalSecurity(route.Require("bearerAuth"))
+	s.AddGlobalSecurity(reqreply.Require("bearerAuth"))
 
 	handle, err := s.ServeSpec("spec")
 	if err != nil {

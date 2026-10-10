@@ -16,7 +16,7 @@ import (
 // Phase 3: Middleware.SetContextFieldFromIn/SetContextFieldFromOut —
 // end-to-end dispatch order, handler retrieval, and client-side round-trip.
 
-var cfTenantIDField = middleware.NewContextField(codex.String())
+var cfTenantIDField = rest.NewContextField(codex.String())
 
 // TestSetContextFieldFromIn_DispatchOrder_BeforeFnAndHandler proves the
 // field is published DURING DecodeIn — before BOTH the attached
@@ -64,10 +64,10 @@ func TestSetContextFieldFromIn_DispatchOrder_BeforeFnAndHandler(t *testing.T) {
 // side publishes from the middleware's OWN returned Out value, available
 // by the time EncodeOut composes the response (after Fn returns).
 func TestSetContextFieldFromOut_DispatchOrder_AfterFnReturns(t *testing.T) {
-	var policyVersionField = middleware.NewContextField(codex.String())
+	var policyVersionField = rest.NewContextField(codex.String())
 	var handlerSawVersion string
 
-	bm := rest.NewBoundMiddleware[createReq](middleware.NewDeclaration("policy-version-out", tdEmptyCodec, tdOutCodec),
+	bm := rest.NewBoundMiddleware[createReq](rest.NewDeclaration("policy-version-out", tdEmptyCodec, tdOutCodec),
 		func(ctx context.Context, req *createReq, in tdEmpty) (tdOut, error) {
 			return tdOut{Value: "v2"}, nil
 		}).
@@ -112,7 +112,7 @@ func TestSetContextFieldFromOut_DispatchOrder_AfterFnReturns(t *testing.T) {
 // zero extra ceremony beyond the ONE EnsureContextFields call every server
 // adapter already makes routine.
 func TestClientMW_SetContextFieldFromIn_RoundTrip(t *testing.T) {
-	var clientTenantField = middleware.NewContextField(codex.String())
+	var clientTenantField = rest.NewContextField(codex.String())
 	bm := rest.NewBoundClientMiddleware[getReq](newTDDeclaration("client-tenant-policy"),
 		func(ctx context.Context, req getReq) (tdIn, error) {
 			return tdIn{Key: "acme-corp"}, nil

@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/DaniDeer/go-codex/api/reqreply"
-	"github.com/DaniDeer/go-codex/internal/route"
 )
 
 // docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase C —
@@ -14,9 +13,9 @@ import (
 
 func TestServer_AddConnectSecurityScheme_AppearsInAsyncAPISpec(t *testing.T) {
 	b := reqreply.NewServer(reqreply.Info{Title: "Compute API", Version: "1.0.0"})
-	b.AddConnectSecurityScheme("brokerAuth", route.SecurityScheme{Type: route.SecuritySchemeHTTP, Scheme: "basic"})
+	b.AddConnectSecurityScheme("brokerAuth", reqreply.BasicScheme().SecurityScheme)
 	b.AddServer("mqtt5", reqreply.ServerEntry{URL: "mqtts://broker:8883", Protocol: "mqtt5",
-		Security: []route.SecurityRequirement{route.Require("brokerAuth")}})
+		Security: []reqreply.SecurityRequirement{reqreply.Require("brokerAuth")}})
 
 	r := newMWTestRoute()
 	if _, err := r.HandleMW(nil, func() (map[string][]string, error) { return nil, nil }).Register(b); err != nil {
@@ -38,13 +37,13 @@ func TestServer_AddConnectSecurityScheme_AppearsInAsyncAPISpec(t *testing.T) {
 // contributor alongside the per-route WithSecurityScheme declarations).
 func TestServer_AddConnectSecurityScheme_RouteCollision_LastRegisteredWins(t *testing.T) {
 	b := reqreply.NewServer(reqreply.Info{Title: "Compute API", Version: "1.0.0"})
-	b.AddConnectSecurityScheme("shared", route.SecurityScheme{Type: route.SecuritySchemeHTTP, Scheme: "basic"})
+	b.AddConnectSecurityScheme("shared", reqreply.BasicScheme().SecurityScheme)
 
 	r := reqreply.NewRoute[computeReq, computeResp](
 		"compute/connect-scheme-collision",
 		mwTestReqCodec, mwTestRespCodec,
 		reqreply.RouteMeta{OperationID: "connectSchemeCollision"},
-		reqreply.WithSecurityScheme("shared", reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}),
+		reqreply.WithSecurityScheme("shared", reqreply.BearerScheme("JWT")),
 	)
 	if _, err := r.HandleMW(nil, func() (map[string][]string, error) { return nil, nil }).Register(b); err != nil {
 		t.Fatalf("Register: %v", err)

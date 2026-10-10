@@ -13,7 +13,6 @@ import (
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/internal/middleware"
-	"github.com/DaniDeer/go-codex/internal/route"
 	asyncapiv3 "github.com/DaniDeer/go-codex/render/asyncapi/v3"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -814,7 +813,7 @@ func TestSubscribe_emptyOperationIDOmittedFromSpec(t *testing.T) {
 
 func TestSecurityScheme_WithCodec_setsCodec(t *testing.T) {
 	c := codex.String().Refine(validate.NonEmptyString)
-	s := events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(c)
+	s := events.BearerScheme("JWT").WithCodec(c)
 	if s.Codec == nil {
 		t.Fatal("expected Codec to be non-nil after WithCodec")
 	}
@@ -822,7 +821,7 @@ func TestSecurityScheme_WithCodec_setsCodec(t *testing.T) {
 
 func TestSecurityScheme_WithCodec_returnsDistinctCopy(t *testing.T) {
 	c := codex.String().Refine(validate.NonEmptyString)
-	orig := events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}
+	orig := events.BearerScheme("JWT")
 	updated := orig.WithCodec(c)
 	if orig.Codec != nil {
 		t.Fatal("WithCodec must not mutate the original")
@@ -837,7 +836,7 @@ func TestWithSecurityScheme_propagatesToChannelHandle(t *testing.T) {
 	c := codex.String().Refine(validate.NonEmptyString)
 
 	handle, err := events.NewChannel[userEvent]("user/created", userEventCodec,
-		events.WithSecurityScheme("bearer", events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(c))).WithSubscribe(events.Subscribe{}).Handle(b)
+		events.WithSecurityScheme("bearer", events.BearerScheme("JWT").WithCodec(c))).WithSubscribe(events.Subscribe{}).Handle(b)
 	if err != nil {
 		t.Fatalf("AddChannel: %v", err)
 	}
@@ -853,7 +852,7 @@ func TestWithSecurityScheme_ClientHandle_PopulatesSecuritySchemes(t *testing.T) 
 	c := codex.String().Refine(validate.NonEmptyString)
 
 	handle, err := events.NewChannel[userEvent]("user/created", userEventCodec,
-		events.WithSecurityScheme("bearer", events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(c))).WithSubscribe(events.Subscribe{}).Handle(nil)
+		events.WithSecurityScheme("bearer", events.BearerScheme("JWT").WithCodec(c))).WithSubscribe(events.Subscribe{}).Handle(nil)
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
@@ -873,12 +872,12 @@ func TestAsyncAPISpec_AggregatesSecuritySchemesFromChannels(t *testing.T) {
 	b := events.NewClient(events.WithInfo(testInfo))
 
 	_, err := events.NewChannel[userEvent]("user/created", userEventCodec,
-		events.WithSecurityScheme("bearer", events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")})).WithSubscribe(events.Subscribe{Summary: "User created"}).Handle(b)
+		events.WithSecurityScheme("bearer", events.BearerScheme("JWT"))).WithSubscribe(events.Subscribe{Summary: "User created"}).Handle(b)
 	if err != nil {
 		t.Fatalf("Register user/created: %v", err)
 	}
 	_, err = events.NewChannel[userEvent]("user/updated", userEventCodec,
-		events.WithSecurityScheme("apiKey", events.SecurityScheme{SecurityScheme: route.APIKeyScheme("X-API-Key", "header")})).WithSubscribe(events.Subscribe{Summary: "User updated"}).Handle(b)
+		events.WithSecurityScheme("apiKey", events.APIKeyScheme("X-API-Key", "header"))).WithSubscribe(events.Subscribe{Summary: "User updated"}).Handle(b)
 	if err != nil {
 		t.Fatalf("Register user/updated: %v", err)
 	}
@@ -904,12 +903,12 @@ func TestAsyncAPISpec_SecuritySchemeCollision_LastRegisteredWins(t *testing.T) {
 	b := events.NewClient(events.WithInfo(testInfo))
 
 	_, err := events.NewChannel[userEvent]("user/created", userEventCodec,
-		events.WithSecurityScheme("shared", events.SecurityScheme{SecurityScheme: route.APIKeyScheme("X-API-Key", "header")})).WithSubscribe(events.Subscribe{Summary: "User created"}).Handle(b)
+		events.WithSecurityScheme("shared", events.APIKeyScheme("X-API-Key", "header"))).WithSubscribe(events.Subscribe{Summary: "User created"}).Handle(b)
 	if err != nil {
 		t.Fatalf("Register user/created: %v", err)
 	}
 	_, err = events.NewChannel[userEvent]("user/updated", userEventCodec,
-		events.WithSecurityScheme("shared", events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")})).WithSubscribe(events.Subscribe{Summary: "User updated"}).Handle(b)
+		events.WithSecurityScheme("shared", events.BearerScheme("JWT"))).WithSubscribe(events.Subscribe{Summary: "User updated"}).Handle(b)
 	if err != nil {
 		t.Fatalf("Register user/updated: %v", err)
 	}
@@ -936,9 +935,9 @@ func TestAsyncAPISpec_SecuritySchemeCollision_LastRegisteredWins(t *testing.T) {
 // referencing it directly (docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase B — Phase 4, connection-level auth).
 func TestAddConnectSecurityScheme_AppearsInAsyncAPISpec(t *testing.T) {
 	b := events.NewClient(events.WithInfo(testInfo))
-	b.AddConnectSecurityScheme("brokerAuth", route.SecurityScheme{Type: route.SecuritySchemeHTTP, Scheme: "basic"})
+	b.AddConnectSecurityScheme("brokerAuth", events.BasicScheme().SecurityScheme)
 	b.AddServer("mqtt5", events.Server{URL: "mqtts://broker:8883", Protocol: "mqtt5",
-		Security: []route.SecurityRequirement{route.Require("brokerAuth")}})
+		Security: []events.SecurityRequirement{events.Require("brokerAuth")}})
 
 	_, err := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithSubscribe(events.Subscribe{Summary: "User created"}).Handle(b)
@@ -969,10 +968,10 @@ func TestAddConnectSecurityScheme_AppearsInAsyncAPISpec(t *testing.T) {
 // contributor alongside AddSchema/AddServer).
 func TestAddConnectSecurityScheme_ChannelCollision_LastRegisteredWins(t *testing.T) {
 	b := events.NewClient(events.WithInfo(testInfo))
-	b.AddConnectSecurityScheme("shared", route.SecurityScheme{Type: route.SecuritySchemeHTTP, Scheme: "basic"})
+	b.AddConnectSecurityScheme("shared", events.BasicScheme().SecurityScheme)
 
 	_, err := events.NewChannel[userEvent]("user/created", userEventCodec,
-		events.WithSecurityScheme("shared", events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")})).
+		events.WithSecurityScheme("shared", events.BearerScheme("JWT"))).
 		WithSubscribe(events.Subscribe{Summary: "User created"}).Handle(b)
 	if err != nil {
 		t.Fatalf("Register user/created: %v", err)
@@ -994,7 +993,7 @@ func TestAddConnectSecurityScheme_ChannelCollision_LastRegisteredWins(t *testing
 
 func TestBuilder_AddGlobalSecurity_populatesChannelHandleGlobalSecurity(t *testing.T) {
 	b := events.NewClient(events.WithInfo(testInfo))
-	b.AddGlobalSecurity(route.Require("bearer"))
+	b.AddGlobalSecurity(events.Require("bearer"))
 
 	handle, err := events.NewChannel[userEvent]("user/created", userEventCodec).WithSubscribe(events.Subscribe{}).Handle(b)
 	if err != nil {
@@ -1011,10 +1010,10 @@ func TestBuilder_AddGlobalSecurity_populatesChannelHandleGlobalSecurity(t *testi
 
 func TestBuilder_AddGlobalSecurity_doesNotAppearInAsyncAPISpec(t *testing.T) {
 	b := events.NewClient(events.WithInfo(testInfo))
-	b.AddGlobalSecurity(route.Require("bearer"))
+	b.AddGlobalSecurity(events.Require("bearer"))
 
 	_, err := events.NewChannel[userEvent]("user/created", userEventCodec,
-		events.WithSecurityScheme("bearer", events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")})).WithSubscribe(events.Subscribe{Summary: "User created"}).Handle(b)
+		events.WithSecurityScheme("bearer", events.BearerScheme("JWT"))).WithSubscribe(events.Subscribe{Summary: "User created"}).Handle(b)
 	if err != nil {
 		t.Fatalf("AddChannel: %v", err)
 	}
@@ -2277,7 +2276,7 @@ func TestPublisherHandle_unconditionalValidation_mergeFieldTypeMismatch_nilClien
 // CheckCoverage (Phase 2) ───────────────
 
 func TestSecurityMiddleware_producesUsableMiddleware(t *testing.T) {
-	scheme := events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}
+	scheme := events.BearerScheme("JWT")
 	mw := events.SecurityMiddleware[struct{}, struct{}]("bearerAuth", scheme, []string{"subscribe:sensors"})
 
 	if mw.Security == nil {
@@ -2289,8 +2288,8 @@ func TestSecurityMiddleware_producesUsableMiddleware(t *testing.T) {
 	if len(mw.Security.Scopes) != 1 || mw.Security.Scopes[0] != "subscribe:sensors" {
 		t.Errorf("Scopes = %v, want [subscribe:sensors]", mw.Security.Scopes)
 	}
-	if mw.Security.Scheme.Type != route.BearerScheme("JWT").Type {
-		t.Errorf("Scheme.Type = %v, want %v", mw.Security.Scheme.Type, route.BearerScheme("JWT").Type)
+	if mw.Security.Scheme.Type != events.BearerScheme("JWT").Type {
+		t.Errorf("Scheme.Type = %v, want %v", mw.Security.Scheme.Type, events.BearerScheme("JWT").Type)
 	}
 
 	// Attach to a Subscriber — must build a usable handle with the merged
@@ -2309,7 +2308,7 @@ func TestSecurityMiddleware_producesUsableMiddleware(t *testing.T) {
 func TestSecurityMiddleware_Publisher_populatesSecuritySchemes_noCoverageCheck(t *testing.T) {
 	// Publisher.Handle never runs CheckCoverage — a declared scheme with no
 	// implementation must NOT error on the publish side.
-	scheme := events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}
+	scheme := events.BearerScheme("JWT")
 	pub := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithPublish(events.Publish{}).
 		Use(events.SecurityMiddleware[struct{}, struct{}]("bearerAuth", scheme, []string{"publish:sensors"}))
@@ -2324,10 +2323,10 @@ func TestSecurityMiddleware_Publisher_populatesSecuritySchemes_noCoverageCheck(t
 }
 
 func TestSubscriberHandle_ConflictingSecurityDeclaration_manualVsMiddleware(t *testing.T) {
-	scheme := events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}
+	scheme := events.BearerScheme("JWT")
 	sub := events.NewChannel[userEvent]("user/created", userEventCodec).
 		WithSubscribe(events.Subscribe{
-			Security: []route.SecurityRequirement{route.Require("bearerAuth", "read:manual")},
+			Security: []events.SecurityRequirement{events.Require("bearerAuth", "read:manual")},
 		}).
 		Use(events.SecurityMiddleware[struct{}, struct{}]("bearerAuth", scheme, []string{"read:middleware"}))
 
@@ -2345,7 +2344,7 @@ func TestSubscriberHandle_ConflictingSecurityDeclaration_manualVsMiddleware(t *t
 }
 
 func TestPublisherHandle_ConflictingSecurityDeclaration_middlewareVsMiddleware(t *testing.T) {
-	schemeA := events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}
+	schemeA := events.BearerScheme("JWT")
 	pub := events.NewChannel[userEvent]("user/published", userEventCodec).
 		WithPublish(events.Publish{}).
 		Use(
@@ -2391,7 +2390,7 @@ func TestSubscriberHandle_CoverageEnforcement_unconditional_noImplementation(t *
 	// run at all for the new Subscriber/Publisher path).
 	sub := events.NewChannel[userEvent]("sensors/data", userEventCodec).
 		WithSubscribe(events.Subscribe{
-			Security: []route.SecurityRequirement{route.Require("bearerAuth")},
+			Security: []events.SecurityRequirement{events.Require("bearerAuth")},
 		})
 
 	_, err := sub.Handle(nil)
@@ -2754,7 +2753,7 @@ func TestSubscriberServer_InterfaceCompliance(t *testing.T) {
 // declare+implement a security scheme, fusing both into one call.
 func TestSubscribeMW_paired_derivesSatisfiesFromSecurity(t *testing.T) {
 	bm := events.BoundSecuritySubscribeMiddleware[userEvent, mdTestIn, mdTestOut]("bearerAuth",
-		events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, []string{"subscribe:sensors"},
+		events.BearerScheme("JWT"), []string{"subscribe:sensors"},
 		func(ctx context.Context, msg *userEvent, in mdTestIn) (mdTestOut, error) { return mdTestOut{}, nil })
 
 	sub := events.NewChannel[userEvent]("sensors/data", userEventCodec).
@@ -2857,7 +2856,7 @@ func TestSubscribeMW_doesNotMutateOriginal(t *testing.T) {
 // declare+implement a security scheme on the publish/sending role.
 func TestPublishMW_paired_derivesSatisfiesFromSecurity(t *testing.T) {
 	bm := events.BoundSecurityPublishMiddleware[userEvent, mdTestIn, mdTestOut]("bearerAuth",
-		events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, []string{"publish:sensors"},
+		events.BearerScheme("JWT"), []string{"publish:sensors"},
 		func(ctx context.Context, msg userEvent) (mdTestOut, error) { return mdTestOut{}, nil })
 
 	pub := events.NewChannel[userEvent]("sensors/data", userEventCodec).
@@ -2925,13 +2924,13 @@ func TestPublishMW_multipleCalls_accumulate(t *testing.T) {
 // requirement.
 func TestCheckCoverage_fails_withoutMatchingSubscribeMW(t *testing.T) {
 	bmAPIKey := events.BoundSecuritySubscribeMiddleware[userEvent, mdTestIn, mdTestOut]("apiKey",
-		events.SecurityScheme{SecurityScheme: route.APIKeyScheme("X-API-Key", "header")}, []string{"subscribe:sensors"},
+		events.APIKeyScheme("X-API-Key", "header"), []string{"subscribe:sensors"},
 		func(ctx context.Context, msg *userEvent, in mdTestIn) (mdTestOut, error) { return mdTestOut{}, nil })
 	// bearerAuthDeclOnly declares "bearerAuth" via .Use() (spec-only, no
 	// Fn attached at all) — left deliberately UNCOVERED alongside
 	// bmAPIKey's "apiKey", which IS implemented.
 	bearerAuthDeclOnly := events.SecurityMiddleware[struct{}, struct{}]("bearerAuth",
-		events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, []string{"subscribe:sensors"})
+		events.BearerScheme("JWT"), []string{"subscribe:sensors"})
 
 	sub := events.NewChannel[userEvent]("sensors/data", userEventCodec).
 		WithSubscribe(events.Subscribe{}).
@@ -2964,7 +2963,7 @@ func TestCheckCoverage_fails_withoutMatchingSubscribeMW(t *testing.T) {
 // recognized as satisfying a real requirement.
 func TestCheckCoverage_passes_withBoundSubscribeMW(t *testing.T) {
 	bm := events.BoundSecuritySubscribeMiddleware[userEvent, mdTestIn, mdTestOut]("bearerAuth",
-		events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, []string{"subscribe:sensors"},
+		events.BearerScheme("JWT"), []string{"subscribe:sensors"},
 		func(ctx context.Context, msg *userEvent, in mdTestIn) (mdTestOut, error) { return mdTestOut{}, nil })
 
 	sub := events.NewChannel[userEvent]("sensors/data", userEventCodec).
@@ -2999,7 +2998,7 @@ func TestCheckCoverage_passes_withBoundSubscribeMW(t *testing.T) {
 // [reqreply.BoundMiddleware.applyBoundRoute]'s existing, equivalent line).
 func TestSubscribeBoundMW_populatesDescriptorSecurity(t *testing.T) {
 	bm := events.BoundSecuritySubscribeMiddleware[userEvent, mdTestIn, mdTestOut]("bearerAuth",
-		events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, []string{"subscribe:sensors"},
+		events.BearerScheme("JWT"), []string{"subscribe:sensors"},
 		func(ctx context.Context, msg *userEvent, in mdTestIn) (mdTestOut, error) { return mdTestOut{}, nil })
 
 	sub := events.NewChannel[userEvent]("sensors/data", userEventCodec).
@@ -3033,7 +3032,7 @@ func TestSubscribeBoundMW_populatesDescriptorSecurity(t *testing.T) {
 // mirror — same bug, same fix, applied to ApplyBoundClientRoute/p.mws.
 func TestPublishBoundMW_populatesDescriptorSecurity(t *testing.T) {
 	bm := events.BoundSecurityPublishMiddleware[userEvent, mdTestIn, mdTestOut]("bearerAuth",
-		events.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, []string{"publish:sensors"},
+		events.BearerScheme("JWT"), []string{"publish:sensors"},
 		func(ctx context.Context, msg userEvent) (mdTestOut, error) { return mdTestOut{}, nil })
 
 	pub := events.NewChannel[userEvent]("sensors/data", userEventCodec).

@@ -6,7 +6,6 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/internal/route"
 )
 
 func staticExtractor(values map[string]map[string]string) rest.CredentialExtractor {
@@ -29,9 +28,9 @@ func TestValidateSecurityCredentials_bearerHappyPath(t *testing.T) {
 		},
 	})
 	schemes := map[string]rest.SecurityScheme{
-		"bearer": rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(captureCodec),
+		"bearer": rest.BearerScheme("JWT").WithCodec(captureCodec),
 	}
-	reqs := []route.SecurityRequirement{{"bearer": nil}}
+	reqs := []rest.SecurityRequirement{{"bearer": nil}}
 	extract := staticExtractor(map[string]map[string]string{
 		"header": {"Authorization": "Bearer abc123"},
 	})
@@ -45,9 +44,9 @@ func TestValidateSecurityCredentials_bearerHappyPath(t *testing.T) {
 
 func TestValidateSecurityCredentials_apiKeyQuery(t *testing.T) {
 	schemes := map[string]rest.SecurityScheme{
-		"apiKey": rest.SecurityScheme{SecurityScheme: route.APIKeyScheme("key", "query")}.WithCodec(codex.String()),
+		"apiKey": rest.APIKeyScheme("key", "query").WithCodec(codex.String()),
 	}
-	reqs := []route.SecurityRequirement{{"apiKey": nil}}
+	reqs := []rest.SecurityRequirement{{"apiKey": nil}}
 	extract := staticExtractor(map[string]map[string]string{
 		"query": {"key": "s3cr3t"},
 	})
@@ -58,9 +57,9 @@ func TestValidateSecurityCredentials_apiKeyQuery(t *testing.T) {
 
 func TestValidateSecurityCredentials_apiKeyCookie(t *testing.T) {
 	schemes := map[string]rest.SecurityScheme{
-		"apiKey": rest.SecurityScheme{SecurityScheme: route.APIKeyScheme("session", "cookie")}.WithCodec(codex.String()),
+		"apiKey": rest.APIKeyScheme("session", "cookie").WithCodec(codex.String()),
 	}
-	reqs := []route.SecurityRequirement{{"apiKey": nil}}
+	reqs := []rest.SecurityRequirement{{"apiKey": nil}}
 	extract := staticExtractor(map[string]map[string]string{
 		"cookie": {"session": "cookieval"},
 	})
@@ -78,9 +77,9 @@ func TestValidateSecurityCredentials_codecFailure(t *testing.T) {
 		},
 	})
 	schemes := map[string]rest.SecurityScheme{
-		"bearer": rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(strictCodec),
+		"bearer": rest.BearerScheme("JWT").WithCodec(strictCodec),
 	}
-	reqs := []route.SecurityRequirement{{"bearer": nil}}
+	reqs := []rest.SecurityRequirement{{"bearer": nil}}
 	extract := staticExtractor(nil) // no Authorization header present -> empty credential
 	err := rest.ValidateSecurityCredentials(extract, reqs, schemes)
 	var credErr rest.SecurityCredentialError
@@ -91,16 +90,16 @@ func TestValidateSecurityCredentials_codecFailure(t *testing.T) {
 
 func TestValidateSecurityCredentials_noCodecSkipsValidation(t *testing.T) {
 	schemes := map[string]rest.SecurityScheme{
-		"bearer": {SecurityScheme: route.BearerScheme("JWT")}, // no Codec set
+		"bearer": rest.BearerScheme("JWT"), // no Codec set
 	}
-	reqs := []route.SecurityRequirement{{"bearer": nil}}
+	reqs := []rest.SecurityRequirement{{"bearer": nil}}
 	if err := rest.ValidateSecurityCredentials(staticExtractor(nil), reqs, schemes); err != nil {
 		t.Fatalf("expected nil error when scheme has no Codec, got %v", err)
 	}
 }
 
 func TestValidateSecurityCredentials_unknownSchemeSkipped(t *testing.T) {
-	reqs := []route.SecurityRequirement{{"missing": nil}}
+	reqs := []rest.SecurityRequirement{{"missing": nil}}
 	if err := rest.ValidateSecurityCredentials(staticExtractor(nil), reqs, map[string]rest.SecurityScheme{}); err != nil {
 		t.Fatalf("expected nil error for unknown scheme, got %v", err)
 	}

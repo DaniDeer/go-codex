@@ -11,7 +11,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/internal/route"
 	asyncapiv3 "github.com/DaniDeer/go-codex/render/asyncapi/v3"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -906,8 +905,8 @@ func TestWithSecurityScheme_Register_PopulatesSecuritySchemes(t *testing.T) {
 	c := codex.String().Refine(validate.NonEmptyString)
 
 	handle, err := reqreply.NewRoute[computeReq, computeResp]("compute/secured", reqCodec, respCodec,
-		reqreply.RouteMeta{Security: []route.SecurityRequirement{route.Require("bearer")}},
-		reqreply.WithSecurityScheme("bearer", reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(c)),
+		reqreply.RouteMeta{Security: []reqreply.SecurityRequirement{reqreply.Require("bearer")}},
+		reqreply.WithSecurityScheme("bearer", reqreply.BearerScheme("JWT").WithCodec(c)),
 	).Register(b)
 	if err != nil {
 		t.Fatalf("Register: %v", err)
@@ -927,8 +926,8 @@ func TestWithSecurityScheme_ClientHandle_PopulatesSecuritySchemes(t *testing.T) 
 	c := codex.String().Refine(validate.NonEmptyString)
 
 	handle := reqreply.NewRoute[computeReq, computeResp]("compute/secured", reqCodec, respCodec,
-		reqreply.RouteMeta{Security: []route.SecurityRequirement{route.Require("bearer")}},
-		reqreply.WithSecurityScheme("bearer", reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}.WithCodec(c)),
+		reqreply.RouteMeta{Security: []reqreply.SecurityRequirement{reqreply.Require("bearer")}},
+		reqreply.WithSecurityScheme("bearer", reqreply.BearerScheme("JWT").WithCodec(c)),
 	).ClientHandle()
 
 	if _, ok := handle.SecuritySchemes["bearer"]; !ok {
@@ -946,13 +945,13 @@ func TestAsyncAPISpec_AggregatesSecuritySchemesFromRoutes_reqreply(t *testing.T)
 	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 
 	_, err := reqreply.NewRoute[computeReq, computeResp]("compute/add", reqCodec, respCodec,
-		reqreply.WithSecurityScheme("bearer", reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}),
+		reqreply.WithSecurityScheme("bearer", reqreply.BearerScheme("JWT")),
 	).Register(b)
 	if err != nil {
 		t.Fatalf("Register compute/add: %v", err)
 	}
 	_, err = reqreply.NewRoute[computeReq, computeResp]("compute/sub", reqCodec, respCodec,
-		reqreply.WithSecurityScheme("apiKey", reqreply.SecurityScheme{SecurityScheme: route.APIKeyScheme("X-API-Key", "header")}),
+		reqreply.WithSecurityScheme("apiKey", reqreply.APIKeyScheme("X-API-Key", "header")),
 	).Register(b)
 	if err != nil {
 		t.Fatalf("Register compute/sub: %v", err)
@@ -977,7 +976,7 @@ func TestAsyncAPISpec_AggregatesSecuritySchemesFromRoutes_reqreply(t *testing.T)
 
 func TestAddGlobalSecurity_populatesRouteHandleGlobalSecurity(t *testing.T) {
 	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
-	b.AddGlobalSecurity(route.Require("bearer"))
+	b.AddGlobalSecurity(reqreply.Require("bearer"))
 
 	handle, err := reqreply.NewRoute[computeReq, computeResp]("compute/add", reqCodec, respCodec).Register(b)
 	if err != nil {

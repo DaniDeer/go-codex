@@ -7,8 +7,6 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/internal/middleware"
-	"github.com/DaniDeer/go-codex/internal/route"
 )
 
 // ── docs/design/d-0003-codec-declared-middlewares.md's Addendum 7: BoundMiddleware[Req,In,Out]
@@ -20,9 +18,9 @@ import (
 // covering, and a plain Middleware[In,Out] passed to HandleMW/ClientMW
 // is rejected (the permanently-closed legacy escape hatch).
 
-func newBoundSecureDeclaration(name string) middleware.Declaration[mdTestIn, mdTestOut] {
-	decl := middleware.NewDeclaration(name, mdTestInCodec, mdTestOutCodec)
-	decl.Security = middleware.NewSecurityDeclaration("bearerAuth", route.BearerScheme("JWT"), nil, nil)
+func newBoundSecureDeclaration(name string) rest.Declaration[mdTestIn, mdTestOut] {
+	decl := rest.NewDeclaration(name, mdTestInCodec, mdTestOutCodec)
+	decl.Security = rest.NewSecurityDeclaration("bearerAuth", rest.BearerScheme("JWT"), nil)
 	return decl
 }
 
@@ -69,7 +67,7 @@ func TestHandleBoundMW_PopulatesSatisfiesAndSpec(t *testing.T) {
 // handlers parameter closes coverage for a scheme ONLY satisfied by a
 // MiddlewareHandler (no matching impls entry at all).
 func TestCheckCoverage_SeesMiddlewareHandlerSatisfies(t *testing.T) {
-	secReqs := []route.SecurityRequirement{{"bearerAuth": nil}}
+	secReqs := []rest.SecurityRequirement{{"bearerAuth": nil}}
 	handlers := []rest.MiddlewareHandler{{Name: "x", Satisfies: []string{"bearerAuth"}}}
 
 	if err := rest.CheckCoverage("GET /x", secReqs, nil, handlers); err != nil {
@@ -81,7 +79,7 @@ func TestCheckCoverage_SeesMiddlewareHandlerSatisfies(t *testing.T) {
 // negative-path regression guard — confirms a scheme with NO covering
 // entry in EITHER list still correctly fails.
 func TestCheckCoverage_MissingWhenNeitherImplsNorHandlersSatisfy(t *testing.T) {
-	secReqs := []route.SecurityRequirement{{"bearerAuth": nil}}
+	secReqs := []rest.SecurityRequirement{{"bearerAuth": nil}}
 	handlers := []rest.MiddlewareHandler{{Name: "x", Satisfies: []string{"otherScheme"}}}
 
 	err := rest.CheckCoverage("GET /x", secReqs, nil, handlers)
@@ -203,7 +201,7 @@ func TestBoundMiddleware_SharedAcrossMultipleRoutes_SameReqType(t *testing.T) {
 // TestMiddleware_NoLongerBindable_RuntimeRejected test-plan entry
 // describes.
 func TestHandleBoundMW_PlainMiddleware_ReturnsTypedError(t *testing.T) {
-	plainMw := rest.SecurityMiddleware[mdTestIn, mdTestOut]("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil).
+	plainMw := rest.SecurityMiddleware[mdTestIn, mdTestOut]("bearerAuth", rest.BearerScheme("JWT"), nil).
 		WithReceive(func(ctx context.Context, in mdTestIn) (mdTestOut, error) {
 			return mdTestOut{Value: in.Key}, nil
 		})
@@ -312,7 +310,7 @@ func TestHandleBoundMW_PlusClientBoundMW_SameScheme_SameRoute_Conflicts(t *testi
 // must now be REJECTED via MiddlewareMisattachedError, never silently
 // dispatched through the (now-removed) legacy path.
 func TestHandleMW_SecurityMiddleware_CredentialShape_Rejected(t *testing.T) {
-	secMw := rest.SecurityMiddleware[struct{}, struct{}]("bearerAuth", rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil)
+	secMw := rest.SecurityMiddleware[struct{}, struct{}]("bearerAuth", rest.BearerScheme("JWT"), nil)
 
 	_, err := rest.NewRoute[mwTestReq, userResp]("GET", "/sec-mw-legacy", mwTestReqCodec, userCodec,
 		rest.RouteMeta{OperationID: "secMWLegacy"},
@@ -371,7 +369,7 @@ type credentialWithToken struct{ Token string }
 // .Use()/.WithSend), not just construction, to catch the panic directly.
 func TestSecurityMiddleware_RealInType_DoesNotPanicOnDispatch(t *testing.T) {
 	mw := rest.SecurityMiddleware[credentialWithToken, struct{}]("bearerAuth",
-		rest.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+		rest.BearerScheme("JWT"), nil,
 	).WithRequestHeader(rest.NewOmitEmptyHeaderParam("Authorization", codex.String(),
 		func(c credentialWithToken) string { return c.Token },
 		func(c *credentialWithToken, v string) { c.Token = v },

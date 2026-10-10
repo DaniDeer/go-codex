@@ -8,7 +8,6 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/internal/middleware"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -36,8 +35,8 @@ var mdTestOutCodec = codex.Struct[mdTestOut](
 	),
 )
 
-func newTestDeclaration() middleware.Declaration[mdTestIn, mdTestOut] {
-	return middleware.NewDeclaration("test-policy", mdTestInCodec, mdTestOutCodec)
+func newTestDeclaration() rest.Declaration[mdTestIn, mdTestOut] {
+	return rest.NewDeclaration("test-policy", mdTestInCodec, mdTestOutCodec)
 }
 
 // ── rest.Middleware[In,Out] construction ─────────────────────────────────
@@ -47,7 +46,7 @@ func TestNewMiddleware_BuildsExpectedShape(t *testing.T) {
 	if mw.Name != "test-policy" {
 		t.Errorf("want Name %q, got %q", "test-policy", mw.Name)
 	}
-	var _ middleware.RouteMiddleware = mw // compiles: RouteMiddlewareMarker is exported
+	var _ rest.RouteMiddleware = mw // compiles: RouteMiddlewareMarker is exported
 	// End-to-end .Use(mw) dispatch is exercised by TestUse_AcceptsCodecBackedMiddleware.
 }
 

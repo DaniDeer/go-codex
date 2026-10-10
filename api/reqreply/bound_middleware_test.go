@@ -7,8 +7,6 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/internal/middleware"
-	"github.com/DaniDeer/go-codex/internal/route"
 )
 
 // ── docs/design/d-0003-codec-declared-middlewares.md's Addendum 7: BoundMiddleware[Req, In, Out]/
@@ -26,9 +24,9 @@ import (
 // computeReq, used by the mismatch tests below.
 type otherComputeReq struct{ Name string }
 
-func newBoundSecureDeclaration(name string) middleware.Declaration[mdAuthIn, mdAuthOut] {
-	decl := middleware.NewDeclaration(name, mdAuthInCodec, mdAuthOutCodec)
-	decl.Security = middleware.NewSecurityDeclaration("bearerAuth", route.BearerScheme("JWT"), nil, nil)
+func newBoundSecureDeclaration(name string) reqreply.Declaration[mdAuthIn, mdAuthOut] {
+	decl := reqreply.NewDeclaration(name, mdAuthInCodec, mdAuthOutCodec)
+	decl.Security = reqreply.NewSecurityDeclaration("bearerAuth", reqreply.BearerScheme("JWT"), nil)
 	return decl
 }
 
@@ -201,12 +199,12 @@ func TestHandleBoundMW_SharedAcrossMultipleRoutes_SameReqType(t *testing.T) {
 // mirroring REST's identical confirmed behavior.
 func TestHandleBoundMW_PlusClientBoundMW_SameScheme_SameRoute_Conflicts(t *testing.T) {
 	serverBm := reqreply.BoundSecurityMiddleware[computeReq, mdAuthIn, mdAuthOut]("bearerAuth",
-		reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+		reqreply.BearerScheme("JWT"), nil,
 		func(ctx context.Context, req *computeReq, in mdAuthIn) (mdAuthOut, error) {
 			return mdAuthOut{}, nil
 		})
 	clientBm := reqreply.BoundSecurityClientMiddleware[computeReq, mdAuthIn, mdAuthOut]("bearerAuth",
-		reqreply.SecurityScheme{SecurityScheme: route.BearerScheme("JWT")}, nil,
+		reqreply.BearerScheme("JWT"), nil,
 		func(ctx context.Context, req computeReq) (mdAuthIn, error) {
 			return mdAuthIn{}, nil
 		})

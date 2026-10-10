@@ -8,7 +8,6 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/internal/middleware"
 	"github.com/DaniDeer/go-codex/validate"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 )
@@ -33,8 +32,8 @@ var tdOutCodec = codex.Struct[tdOut](
 	),
 )
 
-func newTDDeclaration(name string) middleware.Declaration[tdIn, tdOut] {
-	return middleware.NewDeclaration(name, tdInCodec, tdOutCodec)
+func newTDDeclaration(name string) events.Declaration[tdIn, tdOut] {
+	return events.NewDeclaration(name, tdInCodec, tdOutCodec)
 }
 
 // tdEmpty is an In/Out shape with NO required fields — used where a test
@@ -45,8 +44,8 @@ type tdEmpty struct{}
 
 var tdEmptyCodec = codex.Struct[tdEmpty]()
 
-func newTDEmptyDeclaration(name string) middleware.Declaration[tdEmpty, tdEmpty] {
-	return middleware.NewDeclaration(name, tdEmptyCodec, tdEmptyCodec)
+func newTDEmptyDeclaration(name string) events.Declaration[tdEmpty, tdEmpty] {
+	return events.NewDeclaration(name, tdEmptyCodec, tdEmptyCodec)
 }
 
 func newSubscriberChannelHandle(subscriber events.Subscriber[sensorReading]) *events.ChannelHandle[sensorReading] {

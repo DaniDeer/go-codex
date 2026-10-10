@@ -16,7 +16,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/internal/middleware"
 	"github.com/DaniDeer/go-codex/validate"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 )
@@ -1731,8 +1730,8 @@ type mqttMdOut struct{ TenantID string }
 
 var mqttMdOutCodec = codex.Struct[mqttMdOut]()
 
-func newMqttMdDeclaration(name string) middleware.Declaration[mqttMdIn, mqttMdOut] {
-	return middleware.NewDeclaration(name, mqttMdInCodec, mqttMdOutCodec)
+func newMqttMdDeclaration(name string) events.Declaration[mqttMdIn, mqttMdOut] {
+	return events.NewDeclaration(name, mqttMdInCodec, mqttMdOutCodec)
 }
 
 // D1: codec-backed middleware dispatch (SubscribeBoundMW) runs AFTER the

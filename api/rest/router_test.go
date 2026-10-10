@@ -152,8 +152,8 @@ func TestRouter_DuplicateMiddlewareName_ReturnsTypedError(t *testing.T) {
 	// .Use()/the leaf's own .Use() accept either via the shared
 	// middleware.RouteMiddleware interface, but the dedup check is scoped
 	// to the codec-backed family — see docs/design/d-0003-codec-declared-middlewares.md.
-	dup := rest.NewMiddleware(middleware.Declaration[struct{}, struct{}]{Name: "dup"})
-	route := newRouterTestRoute("GET", "/x").Use(rest.NewMiddleware(middleware.Declaration[struct{}, struct{}]{Name: "dup"}))
+	dup := rest.NewMiddleware(rest.Declaration[struct{}, struct{}]{Name: "dup"})
+	route := newRouterTestRoute("GET", "/x").Use(rest.NewMiddleware(rest.Declaration[struct{}, struct{}]{Name: "dup"}))
 	rt := rest.NewRouter("/api").Use(dup).Route(route)
 
 	server := rest.NewServer(rest.Info{Title: "t", Version: "1"})
@@ -170,7 +170,7 @@ func TestRouter_DuplicateMiddlewareName_ReturnsTypedError(t *testing.T) {
 
 func TestRouter_Routes_IncludesBoundMiddlewareNames(t *testing.T) {
 	bm := rest.NewBoundMiddleware[routerTestReq](
-		middleware.Declaration[mdTestIn, mdTestOut]{Name: "bound-audit"},
+		rest.Declaration[mdTestIn, mdTestOut]{Name: "bound-audit"},
 		func(_ context.Context, _ *routerTestReq, _ mdTestIn) (mdTestOut, error) { return mdTestOut{}, nil },
 	)
 	route := newRouterTestRoute("GET", "/bound").HandleBoundMW(bm)

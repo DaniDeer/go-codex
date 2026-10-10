@@ -8,7 +8,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/internal/middleware"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -111,7 +110,7 @@ func TestMiddleware_WithSubscribeProperty_RequiredButAdapterSuppliesNoPropertyMa
 }
 
 func TestMiddleware_WithOptionalSubscribeProperty_AbsentLeavesZeroValueNoError(t *testing.T) {
-	decl := middleware.NewDeclaration("tenant-optional-policy", propOptInCodec, mdTestOutCodec)
+	decl := events.NewDeclaration("tenant-optional-policy", propOptInCodec, mdTestOutCodec)
 	bm := events.NewBoundSubscribeMiddleware(decl,
 		func(ctx context.Context, msg *userEvent, in propOptIn) (mdTestOut, error) { return mdTestOut{}, nil }).
 		WithSubscribeProperty(events.NewOptionalPropertyParam("tenantID", codex.String(),
