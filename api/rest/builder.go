@@ -231,9 +231,30 @@ type ResponseMeta struct {
 	Description string
 	Schema      *schema.Schema // nil for description-only responses (e.g. 404)
 	SchemaName  string         // non-empty → $ref in spec
+	// Headers documents response headers for THIS status entry in the
+	// generated spec (e.g. {"Location": {...}} for a redirect) — keyed
+	// by header name. Optional — nil for every caller not declaring any,
+	// fully backward compatible. See [ResponseMetaHeader].
+	Headers map[string]ResponseMetaHeader
 }
 
 func (m ResponseMeta) applyRoute(rb *routeBuilder) { rb.extraResps = append(rb.extraResps, m) }
+
+// ResponseMetaHeader documents one response header entry for a
+// [ResponseMeta] status — deliberately minimal (description + whether
+// it's required + a schema), not a full param/codec declaration: a
+// non-primary response's headers are documentation-only, never
+// merge-field-decoded the way the PRIMARY response's
+// [ResponseHeaderParam] is.
+type ResponseMetaHeader struct {
+	Description string
+	Required    bool
+	// Schema documents this header's value shape in the spec. Left as
+	// the zero value, it defaults to a plain string schema — the
+	// overwhelmingly common case (e.g. a Location header is just a URL
+	// string).
+	Schema schema.Schema
+}
 
 // RouteMeta holds documentation and response metadata for a route registration.
 // It controls spec output (OpenAPI operation fields and the primary success
@@ -3307,22 +3328,61 @@ func NewClient() *Client {
 	return &Client{}
 }
 
+// ClientAwareTransport is an OPTIONAL extension to [ClientTransport] —
+// mirrors [events.ClientAwareTransport] exactly, for the identical
+// reason: a [ClientTransport] built via an adapter's `New*Transport(opts)`
+// factory is constructed BEFORE the [*Client] that will attach it is
+// known, but the redirect-target registry (see [Client.RegisterRoute])
+// lives on [*Client] while the HTTP-level auto-follow logic that needs to
+// READ it is inherently adapter-specific. [ClientAwareTransport] closes
+// that gap WITHOUT reintroducing a [*Client] parameter to the factory —
+// [Client.Attach] supplies it, exactly once, right after storing t.
+type ClientAwareTransport interface {
+	ClientTransport
+	// BindClient receives c immediately after [Client.Attach] stores t
+	// as c's transport. A non-nil error rolls back the attach (c's
+	// transport is cleared, [Client.Attach] returns this error) —
+	// [Client.Attach] remains all-or-nothing. Mirrors
+	// [events.ClientAwareTransport.BindClient]'s identical shape.
+	BindClient(c *Client) error
+}
+
 // Attach binds t to c as c's transport — the "attach the adapter to the
 // client" step behind [Client.Call]. Each adapter provides its own
 // `New*Transport` constructor (e.g. [nethttp.NewClientTransport]) that
 // builds a [ClientTransport] value; pass it to Attach directly — there is
 // no adapter-namespaced Attach function.
 //
+// If t implements [ClientAwareTransport], its BindClient(c) is called
+// IMMEDIATELY after storing t.
+//
 // Returns [ClientTransportAlreadyAttachedError] if c already has a
 // transport attached — Attach is exclusive, mirrors
 // [events.Client.Attach]/[Server.Attach] exactly.
 func (c *Client) Attach(t ClientTransport) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.transport != nil {
+		c.mu.Unlock()
 		return ClientTransportAlreadyAttachedError{}
 	}
 	c.transport = t
+	c.mu.Unlock()
+
+	// BindClient is called OUTSIDE c.mu — a [ClientAwareTransport]
+	// implementation might legitimately need to call back into c's OWN
+	// methods; sync.RWMutex is NOT reentrant, so calling BindClient
+	// while still holding the write lock would deadlock the moment such
+	// a callback is added (mirrors a REAL deadlock confirmed and fixed
+	// in [reqreply.Server.Attach]/[events.Client.Attach] for the
+	// identical reason).
+	if aware, ok := t.(ClientAwareTransport); ok {
+		if err := aware.BindClient(c); err != nil {
+			c.mu.Lock()
+			c.transport = nil
+			c.mu.Unlock()
+			return err
+		}
+	}
 	return nil
 }
 
@@ -5011,7 +5071,35 @@ func buildExtraResponses(metas []ResponseMeta) []route.Response {
 			Description: m.Description,
 			Schema:      m.Schema,
 			SchemaName:  m.SchemaName,
+			Headers:     buildResponseMetaHeaders(m.Headers),
 		}
+	}
+	return out
+}
+
+// buildResponseMetaHeaders converts a [ResponseMeta.Headers] map into the
+// []route.Param shape [route.Response.Headers] already expects — the SAME
+// mechanism the PRIMARY response's own [ResponseHeaderParam] mechanism
+// populates, so render/openapi's buildResponses (which already renders
+// Headers generically for every response entry) needs no changes to
+// support this. Defaults an unset Schema to a plain string schema (the
+// common case — a header value is just a string).
+func buildResponseMetaHeaders(headers map[string]ResponseMetaHeader) []route.Param {
+	if len(headers) == 0 {
+		return nil
+	}
+	out := make([]route.Param, 0, len(headers))
+	for name, h := range headers {
+		s := h.Schema
+		if s.Type == "" {
+			s = schema.Schema{Type: "string"}
+		}
+		out = append(out, route.Param{
+			Name:        name,
+			Description: h.Description,
+			Required:    h.Required,
+			Schema:      s,
+		})
 	}
 	return out
 }
