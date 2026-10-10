@@ -262,6 +262,55 @@ algorithm needed.
 - **`CallWithTransport` stays registry-free** — see "Resolved design
   decisions" #5 above; this is the confirmed, intentional asymmetry
   between the two call shapes.
+- **New idempotency requirement, surfaced while planning the examples
+  rework below**: a single underlying route commonly has MULTIPLE
+  credential-bound `ClientHandle` variants in real code (e.g.
+  `examples/rest-api/client`'s `CreateUserRouteAsAlice`/`AsAdmin`/
+  `Unauthenticated` — identical Method+PathTemplate, only the attached
+  `ClientBoundMW`/`ClientMW` credential-providing closures differ). This
+  is NOT the "ambiguous match" case above (which is reserved for two
+  UNRELATED routes whose DIFFERENT templates both happen to match the
+  same concrete path) — these variants share the exact same routeKey.
+  **Registering (via `RegisterRoute`) or auto-populating (via `Call`)
+  the SAME routeKey more than once, through different credential-bound
+  variants of the identical underlying route, MUST be a safe, silent
+  no-op — never an error, and never an overwrite that could change the
+  Resp-decoding behavior** (every variant decodes the identical `Resp`
+  type; only the credential plumbing differs, which the registry's own
+  job — "what does an incoming path decode as" — has no reason to care
+  about).
+
+**Two examples, demonstrating the registry's two distinct population
+paths** (both kept deliberately, not a replacement of one by the other —
+see "Files to create" below for the full file list):
+
+- `examples/rest-redirect/main.go` (standalone, minimal) demonstrates
+  **auto-populate-via-`Call`** — the zero-ceremony default: call the
+  target route once normally, then a redirect to it "just works."
+- `examples/rest-api/demo_redirect.go` (the existing flagship,
+  dual-adapter example) demonstrates the **explicit `RegisterRoute`
+  construction-time** half instead: that example's
+  `examples/rest-api/client`'s `Build()` function is reworked to loop
+  over every one of its ~17 distinct underlying routes
+  (`CreateUserRoute`, `GetUserRoute`, `ProfileRoute`, `AdminActionRoute`,
+  `LoginRoute`, etc.) and call `Client.RegisterRoute` for each — using
+  each route's plain, non-credential-bound base declaration (registering
+  any ONE credential-bound variant would be equally correct per the
+  idempotency rule above, but the base declaration is the clearest,
+  least-redundant choice for a demo meant to show the registry plainly)
+  — right after `Client.Attach`, making the client's full route
+  vocabulary an explicit, deterministic part of the "assemble the
+  client" phase (the package's own existing doc comment already calls
+  this the "assemble phase, client variant") instead of leaving registry
+  population to incidental demo-call order. `demo_redirect.go` itself
+  then shows: the primary workflow (calling the redirect-source route,
+  auto-follow succeeds because the TARGET was already known from
+  `Build()`, not from an earlier demo happening to call it first) plus a
+  secondary, explicitly-labeled `CallWithTransport` scenario (manual
+  follow-up, bypassing the shared Client/registry entirely) — mirroring
+  `examples/adapters-nethttp-client`'s own Section-0-then-escape-hatch
+  narration style, in a realistic, multi-route, dual-adapter,
+  already-secured-and-observed context.
 
 ## Proposed API surface (tentative — sketch only, not final)
 
@@ -351,6 +400,7 @@ identified above.
 | Client | `Client.Call` returns `UnrecognizedRedirectError{Location, Status}` for a `Location` not matching any registered route |
 | Client | `http.Client.CheckRedirect` is confirmed disabled by default on the shallow-copied client (no silent double-follow), and the CALLER's own `*http.Client` is confirmed unmutated |
 | Client | `CallWithTransport` returns a typed `RedirectError` (no auto-follow) on receiving a redirect |
+| Client | Registering (or auto-populating) the SAME routeKey twice via two DIFFERENT credential-bound `ClientHandle` variants of the identical route is a safe no-op, not an error |
 | chi/nethttp parity | Server-side behavior (RedirectError recognition, Location + status, no body) is identical in both adapters |
 
 ## Files to create (once approved for implementation)
@@ -358,10 +408,11 @@ identified above.
 | File | Purpose |
 |---|---|
 | `api/rest/redirect.go` + `redirect_test.go` | `RedirectError`, `RedirectTargetVarError`, `RedirectMethodMismatchError`, `Redirect`, `RedirectToSSE` |
-| `api/rest/client_registry.go` (or inline in `builder.go`) + test | `Client`'s Method+PathTemplate registry, `RegisterRoute`, auto-populate-on-Call, `UnrecognizedRedirectError` |
+| `api/rest/client_registry.go` (or inline in `builder.go`) + test | `Client`'s Method+PathTemplate registry, `RegisterRoute`, auto-populate-on-Call, `UnrecognizedRedirectError`, same-routeKey-reregistration idempotency |
 | `adapters/nethttp/redirect.go` (or inline in `adapter.go`/`clienttransport.go`) + test | Server dispatch recognition + `Location` rendering; `CheckRedirect` shallow-copy override; registry-driven auto-follow/decode in `clientTransport.Call` |
 | `adapters/chi/redirect.go` (or inline) + test | Server-side behavior only (no client transport exists in chi) |
-| `examples/rest-redirect/main.go` | Worked end-to-end example |
+| `examples/rest-redirect/main.go` | Minimal, standalone, self-contained worked example — demonstrates the auto-populate-via-`Call` registry path (see "Client-side route registry" above) |
+| `examples/rest-api/demo_redirect.go` + rework of `examples/rest-api/client`'s `Build()` | Richer demo in the existing dual-adapter (chi/nethttp) flagship example — `Build()` reworked to explicitly `Client.RegisterRoute` every distinct route at construction time; the demo itself shows primary (auto-follow via the construction-time-populated registry) + secondary (`CallWithTransport`, manual follow-up) in one file, mirroring `examples/adapters-nethttp-client`'s Section-0-then-escape-hatch style (see "Client-side route registry" above) |
 | `docs/features/rest-redirects.md`, `docs/guides/rest-redirects.md` | User-facing docs once shipped |
 | `docs/roadmap/index.md` row, `zensical.toml` nav entry | Already added by this doc's own creation |
 
