@@ -154,6 +154,50 @@ needed real design work; see its own subsection below.
 
 ## Client-side route registry (the one genuinely new mechanism)
 
+**This registry is not merely a mechanism the redirect feature happens to
+need — it completes REST's client-side parity with `api/events`'
+already-established PRIMARY workflow, and should be documented as such.**
+`docs/features/http-client.md` already calls `rest.Client.Call` (bound
+via `Client.Attach`) **"the single-workflow"**, with `rest.
+CallWithTransport` explicitly named "the lower-level, handle-based
+primitive" — i.e. the primary-vs-escape-hatch framing already exists for
+REST today. `docs/design/d-0006-protocol-native-capabilities.md`'s
+Phase 5a section (status: Implemented) independently, authoritatively
+states the SAME framing for `api/events`: *"events.SubscribeHandle/
+PublishHandle (the 'attach and drive' verbs) ALREADY live in api/events
+itself... This is the reference shape Phase 5a brings REST and reqreply
+to."* What Phase 5a's analysis did NOT cover (redirects weren't a
+concept yet) is that `events.Client` ALSO already has an
+incoming-dispatch registry (`specByTopic`/`subscriberByTopic`) backing
+its primary workflow — something `rest.Client` never had, since REST's
+`Client.Call` only ever needed to look UP (caller→server), never to
+resolve an arbitrary INCOMING identifier back to a known route. This
+registry closes exactly that one remaining asymmetry: once it ships,
+`Client.Call`+registry is accurately described as THE documented primary
+REST client workflow, symmetric to `events.Client.Publish`/`Subscribe`'s
+registry-backed primary workflow — not a redirect-only side mechanism.
+(Updating `http-client.md`/`events.md` themselves to state this
+cross-reference explicitly is deferred to this roadmap's last phase,
+once the registry is actually implemented — tracked here so that step
+isn't lost.)
+
+**A related comparison to explicitly rule out**: `CallWithTransport`
+(REST) mirrors `events.PublishHandle`/`SubscribeHandle` (events) exactly
+— both are the single-endpoint, no-`Client`/no-registry escape hatch,
+already cross-referenced in `docs/features/events.md` today ("mirrors
+rest.CallWithTransport"). `adapters/nethttp.ServeOne` is a DIFFERENT,
+unrelated concept and does NOT belong in this comparison, despite
+surface-level "also feels like a lower-ceremony option" intuition:
+`d-0006` itself already resolved this explicitly — `ServeOne` builds a
+bare `http.Handler` to mount into a caller-owned, EXTERNAL
+`*http.ServeMux`/app router, an inherently HTTP-specific use case with,
+quoting the design doc directly, "NO structural equivalent in
+MQTT/ZeroMQ/reqreply." It is not part of the
+`CallWithTransport`/`PublishHandle`/`SubscribeHandle` no-ceremony tier at
+all — a different axis (embedding into a 3rd-party router) from the one
+this registry discussion is about (resolving an incoming identifier back
+to a known route/channel).
+
 **The gap**: `rest.Client` (api/rest/builder.go) is a thin wrapper —
 `struct { mu; transport ClientTransport }` — nothing else. `Client.Call
 (ctx, route, req)` takes the route value FRESH at every call; there is
