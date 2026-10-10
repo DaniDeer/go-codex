@@ -1,6 +1,41 @@
-# go-codex Review History (R1–R196, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
+# go-codex Review History (R1–R197, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 197 (internal/middleware's 3 exported error types missing a public alias — raised directly by the user during the just-finished internal/middleware test-rework, not via a fresh deep-dive-bug-hunt invocation)
+
+Found while reflecting on the `internal/middleware` test-import rework: the "shared cross-pattern
+MECHANICS belong in `internal/`, with a per-pattern public alias" design rule
+(`docs/design/d-0009-internalize-shared-mechanics.md`) was consistently followed for every
+CONSTRUCTOR/TYPE `internal/middleware` exports, but its 3 EXPORTED ERROR TYPES were missed
+entirely — `MiddlewareShapeError` (returned BARE from ~20 production call sites across every
+adapter), `ContextFieldNotPreparedError` (returned BARE from `ContextField[V].Set`, a method the
+user's OWN Fn code calls directly), and `UnsatisfiedScopesError` (always wrapped inside the
+already-public `SecurityError`, so not a hard leak, but no alias existed for drilling into the
+precise cause). Since `internal/*` is unimportable from outside the module, a real external
+caller could not `errors.As(err, &shapeErr)` on the first two AT ALL.
+
+- **Fix**: added `type XError = middleware.XError` aliases for all 3 to each of
+  `api/events`/`api/reqreply`/`api/rest`'s own `middleware_vocabulary.go` — since Go aliases are
+  the literal same type, this required ZERO changes to any of the ~20 existing production call
+  sites constructing `middleware.MiddlewareShapeError{...}` directly.
+- New regression tests added: `api/{events,reqreply,rest}/middleware_vocabulary_test.go` (new
+  files) directly prove `ContextFieldNotPreparedError`/`UnsatisfiedScopesError` work via the
+  public alias with no adapter needed; `adapters/mqtt5/reqreply_transport_test.go` gained
+  `TestAttachServer_HandleMW_WrongShapedFn_ReturnsPublicMiddlewareShapeError` (reqreply had NO
+  prior test for this failure mode at all); 7 EXISTING tests across
+  `adapters/{mqtt5,mqtt,zeromq}/{caller,client_full_pipeline}_test.go` and
+  `adapters/nethttp/binding_test.go` were converted from asserting on
+  `middleware.MiddlewareShapeError` directly to the new public alias, dropping their
+  `internal/middleware` import where it became fully unused as a result.
+- Extends the exact precedent `ErrorPatternValuer`/`ErrorCase` already established — this round
+  closes the gap those aliases didn't cover. Updated `review-go-codex`'s checklist §16 with a new
+  row ("Exported error types are aliased too") so a future internal-package audit catches this
+  class of gap without relying on a user spotting it first.
+- Full repo verification clean: gofmt, `go build ./...`, `go vet ./...`, `go test ./...` (58/58
+  packages passing), `just check` (staticcheck/gosec clean), full `examples/*/` build sweep.
 
 ---
 

@@ -460,7 +460,7 @@ func TestCall_CredentialFunc_Error(t *testing.T) {
 }
 
 // TestCall_WrongShapeMiddleware_ReturnsMiddlewareShapeError locks in that
-// Call fails LOUDLY (a typed middleware.MiddlewareShapeError, before any
+// Call fails LOUDLY (a typed rest.MiddlewareShapeError, before any
 // network activity) for a mismatched-shape Fn, rather than silently
 // ignoring it the way mergeCredentialHeaders' own type assertion would —
 // mirrors Handler/Register's eager validateMiddlewareShapes on the server
@@ -473,7 +473,7 @@ func TestCall_WrongShapeMiddleware_ReturnsMiddlewareShapeError(t *testing.T) {
 	_, err := callWithHandle(context.Background(), http.DefaultClient, "http://localhost",
 		handle, getReq{}, CallOptions{})
 
-	var shapeErr middleware.MiddlewareShapeError
+	var shapeErr rest.MiddlewareShapeError
 	if !errors.As(err, &shapeErr) {
 		t.Fatalf("want MiddlewareShapeError, got %v", err)
 	}

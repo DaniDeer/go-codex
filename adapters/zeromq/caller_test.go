@@ -9,7 +9,6 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/internal/middleware"
 	"github.com/DaniDeer/go-codex/stats"
 )
 
@@ -341,7 +340,7 @@ func TestServeSubscribers_MalformedImplementationShape_ErrorsEagerly(t *testing.
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	err := caller.ServeSubscribers(ctx)
-	var shapeErr middleware.MiddlewareShapeError
+	var shapeErr events.MiddlewareShapeError
 	if !errors.As(err, &shapeErr) {
 		t.Fatalf("want MiddlewareShapeError, got %T: %v", err, err)
 	}
@@ -419,7 +418,7 @@ func TestSubscribeWithHandle_RejectsMalformedSubscribeMWShape(t *testing.T) {
 	err = subscribeWithHandle(context.Background(), sock, handle,
 		func(_ context.Context, _ sensorReading) error { return nil },
 		SubscribeOptions[sensorReading]{})
-	var shapeErr middleware.MiddlewareShapeError
+	var shapeErr events.MiddlewareShapeError
 	if !errors.As(err, &shapeErr) {
 		t.Fatalf("want MiddlewareShapeError, got %T: %v", err, err)
 	}
@@ -437,7 +436,7 @@ func TestPublish_RejectsMalformedPublishMWShape(t *testing.T) {
 	}
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1.0}
 	err = publish(context.Background(), sock, handle, reading, nil, true, PublishOptions[sensorReading]{})
-	var shapeErr middleware.MiddlewareShapeError
+	var shapeErr events.MiddlewareShapeError
 	if !errors.As(err, &shapeErr) {
 		t.Fatalf("want MiddlewareShapeError, got %T: %v", err, err)
 	}

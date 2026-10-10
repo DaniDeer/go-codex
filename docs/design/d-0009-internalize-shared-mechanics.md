@@ -363,6 +363,44 @@ against AMQP (a real second transport data point) rather than generalized from `
 see that doc for the current design (updated for this doc's own `internal/middleware` +
 per-pattern-wrapper convention after this retirement).
 
+## Addendum — `internal/middleware`'s 3 error types aliased publicly
+
+Found during a later `deep-dive-bug-hunt` session (applying the test-rework session's "stop
+test files reaching into `internal/route`/`internal/middleware` directly" cleanup): the Standing
+design rule above was already followed for every CONSTRUCTOR/TYPE `internal/middleware` exports
+(`Declaration`, `ContextField`, `SecurityDeclaration`, `RouteMiddleware`,
+`ServerImplementation`/`ClientImplementation`, `ErrorPatternValuer`/`ErrorCase`) — each has a
+same-named public alias in `api/events`/`api/reqreply`/`api/rest`'s own `middleware_vocabulary.go`
+— but its 3 EXPORTED ERROR TYPES were missed:
+
+- `MiddlewareShapeError` — returned BARE (no wrapping at all) from ~20 production call sites
+  across every adapter (Register/Attach/Serve/Call/subscribe dispatch) whenever a middleware's
+  `Fn` doesn't match the shape an attachment point expects. Since `internal/*` is unimportable
+  from outside the module, a real external caller could not `errors.As(err, &shapeErr)` on this
+  AT ALL before this fix.
+- `ContextFieldNotPreparedError` — returned BARE from `ContextField[V].Set(ctx, raw)`, a method
+  the user's OWN middleware `Fn` code calls directly (not purely adapter-internal plumbing) —
+  same leak class.
+- `UnsatisfiedScopesError` — checked specifically: ALWAYS wrapped inside the already-public
+  `events.SecurityError`/`reqreply.SecurityError`/`rest.SecurityError{Err: err}` (which already
+  implement `Unwrap`), at every `CheckScopes` call site, so not a hard leak — but had no public
+  alias for a caller wanting the PRECISE cause rather than just "a security check failed".
+
+Fixed by adding the same `type XError = middleware.XError` alias pattern to all 3 packages'
+`middleware_vocabulary.go` files — since Go type aliases are the literal same type (not a new
+one), this required **zero changes to any of the ~20 existing production call sites**: every
+`return middleware.MiddlewareShapeError{...}` automatically became an instance of the new public
+alias the moment it was declared. New regression tests confirm `errors.As` works against each
+alias without importing `internal/middleware` (`api/{events,reqreply,rest}/middleware_vocabulary_test.go`
+for the two directly-testable-via-public-surface cases; an end-to-end adapter-dispatch test per
+pattern for `MiddlewareShapeError` specifically, since that one is only ever constructed inside
+adapter code).
+
+This extends the exact same precedent `ErrorPatternValuer`/`ErrorCase` already established
+(Phase 4 above) — codified here so the Standing design rule's own checklist (§16 in
+`review-go-codex`) is updated to explicitly include "exported error types" alongside
+constructors/types when auditing a shared `internal/` package for a missing public alias.
+
 ## Related documents
 
 - [D-0008 — Declarative Router Groups](d-0008-declarative-router-groups.md)'s

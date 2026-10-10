@@ -801,6 +801,35 @@ func TestAttachServer_HandleMW_GeneralPurpose_AlwaysRuns(t *testing.T) {
 	}
 }
 
+// TestAttachServer_HandleMW_WrongShapedFn_ReturnsPublicMiddlewareShapeError
+// proves [reqreply.MiddlewareShapeError] (the public alias added for
+// internal/middleware.MiddlewareShapeError) is reachable via errors.As
+// WITHOUT ever importing internal/middleware -- this is api/reqreply's
+// own regression coverage for that alias (api/events and api/rest already
+// had pre-existing tests asserting on the internal type directly, now
+// converted to use the same public alias).
+func TestAttachServer_HandleMW_WrongShapedFn_ReturnsPublicMiddlewareShapeError(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	wrongShapedFn := func() {} // matches neither recognized server Fn shape
+	route := reqreply.NewRoute[computeReq, computeResp]("compute/wrong-shape", computeReqCodec, computeRespCodec).
+		HandleMW(nil, wrongShapedFn)
+	handler := func(_ context.Context, req computeReq) (computeResp, error) {
+		return computeResp{Sum: req.X + req.Y}, nil
+	}
+	if _, err := route.WithHandler(handler).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: &mockClient{}, Router: newMockRouter()})); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	err := server.Serve(context.Background())
+	var shapeErr reqreply.MiddlewareShapeError
+	if !errors.As(err, &shapeErr) {
+		t.Fatalf("want reqreply.MiddlewareShapeError, got %v (%T)", err, err)
+	}
+}
+
 // TestAttachServer_MultipleGeneralPurposeHandleMW_ComposeOutermostIn is a
 // direct regression test proving TWO general-purpose HandleMW
 // decorators attached to the SAME route compose in the CORRECT

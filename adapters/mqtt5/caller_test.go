@@ -9,7 +9,6 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
-	"github.com/DaniDeer/go-codex/internal/middleware"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
@@ -298,9 +297,9 @@ func TestSubscribeMW_WrongShape_ReturnsMiddlewareShapeError(t *testing.T) {
 
 	err = subscribeWithHandle(context.Background(), client, router, handle, func(context.Context, sensorReading) error { return nil },
 		SubscribeOptions{})
-	var shapeErr middleware.MiddlewareShapeError
+	var shapeErr events.MiddlewareShapeError
 	if !errors.As(err, &shapeErr) {
-		t.Fatalf("want middleware.MiddlewareShapeError, got %v", err)
+		t.Fatalf("want events.MiddlewareShapeError, got %v", err)
 	}
 }
 
@@ -318,9 +317,9 @@ func TestPublishMW_WrongShape_ReturnsMiddlewareShapeError(t *testing.T) {
 
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
 	err = publish(context.Background(), client, handle, reading, nil, true, PublishOptions[sensorReading]{})
-	var shapeErr middleware.MiddlewareShapeError
+	var shapeErr events.MiddlewareShapeError
 	if !errors.As(err, &shapeErr) {
-		t.Fatalf("want middleware.MiddlewareShapeError, got %v", err)
+		t.Fatalf("want events.MiddlewareShapeError, got %v", err)
 	}
 }
 
@@ -340,9 +339,9 @@ func TestServeSubscribers_WrongImplShape_ReturnsMiddlewareShapeError(t *testing.
 
 	caller := newCaller(client, router, evtClient)
 	err := caller.ServeSubscribers(context.Background())
-	var shapeErr middleware.MiddlewareShapeError
+	var shapeErr events.MiddlewareShapeError
 	if !errors.As(err, &shapeErr) {
-		t.Fatalf("want middleware.MiddlewareShapeError, got %v", err)
+		t.Fatalf("want events.MiddlewareShapeError, got %v", err)
 	}
 }
 

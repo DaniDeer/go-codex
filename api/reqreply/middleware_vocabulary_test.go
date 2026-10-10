@@ -1,0 +1,42 @@
+package reqreply_test
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/DaniDeer/go-codex/api/reqreply"
+	"github.com/DaniDeer/go-codex/codex"
+)
+
+// This file tests the 3 public error aliases middleware_vocabulary.go adds
+// onto internal/middleware's own error types (MiddlewareShapeError,
+// ContextFieldNotPreparedError, UnsatisfiedScopesError) -- confirming
+// errors.As works against each WITHOUT ever importing internal/middleware.
+// MiddlewareShapeError already has end-to-end adapter-dispatch coverage
+// (see adapters/mqtt5/reqreply_transport_test.go's
+// TestAttachServer_HandleMW_WrongShapedFn_ReturnsPublicMiddlewareShapeError);
+// these 2 are directly testable via the public surface alone
+// (ContextField.Set / CheckScopes), so no adapter is needed here.
+
+func TestContextField_Set_NotPrepared_ReturnsPublicAlias(t *testing.T) {
+	field := reqreply.NewContextField(codex.String())
+	// A bare context.Background() never went through the dispatch-internal
+	// EnsureContextFields preparation step a real adapter always performs
+	// before invoking a middleware's own Fn.
+	err := field.Set(context.Background(), "value")
+	var notPrepared reqreply.ContextFieldNotPreparedError
+	if !errors.As(err, &notPrepared) {
+		t.Fatalf("want reqreply.ContextFieldNotPreparedError, got %v (%T)", err, err)
+	}
+}
+
+func TestCheckScopes_Unsatisfied_ReturnsPublicAlias(t *testing.T) {
+	reqs := []reqreply.SecurityRequirement{reqreply.Require("bearer", "read:compute")}
+	granted := map[string][]string{"bearer": {"write:compute"}} // missing read:compute
+	err := reqreply.CheckScopes(reqs, granted)
+	var unsatisfied reqreply.UnsatisfiedScopesError
+	if !errors.As(err, &unsatisfied) {
+		t.Fatalf("want reqreply.UnsatisfiedScopesError, got %v (%T)", err, err)
+	}
+}

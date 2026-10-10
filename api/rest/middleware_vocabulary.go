@@ -80,3 +80,27 @@ type ClientImplementation = middleware.ClientImplementation
 func CheckScopes(reqs []SecurityRequirement, granted map[string][]string) error {
 	return middleware.CheckScopes(reqs, granted)
 }
+
+// MiddlewareShapeError indicates a middleware's own Fn doesn't match the
+// shape an attachment point expects — e.g. a server-side Fn attached via
+// a client-only pairing, or a general-purpose Fn attached where a
+// Security-shaped Fn is required. Returned at Register/Serve/Call time
+// (never silently dropped) by every adapter's dispatch path — see
+// [internal/middleware.MiddlewareShapeError] for the full doc comment.
+// This alias exists so a caller can `errors.As(err, &shapeErr)` without
+// ever importing internal/middleware directly.
+type MiddlewareShapeError = middleware.MiddlewareShapeError
+
+// ContextFieldNotPreparedError is returned by [ContextField.Set] when the
+// owning adapter never called the dispatch-internal context-field
+// preparation step before a middleware's own Fn tried to write into a
+// [ContextField] — see [internal/middleware.ContextFieldNotPreparedError]
+// for the full doc comment.
+type ContextFieldNotPreparedError = middleware.ContextFieldNotPreparedError
+
+// UnsatisfiedScopesError is returned by [CheckScopes] (and reachable via
+// errors.As through [SecurityError], which already implements Unwrap)
+// when the combined granted scopes across every attached security Fn do
+// not satisfy the route's declared [SecurityRequirement]s — see
+// [internal/middleware.UnsatisfiedScopesError] for the full doc comment.
+type UnsatisfiedScopesError = middleware.UnsatisfiedScopesError

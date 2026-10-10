@@ -20,7 +20,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/internal/middleware"
 	"github.com/DaniDeer/go-codex/ports"
 	gstream "github.com/DaniDeer/go-codex/stream"
 )
@@ -579,7 +578,7 @@ func TestConsume_GeneralShapeFn_StillRejected(t *testing.T) {
 	err := consumeSSE(context.Background(), http.DefaultClient, "http://localhost", route.ClientHandle(), sseTestReq{ID: "machine-1"},
 		func(_ context.Context, _ userResp) error { return nil }, ConsumeOptions{})
 
-	var shapeErr middleware.MiddlewareShapeError
+	var shapeErr rest.MiddlewareShapeError
 	if !errors.As(err, &shapeErr) {
 		t.Fatalf("want MiddlewareShapeError, got %v", err)
 	}

@@ -9,7 +9,6 @@ import (
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/internal/middleware"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 )
 
@@ -463,9 +462,9 @@ func TestClientSubscribe_MalformedImplementationFn_ReturnsShapeErrorEagerly(t *t
 		SubscribeMW(nil, func() {}) // wrong shape entirely
 
 	err := c.Subscribe(context.Background(), sub, func(_ context.Context, _ sensorReading) error { return nil })
-	var shapeErr middleware.MiddlewareShapeError
+	var shapeErr events.MiddlewareShapeError
 	if !errors.As(err, &shapeErr) {
-		t.Fatalf("want middleware.MiddlewareShapeError, got %v (%T)", err, err)
+		t.Fatalf("want events.MiddlewareShapeError, got %v (%T)", err, err)
 	}
 }
 
@@ -678,9 +677,9 @@ func TestClientPublish_MalformedImplementationFn_ReturnsShapeErrorEagerly(t *tes
 
 	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
 	err := c.Publish(context.Background(), pub, reading)
-	var shapeErr middleware.MiddlewareShapeError
+	var shapeErr events.MiddlewareShapeError
 	if !errors.As(err, &shapeErr) {
-		t.Fatalf("want middleware.MiddlewareShapeError, got %v (%T)", err, err)
+		t.Fatalf("want events.MiddlewareShapeError, got %v (%T)", err, err)
 	}
 	if len(client.published) != 0 {
 		t.Error("want no message published when shape validation fails eagerly")
