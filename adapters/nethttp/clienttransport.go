@@ -108,7 +108,7 @@ type clientTransport struct {
 	// until BindClient runs (meaning this transport was never attached
 	// via rest.Client.Attach — e.g. used directly with
 	// rest.CallWithTransport, which deliberately stays registry-free per
-	// docs/roadmap/rest-typed-redirects.md's Resolved design decision
+	// docs/features/rest-redirects.md's Resolved design decision
 	// #5 — auto-follow is skipped entirely in that case, a typed
 	// RedirectError is returned instead).
 	client *rest.Client
@@ -668,7 +668,7 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 			statusCode := resp.StatusCode
 			obs.RecordRequest(method, path, statusCode, time.Since(start))
 
-			// docs/roadmap/rest-typed-redirects.md: the overridden
+			// docs/features/rest-redirects.md: the overridden
 			// CheckRedirect (NewClientTransport) means net/http never
 			// auto-follows a 3xx — it's surfaced here, exactly like any
 			// other status, for Call's own outer code (after finalStep
@@ -1036,7 +1036,7 @@ func (t *clientTransport) consumeOnce(
 	defer resp.Body.Close()
 	obs.RecordRequest(method, path, resp.StatusCode, time.Since(start))
 
-	// docs/roadmap/rest-typed-redirects.md round 2 finding D + round 3
+	// docs/features/rest-redirects.md round 2 finding D + round 3
 	// finding G3: a 3xx is resolved against c.sseRoutes (Consume's own
 	// redirect-following, transparent to the caller's fn) EVERY
 	// reconnect attempt — consumeOnce itself runs fresh on each

@@ -440,7 +440,7 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 		handlerResults := handlerFn.Call([]reflect.Value{reflect.ValueOf(ctx), reqPtr.Elem(), send})
 		if errI := handlerResults[0].Interface(); errI != nil {
 			err, _ := errI.(error)
-			// docs/roadmap/rest-typed-redirects.md round 2 finding E: see
+			// docs/features/rest-redirects.md round 2 finding E: see
 			// adapter.go's sseHandlerFunc's identical, non-reflect check
 			// for the full rationale (gated on headersCommitted, not
 			// sw.code).

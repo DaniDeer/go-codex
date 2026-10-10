@@ -16,7 +16,7 @@ import (
 // defaultMaxRedirects is the chain-depth cap used when
 // [rest.ClientCallOptions.MaxRedirects]/[rest.ClientConsumeOptions.MaxRedirects]
 // is left at its zero value — mirrors net/http's own 10-hop default
-// precedent (docs/roadmap/rest-typed-redirects.md, round 3 finding G2).
+// precedent (docs/features/rest-redirects.md, round 3 finding G2).
 const defaultMaxRedirects = 10
 
 // redirectFollowUpInfo captures exactly what [followRedirect] needs from

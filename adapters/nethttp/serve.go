@@ -562,7 +562,7 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 		handlerResults := handlerFn.Call([]reflect.Value{reflect.ValueOf(ctx), reqPtr.Elem()})
 		respValue, handlerErrV := handlerResults[0], handlerResults[1]
 		if err, _ := handlerErrV.Interface().(error); err != nil {
-			// docs/roadmap/rest-typed-redirects.md: a RedirectError
+			// docs/features/rest-redirects.md: a RedirectError
 			// (constructed via rest.Redirect/rest.RedirectToSSE) is
 			// recognized BEFORE ErrorPattern/ErrorStatus matching —
 			// renders status + Location, no body. This is the reflect-

@@ -15,7 +15,7 @@ import (
 // attempt to build a follow-up request — reusing the ORIGINATING
 // attempt's own already-computed credentials/cookies/Accept header
 // (round 4 finding A, applies identically to Consume per
-// docs/roadmap/rest-typed-redirects.md's finding D), never the
+// docs/features/rest-redirects.md's finding D), never the
 // registered target route's own.
 type sseRedirectFollowUpInfo struct {
 	credHeaders http.Header

@@ -3251,7 +3251,7 @@ type ClientCallOptions struct {
 	Observer stats.Observer
 
 	// MaxRedirects caps how many redirects [Client.Call] will
-	// transparently auto-follow (docs/roadmap/rest-typed-redirects.md)
+	// transparently auto-follow (docs/features/rest-redirects.md)
 	// before returning [RedirectChainTooDeepError]. 0 means "use the
 	// default" (10, mirroring net/http's own precedent).
 	MaxRedirects int
@@ -3267,7 +3267,7 @@ type ClientConsumeOptions struct {
 
 	// MaxRedirects is [ClientCallOptions.MaxRedirects]'s Consume-side
 	// sibling — applies to every reconnect attempt, not just the
-	// initial connection (docs/roadmap/rest-typed-redirects.md).
+	// initial connection (docs/features/rest-redirects.md).
 	MaxRedirects int
 }
 
@@ -3330,8 +3330,8 @@ type ClientTransport interface {
 type Client struct {
 	mu        sync.RWMutex
 	transport ClientTransport
-	// routes/sseRoutes are c's redirect-target registry (docs/roadmap/
-	// rest-typed-redirects.md's "Client-side route registry") — TWO
+	// routes/sseRoutes are c's redirect-target registry (docs/features/
+	// rest-redirects.md's "Client-side route registry") — TWO
 	// parallel maps, keyed by [routeKey] (Method+PathTemplate): routes
 	// holds Call-decodable targets, sseRoutes holds Consume-streamable
 	// ones. Populated automatically on first [Client.Call]/
@@ -3471,8 +3471,8 @@ func (c *Client) Call(ctx context.Context, route any, req any, opts ...ClientCal
 	if t == nil {
 		return nil, NoClientTransportAttachedError{}
 	}
-	// Auto-populate the redirect-target registry (docs/roadmap/
-	// rest-typed-redirects.md's "Client-side route registry") — best-
+	// Auto-populate the redirect-target registry (docs/features/
+	// rest-redirects.md's "Client-side route registry") — best-
 	// effort, never blocks/errors this call; see registerAutoFromCall's
 	// own doc comment.
 	c.registerAutoFromCall(route)

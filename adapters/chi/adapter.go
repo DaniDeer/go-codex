@@ -512,7 +512,7 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 
 		resp, err = fn(ctx, req)
 		if err != nil {
-			// docs/roadmap/rest-typed-redirects.md: a RedirectError
+			// docs/features/rest-redirects.md: a RedirectError
 			// (constructed via rest.Redirect/rest.RedirectToSSE) is
 			// recognized BEFORE ErrorPattern/ErrorStatus matching —
 			// renders status + Location, no body — mirrors
@@ -986,7 +986,7 @@ func sseHandlerFunc[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn 
 		}
 
 		if err := fn(ctx, req, send); err != nil {
-			// docs/roadmap/rest-typed-redirects.md round 2 finding E:
+			// docs/features/rest-redirects.md round 2 finding E:
 			// gated on headersCommitted, not sw.code — mirrors
 			// adapters/nethttp's identical sseHandlerFunc check.
 			if !headersCommitted {

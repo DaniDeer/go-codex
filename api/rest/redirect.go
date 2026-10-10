@@ -8,7 +8,7 @@ import (
 
 // redirectStatuses is the set of HTTP status codes [Redirect]/[RedirectToSSE]
 // accept — the general redirect family, not just 303 (see
-// docs/roadmap/rest-typed-redirects.md's Scope decision 1).
+// docs/features/rest-redirects.md's Scope decision 1).
 var redirectStatuses = map[int]bool{
 	http.StatusMovedPermanently:  true, // 301
 	http.StatusFound:             true, // 302

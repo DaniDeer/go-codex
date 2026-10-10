@@ -560,7 +560,7 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 		handlerResults := handlerFn.Call([]reflect.Value{reflect.ValueOf(ctx), reqPtr.Elem()})
 		respValue, handlerErrV := handlerResults[0], handlerResults[1]
 		if err, _ := handlerErrV.Interface().(error); err != nil {
-			// docs/roadmap/rest-typed-redirects.md: mirrors
+			// docs/features/rest-redirects.md: mirrors
 			// adapters/nethttp/serve.go's identical reflect-based check.
 			if redirErr, ok := asRedirectError(err); ok {
 				sw.Header().Set("Location", redirErr.Location)
