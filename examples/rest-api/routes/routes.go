@@ -166,6 +166,28 @@ var IngestConflictRoute = rest.NewRoute[CreateUserReq, struct{}]("POST", "/users
 	),
 )
 
+// CreateUserRedirectRoute demonstrates docs/features/rest-redirects.md's
+// Typed HTTP Redirects end to end against a REAL Router-grouped target
+// (GetUserRoute, Mounted under "/users" below — a RELATIVE "/{id}"
+// template, composed to "/users/{id}" only via that Router): a SCRATCH
+// route (separate from CreateUserRoute, which stays untouched and keeps
+// returning the created User directly — changing ITS behavior would
+// break every OTHER demo that already depends on that contract), whose
+// handler (see chiserver/server.go, nethttpserver/server.go) creates the
+// user then returns rest.Redirect(http.StatusSeeOther, ...,
+// routes.GetUserRoute, vars, rest.WithRouter(usersRouter)) instead of the
+// user directly — the rest.WithRouter(usersRouter) argument is REQUIRED
+// here (GetUserRoute's path template is relative); omitting it would
+// resolve the Location against the wrong, un-prefixed path (see
+// docs/features/rest-redirects.md's "Router-grouped targets" section).
+// Declared with no inline Security (paired at the attachment sites,
+// server AND client, same convention as CreateUserRoute/GetUserRoute
+// above) — see client/client.go's CreateUserRedirectRouteAsAlice.
+var CreateUserRedirectRoute = rest.NewRoute[CreateUserReq, User]("POST", "/users-redirect-demo",
+	CreateUserReqCodec, UserCodec,
+	rest.RouteMeta{OperationID: "createUserRedirectDemo", Summary: "Create a user, then 303-redirect to GetUserRoute", Tags: []string{"redirects"}},
+)
+
 // CreateUserRoute/GetUserRoute/UpdateUserRoute/ListUsersRoute declare
 // RELATIVE paths ("", "/{id}") — ALL 4 are Mounted under a REAL
 // docs/design/d-0008-declarative-router-groups.md Mount

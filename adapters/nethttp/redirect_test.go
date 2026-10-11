@@ -545,3 +545,293 @@ func TestClientConsume_AutoFollowIntoRouteOnlyTarget_ReturnsRedirectTargetNotStr
 		t.Fatalf("Consume: want RedirectTargetNotStreamableError, got %T: %v", err, err)
 	}
 }
+
+// ── Part D (Router/Middleware compatibility verification) ──
+
+// TestClientCall_AutoFollow_DoesNotDispatchTargetsOwnClientMW codifies the
+// "reuse the originating call's credentials, never re-derive from the
+// target's own ClientMW" design rule as a regression-tested property, not
+// just prose: a redirect target with a general-purpose ClientMW (the
+// SAME wrap-around shape TestAttach_ClientCall_GeneralPurposeClientMW_
+// Wraps exercises directly) must NOT have that middleware invoked when
+// reached via auto-follow — only when called directly.
+func TestClientCall_AutoFollow_DoesNotDispatchTargetsOwnClientMW(t *testing.T) {
+	b := rest.NewServer(testInfo)
+
+	var wrapperRan bool
+	getUser := newGetUserRoute().ClientMW(nil, func(next func(context.Context, getUserReq) (userResp, error)) func(context.Context, getUserReq) (userResp, error) {
+		return func(ctx context.Context, req getUserReq) (userResp, error) {
+			wrapperRan = true
+			return next(ctx, req)
+		}
+	})
+	if err := getUser.WithHandler(func(ctx context.Context, req getUserReq) (userResp, error) {
+		return userResp{ID: req.ID, Name: "Alice"}, nil
+	}).Register(b); err != nil {
+		t.Fatalf("Register getUser: %v", err)
+	}
+
+	bounceRoute := rest.NewRoute[createReq, userResp]("POST", "/orders", createReqCodec, userRespCodec)
+	if err := bounceRoute.WithHandler(func(ctx context.Context, req createReq) (userResp, error) {
+		var zero userResp
+		return zero, rest.Redirect(http.StatusSeeOther, bounceRoute, getUser, map[string]string{"id": "f47ac10b"})
+	}).Register(b); err != nil {
+		t.Fatalf("Register bounceRoute: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	if err := serve(mux, b); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := rest.NewClient()
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	if err := client.RegisterRoute(getUser); err != nil {
+		t.Fatalf("RegisterRoute(getUser): %v", err)
+	}
+
+	if _, err := client.Call(context.Background(), bounceRoute, createReq{Name: "Alice"}); err != nil {
+		t.Fatalf("Call(bounceRoute): want transparent auto-follow, got error: %v", err)
+	}
+	if wrapperRan {
+		t.Error("auto-follow must NOT dispatch the target's own ClientMW — wrapperRan should still be false")
+	}
+
+	// Sanity check: the wrapper mechanism itself DOES work when the
+	// target is called directly (not via auto-follow) — proves the
+	// prior assertion is a genuine "bypassed," not "broken."
+	if _, err := client.Call(context.Background(), getUser, getUserReq{ID: "f47ac10b"}); err != nil {
+		t.Fatalf("Call(getUser) direct: %v", err)
+	}
+	if !wrapperRan {
+		t.Error("direct Call(getUser) should have dispatched its own ClientMW — wrapperRan should now be true")
+	}
+}
+
+// TestClientCall_AutoFollow_ReusesCodecBackedClientMiddlewareCredential is
+// a regression test for a confirmed, real bug found while building
+// examples/rest-api's redirect demo: auto-follow's redirectFollowUpInfo
+// only ever captured the LEGACY credHeaders mechanism, silently DROPPING
+// a credential delivered via a codec-backed BoundClientMiddleware (the
+// mechanism examples/rest-api's own auth.BoundScopeClientMW uses) on
+// every follow-up request — producing a 400 (missing required header),
+// not even a 401, since the target's required Authorization header
+// param failed validation before the handler ever ran. Fixed by also
+// capturing/replaying the originating request's merged headerVars.
+func TestClientCall_AutoFollow_ReusesCodecBackedClientMiddlewareCredential(t *testing.T) {
+	type authIn struct{ Token string }
+	// GrantedScopes is read via reflection by the security-grant merge
+	// mechanism (CollectGrantsReflect/MergeMiddlewareHandlerGrants) —
+	// REQUIRED for CheckScopes to consider "bearerAuth" satisfied, even
+	// with nil required scopes (mirrors boundBearerAuthOut's identical
+	// convention in adapter_test.go).
+	type authOut struct{ GrantedScopes map[string][]string }
+
+	b := rest.NewServer(testInfo)
+	serverMW := rest.BoundSecurityMiddleware[getUserReq, authIn, authOut](
+		"bearerAuth", rest.BearerScheme("JWT"), nil,
+		func(ctx context.Context, _ *getUserReq, in authIn) (authOut, error) {
+			if in.Token != "secret-token" {
+				return authOut{}, errors.New("invalid token")
+			}
+			return authOut{GrantedScopes: map[string][]string{"bearerAuth": {}}}, nil
+		},
+	).WithRequestHeader(rest.NewRequiredHeaderParam("Authorization", codex.String(),
+		func(in authIn) string { return in.Token },
+		func(in *authIn, v string) { in.Token = v },
+	))
+
+	getUser := newGetUserRoute().HandleBoundMW(serverMW)
+	if err := getUser.WithHandler(func(ctx context.Context, req getUserReq) (userResp, error) {
+		return userResp{ID: req.ID, Name: "Alice"}, nil
+	}).Register(b); err != nil {
+		t.Fatalf("Register getUser: %v", err)
+	}
+
+	bounceRoute := rest.NewRoute[createReq, userResp]("POST", "/orders", createReqCodec, userRespCodec)
+	if err := bounceRoute.WithHandler(func(ctx context.Context, req createReq) (userResp, error) {
+		var zero userResp
+		return zero, rest.Redirect(http.StatusSeeOther, bounceRoute, getUser, map[string]string{"id": "f47ac10b"})
+	}).Register(b); err != nil {
+		t.Fatalf("Register bounceRoute: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	if err := serve(mux, b); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	clientMW := rest.BoundSecurityClientMiddleware[createReq, authIn, authOut](
+		"bearerAuth", rest.BearerScheme("JWT"), nil,
+		func(context.Context, createReq) (authIn, error) {
+			return authIn{Token: "secret-token"}, nil
+		},
+	).WithRequestHeader(rest.NewRequiredHeaderParam("Authorization", codex.String(),
+		func(in authIn) string { return in.Token },
+		func(in *authIn, v string) { in.Token = v },
+	))
+	bounceRouteClient := bounceRoute.ClientBoundMW(clientMW)
+
+	client := rest.NewClient()
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	if err := client.RegisterRoute(getUser); err != nil {
+		t.Fatalf("RegisterRoute(getUser): %v", err)
+	}
+
+	respAny, err := client.Call(context.Background(), bounceRouteClient, createReq{Name: "Alice"})
+	if err != nil {
+		t.Fatalf("Call(bounceRoute): want transparent auto-follow reusing the codec-backed credential, got error: %v", err)
+	}
+	resp, ok := respAny.(userResp)
+	if !ok || resp.ID != "f47ac10b" {
+		t.Fatalf("Call(bounceRoute): unexpected result %#v", respAny)
+	}
+}
+
+// TestClientCall_RedirectRegistry_MismatchedRouterComposition_ReturnsUnrecognizedRedirectError
+// is a genuine architecture constraint, not just a usage mistake to
+// avoid: the SERVER computes the redirect Location via
+// rest.Redirect(..., target, vars, rest.WithRouter(serverRouter)); the
+// CLIENT separately registers the target's decode handle via its OWN,
+// independently-constructed Router value. If the two Routers compose to
+// DIFFERENT absolute paths, the registry lookup fails — deliberately
+// typed (rest.UnrecognizedRedirectError), never a silent wrong-route
+// match or a panic.
+func TestClientCall_RedirectRegistry_MismatchedRouterComposition_ReturnsUnrecognizedRedirectError(t *testing.T) {
+	b := rest.NewServer(testInfo)
+	serverRouter := rest.NewRouter("/v1")
+
+	getUser := rest.NewRoute[getUserReq, userResp]("GET", "/users/{id}",
+		getUserReqCodec, userRespCodec,
+		rest.NewPathParam("id", codex.String(),
+			func(r getUserReq) string { return r.ID },
+			func(r *getUserReq, v string) { r.ID = v },
+		)).WithHandler(func(ctx context.Context, req getUserReq) (userResp, error) {
+		return userResp{ID: req.ID, Name: "Alice"}, nil
+	})
+	var bounceRoute rest.Route[createReq, userResp]
+	bounceRoute = rest.NewRoute[createReq, userResp]("POST", "/orders", createReqCodec, userRespCodec).
+		WithHandler(func(ctx context.Context, req createReq) (userResp, error) {
+			var zero userResp
+			return zero, rest.Redirect(http.StatusSeeOther, bounceRoute, getUser, map[string]string{"id": "f47ac10b"}, rest.WithRouter(serverRouter))
+		})
+	if err := rest.NewRouter("/v1").Route(getUser).Register(b); err != nil {
+		t.Fatalf("Register getUser under /v1: %v", err)
+	}
+	if err := bounceRoute.Register(b); err != nil {
+		t.Fatalf("Register bounceRoute: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	if err := serve(mux, b); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := rest.NewClient()
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	// DELIBERATE mismatch: the client registers getUser under a
+	// DIFFERENT prefix ("/v2") than the server composed it with
+	// ("/v1") — the registered routeKey's path ("/v2/users/{id}") will
+	// never match the server's actual redirect Location ("/v1/users/f47ac10b").
+	mismatchedClientRouter := rest.NewRouter("/v2")
+	if err := client.RegisterRoute(getUser.ClientHandle(rest.WithRouter(mismatchedClientRouter))); err != nil {
+		t.Fatalf("RegisterRoute: %v", err)
+	}
+
+	_, err := client.Call(context.Background(), bounceRoute, createReq{Name: "Alice"})
+	var unrecognizedErr rest.UnrecognizedRedirectError
+	if !errors.As(err, &unrecognizedErr) {
+		t.Fatalf("Call(bounceRoute): want UnrecognizedRedirectError (Router composition mismatch), got %T: %v", err, err)
+	}
+	if unrecognizedErr.Location != "/v1/users/f47ac10b" {
+		t.Errorf("UnrecognizedRedirectError.Location: want the SERVER's actual composed Location %q, got %q",
+			"/v1/users/f47ac10b", unrecognizedErr.Location)
+	}
+}
+
+// TestClientCall_AutoFollow_TargetRequiresDifferentSecurity_Returns401
+// confirms a security-scheme mismatch across a redirect hop fails
+// correctly — the target's own 401 — rather than hanging, panicking, or
+// silently succeeding: the originating route requires NO credential at
+// all, the target requires bearer auth, and auto-follow (by design)
+// NEVER fabricates or skips a credential it was never given.
+func TestClientCall_AutoFollow_TargetRequiresDifferentSecurity_Returns401(t *testing.T) {
+	type authIn struct{ Token string }
+	type authOut struct{ GrantedScopes map[string][]string }
+
+	b := rest.NewServer(testInfo)
+	// Authorization is OPTIONAL here (not required) — a MISSING header
+	// must still reach the Fn (so IT rejects with its own 401), exactly
+	// like boundBearerAuthMw's identical convention in adapter_test.go;
+	// a REQUIRED header param would instead fail header validation
+	// BEFORE the Fn ever runs, producing 400, not the 401 this test
+	// specifically wants to confirm.
+	serverMW := rest.BoundSecurityMiddleware[getUserReq, authIn, authOut](
+		"bearerAuth", rest.BearerScheme("JWT"), nil,
+		func(ctx context.Context, _ *getUserReq, in authIn) (authOut, error) {
+			if in.Token != "secret-token" {
+				return authOut{}, errors.New("invalid token")
+			}
+			return authOut{GrantedScopes: map[string][]string{"bearerAuth": {}}}, nil
+		},
+	).WithRequestHeader(rest.NewOptionalHeaderParam("Authorization", codex.String(),
+		func(in authIn) string { return in.Token },
+		func(in *authIn, v string) { in.Token = v },
+	))
+
+	getUser := newGetUserRoute().HandleBoundMW(serverMW)
+	if err := getUser.WithHandler(func(ctx context.Context, req getUserReq) (userResp, error) {
+		return userResp{ID: req.ID, Name: "Alice"}, nil
+	}).Register(b); err != nil {
+		t.Fatalf("Register getUser: %v", err)
+	}
+
+	// bounceRoute requires NO credential at all — the originating call
+	// carries no Authorization header to reuse.
+	bounceRoute := rest.NewRoute[createReq, userResp]("POST", "/orders", createReqCodec, userRespCodec)
+	if err := bounceRoute.WithHandler(func(ctx context.Context, req createReq) (userResp, error) {
+		var zero userResp
+		return zero, rest.Redirect(http.StatusSeeOther, bounceRoute, getUser, map[string]string{"id": "f47ac10b"})
+	}).Register(b); err != nil {
+		t.Fatalf("Register bounceRoute: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	if err := serve(mux, b); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := rest.NewClient()
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	if err := client.RegisterRoute(getUser); err != nil {
+		t.Fatalf("RegisterRoute(getUser): %v", err)
+	}
+
+	_, err := client.Call(context.Background(), bounceRoute, createReq{Name: "Alice"})
+	if err == nil {
+		t.Fatal("Call(bounceRoute): want an error (target's own 401), got nil — a security-scheme mismatch must never silently succeed")
+	}
+	var unexpectedStatus UnexpectedStatusError
+	if !errors.As(err, &unexpectedStatus) {
+		t.Fatalf("Call(bounceRoute): want UnexpectedStatusError wrapping the target's 401, got %T: %v", err, err)
+	}
+	if unexpectedStatus.StatusCode != http.StatusUnauthorized {
+		t.Errorf("StatusCode: want %d, got %d", http.StatusUnauthorized, unexpectedStatus.StatusCode)
+	}
+}

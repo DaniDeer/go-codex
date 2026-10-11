@@ -27,7 +27,17 @@ const defaultMaxRedirects = 10
 // Call]'s own networkStep closure (same lexical scope, assigned into an
 // outer variable) right before it returns a [rest.RedirectError].
 type redirectFollowUpInfo struct {
-	method       string
+	method string
+	// headerVars carries the ORIGINATING request's fully-merged header
+	// vars (path/query-param-declared headers AND, critically, any
+	// codec-backed ClientMiddlewareHandler's own EncodeIn-produced
+	// headers — e.g. a BoundClientMiddleware-delivered Authorization
+	// header, docs/design/d-0003-codec-declared-middlewares.md's
+	// Addendum 7) — a confirmed, previously-missing gap: a route secured
+	// via this codec-backed mechanism (not the legacy credHeaders path)
+	// had its credential silently DROPPED on every auto-followed
+	// request, since only credHeaders/extraHeaders were ever reused.
+	headerVars   map[string]string
 	credHeaders  http.Header
 	cookieVars   map[string]string
 	extraHeaders map[string][]string
@@ -110,6 +120,15 @@ func doFollowUpRequest(ctx context.Context, client *rest.Client, httpClient *htt
 	}
 	if contentType != "" {
 		httpReq.Header.Set("Content-Type", contentType)
+	}
+	// Mirrors the ORIGINATING request's own header precedence exactly
+	// (clientTransport.Call's networkStep): headerVars (Set) first, so a
+	// codec-backed ClientMiddlewareHandler's own delivered credential
+	// (e.g. BoundClientMiddleware's Authorization header) IS reused on
+	// the follow-up — the gap this field closes — then extraHeaders/
+	// credHeaders (Add).
+	for k, v := range info.headerVars {
+		httpReq.Header.Set(k, v)
 	}
 	for k, vs := range info.credHeaders {
 		for _, v := range vs {

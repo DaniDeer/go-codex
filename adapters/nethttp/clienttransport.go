@@ -764,6 +764,7 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 				maxRedirects := opts.MaxRedirects
 				info := redirectFollowUpInfo{
 					method:       method,
+					headerVars:   headerVars,
 					credHeaders:  credHeaders,
 					cookieVars:   cookieVars,
 					extraHeaders: opts.ExtraHeaders,
@@ -1047,6 +1048,7 @@ func (t *clientTransport) consumeOnce(
 	if isRedirectStatus(resp.StatusCode) {
 		location := resp.Header.Get("Location")
 		info := sseRedirectFollowUpInfo{
+			headerVars:  headerVars,
 			credHeaders: credHeaders,
 			cookieVars:  cookieVars,
 			accept:      httpReq.Header.Get("Accept"),

@@ -47,6 +47,59 @@ func Build(httpClient *http.Client, baseURL string) (*rest.Client, error) {
 	if err := c.Attach(nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: httpClient, BaseURL: baseURL})); err != nil {
 		return nil, err
 	}
+
+	// Explicit, CONSTRUCTION-TIME redirect-target registry population
+	// (docs/features/rest-redirects.md) — the registry's OTHER
+	// population path, alongside auto-populate-via-Call (demonstrated by
+	// examples/rest-redirect's own, deliberately minimal, standalone
+	// example instead). Registering every distinct route this package's
+	// demo suite calls through c HERE makes the client's full route
+	// vocabulary an explicit, deterministic part of construction, rather
+	// than leaving registry population to incidental demo-call order —
+	// in particular, this is what lets demo_redirect.go's PRIMARY
+	// workflow auto-follow CreateUserRedirectRouteAsAlice's redirect to
+	// GetUserRoute succeed even on the VERY FIRST call, before any OTHER
+	// demo has happened to call GetUserRoute directly.
+	//
+	// Re-registering the SAME underlying routeKey via a DIFFERENT
+	// credential-bound variant (e.g. CreateUserRouteUnauthenticated/
+	// AsAlice/AsAdmin all share POST /users) is a safe, silent no-op —
+	// see Client.RegisterRoute's own doc comment — so listing every
+	// variant below is unnecessary; one representative variant per
+	// routeKey suffices (and is what's done here).
+	for _, route := range []any{
+		LoginRoute,
+		CreateUserRouteAsAdmin,
+		GetUserRouteAsAlice,
+		UpdateUserRouteAsAdmin,
+		ListUsersRouteAsAlice,
+		ProfileRouteAsAlice,
+		AdminActionRouteAsAdmin,
+		ComputeGSRouteWithWriteScope,
+		ReusableAloneRoute,
+		StackedDemoRouteAsAlice,
+		CreateUserRedirectRouteAsAlice,
+		// Ad-hoc ErrorPattern scratch routes demo_error_pattern.go calls
+		// directly via routes.X (never through a client.go-declared
+		// variant) — included for full registry completeness per this
+		// package's own demo suite, NOT just the routes client.go itself
+		// exposes. routes.IngestConflictRoute is deliberately EXCLUDED:
+		// it's called only via nethttp.IngestAdapter, bypassing
+		// *rest.Client entirely — there is no Call/Consume path to
+		// auto-populate from, and RegisterRoute would be inert for it.
+		routes.CreateUserConflictRoute,
+		routes.RateLimitDirectRoute,
+		routes.ThrottledStatusRoute,
+		routes.ConflictRespondRoute,
+		routes.ConflictHandleRoute,
+		routes.ConflictLogRoute,
+		routes.SecuredConflictRoute,
+	} {
+		if err := c.RegisterRoute(route); err != nil {
+			return nil, err
+		}
+	}
+
 	return c, nil
 }
 
@@ -92,6 +145,20 @@ var CreateUserRouteAsAdmin = routes.CreateUserRoute.
 	ClientBoundMW(auth.BoundScopeClientMW[routes.CreateUserReq](auth.AdminScopes, adminCredFn[routes.CreateUserReq])).
 	ClientMW(nil, observer.TimingClientMW[routes.CreateUserReq, routes.User](timingLogger)).
 	ClientHandle(rest.WithRouter(usersRouter))
+
+// CreateUserRedirectRouteAsAlice attaches aliceCredFn — Alice's
+// credential satisfies BOTH this route's own ProfileScopes requirement
+// AND (reused unchanged, per docs/features/rest-redirects.md's
+// credential-reuse rule) the auto-followed hop to GetUserRoute, which
+// ALSO requires ProfileScopes. Declared WITHOUT .ClientHandle(WithRouter(...))
+// — routes.CreateUserRedirectRoute is a STANDALONE scratch route with
+// its own absolute path ("/users-redirect-demo"), registered directly
+// (not Mounted under usersRouter) on BOTH servers, mirroring the other
+// *-demo scratch routes' convention.
+var CreateUserRedirectRouteAsAlice = routes.CreateUserRedirectRoute.
+	ClientBoundMW(auth.BoundScopeClientMW[routes.CreateUserReq](auth.ProfileScopes, aliceCredFn[routes.CreateUserReq])).
+	ClientMW(nil, observer.TimingClientMW[routes.CreateUserReq, routes.User](timingLogger)).
+	ClientHandle()
 
 // GetUserRouteAsAlice attaches aliceCredFn — Alice has "profile", which
 // is exactly what this route requires.

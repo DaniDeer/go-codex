@@ -16,6 +16,18 @@
 // reverse) and pulls in no concrete HTTP client machinery beyond what
 // api/rest itself needs.
 //
+// GetTags/GetImageMetadata deliberately use rest.CallWithTransport (a
+// FRESH nethttp.NewClientTransport per call, no *rest.Client) rather than
+// api/rest's client-side redirect-target registry
+// (docs/features/rest-redirects.md) — this is the officially-documented
+// "escape hatch" use case, not an oversight: the target registry HOST
+// varies per call (resolved from imageURL), so there is no single,
+// persistent base URL a *rest.Client could Attach to once, and neither
+// GetTagsRoute nor GetManifestRoute ever redirects in practice (tags-
+// list/manifest endpoints respond directly on every registry this
+// package is proven against — only blob pulls occasionally redirect,
+// and this package never downloads blobs).
+//
 // File layout — mirrors models/docker/registry's per-operation split,
 // but holding only the IMPLEMENTATION half of each operation:
 //

@@ -2,7 +2,7 @@
 
 > See also: [`api/rest` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/rest) · [`adapters/nethttp` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/nethttp)
 >
-> Runnable demo: [`examples/rest-redirect`](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-redirect)
+> Runnable demos: [`examples/rest-redirect`](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-redirect) (standalone, minimal — auto-populate-via-`Call`) · [`examples/rest-api`'s `demo_redirect.go`](https://github.com/DaniDeer/go-codex/blob/main/examples/rest-api/demo_redirect.go) (richer, dual-adapter, Router-grouped target — explicit construction-time `RegisterRoute`)
 >
 > Guide: [REST redirects](../guides/rest-redirects.md)
 
@@ -27,6 +27,31 @@ createOrderRoute = rest.NewRoute[CreateOrderReq, Order]("POST", "/orders",
             map[string]string{"id": id})
     })
 ```
+
+## Router-grouped targets
+
+`rest.Redirect`/`rest.RedirectToSSE` accept trailing variadic `opts ...rest.ClientHandleOpt`, passed straight through to the target's own `ClientHandle(opts...)`. **Pass `rest.WithRouter(rt)` whenever the target route is (or will be) grouped under a [`Router`](router-groups.md)** — a Router-grouped route declares a RELATIVE path template (e.g. `"/{id}"`, composed to `"/users/{id}"` only via its Router's prefix); omitting `WithRouter` resolves the Location against the bare, un-prefixed template instead — the WRONG target.
+
+```go
+var createOrderRoute rest.Route[CreateOrderReq, Order]
+createOrderRoute = rest.NewRoute[CreateOrderReq, Order]("POST", "", createOrderReqCodec, orderCodec).
+    WithHandler(func(ctx context.Context, req CreateOrderReq) (Order, error) {
+        id := createOrder(req)
+        var zero Order
+        return zero, rest.Redirect(http.StatusSeeOther, createOrderRoute, getOrderRoute,
+            map[string]string{"id": id}, rest.WithRouter(ordersRouter)) // getOrderRoute is Mounted under ordersRouter
+    })
+```
+
+`WithRouter` composes BOTH the Router's prefix AND any reusable middleware attached via `Router.Use` — the SAME composition `Router.Route(target)` + `Router.Register(b)` would have produced for the target's server side, so the redirect's computed Location always matches what the server actually serves.
+
+**This composition must independently match on the client side too.** The server computes the Location via `Redirect(..., target, vars, rest.WithRouter(serverSideRouter))`; the client separately resolves the auto-follow target by consulting its own registry, populated via `Client.RegisterRoute(target.ClientHandle(rest.WithRouter(clientSideRouter)))` (or an equivalent already-composed `*RouteHandle`/credential-bound variant — never the bare, un-composed route value). Both Router values must compose to the IDENTICAL absolute path, or the client fails with the already-typed `rest.UnrecognizedRedirectError` rather than a silent wrong-route match. See [`examples/rest-api`](https://github.com/DaniDeer/go-codex/tree/main/examples/rest-api)'s `demo_redirect.go` for a worked, Router-grouped example.
+
+**Known limitation**: `WithRouter(rt)` applies only `rt`'s OWN prefix/middleware — never an ancestor `Router.Mount`'s contribution (a pre-existing limitation of `WithRouter` itself, not specific to redirects — see `Route.ClientHandle`'s own doc comment). For a multi-level nested `Router.Mount` hierarchy, keep the Router FLAT (one `NewRouter("prefix")` call) when a redirect target under it is also needed, rather than nesting via `Mount`.
+
+**Auto-follow never dispatches the target's own `ClientMW`.** Decoding an auto-followed response uses only the target handle's `DecodeMergedResponse` (codec-declared response header/cookie merge fields) — it does NOT invoke the target's own attached general-purpose `ClientMW`/`ClientBoundMW` (e.g. a timing observer, or any Out-side side effect). This is intentional and mirrors the credential-reuse rule above: auto-follow consults the registered target ONLY for its decode logic, never for behavior the ORIGINATING call didn't itself opt into.
+
+**Credential reuse covers BOTH credential delivery mechanisms.** The originating call's fully-merged header vars are replayed on the follow-up request — this includes a credential delivered via the LEGACY credential-header mechanism AND one delivered via a codec-backed `BoundClientMiddleware`/`ClientMW`'s own `EncodeIn` (e.g. `ClientBoundMW`-attached security middleware declaring a header merge field). A security-scheme MISMATCH across the hop (the target requires a DIFFERENT or ADDITIONAL scheme than the originating route) is never silently bypassed or fabricated — it surfaces as the target's own ordinary rejection (401/400, whichever its own declared requirement produces), exactly as if that request had been made directly.
 
 ## Server side
 

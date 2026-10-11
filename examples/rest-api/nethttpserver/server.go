@@ -6,6 +6,7 @@
 package nethttpserver
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -116,6 +117,35 @@ func Build(store *handlers.UserStore, obs stats.Observer, logger *slog.Logger, a
 		Route(updateUserRoute).
 		Route(listUsersRoute)
 	if err := usersRouter.Register(b); err != nil {
+		return nil, err
+	}
+
+	// createUserRedirectRoute demonstrates docs/features/rest-redirects.md
+	// end to end: creates the user via the SAME MakeCreateUserHandler
+	// routes.CreateUserRoute uses, then returns rest.Redirect(...) instead
+	// of the User directly — redirecting to routes.GetUserRoute, which IS
+	// Router-grouped (relative "/{id}" composed to "/users/{id}" only via
+	// usersRouter above), so rest.WithRouter(usersRouter) is REQUIRED (see
+	// routes.CreateUserRedirectRoute's own doc comment). Paired with
+	// ProfileScopes — the SAME requirement GetUserRoute itself declares —
+	// so the credential the client used to call THIS route is also valid
+	// for the reused-credential follow-up hop (auto-follow never
+	// re-derives credentials from the target's own declaration).
+	createUserHandler := handlers.MakeCreateUserHandler(store)
+	var createUserRedirectRoute rest.Route[routes.CreateUserReq, routes.User]
+	createUserRedirectRoute = routes.CreateUserRedirectRoute.WithHandler(
+		func(ctx context.Context, req routes.CreateUserReq) (routes.User, error) {
+			u, err := createUserHandler(ctx, req)
+			if err != nil {
+				return routes.User{}, err
+			}
+			var zero routes.User
+			return zero, rest.Redirect(http.StatusSeeOther, createUserRedirectRoute, routes.GetUserRoute,
+				map[string]string{"id": u.ID}, rest.WithRouter(usersRouter))
+		},
+	).HandleBoundMW(auth.BoundScopeServerMW[routes.CreateUserReq](auth.ProfileScopes, auth.ScopesBoundFn[routes.CreateUserReq]("/users-redirect-demo"))).
+		HandleMW(nil, obsFn).HandleMW(nil, timingFn).WithOptions(opts)
+	if err := createUserRedirectRoute.Register(b); err != nil {
 		return nil, err
 	}
 

@@ -18,6 +18,14 @@ import (
 // docs/features/rest-redirects.md's finding D), never the
 // registered target route's own.
 type sseRedirectFollowUpInfo struct {
+	// headerVars carries the ORIGINATING connection's fully-merged
+	// header vars — including any codec-backed ClientMiddlewareHandler's
+	// own EncodeIn-produced headers (e.g. a BoundClientMiddleware-
+	// delivered Authorization header) — see [redirectFollowUpInfo]'s
+	// identical field for the full rationale (the SAME gap applied here
+	// too: a Consume target secured via this mechanism had its
+	// credential silently dropped on every auto-followed reconnect).
+	headerVars  map[string]string
 	credHeaders http.Header
 	cookieVars  map[string]string
 	accept      string
@@ -77,6 +85,9 @@ func (t *clientTransport) doFollowSSERequest(ctx context.Context, current rest.R
 	}
 	if info.accept != "" {
 		httpReq.Header.Set("Accept", info.accept)
+	}
+	for k, v := range info.headerVars {
+		httpReq.Header.Set(k, v)
 	}
 	for k, vs := range info.credHeaders {
 		for _, v := range vs {

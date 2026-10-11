@@ -100,6 +100,7 @@ func main() {
 
 	demoLogin(chiClient, nethttpClient)
 	demoCreateUser(chiClient, nethttpClient, "http://"+chiAddr, "http://"+nethttpAddr)
+	demoRedirect(chiClient, nethttpClient, "http://"+chiAddr, "http://"+nethttpAddr)
 	demoGetUser(chiClient, nethttpClient, chiBuilt.GetUserHandle)
 	demoUpdateUser(chiClient, nethttpClient)
 	demoListUsers(chiClient, nethttpClient, "http://"+chiAddr, "http://"+nethttpAddr)

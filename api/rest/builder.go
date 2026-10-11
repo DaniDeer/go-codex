@@ -4777,7 +4777,20 @@ func (s SSERoute[Req, Event]) RegisterHandle(b *Server) (*SSERouteHandle[Req, Ev
 // Use for client-only scenarios where no OpenAPI spec is needed, or when
 // sharing an [SSERoute] definition between server and client in the same
 // binary — see [Client.Consume]/[nethttp.CallSSEAdapter].
-func (s SSERoute[Req, Event]) ClientHandle() *SSERouteHandle[Req, Event] {
+//
+// ClientHandle is variadic (opts ...[ClientHandleOpt]) — mirrors
+// [Route.ClientHandle]'s identical, already-established pattern exactly;
+// every existing zero-argument call site keeps compiling unchanged.
+// Pass [WithRouter] when s was (or will be) grouped under a [Router] —
+// see [Route.ClientHandle]'s doc comment for the full rationale.
+func (s SSERoute[Req, Event]) ClientHandle(opts ...ClientHandleOpt) *SSERouteHandle[Req, Event] {
+	if len(opts) > 0 {
+		var rt routable = s
+		for _, o := range opts {
+			rt = o.applyClientHandle(rt)
+		}
+		s = rt.(SSERoute[Req, Event])
+	}
 	var rb routeBuilder
 	for _, opt := range s.opts {
 		opt.applyRoute(&rb)

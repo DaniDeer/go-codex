@@ -10,6 +10,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/internal/middleware"
+	"github.com/DaniDeer/go-codex/validate"
 )
 
 // ── fixtures ─────────────────────────────────────────────────────────────
@@ -554,6 +555,68 @@ func TestClientHandle_WithRouter_MatchesRegisteredPath(t *testing.T) {
 	if registeredHandle.Descriptor.Path != handle.Descriptor.Path {
 		t.Errorf("want ClientHandle(WithRouter(rt)) to match the registered path exactly: %q vs %q",
 			handle.Descriptor.Path, registeredHandle.Descriptor.Path)
+	}
+}
+
+func TestSSERouteClientHandle_WithRouter_MatchesRegisteredPath(t *testing.T) {
+	sseRoute := newRouterTestSSERoute("/stream")
+	rt := rest.NewRouter("/api/v1")
+
+	handle := sseRoute.ClientHandle(rest.WithRouter(rt))
+	if handle == nil {
+		t.Fatal("want non-nil handle")
+	}
+	const want = "/api/v1/stream"
+	if handle.Descriptor.Path != want {
+		t.Errorf("want path %q, got %q", want, handle.Descriptor.Path)
+	}
+
+	server := rest.NewServer(rest.Info{Title: "t", Version: "1"})
+	if err := rt.Route(sseRoute).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	sseEntries := server.SSEEntries()
+	if len(sseEntries) != 1 {
+		t.Fatalf("want 1 registered SSE route, got %d", len(sseEntries))
+	}
+	if sseEntries[0].Path() != handle.Descriptor.Path {
+		t.Errorf("want ClientHandle(WithRouter(rt)) to match the registered path exactly: %q vs %q",
+			handle.Descriptor.Path, sseEntries[0].Path())
+	}
+}
+
+// TestSSERouteClientHandle_ZeroArgs_StillCompilesAndWorks confirms adding
+// variadic opts to SSERoute.ClientHandle is fully backward compatible —
+// mirrors Route.ClientHandle's identical zero-arg compatibility test.
+func TestSSERouteClientHandle_ZeroArgs_StillCompilesAndWorks(t *testing.T) {
+	sseRoute := newRouterTestSSERoute("/stream")
+	handle := sseRoute.ClientHandle()
+	if handle == nil {
+		t.Fatal("want non-nil handle")
+	}
+	if handle.Descriptor.Path != "/stream" {
+		t.Errorf("want unprefixed path %q, got %q", "/stream", handle.Descriptor.Path)
+	}
+}
+
+// TestRouter_WithRouter_AppliesGroupMiddlewareToo confirms WithRouter
+// composes a Router's OWN attached reusable middleware (not just its
+// path prefix) into the returned ClientHandle — relevant to redirect
+// targets grouped under a Router.Use(mw)'d Router: the registered
+// decode-handle must reflect that middleware's REAL effects too (here, a
+// SecurityMiddleware's declared scheme — mirrors
+// TestSecurityMiddleware_ClientHandle_PopulatesSecuritySchemes' own
+// assertion style), not only the Location string rest.Redirect computes.
+func TestRouter_WithRouter_AppliesGroupMiddlewareToo(t *testing.T) {
+	c := codex.String().Refine(validate.NonEmptyString)
+	route := newRouterTestRoute("GET", "/users")
+	rt := rest.NewRouter("/api/v1").
+		Use(rest.SecurityMiddleware[struct{}, struct{}]("bearer", rest.BearerScheme("JWT").WithCodec(c), nil))
+
+	handle := route.ClientHandle(rest.WithRouter(rt))
+	if _, ok := handle.SecuritySchemes["bearer"]; !ok {
+		t.Fatalf("want ClientHandle(WithRouter(rt)) to carry rt's OWN attached SecurityMiddleware's scheme %q, got %v",
+			"bearer", handle.SecuritySchemes)
 	}
 }
 

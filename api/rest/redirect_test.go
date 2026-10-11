@@ -106,6 +106,70 @@ func TestRedirectToSSE_Success(t *testing.T) {
 	}
 }
 
+// TestRedirect_WithRouter_ResolvesPrefixedLocation confirms Redirect's
+// new opts param fixes the Router-composition gap: a target declared
+// with a RELATIVE path template (as it would be if grouped under a
+// Router) resolves to the Router-PREFIXED Location, not the bare
+// relative one — passing rest.WithRouter(rt) mirrors exactly what a
+// real server-side Router.Route(target)+Register(b) would have composed.
+func TestRedirect_WithRouter_ResolvesPrefixedLocation(t *testing.T) {
+	target := rest.NewRoute[createReq, userResp]("GET", "/{id}",
+		createReqCodec, userCodec, rest.PathParam{Name: "id"})
+	from := rest.NewRoute[createReq, userResp]("GET", "/orders/{id}",
+		createReqCodec, userCodec, rest.PathParam{Name: "id"})
+	rt := rest.NewRouter("/users")
+
+	err := rest.Redirect(http.StatusSeeOther, from, target, map[string]string{"id": "f47ac10b"}, rest.WithRouter(rt))
+	var redirErr rest.RedirectError
+	if !errors.As(err, &redirErr) {
+		t.Fatalf("Redirect: want RedirectError, got %T: %v", err, err)
+	}
+	if redirErr.Location != "/users/f47ac10b" {
+		t.Errorf("Location: want Router-prefixed /users/f47ac10b, got %q", redirErr.Location)
+	}
+}
+
+// TestRedirect_NoOpts_RelativeTargetResolvesUnprefixed confirms the
+// FAILURE MODE this fix addresses: omitting WithRouter for a
+// Router-grouped target produces the WRONG, un-prefixed Location — a
+// regression guard documenting exactly what the gap looked like before
+// the fix, and why WithRouter is mandatory for a Router-grouped target.
+func TestRedirect_NoOpts_RelativeTargetResolvesUnprefixed(t *testing.T) {
+	target := rest.NewRoute[createReq, userResp]("GET", "/{id}",
+		createReqCodec, userCodec, rest.PathParam{Name: "id"})
+	from := rest.NewRoute[createReq, userResp]("GET", "/orders/{id}",
+		createReqCodec, userCodec, rest.PathParam{Name: "id"})
+
+	err := rest.Redirect(http.StatusSeeOther, from, target, map[string]string{"id": "f47ac10b"})
+	var redirErr rest.RedirectError
+	if !errors.As(err, &redirErr) {
+		t.Fatalf("Redirect: want RedirectError, got %T: %v", err, err)
+	}
+	if redirErr.Location != "/f47ac10b" {
+		t.Errorf("Location: want the UN-prefixed /f47ac10b (no WithRouter passed), got %q", redirErr.Location)
+	}
+}
+
+// TestRedirectToSSE_WithRouter_ResolvesPrefixedLocation mirrors
+// TestRedirect_WithRouter_ResolvesPrefixedLocation for an SSERoute
+// target, exercising SSERoute.ClientHandle's new variadic opts support.
+func TestRedirectToSSE_WithRouter_ResolvesPrefixedLocation(t *testing.T) {
+	target := rest.NewSSERoute[createReq, userResp]("/{id}",
+		createReqCodec, userCodec, rest.PathParam{Name: "id"})
+	from := rest.NewRoute[createReq, userResp]("GET", "/orders/{id}",
+		createReqCodec, userCodec, rest.PathParam{Name: "id"})
+	rt := rest.NewRouter("/stream")
+
+	err := rest.RedirectToSSE(http.StatusSeeOther, from, target, map[string]string{"id": "abc"}, rest.WithRouter(rt))
+	var redirErr rest.RedirectError
+	if !errors.As(err, &redirErr) {
+		t.Fatalf("RedirectToSSE: want RedirectError, got %T: %v", err, err)
+	}
+	if redirErr.Location != "/stream/abc" {
+		t.Errorf("Location: want Router-prefixed /stream/abc, got %q", redirErr.Location)
+	}
+}
+
 func TestResponseMeta_Headers_RendersInSpec(t *testing.T) {
 	b := rest.NewServer(testInfo)
 	_, err := rest.NewRoute[createReq, userResp]("POST", "/orders", createReqCodec, userCodec,

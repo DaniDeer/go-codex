@@ -252,9 +252,9 @@ func buildRedirect(status int, from redirectSource, target redirectTarget, vars 
 }
 
 // Redirect resolves target's path template against vars (via
-// target.ClientHandle().BuildPath) and returns a single error a handler
-// returns as its own error value: the [RedirectError] itself on success,
-// or a typed [RedirectTargetVarError]/[RedirectMethodMismatchError]/
+// target.ClientHandle(opts...).BuildPath) and returns a single error a
+// handler returns as its own error value: the [RedirectError] itself on
+// success, or a typed [RedirectTargetVarError]/[RedirectMethodMismatchError]/
 // [RedirectStatusError] on failure.
 //
 // from is the route handling THIS request — its own package-level
@@ -262,15 +262,24 @@ func buildRedirect(status int, from redirectSource, target redirectTarget, vars 
 // closure was built from — used only to validate 307/308's
 // method-preservation constraint (RFC 9110); ignored for 301/302/303.
 //
+// opts is passed straight through to target.ClientHandle(opts...) — pass
+// [WithRouter] when target is (or will be) grouped under a [Router], the
+// SAME way a client-side caller of target would need to
+// (see [Route.ClientHandle]'s own doc comment): without it, a
+// Router-grouped target's RELATIVE path template (e.g. "/{id}", composed
+// to "/users/{id}" only via its Router's prefix) would resolve to the
+// WRONG, un-prefixed Location.
+//
 //	func(ctx context.Context, req Req) (Resp, error) {
 //	    var zero Resp
 //	    return zero, rest.Redirect(http.StatusSeeOther, uploadRoute, targetRoute, vars)
 //	}
-func Redirect[TReq, TResp any](status int, from redirectSource, target Route[TReq, TResp], vars map[string]string) error {
-	return buildRedirect(status, from, routeRedirectTarget[TReq, TResp]{target.ClientHandle()}, vars)
+func Redirect[TReq, TResp any](status int, from redirectSource, target Route[TReq, TResp], vars map[string]string, opts ...ClientHandleOpt) error {
+	return buildRedirect(status, from, routeRedirectTarget[TReq, TResp]{target.ClientHandle(opts...)}, vars)
 }
 
-// RedirectToSSE mirrors [Redirect] for an [SSERoute] target.
-func RedirectToSSE[TReq, TEvent any](status int, from redirectSource, target SSERoute[TReq, TEvent], vars map[string]string) error {
-	return buildRedirect(status, from, sseRedirectTarget[TReq, TEvent]{target.ClientHandle()}, vars)
+// RedirectToSSE mirrors [Redirect] for an [SSERoute] target — see
+// [Redirect]'s doc comment for opts' [WithRouter] rationale.
+func RedirectToSSE[TReq, TEvent any](status int, from redirectSource, target SSERoute[TReq, TEvent], vars map[string]string, opts ...ClientHandleOpt) error {
+	return buildRedirect(status, from, sseRedirectTarget[TReq, TEvent]{target.ClientHandle(opts...)}, vars)
 }
