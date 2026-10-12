@@ -1,24 +1,51 @@
-# `api/reqreply.Client` Registry — Idea / Investigation Only
+# `api/reqreply.Client` Registry — Design Complete, Not Yet Implemented
 
-> **Status:** Idea / investigation only — no driver, no proposal yet. The
-> blocking dependency has cleared: Typed HTTP Redirects
-> ([feature](../features/rest-redirects.md) · [guide](../guides/rest-redirects.md))
-> has SHIPPED — `rest.Client`'s own registry is now the real, working
-> precedent this doc's "next step" calls for. Spun out of that feature's
-> `rest.Client` registry investigation, once a real asymmetry between
-> `reqreply.Client` and `rest.Client` was noticed.
-> [← Back to Roadmap](index.md)
+> **Status:** Design complete — API surface, registry shape, and
+> collision-detection behavior are all settled. **This is the FIRST of 3
+> sequenced reqreply roadmap docs to implement** — see "Relationship to
+> the other 2 reqreply roadmap docs" below. Unlike the other 2, this
+> phase has NO blocking dependency; it can be implemented, tested, and
+> shipped standalone now. An in-depth review pass closed 2 further
+> findings beyond the original design: `routesOrder` dropped as confirmed
+> dead weight (reqreply's lookups are always exact-string, never
+> ambiguous), and a registry collision-detection mechanism added
+> (`DuplicateTopicTypeMismatchError` + a lazily-surfaced "poisoned entry"
+> marker) — a genuine divergence from `rest.Client`'s own
+> first-registered-wins policy, since reqreply has no structural
+> guarantee re-registrations of the same topic are "the same route."
+> Implementation is a distinct, future step requiring its own explicit
+> go-ahead (unit test plan). [← Back to Roadmap](index.md)
+
+## Relationship to the other 2 reqreply roadmap docs
+
+This doc was split out of a single combined doc (originally covering all
+3 phases) once all 3 reached "design complete," so each phase can track
+its own implementation status independently. The 3 docs are sequenced,
+not independent:
+
+1. **This doc** (Phase 0) — registry infrastructure. Ships FIRST,
+   standalone — no blocking dependency.
+2. **[`reqreply-forward-bounce.md`](reqreply-forward-bounce.md)**
+   (Phase 1) — forward/bounce. The highest-risk, highest-complexity
+   phase; this doc's registry is its FIRST real consumer. Blocked on
+   this doc shipping first.
+3. **[`reqreply-dead-letter-replay.md`](reqreply-dead-letter-replay.md)**
+   (Phase 2) — dead-letter replay. This doc's registry is its SECOND
+   consumer. Needs zero new wire mechanism of its own, reusing Phase 1's
+   low-level primitive directly. Blocked on Phase 1 shipping first.
 
 ## Why this exists
 
 While designing Typed HTTP Redirects' client-side route registry for
 `rest.Client` (now shipped — see [the feature page](../features/rest-redirects.md)),
 a question was raised: should `api/reqreply.Client` get an equivalent
-registry too, for symmetry? This doc captures that question — deliberately
-NOT resolved, consistent with how other "idea only" docs in this roadmap
-(`sse-resume-and-retry-policy.md`, `vector-store-adapter.md`,
+registry too, for symmetry? This doc originally captured that question
+deliberately UNRESOLVED, the same way other "idea only" docs in this
+roadmap (`sse-resume-and-retry-policy.md`, `vector-store-adapter.md`,
 `mutable-native-integration.md`) record a genuinely open question without
-forcing a premature decision.
+forcing a premature decision. **That question is now resolved** — see
+"Candidate motivations" below for the confirmed answer and "Phase 0"
+below for the full settled design that followed from it.
 
 ## The asymmetry, confirmed
 
@@ -37,48 +64,59 @@ the three `api/*` `Client` types with no registry at all.
 
 ## Investigated: does reqreply have a structural analog to an HTTP redirect?
 
-**No** — confirmed directly, not assumed. `rest.Client`'s registry exists to
-solve a SPECIFIC problem: an HTTP 3xx response doesn't carry its own typed
-`Resp` — the client has to look up which registered route a received
-`Location` corresponds to, in order to know what type to decode. reqreply
-has no equivalent gap: `Call`/`CallAsync` always know their own `Resp` type
-at the call site (it's the generic type parameter the caller is working
-with), and `CallAsync`'s returned `*Future[Resp]` is typed at construction
-too, before any response has even arrived. There is no "decode an unknown
-target's response type" problem anywhere in reqreply's dispatch today.
+**Not an EXISTING one — confirmed directly, not assumed — but
+[Phase 1](reqreply-forward-bounce.md) designs a NEW one, purpose-built
+for reqreply.** `rest.Client`'s registry exists to solve a SPECIFIC
+problem: an HTTP 3xx response doesn't carry its own typed `Resp` — the
+client has to look up which registered route a received `Location`
+corresponds to, in order to know what type to decode. reqreply had no
+equivalent gap BEFORE this design: `Call`/`CallAsync` always know their
+own `Resp` type at the call site (the generic type parameter the caller
+is working with), and `CallAsync`'s returned `*Future[Resp]` is typed at
+construction too, before any response has even arrived.
 
-**This means a reqreply registry, if it ever happens, would NOT be solving
-the same problem `rest.Client`'s registry solves.** It would need its own,
-independently-justified reason to exist.
+**This means a reqreply registry does NOT solve the same problem
+`rest.Client`'s registry solves — it solves a DIFFERENT, NEW problem
+[Phase 1's](reqreply-forward-bounce.md) `Forward` mechanism itself
+introduces** (a forward reply's target route is NOT known at the
+original call site, unlike an ordinary `Call`/`CallAsync` target) — not
+a retrofit of REST's own motivation, a genuinely new one this design
+creates and then immediately needs to solve for itself.
 
-## Candidate motivations (3 identified, none confirmed — genuinely open)
+## Candidate motivations (3 identified) — RESOLVED
 
-1. **A new, reqreply-native "forward/bounce" concept.** A handler could
-   respond "actually, route X should handle this," and the caller
-   auto-follows to THAT route's typed response — the closest reqreply
-   analog to an HTTP redirect, but a wholly NEW mechanism that doesn't exist
-   in any form today (no sentinel error, no dispatch hook, nothing). Would
-   need its own full design pass (server-side signaling shape, client-side
-   resolution, structured errors, Observer integration) mirroring the depth
-   Typed HTTP Redirects' own 4 critical-review rounds went through — not a
-   trivial port of that design.
-2. **Pure structural symmetry.** Every `api/*` `Client` should have the
-   SAME registry shape, independent of any concrete reqreply feature need
-   right now — i.e. add the registry as a forward-looking capability with
-   no current consumer, purely so the 3 `Client` types stay shaped alike.
-   Weakest justification of the 3 — a registry with zero current callers is
-   dead code until motivation 1 or 3 (or something else) actually needs it.
-3. **Tied to dead-letter/error handling.** Resolving a failed call's
-   retry/requeue target via a known route, reusing (or extending) the
-   existing `DeadLetter` mechanism (`docs/design/
-   d-0005-error-handling.md`'s Topic 4) rather than inventing a new concept
-   from scratch.
+1. **A new, reqreply-native "forward/bounce" concept — CONFIRMED as the
+   real driver.** A handler can respond "actually, route X should handle
+   this" (with a brand NEW request value it constructs itself — see
+   [`reqreply-forward-bounce.md`](reqreply-forward-bounce.md)), and the
+   caller auto-follows to THAT route's typed response. Full design
+   settled there.
+2. **Pure structural symmetry — REFRAMED, not actually a separate
+   motivation.** Originally considered the weakest-justified of the 3 (a
+   registry with zero consumers). Once motivation 1 was confirmed as the
+   real driver, this stopped being "symmetry for its own sake" and became
+   motivation 1's OWN REQUIRED INFRASTRUCTURE: a forward reply has to
+   tell the CLIENT "ask topic X instead" (pub/sub has no broker-level
+   redirect the way HTTP does), and the client then needs to resolve
+   topic X to a registered `RouteHandle` to know what `Resp` type to
+   decode — exactly the registry's job. See "Phase 0" below.
+3. **Tied to dead-letter/error handling — CONFIRMED as a SECOND,
+   sequenced-after driver (not the primary one).** Re-examined in detail:
+   the shipped `DeadLetter` mechanism
+   (`docs/design/d-0005-error-handling.md`'s Topic 4) is
+   SERVER/ADAPTER-SIDE ONLY (publishes a `DeadLetterEnvelope` to a
+   destination topic on an unmatched failure) — it does NOT need a
+   client-side registry by itself. The REAL, concrete motivation-3 use
+   case is narrower: an ops/REPLAY tool consuming a `DeadLetterEnvelope`
+   needs to resolve `SourceTopic` back to the ORIGINAL route (for its
+   `Req` codec) to decode `Payload` and reissue the `Call` — this DOES
+   need this registry, as a consumer. See
+   [`reqreply-dead-letter-replay.md`](reqreply-dead-letter-replay.md).
 
-These lead to MATERIALLY DIFFERENT APIs — a new sentinel-error-driven
-dispatch mechanism (1) vs. a no-op symmetry change with no behavior (2) vs.
-extending an existing, already-shipped mechanism (3). Picking the wrong one
-would mean designing and building something nobody needs. **Do not start
-real design work here until the motivation is confirmed.**
+These are no longer competing, mutually-exclusive choices — they are
+SEQUENCED phases of one connected design: this doc (registry) is Phase
+1's prerequisite; Phase 2 reuses this registry for a second, narrower
+purpose once Phase 1 has settled the registry's final accessor shape.
 
 ## Why this was sequenced AFTER Typed HTTP Redirects, not in parallel
 
@@ -94,95 +132,139 @@ should be informed by this SHIPPED, working shape (what worked, what had to
 change during implementation), not designed blind in parallel against a
 still-moving target.
 
-### The mechanism that actually shipped — reusable building blocks
+## Phase 0 — Registry infrastructure (design settled)
 
-Concretely, whichever motivation above eventually gets picked, the
-following pieces of `rest.Client`'s registry proved out in practice and
-are directly portable, not just conceptually similar:
+Reqreply has no REST-style `{Method, Path}` pair — a route's identity is
+just its `Topic` string (already how `api/reqreply/route.go`'s own
+server-side `DuplicateRouteError{Topic}` keys registration). Reqreply
+also has no SSE/streaming route concept — only ONE registry map is
+needed, not `rest.Client`'s `routes`+`sseRoutes` pair.
 
-- **Dual parallel maps keyed by a plain `{Method, Path}`-shaped key**
-  (`routes`/`sseRoutes` for REST's Call-decodable vs. Consume-streamable
-  split) — a reqreply analog would key by whatever its own route identity
-  is (topic/route name), with the same two-registry split if a
-  forward/bounce concept ever needs to distinguish "normal Call target"
-  from some other dispatch shape.
-- **First-registered-wins ambiguous-match resolution, tracked via an
-  insertion-order-preserving slice alongside the map** — required because
-  a plain Go map has no defined iteration order; any reqreply mechanism
-  needing "which registered target matches" resolution needs the same
-  slice, not just the map.
-- **Dual registration path**: auto-populate on first `Call`/`Consume`
-  (best-effort, never errors — a route value that doesn't match the
-  recognized shape is silently skipped, since this is pure bookkeeping,
-  not the authoritative place a type mismatch gets reported) PLUS an
-  explicit `RegisterRoute` for a target only ever reached indirectly. A
-  reqreply route that's only ever a forward TARGET (never called
-  directly) would need the identical explicit-registration escape hatch.
-- **Credential-identity rule — reuse the ORIGINATING call's own
-  already-computed credentials, NEVER re-derive from the registered
-  target's own middleware.** This is the single most important,
-  easiest-to-get-backwards design decision to carry over verbatim if a
-  forward/bounce mechanism (motivation 1) is ever built — getting it
-  wrong would mean a forwarded call silently authenticates as the WRONG
-  identity, a security-relevant regression, not just a correctness bug.
-- **Chain-depth cap** (`MaxRedirects`, default 10, mirrors `net/http`'s
-  own precedent) threaded via a plain recursive-call counter (not a
-  context value) — one mechanism covering both pathologically long
-  chains and cycles. Directly reusable if a reqreply forward concept
-  ever needs the same cap.
+- `Client` gains `routes map[string]*registeredRoute` (keyed by `Topic`)
+  — a PLAIN map, no insertion-order slice (REVIEWED and DROPPED — see
+  "No `routesOrder`" below).
+- `Client.RegisterRoute(route any) error` — dual-mode
+  (`Route[Req,Resp]`/`*RouteHandle[Req,Resp]`, reflection-discriminated
+  the SAME way `rest.Client.RegisterRoute` does, via pkgPath +
+  type-name-prefix checks), reusing the EXISTING
+  `TransportTypeMismatchError` (`api/reqreply/client.go`) for a plain
+  shape mismatch — no new error type needed for THAT part (see below for
+  the SEPARATE, genuine-content-mismatch case).
+- `Call`/`CallAsync` each gain a `c.registerAutoFromCall(route)` call —
+  auto-populate on first use, mirrors `rest.Client.Call`/`Consume`
+  exactly.
+- **No `routesOrder` — REVIEWED and DROPPED, a genuine simplification
+  over REST's own shape.** `rest.Client`'s `routesOrder` exists SOLELY to
+  deterministically resolve AMBIGUOUS `{var}`-template matches (more than
+  one registered template can match the SAME concrete path; a plain Go
+  map has no defined iteration order). reqreply's `TargetTopic` always
+  arrives ALREADY CONCRETE (resolved server-side via `BuildTopic`) and is
+  used as a literal map key — there is no template-matching step and
+  therefore no ambiguity `routesOrder` could ever help resolve. A plain
+  `map[string]*registeredRoute` is sufficient.
+- **Registry collision detection — a GENUINE DIVERGENCE from REST's own
+  policy, not a straight port.** REST's "first-registered-wins" is safe
+  ONLY because every re-registration of the SAME key is GUARANTEED (by
+  construction) to come from the SAME underlying `Route` value, just
+  wrapped with a different credential-bound `ClientHandle` — same `Resp`
+  type, always. reqreply has NO such guarantee: two GENUINELY DIFFERENT
+  `Route[ReqA,RespA]`/`Route[ReqB,RespB]` values could collide on the
+  SAME `Topic` string (typo, coincidence, two unrelated features
+  choosing the same name) — silently keeping whichever registered first
+  would let a LATER `Forward`/`Replay` resolving that topic decode using
+  the WRONG `Resp` type, a confusing runtime failure invisible at compile
+  time (everything here is `any`-erased). Resolved as follows:
+  - `Client.RegisterRoute` (explicit, already returns `error`): on
+    re-registration of an already-present `Topic`, compares the NEW
+    entry's recovered `Req`/`Resp` reflect types against the EXISTING
+    entry's stored types. A genuine mismatch returns a NEW
+    `DuplicateTopicTypeMismatchError{Topic, ExistingType, NewType}`
+    immediately, instead of silently keeping the first.
+  - `registerAutoFromCall` (best-effort — `Call`/`CallAsync`'s OWN
+    contract requires it "never errors," pure bookkeeping — cannot start
+    returning an error through them without a much bigger, unrelated
+    contract change): on a detected conflict, marks the registry entry as
+    POISONED (recording both candidate types) WITHOUT surfacing anything
+    through `Call`/`CallAsync` itself.
+  - The poisoned marker surfaces LAZILY, exactly where it actually
+    matters: [Phase 1's](reqreply-forward-bounce.md) forward-resolution
+    and [Phase 2's](reqreply-dead-letter-replay.md) replay-resolution
+    (the ONLY real consumers of a registry lookup) check for a poisoned
+    entry right where they already return `UnrecognizedForwardError`/
+    `UnrecognizedDeadLetterSourceError` for a MISSING entry — a poisoned
+    entry returns the SAME `DuplicateTopicTypeMismatchError` at THAT point
+    instead, right before a wrong-type decode would otherwise happen.
+    `Call`/`CallAsync`'s own contract stays completely unchanged.
+- **Credential-identity rule** (direct port, not reqreply-specific):
+  whatever consumes this registry ([Phase 1's](reqreply-forward-bounce.md)
+  forward-following dispatch) reuses the ORIGINATING call's own
+  already-computed credentials, NEVER re-derived from the registered
+  target. Getting this backwards would mean a forwarded call silently
+  authenticates as the WRONG identity — a security regression, not just
+  a correctness bug.
+- **Security-scheme mismatch check — a GENUINE DIVERGENCE from REST's own
+  more permissive behavior, not a straight port.** Fully designed as part
+  of [Phase 1](reqreply-forward-bounce.md) (it is Forward's own
+  client-side dispatch that performs the check, using this registry's
+  resolved target `RouteHandle`) — summarized here because it depends on
+  this registry existing: a mismatch between the originating route's and
+  the resolved target's declared security-scheme NAME(S) fails fast,
+  client-side, BEFORE the network round-trip, with a NEW
+  `ForwardSecuritySchemeMismatchError`. See Phase 1's doc for the full
+  rationale and design.
+- **Chain-depth cap**: direct port of `MaxRedirects`'s mechanics
+  (recursive-call counter, default 10) — reqreply's own option name
+  TBD at implementation time (`ClientCallOptions.MaxForwards`, most
+  likely). Lives with [Phase 1](reqreply-forward-bounce.md) (the only
+  phase that chains calls), noted here only because the registry is what
+  makes each hop's resolution possible.
 
-### The `deep-dive-bug-hunt` Round 201 lesson — the most important addition
+## Known future consumers (why a registry with no consumer in THIS doc is still worth building now)
 
-Typed HTTP Redirects' PRIMARY dispatch path (`rest.Client.Call`/`Consume`,
-via `adapters/nethttp`'s `clienttransport.go`) was correctly
-redirect-aware from the day it shipped. But `adapters/nethttp` ALSO has 4
-INDEPENDENT `ports.Pattern` binding primitives (`CallAdapter`/
-`DrainCallAdapter`/`PollAdapter`/`CallSSEAdapter`, dispatching via the
-package-private `callWithVars`/`consumeSSE` primitives) that each take a
-raw `*http.Client` directly — these silently let `net/http`'s own default
-redirect-following intercept a 3xx, completely invisible to the
-primitive, for some time after the main feature shipped, until a
-dedicated `deep-dive-bug-hunt` round specifically traced EVERY dispatch
-path (not just the obvious, primary one) and reproduced the gap live via
-a failing test before fixing it (see
-`.github/skills/review-go-codex/references/history.md`'s Round 201 entry).
+This phase, taken alone, adds a registry with no shipped caller yet — the
+registry's only consumers are the other 2 roadmap docs:
 
-**Why this matters for `api/reqreply` specifically**: `adapters/mqtt5`
-and `adapters/zeromq` EACH have their own `ports.Pattern` binding
-primitives for reqreply dispatch (confirmed present:
-`adapters/mqtt5/binding.go`, `adapters/zeromq/binding.go`), structurally
-PARALLEL to `Client.Call`/`CallAsync`'s own `ClientTransport`-based
-dispatch — the exact same "multiple independent dispatch paths that
-don't share code" shape Round 201 found and fixed for REST.
+- **[`reqreply-forward-bounce.md`](reqreply-forward-bounce.md)** (Phase
+  1) — resolves a forward reply's `TargetTopic` to recover the registered
+  `*RouteHandle[TargetReq,TargetResp]` needed to decode the second round
+  trip's reply, and to compare security schemes before republishing.
+- **[`reqreply-dead-letter-replay.md`](reqreply-dead-letter-replay.md)**
+  (Phase 2) — resolves a `DeadLetterEnvelope`'s `SourceTopic` back to the
+  original route to decode/replay it.
 
-**Actionable requirement for ANY future reqreply registry/forward
-design**: enumerate and independently verify EVERY dispatch path (not
-just `Client.Call`/`CallAsync`) from the start of the design, not as an
-afterthought discovered via a later bug-hunt round —
-`adapters/mqtt5/binding.go`'s and `adapters/zeromq/binding.go`'s own
-ports.Pattern primitives must be traced and tested for whatever new
-behavior gets introduced; it must NEVER be assumed they inherit it for
-free just because `Client.Call`/`CallAsync` got it right.
+This is unlike the originally-considered (and rejected) "pure symmetry,
+zero consumers" framing of this registry — both consumers are confirmed,
+designed, and sequenced; only their OWN implementation is what's blocked
+on this phase shipping first, not the registry's justification for
+existing.
 
-A smaller, related lesson: a doc comment claiming two separate
-implementations are "behaviorally-equivalent" (as `adapters/nethttp`'s
-own `consumeSSE` doc comment claimed, about `Client.Consume`'s reconnect
-loop — a claim that did NOT hold for redirects) is a CLAIM TO VERIFY via
-a live, failing test — not to trust. Any reqreply design introducing a
-second, adapter-level implementation of a Client-level concept should
-carry the same explicit verification step in its own unit test plan from
-day one, not rely on a doc comment's unverified assertion.
+**What this phase's implementation should keep flexible for those future
+consumers**: the registry's PUBLIC surface (`RegisterRoute`'s dual-mode
+reflection discrimination, its immediate
+`DuplicateTopicTypeMismatchError`) is already fully specified above and
+should NOT need to change once Phase 1 starts consuming it. The ONE
+thing to deliberately keep unexported/flexible is the exact shape of the
+poisoned-marker/lazy-surfacing mechanism — Phase 1 is the first real
+CONSUMER of "resolve a Topic, detect a poisoned entry," so its precise
+internal plumbing (how the poisoned flag is stored, how the "both
+candidate types" are recorded) should stay free to adjust based on
+Phase 1's real implementation experience, even though the error TYPE
+callers see (`DuplicateTopicTypeMismatchError`) is already locked.
 
 ## Next step
 
-The blocking dependency has cleared. Revisit this doc, get an explicit
-answer on which (if any) of the 3 candidate motivations is the real goal,
-and only then turn this into an actual design draft (API surface,
-structured errors, Observer integration, unit test plan — the same rigor
-Typed HTTP Redirects itself went through, documented in its own 4
-critical-review rounds before implementation began, PLUS the dispatch-
-path inventory step above — list every `ClientTransport`/`ports.Pattern`
-binding primitive across `adapters/mqtt5` and `adapters/zeromq` (the 2
-adapters that implement `api/reqreply` today — `adapters/mqtt` is
-events-only) up front, in the design doc itself, before writing any
-code). Until that happens, this doc stays "idea only."
+The registry has a SETTLED design, further hardened by an in-depth
+review pass (`routesOrder` dropped, collision detection added) — none of
+it is implemented yet. **This is the first of the 3 reqreply roadmap docs
+intended to be implemented**, with no blocking dependency of its own.
+Turning this into an actual implementation plan (unit test plan,
+including `RegisterRoute`'s dual-mode discrimination, the
+`DuplicateTopicTypeMismatchError` collision case, and the poisoned-entry
+marker's lazy-surfacing contract — exercised via a stub consumer, since
+Phase 1's real consumer doesn't exist yet) is a distinct, future step
+requiring its own explicit go-ahead — the same rigor Typed HTTP
+Redirects itself went through across its own critical-review rounds
+before implementation began. No code should be written against this
+design until that implementation plan exists and is approved. Once this
+phase ships and is verified, [`reqreply-forward-bounce.md`](reqreply-forward-bounce.md)
+(Phase 1) is unblocked.
