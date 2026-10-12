@@ -50,7 +50,7 @@ func TestDeadLetterFor_UndeclaredHandle_ReturnsFalse(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	_, _, ok := h.DeadLetterFor(stats.NoopObserver{}, "compute/no-dlq", []byte("raw"), errors.New("boom"))
+	_, _, ok := h.DeadLetterFor(stats.NoopObserver{}, "compute/no-dlq", []byte("raw"), nil, errors.New("boom"))
 	if ok {
 		t.Fatal("want ok=false when no DeadLetter declared")
 	}
@@ -65,7 +65,7 @@ func TestDeadLetterFor_ReportsObserver_AndReturnsEncodedEnvelope(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	topic, body, ok := h.DeadLetterFor(stats.NoopObserver{}, "compute/dlq", []byte(`{"bad":true}`), errors.New("decode failed"))
+	topic, body, ok := h.DeadLetterFor(stats.NoopObserver{}, "compute/dlq", []byte(`{"bad":true}`), nil, errors.New("decode failed"))
 	if !ok {
 		t.Fatal("want ok=true when DeadLetter is declared")
 	}
@@ -77,6 +77,46 @@ func TestDeadLetterFor_ReportsObserver_AndReturnsEncodedEnvelope(t *testing.T) {
 	}
 }
 
+// TestDecodeDeadLetterEnvelope_RoundTripsDeadLetterForsOwnEncoding is
+// `deep-dive-bug-hunt` Round 206's own fix test (api/reqreply Phase 2.1
+// focused): confirms [reqreply.DecodeDeadLetterEnvelope] round-trips
+// EXACTLY what [RouteHandle.DeadLetterFor] actually publishes — the
+// single sanctioned decode path an ops/replay consumer needs, now
+// guaranteed to stay in sync with the encode side since both share the
+// SAME codec (no more hand-rolled JSON-field-name mirroring).
+func TestDecodeDeadLetterEnvelope_RoundTripsDeadLetterForsOwnEncoding(t *testing.T) {
+	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	h, err := reqreply.NewRoute[computeReq, computeResp]("compute/dlq-decode-roundtrip", reqCodec, respCodec,
+		reqreply.DeadLetter("compute/dead-letter-decode-roundtrip"),
+	).Register(b)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	properties := map[string]string{"Authorization": "Bearer secret-token"}
+	_, body, ok := h.DeadLetterFor(stats.NoopObserver{}, "compute/dlq-decode-roundtrip", []byte(`{"bad":true}`), properties, errors.New("decode failed"))
+	if !ok {
+		t.Fatal("want ok=true when DeadLetter is declared")
+	}
+
+	envelope, decErr := reqreply.DecodeDeadLetterEnvelope(body)
+	if decErr != nil {
+		t.Fatalf("DecodeDeadLetterEnvelope: %v", decErr)
+	}
+	if envelope.SourceTopic != "compute/dlq-decode-roundtrip" {
+		t.Errorf("SourceTopic = %q, want %q", envelope.SourceTopic, "compute/dlq-decode-roundtrip")
+	}
+	if string(envelope.Payload) != `{"bad":true}` {
+		t.Errorf("Payload = %q, want %q", envelope.Payload, `{"bad":true}`)
+	}
+	if envelope.Error != "decode failed" {
+		t.Errorf("Error = %q, want %q", envelope.Error, "decode failed")
+	}
+	if envelope.Properties["Authorization"] != "Bearer secret-token" {
+		t.Errorf("Properties = %+v, want {Authorization: Bearer secret-token}", envelope.Properties)
+	}
+}
+
 func TestDeadLetter_GlobalDefault_Inherited(t *testing.T) {
 	b := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	b.AddGlobalDeadLetter("global/dead-letter")
@@ -85,7 +125,7 @@ func TestDeadLetter_GlobalDefault_Inherited(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	topic, _, ok := h.DeadLetterFor(stats.NoopObserver{}, "compute/inherits-global", nil, errors.New("boom"))
+	topic, _, ok := h.DeadLetterFor(stats.NoopObserver{}, "compute/inherits-global", nil, nil, errors.New("boom"))
 	if !ok || topic != "global/dead-letter" {
 		t.Fatalf("want inherited global default topic=global/dead-letter ok=true, got topic=%q ok=%v", topic, ok)
 	}
@@ -101,7 +141,7 @@ func TestDeadLetter_OverriddenPerRoute(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	topic, _, ok := h.DeadLetterFor(stats.NoopObserver{}, "compute/overrides-global", nil, errors.New("boom"))
+	topic, _, ok := h.DeadLetterFor(stats.NoopObserver{}, "compute/overrides-global", nil, nil, errors.New("boom"))
 	if !ok || topic != "compute/own-dead-letter" {
 		t.Fatalf("want per-route override to win, got topic=%q ok=%v", topic, ok)
 	}
@@ -117,7 +157,7 @@ func TestDeadLetter_OptedOut(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	_, _, ok := h.DeadLetterFor(stats.NoopObserver{}, "compute/opts-out", nil, errors.New("boom"))
+	_, _, ok := h.DeadLetterFor(stats.NoopObserver{}, "compute/opts-out", nil, nil, errors.New("boom"))
 	if ok {
 		t.Fatal("want ok=false when explicitly opted out of the global default")
 	}

@@ -22,7 +22,7 @@ func (f *registryFakeClientTransport) Call(ctx context.Context, route any, req a
 	return computeResp{}, nil
 }
 
-func (f *registryFakeClientTransport) CallRaw(ctx context.Context, topic string, payload []byte) ([]byte, error) {
+func (f *registryFakeClientTransport) CallRaw(ctx context.Context, topic string, payload []byte, properties map[string]string) ([]byte, error) {
 	f.calls++
 	return payload, nil
 }

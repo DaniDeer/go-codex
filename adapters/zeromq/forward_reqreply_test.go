@@ -31,7 +31,7 @@ var forwardTestTargetRoute = reqreply.NewRoute[computeReq, computeResp](
 func TestServerTransport_Serve_HandlerForward_SendsForwardWireSignal_SkipsErrorPatternAndDeadLetter(t *testing.T) {
 	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	handler := func(_ context.Context, _ computeReq) (computeResp, error) {
-		return computeResp{}, reqreply.Forward(forwardTestTargetRoute, computeReq{X: 9, Y: 10}, nil)
+		return computeResp{}, reqreply.Forward(forwardTestTargetRoute, computeReq{X: 9, Y: 10}, nil, nil)
 	}
 	fwdRoute := reqreply.NewRoute[computeReq, computeResp]("/compute-forward", computeReqCodec, computeRespCodec,
 		reqreply.DeadLetter("/compute-forward/dlq"),
@@ -104,7 +104,7 @@ func TestServerTransport_Serve_HandlerForward_SendsForwardWireSignal_SkipsErrorP
 func TestRouterServerTransport_Serve_HandlerForward_SendsForwardWireSignal_SkipsErrorPatternAndDeadLetter(t *testing.T) {
 	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	handler := func(_ context.Context, _ computeReq) (computeResp, error) {
-		return computeResp{}, reqreply.Forward(forwardTestTargetRoute, computeReq{X: 11, Y: 12}, nil)
+		return computeResp{}, reqreply.Forward(forwardTestTargetRoute, computeReq{X: 11, Y: 12}, nil, nil)
 	}
 	fwdRoute := reqreply.NewRoute[computeReq, computeResp]("/compute-router-forward", computeReqCodec, computeRespCodec,
 		reqreply.DeadLetter("/compute-router-forward/dlq"),
@@ -197,13 +197,13 @@ func TestClientTransport_Call_ForwardReply_ReturnsForwardError(t *testing.T) {
 	}
 }
 
-// ── Client-recognize side: clientTransport.CallRaw() ──────────────────────
+// ── Client-recognize side: clientTransport.CallRaw(, nil) ──────────────────────
 
 func TestClientTransport_CallRaw_ForwardReply_ReturnsForwardError(t *testing.T) {
 	sock := &mockSocket{inFrames: [][][]byte{{statusForward, []byte("/compute-forward-target"), []byte(`{"x":9,"y":10}`)}}}
 	transport := NewClientTransport(ClientTransportOptions{Sockets: map[string]FramedSocket{"/compute-callraw-forward": sock}})
 
-	_, callErr := transport.CallRaw(context.Background(), "/compute-callraw-forward", []byte(`{"x":1,"y":2}`))
+	_, callErr := transport.CallRaw(context.Background(), "/compute-callraw-forward", []byte(`{"x":1,"y":2}`), nil)
 	if callErr == nil {
 		t.Fatal("CallRaw: want a non-nil error (ForwardError), got nil")
 	}
@@ -242,13 +242,13 @@ func TestDealerClientTransport_Call_ForwardReply_ReturnsForwardError(t *testing.
 	}
 }
 
-// ── Client-recognize side: dealerClientTransport.CallRaw() ────────────────
+// ── Client-recognize side: dealerClientTransport.CallRaw(, nil) ────────────────
 
 func TestDealerClientTransport_CallRaw_ForwardReply_ReturnsForwardError(t *testing.T) {
 	sock := &mockSocket{inFrames: [][][]byte{dealerForwardReply("/compute-forward-target", `{"x":9,"y":10}`)}}
 	transport := NewDealerClientTransport(DealerClientTransportOptions{Sockets: map[string]FramedSocket{"/compute-callraw-dealer-forward": sock}})
 
-	_, callErr := transport.CallRaw(context.Background(), "/compute-callraw-dealer-forward", []byte(`{"x":1,"y":2}`))
+	_, callErr := transport.CallRaw(context.Background(), "/compute-callraw-dealer-forward", []byte(`{"x":1,"y":2}`), nil)
 	if callErr == nil {
 		t.Fatal("CallRaw: want a non-nil error (ForwardError), got nil")
 	}
@@ -283,7 +283,7 @@ func dealerForwardReply(targetTopic, payload string) [][]byte {
 func TestClient_Call_FollowsForward_EndToEndViaRealZeroMQAdapter(t *testing.T) {
 	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	originatingHandler := func(_ context.Context, req computeReq) (computeResp, error) {
-		return computeResp{}, reqreply.Forward(forwardTestTargetRoute, computeReq{X: req.X * 10, Y: req.Y * 10}, nil)
+		return computeResp{}, reqreply.Forward(forwardTestTargetRoute, computeReq{X: req.X * 10, Y: req.Y * 10}, nil, nil)
 	}
 	originatingRoute := reqreply.NewRoute[computeReq, computeResp]("compute/e2e-forward-originating", computeReqCodec, computeRespCodec)
 	if _, err := originatingRoute.WithHandler(originatingHandler).Register(server); err != nil {

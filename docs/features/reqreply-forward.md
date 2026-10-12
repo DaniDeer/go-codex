@@ -2,7 +2,7 @@
 
 > See also: [`api/reqreply` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/reqreply) · [`adapters/mqtt5` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mqtt5) · [`adapters/zeromq` on pkg.go.dev](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/zeromq)
 >
-> Runnable demo: [`examples/reqreply-api`'s `demo_forward.go`](https://github.com/DaniDeer/go-codex/blob/main/examples/reqreply-api/demo_forward.go)
+> Runnable demo: [`examples/reqreply-api`'s `demo_forward.go`](https://github.com/DaniDeer/go-codex/blob/main/examples/reqreply-api/demo_forward.go) (`demoForwardWithProperties` demonstrates wire-level properties)
 >
 > Guide: [reqreply Forward/Bounce](../guides/reqreply-forward.md)
 
@@ -17,11 +17,27 @@ var legacyAddRoute = reqreply.NewRoute[LegacyAddReq, LegacyAddResp]("compute/leg
     legacyAddReqCodec, legacyAddRespCodec).WithHandler(
     func(ctx context.Context, req LegacyAddReq) (LegacyAddResp, error) {
         var zero LegacyAddResp
-        return zero, reqreply.Forward(sumRoute, SumReq{A: req.X, B: req.Y}, nil)
+        return zero, reqreply.Forward(sumRoute, SumReq{A: req.X, B: req.Y}, nil, nil)
     })
 ```
 
 **`Forward`'s target `Req`/`Resp` are both FREE to differ from the originating route's** — unlike HTTP 307/308, reqreply's wire protocol has no method/body-preservation constraint to honor, so there is no method-mismatch check and no "from" parameter: the handler constructs and supplies a brand new request value explicitly. This is the single biggest divergence from `rest.Redirect`'s own shape.
+
+`Forward`'s last 2 non-variadic parameters are both plain, nil-able `map[string]string` values: `vars` resolves the target's `{var}` topic template (above); `properties` carries wire-level properties/headers — see "Wire-level properties" below.
+
+## Wire-level properties
+
+A target route may require a property/header-delivered credential (e.g. an MQTT5 User Property) that has nothing to do with the request body. `Forward`'s `properties` parameter carries exactly that:
+
+```go
+func(ctx context.Context, req LegacyAddReq) (LegacyAddResp, error) {
+    var zero LegacyAddResp
+    return zero, reqreply.Forward(sumRoute, SumReq{A: req.X, B: req.Y}, nil,
+        map[string]string{"X-Replay-Reason": "legacy-route-retired"})
+}
+```
+
+`ForwardError.Properties` carries this map; `Client.followForward` threads it into every hop's `ClientTransport.CallRaw` call, and each adapter writes it onto the real wire reply too (`adapters/mqtt5`: a reserved, prefixed User Property per entry, `"x-forward-prop:" + key`, kept distinct from the forward-topic marker and any Case 3 middleware-declared response properties on the SAME reply; `adapters/zeromq`: a confirmed, tested no-op — zeromq's reqreply transport has no property/header wire mechanism of its own).
 
 ## Server side
 

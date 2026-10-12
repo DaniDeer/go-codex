@@ -142,4 +142,46 @@
 // adapter-owned Capability values [api/events] already ships
 // (`mqtt5.QoS`/`mqtt5.Retained`, `zeromq.HWM`/`zeromq.Conflate`) — zero
 // new adapter-side capability types needed.
+//
+// # Forward/Bounce
+//
+// A handler signals "route X should handle this instead" within the SAME
+// correlation-ID round trip by returning the error [Forward] produces — the
+// SERVER publishes a reserved wire signal, and [Client.Call]/[Client.CallAsync]'s
+// CENTRALIZED chain-following loop republishes and decodes the TARGET route's
+// own response, transparently to the caller:
+//
+//	func(ctx context.Context, req LegacyAddReq) (LegacyAddResp, error) {
+//	    var zero LegacyAddResp
+//	    return zero, reqreply.Forward(sumRoute, SumReq{A: req.X, B: req.Y}, nil, nil)
+//	}
+//
+// Unlike [rest.Redirect], target's Req/Resp are both free to differ from the
+// originating route's — no method/body-preservation constraint, no "from"
+// parameter. A target route that is only ever reached as a Forward target
+// needs its registry entry "warmed" explicitly via [Client.RegisterRoute]
+// before the forward is followed. Forward's last parameter, properties, carries
+// wire-level properties/headers (e.g. an MQTT5 User Property credential) through
+// to the target — see docs/features/reqreply-forward.md for the full reference.
+//
+// # Dead-Letter Replay
+//
+// [Client.ReplayDeadLetter]/[Client.ReplayDeadLetterAsync] recover a message a
+// route's [DeadLetter] fallback previously captured: given a decoded
+// [DeadLetterEnvelope], they resolve its SourceTopic back against the registry
+// and reissue Payload VERBATIM (never re-decoded — DeadLetter fires on decode
+// failure too, so re-decoding would fail identically):
+//
+//	envelope, err := reqreply.DecodeDeadLetterEnvelope(dlqMessagePayload)
+//	respAny, err := client.ReplayDeadLetter(ctx, envelope)
+//	sum := respAny.(SumResp)
+//
+// [DecodeDeadLetterEnvelope] is the single sanctioned decode path for the raw
+// bytes an ops/replay consumer reads off the dead-letter topic — sharing the
+// SAME codec [RouteHandle.DeadLetterFor] itself encodes with, so it can never
+// drift out of sync. A header-delivered credential captured into
+// [DeadLetterEnvelope.Properties] at dead-letter time survives the round trip
+// automatically, reusing the SAME wire-level properties mechanism Forward's
+// own properties parameter uses — see docs/features/reqreply-dead-letter-replay.md
+// for the full reference.
 package reqreply

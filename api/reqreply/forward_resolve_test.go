@@ -28,13 +28,20 @@ type forwardFakeClientTransport struct {
 
 	callRawSeq []forwardFakeCallRawResult
 	callRawIdx int
+
+	// callRawProperties RECORDS the properties argument each CallRaw
+	// invocation received, in order — lets Phase 1.5 tests confirm
+	// followForward actually threads fwd.Properties through, not just
+	// the topic/payload.
+	callRawProperties []map[string]string
 }
 
 func (t *forwardFakeClientTransport) Call(_ context.Context, _ any, _ any, _ ...reqreply.ClientCallOptions) (any, error) {
 	return t.callResp, t.callErr
 }
 
-func (t *forwardFakeClientTransport) CallRaw(_ context.Context, _ string, _ []byte) ([]byte, error) {
+func (t *forwardFakeClientTransport) CallRaw(_ context.Context, _ string, _ []byte, properties map[string]string) ([]byte, error) {
+	t.callRawProperties = append(t.callRawProperties, properties)
 	if t.callRawIdx >= len(t.callRawSeq) {
 		return nil, fmt.Errorf("forwardFakeClientTransport.CallRaw: no more scripted results (call %d)", t.callRawIdx)
 	}
@@ -139,6 +146,43 @@ func TestClient_Call_FollowsSingleForward_DecodesTargetResponse(t *testing.T) {
 	}
 	if ft.callRawIdx != 1 {
 		t.Errorf("CallRaw invocations = %d, want 1", ft.callRawIdx)
+	}
+}
+
+// TestClient_Call_FollowsForward_ThreadsPropertiesIntoCallRaw is Phase
+// 1.5's own wire-level properties addendum test (docs/roadmap/
+// reqreply-forward-bounce.md's "Addendum"): followForward's loop must
+// pass the received ForwardError's Properties through to CallRaw
+// UNMODIFIED — the mechanism a dead-lettered credential (Phase 2) relies
+// on to actually reach the wire.
+func TestClient_Call_FollowsForward_ThreadsPropertiesIntoCallRaw(t *testing.T) {
+	properties := map[string]string{"X-Replay-Reason": "retry"}
+	ft := &forwardFakeClientTransport{
+		callErr: reqreply.ForwardError{
+			TargetTopic: forwardTargetBearerRoute.ClientHandle().Topic,
+			Payload:     []byte(`{"x":1,"y":2}`),
+			Properties:  properties,
+		},
+		callRawSeq: []forwardFakeCallRawResult{
+			{bytes: mustEncodeComputeResp(t, computeResp{Sum: 42})},
+		},
+	}
+	c := reqreply.NewClient()
+	if err := c.Attach(ft); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	if err := c.RegisterRoute(forwardTargetBearerRoute); err != nil {
+		t.Fatalf("RegisterRoute(target): %v", err)
+	}
+
+	if _, err := c.Call(context.Background(), forwardOriginatingRoute, computeReq{X: 1, Y: 2}); err != nil {
+		t.Fatalf("Call: want the forward followed, got error: %v", err)
+	}
+	if len(ft.callRawProperties) != 1 {
+		t.Fatalf("CallRaw invocations recorded = %d, want 1", len(ft.callRawProperties))
+	}
+	if ft.callRawProperties[0]["X-Replay-Reason"] != "retry" {
+		t.Errorf("CallRaw's properties argument = %+v, want {X-Replay-Reason: retry}", ft.callRawProperties[0])
 	}
 }
 

@@ -54,7 +54,7 @@ func TestClientTransport_CallRaw_OrdinaryReply(t *testing.T) {
 		t.Fatalf("EncodeRequest: %v", err)
 	}
 
-	replyBytes, err := transport.CallRaw(context.Background(), "compute/add", payload)
+	replyBytes, err := transport.CallRaw(context.Background(), "compute/add", payload, nil)
 	if err != nil {
 		t.Fatalf("CallRaw: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestClientTransport_CallRaw_ErrorReply_FallsBackToPlainTextError(t *testing
 		t.Fatalf("EncodeRequest: %v", err)
 	}
 
-	_, callErr := transport.CallRaw(context.Background(), "compute/add-callraw-err", payload)
+	_, callErr := transport.CallRaw(context.Background(), "compute/add-callraw-err", payload, nil)
 	if callErr == nil {
 		t.Fatal("CallRaw: want an error for a handler failure, got nil")
 	}
@@ -175,7 +175,7 @@ func TestClientTransport_CallRaw_ErrorReply_MatchedPattern_ReturnsRawCode(t *tes
 		t.Fatalf("EncodeRequest: %v", err)
 	}
 
-	_, callErr := transport.CallRaw(context.Background(), "compute/add-callraw-ep", payload)
+	_, callErr := transport.CallRaw(context.Background(), "compute/add-callraw-ep", payload, nil)
 	if callErr == nil {
 		t.Fatal("CallRaw: want an error for a handler failure, got nil")
 	}
@@ -218,7 +218,7 @@ func TestClientTransport_CallRaw_TraceSpan(t *testing.T) {
 		t.Fatalf("EncodeRequest: %v", err)
 	}
 
-	if _, err := transport.CallRaw(ctx, handle.Topic, payload); err != nil {
+	if _, err := transport.CallRaw(ctx, handle.Topic, payload, nil); err != nil {
 		t.Fatalf("CallRaw: %v", err)
 	}
 
@@ -242,7 +242,7 @@ func TestClientTransport_CallRaw_RetainedAppliedToRequestPublish(t *testing.T) {
 	transport := NewClientTransport(ClientTransportOptions{Client: clientClient, Router: clientRouter, Call: CallOptions{Timeout: 100 * time.Millisecond, Capabilities: []Capability{Retained(true)}}})
 
 	go func() {
-		_, _ = transport.CallRaw(context.Background(), "compute/add", []byte(`{"x":1,"y":2}`))
+		_, _ = transport.CallRaw(context.Background(), "compute/add", []byte(`{"x":1,"y":2}`), nil)
 	}()
 
 	deadline := time.Now().Add(500 * time.Millisecond)

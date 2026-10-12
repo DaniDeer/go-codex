@@ -1,6 +1,151 @@
-# go-codex Review History (R1–R205, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
+# go-codex Review History (R1–R206, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 206 (`deep-dive-bug-hunt` applied to `api/reqreply` — ARGUMENTS: "with focus on the new shipped features in api/reqreply" — covers the Phase 1.5/2.0/2.1 wire-level properties addendum + Dead-Letter Replay just shipped THIS session, never previously reviewed by this skill; Round 205 covered Phase 1's own Forward/Bounce feature before this addendum existed)
+
+Round 203 covered Phase 0 (registry + `CallRaw`). Round 205 covered Phase 1 (Forward/Bounce).
+This round covers everything shipped ON TOP of both since: Phase 1.5's wire-level properties
+addendum (`CallRaw`/`ForwardError` gain a `properties`/`Properties map[string]string`), Phase
+2.0 (`DeadLetterEnvelope.Properties` + adapter capture), and Phase 2.1 (`Client.
+ReplayDeadLetter`/`ReplayDeadLetterAsync`, `Client.followForward`'s split into a thin wrapper +
+`Client.followForwardFromHandle`) — none of which existed when Round 205 ran.
+
+### Finding — 1 REAL, confirmed, pre-existing, latent bug: `DeadLetterEnvelope`'s `"payload"` field used the WRONG binary codec for JSON, silently unexercised until this round's new decode function needed it
+
+Tracing Phase 2.1's own `ReplayDeadLetter(ctx, envelope DeadLetterEnvelope, ...)` surface
+raised an immediate question: `ReplayDeadLetter` accepts a `DeadLetterEnvelope` VALUE, but
+nothing exported anywhere in `api/reqreply` could ever PRODUCE one from the actual raw bytes an
+ops/replay consumer reads off a dead-letter topic — the only path (confirmed via `grep`, this
+session's own demo/tests included) was hand-rolling a local JSON struct mirroring
+`deadLetterEnvelopeCodec`'s own PRIVATE field-name strings, an undocumented, compiler-unenforced
+coupling that would silently go stale if a field name in the codec ever changed. Added
+`reqreply.DecodeDeadLetterEnvelope(data []byte) (DeadLetterEnvelope, error)` (`api/reqreply/
+dead_letter.go`) as the single sanctioned decode path, sharing the SAME `deadLetterEnvelopeFormat`
+`DeadLetterFor`'s own Marshal side already uses.
+
+Writing the live round-trip test to PROVE this fix
+(`TestDecodeDeadLetterEnvelope_RoundTripsDeadLetterForsOwnEncoding`: encode via the REAL
+`DeadLetterFor`, decode via the new function) immediately FAILED with `field payload: expected
+bytes, got string` — exposing a genuine, pre-existing, LATENT bug one level deeper:
+`deadLetterEnvelopeCodec`'s `"payload"` field used `codex.Bytes()` instead of `codex.Base64()`.
+`codex.Bytes()`'s own doc comment is explicit: "Use Bytes for binary file I/O (format.Binary)...
+For base64-encoded fields inside JSON documents, use Base64 instead" — `deadLetterEnvelopeFormat`
+is a `format.JSON`, EXACTLY the case the doc comment warns against. The Marshal side (the ONLY
+side ever exercised before this round — `DeadLetterFor` only ever encoded, nothing ever decoded)
+happened to work regardless of which codec was chosen, because `encoding/json` base64-encodes a
+`[]byte` VALUE embedded in an untyped `map[string]any` UNCONDITIONALLY, independent of which
+codec produced it. But `json.Unmarshal` into that SAME generic `map[string]any` destination
+produces a plain Go `string` for a JSON string value, NEVER `[]byte` — so `codex.Bytes().Decode`'s
+`v.([]byte)` type assertion rejected it outright. This bug predates THIS session entirely (traces
+back to Phase 0/`docs/design/d-0005-error-handling.md`'s original Topic 4 design) but had ZERO
+observable symptoms until Phase 2.1's own new need to decode gave it a first real exerciser —
+confirms this skill's own "a design doc's own unit-test-plan table is usually package-level... do
+not trust it's fine without a live test" gotcha applies even to a MULTI-PHASE-OLD mechanism, not
+just brand-new code. Fixed by switching the field to `codex.Base64()` — confirmed, via a
+dedicated check (`encoding/json.Marshal` of a `map[string]any{"payload": []byte(...)}` literal),
+that this produces the IDENTICAL wire bytes either way: a pure decode-side bugfix, zero
+compatibility impact for any already-deployed consumer reading the raw JSON.
+
+**The IDENTICAL bug exists, equally dormant, in `api/events.DeadLetterEnvelope`'s own
+mirrored codec** (`api/events/dead_letter.go`'s `"payload"` field also uses `codex.Bytes()`) —
+confirmed via `grep`, flagged here for a FUTURE round, left UNFIXED as explicitly out of THIS
+round's `api/reqreply`-focused scope (per the session's own stated ARGUMENTS). `api/events` has
+no analogous "decode the envelope back into a typed value" consumer today, so it remains
+harmless until one is ever added — do not re-investigate this as a "new" finding without first
+checking this entry.
+
+Also updated this session's own `demo_dead_letter_replay.go` and `adapters/mqtt5/
+dead_letter_replay_reqreply_test.go` to use `DecodeDeadLetterEnvelope` instead of their own
+hand-rolled mirror structs, closing the exact coupling gap the fix exists to prevent in the
+first place.
+
+### New test coverage added — closes a real gap in how thoroughly `ReplayDeadLetter`'s OWN "key simplification" had been verified
+
+The roadmap doc's entire design justification for giving `ReplayDeadLetter` a loop-free hop-1
+rests on hop 2+ comparing every LATER hop's target scheme against the JUST-RESOLVED
+`SourceTopic` route's OWN declared scheme (passed as `followForwardFromHandle`'s
+`originatingHandle`) — this was IMPLEMENTED correctly but had ZERO test coverage for either
+outcome before this round. Added `TestClient_ReplayDeadLetter_HopTwoSecurityScheme_
+UsesSourceTopicAsOriginating` (2 subtests: a SECURED `SourceTopic` route forwarding to a
+MISMATCHED-scheme target correctly returns `ForwardSecuritySchemeMismatchError`; forwarding to a
+MATCHING-scheme target correctly proceeds) — both PASS against the current code, confirming the
+design's own central claim is genuinely correct, not merely assumed from a static read.
+
+### Everything else re-traced across Phase 1.5/2.0/2.1 — confirmed clean
+
+- **`ClientTransport.CallRaw`'s new `properties` parameter** — re-traced mqtt5's real wire
+  write (`PublishProperties.User` via the existing `userPropertiesFromMap`) and zeromq's
+  confirmed no-op (BOTH `clientTransport.CallRaw` and `dealerClientTransport.CallRaw`) — correct,
+  matches `reqreply-forward-bounce.md`'s own Addendum exactly, no new gap beyond the write-side
+  forward-reply bug ALREADY found and fixed during this session's own implementation (not a new
+  finding this round — re-confirmed fixed, not re-discovered).
+- **`forwardPropertyKeyPrefix` ("x-forward-prop:") collision-safety** — re-traced byte-for-byte
+  against `forwardTopicPropertyKey` ("x-forward-topic") to confirm no accidental prefix overlap;
+  confirmed structurally safe (reserved-namespace convention, same risk class as
+  `x-error-code`/`x-forward-topic` already accepted elsewhere, not a new risk).
+- **`DeadLetterEnvelope.Properties` capture across ALL 12 `adapters/mqtt5` `tryDeadLetterReflect`
+  call sites** — re-traced each one individually (not sampled): all 12 live inside the SAME
+  single `baseHandler` closure, one `msg *pahomqtt5.Publish` parameter, no shadowing anywhere in
+  the function — confirmed every call site threads the SAME, CORRECT incoming request's
+  properties, not a stale/wrong `msg` from a different scope.
+- **`adapters/zeromq`'s dead-letter-capture no-op is LOWER-RISK than mqtt5's by construction** —
+  the no-op lives INSIDE the one shared `tryDeadLetterReflect` function itself (`var properties
+  map[string]string` declared once, always nil), reused identically by BOTH independent server
+  implementations (`serverTransport.Serve` REQ/REP and `routerServerTransport.Serve` ROUTER/
+  DEALER) — unlike mqtt5's own per-call-site pattern, there is no N-way parity risk here at all;
+  a SECOND, Router-specific no-op test was judged NOT to add new coverage over the existing
+  REQ/REP one (same reasoning Round 205 used to justify skipping a 3rd real end-to-end Forward
+  test for the SAME adapter-agnostic-logic reason).
+- **`Client.followForward`/`Client.followForwardFromHandle` refactor** — re-read the full,
+  CURRENT split side by side with the pre-refactor single function; confirmed byte-for-byte
+  behavioral equivalence for the `Client.Call`/`Client.CallAsync` entry path (originating-handle
+  resolution, security-scheme comparison, `MaxForwards` accounting, reply classification) — a
+  pure extraction, no logic changed.
+- **`ReplayDeadLetter`'s `MaxForwards` accounting** — re-confirmed (not just re-read) via the
+  existing `TestClient_ReplayDeadLetter_HopOneForwardsFurther_ChainsIntoFollowForward` test: hop 1
+  lives OUTSIDE `followForwardFromHandle`'s loop (the same structural analogue as `Client.Call`'s
+  own hop 1), so a short hop-1→hop-2 chain never exhausts a small `MaxForwards` budget passed to
+  cover only hop 2 onward.
+- **`ReplayDeadLetter`/`ReplayDeadLetterAsync` have NO other dispatch-path binding to verify** —
+  confirmed via `grep` across the WHOLE repo: every `ReplayDeadLetter` reference outside its own
+  implementation/test/demo files is a bare doc-comment cross-reference, never a second, parallel
+  reflection-based dispatch path (no `ports.Pattern` binding equivalent exists) — the roadmap
+  doc's own "dispatch-path inventory confirmed trivial" claim holds.
+- **`codex.StringMap`'s `OptionalField` nil-vs-empty-map round-trip behavior** — confirmed a
+  benign, pre-existing (not reqreply-specific) codex quirk: `Properties == nil` on the ORIGINAL
+  Go value encodes, decodes, and round-trips back as an EMPTY (non-nil) map, never `nil` — every
+  consumer in this round's own code (`len(...) > 0`/`len(...) != 0` checks, direct key lookups)
+  already treats nil and empty identically, so this causes no observable behavior difference
+  anywhere; noted here so a future round doesn't re-investigate it as a surprise.
+- **Internal-package-alias check** (this skill's own gotcha) — grepped every NEW test file this
+  round touches (`dead_letter_replay_test.go`, `dead_letter_replay_reqreply_test.go`, this
+  session's additions to `dead_letter_reqreply_test.go`/`forward_resolve_test.go`) for
+  `internal/route`/`internal/middleware` imports — none found; the only such imports anywhere in
+  the touched files are in PRODUCTION code (`forward.go`, both adapters' `reqreply_transport.go`),
+  which is the expected, correct usage, not the test-file gotcha pattern.
+- **Full `gofmt`/`go build`/`go vet`/`go test ./...` clean after every fix**, plus a full
+  `examples/*/` sweep (every example with a `main.go` run to completion, zero non-zero exits) —
+  no regressions anywhere in the repo from either the codec fix or the new test coverage.
+
+### Phase B — design-doc re-review
+
+| Round 206 fix/finding | Doc(s) cross-checked | Verdict |
+|---|---|---|
+| `CallRaw`/`Forward` properties threading (re-traced, no new code this round) | `reqreply-forward-bounce.md`'s own "Addendum" | ALIGNED — matches exactly as documented and already shipped; re-confirmed, not re-discovered. |
+| `Client.followForward`/`followForwardFromHandle` split (re-traced, no new code this round) | `reqreply-dead-letter-replay.md`'s "followForward signature adjustment" | ALIGNED — the shipped refactor matches the doc's own flagged-in-advance design exactly. |
+| `DeadLetterEnvelope.Properties` capture, all 12 mqtt5 call sites (re-traced) | `reqreply-dead-letter-replay.md`'s Addendum "Phase 2.0" | ALIGNED. |
+| `ReplayDeadLetter` hop-1/hop-2+ split + security-scheme reuse (re-traced + NEW test coverage) | `reqreply-dead-letter-replay.md`'s "The key simplification" | ALIGNED — the new tests CONFIRM (not just assume) the design's central claim is correctly implemented. |
+| `DecodeDeadLetterEnvelope` added + `codex.Bytes()`→`codex.Base64()` bugfix (NEW this round) | `reqreply-dead-letter-replay.md` (updated this round), `go-codex.instructions.md`'s "Dead-Letter Replay" section (updated this round) | Previously MISALIGNED-BY-SILENCE (the doc's own "key simplification" assumed an `envelope` VALUE already exists, never specifying how one is produced from real wire bytes) — NOW ALIGNED, both docs updated this round to describe the fix. |
+
+No prior-round `go-codex.instructions.md` note was found to contradict anything this round
+introduces — checked the "`api/reqreply.Client` Registry"/"Forward/Bounce"/"Dead-Letter Replay"
+sections together (not in isolation): all 3 already said "SHIPPED" from this session's own
+earlier implementation round, consistent with this round's re-confirmation; only the
+"Dead-Letter Replay" section needed a genuinely NEW addition (the decode function + the codec
+bugfix), not a correction of anything already there.
 
 ---
 

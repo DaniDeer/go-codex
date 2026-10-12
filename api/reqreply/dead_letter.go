@@ -32,6 +32,16 @@ type DeadLetterEnvelope struct {
 	Error string
 	// Timestamp is when the dead-letter was produced.
 	Timestamp time.Time
+	// Properties carries the original request's wire-level properties
+	// (e.g. MQTT5 User Properties) at the moment it was dead-lettered —
+	// Phase 2.0's own wire-level properties addendum (docs/roadmap/
+	// reqreply-dead-letter-replay.md's "Addendum"), mirroring Phase
+	// 1.5's identical [ForwardError.Properties] field. Needed because a
+	// header-delivered credential is otherwise unrecoverable at replay
+	// time: the dead-lettered Payload alone never carried it. nil when
+	// the originating adapter has no property mechanism (zeromq,
+	// confirmed no-op) or the request carried none.
+	Properties map[string]string
 }
 
 var deadLetterEnvelopeCodec = codex.Struct[DeadLetterEnvelope](
@@ -39,7 +49,25 @@ var deadLetterEnvelopeCodec = codex.Struct[DeadLetterEnvelope](
 		func(e DeadLetterEnvelope) string { return e.SourceTopic },
 		func(e *DeadLetterEnvelope, v string) { e.SourceTopic = v },
 	),
-	codex.RequiredField("payload", codex.Bytes(),
+	// codex.Base64(), NOT codex.Bytes() — `deep-dive-bug-hunt` finding
+	// (Round 206, api/reqreply Phase 2.1 focused): codex.Bytes()'s own
+	// doc comment explicitly says "Use Bytes for binary file I/O...
+	// For base64-encoded fields inside JSON documents, use Base64
+	// instead" — deadLetterEnvelopeFormat is a format.JSON, exactly the
+	// case Bytes() warns against. This envelope's Marshal side (the
+	// ONLY side ever exercised before this round — DeadLetterFor only
+	// ever encoded, nothing decoded) happened to work regardless,
+	// because encoding/json base64-encodes a []byte VALUE inside an
+	// untyped map REGARDLESS of which codec produced it — but Decode
+	// receives a plain Go string (json.Unmarshal's own generic
+	// []byte→any decoding, NOT a []byte) and codex.Bytes().Decode's
+	// `v.([]byte)` type assertion then fails outright. Confirmed via a
+	// live failing test (TestDecodeDeadLetterEnvelope_
+	// RoundTripsDeadLetterForsOwnEncoding) before this fix. The wire
+	// format itself is UNCHANGED (already base64 JSON text either way,
+	// confirmed) — this is a pure decode-side bugfix, zero compatibility
+	// impact for any existing consumer reading the raw bytes.
+	codex.RequiredField("payload", codex.Base64(),
 		func(e DeadLetterEnvelope) []byte { return e.Payload },
 		func(e *DeadLetterEnvelope, v []byte) { e.Payload = v },
 	),
@@ -51,9 +79,31 @@ var deadLetterEnvelopeCodec = codex.Struct[DeadLetterEnvelope](
 		func(e DeadLetterEnvelope) time.Time { return e.Timestamp },
 		func(e *DeadLetterEnvelope, v time.Time) { e.Timestamp = v },
 	),
+	codex.OptionalField("properties", codex.StringMap(codex.String()),
+		func(e DeadLetterEnvelope) map[string]string { return e.Properties },
+		func(e *DeadLetterEnvelope, v map[string]string) { e.Properties = v },
+	),
 )
 
 var deadLetterEnvelopeFormat = format.JSON(deadLetterEnvelopeCodec)
+
+// DecodeDeadLetterEnvelope decodes a raw dead-letter-topic payload
+// (published by [RouteHandle.DeadLetterFor] via the SAME
+// [deadLetterEnvelopeFormat]) into a typed [DeadLetterEnvelope] —
+// `deep-dive-bug-hunt` finding (Round 206, api/reqreply Phase 2.1
+// focused): [Client.ReplayDeadLetter]/[Client.ReplayDeadLetterAsync]
+// accept a [DeadLetterEnvelope] VALUE, but until this fix there was NO
+// exported way to produce one from the actual wire bytes an ops/replay
+// consumer subscribes to — the only path was hand-rolling a JSON struct
+// mirroring [deadLetterEnvelopeCodec]'s own private field-name strings
+// (as this package's own demo/tests had started doing), an undocumented,
+// compiler-unenforced coupling that would silently break if a field name
+// in [deadLetterEnvelopeCodec] ever changed. This function is the single
+// sanctioned decode path, guaranteed to stay in sync with the encode
+// side [DeadLetterFor] uses, since both share the SAME codec.
+func DecodeDeadLetterEnvelope(data []byte) (DeadLetterEnvelope, error) {
+	return deadLetterEnvelopeFormat.Unmarshal(data)
+}
 
 // deadLetterRule is the resolved, per-route (or global-default)
 // DeadLetter declaration. A nil *deadLetterRule (route-level) means "not
@@ -207,11 +257,18 @@ func registerDeadLetterChannel(b *Server, rule *deadLetterRule) {
 // from ctx: each adapter stores its raw message under its OWN private
 // context key type).
 //
+// properties (Phase 2.0, docs/roadmap/reqreply-dead-letter-replay.md's
+// own "Addendum") carries the original request's wire-level properties
+// (e.g. MQTT5 User Properties) at the moment it failed — captured into
+// the envelope's own Properties field so a header-delivered credential
+// is recoverable at replay time. nil-safe; an adapter with no property
+// mechanism (zeromq) always passes nil here.
+//
 // Does NOT itself consult ErrorResponseFor — callers are responsible for
 // calling this ONLY after a more specific declared ErrorPattern has
 // already been tried and missed, or immediately for decode-class
 // failures where no such pattern could ever apply.
-func (h *RouteHandle[Req, Resp]) DeadLetterFor(obs stats.Observer, sourceTopic string, rawPayload []byte, err error) (topic string, body []byte, ok bool) {
+func (h *RouteHandle[Req, Resp]) DeadLetterFor(obs stats.Observer, sourceTopic string, rawPayload []byte, properties map[string]string, err error) (topic string, body []byte, ok bool) {
 	dl := h.deadLetterRule
 	if dl == nil || dl.topic == "" {
 		return "", nil, false
@@ -221,6 +278,7 @@ func (h *RouteHandle[Req, Resp]) DeadLetterFor(obs stats.Observer, sourceTopic s
 		Payload:     rawPayload,
 		Error:       err.Error(),
 		Timestamp:   time.Now().UTC(),
+		Properties:  properties,
 	}
 	encoded, encErr := deadLetterEnvelopeFormat.Marshal(envelope)
 	if encErr != nil {

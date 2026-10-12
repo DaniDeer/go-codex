@@ -19,13 +19,16 @@
 > to a future caller holding the registry-resolved target
 > `*RouteHandle`. Documented in
 > `.github/instructions/go-codex.instructions.md`'s own "`api/reqreply.
-> Client` Registry" section. **This doc stays in `docs/roadmap/` (not
-> deleted/promoted, per this project's usual shipped-feature lifecycle)
-> because [`reqreply-forward-bounce.md`](reqreply-forward-bounce.md) and
+> Client` Registry" section. **ALL 3 phases have now shipped** —
+> [`reqreply-forward-bounce.md`](reqreply-forward-bounce.md) (Phase 1 +
+> its own Phase 1.5 wire-level properties addendum) and
 > [`reqreply-dead-letter-replay.md`](reqreply-dead-letter-replay.md)
-> still cross-reference its full design rationale as their own
-> prerequisite** — it will be reconsidered for deletion/promotion once
-> ALL 3 phases have shipped, not phase-by-phase.
+> (Phase 2.0/2.1) are both SHIPPED. This doc stays in `docs/roadmap/`
+> for now (not deleted/promoted) since the other 2 docs still
+> cross-reference its full design rationale directly — reconsidering the
+> 3 docs' lifecycle (promotion to `docs/features/`/`docs/guides/`, or
+> deletion once fully superseded) is a distinct, future step requiring
+> its own explicit go-ahead.
 >
 > **User-facing docs (`docs/features/`/`docs/guides/`) — PUBLISHED, once
 > Phase 1 shipped, exactly as planned.** Checked REST's own redirect docs

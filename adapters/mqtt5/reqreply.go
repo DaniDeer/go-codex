@@ -2,6 +2,7 @@ package mqtt5
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/DaniDeer/go-codex/stats"
@@ -219,6 +220,54 @@ func forwardTopicFromUserProperties(msg *pahomqtt5.Publish) string {
 		}
 	}
 	return ""
+}
+
+// forwardPropertyKeyPrefix prefixes each key of a [reqreply.ForwardError]'s
+// Properties when written onto a forward reply's User Properties —
+// Phase 1.5's wire-level properties addendum (docs/roadmap/
+// reqreply-forward-bounce.md). A prefix is needed because the SAME
+// forward reply also carries [forwardTopicPropertyKey] (a marker) and
+// any Case 3 middleware-declared response properties (unprefixed,
+// docs/design/d-0003-codec-declared-middlewares.md's Addendum) — without
+// it, decoding back out could not tell a forwarded property apart from
+// either of those.
+const forwardPropertyKeyPrefix = "x-forward-prop:"
+
+// forwardPropertiesToUserProperties converts a [reqreply.ForwardError]'s
+// Properties into MQTT5 User Properties, each key prefixed with
+// [forwardPropertyKeyPrefix] — the WRITE side of Phase 1.5's wire-level
+// properties addendum. nil/empty is a no-op (returns nil), mirroring
+// [userPropertiesFromMap]'s own nil-safety.
+func forwardPropertiesToUserProperties(properties map[string]string) pahomqtt5.UserProperties {
+	if len(properties) == 0 {
+		return nil
+	}
+	out := make(pahomqtt5.UserProperties, 0, len(properties))
+	for k, v := range properties {
+		out = append(out, UserProperty{Key: forwardPropertyKeyPrefix + k, Value: v})
+	}
+	return out
+}
+
+// forwardPropertiesFromUserProperties reads every [forwardPropertyKeyPrefix]-
+// prefixed User Property off a forward reply, stripping the prefix — the
+// READ side of Phase 1.5's wire-level properties addendum. nil when none
+// are present (an older server, or a Forward call supplying no
+// properties).
+func forwardPropertiesFromUserProperties(msg *pahomqtt5.Publish) map[string]string {
+	if msg == nil || msg.Properties == nil {
+		return nil
+	}
+	var out map[string]string
+	for _, p := range msg.Properties.User {
+		if k, ok := strings.CutPrefix(p.Key, forwardPropertyKeyPrefix); ok {
+			if out == nil {
+				out = make(map[string]string)
+			}
+			out[k] = p.Value
+		}
+	}
+	return out
 }
 
 // errorCodePropertyKey is the RESERVED MQTT5 User Property key carrying a

@@ -1,4 +1,4 @@
-# `api/reqreply` Forward/Bounce — Phase 1 SHIPPED
+# `api/reqreply` Forward/Bounce — Phase 1 + Phase 1.5 SHIPPED
 
 > **Status: Phase 1 (Forward/Bounce) is SHIPPED.** `reqreply.Forward`/
 > `ForwardError`/`ForwardTargetVarError`/`UnrecognizedForwardError`/
@@ -21,18 +21,25 @@
 > rest-redirects.md` established. Documented in `.github/instructions/
 > go-codex.instructions.md`'s own "Forward/Bounce" section.
 >
-> **1 cross-cutting gap found since shipping, NOT yet implemented —
-> now an explicit "Phase 1.5"**: a [`reqreply-dead-letter-replay.md`](reqreply-dead-letter-replay.md)
-> review round traced a LATENT limitation back to THIS doc's own shipped
-> code — `CallRaw`/`Forward` have no channel to carry wire-level
-> properties (a property/header-delivered credential is silently
-> unsuppliable on a Forward hop) — see this doc's own "Addendum" section
-> below for the full, confirmed resolution (a breaking `CallRaw`
-> signature change + a new `ForwardError.Properties` field). A further
-> re-review made the ORDER explicit (previously only "sequenced
-> together," never actually committed to): **Phase 1.5 is THIS doc's own
-> responsibility and MUST ship FIRST** — `reqreply-dead-letter-replay.md`'s
-> own Phase 2.0/2.1 depend on it.
+> **Phase 1.5 — the cross-cutting wire-level properties addendum — has
+> ALSO SHIPPED.** `ClientTransport.CallRaw` gained a `properties
+> map[string]string` parameter (all 3 implementations: `adapters/mqtt5`
+> threads it into the outgoing `PublishProperties.User`; `adapters/
+> zeromq`'s both client transports accept it as a confirmed, tested
+> no-op); `Forward()` gained its own `properties map[string]string`
+> parameter and `ForwardError` gained a `Properties` field, threaded
+> through every hop of `Client.followForward`. A genuine write-side gap
+> was found and fixed DURING this round: the adapter's own forward-reply
+> publish initially never wrote `fwd.Properties` onto the wire at all
+> (confirmed via a live failing test before fixing) — now written as
+> prefixed MQTT5 User Properties (`forwardPropertyKeyPrefix =
+> "x-forward-prop:"`, to stay distinguishable from the
+> `forwardTopicPropertyKey` marker and Case 3's own unprefixed
+> middleware-declared properties on the SAME reply). This unblocks
+> [`reqreply-dead-letter-replay.md`](reqreply-dead-letter-replay.md)'s
+> own Phase 2.0/2.1, which have ALSO shipped — see that doc for the full
+> writeup. A runnable demo (`demoForwardWithProperties`) lives alongside
+> `demo_forward.go`.
 >
 > Below is the FULL design history (API surface, wire signal, structured
 > errors, dispatch-path inventory), preserved as implemented — settled
@@ -564,7 +571,7 @@ This design's own eventual unit test plan must carry the same explicit
 verification step for each of the 6 wire-signal recognition points
 above, not rely on "it probably works the same way."
 
-## Addendum (pending, NOT yet implemented) — `CallRaw`/`Forward` cannot carry wire-level properties today; a SHARED fix with [`reqreply-dead-letter-replay.md`](reqreply-dead-letter-replay.md)
+## Addendum (SHIPPED) — `CallRaw`/`Forward` now carry wire-level properties; a SHARED fix with [`reqreply-dead-letter-replay.md`](reqreply-dead-letter-replay.md)
 
 **Found during a `reqreply-dead-letter-replay.md` review round, grounded
 against this doc's OWN already-shipped code — a genuine, latent gap in
@@ -587,47 +594,50 @@ replay time — see that doc's own "Addendum" for the full writeup; this
 is the SAME fix, documented in both places since both phases consume
 it).
 
-**Resolution (confirmed, cross-cutting), with an EXPLICIT phase order —
-a further re-review found the FIRST version of this addendum said the 2
-docs' plans should be "sequenced together" without ever committing to
-an actual ORDER; traced the real dependency chain
-([`reqreply-dead-letter-replay.md`](reqreply-dead-letter-replay.md)'s
+**Resolution (SHIPPED, cross-cutting), with the phase order that was
+made explicit before implementation began** — traced the real dependency
+chain ([`reqreply-dead-letter-replay.md`](reqreply-dead-letter-replay.md)'s
 own `ReplayDeadLetter` can only pass properties into `CallRaw` once
-`CallRaw` already accepts them) to confirm the order below is FORCED by
-the code shape, not a style preference**:
+`CallRaw` already accepts them) to confirm the order below was FORCED
+by the code shape, not a style preference:
 
-- **Phase 1.5 (THIS doc's own responsibility — MUST ship before
+- **Phase 1.5 (THIS doc's own responsibility, shipped FIRST — before
   [`reqreply-dead-letter-replay.md`](reqreply-dead-letter-replay.md)'s
-  Phase 2.0/2.1 begin)**:
-  1. **`ClientTransport.CallRaw` gains a new `properties
+  Phase 2.0/2.1 began)**:
+  1. **`ClientTransport.CallRaw` gained a new `properties
      map[string]string` parameter** — a BREAKING change to the
      interface, touching all 3 implementations: `adapters/mqtt5`'s
      `clientTransport.CallRaw` (threads it into the outgoing
-     `PublishProperties.User`, mirroring the EXISTING
+     `PublishProperties.User`, reusing the EXISTING
      `userPropertiesFromMap` conversion `Serve`'s own write-side wiring
      already uses) and `adapters/zeromq`'s `clientTransport.CallRaw`/
      `dealerClientTransport.CallRaw` (accept the parameter for interface
      symmetry; zeromq has no property mechanism of its own to extend,
-     so it stays an accepted, confirmed no-op there).
-  2. **`ForwardError` gains a new `Properties map[string]string` field**
-     (mirrors `Payload`'s existing shape). `Forward()` needs a new,
-     EXPLICIT way for the calling handler to supply properties to carry
-     through — an opts-style parameter, matching this library's
-     declarative `ClientHandleOpt`/`RouteOpt` philosophy, NOT invisible
-     context-threading magic; exact shape TBD at implementation-
-     planning time. `Client.followForward` threads `fwd.Properties`
-     through its own `CallRaw` calls, at every hop.
+     a confirmed, tested no-op).
+  2. **`ForwardError` gained a new `Properties map[string]string` field**
+     (mirrors `Payload`'s existing shape). `Forward()` gained a new,
+     EXPLICIT `properties map[string]string` parameter, inserted right
+     after `vars` (a plain, nil-able map — matching `vars`'s own
+     existing shape, NOT wrapped in a new options type). `Client.
+     followForward` threads `fwd.Properties` through its own `CallRaw`
+     calls, at every hop.
+  3. **A write-side gap found and fixed DURING implementation**: the
+     adapter's own forward-reply publish initially never wrote
+     `fwd.Properties` onto the wire at all (the NEW field was
+     constructed in `ForwardError` but silently dropped before
+     reaching the outgoing `Publish` call) — confirmed via a live
+     failing test (`TestAttachServer_Forward_WithProperties_
+     RoundTripsOverWire`) before fixing. Resolved via a reserved,
+     prefixed User Property key (`forwardPropertyKeyPrefix =
+     "x-forward-prop:"`) distinct from `forwardTopicPropertyKey`'s own
+     marker and Case 3's own unprefixed middleware-declared properties,
+     which ALSO land on the SAME forward reply.
 
 **Phase 2.0/2.1 (the reqreply-package-local half: `DeadLetterEnvelope`'s
 own new field + each adapter's dead-letter-publish capture, THEN
 `ReplayDeadLetter`/`ReplayDeadLetterAsync` themselves) belong to
 [`reqreply-dead-letter-replay.md`](reqreply-dead-letter-replay.md), NOT
-this doc** — see its own "Addendum" section for the full, now explicitly
-ordered breakdown. This is a genuinely large, multi-part change (a
-breaking interface change + 3 adapter implementations + 2
-structured-type extensions) — explicitly scoped as its OWN
-implementation-planning pass, with THIS doc's Phase 1.5 landing FIRST,
-not folded silently into either phase's existing, already-shipped code.
+this doc** — both have ALSO SHIPPED; see that doc for the full writeup.
 
 ## Next step
 
@@ -641,5 +651,6 @@ capping, the `ports.Pattern`/`CallWithTransport` passthrough
 verification, and the runnable example + user-facing docs. See this
 doc's own top status block for the exact file/test inventory.
 [`reqreply-dead-letter-replay.md`](reqreply-dead-letter-replay.md)
-(Phase 2) is unblocked — its own "blocked on Forward/Bounce" dependency
-is now satisfied, ready to plan its own implementation next.
+(Phase 2, including its own Phase 2.0/2.1) has ALSO shipped, reusing
+Phase 1.5's `CallRaw`/`Forward` extension and `followForwardFromHandle`
+directly — see that doc for the full writeup.

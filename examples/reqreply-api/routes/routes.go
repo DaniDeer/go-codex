@@ -117,6 +117,19 @@ var ForwardOriginatingRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 	reqreply.RouteMeta{OperationID: "computeForwardOriginating", Summary: "Forward/Bounce's originating route — always forwards to ForwardTargetRoute.", Security: []reqreply.SecurityRequirement{}},
 )
 
+// ForwardWithPropertiesSourceRoute demonstrates Phase 1.5's own
+// wire-level properties addendum (docs/roadmap/
+// reqreply-forward-bounce.md's "Addendum"): its handler (declared
+// inline in demo_forward.go's demoForwardWithProperties) forwards to
+// ForwardTargetRoute WITH an explicit property attached — proving
+// Forward's properties argument reaches the target as a REAL wire-level
+// MQTT5 User Property, not just the request body.
+var ForwardWithPropertiesSourceRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
+	"forward-with-properties-source",
+	ComputeReqCodec, ComputeRespCodec,
+	reqreply.RouteMeta{OperationID: "computeForwardWithPropertiesSource", Summary: "Forward/Bounce's wire-level properties demo — always forwards to ForwardTargetRoute carrying a property.", Security: []reqreply.SecurityRequirement{}},
+)
+
 // SecuredComputeRoute is declared PRISTINE — no Security, no scheme —
 // exactly like ComputeRoute above. Its OWN security requirement is
 // declared declaratively via .Use(BearerAuthMw) (see middleware.go),
@@ -324,6 +337,24 @@ var DeadLetterComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 	ComputeReqCodec, ComputeRespCodec,
 	reqreply.RouteMeta{OperationID: "computeAddDeadLetterDemo", Summary: "Add two integers (DeadLetter demo).", Security: []reqreply.SecurityRequirement{}},
 	reqreply.DeadLetter("compute/add-deadletter-demo/dlq"),
+)
+
+// DeadLetterReplayComputeRoute demonstrates docs/roadmap/
+// reqreply-dead-letter-replay.md's own Phase 2.1 (see
+// demo_dead_letter_replay.go): its handler (declared inline in that
+// demo) fails on its FIRST invocation (an unmatched business error,
+// dead-lettering the request — capturing the real incoming
+// "Authorization" User Property into the published envelope's
+// Properties, Phase 2.0) and succeeds on its SECOND — an ops tool
+// decodes the dead-lettered envelope off the wire and calls
+// Client.ReplayDeadLetter, recovering the message with its credential
+// intact. Mounted under the SAME "compute" Router as DeadLetterComputeRoute
+// above, in its own isolated scratch server.
+var DeadLetterReplayComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
+	"add-deadletter-replay-demo",
+	ComputeReqCodec, ComputeRespCodec,
+	reqreply.RouteMeta{OperationID: "computeAddDeadLetterReplayDemo", Summary: "Add two integers (Dead-Letter Replay demo).", Security: []reqreply.SecurityRequirement{}},
+	reqreply.DeadLetter("compute/add-deadletter-replay-demo/dlq"),
 )
 
 // ── Security middleware + ErrorPattern combination ───────────────────────────

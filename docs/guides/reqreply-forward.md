@@ -20,7 +20,7 @@ Unlike `rest.Redirect`, `reqreply.Forward` needs no "originating route" argument
 ```go
 legacyAddRoute = legacyAddRoute.WithHandler(func(ctx context.Context, req LegacyAddReq) (LegacyAddResp, error) {
     var zero LegacyAddResp
-    return zero, reqreply.Forward(sumRoute, SumReq{A: req.X, B: req.Y}, nil)
+    return zero, reqreply.Forward(sumRoute, SumReq{A: req.X, B: req.Y}, nil, nil)
 })
 sumRoute = sumRoute.WithHandler(func(ctx context.Context, req SumReq) (SumResp, error) {
     return SumResp{Total: req.A + req.B}, nil
@@ -76,3 +76,17 @@ if errors.As(err, &fwdErr) {
 ```
 
 See [`examples/reqreply-api`'s `demo_forward.go`](https://github.com/DaniDeer/go-codex/blob/main/examples/reqreply-api/demo_forward.go) for the complete, runnable version of this walkthrough.
+
+## 6. Carrying a wire-level property/credential
+
+`Forward`'s 4th parameter carries properties/headers that have nothing to do with the request body — e.g. a credential the target route requires:
+
+```go
+legacyAddRoute = legacyAddRoute.WithHandler(func(ctx context.Context, req LegacyAddReq) (LegacyAddResp, error) {
+    var zero LegacyAddResp
+    return zero, reqreply.Forward(sumRoute, SumReq{A: req.X, B: req.Y}, nil,
+        map[string]string{"X-Replay-Reason": "legacy-route-retired"})
+})
+```
+
+`demoForwardWithProperties` (in the SAME `demo_forward.go` as above) proves this reaches the target as a REAL MQTT5 User Property, not just an internal field — see its own `forwardPropertyRecordingClient` wrapper for how a demo can inspect the actual wire message.

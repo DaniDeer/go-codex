@@ -25,7 +25,7 @@ var forwardTemplateTargetRoute = reqreply.NewRoute[computeReq, computeResp](
 )
 
 func TestForward_HappyPath_ReturnsForwardErrorWithResolvedTopicAndEncodedPayload(t *testing.T) {
-	err := reqreply.Forward(forwardTargetRoute, computeReq{X: 3, Y: 4}, nil)
+	err := reqreply.Forward(forwardTargetRoute, computeReq{X: 3, Y: 4}, nil, nil)
 	if err == nil {
 		t.Fatal("Forward: want a non-nil ForwardError, got nil")
 	}
@@ -53,8 +53,26 @@ func TestForward_HappyPath_ReturnsForwardErrorWithResolvedTopicAndEncodedPayload
 	}
 }
 
+// TestForward_WithProperties_ReturnsForwardErrorWithProperties is Phase
+// 1.5's own wire-level properties addendum test (docs/roadmap/
+// reqreply-forward-bounce.md's "Addendum"): the properties param
+// supplied to Forward() must be carried, unmodified, onto the returned
+// ForwardError.Properties — the field a conforming adapter's dispatch
+// (e.g. mqtt5) later writes onto the actual wire reply.
+func TestForward_WithProperties_ReturnsForwardErrorWithProperties(t *testing.T) {
+	properties := map[string]string{"X-Replay-Reason": "retry"}
+	err := reqreply.Forward(forwardTargetRoute, computeReq{X: 3, Y: 4}, nil, properties)
+	var fwd reqreply.ForwardError
+	if !errors.As(err, &fwd) {
+		t.Fatalf("Forward error: want ForwardError, got %v (%T)", err, err)
+	}
+	if fwd.Properties["X-Replay-Reason"] != "retry" {
+		t.Errorf("ForwardError.Properties = %+v, want {X-Replay-Reason: retry}", fwd.Properties)
+	}
+}
+
 func TestForward_TemplatedTarget_ResolvesVarsViaBuildTopic(t *testing.T) {
-	err := reqreply.Forward(forwardTemplateTargetRoute, computeReq{X: 1, Y: 2}, map[string]string{"tenantID": "acme"})
+	err := reqreply.Forward(forwardTemplateTargetRoute, computeReq{X: 1, Y: 2}, map[string]string{"tenantID": "acme"}, nil)
 	var fwd reqreply.ForwardError
 	if !errors.As(err, &fwd) {
 		t.Fatalf("Forward error: want ForwardError, got %v (%T)", err, err)
@@ -65,7 +83,7 @@ func TestForward_TemplatedTarget_ResolvesVarsViaBuildTopic(t *testing.T) {
 }
 
 func TestForward_MissingRequiredVar_ReturnsForwardTargetVarError(t *testing.T) {
-	err := reqreply.Forward(forwardTemplateTargetRoute, computeReq{X: 1, Y: 2}, nil)
+	err := reqreply.Forward(forwardTemplateTargetRoute, computeReq{X: 1, Y: 2}, nil, nil)
 	if err == nil {
 		t.Fatal("Forward: want a non-nil error for a missing required var, got nil")
 	}

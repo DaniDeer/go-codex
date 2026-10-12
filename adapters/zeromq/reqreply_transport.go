@@ -134,12 +134,17 @@ func sendHandlerErrorReplyReflect(ctx context.Context, sock FramedSocket, observ
 // REQ/REP's strict one-reply-per-request protocol invariant). Returns
 // true only when a dead-letter was both declared AND successfully routed
 // to its own socket.
+// properties is always passed as nil — Phase 2.0's own confirmed no-op
+// (docs/roadmap/reqreply-dead-letter-replay.md's "Addendum"): zeromq's
+// reqreply transport has no property/header wire mechanism of its own
+// to capture from, mirroring Phase 1.5's identical CallRaw no-op.
 func tryDeadLetterReflect(
 	sockets map[string]FramedSocket, deadLetterForMethod reflect.Value,
 	obs stats.Observer, sourceTopic string, rawPayload []byte, err error,
 ) bool {
+	var properties map[string]string
 	results := deadLetterForMethod.Call([]reflect.Value{
-		reflect.ValueOf(&obs).Elem(), reflect.ValueOf(sourceTopic), reflect.ValueOf(rawPayload), reflect.ValueOf(&err).Elem(),
+		reflect.ValueOf(&obs).Elem(), reflect.ValueOf(sourceTopic), reflect.ValueOf(rawPayload), reflect.ValueOf(properties), reflect.ValueOf(&err).Elem(),
 	})
 	topic, _ := results[0].Interface().(string)
 	body, _ := results[1].Interface().([]byte)
@@ -1372,7 +1377,14 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 // that decode itself via RouteHandle.DecodeErrorFor(Code, Body) —
 // moving the "hard part" to api/reqreply, keeping this adapter method a
 // pure wire-level extraction primitive.
-func (t *clientTransport) CallRaw(ctx context.Context, topic string, payload []byte) (result []byte, err error) {
+//
+// properties (Phase 1.5, docs/roadmap/reqreply-forward-bounce.md's own
+// "Addendum" section) is accepted for [reqreply.ClientTransport]
+// interface symmetry ONLY — a confirmed, deliberate NO-OP here: zeromq's
+// reqreply transport has no property/header mechanism of its own (no
+// frame reserved for it, unlike mqtt5's User Properties), so there is
+// nowhere on the wire to put it. This is NOT a partial implementation.
+func (t *clientTransport) CallRaw(ctx context.Context, topic string, payload []byte, properties map[string]string) (result []byte, err error) {
 	obs := t.opts.Observer
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
@@ -2276,8 +2288,9 @@ func (t *dealerClientTransport) call(ctx context.Context, routeAny any, reqAny a
 // call]'s REQ/REP framing, including the Forward leg (4-frame
 // [delimiter, statusForward, targetTopic, payload], checked before the
 // `frames[1] == "error"` check below). See [clientTransport.CallRaw]'s
-// doc comment for the full classification contract.
-func (t *dealerClientTransport) CallRaw(ctx context.Context, topic string, payload []byte) (result []byte, err error) {
+// doc comment for the full classification contract AND for properties'
+// confirmed, deliberate no-op rationale (Phase 1.5) — identical here.
+func (t *dealerClientTransport) CallRaw(ctx context.Context, topic string, payload []byte, properties map[string]string) (result []byte, err error) {
 	obs := t.opts.Observer
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)

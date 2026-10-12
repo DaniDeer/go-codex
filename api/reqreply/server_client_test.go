@@ -94,7 +94,7 @@ func (t *fakeClientTransport) Call(ctx context.Context, routeAny any, reqAny any
 // CallRaw is unused by these Server/Client dual-mode-dispatch tests
 // (Phase 0 infrastructure, not exercised here) — present only to
 // satisfy [reqreply.ClientTransport].
-func (t *fakeClientTransport) CallRaw(ctx context.Context, topic string, payload []byte) ([]byte, error) {
+func (t *fakeClientTransport) CallRaw(ctx context.Context, topic string, payload []byte, properties map[string]string) ([]byte, error) {
 	return nil, nil
 }
 

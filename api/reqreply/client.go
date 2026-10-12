@@ -63,7 +63,22 @@ type ClientTransport interface {
 	// adapter's CallRaw implements all 3 legs; [Client.followForward]
 	// (docs/roadmap/reqreply-forward-bounce.md's chain-following loop)
 	// is the real consumer, built on top of this primitive.
-	CallRaw(ctx context.Context, topic string, payload []byte) ([]byte, error)
+	//
+	// properties (Phase 1.5, docs/roadmap/reqreply-forward-bounce.md's
+	// own "Addendum" section) carries wire-level properties/headers
+	// (e.g. an mqtt5 User Property delivering a credential) alongside
+	// payload — nil when there are none, mirroring every other optional
+	// map parameter in this package (e.g. [Forward]'s own vars
+	// parameter). Closes the LATENT gap found during a
+	// reqreply-dead-letter-replay.md review round: CallRaw previously
+	// had NO channel to carry anything beyond the body, so neither an
+	// ordinary [Forward] hop nor a dead-letter [ReplayDeadLetter] could
+	// ever supply a property/header-delivered credential to the target.
+	// adapters/mqtt5 threads this into the outgoing PublishProperties.
+	// User; adapters/zeromq accepts it for interface symmetry only — it
+	// has no property/header mechanism of its own to put it on, a
+	// confirmed, deliberate no-op there, not a partial implementation.
+	CallRaw(ctx context.Context, topic string, payload []byte, properties map[string]string) ([]byte, error)
 }
 
 // ForwardRawErrorReply is returned by [ClientTransport.CallRaw] when a

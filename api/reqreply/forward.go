@@ -24,18 +24,30 @@ import (
 // method/body preservation) — newReq is the brand new request value the
 // handler constructs explicitly for target.
 //
+// properties (Phase 1.5, docs/roadmap/reqreply-forward-bounce.md's own
+// "Addendum" section) carries wire-level properties/headers (e.g. an
+// mqtt5 User Property delivering a credential) the handler wants carried
+// through to target — nil when there are none. EXPLICIT, not derived
+// from any ClientMW/context-ambient mechanism: Forward is called from
+// INSIDE a server handler, which has no *Client/ClientTransport to
+// dispatch target's own declared ClientMW against, so there is nothing
+// to derive this from automatically — this is the "hard part" moved to
+// the caller's own declaration, matching this library's general
+// declarative, explicit-over-magic philosophy.
+//
 // opts is passed straight through to target.ClientHandle(opts...) —
 // pass [WithRouter] when target is (or will be) grouped under a
 // [Router], the same way a client-side caller of target would need to.
 //
 //	func(ctx context.Context, req ComputeReq) (ComputeResp, error) {
 //	    var zero ComputeResp
-//	    return zero, reqreply.Forward(sumRoute, SumReq{A: req.X, B: req.Y}, nil)
+//	    return zero, reqreply.Forward(sumRoute, SumReq{A: req.X, B: req.Y}, nil, nil)
 //	}
 func Forward[TargetReq, TargetResp any](
 	target Route[TargetReq, TargetResp],
 	newReq TargetReq,
 	vars map[string]string,
+	properties map[string]string,
 	opts ...ClientHandleOpt,
 ) error {
 	handle := target.ClientHandle(opts...)
@@ -47,7 +59,7 @@ func Forward[TargetReq, TargetResp any](
 	if err != nil {
 		return ForwardTargetVarError{Topic: handle.Topic, Err: err}
 	}
-	return ForwardError{TargetTopic: topic, Payload: payload}
+	return ForwardError{TargetTopic: topic, Payload: payload, Properties: properties}
 }
 
 // ForwardError signals that a handler wants the CALLER'S client to
@@ -72,6 +84,13 @@ type ForwardError struct {
 	// "body stays empty" read, which would only have held if Req types
 	// had been constrained to match).
 	Payload []byte
+	// Properties carries wire-level properties/headers (e.g. an mqtt5
+	// User Property delivering a credential) the handler explicitly
+	// supplied to [Forward] — nil when there are none. Threaded through
+	// to [ClientTransport.CallRaw]'s own properties parameter by
+	// [Client.followForward] at every hop (Phase 1.5,
+	// docs/roadmap/reqreply-forward-bounce.md's "Addendum").
+	Properties map[string]string
 }
 
 func (e ForwardError) Error() string {
@@ -83,6 +102,7 @@ func (e ForwardError) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.String("target_topic", e.TargetTopic),
 		slog.Int("payload_len", len(e.Payload)),
+		slog.Int("property_count", len(e.Properties)),
 	)
 }
 
@@ -235,6 +255,26 @@ const defaultMaxForwards = 10
 // the resolved target RouteHandle's DecodeErrorFor, producing the SAME
 // typed [ErrorPatternResponse] an ordinary (non-forwarded) Call would.
 func (c *Client) followForward(ctx context.Context, t ClientTransport, originatingRoute any, fwd ForwardError, opts ...ClientCallOptions) (any, error) {
+	_, originatingHandle, err := recoverRegistryEntry(originatingRoute)
+	if err != nil {
+		return nil, err
+	}
+	return c.followForwardFromHandle(ctx, t, originatingHandle, fwd, opts...)
+}
+
+// followForwardFromHandle is followForward's shared core, factored out
+// (Phase 2.1, docs/roadmap/reqreply-dead-letter-replay.md's own
+// "followForward signature adjustment") so [Client.ReplayDeadLetter] can
+// hand off to the SAME chain-following loop from hop 2 onward WITHOUT a
+// Route[Req,Resp]/*RouteHandle[Req,Resp] VALUE to pass through
+// [recoverRegistryEntry] — Replay's hop 1 resolves its target directly
+// off the registry (there is no "originating call" to recover a value
+// from, see [Client.ReplayDeadLetter]'s own doc comment), so it already
+// HAS the resolved originatingHandle in hand. [followForward] itself
+// remains the entry point [Client.Call]/[Client.CallAsync] use
+// (a Route[Req,Resp]/*RouteHandle[Req,Resp] VALUE to resolve), now a
+// thin wrapper over this.
+func (c *Client) followForwardFromHandle(ctx context.Context, t ClientTransport, originatingHandle any, fwd ForwardError, opts ...ClientCallOptions) (any, error) {
 	var o ClientCallOptions
 	if len(opts) > 0 {
 		o = opts[0]
@@ -245,10 +285,6 @@ func (c *Client) followForward(ctx context.Context, t ClientTransport, originati
 	}
 	remaining := maxForwards
 
-	_, originatingHandle, err := recoverRegistryEntry(originatingRoute)
-	if err != nil {
-		return nil, err
-	}
 	originatingSchemes := effectiveSecurityRequirements(originatingHandle)
 
 	for {
@@ -277,7 +313,7 @@ func (c *Client) followForward(ctx context.Context, t ClientTransport, originati
 			return nil, mismatch
 		}
 
-		replyBytes, callErr := t.CallRaw(ctx, fwd.TargetTopic, fwd.Payload)
+		replyBytes, callErr := t.CallRaw(ctx, fwd.TargetTopic, fwd.Payload, fwd.Properties)
 		if callErr == nil {
 			return decodeResponseReflect(targetHandle, replyBytes)
 		}

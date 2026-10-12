@@ -2,6 +2,7 @@ package zeromq
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -17,6 +18,65 @@ import (
 // its OWN entry in the sockets map passed to AttachServer (a standalone
 // destination socket, e.g. a PUSH socket feeding a dead-letter consumer)
 // for the dead-letter to be reachable at all.
+
+// TestDeadLetter_ServeRequestPayloadDecode_PropertiesConfirmedNoop is
+// Phase 2.0's own wire-level properties addendum test (docs/roadmap/
+// reqreply-dead-letter-replay.md's "Addendum"): zeromq's REQ/REP
+// transport has no property/header wire mechanism to capture from —
+// this proves the published [reqreply.DeadLetterEnvelope]'s Properties
+// field is ALWAYS absent/empty here, a deliberate, tested no-op rather
+// than an untested assumption, mirroring Phase 1.5's identical CallRaw
+// no-op test.
+func TestDeadLetter_ServeRequestPayloadDecode_PropertiesConfirmedNoop(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	handler := func(_ context.Context, _ computeReq) (computeResp, error) {
+		return computeResp{}, nil
+	}
+	dlRoute := reqreply.NewRoute[computeReq, computeResp]("/compute-dlq-props", computeReqCodec, computeRespCodec,
+		reqreply.DeadLetter("/compute-dlq-props/dlq"),
+	)
+	if _, err := dlRoute.WithHandler(handler).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	repSock, reqSock := newChanSocketPair()
+	dlqSock := &mockSocket{}
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Sockets: map[string]FramedSocket{
+		"/compute-dlq-props":     repSock,
+		"/compute-dlq-props/dlq": dlqSock,
+	}})); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = server.Serve(ctx) }()
+
+	if err := reqSock.SendFrames([][]byte{[]byte(`{}`)}); err != nil { // missing required fields
+		t.Fatalf("SendFrames: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	dlqSock.mu.Lock()
+	defer dlqSock.mu.Unlock()
+	var envelope struct {
+		Properties map[string]string `json:"properties"`
+	}
+	var found bool
+	for _, frames := range dlqSock.sentFrames {
+		if len(frames) >= 2 && string(frames[0]) == "/compute-dlq-props/dlq" {
+			if err := json.Unmarshal(frames[1], &envelope); err != nil {
+				t.Fatalf("json.Unmarshal(DLQ envelope): %v", err)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("want a publish to the declared dead-letter socket")
+	}
+	if len(envelope.Properties) != 0 {
+		t.Errorf("DeadLetterEnvelope.Properties = %+v, want empty (zeromq's confirmed no-op)", envelope.Properties)
+	}
+}
 
 func TestDeadLetter_ServeRequestPayloadDecode_Published(t *testing.T) {
 	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})

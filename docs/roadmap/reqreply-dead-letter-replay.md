@@ -1,11 +1,31 @@
-# `api/reqreply` Dead-Letter Replay — Design Complete, Phase 1 Dependency SATISFIED, 1 Cross-Cutting Addendum Pending
+# `api/reqreply` Dead-Letter Replay — Phase 2 (2.0 + 2.1) SHIPPED
 
-> **Status:** Design complete — API surface and structured error are
-> settled, and the dispatch-path inventory is confirmed trivial (no
-> `ports.Pattern` binding equivalent to verify, unlike
-> [Phase 1](reqreply-forward-bounce.md)). **The blocking dependency on
-> [`reqreply-forward-bounce.md`](reqreply-forward-bounce.md) (Phase 1)
-> is SATISFIED — Phase 1 has SHIPPED.**
+> **Status: SHIPPED.** `Client.ReplayDeadLetter`/`ReplayDeadLetterAsync`/
+> `UnrecognizedDeadLetterSourceError` are implemented in `api/reqreply/
+> dead_letter_replay.go` (tests: `api/reqreply/dead_letter_replay_test.go`);
+> `DeadLetterEnvelope.Properties` + each adapter's capture (`RouteHandle.
+> DeadLetterFor`'s new `properties` parameter, threaded by `tryDeadLetterReflect`)
+> are implemented in `api/reqreply/dead_letter.go`/`adapters/mqtt5`/
+> `adapters/zeromq` (tests: `adapters/mqtt5/dead_letter_reqreply_test.go`,
+> `adapters/zeromq/dead_letter_reqreply_test.go`); `Client.followForward`
+> was factored into a thin wrapper + `Client.followForwardFromHandle`
+> (`api/reqreply/forward.go`) so Replay's hop 2+ reuses the EXACT SAME
+> chain-following loop without a `Route`/`*RouteHandle` VALUE to resolve.
+> A runnable demo lives at `examples/reqreply-api/demo_dead_letter_replay.go`;
+> a real end-to-end test (`adapters/mqtt5`'s
+> `TestClient_ReplayDeadLetter_EndToEndViaRealMQTT5Adapter_
+> CredentialSurvivesReplay`) proves a header-delivered credential
+> survives dead-letter capture AND replay over the real wire. Documented
+> in `.github/instructions/go-codex.instructions.md`'s own "Dead-Letter
+> Replay" section.
+>
+> **The blocking dependency on
+> [`reqreply-forward-bounce.md`](reqreply-forward-bounce.md) (Phase 1 +
+> Phase 1.5) is SATISFIED — both have SHIPPED.** Below is the FULL design
+> history that GOVERNED the implementation (API surface, structured
+> error, the key simplification, the addendum) — preserved as
+> implemented, settled across several review rounds BEFORE
+> implementation began:
 >
 > **A review round, grounded against the REAL shipped Phase 0/1 code for
 > the first time, found and resolved 2 real design gaps**: (1)
@@ -14,33 +34,31 @@
 > unconditional security-scheme check would reject replay against any
 > secured route; RESOLVED by giving Replay its own loop-free hop-1
 > dispatch, handing off to the unchanged shared loop only from hop 2
-> onward (see "The key simplification" below). (2) `DeadLetterEnvelope`
-> never captured the original request's wire-level properties, making a
-> header-delivered credential unrecoverable at replay time — traced to a
-> LATENT gap `CallRaw` itself (Phase 0) already has, which Phase 1's own
-> `Forward` also inherits; RESOLVED as a confirmed, CROSS-CUTTING
-> addendum (breaking `CallRaw` signature change + `ForwardError`/
-> `DeadLetterEnvelope` extensions) — see "Addendum" below, mirrored in
-> [`reqreply-forward-bounce.md`](reqreply-forward-bounce.md).
+> onward (see "The key simplification" below) — IMPLEMENTED exactly as
+> specified. (2) `DeadLetterEnvelope` never captured the original
+> request's wire-level properties, making a header-delivered credential
+> unrecoverable at replay time — traced to a LATENT gap `CallRaw` itself
+> (Phase 0) already has, which Phase 1's own `Forward` also inherits;
+> RESOLVED as a confirmed, CROSS-CUTTING addendum (breaking `CallRaw`
+> signature change + `ForwardError`/`DeadLetterEnvelope` extensions) —
+> see "Addendum" below, mirrored in
+> [`reqreply-forward-bounce.md`](reqreply-forward-bounce.md) — IMPLEMENTED,
+> both halves.
 >
-> **A further re-review made the addendum's own ORDER explicit — a
-> direct question surfaced that the previous round left it only as
-> "sequenced together," never actually committing to which comes
-> first.** Traced the real dependency to confirm the order is FORCED,
-> not a preference: **Phase 1.5** (`CallRaw` signature + `ForwardError.
-> Properties`, documented in `reqreply-forward-bounce.md`, MUST ship
-> first) → **Phase 2.0** (`DeadLetterEnvelope.Properties` + adapter
-> capture, THIS doc's own first step) → **Phase 2.1**
-> (`ReplayDeadLetter`/`ReplayDeadLetterAsync` themselves, THIS doc's own
-> second/main step). See "Addendum" below for the full, now explicitly
-> ordered breakdown.
+> **A further re-review made the addendum's own ORDER explicit** — traced
+> the real dependency to confirm the order was FORCED, not a preference:
+> **Phase 1.5** (`CallRaw` signature + `ForwardError.Properties`,
+> documented in `reqreply-forward-bounce.md`, shipped FIRST) → **Phase
+> 2.0** (`DeadLetterEnvelope.Properties` + adapter capture, THIS doc's
+> own first step) → **Phase 2.1** (`ReplayDeadLetter`/
+> `ReplayDeadLetterAsync` themselves, THIS doc's own second/main step).
+> Implemented in exactly this order. See "Addendum" below for the full
+> breakdown.
 >
-> This doc still needs ZERO new wire mechanism of its OWN beyond the
-> shared addendum above — `ReplayDeadLetter` reuses Phase 1's shipped
-> `followForward` (from hop 2 onward) and `CallRaw` (Phase 0's single-hop
-> primitive, once extended by Phase 1.5) directly. Ready to plan Phase
-> 2.0/2.1's own implementation next — a distinct, future step requiring
-> its own explicit go-ahead, the same rigor Phase 1 itself went through.
+> This doc needed ZERO new wire mechanism of its OWN beyond the shared
+> addendum above — `ReplayDeadLetter` reuses Phase 1's shipped
+> `followForwardFromHandle` (from hop 2 onward) and `CallRaw` (Phase 0's
+> single-hop primitive, extended by Phase 1.5) directly.
 > [← Back to Roadmap](index.md)
 
 ## Relationship to the other 2 reqreply roadmap docs
@@ -150,14 +168,38 @@ shared loop's body already does (via the resolved target
 `*RouteHandle.DecodeErrorFor`) — this reuse is unaffected by the
 resolution above.
 
-## API surface — CONFIRMED
+## API surface — CONFIRMED (SHIPPED)
 
 ```go
 // api/reqreply — both synchronous and async variants, from the start
 // (mirrors Call/CallAsync's own pairing).
 func (c *Client) ReplayDeadLetter(ctx context.Context, envelope DeadLetterEnvelope, opts ...ClientCallOptions) (any, error)
 func (c *Client) ReplayDeadLetterAsync(ctx context.Context, envelope DeadLetterEnvelope, opts ...ClientCallOptions) (any, error) // *Future[any] as any
+
+// The sanctioned decode path for the raw bytes an ops/replay consumer
+// reads off the dead-letter topic — `deep-dive-bug-hunt` Round 206
+// finding, added AFTER initial implementation: ReplayDeadLetter accepts
+// a DeadLetterEnvelope VALUE, but nothing exported could produce one
+// from real wire bytes until this was added.
+func DecodeDeadLetterEnvelope(data []byte) (DeadLetterEnvelope, error)
 ```
+
+**Round 206 found and fixed a genuine, pre-existing, latent bug this
+decode function exposed**: `deadLetterEnvelopeCodec`'s `"payload"` field
+used `codex.Bytes()` (documented for `format.Binary` use only, NOT
+`format.JSON`) instead of `codex.Base64()` — `DeadLetterFor`'s own
+Marshal side happened to work regardless of which codec was used
+(`encoding/json` base64-encodes a `[]byte` VALUE inside an untyped map
+unconditionally), but Decode failed outright, since `json.Unmarshal`
+into a generic `any` destination produces a plain `string`, not
+`[]byte`, and `codex.Bytes().Decode`'s type assertion rejects it. This
+had been LATENT since Phase 0/the original `d-0005-error-handling.md`
+Topic 4 design — nothing ever attempted to decode the envelope before
+this round's new function existed to need it. Confirmed via a live
+failing test before fixing; the wire format itself is UNCHANGED, zero
+compatibility impact. The IDENTICAL bug exists, equally dormant, in
+`api/events.DeadLetterEnvelope`'s own mirrored codec — flagged, but
+left unfixed as out of THIS round's `api/reqreply`-focused scope.
 
 Methods on `Client` (not free functions) — the registry lives on
 `Client` (unexported fields), so a method is the natural, no-extra-
@@ -218,7 +260,7 @@ loop unconditionally against a message that will never succeed; any
 automated replay tooling built on top of this should track attempt
 counts or apply its own backoff/giveup policy.
 
-## Addendum — wire-level properties/credentials are lost today; a SHARED fix with Phase 1 (cross-cutting, not Phase-2-only)
+## Addendum (SHIPPED) — wire-level properties/credentials now survive dead-letter capture and replay; a SHARED fix with Phase 1 (cross-cutting, not Phase-2-only)
 
 **Found during this round's re-review, grounded against the REAL,
 shipped `DeadLetterEnvelope`/`CallRaw` code — a genuine, significant gap,
@@ -260,19 +302,16 @@ practice (Replay's whole premise — recovering a FAILED message — makes
 hitting a secured route disproportionately likely; an ordinary Forward
 chain is more often within a single trust domain).
 
-**Resolution (confirmed, cross-cutting — implemented as a SHARED
-addendum with [`reqreply-forward-bounce.md`](reqreply-forward-bounce.md),
-not duplicated independently in each doc), with an EXPLICIT phase order
-— a further re-review found the FIRST version of this addendum said the
-2 docs' plans should be "sequenced together" without ever committing to
-an actual ORDER; traced the real dependency chain (`ReplayDeadLetter`
-can only pass `envelope.Properties` into `CallRaw` once `CallRaw`
-already accepts one, and `DeadLetterEnvelope` already has a field to
-read it from) to confirm the order below is FORCED by the code shape,
-not a style preference**:
+**Resolution (SHIPPED, cross-cutting — implemented as a SHARED addendum
+with [`reqreply-forward-bounce.md`](reqreply-forward-bounce.md), not
+duplicated independently in each doc), in the EXPLICIT phase order
+traced to be FORCED by the code shape (`ReplayDeadLetter` can only pass
+`envelope.Properties` into `CallRaw` once `CallRaw` already accepts one,
+and `DeadLetterEnvelope` already has a field to read it from), not a
+style preference**:
 
 - **Phase 1.5 (documented primarily in [`reqreply-forward-bounce.md`](reqreply-forward-bounce.md),
-  MUST ship before Phase 2 begins)**:
+  shipped FIRST, before Phase 2 began)**:
   1. **`ClientTransport.CallRaw` gains a new `properties
      map[string]string` parameter** — a BREAKING change to the
      already-shipped interface, touching all 3 implementations:
@@ -285,47 +324,45 @@ not a style preference**:
      confirmed, accepted no-op there, not a partial implementation,
      since zeromq's reqreply transport has no property mechanism of its
      own to extend).
-  2. **`ForwardError` gains a new `Properties map[string]string` field**
-     (mirrors `Payload`'s existing shape) — `Forward()` needs a new,
-     EXPLICIT way for the calling handler to supply properties to carry
-     through (an opts-style parameter, matching this library's existing
-     declarative `ClientHandleOpt`/`RouteOpt` philosophy — NOT invisible
-     context-threading magic); exact shape TBD at implementation-
-     planning time. `Client.followForward` threads `fwd.Properties`
-     through its own `CallRaw` calls.
-- **Phase 2.0 (THIS doc's own first implementation step — depends on
-  Phase 1.5 having landed first, since it needs `CallRaw` to already
-  accept properties)**:
-  3. **`DeadLetterEnvelope` gains a new `Properties map[string]string`
+  2. **`ForwardError` gained a new `Properties map[string]string` field**
+     (mirrors `Payload`'s existing shape) — `Forward()` gained a new,
+     EXPLICIT `properties map[string]string` parameter, inserted right
+     after `vars` (a plain, nil-able map, matching `vars`'s own existing
+     shape — NOT wrapped in a new options type). `Client.followForward`
+     threads `fwd.Properties` through its own `CallRaw` calls. A
+     write-side gap (the adapter's own forward-reply publish initially
+     never wrote `fwd.Properties` onto the wire at all) was found and
+     fixed DURING implementation — see `reqreply-forward-bounce.md`'s
+     own writeup for the full fix.
+- **Phase 2.0 (THIS doc's own first implementation step — shipped after
+  Phase 1.5 landed, since it needs `CallRaw` to already accept
+  properties)**:
+  3. **`DeadLetterEnvelope` gained a new `Properties map[string]string`
      field**, capturing the ORIGINAL request's properties at
-     dead-letter time — confirmed a reqreply-package-LOCAL change only:
+     dead-letter time — a reqreply-package-LOCAL change only, confirmed:
      `api/events.DeadLetterEnvelope` is a SEPARATE, independently-
      defined type in a different package (mirrored SHAPE, not a shared
-     type), so this does NOT require touching `api/events` at all.
-     Every reqreply adapter's dead-letter-PUBLISH call site needs
-     updating to CAPTURE the incoming request's real properties into
-     this new field — relevant to `adapters/mqtt5` only (confirmed
-     `adapters/zeromq` has no property mechanism to capture from, a
-     no-op there too, consistent with Phase 1.5's point 1 above).
-- **Phase 2.1 (THIS doc's own second/main implementation step — depends
-  on Phase 2.0, is the NET NEW `Client.ReplayDeadLetter`/
+     type), untouched. `RouteHandle.DeadLetterFor` gained a `properties
+     map[string]string` parameter; every reqreply adapter's dead-letter-
+     PUBLISH call site (`tryDeadLetterReflect`, both adapters, all call
+     sites) now threads it through — `adapters/mqtt5` extracts the real
+     incoming User Properties via `propertyVarsFromUserProperties(msg)`;
+     `adapters/zeromq` always passes `nil` (confirmed, tested no-op —
+     no property mechanism to capture from, consistent with Phase 1.5's
+     point 1 above).
+- **Phase 2.1 (THIS doc's own second/main implementation step — shipped
+  after Phase 2.0, the NET NEW `Client.ReplayDeadLetter`/
   `ReplayDeadLetterAsync` client-facing surface itself)**:
   4. **`ReplayDeadLetter` passes `envelope.Properties` through to its
      own hop-1 `CallRaw` call** (see "The key simplification" above for
-     hop 1's now-corrected, loop-free shape) — no further design
-     decision needed beyond threading the new field through, now that
-     Phase 2.0 guarantees it is populated.
+     hop 1's own loop-free shape) — threaded through exactly as
+     specified, now that Phase 2.0 guarantees it is populated.
 
-This is a genuinely large, multi-part change (a breaking interface
-change + 3 adapter implementations + 2 structured-type extensions,
-spanning Phase 0/1/2's own already-shipped code) — explicitly scoped as
-its OWN implementation-planning pass, NOT folded silently into either
-phase's existing plan. [`reqreply-forward-bounce.md`](reqreply-forward-bounce.md)
-carries the IDENTICAL addendum text for Phase 1.5 (its own
-responsibility to implement first); Phase 2.0/2.1 are THIS doc's own
-responsibility, in that order — read both docs together, not in
-isolation, since all 3 phases consume the same underlying `CallRaw`
-change.
+[`reqreply-forward-bounce.md`](reqreply-forward-bounce.md) carries the
+IDENTICAL addendum text for Phase 1.5 (its own responsibility,
+implemented first); Phase 2.0/2.1 were THIS doc's own responsibility, in
+that order — read both docs together, not in isolation, since all 3
+phases consume the same underlying `CallRaw` change.
 
 ## Dispatch-path inventory — confirmed much smaller than Phase 1's
 
@@ -340,32 +377,24 @@ inventory, not an oversight matching Round 201's own lesson.
 
 ## Next step
 
-Dead-letter replay has a SETTLED design, hardened across this round's
-re-review against the REAL, shipped Phase 0/1 code for the first time —
-**the Phase 1 blocking dependency is SATISFIED** (shipped), and this
-round's findings (hop-1's loop-free dispatch shape; the cross-cutting
-`CallRaw`/`ForwardError`/`DeadLetterEnvelope` properties addendum, NOW
-WITH AN EXPLICIT ORDER) are both resolved at the DESIGN level above.
-None of it is implemented yet. The implementation sequence is now
-UNAMBIGUOUS:
+**SHIPPED.** Dead-letter replay's SETTLED design (hardened across
+several review rounds against the REAL, shipped Phase 0/1 code) was
+implemented exactly as specified above, in the UNAMBIGUOUS order the
+design required:
 
 1. **Phase 1.5** — `CallRaw`'s breaking signature change +
    `ForwardError.Properties` — [`reqreply-forward-bounce.md`](reqreply-forward-bounce.md)'s
-   own responsibility to plan and implement FIRST; THIS doc has nothing
-   to implement until it lands.
+   own responsibility, implemented FIRST.
 2. **Phase 2.0** — `DeadLetterEnvelope.Properties` + each adapter's
-   dead-letter-publish capture (mqtt5 only) — THIS doc's own first step,
-   depends on Phase 1.5.
+   dead-letter-publish capture (mqtt5 real capture; zeromq confirmed
+   no-op) — THIS doc's own first step.
 3. **Phase 2.1** — `Client.ReplayDeadLetter`/`ReplayDeadLetterAsync`
    themselves (`UnrecognizedDeadLetterSourceError`, the
    poisoned-registry-entry case, the hop-1-outside-the-loop dispatch
    shape, the distinct `FutureFactory` resolution path, threading
-   `envelope.Properties` through) — THIS doc's own second/main step,
-   depends on Phase 2.0.
+   `envelope.Properties` through, and the `followForward`/
+   `followForwardFromHandle` factoring the design flagged as needed
+   mid-coding) — THIS doc's own second/main step.
 
-Turning this into an actual implementation plan (unit test plan per
-phase, SQL todos with dependencies matching the 1.5 → 2.0 → 2.1 order
-above) is a distinct, future step requiring its own explicit go-ahead,
-the same rigor Phase 1 itself went through. No code should be written
-against this design until that implementation plan exists and is
-approved.
+See this doc's own top status block for the exact file/test/demo
+inventory.

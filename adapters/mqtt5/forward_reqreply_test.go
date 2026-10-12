@@ -37,7 +37,7 @@ var targetForwardRoute = reqreply.NewRoute[computeReq, computeResp](
 func TestAttachServer_Forward_PublishesReservedSignal_SkipsErrorPatternAndDeadLetter(t *testing.T) {
 	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	handler := func(_ context.Context, req computeReq) (computeResp, error) {
-		return computeResp{}, reqreply.Forward(targetForwardRoute, computeReq{X: req.X + 1, Y: req.Y + 1}, nil)
+		return computeResp{}, reqreply.Forward(targetForwardRoute, computeReq{X: req.X + 1, Y: req.Y + 1}, nil, nil)
 	}
 	fwdRoute := reqreply.NewRoute[computeReq, computeResp]("compute/forward-src", computeReqCodec, computeRespCodec,
 		// Declared specifically to prove the skip is REAL, not just
@@ -120,6 +120,78 @@ func TestAttachServer_Forward_PublishesReservedSignal_SkipsErrorPatternAndDeadLe
 	}
 }
 
+// TestAttachServer_Forward_WithProperties_RoundTripsOverWire is Phase
+// 1.5's own wire-level properties addendum test (docs/roadmap/
+// reqreply-forward-bounce.md's "Addendum"): a handler's
+// reqreply.Forward(target, req, vars, properties) call's Properties
+// MUST appear on the published forward reply's User Properties
+// (write side), AND the client's CallRaw MUST decode them back into
+// ForwardError.Properties (read side) — a real wire-level credential/
+// header, not just the Payload, needs to survive the round trip.
+func TestAttachServer_Forward_WithProperties_RoundTripsOverWire(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	handler := func(_ context.Context, req computeReq) (computeResp, error) {
+		return computeResp{}, reqreply.Forward(targetForwardRoute, computeReq{X: req.X, Y: req.Y},
+			nil, map[string]string{"X-Replay-Reason": "retry", "X-Tenant": "acme"})
+	}
+	fwdRoute := reqreply.NewRoute[computeReq, computeResp]("compute/forward-with-props", computeReqCodec, computeRespCodec)
+	if _, err := fwdRoute.WithHandler(handler).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	serverClient := &mockClient{}
+	serverRouter := newMockRouter()
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter})); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- server.Serve(ctx) }()
+	serverRouter.waitHandler("compute/forward-with-props")
+
+	clientClient := &mockClient{}
+	clientRouter := newMockRouter()
+	transport := NewClientTransport(ClientTransportOptions{Client: clientClient, Router: clientRouter})
+	wireBrokers(t, serverClient, clientRouter)
+	wireBrokers(t, clientClient, serverRouter)
+
+	handle := fwdRoute.ClientHandle()
+	payload, err := handle.EncodeRequest(computeReq{X: 1, Y: 2})
+	if err != nil {
+		t.Fatalf("EncodeRequest: %v", err)
+	}
+
+	_, callErr := transport.CallRaw(context.Background(), "compute/forward-with-props", payload, nil)
+	var fwd reqreply.ForwardError
+	if !errors.As(callErr, &fwd) {
+		t.Fatalf("want CallRaw to return a reqreply.ForwardError, got %v (%T)", callErr, callErr)
+	}
+	if fwd.Properties["X-Replay-Reason"] != "retry" || fwd.Properties["X-Tenant"] != "acme" {
+		t.Fatalf("want ForwardError.Properties to carry the Forward call's properties, got %+v", fwd.Properties)
+	}
+
+	// Write-side proof, independent of CallRaw's own decode: the raw
+	// published message's User Properties carry the SAME values under
+	// [forwardPropertyKeyPrefix], confirmed via the read-side helper
+	// directly against the captured publish.
+	serverClient.mu.Lock()
+	published := append([]*pahomqtt5.Publish(nil), serverClient.published...)
+	serverClient.mu.Unlock()
+	var found bool
+	for _, p := range published {
+		if props := forwardPropertiesFromUserProperties(p); props["X-Replay-Reason"] == "retry" && props["X-Tenant"] == "acme" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want a published forward reply carrying X-Replay-Reason/X-Tenant under %q, got: %+v", forwardPropertyKeyPrefix, published)
+	}
+
+	cancel()
+	<-errCh
+}
+
 // TestAttachClient_Call_RecognizesForwardReply_BeforeErrorPattern confirms
 // the client-recognize side of call(): a server replies with the
 // reserved forward wire signal, and the transport's own Call (invoked
@@ -131,7 +203,7 @@ func TestAttachServer_Forward_PublishesReservedSignal_SkipsErrorPatternAndDeadLe
 func TestAttachClient_Call_RecognizesForwardReply_BeforeErrorPattern(t *testing.T) {
 	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	handler := func(_ context.Context, _ computeReq) (computeResp, error) {
-		return computeResp{}, reqreply.Forward(targetForwardRoute, computeReq{X: 9, Y: 9}, nil)
+		return computeResp{}, reqreply.Forward(targetForwardRoute, computeReq{X: 9, Y: 9}, nil, nil)
 	}
 	fwdRoute := reqreply.NewRoute[computeReq, computeResp]("compute/forward-call-client", computeReqCodec, computeRespCodec)
 	if _, err := fwdRoute.WithHandler(handler).Register(server); err != nil {
@@ -194,7 +266,7 @@ func TestAttachClient_Call_RecognizesForwardReply_BeforeErrorPattern(t *testing.
 func TestClientTransport_CallRaw_ForwardReply(t *testing.T) {
 	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	handler := func(_ context.Context, _ computeReq) (computeResp, error) {
-		return computeResp{}, reqreply.Forward(targetForwardRoute, computeReq{X: 5, Y: 6}, nil)
+		return computeResp{}, reqreply.Forward(targetForwardRoute, computeReq{X: 5, Y: 6}, nil, nil)
 	}
 	fwdRoute := reqreply.NewRoute[computeReq, computeResp]("compute/forward-callraw", computeReqCodec, computeRespCodec)
 	if _, err := fwdRoute.WithHandler(handler).Register(server); err != nil {
@@ -225,7 +297,7 @@ func TestClientTransport_CallRaw_ForwardReply(t *testing.T) {
 		t.Fatalf("EncodeRequest: %v", err)
 	}
 
-	_, callErr := transport.CallRaw(context.Background(), "compute/forward-callraw", payload)
+	_, callErr := transport.CallRaw(context.Background(), "compute/forward-callraw", payload, nil)
 	if callErr == nil {
 		t.Fatal("CallRaw: want an error for a forward reply, got nil")
 	}
@@ -264,7 +336,7 @@ func TestClientTransport_CallRaw_ForwardReply(t *testing.T) {
 func TestMQTT5CallAdapter_ForwardError_PropagatesUnwrapped(t *testing.T) {
 	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	handler := func(_ context.Context, _ computeReq) (computeResp, error) {
-		return computeResp{}, reqreply.Forward(targetForwardRoute, computeReq{X: 1, Y: 1}, nil)
+		return computeResp{}, reqreply.Forward(targetForwardRoute, computeReq{X: 1, Y: 1}, nil, nil)
 	}
 	fwdRoute := reqreply.NewRoute[computeReq, computeResp]("compute/forward-call-adapter", computeReqCodec, computeRespCodec)
 	handle, err := fwdRoute.WithHandler(handler).Register(server)
@@ -333,7 +405,7 @@ func TestAttachServer_WithResponseProperty_ForwardReplyAlsoWritesUserProperty(t 
 			func(v *mwPropOut, s string) { v.Ack = s }))
 
 	handler := func(_ context.Context, _ computeReq) (computeResp, error) {
-		return computeResp{}, reqreply.Forward(targetForwardRoute, computeReq{X: 7, Y: 8}, nil)
+		return computeResp{}, reqreply.Forward(targetForwardRoute, computeReq{X: 7, Y: 8}, nil, nil)
 	}
 	baseRoute := reqreply.NewRoute[computeReq, computeResp]("compute/resp-prop-fwd-test", computeReqCodec, computeRespCodec)
 	rt := baseRoute.HandleBoundMW(mw)
@@ -400,7 +472,7 @@ func TestAttachServer_WithResponseProperty_ForwardReplyAlsoWritesUserProperty(t 
 func TestClient_Call_FollowsForward_EndToEndViaRealMQTT5Adapter(t *testing.T) {
 	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
 	originatingHandler := func(_ context.Context, req computeReq) (computeResp, error) {
-		return computeResp{}, reqreply.Forward(targetForwardRoute, computeReq{X: req.X * 10, Y: req.Y * 10}, nil)
+		return computeResp{}, reqreply.Forward(targetForwardRoute, computeReq{X: req.X * 10, Y: req.Y * 10}, nil, nil)
 	}
 	originatingRoute := reqreply.NewRoute[computeReq, computeResp]("compute/e2e-forward-originating", computeReqCodec, computeRespCodec)
 	if _, err := originatingRoute.WithHandler(originatingHandler).Register(server); err != nil {

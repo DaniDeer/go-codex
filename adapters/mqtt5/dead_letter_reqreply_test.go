@@ -2,6 +2,7 @@ package mqtt5
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -14,6 +15,71 @@ import (
 // side (see docs/design/d-0005-error-handling.md): a
 // route that declares reqreply.DeadLetter dead-letters a request that
 // fails before a successful reply can be produced.
+
+// TestDeadLetter_ServeRequestPayloadDecode_CapturesIncomingUserProperties
+// is Phase 2.0's own wire-level properties addendum test (docs/roadmap/
+// reqreply-dead-letter-replay.md's "Addendum"): a dead-lettered
+// request's REAL incoming User Properties (e.g. a header-delivered
+// credential) must appear on the published [reqreply.
+// DeadLetterEnvelope]'s own Properties field — otherwise a credential
+// delivered only via a header is unrecoverable at replay time, even
+// though the Payload itself was captured. Decodes the published DLQ
+// envelope's raw JSON bytes directly (black-box, no access to
+// api/reqreply's unexported codec needed — mirrors how a real DLQ
+// consumer would read it).
+func TestDeadLetter_ServeRequestPayloadDecode_CapturesIncomingUserProperties(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	handler := func(_ context.Context, _ computeReq) (computeResp, error) {
+		return computeResp{}, nil
+	}
+	dlRoute := reqreply.NewRoute[computeReq, computeResp]("compute/dlq-props", computeReqCodec, computeRespCodec,
+		reqreply.DeadLetter("compute/dlq-props/dlq"),
+	)
+	if _, err := dlRoute.WithHandler(handler).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	serverClient := &mockClient{}
+	serverRouter := newMockRouter()
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter})); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	go func() { _ = server.Serve(ctx) }()
+	serverRouter.waitHandler("compute/dlq-props")
+
+	serverRouter.dispatch("compute/dlq-props", &pahomqtt5.Publish{
+		Topic:   "compute/dlq-props",
+		Payload: []byte(`{}`), // missing required fields -> codex.ValidationErrors
+		Properties: &pahomqtt5.PublishProperties{
+			ResponseTopic:   "replies/client-1",
+			CorrelationData: []byte("corr-decode-props"),
+			User:            pahomqtt5.UserProperties{{Key: "Authorization", Value: "Bearer secret-token"}},
+		},
+	})
+	time.Sleep(50 * time.Millisecond)
+
+	var envelope struct {
+		Properties map[string]string `json:"properties"`
+	}
+	var found bool
+	for _, p := range serverClient.published {
+		if p.Topic != "compute/dlq-props/dlq" {
+			continue
+		}
+		if err := json.Unmarshal(p.Payload, &envelope); err != nil {
+			t.Fatalf("json.Unmarshal(DLQ envelope): %v", err)
+		}
+		found = true
+	}
+	if !found {
+		t.Fatal("want a publish to the declared dead-letter topic")
+	}
+	if envelope.Properties["Authorization"] != "Bearer secret-token" {
+		t.Errorf("DeadLetterEnvelope.Properties = %+v, want {Authorization: Bearer secret-token}", envelope.Properties)
+	}
+}
 
 func TestDeadLetter_ServeRequestPayloadDecode_Published(t *testing.T) {
 	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})

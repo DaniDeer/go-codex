@@ -116,6 +116,8 @@ func main() {
 	demoConcurrentMultiRouteDispatch(ctx, zeromqClient)
 	demoCallAsyncFuture(ctx, mqtt5Client)
 	demoForward(ctx, mqtt5Client)
+	demoForwardWithProperties(ctx)
+	demoDeadLetterReplay(ctx)
 	demoUserPropertyParamMiddleware(ctx, mqtt5Built)
 	demoPropertyAxisMiddleware(ctx, mqtt5Built, zeromqBuilt)
 	demoSpecPrintingAsyncAPI(mqtt5Built.Server)

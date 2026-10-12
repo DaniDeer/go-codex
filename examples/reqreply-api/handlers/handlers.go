@@ -38,7 +38,7 @@ func Triple(_ context.Context, req routes.ComputeReq) (routes.ComputeResp, error
 // Req/Resp are free to differ" rule — see docs/roadmap/
 // reqreply-forward-bounce.md's "API surface" section.
 func ForwardToDouble(_ context.Context, req routes.ComputeReq) (routes.ComputeResp, error) {
-	return routes.ComputeResp{}, reqreply.Forward(routes.ForwardTargetRoute, routes.ComputeReq{X: req.X * 10, Y: req.Y * 10}, nil)
+	return routes.ComputeResp{}, reqreply.Forward(routes.ForwardTargetRoute, routes.ComputeReq{X: req.X * 10, Y: req.Y * 10}, nil, nil)
 }
 
 // AddOAuth is OAuthComputeRoute's handler — same domain logic as Add,

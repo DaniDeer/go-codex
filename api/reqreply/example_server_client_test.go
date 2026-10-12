@@ -50,7 +50,7 @@ func (t *exampleInProcessTransport) Call(ctx context.Context, routeAny any, reqA
 
 // CallRaw is unused by this Example (Phase 0 infrastructure, not
 // exercised here) — present only to satisfy [reqreply.ClientTransport].
-func (t *exampleInProcessTransport) CallRaw(ctx context.Context, topic string, payload []byte) ([]byte, error) {
+func (t *exampleInProcessTransport) CallRaw(ctx context.Context, topic string, payload []byte, properties map[string]string) ([]byte, error) {
 	return nil, nil
 }
 
