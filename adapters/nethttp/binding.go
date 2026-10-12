@@ -630,6 +630,24 @@ func consumeSSE[Req, Event any](
 	fn func(context.Context, Event) error,
 	opts ConsumeOptions,
 ) error {
+	// docs/features/rest-redirects.md / deep-dive-bug-hunt finding: this
+	// loop's own doc comment claims "behaviorally-equivalent" to
+	// [rest.Client.Consume]'s SEPARATE reconnect loop (clienttransport.go)
+	// — that claim did NOT hold for redirects, verified via a live,
+	// failing test: an un-guarded caller client let net/http silently
+	// auto-follow a 3xx on the initial SSE connect attempt, then fed
+	// whatever (non-SSE-shaped) bytes the target returned into the
+	// "data:" line parser — observed to hang with NO error at all, not
+	// even a decode error. redirectAwareHTTPClient (the SAME
+	// shallow-copy-plus-CheckRedirect-override [NewClientTransport] and
+	// [callWithVars] already use) makes consumeSSEOnce's own
+	// isRedirectStatus check (below) return the typed [rest.RedirectError]
+	// instead — mirrors [rest.Client.Consume]'s followSSERedirect exactly
+	// for THIS loop's own registry-free situation (consumeSSE has no
+	// [rest.Client] registry to auto-follow against, same as
+	// [rest.CallWithTransport] used directly).
+	client = redirectAwareHTTPClient(client)
+
 	obs := opts.Observer
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
@@ -843,6 +861,15 @@ func consumeSSEOnce[Req, Event any](
 	}
 	defer resp.Body.Close()
 	obs.RecordRequest(method, path, resp.StatusCode, time.Since(start))
+
+	// A 3xx (CheckRedirect now overridden by consumeSSE's own
+	// redirectAwareHTTPClient wrap, above) surfaces as a typed
+	// rest.RedirectError — mirrors clienttransport.go's followSSERedirect
+	// entry condition (isRedirectStatus) exactly; see consumeSSE's own
+	// doc comment for the full rationale.
+	if isRedirectStatus(resp.StatusCode) {
+		return false, rest.RedirectError{Status: resp.StatusCode, Location: resp.Header.Get("Location")}
+	}
 
 	if resp.StatusCode == http.StatusUnauthorized {
 		if credentialFnRan && opts.OnCredentialRejected != nil {

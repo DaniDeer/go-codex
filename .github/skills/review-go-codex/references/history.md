@@ -1,6 +1,73 @@
-# go-codex Review History (R1–R200, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
+# go-codex Review History (R1–R201, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 201 (`deep-dive-bug-hunt` applied to `api/rest`'s Typed HTTP Redirects feature specifically, across every client-side dispatch path — ARGUMENTS: "with the focus on api/rest after we implemented the redirect feature a couple of prompts ago")
+
+Distinct from Rounds 198–200 (internal-package-alias usage) — this invocation targeted ONE
+concept, the redirect feature itself (`docs/features/rest-redirects.md`), traced end-to-end
+across EVERY client-side dispatch path that can receive a 3xx response, not just
+`rest.Client.Call`/`Consume`. Confirmed 6 real `http.Client.Do` call sites across
+`adapters/nethttp` (`binding.go`×2, `client.go`×1, `clienttransport.go`×2, `redirect.go`×1,
+`redirect_sse.go`×1) — 2 of the 6 (both registry-free `ports.Pattern` binding primitives,
+confirmed NEVER previously exercised by any redirect test) silently let `net/http`'s own default
+`CheckRedirect` auto-follow a 3xx, entirely invisibly to the primitive's own dispatch logic.
+
+### Phase A findings — 2 confirmed, found-and-fixed bugs
+
+- **`adapters/nethttp/client.go`'s `callWithVars`** (the primitive `CallAdapter`'s/
+  `DrainCallAdapter`'s "explicit static `Vars`" escape hatch and `PollAdapter`'s ALWAYS-taken
+  path call into) took the caller's RAW `*http.Client` directly — unlike
+  `clienttransport.go`'s own dispatch (used by `rest.Client.Call`/`Consume`, whose `t.caller.client`
+  is ALREADY wrapped via `redirectAwareHTTPClient` at `NewClientTransport` construction time).
+  Reproduced live first (`TestCallAdapter_RedirectResponse_SurfacesTypedRedirectError`, confirmed
+  failing — `codex.ValidationErrors: field sku: missing required field`, proving `net/http`
+  silently auto-followed the 303 and attempted to decode the REDIRECTED-TO body using the
+  ORIGINATING route's own Resp codec) — then fixed by wrapping `client` via
+  `redirectAwareHTTPClient` at the top of `callWithVars` and adding the SAME `isRedirectStatus`
+  check `clienttransport.go` already has, returning the typed `rest.RedirectError` instead. Added
+  a second regression test at `PollAdapter`'s own (unconditional) call site
+  (`TestPollAdapter_RedirectResponse_SurfacesTypedRedirectError`) since it's the entry point MOST
+  likely to hit this in real production use (no `opts.Vars == nil` escape to `CallWithTransport`
+  the way `CallAdapter`/`DrainCallAdapter` have).
+- **`adapters/nethttp/binding.go`'s `consumeSSE`/`consumeSSEOnce`** (`CallSSEAdapter`'s own
+  independent connect+decode+reconnect loop) — its OWN doc comment explicitly claimed
+  "behaviorally-equivalent" to `rest.Client.Consume`'s SEPARATE reconnect loop in
+  `clienttransport.go`; this claim did NOT hold for redirects, verified rather than trusted.
+  Reproduced live first (`TestCallSSEAdapter_RedirectResponse_SurfacesTypedRedirectError`,
+  confirmed failing — worse than a decode error, it silently HUNG with NO error and NO value at
+  all, since the redirected-to non-SSE JSON body has no `"data:"`-prefixed lines for the parser to
+  ever find) — then fixed identically: `redirectAwareHTTPClient` wrap in `consumeSSE`, plus an
+  `isRedirectStatus` check in `consumeSSEOnce` mirroring `clienttransport.go`'s own
+  `followSSERedirect` entry condition exactly.
+- **Confirmed clean (not just trusted) — the other 4 `Do()` call sites**: `clienttransport.go`'s
+  2 reflection-based dispatch loops (`Client.Call`/`Client.Consume`) both use `t.caller.client`,
+  already wrapped once at `NewClientTransport` construction time; `redirect.go`/`redirect_sse.go`'s
+  2 follow-up-request call sites reuse that SAME already-wrapped client, passed through
+  `followRedirect`/`followSSERedirect`. Server-side (`adapters/nethttp`'s `adapter.go`/`serve.go`/
+  `serve_sse.go` AND `adapters/chi`'s `adapter.go`/`serve.go`/`serve_sse.go`) re-verified: all 6
+  files' `asRedirectError` checks (the TYPED+reflection-based dispatch pair per adapter) are
+  present and correct — genuinely already N-way-parity-clean, not re-fixed. `PipelineAdapter`/
+  `LatestAdapter` confirmed genuinely INAPPLICABLE (not silently skipped) — neither has an
+  error-returning per-request handler shape a `RedirectError` could ever flow through
+  (`PipelineAdapter`'s fn returns a `gstream.Stream`, `LatestAdapter` serves a cached value with
+  no per-request handler at all).
+
+### Phase B — design-doc re-review
+
+| Round | Doc(s) cross-checked | Verdict |
+|-------|----------------------|---------|
+| 201 (`callWithVars`/`consumeSSE` fixes) | `docs/features/rest-redirects.md`'s "Client side" section, specifically its already-existing "`rest.CallWithTransport`/`nethttp.NewClientTransport` used directly (no `*rest.Client`) stay registry-free" sentence | **Aligned, not a reinterpretation** — the fix makes 2 MORE code paths (both already registry-free, no `*rest.Client` involved) honor a contract the doc already specified for every OTHER registry-free path; it does not invent new behavior. Doc updated with one clarifying sentence naming the 4 affected ports.Pattern bindings explicitly, since a reader previously had no way to know this contract covered them too. `go-codex.instructions.md`'s existing Typed HTTP Redirects section gained one new bullet (same pattern as its pre-existing "Confirmed, found-and-fixed bug" bullets) — read together with the older bullets, no contradiction: the older ones describe `Client.Call`/`Client.Consume`'s own dispatch, the new one describes a DIFFERENT, previously-unexamined set of dispatch paths with the identical registry-free contract |
+
+No code/design misalignment found — both fixes bring previously-nonconformant code INTO alignment
+with an existing, already-correct documented contract; nothing in the doc needed correcting itself.
+
+Full repo verification clean: gofmt, `go build ./...`, `go vet ./...`, `go test ./...` (zero FAIL
+across all packages, fresh + cached), `just check` (staticcheck/gosec clean, 0 issues), full
+`examples/*/` build-and-run sweep (0 non-zero exits), `examples/rest-redirect` output re-confirmed
+unchanged (`CallWithTransport (no auto-follow): got 303 redirect to /orders/2`).
 
 ---
 

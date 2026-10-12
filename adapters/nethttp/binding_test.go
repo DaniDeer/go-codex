@@ -117,6 +117,57 @@ func TestPollAdapter_EmitsResponsePerTick(t *testing.T) {
 	}
 }
 
+// TestPollAdapter_RedirectResponse_SurfacesTypedRedirectError is
+// PollAdapter's own instance of
+// TestCallAdapter_RedirectResponse_SurfacesTypedRedirectError's finding —
+// PollAdapter ALWAYS dispatches via callWithVars (no opts.Vars-nil branch
+// the way CallAdapter/DrainCallAdapter have), so it is the entry point MOST
+// likely to hit this gap in real production use. Same shared callWithVars
+// fix; this just locks in regression coverage at PollAdapter's own call
+// site too.
+func TestPollAdapter_RedirectResponse_SurfacesTypedRedirectError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /users/latest", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", "/users/u1")
+		w.WriteHeader(http.StatusSeeOther)
+	})
+	mux.HandleFunc("GET /users/u1", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"u1","name":"Alice"}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	b := rest.NewServer(testInfo)
+	h, _ := rest.NewRoute[getReq, userResp]("GET", "/users/latest",
+		getReqCodec, userRespCodec, rest.RouteMeta{}).RegisterHandle(b)
+
+	p, err := ports.NewSourcePort[userResp]("poll", userRespCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	p.Bind(ctx, PollAdapter(http.DefaultClient, srv.URL, h, getReq{}, 30*time.Millisecond, PollStreamOptions{Buffer: 4}))
+	s := p.Stream(ctx)
+
+	timeCtx, tc := context.WithTimeout(ctx, 80*time.Millisecond)
+	defer tc()
+	_, errs := gstream.Collect(timeCtx, s)
+
+	if len(errs) == 0 {
+		t.Fatal("want an error surfacing the 303 — got 0 errors")
+	}
+	var redirErr rest.RedirectError
+	if !errors.As(errs[0], &redirErr) {
+		t.Fatalf("want rest.RedirectError, got %T: %v", errs[0], errs[0])
+	}
+	if redirErr.Status != http.StatusSeeOther || redirErr.Location != "/users/u1" {
+		t.Errorf("want RedirectError{303, /users/u1}, got %+v", redirErr)
+	}
+}
+
 // ── CallAdapter ───────────────────────────────────────────────────────────────
 
 func TestCallAdapter_EmitsResponsePerItem(t *testing.T) {
@@ -184,6 +235,78 @@ func TestCallAdapter_ErrorsGoToStreamErrors(t *testing.T) {
 	var use UnexpectedStatusError
 	if !errors.As(errs[0], &use) {
 		t.Errorf("want UnexpectedStatusError, got %T", errs[0])
+	}
+}
+
+// TestCallAdapter_RedirectResponse_SurfacesTypedRedirectError reproduces a
+// deep-dive-bug-hunt finding (docs/features/rest-redirects.md): CallAdapter/
+// DrainCallAdapter's own dispatch primitive (callWithVars) takes the caller's
+// RAW *http.Client directly (no [rest.Client], no [NewClientTransport]'s own
+// CheckRedirect override) — unlike EVERY other REST client dispatch path in
+// this package (clienttransport.go's CallWithTransport/Client.Call), a 3xx
+// response reaching this path is silently auto-followed by net/http's OWN
+// default redirect behavior, entirely invisibly to callWithVars. The
+// redirected-to body is then decoded using the ORIGINATING route's Resp
+// codec (orderResp, requiring "sku") — not the target's own shape
+// ("confirmationCode") — producing a confusing decode/validation error with
+// zero indication a redirect ever happened, instead of the typed
+// [rest.RedirectError] every other registry-free dispatch path
+// (rest.CallWithTransport used directly, per docs/features/rest-redirects.md)
+// already surfaces consistently.
+func TestCallAdapter_RedirectResponse_SurfacesTypedRedirectError(t *testing.T) {
+	ctx := context.Background()
+
+	type orderResp struct{ SKU string }
+	orderRespCodec := codex.Struct[orderResp](
+		codex.RequiredField("sku", codex.String(),
+			func(r orderResp) string { return r.SKU },
+			func(r *orderResp, v string) { r.SKU = v },
+		),
+	)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /orders", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", "/orders/42")
+		w.WriteHeader(http.StatusSeeOther)
+	})
+	mux.HandleFunc("GET /orders/42", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"confirmationCode":"ABC123"}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	b := rest.NewServer(testInfo)
+	h, _ := rest.NewRoute[createReq, orderResp]("POST", "/orders",
+		createReqCodec, orderRespCodec, rest.RouteMeta{OperationID: "createOrder"}).RegisterHandle(b)
+
+	ch := make(chan createReq, 1)
+	ch <- createReq{Name: "Widget"}
+	close(ch)
+
+	p, err := ports.NewIOPort[createReq, orderResp]("call", createReqCodec, orderRespCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	// Vars MUST be an explicit non-nil map (even empty) to route through
+	// callWithVars — CallAdapter.Transform only takes that primitive when
+	// opts.Vars != nil; the default (nil, "derive per item") path builds a
+	// NewClientTransport + rest.CallWithTransport instead, which ALREADY
+	// surfaces RedirectError correctly (confirmed: NOT the buggy path).
+	p.Bind(ctx, CallAdapter(http.DefaultClient, srv.URL, h, CallStreamOptions{Vars: map[string]string{}})) //nolint:errcheck
+	out := p.Connect(ctx, gstream.From(ctx, ch))
+	_, errs := gstream.Collect(ctx, out)
+
+	if len(errs) == 0 {
+		t.Fatal("want an error surfacing the 303 — got 0 errors")
+	}
+	var redirErr rest.RedirectError
+	if !errors.As(errs[0], &redirErr) {
+		t.Fatalf("want rest.RedirectError (registry-free dispatch surfaces the raw redirect, "+
+			"matching rest.CallWithTransport's documented contract), got %T: %v", errs[0], errs[0])
+	}
+	if redirErr.Status != http.StatusSeeOther || redirErr.Location != "/orders/42" {
+		t.Errorf("want RedirectError{303, /orders/42}, got %+v", redirErr)
 	}
 }
 
@@ -991,6 +1114,69 @@ func TestCallSSEAdapter_MalformedEvent_ReportsErrorContinues(t *testing.T) {
 			t.Fatalf("want both an error AND a valid event; gotErr=%v gotVal=%v", gotErr, gotVal)
 			return
 		}
+	}
+	cancel()
+}
+
+// TestCallSSEAdapter_RedirectResponse_SurfacesTypedRedirectError is
+// CallSSEAdapter's own instance of the deep-dive-bug-hunt finding —
+// consumeSSE/consumeSSEOnce (CallSSEAdapter's own independent
+// connect+decode+reconnect loop — its own doc comment explicitly notes
+// [rest.Client.Consume]'s reflection-based shim in clienttransport.go has
+// "its own SEPARATE but behaviorally-equivalent reconnect loop," a claim
+// this test verifies rather than trusts) took the caller's *http.Client
+// AS-IS, with no CheckRedirect override — a 3xx response to the initial
+// SSE connect attempt was silently auto-followed by net/http, then
+// whatever (non-SSE-shaped) bytes the target returned were fed into the
+// "data:" line parser, instead of surfacing the typed rest.RedirectError
+// [rest.Client.Consume]'s OWN reconnect loop already does via
+// followSSERedirect.
+func TestCallSSEAdapter_RedirectResponse_SurfacesTypedRedirectError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /stream/machine-1", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", "/other")
+		w.WriteHeader(http.StatusSeeOther)
+	})
+	mux.HandleFunc("GET /other", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"not":"an event stream"}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	b := rest.NewServer(testInfo)
+	handle, err := newSSETestRoute().RegisterHandle(b)
+	if err != nil {
+		t.Fatalf("RegisterHandle: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	p, err := ports.NewSourcePort[userResp]("sseRedirect", userRespCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("NewSourcePort: %v", err)
+	}
+	p.Bind(ctx, CallSSEAdapter(srv.Client(), srv.URL, handle, sseTestReq{ID: "machine-1"}, ConsumeOptions{}))
+
+	stream := p.Stream(ctx)
+	select {
+	case err := <-stream.Errors:
+		var connErr SSEConnectError
+		if !errors.As(err, &connErr) {
+			t.Fatalf("want SSEConnectError wrapping rest.RedirectError, got %T: %v", err, err)
+		}
+		var redirErr rest.RedirectError
+		if !errors.As(connErr, &redirErr) {
+			t.Fatalf("want rest.RedirectError (consumeSSE's registry-free dispatch surfaces the raw "+
+				"redirect, matching rest.Client.Consume's followSSERedirect contract), got %T: %v", err, err)
+		}
+		if redirErr.Status != http.StatusSeeOther || redirErr.Location != "/other" {
+			t.Errorf("want RedirectError{303, /other}, got %+v", redirErr)
+		}
+	case v := <-stream.Values:
+		t.Fatalf("want an error, got a decoded value: %+v", v)
+	case <-time.After(1500 * time.Millisecond):
+		t.Fatal("want an error on the errs channel")
 	}
 	cancel()
 }

@@ -634,6 +634,24 @@ func callWithVars[Req, Resp any](
 ) (Resp, error) {
 	var zero Resp
 
+	// docs/features/rest-redirects.md / deep-dive-bug-hunt finding: unlike
+	// every OTHER REST client dispatch path (clienttransport.go's
+	// CallWithTransport/Client.Call), callWithVars took the caller's client
+	// AS-IS — net/http's own DEFAULT CheckRedirect then silently
+	// auto-followed any 3xx, entirely invisibly to this function, which
+	// went on to decode the REDIRECTED-TO body using the ORIGINATING
+	// route's Resp codec (not the target's own shape). redirectAwareHTTPClient
+	// (the SAME shallow-copy-plus-CheckRedirect-override
+	// [NewClientTransport] already uses) makes a 3xx surface here as an
+	// ordinary response instead, so step 9's own isRedirectStatus check
+	// (below) can return the typed [rest.RedirectError] — this primitive
+	// has no [rest.Client] registry to auto-follow against (the SAME
+	// "registry-free" situation [rest.CallWithTransport] used directly is
+	// already documented to be in), so surfacing the raw redirect, rather
+	// than either silently following it OR misreporting it as a decode
+	// error, is the correct, consistent behavior.
+	client = redirectAwareHTTPClient(client)
+
 	obs := opts.Observer
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
@@ -869,6 +887,19 @@ func callWithVars[Req, Resp any](
 
 		statusCode := resp.StatusCode
 		obs.RecordRequest(method, routePath, statusCode, time.Since(start))
+
+		// 9b. A 3xx (with CheckRedirect now overridden above, net/http
+		// hands it back here instead of auto-following it) surfaces as a
+		// typed rest.RedirectError — mirrors clienttransport.go's
+		// identical check (CallWithTransport/Client.Call) exactly. This
+		// primitive has no rest.Client registry to auto-follow against
+		// (the same registry-free situation rest.CallWithTransport used
+		// directly is already documented to be in — docs/features/
+		// rest-redirects.md), so the caller gets the SAME typed error
+		// either way, to inspect or resolve manually.
+		if isRedirectStatus(statusCode) {
+			return zero, rest.RedirectError{Status: statusCode, Location: resp.Header.Get("Location")}
+		}
 
 		// 10. Read response body.
 		respBody, err := io.ReadAll(resp.Body)
