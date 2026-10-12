@@ -94,6 +94,85 @@ should be informed by this SHIPPED, working shape (what worked, what had to
 change during implementation), not designed blind in parallel against a
 still-moving target.
 
+### The mechanism that actually shipped — reusable building blocks
+
+Concretely, whichever motivation above eventually gets picked, the
+following pieces of `rest.Client`'s registry proved out in practice and
+are directly portable, not just conceptually similar:
+
+- **Dual parallel maps keyed by a plain `{Method, Path}`-shaped key**
+  (`routes`/`sseRoutes` for REST's Call-decodable vs. Consume-streamable
+  split) — a reqreply analog would key by whatever its own route identity
+  is (topic/route name), with the same two-registry split if a
+  forward/bounce concept ever needs to distinguish "normal Call target"
+  from some other dispatch shape.
+- **First-registered-wins ambiguous-match resolution, tracked via an
+  insertion-order-preserving slice alongside the map** — required because
+  a plain Go map has no defined iteration order; any reqreply mechanism
+  needing "which registered target matches" resolution needs the same
+  slice, not just the map.
+- **Dual registration path**: auto-populate on first `Call`/`Consume`
+  (best-effort, never errors — a route value that doesn't match the
+  recognized shape is silently skipped, since this is pure bookkeeping,
+  not the authoritative place a type mismatch gets reported) PLUS an
+  explicit `RegisterRoute` for a target only ever reached indirectly. A
+  reqreply route that's only ever a forward TARGET (never called
+  directly) would need the identical explicit-registration escape hatch.
+- **Credential-identity rule — reuse the ORIGINATING call's own
+  already-computed credentials, NEVER re-derive from the registered
+  target's own middleware.** This is the single most important,
+  easiest-to-get-backwards design decision to carry over verbatim if a
+  forward/bounce mechanism (motivation 1) is ever built — getting it
+  wrong would mean a forwarded call silently authenticates as the WRONG
+  identity, a security-relevant regression, not just a correctness bug.
+- **Chain-depth cap** (`MaxRedirects`, default 10, mirrors `net/http`'s
+  own precedent) threaded via a plain recursive-call counter (not a
+  context value) — one mechanism covering both pathologically long
+  chains and cycles. Directly reusable if a reqreply forward concept
+  ever needs the same cap.
+
+### The `deep-dive-bug-hunt` Round 201 lesson — the most important addition
+
+Typed HTTP Redirects' PRIMARY dispatch path (`rest.Client.Call`/`Consume`,
+via `adapters/nethttp`'s `clienttransport.go`) was correctly
+redirect-aware from the day it shipped. But `adapters/nethttp` ALSO has 4
+INDEPENDENT `ports.Pattern` binding primitives (`CallAdapter`/
+`DrainCallAdapter`/`PollAdapter`/`CallSSEAdapter`, dispatching via the
+package-private `callWithVars`/`consumeSSE` primitives) that each take a
+raw `*http.Client` directly — these silently let `net/http`'s own default
+redirect-following intercept a 3xx, completely invisible to the
+primitive, for some time after the main feature shipped, until a
+dedicated `deep-dive-bug-hunt` round specifically traced EVERY dispatch
+path (not just the obvious, primary one) and reproduced the gap live via
+a failing test before fixing it (see
+`.github/skills/review-go-codex/references/history.md`'s Round 201 entry).
+
+**Why this matters for `api/reqreply` specifically**: `adapters/mqtt5`
+and `adapters/zeromq` EACH have their own `ports.Pattern` binding
+primitives for reqreply dispatch (confirmed present:
+`adapters/mqtt5/binding.go`, `adapters/zeromq/binding.go`), structurally
+PARALLEL to `Client.Call`/`CallAsync`'s own `ClientTransport`-based
+dispatch — the exact same "multiple independent dispatch paths that
+don't share code" shape Round 201 found and fixed for REST.
+
+**Actionable requirement for ANY future reqreply registry/forward
+design**: enumerate and independently verify EVERY dispatch path (not
+just `Client.Call`/`CallAsync`) from the start of the design, not as an
+afterthought discovered via a later bug-hunt round —
+`adapters/mqtt5/binding.go`'s and `adapters/zeromq/binding.go`'s own
+ports.Pattern primitives must be traced and tested for whatever new
+behavior gets introduced; it must NEVER be assumed they inherit it for
+free just because `Client.Call`/`CallAsync` got it right.
+
+A smaller, related lesson: a doc comment claiming two separate
+implementations are "behaviorally-equivalent" (as `adapters/nethttp`'s
+own `consumeSSE` doc comment claimed, about `Client.Consume`'s reconnect
+loop — a claim that did NOT hold for redirects) is a CLAIM TO VERIFY via
+a live, failing test — not to trust. Any reqreply design introducing a
+second, adapter-level implementation of a Client-level concept should
+carry the same explicit verification step in its own unit test plan from
+day one, not rely on a doc comment's unverified assertion.
+
 ## Next step
 
 The blocking dependency has cleared. Revisit this doc, get an explicit
@@ -101,5 +180,9 @@ answer on which (if any) of the 3 candidate motivations is the real goal,
 and only then turn this into an actual design draft (API surface,
 structured errors, Observer integration, unit test plan — the same rigor
 Typed HTTP Redirects itself went through, documented in its own 4
-critical-review rounds before implementation began). Until that happens,
-this doc stays "idea only."
+critical-review rounds before implementation began, PLUS the dispatch-
+path inventory step above — list every `ClientTransport`/`ports.Pattern`
+binding primitive across `adapters/mqtt5` and `adapters/zeromq` (the 2
+adapters that implement `api/reqreply` today — `adapters/mqtt` is
+events-only) up front, in the design doc itself, before writing any
+code). Until that happens, this doc stays "idea only."
