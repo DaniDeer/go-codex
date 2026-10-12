@@ -721,15 +721,15 @@ func consumeSSEOnce[Req, Event any](
 	// D3: explicit ConsumeOptions > middleware-derived (ClientBoundMW's/
 	// bundled .Use()'s In) > route-own-derived — mirrors
 	// [rest.CallWithTransport]'s identical precedence for plain Route.
-	var mwContributed bool
+	var mwContributed []bool
 	if len(handle.ClientMiddlewareHandlers) > 0 {
-		mwHeaders, mwCookies, mwQuery, mwErr := dispatchClientMiddlewareIn(ctx, req, handle.ClientMiddlewareHandlers)
+		mwHeaders, mwCookies, mwQuery, contributed, mwErr := dispatchClientMiddlewareIn(ctx, req, handle.ClientMiddlewareHandlers)
 		if mwErr != nil {
 			stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, clientMiddlewareErrorLocation(mwErr), mwErr)
 			obs.RecordRequest(method, path, 0, time.Since(start))
 			return false, mwErr
 		}
-		mwContributed = len(mwHeaders) > 0 || len(mwCookies) > 0 || len(mwQuery) > 0
+		mwContributed = contributed
 		query = overrideDerived(query, mwQuery)
 		headers = overrideDerived(headers, mwHeaders)
 		cookies = overrideDerived(cookies, mwCookies)
@@ -777,8 +777,10 @@ func consumeSSEOnce[Req, Event any](
 	// [rest.ValidateSecurityCredentials] specifically, true only when a
 	// mechanism ACTUALLY produced a value (preserving the legacy "(nil,
 	// nil) means no credential needed" escape hatch for general-purpose,
-	// non-security ClientMW Fns using this same Fn shape).
-	credentialProduced := len(credHeaders) > 0 || mwContributed
+	// non-security ClientMW Fns using this same Fn shape). Uses
+	// [securityRelevantContributed] — see that function's own doc
+	// comment for the confirmed bug this fixes.
+	credentialProduced := len(credHeaders) > 0 || securityRelevantContributed(handle.ClientMiddlewareHandlers, mwContributed, secReqs)
 
 	// Resolve per-call format override (opts.Formats), falling back to
 	// the route-declared handle.Formats when no override was given for

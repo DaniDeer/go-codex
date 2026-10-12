@@ -423,16 +423,16 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 		// handle.ClientMiddlewareHandlers at all (only the legacy,
 		// general-purpose handle.ClientImplementations).
 		clientMWHandlers, _ := elem.FieldByName("ClientMiddlewareHandlers").Interface().([]rest.ClientMiddlewareHandler)
-		var mwContributed bool
+		var mwContributed []bool
 		if len(clientMWHandlers) > 0 {
-			mwHeaders, mwCookies, mwQuery, mwErr := dispatchClientMiddlewareIn(ctx, reqAny, clientMWHandlers)
+			mwHeaders, mwCookies, mwQuery, contributed, mwErr := dispatchClientMiddlewareIn(ctx, reqAny, clientMWHandlers)
 			if mwErr != nil {
 				stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, clientMiddlewareErrorLocation(mwErr), mwErr)
 				obs.RecordRequest(method, path, 0, time.Since(start))
 				err = mwErr
 				return nil, err
 			}
-			mwContributed = len(mwHeaders) > 0 || len(mwCookies) > 0 || len(mwQuery) > 0
+			mwContributed = contributed
 			queryVars = overrideDerived(queryVars, mwQuery)
 			headerVars = overrideDerived(headerVars, mwHeaders)
 			cookieVars = overrideDerived(cookieVars, mwCookies)
@@ -521,8 +521,16 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 		// needed for this call" (see
 		// TestCall_CredentialFunc_ReturnsNilHeader_SkipsValidation) —
 		// true only when EITHER mechanism actually PRODUCED at least
-		// one header/cookie/query value.
-		credentialProduced := len(credHeaders) > 0 || mwContributed
+		// one header/cookie/query value. Uses
+		// [securityRelevantContributed] (NOT a blanket "did any
+		// attached middleware contribute a header" signal, which the
+		// mwHeaders/mwCookies/mwQuery merge above legitimately includes
+		// every attached middleware for) — see that function's own doc
+		// comment for the confirmed bug this fixes: a non-security
+		// Middleware (e.g. a constant Accept-header declaration)
+		// always contributing a header must NEVER, by itself, count as
+		// this route's security credential having been produced.
+		credentialProduced := len(credHeaders) > 0 || securityRelevantContributed(clientMWHandlers, mwContributed, secReqs)
 
 		// 3. Per-call format override resolution (opts.RequestFormats/
 		// ResponseFormats) — a nil override resolves to the reflected
@@ -939,15 +947,15 @@ func (t *clientTransport) consumeOnce(
 	// confirmed, previously-missing gap: this reflection-based Consume
 	// never dispatched handle.ClientMiddlewareHandlers at all.
 	clientMWHandlers, _ := elem.FieldByName("ClientMiddlewareHandlers").Interface().([]rest.ClientMiddlewareHandler)
-	var mwContributed bool
+	var mwContributed []bool
 	if len(clientMWHandlers) > 0 {
-		mwHeaders, mwCookies, mwQuery, mwErr := dispatchClientMiddlewareIn(ctx, reqVal.Interface(), clientMWHandlers)
+		mwHeaders, mwCookies, mwQuery, contributed, mwErr := dispatchClientMiddlewareIn(ctx, reqVal.Interface(), clientMWHandlers)
 		if mwErr != nil {
 			stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, clientMiddlewareErrorLocation(mwErr), mwErr)
 			obs.RecordRequest(method, path, 0, time.Since(start))
 			return false, mwErr
 		}
-		mwContributed = len(mwHeaders) > 0 || len(mwCookies) > 0 || len(mwQuery) > 0
+		mwContributed = contributed
 		queryVars = overrideDerived(queryVars, mwQuery)
 		headerVars = overrideDerived(headerVars, mwHeaders)
 		cookieVars = overrideDerived(cookieVars, mwCookies)
@@ -986,8 +994,9 @@ func (t *clientTransport) consumeOnce(
 	// SEPARATE signal from credentialFnRan, gating ValidateSecurityCredentials
 	// specifically (true only when a mechanism actually PRODUCED a
 	// value, preserving the legacy "(nil,nil) means no credential
-	// needed" escape hatch).
-	credentialProduced := len(credHeaders) > 0 || mwContributed
+	// needed" escape hatch). Uses [securityRelevantContributed] — see
+	// that function's own doc comment for the confirmed bug this fixes.
+	credentialProduced := len(credHeaders) > 0 || securityRelevantContributed(clientMWHandlers, mwContributed, secReqs)
 
 	httpReq, err := http.NewRequestWithContext(ctx, method, rawURL, nil)
 	if err != nil {

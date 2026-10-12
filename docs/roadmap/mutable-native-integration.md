@@ -71,6 +71,6 @@ roadmap item (`refreshing-cacheable.md`) — revisit folding
 then this stays a low-priority, purely-internal refactor: zero external
 behavior change, and `NewCachingCredentialFunc` caches `http.Header`,
 which has no natural `Codec[http.Header]` — a passthrough codec (see the
-`headerCodec` precedent in `examples/go-edge-models/internal/registry`)
+`headerCodec` precedent in `examples/go-edge-models/models/docker/registry/auth`)
 would be needed to satisfy `Cacheable[T]`'s `Codec[T]` requirement — a
 real, if small, wrinkle to resolve at that time, not now.

@@ -901,7 +901,7 @@ return func(ctx context.Context, _ []route.SecurityRequirement) (http.Header, er
 type BearerCredential struct{ Token string }
 
 // internal.BearerTokenCodec (ALREADY EXISTS, confirmed —
-// examples/go-edge-models/internal/registry/auth.go) already formats a
+// examples/go-edge-models/models/docker/registry/auth/auth.go) already formats a
 // plain token string into "Bearer <token>" — reused UNCHANGED as the
 // header's own value-codec, no new formatting logic needed.
 var BearerAuthDeclaration = rest.SecurityMiddleware[BearerCredential, struct{}](

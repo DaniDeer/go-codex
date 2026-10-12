@@ -1388,6 +1388,92 @@ func TestCallWithTransport_OnCredentialRejected_FiresOn401_CodecBackedClientMW(t
 	}
 }
 
+// TestCallWithTransport_AnonymousBearerPlusNonSecurityMiddleware_Succeeds
+// is a regression guard for a confirmed bug: attaching a SEPARATE,
+// NON-security Middleware (e.g. a constant, always-present header
+// declaration, built via rest.NewMiddleware/WithSend — NOT
+// rest.SecurityMiddleware) alongside an anonymous-capable Bearer
+// SecurityMiddleware (whose Authorization header is correctly OMITTED
+// via rest.NewOmitEmptyHeaderParam when the credential Fn returns an
+// empty token) used to wrongly trip rest.ValidateSecurityCredentials —
+// credentialProduced was derived from a blanket "did ANY attached
+// ClientMiddlewareHandler produce ANY header" signal, not one scoped to
+// the SPECIFIC security scheme's own handler, so the non-security
+// middleware's unconditional header contribution alone made an
+// anonymous call look like it had "produced" a (missing) Bearer
+// credential, incorrectly rejecting it with a SecurityCredentialError.
+func TestCallWithTransport_AnonymousBearerPlusNonSecurityMiddleware_Succeeds(t *testing.T) {
+	type authIn struct{ Authorization string }
+
+	// Anonymous-capable: the Fn always returns an empty token, and
+	// NewOmitEmptyHeaderParam omits the Authorization header entirely
+	// for a zero-value credential — the real-world "public/anonymous
+	// pull" shape examples/go-edge-models' registry clients use.
+	// BOUND (ClientBoundMW), NOT .Use(...) — mirrors
+	// examples/go-edge-models/app/registry/internal.BearerAuthClientMW's
+	// own attachment path exactly (the scenario that actually surfaced
+	// this bug; an earlier version of this test used .Use(...) for both
+	// middlewares and FAILED TO REPRODUCE the bug, since the agnostic
+	// and bound attachment paths are dispatched differently).
+	// .WithCodec(...) matters here — WITHOUT it, scheme.Codec is nil and
+	// rest.ValidateSecurityCredentials skips this scheme entirely
+	// (`if !ok || s.Codec == nil { continue }`), never exercising the
+	// bug this test guards against at all. Mirrors
+	// examples/go-edge-models/models/docker/registry/auth.BearerAuthScheme
+	// exactly (a non-empty-string format codec).
+	bearerMW := rest.BoundSecurityClientMiddleware[getReq, authIn, struct{}](
+		"bearerAuth", rest.BearerScheme("JWT").WithCodec(codex.String().Refine(validate.NonEmptyString)), nil,
+		func(context.Context, getReq) (authIn, error) { return authIn{}, nil },
+	).WithRequestHeader(rest.NewOmitEmptyHeaderParam("Authorization", codex.String(),
+		func(in authIn) string { return in.Authorization },
+		func(in *authIn, v string) { in.Authorization = v },
+	))
+
+	// A SEPARATE, non-security Middleware — carries NO Security
+	// declaration at all, so its ClientMiddlewareHandler's Satisfies is
+	// always empty (see satisfiesOf) — that ALWAYS contributes a fixed
+	// header, mirroring examples/go-edge-models'
+	// AcceptManifestTypesDeclaration exactly (attached via plain .Use(),
+	// the agnostic/general-purpose class, exactly as that real
+	// declaration is).
+	alwaysPresentMW := rest.NewMiddleware(rest.NewDeclaration[struct{}, struct{}](
+		"always-present-header", codex.Struct[struct{}](), codex.Struct[struct{}](),
+	)).
+		WithRequestHeader(rest.NewRequiredHeaderParam("X-Always-Present", codex.String(),
+			func(struct{}) string { return "constant-value" },
+			func(*struct{}, string) {},
+		)).
+		WithSend(func(context.Context) (struct{}, error) { return struct{}{}, nil })
+
+	handle := rest.NewRoute[getReq, userResp]("GET", "/me",
+		getReqCodec, userRespCodec,
+	).Use(alwaysPresentMW).ClientBoundMW(bearerMW).ClientHandle()
+
+	var gotAuth, gotAlwaysPresent string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotAlwaysPresent = r.Header.Get("X-Always-Present")
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"me","name":"Alice"}`)) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	transport := NewClientTransport(ClientTransportOptions{HTTPClient: srv.Client(), BaseURL: srv.URL})
+	resp, err := rest.CallWithTransport(context.Background(), transport, handle, getReq{}, rest.ClientCallOptions{})
+	if err != nil {
+		t.Fatalf("CallWithTransport: want success for anonymous Bearer + non-security middleware, got error: %v", err)
+	}
+	if resp.ID != "me" {
+		t.Errorf("unexpected response: %+v", resp)
+	}
+	if gotAuth != "" {
+		t.Errorf("Authorization header = %q, want omitted (anonymous)", gotAuth)
+	}
+	if gotAlwaysPresent != "constant-value" {
+		t.Errorf("X-Always-Present header = %q, want %q", gotAlwaysPresent, "constant-value")
+	}
+}
+
 func TestCallWithTransport_Observer_PerCallOverride(t *testing.T) {
 	handle := rest.NewRoute[getReq, userResp]("GET", "/me",
 		getReqCodec, userRespCodec).ClientHandle()

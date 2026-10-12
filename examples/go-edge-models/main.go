@@ -40,6 +40,7 @@ import (
 	iothub "github.com/DaniDeer/go-codex/examples/go-edge-models/models/azure/iothub"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker/registry"
+	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker/registry/auth"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/modulepatch"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/modulesummary"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/updatemoduleimage"
@@ -659,11 +660,24 @@ func runFromComposeDemo(dir string, basePath usecase.BasePath) {
 }
 
 // runRegistryDemo wires two local httptest servers together (a registry
-// host and a separate auth-realm host) and calls registryapp.GetTags /
-// registryapp.GetImageMetadata against a synthetic multi-arch image — the
-// image name reuses "factory-dashboard" for narrative continuity with the rest
-// of this example. See docker/registry's own package doc for the reusable
+// host and a separate auth-realm host) and calls
+// registryapp.Dispatcher's GetTags/GetTagsFiltered/GetImageMetadata
+// against a synthetic multi-arch image — the image name reuses
+// "factory-dashboard" for narrative continuity with the rest of this
+// example. See docker/registry's own package doc for the reusable
 // client API this demonstrates.
+//
+// dispatchClient (constructed ONCE below) is registryapp's own
+// bundled, per-registry-dispatching Dispatcher — it picks the right CONCRETE
+// client (dockerhub/ghcr/mcr) per call based on the image URL's resolved
+// registry host. This demo's synthetic registry host (an httptest.Server
+// address) isn't one of those 3 known hosts, so every call below
+// transparently falls back to registry.NewGenericClient — the SAME
+// fallback path a REAL, unrecognized OCI-compliant registry would take;
+// pointed at a real "ghcr.io/..."/"mcr.microsoft.com/..." image URL
+// instead, the SAME dispatchClient would pick the matching concrete
+// dockerhub.Client/ghcr.Client/mcr.Client instead, with zero call-site
+// changes.
 func runRegistryDemo() {
 	const fakeToken = "demo-token"
 
@@ -783,17 +797,26 @@ func runRegistryDemo() {
 
 	ctx := context.Background()
 
-	// registryapp.WithObserver wires a stats.Observer through every
-	// rest.CallWithTransport invocation GetTags/GetImageMetadata make,
-	// including the Ping/token-exchange auth flow — the same mechanism
-	// demonstrated for iotedge above, applied to an HTTP client instead of
-	// a plain codec Decode. This explicit Option isn't strictly required:
-	// docker/registry builds on nethttp.Call/rest.CallWithTransport internally, which
-	// ALREADY falls back to stats.ObserverFromContext(ctx) when no
-	// Observer is set — `ctx = stats.WithObserver(ctx, regObs)` before
-	// these calls would give the exact same result with zero registry
-	// package options touched. WithObserver is used here only to
-	// demonstrate the explicit per-call override.
+	// registryapp.WithObserver (wrapped in WithGenericOptions, since this
+	// demo's synthetic host always resolves to the generic-fallback path
+	// — see dispatchClient's own doc comment) wires a stats.Observer
+	// through every HTTP call the resolved Client makes, including the
+	// Ping/token-exchange auth flow — the same mechanism demonstrated for
+	// iotedge above, applied to an HTTP client instead of a plain codec
+	// Decode. This explicit Option isn't strictly required: docker/registry
+	// builds on rest.Client.Call internally, which ALREADY falls back to
+	// stats.ObserverFromContext(ctx) when no Observer is set —
+	// `ctx = stats.WithObserver(ctx, regObs)` before these calls would
+	// give the exact same result with zero registry package options
+	// touched. WithObserver is used here only to demonstrate the explicit
+	// construction-time option — passed to NewDispatcher via
+	// WithGenericOptions, it becomes the generic-fallback Client's fixed
+	// base Observer for its whole lifetime (a REAL Docker Hub/GHCR/MCR
+	// image URL would instead need WithDockerHubOptions(dockerhub.
+	// WithObserver(obs))/WithGHCROptions(...)/WithMCROptions(...), since
+	// each of those 3 clients now takes its OWN typed options — see
+	// app/registry's own doc.go for the construction-time-vs-per-call
+	// distinction this implies).
 	//
 	// stats.NewFanout combines the counting RegistryObserver above with a
 	// real stats.NewLoggingObserver — one value plugs into every layer, no
@@ -806,14 +829,16 @@ func runRegistryDemo() {
 	logObs := stats.NewLoggingObserver(logger)
 	obs := stats.NewFanout(regObs, logObs)
 
-	tags, err := registryapp.GetTags(ctx, httpsToHTTP, imageURL, registryapp.WithObserver(obs))
+	dispatchClient := registryapp.NewDispatcher(httpsToHTTP, registryapp.WithGenericOptions(registryapp.WithObserver(obs)))
+
+	tags, err := dispatchClient.GetTags(ctx, imageURL)
 	if err != nil {
 		logger.Error("get tags", "error", err)
 		os.Exit(1)
 	}
 	fmt.Printf("tags for %s: %v\n", tags.Name, tags.Tags)
 
-	meta, err := registryapp.GetImageMetadata(ctx, httpsToHTTP, registry.GetImageMetadataReq{ImageURL: imageURL}, registryapp.WithObserver(obs))
+	meta, err := dispatchClient.GetImageMetadata(ctx, registry.GetImageMetadataReq{ImageURL: imageURL})
 	if err != nil {
 		logger.Error("get image metadata", "error", err)
 		os.Exit(1)
@@ -821,6 +846,16 @@ func runRegistryDemo() {
 	fmt.Printf("manifest metadata (resolved from a multi-arch list to linux/amd64):\n")
 	fmt.Printf("  schemaVersion=%d mediaType=%s\n", meta.SchemaVersion, meta.MediaType)
 	fmt.Printf("  image=%s totalSizeBytes=%d\n", meta.Image, meta.TotalSizeBytes)
+
+	filteredTags, err := dispatchClient.GetTagsFiltered(ctx, imageURL, []docker.FilterTagsOpt{docker.WithLimit(2)})
+	if err != nil {
+		logger.Error("Dispatcher.GetTagsFiltered", "error", err)
+		os.Exit(1)
+	}
+	fmt.Printf("GetTagsFiltered (limit 2): %v\n", filteredTags.Tags)
+	fmt.Println("(this demo's synthetic host resolves to the generic fallback client — a real")
+	fmt.Println(" ghcr.io/mcr.microsoft.com/docker.io image URL would resolve to the matching")
+	fmt.Println(" concrete dockerhub/ghcr/mcr.Client instead, with no call-site changes)")
 
 	fmt.Println("\n=== Observer integration: docker/registry HTTP calls (RegistryObserver summary) ===")
 	regObs.Print()
@@ -830,16 +865,18 @@ func runRegistryDemo() {
 
 // runMCPBridgeDemo wraps registry.GetTagsRoute as an MCP tool via
 // adapters/mcprest — the SAME REST client machinery (path merge fields,
-// security scheme) as registryapp.GetTags demonstrated above, now exposed as
-// something an LLM agent could call directly. Reuses the running fake
-// registry server from runRegistryDemo (client, registryHost, fakeToken).
+// security scheme) the Dispatcher calls demonstrated above build on
+// internally, now exposed as something an LLM agent could call directly.
+// Reuses the running fake registry server from runRegistryDemo (client,
+// registryHost, fakeToken).
 func runMCPBridgeDemo(client *http.Client, registryHost, fakeToken string) {
 	baseURL := "https://" + registryHost
 
 	// A credential-providing Fn (attached via rest.Route.ClientMW) for the MCP demo:
-	// the real registryapp.GetTags call above goes through the full
-	// Ping/challenge/token-exchange dance (auth.go, package-private) —
-	// this demo already knows the fake server's expected token, so it
+	// the real dispatchClient.GetTags call above goes through the full
+	// Ping/challenge/token-exchange dance (app/registry/internal's
+	// authenticator.go, package-private) — this demo already knows the
+	// fake server's expected token, so it
 	// supplies it directly. A real integration would plug in its own
 	// token source here (a cached OAuth token, an API key, etc.) — the
 	// middleware is FIXED for every call made through the returned MCP
@@ -850,14 +887,14 @@ func runMCPBridgeDemo(client *http.Client, registryHost, fakeToken string) {
 	// itself anymore (docs/design/d-0003-codec-declared-middlewares.md's Addendum 7) — a reusable
 	// Middleware[In,Out]'s Fn travels EMBEDDED in the SAME .Use() call, so
 	// credFn both DECLARES the requirement and FULFILLS it in one
-	// .Use(registry.BearerAuthDeclaration.WithSend(credFn)) call. Declare
+	// .Use(auth.BearerAuthDeclaration.WithSend(credFn)) call. Declare
 	// + fulfill (Use) → build (ClientHandle) — the same pattern
-	// app/registry's GetTags itself uses.
-	credFn := func(context.Context) (registry.BearerCredential, error) {
-		return registry.BearerCredential{Token: fakeToken}, nil
+	// registryapp.Dispatcher itself uses internally.
+	credFn := func(context.Context) (auth.BearerCredential, error) {
+		return auth.BearerCredential{Token: fakeToken}, nil
 	}
 	callOpts := rest.ClientCallOptions{}
-	restHandle := registry.GetTagsRoute.Use(registry.BearerAuthDeclaration.WithSend(credFn)).ClientHandle()
+	restHandle := registry.GetTagsRoute.Use(auth.BearerAuthDeclaration.WithSend(credFn)).ClientHandle()
 
 	mcpBuilder := mcp.NewBuilder(mcp.Info{Name: "go-edge-models MCP bridge demo", Version: "1.0.0"})
 
@@ -971,13 +1008,14 @@ func runMCPBridgeDemo(client *http.Client, registryHost, fakeToken string) {
 	//
 	// Unlike the ToolHandler/MappedToolHandler sections above (which wrap
 	// GetTagsRoute directly via adapters/mcprest — fixed to ONE registry's
-	// baseURL), registry.GetTagsTool/GetImageMetadataTool wrap the
-	// batteries-included GetTags/GetImageMetadata FUNCTIONS themselves —
-	// registry-agnostic, exactly like calling them directly above (each
-	// resolves its target registry per call from the tool input's
-	// ImageURL). No mcprest bridge is involved: NewGetTagsToolHandler/
-	// NewGetImageMetadataToolHandler are plain closures over
-	// registryapp.GetTags/GetImageMetadata.
+	// baseURL), registry.GetTagsTool/GetImageMetadataTool pair with
+	// registryapp.Dispatcher's own NewGetTagsToolHandler()/
+	// NewGetImageMetadataToolHandler() methods — registry-agnostic,
+	// exactly like calling dispatchClient.GetTags/GetImageMetadata
+	// directly in runRegistryDemo above (each resolves its target
+	// registry per call from the tool input's ImageURL). No mcprest
+	// bridge is involved: these are plain closures over a HELD
+	// Dispatcher.
 	fmt.Println("\n=== Package-provided MCP tools: registry.GetTagsTool/GetImageMetadataTool (registry-agnostic) ===")
 
 	imageURL, err := registry.FormatImageRef(registry.ImageRef{
@@ -993,13 +1031,15 @@ func runMCPBridgeDemo(client *http.Client, registryHost, fakeToken string) {
 	// ToolHandler section above already registered on mcpBuilder.
 	packageToolsBuilder := mcp.NewBuilder(mcp.Info{Name: "go-edge-models package-provided MCP tools", Version: "1.0.0"})
 
+	dispatchClient := registryapp.NewDispatcher(client)
+
 	getTagsToolHandle, err := registry.GetTagsTool.Register(packageToolsBuilder)
 	if err != nil {
 		logger.Error("register get_tags (package tool)", "error", err)
 		os.Exit(1)
 	}
 	_, getTagsToolHandlerFn := mcpgo.ToolHandler(getTagsToolHandle,
-		registryapp.NewGetTagsToolHandler(client),
+		dispatchClient.NewGetTagsToolHandler(),
 		mcpgo.Options{},
 	)
 	callMCPTool(getTagsToolHandlerFn, fmt.Sprintf("get_tags(%s)", imageURL), map[string]any{"imageURL": imageURL})
@@ -1010,7 +1050,7 @@ func runMCPBridgeDemo(client *http.Client, registryHost, fakeToken string) {
 		os.Exit(1)
 	}
 	_, getMetaToolHandlerFn := mcpgo.ToolHandler(getMetaToolHandle,
-		registryapp.NewGetImageMetadataToolHandler(client),
+		dispatchClient.NewGetImageMetadataToolHandler(),
 		mcpgo.Options{},
 	)
 	callMCPTool(getMetaToolHandlerFn, fmt.Sprintf("get_image_metadata(%s)", imageURL), map[string]any{"imageURL": imageURL})
@@ -1083,9 +1123,9 @@ func (o *ManifestObserver) RecordValidationError(location, constraint, field str
 }
 
 // RegistryObserver implements stats.Observer — records every HTTP call
-// registryapp.GetTags/GetImageMetadata make (via registryapp.WithObserver),
-// including the auth-realm Ping/token exchange, not just the final
-// tags/manifest fetch.
+// dispatchClient.GetTags/GetImageMetadata make (via registryapp.WithObserver,
+// passed to registryapp.NewDispatcher), including the auth-realm Ping/token
+// exchange, not just the final tags/manifest fetch.
 type RegistryObserver struct {
 	stats.NoopObserver
 	requests []registryRequest

@@ -48,9 +48,14 @@ this example tree.
 | [`models/docker/dockercompose/`](models/docker/dockercompose) | The Docker Compose FILE FORMAT itself — `Project`/`ServiceName`/`ProjectCodec` (a project's named services map) and `Service`/`ServiceCodec` (image, `build:` presence, `ports:` decoded DIRECTLY into `[]docker.PortMapping` via `docker.PortMappingCodec`, `volumes:` reusing `docker.Bind` directly, `environment:` list-form reusing `docker.Env` directly, `command`/`entrypoint`, `restart`, `healthcheck` decoded DIRECTLY into `docker.Healthcheck` via `HealthcheckFromComposeCodec`, `mem_limit`/`mem_reservation` reusing `docker.MemBytesCodec`, and `ulimits` decoded DIRECTLY into `[]docker.Ulimit` via `UlimitsCodec`). **`CreateOptionsFromServiceCodec`** is a `Codec[docker.CreateOptions]` backed directly by `ServiceCodec`'s own wire shape (built via `codex.MapCodecValidated`) — the genuine "Docker ↔ docker-compose" mapping; `Service.CreateOptionsFor()`/`ServiceFromCreateOptions()` are thin wrappers around it — zero orchestrator (IoT Edge, Kubernetes, ...) vocabulary whatsoever. A malformed `ports:` entry now fails `ServiceCodec.Decode` itself, matching every other field's already-strict behavior. `codex.Struct`'s forward-compatible decode means unmodeled Compose keys (`networks:`, `depends_on:`, `deploy:`, ...) are silently ignored, not errors. | `models/docker` |
 | [`models/versioning/`](models/versioning) | Domain-agnostic classification/ordering of version-like strings — generalized out of `models/docker`'s tag-sorting once it became clear the same "strict semver, semver-like, or opaque" problem applies to any versioned identifier (Helm charts, git tags, npm packages, ...). `Version`/`VersionCodec` (a `codex.UntaggedUnion` over `validate.SemVer`/`validate.SemVerLike`), `Parse[T ~string]`, `Compare`, `Filter[T ~string]` (pure, no I/O — works directly on `docker.Tag` or any other named string type, no conversion needed). See its own README.md for the full design, usage examples, and the "version-order, not real chronological order" caveat. Self-contained enough to plausibly become its own standalone library one day. | *(none)* |
 | [`models/iotedge/fromcompose/`](models/iotedge/fromcompose) | A BIDIRECTIONAL converter between a `dockercompose.Project` and a SCAFFOLD `iothub.LayeredDeployment` use-case template — the ONLY package depending on BOTH `dockercompose` AND `azure/iothub` at once (mirrors `finaldeviceconfig`'s own "depends on both wire formats" shape). The actual VALUE transformation is ONE declaration, `ModuleConfigFromServiceCodec = codex.MapCodecValidated(dockercompose.ServiceCodec, iothub.ModuleConfigCodec, ...)` — since `MapCodecValidated` always builds BOTH Encode and Decode, this single `codex.Codec[iothub.ModuleConfig]` works directly with `format.YAML`/`format.JSON` in EITHER direction, with `iothub.ModuleConfigCodec`'s own `Refine` constraints enforced automatically. `ServicesToModulesCodec` extends the same idea to the whole project via `codex.Map[ModuleName, ModuleConfig]`. `ConvertService`/`ConvertProject` (forward) and `ConvertModuleConfig`/`ConvertDeployment` (reverse) route through these codecs; name sanitization, placeholder-image policy, and restart-policy mapping stay hand-written (genuinely IoT-Edge-specific concerns), with Warnings computed OUTSIDE the pure codec by re-deriving the same facts. `$edgeHub` routes are ALWAYS EMPTY going forward and have nothing to reverse onto going back. Conversion ALWAYS SUCCEEDS in either direction for a syntactically valid input — every lossy/approximated decision is a `Warning`, never an error. | `models/docker/dockercompose`, `models/azure/iothub` |
-| [`models/docker/registry/`](models/docker/registry) | The DECLARED, REUSABLE contract for the Docker Registry HTTP API v2 / OCI Distribution Spec: `PingRoute`/`GetTagsRoute`/`GetManifestRoute` (plain `rest.Route` values), domain structs/codecs (`ImageRef`, `TagsList`, `GetTagsReq`, `GetManifestReq`, `GetImageMetadataReq`, `ManifestMetadata`, `Credentials`), and `GetTagsTool`/`GetImageMetadataTool` (declared, unregistered `api/mcp` tool contracts). Pure data — no `*http.Client`, no auth flow; safe to import standalone to build a different client/server. `ImageRef.ToImage()`/`ImageRefFromImage()` map to/from `docker.Image` — `ImageRef`'s registry-host-split shape is genuinely different (needed to build a specific registry's HTTP base URL), so it keeps its own codec rather than reusing `docker.ImageCodec` directly. `TagsList.Tags []docker.Tag` reuses the shared domain type directly (same concept, identical shape — no mapper needed). `GetImageMetadataReq`/`ManifestMetadata` (unlike `GetTagsReq`/`GetManifestReq`) are NOT one route's Req/Resp types — `GetImageMetadata` (its concrete implementation lives in `app/registry`) is a multi-call client-side orchestration, so its own shape is declared via a plain `codex.Struct`-based codec pair instead of a `rest.Route`. Files are organized ONE PER OPERATION (`ping.go`, `gettags.go`, `getimagemetadata.go`, plus shared `imageref.go`/`credentials.go`/`security.go`) — no `client.go`/`routes.go`/`mcptools.go` aggregator file. | `models/docker` (Image/Tag/Digest reuse plus the Image mapper) |
-| [`app/registry/`](app/registry) | The CONCRETE IMPLEMENTATION built on `models/docker/registry`'s contract: `GetTags`/`GetImageMetadata` (the batteries-included client functions — transparent multi-arch manifest-list resolution, registry-agnostic per-call registry resolution), the entire Bearer/Basic auth-challenge flow (token exchange, credential injection) as package-private plumbing in `auth.go` a caller never constructs themselves, and `NewGetTagsToolHandler`/`NewGetImageMetadataToolHandler` (closures binding `models/docker/registry`'s declared MCP tools to these client functions — registry-agnostic, NOT an `adapters/mcprest` route bridge). Has its OWN internal models where useful for the implementation only (e.g. manifest-list resolution helpers, `NestedManifestListError`/`PlatformNotFoundError`) — these are deliberately NOT exported as part of any reusable contract. | `models/docker/registry`, `models/docker` |
-| [`internal/registry/`](internal/registry) | Shared, generic OCI Distribution Spec / Docker Registry HTTP API v2 wire-format plumbing (manifest/manifest-list envelope types, WWW-Authenticate challenge, Docker auth-scope string, "os/arch" platform selector, and their codecs) — a true Go internal package, importable only by code rooted at `go-edge-models`. Lives one level above `models/docker/registry` and `app/registry` (its two importers, which are siblings, not a parent/child pair) specifically so BOTH can reach it. | *(none — pure wire-format codecs)* |
+| [`models/docker/registry/`](models/docker/registry) | The DECLARED, REUSABLE contract for the Docker Registry HTTP API v2 / OCI Distribution Spec: `PingRoute`/`GetTagsRoute`/`GetManifestRoute` (plain `rest.Route` values, SHARED across every registry — the wire format is genuinely identical) and domain structs/codecs (`ImageRef`, `TagsList`, `GetTagsReq`, `GetManifestReq`, `GetImageMetadataReq`, `ManifestMetadata`), plus `GetTagsTool`/`GetImageMetadataTool` (declared, unregistered `api/mcp` tool contracts). Pure data — no `*http.Client`, no auth flow; safe to import standalone to build a different client/server. ALL auth-related concerns (Credentials, Bearer/Basic header codecs, the "bearerAuth" scheme) live in the sibling `auth` subpackage instead, not here. `ImageRef.ToImage()`/`ImageRefFromImage()` map to/from `docker.Image`. `GetImageMetadataReq`/`ManifestMetadata` (unlike `GetTagsReq`/`GetManifestReq`) are NOT one route's Req/Resp types — `GetImageMetadata` is a multi-call client-side orchestration, so its own shape is declared via a plain `codex.Struct`-based codec pair instead of a `rest.Route`. | `models/docker`, `models/util` (manifest/platform wire types), `models/docker/registry/auth` (Bearer header codec) |
+| [`models/docker/registry/auth/`](models/docker/registry/auth) | PUBLIC, SINGLE HOME for every auth-related concern: `Credentials` (the shared Username/Password base type EVERY other Credentials type in this module — `generic.Credentials`, `dockerhub.Credentials`, `ghcr.Credentials`, `mcr.Credentials` — is built from, directly or via a distinct named type over it) + `CredentialsCodec`/`NewCredentials`, the Bearer/Basic Authorization-header codecs (`BearerTokenCodec`/`BasicAuthCodec` — the latter's input/output type IS `Credentials` itself), the token-USE scheme declaration (`BearerAuthScheme`/`BearerCredential`/`BearerAuthDeclaration` — migrated here from `models/docker/registry`'s own `security.go`), the WWW-Authenticate `Challenge`/`ChallengeCodec`, the Docker auth-scope `DockerScope`/`DockerScopeCodec`, and the registry token-endpoint `TokenResponse`. Migrated from what used to be a true Go internal package specifically so this auth-flow plumbing is officially reusable — a caller building their OWN client against a registry this module doesn't model concretely can reuse it directly. | *(none — pure wire-format codecs)* |
+| [`models/docker/registry/generic/`](models/docker/registry/generic) | The any-OCI-registry FALLBACK's own `Credentials`/`RegistryCredentials` — `Credentials` is a plain ALIAS of `auth.Credentials` (no extra constraint: the generic fallback has no single known registry to compile-time-guard against), used ONLY by `app/registry`'s `NewGenericClient`/`WithCredentials`/`WithCredentialsByRegistry`, for any registry host OTHER than the 3 known ones below. A sibling of `dockerhub`/`ghcr`/`mcr` — the layout is fully symmetric. | `models/docker/registry/auth`, `models/docker/registry/{dockerhub,ghcr,mcr}` (RegistryHost consts only) |
+| [`models/docker/registry/dockerhub/`](models/docker/registry/dockerhub), [`.../ghcr/`](models/docker/registry/ghcr), [`.../mcr/`](models/docker/registry/mcr) | Registry-SPECIFIC models — each declares its own `RegistryHost` constant and its own DISTINCT named `Credentials` type (`type Credentials auth.Credentials` — passing GHCR credentials to a Docker Hub client is a compile error, not a silent misconfiguration) + `CredentialsCodec` + `NewCredentials` smart constructor. The underlying shape/base validation is written ONCE in `auth.Credentials`/`auth.CredentialsCodec` — each package's own `CredentialsCodec` is a thin wrapper composed on top of it (`c.MapCodecSafe(auth.CredentialsCodec, ...)`), never a redeclared struct. `ghcr.CredentialsCodec` layers an EXTRA "Username required" constraint via `.RefineFunc(...)` (GHCR's token exchange always needs a real GitHub username); `dockerhub`/`mcr` leave Username optional, matching `auth.CredentialsCodec`'s own base shape. | `models/docker/registry/auth` |
+| [`models/util/`](models/util) | Generic OCI Distribution Spec wire plumbing that is NOT auth-specific — the manifest/manifest-list envelope (`ManifestEnvelope`/`ManifestDescriptor`/`SingleManifestWire`/`ManifestListWire`, `DigestCodec`) and the "os/arch" platform selector (`PlatformSelector`/`PlatformSelectorCodec`). A top-level, PUBLIC package (sibling to `models/docker`/`models/azure`/`models/iotedge`/`models/versioning`) — migrated from what used to be a true Go internal package. | *(none — pure wire-format codecs)* |
+| [`app/registry/`](app/registry) | The CONCRETE IMPLEMENTATION built on `models/docker/registry`'s contract: the `Client` interface, `NewGenericClient` (a real, persistent, per-registry-host-bound `*rest.Client` — the FALLBACK for any OCI-compliant registry not specifically modeled by the 3 self-contained sibling packages), and `Dispatcher`/`NewDispatcher` — THE recommended, registry-agnostic entry point, bundling `GetTags`/`GetTagsFiltered`/`GetImageMetadata` plus ready-made MCP tool-handler constructors into ONE constructed object that picks the right CONCRETE per-registry client per call from an image URL (falling back to `NewGenericClient` for any other registry). `Dispatcher` safely imports `dockerhub`/`ghcr`/`mcr` with NO import cycle, since those are now FULLY SELF-CONTAINED (see below) rather than embedding a shared base. | `models/docker/registry`, `models/docker`, `app/registry/internal`, `app/registry/dockerhub`, `app/registry/ghcr`, `app/registry/mcr` |
+| [`app/registry/dockerhub/`](app/registry/dockerhub), [`.../ghcr/`](app/registry/ghcr), [`.../mcr/`](app/registry/mcr) | FULLY SELF-CONTAINED registry clients — one per KNOWN registry (Docker Hub/GHCR/MCR). Each builds its OWN persistent `*rest.Client` + its OWN `*internal.Authenticator` directly against its own `models/docker/registry/<name>` models (RegistryHost + typed Credentials) — NOT embedding/wrapping a shared `app/registry.Client` (an earlier round of this codebase did; this round deliberately reversed that). Each exposes its own `New(httpClient, opts...) *Client` + `WithCredentials`/`WithObserver` (per-registry TYPED options — a `dockerhub.Option` is a DIFFERENT Go type from `ghcr.Option`). Depends on `app/registry/internal` for shared MECHANICS, NOT on `app/registry` itself — specifically so `app/registry` can safely import these 3 back for `Dispatcher` without a cycle. | `app/registry/internal`, `models/docker/registry`, `models/docker/registry/<name>`, `models/docker/registry/auth`, `models/util` |
+| [`app/registry/internal/`](app/registry/internal) | The MECHANICS every self-contained client (and `app/registry`'s own generic fallback) is BUILT ON — the Bearer-token challenge/token-exchange auth flow, a per-repository token cache (`Authenticator`), the shared `BoundClientMiddleware` constructor (`BearerAuthClientMW`), and manifest-list resolution logic (`PlatformMatches`/`FormatPlatformSelector` -- each client calls its own `*rest.Client.Call(ctx, manifestRoute, ...)` directly for the actual fetch, a single line not worth a shared wrapper). A true Go internal package — importable only from code rooted at `app/registry` (itself and its subpackages) — so "fully self-contained client" means "owns its own construction," not "duplicates ~150 lines of auth-flow/manifest-resolution logic" 3 times over. `RegistryAuthError`/`RegistryAuthChallengeError`/`NestedManifestListError`/`PlatformNotFoundError` are defined HERE; every consuming package re-exports each as a PUBLIC type alias, so a caller can `errors.As` on the SAME underlying type regardless of which concrete Client's error they caught. | `models/docker/registry`, `models/docker/registry/auth`, `models/util` |
 | [`app/iotedge/`](app/iotedge) | The CONCRETE IMPLEMENTATION built on the `models/iotedge` subpackages' contracts: `ReadUseCase(basePath usecase.BasePath, useCaseName usecase.Name, opts)` (reads useCaseName's deployment manifest under basePath via `usecase.NewFile` — named distinctly from `usecase.Read`, which additionally assembles every nested device), `PatchUseCaseModule`/`UpdateUseCaseModuleImage` (patch the use case's shared TEMPLATE), and their DEVICE-scoped analogues `PatchDeviceModule`/`UpdateDeviceModuleImage` (patch ONE device's OWN config file only, taking a `usecase.DeviceID` too — isolated and reversible, template and every other device untouched; bridges `modulepatch.FieldsBodyCodec`'s typed validation into `deviceconfig.Patch.EdgeAgent`, handling both "device already has a config file" via `ports.PatchEncoded`'s deep-merge and "device's first-ever override" via a direct write). `NewReadModuleSummaryToolHandler`/`NewUpdateModuleImageToolHandler` bind `modulesummary`'s/`updatemoduleimage`'s declared `ReadTool`/`Tool` — selecting template vs. device scope via the request's OPTIONAL `DeviceID` (delegating to `usecase.ReadEffective` for device-scoped reads) — sharing an unexported `readModuleSummary`/`effectiveManifest` helper, returning a `ModuleNotFoundError`, structured `slog.LogValuer`, when the named module is absent; the update handler checks the module exists BEFORE patching, so a nonexistent module fails cleanly instead of merging an incomplete entry. `ImportDockerComposeAsUseCase(basePath usecase.BasePath, useCaseName usecase.Name, composeFilePath, opts) ([]fromcompose.Warning, error)` reads a `docker-compose.yaml` from disk, converts it via `fromcompose.ConvertProject`, and writes the result as a new use-case template file via `usecase.NewFile`; its reverse, `ExportUseCaseAsDockerCompose(basePath usecase.BasePath, useCaseName usecase.Name, composeFilePath, opts) ([]fromcompose.Warning, error)`, reads a use case back via `ReadUseCase` and writes it out as Compose YAML via `fromcompose.ConvertDeployment` — the concrete file-I/O wrappers over `fromcompose`'s pure, in-memory bidirectional conversion. A caller always supplies a `usecase.BasePath` + `usecase.Name` per call; this package never assumes or hardcodes where a use case's manifest lives. `usecase.BasePath`/`usecase.Name`/`usecase.DeviceID` all flow end-to-end from an MCP tool request's wire strings straight through to every function here (the now-dead internal `usecase.NewName`/`usecase.NewDeviceID` conversions this package used to need have been removed) — exactly ONE string→typed conversion per identifier, at the outermost boundary. | `models/iotedge/usecase`, `models/iotedge/modulesummary`, `models/iotedge/updatemoduleimage`, `models/iotedge/modulepatch`, `models/iotedge/deviceconfig`, `models/iotedge/fromcompose`, `models/docker/dockercompose` |
 
 Each declarative package follows the same internal convention: ONE FILE
@@ -122,40 +127,63 @@ err := iotedgeapp.PatchUseCaseModule(basePath, "usecase1", modulepatch.FieldsPat
 ```
 
 **Fetch tags and lean manifest metadata from any OCI-compliant registry —
-same functions, same routes, only the image URL differs:**
+construct ONE `Dispatcher`, same methods, only the image URL differs:**
 
 ```go
 import (
     registry "github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker/registry"
     registryapp "github.com/DaniDeer/go-codex/examples/go-edge-models/app/registry"
+    "github.com/DaniDeer/go-codex/examples/go-edge-models/app/registry/dockerhub"
+    "github.com/DaniDeer/go-codex/examples/go-edge-models/app/registry/ghcr"
 )
 
-tags, err := registryapp.GetTags(ctx, http.DefaultClient, "nodered/node-red")       // Docker Hub
-tags, err  = registryapp.GetTags(ctx, http.DefaultClient, "ghcr.io/org/image")      // GHCR
-tags, err  = registryapp.GetTags(ctx, http.DefaultClient, "mcr.microsoft.com/dotnet/runtime") // MCR
+client := registryapp.NewDispatcher(http.DefaultClient)
 
-meta, err := registryapp.GetImageMetadata(ctx, http.DefaultClient,
+tags, err := client.GetTags(ctx, "nodered/node-red")       // Docker Hub
+tags, err  = client.GetTags(ctx, "ghcr.io/org/image")      // GHCR
+tags, err  = client.GetTags(ctx, "mcr.microsoft.com/dotnet/runtime") // MCR
+
+meta, err := client.GetImageMetadata(ctx,
     registry.GetImageMetadataReq{ImageURL: "alpine:latest"}) // Platform defaults to "linux/amd64"
 fmt.Println(meta.Image, meta.TotalSizeBytes)
 
 // Private repository requiring Basic auth at the token-exchange step
-// (e.g. a private GHCR package — GitHub username + a read:packages PAT):
-tags, err = registryapp.GetTags(ctx, http.DefaultClient, "ghcr.io/org/private-image",
-    registryapp.WithCredentials(registry.Credentials{Username: os.Getenv("GHCR_USER"), Password: os.Getenv("GHCR_PAT")}))
+// (e.g. a private GHCR package — GitHub username + a read:packages PAT) —
+// pass credentials at CONSTRUCTION time, via the TYPED option the target
+// registry's OWN package exposes (a dockerhub.Option is a DIFFERENT Go
+// type from a ghcr.Option — Dispatcher wraps each per-registry so it
+// still reads as one constructor call): a Client represents one identity
+// for its whole lifetime.
+privateClient := registryapp.NewDispatcher(http.DefaultClient,
+    registryapp.WithGHCROptions(ghcr.WithCredentials(ghcr.Credentials{
+        Username: os.Getenv("GHCR_USER"), Password: os.Getenv("GHCR_PAT"),
+    })))
+tags, err = privateClient.GetTags(ctx, "ghcr.io/org/private-image")
 
-// A single call site working against MULTIPLE registries: declare ALL
-// your registries' credentials once, GetTags/GetImageMetadata pick the
-// right entry automatically based on each image URL's resolved registry
-// host — the SAME options value is reused unchanged below.
-byRegistry := registry.RegistryCredentials{
-    "registry-1.docker.io": {Username: "docker-user", Password: os.Getenv("DOCKERHUB_TOKEN")},
-    "ghcr.io":               {Username: os.Getenv("GHCR_USER"), Password: os.Getenv("GHCR_PAT")},
-    "mcr.microsoft.com":     {},                              // MCR needs no auth — omit or leave zero.
-}
-opt := registryapp.WithCredentialsByRegistry(byRegistry)
-tags, err = registryapp.GetTags(ctx, http.DefaultClient, "nodered/node-red", opt)
-tags, err  = registryapp.GetTags(ctx, http.DefaultClient, "ghcr.io/org/private-image", opt)
+// A Dispatcher working against MULTIPLE known registries: configure each
+// one's own typed credentials once — GetTags/GetImageMetadata pick the
+// right concrete client automatically based on each image URL's resolved
+// registry host, falling back to the generic client (and its own
+// generic.RegistryCredentials map) for any OTHER OCI-compliant registry.
+multiClient := registryapp.NewDispatcher(http.DefaultClient,
+    registryapp.WithDockerHubOptions(dockerhub.WithCredentials(dockerhub.Credentials{
+        Username: "docker-user", Password: os.Getenv("DOCKERHUB_TOKEN"),
+    })),
+    registryapp.WithGHCROptions(ghcr.WithCredentials(ghcr.Credentials{
+        Username: os.Getenv("GHCR_USER"), Password: os.Getenv("GHCR_PAT"),
+    })),
+    // MCR needs no auth for public images — omit its option entirely.
+)
+tags, err = multiClient.GetTags(ctx, "nodered/node-red")
+tags, err  = multiClient.GetTags(ctx, "ghcr.io/org/private-image")
 ```
+
+A caller who already knows the target registry (no image-URL resolution
+needed) can instead construct one of the FULLY SELF-CONTAINED clients
+directly — `dockerhub.New(...)`/`ghcr.New(...)`/`mcr.New(...)` — or, for
+any OTHER OCI-compliant registry, `app/registry.NewGenericClient`
+directly. `Dispatcher` is built on top of exactly these 4, bundling them
+behind one constructed object.
 
 **Get the most recent N tags** — the plain OCI `tags/list` response is
 unordered and carries no timestamps, so `docker.FilterTags` orders tags by
@@ -164,7 +192,7 @@ highest-version-first (strict semver, then "semver-like" tags such as
 chronological recency — see `docker.SortByVersionDesc`'s doc comment:
 
 ```go
-tags, err := registryapp.GetTagsFiltered(ctx, http.DefaultClient, "nodered/node-red",
+tags, err := client.GetTagsFiltered(ctx, "nodered/node-red",
     []docker.FilterTagsOpt{docker.WithLimit(5)}) // 5 highest-version tags
 // tags.Tags is already sorted/limited — no further client-side work needed.
 ```
@@ -174,19 +202,19 @@ optional input fields: `limit` (int) and `sort`
 (`"version_desc"`|`"alphabetical"`|`"none"`).
 
 **Expose GetTags/GetImageMetadata as MCP tools** — the declared contract
-(`models/docker/registry`) and the concrete binding (`app/registry`) stay
+(`models/docker/registry`) and the concrete binding (`Dispatcher`) stay
 separate, so registering the tool never requires touching HTTP-client
 code:
 
 ```go
 tool, err := registry.GetTagsTool.Register(mcpBuilder)
 _, handlerFn := mcpgo.ToolHandler(tool,
-    registryapp.NewGetTagsToolHandler(http.DefaultClient, registryapp.WithObserver(obs)),
+    client.NewGetTagsToolHandler(),
     mcpgo.Options{})
 ```
 
-**Observer integration.** `app/registry` builds on `nethttp.Call`/
-`CallHandle` internally, so it inherits [go-codex's context-based Observer
+**Observer integration.** `app/registry` builds on `rest.Client.Call`
+internally, so it inherits [go-codex's context-based Observer
 default](../../docs/features/observer.md#per-layer-behavior) for free — no
 option needed:
 
@@ -195,13 +223,16 @@ option needed:
 // package makes (auth-realm Ping/token exchange included) is observed
 // automatically.
 ctx = stats.WithObserver(ctx, stats.NewLoggingObserver(slog.Default()))
-tags, err := registryapp.GetTags(ctx, http.DefaultClient, "nodered/node-red")
+tags, err := client.GetTags(ctx, "nodered/node-red")
 
-// The EXPLICIT way: registryapp.WithObserver overrides ctx for just this
-// one call (same "explicit wins over context" precedence as
-// nethttp.CallOptions.Observer).
-tags, err = registryapp.GetTags(ctx, http.DefaultClient, "nodered/node-red",
-    registryapp.WithObserver(stats.NewLoggingObserver(slog.Default())))
+// The EXPLICIT way: registryapp.WithGenericOptions(registryapp.WithObserver(...))
+// becomes the generic-fallback client's fixed Observer for its whole
+// lifetime (construction-time, like credentials above) — each
+// self-contained sibling takes its OWN WithObserver via its own
+// WithDockerHubOptions/WithGHCROptions/WithMCROptions wrapper the same way.
+observedClient := registryapp.NewDispatcher(http.DefaultClient,
+    registryapp.WithGenericOptions(registryapp.WithObserver(stats.NewLoggingObserver(slog.Default()))))
+tags, err = observedClient.GetTags(ctx, "nodered/node-red")
 ```
 
 **GHCR requires a real username, not just a token.** GHCR's token-exchange
@@ -218,11 +249,15 @@ private repositories) scope.
 
 `GetImageMetadata` transparently resolves a multi-arch manifest list to a
 single platform — no list/index shape ever reaches the caller.
-`app/registry` is registry-agnostic by design — verified end-to-end
-against real Docker Hub, GHCR, and MCR (see Testing below); there is no
-per-registry subpackage, and none is planned — any future registry-specific
-wire-shape difference gets modeled as an additional field/variant in the
-existing generic codecs, never as registry-name branching.
+`app/registry` (the generic fallback + `Dispatcher`) is registry-agnostic
+by design — verified end-to-end against real Docker Hub, GHCR, and MCR
+(see Testing below). `app/registry/dockerhub`/`.../ghcr`/`.../mcr` ARE
+per-registry, FULLY SELF-CONTAINED clients — the seam for registry-
+specific behavior (e.g. `ghcr.Credentials` requiring a non-empty Username,
+unlike the other two) — but any future WIRE-SHAPE difference still gets
+modeled as an additional field/variant in the existing shared codecs
+(`models/docker/registry`, `models/util`, `models/docker/registry/auth`),
+never as registry-name branching inside the declarative contract itself.
 
 ## Running the example
 

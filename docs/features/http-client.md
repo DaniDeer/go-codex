@@ -104,6 +104,42 @@ handling all supported) — use `rest.CallWithTransport` directly only when
 you need a pre-built `*rest.RouteHandle` or finer per-call control
 `ClientCallOptions` doesn't expose.
 
+### Auto-registration vs. explicit `Client.RegisterRoute`
+
+A `rest.Route` value passed to `client.Call(ctx, route, req)` is
+**auto-registered** into `client`'s own internal route registry the
+first time it's called — no extra code needed; this is the DEFAULT, and
+sufficient for the overwhelming majority of callers (every example
+above relies on it implicitly).
+
+A caller may instead call `client.RegisterRoute(route)` explicitly —
+typically once, right after `client.Attach(...)` — to declare a
+Client's full set of known routes up front, in one place:
+
+```go
+client := rest.NewClient()
+err := client.Attach(nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: http.DefaultClient, BaseURL: "https://api.example.com"}))
+_ = client.RegisterRoute(getUser)
+_ = client.RegisterRoute(createUser)
+// ... later, anywhere ...
+userAny, err := client.Call(ctx, getUser, GetUserReq{ID: userID})
+```
+
+Both are fully valid, interchangeable styles for an ordinary route —
+`RegisterRoute` is a documented no-op when the SAME route has already
+been (or will later be) auto-registered via `Call`. Explicit
+registration is purely a matter of preference: it mirrors
+[`events.Client`](events.md)'s own explicit `Subscriber.Register(client)`
+step, so a caller who prefers declaring a
+Client's full capability set up front (rather than relying on an
+implicit, call-time side effect) can do so consistently across both
+`rest.Client` and `events.Client`.
+
+**`RegisterRoute` is REQUIRED (not just stylistic) for exactly one
+case**: a route that is *only ever reached as a redirect target*,
+never called directly — see [REST redirects](rest-redirects.md#client-side-adaptersnethttp)
+for the full explanation and a worked example.
+
 ## `nethttp.NewClientTransport`
 
 ```go

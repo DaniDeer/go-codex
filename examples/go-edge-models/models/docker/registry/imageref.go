@@ -10,32 +10,13 @@ import (
 	v "github.com/DaniDeer/go-codex/validate"
 )
 
-// ── Docker Hub defaults ───────────────────────────────────────────────────────
-//
-// Constants used only by this file's own parsing/formatting logic
-// (parseImageRefString/splitDockerDomain/ImageRefFromImage).
+// dockerHubLegacyDomain/dockerHubDomain/DockerHubRegistryHost/
+// dockerHubOfficialPrefix (this file's own parsing/formatting constants)
+// now live in config.go — see that file's own doc comment for why.
 
-const (
-	// dockerHubLegacyDomain is the domain name Docker CLI accepts as an
-	// alias for dockerHubDomain in an image reference (e.g.
-	// "index.docker.io/library/alpine").
-	dockerHubLegacyDomain = "docker.io"
-	// dockerHubDomain is the canonical Docker Hub domain as it appears in
-	// an image reference when no other registry host is given.
-	dockerHubDomain = "docker.io"
-	// dockerHubRegistryHost is the ACTUAL host GetTags/GetImageMetadata
-	// call — Docker Hub's reference domain ("docker.io") is NOT itself a
-	// reachable registry API host; "registry-1.docker.io" is. Also
-	// referenced directly by credentials.go's knownRegistryHosts (same
-	// package, no import needed).
-	dockerHubRegistryHost = "registry-1.docker.io"
-	// dockerHubOfficialPrefix is prepended to a single-segment repository
-	// name resolved against Docker Hub (e.g. "alpine" -> "library/alpine").
-	dockerHubOfficialPrefix = "library"
-	// defaultReference is used when an image URL has neither a tag nor a
-	// digest.
-	defaultReference = "latest"
-)
+// defaultReference is used when an image URL has neither a tag nor a
+// digest.
+const defaultReference = "latest"
 
 // ── ImageRef ──────────────────────────────────────────────────────────────────
 
@@ -255,7 +236,7 @@ func splitDockerDomain(name string) (domain, repository string) {
 		domain, repository = name[:i], name[i+1:]
 	}
 	if domain == dockerHubLegacyDomain || domain == dockerHubDomain {
-		domain = dockerHubRegistryHost
+		domain = DockerHubRegistryHost
 		if !strings.Contains(repository, "/") {
 			repository = dockerHubOfficialPrefix + "/" + repository
 		}

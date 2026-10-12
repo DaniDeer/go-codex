@@ -28,12 +28,12 @@ func TestParseImageRef(t *testing.T) {
 		{
 			name:  "bare name defaults to Docker Hub + library prefix + latest",
 			input: "alpine",
-			want:  ImageRef{Registry: dockerHubRegistryHost, Repository: "library/alpine", Reference: "latest"},
+			want:  ImageRef{Registry: DockerHubRegistryHost, Repository: "library/alpine", Reference: "latest"},
 		},
 		{
 			name:  "bare name with tag",
 			input: "alpine:3.19",
-			want:  ImageRef{Registry: dockerHubRegistryHost, Repository: "library/alpine", Reference: "3.19"},
+			want:  ImageRef{Registry: DockerHubRegistryHost, Repository: "library/alpine", Reference: "3.19"},
 		},
 		{
 			name:  "explicit registry host with port",
@@ -123,8 +123,8 @@ func TestImageRefFromImage(t *testing.T) {
 		{
 			name:         "tag, bare name gets library/ prefix for Docker Hub",
 			img:          docker.Image{Name: "alpine", Tag: "3.19"},
-			registryHost: dockerHubRegistryHost,
-			want:         ImageRef{Registry: dockerHubRegistryHost, Repository: "library/alpine", Reference: "3.19"},
+			registryHost: DockerHubRegistryHost,
+			want:         ImageRef{Registry: DockerHubRegistryHost, Repository: "library/alpine", Reference: "3.19"},
 		},
 		{
 			name:         "digest, embedded registry prefix stripped in favor of registryHost",

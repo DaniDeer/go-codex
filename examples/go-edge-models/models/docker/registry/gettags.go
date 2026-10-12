@@ -42,10 +42,12 @@ type GetTagsReq struct {
 // caller actually wants to authenticate. A caller chains
 // .Use(BearerAuthDeclaration.WithSend(credentialFn)) before calling
 // .ClientHandle() to both declare the "bearerAuth" requirement AND
-// authenticate outgoing calls; see app/registry's GetTags for the
-// batteries-included client (auth flow via app/registry's own
-// newAuthCredentialFunc, image-URL parsing) built this way on top of this
-// route.
+// authenticate outgoing calls; see app/registry's Client/NewGenericClient
+// for the concrete client (auth flow via app/registry/internal's
+// BearerAuthClientMW, middleware.go, and Authenticator.CredentialFor,
+// authenticator.go) built this way on top of this route, and
+// app/registry.Dispatcher for the registry-agnostic, image-URL-
+// resolving convenience layered on top of that.
 var GetTagsRoute = rest.NewRoute[GetTagsReq, TagsList](
 	"GET", "/v2/{name}/tags/list",
 	c.Struct[GetTagsReq](), TagsListCodec,
@@ -117,11 +119,11 @@ var TagsListCodec = c.Struct[TagsList](
 // already-resolved repository path, no registry host), GetTagsToolReq
 // carries the full raw image URL: an MCP tool call has no separate
 // "already resolved which registry" step, so the full URL must travel
-// through the tool's own input codec. app/registry's NewGetTagsToolHandler
-// binds this declared tool to the concrete, registry-agnostic GetTags
-// client function (resolves the target registry per call from
-// ImageURL) — NOT GetTagsRoute directly, since there's no single fixed
-// REST endpoint/baseURL to bridge via adapters/mcprest.
+// through the tool's own input codec. app/registry.Dispatcher's own
+// NewGetTagsToolHandler() method binds this declared tool to its
+// registry-agnostic GetTagsFiltered method (resolves the target registry
+// per call from ImageURL) — NOT GetTagsRoute directly, since there's no
+// single fixed REST endpoint/baseURL to bridge via adapters/mcprest.
 
 // GetTagsToolReq is GetTagsTool's input.
 type GetTagsToolReq struct {
@@ -133,43 +135,67 @@ type GetTagsToolReq struct {
 	Limit int
 	// Sort selects the tag ordering — one of "version_desc" (default),
 	// "alphabetical", or "none". An absent or unrecognized value falls
-	// back to "version_desc" (app/registry's NewGetTagsToolHandler
+	// back to "version_desc" (app/registry.FilterOptsFor, which
+	// app/registry.Dispatcher's NewGetTagsToolHandler() uses,
 	// tolerates this rather than erroring, since an LLM omitting the
 	// field is the expected common case).
 	Sort string
 }
 
-// sortModeAllowedValues lists GetTagsToolReq.Sort's allowed wire values —
-// the string names for docker.SortMode's constants, since MCP tool
-// arguments are plain JSON-ish values, not Go enums. Exported as a plain
-// slice (not a type) so app/registry's NewGetTagsToolHandler can reuse
-// the same three literal strings when mapping Sort back to
-// docker.SortMode, without either package hand-duplicating them.
+// sortModeAllowedValues lists GetTagsToolReq.Sort's allowed non-empty
+// wire values — the string names for docker.SortMode's constants, since
+// MCP tool arguments are plain JSON-ish values, not Go enums.
 var sortModeAllowedValues = []string{"version_desc", "alphabetical", "none"}
 
-// sortModeConstraint accepts "" (the zero value for an absent Sort field)
-// in addition to sortModeAllowedValues — an OptionalField's codec is still
-// called unconditionally on Encode even when the field was never set (see
+// sortModeWireCodec is the shared base string codec BOTH SortModeCodec
+// (below) and GetTagsToolReqCodec's own "sort" field validation build on
+// — accepting "" (the zero value for an absent Sort field) ALONGSIDE
+// sortModeAllowedValues, so there is exactly ONE place the 3 allowed
+// values (plus the empty-string exception) are spelled, instead of a
+// separate Refine constraint and a separate Decode switch each
+// hand-duplicating them. An OptionalField's codec is still called
+// unconditionally on Encode even when the field was never set (see
 // docker.Image's tagConstraint for the same "empty string must stay
 // valid for Encode-time re-validation" reasoning), so plain
 // validate.OneOf(sortModeAllowedValues...) alone would incorrectly reject
 // every GetTagsToolReq whose Sort was left at its zero value.
-var sortModeConstraint = c.Constraint[string]{
-	Name: "get-tags-sort-mode",
-	Check: func(s string) bool {
-		if s == "" {
-			return true
+var sortModeWireCodec = c.String().Refine(v.OneOf(append([]string{""}, sortModeAllowedValues...)...))
+
+// SortModeCodec is the wire-string <-> docker.SortMode codec for
+// GetTagsToolReq.Sort — the SAME c.MapCodecSafe + validate.OneOf shape
+// models/docker/registry/auth's BearerTokenCodec/BasicAuthCodec already
+// use for their own wire-format transforms. An EMPTY string decodes to
+// docker.SortByVersionDesc (GetTagsToolReq.Sort's own "absent means
+// default" behavior, mirroring sortModeWireCodec's own "" exception) —
+// app/registry.FilterOptsFor's Sort -> docker.SortMode mapping decodes
+// through this SAME codec, rather than hand-duplicating the 3 allowed
+// literal strings in a switch of its own.
+var SortModeCodec = c.MapCodecSafe(
+	sortModeWireCodec,
+	func(s string) docker.SortMode {
+		switch s {
+		case "alphabetical":
+			return docker.SortAlphabetical
+		case "none":
+			return docker.SortNone
+		default:
+			return docker.SortByVersionDesc
 		}
-		return v.OneOf(sortModeAllowedValues...).Check(s)
 	},
-	Message: func(s string) string {
-		return v.OneOf(sortModeAllowedValues...).Message(s)
+	func(mode docker.SortMode) (string, error) {
+		switch mode {
+		case docker.SortAlphabetical:
+			return "alphabetical", nil
+		case docker.SortNone:
+			return "none", nil
+		default:
+			return "version_desc", nil
+		}
 	},
-	Schema: v.OneOf(sortModeAllowedValues...).Schema,
-}
+)
 
 // GetTagsToolReqCodec validates a GetTagsToolReq value — ImageURL is
-// required (app/registry's GetTags further validates the full
+// required (app/registry.Dispatcher further validates the full
 // image-reference shape via ParseImageRef at call time); Limit and Sort
 // are both optional.
 var GetTagsToolReqCodec = c.Struct[GetTagsToolReq](
@@ -192,7 +218,7 @@ var GetTagsToolReqCodec = c.Struct[GetTagsToolReq](
 		func(r *GetTagsToolReq, val int) { r.Limit = val },
 	),
 	c.OptionalField("sort",
-		c.String().Refine(sortModeConstraint).WithDescription(
+		sortModeWireCodec.WithDescription(
 			`How to order the returned tags: "version_desc" (default — `+
 				"highest version first, inferred from each tag's own text; "+
 				"NOT real chronological recency, since registries do not "+
@@ -209,7 +235,8 @@ var GetTagsToolReqCodec = c.Struct[GetTagsToolReq](
 // — the SAME "declare once, register anywhere" pattern GetTagsRoute
 // itself follows: a caller registers it against their own mcp.Builder
 // (GetTagsTool.Register(builder)) and pairs the resulting handle with
-// app/registry's NewGetTagsToolHandler via mcpgo.ToolHandler.
+// app/registry.Dispatcher's NewGetTagsToolHandler() method via
+// mcpgo.ToolHandler.
 // ToolMeta.Description tells an LLM client WHEN to call this tool;
 // GetTagsToolReqCodec's own per-field .WithDescription (above) tells it
 // WHAT to pass — both flow into the JSON Schema an MCP client shows the
