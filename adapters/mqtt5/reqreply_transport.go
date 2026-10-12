@@ -1375,6 +1375,147 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 	return finalResults[0].Interface(), nil
 }
 
+// CallRaw implements [reqreply.ClientTransport]. docs/roadmap/
+// reqreply-client-registry.md Phase 0 infrastructure — publishes payload
+// to topic VERBATIM (no route/Req/Resp reflection at all, unlike [call])
+// and awaits exactly one correlated reply, reusing the SAME reply-topic/
+// correlation-ID/subscribe mechanics [call] does, generalized to not
+// need a route.
+//
+// Classifies the reply the SAME way [call] does for its OWN ordinary/
+// error legs: an ordinary reply returns its raw payload bytes; a reply
+// carrying mqtt5's reserved error ContentType ([isErrorReply]) returns
+// the SAME plain-text fallback [CallError] [call] returns when a reply's
+// error code is absent/unmatched — CallRaw has no route to resolve a
+// specific [reqreply.ErrorPattern]'s Code against (it never receives
+// one), so it cannot reproduce [call]'s matched-code decode branch; a
+// future caller holding the REGISTRY-resolved target RouteHandle (docs/
+// roadmap/reqreply-forward-bounce.md/reqreply-dead-letter-replay.md) can
+// still decode that case itself from the error's message if needed.
+//
+// The THIRD classification leg (a reply tagged as a Forward) is NOT YET
+// IMPLEMENTED — docs/roadmap/reqreply-forward-bounce.md's wire signal
+// doesn't exist yet. Insert that check HERE, before the isErrorReply
+// check below, once that roadmap ships (mirrors [call]'s own documented
+// "Forward recognized before ErrorPattern" precedence).
+func (t *clientTransport) CallRaw(ctx context.Context, topic string, payload []byte) (result []byte, err error) {
+	obs := t.opts.Observer
+	if obs == nil {
+		obs = stats.ObserverFromContext(ctx)
+	}
+	start := time.Now()
+
+	// TraceObserver span — mirrors [call]'s identical convention (deep-
+	// dive-bug-hunt finding: CallRaw originally omitted this, the ONLY
+	// divergence from Call's own observability contract found during
+	// the api/reqreply-focused round covering this new Phase 0
+	// primitive).
+	if to, ok := obs.(stats.TraceObserver); ok {
+		ctx = to.StartSpan(ctx, "mqtt5.request", topic)
+		defer func() { to.EndSpan(ctx, err) }()
+	}
+
+	timeout := t.opts.Timeout
+	if timeout == 0 {
+		timeout = 30 * time.Second
+	}
+	qos := t.opts.QoS
+	if qos == 0 {
+		qos = 1
+	}
+	// docs/design/d-0006-protocol-native-capabilities.md's Phase 5:
+	// resolve this call's CallOptions.Capabilities into the EFFECTIVE
+	// QoS/Retained wire attributes, mirroring [call]'s identical
+	// resolution — deep-dive-bug-hunt finding: CallRaw originally
+	// omitted this (a SEPARATE dispatch implementation from call(), so
+	// applying capabilities there does NOT cover this path). QoS/
+	// Retained are wire-attribute, route-independent configuration — a
+	// caller configuring them expects them honored regardless of
+	// whether the call goes through Call or CallRaw.
+	wire := WireAttributes{QoS: qos}
+	events.ApplyCapabilities(t.opts.Capabilities, &wire, obs, topic)
+	qos, retained := wire.QoS, wire.Retained
+
+	var replyTopic, subscribeFilter string
+	if t.opts.ReplyTopicBuilder != nil {
+		replyTopic, subscribeFilter = t.opts.ReplyTopicBuilder()
+		if replyTopic == "" {
+			obs.RecordRequest("MQTT5-REQ", topic, 0, time.Since(start))
+			return nil, CallError{Kind: KindEncode, Err: fmt.Errorf("reply topic builder returned empty response topic")}
+		}
+		if subscribeFilter == "" {
+			subscribeFilter = replyTopic
+		}
+	} else {
+		prefix := t.opts.ReplyTopicPrefix
+		if prefix == "" {
+			prefix = "replies"
+		}
+		replyTopic = prefix + "/" + uuid.New().String()
+		subscribeFilter = replyTopic
+	}
+
+	corrID := uuid.New()
+	corrData := corrID[:]
+	replyCh := make(chan *pahomqtt5.Publish, 1)
+
+	t.router.RegisterHandler(replyTopic, func(msg *pahomqtt5.Publish) {
+		if msg.Properties == nil || string(msg.Properties.CorrelationData) != string(corrData) {
+			return
+		}
+		select {
+		case replyCh <- msg:
+		default:
+		}
+	})
+
+	if _, err := t.client.Subscribe(ctx, &pahomqtt5.Subscribe{
+		Subscriptions: []pahomqtt5.SubscribeOptions{{Topic: subscribeFilter, QoS: qos}},
+	}); err != nil {
+		t.router.UnregisterHandler(replyTopic)
+		obs.RecordRequest("MQTT5-REQ", topic, 0, time.Since(start))
+		return nil, CallError{Kind: KindEncode, Err: fmt.Errorf("subscribe reply topic: %w", err)}
+	}
+	var once sync.Once
+	cleanup := func() {
+		once.Do(func() {
+			t.router.UnregisterHandler(replyTopic)
+			_, _ = t.client.Unsubscribe(ctx, &pahomqtt5.Unsubscribe{Topics: []string{subscribeFilter}})
+		})
+	}
+	defer cleanup()
+
+	if _, err := t.client.Publish(ctx, &pahomqtt5.Publish{
+		Topic:      topic,
+		QoS:        qos,
+		Retain:     retained,
+		Payload:    payload,
+		Properties: &pahomqtt5.PublishProperties{ResponseTopic: replyTopic, CorrelationData: corrData},
+	}); err != nil {
+		obs.RecordRequest("MQTT5-REQ", topic, 0, time.Since(start))
+		return nil, CallError{Kind: KindEncode, Err: fmt.Errorf("publish request: %w", err)}
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		obs.RecordRequest("MQTT5-REQ", topic, 0, time.Since(start))
+		return nil, CallError{Kind: KindTimeout, Err: ctx.Err()}
+	case <-timer.C:
+		obs.RecordRequest("MQTT5-REQ", topic, 0, time.Since(start))
+		return nil, CallError{Kind: KindTimeout, Err: fmt.Errorf("no reply within %s", timeout)}
+	case replyMsg := <-replyCh:
+		if isErrorReply(replyMsg) {
+			obs.RecordRequest("MQTT5-REQ", topic, 500, time.Since(start))
+			return nil, CallError{Kind: KindHandler, Err: fmt.Errorf("server error: %s", replyMsg.Payload)}
+		}
+		obs.RecordRequest("MQTT5-REQ", topic, 200, time.Since(start))
+		return replyMsg.Payload, nil
+	}
+}
+
 // CallAsync implements [reqreply.ClientTransport]. Non-blocking
 // counterpart to [clientTransport.Call]: recovers a *reqreply.Future[Resp]
 // (as any) via routeAny's [reqreply.FutureFactory] (confirmed zero-

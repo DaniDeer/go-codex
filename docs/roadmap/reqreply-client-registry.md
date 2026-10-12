@@ -1,37 +1,28 @@
-# `api/reqreply.Client` Registry — Design Complete, Not Yet Implemented
+# `api/reqreply.Client` Registry — Phase 0 SHIPPED
 
-> **Status:** Design complete — API surface, registry shape,
-> collision-detection behavior, AND the adapter↔registry bridge are all
-> settled. **This is the FIRST of 3 sequenced reqreply roadmap docs to
-> implement** — see "Relationship to the other 2 reqreply roadmap docs"
-> below. Unlike the other 2, this phase has NO blocking dependency; it
-> can be implemented, tested, and shipped standalone now. A post-split
-> re-review closed 1 further BLOCKING gap plus 1 minor fix beyond the
-> original design: the doc never specified how an adapter reaches this
-> registry at all (unlike REST, `reqreply.Client` had no
-> `ClientAwareTransport` counterpart) — resolved as a CENTRALIZED design
-> (adapters stay registry-unaware; resolve+decode happens in
-> `api/reqreply.Client` itself via a new, narrow `ClientTransport.CallRaw`
-> method), a deliberate divergence from REST's own adapter-side
-> resolution, explained in "Adapter↔registry bridge" below. Also closed:
-> `routesOrder` dropped as confirmed dead weight (reqreply's lookups are
-> always exact-string, never ambiguous), a registry collision-detection
-> mechanism added (`DuplicateTopicTypeMismatchError` + a lazily-surfaced
-> "poisoned entry" marker — a genuine divergence from `rest.Client`'s own
-> first-registered-wins policy, since reqreply has no structural
-> guarantee re-registrations of the same topic are "the same route"), and
-> `DuplicateTopicTypeMismatchError`'s fields clarified as whole-handle
-> type strings (Go's `reflect` can't recover Req/Resp individually from
-> an instantiated generic type). **A THIRD re-review pass closed 1 more
-> gap in the `CallRaw` design itself**: its original specification (a
-> "bytes-in-bytes-out" primitive) couldn't detect a CHAINED forward (the
-> target route's own handler also forwarding) — fixed by requiring
-> `CallRaw` to replicate the SAME 3-way reply classification `Call`/
-> `CallAsync` already apply, with the chain-following LOOP itself
-> explicitly assigned one layer above `CallRaw` (see "Adapter↔registry
-> bridge" below); confirmed no separate async primitive is needed.
-> Implementation is a distinct, future step requiring its own explicit
-> go-ahead (unit test plan). [← Back to Roadmap](index.md)
+> **Status: Phase 0 (registry + `CallRaw` infrastructure) is SHIPPED.**
+> `Client.RegisterRoute`/`registerAutoFromCall`/`DuplicateTopicTypeMismatchError`
+> are implemented in `api/reqreply/client.go` (tests:
+> `api/reqreply/client_registry_test.go`); `ClientTransport.CallRaw` is
+> implemented in `adapters/mqtt5` and both of `adapters/zeromq`'s client
+> transports (tests: `adapters/mqtt5/callraw_test.go`,
+> `adapters/zeromq/callraw_test.go`) — each adapter's `CallRaw`
+> classifies ONLY the ordinary-reply/`ErrorPattern`-reply legs for now; a
+> marked `// TODO Phase 1:` comment flags the exact insertion point for
+> the Forward-signal classification leg once
+> `reqreply-forward-bounce.md` ships. Documented in
+> `.github/instructions/go-codex.instructions.md`'s own "`api/reqreply.
+> Client` Registry" section. **This doc stays in `docs/roadmap/` (not
+> deleted/promoted, per this project's usual shipped-feature lifecycle)
+> because [`reqreply-forward-bounce.md`](reqreply-forward-bounce.md) and
+> [`reqreply-dead-letter-replay.md`](reqreply-dead-letter-replay.md)
+> still cross-reference its full design rationale as their own
+> prerequisite** — it will be reconsidered for deletion/promotion once
+> ALL 3 phases have shipped, not phase-by-phase. No `docs/features/`
+> page yet — Phase 0 alone has no end-to-end, user-visible behavior
+> (mirrors `rest-redirects.md`'s own precedent: that page was written
+> once redirects/Phase-1-equivalent shipped, not when REST's registry
+> alone did). [← Back to Roadmap](index.md)
 
 ## Relationship to the other 2 reqreply roadmap docs
 
@@ -394,23 +385,25 @@ candidate types" are recorded) should stay free to adjust based on
 Phase 1's real implementation experience, even though the error TYPE
 callers see (`DuplicateTopicTypeMismatchError`) is already locked.
 
-## Next step
+## Next step — SHIPPED, Phase 1 now unblocked
 
-The registry has a SETTLED design, further hardened by both the original
-in-depth review pass (`routesOrder` dropped, collision detection added)
-AND a post-split re-review (the adapter↔registry bridge gap, closed via
-the centralized `CallRaw` design above) — none of it is implemented yet.
-**This is the first of the 3 reqreply roadmap docs intended to be
-implemented**, with no blocking dependency of its own. Turning this into
-an actual implementation plan (unit test plan, including
-`RegisterRoute`'s dual-mode discrimination, the
-`DuplicateTopicTypeMismatchError` collision case, the poisoned-entry
-marker's lazy-surfacing contract, and `CallRaw`'s own dispatch mechanics
-— each exercised via a stub consumer, since Phase 1's real consumer
-doesn't exist yet) is a distinct, future step requiring its own explicit
-go-ahead — the same rigor Typed HTTP Redirects itself went through
-across its own critical-review rounds before implementation began. No
-code should be written against this design until that implementation
-plan exists and is approved. Once this phase ships and is verified,
+Phase 0 (registry + `CallRaw` infrastructure) is implemented and tested
+— see the status block at the top of this doc for exact file locations.
+All of this phase's own design decisions (the dropped `routesOrder`, the
+collision-detection/poisoned-entry mechanism, the centralized
+`CallRaw`-based adapter↔registry bridge, the chain-following loop's
+exact responsibility split) were implemented as designed, with no
+further gaps found during implementation itself — `go build ./...`,
+`go vet ./...`, and the FULL `go test ./...` suite all pass with zero
+failures across the whole repository, confirming this phase's changes
+didn't regress anything else (every existing `reqreply.ClientTransport`
+test fake needed a trivial `CallRaw` stub added to keep compiling — the
+ONLY ripple effect, expected from an additive interface method).
+
 [`reqreply-forward-bounce.md`](reqreply-forward-bounce.md) (Phase 1) is
-unblocked.
+now UNBLOCKED — its own implementation plan (the 8→4-combination
+dispatch-path inventory, the new wire signal in both adapters, the
+`ForwardSecuritySchemeMismatchError` check) is the next distinct,
+future step requiring its own explicit go-ahead, the same rigor Typed
+HTTP Redirects itself went through across its own critical-review
+rounds before implementation began.

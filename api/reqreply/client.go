@@ -2,7 +2,10 @@ package reqreply
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"reflect"
+	"strings"
 	"sync"
 )
 
@@ -31,6 +34,32 @@ type ClientTransport interface {
 	// docs/design/d-0004-reqreply-workflow-simplification.md's Addendum's
 	// "Interaction with CallAsync/Future").
 	CallAsync(ctx context.Context, route any, req any, opts ...ClientCallOptions) (any, error)
+
+	// CallRaw publishes payload to topic VERBATIM (already encoded by the
+	// caller — no Req/Resp type involvement here) and awaits exactly ONE
+	// correlated reply — the single-hop primitive
+	// docs/roadmap/reqreply-forward-bounce.md's forward-following chain
+	// and docs/roadmap/reqreply-dead-letter-replay.md's replay both build
+	// on, via a shared loop living in [*Client] (NOT inside CallRaw
+	// itself, and NOT inside either consuming roadmap feature's own
+	// code — CallRaw is Phase 0 infrastructure, added ahead of its real
+	// consumers).
+	//
+	// CallRaw MUST classify its reply the SAME 3-way way an ordinary
+	// Call/CallAsync reply already is:
+	//   - an ordinary successful reply:              (replyBytes, nil)
+	//   - a reply tagged as a Forward (reserved wire
+	//     signal — mqtt5's ContentType+User Property,
+	//     zeromq's frames[0], NOT YET IMPLEMENTED):    (nil, a forward sentinel error, once that roadmap ships)
+	//   - a reply matching a declared ErrorPattern:    (nil, <the same
+	//     typed error Call would return for that case>)
+	//
+	// As of this Phase 0 implementation, the Forward leg's wire signal
+	// does not exist yet (docs/roadmap/reqreply-forward-bounce.md is not
+	// implemented) — each adapter's CallRaw implements ONLY the ordinary/
+	// ErrorPattern legs for now, with a marked insertion point for the
+	// Forward leg to be added when that roadmap ships.
+	CallRaw(ctx context.Context, topic string, payload []byte) ([]byte, error)
 }
 
 // ClientCallOptions configures a single [Client.Call]/[Client.CallAsync]
@@ -57,12 +86,206 @@ type ClientCallOptions struct {
 	ResponseFormats any
 }
 
-// Client accumulates NO spec state — it is purely a dispatch handle, one
-// [ClientTransport] attached via [Client.Attach], mirroring
-// [rest.Client]/[events.Client]'s identical shape.
+// Client accumulates ONE piece of spec state beyond a dispatch handle: a
+// redirect-target-style registry (see [Client.RegisterRoute]) — added for
+// docs/roadmap/reqreply-forward-bounce.md's forward/bounce mechanism,
+// mirroring [rest.Client]'s own registry (see docs/features/
+// rest-redirects.md). Still just ONE [ClientTransport] attached via
+// [Client.Attach], mirroring [rest.Client]/[events.Client]'s identical
+// attach shape.
 type Client struct {
 	mu        sync.RWMutex
 	transport ClientTransport
+	routes    map[string]*registeredRoute
+}
+
+// registeredRoute is one entry in [Client]'s topic-keyed registry.
+// Reqreply has no REST-style {Method, Path} pair — a route's identity is
+// just its Topic string, already used as the map key, so no further
+// descriptor needs storing here beyond the recovered handle itself.
+type registeredRoute struct {
+	// Handle is the recovered *RouteHandle[Req, Resp] (dynamic type),
+	// exactly as [recoverRegistryEntry] returns it.
+	Handle any
+
+	// poisoned is set by [Client.registerAutoFromCall] when a SECOND,
+	// genuinely different route type is auto-registered against an
+	// ALREADY-registered topic — [Call]/[CallAsync]'s own contract
+	// requires registerAutoFromCall to never error, so the conflict is
+	// recorded here instead and surfaced lazily by whichever future
+	// consumer resolves this topic (docs/roadmap/reqreply-forward-bounce.md's
+	// forward resolution, docs/roadmap/reqreply-dead-letter-replay.md's
+	// replay resolution) at the exact point it would otherwise decode
+	// using the WRONG Resp type.
+	poisoned bool
+
+	// conflictingType records the SECOND type seen, for
+	// [DuplicateTopicTypeMismatchError]'s NewType field once a future
+	// consumer surfaces this poisoning.
+	conflictingType string
+}
+
+// reqreplyClientPkgPath is api/reqreply's own import path — used to
+// recognize a genuine reqreply.Route[Req,Resp]/*reqreply.RouteHandle[Req,Resp]
+// value (for ANY type params), mirroring api/rest's identical
+// clientRegistryPkgPath-based discrimination in its own
+// recoverRegistryEntry.
+const reqreplyClientPkgPath = "github.com/DaniDeer/go-codex/api/reqreply"
+
+// recoverRegistryEntry reflects routeAny into this Client's registry
+// shape: the route's Topic plus the recovered handle (dynamic type
+// *RouteHandle[Req,Resp]). Accepts the SAME dual-mode shapes [Client.
+// Call]/[Client.CallAsync] do: a raw, unregistered Route[Req,Resp]
+// (calls its own ClientHandle() method reflectively), or an
+// already-built *RouteHandle[Req,Resp] (used as-is).
+func recoverRegistryEntry(routeAny any) (topic string, handle any, err error) {
+	rv := reflect.ValueOf(routeAny)
+	if !rv.IsValid() {
+		return "", nil, TransportTypeMismatchError{
+			Want: "reqreply.Route[Req, Resp] or *reqreply.RouteHandle[Req, Resp]",
+			Got:  fmt.Sprintf("%T", routeAny),
+		}
+	}
+	t := rv.Type()
+	switch {
+	case t.PkgPath() == reqreplyClientPkgPath && strings.HasPrefix(t.Name(), "Route["):
+		handleVal := rv.MethodByName("ClientHandle").Call(nil)[0]
+		return topicOf(handleVal), handleVal.Interface(), nil
+	case t.Kind() == reflect.Pointer && t.Elem().PkgPath() == reqreplyClientPkgPath && strings.HasPrefix(t.Elem().Name(), "RouteHandle["):
+		return topicOf(rv), rv.Interface(), nil
+	default:
+		return "", nil, TransportTypeMismatchError{
+			Want: "reqreply.Route[Req, Resp] or *reqreply.RouteHandle[Req, Resp]",
+			Got:  fmt.Sprintf("%T", routeAny),
+		}
+	}
+}
+
+// topicOf reads Topic off handleVal (handleVal is always a
+// *RouteHandle[Req,Resp] reflect.Value) — RouteHandle's Topic field is a
+// plain string, unlike [rest.RouteHandle]'s nested Descriptor, so no
+// further field traversal is needed.
+func topicOf(handleVal reflect.Value) string {
+	return handleVal.Elem().FieldByName("Topic").String()
+}
+
+// RegisterRoute warms c's registry with route without making a live call
+// against it — for a route that is only ever reached as a
+// [docs/roadmap/reqreply-forward-bounce.md Forward] target or a
+// [docs/roadmap/reqreply-dead-letter-replay.md ReplayDeadLetter] source,
+// never called directly (routes called directly via [Client.Call]/
+// [Client.CallAsync] are indexed automatically). route may be a [Route]
+// or [*RouteHandle] — discriminated via reflection.
+//
+// Re-registering the SAME Topic with a route recovering to the IDENTICAL
+// concrete handle type is a safe no-op. Re-registering the SAME Topic
+// with a GENUINELY DIFFERENT route type (unlike [rest.Client.
+// RegisterRoute]'s own "always safe" guarantee — reqreply has no
+// structural guarantee two routes sharing a Topic are "the same route")
+// returns [DuplicateTopicTypeMismatchError] immediately, without
+// mutating the existing entry.
+func (c *Client) RegisterRoute(route any) error {
+	topic, handle, err := recoverRegistryEntry(route)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.routes == nil {
+		c.routes = make(map[string]*registeredRoute)
+	}
+	existing, ok := c.routes[topic]
+	if !ok {
+		c.routes[topic] = &registeredRoute{Handle: handle}
+		return nil
+	}
+	existingType := reflect.TypeOf(existing.Handle)
+	newType := reflect.TypeOf(handle)
+	if existingType == newType {
+		return nil
+	}
+	return DuplicateTopicTypeMismatchError{
+		Topic:        topic,
+		ExistingType: existingType.String(),
+		NewType:      newType.String(),
+	}
+}
+
+// registerAutoFromCall is called by [Client.Call]/[Client.CallAsync]
+// BEFORE delegating to the attached [ClientTransport] — auto-populates
+// the registry the first time a given route is seen, per [Client.
+// RegisterRoute]'s own doc comment ("routes called directly via Call/
+// CallAsync are indexed automatically"). Best-effort: a route value that
+// doesn't match the recognized shapes is silently skipped here (NOT an
+// error) — the attached [ClientTransport]'s own dispatch is the
+// authoritative place a genuine type-mismatch is reported, this is pure
+// bookkeeping that must never mask or duplicate that error.
+//
+// A genuine topic collision here (unlike [Client.RegisterRoute]'s
+// explicit error) marks the EXISTING entry POISONED instead of
+// returning an error — [Call]/[CallAsync]'s own contract requires this
+// method to never error. The poisoning surfaces lazily, later, at
+// whichever future consumer (forward/replay resolution) actually
+// resolves this topic.
+func (c *Client) registerAutoFromCall(route any) {
+	topic, handle, err := recoverRegistryEntry(route)
+	if err != nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.routes == nil {
+		c.routes = make(map[string]*registeredRoute)
+	}
+	existing, ok := c.routes[topic]
+	if !ok {
+		c.routes[topic] = &registeredRoute{Handle: handle}
+		return
+	}
+	newType := reflect.TypeOf(handle)
+	if reflect.TypeOf(existing.Handle) == newType {
+		return
+	}
+	existing.poisoned = true
+	existing.conflictingType = newType.String()
+}
+
+// DuplicateTopicTypeMismatchError is returned by [Client.RegisterRoute]
+// when a SECOND, genuinely different route is registered against an
+// ALREADY-registered Topic — a GENUINE DIVERGENCE from [rest.Client.
+// RegisterRoute]'s own always-safe "first-registered-wins" policy, since
+// reqreply has no structural guarantee that two routes sharing a Topic
+// are "the same route" (REST's guarantee holds only because every
+// re-registration of the same key is, by construction, the SAME
+// underlying Route wrapped in a different credential-bound handle).
+//
+// ExistingType/NewType are the WHOLE registered handle's
+// reflect.Type.String() (e.g. "*reqreply.RouteHandle[foo.FooReq,foo.FooResp]"),
+// not individually-recovered Req/Resp types — Go's reflect package has
+// no API to extract a generic type's own instantiated type arguments
+// after the fact.
+type DuplicateTopicTypeMismatchError struct {
+	// Topic is the topic that was registered more than once with
+	// incompatible route types.
+	Topic string
+	// ExistingType is the FIRST-registered handle's whole type string.
+	ExistingType string
+	// NewType is the SECOND (rejected or poisoned) handle's whole type
+	// string.
+	NewType string
+}
+
+func (e DuplicateTopicTypeMismatchError) Error() string {
+	return "api/reqreply: " + e.Topic + ": registered with incompatible route types: " + e.ExistingType + " vs. " + e.NewType
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e DuplicateTopicTypeMismatchError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("topic", e.Topic),
+		slog.String("existing_type", e.ExistingType),
+		slog.String("new_type", e.NewType),
+	)
 }
 
 // NewClient returns an unattached [Client]. Call client.Attach(...) with an
@@ -116,6 +339,7 @@ func (c *Client) Attach(t ClientTransport) error {
 // Returns [NoClientTransportAttachedError] if [Client.Attach] was never
 // called.
 func (c *Client) Call(ctx context.Context, route any, req any, opts ...ClientCallOptions) (any, error) {
+	c.registerAutoFromCall(route)
 	c.mu.RLock()
 	t := c.transport
 	c.mu.RUnlock()
@@ -148,6 +372,7 @@ func (c *Client) Call(ctx context.Context, route any, req any, opts ...ClientCal
 //	// ... do other independent work here ...
 //	resp, err := future.(*reqreply.Future[ComputeResp]).Wait(ctx)
 func (c *Client) CallAsync(ctx context.Context, route any, req any, opts ...ClientCallOptions) (any, error) {
+	c.registerAutoFromCall(route)
 	c.mu.RLock()
 	t := c.transport
 	c.mu.RUnlock()

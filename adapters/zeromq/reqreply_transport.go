@@ -1279,6 +1279,105 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 	return finalResults[0].Interface(), nil
 }
 
+// CallRaw implements [reqreply.ClientTransport]. docs/roadmap/
+// reqreply-client-registry.md Phase 0 infrastructure — sends payload
+// VERBATIM (no route/Req/Resp reflection, unlike [call]) on topic's
+// registered socket and awaits exactly one reply, reusing the SAME
+// send/recv-poll mechanics [call] does, generalized to not need a route.
+//
+// Classifies the reply the SAME way [call] does for its OWN ordinary/
+// error legs: an ordinary 2-frame `[status, payload]` reply returns
+// frames[1]; a `frames[0] == "error"` reply returns the SAME plain-text
+// fallback [CallError] [call] returns when a reply's error code is
+// absent/unmatched — CallRaw has no route to resolve a specific
+// [reqreply.ErrorPattern]'s Code against (it never receives one), so it
+// cannot reproduce [call]'s matched-code decode branch; a future caller
+// holding the REGISTRY-resolved target RouteHandle (docs/roadmap/
+// reqreply-forward-bounce.md/reqreply-dead-letter-replay.md) can still
+// decode that case itself from the error's message if needed.
+//
+// The THIRD classification leg (a reply tagged as a Forward) is NOT YET
+// IMPLEMENTED — docs/roadmap/reqreply-forward-bounce.md's wire signal
+// (a 3rd `frames[0]="forward"` status) doesn't exist yet. Insert that
+// check HERE, before the `frames[0] == "error"` check below, once that
+// roadmap ships (mirrors [call]'s own documented "Forward recognized
+// before ErrorPattern" precedence).
+func (t *clientTransport) CallRaw(ctx context.Context, topic string, payload []byte) (result []byte, err error) {
+	obs := t.opts.Observer
+	if obs == nil {
+		obs = stats.ObserverFromContext(ctx)
+	}
+	start := time.Now()
+
+	// TraceObserver span — mirrors [call]'s identical convention (deep-
+	// dive-bug-hunt finding: CallRaw originally omitted this, the ONLY
+	// divergence from Call's own observability contract found during
+	// the api/reqreply-focused round covering this new Phase 0
+	// primitive).
+	if to, ok := obs.(stats.TraceObserver); ok {
+		ctx = to.StartSpan(ctx, "zmq.request", topic)
+		defer func() { to.EndSpan(ctx, err) }()
+	}
+
+	sock, ok := t.sockets[topic]
+	if !ok {
+		obs.RecordRequest("ZMQ-REQ", topic, 0, time.Since(start))
+		return nil, MissingSocketError{Topic: topic}
+	}
+
+	// docs/design/d-0006-protocol-native-capabilities.md's Phase 2:
+	// apply this call's CallOptions.Capabilities to the socket, mirroring
+	// [call]'s identical call — deep-dive-bug-hunt finding: CallRaw
+	// originally omitted this (a SEPARATE dispatch implementation from
+	// call(), so applying capabilities there does NOT cover this path).
+	// HWM/Conflate are socket-level, route-independent configuration —
+	// a caller configuring them expects them honored regardless of
+	// whether the call goes through Call or CallRaw.
+	applyCapabilities(sock, t.opts.Capabilities, obs, topic)
+
+	if sendErr := sock.SendFrames([][]byte{payload}); sendErr != nil {
+		obs.RecordRequest("ZMQ-REQ", topic, 0, time.Since(start))
+		return nil, CallError{Err: fmt.Errorf("send: %w", sendErr)}
+	}
+
+	if err := sock.SetRecvTimeout(recvPollInterval); err != nil {
+		return nil, CallError{Err: fmt.Errorf("set recv timeout: %w", err)}
+	}
+
+	var frames [][]byte
+	for {
+		select {
+		case <-ctx.Done():
+			obs.RecordRequest("ZMQ-REQ", topic, 0, time.Since(start))
+			return nil, CallError{Err: ctx.Err()}
+		default:
+		}
+		var recvErr error
+		frames, recvErr = sock.RecvFrames()
+		if errors.Is(recvErr, ErrTimeout) {
+			continue
+		}
+		if recvErr != nil {
+			obs.RecordRequest("ZMQ-REQ", topic, 0, time.Since(start))
+			return nil, CallError{Err: fmt.Errorf("recv: %w", recvErr)}
+		}
+		break
+	}
+
+	if len(frames) < 2 {
+		obs.RecordRequest("ZMQ-REQ", topic, 0, time.Since(start))
+		return nil, CallError{Err: fmt.Errorf("malformed reply: expected [status, payload], got %d frame(s)", len(frames))}
+	}
+
+	if string(frames[0]) == "error" {
+		obs.RecordRequest("ZMQ-REQ", topic, 500, time.Since(start))
+		return nil, CallError{Err: fmt.Errorf("server error: %s", frames[len(frames)-1])}
+	}
+
+	obs.RecordRequest("ZMQ-REQ", topic, 200, time.Since(start))
+	return frames[1], nil
+}
+
 // CallAsync implements [reqreply.ClientTransport]. Non-blocking
 // counterpart to [clientTransport.Call]: recovers a *reqreply.Future[Resp]
 // (as any) via routeAny's [reqreply.FutureFactory], then runs the SAME
@@ -2059,6 +2158,88 @@ func (t *dealerClientTransport) call(ctx context.Context, routeAny any, reqAny a
 		return nil, errI
 	}
 	return finalResults[0].Interface(), nil
+}
+
+// CallRaw implements [reqreply.ClientTransport]. docs/roadmap/
+// reqreply-client-registry.md Phase 0 infrastructure — mirrors
+// [clientTransport.CallRaw] exactly, adapted to DEALER's envelope
+// framing (empty delimiter + payload out; [delimiter, status, payload]
+// in) the SAME way [dealerClientTransport.call] adapts [clientTransport.
+// call]'s REQ/REP framing. See [clientTransport.CallRaw]'s doc comment
+// for the full classification contract and the Forward-leg TODO (same
+// insertion point: before the `frames[1] == "error"` check below).
+func (t *dealerClientTransport) CallRaw(ctx context.Context, topic string, payload []byte) (result []byte, err error) {
+	obs := t.opts.Observer
+	if obs == nil {
+		obs = stats.ObserverFromContext(ctx)
+	}
+	start := time.Now()
+
+	// TraceObserver span — mirrors [call]'s identical convention (deep-
+	// dive-bug-hunt finding: CallRaw originally omitted this, the ONLY
+	// divergence from Call's own observability contract found during
+	// the api/reqreply-focused round covering this new Phase 0
+	// primitive).
+	if to, ok := obs.(stats.TraceObserver); ok {
+		ctx = to.StartSpan(ctx, "zmq.request", topic)
+		defer func() { to.EndSpan(ctx, err) }()
+	}
+
+	sock, ok := t.sockets[topic]
+	if !ok {
+		obs.RecordRequest("ZMQ-DEALER", topic, 0, time.Since(start))
+		return nil, MissingSocketError{Topic: topic}
+	}
+
+	// docs/design/d-0006-protocol-native-capabilities.md's Phase 2:
+	// apply this call's CallOptions.Capabilities to the socket, mirroring
+	// [call]'s identical call — deep-dive-bug-hunt finding: CallRaw
+	// originally omitted this (a SEPARATE dispatch implementation from
+	// call(), so applying capabilities there does NOT cover this path).
+	applyCapabilities(sock, t.opts.Capabilities, obs, topic)
+
+	if sendErr := sock.SendFrames([][]byte{emptyDelimiter, payload}); sendErr != nil {
+		obs.RecordRequest("ZMQ-DEALER", topic, 0, time.Since(start))
+		return nil, CallError{Err: fmt.Errorf("send: %w", sendErr)}
+	}
+
+	if err := sock.SetRecvTimeout(recvPollInterval); err != nil {
+		return nil, CallError{Err: fmt.Errorf("set recv timeout: %w", err)}
+	}
+
+	var frames [][]byte
+	for {
+		select {
+		case <-ctx.Done():
+			obs.RecordRequest("ZMQ-DEALER", topic, 0, time.Since(start))
+			return nil, CallError{Err: ctx.Err()}
+		default:
+		}
+		var recvErr error
+		frames, recvErr = sock.RecvFrames()
+		if errors.Is(recvErr, ErrTimeout) {
+			continue
+		}
+		if recvErr != nil {
+			obs.RecordRequest("ZMQ-DEALER", topic, 0, time.Since(start))
+			return nil, CallError{Err: fmt.Errorf("recv: %w", recvErr)}
+		}
+		break
+	}
+
+	// Expect [delimiter, status, payload].
+	if len(frames) < 3 {
+		obs.RecordRequest("ZMQ-DEALER", topic, 0, time.Since(start))
+		return nil, CallError{Err: fmt.Errorf("malformed reply: expected [delimiter, status, payload], got %d frame(s)", len(frames))}
+	}
+
+	if string(frames[1]) == "error" {
+		obs.RecordRequest("ZMQ-DEALER", topic, 500, time.Since(start))
+		return nil, CallError{Err: fmt.Errorf("server error: %s", frames[len(frames)-1])}
+	}
+
+	obs.RecordRequest("ZMQ-DEALER", topic, 200, time.Since(start))
+	return frames[2], nil
 }
 
 // CallAsync implements [reqreply.ClientTransport]. Non-blocking

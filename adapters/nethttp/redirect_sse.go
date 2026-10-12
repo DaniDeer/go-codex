@@ -6,8 +6,10 @@ import (
 	"net/http"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/DaniDeer/go-codex/api/rest"
+	"github.com/DaniDeer/go-codex/stats"
 )
 
 // sseRedirectFollowUpInfo captures what [clientTransport.followSSERedirect]
@@ -44,17 +46,28 @@ type sseRedirectFollowUpInfo struct {
 // PARALLEL path to consumeOnce's normal connect logic — NOT a recursive
 // call into [rest.Client.Consume] (round 4 finding H2, applies
 // identically here).
-func (t *clientTransport) followSSERedirect(ctx context.Context, current rest.RedirectError, info sseRedirectFollowUpInfo, eventType reflect.Type, dispatchFn reflect.Value, remaining, configuredMax int) (hadTraffic bool, err error) {
+//
+// obs is [Consume]'s own already-resolved [stats.Observer] (threaded
+// through, NOT re-derived from ctx — same rationale as [followRedirect]'s
+// identical parameter, see its doc comment) — found-and-fixed gap: every
+// SSE follow-up reconnect was completely unobserved before this fix,
+// tracked as its own follow-up (`rest-redirect-observer-gap`) until
+// fixed here, alongside the Call-path's identical gap.
+func (t *clientTransport) followSSERedirect(ctx context.Context, current rest.RedirectError, info sseRedirectFollowUpInfo, eventType reflect.Type, dispatchFn reflect.Value, remaining, configuredMax int, obs stats.Observer) (hadTraffic bool, err error) {
+	hopStart := time.Now()
 	if remaining <= 0 {
+		obs.RecordRequest(http.MethodGet, current.Location, 0, time.Since(hopStart))
 		return false, rest.RedirectChainTooDeepError{Location: current.Location, Depth: configuredMax}
 	}
 
 	if handle, ok := t.client.MatchRedirectSSERoute(http.MethodGet, current.Location); ok {
-		return t.doFollowSSERequest(ctx, current, info, eventType, dispatchFn, handle, remaining, configuredMax)
+		return t.doFollowSSERequest(ctx, current, info, eventType, dispatchFn, handle, remaining, configuredMax, obs)
 	}
 	if _, ok := t.client.MatchRedirectRoute(http.MethodGet, current.Location); ok {
+		obs.RecordRequest(http.MethodGet, current.Location, 0, time.Since(hopStart))
 		return false, rest.RedirectTargetNotStreamableError{Location: current.Location}
 	}
+	obs.RecordRequest(http.MethodGet, current.Location, 0, time.Since(hopStart))
 	return false, rest.UnrecognizedRedirectError{Location: current.Location, Status: current.Status}
 }
 
@@ -67,20 +80,27 @@ func (t *clientTransport) followSSERedirect(ctx context.Context, current rest.Re
 // like "no usable match": [rest.UnrecognizedRedirectError]), then
 // decodes+dispatches via [scanAndDispatchSSE], continuing the chain via
 // [clientTransport.followSSERedirect] with one fewer hop remaining if
-// the follow-up response is ITSELF a redirect.
-func (t *clientTransport) doFollowSSERequest(ctx context.Context, current rest.RedirectError, info sseRedirectFollowUpInfo, eventType reflect.Type, dispatchFn reflect.Value, handle any, remaining, configuredMax int) (bool, error) {
+// the follow-up response is ITSELF a redirect. obs is threaded through
+// unchanged from [followSSERedirect] — this hop (the connection attempt
+// itself, not each individual dispatched event) is observed exactly like
+// [doFollowUpRequest]'s identical per-hop convention; hopStart is
+// captured HERE so each hop's own duration is independently timed.
+func (t *clientTransport) doFollowSSERequest(ctx context.Context, current rest.RedirectError, info sseRedirectFollowUpInfo, eventType reflect.Type, dispatchFn reflect.Value, handle any, remaining, configuredMax int, obs stats.Observer) (bool, error) {
+	hopStart := time.Now()
 	handleVal := reflect.ValueOf(handle)
 	resolveEventDecoderMethod := handleVal.MethodByName("ResolveEventDecoder") // func(string, ...format.Format[Event]) func([]byte) (Event, error)
 	effectiveFormatsMethod := handleVal.MethodByName("EffectiveEventFormats")  // func(...format.Format[Event]) []format.Format[Event]
 	decodeEventFuncType := resolveEventDecoderMethod.Type().Out(0)
 	targetEventType := decodeEventFuncType.Out(0)
 	if targetEventType != eventType {
+		obs.RecordRequest(http.MethodGet, current.Location, 0, time.Since(hopStart))
 		return false, rest.UnrecognizedRedirectError{Location: current.Location, Status: current.Status}
 	}
 
 	rawURL := strings.TrimRight(t.caller.baseURL, "/") + current.Location
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
+		obs.RecordRequest(http.MethodGet, current.Location, 0, time.Since(hopStart))
 		return false, RequestBuildError{Err: err}
 	}
 	if info.accept != "" {
@@ -100,15 +120,18 @@ func (t *clientTransport) doFollowSSERequest(ctx context.Context, current rest.R
 
 	resp, err := t.caller.client.Do(httpReq)
 	if err != nil {
+		obs.RecordRequest(http.MethodGet, current.Location, 0, time.Since(hopStart))
 		return false, RequestError{Method: http.MethodGet, Path: current.Location, Err: err}
 	}
 	defer resp.Body.Close()
 
 	if isRedirectStatus(resp.StatusCode) {
+		obs.RecordRequest(http.MethodGet, current.Location, resp.StatusCode, time.Since(hopStart))
 		next := rest.RedirectError{Status: resp.StatusCode, Location: resp.Header.Get("Location")}
-		return t.followSSERedirect(ctx, next, info, eventType, dispatchFn, remaining-1, configuredMax)
+		return t.followSSERedirect(ctx, next, info, eventType, dispatchFn, remaining-1, configuredMax, obs)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		obs.RecordRequest(http.MethodGet, current.Location, resp.StatusCode, time.Since(hopStart))
 		body, _ := io.ReadAll(resp.Body)
 		return false, UnexpectedStatusError{Method: http.MethodGet, Path: current.Location, StatusCode: resp.StatusCode, Body: body, Header: resp.Header}
 	}
@@ -120,5 +143,6 @@ func (t *clientTransport) doFollowSSERequest(ctx context.Context, current rest.R
 	formatsVal := reflect.Zero(effectiveFormatsMethod.Type().In(0))
 	decode := resolveEventDecoderMethod.CallSlice([]reflect.Value{reflect.ValueOf(httpReq.Header.Get("Accept")), formatsVal})[0]
 
+	obs.RecordRequest(http.MethodGet, current.Location, resp.StatusCode, time.Since(hopStart))
 	return scanAndDispatchSSE(ctx, resp.Body, decode, dispatchFn), nil
 }

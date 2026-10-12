@@ -1,8 +1,195 @@
-# go-codex Review History (R1–R201, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
+# go-codex Review History (R1–R204, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
 
 Do not re-report any of these findings. They have been implemented and tested.
 
 ---
+
+## Round 204 (`deep-dive-bug-hunt` applied to `api/rest` — ARGUMENTS: "on api/rest after we fixed the observer pattern gap in the redirects" — re-verifying Round 202's fix for completeness AND checking whether the SAME "missing Observer coverage" gap class recurs in any OTHER `api/rest` client dispatch path)
+
+Per this skill's own Gotcha ("a fix applied to ONE [dispatch path] does NOT imply the others
+got it"), this round does NOT re-litigate Round 202's fix itself — it (a) re-verifies EVERY
+return/exit path inside the fixed files is actually covered, line by line, and (b) re-checks
+whether the SAME class of gap (an Observer-free client dispatch path) exists anywhere ELSE in
+`api/rest`'s client side, now that Round 202 proved the gap CAN recur even in already-reviewed
+code (`redirect.go`/`redirect_sse.go` had been thoroughly traced by Round 201 for REDIRECT
+correctness without anyone noticing the separate Observer omission).
+
+### Phase A — re-verification: clean, no further bug found
+
+- **Line-by-line re-check of every `return` in `redirect.go`/`redirect_sse.go`**: confirmed 10
+  `obs.RecordRequest` call sites in `redirect.go` (`followRedirect`/`followRedirectHop`/
+  `doFollowUpRequest` — one per terminal exit: `RedirectChainTooDeepError`,
+  `RedirectToStreamUnsupportedError`, `UnrecognizedRedirectError`, `RequestBuildError`,
+  `RequestError`, `ResponseBodyError`, `UnexpectedStatusError`, a decode failure, and success, plus
+  the registry-free `client == nil` early return — correctly UN-observed here, since that path
+  returns the ORIGINATING call's own error UNCHANGED, which `clientTransport.Call` already
+  observed before ever reaching this function) and 9 in `redirect_sse.go`
+  (`followSSERedirect`/`doFollowSSERequest`, the SSE-path equivalent of the same 8 terminal
+  exits plus success). The 3 small internal helpers (`isRedirectStatus`, `decodeTargetResponse`,
+  `asRedirectError`/`isTerminalRedirectError`) correctly have NO direct `Observer` call of their
+  own — their errors/results bubble straight back to an ALREADY-observed caller, never a
+  standalone exit point. Re-read every line rather than trusting the Round 202 diff — confirmed,
+  not assumed.
+- **Full enumeration of `api/rest`'s client-side dispatch paths, re-confirmed from scratch**: the
+  ENTIRE codebase has exactly ONE `rest.ClientTransport` implementer (`adapters/nethttp` —
+  `adapters/chi` is server-side routing only, reconfirmed via `grep`), with exactly 6 real
+  `http.Client.Do` call sites (Round 201's own count, re-verified): `clienttransport.go`'s `Call`/
+  `Consume` (had full `Observer` coverage from inception — the ORIGINAL, reference
+  implementation), `client.go`'s `callWithVars` and `binding.go`'s `consumeSSEOnce` (the
+  registry-free `ports.Pattern` primitives — ALSO already fully `Observer`-covered from
+  inception, confirmed via `grep`; these return `RedirectError` directly instead of auto-following,
+  per the already-shipped Round 201 fix, so they never delegate into the 2 files below and have no
+  "hop" to miss observing), and `redirect.go`/`redirect_sse.go` (the 2 files Round 202 fixed). All
+  6 now have complete, verified Observer coverage — no 7th dispatch path exists, and no gap
+  remains anywhere in this enumeration.
+- **No new bug found** — this is a genuinely clean verification round, confirming Round 202's fix
+  was complete rather than merely "probably fine."
+
+### Phase B — design-doc re-review (mandatory)
+
+| Round | Doc(s) cross-checked | Verdict |
+|---|---|---|
+| 202 (redirect Observer fix) | `docs/design/d-0001-rest-middleware-workflow-simplification.md` (the doc governing `adapters/nethttp`'s client-side Observer conventions) | **ALIGNED, and reinforcing** — d-0001 already documents the IDENTICAL root-cause lesson for a DIFFERENT mechanism: `clientTransport.Call` was itself ONCE found missing `RecordRequest`/`ErrorPattern` wiring because it was "written as a from-scratch reflection shim... rather than delegating to `callWithVars`," and d-0001's own "Lessons Learned" explicitly warns "a [dispatch path] built to solve ONE structural problem can silently regress OTHER, unrelated concerns (observability...) if ... written as a fresh implementation instead of a thin wrapper delegating to the already-correct... pieces." Round 202's fix (`redirect.go`/`redirect_sse.go` being a PARALLEL, from-scratch dispatch path that forgot Observer wiring) is EXACTLY this same documented failure mode recurring in a different file — the fix's behavior (thread `obs` explicitly, `RecordRequest` on every exit path, status 0 before a response) matches d-0001's own already-established convention precisely, not a reinterpretation. No doc change needed beyond this round's own addition to `go-codex.instructions.md` (added: a note cross-referencing this exact convention + Round 202/203's fixes, see below). |
+| 203 (reqreply `CallRaw` Observer/Capability fix) | `docs/design/d-0006-protocol-native-capabilities.md` (capability application) + this round's own d-0001 finding (Observer) | **ALIGNED** — same root-cause class confirmed (a fresh dispatch path, `CallRaw`, omitting cross-cutting conventions `call()` already had), now explicitly connected to d-0001's own documented lesson rather than treated as a one-off. |
+
+**Documentation fix applied** (Phase B, docs-clarity only, not a new code finding):
+`go-codex.instructions.md`'s "Typed HTTP Redirects" section was missing any mention of Round
+202's Observer fix entirely (an omission, not a contradiction) — added a note describing the
+threading mechanism and cross-referencing this round's re-verification that no further gap exists
+elsewhere in `api/rest`.
+
+### Verification
+
+`gofmt -l .`, `go build ./...`, `go vet ./...`, full `go test ./...` (68 packages, 0 failures) —
+all clean. No code changed this round (re-verification + 1 documentation addition only).
+
+## Round 203 (`deep-dive-bug-hunt` applied to `api/reqreply` specifically — ARGUMENTS: "With the focus on api/reqreply" — the ORIGINAL 9-round deep-dive series (Rounds 185–194) was already complete; this round covers the registry + `CallRaw` concept added THIS session, never previously reviewed)
+
+The `api/reqreply` deep-dive series (Rounds 185–194, "deep dive #1–#9") closed with Round 194's
+"9/9 concept-reqreply-* rounds done." Since then, this session added brand-new `api/reqreply`
+production code — a `Client` registry (`RegisterRoute`/`registerAutoFromCall`/
+`DuplicateTopicTypeMismatchError`, infrastructure for the not-yet-implemented
+`reqreply-forward-bounce.md`/`reqreply-dead-letter-replay.md` roadmap docs) and a new
+`ClientTransport.CallRaw` method implemented in 3 places (`adapters/mqtt5`'s `clientTransport`,
+`adapters/zeromq`'s `clientTransport` and `dealerClientTransport`) — NONE of which had been
+subjected to this skill's trace-every-adapter-dispatch-path methodology yet. This round covers
+exactly that gap, applying `checklist.md`'s §7/8/9/12/13/15 to the new concept specifically.
+
+### Findings — 2 REAL, confirmed bugs, each affecting ALL 3 `CallRaw` implementations identically
+
+Both bugs share the SAME root cause: `CallRaw` was written by generalizing `call()`'s wire
+mechanics (publish/subscribe/correlate/classify) to not need a route — but in doing so, silently
+dropped 2 of `call()`'s own CROSS-CUTTING conventions that have nothing to do with the route at
+all. This is the EXACT "a new dispatch path silently misses an established convention other paths
+already have" gotcha this skill's own reference doc warns about.
+
+- **Missing `TraceObserver` span** (§8 Observer Pattern). `call()` in both adapters starts a
+  `TraceObserver` span (`"mqtt5.request"`/`"zmq.request"`) around the ENTIRE dispatch and ends it
+  with the final error via a deferred `EndSpan` — `CallRaw`, as originally written, did none of
+  this, silently losing distributed-tracing visibility for this entire new primitive. Reproduced
+  live first (3 new, initially-failing tests: `adapters/mqtt5/callraw_test.go`'s
+  `TestClientTransport_CallRaw_TraceSpan`, `adapters/zeromq/callraw_test.go`'s
+  `TestClientTransport_CallRaw_TraceSpan`/`TestDealerClientTransport_CallRaw_TraceSpan` — each
+  confirmed failing with `got []` before the fix), then fixed by adding the IDENTICAL
+  `if to, ok := obs.(stats.TraceObserver); ok { ctx = to.StartSpan(...); defer func(){ to.EndSpan(ctx, err) }() }`
+  block to all 3 `CallRaw` implementations, changing each to named return values `(result []byte,
+  err error)` (mirroring `call`'s own identical pattern) so the deferred `EndSpan` observes the
+  real final error.
+- **Missing `Capabilities` application** (§15 Adapter Thinness & Capability Guardrail — "verify
+  the resolved QoS/Retained values are threaded through EVERY ... dispatch implementation").
+  `call()` in both adapters resolves `t.opts.Capabilities` into the EFFECTIVE wire attributes
+  before publishing (mqtt5: `events.ApplyCapabilities` into a `WireAttributes{QoS}`, applying the
+  resolved `QoS`/`Retain` to the outgoing `Publish`; zeromq: `applyCapabilities(sock, ...)`,
+  applying HWM/Conflate directly to the socket) — `CallRaw`, as originally written, skipped this
+  entirely, meaning a caller who configured `ClientTransportOptions.Call.Capabilities`/
+  `DealerClientTransportOptions.Call.Capabilities` (e.g. `Retained(true)`, `HWM(n)`,
+  `Conflate(true)`) got it silently honored on ordinary `Call`/`CallAsync` requests but IGNORED on
+  `CallRaw` requests — the SAME transport-level configuration behaving inconsistently depending on
+  which dispatch method was used. Confirmed this is NOT about route-declared `Requirements`
+  coverage-checking (which genuinely doesn't apply — `CallRaw` has no route to check requirements
+  against) — only the APPLY side was missing. Reproduced live first (3 new, initially-failing
+  tests mirroring the EXISTING `capability_reqreply_test.go` Call-side coverage exactly:
+  `adapters/mqtt5/callraw_test.go`'s `TestClientTransport_CallRaw_RetainedAppliedToRequestPublish`,
+  `adapters/zeromq/callraw_test.go`'s `TestClientTransport_CallRaw_CapabilitiesApplied`/
+  `TestDealerClientTransport_CallRaw_CapabilitiesApplied`), then fixed by adding the IDENTICAL
+  `events.ApplyCapabilities`/`applyCapabilities` call each adapter's own `call()` already makes, at
+  the same point in `CallRaw`'s own dispatch (before the outgoing publish/send).
+
+### Not a gap, checked and confirmed clean
+
+- `CallRaw`'s own documented decision to NOT attempt a route-specific `ErrorPattern`-code decode
+  (it has no route, only a topic+bytes) — already an accepted, explicitly-documented limitation
+  from when `CallRaw` was designed (`docs/roadmap/reqreply-client-registry.md`'s "Adapter↔registry
+  bridge"), not rediscovered as a NEW finding here.
+- The registry (`RegisterRoute`/`registerAutoFromCall`/`DuplicateTopicTypeMismatchError`) itself —
+  re-traced against §7 (typed, `errors.As`-navigable, `slog.LogValuer`-implementing — confirmed)
+  and §9 (every exported symbol has a `Test...` — confirmed via `api/reqreply/
+  client_registry_test.go`) — clean, no new findings.
+- `go test -race` across `api/reqreply`/`adapters/mqtt5`/`adapters/zeromq` — clean for all NEW
+  code (registry + all 3 `CallRaw` implementations). Found ONE pre-existing, UNRELATED race in
+  BOTH adapters' identically-named `TestAttachServer_MiddlewareError_WrapsAsKindMiddleware` (a
+  test-local `gotKind`/`kindSet` closure variable read/written across goroutines without
+  synchronization, confirmed via `git log` to predate this session entirely) — flagged here as a
+  discovered-but-OUT-OF-SCOPE test-robustness issue (test code only, not production code, and
+  unrelated to the registry/`CallRaw` concept this round covers), NOT fixed in this round.
+
+### Phase B — design-doc re-review
+
+`docs/roadmap/reqreply-client-registry.md`'s "Adapter↔registry bridge" section (the doc governing
+`CallRaw`'s design) describes `CallRaw`'s 3-way reply-classification CONTRACT in detail but never
+mentions Observer/Capability wiring at all — not a contradiction (the doc is about the
+REGISTRY/CHAINING mechanism, a different concern from per-call observability/capability
+plumbing), just an area the doc was silent on. No doc change needed — these are implementation-
+level cross-cutting conventions every dispatch method in these adapters already follows, not a
+registry-design decision. Confirmed the fix's behavior doesn't contradict anything the roadmap doc
+specifies, and doesn't reintroduce any retired pattern.
+
+## Round 202 (fixing the `rest-redirect-observer-gap` follow-up Round 201/the reqreply-forward-bounce design discussion flagged — `adapters/nethttp`'s redirect-following code had ZERO `stats.Observer` calls anywhere)
+
+A genuine, confirmed gap discovered WHILE designing `docs/roadmap/reqreply-forward-bounce.md`'s
+own "every hop observed" requirement for reqreply's not-yet-implemented forward/bounce mechanism:
+researching that design's REST precedent found `adapters/nethttp/redirect.go`/`redirect_sse.go`
+(Round 201's own already-fixed/verified redirect-following code) had **zero** `stats.Observer`
+calls anywhere — confirmed via `grep`, not a reading error. Every follow-up hop (both the Call
+path's `followRedirect`/`followRedirectHop`/`doFollowUpRequest` and the SSE path's
+`followSSERedirect`/`doFollowSSERequest`) was completely invisible to any attached `Observer` —
+only the ORIGINATING call was ever recorded. Tracked as its own deferred SQL todo
+(`rest-redirect-observer-gap`) at the time, explicitly NOT fixed in that design-discussion
+session; fixed here as its own dedicated round.
+
+### Fix
+
+Threaded the ORIGINATING call's own already-resolved `stats.Observer` through every redirect
+function as an explicit parameter (`followRedirect`/`followRedirectHop`/`doFollowUpRequest` in
+`redirect.go`; `followSSERedirect`/`doFollowSSERequest` in `redirect_sse.go`) — deliberately NOT
+re-derived via `stats.ObserverFromContext(ctx)` inside these functions, since doing so would
+silently drop an explicit `ClientCallOptions.Observer`/`ClientConsumeOptions`-equivalent override
+the originating call used (`ClientConsumeOptions` has no such field — `Consume`'s own `obs` is
+always `ctx`-derived, confirmed via its existing code; `Call`'s is `opts.Observer`-overridable).
+Each hop captures its OWN `hopStart := time.Now()` (not reusing an outer timer) and calls
+`obs.RecordRequest(method, location, statusCode, duration)` on EVERY exit path — status 0 before
+a response is ever received (pre-flight/build/network failures, `RedirectChainTooDeepError`/
+`RedirectToStreamUnsupportedError`/`UnrecognizedRedirectError`'s own early returns), the real
+status code once received — mirroring `clientTransport.Call`'s own pre-existing convention
+exactly. This is the SAME "every hop observed as if it were its own Call" decision
+`reqreply-forward-bounce.md` made for reqreply's own forward-following, applied back to REST to
+close the asymmetry that design discussion surfaced.
+
+### Verification
+
+3 new tests (`adapters/nethttp/redirect_observer_test.go`) using `spyObserver` (the EXISTING
+call-HISTORY-accumulating fake from `adapter_test.go` — NOT `testObserver`, which only records
+the last call and cannot prove multiple hops were each independently observed):
+`TestClientCall_AutoFollowsRedirect_ObservesBothHops` (originating POST 303 + follow-up GET 200,
+2 distinct `RecordRequest` calls), `TestClientCall_RedirectChainTooDeep_ObservesEveryHop` (a
+self-redirecting loop capped at `MaxRedirects: 2` — confirms the ORIGINATING call + both allowed
+hops + the FINAL rejected-as-too-deep attempt are ALL 4 independently observed, including the
+early-return failure path), and `TestClientConsume_AutoFollowsRedirect_ObservesBothHops` (the SSE
+path's identical originating-connection + follow-up-hop pair, via `stats.WithObserver(ctx, spy)`
+since `ClientConsumeOptions` has no `Observer` override field). All pre-existing redirect tests
+(`go test ./adapters/nethttp/... -run Redirect`) and the FULL repository test suite
+(`go test ./...`) still pass — this was a purely additive instrumentation fix, zero behavior
+change to any redirect decision/error type.
 
 ## Round 201 (`deep-dive-bug-hunt` applied to `api/rest`'s Typed HTTP Redirects feature specifically, across every client-side dispatch path — ARGUMENTS: "with the focus on api/rest after we implemented the redirect feature a couple of prompts ago")
 

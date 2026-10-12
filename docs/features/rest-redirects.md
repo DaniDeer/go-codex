@@ -85,6 +85,8 @@ On a 3xx:
 
 `NewClientTransport` overrides `CheckRedirect` on a shallow copy of the caller's own `*http.Client` (so a caller's own client is never mutated) to stop `net/http`'s silent built-in auto-follow — `rest.Client`'s own registry-aware auto-follow replaces it.
 
+**Every hop is observed.** Each follow-up hop (`Call`'s `followRedirectHop`/`doFollowUpRequest` chain and `Consume`'s `followSSERedirect`/`doFollowSSERequest` chain) calls `obs.RecordRequest` exactly as if it were its own `Call`/connection attempt — using the SAME `Observer` the originating call resolved (`ClientCallOptions.Observer` override, or `stats.ObserverFromContext(ctx)`), status 0 before a response is ever received (pre-flight/build/network failures, or a terminal error like `RedirectChainTooDeepError`), the real status code once received. This was a confirmed, found-and-fixed gap (`history.md`'s Round 202) — earlier redirect rounds verified the dispatch/decode/error-taxonomy correctness of auto-follow but missed that every follow-up hop was entirely invisible to observability until that round.
+
 ## `ResponseMeta.Headers`
 
 A redirect's `Location` response header (or any other declared response header) can be documented in the OpenAPI spec via `rest.ResponseMeta.Headers`:

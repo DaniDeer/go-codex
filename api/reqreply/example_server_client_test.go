@@ -56,6 +56,12 @@ func (t *exampleInProcessTransport) CallAsync(ctx context.Context, routeAny any,
 	return future, nil
 }
 
+// CallRaw is unused by this Example (Phase 0 infrastructure, not
+// exercised here) — present only to satisfy [reqreply.ClientTransport].
+func (t *exampleInProcessTransport) CallRaw(ctx context.Context, topic string, payload []byte) ([]byte, error) {
+	return nil, nil
+}
+
 // Example demonstrates the confirmed Server/Client + Attach workflow: a
 // fluent WithHandler+Register server-side declaration, dispatched via
 // Server.Serve, and a blocking Client.Call against the SAME in-process

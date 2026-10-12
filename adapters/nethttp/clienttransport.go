@@ -779,7 +779,7 @@ func (t *clientTransport) Call(ctx context.Context, routeAny, reqAny any, optsVa
 					bodyBytes:    lastBodyBytes,
 					contentType:  lastContentType,
 				}
-				result, followErr := followRedirect(ctx, t.client, t.caller.client, t.caller.baseURL, redirErr, info, maxRedirects)
+				result, followErr := followRedirect(ctx, t.client, t.caller.client, t.caller.baseURL, redirErr, info, maxRedirects, obs)
 				err = followErr
 				return result, err
 			}
@@ -1066,7 +1066,7 @@ func (t *clientTransport) consumeOnce(
 		if maxRedirects <= 0 {
 			maxRedirects = defaultMaxRedirects
 		}
-		return t.followSSERedirect(ctx, rest.RedirectError{Status: resp.StatusCode, Location: location}, info, eventType, dispatchFn, maxRedirects, maxRedirects)
+		return t.followSSERedirect(ctx, rest.RedirectError{Status: resp.StatusCode, Location: location}, info, eventType, dispatchFn, maxRedirects, maxRedirects, obs)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

@@ -105,6 +105,13 @@ func (t *fakeClientTransport) CallAsync(ctx context.Context, routeAny any, reqAn
 	return future, nil
 }
 
+// CallRaw is unused by these Server/Client dual-mode-dispatch tests
+// (Phase 0 infrastructure, not exercised here) — present only to
+// satisfy [reqreply.ClientTransport].
+func (t *fakeClientTransport) CallRaw(ctx context.Context, topic string, payload []byte) ([]byte, error) {
+	return nil, nil
+}
+
 // ── Server/Client + Attach error taxonomy ──────────────────────────────────
 
 func TestServer_Serve_NoTransportAttached(t *testing.T) {

@@ -9,8 +9,10 @@ import (
 	"net/http"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/DaniDeer/go-codex/api/rest"
+	"github.com/DaniDeer/go-codex/stats"
 )
 
 // defaultMaxRedirects is the chain-depth cap used when
@@ -60,14 +62,25 @@ type redirectFollowUpInfo struct {
 // round 2 finding #5) — in that case there is no registry to consult at
 // all, so first is returned as-is (a typed [rest.RedirectError] the
 // caller follows up on manually).
-func followRedirect(ctx context.Context, client *rest.Client, httpClient *http.Client, baseURL string, first rest.RedirectError, info redirectFollowUpInfo, maxRedirects int) (any, error) {
+//
+// obs is the ORIGINATING call's own already-resolved [stats.Observer]
+// (threaded through, NOT re-derived from ctx inside this function or any
+// callee — re-deriving would silently drop an explicit
+// [rest.ClientCallOptions.Observer]/[rest.ClientConsumeOptions.Observer]
+// override the originating call used) — found-and-fixed gap: every
+// follow-up hop was completely unobserved before this fix (confirmed via
+// grep: zero [stats.Observer] calls anywhere in this file), discovered
+// while designing docs/roadmap/reqreply-forward-bounce.md's own
+// per-hop-observed requirement and tracked as its own follow-up
+// (`rest-redirect-observer-gap`) until fixed here.
+func followRedirect(ctx context.Context, client *rest.Client, httpClient *http.Client, baseURL string, first rest.RedirectError, info redirectFollowUpInfo, maxRedirects int, obs stats.Observer) (any, error) {
 	if client == nil {
 		return nil, first
 	}
 	if maxRedirects <= 0 {
 		maxRedirects = defaultMaxRedirects
 	}
-	return followRedirectHop(ctx, client, httpClient, baseURL, first, info, maxRedirects, maxRedirects)
+	return followRedirectHop(ctx, client, httpClient, baseURL, first, info, maxRedirects, maxRedirects, obs)
 }
 
 // followRedirectHop performs ONE hop of the chain — remaining is how
@@ -75,9 +88,12 @@ func followRedirect(ctx context.Context, client *rest.Client, httpClient *http.C
 // target against client's registry (Call-decodable routes first,
 // Consume-streamable sseRoutes second — a match in the latter alone is
 // [rest.RedirectToStreamUnsupportedError], round 2 finding D), then
-// issues the follow-up request via [doFollowUpRequest].
-func followRedirectHop(ctx context.Context, client *rest.Client, httpClient *http.Client, baseURL string, current rest.RedirectError, info redirectFollowUpInfo, remaining, configuredMax int) (any, error) {
+// issues the follow-up request via [doFollowUpRequest]. obs is threaded
+// through unchanged from [followRedirect] — see its doc comment.
+func followRedirectHop(ctx context.Context, client *rest.Client, httpClient *http.Client, baseURL string, current rest.RedirectError, info redirectFollowUpInfo, remaining, configuredMax int, obs stats.Observer) (any, error) {
+	hopStart := time.Now()
 	if remaining <= 0 {
+		obs.RecordRequest(info.method, current.Location, 0, time.Since(hopStart))
 		return nil, rest.RedirectChainTooDeepError{Location: current.Location, Depth: configuredMax}
 	}
 
@@ -94,11 +110,13 @@ func followRedirectHop(ctx context.Context, client *rest.Client, httpClient *htt
 	}
 
 	if handle, ok := client.MatchRedirectRoute(nextMethod, current.Location); ok {
-		return doFollowUpRequest(ctx, client, httpClient, baseURL, nextMethod, current.Location, body, contentType, info, handle, remaining, configuredMax)
+		return doFollowUpRequest(ctx, client, httpClient, baseURL, nextMethod, current.Location, body, contentType, info, handle, remaining, configuredMax, obs)
 	}
 	if _, ok := client.MatchRedirectSSERoute(nextMethod, current.Location); ok {
+		obs.RecordRequest(nextMethod, current.Location, 0, time.Since(hopStart))
 		return nil, rest.RedirectToStreamUnsupportedError{Location: current.Location}
 	}
+	obs.RecordRequest(nextMethod, current.Location, 0, time.Since(hopStart))
 	return nil, rest.UnrecognizedRedirectError{Location: current.Location, Status: current.Status}
 }
 
@@ -107,7 +125,19 @@ func followRedirectHop(ctx context.Context, client *rest.Client, httpClient *htt
 // recovered via reflection) and either decodes the response (done) or,
 // if the response is ITSELF a redirect, continues the chain via
 // [followRedirectHop] with one fewer hop remaining.
-func doFollowUpRequest(ctx context.Context, client *rest.Client, httpClient *http.Client, baseURL, method, location string, body []byte, contentType string, info redirectFollowUpInfo, handle any, remaining, configuredMax int) (any, error) {
+//
+// obs is threaded through unchanged from [followRedirectHop] — this hop
+// is observed AS IF it were its own [rest.Client.Call], exactly mirroring
+// [clientTransport.Call]'s own "status 0 before a response is ever
+// received (pre-flight/build/network failures), the real status code
+// once received" convention. hopStart is captured HERE (not reused from
+// an outer scope) so EACH hop's own duration is independently timed —
+// the SAME "every hop observed as if it were its own Call" decision
+// docs/roadmap/reqreply-forward-bounce.md made for reqreply's own
+// forward-following, applied back to REST to close the asymmetry that
+// design discussion flagged.
+func doFollowUpRequest(ctx context.Context, client *rest.Client, httpClient *http.Client, baseURL, method, location string, body []byte, contentType string, info redirectFollowUpInfo, handle any, remaining, configuredMax int, obs stats.Observer) (any, error) {
+	hopStart := time.Now()
 	rawURL := strings.TrimRight(baseURL, "/") + location
 
 	var bodyReader io.Reader
@@ -116,6 +146,7 @@ func doFollowUpRequest(ctx context.Context, client *rest.Client, httpClient *htt
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, method, rawURL, bodyReader)
 	if err != nil {
+		obs.RecordRequest(method, location, 0, time.Since(hopStart))
 		return nil, RequestBuildError{Err: err}
 	}
 	if contentType != "" {
@@ -146,25 +177,35 @@ func doFollowUpRequest(ctx context.Context, client *rest.Client, httpClient *htt
 
 	resp, err := httpClient.Do(httpReq)
 	if err != nil {
+		obs.RecordRequest(method, location, 0, time.Since(hopStart))
 		return nil, RequestError{Method: method, Path: location, Err: err}
 	}
 	defer resp.Body.Close()
 
 	respBody, readErr := io.ReadAll(resp.Body)
 	if readErr != nil {
+		obs.RecordRequest(method, location, resp.StatusCode, time.Since(hopStart))
 		return nil, ResponseBodyError{Err: readErr}
 	}
 
 	if isRedirectStatus(resp.StatusCode) {
+		obs.RecordRequest(method, location, resp.StatusCode, time.Since(hopStart))
 		next := rest.RedirectError{Status: resp.StatusCode, Location: resp.Header.Get("Location")}
-		return followRedirectHop(ctx, client, httpClient, baseURL, next, info, remaining-1, configuredMax)
+		return followRedirectHop(ctx, client, httpClient, baseURL, next, info, remaining-1, configuredMax, obs)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		obs.RecordRequest(method, location, resp.StatusCode, time.Since(hopStart))
 		return nil, UnexpectedStatusError{Method: method, Path: location, StatusCode: resp.StatusCode, Body: respBody, Header: resp.Header}
 	}
 
-	return decodeTargetResponse(handle, respBody, resp)
+	result, decodeErr := decodeTargetResponse(handle, respBody, resp)
+	if decodeErr != nil {
+		obs.RecordRequest(method, location, resp.StatusCode, time.Since(hopStart))
+		return nil, decodeErr
+	}
+	obs.RecordRequest(method, location, resp.StatusCode, time.Since(hopStart))
+	return result, nil
 }
 
 // isRedirectStatus reports whether status is one of the 5 statuses
