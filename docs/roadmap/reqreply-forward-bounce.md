@@ -1,7 +1,9 @@
 # `api/reqreply` Forward/Bounce — Design Complete, Not Yet Implemented
 
 > **Status:** Design complete — API surface, wire signal, structured
-> errors, and an 8-combination dispatch-path inventory are all settled.
+> errors, and a CORRECTED, grounded dispatch-path inventory (4 real
+> forward-following combinations + 2 small, precedented passthrough
+> checks — see "Dispatch-path inventory" below) are all settled.
 > **Blocked on [the registry doc](reqreply-client-registry.md) (Phase 0)
 > shipping first** — this doc's client-side resolution step is the
 > registry's first real consumer, and implementing Forward against a
@@ -12,10 +14,24 @@
 > surfacing made explicit (direct/unwrapped, no retry, no `DeadLetter`
 > role), a Disposition/ack-interaction note flagged for a future AMQP
 > round, and `ForwardTargetVarError`'s wrapping pattern verified
-> consistent with `rest.Redirect`'s own precedent. Implementation is a
-> distinct, future step requiring its own explicit go-ahead (the unit
-> test plan, the 8-combination dispatch-path inventory executed one by
-> one). [← Back to Roadmap](index.md)
+> consistent with `rest.Redirect`'s own precedent. A post-split
+> re-review closed 2 further findings: resolution is now CENTRALIZED in
+> `api/reqreply.Client` via a new `ClientTransport.CallRaw` method
+> (adapters stay registry-unaware — see the registry doc's "Adapter↔
+> registry bridge"), and the dispatch-path inventory was corrected after
+> confirming `ports.Pattern`'s `Call`-equivalent is registry-free by
+> design (mirrors REST's own `CallWithTransport` precedent) and that no
+> `CallAsync`-equivalent `ports.Pattern` binding exists today. **A THIRD
+> re-review pass closed 1 more gap**: "Client-side resolution" originally
+> described only a SINGLE hop through `CallRaw`, which cannot detect a
+> CHAINED forward (the target route's own handler also forwarding) —
+> fixed by making it an explicit chain-following LOOP (mirrors
+> `followRedirectHop`'s `remaining`-counter shape), with `CallAsync`
+> confirmed to need no separate async primitive (its background
+> goroutine reuses the same synchronous `CallRaw` in a loop).
+> Implementation is a distinct, future step requiring its own explicit
+> go-ahead (the unit test plan, the 4-combination dispatch-path inventory executed one
+> by one). [← Back to Roadmap](index.md)
 
 ## Relationship to the other 2 reqreply roadmap docs
 
@@ -117,19 +133,50 @@ carries `TargetTopic`; the body IS `Payload`.
 
 ## Client-side resolution
 
-On recognizing a forward reply, the client's own dispatch (mirrors
-`rest.Client`'s `followRedirect`/`followRedirectHop`) builds a NEW
-correlation ID, publishes `Payload` to `TargetTopic` AS-IS (no
-re-encoding — already encoded server-side), awaits THAT reply, and
-decodes it by resolving `TargetTopic` against
-**[Phase 0's registry](reqreply-client-registry.md)** to recover the
-registered `*RouteHandle[TargetReq,TargetResp]` — the client has only a
-topic STRING and raw bytes at this point, no static `TargetResp` type
-information, so this registry lookup is NOT optional. Since
-`TargetTopic` arrives ALREADY CONCRETE (resolved server-side via
+**CENTRALIZED in `api/reqreply.Client` — NOT resolved/republished inside
+the adapter, a deliberate divergence from REST's own shipped mechanism
+(see [Phase 0's "Adapter↔registry bridge"](reqreply-client-registry.md#adapterregistry-bridge--centralized-in-apireqreplyclient-not-mirroring-rests-adapter-side-resolution-found--resolved-during-review)
+for the full rationale).** An adapter's `Call`/`CallAsync` recognizes the
+wire-level forward signal (above) but does NOT itself build a new
+correlation ID, republish, or decode anything — it simply returns the
+SAME `ForwardError{TargetTopic, Payload}` sentinel through its ORDINARY
+return path, exactly as if a handler had returned it directly.
+
+`api/reqreply.Client.Call`/`CallAsync` (the API-layer methods, which own
+[Phase 0's registry](reqreply-client-registry.md)) catch that sentinel
+and do the actual follow-up themselves via an explicit CHAIN-FOLLOWING
+LOOP (found missing from the first draft of this section during a
+further re-review — see
+[Phase 0's `CallRaw` contract](reqreply-client-registry.md) for why a
+single hop isn't enough): resolve `TargetTopic` against the registry to
+recover the registered `*RouteHandle[TargetReq,TargetResp]` — the client
+has only a topic STRING and raw bytes at this point, no static
+`TargetResp` type information, so this registry lookup is NOT optional —
+then call the SAME attached `ClientTransport`'s `CallRaw(ctx,
+TargetTopic, Payload)` method to publish `Payload` AS-IS (no re-encoding
+— already encoded server-side) and await THAT reply.
+
+`CallRaw` itself classifies that reply the SAME 3-way way an ordinary
+`Call` would (see Phase 0's doc): an ordinary successful reply decodes
+immediately via the resolved `RouteHandle`'s own `Resp` codec — DONE. A
+reply that is ITSELF tagged as a forward returns ANOTHER `ForwardError`
+through `CallRaw`'s own `error` return — the loop resolves the NEW
+`TargetTopic` against the registry again and calls `CallRaw` again,
+decrementing a `MaxForwards` counter each iteration (mirrors
+`adapters/nethttp/redirect.go`'s own `followRedirectHop`'s `remaining`-
+counter shape exactly), returning `ForwardChainTooDeepError` once
+exhausted. A reply that matched a declared `ErrorPattern` surfaces that
+SAME typed error directly, unwrapped — see "Client-side follow-up
+failure handling" below.
+
+Since `TargetTopic` arrives ALREADY CONCRETE (resolved server-side via
 `BuildTopic`, not a `{var}`-templated key the client must pattern-match),
-the lookup is a plain exact-string map lookup — simpler than REST's own
-`MatchNonWildcard`-based ambiguous-match resolution.
+each lookup is a plain exact-string map lookup — simpler than REST's own
+`MatchNonWildcard`-based ambiguous-match resolution. Both adapters
+(`mqtt5`, `zeromq`) implement ONLY `CallRaw`'s single-hop, 3-way-
+classifying mechanics — neither needs its own copy of the chain-
+following LOOP or the resolve+decode logic, both of which live once, in
+`api/reqreply.Client`.
 
 **Type-safety note, not a NEW problem**: `Client.Call`/`CallAsync` already
 return `(any, error)` (confirmed:
@@ -244,32 +291,81 @@ need re-investigating in a future review.
 
 ## `CallAsync`/`Future` — CONFIRMED in scope from v1 (not deferred)
 
-The forward-following logic (recognize forward reply → new correlation
-ID → republish → await second reply → decode) must run inside whatever
-internal mechanism currently resolves a `*Future[Resp]` when its
-ORIGINAL reply arrives — it must resolve the SAME `Future` object via the
-SECOND round trip's reply, not construct a new one. Needs each adapter's
-own "pending calls by correlation ID" bookkeeping traced at
-implementation time to confirm this chaining is mechanically sound.
+The forward-following CHAIN-FOLLOWING LOOP (recognize forward reply →
+new correlation ID → `CallRaw` republish → classify the reply → repeat
+if chained → decode, now CENTRALIZED in `api/reqreply.Client` — see
+"Client-side resolution" above) must run inside whatever internal
+mechanism currently resolves a `*Future[Resp]` when its ORIGINAL reply
+arrives — it must resolve the SAME `Future` object via the FINAL round
+trip's reply, not construct a new one.
 
-## Dispatch-path inventory — bigger than it first looks
+**No separate async primitive needed — CONFIRMED.** `CallRaw` stays
+synchronous; `CallAsync`'s own background goroutine (which already
+resolves correlation IDs off the caller-facing path once the ORIGINAL
+reply arrives) simply runs the SAME chain-following loop itself,
+blocking on `CallRaw` calls from within that goroutine — safe, since
+nothing caller-facing is waiting on it directly. A `CallRawAsync`
+counterpart was considered and rejected: it would add a 2nd new
+`ClientTransport` method for no identified benefit over reusing the
+already-async-safe background goroutine. Needs each adapter's own
+"pending calls by correlation ID" bookkeeping traced at implementation
+time to confirm this reuse is mechanically sound.
+
+## Dispatch-path inventory — CORRECTED, smaller than originally stated once grounded in the actual `ports.Pattern` binding code
 
 The `deep-dive-bug-hunt` Round 201 lesson (`.github/skills/
 deep-dive-bug-hunt/references/../review-go-codex/references/history.md`
 — the Typed HTTP Redirects bug hunt) means EVERY dispatch path needs
-independent verification, not just the obvious primary one. Because
-`CallAsync` is ALSO in scope (previous section), the real inventory is a
-cross product:
+independent verification, not just the obvious primary one — but
+checking the ACTUAL `ports.Pattern` binding code (not just assuming it
+mirrors `Call`/`CallAsync`) during the post-split re-review found the
+original "8 independent combinations" claim OVERSTATED, in 2 ways:
 
-| | `Client`-level (`ClientTransport.Call`/`CallAsync`) | `ports.Pattern` binding primitive |
+1. **`ports.Pattern` binding's `Call`-equivalent is REGISTRY-FREE BY
+   DESIGN, mirroring REST's own identical, already-shipped precedent —
+   not a 5th independent forward-following implementation to build.**
+   Confirmed directly: `adapters/mqtt5/binding.go`/`adapters/zeromq/
+   binding.go`'s own `ports.Pattern` binding dispatches via
+   `reqreply.CallWithTransport` (the registry-free, `*Client`-free escape
+   hatch — confirmed its implementation is a thin generic wrapper calling
+   `transport.Call` directly, with NO registry access at all). This
+   EXACTLY matches `docs/features/rest-redirects.md`'s own documented
+   rule: *"`rest.CallWithTransport`/`nethttp.NewClientTransport` used
+   directly (no `*rest.Client`) stay registry-free... This includes
+   `adapters/nethttp`'s `ports.Pattern` bindings... all of these are ALSO
+   registry-free (no `*rest.Client` to auto-follow against)."* Since
+   Option B's centralized resolve+`CallRaw` logic lives in
+   `api/reqreply.Client` (not in the adapter), and `CallWithTransport`
+   never goes through `Client`, a forward reply surfacing through THIS
+   path simply returns `ForwardError` directly to the caller, unresolved
+   — exactly `rest.CallWithTransport`'s own accepted, documented
+   behavior for `RedirectError`. **This path needs NO new forward-
+   following logic at all** — only confirmation (via a real test, not
+   assumption) that the sentinel propagates through untouched, the same
+   small, already-precedented verification REST's own `ports.Pattern`
+   bindings needed.
+2. **No `CallAsync`-equivalent `ports.Pattern` binding or
+   `CallAsyncWithTransport` escape hatch EXISTS today** — confirmed via
+   `grep` across `api/reqreply/handletransport.go` and both adapters'
+   `binding.go` files: zero matches. The original matrix's
+   "`ports.Pattern` binding × `CallAsync`" cell doesn't correspond to any
+   REAL, existing dispatch path — there is nothing to trace or test for
+   a combination that isn't implemented today, in either adapter.
+
+The CORRECTED, grounded inventory:
+
+| | `Client`-level (`ClientTransport.Call`/`CallAsync`) | `ports.Pattern` binding (`CallWithTransport`) |
 |---|---|---|
-| `adapters/mqtt5` | needs forward support | needs forward support (separately) |
-| `adapters/zeromq` | needs forward support | needs forward support (separately) |
+| `adapters/mqtt5` | needs the FULL centralized forward-following (2 combinations: `Call`, `CallAsync`) | registry-free by design — only needs sentinel-passthrough verification |
+| `adapters/zeromq` | needs the FULL centralized forward-following (2 combinations: `Call`, `CallAsync`) | registry-free by design — only needs sentinel-passthrough verification |
 
-— 2 adapters × 2 call shapes (`Call`/`CallAsync`) × 2 dispatch layers
-(`Client`-level vs. `ports.Pattern` binding, confirmed present at
-`adapters/mqtt5/binding.go`/`adapters/zeromq/binding.go`) = **up to 8
-independent dispatch combinations**, each needing its OWN trace + test at
+— **4 real forward-following combinations** (2 adapters × `Call`/
+`CallAsync`, all resolved centrally in `api/reqreply.Client` via
+`CallRaw`) **plus 2 small, already-precedented passthrough checks** (2
+adapters' `ports.Pattern` `Call`-equivalent, registry-free) — 6 total
+verification items, not 8, and of two genuinely different kinds (4
+substantial, 2 trivial-but-still-worth-a-test). Each of the 4 real
+combinations still needs its OWN independent trace + test at
 implementation time, per Round 201's own hard-won lesson ("a fix applied
 to ONE of these does NOT imply the others got it").
 
@@ -279,8 +375,8 @@ separate implementations are "behaviorally-equivalent" (as
 `Client.Consume`'s reconnect loop — a claim that did NOT hold for
 redirects) is a CLAIM TO VERIFY via a live, failing test — not to trust.
 This design's own eventual unit test plan must carry the same explicit
-verification step for each of the 8 combinations above, not rely on "it
-probably works the same way."
+verification step for each of the 4 real combinations above, not rely on
+"it probably works the same way."
 
 ## Next step
 

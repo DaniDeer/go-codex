@@ -1,18 +1,35 @@
 # `api/reqreply.Client` Registry — Design Complete, Not Yet Implemented
 
-> **Status:** Design complete — API surface, registry shape, and
-> collision-detection behavior are all settled. **This is the FIRST of 3
-> sequenced reqreply roadmap docs to implement** — see "Relationship to
-> the other 2 reqreply roadmap docs" below. Unlike the other 2, this
-> phase has NO blocking dependency; it can be implemented, tested, and
-> shipped standalone now. An in-depth review pass closed 2 further
-> findings beyond the original design: `routesOrder` dropped as confirmed
-> dead weight (reqreply's lookups are always exact-string, never
-> ambiguous), and a registry collision-detection mechanism added
-> (`DuplicateTopicTypeMismatchError` + a lazily-surfaced "poisoned entry"
-> marker) — a genuine divergence from `rest.Client`'s own
+> **Status:** Design complete — API surface, registry shape,
+> collision-detection behavior, AND the adapter↔registry bridge are all
+> settled. **This is the FIRST of 3 sequenced reqreply roadmap docs to
+> implement** — see "Relationship to the other 2 reqreply roadmap docs"
+> below. Unlike the other 2, this phase has NO blocking dependency; it
+> can be implemented, tested, and shipped standalone now. A post-split
+> re-review closed 1 further BLOCKING gap plus 1 minor fix beyond the
+> original design: the doc never specified how an adapter reaches this
+> registry at all (unlike REST, `reqreply.Client` had no
+> `ClientAwareTransport` counterpart) — resolved as a CENTRALIZED design
+> (adapters stay registry-unaware; resolve+decode happens in
+> `api/reqreply.Client` itself via a new, narrow `ClientTransport.CallRaw`
+> method), a deliberate divergence from REST's own adapter-side
+> resolution, explained in "Adapter↔registry bridge" below. Also closed:
+> `routesOrder` dropped as confirmed dead weight (reqreply's lookups are
+> always exact-string, never ambiguous), a registry collision-detection
+> mechanism added (`DuplicateTopicTypeMismatchError` + a lazily-surfaced
+> "poisoned entry" marker — a genuine divergence from `rest.Client`'s own
 > first-registered-wins policy, since reqreply has no structural
-> guarantee re-registrations of the same topic are "the same route."
+> guarantee re-registrations of the same topic are "the same route"), and
+> `DuplicateTopicTypeMismatchError`'s fields clarified as whole-handle
+> type strings (Go's `reflect` can't recover Req/Resp individually from
+> an instantiated generic type). **A THIRD re-review pass closed 1 more
+> gap in the `CallRaw` design itself**: its original specification (a
+> "bytes-in-bytes-out" primitive) couldn't detect a CHAINED forward (the
+> target route's own handler also forwarding) — fixed by requiring
+> `CallRaw` to replicate the SAME 3-way reply classification `Call`/
+> `CallAsync` already apply, with the chain-following LOOP itself
+> explicitly assigned one layer above `CallRaw` (see "Adapter↔registry
+> bridge" below); confirmed no separate async primitive is needed.
 > Implementation is a distinct, future step requiring its own explicit
 > go-ahead (unit test plan). [← Back to Roadmap](index.md)
 
@@ -176,10 +193,20 @@ needed, not `rest.Client`'s `routes`+`sseRoutes` pair.
   time (everything here is `any`-erased). Resolved as follows:
   - `Client.RegisterRoute` (explicit, already returns `error`): on
     re-registration of an already-present `Topic`, compares the NEW
-    entry's recovered `Req`/`Resp` reflect types against the EXISTING
-    entry's stored types. A genuine mismatch returns a NEW
+    entry's handle type against the EXISTING entry's stored handle type.
+    A genuine mismatch returns a NEW
     `DuplicateTopicTypeMismatchError{Topic, ExistingType, NewType}`
-    immediately, instead of silently keeping the first.
+    immediately, instead of silently keeping the first. **Field-type
+    clarification (found during review): `ExistingType`/`NewType` are
+    the WHOLE registered handle's `reflect.Type.String()` (e.g.
+    `"*reqreply.RouteHandle[foo.FooReq,foo.FooResp]"`), NOT an attempt to
+    recover `Req`/`Resp` individually — Go's `reflect` package has no API
+    to extract a generic type's own instantiated type arguments after
+    the fact. Comparing the whole instantiated type is both sufficient
+    (two different `(Req,Resp)` pairs always produce two different
+    `reflect.Type` values) and arguably clearer for the error message
+    (shows both types in one readable string) than a doc that implied
+    Req/Resp would be reported separately.**
   - `registerAutoFromCall` (best-effort — `Call`/`CallAsync`'s OWN
     contract requires it "never errors," pure bookkeeping — cannot start
     returning an error through them without a much bigger, unrelated
@@ -219,6 +246,122 @@ needed, not `rest.Client`'s `routes`+`sseRoutes` pair.
   phase that chains calls), noted here only because the registry is what
   makes each hop's resolution possible.
 
+## Adapter↔registry bridge — CENTRALIZED in `api/reqreply.Client`, NOT mirroring REST's adapter-side resolution (found + resolved during review)
+
+A real, confirmed gap existed in the original Phase 0/1 split: the docs
+placed forward-recognition deep inside each adapter's own dispatch code
+but never specified HOW that adapter code would reach THIS registry —
+and, unlike REST, `api/reqreply.Client` has no existing back-reference
+mechanism to an adapter at all (`Client.Attach`'s own doc comment
+states "no adapter's `ClientTransport` currently needs a `*Client`
+back-reference at bind time... so there is no `ClientAwareTransport`
+counterpart today").
+
+**Resolved: adapters stay registry-unaware (NOT a REST-style
+`ClientAwareTransport`+`Match*Route` accessor).** Instead:
+
+- An adapter's `Call`/`CallAsync` recognizes the wire-level forward
+  signal (see [Phase 1](reqreply-forward-bounce.md)) but does NOT
+  resolve or republish it itself — it returns the SAME `ForwardError`
+  sentinel (`TargetTopic`, `Payload`) through its ORDINARY return path.
+- `api/reqreply.Client.Call`/`CallAsync` (which already owns this
+  registry) catch that sentinel, resolve `TargetTopic` against the
+  registry THEMSELVES, and issue the actual republish via a NEW,
+  narrow, additive `ClientTransport` method:
+
+  ```go
+  // ClientTransport gains this ADDITIVE method — operates on raw,
+  // already-encoded bytes only; no route/Req type involvement, since
+  // the payload was already encoded server-side (Phase 1) or is being
+  // replayed verbatim (Phase 2). ONE SINGLE HOP: publishes payload to
+  // topic verbatim and awaits exactly one correlated reply.
+  //
+  // CallRaw is NOT a dumb bytes-in-bytes-out primitive — found during a
+  // second review pass that it must replicate the SAME wire-level reply
+  // classification an adapter's ordinary Call/CallAsync already applies
+  // to a reply (forward signal / declared ErrorPattern match / ordinary
+  // success), because the forward signal lives OUT-OF-BAND from the
+  // payload bytes (mqtt5's reserved ContentType+User Property; zeromq's
+  // frames[0]) — a chained Forward (the TARGET route's own handler also
+  // forwarding, exactly the case MaxForwards/ForwardChainTooDeepError
+  // exist for) would otherwise be undetectable: this reply's classification
+  // result surfaces through the SAME return shape:
+  //   - ordinary successful reply:            (replyBytes, nil)
+  //   - reply is itself tagged as a forward:   (nil, ForwardError{TargetTopic, Payload})
+  //   - reply matched a declared ErrorPattern: (nil, <the same typed error Call would return>)
+  CallRaw(ctx context.Context, topic string, payload []byte) ([]byte, error)
+  ```
+
+  Decoding the raw reply bytes into the registry-resolved
+  `*RouteHandle[TargetReq,TargetResp]`'s `Resp` type then happens in
+  `api/reqreply.Client` itself, where the registry and its codecs
+  already live. `CallRaw` is ALWAYS a single hop — chaining (following a
+  reply that is ITSELF tagged as a forward) is the job of a LOOP living
+  one layer above `CallRaw`, in `api/reqreply.Client` — see
+  [Phase 1's "Client-side resolution"](reqreply-forward-bounce.md) for
+  that loop's exact shape (mirrors `adapters/nethttp/redirect.go`'s own
+  `followRedirectHop`'s `remaining`-counter pattern).
+- This closes BOTH Phase 1's and Phase 2's own already-stated need for "a
+  shared internal helper both forward-following and Replay call" — that
+  helper is the CHAIN-FOLLOWING LOOP described above (built on top of
+  `CallRaw`, not `CallRaw` itself), now a concrete, assigned Phase 0/1
+  deliverable (previously unassigned, and in last round's first draft of
+  this section, conflated with `CallRaw` itself) rather than an
+  unresolved detail left to implementation time.
+- **No separate async primitive** (`CallRawAsync`) is needed: `CallAsync`'s
+  forward-following reuses this SAME synchronous `CallRaw` inside the
+  background goroutine that already resolves `CallAsync`'s `*Future`
+  once the original correlation ID's reply arrives — that goroutine is
+  already off the caller-facing path, so a blocking `CallRaw` call
+  inside it is safe, and a second new method would add surface for no
+  identified benefit.
+- No new `reqreply.ClientAwareTransport` interface is added, and no
+  registry READ accessor is exported to adapters at all — the registry's
+  resolve+decode step stays entirely private to `api/reqreply`, reusable
+  identically by both `adapters/mqtt5` and `adapters/zeromq` without
+  either needing its OWN copy of that logic.
+
+**Why this deliberately diverges from REST's own shipped mechanism — NOT
+an unexplained inconsistency between the two layers.** `rest.Client`'s
+redirect-following (shipped, `adapters/nethttp/redirect.go`) resolves and
+republishes entirely INSIDE the adapter, via a `ClientAwareTransport`-
+retained `*rest.Client` reference and an exported `MatchRedirectRoute`
+accessor — the architectural mirror of this doc's REJECTED "Option A."
+Investigated directly (checked via `grep`, not assumed) whether reqreply
+should do the same, and confirmed REST's choice doesn't transfer, for 2
+concrete structural reasons:
+
+1. **Adapter count.** `rest.ClientTransport` has exactly ONE
+   implementation (`adapters/nethttp`; `adapters/chi` is server-side
+   routing only, no REST client transport) — there is no duplicated
+   resolve+decode logic to eliminate by centralizing. `reqreply.
+   ClientTransport` has TWO (`adapters/mqtt5`, `adapters/zeromq`) — both
+   would need to independently implement identical resolve+decode logic
+   under an "Option A"-style design. Centralizing in `api/reqreply.Client`
+   avoids writing and testing that logic twice.
+2. **Primitive richness.** reqreply's republish step is genuinely
+   minimal — raw, already-encoded bytes, one topic, one correlated
+   reply — so `CallRaw`'s narrow signature loses nothing reqreply's
+   dispatch needs. REST's follow-up request carries method,
+   content-type, 307/308 body-preservation rules, and interacts with
+   status-code-based `ErrorPattern` matching on the SAME response — a
+   byte-level primitive for REST would need to grow nearly as rich a
+   signature as its EXISTING `doFollowUpRequest` just to carry all of
+   that, so centralizing wouldn't simplify anything there, only relocate
+   it. REST's own registry match is also heavier (method + ordered,
+   ambiguous `{var}`-template resolution) and has natural proximity to
+   the adapter, which already parsed the real `http.Response` driving
+   that match — reqreply's flat, exact-string `Topic` lookup has no such
+   locality argument favoring either side.
+
+Given REST's redirect feature is already shipped, tested, and
+bug-hunted (`deep-dive-bug-hunt` Round 201) under its OWN (Option A)
+shape, retrofitting it to match reqreply's Option B would be nontrivial
+rework of stable code for a benefit (avoiding cross-adapter duplication)
+that simply doesn't apply to REST's actual 1-adapter reality — correctly
+picking different solutions for structurally different problems, not an
+inconsistency to resolve.
+
 ## Known future consumers (why a registry with no consumer in THIS doc is still worth building now)
 
 This phase, taken alone, adds a registry with no shipped caller yet — the
@@ -253,18 +396,21 @@ callers see (`DuplicateTopicTypeMismatchError`) is already locked.
 
 ## Next step
 
-The registry has a SETTLED design, further hardened by an in-depth
-review pass (`routesOrder` dropped, collision detection added) — none of
-it is implemented yet. **This is the first of the 3 reqreply roadmap docs
-intended to be implemented**, with no blocking dependency of its own.
-Turning this into an actual implementation plan (unit test plan,
-including `RegisterRoute`'s dual-mode discrimination, the
-`DuplicateTopicTypeMismatchError` collision case, and the poisoned-entry
-marker's lazy-surfacing contract — exercised via a stub consumer, since
-Phase 1's real consumer doesn't exist yet) is a distinct, future step
-requiring its own explicit go-ahead — the same rigor Typed HTTP
-Redirects itself went through across its own critical-review rounds
-before implementation began. No code should be written against this
-design until that implementation plan exists and is approved. Once this
-phase ships and is verified, [`reqreply-forward-bounce.md`](reqreply-forward-bounce.md)
-(Phase 1) is unblocked.
+The registry has a SETTLED design, further hardened by both the original
+in-depth review pass (`routesOrder` dropped, collision detection added)
+AND a post-split re-review (the adapter↔registry bridge gap, closed via
+the centralized `CallRaw` design above) — none of it is implemented yet.
+**This is the first of the 3 reqreply roadmap docs intended to be
+implemented**, with no blocking dependency of its own. Turning this into
+an actual implementation plan (unit test plan, including
+`RegisterRoute`'s dual-mode discrimination, the
+`DuplicateTopicTypeMismatchError` collision case, the poisoned-entry
+marker's lazy-surfacing contract, and `CallRaw`'s own dispatch mechanics
+— each exercised via a stub consumer, since Phase 1's real consumer
+doesn't exist yet) is a distinct, future step requiring its own explicit
+go-ahead — the same rigor Typed HTTP Redirects itself went through
+across its own critical-review rounds before implementation began. No
+code should be written against this design until that implementation
+plan exists and is approved. Once this phase ships and is verified,
+[`reqreply-forward-bounce.md`](reqreply-forward-bounce.md) (Phase 1) is
+unblocked.

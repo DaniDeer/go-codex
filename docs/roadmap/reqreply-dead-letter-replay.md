@@ -6,9 +6,9 @@
 > [Phase 1](reqreply-forward-bounce.md)). **Blocked on
 > [`reqreply-forward-bounce.md`](reqreply-forward-bounce.md) (Phase 1)
 > shipping first** — this doc needs zero new wire mechanism of its own,
-> reusing Phase 1's own low-level republish-and-decode primitive
-> directly; it cannot be implemented before that primitive exists.
-> [← Back to Roadmap](index.md)
+> reusing Phase 1's own chain-following loop (built on `CallRaw`, Phase
+> 0's single-hop primitive) directly; it cannot be implemented before
+> that loop exists. [← Back to Roadmap](index.md)
 
 ## Relationship to the other 2 reqreply roadmap docs
 
@@ -58,12 +58,22 @@ exactly the case most likely to need it.
 step) — exactly the same "publish raw bytes to topic X, await reply,
 decode via the registry-resolved target's `Resp` codec" mechanic
 [Phase 1's](reqreply-forward-bounce.md) forward-following client
-dispatch already needs. This means **Phase 2 needs ZERO new wire
-mechanism and ZERO new adapter-side code** — it is a thin, direct reuse
-of Phase 1's own low-level republish-and-decode primitive (factored out
-as a shared internal helper both forward-following and Replay call),
-invoked with `(SourceTopic, Payload)` directly instead of being
-triggered by a recognized forward reply.
+dispatch already needs. Concretely, `ReplayDeadLetter` goes through the
+EXACT SAME chain-following LOOP Phase 1's own forward-following uses
+(NOT a single, raw `ClientTransport.CallRaw(ctx, topic, payload)
+([]byte, error)` call directly — found during a further re-review:
+`CallRaw` is only a SINGLE-hop primitive; if the replayed message's own
+handler ALSO forwards, only the LOOP built on top of `CallRaw` — see
+[Phase 0's "Adapter↔registry bridge"](reqreply-client-registry.md) and
+[Phase 1's "Client-side resolution"](reqreply-forward-bounce.md) for its
+exact shape — correctly continues the chain, decrementing the SAME
+`MaxForwards` counter). `ReplayDeadLetter` invokes that loop with
+`(SourceTopic, Payload)` as its starting point instead of a recognized
+forward reply, decoding the FINAL raw reply via the registry-resolved
+target's `Resp` codec in `api/reqreply.Client` itself. This means
+**Phase 2 needs ZERO new wire mechanism and ZERO new adapter-side code**
+— both `CallRaw` and the chain-following loop are implemented ONCE, by
+Phase 0/1, and reused unchanged here.
 
 ## API surface — CONFIRMED
 
