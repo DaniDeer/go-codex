@@ -1385,13 +1385,16 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 // Classifies the reply the SAME way [call] does for its OWN ordinary/
 // error legs: an ordinary reply returns its raw payload bytes; a reply
 // carrying mqtt5's reserved error ContentType ([isErrorReply]) returns
-// the SAME plain-text fallback [CallError] [call] returns when a reply's
-// error code is absent/unmatched — CallRaw has no route to resolve a
-// specific [reqreply.ErrorPattern]'s Code against (it never receives
-// one), so it cannot reproduce [call]'s matched-code decode branch; a
-// future caller holding the REGISTRY-resolved target RouteHandle (docs/
-// roadmap/reqreply-forward-bounce.md/reqreply-dead-letter-replay.md) can
-// still decode that case itself from the error's message if needed.
+// [reqreply.ForwardRawErrorReply{Code, Body}] — the RAW wire-level code
+// (via [errorCodeFromUserProperties], itself route-free) and body,
+// deliberately WITHOUT attempting [call]'s own matched-code DECODE
+// (which needs a *reqreply.RouteHandle CallRaw never receives). A future
+// caller holding the REGISTRY-resolved target RouteHandle (docs/
+// roadmap/reqreply-forward-bounce.md/reqreply-dead-letter-replay.md's
+// own chain-following loop) finishes that decode itself via
+// RouteHandle.DecodeErrorFor(Code, Body) — moving the "hard part" to
+// api/reqreply, keeping this adapter method a pure wire-level
+// extraction primitive.
 //
 // The THIRD classification leg (a reply tagged as a Forward) is NOT YET
 // IMPLEMENTED — docs/roadmap/reqreply-forward-bounce.md's wire signal
@@ -1509,7 +1512,15 @@ func (t *clientTransport) CallRaw(ctx context.Context, topic string, payload []b
 	case replyMsg := <-replyCh:
 		if isErrorReply(replyMsg) {
 			obs.RecordRequest("MQTT5-REQ", topic, 500, time.Since(start))
-			return nil, CallError{Kind: KindHandler, Err: fmt.Errorf("server error: %s", replyMsg.Payload)}
+			// Extracts the RAW code (route-free — a plain User Property
+			// read) and returns it alongside the body via
+			// reqreply.ForwardRawErrorReply, deliberately WITHOUT
+			// attempting the route-dependent DecodeErrorFor decode
+			// call() does — CallRaw has no route. A caller holding the
+			// registry-resolved target *RouteHandle (Phase 1/2's own
+			// chain-following loop) finishes that decode itself.
+			code := errorCodeFromUserProperties(replyMsg)
+			return nil, reqreply.ForwardRawErrorReply{Code: code, Body: replyMsg.Payload}
 		}
 		obs.RecordRequest("MQTT5-REQ", topic, 200, time.Since(start))
 		return replyMsg.Payload, nil

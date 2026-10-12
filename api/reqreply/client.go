@@ -51,8 +51,22 @@ type ClientTransport interface {
 	//   - a reply tagged as a Forward (reserved wire
 	//     signal — mqtt5's ContentType+User Property,
 	//     zeromq's frames[0], NOT YET IMPLEMENTED):    (nil, a forward sentinel error, once that roadmap ships)
-	//   - a reply matching a declared ErrorPattern:    (nil, <the same
-	//     typed error Call would return for that case>)
+	//   - a reply matching a declared ErrorPattern:    (nil, ForwardRawErrorReply{Code, Body})
+	//
+	// CallRaw deliberately does NOT decode the ErrorPattern-matched case
+	// into a typed ErrorPatternResponse — it has no route to resolve a
+	// declared pattern against (only a topic string and raw bytes).
+	// [ForwardRawErrorReply] carries the RAW wire-level code (if present)
+	// + body instead — a caller holding the registry-resolved target
+	// *RouteHandle (e.g. the chain-following loop
+	// docs/roadmap/reqreply-forward-bounce.md's Client.Call and
+	// docs/roadmap/reqreply-dead-letter-replay.md's ReplayDeadLetter both
+	// build) can finish the decode itself via
+	// RouteHandle.DecodeErrorFor(Code, Body) — moving the "hard part"
+	// (interpreting the code against a declared ErrorPattern) to
+	// api/reqreply, keeping CallRaw a pure wire-level extraction
+	// primitive. Code is "" when the reply carries no code (the
+	// plain-text fallback case — mirrors Call's own identical fallback).
 	//
 	// As of this Phase 0 implementation, the Forward leg's wire signal
 	// does not exist yet (docs/roadmap/reqreply-forward-bounce.md is not
@@ -60,6 +74,37 @@ type ClientTransport interface {
 	// ErrorPattern legs for now, with a marked insertion point for the
 	// Forward leg to be added when that roadmap ships.
 	CallRaw(ctx context.Context, topic string, payload []byte) ([]byte, error)
+}
+
+// ForwardRawErrorReply is returned by [ClientTransport.CallRaw] when a
+// reply is classified as matching a declared [ErrorPattern] — carries
+// the RAW wire-level code (if present) and body, NOT a decoded
+// [ErrorPatternResponse]-equivalent, since CallRaw has no route to
+// decode against (see [ClientTransport.CallRaw]'s doc comment for the
+// full rationale). A caller holding the registry-resolved target
+// *[RouteHandle] can finish the decode itself via
+// RouteHandle.DecodeErrorFor(Code, Body).
+type ForwardRawErrorReply struct {
+	// Code is the matched ErrorPattern's reserved wire-level code (e.g.
+	// mqtt5's "x-error-code" User Property, zeromq's 3rd/4th status
+	// frame), or "" when the reply carries no code — the plain-text
+	// fallback case (no declared ErrorPattern matched, or the server
+	// predates this mechanism).
+	Code string
+	// Body is the reply's raw payload bytes.
+	Body []byte
+}
+
+func (e ForwardRawErrorReply) Error() string {
+	return "api/reqreply: server error: " + string(e.Body)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e ForwardRawErrorReply) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("code", e.Code),
+		slog.String("body", string(e.Body)),
+	)
 }
 
 // ClientCallOptions configures a single [Client.Call]/[Client.CallAsync]

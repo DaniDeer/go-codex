@@ -1,37 +1,47 @@
 # `api/reqreply` Forward/Bounce — Design Complete, Not Yet Implemented
 
 > **Status:** Design complete — API surface, wire signal, structured
-> errors, and a CORRECTED, grounded dispatch-path inventory (4 real
-> forward-following combinations + 2 small, precedented passthrough
-> checks — see "Dispatch-path inventory" below) are all settled.
+> errors, and a dispatch-path inventory are all settled, NOW GROUNDED
+> AGAINST THE REAL, SHIPPED PHASE 0 CODE (registry + `CallRaw`,
+> committed `e86bc99`) rather than assumptions, across 4 review rounds:
+>
+> 1. An in-depth review pass closed 5 findings: a new
+>    `ForwardSecuritySchemeMismatchError` (going further than REST's own
+>    precedent), Observer-per-hop made explicit, client-side failure
+>    surfacing made explicit, a Disposition/ack-interaction note flagged
+>    for a future AMQP round, and `ForwardTargetVarError`'s wrapping
+>    pattern verified consistent with `rest.Redirect`'s precedent.
+> 2. A post-split re-review closed 2 findings: resolution CENTRALIZED in
+>    `api/reqreply.Client` via `ClientTransport.CallRaw` (adapters stay
+>    registry-unaware), and the dispatch-path inventory corrected after
+>    confirming `ports.Pattern`'s `Call`-equivalent is registry-free and
+>    no `CallAsync`-equivalent `ports.Pattern` binding exists.
+> 3. A third re-review closed 1 gap: "Client-side resolution" became an
+>    explicit chain-following LOOP (mirrors `followRedirectHop`'s
+>    `remaining`-counter shape) instead of a single hop, to detect
+>    CHAINED forwards.
+> 4. **A FOURTH re-review, conducted AFTER Phase 0 actually shipped**,
+>    traced this doc's own remaining open items against the real code
+>    for the first time and found 2 more: (a) the wire-signal
+>    dispatch-path count was undercounted — 9 real insertion points (6
+>    client-recognize + 3 server-publish), not the "1 per side" earlier
+>    revisions implied, now that `CallRaw` is real, separate code with
+>    its own reply-classification block; (b) `CallAsync`'s own
+>    chain-following design, previously flagged as "needs tracing at
+>    implementation time," was traced and found STRUCTURALLY BROKEN as
+>    written (the adapter's own background goroutine resolves the Future
+>    before `api/reqreply.Client` ever sees the result) — RESOLVED by
+>    restructuring `Client.CallAsync` to wrap `Client.Call` directly and
+>    REMOVING `CallAsync` from `ClientTransport` entirely (consistent
+>    with this project's general preference for hard logic in `api/*`,
+>    thin adapters) — see "`CallAsync`/`Future`" below for the full
+>    resolution.
+>
 > **Blocked on [the registry doc](reqreply-client-registry.md) (Phase 0)
-> shipping first** — this doc's client-side resolution step is the
-> registry's first real consumer, and implementing Forward against a
-> not-yet-proven registry would risk reworking both at once. An in-depth
-> review pass closed 5 further findings beyond the original design: a
-> new `ForwardSecuritySchemeMismatchError` (going further than REST's own
-> precedent), Observer-per-hop made explicit, client-side failure
-> surfacing made explicit (direct/unwrapped, no retry, no `DeadLetter`
-> role), a Disposition/ack-interaction note flagged for a future AMQP
-> round, and `ForwardTargetVarError`'s wrapping pattern verified
-> consistent with `rest.Redirect`'s own precedent. A post-split
-> re-review closed 2 further findings: resolution is now CENTRALIZED in
-> `api/reqreply.Client` via a new `ClientTransport.CallRaw` method
-> (adapters stay registry-unaware — see the registry doc's "Adapter↔
-> registry bridge"), and the dispatch-path inventory was corrected after
-> confirming `ports.Pattern`'s `Call`-equivalent is registry-free by
-> design (mirrors REST's own `CallWithTransport` precedent) and that no
-> `CallAsync`-equivalent `ports.Pattern` binding exists today. **A THIRD
-> re-review pass closed 1 more gap**: "Client-side resolution" originally
-> described only a SINGLE hop through `CallRaw`, which cannot detect a
-> CHAINED forward (the target route's own handler also forwarding) —
-> fixed by making it an explicit chain-following LOOP (mirrors
-> `followRedirectHop`'s `remaining`-counter shape), with `CallAsync`
-> confirmed to need no separate async primitive (its background
-> goroutine reuses the same synchronous `CallRaw` in a loop).
-> Implementation is a distinct, future step requiring its own explicit
-> go-ahead (the unit test plan, the 4-combination dispatch-path inventory executed one
-> by one). [← Back to Roadmap](index.md)
+> shipping first** — ALREADY SATISFIED (Phase 0 shipped, commit
+> `e86bc99`). Implementation is a distinct, future step requiring its
+> own explicit go-ahead (the unit test plan, the 6 wire-signal
+> recognition points executed one by one). [← Back to Roadmap](index.md)
 
 ## Relationship to the other 2 reqreply roadmap docs
 
@@ -43,9 +53,9 @@ complete." The 3 docs are sequenced, not independent:
    (Phase 0) — registry infrastructure. Must ship FIRST; this doc's
    client-side resolution step is the registry's first real consumer.
 2. **This doc** (Phase 1) — forward/bounce. The highest-risk, highest-
-   complexity phase (new wire protocol in 2 adapters, 8-combination
-   dispatch-path inventory, new security validation, `CallAsync`/
-   `Future` chaining).
+   complexity phase (new wire protocol across 3 adapter-transports, a
+   9-point wire-signal dispatch inventory, new security validation, a
+   `ClientTransport.CallAsync` removal + `Client.CallAsync` restructure).
 3. **[`reqreply-dead-letter-replay.md`](reqreply-dead-letter-replay.md)**
    (Phase 2) — dead-letter replay. Depends on THIS doc's low-level
    republish-and-decode primitive existing first; needs zero new wire
@@ -81,15 +91,41 @@ required infrastructure, not the other way around.
   THIRD `frames[0]` status value (e.g. `"forward"`) + `frames[1]` = the
   target topic.
 - **Dispatch ordering**: checked BEFORE the existing error-reply check,
-  on BOTH the server-publish side (confirmed real insertion point:
-  `adapters/mqtt5/reqreply_transport.go`'s `if handlerErr != nil` branch,
-  ~line 764, which currently runs `publishHandlerErrorReplyReflect` +
-  `tryDeadLetterReflect`) and the client-recognize side (confirmed real
-  insertion point: the SAME file's `case replyMsg := <-replyCh:` block,
-  which currently checks `isErrorReply` first) — mirrors `rest.Redirect`'s
-  own documented "recognized BEFORE `ErrorPattern`/`ErrorStatus`
-  matching" precedence. A Forward is a deliberate instruction, not a
-  failure — it skips `ErrorPattern`/`DeadLetter` entirely.
+  on BOTH the server-publish side and the client-recognize side —
+  mirrors `rest.Redirect`'s own documented "recognized BEFORE
+  `ErrorPattern`/`ErrorStatus` matching" precedence. A Forward is a
+  deliberate instruction, not a failure — it skips `ErrorPattern`/
+  `DeadLetter` entirely.
+- **Insertion-point count — CORRECTED against the REAL, now-shipped
+  Phase 0 code** (a prior revision of this doc, written before Phase 0
+  existed, understated this to "one insertion point per side"; see
+  "Dispatch-path inventory" below for the full, re-grounded count):
+  **9 total insertion points, not 2.** Server-publish side: 3
+  independent, non-delegating dispatch implementations each need their
+  OWN `handlerErr != nil`-equivalent check
+  (`adapters/mqtt5/reqreply_transport.go`'s `serverTransport.Serve`,
+  confirmed still accurate at its `if handlerErr != nil` branch;
+  `adapters/zeromq/reqreply_transport.go`'s `serverTransport.Serve` AND
+  `routerServerTransport.Serve` — TWO separate server implementations
+  the original wording never mentioned). Client-recognize side: 6
+  independent reply-classification blocks, confirmed via direct
+  inspection of the shipped code — `call()` and `CallRaw()` EACH have
+  their OWN separate `case replyMsg := <-replyCh:`/`frames[0]=="error"`-
+  style block, in EACH of mqtt5's `clientTransport`, zeromq's
+  `clientTransport`, and zeromq's `dealerClientTransport` (3 × 2 = 6) —
+  `CallRaw` didn't exist when this doc's wire-signal section was
+  originally written, so its own separate reply-classification code
+  (added by Phase 0) was never accounted for here.
+- **Implementation burden stays small despite the 9-point count**: mqtt5
+  already factors its error-reply check into ONE shared helper
+  (`isErrorReply`) called from BOTH `call()` and `CallRaw()` — the SAME
+  pattern should apply to Forward recognition (a new shared
+  `isForwardReply`-style helper PER adapter-transport, called from both
+  dispatch methods) — 3 shared helper functions total, not 6 independent
+  reimplementations. The VERIFICATION burden (each of the 9 points needs
+  its own trace + test, per `deep-dive-bug-hunt`'s own "N-way parity,
+  not just 2" principle) stays real regardless of how much code is
+  shared.
 
 ## API surface
 
@@ -136,15 +172,17 @@ carries `TargetTopic`; the body IS `Payload`.
 **CENTRALIZED in `api/reqreply.Client` — NOT resolved/republished inside
 the adapter, a deliberate divergence from REST's own shipped mechanism
 (see [Phase 0's "Adapter↔registry bridge"](reqreply-client-registry.md#adapterregistry-bridge--centralized-in-apireqreplyclient-not-mirroring-rests-adapter-side-resolution-found--resolved-during-review)
-for the full rationale).** An adapter's `Call`/`CallAsync` recognizes the
-wire-level forward signal (above) but does NOT itself build a new
+for the full rationale).** An adapter's `Call` (the ONLY remaining
+adapter-level client entry point — see "`CallAsync`/`Future`" below for
+why `CallAsync` was REMOVED from `ClientTransport` entirely) recognizes
+the wire-level forward signal (above) but does NOT itself build a new
 correlation ID, republish, or decode anything — it simply returns the
 SAME `ForwardError{TargetTopic, Payload}` sentinel through its ORDINARY
 return path, exactly as if a handler had returned it directly.
 
-`api/reqreply.Client.Call`/`CallAsync` (the API-layer methods, which own
-[Phase 0's registry](reqreply-client-registry.md)) catch that sentinel
-and do the actual follow-up themselves via an explicit CHAIN-FOLLOWING
+`api/reqreply.Client.Call` (the API-layer method, which owns
+[Phase 0's registry](reqreply-client-registry.md)) catches that sentinel
+and does the actual follow-up itself via an explicit CHAIN-FOLLOWING
 LOOP (found missing from the first draft of this section during a
 further re-review — see
 [Phase 0's `CallRaw` contract](reqreply-client-registry.md) for why a
@@ -165,9 +203,14 @@ through `CallRaw`'s own `error` return — the loop resolves the NEW
 decrementing a `MaxForwards` counter each iteration (mirrors
 `adapters/nethttp/redirect.go`'s own `followRedirectHop`'s `remaining`-
 counter shape exactly), returning `ForwardChainTooDeepError` once
-exhausted. A reply that matched a declared `ErrorPattern` surfaces that
-SAME typed error directly, unwrapped — see "Client-side follow-up
-failure handling" below.
+exhausted. A reply that matched a declared `ErrorPattern` surfaces as
+`CallRaw`'s `ForwardRawErrorReply{Code, Body}` (SHIPPED — see [Phase 0's
+`CallRaw` contract](reqreply-client-registry.md) for the extraction-
+vs-decode split rationale) — the loop, already holding the resolved
+target `*RouteHandle` from the registry lookup above, finishes the
+decode itself via `targetHandle.DecodeErrorFor(Code, Body)`, producing
+the SAME typed `ErrorPatternResponse` an ordinary (non-forwarded) `Call`
+would — see "Client-side follow-up failure handling" below.
 
 Since `TargetTopic` arrives ALREADY CONCRETE (resolved server-side via
 `BuildTopic`, not a `{var}`-templated key the client must pattern-match),
@@ -197,13 +240,22 @@ SERVER-side-only mechanism, has NO role here at all — there is no
 "server" in this client-side failure path to dead-letter anything. No
 retry, no composite wrapper type.
 
-**Observer integration — every hop observed.** EVERY hop (the original
-call AND each subsequent forward republish) calls
-`obs.RecordRequest(topic, ..., duration)` exactly as an ordinary `Call`
-already does — a forward hop is observed AS IF it were its own `Call`,
-using the SAME `Observer` instance the originating call resolved. No new
-Observer extension/interface needed — a dispatch-wiring fix (call it at
-each hop), not a new capability. **Separately flagged, NOT fixed here**:
+**Observer integration — every hop observed, ALREADY FREE, confirmed —
+zero additional code, not merely "a dispatch-wiring fix."** Checked
+precisely against the shipped `ClientCallOptions` struct: it has NO
+`Observer` override field (unlike REST's `ClientCallOptions.Observer`) —
+reqreply's `obs` is ALWAYS resolved via the attached `ClientTransport`'s
+own construction-time `t.opts.Observer`, falling back to `ctx`. Since the
+chain-following loop calls `CallRaw` on the EXACT SAME attached
+`ClientTransport` instance the originating `Call` used, EVERY hop
+automatically resolves the IDENTICAL `obs` — and `CallRaw` ALREADY calls
+`obs.RecordRequest` on its own (Round 203's fix, shipped). So EVERY hop
+(the original call AND each subsequent forward republish) is observed
+AS IF it were its own `Call`, using the SAME `Observer` instance, with
+NOTHING left to wire in `api/reqreply.Client` and NO new adapter code —
+confirmed during a later thin-adapter review round, this is good news
+for the "thin adapter" goal (one less thing to build), not a remaining
+TODO. **Separately flagged, NOT fixed here**:
 `adapters/nethttp`'s ALREADY-SHIPPED redirect-following code
 (`redirect.go`/`redirect_sse.go`) was found, while researching this
 precedent, to have ZERO `stats.Observer` calls anywhere — every REST
@@ -233,11 +285,11 @@ this doc's "free `Req`/`Resp`" decision), a genuine cross-domain scheme
 mismatch is MORE LIKELY here than it ever was for REST's own redirect
 targets (which in practice stay within the same resource).
 
-Before republishing, the client — which already holds BOTH the
-ORIGINATING route's `RouteHandle` (being dispatched) and the TARGET's
-`RouteHandle` (just resolved from
-[Phase 0's registry](reqreply-client-registry.md)) — compares the two
-declared security requirements' SCHEME NAME(S). A match (or the target
+Before republishing, **`api/reqreply.Client` — never the adapter** (the
+chain-following loop, which already holds BOTH the ORIGINATING route's
+`RouteHandle` (being dispatched) and the TARGET's `RouteHandle` (just
+resolved from [Phase 0's registry](reqreply-client-registry.md)) —
+compares the two declared security requirements' SCHEME NAME(S). A match (or the target
 requiring no security at all) proceeds exactly as today (credential
 reuse, verbatim). A mismatch FAILS FAST, client-side, BEFORE the network
 round-trip, with a NEW `ForwardSecuritySchemeMismatchError
@@ -289,27 +341,90 @@ error (`PathParamError`/`MissingPathVarError`/`InvalidPathError`) inside
 confirmed NOT redundant over-wrapping, so this specific question doesn't
 need re-investigating in a future review.
 
-## `CallAsync`/`Future` — CONFIRMED in scope from v1 (not deferred)
+## `CallAsync`/`Future` — CONFIRMED in scope from v1; design CORRECTED after tracing the real, shipped Phase 0 code
 
 The forward-following CHAIN-FOLLOWING LOOP (recognize forward reply →
 new correlation ID → `CallRaw` republish → classify the reply → repeat
-if chained → decode, now CENTRALIZED in `api/reqreply.Client` — see
-"Client-side resolution" above) must run inside whatever internal
-mechanism currently resolves a `*Future[Resp]` when its ORIGINAL reply
-arrives — it must resolve the SAME `Future` object via the FINAL round
-trip's reply, not construct a new one.
+if chained → decode, CENTRALIZED in `api/reqreply.Client` — see
+"Client-side resolution" above) must resolve the SAME `Future` object
+via the FINAL round trip's reply, not construct a new one.
 
-**No separate async primitive needed — CONFIRMED.** `CallRaw` stays
-synchronous; `CallAsync`'s own background goroutine (which already
-resolves correlation IDs off the caller-facing path once the ORIGINAL
-reply arrives) simply runs the SAME chain-following loop itself,
-blocking on `CallRaw` calls from within that goroutine — safe, since
-nothing caller-facing is waiting on it directly. A `CallRawAsync`
-counterpart was considered and rejected: it would add a 2nd new
-`ClientTransport` method for no identified benefit over reusing the
-already-async-safe background goroutine. Needs each adapter's own
-"pending calls by correlation ID" bookkeeping traced at implementation
-time to confirm this reuse is mechanically sound.
+**A prior revision of this section claimed "CallAsync's own background
+goroutine... simply runs the SAME chain-following loop itself," flagging
+only that this "needs tracing at implementation time." Traced against
+the REAL, shipped Phase 0 code — it is NOT mechanically sound.**
+Confirmed identical in all 3 implementations
+(`adapters/mqtt5/reqreply_transport.go`'s `clientTransport.CallAsync`,
+`adapters/zeromq/reqreply_transport.go`'s `clientTransport.CallAsync`
+and `dealerClientTransport.CallAsync`):
+
+```go
+future, resolve := ff.NewFutureAny()
+go func() {
+    resp, err := t.call(ctx, routeAny, reqAny, o)
+    resolve(resp, err)
+}()
+return future, nil
+```
+
+This goroutine lives ENTIRELY INSIDE THE ADAPTER — `api/reqreply.
+Client.CallAsync` is a 1-line `return t.CallAsync(ctx, route, req,
+opts...)` that returns the Future IMMEDIATELY, never itself seeing
+`resp`/`err`. By the time anything outside the adapter could inspect
+the result, `resolve(resp, err)` has already fired. If `t.call(...)`
+returns `(nil, ForwardError{...})`, the Future resolves with that
+UNRESOLVED error — there is no point at which `api/reqreply.Client`
+(which owns the registry the chain-following loop needs) can intercept
+it. The centralized design works for the SYNCHRONOUS `Call` path
+(`Client.Call` directly receives `(resp, err)` from `t.Call(...)` and
+can inspect/loop freely) but does NOT transfer to `CallAsync` as
+originally structured.
+
+**RESOLVED — `Client.CallAsync` is restructured; `CallAsync` is REMOVED
+from `ClientTransport` entirely.** Consistent with this project's
+general preference (confirmed during this review) for implementing hard
+parts in the `api/*` layer and keeping adapters as thin as possible:
+
+```go
+// api/reqreply/client.go — Client.CallAsync no longer delegates to
+// ClientTransport.CallAsync at all.
+func (c *Client) CallAsync(ctx context.Context, route any, req any, opts ...ClientCallOptions) (any, error) {
+    c.registerAutoFromCall(route)
+    ff, ok := /* recover reqreply.FutureFactory from route — a PUBLIC
+                 api/reqreply interface (future.go), already implemented
+                 by RouteHandle.NewFutureAny — no adapter cooperation
+                 needed, confirmed usable directly from api/reqreply */
+    if !ok {
+        return nil, TransportTypeMismatchError{Want: "FutureFactory", Got: fmt.Sprintf("%T", route)}
+    }
+    future, resolve := ff.NewFutureAny()
+    go func() {
+        resp, err := c.Call(ctx, route, req, opts...) // reuses Client.Call's OWN already-centralized chain-following loop directly
+        resolve(resp, err)
+    }()
+    return future, nil
+}
+```
+
+- `CallRaw` stays synchronous — no `CallRawAsync` counterpart needed,
+  since the ASYNC wrapping now happens entirely at the `api/reqreply.
+  Client` level, one layer above both `Call` and `CallRaw`.
+- **Real, confirmed consequence**: `ClientTransport.CallAsync` (the
+  interface method) is REMOVED, not left as dead code — confirmed via
+  `grep` that it has EXACTLY ONE caller anywhere in the codebase today
+  (the very 1-line delegation this restructuring replaces); no
+  `CallAsyncWithTransport` escape hatch and no `ports.Pattern` binding
+  depends on it. Phase 1's implementation deletes the method from the
+  `ClientTransport` interface AND from all 3 adapters' own
+  implementations — a breaking change to an already-shipped interface,
+  but a safe one (nothing else calls it).
+- **Scoping note — this is Phase 1 work, not an urgent fix to today's
+  shipped Phase 0 code.** `Client.CallAsync`/`ClientTransport.CallAsync`
+  work correctly today exactly as shipped — `Forward` doesn't exist yet,
+  so there is no `ForwardError` to fail to intercept. This restructuring
+  is a confirmed, now-settled REQUIREMENT of Phase 1's own
+  implementation (recorded here for when that implementation begins),
+  not something to retrofit into Phase 0 separately.
 
 ## Dispatch-path inventory — CORRECTED, smaller than originally stated once grounded in the actual `ports.Pattern` binding code
 
@@ -352,22 +467,44 @@ original "8 independent combinations" claim OVERSTATED, in 2 ways:
    REAL, existing dispatch path — there is nothing to trace or test for
    a combination that isn't implemented today, in either adapter.
 
+**FURTHER SIMPLIFIED after the `CallAsync` restructure above**: since
+`CallAsync` is REMOVED from `ClientTransport` entirely and
+`api/reqreply.Client.CallAsync` now wraps `Client.Call` directly (not a
+per-adapter dispatch path anymore), the "`Call` vs `CallAsync`" axis
+this matrix originally had COLLAPSES — there is only ONE adapter-level
+client entry point left (`Call`/`CallRaw`), not two. The
+CHAIN-FOLLOWING LOOP itself is tested EXACTLY ONCE, at the
+`api/reqreply.Client.Call` level (both `Client.Call` and
+`Client.CallAsync` exercise the IDENTICAL loop — `CallAsync` is a thin
+goroutine wrapper around it) — not once per adapter and not twice per
+adapter. What EACH adapter still needs independently traced/tested is
+the WIRE-SIGNAL RECOGNITION itself (the 6 client-recognize + 3
+server-publish points from "Wire-level signal" above) — a DIFFERENT,
+narrower concern than "does the chain-following loop work," which is now
+adapter-agnostic by construction.
+
 The CORRECTED, grounded inventory:
 
-| | `Client`-level (`ClientTransport.Call`/`CallAsync`) | `ports.Pattern` binding (`CallWithTransport`) |
+| | `Client`-level (`ClientTransport.Call`, feeding the SHARED `api/reqreply.Client` loop) | `ports.Pattern` binding (`CallWithTransport`) |
 |---|---|---|
-| `adapters/mqtt5` | needs the FULL centralized forward-following (2 combinations: `Call`, `CallAsync`) | registry-free by design — only needs sentinel-passthrough verification |
-| `adapters/zeromq` | needs the FULL centralized forward-following (2 combinations: `Call`, `CallAsync`) | registry-free by design — only needs sentinel-passthrough verification |
+| `adapters/mqtt5` | wire-signal recognition in `call()`+`CallRaw()` (2 of the 6 client-recognize points above) | registry-free by design — only needs sentinel-passthrough verification |
+| `adapters/zeromq` (`clientTransport`) | wire-signal recognition in `call()`+`CallRaw()` (2 of the 6) | registry-free by design — only needs sentinel-passthrough verification |
+| `adapters/zeromq` (`dealerClientTransport`) | wire-signal recognition in `call()`+`CallRaw()` (2 of the 6) | registry-free by design — only needs sentinel-passthrough verification |
 
-— **4 real forward-following combinations** (2 adapters × `Call`/
-`CallAsync`, all resolved centrally in `api/reqreply.Client` via
-`CallRaw`) **plus 2 small, already-precedented passthrough checks** (2
-adapters' `ports.Pattern` `Call`-equivalent, registry-free) — 6 total
-verification items, not 8, and of two genuinely different kinds (4
-substantial, 2 trivial-but-still-worth-a-test). Each of the 4 real
-combinations still needs its OWN independent trace + test at
-implementation time, per Round 201's own hard-won lesson ("a fix applied
-to ONE of these does NOT imply the others got it").
+— **6 wire-signal recognition points** (3 adapter-transports × `call()`/
+`CallRaw()`, matching "Wire-level signal" above exactly) **plus 2 small,
+already-precedented passthrough checks** (mqtt5/zeromq's `ports.Pattern`
+`Call`-equivalent, registry-free — zeromq's DEALER transport has no
+`ports.Pattern` binding of its own today, so only 2 passthrough checks
+exist, not 3) **plus the chain-following loop itself, tested EXACTLY
+ONCE at the `api/reqreply.Client` level** (used identically by both
+`Client.Call` and `Client.CallAsync`) — a smaller, more precisely-scoped
+total than any earlier revision of this count (which ranged from "8" to
+"4+2" across prior reviews, each one grounded in progressively more of
+the real code as it came to exist). Each of the 6 wire-signal points
+still needs its OWN independent trace + test at implementation time, per
+Round 201's own hard-won lesson ("a fix applied to ONE of these does NOT
+imply the others got it").
 
 A smaller, related lesson from the SAME round: a doc comment claiming two
 separate implementations are "behaviorally-equivalent" (as
@@ -375,18 +512,21 @@ separate implementations are "behaviorally-equivalent" (as
 `Client.Consume`'s reconnect loop — a claim that did NOT hold for
 redirects) is a CLAIM TO VERIFY via a live, failing test — not to trust.
 This design's own eventual unit test plan must carry the same explicit
-verification step for each of the 4 real combinations above, not rely on
-"it probably works the same way."
+verification step for each of the 6 wire-signal recognition points
+above, not rely on "it probably works the same way."
 
 ## Next step
 
-Forward/bounce has a SETTLED design, further hardened by an in-depth
-review pass — none of it is implemented yet, and it is explicitly
-BLOCKED on [the registry doc](reqreply-client-registry.md) (Phase 0)
-shipping first. Once Phase 0 ships, turning this into an actual
-implementation plan (unit test plan, the 8-combination dispatch-path
-inventory executed one by one) is a distinct, future step requiring its
-own explicit go-ahead — the same rigor Typed HTTP Redirects itself went
-through across its own critical-review rounds before implementation
-began. No code should be written against this design until that
-implementation plan exists and is approved.
+Forward/bounce has a SETTLED design, hardened across 4 review rounds —
+the latest grounded against the REAL, shipped Phase 0 registry +
+`CallRaw` code rather than assumptions — none of it is implemented yet.
+**The Phase 0 blocking dependency is ALREADY SATISFIED** (shipped,
+commit `e86bc99`) — turning this into an actual implementation plan
+(unit test plan covering the 6 wire-signal recognition points, the
+`Client.CallAsync` restructure + `ClientTransport.CallAsync` removal,
+`ForwardSecuritySchemeMismatchError`, `MaxForwards` chain-depth capping)
+is a distinct, future step requiring its own explicit go-ahead — the
+same rigor Typed HTTP Redirects itself went through across its own
+critical-review rounds before implementation began. No code should be
+written against this design until that implementation plan exists and
+is approved.

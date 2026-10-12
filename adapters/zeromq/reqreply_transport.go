@@ -1287,14 +1287,17 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 //
 // Classifies the reply the SAME way [call] does for its OWN ordinary/
 // error legs: an ordinary 2-frame `[status, payload]` reply returns
-// frames[1]; a `frames[0] == "error"` reply returns the SAME plain-text
-// fallback [CallError] [call] returns when a reply's error code is
-// absent/unmatched — CallRaw has no route to resolve a specific
-// [reqreply.ErrorPattern]'s Code against (it never receives one), so it
-// cannot reproduce [call]'s matched-code decode branch; a future caller
-// holding the REGISTRY-resolved target RouteHandle (docs/roadmap/
-// reqreply-forward-bounce.md/reqreply-dead-letter-replay.md) can still
-// decode that case itself from the error's message if needed.
+// frames[1]; a `frames[0] == "error"` reply returns
+// [reqreply.ForwardRawErrorReply{Code, Body}] — the RAW wire-level code
+// (present on a 3-frame `[status, code, body]` reply, "" on the 2-frame
+// plain-text fallback) and body, deliberately WITHOUT attempting
+// [call]'s own matched-code DECODE (which needs a *reqreply.RouteHandle
+// CallRaw never receives). A future caller holding the REGISTRY-resolved
+// target RouteHandle (docs/roadmap/reqreply-forward-bounce.md/
+// reqreply-dead-letter-replay.md's own chain-following loop) finishes
+// that decode itself via RouteHandle.DecodeErrorFor(Code, Body) —
+// moving the "hard part" to api/reqreply, keeping this adapter method a
+// pure wire-level extraction primitive.
 //
 // The THIRD classification leg (a reply tagged as a Forward) is NOT YET
 // IMPLEMENTED — docs/roadmap/reqreply-forward-bounce.md's wire signal
@@ -1371,7 +1374,19 @@ func (t *clientTransport) CallRaw(ctx context.Context, topic string, payload []b
 
 	if string(frames[0]) == "error" {
 		obs.RecordRequest("ZMQ-REQ", topic, 500, time.Since(start))
-		return nil, CallError{Err: fmt.Errorf("server error: %s", frames[len(frames)-1])}
+		// Extracts the RAW code (route-free — a 3-frame
+		// [status,code,body] reply) when present, returning it alongside
+		// the body via reqreply.ForwardRawErrorReply, deliberately
+		// WITHOUT attempting the route-dependent DecodeErrorFor decode
+		// call() does — CallRaw has no route. A caller holding the
+		// registry-resolved target *RouteHandle (Phase 1/2's own
+		// chain-following loop) finishes that decode itself. The
+		// plain-text fallback stays 2-frame ([status,body]), Code "".
+		var code string
+		if len(frames) >= 3 {
+			code = string(frames[1])
+		}
+		return nil, reqreply.ForwardRawErrorReply{Code: code, Body: frames[len(frames)-1]}
 	}
 
 	obs.RecordRequest("ZMQ-REQ", topic, 200, time.Since(start))
@@ -2235,7 +2250,20 @@ func (t *dealerClientTransport) CallRaw(ctx context.Context, topic string, paylo
 
 	if string(frames[1]) == "error" {
 		obs.RecordRequest("ZMQ-DEALER", topic, 500, time.Since(start))
-		return nil, CallError{Err: fmt.Errorf("server error: %s", frames[len(frames)-1])}
+		// Extracts the RAW code (route-free — a 4-frame
+		// [delimiter,status,code,body] reply) when present, returning it
+		// alongside the body via reqreply.ForwardRawErrorReply,
+		// deliberately WITHOUT attempting the route-dependent
+		// DecodeErrorFor decode call() does — CallRaw has no route. A
+		// caller holding the registry-resolved target *RouteHandle
+		// (Phase 1/2's own chain-following loop) finishes that decode
+		// itself. The plain-text fallback stays 3-frame
+		// ([delimiter,status,body]), Code "".
+		var code string
+		if len(frames) >= 4 {
+			code = string(frames[2])
+		}
+		return nil, reqreply.ForwardRawErrorReply{Code: code, Body: frames[len(frames)-1]}
 	}
 
 	obs.RecordRequest("ZMQ-DEALER", topic, 200, time.Since(start))

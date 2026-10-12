@@ -10,7 +10,13 @@
 > classifies ONLY the ordinary-reply/`ErrorPattern`-reply legs for now; a
 > marked `// TODO Phase 1:` comment flags the exact insertion point for
 > the Forward-signal classification leg once
-> `reqreply-forward-bounce.md` ships. Documented in
+> `reqreply-forward-bounce.md` ships. On an `ErrorPattern`-matched reply,
+> `CallRaw` returns `reqreply.ForwardRawErrorReply{Code, Body}` (added
+> during a later thin-adapter review round, see "Decoding the raw reply
+> bytes" below) — a route-free RAW code+body extraction, not the decoded
+> `ErrorPatternResponse` `Call` itself produces; the decode is deferred
+> to a future caller holding the registry-resolved target
+> `*RouteHandle`. Documented in
 > `.github/instructions/go-codex.instructions.md`'s own "`api/reqreply.
 > Client` Registry" section. **This doc stays in `docs/roadmap/` (not
 > deleted/promoted, per this project's usual shipped-feature lifecycle)
@@ -18,11 +24,25 @@
 > [`reqreply-dead-letter-replay.md`](reqreply-dead-letter-replay.md)
 > still cross-reference its full design rationale as their own
 > prerequisite** — it will be reconsidered for deletion/promotion once
-> ALL 3 phases have shipped, not phase-by-phase. No `docs/features/`
-> page yet — Phase 0 alone has no end-to-end, user-visible behavior
-> (mirrors `rest-redirects.md`'s own precedent: that page was written
-> once redirects/Phase-1-equivalent shipped, not when REST's registry
-> alone did). [← Back to Roadmap](index.md)
+> ALL 3 phases have shipped, not phase-by-phase.
+>
+> **User-facing docs (`docs/features/`/`docs/guides/`) are DELIBERATELY
+> DEFERRED, confirmed not merely an oversight.** Checked REST's own
+> redirect docs precisely: `docs/features/rest-redirects.md` (reference)
+> and `docs/guides/rest-redirects.md` (step-by-step walkthrough,
+> cross-linking the feature page) are a PAIR, both written in the SAME
+> commit that shipped the FULL feature — registry AND redirect-following
+> TOGETHER — not when the registry alone existed, and both link RUNNABLE
+> example demos (`examples/rest-redirect`, `examples/rest-api`'s
+> `demo_redirect.go`). Phase 0's registry has no equivalent runnable
+> demo possible today — `RegisterRoute`'s only reason to exist (Forward's
+> target resolution) doesn't exist yet, so there is no end-to-end
+> workflow a guide could walk through or an example could demonstrate.
+> The SAME features+guide PAIR for reqreply will be written together,
+> once [`reqreply-forward-bounce.md`](reqreply-forward-bounce.md) (Phase
+> 1) ships and there is a real, runnable workflow to document — not
+> phase-by-phase, and not as a weaker, demo-free stand-in now.
+> [← Back to Roadmap](index.md)
 
 ## Relationship to the other 2 reqreply roadmap docs
 
@@ -278,10 +298,25 @@ counterpart today").
   // exist for) would otherwise be undetectable: this reply's classification
   // result surfaces through the SAME return shape:
   //   - ordinary successful reply:            (replyBytes, nil)
-  //   - reply is itself tagged as a forward:   (nil, ForwardError{TargetTopic, Payload})
-  //   - reply matched a declared ErrorPattern: (nil, <the same typed error Call would return>)
+  //   - reply is itself tagged as a forward:   (nil, ForwardError{TargetTopic, Payload})      [NOT YET IMPLEMENTED]
+  //   - reply matched a declared ErrorPattern: (nil, ForwardRawErrorReply{Code, Body})         [SHIPPED]
   CallRaw(ctx context.Context, topic string, payload []byte) ([]byte, error)
   ```
+
+  **`ForwardRawErrorReply{Code, Body}` — SHIPPED, this round.** `CallRaw`
+  has no route to DECODE a matched `ErrorPattern`'s code against (that's
+  a `*RouteHandle` method, `DecodeErrorFor`), but the raw code
+  EXTRACTION itself (mqtt5's `errorCodeFromUserProperties`; zeromq's
+  3rd/4th reply frame) is a pure wire-level read needing no route at
+  all. `CallRaw` does ONLY the extraction, returning
+  `ForwardRawErrorReply{Code, Body}` (`Code` is `""` on the plain-text
+  fallback, non-empty on a matched pattern); a caller holding the
+  registry-resolved target `*RouteHandle` — i.e. the chain-following
+  loop described below, once Phase 1 ships — finishes the decode itself
+  via `targetHandle.DecodeErrorFor(Code, Body)`. This keeps `CallRaw` a
+  pure wire-extraction primitive while still closing the "cannot
+  reproduce `Call`'s matched-code decode branch" gap that existed when
+  `CallRaw` first shipped.
 
   Decoding the raw reply bytes into the registry-resolved
   `*RouteHandle[TargetReq,TargetResp]`'s `Resp` type then happens in
@@ -401,9 +436,11 @@ test fake needed a trivial `CallRaw` stub added to keep compiling — the
 ONLY ripple effect, expected from an additive interface method).
 
 [`reqreply-forward-bounce.md`](reqreply-forward-bounce.md) (Phase 1) is
-now UNBLOCKED — its own implementation plan (the 8→4-combination
-dispatch-path inventory, the new wire signal in both adapters, the
-`ForwardSecuritySchemeMismatchError` check) is the next distinct,
-future step requiring its own explicit go-ahead, the same rigor Typed
-HTTP Redirects itself went through across its own critical-review
-rounds before implementation began.
+now UNBLOCKED — its own implementation plan (the 9-point wire-signal
+dispatch inventory, the new wire signal across 3 adapter-transports, the
+`ForwardSecuritySchemeMismatchError` check, and the `Client.CallAsync`
+restructure/`ClientTransport.CallAsync` removal found necessary by that
+doc's own 4th review round) is the next distinct, future step requiring
+its own explicit go-ahead, the same rigor Typed HTTP Redirects itself
+went through across its own critical-review rounds before
+implementation began.

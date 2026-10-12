@@ -73,7 +73,13 @@ forward reply, decoding the FINAL raw reply via the registry-resolved
 target's `Resp` codec in `api/reqreply.Client` itself. This means
 **Phase 2 needs ZERO new wire mechanism and ZERO new adapter-side code**
 — both `CallRaw` and the chain-following loop are implemented ONCE, by
-Phase 0/1, and reused unchanged here.
+Phase 0/1, and reused unchanged here. This also means Phase 2 benefits
+AUTOMATICALLY, for free, from `CallRaw`'s `ForwardRawErrorReply{Code,
+Body}` enrichment ([Phase 0, shipped](reqreply-client-registry.md)): if
+a replayed message's reply matches a declared `ErrorPattern`,
+`ReplayDeadLetter` gets the SAME structured decode (via the loop's
+already-resolved target `*RouteHandle.DecodeErrorFor`) an ordinary
+forward-following `Call` would — no separate work needed here either.
 
 ## API surface — CONFIRMED
 
@@ -87,11 +93,18 @@ func (c *Client) ReplayDeadLetterAsync(ctx context.Context, envelope DeadLetterE
 Methods on `Client` (not free functions) — the registry lives on
 `Client` (unexported fields), so a method is the natural, no-extra-
 surface choice; a free function would just be a thin wrapper needing the
-same access anyway. `ReplayDeadLetterAsync` reuses the SAME "pending
-calls by correlation ID" chaining machinery
-[Phase 1's](reqreply-forward-bounce.md) `CallAsync`-forward-chaining
-already needs — not genuinely new dispatch complexity, just another call
-site into it.
+same access anyway. **`ReplayDeadLetterAsync` reuses the SAME
+goroutine-wraps-its-own-synchronous-call pattern
+[Phase 1's](reqreply-forward-bounce.md) restructured `Client.CallAsync`
+uses** (confirmed, after Phase 1's own review found the ORIGINAL
+"delegate to `ClientTransport.CallAsync`" design structurally broken —
+see that doc's "`CallAsync`/`Future`" section): spawn a goroutine
+wrapping the synchronous `ReplayDeadLetter` (which already runs the
+chain-following loop), resolve a `Future` with its result. `Replay
+DeadLetterAsync` was ALREADY correctly scoped as a `Client`-level-ONLY
+method with no `ClientTransport` involvement at all, so it has NO
+equivalent structural issue to resolve — this note just keeps the two
+docs' terminology consistent now that Phase 1's own design changed.
 
 ## Structured error — a DISTINCT type, not a reuse
 
@@ -142,8 +155,8 @@ independently verify (an ops/replay tool invokes `Client` directly; it is
 not a domain port a `ports.Pattern` binding would ever wrap). Confirmed
 clean via this structural reasoning, not silently skipped — this is a
 genuine, structural reason Phase 2 avoids
-[Phase 1's](reqreply-forward-bounce.md) 8-combination matrix, not an
-oversight matching Round 201's own lesson.
+[Phase 1's](reqreply-forward-bounce.md) 6-point wire-signal dispatch
+inventory, not an oversight matching Round 201's own lesson.
 
 ## Next step
 
@@ -154,7 +167,8 @@ shipping first (this doc reuses Phase 1's own low-level primitive
 directly; there is nothing for Phase 2 to implement until that primitive
 exists). Once Phase 1 ships, turning this into an actual implementation
 plan (unit test plan covering `UnrecognizedDeadLetterSourceError`, the
-poisoned-registry-entry case, and the `CallAsync` chaining reuse) is a
-distinct, future step requiring its own explicit go-ahead. No code
+poisoned-registry-entry case, and the goroutine-wraps-synchronous-call
+async pattern reuse) is a distinct, future step requiring its own
+explicit go-ahead. No code
 should be written against this design until that implementation plan
 exists and is approved.

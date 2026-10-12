@@ -111,12 +111,83 @@ func TestClientTransport_CallRaw_ErrorReply_FallsBackToPlainTextError(t *testing
 	if callErr == nil {
 		t.Fatal("CallRaw: want an error for a handler failure, got nil")
 	}
-	var ce CallError
-	if !errors.As(callErr, &ce) || ce.Kind != KindHandler {
-		t.Fatalf("CallRaw error: want CallError{Kind: KindHandler}, got %v (%T)", callErr, callErr)
+	var raw reqreply.ForwardRawErrorReply
+	if !errors.As(callErr, &raw) {
+		t.Fatalf("CallRaw error: want reqreply.ForwardRawErrorReply, got %v (%T)", callErr, callErr)
 	}
-	if !strings.Contains(callErr.Error(), unrelatedErr.Error()) {
-		t.Errorf("CallRaw error: want plain-text fallback containing %q, got: %v", unrelatedErr.Error(), callErr)
+	if raw.Code != "" {
+		t.Errorf("ForwardRawErrorReply.Code: want \"\" (no declared ErrorPattern matched), got %q", raw.Code)
+	}
+	if !strings.Contains(string(raw.Body), unrelatedErr.Error()) {
+		t.Errorf("ForwardRawErrorReply.Body: want plain-text fallback containing %q, got: %s", unrelatedErr.Error(), raw.Body)
+	}
+
+	cancel()
+	if err := <-errCh; err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+}
+
+// TestClientTransport_CallRaw_ErrorReply_MatchedPattern_ReturnsRawCode
+// confirms CallRaw's own route-free code EXTRACTION (via
+// errorCodeFromUserProperties) when a declared ErrorPattern DOES match
+// server-side — CallRaw still cannot DECODE the matched pattern itself
+// (no route), but must surface the raw code so a future caller holding
+// the registry-resolved target RouteHandle can finish that decode via
+// RouteHandle.DecodeErrorFor(Code, Body).
+func TestClientTransport_CallRaw_ErrorReply_MatchedPattern_ReturnsRawCode(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	handler := func(_ context.Context, _ computeReq) (computeResp, error) {
+		return computeResp{}, serveConflictErr{msg: "duplicate"}
+	}
+	epRoute := reqreply.NewRoute[computeReq, computeResp]("compute/add-callraw-ep", computeReqCodec, computeRespCodec,
+		reqreply.ErrorPattern[serveConflictErr, serveErrPayload](serveErrPayloadCodec,
+			func(e serveConflictErr) (serveErrPayload, error) {
+				return serveErrPayload{Code: "conflict", Message: e.msg}, nil
+			},
+		).WithCode("conflict"),
+	)
+	if _, err := epRoute.WithHandler(handler).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	serverClient := &mockClient{}
+	serverRouter := newMockRouter()
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter})); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- server.Serve(ctx) }()
+	serverRouter.waitHandler("compute/add-callraw-ep")
+
+	clientClient := &mockClient{}
+	clientRouter := newMockRouter()
+	transport := NewClientTransport(ClientTransportOptions{Client: clientClient, Router: clientRouter})
+
+	wireBrokers(t, serverClient, clientRouter)
+	wireBrokers(t, clientClient, serverRouter)
+
+	handle := epRoute.ClientHandle()
+	payload, err := handle.EncodeRequest(computeReq{X: 1, Y: 2})
+	if err != nil {
+		t.Fatalf("EncodeRequest: %v", err)
+	}
+
+	_, callErr := transport.CallRaw(context.Background(), "compute/add-callraw-ep", payload)
+	if callErr == nil {
+		t.Fatal("CallRaw: want an error for a handler failure, got nil")
+	}
+	var raw reqreply.ForwardRawErrorReply
+	if !errors.As(callErr, &raw) {
+		t.Fatalf("CallRaw error: want reqreply.ForwardRawErrorReply, got %v (%T)", callErr, callErr)
+	}
+	if raw.Code != "conflict" {
+		t.Errorf("ForwardRawErrorReply.Code: want %q, got %q", "conflict", raw.Code)
+	}
+	if len(raw.Body) == 0 {
+		t.Error("ForwardRawErrorReply.Body: want non-empty encoded serveErrPayload body")
 	}
 
 	cancel()

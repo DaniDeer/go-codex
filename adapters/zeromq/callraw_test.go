@@ -101,12 +101,83 @@ func TestClientTransport_CallRaw_ErrorReply_FallsBackToPlainTextError(t *testing
 	if callErr == nil {
 		t.Fatal("CallRaw: want an error for a handler failure, got nil")
 	}
-	var ce CallError
-	if !errors.As(callErr, &ce) {
-		t.Fatalf("CallRaw error: want CallError, got %v (%T)", callErr, callErr)
+	var raw reqreply.ForwardRawErrorReply
+	if !errors.As(callErr, &raw) {
+		t.Fatalf("CallRaw error: want reqreply.ForwardRawErrorReply, got %v (%T)", callErr, callErr)
 	}
-	if !strings.Contains(callErr.Error(), unrelatedErr.Error()) {
-		t.Errorf("CallRaw error: want plain-text fallback containing %q, got: %v", unrelatedErr.Error(), callErr)
+	if raw.Code != "" {
+		t.Errorf("ForwardRawErrorReply.Code: want \"\" (no declared ErrorPattern matched), got %q", raw.Code)
+	}
+	if !strings.Contains(string(raw.Body), unrelatedErr.Error()) {
+		t.Errorf("ForwardRawErrorReply.Body: want plain-text fallback containing %q, got: %s", unrelatedErr.Error(), raw.Body)
+	}
+
+	cancel()
+	select {
+	case err := <-serveErrCh:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not return after ctx cancellation")
+	}
+}
+
+// TestClientTransport_CallRaw_ErrorReply_MatchedPattern_ReturnsRawCode
+// confirms CallRaw's own route-free code EXTRACTION (3-frame
+// [status,code,body] reply) when a declared ErrorPattern DOES match
+// server-side — CallRaw still cannot DECODE the matched pattern itself
+// (no route), but must surface the raw code so a future caller holding
+// the registry-resolved target RouteHandle can finish that decode via
+// RouteHandle.DecodeErrorFor(Code, Body).
+func TestClientTransport_CallRaw_ErrorReply_MatchedPattern_ReturnsRawCode(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	handler := func(_ context.Context, _ computeReq) (computeResp, error) {
+		return computeResp{}, serveZmqConflictErr{msg: "duplicate"}
+	}
+	epRoute := reqreply.NewRoute[computeReq, computeResp]("/compute-callraw-ep", computeReqCodec, computeRespCodec,
+		reqreply.ErrorPattern[serveZmqConflictErr, serveZmqErrPayload](serveZmqErrPayloadCodec,
+			func(e serveZmqConflictErr) (serveZmqErrPayload, error) {
+				return serveZmqErrPayload{Code: "conflict", Message: e.msg}, nil
+			},
+		).WithCode("conflict"),
+	)
+	if _, err := epRoute.WithHandler(handler).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	repSock, reqSock := newChanSocketPair()
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Sockets: map[string]FramedSocket{"/compute-callraw-ep": repSock}})); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	transport := NewClientTransport(ClientTransportOptions{Sockets: map[string]FramedSocket{"/compute-callraw-ep": reqSock}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveErrCh := make(chan error, 1)
+	go func() { serveErrCh <- server.Serve(ctx) }()
+
+	handle := epRoute.ClientHandle()
+	payload, err := handle.EncodeRequest(computeReq{X: 1, Y: 2})
+	if err != nil {
+		t.Fatalf("EncodeRequest: %v", err)
+	}
+
+	callCtx, callCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer callCancel()
+	_, callErr := transport.CallRaw(callCtx, "/compute-callraw-ep", payload)
+	if callErr == nil {
+		t.Fatal("CallRaw: want an error for a handler failure, got nil")
+	}
+	var raw reqreply.ForwardRawErrorReply
+	if !errors.As(callErr, &raw) {
+		t.Fatalf("CallRaw error: want reqreply.ForwardRawErrorReply, got %v (%T)", callErr, callErr)
+	}
+	if raw.Code != "conflict" {
+		t.Errorf("ForwardRawErrorReply.Code: want %q, got %q", "conflict", raw.Code)
+	}
+	if len(raw.Body) == 0 {
+		t.Error("ForwardRawErrorReply.Body: want non-empty encoded serveZmqErrPayload body")
 	}
 
 	cancel()
@@ -200,12 +271,80 @@ func TestDealerClientTransport_CallRaw_ErrorReply_FallsBackToPlainTextError(t *t
 	if callErr == nil {
 		t.Fatal("CallRaw: want an error for a handler failure, got nil")
 	}
-	var ce CallError
-	if !errors.As(callErr, &ce) {
-		t.Fatalf("CallRaw error: want CallError, got %v (%T)", callErr, callErr)
+	var raw reqreply.ForwardRawErrorReply
+	if !errors.As(callErr, &raw) {
+		t.Fatalf("CallRaw error: want reqreply.ForwardRawErrorReply, got %v (%T)", callErr, callErr)
 	}
-	if !strings.Contains(callErr.Error(), unrelatedErr.Error()) {
-		t.Errorf("CallRaw error: want plain-text fallback containing %q, got: %v", unrelatedErr.Error(), callErr)
+	if raw.Code != "" {
+		t.Errorf("ForwardRawErrorReply.Code: want \"\" (no declared ErrorPattern matched), got %q", raw.Code)
+	}
+	if !strings.Contains(string(raw.Body), unrelatedErr.Error()) {
+		t.Errorf("ForwardRawErrorReply.Body: want plain-text fallback containing %q, got: %s", unrelatedErr.Error(), raw.Body)
+	}
+
+	cancel()
+	select {
+	case err := <-serveErrCh:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve did not return after ctx cancellation")
+	}
+}
+
+// TestDealerClientTransport_CallRaw_ErrorReply_MatchedPattern_ReturnsRawCode
+// mirrors TestClientTransport_CallRaw_ErrorReply_MatchedPattern_ReturnsRawCode,
+// adapted to DEALER's 4-frame [delimiter,status,code,body] matched-reply
+// framing.
+func TestDealerClientTransport_CallRaw_ErrorReply_MatchedPattern_ReturnsRawCode(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	handler := func(_ context.Context, _ computeReq) (computeResp, error) {
+		return computeResp{}, serveZmqConflictErr{msg: "duplicate"}
+	}
+	epRoute := reqreply.NewRoute[computeReq, computeResp]("/compute-callraw-dealer-ep", computeReqCodec, computeRespCodec,
+		reqreply.ErrorPattern[serveZmqConflictErr, serveZmqErrPayload](serveZmqErrPayloadCodec,
+			func(e serveZmqConflictErr) (serveZmqErrPayload, error) {
+				return serveZmqErrPayload{Code: "conflict", Message: e.msg}, nil
+			},
+		).WithCode("conflict"),
+	)
+	if _, err := epRoute.WithHandler(handler).Register(server); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	dealerSock, routerSock := newDealerRouterPair([]byte("client-1"))
+	if err := server.Attach(NewRouterServerTransport(RouterServerTransportOptions{Sockets: map[string]FramedSocket{"/compute-callraw-dealer-ep": routerSock}})); err != nil {
+		t.Fatalf("AttachRouterServer: %v", err)
+	}
+	transport := NewDealerClientTransport(DealerClientTransportOptions{Sockets: map[string]FramedSocket{"/compute-callraw-dealer-ep": dealerSock}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveErrCh := make(chan error, 1)
+	go func() { serveErrCh <- server.Serve(ctx) }()
+
+	handle := epRoute.ClientHandle()
+	payload, err := handle.EncodeRequest(computeReq{X: 1, Y: 2})
+	if err != nil {
+		t.Fatalf("EncodeRequest: %v", err)
+	}
+
+	callCtx, callCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer callCancel()
+	_, callErr := transport.CallRaw(callCtx, "/compute-callraw-dealer-ep", payload)
+	if callErr == nil {
+		t.Fatal("CallRaw: want an error for a handler failure, got nil")
+	}
+	var raw reqreply.ForwardRawErrorReply
+	if !errors.As(callErr, &raw) {
+		t.Fatalf("CallRaw error: want reqreply.ForwardRawErrorReply, got %v (%T)", callErr, callErr)
+	}
+	if raw.Code != "conflict" {
+		t.Errorf("ForwardRawErrorReply.Code: want %q, got %q", "conflict", raw.Code)
+	}
+	if len(raw.Body) == 0 {
+		t.Error("ForwardRawErrorReply.Body: want non-empty encoded serveZmqErrPayload body")
 	}
 
 	cancel()
