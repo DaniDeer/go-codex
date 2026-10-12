@@ -45,10 +45,6 @@ func (m *mockClientTransport) Call(_ context.Context, route, req any, _ ...reqre
 	return m.resp, m.err
 }
 
-func (m *mockClientTransport) CallAsync(_ context.Context, route, req any, _ ...reqreply.ClientCallOptions) (any, error) {
-	return nil, nil
-}
-
 // CallRaw is unused by these CallWithTransport tests (Phase 0
 // infrastructure, not exercised here) — present only to satisfy
 // [reqreply.ClientTransport].

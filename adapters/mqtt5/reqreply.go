@@ -170,6 +170,13 @@ type CallOptions struct {
 
 // isErrorReply checks whether an incoming reply was sent as an error by the responder.
 // Error replies carry a special ContentType "application/mqtt5-error".
+//
+// Dispatch ordering: wherever both [isForwardReply] and [isErrorReply] are
+// consulted on the same reply, [isForwardReply] MUST be checked FIRST —
+// docs/roadmap/reqreply-forward-bounce.md's documented "Forward
+// recognized before ErrorPattern" precedence, mirroring
+// [rest.RedirectError]'s identical "recognized before ErrorPattern/
+// ErrorStatus" rule.
 func isErrorReply(msg *pahomqtt5.Publish) bool {
 	return msg.Properties != nil &&
 		msg.Properties.ContentType == errorReplyContentType
@@ -177,6 +184,42 @@ func isErrorReply(msg *pahomqtt5.Publish) bool {
 
 // errorReplyContentType is the ContentType set on error replies by [Serve].
 const errorReplyContentType = "application/mqtt5-error"
+
+// isForwardReply checks whether an incoming reply was sent as a
+// [reqreply.ForwardError] signal by the responder — docs/roadmap/
+// reqreply-forward-bounce.md's mqtt5 wire signal, built the SAME way
+// [isErrorReply] is: a reserved ContentType. See [isErrorReply]'s doc
+// comment for the dispatch-ordering rule governing both checks.
+func isForwardReply(msg *pahomqtt5.Publish) bool {
+	return msg.Properties != nil &&
+		msg.Properties.ContentType == forwardContentType
+}
+
+// forwardContentType is the ContentType set on forward replies by
+// [Serve] when a handler returns a [reqreply.ForwardError] (constructed
+// via [reqreply.Forward]).
+const forwardContentType = "application/mqtt5-forward"
+
+// forwardTopicPropertyKey is the RESERVED MQTT5 User Property key
+// carrying a [reqreply.ForwardError]'s TargetTopic — set ONLY on a
+// forward reply (ContentType [forwardContentType]), mirroring
+// [errorCodePropertyKey]'s identical convention for error replies.
+const forwardTopicPropertyKey = "x-forward-topic"
+
+// forwardTopicFromUserProperties reads [forwardTopicPropertyKey] from a
+// forward reply's User Properties — "" when absent. Mirrors
+// [errorCodeFromUserProperties] exactly.
+func forwardTopicFromUserProperties(msg *pahomqtt5.Publish) string {
+	if msg.Properties == nil {
+		return ""
+	}
+	for _, p := range msg.Properties.User {
+		if p.Key == forwardTopicPropertyKey {
+			return p.Value
+		}
+	}
+	return ""
+}
 
 // errorCodePropertyKey is the RESERVED MQTT5 User Property key carrying a
 // matched [reqreply.ErrorPattern]'s Code — set ONLY by

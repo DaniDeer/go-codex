@@ -1,8 +1,138 @@
-# go-codex Review History (R1–R204, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
+# go-codex Review History (R1–R205, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
 
 Do not re-report any of these findings. They have been implemented and tested.
 
 ---
+
+## Round 205 (`deep-dive-bug-hunt` applied to `api/reqreply` — ARGUMENTS: "for api/reqreply especially for the forward-bounce implementation" — the Forward/Bounce feature (Phase 1 of docs/roadmap/reqreply-forward-bounce.md) just shipped THIS session, never previously reviewed by this skill)
+
+Round 203 covered the registry + `CallRaw` concept (Phase 0). This round covers the NEW
+production code added on top of it since: `reqreply.Forward`/`ForwardError`/4 new structured
+errors (`api/reqreply/forward.go`), the CENTRALIZED chain-following loop
+(`Client.followForward`), the `CallAsync` restructure (`ClientTransport.CallAsync` removed
+entirely), the wire signal across all 9 real insertion points in `adapters/mqtt5`/
+`adapters/zeromq` (6 client-recognize + 3 server-publish), and the `ports.Pattern`/
+`CallWithTransport` passthrough verification — none of which existed when Round 203 ran.
+
+### Finding — 1 REAL, confirmed bug: mqtt5's Forward reply silently dropped Case 3 write-side property wiring
+
+`adapters/mqtt5`'s server-side `Serve` dispatch has 3 distinct reply kinds it can publish for a
+route: success, `ErrorPattern`-matched error, and (new this session) Forward. `docs/design/
+d-0003-codec-declared-middlewares.md`'s Addendum already established and tested that a
+`WithResponseProperty`-declared value must be written onto the outgoing reply's User Properties
+for BOTH the success reply (`TestAttachServer_WithResponseProperty_WritesOutgoingUserProperty`)
+AND the error reply (`TestAttachServer_WithResponseProperty_ErrorReplyAlsoWritesUserProperty`) —
+this is EXACTLY the "a new dispatch path silently misses an established convention other paths
+already have" gotcha this skill's own reference doc warns about, and EXACTLY the same root cause
+as Round 203's 2 `CallRaw` findings (TraceObserver span, Capabilities application) a few rounds
+ago. The NEW Forward reply-publish branch (added this session) built its own
+`*pahomqtt5.PublishProperties` literal from scratch, including the reserved `ContentType`/
+`x-forward-topic` User Property, but never appended `middlewarePropertyVars` — so a route with
+BOTH a `WithResponseProperty`-declaring middleware AND a handler that forwards would silently
+drop the declared property from the Forward reply, while the SAME route's success/error replies
+would correctly carry it.
+
+Reproduced live first (`adapters/mqtt5/forward_reqreply_test.go`'s
+`TestAttachServer_WithResponseProperty_ForwardReplyAlsoWritesUserProperty` — mirrors the 2
+existing success/error-reply tests exactly, substituting a forwarding handler — confirmed FAILING
+against the pre-fix code: `want the FORWARD reply's User Properties to ALSO carry X-Ack=fwd-ack`,
+got a published message with only the reserved `x-forward-topic` property), then fixed by building
+the Forward reply's `PublishProperties.User` the SAME way the success/error paths already do:
+start with the reserved forward markers, then `append(..., userPropertiesFromMap(middlewarePropertyVars)...)`
+when non-empty. Confirmed the fix is correctly ORDERED — `middlewarePropertyVars` is populated by
+the SAME middleware-dispatch block that runs BEFORE the handler call (and thus before the
+`handlerErr != nil`/Forward branch), identically for all 3 reply kinds.
+
+**`adapters/zeromq` has NO equivalent gap — confirmed, not assumed.** zeromq's reqreply transport
+has NO write-side property-vars wire mechanism of ANY kind (confirmed via `grep`: its only
+`MergePropertyVars` calls are READ-side, decoding the INCOMING request; there is no analogous
+"write a property onto the outgoing reply" call site anywhere in `adapters/zeromq/
+reqreply_transport.go`, matching `examples/reqreply-api/zeromqserver/server.go`'s own documented
+"a transport with NO property mechanism at all" note). This is NOT an N-way parity miss — the
+other adapter genuinely has nothing to be missing.
+
+### Everything else re-traced across all 9 wire-signal insertion points — confirmed clean
+
+- **Capabilities (QoS/Retained for mqtt5, HWM/Conflate for zeromq) correctly cover the Forward
+  reply.** mqtt5's Forward publish uses the SAME per-publish `effectiveQoS`/`effectiveRetained`
+  (resolved once, at `Serve` setup, from `ServeOptions.Capabilities`) every other reply kind uses
+  — confirmed via direct code read, no gap. zeromq applies `Capabilities` ONCE, at socket setup
+  (`applyCapabilities(sock, ...)`, since HWM/Conflate are socket-level, not per-message) — the
+  Forward reply automatically inherits this through the SAME socket, by construction; no
+  per-reply-kind code path to miss at all.
+- **`TraceObserver` spans correctly capture a Forward's error.** Both `mqtt5`'s `Serve` (server
+  side) and `call()`/`CallRaw()` (client side) use the SAME `defer func(){ to.EndSpan(ctx/spanCtx,
+  serveErr/err) }()` pattern against a NAMED return/mutable local the Forward branch already
+  assigns before returning (`serveErr = handlerErr` server-side; the reflection dispatch's
+  `finalResults[1]` unpacks into `call()`'s own named `err` return via a plain `return nil, errI`
+  statement) — traced the FULL call chain from the `reflect.MakeFunc`-constructed inner dispatch
+  back out to the named return to confirm this, not assumed from the pattern looking similar.
+- **Disposition records `DispositionNackRequeue` for a Forward today — an ALREADY-documented,
+  deliberately-deferred limitation, not a new finding.** `stats.ResolveDisposition` treats ANY
+  non-nil `handlerErr` (including `ForwardError`) as `DispositionNackRequeue`; this doc's own
+  "Handler Disposition / message-acknowledgement interaction" section already flags this exact
+  interaction ("A Forward should be treated as 'this server handled the inbound message'... for
+  whichever adapter eventually has real ack semantics (AMQP)... noted now so that future AMQP-
+  adapter round doesn't have to rediscover this") as a KNOWN, explicitly-deferred gap, low priority
+  since no adapter has real ack/nack protocol yet. Confirmed the CURRENT behavior matches exactly
+  what the doc already anticipates, not a NEW divergence.
+- **Security-scheme check compares EVERY hop against the ORIGINATING route's scheme, not the
+  immediately-preceding hop's — confirmed CORRECT by design, not a bug.** `followForward` resolves
+  `originatingSchemes` ONCE, before the loop, and reuses it for every iteration's
+  `checkForwardSecurityScheme` call. Reasoned through deliberately (not just read): the actual
+  CREDENTIAL being reused across every hop is the ORIGINATING call's own credential (the design
+  doc's own "Credential reuse... The originating call's fully-merged header vars are replayed on
+  the follow-up request" — this never changes mid-chain), so validating each hop's target scheme
+  against that SAME originating scheme is the behavior that actually matches what credential will
+  be reused there — comparing against an intermediate hop's OWN declared scheme instead would be
+  wrong.
+- **All 9 wire-signal insertion points independently re-traced** (not re-verified via the
+  implementing subagents' own self-reports): mqtt5 `call()`/`CallRaw()`, zeromq `clientTransport.
+  call()`/`CallRaw()`, zeromq `dealerClientTransport.call()`/`CallRaw()` (6 client-recognize,
+  confirmed Forward checked BEFORE `isErrorReply`/`"error"` in all 6, correct frame/property
+  shapes); mqtt5 `serverTransport.Serve`, zeromq `serverTransport.Serve`/`routerServerTransport.
+  Serve` (3 server-publish, confirmed ErrorPattern/DeadLetter correctly skipped in all 3).
+- **`ErrorPatternResponse` gaining `Error()`/`ErrorPatternValue()`/`LogValue()` this session
+  introduces no zero-value-as-error risk.** Checked every existing call site constructing a bare
+  `ErrorPatternResponse{}` (all 8, in `api/reqreply/route.go`) — every one is the SECOND of a
+  3-value `(ErrorPatternResponse, bool, error)` tuple return's "no match" case, never itself cast
+  to `error`; the type is only ever used AS an error in the NEW `decodeErrorForReflect` path and
+  the PRE-EXISTING adapter-level `mqtt5.ErrorPatternResponse`/`zeromq.ErrorPatternResponse`
+  wrapper types, both ONLY reached after confirming a genuine match.
+
+### New test coverage added — closes a real gap in how thoroughly the chain-following loop had been exercised
+
+Every pre-existing Forward test (both subagent-authored and this session's own
+`api/reqreply/forward_resolve_test.go`) stopped at ONE of 2 levels: TRANSPORT-level wire-signal
+recognition (`call()`/`CallRaw()` return the right `ForwardError`), or the chain-following LOOP's
+own logic in isolation (`forwardFakeClientTransport`, a scripted fake — proves the LOOP mechanics
+but never touches a real adapter's wire format). Neither proves the FULL path — `reqreply.
+Client.Call` → real wire signal → `followForward` → real `CallRaw` republish → real decode —
+actually works end to end. Added `adapters/mqtt5/forward_reqreply_test.go`'s
+`TestClient_Call_FollowsForward_EndToEndViaRealMQTT5Adapter` and `adapters/zeromq/
+forward_reqreply_test.go`'s `TestClient_Call_FollowsForward_EndToEndViaRealZeroMQAdapter` — both
+register an originating + target route on a REAL server, dispatch via `reqreply.Client.Call`
+against a REAL attached transport, and assert the FINAL decoded target response — both pass,
+confirming the full path genuinely works, not just its parts in isolation. (ROUTER/DEALER's own
+end-to-end path was NOT separately added — `followForward` is adapter-agnostic by construction
+[confirmed via code read: it depends only on the `ClientTransport` interface], and DEALER's own
+wire-level Forward recognition is ALREADY independently unit-tested; the marginal value of a 3rd
+real E2E test re-confirming the SAME adapter-agnostic loop logic was judged not to justify the
+added test-maintenance surface.)
+
+### Phase B — design-doc re-review
+
+| Round/fix | Doc(s) cross-checked | Verdict |
+|---|---|---|
+| Forward reply's missing `middlewarePropertyVars` (mqtt5) | `docs/design/d-0003-codec-declared-middlewares.md`'s Addendum "Write-side wiring" | ALIGNED — the doc's own wording ("both success-reply and error-reply... call sites") is accurate to when it was written (Forward didn't exist yet); the fix EXTENDS the same established principle to a 3rd reply kind the doc never had occasion to mention. No doc correction needed (it's not wrong, just dated) — the fix itself is recorded in this round's own entry and a short note added to `go-codex.instructions.md`'s Forward/Bounce section. |
+| Chain-following loop's decode skipping the target's own `ClientMW` | `docs/features/rest-redirects.md` ("Auto-follow never dispatches the target's own `ClientMW`... intentional") | MISALIGNED-BY-SILENCE, now fixed — `reqreply-forward-bounce.md` never stated this decision at all (not a contradiction, just unaddressed), even though the shipped `decodeResponseReflect`/`decodeErrorForReflect` implementation makes the EXACT SAME choice REST already made and explicitly justified. Added an explicit paragraph to `reqreply-forward-bounce.md` cross-referencing REST's own documented rationale almost verbatim, closing the silence. |
+| Disposition recording `NackRequeue` for a Forward | `reqreply-forward-bounce.md`'s own "Handler Disposition / message-acknowledgement interaction" section | ALIGNED — the doc already anticipated and explicitly deferred this exact interaction before implementation began; the shipped behavior matches precisely what the doc said would happen, not a new divergence requiring any doc change. |
+| `CallAsync` restructure / `ClientTransport.CallAsync` removal | `reqreply-forward-bounce.md`'s "CallAsync/Future" section | ALIGNED — re-confirmed (not re-litigated) the shipped code matches the doc's own settled design exactly; no new finding here this round, verified only as part of this round's broader re-trace. |
+
+No `go-codex.instructions.md` note from a PRIOR round was found to contradict anything new this
+round introduced — the existing "Forward/Bounce" section (added when Phase 1 shipped, earlier
+this session) is extended with 1 new paragraph describing this round's bug fix and verification
+scope, not rewritten.
 
 ## Round 204 (`deep-dive-bug-hunt` applied to `api/rest` — ARGUMENTS: "on api/rest after we fixed the observer pattern gap in the redirects" — re-verifying Round 202's fix for completeness AND checking whether the SAME "missing Observer coverage" gap class recurs in any OTHER `api/rest` client dispatch path)
 

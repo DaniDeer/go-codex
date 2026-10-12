@@ -6,11 +6,12 @@
 > `api/reqreply/client_registry_test.go`); `ClientTransport.CallRaw` is
 > implemented in `adapters/mqtt5` and both of `adapters/zeromq`'s client
 > transports (tests: `adapters/mqtt5/callraw_test.go`,
-> `adapters/zeromq/callraw_test.go`) — each adapter's `CallRaw`
-> classifies ONLY the ordinary-reply/`ErrorPattern`-reply legs for now; a
-> marked `// TODO Phase 1:` comment flags the exact insertion point for
-> the Forward-signal classification leg once
-> `reqreply-forward-bounce.md` ships. On an `ErrorPattern`-matched reply,
+> `adapters/zeromq/callraw_test.go`). **[`reqreply-forward-bounce.md`](reqreply-forward-bounce.md)
+> (Phase 1) has SINCE SHIPPED** — `CallRaw` now classifies ALL 3 reply
+> legs (ordinary/Forward/`ErrorPattern`); the marked insertion point this
+> status block used to flag as a future TODO is now real, implemented
+> code (see that doc's own status block for the full file/test
+> inventory). On an `ErrorPattern`-matched reply,
 > `CallRaw` returns `reqreply.ForwardRawErrorReply{Code, Body}` (added
 > during a later thin-adapter review round, see "Decoding the raw reply
 > bytes" below) — a route-free RAW code+body extraction, not the decoded
@@ -26,22 +27,18 @@
 > prerequisite** — it will be reconsidered for deletion/promotion once
 > ALL 3 phases have shipped, not phase-by-phase.
 >
-> **User-facing docs (`docs/features/`/`docs/guides/`) are DELIBERATELY
-> DEFERRED, confirmed not merely an oversight.** Checked REST's own
-> redirect docs precisely: `docs/features/rest-redirects.md` (reference)
-> and `docs/guides/rest-redirects.md` (step-by-step walkthrough,
-> cross-linking the feature page) are a PAIR, both written in the SAME
-> commit that shipped the FULL feature — registry AND redirect-following
-> TOGETHER — not when the registry alone existed, and both link RUNNABLE
-> example demos (`examples/rest-redirect`, `examples/rest-api`'s
-> `demo_redirect.go`). Phase 0's registry has no equivalent runnable
-> demo possible today — `RegisterRoute`'s only reason to exist (Forward's
-> target resolution) doesn't exist yet, so there is no end-to-end
-> workflow a guide could walk through or an example could demonstrate.
-> The SAME features+guide PAIR for reqreply will be written together,
-> once [`reqreply-forward-bounce.md`](reqreply-forward-bounce.md) (Phase
-> 1) ships and there is a real, runnable workflow to document — not
-> phase-by-phase, and not as a weaker, demo-free stand-in now.
+> **User-facing docs (`docs/features/`/`docs/guides/`) — PUBLISHED, once
+> Phase 1 shipped, exactly as planned.** Checked REST's own redirect docs
+> precisely: `docs/features/rest-redirects.md` (reference) and
+> `docs/guides/rest-redirects.md` (step-by-step walkthrough) are a PAIR,
+> both written in the SAME commit that shipped the FULL feature —
+> registry AND redirect-following TOGETHER — not when the registry alone
+> existed. The SAME precedent now applies to reqreply:
+> `docs/features/reqreply-forward.md`/`docs/guides/reqreply-forward.md`
+> were written together with [`reqreply-forward-bounce.md`](reqreply-forward-bounce.md)'s
+> (Phase 1) implementation, linking the runnable
+> `examples/reqreply-api/demo_forward.go` demo — not when Phase 0's
+> registry alone existed, and not as a weaker, demo-free stand-in.
 > [← Back to Roadmap](index.md)
 
 ## Relationship to the other 2 reqreply roadmap docs
@@ -298,7 +295,7 @@ counterpart today").
   // exist for) would otherwise be undetectable: this reply's classification
   // result surfaces through the SAME return shape:
   //   - ordinary successful reply:            (replyBytes, nil)
-  //   - reply is itself tagged as a forward:   (nil, ForwardError{TargetTopic, Payload})      [NOT YET IMPLEMENTED]
+  //   - reply is itself tagged as a forward:   (nil, ForwardError{TargetTopic, Payload})      [SHIPPED, Phase 1]
   //   - reply matched a declared ErrorPattern: (nil, ForwardRawErrorReply{Code, Body})         [SHIPPED]
   CallRaw(ctx context.Context, topic string, payload []byte) ([]byte, error)
   ```

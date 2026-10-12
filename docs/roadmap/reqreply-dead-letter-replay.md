@@ -1,14 +1,16 @@
-# `api/reqreply` Dead-Letter Replay — Design Complete, Not Yet Implemented
+# `api/reqreply` Dead-Letter Replay — Design Complete, Phase 1 Dependency SATISFIED
 
 > **Status:** Design complete — API surface and structured error are
 > settled, and the dispatch-path inventory is confirmed trivial (no
 > `ports.Pattern` binding equivalent to verify, unlike
-> [Phase 1](reqreply-forward-bounce.md)). **Blocked on
+> [Phase 1](reqreply-forward-bounce.md)). **The blocking dependency on
 > [`reqreply-forward-bounce.md`](reqreply-forward-bounce.md) (Phase 1)
-> shipping first** — this doc needs zero new wire mechanism of its own,
-> reusing Phase 1's own chain-following loop (built on `CallRaw`, Phase
-> 0's single-hop primitive) directly; it cannot be implemented before
-> that loop exists. [← Back to Roadmap](index.md)
+> is NOW SATISFIED — Phase 1 has SHIPPED.** This doc needs zero new wire
+> mechanism of its own, reusing Phase 1's own shipped chain-following
+> loop (`Client.followForward`, built on `CallRaw`, Phase 0's single-hop
+> primitive) directly. Ready to plan Phase 2's own implementation next —
+> a distinct, future step requiring its own explicit go-ahead, the same
+> rigor Phase 1 itself went through. [← Back to Roadmap](index.md)
 
 ## Relationship to the other 2 reqreply roadmap docs
 

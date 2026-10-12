@@ -7,6 +7,7 @@ package handlers
 import (
 	"context"
 
+	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/examples/reqreply-api/routes"
 )
 
@@ -27,6 +28,17 @@ func Double(_ context.Context, req routes.ComputeReq) (routes.ComputeResp, error
 // Demo 4's concurrent multi-route dispatch.
 func Triple(_ context.Context, req routes.ComputeReq) (routes.ComputeResp, error) {
 	return routes.ComputeResp{Sum: (req.X + req.Y) * 3}, nil
+}
+
+// ForwardToDouble is ForwardOriginatingRoute's handler — ALWAYS forwards
+// to ForwardTargetRoute (handled by Double, below — reused rather than
+// declaring a 3rd "doubling" handler) instead of returning a normal
+// response, constructing a BRAND NEW request (X/Y scaled ×10, visually
+// distinct from the caller's own req) to demonstrate Forward's "target's
+// Req/Resp are free to differ" rule — see docs/roadmap/
+// reqreply-forward-bounce.md's "API surface" section.
+func ForwardToDouble(_ context.Context, req routes.ComputeReq) (routes.ComputeResp, error) {
+	return routes.ComputeResp{}, reqreply.Forward(routes.ForwardTargetRoute, routes.ComputeReq{X: req.X * 10, Y: req.Y * 10}, nil)
 }
 
 // AddOAuth is OAuthComputeRoute's handler — same domain logic as Add,

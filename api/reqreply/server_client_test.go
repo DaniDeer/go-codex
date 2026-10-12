@@ -91,20 +91,6 @@ func (t *fakeClientTransport) Call(ctx context.Context, routeAny any, reqAny any
 	}
 }
 
-func (t *fakeClientTransport) CallAsync(ctx context.Context, routeAny any, reqAny any, opts ...reqreply.ClientCallOptions) (any, error) {
-	ff, ok := routeAny.(reqreply.FutureFactory)
-	if !ok {
-		return nil, reqreply.TransportTypeMismatchError{Want: "FutureFactory", Got: fmt.Sprintf("%T", routeAny)}
-	}
-	future, resolve := ff.NewFutureAny()
-	req := reqAny.(computeReq)
-	go func() {
-		time.Sleep(5 * time.Millisecond) // simulate async network round trip
-		resolve(computeResp{Sum: req.X + req.Y}, nil)
-	}()
-	return future, nil
-}
-
 // CallRaw is unused by these Server/Client dual-mode-dispatch tests
 // (Phase 0 infrastructure, not exercised here) — present only to
 // satisfy [reqreply.ClientTransport].

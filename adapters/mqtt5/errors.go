@@ -37,6 +37,13 @@ const (
 	// middleware mechanism. Distinct from KindHandler (a real domain
 	// handler failure).
 	KindMiddleware
+
+	// KindForward indicates a handler returned a [reqreply.ForwardError]
+	// (constructed via [reqreply.Forward]) — docs/roadmap/
+	// reqreply-forward-bounce.md's Phase 1.3. Distinct from
+	// [KindHandler]: a Forward is a deliberate instruction to republish
+	// elsewhere, not a failure.
+	KindForward
 )
 
 func (k ErrorKind) String() string {
@@ -53,6 +60,8 @@ func (k ErrorKind) String() string {
 		return "security"
 	case KindMiddleware:
 		return "middleware"
+	case KindForward:
+		return "forward"
 	default:
 		return "unknown"
 	}

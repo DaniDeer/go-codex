@@ -94,6 +94,29 @@ var TripleRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 	reqreply.RouteMeta{OperationID: "computeTriple", Summary: "Triple the sum of two integers."},
 )
 
+// ForwardOriginatingRoute/ForwardTargetRoute demonstrate docs/roadmap/
+// reqreply-forward-bounce.md's Forward/Bounce feature: a handler on
+// ForwardOriginatingRoute always returns reqreply.Forward(...) targeting
+// ForwardTargetRoute — mqtt5Client.Call auto-follows it via its
+// CENTRALIZED chain-following loop (see demo_forward.go), returning
+// ForwardTargetRoute's OWN typed response directly, transparently to the
+// caller.
+var ForwardTargetRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
+	"forward-target",
+	ComputeReqCodec, ComputeRespCodec,
+	// Security: []reqreply.SecurityRequirement{} explicitly OPTS OUT of
+	// this Server's inherited GlobalSecurity (bearerAuth, declared for
+	// GlobalOnlyComputeRoute's own demo) — mirrors ComputeRoute's own
+	// identical opt-out; neither Forward route needs auth for this demo.
+	reqreply.RouteMeta{OperationID: "computeForwardTarget", Summary: "Forward/Bounce's target route — doubles the sum.", Security: []reqreply.SecurityRequirement{}},
+)
+
+var ForwardOriginatingRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
+	"forward-originating",
+	ComputeReqCodec, ComputeRespCodec,
+	reqreply.RouteMeta{OperationID: "computeForwardOriginating", Summary: "Forward/Bounce's originating route — always forwards to ForwardTargetRoute.", Security: []reqreply.SecurityRequirement{}},
+)
+
 // SecuredComputeRoute is declared PRISTINE — no Security, no scheme —
 // exactly like ComputeRoute above. Its OWN security requirement is
 // declared declaratively via .Use(BearerAuthMw) (see middleware.go),

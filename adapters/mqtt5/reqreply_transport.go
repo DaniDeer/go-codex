@@ -2,6 +2,7 @@ package mqtt5
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -767,6 +768,57 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 			dispObs.RecordDisposition(path, disposition)
 		}
 		if handlerErr != nil {
+			// docs/roadmap/reqreply-forward-bounce.md's Phase 1.3
+			// "Dispatch ordering" rule: a [reqreply.ForwardError] is a
+			// DELIBERATE instruction to republish elsewhere, not a
+			// failure — it MUST skip ErrorPattern matching
+			// (publishHandlerErrorReplyReflect) AND DeadLetter
+			// (tryDeadLetterReflect) entirely, publishing the reserved
+			// forward wire signal instead and returning early.
+			var fwd reqreply.ForwardError
+			if errors.As(handlerErr, &fwd) {
+				serveErr = handlerErr
+				// RecordRequest status choice: 0, mirroring every OTHER
+				// non-success branch in this dispatch (KindSecurity/
+				// KindDecode/KindEncode/KindHandler all record 0 here;
+				// only the terminal success path records 200) — a
+				// Forward is non-success from THIS route's own
+				// perspective even though it is not an error, so it
+				// stays consistent with the surrounding convention
+				// rather than inventing a new status code.
+				obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
+				if responseTopic != "" {
+					// `deep-dive-bug-hunt` finding (reqreply/forward-
+					// bounce focused round): Case 3 write-side wiring
+					// (docs/design/d-0003-codec-declared-middlewares.md's
+					// Addendum) — a Middleware's WithResponseProperty-
+					// declared value must be written onto EVERY reply
+					// this server publishes for the route, not just the
+					// success/error-pattern replies (both of which
+					// already append middlewarePropertyVars) — the
+					// Forward reply had silently dropped this, found via
+					// a live failing test before this fix.
+					fwdProps := &pahomqtt5.PublishProperties{
+						ContentType:     forwardContentType,
+						CorrelationData: correlationData,
+						User:            pahomqtt5.UserProperties{{Key: forwardTopicPropertyKey, Value: fwd.TargetTopic}},
+					}
+					if len(middlewarePropertyVars) > 0 {
+						fwdProps.User = append(fwdProps.User, userPropertiesFromMap(middlewarePropertyVars)...)
+					}
+					_, _ = t.client.Publish(spanCtx, &pahomqtt5.Publish{
+						Topic:      responseTopic,
+						QoS:        effectiveQoS,
+						Retain:     effectiveRetained,
+						Payload:    fwd.Payload,
+						Properties: fwdProps,
+					})
+				}
+				if t.opts.OnError != nil {
+					t.opts.OnError(ServeError{Kind: KindForward, Err: handlerErr})
+				}
+				return
+			}
 			serveErr = handlerErr
 			obs.RecordRequest("MQTT5-REP", path, 0, time.Since(start))
 			publishHandlerErrorReplyReflect(spanCtx, t.client, observeErrorResponseForMethod, responseTopic, correlationData, handlerErr, obs, middlewarePropertyVars, effectiveQoS, effectiveRetained)
@@ -1304,6 +1356,23 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 			obs.RecordRequest("MQTT5-REQ", path, 0, time.Since(start))
 			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Kind: KindTimeout, Err: fmt.Errorf("no reply within %s", timeout)}).Convert(errType)}
 		case replyMsg := <-replyCh:
+			// Dispatch ordering: [isForwardReply] is checked BEFORE
+			// [isErrorReply] — docs/roadmap/reqreply-forward-bounce.md's
+			// documented "Forward recognized before ErrorPattern"
+			// precedence, mirroring [rest.RedirectError]'s identical
+			// rule (see [isErrorReply]'s doc comment).
+			if isForwardReply(replyMsg) {
+				// RecordRequest status choice: 200, NOT 500 —
+				// unlike an error reply, a Forward is NOT a failure of
+				// THIS round trip; it's a deliberate instruction the
+				// caller's own [api/reqreply.Client] chain-following
+				// loop (Phase 1.5) is expected to act on successfully.
+				obs.RecordRequest("MQTT5-REQ", path, 200, time.Since(start))
+				return []reflect.Value{zeroResp, reflect.ValueOf(reqreply.ForwardError{
+					TargetTopic: forwardTopicFromUserProperties(replyMsg),
+					Payload:     replyMsg.Payload,
+				}).Convert(errType)}
+			}
 			if isErrorReply(replyMsg) {
 				obs.RecordRequest("MQTT5-REQ", path, 500, time.Since(start))
 				if code := errorCodeFromUserProperties(replyMsg); code != "" {
@@ -1396,11 +1465,14 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 // api/reqreply, keeping this adapter method a pure wire-level
 // extraction primitive.
 //
-// The THIRD classification leg (a reply tagged as a Forward) is NOT YET
-// IMPLEMENTED — docs/roadmap/reqreply-forward-bounce.md's wire signal
-// doesn't exist yet. Insert that check HERE, before the isErrorReply
-// check below, once that roadmap ships (mirrors [call]'s own documented
-// "Forward recognized before ErrorPattern" precedence).
+// The THIRD classification leg (a reply tagged as a Forward) IS
+// implemented — docs/roadmap/reqreply-forward-bounce.md's Phase 1.3: a
+// reply carrying mqtt5's reserved forward ContentType ([isForwardReply])
+// returns [reqreply.ForwardError{TargetTopic, Payload}] directly (no
+// decode step needed — the target topic is already concrete, unlike
+// error replies' route-dependent Code→RouteHandle lookup). Checked
+// BEFORE the isErrorReply check below, mirroring [call]'s own documented
+// "Forward recognized before ErrorPattern" precedence.
 func (t *clientTransport) CallRaw(ctx context.Context, topic string, payload []byte) (result []byte, err error) {
 	obs := t.opts.Observer
 	if obs == nil {
@@ -1510,6 +1582,15 @@ func (t *clientTransport) CallRaw(ctx context.Context, topic string, payload []b
 		obs.RecordRequest("MQTT5-REQ", topic, 0, time.Since(start))
 		return nil, CallError{Kind: KindTimeout, Err: fmt.Errorf("no reply within %s", timeout)}
 	case replyMsg := <-replyCh:
+		// Dispatch ordering: [isForwardReply] checked BEFORE
+		// [isErrorReply] — see [isErrorReply]'s doc comment.
+		if isForwardReply(replyMsg) {
+			obs.RecordRequest("MQTT5-REQ", topic, 200, time.Since(start))
+			return nil, reqreply.ForwardError{
+				TargetTopic: forwardTopicFromUserProperties(replyMsg),
+				Payload:     replyMsg.Payload,
+			}
+		}
 		if isErrorReply(replyMsg) {
 			obs.RecordRequest("MQTT5-REQ", topic, 500, time.Since(start))
 			// Extracts the RAW code (route-free — a plain User Property
@@ -1527,34 +1608,14 @@ func (t *clientTransport) CallRaw(ctx context.Context, topic string, payload []b
 	}
 }
 
-// CallAsync implements [reqreply.ClientTransport]. Non-blocking
-// counterpart to [clientTransport.Call]: recovers a *reqreply.Future[Resp]
-// (as any) via routeAny's [reqreply.FutureFactory] (confirmed zero-
-// reflection-for-generics mechanism, see [reqreply.RouteHandle.NewFutureAny]),
-// then runs the SAME dispatch [clientTransport.Call] does in a background
-// goroutine, resolving the future exactly once when it completes — the
-// "send here, resolve elsewhere" mechanism [reqreply.Client.CallAsync]
-// documents.
-func (t *clientTransport) CallAsync(ctx context.Context, routeAny any, reqAny any, opts ...reqreply.ClientCallOptions) (any, error) {
-	var o reqreply.ClientCallOptions
-	if len(opts) > 0 {
-		o = opts[0]
-	}
-	handleVal, _, err := recoverRouteHandleValue(routeAny)
-	if err != nil {
-		return nil, err
-	}
-	ff, ok := handleVal.Interface().(reqreply.FutureFactory)
-	if !ok {
-		return nil, reqreply.TransportTypeMismatchError{Want: "reqreply.FutureFactory", Got: fmt.Sprintf("%T", routeAny)}
-	}
-	future, resolve := ff.NewFutureAny()
-	go func() {
-		resp, err := t.call(ctx, routeAny, reqAny, o)
-		resolve(resp, err)
-	}()
-	return future, nil
-}
+// CallAsync is REMOVED from [reqreply.ClientTransport] — docs/roadmap/
+// reqreply-forward-bounce.md's "CallAsync/Future" section (traced
+// against the real shipped code and found the adapter's own background
+// goroutine resolved the Future entirely INSIDE the adapter, before
+// [reqreply.Client] could ever intercept a chained forward reply).
+// [reqreply.Client.CallAsync] now wraps [reqreply.Client.Call] directly
+// instead — this adapter needs no CallAsync method at all, only [call]
+// (shared by both [clientTransport.Call] and [clientTransport.CallRaw]).
 
 var _ reqreply.ClientTransport = (*clientTransport)(nil)
 

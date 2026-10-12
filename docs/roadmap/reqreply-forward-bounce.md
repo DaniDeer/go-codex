@@ -1,9 +1,31 @@
-# `api/reqreply` Forward/Bounce — Design Complete, Not Yet Implemented
+# `api/reqreply` Forward/Bounce — Phase 1 SHIPPED
 
-> **Status:** Design complete — API surface, wire signal, structured
-> errors, and a dispatch-path inventory are all settled, NOW GROUNDED
-> AGAINST THE REAL, SHIPPED PHASE 0 CODE (registry + `CallRaw`,
-> committed `e86bc99`) rather than assumptions, across 4 review rounds:
+> **Status: Phase 1 (Forward/Bounce) is SHIPPED.** `reqreply.Forward`/
+> `ForwardError`/`ForwardTargetVarError`/`UnrecognizedForwardError`/
+> `ForwardChainTooDeepError`/`ForwardSecuritySchemeMismatchError` are
+> implemented in `api/reqreply/forward.go` (tests:
+> `api/reqreply/forward_test.go`, `api/reqreply/forward_resolve_test.go`);
+> the CENTRALIZED chain-following loop (`Client.followForward`) is
+> implemented in `api/reqreply/client.go`; the wire signal is implemented
+> in `adapters/mqtt5` (reserved ContentType+User Property, tests:
+> `adapters/mqtt5/forward_reqreply_test.go`) and `adapters/zeromq` (a 3rd/
+> 4th status-frame value, both REQ/REP and ROUTER/DEALER transports,
+> tests: `adapters/zeromq/forward_reqreply_test.go`); `ClientTransport.
+> CallAsync` was REMOVED from the interface entirely, `Client.CallAsync`
+> restructured to wrap `Client.Call` directly (both adapters' own
+> `CallAsync` methods deleted). A runnable demo lives at
+> `examples/reqreply-api/demo_forward.go`; user-facing docs
+> (`docs/features/reqreply-forward.md`/`docs/guides/reqreply-forward.md`)
+> are now published, following the SAME "write them together, in the
+> commit that ships the FULL feature" precedent `docs/features/
+> rest-redirects.md` established. Documented in `.github/instructions/
+> go-codex.instructions.md`'s own "Forward/Bounce" section.
+>
+> Below is the FULL design history (API surface, wire signal, structured
+> errors, dispatch-path inventory), preserved as implemented — settled
+> across 4 review rounds, NOW GROUNDED AGAINST THE REAL, SHIPPED PHASE 0
+> CODE (registry + `CallRaw`, committed `e86bc99`) rather than
+> assumptions:
 >
 > 1. An in-depth review pass closed 5 findings: a new
 >    `ForwardSecuritySchemeMismatchError` (going further than REST's own
@@ -211,6 +233,20 @@ target `*RouteHandle` from the registry lookup above, finishes the
 decode itself via `targetHandle.DecodeErrorFor(Code, Body)`, producing
 the SAME typed `ErrorPatternResponse` an ordinary (non-forwarded) `Call`
 would — see "Client-side follow-up failure handling" below.
+
+**The chain-following loop's decode uses ONLY the target `RouteHandle`'s
+own `DecodeResponseWithFormats`/`DecodeErrorFor` — it deliberately does
+NOT dispatch the target route's own general-purpose `ClientMW`/
+`ClientBoundMW` (e.g. a timing observer, or any Out-side side effect),
+confirmed via a `deep-dive-bug-hunt` round grounded against the shipped
+implementation.** This mirrors `docs/features/rest-redirects.md`'s own,
+explicitly-documented identical choice almost word for word: *"Auto-
+follow never dispatches the target's own `ClientMW`... intentional...
+auto-follow consults the registered target ONLY for its decode logic,
+never for behavior the ORIGINATING call didn't itself opt into."* The
+SAME rationale applies here unchanged — this was previously undocumented
+in this doc (a silence, not a contradiction, since no implementation
+existed yet to check it against) and is recorded here now that it does.
 
 Since `TargetTopic` arrives ALREADY CONCRETE (resolved server-side via
 `BuildTopic`, not a `{var}`-templated key the client must pattern-match),
@@ -517,16 +553,15 @@ above, not rely on "it probably works the same way."
 
 ## Next step
 
-Forward/bounce has a SETTLED design, hardened across 4 review rounds —
-the latest grounded against the REAL, shipped Phase 0 registry +
-`CallRaw` code rather than assumptions — none of it is implemented yet.
-**The Phase 0 blocking dependency is ALREADY SATISFIED** (shipped,
-commit `e86bc99`) — turning this into an actual implementation plan
-(unit test plan covering the 6 wire-signal recognition points, the
-`Client.CallAsync` restructure + `ClientTransport.CallAsync` removal,
-`ForwardSecuritySchemeMismatchError`, `MaxForwards` chain-depth capping)
-is a distinct, future step requiring its own explicit go-ahead — the
-same rigor Typed HTTP Redirects itself went through across its own
-critical-review rounds before implementation began. No code should be
-written against this design until that implementation plan exists and
-is approved.
+**SHIPPED.** Forward/bounce's SETTLED design (hardened across 4 review
+rounds, the latest grounded against the REAL, shipped Phase 0 registry +
+`CallRaw` code rather than assumptions) was implemented exactly as
+specified above: all 6 wire-signal recognition points + 3 server-publish
+points, the `Client.CallAsync` restructure + `ClientTransport.CallAsync`
+removal, `ForwardSecuritySchemeMismatchError`, `MaxForwards` chain-depth
+capping, the `ports.Pattern`/`CallWithTransport` passthrough
+verification, and the runnable example + user-facing docs. See this
+doc's own top status block for the exact file/test inventory.
+[`reqreply-dead-letter-replay.md`](reqreply-dead-letter-replay.md)
+(Phase 2) is unblocked — its own "blocked on Forward/Bounce" dependency
+is now satisfied, ready to plan its own implementation next.

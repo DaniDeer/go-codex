@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/DaniDeer/go-codex/api/events"
+	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/ports"
@@ -527,4 +528,46 @@ func respCodec() codex.Codec[computeResp] {
 			func(r computeResp) int { return r.Sum },
 			func(r *computeResp, v int) { r.Sum = v }),
 	)
+}
+
+// TestCallAdapter_ForwardError_PropagatesUnwrapped confirms Phase 1.6's
+// "ports.Pattern passthrough" verification: zeromq.CallAdapter (REQ/REP)
+// dispatches via [reqreply.CallWithTransport] directly (registry-free by
+// design) — a forward reply surfacing through THIS path returns
+// reqreply.ForwardError UNWRAPPED, exactly as CallWithTransport's own
+// real implementation already guarantees for any transport.Call error.
+// No new production code is expected to make this pass — pure
+// verification, per docs/roadmap/reqreply-forward-bounce.md's dispatch-
+// path inventory. (zeromq's DEALER transport has no ports.Pattern
+// binding of its own today — confirmed, nothing to verify there.)
+func TestCallAdapter_ForwardError_PropagatesUnwrapped(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	handle := newRouteHandle()
+
+	sock := &mockSocket{inFrames: [][][]byte{{statusForward, []byte("compute/forward-adapter-target"), []byte(`{"x":1,"y":1}`)}}}
+
+	reqCh := make(chan computeReq, 1)
+	reqCh <- computeReq{X: 3, Y: 4}
+	close(reqCh)
+	src := gstream.From(ctx, reqCh)
+
+	p, err := ports.NewIOPort[computeReq, computeResp]("test", computeReqCodec, computeRespCodec, ports.PortOptions{Buffer: 4})
+	if err != nil {
+		t.Fatalf("construct port: %v", err)
+	}
+	p.Bind(ctx, CallAdapter(sock, handle, CallStreamOptions{})) //nolint:errcheck
+	out := p.Connect(ctx, src)
+	_, errs := gstream.Collect(ctx, out)
+	if len(errs) != 1 {
+		t.Fatalf("want exactly 1 forwarded error, got %d: %v", len(errs), errs)
+	}
+	var fwd reqreply.ForwardError
+	if !errors.As(errs[0], &fwd) {
+		t.Fatalf("want errors.As to match reqreply.ForwardError UNWRAPPED, got %v (%T)", errs[0], errs[0])
+	}
+	if fwd.TargetTopic != "compute/forward-adapter-target" {
+		t.Errorf("TargetTopic = %q, want %q", fwd.TargetTopic, "compute/forward-adapter-target")
+	}
 }

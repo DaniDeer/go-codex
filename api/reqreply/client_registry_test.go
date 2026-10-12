@@ -22,11 +22,6 @@ func (f *registryFakeClientTransport) Call(ctx context.Context, route any, req a
 	return computeResp{}, nil
 }
 
-func (f *registryFakeClientTransport) CallAsync(ctx context.Context, route any, req any, opts ...reqreply.ClientCallOptions) (any, error) {
-	f.calls++
-	return nil, nil
-}
-
 func (f *registryFakeClientTransport) CallRaw(ctx context.Context, topic string, payload []byte) ([]byte, error) {
 	f.calls++
 	return payload, nil
@@ -148,8 +143,20 @@ func TestClient_CallAsync_AutoPopulatesRegistry(t *testing.T) {
 	}
 	route := reqreply.NewRoute[computeReq, computeResp]("compute/auto-populate-async", reqCodec, respCodec)
 
-	if _, err := c.CallAsync(context.Background(), route, computeReq{}); err != nil {
+	futureAny, err := c.CallAsync(context.Background(), route, computeReq{})
+	if err != nil {
 		t.Fatalf("CallAsync: %v", err)
+	}
+	// CallAsync now wraps Client.Call in a background goroutine (the
+	// confirmed, settled restructure — see docs/roadmap/
+	// reqreply-forward-bounce.md's "CallAsync/Future" section) — the
+	// transport call itself (ft.calls++) happens ASYNCHRONOUSLY, so this
+	// must await the Future before asserting ft.calls, unlike the
+	// synchronous registry auto-populate step above it (which still runs
+	// BEFORE the goroutine launches).
+	future := futureAny.(*reqreply.Future[computeResp])
+	if _, err := future.Wait(context.Background()); err != nil {
+		t.Fatalf("future.Wait: %v", err)
 	}
 	if ft.calls != 1 {
 		t.Fatalf("registryFakeClientTransport.calls: want 1, got %d", ft.calls)

@@ -177,6 +177,26 @@ func sendRouterHandlerErrorReplyReflect(ctx context.Context, sock FramedSocket, 
 	sendRouterErrorReply(sock, identity, err)
 }
 
+// sendForwardReplyReflect sends fwd's wire signal on a REQ/REP reply
+// socket — docs/roadmap/reqreply-forward-bounce.md's Phase 1 server-
+// publish side. Mirrors [sendHandlerErrorReplyReflect]'s EXACT 3-frame
+// shape (normal reply is 2-frame [status, payload]; a Forward reply is
+// 3-frame [statusForward, targetTopic, payload]), swapping statusError+
+// code for statusForward+TargetTopic — a Forward is a deliberate
+// instruction, never routed through [sendHandlerErrorReplyReflect]'s own
+// ErrorPattern/plain-text-fallback logic.
+func sendForwardReplyReflect(sock FramedSocket, fwd reqreply.ForwardError) {
+	_ = sock.SendFrames([][]byte{statusForward, []byte(fwd.TargetTopic), fwd.Payload})
+}
+
+// sendRouterForwardReplyReflect is [sendForwardReplyReflect]'s
+// ROUTER-socket counterpart — preserves the identity frame, mirroring
+// [sendRouterHandlerErrorReplyReflect]'s EXACT 4-frame shape ([identity,
+// emptyDelimiter, statusForward, targetTopic, payload]).
+func sendRouterForwardReplyReflect(sock FramedSocket, identity []byte, fwd reqreply.ForwardError) {
+	_ = sock.SendFrames([][]byte{identity, emptyDelimiter, statusForward, []byte(fwd.TargetTopic), fwd.Payload})
+}
+
 // MissingSocketError is returned by [NewServerTransport]/[NewRouterServerTransport]
 // when server has a route registered whose topic is not a key in the
 // sockets map, and by [NewClientTransport]/[NewDealerClientTransport]'s resulting
@@ -813,6 +833,33 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 			dispObs.RecordDisposition(path, disposition)
 		}
 		if handlerErr != nil {
+			// docs/roadmap/reqreply-forward-bounce.md's Phase 1.4
+			// "Dispatch ordering" rule: a [reqreply.ForwardError] is a
+			// DELIBERATE instruction to republish elsewhere, not a
+			// failure — it MUST skip ErrorPattern matching
+			// (sendHandlerErrorReplyReflect) AND DeadLetter
+			// (tryDeadLetterReflect) entirely, sending the reserved
+			// forward wire signal instead and continuing to the next
+			// request.
+			var fwd reqreply.ForwardError
+			if errors.As(handlerErr, &fwd) {
+				serveErr = handlerErr
+				// RecordRequest status choice: 0, mirroring every OTHER
+				// non-success branch in this dispatch (KindSecurity/
+				// KindDecode/KindEncode/KindHandler all record 0 here;
+				// only the terminal success path records 200) — a
+				// Forward is non-success from THIS route's own
+				// perspective even though it is not an error, so it
+				// stays consistent with the surrounding convention
+				// rather than inventing a new status code.
+				obs.RecordRequest("ZMQ-REP", path, 0, time.Since(start))
+				sendForwardReplyReflect(sock, fwd)
+				endSpan()
+				if t.opts.OnError != nil {
+					t.opts.OnError(ServeError{Kind: KindForward, Err: handlerErr})
+				}
+				continue
+			}
 			serveErr = handlerErr
 			obs.RecordRequest("ZMQ-REP", path, 0, time.Since(start))
 			sendHandlerErrorReplyReflect(spanCtx, sock, observeErrorResponseForMethod, handlerErr, obs)
@@ -1206,6 +1253,26 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: fmt.Errorf("malformed reply: expected [status, payload], got %d frame(s)", len(frames))}).Convert(errType)}
 		}
 
+		// Dispatch ordering: a Forward reply (frames[0] == statusForward)
+		// is recognized BEFORE an ErrorPattern reply — docs/roadmap/
+		// reqreply-forward-bounce.md's documented "Forward recognized
+		// before ErrorPattern" precedence, mirroring [rest.RedirectError]'s
+		// identical rule. A Forward reply is 3-frame: [statusForward,
+		// targetTopic, payload] — the SAME shape as the matched-
+		// ErrorPattern 3-frame reply, 2nd frame reused as the target
+		// topic instead of a pattern code.
+		if string(frames[0]) == string(statusForward) && len(frames) >= 3 {
+			// RecordRequest status choice: 200, NOT 500 — unlike an
+			// error reply, a Forward is NOT a failure of THIS round
+			// trip; it's a deliberate instruction the caller's own
+			// [api/reqreply.Client] chain-following loop (a future
+			// phase) is expected to act on successfully.
+			obs.RecordRequest("ZMQ-REQ", path, 200, time.Since(start))
+			return []reflect.Value{zeroResp, reflect.ValueOf(reqreply.ForwardError{
+				TargetTopic: string(frames[1]), Payload: frames[2],
+			}).Convert(errType)}
+		}
+
 		if string(frames[0]) == "error" {
 			obs.RecordRequest("ZMQ-REQ", path, 500, time.Since(start))
 			// A matched ErrorPattern reply is 3-frame: [status, code, body].
@@ -1286,8 +1353,15 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 // send/recv-poll mechanics [call] does, generalized to not need a route.
 //
 // Classifies the reply the SAME way [call] does for its OWN ordinary/
-// error legs: an ordinary 2-frame `[status, payload]` reply returns
-// frames[1]; a `frames[0] == "error"` reply returns
+// error/forward legs: an ordinary 2-frame `[status, payload]` reply
+// returns frames[1]; a `frames[0] == statusForward` reply (3-frame
+// `[statusForward, targetTopic, payload]`, checked BEFORE the ErrorPattern
+// leg below — docs/roadmap/reqreply-forward-bounce.md's documented
+// "Forward recognized before ErrorPattern" precedence) returns
+// [reqreply.ForwardError{TargetTopic, Payload}] directly — unlike the
+// ErrorPattern leg, a Forward needs no route-dependent decode step, so
+// CallRaw returns the SAME typed value [call] does, not a raw/deferred
+// variant; a `frames[0] == "error"` reply returns
 // [reqreply.ForwardRawErrorReply{Code, Body}] — the RAW wire-level code
 // (present on a 3-frame `[status, code, body]` reply, "" on the 2-frame
 // plain-text fallback) and body, deliberately WITHOUT attempting
@@ -1298,13 +1372,6 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 // that decode itself via RouteHandle.DecodeErrorFor(Code, Body) —
 // moving the "hard part" to api/reqreply, keeping this adapter method a
 // pure wire-level extraction primitive.
-//
-// The THIRD classification leg (a reply tagged as a Forward) is NOT YET
-// IMPLEMENTED — docs/roadmap/reqreply-forward-bounce.md's wire signal
-// (a 3rd `frames[0]="forward"` status) doesn't exist yet. Insert that
-// check HERE, before the `frames[0] == "error"` check below, once that
-// roadmap ships (mirrors [call]'s own documented "Forward recognized
-// before ErrorPattern" precedence).
 func (t *clientTransport) CallRaw(ctx context.Context, topic string, payload []byte) (result []byte, err error) {
 	obs := t.opts.Observer
 	if obs == nil {
@@ -1372,6 +1439,20 @@ func (t *clientTransport) CallRaw(ctx context.Context, topic string, payload []b
 		return nil, CallError{Err: fmt.Errorf("malformed reply: expected [status, payload], got %d frame(s)", len(frames))}
 	}
 
+	// Dispatch ordering: a Forward reply (frames[0] == statusForward) is
+	// recognized BEFORE an ErrorPattern reply — mirrors [call]'s
+	// identical "Forward recognized before ErrorPattern" precedence. A
+	// Forward reply is 3-frame: [statusForward, targetTopic, payload] —
+	// returned directly as [reqreply.ForwardError] (route-free, same as
+	// [call]'s own return — unlike the ErrorPattern leg below, which has
+	// to defer decoding to a future caller via
+	// [reqreply.ForwardRawErrorReply], a Forward's TargetTopic/Payload
+	// need no route-dependent decode step at all).
+	if string(frames[0]) == string(statusForward) && len(frames) >= 3 {
+		obs.RecordRequest("ZMQ-REQ", topic, 200, time.Since(start))
+		return nil, reqreply.ForwardError{TargetTopic: string(frames[1]), Payload: frames[2]}
+	}
+
 	if string(frames[0]) == "error" {
 		obs.RecordRequest("ZMQ-REQ", topic, 500, time.Since(start))
 		// Extracts the RAW code (route-free — a 3-frame
@@ -1393,33 +1474,14 @@ func (t *clientTransport) CallRaw(ctx context.Context, topic string, payload []b
 	return frames[1], nil
 }
 
-// CallAsync implements [reqreply.ClientTransport]. Non-blocking
-// counterpart to [clientTransport.Call]: recovers a *reqreply.Future[Resp]
-// (as any) via routeAny's [reqreply.FutureFactory], then runs the SAME
-// dispatch [clientTransport.Call] does in a background goroutine,
-// resolving the future exactly once when it completes. opts is [Call]'s
-// identical per-call format-override parameter, applied inside the
-// background goroutine.
-func (t *clientTransport) CallAsync(ctx context.Context, routeAny any, reqAny any, opts ...reqreply.ClientCallOptions) (any, error) {
-	var o reqreply.ClientCallOptions
-	if len(opts) > 0 {
-		o = opts[0]
-	}
-	handleVal, _, err := recoverRouteHandleValue(routeAny)
-	if err != nil {
-		return nil, err
-	}
-	ff, ok := handleVal.Interface().(reqreply.FutureFactory)
-	if !ok {
-		return nil, reqreply.TransportTypeMismatchError{Want: "reqreply.FutureFactory", Got: fmt.Sprintf("%T", routeAny)}
-	}
-	future, resolve := ff.NewFutureAny()
-	go func() {
-		resp, err := t.call(ctx, routeAny, reqAny, o)
-		resolve(resp, err)
-	}()
-	return future, nil
-}
+// CallAsync is REMOVED from [reqreply.ClientTransport] — docs/roadmap/
+// reqreply-forward-bounce.md's "CallAsync/Future" section (traced
+// against the real shipped code and found the adapter's own background
+// goroutine resolved the Future entirely INSIDE the adapter, before
+// [reqreply.Client] could ever intercept a chained forward reply).
+// [reqreply.Client.CallAsync] now wraps [reqreply.Client.Call] directly
+// instead — this adapter needs no CallAsync method at all, only [call]
+// (shared by both [clientTransport.Call] and [clientTransport.CallRaw]).
 
 var _ reqreply.ClientTransport = (*clientTransport)(nil)
 
@@ -1776,6 +1838,21 @@ func (t *routerServerTransport) Serve(ctx context.Context, routeAny any, fnAny a
 				dispObs.RecordDisposition(path, disposition)
 			}
 			if handlerErr != nil {
+				// docs/roadmap/reqreply-forward-bounce.md's Phase 1.4
+				// "Dispatch ordering" rule — see serverTransport.Serve's
+				// identical check for the full rationale: a
+				// [reqreply.ForwardError] skips ErrorPattern/DeadLetter
+				// entirely.
+				var fwd reqreply.ForwardError
+				if errors.As(handlerErr, &fwd) {
+					serveErr = handlerErr
+					obs.RecordRequest("ZMQ-ROUTER", path, 0, time.Since(start))
+					sendRouterForwardReplyReflect(sock, id, fwd)
+					if t.opts.OnError != nil {
+						t.opts.OnError(ServeError{Kind: KindForward, Err: handlerErr})
+					}
+					return
+				}
 				serveErr = handlerErr
 				obs.RecordRequest("ZMQ-ROUTER", path, 0, time.Since(start))
 				sendRouterHandlerErrorReplyReflect(spanCtx, sock, id, observeErrorResponseForMethod, handlerErr, obs)
@@ -2112,6 +2189,22 @@ func (t *dealerClientTransport) call(ctx context.Context, routeAny any, reqAny a
 			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: fmt.Errorf("malformed reply: expected [delimiter, status, payload], got %d frame(s)", len(frames))}).Convert(errType)}
 		}
 
+		// Dispatch ordering: a Forward reply (frames[1] == statusForward)
+		// is recognized BEFORE an ErrorPattern reply — see
+		// [clientTransport.call]'s identical check for the full
+		// rationale. A Forward reply is 4-frame: [delimiter,
+		// statusForward, targetTopic, payload] — the SAME shape as the
+		// matched-ErrorPattern 4-frame reply, 3rd frame reused as the
+		// target topic instead of a pattern code.
+		if string(frames[1]) == string(statusForward) && len(frames) >= 4 {
+			// RecordRequest status choice: 200 — see
+			// [clientTransport.call]'s identical rationale.
+			obs.RecordRequest("ZMQ-DEALER", path, 200, time.Since(start))
+			return []reflect.Value{zeroResp, reflect.ValueOf(reqreply.ForwardError{
+				TargetTopic: string(frames[2]), Payload: frames[3],
+			}).Convert(errType)}
+		}
+
 		if string(frames[1]) == "error" {
 			obs.RecordRequest("ZMQ-DEALER", path, 500, time.Since(start))
 			// A matched ErrorPattern reply is 4-frame:
@@ -2180,9 +2273,10 @@ func (t *dealerClientTransport) call(ctx context.Context, routeAny any, reqAny a
 // [clientTransport.CallRaw] exactly, adapted to DEALER's envelope
 // framing (empty delimiter + payload out; [delimiter, status, payload]
 // in) the SAME way [dealerClientTransport.call] adapts [clientTransport.
-// call]'s REQ/REP framing. See [clientTransport.CallRaw]'s doc comment
-// for the full classification contract and the Forward-leg TODO (same
-// insertion point: before the `frames[1] == "error"` check below).
+// call]'s REQ/REP framing, including the Forward leg (4-frame
+// [delimiter, statusForward, targetTopic, payload], checked before the
+// `frames[1] == "error"` check below). See [clientTransport.CallRaw]'s
+// doc comment for the full classification contract.
 func (t *dealerClientTransport) CallRaw(ctx context.Context, topic string, payload []byte) (result []byte, err error) {
 	obs := t.opts.Observer
 	if obs == nil {
@@ -2248,6 +2342,16 @@ func (t *dealerClientTransport) CallRaw(ctx context.Context, topic string, paylo
 		return nil, CallError{Err: fmt.Errorf("malformed reply: expected [delimiter, status, payload], got %d frame(s)", len(frames))}
 	}
 
+	// Dispatch ordering: a Forward reply (frames[1] == statusForward) is
+	// recognized BEFORE an ErrorPattern reply — mirrors
+	// [clientTransport.CallRaw]'s identical precedence/rationale. A
+	// Forward reply is 4-frame: [delimiter, statusForward, targetTopic,
+	// payload].
+	if string(frames[1]) == string(statusForward) && len(frames) >= 4 {
+		obs.RecordRequest("ZMQ-DEALER", topic, 200, time.Since(start))
+		return nil, reqreply.ForwardError{TargetTopic: string(frames[2]), Payload: frames[3]}
+	}
+
 	if string(frames[1]) == "error" {
 		obs.RecordRequest("ZMQ-DEALER", topic, 500, time.Since(start))
 		// Extracts the RAW code (route-free — a 4-frame
@@ -2270,29 +2374,8 @@ func (t *dealerClientTransport) CallRaw(ctx context.Context, topic string, paylo
 	return frames[2], nil
 }
 
-// CallAsync implements [reqreply.ClientTransport]. Non-blocking
-// counterpart to [dealerClientTransport.Call] — same mechanism as
-// [clientTransport.CallAsync]. opts is [Call]'s identical per-call
-// format-override parameter, applied inside the background goroutine.
-func (t *dealerClientTransport) CallAsync(ctx context.Context, routeAny any, reqAny any, opts ...reqreply.ClientCallOptions) (any, error) {
-	var o reqreply.ClientCallOptions
-	if len(opts) > 0 {
-		o = opts[0]
-	}
-	handleVal, _, err := recoverRouteHandleValue(routeAny)
-	if err != nil {
-		return nil, err
-	}
-	ff, ok := handleVal.Interface().(reqreply.FutureFactory)
-	if !ok {
-		return nil, reqreply.TransportTypeMismatchError{Want: "reqreply.FutureFactory", Got: fmt.Sprintf("%T", routeAny)}
-	}
-	future, resolve := ff.NewFutureAny()
-	go func() {
-		resp, err := t.call(ctx, routeAny, reqAny, o)
-		resolve(resp, err)
-	}()
-	return future, nil
-}
+// CallAsync is REMOVED from [reqreply.ClientTransport] — see
+// [clientTransport]'s identical doc comment above its own now-removed
+// CallAsync for the full rationale.
 
 var _ reqreply.ClientTransport = (*dealerClientTransport)(nil)

@@ -115,6 +115,7 @@ func main() {
 	demoRouteLevelSecurityCredentialError(ctx, mqtt5Built)
 	demoConcurrentMultiRouteDispatch(ctx, zeromqClient)
 	demoCallAsyncFuture(ctx, mqtt5Client)
+	demoForward(ctx, mqtt5Client)
 	demoUserPropertyParamMiddleware(ctx, mqtt5Built)
 	demoPropertyAxisMiddleware(ctx, mqtt5Built, zeromqBuilt)
 	demoSpecPrintingAsyncAPI(mqtt5Built.Server)

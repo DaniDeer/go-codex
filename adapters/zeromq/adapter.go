@@ -19,10 +19,18 @@ import (
 // context cancellation is checked at least this often.
 const recvPollInterval = 100 * time.Millisecond
 
-// statusOK and statusError are the status frame values for REQ/REP framing.
+// statusOK, statusError and statusForward are the status frame values for
+// REQ/REP framing. statusForward is the wire-level signal for
+// [reqreply.ForwardError] — docs/roadmap/reqreply-forward-bounce.md's
+// zeromq counterpart of mqtt5's ContentType+User Property forward
+// signal, mirroring statusError's EXACT frame-shifting convention
+// (normal reply stays 2-frame/3-frame; a forward reply is the SAME
+// shape with one extra frame — see sendHandlerErrorReplyReflect's/
+// sendForwardReplyReflect's doc comments for the precise layouts).
 var (
-	statusOK    = []byte("ok")
-	statusError = []byte("error")
+	statusOK      = []byte("ok")
+	statusError   = []byte("error")
+	statusForward = []byte("forward")
 )
 
 // SubscribeOptions configures [subscribe]/[subscribeWithHandle]. Generic

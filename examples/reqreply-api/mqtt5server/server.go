@@ -229,6 +229,21 @@ func Build() (*Built, error) {
 		return nil, err
 	}
 
+	// ForwardOriginatingRoute/ForwardTargetRoute demonstrate docs/roadmap/
+	// reqreply-forward-bounce.md — see demo_forward.go. Both stay
+	// OUTSIDE the "compute" Mount too, same rationale as
+	// ErrorPatternComputeRoute above.
+	if _, err := routes.ForwardTargetRoute.
+		WithHandler(handlers.Double).
+		Register(server); err != nil {
+		return nil, err
+	}
+	if _, err := routes.ForwardOriginatingRoute.
+		WithHandler(handlers.ForwardToDouble).
+		Register(server); err != nil {
+		return nil, err
+	}
+
 	// ServeSpec registers this Server's own self-serving AsyncAPI spec
 	// topic — natively, via the core library (no hand-rolled handler).
 	// Stays OUTSIDE the "compute" Mount too — an absolute topic, like

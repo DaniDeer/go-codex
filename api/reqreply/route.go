@@ -560,6 +560,33 @@ type ErrorPatternResponse struct {
 	Value any
 }
 
+// Error implements the error interface, letting [ErrorPatternResponse]
+// be returned directly as the error value from [Client.Call]/[Client.
+// CallAsync]'s forward-following chain-following loop
+// (docs/roadmap/reqreply-forward-bounce.md's "Client-side resolution")
+// when a forwarded reply's declared [ErrorPattern] matches — mirrors
+// each adapter's OWN `mqtt5.ErrorPatternResponse`/
+// `zeromq.ErrorPatternResponse` wrapper type's identical Error() shape,
+// but lives directly on THIS type since api/reqreply.Client (not an
+// adapter) is the one decoding a FORWARDED reply's matched pattern.
+func (e ErrorPatternResponse) Error() string {
+	return fmt.Sprintf("api/reqreply: server error [%s]: %T", e.Code, e.Value)
+}
+
+// ErrorPatternValue implements [ErrorPatternValuer], letting
+// [ErrorPatternOpt.Match] extract this response's decoded typed payload
+// the SAME way it already does for each adapter's own
+// ErrorPatternResponse wrapper type.
+func (e ErrorPatternResponse) ErrorPatternValue() any { return e.Value }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e ErrorPatternResponse) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("code", e.Code),
+		slog.Any("value", e.Value),
+	)
+}
+
 // ErrorPatternValuer is implemented by a CLIENT adapter's own
 // error-pattern response error type (e.g. `mqtt5.ErrorPatternResponse`/
 // `zeromq.ErrorPatternResponse`) — it lets [ErrorPatternOpt.Match]

@@ -48,14 +48,6 @@ func (t *exampleInProcessTransport) Call(ctx context.Context, routeAny any, reqA
 	return h(ctx, reqAny)
 }
 
-func (t *exampleInProcessTransport) CallAsync(ctx context.Context, routeAny any, reqAny any, opts ...reqreply.ClientCallOptions) (any, error) {
-	resp, err := t.Call(ctx, routeAny, reqAny)
-	ff := routeAny.(reqreply.FutureFactory)
-	future, resolve := ff.NewFutureAny()
-	resolve(resp, err)
-	return future, nil
-}
-
 // CallRaw is unused by this Example (Phase 0 infrastructure, not
 // exercised here) — present only to satisfy [reqreply.ClientTransport].
 func (t *exampleInProcessTransport) CallRaw(ctx context.Context, topic string, payload []byte) ([]byte, error) {

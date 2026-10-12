@@ -2,6 +2,7 @@ package reqreply
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"reflect"
@@ -23,18 +24,6 @@ type ClientTransport interface {
 	// [ClientCallOptions].
 	Call(ctx context.Context, route any, req any, opts ...ClientCallOptions) (any, error)
 
-	// CallAsync is the non-blocking counterpart to Call — returns
-	// (*[Future][Resp] as any, nil) immediately (or a non-nil error if
-	// dispatch itself fails before any future could be constructed); the
-	// future resolves later, asynchronously, when the correlated reply
-	// arrives. See [Client.CallAsync]'s doc comment for the confirmed
-	// "send here, resolve elsewhere" mechanism. opts is [Call]'s
-	// identical per-call override parameter — resolved inside the SAME
-	// underlying dispatch [Call] uses (see
-	// docs/design/d-0004-reqreply-workflow-simplification.md's Addendum's
-	// "Interaction with CallAsync/Future").
-	CallAsync(ctx context.Context, route any, req any, opts ...ClientCallOptions) (any, error)
-
 	// CallRaw publishes payload to topic VERBATIM (already encoded by the
 	// caller — no Req/Resp type involvement here) and awaits exactly ONE
 	// correlated reply — the single-hop primitive
@@ -45,12 +34,13 @@ type ClientTransport interface {
 	// code — CallRaw is Phase 0 infrastructure, added ahead of its real
 	// consumers).
 	//
-	// CallRaw MUST classify its reply the SAME 3-way way an ordinary
-	// Call/CallAsync reply already is:
+	// CallRaw classifies its reply the SAME 3-way way an ordinary
+	// Call/CallAsync reply already does:
 	//   - an ordinary successful reply:              (replyBytes, nil)
 	//   - a reply tagged as a Forward (reserved wire
 	//     signal — mqtt5's ContentType+User Property,
-	//     zeromq's frames[0], NOT YET IMPLEMENTED):    (nil, a forward sentinel error, once that roadmap ships)
+	//     zeromq's status frame — SHIPPED,
+	//     docs/roadmap/reqreply-forward-bounce.md):    (nil, ForwardError{TargetTopic, Payload})
 	//   - a reply matching a declared ErrorPattern:    (nil, ForwardRawErrorReply{Code, Body})
 	//
 	// CallRaw deliberately does NOT decode the ErrorPattern-matched case
@@ -68,11 +58,11 @@ type ClientTransport interface {
 	// primitive. Code is "" when the reply carries no code (the
 	// plain-text fallback case — mirrors Call's own identical fallback).
 	//
-	// As of this Phase 0 implementation, the Forward leg's wire signal
-	// does not exist yet (docs/roadmap/reqreply-forward-bounce.md is not
-	// implemented) — each adapter's CallRaw implements ONLY the ordinary/
-	// ErrorPattern legs for now, with a marked insertion point for the
-	// Forward leg to be added when that roadmap ships.
+	// The Forward leg's wire signal is SHIPPED
+	// (docs/roadmap/reqreply-forward-bounce.md, Phase 1) — each
+	// adapter's CallRaw implements all 3 legs; [Client.followForward]
+	// (docs/roadmap/reqreply-forward-bounce.md's chain-following loop)
+	// is the real consumer, built on top of this primitive.
 	CallRaw(ctx context.Context, topic string, payload []byte) ([]byte, error)
 }
 
@@ -129,6 +119,17 @@ type ClientCallOptions struct {
 	// ([]format.Format[Resp]), falling back to [RouteHandle.Formats]
 	// when nil.
 	ResponseFormats any
+
+	// MaxForwards caps how many [Forward] hops [Client.Call]/[Client.
+	// CallAsync] will follow before giving up with
+	// [ForwardChainTooDeepError] — direct port of [rest.
+	// ClientCallOptions.MaxRedirects]'s identical mechanics (a
+	// recursive-call counter, covering both unreasonably long chains
+	// and cycles with one mechanism). MaxForwards <= 0 (including the
+	// zero value) means "use the default of 10" — mirrors
+	// [rest.ClientCallOptions.MaxRedirects]'s own resolution exactly
+	// (see adapters/nethttp/redirect.go's followRedirect).
+	MaxForwards int
 }
 
 // Client accumulates ONE piece of spec state beyond a dispatch handle: a
@@ -383,6 +384,12 @@ func (c *Client) Attach(t ClientTransport) error {
 //
 // Returns [NoClientTransportAttachedError] if [Client.Attach] was never
 // called.
+//
+// Auto-follows a [ForwardError] (docs/roadmap/reqreply-forward-bounce.md)
+// via an explicit CHAIN-FOLLOWING LOOP, CENTRALIZED here — not inside
+// the adapter — see [Client.followForward]'s doc comment for the full
+// resolution mechanism (registry lookup, security-scheme check,
+// [ClientCallOptions.MaxForwards] capping, decode).
 func (c *Client) Call(ctx context.Context, route any, req any, opts ...ClientCallOptions) (any, error) {
 	c.registerAutoFromCall(route)
 	c.mu.RLock()
@@ -391,7 +398,12 @@ func (c *Client) Call(ctx context.Context, route any, req any, opts ...ClientCal
 	if t == nil {
 		return nil, NoClientTransportAttachedError{}
 	}
-	return t.Call(ctx, route, req, opts...)
+	resp, err := t.Call(ctx, route, req, opts...)
+	var fwd ForwardError
+	if !errors.As(err, &fwd) {
+		return resp, err
+	}
+	return c.followForward(ctx, t, route, fwd, opts...)
 }
 
 // CallAsync is the non-blocking counterpart to [Client.Call] — returns a
@@ -403,6 +415,22 @@ func (c *Client) Call(ctx context.Context, route any, req any, opts ...ClientCal
 // based reply matching) is genuinely asynchronous, unlike REST's
 // synchronous HTTP.
 //
+// RESTRUCTURED (docs/roadmap/reqreply-forward-bounce.md's "CallAsync/
+// Future" section) — CallAsync no longer delegates to a
+// ClientTransport.CallAsync method at all (that method was REMOVED from
+// the interface entirely); it resolves a [FutureFactory] from route
+// itself, then launches a goroutine that calls [Client.Call] directly,
+// reusing Call's OWN chain-following loop (docs/roadmap/
+// reqreply-forward-bounce.md's forward-following, docs/roadmap/
+// reqreply-dead-letter-replay.md's replay) rather than needing a SECOND,
+// adapter-level copy of it. A prior design had each adapter's own
+// CallAsync run a background goroutine that resolved the Future entirely
+// INSIDE the adapter — traced against the real, shipped code and found
+// structurally unable to let api/reqreply.Client intercept a forward
+// reply before the Future resolved; this restructure is the confirmed
+// fix (consistent with this project's general preference for hard logic
+// in the api/* layer, thin adapters).
+//
 // route accepts the SAME dual-mode shape [Client.Call] does. opts is
 // [Client.Call]'s IDENTICAL trailing per-call format-override parameter —
 // resolved inside the SAME underlying dispatch [Client.Call] uses, so it
@@ -411,7 +439,9 @@ func (c *Client) Call(ctx context.Context, route any, req any, opts ...ClientCal
 // "Interaction with CallAsync/Future" for the
 // confirmed async-timing nuance this implies for general-purpose
 // middleware, unrelated to format resolution itself). Returns
-// [NoClientTransportAttachedError] if [Client.Attach] was never called.
+// [NoClientTransportAttachedError] if [Client.Attach] was never called
+// — checked up front, synchronously, before any goroutine launches, so
+// a caller sees it immediately rather than only once the Future resolves.
 //
 //	future, err := client.CallAsync(ctx, ComputeRoute, ComputeReq{X: 1, Y: 2})
 //	// ... do other independent work here ...
@@ -424,7 +454,20 @@ func (c *Client) CallAsync(ctx context.Context, route any, req any, opts ...Clie
 	if t == nil {
 		return nil, NoClientTransportAttachedError{}
 	}
-	return t.CallAsync(ctx, route, req, opts...)
+	_, handle, err := recoverRegistryEntry(route)
+	if err != nil {
+		return nil, err
+	}
+	ff, ok := handle.(FutureFactory)
+	if !ok {
+		return nil, TransportTypeMismatchError{Want: "reqreply.FutureFactory", Got: fmt.Sprintf("%T", route)}
+	}
+	future, resolve := ff.NewFutureAny()
+	go func() {
+		resp, err := c.Call(ctx, route, req, opts...)
+		resolve(resp, err)
+	}()
+	return future, nil
 }
 
 // ClientTransportAlreadyAttachedError is returned by [Client.Attach] when
