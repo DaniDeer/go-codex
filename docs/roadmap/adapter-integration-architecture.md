@@ -194,7 +194,7 @@ internal translation of that binding.
 
 | Pattern | Dispatch paths confirmed | Converged? |
 |---|---|---|
-| `api/rest` (`adapters/nethttp`) | ONE — `serve.go`'s `ServeOne`/`Serve` reflects (`reflect.Value.Call`/`MethodByName`) directly into `RouteHandle[Req,Resp]`'s own generic, type-safe methods (`ApplyMergeFields`, `DecodeMerged`, `EncodeResponseMergeFields`, `ErrorStatusFor`, etc.) — confirmed via its own doc comment: "runs the SAME pipeline... invoked via `reflect.Value.Call`." | **YES** — the reference pattern to converge toward |
+| `api/rest` (`adapters/nethttp`), standard HTTP/SSE surface | ONE — `serve.go`'s `ServeOne`/`Serve` reflects (`reflect.Value.Call`/`MethodByName`) directly into `RouteHandle[Req,Resp]`'s own generic, type-safe methods (`ApplyMergeFields`, `DecodeMerged`, `EncodeResponseMergeFields`, `ErrorStatusFor`, etc.) — confirmed via its own doc comment: "runs the SAME pipeline... invoked via `reflect.Value.Call`." **Superseded by the Phase 1 audit**: this holds only for this surface — see the "Correction to Confirmed asymmetry table" under "Phase 1 audit results" below for the full, corrected picture once `ports`-binding adapters and `adapters/chi` are included. | **YES, for this surface only** — see correction below |
 | `api/events` Subscribe (`adapters/mqtt`/`mqtt5`/`zeromq`) | THREE, confirmed directly from `d-0007`'s own regression writeup | **NO** — confirmed broken, since patched for the specific gap that surfaced it, but the 3-implementation structure itself was never consolidated |
 | `api/events` Publish | Dispatch-*implementation*-count still not directly audited — `adapters/mqtt5/transport_dispatch.go`'s own doc comment confirms some ad hoc convergence already happened ("the SUBSCRIBE-side equivalents ALREADY EXIST in caller.go... this file reuses them directly rather than duplicating"), but the exact count/location for Publish specifically remains unconfirmed on that axis. A *related but distinct* axis WAS confirmed by the later "Preliminary evidence" pass: capability-coverage checking on the publish path was missing until fixed (a location bug, not a count), per `adapters/mqtt5/transport.go:344-349`. | **PARTIALLY KNOWN** — implementation count still open; a capability-check-location gap on publish is confirmed |
 | `api/reqreply` Call/Serve (`adapters/mqtt5`/`zeromq`) | **CONFIRMED by the later "Preliminary evidence" pass** (see below) — structurally separate files from events' own dispatch (`reqreply_transport.go` vs. `transport.go`) per adapter, and NOT the same shape as events' Subscribe: 6 independent capability-coverage-check call sites (mqtt5 Serve+Call, zeromq plain-Serve+ROUTER-Serve+plain-Call+DEALER-Call), wider than events' 3. | **NO — confirmed, and worse than events' Subscribe shape** (6 vs. 3 call sites) |
@@ -1027,7 +1027,9 @@ Produce one merged audit artifact with two complementary matrices:
 **Deliverable:** a current-state diagram, the capability/adapter
 compatibility matrix, and the capability/adapter/entry-point duplication +
 coverage matrix. Base this strictly on `main`, not on possibly stale
-released documentation.
+released documentation. **Status: COMPLETE — see "Phase 1 audit results
+(all adapters)" below the matrix template for the populated matrices,
+findings, and reconciliation with the earlier "Preliminary evidence."**
 
 #### Audit matrix template (Round 3, decision 4)
 
@@ -1064,6 +1066,482 @@ appropriate to each matrix.
 | Shared vs. duplicated | Which entry points already delegate to a shared helper vs. independently reimplement |
 | Test coverage per entry point | Yes/no per entry point — does an automated test exercise this *exact* path, not just the easiest one for the capability |
 | Known regression history | Cross-reference to `d-0001`/`d-0005`/`d-0007`/this doc's "Preliminary evidence," if this exact cell already has a documented incident |
+
+### Phase 1 audit results (all adapters)
+
+**Status: COMPLETE.** Full, fresh, independent audit across all 14 targets
+(`chi`, `file`, `mcpgo`, `mcprest`, `mqtt`, `mqtt5`, `nethttp`, `openai`,
+`redis`, `sql`, `templ`, `websocket`, `zeromq`, `internal`), dispatched as 14
+parallel investigations per the template above. This fresh pass
+deliberately ignored the earlier "Preliminary evidence" section's findings
+(a narrower, Doc A/B-focused pass) to maximize rigor; see "Reconciliation
+with Preliminary evidence" at the end of this section for where the two
+agree, extend, or correct each other.
+
+#### External-seam matrix results
+
+##### `adapters/chi`
+
+| Adapter | Seam(s) served | Pattern family | Declared capabilities | Capability form | Guaranteed or approximated | Observable to application | Where coverage is checked | Binding/handle type used | Adapter-facing exported methods used | Middleware application point | Observer call sites | ErrorPattern/DeadLetter consultation |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| adapters/chi | REST route dispatch (Ingest/Pipeline/Latest/Tool ports) + declarative attach via `rest.Server` | Request/Response REST | Header/Cookie/Query transport-capability extraction (`rest.HeaderCapableTransport`/`CookieCapableTransport`/`QueryCapableTransport`) | Compile-time type-assertion marker (`httpTransport` zero-value carrier) + per-request real `httpCarrier{r}` | Guaranteed at compile time via `var _ rest.XxxCapableTransport = httpTransport` (capability.go:77-80) | Not directly observable to application code; internal Attach-time assertion | capability.go:63-72, 77-80 | `*rest.RouteHandle[Req,Resp]`, `*rest.SSERouteHandle[Req,Event]` | `handle.Descriptor.Method/Path`, `handle.Implementations`, `handle.MiddlewareHandlers` (reflection in serve.go) | `applyGeneralMiddleware` (adapter.go:239) + per-request `MiddlewareHandlers` dispatch in `handlerFunc`/`buildRouteHandler` | `stats.ObserverFromContext`/`ReportErrors`/`RecordDiagnostic`/SecurityObserver across adapter.go, serve.go, serve_sse.go (~20 sites) | `tryRespondErrorPatternGeneric` (adapter.go:1109, ~15 sites) + `tryRespondErrorPattern` (serve.go:841, ~17 sites); no DeadLetter |
+
+##### `adapters/file`
+
+| Adapter | Seam(s) served | Pattern family | Declared capabilities | Capability form | Guaranteed or approximated | Observable to application | Where coverage is checked | Binding/handle type used | Adapter-facing exported methods used | Middleware application point | Observer call sites | ErrorPattern/DeadLetter consultation |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `ScanAdapter`/`WatchAdapter` (binding.go:31,122) | `ports.SourcePort` | ports source | N/A — no capability mechanism | N/A | N/A | via `errs` chan | N/A | `ports.SourceAdapter[T]` | `AdapterName`, `Activate` | none (no middleware layer in ports) | Scan: forwarded to `gstream.FromCodec` options; Watch: `Observer` option accepted but **dead — never read** (binding.go:111) | N/A |
+| `ReadEachAdapter`/`ReadAdapter` (binding.go:187,300) | `ports.IOPort` | ports IO | N/A | N/A | N/A | via returned error stream | N/A | `ports.IOAdapter[In,Resp]` | `AdapterName`, `Transform`; `ports.File.ReadMerged`, `ports.ValidateParams` | none | observer forwarded into `fileOpts.Observer`, not called directly | N/A |
+| `DrainWriteAdapter` (binding.go:343) | `ports.SinkPort` | ports sink | N/A | N/A | N/A | via `OnError` callback | N/A | `ports.SinkAdapter[T]` | `AdapterName`, `Activate` | none | **only** direct `stats.ReportErrors(obs,"file",err)` call in the package (binding.go:368) | N/A |
+| `DrainWriteFileAdapter`/`DrainPatchAdapter`/`DrainPatchEncodedAdapter` (binding.go:433,536,615) | `ports.SinkPort` | ports sink | N/A | N/A | N/A | via `OnError` callback | N/A | `ports.SinkAdapter[T/map/P]` | `AdapterName`, `Activate`; `ports.File.{MergeFields,Write,Patch}`, `ports.PatchEncoded`, `ports.ValidateParams` | none | observer forwarded into `fileOpts.Observer`, not called directly | N/A |
+
+No capability-requirement/coverage-check mechanism exists anywhere in this
+package — confirmed across all 8 exported constructors and their `*Options`
+structs.
+
+##### `adapters/mcpgo`
+
+| Adapter | Seam(s) served | Pattern family | Declared capabilities | Capability form | Guaranteed or approximated | Observable to application | Where coverage is checked | Binding/handle type used | Adapter-facing exported methods used | Middleware application point | Observer call sites | ErrorPattern/DeadLetter consultation |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| ToolHandler/RegisterTool | `api/mcp` Tool registration | Request/response RPC | N/A — no capability mechanism; only codec validation | N/A | N/A | via `stats.Observer.RecordRequest`/`ReportErrors` | No pre-flight gate; per-call only | `*apimcp.ToolHandle[In,Out]` (adapter.go:70) | `handle.Decode`/`Encode`/`ErrorResponseFor` | Inline in `server.ToolHandlerFunc` closure (adapter.go:81-139) | adapter.go:93,100,128,137 | `handle.ErrorResponseFor` at adapter.go:112; no DeadLetter anywhere in `api/mcp` |
+| ResourceHandler/ResourceHandlerWithVars | `api/mcp` Resource registration | Request/response (URI-templated) | N/A | N/A | N/A | via RecordRequest | No gate | `*apimcp.ResourceHandle[V,T]` (adapter.go:168,262) | `handle.Encode`, `handle.ExtractURIVars` | Inline, 2 near-duplicate closures (adapter.go:179-206, 271-301) | adapter.go:194-298 (multiple sites) | None — no `ErrorResponseFor` equivalent for resources |
+| PromptHandler | `api/mcp` Prompt registration | Request/response | N/A — only `PromptArg.Required` | N/A | N/A | via RecordRequest/ReportErrors | No gate | `*apimcp.PromptHandle` (adapter.go:351) | `handle.ValidateArgs` | Inline closure (adapter.go:369-400) | adapter.go:386-397 | None |
+| ToolLatestHandler/ToolPipelineHandler (+ port adapters) | Same Tool seam, reactive variants | Request/response wrapping cache/pipeline | N/A | N/A | N/A | delegates to ToolHandler's RecordRequest | No gate | `*apimcp.ToolHandle[In,Out]` | Delegates entirely to `ToolHandler` (stream.go:76,155) | Reuses ToolHandler's one closure | Inherited | Inherited (`ErrorResponseFor`) |
+
+##### `adapters/mcprest`
+
+| Adapter | Seam(s) served | Pattern family | Declared capabilities | Capability form | Guaranteed or approximated | Observable to application | Where coverage is checked | Binding/handle type used | Adapter-facing exported methods used | Middleware application point | Observer call sites | ErrorPattern/DeadLetter consultation |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `adapters/mcprest` | Bridges an MCP tool call to an outbound REST client call | REST (client) exposed as MCP tool | N/A — inherits whatever `rest`/`nethttp` checks internally; adds none itself | N/A | N/A | N/A | Not checked in mcprest — delegated entirely to `adapters/nethttp`'s client transport setup | `*rest.RouteHandle[Req,Resp]` via `rest.Route.ClientHandle()` (bridge.go:44) | `rest.CallWithTransport` (bridge.go:63), `nethttp.NewClientTransport` (bridge.go:46) | None in mcprest — any `ClientMW` attached by the caller before reaching mcprest | None in mcprest — entirely inside `adapters/nethttp/clienttransport.go` | `errors.go:117-205` `DefaultErrorPatterns()` maps nethttp/rest client errors + mcprest's own `ToolRequestMapError`/`ToolResponseMapError` into `apimcp.ErrorPattern`; no DeadLetter |
+
+##### `adapters/mqtt` (v3)
+
+| Adapter | Seam(s) served | Pattern family | Declared capabilities | Capability form | Guaranteed or approximated | Observable to application | Where coverage is checked | Binding/handle type used | Adapter-facing exported methods used | Middleware application point | Observer call sites | ErrorPattern/DeadLetter consultation |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| adapters/mqtt (v3) | `api/events` pub/sub | pub/sub | `QoS` (0/1/2), `Retained` — sealed `mqtt.Capability`; **no `UserPropertyParam`** (confirmed absent via grep — MQTT5-only feature) | sealed interface, `Apply(wire *WireAttributes)` | Approximated per-call, not compiler-enforced | Yes — missing capability surfaces as an error to caller/errs channel | **Scattered — 6 distinct call sites**: adapter.go:653 (publish), caller.go:139 (subscribeHandle), caller.go:463 (ServeSubscribers reflection), binding.go:123 (SubscribeAdapter), transport.go:308 (reflection Publish), transport.go:564 (reflection Subscribe) | `events.ChannelHandle[T]` (generic + reflection-recovered) | `SubscribeAdapter`/`PublishAdapter`, `subscribe`/`subscribeHandle`/`publish`/`publishHandle` | `wrapPublishGeneral`/`wrapSubscribeGeneral` + reflection mirrors `wrapClientGeneralDecoratorReflect`/`wrapServerGeneralDecoratorReflect` | `stats.ObserverFromContext` + `Record*` across adapter.go, caller.go:112,454, binding.go, transport.go/transport_dispatch.go, plus `Observability[T]` wrapper (caller.go:759) | `tryPublishErrorChannel`/`tryDeadLetter` (adapter.go:216,238), consulted at every failure point; reflection mirrors in transport.go:429,442; ServeSubscribers' reflection dispatch now wired too (per in-code comment acknowledging a prior gap) |
+
+##### `adapters/mqtt5`
+
+| Adapter | Seam(s) served | Pattern family | Declared capabilities | Capability form | Guaranteed or approximated | Observable to application | Where coverage is checked | Binding/handle type used | Adapter-facing exported methods used | Middleware application point | Observer call sites | ErrorPattern/DeadLetter consultation |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| mqtt5 | `api/events` (Subscribe+Publish) | pub/sub, topic-based | `Capability` (QoS, Retained) — capability.go:35-95; **User Properties via separate `UserPropertyParam`, NOT part of Capability** (capability.go:100-102) | sealed, `isMQTT5Capability()` marker | Guaranteed-at-setup via `events.VerifyCapabilityCoverage` | Yes — `SubscribeError`/dead-letter/error-channel | 3 explicit call sites: adapter.go:791 (subscribeWithHandle), adapter.go:970 (publish), caller.go:157 (ServeSubscribers) — transport.go's reflection Subscribe/Publish rely only on `ApplyCapabilities`, **no independent coverage pre-check found** | `*events.ChannelHandle[T]` | `events.Transport.Publish/Subscribe/ServeSubscribers`, Attach/Bind | `events.ApplyCapabilities` + `wrapSubscribeGeneral`/`wrapPublishGeneral`/reflection mirrors | `obs.RecordSubscribe`/`RecordPublish`, dozens of sites across adapter.go/transport.go/caller.go | `tryDeadLetter`/`tryPublishErrorChannel`, 14+ call sites in adapter.go |
+| mqtt5 | `api/reqreply` (Call+Serve) | request/reply, correlation-id + reply-topic | `Capability` (QoS, Retained), same sealed interface reused | same sealed interface | Guaranteed via `reqreply.CheckCoverage` (Serve setup, reqreply_transport.go:440) + `VerifyCapabilityCoverage` (Serve:462, Call:1192) | Yes — `ErrorPatternResponse`, `CallError`, `ServeError` | reqreply_transport.go:440,462,1192 (3 call sites, checked once per Serve setup not per-message) | reflection-recovered route handle | `reqreply.ServerTransport.Serve`, `ClientTransport.Call`/`CallRaw` | `events.ApplyCapabilities` reused for wire attrs; `applyGeneralServerMiddleware`/`runServerSecurityMiddleware`/`mergeCredentialUserProperties` | `obs.RecordRequest("MQTT5-REP/REQ",...)`, 40+ sites | `tryDeadLetterReflect` (reqreply_transport.go:196) + `ErrorPatternResponse` matching |
+| mqtt5 | `ports.Pattern` binding | stream adapters (Sub/Pub/Call/Serve) | Same `Capability` type | Same, delegated | Delegates to underlying generic/transport functions, no separate check | Yes, same plumbing | Delegated — binding.go itself has no independent check | `*events.ChannelHandle[T]`/route handles wrapped in `ports.Sink/Source/IO/ToolAdapter` | `SubscribeAdapter`/`PublishAdapter`/`CallAdapter`/`ServeAdapter` | Delegated | Delegated | Delegated (e.g. `handleUpstreamError` reuses `tryPublishErrorChannel`) |
+
+##### `adapters/nethttp`
+
+| Adapter | Seam(s) served | Pattern family | Declared capabilities | Capability form | Guaranteed or approximated | Observable to application | Where coverage is checked | Binding/handle type used | Adapter-facing exported methods used | Middleware application point | Observer call sites | ErrorPattern/DeadLetter consultation |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| adapters/nethttp | `api/rest` standard HTTP route dispatch | REST request/response, ONE reflection-based implementation (reference pattern) | `rest.CapabilityRequirement` (`RequireQoS`/`RequireHWM`) | `rest.CapabilityName`, minimum-level | Approximated — always fails closed since HTTP has no native QoS/HWM | Yes — eager failure at `serve()`/`ServeOne` time, not request time | `buildRouteHandler`, serve.go:~290-320 (security + capability + param-kind coverage), via `VerifyCapabilityCoverage` | `*rest.RouteHandle[Req,Resp]` via reflection | `Decode`, `Validate*`, `MergeFields`, `*ParamNames` (reflect-called) | `applyGeneralMiddleware` wraps `http.Handler` outermost-in | `stats.ObserverFromContext`, `SecurityObserver`, `ReportErrors` (serve.go:326,488,619,633) | `tryRespondErrorPattern`, 21 call sites (serve.go:848) |
+| adapters/nethttp | `api/rest` SSE dispatch — ONE implementation, separate file (`serve_sse.go`), duplicates REST's format-negotiation/decode/validate logic rather than reusing it | SSE streaming | Same `CapabilityRequirement` mechanism reused | Same as REST row | Approximated, same as REST | Yes — `serveSSE`/`buildSSERouteHandler` eager check (serve_sse.go:130,141) | serve_sse.go:130 (security CheckCoverage), :141 (capability coverage) | `*rest.SSERouteHandle[Req,Event]` via reflection | Format negotiation + decode/validate reflect calls mirroring serve.go | Same `applyGeneralMiddleware`-style wrapping | serve_sse.go:221,274,285,424 | **None** — code comment explicitly states "no declared ErrorPattern concept exists for SSE" (serve_sse.go:241) |
+| adapters/nethttp | **`ports`-binding adapters** (IngestAdapter/LatestAdapter/HandlerLatest/PipelineHandler/CallAdapter/etc.) via shared `handlerFunc[Req,Resp]` (adapter.go:167) — **a SECOND, independently-written implementation, NOT a thin delegate of `buildRouteHandler`** | `ports.Source/Sink/Transform`+stream-binding over REST+SSE, generic (non-reflection) dispatch | No `CapabilityRequirement` applied in this path | N/A | N/A (gap, not approximation) | **Not checked** — zero capability-coverage calls found in `adapter.go`'s `handlerFunc` | **No `VerifyCapabilityCoverage`/`CheckCoverage` call anywhere in this path — a confirmed, previously-unflagged gap** | `*rest.RouteHandle[Req,Resp]` directly (generics, not reflection) | Same method names, called directly (typed, not reflected) | Same `impls` plumbing passed into `handlerFunc(..., impls...)` | adapter.go:196,348,503,517,749,794,805,857,889 | `tryRespondErrorPatternGeneric`, ~20 call sites (adapter.go:1043) — added later per `d-0005`'s H1 finding to close an original zero-coverage gap |
+
+##### `adapters/openai`
+
+| Adapter | Seam(s) served | Pattern family | Declared capabilities | Capability form | Guaranteed or approximated | Observable to application | Where coverage is checked | Binding/handle type used | Adapter-facing exported methods used | Middleware application point | Observer call sites | ErrorPattern/DeadLetter consultation |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `adapters/openai` (CallAdapter) | `api/llm` LLM-completion seam | LLM Pattern only — no streaming/function-calling/tool pattern exists | **None — no `Capabilities`/feature-flag concept exists anywhere in `api/llm`** | N/A — entirely config-driven (`CallAdapterOptions`) | N/A | Only indirectly via errors/Observer | Nowhere — no coverage-check mechanism exists | `*llm.CallHandle[Req,Resp]` | `EncodeRequest`, `ResponseSchema`, `DecodeResponse`, `SystemPrompt`, `Name` — all 5 exported fields/funcs used | None — no middleware layer; cross-cutting concerns inlined in `complete()` | `obs.RecordRequest`, 9 sites (every exit path); `stats.ReportErrors` at client.go:199 | None — no `ErrorPattern`/`DeadLetter` type exists in this repo at all for LLM |
+
+##### `adapters/redis`
+
+| Adapter | Seam(s) served | Pattern family | Declared capabilities | Capability form | Guaranteed or approximated | Observable to application | Where coverage is checked | Binding/handle type used | Adapter-facing exported methods used | Middleware application point | Observer call sites | ErrorPattern/DeadLetter consultation |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Read-through cache (GetAdapter/Get/GetMerged/Seed) | `ports.IOPort` | `ports.CachePattern` | Get/lookup, decode+codec-validate, optional miss-as-error | Declarative `CachePattern{Key,TTL}` | Approximated — no requirement enforcement, purely opt-in | Yes — `CacheObserver.RecordCacheHit/Miss` + `ReportErrors` | Not checked anywhere — no capability-requirement mechanism exists | `ports.Cache[T]` | `GetAdapter`, `Get`, `GetMerged`, `Seed` | None | binding.go:70,176,187,191 | None — no ErrorPattern/DeadLetter type in this package |
+| Write-through cache (SetAdapter/Set/SetHandle/DrainSetAdapter) | `ports.IOPort`/`ports.SinkPort` | `ports.CachePattern` | Set/write, encode+codec-validate, pass-through-on-failure, TTL override | Shared `writeThrough` helper | Approximated — behavioral guarantee, not statically checked | Yes — `RecordCacheWrite` + `ReportErrors` | None | `ports.Cache[T]` | `SetAdapter`, `Set`, `SetHandle`, `DrainSetAdapter` | None | binding.go:279,374,384,483 | None |
+| **Pub/Sub (`SubscribeAdapter`/`PublishAdapter`)** | — | **NOT SHIPPED** — confirmed via file listing (no `pubsub.go`) and `docs/roadmap/redis-pubsub.md`'s own status: "Design draft — awaiting refinement / use case" | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
+
+##### `adapters/sql`
+
+| Adapter | Seam(s) served | Pattern family | Declared capabilities | Capability form | Guaranteed or approximated | Observable to application | Where coverage is checked | Binding/handle type used | Adapter-facing exported methods used | Middleware application point | Observer call sites | ErrorPattern/DeadLetter consultation |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `QueryAdapter[T]`/`DrainInsertAdapter[T]`/`QueryEachAdapter[In,T]` | `ports.Source/Sink/IOPort` | `ports.SQLPattern` — **confirmed strictly metadata-only**: a `{Table,Op}` struct propagated via context, no handle, no spec document | Table/Op descriptive metadata only, not a capability-requirement type | N/A | Approximated — metadata is descriptive only, never enforced | Via `errs` chan / `OnError` callback / returned stream | **Not checked** — `ports.SQLPattern` has no coverage/requirement mechanism at all | None (plain context value, not a handle) | `AdapterName`, `Activate`/`Transform`; shared `Validate`/`resolveTableOp` helpers | None — validation inlined per-call | binding.go:88-90,169-171,242-244 + `Validate`'s own `SQLObserver` calls | Not consulted — no ErrorPattern/DeadLetter anywhere in `ports`/`sql` |
+| `Migrator` (Up/Down/Status) | Standalone helper, not a `ports` adapter | N/A | Observer-only; no `SQLPattern` involvement | N/A | N/A | Return error (`MigrationError`) | N/A | N/A | `NewMigrator`, `Up`, `Down`, `Status` | None | migrate.go:75-77,86-88,102-104,117-119 | Not consulted |
+
+##### `adapters/templ`
+
+| Adapter | Seam(s) served | Pattern family | Declared capabilities | Capability form | Guaranteed or approximated | Observable to application | Where coverage is checked | Binding/handle type used | Adapter-facing exported methods used | Middleware application point | Observer call sites | ErrorPattern/DeadLetter consultation |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| adapters/templ (`Format`/`StreamingFormat`) | REST response rendering (HTML) | Format/encoding only — no resilience/retry seam | None — no declared capability set at all | N/A | N/A | No — no Observer plumbed through this package at all | Not checked in this package; delegated to caller-supplied `codex.Codec[Props]` | `format.Format[Props]` value | `Format[Props]()`, `StreamingFormat[Props]()` | None — content negotiation/Observer handled entirely by the consuming `rest.Route`/adapter | **None found anywhere in package** | None — only a local `DecodeNotSupportedError` sentinel for the intentionally-unsupported decode path |
+
+##### `adapters/websocket`
+
+| Adapter | Seam(s) served | Pattern family | Declared capabilities | Capability form | Guaranteed or approximated | Observable to application | Where coverage is checked | Binding/handle type used | Adapter-facing exported methods used | Middleware application point | Observer call sites | ErrorPattern/DeadLetter consultation |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `IngestSocketAdapter[T]`/`BroadcastSocketAdapter[T]`/`DuplexSocketAdapter[In,Out]` | Server upgrade → `ports.Source/Sink/DuplexAdapter` | `ports.SocketPattern` | Header/Cookie/Query param-kind coverage (shared `checkSocketParamKindCoverage`, explicitly commented "to avoid tripling the same 4-line check") | Real-interface capability check, not a declared-list struct | Guaranteed-at-construction (checked once, error from constructor) | Yes | capability.go:76-82, called once per adapter at construction (binding.go:147,267,~473) | `ports.Socket[In,Out]` | `handle.Route.Validate*`, `MergeInbound`/`MergeOutbound`, `InFormat.Unmarshal`/`OutFormat.Marshal`, `hub.*` | **None — zero `MiddlewareHandlers`/`DispatchSubscribeMiddleware`/`SubscribeMW` usage anywhere, confirmed fresh via repo-wide grep** | `obs.RecordRequest/RecordSubscribe/RecordPublish`, `ReportErrors` — ~30 sites across binding.go | `ErrorFrames` consulted in Broadcast's and Duplex's own `handleUpstreamError` closures (near-identical, explicitly commented as mirroring each other); Ingest has none |
+| `DialSourceAdapter[T]`/`DialSinkAdapter[T]`/`DialDuplexAdapter[In,Out]` | Client dial variants | Same pattern, client-side | **None — no HTTP-request param surface, no coverage check at all for client dialers** | N/A | N/A | N/A | Not checked | `ports.Socket[In,Out]` (reused) | `handle.Route.BuildPath`, `InFormat.Unmarshal`/`OutFormat.Marshal` | None | client.go, ~11 sites | None — `DialAdapterOptions` has no `ErrorFrames` field at all |
+
+No `RegisterSocket`/AsyncAPI channel-registration mechanism exists anywhere
+in this package or repo-wide (confirmed via repo-wide grep).
+
+##### `adapters/zeromq`
+
+| Adapter | Seam(s) served | Pattern family | Declared capabilities | Capability form | Guaranteed or approximated | Observable to application | Where coverage is checked | Binding/handle type used | Adapter-facing exported methods used | Middleware application point | Observer call sites | ErrorPattern/DeadLetter consultation |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| adapters/zeromq | `api/events` Subscribe | pub/sub | `Capability` (HWM, Conflate) | sealed, `Apply(sock)(bool,error)`, `events.ApplyCapabilities` | Approximated — `Apply` no-ops when socket doesn't implement setter interface | Yes, via Observer + returned applied flag | adapter.go `subscribeWithHandle` (generic) AND transport.go `Subscribe` (reflection) — **each does its own separate coverage check** | `*events.ChannelHandle[T]` | `Subscribe`, `WithOptions`, `SubscribeMW` | `wrapSubscribeGeneral`/`wrapServerGeneralDecoratorReflect` | adapter.go:706,719; serve_subscribers.go:324,335 | `tryDeadLetter[T]` (adapter.go:337) + reflection equivalent |
+| adapters/zeromq | `api/events` Publish | pub/sub | same `Capability` set | same | same | Yes | adapter.go `publish[T]`/`publishHandle[T]` (870,1033); transport.go:156 `(*transport).Publish` (reflection) — separate coverage check each | `*events.ChannelHandle[T]` | `Publish`, `WithOptions`, `PublishMW` | `wrapPublishGeneral[T]`/`wrapClientGeneralDecoratorReflect` | `publish_adapter_observer_test.go`; transport.go:326 `publishDeadLetterReflect` | `tryPublishErrorChannel[T]` (adapter.go:317); `publishDeadLetterReflect` (transport.go:326) |
+| adapters/zeromq | `api/reqreply` Call+Serve — plain REQ/REP | req/reply | `Capability` (HWM, Conflate) applied per Serve/Call via `ServeTransportOptions.Capabilities`/`ClientCallOptions.Capabilities` | Sealed interface + `reqreply.VerifyCapabilityCoverage` (reqreply_transport.go:607,1017) | Guaranteed-checked (hard error if required capability absent) | Yes | plain-Serve: reqreply_transport.go:594,607; plain-Call: reqreply_transport.go:1017 | `reqreply.RouteHandle[Req,Resp]` | `Serve`, `Call`, `CallRaw` | `applyGeneralServerMiddleware` (reqreply_transport.go:384) — **shared** between plain+ROUTER Serve (called at 615 and 1635) | `sendHandlerErrorReplyReflect`/`sendErrorReply` (adapter.go:1077) | `tryDeadLetterReflect` (reqreply_transport.go:141), 8+ call sites |
+| adapters/zeromq | `api/reqreply` Call+Serve — ROUTER/DEALER | req/reply | same `Capability` set | same, `reqreply.VerifyCapabilityCoverage` (1631, 1998) | Guaranteed-checked | Yes | ROUTER-Serve: reqreply_transport.go:1621,1631; DEALER-Call: reqreply_transport.go:1998 | `reqreply.RouteHandle[Req,Resp]` | `Serve` (ROUTER), `Call`/`CallRaw` (DEALER) | `applyGeneralServerMiddleware` reused at line 1635 (same function as plain) | `sendRouterHandlerErrorReplyReflect`/`sendRouterForwardReplyReflect` (166,201) | `tryDeadLetterReflect`, identity-frame-based correlation (frames[0], line 1674) |
+| adapters/zeromq | `ports.Pattern` binding | n/a | — | — | — | not separately checked | binding.go wraps events/reqreply constructors (`PublishOptions`/`SubscribeOptions`→binding.go:60-212) — no independent `ports.Pattern` dispatch loop; delegates to the rows above | `PublisherBinding`/`SubscriberBinding` structs | `Publish`, `Subscribe` wrappers | delegates to adapter.go/handletransport.go paths | delegates | delegates |
+
+##### `adapters/internal`
+
+Only two sub-packages exist — no general "internal" grab-bag:
+
+- **`httpsecurity`** (net/http-family only — nethttp, chi): merges legacy
+  Fn-based + new `MiddlewareHandler`-based `GrantedScopes` before one
+  `middleware.CheckScopes` call.
+- **`scopesmerge`** (events/reqreply-family only — mqtt, mqtt5, zeromq):
+  the transport-agnostic equivalent, plus `HasSatisfyingHandler` to gate
+  whether `CheckScopes` should run at all.
+
+No external-seam row applies — `adapters/internal` binds to no `api/*`
+pattern directly; it's pure shared utility consumed by the other adapters.
+
+#### Internal-seam matrix results
+
+##### `adapters/chi`
+
+| Capability (or middleware concern) | Adapter | Entry point | Implementation count | Shared vs. duplicated | Test coverage per entry point | Known regression history |
+|---|---|---|---|---|---|---|
+| Route dispatch (declarative Attach workflow) | chi | `serve`→`buildRouteHandler` (reflection), serve.go:161,239 | 1 (reflect-based) | **Duplicated vs. `adapters/nethttp`'s identical `serve`/`buildRouteHandler`** — comments explicitly say "mirrors adapters/nethttp...identical...check"; chi has "no import relationship with nethttp...intentionally duplicated" | serve_test.go, adapter_test.go, error_pattern tests | n/a within this cell |
+| Route dispatch (direct generic handler, non-Attach) | chi | `handlerFunc[Req,Resp]`, adapter.go:256 | 1 generic func, 2 call sites (Ingest, Latest) | Parallels the reflect path; also duplicated vs. nethttp's identical `handlerFunc` | binding_test.go, adapter_test.go | — |
+| SSE dispatch (Attach + direct) | chi | `serveSSE`/`buildSSERouteHandler` (serve_sse.go:50,95); `sseHandlerFunc` (adapter.go:761) | 2 | Both duplicated vs. nethttp's identical SSE paths | serve_test.go, gap1_ports_middleware_dispatch_test.go | **Gap-1 review fix** (binding.go:163-165): generic SSE path previously passed NO `Implementations`, so `MiddlewareHandlers` never dispatched — a real historical regression, fixed, cross-referenced to nethttp's identical bug |
+| Error handling / ErrorPattern consultation | chi | `tryRespondErrorPattern` (serve.go:841) + `tryRespondErrorPatternGeneric` (adapter.go:1109) | 2 independent implementations in-package | Duplicated in-package AND duplicated across packages vs. nethttp's identical functions | error_pattern_category_a_test.go, port_adapter_error_pattern_test.go | Comments flag deliberate parity fixes to keep both in sync with nethttp — drift/regression risk between the duplicated implementations |
+| Observer reporting | chi | ~20 call sites across adapter.go/serve.go/serve_sse.go/stream.go | ~20, no single central dispatcher | Duplicated per-path (reflect route, generic route, SSE reflect, SSE generic, stream hub) | Covered incidentally | — |
+
+**Chi's single biggest finding**: it is architecturally parallel to, but
+**not a thin delegate of**, `adapters/nethttp` — it independently
+duplicates nethttp's entire dispatch, error-pattern, and Observer logic
+**line-for-line** (explicitly documented in ~15 comments), making chi/nethttp
+together a confirmed cross-adapter duplication pair the per-adapter
+template doesn't fully capture on its own.
+
+##### `adapters/file`
+
+| Capability (or middleware concern) | Adapter | Entry point | Implementation count | Shared vs. duplicated | Test coverage per entry point | Known regression history |
+|---|---|---|---|---|---|---|
+| Scan/decode, Watch/poll, Read, 4× Write/drain variants | file | One independent `Activate`/`Transform` per adapter function (binding.go, 8 functions) | 8 entry points, but each serves a **genuinely different operation** (not 8 competing implementations of one concern) | Not duplicated by design — `ReadAdapter` is an honest thin wrapper of `ReadEachAdapter`; the 4 Drain* sinks serve 4 different write semantics | Dedicated tests per function | None found |
+| Param validation ("vars") | file | 4 call sites, all calling the same `ports.ValidateParams` helper | 4 call sites, 1 shared implementation | Shared logic, duplicated call-site boilerplate (minor, not a bug) | Per-adapter `_ParamValidationError` tests | None |
+| Observer reporting | file | 1 direct `stats.ReportErrors` call (`DrainWriteAdapter` only); all others forward-only; `WatchAdapter`'s `Observer` option is dead code | Asymmetric — 1 direct call + N forwarding sites + 1 unused option | **Fresh finding, not previously flagged**: inconsistent Observer usage across sibling sink adapters | No dedicated observer-forwarding test for the affected adapters | None found — new finding |
+
+**No duplication problem in this package by design.** The one soft spot is
+the asymmetric/dead Observer wiring (fresh finding).
+
+##### `adapters/mcpgo`
+
+| Capability (or middleware concern) | Adapter | Entry point | Implementation count | Shared vs. duplicated | Test coverage per entry point | Known regression history |
+|---|---|---|---|---|---|---|
+| Tool-call dispatch (core + latest + pipeline + port-adapter variants) | mcpgo | `ToolHandler` closure (adapter.go:81), all variants delegate/wrap it (stream.go:76,155; binding.go:33,92) | 1 canonical implementation, N thin wrappers | **Shared** — no independent reflection-based dispatcher exists; unlike events/reqreply, there is no escape-hatch generic path that bypasses this | adapter_test.go, stream_test.go | None found |
+| Resource dispatch (literal + vars-aware) | mcpgo | `ResourceHandler` (adapter.go:179), `ResourceHandlerWithVars` (adapter.go:271) | 2 near-identical hand-copied closures | **Duplicated** — not built on a shared helper | adapter_test.go | None confirmed, but a maintenance-risk pattern |
+| Observer reporting | mcpgo | Inline per-call in 4 closures (tool/resource/resource-vars/prompt) | 4 independent inline implementations | Duplicated — "resolve observer, start span, RecordRequest" boilerplate repeated near-identically instead of factored out | adapter_test.go, stream_test.go | None found |
+| ErrorPattern | mcpgo | `handle.ErrorResponseFor` (adapter.go:112), tool-only | 1 call site | Shared (only tools have it; resources/prompts lack an equivalent — asymmetric, not duplicated) | error_pattern_test.go | None found |
+| DeadLetter | mcpgo | N/A | 0 — no DeadLetter type exists anywhere in `api/mcp` | N/A | N/A | N/A |
+
+**Biggest finding**: unlike events/reqreply, mcpgo's tool-call dispatch is
+genuinely single-path — no escape-hatch/reflection duplication exists for
+it. The duplication that does exist (resource closures, Observer
+boilerplate) is smaller-scale and in-package only.
+
+##### `adapters/mcprest`
+
+| Capability (or middleware concern) | Adapter | Entry point | Implementation count | Shared vs. duplicated | Test coverage per entry point | Known regression history |
+|---|---|---|---|---|---|---|
+| REST client dispatch (transport build + HTTP call) | mcprest via nethttp | `MappedToolHandler` → `nethttp.NewClientTransport` → `rest.CallWithTransport` (bridge.go:46,63) | 1 (reused, not reimplemented) | **Shared, not duplicated** — zero reimplementation of HTTP transport/dispatch logic | bridge_test.go (+ nethttp's own client transport tests) | None found specific to mcprest |
+| Error-pattern mapping | mcprest | `DefaultErrorPatterns()` (errors.go:117) | 1 implementation, but duplicative *in spirit* — re-wraps the same nethttp/rest client error types nethttp's own error-dispatch machinery already classifies | Shared error *types*, duplicated *mapping tables* (mcprest keeps its own payload/pattern list) | errors_test.go | None found |
+| Capability-requirement checking | — | — | 0 — mcprest checks nothing itself | Relies entirely on whatever `rest.RouteHandle`/`nethttp` transport already enforced at construction time | N/A | N/A |
+
+**Genuinely thin bridge** — the one place it adds its own logic
+(error-pattern mapping) is a deliberate, narrow translation layer, not
+transport duplication.
+
+##### `adapters/mqtt` (v3)
+
+| Capability (or middleware concern) | Adapter | Entry point | Implementation count | Shared vs. duplicated | Test coverage per entry point | Known regression history |
+|---|---|---|---|---|---|---|
+| Subscribe dispatch | mqtt | (1) `subscribeHandle`/`subscribeHandler` escape hatch; (2) `transport.go`'s reflection `Client.Subscribe` shim; (3) `(*caller).ServeSubscribers` + reflection body | **3** independent implementations — **confirms mqtt v3 shares mqtt5's exact 3-way shape, a cross-check not previously done explicitly for v3** | Duplicated logically (coverage check + ApplyCapabilities + Fn-shape validation re-implemented 3×), though all funnel to the same low-level decode helper | adapter_test.go, binding_test.go, caller_test.go, transform_dispatch_test.go | In-code comments flag several of these as "PREVIOUSLY-MISSING"/belatedly added — a recurring regression pattern of new dispatch paths omitting the check |
+| Publish dispatch | mqtt | (1) `publish[T]`/`publishHandle[T]` shared primitive; (2) `transport.go`'s reflection `Client.Publish` shim | **2** independent implementations | Shared primitive reused by binding/transport wrappers, but coverage-check logic still duplicated between primitive and reflection path | adapter_test.go, publish_adapter_observer_test.go, publish_error_channel_exclusion_test.go | Dedicated regression-test filenames indicate past ErrorChannel/DeadLetter exclusion bugs on this path |
+| Capability coverage check | mqtt | 6 call sites (listed in external-seam row above) | 6 | Scattered, not centralized — each dispatch path re-implements the `events.VerifyCapabilityCoverage` call | capability_test.go + per-path test files | Multiple comments explicitly document several of these 6 sites as "PREVIOUSLY-MISSING"/belatedly added |
+| ErrorPattern/DeadLetter consultation | mqtt | `tryPublishErrorChannel`/`tryDeadLetter` (shared helpers) + reflection mirrors in transport.go and ServeSubscribers | 4 independently-reachable consultation implementations | Centralized in 2 shared helpers for non-reflection paths; reflection paths re-implement equivalent logic via `reflect.Value` rather than calling the helpers directly | error_channel/dead_letter test files | Explicit comments confirm `ServeSubscribers` was missing this entirely in a prior revision — "same regression class as mqtt5" |
+
+**Biggest finding**: `adapters/mqtt` (v3) is a fully independent codebase
+from `adapters/mqtt5` (not a shared package, deliberately — its own doc
+comment says so), yet is a near line-for-line structural mirror, including
+**the same 3-way Subscribe duplication and the same historical regression
+pattern of newer paths initially missing coverage/DeadLetter checks**
+before being belatedly patched. This means any future consolidation fix
+designed only against mqtt5 will need a **separate, parallel fix for mqtt
+v3** — they do not share code that a single change could fix once.
+
+##### `adapters/mqtt5`
+
+| Capability (or middleware concern) | Adapter | Entry point | Implementation count | Shared vs. duplicated | Test coverage per entry point | Known regression history |
+|---|---|---|---|---|---|---|
+| events Subscribe dispatch | mqtt5 | (1) `makeSubscribeMessageHandler[T]` (adapter.go:273, generic escape-hatch); (2) `(*transport).Subscribe` (transport.go:462, reflection); (3) `(*caller).ServeSubscribers`→`makeErasedSubscribeMessageHandler` (caller.go:122,426) | **3** independent implementations | Duplicated logic across all 3, confirmed by `transport_dispatch.go`'s own doc comment (explicitly a "reflection-only mirror," structurally separate) | adapter_test.go, transport_test.go, caller_test.go | `transport_dispatch.go` comments document a historical bug: "ServeSubscribers dispatch previously consulted NEITHER mechanism" — fixed later |
+| events Publish dispatch | mqtt5 | (1) `publish[T]`/`publishHandle[T]` (adapter.go:943,1218); (2) `(*transport).Publish` (transport.go:174, reflection mirror) | **2** independent implementations | Partially shared small helpers, but each has its own full dispatch body — acknowledged duplication, not full sharing | adapter_test.go, transport_test.go, client_full_pipeline_test.go | A fixed RequireQoS/coverage-check gap historically present in only one of the two paths |
+| reqreply Call dispatch | mqtt5 | `(*clientTransport).Call`/`call` (reqreply_transport.go:975,989); `CallRaw` (1497, separate bypass) | 1 primary + 1 raw-bypass variant | Single typed implementation; `CallRaw` is an intentional separate escape hatch | reqreply_test.go, callraw_test.go | Past forward/error-pattern-precedence bugs referenced in test filenames |
+| reqreply Serve dispatch | mqtt5 | `(*serverTransport).Serve` (reqreply_transport.go:347) | 1 implementation | Single, not duplicated | reqreply_test.go, grantedscopes_reqreply_test.go | Documented fixed asymmetries ("closing an asymmetry with...") |
+| Capability coverage checking — events | mqtt5 | adapter.go:791,970; caller.go:157 — **transport.go's reflection Subscribe/Publish show NO independent `VerifyCapabilityCoverage` call, only `ApplyCapabilities`** | 3 confirmed explicit sites; **potential gap flagged on the reflection path** | Shared function (`events.VerifyCapabilityCoverage`), called from 3 distinct sites — reflection path's coverage may be weaker | adapter_test.go, caller_test.go, capability_test.go | capability_test.go notes — reflection path gap is a fresh observation from this audit, not previously documented |
+| Capability coverage checking — reqreply | mqtt5 | reqreply_transport.go:440 (CheckCoverage) + :462,1192 (VerifyCapabilityCoverage) | 3 call sites | Shared function, called at 3 distinct sites, resolved once per Serve setup (not per-message) | capability_reqreply_test.go | Documented "per-message vs per-setup" distinction |
+| ErrorPattern/DeadLetter | mqtt5 | events: `tryDeadLetter`/`tryPublishErrorChannel` (~14 sites); reqreply: `tryDeadLetterReflect` + `ErrorPatternResponse` matching | 1 shared helper per side, many invocations | Shared helper, duplicated call-site pattern (not logic duplication) | dead_letter_test.go, dead_letter_reqreply_test.go, error_pattern tests | "Category A fix," "now ErrorPattern-eligible" comments indicate past gaps on certain failure paths |
+| Observer reporting | mqtt5 | `obs.RecordSubscribe`/`RecordPublish` (dozens of sites, 3 impl families for Subscribe + 2 for Publish); `obs.RecordRequest` (40+ sites, reqreply) | Many duplicated call-site families | Duplicated call-site patterns across the 3 Subscribe/2 Publish implementations | error_pattern_observer_test.go, disposition_test.go | Repeated optional-interface-check pattern (SecurityObserver/TraceObserver/DispositionObserver) duplicated identically 3× |
+
+**Biggest finding (reconfirmed fresh, with one new addition)**: events
+Subscribe has 3 and Publish has 2 fully independent, hand-maintained
+dispatch implementations, with an extensive documented history of each
+capability/error/observer concern independently regressing on at least one
+of the parallel paths before being fixed. **New in this fresh pass**:
+`transport.go`'s reflection Subscribe/Publish paths show only
+`ApplyCapabilities` calls, not an independent `VerifyCapabilityCoverage`
+pre-check — a potential coverage gap on the reflection path that the
+original narrower evidence pass did not surface as explicitly.
+
+##### `adapters/nethttp`
+
+| Capability (or middleware concern) | Adapter | Entry point | Implementation count | Shared vs. duplicated | Test coverage per entry point | Known regression history |
+|---|---|---|---|---|---|---|
+| Route dispatch (decode/validate/encode/error pipeline) | nethttp | `serve()`/`ServeOne`→`buildRouteHandler` (serve.go:159,218,237) | **ONE** reflection-based implementation — confirmed still the sole REST route-dispatch path; "reference pattern" claim holds **for this entry point** | N/A (reference) | serve_test.go, adapter_test.go | n/a — reference implementation |
+| Route dispatch (ports-binding path) | nethttp | `handlerFunc[Req,Resp]` (adapter.go:167), called from binding.go/stream.go | **A genuinely SECOND, independent implementation — NOT a thin delegate of `buildRouteHandler`** | **Duplicated**, not shared — full generics-typed re-implementation of body decode, format negotiation, validation, merge-fields, middleware Fn application, encode, and error handling | binding_test.go, port_adapter_error_pattern_test.go, gap1_ports_middleware_dispatch_test.go | `d-0005`:25-37 explicitly documents this as a SEPARATE dispatch function, originally out of scope for ErrorPattern/Observer fixes, later patched (H1) to add parity — **duplication itself was never eliminated, only the gap it caused** |
+| SSE dispatch | nethttp | `serveSSE`/`buildSSERouteHandler` (serve_sse.go:53,98) | ONE implementation, but conceptually parallel to (not reused from) `serve.go`'s pipeline | Duplicated vs. serve.go (format negotiation/decode/validate reflect helpers largely re-implemented) | transform_sse_dispatch_test.go | Comment flags no ErrorPattern concept for SSE — intentional scope gap, not a regression |
+| ErrorPattern consultation | nethttp | `tryRespondErrorPattern` (serve.go:848) vs. `tryRespondErrorPatternGeneric` (adapter.go:1043) | TWO separate functions, one per dispatch path | Duplicated by necessity since the two dispatch paths are themselves duplicated | error_pattern_category_a_test.go, port_adapter_error_pattern_test.go | `d-0005` documents `handlerFunc` originally had ZERO ErrorPattern coverage until a later pass (H1) added the generic counterpart |
+| Observer reporting | nethttp | ~6 sites in serve.go vs. ~9 in adapter.go | Independent call-site sets | Duplicated call sites, same `stats` package reused (shared library, duplicated wiring) | redirect_observer_test.go, gap1_ports_middleware_dispatch_test.go | `d-0005` separately notes REST's middleware-fn/handler-error branches historically had "ZERO observer calls" before fixes — parallel gap addressed via the H1 finding |
+| **Capability coverage check** | nethttp | `rest.VerifyCapabilityCoverage` present in BOTH `serve.go` and `serve_sse.go` — **absent in `handlerFunc`/binding.go entirely** | Present in 2 of 3 dispatch paths | **Not shared with `handlerFunc` — a confirmed, previously-under-examined gap**: ports-binding routes declaring capability requirements silently skip the eager-failure guarantee REST/SSE routes get | capability_test.go exercises only the reflect-based paths | **No regression history found — this appears to have simply never been extended to the ports-binding path; a genuinely new finding from this fresh audit, not previously flagged in design docs** |
+
+**Biggest finding — corrects the doc's own earlier "Confirmed asymmetry"
+table**: the common assumption that `adapters/nethttp`'s REST dispatch is
+*the single converged reference pattern* holds only for the standard
+REST/SSE surface (`serve.go`/`serve_sse.go`). Once the `ports`-binding
+adapters are included, nethttp **also has two parallel, independently
+evolving dispatch implementations** (reflect-based vs. generic-based),
+sharing only library primitives, not code — plus a confirmed capability-
+coverage gap on the generic side that has never been closed. See
+"Reconciliation with Preliminary evidence" below.
+
+##### `adapters/openai`
+
+| Capability (or middleware concern) | Adapter | Entry point | Implementation count | Shared vs. duplicated | Test coverage per entry point | Known regression history |
+|---|---|---|---|---|---|---|
+| Completion call dispatch | openai | `complete[Req,Resp]` (client.go:88) — sole implementation | 1 | Not duplicated — single generic function, no streaming variant, no second call path | client_test.go (11 dedicated cases) | One commit fixed a missing-Name/Observer-placement bug; no architectural duplication |
+| Streaming dispatch | openai | None — `Transform` fans discrete request items through the same single `complete()` call | 0 (token-by-token streaming doesn't exist for this adapter) | N/A | N/A | N/A |
+| Error handling | openai | 6 exported error types, each constructed at a single site in `complete()` | 6 distinct types, each with exactly 1 construction path | Not duplicated | Each has a dedicated test + LogValue test | Same commit fixed a Name-field bug across these constructions |
+| Observer reporting | openai | 9 `RecordRequest` sites + 1 `ReportErrors` site, all inlined in `complete()` | 9+1 call sites, all within one function | Duplicated in the sense that every exit branch repeats the call inline rather than via `defer`/helper | Verified via `recordingObserver` test double | Same commit explicitly fixed "observer location" |
+
+**Clean baseline — no internal-seam fragmentation problem to report.** The
+one known regression was a correctness bug (wrong Name/Observer placement),
+not architectural duplication.
+
+##### `adapters/redis`
+
+| Capability (or middleware concern) | Adapter | Entry point | Implementation count | Shared vs. duplicated | Test coverage per entry point | Known regression history |
+|---|---|---|---|---|---|---|
+| Get dispatch | redis | `GetAdapter.Transform`→`GetMerged`→`Get`; `Seed` (warm-restart wrapper) | 4 entry points, 1 underlying implementation | Shared — all funnel through `Get` | Extensive per-entry-point tests | A dedicated parity test (`TestGetSetAdapter_DelegatesToGetSet_SameBehavior`) suggests prior drift risk between adapter/plain-function behavior was a known concern |
+| Set dispatch | redis | `SetAdapter`, `DrainSetAdapter`, `Set`, `SetHandle` — all call shared `writeThrough`+`keyVarsFor` | 1 shared implementation, 4 entry points | **Shared** — explicitly documented "Shared by Set, SetAdapter, and DrainSetAdapter" | Extensive per-entry-point tests | Same parity test covers this path too |
+| Subscribe dispatch (pub/sub) | redis | **None — not implemented** | 0 | N/A | 0 tests | `docs/roadmap/redis-pubsub.md` confirms it hasn't shipped — design draft only |
+| Key-codec handling | redis | `cache.BuildKey` called independently at 2 sites (Get, writeThrough) rather than one shared key-resolution helper | 2 independent call sites to a shared external function | Partially duplicated — minor | TestCache_BuildKey + missing-var tests | No explicit regression; low-risk since behavior is identical |
+| Error wrapping | redis | `CacheError{}` constructed independently ~6+ times, no single factory function | Duplicated struct-literal construction | Low-risk (trivial struct), but genuine duplication | LogValue/chain tests | None noted |
+| Observer reporting | redis | Observer *resolution* duplicated at 5 independent sites; Observer *recording* centralized in `Get`/`writeThrough` | 5 resolution sites + 2 recording call sites | Mixed — resolution duplicated, recording shared | Nil-safety deliberately tested | No incident history; nil-safety was a deliberate design concern |
+
+**Biggest finding**: the two core helpers (`Get`, `writeThrough`) genuinely
+prevent duplication for the operations that exist — the real gap is the
+**entirely unshipped pub/sub side**, confirmed still just a design draft.
+
+##### `adapters/sql`
+
+| Capability (or middleware concern) | Adapter | Entry point | Implementation count | Shared vs. duplicated | Test coverage per entry point | Known regression history |
+|---|---|---|---|---|---|---|
+| Row/param validation | sql | `Validate()` called from 3 sites (Query, DrainInsert, QueryEach), defined once | 1 shared implementation, 3 call sites | **Shared** — single function reused | binding_test.go + validate_test.go (9 funcs) | A commit added test-quality-gap coverage to validate_test.go |
+| Table/Op default resolution | sql | `resolveTableOp`, called at 3 sites | 1 shared implementation | Shared | Default-resolution tests for Drain/QueryEach; **QueryAdapter's own path has no dedicated test — a coverage gap** | None found |
+| Query dispatch (poll-based) | sql | `QueryAdapter.Activate` (single ticker loop) | 1 | N/A (only one query-dispatch adapter) | 3 dedicated tests | None found |
+| DrainInsert dispatch | sql | `DrainInsertAdapter.Activate`, delegates looping to shared `gstream.Drain` | 1 (adapter-local closure) + shared loop mechanics | Shared loop mechanics; validation/insert closure is adapter-local | 3 dedicated tests | None found |
+| QueryEach dispatch | sql | `QueryEachAdapter.Transform`, bespoke goroutine fan-in — **does NOT reuse `gstream.Drain`** | 1 implementation, hand-rolled, structurally distinct from DrainInsert | **Duplicated control-flow pattern** — separate fan-in mechanics from the shared helper DrainInsert uses | 3 dedicated tests | None found |
+| Migration handling | sql | `Up`/`Down`/`Status`, shared `newProvider()` + 3 distinct methods with near-identical obs/err patterns | 1 shared constructor + 3 near-duplicate method bodies | Shared construction; dispatch logic duplicated per-method, not factored into one helper | 7 test funcs | A commit added 34 lines of test-quality-gap coverage — regression-driven hardening |
+| Error wrapping | sql | 4 distinct error types, each independently implementing `Error()`/`Unwrap()`/`LogValue()` | 4 types, structurally identical boilerplate, no shared base | Duplicated boilerplate (same shape, no shared helper) | LogValue tests for 2 of 4 types found — **gap for RowValidationError/MigrationError** | None found |
+| Observer reporting | sql | 6+ independent `ObserverFromContext` fallback blocks; actual recording via shared `stats` functions | 6+ resolution sites | Mixed — resolution duplicated, recording shared | No isolated Observer-call-site unit tests in the sql package itself | None found |
+
+**Biggest finding (reconfirms prior roadmap note)**: `ports.SQLPattern` is
+confirmed strictly metadata-only — no handle, no capability-requirement
+mechanism, no ErrorPattern/DeadLetter anywhere. The adapters' only real
+shared logic is `Validate`/`resolveTableOp`; the three dispatch loops
+themselves (ticker-poll, shared-`gstream.Drain`, hand-rolled fan-in) are
+structurally distinct by necessity, not duplicated unnecessarily.
+
+##### `adapters/templ`
+
+| Capability (or middleware concern) | Adapter | Entry point | Implementation count | Shared vs. duplicated | Test coverage per entry point | Known regression history |
+|---|---|---|---|---|---|---|
+| Buffered HTML rendering | templ | `Format[Props]` marshal closure (adapter.go:47-53) | 1 | Shares the underlying `templ.Component.Render` call with the streaming variant, but buffering logic is unique | adapter_test.go | None found |
+| Streaming HTML rendering | templ | `StreamingFormat[Props]` marshal closure (adapter.go:80-82) | 1 | Structurally distinct closure from the buffered variant — no shared internal helper between the two | adapter_test.go | None found |
+| Decode/unmarshal (explicitly unsupported) | templ | Both `Format` and `StreamingFormat` independently return `DecodeNotSupportedError` | 2, duplicated, identical logic | **Duplicated** — not factored into a shared function (minor) | adapter_test.go | None found |
+| Props validation | templ | Entirely delegated to caller-supplied `codex.Codec[Props]` | 0 (pass-through) | Shared with every other format adapter via the common `format` package | N/A | None found |
+
+**Thin, single-purpose adapter — no dispatch logic, no capability
+mechanism, no Observer calls of its own.** The only duplication is the
+trivially-small `DecodeNotSupportedError` stub written out twice.
+
+##### `adapters/websocket`
+
+| Capability (or middleware concern) | Adapter | Entry point | Implementation count | Shared vs. duplicated | Test coverage per entry point | Known regression history |
+|---|---|---|---|---|---|---|
+| Upgrade/validation | websocket | `upgradeAndValidate` (binding.go:33-102), 3 call sites (Ingest/Broadcast/Duplex) | 1 shared implementation | **Shared** | binding_test.go (20 funcs) | None noted |
+| Capability/param-kind coverage check | websocket | `checkSocketParamKindCoverage` (capability.go:76-82), 3 call sites | 1 shared implementation, explicitly commented "to avoid tripling the same 4-line check" | **Shared** | capability_test.go | None |
+| Inbound decode loop | websocket | `readLoop` (binding.go:103-131), 4 call sites across server+client | 1 shared generic implementation | **Shared** — genuinely one core, **contrast with mqtt5/zeromq's 3-way duplication** | binding_test.go + client_test.go | None |
+| Outbound/broadcast send | websocket | Broadcast's `gstream.Drain`-based loop vs. Duplex's own inline select-loop | 2 independent implementations | **Partially duplicated** — both reimplement per-session hub.send + MergeOutbound + Marshal + RecordPublish bookkeeping | binding_test.go | Structurally the one place genuine duplication exists here (smaller-scale than mqtt5/zeromq) |
+| Client-side managed-connection write | websocket | `managedConn.write`, used by DialSink + DialDuplex | 1 shared implementation | **Shared** | client_test.go | None |
+| Reconnect/dial-loop handling | websocket | `dialLoop`, used directly and via `managedConn.readEach` | 1 shared implementation | **Shared** | client_test.go | None |
+| Error handling — upstream pipeline errors → ErrorFrame | websocket | Broadcast's and Duplex's own `handleUpstreamError` closures | 2 independent implementations | **Duplicated** — explicitly acknowledged in comments as mirroring each other rather than sharing one function | binding_test.go | Explicit comment flags the duplication as intentional mirroring, not accidental |
+| Declarative middleware | websocket | N/A | **0** — confirmed fresh via repo-wide grep, zero `MiddlewareHandlers`/`DispatchSubscribeMiddleware`/`SubscribeMW` usage | N/A | N/A | Reconfirms the roadmap's earlier finding that this package has no declarative middleware concept at all |
+| chi-variant delegation | websocket | — | **0** — package depends only on a narrow `Mux` interface, not on `adapters/chi` at all | N/A — no chi coupling found | N/A | No duplication axis here, contrary to what might be assumed from nethttp/chi's pattern |
+
+**Biggest finding**: websocket's core dispatch (`upgradeAndValidate`,
+`readLoop`, `dialLoop`, `managedConn`) is **genuinely shared** across
+server and client variants — materially better than mqtt5/zeromq's
+situation. The one real duplication pocket is the
+`handleUpstreamError`/`ErrorFrame`-matching closure between Broadcast and
+Duplex.
+
+##### `adapters/zeromq`
+
+| Capability (or middleware concern) | Adapter | Entry point | Implementation count | Shared vs. duplicated | Test coverage per entry point | Known regression history |
+|---|---|---|---|---|---|---|
+| events Subscribe dispatch | zeromq | (1) `subscribeWithHandle[T]` (adapter.go:348, generic); (2) `(*transport).Subscribe` (transport.go:360, reflection); (3) `(*caller).ServeSubscribers`→`dispatchToRoute`/`processMessage` (serve_subscribers.go:302,363,491) | **3** | Duplicated (3 independent recv/decode/dispatch loops); `serveOneSubscriber` is a thin wrapper of (3), not a 4th implementation | transport_test.go, caller_test.go, stream_test.go | **Code comments explicitly document a historical bug**: Subscribe's coverage check was missing on the `transport.go`/`ports.Pattern` reflection path even though the generic and `ServeSubscribers` paths had it — confirmed shipped regression |
+| events Publish dispatch | zeromq | (1) `publish[T]`/`publishHandle[T]` (adapter.go:870,1033); (2) `(*transport).Publish` (transport.go:156) | **2** | Duplicated (fewer than Subscribe — no publish-side server-loop equivalent) | publish_adapter_observer_test.go | Same coverage-check gap noted for Publish ("mirrors Transport.Publish's identical fix") |
+| reqreply plain-Serve dispatch | zeromq | `(*serverTransport).Serve` (reqreply_transport.go:508) | 1 | N/A alone, but sibling-duplicated vs. ROUTER below | reqreply_transport_test.go, dead_letter_reqreply_test.go | — |
+| reqreply ROUTER-Serve dispatch | zeromq | `(*routerServerTransport).Serve` (reqreply_transport.go:1555) | 1 | Duplicated relative to plain-Serve (separate recv loop keyed on identity frame), but shares `applyGeneralServerMiddleware` with plain-Serve | forward_reqreply_test.go | Comment notes it replaces "now-deleted ServeRouter" — history of partial consolidation |
+| reqreply plain-Call / DEALER-Call dispatch | zeromq | `(*clientTransport).call`/`CallRaw`; `(*dealerClientTransport).call`/`CallRaw` | 2+2 (typed + raw, per variant) | Duplicated — necessitated by envelope framing differences (empty-delimiter+identity vs. socket-implicit routing) | callraw_test.go, capability_reqreply_test.go, dead_letter_reqreply_test.go | — |
+| Capability coverage checking | zeromq | 4 reqreply call sites (plain-Serve, ROUTER-Serve, plain-Call, DEALER-Call) + 2 events call sites (Subscribe, Publish, via `ApplyCapabilities`) | 4 + 2 | Duplicated call sites, but all route through shared `reqreply.CheckCoverage`/`VerifyCapabilityCoverage`/`events.ApplyCapabilities` — logic shared, call sites duplicated | capability_reqreply_test.go (4 tests, one per variant), capability_test.go | Explicit "confirmed-missing gap" fixed in Subscribe/Publish |
+| Observer reporting | zeromq | pub/sub: adapter.go + serve_subscribers.go; reqreply: adapter.go + reqreply_transport.go | ≥6 distinct call-site families | Duplicated per socket-variant, no shared single Observer-emit helper across pub/sub vs. reqreply | publish_adapter_observer_test.go, error_channel_category_a_test.go | — |
+
+**Biggest finding**: zeromq has 3 independent events-Subscribe and 2
+events-Publish dispatch loops (same shape as mqtt5), PLUS the reqreply side
+doubles again across plain vs. ROUTER/DEALER socket variants — a confirmed,
+shipped coverage-check regression on the reflection path is directly
+documented in code comments, the clearest "textbook N-implementations
+regression" evidence found in this entire audit.
+
+##### `adapters/internal`
+
+| Capability (or middleware concern) | Adapter | Entry point | Implementation count | Shared vs. duplicated | Test coverage | Known regression history |
+|---|---|---|---|---|---|---|
+| Legacy Fn grants collection + CheckScopes | nethttp, chi | `httpsecurity.RunSecurityMiddlewareReflect`/`CollectGrantsReflect` | 1 (shared) | Shared | httpsecurity_test.go | None noted |
+| MiddlewareHandler GrantedScopes merge (REST) | nethttp, chi | `httpsecurity.MergeMiddlewareHandlerGrants` | 1 (shared) | Shared | httpsecurity_test.go | None noted |
+| MiddlewareHandler GrantedScopes merge (events/reqreply) | mqtt, mqtt5, zeromq | `scopesmerge.MergeHandlerGrants` | 1 (shared across these 3) | Shared across the 3, but **duplicate-by-design relative to `httpsecurity`'s near-identical function** — the two packages were deliberately kept separate rather than unified | scopesmerge_test.go, zeromq/grantedscopes_reqreply_test.go | **Comment explicitly documents a found regression**: an unconditional `CheckScopes` call broke zeromq's grant-less legacy security — fixed by introducing `HasSatisfyingHandler` |
+| CheckScopes invocation gating | mqtt, mqtt5, zeromq | `scopesmerge.HasSatisfyingHandler` | 1 (shared) | Shared | scopesmerge_test.go | Same regression as above |
+
+**Biggest finding — reinforces the roadmap's own problem statement rather
+than contradicting it**: `adapters/internal` is NOT a cross-adapter
+dispatch-core. It contains exactly one narrow, deliberately-scoped utility
+concern (grants merging before `CheckScopes`), and even that one concern is
+implemented **twice** (`httpsecurity` vs. `scopesmerge`) by explicit
+design choice rather than unified further — confirming no shared
+dispatch-core exists anywhere in the codebase today for capability
+checking, middleware application, or Observer/error-pattern reporting.
+
+#### Reconciliation with "Preliminary evidence"
+
+This fresh, independent pass agrees with the earlier Doc A/Doc B grounding
+on every claim it re-examined, and extends it in several places. Two
+corrections are important enough to flag explicitly rather than leave two
+silently-differing accounts in this doc:
+
+1. **Correction: REST (`adapters/nethttp`) is not a single converged
+   dispatch path once the `ports`-binding adapters are included.** The
+   "Confirmed asymmetry" table above (and several other passages)
+   describe REST's dispatch as "ONE — the reference pattern" based on
+   `serve.go`'s reflection path alone. This fresh audit confirms that claim
+   is only true for the standard REST/SSE HTTP surface; `handlerFunc`
+   (`adapter.go:167`, backing `IngestAdapter`/`LatestAdapter`/
+   `PipelineHandler`/etc.) is a second, independently-maintained, fully
+   generic re-implementation of the same pipeline, and — a genuinely new
+   finding — it has **no capability-coverage check at all**, unlike
+   `serve.go`/`serve_sse.go`. The "Confirmed asymmetry" table's REST row is
+   updated below to reflect this.
+2. **Extension, not correction: `adapters/mqtt` (v3) shares mqtt5's exact
+   3-way Subscribe-dispatch shape.** Prior evidence focused on mqtt5;
+   Doc B's own scope statement named `mqtt`/`mqtt5`/`zeromq` together but
+   the detailed 3-way citation was always mqtt5-specific. This audit
+   confirms, independently, that mqtt v3 (a fully separate codebase, not a
+   shared package) has the identical structural shape and the identical
+   history of newer paths initially missing capability/DeadLetter checks —
+   meaning a consolidation fix designed only against mqtt5 will need a
+   **separate, parallel fix for mqtt v3**.
+3. **Corroboration: the reqreply 6-call-site duplication finding holds.**
+   The earlier "Preliminary evidence" pass found 6 independent
+   capability-coverage-check call sites across mqtt5+zeromq's reqreply
+   Serve/Call sides. This fresh, adapter-by-adapter audit independently
+   reaches the same conclusion via a different counting path (mqtt5: 3
+   reqreply call sites; zeromq: 4 reqreply call sites across its 4 socket
+   variants) — consistent in substance, though the per-adapter breakdown
+   differs slightly by counting granularity (CheckCoverage vs.
+   VerifyCapabilityCoverage counted separately in this pass).
+4. **New, not previously surfaced: `adapters/chi` independently duplicates
+   `adapters/nethttp`'s entire dispatch/error-pattern/Observer logic
+   line-for-line**, by explicit design (no import relationship between the
+   two packages). This is a cross-adapter duplication axis the per-adapter
+   matrix template captures only partially (each package's own row looks
+   "internally" fine; the duplication is *between* chi and nethttp, not
+   within either one alone). Phase 2 should treat the REST family as
+   **three** dispatch surfaces needing consolidation design (nethttp's
+   reflect path, nethttp's generic path, and chi's independent mirror of
+   both), not the one or two previously assumed.
+5. **New: `adapters/internal` is confirmed NOT a shared dispatch-core.**
+   This was an open question in the roadmap's framing ("no real shared
+   dispatch-core exists yet anywhere in the codebase" was an assumption,
+   not a confirmed fact) — this audit confirms it directly: the one
+   existing shared-utility package (`adapters/internal`) addresses a single
+   narrow concern (grants merging) and is itself split into two
+   deliberately-unmerged implementations.
+6. **New: several adapters have no duplication problem at all** — `file`,
+   `sql` (dispatch-loop level), `openai`, `templ`, `mcpgo`'s tool-call path,
+   and (mostly) `websocket`'s core dispatch (`readLoop`/`upgradeAndValidate`/
+   `dialLoop`/`managedConn` are genuinely shared). This matters for Phase 2
+   prioritization: the events/reqreply family (mqtt/mqtt5/zeromq) plus the
+   REST family (nethttp/chi) concentrate essentially all of the confirmed
+   duplication found across all 14 targets; the `ports`-only adapters
+   (file, redis, sql) and the simpler single-purpose adapters (openai,
+   templ, mcprest) do not need the same Phase 4 consolidation effort.
+
+##### Correction to "Confirmed asymmetry" table
+
+The `api/rest` row in the "Confirmed asymmetry" table (near the top of this
+doc) should be read as superseded by this fresher finding:
+
+| Pattern | Dispatch paths confirmed | Converged? |
+|---|---|---|
+| `api/rest` (`adapters/nethttp`), standard HTTP/SSE surface only | ONE — `serve.go`'s `ServeOne`/`Serve` + `serve_sse.go`'s `serveSSE`, both reflection-based | **YES**, for this surface only |
+| `api/rest` via `ports`-binding adapters (`IngestAdapter`/`LatestAdapter`/`PipelineHandler`/etc.) | A SECOND, independent, generic (non-reflection) implementation (`handlerFunc`, `adapter.go:167`) — confirmed not a thin delegate | **NO** — two parallel dispatch implementations, confirmed missing a capability-coverage check the reflect-based surface has |
+| `adapters/chi` (both surfaces) | Independently duplicates `adapters/nethttp`'s entire dispatch, error-pattern, and Observer logic — no import relationship, no shared code | **NO** — a third and fourth dispatch implementation, line-for-line mirrors of the two above |
+
+#### Overall synthesis — where Phase 2/4 effort should concentrate
+
+Ranked by confirmed duplication severity and regression history found in
+this audit:
+
+1. **Highest priority: events/reqreply across `mqtt`/`mqtt5`/`zeromq`.**
+   Every one of the three adapters shows 2-4 independent dispatch
+   implementations per capability, a long, explicitly-documented history of
+   each one independently regressing (missing coverage checks, missing
+   DeadLetter consultation, missing middleware dispatch), and zeromq's
+   reqreply side doubles the count again via ROUTER/DEALER socket variants.
+   This is exactly where Round 2's "per pattern family" dispatch-core
+   decision should be spent first.
+2. **Second priority: the REST family across `nethttp`/`chi`.** Less
+   severe than events/reqreply (no multi-adapter protocol-version split
+   like mqtt/mqtt5), but genuinely two-to-four parallel implementations
+   once `ports`-binding and `chi` are counted, plus one confirmed,
+   previously-unflagged capability-coverage gap (`handlerFunc`).
+3. **Lower priority, narrower fixes only: `websocket`'s
+   `handleUpstreamError` duplication**, `chi`'s own Gap-1 regression (now
+   fixed), `file`'s asymmetric Observer wiring, and `mcpgo`'s duplicate
+   resource-handler closures — each is a small, self-contained fix, not a
+   consolidation redesign.
+4. **No action needed**: `file`, `sql` (dispatch level), `openai`,
+   `templ`, `mcprest`, and `adapters/internal` show no duplication problem
+   warranting Phase 4 attention; `redis`'s only gap (unshipped pub/sub) is
+   out of scope until that feature actually ships.
+
+**Deliverable status: COMPLETE.** The current-state diagram, external-seam
+compatibility matrix, and internal-seam duplication/coverage matrix called
+for at the start of this Phase 1 section are the two matrix result sets
+above, covering all 14 adapter packages. Phase 2 design work may now begin.
 
 ### Phase 2 — Specify the seam (two sub-tracks, same phase)
 
