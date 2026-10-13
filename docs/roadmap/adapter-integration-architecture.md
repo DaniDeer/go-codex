@@ -2277,10 +2277,10 @@ into a generic "capability implemented: yes/no."
 
 ### Phase 3 — Proof of concept
 
-**Status: 5 of 7 cases done (1, 2, 3, 6, 7); cases 4 and 5 deferred to a
-later round.** See "Phase 3 results" below for outcomes, including one
-significant finding that revises Phase 2's design (case 6) and one
-correction to Phase 1's own findings (surfaced while implementing case 6).
+**Status: 7 of 7 cases done (1, 2, 3, 4, 5, 6, 7).** See "Phase 3 results"
+below for outcomes, including one significant finding that revises Phase
+2's design (case 6) and one correction to Phase 1's own findings
+(surfaced while implementing case 6).
 
 Exercise the proposed model against representative cases drawn from both
 source drafts:
@@ -2317,9 +2317,10 @@ both the `api/*` and `ports/*` seams.
 
 #### Phase 3 results
 
-Cases 1, 2, 3 (QoS/HWM half), and 7 selected for this round; cases 4
+All 7 cases now done — cases 1, 2, 3, 6, 7 in the initial round; cases 4
 (cross-transport reqreply) and 5 (middleware chain consistency across
-adapters) deferred to a later round.
+adapters) in a follow-up round, once no existing test in the codebase was
+confirmed to already cover either.
 
 - **Case 1 (REST route) — confirmed, no new code.** `go test ./api/rest/...
   ./adapters/nethttp/...` passes against `main` unchanged, confirming the
@@ -2362,6 +2363,70 @@ adapters) deferred to a later round.
   force changes onto adapters that don't need them. Proving that
   explicitly (rather than assuming it) was the point of including this
   case.
+- **Case 5 (middleware chain consistency across REST adapters) — new
+  ground, IMPLEMENTED.** Confirmed first that no existing test actually
+  binds one identical route+middleware declaration to both
+  `adapters/nethttp` and `adapters/chi` and asserts matching behavior —
+  prior cross-references between the two packages' test suites are
+  incidental doc comments only (e.g. "mirrors adapters/nethttp's
+  identically-named test"), never a shared assertion. Added
+  `TestMiddlewareChain_ConsistentAcrossNethttpAndChi`
+  (`adapters/chi/cross_adapter_consistency_test.go`, `package chi` — not
+  an external `_test` package — specifically so it can reach chi's own
+  unexported `serveOne` directly while importing `adapters/nethttp`
+  normally, since `nethttp.ServeOne` is exported but `chi.serveOne` is
+  not, an asymmetry Phase 1 already confirmed in the public surface
+  between the two packages). The test declares **one** `rest.Route` with
+  **one** general-purpose `.HandleMW(nil, apiKeyFn)` middleware (mirroring
+  the existing `TestHandler_RequireAPIKey_RunsWithoutRouteSecurity`
+  pattern both packages already carry independently), serves it via both
+  `nethttp.ServeOne` and chi's `serveOne` wrapped in `httptest.NewServer`,
+  and fires three cases (missing/wrong/valid API key) at both, asserting
+  identical accept/reject status codes, identical success/failure
+  response shape, and that the Fn runs exactly once per request on each
+  adapter (6 calls total). **Result: passes — no observable behavioral
+  drift found yet** between chi's confirmed line-for-line duplication of
+  nethttp's dispatch logic and nethttp itself, for this middleware shape.
+  This is a reassuring negative result, not evidence the duplication risk
+  is unfounded: it proves today's two implementations haven't yet
+  diverged, which is exactly the kind of regression this roadmap's
+  dispatch-core consolidation (Phase 4, REST family) is meant to make
+  structurally impossible to reintroduce, rather than merely
+  coincidentally absent.
+- **Case 4 (reqreply contract on two transports) — new ground,
+  IMPLEMENTED at reduced rigor (explicitly stated, not hidden).** No live
+  MQTT5/ZeroMQ broker is available in this sandboxed environment, so a
+  single shared, literally-cross-package live test (the ideal proof) isn't
+  achievable here. Instead, added one mirrored test per adapter, each
+  named identically (`TestCrossTransportContract_ComputeRoundTrip`) and
+  explicitly cross-referencing the other in its doc comment, both
+  declaring the exact same logical contract — the same `computeReq`/
+  `computeResp` types, the same `"/compute"` `reqreply.RouteHandle`, the
+  same `X+Y=Sum` handler semantics already shared verbatim by both
+  packages' pre-existing test fixtures (`newRouteHandle()`,
+  `computeReqCodec`/`computeRespCodec`) — against each package's own
+  pre-existing mock harness:
+  - `adapters/mqtt5/cross_transport_contract_test.go` — a genuine,
+    fully-wired, in-process Serve+Call round trip via mqtt5's own
+    `mockClient`/`mockRouter` harness (the same harness
+    `TestCall_ValidRoundTrip` already uses) — the higher-rigor half, since
+    mqtt5's mock harness already supports true end-to-end dispatch.
+  - `adapters/zeromq/cross_transport_contract_test.go` — zeromq's own
+    `mockSocket` harness is one-way/scripted (canned frames in, recorded
+    frames out), matching how zeromq's own pre-existing suite already
+    tests Serve and Call independently, never end-to-end in one test. The
+    new test therefore proves both halves of the same contract
+    separately: Serve's encode path (the handler computes the correct Sum
+    and it's reflected verbatim, via `format.JSON(computeRespCodec)`, in
+    the reply frame) and Call's decode path (a reply frame carrying the
+    same Sum decodes into the correct `computeResp`) — together
+    equivalent evidence to mqtt5's one wired round trip, at a rigor level
+    consistent with this package's own existing test conventions rather
+    than a bespoke, one-off harness invented only for this test.
+  Both tests pass; this rigor asymmetry (mqtt5 genuinely end-to-end,
+  zeromq split encode+decode) is recorded here plainly rather than
+  presented as equivalent proof — a known, accepted limitation of this
+  sandboxed environment, not a design choice.
 - **Case 6 (events Subscribe dispatch-core) — IMPLEMENTED PARTIALLY, and
   this is itself the most valuable PoC result: it revealed that Phase 2's
   Workstream A design, as written, is not a safe mechanical refactor.**
