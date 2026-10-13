@@ -196,8 +196,8 @@ internal translation of that binding.
 |---|---|---|
 | `api/rest` (`adapters/nethttp`) | ONE — `serve.go`'s `ServeOne`/`Serve` reflects (`reflect.Value.Call`/`MethodByName`) directly into `RouteHandle[Req,Resp]`'s own generic, type-safe methods (`ApplyMergeFields`, `DecodeMerged`, `EncodeResponseMergeFields`, `ErrorStatusFor`, etc.) — confirmed via its own doc comment: "runs the SAME pipeline... invoked via `reflect.Value.Call`." | **YES** — the reference pattern to converge toward |
 | `api/events` Subscribe (`adapters/mqtt`/`mqtt5`/`zeromq`) | THREE, confirmed directly from `d-0007`'s own regression writeup | **NO** — confirmed broken, since patched for the specific gap that surfaced it, but the 3-implementation structure itself was never consolidated |
-| `api/events` Publish | Not yet audited — `adapters/mqtt5/transport_dispatch.go`'s own doc comment confirms some ad hoc convergence already happened ("the SUBSCRIBE-side equivalents ALREADY EXIST in caller.go... this file reuses them directly rather than duplicating"), but the exact count/location for Publish specifically is unconfirmed | **UNKNOWN** |
-| `api/reqreply` Call/Serve (`adapters/mqtt5`/`zeromq`) | Structurally separate files from events' own dispatch (`reqreply_transport.go` vs. `transport.go`) per adapter, confirmed via file listing — whether reqreply's own Call/Serve paths share events' Subscribe shape is unconfirmed | **UNKNOWN** |
+| `api/events` Publish | Dispatch-*implementation*-count still not directly audited — `adapters/mqtt5/transport_dispatch.go`'s own doc comment confirms some ad hoc convergence already happened ("the SUBSCRIBE-side equivalents ALREADY EXIST in caller.go... this file reuses them directly rather than duplicating"), but the exact count/location for Publish specifically remains unconfirmed on that axis. A *related but distinct* axis WAS confirmed by the later "Preliminary evidence" pass: capability-coverage checking on the publish path was missing until fixed (a location bug, not a count), per `adapters/mqtt5/transport.go:344-349`. | **PARTIALLY KNOWN** — implementation count still open; a capability-check-location gap on publish is confirmed |
+| `api/reqreply` Call/Serve (`adapters/mqtt5`/`zeromq`) | **CONFIRMED by the later "Preliminary evidence" pass** (see below) — structurally separate files from events' own dispatch (`reqreply_transport.go` vs. `transport.go`) per adapter, and NOT the same shape as events' Subscribe: 6 independent capability-coverage-check call sites (mqtt5 Serve+Call, zeromq plain-Serve+ROUTER-Serve+plain-Call+DEALER-Call), wider than events' 3. | **NO — confirmed, and worse than events' Subscribe shape** (6 vs. 3 call sites) |
 | All other adapters (`nethttp`'s non-REST uses, `chi`, `websocket`, `redis`, `file`, `sql`, `mcpgo`, `mcprest`, `openai`, `templ`) | Not yet audited under this lens at all | **UNKNOWN — now in scope** (broadened from Doc B's 3-adapter limit; see Phase 1) |
 
 ### Why `d-0008`'s Router is not at risk of this regression class
@@ -380,6 +380,64 @@ instead of none.
   lifecycle interfaces — not just two. Round 1 decision 3 ("unified")
   stands, informed rather than contradicted by this finding.
 
+### Doc B's own claims — independently re-verified
+
+Doc B based its claims on citing two existing design docs (`d-0001`,
+`d-0007`) rather than fresh investigation, so they're re-confirmed here
+directly against current code rather than taken on faith a second time.
+
+- **The 3-way Subscribe dispatch split — confirmed, still unconsolidated
+  on `main`.** All three independent implementations exist exactly as Doc B
+  describes, in both `adapters/mqtt5` and `adapters/zeromq`:
+  (a) `adapters/mqtt5/adapter.go:273`'s generic `makeSubscribeMessageHandler[T]`
+  (escape hatch only); (b) `adapters/mqtt5/transport.go:462`'s reflection-based
+  `Subscribe` (the `ports.Pattern` path), which independently re-implements
+  decode/property-extraction/security/credential-check logic with comments
+  explicitly flagging each step as a duplicate ("mirrors",
+  "IDENTICAL", "SAME") rather than delegating; (c)
+  `adapters/mqtt5/caller.go:122`'s `ServeSubscribers`, dispatch built by
+  `caller.go:426`'s `makeErasedSubscribeMessageHandler`, explicitly
+  documented as "the `ServeSubscribers` dispatch *equivalent* of
+  `makeSubscribeMessageHandler`" — parallel, not shared. None of the three
+  delegates to another. zeromq mirrors this shape at `handletransport.go:69`,
+  `transport.go:360`/`591`, and `serve_subscribers.go:491`.
+- **The specific missing-middleware regression — confirmed, fixed, but with
+  a real residual test-coverage gap.** Documented almost verbatim at
+  `docs/design/d-0007-declarative-middleware-layering.md:3305-3361`; the fix
+  is live (`adapters/mqtt5/caller.go:418-425`). **New finding, not
+  previously flagged**: the *exact* entry-point combination this regression
+  was about — `Client.Attach` + `ServeSubscribers` + genuine `SubscribeMW`/
+  `GrantedScopes`/`ContextField` enrichment — is covered only by a runnable
+  example (`examples/events-api/demo_granted_scopes_context_field.go`), not
+  by an automated `go test` assertion. Existing unit tests exercise
+  `ServeSubscribers` for shape-errors and `DeadLetter` separately
+  (`adapters/mqtt5/caller_test.go:326,553`), but not this specific
+  middleware-enrichment path. This is a concrete, low-effort action item
+  Phase 5 should pick up directly: converting the existing example into (or
+  adding alongside it) a real regression-guard test is exactly the kind of
+  "test per confirmed dispatch entry point" Phase 5 already commits to.
+- **The `d-0008` Router-immunity argument — confirmed, in both doc text and
+  code.** `d-0008`'s own text matches almost verbatim
+  (`docs/design/d-0008-declarative-router-groups.md:475-477`). Code confirms
+  it structurally: `api/events/router.go:210-212`'s `Router.Register` is a
+  one-line delegate to the shared generic router, touching no
+  adapter-dispatch code; there's even a dedicated regression test,
+  `TestRouter_Register_IndistinguishableFromDirectRegister`
+  (`api/events/router_test.go:348`, mirrored for REST at
+  `api/rest/router_test.go:350`).
+- **Doc B's scoping to mqtt/mqtt5/zeromq only — confirmed as correctly
+  scoped, not merely unaudited elsewhere.** Spot-checked `adapters/websocket`
+  (chosen for having its own non-trivial dispatch logic): it has no
+  Subscribe/`SubscribeMW`/`MiddlewareHandlers` concept at all — a single
+  dispatch path via REST-style socket binding (`IngestSocketAdapter`/
+  `BroadcastSocketAdapter`/`DuplexSocketAdapter` over `ports.SocketPattern`).
+  This is a genuine architectural difference, not "the same bug, not yet
+  found" — the 3-way-duplication shape categorically does not apply here.
+  This doesn't clear `websocket` of all Phase 1 audit scope (it still needs
+  auditing for ITS OWN capability/dispatch shape), but it does confirm Doc
+  B's original narrowing to mqtt/mqtt5/zeromq wasn't an arbitrary or lazy
+  scope cut.
+
 ### What this evidence resolved (see "Resolved design decisions", Round 2)
 
 The evidence above was enough to resolve both decisions Round 1 had left
@@ -539,6 +597,44 @@ deferred indefinitely.
    MQTT 3 rejected with an actionable error) becomes a valid Phase 3 PoC
    case rather than a presently-false claim.
 
+### Round 3 — narrower gaps
+
+1. **Conformance-test-suite mechanism — resolved: a shared, importable
+   `_test`-only helper package per API family** (e.g. `api/rest/resttest`),
+   mirroring Go stdlib conventions (`net/http/httptest`, `testing/fstest`,
+   `testing/iotest`). Rejected: a testify-style `Suite` type (adds an
+   object-model layer go-codex doesn't use elsewhere, against "keep the
+   adapter-facing contract small"); a CI-generated checklist as the
+   *primary* mechanism (not self-enforcing at `go test` time — exactly the
+   silent-rot failure mode this roadmap exists to close; it may still
+   survive as a secondary, non-enforcing human-readable summary). The
+   helper package exposes a function-shaped entry point (e.g.
+   `resttest.RunConformance(t, binding)`) rather than a type hierarchy, and
+   its exact signature can evolve alongside each pattern family's
+   still-provisional binding shape (Round 2 decision 1) without blocking
+   Phase 2. This item is removed from "Open design points deferred to
+   future rounds" below, which it previously occupied.
+2. **Capability-value taxonomy — resolved: expand now, conceptually (not
+   as concrete Go types yet).** Despite the "no concrete driver yet"
+   analysis favoring YAGNI, the explicit decision is to specify all four of
+   Doc A's originally-open axes now at the conceptual/semantic level — see
+   the rewritten "Boolean and parameterized capabilities" section below for
+   the actual specification. Concrete Go types implementing this are
+   Phase 2's job; this round only fixes the semantics each axis must
+   support.
+3. **Adapter-interface granularity — resolved: codify the existing
+   pattern as the explicit rule**, rather than leaving it case-by-case.
+   One small interface per (pattern family × lifecycle role) — typically
+   1–2 methods — plus separate, optional `...Aware`/`...Capable` extension
+   interfaces for opt-in features, exactly matching what the Doc A
+   evidence pass already found in code (`ServerTransport`/`ClientTransport`,
+   `PublishTransport[T]`/`SubscribeTransport[T]`, `HeaderCapableTransport`,
+   etc.). Phase 2/4 should treat deviation from this shape as something to
+   justify explicitly, not a free choice per family.
+4. **Phase 1 audit matrix template — resolved: specify the concrete column
+   schema now**, rather than deferring template design to Phase 1 itself —
+   see the "Audit matrix template" subsection added to Phase 1 below.
+
 ## Design goals
 
 1. Preserve the simple, declarative user experience of `api/rest`,
@@ -670,13 +766,16 @@ described) is in scope for Phase 2/4, not yet done.
 
 These concepts must remain distinct.
 
-- **Requirement:** "This contract needs user properties."
-- **Adapter configuration:** "Configure this MQTT 5 binding with these
-  concrete user-property values or mapping rules."
+- **Requirement:** "This contract needs QoS level 1 or higher."
+- **Adapter configuration:** "Configure this MQTT binding's default QoS, or
+  its retry/reconnect policy."
 
 Requirements determine compatibility. Adapter options configure how a
 compatible adapter operates. An option must not silently imply that an
-unsupported transport can meet a semantic requirement.
+unsupported transport can meet a semantic requirement. (The "Preliminary
+evidence" audit spot-checked this for `adapters/mqtt5`'s option structs and
+found no violation — `Capabilities` is always a separate field, never
+merged with mechanical config like `UserPropertyParams`/`TopicFilter`.)
 
 ### Boolean and parameterized capabilities
 
@@ -684,21 +783,53 @@ Not every capability is a simple yes/no feature. Some have values or
 constraints: QoS levels, maximum payload size, delivery guarantees,
 ordering, streaming, duplex communication, or transactional behavior.
 
-The model should support these only where there is a concrete use case.
-Avoid designing a general constraint solver prematurely. Start with the
-capability forms already shipped (QoS/Retained/HWM/Conflate per
-`d-0006`), and ensure their semantics stay explicit:
+Start with the capability forms already shipped (QoS/Retained/HWM/Conflate
+per `d-0006`) — presence-only (`Retained`, `Conflate`) and
+minimum-level (`QoS`, `HWM`, via `>=`) — confirmed by the "Preliminary
+evidence" audit to be the only two forms that exist in code today. Avoid
+designing a general constraint-solving engine (still a non-goal, see
+below); what follows is a conceptual specification of four additional
+semantic axes (**Round 3, decision 2**), not yet a concrete Go type design
+— that remains Phase 2's job once a real capability needing one of these
+axes is confirmed:
 
-- Is a capability merely present?
-- Does the declaration specify a minimum or exact level?
-- Can the adapter satisfy a weaker form, or must attachment fail?
-- Is the feature guaranteed by the transport, or approximated by the
-  adapter?
-- Is the feature observable to the application, or merely an
-  implementation detail?
+1. **Presence vs. minimum-level vs. exact-level.** A requirement declares
+   one of three modes: *presence* (capability must merely exist, no value
+   comparison); *minimum level* (adapter's level must be `>=` the declared
+   value — the only leveled form that exists today); or *exact level* (the
+   adapter's level must equal the declared value exactly — satisfied by
+   neither a higher nor a lower level). Exact-level matters when a
+   capability's semantics genuinely change at different levels rather than
+   monotonically improving (e.g. a level that trades a guarantee for a
+   different, not strictly "better," behavior).
+2. **Weaker-form-satisfiable.** A requirement may explicitly permit an
+   adapter to satisfy it via a documented, non-native/approximated
+   mechanism instead of failing coverage outright — but only if that
+   degradation is surfaced, never silent (see axis 3). Without an explicit
+   opt-in, the default remains today's behavior: an adapter that cannot
+   natively meet the requirement fails coverage.
+3. **Transport-guaranteed vs. adapter-approximated.** Every capability
+   implementation declares whether its semantics are protocol-native
+   (guaranteed by the wire protocol/broker itself) or adapter-approximated
+   (emulated client-side, e.g. a retry loop simulating a guarantee the
+   protocol doesn't actually provide). This flag is required capability
+   metadata, not an afterthought — it should flow into the coverage-check
+   result and into `stats.CapabilityObserver.RecordCapabilityApplied`'s
+   observed event (both already confirmed to exist), so a guaranteed vs.
+   approximated capability is distinguishable after the fact, not just at
+   declare time.
+4. **Observable-to-application vs. implementation-detail-only.** A
+   capability declares whether its satisfaction mode (including whether it
+   was approximated per axis 3) is something application/handler code can
+   itself query at runtime, or whether it is purely internal and invisible
+   to the handler. This determines whether app code can adapt behavior
+   (e.g. log a warning when running in approximated mode) or is fully
+   insulated from the detail.
 
 A capability should not be advertised as supported if the adapter cannot
-uphold the declared semantics.
+uphold the declared semantics — this remains true under every axis above;
+axis 2 (weaker-form-satisfiable) is the only sanctioned, explicit exception,
+and only when axis 3 makes the approximation visible rather than silent.
 
 ## Binding and attachment
 
@@ -768,6 +899,19 @@ and current package boundaries, not an assumed taxonomy.
 An adapter may implement multiple interfaces. Unsupported patterns should
 be unrepresentable where practical, or rejected clearly at attachment time.
 
+**Explicit granularity rule (Round 3, decision 3):** one small interface
+per (pattern family × lifecycle role) — typically 1–2 methods — plus
+separate, optional `...Aware`/`...Capable` extension interfaces for opt-in
+features. This codifies what the "Preliminary evidence" audit already
+found in code: `ServerTransport`/`ClientTransport` (reqreply),
+`Transport`/`ClientAwareTransport` (events), `PublishTransport[T]`/
+`SubscribeTransport[T]` (events, generic per-pattern), and capability-only
+interfaces like `HeaderCapableTransport`/`CookieCapableTransport`/
+`QueryCapableTransport` (REST) all already follow this shape. Treat any
+future interface design that deviates from it (e.g. a single interface
+spanning multiple lifecycle roles, or one with 3+ required methods) as
+something to justify explicitly, not a free per-family choice.
+
 ## Keep middleware separate from capabilities
 
 Middleware describes processing behavior; capabilities describe whether the
@@ -806,11 +950,15 @@ documented `Client.Attach` workflow (`caller.go`/`serve_subscribers.go`) —
 two legitimately different integration paths that nonetheless must not
 silently diverge in capability dispatch.
 
-**Resolved (Round 1, decision 3):** the eventual Binding/capability type
-family is unified across both seams — see "Resolved design decisions"
-below. That unification is at the type-family level only; it does not
-collapse `Register`/`Handle` (`api/*`) and `Bind` (`ports/*`) into one
-integration path, and does not change the guidance above.
+**Resolved (Round 1, decision 3, narrowed by the critical-review pass):**
+the Binding/capability type family is unified **where evidence shows
+convergence** (confirmed for mqtt5's events-capable path); it is
+**explicitly undecided** for pure-ports adapters (`file`/`redis`/`sql`)
+pending the full Phase 1 audit — see "Resolved design decisions" below for
+the full reasoning. Where unification applies, it is at the type-family
+level only; it does not collapse `Register`/`Handle` (`api/*`) and `Bind`
+(`ports/*`) into one integration path, and does not change the guidance
+above.
 
 ## Design principles to preserve
 
@@ -880,6 +1028,42 @@ Produce one merged audit artifact with two complementary matrices:
 compatibility matrix, and the capability/adapter/entry-point duplication +
 coverage matrix. Base this strictly on `main`, not on possibly stale
 released documentation.
+
+#### Audit matrix template (Round 3, decision 4)
+
+Specified now so Phase 1 can start directly from it rather than re-deriving
+a format first. One row per (adapter × capability or pattern-family), as
+appropriate to each matrix.
+
+**External-seam matrix** — columns:
+
+| Column | Meaning |
+|---|---|
+| Adapter | Package name (e.g. `adapters/mqtt5`) |
+| Seam(s) served | `api/*` only / `ports/*` only / both (per the seam-tagging rule above) |
+| Pattern family | REST / events / reqreply / tools / ports-File / ports-Cache / ports-SQL / ... |
+| Declared capabilities | Which `CapabilityRequirement`-style capabilities this adapter can advertise |
+| Capability form | Presence / minimum-level / exact-level / weaker-form-satisfiable (per the taxonomy above) |
+| Guaranteed or approximated | Per capability, whether native or adapter-emulated |
+| Observable to application | Per capability, yes/no (per the taxonomy above) |
+| Where coverage is checked | File:line of the compatibility-check call site(s) — ideally one, per Design goal 12 |
+| Binding/handle type used | e.g. `RouteHandle[Req,Resp]`, `ChannelHandle[T]` |
+| Adapter-facing exported methods used | Which handle methods this adapter actually calls (feeds the essential/adapter-facing/internal-detail classification) |
+| Middleware application point | File:line where declared middleware is dispatched |
+| Observer call sites | File:line(s) reporting through `stats.Observer`/siblings |
+| ErrorPattern/DeadLetter consultation | File:line(s), or "not consulted" |
+
+**Internal-seam matrix** — columns:
+
+| Column | Meaning |
+|---|---|
+| Capability (or middleware concern) | e.g. "Subscribe dispatch," "capability coverage check," "ErrorPattern consultation" |
+| Adapter | Package name |
+| Entry point | Name/file:line of each independently-reachable dispatch path (e.g. `adapter.go`'s generic handler, `transport.go`'s reflection path, `caller.go`'s `ServeSubscribers`) |
+| Implementation count | Total number of independently-maintained implementations found for this capability × adapter |
+| Shared vs. duplicated | Which entry points already delegate to a shared helper vs. independently reimplement |
+| Test coverage per entry point | Yes/no per entry point — does an automated test exercise this *exact* path, not just the easiest one for the capability |
+| Known regression history | Cross-reference to `d-0001`/`d-0005`/`d-0007`/this doc's "Preliminary evidence," if this exact cell already has a documented incident |
 
 ### Phase 2 — Specify the seam (two sub-tracks, same phase)
 
@@ -1004,9 +1188,14 @@ Based on the audit and PoC:
 - reuse shared helpers only where behavior is genuinely common;
 - consolidate every confirmed-duplicated capability (per adapter) onto one
   internal dispatch-core, with every entry point calling through it;
-- extend the same treatment to events' Publish side and reqreply's
-  Call/Serve side once Phase 1 confirms or denies they share Subscribe's
-  shape.
+- apply this directly to reqreply's Call/Serve side — already confirmed by
+  the "Preliminary evidence" pass to have its own duplication shape (6
+  independent capability-coverage-check call sites, worse than and
+  differently shaped from events' Subscribe), not waiting on further
+  confirmation;
+- extend the same treatment to events' Publish side once Phase 1 confirms
+  its dispatch-implementation count (still open — see "Confirmed
+  asymmetry").
 
 ### Phase 5 — Conformance tests and documentation
 
@@ -1025,41 +1214,25 @@ Who owns these conformance tests, and how an adapter author discovers and
 runs them, is itself an open design point — see "API-defined conformance
 test suites" below.
 
+**Immediate, low-effort action item found by the Doc B grounding pass**: the
+`Client.Attach` + `ServeSubscribers` + `SubscribeMW`/`GrantedScopes`/
+`ContextField` combination — the exact entry point `d-0007`'s regression was
+about — is currently exercised only by a runnable example
+(`examples/events-api/demo_granted_scopes_context_field.go`), not an
+automated test. This doesn't need to wait for the full Phase 1 audit or
+Phase 4 redesign; it can be closed directly as a conformance-test seed, and
+doing so early is a concrete demonstration of this phase's own principle.
+
 ## Open design points deferred to future rounds
 
 These are raised now, during this roadmap's drafting, so they are not lost —
 but they are explicitly **not decided here**. Each needs its own design
 round once Phase 1's audit findings are in hand.
 
-1. **API-defined conformance test suites.** Phase 5 above currently frames
-   conformance tests as adapter-authored and somewhat ad hoc. A stronger
-   version of that idea: each `api/*` package (`api/rest`, `api/events`,
-   `api/reqreply`, `api/mcp`, ...) should define its own conformance test
-   suite — an exportable/importable set of tests that any adapter claiming
-   to implement that API's contract must run against itself. This
-   inverts the ownership: the contract's test suite lives with the
-   contract, not with each adapter's own judgment of what to test.
-
-   This is one of several enforcement points this roadmap already relies on
-   (capability compatibility checks at attach-time, the Phase 1 audit
-   matrices, per-entry-point dispatch tests from Phase 5). Framed
-   explicitly, API-defined conformance suites would be the **last**
-   enforcement point: the gate that catches a non-conformant adapter when
-   its code actually lands on `main`, after every earlier, more static
-   check has already had its chance.
-
-   For this to work as intended, the suites must be **clearly visible and
-   explorable in the codebase** — a contributor implementing a new adapter
-   must be able to find "here is the contract my adapter must pass"
-   without spelunking. The exact mechanism is left open: a shared
-   `_test`-only helper package per API family, a Go-level conformance
-   "suite" type adapters instantiate against their own binding, a
-   generated checklist cross-checked by CI, or something else entirely.
-   Deciding the mechanism, where it lives, how it is versioned alongside
-   the API it tests, and how CI enforces that every in-tree adapter
-   actually runs it, is deferred to a future design round once Phase 1's
-   audit shows which capabilities and entry points most need this kind of
-   enforcement.
+*(The API-defined conformance test suite mechanism that originally lived
+here was resolved in Round 3 — see "Resolved design decisions" below. This
+section is currently empty; new narrower gaps will be added here as they
+surface in future rounds.)*
 
 ## Acceptance criteria
 
@@ -1120,8 +1293,10 @@ capability-compatibility matrix and the internal duplication matrix.
 
 The next step is the Phase 1 audit across all adapters, followed by a
 focused proof-of-concept using one REST route, one ordinary event channel,
-one channel requiring MQTT 5 user properties, and the confirmed
-events-Subscribe 3-implementation case. Use those examples to decide
+one channel requiring a minimum QoS or ZeroMQ HWM (the corrected,
+already-working illustration — see "Capabilities are requirements" and
+Phase 3), and the confirmed events-Subscribe 3-implementation case. Use
+those examples to decide
 whether the existing registered handles already provide the right binding
 contract, whether a smaller adapter-facing interface is needed, and whether
 a shared dispatch-core is mechanically achievable across the
