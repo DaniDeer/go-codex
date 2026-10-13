@@ -1830,13 +1830,21 @@ client directly. `ServeSubscribers` becomes: for each registered entry,
 build the SAME `erasedChannelFields` shape via
 `extractErasedSubscriberHandle` (already does this — just needs its
 output struct's shape aligned with what `subscribeDispatchCore` wants),
-call the same core, register the closure per filter. **This is not a
-hypothetical merge — `erasedSubscriberHandle` and
-`recoverHandle`+`elem.FieldByName` already produce equivalent data; the
-work is unifying their output shape into one struct and moving the
-duplicated `dispatchFailure`/decode/security/Middleware body that
-currently lives twice (once inline in each function) into the one shared
-core function.**
+call the same core, register the closure per filter.
+
+**Correction found during Phase 3 implementation (see the roadmap's
+"Phase 3 results" below): this is only true for the `dispatchFailure`
+triplet, not the full per-message dispatch body.** Implementing this
+design for real found `transport.Subscribe` and `ServeSubscribers`'
+per-message bodies have genuinely diverged, not merely duplicated —
+topic-template-var matching and `PropertyMergeField` merge-into-value
+support exist only in `transport.Subscribe`; `stats.Disposition` tracking
+exists only in `ServeSubscribers`' path. Only the `dispatchFailure`
+triplet was confirmed byte-for-byte identical and was safely extracted
+into a shared `subscribeDispatchFailure` function. The rest of this
+design's "one shared core" remains the right target, but requires an
+explicit decision on reconciling those three divergences first — it is
+not a pure mechanical unification as originally scoped here.
 
 The generic Side-A path (`makeSubscribeMessageHandler`) **cannot** be
 folded into this same Go function — Go has no reflective generic
@@ -2349,8 +2357,53 @@ adapters) deferred to a later round.
   force changes onto adapters that don't need them. Proving that
   explicitly (rather than assuming it) was the point of including this
   case.
-- **Case 6 (events Subscribe dispatch-core) — see below, the substantive
-  implementation work for this phase.**
+- **Case 6 (events Subscribe dispatch-core) — IMPLEMENTED PARTIALLY, and
+  this is itself the most valuable PoC result: it revealed that Phase 2's
+  Workstream A design, as written, is not a safe mechanical refactor.**
+
+  Reading `transport.go`'s `(*transport).Subscribe` and `caller.go`'s
+  `makeErasedSubscribeMessageHandler` side by side to implement the full
+  `subscribeDispatchCore` merge found they have genuinely diverged beyond
+  duplication, not merely duplicated:
+  - Only `transport.Subscribe` supports topic-template-var matching
+    (`matchTopicTemplate`) and `PropertyMergeField` merge-into-value
+    (`MergePropertyVars`) — `ServeSubscribers`' path has neither.
+  - Only `ServeSubscribers`' path tracks `stats.Disposition` (`EnsureDispositionBox`/
+    `ResolveDisposition`/`DispositionObserver`) — `transport.Subscribe`
+    has none of this.
+  - `ServeSubscribers`' path calls `wrapHandlerGeneralReflect` **per
+    message** inside the hot path, where `transport.Subscribe` calls the
+    equivalent once outside it — a latent inefficiency, not a correctness
+    bug, but another real difference.
+
+  Merging these into one shared core would require **deciding**, not
+  discovering, whether `ServeSubscribers` should gain topic-var/property-
+  merge support it lacks today, whether `transport.Subscribe` should gain
+  Disposition tracking it lacks today, and whether the per-message
+  re-wrap is worth fixing as part of this work — each a genuine
+  product-behavior decision, not a mechanical deduplication, and exactly
+  the kind of "forcing artificial uniformity onto genuinely different
+  entry-point shapes" this Phase 3 section's own closing paragraph warns
+  against. Silently picking one behavior during an otherwise-mechanical
+  refactor would be the wrong way to resolve it.
+
+  **What was safely implemented**: the one piece confirmed byte-for-byte
+  identical between the two paths — the `dispatchFailure`
+  (ErrorChannel→DeadLetter→OnError) fallback triplet — was extracted into
+  a new shared `subscribeDispatchFailure` function
+  (`adapters/mqtt5/transport_dispatch.go`), with both `transport.go` and
+  `caller.go` repointed to call it. Zero behavior change; full
+  `adapters/mqtt5`/`adapters/mqtt`/`adapters/zeromq`/`api/events` test
+  suites re-verified passing unchanged; `go vet`/`gofmt` clean.
+
+  **Revised scope for Phase 4**: the remaining steps of Workstream A (full
+  `subscribeDispatchCore` unification) are **deferred pending an explicit
+  decision** on reconciling the three found divergences above — not
+  dropped, but correctly re-sequenced behind a design decision this PoC
+  surfaced rather than one Phase 2 anticipated in the abstract. This is
+  recorded as this roadmap's own instance of the principle it asks of
+  Phase 4 generally: "no false portability" — don't claim two things are
+  the same when a closer look shows they aren't yet.
 
 ### Phase 4 — Implementation
 

@@ -538,43 +538,10 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 
 	// dispatchFailure is the shared ErrorChannel→DeadLetter→OnError
 	// fallback triplet every pipeline step below consults on failure —
-	// mirrors [tryPublishErrorChannel]/[tryDeadLetter]/opts.OnError's
-	// exact fallback order, factored into one closure to avoid repeating
-	// it at all 6 call sites (decode, property-merge, user-property-param,
-	// Implementations-security, codec-Middleware, handler).
-	dispatchFailure := func(kind ErrorKind, sourceTopic string, payload []byte, failErr error) {
-		errResults := errorResponseForMethod.Call([]reflect.Value{reflect.ValueOf(&failErr).Elem()})
-		resp, _ := errResults[0].Interface().(events.ErrorChannelResponse)
-		matched, _ := errResults[1].Interface().(bool)
-		matchErrI, _ := errResults[2].Interface().(error)
-		if matched && matchErrI == nil && resp.Action == events.ErrorRespond {
-			// handled=true (mirrors tryPublishErrorChannel's exact
-			// contract): a matched, published ErrorRespond skips
-			// DeadLetter AND opts.OnError entirely — the caller must
-			// return immediately, never falling through to its own
-			// OnError fallback.
-			_, _ = t.caller.client.Publish(ctx, &pahomqtt5.Publish{Topic: resp.Topic, QoS: defaultQoS, Payload: resp.Body})
-			return
-		}
-		if !matched {
-			dlResults := deadLetterForMethod.Call([]reflect.Value{
-				reflect.ValueOf(obs), reflect.ValueOf(sourceTopic), reflect.ValueOf(payload), reflect.ValueOf(&failErr).Elem(),
-			})
-			dlTopic, _ := dlResults[0].Interface().(string)
-			dlBody, _ := dlResults[1].Interface().([]byte)
-			dlOk, _ := dlResults[2].Interface().(bool)
-			if dlOk {
-				_, _ = t.caller.client.Publish(ctx, &pahomqtt5.Publish{Topic: dlTopic, QoS: defaultQoS, Payload: dlBody})
-				return
-			}
-		}
-		// matched but a non-Respond action (ErrorHandle/ErrorLog): falls
-		// through DIRECTLY to opts.OnError, skipping DeadLetter — same
-		// as an unmatched-and-no-DeadLetter-declared case.
-		if onErrorFn != nil {
-			onErrorFn(SubscribeError{Kind: kind, Topic: sourceTopic, Err: failErr})
-		}
-	}
+	// extracted (Phase 3) into [subscribeDispatchFailure], shared
+	// verbatim with `caller.go`'s identical closure. See that function's
+	// own doc comment for the full extraction rationale and scope.
+	dispatchFailure := subscribeDispatchFailure(ctx, t.caller.client, obs, errorResponseForMethod, deadLetterForMethod, onErrorFn)
 
 	handler := func(msg *pahomqtt5.Publish) {
 		start := time.Now()

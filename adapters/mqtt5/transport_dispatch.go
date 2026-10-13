@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"reflect"
 
+	pahomqtt5 "github.com/eclipse/paho.golang/paho"
+
 	"github.com/DaniDeer/go-codex/api/events"
+	"github.com/DaniDeer/go-codex/stats"
 )
 
 // This file holds the PUBLISH-side reflection-only mirrors of adapter.go's
@@ -231,4 +234,63 @@ func resolveFormatsOverride(overrideAny any, expectedType reflect.Type) (reflect
 		return reflect.Value{}, fmt.Errorf("mqtt5: format override: want %s, got %T", expectedType, overrideAny)
 	}
 	return v, nil
+}
+
+// subscribeDispatchFailure returns the shared ErrorChannel→DeadLetter→
+// OnError fallback triplet — extracted (Phase 3,
+// docs/roadmap/adapter-integration-architecture.md's "Phase 3 results")
+// from the two byte-for-byte-identical `dispatchFailure` closures
+// previously hand-duplicated in `transport.go`'s `(*transport).Subscribe`
+// and `caller.go`'s `makeErasedSubscribeMessageHandler`. Both call sites
+// already resolved errorResponseForMethod/deadLetterForMethod via
+// reflection against the SAME *events.ChannelHandle[T] shape before
+// calling this — only the recovery PATH differed (fresh per-call in
+// transport.go vs. pre-extracted once into erasedSubscriberHandle in
+// caller.go), not the shape itself, which is why this extraction is a
+// pure, zero-behavior-change deduplication.
+//
+// This is deliberately SCOPED to only the error-dispatch triplet, not the
+// full per-message dispatch body those two functions still each
+// implement independently — Phase 3's investigation while writing this
+// extraction found the two bodies have genuinely diverged beyond mere
+// duplication (topic-template-var matching and PropertyMergeField
+// merge-into-value support exist only in transport.go's path; Disposition
+// tracking exists only in caller.go's path; caller.go's
+// wrapHandlerGeneralReflect call also runs per-message instead of once,
+// unlike transport.go's). Reconciling those real differences into one
+// shared dispatch core is an explicit behavior decision, not a
+// mechanical refactor — see the roadmap's "Phase 3 results" for the full
+// finding, deferred pending that decision rather than papered over here.
+func subscribeDispatchFailure(
+	ctx context.Context,
+	client MQTTClient,
+	obs stats.Observer,
+	errorResponseForMethod, deadLetterForMethod reflect.Value,
+	onErrorFn func(SubscribeError),
+) func(kind ErrorKind, sourceTopic string, payload []byte, failErr error) {
+	return func(kind ErrorKind, sourceTopic string, payload []byte, failErr error) {
+		errResults := errorResponseForMethod.Call([]reflect.Value{reflect.ValueOf(&failErr).Elem()})
+		resp, _ := errResults[0].Interface().(events.ErrorChannelResponse)
+		matched, _ := errResults[1].Interface().(bool)
+		matchErrI, _ := errResults[2].Interface().(error)
+		if matched && matchErrI == nil && resp.Action == events.ErrorRespond {
+			_, _ = client.Publish(ctx, &pahomqtt5.Publish{Topic: resp.Topic, QoS: defaultQoS, Payload: resp.Body})
+			return
+		}
+		if !matched {
+			dlResults := deadLetterForMethod.Call([]reflect.Value{
+				reflect.ValueOf(obs), reflect.ValueOf(sourceTopic), reflect.ValueOf(payload), reflect.ValueOf(&failErr).Elem(),
+			})
+			dlTopic, _ := dlResults[0].Interface().(string)
+			dlBody, _ := dlResults[1].Interface().([]byte)
+			dlOk, _ := dlResults[2].Interface().(bool)
+			if dlOk {
+				_, _ = client.Publish(ctx, &pahomqtt5.Publish{Topic: dlTopic, QoS: defaultQoS, Payload: dlBody})
+				return
+			}
+		}
+		if onErrorFn != nil {
+			onErrorFn(SubscribeError{Kind: kind, Topic: sourceTopic, Err: failErr})
+		}
+	}
 }

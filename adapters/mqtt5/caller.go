@@ -426,37 +426,13 @@ func wrapHandlerGeneralReflect(handlerVal reflect.Value, impls []events.ServerIm
 func makeErasedSubscribeMessageHandler(ctx context.Context, client MQTTClient, info erasedSubscriberHandle, obs stats.Observer, opts SubscribeOptions) pahomqtt5.MessageHandler {
 	// dispatchFailure is the shared ErrorChannel→DeadLetter→OnError
 	// fallback triplet every pipeline step below consults on failure —
-	// mirrors [tryPublishErrorChannel]/[tryDeadLetter]/opts.OnError's
-	// exact fallback order (adapter.go), and `transport.go`'s identical
-	// reflection-based dispatchFailure closure. CORRECTED: this
-	// ServeSubscribers dispatch previously consulted NEITHER mechanism —
-	// a declared [events.ErrorChannel]/[events.DeadLetter] silently never
-	// fired on the PRIMARY recommended Client.Attach workflow.
-	dispatchFailure := func(kind ErrorKind, sourceTopic string, payload []byte, failErr error) {
-		errResults := info.errorResponseForMethod.Call([]reflect.Value{reflect.ValueOf(&failErr).Elem()})
-		resp, _ := errResults[0].Interface().(events.ErrorChannelResponse)
-		matched, _ := errResults[1].Interface().(bool)
-		matchErrI, _ := errResults[2].Interface().(error)
-		if matched && matchErrI == nil && resp.Action == events.ErrorRespond {
-			_, _ = client.Publish(ctx, &pahomqtt5.Publish{Topic: resp.Topic, QoS: defaultQoS, Payload: resp.Body})
-			return
-		}
-		if !matched {
-			dlResults := info.deadLetterForMethod.Call([]reflect.Value{
-				reflect.ValueOf(obs), reflect.ValueOf(sourceTopic), reflect.ValueOf(payload), reflect.ValueOf(&failErr).Elem(),
-			})
-			dlTopic, _ := dlResults[0].Interface().(string)
-			dlBody, _ := dlResults[1].Interface().([]byte)
-			dlOk, _ := dlResults[2].Interface().(bool)
-			if dlOk {
-				_, _ = client.Publish(ctx, &pahomqtt5.Publish{Topic: dlTopic, QoS: defaultQoS, Payload: dlBody})
-				return
-			}
-		}
-		if opts.OnError != nil {
-			opts.OnError(SubscribeError{Kind: kind, Topic: sourceTopic, Err: failErr})
-		}
-	}
+	// extracted (Phase 3) into [subscribeDispatchFailure], shared
+	// verbatim with `transport.go`'s identical closure. CORRECTED
+	// (pre-Phase-3): this ServeSubscribers dispatch previously consulted
+	// NEITHER mechanism — a declared [events.ErrorChannel]/
+	// [events.DeadLetter] silently never fired on the PRIMARY recommended
+	// Client.Attach workflow; that fix is what this closure embodies.
+	dispatchFailure := subscribeDispatchFailure(ctx, client, obs, info.errorResponseForMethod, info.deadLetterForMethod, opts.OnError)
 
 	return func(msg *pahomqtt5.Publish) {
 		start := time.Now()
