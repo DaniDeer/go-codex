@@ -1563,13 +1563,35 @@ above, covering all 14 adapter packages. Phase 2 design work may now begin.
 
 ### Phase 2 — Specify the seam (two sub-tracks, same phase)
 
+**Status: COMPLETE.** Both sub-tracks below are resolved: capability
+semantics closed with no new mechanism needed; dispatch-core consolidation
+produced concrete, code-grounded designs for both confirmed families (REST:
+`adapters/nethttp`+`adapters/chi`; events/reqreply:
+`adapters/mqtt`+`adapters/mqtt5`+`adapters/zeromq`) plus a refined,
+mechanically-compatible resolution of Design goal 12's capability-coverage
+split. See the two "... dispatch-core consolidation design" subsections
+below for the concrete, implementer-ready designs. Phase 3 (proof of
+concept) and Phase 4 (implementation) may now begin.
+
 Run both sub-tracks together, since they inform each other directly:
 
 - **Capability semantics (external seam):** Write down how requirements
   are declared, advertised, compared, and reported. Ensure capability
   identity and values are semantic rather than accidentally tied to one
   protocol implementation. Do not implement an elaborate generic capability
-  framework unless Phase 1's findings demand it.
+  framework unless Phase 1's findings demand it. **Resolved: no new
+  mechanism needed.** The completed Phase 1 audit found exactly two
+  capability forms in use anywhere across all 14 adapters — presence-only
+  (`Retained`, `Conflate`) and minimum-level via `>=` (`QoS`, `HWM`) — and
+  no adapter anywhere needing the richer taxonomy Round 3 specified
+  conceptually (exact-level, weaker-form-satisfiable,
+  guaranteed-vs-approximated, observable-vs-detail). Per Round 3's own
+  YAGNI framing ("concrete types... Phase 2's job once a real capability
+  needing one of these axes is confirmed"), that confirmation never
+  arrived — the existing `CapabilityRequirement`/`CheckCapabilityCoverage`
+  mechanism is sufficient as-is. This sub-track closes with no new design
+  output; revisit only if a future adapter concretely needs one of the
+  unimplemented axes.
 - **Dispatch-core consolidation (internal seam):** For every
   confirmed-duplicated capability from Phase 1, determine whether the
   reference pattern (REST's single reflection path, calling into the
@@ -1588,27 +1610,613 @@ Run both sub-tracks together, since they inform each other directly:
   helper package or a per-adapter-local convention remains open to this
   phase.
 
-#### New: consolidate capability-coverage checking to one point (Design goal 12)
+#### Resolved: capability-coverage checking splits into two mechanisms (Design goal 12, refined)
 
 Distinct from dispatch-core consolidation above (which fixes HOW MANY
-implementations exist), this sub-goal fixes WHERE a capability-coverage
-check runs. The "Preliminary evidence" audit found checks executing
-separately at each runtime call site (once on publish, once on subscribe)
-rather than once at a single attach/registration gate — confirmed
-independently of the dispatch-core duplication count. Phase 2 must design
-a single consolidated check point per binding (likely at `Attach`/
-`BindClient`/`ServerAwareTransport.BindServer`-equivalent time, per the
-"Binding and attachment" lifecycle below), and Phase 4 must remove the
-scattered per-call-site checks once the consolidated gate exists.
+implementations exist), this sub-goal originally proposed fixing WHERE a
+capability-coverage check runs, as a single unified gate. **The open
+question below is now answered, and the goal splits into two distinct
+mechanisms rather than one gate:**
 
-**Open question (flagged by critical review, must be answered before this
-goal is treated as unconditionally achievable):** does any in-scope
-capability allow a legitimate **per-call override** of a capability-relevant
-value (e.g. a caller setting QoS on an individual publish call rather than
-only at channel-declare time)? If so, a single attach-time gate cannot be
-the whole answer — it would miss an override that violates the declared
-requirement at the moment it actually matters. Phase 2 must check this
-explicitly for each capability in scope, not assume a single gate suffices.
+**Confirmed finding**: a legitimate per-call capability override exists.
+`adapters/mqtt5`'s `PublishOptions[T].Capabilities` (adapter.go:152) lets a
+caller set QoS (and other capabilities) on an individual publish call, not
+only once at channel-declare time — exercised throughout
+`adapter_test.go` (e.g. `PublishOptions[sensorReading]{Capabilities:
+[]Capability{QoS(1)}}`). A single attach-time gate cannot be the whole
+answer for this.
+
+**Resolution — two distinct mechanisms, not one**:
+
+1. **Requirement coverage (declare-time, static).** "Can this adapter
+   satisfy the channel's declared `CapabilityRequirement`s at all" is a
+   property of the channel declaration and the bound adapter, fixed at
+   bind time — this genuinely moves to ONE check at `Attach`/`BindClient`/
+   `ServerAwareTransport.BindServer`-equivalent time, exactly as originally
+   proposed. Phase 4 removes the scattered per-call-site requirement
+   checks once this consolidated gate exists.
+2. **Capability application (per-call, dynamic).** Applying specific
+   capability values to a specific outgoing message (e.g. the QoS a
+   particular publish call actually uses) is inherently per-call and
+   cannot be collapsed into a single attach-time gate — this is not a
+   location bug to fix, it is the correct, necessary shape. What Phase 4
+   *can* still fix is implementing it through exactly ONE shared,
+   consolidated code path per adapter (not re-duplicated per dispatch
+   entry point) — this folds into the **dispatch-core consolidation**
+   goal above, not a separate location-consolidation goal.
+
+Phase 4 scope is therefore: consolidate requirement-coverage checking to
+one Attach-time gate (new, standalone work), and ensure capability
+*application* goes through the one dispatch-core per adapter that
+dispatch-core consolidation already produces (no separate mechanism
+needed for it).
+
+#### REST family dispatch-core consolidation design (nethttp + chi)
+
+Concrete design for the REST family's dispatch-core consolidation (Round 2
+decision 2's "shared-helper-package vs. per-adapter-local" choice, now
+resolved for this family). Grounded directly in code, including an
+existing in-repo precedent (`adapters/internal/httpsecurity`/`scopesmerge`)
+for exactly this kind of cross-package family-scoped helper.
+
+**Within `adapters/nethttp`**: `serve.go`'s reflection-based
+`buildRouteHandler` and `adapter.go`'s generic `handlerFunc[Req,Resp]`
+cannot become one Go function — they sit on opposite sides of Go's
+generics/reflection boundary (`serve` walks a heterogeneous route slice
+with erased `Req`/`Resp`; `handlerFunc` has them as concrete compile-time
+parameters, and Go has no reflective generic instantiation). But full
+function-level unification isn't needed to close the confirmed gap: three
+of the four missing checks (`rest.CheckCoverage`, `VerifyCapabilityCoverage`,
+`CheckParamKindCoverage`) already take plain typed slices/maps with no
+`Req`/`Resp` in their signatures, and the fourth (shape validation) already
+has a working precedent for crossing this exact boundary —
+`httpsecurity.CollectGrantsReflect` is already called from both the fully
+erased `serve.go` path and `handlerFunc`'s fully generic path, paying a
+small reflect cost from the generic side to reach a shared reflect-based
+core. **Design: extract a single unexported `validateRouteConstruction`
+core** (new function) that both `buildRouteHandler` and `handlerFunc` call
+once, each building the same reflect-friendly inputs from their own
+starting point. This closes the gap by construction — a future check added
+to one path is automatically present in the other.
+
+**Between `adapters/nethttp` and `adapters/chi`**: a shared cross-package
+dispatch-core package is feasible and not hypothetical — `adapters/chi`
+already imports `adapters/internal/httpsecurity`, whose own doc comment
+scopes it explicitly to "the net/http-family adapter tree (adapters/nethttp,
+adapters/chi, and any future adapter built on net/http)." The precondition
+this relies on — both adapters operating on `*http.Request`/
+`http.ResponseWriter` — is independently confirmed: `httpCarrier` and
+`applyGeneralMiddleware` are byte-for-byte identical in both packages
+today. The one genuine per-package difference is path-param extraction
+(`r.PathValue(name)` vs. `chi.URLParam(r, name)`), which has the exact same
+signature shape in both and is a clean dependency-injection seam, not a
+structural blocker. Chi's router-level registration and middleware chaining
+stay entirely outside the shared core, one layer up — exactly how
+`applyGeneralMiddleware` already works without any chi-awareness today.
+
+**Resolved design: a new `adapters/internal/restdispatch` package**,
+mirroring the `httpsecurity`/`scopesmerge` convention, holding:
+`httpCarrier` (promoted, not copied, from the now-duplicate nethttp/chi
+definitions), `ValidateRouteConstruction` (the four-check construction-time
+core from point 1), and `DispatchRoute` (the full per-request dispatch
+body — decode/validate/security/middleware/handle/encode — parameterized
+by an injected `pathValues func(*http.Request, []string) map[string]string`
+to absorb the one real per-router difference). All four existing entry
+points (`nethttp.buildRouteHandler`, `nethttp.handlerFunc`,
+`chi.buildRouteHandler`, `chi.handlerFunc`) become thin wrappers around it.
+
+**Recommended Phase 4 implementation order** (each step independently
+verifiable before the next):
+
+1. Add `adapters/internal/restdispatch` with `httpCarrier` + 
+   `ValidateRouteConstruction`, assembled from nethttp's/chi's existing
+   (confirmed identical) implementations.
+2. Repoint `nethttp.buildRouteHandler` to call it; verify nethttp's tests
+   unchanged (pure extraction, zero behavior change).
+3. Repoint `chi.buildRouteHandler` the same way; delete chi's now-dead copy.
+4. Extract the per-request dispatch closure into `restdispatch.DispatchRoute`
+   (parameterized by `pathValues`); repoint nethttp; verify nethttp's full
+   suite before touching chi.
+5. Repoint `chi.buildRouteHandler` to the same `DispatchRoute`; delete
+   chi's duplicate closure; verify chi's suite.
+6. Wire `handlerFunc` in both packages through `ValidateRouteConstruction`
+   at construction time, closing the confirmed capability-coverage gap.
+7. (Stretch goal, separate step) extend `handlerFunc`'s per-request body
+   through `DispatchRoute` too, once step 4 proves the seam works.
+8. Add a conformance test exercising `ValidateRouteConstruction`/
+   `DispatchRoute` against both a nethttp-shaped and chi-shaped `pathValues`
+   with the same fixtures, catching future per-router divergence at the
+   shared-package level.
+
+**Confirmed behavioral-compatibility risk, not an invisible side effect**:
+step 6 gives `handlerFunc` a new failure mode. Its public signature (used by
+`IngestAdapter`/`HandlerLatest`/`PipelineHandler`/etc.) has no error-return
+path to extend without a wider breaking change — since backward
+compatibility is explicitly a non-goal of this roadmap (see "Constraint:
+backward compatibility is not a goal" above), the design accepts a
+**panic** (a new, named `restdispatch.ConstructionError` type, not a bare
+`panic(err)`) on failed construction-time validation, mirroring
+`buildRouteHandler`'s existing "fail loudly, never silently" principle via
+the only mechanism available at that call shape. This must be documented
+explicitly in each affected function's doc comment and the changelog when
+implemented — a route that previously silently served with an unenforced
+coverage gap will instead panic at construction/`Activate` time. No
+non-panicking opt-out is included speculatively; add one only if a concrete
+need appears later. **Also flagged, not yet audited**: `serve_sse.go` in
+both packages almost certainly shares this exact duplication shape and
+should be treated as a near-certain follow-on consolidation target, not an
+afterthought, when Phase 4 is actually scoped.
+
+#### Events/reqreply family dispatch-core consolidation design (mqtt + mqtt5 + zeromq)
+
+Concrete design for the events/reqreply family's dispatch-core
+consolidation, the audit's #1 priority target. Grounded directly in code:
+`adapters/mqtt/{adapter,caller,transport,binding}.go`,
+`adapters/mqtt5/{adapter,caller,transport,transport_dispatch,
+reqreply_transport}.go`, `adapters/zeromq/{adapter,transport,
+serve_subscribers,reqreply_transport,handletransport}.go`,
+`api/events/capability.go`, `api/reqreply/capability.go`, and
+`adapters/internal/scopesmerge`.
+
+##### 1. Within one adapter: Subscribe's 3-way duplication collapses to 2, not 1
+
+Every one of the three adapters has exactly the same two-sided boundary,
+not three independent sides:
+
+- **Side A — compile-time generic.** The escape-hatch entry point
+  (mqtt5's `makeSubscribeMessageHandler[T any]`, mqtt's equivalent, and
+  zeromq's `subscribeWithHandle[T any]`) is built with `T` known at
+  compile time. Its handler closure has shape `func(*pahomqtt5.Publish)`
+  (or zeromq's socket-frame equivalent) and calls `handle.Decode`/
+  `handle.DecodeMergedWithFormats` as **direct, generic method calls** —
+  zero `reflect.Value` anywhere in the hot path.
+- **Side B — type-erased, `reflect.Value`-driven.** The other two entry
+  points — `transport.go`'s `(*transport).Subscribe` (recovers a
+  `reflect.Value handleVal`/`elem` once via `recoverHandle`, then calls
+  `decodeMergedMethod.CallSlice(...)` per message) and
+  `caller.go`'s `ServeSubscribers`→`makeErasedSubscribeMessageHandler`
+  (recovers an `erasedSubscriberHandle` struct of pre-extracted
+  `reflect.Value` fields via `extractErasedSubscriberHandle`, then calls
+  `info.decodeFn.Call(...)` per message) — **already start from the exact
+  same type-erasure boundary**: a `reflect.Value`-shaped view over a
+  type-erased `*events.ChannelHandle[T]`/`*reqreply.RouteHandle[Req,Resp]`.
+  Reading `makeErasedSubscribeMessageHandler` (caller.go:426) next to
+  `transport.Subscribe`'s inline handler (transport.go:586) confirms this
+  directly: both build the identical `dispatchFailure` closure
+  (ErrorChannel→DeadLetter→OnError fallback, same precedence), both run
+  decode→user-property-validation→security→codec-Middleware→handler in
+  the same order, against fields recovered by reflection from the same
+  handle shape. The only structural difference is *when/how* the
+  `reflect.Value` fields are obtained — `recoverHandle`+`elem.FieldByName`
+  fresh per `Subscribe` call vs. a pre-extracted `erasedSubscriberHandle`
+  struct built once per `ServeSubscribers` loop entry — not a difference
+  in what the dispatch body does with them.
+
+**Concrete design**: within each adapter, extract ONE unexported
+reflect-based dispatch core — e.g. `subscribeDispatchCore` — shaped as:
+
+```
+subscribeDispatchCore(
+    ctx, client, obs,
+    fields erasedChannelFields,   // the reflect.Value/concrete-field bundle
+                                    // BOTH transport.Subscribe and
+                                    // ServeSubscribers already compute
+                                    // (decodeMethod, errorResponseForMethod,
+                                    //  deadLetterForMethod, Implementations,
+                                    //  MiddlewareHandlers, Requirements, ...)
+    fn reflect.Value,              // the type-erased handler, already
+                                    // shape-validated + wrapped by
+                                    // wrapHandlerGeneralReflect
+    opts SubscribeOptions,
+) func(*wireMessage)               // returns the per-message handler closure
+```
+
+`transport.Subscribe` becomes: recover `fields` via `recoverHandle`,
+validate/wrap `fn` (unchanged, already shared logic), call
+`subscribeDispatchCore(...)`, pass the returned closure to the broker
+client directly. `ServeSubscribers` becomes: for each registered entry,
+build the SAME `erasedChannelFields` shape via
+`extractErasedSubscriberHandle` (already does this — just needs its
+output struct's shape aligned with what `subscribeDispatchCore` wants),
+call the same core, register the closure per filter. **This is not a
+hypothetical merge — `erasedSubscriberHandle` and
+`recoverHandle`+`elem.FieldByName` already produce equivalent data; the
+work is unifying their output shape into one struct and moving the
+duplicated `dispatchFailure`/decode/security/Middleware body that
+currently lives twice (once inline in each function) into the one shared
+core function.**
+
+The generic Side-A path (`makeSubscribeMessageHandler`) **cannot** be
+folded into this same Go function — Go has no reflective generic
+instantiation, so a function taking `reflect.Value` cannot also be called
+with a concrete `T` without boxing it through `any` first, which is
+exactly the cost the generic path exists to avoid paying on the hot
+decode path. **Resolved count: 3 → 2 implementations per adapter** (one
+generic, one shared reflect-core), not 3 → 1. This matches the REST
+family's nethttp precedent exactly: `buildRouteHandler` (reflect) and
+`handlerFunc` (generic) stayed two functions there too, unified only via
+a shared construction-time validation core — the same shape of partial
+convergence applies here.
+
+**Does the same answer apply to Publish's 2-way duplication?** Yes,
+identically — mqtt5's `publish[T]`/`publishHandle[T]` (adapter.go:943,
+1218, generic) vs. `(*transport).Publish` (transport.go:174, reflection)
+is the SAME two-sided boundary with only one entry point on the reflect
+side (no `ServePublishers`-equivalent registry-walk entry point exists for
+Publish in any of the three adapters — Publish is always caller-driven,
+never server-driven). So Publish's reflect-side duplication is already
+effectively 1 implementation per adapter structurally; the fix there is
+narrower — just ensure the reflect `Publish` path's requirement-coverage
+and `ApplyCapabilities`/Observer/ErrorPattern call sequence is a single
+function called from the one reflect entry point, not inlined ad hoc
+(zeromq's audit already found this path's coverage check missing — see
+point 4 below).
+
+##### 2. Across mqtt vs. mqtt5: do NOT share a cross-package dispatch-core
+
+**Definitive answer: no.** This is the opposite conclusion from the REST
+family's nethttp/chi case, and for a reason specific to the evidence, not
+a generic "different libraries, so no" hand-wave:
+
+- nethttp/chi's shared-core precondition was that **both packages operate
+  on the exact same wire type** (`*http.Request`/`http.ResponseWriter`),
+  confirmed by `httpCarrier` and `applyGeneralMiddleware` being
+  byte-for-byte identical today. The ONE real difference (path-param
+  extraction) was a clean single-function injection seam
+  (`func(*http.Request, []string) map[string]string`).
+- mqtt vs. mqtt5 fail this precondition at the root: mqtt's reflect/generic
+  dispatch bodies are built against `paho.mqtt.golang`'s `MQTT.Client`/
+  `MQTT.Message` types (no `Properties`/User Properties concept at all —
+  confirmed via grep, `mqtt.Capability` has no `UserPropertyParam`
+  counterpart), while mqtt5's are built against `paho.golang/paho`'s
+  `*paho.Publish`/`Properties` (MQTT5-only fields: `ContentType`,
+  `UserProperties`, `CorrelationData`). This is not one cosmetic
+  difference to inject around — mqtt5's dispatch core touches
+  `msg.Properties.ContentType`/`msg.Properties.User` at MULTIPLE points
+  (content-type format auto-selection, property-merge-field decode, User
+  Property param validation) that have **no equivalent field to inject at
+  all** in mqtt v3's wire message, not merely a different accessor for the
+  same concept. A shared core would need either (a) a lowest-common-
+  denominator interface mqtt v3 could never fully implement (dead code on
+  the v3 side, or runtime panics/no-ops standing in for features that
+  structurally cannot exist there), or (b) enough injected hook functions
+  that the "shared core" becomes a thin shell calling back into
+  per-adapter logic anyway — defeating the consolidation's own purpose of
+  having ONE place a fix lands automatically for both.
+- The REST family's injection seam was ONE function
+  (`pathValues func(*http.Request, []string) map[string]string`) covering
+  ONE difference. The mqtt/mqtt5 equivalent would need injection seams for
+  message-property extraction, content-type resolution, user-property
+  decode, AND the underlying client/publish call signatures themselves
+  (`MQTT.Client.Publish` vs. `paho.golang`'s async `Publish`) — this is
+  not "a few more parameters," it is most of the dispatch body becoming
+  injected callbacks, which is indistinguishable in practice from keeping
+  two separate implementations but adding an extra layer of indirection
+  with no payoff.
+
+**Recommendation: keep mqtt and mqtt5 as separate codebases, each with its
+own internal `subscribeDispatchCore`/reflect-core from point 1, following
+the SAME shape/convention but NOT the same package or shared Go function.**
+This is consistent with the existing, deliberate `scopesmerge` precedent:
+`adapters/internal/scopesmerge` is explicitly scoped ONLY to the narrow
+concern that genuinely IS protocol-agnostic (grants-merging over
+`map[string][]string`/`[]any` — no MQTT/MQTT5/ZeroMQ-specific type
+anywhere in its signature), while `httpsecurity` (REST's equivalent) was
+deliberately NOT reused for events/reqreply specifically because of this
+same kind of boundary mismatch. The right level of sharing across mqtt/
+mqtt5/zeromq is: shared API-layer helpers that are ALREADY
+protocol-agnostic by construction (`events.VerifyCapabilityCoverage`,
+`events.ApplyCapabilities`, `scopesmerge.*`, `reqreply.CheckCoverage`) —
+already true today — plus a **shared naming/shape CONVENTION** for each
+adapter's own internal dispatch-core (same function name pattern, same
+field-bundle shape, same call order), enforced by doc-comment cross-
+references (as the code already does extensively, e.g. "mirrors
+adapters/mqtt5's identical...") and by Phase 5 conformance tests run
+per-adapter against the same fixtures — NOT by a shared Go package. If a
+genuinely protocol-agnostic piece of logic is found during Phase 4
+implementation (e.g. the `dispatchFailure` fallback-precedence shape is
+identical prose across all three adapters even though its field types
+differ), extract ONLY that narrow piece into `adapters/internal`,
+following `scopesmerge`'s precedent of a tightly-scoped single-concern
+package — do not pre-design a wider shared package speculatively.
+
+##### 3. zeromq reqreply's 4-socket-variant duplication: separate the setup core from the recv-loop
+
+Reading `serverTransport.Serve` (reqreply_transport.go:508) against
+`routerServerTransport.Serve` (reqreply_transport.go:1555) confirms a
+clean internal seam already exists, just not factored out:
+
+- **Setup phase (CAN consolidate, no protocol dependency)**: recovering
+  the route handle via reflection, validating the handler's `Fn` shape
+  against `wantFnType`, `validateServerImplementationShapes`,
+  `reqreply.CheckCoverage` (security/middleware-declaration coverage),
+  `reqreply.VerifyCapabilityCoverage` (capability-requirement coverage),
+  `applyCapabilities` (socket-level HWM/Conflate), and
+  `applyGeneralServerMiddleware` (already shared as a free function,
+  confirmed used by BOTH plain and ROUTER Serve at lines 615 and 1635) —
+  every one of these runs ONCE per `Serve` call, before the recv loop
+  starts, and is **already textually identical** between plain and
+  ROUTER-Serve (both call the same functions in the same order on the
+  same field names). Zero genuine protocol divergence exists in this
+  phase — HWM/Conflate/coverage/middleware-wrapping do not know or care
+  whether the underlying socket is REQ/REP or ROUTER.
+- **Recv-loop phase (MUST stay separate)**: how a request frame is
+  received, how the reply is correlated back to the right peer, and how
+  the reply is sent — REQ/REP has no addressing concept (the socket
+  itself enforces strict one-reply-per-request ordering); ROUTER
+  prepends/strips an identity frame per message and must echo it back on
+  reply, with no ordering guarantee the socket enforces for you. This is
+  the genuinely protocol-necessitated part and correctly stays unmerged.
+  The client side mirrors this: `clientTransport.call` (plain REQ) has no
+  correlation data to manage beyond strict request/reply ordering;
+  `dealerClientTransport.call` (DEALER) manages its own identity/sequence
+  correlation since DEALER sockets are inherently async multiplexed.
+
+**Concrete design**: extract an unexported
+`reqreplyServerSetupCore(routeAny, fnAny any) (*serverDispatchFields, error)`
+function — covering recovery, shape validation, `CheckCoverage`,
+`VerifyCapabilityCoverage`, `applyCapabilities`, and
+`applyGeneralServerMiddleware` — called identically by both
+`serverTransport.Serve` and `routerServerTransport.Serve` at the top of
+each. Each `Serve` then runs its own socket-specific recv loop using
+`serverDispatchFields.dispatchFn` (the already-middleware-wrapped
+handler) and `serverDispatchFields.{decodeWithFormatsMethod,
+encodeWithFormatsMethod, observeErrorResponseForMethod,
+deadLetterForMethod}` for the per-message decode/encode/error path — this
+part (decode received bytes → call `dispatchFn` → encode/send reply) is
+ALSO textually near-identical between the two Serve variants (same
+decode/encode/ErrorPattern/DeadLetter sequence), so a second, smaller
+shared helper — `reqreplyServerDispatchOne(fields, reqBytes) (respBytes
+[]byte, err error)` — can cover "decode, call handler, encode" while
+leaving ONLY the socket recv/identity-framing/send mechanics (genuinely
+~20-30 lines per variant) unconsolidated. The same split applies
+client-side: a shared `reqreplyClientCallSetup`/`reqreplyClientEncodeDecode`
+helper covering route recovery, shape validation, `VerifyCapabilityCoverage`,
+format resolution, and request-encode/response-decode, with ONLY the
+socket send/correlate/receive mechanics (empty-delimiter+identity framing
+for plain, DEALER's async correlation bookkeeping for DEALER) left
+per-variant. This does not reduce "4 implementations" to "1" — it reduces
+each 4-way duplication to "1 shared setup/encode-decode core + 4 genuinely
+distinct, now much smaller, socket-mechanics bodies," which is the
+honest, protocol-correct target (not a universal merge).
+
+##### 4. Capability-coverage checking: one gate per logical dispatch setup, not one global location
+
+**Confirm and refine, not simply confirm**: Design goal 12's "requirement-
+coverage becomes one Attach-time check" is correct in spirit but needs
+one precision fix once the actual `events.Client.Attach`/`Register`
+lifecycle is read closely. `events.Client.Attach(t)` calls
+`t.BindClient(c)` immediately — but `Subscriber.Register(client)` (the
+call that populates `client.SubscriberEntries()`, which `ServeSubscribers`
+walks) has **no ordering constraint relative to `Attach`** — an
+application may register channels before OR after attaching a transport
+(confirmed: `Register` only touches `client`'s internal registry, never
+touches `client.transport`). This means a literal single check inside
+`BindClient` itself would silently skip any `Subscriber` registered
+AFTER `Attach` — this would be a NEW regression, not a fix, if
+implemented naively.
+
+**Resolved design**: "one Attach-time check" means **exactly one
+syntactic call site per logical dispatch-setup moment, never per-message,
+and never duplicated across the (now 2, per point 1) entry points that
+share that moment** — not literally one global call inside `BindClient`.
+Concretely, per adapter:
+
+- **Generic/reflect call-time Subscribe/Publish** (`subscribeWithHandle`/
+  `transport.Subscribe`/`transport.Publish`): the check runs once, at the
+  top of the (now-shared, per point 1) dispatch-core function, before any
+  message is received/sent — this already matches `subscribeWithHandle`'s
+  existing timing exactly, and is what `transport.Subscribe`'s
+  already-shipped fix for mqtt5 does today (transport.go:514-519) for
+  Subscribe; the same must be added for `transport.Publish` wherever it
+  is currently missing (zeromq's audit confirms it is).
+- **`ServeSubscribers`' registry walk**: the check runs once PER ENTRY,
+  in the `ServeSubscribers` loop, before that entry's goroutine starts
+  (mqtt5's `caller.go:157` already does exactly this — `opts.Capabilities`
+  checked once per entry inside the `for _, entry := range entries` loop,
+  not inside `serveOneEntry`/`makeErasedSubscribeMessageHandler`'s
+  per-message body). This is the correct existing shape; Phase 4's job is
+  making sure mqtt v3 and zeromq's `ServeSubscribers` match it exactly
+  (confirm no adapter has regressed this into the per-message body).
+- **reqreply Serve**: the check runs once inside the (now-shared, per
+  point 3) `reqreplyServerSetupCore`, before the recv loop starts — this
+  already matches mqtt5's existing `reqreply_transport.go:462` timing and
+  zeromq's existing `serverTransport.Serve` timing; the fix is making
+  ROUTER-Serve call the SAME shared core function rather than its own
+  copy, not changing WHEN the check runs.
+
+**Mechanically compatible with points 1-3's dispatch-core design? Yes, by
+construction**: each dispatch-core function's signature already separates
+"setup, run once" (requirement-coverage check belongs here) from "per-
+message/per-call body" (capability APPLICATION belongs here, per Design
+goal 12's already-resolved split) — point 1's `subscribeDispatchCore` and
+point 3's `reqreplyServerSetupCore` are EXACTLY the functions where the
+once-per-setup requirement-coverage check now has a single home, and the
+returned per-message closure is EXACTLY where capability application
+(QoS applied via `events.ApplyCapabilities`, the per-call
+`PublishOptions[T].Capabilities` override) continues to run per-message
+as Design goal 12 already requires. The dispatch-core's job after Phase 4
+becomes precisely "run the message through a handler the setup-time check
+already validated is coverage-safe" — no per-message re-check of
+requirement coverage is added or needed anywhere in this design.
+
+##### 5. Recommended Phase 4 implementation order, per adapter (3 separate workstreams)
+
+These are **three independent workstreams** (per point 2's answer — no
+shared package links them), each independently schedulable and
+independently verifiable; the SAME step shape is recommended for all
+three because the duplication shape is structurally identical, not
+because the code is shared.
+
+**Workstream A — `adapters/mqtt5`** (do this one first — it has the
+clearest, most thoroughly-documented existing gap and the smallest
+reqreply side, making it the best place to prove the pattern before
+repeating it):
+
+1. Define `erasedChannelFields` (new unexported struct) capturing exactly
+   the field set `transport.Subscribe`'s `recoverHandle`+`elem.FieldByName`
+   calls and `caller.go`'s `extractErasedSubscriberHandle` already both
+   produce (decode method, error/dead-letter methods, Implementations,
+   MiddlewareHandlers, Requirements, security schemes, descriptor) — a
+   pure struct-shape unification, zero behavior change yet.
+2. Extract `subscribeDispatchCore(ctx, client, obs, fields, fn, opts)
+   func(*paho.Publish)` from the currently-duplicated body shared between
+   `transport.Subscribe`'s inline handler and
+   `makeErasedSubscribeMessageHandler` — verify byte-identical behavior
+   via mqtt5's existing `transport_test.go`+`caller_test.go` suites
+   (should pass unchanged; this step is pure extraction).
+3. Repoint `transport.Subscribe` to build `erasedChannelFields` via
+   `recoverHandle`, call `subscribeDispatchCore`, verify tests.
+4. Repoint `ServeSubscribers`/`extractErasedSubscriberHandle` to build the
+   same `erasedChannelFields` shape, call the same core, verify tests;
+   delete the now-dead `makeErasedSubscribeMessageHandler`.
+5. Add the requirement-coverage check to `subscribeDispatchCore`'s setup
+   section (closing the confirmed Subscribe-reflection-path gap by
+   construction, not as a separate patch) — add a regression test
+   exercising `transport.Subscribe` with an unsatisfiable
+   `CapabilityRequirement`, mirroring the existing per-path capability
+   tests.
+6. Repeat steps 1-5 for Publish (`transport.Publish` vs.
+   `publish[T]`/`publishHandle[T]`) — smaller, since there is no
+   `ServePublishers`-equivalent third entry point; just unify the
+   reflect-side body into its own dispatch-core function and confirm the
+   requirement-coverage check is present (audit found this may already be
+   missing — treat as a confirmed fix, not speculative).
+7. Extract `reqreplyServerSetupCore`/`reqreplyServerDispatchOne` from
+   `reqreply_transport.go`'s `serverTransport.Serve` (there is only ONE
+   server-socket variant in mqtt5, so this step is pure refactor-for-
+   future-reuse-by-convention, not yet a merge of two things — do it here
+   first since mqtt5's reqreply side is simplest, establishing the target
+   shape zeromq's workstream C will follow).
+8. Add conformance tests (Phase 5 scope, but seed them here) exercising
+   `subscribeDispatchCore`/`reqreplyServerSetupCore` directly, independent
+   of which entry point calls them, so future regressions are caught at
+   the core, not only through one entry point's own tests.
+
+**Workstream B — `adapters/mqtt` (v3)** (second — apply the PROVEN shape
+from Workstream A, adapted to v3's own client library, with no shared
+code between the two):
+
+1-6. Identical step shape to Workstream A steps 1-6, applied to mqtt v3's
+own `adapter.go`/`caller.go`/`transport.go` (its own `subscribeHandle`/
+`subscribeHandler`, `transport.go`'s reflection Subscribe, and
+`ServeSubscribers`). Since mqtt v3 already has 6 confirmed capability-
+coverage call sites (vs. mqtt5's 3), expect MORE sites to collapse into
+the one dispatch-core's setup section here, not fewer — this is a bigger
+cleanup than mqtt5's despite following the same recipe. No reqreply
+Serve/Call exists in mqtt v3 (events-only), so skip the equivalent of
+step 7.
+7. Add conformance tests mirroring Workstream A's step 8, run against
+   mqtt v3's own dispatch-core (NOT the same test code as mqtt5's — a
+   new, adapter-local conformance test file, following the same fixture
+   shape by convention).
+
+**Workstream C — `adapters/zeromq`** (third — the largest workstream,
+since it must cover BOTH events (3-way Subscribe, 2-way Publish, same
+shape as A/B) AND reqreply's 4-socket-variant split from point 3):
+
+1-6. Identical step shape to Workstream A steps 1-6, applied to zeromq's
+`subscribeWithHandle`/`transport.Subscribe`/`ServeSubscribers`
+(`serve_subscribers.go`'s `buildSubscriberRoute`/`dispatchToRoute`/
+`processMessage` play the role mqtt5's `extractErasedSubscriberHandle`/
+`makeErasedSubscribeMessageHandler` do) — this closes the audit's
+**confirmed, already-shipped regression** (Subscribe's reflection path
+missing the coverage check that the generic and ServeSubscribers paths
+had) by construction, as the top-priority first deliverable of this
+entire workstream.
+7. Extract `reqreplyServerSetupCore`/`reqreplyServerDispatchOne` per point
+   3's design, shared by `serverTransport.Serve` AND
+   `routerServerTransport.Serve` — verify both `reqreply_transport_test.go`
+   and `forward_reqreply_test.go` (ROUTER-specific) pass unchanged after
+   repointing each `Serve` to call the shared core, before touching the
+   recv-loop bodies.
+8. Extract the client-side equivalent
+   (`reqreplyClientCallSetup`/`reqreplyClientEncodeDecode`) shared by
+   `clientTransport.call` AND `dealerClientTransport.call`, leaving only
+   each socket's send/correlate/receive mechanics distinct — verify
+   `callraw_test.go`/`capability_reqreply_test.go` for both variants.
+9. Add conformance tests mirroring Workstream A's step 8/B's step 7, for
+   BOTH the events dispatch-core and the reqreply setup/dispatch-one
+   cores, covering all 4 reqreply socket-variant entry points against the
+   same shared-core fixtures.
+
+##### 6. Risks and behavioral-compatibility concerns
+
+- **(a) Attach-time consolidation changing per-call re-check behavior**:
+  LOW risk, if point 4's refined design (checks live in each
+  dispatch-core's setup section, not literally inside `BindClient`) is
+  followed — this preserves every adapter's EXISTING timing (per-entry
+  for `ServeSubscribers`, per-Serve-call for reqreply, per-call for the
+  generic/reflect Subscribe/Publish paths) exactly; the only CHANGE in
+  behavior is adding the check where it was confirmed MISSING (zeromq's
+  Subscribe reflection path; mqtt5's Publish reflection path; several of
+  mqtt v3's 6 call sites consolidating into fewer, but none removed).
+  **Confirmed NOT at risk**: mqtt5's `PublishOptions[T].Capabilities`
+  per-call override (adapter.go:152) is capability APPLICATION, not
+  requirement COVERAGE — Design goal 12 already separates these, and this
+  design's dispatch-cores apply capabilities per-message inside the
+  returned closure exactly as today, never gating that on a one-time
+  setup check. **Genuine new risk to flag explicitly**: if a future
+  `Subscriber`/`Publisher`/`Route` is registered or re-subscribed to an
+  ALREADY-RUNNING `ServeSubscribers` loop (not currently supported by any
+  of the three adapters — `ServeSubscribers` walks a snapshot of entries
+  once at call time, per `errgroup.WithContext` usage, with no live
+  re-walk), the consolidated per-entry check continues to only run at
+  that snapshot time — this is UNCHANGED behavior, not a regression, but
+  should be called out in each dispatch-core's doc comment so a future
+  contributor doesn't assume live re-registration is coverage-checked.
+- **(b) Subscribe entry points already found to behave subtly
+  differently**: **YES, confirmed, two concrete cases to decide
+  explicitly, not paper over**:
+  1. **zeromq's historical coverage-check gap itself** (the shipped
+     regression this audit already found) means the THREE existing
+     entry points do NOT currently behave identically — the reflection
+     path silently accepted uncovered requirements while the other two
+     rejected them. Consolidation must choose the "reject" behavior (the
+     generic/`ServeSubscribers` paths' existing behavior) as canonical,
+     not whichever behavior the reflection path happened to have — this
+     is explicit, not a by-construction accident, and should be called
+     out in the Phase 4 PR description so reviewers know a previously-
+     silent-success case now fails loudly.
+  2. **mqtt5's reflection `transport.Subscribe` path's missing
+     independent `VerifyCapabilityCoverage` call** (flagged fresh by this
+     audit, `ApplyCapabilities` only) is the SAME class of divergence,
+     not yet shipped as a known regression (no bug report/test exists for
+     it the way zeromq's does) — but by the time Workstream A's step 5
+     runs, this design's consolidation closes it identically to zeromq's
+     case. Flag this explicitly as "fixing an undetected-until-this-audit
+     gap," not merely "preserving existing behavior," so nobody
+     mistakenly treats step 5 as a no-op refactor.
+  3. **Property/merge-field support differs by necessity, not bug**:
+     zeromq's reqreply side has NO property-merge-field/topic-template
+     concept (confirmed via code comment: "zeromq's REQ/REP wire format
+     carries no topic frame at all"), while mqtt5's does. The shared
+     `reqreplyServerSetupCore`/dispatch-one design (point 3) must NOT
+     attempt to unify this away — zeromq's core correctly passes an
+     always-empty property-value map (already how it works today) rather
+     than gaining a new feature it has no wire representation for;
+     consolidation must preserve this intentional asymmetry, not sand it
+     flat.
+
+**Summary and biggest risk**: Consolidate events Subscribe/Publish within
+each of mqtt, mqtt5, and zeromq onto one shared, adapter-local,
+`reflect`-based dispatch-core per capability (3→2 implementations: one
+generic, one reflect-core), keep mqtt and mqtt5 as permanently separate,
+non-shared codebases despite their structural mirroring (their underlying
+client libraries diverge too deeply at the wire-property level for a
+shared package to pay off), split zeromq's reqreply 4-socket-variant
+duplication into a shared setup/encode-decode core plus genuinely distinct,
+now much smaller, per-socket recv/correlate/send bodies, and move
+requirement-coverage checking to exactly one call site per dispatch-core's
+setup section (not literally into `BindClient`, since `Subscriber.Register`
+has no enforced ordering relative to `Attach`) while leaving per-call
+capability application untouched. The biggest risk is **silently
+canonicalizing the wrong behavior where entry points already diverge** —
+zeromq's confirmed coverage-check gap and mqtt5's freshly-flagged
+reflection-path gap must be fixed by deliberately choosing the
+already-correct paths' behavior as the merged result, with that choice
+stated explicitly in the Phase 4 PR, not discovered by a reviewer after
+the fact as an unannounced behavior change.
 
 #### Essential: Observer integration and error-pattern mechanisms are in scope
 
