@@ -2,17 +2,16 @@ package chi
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"reflect"
-	"strconv"
 	"strings"
 
 	gochi "github.com/go-chi/chi/v5"
 
 	"github.com/DaniDeer/go-codex/adapters/internal/httpsecurity"
+	"github.com/DaniDeer/go-codex/adapters/internal/restdispatch"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
@@ -21,8 +20,10 @@ import (
 	"github.com/DaniDeer/go-codex/stats"
 )
 
-// maxRequestBodyBytes is the maximum number of bytes read from a request body.
-const maxRequestBodyBytes = 1 << 20 // 1 MiB
+// maxRequestBodyBytes is the maximum number of bytes read from a request
+// body — PROMOTED (Phase 4) to [restdispatch.MaxRequestBodyBytes] —
+// aliased here (not copied).
+const maxRequestBodyBytes = restdispatch.MaxRequestBodyBytes
 
 // contextKey is the unexported type for request values stored in context by this package.
 type contextKey struct{}
@@ -1013,16 +1014,11 @@ func primaryStatus[Req, Resp any](handle *rest.RouteHandle[Req, Resp]) int {
 
 // primaryStatusFor is [primaryStatus]'s non-generic-signature equivalent —
 // used by [serve], which only has a route.Route descriptor (via reflect),
-// never a concrete *rest.RouteHandle[Req, Resp].
+// never a concrete *rest.RouteHandle[Req, Resp]. PROMOTED (Phase 4) to
+// [restdispatch.PrimaryStatusFor] — aliased here (not copied), mirroring
+// adapters/nethttp's identical promotion.
 func primaryStatusFor(descriptor route.Route) int {
-	if len(descriptor.Responses) == 0 {
-		return http.StatusOK
-	}
-	code, err := strconv.Atoi(descriptor.Responses[0].Status)
-	if err != nil {
-		return http.StatusOK
-	}
-	return code
+	return restdispatch.PrimaryStatusFor(descriptor)
 }
 
 type statusResponseWriter struct {
@@ -1035,16 +1031,10 @@ func (rw *statusResponseWriter) WriteHeader(code int) {
 	rw.ResponseWriter.WriteHeader(code)
 }
 
-type errorBody struct {
-	Error string `json:"error"`
-}
-
-func defaultErrorHandler(w http.ResponseWriter, _ *http.Request, status int, err error) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	body, _ := json.Marshal(errorBody{Error: err.Error()})
-	_, _ = w.Write(body)
-}
+// defaultErrorHandler is PROMOTED (Phase 4) to
+// [restdispatch.DefaultErrorHandler] — aliased here (not copied),
+// mirroring adapters/nethttp's identical promotion.
+var defaultErrorHandler = restdispatch.DefaultErrorHandler
 
 // pathValues extracts the path variable values named in names from r using
 // chi.URLParam.
@@ -1056,22 +1046,15 @@ func pathValues(r *http.Request, names []string) map[string]string {
 	return m
 }
 
+// responseHeaderValues/responseCookieValues are PROMOTED (Phase 4) to
+// restdispatch's identical functions — aliased here (not copied),
+// mirroring adapters/nethttp's identical promotion.
 func responseHeaderValues(h http.Header) map[string]string {
-	m := make(map[string]string, len(h))
-	for k, vs := range h {
-		if len(vs) > 0 {
-			m[k] = vs[0]
-		}
-	}
-	return m
+	return restdispatch.ResponseHeaderValues(h)
 }
 
 func responseCookieValues(cookies []PendingCookie) map[string]string {
-	m := make(map[string]string, len(cookies))
-	for _, pc := range cookies {
-		m[pc.Name] = pc.Value
-	}
-	return m
+	return restdispatch.ResponseCookieValues(cookies)
 }
 
 // tryRespondErrorPatternGeneric is [handlerFunc]'s own Req/Resp-generic
@@ -1175,23 +1158,7 @@ func negotiateRequestFormat[T any](formats []format.Format[T], contentType strin
 	return format.Format[T]{}, false
 }
 
-// credentialExtractorFor builds a [rest.CredentialExtractor] closure from
-// r — the ONLY piece of this package's security-credential validation
-// that still touches *http.Request directly. The actual codec
-// validation/dispatch logic lives in [rest.ValidateSecurityCredentials],
-// which needs no net/http import at all.
-func credentialExtractorFor(r *http.Request) rest.CredentialExtractor {
-	return func(location, name string) string {
-		switch location {
-		case "header":
-			return r.Header.Get(name)
-		case "query":
-			return r.URL.Query().Get(name)
-		case "cookie":
-			if c, err := r.Cookie(name); err == nil {
-				return c.Value
-			}
-		}
-		return ""
-	}
-}
+// credentialExtractorFor is PROMOTED (Phase 4) to
+// [restdispatch.CredentialExtractorFor] — aliased here (not copied),
+// mirroring adapters/nethttp's identical promotion.
+var credentialExtractorFor = restdispatch.CredentialExtractorFor

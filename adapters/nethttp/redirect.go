@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/DaniDeer/go-codex/adapters/internal/restdispatch"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/stats"
 )
@@ -250,14 +251,9 @@ func decodeTargetResponse(handle any, respBody []byte, resp *http.Response) (any
 	return results[0].Interface(), nil
 }
 
-// asRedirectError is a small, explicit errors.As wrapper — kept as a
-// named helper purely for readability at call sites checking whether
-// networkStep's returned error signals a redirect.
-func asRedirectError(err error) (rest.RedirectError, bool) {
-	var redirErr rest.RedirectError
-	ok := errors.As(err, &redirErr)
-	return redirErr, ok
-}
+// asRedirectError is PROMOTED (Phase 4) to [restdispatch.AsRedirectError]
+// — aliased here (not copied).
+var asRedirectError = restdispatch.AsRedirectError
 
 // isTerminalRedirectError reports whether err is one of the redirect-
 // resolution errors [clientTransport.Consume]'s reconnect loop must

@@ -2,20 +2,15 @@ package chi
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"reflect"
 	"strings"
 
-	"github.com/DaniDeer/go-codex/adapters/internal/httpsecurity"
 	"github.com/DaniDeer/go-codex/adapters/internal/restdispatch"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/internal/middleware"
-	"github.com/DaniDeer/go-codex/internal/route"
-	"github.com/DaniDeer/go-codex/stats"
 	gochi "github.com/go-chi/chi/v5"
 )
 
@@ -249,13 +244,8 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	elem := cr.Elem
-	descriptor, secSchemes, globalSecurity := cr.Descriptor, cr.SecSchemes, cr.GlobalSecurity
-	impls, middlewareHandlers := cr.Impls, cr.MiddlewareHandlers
-	handlerOptsAny, handlerFn := cr.HandlerOptsAny, cr.HandlerFn
-	reqType, respType := cr.ReqType, cr.RespType
 
-	opts, err := resolveOptions(descriptor.Method, descriptor.Path, handlerOptsAny)
+	opts, err := resolveOptions(cr.Descriptor.Method, cr.Descriptor.Path, cr.HandlerOptsAny)
 	if err != nil {
 		return nil, err
 	}
@@ -271,6 +261,9 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 	if expectedCT == "" {
 		expectedCT = "application/json"
 	}
+	writeCookie := func(w http.ResponseWriter, name, value string, attrs rest.CookieAttributes) error {
+		return SetCookie(w, name, value, cookieOptionsFrom(attrs))
+	}
 
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sw := &statusResponseWriter{ResponseWriter: w, code: http.StatusOK}
@@ -280,567 +273,37 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 		ctx = context.WithValue(ctx, responseHeadersKey{}, respHeaders)
 		pendingCookies := make([]PendingCookie, 0)
 		ctx = context.WithValue(ctx, responseCookiesKey{}, &pendingCookies)
-		obs := stats.ObserverFromContext(ctx)
-
-		var body []byte
-		// reqFormatValue/haveReqFormatValue: when the route declares
-		// RequestFormats, the body is decoded HERE via the negotiated
-		// format (not DecodeMerged's plain Decode below) — reqFormatValue
-		// carries that already-decoded Req value across to the
-		// DecodeMerged replacement further down.
-		var reqFormatValue reflect.Value
-		haveReqFormatValue := false
-		reqFormats := elem.FieldByName("RequestFormats")
-		if descriptor.RequestBody != nil {
-			ct, _, _ := strings.Cut(r.Header.Get("Content-Type"), ";")
-			ct = strings.TrimSpace(ct)
-
-			if reqFormats.Len() > 0 {
-				chosen, ok := negotiateRequestFormatReflect(reqFormats, ct)
-				if !ok {
-					supported := formatContentTypesReflect(reqFormats)
-					errFn(sw, r, http.StatusUnsupportedMediaType,
-						rest.UnsupportedMediaTypeError{Got: ct, Supported: supported})
-					return
-				}
-				r.Body = http.MaxBytesReader(sw, r.Body, maxBody)
-				b, readErr := io.ReadAll(r.Body)
-				if readErr != nil {
-					var mbe *http.MaxBytesError
-					if errors.As(readErr, &mbe) {
-						errFn(sw, r, http.StatusRequestEntityTooLarge, rest.BodyTooLargeError{Limit: maxBody})
-					} else {
-						errFn(sw, r, http.StatusBadRequest, readErr)
-					}
-					return
-				}
-				body = b
-				unmarshalResults := chosen.MethodByName("Unmarshal").Call([]reflect.Value{reflect.ValueOf(body)})
-				if err, _ := unmarshalResults[1].Interface().(error); err != nil {
-					rest.ReportBodyErrors(ctx, err)
-					if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &err) {
-						return
-					}
-					errFn(sw, r, http.StatusBadRequest, err)
-					return
-				}
-				reqFormatValue = unmarshalResults[0]
-				haveReqFormatValue = true
-			} else {
-				if ct != expectedCT {
-					errFn(sw, r, http.StatusUnsupportedMediaType,
-						rest.UnsupportedMediaTypeError{Got: ct, Supported: []string{expectedCT}})
-					return
-				}
-				r.Body = http.MaxBytesReader(sw, r.Body, maxBody)
-				b, readErr := io.ReadAll(r.Body)
-				if readErr != nil {
-					var mbe *http.MaxBytesError
-					if errors.As(readErr, &mbe) {
-						errFn(sw, r, http.StatusRequestEntityTooLarge, rest.BodyTooLargeError{Limit: maxBody})
-					} else {
-						errFn(sw, r, http.StatusBadRequest, readErr)
-					}
-					return
-				}
-				body = b
-			}
-		}
-
-		pathNames := elem.Addr().MethodByName("PathParamNames").Call(nil)[0].Interface().([]string)
-		pathVars := pathValues(r, pathNames)
-		carrier := httpCarrier{R: r}
-		queryVars := carrier.ExtractQuery()
-		headerNames := elem.Addr().MethodByName("HeaderParamNames").Call(nil)[0].Interface().([]string)
-		headerVars := rest.NormalizeHeaderVars(carrier.ExtractHeaders(), headerNames)
-		cookieVars := carrier.ExtractCookies()
-
-		if opts.MultiValueQueryParams {
-			if errV := callErr(elem.Addr(), "ValidateQueryMulti", reflect.ValueOf(carrier.ExtractQueryMulti())); errV != nil {
-				rest.ReportQueryErrors(ctx, errV)
-				if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &errV) {
-					return
-				}
-				errFn(sw, r, http.StatusBadRequest, errV)
-				return
-			}
-		} else if errV := callErr(elem.Addr(), "ValidateQuery", reflect.ValueOf(queryVars)); errV != nil {
-			rest.ReportQueryErrors(ctx, errV)
-			if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &errV) {
-				return
-			}
-			errFn(sw, r, http.StatusBadRequest, errV)
-			return
-		}
-		if errV := callErr(elem.Addr(), "ValidateCookies", reflect.ValueOf(cookieVars)); errV != nil {
-			rest.ReportCookieErrors(ctx, errV)
-			if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &errV) {
-				return
-			}
-			errFn(sw, r, http.StatusBadRequest, errV)
-			return
-		}
-		if errV := callErr(elem.Addr(), "ValidateHeaders", reflect.ValueOf(headerVars)); errV != nil {
-			rest.ReportHeaderErrors(ctx, errV)
-			if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &errV) {
-				return
-			}
-			errFn(sw, r, http.StatusBadRequest, errV)
-			return
-		}
-		if len(pathNames) > 0 {
-			if errV := callErr(elem.Addr(), "ValidatePathParams", reflect.ValueOf(pathVars)); errV != nil {
-				rest.ReportPathErrors(ctx, errV)
-				if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &errV) {
-					return
-				}
-				errFn(sw, r, http.StatusBadRequest, errV)
-				return
-			}
-		}
-
-		// reqPtr: an addressable *Req so security impl Fns (which take
-		// *Req) and the eventual HandlerFn call can share the SAME value.
-		reqPtr := reflect.New(reqType)
-		if haveReqFormatValue {
-			// Body already decoded above via the negotiated RequestFormats
-			// entry — only the var-merge half of DecodeMerged remains.
-			reqPtr.Elem().Set(reqFormatValue)
-			applyResults := elem.Addr().MethodByName("ApplyMergeFields").Call([]reflect.Value{
-				reqPtr, reflect.ValueOf(pathVars), reflect.ValueOf(queryVars),
-				reflect.ValueOf(headerVars), reflect.ValueOf(cookieVars),
-			})
-			if err, _ := applyResults[0].Interface().(error); err != nil {
-				rest.ReportBodyErrors(ctx, err)
-				if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &err) {
-					return
-				}
-				errFn(sw, r, http.StatusBadRequest, err)
-				return
-			}
-		} else {
-			// DecodeMerged(body, pathVars, query, headers, cookies) (Req, error)
-			decodeResults := elem.Addr().MethodByName("DecodeMerged").Call([]reflect.Value{
-				reflect.ValueOf(body), reflect.ValueOf(pathVars), reflect.ValueOf(queryVars),
-				reflect.ValueOf(headerVars), reflect.ValueOf(cookieVars),
-			})
-			reqValue, decErr := decodeResults[0], decodeResults[1]
-			if err, _ := decErr.Interface().(error); err != nil {
-				rest.ReportBodyErrors(ctx, err)
-				if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &err) {
-					return
-				}
-				errFn(sw, r, http.StatusBadRequest, err)
-				return
-			}
-			reqPtr.Elem().Set(reqValue)
-		}
-
-		secReqs := descriptor.Security
-		if secReqs == nil {
-			secReqs = globalSecurity
-		}
-		if len(secReqs) > 0 {
-			if credErr := rest.ValidateSecurityCredentials(credentialExtractorFor(r), secReqs, secSchemes); credErr != nil {
-				if secObs, ok := stats.ObserverFromContext(ctx).(stats.SecurityObserver); ok {
-					secObs.RecordSecurityRejection(descriptor.Path, route.FirstSchemeName(secReqs))
-				}
-				errFn(sw, r, http.StatusUnauthorized, credErr)
-				return
-			}
-		}
-		// docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase
-		// A: runSecurityMiddleware's separate code path is RETIRED —
-		// Security now dispatches through the SAME unified
-		// MiddlewareHandler mechanism every other middleware uses.
-		// CollectGrantsReflect runs the legacy security-shaped impls
-		// WITHOUT calling rest.CheckScopes yet (that now happens
-		// ONCE, below, after merging in any GrantedScopes a
-		// MiddlewareHandler-dispatched Security middleware contributes —
-		// its Out only becomes available once DispatchMiddlewareHandlers
-		// runs).
-		granted, grantErr := httpsecurity.CollectGrantsReflect(ctx, r, reqPtr, impls, secReqs)
-		if grantErr != nil {
-			if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &grantErr) {
-				return
-			}
-			errFn(sw, r, http.StatusUnauthorized, rest.SecurityError{Err: grantErr})
-			return
-		}
-
-		middlewareOuts, mwErr := rest.DispatchMiddlewareHandlers(ctx, reqPtr, middlewareHandlers, headerVars, cookieVars, queryVars)
-		if mwErr != nil {
-			dispatchErr, _ := rest.AsMiddlewareDispatchError(mwErr)
-			if !dispatchErr.IsFnError {
-				// Middleware DecodeIn failure IS ErrorPattern-eligible now
-				// (Topic 1's Category A fix) — already wrapped in
-				// MiddlewareInputError by rest.DispatchMiddlewareHandlers,
-				// but previously never passed to ErrorResponseFor.
-				if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &dispatchErr.Err) {
-					return
-				}
-				errFn(sw, r, http.StatusBadRequest, dispatchErr.Err)
-				return
-			}
-			// A FAILING handler whose OWN Satisfies is non-empty (i.e. a
-			// Security-paired MiddlewareHandler, confirmed via Name
-			// lookup) keeps Security's own, DISTINCT fallback (401,
-			// rest.SecurityError) — mirrors runSecurityMiddleware's prior,
-			// established behavior exactly, even though both now dispatch
-			// through the SAME mechanism. An ordinary (non-Security) Fn
-			// error keeps the generic fallback (400, rest.MiddlewareError).
-			err := dispatchErr.Err
-			if isSecuritySatisfyingHandler(middlewareHandlers, dispatchErr.Name) {
-				if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &err) {
-					return
-				}
-				errFn(sw, r, http.StatusUnauthorized, rest.SecurityError{Err: err})
-				return
-			}
-			// fn's own business error IS ErrorPattern-eligible (D2) — run
-			// through the SAME ObserveErrorResponseFor mechanism a handler
-			// error uses, falling back to rest.MiddlewareError at status
-			// 400 when unmatched.
-			if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &err) {
-				return
-			}
-			errFn(sw, r, http.StatusBadRequest, rest.MiddlewareError{Name: dispatchErr.Name, Err: err})
-			return
-		}
-		httpsecurity.MergeMiddlewareHandlerGrants(granted, satisfiesPerHandler(middlewareHandlers), middlewareOuts)
-		if err := rest.CheckScopes(secReqs, granted); err != nil {
-			if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &err) {
-				return
-			}
-			errFn(sw, r, http.StatusUnauthorized, rest.SecurityError{Err: err})
-			return
-		}
-
-		handlerResults := handlerFn.Call([]reflect.Value{reflect.ValueOf(ctx), reqPtr.Elem()})
-		respValue, handlerErrV := handlerResults[0], handlerResults[1]
-		if err, _ := handlerErrV.Interface().(error); err != nil {
-			// docs/features/rest-redirects.md: mirrors
-			// adapters/nethttp/serve.go's identical reflect-based check.
-			if redirErr, ok := asRedirectError(err); ok {
-				sw.Header().Set("Location", redirErr.Location)
-				sw.WriteHeader(redirErr.Status)
-				return
-			}
-			if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &err) {
-				return
-			}
-			status := http.StatusInternalServerError
-			if mappedStatus, ok := callErrStatusFor(elem.Addr(), err); ok {
-				status = mappedStatus
-			}
-			errFn(sw, r, status, err)
-			return
-		}
-
-		// Derive response header/cookie merge-field values BEFORE deciding
-		// how to encode the body — mirrors handlerFunc's ordering, applies
-		// regardless of whether Formats negotiation runs below.
-		mergeResults := elem.Addr().MethodByName("EncodeResponseMergeFields").Call([]reflect.Value{respValue})
-		mergedHeaders, _ := mergeResults[0].Interface().(map[string]string)
-		mergedCookies, _ := mergeResults[1].Interface().(map[string]string)
-		if err, _ := mergeResults[2].Interface().(error); err != nil {
-			rest.ReportResponseHeaderErrors(ctx, err)
-			rest.ReportResponseCookieErrors(ctx, err)
-			if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &err) {
-				return
-			}
-			errFn(sw, r, http.StatusInternalServerError, err)
-			return
-		}
-		for k, v := range mergedHeaders {
-			respHeaders.Set(k, v)
-		}
-		cookieAttrsResults := elem.Addr().MethodByName("EncodeResponseCookieAttributes").Call([]reflect.Value{respValue})
-		cookieAttrs, _ := cookieAttrsResults[0].Interface().(map[string]rest.CookieAttributes)
-		for k, v := range mergedCookies {
-			pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v, Attrs: cookieAttrs[k]})
-		}
-
-		// Compose every middleware's OWN response header/cookie values
-		// (derived from its Out, already produced pre-handler above) —
-		// registration-order, last-applied-wins alongside the route's own
-		// values just merged above.
-		for i, h := range middlewareHandlers {
-			mwHeaders, mwCookies, encErr := h.EncodeOut(ctx, middlewareOuts[i])
-			if encErr != nil {
-				stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, "middleware:out", encErr)
-				if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &encErr) {
-					return
-				}
-				errFn(sw, r, http.StatusInternalServerError, encErr)
-				return
-			}
-			for k, v := range mwHeaders {
-				respHeaders.Set(k, v)
-			}
-			var mwCookieAttrs map[string]rest.CookieAttributes
-			if h.EncodeOutCookieAttrs != nil {
-				mwCookieAttrs, encErr = h.EncodeOutCookieAttrs(middlewareOuts[i])
-				if encErr != nil {
-					stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, "middleware:out", encErr)
-					if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &encErr) {
-						return
-					}
-					errFn(sw, r, http.StatusInternalServerError, encErr)
-					return
-				}
-			}
-			for k, v := range mwCookies {
-				pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v, Attrs: mwCookieAttrs[k]})
-			}
-		}
-
-		var outBytes []byte
-		respCT := "application/json"
-		respFormats := elem.FieldByName("Formats")
-		if respFormats.Len() > 0 {
-			chosen, ok := negotiateFormatReflect(respFormats, r.Header.Get("Accept"))
-			if !ok {
-				supported := formatContentTypesReflect(respFormats)
-				errFn(sw, r, http.StatusNotAcceptable,
-					rest.NotAcceptableError{Accept: r.Header.Get("Accept"), Supported: supported})
-				return
-			}
-			if chosen.MethodByName("IsStreamable").Call(nil)[0].Bool() {
-				// Pre-validate before committing response headers so we can
-				// still return an error response if the value violates
-				// codec constraints.
-				valResults := chosen.MethodByName("Validate").Call([]reflect.Value{respValue})
-				if err, _ := valResults[0].Interface().(error); err != nil {
-					rest.ReportBodyErrors(ctx, err)
-					if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &err) {
-						return
-					}
-					errFn(sw, r, http.StatusInternalServerError, err)
-					return
-				}
-				respCT = chosen.MethodByName("ContentType").Call(nil)[0].String()
-
-				respHeaderNames := elem.Addr().MethodByName("ResponseHeaderParamNames").Call(nil)[0].Interface().([]string)
-				if errV := callErr(elem.Addr(), "ValidateResponseHeaders", reflect.ValueOf(rest.NormalizeHeaderVars(responseHeaderValues(respHeaders), respHeaderNames))); errV != nil {
-					rest.ReportResponseHeaderErrors(ctx, errV)
-					errFn(sw, r, http.StatusInternalServerError, errV)
-					return
-				}
-				if errV := callErr(elem.Addr(), "ValidateResponseCookies", reflect.ValueOf(responseCookieValues(pendingCookies))); errV != nil {
-					rest.ReportResponseCookieErrors(ctx, errV)
-					errFn(sw, r, http.StatusInternalServerError, errV)
-					return
-				}
-				for key, vals := range respHeaders {
-					for _, v := range vals {
-						sw.Header().Add(key, v)
-					}
-				}
-				for i := range pendingCookies {
-					pc := &pendingCookies[i]
-					writeOpts := cookieOptionsFrom(pc.Attrs) // Codec is always nil here — cookieOptionsFrom never sets it
-					if err := SetCookie(sw, pc.Name, pc.Value, writeOpts); err != nil {
-						errFn(sw, r, http.StatusInternalServerError, err)
-						return
-					}
-				}
-				sw.Header().Set("Content-Type", respCT)
-				sw.WriteHeader(primaryStatusFor(descriptor))
-				// MarshalTo re-validates then streams. Headers are
-				// committed at this point; streaming errors are logged
-				// but cannot be returned as HTTP error responses.
-				streamResults := chosen.MethodByName("MarshalTo").Call([]reflect.Value{respValue, reflect.ValueOf(sw)})
-				if err, _ := streamResults[0].Interface().(error); err != nil {
-					rest.ReportBodyErrors(ctx, err)
-				}
-				return
-			}
-			marshalResults := chosen.MethodByName("Marshal").Call([]reflect.Value{respValue})
-			outBytes, _ = marshalResults[0].Interface().([]byte)
-			if err, _ := marshalResults[1].Interface().(error); err != nil {
-				rest.ReportBodyErrors(ctx, err)
-				if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &err) {
-					return
-				}
-				errFn(sw, r, http.StatusInternalServerError, err)
-				return
-			}
-			respCT = chosen.MethodByName("ContentType").Call(nil)[0].String()
-		} else {
-			encodeResults := elem.FieldByName("Encode").Call([]reflect.Value{respValue})
-			outBytes, _ = encodeResults[0].Interface().([]byte)
-			if err, _ := encodeResults[1].Interface().(error); err != nil {
-				rest.ReportBodyErrors(ctx, err)
-				if tryRespondErrorPattern(ctx, sw, elem, respType, obs, respHeaders, &pendingCookies, &err) {
-					return
-				}
-				errFn(sw, r, http.StatusInternalServerError, err)
-				return
-			}
-		}
-
-		respHeaderNames := elem.Addr().MethodByName("ResponseHeaderParamNames").Call(nil)[0].Interface().([]string)
-		if errV := callErr(elem.Addr(), "ValidateResponseHeaders", reflect.ValueOf(rest.NormalizeHeaderVars(responseHeaderValues(respHeaders), respHeaderNames))); errV != nil {
-			rest.ReportResponseHeaderErrors(ctx, errV)
-			errFn(sw, r, http.StatusInternalServerError, errV)
-			return
-		}
-		if errV := callErr(elem.Addr(), "ValidateResponseCookies", reflect.ValueOf(responseCookieValues(pendingCookies))); errV != nil {
-			rest.ReportResponseCookieErrors(ctx, errV)
-			errFn(sw, r, http.StatusInternalServerError, errV)
-			return
-		}
-
-		for key, vals := range respHeaders {
-			for _, v := range vals {
-				sw.Header().Add(key, v)
-			}
-		}
-		for i := range pendingCookies {
-			pc := &pendingCookies[i]
-			writeOpts := cookieOptionsFrom(pc.Attrs) // Codec is always nil here — cookieOptionsFrom never sets it
-			if err := SetCookie(sw, pc.Name, pc.Value, writeOpts); err != nil {
-				errFn(sw, r, http.StatusInternalServerError, err)
-				return
-			}
-		}
-		sw.Header().Set("Content-Type", respCT)
-		sw.WriteHeader(primaryStatusFor(descriptor))
-		_, _ = sw.Write(outBytes)
+		restdispatch.DispatchRoute(ctx, cr, sw, r, respHeaders, &pendingCookies, pathValues, writeCookie, errFn, maxBody, expectedCT, opts.MultiValueQueryParams)
 	})
 
-	return applyGeneralMiddleware(inner, impls), nil
+	return applyGeneralMiddleware(inner, cr.Impls), nil
 }
 
-// callErr reflect-calls method(arg) on target (a *rest.RouteHandle[Req,Resp]
-// reflect.Value) and returns its single error result (nil on success).
-// Used for the family of RouteHandle methods whose signature never names
-// Req/Resp (map[string]string -> error, etc.) — reflect is only needed
-// here because target's static type is unknown to serve, not because the
-// METHOD itself is generic.
+// callErr/callErrStatusFor are PROMOTED (Phase 4) to restdispatch's
+// identical functions — aliased here (not copied), mirroring
+// adapters/nethttp's identical promotion.
 func callErr(target reflect.Value, method string, arg reflect.Value) error {
-	results := target.MethodByName(method).Call([]reflect.Value{arg})
-	err, _ := results[0].Interface().(error)
-	return err
+	return restdispatch.CallErr(target, method, arg)
 }
 
-// callErrStatusFor reflect-calls ErrorStatusFor(err) on target.
 func callErrStatusFor(target reflect.Value, err error) (int, bool) {
-	results := target.MethodByName("ErrorStatusFor").Call([]reflect.Value{reflect.ValueOf(&err).Elem()})
-	status, _ := results[0].Interface().(int)
-	ok, _ := results[1].Interface().(bool)
-	return status, ok
+	return restdispatch.CallErrStatusFor(target, err)
 }
 
-// formatContentTypesReflect returns the ContentType() of every entry in
-// formats (a reflect.Value of type []format.Format[T] for an erased T) —
-// used to build the Supported list on [rest.UnsupportedMediaTypeError]/
-// [rest.NotAcceptableError].
-func formatContentTypesReflect(formats reflect.Value) []string {
-	n := formats.Len()
-	if n == 0 {
-		return nil
-	}
-	out := make([]string, 0, n)
-	for i := 0; i < n; i++ {
-		if ct := formats.Index(i).MethodByName("ContentType").Call(nil)[0].String(); ct != "" {
-			out = append(out, ct)
-		}
-	}
-	return out
-}
+// formatContentTypesReflect/negotiateRequestFormatReflect/
+// tryRespondErrorPattern (the reflect-based one, used only by
+// buildRouteHandler) are PROMOTED (Phase 4) into
+// adapters/internal/restdispatch's DispatchRoute — buildRouteHandler now
+// calls restdispatch.DispatchRoute directly, so these three are DELETED
+// here rather than aliased (confirmed via grep: nothing else in this
+// package referenced them), mirroring adapters/nethttp's identical
+// treatment.
 
-// negotiateFormatReflect (Resp-direction) is defined in serve_sse.go —
-// shared with [serve]/SSE's own reflect dispatch since both need to pick a
-// format.Format[T] (T erased) by Accept header.
-
-// negotiateRequestFormatReflect is [negotiateRequestFormat]'s reflect-based
-// equivalent — formats is a reflect.Value of type []format.Format[Req]
-// (Req erased at [serve]'s call site). Picks the format whose ContentType
-// exactly matches contentType (parameters stripped).
-func negotiateRequestFormatReflect(formats reflect.Value, contentType string) (reflect.Value, bool) {
-	n := formats.Len()
-	for i := 0; i < n; i++ {
-		f := formats.Index(i)
-		fmtMediaType, _, _ := strings.Cut(f.MethodByName("ContentType").Call(nil)[0].String(), ";")
-		if strings.TrimSpace(fmtMediaType) == contentType {
-			return f, true
-		}
-	}
-	return reflect.Value{}, false
-}
-
-// tryRespondErrorPattern is the RECOMMENDED single call site for every
-// Category-A failure point (docs/design/d-0005-error-handling.md's
-// Topic 1/5): consults a declared [rest.ErrorPattern] via
-// ObserveErrorResponseFor (which ALSO reports match/miss/span-tag
-// observability internally) and, on a matched [rest.ErrorRespond] action,
-// writes the typed response. Returns true when the response was fully
-// handled — the caller should return immediately without invoking its
-// own fixed-shape errFn call. Returns false (unmatched, a non-Respond
-// action, or a write failure) when the caller should fall through to its
-// EXISTING fixed-shape errFn call — purely additive, never a behavior
-// change for routes with no matching declared pattern.
-//
-// *err is mutated in place to the pattern's own applyErr (a mapFn/encode
-// failure) or a response-write failure, mirroring this function's
-// pre-consolidation inline shape exactly — callers must use the
-// (possibly updated) *err in their own subsequent errFn call, not the
-// original value passed in.
-// Delegates ENTIRELY to [rest.CallDispatchErrorResponse]
-// (docs/design/d-0006-protocol-native-capabilities.md's Phase 7) —
-// this thin wrapper exists only to preserve every existing call site's
-// bool-return/*err-mutation contract unchanged; respType is no longer
-// needed (the generic [rest.RouteHandle.DispatchErrorResponse] this
-// reflect-calls into does its own `pattern.Value.(Resp)` type
-// assertion against the ACTUAL Resp type parameter, recovered by Go's
-// runtime from elem's own concrete instantiation — the same reflection
-// idiom [rest.CallObserveErrorResponseFor] already relies on).
-func tryRespondErrorPattern(
-	ctx context.Context, sw *statusResponseWriter, elem reflect.Value, respType reflect.Type,
-	obs stats.Observer, respHeaders http.Header, pendingCookies *[]PendingCookie, err *error,
-) bool {
-	var w rest.ErrorResponseWriter = sw
-	handled, updatedErr := rest.CallDispatchErrorResponse(elem.Addr(), ctx, obs, w, respHeaders, *pendingCookies, *err)
-	*err = updatedErr
-	return handled
-}
-
-// validateImplementationShapesReflect checks every attached impl.Fn against
-// the two concrete shapes this package recognizes, EAGERLY at serve
-// construction time rather than deferring to the first incoming request —
-// a malformed Fn fails loudly and immediately. reqType is the route's Req
-// type, recovered at runtime via reflect (see [buildRouteHandler]), letting
-// serve build the EXACT expected security Fn shape
-// (func(context.Context, *http.Request, *Req) (map[string][]string, error))
-// dynamically instead of via a static type parameter.
-// satisfiesPerHandler extracts handlers[i].Satisfies into a parallel
-// [][]string slice — [httpsecurity.MergeMiddlewareHandlerGrants]'s own
-// input shape, kept package-agnostic (no api/rest dependency in
-// adapters/internal/httpsecurity).
-func satisfiesPerHandler(handlers []rest.MiddlewareHandler) [][]string {
-	out := make([][]string, len(handlers))
-	for i, h := range handlers {
-		out[i] = h.Satisfies
-	}
-	return out
-}
-
-// isSecuritySatisfyingHandler reports whether handlers contains an entry
-// named name with a non-empty Satisfies — i.e. a Security-paired
-// MiddlewareHandler (docs/design/d-0007-declarative-middleware-layering.md's
-// Rollout Phase A) — used to keep Security's OWN distinct error fallback
-// (401, rest.SecurityError) for a failing Security-gated Fn, even though
-// it now dispatches through the SAME mechanism as ordinary middleware.
-func isSecuritySatisfyingHandler(handlers []rest.MiddlewareHandler, name string) bool {
-	for _, h := range handlers {
-		if h.Name == name {
-			return len(h.Satisfies) > 0
-		}
-	}
-	return false
-}
+// satisfiesPerHandler/isSecuritySatisfyingHandler are PROMOTED (Phase 4)
+// to restdispatch's identical functions — aliased here (not copied),
+// mirroring adapters/nethttp's identical promotion.
+var satisfiesPerHandler = restdispatch.SatisfiesPerHandler
+var isSecuritySatisfyingHandler = restdispatch.IsSecuritySatisfyingHandler
 
 func validateImplementationShapesReflect(routeLabel string, reqType reflect.Type, impls []rest.ServerImplementation) error {
 	generalType := reflect.TypeOf((func(http.Handler) http.Handler)(nil))

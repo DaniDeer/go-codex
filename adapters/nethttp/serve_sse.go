@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/DaniDeer/go-codex/adapters/internal/httpsecurity"
+	"github.com/DaniDeer/go-codex/adapters/internal/restdispatch"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/internal/middleware"
 	"github.com/DaniDeer/go-codex/internal/route"
@@ -461,27 +462,8 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 	return applyGeneralMiddleware(inner, impls), nil
 }
 
-// negotiateFormatReflect is [negotiateFormat]'s reflect-based equivalent —
-// formatsVal is a reflect.Value wrapping []format.Format[Event] (Event
-// erased). Returns the chosen format.Format[Event] value (as
-// reflect.Value) and whether a match was found.
-func negotiateFormatReflect(formatsVal reflect.Value, accept string) (reflect.Value, bool) {
-	if accept == "" || accept == "*/*" {
-		return formatsVal.Index(0), true
-	}
-	for _, part := range strings.Split(accept, ",") {
-		want := strings.TrimSpace(strings.SplitN(part, ";", 2)[0])
-		if want == "*/*" {
-			return formatsVal.Index(0), true
-		}
-		for i := 0; i < formatsVal.Len(); i++ {
-			f := formatsVal.Index(i)
-			ct := f.MethodByName("ContentType").Call(nil)[0].String()
-			ct, _, _ = strings.Cut(ct, ";")
-			if strings.TrimSpace(ct) == want {
-				return f, true
-			}
-		}
-	}
-	return reflect.Value{}, false
-}
+// negotiateFormatReflect is PROMOTED (Phase 4, REST family dispatch-core
+// consolidation) to [restdispatch.NegotiateFormatReflect] — aliased here
+// (not copied) so every existing call site in this package keeps
+// compiling and behaving identically.
+var negotiateFormatReflect = restdispatch.NegotiateFormatReflect

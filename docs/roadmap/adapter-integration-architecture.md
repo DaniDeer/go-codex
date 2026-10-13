@@ -2552,10 +2552,10 @@ Based on the audit and PoC:
   its dispatch-implementation count (still open — see "Confirmed
   asymmetry").
 
-#### Phase 4 progress: REST family (steps 1-3 of 8)
+#### Phase 4 progress: REST family (steps 1-5 of 8)
 
-**Status: steps 1-3 of the REST family's 8-step plan (above) DONE; steps
-4-8 not started.** Began with the REST family per user choice — fully
+**Status: steps 1-5 of the REST family's 8-step plan (above) DONE; steps
+6-8 not started.** Began with the REST family per user choice — fully
 specified by Phase 2, untouched by any Phase 3 finding, lowest-risk
 starting point.
 
@@ -2589,17 +2589,90 @@ starting point.
   were updated to the keyed form `httpCarrier{R: r}` to keep `go vet`
   clean. Zero behavior change — purely a literal-syntax fix forced by the
   type's new cross-package location.
-- **Verification**: full-repo `go build ./...`, `go test ./...` (zero
-  failures), `go vet ./...` (clean, including the unkeyed-literal fix
-  above), `gofmt` all clean.
-- **What remains (steps 4-8, not started)**: the per-request
-  `DispatchRoute` body extraction (step 4), wiring `handlerFunc` through
+- **Verification (steps 1-3)**: full-repo `go build ./...`, `go test ./...`
+  (zero failures), `go vet ./...` (clean, including the unkeyed-literal
+  fix above), `gofmt` all clean.
+
+**Steps 4-5 — per-request `DispatchRoute` body extraction, both packages
+repointed.** Investigated thoroughly before coding, same rigor that
+caught case 6's scope correction: programmatically diffed (package-name-
+normalized) every helper the per-request dispatch body calls. Found:
+
+- The full per-request closure body itself, plus 11 supporting helpers
+  (`defaultErrorHandler`, `tryRespondErrorPattern`, `callErr`,
+  `callErrStatusFor`, `isSecuritySatisfyingHandler`, `satisfiesPerHandler`,
+  `credentialExtractorFor`, `negotiateRequestFormatReflect`,
+  `negotiateFormatReflect`, `formatContentTypesReflect`,
+  `responseHeaderValues`, `responseCookieValues`, `primaryStatusFor`,
+  `asRedirectError`), confirmed byte-for-byte identical between
+  `nethttp`/`chi` (only cosmetic comment differences). `PendingCookie` was
+  already a shared `rest.PendingCookie` type alias in both packages.
+- The one genuine per-package difference, confirmed exactly as Phase 2
+  predicted: `pathValues` (`r.PathValue` vs. `gochi.URLParam`) — injected
+  as a `DispatchRoute` parameter.
+- A second, real difference the doc's simplified description didn't
+  fully anticipate, found during this investigation: `contextKey`/
+  `responseHeadersKey`/`responseCookiesKey` are PACKAGE-LOCAL sentinel
+  types backing each package's own public `RequestFromContext`/
+  `ResponseHeadersFromContext`/`WithResponseCookies` accessors — these
+  cannot be promoted into `restdispatch` without breaking those public
+  accessors (a correctness risk, not a style one). Confirmed the
+  dispatch body itself never reads these keys back via `ctx.Value` (only
+  writes them, for user-supplied handler code) — so `DispatchRoute`
+  accepts an ALREADY-ctx-wrapped `context.Context` plus explicit
+  `respHeaders`/`pendingCookies` parameters, never touching the
+  per-package sentinel types itself.
+- A third, similar finding: `statusResponseWriter` (and its
+  `WriteErrorResponse` method, which calls each package's own exported
+  `SetCookie`/`CookieOptions`-translation helper directly) also could not
+  be promoted — its fields are unexported, so a type alias would make
+  cross-package struct-literal construction at `handlerFunc`'s/
+  `serve_sse.go`'s many existing call sites fail to compile (unexported
+  fields from another package are invisible to literal construction).
+  Resolved by having `DispatchRoute` accept a small `restdispatch.ResponseWriter`
+  interface (`http.ResponseWriter` + `rest.ErrorResponseWriter`) instead
+  of a concrete shared type — `statusResponseWriter` itself stays
+  package-local and completely unchanged in both packages. The two
+  direct cookie-write call sites inside `DispatchRoute`'s own body
+  (outside `WriteErrorResponse`) use an injected `writeCookie` closure
+  built by each package's thin wrapper over its own `SetCookie`/
+  `cookieOptionsFrom`.
+- **A beneficial side effect of this investigation**: since all 11
+  helpers above are ALSO used by `handlerFunc`/`serve_sse.go` (not just
+  `buildRouteHandler`), promoting them with the same type-alias/func-var-
+  alias pattern already established for `httpCarrier` means
+  `handlerFunc`/`serve_sse.go` now ALSO call the shared implementations —
+  closing part of their own duplication too, as a side effect, without
+  touching their own dispatch LOGIC or structure at all (steps 6-8,
+  covering `handlerFunc`'s actual construction-time wiring and the
+  `serve_sse.go` dispatch-body audit, remain separately scoped and not
+  started).
+
+Implemented: added `restdispatch.DispatchRoute` (the full per-request
+pipeline) plus the 11 helpers above (with `callErr`/`callErrStatusFor`/
+`satisfiesPerHandler`/`isSecuritySatisfyingHandler`/
+`credentialExtractorFor`/`responseHeaderValues`/`responseCookieValues`/
+`primaryStatusFor`/`asRedirectError`/`negotiateFormatReflect` exported for
+cross-package aliasing; `negotiateRequestFormatReflect`/
+`formatContentTypesReflect`/the reflect-based `tryRespondErrorPattern`
+kept unexported, `buildRouteHandler`-exclusive). Repointed both
+`adapters/nethttp`'s and `adapters/chi`'s `buildRouteHandler` to the thin
+wrapper shape: resolve `Options`, build a `writeCookie` closure, then call
+`restdispatch.DispatchRoute` from inside the existing ctx-wrapping
+`http.HandlerFunc`. Verified nethttp's full suite, then chi's full suite
+(including the Phase 3 case 5 cross-adapter test), both passing
+unchanged.
+
+- **Verification (steps 4-5)**: full-repo `go build ./...`, `go test ./...`
+  (zero failures), `go vet ./...` (clean), `gofmt` all clean.
+- **What remains (steps 6-8, not started)**: wiring `handlerFunc` through
   `ValidateRouteConstruction` with its accepted new panic-on-failed-
-  construction behavior change (step 6), the cross-adapter conformance
-  test (step 8), and the `serve_sse.go` follow-on audit (flagged, not yet
-  done) — each deliberately deferred to its own later round, per the
-  design's own "each step independently verifiable before the next"
-  principle.
+  construction behavior change (step 6), extending `handlerFunc` through
+  `DispatchRoute` too (step 7, stretch goal), the cross-adapter
+  conformance test (step 8), and the `serve_sse.go` follow-on audit
+  (flagged, not yet done) — each deliberately deferred to its own later
+  round, per the design's own "each step independently verifiable before
+  the next" principle.
 
 ### Phase 5 — Conformance tests and documentation
 
