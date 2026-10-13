@@ -1145,7 +1145,7 @@ structs.
 
 | Adapter | Seam(s) served | Pattern family | Declared capabilities | Capability form | Guaranteed or approximated | Observable to application | Where coverage is checked | Binding/handle type used | Adapter-facing exported methods used | Middleware application point | Observer call sites | ErrorPattern/DeadLetter consultation |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| mqtt5 | `api/events` (Subscribe+Publish) | pub/sub, topic-based | `Capability` (QoS, Retained) — capability.go:35-95; **User Properties via separate `UserPropertyParam`, NOT part of Capability** (capability.go:100-102) | sealed, `isMQTT5Capability()` marker | Guaranteed-at-setup via `events.VerifyCapabilityCoverage` | Yes — `SubscribeError`/dead-letter/error-channel | 3 explicit call sites: adapter.go:791 (subscribeWithHandle), adapter.go:970 (publish), caller.go:157 (ServeSubscribers) — transport.go's reflection Subscribe/Publish rely only on `ApplyCapabilities`, **no independent coverage pre-check found** | `*events.ChannelHandle[T]` | `events.Transport.Publish/Subscribe/ServeSubscribers`, Attach/Bind | `events.ApplyCapabilities` + `wrapSubscribeGeneral`/`wrapPublishGeneral`/reflection mirrors | `obs.RecordSubscribe`/`RecordPublish`, dozens of sites across adapter.go/transport.go/caller.go | `tryDeadLetter`/`tryPublishErrorChannel`, 14+ call sites in adapter.go |
+| mqtt5 | `api/events` (Subscribe+Publish) | pub/sub, topic-based | `Capability` (QoS, Retained, **UserProperties, added Phase 3**) — capability.go:35-95; User Properties' per-message value validation remains via the separate, pre-existing `UserPropertyParam` mechanism (capability.go:100-102), only declare-time requirement-coverage was folded in | sealed, `isMQTT5Capability()` marker | Guaranteed-at-setup via `events.VerifyCapabilityCoverage` | Yes — `SubscribeError`/dead-letter/error-channel | 5 explicit call sites, all 3 Subscribe + both Publish entry points: adapter.go:791 (subscribeWithHandle), adapter.go:970 (publish), caller.go:157 (ServeSubscribers), transport.go:521 (Subscribe reflection), transport.go:360 (Publish reflection) — **corrected during Phase 3: all entry points already have this check**, see "Reconciliation" note below | `*events.ChannelHandle[T]` | `events.Transport.Publish/Subscribe/ServeSubscribers`, Attach/Bind | `events.ApplyCapabilities` + `wrapSubscribeGeneral`/`wrapPublishGeneral`/reflection mirrors | `obs.RecordSubscribe`/`RecordPublish`, dozens of sites across adapter.go/transport.go/caller.go | `tryDeadLetter`/`tryPublishErrorChannel`, 14+ call sites in adapter.go |
 | mqtt5 | `api/reqreply` (Call+Serve) | request/reply, correlation-id + reply-topic | `Capability` (QoS, Retained), same sealed interface reused | same sealed interface | Guaranteed via `reqreply.CheckCoverage` (Serve setup, reqreply_transport.go:440) + `VerifyCapabilityCoverage` (Serve:462, Call:1192) | Yes — `ErrorPatternResponse`, `CallError`, `ServeError` | reqreply_transport.go:440,462,1192 (3 call sites, checked once per Serve setup not per-message) | reflection-recovered route handle | `reqreply.ServerTransport.Serve`, `ClientTransport.Call`/`CallRaw` | `events.ApplyCapabilities` reused for wire attrs; `applyGeneralServerMiddleware`/`runServerSecurityMiddleware`/`mergeCredentialUserProperties` | `obs.RecordRequest("MQTT5-REP/REQ",...)`, 40+ sites | `tryDeadLetterReflect` (reqreply_transport.go:196) + `ErrorPatternResponse` matching |
 | mqtt5 | `ports.Pattern` binding | stream adapters (Sub/Pub/Call/Serve) | Same `Capability` type | Same, delegated | Delegates to underlying generic/transport functions, no separate check | Yes, same plumbing | Delegated — binding.go itself has no independent check | `*events.ChannelHandle[T]`/route handles wrapped in `ports.Sink/Source/IO/ToolAdapter` | `SubscribeAdapter`/`PublishAdapter`/`CallAdapter`/`ServeAdapter` | Delegated | Delegated | Delegated (e.g. `handleUpstreamError` reuses `tryPublishErrorChannel`) |
 
@@ -1301,20 +1301,29 @@ v3** — they do not share code that a single change could fix once.
 | events Publish dispatch | mqtt5 | (1) `publish[T]`/`publishHandle[T]` (adapter.go:943,1218); (2) `(*transport).Publish` (transport.go:174, reflection mirror) | **2** independent implementations | Partially shared small helpers, but each has its own full dispatch body — acknowledged duplication, not full sharing | adapter_test.go, transport_test.go, client_full_pipeline_test.go | A fixed RequireQoS/coverage-check gap historically present in only one of the two paths |
 | reqreply Call dispatch | mqtt5 | `(*clientTransport).Call`/`call` (reqreply_transport.go:975,989); `CallRaw` (1497, separate bypass) | 1 primary + 1 raw-bypass variant | Single typed implementation; `CallRaw` is an intentional separate escape hatch | reqreply_test.go, callraw_test.go | Past forward/error-pattern-precedence bugs referenced in test filenames |
 | reqreply Serve dispatch | mqtt5 | `(*serverTransport).Serve` (reqreply_transport.go:347) | 1 implementation | Single, not duplicated | reqreply_test.go, grantedscopes_reqreply_test.go | Documented fixed asymmetries ("closing an asymmetry with...") |
-| Capability coverage checking — events | mqtt5 | adapter.go:791,970; caller.go:157 — **transport.go's reflection Subscribe/Publish show NO independent `VerifyCapabilityCoverage` call, only `ApplyCapabilities`** | 3 confirmed explicit sites; **potential gap flagged on the reflection path** | Shared function (`events.VerifyCapabilityCoverage`), called from 3 distinct sites — reflection path's coverage may be weaker | adapter_test.go, caller_test.go, capability_test.go | capability_test.go notes — reflection path gap is a fresh observation from this audit, not previously documented |
+| Capability coverage checking — events | mqtt5 | adapter.go:791,970; caller.go:157; `transport.go:521` (Subscribe), `transport.go:360` (Publish) | **5** confirmed explicit `VerifyCapabilityCoverage` call sites across all 3 Subscribe + 2 Publish entry points | Shared function (`events.VerifyCapabilityCoverage`), called from all 5 sites — **corrected during Phase 3 (see below): every entry point already has this check, confirmed by re-reading the code directly** | adapter_test.go, caller_test.go, transport_test.go, capability_test.go | **Correction (Phase 3):** the Phase 1 audit's claim that `transport.go`'s reflection Subscribe/Publish paths were "missing an independent coverage pre-check" is **factually wrong** as of current `main` — both already call `events.VerifyCapabilityCoverage` (transport.go:521, :360), each with an explicit code comment dating the fix to before this audit ran ("Mirrors Transport.Publish's identical fix"). Treat this as a corrected finding, not an open gap — see the "Correction" note after this matrix. |
 | Capability coverage checking — reqreply | mqtt5 | reqreply_transport.go:440 (CheckCoverage) + :462,1192 (VerifyCapabilityCoverage) | 3 call sites | Shared function, called at 3 distinct sites, resolved once per Serve setup (not per-message) | capability_reqreply_test.go | Documented "per-message vs per-setup" distinction |
 | ErrorPattern/DeadLetter | mqtt5 | events: `tryDeadLetter`/`tryPublishErrorChannel` (~14 sites); reqreply: `tryDeadLetterReflect` + `ErrorPatternResponse` matching | 1 shared helper per side, many invocations | Shared helper, duplicated call-site pattern (not logic duplication) | dead_letter_test.go, dead_letter_reqreply_test.go, error_pattern tests | "Category A fix," "now ErrorPattern-eligible" comments indicate past gaps on certain failure paths |
 | Observer reporting | mqtt5 | `obs.RecordSubscribe`/`RecordPublish` (dozens of sites, 3 impl families for Subscribe + 2 for Publish); `obs.RecordRequest` (40+ sites, reqreply) | Many duplicated call-site families | Duplicated call-site patterns across the 3 Subscribe/2 Publish implementations | error_pattern_observer_test.go, disposition_test.go | Repeated optional-interface-check pattern (SecurityObserver/TraceObserver/DispositionObserver) duplicated identically 3× |
 
-**Biggest finding (reconfirmed fresh, with one new addition)**: events
-Subscribe has 3 and Publish has 2 fully independent, hand-maintained
-dispatch implementations, with an extensive documented history of each
-capability/error/observer concern independently regressing on at least one
-of the parallel paths before being fixed. **New in this fresh pass**:
-`transport.go`'s reflection Subscribe/Publish paths show only
-`ApplyCapabilities` calls, not an independent `VerifyCapabilityCoverage`
-pre-check — a potential coverage gap on the reflection path that the
-original narrower evidence pass did not surface as explicitly.
+**Biggest finding (reconfirmed fresh)**: events Subscribe has 3 and Publish
+has 2 fully independent, hand-maintained dispatch implementations, with an
+extensive documented history of each capability/error/observer concern
+independently regressing on at least one of the parallel paths before
+being fixed. **Correction, found during Phase 3 implementation work**: an
+earlier pass of this audit claimed `transport.go`'s reflection
+Subscribe/Publish paths were missing an independent
+`VerifyCapabilityCoverage` pre-check. Re-reading the code directly while
+implementing Phase 3's case 6 found this claim is **wrong** — both calls
+already exist (`transport.go:521`, `:360`), each with its own code comment
+dated before this audit ran, documenting that exact gap as already fixed
+independently on this path. The remaining, accurate finding is narrower but
+still real: the requirement-coverage check is correct at all 3 (now
+confirmed) entry points, but it is **duplicated 3 separate times**
+(2 for Subscribe, 1 shared pattern for Publish's 2 paths) rather than
+implemented once — a DRY/future-regression-prevention concern, not a
+currently-active bug. See "Phase 3 results" below for the dispatch-core
+consolidation that addresses this.
 
 ##### `adapters/nethttp`
 
@@ -2122,11 +2131,16 @@ shape as A/B) AND reqreply's 4-socket-variant split from point 3):
 `subscribeWithHandle`/`transport.Subscribe`/`ServeSubscribers`
 (`serve_subscribers.go`'s `buildSubscriberRoute`/`dispatchToRoute`/
 `processMessage` play the role mqtt5's `extractErasedSubscriberHandle`/
-`makeErasedSubscribeMessageHandler` do) — this closes the audit's
-**confirmed, already-shipped regression** (Subscribe's reflection path
-missing the coverage check that the generic and ServeSubscribers paths
-had) by construction, as the top-priority first deliverable of this
-entire workstream.
+`makeErasedSubscribeMessageHandler` do). **Correction (Phase 3):** an
+earlier pass of this audit claimed zeromq's reflection Subscribe/Publish
+paths were missing their coverage check; re-verified directly against
+current code during Phase 3 implementation work, this is **wrong** —
+`transport.go:421` (Subscribe) and `:281` (Publish) both already call
+`events.VerifyCapabilityCoverage`, per a commit (`47f4e198`) that predates
+this roadmap's own Phase 1 audit. Reframe this workstream's motivation
+accordingly: it closes a DRY/future-regression-prevention concern (one
+shared implementation instead of 3 separately-correct ones), not an
+active gap.
 7. Extract `reqreplyServerSetupCore`/`reqreplyServerDispatchOne` per point
    3's design, shared by `serverTransport.Serve` AND
    `routerServerTransport.Serve` — verify both `reqreply_transport_test.go`
@@ -2150,10 +2164,14 @@ entire workstream.
   dispatch-core's setup section, not literally inside `BindClient`) is
   followed — this preserves every adapter's EXISTING timing (per-entry
   for `ServeSubscribers`, per-Serve-call for reqreply, per-call for the
-  generic/reflect Subscribe/Publish paths) exactly; the only CHANGE in
-  behavior is adding the check where it was confirmed MISSING (zeromq's
-  Subscribe reflection path; mqtt5's Publish reflection path; several of
-  mqtt v3's 6 call sites consolidating into fewer, but none removed).
+  generic/reflect Subscribe/Publish paths) exactly. **Corrected (Phase
+  3): there is no missing check left to add** — mqtt5's and zeromq's
+  reflection Subscribe/Publish paths already have their coverage check
+  (see the corrections above); the only behavior change from this
+  consolidation is collapsing duplicate, individually-correct
+  implementations into one, not adding a previously-absent check. Several
+  of mqtt v3's 6 call sites still genuinely consolidate into fewer (that
+  finding was not re-examined and stands as audited).
   **Confirmed NOT at risk**: mqtt5's `PublishOptions[T].Capabilities`
   per-call override (adapter.go:152) is capability APPLICATION, not
   requirement COVERAGE — Design goal 12 already separates these, and this
@@ -2169,27 +2187,20 @@ entire workstream.
   should be called out in each dispatch-core's doc comment so a future
   contributor doesn't assume live re-registration is coverage-checked.
 - **(b) Subscribe entry points already found to behave subtly
-  differently**: **YES, confirmed, two concrete cases to decide
-  explicitly, not paper over**:
-  1. **zeromq's historical coverage-check gap itself** (the shipped
-     regression this audit already found) means the THREE existing
-     entry points do NOT currently behave identically — the reflection
-     path silently accepted uncovered requirements while the other two
-     rejected them. Consolidation must choose the "reject" behavior (the
-     generic/`ServeSubscribers` paths' existing behavior) as canonical,
-     not whichever behavior the reflection path happened to have — this
-     is explicit, not a by-construction accident, and should be called
-     out in the Phase 4 PR description so reviewers know a previously-
-     silent-success case now fails loudly.
-  2. **mqtt5's reflection `transport.Subscribe` path's missing
-     independent `VerifyCapabilityCoverage` call** (flagged fresh by this
-     audit, `ApplyCapabilities` only) is the SAME class of divergence,
-     not yet shipped as a known regression (no bug report/test exists for
-     it the way zeromq's does) — but by the time Workstream A's step 5
-     runs, this design's consolidation closes it identically to zeromq's
-     case. Flag this explicitly as "fixing an undetected-until-this-audit
-     gap," not merely "preserving existing behavior," so nobody
-     mistakenly treats step 5 as a no-op refactor.
+  differently**: **Corrected during Phase 3 — the two cases below were
+  originally reported as currently-active divergences; re-verification
+  against the actual code found both had already been fixed before this
+  audit ran.** Recorded here for traceability, not as open risks:
+  1. **zeromq's historical coverage-check gap** — `transport.go`'s
+     reflection Subscribe/Publish paths DID at one point lack the check
+     the generic/`ServeSubscribers` paths had; commit `47f4e198` (dated
+     before this roadmap's Phase 1 audit) already fixed both. All 3 entry
+     points behave identically today. Consolidation (steps 1-5) still
+     reduces the risk of this exact class of regression recurring, but
+     there is no divergent behavior to canonicalize — all 3 already
+     agree.
+  2. **mqtt5's reflection `transport.Subscribe` path** — same situation,
+     same commit, same correction. No open divergence.
   3. **Property/merge-field support differs by necessity, not bug**:
      zeromq's reqreply side has NO property-merge-field/topic-template
      concept (confirmed via code comment: "zeromq's REQ/REP wire format
@@ -2213,13 +2224,21 @@ now much smaller, per-socket recv/correlate/send bodies, and move
 requirement-coverage checking to exactly one call site per dispatch-core's
 setup section (not literally into `BindClient`, since `Subscriber.Register`
 has no enforced ordering relative to `Attach`) while leaving per-call
-capability application untouched. The biggest risk is **silently
-canonicalizing the wrong behavior where entry points already diverge** —
-zeromq's confirmed coverage-check gap and mqtt5's freshly-flagged
-reflection-path gap must be fixed by deliberately choosing the
-already-correct paths' behavior as the merged result, with that choice
-stated explicitly in the Phase 4 PR, not discovered by a reviewer after
-the fact as an unannounced behavior change.
+capability application untouched. **Updated during Phase 3**: the
+original "biggest risk" here (silently canonicalizing the wrong behavior
+where entry points already diverge, citing zeromq's and mqtt5's coverage
+checks as currently-missing) no longer applies — re-verification against
+the actual code found both had already been fixed (commit `47f4e198`,
+predating this roadmap's Phase 1 audit) before Phase 4 work was even
+scoped. The consolidation's value is now accurately framed as
+DRY/future-regression-prevention (collapsing N individually-correct
+implementations into one, so this exact class of gap — proven to have
+happened at least twice already — cannot recur silently), not closing a
+presently-active bug. The general principle stands for any future finding
+of this kind: re-verify an audit's "confirmed gap" claims directly against
+current code before treating them as license to change behavior, since an
+audit can itself become stale between when it runs and when its findings
+are acted on.
 
 #### Essential: Observer integration and error-pattern mechanisms are in scope
 
