@@ -380,31 +380,37 @@ instead of none.
   lifecycle interfaces — not just two. Round 1 decision 3 ("unified")
   stands, informed rather than contradicted by this finding.
 
-### What this means for the still-deferred Round 1 decisions
+### What this evidence resolved (see "Resolved design decisions", Round 2)
 
-- **Decision 1 (binding type: reuse handles vs. new type) — still open,
-  but now with real signal.** Every pattern family's existing registered
-  handle (`RouteHandle`, `ChannelHandle`, reqreply's `RouteHandle`) already
+The evidence above was enough to resolve both decisions Round 1 had left
+open — per pattern family, not with one universal answer. See Round 2
+below for the actual resolutions and rationale. Summary of the evidence
+that drove them:
+
+- **Binding type:** every pattern family's existing registered handle
+  (`RouteHandle`, `ChannelHandle`, reqreply's `RouteHandle`) already
   functions as a working "binding" by Doc A's own definition — adapters
   consistently call into the handle's own methods rather than
-  reconstructing logic. The strongest argument *for* a new, smaller type
-  would be REST's ~30-method surface (large, not small) and reqreply's
-  partial case (middleware lives beside, not on, the handle) — both
-  granularity problems, not missing-capability problems. The formal Phase 1
-  audit should specifically test whether a smaller *view* over the
-  existing handles (not a full replacement type) resolves the granularity
-  complaint.
-- **Decision 2 (dispatch-core mechanism) — still open, but now
-  quantified.** The duplication problem is confirmed **worse** than
-  previously known: reqreply has 6 independent coverage-check call sites
-  (not 3), and a third real regression instance was found (capability
-  coverage missing on mqtt5's publish path until fixed) beyond the two
-  already cited (events-Subscribe middleware, `d-0005`'s ErrorPattern
-  H1/H2). This strengthens the case for *some* form of consolidation but
-  does not yet resolve shared-package vs. per-adapter-local — zeromq's
-  socket-variant duplication (ROUTER/DEALER) is a structurally different
-  shape from mqtt5/zeromq protocol divergence (MQTT `CorrelationData` vs.
-  ZMQ framing), so a single mechanical answer may not fit both.
+  reconstructing logic. The concrete complaints are granularity (REST's
+  ~30-method surface) and reqreply's split (middleware lives beside, not
+  on, the handle) — both granularity/co-location problems, not
+  missing-capability problems, and they differ by family.
+- **Dispatch-core mechanism:** the duplication problem is confirmed
+  **worse** than previously known: reqreply has 6 independent
+  coverage-check call sites (not 3), and a third real regression instance
+  was found (capability coverage missing on mqtt5's publish path until
+  fixed) beyond the two already cited (events-Subscribe middleware,
+  `d-0005`'s ErrorPattern H1/H2). The shapes differ structurally even
+  within reqreply across adapters — zeromq's socket-variant duplication
+  (ROUTER/DEALER) is a different shape from mqtt5/zeromq's protocol-level
+  correlation divergence (MQTT `CorrelationData` vs. ZMQ framing) — so a
+  single mechanical answer across pattern families would not fit the
+  evidence.
+- **New, separate finding:** capability-coverage checks run per-call-site
+  today (once on publish, once on subscribe), not at one unified
+  attach/registration gate — confirmed independently of the
+  how-many-implementations duplication problem above. This is now its own
+  Phase 2 goal (Round 2, decision 4).
 
 ## Resolved design decisions
 
@@ -412,6 +418,15 @@ Gaps surfaced and resolved so far, in resolution order. Each entry records
 the decision and why, so the reasoning stays visible without re-deriving it.
 Narrower gaps not yet raised remain open; see "Open design points deferred
 to future rounds" below for the ones explicitly parked.
+
+**A critical pass (below, after Round 2) reviewed every entry for pros and
+cons rather than just restating them.** Two entries changed status as a
+result: Round 1 decision 3 narrowed from a blanket claim to a conditional
+one, and Round 2 decisions 1 and 2 are marked **provisional** — evidence-backed
+enough to act as working assumptions, but explicitly revisit-if-contradicted
+once the full Phase 1 audit (Round 1 decision 4, still a strict waterfall)
+completes. This keeps the record honest about the difference between "fully
+settled" and "best current evidence, not yet exhaustively checked."
 
 ### Round 1 — foundational gaps (shape every later decision)
 
@@ -432,18 +447,97 @@ to future rounds" below for the ones explicitly parked.
    choice before seeing the actual per-adapter entry-point shapes
    (compile-time-generic vs. reflected) would be premature.
 3. **One Binding/capability model for `api/*` and `ports/*`, or two
-   parallel models?** — **Resolved: unified.** One Binding/capability type
-   family spans both seams. This does not reopen "Preserve the distinction
-   between API contracts and application ports" below: the two
+   parallel models?** — **Resolved: conditionally unified, narrowed by the
+   critical-review pass.** Originally recorded as a blanket "unified."
+   The Doc A evidence-grounding pass found this true for exactly one
+   adapter (mqtt5: the `ports.Pattern`/`Bind` path and the direct
+   `api/events` path already share the identical `ChannelHandle` and
+   dispatch helpers). But `file`/`redis`/`sql` — the adapters that are
+   *primarily* ports-only — don't implement `ports.Pattern` at all; they
+   implement `SourceAdapter`/`SinkAdapter`/`IOAdapter` directly, with
+   `Pattern` sitting one layer above, untouched by their bindings. The
+   decision is therefore narrowed to: **unified where evidence shows
+   convergence** (events-capable adapters, confirmed for mqtt5);
+   **explicitly undecided** for pure-ports adapters (`file`/`redis`/`sql`)
+   pending the full Phase 1 audit. This does not reopen "Preserve the
+   distinction between API contracts and application ports" below: the two
    *integration paths* (`Register`/`Handle` for `api/*`, the `ports.Pattern`
    `Bind` path for `ports/*`) remain explicit in naming and documentation,
    per that section — only the underlying Binding/capability type family is
-   shared, not the integration path's meaning.
+   shared where unification is confirmed, not the integration path's
+   meaning, and not (yet) a claim about every `ports` adapter.
 4. **Phase 1 execution sequencing: audit everything first, or iterate per
    pattern family?** — **Resolved: strict waterfall.** The full audit
    (both matrices, across every adapter package, both seams) completes
    before any Phase 2 design work starts on any pattern family. No
    partial/iterative overlap between Phase 1 and Phase 2.
+
+### Round 2 — resolved using the Doc A evidence-grounding pass
+
+These revisit Round 1 decisions 1 and 2 now that the "Preliminary evidence"
+section above gives concrete, per-family signal, rather than leaving them
+deferred indefinitely.
+
+1. **Decision 1 (binding type), refined — *provisionally* resolved *per
+   pattern family*, not universally.** REST's registered handle needs a
+   smaller adapter-facing *view* (its ~30-method surface is a genuine
+   granularity problem, confirmed by evidence); events' `ChannelHandle` is
+   fine as-is (already confirmed working, no changes needed); reqreply
+   needs its capability requirements and middleware/`Implementations`
+   co-located on or directly alongside the handle (currently split across
+   the handle and the adjacent route/builder). No wholesale new `Binding`
+   type is adopted for any family — in every case the fix is narrower
+   (a view, or co-location), not a replacement type. **Provisional:**
+   this was decided from a preliminary, non-exhaustive evidence pass (3 of
+   ~13 adapter packages); revisit if the full Phase 1 audit contradicts it.
+   **Guardrail (critical-review pass):** per-family does not mean
+   undocumented-per-family — Phase 2 must still produce one documented,
+   consistent adapter-facing *contract shape* (e.g. "declare + requirements
+   + middleware-handle, always three named parts") even though each
+   family's concrete type differs, so this doesn't quietly recreate the
+   roadmap's core cross-adapter-asymmetry complaint one layer up, at the
+   binding level instead of the dispatch level.
+2. **Decision 2 (dispatch-core mechanism), refined — *provisionally*
+   resolved *per pattern family*, not universally.** Events and reqreply
+   get separate consolidation designs in Phase 2/4, not one shared
+   cross-pattern-family mechanism: reqreply's duplication is both worse (6
+   call sites vs. 3) and differently shaped (zeromq's extra ROUTER/DEALER
+   socket variants have no events counterpart), so forcing one scheme
+   across both would not fit the evidence. Still open within each family:
+   shared-helper-package vs. per-adapter-local convention — that narrower
+   choice is deferred to Phase 2 for each family independently.
+   **Provisional:** same caveat as decision 1 above — only 2 of ~13 adapter
+   packages were sampled; revisit if the full audit contradicts it.
+   **Guardrail (critical-review pass):** if the full Phase 1 audit shows
+   3+ pattern families each needing a genuinely distinct dispatch-core
+   mechanism, that is itself a flagged risk requiring explicit sign-off
+   before Phase 4 begins — "per pattern family" is a floor meant to avoid
+   forcing one ill-fitting universal mechanism, not an invitation to drift
+   into N independently-designed mechanisms with no shared principle at
+   all.
+3. **Capability-coverage check location — new, explicit Phase 2 goal.**
+   Distinct from the dispatch-core duplication problem above (which is
+   about HOW MANY implementations exist), this is about WHERE the check
+   runs: today it executes per-call-site (separately on publish and on
+   subscribe), not once at a single attach/registration gate. Phase 2 must
+   design a consolidated capability-check point as its own goal, alongside
+   (not folded into) dispatch-core consolidation. **Open question flagged
+   by the critical-review pass:** this assumes a single attach-time gate is
+   always sufficient, which is not yet verified — some capability-relevant
+   values may legitimately be overridable per-call (e.g., a caller setting
+   QoS on an individual publish call rather than only at channel-declare
+   time), and a single attach-time check could miss such an override
+   violating the declared requirement. Phase 2 must explicitly check
+   whether per-call capability overrides exist anywhere in scope before
+   treating "one gate" as unconditionally sufficient.
+4. **Doc A's MQTT3/MQTT5 user-properties worked example — corrected.** It
+   does not work as originally described (see "Preliminary evidence" and
+   the corrected "Capabilities are requirements" section above). QoS/HWM
+   now serve as the primary, accurate illustration of the existing
+   mechanism; MQTT user properties are recorded as a named, open gap to
+   close in Phase 2/4, after which the original scenario (MQTT 5 accepted,
+   MQTT 3 rejected with an actionable error) becomes a valid Phase 3 PoC
+   case rather than a presently-false claim.
 
 ## Design goals
 
@@ -467,6 +561,11 @@ to future rounds" below for the ones explicitly parked.
 11. Ensure that within one adapter, every dispatch entry point for a given
     capability resolves to exactly one implementation of that capability's
     logic — by construction, not by code review discipline.
+12. Check capability coverage at exactly one point in the attach/
+    registration lifecycle per binding, not separately at each runtime
+    call site (publish, subscribe, call, serve, ...). (Added in Round 2,
+    informed by evidence that today's checks run per-call-site — see
+    "Resolved design decisions.")
 
 ## Proposed conceptual model
 
@@ -528,27 +627,44 @@ The existing capability approach (shipped per
 should be retained and evaluated as a central part of the design.
 
 A declaration can require semantic features that not every transport
-supports. For example, an event channel may require user properties. MQTT 5
-supports MQTT user properties, while MQTT 3 does not provide the same
-native feature. A binding that requires this capability should therefore be
-rejected for an incompatible adapter before it is activated.
+supports. For example, an event channel may require a minimum QoS level, or
+a ZeroMQ high-water-mark guarantee. A binding that requires one of these
+capabilities should therefore be rejected for an incompatible adapter
+before it is activated — and this already works today:
+`RequireQoS`/`RequireHWM` declare the requirement, `CheckCapabilityCoverage`
+checks it, and an incompatible adapter produces a structured
+`CapabilityCoverageError` (see "Preliminary evidence" above).
 
 ```text
 Channel declaration
-  requires: UserProperties
+  requires: QoS >= 1
        |
        v
   compatibility check
        |
-       +---- MQTT 3: unsupported -> clear error
+       +---- adapter without QoS>=1: unsupported -> clear error
        |
-       +---- MQTT 5: supported   -> attach
+       +---- adapter with QoS>=1:    supported   -> attach
 ```
 
 The declaration should express the semantic requirement, not name a
-particular adapter. Prefer a protocol-neutral concept such as event user
-properties over a requirement that directly names MQTT 5, unless the API is
+particular adapter. Prefer a protocol-neutral concept such as a QoS level
+over a requirement that directly names a transport, unless the API is
 intentionally exposing a protocol-specific extension.
+
+**Known gap, not yet covered by this mechanism: MQTT user properties.**
+Doc A's original worked example used "an event channel may require user
+properties; MQTT 5 supports them, MQTT 3 does not" as its illustration of
+this model. The "Preliminary evidence" audit above found this example does
+**not** currently work as described: MQTT user properties are declared and
+validated through a separate, pre-existing `UserPropertyParam` mechanism,
+not through `CapabilityRequirement`/`CheckCapabilityCoverage` — and
+`adapters/mqtt` (v3) doesn't even have the type, so attempting the scenario
+today is a **Go compile error**, not the clean runtime
+`CapabilityCoverageError` this model promises. This is recorded here as a
+concrete, named gap: folding MQTT user properties into the sealed
+Capability mechanism (so the scenario works exactly as Doc A originally
+described) is in scope for Phase 2/4, not yet done.
 
 ### Capability requirements versus adapter configuration
 
@@ -783,7 +899,36 @@ Run both sub-tracks together, since they inform each other directly:
   per entry point. Determine whether a shared, explicit dispatch-core
   abstraction is feasible given each entry point's different starting
   point (fully-generic `T` known at compile time vs. type-erased `any`
-  recovered via reflection).
+  recovered via reflection). **Resolved (Round 2): design this per pattern
+  family, not as one universal mechanism** — events and reqreply get
+  separate consolidation designs, since the evidence shows their
+  duplication differs both in degree (3 vs. 6 confirmed call sites) and in
+  shape (reqreply's zeromq ROUTER/DEALER socket variants have no events
+  counterpart). Within each family, whether the mechanism is a shared
+  helper package or a per-adapter-local convention remains open to this
+  phase.
+
+#### New: consolidate capability-coverage checking to one point (Design goal 12)
+
+Distinct from dispatch-core consolidation above (which fixes HOW MANY
+implementations exist), this sub-goal fixes WHERE a capability-coverage
+check runs. The "Preliminary evidence" audit found checks executing
+separately at each runtime call site (once on publish, once on subscribe)
+rather than once at a single attach/registration gate — confirmed
+independently of the dispatch-core duplication count. Phase 2 must design
+a single consolidated check point per binding (likely at `Attach`/
+`BindClient`/`ServerAwareTransport.BindServer`-equivalent time, per the
+"Binding and attachment" lifecycle below), and Phase 4 must remove the
+scattered per-call-site checks once the consolidated gate exists.
+
+**Open question (flagged by critical review, must be answered before this
+goal is treated as unconditionally achievable):** does any in-scope
+capability allow a legitimate **per-call override** of a capability-relevant
+value (e.g. a caller setting QoS on an individual publish call rather than
+only at channel-declare time)? If so, a single attach-time gate cannot be
+the whole answer — it would miss an override that violates the declared
+requirement at the moment it actually matters. Phase 2 must check this
+explicitly for each capability in scope, not assume a single gate suffices.
 
 #### Essential: Observer integration and error-pattern mechanisms are in scope
 
@@ -818,10 +963,17 @@ Exercise the proposed model against representative cases drawn from both
 source drafts:
 
 1. A simple REST route bound to an HTTP adapter.
-2. An event channel without optional transport features bound to MQTT 3 and
-   MQTT 5.
-3. An event channel requiring user properties: accepted by MQTT 5 and
-   rejected by MQTT 3 with an actionable error.
+2. An event channel without optional capability requirements bound to MQTT
+   3 and MQTT 5.
+3. An event channel requiring a minimum QoS (or a ZeroMQ HWM) that an
+   incompatible adapter cannot satisfy: accepted by a compatible adapter and
+   rejected by an incompatible one with an actionable
+   `CapabilityCoverageError` — this already works today (see "Preliminary
+   evidence"), so this case is a regression test, not new ground. Separately,
+   fold MQTT user properties into the sealed Capability mechanism as the
+   named gap recorded above, and prove the ORIGINAL Doc A scenario (MQTT 5
+   accepted, MQTT 3 rejected with an actionable error, not a compile error)
+   once that gap is closed.
 4. A request/reply contract bound to two transports that genuinely support
    its required semantics.
 5. A middleware chain whose behavior remains consistent across compatible
