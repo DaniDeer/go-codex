@@ -2552,10 +2552,10 @@ Based on the audit and PoC:
   its dispatch-implementation count (still open — see "Confirmed
   asymmetry").
 
-#### Phase 4 progress: REST family (steps 1-6 of 8)
+#### Phase 4 progress: REST family (steps 1-7 of 8)
 
-**Status: steps 1-6 of the REST family's 8-step plan (above) DONE; steps
-7-8 not started.** Began with the REST family per user choice — fully
+**Status: steps 1-7 of the REST family's 8-step plan (above) DONE; step
+8 not started.** Began with the REST family per user choice — fully
 specified by Phase 2, untouched by any Phase 3 finding, lowest-risk
 starting point.
 
@@ -2716,14 +2716,64 @@ pulled back to step 6 alone (step 7 deferred — see below).
   silently depended on the previously-missing gate's absence. Full-repo
   `go build ./...`, `go test ./...` (zero failures), `go vet ./...`
   (clean), `gofmt` all clean.
-- **What remains (steps 7-8, not started)**: extending `handlerFunc`'s
-  full per-request body through `DispatchRoute` too (step 7 — deferred
-  given the `fn`/`impls`-override complexity found; a 3-parameter-
-  override construction entry point now exists, but the per-request
-  body itself still needs its own careful line-by-line reconciliation
-  before this is safe), and the cross-adapter conformance test (step 8)
-  — each deliberately deferred to its own later round, per the design's
-  own "each step independently verifiable before the next" principle.
+**Step 7 — `handlerFunc`'s full per-request body through
+`DispatchRoute`.** Deferred twice earlier given the `fn`/`impls`-override
+complexity found while scoping step 6; revisited once step 6 had already
+solved that exact problem.
+
+- **Investigation**: read `handlerFunc`'s ENTIRE per-request body
+  (nethttp) end to end and compared every mechanism against
+  `DispatchRoute`'s own reflect-based calls. Found the SAME pattern that
+  recurred throughout this whole Phase 4/SSE-family effort: every
+  apparent "different mechanism" turned out to be the SAME canonical
+  `RouteHandle` method, just reached two different ways (generic direct
+  call vs. reflection) — confirmed for: the merge mechanism
+  (`MergeFields`+`DecodeVars` vs. `DecodeMerged`/`ApplyMergeFields` —
+  `DecodeMerged` literally calls `ApplyMergeFields` internally, per
+  step 6's own earlier finding); response merge-field encoding
+  (`ResponseHeaderMergeFields`/`ResponseCookieMergeFields` vs.
+  `EncodeResponseMergeFields` — the latter's own source is exactly the
+  combined form of the former two calls); format negotiation
+  (`negotiateFormat`/`negotiateRequestFormat` vs.
+  `NegotiateFormatReflect`/`negotiateRequestFormatReflect` — same
+  underlying `format.Format[T]` methods); `primaryStatus` (literally
+  calls `primaryStatusFor` already); `tryRespondErrorPatternGeneric` vs.
+  `tryRespondErrorPattern` (both call the same
+  `RouteHandle.DispatchErrorResponse`/`rest.CallDispatchErrorResponse`
+  machinery, confirmed matching call-site count and order at every
+  validation/security/middleware/handler-error point). **No remaining
+  unexplained divergence found** — unlike the mqtt5 case-6 precedent
+  (where real behavioral differences WERE found), this generic/reflect
+  duality is confirmed to be a pure dispatch-mechanism difference, not a
+  behavior difference, consistently across the whole body.
+- **Implemented**: rewrote both packages' `handlerFunc` to the thin-
+  wrapper shape — `ValidateRouteConstructionForHandler` (unchanged from
+  step 6) → build a `writeCookie` closure → wrap `ctx` with the
+  package's own context keys (unchanged) → call
+  `restdispatch.DispatchRoute` → `applyGeneralMiddleware(inner,
+  cr.Impls)`. Deleted the now-fully-superseded generic per-request body
+  from both packages, including `tryRespondErrorPatternGeneric` and
+  `negotiateRequestFormat` (confirmed, via grep, exclusively used by
+  `handlerFunc` — safe to delete) and the generic `primaryStatus`
+  (ditto). `negotiateFormat` was KEPT (confirmed still used by
+  `sseHandlerFunc`, a separate, untouched function) — same "check every
+  helper for other callers before deleting" discipline used throughout
+  Phase 4.
+- **A real, unrelated build hazard hit during verification, not a
+  design issue**: the sandboxed environment's root filesystem ran out of
+  disk space mid-build (`go-build` cache had grown to ~9 GB) — resolved
+  with `go clean -cache`, after which the full-repo build/test completed
+  normally. Noted here only because it could otherwise look like a
+  code-change failure if not explained.
+- **Verification**: both packages' full suites pass unchanged; full-repo
+  `go build ./...`, `go test ./...` (zero failures), `go vet ./...`
+  (clean), `gofmt` all clean (one file needed a trailing `gofmt -w` after
+  the large body deletion — purely whitespace, fixed immediately).
+
+**What remains (step 8, not started)**: the cross-adapter conformance
+test exercising `ValidateRouteConstruction`/`DispatchRoute` against both
+a nethttp-shaped and chi-shaped `pathValues` — the REST family's last
+remaining step, deliberately deferred to its own round.
 
 #### Phase 4 progress: SSE family (the `serve_sse.go` follow-on audit, now closed)
 

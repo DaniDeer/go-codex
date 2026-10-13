@@ -2,8 +2,6 @@ package chi
 
 import (
 	"context"
-	"errors"
-	"io"
 	"net/http"
 	"reflect"
 	"strings"
@@ -258,7 +256,14 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 	// Phase 4 (REST family step 6): construction-time gate — mirrors
 	// adapters/nethttp's identical addition. See that package's own
 	// handlerFunc doc comment for the full rationale.
-	if _, err := restdispatch.ValidateRouteConstructionForHandler("chi", handle, fn, impls); err != nil {
+	//
+	// Phase 4 (REST family step 7): the per-request body below is now
+	// ALSO shared with buildRouteHandler via restdispatch.DispatchRoute
+	// — mirrors adapters/nethttp's identical rewrite; see that
+	// package's own handlerFunc doc comment for the full equivalence
+	// rationale.
+	cr, err := restdispatch.ValidateRouteConstructionForHandler("chi", handle, fn, impls)
+	if err != nil {
 		panic(restdispatch.ConstructionError{
 			Adapter: "chi",
 			Route:   handle.Descriptor.Method + " " + handle.Descriptor.Path,
@@ -278,476 +283,24 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 	if expectedCT == "" {
 		expectedCT = "application/json"
 	}
+	writeCookie := func(w http.ResponseWriter, name, value string, attrs rest.CookieAttributes) error {
+		return SetCookie(w, name, value, cookieOptionsFrom(attrs))
+	}
 
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sw := &statusResponseWriter{ResponseWriter: w, code: http.StatusOK}
-
 		ctx := middleware.EnsureContextFields(r.Context())
 		ctx = context.WithValue(ctx, contextKey{}, r)
 		respHeaders := make(http.Header)
 		ctx = context.WithValue(ctx, responseHeadersKey{}, respHeaders)
 		pendingCookies := make([]PendingCookie, 0)
 		ctx = context.WithValue(ctx, responseCookiesKey{}, &pendingCookies)
-		// Session-review finding (H1): resolved once here so every
-		// Category-A call site below can consult the SAME declared
-		// rest.ErrorPattern via ObserveErrorResponseFor — mirrors
-		// serve.go's own resolution exactly, closing a previously-total
-		// gap in this SEPARATE (port/stream-adapter-facing) dispatch
-		// function.
-		obs := stats.ObserverFromContext(ctx)
-
-		var req Req
-		if handle.Descriptor.RequestBody != nil {
-			ct, _, _ := strings.Cut(r.Header.Get("Content-Type"), ";")
-			ct = strings.TrimSpace(ct)
-			r.Body = http.MaxBytesReader(sw, r.Body, maxBody)
-			body, err := io.ReadAll(r.Body)
-			if err != nil {
-				var mbe *http.MaxBytesError
-				if errors.As(err, &mbe) {
-					errFn(sw, r, http.StatusRequestEntityTooLarge, rest.BodyTooLargeError{Limit: maxBody})
-				} else {
-					errFn(sw, r, http.StatusBadRequest, err)
-				}
-				return
-			}
-			var decErr error
-			if len(handle.RequestFormats) > 0 {
-				// Multi-format: negotiate by Content-Type, 415 on no match.
-				chosen, ok := negotiateRequestFormat(handle.RequestFormats, ct)
-				if !ok {
-					var supported []string
-					for _, f := range handle.RequestFormats {
-						supported = append(supported, f.ContentType())
-					}
-					errFn(sw, r, http.StatusUnsupportedMediaType,
-						rest.UnsupportedMediaTypeError{Got: ct, Supported: supported})
-					return
-				}
-				var v Req
-				v, decErr = chosen.Unmarshal(body)
-				req = v
-			} else {
-				// Single-format: enforce opts.ContentType (default application/json).
-				if ct != expectedCT {
-					errFn(sw, r, http.StatusUnsupportedMediaType,
-						rest.UnsupportedMediaTypeError{Got: ct, Supported: []string{expectedCT}})
-					return
-				}
-				req, decErr = handle.Decode(body)
-			}
-			if decErr != nil {
-				rest.ReportBodyErrors(ctx, decErr)
-				if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &decErr) {
-					return
-				}
-				errFn(sw, r, http.StatusBadRequest, decErr)
-				return
-			}
-		}
-
-		// carrier is constructed ONCE and its extracted maps reused for
-		// BOTH the validation calls below AND the merge-field building
-		// further down (docs/design/d-0006-protocol-native-capabilities.md's
-		// Phase 6 "Decision A" — eliminates the former double extraction).
-		carrier := httpCarrier{R: r}
-		queryVars := carrier.ExtractQuery()
-		headerVars := rest.NormalizeHeaderVars(carrier.ExtractHeaders(), handle.HeaderParamNames())
-		cookieVars := carrier.ExtractCookies()
-
-		if opts.MultiValueQueryParams {
-			if err := handle.ValidateQueryMulti(carrier.ExtractQueryMulti()); err != nil {
-				rest.ReportQueryErrors(ctx, err)
-				if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &err) {
-					return
-				}
-				errFn(sw, r, http.StatusBadRequest, err)
-				return
-			}
-		} else {
-			if err := handle.ValidateQuery(queryVars); err != nil {
-				rest.ReportQueryErrors(ctx, err)
-				if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &err) {
-					return
-				}
-				errFn(sw, r, http.StatusBadRequest, err)
-				return
-			}
-		}
-
-		if err := handle.ValidateCookies(cookieVars); err != nil {
-			rest.ReportCookieErrors(ctx, err)
-			if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &err) {
-				return
-			}
-			errFn(sw, r, http.StatusBadRequest, err)
-			return
-		}
-
-		if err := handle.ValidateHeaders(headerVars); err != nil {
-			rest.ReportHeaderErrors(ctx, err)
-			if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &err) {
-				return
-			}
-			errFn(sw, r, http.StatusBadRequest, err)
-			return
-		}
-
-		// Validate path parameters against their registered codecs (if any).
-		names := handle.PathParamNames()
-		if len(names) > 0 {
-			if err := handle.ValidatePathParams(pathValues(r, names)); err != nil {
-				rest.ReportPathErrors(ctx, err)
-				if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &err) {
-					return
-				}
-				errFn(sw, r, http.StatusBadRequest, err)
-				return
-			}
-		}
-
-		// Merge path/query/header/cookie values declared via
-		// rest.NewPathParam/NewRequiredQueryParam/etc. into req — additive,
-		// only runs when the route has merge-capable params (backward
-		// compatible: identical behavior to the block above when none are
-		// declared). Values were already validated by the block above;
-		// DecodeVars re-validates as a byproduct of decoding, which is
-		// harmless (same codec, same value). Reuses queryVars/headerVars/
-		// cookieVars captured above instead of re-extracting.
-		if mergeFields := handle.MergeFields(); len(mergeFields) > 0 {
-			vars := pathValues(r, names)
-			for k, v := range queryVars {
-				vars[k] = v
-			}
-			for k, v := range headerVars {
-				vars[k] = v
-			}
-			for k, v := range cookieVars {
-				vars[k] = v
-			}
-			if err := codex.DecodeVars(&req, vars, mergeFields...); err != nil {
-				rest.ReportBodyErrors(ctx, err)
-				if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &err) {
-					return
-				}
-				errFn(sw, r, http.StatusBadRequest, err)
-				return
-			}
-		}
-
-		// Enforce security: per-route requirements take precedence; nil falls back
-		// to global security declared via Builder.AddGlobalSecurity.
-		secReqs := handle.Descriptor.Security
-		if secReqs == nil {
-			secReqs = handle.GlobalSecurity
-		}
-		if len(secReqs) > 0 {
-			if credErr := rest.ValidateSecurityCredentials(credentialExtractorFor(r), secReqs, handle.SecuritySchemes); credErr != nil {
-				if secObs, ok := stats.ObserverFromContext(ctx).(stats.SecurityObserver); ok {
-					secObs.RecordSecurityRejection(handle.Descriptor.Path, route.FirstSchemeName(secReqs))
-				}
-				errFn(sw, r, http.StatusUnauthorized, credErr)
-				return
-			}
-		}
-		// Gap-1 review fix (docs/design/d-0007-declarative-middleware-layering.md's
-		// Rollout Phase A review): this ports-facing handlerFunc previously
-		// never dispatched handle.MiddlewareHandlers at all (neither the
-		// pre-Phase-A agnostic .Use(mw)-attached codec-backed middleware NOR
-		// Phase A's new bound-HandleMW style) — only serve.go's Attach path
-		// did. Mirrors serve.go's EXACT unified dispatch sequence now:
-		// legacy security Fns' grants (CollectGrantsReflect, no CheckScopes
-		// yet) -> every codec-backed MiddlewareHandler (DispatchMiddlewareHandlers,
-		// which ALSO runs any Security-shaped middleware's Fn) -> merge
-		// GrantedScopes from both sources -> ONE rest.CheckScopes call.
-		reqPtr := reflect.ValueOf(&req)
-		granted, grantErr := httpsecurity.CollectGrantsReflect(ctx, r, reqPtr, impls, secReqs)
-		if grantErr != nil {
-			// Security middleware Fn error IS ErrorPattern-eligible now
-			// (session-review finding H1, mirroring serve.go's own
-			// Category-A fix) — previously bypassed ErrorResponseFor
-			// entirely, always producing SecurityError.
-			var secErr error = rest.SecurityError{Err: grantErr}
-			if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &secErr) {
-				return
-			}
-			errFn(sw, r, http.StatusUnauthorized, secErr)
-			return
-		}
-		middlewareOuts, mwErr := rest.DispatchMiddlewareHandlers(ctx, reqPtr, handle.MiddlewareHandlers, headerVars, cookieVars, queryVars)
-		if mwErr != nil {
-			dispatchErr, _ := rest.AsMiddlewareDispatchError(mwErr)
-			if !dispatchErr.IsFnError {
-				// Middleware DecodeIn failure IS ErrorPattern-eligible
-				// (Topic 1's Category A fix), already wrapped in
-				// MiddlewareInputError by DispatchMiddlewareHandlers.
-				if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &dispatchErr.Err) {
-					return
-				}
-				errFn(sw, r, http.StatusBadRequest, dispatchErr.Err)
-				return
-			}
-			// A FAILING handler whose OWN Satisfies is non-empty (i.e. a
-			// Security-paired MiddlewareHandler) keeps Security's own,
-			// DISTINCT fallback (401, rest.SecurityError) — mirrors
-			// runSecurityMiddleware's prior, established behavior exactly,
-			// even though both now dispatch through the SAME mechanism. An
-			// ordinary (non-Security) Fn error keeps the generic fallback
-			// (400, rest.MiddlewareError).
-			fnErr := dispatchErr.Err
-			if isSecuritySatisfyingHandler(handle.MiddlewareHandlers, dispatchErr.Name) {
-				if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &fnErr) {
-					return
-				}
-				errFn(sw, r, http.StatusUnauthorized, rest.SecurityError{Err: fnErr})
-				return
-			}
-			if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &fnErr) {
-				return
-			}
-			errFn(sw, r, http.StatusBadRequest, rest.MiddlewareError{Name: dispatchErr.Name, Err: fnErr})
-			return
-		}
-		httpsecurity.MergeMiddlewareHandlerGrants(granted, satisfiesPerHandler(handle.MiddlewareHandlers), middlewareOuts)
-		if err := rest.CheckScopes(secReqs, granted); err != nil {
-			if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &err) {
-				return
-			}
-			errFn(sw, r, http.StatusUnauthorized, rest.SecurityError{Err: err})
-			return
-		}
-
-		var (
-			resp Resp
-			err  error
-		)
-
-		resp, err = fn(ctx, req)
-		if err != nil {
-			// docs/features/rest-redirects.md: a RedirectError
-			// (constructed via rest.Redirect/rest.RedirectToSSE) is
-			// recognized BEFORE ErrorPattern/ErrorStatus matching —
-			// renders status + Location, no body — mirrors
-			// adapters/nethttp's identical handlerFunc check.
-			if redirErr, ok := asRedirectError(err); ok {
-				sw.Header().Set("Location", redirErr.Location)
-				sw.WriteHeader(redirErr.Status)
-				return
-			}
-			// H1: upgraded from the bare ErrorResponseFor this branch
-			// used before to tryRespondErrorPatternGeneric/
-			// ObserveErrorResponseFor — now ALSO reports match/miss/
-			// span-tag observability, mirroring serve.go's identical
-			// handler-error site.
-			if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &err) {
-				return
-			}
-			status := http.StatusInternalServerError
-			if mappedStatus, ok := handle.ErrorStatusFor(err); ok {
-				status = mappedStatus
-			}
-			errFn(sw, r, status, err)
-			return
-		}
-
-		// Encode response header/cookie values declared via
-		// rest.NewRequiredResponseHeaderParam/etc. into the SAME
-		// respHeaders/pendingCookies values WithResponseHeaders/
-		// WithResponseCookies already write to — additive, only runs
-		// when the route has response merge-capable params. The
-		// existing ValidateResponseHeaders/ValidateResponseCookies +
-		// write loop below picks these up unchanged, exactly like the
-		// manual ResponseHeadersFromContext/WithResponseCookies escape
-		// hatch.
-		if headerFields := handle.ResponseHeaderMergeFields(); len(headerFields) > 0 {
-			// Gap-1 review fix: was codex.EncodeVars (does NOT honor
-			// omit-empty) — chi's own serve.go Attach path already calls
-			// the shared RouteHandle.EncodeResponseMergeFields, which
-			// correctly uses codex.EncodeMergeVars internally; this
-			// hand-inlined copy had silently drifted out of sync with
-			// nethttp's identical block, which already used
-			// EncodeMergeVars. Matches nethttp's handlerFunc exactly now.
-			values, encErr := codex.EncodeMergeVars(resp, headerFields...)
-			if encErr != nil {
-				rest.ReportResponseHeaderErrors(ctx, encErr)
-				if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &encErr) {
-					return
-				}
-				errFn(sw, r, http.StatusInternalServerError, encErr)
-				return
-			}
-			for k, v := range values {
-				respHeaders.Set(k, v)
-			}
-		}
-		if cookieFields := handle.ResponseCookieMergeFields(); len(cookieFields) > 0 {
-			// Gap-1 review fix — see the header block's identical note above.
-			values, encErr := codex.EncodeMergeVars(resp, cookieFields...)
-			if encErr != nil {
-				rest.ReportResponseCookieErrors(ctx, encErr)
-				if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &encErr) {
-					return
-				}
-				errFn(sw, r, http.StatusInternalServerError, encErr)
-				return
-			}
-			cookieAttrs := handle.EncodeResponseCookieAttributes(resp)
-			for k, v := range values {
-				pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v, Attrs: cookieAttrs[k]})
-			}
-		}
-
-		// Compose every middleware's OWN response header/cookie values
-		// (derived from its Out, already produced pre-handler above) —
-		// registration-order, last-applied-wins alongside the route's own
-		// values just merged above. Gap-1 review fix — mirrors serve.go's
-		// identical post-handler loop, previously missing here entirely.
-		for i, h := range handle.MiddlewareHandlers {
-			mwHeaders, mwCookies, encErr := h.EncodeOut(ctx, middlewareOuts[i])
-			if encErr != nil {
-				stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, "middleware:out", encErr)
-				if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &encErr) {
-					return
-				}
-				errFn(sw, r, http.StatusInternalServerError, encErr)
-				return
-			}
-			for k, v := range mwHeaders {
-				respHeaders.Set(k, v)
-			}
-			var mwCookieAttrs map[string]rest.CookieAttributes
-			if h.EncodeOutCookieAttrs != nil {
-				mwCookieAttrs, encErr = h.EncodeOutCookieAttrs(middlewareOuts[i])
-				if encErr != nil {
-					stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, "middleware:out", encErr)
-					if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &encErr) {
-						return
-					}
-					errFn(sw, r, http.StatusInternalServerError, encErr)
-					return
-				}
-			}
-			for k, v := range mwCookies {
-				pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v, Attrs: mwCookieAttrs[k]})
-			}
-		}
-
-		var out []byte
-		var respCT string
-		if len(handle.Formats) > 0 {
-			chosen, ok := negotiateFormat(handle.Formats, r.Header.Get("Accept"))
-			if !ok {
-				supported := make([]string, 0, len(handle.Formats))
-				for _, f := range handle.Formats {
-					if ct := f.ContentType(); ct != "" {
-						supported = append(supported, ct)
-					}
-				}
-				errFn(sw, r, http.StatusNotAcceptable,
-					rest.NotAcceptableError{Accept: r.Header.Get("Accept"), Supported: supported})
-				return
-			}
-			if chosen.IsStreamable() {
-				if valErr := chosen.Validate(resp); valErr != nil {
-					rest.ReportBodyErrors(ctx, valErr)
-					if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &valErr) {
-						return
-					}
-					errFn(sw, r, http.StatusInternalServerError, valErr)
-					return
-				}
-				respCT = chosen.ContentType()
-
-				if err := handle.ValidateResponseHeaders(rest.NormalizeHeaderVars(responseHeaderValues(respHeaders), handle.ResponseHeaderParamNames())); err != nil {
-					rest.ReportResponseHeaderErrors(ctx, err)
-					errFn(sw, r, http.StatusInternalServerError, err)
-					return
-				}
-				if err := handle.ValidateResponseCookies(responseCookieValues(pendingCookies)); err != nil {
-					rest.ReportResponseCookieErrors(ctx, err)
-					errFn(sw, r, http.StatusInternalServerError, err)
-					return
-				}
-				for key, vals := range respHeaders {
-					for _, v := range vals {
-						sw.Header().Add(key, v)
-					}
-				}
-				for i := range pendingCookies {
-					pc := &pendingCookies[i]
-					writeOpts := cookieOptionsFrom(pc.Attrs) // Codec is always nil here — cookieOptionsFrom never sets it
-					if err := SetCookie(sw, pc.Name, pc.Value, writeOpts); err != nil {
-						errFn(sw, r, http.StatusInternalServerError, err)
-						return
-					}
-				}
-				sw.Header().Set("Content-Type", respCT)
-				sw.WriteHeader(primaryStatus(handle))
-				if streamErr := chosen.MarshalTo(resp, sw); streamErr != nil {
-					rest.ReportBodyErrors(ctx, streamErr)
-				}
-				return
-			}
-			var encErr error
-			out, encErr = chosen.Marshal(resp)
-			if encErr != nil {
-				rest.ReportBodyErrors(ctx, encErr)
-				if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &encErr) {
-					return
-				}
-				errFn(sw, r, http.StatusInternalServerError, encErr)
-				return
-			}
-			respCT = chosen.ContentType()
-		} else {
-			var encErr error
-			out, encErr = handle.Encode(resp)
-			if encErr != nil {
-				rest.ReportBodyErrors(ctx, encErr)
-				if tryRespondErrorPatternGeneric(ctx, sw, handle, obs, respHeaders, &pendingCookies, &encErr) {
-					return
-				}
-				errFn(sw, r, http.StatusInternalServerError, encErr)
-				return
-			}
-			respCT = "application/json"
-		}
-
-		if err := handle.ValidateResponseHeaders(rest.NormalizeHeaderVars(responseHeaderValues(respHeaders), handle.ResponseHeaderParamNames())); err != nil {
-			rest.ReportResponseHeaderErrors(ctx, err)
-			errFn(sw, r, http.StatusInternalServerError, err)
-			return
-		}
-
-		if err := handle.ValidateResponseCookies(responseCookieValues(pendingCookies)); err != nil {
-			rest.ReportResponseCookieErrors(ctx, err)
-			errFn(sw, r, http.StatusInternalServerError, err)
-			return
-		}
-
-		for key, vals := range respHeaders {
-			for _, v := range vals {
-				sw.Header().Add(key, v)
-			}
-		}
-		for i := range pendingCookies {
-			pc := &pendingCookies[i]
-			writeOpts := cookieOptionsFrom(pc.Attrs) // Codec is always nil here — cookieOptionsFrom never sets it
-			if err := SetCookie(sw, pc.Name, pc.Value, writeOpts); err != nil {
-				errFn(sw, r, http.StatusInternalServerError, err)
-				return
-			}
-		}
-
-		status := primaryStatus(handle)
-		sw.Header().Set("Content-Type", respCT)
-		sw.WriteHeader(status)
-		_, _ = sw.Write(out) // #nosec G705 -- content is application-generated, not user-controlled
+		restdispatch.DispatchRoute(ctx, cr, sw, r, respHeaders, &pendingCookies, pathValues, writeCookie, errFn, maxBody, expectedCT, opts.MultiValueQueryParams)
 	})
 
 	// General-purpose middlewares (e.g. nethttp.Observability) wrap
 	// the WHOLE call, outermost-in, in attachment order.
-	return applyGeneralMiddleware(inner, impls).ServeHTTP
+	return applyGeneralMiddleware(inner, cr.Impls).ServeHTTP
 }
 
 // SSEHandlerFunc is the typed application handler called by SSE dispatch.
@@ -1019,15 +572,11 @@ func sseHandlerFunc[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn 
 	return applyGeneralMiddleware(inner, impls).ServeHTTP
 }
 
-func primaryStatus[Req, Resp any](handle *rest.RouteHandle[Req, Resp]) int {
-	return primaryStatusFor(handle.Descriptor)
-}
-
-// primaryStatusFor is [primaryStatus]'s non-generic-signature equivalent —
-// used by [serve], which only has a route.Route descriptor (via reflect),
-// never a concrete *rest.RouteHandle[Req, Resp]. PROMOTED (Phase 4) to
-// [restdispatch.PrimaryStatusFor] — aliased here (not copied), mirroring
-// adapters/nethttp's identical promotion.
+// primaryStatusFor is used by [serve], which only has a route.Route
+// descriptor (via reflect), never a concrete *rest.RouteHandle[Req,
+// Resp]. PROMOTED (Phase 4) to [restdispatch.PrimaryStatusFor] —
+// aliased here (not copied), mirroring adapters/nethttp's identical
+// promotion.
 func primaryStatusFor(descriptor route.Route) int {
 	return restdispatch.PrimaryStatusFor(descriptor)
 }
@@ -1074,47 +623,6 @@ func responseCookieValues(cookies []PendingCookie) map[string]string {
 	return restdispatch.ResponseCookieValues(cookies)
 }
 
-// tryRespondErrorPatternGeneric is [handlerFunc]'s own Req/Resp-generic
-// (no reflection needed, unlike serve.go's [tryRespondErrorPattern]
-// reflection-based helper of a similar name) counterpart of the
-// RECOMMENDED single call site for every Category-A failure point
-// (docs/design/d-0005-error-handling.md's Topic 1/5):
-// consults a declared [rest.ErrorPattern] via ObserveErrorResponseFor
-// (which ALSO reports match/miss/span-tag observability internally) and,
-// on a matched [rest.ErrorRespond] action, writes the typed response.
-//
-// Session-review finding (H1): handlerFunc — the dispatch behind
-// port/stream bindings (IngestAdapter, LatestAdapter, HandlerLatest,
-// PipelineHandler) — is a SEPARATE dispatch function from serve.go's
-// fully Category-A-wired one; it never received Topic 1/5's wiring even
-// though the roadmap's own North Star principle states any new failure
-// point should, by default, be wired through this SAME enforcement
-// point. This closes that gap for handlerFunc specifically (mirrors
-// adapters/nethttp's identical fix exactly).
-//
-// Returns true when the response was fully handled — the caller should
-// return immediately without invoking its own fixed-shape errFn call.
-// Returns false (unmatched, a non-Respond action, or a write failure)
-// when the caller should fall through to its EXISTING fixed-shape errFn
-// call — purely additive, never a behavior change for routes with no
-// matching declared pattern. *err is mutated in place to the pattern's
-// own applyErr (a mapFn/encode failure) or a response-write failure,
-// mirroring serve.go's identical contract — callers must use the
-// (possibly updated) *err in their own subsequent errFn call.
-// Delegates ENTIRELY to [rest.RouteHandle.DispatchErrorResponse]
-// (docs/design/d-0006-protocol-native-capabilities.md's Phase 7) —
-// this thin wrapper exists only to preserve every existing call site's
-// bool-return/*err-mutation contract unchanged; the match/encode/
-// validate/write orchestration itself now lives entirely in api/rest.
-func tryRespondErrorPatternGeneric[Req, Resp any](
-	ctx context.Context, sw *statusResponseWriter, handle *rest.RouteHandle[Req, Resp],
-	obs stats.Observer, respHeaders http.Header, pendingCookies *[]PendingCookie, err *error,
-) bool {
-	handled, updatedErr := handle.DispatchErrorResponse(ctx, obs, sw, respHeaders, *pendingCookies, *err)
-	*err = updatedErr
-	return handled
-}
-
 // WriteErrorResponse implements [rest.ErrorResponseWriter] — the ONLY
 // genuinely protocol-specific remainder of the former
 // `writeErrorPatternResponse` (docs/design/
@@ -1158,18 +666,6 @@ func negotiateFormat[T any](formats []format.Format[T], accept string) (format.F
 			if strings.TrimSpace(fmtMediaType) == mediaType {
 				return f, true
 			}
-		}
-	}
-	return format.Format[T]{}, false
-}
-
-// negotiateRequestFormat picks the format whose ContentType matches the given
-// Content-Type header value (exact match after stripping parameters).
-func negotiateRequestFormat[T any](formats []format.Format[T], contentType string) (format.Format[T], bool) {
-	for _, f := range formats {
-		fmtMediaType, _, _ := strings.Cut(f.ContentType(), ";")
-		if strings.TrimSpace(fmtMediaType) == contentType {
-			return f, true
 		}
 	}
 	return format.Format[T]{}, false
