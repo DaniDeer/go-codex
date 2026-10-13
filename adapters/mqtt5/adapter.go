@@ -616,13 +616,22 @@ func makeSubscribeMessageHandler[T any](
 			}
 		}
 
-		var spanCtx = msgCtx
+		// EnsureDispositionBox is called unconditionally, at zero cost to
+		// callers that never call SetDisposition — brings this generic
+		// escape-hatch path (subscribeWithHandle/subscribe[T]) to parity
+		// with ServeSubscribers'/caller.go's identical plumbing (Phase 3
+		// case 6's 3-way reconciliation).
+		var spanCtx = stats.EnsureDispositionBox(msgCtx)
 		if to, ok := obs.(stats.TraceObserver); ok {
-			spanCtx = to.StartSpan(msgCtx, "mqtt5.subscribe", msg.Topic)
+			spanCtx = to.StartSpan(spanCtx, "mqtt5.subscribe", msg.Topic)
 		}
 		fnErr := fn(spanCtx, value)
 		if to, ok := obs.(stats.TraceObserver); ok {
 			to.EndSpan(spanCtx, fnErr)
+		}
+		disposition := stats.ResolveDisposition(spanCtx, fnErr)
+		if dispObs, ok := obs.(stats.DispositionObserver); ok {
+			dispObs.RecordDisposition(msg.Topic, disposition)
 		}
 		if fnErr != nil {
 			stats.ReportErrors(obs, "topic_var", fnErr)

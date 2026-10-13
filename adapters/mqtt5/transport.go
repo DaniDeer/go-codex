@@ -682,14 +682,26 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 			}
 		}
 
-		spanCtx := msgCtx
+		// EnsureDispositionBox is called unconditionally, at zero cost to
+		// adapters/callers that never call SetDisposition — brings this
+		// ports.Pattern-binding reflection path to parity with
+		// ServeSubscribers'/caller.go's identical plumbing (Phase 3 case
+		// 6's 3-way reconciliation; mqtt5 has no acknowledgement concept
+		// of its own today, but the plumbing is proven end-to-end here
+		// for a future ack-capable adapter to consume without further
+		// core changes — see docs/design/d-0006-protocol-native-capabilities.md's §8).
+		spanCtx := stats.EnsureDispositionBox(msgCtx)
 		if to, ok := obs.(stats.TraceObserver); ok {
-			spanCtx = to.StartSpan(msgCtx, "mqtt5.subscribe", msg.Topic)
+			spanCtx = to.StartSpan(spanCtx, "mqtt5.subscribe", msg.Topic)
 		}
 		fnResults := fnVal.Call([]reflect.Value{reflect.ValueOf(spanCtx), valuePtr.Elem()})
 		handlerErr, _ := fnResults[0].Interface().(error)
 		if to, ok := obs.(stats.TraceObserver); ok {
 			to.EndSpan(spanCtx, handlerErr)
+		}
+		disposition := stats.ResolveDisposition(spanCtx, handlerErr)
+		if dispObs, ok := obs.(stats.DispositionObserver); ok {
+			dispObs.RecordDisposition(msg.Topic, disposition)
 		}
 		if handlerErr == nil {
 			obs.RecordSubscribe(msg.Topic, true, time.Since(start))
