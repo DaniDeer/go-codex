@@ -130,7 +130,7 @@ func TestServe_CapabilityCoverage_APIKeyCookieScheme_StillPasses(t *testing.T) {
 // value — the documented first-value-wins contract.
 func TestHttpCarrier_ExtractQuery_FirstValueWins(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/?dryRun=true&dryRun=false&tenant=acme", nil)
-	c := httpCarrier{r}
+	c := httpCarrier{R: r}
 	got := c.ExtractQuery()
 	want := map[string]string{"dryRun": "true", "tenant": "acme"}
 	if !reflect.DeepEqual(got, want) {
@@ -143,7 +143,7 @@ func TestHttpCarrier_ExtractQuery_FirstValueWins(t *testing.T) {
 // ExtractQuery's first-value-wins collapse.
 func TestHttpCarrier_ExtractQueryMulti_PreservesAllValues(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/?tags=a&tags=b&tags=c", nil)
-	c := httpCarrier{r}
+	c := httpCarrier{R: r}
 	got := c.ExtractQueryMulti()
 	want := map[string][]string{"tags": {"a", "b", "c"}}
 	if !reflect.DeepEqual(got, want) {
@@ -159,7 +159,7 @@ func TestHttpCarrier_ExtractHeaders_FirstValueWins(t *testing.T) {
 	r.Header.Add("X-Trace-Id", "trace-1")
 	r.Header.Add("X-Trace-Id", "trace-2")
 	r.Header.Set("X-Tenant", "acme")
-	c := httpCarrier{r}
+	c := httpCarrier{R: r}
 	got := c.ExtractHeaders()
 	if got["X-Trace-Id"] != "trace-1" {
 		t.Errorf("ExtractHeaders()[X-Trace-Id] = %q, want %q", got["X-Trace-Id"], "trace-1")
@@ -177,7 +177,7 @@ func TestHttpCarrier_ExtractCookies_FirstValueWins(t *testing.T) {
 	r.AddCookie(&http.Cookie{Name: "session", Value: "first"})
 	r.Header.Add("Cookie", "session=second")
 	r.AddCookie(&http.Cookie{Name: "tenant", Value: "acme"})
-	c := httpCarrier{r}
+	c := httpCarrier{R: r}
 	got := c.ExtractCookies()
 	if got["session"] != "first" {
 		t.Errorf("ExtractCookies()[session] = %q, want %q", got["session"], "first")

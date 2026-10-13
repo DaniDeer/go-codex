@@ -172,7 +172,7 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 
 		pathNames := elem.Addr().MethodByName("PathParamNames").Call(nil)[0].Interface().([]string)
 		pathVars := pathValues(r, pathNames)
-		carrier := httpCarrier{r}
+		carrier := httpCarrier{R: r}
 		queryVars := carrier.ExtractQuery()
 		headerNames := elem.Addr().MethodByName("HeaderParamNames").Call(nil)[0].Interface().([]string)
 		headerVars := rest.NormalizeHeaderVars(carrier.ExtractHeaders(), headerNames)

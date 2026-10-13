@@ -338,7 +338,7 @@ func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerF
 		// BOTH the validation calls below AND the merge-field building
 		// further down (docs/design/d-0006-protocol-native-capabilities.md's
 		// Phase 6 "Decision A" — eliminates the former double extraction).
-		carrier := httpCarrier{r}
+		carrier := httpCarrier{R: r}
 		queryVars := carrier.ExtractQuery()
 		headerVars := rest.NormalizeHeaderVars(carrier.ExtractHeaders(), handle.HeaderParamNames())
 		cookieVars := carrier.ExtractCookies()
@@ -778,7 +778,7 @@ func sseHandlerFunc[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn 
 		// closure captured further down (docs/design/
 		// d-0006-protocol-native-capabilities.md's Phase 6 "Decision A"
 		// — eliminates the former double extraction).
-		carrier := httpCarrier{r}
+		carrier := httpCarrier{R: r}
 		queryVars := carrier.ExtractQuery()
 		headerVars := rest.NormalizeHeaderVars(carrier.ExtractHeaders(), handle.HeaderParamNames())
 		cookieVars := carrier.ExtractCookies()

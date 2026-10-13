@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/DaniDeer/go-codex/adapters/internal/httpsecurity"
+	"github.com/DaniDeer/go-codex/adapters/internal/restdispatch"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/internal/middleware"
 	"github.com/DaniDeer/go-codex/internal/route"
@@ -234,69 +235,23 @@ func ServeOne[Req, Resp any](r rest.Route[Req, Resp]) (http.Handler, error) {
 // SAME pipeline `handlerFunc` runs, invoked via reflect.Value.Call since
 // Req/Resp are erased at this call site. handle is a *rest.RouteHandle[Req, Resp]
 // stored as any.
+//
+// The construction-time recovery + four-check validation (shape, security
+// coverage, capability coverage, param-kind coverage) is now shared with
+// adapters/chi via [restdispatch.ValidateRouteConstruction] (Phase 4, REST
+// family dispatch-core consolidation — previously independently
+// duplicated, confirmed byte-for-byte identical, in both packages' own
+// buildRouteHandler).
 func buildRouteHandler(handle any) (http.Handler, error) {
-	hv := reflect.ValueOf(handle)
-	if hv.Kind() != reflect.Pointer || hv.IsNil() {
-		return nil, fmt.Errorf("nethttp.serve: expected non-nil *rest.RouteHandle[Req, Resp], got %T", handle)
-	}
-	elem := hv.Elem()
-
-	descriptor, _ := elem.FieldByName("Descriptor").Interface().(route.Route)
-	secSchemes, _ := elem.FieldByName("SecuritySchemes").Interface().(map[string]rest.SecurityScheme)
-	globalSecurity, _ := elem.FieldByName("GlobalSecurity").Interface().([]route.SecurityRequirement)
-	impls, _ := elem.FieldByName("Implementations").Interface().([]rest.ServerImplementation)
-	middlewareHandlers, _ := elem.FieldByName("MiddlewareHandlers").Interface().([]rest.MiddlewareHandler)
-	handlerOptsAny := elem.FieldByName("HandlerOpts").Interface()
-	handlerFnVal := elem.FieldByName("HandlerFn")
-	if handlerFnVal.IsNil() {
-		return nil, fmt.Errorf("nethttp.serve: route %s %s has no handler (internal error — HasHandler should have skipped it)", descriptor.Method, descriptor.Path)
-	}
-	handlerFn := handlerFnVal.Elem() // unwrap the `any` field to the concrete func value
-	reqType := handlerFn.Type().In(1)
-	respType := handlerFn.Type().Out(0)
-
-	routeLabel := descriptor.Method + " " + descriptor.Path
-	if err := validateImplementationShapesReflect(routeLabel, reqType, impls); err != nil {
+	cr, err := restdispatch.ValidateRouteConstruction("nethttp", handle)
+	if err != nil {
 		return nil, err
 	}
-
-	// Coverage check: every scheme named in descriptor.Security (falling back
-	// to GlobalSecurity, same resolution rule the runtime path uses) must
-	// have a matching impls[i].Satisfies entry — catches a route that
-	// declares a security requirement via .Use() but never attaches a
-	// matching .HandleMW() implementation, EAGERLY at serve time instead of
-	// letting every request fail closed at runtime with no clear signal why.
-	coverageReqs := descriptor.Security
-	if coverageReqs == nil {
-		coverageReqs = globalSecurity
-	}
-	if err := rest.CheckCoverage(routeLabel, coverageReqs, impls, middlewareHandlers); err != nil {
-		return nil, err
-	}
-
-	// docs/design/d-0006-protocol-native-capabilities.md's Phase 3:
-	// Tier 3a — nethttp supplies NO concrete Capability values at all
-	// (HTTP has no QoS/HWM concept), so a route declaring RequireQoS/
-	// RequireHWM correctly, EAGERLY fails coverage here rather than
-	// silently ignoring the requirement — exactly the intended "adapter
-	// doesn't support this capability" outcome, not a bug.
-	requirements, _ := elem.FieldByName("Requirements").Interface().([]rest.CapabilityRequirement)
-	if err := rest.VerifyCapabilityCoverage[rest.CapabilityName](routeLabel, requirements, nil); err != nil {
-		return nil, err
-	}
-	// Tier 2 — HeaderParamNames/CookieParamNames/QueryParamNames already
-	// reflect the FULL declared set (plain-opt AND middleware-merged),
-	// scanned alongside every declared SecurityScheme's In field. This
-	// check can never fail for nethttp (httpCarrier implements all 3
-	// capability interfaces) — proves the mechanism coexists with zero
-	// behavior change for existing routes.
-	headerNames, _ := hv.MethodByName("HeaderParamNames").Call(nil)[0].Interface().([]string)
-	cookieNames, _ := hv.MethodByName("CookieParamNames").Call(nil)[0].Interface().([]string)
-	queryNames, _ := hv.MethodByName("QueryParamNames").Call(nil)[0].Interface().([]string)
-	requiredKinds := rest.RequiredParamKinds(headerNames, cookieNames, queryNames, secSchemes)
-	if err := rest.CheckParamKindCoverage("nethttp", requiredKinds, httpTransport); err != nil {
-		return nil, err
-	}
+	elem := cr.Elem
+	descriptor, secSchemes, globalSecurity := cr.Descriptor, cr.SecSchemes, cr.GlobalSecurity
+	impls, middlewareHandlers := cr.Impls, cr.MiddlewareHandlers
+	handlerOptsAny, handlerFn := cr.HandlerOptsAny, cr.HandlerFn
+	reqType, respType := cr.ReqType, cr.RespType
 
 	opts, err := resolveOptions(descriptor.Method, descriptor.Path, handlerOptsAny)
 	if err != nil {
@@ -392,7 +347,7 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 
 		pathNames := elem.Addr().MethodByName("PathParamNames").Call(nil)[0].Interface().([]string)
 		pathVars := pathValues(r, pathNames)
-		carrier := httpCarrier{r}
+		carrier := httpCarrier{R: r}
 		queryVars := carrier.ExtractQuery()
 		headerNames := elem.Addr().MethodByName("HeaderParamNames").Call(nil)[0].Interface().([]string)
 		headerVars := rest.NormalizeHeaderVars(carrier.ExtractHeaders(), headerNames)

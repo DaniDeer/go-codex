@@ -2552,6 +2552,55 @@ Based on the audit and PoC:
   its dispatch-implementation count (still open — see "Confirmed
   asymmetry").
 
+#### Phase 4 progress: REST family (steps 1-3 of 8)
+
+**Status: steps 1-3 of the REST family's 8-step plan (above) DONE; steps
+4-8 not started.** Began with the REST family per user choice — fully
+specified by Phase 2, untouched by any Phase 3 finding, lowest-risk
+starting point.
+
+- **Step 1 — new `adapters/internal/restdispatch` package**: added,
+  mirroring the `httpsecurity`/`scopesmerge` convention. Holds
+  `HTTPCarrier`/`HTTPTransport` (promoted from `adapters/nethttp`'s and
+  `adapters/chi`'s previously separate, confirmed-byte-for-byte-identical
+  definitions) and `ValidateRouteConstruction` (the four-check
+  construction-time core — shape validation, security coverage,
+  capability coverage, param-kind coverage — assembled verbatim from the
+  confirmed-identical block previously duplicated in both packages' own
+  `buildRouteHandler`, generalizing only the one genuine per-caller
+  parameter, the adapter-name string used in error messages/
+  `CheckParamKindCoverage`'s label).
+- **Step 2 — `adapters/nethttp` repointed**: `capability.go`'s
+  `httpCarrier`/`httpTransport` are now type aliases to
+  `restdispatch.HTTPCarrier`/`restdispatch.HTTPTransport` (so every
+  existing call site, including the deliberately-untouched
+  `serve_sse.go`, keeps compiling unchanged); `serve.go`'s
+  `buildRouteHandler` now calls `restdispatch.ValidateRouteConstruction("nethttp", handle)`
+  in place of its own inline recovery+checks. Verified: nethttp's full
+  test suite passes unchanged (pure extraction, zero behavior change).
+- **Step 3 — `adapters/chi` repointed** the identical way; its duplicate
+  construction block deleted. Verified: chi's full test suite passes
+  unchanged, including the Phase 3 case 5 cross-adapter consistency test.
+- **One side effect found and fixed during verification, not a design
+  change**: `go vet` flags unkeyed struct literals for a type now defined
+  in a *different* package (it didn't flag this when `httpCarrier` was
+  package-local) — the ~14 existing `httpCarrier{r}` construction call
+  sites across both packages (untouched by this consolidation otherwise)
+  were updated to the keyed form `httpCarrier{R: r}` to keep `go vet`
+  clean. Zero behavior change — purely a literal-syntax fix forced by the
+  type's new cross-package location.
+- **Verification**: full-repo `go build ./...`, `go test ./...` (zero
+  failures), `go vet ./...` (clean, including the unkeyed-literal fix
+  above), `gofmt` all clean.
+- **What remains (steps 4-8, not started)**: the per-request
+  `DispatchRoute` body extraction (step 4), wiring `handlerFunc` through
+  `ValidateRouteConstruction` with its accepted new panic-on-failed-
+  construction behavior change (step 6), the cross-adapter conformance
+  test (step 8), and the `serve_sse.go` follow-on audit (flagged, not yet
+  done) — each deliberately deferred to its own later round, per the
+  design's own "each step independently verifiable before the next"
+  principle.
+
 ### Phase 5 — Conformance tests and documentation
 
 Create reusable adapter conformance tests for common semantics:
