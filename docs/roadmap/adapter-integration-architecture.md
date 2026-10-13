@@ -214,6 +214,237 @@ capability into one of the existing ones — it composes `opts`/prefixes
 before any existing dispatch path ever runs, using each leaf's own,
 completely unchanged `Register`/`Handle` method.
 
+## Preliminary evidence: validating Doc A's model against current code
+
+**Status: targeted, non-exhaustive.** This is not the formal, all-adapter
+Phase 1 audit (Round 1 decision 4 still commits to that as a strict
+waterfall before Phase 2 design work). This is preparatory grounding of
+Doc A's conceptual claims against `api/rest`+`adapters/nethttp`,
+`api/events`+`adapters/mqtt`/`mqtt5`/`zeromq`, `api/reqreply`+
+`adapters/mqtt5`/`zeromq`, the `d-0006` capability mechanism, and the
+`ports.Pattern` seam — done specifically to inform the two decisions Round
+1 left deferred (binding type; dispatch-core mechanism) with real evidence
+instead of none.
+
+### REST (`api/rest` + `adapters/nethttp`)
+
+- **Binding role — confirmed.** `handlerFunc`/`buildRouteHandler`
+  (`adapters/nethttp/adapter.go`, `serve.go:237+`) call `RouteHandle`'s own
+  methods directly (`MergeFields`, `ValidateQuery*`, `DecodeMerged`,
+  `ErrorStatusFor`, etc.) rather than reconstructing codec/validation/merge
+  logic. The reflection-based heterogeneous-route path
+  (`buildRouteHandler`) calls the exact same method names via
+  `reflect.Value.Call`/`MethodByName`.
+- **Lifecycle — confirmed, closer than expected.** Real verbs:
+  `NewRoute` (declare) → `Route.Register`/`RegisterHandle` (register/compile)
+  → `Server.Attach(ServerTransport)` (literally named "Attach",
+  `api/rest/builder.go:3081`) → `Server.Serve` (run). The old
+  `nethttp.Serve(mux, builder)` entry point was removed once `Attach`+
+  `Serve` shipped (per `d-0002`'s Decision 6).
+- **Small interfaces, no universal Adapter — confirmed.** No
+  `Adapter{ Attach(any) error }` shape anywhere; only narrow interfaces
+  (`ServerTransport`, `ServerAwareTransport`, `ClientTransport`,
+  `HeaderCapableTransport`/`CookieCapableTransport`/`QueryCapableTransport`).
+  `adapters/nethttp` defines zero interfaces of its own — only concrete
+  generic functions/types.
+- **Exported-method audit — partially confirmed.** `RouteHandle` has ~30
+  exported methods, nearly all genuinely called by `adapters/nethttp` (not
+  accidental/unused surface) — but the surface is large, not "small." A
+  legitimate critique of granularity, not of duplication.
+
+### Events (`api/events` + `adapters/mqtt`/`mqtt5`/`zeromq`)
+
+- **Binding role — confirmed.** `ChannelHandle[T]` exposes
+  `MergeFields`/`PropertyMergeFields`/`DispatchSubscribeMiddleware`/
+  `DispatchPublishMiddleware`/`DecodeMerged` plus `Requirements`/
+  `Implementations`. `adapters/mqtt5/adapter.go`'s `subscribeWithHandle`
+  (the real dispatch path shared by the documented `Client.Attach`
+  workflow) calls these directly.
+- **Lifecycle — confirmed, including a literal "Attach."**
+  `NewChannel` (declare) → `Subscriber.Register`/`Router.Register`
+  (register/compile) → `Client.Attach(Transport)` — literally named
+  "Attach" (`api/events/builder.go:3040`), with an optional
+  `ClientAwareTransport.BindClient` hook that can reject at bind-time → run
+  via `Publish`/`Subscribe`/`ServeSubscribers`.
+- **Capability check at attach-time — partially confirmed, and Doc A's own
+  worked example is wrong.** The generic `CapabilityRequirement`/
+  `CheckCapabilityCoverage` mechanism genuinely works for QoS/Retained/
+  HWM/Conflate (declare → check → actionable `CapabilityCoverageError`).
+  But **MQTT5 User Properties — Doc A's specific worked example — are
+  explicitly *not* modeled through this mechanism.** They use a separate,
+  pre-existing `UserPropertyParam` mechanism, validated per-message inside
+  `caller.go`, not at attach time — and `adapters/mqtt` (v3) doesn't even
+  have the `UserPropertyParams` type, so declaring it against v3 would be a
+  **Go compile error**, not the clean runtime `CapabilityCoverageError`
+  Doc A describes. The adapter's own code comment
+  (`adapters/mqtt5/capability.go:100-104`) says folding User Properties
+  into the sealed Capability mechanism is "left for a future round." Doc
+  A's general model (declare → attach-time check → actionable error) is
+  correct for the capability-requirement family that already exists; its
+  chosen illustrative example is not currently accurate.
+- **Capability checks happen per-call-site, not at one unified boundary —
+  new finding.** `CheckCapabilityCoverage` is invoked separately on the
+  publish path (`adapters/mqtt5/transport.go:358`) and the subscribe path
+  (`adapters/mqtt5/caller.go:122`), not once at a single attach/registration
+  gate. A code comment at `transport.go:344-349` confirms this was a
+  **previously-missing gap on publish** (coverage existed only on subscribe
+  until fixed) — a **third** confirmed instance of this roadmap's core bug
+  class (alongside the Subscribe-middleware regression and `d-0005`'s
+  ErrorPattern H1/H2 gap).
+- **Small interfaces, no universal Adapter — confirmed.**
+
+### Reqreply (`api/reqreply` + `adapters/mqtt5`/`zeromq`)
+
+- **Binding role — partially confirmed.** `RouteHandle[Req,Resp]`
+  (`api/reqreply/route.go:1419`) carries codec + `Requirements`, read via
+  reflection by adapter transports rather than reconstructed. But
+  middleware/`Implementations` live adjacent to the handle (on the
+  route/builder), not bundled onto `RouteHandle` itself — a partial, not
+  total, match to Doc A's "binding carries everything" framing.
+- **Lifecycle — confirmed.** `Route.Register` → `RouteHandle` →
+  `Server.Attach`/`Client.Attach` (literal verbs, `api/reqreply/builder.go:462`,
+  `client.go:370`) → `Serve`/`Call`, plus escape hatches
+  `ServeWithTransport`/`CallWithTransport`.
+- **Middleware kept separate from capabilities — confirmed.** Distinct
+  calls: `CheckCoverage`/`applyGeneralServerMiddleware`/
+  `runServerSecurityMiddleware` (middleware) vs. `VerifyCapabilityCoverage`/
+  `ApplyCapabilities` (capabilities) — separate functions, separate call
+  sites.
+- **Duplication shape — refuted as "same as events," actually worse.**
+  reqreply has **six** independent capability-coverage-check call sites
+  (mqtt5 Serve + Call, zeromq plain-Serve + ROUTER-Serve + plain-Call +
+  DEALER-Call) — wider than events' confirmed 3-implementation Subscribe
+  shape, because zeromq alone has two server socket variants and two client
+  socket variants. Correlation handling itself genuinely differs by
+  protocol (MQTT5 `CorrelationData` vs. ZeroMQ frame/identity), so that
+  part is not spurious duplication — but the repeated coverage-check
+  plumbing is. Only the middleware-wrapping helper
+  (`applyGeneralServerMiddleware`) is shared across zeromq's two server
+  variants; nothing is shared across the mqtt5/zeromq boundary.
+- **Small interfaces, no universal Adapter — confirmed.**
+
+### Capability mechanism (`d-0006` / `api/events/capability.go`)
+
+- **Boolean vs. leveled capabilities — partially confirmed.** The code
+  does distinguish presence-only (`Retained`, `Conflate`) from leveled
+  (`QoS`, `HWM` via `LeveledCapability.Level()`/`MinLevel`) capabilities.
+  But it supports only a flat `>=` minimum-level comparison
+  (`CheckCapabilityCoverage`) — Doc A's richer taxonomy (exact-level,
+  weaker-form-satisfiable, transport-guaranteed vs. adapter-approximated,
+  observable-to-application vs. implementation-detail-only) is **not
+  implemented**. Any future capability-model work has a concrete, narrower
+  starting point than Doc A's full taxonomy implied.
+- **Capability requirement vs. adapter configuration distinction — held.**
+  Spot-checked `adapters/mqtt5/binding.go`/`adapter.go` option structs;
+  `Capabilities []Capability` is always a separate field, never merged with
+  mechanical config (`UserPropertyParams`, `TopicFilter`). No violation
+  found.
+- **Observer/Disposition relationship — confirmed, and distinct in time.**
+  `stats.CapabilityObserver.RecordCapabilityApplied` fires at
+  Apply-time (mechanical wire application), before the coverage check;
+  `stats.Disposition`/`DispositionObserver` fire after handler execution —
+  a third, unrelated point in the pipeline. The three signals
+  (Apply, coverage-check, Disposition) are temporally and conceptually
+  distinct today, confirming they are not already conflated (a desirable
+  property Phase 2 design should preserve).
+
+### `ports.Pattern` seam (feeds Round 1 decision 3)
+
+- **Already unified at the handle/codec layer — confirmed, stronger than
+  expected.** `ports/handle.go`'s `EventPattern` path calls the *exact
+  same* `events.NewChannel`/`ChannelHandle` constructors the direct
+  `api/events` path uses (its own doc comment: "the SAME calls a
+  hand-declared channel makes"). In `adapters/mqtt5`, both the direct
+  `api/events` path and the `ports.Pattern`/`Bind` path
+  (`SubscribeAdapter`/`PublishAdapter`) consume the identical
+  `*events.ChannelHandle[T]` and call the identical shared dispatch helpers
+  (`makeSubscribeMessageHandler`, `publishHandle`). Round 1 decision 3's
+  "unified Binding/capability type family" is, at this layer, **already
+  true in practice** for events/mqtt5 — formalizing it would mostly mean
+  naming/documenting an existing convergence, not inventing a new one.
+- **Genuine structural difference remains at the outer lifecycle layer.**
+  `ports.SourceAdapter`/`SinkAdapter`/`IOAdapter` are long-running,
+  `Activate(ctx, ...)`-based, fan-in/fan-out constructs bound via `Bind` —
+  with no counterpart in direct `api/events` usage (a single synchronous
+  `Subscribe`/`Publish` call, no adapter-interface indirection). `Pattern`
+  itself is a closed, sealed spec-declaration concern (9 known variants),
+  separate from the adapter-binding-time concern.
+  `file`/`redis`/`sql` reinforce this: their bindings implement
+  `SourceAdapter`/`SinkAdapter`/`IOAdapter` directly, not `ports.Pattern` —
+  `Pattern` is purely a declarative spec layer consumed once at
+  handle-construction time, not what adapters bind against.
+- **Net assessment:** a unified type family is mechanically plausible at
+  the handle/codec/capability layer (already de facto true for at least
+  one adapter), but must still reconcile three distinct things — Pattern
+  specs, built Handles, and the `SourceAdapter`/`SinkAdapter`/`IOAdapter`
+  lifecycle interfaces — not just two. Round 1 decision 3 ("unified")
+  stands, informed rather than contradicted by this finding.
+
+### What this means for the still-deferred Round 1 decisions
+
+- **Decision 1 (binding type: reuse handles vs. new type) — still open,
+  but now with real signal.** Every pattern family's existing registered
+  handle (`RouteHandle`, `ChannelHandle`, reqreply's `RouteHandle`) already
+  functions as a working "binding" by Doc A's own definition — adapters
+  consistently call into the handle's own methods rather than
+  reconstructing logic. The strongest argument *for* a new, smaller type
+  would be REST's ~30-method surface (large, not small) and reqreply's
+  partial case (middleware lives beside, not on, the handle) — both
+  granularity problems, not missing-capability problems. The formal Phase 1
+  audit should specifically test whether a smaller *view* over the
+  existing handles (not a full replacement type) resolves the granularity
+  complaint.
+- **Decision 2 (dispatch-core mechanism) — still open, but now
+  quantified.** The duplication problem is confirmed **worse** than
+  previously known: reqreply has 6 independent coverage-check call sites
+  (not 3), and a third real regression instance was found (capability
+  coverage missing on mqtt5's publish path until fixed) beyond the two
+  already cited (events-Subscribe middleware, `d-0005`'s ErrorPattern
+  H1/H2). This strengthens the case for *some* form of consolidation but
+  does not yet resolve shared-package vs. per-adapter-local — zeromq's
+  socket-variant duplication (ROUTER/DEALER) is a structurally different
+  shape from mqtt5/zeromq protocol divergence (MQTT `CorrelationData` vs.
+  ZMQ framing), so a single mechanical answer may not fit both.
+
+## Resolved design decisions
+
+Gaps surfaced and resolved so far, in resolution order. Each entry records
+the decision and why, so the reasoning stays visible without re-deriving it.
+Narrower gaps not yet raised remain open; see "Open design points deferred
+to future rounds" below for the ones explicitly parked.
+
+### Round 1 — foundational gaps (shape every later decision)
+
+1. **Adapter-facing binding: reuse existing handles, or a new public
+   `Binding` type?** — **Deferred, deliberately left open, no default
+   lean.** The new-type idea originates entirely from Doc A, the external,
+   outside-in analysis — Doc A's own text already treats it as an
+   unvalidated hypothesis ("First determine whether the existing handles
+   can serve this role..."). Doc B, written with hands-on codebase
+   experience, never engages with this question at all; its evidence (the
+   3-implementation Subscribe bug) is orthogonal to whether a new type
+   exists. With no hands-on evidence yet pointing either way, this decision
+   is deferred to Phase 1 audit findings, and may legitimately differ per
+   pattern family (REST vs. events vs. reqreply vs. ports).
+2. **How is "one dispatch-core per capability" enforced?** (new shared
+   helper package vs. per-adapter-local convention) — **Deferred to Phase 1
+   evidence.** Confirmed only that an audit must run first; a mechanism
+   choice before seeing the actual per-adapter entry-point shapes
+   (compile-time-generic vs. reflected) would be premature.
+3. **One Binding/capability model for `api/*` and `ports/*`, or two
+   parallel models?** — **Resolved: unified.** One Binding/capability type
+   family spans both seams. This does not reopen "Preserve the distinction
+   between API contracts and application ports" below: the two
+   *integration paths* (`Register`/`Handle` for `api/*`, the `ports.Pattern`
+   `Bind` path for `ports/*`) remain explicit in naming and documentation,
+   per that section — only the underlying Binding/capability type family is
+   shared, not the integration path's meaning.
+4. **Phase 1 execution sequencing: audit everything first, or iterate per
+   pattern family?** — **Resolved: strict waterfall.** The full audit
+   (both matrices, across every adapter package, both seams) completes
+   before any Phase 2 design work starts on any pattern family. No
+   partial/iterative overlap between Phase 1 and Phase 2.
+
 ## Design goals
 
 1. Preserve the simple, declarative user experience of `api/rest`,
@@ -458,6 +689,12 @@ precisely between the `ports.Pattern` binding path (`transport.go`) and the
 documented `Client.Attach` workflow (`caller.go`/`serve_subscribers.go`) —
 two legitimately different integration paths that nonetheless must not
 silently diverge in capability dispatch.
+
+**Resolved (Round 1, decision 3):** the eventual Binding/capability type
+family is unified across both seams — see "Resolved design decisions"
+below. That unification is at the type-family level only; it does not
+collapse `Register`/`Handle` (`api/*`) and `Bind` (`ports/*`) into one
+integration path, and does not change the guidance above.
 
 ## Design principles to preserve
 
