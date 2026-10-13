@@ -2277,6 +2277,11 @@ into a generic "capability implemented: yes/no."
 
 ### Phase 3 — Proof of concept
 
+**Status: 5 of 7 cases done (1, 2, 3, 6, 7); cases 4 and 5 deferred to a
+later round.** See "Phase 3 results" below for outcomes, including one
+significant finding that revises Phase 2's design (case 6) and one
+correction to Phase 1's own findings (surfaced while implementing case 6).
+
 Exercise the proposed model against representative cases drawn from both
 source drafts:
 
