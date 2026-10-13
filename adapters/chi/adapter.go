@@ -255,6 +255,17 @@ func applyGeneralMiddleware(h http.Handler, impls []rest.ServerImplementation) h
 // stream.go), which call it directly since Req/Resp are concrete at those
 // call sites.
 func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[Req, Resp], opts Options, impls ...rest.ServerImplementation) http.HandlerFunc {
+	// Phase 4 (REST family step 6): construction-time gate — mirrors
+	// adapters/nethttp's identical addition. See that package's own
+	// handlerFunc doc comment for the full rationale.
+	if _, err := restdispatch.ValidateRouteConstructionForHandler("chi", handle, fn, impls); err != nil {
+		panic(restdispatch.ConstructionError{
+			Adapter: "chi",
+			Route:   handle.Descriptor.Method + " " + handle.Descriptor.Path,
+			Err:     err,
+		})
+	}
+
 	errFn := opts.ErrorHandler
 	if errFn == nil {
 		errFn = defaultErrorHandler

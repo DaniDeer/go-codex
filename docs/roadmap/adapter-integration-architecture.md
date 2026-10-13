@@ -2552,10 +2552,10 @@ Based on the audit and PoC:
   its dispatch-implementation count (still open — see "Confirmed
   asymmetry").
 
-#### Phase 4 progress: REST family (steps 1-5 of 8)
+#### Phase 4 progress: REST family (steps 1-6 of 8)
 
-**Status: steps 1-5 of the REST family's 8-step plan (above) DONE; steps
-6-8 not started.** Began with the REST family per user choice — fully
+**Status: steps 1-6 of the REST family's 8-step plan (above) DONE; steps
+7-8 not started.** Began with the REST family per user choice — fully
 specified by Phase 2, untouched by any Phase 3 finding, lowest-risk
 starting point.
 
@@ -2665,14 +2665,66 @@ unchanged.
 
 - **Verification (steps 4-5)**: full-repo `go build ./...`, `go test ./...`
   (zero failures), `go vet ./...` (clean), `gofmt` all clean.
-- **What remains (steps 6-8, not started)**: wiring `handlerFunc` through
-  `ValidateRouteConstruction` with its accepted new panic-on-failed-
-  construction behavior change (step 6), extending `handlerFunc` through
-  `DispatchRoute` too (step 7, stretch goal), the cross-adapter
-  conformance test (step 8), and the `serve_sse.go` follow-on audit
-  (flagged, not yet done) — each deliberately deferred to its own later
-  round, per the design's own "each step independently verifiable before
-  the next" principle.
+
+**Step 6 — `handlerFunc`'s construction-time gate.** User initially chose
+to scope this round as steps 6+7 together; designing step 7 (routing
+`handlerFunc`'s full per-request body through `DispatchRoute`) surfaced
+real complexity beyond the "stretch goal" framing, so the round was
+pulled back to step 6 alone (step 7 deferred — see below).
+
+- **Finding that shaped the design**: `handlerFunc`'s `fn` and `impls`
+  are NOT read from `handle.HandlerFn`/`handle.Implementations` —
+  confirmed via exhaustive grep that every real call site
+  (`IngestAdapter`/`HandlerLatest`/`PipelineHandler`/etc. in
+  `binding.go`/`stream.go`) never calls `handle.WithHandler(fn)`, so
+  `handle.HandlerFn` is unset; `fn`/`impls` arrive as `handlerFunc`'s own
+  parameters instead. Calling the existing `ValidateRouteConstruction`
+  as-is would have hit the "has no handler" error branch and panicked on
+  literally every route — a guaranteed regression, not an edge case.
+  Everything else `ConstructedRoute` carries (`MiddlewareHandlers`,
+  `Requirements`, etc.) IS read directly from `handle` in both call
+  shapes — only `fn`/`impls` diverge.
+- **Resolved design**: added
+  `restdispatch.ValidateRouteConstructionForHandler(adapterName, handle,
+  fn, impls)` — shares the existing four-check core (refactored into a
+  private `validateRouteConstruction` both entry points call) but
+  resolves `HandlerFn`/`Impls` from the explicitly-supplied `fn`/`impls`
+  parameters instead of the handle's own fields. The existing
+  `ValidateRouteConstruction(adapterName, handle)` is unchanged for
+  `buildRouteHandler`.
+- **Added `restdispatch.ConstructionError`** — a named type (`Adapter`,
+  `Route`, `Err` fields, with `Error()`/`Unwrap()`) used ONLY at the
+  panic call site in each package's `handlerFunc` — not baked into
+  `validateRouteConstruction`'s own returned errors, which stay the raw
+  underlying error (preserving `buildRouteHandler`'s existing
+  error-return contract/tests exactly, since `ValidateRouteConstruction`
+  itself is unchanged for that path).
+- **Both packages' `handlerFunc`** now call
+  `ValidateRouteConstructionForHandler` at the top; on error,
+  `panic(restdispatch.ConstructionError{...})` — the per-request body
+  below is otherwise **completely untouched** this round, confirming
+  this was purely an additive gate, not a dispatch rewrite.
+- **Verification**: 2 new regression tests per package (4 total) —
+  `TestHandlerFunc_MissingSecurityCoverage_Panics` (a route declaring a
+  security scheme via `.Use()` but never attaching an implementation now
+  panics with `ConstructionError` wrapping the same
+  `rest.MissingSecurityMiddlewareError` `buildRouteHandler` would have
+  returned as a plain error) and `TestHandlerFunc_ValidConstruction_DoesNotPanic`
+  (a companion guard: the gate is additive, a valid route must not
+  panic). Both packages' full suites re-verified passing unchanged
+  BEFORE these new tests were added, confirming no existing test
+  silently depended on the previously-missing gate's absence. Full-repo
+  `go build ./...`, `go test ./...` (zero failures), `go vet ./...`
+  (clean), `gofmt` all clean.
+- **What remains (steps 7-8, not started)**: extending `handlerFunc`'s
+  full per-request body through `DispatchRoute` too (step 7 — deferred
+  given the `fn`/`impls`-override complexity found; a 3-parameter-
+  override construction entry point now exists, but the per-request
+  body itself still needs its own careful line-by-line reconciliation
+  before this is safe), the cross-adapter conformance test (step 8), and
+  the `serve_sse.go` follow-on audit (flagged, not yet done) — each
+  deliberately deferred to its own later round, per the design's own
+  "each step independently verifiable before the next" principle.
 
 ### Phase 5 — Conformance tests and documentation
 

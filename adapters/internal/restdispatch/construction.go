@@ -56,23 +56,75 @@ type ConstructedRoute struct {
 // messages and the [rest.CheckParamKindCoverage] call ("nethttp" or
 // "chi") — the ONE genuine per-caller parameter this logic ever needed.
 func ValidateRouteConstruction(adapterName string, handle any) (ConstructedRoute, error) {
-	hv := reflect.ValueOf(handle)
-	if hv.Kind() != reflect.Pointer || hv.IsNil() {
-		return ConstructedRoute{}, fmt.Errorf("%s.serve: expected non-nil *rest.RouteHandle[Req, Resp], got %T", adapterName, handle)
+	hv, elem, err := recoverHandleValue(adapterName, handle)
+	if err != nil {
+		return ConstructedRoute{}, err
 	}
-	elem := hv.Elem()
-
 	descriptor, _ := elem.FieldByName("Descriptor").Interface().(route.Route)
-	secSchemes, _ := elem.FieldByName("SecuritySchemes").Interface().(map[string]rest.SecurityScheme)
-	globalSecurity, _ := elem.FieldByName("GlobalSecurity").Interface().([]route.SecurityRequirement)
 	impls, _ := elem.FieldByName("Implementations").Interface().([]rest.ServerImplementation)
-	middlewareHandlers, _ := elem.FieldByName("MiddlewareHandlers").Interface().([]rest.MiddlewareHandler)
-	handlerOptsAny := elem.FieldByName("HandlerOpts").Interface()
 	handlerFnVal := elem.FieldByName("HandlerFn")
 	if handlerFnVal.IsNil() {
 		return ConstructedRoute{}, fmt.Errorf("%s.serve: route %s %s has no handler (internal error — HasHandler should have skipped it)", adapterName, descriptor.Method, descriptor.Path)
 	}
 	handlerFn := handlerFnVal.Elem() // unwrap the `any` field to the concrete func value
+	return validateRouteConstruction(adapterName, hv, elem, handlerFn, impls)
+}
+
+// ValidateRouteConstructionForHandler is [ValidateRouteConstruction]'s
+// sibling for call shapes where the handler Fn and attached
+// implementations are NOT read from handle itself — confirmed (Phase 4,
+// REST family step 6) to be the case for adapters/nethttp's/
+// adapters/chi's own `handlerFunc` (the generic, port/stream-binding
+// dispatch function): its callers (IngestAdapter/HandlerLatest/
+// PipelineHandler/etc.) never call handle.WithHandler(fn), so
+// handle.HandlerFn is unset, and handlerFunc's entire body reads ONLY
+// its own call-time variadic `impls` parameter, never
+// handle.Implementations. fn and impls are therefore supplied
+// EXPLICITLY here instead of recovered from handle — every other field
+// (MiddlewareHandlers, Requirements, SecuritySchemes, etc.) is still
+// recovered from handle exactly as [ValidateRouteConstruction] does,
+// confirmed via exhaustive grep to be read directly from handle in both
+// call shapes.
+func ValidateRouteConstructionForHandler(adapterName string, handle any, fn any, impls []rest.ServerImplementation) (ConstructedRoute, error) {
+	hv, elem, err := recoverHandleValue(adapterName, handle)
+	if err != nil {
+		return ConstructedRoute{}, err
+	}
+	handlerFn := reflect.ValueOf(fn)
+	return validateRouteConstruction(adapterName, hv, elem, handlerFn, impls)
+}
+
+// recoverHandleValue type-checks handle (expected *rest.RouteHandle[Req,
+// Resp] stored as any) and returns its reflect.Value pointer/Elem pair.
+func recoverHandleValue(adapterName string, handle any) (hv, elem reflect.Value, err error) {
+	hv = reflect.ValueOf(handle)
+	if hv.Kind() != reflect.Pointer || hv.IsNil() {
+		return reflect.Value{}, reflect.Value{}, fmt.Errorf("%s.serve: expected non-nil *rest.RouteHandle[Req, Resp], got %T", adapterName, handle)
+	}
+	return hv, hv.Elem(), nil
+}
+
+// validateRouteConstruction is the shared core both
+// [ValidateRouteConstruction] and [ValidateRouteConstructionForHandler]
+// delegate to, once each has resolved handlerFn/impls from its own
+// call shape — the four Tier construction-time checks (shape validation,
+// security coverage, capability coverage, param-kind coverage), EAGERLY,
+// failing loudly (a returned error, never a silent pass-through) exactly
+// once per route, at construction time rather than letting a gap
+// surface only at runtime. This is the shared, byte-for-byte-identical
+// logic PREVIOUSLY independently duplicated in adapters/nethttp's and
+// adapters/chi's own buildRouteHandler (confirmed via direct diff during
+// Phase 4's REST family dispatch-core consolidation — see
+// docs/roadmap/adapter-integration-architecture.md's "REST family
+// dispatch-core consolidation design"). adapterName labels error
+// messages and the [rest.CheckParamKindCoverage] call ("nethttp" or
+// "chi").
+func validateRouteConstruction(adapterName string, hv, elem, handlerFn reflect.Value, impls []rest.ServerImplementation) (ConstructedRoute, error) {
+	descriptor, _ := elem.FieldByName("Descriptor").Interface().(route.Route)
+	secSchemes, _ := elem.FieldByName("SecuritySchemes").Interface().(map[string]rest.SecurityScheme)
+	globalSecurity, _ := elem.FieldByName("GlobalSecurity").Interface().([]route.SecurityRequirement)
+	middlewareHandlers, _ := elem.FieldByName("MiddlewareHandlers").Interface().([]rest.MiddlewareHandler)
+	handlerOptsAny := elem.FieldByName("HandlerOpts").Interface()
 	reqType := handlerFn.Type().In(1)
 	respType := handlerFn.Type().Out(0)
 
@@ -134,6 +186,35 @@ func ValidateRouteConstruction(adapterName string, handle any) (ConstructedRoute
 		ReqType:            reqType,
 		RespType:           respType,
 	}, nil
+}
+
+// ConstructionError wraps a failed construction-time check (shape
+// validation, security coverage, capability coverage, or param-kind
+// coverage) for callers whose call shape has no error-return path to
+// surface it through normally — currently only
+// adapters/nethttp's/adapters/chi's own `handlerFunc`, whose public
+// signature (used directly by IngestAdapter/HandlerLatest/
+// PipelineHandler/etc.) returns only http.Handler, with no error
+// alongside it, and backward compatibility is explicitly a non-goal of
+// this roadmap (see docs/roadmap/adapter-integration-architecture.md's
+// "Constraint: backward compatibility is not a goal"). Such a caller
+// panics with this type (never a bare panic(err)) — a route that
+// previously silently served with an unenforced coverage gap now fails
+// loudly and immediately at construction/Activate time instead,
+// mirroring buildRouteHandler's "fail loudly, never silently" principle
+// via the only mechanism available at this call shape.
+type ConstructionError struct {
+	Adapter string
+	Route   string
+	Err     error
+}
+
+func (e ConstructionError) Error() string {
+	return fmt.Sprintf("%s: route construction failed for %s: %v", e.Adapter, e.Route, e.Err)
+}
+
+func (e ConstructionError) Unwrap() error {
+	return e.Err
 }
 
 // validateImplementationShapesReflect checks every attached

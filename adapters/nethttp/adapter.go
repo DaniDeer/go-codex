@@ -166,6 +166,29 @@ func applyGeneralMiddleware(h http.Handler, impls []rest.ServerImplementation) h
 // Pass a zero-value [Options]{} for default behaviour (JSON error envelope, 1 MiB
 // body limit, application/json Content-Type check, no-op observer).
 func handlerFunc[Req, Resp any](handle *rest.RouteHandle[Req, Resp], fn HandlerFunc[Req, Resp], opts Options, impls ...rest.ServerImplementation) http.Handler {
+	// Phase 4 (REST family step 6): construction-time gate — closes the
+	// confirmed gap (Phase 1 audit) that this port/stream-binding
+	// dispatch function never ran shape validation/security coverage/
+	// capability coverage/param-kind coverage, unlike serve.go's
+	// buildRouteHandler. handle.HandlerFn/handle.Implementations are
+	// NOT used here — fn/impls are this function's OWN call-time
+	// parameters (confirmed: no caller ever calls handle.WithHandler) —
+	// so ValidateRouteConstructionForHandler resolves them explicitly
+	// instead of reading the handle's own (unset) fields. No
+	// error-return path exists on this function's signature to surface
+	// a failure through normally, and backward compatibility is
+	// explicitly a non-goal of this roadmap — a failed check PANICS with
+	// a named restdispatch.ConstructionError (never a bare panic(err)),
+	// mirroring buildRouteHandler's "fail loudly, never silently"
+	// principle via the only mechanism available at this call shape.
+	if _, err := restdispatch.ValidateRouteConstructionForHandler("nethttp", handle, fn, impls); err != nil {
+		panic(restdispatch.ConstructionError{
+			Adapter: "nethttp",
+			Route:   handle.Descriptor.Method + " " + handle.Descriptor.Path,
+			Err:     err,
+		})
+	}
+
 	errFn := opts.ErrorHandler
 	if errFn == nil {
 		errFn = defaultErrorHandler
