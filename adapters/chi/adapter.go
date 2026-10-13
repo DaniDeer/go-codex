@@ -1042,6 +1042,12 @@ func (rw *statusResponseWriter) WriteHeader(code int) {
 	rw.ResponseWriter.WriteHeader(code)
 }
 
+// StatusCode implements [restdispatch.ResponseWriter] — mirrors
+// adapters/nethttp's identical addition.
+func (rw *statusResponseWriter) StatusCode() int {
+	return rw.code
+}
+
 // defaultErrorHandler is PROMOTED (Phase 4) to
 // [restdispatch.DefaultErrorHandler] — aliased here (not copied),
 // mirroring adapters/nethttp's identical promotion.

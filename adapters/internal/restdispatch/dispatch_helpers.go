@@ -34,6 +34,12 @@ const MaxRequestBodyBytes = 1 << 20
 type ResponseWriter interface {
 	http.ResponseWriter
 	rest.ErrorResponseWriter
+	// StatusCode returns the status code written so far (via
+	// WriteHeader), or http.StatusOK if none has been written yet —
+	// needed by [DispatchSSERoute]'s "has a response already been
+	// committed" check (SSE's streaming body may have already written
+	// data before a late handler error occurs).
+	StatusCode() int
 }
 
 // errorBody is the JSON error envelope used by [DefaultErrorHandler].

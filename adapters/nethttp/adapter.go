@@ -979,6 +979,14 @@ func (rw *statusResponseWriter) WriteHeader(code int) {
 	rw.ResponseWriter.WriteHeader(code)
 }
 
+// StatusCode implements [restdispatch.ResponseWriter] — exposes the
+// captured status code (added for Phase 4's SSE family consolidation,
+// restdispatch.DispatchSSERoute's own "has a response already been
+// committed" check).
+func (rw *statusResponseWriter) StatusCode() int {
+	return rw.code
+}
+
 // defaultErrorHandler is PROMOTED (Phase 4, REST family dispatch-core
 // consolidation) to [restdispatch.DefaultErrorHandler] — aliased here
 // (not copied) so every existing call site in this package (handlerFunc,

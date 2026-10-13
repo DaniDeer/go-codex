@@ -2721,10 +2721,58 @@ pulled back to step 6 alone (step 7 deferred — see below).
   given the `fn`/`impls`-override complexity found; a 3-parameter-
   override construction entry point now exists, but the per-request
   body itself still needs its own careful line-by-line reconciliation
-  before this is safe), the cross-adapter conformance test (step 8), and
-  the `serve_sse.go` follow-on audit (flagged, not yet done) — each
-  deliberately deferred to its own later round, per the design's own
-  "each step independently verifiable before the next" principle.
+  before this is safe), and the cross-adapter conformance test (step 8)
+  — each deliberately deferred to its own later round, per the design's
+  own "each step independently verifiable before the next" principle.
+
+#### Phase 4 progress: SSE family (the `serve_sse.go` follow-on audit, now closed)
+
+**Status: DONE.** The `serve_sse.go` follow-on audit (flagged throughout
+Phase 4 but never investigated) was finally carried out, confirmed the
+suspected duplication was real, and the consolidation was implemented in
+the same round, following the REST family's already-proven pattern.
+
+- **Audit finding**: diffed (package-name/comment-normalized) every
+  function in both packages' `serve_sse.go` — `writeSSEData` confirmed
+  byte-for-byte identical; `buildSSERouteHandler`'s ENTIRE body
+  (construction-time checks AND the per-event streaming dispatch)
+  confirmed essentially identical too, the exact same shape of gap the
+  REST family's `buildRouteHandler` already had.
+- **Key simplification found while designing the fix**: `rest.SSERouteHandle[Req, Event]`'s
+  field names/types (`Descriptor`, `SecuritySchemes`, `GlobalSecurity`,
+  `Implementations`, `MiddlewareHandlers`, `HandlerOpts`, `HandlerFn`,
+  `Requirements`) match `rest.RouteHandle[Req, Resp]`'s exactly — so
+  **no new construction-time entry point was needed at all**: the
+  existing `restdispatch.ValidateRouteConstruction` is reused directly
+  for SSE routes too. Only `ConstructedRoute.RespType`'s derivation
+  means something different for SSE's `func(ctx, Req, send func(Event)
+  error) error` handler shape (captures the bare `error` type instead of
+  a real Resp type) — harmless, since the new SSE dispatch function
+  never reads `cr.RespType`.
+- **One small additive capability needed**: the per-event body reads
+  back the response's already-committed status code
+  (`sw.code == http.StatusOK`, deciding whether a late handler error can
+  still produce a normal error response). Added a `StatusCode() int`
+  method to both packages' `statusResponseWriter` and to
+  `restdispatch.ResponseWriter`'s interface.
+- **Implemented**: promoted `writeSSEData` into `restdispatch` (aliased
+  in both packages); added `restdispatch.DispatchSSERoute` — the full
+  per-event streaming pipeline, reusing every helper already shared from
+  the REST family's steps 1-6 (`CallErr`, `CredentialExtractorFor`,
+  `IsSecuritySatisfyingHandler`/`SatisfiesPerHandler`,
+  `NegotiateFormatReflect`, `ResponseHeaderValues`/`ResponseCookieValues`,
+  `AsRedirectError`, `HTTPCarrier`) — confirming Phase 4's investment in
+  the REST family's shared helpers pays off again here, not just once.
+  Confirmed (and preserved) that SSE has NO `rest.ErrorPattern` dispatch
+  at all, unlike `DispatchRoute` — a pre-existing, separate gap this
+  consolidation does not silently add. Rewrote both packages'
+  `buildSSERouteHandler` to the thin-wrapper shape: construction via the
+  existing `ValidateRouteConstruction`, then `DispatchSSERoute`.
+- **Verification**: both packages' full suites pass unchanged; full-repo
+  `go build ./...`, `go test ./...` (zero failures), `go vet ./...`
+  (clean), `gofmt` all clean.
+- **What remains**: an SSE-specific conformance test (mirroring the REST
+  family's still-pending step 8) is a natural follow-on, not yet done.
 
 ### Phase 5 — Conformance tests and documentation
 

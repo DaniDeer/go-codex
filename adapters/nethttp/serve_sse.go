@@ -1,44 +1,19 @@
 package nethttp
 
 import (
-	"bytes"
 	"context"
-	"fmt"
-	"io"
 	"net/http"
-	"reflect"
-	"strings"
 
-	"github.com/DaniDeer/go-codex/adapters/internal/httpsecurity"
 	"github.com/DaniDeer/go-codex/adapters/internal/restdispatch"
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/internal/middleware"
-	"github.com/DaniDeer/go-codex/internal/route"
-	"github.com/DaniDeer/go-codex/stats"
 )
 
-// writeSSEData writes data as one or more spec-compliant SSE "data:"
-// lines to w, terminated by the blank line that dispatches the event.
-// Per the WHATWG Server-Sent Events spec, EVERY line of a multi-line
-// data value must carry its OWN "data: " prefix — a single "data: "
-// prefix in front of a raw multi-line payload (as an earlier version of
-// this file did) is NOT spec-compliant: any standards-conformant reader
-// (a browser's native EventSource, or this package's own
-// [CallSSEAdapter]/[rest.Client.Consume]) would misread everything after
-// the first embedded newline as un-prefixed noise, silently losing it. This
-// matters for any format whose encoding embeds raw newlines — YAML's
-// block style, or an [adapters/templ.Format] HTML fragment — not just
-// contrived multi-line test payloads.
-func writeSSEData(w io.Writer, data []byte) (int, error) {
-	var buf bytes.Buffer
-	for _, line := range bytes.Split(data, []byte("\n")) {
-		buf.WriteString("data: ")
-		buf.Write(line)
-		buf.WriteByte('\n')
-	}
-	buf.WriteByte('\n')
-	return w.Write(buf.Bytes())
-}
+// writeSSEData is PROMOTED (Phase 4, SSE family dispatch-core
+// consolidation) to [restdispatch.WriteSSEData] — aliased here (not
+// copied) so every existing call site in this package (including
+// adapter.go's sseHandlerFunc) keeps compiling and behaving identically.
+var writeSSEData = restdispatch.WriteSSEData
 
 // serveSSE walks every [rest.SSERoute] registered into b (via
 // [rest.SSERoute.Register]/[rest.SSERoute.RegisterHandle]) and wires each
@@ -97,72 +72,21 @@ func serveSSE(mux *http.ServeMux, b *rest.Server) error {
 // doc comment for the shared reflect-based rationale. handle is a
 // *rest.SSERouteHandle[Req, Event] stored as any.
 func buildSSERouteHandler(handle any) (http.Handler, error) {
-	hv := reflect.ValueOf(handle)
-	if hv.Kind() != reflect.Pointer || hv.IsNil() {
-		return nil, fmt.Errorf("nethttp.serveSSE: expected non-nil *rest.SSERouteHandle[Req, Event], got %T", handle)
-	}
-	elem := hv.Elem()
-
-	descriptor, _ := elem.FieldByName("Descriptor").Interface().(route.Route)
-	secSchemes, _ := elem.FieldByName("SecuritySchemes").Interface().(map[string]rest.SecurityScheme)
-	globalSecurity, _ := elem.FieldByName("GlobalSecurity").Interface().([]route.SecurityRequirement)
-	impls, _ := elem.FieldByName("Implementations").Interface().([]rest.ServerImplementation)
-	middlewareHandlers, _ := elem.FieldByName("MiddlewareHandlers").Interface().([]rest.MiddlewareHandler)
-	handlerOptsAny := elem.FieldByName("HandlerOpts").Interface()
-	handlerFnVal := elem.FieldByName("HandlerFn")
-	if handlerFnVal.IsNil() {
-		return nil, fmt.Errorf("nethttp.serveSSE: route %s %s has no handler (internal error — HasHandler should have skipped it)", descriptor.Method, descriptor.Path)
-	}
-	handlerFn := handlerFnVal.Elem() // unwrap the `any` field to the concrete func value
-	reqType := handlerFn.Type().In(1)
-	eventType := handlerFn.Type().In(2).In(0) // send func(Event) error's Event param
-
-	routeLabel := descriptor.Method + " " + descriptor.Path
-	if err := validateImplementationShapesReflect(routeLabel, reqType, impls); err != nil {
+	cr, err := restdispatch.ValidateRouteConstruction("nethttp", handle)
+	if err != nil {
 		return nil, err
 	}
 
-	// Coverage check — see [buildRouteHandler]'s identical block for the
-	// full rationale (SSE routes need this exactly as much as regular ones).
-	coverageReqs := descriptor.Security
-	if coverageReqs == nil {
-		coverageReqs = globalSecurity
-	}
-	if err := rest.CheckCoverage(routeLabel, coverageReqs, impls, middlewareHandlers); err != nil {
-		return nil, err
-	}
-
-	// Tier 3a — mirrors [buildRouteHandler]'s identical block (this check
-	// was previously MISSING entirely for SSE routes: [rest.SSERouteHandle]
-	// had no Requirements field at all, so a [rest.CapabilityRequirement]
-	// declared via [rest.NewSSERoute] was silently accumulated into the
-	// OpenAPI spec's x-codex-capabilities vendor extension but NEVER
-	// enforced at Attach time — a confirmed gap, now closed).
-	requirements, _ := elem.FieldByName("Requirements").Interface().([]rest.CapabilityRequirement)
-	if err := rest.VerifyCapabilityCoverage[rest.CapabilityName](routeLabel, requirements, nil); err != nil {
-		return nil, err
-	}
-	// Tier 2 — mirrors [buildRouteHandler]'s identical block
-	// (docs/design/d-0006-protocol-native-capabilities.md's Phase 6a —
-	// this check was previously MISSING entirely for SSE routes, a real
-	// gap for any future SSE-capable adapter that doesn't support one of
-	// these kinds; harmless for nethttp today since httpCarrier
-	// implements all 3 capability interfaces).
-	headerNames, _ := hv.MethodByName("HeaderParamNames").Call(nil)[0].Interface().([]string)
-	cookieNames, _ := hv.MethodByName("CookieParamNames").Call(nil)[0].Interface().([]string)
-	queryNames, _ := hv.MethodByName("QueryParamNames").Call(nil)[0].Interface().([]string)
-	requiredKinds := rest.RequiredParamKinds(headerNames, cookieNames, queryNames, secSchemes)
-	if err := rest.CheckParamKindCoverage("nethttp", requiredKinds, httpTransport); err != nil {
-		return nil, err
-	}
-
-	opts, err := resolveOptions(descriptor.Method, descriptor.Path, handlerOptsAny)
+	opts, err := resolveOptions(cr.Descriptor.Method, cr.Descriptor.Path, cr.HandlerOptsAny)
 	if err != nil {
 		return nil, err
 	}
 	errFn := opts.ErrorHandler
 	if errFn == nil {
 		errFn = defaultErrorHandler
+	}
+	writeCookie := func(w http.ResponseWriter, name, value string, attrs rest.CookieAttributes) error {
+		return SetCookie(w, name, value, cookieOptionsFrom(attrs))
 	}
 
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -173,293 +97,10 @@ func buildSSERouteHandler(handle any) (http.Handler, error) {
 		ctx = context.WithValue(ctx, responseHeadersKey{}, responseHeaders)
 		pendingCookies := make([]PendingCookie, 0)
 		ctx = context.WithValue(ctx, responseCookiesKey{}, &pendingCookies)
-
-		pathNames := elem.Addr().MethodByName("PathParamNames").Call(nil)[0].Interface().([]string)
-		pathVars := pathValues(r, pathNames)
-		carrier := httpCarrier{R: r}
-		queryVars := carrier.ExtractQuery()
-		headerNames := elem.Addr().MethodByName("HeaderParamNames").Call(nil)[0].Interface().([]string)
-		headerVars := rest.NormalizeHeaderVars(carrier.ExtractHeaders(), headerNames)
-		cookieVars := carrier.ExtractCookies()
-
-		if opts.MultiValueQueryParams {
-			if errV := callErr(elem.Addr(), "ValidateQueryMulti", reflect.ValueOf(carrier.ExtractQueryMulti())); errV != nil {
-				rest.ReportQueryErrors(ctx, errV)
-				errFn(sw, r, http.StatusBadRequest, errV)
-				return
-			}
-		} else if errV := callErr(elem.Addr(), "ValidateQuery", reflect.ValueOf(queryVars)); errV != nil {
-			rest.ReportQueryErrors(ctx, errV)
-			errFn(sw, r, http.StatusBadRequest, errV)
-			return
-		}
-		if errV := callErr(elem.Addr(), "ValidateCookies", reflect.ValueOf(cookieVars)); errV != nil {
-			rest.ReportCookieErrors(ctx, errV)
-			errFn(sw, r, http.StatusBadRequest, errV)
-			return
-		}
-		if errV := callErr(elem.Addr(), "ValidateHeaders", reflect.ValueOf(headerVars)); errV != nil {
-			rest.ReportHeaderErrors(ctx, errV)
-			errFn(sw, r, http.StatusBadRequest, errV)
-			return
-		}
-		if len(pathNames) > 0 {
-			if errV := callErr(elem.Addr(), "ValidatePathParams", reflect.ValueOf(pathVars)); errV != nil {
-				rest.ReportPathErrors(ctx, errV)
-				errFn(sw, r, http.StatusBadRequest, errV)
-				return
-			}
-		}
-
-		reqPtr := reflect.New(reqType) // zero-value Req — SSE (GET) routes never decode a body
-
-		secReqs := descriptor.Security
-		if secReqs == nil {
-			secReqs = globalSecurity
-		}
-		if len(secReqs) > 0 {
-			if credErr := rest.ValidateSecurityCredentials(credentialExtractorFor(r), secReqs, secSchemes); credErr != nil {
-				if secObs, ok := stats.ObserverFromContext(ctx).(stats.SecurityObserver); ok {
-					secObs.RecordSecurityRejection(descriptor.Path, route.FirstSchemeName(secReqs))
-				}
-				errFn(sw, r, http.StatusUnauthorized, credErr)
-				return
-			}
-		}
-		// docs/design/d-0007-declarative-middleware-layering.md's Rollout Phase
-		// A: runSecurityMiddleware's separate code path is RETIRED — see
-		// serve.go's identical rewrite for the full rationale.
-		granted, grantErr := httpsecurity.CollectGrantsReflect(ctx, r, reqPtr, impls, secReqs)
-		if grantErr != nil {
-			errFn(sw, r, http.StatusUnauthorized, rest.SecurityError{Err: grantErr})
-			return
-		}
-
-		// Codec-backed middleware dispatch (HandleBoundMW/ClientBoundMW
-		// and bundled .Use()) — SAME pre-handler dispatch point plain Route
-		// uses (D1), reusing rest.DispatchMiddlewareHandlers/
-		// rest.AsMiddlewareDispatchError verbatim from serve.go. SSE has no
-		// ErrorResponseFor (no declared ErrorPattern concept exists for SSE
-		// at all today — mirrors how SSE's own handler errors below have
-		// never consulted one either), so a fn error always falls back to
-		// rest.MiddlewareError directly (or rest.SecurityError, for a
-		// Security-Satisfying handler's own Fn failure — see serve.go's
-		// identical distinction).
-		middlewareOuts, mwErr := rest.DispatchMiddlewareHandlers(ctx, reqPtr, middlewareHandlers, headerVars, cookieVars, queryVars)
-		if mwErr != nil {
-			dispatchErr, _ := rest.AsMiddlewareDispatchError(mwErr)
-			if !dispatchErr.IsFnError {
-				errFn(sw, r, http.StatusBadRequest, dispatchErr.Err)
-				return
-			}
-			if isSecuritySatisfyingHandler(middlewareHandlers, dispatchErr.Name) {
-				errFn(sw, r, http.StatusUnauthorized, rest.SecurityError{Err: dispatchErr.Err})
-				return
-			}
-			errFn(sw, r, http.StatusBadRequest, rest.MiddlewareError{Name: dispatchErr.Name, Err: dispatchErr.Err})
-			return
-		}
-		httpsecurity.MergeMiddlewareHandlerGrants(granted, satisfiesPerHandler(middlewareHandlers), middlewareOuts)
-		if err := rest.CheckScopes(secReqs, granted); err != nil {
-			errFn(sw, r, http.StatusUnauthorized, rest.SecurityError{Err: err})
-			return
-		}
-		// Compose every middleware's OWN response header/cookie values
-		// (derived from its Out, already produced pre-handler above) —
-		// BEFORE SSE's own headers are committed below, per
-		// docs/design/d-0003-codec-declared-middlewares.md's "Out-side"
-		// SSE migration note.
-		for i, mh := range middlewareHandlers {
-			mwHeaders, mwCookies, encErr := mh.EncodeOut(ctx, middlewareOuts[i])
-			if encErr != nil {
-				stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, "middleware:out", encErr)
-				errFn(sw, r, http.StatusInternalServerError, encErr)
-				return
-			}
-			for k, v := range mwHeaders {
-				responseHeaders.Set(k, v)
-			}
-			var mwCookieAttrs map[string]rest.CookieAttributes
-			if mh.EncodeOutCookieAttrs != nil {
-				mwCookieAttrs, encErr = mh.EncodeOutCookieAttrs(middlewareOuts[i])
-				if encErr != nil {
-					stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, "middleware:out", encErr)
-					errFn(sw, r, http.StatusInternalServerError, encErr)
-					return
-				}
-			}
-			for k, v := range mwCookies {
-				pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v, Attrs: mwCookieAttrs[k]})
-			}
-		}
-
-		// SSE headers — must be set before WriteHeader.
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-		w.Header().Set("X-Accel-Buffering", "no")
-
-		flusher, canFlush := w.(http.Flusher)
-
-		formatsVal := elem.FieldByName("Formats")
-		var encodeEvent func(reflect.Value) ([]byte, error)
-		if formatsVal.Len() > 0 {
-			// Content negotiation across declared formats — resolved via
-			// the format.Format[Event] interface's own reflect-callable
-			// Marshal method, since Event is erased here.
-			accept := r.Header.Get("Accept")
-			chosen, ok := negotiateFormatReflect(formatsVal, accept)
-			if !ok {
-				if strings.Contains(accept, "text/event-stream") {
-					chosen = formatsVal.Index(0)
-				} else {
-					var supported []string
-					for i := 0; i < formatsVal.Len(); i++ {
-						ct := formatsVal.Index(i).MethodByName("ContentType").Call(nil)[0].String()
-						supported = append(supported, ct)
-					}
-					errFn(sw, r, http.StatusNotAcceptable,
-						rest.NotAcceptableError{Accept: accept, Supported: supported})
-					return
-				}
-			}
-			encodeEvent = func(e reflect.Value) ([]byte, error) {
-				results := chosen.MethodByName("Marshal").Call([]reflect.Value{e})
-				body, _ := results[0].Interface().([]byte)
-				errI := results[1].Interface()
-				if errI != nil {
-					return nil, errI.(error)
-				}
-				return body, nil
-			}
-		} else {
-			encodeEventFn := elem.FieldByName("EncodeEvent")
-			encodeEvent = func(e reflect.Value) ([]byte, error) {
-				results := encodeEventFn.Call([]reflect.Value{e})
-				body, _ := results[0].Interface().([]byte)
-				errI := results[1].Interface()
-				if errI != nil {
-					return nil, errI.(error)
-				}
-				return body, nil
-			}
-		}
-		validateEventFn := elem.FieldByName("ValidateEvent")
-
-		headersCommitted := false
-		mergeFields := elem.Addr().MethodByName("MergeFields").Call(nil)[0]
-		send := reflect.MakeFunc(handlerFn.Type().In(2), func(args []reflect.Value) []reflect.Value {
-			e := args[0]
-			errType := reflect.TypeOf((*error)(nil)).Elem()
-			retErr := func(err error) []reflect.Value {
-				v := reflect.New(errType).Elem()
-				if err != nil {
-					v.Set(reflect.ValueOf(err))
-				}
-				return []reflect.Value{v}
-			}
-
-			if mergeFields.Len() > 0 {
-				mergeResults := elem.Addr().MethodByName("MergeEvent").Call([]reflect.Value{
-					e, reflect.ValueOf(pathVars), reflect.ValueOf(queryVars),
-					reflect.ValueOf(headerVars), reflect.ValueOf(cookieVars),
-				})
-				mergedE, mergeErrI := mergeResults[0], mergeResults[1].Interface()
-				if mergeErrI != nil {
-					stats.ReportErrors(rest.DiagnosticObserver{Ctx: ctx}, "response", mergeErrI.(error))
-					return retErr(mergeErrI.(error))
-				}
-				e = mergedE
-			}
-			if !headersCommitted {
-				headersCommitted = true
-				// Derive the SSE route's OWN response header/cookie
-				// merge-field values (NewRequiredResponseHeaderParam/
-				// NewRequiredResponseCookieParam declared directly on the
-				// route, not via HandleBoundMW) from the FIRST event sent —
-				// mirrors plain Route's EncodeResponseMergeFields dispatch,
-				// composing alongside (registration-order, before) the
-				// middleware-derived values already gathered above.
-				ownMergeResults := elem.Addr().MethodByName("EncodeResponseMergeFields").Call([]reflect.Value{e})
-				ownHeaders, _ := ownMergeResults[0].Interface().(map[string]string)
-				ownCookies, _ := ownMergeResults[1].Interface().(map[string]string)
-				if errI := ownMergeResults[2].Interface(); errI != nil {
-					err := errI.(error)
-					rest.ReportResponseHeaderErrors(ctx, err)
-					rest.ReportResponseCookieErrors(ctx, err)
-					return retErr(err)
-				}
-				for k, v := range ownHeaders {
-					responseHeaders.Set(k, v)
-				}
-				ownCookieAttrsResults := elem.Addr().MethodByName("EncodeResponseCookieAttributes").Call([]reflect.Value{e})
-				ownCookieAttrs, _ := ownCookieAttrsResults[0].Interface().(map[string]rest.CookieAttributes)
-				for k, v := range ownCookies {
-					pendingCookies = append(pendingCookies, PendingCookie{Name: k, Value: v, Attrs: ownCookieAttrs[k]})
-				}
-				respHeaderNames := elem.Addr().MethodByName("ResponseHeaderParamNames").Call(nil)[0].Interface().([]string)
-				if errV := callErr(elem.Addr(), "ValidateResponseHeaders", reflect.ValueOf(rest.NormalizeHeaderVars(responseHeaderValues(responseHeaders), respHeaderNames))); errV != nil {
-					rest.ReportResponseHeaderErrors(ctx, errV)
-					return retErr(errV)
-				}
-				if errV := callErr(elem.Addr(), "ValidateResponseCookies", reflect.ValueOf(responseCookieValues(pendingCookies))); errV != nil {
-					rest.ReportResponseCookieErrors(ctx, errV)
-					return retErr(errV)
-				}
-				for i := range pendingCookies {
-					pc := &pendingCookies[i]
-					writeOpts := cookieOptionsFrom(pc.Attrs) // Codec is always nil here — cookieOptionsFrom never sets it
-					if err := SetCookie(sw, pc.Name, pc.Value, writeOpts); err != nil {
-						return retErr(err)
-					}
-				}
-				for key, vals := range responseHeaders {
-					for _, v := range vals {
-						sw.Header().Add(key, v)
-					}
-				}
-			}
-			valResults := validateEventFn.Call([]reflect.Value{e})
-			if errI := valResults[0].Interface(); errI != nil {
-				err := errI.(error)
-				stats.RecordDiagnostic(ctx, stats.Diagnostic{Location: "response", ConstraintName: stats.ConstraintName(err), Field: "event"})
-				return retErr(err)
-			}
-			data, err := encodeEvent(e)
-			if err != nil {
-				return retErr(err)
-			}
-			if _, werr := writeSSEData(sw, data); werr != nil {
-				return retErr(werr)
-			}
-			if canFlush {
-				flusher.Flush()
-			}
-			return retErr(nil)
-		})
-
-		handlerResults := handlerFn.Call([]reflect.Value{reflect.ValueOf(ctx), reqPtr.Elem(), send})
-		if errI := handlerResults[0].Interface(); errI != nil {
-			err, _ := errI.(error)
-			// docs/features/rest-redirects.md round 2 finding E: see
-			// adapter.go's sseHandlerFunc's identical, non-reflect check
-			// for the full rationale (gated on headersCommitted, not
-			// sw.code).
-			if !headersCommitted {
-				if redirErr, ok := asRedirectError(err); ok {
-					sw.Header().Set("Location", redirErr.Location)
-					sw.WriteHeader(redirErr.Status)
-					return
-				}
-			}
-			if sw.code == http.StatusOK {
-				errFn(sw, r, http.StatusInternalServerError, err)
-			}
-		}
-		_ = eventType
+		restdispatch.DispatchSSERoute(ctx, cr, sw, r, responseHeaders, &pendingCookies, pathValues, writeCookie, errFn, opts.MultiValueQueryParams)
 	})
 
-	return applyGeneralMiddleware(inner, impls), nil
+	return applyGeneralMiddleware(inner, cr.Impls), nil
 }
 
 // negotiateFormatReflect is PROMOTED (Phase 4, REST family dispatch-core
