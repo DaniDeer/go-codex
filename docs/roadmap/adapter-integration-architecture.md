@@ -6,12 +6,16 @@
 
 This doc replaces and merges two earlier drafts:
 
-- `api-adapter-architecture-roadmap.md` — an external, broad analysis of the
-  seam between `api/*` declarations and `adapters/*` (binding/capability
-  model), proposing a 5-phase arc through redesign and conformance tests.
-- `adapter-dispatch-unification.md` — a narrower, evidence-grounded audit of
-  dispatch-path duplication *inside* `adapters/mqtt`, `adapters/mqtt5`, and
-  `adapters/zeromq`, deliberately scoped to "audit only, no redesign yet."
+- `api-adapter-architecture-roadmap.md` — written by an **external agent**
+  as an outside-in architectural proposal, without hands-on familiarity
+  with this codebase: a broad analysis of the seam between `api/*`
+  declarations and `adapters/*` (binding/capability model), proposing a
+  5-phase arc through redesign and conformance tests.
+- `adapter-dispatch-unification.md` — written by an agent with **hands-on
+  experience working on this codebase**: a narrower, evidence-grounded
+  audit of dispatch-path duplication *inside* `adapters/mqtt`,
+  `adapters/mqtt5`, and `adapters/zeromq`, deliberately scoped to "audit
+  only, no redesign yet."
 
 Both documents analyze the same underlying pain point — the adapter layer —
 from different altitudes. They are not in conflict; one is the general case,
@@ -19,6 +23,18 @@ the other a concrete, cited instance of it. This doc merges them into one
 coherent plan, broadens the audit to **all** adapters, and sequences the
 work explicitly: audit → design → proof-of-concept → implementation →
 conformance tests, with no phase skipped.
+
+### Constraint: backward compatibility is not a goal
+
+go-codex currently has a single consumer — its author. Backward
+compatibility is therefore **not a constraint** on this roadmap. Where the
+audit and design phases show that the cleanest architecture requires
+breaking changes to adapter-facing contracts, or even to some public API,
+that is acceptable and expected as part of Phase 4 implementation. This
+roadmap should optimize for the clearest, simplest, most maintainable
+result rather than hedge against or deprecate around compatibility concerns
+that do not currently exist. (This may need revisiting if/when go-codex
+gains other consumers, but it does not constrain this round.)
 
 ## Motivation
 
@@ -137,7 +153,12 @@ the merge is traceable.
   redesign and conformance tests (5 phases, ending in acceptance criteria
   for a changed architecture). Doc B hard-stops at "audit only, no code
   changes proposed," explicitly deferring design and implementation to "a
-  follow-up round."
+  follow-up round." **Resolved:** this merged roadmap follows Doc A's full
+  depth — audit through redesign and conformance tests — rather than Doc
+  B's hard stop. That commitment is practical here specifically because
+  backward compatibility is not a constraint (see "Constraint: backward
+  compatibility is not a goal" above); there is no sole-consumer risk that
+  would otherwise argue for stopping at audit-only.
 - Doc A never engages with Doc B's concrete regression evidence (the
   3-implementation Subscribe bug). Doc B never engages with Doc A's
   Binding/capability abstraction at all.
@@ -470,6 +491,23 @@ adapter package (`chi`, `file`, `mcpgo`, `mcprest`, `mqtt`, `mqtt5`,
 `nethttp`, `openai`, `redis`, `sql`, `templ`, `websocket`, `zeromq`, and
 `internal` shared helpers) — not just the three Doc B named.
 
+**Tag each adapter by which seam(s) it serves.** `api/*` communication
+patterns (`api/rest`, `api/events`, `api/reqreply`) are the most developed
+and most complex part of go-codex today, so most of this roadmap's depth —
+examples, regression history, dispatch-entry-point counts — naturally
+concentrates there. But `ports/*` application-dependency patterns are part
+of the same adapter-layer problem and must not be under-audited just
+because their adapters are structurally simpler. Confirmed via their
+`binding.go`-named entry points, `adapters/file`, `adapters/redis`, and
+`adapters/sql` are primarily `ports`-pattern adapters (binding
+`ports.File`/`ports.Cache`/`ports.SQL`-style patterns), not `api/*`
+route/channel/tool declarations. Some adapters serve both seams — `mqtt`,
+`mqtt5`, and `zeromq` already bind both `api/events` channels and the
+`ports.Pattern` path (see `transport.go`, above). Record this seam
+classification (`api/*` only / `ports/*` only / both) as an explicit column
+in the audit so coverage of `ports` adapters is a deliberate check, not an
+afterthought.
+
 Produce one merged audit artifact with two complementary matrices:
 
 1. **External-seam matrix** (Doc A's axis): per API declaration/handle,
@@ -510,6 +548,33 @@ Run both sub-tracks together, since they inform each other directly:
   point (fully-generic `T` known at compile time vs. type-erased `any`
   recovered via reflection).
 
+#### Essential: Observer integration and error-pattern mechanisms are in scope
+
+Both sub-tracks above must explicitly account for two existing,
+already-shipped cross-cutting mechanisms — they are not new concerns this
+roadmap invents, and skipping them in the design would leave the exact gap
+this roadmap exists to close:
+
+- **Observer integration** (`stats.Observer` and its siblings —
+  `stats.CapabilityObserver`, `stats.Disposition`/`DispositionObserver` per
+  `d-0006`, `stats.PipelineObserver` for forge). Every dispatch entry point
+  must report through the same observer call sites; a consolidated
+  dispatch-core is also the natural place to guarantee that.
+- **Error-pattern mechanisms** (`ErrorPattern`, `DeadLetter`, `ErrorChannel`,
+  `ObserveErrorResponseFor`/`ErrorPatternObserver` per
+  [`d-0005-error-handling.md`](../design/d-0005-error-handling.md)).
+
+`d-0005` itself is a second, independently-confirmed instance of this
+roadmap's core bug class: its own "Scope widened" H1/H2 notes document
+`ErrorPattern` being correctly wired at one dispatch entry point
+(`serve.go`'s `serve`) but silently **not** consulted at another
+(`handlerFunc`, backing the port/stream-binding adapters) — found only in a
+later review round, the same "wired here, silently missing there" shape
+Doc B found for events' Subscribe middleware. Phase 1's audit matrices
+should therefore track Observer-call-site coverage and ErrorPattern
+consultation as explicit columns per dispatch entry point, not fold them
+into a generic "capability implemented: yes/no."
+
 ### Phase 3 — Proof of concept
 
 Exercise the proposed model against representative cases drawn from both
@@ -527,11 +592,16 @@ source drafts:
 6. Events' Subscribe path specifically (the confirmed 3-implementation
    case) refactored to one shared dispatch-core, verified against all three
    previously-independent entry points.
+7. A `ports`-pattern case — e.g. a `ports.File` or `ports.Cache` bound to
+   `adapters/file`/`adapters/redis` — proving the capability/binding model
+   and dispatch-core consolidation apply to the `ports/*` seam as well, not
+   only `api/*` communication patterns.
 
 These examples should reveal whether the current handle is already a good
 binding or whether a separate adapter-facing view is justified, and whether
 dispatch-core consolidation is mechanically achievable without forcing
-artificial uniformity onto genuinely different entry-point shapes.
+artificial uniformity onto genuinely different entry-point shapes — across
+both the `api/*` and `ports/*` seams.
 
 ### Phase 4 — Implementation
 
@@ -561,6 +631,46 @@ previously-duplicated capability, so a future regression of this exact
 class is caught by CI rather than by a new example exercising an
 unguarded path. Sync `docs/roadmap`, `docs/design`, and adapter doc
 comments to reflect the converged model.
+
+Who owns these conformance tests, and how an adapter author discovers and
+runs them, is itself an open design point — see "API-defined conformance
+test suites" below.
+
+## Open design points deferred to future rounds
+
+These are raised now, during this roadmap's drafting, so they are not lost —
+but they are explicitly **not decided here**. Each needs its own design
+round once Phase 1's audit findings are in hand.
+
+1. **API-defined conformance test suites.** Phase 5 above currently frames
+   conformance tests as adapter-authored and somewhat ad hoc. A stronger
+   version of that idea: each `api/*` package (`api/rest`, `api/events`,
+   `api/reqreply`, `api/mcp`, ...) should define its own conformance test
+   suite — an exportable/importable set of tests that any adapter claiming
+   to implement that API's contract must run against itself. This
+   inverts the ownership: the contract's test suite lives with the
+   contract, not with each adapter's own judgment of what to test.
+
+   This is one of several enforcement points this roadmap already relies on
+   (capability compatibility checks at attach-time, the Phase 1 audit
+   matrices, per-entry-point dispatch tests from Phase 5). Framed
+   explicitly, API-defined conformance suites would be the **last**
+   enforcement point: the gate that catches a non-conformant adapter when
+   its code actually lands on `main`, after every earlier, more static
+   check has already had its chance.
+
+   For this to work as intended, the suites must be **clearly visible and
+   explorable in the codebase** — a contributor implementing a new adapter
+   must be able to find "here is the contract my adapter must pass"
+   without spelunking. The exact mechanism is left open: a shared
+   `_test`-only helper package per API family, a Go-level conformance
+   "suite" type adapters instantiate against their own binding, a
+   generated checklist cross-checked by CI, or something else entirely.
+   Deciding the mechanism, where it lives, how it is versioned alongside
+   the API it tests, and how CI enforces that every in-tree adapter
+   actually runs it, is deferred to a future design round once Phase 1's
+   audit shows which capabilities and entry points most need this kind of
+   enforcement.
 
 ## Acceptance criteria
 
