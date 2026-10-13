@@ -1426,6 +1426,45 @@ func TestPublish_RequireQoS_NoCapabilitySupplied_FailsCoverage(t *testing.T) {
 	}
 }
 
+// TestPublish_RequireUserProperties_FailsCoverage is Phase 3 (case 3)'s
+// proof of the ORIGINAL Doc A scenario's "rejected" half, on the actual
+// MQTT 3 adapter: MQTT 3 has no user-properties concept at all, so
+// adapters/mqtt.Capability has no equivalent to
+// adapters/mqtt5.UserProperties — a channel declaring
+// events.RequireUserProperties() and bound here can never supply a
+// matching capability, so it fails events.VerifyCapabilityCoverage with
+// an actionable, structured *events.CapabilityCoverageError at
+// publish/attach time — NOT a Go compile error, which is what attempting
+// this scenario produced before adapters/mqtt5.UserProperties existed
+// (there was no protocol-neutral way to even express the requirement).
+func TestPublish_RequireUserProperties_FailsCoverage(t *testing.T) {
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	handle, err := events.NewChannel[userEvent]("user/created", userEventCodec,
+		events.RequireUserProperties(),
+	).WithPublish(events.Publish{Summary: "test"}).Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	client := &mockClient{token: newCompletedToken(nil)}
+	event := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Email: "alice@example.com"}
+
+	err = publish(context.Background(), client, handle, event, nil, PublishOptions[userEvent]{})
+	if err == nil {
+		t.Fatal("want a capability coverage error, got nil")
+	}
+	var covErr *events.CapabilityCoverageError
+	if !errors.As(err, &covErr) {
+		t.Fatalf("want events.CapabilityCoverageError, got %T: %v", err, err)
+	}
+	if covErr.Missing == nil || covErr.Missing[0] != "UserProperties" {
+		t.Errorf("want Missing=[UserProperties], got %v", covErr.Missing)
+	}
+	if topics := client.publishedTopicsSnapshot(); len(topics) != 0 {
+		t.Errorf("want 0 published messages, got %d", len(topics))
+	}
+}
+
 // TestSubscribeHandle_RequireQoS_NoCapabilitySupplied_FailsCoverage is a
 // REGRESSION GUARD: a channel declaring events.RequireQoS could be
 // subscribed to via the escape-hatch subscribeHandle with ZERO matching

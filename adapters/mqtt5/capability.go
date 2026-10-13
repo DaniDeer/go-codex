@@ -97,8 +97,48 @@ func (r Retained) Apply(wire *WireAttributes) (bool, error) {
 	return true, nil
 }
 
-// User Properties remain declared via [UserPropertyParam] (a distinct,
-// pre-existing mechanism) rather than as a sealed Capability — folding
-// [UserPropertyParam] into this mechanism (embedding
-// middleware.Declaration, per §5.2's worked example) is left for a future
-// round; the two mechanisms coexist without conflict today.
+// UserProperties is a sealed [Capability] declaring MQTT 5 user-property
+// SUPPORT for a channel — presence-only (no natural ordering), same
+// reasoning as [Retained]. Pairs with [events.RequireUserProperties] at
+// the channel-declaration level (see
+// docs/roadmap/adapter-integration-architecture.md's Phase 3, case 3):
+// supplying UserProperties(true) via [SubscribeOptions.Capabilities]/
+// [PublishOptions.Capabilities] satisfies a declared
+// events.RequireUserProperties() requirement for
+// [events.CheckCapabilityCoverage]/[events.VerifyCapabilityCoverage].
+//
+// This is deliberately NARROW: it only makes "does this adapter support
+// user properties at all" checkable at declare/attach time, the same
+// declare-time REQUIREMENT-COVERAGE concern [CheckCapabilityCoverage]
+// already handles for QoS/Retained. It does NOT replace
+// [UserPropertyParam] — per-message user-property NAME/VALUE validation
+// (a distinct, pre-existing, per-call CAPABILITY-APPLICATION concern, per
+// this roadmap's Design goal 12 split) remains exactly as it is today,
+// via [SubscribeOptions.UserPropertyParams]/[ServeOptions.UserPropertyParams]
+// and [validateUserProperties]. Folding UserPropertyParam's own per-property
+// validation fully into the Capability/Apply model (embedding
+// middleware.Declaration, per d-0006 §5.2's worked example) remains left
+// for a future round; the two mechanisms coexist without conflict.
+//
+// adapters/mqtt (MQTT 3) has no equivalent type — MQTT 3 has no user
+// properties concept at all — so a channel declaring
+// events.RequireUserProperties() attached to an MQTT 3 adapter naturally
+// has nothing to supply for "UserProperties" and fails
+// CheckCapabilityCoverage with an actionable, structured
+// CapabilityCoverageError, not a compile error.
+type UserProperties bool
+
+func (UserProperties) isMQTT5Capability() {}
+
+// CapabilityName implements [events.CapabilityName].
+func (UserProperties) CapabilityName() string { return "UserProperties" }
+
+// Apply implements [Capability]. UserProperties has no WireAttributes
+// field of its own to set — its sole purpose is declare-time
+// requirement-coverage matching via CapabilityName(), not per-message
+// wire application (that remains [UserPropertyParam]'s job). Always
+// reports applied=true: presence is all [CheckCapabilityCoverage] checks
+// for a requirement with no MinLevel.
+func (UserProperties) Apply(*WireAttributes) (bool, error) {
+	return true, nil
+}

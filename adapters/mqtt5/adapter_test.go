@@ -2180,6 +2180,66 @@ func TestPublish_RequireRetained_NoCapabilitySupplied_FailsCoverage(t *testing.T
 	}
 }
 
+// TestPublish_RequireUserProperties_NoCapabilitySupplied_FailsCoverage is
+// Phase 3 (case 3)'s proof that folding adapters/mqtt5.UserProperties
+// into the sealed Capability model makes events.RequireUserProperties()
+// go through the SAME events.VerifyCapabilityCoverage mechanism as
+// RequireQoS/RequireRetained — a channel declaring
+// events.RequireUserProperties() must fail to publish without a matching
+// Capability supplied, with an actionable CapabilityCoverageError.
+func TestPublish_RequireUserProperties_NoCapabilitySupplied_FailsCoverage(t *testing.T) {
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec,
+		events.RequireUserProperties(),
+	).WithPublish(events.Publish{Summary: "test"}).Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	client := &mockClient{}
+	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1}
+
+	pubErr := publish(context.Background(), client, handle, reading, nil, true,
+		PublishOptions[sensorReading]{})
+
+	if pubErr == nil {
+		t.Fatal("want a capability coverage error, got nil")
+	}
+	var covErr *events.CapabilityCoverageError
+	if !errors.As(pubErr, &covErr) {
+		t.Fatalf("want events.CapabilityCoverageError, got %T: %v", pubErr, pubErr)
+	}
+	if len(client.published) != 0 {
+		t.Errorf("want 0 published messages, got %d", len(client.published))
+	}
+}
+
+// TestPublish_RequireUserProperties_SuppliedCapability_Passes is Phase 3
+// (case 3)'s proof of the ORIGINAL Doc A scenario's "accepted" half:
+// supplying mqtt5.UserProperties(true) satisfies a declared
+// events.RequireUserProperties() requirement and the publish succeeds.
+func TestPublish_RequireUserProperties_SuppliedCapability_Passes(t *testing.T) {
+	b := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	handle, err := events.NewChannel[sensorReading]("sensors/readings", sensorCodec,
+		events.RequireUserProperties(),
+	).WithPublish(events.Publish{Summary: "test"}).Handle(b)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	client := &mockClient{}
+	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1}
+
+	pubErr := publish(context.Background(), client, handle, reading, nil, true,
+		PublishOptions[sensorReading]{Capabilities: []Capability{UserProperties(true)}})
+	if pubErr != nil {
+		t.Fatalf("unexpected error: %v", pubErr)
+	}
+	if len(client.published) != 1 {
+		t.Errorf("want 1 published message, got %d", len(client.published))
+	}
+}
+
 // TestSubscribe_BuiltInCredentialCheck_MatchedErrorChannel_PublishesTypedPayload
 // is a REGRESSION GUARD: the built-in codec-based credential FORMAT check
 // (validateSecurityCredentials, gating on SecurityScheme.Codec) was the

@@ -90,3 +90,32 @@ func RequireConflate() ChannelOpt {
 		Description: "requires keep-latest-only semantics",
 	}
 }
+
+// RequireUserProperties declares, at the CHANNEL level — independent of
+// any concrete adapter — that this channel needs MQTT 5 user-property
+// support from whichever adapter attaches. Sugar over
+// CapabilityRequirement{Name: "UserProperties", ...} — presence-only, same
+// reasoning as [RequireRetained]/[RequireConflate].
+//
+// This is the protocol-neutral declaration half of folding
+// adapters/mqtt5's pre-existing UserPropertyParam mechanism into the
+// sealed Capability model (see
+// docs/roadmap/adapter-integration-architecture.md's Phase 3, case 3):
+// adapters/mqtt5.UserProperties is the only sealed Capability today that
+// reports CapabilityName() "UserProperties"; adapters/mqtt (MQTT 3) has
+// no equivalent type at all, so a channel declaring this requirement
+// attached to an MQTT 3 adapter fails [CheckCapabilityCoverage] with an
+// actionable [CapabilityCoverageError] — not a compile error — exactly
+// the scenario this requirement exists to make possible.
+//
+// Example — require MQTT 5 user-property support:
+//
+//	ch := events.NewChannel[SensorReading]("sensor/reading", sensorCodec,
+//	    events.RequireUserProperties(),
+//	)
+func RequireUserProperties() ChannelOpt {
+	return CapabilityRequirement{
+		Name:        "UserProperties",
+		Description: "requires MQTT 5 user-property support",
+	}
+}

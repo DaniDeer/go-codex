@@ -766,19 +766,22 @@ particular adapter. Prefer a protocol-neutral concept such as a QoS level
 over a requirement that directly names a transport, unless the API is
 intentionally exposing a protocol-specific extension.
 
-**Known gap, not yet covered by this mechanism: MQTT user properties.**
-Doc A's original worked example used "an event channel may require user
-properties; MQTT 5 supports them, MQTT 3 does not" as its illustration of
-this model. The "Preliminary evidence" audit above found this example does
-**not** currently work as described: MQTT user properties are declared and
-validated through a separate, pre-existing `UserPropertyParam` mechanism,
-not through `CapabilityRequirement`/`CheckCapabilityCoverage` — and
-`adapters/mqtt` (v3) doesn't even have the type, so attempting the scenario
-today is a **Go compile error**, not the clean runtime
-`CapabilityCoverageError` this model promises. This is recorded here as a
-concrete, named gap: folding MQTT user properties into the sealed
-Capability mechanism (so the scenario works exactly as Doc A originally
-described) is in scope for Phase 2/4, not yet done.
+**Gap closed in Phase 3: MQTT user properties.** Doc A's original worked
+example used "an event channel may require user properties; MQTT 5
+supports them, MQTT 3 does not" as its illustration of this model. The
+"Preliminary evidence" audit above found this example did **not** work as
+described at the time: MQTT user properties were declared and validated
+only through a separate, pre-existing `UserPropertyParam` mechanism, not
+through `CapabilityRequirement`/`CheckCapabilityCoverage` — and
+`adapters/mqtt` (v3) didn't have the type, so attempting the scenario was a
+**Go compile error**, not the clean runtime `CapabilityCoverageError` this
+model promises. **This is now fixed and proven** (Phase 3, case 3):
+`events.RequireUserProperties()` + `adapters/mqtt5.UserProperties` close
+the gap, with MQTT 5 accepting and MQTT 3 rejecting via an actionable
+`CapabilityCoverageError` — see "Phase 3 results" below. `UserPropertyParam`
+itself is intentionally unchanged (its per-message value-validation
+concern is separate, per Design goal 12's split); only the declare-time
+requirement-coverage half was folded in.
 
 ### Capability requirements versus adapter configuration
 
@@ -2279,6 +2282,56 @@ binding or whether a separate adapter-facing view is justified, and whether
 dispatch-core consolidation is mechanically achievable without forcing
 artificial uniformity onto genuinely different entry-point shapes — across
 both the `api/*` and `ports/*` seams.
+
+#### Phase 3 results
+
+Cases 1, 2, 3 (QoS/HWM half), and 7 selected for this round; cases 4
+(cross-transport reqreply) and 5 (middleware chain consistency across
+adapters) deferred to a later round.
+
+- **Case 1 (REST route) — confirmed, no new code.** `go test ./api/rest/...
+  ./adapters/nethttp/...` passes against `main` unchanged, confirming the
+  roadmap's own note that this case already works today.
+- **Case 2 (basic event channel, MQTT3+MQTT5) — confirmed, no new code.**
+  `go test ./api/events/... ./adapters/mqtt/... ./adapters/mqtt5/...`
+  passes unchanged.
+- **Case 3, QoS/HWM half — confirmed, no new code.** Covered by the same
+  test run above (existing `capability_test.go` suites exercise this
+  already).
+- **Case 3, MQTT User Properties half — new ground, IMPLEMENTED and
+  proven.** Closed the named gap from Round 2 decision 4: added
+  `events.RequireUserProperties()` (`api/events/capability_require.go`,
+  mirroring `RequireRetained`/`RequireConflate`'s presence-only shape) and
+  a new sealed `adapters/mqtt5.UserProperties` capability (`capability.go`,
+  mirroring `Retained`'s shape; `Apply` is a no-op returning
+  `(true, nil)` — it exists purely for declare-time requirement-coverage
+  matching via `CapabilityName()`, deliberately NOT replacing
+  `UserPropertyParam`'s separate per-message value-validation concern, per
+  Design goal 12's capability-application/requirement-coverage split).
+  `adapters/mqtt` (v3) gets no equivalent type — it has no user-properties
+  concept at all. Three new tests prove the ORIGINAL Doc A scenario end to
+  end:
+  - `TestPublish_RequireUserProperties_SuppliedCapability_Passes`
+    (`adapters/mqtt5/adapter_test.go`) — MQTT 5 **accepted**.
+  - `TestPublish_RequireUserProperties_NoCapabilitySupplied_FailsCoverage`
+    (`adapters/mqtt5/adapter_test.go`) — regression guard, mirrors the
+    existing QoS/Retained pattern.
+  - `TestPublish_RequireUserProperties_FailsCoverage`
+    (`adapters/mqtt/adapter_test.go`) — MQTT 3 **rejected** with an
+    actionable `*events.CapabilityCoverageError{Missing: ["UserProperties"]}`
+    — not a Go compile error, closing the gap exactly as described.
+  All three pass; full `api/events`/`adapters/mqtt`/`adapters/mqtt5`/
+  `adapters/zeromq` suites re-verified with no regressions.
+- **Case 7 (ports pattern) — confirmed, no new code, a deliberate negative
+  result.** `go test ./ports/... ./adapters/file/... ./adapters/redis/...`
+  passes unchanged. This is the expected, correct outcome per Phase 1's
+  finding that `file`/`redis` have no duplication problem and no
+  capability mechanism at all: the binding/dispatch-core model does not
+  force changes onto adapters that don't need them. Proving that
+  explicitly (rather than assuming it) was the point of including this
+  case.
+- **Case 6 (events Subscribe dispatch-core) — see below, the substantive
+  implementation work for this phase.**
 
 ### Phase 4 — Implementation
 
