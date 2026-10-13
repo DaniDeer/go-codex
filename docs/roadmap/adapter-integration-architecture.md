@@ -545,34 +545,52 @@ deferred indefinitely.
    co-located on or directly alongside the handle (currently split across
    the handle and the adjacent route/builder). No wholesale new `Binding`
    type is adopted for any family — in every case the fix is narrower
-   (a view, or co-location), not a replacement type. **Provisional:**
-   this was decided from a preliminary, non-exhaustive evidence pass (3 of
-   ~13 adapter packages); revisit if the full Phase 1 audit contradicts it.
-   **Guardrail (critical-review pass):** per-family does not mean
+   (a view, or co-location), not a replacement type. **Confirmed by the
+   completed Phase 1 audit** (see "Phase 1 audit results" above): the
+   full, independent, all-14-adapter audit found no contradiction — REST's
+   granularity problem, events' already-working handle, and reqreply's
+   capability/middleware split were each reconfirmed exactly as this
+   decision anticipated from the earlier preliminary pass. No longer
+   provisional. **Guardrail (critical-review pass):** per-family does not
+   mean
    undocumented-per-family — Phase 2 must still produce one documented,
    consistent adapter-facing *contract shape* (e.g. "declare + requirements
    + middleware-handle, always three named parts") even though each
    family's concrete type differs, so this doesn't quietly recreate the
    roadmap's core cross-adapter-asymmetry complaint one layer up, at the
    binding level instead of the dispatch level.
-2. **Decision 2 (dispatch-core mechanism), refined — *provisionally*
-   resolved *per pattern family*, not universally.** Events and reqreply
-   get separate consolidation designs in Phase 2/4, not one shared
-   cross-pattern-family mechanism: reqreply's duplication is both worse (6
-   call sites vs. 3) and differently shaped (zeromq's extra ROUTER/DEALER
-   socket variants have no events counterpart), so forcing one scheme
-   across both would not fit the evidence. Still open within each family:
-   shared-helper-package vs. per-adapter-local convention — that narrower
-   choice is deferred to Phase 2 for each family independently.
-   **Provisional:** same caveat as decision 1 above — only 2 of ~13 adapter
-   packages were sampled; revisit if the full audit contradicts it.
-   **Guardrail (critical-review pass):** if the full Phase 1 audit shows
-   3+ pattern families each needing a genuinely distinct dispatch-core
-   mechanism, that is itself a flagged risk requiring explicit sign-off
-   before Phase 4 begins — "per pattern family" is a floor meant to avoid
-   forcing one ill-fitting universal mechanism, not an invitation to drift
-   into N independently-designed mechanisms with no shared principle at
-   all.
+2. **Decision 2 (dispatch-core mechanism), refined — resolved *per pattern
+   family*, not universally.** Events/reqreply and REST each get separate
+   consolidation designs in Phase 2/4, not one shared cross-pattern-family
+   mechanism. Still open within each family: shared-helper-package vs.
+   per-adapter-local convention — that narrower choice is deferred to
+   Phase 2 for each family independently. **Confirmed by the completed
+   Phase 1 audit, with scope expanded (not reversed):**
+   - **Events/reqreply family — now explicitly includes `adapters/mqtt`
+     (v3), not just mqtt5/zeromq.** The audit confirmed mqtt v3 shares
+     mqtt5's exact 3-way Subscribe-dispatch shape (generic escape-hatch,
+     reflection-based `ports.Pattern` path, `Client.Attach`-driven
+     `ServeSubscribers`) and the same history of newer paths initially
+     missing capability/DeadLetter checks — a separate, parallel codebase
+     needing its own parallel fix, not something a mqtt5-only
+     consolidation would also resolve. Reqreply's duplication was
+     corroborated independently at a similar severity (mqtt5: 3 call
+     sites; zeromq: 4, across its ROUTER/DEALER socket variants).
+   - **REST family — newly confirmed as a second consolidation target,
+     now explicitly including both `adapters/nethttp` and `adapters/chi`.**
+     `adapters/nethttp` has two independent dispatch implementations
+     (reflect-based `serve`/`serveSSE` vs. generic `handlerFunc`), the
+     latter confirmed missing a capability-coverage check entirely.
+     `adapters/chi` independently duplicates **both** of nethttp's paths
+     line-for-line, with no import relationship between the two packages.
+   - **Guardrail checked against the completed audit — NOT triggered.**
+     The critical-review pass's tripwire ("3+ pattern families each
+     needing a genuinely distinct dispatch-core mechanism" → flagged risk
+     requiring explicit sign-off before Phase 4) does not fire: exactly
+     two families are confirmed (events/reqreply; REST), not three or
+     more. No escalation/sign-off is required before Phase 4 on this
+     basis. This guardrail remains in force for any further expansion of
+     scope discovered later.
 3. **Capability-coverage check location — new, explicit Phase 2 goal.**
    Distinct from the dispatch-core duplication problem above (which is
    about HOW MANY implementations exist), this is about WHERE the check
