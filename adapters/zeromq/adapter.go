@@ -21,7 +21,7 @@ const recvPollInterval = 100 * time.Millisecond
 
 // statusOK, statusError and statusForward are the status frame values for
 // REQ/REP framing. statusForward is the wire-level signal for
-// [reqreply.ForwardError] — docs/roadmap/reqreply-forward-bounce.md's
+// [reqreply.ForwardError] — docs/design/d-0004-reqreply-workflow-simplification.md's
 // zeromq counterpart of mqtt5's ContentType+User Property forward
 // signal, mirroring statusError's EXACT frame-shifting convention
 // (normal reply stays 2-frame/3-frame; a forward reply is the SAME

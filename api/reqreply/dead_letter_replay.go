@@ -13,11 +13,11 @@ import (
 // SourceTopic does not match any route registered on the [*Client] (via
 // a prior [Client.Call]/[Client.CallAsync]/[Client.RegisterRoute]).
 // Deliberately NOT a reuse of [UnrecognizedForwardError]
-// (docs/roadmap/reqreply-forward-bounce.md) — even though the
+// (docs/design/d-0004-reqreply-workflow-simplification.md) — even though the
 // underlying condition (a registry miss) is mechanically identical, a
 // replay caller was never "forwarding" anything, and a distinct type
 // keeps the error message/semantics clear for that caller (see
-// docs/roadmap/reqreply-dead-letter-replay.md's "Structured error").
+// docs/design/d-0004-reqreply-workflow-simplification.md's "Structured error").
 type UnrecognizedDeadLetterSourceError struct {
 	SourceTopic string
 }
@@ -34,7 +34,7 @@ func (e UnrecognizedDeadLetterSourceError) LogValue() slog.Value {
 }
 
 // ReplayDeadLetter reissues a dead-lettered request captured in envelope
-// (docs/roadmap/reqreply-dead-letter-replay.md) — the ops/replay
+// (docs/design/d-0004-reqreply-workflow-simplification.md) — the ops/replay
 // workflow for recovering a message a route's [DeadLetter] fallback
 // previously captured (docs/design/d-0005-error-handling.md's Topic 4).
 //

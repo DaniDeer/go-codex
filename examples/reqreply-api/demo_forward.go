@@ -15,7 +15,7 @@ import (
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 )
 
-// demoForward demonstrates docs/roadmap/reqreply-forward-bounce.md's
+// demoForward demonstrates docs/design/d-0004-reqreply-workflow-simplification.md's
 // Forward/Bounce feature end to end: ForwardOriginatingRoute's own
 // handler (handlers.ForwardToDouble) ALWAYS returns
 // reqreply.Forward(routes.ForwardTargetRoute, ...) instead of a normal
@@ -29,7 +29,7 @@ import (
 //
 // ForwardTargetRoute must be REGISTERED on the client BEFORE the forward
 // is followed — mqtt5Client.RegisterRoute "warms" the registry without a
-// live call, exactly docs/roadmap/reqreply-client-registry.md's own
+// live call, exactly docs/design/d-0004-reqreply-workflow-simplification.md's own
 // documented use case for a route "only ever reached as a Forward
 // target."
 func demoForward(ctx context.Context, mqtt5Client *reqreply.Client) {
@@ -94,7 +94,7 @@ func (c *forwardPropertyRecordingClient) lastUserProperty(key string) (string, b
 }
 
 // demoForwardWithProperties demonstrates Phase 1.5's own wire-level
-// properties addendum (docs/roadmap/reqreply-forward-bounce.md's
+// properties addendum (docs/design/d-0004-reqreply-workflow-simplification.md's
 // "Addendum"): a handler can supply an explicit properties map to
 // reqreply.Forward, and that map reaches the target as REAL wire-level
 // MQTT5 User Properties — not just the request body. Self-contained (own

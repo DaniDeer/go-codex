@@ -150,8 +150,7 @@ func TestClient_Call_FollowsSingleForward_DecodesTargetResponse(t *testing.T) {
 }
 
 // TestClient_Call_FollowsForward_ThreadsPropertiesIntoCallRaw is Phase
-// 1.5's own wire-level properties addendum test (docs/roadmap/
-// reqreply-forward-bounce.md's "Addendum"): followForward's loop must
+// 1.5's own wire-level properties addendum test (docs/design/d-0004-reqreply-workflow-simplification.md's "Addendum"): followForward's loop must
 // pass the received ForwardError's Properties through to CallRaw
 // UNMODIFIED — the mechanism a dead-lettered credential (Phase 2) relies
 // on to actually reach the wire.

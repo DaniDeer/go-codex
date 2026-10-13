@@ -537,7 +537,7 @@ func respCodec() codex.Codec[computeResp] {
 // reqreply.ForwardError UNWRAPPED, exactly as CallWithTransport's own
 // real implementation already guarantees for any transport.Call error.
 // No new production code is expected to make this pass — pure
-// verification, per docs/roadmap/reqreply-forward-bounce.md's dispatch-
+// verification, per docs/design/d-0004-reqreply-workflow-simplification.md's dispatch-
 // path inventory. (zeromq's DEALER transport has no ports.Pattern
 // binding of its own today — confirmed, nothing to verify there.)
 func TestCallAdapter_ForwardError_PropagatesUnwrapped(t *testing.T) {

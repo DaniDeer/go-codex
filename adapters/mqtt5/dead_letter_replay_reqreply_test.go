@@ -9,7 +9,7 @@ import (
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 )
 
-// This file tests docs/roadmap/reqreply-dead-letter-replay.md's own
+// This file tests docs/design/d-0004-reqreply-workflow-simplification.md's own
 // Phase 2.1 end to end, against the REAL mqtt5 wire — the single most
 // important proof the whole wire-level properties addendum (Phase 1.5 +
 // Phase 2.0) exists for: a dead-lettered request's header-delivered

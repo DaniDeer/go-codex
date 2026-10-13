@@ -10,20 +10,18 @@ import (
 	"github.com/DaniDeer/go-codex/api/reqreply"
 )
 
-// ── docs/roadmap/reqreply-client-registry.md Phase 0: CallRaw ──────────────
+// ── docs/design/d-0004-reqreply-workflow-simplification.md Phase 0: CallRaw ──────────────
 //
-// CallRaw is Phase 0 infrastructure with no real consumer yet (docs/
-// roadmap/reqreply-forward-bounce.md's chain-following loop, its first
-// real caller, is not implemented) — these tests exercise it directly
-// against a real Server+Attach round trip (mirrors
+// CallRaw is Phase 0 infrastructure — [Client.followForward]'s/[Client.
+// ReplayDeadLetter]'s own chain-following loop is its real, shipped
+// consumer (see d-0004's own "Addendum: Client Registry, Forward/Bounce,
+// and Dead-Letter Replay" for the full design history) — these tests
+// exercise it directly against a real Server+Attach round trip (mirrors
 // TestAttachServer_AttachClient_RoundTrip's/
-// TestAttachRouterServer_AttachDealerClient_RoundTrip's setup), the SAME
-// "stub consumer" testing strategy the roadmap doc's own "Next step"
-// section describes.
+// TestAttachRouterServer_AttachDealerClient_RoundTrip's setup.
 
 // TestClientTransport_CallRaw_PropertiesParam_SafeNoop is Phase 1.5's
-// own wire-level properties addendum test (docs/roadmap/
-// reqreply-forward-bounce.md's "Addendum"): zeromq's reqreply transport
+// own wire-level properties addendum test (docs/design/d-0004-reqreply-workflow-simplification.md's "Addendum"): zeromq's reqreply transport
 // has no property/header wire mechanism — CallRaw's properties
 // parameter is accepted ONLY for reqreply.ClientTransport interface
 // conformance and is a confirmed, deliberate no-op. This proves that

@@ -50,7 +50,7 @@ A handler returns the `error` `reqreply.Forward` produces (a `reqreply.ForwardEr
 
 ## Client side
 
-`reqreply.Client` keeps ONE topic-keyed registry (shared with `RegisterRoute`/auto-populate — see `docs/roadmap/reqreply-client-registry.md` for the full registry design, which stays a roadmap doc rather than a `docs/features/` page for now, see that doc's own status block for why). A route is indexed automatically the first time it's seen via `Client.Call`/`Client.CallAsync` — a route that's *only ever reached as a Forward target* needs explicit warming via `Client.RegisterRoute`:
+`reqreply.Client` keeps ONE topic-keyed registry (shared with `RegisterRoute`/auto-populate — see `docs/design/d-0004-reqreply-workflow-simplification.md`'s own "Addendum: Client Registry, Forward/Bounce, and Dead-Letter Replay" for the full registry design). A route is indexed automatically the first time it's seen via `Client.Call`/`Client.CallAsync` — a route that's *only ever reached as a Forward target* needs explicit warming via `Client.RegisterRoute`:
 
 ```go
 client := reqreply.NewClient()

@@ -9,7 +9,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/reqreply"
 )
 
-// This file tests docs/roadmap/reqreply-forward-bounce.md's Phase 1.4
+// This file tests docs/design/d-0004-reqreply-workflow-simplification.md's Phase 1.4
 // zeromq wire signal: a handler returning a [reqreply.ForwardError]
 // (constructed via [reqreply.Forward]) must publish/recognize the
 // statusForward-tagged reply SHAPE, and must skip ErrorPattern/

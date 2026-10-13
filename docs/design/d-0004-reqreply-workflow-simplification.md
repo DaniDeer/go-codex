@@ -1576,3 +1576,267 @@ ALL 3 pub/sub adapters (`adapters/zeromq`, `adapters/mqtt5`,
 [D-0002](d-0002-pubsub-workflow-simplification.md)'s own "Addendum:
 Observability Core Consolidation, `SecurityFunc` Retirement, and
 `examples/events-api`" for the full evidence/decision record.
+
+## Addendum: Client Registry, Forward/Bounce, and Dead-Letter Replay
+
+Added after `docs/roadmap/reqreply-client-registry.md` (Phase 0),
+`docs/roadmap/reqreply-forward-bounce.md` (Phase 1 + its own Phase 1.5
+wire-level properties addendum), and `docs/roadmap/reqreply-dead-letter-
+replay.md` (Phase 2.0 + 2.1) all shipped — recorded here so the lineage
+is discoverable from this document, mirroring the "Addendum: `reqreply-
+middleware.md` and `zeromq-security.md`" section above exactly. All 3
+roadmap docs have SINCE BEEN DELETED (per their own 3-way delete/keep/
+promote graduation policy — these 3 features build directly on THIS
+doc's own `Client`/`Server`/`Attach` foundation, with no lasting
+cross-cutting design value of their own beyond what is captured here);
+this addendum is the durable record that remains after that deletion.
+`.github/instructions/go-codex.instructions.md`'s own "`api/reqreply.
+Client` Registry"/"Forward/Bounce"/"Dead-Letter Replay" sections and the
+user-facing `docs/features/`/`docs/guides/` pages carry the full,
+up-to-date API reference; this addendum is the design-rationale summary.
+
+### Phase 0 — Client Registry + `CallRaw`
+
+`reqreply.Client` was the only `api/*` `Client` type with NO registry
+(`rest.Client`/`events.Client` both already had one). Investigated
+whether reqreply has a structural analog to an HTTP redirect — confirmed
+NOT an existing one (`Call`/`CallAsync` always know their own `Resp`
+type at the call site, unlike an HTTP 3xx response) — but Forward/Bounce
+(Phase 1, below) designs a NEW one, purpose-built, and needs a registry
+as its OWN required infrastructure, not a retrofit of REST's own
+motivation.
+
+- `Client` gains `routes map[string]*registeredRoute` keyed by `Topic` —
+  a PLAIN map, no REST-style `routesOrder`: reqreply's `TargetTopic`
+  always arrives ALREADY CONCRETE (resolved server-side via
+  `BuildTopic`), so there is no ambiguous `{var}`-template match to
+  disambiguate the way `routesOrder` exists for in `rest.Client`.
+  `Client.RegisterRoute(route any) error` is dual-mode
+  (`Route[Req,Resp]`/`*RouteHandle[Req,Resp]`, reflection-discriminated
+  the same way `rest.Client.RegisterRoute` is); `Call`/`CallAsync` each
+  auto-populate via `registerAutoFromCall` on first use.
+- **Collision detection is a GENUINE DIVERGENCE from REST's own
+  "first-registered-wins" policy, not a straight port** — REST's policy
+  is safe only because every re-registration of the same key is, BY
+  CONSTRUCTION, the SAME underlying `Route`; reqreply has no such
+  guarantee (two genuinely different `Route[ReqA,RespA]`/
+  `Route[ReqB,RespB]` values could collide on the same `Topic`).
+  `RegisterRoute` returns a new `DuplicateTopicTypeMismatchError{Topic,
+  ExistingType, NewType}` immediately on an explicit conflicting
+  re-registration; `registerAutoFromCall` (best-effort — `Call`/
+  `CallAsync`'s contract requires it never errors) marks a conflicting
+  entry POISONED instead, surfaced LAZILY only once a real consumer
+  (Forward/Replay resolution, below) actually resolves that topic.
+- **The adapter↔registry bridge is CENTRALIZED in `api/reqreply.Client`,
+  NOT REST's adapter-side `ClientAwareTransport`+`Match*Route`
+  pattern** — a deliberate divergence, for 2 concrete structural reasons:
+  `reqreply.ClientTransport` has TWO implementations (`adapters/mqtt5`,
+  `adapters/zeromq`) vs. REST's ONE, so centralizing avoids writing and
+  testing identical resolve+decode logic twice; and reqreply's republish
+  step is genuinely minimal (raw, already-encoded bytes, one topic, one
+  correlated reply) vs. REST's richer follow-up request (method,
+  content-type, 307/308 body-preservation rules), so a byte-level
+  primitive loses nothing reqreply's dispatch needs. `ClientTransport`
+  gains an additive `CallRaw(ctx context.Context, topic string, payload
+  []byte, properties map[string]string) ([]byte, error)` method (the
+  `properties` parameter was added later, by Phase 1.5 below) — a
+  single-hop, route-free primitive that classifies ALL 3 reply legs the
+  SAME way an ordinary `Call` does: ordinary success, a reply itself
+  tagged as a Forward, or a reply matching a declared `ErrorPattern`
+  (returned as `ForwardRawErrorReply{Code, Body}` — a route-free RAW
+  code+body extraction; the registry-resolved target `*RouteHandle`'s
+  own `DecodeErrorFor` finishes the decode). No `ClientAwareTransport`
+  interface and no exported registry read-accessor exist — the
+  resolve+decode step stays entirely private to `api/reqreply`, reused
+  identically by both adapters.
+
+### Phase 1 + 1.5 — Forward/Bounce + wire-level properties
+
+A handler can respond "actually, route X should handle this instead" —
+pub/sub has no broker-level redirect the way HTTP does, so the SERVER
+signals "ask topic X instead" within the SAME correlation-ID round trip,
+and the CLIENT does the actual republish.
+
+- **Wire signal** mirrors each adapter's existing `ErrorPattern`
+  discriminator exactly (no new envelope type): `adapters/mqtt5` uses a
+  reserved `ContentType` + a reserved User Property carrying the
+  target's already-resolved concrete topic; `adapters/zeromq` uses a
+  3rd/4th status-frame value + the target topic as the next frame, for
+  BOTH REQ/REP and ROUTER/DEALER transports. Checked BEFORE
+  `ErrorPattern`/`DeadLetter` on both the server-publish side (3
+  independent dispatch implementations) and the client-recognize side
+  (6 independent reply-classification blocks — `call()`/`CallRaw()` ×
+  mqtt5's `clientTransport`, zeromq's `clientTransport`, zeromq's
+  `dealerClientTransport`) — 9 total insertion points.
+- **API surface (final, shipped shape, after Phase 1.5)**:
+
+  ```go
+  func Forward[TargetReq, TargetResp any](
+      target Route[TargetReq, TargetResp],
+      newReq TargetReq,
+      vars map[string]string,
+      properties map[string]string,
+      opts ...ClientHandleOpt,
+  ) error
+
+  type ForwardError struct {
+      TargetTopic string
+      Payload     []byte
+      Properties  map[string]string
+  }
+  ```
+
+  Unlike `rest.Redirect`, target's `Req`/`Resp` are both FREE to differ
+  from the originating route's — no method/body-preservation constraint,
+  no "from" parameter: the handler constructs and supplies a brand new
+  request value explicitly.
+- **Client-side resolution is CENTRALIZED in `Client.followForward`**
+  (later factored into a thin wrapper + `Client.followForwardFromHandle`
+  for Phase 2.1's own reuse, below) — an explicit chain-following LOOP
+  (mirrors `adapters/nethttp/redirect.go`'s `followRedirectHop`'s
+  `remaining`-counter shape): resolve `TargetTopic` against the registry
+  (`UnrecognizedForwardError`/`DuplicateTopicTypeMismatchError` on
+  failure); compare the originating/target routes' declared security
+  SCHEME NAME(S) — `ForwardSecuritySchemeMismatchError` on a structural
+  mismatch, fails fast client-side BEFORE the network round-trip (a
+  GENUINE DIVERGENCE from REST's own more permissive "let the target
+  reject it" behavior, since Forward's free `Req`/`Resp` makes
+  cross-domain scheme mismatches more likely); decrement
+  `ClientCallOptions.MaxForwards` (default 10, mirrors `rest.
+  ClientCallOptions.MaxRedirects`) — `ForwardChainTooDeepError` once
+  exhausted; call `CallRaw` and classify the reply (ordinary → decode
+  via the resolved target's own `Resp` codec; another Forward → loop;
+  `ErrorPattern`-matched → decode via `DecodeErrorFor`, producing the
+  SAME typed `ErrorPatternResponse` an ordinary `Call` would).
+  Deliberately does NOT dispatch the target route's own general-purpose
+  `ClientMW`/`ClientBoundMW` — mirrors `docs/features/rest-redirects.md`'s
+  own identical, explicitly-documented choice.
+- **`ClientTransport.CallAsync` was REMOVED from the interface
+  entirely** — `Client.CallAsync` restructured to wrap `Client.Call`
+  directly, reusing `Call`'s OWN centralized chain-following loop,
+  rather than each adapter running its own background goroutine (the
+  prior per-adapter design was confirmed structurally unable to let
+  `api/reqreply.Client` intercept a chained forward before the Future
+  resolved — the adapter's own goroutine resolved the Future entirely
+  INSIDE the adapter). Consistent with this project's general preference
+  for hard logic in the `api/*` layer, thin adapters.
+- **Structured errors** (mirrors REST's "Redirect"→"Forward" naming
+  1:1, plus 1 reqreply-specific addition): `ForwardError`,
+  `ForwardTargetVarError`, `UnrecognizedForwardError`,
+  `ForwardChainTooDeepError`, and `ForwardSecuritySchemeMismatchError`
+  (no REST equivalent — the fail-fast scheme-mismatch check above).
+- **Phase 1.5 (the cross-cutting wire-level properties addendum,
+  SHARED with Dead-Letter Replay below)**: `ClientTransport.CallRaw`
+  gained the `properties map[string]string` parameter shown above
+  (`adapters/mqtt5` threads it into the outgoing `PublishProperties.
+  User` via the existing `userPropertiesFromMap`; `adapters/zeromq`
+  accepts it for interface symmetry, a confirmed, tested no-op — no
+  property mechanism of its own); `Forward()`/`ForwardError` gained
+  `properties`/`Properties`, threaded through every hop of
+  `Client.followForward`. **A genuine write-side bug was found and
+  fixed DURING implementation**: the adapter's own forward-reply publish
+  initially never wrote `fwd.Properties` onto the wire at all (confirmed
+  via a live failing test before fixing) — resolved via a reserved,
+  prefixed MQTT5 User Property key (`forwardPropertyKeyPrefix =
+  "x-forward-prop:"`), kept distinct from the forward-topic marker and
+  the property-axis's own unprefixed middleware-declared properties
+  landing on the SAME reply.
+- Runnable demo: `examples/reqreply-api/demo_forward.go` (+
+  `demoForwardWithProperties` for the properties addendum). User-facing
+  docs: `docs/features/reqreply-forward.md`/`docs/guides/reqreply-forward.md`.
+
+### Phase 2.0 + 2.1 — Dead-Letter Replay
+
+The shipped `DeadLetter` mechanism (`docs/design/
+d-0005-error-handling.md`'s Topic 4) is SERVER/ADAPTER-SIDE ONLY; an
+ops/REPLAY tool consuming a `DeadLetterEnvelope` needs to resolve
+`SourceTopic` back to the ORIGINAL route (for its `Req` codec) to decode
+`Payload` and reissue the call — the registry's SECOND consumer.
+
+- **Key simplification**: Replay republishes `Payload` VERBATIM, never
+  re-decoded/re-encoded — `DeadLetter` fires for BOTH a decode failure
+  and an unmatched business error, so re-decoding would fail identically
+  for the decode-failure case, making replay impossible for exactly the
+  case most likely to need it.
+- **A real design gap found during review, before implementation**:
+  `ReplayDeadLetter`'s hop 1 CANNOT naively enter the shared
+  `followForward` loop — that loop's unconditional security-scheme
+  check has no answer for a COLD start (there is no "originating call"
+  to compare against), and would reject replay against ANY route
+  declaring security — almost certainly the most common real-world case
+  a replay tool exists to recover. **Resolution**: `ReplayDeadLetter`
+  performs its OWN loop-free hop-1 dispatch directly — its own
+  `UnrecognizedDeadLetterSourceError` on a registry miss (a DISTINCT
+  type from `UnrecognizedForwardError`, even though the underlying
+  condition is mechanically identical — a replay caller was never
+  "forwarding" anything), `DuplicateTopicTypeMismatchError` on a
+  poisoned entry, a single `CallRaw` call classified the SAME 3-way way.
+  ONLY if that first reply is itself a Forward does it hand off to the
+  EXISTING, UNCHANGED `Client.followForwardFromHandle` loop for hop 2
+  onward — at that point the just-resolved `SourceTopic` route
+  legitimately becomes the baseline the security-scheme check compares
+  subsequent targets against. This mirrors `Client.Call`'s own shape
+  exactly: hop 1 always lives OUTSIDE the loop too. Also fixes a
+  `MaxForwards` accounting asymmetry for free (hop 1 never consumes a
+  unit of the budget, the same way an ordinary `Call`'s own hop 1
+  doesn't).
+- **`Client.followForward` was factored into a thin wrapper +
+  `Client.followForwardFromHandle`** — the shared core now takes an
+  ALREADY-RESOLVED `originatingHandle any` directly, rather than
+  resolving one itself via `recoverRegistryEntry`, since Replay's hop 1
+  has no `Route[Req,Resp]`/`*RouteHandle[Req,Resp]` VALUE to resolve
+  (only `envelope.SourceTopic`, a string) — it already has the resolved
+  handle in hand from its own hop-1 lookup.
+- **API surface**:
+
+  ```go
+  func (c *Client) ReplayDeadLetter(ctx context.Context, envelope DeadLetterEnvelope, opts ...ClientCallOptions) (any, error)
+  func (c *Client) ReplayDeadLetterAsync(ctx context.Context, envelope DeadLetterEnvelope, opts ...ClientCallOptions) (any, error) // *Future[any] as any
+  func DecodeDeadLetterEnvelope(data []byte) (DeadLetterEnvelope, error)
+  ```
+
+  `DeadLetterEnvelope` gained `Properties map[string]string`, captured
+  at dead-letter time by `RouteHandle.DeadLetterFor`'s new `properties`
+  parameter (`adapters/mqtt5` real capture via
+  `propertyVarsFromUserProperties`; `adapters/zeromq` confirmed no-op) —
+  closing the SAME latent gap Phase 1.5 closed for Forward: without
+  this, a header-delivered credential on a dead-lettered request was
+  PERMANENTLY LOST. `ReplayDeadLetterAsync` reuses `CallAsync`'s
+  goroutine-wraps-a-synchronous-call SHAPE but NOT its exact
+  `FutureFactory`-resolution STEP — its `FutureFactory` comes from the
+  SAME registry-resolved handle its own hop-1 lookup recovers, since
+  `envelope.SourceTopic` (a string) has no route VALUE to resolve one
+  from the way `CallAsync` does.
+- **`DecodeDeadLetterEnvelope` + a real, pre-existing bug found and
+  fixed via this new function** (`deep-dive-bug-hunt` round): `Replay
+  DeadLetter` accepts a `DeadLetterEnvelope` VALUE, but nothing exported
+  could produce one from real wire bytes until `DecodeDeadLetterEnvelope`
+  was added — the only prior path was hand-rolling a JSON struct
+  mirroring the envelope codec's own PRIVATE field names. Writing the
+  function's own round-trip test then exposed a genuine, LATENT bug one
+  level deeper: `deadLetterEnvelopeCodec`'s `"payload"` field used
+  `codex.Bytes()` (documented for `format.Binary` use only) instead of
+  `codex.Base64()` — `DeadLetterFor`'s Marshal side happened to work
+  regardless of which codec was chosen (`encoding/json` always
+  base64-encodes a `[]byte` VALUE embedded in an untyped map), but
+  Decode failed outright once a real decode path existed to exercise
+  it. Fixed with zero wire-format compatibility impact (confirmed: the
+  JSON bytes produced are byte-for-byte identical either way). The
+  IDENTICAL bug exists, equally dormant, in `api/events.DeadLetterEnvelope`'s
+  own mirrored codec — flagged, left unfixed as out of this feature's
+  own scope (no analogous decode-back-into-a-typed-value consumer exists
+  in `api/events` today).
+- **Operational caution** (not a design bug): replaying a PERMANENTLY-
+  broken dead-lettered message could flood the dead-letter topic with
+  repeat entries if automated tooling retries without limit —
+  `ReplayDeadLetter`/`ReplayDeadLetterAsync` are not safe to loop
+  unconditionally against a message that will never succeed; such
+  tooling should track attempt counts or apply its own backoff policy.
+- Runnable demo: `examples/reqreply-api/demo_dead_letter_replay.go`.
+  Real end-to-end test: `adapters/mqtt5`'s `TestClient_ReplayDeadLetter_
+  EndToEndViaRealMQTT5Adapter_CredentialSurvivesReplay` (proves a
+  header-delivered credential survives dead-letter capture AND replay
+  over the real wire — the single most important proof the whole
+  wire-level properties addendum exists for). User-facing docs:
+  `docs/features/reqreply-dead-letter-replay.md`/`docs/guides/
+  reqreply-dead-letter-replay.md`.

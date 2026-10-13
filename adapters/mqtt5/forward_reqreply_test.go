@@ -13,7 +13,7 @@ import (
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 )
 
-// This file tests docs/roadmap/reqreply-forward-bounce.md's Phase 1.3
+// This file tests docs/design/d-0004-reqreply-workflow-simplification.md's Phase 1.3
 // mqtt5 wire signal: a handler returning reqreply.Forward(...) publishes
 // the reserved forward ContentType+User Property, and the CLIENT's
 // call()/CallRaw() recognize it as reqreply.ForwardError — BEFORE
@@ -121,8 +121,7 @@ func TestAttachServer_Forward_PublishesReservedSignal_SkipsErrorPatternAndDeadLe
 }
 
 // TestAttachServer_Forward_WithProperties_RoundTripsOverWire is Phase
-// 1.5's own wire-level properties addendum test (docs/roadmap/
-// reqreply-forward-bounce.md's "Addendum"): a handler's
+// 1.5's own wire-level properties addendum test (docs/design/d-0004-reqreply-workflow-simplification.md's "Addendum"): a handler's
 // reqreply.Forward(target, req, vars, properties) call's Properties
 // MUST appear on the published forward reply's User Properties
 // (write side), AND the client's CallRaw MUST decode them back into
@@ -331,7 +330,7 @@ func TestClientTransport_CallRaw_ForwardReply(t *testing.T) {
 // reqreply.ForwardError UNWRAPPED, exactly as CallWithTransport's own
 // real implementation already guarantees for any transport.Call error.
 // No new production code is expected to make this pass — pure
-// verification, per docs/roadmap/reqreply-forward-bounce.md's dispatch-
+// verification, per docs/design/d-0004-reqreply-workflow-simplification.md's dispatch-
 // path inventory.
 func TestMQTT5CallAdapter_ForwardError_PropagatesUnwrapped(t *testing.T) {
 	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})

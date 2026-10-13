@@ -229,8 +229,7 @@ func Build() (*Built, error) {
 		return nil, err
 	}
 
-	// ForwardOriginatingRoute/ForwardTargetRoute demonstrate docs/roadmap/
-	// reqreply-forward-bounce.md — see demo_forward.go. Both stay
+	// ForwardOriginatingRoute/ForwardTargetRoute demonstrate docs/design/d-0004-reqreply-workflow-simplification.md — see demo_forward.go. Both stay
 	// OUTSIDE the "compute" Mount too, same rationale as
 	// ErrorPatternComputeRoute above.
 	if _, err := routes.ForwardTargetRoute.

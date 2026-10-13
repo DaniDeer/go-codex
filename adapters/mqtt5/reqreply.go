@@ -174,7 +174,7 @@ type CallOptions struct {
 //
 // Dispatch ordering: wherever both [isForwardReply] and [isErrorReply] are
 // consulted on the same reply, [isForwardReply] MUST be checked FIRST —
-// docs/roadmap/reqreply-forward-bounce.md's documented "Forward
+// docs/design/d-0004-reqreply-workflow-simplification.md's documented "Forward
 // recognized before ErrorPattern" precedence, mirroring
 // [rest.RedirectError]'s identical "recognized before ErrorPattern/
 // ErrorStatus" rule.
@@ -187,8 +187,7 @@ func isErrorReply(msg *pahomqtt5.Publish) bool {
 const errorReplyContentType = "application/mqtt5-error"
 
 // isForwardReply checks whether an incoming reply was sent as a
-// [reqreply.ForwardError] signal by the responder — docs/roadmap/
-// reqreply-forward-bounce.md's mqtt5 wire signal, built the SAME way
+// [reqreply.ForwardError] signal by the responder — docs/design/d-0004-reqreply-workflow-simplification.md's mqtt5 wire signal, built the SAME way
 // [isErrorReply] is: a reserved ContentType. See [isErrorReply]'s doc
 // comment for the dispatch-ordering rule governing both checks.
 func isForwardReply(msg *pahomqtt5.Publish) bool {
@@ -224,8 +223,7 @@ func forwardTopicFromUserProperties(msg *pahomqtt5.Publish) string {
 
 // forwardPropertyKeyPrefix prefixes each key of a [reqreply.ForwardError]'s
 // Properties when written onto a forward reply's User Properties —
-// Phase 1.5's wire-level properties addendum (docs/roadmap/
-// reqreply-forward-bounce.md). A prefix is needed because the SAME
+// Phase 1.5's wire-level properties addendum (docs/design/d-0004-reqreply-workflow-simplification.md). A prefix is needed because the SAME
 // forward reply also carries [forwardTopicPropertyKey] (a marker) and
 // any Case 3 middleware-declared response properties (unprefixed,
 // docs/design/d-0003-codec-declared-middlewares.md's Addendum) — without

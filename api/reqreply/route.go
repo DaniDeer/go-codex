@@ -563,7 +563,7 @@ type ErrorPatternResponse struct {
 // Error implements the error interface, letting [ErrorPatternResponse]
 // be returned directly as the error value from [Client.Call]/[Client.
 // CallAsync]'s forward-following chain-following loop
-// (docs/roadmap/reqreply-forward-bounce.md's "Client-side resolution")
+// (docs/design/d-0004-reqreply-workflow-simplification.md's "Client-side resolution")
 // when a forwarded reply's declared [ErrorPattern] matches — mirrors
 // each adapter's OWN `mqtt5.ErrorPatternResponse`/
 // `zeromq.ErrorPatternResponse` wrapper type's identical Error() shape,

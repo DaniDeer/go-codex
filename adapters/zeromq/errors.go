@@ -42,8 +42,7 @@ const (
 	KindMiddleware
 
 	// KindForward indicates a handler returned a [reqreply.ForwardError]
-	// (constructed via [reqreply.Forward]) — docs/roadmap/
-	// reqreply-forward-bounce.md's Phase 1 wire signal. Distinct from
+	// (constructed via [reqreply.Forward]) — docs/design/d-0004-reqreply-workflow-simplification.md's Phase 1 wire signal. Distinct from
 	// KindHandler: a Forward is a DELIBERATE instruction to republish
 	// elsewhere, not a failure — ErrorPattern matching and DeadLetter
 	// are both skipped for it (see the Dispatch ordering section of the

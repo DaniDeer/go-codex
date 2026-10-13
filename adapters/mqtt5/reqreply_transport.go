@@ -188,7 +188,7 @@ func publishHandlerErrorReplyReflect(
 // [ServeOptions.Capabilities] (docs/design/
 // d-0006-protocol-native-capabilities.md's Phase 2) — closing a gap
 // where this path previously hardcoded QoS 1 and never set Retained.
-// properties (Phase 2.0, docs/roadmap/reqreply-dead-letter-replay.md's
+// properties (Phase 2.0, docs/design/d-0004-reqreply-workflow-simplification.md's
 // own "Addendum") is the FAILED request's own incoming User Properties —
 // threaded straight through to [reqreply.RouteHandle.DeadLetterFor] so
 // the published [reqreply.DeadLetterEnvelope] captures them, mirroring
@@ -773,7 +773,7 @@ func (t *serverTransport) Serve(ctx context.Context, routeAny any, fnAny any) er
 			dispObs.RecordDisposition(path, disposition)
 		}
 		if handlerErr != nil {
-			// docs/roadmap/reqreply-forward-bounce.md's Phase 1.3
+			// docs/design/d-0004-reqreply-workflow-simplification.md's Phase 1.3
 			// "Dispatch ordering" rule: a [reqreply.ForwardError] is a
 			// DELIBERATE instruction to republish elsewhere, not a
 			// failure — it MUST skip ErrorPattern matching
@@ -1372,7 +1372,7 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Kind: KindTimeout, Err: fmt.Errorf("no reply within %s", timeout)}).Convert(errType)}
 		case replyMsg := <-replyCh:
 			// Dispatch ordering: [isForwardReply] is checked BEFORE
-			// [isErrorReply] — docs/roadmap/reqreply-forward-bounce.md's
+			// [isErrorReply] — docs/design/d-0004-reqreply-workflow-simplification.md's
 			// documented "Forward recognized before ErrorPattern"
 			// precedence, mirroring [rest.RedirectError]'s identical
 			// rule (see [isErrorReply]'s doc comment).
@@ -1460,8 +1460,7 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 	return finalResults[0].Interface(), nil
 }
 
-// CallRaw implements [reqreply.ClientTransport]. docs/roadmap/
-// reqreply-client-registry.md Phase 0 infrastructure — publishes payload
+// CallRaw implements [reqreply.ClientTransport]. docs/design/d-0004-reqreply-workflow-simplification.md Phase 0 infrastructure — publishes payload
 // to topic VERBATIM (no route/Req/Resp reflection at all, unlike [call])
 // and awaits exactly one correlated reply, reusing the SAME reply-topic/
 // correlation-ID/subscribe mechanics [call] does, generalized to not
@@ -1473,16 +1472,16 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 // [reqreply.ForwardRawErrorReply{Code, Body}] — the RAW wire-level code
 // (via [errorCodeFromUserProperties], itself route-free) and body,
 // deliberately WITHOUT attempting [call]'s own matched-code DECODE
-// (which needs a *reqreply.RouteHandle CallRaw never receives). A future
-// caller holding the REGISTRY-resolved target RouteHandle (docs/
-// roadmap/reqreply-forward-bounce.md/reqreply-dead-letter-replay.md's
-// own chain-following loop) finishes that decode itself via
+// (which needs a *reqreply.RouteHandle CallRaw never receives). A
+// caller holding the REGISTRY-resolved target RouteHandle (e.g.
+// [Client.followForward]'s/[Client.ReplayDeadLetter]'s own
+// chain-following loop) finishes that decode itself via
 // RouteHandle.DecodeErrorFor(Code, Body) — moving the "hard part" to
 // api/reqreply, keeping this adapter method a pure wire-level
 // extraction primitive.
 //
 // The THIRD classification leg (a reply tagged as a Forward) IS
-// implemented — docs/roadmap/reqreply-forward-bounce.md's Phase 1.3: a
+// implemented — docs/design/d-0004-reqreply-workflow-simplification.md's Phase 1.3: a
 // reply carrying mqtt5's reserved forward ContentType ([isForwardReply])
 // returns [reqreply.ForwardError{TargetTopic, Payload}] directly (no
 // decode step needed — the target topic is already concrete, unlike
@@ -1490,7 +1489,7 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 // BEFORE the isErrorReply check below, mirroring [call]'s own documented
 // "Forward recognized before ErrorPattern" precedence.
 //
-// properties (Phase 1.5, docs/roadmap/reqreply-forward-bounce.md's own
+// properties (Phase 1.5, docs/design/d-0004-reqreply-workflow-simplification.md's own
 // "Addendum" section) is threaded into the outgoing request's
 // PublishProperties.User, mirroring the EXISTING userPropertiesFromMap
 // conversion Serve's own write-side wiring already uses — nil-safe,
@@ -1635,8 +1634,7 @@ func (t *clientTransport) CallRaw(ctx context.Context, topic string, payload []b
 	}
 }
 
-// CallAsync is REMOVED from [reqreply.ClientTransport] — docs/roadmap/
-// reqreply-forward-bounce.md's "CallAsync/Future" section (traced
+// CallAsync is REMOVED from [reqreply.ClientTransport] — docs/design/d-0004-reqreply-workflow-simplification.md's "CallAsync/Future" section (traced
 // against the real shipped code and found the adapter's own background
 // goroutine resolved the Future entirely INSIDE the adapter, before
 // [reqreply.Client] could ever intercept a chained forward reply).

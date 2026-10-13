@@ -14,7 +14,7 @@ import (
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 )
 
-// This file demonstrates docs/roadmap/reqreply-dead-letter-replay.md's
+// This file demonstrates docs/design/d-0004-reqreply-workflow-simplification.md's
 // Phase 2.1 end to end: a dead-lettered message — captured by the SAME
 // reqreply.DeadLetter mechanism demo_error_pattern.go's
 // demoErrorPatternDeadLetterFallback already shows — can be RECOVERED via

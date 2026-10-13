@@ -20,8 +20,7 @@ import (
 // for the dead-letter to be reachable at all.
 
 // TestDeadLetter_ServeRequestPayloadDecode_PropertiesConfirmedNoop is
-// Phase 2.0's own wire-level properties addendum test (docs/roadmap/
-// reqreply-dead-letter-replay.md's "Addendum"): zeromq's REQ/REP
+// Phase 2.0's own wire-level properties addendum test (docs/design/d-0004-reqreply-workflow-simplification.md's "Addendum"): zeromq's REQ/REP
 // transport has no property/header wire mechanism to capture from —
 // this proves the published [reqreply.DeadLetterEnvelope]'s Properties
 // field is ALWAYS absent/empty here, a deliberate, tested no-op rather

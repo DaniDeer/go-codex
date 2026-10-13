@@ -26,21 +26,23 @@ type ClientTransport interface {
 
 	// CallRaw publishes payload to topic VERBATIM (already encoded by the
 	// caller — no Req/Resp type involvement here) and awaits exactly ONE
-	// correlated reply — the single-hop primitive
-	// docs/roadmap/reqreply-forward-bounce.md's forward-following chain
-	// and docs/roadmap/reqreply-dead-letter-replay.md's replay both build
-	// on, via a shared loop living in [*Client] (NOT inside CallRaw
-	// itself, and NOT inside either consuming roadmap feature's own
-	// code — CallRaw is Phase 0 infrastructure, added ahead of its real
-	// consumers).
+	// correlated reply — the single-hop primitive [Client.followForward]'s
+	// forward-following chain and [Client.ReplayDeadLetter]'s replay both
+	// build on, via a shared loop living in [*Client] (NOT inside CallRaw
+	// itself, and NOT inside either consuming feature's own code —
+	// CallRaw is Phase 0 infrastructure, added ahead of its real
+	// consumers). See docs/design/d-0004-reqreply-workflow-simplification.md's
+	// own "Addendum: Client Registry, Forward/Bounce, and Dead-Letter
+	// Replay" for the full design history (these 3 features originally
+	// had their own roadmap docs, since graduated/folded into that
+	// Addendum).
 	//
 	// CallRaw classifies its reply the SAME 3-way way an ordinary
 	// Call/CallAsync reply already does:
 	//   - an ordinary successful reply:              (replyBytes, nil)
 	//   - a reply tagged as a Forward (reserved wire
 	//     signal — mqtt5's ContentType+User Property,
-	//     zeromq's status frame — SHIPPED,
-	//     docs/roadmap/reqreply-forward-bounce.md):    (nil, ForwardError{TargetTopic, Payload})
+	//     zeromq's status frame — SHIPPED):           (nil, ForwardError{TargetTopic, Payload})
 	//   - a reply matching a declared ErrorPattern:    (nil, ForwardRawErrorReply{Code, Body})
 	//
 	// CallRaw deliberately does NOT decode the ErrorPattern-matched case
@@ -48,36 +50,32 @@ type ClientTransport interface {
 	// declared pattern against (only a topic string and raw bytes).
 	// [ForwardRawErrorReply] carries the RAW wire-level code (if present)
 	// + body instead — a caller holding the registry-resolved target
-	// *RouteHandle (e.g. the chain-following loop
-	// docs/roadmap/reqreply-forward-bounce.md's Client.Call and
-	// docs/roadmap/reqreply-dead-letter-replay.md's ReplayDeadLetter both
-	// build) can finish the decode itself via
-	// RouteHandle.DecodeErrorFor(Code, Body) — moving the "hard part"
-	// (interpreting the code against a declared ErrorPattern) to
-	// api/reqreply, keeping CallRaw a pure wire-level extraction
+	// *RouteHandle (e.g. [Client.followForward]'s/[Client.
+	// ReplayDeadLetter]'s own chain-following loop) can finish the decode
+	// itself via RouteHandle.DecodeErrorFor(Code, Body) — moving the
+	// "hard part" (interpreting the code against a declared ErrorPattern)
+	// to api/reqreply, keeping CallRaw a pure wire-level extraction
 	// primitive. Code is "" when the reply carries no code (the
 	// plain-text fallback case — mirrors Call's own identical fallback).
 	//
-	// The Forward leg's wire signal is SHIPPED
-	// (docs/roadmap/reqreply-forward-bounce.md, Phase 1) — each
-	// adapter's CallRaw implements all 3 legs; [Client.followForward]
-	// (docs/roadmap/reqreply-forward-bounce.md's chain-following loop)
-	// is the real consumer, built on top of this primitive.
+	// The Forward leg's wire signal is SHIPPED (Phase 1) — each
+	// adapter's CallRaw implements all 3 legs; [Client.followForward]'s
+	// chain-following loop is the real consumer, built on top of this
+	// primitive.
 	//
-	// properties (Phase 1.5, docs/roadmap/reqreply-forward-bounce.md's
-	// own "Addendum" section) carries wire-level properties/headers
-	// (e.g. an mqtt5 User Property delivering a credential) alongside
-	// payload — nil when there are none, mirroring every other optional
-	// map parameter in this package (e.g. [Forward]'s own vars
-	// parameter). Closes the LATENT gap found during a
-	// reqreply-dead-letter-replay.md review round: CallRaw previously
-	// had NO channel to carry anything beyond the body, so neither an
-	// ordinary [Forward] hop nor a dead-letter [ReplayDeadLetter] could
-	// ever supply a property/header-delivered credential to the target.
-	// adapters/mqtt5 threads this into the outgoing PublishProperties.
-	// User; adapters/zeromq accepts it for interface symmetry only — it
-	// has no property/header mechanism of its own to put it on, a
-	// confirmed, deliberate no-op there, not a partial implementation.
+	// properties (Phase 1.5) carries wire-level properties/headers (e.g.
+	// an mqtt5 User Property delivering a credential) alongside payload —
+	// nil when there are none, mirroring every other optional map
+	// parameter in this package (e.g. [Forward]'s own vars parameter).
+	// Closes a LATENT gap found during a Dead-Letter Replay design
+	// review: CallRaw previously had NO channel to carry anything beyond
+	// the body, so neither an ordinary [Forward] hop nor a dead-letter
+	// [ReplayDeadLetter] could ever supply a property/header-delivered
+	// credential to the target. adapters/mqtt5 threads this into the
+	// outgoing PublishProperties.User; adapters/zeromq accepts it for
+	// interface symmetry only — it has no property/header mechanism of
+	// its own to put it on, a confirmed, deliberate no-op there, not a
+	// partial implementation.
 	CallRaw(ctx context.Context, topic string, payload []byte, properties map[string]string) ([]byte, error)
 }
 
@@ -148,12 +146,11 @@ type ClientCallOptions struct {
 }
 
 // Client accumulates ONE piece of spec state beyond a dispatch handle: a
-// redirect-target-style registry (see [Client.RegisterRoute]) — added for
-// docs/roadmap/reqreply-forward-bounce.md's forward/bounce mechanism,
-// mirroring [rest.Client]'s own registry (see docs/features/
-// rest-redirects.md). Still just ONE [ClientTransport] attached via
-// [Client.Attach], mirroring [rest.Client]/[events.Client]'s identical
-// attach shape.
+// redirect-target-style registry (see [Client.RegisterRoute]) — added
+// for [Forward]'s own forward/bounce mechanism, mirroring [rest.Client]'s
+// own registry (see docs/features/rest-redirects.md). Still just ONE
+// [ClientTransport] attached via [Client.Attach], mirroring
+// [rest.Client]/[events.Client]'s identical attach shape.
 type Client struct {
 	mu        sync.RWMutex
 	transport ClientTransport
@@ -174,10 +171,9 @@ type registeredRoute struct {
 	// ALREADY-registered topic — [Call]/[CallAsync]'s own contract
 	// requires registerAutoFromCall to never error, so the conflict is
 	// recorded here instead and surfaced lazily by whichever future
-	// consumer resolves this topic (docs/roadmap/reqreply-forward-bounce.md's
-	// forward resolution, docs/roadmap/reqreply-dead-letter-replay.md's
-	// replay resolution) at the exact point it would otherwise decode
-	// using the WRONG Resp type.
+	// consumer resolves this topic ([Client.followForward]'s forward
+	// resolution, [Client.ReplayDeadLetter]'s replay resolution) at the
+	// exact point it would otherwise decode using the WRONG Resp type.
 	poisoned bool
 
 	// conflictingType records the SECOND type seen, for
@@ -231,12 +227,11 @@ func topicOf(handleVal reflect.Value) string {
 }
 
 // RegisterRoute warms c's registry with route without making a live call
-// against it — for a route that is only ever reached as a
-// [docs/roadmap/reqreply-forward-bounce.md Forward] target or a
-// [docs/roadmap/reqreply-dead-letter-replay.md ReplayDeadLetter] source,
-// never called directly (routes called directly via [Client.Call]/
-// [Client.CallAsync] are indexed automatically). route may be a [Route]
-// or [*RouteHandle] — discriminated via reflection.
+// against it — for a route that is only ever reached as a [Forward]
+// target or a [Client.ReplayDeadLetter] source, never called directly
+// (routes called directly via [Client.Call]/[Client.CallAsync] are
+// indexed automatically). route may be a [Route] or [*RouteHandle] —
+// discriminated via reflection.
 //
 // Re-registering the SAME Topic with a route recovering to the IDENTICAL
 // concrete handle type is a safe no-op. Re-registering the SAME Topic
@@ -400,8 +395,8 @@ func (c *Client) Attach(t ClientTransport) error {
 // Returns [NoClientTransportAttachedError] if [Client.Attach] was never
 // called.
 //
-// Auto-follows a [ForwardError] (docs/roadmap/reqreply-forward-bounce.md)
-// via an explicit CHAIN-FOLLOWING LOOP, CENTRALIZED here — not inside
+// Auto-follows a [ForwardError] via an explicit CHAIN-FOLLOWING LOOP,
+// CENTRALIZED here — not inside
 // the adapter — see [Client.followForward]'s doc comment for the full
 // resolution mechanism (registry lookup, security-scheme check,
 // [ClientCallOptions.MaxForwards] capping, decode).
@@ -430,15 +425,15 @@ func (c *Client) Call(ctx context.Context, route any, req any, opts ...ClientCal
 // based reply matching) is genuinely asynchronous, unlike REST's
 // synchronous HTTP.
 //
-// RESTRUCTURED (docs/roadmap/reqreply-forward-bounce.md's "CallAsync/
-// Future" section) — CallAsync no longer delegates to a
-// ClientTransport.CallAsync method at all (that method was REMOVED from
-// the interface entirely); it resolves a [FutureFactory] from route
-// itself, then launches a goroutine that calls [Client.Call] directly,
-// reusing Call's OWN chain-following loop (docs/roadmap/
-// reqreply-forward-bounce.md's forward-following, docs/roadmap/
-// reqreply-dead-letter-replay.md's replay) rather than needing a SECOND,
-// adapter-level copy of it. A prior design had each adapter's own
+// RESTRUCTURED ("CallAsync/Future" in docs/design/
+// d-0004-reqreply-workflow-simplification.md's Addendum) — CallAsync no
+// longer delegates to a ClientTransport.CallAsync method at all (that
+// method was REMOVED from the interface entirely); it resolves a
+// [FutureFactory] from route itself, then launches a goroutine that
+// calls [Client.Call] directly, reusing Call's OWN chain-following loop
+// ([Client.followForward]'s forward-following, [Client.ReplayDeadLetter]'s
+// replay) rather than needing a SECOND, adapter-level copy of it. A
+// prior design had each adapter's own
 // CallAsync run a background goroutine that resolved the Future entirely
 // INSIDE the adapter — traced against the real, shipped code and found
 // structurally unable to let api/reqreply.Client intercept a forward

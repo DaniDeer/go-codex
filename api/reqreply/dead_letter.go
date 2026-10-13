@@ -34,8 +34,7 @@ type DeadLetterEnvelope struct {
 	Timestamp time.Time
 	// Properties carries the original request's wire-level properties
 	// (e.g. MQTT5 User Properties) at the moment it was dead-lettered —
-	// Phase 2.0's own wire-level properties addendum (docs/roadmap/
-	// reqreply-dead-letter-replay.md's "Addendum"), mirroring Phase
+	// Phase 2.0's own wire-level properties addendum (docs/design/d-0004-reqreply-workflow-simplification.md's "Addendum"), mirroring Phase
 	// 1.5's identical [ForwardError.Properties] field. Needed because a
 	// header-delivered credential is otherwise unrecoverable at replay
 	// time: the dead-lettered Payload alone never carried it. nil when
@@ -257,7 +256,7 @@ func registerDeadLetterChannel(b *Server, rule *deadLetterRule) {
 // from ctx: each adapter stores its raw message under its OWN private
 // context key type).
 //
-// properties (Phase 2.0, docs/roadmap/reqreply-dead-letter-replay.md's
+// properties (Phase 2.0, docs/design/d-0004-reqreply-workflow-simplification.md's
 // own "Addendum") carries the original request's wire-level properties
 // (e.g. MQTT5 User Properties) at the moment it failed — captured into
 // the envelope's own Properties field so a header-delivered credential

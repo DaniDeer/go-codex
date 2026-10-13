@@ -35,8 +35,7 @@ func Triple(_ context.Context, req routes.ComputeReq) (routes.ComputeResp, error
 // declaring a 3rd "doubling" handler) instead of returning a normal
 // response, constructing a BRAND NEW request (X/Y scaled ×10, visually
 // distinct from the caller's own req) to demonstrate Forward's "target's
-// Req/Resp are free to differ" rule — see docs/roadmap/
-// reqreply-forward-bounce.md's "API surface" section.
+// Req/Resp are free to differ" rule — see docs/design/d-0004-reqreply-workflow-simplification.md's "API surface" section.
 func ForwardToDouble(_ context.Context, req routes.ComputeReq) (routes.ComputeResp, error) {
 	return routes.ComputeResp{}, reqreply.Forward(routes.ForwardTargetRoute, routes.ComputeReq{X: req.X * 10, Y: req.Y * 10}, nil, nil)
 }

@@ -10,7 +10,7 @@ import (
 	"github.com/DaniDeer/go-codex/format"
 )
 
-// ── docs/roadmap/reqreply-dead-letter-replay.md's own Phase 2.1 tests —
+// ── docs/design/d-0004-reqreply-workflow-simplification.md's own Phase 2.1 tests —
 // reuses forwardFakeClientTransport (forward_resolve_test.go's own
 // scripted fake) since ReplayDeadLetter's hop 1 dispatches via the EXACT
 // SAME ClientTransport.CallRaw primitive [Client.followForwardFromHandle]

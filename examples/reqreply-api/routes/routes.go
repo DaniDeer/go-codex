@@ -94,8 +94,7 @@ var TripleRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 	reqreply.RouteMeta{OperationID: "computeTriple", Summary: "Triple the sum of two integers."},
 )
 
-// ForwardOriginatingRoute/ForwardTargetRoute demonstrate docs/roadmap/
-// reqreply-forward-bounce.md's Forward/Bounce feature: a handler on
+// ForwardOriginatingRoute/ForwardTargetRoute demonstrate docs/design/d-0004-reqreply-workflow-simplification.md's Forward/Bounce feature: a handler on
 // ForwardOriginatingRoute always returns reqreply.Forward(...) targeting
 // ForwardTargetRoute — mqtt5Client.Call auto-follows it via its
 // CENTRALIZED chain-following loop (see demo_forward.go), returning
@@ -118,8 +117,7 @@ var ForwardOriginatingRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 )
 
 // ForwardWithPropertiesSourceRoute demonstrates Phase 1.5's own
-// wire-level properties addendum (docs/roadmap/
-// reqreply-forward-bounce.md's "Addendum"): its handler (declared
+// wire-level properties addendum (docs/design/d-0004-reqreply-workflow-simplification.md's "Addendum"): its handler (declared
 // inline in demo_forward.go's demoForwardWithProperties) forwards to
 // ForwardTargetRoute WITH an explicit property attached — proving
 // Forward's properties argument reaches the target as a REAL wire-level
@@ -339,8 +337,7 @@ var DeadLetterComputeRoute = reqreply.NewRoute[ComputeReq, ComputeResp](
 	reqreply.DeadLetter("compute/add-deadletter-demo/dlq"),
 )
 
-// DeadLetterReplayComputeRoute demonstrates docs/roadmap/
-// reqreply-dead-letter-replay.md's own Phase 2.1 (see
+// DeadLetterReplayComputeRoute demonstrates docs/design/d-0004-reqreply-workflow-simplification.md's own Phase 2.1 (see
 // demo_dead_letter_replay.go): its handler (declared inline in that
 // demo) fails on its FIRST invocation (an unmatched business error,
 // dead-lettering the request — capturing the real incoming

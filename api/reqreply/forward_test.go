@@ -54,8 +54,7 @@ func TestForward_HappyPath_ReturnsForwardErrorWithResolvedTopicAndEncodedPayload
 }
 
 // TestForward_WithProperties_ReturnsForwardErrorWithProperties is Phase
-// 1.5's own wire-level properties addendum test (docs/roadmap/
-// reqreply-forward-bounce.md's "Addendum"): the properties param
+// 1.5's own wire-level properties addendum test (docs/design/d-0004-reqreply-workflow-simplification.md's "Addendum"): the properties param
 // supplied to Forward() must be carried, unmodified, onto the returned
 // ForwardError.Properties — the field a conforming adapter's dispatch
 // (e.g. mqtt5) later writes onto the actual wire reply.

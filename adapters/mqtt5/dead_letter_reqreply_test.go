@@ -17,8 +17,7 @@ import (
 // fails before a successful reply can be produced.
 
 // TestDeadLetter_ServeRequestPayloadDecode_CapturesIncomingUserProperties
-// is Phase 2.0's own wire-level properties addendum test (docs/roadmap/
-// reqreply-dead-letter-replay.md's "Addendum"): a dead-lettered
+// is Phase 2.0's own wire-level properties addendum test (docs/design/d-0004-reqreply-workflow-simplification.md's "Addendum"): a dead-lettered
 // request's REAL incoming User Properties (e.g. a header-delivered
 // credential) must appear on the published [reqreply.
 // DeadLetterEnvelope]'s own Properties field — otherwise a credential

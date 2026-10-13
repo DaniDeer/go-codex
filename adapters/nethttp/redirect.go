@@ -70,7 +70,7 @@ type redirectFollowUpInfo struct {
 // override the originating call used) — found-and-fixed gap: every
 // follow-up hop was completely unobserved before this fix (confirmed via
 // grep: zero [stats.Observer] calls anywhere in this file), discovered
-// while designing docs/roadmap/reqreply-forward-bounce.md's own
+// while designing docs/design/d-0004-reqreply-workflow-simplification.md's own
 // per-hop-observed requirement and tracked as its own follow-up
 // (`rest-redirect-observer-gap`) until fixed here.
 func followRedirect(ctx context.Context, client *rest.Client, httpClient *http.Client, baseURL string, first rest.RedirectError, info redirectFollowUpInfo, maxRedirects int, obs stats.Observer) (any, error) {
@@ -133,7 +133,7 @@ func followRedirectHop(ctx context.Context, client *rest.Client, httpClient *htt
 // once received" convention. hopStart is captured HERE (not reused from
 // an outer scope) so EACH hop's own duration is independently timed —
 // the SAME "every hop observed as if it were its own Call" decision
-// docs/roadmap/reqreply-forward-bounce.md made for reqreply's own
+// docs/design/d-0004-reqreply-workflow-simplification.md made for reqreply's own
 // forward-following, applied back to REST to close the asymmetry that
 // design discussion flagged.
 func doFollowUpRequest(ctx context.Context, client *rest.Client, httpClient *http.Client, baseURL, method, location string, body []byte, contentType string, info redirectFollowUpInfo, handle any, remaining, configuredMax int, obs stats.Observer) (any, error) {

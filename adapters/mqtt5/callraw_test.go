@@ -11,15 +11,14 @@ import (
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 )
 
-// ── docs/roadmap/reqreply-client-registry.md Phase 0: CallRaw ──────────────
+// ── docs/design/d-0004-reqreply-workflow-simplification.md Phase 0: CallRaw ──────────────
 //
-// CallRaw is Phase 0 infrastructure with no real consumer yet (docs/
-// roadmap/reqreply-forward-bounce.md's chain-following loop, its first
-// real caller, is not implemented) — these tests exercise it directly
-// against a real Server+Attach round trip (mirrors
-// TestAttachServer_AttachClient_RoundTrip's setup), the SAME "stub
-// consumer" testing strategy the roadmap doc's own "Next step" section
-// describes.
+// CallRaw is Phase 0 infrastructure — [Client.followForward]'s/[Client.
+// ReplayDeadLetter]'s own chain-following loop is its real, shipped
+// consumer (see d-0004's own "Addendum: Client Registry, Forward/Bounce,
+// and Dead-Letter Replay" for the full design history) — these tests
+// exercise it directly against a real Server+Attach round trip (mirrors
+// TestAttachServer_AttachClient_RoundTrip's setup).
 
 func TestClientTransport_CallRaw_OrdinaryReply(t *testing.T) {
 	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})

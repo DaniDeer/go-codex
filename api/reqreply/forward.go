@@ -14,8 +14,10 @@ import (
 // target.ClientHandle(opts...).BuildTopic) and returns a single error a
 // handler returns as its own error value: the [ForwardError] itself on
 // success, or a typed [ForwardTargetVarError] on failure — mirrors
-// [rest.Redirect]'s identical "single sentinel error return" shape
-// (docs/roadmap/reqreply-forward-bounce.md's "API surface" section).
+// [rest.Redirect]'s identical "single sentinel error return" shape (see
+// docs/design/d-0004-reqreply-workflow-simplification.md's own
+// "Addendum: Client Registry, Forward/Bounce, and Dead-Letter Replay"
+// for the full design history).
 //
 // Unlike [rest.Redirect], Forward has no "from" parameter and no status
 // code: reqreply's pub/sub round trip has no HTTP-style redirect-family
@@ -24,8 +26,7 @@ import (
 // method/body preservation) — newReq is the brand new request value the
 // handler constructs explicitly for target.
 //
-// properties (Phase 1.5, docs/roadmap/reqreply-forward-bounce.md's own
-// "Addendum" section) carries wire-level properties/headers (e.g. an
+// properties (Phase 1.5) carries wire-level properties/headers (e.g. an
 // mqtt5 User Property delivering a credential) the handler wants carried
 // through to target — nil when there are none. EXPLICIT, not derived
 // from any ClientMW/context-ambient mechanism: Forward is called from
@@ -67,7 +68,8 @@ func Forward[TargetReq, TargetResp any](
 // round trip, instead of returning a normal response body — pub/sub has
 // no broker-level "redirect" the way HTTP does, so the SERVER signals
 // "ask topic X instead" and the CLIENT does the actual re-publish (see
-// docs/roadmap/reqreply-forward-bounce.md's "Why this exists").
+// docs/design/d-0004-reqreply-workflow-simplification.md's "Addendum:
+// Client Registry, Forward/Bounce, and Dead-Letter Replay").
 // Returned as the error value from a handler — recognized by each
 // adapter's `call()`/`CallRaw()` dispatch via a reserved wire-level
 // signal (mqtt5's ContentType+User Property; zeromq's frames[0]),
@@ -88,8 +90,7 @@ type ForwardError struct {
 	// User Property delivering a credential) the handler explicitly
 	// supplied to [Forward] — nil when there are none. Threaded through
 	// to [ClientTransport.CallRaw]'s own properties parameter by
-	// [Client.followForward] at every hop (Phase 1.5,
-	// docs/roadmap/reqreply-forward-bounce.md's "Addendum").
+	// [Client.followForward] at every hop (Phase 1.5).
 	Properties map[string]string
 }
 
@@ -183,8 +184,7 @@ func (e ForwardChainTooDeepError) LogValue() slog.Value {
 // [Client.CallAsync] when a forward's target route declares a security
 // scheme that does not match the originating route's own declared
 // scheme — a GENUINE DIVERGENCE from REST's own more permissive
-// behavior (docs/roadmap/reqreply-forward-bounce.md's "Security-scheme
-// mismatch check"): because a forward's target can be an ENTIRELY
+// behavior: because a forward's target can be an ENTIRELY
 // DIFFERENT route in an entirely different trust/feature domain (Req/
 // Resp are free to differ, unlike HTTP 307/308), a genuine cross-domain
 // scheme mismatch is more likely here than for REST's own redirect
@@ -222,11 +222,11 @@ func (e ForwardSecuritySchemeMismatchError) LogValue() slog.Value {
 // [ClientCallOptions.MaxForwards] is <= 0 (the unset default).
 const defaultMaxForwards = 10
 
-// followForward is [Client.Call]'s CENTRALIZED chain-following loop
-// (docs/roadmap/reqreply-forward-bounce.md's "Client-side resolution") —
+// followForward is [Client.Call]'s CENTRALIZED chain-following loop —
 // NOT inside the adapter, a deliberate divergence from REST's own
-// adapter-side resolution mechanism (see docs/roadmap/
-// reqreply-client-registry.md's "Adapter↔registry bridge" for the full
+// adapter-side resolution mechanism (see docs/design/
+// d-0004-reqreply-workflow-simplification.md's own "Addendum: Client
+// Registry, Forward/Bounce, and Dead-Letter Replay" for the full
 // rationale). originatingRoute is the route [Client.Call] was ORIGINALLY
 // dispatched against (needed for its OWN declared security requirements,
 // compared against each hop's target below) — fwd is the FIRST
@@ -238,10 +238,9 @@ const defaultMaxForwards = 10
 // [DuplicateTopicTypeMismatchError] if the registry entry is poisoned);
 // (2) compares the originating and target routes' declared security
 // SCHEME NAME(S) — [ForwardSecuritySchemeMismatchError] on a structural
-// mismatch, fails fast, client-side, BEFORE the network round-trip (see
-// docs/roadmap/reqreply-forward-bounce.md's "Security-scheme mismatch
-// check" — this check runs HERE, in api/reqreply.Client, never the
-// adapter); (3) decrements a [ClientCallOptions.MaxForwards]-capped
+// mismatch, fails fast, client-side, BEFORE the network round-trip —
+// this check runs HERE, in api/reqreply.Client, never the adapter;
+// (3) decrements a [ClientCallOptions.MaxForwards]-capped
 // counter — [ForwardChainTooDeepError] once exhausted (mirrors
 // adapters/nethttp/redirect.go's followRedirectHop's remaining-counter
 // shape exactly); (4) calls CallRaw on the SAME attached ClientTransport
@@ -263,9 +262,8 @@ func (c *Client) followForward(ctx context.Context, t ClientTransport, originati
 }
 
 // followForwardFromHandle is followForward's shared core, factored out
-// (Phase 2.1, docs/roadmap/reqreply-dead-letter-replay.md's own
-// "followForward signature adjustment") so [Client.ReplayDeadLetter] can
-// hand off to the SAME chain-following loop from hop 2 onward WITHOUT a
+// (Phase 2.1) so [Client.ReplayDeadLetter] can hand off to the SAME
+// chain-following loop from hop 2 onward WITHOUT a
 // Route[Req,Resp]/*RouteHandle[Req,Resp] VALUE to pass through
 // [recoverRegistryEntry] — Replay's hop 1 resolves its target directly
 // off the registry (there is no "originating call" to recover a value
@@ -352,8 +350,7 @@ func effectiveSecurityRequirements(handleAny any) []SecurityRequirement {
 
 // checkForwardSecurityScheme compares originating's and target's
 // effective security requirements' SCHEME NAME(S) — scheme-NAME
-// comparison only, never a value/credential comparison (docs/roadmap/
-// reqreply-forward-bounce.md's "Security-scheme mismatch check"). The
+// comparison only, never a value/credential comparison. The
 // target requiring NO security at all (empty requirement list) always
 // matches — there is nothing to reuse incompatibly. Otherwise, the
 // target's first declared scheme name must also appear somewhere in

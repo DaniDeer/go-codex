@@ -35,7 +35,7 @@ func TestClient_RegisterRoute_WarmsRegistryWithoutLiveCall(t *testing.T) {
 		t.Fatalf("RegisterRoute: %v", err)
 	}
 	// No public read accessor exists (Option B — adapters/callers stay
-	// registry-unaware, see docs/roadmap/reqreply-client-registry.md's
+	// registry-unaware, see docs/design/d-0004-reqreply-workflow-simplification.md's
 	// "Adapter↔registry bridge"); re-registering the SAME topic with the
 	// SAME concrete type is observable indirectly as a safe no-op.
 	if err := c.RegisterRoute(target); err != nil {
@@ -56,7 +56,7 @@ func TestClient_RegisterRoute_SameTopic_DifferentType_ReturnsDuplicateTopicTypeM
 	first := reqreply.NewRoute[computeReq, computeResp]("compute/shared-topic", reqCodec, respCodec)
 	// Genuinely different route type sharing the SAME topic — two
 	// unrelated features colliding by coincidence, the exact scenario
-	// docs/roadmap/reqreply-client-registry.md's collision detection
+	// docs/design/d-0004-reqreply-workflow-simplification.md's collision detection
 	// guards against (REST's own first-registered-wins policy is safe
 	// only because re-registrations are guaranteed to be "the same
 	// route"; reqreply has no such guarantee).
@@ -148,8 +148,7 @@ func TestClient_CallAsync_AutoPopulatesRegistry(t *testing.T) {
 		t.Fatalf("CallAsync: %v", err)
 	}
 	// CallAsync now wraps Client.Call in a background goroutine (the
-	// confirmed, settled restructure — see docs/roadmap/
-	// reqreply-forward-bounce.md's "CallAsync/Future" section) — the
+	// confirmed, settled restructure — see docs/design/d-0004-reqreply-workflow-simplification.md's "CallAsync/Future" section) — the
 	// transport call itself (ft.calls++) happens ASYNCHRONOUSLY, so this
 	// must await the Future before asserting ft.calls, unlike the
 	// synchronous registry auto-populate step above it (which still runs

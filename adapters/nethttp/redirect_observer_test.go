@@ -15,8 +15,10 @@ import (
 // ── rest-redirect-observer-gap: every redirect hop must be observed ────────
 //
 // Found-and-fixed gap: adapters/nethttp/redirect.go/redirect_sse.go had
-// ZERO stats.Observer calls anywhere — discovered while designing docs/
-// roadmap/reqreply-forward-bounce.md's own per-hop-observed requirement,
+// ZERO stats.Observer calls anywhere — discovered while designing
+// api/reqreply's own Forward/Bounce per-hop-observed requirement (see
+// docs/design/d-0004-reqreply-workflow-simplification.md's own
+// "Addendum: Client Registry, Forward/Bounce, and Dead-Letter Replay"),
 // tracked as its own follow-up (rest-redirect-observer-gap) until fixed.
 // These tests confirm EACH hop (not just the originating call) is now
 // observed via obs.RecordRequest, using spyObserver's call-history
