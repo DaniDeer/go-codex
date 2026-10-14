@@ -19,13 +19,16 @@ Phase 5 has two ad hoc conformance tests seeded
 (`adapters/mqtt5/granted_scopes_context_field_test.go`,
 `adapters/mqtt5/reqreply_dispatch_core_test.go`) plus the "API-defined
 conformance test suites" mechanism (Round 3 decision 1) now **implemented
-for the REST family**: `api/rest/resttest` exports 3 canonical routes +
-Assert functions, wired into both `adapters/nethttp` and `adapters/chi` as
-real, independent usage. The rest of Phase 5's "reusable adapter
-conformance tests for common semantics" scope — the same per-family
-conformance package for events/reqreply and ports, and a broader scenario
-taxonomy for REST itself (middleware chains, error mapping, capability
-rejection, lifecycle, observability) — remain for a future round. This
+for the REST family with a 7-scenario taxonomy**: `api/rest/resttest`
+exports 7 canonical routes + Assert functions (basic decode/encode,
+path-param merge field, security gate, ordered middleware chain,
+declared ErrorPattern mapping, capability-requirement rejection at
+construction time — which also covers "lifecycle" — and an observability
+hook), wired into both `adapters/nethttp` and `adapters/chi` as real,
+independent usage, all passing identically on both. The rest of Phase 5's
+"reusable adapter conformance tests for common semantics" scope — the
+same per-family conformance package for events/reqreply and ports —
+remains for a future round. This
 status line is updated as major increments land —
 see the per-phase sections below for full detail.
 
@@ -3509,23 +3512,77 @@ exact confusion cost significant debugging time during this round and is
 worth flagging explicitly so it isn't rediscovered.
 
 **Done — the API-defined conformance-test-suite mechanism (Round 3
-decision 1) is now implemented, for the REST family.** New package
-`api/rest/resttest` is the first concrete instance of the "shared,
-importable `_test`-only helper package per API family" design: it exports
-three canonical routes (`EchoRoute` — basic decode/encode; `PathParamRoute`
-— path-param merge-field coverage; `SecurityRoute` — a general-purpose
-security gate, the same shape Phase 3 case 5's cross-adapter test already
-exercised) and a matching `AssertXRoute(t, h)` function per route. An
-adapter author builds an `http.Handler` from one of these routes using
-their OWN `ServeOne`/`serveOne`, then passes it to the matching Assert
-function — mirroring Go stdlib's `httptest` convention exactly, no
+decision 1) is now implemented, for the REST family, with a 7-scenario
+taxonomy.** New package `api/rest/resttest` is the first concrete instance
+of the "shared, importable `_test`-only helper package per API family"
+design: it exports seven canonical routes, each with a matching
+`AssertXRoute(t, ...)` function:
+
+1. `EchoRoute`/`AssertEchoRoute` — basic decode/encode + malformed-body
+   rejection.
+2. `PathParamRoute`/`AssertPathParamRoute` — path-param merge-field
+   coverage (invalid value rejected; valid value merged into the decoded
+   request).
+3. `SecurityRoute`/`AssertSecurityRoute` — a general-purpose security
+   gate, the same shape Phase 3 case 5's cross-adapter test already
+   exercised (missing/wrong key rejected without the handler running;
+   valid key accepted).
+4. `NewMiddlewareChainRoute`/`AssertMiddlewareChainRoute` — two ordered
+   general-purpose `HandleMW` Fns proving attachment-order execution AND
+   short-circuit (the second Fn and the handler must never run when the
+   first Fn fails).
+5. `ErrorMappingRoute`/`AssertErrorMappingRoute` — a declared
+   `rest.ErrorPattern` mapping a sentinel handler error to a custom
+   status + body, proving the mapped response reaches the client instead
+   of a generic failure status.
+6. `CapabilityRejectionRoute`/`AssertCapabilityRejected` — declares
+   `rest.RequireQoS`, a requirement every current plain-HTTP REST adapter
+   is unconditionally unable to satisfy; proves the adapter's own
+   `ServeOne`/`serveOne`-equivalent construction function itself returns
+   a non-nil `*rest.CapabilityCoverageError`, never reaching a servable
+   handler. **This scenario intentionally also covers what Phase 5's
+   taxonomy calls "lifecycle"** — a true separate lifecycle scenario
+   (e.g. proving a spec-only route with no `.WithHandler()` is silently
+   skipped by the full-registry `Serve(mux, server)` path) would need a
+   different shared entry point the suite doesn't abstract over yet
+   (`Serve`, not `ServeOne`); construction-time rejection already proves
+   the most valuable lifecycle guarantee ("a malformed/unsatisfiable
+   route fails fast, before any HTTP traffic is possible") without that
+   extra abstraction work. This is a deliberate scoping decision, not an
+   oversight.
+7. `ObservabilityRoute`/`AssertObservabilityRoute`/`SpyObserver` — proves
+   `RecordRequest` fires exactly once with the expected method/path/
+   status. **A real design finding surfaced while building this
+   scenario**: observability is NOT automatically consulted via
+   `stats.ObserverFromContext` by every dispatch path — it is an
+   EXPLICIT, adapter-provided general-purpose middleware
+   (`nethttp.Observability(obs)`) a route must opt into via
+   `.HandleMW(nil, observabilityMW)` (confirmed directly from
+   `adapters/nethttp/observability.go`'s own doc comment). A further
+   finding: `adapters/chi` has **no `Observability` function of its
+   own at all** — it deliberately reuses `nethttp.Observability` as-is
+   (confirmed via `adapters/chi/adapter.go`'s own doc comment pointing to
+   it), since both operate on the framework-agnostic
+   `func(http.Handler) http.Handler` shape. `ObservabilityRoute` was
+   redesigned mid-round to take the observability-wrapping middleware as
+   an explicit parameter (rather than assuming automatic context
+   consultation), and `SpyObserver` was exported so adapter test files
+   can construct one, wrap it with their own observability middleware,
+   and inspect it afterward.
+
+An adapter author builds an `http.Handler` (or, for scenario 6, inspects
+the returned construction-time `error` directly) from one of these routes
+using their OWN `ServeOne`/`serveOne`, then passes it to the matching
+Assert function — mirroring Go stdlib's `httptest` convention exactly, no
 testify-style `Suite` type, no CI-only checklist.
 
 Wired into both `adapters/nethttp` (`resttest_conformance_test.go`,
 exported `ServeOne`) and `adapters/chi` (`resttest_conformance_test.go`,
-package-internal `serveOne`) as genuine, independent usage — both pass
-identically against the same shared suite, concretely proving the
-mechanism works across 2 real, structurally-independent adapter
+package-internal `serveOne`, importing `adapters/nethttp` for
+`Observability` the same way Phase 3 case 5's cross-adapter test already
+does) as genuine, independent usage — all 7 scenarios pass identically
+against the same shared suite on both real adapters, concretely proving
+the mechanism works across 2 real, structurally-independent
 implementations (not just a theoretical design). This is the "last
 enforcement point" Phase 5 describes in practice: a future regression that
 silently breaks one adapter's handling of a capability the other already
@@ -3533,28 +3590,31 @@ implements correctly will now fail `go test` in BOTH adapters' own test
 suites, not just one, and the failure is attributable to a specific,
 documented canonical scenario rather than a bespoke, adapter-local test.
 
-Coverage in this round is intentionally representative, not exhaustive —
-3 scenarios (basic route, path-param merge field, security gate), not the
-full taxonomy Phase 5's opening paragraph lists (middleware chains, error
-mapping, capability rejection, lifecycle, observability). Further
-canonical routes can be added to `api/rest/resttest` the same way in
-future rounds without breaking its existing exported surface. The events/
-reqreply family (`mqtt`/`mqtt5`/`zeromq`) and the ports family
+Further canonical routes can be added to `api/rest/resttest` the same way
+in future rounds without breaking its existing exported surface. The
+events/reqreply family (`mqtt`/`mqtt5`/`zeromq`) and the ports family
 (`file`/`redis`/`sql`) do not yet have an equivalent per-family
 conformance package — this is explicitly left for a future round, now
 that the REST family has established the concrete pattern to replicate.
 
-One incidental fix made during this work: `gosec.config.json` gained a new
-G101 (hardcoded-credentials) path exclusion for
-`api/rest/resttest/resttest.go` — its `SecurityAPIKeyValue` test-fixture
-constant triggers gosec's heuristic exactly like `examples/reqreply-api`'s
-two pre-existing G101 exclusions do, for the same reason (a string
-constant that merely *looks* credential-shaped, not an actual secret).
+Two incidental fixes made during this work:
+- `gosec.config.json` gained a new G101 (hardcoded-credentials) path
+  exclusion for `api/rest/resttest/resttest.go` — its
+  `SecurityAPIKeyValue` test-fixture constant triggers gosec's heuristic
+  exactly like `examples/reqreply-api`'s two pre-existing G101 exclusions
+  do, for the same reason (a string constant that merely *looks*
+  credential-shaped, not an actual secret).
+- A hand-rolled string-slice-equality helper (used by
+  `AssertMiddlewareChainRoute`'s execution-order checks) was replaced
+  with the standard library's `slices.Equal` after gosec flagged a G602
+  (slice-index-out-of-range) false positive on the manual loop — using
+  the stdlib function is both simpler and avoids the false positive
+  entirely.
 
-Verified: new `TestResttestConformance_*` tests pass identically in both
-`adapters/nethttp` and `adapters/chi`; whole-repo `go build`/`go test`
-(zero failures)/`go vet`/`gofmt -l` clean; `just check` (staticcheck +
-gosec + fmt) clean after the G101 exclusion was added.
+Verified: new `TestResttestConformance_*` tests (all 7 scenarios) pass
+identically in both `adapters/nethttp` and `adapters/chi`; whole-repo
+`go build`/`go test` (zero failures)/`go vet`/`gofmt -l` clean; `just
+check` (staticcheck + gosec + fmt) clean after both incidental fixes.
 
 ## Open design points deferred to future rounds
 

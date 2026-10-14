@@ -1,6 +1,7 @@
 package nethttp
 
 import (
+	"net/http"
 	"testing"
 
 	"github.com/DaniDeer/go-codex/api/rest/resttest"
@@ -35,4 +36,36 @@ func TestResttestConformance_Security(t *testing.T) {
 		t.Fatalf("ServeOne: %v", err)
 	}
 	resttest.AssertSecurityRoute(t, h)
+}
+
+func TestResttestConformance_MiddlewareChain(t *testing.T) {
+	resttest.AssertMiddlewareChainRoute(t, func(order *[]string) http.Handler {
+		h, err := ServeOne(resttest.NewMiddlewareChainRoute(order))
+		if err != nil {
+			t.Fatalf("ServeOne: %v", err)
+		}
+		return h
+	})
+}
+
+func TestResttestConformance_ErrorMapping(t *testing.T) {
+	h, err := ServeOne(resttest.ErrorMappingRoute())
+	if err != nil {
+		t.Fatalf("ServeOne: %v", err)
+	}
+	resttest.AssertErrorMappingRoute(t, h)
+}
+
+func TestResttestConformance_CapabilityRejection(t *testing.T) {
+	_, err := ServeOne(resttest.CapabilityRejectionRoute())
+	resttest.AssertCapabilityRejected(t, err)
+}
+
+func TestResttestConformance_Observability(t *testing.T) {
+	spy := &resttest.SpyObserver{}
+	h, err := ServeOne(resttest.ObservabilityRoute(Observability(spy)))
+	if err != nil {
+		t.Fatalf("ServeOne: %v", err)
+	}
+	resttest.AssertObservabilityRoute(t, h, spy)
 }

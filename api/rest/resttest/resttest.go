@@ -6,11 +6,14 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DaniDeer/go-codex/api/rest"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -253,4 +256,291 @@ func AssertSecurityRoute(t *testing.T, h http.Handler) {
 			t.Errorf("want handler to run and return OK:true, got %+v", got)
 		}
 	})
+}
+
+// ── Scenario 4: ordered middleware chain with short-circuit ────────────────
+
+// MiddlewareChainReq/MiddlewareChainResp are MiddlewareChainRoute's
+// request/response types.
+type MiddlewareChainReq struct{}
+type MiddlewareChainResp struct{ OK bool }
+
+var middlewareChainReqCodec = codex.Struct[MiddlewareChainReq]()
+
+var middlewareChainRespCodec = codex.Struct[MiddlewareChainResp](
+	codex.RequiredField("ok", codex.Bool(),
+		func(r MiddlewareChainResp) bool { return r.OK },
+		func(r *MiddlewareChainResp, v bool) { r.OK = v },
+	),
+)
+
+// MiddlewareChainGateHeader is the header [MiddlewareChainRoute]'s FIRST
+// middleware Fn requires to be present (any value) before letting the
+// chain proceed.
+const MiddlewareChainGateHeader = "X-Resttest-Chain-Gate"
+
+// NewMiddlewareChainRoute declares the canonical "ordered middleware
+// chain" route: TWO general-purpose (unpaired) HandleMW Fns attached in
+// order, plus the handler. order records each participant's name, in the
+// order it actually ran, into *order (reset by the caller between
+// sub-tests) — a conforming adapter must run both Fns BEFORE the handler,
+// in ATTACHMENT order, and must NEVER invoke the second Fn or the handler
+// when the first Fn fails.
+func NewMiddlewareChainRoute(order *[]string) rest.Route[MiddlewareChainReq, MiddlewareChainResp] {
+	first := func(_ context.Context, r *http.Request, _ *MiddlewareChainReq) (map[string][]string, error) {
+		*order = append(*order, "first")
+		if r.Header.Get(MiddlewareChainGateHeader) == "" {
+			return nil, errors.New("missing chain gate header")
+		}
+		return nil, nil
+	}
+	second := func(_ context.Context, _ *http.Request, _ *MiddlewareChainReq) (map[string][]string, error) {
+		*order = append(*order, "second")
+		return nil, nil
+	}
+	return rest.NewRoute[MiddlewareChainReq, MiddlewareChainResp]("GET", "/resttest/chain",
+		middlewareChainReqCodec, middlewareChainRespCodec, rest.RouteMeta{OperationID: "resttestChain"},
+	).WithHandler(func(_ context.Context, _ MiddlewareChainReq) (MiddlewareChainResp, error) {
+		*order = append(*order, "handler")
+		return MiddlewareChainResp{OK: true}, nil
+	}).HandleMW(nil, first).HandleMW(nil, second)
+}
+
+// AssertMiddlewareChainRoute proves h (built from a route declared via
+// [NewMiddlewareChainRoute] with a FRESH *order for each call) runs both
+// Fns and the handler in attachment order when the gate header is
+// present, and stops at the first Fn — never reaching the second Fn or
+// the handler — when it is absent.
+func AssertMiddlewareChainRoute(t *testing.T, newHandler func(order *[]string) http.Handler) {
+	t.Helper()
+
+	t.Run("gate_present_runs_full_chain_in_order", func(t *testing.T) {
+		var order []string
+		h := newHandler(&order)
+		rec := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, "/resttest/chain", nil)
+		r.Header.Set(MiddlewareChainGateHeader, "present")
+		h.ServeHTTP(rec, r)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+		}
+		want := []string{"first", "second", "handler"}
+		if !slices.Equal(order, want) {
+			t.Errorf("execution order = %v, want %v", order, want)
+		}
+	})
+
+	t.Run("gate_absent_short_circuits_before_second_and_handler", func(t *testing.T) {
+		var order []string
+		h := newHandler(&order)
+		rec := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, "/resttest/chain", nil)
+		h.ServeHTTP(rec, r)
+
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("status = %d, want 401 when the gate header is missing; body=%s", rec.Code, rec.Body.String())
+		}
+		want := []string{"first"}
+		if !slices.Equal(order, want) {
+			t.Errorf("execution order = %v, want %v (second Fn and handler must never run)", order, want)
+		}
+	})
+}
+
+// ── Scenario 5: declared ErrorPattern mapping ───────────────────────────────
+
+// ErrorMappingReq/ErrorMappingResp are ErrorMappingRoute's request/
+// response types. ErrorMappingResp doubles as the ErrorPattern's mapped
+// body shape.
+type ErrorMappingReq struct{}
+type ErrorMappingResp struct{ Reason string }
+
+var errorMappingReqCodec = codex.Struct[ErrorMappingReq]()
+
+var errorMappingRespCodec = codex.Struct[ErrorMappingResp](
+	codex.RequiredField("reason", codex.String(),
+		func(r ErrorMappingResp) string { return r.Reason },
+		func(r *ErrorMappingResp, v string) { r.Reason = v },
+	),
+)
+
+// ErrorMappingSentinelError is the error type [ErrorMappingRoute]'s
+// handler always returns and its declared [rest.ErrorPattern] matches —
+// a conforming adapter must map it to [ErrorMappingStatus] + a
+// [ErrorMappingResp] body, not a generic 500.
+type ErrorMappingSentinelError struct{ Reason string }
+
+func (e ErrorMappingSentinelError) Error() string { return "resttest sentinel: " + e.Reason }
+
+// ErrorMappingStatus is the status [ErrorMappingRoute]'s declared
+// [rest.ErrorPattern] maps [ErrorMappingSentinelError] to.
+const ErrorMappingStatus = http.StatusUnprocessableEntity
+
+// ErrorMappingReason is the fixed reason the handler's sentinel error
+// (and therefore the mapped response body) always carries.
+const ErrorMappingReason = "resttest-mapped-reason"
+
+// ErrorMappingRoute is the canonical "declared ErrorPattern" route: a
+// conforming adapter must consult the route's declared [rest.ErrorPattern]
+// when the handler returns a matching error type, and produce the
+// pattern's declared status + mapped body — not treat it as an
+// undifferentiated handler failure (generic 500).
+func ErrorMappingRoute() rest.Route[ErrorMappingReq, ErrorMappingResp] {
+	return rest.NewRoute[ErrorMappingReq, ErrorMappingResp]("GET", "/resttest/error-mapping",
+		errorMappingReqCodec, errorMappingRespCodec, rest.RouteMeta{OperationID: "resttestErrorMapping"},
+		rest.ErrorPattern[ErrorMappingSentinelError, ErrorMappingResp](ErrorMappingStatus, errorMappingRespCodec,
+			func(e ErrorMappingSentinelError) (ErrorMappingResp, error) {
+				return ErrorMappingResp(e), nil
+			}),
+	).WithHandler(func(_ context.Context, _ ErrorMappingReq) (ErrorMappingResp, error) {
+		return ErrorMappingResp{}, ErrorMappingSentinelError{Reason: ErrorMappingReason}
+	})
+}
+
+// AssertErrorMappingRoute proves h (built from [ErrorMappingRoute])
+// returns the declared ErrorPattern's mapped status and body instead of
+// a generic failure status.
+func AssertErrorMappingRoute(t *testing.T, h http.Handler) {
+	t.Helper()
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/resttest/error-mapping", nil)
+	h.ServeHTTP(rec, r)
+
+	if rec.Code != ErrorMappingStatus {
+		t.Fatalf("status = %d, want %d (the declared ErrorPattern's status); body=%s", rec.Code, ErrorMappingStatus, rec.Body.String())
+	}
+	var got ErrorMappingResp
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if got.Reason != ErrorMappingReason {
+		t.Errorf("mapped body Reason = %q, want %q", got.Reason, ErrorMappingReason)
+	}
+}
+
+// ── Scenario 6: capability-requirement rejection at construction time ──────
+
+// CapabilityRejectionReq/CapabilityRejectionResp are
+// CapabilityRejectionRoute's request/response types — never actually
+// served, since the route is expected to fail BEFORE a handler could run.
+type CapabilityRejectionReq struct{}
+type CapabilityRejectionResp struct{}
+
+var capabilityRejectionReqCodec = codex.Struct[CapabilityRejectionReq]()
+var capabilityRejectionRespCodec = codex.Struct[CapabilityRejectionResp]()
+
+// CapabilityRejectionRoute is the canonical "unsatisfiable capability
+// requirement" route: it declares [rest.RequireQoS], a requirement every
+// current plain-HTTP REST adapter (nethttp, chi) declares zero
+// capabilities to satisfy — a conforming adapter's own
+// ServeOne/serveOne-equivalent construction function MUST reject this
+// route with a non-nil error at construction time, before any HTTP
+// traffic is possible. This also exercises "lifecycle" in Phase 5's
+// sense: a malformed/unsatisfiable route must fail fast at construction,
+// not silently serve traffic it cannot correctly handle.
+func CapabilityRejectionRoute() rest.Route[CapabilityRejectionReq, CapabilityRejectionResp] {
+	return rest.NewRoute[CapabilityRejectionReq, CapabilityRejectionResp]("GET", "/resttest/capability-rejection",
+		capabilityRejectionReqCodec, capabilityRejectionRespCodec, rest.RouteMeta{OperationID: "resttestCapabilityRejection"},
+		rest.RequireQoS(rest.AtLeastOnce),
+	).WithHandler(func(_ context.Context, _ CapabilityRejectionReq) (CapabilityRejectionResp, error) {
+		return CapabilityRejectionResp{}, nil
+	})
+}
+
+// AssertCapabilityRejected proves err (the error returned by the
+// adapter's own ServeOne/serveOne when given [CapabilityRejectionRoute])
+// is non-nil and, when it exposes a stable public capability-coverage
+// error type, names the correct missing capability.
+func AssertCapabilityRejected(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("want a non-nil construction-time error for an unsatisfiable capability requirement, got nil")
+	}
+	var cce *rest.CapabilityCoverageError
+	if errors.As(err, &cce) {
+		if len(cce.Missing) != 1 || cce.Missing[0] != "QoS" {
+			t.Errorf("want Missing=[QoS], got %v", cce.Missing)
+		}
+		return
+	}
+	t.Errorf("want a *rest.CapabilityCoverageError, got %T: %v", err, err)
+}
+
+// ── Scenario 7: Observer hook fires with the expected data ──────────────────
+
+// ObservabilityReq/ObservabilityResp are ObservabilityRoute's request/
+// response types.
+type ObservabilityReq struct{}
+type ObservabilityResp struct{}
+
+var observabilityReqCodec = codex.Struct[ObservabilityReq]()
+var observabilityRespCodec = codex.Struct[ObservabilityResp]()
+
+// SpyObserver is a minimal [stats.Observer] spy recording every
+// RecordRequest call it receives — exported so adapter test files can
+// construct one, wrap it with their own general-purpose observability
+// middleware (e.g. `nethttp.Observability(spy)`, which `adapters/chi`
+// deliberately reuses as-is rather than duplicating — see that
+// function's own doc comment), and pass the SAME spy to
+// [AssertObservabilityRoute] for inspection afterward.
+//
+// Observability is NOT automatically consulted via
+// [stats.ObserverFromContext] by every dispatch path — it is an
+// EXPLICIT, adapter-provided general-purpose middleware a route opts
+// into via `.HandleMW(nil, observabilityMW)`, confirmed directly from
+// adapters/nethttp's own Observability doc comment. [ObservabilityRoute]
+// therefore takes the observability-wrapping middleware as a parameter
+// instead of assuming a context-injection-only mechanism exists.
+type SpyObserver struct {
+	stats.NoopObserver
+	Calls []SpyObserverCall
+}
+
+// SpyObserverCall is one recorded [stats.Observer.RecordRequest] call.
+type SpyObserverCall struct {
+	Method string
+	Path   string
+	Status int
+}
+
+// RecordRequest implements [stats.Observer].
+func (s *SpyObserver) RecordRequest(method, path string, statusCode int, _ time.Duration) {
+	s.Calls = append(s.Calls, SpyObserverCall{Method: method, Path: path, Status: statusCode})
+}
+
+// ObservabilityRoute is the canonical "observed request" route — a plain
+// handler attached to the caller-supplied observability middleware (a
+// general-purpose `func(http.Handler) http.Handler`, e.g.
+// `nethttp.Observability(spy)`) via `.HandleMW(nil, observabilityMW)`,
+// the same way a real caller would opt a route into observability.
+func ObservabilityRoute(observabilityMW func(http.Handler) http.Handler) rest.Route[ObservabilityReq, ObservabilityResp] {
+	return rest.NewRoute[ObservabilityReq, ObservabilityResp]("GET", "/resttest/observability",
+		observabilityReqCodec, observabilityRespCodec, rest.RouteMeta{OperationID: "resttestObservability"},
+	).WithHandler(func(_ context.Context, _ ObservabilityReq) (ObservabilityResp, error) {
+		return ObservabilityResp{}, nil
+	}).HandleMW(nil, observabilityMW)
+}
+
+// AssertObservabilityRoute proves h (built from [ObservabilityRoute]
+// wrapping spy via the adapter's own observability middleware) reports
+// exactly one RecordRequest call with the expected method/path/status.
+func AssertObservabilityRoute(t *testing.T, h http.Handler, spy *SpyObserver) {
+	t.Helper()
+
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/resttest/observability", nil)
+	h.ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if len(spy.Calls) != 1 {
+		t.Fatalf("want exactly 1 RecordRequest call, got %d: %+v", len(spy.Calls), spy.Calls)
+	}
+	got := spy.Calls[0]
+	if got.Method != http.MethodGet || got.Path != "/resttest/observability" || got.Status != http.StatusOK {
+		t.Errorf("RecordRequest call = %+v, want {Method:GET Path:/resttest/observability Status:200}", got)
+	}
 }
