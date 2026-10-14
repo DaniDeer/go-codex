@@ -131,3 +131,87 @@ func TestPublish_CapabilitiesSetsRetained(t *testing.T) {
 		t.Errorf("want RecordCapabilityApplied(topic, \"Retained\"), got %v", obs.applied)
 	}
 }
+
+// TestMessageExpiry_Apply_SetsWireField proves MessageExpiry.Apply sets
+// wire.MessageExpiryInterval correctly and reports applied=true/nil err
+// (docs/roadmap/mqtt5-capability-extensions.md's unit test plan).
+func TestMessageExpiry_Apply_SetsWireField(t *testing.T) {
+	var wire WireAttributes
+	applied, err := MessageExpiry(60).Apply(&wire)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !applied {
+		t.Error("want applied=true")
+	}
+	if wire.MessageExpiryInterval == nil || *wire.MessageExpiryInterval != 60 {
+		t.Errorf("want MessageExpiryInterval=60, got %v", wire.MessageExpiryInterval)
+	}
+}
+
+// TestMessageExpiry_CapabilityName proves MessageExpiry.CapabilityName
+// returns "MessageExpiry".
+func TestMessageExpiry_CapabilityName(t *testing.T) {
+	var _ Capability = MessageExpiry(60)
+	if got := MessageExpiry(60).CapabilityName(); got != "MessageExpiry" {
+		t.Errorf("want CapabilityName %q, got %q", "MessageExpiry", got)
+	}
+}
+
+// TestPublish_MessageExpiry_SetsPahoProperty confirms
+// PublishOptions.Capabilities declaring MessageExpiry(60) produces a
+// pahomqtt5.Publish with Properties.MessageExpiry set to 60 — end to
+// end, mirroring TestPublish_CapabilitiesSetsRetained's identical proof
+// for Retained.
+func TestPublish_MessageExpiry_SetsPahoProperty(t *testing.T) {
+	client := &mockClient{}
+	obs := &mockCapabilityObserver{}
+	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
+
+	err := publish(context.Background(), client, newChannelHandle(), reading, nil, true,
+		PublishOptions[sensorReading]{
+			Capabilities: []Capability{MessageExpiry(60)},
+			Observer:     obs,
+		})
+	if err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+
+	pub := client.lastPublished()
+	if pub == nil || pub.Properties == nil || pub.Properties.MessageExpiry == nil || *pub.Properties.MessageExpiry != 60 {
+		t.Fatalf("want Properties.MessageExpiry=60, got %v", pub)
+	}
+	found := false
+	for _, a := range obs.applied {
+		if a == "sensors/readings:MessageExpiry" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want RecordCapabilityApplied(topic, \"MessageExpiry\"), got %v", obs.applied)
+	}
+}
+
+// TestPublish_NoMessageExpiry_LeavesPropertyNil is the zero-value/
+// undeclared-case regression: Properties.MessageExpiry stays nil when
+// no MessageExpiry capability is supplied — no behavior change for
+// existing routes, mirroring every prior phase's "zero behavior change"
+// regression bar.
+func TestPublish_NoMessageExpiry_LeavesPropertyNil(t *testing.T) {
+	client := &mockClient{}
+	reading := sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 22.5}
+
+	err := publish(context.Background(), client, newChannelHandle(), reading, nil, true,
+		PublishOptions[sensorReading]{})
+	if err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+
+	pub := client.lastPublished()
+	if pub == nil || pub.Properties == nil {
+		t.Fatalf("want a non-nil Publish/Properties, got %v", pub)
+	}
+	if pub.Properties.MessageExpiry != nil {
+		t.Errorf("want Properties.MessageExpiry=nil when undeclared, got %v", *pub.Properties.MessageExpiry)
+	}
+}

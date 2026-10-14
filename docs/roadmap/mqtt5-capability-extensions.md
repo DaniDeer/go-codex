@@ -1,7 +1,12 @@
 # MQTT5 Capability Extensions — Message Expiry Interval & Shared Subscriptions
 
-> **Status:** Design draft — Message Expiry Interval ready to implement;
-> Shared Subscriptions has one open design decision, not pre-decided.
+> **Status:** Message Expiry Interval SHIPPED (a new sealed
+> `mqtt5.MessageExpiry` `Capability`, `WireAttributes.MessageExpiryInterval`
+> field, wired into the existing publish path, 4 unit tests per this
+> doc's own test plan — see `adapters/mqtt5/capability.go`/`capability_test.go`).
+> Shared Subscriptions remains a design draft — it still has the one open
+> design decision below, not pre-decided, and is NOT part of this
+> shipped scope.
 > [← Back to Roadmap](index.md)
 
 ## Motivation
@@ -37,7 +42,7 @@ topic-string conventions, already vendored.
 
 ## API surface
 
-### Message Expiry Interval — ready to implement, mirrors `Retained` exactly
+### Message Expiry Interval — SHIPPED, mirrors `Retained` exactly
 
 ```go
 // adapters/mqtt5/capability.go — new sealed Capability, Publish-side only
@@ -186,9 +191,10 @@ committed here.
 
 - **Shared Subscriptions: Option A (widen `WireAttributes`) vs. Option
   B (a separate, non-`Capability` declaration mechanism)** — the
-  central open question this doc raises, not pre-decided.
-- Message Expiry Interval has NO open design decisions — ready to
-  implement as sketched above whenever prioritized.
+  central open question this doc raises, not pre-decided. This is the
+  ONLY remaining open item in this doc.
+- Message Expiry Interval had NO open design decisions and has now
+  SHIPPED exactly as sketched above.
 
 ## See also
 

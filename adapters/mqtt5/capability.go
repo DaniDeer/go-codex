@@ -43,6 +43,10 @@ type Capability interface {
 type WireAttributes struct {
 	QoS      byte
 	Retained bool
+	// MessageExpiryInterval is the MQTT 5 Message Expiry Interval
+	// (seconds), publish-side only — nil means "not declared," mirroring
+	// paho's own `*uint32` shape (see [MessageExpiry]).
+	MessageExpiryInterval *uint32
 }
 
 // QoS is a sealed [Capability] declaring the MQTT 5 quality-of-service
@@ -94,6 +98,29 @@ func (Retained) CapabilityName() string { return "Retained" }
 // never reads wire.Retained.
 func (r Retained) Apply(wire *WireAttributes) (bool, error) {
 	wire.Retained = bool(r)
+	return true, nil
+}
+
+// MessageExpiry is a sealed [Capability] declaring the MQTT 5 Message
+// Expiry Interval (seconds) for one outgoing publish — Publish-side
+// only, mirroring [Retained]'s shape exactly (no Subscribe-side
+// equivalent: `pahomqtt5.SubscribeOptions` has no Message-Expiry-related
+// field at all — a subscriber cannot request expiry, only a publisher
+// sets it). See docs/roadmap/mqtt5-capability-extensions.md for the
+// full design history.
+type MessageExpiry uint32
+
+func (MessageExpiry) isMQTT5Capability() {}
+
+// CapabilityName implements [events.CapabilityName].
+func (MessageExpiry) CapabilityName() string { return "MessageExpiry" }
+
+// Apply implements [Capability] — sets wire.MessageExpiryInterval.
+// Always applies (a pure field assignment, mirroring [QoS]/[Retained]'s
+// existing `(true, nil)`-always contract — never fails).
+func (e MessageExpiry) Apply(wire *WireAttributes) (bool, error) {
+	v := uint32(e)
+	wire.MessageExpiryInterval = &v
 	return true, nil
 }
 

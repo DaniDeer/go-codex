@@ -1187,6 +1187,7 @@ func publish[T any](
 	if len(userProps) > 0 {
 		props.User = userProps
 	}
+	props.MessageExpiry = wire.MessageExpiryInterval
 
 	transmit := func(ctx context.Context, m T) error {
 		// The channel's OWN declaration (WithFormats/WithPublishFormats)
