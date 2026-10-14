@@ -115,10 +115,32 @@ func (r Retained) Apply(wire *WireAttributes) (bool, error) {
 // (a distinct, pre-existing, per-call CAPABILITY-APPLICATION concern, per
 // this roadmap's Design goal 12 split) remains exactly as it is today,
 // via [SubscribeOptions.UserPropertyParams]/[ServeOptions.UserPropertyParams]
-// and [validateUserProperties]. Folding UserPropertyParam's own per-property
-// validation fully into the Capability/Apply model (embedding
-// middleware.Declaration, per d-0006 §5.2's worked example) remains left
-// for a future round; the two mechanisms coexist without conflict.
+// and [validateUserProperties].
+//
+// EVALUATED, NOT PURSUED (`deep-dive-bug-hunt`/D-0010 follow-up round):
+// D-0006 §5.2 once sketched folding UserPropertyParam's own per-property
+// MERGE behavior fully into the Capability/Apply model (a
+// `UserProperty[In]` type embedding `middleware.Declaration[In,struct{}]`
+// + `mergeFields []codex.FieldCodec[In]`). Investigated and found
+// genuinely redundant, not just unimplemented: D-0003's Addendum
+// property axis (`events.NewPropertyParam[T,V]`/`MergedPropertyParam[T]`)
+// ALREADY merges real MQTT 5 User Properties into the decoded value —
+// confirmed live via `propertyVarsFromUserProperties(msg)` →
+// `MergePropertyVars` in both `subscribeDispatchCore` and
+// `reqreply_dispatch_core.go`. A second, sealed-Capability-based merge
+// mechanism for the SAME job would duplicate, not extend, already-shipped
+// behavior — the exact "false portability"/duplicate-mechanism outcome
+// this roadmap's own discipline elsewhere deliberately avoids (e.g. NOT
+// merging mqtt5's 3-way Subscribe dispatch across the generic/reflect
+// boundary). The sketch's embedded `middleware.Declaration` is also now
+// stale: that type moved to `internal/middleware` under D-0009, reachable
+// only via each pattern's own public wrapper, not directly by an adapter.
+// The one genuinely useful property this sketch chased — failing fast,
+// ONCE, at attach time, rather than per-message at runtime, when a
+// channel needs User Property support an attached adapter lacks — is
+// ALREADY delivered by THIS type ([UserProperties], presence-only,
+// paired with [events.RequireUserProperties]). No further work planned
+// here; this note replaces the prior "left for a future round" one.
 //
 // adapters/mqtt (MQTT 3) has no equivalent type — MQTT 3 has no user
 // properties concept at all — so a channel declaring

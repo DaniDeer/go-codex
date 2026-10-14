@@ -15,19 +15,40 @@
 > establishes a pattern multiple `api/*`/`ports` packages are expected to
 > follow.
 >
-> A handful of items remain **intentionally deferred as future work**
-> (not accidental gaps — each is named and reasoned about in its own
-> Phase 4/5 progress subsection below): MQTT5 User Properties folding
-> into the sealed `Capability` mechanism; a literal single-function
-> 3-way Subscribe dispatch-core merge for `adapters/mqtt5` (kept at
-> "3 → 2, not 3 → 1" since the 3rd, compile-time-generic path cannot
-> mechanically share code with the two reflect-based paths);
-> `SubscribeOptions.Formats`' missing-field asymmetry on the
-> `ServeSubscribers` path; `adapters/zeromq`'s exclusion from the
+> **Post-graduation follow-up round** (`deep-dive-bug-hunt` + a
+> deferred-items closeout pass) closed 3 of this doc's originally-named
+> deferred items: `ports.SinkAdapter`/`ports.IOAdapter` conformance
+> scenarios now ship (proven via `adapters/file`+`adapters/websocket` and
+> `adapters/sql`+`adapters/openai` respectively); the
+> `SubscribeOptions.Formats` missing-field asymmetry on the
+> `ServeSubscribers` path is fixed (both `adapters/mqtt`/`adapters/mqtt5`);
+> and MQTT5 User Properties folding into the sealed `Capability`
+> mechanism was evaluated and closed as NOT pursued — found to be
+> functionally redundant with D-0003's Addendum property axis, which
+> already ships the real merge behavior this folding would have
+> duplicated (see `adapters/mqtt5/capability.go`'s `UserProperties`
+> type doc comment for the full reasoning). This round ALSO reviewed
+> `adapters/websocket` against this doc's dispatch-core-consolidation
+> pattern specifically and found no gap: `adapters/chi`'s websocket
+> wiring (`socket.go`) is already a thin delegator with zero duplicated
+> dispatch body, `adapters/nethttp` needs no wrapper at all
+> (`websocket.Mux` is satisfied directly by `*http.ServeMux`), and the
+> package's own 3 constructors already share
+> `upgradeAndValidate`/`readLoop`/`writeLoop` internally — no
+> restdispatch-style consolidation applies there.
+>
+> A smaller remaining handful of items stay **intentionally deferred as
+> future work** (not accidental gaps — each is named and reasoned about
+> in its own Phase 4/5 progress subsection below): a literal
+> single-function 3-way Subscribe dispatch-core merge for
+> `adapters/mqtt5` (kept at "3 → 2, not 3 → 1" since the 3rd,
+> compile-time-generic path cannot mechanically share code with the two
+> reflect-based paths); `adapters/zeromq`'s exclusion from the
 > events/reqreply conformance packages (its mock socket is one-way/
 > scripted, not a live loopback broker — a sandboxed-environment
-> limitation, not a design gap); and `ports.SinkAdapter`/`ports.IOAdapter`
-> conformance scenarios (only `SourceAdapter` shipped this round).
+> limitation, not a design gap); and `CallRaw` zeromq client-side
+> dispatch-core consolidation (no concrete driver yet — "a candidate for
+> a future round if ever needed").
 
 ## Status detail (full history, preserved from the roadmap)
 
@@ -2606,9 +2627,15 @@ confirmed to already cover either.
   Phase 3 found, deliberately without forcing the three implementations'
   genuinely different typing (one generic, two reflect) into one body in
   the same pass, consistent with this roadmap's "no false portability"
-  principle. The newly-found `SubscribeOptions.Formats` asymmetry (noted
-  above) is also left open. Both are candidates for Phase 4's
-  events/reqreply family work, not resolved here.
+  principle. **CLOSED (post-graduation follow-up round)**: the
+  `SubscribeOptions.Formats` asymmetry noted above — both
+  `adapters/mqtt`'s and `adapters/mqtt5`'s non-generic `SubscribeOptions`
+  now carry a `Formats` field, wired through to `subscribeDispatchCore`'s
+  existing `formatsOverride` parameter on the `ServeSubscribers` path
+  (previously only reachable via `transport.Subscribe`); see each
+  adapter's `TestServeSubscribers_FormatOverride` regression test. The
+  single-shared-function merge itself remains open, for the SAME "no
+  false portability" reason.
 
 ### Phase 4 — Implementation
 
@@ -3919,9 +3946,9 @@ structurally-independent `ports.SourceAdapter` implementations backed by
 completely different underlying resources (a polling database query vs.
 a line-scanned file).
 
-Coverage is intentionally ONE scenario this round
+Coverage was intentionally ONE scenario this round
 (`ports.SourceAdapter` only) — `ports.SinkAdapter`/`ports.IOAdapter`
-conformance scenarios are explicitly left for a future round, mirroring
+conformance scenarios were explicitly left for a future round, mirroring
 every other conformance package's own "start with 1, expand later"
 pacing.
 
@@ -3929,6 +3956,25 @@ Verified: new `TestPortstestConformance_SourceAdapterRoundTrip` passes
 identically in both `adapters/sql` and `adapters/file`; whole-repo `go
 build`/`go test` (zero failures)/`go vet`/`gofmt -l` clean; `just check`
 (staticcheck + gosec + fmt) clean.
+
+**CLOSED (post-graduation follow-up round)**: `ports.SinkAdapter`'s
+conformance scenario (`AssertSinkAdapterRoundTrip`) shipped, proven
+against `adapters/file`'s `DrainWriteAdapter` (a plain `io.Writer`) AND
+`adapters/websocket`'s `BroadcastSocketAdapter` (a live, push-based
+socket broadcast) — structurally independent, mirroring
+`SourceAdapter`'s sql-vs-file precedent. `AssertSinkAdapterRoundTrip`
+takes an already-`Bind`-ed `*ports.SinkPort` (rather than constructing
+one internally, unlike `AssertSourceAdapterRoundTrip`) since
+`BroadcastSocketAdapter` needs a port-DERIVED handle (via
+`port.PluginSocketPattern`) at construction time, before `Bind` — the
+caller owns the full port→handle→adapter→Bind sequence itself.
+`ports.IOAdapter`'s conformance scenario (`AssertIOAdapterRoundTrip`)
+also shipped, proven against `adapters/sql`'s `QueryEachAdapter`
+(closure-based lookup-by-ID, no real database) AND `adapters/openai`'s
+`CallAdapter` (a mocked HTTP server simulating an LLM call) — also
+structurally independent. All 4 adapter pairings pass identically
+against their shared scenario; whole-repo `go build`/`go test`/`gofmt`
+clean.
 
 ## Open design points deferred to future rounds
 
@@ -4023,9 +4069,18 @@ clear, single-implementation extension point for adapter authors, without
 coupling declarations to protocols, accumulating unneeded abstraction
 layers, or letting one adapter's multiple entry points drift out of sync
 with each other again — has been achieved for the REST, SSE, events,
-reqreply, and ports families this roadmap scoped. The handful of items
-still intentionally deferred as future work (not accidental gaps) are
-listed in each family's own Phase 4/5 progress subsection above — e.g.
-MQTT5 User Properties folding into the sealed Capability mechanism, the
-literal 3-way Subscribe dispatch-core merge, and conformance-suite
-expansion beyond each package's current scenario set.
+reqreply, and ports families this roadmap scoped. A post-graduation
+follow-up round (`deep-dive-bug-hunt` + a deferred-items closeout pass)
+closed 3 of the originally-deferred items — `ports.SinkAdapter`/
+`ports.IOAdapter` conformance scenarios, and the `SubscribeOptions.Formats`
+missing-field asymmetry — and evaluated MQTT5 User Properties→Capability
+folding, closing it as NOT pursued (functionally redundant with D-0003's
+already-shipped property axis). That same round also confirmed
+`adapters/websocket` needs no restdispatch-style consolidation at all —
+its chi wiring already delegates thinly, nethttp needs no wrapper, and
+its own 3 constructors already share their dispatch internals. The
+handful of items still intentionally deferred as future work (not
+accidental gaps) are listed in each family's own Phase 4/5 progress
+subsection above — the literal 3-way Subscribe dispatch-core merge,
+`adapters/zeromq`'s conformance-suite exclusion (pending a live broker),
+and `CallRaw` zeromq consolidation (no driver yet).
