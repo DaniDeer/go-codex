@@ -3196,6 +3196,79 @@ remaining piece of the entire events/reqreply family, covering
 `serverTransport.Serve`/`routerServerTransport.Serve` and their
 client-side counterparts).
 
+#### Phase 4 progress: events/reqreply family, Workstream C (`adapters/zeromq`), reqreply server-side setup/dispatch-one split
+
+**Status: DONE for the SERVER side** (`serverTransport.Serve`/
+`routerServerTransport.Serve`); the client side
+(`clientTransport.call`/`dealerClientTransport.call`) remains unstarted.
+
+Investigated `serverTransport.Serve` (plain REQ/REP) side by side with
+`routerServerTransport.Serve` (ROUTER) — exactly as point 3 of this
+family's design predicted: the SETUP phase (route-handle recovery,
+handler-shape validation, `reqreply.CheckCoverage`, capability
+application + `reqreply.VerifyCapabilityCoverage`, general-purpose
+middleware wrapping) is confirmed **byte-for-byte identical** between the
+two (the code's own doc comments already said so: "same mechanism...
+duplicated for the ROUTER variant"). The per-message DISPATCH body
+(decode → property-merge → paired-security → codec-middleware →
+unified-scopes-check → handler → encode) is ALSO confirmed near-identical
+— the only genuine differences are reply framing (REQ/REP: `[status,
+payload]`, 2 frames, no addressing; ROUTER: `[identity, delimiter,
+status, payload]`, 4 frames, echoing the sender's identity) and
+concurrency (REQ/REP processes sequentially; ROUTER spawns one goroutine
+per request, since ROUTER allows concurrent in-flight requests from
+multiple peers while REQ/REP enforces strict one-reply-per-request
+ordering).
+
+**Design**: new `adapters/zeromq/reqreply_dispatch_core.go` —
+`reqreplyServerSetupCore(routeAny, fnAny, sock, obs, caps)
+(*reqreplyServerSetup, error)` (the shared setup phase, assembled
+verbatim from the confirmed-identical block) and
+`reqreplyServerDispatchOne(ctx, setup, sink, sockets, obs, payload,
+onError)` (the shared per-message pipeline), parameterized by a small
+`reqreplyReplySink` struct (`label` for the `stats.Observer.RecordRequest`
+protocol tag, plus `sendSuccess`/`sendError`/`sendForward` closures) that
+captures the ONE genuine per-variant difference — reply framing/identity
+— leaving the dispatch body itself completely socket-agnostic. ROUTER's
+goroutine-per-request concurrency and REQ/REP's sequential loop both stay
+in their own `Serve` function (the protocol-necessitated recv-loop
+mechanics point 3 of the design said must stay unmerged); only the
+per-message dispatch is unified.
+
+Repointed both `serverTransport.Serve` and `routerServerTransport.Serve`
+to thin wrappers: call `reqreplyServerSetupCore` once, build their own
+`reqreplyReplySink` (REQ/REP: built once per `Serve` call; ROUTER: built
+per request, inside the goroutine, since it needs that specific request's
+identity frame), then call `reqreplyServerDispatchOne` from their own
+recv loop/goroutine. Verified incrementally — `serverTransport.Serve`
+repointed and tested first, then `routerServerTransport.Serve` — both
+confirmed unchanged against the full `adapters/zeromq` suite (including
+every reqreply-specific test: dead-letter, error-pattern, forward,
+capability, disposition, security-middleware tests for both variants).
+
+Added 2 new regression tests
+(`adapters/zeromq/reqreply_dispatch_core_test.go`):
+`TestReqreplyServerDispatchOne_DirectCall` (decode → handler → encode
+round-trip, called directly against the shared core, independent of
+either `Serve` variant) and
+`TestReqreplyServerDispatchOne_DecodeFailure_InvokesOnError` (decode
+failure reaches `onError`, handler never invoked) — seeding Phase 5's
+"a test per confirmed dispatch entry point" principle at the shared core
+itself, mirroring mqtt5's/mqtt v3's identical `subscribe_dispatch_core_test.go`
+pattern for this family's reqreply side.
+
+Verified: `adapters/zeromq`'s full suite unchanged plus the 2 new tests;
+whole-repo `go build`/`go test` (zero failures)/`go vet`/`gofmt -l`
+clean; `just check` (staticcheck + gosec + fmt) clean — confirmed no
+dead code left behind by the two large extractions (the old inline
+bodies were fully deleted, not left as unreferenced duplicates).
+
+**Remaining in Workstream C**: the client-side equivalent
+(`reqreplyClientCallSetup`/`reqreplyClientEncodeDecode`, shared by
+`clientTransport.call` and `dealerClientTransport.call`) — per the
+design's point 3, this is the LAST piece of the entire events/reqreply
+family's dispatch-core consolidation scope.
+
 ### Phase 5 — Conformance tests and documentation
 
 Create reusable adapter conformance tests for common semantics:
