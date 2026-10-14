@@ -26,16 +26,17 @@ declared ErrorPattern mapping, capability-requirement rejection at
 construction time — which also covers "lifecycle" — and an observability
 hook), wired into both `adapters/nethttp` and `adapters/chi` as real,
 independent usage, all passing identically on both. The **events family**
-now also has its own conformance package, `api/events/eventstest` (3
+now also has its own conformance package, `api/events/eventstest` (4
 scenarios: publish/subscribe round trip, topic-var merge field,
-capability-requirement rejection), wired into `adapters/mqtt5` and
+capability-requirement rejection, and security-gate rejection — the
+last resolving a previously-flagged MQTT3-vs-MQTT5 User Properties
+asymmetry via a reduced-rigor, explicitly-documented scenario, mirroring
+Phase 3 case 4's own precedent), wired into `adapters/mqtt5` and
 `adapters/mqtt` (v3) — `adapters/zeromq` is explicitly excluded pending a
 live broker, since its mock socket is fundamentally one-way/scripted
-(same limitation Phase 3 case 4 already documented); a security/
-middleware rejection scenario is also explicitly deferred, having
-surfaced a genuine MQTT3-vs-MQTT5 User Properties asymmetry needing its
-own resolution first. The rest of Phase 5's "reusable adapter conformance
-tests for common semantics" scope — the same per-family conformance
+(same limitation Phase 3 case 4 already documented). The rest of Phase
+5's "reusable adapter conformance tests for common semantics" scope —
+the same per-family conformance
 package for reqreply and ports — remains for a future round.
 This status line is updated as major increments land —
 see the per-phase sections below for full detail.
@@ -3626,7 +3627,7 @@ check` (staticcheck + gosec + fmt) clean after both incidental fixes.
 
 ### Phase 5 progress: events-family conformance package (`api/events/eventstest`)
 
-**Status: DONE (3 scenarios, `adapters/mqtt5` + `adapters/mqtt` v3), with
+**Status: DONE (4 scenarios, `adapters/mqtt5` + `adapters/mqtt` v3), with
 `adapters/zeromq` explicitly excluded this round.** Investigated whether
 `api/rest/resttest`'s design transfers directly to events — it does NOT:
 unlike REST, where every adapter speaks a uniform `http.Handler` testable
@@ -3685,44 +3686,74 @@ channels + matching assert functions:
    the blocking subscribe starts) — so `ServeSubscribers(ctx)` itself
    returns the coverage error SYNCHRONOUSLY, a simpler assertion shape
    than the round-trip scenarios (no `isReady`/`deliver` needed at all).
+4. `NewSecurityRejectionChannel`/`AssertSecurityRejectionRoundTrip` —
+   **resolves the MQTT3-vs-MQTT5 security asymmetry flagged in the prior
+   round** (see below).
 
-The two round-trip assertion functions each take the SAME two genuinely
-adapter-specific bridging callbacks (`isReady` — poll until the mock
-broker's handler is registered; `deliver` — forward the real published
-bytes into the adapter's own mock-dispatch mechanism) — mirroring the
-same "take the one truly adapter-specific piece as an explicit parameter"
-pattern `api/rest/resttest`'s `ObservabilityRoute` established.
+The three round-trip assertion functions each take the SAME two
+genuinely adapter-specific bridging callbacks (`isReady` — poll until
+the mock broker's handler is registered; `deliver` — forward the real
+published bytes into the adapter's own mock-dispatch mechanism) —
+mirroring the same "take the one truly adapter-specific piece as an
+explicit parameter" pattern `api/rest/resttest`'s `ObservabilityRoute`
+established.
 
-**Deferred out of this round, not an oversight**: a security/middleware
-rejection scenario (mirroring `resttest`'s `SecurityRoute`) was
-investigated and found to need DIFFERENT credential-extraction
-mechanisms per adapter — `adapters/mqtt`(v3) and `adapters/mqtt5` both
-support `SubscribeBoundMW`/`BoundSecuritySubscribeMiddleware`, but MQTT
-v3 has NO User Properties at all (a protocol-level limitation, not an
-adapter gap), so a credential a shared scenario could extract uniformly
-doesn't exist yet. This genuine MQTT3-vs-MQTT5 asymmetry needs its own
-resolution before a shared security scenario can be added — flagged
-here as an explicit, unresolved gap for a future round, not a quick
-addition skipped by oversight.
+**Resolution of the previously-deferred security-scenario gap**:
+investigated `adapters/mqtt`(v3)'s own existing security-rejection test
+(`TestServeSubscribers_SecurityRejection_CallsSecurityObserver`) closely
+and confirmed the MQTT3-vs-MQTT5 asymmetry is PERMANENT, not a gap to
+close — MQTT v3 has no out-of-band credential channel (no User
+Properties) at all, so full credential round-trip rigor (missing/wrong/
+valid real key) structurally cannot exist for it. The honest resolution,
+mirroring Phase 3 case 4's own "reduced rigor, explicitly documented"
+precedent: `NewSecurityRejectionChannel`/`AssertSecurityRejectionRoundTrip`
+proves the security-GATE WIRING both adapters genuinely share, not
+credential validation. A real design finding surfaced while building
+this scenario (NOT assumed from reading alone): confirmed directly
+against `adapters/mqtt5`'s own dispatch-core classification logic
+(`transport_dispatch.go`) that a `BoundSecuritySubscribeMiddleware` Fn
+which itself RETURNS AN ERROR is classified as a generic handler failure
+(`KindHandler`) and does **NOT** call
+`stats.SecurityObserver.RecordSecurityRejection` at all — only a Fn that
+SUCCEEDS with insufficient granted scopes, subsequently rejected by
+`events.CheckScopes`, is classified as `KindSecurity` and triggers
+`RecordSecurityRejection`. The scenario's Fn is therefore deliberately
+shaped to succeed-but-under-scope (never granting the declared
+requirement's scope) rather than mirroring MQTT v3's own
+always-erroring-Fn test convention literally — the only shape that
+actually reaches the assertion this scenario needs to make. A shared
+`SpyObserver`-equivalent (implementing `stats.SecurityObserver`,
+mirroring `api/rest/resttest`'s own `SpyObserver` precedent) is injected
+via `stats.WithObserver`, asserting `RecordSecurityRejection` fires
+exactly once with the correct topic/scheme. Full credential-validation
+rigor remains `adapters/mqtt5`-only (see that package's own
+GrantedScopes/ContextField test) and is explicitly documented as a
+PERMANENT, protocol-level asymmetry in `eventstest`'s own package doc —
+not a temporary gap to revisit again.
 
 Wired into both `adapters/mqtt5` (`eventstest_conformance_test.go`) and
 `adapters/mqtt` (`eventstest_conformance_test.go`) as genuine, independent
-usage — all 3 scenarios pass identically against the same shared
-assertion functions, with NO design mismatches found across either round
-(unlike `resttest`'s earlier rounds, which each found at least one issue)
-— the one real subtlety found (topic-var merge needing `want.ID` set for
-Publish's own topic-building) was caught during design investigation,
-before writing any adapter-wiring code, not via a failing test.
+usage — all 4 scenarios pass identically against the same shared
+assertion functions. Two real issues were found and fixed while building
+the security scenario specifically (both via direct investigation before
+or immediately after a first failing run, not left unresolved): (1) the
+classification finding above, requiring the Fn to succeed-but-under-scope
+rather than error outright; (2) a scopes-declaration consistency check
+(`events.Register`'s own validation) requiring the `BoundSecuritySubscribeMiddleware`
+constructor's own declared-scopes parameter to match the `Subscribe.Security`
+requirement's scopes exactly — initially passed as `nil`, corrected to
+the matching scope list. The earlier topic-var merge scenario (prior
+round) needed no such fixes — zero design mismatches found there.
 
-Coverage is now 3 scenarios (up from 1), still representative rather than
+Coverage is now 4 scenarios (up from 1), still representative rather than
 exhaustive — mirroring exactly how `api/rest/resttest` itself expanded
 from 3 to 7 scenarios over two separate rounds.
 
-Verified: new `TestEventstestConformance_TopicVarRoundTrip`/
-`TestEventstestConformance_CapabilityRejection` (plus the existing
-`TestEventstestConformance_SensorRoundTrip`) pass identically in both
-`adapters/mqtt5` and `adapters/mqtt`; whole-repo `go build`/`go test`
-(zero failures)/`go vet`/`gofmt -l` clean; `just check` (staticcheck +
+Verified: new `TestEventstestConformance_SecurityRejection` (plus the
+existing `TestEventstestConformance_SensorRoundTrip`/`_TopicVarRoundTrip`/
+`_CapabilityRejection`) pass identically in both `adapters/mqtt5` and
+`adapters/mqtt`; whole-repo `go build`/`go test` (zero failures)/`go
+vet`/`gofmt -l` clean; `just check` (staticcheck +
 gosec + fmt) clean.
 
 ## Open design points deferred to future rounds

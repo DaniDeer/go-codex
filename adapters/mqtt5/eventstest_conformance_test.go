@@ -67,3 +67,17 @@ func TestEventstestConformance_CapabilityRejection(t *testing.T) {
 	err := evtClient.ServeSubscribers(context.Background())
 	eventstest.AssertCapabilityRejected(t, err)
 }
+
+func TestEventstestConformance_SecurityRejection(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+	evtClient := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	if err := evtClient.Attach(NewTransport(TransportOptions{Client: client, Router: router})); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	eventstest.AssertSecurityRejectionRoundTrip(t, evtClient,
+		func() bool { return router.hasHandler(eventstest.SecurityRejectionTopic) },
+		func() { router.dispatch(eventstest.SecurityRejectionTopic, client.lastPublished()) },
+	)
+}

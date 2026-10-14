@@ -8,6 +8,7 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 )
 
@@ -292,5 +293,190 @@ func AssertCapabilityRejected(t *testing.T, err error) {
 	t.Helper()
 	if err == nil {
 		t.Fatal("want a non-nil error from ServeSubscribers for an unsatisfiable capability requirement, got nil")
+	}
+}
+
+// ── Scenario 4: security-gate rejection (REDUCED RIGOR — see doc.go) ───────
+
+// SecurityRejectionReading is the canonical message type
+// [NewSecurityRejectionChannel] declares.
+type SecurityRejectionReading struct{ Value float64 }
+
+var securityRejectionReadingCodec = codex.Struct[SecurityRejectionReading](
+	codex.RequiredField("value",
+		codex.Float64(),
+		func(r SecurityRejectionReading) float64 { return r.Value },
+		func(r *SecurityRejectionReading, v float64) { r.Value = v },
+	),
+)
+
+// SecurityRejectionTopic is [NewSecurityRejectionChannel]'s topic.
+const SecurityRejectionTopic = "eventstest/security-rejection/reading"
+
+// SecurityRejectionScheme is the security scheme name
+// [NewSecurityRejectionChannel] declares and [AssertSecurityRejectionRoundTrip]
+// asserts [stats.SecurityObserver.RecordSecurityRejection] is reported
+// against.
+const SecurityRejectionScheme = "apiKeyAuth"
+
+// securityRejectionIn is the Bound-mechanism In shape
+// [NewSecurityRejectionChannel]'s middleware declares — deliberately
+// EMPTY, mirroring adapters/mqtt's own existing security-rejection test
+// convention exactly (see AssertSecurityRejectionRoundTrip's doc comment
+// for why no real credential is extracted here).
+type securityRejectionIn struct{}
+
+// securityRejectionOut is the Bound-mechanism Out shape
+// [NewSecurityRejectionChannel]'s middleware declares.
+type securityRejectionOut struct{ GrantedScopes map[string][]string }
+
+// NewSecurityRejectionChannel is the canonical "security-gate rejection"
+// channel declaration (undecorated — call `.WithSubscribe(...)
+// .SubscribeBoundMW(...)` to attach the always-rejecting middleware, as
+// [AssertSecurityRejectionRoundTrip] does).
+func NewSecurityRejectionChannel() events.Channel[SecurityRejectionReading] {
+	return events.NewChannel[SecurityRejectionReading](SecurityRejectionTopic, securityRejectionReadingCodec)
+}
+
+// SecurityRejectionRequiredScope is the scope
+// [NewSecurityRejectionChannel]'s declared [events.SecurityRequirement]
+// demands — [newSecurityRejectionBoundMW]'s Fn deliberately NEVER grants
+// it (see that function's doc comment for why), so
+// [events.CheckScopes] — not the middleware Fn itself — is what
+// actually rejects.
+const SecurityRejectionRequiredScope = "read:eventstest"
+
+// newSecurityRejectionBoundMW returns the
+// [events.BoundSecuritySubscribeMiddleware] [AssertSecurityRejectionRoundTrip]
+// attaches via `.SubscribeBoundMW(...)`.
+//
+// Its Fn ALWAYS SUCCEEDS (returns a nil error) but grants NO scopes at
+// all — confirmed directly against adapters/mqtt5's own dispatch-core
+// classification logic: a middleware Fn that itself RETURNS AN ERROR is
+// classified as a generic handler failure (KindHandler), NOT a security
+// rejection, and does NOT call
+// [stats.SecurityObserver.RecordSecurityRejection] — only a Fn that
+// SUCCEEDS with insufficient granted scopes, subsequently rejected by
+// [events.CheckScopes], is classified as KindSecurity and triggers
+// RecordSecurityRejection. This Fn is deliberately shaped to hit that
+// exact path, not the Fn-error path, so the scenario proves what it
+// claims to prove.
+func newSecurityRejectionBoundMW() events.BoundSubscribeMiddleware[SecurityRejectionReading, securityRejectionIn, securityRejectionOut] {
+	return events.BoundSecuritySubscribeMiddleware[SecurityRejectionReading, securityRejectionIn, securityRejectionOut](
+		SecurityRejectionScheme, events.APIKeyScheme("X-Eventstest-Api-Key", "header"), []string{SecurityRejectionRequiredScope},
+		func(_ context.Context, _ *SecurityRejectionReading, _ securityRejectionIn) (securityRejectionOut, error) {
+			return securityRejectionOut{GrantedScopes: map[string][]string{SecurityRejectionScheme: nil}}, nil
+		},
+	)
+}
+
+// securityRejectionSpyObserver is a minimal [stats.SecurityObserver] spy
+// recording every RecordSecurityRejection call it receives — mirrors
+// api/rest/resttest's own SpyObserver precedent, scoped to this one
+// interface since that's all this scenario needs.
+type securityRejectionSpyObserver struct {
+	stats.NoopObserver
+	calls []securityRejectionCall
+}
+
+type securityRejectionCall struct {
+	location string
+	scheme   string
+}
+
+func (s *securityRejectionSpyObserver) RecordSecurityRejection(location, scheme string) {
+	s.calls = append(s.calls, securityRejectionCall{location: location, scheme: scheme})
+}
+
+// AssertSecurityRejectionRoundTrip proves a conforming adapter's security
+// gate rejects a message whose granted scopes never satisfy the declared
+// requirement: the handler is NEVER called, and
+// [stats.SecurityObserver.RecordSecurityRejection] fires exactly once
+// with [SecurityRejectionTopic]/[SecurityRejectionScheme].
+//
+// REDUCED RIGOR, DOCUMENTED, NOT A GAP: this scenario proves the
+// security-GATE WIRING only (an insufficiently-scoped grant correctly
+// blocks the handler and is correctly observed) — it does NOT prove real
+// credential round-trip validation (missing/wrong/valid key), because
+// MQTT v3 has NO out-of-band credential channel (no User Properties) to
+// extract a real credential from at all — confirmed directly from
+// adapters/mqtt's own existing security-rejection test convention
+// (TestServeSubscribers_SecurityRejection_CallsSecurityObserver), which
+// uses the SAME "Fn declares no real credential extraction" shape (there,
+// via an always-erroring Fn instead — see [newSecurityRejectionBoundMW]'s
+// own doc comment for why THIS scenario deliberately uses a
+// succeeds-but-under-scoped Fn instead, the only shape that actually
+// reaches [stats.SecurityObserver.RecordSecurityRejection] per
+// adapters/mqtt5's own dispatch-core classification). Full
+// credential-validation rigor remains adapters/mqtt5-only (see that
+// package's own GrantedScopes/ContextField test) and is a PERMANENT,
+// protocol-level asymmetry, not a temporary gap to close in a future
+// round.
+func AssertSecurityRejectionRoundTrip(t *testing.T, client *events.Client, isReady func() bool, deliver func()) {
+	t.Helper()
+
+	var mu sync.Mutex
+	var handlerCalled bool
+	sub := NewSecurityRejectionChannel().
+		WithSubscribe(events.Subscribe{Security: []events.SecurityRequirement{events.Require(SecurityRejectionScheme, SecurityRejectionRequiredScope)}}).
+		SubscribeBoundMW(newSecurityRejectionBoundMW()).
+		WithHandler(func(_ context.Context, _ SecurityRejectionReading) error {
+			mu.Lock()
+			handlerCalled = true
+			mu.Unlock()
+			return nil
+		})
+	if err := sub.Register(client); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	spy := &securityRejectionSpyObserver{}
+	ctx, cancel := context.WithTimeout(stats.WithObserver(context.Background(), spy), 2*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- client.ServeSubscribers(ctx) }()
+
+	deadline := time.Now().Add(time.Second)
+	for !isReady() {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for the subscriber's handler to be registered (isReady never returned true)")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	pub := NewSecurityRejectionChannel().WithPublish(events.Publish{})
+	if err := client.Publish(ctx, pub, SecurityRejectionReading{Value: 1}); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	deliver()
+
+	deadline = time.Now().Add(time.Second)
+	for {
+		mu.Lock()
+		spyCalls := len(spy.calls)
+		mu.Unlock()
+		if spyCalls > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for RecordSecurityRejection to be called after deliver()")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	cancel()
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+	if handlerCalled {
+		t.Error("handler must NOT be called when the security middleware rejects")
+	}
+	if len(spy.calls) != 1 {
+		t.Fatalf("want exactly 1 RecordSecurityRejection call, got %d: %+v", len(spy.calls), spy.calls)
+	}
+	got := spy.calls[0]
+	if got.location != SecurityRejectionTopic || got.scheme != SecurityRejectionScheme {
+		t.Errorf("RecordSecurityRejection call = %+v, want {location:%s scheme:%s}", got, SecurityRejectionTopic, SecurityRejectionScheme)
 	}
 }
