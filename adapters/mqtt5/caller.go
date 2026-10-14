@@ -9,11 +9,9 @@ import (
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/DaniDeer/go-codex/adapters/internal/scopesmerge"
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/internal/middleware"
 	"github.com/DaniDeer/go-codex/internal/route"
 	asyncapi "github.com/DaniDeer/go-codex/render/asyncapi/v3"
 	"github.com/DaniDeer/go-codex/stats"
@@ -179,7 +177,22 @@ func (c *caller) serveOneEntry(ctx context.Context, filter string, qos byte, opt
 		obs = stats.ObserverFromContext(ctx)
 	}
 
-	handler := makeErasedSubscribeMessageHandler(ctx, c.client, info, obs, opts)
+	// General-purpose wrapping composes ONCE, outside the per-message
+	// loop — mirrors `transport.go`'s identical
+	// `fnVal = wrapHandlerGeneralReflect(fnVal, implementations)` timing
+	// (Phase 3 case 6's per-message-re-wrap fix).
+	wrappedFn := wrapHandlerGeneralReflect(info.handlerFn, info.implementations)
+	// formatsZero: no call-time format override mechanism exists on this
+	// path (SubscribeOptions has no Formats field) — identical to this
+	// path's pre-existing behavior.
+	formatsZero := reflect.Zero(info.decodeMergedMethod.Type().In(2))
+
+	// subscribeDispatchCore is the ONE shared reflect-based dispatch core
+	// (Phase 4 events/reqreply family, Workstream A) — also used by
+	// `transport.go`'s [(*transport).Subscribe] (the ports.Pattern-
+	// binding path). See its own doc comment for the full unification
+	// rationale.
+	handler := subscribeDispatchCore(ctx, c.client, obs, info, wrappedFn, formatsZero, opts.UserPropertyParams, opts.OnError)
 	c.router.RegisterHandler(filter, handler)
 
 	_, err := c.client.Subscribe(ctx, &pahomqtt5.Subscribe{
@@ -288,6 +301,49 @@ type erasedSubscriberHandle struct {
 	deadLetterForMethod    reflect.Value
 }
 
+// buildErasedSubscriberHandleFields fills in every [erasedSubscriberHandle]
+// field recoverable from an already-obtained (handleVal, elem) pair —
+// handleVal the reflect.Value of *[events.ChannelHandle][T] itself (for
+// its own methods, e.g. DecodeMergedWithFormats), elem its Elem() (for
+// its own fields, e.g. Topic/Descriptor). Shared by BOTH
+// [extractErasedSubscriberHandle] (ServeSubscribers' per-entry path,
+// which also populates handlerFn/handlerOptsAny from elem's own Handler/
+// HandlerOpts fields below) and `transport.go`'s [(*transport).Subscribe]
+// (the ports.Pattern-binding path, which supplies its OWN, separately
+// call-time-validated handler function instead of reading elem's Handler
+// field — msgType is derived from decodeMergedMethod's return type here
+// specifically so BOTH callers can rely on it without needing a non-nil
+// Handler field) — this is the Phase 4 events/reqreply family,
+// Workstream A alignment step: previously `transport.go` re-derived every
+// one of these fields independently via ad hoc `elem.FieldByName(...)`
+// calls scattered through its own body; this is now the single place
+// that logic lives.
+func buildErasedSubscriberHandleFields(handleVal, elem reflect.Value) erasedSubscriberHandle {
+	descriptor, _ := elem.FieldByName("Descriptor").Interface().(asyncapi.ChannelItem)
+	securitySchemes, _ := elem.FieldByName("SecuritySchemes").Interface().(map[string]events.SecurityScheme)
+	globalSecurity, _ := elem.FieldByName("GlobalSecurity").Interface().([]route.SecurityRequirement)
+	implementations, _ := elem.FieldByName("Implementations").Interface().([]events.ServerImplementation)
+	requirements, _ := elem.FieldByName("Requirements").Interface().([]events.CapabilityRequirement)
+	middlewareHandlers, _ := elem.FieldByName("MiddlewareHandlers").Interface().([]events.MiddlewareHandler)
+	decodeMergedMethod := handleVal.MethodByName("DecodeMergedWithFormats")
+	return erasedSubscriberHandle{
+		topic:                       elem.FieldByName("Topic").String(),
+		descriptor:                  descriptor,
+		securitySchemes:             securitySchemes,
+		globalSecurity:              globalSecurity,
+		implementations:             implementations,
+		msgType:                     decodeMergedMethod.Type().Out(0),
+		requirements:                requirements,
+		middlewareHandlers:          middlewareHandlers,
+		dispatchSubscribeMiddleware: handleVal.MethodByName("DispatchSubscribeMiddleware"),
+		errorResponseForMethod:      handleVal.MethodByName("ErrorResponseFor"),
+		deadLetterForMethod:         handleVal.MethodByName("DeadLetterFor"),
+		decodeMergedMethod:          decodeMergedMethod,
+		mergePropertyVarsMethod:     handleVal.MethodByName("MergePropertyVars"),
+		propertyMergeFieldsLen:      handleVal.MethodByName("PropertyMergeFields").Call(nil)[0].Len(),
+	}
+}
+
 // extractErasedSubscriberHandle recovers an [erasedSubscriberHandle] from
 // handleAny (a *[events.ChannelHandle][T] stored as any).
 func extractErasedSubscriberHandle(handleAny any) (erasedSubscriberHandle, error) {
@@ -300,30 +356,10 @@ func extractErasedSubscriberHandle(handleAny any) (erasedSubscriberHandle, error
 	if handlerFn.IsNil() {
 		return erasedSubscriberHandle{}, fmt.Errorf("mqtt5.ServeSubscribers: channel has no handler (internal error — HasHandler should have skipped it)")
 	}
-	descriptor, _ := elem.FieldByName("Descriptor").Interface().(asyncapi.ChannelItem)
-	securitySchemes, _ := elem.FieldByName("SecuritySchemes").Interface().(map[string]events.SecurityScheme)
-	globalSecurity, _ := elem.FieldByName("GlobalSecurity").Interface().([]route.SecurityRequirement)
-	implementations, _ := elem.FieldByName("Implementations").Interface().([]events.ServerImplementation)
-	requirements, _ := elem.FieldByName("Requirements").Interface().([]events.CapabilityRequirement)
-	middlewareHandlers, _ := elem.FieldByName("MiddlewareHandlers").Interface().([]events.MiddlewareHandler)
-	return erasedSubscriberHandle{
-		topic:                       elem.FieldByName("Topic").String(),
-		descriptor:                  descriptor,
-		securitySchemes:             securitySchemes,
-		globalSecurity:              globalSecurity,
-		implementations:             implementations,
-		handlerOptsAny:              elem.FieldByName("HandlerOpts").Interface(),
-		handlerFn:                   handlerFn,
-		msgType:                     handlerFn.Type().In(1),
-		requirements:                requirements,
-		middlewareHandlers:          middlewareHandlers,
-		dispatchSubscribeMiddleware: hv.MethodByName("DispatchSubscribeMiddleware"),
-		errorResponseForMethod:      hv.MethodByName("ErrorResponseFor"),
-		deadLetterForMethod:         hv.MethodByName("DeadLetterFor"),
-		decodeMergedMethod:          hv.MethodByName("DecodeMergedWithFormats"),
-		mergePropertyVarsMethod:     hv.MethodByName("MergePropertyVars"),
-		propertyMergeFieldsLen:      hv.MethodByName("PropertyMergeFields").Call(nil)[0].Len(),
-	}, nil
+	info := buildErasedSubscriberHandleFields(hv, elem)
+	info.handlerOptsAny = elem.FieldByName("HandlerOpts").Interface()
+	info.handlerFn = handlerFn
+	return info, nil
 }
 
 // subscribeSecurityFnType builds the reflect.Type for the security shape
@@ -430,193 +466,6 @@ func wrapHandlerGeneralReflect(handlerVal reflect.Value, impls []events.ServerIm
 		h = fnVal.Call([]reflect.Value{h})[0]
 	}
 	return h
-}
-
-// makeErasedSubscribeMessageHandler builds the [pahomqtt5.MessageHandler]
-// [(*caller).serveOneEntry] registers with the router — the
-// [ServeSubscribers] dispatch equivalent of [makeSubscribeMessageHandler],
-// operating on an erased [erasedSubscriberHandle] via reflect.Value.Call
-// instead of a generic *[events.ChannelHandle][T]. Runs the SAME
-// built-in codec-based credential check + Implementations-based security
-// check + general-purpose wrapping [makeSubscribeMessageHandler] runs.
-// CORRECTED (Phase 3 case 6's 3-way reconciliation): previously had NO
-// topic-template-var support at all, a confirmed gap relative to
-// `transport.go`'s identical reflection pattern — now derives topic vars
-// via [matchTopicTemplate] and merges them via
-// [info.decodeMergedMethod]/[info.mergePropertyVarsMethod], exactly
-// mirroring `transport.go`'s Subscribe. The handler Fn is ALSO now
-// wrapped exactly ONCE here (outside the per-message closure, mirroring
-// `transport.go`'s identical timing) — previously re-wrapped on EVERY
-// message, a latent inefficiency (not a correctness bug) this closes.
-func makeErasedSubscribeMessageHandler(ctx context.Context, client MQTTClient, info erasedSubscriberHandle, obs stats.Observer, opts SubscribeOptions) pahomqtt5.MessageHandler {
-	// dispatchFailure is the shared ErrorChannel→DeadLetter→OnError
-	// fallback triplet every pipeline step below consults on failure —
-	// extracted (Phase 3) into [subscribeDispatchFailure], shared
-	// verbatim with `transport.go`'s identical closure. CORRECTED
-	// (pre-Phase-3): this ServeSubscribers dispatch previously consulted
-	// NEITHER mechanism — a declared [events.ErrorChannel]/
-	// [events.DeadLetter] silently never fired on the PRIMARY recommended
-	// Client.Attach workflow; that fix is what this closure embodies.
-	dispatchFailure := subscribeDispatchFailure(ctx, client, obs, info.errorResponseForMethod, info.deadLetterForMethod, opts.OnError)
-
-	// General-purpose wrapping composes ONCE, outside the per-message
-	// loop — mirrors `transport.go`'s identical
-	// `fnVal = wrapHandlerGeneralReflect(fnVal, implementations)` timing
-	// (Phase 3 case 6's divergence-3 fix).
-	wrappedHandler := wrapHandlerGeneralReflect(info.handlerFn, info.implementations)
-	formatsZero := reflect.Zero(info.decodeMergedMethod.Type().In(2)) // no call-time format override mechanism exists on this path (SubscribeOptions has no Formats field) — identical to this path's pre-existing behavior.
-
-	return func(msg *pahomqtt5.Publish) {
-		start := time.Now()
-		msgCtx := middleware.EnsureContextFields(context.WithValue(ctx, contextKey{}, msg))
-		if msg.Properties != nil && len(msg.Properties.User) > 0 {
-			msgCtx = context.WithValue(msgCtx, userPropsKey{}, msg.Properties.User)
-		}
-
-		vars, matchErr := matchTopicTemplate(info.topic, msg.Topic)
-		if matchErr != nil {
-			return // broader wildcard subscription received a non-matching topic — expected, not an error (mirrors transport.go's identical check).
-		}
-
-		valuePtr := reflect.New(info.msgType)
-		decodeResults := info.decodeMergedMethod.CallSlice([]reflect.Value{reflect.ValueOf(msg.Payload), reflect.ValueOf(vars), formatsZero})
-		if err, _ := decodeResults[1].Interface().(error); err != nil {
-			stats.ReportErrors(obs, "payload", err)
-			obs.RecordSubscribe(msg.Topic, false, time.Since(start))
-			dispatchFailure(KindDecode, msg.Topic, msg.Payload, err)
-			return
-		}
-		valuePtr.Elem().Set(decodeResults[0])
-
-		// Property vocabulary axis: extract real MQTT5 User Properties
-		// AND merge them into the decoded value via a declared
-		// MergedPropertyParam/PropertyMergeField — mirrors
-		// `transport.go`'s identical extraction+merge, another part of
-		// the Phase 3 case 6 topic-var/property-merge parity fix.
-		var propertyVars map[string]string
-		if len(info.middlewareHandlers) > 0 || info.propertyMergeFieldsLen > 0 {
-			propertyVars = propertyVarsFromUserProperties(msg)
-			if info.propertyMergeFieldsLen > 0 {
-				mergeResults := info.mergePropertyVarsMethod.Call([]reflect.Value{valuePtr, reflect.ValueOf(propertyVars)})
-				if mergeErr, _ := mergeResults[0].Interface().(error); mergeErr != nil {
-					stats.ReportErrors(obs, "property_var", mergeErr)
-					obs.RecordSubscribe(msg.Topic, false, time.Since(start))
-					dispatchFailure(KindDecode, msg.Topic, msg.Payload, mergeErr)
-					return
-				}
-			}
-		}
-
-		if propErr := validateUserProperties(msg, opts.UserPropertyParams); propErr != nil {
-			obs.RecordValidationError("user_property", stats.ConstraintName(propErr), userPropertyName(propErr))
-			obs.RecordSubscribe(msg.Topic, false, time.Since(start))
-			dispatchFailure(KindSecurity, msg.Topic, msg.Payload, propErr)
-			return
-		}
-
-		var secReqs []route.SecurityRequirement
-		if info.descriptor.Subscribe != nil {
-			secReqs = info.descriptor.Subscribe.Security
-		}
-		if secReqs == nil {
-			secReqs = info.globalSecurity
-		}
-		if len(secReqs) > 0 {
-			if err := runErasedBuiltinSecurityCheck(msg, secReqs, info.securitySchemes); err != nil {
-				if secObs, ok := obs.(stats.SecurityObserver); ok {
-					secObs.RecordSecurityRejection(msg.Topic, route.FirstSchemeName(secReqs))
-				}
-				obs.RecordSubscribe(msg.Topic, false, time.Since(start))
-				dispatchFailure(KindSecurity, msg.Topic, msg.Payload, err)
-				return
-			}
-		}
-
-		granted := make(map[string][]string)
-		if len(info.implementations) > 0 {
-			g, err := runSubscribeSecurityImplsReflect(msgCtx, msg, valuePtr, secReqs, info.implementations)
-			if err != nil {
-				if secObs, ok := obs.(stats.SecurityObserver); ok {
-					secObs.RecordSecurityRejection(msg.Topic, route.FirstSchemeName(secReqs))
-				}
-				obs.RecordSubscribe(msg.Topic, false, time.Since(start))
-				dispatchFailure(KindSecurity, msg.Topic, msg.Payload, events.SecurityError{Err: err})
-				return
-			}
-			granted = g
-		}
-
-		// Codec-backed bound MiddlewareHandler dispatch (SubscribeMW's
-		// bound path) — CORRECTED: this reflect-based ServeSubscribers
-		// dispatch previously never ran this at all (see
-		// erasedSubscriberHandle.middlewareHandlers' own doc comment).
-		// Topic vars AND property vars (MQTT5 User Properties) are now
-		// BOTH extracted (Phase 3 case 6's parity fix — topic vars were
-		// previously unsupported on this path), reusing the SAME `vars`/
-		// `propertyVars` derived above, mirroring `transport.go`'s
-		// identical dispatch point exactly.
-		if len(info.middlewareHandlers) > 0 {
-			mwResults := info.dispatchSubscribeMiddleware.Call([]reflect.Value{
-				reflect.ValueOf(msgCtx), valuePtr, reflect.ValueOf(vars), reflect.ValueOf(propertyVars),
-			})
-			outs, _ := mwResults[0].Interface().([]any)
-			if mwErr, _ := mwResults[1].Interface().(error); mwErr != nil {
-				obs.RecordSubscribe(msg.Topic, false, time.Since(start))
-				dispatchErr, _ := events.AsMiddlewareDispatchError(mwErr)
-				kind := KindDecode
-				if dispatchErr.IsFnError {
-					kind = KindHandler
-				}
-				dispatchFailure(kind, msg.Topic, msg.Payload, mwErr)
-				return
-			}
-			satisfies := make([][]string, len(info.middlewareHandlers))
-			for i, h := range info.middlewareHandlers {
-				satisfies[i] = h.Satisfies
-			}
-			scopesmerge.MergeHandlerGrants(granted, satisfies, outs)
-		}
-
-		if len(secReqs) > 0 {
-			if err := events.CheckScopes(secReqs, granted); err != nil {
-				if secObs, ok := obs.(stats.SecurityObserver); ok {
-					secObs.RecordSecurityRejection(msg.Topic, route.FirstSchemeName(secReqs))
-				}
-				obs.RecordSubscribe(msg.Topic, false, time.Since(start))
-				dispatchFailure(KindSecurity, msg.Topic, msg.Payload, events.SecurityError{Err: err})
-				return
-			}
-		}
-
-		// wrappedHandler is the ONCE-computed wrap from setup above (Phase
-		// 3 case 6's per-message-re-wrap fix — no longer rebuilt here).
-		// EnsureDispositionBox is called unconditionally, at zero cost to
-		// adapters/callers that never call SetDisposition — mqtt5 has no
-		// acknowledgement concept of its own today, but the plumbing is
-		// proven end-to-end here for a future ack-capable adapter (e.g.
-		// AMQP) to consume without further core changes. See
-		// docs/design/d-0006-protocol-native-capabilities.md's §8.
-		spanCtx := stats.EnsureDispositionBox(msgCtx)
-		if to, ok := obs.(stats.TraceObserver); ok {
-			spanCtx = to.StartSpan(spanCtx, "mqtt5.subscribe", msg.Topic)
-		}
-		results := wrappedHandler.Call([]reflect.Value{reflect.ValueOf(spanCtx), valuePtr.Elem()})
-		fnErr, _ := results[0].Interface().(error)
-		if to, ok := obs.(stats.TraceObserver); ok {
-			to.EndSpan(spanCtx, fnErr)
-		}
-		disposition := stats.ResolveDisposition(spanCtx, fnErr)
-		if dispObs, ok := obs.(stats.DispositionObserver); ok {
-			dispObs.RecordDisposition(msg.Topic, disposition)
-		}
-		if fnErr != nil {
-			stats.ReportErrors(obs, "topic_var", fnErr)
-			obs.RecordSubscribe(msg.Topic, false, time.Since(start))
-			dispatchFailure(KindHandler, msg.Topic, msg.Payload, fnErr)
-			return
-		}
-		obs.RecordSubscribe(msg.Topic, true, time.Since(start))
-	}
 }
 
 // runErasedBuiltinSecurityCheck runs the SAME built-in codec-based

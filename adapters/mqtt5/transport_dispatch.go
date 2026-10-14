@@ -4,10 +4,14 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"time"
 
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
 
+	"github.com/DaniDeer/go-codex/adapters/internal/scopesmerge"
 	"github.com/DaniDeer/go-codex/api/events"
+	"github.com/DaniDeer/go-codex/internal/middleware"
+	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/stats"
 )
 
@@ -292,5 +296,229 @@ func subscribeDispatchFailure(
 		if onErrorFn != nil {
 			onErrorFn(SubscribeError{Kind: kind, Topic: sourceTopic, Err: failErr})
 		}
+	}
+}
+
+// subscribeDispatchCore builds the [pahomqtt5.MessageHandler] both
+// `transport.go`'s [(*transport).Subscribe] (the ports.Pattern-binding
+// path) and `caller.go`'s [(*caller).serveOneEntry] (the Client.Attach/
+// ServeSubscribers path) register with their router — the ONE shared
+// reflect-based dispatch core Phase 3 case 6's parity fix made possible:
+// once topic-var/property-merge support and Disposition tracking were
+// brought to parity across both paths (and the per-message re-wrap
+// hoisted to run once), the two paths' per-message bodies became
+// byte-for-byte identical, not merely behaviorally equivalent — this is
+// the literal merge that fix deliberately deferred as "too risky" at the
+// time (case 6's own writeup), now safe to perform because the ONLY
+// genuine divergence left (Disposition-only vs. topic-var-only support)
+// was exactly what that fix closed.
+//
+// Per Phase 4's "Events/reqreply family dispatch-core consolidation
+// design" point 1: this covers 2 of mqtt5's 3 Subscribe dispatch
+// implementations — the compile-time-generic
+// [makeSubscribeMessageHandler][T] escape hatch (adapter.go) is NOT
+// folded in here; Go has no reflective generic instantiation, so a
+// function taking reflect.Value cannot also be called with a concrete T
+// without boxing through any first, defeating the whole point of the
+// generic path's existence. Resolved count: 3 → 2 implementations, not
+// 3 → 1 — matching the REST family's nethttp precedent (buildRouteHandler
+// reflect vs. handlerFunc generic stayed two functions, unified only via
+// a shared construction-time core).
+//
+// wrappedFn is the handler reflect.Value, ALREADY shape-validated and
+// ALREADY wrapped via [wrapHandlerGeneralReflect] by the caller — exactly
+// once, before any message is dispatched (mirrors both prior bodies'
+// identical once-per-setup wrap timing). formatsOverride is the
+// resolved per-call formats override (zero value when the dispatch path
+// has no override mechanism — see caller.go's [makeErasedSubscribeMessageHandler]
+// doc comment, now folded into this function, for why ServeSubscribers'
+// own call site always passes the zero value here).
+func subscribeDispatchCore(
+	ctx context.Context,
+	client MQTTClient,
+	obs stats.Observer,
+	info erasedSubscriberHandle,
+	wrappedFn reflect.Value,
+	formatsOverride reflect.Value,
+	userPropertyParams []UserPropertyParam,
+	onErrorFn func(SubscribeError),
+) pahomqtt5.MessageHandler {
+	middlewareHandlersLen := len(info.middlewareHandlers)
+	middlewareSatisfies := make([][]string, middlewareHandlersLen)
+	for i, h := range info.middlewareHandlers {
+		middlewareSatisfies[i] = h.Satisfies
+	}
+
+	var secReqs []route.SecurityRequirement
+	if info.descriptor.Subscribe != nil {
+		secReqs = info.descriptor.Subscribe.Security
+	}
+	if secReqs == nil {
+		secReqs = info.globalSecurity
+	}
+
+	// dispatchFailure is the shared ErrorChannel→DeadLetter→OnError
+	// fallback triplet every pipeline step below consults on failure
+	// (extracted in Phase 3, shared by both paths even before this
+	// literal merge — see [subscribeDispatchFailure]'s own doc comment).
+	dispatchFailure := subscribeDispatchFailure(ctx, client, obs, info.errorResponseForMethod, info.deadLetterForMethod, onErrorFn)
+
+	return func(msg *pahomqtt5.Publish) {
+		start := time.Now()
+		// msgCtx stores msg AND its User Properties pre-decode — a caller
+		// reading these inside its handler must see them regardless of
+		// which dispatch path (generic/reflect, Subscribe/ServeSubscribers)
+		// decoded the message.
+		msgCtx := middleware.EnsureContextFields(context.WithValue(ctx, contextKey{}, msg))
+		if msg.Properties != nil && len(msg.Properties.User) > 0 {
+			msgCtx = context.WithValue(msgCtx, userPropsKey{}, msg.Properties.User)
+		}
+
+		vars, matchErr := matchTopicTemplate(info.topic, msg.Topic)
+		if matchErr != nil {
+			return // broader wildcard subscription received a non-matching topic — expected, not an error.
+		}
+
+		decodeResults := info.decodeMergedMethod.CallSlice([]reflect.Value{reflect.ValueOf(msg.Payload), reflect.ValueOf(vars), formatsOverride})
+		if decErr, _ := decodeResults[1].Interface().(error); decErr != nil {
+			stats.ReportErrors(obs, "payload", decErr)
+			obs.RecordSubscribe(msg.Topic, false, time.Since(start))
+			dispatchFailure(KindDecode, msg.Topic, msg.Payload, decErr)
+			return
+		}
+		valuePtr := reflect.New(info.msgType)
+		valuePtr.Elem().Set(decodeResults[0])
+
+		// Property vocabulary axis: extract real MQTT5 User Properties
+		// into a plain map for codec-Middleware dispatch AND
+		// channel-level MergedPropertyParam merge fields — kept SEPARATE
+		// from topic vars (independent namespace/consumer).
+		var propertyVars map[string]string
+		if middlewareHandlersLen > 0 || info.propertyMergeFieldsLen > 0 {
+			propertyVars = make(map[string]string)
+			if msg.Properties != nil {
+				for _, p := range msg.Properties.User {
+					propertyVars[p.Key] = p.Value
+				}
+			}
+			if info.propertyMergeFieldsLen > 0 {
+				mergeResults := info.mergePropertyVarsMethod.Call([]reflect.Value{valuePtr, reflect.ValueOf(propertyVars)})
+				if mergeErr, _ := mergeResults[0].Interface().(error); mergeErr != nil {
+					stats.ReportErrors(obs, "property_var", mergeErr)
+					obs.RecordSubscribe(msg.Topic, false, time.Since(start))
+					dispatchFailure(KindDecode, msg.Topic, msg.Payload, mergeErr)
+					return
+				}
+			}
+		}
+
+		// User Property param validation — runs before security
+		// enforcement.
+		if propErr := validateUserProperties(msg, userPropertyParams); propErr != nil {
+			obs.RecordValidationError("user_property", stats.ConstraintName(propErr), userPropertyName(propErr))
+			obs.RecordSubscribe(msg.Topic, false, time.Since(start))
+			dispatchFailure(KindSecurity, msg.Topic, msg.Payload, propErr)
+			return
+		}
+
+		// Built-in codec-based credential check — runs BEFORE any
+		// declarative SubscribeMW security implementation. Deliberately
+		// does NOT consult ErrorChannel/DeadLetter — falls straight to
+		// OnError.
+		if len(secReqs) > 0 {
+			if err := runErasedBuiltinSecurityCheck(msg, secReqs, info.securitySchemes); err != nil {
+				if secObs, ok := obs.(stats.SecurityObserver); ok {
+					secObs.RecordSecurityRejection(msg.Topic, route.FirstSchemeName(secReqs))
+				}
+				obs.RecordSubscribe(msg.Topic, false, time.Since(start))
+				if onErrorFn != nil {
+					onErrorFn(SubscribeError{Kind: KindSecurity, Topic: msg.Topic, Err: err})
+				}
+				return
+			}
+		}
+
+		// Implementations-based security check (from SubscribeMW) — runs
+		// UNCONDITIONALLY.
+		granted := make(map[string][]string)
+		if len(info.implementations) > 0 {
+			g, err := runSubscribeSecurityImplsReflect(msgCtx, msg, valuePtr, secReqs, info.implementations)
+			if err != nil {
+				if secObs, ok := obs.(stats.SecurityObserver); ok {
+					secObs.RecordSecurityRejection(msg.Topic, route.FirstSchemeName(secReqs))
+				}
+				obs.RecordSubscribe(msg.Topic, false, time.Since(start))
+				dispatchFailure(KindSecurity, msg.Topic, msg.Payload, events.SecurityError{Err: err})
+				return
+			}
+			granted = g
+		}
+
+		// Codec-backed middleware dispatch (SubscribeBoundMW and bundled
+		// .Use()) — SAME pre-handler dispatch point the security
+		// Implementations check just ran at, reusing the SAME
+		// topicVars/propertyVars derived above. A bound MiddlewareHandler's
+		// own GrantedScopes-carrying Out (via scopesmerge.MergeHandlerGrants)
+		// is merged into the SAME `granted` map BEFORE the unified
+		// CheckScopes call below.
+		if middlewareHandlersLen > 0 {
+			mwResults := info.dispatchSubscribeMiddleware.Call([]reflect.Value{
+				reflect.ValueOf(msgCtx), valuePtr, reflect.ValueOf(vars), reflect.ValueOf(propertyVars),
+			})
+			outs, _ := mwResults[0].Interface().([]any)
+			if mwErr, _ := mwResults[1].Interface().(error); mwErr != nil {
+				obs.RecordSubscribe(msg.Topic, false, time.Since(start))
+				dispatchErr, _ := events.AsMiddlewareDispatchError(mwErr)
+				if dispatchErr.IsFnError {
+					stats.ReportErrors(obs, "middleware:fn", dispatchErr.Err)
+					dispatchFailure(KindHandler, msg.Topic, msg.Payload, events.MiddlewareError{Name: dispatchErr.Name, Err: dispatchErr.Err})
+				} else {
+					stats.ReportErrors(obs, "middleware:in", dispatchErr.Err)
+					dispatchFailure(KindDecode, msg.Topic, msg.Payload, dispatchErr.Err)
+				}
+				return
+			}
+			scopesmerge.MergeHandlerGrants(granted, middlewareSatisfies, outs)
+		}
+
+		// ONE unified CheckScopes call covering grants from BOTH the
+		// legacy Implementations path AND any bound MiddlewareHandler's
+		// own GrantedScopes (merged above).
+		if len(secReqs) > 0 {
+			if err := events.CheckScopes(secReqs, granted); err != nil {
+				if secObs, ok := obs.(stats.SecurityObserver); ok {
+					secObs.RecordSecurityRejection(msg.Topic, route.FirstSchemeName(secReqs))
+				}
+				obs.RecordSubscribe(msg.Topic, false, time.Since(start))
+				dispatchFailure(KindSecurity, msg.Topic, msg.Payload, events.SecurityError{Err: err})
+				return
+			}
+		}
+
+		// EnsureDispositionBox is called unconditionally, at zero cost to
+		// adapters/callers that never call SetDisposition — mqtt5 has no
+		// acknowledgement concept of its own today, but the plumbing is
+		// proven end-to-end here for a future ack-capable adapter to
+		// consume without further core changes.
+		spanCtx := stats.EnsureDispositionBox(msgCtx)
+		if to, ok := obs.(stats.TraceObserver); ok {
+			spanCtx = to.StartSpan(spanCtx, "mqtt5.subscribe", msg.Topic)
+		}
+		fnResults := wrappedFn.Call([]reflect.Value{reflect.ValueOf(spanCtx), valuePtr.Elem()})
+		handlerErr, _ := fnResults[0].Interface().(error)
+		if to, ok := obs.(stats.TraceObserver); ok {
+			to.EndSpan(spanCtx, handlerErr)
+		}
+		disposition := stats.ResolveDisposition(spanCtx, handlerErr)
+		if dispObs, ok := obs.(stats.DispositionObserver); ok {
+			dispObs.RecordDisposition(msg.Topic, disposition)
+		}
+		if handlerErr == nil {
+			obs.RecordSubscribe(msg.Topic, true, time.Since(start))
+			return
+		}
+		stats.ReportErrors(obs, "topic_var", handlerErr)
+		obs.RecordSubscribe(msg.Topic, false, time.Since(start))
+		dispatchFailure(KindHandler, msg.Topic, msg.Payload, handlerErr)
 	}
 }

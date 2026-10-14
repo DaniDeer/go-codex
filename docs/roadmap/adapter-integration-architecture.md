@@ -2885,6 +2885,71 @@ the same round, following the REST family's already-proven pattern.
   (clean), `gofmt` all clean. **Both the REST and SSE families' own
   conformance tests are now complete.**
 
+#### Phase 4 progress: events/reqreply family, Workstream A (`adapters/mqtt5`) — Subscribe literal dispatch-core merge
+
+**Status: PARTIALLY DONE** (Subscribe side only; Publish and reqreply
+remain per Workstream A's own steps 6-8, not started). The literal merge
+Phase 3 case 6 deferred as "too risky" — because at the time
+`transport.Subscribe` and `caller.go`'s `ServeSubscribers` dispatch had
+genuinely diverged (topic-var/property-merge only on one path,
+Disposition tracking only on the other) — is now safe: case 6's own
+behavioral-parity fix closed exactly those two divergences, and a fresh
+side-by-side re-reading of both bodies post-fix found them **byte-for-byte
+identical**, field for field, not merely behaviorally equivalent. This
+is the literal merge the design's point 1 originally called for (3 → 2
+implementations per adapter: one shared reflect-core, plus the
+compile-time-generic `subscribeWithHandle[T]` escape hatch, which cannot
+share a function with the reflect paths — Go has no reflective generic
+instantiation).
+
+- **Struct alignment**: added `buildErasedSubscriberHandleFields(handleVal, elem
+  reflect.Value) erasedSubscriberHandle` (`caller.go`) — the single place
+  every field both `transport.Subscribe` and `ServeSubscribers`' dispatch
+  need is now extracted, replacing `transport.Subscribe`'s own scattered
+  ad hoc `elem.FieldByName(...)` calls. `extractErasedSubscriberHandle`
+  (ServeSubscribers' entry point, which also needs the channel's own
+  `Handler`/`HandlerOpts` fields) now wraps this shared constructor rather
+  than duplicating its field-extraction logic.
+- **Shared dispatch core**: extracted `subscribeDispatchCore(ctx, client,
+  obs, info, wrappedFn, formatsOverride, userPropertyParams, onErrorFn)
+  pahomqtt5.MessageHandler` (`transport_dispatch.go`) — the full
+  per-message pipeline (decode-with-vars-and-formats → property-var
+  extraction + merge → user-property validation → built-in security →
+  Implementations security → middleware dispatch → unified `CheckScopes`
+  → disposition/span → wrapped-handler call → `subscribeDispatchFailure`
+  on any step's error), assembled verbatim from the two confirmed-
+  identical bodies — ONE canonical version now, not two.
+- **`transport.Subscribe` repointed**: keeps its own unique setup
+  (`recoverHandle`, implementation shape validation, the Subscribe-side
+  capability coverage check, `wrapHandlerGeneralReflect`, filter
+  derivation, broker subscribe/unsubscribe bracket) exactly as before;
+  builds its `erasedSubscriberHandle` via the shared constructor; calls
+  `subscribeDispatchCore` for the handler closure.
+- **`caller.serveOneEntry` repointed**: wraps the handler once (mirroring
+  `transport.Subscribe`'s identical timing), calls the SAME
+  `subscribeDispatchCore`; the now fully-superseded
+  `makeErasedSubscribeMessageHandler` function was deleted.
+- **New regression tests**
+  (`adapters/mqtt5/subscribe_dispatch_core_test.go`):
+  `TestSubscribeDispatchCore_DirectCall` (topic-var merge, proven by
+  calling `subscribeDispatchCore` directly, independent of either entry
+  point) and `TestSubscribeDispatchCore_DecodeFailure_InvokesOnError`
+  (decode failure reaches `onErrorFn`, handler never invoked) — seeding
+  Phase 5's own "a test per confirmed dispatch entry point" principle at
+  the shared core itself, not just through one entry point's own tests.
+- **Verification**: `adapters/mqtt5`'s full suite passes unchanged after
+  each repointing step (including Phase 3 case 6's own 3 parity tests);
+  full-repo `go build ./...`, `go test ./...` (zero failures),
+  `go vet ./...` (clean), `gofmt -l` (clean), and `just check`
+  (staticcheck + gosec + fmt) all clean — confirmed no new dead code was
+  left behind by `makeErasedSubscribeMessageHandler`'s deletion, per the
+  lesson from this session's earlier REST/SSE dead-code cleanup round.
+- **Explicitly out of scope for this round, remaining in Workstream A**:
+  Publish's 2-way consolidation (step 6), the reqreply Serve-side
+  setup-core extraction (step 7), and conformance tests seeding Phase 5
+  for this family specifically (step 8). Workstreams B (`adapters/mqtt`
+  v3) and C (`adapters/zeromq`) are untouched.
+
 ### Phase 5 — Conformance tests and documentation
 
 Create reusable adapter conformance tests for common semantics:
