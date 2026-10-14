@@ -516,7 +516,22 @@ func subscribeHandler[T any](
 			defer func() { to.EndSpan(ctx, err) }()
 		}
 
-		if err = fn(ctx, value); err != nil {
+		// EnsureDispositionBox is called unconditionally, at zero cost to
+		// adapters/callers that never call SetDisposition — brings this
+		// generic, compile-time-typed escape-hatch path to parity with
+		// `subscribeEntryReflect`'s pre-existing Disposition tracking
+		// (Phase 4 events/reqreply family, Workstream B's parity fix —
+		// mqtt v3 has no acknowledgement concept of its own today, but
+		// the plumbing is proven end-to-end here for a future
+		// ack-capable adapter to consume without further core changes.
+		// See docs/design/d-0006-protocol-native-capabilities.md's §8).
+		ctx = stats.EnsureDispositionBox(ctx)
+		err = fn(ctx, value)
+		disposition := stats.ResolveDisposition(ctx, err)
+		if dispObs, ok := obs.(stats.DispositionObserver); ok {
+			dispObs.RecordDisposition(msg.Topic(), disposition)
+		}
+		if err != nil {
 			reportTopicMismatchErrors(err, obs)
 			reportInvalidTopicErrors(err, obs)
 			stats.ReportErrors(obs, "topic_var", err)

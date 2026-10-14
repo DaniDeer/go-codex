@@ -2999,8 +2999,79 @@ fmt) clean.
 
 - **Remaining in Workstream A**: the reqreply Serve-side setup-core
   extraction (step 7) and conformance tests seeding Phase 5 for this
-  family specifically (step 8). Workstreams B (`adapters/mqtt` v3) and C
-  (`adapters/zeromq`) are untouched.
+  family specifically (step 8). Workstream C (`adapters/zeromq`) is
+  untouched.
+
+#### Phase 4 progress: events/reqreply family, Workstream B (`adapters/mqtt` v3) — Subscribe dispatch-core merge
+
+**Status: DONE** (Subscribe side; Publish and reqreply are out of scope
+for v3 — mqtt v3 is events-only, confirmed by Phase 1's own audit).
+Applied the proven Workstream A recipe to `adapters/mqtt` (v3), condensed
+into a single round since mqtt5's experience showed the parity-fix and
+literal-merge steps compose safely together.
+
+**Investigation found mqtt v3 was in the exact pre-case-6 state mqtt5 was
+in** — a confirmed 3-way Subscribe dispatch split, shaped as a mirror
+image of mqtt5's original divergence (2 of 3 paths agreed on one axis,
+and the third diverged on BOTH axes, rather than mqtt5's "each path had
+exactly one gap"):
+
+| Path | Topic-var support | Disposition tracking |
+|---|---|---|
+| `subscribeHandler[T]` (generic, `adapter.go`) | yes | **no** |
+| `(*transport).Subscribe` (reflect, `transport.go`) | yes | **no** |
+| `subscribeEntryReflect` (reflect, `caller.go`, backs `ServeSubscribers`) | **no** | yes |
+
+A THIRD divergence was found while writing the shared dispatch core (not
+caught by the initial topic-var/Disposition investigation alone): the two
+reflect paths' middleware-dispatch-error handling disagreed on BOTH
+error-kind classification and detail. `transport.Subscribe` distinguished
+`IsFnError` (→ `KindHandler`, wrapped as `events.MiddlewareError`, with
+`stats.ReportErrors`) from the encode/"in" case (→ `KindDecode`) but never
+checked whether the failing Fn was a Security-carrying handler.
+`subscribeEntryReflect` had the OPPOSITE gap: it checked
+`events.IsSecuritySatisfyingHandler` (correctly escalating to
+`KindSecurity` + `RecordSecurityRejection`) but otherwise always fell
+back to `KindDecode` regardless of `IsFnError`, and never called
+`stats.ReportErrors` at all. No per-message-re-wrap inefficiency was
+found this time (both reflect paths already hoist their wrap composition
+once, outside the per-message closure, unlike mqtt5's pre-fix state).
+
+**Fix — full "add parity" superset, reapplying mqtt5's case 6 precedent**:
+new `adapters/mqtt/subscribe_dispatch_core.go` defines
+`erasedSubscriberHandle` (leaner than mqtt5's — v3 has no User-Property/
+property-merge mechanism at all) + `buildErasedSubscriberHandleFields`
+(the shared constructor) + `subscribeDispatchCore` (the full per-message
+pipeline, assembled as the superset of all three found divergences:
+topic-var merge via `matchTopicTemplate`/`DecodeMergedWithFormats`,
+Disposition tracking via `EnsureDispositionBox`/`ResolveDisposition`/
+`RecordDisposition`, and the complete middleware-error-kind logic
+combining both paths' partial fixes). `transport.Subscribe` and
+`subscribeEntryReflect` both repointed to call it. The generic
+`subscribeHandler[T]`'s own Disposition gap was fixed separately and
+directly in `adapter.go` (not part of the dispatch-core merge, since it's
+a distinct, compile-time-typed function that cannot share code with the
+reflect paths — the same "3 → 2, not 3 → 1" principle Workstream A
+established).
+
+Added 4 new regression tests: `TestServeSubscribers_TopicVarMerge_NowSupported`,
+`TestAttach_ClientSubscribe_Disposition_NowSupported`,
+`TestSubscribeHandler_Disposition_NowSupported` (closing each confirmed
+gap, mirroring mqtt5's identically-named tests — `subscribe_dispatch_parity_test.go`)
+and `TestSubscribeDispatchCore_DirectCall`/
+`TestSubscribeDispatchCore_DecodeFailure_InvokesOnError` (direct core
+tests, mirroring mqtt5's `subscribe_dispatch_core_test.go`).
+
+Verified incrementally after each repointing step (transport.go, then
+caller.go, then the generic-path Disposition fix); `adapters/mqtt`'s full
+suite (157 tests) passes unchanged plus all 4 new tests; whole-repo
+`go build`/`go test` (zero failures)/`go vet`/`gofmt -l` clean; `just
+check` (staticcheck + gosec + fmt) clean.
+
+**Remaining in Workstream B**: none — mqtt v3 has no reqreply surface
+(events-only adapter), so Workstream B is now fully complete. Workstream
+C (`adapters/zeromq`) remains the only entirely-unstarted piece of the
+events/reqreply family.
 
 ### Phase 5 — Conformance tests and documentation
 
