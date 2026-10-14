@@ -2,7 +2,25 @@
 
 ## Status
 
-**Proposal — architecture investigation and audit plan. No code changes yet.**
+**In progress — audit, design, and proof-of-concept complete; implementation
+substantially underway.** Phase 1's full 14-adapter audit is done (both
+matrices below). Phase 2's capability-semantics and dispatch-core design is
+done for the REST, SSE, and events/reqreply families. Phase 3's proof of
+concept is fully done (7/7 cases plus the case-6 follow-up). Phase 4
+implementation: the REST family (8/8 steps) and the SSE family
+(construction+dispatch consolidation + conformance test) are **fully
+complete**; the events/reqreply family's three workstreams
+(`adapters/mqtt5`, `adapters/mqtt` v3, `adapters/zeromq`) are **essentially
+complete** (Subscribe dispatch-core consolidation, Publish capability-
+coverage-ordering fixes, and zeromq's reqreply server/client-side splits —
+see "Phase 4 — Implementation" below for the per-workstream writeups; only
+mqtt5's low-priority reqreply setup-core extraction remains, deferred as
+no-current-duplication). Phase 5 has one conformance test seeded
+(`adapters/mqtt5/granted_scopes_context_field_test.go`); the rest of its
+"reusable adapter conformance tests for common semantics" scope, and the
+still-open "API-defined conformance test suites" ownership question, remain
+for a future round. This status line is updated as major increments land —
+see the per-phase sections below for full detail.
 
 This doc replaces and merges two earlier drafts:
 
@@ -1754,10 +1772,16 @@ explicitly in each affected function's doc comment and the changelog when
 implemented — a route that previously silently served with an unenforced
 coverage gap will instead panic at construction/`Activate` time. No
 non-panicking opt-out is included speculatively; add one only if a concrete
-need appears later. **Also flagged, not yet audited**: `serve_sse.go` in
-both packages almost certainly shares this exact duplication shape and
-should be treated as a near-certain follow-on consolidation target, not an
-afterthought, when Phase 4 is actually scoped.
+need appears later. **Also flagged, not yet audited** (at Phase 2
+design time): `serve_sse.go` in both packages almost certainly shares this
+exact duplication shape and should be treated as a near-certain follow-on
+consolidation target, not an afterthought, when Phase 4 is actually
+scoped. **Update — confirmed and resolved in Phase 4**: the audit found
+this flag correct (`buildSSERouteHandler` was essentially identical across
+both packages, construction block and per-event streaming body alike) and
+the SSE family's own construction+dispatch consolidation (`restdispatch.
+DispatchSSERoute`) plus its own conformance test are now fully done — see
+"Phase 4 — Implementation", SSE family section.
 
 #### Events/reqreply family dispatch-core consolidation design (mqtt + mqtt5 + zeromq)
 
@@ -3471,23 +3495,30 @@ points onto one implementation per capability.** Capabilities and bindings
 solve complementary problems at the external seam; dispatch-core
 consolidation solves the sibling problem at the internal seam. Treating
 them as one investigation — rather than two separately-scoped documents —
-is what makes the Phase 1 audit actionable: the same evidence (which
-capability, which adapter, which entry point) feeds both the external
+is what made the Phase 1 audit actionable: the same evidence (which
+capability, which adapter, which entry point) fed both the external
 capability-compatibility matrix and the internal duplication matrix.
 
-The next step is the Phase 1 audit across all adapters, followed by a
-focused proof-of-concept using one REST route, one ordinary event channel,
-one channel requiring a minimum QoS or ZeroMQ HWM (the corrected,
-already-working illustration — see "Capabilities are requirements" and
-Phase 3), and the confirmed events-Subscribe 3-implementation case. Use
-those examples to decide
-whether the existing registered handles already provide the right binding
-contract, whether a smaller adapter-facing interface is needed, and whether
-a shared dispatch-core is mechanically achievable across the
-compile-time-generic/reflected boundary.
+**Status of this recommendation, updated as the roadmap executed**: the
+Phase 1 audit (all adapters), Phase 2 design (REST, SSE, events/reqreply
+families), and Phase 3 proof-of-concept (all 7 cases + the case-6
+follow-up) described above are now complete — see "Phase 1 audit results",
+"Phase 2 — Specify the seam", and "Phase 3 — Proof of concept" for the full
+findings. Those findings confirmed this recommendation held: the existing
+registered handles work as the binding contract for events/reqreply as-is,
+REST needed (and received) a smaller shared dispatch-core view
+(`adapters/internal/restdispatch`), and a shared dispatch-core proved
+mechanically achievable across the reflected entry points within each
+adapter (though not across the compile-time-generic/reflected boundary,
+confirmed not worth forcing — see Phase 4's per-workstream "3 → 2, not
+3 → 1" notes). Phase 4 implementation is now substantially complete for
+REST, SSE, and events/reqreply (see "Phase 4 — Implementation" for current
+status); Phase 5's conformance-test and documentation-sync work is only
+just beginning.
 
-The desired result is a simple experience for API users and an equally
-clear, single-implementation extension point for adapter authors — without
+The desired result — a simple experience for API users and an equally
+clear, single-implementation extension point for adapter authors, without
 coupling declarations to protocols, accumulating unneeded abstraction
 layers, or letting one adapter's multiple entry points drift out of sync
-with each other again.
+with each other again — has been substantially achieved for the REST, SSE,
+and events/reqreply families; remaining work is tracked per-phase above.
