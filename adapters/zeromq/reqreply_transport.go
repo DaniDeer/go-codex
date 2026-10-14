@@ -12,7 +12,6 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/reqreply"
 	"github.com/DaniDeer/go-codex/internal/middleware"
-	"github.com/DaniDeer/go-codex/internal/route"
 	"github.com/DaniDeer/go-codex/stats"
 )
 
@@ -653,364 +652,61 @@ func (t *clientTransport) call(ctx context.Context, routeAny any, reqAny any, ca
 	}
 	start := time.Now()
 
-	rv, elem, err := recoverRouteHandleValue(routeAny)
+	_, elem0, err := recoverRouteHandleValue(routeAny)
 	if err != nil {
 		return nil, err
 	}
-	path := elem.FieldByName("Topic").String()
-
+	path := elem0.FieldByName("Topic").String()
 	sock, ok := t.sockets[path]
 	if !ok {
 		obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
 		return nil, MissingSocketError{Topic: path}
 	}
 
-	// docs/design/d-0006-protocol-native-capabilities.md's Phase 2: apply
-	// this call's supplied [CallOptions.Capabilities] to the socket via
-	// the EXISTING [applyCapabilities] helper (re-application on every
-	// call is idempotent — a minor, accepted inefficiency, not a
-	// correctness issue).
-	applyCapabilities(sock, t.opts.Capabilities, obs, path)
-	// Client-side Tier 1 coverage check — deep-dive review round fix:
-	// closes the "No coverage check on the client/Call side" gap this
-	// file's own comment used to flag — mirrors api/events' identical,
-	// previously-confirmed publish-side capability-coverage gap
-	// (Round 178) and adapters/mqtt5's identical fix.
-	if requirements, ok := elem.FieldByName("Requirements").Interface().([]reqreply.CapabilityRequirement); ok {
-		if covErr := reqreply.VerifyCapabilityCoverage(path, requirements, t.opts.Capabilities); covErr != nil {
-			obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
-			return nil, covErr
-		}
-	}
-
-	reqType := elem.FieldByName("EncodeRequest").Type().In(0)
-	reqVal := reflect.ValueOf(reqAny)
-	if !reqVal.IsValid() || reqVal.Type() != reqType {
-		obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
-		return nil, reqreply.TransportTypeMismatchError{Topic: path, Want: reqType.String(), Got: fmt.Sprintf("%T", reqAny)}
-	}
-
-	// Resolve an OBSERVABILITY-only path override (span name/RecordRequest
-	// argument), mirroring the escape hatch's [CallHandle]/[Call]
-	// CallOptions.Vars precedence EXACTLY: auto-derive from req via
-	// RouteHandle.EncodeVars when the route declares NewTopicParam merge
-	// fields, then let an explicit t.opts.Vars entry win on the same key.
-	// Does NOT affect socket selection (sock is already resolved above,
-	// via the route's literal registered topic — zeromq REQ/REP routing
-	// is socket-based, never topic-template-based, confirmed via the
-	// escape hatch's own doc comment on [CallHandle]). A BuildTopic
-	// failure here IS FATAL (mirrors the escape hatch's [Call] exactly —
-	// confirmed via TestCall_Vars_MissingVar_ReturnsCallError, which
-	// expects a CallError{MissingRouteParamError} BEFORE anything is
-	// ever sent) — an earlier revision of this fix wrongly treated it as
-	// a non-fatal, ignorable observability-labeling concern, which left
-	// the socket send/recv path to run with NO reply ever coming,
-	// hanging indefinitely.
-	if mergeFieldsMethod := rv.MethodByName("MergeFields"); mergeFieldsMethod.Call(nil)[0].Len() > 0 || t.opts.Vars != nil {
-		var vars map[string]string
-		if mergeFieldsMethod.Call(nil)[0].Len() > 0 {
-			encodeVarsResults := rv.MethodByName("EncodeVars").Call([]reflect.Value{reqVal})
-			vars, _ = encodeVarsResults[0].Interface().(map[string]string)
-		}
-		if t.opts.Vars != nil {
-			merged := make(map[string]string, len(vars)+len(t.opts.Vars))
-			for k, v := range vars {
-				merged[k] = v
-			}
-			for k, v := range t.opts.Vars {
-				merged[k] = v
-			}
-			vars = merged
-		}
-		buildTopicResults := rv.MethodByName("BuildTopic").Call([]reflect.Value{reflect.ValueOf(vars)})
-		if errI, _ := buildTopicResults[1].Interface().(error); errI != nil {
-			stats.ReportErrors(obs, "topic_var", errI)
-			obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
-			return nil, CallError{Err: errI}
-		}
-		path = buildTopicResults[0].String()
+	// reqreplyClientRecoverAndResolvePath/reqreplyClientResolveDispatchSetup
+	// are the TWO shared setup phases (Phase 4 events/reqreply family,
+	// Workstream C) — also used by (*dealerClientTransport).call. Split
+	// in two (not one) so the TraceObserver span below starts at
+	// EXACTLY the same point the pre-extraction body did — immediately
+	// after the observability-only BuildTopic override resolves, before
+	// format-override resolution — preserving which failures are
+	// span-wrapped byte-for-byte. See both functions' own doc comments
+	// for the full unification rationale.
+	rv, elem, reqVal, path, err := reqreplyClientRecoverAndResolvePath(routeAny, reqAny, sock, obs, start, "ZMQ-REQ", t.opts)
+	if err != nil {
+		return nil, err
 	}
 
 	// TraceObserver span — mirrors the escape hatch's [Call] exactly
-	// (span name "zmq.request"): a capability that was silently absent
-	// from this reflection-based dispatcher, found and closed as part of
-	// Phase 0/0b, mirroring the SAME gap found and fixed for mqtt5.
+	// (span name "zmq.request").
 	if to, ok := obs.(stats.TraceObserver); ok {
 		ctx = to.StartSpan(ctx, "zmq.request", path)
 		defer func() { to.EndSpan(ctx, err) }()
 	}
 
-	// Resolve per-call format overrides, in priority order:
-	// callOpts.RequestFormats/ResponseFormats (the NEW, Attach-based
-	// reqreply.ClientCallOptions parameter) > t.opts.RequestFormats/
-	// ResponseFormats (the mqtt5.CallOptions-style fields the escape
-	// hatch's Call/CallHandle have always supported) > nil (route-
-	// declared, or plain EncodeRequest/DecodeResponse) — mirrors
-	// [adapters/mqtt5]'s identical priority chain exactly.
-	requestOverrideAny := callOpts.RequestFormats
-	if requestOverrideAny == nil {
-		requestOverrideAny = t.opts.RequestFormats
-	}
-	requestFormatsOverride, fmtErr := resolveCallFormatReflect(requestOverrideAny, elem.FieldByName("RequestFormats").Type())
-	if fmtErr != nil {
-		obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
-		return nil, CallError{Err: fmtErr}
-	}
-	responseOverrideAny := callOpts.ResponseFormats
-	if responseOverrideAny == nil {
-		responseOverrideAny = t.opts.ResponseFormats
-	}
-	responseFormatsOverride, fmtErr := resolveCallFormatReflect(responseOverrideAny, elem.FieldByName("Formats").Type())
-	if fmtErr != nil {
-		obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
-		return nil, CallError{Err: fmtErr}
-	}
-
-	// Security Fn-shape dispatch (docs/design/d-0004-reqreply-workflow-simplification.md's Addendum).
-	// clientImpls are the [reqreply.Route.ClientMW]-attached
-	// implementations — validated for shape EAGERLY, mirroring
-	// adapters/mqtt5's identical build-time check. respType/innerType
-	// let this reflection-only dispatcher recognize the general-purpose
-	// decorator shape without knowing Req/Resp at compile time.
-	respType := elem.FieldByName("DecodeResponse").Type().Out(0)
-	clientImpls, _ := elem.FieldByName("ClientImplementations").Interface().([]reqreply.ClientImplementation)
-	credentialFnType := buildPairedSecurityFnType(reqType)
-	generalDecoratorFnType := buildGeneralDecoratorFnType(reqType, respType)
-	if err := validateClientImplementationShapes(clientImpls, credentialFnType, generalDecoratorFnType); err != nil {
-		obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
+	setup, err := reqreplyClientResolveDispatchSetup(rv, elem, obs, start, "ZMQ-REQ", path, t.opts, callOpts)
+	if err != nil {
 		return nil, err
 	}
-	secReqs := effectiveSecurity(elem)
-	errType := reflect.TypeOf((*error)(nil)).Elem()
 
-	// docs/design/d-0003-codec-declared-middlewares.md's Addendum: codec-backed
-	// ClientMiddlewareHandler dispatch — runs AFTER the paired
-	// credential Fns (D1 mirror), inside innerCall below. zeromq has no
-	// wire mechanism to carry the produced topic/property vars (no
-	// topic template, no property side channel) — dispatched purely for
-	// the Fn's own business logic/error semantics; the produced vars
-	// themselves are N/A here (see docs' "adapters/zeromq: N/A for all
-	// 3 cases").
-	clientMiddlewareHandlers, _ := elem.FieldByName("ClientMiddlewareHandlers").Interface().([]reqreply.ClientMiddlewareHandler)
-
-	// innerCall is the "credential → encode → send → recv → decode"
-	// sequence, wrapped via [reflect.MakeFunc] into a concretely-typed
-	// func(context.Context, Req) (Resp, error) value so every attached
-	// general-purpose ClientMW decorator (itself a real, concretely-typed
-	// Go closure) can wrap it — mirrors adapters/mqtt5's identical
-	// reflect.MakeFunc technique, adapted to zeromq's simpler (no
-	// User-Property side channel) in-payload credential model.
-	innerType := reflect.FuncOf(
-		[]reflect.Type{reflect.TypeOf((*context.Context)(nil)).Elem(), reqType},
-		[]reflect.Type{respType, errType},
-		false,
-	)
-	innerCall := reflect.MakeFunc(innerType, func(args []reflect.Value) []reflect.Value {
-		// ctx is read from args[0], NOT the outer captured ctx variable
-		// — a general-purpose ClientMW decorator wrapping this closure
-		// may call next(modifiedCtx, req) with a context it mutated
-		// (added a value, deadline, span, etc.); shadowing the outer
-		// name here means every subsequent use of ctx in this closure
-		// sees that decorator's context, not the original one captured
-		// before any decorator ran. Mirrors the identical fix applied
-		// to adapters/mqtt5's own innerCall (found via a later review
-		// pass — the bug was faithfully mirrored here from mqtt5's
-		// Phase 1, now fixed in both places).
-		ctx := args[0].Interface().(context.Context)
-		innerReqVal := args[1]
-		zeroResp := reflect.Zero(respType)
-
-		// Paired credential Fns write a credential field INTO a fresh
-		// *Req copy, BEFORE encode — mirrors [serverTransport.Serve]'s
-		// identical read/write mechanic, mirrored for the write
-		// direction.
-		if len(clientImpls) > 0 {
-			reqPtr := reflect.New(reqType)
-			reqPtr.Elem().Set(innerReqVal)
-			if credErr := runPairedClientCredential(ctx, reqPtr, clientImpls, secReqs); credErr != nil {
-				wrapped := reqreply.SecurityCredentialError{Scheme: route.FirstSchemeName(secReqs), Err: credErr}
-				if secObs, ok := obs.(stats.SecurityObserver); ok {
-					secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
-				}
-				obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
-				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: wrapped}).Convert(errType)}
-			}
-			innerReqVal = reqPtr.Elem()
-		}
-
-		// docs/design/d-0003-codec-declared-middlewares.md's Addendum: codec-
-		// backed ClientMiddlewareHandler dispatch — runs AFTER the
-		// paired credential Fns above (D1).
-		if len(clientMiddlewareHandlers) > 0 {
-			_, _, mwName, mwErr := reqreply.DispatchClientMiddlewareIn(ctx, innerReqVal, clientMiddlewareHandlers)
-			if mwErr != nil {
-				_, isFnErr := mwErr.(reqreply.MiddlewareError)
-				loc := "middleware:in"
-				if isFnErr {
-					loc = "middleware:fn"
-				}
-				stats.ReportErrors(obs, loc, mwErr)
-				obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
-				// A FAILING handler whose OWN Satisfies is non-empty (a
-				// Security-carrying ClientMiddlewareHandler, confirmed
-				// via Name lookup) keeps Security's own, DISTINCT
-				// fallback (reqreply.SecurityError), mirroring the
-				// SERVER-side isSecuritySatisfyingHandler precedent
-				// (reqreply.IsSecuritySatisfyingHandler has no
-				// ClientMiddlewareHandler-typed equivalent, so checked
-				// inline here).
-				effErr := mwErr
-				if me, ok := mwErr.(reqreply.MiddlewareError); ok && isFnErr {
-					for _, h := range clientMiddlewareHandlers {
-						if h.Name == mwName && len(h.Satisfies) > 0 {
-							if secObs, ok := obs.(stats.SecurityObserver); ok {
-								secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
-							}
-							effErr = reqreply.SecurityError{Err: me.Err}
-							break
-						}
-					}
-				}
-				_ = mwName
-				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: effErr}).Convert(errType)}
-			}
-		}
-
-		// EncodeRequestWithFormats honors the per-call/t.opts override
-		// (falling back to route-declared RequestFormats, then plain
-		// EncodeRequest) — closes Phase 0 work item 1 (client-side).
-		encodeResults := rv.MethodByName("EncodeRequestWithFormats").CallSlice([]reflect.Value{innerReqVal, requestFormatsOverride})
-		if errI, _ := encodeResults[1].Interface().(error); errI != nil {
-			stats.ReportErrors(obs, "body", errI)
-			obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
-			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: errI}).Convert(errType)}
-		}
-		payload, _ := encodeResults[0].Interface().([]byte)
-
-		if sendErr := sock.SendFrames([][]byte{payload}); sendErr != nil {
-			obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
-			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: fmt.Errorf("send: %w", sendErr)}).Convert(errType)}
-		}
-
-		if err := sock.SetRecvTimeout(recvPollInterval); err != nil {
-			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: fmt.Errorf("set recv timeout: %w", err)}).Convert(errType)}
-		}
-
-		var frames [][]byte
-		for {
-			select {
-			case <-ctx.Done():
-				obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
-				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: ctx.Err()}).Convert(errType)}
-			default:
-			}
-			var recvErr error
-			frames, recvErr = sock.RecvFrames()
-			if errors.Is(recvErr, ErrTimeout) {
-				continue
-			}
+	sink := reqreplyClientSink{
+		label: "ZMQ-REQ",
+		sendRequest: func(payload []byte) error {
+			return sock.SendFrames([][]byte{payload})
+		},
+		recvReply: func(ctx context.Context) ([][]byte, error) {
+			frames, recvErr := reqreplyClientRecvOne(ctx, sock)
 			if recvErr != nil {
-				obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
-				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: fmt.Errorf("recv: %w", recvErr)}).Convert(errType)}
+				return nil, recvErr
 			}
-			break
-		}
-
-		if len(frames) < 2 {
-			obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
-			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: fmt.Errorf("malformed reply: expected [status, payload], got %d frame(s)", len(frames))}).Convert(errType)}
-		}
-
-		// Dispatch ordering: a Forward reply (frames[0] == statusForward)
-		// is recognized BEFORE an ErrorPattern reply — docs/design/d-0004-reqreply-workflow-simplification.md's documented "Forward recognized
-		// before ErrorPattern" precedence, mirroring [rest.RedirectError]'s
-		// identical rule. A Forward reply is 3-frame: [statusForward,
-		// targetTopic, payload] — the SAME shape as the matched-
-		// ErrorPattern 3-frame reply, 2nd frame reused as the target
-		// topic instead of a pattern code.
-		if string(frames[0]) == string(statusForward) && len(frames) >= 3 {
-			// RecordRequest status choice: 200, NOT 500 — unlike an
-			// error reply, a Forward is NOT a failure of THIS round
-			// trip; it's a deliberate instruction the caller's own
-			// [api/reqreply.Client] chain-following loop (a future
-			// phase) is expected to act on successfully.
-			obs.RecordRequest("ZMQ-REQ", path, 200, time.Since(start))
-			return []reflect.Value{zeroResp, reflect.ValueOf(reqreply.ForwardError{
-				TargetTopic: string(frames[1]), Payload: frames[2],
-			}).Convert(errType)}
-		}
-
-		if string(frames[0]) == "error" {
-			obs.RecordRequest("ZMQ-REQ", path, 500, time.Since(start))
-			// A matched ErrorPattern reply is 3-frame: [status, code, body].
-			// The plain-text fallback stays 2-frame: [status, body].
-			if len(frames) >= 3 {
-				code := string(frames[1])
-				body := frames[2]
-				decodeResults := rv.MethodByName("DecodeErrorFor").Call([]reflect.Value{reflect.ValueOf(code), reflect.ValueOf(body)})
-				errResp, _ := decodeResults[0].Interface().(reqreply.ErrorPatternResponse)
-				matched, _ := decodeResults[1].Interface().(bool)
-				decErr, _ := decodeResults[2].Interface().(error)
-				if matched && decErr == nil {
-					return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: ErrorPatternResponse{
-						Code: errResp.Code, Value: errResp.Value, Body: errResp.Body,
-					}}).Convert(errType)}
-				}
+			if len(frames) < 2 {
+				return nil, fmt.Errorf("malformed reply: expected [status, payload], got %d frame(s)", len(frames))
 			}
-			// UNCHANGED fallback — 2-frame reply, unmatched code, or
-			// decode failed. frames[len(frames)-1] is the body in both
-			// the 2-frame and unmatched-3-frame case.
-			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: fmt.Errorf("server error: %s", frames[len(frames)-1])}).Convert(errType)}
-		}
-
-		if len(clientMiddlewareHandlers) > 0 {
-			// zeromq has neither a reply-topic nor a property mechanism
-			// (confirmed: REQ/REP frames carry only [status, payload]) —
-			// both maps are always empty; a route declaring a REQUIRED
-			// WithResponseTopic/WithResponseProperty naturally fails here,
-			// no special-casing needed, mirrors mqtt5's identical call.
-			// mwErr is UNAMBIGUOUSLY an Out-decode failure — reported as
-			// "middleware:out", symmetric with "middleware:in" already
-			// covering the client-side ENCODE of the request's In struct.
-			if mwErr := reqreply.DispatchClientMiddlewareOut(ctx, nil, nil, clientMiddlewareHandlers); mwErr != nil {
-				stats.ReportErrors(obs, "middleware:out", mwErr)
-				obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
-				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: mwErr}).Convert(errType)}
-			}
-		}
-
-		// DecodeResponseWithFormats honors the per-call/t.opts override
-		// (falling back to route-declared Formats, then plain
-		// DecodeResponse) — closes the response-direction half of Phase
-		// 0 work item 1 (client-side).
-		decodeResults := rv.MethodByName("DecodeResponseWithFormats").CallSlice([]reflect.Value{reflect.ValueOf(frames[1]), responseFormatsOverride})
-		if errI, _ := decodeResults[1].Interface().(error); errI != nil {
-			stats.ReportErrors(obs, "body", errI)
-			obs.RecordRequest("ZMQ-REQ", path, 0, time.Since(start))
-			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: fmt.Errorf("decode response: %w", errI)}).Convert(errType)}
-		}
-		obs.RecordRequest("ZMQ-REQ", path, 200, time.Since(start))
-		return []reflect.Value{decodeResults[0], reflect.Zero(errType)}
-	})
-
-	// applyGeneralClientMiddleware wraps innerCall with every
-	// general-purpose ClientMW implementation, OUTERMOST-in — mirrors
-	// adapters/mqtt5's identical composition, reflection-based since
-	// Req/Resp are erased at this dispatcher's call site.
-	wrappedCall := innerCall
-	for i := len(clientImpls) - 1; i >= 0; i-- {
-		if len(clientImpls[i].Satisfies) > 0 {
-			continue
-		}
-		decoratorVal := reflect.ValueOf(clientImpls[i].Fn)
-		wrappedCall = decoratorVal.Call([]reflect.Value{wrappedCall})[0]
+			return frames, nil
+		},
 	}
 
-	finalResults := wrappedCall.Call([]reflect.Value{reflect.ValueOf(ctx), reqVal})
-	if errI, _ := finalResults[1].Interface().(error); errI != nil {
-		return nil, errI
-	}
-	return finalResults[0].Interface(), nil
+	return reqreplyClientCallOne(ctx, setup, sink, obs, start, path, reqVal)
 }
 
 // CallRaw implements [reqreply.ClientTransport]. docs/design/d-0004-reqreply-workflow-simplification.md Phase 0 infrastructure — sends payload
@@ -1366,68 +1062,24 @@ func (t *dealerClientTransport) call(ctx context.Context, routeAny any, reqAny a
 	}
 	start := time.Now()
 
-	rv, elem, err := recoverRouteHandleValue(routeAny)
+	_, elem0, err := recoverRouteHandleValue(routeAny)
 	if err != nil {
 		return nil, err
 	}
-	path := elem.FieldByName("Topic").String()
-
+	path := elem0.FieldByName("Topic").String()
 	sock, ok := t.sockets[path]
 	if !ok {
 		obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
 		return nil, MissingSocketError{Topic: path}
 	}
 
-	// docs/design/d-0006-protocol-native-capabilities.md's Phase 2: same
-	// mechanism as [clientTransport.call], duplicated for the DEALER
-	// variant (see the established 4-transport duplication precedent
-	// cited on [routerServerTransport.Serve]).
-	applyCapabilities(sock, t.opts.Capabilities, obs, path)
-	// Client-side Tier 1 coverage check — deep-dive review round fix,
-	// duplicated for the DEALER variant — see [clientTransport.call]'s
-	// identical fix.
-	if requirements, ok := elem.FieldByName("Requirements").Interface().([]reqreply.CapabilityRequirement); ok {
-		if covErr := reqreply.VerifyCapabilityCoverage(path, requirements, t.opts.Capabilities); covErr != nil {
-			obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
-			return nil, covErr
-		}
-	}
-
-	reqType := elem.FieldByName("EncodeRequest").Type().In(0)
-	reqVal := reflect.ValueOf(reqAny)
-	if !reqVal.IsValid() || reqVal.Type() != reqType {
-		obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
-		return nil, reqreply.TransportTypeMismatchError{Topic: path, Want: reqType.String(), Got: fmt.Sprintf("%T", reqAny)}
-	}
-
-	// Resolve an OBSERVABILITY-only path override — mirrors
-	// [clientTransport.call]'s identical block (see its comment for the
-	// full rationale: does NOT affect socket selection, sock is already
-	// resolved above; a BuildTopic failure IS FATAL, matching the former,
-	// now-deleted CallDealer escape hatch exactly).
-	if mergeFieldsMethod := rv.MethodByName("MergeFields"); mergeFieldsMethod.Call(nil)[0].Len() > 0 || t.opts.Vars != nil {
-		var vars map[string]string
-		if mergeFieldsMethod.Call(nil)[0].Len() > 0 {
-			encodeVarsResults := rv.MethodByName("EncodeVars").Call([]reflect.Value{reqVal})
-			vars, _ = encodeVarsResults[0].Interface().(map[string]string)
-		}
-		if t.opts.Vars != nil {
-			merged := make(map[string]string, len(vars)+len(t.opts.Vars))
-			for k, v := range vars {
-				merged[k] = v
-			}
-			for k, v := range t.opts.Vars {
-				merged[k] = v
-			}
-			vars = merged
-		}
-		buildTopicResults := rv.MethodByName("BuildTopic").Call([]reflect.Value{reflect.ValueOf(vars)})
-		if errI, _ := buildTopicResults[1].Interface().(error); errI != nil {
-			stats.ReportErrors(obs, "topic_var", errI)
-			obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
-			return nil, CallError{Err: errI}
-		}
-		path = buildTopicResults[0].String()
+	// reqreplyClientRecoverAndResolvePath/reqreplyClientResolveDispatchSetup
+	// are the TWO shared setup phases (Phase 4 events/reqreply family,
+	// Workstream C) — also used by (*clientTransport).call. See both
+	// functions' own doc comments for the full unification rationale.
+	rv, elem, reqVal, path, err := reqreplyClientRecoverAndResolvePath(routeAny, reqAny, sock, obs, start, "ZMQ-DEALER", t.opts)
+	if err != nil {
+		return nil, err
 	}
 
 	// TraceObserver span — mirrors [clientTransport.call]'s identical
@@ -1437,236 +1089,30 @@ func (t *dealerClientTransport) call(ctx context.Context, routeAny any, reqAny a
 		defer func() { to.EndSpan(ctx, err) }()
 	}
 
-	// Resolve per-call format overrides — mirrors [clientTransport.call]'s
-	// identical priority chain (callOpts > t.opts > declared).
-	requestOverrideAny := callOpts.RequestFormats
-	if requestOverrideAny == nil {
-		requestOverrideAny = t.opts.RequestFormats
-	}
-	requestFormatsOverride, fmtErr := resolveCallFormatReflect(requestOverrideAny, elem.FieldByName("RequestFormats").Type())
-	if fmtErr != nil {
-		obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
-		return nil, CallError{Err: fmtErr}
-	}
-	responseOverrideAny := callOpts.ResponseFormats
-	if responseOverrideAny == nil {
-		responseOverrideAny = t.opts.ResponseFormats
-	}
-	responseFormatsOverride, fmtErr := resolveCallFormatReflect(responseOverrideAny, elem.FieldByName("Formats").Type())
-	if fmtErr != nil {
-		obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
-		return nil, CallError{Err: fmtErr}
-	}
-
-	// Security Fn-shape dispatch (docs/design/d-0004-reqreply-workflow-simplification.md's Addendum) — same
-	// mechanism as [clientTransport.call], duplicated for the DEALER
-	// variant (mirrors how Phase 0's capability-parity work was ALSO
-	// duplicated, not shared, across these same 4 transports).
-	respType := elem.FieldByName("DecodeResponse").Type().Out(0)
-	clientImpls, _ := elem.FieldByName("ClientImplementations").Interface().([]reqreply.ClientImplementation)
-	credentialFnType := buildPairedSecurityFnType(reqType)
-	generalDecoratorFnType := buildGeneralDecoratorFnType(reqType, respType)
-	if err := validateClientImplementationShapes(clientImpls, credentialFnType, generalDecoratorFnType); err != nil {
-		obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
+	setup, err := reqreplyClientResolveDispatchSetup(rv, elem, obs, start, "ZMQ-DEALER", path, t.opts, callOpts)
+	if err != nil {
 		return nil, err
 	}
-	secReqs := effectiveSecurity(elem)
-	errType := reflect.TypeOf((*error)(nil)).Elem()
 
-	// docs/design/d-0003-codec-declared-middlewares.md's Addendum: codec-backed
-	// ClientMiddlewareHandler dispatch — mirrors [clientTransport.call]'s
-	// identical mechanism, duplicated for the DEALER variant (one of the
-	// 4 transports this mechanism must be transport-agnostic across).
-	// zeromq has no wire mechanism to carry produced topic/property vars
-	// (no topic template, no property side channel) — dispatched purely
-	// for the Fn's own business logic/error semantics.
-	clientMiddlewareHandlers, _ := elem.FieldByName("ClientMiddlewareHandlers").Interface().([]reqreply.ClientMiddlewareHandler)
-
-	innerType := reflect.FuncOf(
-		[]reflect.Type{reflect.TypeOf((*context.Context)(nil)).Elem(), reqType},
-		[]reflect.Type{respType, errType},
-		false,
-	)
-	innerCall := reflect.MakeFunc(innerType, func(args []reflect.Value) []reflect.Value {
-		// ctx read from args[0], NOT the outer captured ctx — see
-		// clientTransport.call's identical fix/comment for the full
-		// rationale (mirrors adapters/mqtt5's own fix too).
-		ctx := args[0].Interface().(context.Context)
-		innerReqVal := args[1]
-		zeroResp := reflect.Zero(respType)
-
-		if len(clientImpls) > 0 {
-			reqPtr := reflect.New(reqType)
-			reqPtr.Elem().Set(innerReqVal)
-			if credErr := runPairedClientCredential(ctx, reqPtr, clientImpls, secReqs); credErr != nil {
-				wrapped := reqreply.SecurityCredentialError{Scheme: route.FirstSchemeName(secReqs), Err: credErr}
-				if secObs, ok := obs.(stats.SecurityObserver); ok {
-					secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
-				}
-				obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
-				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: wrapped}).Convert(errType)}
-			}
-			innerReqVal = reqPtr.Elem()
-		}
-
-		// docs/design/d-0003-codec-declared-middlewares.md's Addendum: codec-
-		// backed ClientMiddlewareHandler dispatch — runs AFTER the
-		// paired credential Fns above (D1).
-		if len(clientMiddlewareHandlers) > 0 {
-			_, _, mwName, mwErr := reqreply.DispatchClientMiddlewareIn(ctx, innerReqVal, clientMiddlewareHandlers)
-			if mwErr != nil {
-				_, isFnErr := mwErr.(reqreply.MiddlewareError)
-				loc := "middleware:in"
-				if isFnErr {
-					loc = "middleware:fn"
-				}
-				stats.ReportErrors(obs, loc, mwErr)
-				obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
-				// A FAILING handler whose OWN Satisfies is non-empty (a
-				// Security-carrying ClientMiddlewareHandler, confirmed
-				// via Name lookup) keeps Security's own, DISTINCT
-				// fallback (reqreply.SecurityError), mirroring the
-				// SERVER-side isSecuritySatisfyingHandler precedent
-				// (reqreply.IsSecuritySatisfyingHandler has no
-				// ClientMiddlewareHandler-typed equivalent, so checked
-				// inline here).
-				effErr := mwErr
-				if me, ok := mwErr.(reqreply.MiddlewareError); ok && isFnErr {
-					for _, h := range clientMiddlewareHandlers {
-						if h.Name == mwName && len(h.Satisfies) > 0 {
-							if secObs, ok := obs.(stats.SecurityObserver); ok {
-								secObs.RecordSecurityRejection(path, route.FirstSchemeName(secReqs))
-							}
-							effErr = reqreply.SecurityError{Err: me.Err}
-							break
-						}
-					}
-				}
-				_ = mwName
-				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: effErr}).Convert(errType)}
-			}
-		}
-
-		encodeResults := rv.MethodByName("EncodeRequestWithFormats").CallSlice([]reflect.Value{innerReqVal, requestFormatsOverride})
-		if errI, _ := encodeResults[1].Interface().(error); errI != nil {
-			stats.ReportErrors(obs, "body", errI)
-			obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
-			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: errI}).Convert(errType)}
-		}
-		payload, _ := encodeResults[0].Interface().([]byte)
-
-		if sendErr := sock.SendFrames([][]byte{emptyDelimiter, payload}); sendErr != nil {
-			obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
-			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: fmt.Errorf("send: %w", sendErr)}).Convert(errType)}
-		}
-
-		if err := sock.SetRecvTimeout(recvPollInterval); err != nil {
-			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: fmt.Errorf("set recv timeout: %w", err)}).Convert(errType)}
-		}
-
-		var frames [][]byte
-		for {
-			select {
-			case <-ctx.Done():
-				obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
-				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: ctx.Err()}).Convert(errType)}
-			default:
-			}
-			var recvErr error
-			frames, recvErr = sock.RecvFrames()
-			if errors.Is(recvErr, ErrTimeout) {
-				continue
-			}
+	sink := reqreplyClientSink{
+		label: "ZMQ-DEALER",
+		sendRequest: func(payload []byte) error {
+			return sock.SendFrames([][]byte{emptyDelimiter, payload})
+		},
+		recvReply: func(ctx context.Context) ([][]byte, error) {
+			frames, recvErr := reqreplyClientRecvOne(ctx, sock)
 			if recvErr != nil {
-				obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
-				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: fmt.Errorf("recv: %w", recvErr)}).Convert(errType)}
+				return nil, recvErr
 			}
-			break
-		}
-
-		// Expect [delimiter, status, payload].
-		if len(frames) < 3 {
-			obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
-			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: fmt.Errorf("malformed reply: expected [delimiter, status, payload], got %d frame(s)", len(frames))}).Convert(errType)}
-		}
-
-		// Dispatch ordering: a Forward reply (frames[1] == statusForward)
-		// is recognized BEFORE an ErrorPattern reply — see
-		// [clientTransport.call]'s identical check for the full
-		// rationale. A Forward reply is 4-frame: [delimiter,
-		// statusForward, targetTopic, payload] — the SAME shape as the
-		// matched-ErrorPattern 4-frame reply, 3rd frame reused as the
-		// target topic instead of a pattern code.
-		if string(frames[1]) == string(statusForward) && len(frames) >= 4 {
-			// RecordRequest status choice: 200 — see
-			// [clientTransport.call]'s identical rationale.
-			obs.RecordRequest("ZMQ-DEALER", path, 200, time.Since(start))
-			return []reflect.Value{zeroResp, reflect.ValueOf(reqreply.ForwardError{
-				TargetTopic: string(frames[2]), Payload: frames[3],
-			}).Convert(errType)}
-		}
-
-		if string(frames[1]) == "error" {
-			obs.RecordRequest("ZMQ-DEALER", path, 500, time.Since(start))
-			// A matched ErrorPattern reply is 4-frame:
-			// [delimiter, status, code, body]. The plain-text fallback
-			// stays 3-frame: [delimiter, status, body].
-			if len(frames) >= 4 {
-				code := string(frames[2])
-				body := frames[3]
-				decodeResults := rv.MethodByName("DecodeErrorFor").Call([]reflect.Value{reflect.ValueOf(code), reflect.ValueOf(body)})
-				errResp, _ := decodeResults[0].Interface().(reqreply.ErrorPatternResponse)
-				matched, _ := decodeResults[1].Interface().(bool)
-				decErr, _ := decodeResults[2].Interface().(error)
-				if matched && decErr == nil {
-					return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: ErrorPatternResponse{
-						Code: errResp.Code, Value: errResp.Value, Body: errResp.Body,
-					}}).Convert(errType)}
-				}
+			// Expect [delimiter, status, payload].
+			if len(frames) < 3 {
+				return nil, fmt.Errorf("malformed reply: expected [delimiter, status, payload], got %d frame(s)", len(frames))
 			}
-			// UNCHANGED fallback — 3-frame reply, unmatched code, or
-			// decode failed. frames[len(frames)-1] is the body in both
-			// the 3-frame and unmatched-4-frame case.
-			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: fmt.Errorf("server error: %s", frames[len(frames)-1])}).Convert(errType)}
-		}
-
-		if len(clientMiddlewareHandlers) > 0 {
-			// zeromq has neither a reply-topic nor a property mechanism
-			// (ROUTER/DEALER frames carry only [delimiter, status,
-			// payload]) — both maps are always empty; mirrors the
-			// identical ZMQ-REQ variant's call. mwErr is UNAMBIGUOUSLY an
-			// Out-decode failure — reported as "middleware:out".
-			if mwErr := reqreply.DispatchClientMiddlewareOut(ctx, nil, nil, clientMiddlewareHandlers); mwErr != nil {
-				stats.ReportErrors(obs, "middleware:out", mwErr)
-				obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
-				return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: mwErr}).Convert(errType)}
-			}
-		}
-
-		decodeResults := rv.MethodByName("DecodeResponseWithFormats").CallSlice([]reflect.Value{reflect.ValueOf(frames[2]), responseFormatsOverride})
-		if errI, _ := decodeResults[1].Interface().(error); errI != nil {
-			stats.ReportErrors(obs, "body", errI)
-			obs.RecordRequest("ZMQ-DEALER", path, 0, time.Since(start))
-			return []reflect.Value{zeroResp, reflect.ValueOf(CallError{Err: fmt.Errorf("decode response: %w", errI)}).Convert(errType)}
-		}
-		obs.RecordRequest("ZMQ-DEALER", path, 200, time.Since(start))
-		return []reflect.Value{decodeResults[0], reflect.Zero(errType)}
-	})
-
-	wrappedCall := innerCall
-	for i := len(clientImpls) - 1; i >= 0; i-- {
-		if len(clientImpls[i].Satisfies) > 0 {
-			continue
-		}
-		decoratorVal := reflect.ValueOf(clientImpls[i].Fn)
-		wrappedCall = decoratorVal.Call([]reflect.Value{wrappedCall})[0]
+			return frames[1:], nil
+		},
 	}
 
-	finalResults := wrappedCall.Call([]reflect.Value{reflect.ValueOf(ctx), reqVal})
-	if errI, _ := finalResults[1].Interface().(error); errI != nil {
-		return nil, errI
-	}
-	return finalResults[0].Interface(), nil
+	return reqreplyClientCallOne(ctx, setup, sink, obs, start, path, reqVal)
 }
 
 // CallRaw implements [reqreply.ClientTransport]. docs/design/d-0004-reqreply-workflow-simplification.md Phase 0 infrastructure — mirrors

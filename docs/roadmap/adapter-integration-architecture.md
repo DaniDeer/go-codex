@@ -3263,11 +3263,95 @@ clean; `just check` (staticcheck + gosec + fmt) clean — confirmed no
 dead code left behind by the two large extractions (the old inline
 bodies were fully deleted, not left as unreferenced duplicates).
 
-**Remaining in Workstream C**: the client-side equivalent
-(`reqreplyClientCallSetup`/`reqreplyClientEncodeDecode`, shared by
-`clientTransport.call` and `dealerClientTransport.call`) — per the
-design's point 3, this is the LAST piece of the entire events/reqreply
-family's dispatch-core consolidation scope.
+#### Phase 4 progress: events/reqreply family, Workstream C (`adapters/zeromq`), reqreply client-side setup/dispatch-one split
+
+**Status: DONE.** This closes the client side — and with it, the LAST
+piece of the entire events/reqreply family's dispatch-core consolidation
+scope (per point 3 of this family's design).
+
+Investigated `clientTransport.call` (plain REQ) side by side with
+`dealerClientTransport.call` (DEALER) — found them to be an even closer
+match than the server side's two `Serve` variants: contrary to this
+family's own design text (which anticipated DEALER's "inherently async
+multiplexed" nature would force a correlation-bookkeeping divergence),
+this actual implementation's `dealerClientTransport.call` is **fully
+synchronous**, just like `clientTransport.call` — it sends one request
+then blocks in a recv-poll loop for exactly one reply, with no async
+correlation logic anywhere. The ENTIRE setup phase (route recovery,
+capability application + requirement coverage, request type-check, the
+observability-only `BuildTopic` path override, per-call format-override
+resolution, client implementation-shape validation) and the ENTIRE
+dispatch body (credential Fn → codec-middleware-in → encode → send →
+recv-poll → forward/error/ordinary reply classification → codec-
+middleware-out → decode), including the `reflect.MakeFunc`-based
+general-purpose `ClientMW` decorator wrapping, are confirmed
+**near-identical** — the only genuine differences are wire framing
+(REQ: send `[payload]`, recv `[status, payload]`; DEALER: send
+`[emptyDelimiter, payload]`, recv `[delimiter, status, payload]`, needing
+the empty delimiter DEALER requires to mimic REQ's hidden envelope) and
+the observability label ("ZMQ-REQ"/"ZMQ-DEALER").
+
+**Design**: new `adapters/zeromq/reqreply_client_dispatch_core.go` —
+split into THREE pieces (not two, unlike the server side), to preserve
+exact `TraceObserver` span timing:
+1. `reqreplyClientRecoverAndResolvePath` — the setup steps that MUST run
+   **before** the span starts (matching both pre-extraction bodies'
+   exact span placement: immediately after the observability-only
+   `BuildTopic` override resolves, before format-override resolution) —
+   route recovery, capability application + coverage, type-check,
+   `BuildTopic` override.
+2. `reqreplyClientResolveDispatchSetup` — the setup steps that run
+   **after** the span starts — format-override resolution,
+   implementation-shape validation — returning the full
+   `reqreplyClientSetup`.
+3. `reqreplyClientCallOne` — the shared dispatch body (the
+   `reflect.MakeFunc`-based `innerCall`/`wrappedCall` logic, assembled
+   verbatim from the two confirmed near-identical bodies), parameterized
+   by a `reqreplyClientSink` struct (`label` + `sendRequest` +
+   `recvReply`) capturing the one genuine per-variant difference. A
+   shared `reqreplyClientRecvOne` helper covers the recv-poll mechanics
+   common to both (`SetRecvTimeout`, `ctx.Done()` check, `ErrTimeout`
+   retry) — each sink's `recvReply` wraps it, validates its own expected
+   frame count, and strips its own envelope prefix (DEALER's leading
+   delimiter), so the rest of the dispatch body operates on uniform
+   "logical frames" regardless of variant.
+
+This 3-way split (vs. the server side's 2-way setup/dispatch split) was
+necessary specifically to avoid a subtle, easy-to-miss behavior change:
+collapsing setup into one function would have meant format-override
+failures no longer being wrapped by the `TraceObserver` span the way
+they were before this extraction — traced here precisely, not silently
+accepted, consistent with this whole effort's "no silent behavior
+changes" discipline.
+
+Repointed both `clientTransport.call` and `dealerClientTransport.call`
+to thin wrappers. `CallRaw` (a separate, pre-existing Phase 0 primitive
+on both transports, with its own already-established mirroring
+discipline) is explicitly OUT of scope for this round — left untouched,
+a candidate for a future round if ever needed.
+
+Added 1 new regression test
+(`adapters/zeromq/reqreply_client_dispatch_core_test.go`,
+`TestReqreplyClientCallOne_DirectCall`) exercising the full
+`reqreplyClientRecoverAndResolvePath`/`reqreplyClientResolveDispatchSetup`/
+`reqreplyClientCallOne` pipeline directly against a scripted mock-socket
+reply, independent of either `call` variant.
+
+Verified: `adapters/zeromq`'s full suite unchanged (including every
+Call-specific test: forward, error-pattern, capability, security-
+middleware, trace-span tests for both REQ and DEALER variants) plus the
+1 new test; whole-repo `go build`/`go test` (zero failures)/`go
+vet`/`gofmt -l` clean; `just check` (staticcheck + gosec + fmt) clean —
+confirmed no dead code left behind by this ~700-line extraction.
+
+**This completes Workstream C, and with it, the entire events/reqreply
+family's Phase 4 dispatch-core consolidation scope** (Workstreams A, B,
+and C's Subscribe/Publish/reqreply splits across mqtt5, mqtt v3, and
+zeromq) — except for mqtt5's own reqreply setup-core extraction (step 7
+of Workstream A), which remains a standalone, lower-priority item since
+mqtt5 has only ONE reqreply server-socket variant (no current
+duplication to resolve there, unlike zeromq's confirmed 4-way split),
+and conformance-test seeding for Phase 5 across the family.
 
 ### Phase 5 — Conformance tests and documentation
 
