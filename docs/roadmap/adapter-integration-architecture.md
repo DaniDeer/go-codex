@@ -2852,8 +2852,22 @@ the same round, following the REST family's already-proven pattern.
 - **Verification**: both packages' full suites pass unchanged; full-repo
   `go build ./...`, `go test ./...` (zero failures), `go vet ./...`
   (clean), `gofmt` all clean.
-- **What remains**: an SSE-specific conformance test (mirroring the REST
-  family's still-pending step 8) is a natural follow-on, not yet done.
+- **Follow-on, now DONE**: added
+  `TestDispatchSSERoute_ConsistentAcrossPathValueMechanisms`
+  (`adapters/internal/restdispatch/dispatch_sse_conformance_test.go`),
+  mirroring the REST family's step 8 conformance test exactly — one
+  `*rest.SSERouteHandle[Req, Event]` fixture (same `{id}` path-param
+  shape), `ValidateRouteConstruction` called once (confirmed unchanged
+  for SSE handles), `DispatchSSERoute` called twice (once per
+  `pathValues` mechanism — the same stdlib-`PathValue`/manual-template
+  stand-ins the REST conformance test already defined, reused directly
+  since both tests live in the same package), served via two
+  `httptest.NewServer`s. Parses each response's SSE `data:` lines and
+  asserts byte-identical framed event output and status code for both a
+  valid and invalid path-param value. Verified: passes; full-repo
+  `go build ./...`, `go test ./...` (zero failures), `go vet ./...`
+  (clean), `gofmt` all clean. **Both the REST and SSE families' own
+  conformance tests are now complete.**
 
 ### Phase 5 — Conformance tests and documentation
 
