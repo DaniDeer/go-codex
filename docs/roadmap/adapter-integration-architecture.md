@@ -39,9 +39,14 @@ family** now also has its own conformance package,
 `api/reqreply/reqreplytest` (1 scenario: a Call/Serve round trip),
 wired into `adapters/mqtt5` only — `adapters/mqtt` (v3) has no reqreply
 surface at all, and `adapters/zeromq` is excluded for the same reason as
-events. The rest of Phase 5's "reusable adapter conformance tests for
-common semantics" scope — the same per-family conformance package for
-ports — remains for a future round.
+events. The **ports pattern family**'s long-open design-status question
+is now resolved (two-part answer: no capability mechanism needed there,
+confirmed; but a binding-lifecycle conformance package IS real,
+achievable work) — `ports/portstest` (1 scenario: a `SourceAdapter`
+round trip) is wired into `adapters/sql` and `adapters/file`. All four
+families this roadmap scoped (REST, events, reqreply, ports) now have
+their own conformance package — this is the last family-level question
+Phase 5 had open.
 This status line is updated as major increments land —
 see the per-phase sections below for full detail.
 
@@ -3605,10 +3610,8 @@ documented canonical scenario rather than a bespoke, adapter-local test.
 
 Further canonical routes can be added to `api/rest/resttest` the same way
 in future rounds without breaking its existing exported surface. The
-ports family (`file`/`redis`/`sql`) does not yet have an equivalent
-per-family conformance package — this is explicitly left for a future
-round. The events family now has its own conformance package (see below);
-reqreply does not yet.
+events, reqreply, and ports families all now have their own conformance
+packages (see below).
 
 Two incidental fixes made during this work:
 - `gosec.config.json` gained a new G101 (hardcoded-credentials) path
@@ -3818,6 +3821,87 @@ this environment).
 Verified: new `TestReqreplytestConformance_ComputeRoundTrip` passes in
 `adapters/mqtt5`; whole-repo `go build`/`go test` (zero failures)/`go
 vet`/`gofmt -l` clean; `just check` (staticcheck + gosec + fmt) clean.
+
+### Ports pattern family design status — RESOLVED (two-part answer, not a single "no action needed")
+
+This closes the LAST remaining family-level design-status ambiguity
+carried in this doc since the Phase 1 audit: whether `adapters/file`/
+`adapters/redis`/`adapters/sql` need real design/implementation work, or
+should be formally closed as "no action needed."
+
+**Part 1 — re-confirmed, genuinely closed**: re-read Phase 1's audit
+tables for all three directly (not trusted from memory) — confirmed
+verbatim "Not checked anywhere — no capability-requirement mechanism
+exists" (or equivalent wording) for all three. There is no capability-
+coverage/dispatch-core-duplication work needed for this family. This
+part of the ambiguity is CLOSED, not deferred.
+
+**Part 2 — a separate, previously-unconsidered opportunity, now also
+closed via a new conformance package**: `ports.SourceAdapter[T]`/
+`SinkAdapter[T]`/`IOAdapter[Req,Resp]` are genuine, SHARED Go interfaces
+implemented by MANY structurally-independent adapters across the WHOLE
+codebase — confirmed via `SourceAdapter[T]`'s own doc comment, which
+lists `adapters/mqtt5`, `adapters/mqtt`, `adapters/nethttp`,
+`adapters/zeromq`, `adapters/chi`, `adapters/websocket`,
+`adapters/file`, and `adapters/sql` as implementers. This means a
+ports-family conformance package is real, achievable work — just a
+DIFFERENT kind than REST/events/reqreply's (those each prove ONE
+request/response-style contract across multiple adapters of the SAME
+protocol family; this proves `ports`' own BINDING LIFECYCLE contract
+across structurally unrelated adapters that merely happen to implement
+the same Go interface).
+
+### Phase 5 progress: ports-family conformance package (`ports/portstest`)
+
+**Status: DONE (1 scenario — `ports.SourceAdapter` round trip —
+`adapters/sql` + `adapters/file`).** `adapters/redis` is scoped out of
+THIS specific scenario (its `ports.Cache[T]` read-through/write-through
+pattern is a structurally different shape than a plain
+`ports.SourceAdapter`), not excluded from the ports family generally.
+
+**Design**: new package `ports/portstest` exports a canonical `Reading`
+item type + codec (deliberately the same ID/Value shape convention
+`eventstest`'s `SensorReading` already established, kept consistent
+across this roadmap's conformance packages) and
+`AssertSourceAdapterRoundTrip(t, codec, adapter ports.SourceAdapter[Reading],
+want []Reading)` — binds `adapter` to a fresh `ports.SourcePort[Reading]`,
+consumes via `gstream.Collect` (the SAME idiom `adapters/sql`'s own
+existing `SourcePort` tests already use), and asserts the collected
+items match.
+
+**A real behavioral difference found and handled deliberately** (not
+assumed from reading alone — confirmed directly from `adapters/sql`'s
+own existing tests): some `SourceAdapter` implementations emit their
+items exactly once then terminate (`adapters/file.ScanAdapter`, reaching
+EOF), while others poll continuously and RE-EMIT the SAME items every
+tick (`adapters/sql.QueryAdapter`, confirmed via its own
+`TestQueryAdapter_EmitsRows`, which itself only asserts `len(vals) >= 2`,
+not an exact count, for exactly this reason). `AssertSourceAdapterRoundTrip`
+therefore asserts the FIRST `len(want)` collected items match `want`
+exactly, not that exactly `len(want)` items were collected overall —
+accommodating both emission shapes without forcing a false assumption
+about either.
+
+Wired into both `adapters/sql` (`portstest_conformance_test.go`, a plain
+`queryFn` closure returning `WantReadings` — no real database needed) and
+`adapters/file` (`portstest_conformance_test.go`, a real temp NDJSON file
+written at test time) as genuine, independent usage — both pass against
+the same shared assertion function on the first real run (no design
+mismatches found), proving the mechanism works across 2 real,
+structurally-independent `ports.SourceAdapter` implementations backed by
+completely different underlying resources (a polling database query vs.
+a line-scanned file).
+
+Coverage is intentionally ONE scenario this round
+(`ports.SourceAdapter` only) — `ports.SinkAdapter`/`ports.IOAdapter`
+conformance scenarios are explicitly left for a future round, mirroring
+every other conformance package's own "start with 1, expand later"
+pacing.
+
+Verified: new `TestPortstestConformance_SourceAdapterRoundTrip` passes
+identically in both `adapters/sql` and `adapters/file`; whole-repo `go
+build`/`go test` (zero failures)/`go vet`/`gofmt -l` clean; `just check`
+(staticcheck + gosec + fmt) clean.
 
 ## Open design points deferred to future rounds
 
