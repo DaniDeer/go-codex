@@ -1,6 +1,139 @@
-# go-codex Review History (R1–R211, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
+# go-codex Review History (R1–R215, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 215 (`deep-dive-bug-hunt` Phase B — mandatory consolidated design-doc re-review of Rounds 207-214)
+
+Per the skill's Phase B (mandatory, not optional): cross-checked every fix
+from this deep-dive pass against the governing design doc(s). Only ONE of
+the 8 rounds (211) changed code — the other 7 were clean/no-fix, so Phase
+B's doc-conformance check applies to Round 211 alone; the other 7 rounds'
+OWN "confirmed via direct diff"/"pure extraction, zero behavior change"
+claims were already verified live during Phase A itself (byte-identical
+source comparisons, baseline test re-runs), not deferred to here.
+
+**Verdict table:**
+
+| Round | Doc(s) cross-checked | Verdict |
+|---|---|---|
+| 211 (mqtt v3 Publish security-impl scheme-filtering fix) | `docs/design/d-0007-declarative-middleware-layering.md` (§"Security's gating semantics need a new field..." — the doc that originally specifies `Satisfies` is "matched... against the route's declared requirements," i.e. scheme-matching, not "runs whenever secReqs is merely non-empty"); `docs/design/d-0010-adapter-integration-architecture.md` (doesn't itself specify this mechanism's semantics — it's a pre-existing, independent mechanism untouched by D-0010's dispatch-core CONSOLIDATION, coincidentally living in a file D-0010 did touch) | **ALIGNED.** The fix's behavior (scheme-matching) is exactly what d-0007 already specifies as the intended semantics for `Satisfies`; the OLD "always-run-if-secReqs-non-empty" behavior mqtt v3's generic path had was the divergent one, not a retired pattern being reintroduced. No instructions-note contradiction: grepped `go-codex.instructions.md` for any existing note describing this specific function's filtering semantics — none exists, so no reconciliation needed; this round's own code-comment citation (`deep-dive-bug-hunt, api/events Round 211`) is the only documentation trail, and it doesn't contradict anything older. |
+
+No documentation-clarity issues found requiring a fix. No genuine
+code/design misalignment found (which would have reopened Phase A for
+that concept). This closes the deep-dive-bug-hunt pass for
+`api/rest`/`api/events`/`api/reqreply` post-D-0010 (Rounds 207-215,
+9 entries total: 7 clean, 1 real fix, 1 Phase B re-review).
+
+---
+
+## Round 214 (`deep-dive-bug-hunt` applied to `api/reqreply` — mutation-testing `api/reqreply/reqreplytest`'s own `Assert*` function — ARGUMENTS: "post-D-0010 fresh revisit, round 2 of the api/reqreply family, per the skill's new conformance-package Gotcha" — the LAST round of this deep-dive pass; see this Round's own Phase B re-review note below)
+
+**CLEAN — no bug found.** `reqreplytest` has exactly ONE `Assert*`
+function (`AssertComputeRoundTrip`), and — unlike `resttest`/`eventstest`
+— it owns its OWN handler construction internally (no adapter-supplied
+handler/bridging callback to swap for a broken one), so this round
+mutation-tested it differently: via a throwaway, never-committed scratch
+test (`api/reqreply/reqreplytest/zz_mutation_scratch_test.go`, deleted
+immediately after use, confirmed via `git status --short` showing zero
+diff afterward) implementing minimal, deliberately-broken
+`reqreply.ServerTransport`/`reqreply.ClientTransport` fakes — the fake
+`ClientTransport.Call` always returns `ComputeResp{Sum: -999}}` instead
+of the real 7 — confirming `AssertComputeRoundTrip`'s final `got.Sum !=
+7` check correctly fails with an exact diagnostic (`Sum = -999, want 7
+(3+4)`).
+
+Baseline re-confirmed: `go test ./api/reqreply/reqreplytest/...` shows
+`[no test files]` after scratch-file removal — confirmed to be the
+EXPECTED state (mirrors `resttest`'s identical status from Round 209),
+not a coverage gap: `reqreplytest`'s `Assert*` function is exported for
+adapter-level callers (`adapters/mqtt5`'s own
+`reqreplytest_conformance_test.go`), not exercised by a permanent test
+file inside the package itself.
+
+This closes Part A of this deep-dive pass (Rounds 207-214, 8 rounds
+total across `api/rest`/`api/events`/`api/reqreply`). Part B (the
+mandatory consolidated design-doc re-review) follows as a separate
+entry below once complete.
+
+---
+
+## Round 213 (`deep-dive-bug-hunt` applied to `api/reqreply` — dispatch-core, foundational — ARGUMENTS: "post-D-0010 fresh revisit, round 1 of the api/reqreply family" — the FIRST deep-dive pass ever pointed at `adapters/mqtt5/reqreply_dispatch_core.go` AND `adapters/zeromq/reqreply_dispatch_core.go`, the reqreply family's new shared dispatch-cores shipped by D-0010's Workstream A (mqtt5) and Workstream C (zeromq))
+
+**CLEAN — no bug found.** `adapters/mqtt5/reqreply_dispatch_core.go`'s own
+doc comment is explicit that it has only ONE server-socket variant (no
+REQ/REP-vs-ROUTER-style split like zeromq) — this extraction is "pure
+refactor-for-future-reuse-by-convention... not a merge of two existing
+duplicates," so there's no N-way parity question to re-derive here; read
+it in full regardless (both `reqreplyServerSetupCore` and
+`reqreplyServerDispatchOne`), confirming it's a faithful, unmodified
+extraction of the full user-property → topic-var → decode →
+property-merge → security-credential → paired-security-middleware →
+codec-middleware → unified-scopes-check → handler → encode → reply
+pipeline, matching the same fallback-ordering conventions
+(`ErrorPattern`/`DeadLetter`/`onError`) established and already hardened
+by the ORIGINAL (pre-D-0010) `api/reqreply` deep-dive series (Rounds
+185-194, 203, 205, 206).
+
+Expanded this round's scope (beyond the plan's literal wording) to ALSO
+cover `adapters/zeromq/reqreply_dispatch_core.go`, since — unlike mqtt5's
+single-consumer extraction — it IS a genuine 2-way merge
+(`(*serverTransport).Serve`'s REQ/REP variant vs.
+`(*routerServerTransport).Serve`'s ROUTER variant), squarely the
+higher-risk N-way-parity shape this skill's Phase A step 4 targets.
+Confirmed, via direct inspection of both call sites
+(`reqreply_transport.go` lines ~542 and ~981), that both variants call
+the IDENTICAL shared `reqreplyServerSetupCore`/`reqreplyServerDispatchOne`
+pair, with the ONE genuine per-variant difference (reply/error-reply/
+forward-reply framing — REQ/REP's 2-frame vs. ROUTER's 4-frame
+identity-prefixed format) cleanly isolated behind the `reqreplyReplySink`
+interface's 3 closures, constructed once-per-Serve-call for REQ/REP and
+once-PER-REQUEST for ROUTER (correctly, since ROUTER's reply framing
+needs that specific request's identity frame, captured in the
+per-request goroutine's closure).
+
+Both files already have dedicated test files
+(`adapters/mqtt5/reqreply_dispatch_core_test.go`,
+`adapters/zeromq/reqreply_dispatch_core_test.go`), and
+`api/reqreply/reqreplytest`'s own conformance package is wired into
+mqtt5 (confirmed `[no test files]` is `reqreplytest`'s own expected
+state, mirroring `resttest`'s identical status from Round 209).
+
+Baseline: `go test ./adapters/zeromq/... ./adapters/mqtt5/...
+./api/reqreply/...` all pass (cached).
+
+---
+
+## Round 212 (`deep-dive-bug-hunt` applied to `api/events` — mutation-testing `api/events/eventstest`'s own `Assert*` functions — ARGUMENTS: "post-D-0010 fresh revisit, round 3 of the api/events family, per the skill's new conformance-package Gotcha")
+
+**CLEAN — no bug found.** Per the skill's newly-added Gotcha, wrote a
+throwaway, never-committed scratch test
+(`adapters/mqtt/zz_eventstest_mutation_scratch_test.go`, deleted
+immediately after use, confirmed via `git status --short` showing zero
+diff afterward) reusing `adapters/mqtt`'s existing `mockClient`/
+`mockMessage` conformance-test harness, delivering a deliberately WRONG
+(but validly-decodable) payload instead of the actually-published one.
+`AssertPublishSubscribeRoundTrip`'s final `got != want` check correctly
+failed with an exact diagnostic
+(`subscriber received {SensorID:00000...}, want {SensorID:f47ac10b...}`)
+— confirming it's a real value-correctness assertion, not a loose
+"handler ran" check. (A first attempt using a structurally-invalid
+payload failed EARLIER, at decode time, before even reaching the
+value-comparison — also a legitimate failure, but switched to a
+validly-decodable-but-wrong-value payload to specifically exercise the
+`got != want` comparison itself.)
+
+Read `AssertCapabilityRejected` (a tight one-line `err == nil` check — no
+looser than REST's identical-purpose scenario) and
+`AssertSecurityRejectionRoundTrip` (exact `handlerCalled` must-be-false
+check, exact `RecordSecurityRejection` call COUNT, exact
+location/scheme field assertions) in full — both confirmed to be
+equally rigorous, no loose checks found in any of the 4 `Assert*`
+functions.
+
+Baseline re-confirmed green after scratch-file removal:
+`go test ./adapters/mqtt/...`.
 
 ---
 
