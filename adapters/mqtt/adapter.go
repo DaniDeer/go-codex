@@ -804,14 +804,43 @@ func publish[T any](ctx context.Context, client pahomqtt.Client, handle *events.
 // client-side and generic over T (concrete at this call site). General-purpose
 // wrapping-shaped Fns are silently skipped here (consumed instead by
 // [wrapPublishGeneral]).
+//
+// A security impl whose OWN Satisfies list is non-empty only runs when at
+// least one of its Satisfies schemes is actually named in secReqs — not
+// merely whenever secReqs is non-empty. This fixes a confirmed, real
+// behavioral divergence (`deep-dive-bug-hunt`, api/events Round 211) from
+// this function's OWN reflect mirror
+// ([runPublishSecurityImplsReflect] in transport_dispatch.go, used by the
+// ports.Pattern-binding `transport.Publish` path) AND from
+// adapters/mqtt5's/adapters/zeromq's identical generic+reflect
+// counterparts, all four of which already implemented this scheme-match
+// filter — this was the ONE outlier, meaning mqtt v3's two Publish
+// dispatch paths (this generic one, used by `Attach`/`NewPublishTransport`,
+// vs. the reflect one, used by the ports.Pattern-binding path) previously
+// disagreed on which security impls run for the SAME declared route.
 func runPublishSecurityImpls[T any](ctx context.Context, msg *T, secReqs []events.SecurityRequirement, impls []events.ClientImplementation) error {
+	reqSchemes := make(map[string]bool, len(secReqs))
+	for _, req := range secReqs {
+		for scheme := range req {
+			reqSchemes[scheme] = true
+		}
+	}
 	for _, impl := range impls {
 		fn, ok := impl.Fn.(func(context.Context, *T, []events.SecurityRequirement) error)
 		if !ok {
 			continue // general-purpose or nil
 		}
-		if len(impl.Satisfies) > 0 && len(secReqs) == 0 {
-			continue
+		if len(impl.Satisfies) > 0 {
+			matched := false
+			for _, s := range impl.Satisfies {
+				if reqSchemes[s] {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
 		}
 		if err := fn(ctx, msg, secReqs); err != nil {
 			return err

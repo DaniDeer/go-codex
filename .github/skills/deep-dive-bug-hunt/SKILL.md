@@ -63,7 +63,18 @@ Round-numbering convention. Read `review-go-codex/SKILL.md` first if unfamiliar 
    and its builder-applied field) → router/spec contribution (does it render correctly in the
    generated spec?) → EVERY relevant adapter's dispatch — this means N-way parity (3 adapters
    for events: mqtt, mqtt5, zeromq; 2 for REST: nethttp, chi), not just comparing 2 and calling
-   it done.
+   it done. **Post-D-0010**, some concepts now route through a SINGLE shared dispatch-core
+   function instead of N independent per-adapter copies (e.g. `adapters/internal/restdispatch`
+   for the REST+SSE family, consumed by both `nethttp` and `chi`; a per-family
+   `adapters/<name>/*_dispatch_core.go` for events/reqreply, e.g.
+   `adapters/mqtt/subscribe_dispatch_core.go`, `adapters/mqtt5/reqreply_dispatch_core.go`). For
+   these concepts the N-way check becomes three narrower checks instead of one: (a) prove the
+   shared core itself correct ONCE; (b) verify EVERY consuming adapter actually delegates to it
+   rather than silently reimplementing or drifting back to a duplicate copy; (c) separately
+   check any PRE/POST logic an adapter still keeps OUTSIDE the shared core (setup, security-gate
+   ordering, observer hooks) — consolidation removes duplicate-copy drift risk, but an adapter's
+   own wiring around the shared call can still have an adapter-specific bug the core itself
+   can't catch.
 5. **Reproduce any suspected bug LIVE, via a failing test, BEFORE fixing it.** This is the
    single highest-value practice in this methodology — a purely static read of the dispatch code
    missed real bugs across MULTIPLE prior review passes until an actual failing test exposed
@@ -120,6 +131,15 @@ drift, not code bugs):
 - **Sequencing matters for avoiding wasted rework**: if the foundational merge/transform round
   (first in Phase A) turns up a bug, every later concept round would have silently inherited it
   — always do that round FIRST and get it clean before fanning out to named concepts.
+- **The "API-defined conformance test suite" packages (`resttest`, `eventstest`,
+  `reqreplytest`, `portstest`, D-0010) are a NEW testable surface in their own right, not just
+  test fixtures to trust blindly.** A concept round touching a family that has one of these
+  packages should include one mutation-test check per existing `Assert*` function: deliberately
+  break the thing the assertion claims to verify (in a scratch/throwaway copy, never committed),
+  confirm the assertion actually fails, then revert. A conformance package with a quietly-too-
+  loose assertion would otherwise rubber-stamp a real regression forever, across every adapter
+  wired into it — and because these packages are themselves fairly new/unreviewed, don't assume
+  their own correctness is already established just because adapters pass against them.
 - **A concept round should also check whether the CONCEPT'S OWN TEST FILES reach into a shared
   `internal/<name>` package directly instead of the consuming pattern's public alias** — this is
   a distinct finding from a dispatch-path code bug (no runtime behavior changes), but it's the

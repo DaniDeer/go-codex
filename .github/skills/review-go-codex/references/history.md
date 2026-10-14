@@ -1,6 +1,216 @@
-# go-codex Review History (R1–R206, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
+# go-codex Review History (R1–R211, plus middleware-workflow-simplification G1–G15, pubsub-workflow-simplification G1–G4, F1–F2, error-handling-rest-events-reqreply H1–H2, protocol-native-capabilities P1–P5)
 
 Do not re-report any of these findings. They have been implemented and tested.
+
+---
+
+## Round 211 (`deep-dive-bug-hunt` applied to `api/events` — Publish dispatch-core-adjacent code — ARGUMENTS: "post-D-0010 fresh revisit, round 2 of the api/events family" — the FIRST deep-dive pass ever pointed at `adapters/mqtt/transport_dispatch.go`, mqtt v3's reflection-only mirror helpers consolidated alongside Subscribe's dispatch-core)
+
+**A REAL, confirmed cross-path code-level divergence, found and fixed — but
+NOT currently user-reachable (full honesty below).** While comparing
+`transport_dispatch.go`'s `runPublishSecurityImplsReflect` (the
+reflection-only Publish-side security-impl filter used by the
+`ports.Pattern`-binding `transport.Publish` path) against `adapter.go`'s
+own generic sibling `runPublishSecurityImpls[T]` (used by `Attach`/
+`NewPublishTransport`'s `publish[T]`), found they implement DIFFERENT
+filtering semantics for the exact SAME mechanism: the reflect version
+only invokes a security-shaped impl whose `Satisfies` names a scheme
+ACTUALLY present in the channel's required schemes (scheme-matching); the
+generic version invoked EVERY security-shaped impl whenever `secReqs` was
+merely non-empty, regardless of whether that impl's own `Satisfies`
+scheme was relevant at all. Confirmed, via grep across all 3 adapters'
+generic+reflect pairs, that mqtt v3's generic function was the ONE
+outlier — `adapters/mqtt5`'s and `adapters/zeromq`'s generic AND reflect
+Publish-security-filter functions ALL already use the scheme-matching
+algorithm; mqtt v3's own reflect sibling does too. Reproduced live via a
+scratch test (never committed) BEFORE fixing: 2 security-shaped impls,
+one `Satisfies=["apiKey"]` (required) and one `Satisfies=["oauth"]` (NOT
+required) — the generic path invoked BOTH; fixed to invoke only the
+matching one, confirmed via the same test, then promoted the scenario
+into a permanent regression test,
+`TestPublish_SecurityImpl_SchemeFiltering_Parity` in `caller_test.go`.
+
+**Important scoping caveat, confirmed by reading `Publisher.PublishMW`'s
+own doc comment and its single production construction site
+(`api/events/builder.go`)**: `PublishMW` NEVER itself sets
+`ClientImplementation.Satisfies` to anything non-empty — "A Security
+scheme is declared and PAIRED exclusively via `PublishBoundMW` +
+`BoundSecurityPublishMiddleware` now" (confirmed: `buildServerImplementation`,
+Subscribe's equivalent construction site, has the identical property).
+This means the divergence this round fixed is NOT reachable via any
+public builder method today — it only manifests if a caller constructs
+`events.ClientImplementation{Satisfies: [...]}` directly (bypassing the
+builder), which is possible (the struct's fields are exported) but
+unsupported/undocumented. The fix is still correct and worth keeping:
+it eliminates a genuine two-path inconsistency within mqtt v3 itself,
+matches the ALREADY-established precedent on the other 2 adapters, costs
+zero behavior change for every real caller (confirmed: full
+`go build`/`gofmt`/`go test ./adapters/mqtt/...` unchanged, all green
+before and after), and future-proofs the mechanism in case `Satisfies`
+ever becomes constructible through a future builder method.
+
+Baseline: `go test ./adapters/mqtt/... ./adapters/mqtt5/...
+./adapters/zeromq/... ./examples/...` all pass after the fix (confirmed
+fresh, not cached).
+
+---
+
+## Round 210 (`deep-dive-bug-hunt` applied to `api/events` — Subscribe dispatch-core, foundational — ARGUMENTS: "post-D-0010 fresh revisit, round 1 of the api/events family" — the FIRST deep-dive pass ever pointed at `adapters/mqtt/subscribe_dispatch_core.go` and `adapters/mqtt5/transport_dispatch.go`'s Subscribe-dispatch portion, the events family's new shared dispatch-core shipped by D-0010's Workstream A (mqtt v3) and its mqtt5 precedent)
+
+**CLEAN — no bug found.** Confirmed `subscribeDispatchCore` is genuinely the
+merge point of 2 of mqtt v3's 3 Subscribe dispatch implementations
+(`transport.go`'s `(*transport).Subscribe` — the `ports.Pattern`-binding
+path — and `caller.go`'s `subscribeEntryReflect` — the `Client.Attach`/
+`ServeSubscribers` path), per the function's own extensive doc comment
+describing the EXACT 2-direction divergence it fixed (topic-var support
+vs. Disposition-tracking + security-kind-detection, each path previously
+missing what the other had) — this is the deliberate, intentional "3 → 2,
+not 3 → 1" boundary the skill's Phase A step 4 now explicitly calls out,
+since the 3rd path (`adapter.go`'s compile-time-generic `subscribeHandler
+[T]`) cannot mechanically share code with the two reflect-based paths.
+
+Verified the "3 → 2" boundary is still correctly respected, not
+accidentally bypassed or silently eroded: `subscribeHandler[T]`
+independently re-implements the SAME feature set (property-merge-field
+enforcement, Implementations-based security, codec-backed middleware
+dispatch with the same `IsFnError`/`IsSecuritySatisfyingHandler` kind
+classification, ErrorChannel→DeadLetter→OnError fallback ordering, AND
+`stats.EnsureDispositionBox`/`ResolveDisposition`/`RecordDisposition`
+Disposition tracking) as the consolidated core — confirmed via direct
+grep for `EnsureDispositionBox` across all 3 mqtt v3 call sites (present
+in all 3) and all 3 mqtt5 call sites (`adapter.go`, `transport_dispatch.go`,
+`reqreply_dispatch_core.go` — all present). Also confirmed, reading
+`adapter.go`'s `validateSecurityCredentials`, that the consolidated
+reflect core's APPARENT omission of a built-in codec-credential check
+(present in the 3rd generic path) is NOT a parity gap — that function is
+a documented permanent no-op for mqtt v3 (the `pahomqtt.Message`
+interface never exposes MQTT 3.1.1 per-message credentials at all), so
+omitting a call to a function that always returns nil changes nothing.
+
+Both families already have a dedicated 3-way parity test file
+(`adapters/mqtt/subscribe_dispatch_parity_test.go`,
+`adapters/mqtt5/subscribe_dispatch_parity_test.go`) independently proving
+this same boundary — this round's finding corroborates, rather than
+newly discovers, that existing test coverage.
+
+Baseline: `go test ./adapters/mqtt/... ./adapters/mqtt5/...` green (cached).
+
+---
+
+## Round 209 (`deep-dive-bug-hunt` applied to `api/rest` — mutation-testing `api/rest/resttest`'s own `Assert*` functions — ARGUMENTS: "post-D-0010 fresh revisit, round 3 of the api/rest family, per the skill's new conformance-package Gotcha" — the FIRST time any of `resttest`'s 7 `Assert*` functions have themselves been scrutinized for false-negative risk, not just trusted as fixtures)
+
+**CLEAN — no bug found.** Per the skill's newly-added Gotcha, wrote a throwaway,
+NEVER-committed scratch test file (`api/rest/resttest/zz_mutation_scratch_test.go`,
+deleted immediately after use, confirmed via `git status --short` showing zero
+diff afterward) with deliberately-broken `http.Handler` implementations, one
+per sampled `Assert*` function, and confirmed each assertion actually fails
+against the broken handler (not just passes against a correct one):
+
+- `AssertEchoRoute` — a handler returning 200 instead of 201, and not
+  rejecting malformed JSON — both sub-checks failed as expected, with
+  precise diagnostic messages (`status = 200, want 201`, etc.).
+- `AssertPathParamRoute` — a handler ignoring the path param and always
+  returning a fixed wrong ID — both the invalid-UUID-rejection check AND
+  the merged-value check failed as expected.
+- `AssertSecurityRoute` — a handler that never checks credentials (always
+  200s) — both the missing-key and wrong-key rejection checks failed as
+  expected (the valid-key sub-check still passed, correctly, since that
+  handler's accept-everything behavior happens to satisfy the one
+  legitimately-valid case too).
+- `AssertErrorMappingRoute` — a handler returning a generic 500 instead of
+  the declared `ErrorPattern`'s mapped 422+body — failed as expected with
+  an exact status-code diagnostic.
+
+Did not additionally mutation-test `AssertMiddlewareChainRoute`,
+`AssertCapabilityRejected`, or `AssertObservabilityRoute` directly, but
+read all three in full and confirmed they follow the IDENTICAL rigor
+pattern as the four sampled above (exact execution-order slice equality,
+exact error-type + exact `Missing` field-name assertion, structured spy-call
+field assertions respectively) — none of the 7 are a loose "no panic"/
+"no error" check that could rubber-stamp a real regression.
+
+Baseline re-confirmed green after scratch-file removal:
+`go test ./api/rest/resttest/...` (package itself has no permanent test
+files of its own — its `Assert*` functions are exported for adapter-level
+callers, confirmed `[no test files]` is the expected/correct state, not a
+coverage gap).
+
+---
+
+## Round 208 (`deep-dive-bug-hunt` applied to `api/rest` — SSE dispatch-core + construction — ARGUMENTS: "post-D-0010 fresh revisit, round 2 of the api/rest family" — the FIRST deep-dive pass ever pointed at `adapters/internal/restdispatch`'s `dispatch_sse.go` (the SSE family's new shared dispatch-core) and `construction.go` (the shared `ValidateRouteConstruction`/`ValidateRouteConstructionForHandler` EAGER four-Tier check); depends on Round 207's clean foundational result)
+
+**CLEAN — no bug found.** `construction.go` reviewed in full: `validateRouteConstruction`
+(the shared core both `ValidateRouteConstruction` and
+`ValidateRouteConstructionForHandler` delegate to) runs the same four Tier
+checks (shape validation, security coverage, capability coverage,
+param-kind coverage) regardless of which public entry point a caller uses
+— confirmed both entry points resolve `handlerFn`/`impls` correctly for
+their own call shape (handle's own fields vs. explicit call-time
+parameters) before delegating to the identical shared core, so no
+behavioral drift between the `Register()`-path and the generic
+`HandlerLatest`/`PipelineHandler`-path construction checks.
+
+`dispatch_sse.go` reviewed in full, including its one piece of genuinely
+SSE-specific logic (not shared with `DispatchRoute`): the Accept-header
+fallback when `NegotiateFormatReflect` finds no exact content-type match
+but the request's Accept header literally contains `"text/event-stream"`
+(browsers' native `EventSource` always sends this) — falls back to the
+route's first declared Format instead of 406, confirmed to be pre-existing,
+intentional behavior (not newly introduced by the consolidation) via its
+accompanying doc comment and the referenced `rest-redirects.md` round-2
+finding E it also still correctly honors (`headersCommitted` gating, not
+`sw.StatusCode()`, for the late-redirect check).
+
+Confirmed, via direct `diff` of `buildSSERouteHandler`'s full function body
+in both packages (`awk '/^func buildSSERouteHandler/,/^}/'` isolation),
+that `adapters/nethttp`'s and `adapters/chi`'s SSE call sites are
+IDENTICAL except the literal adapter-name string passed to
+`restdispatch.ValidateRouteConstruction` — same true source-level N-way
+parity Round 207 found for the non-SSE path.
+
+Baseline: same 3-package test run as Round 207, all green (cached).
+
+---
+
+## Round 207 (`deep-dive-bug-hunt` applied to `api/rest` — ARGUMENTS: "post-D-0010 fresh revisit, foundational dispatch-core round" — the FIRST deep-dive pass ever pointed at `adapters/internal/restdispatch`'s `dispatch.go`/`dispatch_helpers.go`/`httpcarrier.go`, the REST+SSE family's new shared dispatch-core shipped by D-0010's Phase 4 consolidation; Rounds 167–174 deep-dived REST's CONCEPTS before this consolidation existed, never the consolidated mechanism itself)
+
+**CLEAN — no bug found.** Confirmed (via direct side-by-side view, not just the
+code's own doc comments) that `adapters/nethttp`'s and `adapters/chi`'s two
+consolidated call sites — `buildRouteHandler` (the `Register()` path) and
+`handlerFunc[Req, Resp]` (the generic `HandlerLatest`/`PipelineHandler`/
+`IngestAdapter` path) — are BYTE-FOR-BYTE IDENTICAL between the two packages
+except the literal adapter-name string ("nethttp" vs "chi") passed to
+`restdispatch.ValidateRouteConstruction(ForHandler)`/`DispatchRoute`. This is
+true N-way parity at the SOURCE level now (not just behavioral parity proven
+via tests), which is the expected, intended outcome of D-0010's consolidation
+— the risk class Rounds 167-174 had to prove via painstaking per-concept
+adapter-by-adapter comparison (header-casing bugs, dropped fields, etc.) is
+structurally eliminated for any concept whose logic lives inside
+`restdispatch.DispatchRoute` itself, since there is now only ONE copy to get
+right, not two to keep in sync.
+
+Per the skill's newly-added Phase A step 4 guidance (shared dispatch-core
+concepts): (a) `dispatch.go`'s `DispatchRoute` body — confirmed, per its own
+doc comment AND `git log`'s single-commit extraction history
+(`8babe11 Phase 4, REST family: extract per-request dispatch body into
+restdispatch`), to be a pure, diff-verified move of pre-existing,
+already-hardened logic, not a rewrite — so no NEW logic here to re-derive
+from scratch; (b) both adapters' delegation — confirmed exactly, see above;
+(c) each adapter's own pre/post logic kept OUTSIDE the shared core
+(`resolveOptions`, `errFn`/`maxBody`/`expectedCT` defaulting, the
+`writeCookie` closure, `EnsureContextFields` + context-key wrapping,
+`applyGeneralMiddleware`) — also confirmed byte-for-byte identical between
+`nethttp` and `chi` at all 4 call sites (`buildRouteHandler` ×2 packages,
+`handlerFunc`/generic-path ×2 packages).
+
+`dispatch_helpers.go` and `httpcarrier.go` reviewed in full: every exported
+function/type is explicitly "Promoted (Phase 4) verbatim" per its own doc
+comment, matching the extraction-commit evidence above — no new logic
+introduced by the consolidation itself.
+
+Baseline: `go test ./adapters/internal/restdispatch/... ./adapters/nethttp/...
+./adapters/chi/...` all pass (cached, pre-existing green state confirmed,
+not freshly broken then silently left).
 
 ---
 

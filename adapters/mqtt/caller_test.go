@@ -438,6 +438,57 @@ func TestPublish_SecurityImpl_ErrorAborts(t *testing.T) {
 	}
 }
 
+// TestPublish_SecurityImpl_SchemeFiltering_Parity is a white-box
+// regression test for `runPublishSecurityImpls[T]` (`deep-dive-bug-hunt`,
+// api/events Round 211): a security-shaped [events.ClientImplementation]
+// whose own Satisfies names a scheme NOT among the channel's required
+// schemes must be SKIPPED, not invoked — mirroring this function's own
+// reflect sibling (`runPublishSecurityImplsReflect` in
+// transport_dispatch.go, used by the ports.Pattern-binding
+// `transport.Publish` path) and adapters/mqtt5's/adapters/zeromq's
+// identical generic+reflect counterparts, all of which already filtered
+// this way.
+//
+// NOTE: [Publisher.PublishMW] (the only PUBLIC builder method that
+// attaches a [ClientImplementation]) never itself sets Satisfies — a
+// Security scheme is declared/paired exclusively via
+// [Publisher.PublishBoundMW] + [events.BoundSecurityPublishMiddleware]
+// today (see PublishMW's own doc comment) — so this scenario is not
+// reachable via the public builder API, and this fix changes no
+// currently-observable behavior for any real caller. This test
+// constructs [events.ClientImplementation] directly (white-box, same
+// package) purely to guard the INTERNAL function's own correctness and
+// its parity with its 3 sibling implementations, in case Satisfies ever
+// becomes reachable here in the future.
+func TestPublish_SecurityImpl_SchemeFiltering_Parity(t *testing.T) {
+	var oauthCalled bool
+	impls := []events.ClientImplementation{
+		{
+			Name:      "apiKeyImpl",
+			Satisfies: []string{"apiKey"},
+			Fn: func(context.Context, *userEvent, []events.SecurityRequirement) error {
+				return nil
+			},
+		},
+		{
+			Name:      "oauthImpl",
+			Satisfies: []string{"oauth"}, // NOT required below
+			Fn: func(context.Context, *userEvent, []events.SecurityRequirement) error {
+				oauthCalled = true
+				return nil
+			},
+		},
+	}
+	secReqs := []events.SecurityRequirement{events.Require("apiKey")}
+	msg := userEvent{ID: "f47ac10b-58cc-4372-a567-0e02b2c3d479"}
+	if err := runPublishSecurityImpls[userEvent](context.Background(), &msg, secReqs, impls); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if oauthCalled {
+		t.Error("oauthImpl.Fn ran even though its Satisfies scheme (\"oauth\") is not among the required schemes")
+	}
+}
+
 // ── Eager shape-validation rejection: SubscribeMW / PublishMW ─────────────────
 
 func TestSubscribeMW_WrongShape_RejectedEagerly(t *testing.T) {
