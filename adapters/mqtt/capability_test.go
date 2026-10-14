@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/DaniDeer/go-codex/api/events"
+	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/stats"
 )
 
@@ -88,6 +89,64 @@ func TestServeSubscribers_CapabilitiesSetsQoS(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("want RecordCapabilityApplied(topic, \"QoS\"), got %v", obs.applied)
+	}
+}
+
+// TestServeSubscribers_FormatOverride is `deep-dive-bug-hunt`'s api/events
+// follow-up regression test for the `SubscribeOptions.Formats` asymmetry
+// (D-0010's own named deferred item): proves a per-channel
+// `SubscribeOptions.Formats` override is now honored on the
+// `ServeSubscribers` path too — mirrors
+// `TestClientSubscribe_FormatOverride`'s identical proof for the
+// `transport.Subscribe` (ports.Pattern-binding) path, which already
+// worked before this fix.
+func TestServeSubscribers_FormatOverride(t *testing.T) {
+	client := &mockClient{token: newCompletedToken(nil)}
+	ev := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	caller := newCaller(client, ev)
+
+	callCount := 0
+	jsonFmt := format.JSON(sensorCodec)
+	overrideFmt := format.NewTyped(sensorCodec,
+		func(r sensorReading) ([]byte, error) { return jsonFmt.Marshal(r) },
+		func(b []byte) (sensorReading, error) {
+			callCount++
+			return jsonFmt.Unmarshal(b)
+		},
+		"application/x-custom",
+	)
+
+	done := make(chan struct{})
+	ch := events.NewChannel[sensorReading]("sensors/format-override", sensorCodec)
+	sub := ch.WithSubscribe(events.Subscribe{}).
+		WithHandler(func(_ context.Context, _ sensorReading) error {
+			close(done)
+			return nil
+		}).
+		WithOptions(SubscribeOptions{Formats: []format.Format[sensorReading]{overrideFmt}})
+
+	if err := sub.Register(ev); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	go func() { _ = caller.ServeSubscribers(ctx) }()
+
+	payload, _ := jsonFmt.Marshal(sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1})
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for client.subscribedHandlerSnapshot() == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for the subscriber's handler to be registered")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	handler := client.subscribedHandlerSnapshot()
+	handler(client, &mockMessage{topic: "sensors/format-override", payload: payload})
+	<-done
+
+	if callCount != 1 {
+		t.Errorf("want override format's Unmarshal called once, got %d", callCount)
 	}
 }
 

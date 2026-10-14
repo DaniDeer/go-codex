@@ -9,6 +9,7 @@ import (
 
 	"github.com/DaniDeer/go-codex/api/events"
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 	pahomqtt5 "github.com/eclipse/paho.golang/paho"
@@ -219,6 +220,58 @@ func TestServeSubscribers_HandlerOpts_QoSDispatch(t *testing.T) {
 	}
 	if got := client.subscribed[0].Subscriptions[0].QoS; got != 2 {
 		t.Errorf("want QoS 2 from HandlerOpts dispatch, got %d", got)
+	}
+}
+
+// TestServeSubscribers_FormatOverride is `deep-dive-bug-hunt`'s api/events
+// follow-up regression test for the `SubscribeOptions.Formats` asymmetry
+// (D-0010's own named deferred item): proves a per-channel
+// `SubscribeOptions.Formats` override is now honored on the
+// `ServeSubscribers` path too — mirrors
+// `TestClientSubscribe_FormatOverride`'s identical proof for the
+// `transport.Subscribe` (ports.Pattern-binding) path, which already
+// worked before this fix.
+func TestServeSubscribers_FormatOverride(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+	evtClient := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+
+	callCount := 0
+	jsonFmt := format.JSON(sensorCodec)
+	overrideFmt := format.NewTyped(sensorCodec,
+		func(r sensorReading) ([]byte, error) { return jsonFmt.Marshal(r) },
+		func(b []byte) (sensorReading, error) {
+			callCount++
+			return jsonFmt.Unmarshal(b)
+		},
+		"application/x-custom",
+	)
+
+	done := make(chan struct{})
+	ch := events.NewChannel[sensorReading]("sensors/format-override", sensorCodec)
+	sub := ch.WithSubscribe(events.Subscribe{}).
+		WithHandler(func(_ context.Context, _ sensorReading) error {
+			close(done)
+			return nil
+		}).
+		WithOptions(SubscribeOptions{Formats: []format.Format[sensorReading]{overrideFmt}})
+
+	if err := sub.Register(evtClient); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	caller := newCaller(client, router, evtClient)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	go func() { _ = caller.ServeSubscribers(ctx) }()
+
+	router.waitHandler("sensors/format-override")
+	payload, _ := jsonFmt.Marshal(sensorReading{SensorID: "f47ac10b-58cc-4372-a567-0e02b2c3d479", Value: 1})
+	router.dispatch("sensors/format-override", &pahomqtt5.Publish{Topic: "sensors/format-override", Payload: payload})
+	<-done
+
+	if callCount != 1 {
+		t.Errorf("want override format's Unmarshal called once, got %d", callCount)
 	}
 }
 

@@ -182,17 +182,22 @@ func (c *caller) serveOneEntry(ctx context.Context, filter string, qos byte, opt
 	// `fnVal = wrapHandlerGeneralReflect(fnVal, implementations)` timing
 	// (Phase 3 case 6's per-message-re-wrap fix).
 	wrappedFn := wrapHandlerGeneralReflect(info.handlerFn, info.implementations)
-	// formatsZero: no call-time format override mechanism exists on this
-	// path (SubscribeOptions has no Formats field) — identical to this
-	// path's pre-existing behavior.
-	formatsZero := reflect.Zero(info.decodeMergedMethod.Type().In(2))
+	// formatsOverride resolves opts.Formats (previously always the zero
+	// value — SubscribeOptions had no Formats field at all, closed by
+	// `deep-dive-bug-hunt`'s api/events follow-up) against the SAME
+	// decodeMergedMethod variadic slice type `transport.Subscribe`'s own
+	// `resolveFormatsOverride` call already resolves against.
+	formatsOverride, formatsErr := resolveFormatsOverride(opts.Formats, info.decodeMergedMethod.Type().In(2))
+	if formatsErr != nil {
+		return formatsErr
+	}
 
 	// subscribeDispatchCore is the ONE shared reflect-based dispatch core
 	// (Phase 4 events/reqreply family, Workstream A) — also used by
 	// `transport.go`'s [(*transport).Subscribe] (the ports.Pattern-
 	// binding path). See its own doc comment for the full unification
 	// rationale.
-	handler := subscribeDispatchCore(ctx, c.client, obs, info, wrappedFn, formatsZero, opts.UserPropertyParams, opts.OnError)
+	handler := subscribeDispatchCore(ctx, c.client, obs, info, wrappedFn, formatsOverride, opts.UserPropertyParams, opts.OnError)
 	c.router.RegisterHandler(filter, handler)
 
 	_, err := c.client.Subscribe(ctx, &pahomqtt5.Subscribe{

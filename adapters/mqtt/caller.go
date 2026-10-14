@@ -463,10 +463,15 @@ func subscribeEntryReflect(ctx context.Context, client pahomqtt.Client, entry ev
 		wrapped = fnVal.Call([]reflect.Value{wrapped})[0]
 	}
 
-	// formatsZero: no call-time format override mechanism exists on this
-	// path (SubscribeOptions has no Formats field) — identical to this
-	// path's pre-existing behavior.
-	formatsZero := reflect.Zero(info.decodeMergedMethod.Type().In(2))
+	// formatsOverride resolves opts.Formats (previously always the zero
+	// value — SubscribeOptions had no Formats field at all, closed by
+	// `deep-dive-bug-hunt`'s api/events follow-up) against the SAME
+	// decodeMergedMethod variadic slice type `transport.Subscribe`'s own
+	// `resolveFormatsOverride` call already resolves against.
+	formatsOverride, formatsErr := resolveFormatsOverride(opts.Formats, info.decodeMergedMethod.Type().In(2))
+	if formatsErr != nil {
+		return formatsErr
+	}
 
 	filter := opts.TopicFilter
 	if filter == "" {
@@ -478,7 +483,7 @@ func subscribeEntryReflect(ctx context.Context, client pahomqtt.Client, entry ev
 	// `transport.go`'s [(*transport).Subscribe] (the ports.Pattern-
 	// binding path). See its own doc comment for the full unification
 	// rationale.
-	handler := subscribeDispatchCore(ctx, client, obs, info, wrapped, formatsZero, opts.OnError)
+	handler := subscribeDispatchCore(ctx, client, obs, info, wrapped, formatsOverride, opts.OnError)
 
 	token := client.Subscribe(filter, wire.QoS, handler)
 	token.Wait()

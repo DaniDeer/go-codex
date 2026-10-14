@@ -143,6 +143,17 @@ type SubscribeOptions struct {
 	// [stats.CapabilityObserver.RecordCapabilityApplied] when Observer
 	// implements it.
 	Capabilities []Capability
+
+	// Formats overrides the channel's declared subscribe format(s) for
+	// THIS ServeSubscribers call only — the [events.ClientSubscribeOptions.Formats]
+	// override mechanism's `Client.Attach`/`ServeSubscribers` counterpart
+	// (previously only reachable via `transport.Subscribe`, the
+	// ports.Pattern-binding path — closed, `deep-dive-bug-hunt` api/events
+	// follow-up). Dynamic type must be []format.Format[T] for the
+	// channel's own T. nil means "no override," falling back to
+	// handle.EffectiveSubscribeFormats' own declared-format resolution,
+	// identical to this path's pre-existing behavior.
+	Formats any
 }
 
 // PublishOptions configures [publish]/[publishHandle]. Generic over T so

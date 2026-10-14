@@ -158,6 +158,18 @@ type SubscribeOptions struct {
 	// [stats.CapabilityObserver.RecordCapabilityApplied] when Observer
 	// implements it.
 	Capabilities []Capability
+
+	// Formats overrides the channel's declared subscribe format(s) for
+	// THIS call only — the ports.Pattern-binding `transport.Subscribe`
+	// path's `events.ClientSubscribeOptions.Formats` override
+	// mechanism's `Attach`/internal subscribe-path counterpart
+	// (previously only reachable via `transport.Subscribe` — closed,
+	// `deep-dive-bug-hunt` api/events follow-up, mirrors adapters/mqtt5's
+	// identical fix). Dynamic type must be []format.Format[T] for the
+	// channel's own T. nil means "no override," falling back to the
+	// channel's own declared-format resolution, identical to this path's
+	// pre-existing behavior.
+	Formats any
 }
 
 // MessageFromContext retrieves the [pahomqtt.Message] stored in ctx by the
