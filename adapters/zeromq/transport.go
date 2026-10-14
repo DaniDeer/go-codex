@@ -507,6 +507,30 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 			continue // topic prefix subscription received a non-matching topic — expected, not an error
 		}
 
+		// CORRECTED (Phase 4 events/reqreply family, Workstream C's
+		// parity fix): this ports.Pattern-binding reflection path
+		// previously skipped ValidateTopic/ValidateTopicVars entirely —
+		// a confirmed gap relative to ServeSubscribers'
+		// (*subscriberRoute).processMessage, which has always run both
+		// before decode. A channel declared with WithTopicCodec/
+		// WithTopicConstraints or a TopicParam codec that is NOT also a
+		// merge field would have its constraint silently skipped on this
+		// path (decode-time merge-field validation via
+		// DecodeMergedWithFormats only covers topic params that are ALSO
+		// merge fields, not every declared TopicParam).
+		if err := callErrMethod(handleVal, "ValidateTopic", gotTopic); err != nil {
+			stats.ReportErrors(obs, "topic", err)
+			obs.RecordSubscribe(gotTopic, false, time.Since(start))
+			dispatchFailure(KindDecode, gotTopic, payload, err)
+			continue
+		}
+		if err := callErrMethod(handleVal, "ValidateTopicVars", vars); err != nil {
+			stats.ReportErrors(obs, "topic_var", err)
+			obs.RecordSubscribe(gotTopic, false, time.Since(start))
+			dispatchFailure(KindDecode, gotTopic, payload, err)
+			continue
+		}
+
 		decodeResults := decodeMergedMethod.CallSlice([]reflect.Value{reflect.ValueOf(payload), reflect.ValueOf(vars), formatsOverride})
 		if decErr, _ := decodeResults[1].Interface().(error); decErr != nil {
 			stats.ReportErrors(obs, "payload", decErr)
@@ -532,6 +556,21 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 			}
 		}
 
+		// EnsureDispositionBox is called unconditionally, PER MESSAGE (not
+		// once before the loop, unlike ctxVal above — a shared box across
+		// every message would let one message's SetDisposition call leak
+		// into another's), at zero cost to adapters/callers that never
+		// call SetDisposition — brings this ports.Pattern-binding
+		// reflection path to parity with ServeSubscribers'/
+		// (*subscriberRoute).processMessage's pre-existing Disposition
+		// tracking (Phase 4 events/reqreply family, Workstream C's parity
+		// fix; zeromq PUB/SUB has no acknowledgement concept of its own
+		// today, but the plumbing is proven end-to-end here for a future
+		// ack-capable adapter to consume without further core changes —
+		// see docs/design/d-0006-protocol-native-capabilities.md's §8).
+		msgCtx := stats.EnsureDispositionBox(ctx)
+		msgCtxVal := reflect.ValueOf(msgCtx)
+
 		// Codec-backed middleware dispatch (SubscribeBoundMW and bundled
 		// .Use()) — SAME pre-handler dispatch point the security
 		// Implementations check just ran at. zeromq has no property
@@ -544,7 +583,7 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 		// gate).
 		if middlewareHandlersLen > 0 {
 			mwResults := dispatchSubscribeMiddlewareMethod.Call([]reflect.Value{
-				reflect.ValueOf(ctx), valuePtr, reflect.ValueOf(vars), reflect.Zero(reflect.TypeOf(map[string]string(nil))),
+				msgCtxVal, valuePtr, reflect.ValueOf(vars), reflect.Zero(reflect.TypeOf(map[string]string(nil))),
 			})
 			outs, _ := mwResults[0].Interface().([]any)
 			if mwErr, _ := mwResults[1].Interface().(error); mwErr != nil {
@@ -573,8 +612,12 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 			}
 		}
 
-		fnResults := fnVal.Call([]reflect.Value{ctxVal, valuePtr.Elem()})
+		fnResults := fnVal.Call([]reflect.Value{msgCtxVal, valuePtr.Elem()})
 		handlerErr, _ := fnResults[0].Interface().(error)
+		disposition := stats.ResolveDisposition(msgCtx, handlerErr)
+		if dispObs, ok := obs.(stats.DispositionObserver); ok {
+			dispObs.RecordDisposition(gotTopic, disposition)
+		}
 		if handlerErr == nil {
 			obs.RecordSubscribe(gotTopic, true, time.Since(start))
 			continue

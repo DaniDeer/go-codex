@@ -3069,9 +3069,90 @@ suite (157 tests) passes unchanged plus all 4 new tests; whole-repo
 check` (staticcheck + gosec + fmt) clean.
 
 **Remaining in Workstream B**: none — mqtt v3 has no reqreply surface
-(events-only adapter), so Workstream B is now fully complete. Workstream
-C (`adapters/zeromq`) remains the only entirely-unstarted piece of the
-events/reqreply family.
+(events-only adapter), so Workstream B is now fully complete.
+
+#### Phase 4 progress: events/reqreply family, Workstream C (`adapters/zeromq`), events side — parity fix (not a literal merge)
+
+**Status: DONE for Subscribe's parity gaps; literal merge NOT performed
+(documented, deliberate choice, see rationale below); Publish and
+reqreply sides of Workstream C remain entirely unstarted.**
+
+**Investigated** `transport.go`'s `(*transport).Subscribe` (the
+ports.Pattern-binding path — a BLOCKING RECEIVE LOOP, architecturally
+different from mqtt5/mqtt v3's callback-registration model, since ZeroMQ
+SUB sockets require a dedicated polling loop) side by side with
+`serve_subscribers.go`'s `(*subscriberRoute).processMessage` (the
+ServeSubscribers/Client.Attach path, which already dispatches via a
+per-route, per-message method — closer in shape to mqtt5/v3's dispatch
+cores than `transport.Subscribe`'s inline loop body). Found
+`processMessage` is already the superset — it has topic-var merge,
+Disposition tracking, AND `ValidateTopic`/`ValidateTopicVars` calls
+`transport.Subscribe` lacked:
+
+| Feature | `transport.Subscribe` (before fix) | `processMessage` |
+|---|---|---|
+| Topic-var merge | yes | yes |
+| Disposition tracking | **no** | yes |
+| `ValidateTopic`/`ValidateTopicVars` | **no** | yes |
+| Formats-override support | yes (`ClientSubscribeOptions.Formats`) | no (`SubscribeOptions[T]` has no Formats field — same deliberately-unfixed asymmetry mqtt5/mqtt v3 flagged) |
+
+`ValidateTopic`/`ValidateTopicVars` is a genuinely new finding beyond the
+topic-var/Disposition shape prior Workstreams found: a channel declared
+with `WithTopicCodec`/`WithTopicConstraints` (client-level) or a
+per-variable `TopicParam` codec constraint was silently unenforced
+against RECEIVED concrete topics on `transport.Subscribe`'s path — decode-
+time merge-field validation only covers topic params that are ALSO merge
+fields, not every declared constraint.
+
+**Fix — targeted parity, not a literal merge.** Unlike Workstreams A/B
+(where the two reflect paths shared the same reflect.Value-driven
+per-message-closure shape and could be merged into one function), this
+round deliberately applies ONLY the "add parity" fixes directly to
+`transport.Subscribe`'s existing body — adding `ValidateTopic`/
+`ValidateTopicVars` calls (mirroring `processMessage`'s placement, before
+decode) and per-message `stats.EnsureDispositionBox`/`ResolveDisposition`/
+`RecordDisposition` (mirroring `processMessage`'s placement, around the
+handler call) — rather than attempting to force `transport.Subscribe`'s
+loop body through `(*subscriberRoute).processMessage` directly. Rationale:
+`transport.Subscribe`'s own setup (implementation-shape validation,
+general-purpose wrap composition, requirement-coverage check) uses a
+DIFFERENT general-wrap mechanism and a DIFFERENT `SubscribeOptions`
+source than `buildSubscriberRoute`'s (`ClientSubscribeOptions` call-time
+param vs. `SubscribeOptions[T]`'s declared `HandlerOpts`) — reconciling
+these into one shared constructor is a larger, higher-risk undertaking
+than the targeted fix, and mirrors mqtt5's OWN original case 6 caveat
+("behavioral parity... judged too risky given generic-vs-reflect typing
+differences... not a literal single merged function") — the same
+precedented, lower-risk choice, made explicit here rather than silently
+deferred.
+
+One subtlety handled carefully: `EnsureDispositionBox` must be called
+PER MESSAGE, not once before the loop (unlike the loop's other
+pre-computed, reused-across-messages values) — a shared box across every
+message would let one message's `SetDisposition` call leak into
+another's.
+
+Added 2 new regression tests
+(`adapters/zeromq/subscribe_dispatch_parity_test.go`):
+`TestAttach_ClientSubscribe_ValidateTopic_NowSupported` (a topic
+constraint that passes the declared template but rejects a specific
+concrete delivered topic, isolating receive-time validation from
+declare-time validation) and
+`TestAttach_ClientSubscribe_Disposition_NowSupported` (mirrors mqtt5's/
+mqtt v3's identically-named tests). Both verified to actually FAIL
+against the pre-fix code before restoring the fix, confirming they are
+meaningful regression guards, not false positives.
+
+Verified: `adapters/zeromq`'s full suite unchanged plus the 2 new tests;
+whole-repo `go build`/`go test` (zero failures)/`go vet`/`gofmt -l`
+clean; `just check` (staticcheck + gosec + fmt) clean.
+
+**Remaining in Workstream C**: Publish's reflect-side (not yet audited
+for the same shape of divergence this round found on Subscribe) and the
+full reqreply 4-socket-variant setup/dispatch-one split (point 3 of this
+family's design — the largest remaining piece of the entire events/
+reqreply family, covering `serverTransport.Serve`/
+`routerServerTransport.Serve` and their client-side counterparts).
 
 ### Phase 5 — Conformance tests and documentation
 
