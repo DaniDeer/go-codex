@@ -213,6 +213,31 @@ func (t *transport) Publish(ctx context.Context, pubAny, msgAny any, optsVariadi
 		return err
 	}
 
+	// Publish-side Tier 1 coverage check + [events.ApplyCapabilities] —
+	// CORRECTED (Phase 4 events/reqreply family, Workstream A step 6):
+	// previously ran LAST, right before transmit, AFTER property-var
+	// merge/middleware dispatch/security credential validation had
+	// already executed — a confirmed ordering divergence from [publish][T]
+	// (the generic path), which checks coverage FIRST, before any of
+	// those side effects run. Moved here, immediately after
+	// implementation-shape validation, to match [publish][T]'s exact
+	// position: a declared-but-unmet [events.CapabilityRequirement] now
+	// fails BEFORE any middleware Fn or security credential check runs
+	// on this path too, mirroring the generic path's behavior exactly.
+	// Also corrected: uses the RAW `topic` (not the post-BuildTopic
+	// `finalTopic`) for both calls' observability labels, matching
+	// [publish][T]'s identical `handle.Topic` choice — these only differ
+	// when a channel's topic vars resolve to a different string.
+	contentType, declaredUserProps, caps := publishHandlerOptsFields(elem.FieldByName("HandlerOpts"))
+	if requirements, ok := elem.FieldByName("Requirements").Interface().([]events.CapabilityRequirement); ok {
+		if covErr := events.VerifyCapabilityCoverage(topic, requirements, caps); covErr != nil {
+			obs.RecordPublish(topic, false, time.Since(start))
+			return covErr
+		}
+	}
+	var wire WireAttributes
+	events.ApplyCapabilities(caps, &wire, obs, topic)
+
 	// valuePtr is addressable so a security credential Fn can mutate the
 	// outgoing message in-place (in-payload credential embedding) — see
 	// [runPublishSecurityImpls][T]'s own doc comment.
@@ -296,7 +321,6 @@ func (t *transport) Publish(ctx context.Context, pubAny, msgAny any, optsVariadi
 	// encoding, so any *msg mutation (in-payload credential embedding) is
 	// captured by the encode step below — mirrors [publish][T]'s own
 	// ordering exactly.
-	contentType, declaredUserProps, caps := publishHandlerOptsFields(elem.FieldByName("HandlerOpts"))
 	secReqs := resolveSecReqsReflect(elem, "Publish")
 	userProps := append([]UserProperty(nil), declaredUserProps...)
 	for k, v := range propertyVars {
@@ -345,27 +369,6 @@ func (t *transport) Publish(ctx context.Context, pubAny, msgAny any, optsVariadi
 			return err
 		}
 	}
-
-	// Publish-side Tier 1 coverage check — confirmed, PREVIOUSLY-MISSING
-	// gap: a channel's own declared [events.RequireQoS]/[events.RequireRetained]
-	// (handle.Requirements) was verified on the SUBSCRIBE side
-	// (ServeSubscribers/subscribeEntryReflect) but NEVER on the PUBLISH
-	// side, across all 3 event adapters — a publish call supplying ZERO
-	// matching Capability silently succeeded despite the channel's own
-	// declared requirement. Mirrors the subscribe side's identical
-	// VerifyCapabilityCoverage call exactly.
-	if requirements, ok := elem.FieldByName("Requirements").Interface().([]events.CapabilityRequirement); ok {
-		if covErr := events.VerifyCapabilityCoverage(finalTopic, requirements, caps); covErr != nil {
-			obs.RecordPublish(finalTopic, false, time.Since(start))
-			return covErr
-		}
-	}
-
-	// docs/design/d-0006-protocol-native-capabilities.md's Phase 4c: a
-	// declared [Publisher.WithOptions]([PublishOptions][T]{Capabilities:
-	// ...}) value is resolved and applied via [events.ApplyCapabilities].
-	var wire WireAttributes
-	events.ApplyCapabilities(caps, &wire, obs, finalTopic)
 
 	props := &pahomqtt5.PublishProperties{}
 	if contentType != "" {

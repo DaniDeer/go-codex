@@ -2944,11 +2944,63 @@ instantiation).
   (staticcheck + gosec + fmt) all clean — confirmed no new dead code was
   left behind by `makeErasedSubscribeMessageHandler`'s deletion, per the
   lesson from this session's earlier REST/SSE dead-code cleanup round.
-- **Explicitly out of scope for this round, remaining in Workstream A**:
-  Publish's 2-way consolidation (step 6), the reqreply Serve-side
-  setup-core extraction (step 7), and conformance tests seeding Phase 5
-  for this family specifically (step 8). Workstreams B (`adapters/mqtt`
-  v3) and C (`adapters/zeromq`) are untouched.
+
+**Step 6 — Publish confirmation found a real ordering divergence, not
+just a confirmation.** Per this design's own point 1, Publish's
+reflect-side duplication was expected to already be "effectively 1
+implementation per adapter structurally" (no `ServePublishers`-equivalent
+third entry point) — true: both `transport.Publish`'s coverage check and
+`events.ApplyCapabilities` call were already present and already one
+function, not duplicated. But re-reading `transport.Publish` (reflect)
+side by side with `publish[T]` (generic) found their CALL SEQUENCE had
+silently diverged:
+
+- **Generic `publish[T]`'s order**: coverage check
+  (`VerifyCapabilityCoverage`) → `ApplyCapabilities` → implementation-
+  shape validation → property-var merge → middleware dispatch →
+  `BuildTopic` → security credential dispatch/validate → transmit. The
+  coverage check runs FIRST, before any middleware/security side effects.
+- **Reflect `transport.Publish`'s order (before this fix)**:
+  implementation-shape validation → property-var merge → middleware
+  dispatch → `BuildTopic` → security credential dispatch/validate →
+  coverage check → `ApplyCapabilities` → transmit. The coverage check ran
+  LAST, AFTER middleware dispatch and security credential validation had
+  already executed.
+- **Consequence**: a caller relying on "a capability-coverage failure
+  means nothing else ran" (true and reasonable on the generic path) was
+  silently wrong on the reflect path — a `PublishBoundMW` Fn's side
+  effects (and any security credential check) would run BEFORE the
+  declared-but-unmet requirement was ever detected.
+- **Second, smaller divergence found alongside it**: the generic path's
+  coverage check and `ApplyCapabilities` call both use `handle.Topic`
+  (the raw, undecorated channel topic); the reflect path used
+  `finalTopic` (the resolved, post-topic-vars topic) for the same calls
+  instead — only observable when a channel's topic vars actually resolve
+  to a different string, but a real inconsistency in the observability
+  labels passed to `RecordCapabilityApplied`/span naming.
+
+This is the same class of finding Subscribe needed case 6's
+reconciliation for — silent cross-path sequencing drift, not
+duplication. **Fix**: reordered `transport.Publish` to match `publish[T]`'s
+exact position (coverage check + `ApplyCapabilities`, using the raw
+`topic`, moved to run immediately after implementation-shape validation,
+before property merge/middleware/security run at all) — a mechanical,
+behavior-aligning reorder, not a new mechanism. Added 2 new regression
+tests (`publish_dispatch_order_test.go`) exercising `Client.Publish`
+(the reflect path, through `Client.Attach`): one proving a
+`PublishBoundMW` Fn does NOT run when coverage fails (verified this test
+actually fails against the pre-fix ordering, confirming it's meaningful,
+not a false positive), one confirming the fix is not a regression
+(middleware still runs and the message still publishes when a matching
+Capability is supplied). Verified: `adapters/mqtt5`'s full suite
+unchanged plus the 2 new tests; whole-repo `go build`/`go test` (zero
+failures)/`go vet`/`gofmt -l` clean; `just check` (staticcheck + gosec +
+fmt) clean.
+
+- **Remaining in Workstream A**: the reqreply Serve-side setup-core
+  extraction (step 7) and conformance tests seeding Phase 5 for this
+  family specifically (step 8). Workstreams B (`adapters/mqtt` v3) and C
+  (`adapters/zeromq`) are untouched.
 
 ### Phase 5 — Conformance tests and documentation
 
