@@ -49,6 +49,9 @@ Planning items happen first (roadmap doc); the rest only after approval.
       compile-time assertion in `stats/observer_test.go`
 - [ ] `Example...()` functions for key constructors (deterministic)
 - [ ] `go test -race ./adapters/<name>/` clean
+- [ ] Wired into (or extended, if new) the matching API-defined
+      conformance-test suite — `api/rest/resttest`, `api/events/eventstest`,
+      `api/reqreply/reqreplytest`, or `ports/portstest` (Step 5h)
 
 ## Documentation surfaces
 

@@ -1,9 +1,37 @@
-# Adapter Integration Architecture: a Unified Roadmap
+# D-0010 — Adapter Integration Architecture
 
-## Status
+> **Status:** Implemented — architectural foundation. All 5 phases
+> (audit, design, proof-of-concept, implementation, conformance tests)
+> are shipped across `adapters/internal/restdispatch` (REST+SSE family,
+> `adapters/nethttp`/`adapters/chi`), per-adapter dispatch-core
+> consolidation (events/reqreply family, `adapters/mqtt`/`adapters/mqtt5`/
+> `adapters/zeromq`), and four new API-defined conformance-test packages
+> (`api/rest/resttest`, `api/events/eventstest`,
+> `api/reqreply/reqreplytest`, `ports/portstest`) — the mechanism this
+> doc's own Round 3 decided on for "a shared, importable `_test`-only
+> helper package per API family," now shipped for all four families this
+> roadmap scoped. Promoted from `docs/roadmap/adapter-integration-architecture.md`
+> per `docs/design/index.md`'s own graduation bar: fully shipped AND
+> establishes a pattern multiple `api/*`/`ports` packages are expected to
+> follow.
+>
+> A handful of items remain **intentionally deferred as future work**
+> (not accidental gaps — each is named and reasoned about in its own
+> Phase 4/5 progress subsection below): MQTT5 User Properties folding
+> into the sealed `Capability` mechanism; a literal single-function
+> 3-way Subscribe dispatch-core merge for `adapters/mqtt5` (kept at
+> "3 → 2, not 3 → 1" since the 3rd, compile-time-generic path cannot
+> mechanically share code with the two reflect-based paths);
+> `SubscribeOptions.Formats`' missing-field asymmetry on the
+> `ServeSubscribers` path; `adapters/zeromq`'s exclusion from the
+> events/reqreply conformance packages (its mock socket is one-way/
+> scripted, not a live loopback broker — a sandboxed-environment
+> limitation, not a design gap); and `ports.SinkAdapter`/`ports.IOAdapter`
+> conformance scenarios (only `SourceAdapter` shipped this round).
 
-**In progress — audit, design, and proof-of-concept complete; implementation
-substantially underway.** Phase 1's full 14-adapter audit is done (both
+## Status detail (full history, preserved from the roadmap)
+
+Phase 1's full 14-adapter audit is done (both
 matrices below). Phase 2's capability-semantics and dispatch-core design is
 done for the REST, SSE, and events/reqreply families. Phase 3's proof of
 concept is fully done (7/7 cases plus the case-6 follow-up). Phase 4
@@ -45,10 +73,9 @@ confirmed; but a binding-lifecycle conformance package IS real,
 achievable work) — `ports/portstest` (1 scenario: a `SourceAdapter`
 round trip) is wired into `adapters/sql` and `adapters/file`. All four
 families this roadmap scoped (REST, events, reqreply, ports) now have
-their own conformance package — this is the last family-level question
-Phase 5 had open.
-This status line is updated as major increments land —
-see the per-phase sections below for full detail.
+their own conformance package — this was the last family-level question
+Phase 5 had open, now resolved.
+See the per-phase sections below for full detail.
 
 This doc replaces and merges two earlier drafts:
 
@@ -241,10 +268,10 @@ internal translation of that binding.
 | Pattern | Dispatch paths confirmed | Converged? |
 |---|---|---|
 | `api/rest` (`adapters/nethttp`), standard HTTP/SSE surface | ONE — `serve.go`'s `ServeOne`/`Serve` reflects (`reflect.Value.Call`/`MethodByName`) directly into `RouteHandle[Req,Resp]`'s own generic, type-safe methods (`ApplyMergeFields`, `DecodeMerged`, `EncodeResponseMergeFields`, `ErrorStatusFor`, etc.) — confirmed via its own doc comment: "runs the SAME pipeline... invoked via `reflect.Value.Call`." **Superseded by the Phase 1 audit**: this holds only for this surface — see the "Correction to Confirmed asymmetry table" under "Phase 1 audit results" below for the full, corrected picture once `ports`-binding adapters and `adapters/chi` are included. | **YES, for this surface only** — see correction below |
-| `api/events` Subscribe (`adapters/mqtt`/`mqtt5`/`zeromq`) | THREE, confirmed directly from `d-0007`'s own regression writeup | **NO** — confirmed broken, since patched for the specific gap that surfaced it, but the 3-implementation structure itself was never consolidated |
-| `api/events` Publish | Dispatch-*implementation*-count still not directly audited — `adapters/mqtt5/transport_dispatch.go`'s own doc comment confirms some ad hoc convergence already happened ("the SUBSCRIBE-side equivalents ALREADY EXIST in caller.go... this file reuses them directly rather than duplicating"), but the exact count/location for Publish specifically remains unconfirmed on that axis. A *related but distinct* axis WAS confirmed by the later "Preliminary evidence" pass: capability-coverage checking on the publish path was missing until fixed (a location bug, not a count), per `adapters/mqtt5/transport.go:344-349`. | **PARTIALLY KNOWN** — implementation count still open; a capability-check-location gap on publish is confirmed |
-| `api/reqreply` Call/Serve (`adapters/mqtt5`/`zeromq`) | **CONFIRMED by the later "Preliminary evidence" pass** (see below) — structurally separate files from events' own dispatch (`reqreply_transport.go` vs. `transport.go`) per adapter, and NOT the same shape as events' Subscribe: 6 independent capability-coverage-check call sites (mqtt5 Serve+Call, zeromq plain-Serve+ROUTER-Serve+plain-Call+DEALER-Call), wider than events' 3. | **NO — confirmed, and worse than events' Subscribe shape** (6 vs. 3 call sites) |
-| All other adapters (`nethttp`'s non-REST uses, `chi`, `websocket`, `redis`, `file`, `sql`, `mcpgo`, `mcprest`, `openai`, `templ`) | Not yet audited under this lens at all | **UNKNOWN — now in scope** (broadened from Doc B's 3-adapter limit; see Phase 1) |
+| `api/events` Subscribe (`adapters/mqtt`/`mqtt5`/`zeromq`) | THREE, confirmed directly from `d-0007`'s own regression writeup | **NO at the time this row was written** — **superseded by Phase 3 case 6 and Phase 4's Workstream A/B/C**: mqtt5 and mqtt v3 both merged their 2 reflect-based paths onto one shared `subscribeDispatchCore` (the 3rd, compile-time-generic path deliberately kept separate, "3 → 2, not 3 → 1" — see Phase 4's own writeup); zeromq received a targeted behavioral-parity fix rather than a literal merge (documented rationale: different general-wrap mechanisms). The 3-implementation STRUCTURE was consolidated where mechanically safe to do so, not left untouched. |
+| `api/events` Publish | Dispatch-*implementation*-count still not directly audited — `adapters/mqtt5/transport_dispatch.go`'s own doc comment confirms some ad hoc convergence already happened ("the SUBSCRIBE-side equivalents ALREADY EXIST in caller.go... this file reuses them directly rather than duplicating"), but the exact count/location for Publish specifically remains unconfirmed on that axis. A *related but distinct* axis WAS confirmed by the later "Preliminary evidence" pass: capability-coverage checking on the publish path was missing until fixed (a location bug, not a count), per `adapters/mqtt5/transport.go:344-349`. | **PARTIALLY KNOWN at the time this row was written** — **superseded by Phase 4's Workstream A/B/C Publish-ordering audit**: confirmed an IDENTICAL capability-coverage-ordering bug (checked last instead of first) existed in all 3 adapters' reflect Publish paths (mqtt5, mqtt v3, zeromq) and fixed all 3 — see each workstream's own "Publish ordering fix" writeup below. |
+| `api/reqreply` Call/Serve (`adapters/mqtt5`/`zeromq`) | **CONFIRMED by the later "Preliminary evidence" pass** (see below) — structurally separate files from events' own dispatch (`reqreply_transport.go` vs. `transport.go`) per adapter, and NOT the same shape as events' Subscribe: 6 independent capability-coverage-check call sites (mqtt5 Serve+Call, zeromq plain-Serve+ROUTER-Serve+plain-Call+DEALER-Call), wider than events' 3. | **NO at the time this row was written** — **superseded by Phase 4's reqreply server/client-side splits**: zeromq's reqreply server side (plain-Serve/ROUTER-Serve) was merged onto one shared `reqreplyServerSetupCore`/`reqreplyServerDispatchOne`; its client side (plain-Call/DEALER-Call) was merged onto one shared `reqreplyClientCallOne`; mqtt5's own (single-variant) reqreply side also received a setup-core extraction, for shape-consistency with zeromq's. |
+| All other adapters (`nethttp`'s non-REST uses, `chi`, `websocket`, `redis`, `file`, `sql`, `mcpgo`, `mcprest`, `openai`, `templ`) | Not yet audited under this lens at all | **UNKNOWN at the time this row was written** — **superseded by Phase 1's completed 14-adapter audit** (see "Phase 1 audit results" below for every adapter's own detailed findings) — most of these were found to have no duplication problem at all; `nethttp`'s `handlerFunc`/`chi` were confirmed to share REST's duplication shape and were consolidated in Phase 4 (see the REST family section). |
 
 ### Why `d-0008`'s Router is not at risk of this regression class
 
@@ -3983,14 +4010,22 @@ REST needed (and received) a smaller shared dispatch-core view
 mechanically achievable across the reflected entry points within each
 adapter (though not across the compile-time-generic/reflected boundary,
 confirmed not worth forcing — see Phase 4's per-workstream "3 → 2, not
-3 → 1" notes). Phase 4 implementation is now substantially complete for
-REST, SSE, and events/reqreply (see "Phase 4 — Implementation" for current
-status); Phase 5's conformance-test and documentation-sync work is only
-just beginning.
+3 → 1" notes). Phase 4 implementation is now fully complete for REST,
+SSE, and events/reqreply (see "Phase 4 — Implementation" for the full
+per-workstream writeups); Phase 5's conformance-test work is also
+substantially complete — all four in-scope families (REST, events,
+reqreply, ports) now have their own API-defined conformance-test
+package, each proving the shared mechanism works across multiple real,
+structurally-independent implementations, not just as a design.
 
 The desired result — a simple experience for API users and an equally
 clear, single-implementation extension point for adapter authors, without
 coupling declarations to protocols, accumulating unneeded abstraction
 layers, or letting one adapter's multiple entry points drift out of sync
-with each other again — has been substantially achieved for the REST, SSE,
-and events/reqreply families; remaining work is tracked per-phase above.
+with each other again — has been achieved for the REST, SSE, events,
+reqreply, and ports families this roadmap scoped. The handful of items
+still intentionally deferred as future work (not accidental gaps) are
+listed in each family's own Phase 4/5 progress subsection above — e.g.
+MQTT5 User Properties folding into the sealed Capability mechanism, the
+literal 3-way Subscribe dispatch-core merge, and conformance-suite
+expansion beyond each package's current scenario set.

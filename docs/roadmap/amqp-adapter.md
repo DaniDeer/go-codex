@@ -389,7 +389,8 @@ its OWN private `validateSecurityCredentials`, built directly around `pahomqtt5.
 with no extractor-interface abstraction — fine for mqtt5 alone, but AMQP would otherwise have to
 write a THIRD, independently-hand-rolled copy of the same format-validation logic (mirroring
 exactly the kind of "same thing reinvented per adapter" pattern
-`docs/roadmap/adapter-integration-architecture.md` already warns about in a related context).
+[D-0010 — Adapter Integration Architecture](../design/d-0010-adapter-integration-architecture.md)
+already warns about in a related context).
 
 **This roadmap now explicitly includes building that shared core as part of AMQP's OWN security
 design** — not deferred to a separate, generic-first roadmap with no concrete consumer to

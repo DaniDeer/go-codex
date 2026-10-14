@@ -446,6 +446,52 @@ adapter-local error types) is missing its public `api/*`-side alias — see
 the Six Mandatory Requirements' `plan-a-new-codex-feature` skill §1 for
 the exact rule and judgment call ("is this error useful to the user").
 
+## Step 5h — If your adapter duplicates ANOTHER adapter's dispatch logic within the SAME pattern family, extract to `adapters/internal/<family>dispatch` — and wire into/extend the matching conformance suite
+
+**Distinct from Step 5g above**: Step 5g governs mechanics shared ACROSS
+`api/rest`/`api/events`/`api/reqreply` (repo-root `internal/`). This step
+governs the narrower, more common case: your new adapter shares a
+construction-validation/per-request-dispatch pipeline with ANOTHER
+adapter of the SAME pattern family — e.g. a second REST-family adapter
+alongside `adapters/nethttp`/`adapters/chi`, or a third events/reqreply
+adapter alongside `adapters/mqtt`/`adapters/mqtt5`/`adapters/zeromq`.
+`docs/design/d-0010-adapter-integration-architecture.md` found and fixed
+exactly this duplication for REST (`adapters/nethttp`/`adapters/chi`
+independently reimplemented the same construction+dispatch pipeline) and
+for events/reqreply (mqtt/mqtt5/zeromq's Subscribe/Publish/Call/Serve
+dispatch, independently maintained per adapter).
+
+That shared mechanism belongs in `adapters/internal/<family>dispatch`
+(e.g. `adapters/internal/restdispatch`) — scoped under `adapters/internal/`
+(visible only to `adapters/*`), NOT repo-root `internal/` (reserved for
+mechanics shared ACROSS patterns, per Step 5g) — mirroring the existing
+`adapters/internal/httpsecurity`/`adapters/internal/restdispatch`
+precedent. Within one adapter family, prefer the established
+`<Family>SetupCore` (one-time, per-Serve/per-call validation) +
+`<Family>DispatchOne`/`CallOne` (per-message/per-call pipeline) split,
+parameterized by a small "sink"/"carrier" struct capturing the one
+genuine per-variant difference (e.g. `pathValues` for
+`(*http.Request).PathValue` vs. `chi.URLParam`; reply-framing for
+REQ/REP vs. ROUTER). Do NOT force a literal merge across the
+compile-time-generic/reflection-based boundary if one exists in the same
+family (confirmed not mechanically achievable — see that doc's own
+"3 → 2, not 3 → 1" notes); a behavioral-parity fix is an accepted
+alternative when a literal merge is genuinely unsafe.
+
+**Also wire your new adapter into (or extend) the matching API-defined
+conformance-test suite** — `api/rest/resttest`, `api/events/eventstest`,
+`api/reqreply/reqreplytest`, or `ports/portstest`, whichever matches the
+pattern(s) your adapter implements. Each exports canonical fixtures +
+`Assert*` functions an adapter author imports into their OWN `_test.go`
+file to prove conformance to the API contract, instead of hand-rolling ad
+hoc tests — see each package's own doc comment for its exact usage
+pattern and current scenario coverage. If your new adapter is the FIRST
+of its pattern family to exist (no conformance package yet), consider
+whether building one is warranted — see
+`docs/design/d-0010-adapter-integration-architecture.md`'s own package
+docs for the design this session established (shared assertion function,
+adapter supplies only the genuinely adapter-specific bridging pieces).
+
 ## Step 6 — Use the checklist
 
 Work through [references/checklist.md](references/checklist.md) — a
@@ -504,3 +550,5 @@ verification ritual. Track progress with todos, one per checklist block.
 - `docs/concepts/ports-and-adapters.md` — Step 5c's "no adapter-invented escape hatch" principle AND Step 5d's "convenience helpers belong in `api/*`" principle, user-facing framing
 - `docs/design/d-0006-protocol-native-capabilities.md` + `docs/concepts/ports-and-adapters.md` — Step 5e's MANDATORY sealed `Capability` mechanism and its "adapters as pure protocol shims" guardrail
 - `ports/pattern.go`, `ports/handle.go` — Pattern declaration + build machinery
+- `docs/design/d-0010-adapter-integration-architecture.md` — Step 5h's `adapters/internal/<family>dispatch` convention (`adapters/internal/restdispatch` worked example) and the API-defined conformance-test-suite mechanism
+- `api/rest/resttest`, `api/events/eventstest`, `api/reqreply/reqreplytest`, `ports/portstest` — the 4 existing conformance-test packages; import the one matching your new adapter's pattern(s) per Step 5h
