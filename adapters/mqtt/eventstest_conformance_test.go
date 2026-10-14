@@ -1,6 +1,7 @@
 package mqtt
 
 import (
+	"context"
 	"testing"
 
 	"github.com/DaniDeer/go-codex/api/events"
@@ -31,4 +32,40 @@ func TestEventstestConformance_SensorRoundTrip(t *testing.T) {
 			})
 		},
 	)
+}
+
+func TestEventstestConformance_TopicVarRoundTrip(t *testing.T) {
+	client := &mockClient{token: newCompletedToken(nil)}
+	evtClient := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	if err := evtClient.Attach(NewTransport(TransportOptions{Client: client})); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	eventstest.AssertTopicVarMergeRoundTrip(t, evtClient,
+		func() bool { return client.subscribedHandlerSnapshot() != nil },
+		func() {
+			h := client.subscribedHandlerSnapshot()
+			h(client, &mockMessage{
+				topic:   client.publishedTopicSnapshot(),
+				payload: client.publishedPayloadSnapshot(),
+			})
+		},
+	)
+}
+
+func TestEventstestConformance_CapabilityRejection(t *testing.T) {
+	client := &mockClient{token: newCompletedToken(nil)}
+	evtClient := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	if err := evtClient.Attach(NewTransport(TransportOptions{Client: client})); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	sub := eventstest.NewCapabilityRejectionChannel().WithSubscribe(events.Subscribe{}).
+		WithHandler(func(_ context.Context, _ eventstest.CapabilityRejectionReading) error { return nil })
+	if err := sub.Register(evtClient); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	err := evtClient.ServeSubscribers(context.Background())
+	eventstest.AssertCapabilityRejected(t, err)
 }

@@ -26,14 +26,17 @@ declared ErrorPattern mapping, capability-requirement rejection at
 construction time — which also covers "lifecycle" — and an observability
 hook), wired into both `adapters/nethttp` and `adapters/chi` as real,
 independent usage, all passing identically on both. The **events family**
-now also has its own conformance package, `api/events/eventstest` (1
-scenario: a publish/subscribe round trip), wired into `adapters/mqtt5`
-and `adapters/mqtt` (v3) — `adapters/zeromq` is explicitly excluded
-pending a live broker, since its mock socket is fundamentally one-way/
-scripted (same limitation Phase 3 case 4 already documented). The rest of
-Phase 5's "reusable adapter conformance tests for common semantics"
-scope — the same per-family conformance package for reqreply and ports,
-and a broader scenario taxonomy for events — remains for a future round.
+now also has its own conformance package, `api/events/eventstest` (3
+scenarios: publish/subscribe round trip, topic-var merge field,
+capability-requirement rejection), wired into `adapters/mqtt5` and
+`adapters/mqtt` (v3) — `adapters/zeromq` is explicitly excluded pending a
+live broker, since its mock socket is fundamentally one-way/scripted
+(same limitation Phase 3 case 4 already documented); a security/
+middleware rejection scenario is also explicitly deferred, having
+surfaced a genuine MQTT3-vs-MQTT5 User Properties asymmetry needing its
+own resolution first. The rest of Phase 5's "reusable adapter conformance
+tests for common semantics" scope — the same per-family conformance
+package for reqreply and ports — remains for a future round.
 This status line is updated as major increments land —
 see the per-phase sections below for full detail.
 
@@ -3602,9 +3605,28 @@ per-family conformance package — this is explicitly left for a future
 round. The events family now has its own conformance package (see below);
 reqreply does not yet.
 
+Two incidental fixes made during this work:
+- `gosec.config.json` gained a new G101 (hardcoded-credentials) path
+  exclusion for `api/rest/resttest/resttest.go` — its
+  `SecurityAPIKeyValue` test-fixture constant triggers gosec's heuristic
+  exactly like `examples/reqreply-api`'s two pre-existing G101 exclusions
+  do, for the same reason (a string constant that merely *looks*
+  credential-shaped, not an actual secret).
+- A hand-rolled string-slice-equality helper (used by
+  `AssertMiddlewareChainRoute`'s execution-order checks) was replaced
+  with the standard library's `slices.Equal` after gosec flagged a G602
+  (slice-index-out-of-range) false positive on the manual loop — using
+  the stdlib function is both simpler and avoids the false positive
+  entirely.
+
+Verified: new `TestResttestConformance_*` tests (all 7 scenarios) pass
+identically in both `adapters/nethttp` and `adapters/chi`; whole-repo
+`go build`/`go test` (zero failures)/`go vet`/`gofmt -l` clean; `just
+check` (staticcheck + gosec + fmt) clean after both incidental fixes.
+
 ### Phase 5 progress: events-family conformance package (`api/events/eventstest`)
 
-**Status: DONE (1 scenario, `adapters/mqtt5` + `adapters/mqtt` v3), with
+**Status: DONE (3 scenarios, `adapters/mqtt5` + `adapters/mqtt` v3), with
 `adapters/zeromq` explicitly excluded this round.** Investigated whether
 `api/rest/resttest`'s design transfers directly to events — it does NOT:
 unlike REST, where every adapter speaks a uniform `http.Handler` testable
@@ -3628,61 +3650,80 @@ into this package; its own existing
 remains its accepted conformance evidence until a live broker is
 available in this sandboxed environment.
 
-**Design**: new package `api/events/eventstest` exports a canonical
-`SensorReading` channel (deliberately reusing the SAME shape — SensorID/
-Value — already used identically, independently, across all three
-adapters' own test fixtures) on a namespaced topic
-(`eventstest/sensor/reading`, avoiding collision with any adapter's own
-test-fixture topics), and ONE assertion function:
-`AssertPublishSubscribeRoundTrip(t, client *events.Client, isReady func()
-bool, deliver func())`. The suite owns registering the subscriber,
-starting `ServeSubscribers`, calling the REAL `Client.Publish` encode
-path (not a hand-crafted payload — this proves Publish's real encode path
-reaches Subscribe's real decode path, not just one half), and asserting
-the decoded value matches exactly. The adapter supplies only the two
-genuinely adapter-specific bridging callbacks (`isReady` — poll until the
-mock broker's handler is registered; `deliver` — forward the real
-published bytes into the adapter's own mock-dispatch mechanism) —
-mirroring the same "take the one truly adapter-specific piece as an
-explicit parameter" pattern `api/rest/resttest`'s `ObservabilityRoute`
-established.
+**Design**: new package `api/events/eventstest` exports three canonical
+channels + matching assert functions:
+
+1. `NewSensorChannel`/`AssertPublishSubscribeRoundTrip` — a basic
+   publish/subscribe round trip. Reuses the SAME `SensorReading` shape
+   (SensorID/Value) already used identically, independently, across all
+   three adapters' own test fixtures, on a namespaced topic
+   (`eventstest/sensor/reading`, avoiding collision with any adapter's
+   own test-fixture topics). The suite owns registering the subscriber,
+   starting `ServeSubscribers`, calling the REAL `Client.Publish` encode
+   path (not a hand-crafted payload — this proves Publish's real encode
+   path reaches Subscribe's real decode path, not just one half), and
+   asserting the decoded value matches exactly.
+2. `NewTopicVarChannel`/`AssertTopicVarMergeRoundTrip` — a topic-var
+   merge field (`events.NewTopicParam`), proving the `{id}` topic segment
+   merges directly into the decoded value with no manual re-extraction.
+   Uses a SEPARATE type (`TopicVarReading`) rather than reusing
+   `SensorReading`, to avoid any ambiguity about whether a merge-supplied
+   field must also appear in the payload codec — `ID` is supplied SOLELY
+   by the topic template, never the payload, mirroring
+   `api/rest/resttest`'s own `PathParamReq` precedent. One real design
+   subtlety found while building this: `want.ID` must still be SET
+   before calling `Publish` (Publish's own topic-building step resolves
+   `{id}` from the SAME struct field via the merge getter) — only the
+   payload codec omits it; the field itself is not "subscribe-only."
+3. `NewCapabilityRejectionChannel`/`AssertCapabilityRejected` — declares
+   `events.RequireHWM`, whose own doc comment confirms it is "satisfiable
+   only by adapters/zeromq.HWM — no mqtt/mqtt5 equivalent exists" — the
+   same "foreign, unconditionally unsatisfiable capability" trick
+   `api/rest/resttest`'s `CapabilityRejectionRoute`/`rest.RequireQoS`
+   already used. Confirmed the exact call site
+   (`caller.go`'s `ServeSubscribers`, inside its per-entry loop, BEFORE
+   the blocking subscribe starts) — so `ServeSubscribers(ctx)` itself
+   returns the coverage error SYNCHRONOUSLY, a simpler assertion shape
+   than the round-trip scenarios (no `isReady`/`deliver` needed at all).
+
+The two round-trip assertion functions each take the SAME two genuinely
+adapter-specific bridging callbacks (`isReady` — poll until the mock
+broker's handler is registered; `deliver` — forward the real published
+bytes into the adapter's own mock-dispatch mechanism) — mirroring the
+same "take the one truly adapter-specific piece as an explicit parameter"
+pattern `api/rest/resttest`'s `ObservabilityRoute` established.
+
+**Deferred out of this round, not an oversight**: a security/middleware
+rejection scenario (mirroring `resttest`'s `SecurityRoute`) was
+investigated and found to need DIFFERENT credential-extraction
+mechanisms per adapter — `adapters/mqtt`(v3) and `adapters/mqtt5` both
+support `SubscribeBoundMW`/`BoundSecuritySubscribeMiddleware`, but MQTT
+v3 has NO User Properties at all (a protocol-level limitation, not an
+adapter gap), so a credential a shared scenario could extract uniformly
+doesn't exist yet. This genuine MQTT3-vs-MQTT5 asymmetry needs its own
+resolution before a shared security scenario can be added — flagged
+here as an explicit, unresolved gap for a future round, not a quick
+addition skipped by oversight.
 
 Wired into both `adapters/mqtt5` (`eventstest_conformance_test.go`) and
 `adapters/mqtt` (`eventstest_conformance_test.go`) as genuine, independent
-usage — both pass identically against the same shared assertion function
-on the first real run (no design mismatches found this round, unlike
-`resttest`'s earlier rounds which each found at least one).
+usage — all 3 scenarios pass identically against the same shared
+assertion functions, with NO design mismatches found across either round
+(unlike `resttest`'s earlier rounds, which each found at least one issue)
+— the one real subtlety found (topic-var merge needing `want.ID` set for
+Publish's own topic-building) was caught during design investigation,
+before writing any adapter-wiring code, not via a failing test.
 
-Coverage is intentionally ONE scenario this round (a basic publish/
-subscribe round trip) — validating the whole deliver-callback mechanism
-design works end-to-end for 2 real, structurally-independent adapters
-before investing in more scenarios (security/middleware/capability-
-rejection equivalents), mirroring exactly how `api/rest/resttest` itself
-started at 3 scenarios and only expanded to 7 in a later, separate round.
+Coverage is now 3 scenarios (up from 1), still representative rather than
+exhaustive — mirroring exactly how `api/rest/resttest` itself expanded
+from 3 to 7 scenarios over two separate rounds.
 
-Verified: new `TestEventstestConformance_SensorRoundTrip` passes
-identically in both `adapters/mqtt5` and `adapters/mqtt`; whole-repo
-`go build`/`go test` (zero failures)/`go vet`/`gofmt -l` clean; `just
-check` (staticcheck + gosec + fmt) clean.
-
-Two incidental fixes made during this work:
-- `gosec.config.json` gained a new G101 (hardcoded-credentials) path
-  exclusion for `api/rest/resttest/resttest.go` — its
-  `SecurityAPIKeyValue` test-fixture constant triggers gosec's heuristic
-  exactly like `examples/reqreply-api`'s two pre-existing G101 exclusions
-  do, for the same reason (a string constant that merely *looks*
-  credential-shaped, not an actual secret).
-- A hand-rolled string-slice-equality helper (used by
-  `AssertMiddlewareChainRoute`'s execution-order checks) was replaced
-  with the standard library's `slices.Equal` after gosec flagged a G602
-  (slice-index-out-of-range) false positive on the manual loop — using
-  the stdlib function is both simpler and avoids the false positive
-  entirely.
-
-Verified: new `TestResttestConformance_*` tests (all 7 scenarios) pass
-identically in both `adapters/nethttp` and `adapters/chi`; whole-repo
-`go build`/`go test` (zero failures)/`go vet`/`gofmt -l` clean; `just
-check` (staticcheck + gosec + fmt) clean after both incidental fixes.
+Verified: new `TestEventstestConformance_TopicVarRoundTrip`/
+`TestEventstestConformance_CapabilityRejection` (plus the existing
+`TestEventstestConformance_SensorRoundTrip`) pass identically in both
+`adapters/mqtt5` and `adapters/mqtt`; whole-repo `go build`/`go test`
+(zero failures)/`go vet`/`gofmt -l` clean; `just check` (staticcheck +
+gosec + fmt) clean.
 
 ## Open design points deferred to future rounds
 
