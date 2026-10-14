@@ -171,15 +171,16 @@ func handlerOptsStructValue(handlerOptsField reflect.Value) (reflect.Value, bool
 // concretely-typed fields regardless of the channel's T) from a
 // type-erased [events.ChannelHandle.HandlerOpts] value. Returns zero
 // values when handlerOptsField is nil/wrong-shape.
-func subscribeHandlerOptsFields(handlerOptsField reflect.Value) (onError func(SubscribeError), userPropertyParams []UserPropertyParam, caps []Capability) {
+func subscribeHandlerOptsFields(handlerOptsField reflect.Value) (onError func(SubscribeError), userPropertyParams []UserPropertyParam, caps []Capability, sharedSubscriptionGroup string) {
 	v, ok := handlerOptsStructValue(handlerOptsField)
 	if !ok {
-		return nil, nil, nil
+		return nil, nil, nil, ""
 	}
 	onError, _ = v.FieldByName("OnError").Interface().(func(SubscribeError))
 	userPropertyParams, _ = v.FieldByName("UserPropertyParams").Interface().([]UserPropertyParam)
 	caps, _ = v.FieldByName("Capabilities").Interface().([]Capability)
-	return onError, userPropertyParams, caps
+	sharedSubscriptionGroup, _ = v.FieldByName("SharedSubscriptionGroup").Interface().(string)
+	return onError, userPropertyParams, caps, sharedSubscriptionGroup
 }
 
 // publishHandlerOptsFields is [subscribeHandlerOptsFields]'s publish-side

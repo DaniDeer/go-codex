@@ -26,6 +26,33 @@ func deriveWildcardFilter(topic string) string {
 	return templateVarRe.ReplaceAllString(topic, "+")
 }
 
+// applySharedSubscriptionGroup prefixes filter with MQTT 5's
+// `$share/<group>/` Shared Subscription syntax when group is non-empty
+// (competing-consumers — multiple subscribers using the SAME group
+// split delivery of matching messages, rather than every subscriber
+// receiving every message). Returns filter UNCHANGED when group is
+// empty — the common case, no behavior change for existing routes.
+//
+// Deliberately NOT a sealed [Capability] (docs/roadmap/
+// mqtt5-capability-extensions.md's Option B, chosen after investigating
+// Option A's real blast radius: all 4 Subscribe entry points currently
+// register the router handler using the SAME filter string later handed
+// to the broker subscribe call, computed BEFORE any capability
+// application runs — routing Shared Subscriptions through
+// Capability.Apply would require reordering router-registration-after-
+// capability-application in all 4 places, real behavior-change risk for
+// a feature that has no actual cross-adapter support-variability
+// question to gate in the first place, unlike QoS/Retained/
+// MessageExpiry's genuine protocol-level semantics). Applied as a
+// simple string-wrap at each call site's EXISTING filter-computation
+// point instead — no reordering needed anywhere.
+func applySharedSubscriptionGroup(filter, group string) string {
+	if group == "" {
+		return filter
+	}
+	return "$share/" + group + "/" + filter
+}
+
 // ── SubscribeAdapter ──────────────────────────────────────────────────────────
 
 // SubscribeAdapterOptions configures [SubscribeAdapter].
@@ -47,6 +74,11 @@ type SubscribeAdapterOptions struct {
 	Capabilities []Capability
 	// Observer receives per-message lifecycle events. Resolved from ctx when nil.
 	Observer stats.Observer
+	// SharedSubscriptionGroup, when non-empty, prefixes the resolved
+	// broker subscription filter with MQTT 5's `$share/<group>/`
+	// competing-consumers syntax — see [applySharedSubscriptionGroup]'s
+	// own doc comment for the full design-decision history.
+	SharedSubscriptionGroup string
 }
 
 // SubscribeAdapter returns a [ports.SourceAdapter] backed by the MQTT 5 subscription
@@ -122,6 +154,7 @@ func (a *mqtt5SubscribeAdapter[T]) Activate(ctx context.Context, dst chan<- T, e
 	if filter == "" {
 		filter = deriveWildcardFilter(a.handle.Topic)
 	}
+	filter = applySharedSubscriptionGroup(filter, a.opts.SharedSubscriptionGroup)
 	a.router.RegisterHandler(filter, handler)
 
 	// Tier 1 coverage check — a channel's own declared [events.RequireQoS]/

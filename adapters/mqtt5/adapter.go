@@ -154,6 +154,16 @@ type SubscribeOptions struct {
 	// handle.EffectiveSubscribeFormats' own declared-format resolution,
 	// identical to this path's pre-existing behavior.
 	Formats any
+
+	// SharedSubscriptionGroup, when non-empty, prefixes the resolved
+	// broker subscription filter with MQTT 5's `$share/<group>/` syntax
+	// (competing-consumers — multiple subscribers sharing the SAME group
+	// split delivery of matching messages, rather than every subscriber
+	// receiving every message) via [applySharedSubscriptionGroup].
+	// Deliberately NOT a [Capability] — see that function's own doc
+	// comment for the full design-decision history
+	// (docs/roadmap/mqtt5-capability-extensions.md).
+	SharedSubscriptionGroup string
 }
 
 // PublishOptions configures [publish]/[publishHandle]. Generic over T so
@@ -822,6 +832,7 @@ func subscribeWithHandle[T any](
 	if filter == "" {
 		filter = deriveWildcardFilter(handle.Topic)
 	}
+	filter = applySharedSubscriptionGroup(filter, opts.SharedSubscriptionGroup)
 
 	router.RegisterHandler(filter,
 		makeSubscribeMessageHandler(ctx, client, handle, effectiveFmts, fn, obs, opts))

@@ -1,12 +1,16 @@
 # MQTT5 Capability Extensions — Message Expiry Interval & Shared Subscriptions
 
-> **Status:** Message Expiry Interval SHIPPED (a new sealed
-> `mqtt5.MessageExpiry` `Capability`, `WireAttributes.MessageExpiryInterval`
+> **Status:** Both features SHIPPED. Message Expiry Interval: a new
+> sealed `mqtt5.MessageExpiry` `Capability`, `WireAttributes.MessageExpiryInterval`
 > field, wired into the existing publish path, 4 unit tests per this
-> doc's own test plan — see `adapters/mqtt5/capability.go`/`capability_test.go`).
-> Shared Subscriptions remains a design draft — it still has the one open
-> design decision below, not pre-decided, and is NOT part of this
-> shipped scope.
+> doc's own test plan — see `adapters/mqtt5/capability.go`/`capability_test.go`.
+> Shared Subscriptions: resolved its open design decision in favor of
+> Option B (a plain `SharedSubscriptionGroup string` field, NOT a
+> `Capability` — see that section below for the full investigation that
+> closed the decision) — wired into all 4 Subscribe entry points, 5 unit
+> tests — see `adapters/mqtt5/binding.go`'s `applySharedSubscriptionGroup`
+> and `adapters/mqtt5/shared_subscription_test.go`. This doc's scope is
+> now fully closed.
 > [← Back to Roadmap](index.md)
 
 ## Motivation
@@ -30,9 +34,9 @@ applies to) already exists, unlike AMQP's still-pending candidates.
 
 | In scope | Out of scope |
 |---|---|
-| `mqtt5.MessageExpiry(seconds uint32)` — a new sealed `Capability`, Publish-side only | Any `mqtt`(v3)/`zeromq` equivalent (MQTT v3 has no message-expiry concept at all in the spec) |
-| `mqtt5.SharedSubscription(group string)` — a new sealed `Capability`, Subscribe-side only, PENDING the open design decision below | A generalized "Capability that rewrites the topic filter" mechanism for OTHER future capabilities — scoped narrowly to what Shared Subscriptions itself needs |
-| Extending `adapters/mqtt5.WireAttributes` with the new field(s) these 2 capabilities apply to | Any change to `mqtt`(v3)'s or `zeromq`'s own `Capability`/`WireAttributes` types — this doc is mqtt5-only |
+| `mqtt5.MessageExpiry(seconds uint32)` — a new sealed `Capability`, Publish-side only (SHIPPED) | Any `mqtt`(v3)/`zeromq` equivalent (MQTT v3 has no message-expiry concept at all in the spec) |
+| MQTT 5 Shared Subscriptions support, Subscribe-side only — SHIPPED as `SubscribeOptions`/`SubscribeAdapterOptions.SharedSubscriptionGroup string`, NOT a `Capability` (Option B — see below for why) | A generalized "Capability that rewrites the topic filter" mechanism — NOT built, since Option A (which would have needed one) was not chosen |
+| Extending `adapters/mqtt5.WireAttributes` with `MessageExpiryInterval` | Any change to `mqtt`(v3)'s or `zeromq`'s own `Capability`/`WireAttributes` types — this doc is mqtt5-only; `WireAttributes` is NOT touched for Shared Subscriptions (Option B) |
 
 ## Toolchain / dependency decisions
 
@@ -86,7 +90,7 @@ No `Subscribe` path change needed — `pahomqtt5.SubscribeOptions` has no
 only a publisher sets it), consistent with `Retained`'s own
 publish-only precedent.
 
-### Shared Subscriptions — the open design decision (NOT pre-decided)
+### Shared Subscriptions — SHIPPED (Option B)
 
 MQTT5 Shared Subscriptions are encoded ENTIRELY as a `$share/group/`
 prefix on the topic FILTER STRING itself — confirmed via reading
@@ -100,36 +104,43 @@ filter itself (it's passed separately as `filter string` to
 (bool, error)`'s EXISTING signature has no natural place to rewrite a
 topic string.
 
-**Two candidate directions, neither pre-decided:**
+**Two candidate directions were weighed — Option A was investigated
+concretely (not just reasoned about) and found more invasive than this
+doc's own original sketch suggested, closing the decision in favor of
+Option B:**
 
 - **Option A — widen `WireAttributes` to also carry a mutable topic.**
-  Add `Topic string` (pre-populated with the undecorated filter before
-  `ApplyCapabilities` runs) to `WireAttributes`; `SharedSubscription`'s
-  `Apply` rewrites `wire.Topic = "$share/" + group + "/" + wire.Topic`.
-  The subscribe call site reads `wire.Topic` instead of the original
-  `filter` parameter after capabilities apply. Tradeoff: every OTHER
-  capability's `Apply` implementation gains access to (and could
-  theoretically mutate) the topic too — a broader blast-radius change
-  to `WireAttributes`'s own contract than a single-purpose field would
-  need.
-- **Option B — a `TopicParam`-adjacent declaration, not a `Capability`
-  at all.** Since the `$share/` prefix is really a TOPIC-SHAPE
-  decision (not a per-message wire attribute), it could instead be
-  expressed as a channel-declaration-time option (e.g. `mqtt5.
-  SharedSubscriptionGroup(group string)` passed alongside the
-  channel's topic template, composed at Attach time before the filter
-  is ever handed to `Capability.Apply`). This keeps `WireAttributes`
-  untouched but means Shared Subscriptions would NOT go through the
-  `events.ApplyCapabilities`/`RequireX` coverage-checking mechanism
-  this whole roadmap built — a real inconsistency with how every other
-  capability declares/is-required, worth weighing against the
-  simplicity of not touching `WireAttributes`.
+  Investigated against the ACTUAL current code (not hypothetically):
+  all 4 of mqtt5's Subscribe entry points (`ServeSubscribers`/
+  `serveOneEntry`, `subscribeWithHandle`, the ports.Pattern-binding
+  `transport.Subscribe`, and the ports `SubscribeAdapter` binding)
+  register the router handler (`router.RegisterHandler(filter,
+  handler)`) using the SAME `filter` string later handed to the broker
+  `client.Subscribe` call, computed BEFORE any capability application
+  runs — in `subscribeWithHandle` specifically, router registration
+  happens even before `ApplyCapabilities` is called at all. Option A
+  would require reordering router-registration-after-capability-
+  application in all 4 places — real behavior-change risk (a filter
+  mismatch between router registration and the broker subscribe would
+  silently break message delivery), not a trivial field-threading
+  exercise as the original sketch implied.
+- **Option B — a plain, non-`Capability` declaration field (CHOSEN).**
+  A `SharedSubscriptionGroup string` field added directly to
+  `SubscribeOptions`/`SubscribeAdapterOptions` (and extracted via the
+  SAME reflection mechanism `transport.Subscribe` already uses for
+  `Capabilities`/`UserPropertyParams`), applied via a small shared
+  helper (`applySharedSubscriptionGroup`) at each call site's EXISTING
+  filter-computation point — no reordering needed anywhere. Accepted
+  tradeoff: Shared Subscriptions does NOT go through
+  `events.ApplyCapabilities`/`RequireX` coverage-checking — judged
+  acceptable because, unlike QoS/Retained/MessageExpiry's genuine
+  protocol-level semantics, Shared Subscriptions has no real
+  cross-adapter support-variability question for that mechanism to
+  gate: it's a pure client-chosen topic-string shape, not a
+  broker/protocol capability an adapter might lack.
 
-**Not silently assumed to be a trivial string-prefix operation** — per
-this doc's own directive: whichever option is chosen, it changes
-either `WireAttributes`'s contract (Option A) or introduces a SECOND,
-parallel declaration mechanism alongside `Capability` for one specific
-case (Option B) — both are real design costs, not a free win.
+See `adapters/mqtt5/binding.go`'s `applySharedSubscriptionGroup` doc
+comment for the shipped implementation's own design-history note.
 
 ## Structured errors
 
@@ -159,20 +170,29 @@ data point against Option B's consistency).
 | `TestPublish_MessageExpiry_SetsPahoProperty` | End-to-end: a channel declaring `PublishOptions{Capabilities: []Capability{MessageExpiry(60)}}` produces a `pahomqtt5.Publish` with `Properties.MessageExpiry` set to `60` |
 | `TestPublish_NoMessageExpiry_LeavesPropertyNil` | Zero-value/undeclared case — `Properties.MessageExpiry` stays `nil`, no behavior change for existing routes (mirrors every prior phase's "zero behavior change" regression bar) |
 
-Shared Subscriptions' test plan is deferred until the open design
-decision above is resolved — writing tests against an undecided API
-shape would need rework either way.
+Shared Subscriptions shipped with its own test table, covering all 4
+Subscribe entry points plus the zero-value regression bar every prior
+phase uses:
 
-## Files to create
+| Test | Verifies |
+|---|---|
+| `TestApplySharedSubscriptionGroup_EmptyGroup_LeavesFilterUnchanged` | Zero-value/undeclared case — filter unchanged, no behavior change for existing routes |
+| `TestApplySharedSubscriptionGroup_NonEmptyGroup_PrefixesFilter` | The `$share/<group>/` prefix is applied correctly (direct helper test) |
+| `TestSubscribeAdapter_SharedSubscriptionGroup_PrefixesFilter` | End-to-end via the ports `SubscribeAdapter` binding — both the router-registered filter AND the broker subscription's Topic carry the prefixed filter |
+| `TestServeSubscribers_SharedSubscriptionGroup_PrefixesFilter` | End-to-end via the `ServeSubscribers`/`Client.Attach` path |
+| `TestTransportSubscribe_SharedSubscriptionGroup_PrefixesFilter` | End-to-end via the ports.Pattern-binding `transport.Subscribe` path, extracted via `subscribeHandlerOptsFields`'s reflection |
+
+## Files changed
 
 | File | Responsibility |
 |---|---|
-| `adapters/mqtt5/capability.go` | Add `MessageExpiry` sealed `Capability` + `WireAttributes.MessageExpiryInterval` field (existing file, additive change) |
-| `adapters/mqtt5/adapter.go` | One-line addition wiring `props.MessageExpiry = wire.MessageExpiryInterval` into the existing publish path (existing file) |
-| `adapters/mqtt5/capability_test.go` | New tests per the table above (existing file) |
-
-Shared Subscriptions' file list depends on the chosen option — not
-committed here.
+| `adapters/mqtt5/capability.go` | Added `MessageExpiry` sealed `Capability` + `WireAttributes.MessageExpiryInterval` field (existing file, additive change) |
+| `adapters/mqtt5/adapter.go` | One-line addition wiring `props.MessageExpiry = wire.MessageExpiryInterval` into the existing publish path; `SubscribeOptions.SharedSubscriptionGroup` field + wiring into `subscribeWithHandle`'s filter computation |
+| `adapters/mqtt5/binding.go` | New `applySharedSubscriptionGroup` helper; `SubscribeAdapterOptions.SharedSubscriptionGroup` field + wiring into `SubscribeAdapter`'s filter computation |
+| `adapters/mqtt5/caller.go` | `serveOneEntry`'s filter computation wired to apply `SharedSubscriptionGroup` |
+| `adapters/mqtt5/transport.go` / `transport_dispatch.go` | `subscribeHandlerOptsFields` extended to extract `SharedSubscriptionGroup` via reflection; `transport.Subscribe`'s filter computation wired accordingly |
+| `adapters/mqtt5/capability_test.go` | `MessageExpiry` tests per the table above |
+| `adapters/mqtt5/shared_subscription_test.go` | New file — Shared Subscriptions tests per the table above |
 
 ## Out of scope (this doc)
 
@@ -183,18 +203,20 @@ committed here.
 - AMQP's own addressing/ack-mode/dead-lettering candidates — blocked
   on a future AMQP adapter existing at all.
 - Any generalized "Capability that mutates the topic/address" mechanism
-  beyond what Shared Subscriptions itself needs (see Option A/B above)
-  — if Option A is chosen, `WireAttributes.Topic` should be scoped
-  narrowly, not marketed as a new general-purpose extension point.
+  — Option A was investigated and NOT chosen (see above), so no such
+  mechanism was built; `WireAttributes` remains unchanged except for
+  `MessageExpiryInterval`.
+- `transport.Subscribe`'s own pre-existing `TopicFilter`-override gap
+  (found while implementing this, NOT fixed): unlike
+  `SubscribeOptions.TopicFilter`/`SubscribeAdapterOptions.TopicFilter`,
+  this ports.Pattern-binding path has no way to override the derived
+  wildcard filter at all today — a separate, unrelated gap, flagged for
+  a future round if ever needed.
 
-## Open design decisions (to resolve before/during implementation)
+## Open design decisions
 
-- **Shared Subscriptions: Option A (widen `WireAttributes`) vs. Option
-  B (a separate, non-`Capability` declaration mechanism)** — the
-  central open question this doc raises, not pre-decided. This is the
-  ONLY remaining open item in this doc.
-- Message Expiry Interval had NO open design decisions and has now
-  SHIPPED exactly as sketched above.
+None remaining — both Message Expiry Interval and Shared Subscriptions
+have shipped. This doc's scope is fully closed.
 
 ## See also
 

@@ -159,6 +159,7 @@ func (c *caller) ServeSubscribers(ctx context.Context) error {
 		if filter == "" {
 			filter = deriveWildcardFilter(info.topic)
 		}
+		filter = applySharedSubscriptionGroup(filter, opts.SharedSubscriptionGroup)
 
 		g.Go(func() error {
 			return c.serveOneEntry(gctx, filter, wire.QoS, opts, info)

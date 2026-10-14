@@ -495,7 +495,7 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 		return events.TransportTypeMismatchError{Topic: topic, Want: info.decodeMergedMethod.Type().In(2).String(), Got: fmt.Sprintf("%T", callOpts.Formats)}
 	}
 
-	onErrorFn, userPropertyParams, caps := subscribeHandlerOptsFields(elem.FieldByName("HandlerOpts"))
+	onErrorFn, userPropertyParams, caps, sharedSubscriptionGroup := subscribeHandlerOptsFields(elem.FieldByName("HandlerOpts"))
 
 	// Every attached [events.ChannelHandle.Implementations] Fn (from
 	// [Subscriber.SubscribeMW]) is shape-validated EAGERLY here, before
@@ -514,7 +514,12 @@ func (t *transport) Subscribe(ctx context.Context, subAny, fnAny any, optsVariad
 	// per-message-re-wrap fix).
 	fnVal = wrapHandlerGeneralReflect(fnVal, info.implementations)
 
+	// NOTE (found, not fixed — out of scope for this round): this path
+	// has no TopicFilter-override mechanism at all today, unlike
+	// [SubscribeOptions.TopicFilter]/[SubscribeAdapterOptions.TopicFilter]
+	// — filter is always derived, never settable here.
 	filter := deriveWildcardFilter(topic)
+	filter = applySharedSubscriptionGroup(filter, sharedSubscriptionGroup)
 
 	// Subscribe-side Tier 1 coverage check — this ports.Pattern-binding
 	// reflection path (Transport.Subscribe) is a SEPARATE dispatch path
