@@ -34,10 +34,14 @@ asymmetry via a reduced-rigor, explicitly-documented scenario, mirroring
 Phase 3 case 4's own precedent), wired into `adapters/mqtt5` and
 `adapters/mqtt` (v3) — `adapters/zeromq` is explicitly excluded pending a
 live broker, since its mock socket is fundamentally one-way/scripted
-(same limitation Phase 3 case 4 already documented). The rest of Phase
-5's "reusable adapter conformance tests for common semantics" scope —
-the same per-family conformance
-package for reqreply and ports — remains for a future round.
+(same limitation Phase 3 case 4 already documented). The **reqreply
+family** now also has its own conformance package,
+`api/reqreply/reqreplytest` (1 scenario: a Call/Serve round trip),
+wired into `adapters/mqtt5` only — `adapters/mqtt` (v3) has no reqreply
+surface at all, and `adapters/zeromq` is excluded for the same reason as
+events. The rest of Phase 5's "reusable adapter conformance tests for
+common semantics" scope — the same per-family conformance package for
+ports — remains for a future round.
 This status line is updated as major increments land —
 see the per-phase sections below for full detail.
 
@@ -3755,6 +3759,65 @@ existing `TestEventstestConformance_SensorRoundTrip`/`_TopicVarRoundTrip`/
 `adapters/mqtt`; whole-repo `go build`/`go test` (zero failures)/`go
 vet`/`gofmt -l` clean; `just check` (staticcheck +
 gosec + fmt) clean.
+
+### Phase 5 progress: reqreply-family conformance package (`api/reqreply/reqreplytest`)
+
+**Status: DONE (1 scenario, `adapters/mqtt5` only), with `adapters/mqtt`
+(v3) out of scope (no reqreply surface) and `adapters/zeromq` explicitly
+excluded this round.** `adapters/mqtt` is an events-only adapter
+(confirmed by Phase 1's own audit) — it has no reqreply surface to
+target at all. `adapters/zeromq`'s mock socket is the SAME one-way/
+scripted limitation already documented for `eventstest` — its own
+existing `TestCrossTransportContract_ComputeRoundTrip` (a reduced-rigor,
+split-half test) remains its accepted conformance evidence.
+
+**A real simplification found versus `resttest`/`eventstest`**: this
+package needs NO adapter-specific bridging callbacks at all. Confirmed
+`reqreply.ServerTransport.Serve`/`reqreply.ClientTransport.Call` both
+accept EITHER a raw, unregistered `reqreply.Route[Req,Resp]` OR an
+already-registered `*reqreply.RouteHandle[Req,Resp]` (via
+`recoverRouteHandleValue`'s own dual-mode acceptance) — so the canonical
+route needs no scratch `reqreply.Server`/registration step. And because
+`adapters/mqtt5`'s own existing mock-broker fixture (`brokerClient`)
+already auto-dispatches a published request to its registered `Serve`
+handler internally (confirmed via Phase 3 case 4's own
+`cross_transport_contract_test.go`), the suite can accept the real,
+standard `reqreply.ServerTransport`/`reqreply.ClientTransport` interfaces
+directly — unlike `eventstest`'s `isReady`/`deliver` parameters, which
+exist specifically to bridge TWO structurally different mock-broker
+idioms across two different adapters. With only one real adapter in
+scope here, that abstraction problem doesn't arise.
+
+**Design**: new package `api/reqreply/reqreplytest` exports
+`NewComputeRoute` and `AssertComputeRoundTrip(t, server
+reqreply.ServerTransport, client reqreply.ClientTransport)`, reusing the
+EXACT `ComputeReq{X,Y}`/`ComputeResp{Sum}`/`"/compute"` contract Phase 3
+case 4 already established as this roadmap's canonical reqreply example
+(cited identically in both `adapters/mqtt5`'s and `adapters/zeromq`'s own
+existing cross-transport tests) — not inventing a new contract. The
+function calls `server.Serve` with the canonical `X+Y=Sum` handler, then
+`client.Call`, asserting the response is `ComputeResp{Sum: 7}`.
+
+Wired into `adapters/mqtt5` (`reqreplytest_conformance_test.go`), reusing
+its own existing `brokerClient`/`newMockRouter()` fixtures from
+`cross_transport_contract_test.go`/`reqreply_test.go` — passed on the
+first real run, with zero design mismatches (the "no bridging callbacks
+needed" simplification held up exactly as designed).
+
+**Honestly scoped, not overclaimed**: this package's proof value is
+lower than `resttest`'s or `eventstest`'s — only one real adapter can use
+it at full rigor today, so there is no second, structurally-independent
+implementation to validate the shared-assertion-function design against
+(unlike `resttest`'s nethttp+chi or `eventstest`'s mqtt5+mqtt v3). It
+still fulfills the "API-defined, adapter-author-facing contract test"
+goal Round 3 envisioned, and is ready to validate a second reqreply
+adapter's conformance the moment one exists with sufficient mock-broker
+rigor (or once a live broker becomes available for `adapters/zeromq` in
+this environment).
+
+Verified: new `TestReqreplytestConformance_ComputeRoundTrip` passes in
+`adapters/mqtt5`; whole-repo `go build`/`go test` (zero failures)/`go
+vet`/`gofmt -l` clean; `just check` (staticcheck + gosec + fmt) clean.
 
 ## Open design points deferred to future rounds
 
