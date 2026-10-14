@@ -3379,6 +3379,34 @@ automated test. This doesn't need to wait for the full Phase 1 audit or
 Phase 4 redesign; it can be closed directly as a conformance-test seed, and
 doing so early is a concrete demonstration of this phase's own principle.
 
+**Done** — `adapters/mqtt5/granted_scopes_context_field_test.go` adds this
+as an automated regression test, mirroring the example's scenario (local
+fixtures only, no new `examples/` dependency): a correctly-scoped API key
+is accepted and the authenticated key is readable via the `ContextField`
+with zero manual re-decoding; a known key whose granted scopes don't
+satisfy the declared requirement is rejected with `KindSecurity`, and the
+handler never runs. Both paths are now proven against the shared
+`subscribeDispatchCore` dispatch path (the same one closed by this
+session's Workstream A Subscribe merge), not just the standalone example.
+
+A debugging note worth recording for future test authors in this package:
+this package's `mockClient`/`mockRouter` pair is **not a loopback
+broker** — `evtClient.Publish(...)` only records the outgoing message on
+the mock client (`client.lastPublished()`), it does **not** automatically
+deliver it back to registered subscribers. Every existing test in this
+package that exercises a Publish→Subscribe round trip explicitly bridges
+the two via `router.dispatch(topic, client.lastPublished())` (or an
+inline-constructed `*pahomqtt5.Publish`) — a new test that publishes via
+the generic `events.Client` API and omits this manual dispatch call will
+silently never invoke any handler or `OnError` callback, and a declared-
+but-never-assigned result variable (e.g. `var rejected SubscribeError`)
+will read back as its **zero value**, not as "no error occurred" — for
+`SubscribeError`, that zero value happens to be `{Kind: KindDecode, Err:
+nil}` (since `KindDecode` is error-kind iota 0), which looks confusingly
+like a real decode-failure rejection rather than "nothing ran." This
+exact confusion cost significant debugging time during this round and is
+worth flagging explicitly so it isn't rediscovered.
+
 ## Open design points deferred to future rounds
 
 These are raised now, during this roadmap's drafting, so they are not lost —
