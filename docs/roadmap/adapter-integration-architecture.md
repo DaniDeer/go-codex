@@ -7,16 +7,17 @@ substantially underway.** Phase 1's full 14-adapter audit is done (both
 matrices below). Phase 2's capability-semantics and dispatch-core design is
 done for the REST, SSE, and events/reqreply families. Phase 3's proof of
 concept is fully done (7/7 cases plus the case-6 follow-up). Phase 4
-implementation: the REST family (8/8 steps) and the SSE family
-(construction+dispatch consolidation + conformance test) are **fully
-complete**; the events/reqreply family's three workstreams
-(`adapters/mqtt5`, `adapters/mqtt` v3, `adapters/zeromq`) are **essentially
-complete** (Subscribe dispatch-core consolidation, Publish capability-
-coverage-ordering fixes, and zeromq's reqreply server/client-side splits —
-see "Phase 4 — Implementation" below for the per-workstream writeups; only
-mqtt5's low-priority reqreply setup-core extraction remains, deferred as
-no-current-duplication). Phase 5 has one conformance test seeded
-(`adapters/mqtt5/granted_scopes_context_field_test.go`); the rest of its
+implementation: the REST family (8/8 steps), the SSE family
+(construction+dispatch consolidation + conformance test), and the
+events/reqreply family's three workstreams (`adapters/mqtt5`,
+`adapters/mqtt` v3, `adapters/zeromq`) are **all fully complete** —
+Subscribe dispatch-core consolidation, Publish capability-coverage-
+ordering fixes, zeromq's reqreply server/client-side splits, and mqtt5's
+own reqreply setup-core extraction (Workstream A's final step) all done;
+see "Phase 4 — Implementation" below for the per-workstream writeups.
+Phase 5 has two conformance tests seeded
+(`adapters/mqtt5/granted_scopes_context_field_test.go`,
+`adapters/mqtt5/reqreply_dispatch_core_test.go`); the rest of its
 "reusable adapter conformance tests for common semantics" scope, and the
 still-open "API-defined conformance test suites" ownership question, remain
 for a future round. This status line is updated as major increments land —
@@ -3021,10 +3022,80 @@ unchanged plus the 2 new tests; whole-repo `go build`/`go test` (zero
 failures)/`go vet`/`gofmt -l` clean; `just check` (staticcheck + gosec +
 fmt) clean.
 
-- **Remaining in Workstream A**: the reqreply Serve-side setup-core
-  extraction (step 7) and conformance tests seeding Phase 5 for this
-  family specifically (step 8). Workstream C (`adapters/zeromq`) is
-  untouched.
+- **Remaining in Workstream A** (at this point): the reqreply Serve-side
+  setup-core extraction (step 7) and conformance tests seeding Phase 5
+  for this family specifically (step 8). Workstream C (`adapters/zeromq`)
+  is untouched.
+
+#### Phase 4 progress: events/reqreply family, Workstream A (`adapters/mqtt5`), steps 7-8 — reqreply setup-core extraction + conformance tests — WORKSTREAM A FULLY COMPLETE (8/8)
+
+**Status: DONE.** Read `(*serverTransport).Serve` (the ONLY server-socket
+variant mqtt5 has — confirmed, no second variant exists) end to end
+alongside `adapters/zeromq`'s already-built `reqreply_dispatch_core.go`
+(Workstream C's reference shape) before implementing. Confirmed the
+roadmap's own step-7 framing: since mqtt5 has only one variant, this is
+a pure refactor-for-future-reuse-by-convention, not a merge of two
+existing duplicates — no `reqreplyReplySink`-style abstraction was
+needed (that exists in zeromq specifically to parameterize over its
+REQ/REP-vs-ROUTER reply-framing difference, which mqtt5 has no second
+variant of). Scope stayed a straightforward 2-function split, mirroring
+the *shape* zeromq proved (setup-core + dispatch-one, standalone
+functions) without inventing an unneeded abstraction.
+
+Found the natural split point directly: `Serve` divided cleanly into a
+one-time setup block (route-handle recovery, req/resp-type + fn-shape
+validation, decode/encode/dead-letter method resolution,
+`hasMergeFields`/`hasPropertyMergeFields` flags, Implementations/
+MiddlewareHandlers extraction + `CheckCoverage`, capability requirements
++ `ApplyCapabilities`/`VerifyCapabilityCoverage` → `effectiveQoS`/
+`effectiveRetained`, `requestHeaderParams`) and a per-message closure
+(`baseHandler`: User-Property validation ×2, topic-var extraction/
+validation, decode, property-var merge, security-credential validation,
+paired security middleware, codec-backed middleware dispatch, unified
+`CheckScopes`, handler call, encode, reply/forward/error/dead-letter
+publishing) followed by a short, non-reusable bracket
+(`RegisterHandler`+`Subscribe`+`return nil`) that stayed in `Serve`
+as-is.
+
+**Implemented**: new file `adapters/mqtt5/reqreply_dispatch_core.go`
+with `reqreplyServerSetup` (struct bundling every field the per-message
+body needs), `reqreplyServerSetupCore` (the former inline setup block,
+assembled verbatim), and `reqreplyServerDispatchOne` (the former
+`baseHandler` body, assembled verbatim — same byte-identical-extraction
+discipline used throughout this session's other dispatch-core work).
+`(*serverTransport).Serve` now calls `reqreplyServerSetupCore` once,
+then registers a thin closure delegating to `reqreplyServerDispatchOne`
+via `applyGeneralServerMiddleware` exactly as before.
+
+**Step 8 (conformance tests seeded here)**: added
+`adapters/mqtt5/reqreply_dispatch_core_test.go` — two tests calling
+`reqreplyServerSetupCore`/`reqreplyServerDispatchOne` directly against a
+hand-built route handle and a crafted `*paho.Publish`, independent of
+`Serve`/the mock client-router harness: a happy-path request/response
+round trip, and a decode-failure case proving the handler is never
+invoked and `onError` receives `KindDecode`. (A test-authoring pitfall
+caught during this round, unrelated to the extraction itself: the
+shared `computeReq`/`computeResp` fixture's codec declares lowercase
+JSON field names `x`/`y`/`sum` — not the Go struct field names `X`/`Y`/
+`Sum` — an easy, unrelated mistake to make when hand-crafting a raw JSON
+payload for a direct dispatch-core test; both tests were fixed to use
+the correct casing and now pass for the right reason.)
+
+Verified: `adapters/mqtt5`'s full suite unchanged plus the 2 new tests;
+whole-repo `go build`/`go test` (zero failures)/`go vet`/`gofmt -l`
+clean; `just check` (staticcheck + gosec + fmt) clean — confirmed no
+orphaned helper left behind by the extraction (the two now-unused
+imports in `reqreply_transport.go`, `errors` and
+`adapters/internal/scopesmerge`, were removed; both are still used, now
+solely from the new file).
+
+**Workstream A is now fully complete — all 8 steps done** (Subscribe
+dispatch-core merge, Publish ordering fix, reqreply setup-core
+extraction, reqreply conformance tests). Workstream C
+(`adapters/zeromq`) remains fully complete from earlier in Phase 4 too —
+see its own progress subsections above. The events/reqreply family's
+Phase 4 dispatch-core consolidation scope is therefore complete across
+all three adapters (mqtt5, mqtt v3, zeromq).
 
 #### Phase 4 progress: events/reqreply family, Workstream B (`adapters/mqtt` v3) — Subscribe dispatch-core merge
 
