@@ -2552,12 +2552,13 @@ Based on the audit and PoC:
   its dispatch-implementation count (still open — see "Confirmed
   asymmetry").
 
-#### Phase 4 progress: REST family (steps 1-7 of 8)
+#### Phase 4 progress: REST family (8 of 8 steps — COMPLETE)
 
-**Status: steps 1-7 of the REST family's 8-step plan (above) DONE; step
-8 not started.** Began with the REST family per user choice — fully
-specified by Phase 2, untouched by any Phase 3 finding, lowest-risk
-starting point.
+**Status: ALL 8 steps of the REST family's plan (above) DONE.** Began
+with the REST family per user choice — fully specified by Phase 2,
+untouched by any Phase 3 finding, lowest-risk starting point. Completed
+across several rounds; see each step's own writeup below for what was
+found and decided along the way.
 
 - **Step 1 — new `adapters/internal/restdispatch` package**: added,
   mirroring the `httpsecurity`/`scopesmerge` convention. Holds
@@ -2770,10 +2771,40 @@ solved that exact problem.
   (clean), `gofmt` all clean (one file needed a trailing `gofmt -w` after
   the large body deletion — purely whitespace, fixed immediately).
 
-**What remains (step 8, not started)**: the cross-adapter conformance
-test exercising `ValidateRouteConstruction`/`DispatchRoute` against both
-a nethttp-shaped and chi-shaped `pathValues` — the REST family's last
-remaining step, deliberately deferred to its own round.
+**Step 8 — cross-adapter conformance test, DONE. The REST family's
+8-step plan is now fully complete.**
+
+- **Design**: `adapters/internal/restdispatch` cannot import
+  `adapters/chi` (that would invert the dependency direction this whole
+  consolidation establishes), so the test can't literally call
+  `gochi.URLParam`. Instead, it builds its own
+  `restdispatch.ResponseWriter` implementation (a minimal, test-local
+  `testStatusResponseWriter`) and TWO genuinely different `pathValues`
+  implementations: `pathValuesStdlib` (the real
+  `(*http.Request).PathValue` mechanism, identical to
+  `adapters/nethttp`'s own) and `pathValuesManualTemplate` (a standalone
+  path-template matcher, representationally equivalent to what any OTHER
+  router — chi included — does internally, without introducing a
+  dependency on one).
+- **Test**
+  (`adapters/internal/restdispatch/dispatch_conformance_test.go`,
+  `TestDispatchRoute_ConsistentAcrossPathValueMechanisms`): builds ONE
+  `*rest.RouteHandle[Req, Resp]` fixture with a path param, calls
+  `ValidateRouteConstruction` ONCE, then `DispatchRoute` TWICE — once
+  per `pathValues` mechanism — served via two separate
+  `httptest.NewServer`s. Fires identical requests (valid and invalid
+  UUID path param) at both and asserts byte-identical status codes and
+  response bodies. This directly exercises the ONE genuine per-adapter
+  seam Phase 2's design identified — everything else in the shared core
+  is proven identical by construction (one function, one call site);
+  only `pathValues` is adapter-supplied, so this is the one place future
+  per-router divergence could hide.
+- **Verification**: new test passes; `adapters/nethttp`'s and
+  `adapters/chi`'s full suites re-verified unchanged; full-repo
+  `go build ./...`, `go test ./...` (zero failures), `go vet ./...`
+  (clean), `gofmt` all clean.
+
+**REST family status: 8 of 8 steps DONE.**
 
 #### Phase 4 progress: SSE family (the `serve_sse.go` follow-on audit, now closed)
 
