@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"reflect"
 	"strings"
 
 	"github.com/DaniDeer/go-codex/adapters/internal/restdispatch"
@@ -277,64 +276,24 @@ func buildRouteHandler(handle any) (http.Handler, error) {
 	return applyGeneralMiddleware(inner, cr.Impls), nil
 }
 
-// callErr/callErrStatusFor are PROMOTED (Phase 4) to restdispatch's
-// identical functions — aliased here (not copied).
-func callErr(target reflect.Value, method string, arg reflect.Value) error {
-	return restdispatch.CallErr(target, method, arg)
-}
-
-func callErrStatusFor(target reflect.Value, err error) (int, bool) {
-	return restdispatch.CallErrStatusFor(target, err)
-}
-
 // formatContentTypesReflect/negotiateRequestFormatReflect/
 // tryRespondErrorPattern (the reflect-based one, used only by
 // buildRouteHandler) are PROMOTED (Phase 4) into
 // adapters/internal/restdispatch's DispatchRoute — buildRouteHandler now
 // calls restdispatch.DispatchRoute directly, so these three are DELETED
 // here rather than aliased (confirmed via grep: nothing else in this
-// package referenced them).
-
-// validateImplementationShapesReflect checks every attached impl.Fn against
-// the two concrete shapes this package recognizes, EAGERLY at serve
-// construction time rather than deferring to the first incoming request —
-// a malformed Fn fails loudly and immediately. reqType is the route's Req
-// type, recovered at runtime via reflect (see [buildRouteHandler]), letting
-// serve build the EXACT expected security Fn shape
-// (func(context.Context, *http.Request, *Req) (map[string][]string, error))
-// dynamically instead of via a static type parameter.
+// package referenced them). callErr/callErrStatusFor/
+// validateImplementationShapesReflect were kept as local
+// aliases/copies through the REST family's steps 1-6 (still called by
+// buildRouteHandler's own construction/dispatch body at the time), then
+// became genuinely dead once step 7 ALSO replaced that body with a
+// direct call to restdispatch.DispatchRoute — deleted here, caught by
+// `just check`'s staticcheck pass (U1000), not `go vet`, which doesn't
+// flag unused package-level funcs/vars.
+//
 // satisfiesPerHandler/isSecuritySatisfyingHandler are PROMOTED (Phase 4)
-// to restdispatch's identical functions — aliased here (not copied).
+// to restdispatch's identical functions — aliased here (not copied);
+// still genuinely used by adapter.go's own `sseHandlerFunc` (confirmed
+// via grep), which this consolidation deliberately does not touch.
 var satisfiesPerHandler = restdispatch.SatisfiesPerHandler
 var isSecuritySatisfyingHandler = restdispatch.IsSecuritySatisfyingHandler
-
-func validateImplementationShapesReflect(routeLabel string, reqType reflect.Type, impls []rest.ServerImplementation) error {
-	generalType := reflect.TypeOf((func(http.Handler) http.Handler)(nil))
-	securityType := reflect.FuncOf(
-		[]reflect.Type{
-			reflect.TypeOf((*context.Context)(nil)).Elem(),
-			reflect.TypeOf((*http.Request)(nil)),
-			reflect.PointerTo(reqType),
-		},
-		[]reflect.Type{
-			reflect.TypeOf(map[string][]string(nil)),
-			reflect.TypeOf((*error)(nil)).Elem(),
-		},
-		false,
-	)
-	for _, impl := range impls {
-		if impl.Fn == nil {
-			continue
-		}
-		fnType := reflect.TypeOf(impl.Fn)
-		if fnType == generalType || fnType == securityType {
-			continue
-		}
-		return rest.MiddlewareShapeError{
-			Name:     impl.Name,
-			Expected: "func(http.Handler) http.Handler or func(context.Context, *http.Request, *Req) (map[string][]string, error)",
-			Got:      fmt.Sprintf("%T", impl.Fn),
-		}
-	}
-	return nil
-}

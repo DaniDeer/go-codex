@@ -2806,6 +2806,22 @@ solved that exact problem.
 
 **REST family status: 8 of 8 steps DONE.**
 
+**Post-completion hygiene note:** this session's own verification loop
+(`go build`/`go test`/`go vet`/`gofmt -l` on touched files) does not catch
+unused package-level declarations — only `staticcheck` (via `just check`)
+does. Running `just check` after the REST and SSE families were both
+marked complete found 10 genuinely dead declarations (5 symbols ×
+`adapters/nethttp`/`adapters/chi`: `primaryStatusFor`, `httpTransport`,
+`callErr`, `callErrStatusFor`, `validateImplementationShapesReflect`) —
+package-local aliases/copies kept during earlier steps because they were
+still called at the time, orphaned once later steps (handlerFunc's full
+`DispatchRoute` wiring, the SSE consolidation) replaced their last
+remaining call sites too. All 10 were removed; `just check`
+(staticcheck + gosec + `gofmt -l`) and the full build/test/vet/fmt loop
+were re-run clean afterward. No behavior change — pure dead-code removal.
+Lesson for future rounds: run `just check`, not just `go vet`, after any
+consolidation round that replaces a package-local helper's last caller.
+
 #### Phase 4 progress: SSE family (the `serve_sse.go` follow-on audit, now closed)
 
 **Status: DONE.** The `serve_sse.go` follow-on audit (flagged throughout

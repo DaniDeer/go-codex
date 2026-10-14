@@ -503,14 +503,6 @@ func sseHandlerFunc[Req, Event any](handle *rest.SSERouteHandle[Req, Event], fn 
 	return applyGeneralMiddleware(inner, impls)
 }
 
-// primaryStatusFor is used by [serve], which only has a route.Route
-// descriptor (via reflect), never a concrete *rest.RouteHandle[Req,
-// Resp]. PROMOTED (Phase 4) to [restdispatch.PrimaryStatusFor] —
-// aliased here (not copied).
-func primaryStatusFor(descriptor route.Route) int {
-	return restdispatch.PrimaryStatusFor(descriptor)
-}
-
 // statusResponseWriter wraps [http.ResponseWriter] to capture the written status code.
 type statusResponseWriter struct {
 	http.ResponseWriter
