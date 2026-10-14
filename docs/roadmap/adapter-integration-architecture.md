@@ -25,11 +25,16 @@ path-param merge field, security gate, ordered middleware chain,
 declared ErrorPattern mapping, capability-requirement rejection at
 construction time — which also covers "lifecycle" — and an observability
 hook), wired into both `adapters/nethttp` and `adapters/chi` as real,
-independent usage, all passing identically on both. The rest of Phase 5's
-"reusable adapter conformance tests for common semantics" scope — the
-same per-family conformance package for events/reqreply and ports —
-remains for a future round. This
-status line is updated as major increments land —
+independent usage, all passing identically on both. The **events family**
+now also has its own conformance package, `api/events/eventstest` (1
+scenario: a publish/subscribe round trip), wired into `adapters/mqtt5`
+and `adapters/mqtt` (v3) — `adapters/zeromq` is explicitly excluded
+pending a live broker, since its mock socket is fundamentally one-way/
+scripted (same limitation Phase 3 case 4 already documented). The rest of
+Phase 5's "reusable adapter conformance tests for common semantics"
+scope — the same per-family conformance package for reqreply and ports,
+and a broader scenario taxonomy for events — remains for a future round.
+This status line is updated as major increments land —
 see the per-phase sections below for full detail.
 
 This doc replaces and merges two earlier drafts:
@@ -3592,10 +3597,73 @@ documented canonical scenario rather than a bespoke, adapter-local test.
 
 Further canonical routes can be added to `api/rest/resttest` the same way
 in future rounds without breaking its existing exported surface. The
-events/reqreply family (`mqtt`/`mqtt5`/`zeromq`) and the ports family
-(`file`/`redis`/`sql`) do not yet have an equivalent per-family
-conformance package — this is explicitly left for a future round, now
-that the REST family has established the concrete pattern to replicate.
+ports family (`file`/`redis`/`sql`) does not yet have an equivalent
+per-family conformance package — this is explicitly left for a future
+round. The events family now has its own conformance package (see below);
+reqreply does not yet.
+
+### Phase 5 progress: events-family conformance package (`api/events/eventstest`)
+
+**Status: DONE (1 scenario, `adapters/mqtt5` + `adapters/mqtt` v3), with
+`adapters/zeromq` explicitly excluded this round.** Investigated whether
+`api/rest/resttest`'s design transfers directly to events — it does NOT:
+unlike REST, where every adapter speaks a uniform `http.Handler` testable
+identically via `httptest`, events adapters have no uniform mock-broker
+mechanism. Each adapter's own test suite implements its own in-process
+mock client/router (or mock socket) to simulate a broker, and these mocks
+are not structurally interchangeable.
+
+Confirmed directly: `adapters/mqtt5` and `adapters/mqtt` (v3) both have
+live, two-way loopback mocks — a published message can be bridged to a
+registered subscriber within the same test, following the SAME idiom
+under different names (`mockRouter.hasHandler`/`lastPublished`/`dispatch`
+for mqtt5; `subscribedHandlerSnapshot`/direct field reads/manual handler
+invocation for mqtt v3). `adapters/zeromq`'s mock socket, by contrast, is
+fundamentally one-way/scripted (canned input frames in, recorded output
+frames out) — the SAME limitation Phase 3 case 4 already documented and
+worked around with a reduced-rigor, explicitly cross-referenced pair of
+split-half tests. `adapters/zeromq` is therefore deliberately NOT wired
+into this package; its own existing
+`TestCrossTransportContract_ComputeRoundTrip`-style split-half test
+remains its accepted conformance evidence until a live broker is
+available in this sandboxed environment.
+
+**Design**: new package `api/events/eventstest` exports a canonical
+`SensorReading` channel (deliberately reusing the SAME shape — SensorID/
+Value — already used identically, independently, across all three
+adapters' own test fixtures) on a namespaced topic
+(`eventstest/sensor/reading`, avoiding collision with any adapter's own
+test-fixture topics), and ONE assertion function:
+`AssertPublishSubscribeRoundTrip(t, client *events.Client, isReady func()
+bool, deliver func())`. The suite owns registering the subscriber,
+starting `ServeSubscribers`, calling the REAL `Client.Publish` encode
+path (not a hand-crafted payload — this proves Publish's real encode path
+reaches Subscribe's real decode path, not just one half), and asserting
+the decoded value matches exactly. The adapter supplies only the two
+genuinely adapter-specific bridging callbacks (`isReady` — poll until the
+mock broker's handler is registered; `deliver` — forward the real
+published bytes into the adapter's own mock-dispatch mechanism) —
+mirroring the same "take the one truly adapter-specific piece as an
+explicit parameter" pattern `api/rest/resttest`'s `ObservabilityRoute`
+established.
+
+Wired into both `adapters/mqtt5` (`eventstest_conformance_test.go`) and
+`adapters/mqtt` (`eventstest_conformance_test.go`) as genuine, independent
+usage — both pass identically against the same shared assertion function
+on the first real run (no design mismatches found this round, unlike
+`resttest`'s earlier rounds which each found at least one).
+
+Coverage is intentionally ONE scenario this round (a basic publish/
+subscribe round trip) — validating the whole deliver-callback mechanism
+design works end-to-end for 2 real, structurally-independent adapters
+before investing in more scenarios (security/middleware/capability-
+rejection equivalents), mirroring exactly how `api/rest/resttest` itself
+started at 3 scenarios and only expanded to 7 in a later, separate round.
+
+Verified: new `TestEventstestConformance_SensorRoundTrip` passes
+identically in both `adapters/mqtt5` and `adapters/mqtt`; whole-repo
+`go build`/`go test` (zero failures)/`go vet`/`gofmt -l` clean; `just
+check` (staticcheck + gosec + fmt) clean.
 
 Two incidental fixes made during this work:
 - `gosec.config.json` gained a new G101 (hardcoded-credentials) path
