@@ -228,6 +228,27 @@ func (t *transport) Publish(ctx context.Context, pubAny, msgAny any, optsVariadi
 		return err
 	}
 
+	// Publish-side Tier 1 coverage check + [events.ApplyCapabilities] —
+	// CORRECTED (Phase 4 events/reqreply family, Workstream C's audit):
+	// previously ran LAST, right before transmit, AFTER middleware
+	// dispatch and security implementations dispatch had already
+	// executed — the SAME ordering divergence from [publish][T] (the
+	// generic path, which checks coverage FIRST) mqtt5's Workstream A
+	// step 6 and zeromq's Workstream C found and fixed. Moved here,
+	// immediately after implementation-shape validation, to match
+	// [publish][T]'s exact position. Also corrected: uses the RAW `topic`
+	// (not the post-BuildTopic `finalTopic`) for both calls'
+	// observability labels, matching [publish][T]'s identical choice.
+	caps := resolveHandlerOptsCapabilities(elem.FieldByName("HandlerOpts"))
+	if requirements, ok := elem.FieldByName("Requirements").Interface().([]events.CapabilityRequirement); ok {
+		if covErr := events.VerifyCapabilityCoverage(topic, requirements, caps); covErr != nil {
+			obs.RecordPublish(topic, false, time.Since(start))
+			return covErr
+		}
+	}
+	var wire WireAttributes
+	events.ApplyCapabilities(caps, &wire, obs, topic)
+
 	valuePtr := reflect.New(tType)
 	valuePtr.Elem().Set(msgVal)
 
@@ -292,24 +313,6 @@ func (t *transport) Publish(ctx context.Context, pubAny, msgAny any, optsVariadi
 			return err
 		}
 	}
-
-	// docs/design/d-0006-protocol-native-capabilities.md's Phase 5: a
-	// declared Capabilities value is applied via [events.ApplyCapabilities]
-	// against a [WireAttributes] value — mirrors adapters/mqtt5's
-	// identical, already-shipped shape exactly.
-	caps := resolveHandlerOptsCapabilities(elem.FieldByName("HandlerOpts"))
-	// Publish-side Tier 1 coverage check — confirmed, PREVIOUSLY-MISSING
-	// gap: a channel's own declared Requirements was verified on the
-	// SUBSCRIBE side (ServeSubscribers) but never on this ports.Pattern
-	// binding's PUBLISH side. Mirrors Transport.Subscribe's identical fix.
-	if requirements, ok := elem.FieldByName("Requirements").Interface().([]events.CapabilityRequirement); ok {
-		if covErr := events.VerifyCapabilityCoverage(finalTopic, requirements, caps); covErr != nil {
-			obs.RecordPublish(finalTopic, false, time.Since(start))
-			return covErr
-		}
-	}
-	var wire WireAttributes
-	events.ApplyCapabilities(caps, &wire, obs, finalTopic)
 
 	// transmit is wrapped via [reflect.MakeFunc] so every attached
 	// general-purpose PublishMW Fn can compose around it — mirrors

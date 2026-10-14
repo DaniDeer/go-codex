@@ -3147,12 +3147,54 @@ Verified: `adapters/zeromq`'s full suite unchanged plus the 2 new tests;
 whole-repo `go build`/`go test` (zero failures)/`go vet`/`gofmt -l`
 clean; `just check` (staticcheck + gosec + fmt) clean.
 
-**Remaining in Workstream C**: Publish's reflect-side (not yet audited
-for the same shape of divergence this round found on Subscribe) and the
-full reqreply 4-socket-variant setup/dispatch-one split (point 3 of this
-family's design — the largest remaining piece of the entire events/
-reqreply family, covering `serverTransport.Serve`/
-`routerServerTransport.Serve` and their client-side counterparts).
+#### Phase 4 progress: events/reqreply family, Workstream C (`adapters/zeromq`), Publish ordering fix
+
+**Status: DONE.** Audited `transport.go`'s `(*transport).Publish` (the
+reflect path, backing `Client.Attach`'s `Client.Publish`) against the
+generic `publish[T]` the same way mqtt5's Workstream A step 6 audited its
+own two Publish paths — and found the **identical ordering bug**:
+`transport.Publish` checked capability-requirement coverage LAST
+(immediately before transmit, AFTER middleware dispatch and security
+implementations dispatch had already executed), while `publish[T]`
+checks coverage FIRST, before any of those run. Also carried the same
+observability-label inconsistency (`finalTopic`, post-`BuildTopic`,
+instead of the raw `topic` `publish[T]` uses).
+
+**Fix**: identical to mqtt5's — moved the coverage check +
+`events.ApplyCapabilities` to run immediately after implementation-shape
+validation, using the raw topic, deleting the old late-position block.
+Added 2 regression tests
+(`adapters/zeromq/publish_dispatch_order_test.go`,
+`TestClientPublish_RequireHWM_NoCapability_FailsBeforeMiddlewareRuns`/
+`..._SuppliedCapability_RunsMiddlewareAndPublishes`), mirroring mqtt5's
+own Publish-ordering tests exactly (declares `events.RequireHWM`, a
+`PublishBoundMW` with an observable side effect) — verified the first
+test actually fails against the pre-fix ordering before restoring the
+fix.
+
+Verified: `adapters/zeromq`'s full suite unchanged plus the 2 new tests;
+whole-repo `go build`/`go test` (zero failures)/`go vet`/`gofmt -l`
+clean; `just check` clean.
+
+**This closes the Publish side of Workstream C entirely — and also
+corrected a mistaken claim this doc made about Workstream B.** While
+writing this round's cross-adapter comparison, re-checked `adapters/mqtt`
+(v3) too and found it had the IDENTICAL, still-unfixed ordering bug —
+Workstream B's own write-up above did not audit this (it only touched
+mqtt v3's Subscribe side, not Publish) and should not have been read as
+implying Publish was already fine there. Fixed `adapters/mqtt`'s
+`transport.Publish` the same way in this same round, with the same 2
+regression tests (`adapters/mqtt/publish_dispatch_order_test.go`),
+verified against mqtt v3's full suite (unchanged) and the same
+fails-before-fix check. The ordering bug is now confirmed and fixed
+identically across all 3 event adapters (mqtt5, mqtt v3, zeromq) that
+have a reflect Publish path alongside a generic one.
+
+**Remaining in Workstream C**: the full reqreply 4-socket-variant
+setup/dispatch-one split (point 3 of this family's design — the largest
+remaining piece of the entire events/reqreply family, covering
+`serverTransport.Serve`/`routerServerTransport.Serve` and their
+client-side counterparts).
 
 ### Phase 5 — Conformance tests and documentation
 
