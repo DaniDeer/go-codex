@@ -23,25 +23,39 @@ implementation the way `adapters/nethttp`/`adapters/mqtt5` are for
 This doc designs `api/file`: a new `api/*` package applying the SAME
 three-layer model (declare → attach adapter → dispatch) every other
 go-codex boundary already uses, with file-shaped verbs (Read/Create/
-Patch/Delete/List instead of GET/POST/PATCH/DELETE/GET-collection), full
-Router-group and declarative-Middleware parity, Observer integration, and
-— the ultimate goal — true backend transparency: the SAME declared
-`Resource[T]` works unchanged whether the concrete storage is the local
-filesystem, S3, or an SMB share, with the backend chosen entirely at
-attach time, never baked into the declaration.
+Patch/Delete/List/Update/Exists/Copy/Move/Mkdir instead of GET/POST/
+PATCH/DELETE/GET-collection), full Router-group and declarative-
+Middleware parity, Observer integration, a cross-backend permission
+capability, and — the ultimate goal — true backend transparency: the
+SAME declared `Resource[T]` works unchanged whether the concrete storage
+is the local filesystem, S3, or an SMB share, with the backend chosen
+entirely at attach time, never baked into the declaration.
+
+**Refinement round (this revision)**: expanded the verb set by directly
+surveying what Amazon S3's own API provides (`PutObject`/`GetObject`/
+`DeleteObject`/`ListObjectsV2`/`HeadObject`/`CopyObject`), added 4 verbs
+this surfaced that `ports.File` has no equivalent for today (`Exists`/
+`Copy`/`Move`/`Mkdir`), promoted directory creation from an implicit
+`Write` side effect to its own first-class operation, and designed a
+cross-backend permission capability (`AccessMode`) after confirming via
+direct research that POSIX mode bits and Windows/S3 permission models are
+NOT meaningfully unifiable beyond a binary read-only/writable distinction
+— the SAME simplification Go's own `os.Chmod` already makes on Windows.
 
 ## Scope decisions
 
 | In scope (Phase 1) | Out of scope |
 |---|---|
-| New `api/file` package: `Resource[T]` declaration + 5 role builders (Read/Create/Patch/Delete/List) | A genuinely new HTTP-shaped protocol — `api/file` is NOT a network protocol, it has no wire format of its own; "transport" here means storage BACKEND (filesystem/S3/SMB), not a byte-stream protocol |
-| A new `file.Backend` interface — the transparency seam adapters implement | An actual `adapters/s3`/`adapters/smb` implementation — each gets its OWN future roadmap doc once there's a concrete driver, mirroring `amqp-adapter.md`/`tcp-adapter.md`'s existing precedent; this doc designs the SEAM they will plug into, not the adapters themselves |
-| Migrating `adapters/file` onto the new `Backend` interface (the ONE Phase 1 backend, proving the abstraction against a REAL adapter, not just a design) | Any change to `adapters/file`'s OWN existing stream-bridge functions (`ScanAdapter`/`WatchAdapter`/`ReadEachAdapter`/etc.) beyond what's needed to also implement `file.Backend` — those keep their existing signatures |
+| New `api/file` package: `Resource[T]` declaration + 9 role builders — Read, Create, Patch, Delete, List, **Exists** (NEW — mirrors S3's `HeadObject`: metadata-only, no body download), **Copy** (NEW — mirrors S3's `CopyObject`: duplicate without a client-side round-trip), **Move**/Rename (NEW — filesystem's atomic `os.Rename`; S3 has no native equivalent, composed from Copy+Delete there), **Mkdir** (NEW — promoted from `WriteOptions.CreateDirs`'s implicit side effect to its own first-class operation) | A genuinely new HTTP-shaped protocol — `api/file` is NOT a network protocol, it has no wire format of its own; "transport" here means storage BACKEND (filesystem/S3/SMB), not a byte-stream protocol |
+| `Update` stays a CLIENT-SIDE-ONLY Read+transform+Write composition (unchanged from the original round) | S3 object versioning, tagging, or fine-grained ACL/grantee modeling — surfaced during the S3 survey but NOT requested; would be inventing API without a driver, flagged only as a possible future extension if a real use case appears |
+| A new `file.Backend` interface — the transparency seam adapters implement, now including `Mkdir`/`Stat`, plus 2 OPTIONAL extension interfaces (`CopyingBackend`/`MovingBackend`) a backend may implement for a native fast path | An actual `adapters/s3`/`adapters/smb` implementation — each gets its OWN future roadmap doc once there's a concrete driver, mirroring `amqp-adapter.md`/`tcp-adapter.md`'s existing precedent; this doc designs the SEAM they will plug into, not the adapters themselves |
+| Migrating `adapters/file` onto the new `Backend` interface (the ONE Phase 1 backend, proving the abstraction against a REAL adapter, not just a design) — including implementing `CopyingBackend`/`MovingBackend` via `io.Copy`/`os.Rename` to prove the optional-fast-path mechanism, not just the required interface | Any change to `adapters/file`'s OWN existing stream-bridge functions (`ScanAdapter`/`WatchAdapter`/`ReadEachAdapter`/etc.) beyond what's needed to also implement `file.Backend` — those keep their existing signatures |
+| A new `file.Capability` sealed interface (mirrors `d-0006`'s established `mqtt5.Capability`/`Apply`/`CheckCapabilityCoverage` mechanism exactly): `AccessMode` (ReadOnly/ReadWrite — the ONE permission concept genuinely portable across filesystem/S3/SMB) + `NativePOSIXMode` (escape hatch, filesystem/SMB-only) | A full POSIX-mode-bits-to-Windows-ACL or POSIX-to-S3-ACL TRANSLATOR — researched directly and confirmed NOT meaningfully achievable: Windows collapses ALL of `os.FileMode` to one bit via Go's own `os.Chmod` (confirmed via Go's stdlib docs), and S3's ACL/bucket-policy model is grantee+action-based, not bit-based at all — there is no lossless translation to invent, only an honest, portable common denominator |
 | `ports.File[T]` becomes a thin wrapper around an `api/file`-declared `Resource[T]` Handle + an attached `file.Backend` — mirrors `ports.SourcePort`/`SinkPort`/`IOPort` wrapping adapters today; `ports.FilePattern`/`*Port.PluginFilePattern` is the EXISTING slot this plugs into (confirmed via code: `ports/pattern.go`'s `FilePattern`, `ports/io_port.go`'s `PluginFilePattern(pattern FilePattern) (File[Resp], error)`) | `ports.Dir`/`DirEntry` — stays EXACTLY as-is (untyped, metadata-only directory enumeration); `Resource[T].WithList` is a new, complementary, TYPED+decoded sibling, not a replacement |
 | Router groups (`d-0008`'s "one shape, N packages" pattern) — `api/file` becomes the 4th instance | `d-0008`'s core Router mechanism itself — reused unchanged, only a new "Design decisions — resolved for `api/file`" subsection is added to that doc once this ships |
-| Declarative per-role middleware (`ReadMW`/`CreateMW`/`PatchMW`/`DeleteMW`/`ListMW` — see "Why verb-specific MW names, not `HandleMW`/`ClientMW`" below) + Security schemes | A NEW security-SCHEME TYPE — reuses `route.SecurityScheme`/`route.SecurityRequirement` unchanged, same as `rest`/`events`/`reqreply` |
+| Declarative per-role middleware (`ReadMW`/`CreateMW`/`PatchMW`/`DeleteMW`/`ListMW`/`ExistsMW`/`CopyMW`/`MoveMW`/`MkdirMW` — see "Why verb-specific MW names, not `HandleMW`/`ClientMW`" below) + Security schemes | A NEW security-SCHEME TYPE — reuses `route.SecurityScheme`/`route.SecurityRequirement` unchanged, same as `rest`/`events`/`reqreply` |
 | `ErrorPattern` (reusing the established `errors.As` + first-rule-wins + direct/mapped convention) | Inventing a new error-response shape |
-| Observer (`stats.FileObserver`, extended with one new method — see below) | A new top-level `stats.Observer` extension unrelated to file lifecycle |
+| Observer (`stats.FileObserver`, extended with 2 new methods — see below) | A new top-level `stats.Observer` extension unrelated to file lifecycle |
 
 ## Toolchain / dependency decisions
 
@@ -130,18 +144,57 @@ type Delete struct{ Summary, Description string }
 // stays unchanged for metadata-only enumeration).
 func (r Resource[T]) WithList(op List) Lister[T]
 type List struct{ Summary, Description string }
+
+// WithExists mirrors S3's HeadObject: proves presence/absence and
+// returns metadata (size, modtime) WITHOUT downloading/decoding the
+// body — the one verb ports.File has NO equivalent for today. Returns
+// (Entry, bool, error): bool is false (zero Entry, nil error) for the
+// idempotent "absent" case, mirroring Delete's own existed-bool
+// convention exactly — absence is not itself an error here.
+func (r Resource[T]) WithExists(op Exists) Exister[T]
+type Exists struct{ Summary, Description string }
+
+// WithCopy mirrors S3's CopyObject: duplicates the resource at a new
+// set of path vars without round-tripping bytes through the caller when
+// the attached Backend implements the optional CopyingBackend fast path
+// (falls back to Read+Write generically otherwise — see "Backend
+// semantic differences" below).
+func (r Resource[T]) WithCopy(op Copy) Copier[T]
+type Copy struct{ Summary, Description string }
+
+// WithMove mirrors filesystem's atomic os.Rename — S3 has NO native
+// move (composed from Copy+Delete there instead, 2 non-atomic calls;
+// see "Backend semantic differences"). Uses the optional MovingBackend
+// fast path when the attached Backend implements it.
+func (r Resource[T]) WithMove(op Move) Mover[T]
+type Move struct{ Summary, Description string }
+
+// WithMkdir is the NEW first-class directory-creation operation —
+// PROMOTED from WriteOptions.CreateDirs's implicit side effect (which
+// keeps working unchanged, now implemented IN TERMS OF this same
+// Backend.Mkdir call, not a separate code path). Operates over the
+// resource's parent directory, mirroring WithList's own derivation.
+func (r Resource[T]) WithMkdir(op Mkdir) MkdirCreator[T]
+type Mkdir struct{ Summary, Description string }
 ```
 
 ### Per-role attachment surface — mirrors `Subscriber[T]`/`Publisher[T]` exactly
 
 Each role type (`Reader[T]`, `Creator[T]`, `Patcher[T,P]`, `Deleter[T]`,
-`Lister[T]`) is independent — a Security requirement on `Deleter` does
-NOT imply one on `Reader`, mirroring how a `Publish.Security` requirement
-never implies one on the SAME channel's `Subscribe` side today:
+`Lister[T]`, `Exister[T]`, `Copier[T]`, `Mover[T]`, `MkdirCreator[T]`) is
+independent — a Security requirement on `Deleter` does NOT imply one on
+`Reader`, mirroring how a `Publish.Security` requirement never implies
+one on the SAME channel's `Subscribe` side today. `Mover[T]`'s own
+Security is checked ONCE, covering both the logical read-the-source and
+write-the-destination halves — it does NOT separately re-check
+`Deleter`'s or `Creator`'s own declared Security, since `Move` is its OWN
+declared role with its OWN Security requirement, not a composition of
+two OTHER roles' declarations (a Resource is not required to declare
+`Delete`/`Create` at all to declare `Move`):
 
 ```go
 // Reader[T] — every role type follows this SAME shape; shown once,
-// the other 4 are structurally identical (Patcher[T,P] additionally
+// the other 8 are structurally identical (Patcher[T,P] additionally
 // carries P throughout).
 type Reader[T any] struct{ /* unexported */ }
 
@@ -209,10 +262,58 @@ type Backend interface {
     // responsibility).
     ListDir(ctx context.Context, path string) ([]Entry, error)
 
+    // Stat returns path's metadata WITHOUT reading its content — the
+    // backend operation WithExists/Exister[T] delegates to directly
+    // (mirrors S3's HeadObject exactly; adapters/file implements this
+    // via os.Stat). Not-found reports the SAME not-found signal
+    // ReadBytes does — Exister[T] translates it to (Entry{}, false, nil)
+    // rather than propagating an error, per Exists's own "absence is not
+    // an error" contract.
+    Stat(ctx context.Context, path string) (Entry, error)
+
+    // Mkdir creates path as a directory, including any missing parents
+    // (mirrors os.MkdirAll) — the operation WithMkdir/MkdirCreator[T]
+    // AND WriteOptions.CreateDirs both delegate to, so there is only
+    // ONE directory-creation code path backends implement, not two.
+    // created=false (nil error) is the idempotent "already existed"
+    // success case. A backend with NO real directory concept (S3) MUST
+    // still implement this as a no-op success (created=true, nil error)
+    // — never an error — since failing would make EVERY WriteOptions.
+    // CreateDirs=true call fail on that backend; see "Backend semantic
+    // differences" below for why this is an acknowledged, not hidden,
+    // divergence.
+    Mkdir(ctx context.Context, path string, opts MkdirOptions) (created bool, err error)
+
     // BackendName returns a descriptor for observability — mirrors
     // every ports.SourceAdapter/SinkAdapter/IOAdapter's own AdapterName()
     // convention exactly.
     BackendName() string
+}
+
+// CopyingBackend is an OPTIONAL extension a Backend may implement for a
+// native, server-side copy (e.g. S3's CopyObject — no bytes round-trip
+// through the caller at all; a local filesystem's reflink/CoW fast path
+// where supported). Type-asserted by the dispatch core's Copier[T]
+// handling — mirrors stats.TraceObserver/SecurityObserver's EXACT
+// type-assertion-guard idiom, just applied to a Backend capability
+// instead of an Observer one. A Backend NOT implementing this falls back
+// to the dispatch core's own generic Read(src)+Write(dst) composition
+// automatically — CopyingBackend only ever makes Copy FASTER/cheaper,
+// never changes its observable result.
+type CopyingBackend interface {
+    CopyBytes(ctx context.Context, srcPath, dstPath string) error
+}
+
+// MovingBackend is CopyingBackend's sibling for atomic rename/move
+// (e.g. filesystem's os.Rename, SMB's native rename) — S3 has NO native
+// move at all (see "Backend semantic differences"), so an S3 Backend
+// simply does not implement this interface; the dispatch core falls
+// back to a generic Copy(src,dst)+Delete(src) composition, which for S3
+// is the ONLY correct implementation anyway (2 non-atomic calls, exactly
+// matching what a caller would have to do by hand against the raw S3
+// API).
+type MovingBackend interface {
+    MoveBytes(ctx context.Context, srcPath, dstPath string) error
 }
 
 // Entry mirrors ports.DirEntry's existing shape (Name/IsDir/Size/ModTime)
@@ -226,6 +327,17 @@ type Entry struct {
     Size    int64
     ModTime time.Time
 }
+
+// MkdirOptions mirrors the backend-agnostic subset of today's
+// FileOptions.DirPerm — see the Capability section below for why raw
+// POSIX permission bits are NOT the primary mechanism going forward.
+type MkdirOptions struct {
+    // NativePOSIXMode, when non-nil, is passed to the backend's own
+    // permission-setting call when (and ONLY when) the backend
+    // implements POSIX-style permissions at all — see [NativePOSIXMode]
+    // capability below. nil means "use the backend's own default."
+    NativePOSIXMode *os.FileMode
+}
 ```
 
 `adapters/file` is migrated to implement `file.Backend` against `os.*` —
@@ -234,7 +346,124 @@ etc.) are unaffected; they keep calling `ports.File`'s methods exactly as
 today, since `ports.File` itself becomes the thing that now delegates to
 `file.Backend` internally rather than calling `os.*` directly — a
 backend-swap below `ports.File`'s existing public surface, not a breaking
-change to `ports.File`'s own call signatures.
+change to `ports.File`'s own call signatures. `adapters/file`'s `Backend`
+implementation ALSO implements `CopyingBackend` (via `io.Copy` between 2
+open `*os.File` handles — not a true reflink/CoW fast path in Phase 1,
+but still avoids a full decode/re-encode round-trip through the caller)
+and `MovingBackend` (via `os.Rename`, genuinely atomic on a single
+filesystem) — proving BOTH optional extension interfaces against a real
+backend, not just the required one.
+
+### `file.Capability` — the cross-backend permission model
+
+Mirrors `d-0006-protocol-native-capabilities.md`'s ALREADY-ESTABLISHED
+sealed `Capability`/`Apply`/`CheckCapabilityCoverage` mechanism EXACTLY
+(the same one `mqtt5.QoS`/`Retained`/`MessageExpiry` use) — a NEW
+instance of a PROVEN pattern, not a new mechanism:
+
+```go
+// Capability is the sealed interface for api/file-specific protocol-
+// native declarations — mirrors mqtt5.Capability's own sealing pattern
+// (isFileCapability() instead of isMQTT5Capability()), for the SAME
+// reason: a Capability meant for one boundary should not compile against
+// an unrelated one.
+type Capability interface {
+    isFileCapability()
+    Apply(wire *WireAttributes) (applied bool, err error)
+}
+
+// WireAttributes is the ONE intermediate value every Capability.Apply
+// targets — mirrors mqtt5.WireAttributes's exact rationale.
+type WireAttributes struct {
+    AccessMode      AccessMode // zero value AccessMode(0) means "unset, use backend default"
+    NativePOSIXMode *os.FileMode
+}
+
+// AccessMode is a sealed Capability declaring READ-ONLY vs. READ-WRITE
+// access for one Resource role — the ONE permission concept confirmed
+// (via direct research, not assumption) to be genuinely portable across
+// ALL 3 backends:
+//   - filesystem: os.Chmod's OWN Windows behavior ALREADY collapses the
+//     entire POSIX mode matrix down to exactly this binary distinction
+//     (confirmed via Go's stdlib docs: "on Windows, only the 0200 bit...
+//     controls whether the file's read-only attribute is set or
+//     cleared" — every other bit is ignored) — AccessMode is not a
+//     simplification THIS doc invents, it is the simplification Go's
+//     OWN standard library already settled on for cross-platform code.
+//   - S3: enforced at the api/file DISPATCH level (reject Write/Delete/
+//     Move/Mkdir before ever calling the Backend) when ReadOnly is
+//     declared — S3's OWN ACL/bucket-policy model is grantee+action
+//     based, not bit-based, so there is nothing finer-grained to
+//     usefully expose here without inventing an S3-specific capability
+//     (explicitly out of scope — see Scope decisions).
+//   - SMB: same dispatch-level enforcement as S3 (SMB shares typically
+//     inherit the HOST's native permission model — Windows ACLs on a
+//     Windows-hosted share, POSIX-mapped on a Samba-hosted one — neither
+//     of which this doc's Phase 1 attempts to model precisely).
+type AccessMode int
+
+const (
+    AccessModeUnset     AccessMode = 0
+    AccessModeReadOnly  AccessMode = 1
+    AccessModeReadWrite AccessMode = 2
+)
+
+func (AccessMode) isFileCapability() {}
+func (AccessMode) CapabilityName() string { return "AccessMode" }
+func (m AccessMode) Apply(wire *WireAttributes) (bool, error) {
+    wire.AccessMode = m
+    return true, nil
+}
+
+// NativePOSIXMode is a sealed Capability escape hatch for callers who
+// genuinely need literal POSIX mode bits (e.g. 0755) — ONLY meaningful
+// on filesystem-family backends. Explicitly a NO-OP (applied=false, nil
+// error — "doesn't apply here," NOT a failure) on S3; on Windows
+// filesystems it is silently collapsed to the SAME binary distinction
+// AccessMode already provides, via os.Chmod's own behavior — NOT
+// duplicated logic, the SAME call. Declaring BOTH AccessMode and
+// NativePOSIXMode on one role is allowed (NativePOSIXMode further
+// refines what AccessMode leaves backend-default on a POSIX backend);
+// declaring ONLY NativePOSIXMode against an S3-attached Resource is
+// valid and simply inert, never an error — mirrors Retained's existing
+// "harmless no-op on a path that doesn't read it" precedent exactly.
+type NativePOSIXMode os.FileMode
+
+func (NativePOSIXMode) isFileCapability() {}
+func (NativePOSIXMode) CapabilityName() string { return "NativePOSIXMode" }
+func (m NativePOSIXMode) Apply(wire *WireAttributes) (bool, error) {
+    v := os.FileMode(m)
+    wire.NativePOSIXMode = &v
+    return true, nil
+}
+```
+
+`CheckCapabilityCoverage`/`RequireReadOnly()`-style declare-time
+requirement enforcement is reused UNCHANGED — a `Resource` role declaring
+`RequireAccessMode(AccessModeReadOnly)` against a `Backend` that hasn't
+been told it's read-only-safe (i.e., no `AccessMode` Capability was
+supplied at attach time) fails loudly at attach time, mirroring
+`events.RequireQoS`'s identical "fail fast, not silently" contract.
+
+### Backend semantic differences — documented, not hidden
+
+"Transparent across backends" does NOT mean "identical in every
+respect" — 3 real, acknowledged divergences, each resolved explicitly
+rather than papered over:
+
+| Operation | Filesystem | S3 | SMB |
+|---|---|---|---|
+| `Mkdir` | Real directory, enforced (`os.MkdirAll`) | NO-OP success — S3 has NO real directories at all; "folders" are a pure key-prefix convention in `ListObjectsV2`'s own delimiter handling, not a backend entity `Mkdir` could meaningfully create | Real directory, enforced (native SMB `MKDIR`) |
+| `Move` | ONE atomic syscall (`os.Rename`) — either fully succeeds or the source is untouched | TWO non-atomic calls (`CopyObject` then `DeleteObject`) — a crash/failure between them can leave BOTH copies present; `api/file`'s dispatch core surfaces this as a DOCUMENTED caveat on `Mover[T]`'s own godoc for any backend lacking `MovingBackend`, never silently | ONE native, typically-atomic protocol operation (SMB2's own rename) |
+| Permission granularity | Full POSIX mode bits (`NativePOSIXMode`) honored | `AccessMode` only — enforced at `api/file`'s dispatch level, never translated into an S3 ACL/policy call (explicitly out of scope) | `AccessMode` only in Phase 1 (same reasoning — SMB's native ACL model is as rich as Windows's own, not usefully bit-mappable either) |
+
+`Mkdir`'s S3 no-op in particular means `WriteOptions.CreateDirs=true`
+behaves identically to `CreateDirs=false` on an S3-attached `Resource` —
+NOT a bug, a direct, honest consequence of S3 genuinely having no
+directory concept; documented on `Backend.Mkdir`'s own godoc (above) and
+cross-referenced from `WriteOptions.CreateDirs`'s doc comment, so a
+caller migrating a `Resource` from filesystem to S3 learns this from the
+type they're already reading, not by surprise at runtime.
 
 ## Structured errors (all implement `slog.LogValuer`)
 
@@ -253,18 +482,30 @@ alias for backward `errors.As` compatibility, since `ports` is a public
 package real callers already type-assert against).
 
 One NEW error type, `BackendUnsupportedOptionError{Backend, Option
-string}` — returned when a `WriteOptions`/`DeleteOptions` field a backend
-genuinely cannot honor is set to a non-default value AND the backend
-author chose to fail loudly rather than silently no-op (an explicit,
-per-backend, per-option choice — not a core-dispatch decision).
+string}` — returned when a `WriteOptions`/`DeleteOptions`/`MkdirOptions`
+field a backend genuinely cannot honor is set to a non-default value AND
+the backend author chose to fail loudly rather than silently no-op (an
+explicit, per-backend, per-option choice — not a core-dispatch decision).
+
+No further NEW error types needed for the 4 added verbs — `Exists`
+reuses `FileNotFoundError`'s ABSENCE of an error (the `(Entry{}, false,
+nil)` case) rather than introducing one; `Copy`/`Move` reuse
+`FileReadError`/`FileWriteError`/`FileDeleteError` for their respective
+halves (whichever actually failed, fast path or fallback); `Mkdir` reuses
+`FileWriteError` (mirrors `ports.File.Write`'s own existing
+`CreateDirs`-failure error type exactly, since `Mkdir` was always
+implicitly part of that error's scope).
 
 ## Observer integration
 
 Reuses `stats.FileObserver` (`RecordFileRead`/`RecordFileWrite`/
 `RecordFileDelete`) for Read/Create/Patch/Delete — identical call sites
 to `ports.File`'s existing ones, just now fired from `api/file`'s
-dispatch core instead of inline. ONE new method needed for the NEW List
-verb:
+dispatch core instead of inline. The expanded verb set (this revision)
+needs 5 new methods — batched into ONE breaking round rather than 5
+separate ones across future revisions, since `FileObserver` already
+accepts this kind of direct, no-separate-extension churn (see
+`RecordFileDelete`'s own precedent):
 
 ```go
 type FileObserver interface {
@@ -276,6 +517,26 @@ type FileObserver interface {
     // failure, never because the directory was merely empty (an empty
     // result is a successful, zero-length list).
     RecordFileList(path string, success bool, count int, duration time.Duration)
+    // RecordFileExists is called once per WithExists call — success is
+    // false ONLY on a genuine backend-level Stat failure; the "absent"
+    // case (Entry{}, false, nil) is success=true, mirroring
+    // RecordFileDelete's own "idempotent absence is still success"
+    // convention exactly.
+    RecordFileExists(path string, success bool, duration time.Duration)
+    // RecordFileCopy is called once per WithCopy call, regardless of
+    // whether the CopyingBackend fast path or the generic Read+Write
+    // fallback actually ran — callers observing lifecycle events should
+    // not need to know which path was taken.
+    RecordFileCopy(srcPath, dstPath string, success bool, duration time.Duration)
+    // RecordFileMove mirrors RecordFileCopy for WithMove — fires once
+    // regardless of MovingBackend fast path vs. generic Copy+Delete
+    // fallback.
+    RecordFileMove(srcPath, dstPath string, success bool, duration time.Duration)
+    // RecordFileMkdir is called once per WithMkdir call AND once per
+    // WriteOptions.CreateDirs=true Write call that actually invokes
+    // Backend.Mkdir — success=true for S3's documented no-op case too
+    // (a no-op IS the correct, successful outcome there, not a failure).
+    RecordFileMkdir(path string, success bool, duration time.Duration)
 }
 ```
 
@@ -283,10 +544,13 @@ Added DIRECTLY to the existing `FileObserver` interface (an intentional,
 acknowledged breaking change — mirrors `RecordFileDelete`'s own addition
 precedent exactly, documented in `stats/observer.go`'s own doc comment:
 "go-codex has one consumer," so this repo accepts the churn rather than
-fragmenting into yet another observer extension for one new method).
-`TraceObserver`/`SecurityObserver` integration mirrors `rest`/`events`/
-`reqreply`'s identical type-assertion-guard pattern — no new observer
-extension needed for either.
+fragmenting into yet another observer extension per method). `Capability`
+Apply reporting reuses `stats.CapabilityObserver.RecordCapabilityApplied`
+UNCHANGED — the SAME interface `mqtt5.QoS`/`Retained`/`MessageExpiry`
+already report through, no new observer concept needed for `AccessMode`/
+`NativePOSIXMode`. `TraceObserver`/`SecurityObserver` integration mirrors
+`rest`/`events`/`reqreply`'s identical type-assertion-guard pattern — no
+new observer extension needed for either.
 
 ## Router/Middleware integration
 
@@ -329,19 +593,32 @@ extension needed for either.
 | `TestErrorPattern_MatchedOnBackendError` | A declared `file.ErrorPattern` maps a `Backend`-specific error to its typed response |
 | `TestRouterGroup_PrefixesResourcePath` | A `Resource[T]` registered under a `Router.Group` gets the group's path prefix applied |
 | `TestPortsFile_StillWorksViaPluginFilePattern` | `ports.File[T]` built via `PluginFilePattern` against a migrated `adapters/file` Backend behaves IDENTICALLY to today's direct-`os.*` behavior — the critical "no silent behavior change" regression proof |
-| `ExampleResource_read` / `ExampleResource_create` | pkg.go.dev-facing worked examples |
+| `TestExister_Handle_Exists_ReturnsEntryWithoutReadingBody` | `Exister[T]` calls ONLY `Backend.Stat`, never `ReadBytes` — proves no accidental body download |
+| `TestExister_Handle_Exists_AbsentReturnsFalseNotError` | A not-found `Stat` result returns `(Entry{}, false, nil)`, NOT an error |
+| `TestCopier_Handle_Copy_UsesNativeFastPathWhenAvailable` | A fake `Backend` ALSO implementing `CopyingBackend` has its `CopyBytes` called directly, never `ReadBytes`/`WriteBytes` |
+| `TestCopier_Handle_Copy_FallsBackToReadWriteWhenBackendLacksCopyingBackend` | A fake `Backend` NOT implementing `CopyingBackend` is copied via the generic `ReadBytes`+`WriteBytes` composition — same observable result either way |
+| `TestMover_Handle_Move_UsesNativeRenameOnFilesystem` | `adapters/file`'s `MovingBackend` implementation (`os.Rename`) is actually invoked, not the generic fallback |
+| `TestMover_Handle_Move_FallsBackToCopyThenDeleteWithoutMovingBackend` | A fake `Backend` without `MovingBackend` is moved via Copy+Delete — proving the S3-shaped fallback path works correctly even on a non-S3 fake |
+| `TestMkdirCreator_Handle_Mkdir_CreatesMissingParents` | `WithMkdir` creates a multi-level missing parent chain in one call, mirrors `ports.File.Write`'s existing `CreateDirs` proof |
+| `TestWriteOptions_CreateDirs_DelegatesToBackendMkdir` | `WriteOptions.CreateDirs=true` internally calls the SAME `Backend.Mkdir` a direct `WithMkdir` call would — proving there is only ONE directory-creation code path, not two |
+| `TestAccessMode_ReadOnly_RejectsWriteBeforeAnyBackendCall` | A `Resource` with `AccessMode: AccessModeReadOnly` supplied at attach time rejects a `Creator`/`Deleter`/`Mover` call BEFORE the `Backend` is ever invoked — fails at the dispatch layer, not the backend |
+| `TestNativePOSIXMode_Apply_SetsWireField` | Mirrors `TestMessageExpiry_Apply_SetsWireField`'s own direct-`Apply` proof pattern |
+| `TestNativePOSIXMode_NoOpOnBackendsThatDontHonorIt` | A fake non-POSIX `Backend` receiving a `NativePOSIXMode` capability reports `applied=false`, never an error — proves the "harmless no-op" contract |
+| `TestResourceRequireAccessMode_NoCapabilitySupplied_FailsCoverageAtAttachTime` | Mirrors `events.RequireQoS`'s identical "fail fast, not silently" proof, applied to `AccessMode` |
+| `ExampleResource_read` / `ExampleResource_create` / `ExampleResource_copy` | pkg.go.dev-facing worked examples |
 
 ## Files to create
 
 | File | Responsibility |
 |---|---|
-| `api/file/builder.go` | `Resource[T]`, `PathParam`/`MergedPathParam`, `Reader`/`Creator`/`Patcher`/`Deleter`/`Lister`, `Read`/`Create`/`Patch`/`Delete`/`List` metadata structs, `Client`/`Handle` registry (mirrors `events.Client`/`ChannelHandle`) |
-| `api/file/backend.go` | `Backend` interface, `Entry`, `WriteOptions`/`DeleteOptions` |
-| `api/file/dispatch.go` | The shared dispatch core every `*Handle[T]`'s Read/Create/Patch/Delete/List call delegates to — path build/validate, codec encode/decode, merge-field application, Observer calls, ErrorPattern dispatch |
+| `api/file/builder.go` | `Resource[T]`, `PathParam`/`MergedPathParam`, `Reader`/`Creator`/`Patcher`/`Deleter`/`Lister`/`Exister`/`Copier`/`Mover`/`MkdirCreator`, `Read`/`Create`/`Patch`/`Delete`/`List`/`Exists`/`Copy`/`Move`/`Mkdir` metadata structs, `Client`/`Handle` registry (mirrors `events.Client`/`ChannelHandle`) |
+| `api/file/backend.go` | `Backend` interface (incl. `Stat`/`Mkdir`), `CopyingBackend`/`MovingBackend` optional extensions, `Entry`, `WriteOptions`/`DeleteOptions`/`MkdirOptions` |
+| `api/file/capability.go` | `Capability`/`WireAttributes`/`AccessMode`/`NativePOSIXMode` — mirrors `adapters/mqtt5/capability.go`'s exact shape, one boundary over |
+| `api/file/dispatch.go` | The shared dispatch core every `*Handle[T]`'s Read/Create/Patch/Delete/List/Exists/Copy/Move/Mkdir call delegates to — path build/validate, codec encode/decode, merge-field application, `AccessMode` enforcement, `CopyingBackend`/`MovingBackend` type-assertion-guarded fast paths with generic fallback, Observer calls, ErrorPattern dispatch |
 | `api/file/errors.go` | Relocated error types (from `ports/file.go`) + `BackendUnsupportedOptionError` |
 | `api/file/error_pattern.go` | `ErrorPattern[E,B]` — mirrors `rest.ErrorPattern`/`events.ErrorPattern`/`reqreply.ErrorPattern`'s identical shape |
 | `api/file/doc.go` | Package godoc |
-| `adapters/file/backend.go` | `os.*`-backed `file.Backend` implementation (new file; existing `binding.go`/`adapter.go` untouched) |
+| `adapters/file/backend.go` | `os.*`-backed `file.Backend` implementation, ALSO implementing `CopyingBackend` (`io.Copy`) and `MovingBackend` (`os.Rename`) — new file; existing `binding.go`/`adapter.go` untouched |
 | `ports/file.go` | `File[T]`/`Dir` methods rewritten to delegate to an attached `api/file` Handle + `Backend`, instead of calling `os.*` inline; public call signatures UNCHANGED |
 | `ports/pattern.go` | `FilePattern`/`PluginFilePattern` updated to build/bind against the new `api/file.Resource` Handle |
 
@@ -367,15 +644,42 @@ extension needed for either.
 
 ## Open design decisions
 
-None remaining — all decisions below were resolved via `ask_user` before
-drafting this doc:
+Mostly resolved. One genuinely open item remains from this refinement
+round, flagged rather than silently decided:
+
+- **`MkdirOptions`'s exact field set beyond `NativePOSIXMode`** — e.g.
+  whether a `DryRun`-equivalent (mirrors `WriteOptions.DryRun`'s existing
+  "report what would happen" contract) is worth adding to `Mkdir`
+  directly, versus relying on `WithMkdir`'s caller composing their own
+  dry-run check via `WithExists` first. Leaning toward adding `DryRun`
+  for parity with every other verb's option struct, but not pre-decided
+  — resolve during Implement mode once the full option-struct shapes are
+  drafted together.
+
+Everything else resolved via `ask_user` across both rounds (original +
+this refinement):
 
 - Package name: `api/file` (not `api/storage`).
 - `ports.File[T]`'s fate: thin wrapper over the new `Backend` seam, not
   replaced or left untouched.
-- Verb scope: Read, Create, Patch, Delete, List, Update (Update stays a
-  CLIENT-SIDE-ONLY Read+transform+Write composition, no new wire verb).
-- Backend scope: design the full seam now; implement only
-  `adapters/file` (filesystem) in Phase 1.
+- Verb scope (refined this round): Read, Create, Patch, Delete, List,
+  Update, Exists, Copy, Move, Mkdir — Update stays a CLIENT-SIDE-ONLY
+  Read+transform+Write composition (no new wire verb); Exists/Copy/Move/
+  Mkdir are the S3-survey-informed additions, each traced to a specific
+  S3 operation or the user's explicit directory-creation/permission ask,
+  not invented speculatively.
+- Backend scope: design the full seam now (now including `Stat`/`Mkdir`
+  + the `CopyingBackend`/`MovingBackend` optional extensions); implement
+  only `adapters/file` (filesystem) in Phase 1, proving ALL of it
+  (including both optional extensions) against one real backend.
 - Router/Middleware depth: full parity designed for Phase 1 (not
   deferred to Phase 2).
+- Permission model: a sealed `AccessMode` Capability (ReadOnly/ReadWrite)
+  is the ONE universally portable concept — confirmed via direct research
+  (Go's own `os.Chmod` Windows behavior, S3's ACL/policy model) that a
+  full POSIX-to-Windows/S3 bit-level translator is not meaningfully
+  achievable, so none was designed; `NativePOSIXMode` is the explicit,
+  honest escape hatch for POSIX-specific callers instead.
+- `Move`'s cross-backend atomicity difference (filesystem's 1 atomic
+  syscall vs. S3's 2 non-atomic calls) is DOCUMENTED, not hidden or
+  papered over with a false "it's the same everywhere" claim.
