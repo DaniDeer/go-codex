@@ -15,12 +15,18 @@ Subscribe dispatch-core consolidation, Publish capability-coverage-
 ordering fixes, zeromq's reqreply server/client-side splits, and mqtt5's
 own reqreply setup-core extraction (Workstream A's final step) all done;
 see "Phase 4 — Implementation" below for the per-workstream writeups.
-Phase 5 has two conformance tests seeded
+Phase 5 has two ad hoc conformance tests seeded
 (`adapters/mqtt5/granted_scopes_context_field_test.go`,
-`adapters/mqtt5/reqreply_dispatch_core_test.go`); the rest of its
-"reusable adapter conformance tests for common semantics" scope, and the
-still-open "API-defined conformance test suites" ownership question, remain
-for a future round. This status line is updated as major increments land —
+`adapters/mqtt5/reqreply_dispatch_core_test.go`) plus the "API-defined
+conformance test suites" mechanism (Round 3 decision 1) now **implemented
+for the REST family**: `api/rest/resttest` exports 3 canonical routes +
+Assert functions, wired into both `adapters/nethttp` and `adapters/chi` as
+real, independent usage. The rest of Phase 5's "reusable adapter
+conformance tests for common semantics" scope — the same per-family
+conformance package for events/reqreply and ports, and a broader scenario
+taxonomy for REST itself (middleware chains, error mapping, capability
+rejection, lifecycle, observability) — remain for a future round. This
+status line is updated as major increments land —
 see the per-phase sections below for full detail.
 
 This doc replaces and merges two earlier drafts:
@@ -3501,6 +3507,54 @@ nil}` (since `KindDecode` is error-kind iota 0), which looks confusingly
 like a real decode-failure rejection rather than "nothing ran." This
 exact confusion cost significant debugging time during this round and is
 worth flagging explicitly so it isn't rediscovered.
+
+**Done — the API-defined conformance-test-suite mechanism (Round 3
+decision 1) is now implemented, for the REST family.** New package
+`api/rest/resttest` is the first concrete instance of the "shared,
+importable `_test`-only helper package per API family" design: it exports
+three canonical routes (`EchoRoute` — basic decode/encode; `PathParamRoute`
+— path-param merge-field coverage; `SecurityRoute` — a general-purpose
+security gate, the same shape Phase 3 case 5's cross-adapter test already
+exercised) and a matching `AssertXRoute(t, h)` function per route. An
+adapter author builds an `http.Handler` from one of these routes using
+their OWN `ServeOne`/`serveOne`, then passes it to the matching Assert
+function — mirroring Go stdlib's `httptest` convention exactly, no
+testify-style `Suite` type, no CI-only checklist.
+
+Wired into both `adapters/nethttp` (`resttest_conformance_test.go`,
+exported `ServeOne`) and `adapters/chi` (`resttest_conformance_test.go`,
+package-internal `serveOne`) as genuine, independent usage — both pass
+identically against the same shared suite, concretely proving the
+mechanism works across 2 real, structurally-independent adapter
+implementations (not just a theoretical design). This is the "last
+enforcement point" Phase 5 describes in practice: a future regression that
+silently breaks one adapter's handling of a capability the other already
+implements correctly will now fail `go test` in BOTH adapters' own test
+suites, not just one, and the failure is attributable to a specific,
+documented canonical scenario rather than a bespoke, adapter-local test.
+
+Coverage in this round is intentionally representative, not exhaustive —
+3 scenarios (basic route, path-param merge field, security gate), not the
+full taxonomy Phase 5's opening paragraph lists (middleware chains, error
+mapping, capability rejection, lifecycle, observability). Further
+canonical routes can be added to `api/rest/resttest` the same way in
+future rounds without breaking its existing exported surface. The events/
+reqreply family (`mqtt`/`mqtt5`/`zeromq`) and the ports family
+(`file`/`redis`/`sql`) do not yet have an equivalent per-family
+conformance package — this is explicitly left for a future round, now
+that the REST family has established the concrete pattern to replicate.
+
+One incidental fix made during this work: `gosec.config.json` gained a new
+G101 (hardcoded-credentials) path exclusion for
+`api/rest/resttest/resttest.go` — its `SecurityAPIKeyValue` test-fixture
+constant triggers gosec's heuristic exactly like `examples/reqreply-api`'s
+two pre-existing G101 exclusions do, for the same reason (a string
+constant that merely *looks* credential-shaped, not an actual secret).
+
+Verified: new `TestResttestConformance_*` tests pass identically in both
+`adapters/nethttp` and `adapters/chi`; whole-repo `go build`/`go test`
+(zero failures)/`go vet`/`gofmt -l` clean; `just check` (staticcheck +
+gosec + fmt) clean after the G101 exclusion was added.
 
 ## Open design points deferred to future rounds
 

@@ -47,6 +47,10 @@
 		{
 			"path": "examples/reqreply-api/demo_bound_middleware_split.go",
 			"rules": ["G101"]
+		},
+		{
+			"path": "api/rest/resttest/resttest.go",
+			"rules": ["G101"]
 		}
 	]
 }
