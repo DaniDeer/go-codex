@@ -102,6 +102,26 @@ func isNotFound(err error) bool {
 	return errors.Is(err, os.ErrNotExist)
 }
 
+// ── Path-var merge (MergedPathParam) ────────────────────────────────────
+
+// applyPathMergeFields decodes vars (the SAME map already used to build
+// path) into v's own mergeFields-declared fields — mirrors
+// rest.PathParam/events.TopicParam's identical "merge extracted vars
+// directly into T" promise. A complete no-op when core.resource has no
+// mergeFields declared (the common case for a plain [PathParam]).
+//
+// Read-only for now: List's own per-entry vars would need MATCHING each
+// discovered child path against the template (not simply reusing the
+// caller's own vars, which address the PARENT directory, not any one
+// entry) — a genuinely separate mechanism, scoped out of this fix;
+// tracked as a named follow-up, not silently dropped.
+func applyPathMergeFields[T any](vars map[string]string, core roleCore[T], v *T) error {
+	if len(core.resource.mergeFields) == 0 {
+		return nil
+	}
+	return codex.DecodeVars(v, vars, core.resource.mergeFields...)
+}
+
 // ── Metadata merge (the file-metadata axis — see MetadataBackend's doc
 // comment in backend.go) ───────────────────────────────────────────────
 
@@ -188,6 +208,10 @@ func readCore[T any](ctx context.Context, backend Backend, core roleCore[T], rou
 	if err != nil {
 		recordRead(obs, path, false, time.Since(start))
 		return zero, FileDecodeError{Path: path, Err: err}
+	}
+	if err := applyPathMergeFields(vars, core, &v); err != nil {
+		recordRead(obs, path, false, time.Since(start))
+		return zero, err
 	}
 	if err := applyMetadataMergeFields(ctx, backend, path, core, &v); err != nil {
 		recordRead(obs, path, false, time.Since(start))

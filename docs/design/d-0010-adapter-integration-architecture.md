@@ -49,6 +49,34 @@
 > limitation, not a design gap); and `CallRaw` zeromq client-side
 > dispatch-core consolidation (no concrete driver yet — "a candidate for
 > a future round if ever needed").
+>
+> **`api/file` Full-Parity round** (part of `api/file`'s Phase 1 "full
+> Router + Declarative Middleware parity" effort): added a 5th
+> API-defined conformance-test package, `api/file/filetest` — the SAME
+> 7-scenario taxonomy as `resttest`/`eventstest`/`reqreplytest`
+> (round-trip, path-param merge field, security gate, ordered middleware
+> chain, declared ErrorPattern mapping, capability-requirement rejection,
+> observability hook), parameterized over a `file.Backend` instead of an
+> `http.Handler` (file's own "thing that varies per adapter"), wired into
+> `adapters/file` as the real, independent proof. Writing it caught 2
+> genuine, previously-undetected bugs: `CapabilityCoverageError`'s
+> pointer-receiver `Error()` method (fixed the conformance helper's own
+> `errors.As` target, not the error type — a pre-existing, correct
+> design, just an easy-to-get-wrong call-site detail) and a REAL gap
+> where `MergedPathParam`'s "decode extracted path vars directly into
+> T" promise was declared but never actually wired into `readCore`'s
+> dispatch — fixed via a new `applyPathMergeFields` helper (Read-only for
+> now; `List`'s own per-entry merge needs template-matching each
+> discovered child path, not just reusing the caller's own vars — a
+> separate, explicitly named follow-up, not silently dropped). Also
+> closed `api/file`'s own long-standing Phase 1 gaps: `file.ErrorPattern`
+> is now AUTO-INVOKED on a Backend error (previously declared but never
+> consulted — now matches `resttest`'s/`eventstest`'s own dispatch cores);
+> dispatch-core consolidation itself was checked and found ALREADY
+> satisfied (`api/file/dispatch.go` is the one and only dispatch core —
+> no N-way per-backend duplication exists yet, since only
+> `adapters/file` consumes it today — so no `restdispatch`-style
+> extraction was needed).
 
 ## Status detail (full history, preserved from the roadmap)
 
