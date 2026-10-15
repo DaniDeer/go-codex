@@ -70,6 +70,7 @@ go get github.com/DaniDeer/go-codex@latest
 | `api/events` | Event channel builder (PUB/SUB): typed Decode/Encode + AsyncAPI spec; works for MQTT 3, MQTT 5, ZMQ PUB/SUB | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/events) |
 | `api/reqreply` | Request-reply route builder: `NewRoute[Req,Resp](topic, codecs, ...RouteOpt)` + `Route.RegisterHandle(server) (*RouteHandle, error)`; mirrors `api/rest` for async transports (ZMQ REQ/REP, MQTT 5); generates AsyncAPI 3.0 with request-reply `reply:` block | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/reqreply) |
 | `api/mcp` | MCP server builder: Tools, Resources, Prompts | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/mcp) |
+| `api/file` | Transport-agnostic file-resource API (Phase 1): `Resource[T]` + 10 verbs (Read/Create/Patch/Delete/List/Exists/Copy/Move/Mkdir/BatchDelete), `Client`/`Backend`/`Capability`; see [File API](../features/file-api.md) | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/file) |
 
 ## Adapters
 

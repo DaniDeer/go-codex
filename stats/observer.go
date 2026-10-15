@@ -279,6 +279,43 @@ type FileObserver interface {
 	// false for any error OTHER than the idempotent "already absent"
 	// case (which reports success=true — the postcondition holds).
 	RecordFileDelete(path string, success bool, duration time.Duration)
+
+	// RecordFileList is called once per api/file Lister[T] call (NOT
+	// once per entry) — success is false only on a backend-level
+	// listing failure, never because the directory was merely empty.
+	// Added alongside the other 5 api/file methods below — the SAME
+	// kind of direct, acknowledged breaking addition RecordFileDelete's
+	// own precedent established (see docs/roadmap/file-api.md).
+	RecordFileList(path string, success bool, count int, duration time.Duration)
+
+	// RecordFileExists is called once per api/file Exister[T] call —
+	// success is false ONLY on a genuine backend-level Stat failure;
+	// the "absent" case is success=true, mirroring RecordFileDelete's
+	// own "idempotent absence is still success" convention.
+	RecordFileExists(path string, success bool, duration time.Duration)
+
+	// RecordFileCopy is called once per api/file Copier[T] call,
+	// regardless of whether a native CopyingBackend fast path or the
+	// generic Read+Write fallback actually ran.
+	RecordFileCopy(srcPath, dstPath string, success bool, duration time.Duration)
+
+	// RecordFileMove mirrors RecordFileCopy for api/file Mover[T] —
+	// fires once regardless of which level of the MovingBackend/
+	// CopyingBackend/generic fallback cascade actually ran.
+	RecordFileMove(srcPath, dstPath string, success bool, duration time.Duration)
+
+	// RecordFileMkdir is called once per api/file MkdirCreator[T] call
+	// AND once per WriteOptions.CreateDirs=true Write call that
+	// actually invokes Backend.Mkdir — success=true for a backend's
+	// documented no-op case too (a no-op IS the correct, successful
+	// outcome there, not a failure).
+	RecordFileMkdir(path string, success bool, duration time.Duration)
+
+	// RecordFileBatchDelete is called ONCE per api/file BatchDeleter[T]
+	// call (NOT once per key) — mirrors RecordFileList's own
+	// once-per-call-not-once-per-item convention. successCount/
+	// failureCount are derived from the returned []BatchDeleteResult.
+	RecordFileBatchDelete(paths []string, successCount, failureCount int, duration time.Duration)
 }
 
 // SQLObserver is an optional extension to [Observer] for SQL adapter lifecycle
@@ -503,6 +540,30 @@ func (o *LoggingObserver) RecordFileDelete(path string, success bool, d time.Dur
 	o.logger.Debug("file delete", "path", path, "success", success, "ms", d.Milliseconds())
 }
 
+func (o *LoggingObserver) RecordFileList(path string, success bool, count int, d time.Duration) {
+	o.logger.Debug("file list", "path", path, "success", success, "count", count, "ms", d.Milliseconds())
+}
+
+func (o *LoggingObserver) RecordFileExists(path string, success bool, d time.Duration) {
+	o.logger.Debug("file exists", "path", path, "success", success, "ms", d.Milliseconds())
+}
+
+func (o *LoggingObserver) RecordFileCopy(srcPath, dstPath string, success bool, d time.Duration) {
+	o.logger.Debug("file copy", "src", srcPath, "dst", dstPath, "success", success, "ms", d.Milliseconds())
+}
+
+func (o *LoggingObserver) RecordFileMove(srcPath, dstPath string, success bool, d time.Duration) {
+	o.logger.Debug("file move", "src", srcPath, "dst", dstPath, "success", success, "ms", d.Milliseconds())
+}
+
+func (o *LoggingObserver) RecordFileMkdir(path string, success bool, d time.Duration) {
+	o.logger.Debug("file mkdir", "path", path, "success", success, "ms", d.Milliseconds())
+}
+
+func (o *LoggingObserver) RecordFileBatchDelete(paths []string, successCount, failureCount int, d time.Duration) {
+	o.logger.Debug("file batch delete", "count", len(paths), "success", successCount, "failure", failureCount, "ms", d.Milliseconds())
+}
+
 func (o *LoggingObserver) RecordValidation(table, op string, d time.Duration, err error) {
 	o.logger.Debug("sql validate", "table", table, "op", op, "ms", d.Milliseconds(), "err", err)
 }
@@ -612,6 +673,61 @@ func (f *fanout) RecordFileDelete(path string, success bool, d time.Duration) {
 	for _, o := range f.observers {
 		if fo, ok := o.(FileObserver); ok {
 			fo.RecordFileDelete(path, success, d)
+		}
+	}
+}
+
+// RecordFileList implements [FileObserver] — delegates to inner observers
+// that also implement it.
+func (f *fanout) RecordFileList(path string, success bool, count int, d time.Duration) {
+	for _, o := range f.observers {
+		if fo, ok := o.(FileObserver); ok {
+			fo.RecordFileList(path, success, count, d)
+		}
+	}
+}
+
+// RecordFileExists implements [FileObserver].
+func (f *fanout) RecordFileExists(path string, success bool, d time.Duration) {
+	for _, o := range f.observers {
+		if fo, ok := o.(FileObserver); ok {
+			fo.RecordFileExists(path, success, d)
+		}
+	}
+}
+
+// RecordFileCopy implements [FileObserver].
+func (f *fanout) RecordFileCopy(srcPath, dstPath string, success bool, d time.Duration) {
+	for _, o := range f.observers {
+		if fo, ok := o.(FileObserver); ok {
+			fo.RecordFileCopy(srcPath, dstPath, success, d)
+		}
+	}
+}
+
+// RecordFileMove implements [FileObserver].
+func (f *fanout) RecordFileMove(srcPath, dstPath string, success bool, d time.Duration) {
+	for _, o := range f.observers {
+		if fo, ok := o.(FileObserver); ok {
+			fo.RecordFileMove(srcPath, dstPath, success, d)
+		}
+	}
+}
+
+// RecordFileMkdir implements [FileObserver].
+func (f *fanout) RecordFileMkdir(path string, success bool, d time.Duration) {
+	for _, o := range f.observers {
+		if fo, ok := o.(FileObserver); ok {
+			fo.RecordFileMkdir(path, success, d)
+		}
+	}
+}
+
+// RecordFileBatchDelete implements [FileObserver].
+func (f *fanout) RecordFileBatchDelete(paths []string, successCount, failureCount int, d time.Duration) {
+	for _, o := range f.observers {
+		if fo, ok := o.(FileObserver); ok {
+			fo.RecordFileBatchDelete(paths, successCount, failureCount, d)
 		}
 	}
 }
@@ -810,6 +926,12 @@ func (NoopObserver) TagSpan(_ context.Context, _, _ string)                     
 func (NoopObserver) RecordFileRead(_ string, _ bool, _ time.Duration)               {}
 func (NoopObserver) RecordFileWrite(_ string, _ bool, _ time.Duration)              {}
 func (NoopObserver) RecordFileDelete(_ string, _ bool, _ time.Duration)             {}
+func (NoopObserver) RecordFileList(_ string, _ bool, _ int, _ time.Duration)        {}
+func (NoopObserver) RecordFileExists(_ string, _ bool, _ time.Duration)             {}
+func (NoopObserver) RecordFileCopy(_, _ string, _ bool, _ time.Duration)            {}
+func (NoopObserver) RecordFileMove(_, _ string, _ bool, _ time.Duration)            {}
+func (NoopObserver) RecordFileMkdir(_ string, _ bool, _ time.Duration)              {}
+func (NoopObserver) RecordFileBatchDelete(_ []string, _, _ int, _ time.Duration)    {}
 func (NoopObserver) RecordValidation(_, _ string, _ time.Duration, _ error)         {}
 func (NoopObserver) RecordMigration(_, _ string, _ int64, _ time.Duration, _ error) {}
 func (NoopObserver) RecordStreamItem(_ string, _ bool, _ time.Duration)             {}

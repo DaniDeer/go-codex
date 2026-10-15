@@ -1,8 +1,24 @@
 # File API — `api/file`
 
-> **Status:** Phase 1 design complete — not yet implemented. Phase 2
-> outlined (full design deferred until Phase 1 ships). Phases 3-4
-> planned. See "Roadmap phases" below for the full picture.
+> **Status:** Phase 1 PARTIALLY IMPLEMENTED. The `api/file` package (all 10
+> roles, `Client`, dual-accept dispatch, `Capability` model, `ErrorPattern`,
+> Observer integration) and `adapters/file.Backend` (the filesystem
+> implementation, including `CopyingBackend`/`MovingBackend` fast paths) are
+> fully built and tested — see `docs/features/file-api.md` and
+> `examples/file-api/main.go`. **NOT yet done**: migrating `ports.File[T]`/
+> `ports.Dir`/`ports/pattern.go`'s existing `os.*`-calling code to delegate
+> onto this new stack — that is a separate, higher-risk follow-up (the
+> existing `ports.File`/`adapters/file` functions continue to work exactly
+> as before, UNCHANGED, in the meantime). Two documented Phase 1 scope
+> reductions vs. the design below: (1) Router-group integration is a
+> SIMPLIFIED plain-prefix mechanism (`router.go`'s `WithRouter(prefix)`),
+> not yet the full `internal/router.Routable[Target]` integration
+> `api/rest`/`api/events`/`api/reqreply` use; (2) `ErrorPattern[E,B]` is
+> implemented but NOT auto-invoked by the dispatch core (unlike
+> `rest`/`events`/`reqreply`'s `ErrorPattern`, which IS auto-consulted).
+> Phase 2 outlined (full design deferred until Phase 1's ports migration
+> ships). Phases 3-4 planned. See "Roadmap phases" below for the full
+> picture.
 > [← Back to Roadmap](index.md)
 
 ## Motivation

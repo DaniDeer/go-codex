@@ -1,0 +1,381 @@
+package file_test
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+
+	adapterfile "github.com/DaniDeer/go-codex/adapters/file"
+	"github.com/DaniDeer/go-codex/api/file"
+	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/format"
+)
+
+type record struct {
+	Name  string
+	Value int
+}
+
+func recordCodec() codex.Codec[record] {
+	return codex.Struct[record](
+		codex.RequiredField("name", codex.String(),
+			func(r record) string { return r.Name },
+			func(r *record, v string) { r.Name = v }),
+		codex.RequiredField("value", codex.Int(),
+			func(r record) int { return r.Value },
+			func(r *record, v int) { r.Value = v }),
+	)
+}
+
+func newResource(t *testing.T, dir string) file.Resource[record] {
+	t.Helper()
+	return file.NewResource[record](filepath.Join(dir, "{name}.json"), format.JSON(recordCodec()),
+		file.PathParam{Name: "name"},
+	)
+}
+
+func TestClient_ReadCreateDelete_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	backend := adapterfile.NewBackend()
+	client := file.NewClient()
+	if err := client.Attach(backend); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	vars := map[string]string{"name": "alice"}
+
+	creator := res.WithCreate(file.Create{})
+	if err := client.Create(ctx, creator, record{Name: "alice", Value: 42}, vars); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	reader := res.WithRead(file.Read{})
+	gotAny, err := client.Read(ctx, reader, vars)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	got, ok := gotAny.(record)
+	if !ok {
+		t.Fatalf("Read: want record, got %T", gotAny)
+	}
+	if got.Name != "alice" || got.Value != 42 {
+		t.Fatalf("Read: got %+v", got)
+	}
+
+	deleter := res.WithDelete(file.Delete{})
+	existed, err := client.Delete(ctx, deleter, vars)
+	if err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if !existed {
+		t.Fatalf("Delete: want existed=true")
+	}
+
+	// Idempotent absence.
+	existed2, err := client.Delete(ctx, deleter, vars)
+	if err != nil {
+		t.Fatalf("Delete (2nd): %v", err)
+	}
+	if existed2 {
+		t.Fatalf("Delete (2nd): want existed=false")
+	}
+}
+
+func TestClient_Read_NotFound_ReturnsFileNotFoundError(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	reader := res.WithRead(file.Read{})
+	_, err := client.Read(context.Background(), reader, map[string]string{"name": "missing"})
+	var notFound file.FileNotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("want FileNotFoundError, got %v (%T)", err, err)
+	}
+}
+
+func TestClient_List_ReturnsDecodedEntries(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	creator := res.WithCreate(file.Create{})
+	for _, name := range []string{"a", "b"} {
+		if err := client.Create(ctx, creator, record{Name: name, Value: 1}, map[string]string{"name": name}); err != nil {
+			t.Fatalf("Create(%s): %v", name, err)
+		}
+	}
+	lister := res.WithList(file.List{})
+	gotAny, err := client.List(ctx, lister, nil)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	got, ok := gotAny.([]record)
+	if !ok {
+		t.Fatalf("List: want []record, got %T", gotAny)
+	}
+	if len(got) != 2 {
+		t.Fatalf("List: want 2 entries, got %d", len(got))
+	}
+}
+
+func TestClient_Exists_AbsentReturnsFalseNotError(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	exister := res.WithExists(file.Exists{})
+	_, ok, err := client.Exists(context.Background(), exister, map[string]string{"name": "ghost"})
+	if err != nil {
+		t.Fatalf("Exists: unexpected error %v", err)
+	}
+	if ok {
+		t.Fatalf("Exists: want ok=false for absent path")
+	}
+}
+
+func TestClient_Exists_PresentReturnsTrue(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	vars := map[string]string{"name": "bob"}
+	if err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "bob", Value: 1}, vars); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	_, ok, err := client.Exists(ctx, res.WithExists(file.Exists{}), vars)
+	if err != nil {
+		t.Fatalf("Exists: %v", err)
+	}
+	if !ok {
+		t.Fatalf("Exists: want ok=true for present path")
+	}
+}
+
+func TestClient_Copy_UsesNativeFastPathOnFilesystem(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	srcVars := map[string]string{"name": "src"}
+	dstVars := map[string]string{"name": "dst"}
+	if err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "src", Value: 7}, srcVars); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := client.Copy(ctx, res.WithCopy(file.Copy{}), srcVars, dstVars); err != nil {
+		t.Fatalf("Copy: %v", err)
+	}
+	gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), dstVars)
+	if err != nil {
+		t.Fatalf("Read dst: %v", err)
+	}
+	if got := gotAny.(record); got.Value != 7 {
+		t.Fatalf("Copy: dst value = %d, want 7", got.Value)
+	}
+	// Source must still exist after Copy.
+	if _, err := os.Stat(filepath.Join(dir, "src.json")); err != nil {
+		t.Fatalf("Copy: source should still exist: %v", err)
+	}
+}
+
+func TestClient_Move_UsesNativeRenameOnFilesystem(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	srcVars := map[string]string{"name": "src2"}
+	dstVars := map[string]string{"name": "dst2"}
+	if err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "src2", Value: 9}, srcVars); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := client.Move(ctx, res.WithMove(file.Move{}), srcVars, dstVars); err != nil {
+		t.Fatalf("Move: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "src2.json")); !os.IsNotExist(err) {
+		t.Fatalf("Move: source should no longer exist, stat err = %v", err)
+	}
+	gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), dstVars)
+	if err != nil {
+		t.Fatalf("Read dst: %v", err)
+	}
+	if got := gotAny.(record); got.Value != 9 {
+		t.Fatalf("Move: dst value = %d, want 9", got.Value)
+	}
+}
+
+func TestClient_Mkdir_CreatesMissingParents(t *testing.T) {
+	dir := t.TempDir()
+	nested := filepath.Join(dir, "a", "b", "c")
+	res := file.NewResource[record](nested, format.JSON(recordCodec()))
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	created, err := client.Mkdir(context.Background(), res.WithMkdir(file.Mkdir{}), nil)
+	if err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	if !created {
+		t.Fatalf("Mkdir: want created=true")
+	}
+	if info, err := os.Stat(nested); err != nil || !info.IsDir() {
+		t.Fatalf("Mkdir: directory not created: %v", err)
+	}
+}
+
+func TestClient_BatchDelete_PartialFailure_ReturnsPerKeyResults(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	if err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "exists", Value: 1}, map[string]string{"name": "exists"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	varsList := []map[string]string{
+		{"name": "exists"},
+		{"name": "absent"},
+	}
+	results, err := client.BatchDelete(ctx, res.WithBatchDelete(file.BatchDelete{}), varsList)
+	if err != nil {
+		t.Fatalf("BatchDelete: unexpected call-level error %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("BatchDelete: want 2 results, got %d", len(results))
+	}
+	if !results[0].Existed || results[0].Err != nil {
+		t.Fatalf("BatchDelete[0]: want existed=true, no error; got %+v", results[0])
+	}
+	if results[1].Existed || results[1].Err != nil {
+		t.Fatalf("BatchDelete[1]: want existed=false (idempotent absence), no error; got %+v", results[1])
+	}
+}
+
+func TestClient_Read_AcceptsRawBuilderOrPreBuiltHandle(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	vars := map[string]string{"name": "dual"}
+	if err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "dual", Value: 5}, vars); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	bareAny, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
+	if err != nil {
+		t.Fatalf("Read (bare builder): %v", err)
+	}
+
+	handle, err := res.WithRead(file.Read{}).Handle(client)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	handleAny, err := client.Read(ctx, handle, vars)
+	if err != nil {
+		t.Fatalf("Read (pre-built handle): %v", err)
+	}
+
+	if bareAny.(record) != handleAny.(record) {
+		t.Fatalf("dual-accept mismatch: bare=%+v handle=%+v", bareAny, handleAny)
+	}
+}
+
+func TestClient_Attach_Exclusive_SecondCallReturnsBackendAlreadyAttachedError(t *testing.T) {
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach (1st): %v", err)
+	}
+	err := client.Attach(adapterfile.NewBackend())
+	var already file.BackendAlreadyAttachedError
+	if !errors.As(err, &already) {
+		t.Fatalf("want BackendAlreadyAttachedError, got %v (%T)", err, err)
+	}
+}
+
+func TestClient_Read_NoBackendAttached_ReturnsNoBackendAttachedError(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	_, err := client.Read(context.Background(), res.WithRead(file.Read{}), map[string]string{"name": "x"})
+	var noBackend file.NoBackendAttachedError
+	if !errors.As(err, &noBackend) {
+		t.Fatalf("want NoBackendAttachedError, got %v (%T)", err, err)
+	}
+}
+
+func TestClient_Create_AccessModeReadOnly_RejectsBeforeBackendCall(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	creator := res.WithCreate(file.Create{}).WithCapabilities(file.AccessModeReadOnly)
+	err := client.Create(context.Background(), creator, record{Name: "ro", Value: 1}, map[string]string{"name": "ro"})
+	if err == nil {
+		t.Fatalf("want rejection error for AccessModeReadOnly Create")
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "ro.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("Create should NOT have reached the backend: file exists")
+	}
+}
+
+func TestPatcher_HandlePatch_AppliesPartialUpdate(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	vars := map[string]string{"name": "patchme"}
+	if err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "patchme", Value: 1}, vars); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	type valuePatch struct {
+		Value *int
+	}
+	patchCodec := codex.PartialStruct[valuePatch](
+		codex.PartialField("value", codex.Int(),
+			func(p valuePatch) *int { return p.Value },
+			func(p *valuePatch, v *int) { p.Value = v }),
+	)
+	newValue := 99
+	patcher := file.WithPatch(res, patchCodec, file.Patch{})
+	if err := client.Patch(ctx, patcher, valuePatch{Value: &newValue}, vars); err != nil {
+		t.Fatalf("Patch: %v", err)
+	}
+	gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
+	if err != nil {
+		t.Fatalf("Read after patch: %v", err)
+	}
+	got := gotAny.(record)
+	if got.Value != 99 || got.Name != "patchme" {
+		t.Fatalf("Patch: got %+v, want Value=99 Name=patchme (unchanged)", got)
+	}
+}
