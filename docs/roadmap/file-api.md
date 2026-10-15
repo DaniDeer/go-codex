@@ -25,12 +25,54 @@
 > See `docs/features/file-api.md` and `examples/file-api/main.go` for the
 > full, updated worked example.
 >
-> **NOT yet done**: migrating `ports.File[T]`/`ports.Dir`/
-> `ports/pattern.go`'s existing `os.*`-calling code to delegate onto this
-> new stack — that remains a separate, higher-risk follow-up (the existing
-> `ports.File`/`adapters/file` functions continue to work exactly as
-> before, UNCHANGED, in the meantime) — the ONLY item left in Phase 1's
-> scope. **Phase 1's own "Open design decisions" is now EMPTY** —
+> **Stage F — DONE for `ports.File[T]`'s `Read`/`Write`/`Delete`** (the
+> only 3 methods that called `os.*` directly; `Update`/`Patch`/
+> `ReadMerged`/`WriteHandle` compose them and needed no changes of their
+> own). Before this could be migrated, a "Stage F0" sub-round closed
+> several real parity gaps `api/file`'s dispatch core had relative to
+> `ports.File`'s existing, tested behavior: TraceObserver spans were
+> entirely unwired (now fixed — every dispatch-core function starts/ends
+> a span); `createdDirs` only reported the immediate parent directory,
+> not every missing ancestor (now fixed, matches `ports.File.Write`'s own
+> multi-level walk); `Client.Create`/`Patch`/`Delete`/`Mkdir` had NO
+> per-call options parameter at all — only attach-time `Capability` could
+> set `Perm`/`CreateDirs`/`Strict`/`DryRun` (now fixed via an optional
+> trailing variadic `...WriteOptions`/`...DeleteOptions`/`...MkdirOptions`
+> parameter on each); `DryRun`+`Strict` on Write/Delete didn't combine
+> correctly (now fixed to check Strict even under DryRun, in BOTH
+> `adapters/file.Backend` and the migration's own private backend);
+> `NewResource` didn't panic on multiple `"**"` glob segments like
+> `ports.NewFile` does (now fixed). `ports.File[T]`'s 12 error types are
+> now `type X = file.X` aliases onto `api/file`'s own identically-shaped
+> ones (verified field-for-field first). Because `adapters/file/binding.go`
+> itself imports `ports` (for its `SourceAdapter`/`SinkAdapter`/`IOAdapter`
+> bindings), `ports` cannot import `adapters/file` without an import cycle
+> — `ports/file_backend.go` defines a small, private, unexported
+> `osBackend` implementing `file.Backend`, a deliberate, disclosed
+> near-duplicate of `adapters/file.Backend`'s os.*-backed logic, used ONLY
+> by this delegation. `File[T]` builds a FRESH `Resource[T]`+`Client` on
+> every call rather than caching one (confirmed: `File[T]` is an immutable
+> value struct with value-receiver methods, so a cached `*Client`/
+> `sync.Once` field would risk a copy-after-first-use hazard; building
+> fresh is cheap — no I/O, pure Go struct construction). The full
+> pre-existing `ports/file_test.go` (2281 lines) suite passes UNMODIFIED —
+> the regression proof. **Two small, disclosed, untested-by-existing-tests
+> behavior differences remain** (neither test-enforced, so neither blocks
+> this migration): (1) `FileDeleteError`'s underlying `existed` value on a
+> generic (non-not-found) `os.Remove` failure was hardcoded `true` in
+> `ports.File.Delete`'s original code; the delegated path returns `false`
+> instead (more semantically honest, but a disclosed divergence); (2) the
+> original `Strict` Write used an atomic `O_CREATE|O_EXCL` open, while the
+> delegated path uses a `os.Stat`-then-`os.WriteFile` sequence (a
+> non-atomic TOCTOU window under concurrent writers — fine for this
+> package's existing single-threaded test coverage, flagged for anyone
+> relying on Strict as a concurrency-safety mechanism).
+>
+> **NOT yet done**: migrating `ports.Dir`/`ports/pattern.go`'s existing
+> `os.*`-calling code (`FilePattern`/`PluginFilePattern`) to bind against
+> `api/file.Resource`'s `WithList` — `ports.Dir`'s own methods are
+> UNCHANGED, still calling `os.*` directly. **Phase 1's own "Open design
+> decisions" is now EMPTY** —
 > round 7 closed both remaining items (BoundMiddleware's metadata
 > integration for `Create`/`Patch`; `List`'s path-var merge field
 > support) — see "Resolved round 7" below. Phase 2 outlined (full design

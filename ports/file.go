@@ -4,17 +4,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/DaniDeer/go-codex/api/file"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/internal/templatematch"
 	"github.com/DaniDeer/go-codex/schema"
 	"github.com/DaniDeer/go-codex/stats"
 )
+
+// Note: "log/slog" is deliberately NOT imported here anymore — every
+// error type's LogValue() now lives on its api/file counterpart (see
+// FilePatchNotSupportedError's doc comment for the Stage F alias
+// rationale); only its mention survives in doc-comment prose above.
 
 // ── FilePathParam ─────────────────────────────────────────────────────────────
 
@@ -492,6 +497,12 @@ func (fh File[T]) MatchPath(path string) (map[string]string, error) {
 //   - [FilePathParamError] / [MissingFilePathVarError] — path variable validation failure (no I/O)
 //   - [FileReadError] — os.ReadFile failure
 //   - [FileDecodeError] — format decode/validation failure (wraps [codex.ValidationErrors])
+//
+// Read delegates to [file.Client.Read] against a private, internal
+// api/file [Resource]+[Client] built fresh on every call (see Stage F's
+// migration note at FilePatchNotSupportedError's doc comment — File is
+// an immutable value type with value-receiver methods, so building
+// fresh rather than caching avoids any sync.Once-vs-copy hazard).
 func (fh File[T]) Read(vars map[string]string, opts FileOptions) (T, error) {
 	var zero T
 	obs := opts.Observer
@@ -507,34 +518,32 @@ func (fh File[T]) Read(vars map[string]string, opts FileOptions) (T, error) {
 		return zero, err // FilePathParamError or MissingFilePathVarError — no I/O
 	}
 
-	var opErr error
-	traceCtx := opts.Context
-	if traceCtx == nil {
-		traceCtx = context.Background()
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	if to, ok := obs.(stats.TraceObserver); ok {
-		traceCtx = to.StartSpan(traceCtx, "file.read", path)
-		defer func() { to.EndSpan(traceCtx, opErr) }()
-	}
+	ctx = stats.WithObserver(ctx, obs)
 
-	start := time.Now()
-	data, err := os.ReadFile(path)
+	res := file.NewResource[T](path, fh.format)
+	client := file.NewClient()
+	_ = client.Attach(osBackend{}) // fresh Client — Attach never fails here
+	gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), nil)
 	if err != nil {
-		opErr = FileReadError{Path: path, Err: err}
-		recordFileRead(obs, path, false, time.Since(start))
-		return zero, opErr
+		// ports.File.Read has always reported ANY read failure — including
+		// "file does not exist" — as FileReadError (never FileNotFoundError,
+		// unlike Delete/Write's Strict paths); preserve that exact, tested
+		// behavior rather than letting api/file's own FileNotFoundError
+		// surface here. See TestRead_FileNotFound_ReturnsFileReadError.
+		var notFound FileNotFoundError
+		if errors.As(err, &notFound) {
+			return zero, FileReadError{Path: path, Err: os.ErrNotExist}
+		}
+		if decErr, ok := err.(FileDecodeError); ok {
+			stats.ReportErrors(obs, "file", decErr.Err)
+		}
+		return zero, err
 	}
-
-	v, err := fh.format.Unmarshal(data)
-	if err != nil {
-		opErr = FileDecodeError{Path: path, Err: err}
-		stats.ReportErrors(obs, "file", err)
-		recordFileRead(obs, path, false, time.Since(start))
-		return zero, opErr
-	}
-
-	recordFileRead(obs, path, true, time.Since(start))
-	return v, nil
+	return gotAny.(T), nil
 }
 
 // ReadMerged is the decode-merge convenience: it reads and decodes exactly
@@ -587,6 +596,10 @@ func (fh File[T]) ReadMerged(vars map[string]string, opts FileOptions) (T, error
 //   - [FileEncodeError] — format encode/validation failure
 //   - [FileAlreadyExistsError] — file already exists AND [FileOptions.Strict] is set
 //   - [FileWriteError] — os.MkdirAll (when CreateDirs is set) or os.WriteFile failure
+//
+// Write delegates to [file.Client.Create] against a private, internal
+// api/file [Resource]+[Client] built fresh on every call — see Read's
+// identical Stage F migration note.
 func (fh File[T]) Write(vars map[string]string, v T, opts FileOptions) (createdDirs []string, err error) {
 	obs := opts.Observer
 	if obs == nil && opts.Context != nil {
@@ -595,102 +608,34 @@ func (fh File[T]) Write(vars map[string]string, v T, opts FileOptions) (createdD
 	if obs == nil {
 		obs = stats.NoopObserver{}
 	}
-	perm := opts.Perm
-	if perm == 0 {
-		perm = 0644
-	}
-	dirPerm := opts.DirPerm
-	if dirPerm == 0 {
-		dirPerm = 0755
-	}
 
 	path, buildErr := fh.BuildPath(vars)
 	if buildErr != nil {
 		return nil, buildErr
 	}
 
-	var opErr error
-	traceCtx := opts.Context
-	if traceCtx == nil {
-		traceCtx = context.Background()
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	if to, ok := obs.(stats.TraceObserver); ok {
-		traceCtx = to.StartSpan(traceCtx, "file.write", path)
-		defer func() { to.EndSpan(traceCtx, opErr) }()
-	}
+	ctx = stats.WithObserver(ctx, obs)
 
-	data, encErr := fh.format.Marshal(v)
-	if encErr != nil {
-		opErr = FileEncodeError{Path: path, Err: encErr}
-		stats.ReportErrors(obs, "file", encErr)
-		recordFileWrite(obs, path, false, 0)
-		return nil, opErr
-	}
-
-	start := time.Now()
-
-	if opts.CreateDirs {
-		createdDirs = missingParentDirs(filepath.Dir(path))
-	}
-
-	if opts.DryRun {
-		if opts.Strict {
-			if _, statErr := os.Stat(path); statErr == nil {
-				opErr = FileAlreadyExistsError{Path: path}
-				recordFileWrite(obs, path, false, time.Since(start))
-				return createdDirs, opErr
-			} else if !os.IsNotExist(statErr) {
-				opErr = FileWriteError{Path: path, Err: statErr}
-				recordFileWrite(obs, path, false, time.Since(start))
-				return createdDirs, opErr
-			}
+	res := file.NewResource[T](path, fh.format)
+	client := file.NewClient()
+	_ = client.Attach(osBackend{}) // fresh Client — Attach never fails here
+	createdDirs, err = client.Create(ctx, res.WithCreate(file.Create{}), v, nil, file.WriteOptions{
+		Perm:       opts.Perm,
+		CreateDirs: opts.CreateDirs,
+		DirPerm:    opts.DirPerm,
+		Strict:     opts.Strict,
+		DryRun:     opts.DryRun,
+	})
+	if err != nil {
+		if encErr, ok := err.(FileEncodeError); ok {
+			stats.ReportErrors(obs, "file", encErr.Err)
 		}
-		recordFileWrite(obs, path, true, time.Since(start))
-		return createdDirs, nil
+		return createdDirs, err
 	}
-
-	if opts.CreateDirs {
-		if err := os.MkdirAll(filepath.Dir(path), dirPerm); err != nil {
-			opErr = FileWriteError{Path: path, Err: err}
-			recordFileWrite(obs, path, false, time.Since(start))
-			return nil, opErr
-		}
-	}
-
-	if opts.Strict {
-		f, openErr := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
-		if openErr != nil {
-			if os.IsExist(openErr) {
-				opErr = FileAlreadyExistsError{Path: path}
-			} else {
-				opErr = FileWriteError{Path: path, Err: openErr}
-			}
-			recordFileWrite(obs, path, false, time.Since(start))
-			return createdDirs, opErr
-		}
-		_, writeErr := f.Write(data)
-		closeErr := f.Close()
-		if writeErr != nil {
-			opErr = FileWriteError{Path: path, Err: writeErr}
-			recordFileWrite(obs, path, false, time.Since(start))
-			return createdDirs, opErr
-		}
-		if closeErr != nil {
-			opErr = FileWriteError{Path: path, Err: closeErr}
-			recordFileWrite(obs, path, false, time.Since(start))
-			return createdDirs, opErr
-		}
-		recordFileWrite(obs, path, true, time.Since(start))
-		return createdDirs, nil
-	}
-
-	if err := os.WriteFile(path, data, perm); err != nil {
-		opErr = FileWriteError{Path: path, Err: err}
-		recordFileWrite(obs, path, false, time.Since(start))
-		return createdDirs, opErr
-	}
-
-	recordFileWrite(obs, path, true, time.Since(start))
 	return createdDirs, nil
 }
 
@@ -707,6 +652,10 @@ func (fh File[T]) Write(vars map[string]string, v T, opts FileOptions) (createdD
 //   - [FileNotFoundError] — file did not exist AND [FileOptions.Strict] is set
 //   - [FileDeleteError] — os.Remove failure OTHER than "already absent"
 //     (e.g. permission denied, path is actually a non-empty directory)
+//
+// Delete delegates to [file.Client.Delete] against a private, internal
+// api/file [Resource]+[Client] built fresh on every call — see Read's
+// identical Stage F migration note.
 func (fh File[T]) Delete(vars map[string]string, opts FileOptions) (existed bool, err error) {
 	obs := opts.Observer
 	if obs == nil && opts.Context != nil {
@@ -721,52 +670,20 @@ func (fh File[T]) Delete(vars map[string]string, opts FileOptions) (existed bool
 		return false, buildErr
 	}
 
-	var opErr error
-	traceCtx := opts.Context
-	if traceCtx == nil {
-		traceCtx = context.Background()
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	if to, ok := obs.(stats.TraceObserver); ok {
-		traceCtx = to.StartSpan(traceCtx, "file.delete", path)
-		defer func() { to.EndSpan(traceCtx, opErr) }()
-	}
+	ctx = stats.WithObserver(ctx, obs)
 
-	start := time.Now()
-
-	if opts.DryRun {
-		_, statErr := os.Stat(path)
-		existed = statErr == nil
-		if statErr != nil && !os.IsNotExist(statErr) {
-			opErr = FileDeleteError{Path: path, Err: statErr}
-			recordFileDelete(obs, path, false, time.Since(start))
-			return false, opErr
-		}
-		if !existed && opts.Strict {
-			opErr = FileNotFoundError{Path: path}
-			recordFileDelete(obs, path, false, time.Since(start))
-			return false, opErr
-		}
-		recordFileDelete(obs, path, true, time.Since(start))
-		return existed, nil
-	}
-
-	removeErr := os.Remove(path)
-	if removeErr == nil {
-		recordFileDelete(obs, path, true, time.Since(start))
-		return true, nil
-	}
-	if os.IsNotExist(removeErr) {
-		if opts.Strict {
-			opErr = FileNotFoundError{Path: path}
-			recordFileDelete(obs, path, false, time.Since(start))
-			return false, opErr
-		}
-		recordFileDelete(obs, path, true, time.Since(start))
-		return false, nil
-	}
-	opErr = FileDeleteError{Path: path, Err: removeErr}
-	recordFileDelete(obs, path, false, time.Since(start))
-	return true, opErr
+	res := file.NewResource[T](path, fh.format)
+	client := file.NewClient()
+	_ = client.Attach(osBackend{}) // fresh Client — Attach never fails here
+	existed, err = client.Delete(ctx, res.WithDelete(file.Delete{}), nil, file.DeleteOptions{
+		Strict: opts.Strict,
+		DryRun: opts.DryRun,
+	})
+	return existed, err
 }
 
 // WriteHandle is the single-call convenience wrapper around [File.Write]:
@@ -1067,21 +984,12 @@ func (fh File[T]) Patch(vars map[string]string, patch map[string]any, opts FileO
 //	if errors.As(err, &patchErr) {
 //	    slog.Warn("patch not supported", "error", patchErr)
 //	}
-type FilePatchNotSupportedError struct {
-	// Path is the concrete file path after template substitution.
-	Path string
-}
-
-func (e FilePatchNotSupportedError) Error() string {
-	return fmt.Sprintf("patch file %q: format does not support partial patch (use JSON, YAML, or TOML)", e.Path)
-}
-
-// LogValue implements [slog.LogValuer] for structured logging.
-func (e FilePatchNotSupportedError) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("path", e.Path),
-	)
-}
+//
+// FilePatchNotSupportedError is an alias for [file.FilePatchNotSupportedError]
+// — see api/file's "Stage F" migration note at the top of this file for why
+// ports' error types are aliased onto api/file's identically-shaped ones
+// rather than kept as separate duplicate types.
+type FilePatchNotSupportedError = file.FilePatchNotSupportedError
 
 // ── Observer helpers ──────────────────────────────────────────────────────────
 
@@ -1203,49 +1111,19 @@ func matchFileTemplate(template, path string) (map[string]string, error) {
 //	        "cause", paramErr.Err,
 //	    )
 //	}
-type FilePathParamError struct {
-	Name  string // placeholder name (without braces)
-	Value string // the value that failed validation
-	Err   error  // underlying constraint or codec error
-}
-
-func (e FilePathParamError) Error() string {
-	return fmt.Sprintf("file path variable {%s}: invalid value %q: %s", e.Name, e.Value, e.Err)
-}
-
-// Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
-func (e FilePathParamError) Unwrap() error { return e.Err }
-
-// LogValue implements [slog.LogValuer] for structured logging.
-func (e FilePathParamError) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("param", e.Name),
-		slog.String("value", e.Value),
-		slog.Any("cause", e.Err),
-	)
-}
+//
+// FilePathParamError is an alias for [file.FilePathParamError] — see the
+// Stage F migration note at FilePatchNotSupportedError's doc comment.
+type FilePathParamError = file.FilePathParamError
 
 // FilePathMismatchError is returned by [File.MatchPath] when a concrete
 // path does not match the template's structure (wrong number of segments,
 // or literal text does not match). Mirrors adapters/mqtt's
 // TopicMismatchError exactly (same fields, same rationale) — no wrapped
 // cause, this is a self-contained structural mismatch.
-type FilePathMismatchError struct {
-	Template string
-	Path     string
-}
-
-func (e FilePathMismatchError) Error() string {
-	return fmt.Sprintf("file path %q does not match template %q", e.Path, e.Template)
-}
-
-// LogValue implements [slog.LogValuer] for structured logging.
-func (e FilePathMismatchError) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("template", e.Template),
-		slog.String("path", e.Path),
-	)
-}
+// FilePathMismatchError is an alias for [file.FilePathMismatchError] — see
+// the Stage F migration note at FilePatchNotSupportedError's doc comment.
+type FilePathMismatchError = file.FilePathMismatchError
 
 // MissingFilePathVarError is returned by [File.BuildPath] when a {varName}
 // placeholder has no corresponding entry in the vars map.
@@ -1256,186 +1134,57 @@ func (e FilePathMismatchError) LogValue() slog.Value {
 //	if errors.As(err, &missingErr) {
 //	    slog.Warn("missing file path variable", "param", missingErr.Name)
 //	}
-type MissingFilePathVarError struct {
-	Name string // placeholder name (without braces)
-}
-
-func (e MissingFilePathVarError) Error() string {
-	return fmt.Sprintf("missing value for file path variable {%s}", e.Name)
-}
-
-// LogValue implements [slog.LogValuer] for structured logging.
-func (e MissingFilePathVarError) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("param", e.Name),
-	)
-}
-
-// FileReadError is returned by [File.Read] when [os.ReadFile] fails.
 //
-// Use [errors.As] to extract the path and underlying OS error.
-type FileReadError struct {
-	Path string
-	Err  error
-}
+// MissingFilePathVarError is an alias for [file.MissingFilePathVarError] —
+// see the Stage F migration note at FilePatchNotSupportedError's doc comment.
+type MissingFilePathVarError = file.MissingFilePathVarError
 
-func (e FileReadError) Error() string { return fmt.Sprintf("read file %q: %s", e.Path, e.Err) }
-
-// Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
-func (e FileReadError) Unwrap() error { return e.Err }
-
-// LogValue implements [slog.LogValuer] for structured logging.
-func (e FileReadError) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("path", e.Path),
-		slog.Any("cause", e.Err),
-	)
-}
+// FileReadError is an alias for [file.FileReadError] — see the Stage F
+// migration note at FilePatchNotSupportedError's doc comment.
+type FileReadError = file.FileReadError
 
 // FileDecodeError is returned by [File.Read] when format decoding or codec
 // validation fails after a successful [os.ReadFile].
 //
 // The wrapped error is typically a [codex.ValidationErrors] — use [errors.As]
 // to extract per-field details.
-type FileDecodeError struct {
-	Path string
-	Err  error
-}
+// FileDecodeError is an alias for [file.FileDecodeError] — see the Stage F
+// migration note at FilePatchNotSupportedError's doc comment.
+type FileDecodeError = file.FileDecodeError
 
-func (e FileDecodeError) Error() string {
-	return fmt.Sprintf("decode file %q: %s", e.Path, e.Err)
-}
+// FileEncodeError is an alias for [file.FileEncodeError] — see the Stage F
+// migration note at FilePatchNotSupportedError's doc comment.
+type FileEncodeError = file.FileEncodeError
 
-// Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
-func (e FileDecodeError) Unwrap() error { return e.Err }
+// FileWriteError is an alias for [file.FileWriteError] — see the Stage F
+// migration note at FilePatchNotSupportedError's doc comment.
+type FileWriteError = file.FileWriteError
 
-// LogValue implements [slog.LogValuer] for structured logging.
-func (e FileDecodeError) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("path", e.Path),
-		slog.Any("cause", e.Err),
-	)
-}
+// FileAlreadyExistsError is an alias for [file.FileAlreadyExistsError] — see
+// the Stage F migration note at FilePatchNotSupportedError's doc comment.
+type FileAlreadyExistsError = file.FileAlreadyExistsError
 
-// FileEncodeError is returned by [File.Write] when format encoding or codec
-// validation fails before any write to the filesystem.
-type FileEncodeError struct {
-	Path string
-	Err  error
-}
+// FileDeleteError is an alias for [file.FileDeleteError] — see the Stage F
+// migration note at FilePatchNotSupportedError's doc comment.
+type FileDeleteError = file.FileDeleteError
 
-func (e FileEncodeError) Error() string {
-	return fmt.Sprintf("encode for file %q: %s", e.Path, e.Err)
-}
+// FileNotFoundError is an alias for [file.FileNotFoundError] — returned by
+// [File.Delete] when [FileOptions.Strict] is set and the file did not
+// exist (Delete's default is idempotent "ensure absent" success; Strict
+// opts out of that), and by [File.Read]/[File.ReadMerged] when the file
+// does not exist. See the Stage F migration note at
+// FilePatchNotSupportedError's doc comment.
+type FileNotFoundError = file.FileNotFoundError
 
-// Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
-func (e FileEncodeError) Unwrap() error { return e.Err }
-
-// LogValue implements [slog.LogValuer] for structured logging.
-func (e FileEncodeError) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("path", e.Path),
-		slog.Any("cause", e.Err),
-	)
-}
-
-// FileWriteError is returned by [File.Write] when [os.WriteFile] fails after
-// successful encoding.
-type FileWriteError struct {
-	Path string
-	Err  error
-}
-
-func (e FileWriteError) Error() string { return fmt.Sprintf("write file %q: %s", e.Path, e.Err) }
-
-// Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
-func (e FileWriteError) Unwrap() error { return e.Err }
-
-// LogValue implements [slog.LogValuer] for structured logging.
-func (e FileWriteError) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("path", e.Path),
-		slog.Any("cause", e.Err),
-	)
-}
-
-// FileAlreadyExistsError is returned by [File.Write] when [FileOptions.Strict]
-// is set and the file already exists (O_CREATE|O_EXCL semantics) — no write
-// is performed.
-type FileAlreadyExistsError struct {
-	Path string
-}
-
-func (e FileAlreadyExistsError) Error() string {
-	return fmt.Sprintf("file %q already exists (Strict)", e.Path)
-}
-
-// LogValue implements [slog.LogValuer] for structured logging.
-func (e FileAlreadyExistsError) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("path", e.Path),
-	)
-}
-
-// FileDeleteError is returned by [File.Delete] when [os.Remove] fails for a
-// reason OTHER than "already absent" (e.g. permission denied, path is
-// actually a non-empty directory).
-type FileDeleteError struct {
-	Path string
-	Err  error
-}
-
-func (e FileDeleteError) Error() string { return fmt.Sprintf("delete file %q: %s", e.Path, e.Err) }
-
-// Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
-func (e FileDeleteError) Unwrap() error { return e.Err }
-
-// LogValue implements [slog.LogValuer] for structured logging.
-func (e FileDeleteError) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("path", e.Path),
-		slog.Any("cause", e.Err),
-	)
-}
-
-// FileNotFoundError is returned by [File.Delete] when [FileOptions.Strict]
-// is set and the file did not exist — Delete's default is idempotent
-// "ensure absent" success; Strict opts out of that.
-type FileNotFoundError struct {
-	Path string
-}
-
-func (e FileNotFoundError) Error() string {
-	return fmt.Sprintf("file %q does not exist (Strict)", e.Path)
-}
-
-// LogValue implements [slog.LogValuer] for structured logging.
-func (e FileNotFoundError) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("path", e.Path),
-	)
-}
-
-// FileWildcardBuildError is returned by [File.BuildPath] when the
-// template contains a glob segment ("**", or a segment with '*'/'?'/'[')
-// — see [internal/templatematch.IsGlobEnabled]. Building or matching a
-// SINGLE concrete path from a template that can match multiple paths is
+// FileWildcardBuildError is an alias for [file.FileWildcardBuildError] —
+// returned by [File.BuildPath] when the template contains a glob segment
+// ("**", or a segment with '*'/'?'/'[') — see
+// [internal/templatematch.IsGlobEnabled]. Building or matching a SINGLE
+// concrete path from a template that can match multiple paths is
 // undefined; [File.MatchPath] still works against a glob-enabled
 // template (matching an externally-discovered path), but BuildPath does
 // not, since File has no glob-discovery mechanism of its own — compose
 // [Dir.List]'s glob-discovery mode (discover) with [File.Read]/
-// [File.Write]/[File.Delete] (per-entry) instead.
-type FileWildcardBuildError struct {
-	Template string
-}
-
-func (e FileWildcardBuildError) Error() string {
-	return fmt.Sprintf("file path template %q is glob-enabled: BuildPath has no meaning for a template that can match multiple paths", e.Template)
-}
-
-// LogValue implements [slog.LogValuer] for structured logging.
-func (e FileWildcardBuildError) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("template", e.Template),
-	)
-}
+// [File.Write]/[File.Delete] (per-entry) instead. See the Stage F
+// migration note at FilePatchNotSupportedError's doc comment.
+type FileWildcardBuildError = file.FileWildcardBuildError
