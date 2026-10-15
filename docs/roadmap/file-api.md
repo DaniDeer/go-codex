@@ -25,8 +25,8 @@ implementation the way `adapters/nethttp`/`adapters/mqtt5` are for
 This doc designs `api/file`: a new `api/*` package applying the SAME
 three-layer model (declare → attach adapter → dispatch) every other
 go-codex boundary already uses, with file-shaped verbs (Read/Create/
-Patch/Delete/List/Update/Exists/Copy/Move/Mkdir instead of GET/POST/
-PATCH/DELETE/GET-collection), full Router-group and declarative-
+Patch/Delete/List/Update/Exists/Copy/Move/Mkdir/BatchDelete instead of
+GET/POST/PATCH/DELETE/GET-collection), full Router-group and declarative-
 Middleware parity, Observer integration, a cross-backend permission
 capability, and — the ultimate goal — true backend transparency: the
 SAME declared `Resource[T]` works unchanged whether the concrete storage
@@ -91,8 +91,11 @@ end, after "Out of scope."
 No new dependency for Phase 1 — `adapters/file`'s migration uses the SAME
 stdlib `os`/`io` calls it (transitively, via `ports.File`) already uses
 today, just reached through the new `file.Backend` interface instead of
-inline. A future `adapters/s3`/`adapters/smb` adapter would each bring
-their OWN dependency decision in their OWN roadmap doc.
+inline. **Corrected this round** (was stale after the round-4 phase
+restructuring): `adapters/s3`/`adapters/smb` no longer get their own
+future roadmap doc — their toolchain/dependency decisions (which AWS SDK,
+which SMB client library) are deferred to Phase 2's own full design pass,
+tracked in THIS doc's "Phase 2 — outline" section, not a separate one.
 
 ## API surface
 
@@ -291,7 +294,54 @@ calling convention is `respAny, err := client.Call(ctx, route, req)`
 then a plain `resp := respAny.(ComputeResp)` by the caller — Go
 generics cannot add a type parameter to a method, so `Client.Call`/
 `Client.Publish` stay `any`-typed by necessity, and the caller supplies
-the type assertion. `api/file` mirrors this EXACT shape, not a new one:
+the type assertion. `api/file` mirrors this EXACT shape, not a new one.
+
+**Correction (Phase 1 pre-implementation review)**: an earlier draft of
+this section claimed every dispatch method's `any`-typed role parameter
+MUST be a pre-built `*ReadHandle[T]` (i.e. the caller always calls
+`.Handle(client)` first). Re-verified against the ACTUAL precedent and
+found this backwards: `events.Transport.Publish`'s own doc comment
+states `pub`'s dynamic type is `Publisher[T]` — the RAW, pre-`.Handle()`
+builder — confirmed by a real example
+(`routes.PlainReadingsPub = PlainReadingsChannel.WithPublish(events.Publish{...})`
+passed DIRECTLY to `Client.Publish`, no `.Handle()` call anywhere);
+`reqreply.Client.CallAsync`'s own doc example does the same
+(`client.CallAsync(ctx, ComputeRoute, ComputeReq{...})` — the raw
+declared `Route`). `.Handle(client, opts...)`/`.ClientHandle(opts...)`
+are OPTIONAL steps, used ONLY when extra composition is needed (Router
+grouping, middleware stacking — confirmed via `reqreply`'s OWN
+`routes.ComputeRoute.ClientHandle(reqreply.WithRouter(...))` usage).
+`file.Client`'s dispatch methods are corrected below to accept EITHER
+form — a **dual-accept** contract, mirroring `reqreply.Client.Call`'s
+confirmed dual-acceptance exactly:
+
+- **The common case** (no Router grouping, no extra per-call
+  middleware/options): pass the bare role builder directly —
+  `client.Read(ctx, myResource.WithRead(file.Read{}), vars)` — zero
+  ceremony, matching `events.Client.Publish`'s own common-case usage.
+- **The Router-grouped case**: register the role's Handle ONCE via
+  `.Handle(client, file.WithRouter(router))` (mirrors
+  `reqreply.ClientHandle(reqreply.WithRouter(...))` exactly) and pass
+  THAT built `*ReadHandle[T]` to every subsequent `Client.Read` call
+  instead of the bare builder — the Handle already carries the
+  resolved, router-prefixed path, so path composition has exactly ONE
+  construction point (at `.Handle()` time), never re-derived per call.
+  This is the direct resolution of the `plan-a-new-codex-feature`
+  skill's own mandatory "Router composition" pre-implementation
+  check (the `rest.Redirect` real-bug precedent it cites): there is
+  only ONE place a Router-grouped path gets built, and every dispatch
+  call downstream of it automatically inherits the correct path — no
+  call site can forget to re-supply routing, because there is nothing
+  to re-supply.
+
+`Client`'s dispatch methods type-switch internally: if the `any`
+argument is the bare builder type (`Reader[T]`), they call
+`.Handle(c)` themselves with ZERO additional options (equivalent to
+the non-Router-grouped case); if it's already a `*ReadHandle[T]`, they
+use it directly. A caller therefore NEVER needs to call `.Handle()`
+manually unless they need Router grouping or extra per-call options —
+exactly mirroring how a `reqreply` caller only reaches for
+`.ClientHandle(opts...)` when `opts` is non-empty:
 
 ```go
 // Client mirrors events.Client/reqreply.Client's own role exactly: the
@@ -310,17 +360,29 @@ func NewClient(opts ...ClientOpt) *Client
 func (c *Client) Attach(backend Backend) error
 
 // Read performs r's declared Read role against c's attached Backend.
-// r is the role value built via Resource.WithRead(...).Handle(c) (any,
-// reflectively dispatched — SAME shape as Client.Publish's pub
-// parameter); vars supplies the path template's variables (mirrors
-// ports.File[T].Read's own existing vars map[string]string parameter).
-// Returns the decoded T boxed as any — caller asserts it, exactly like
-// reqreply.Call's respAny.(ComputeResp) idiom:
+// r is DUAL-ACCEPT (any, reflectively dispatched — SAME shape as
+// Client.Publish's pub parameter): EITHER the bare Reader[T] returned
+// by Resource.WithRead(...) (the common case — Read builds the Handle
+// internally with no extra options) OR an explicitly pre-built
+// *ReadHandle[T] from Reader[T].Handle(c, opts...) (the Router-grouped/
+// extra-options case — see the dual-accept discussion above). vars
+// supplies the path template's variables (mirrors ports.File[T].Read's
+// own existing vars map[string]string parameter). Returns the decoded
+// T boxed as any — caller asserts it, exactly like reqreply.Call's
+// respAny.(ComputeResp) idiom:
 //
-//	entryAny, err := client.Read(ctx, reader, map[string]string{"id": "42"})
+//	// Common case — bare builder, no Router grouping:
+//	entryAny, err := client.Read(ctx, myResource.WithRead(file.Read{}), map[string]string{"id": "42"})
 //	entry := entryAny.(MyRecord)
+//
+//	// Router-grouped case — pre-built Handle carries the resolved path:
+//	readHandle, _ := myResource.WithRead(file.Read{}).Handle(client, file.WithRouter(router))
+//	entryAny, err := client.Read(ctx, readHandle, map[string]string{"id": "42"})
 func (c *Client) Read(ctx context.Context, r any, vars map[string]string) (any, error)
 
+// Create's cr is dual-accept exactly like Read's r (bare Creator[T] or
+// pre-built *CreateHandle[T]) — this dual-accept note applies IDENTICALLY
+// to every method below; not repeated per-method.
 func (c *Client) Create(ctx context.Context, cr any, val any, vars map[string]string) error
 
 func (c *Client) Patch(ctx context.Context, p any, patch any, vars map[string]string) error
@@ -349,7 +411,12 @@ func (c *Client) Exists(ctx context.Context, e any, vars map[string]string) (Ent
 // template would only be needed if source/destination could have
 // STRUCTURALLY different path shapes (different param names/types) —
 // not a requirement anyone has asked for, and inventing it now would be
-// scope creep this doc deliberately avoids (see "Out of scope").
+// scope creep this doc deliberately avoids (see "Out of scope"). If
+// cp/mv is a Router-grouped *CopierHandle[T]/*MoverHandle[T], BOTH
+// srcVars and dstVars are built against that SAME resolved,
+// router-prefixed path template — there is no way to mix a
+// Router-grouped source with a non-grouped destination, since both
+// sides come from the ONE Handle passed in.
 func (c *Client) Copy(ctx context.Context, cp any, srcVars, dstVars map[string]string) error
 func (c *Client) Move(ctx context.Context, mv any, srcVars, dstVars map[string]string) error
 
@@ -366,7 +433,13 @@ func (c *Client) Mkdir(ctx context.Context, m any, vars map[string]string) (crea
 // success/failure response shape. err is non-nil ONLY for a
 // call-level failure (e.g. Security rejection before ANY key is
 // attempted) — a per-key failure lives in its own BatchDeleteResult.Err,
-// never escalated to the call-level err.
+// never escalated to the call-level err. UNLIKE Move (which DELEGATES
+// its fallback to Copier[T]'s own dispatch function), BatchDelete's
+// fallback calls Backend.DeleteBytes DIRECTLY in a loop, NOT through
+// Deleter[T]'s own dispatch — deliberate, not an oversight: Security is
+// checked ONCE per BATCH (see "Per-role attachment surface" above), so
+// routing each key through Deleter[T]'s FULL dispatch (which would
+// re-check Security per key) would be wrong, not just redundant.
 func (c *Client) BatchDelete(ctx context.Context, bd any, varsList []map[string]string) ([]BatchDeleteResult, error)
 
 // BatchDeleteResult is one varsList entry's outcome — Existed mirrors
@@ -407,8 +480,8 @@ type Backend interface {
     ReadBytes(ctx context.Context, path string) ([]byte, error)
 
     // WriteBytes writes path's content. opts carries the backend-
-    // agnostic subset of today's FileOptions (CreateDirs/DirPerm/Perm/
-    // Strict/DryRun) that EVERY backend can plausibly honor — a backend
+    // agnostic subset of today's FileOptions that EVERY backend can
+    // plausibly honor (see the WriteOptions struct below) — a backend
     // that genuinely cannot honor one (e.g. S3 has no directory-
     // permission concept) documents it as a no-op, never an error.
     WriteBytes(ctx context.Context, path string, data []byte, opts WriteOptions) (createdDirs []string, err error)
@@ -525,9 +598,54 @@ type Entry struct {
     ModTime time.Time
 }
 
+// WriteOptions (ADDED explicitly this round — previously only
+// prose-described, an inconsistency with MkdirOptions's own full block
+// below, now fixed) mirrors today's ports.File FileOptions as closely
+// as possible for Create/Patch. Perm/DirPerm/CreateDirs/Strict/DryRun
+// are kept VERBATIM from FileOptions (NOT replaced by Capability) —
+// see "Capability vs. per-call option precedence" below for how Perm
+// interacts with an attach-time AccessMode/NativePOSIXMode Capability
+// when BOTH are supplied for the same role.
+type WriteOptions struct {
+    // Perm is the permission used when creating a new file. Defaults to
+    // 0644 when zero — IDENTICAL default to today's FileOptions.Perm.
+    Perm os.FileMode
+    // CreateDirs, when true, creates any missing parent directories
+    // (via Backend.Mkdir) before writing — IDENTICAL semantics to
+    // today's FileOptions.CreateDirs, now implemented IN TERMS OF
+    // Backend.Mkdir (see Mkdir's own doc comment above) rather than a
+    // separate inline os.MkdirAll call.
+    CreateDirs bool
+    // DirPerm is the permission used for directories CreateDirs creates.
+    // Defaults to 0755 when zero. Has no effect when CreateDirs is false.
+    DirPerm os.FileMode
+    // Strict, when true, requires path to NOT already exist
+    // (FileAlreadyExistsError instead of silently overwriting) —
+    // IDENTICAL to today's FileOptions.Strict Write-side semantics.
+    Strict bool
+    // DryRun, when true, reports which directories WOULD be created
+    // WITHOUT creating them or writing the file — IDENTICAL to today's
+    // FileOptions.DryRun Write-side semantics.
+    DryRun bool
+}
+
+// DeleteOptions mirrors the backend-agnostic subset of today's
+// FileOptions relevant to Delete.
+type DeleteOptions struct {
+    // Strict, when true, requires path to have existed (FileNotFoundError
+    // instead of idempotent "ensure absent" success) — IDENTICAL to
+    // today's FileOptions.Strict Delete-side semantics.
+    Strict bool
+    // DryRun, when true, reports what WOULD happen WITHOUT removing the
+    // file — IDENTICAL to today's FileOptions.DryRun Delete-side
+    // semantics.
+    DryRun bool
+}
+
 // MkdirOptions mirrors the backend-agnostic subset of today's
-// FileOptions.DirPerm — see the Capability section below for why raw
-// POSIX permission bits are NOT the primary mechanism going forward.
+// FileOptions.DirPerm — see "Capability vs. per-call option precedence"
+// below for how NativePOSIXMode here interacts with an attach-time
+// NativePOSIXMode Capability.
 type MkdirOptions struct {
     // NativePOSIXMode, when non-nil, is passed to the backend's own
     // permission-setting call when (and ONLY when) the backend
@@ -536,6 +654,27 @@ type MkdirOptions struct {
     NativePOSIXMode *os.FileMode
 }
 ```
+
+**Capability vs. per-call option precedence (resolved this round — Phase
+1 pre-implementation review)**: `WriteOptions.Perm`/`MkdirOptions.
+NativePOSIXMode` and the `Capability`-based `AccessMode`/`NativePOSIXMode`
+(declared at role-attach time, see "`file.Capability`" below) are BOTH
+kept — this is NOT redundant, it mirrors `ports.File`'s own existing
+per-call `FileOptions` exactly while ALSO offering the new, declarative
+attach-time mechanism. When a role has an attach-time `Capability`
+value, **the Capability ALWAYS wins** over whatever the per-call option
+says — a declared, attach-time contract (visible to anyone reading the
+`Resource`'s declaration) must not be silently overridable by a
+less-visible per-call option. Concretely: if a role declares
+`Capabilities: []Capability{AccessModeReadOnly}` at attach time, a
+`Create`/`Delete`/`Move`/`Mkdir` call is rejected at the dispatch layer
+regardless of what `WriteOptions`/`DeleteOptions`/`MkdirOptions` says —
+there is no per-call escape hatch around a declared `AccessMode`. The
+SAME precedence applies to `NativePOSIXMode`: if BOTH an attach-time
+`NativePOSIXMode` Capability AND a per-call `MkdirOptions.
+NativePOSIXMode` are supplied, the Capability's value is what actually
+gets passed to `Backend.Mkdir` — the per-call field is only consulted
+when NO attach-time Capability was declared for that role.
 
 `adapters/file` is migrated to implement `file.Backend` against `os.*` —
 its EXISTING stream-bridge functions (`ScanAdapter`/`DrainWriteAdapter`/
@@ -717,8 +856,8 @@ own copy):
   `Client.Attach` call.
 - `NoBackendAttachedError{}` — mirrors
   `events.NoTransportAttachedError{}`; returned by `Read`/`Create`/
-  `Patch`/`Delete`/`List`/`Exists`/`Copy`/`Move`/`Mkdir` when `Attach`
-  was never called.
+  `Patch`/`Delete`/`List`/`Exists`/`Copy`/`Move`/`Mkdir`/`BatchDelete`
+  when `Attach` was never called.
 - `BackendTypeMismatchError{Expected, Got string}` — mirrors
   `events.TransportTypeMismatchError`; returned when `val`/`patch`'s
   dynamic type doesn't match the role's declared `T`/`P`.
@@ -808,9 +947,24 @@ new observer extension needed for either.
   value type UNCHANGED — a `Router.Group("files/{tenant}")` composes a
   path PREFIX onto every `Resource[T]` registered under it, mirroring
   `rest`/`events`/`reqreply`'s identical prefix-composition semantics.
-  Needs its own "Design decisions — resolved for `api/file`" subsection
-  appended to `d-0008` once implemented (the SAME per-pattern-closed-
-  decisions structure that doc already uses 3 times).
+  **Resolved this round (Phase 1 pre-implementation review) — the
+  skill's own mandatory "Router composition" pre-implementation check**
+  (`plan-a-new-codex-feature`'s worked `rest.Redirect` bug precedent:
+  never let a construction site silently skip Router-group prefixing):
+  path composition has exactly ONE construction point, matching
+  `file.Client`'s dual-accept design above — a Router-grouped role is
+  registered via `reader.Handle(client, file.WithRouter(router))` ONCE,
+  producing a `*ReadHandle[T]` that already carries the resolved,
+  prefixed path; every `Client.Read(ctx, readHandle, vars)` call
+  downstream reuses THAT Handle, never re-deriving the path or
+  re-supplying `WithRouter(...)`. A caller CANNOT forget to apply
+  Router-group composition at a later call site, because there is no
+  later construction site at all — passing the bare, non-Router-grouped
+  `Reader[T]` builder directly to `Client.Read` (the common case) is the
+  ONLY other option, and it is unambiguous: no Router group was ever
+  involved. Needs its own "Design decisions — resolved for `api/file`"
+  subsection appended to `d-0008` once implemented (the SAME
+  per-pattern-closed-decisions structure that doc already uses 3 times).
 - **Declarative Middleware**: reuses `middleware.Middleware[In,Out]`/
   `BoundMiddleware`-style codec-backed attachment (`d-0003`/`d-0007`),
   realized here as `ReadBoundMW`/`CreateBoundMW`/`PatchBoundMW`/
@@ -869,6 +1023,9 @@ new observer extension needed for either.
 | `TestBatchDeleter_UsesNativeBatchDeletingBackendWhenAvailable` | A fake `Backend` ALSO implementing `BatchDeletingBackend` has `DeleteBytesBatch` called ONCE with all paths, never N individual `DeleteBytes` calls |
 | `TestBatchDeleter_FallsBackToSequentialDeleteBytes` | A fake `Backend` NOT implementing `BatchDeletingBackend` gets N individual `DeleteBytes` calls, one per `varsList` entry, each independently collected into its own result |
 | `TestFileObserver_RecordFileBatchDelete_CalledOnceNotPerKey` | `RecordFileBatchDelete` fires exactly once per `BatchDelete` call (mirrors `RecordFileList`'s own once-per-call convention), with correct `successCount`/`failureCount` |
+| `TestClient_Read_AcceptsRawBuilderOrPreBuiltHandle` | `Client.Read` produces the IDENTICAL result whether passed a bare `Reader[T]` or a pre-built `*ReadHandle[T]` for a NON-Router-grouped `Resource` — proves dual-accept is a true no-op distinction in the common case |
+| `TestClient_Read_RouterGroupedResource_RequiresPreBuiltHandleForCorrectPath` | A `Resource` registered under a `Router.Group` built via `reader.Handle(client, file.WithRouter(router))` resolves the CORRECT, prefixed path; passing the BARE (non-Router-grouped) builder for the SAME resource resolves the UN-prefixed path instead — proves the dual-accept design's path-composition contract is exactly as documented, not accidentally identical in both cases |
+| `TestWriteOptions_Perm_OverriddenByAttachTimeAccessModeCapability` | A role declaring `AccessModeReadOnly` at attach time rejects a `Create`/`Write` call regardless of what `WriteOptions` says — proves the "Capability always wins over per-call option" precedence rule |
 | `ExampleResource_read` / `ExampleResource_create` / `ExampleResource_copy` | pkg.go.dev-facing worked examples |
 
 ## Files to create
@@ -1059,6 +1216,48 @@ above for each item's own specific open questions, not repeated here):
   is the lowest-risk item) — see "Phase 2 — outline" above; not resolved
   here by design, since full Phase 2 design is explicitly deferred until
   Phase 1 ships.
+
+**Resolved round 5** (a critical pre-implementation consistency review
+of Phase 1's ENTIRE design, done explicitly BEFORE planning Phase 1's
+implementation, per the skill's own Mode-3 pre-implementation checklist
+— found 3 major + 4 minor issues accumulated across rounds 2-4):
+
+- **`file.Client`'s dispatch-method parameter contract was factually
+  wrong about its own cited precedent** — claimed every role parameter
+  MUST be pre-built via `.Handle(client)`; re-verified against the REAL
+  `events`/`reqreply` code and found the opposite (the raw builder is
+  passed directly in the common case). **Resolved as "dual-accept"**:
+  every dispatch method accepts EITHER the bare role builder OR an
+  explicitly pre-built Handle, mirroring `reqreply.Client.Call`'s own
+  confirmed dual-acceptance exactly — see "`file.Client`" above for the
+  corrected doc comments.
+- **The skill's own mandatory "Router composition" pre-implementation
+  check was left completely unanswered** — resolved as a direct
+  consequence of the dual-accept design above: a Router-grouped role is
+  registered via `.Handle(client, file.WithRouter(router))` ONCE,
+  producing a Handle that already carries the resolved path; every
+  subsequent dispatch call reuses THAT Handle — exactly ONE path-
+  construction point, eliminating the `rest.Redirect`-shaped bug class
+  the skill's check exists to catch. See "Router/Middleware integration"
+  above for the full resolution.
+- **`NativePOSIXMode` had two entry points (`Capability` vs. per-call
+  `MkdirOptions` field) with no stated precedence**, and
+  `WriteOptions`/`DeleteOptions` were referenced constantly but never
+  actually shown as Go structs (an inconsistency with `MkdirOptions`'s
+  own full block). **Resolved**: both `WriteOptions`/`DeleteOptions` now
+  get explicit struct blocks (keeping `Perm`/`DirPerm`/`CreateDirs`/
+  `Strict`/`DryRun`, matching today's `ports.File.FileOptions` closely);
+  "**Capability always wins over per-call option**" is now the
+  explicitly stated precedence rule for BOTH `AccessMode` (vs. any
+  write/delete attempt) and `NativePOSIXMode` (vs.
+  `MkdirOptions.NativePOSIXMode`) — see "`file.Backend`"'s new
+  "Capability vs. per-call option precedence" subsection above.
+- 4 minor staleness fixes also applied: Motivation's verb list and
+  `NoBackendAttachedError`'s enumeration both now include `BatchDelete`;
+  the "Toolchain" section no longer contradicts the Phase 2
+  restructuring; `BatchDelete`'s intentionally-non-delegating fallback
+  (unlike `Move`'s delegation to `Copier[T]`) is now explicitly
+  contrasted and justified in `Client.BatchDelete`'s own doc comment.
 
 **Resolved round 4** (an S3 verb-completeness audit against the FULL,
 authoritative AWS API operations list — not just the round-2 6-op core
