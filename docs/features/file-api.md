@@ -36,6 +36,22 @@ notes := file.NewResource[Note]("notes/{id}.json", format.JSON(noteCodec),
 )
 ```
 
+`PathParam` accepts a `codex.Codec[string]` validator via `.WithCodec`,
+mirroring `rest.PathParam.WithCodec`/`events.TopicParam.WithCodec` exactly —
+a value failing the codec is rejected at path-build time, before any
+Backend call:
+
+```go
+notes := file.NewResource[Note]("notes/{id}.json", format.JSON(noteCodec),
+    file.PathParam{Name: "id"}.WithCodec(codex.String().Refine(validate.Slug)),
+)
+```
+
+Use `file.NewPathParam[T, V](name, codec, get, set)` instead when the
+validated value should ALSO be merged directly into one of `T`'s own
+fields (mirrors `rest.NewPathParam`/`events.NewTopicParam`'s merge-field
+pattern).
+
 ## Attaching a backend and dispatching
 
 ```go

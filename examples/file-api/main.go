@@ -33,6 +33,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/file"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/validate"
 )
 
 // Note is the domain type stored, one JSON file per note.
@@ -60,8 +61,13 @@ func main() {
 	defer os.RemoveAll(dir)
 
 	// 1. Declare the resource: WHAT a note looks like (path template + codec).
+	// file.PathParam.WithCodec validates every {id} path variable against a
+	// codex.Codec[string] BEFORE the path is built — mirrors
+	// rest.PathParam.WithCodec/events.TopicParam.WithCodec exactly. Here,
+	// every id must be a URL-friendly slug (lowercase alphanumeric +
+	// hyphens); an invalid id never reaches the backend at all.
 	notes := file.NewResource[Note](filepath.Join(dir, "{id}.json"), format.JSON(noteCodec()),
-		file.PathParam{Name: "id"},
+		file.PathParam{Name: "id"}.WithCodec(codex.String().Refine(validate.Slug)),
 	)
 
 	// 2. Attach a backend: WHERE notes actually live. Swapping this one
@@ -105,6 +111,16 @@ func main() {
 	var notFound file.FileNotFoundError
 	if errors.As(err, &notFound) {
 		fmt.Println("confirmed: missing note reports FileNotFoundError")
+	}
+
+	// A path variable failing its PathParam.WithCodec constraint never
+	// reaches the backend at all — rejected at path-build time.
+	err = client.Create(ctx, notes.WithCreate(file.Create{}), Note{Title: "x", Body: "y"}, map[string]string{"id": "Not Valid!"})
+	var pathParamErr file.FilePathParamError
+	if errors.As(err, &pathParamErr) {
+		fmt.Println("confirmed: invalid id (\"Not Valid!\") rejected by PathParam.WithCodec(validate.Slug)")
+	} else {
+		log.Fatalf("expected FilePathParamError for invalid id, got: %v", err)
 	}
 
 	// 6. List — enumerates the resource's parent directory.
