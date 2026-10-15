@@ -301,3 +301,80 @@ func AssertObservability(t *testing.T, backend file.Backend, spy *SpyObserver) {
 		t.Fatalf("want exactly 1 successful RecordFileRead call, got %+v", spy.Reads)
 	}
 }
+
+// ── Scenario 8: BoundMiddleware metadata integration (Create) ──────────
+
+type recordWithOwner struct {
+	ID    string
+	Value int
+	Owner string
+}
+
+func recordWithOwnerCodec() codex.Codec[recordWithOwner] {
+	return codex.Struct[recordWithOwner](
+		codex.RequiredField("id", codex.String(),
+			func(r recordWithOwner) string { return r.ID },
+			func(r *recordWithOwner, v string) { r.ID = v }),
+		codex.RequiredField("value", codex.Int(),
+			func(r recordWithOwner) int { return r.Value },
+			func(r *recordWithOwner, v int) { r.Value = v }),
+	)
+}
+
+type metaIn struct{ Owner string }
+type metaOut struct{ Owner string }
+
+// AssertMetadataIntegration proves the file-metadata axis AND its
+// BoundCreateMiddleware integration both work end-to-end against
+// backend: a resource-level MergedMetadataParam persists/retrieves
+// Owner automatically, and an attached BoundCreateMiddleware can
+// override it via WithMetadataOut (a newer capability than the other 7
+// scenarios, added once BoundMiddleware's metadata integration shipped).
+func AssertMetadataIntegration(t *testing.T, backend file.Backend) {
+	t.Helper()
+	client, dir := newClient(t, backend)
+	res := file.NewResource[recordWithOwner](filepath.Join(dir, "{id}.json"), format.JSON(recordWithOwnerCodec()),
+		file.PathParam{Name: "id"},
+		file.NewMetadataParam("owner", codex.String(),
+			func(r recordWithOwner) string { return r.Owner },
+			func(r *recordWithOwner, v string) { r.Owner = v }),
+	)
+	ctx := context.Background()
+
+	t.Run("resource_level_metadata_round_trips", func(t *testing.T) {
+		vars := map[string]string{"id": "plain"}
+		if err := client.Create(ctx, res.WithCreate(file.Create{}), recordWithOwner{ID: "plain", Value: 1, Owner: "alice"}, vars); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		if got := gotAny.(recordWithOwner); got.Owner != "alice" {
+			t.Fatalf("Owner = %q, want alice", got.Owner)
+		}
+	})
+
+	t.Run("bound_middleware_metadata_out_overrides", func(t *testing.T) {
+		bm := file.NewBoundCreateMiddleware[recordWithOwner, metaIn, metaOut](
+			file.NewDeclaration[metaIn, metaOut]("owner-override", codex.Struct[metaIn](), codex.Struct[metaOut]()),
+			func(ctx context.Context, v *recordWithOwner, in metaIn) (metaOut, error) {
+				return metaOut{Owner: "overridden"}, nil
+			},
+		).WithMetadataOut(file.NewMetadataParam("owner", codex.String(),
+			func(m metaOut) string { return m.Owner },
+			func(m *metaOut, v string) { m.Owner = v }))
+		vars := map[string]string{"id": "gated"}
+		creator := res.WithCreate(file.Create{}).CreateBoundMW(bm)
+		if err := client.Create(ctx, creator, recordWithOwner{ID: "gated", Value: 1, Owner: "original"}, vars); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		if got := gotAny.(recordWithOwner); got.Owner != "overridden" {
+			t.Fatalf("Owner = %q, want overridden (BoundCreateMiddleware's WithMetadataOut should win)", got.Owner)
+		}
+	})
+}

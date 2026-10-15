@@ -56,7 +56,10 @@ func BoundSecurityReadMiddleware[T, In, Out any](schemeName string, scheme Secur
 	}
 }
 
-func (bm BoundReadMiddleware[T, In, Out]) invoke(ctx context.Context, v any) (map[string][]string, error) {
+// invoke ignores md and never returns outMD — Read's metadata is only
+// available AFTER the Backend call, so In stays permanently zero-valued
+// here (see Middleware's own doc comment for the full rationale).
+func (bm BoundReadMiddleware[T, In, Out]) invoke(ctx context.Context, v any, _ map[string]string) (map[string]string, map[string][]string, error) {
 	var in In
 	var tp *T
 	if v != nil {
@@ -64,9 +67,9 @@ func (bm BoundReadMiddleware[T, In, Out]) invoke(ctx context.Context, v any) (ma
 	}
 	out, err := bm.fn(ctx, tp, in)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return grantedScopesOf(out), nil
+	return nil, grantedScopesOf(out), nil
 }
 func (bm BoundReadMiddleware[T, In, Out]) boundName() string { return bm.mw.Name }
 
@@ -76,7 +79,7 @@ func (bm BoundReadMiddleware[T, In, Out]) boundSecurity() *middleware.SecurityDe
 }
 
 type readBoundMWShape[T any] interface {
-	invoke(ctx context.Context, v any) (map[string][]string, error)
+	invoke(ctx context.Context, v any, md map[string]string) (map[string]string, map[string][]string, error)
 	boundName() string
 	boundSecurity() *middleware.SecurityDeclaration
 	// boundTWitness is a deliberate, never-called no-op whose SOLE
@@ -140,17 +143,51 @@ func BoundSecurityCreateMiddleware[T, In, Out any](schemeName string, scheme Sec
 	}
 }
 
-func (bm BoundCreateMiddleware[T, In, Out]) invoke(ctx context.Context, v any) (map[string][]string, error) {
+// WithMetadataIn declares that p's metadata key should be decoded into
+// In before Fn runs — forwards to the embedded [Middleware.WithMetadataIn].
+// Create is one of only 2 roles (the other: Patch) where this ever
+// actually populates In — see [Middleware]'s own doc comment.
+func (bm BoundCreateMiddleware[T, In, Out]) WithMetadataIn(p MergedMetadataParam[In]) BoundCreateMiddleware[T, In, Out] {
+	bm.mw = bm.mw.WithMetadataIn(p)
+	return bm
+}
+
+// WithMetadataOut declares that Out's corresponding field should be
+// encoded back into a metadata key once Fn returns — forwards to the
+// embedded [Middleware.WithMetadataOut].
+func (bm BoundCreateMiddleware[T, In, Out]) WithMetadataOut(p MergedMetadataParam[Out]) BoundCreateMiddleware[T, In, Out] {
+	bm.mw = bm.mw.WithMetadataOut(p)
+	return bm
+}
+
+// invoke decodes md into In (via Middleware.WithMetadataIn, when
+// declared) BEFORE calling Fn, and encodes Fn's Out into outMD (via
+// WithMetadataOut, when declared) AFTER — Create's caller-supplied value
+// and its intended metadata both already exist pre-Backend-call, so
+// there's no ordering conflict here (see Middleware's own doc comment).
+func (bm BoundCreateMiddleware[T, In, Out]) invoke(ctx context.Context, v any, md map[string]string) (map[string]string, map[string][]string, error) {
 	var in In
+	if len(bm.mw.metadataFieldsIn) > 0 && md != nil {
+		if err := codex.DecodeVars(&in, md, bm.mw.metadataFieldsIn...); err != nil {
+			return nil, nil, err
+		}
+	}
 	var tp *T
 	if v != nil {
 		tp, _ = v.(*T)
 	}
 	out, err := bm.fn(ctx, tp, in)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return grantedScopesOf(out), nil
+	var outMD map[string]string
+	if len(bm.mw.metadataFieldsOut) > 0 {
+		outMD, err = codex.EncodeVars(out, bm.mw.metadataFieldsOut...)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	return outMD, grantedScopesOf(out), nil
 }
 func (bm BoundCreateMiddleware[T, In, Out]) boundName() string { return bm.mw.Name }
 
@@ -160,7 +197,7 @@ func (bm BoundCreateMiddleware[T, In, Out]) boundSecurity() *middleware.Security
 }
 
 type createBoundMWShape[T any] interface {
-	invoke(ctx context.Context, v any) (map[string][]string, error)
+	invoke(ctx context.Context, v any, md map[string]string) (map[string]string, map[string][]string, error)
 	boundName() string
 	boundSecurity() *middleware.SecurityDeclaration
 	// boundTWitness is a deliberate, never-called no-op whose SOLE
@@ -204,17 +241,60 @@ func BoundSecurityPatchMiddleware[T, In, Out any](schemeName string, scheme Secu
 	}
 }
 
-func (bm BoundPatchMiddleware[T, In, Out]) invoke(ctx context.Context, v any) (map[string][]string, error) {
+// WithMetadataIn forwards to the embedded [Middleware.WithMetadataIn] —
+// see [BoundPatchMiddleware]'s own invoke doc comment for why this
+// NEVER actually populates In in practice (Patch's BASE T value isn't
+// available at invoke time) — kept for structural symmetry with
+// [BoundCreateMiddleware.WithMetadataIn] and so a future fix (if the
+// ordering constraint is ever relaxed) needs no new API.
+func (bm BoundPatchMiddleware[T, In, Out]) WithMetadataIn(p MergedMetadataParam[In]) BoundPatchMiddleware[T, In, Out] {
+	bm.mw = bm.mw.WithMetadataIn(p)
+	return bm
+}
+
+// WithMetadataOut forwards to the embedded [Middleware.WithMetadataOut]
+// — UNLIKE WithMetadataIn, this DOES work for Patch (Fn can compute an
+// Out value independent of In).
+func (bm BoundPatchMiddleware[T, In, Out]) WithMetadataOut(p MergedMetadataParam[Out]) BoundPatchMiddleware[T, In, Out] {
+	bm.mw = bm.mw.WithMetadataOut(p)
+	return bm
+}
+
+// invoke shares BoundCreateMiddleware's exact metadata-in/out logic,
+// but in practice md is ALWAYS nil for Patch (so In stays permanently
+// zero-valued): unlike Create, Patch's BASE T value — the thing
+// metadata would be derived FROM via deriveWriteMetadata — doesn't
+// exist yet at invoke time, since it's only known after reading+merging
+// the existing resource, a Backend call that must happen AFTER this
+// Security gate. A discovered, honest correction to the original
+// "Create/Patch both get full metadata integration" assumption — Patch
+// structurally cannot populate In, for the same reason Read/List
+// cannot (see patchCore's own call site). WithMetadataOut-side encoding
+// still works independently (Fn can compute an Out value — and
+// therefore a metadata contribution — WITHOUT needing In populated).
+func (bm BoundPatchMiddleware[T, In, Out]) invoke(ctx context.Context, v any, md map[string]string) (map[string]string, map[string][]string, error) {
 	var in In
+	if len(bm.mw.metadataFieldsIn) > 0 && md != nil {
+		if err := codex.DecodeVars(&in, md, bm.mw.metadataFieldsIn...); err != nil {
+			return nil, nil, err
+		}
+	}
 	var tp *T
 	if v != nil {
 		tp, _ = v.(*T)
 	}
 	out, err := bm.fn(ctx, tp, in)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return grantedScopesOf(out), nil
+	var outMD map[string]string
+	if len(bm.mw.metadataFieldsOut) > 0 {
+		outMD, err = codex.EncodeVars(out, bm.mw.metadataFieldsOut...)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	return outMD, grantedScopesOf(out), nil
 }
 func (bm BoundPatchMiddleware[T, In, Out]) boundName() string { return bm.mw.Name }
 
@@ -224,7 +304,7 @@ func (bm BoundPatchMiddleware[T, In, Out]) boundSecurity() *middleware.SecurityD
 }
 
 type patchBoundMWShape[T any] interface {
-	invoke(ctx context.Context, v any) (map[string][]string, error)
+	invoke(ctx context.Context, v any, md map[string]string) (map[string]string, map[string][]string, error)
 	boundName() string
 	boundSecurity() *middleware.SecurityDeclaration
 	// boundTWitness is a deliberate, never-called no-op whose SOLE
@@ -268,7 +348,10 @@ func BoundSecurityListMiddleware[T, In, Out any](schemeName string, scheme Secur
 	}
 }
 
-func (bm BoundListMiddleware[T, In, Out]) invoke(ctx context.Context, v any) (map[string][]string, error) {
+// invoke ignores md and never returns outMD — same rationale as
+// BoundReadMiddleware's own invoke (List's metadata is only available
+// AFTER the Backend call).
+func (bm BoundListMiddleware[T, In, Out]) invoke(ctx context.Context, v any, _ map[string]string) (map[string]string, map[string][]string, error) {
 	var in In
 	var tp *T
 	if v != nil {
@@ -276,9 +359,9 @@ func (bm BoundListMiddleware[T, In, Out]) invoke(ctx context.Context, v any) (ma
 	}
 	out, err := bm.fn(ctx, tp, in)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return grantedScopesOf(out), nil
+	return nil, grantedScopesOf(out), nil
 }
 func (bm BoundListMiddleware[T, In, Out]) boundName() string { return bm.mw.Name }
 
@@ -288,7 +371,7 @@ func (bm BoundListMiddleware[T, In, Out]) boundSecurity() *middleware.SecurityDe
 }
 
 type listBoundMWShape[T any] interface {
-	invoke(ctx context.Context, v any) (map[string][]string, error)
+	invoke(ctx context.Context, v any, md map[string]string) (map[string]string, map[string][]string, error)
 	boundName() string
 	boundSecurity() *middleware.SecurityDeclaration
 	// boundTWitness is a deliberate, never-called no-op whose SOLE
@@ -337,13 +420,13 @@ func BoundSecurityDeleteMiddleware[In, Out any](schemeName string, scheme Securi
 	}
 }
 
-func (bm BoundDeleteMiddleware[In, Out]) invoke(ctx context.Context, _ any) (map[string][]string, error) {
+func (bm BoundDeleteMiddleware[In, Out]) invoke(ctx context.Context, _ any, _ map[string]string) (map[string]string, map[string][]string, error) {
 	var in In
 	out, err := bm.fn(ctx, in)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return grantedScopesOf(out), nil
+	return nil, grantedScopesOf(out), nil
 }
 func (bm BoundDeleteMiddleware[In, Out]) boundName() string { return bm.mw.Name }
 func (bm BoundDeleteMiddleware[In, Out]) boundSecurity() *middleware.SecurityDeclaration {
@@ -351,7 +434,7 @@ func (bm BoundDeleteMiddleware[In, Out]) boundSecurity() *middleware.SecurityDec
 }
 
 type noTBoundMWShape interface {
-	invoke(ctx context.Context, v any) (map[string][]string, error)
+	invoke(ctx context.Context, v any, md map[string]string) (map[string]string, map[string][]string, error)
 	boundName() string
 	boundSecurity() *middleware.SecurityDeclaration
 }
@@ -388,13 +471,13 @@ func BoundSecurityExistsMiddleware[In, Out any](schemeName string, scheme Securi
 	}
 }
 
-func (bm BoundExistsMiddleware[In, Out]) invoke(ctx context.Context, _ any) (map[string][]string, error) {
+func (bm BoundExistsMiddleware[In, Out]) invoke(ctx context.Context, _ any, _ map[string]string) (map[string]string, map[string][]string, error) {
 	var in In
 	out, err := bm.fn(ctx, in)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return grantedScopesOf(out), nil
+	return nil, grantedScopesOf(out), nil
 }
 func (bm BoundExistsMiddleware[In, Out]) boundName() string { return bm.mw.Name }
 func (bm BoundExistsMiddleware[In, Out]) boundSecurity() *middleware.SecurityDeclaration {
@@ -433,13 +516,13 @@ func BoundSecurityCopyMiddleware[In, Out any](schemeName string, scheme Security
 	}
 }
 
-func (bm BoundCopyMiddleware[In, Out]) invoke(ctx context.Context, _ any) (map[string][]string, error) {
+func (bm BoundCopyMiddleware[In, Out]) invoke(ctx context.Context, _ any, _ map[string]string) (map[string]string, map[string][]string, error) {
 	var in In
 	out, err := bm.fn(ctx, in)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return grantedScopesOf(out), nil
+	return nil, grantedScopesOf(out), nil
 }
 func (bm BoundCopyMiddleware[In, Out]) boundName() string { return bm.mw.Name }
 func (bm BoundCopyMiddleware[In, Out]) boundSecurity() *middleware.SecurityDeclaration {
@@ -478,13 +561,13 @@ func BoundSecurityMoveMiddleware[In, Out any](schemeName string, scheme Security
 	}
 }
 
-func (bm BoundMoveMiddleware[In, Out]) invoke(ctx context.Context, _ any) (map[string][]string, error) {
+func (bm BoundMoveMiddleware[In, Out]) invoke(ctx context.Context, _ any, _ map[string]string) (map[string]string, map[string][]string, error) {
 	var in In
 	out, err := bm.fn(ctx, in)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return grantedScopesOf(out), nil
+	return nil, grantedScopesOf(out), nil
 }
 func (bm BoundMoveMiddleware[In, Out]) boundName() string { return bm.mw.Name }
 func (bm BoundMoveMiddleware[In, Out]) boundSecurity() *middleware.SecurityDeclaration {
@@ -523,13 +606,13 @@ func BoundSecurityMkdirMiddleware[In, Out any](schemeName string, scheme Securit
 	}
 }
 
-func (bm BoundMkdirMiddleware[In, Out]) invoke(ctx context.Context, _ any) (map[string][]string, error) {
+func (bm BoundMkdirMiddleware[In, Out]) invoke(ctx context.Context, _ any, _ map[string]string) (map[string]string, map[string][]string, error) {
 	var in In
 	out, err := bm.fn(ctx, in)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return grantedScopesOf(out), nil
+	return nil, grantedScopesOf(out), nil
 }
 func (bm BoundMkdirMiddleware[In, Out]) boundName() string { return bm.mw.Name }
 func (bm BoundMkdirMiddleware[In, Out]) boundSecurity() *middleware.SecurityDeclaration {
@@ -569,13 +652,13 @@ func BoundSecurityBatchDeleteMiddleware[In, Out any](schemeName string, scheme S
 	}
 }
 
-func (bm BoundBatchDeleteMiddleware[In, Out]) invoke(ctx context.Context, _ any) (map[string][]string, error) {
+func (bm BoundBatchDeleteMiddleware[In, Out]) invoke(ctx context.Context, _ any, _ map[string]string) (map[string]string, map[string][]string, error) {
 	var in In
 	out, err := bm.fn(ctx, in)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return grantedScopesOf(out), nil
+	return nil, grantedScopesOf(out), nil
 }
 func (bm BoundBatchDeleteMiddleware[In, Out]) boundName() string { return bm.mw.Name }
 func (bm BoundBatchDeleteMiddleware[In, Out]) boundSecurity() *middleware.SecurityDeclaration {

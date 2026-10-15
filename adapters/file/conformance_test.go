@@ -51,4 +51,7 @@ func TestFiletestConformance(t *testing.T) {
 	t.Run("Observability", func(t *testing.T) {
 		filetest.AssertObservability(t, adapterfile.NewBackend(), &filetest.SpyObserver{})
 	})
+	t.Run("MetadataIntegration", func(t *testing.T) {
+		filetest.AssertMetadataIntegration(t, adapterfile.NewBackend())
+	})
 }

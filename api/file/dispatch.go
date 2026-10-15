@@ -203,6 +203,25 @@ func deriveWriteMetadata[T any](path string, core roleCore[T], v T) (map[string]
 	return md, nil
 }
 
+// mergeMetadata merges override OVER base (override wins on a key
+// collision) — used to layer a BoundMiddleware's own
+// WithMetadataOut-contributed metadata atop the resource's own derived
+// metadata before the final Backend.WriteBytes call. Returns nil when
+// both are empty (never an empty, non-nil map).
+func mergeMetadata(base, override map[string]string) map[string]string {
+	if len(base) == 0 && len(override) == 0 {
+		return nil
+	}
+	merged := make(map[string]string, len(base)+len(override))
+	for k, v := range base {
+		merged[k] = v
+	}
+	for k, v := range override {
+		merged[k] = v
+	}
+	return merged
+}
+
 // ── Read ─────────────────────────────────────────────────────────────────
 
 type readDispatcher interface {
@@ -224,7 +243,7 @@ func readCore[T any](ctx context.Context, backend Backend, core roleCore[T], rou
 	if err != nil {
 		return zero, err
 	}
-	if err := runBoundMiddleware(ctx, path, core, nil); err != nil {
+	if _, err := runBoundMiddleware(ctx, path, core, nil, nil); err != nil {
 		return zero, err
 	}
 	start := time.Now()
@@ -293,7 +312,17 @@ func createCore[T any](ctx context.Context, backend Backend, core roleCore[T], r
 	if err != nil {
 		return err
 	}
-	if err := runBoundMiddleware(ctx, path, core, &v); err != nil {
+	// md (the caller-intended metadata, derived from v's own
+	// metadataMergeFields-tagged fields) is computed BEFORE
+	// runBoundMiddleware so an attached BoundCreateMiddleware's
+	// WithMetadataIn can decode it into its own In — see
+	// Middleware's own doc comment for the full rationale.
+	md, err := deriveWriteMetadata(path, core, v)
+	if err != nil {
+		return err
+	}
+	boundOutMD, err := runBoundMiddleware(ctx, path, core, &v, md)
+	if err != nil {
 		return err
 	}
 	start := time.Now()
@@ -306,12 +335,11 @@ func createCore[T any](ctx context.Context, backend Backend, core roleCore[T], r
 	if wire.NativePOSIXMode != nil {
 		opts.Perm = *wire.NativePOSIXMode
 	}
-	md, err := deriveWriteMetadata(path, core, v)
-	if err != nil {
-		recordWrite(obs, path, false, time.Since(start))
-		return err
-	}
-	opts.Metadata = md
+	// A bound middleware's own metadata contribution (via
+	// WithMetadataOut) wins over the resource-derived md on a key
+	// collision — it represents a more specific, runtime-computed value
+	// layered on top of the resource's own declared fields.
+	opts.Metadata = mergeMetadata(md, boundOutMD)
 	_, err = backend.WriteBytes(ctx, path, data, opts)
 	if err != nil {
 		recordWrite(obs, path, false, time.Since(start))
@@ -356,7 +384,17 @@ func patchCore[T, P any](ctx context.Context, backend Backend, core roleCore[T],
 	if !core.resource.format.IsPatchable() {
 		return FilePatchNotSupportedError{Path: path}
 	}
-	if err := runBoundMiddleware(ctx, path, core, nil); err != nil {
+	// md is nil here: unlike Create, Patch's BASE T value (the thing
+	// metadata would be derived FROM) doesn't exist yet at this point —
+	// it's only known after reading+merging below, which is a Backend
+	// call that must come AFTER this Security gate. So Patch's bound
+	// middleware gets the SAME permanently-zero-valued In as Read/List
+	// (a discovered, honest correction to the original "Create/Patch
+	// both get full metadata integration" assumption — Patch structurally
+	// cannot, for the same reason Read/List cannot). See
+	// BoundPatchMiddleware's own doc comment.
+	boundOutMD, err := runBoundMiddleware(ctx, path, core, nil, nil)
+	if err != nil {
 		return err
 	}
 	start := time.Now()
@@ -393,7 +431,10 @@ func patchCore[T, P any](ctx context.Context, backend Backend, core roleCore[T],
 		recordWrite(obs, path, false, time.Since(start))
 		return err
 	}
-	if _, err := backend.WriteBytes(ctx, path, newData, WriteOptions{Metadata: md}); err != nil {
+	// boundOutMD may be non-nil even though In was never populated — a
+	// bound middleware's Fn can still unconditionally compute an Out
+	// value (ignoring In) and declare WithMetadataOut independently.
+	if _, err := backend.WriteBytes(ctx, path, newData, WriteOptions{Metadata: mergeMetadata(md, boundOutMD)}); err != nil {
 		recordWrite(obs, path, false, time.Since(start))
 		return FileWriteError{Path: path, Err: err}
 	}
@@ -436,7 +477,7 @@ func deleteCore[T any](ctx context.Context, backend Backend, core roleCore[T], r
 	if err != nil {
 		return false, err
 	}
-	if err := runBoundMiddleware(ctx, path, core, nil); err != nil {
+	if _, err := runBoundMiddleware(ctx, path, core, nil, nil); err != nil {
 		return false, err
 	}
 	start := time.Now()
@@ -477,7 +518,7 @@ func listCore[T any](ctx context.Context, backend Backend, core roleCore[T], rou
 	if err != nil {
 		return nil, err
 	}
-	if err := runBoundMiddleware(ctx, path, core, nil); err != nil {
+	if _, err := runBoundMiddleware(ctx, path, core, nil, nil); err != nil {
 		return nil, err
 	}
 	start := time.Now()
@@ -549,7 +590,7 @@ func existsCore[T any](ctx context.Context, backend Backend, core roleCore[T], r
 	if err != nil {
 		return Entry{}, false, err
 	}
-	if err := runBoundMiddleware(ctx, path, core, nil); err != nil {
+	if _, err := runBoundMiddleware(ctx, path, core, nil, nil); err != nil {
 		return Entry{}, false, err
 	}
 	start := time.Now()
@@ -632,7 +673,7 @@ func copyCore[T any](ctx context.Context, backend Backend, core roleCore[T], rou
 	if err != nil {
 		return err
 	}
-	if err := runBoundMiddleware(ctx, precheckPath, core, nil); err != nil {
+	if _, err := runBoundMiddleware(ctx, precheckPath, core, nil, nil); err != nil {
 		return err
 	}
 	start := time.Now()
@@ -688,7 +729,7 @@ func moveCore[T any](ctx context.Context, backend Backend, core roleCore[T], rou
 	if err != nil {
 		return err
 	}
-	if err := runBoundMiddleware(ctx, srcPath, core, nil); err != nil {
+	if _, err := runBoundMiddleware(ctx, srcPath, core, nil, nil); err != nil {
 		return err
 	}
 
@@ -750,7 +791,7 @@ func mkdirCore[T any](ctx context.Context, backend Backend, core roleCore[T], ro
 	if err != nil {
 		return false, err
 	}
-	if err := runBoundMiddleware(ctx, path, core, nil); err != nil {
+	if _, err := runBoundMiddleware(ctx, path, core, nil, nil); err != nil {
 		return false, err
 	}
 	opts := MkdirOptions{}
@@ -816,7 +857,7 @@ func batchDeleteCore[T any](ctx context.Context, backend Backend, core roleCore[
 	// once per path, consistent with this role's own established
 	// "Security checked once per batch, not once per item" design (see
 	// Client.BatchDelete's doc comment).
-	if err := runBoundMiddleware(ctx, "", core, nil); err != nil {
+	if _, err := runBoundMiddleware(ctx, "", core, nil, nil); err != nil {
 		return nil, err
 	}
 

@@ -877,3 +877,224 @@ func TestLister_NoMergeFieldsDeclared_UnaffectedRegression(t *testing.T) {
 		t.Fatalf("List: want 1 entry, got %+v", gotAny)
 	}
 }
+
+// ── BoundMiddleware metadata integration (Create/Patch) ──────────────────
+
+type mwMetaIn struct {
+	Owner string
+}
+
+type mwMetaOut struct {
+	Owner string
+}
+
+func TestBoundCreateMiddleware_MetadataIn_PopulatesInFromIntendedMetadata(t *testing.T) {
+	dir := t.TempDir()
+	res := file.NewResource[recordWithOwner](filepath.Join(dir, "{name}.json"), format.JSON(recordWithOwnerCodec()),
+		file.PathParam{Name: "name"},
+		file.NewMetadataParam("owner", codex.String(),
+			func(r recordWithOwner) string { return r.Owner },
+			func(r *recordWithOwner, v string) { r.Owner = v }),
+	)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+
+	var gotIn mwMetaIn
+	bm := file.NewBoundCreateMiddleware[recordWithOwner, mwMetaIn, mwMetaOut](
+		file.NewDeclaration[mwMetaIn, mwMetaOut]("create-mw", codex.Struct[mwMetaIn](), codex.Struct[mwMetaOut]()),
+		func(ctx context.Context, v *recordWithOwner, in mwMetaIn) (mwMetaOut, error) {
+			gotIn = in
+			return mwMetaOut{}, nil
+		},
+	).WithMetadataIn(file.NewMetadataParam("owner", codex.String(),
+		func(m mwMetaIn) string { return m.Owner },
+		func(m *mwMetaIn, v string) { m.Owner = v }))
+	creator := res.WithCreate(file.Create{}).CreateBoundMW(bm)
+	if err := client.Create(ctx, creator, recordWithOwner{Name: "widget", Value: 1, Owner: "alice"}, map[string]string{"name": "widget"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if gotIn.Owner != "alice" {
+		t.Fatalf("BoundCreateMiddleware.In.Owner = %q, want %q (derived from v.Owner via the resource's own metadataMergeFields)", gotIn.Owner, "alice")
+	}
+}
+
+func TestBoundCreateMiddleware_MetadataOut_MergesIntoPersistedMetadata(t *testing.T) {
+	dir := t.TempDir()
+	res := file.NewResource[recordWithOwner](filepath.Join(dir, "{name}.json"), format.JSON(recordWithOwnerCodec()),
+		file.PathParam{Name: "name"},
+		file.NewMetadataParam("owner", codex.String(),
+			func(r recordWithOwner) string { return r.Owner },
+			func(r *recordWithOwner, v string) { r.Owner = v }),
+	)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+
+	bm := file.NewBoundCreateMiddleware[recordWithOwner, mwMetaIn, mwMetaOut](
+		file.NewDeclaration[mwMetaIn, mwMetaOut]("create-mw-out", codex.Struct[mwMetaIn](), codex.Struct[mwMetaOut]()),
+		func(ctx context.Context, v *recordWithOwner, in mwMetaIn) (mwMetaOut, error) {
+			// Overrides whatever the resource's own v.Owner would have
+			// derived - proves the middleware's OWN contribution wins.
+			return mwMetaOut{Owner: "middleware-override"}, nil
+		},
+	).WithMetadataOut(file.NewMetadataParam("owner", codex.String(),
+		func(m mwMetaOut) string { return m.Owner },
+		func(m *mwMetaOut, v string) { m.Owner = v }))
+	creator := res.WithCreate(file.Create{}).CreateBoundMW(bm)
+	if err := client.Create(ctx, creator, recordWithOwner{Name: "gadget", Value: 1, Owner: "original-owner"}, map[string]string{"name": "gadget"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), map[string]string{"name": "gadget"})
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	got := gotAny.(recordWithOwner)
+	if got.Owner != "middleware-override" {
+		t.Fatalf("Owner = %q, want %q (middleware's WithMetadataOut contribution should win)", got.Owner, "middleware-override")
+	}
+}
+
+func TestBoundReadMiddleware_MetadataIn_AlwaysZeroValue(t *testing.T) {
+	dir := t.TempDir()
+	res := file.NewResource[recordWithOwner](filepath.Join(dir, "{name}.json"), format.JSON(recordWithOwnerCodec()),
+		file.PathParam{Name: "name"},
+		file.NewMetadataParam("owner", codex.String(),
+			func(r recordWithOwner) string { return r.Owner },
+			func(r *recordWithOwner, v string) { r.Owner = v }),
+	)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	if err := client.Create(ctx, res.WithCreate(file.Create{}), recordWithOwner{Name: "x", Value: 1, Owner: "bob"}, map[string]string{"name": "x"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	var gotIn mwMetaIn
+	seen := false
+	bm := file.NewBoundReadMiddleware[recordWithOwner, mwMetaIn, mwMetaOut](
+		file.NewDeclaration[mwMetaIn, mwMetaOut]("read-mw", codex.Struct[mwMetaIn](), codex.Struct[mwMetaOut]()),
+		func(ctx context.Context, v *recordWithOwner, in mwMetaIn) (mwMetaOut, error) {
+			gotIn = in
+			seen = true
+			return mwMetaOut{}, nil
+		},
+	)
+	reader := res.WithRead(file.Read{}).ReadBoundMW(bm)
+	if _, err := client.Read(ctx, reader, map[string]string{"name": "x"}); err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if !seen {
+		t.Fatalf("BoundReadMiddleware Fn was never invoked")
+	}
+	// Even though the stored metadata has owner="bob", In must stay
+	// zero-valued - Read's metadata is only available AFTER the Backend
+	// call, but the Security/BoundMiddleware gate runs BEFORE it.
+	if gotIn.Owner != "" {
+		t.Fatalf("BoundReadMiddleware.In.Owner = %q, want \"\" (permanently zero-valued for Read)", gotIn.Owner)
+	}
+}
+
+func TestBoundPatchMiddleware_MetadataIn_AlwaysZeroValue(t *testing.T) {
+	dir := t.TempDir()
+	res := file.NewResource[recordWithOwner](filepath.Join(dir, "{name}.json"), format.JSON(recordWithOwnerCodec()),
+		file.PathParam{Name: "name"},
+		file.NewMetadataParam("owner", codex.String(),
+			func(r recordWithOwner) string { return r.Owner },
+			func(r *recordWithOwner, v string) { r.Owner = v }),
+	)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	vars := map[string]string{"name": "patchtarget"}
+	if err := client.Create(ctx, res.WithCreate(file.Create{}), recordWithOwner{Name: "patchtarget", Value: 1, Owner: "carol"}, vars); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	type valuePatch struct{ Value *int }
+	patchCodec := codex.PartialStruct[valuePatch](
+		codex.PartialField("value", codex.Int(),
+			func(p valuePatch) *int { return p.Value },
+			func(p *valuePatch, v *int) { p.Value = v }),
+	)
+
+	var gotIn mwMetaIn
+	bm := file.NewBoundPatchMiddleware[recordWithOwner, mwMetaIn, mwMetaOut](
+		file.NewDeclaration[mwMetaIn, mwMetaOut]("patch-mw", codex.Struct[mwMetaIn](), codex.Struct[mwMetaOut]()),
+		func(ctx context.Context, v *recordWithOwner, in mwMetaIn) (mwMetaOut, error) {
+			gotIn = in
+			return mwMetaOut{}, nil
+		},
+	).WithMetadataIn(file.NewMetadataParam("owner", codex.String(),
+		func(m mwMetaIn) string { return m.Owner },
+		func(m *mwMetaIn, v string) { m.Owner = v }))
+	patcher := file.WithPatch(res, patchCodec, file.Patch{}).PatchBoundMW(bm)
+	newValue := 99
+	if err := client.Patch(ctx, patcher, valuePatch{Value: &newValue}, vars); err != nil {
+		t.Fatalf("Patch: %v", err)
+	}
+	if gotIn.Owner != "" {
+		t.Fatalf("BoundPatchMiddleware.In.Owner = %q, want \"\" (Patch's base T isn't available at invoke time)", gotIn.Owner)
+	}
+}
+
+func TestBoundPatchMiddleware_MetadataOut_MergesIntoPersistedMetadata(t *testing.T) {
+	dir := t.TempDir()
+	res := file.NewResource[recordWithOwner](filepath.Join(dir, "{name}.json"), format.JSON(recordWithOwnerCodec()),
+		file.PathParam{Name: "name"},
+		file.NewMetadataParam("owner", codex.String(),
+			func(r recordWithOwner) string { return r.Owner },
+			func(r *recordWithOwner, v string) { r.Owner = v }),
+	)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	vars := map[string]string{"name": "patchtarget2"}
+	if err := client.Create(ctx, res.WithCreate(file.Create{}), recordWithOwner{Name: "patchtarget2", Value: 1, Owner: "dave"}, vars); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	type valuePatch struct{ Value *int }
+	patchCodec := codex.PartialStruct[valuePatch](
+		codex.PartialField("value", codex.Int(),
+			func(p valuePatch) *int { return p.Value },
+			func(p *valuePatch, v *int) { p.Value = v }),
+	)
+
+	bm := file.NewBoundPatchMiddleware[recordWithOwner, mwMetaIn, mwMetaOut](
+		file.NewDeclaration[mwMetaIn, mwMetaOut]("patch-mw-out", codex.Struct[mwMetaIn](), codex.Struct[mwMetaOut]()),
+		func(ctx context.Context, v *recordWithOwner, in mwMetaIn) (mwMetaOut, error) {
+			return mwMetaOut{Owner: "patched-by-middleware"}, nil
+		},
+	).WithMetadataOut(file.NewMetadataParam("owner", codex.String(),
+		func(m mwMetaOut) string { return m.Owner },
+		func(m *mwMetaOut, v string) { m.Owner = v }))
+	patcher := file.WithPatch(res, patchCodec, file.Patch{}).PatchBoundMW(bm)
+	newValue := 42
+	if err := client.Patch(ctx, patcher, valuePatch{Value: &newValue}, vars); err != nil {
+		t.Fatalf("Patch: %v", err)
+	}
+
+	gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	got := gotAny.(recordWithOwner)
+	if got.Owner != "patched-by-middleware" {
+		t.Fatalf("Owner = %q, want %q", got.Owner, "patched-by-middleware")
+	}
+	if got.Value != 42 {
+		t.Fatalf("Value = %d, want 42 (patch itself should still apply normally)", got.Value)
+	}
+}

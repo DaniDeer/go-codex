@@ -136,6 +136,25 @@ called (`SecurityRejectedError`) — `GrantedScopes` is extracted from the
 bound function's `Out` value via reflection, the same convention
 `api/rest`/`api/events` already use.
 
+`Create`/`Patch`'s bound middleware can ALSO declare
+`WithMetadataIn`/`WithMetadataOut` to read/contribute file metadata (see
+"File metadata" below):
+
+```go
+bm := file.NewBoundCreateMiddleware[Note, metaIn, metaOut](decl, fn).
+    WithMetadataOut(file.NewMetadataParam("owner", codex.String(),
+        func(m metaOut) string { return m.Owner },
+        func(m *metaOut, v string) { m.Owner = v }))
+```
+
+`Create`'s `In` is populated from the resource's own derived metadata
+(available before any Backend call, since `Create`'s full value is
+supplied directly); its `Out` contribution is merged OVER the
+resource's own metadata before the write. `Patch`'s `Out` works the
+same way, but its `In` — like `Read`/`List`'s — stays permanently
+zero-valued, since the base value metadata would derive from isn't
+known until after a Backend call the Security gate must run before.
+
 ## All 10 verbs
 
 | Verb | Client method | Role builder |
@@ -156,6 +175,12 @@ the SAME declared template instantiated twice, never a second template.
 `BatchDelete` takes a `[]map[string]string` and returns a per-key
 `[]BatchDeleteResult` (a batch call can partially fail, mirroring S3's own
 `DeleteObjects`).
+
+`List` automatically extracts any declared `MergedPathParam` value from
+each discovered entry's own filename (matched against the resource's
+template) — no separate declaration needed; the SAME `PathParam`/
+`MergedPathParam` you already use for `Read`/`Create` just works for
+`List` too.
 
 ## Backends
 

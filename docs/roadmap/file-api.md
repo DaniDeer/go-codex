@@ -29,11 +29,13 @@
 > `ports/pattern.go`'s existing `os.*`-calling code to delegate onto this
 > new stack — that remains a separate, higher-risk follow-up (the existing
 > `ports.File`/`adapters/file` functions continue to work exactly as
-> before, UNCHANGED, in the meantime). BoundMiddleware's `In`/`Out` is NOT
-> yet integrated with the new metadata axis (a genuine ordering conflict —
-> see "Open design decisions"). Phase 2 outlined (full design deferred
-> until Phase 1's ports migration ships). Phases 3-4 planned. See "Roadmap
-> phases" below for the full picture.
+> before, UNCHANGED, in the meantime) — the ONLY item left in Phase 1's
+> scope. **Phase 1's own "Open design decisions" is now EMPTY** —
+> round 7 closed both remaining items (BoundMiddleware's metadata
+> integration for `Create`/`Patch`; `List`'s path-var merge field
+> support) — see "Resolved round 7" below. Phase 2 outlined (full design
+> deferred until Phase 1's ports migration ships). Phases 3-4 planned.
+> See "Roadmap phases" below for the full picture.
 > [← Back to Roadmap](index.md)
 
 ## Motivation
@@ -1228,51 +1230,62 @@ excluded, not merely deferred:
 
 ## Open design decisions
 
-Mostly resolved for Phase 1. Genuinely open items — 2 carried over
-(1 pre-existing + 1 new from this round), plus every Phase 2 item is
-DELIBERATELY left at outline depth (see "Phase 2" above for each item's
-own specific open questions, not repeated here):
+**Phase 1 now has ZERO remaining open design decisions.** Every item
+previously listed here is resolved — see "Resolved round 7" below for
+the 2 closed this round. Only Phase 2's own items remain, and those are
+DELIBERATELY left at outline depth (see "Phase 2 — outline" above for
+each item's own specific open questions, not repeated here): S3's
+`AccessMode`-vs-IAM interaction, `adapters/smb`'s driver/permission
+choices, the streaming-`Backend`-extension's exact interface shape,
+conditional-writes' atomicity gap (none for recursive `WithList`, the
+lowest-risk item) — not resolved here by design, since full Phase 2
+design is explicitly deferred until Phase 1 ships.
 
-- **`MkdirOptions`'s exact field set beyond `NativePOSIXMode`** —
-  RESOLVED during implementation: `DryRun` was added, for parity with
-  every other verb's option struct.
-- **BoundMiddleware's `In`/`Out` has NO metadata-merge-field
-  integration yet** (new this round) — investigated a genuine ordering
-  conflict: `Read`/`List`'s stored metadata is only available AFTER the
-  `Backend` call that decodes the resource, but the Security gate (via
-  `runBoundMiddleware`) must run BEFORE any `Backend` call (the
-  established "fail before backend" convention `Capability` already
-  set). Rather than ship a `WithMetadataIn`/`WithMetadataOut` that
-  silently never actually populates `In` for `Read`/`List`, this was
-  left explicitly unimplemented — `Middleware[In,Out]`'s own doc comment
-  documents the investigation. The metadata axis ITSELF (storage,
-  `MetadataParam`/`MergedPathParam`-style merge into `Resource[T]`
-  directly) is fully shipped and working; only its INTEGRATION into
-  BoundMiddleware is open. A future round could resolve this by, e.g.,
-  restricting metadata-merge-field `In` population to roles where the
-  domain value already exists pre-dispatch (`Create`/`Patch`), while
-  leaving `Read`/`List` BoundMiddleware's `In` always zero-valued (a
-  documented, permanent asymmetry) — or by moving the Security gate for
-  `Read`/`List` to run AFTER decode instead (a bigger, more invasive
-  change to the "fail before backend" convention, not recommended
-  without a concrete driving use case).
-- **`List`'s own path-var merge field support** (new this round) — this
-  round fixed `Read`'s `MergedPathParam` dispatch-wiring gap (it was
-  declared but never actually consumed — see the conformance-suite
-  bullet below), but deliberately scoped the fix to `Read` only. `List`
-  enumerates a PARENT directory using the caller's own vars (which
-  address that directory, not any one discovered entry) — merging a
-  path var into each list entry's own `T` would require MATCHING each
-  discovered child path back against the resource's template (extracting
-  that entry's OWN id/etc.), a genuinely different, not-yet-designed
-  mechanism. Tracked as a named follow-up.
-- Phase 2's 5 items each carry their OWN specific open question (S3's
-  `AccessMode`-vs-IAM interaction, `adapters/smb`'s driver/permission
-  choices, the streaming-`Backend`-extension's exact interface shape,
-  conditional-writes' atomicity gap, none for recursive `WithList` which
-  is the lowest-risk item) — see "Phase 2 — outline" above; not resolved
-  here by design, since full Phase 2 design is explicitly deferred until
-  Phase 1 ships.
+**Resolved round 7** (closing the 2 items this doc carried from round 6):
+
+- **BoundMiddleware's `In`/`Out` metadata-merge-field integration** —
+  implemented for `Create` (BOTH directions) via
+  `Middleware.WithMetadataIn`/`WithMetadataOut` +
+  `BoundCreateMiddleware.WithMetadataIn`/`WithMetadataOut` forwarding
+  methods: `In` is populated from the SAME caller-intended metadata
+  `deriveWriteMetadata` already derives (available pre-Backend-call
+  since `Create`'s full value is supplied directly), and `Out`'s
+  encoded contribution is merged OVER the resource-derived metadata
+  (last-wins, mirrors `ApplyCapabilities`'s identical convention)
+  before the final write.
+  **A genuine correction discovered DURING implementation**: the
+  original round-6 assumption that `Patch` could ALSO get full `In`
+  population was wrong — `Patch`'s BASE `T` value (the thing metadata
+  would be derived FROM) doesn't exist at invoke time either; it's only
+  known after reading+merging the existing resource, a `Backend` call
+  that must happen AFTER the Security gate — the SAME ordering
+  constraint `Read`/`List` already have. So `Patch`'s `In` stays
+  permanently zero-valued too (proven by
+  `TestBoundPatchMiddleware_MetadataIn_AlwaysZeroValue`), while its
+  `Out`-side `WithMetadataOut` DOES still work (Fn can compute an `Out`
+  value independent of `In` — proven by
+  `TestBoundPatchMiddleware_MetadataOut_MergesIntoPersistedMetadata`).
+  `Read`/`List` remain unchanged (permanently zero-valued `In`, no
+  `WithMetadataIn`/`Out` methods offered on their Bound types at all —
+  only `Create`/`Patch` expose them, matching what actually works).
+  New `api/file/filetest` conformance scenario,
+  `AssertMetadataIntegration`, proves both the resource-level metadata
+  axis AND the `BoundCreateMiddleware` override end-to-end against a
+  real `Backend`.
+- **`List`'s own path-var merge field support** — implemented via a new
+  `matchFileTemplate` helper (`internal/templatematch.MatchNonWildcard`,
+  the SAME engine `ports.File.MatchPath`/`ports.Dir.MatchPath` already
+  use — confirmed the closer, proven precedent over REST's own
+  router-delegated matching, since `api/file` has no external router to
+  delegate to). `List` now matches each discovered entry's filename
+  against the resource's own FINAL path-template segment (e.g.
+  `"{id}.json"`), merging the extracted vars over the caller's own
+  parent-directory vars (entry-specific wins on collision), then
+  decodes via the SAME `codex.DecodeVars` call `Read`'s own fix already
+  established. A non-matching stray file aborts the whole `List` call
+  with `FilePathMismatchError`, consistent with `listCore`'s existing
+  abort-on-first-error semantics. Zero overhead when no `mergeFields`
+  are declared (the common case, explicitly regression-tested).
 
 **Resolved round 6** (a dedicated "full Router + Declarative Middleware
 parity" implementation round, closing this doc's own previously-named

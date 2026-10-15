@@ -36,22 +36,24 @@ func NewDeclaration[In, Out any](name string, inCodec codex.Codec[In], outCodec 
 // [BoundSecurityReadMiddleware] (and each role's own equivalent pair) —
 // see those for the attach-and-run half.
 //
-// UNLIKE events' Middleware[In,Out], this type does NOT (yet) offer
-// metadata-merge-field methods (a WithMetadataIn/WithMetadataOut
-// analogue of events' WithSubscribeTopic/WithSubscribeProperty):
-// investigated and found a genuine ordering conflict specific to file —
-// Read/List's metadata is only available AFTER the Backend call that
-// decodes the resource, but BoundMiddleware's Security gate must run
-// BEFORE any Backend call (the established "fail before backend"
-// convention). Rather than ship a WithMetadataIn that silently never
-// actually populates In for Read/List, this is left as an explicitly
-// named, deferred follow-up — see docs/roadmap/file-api.md's "Open
-// design decisions." The METADATA AXIS ITSELF (MetadataParam/
-// MergedMetadataParam, Resource[T]'s own metadataMergeFields) is fully
-// shipped and working (Stage M1) — only its INTEGRATION into
-// BoundMiddleware's In/Out is deferred.
+// WithMetadataIn/WithMetadataOut populate/encode In/Out against the
+// file-metadata axis (see [MetadataBackend]'s doc comment) — but ONLY
+// for Create/Patch: their intended metadata is derivable directly from
+// the caller-supplied value BEFORE any Backend call (via the same
+// mechanism [WriteOptions.Metadata] already uses), so there's no
+// ordering conflict for these 2 roles. Read/List's stored metadata is
+// only available AFTER the Backend call that decodes the resource, but
+// the Security gate must run BEFORE any Backend call — so In stays
+// permanently zero-valued for Read/List's own BoundMiddleware (a
+// disclosed, permanent asymmetry, not a bug — proven by
+// TestBoundReadMiddleware_MetadataIn_AlwaysZeroValue), and
+// WithMetadataOut on a Read/List-attached Middleware is accepted but has
+// nothing to encode INTO (Read/List never write).
 type Middleware[In, Out any] struct {
 	middleware.Declaration[In, Out]
+
+	metadataFieldsIn  []codex.FieldCodec[In]
+	metadataFieldsOut []codex.FieldCodec[Out]
 }
 
 // NewMiddleware builds a [Middleware] from a [middleware.Declaration].
@@ -65,6 +67,23 @@ func (m Middleware[In, Out]) RouteMiddlewareMarker() {}
 // SecurityDeclaration makes Middleware satisfy [middleware.SecurityCarrier].
 func (m Middleware[In, Out]) SecurityDeclaration() *middleware.SecurityDeclaration {
 	return m.Declaration.Security
+}
+
+// WithMetadataIn declares that p's metadata key should be decoded into
+// In before this middleware's Fn runs — see [Middleware]'s own doc
+// comment for which roles (Create/Patch only) actually populate it.
+func (m Middleware[In, Out]) WithMetadataIn(p MergedMetadataParam[In]) Middleware[In, Out] {
+	m.metadataFieldsIn = append(append([]codex.FieldCodec[In]{}, m.metadataFieldsIn...), p.Field)
+	return m
+}
+
+// WithMetadataOut declares that Out's corresponding field should be
+// encoded back into a metadata key once this middleware's Fn returns —
+// see [Middleware]'s own doc comment for which roles (Create/Patch only)
+// actually persist it.
+func (m Middleware[In, Out]) WithMetadataOut(p MergedMetadataParam[Out]) Middleware[In, Out] {
+	m.metadataFieldsOut = append(append([]codex.FieldCodec[Out]{}, m.metadataFieldsOut...), p.Field)
+	return m
 }
 
 var (
@@ -114,41 +133,62 @@ func grantedScopesOf(out any) map[string][]string {
 // any middleware); a Security-gating BoundReadMiddleware validates the
 // REQUEST (credentials/scopes), never the response body — same
 // separation REST's own request-time Security gate already has.
+//
+// md is the CALLER-INTENDED metadata (non-nil only for Create/Patch,
+// derived from the resource's own metadataMergeFields via
+// deriveWriteMetadata — see dispatch.go's runBoundMiddleware call
+// sites); decoded into the bound middleware's own In via
+// Middleware.WithMetadataIn, when declared. outMD is this middleware's
+// OWN metadata CONTRIBUTION (encoded from Out via WithMetadataOut, when
+// declared) — nil when the middleware declares no WithMetadataOut
+// fields, or for any role where metadata doesn't apply.
 type roleBoundMW struct {
 	name     string
 	security *middleware.SecurityDeclaration
-	invoke   func(ctx context.Context, v any) (map[string][]string, error)
+	invoke   func(ctx context.Context, v any, md map[string]string) (outMD map[string]string, granted map[string][]string, err error)
 }
 
 // runBoundMiddleware executes every bound middleware attached to core,
-// in attachment order, collecting GrantedScopes from each, then checks
-// core's own declared Security requirements against the merged result —
-// called once per dispatch, BEFORE any Backend call, by every xxxCore
-// function in dispatch.go. A no-op (nil error, immediately) when core
-// has neither bound middleware nor declared Security requirements — the
+// in attachment order, collecting GrantedScopes AND metadata
+// contributions from each, then checks core's own declared Security
+// requirements against the merged GrantedScopes — called once per
+// dispatch, BEFORE any Backend call, by every xxxCore function in
+// dispatch.go. Returns the merged metadata contribution (LAST-WINS on a
+// key collision across multiple attached middlewares — mirrors
+// ApplyCapabilities's identical "last-wins on a field collision"
+// convention) for createCore/patchCore to layer over the resource's own
+// derived metadata. A no-op (nil, nil immediately) when core has
+// neither bound middleware nor declared Security requirements — the
 // common case, zero overhead.
-func runBoundMiddleware[T any](ctx context.Context, path string, core roleCore[T], v any) error {
+func runBoundMiddleware[T any](ctx context.Context, path string, core roleCore[T], v any, md map[string]string) (outMD map[string]string, err error) {
 	if len(core.boundMWs) == 0 {
 		if len(core.security) == 0 {
-			return nil
+			return nil, nil
 		}
-		return SecurityRejectedError{Path: path, Err: middleware.CheckScopes(core.security, nil)}
+		return nil, SecurityRejectedError{Path: path, Err: middleware.CheckScopes(core.security, nil)}
 	}
 	granted := map[string][]string{}
+	merged := map[string]string{}
 	for _, bmw := range core.boundMWs {
-		gs, err := bmw.invoke(ctx, v)
+		bmwOutMD, gs, err := bmw.invoke(ctx, v, md)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		for scheme, scopes := range gs {
 			granted[scheme] = append(granted[scheme], scopes...)
 		}
+		for k, val := range bmwOutMD {
+			merged[k] = val
+		}
+	}
+	if len(merged) == 0 {
+		merged = nil
 	}
 	if len(core.security) == 0 {
-		return nil
+		return merged, nil
 	}
 	if err := middleware.CheckScopes(core.security, granted); err != nil {
-		return SecurityRejectedError{Path: path, Err: err}
+		return nil, SecurityRejectedError{Path: path, Err: err}
 	}
-	return nil
+	return merged, nil
 }
