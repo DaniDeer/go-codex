@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	apifile "github.com/DaniDeer/go-codex/api/file"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/internal/templatematch"
 	"github.com/DaniDeer/go-codex/stats"
@@ -509,6 +509,9 @@ func (d Dir) List(vars map[string]string, opts DirOptions) ([]DirEntry, error) {
 		path = "."
 	}
 
+	ctx := context.Background()
+	backend := osBackend{}
+
 	start := time.Now()
 	if opts.CreateIfMissing {
 		perm := opts.CreatePerm
@@ -516,7 +519,7 @@ func (d Dir) List(vars map[string]string, opts DirOptions) ([]DirEntry, error) {
 			perm = 0755
 		}
 		if opts.Strict {
-			if _, statErr := os.Stat(path); statErr == nil {
+			if _, statErr := backend.Stat(ctx, path); statErr == nil {
 				recordFileRead(obs, path, false, time.Since(start))
 				return nil, DirAlreadyExistsError{Path: path}
 			} else if !os.IsNotExist(statErr) {
@@ -525,7 +528,7 @@ func (d Dir) List(vars map[string]string, opts DirOptions) ([]DirEntry, error) {
 			}
 		}
 		if !opts.DryRun {
-			if err := os.MkdirAll(path, perm); err != nil {
+			if _, err := backend.Mkdir(ctx, path, apifile.MkdirOptions{NativePOSIXMode: &perm}); err != nil {
 				recordFileRead(obs, path, false, time.Since(start))
 				return nil, DirReadError{Path: path, Err: err}
 			}
@@ -534,9 +537,9 @@ func (d Dir) List(vars map[string]string, opts DirOptions) ([]DirEntry, error) {
 
 	var entries []DirEntry
 	if d.recursive {
-		entries, err = d.listRecursive(path)
+		entries, err = d.listRecursive(backend, path)
 	} else {
-		entries, err = d.listSingleLevel(path)
+		entries, err = d.listSingleLevel(backend, path)
 	}
 	if err != nil {
 		recordFileRead(obs, path, false, time.Since(start))
@@ -546,33 +549,38 @@ func (d Dir) List(vars map[string]string, opts DirOptions) ([]DirEntry, error) {
 	return entries, nil
 }
 
-func (d Dir) listSingleLevel(path string) ([]DirEntry, error) {
-	osEntries, err := os.ReadDir(path)
+// listSingleLevel delegates to [osBackend.ListDir] — the api/file
+// Backend's own single-level directory read — instead of calling
+// os.ReadDir inline.
+func (d Dir) listSingleLevel(backend osBackend, path string) ([]DirEntry, error) {
+	apiEntries, err := backend.ListDir(context.Background(), path)
 	if err != nil {
 		return nil, DirReadError{Path: path, Err: err}
 	}
 	var out []DirEntry
-	for _, de := range osEntries {
-		name := de.Name()
+	for _, e := range apiEntries {
 		kind := EntryFile
-		if de.IsDir() {
+		if e.IsDir {
 			kind = EntryDir
 		}
-		entryVars, included, merr := d.matchEntry(name)
+		entryVars, included, merr := d.matchEntry(e.Name)
 		if merr != nil {
 			return nil, merr
 		}
 		if !included {
 			continue
 		}
-		out = append(out, DirEntry{Name: name, RelPath: name, Kind: kind, Vars: entryVars})
+		out = append(out, DirEntry{Name: e.Name, RelPath: e.Name, Kind: kind, Vars: entryVars})
 	}
 	return out, nil
 }
 
-func (d Dir) listRecursive(root string) ([]DirEntry, error) {
+// listRecursive delegates to [osBackend.WalkDir] (implementing
+// [apifile.WalkingBackend]) instead of calling filepath.WalkDir inline —
+// the matching/filtering logic below is UNCHANGED.
+func (d Dir) listRecursive(backend osBackend, root string) ([]DirEntry, error) {
 	var out []DirEntry
-	walkErr := filepath.WalkDir(root, func(p string, de fs.DirEntry, err error) error {
+	walkErr := backend.WalkDir(context.Background(), root, func(p string, e apifile.Entry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -585,7 +593,7 @@ func (d Dir) listRecursive(root string) ([]DirEntry, error) {
 		}
 		rel = filepath.ToSlash(rel)
 		kind := EntryFile
-		if de.IsDir() {
+		if e.IsDir {
 			kind = EntryDir
 		}
 		entryVars, included, merr := d.matchEntry(rel)
@@ -595,7 +603,7 @@ func (d Dir) listRecursive(root string) ([]DirEntry, error) {
 		if !included {
 			return nil
 		}
-		out = append(out, DirEntry{Name: de.Name(), RelPath: rel, Kind: kind, Vars: entryVars})
+		out = append(out, DirEntry{Name: e.Name, RelPath: rel, Kind: kind, Vars: entryVars})
 		return nil
 	})
 	if walkErr != nil {
@@ -666,6 +674,7 @@ func (d Dir) matchDirGlob(rel string, vars map[string]string) (captured map[stri
 // exists to prune against.
 func (d Dir) listGlobDiscovery(vars map[string]string, obs stats.Observer) ([]DirEntry, error) {
 	start := time.Now()
+	backend := osBackend{}
 
 	baseDir := d.baseDir
 	if baseDir == "" {
@@ -684,11 +693,11 @@ func (d Dir) listGlobDiscovery(vars map[string]string, obs stats.Observer) ([]Di
 	}
 
 	var out []DirEntry
-	walkErr := filepath.WalkDir(walkRoot, func(p string, de fs.DirEntry, err error) error {
+	walkErr := backend.WalkDir(context.Background(), walkRoot, func(p string, e apifile.Entry, err error) error {
 		if err != nil {
 			return err
 		}
-		if !de.IsDir() {
+		if !e.IsDir {
 			return nil // only directories are candidates for d's own template
 		}
 		rel, relErr := filepath.Rel(baseDir, p)
@@ -712,9 +721,9 @@ func (d Dir) listGlobDiscovery(vars map[string]string, obs stats.Observer) ([]Di
 		if matched {
 			var entries []DirEntry
 			if d.recursive {
-				entries, err = d.listRecursive(p)
+				entries, err = d.listRecursive(backend, p)
 			} else {
-				entries, err = d.listSingleLevel(p)
+				entries, err = d.listSingleLevel(backend, p)
 			}
 			if err != nil {
 				return err
@@ -777,6 +786,11 @@ func (d Dir) listGlobDiscovery(vars map[string]string, obs stats.Observer) ([]Di
 //   - [DirNotFoundError] — directory did not exist AND [DirOptions.Strict] is set
 //   - [DirNotEmptyError] — non-empty directory, DeleteRecursive not set
 //   - [DirDeleteError] — os.ReadDir/os.Remove/os.RemoveAll failure (e.g. permission denied)
+//
+// Delete delegates to [osBackend.DeleteDir] (implementing
+// [apifile.DirDeletingBackend]) instead of calling os.Stat/os.ReadDir/
+// os.Remove/os.RemoveAll inline — the not-found/Strict/error-translation
+// logic below is UNCHANGED, now just driven by DeleteDir's return value.
 func (d Dir) Delete(vars map[string]string, opts DirOptions) (deleted []string, err error) {
 	obs := opts.Observer
 	if obs == nil && opts.Context != nil {
@@ -795,10 +809,11 @@ func (d Dir) Delete(vars map[string]string, opts DirOptions) (deleted []string, 
 	}
 
 	start := time.Now()
+	backend := osBackend{}
 
-	info, statErr := os.Stat(path)
-	if statErr != nil {
-		if os.IsNotExist(statErr) {
+	affected, delErr := backend.DeleteDir(context.Background(), path, opts.DeleteRecursive, opts.DryRun)
+	if delErr != nil {
+		if os.IsNotExist(delErr) {
 			if opts.Strict {
 				recordFileDelete(obs, path, false, time.Since(start))
 				return nil, DirNotFoundError{Path: path}
@@ -806,73 +821,17 @@ func (d Dir) Delete(vars map[string]string, opts DirOptions) (deleted []string, 
 			recordFileDelete(obs, path, true, time.Since(start))
 			return nil, nil
 		}
-		recordFileDelete(obs, path, false, time.Since(start))
-		return nil, DirDeleteError{Path: path, Err: statErr}
-	}
-	if !info.IsDir() {
-		recordFileDelete(obs, path, false, time.Since(start))
-		return nil, DirDeleteError{Path: path, Err: fmt.Errorf("%s is not a directory", path)}
-	}
-
-	if opts.DeleteRecursive {
-		affected, walkErr := collectAllPaths(path)
-		if walkErr != nil {
+		var notEmpty apifile.DirNotEmptyError
+		if errors.As(delErr, &notEmpty) {
 			recordFileDelete(obs, path, false, time.Since(start))
-			return nil, DirDeleteError{Path: path, Err: walkErr}
+			return nil, DirNotEmptyError{Path: path}
 		}
-		if opts.DryRun {
-			recordFileDelete(obs, path, true, time.Since(start))
-			return affected, nil
-		}
-		if err := os.RemoveAll(path); err != nil {
-			recordFileDelete(obs, path, false, time.Since(start))
-			return nil, DirDeleteError{Path: path, Err: err}
-		}
-		recordFileDelete(obs, path, true, time.Since(start))
-		return affected, nil
+		recordFileDelete(obs, path, false, time.Since(start))
+		return nil, DirDeleteError{Path: path, Err: delErr}
 	}
 
-	// Non-recursive: the directory must be empty.
-	osEntries, readErr := os.ReadDir(path)
-	if readErr != nil {
-		recordFileDelete(obs, path, false, time.Since(start))
-		return nil, DirDeleteError{Path: path, Err: readErr}
-	}
-	if len(osEntries) > 0 {
-		recordFileDelete(obs, path, false, time.Since(start))
-		return nil, DirNotEmptyError{Path: path}
-	}
-
-	if opts.DryRun {
-		recordFileDelete(obs, path, true, time.Since(start))
-		return []string{path}, nil
-	}
-
-	if err := os.Remove(path); err != nil {
-		recordFileDelete(obs, path, false, time.Since(start))
-		return nil, DirDeleteError{Path: path, Err: err}
-	}
 	recordFileDelete(obs, path, true, time.Since(start))
-	return []string{path}, nil
-}
-
-// collectAllPaths walks root and returns every path found, root included
-// first (filepath.WalkDir's own visiting order) — used by [Dir.Delete]'s
-// DeleteRecursive mode to report the full affected-paths list, for both
-// a real removal and a DryRun preview.
-func collectAllPaths(root string) ([]string, error) {
-	var all []string
-	err := filepath.WalkDir(root, func(p string, _ fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		all = append(all, p)
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return all, nil
+	return affected, nil
 }
 
 // dirEntryMismatch is an internal sentinel distinguishing "this entry's

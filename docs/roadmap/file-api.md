@@ -61,17 +61,65 @@
 > this migration): (1) `FileDeleteError`'s underlying `existed` value on a
 > generic (non-not-found) `os.Remove` failure was hardcoded `true` in
 > `ports.File.Delete`'s original code; the delegated path returns `false`
-> instead (more semantically honest, but a disclosed divergence); (2) the
-> original `Strict` Write used an atomic `O_CREATE|O_EXCL` open, while the
-> delegated path uses a `os.Stat`-then-`os.WriteFile` sequence (a
-> non-atomic TOCTOU window under concurrent writers — fine for this
-> package's existing single-threaded test coverage, flagged for anyone
-> relying on Strict as a concurrency-safety mechanism).
+> instead (more semantically honest) — **user explicitly confirmed KEEPING
+> this as an intentional, accepted deviation** rather than restoring the
+> old quirk; (2) ~~the original `Strict` Write used an atomic
+> `O_CREATE|O_EXCL` open...~~ **RESOLVED (see below)**.
 >
-> **NOT yet done**: migrating `ports.Dir`/`ports/pattern.go`'s existing
-> `os.*`-calling code (`FilePattern`/`PluginFilePattern`) to bind against
-> `api/file.Resource`'s `WithList` — `ports.Dir`'s own methods are
-> UNCHANGED, still calling `os.*` directly. **Phase 1's own "Open design
+> **Strict-Write atomicity fix (this round)**: the `os.Stat`-then-
+> `os.WriteFile` TOCTOU race noted above is now FIXED in BOTH
+> `ports`'s private `osBackend` and the public `adapters/file.Backend` —
+> both now use the original atomic `os.OpenFile(path,
+> os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)` open for a `Strict` write
+> (DryRun+Strict still uses a preview-only `os.Stat` check, correctly,
+> since nothing is actually written under DryRun). A genuine correctness
+> fix, applied to both backends since the race was never ports-specific.
+>
+> **Stage F — DONE for `ports.Dir` too (this round)**. Two NEW optional
+> `api/file.Backend` extensions were designed and implemented to make
+> this possible — `ports.Dir` is UNTYPED (no codec/Resource/Client), so
+> it consumes these DIRECTLY, bypassing `api/file.Client`/dispatch.go
+> entirely (no Capability/BoundMiddleware/Router/ErrorPattern involved,
+> unlike `ports.File`'s migration):
+> - **`WalkingBackend.WalkDir(ctx, root, fn DirWalkFunc) error`** — a
+>   generic, callback-based recursive directory walk mirroring
+>   `filepath.WalkDir`'s own shape (including honoring
+>   `filepath.SkipDir` returned from `fn`). ONE shared primitive serves
+>   THREE different `ports.Dir` callers: `Dir.List`'s recursive mode,
+>   `Dir.List`'s glob-discovery mode (walks looking for directories
+>   matching a glob-enabled template), and `Dir.Delete`'s recursive
+>   affected-path collection (replacing the old standalone
+>   `collectAllPaths` helper, now removed as redundant).
+> - **`DirDeletingBackend.DeleteDir(ctx, path string, recursive, dryRun
+>   bool) (affected []string, err error)`** — directory delete with
+>   recursive/non-empty-check/dry-run semantics, relocating
+>   `Dir.Delete`'s existing, tested logic into the Backend unchanged. A
+>   new `DirNotEmptyError{Path}` type lives in `api/file` for this
+>   (Backend-facing); `ports.Dir.Delete` converts it back to its OWN,
+>   unchanged, public `ports.DirNotEmptyError` via `errors.As` — NOT
+>   aliased (unlike `ports.File`'s error types), since `ports.Dir` never
+>   goes through `api/file`'s dispatch/error-wrapping machinery at all.
+> - Both implemented in `adapters/file.Backend` (public) AND `ports`'s
+>   private `osBackend` (same deliberate, disclosed near-duplication
+>   rationale as every other `osBackend` method — the `adapters/file`
+>   `->` `ports` import-cycle constraint is unchanged).
+> - `Dir.List`'s single-level, non-glob case needed NO new Backend
+>   method at all — it already mapped cleanly onto the EXISTING
+>   `Backend.ListDir`/`Backend.Stat`/`Backend.Mkdir`.
+> - The full pre-existing `ports/dir_test.go` (1089 lines) passes
+>   UNMODIFIED — the regression proof, mirroring `ports/file_test.go`'s
+>   role in the prior round.
+> - `ports/pattern.go` (`FilePattern`/`PluginFilePattern`) needed ZERO
+>   code changes — it already builds a `File[T]` via `NewFile(...)`,
+>   which was ALREADY migrated; confirmed, not re-implemented.
+> - **NOT changed this round**: `api/file.Client.List` itself stays
+>   single-level-only — `WalkingBackend` is a new primitive `ports.Dir`
+>   consumes directly; wiring recursive listing into `Client.List`
+>   remains Phase 2 scope (the "Recursive WithList" outline below),
+>   now easier thanks to this primitive existing, but not implemented
+>   here.
+>
+> **Phase 1's own "Open design
 > decisions" is now EMPTY** —
 > round 7 closed both remaining items (BoundMiddleware's metadata
 > integration for `Create`/`Patch`; `List`'s path-var merge field
@@ -1194,10 +1242,15 @@ such, not pre-decided.
 ### Recursive `WithList`
 
 Today's `ports.Dir.List` already supports a recursive mode — Phase 1's
-`Lister[T]` is single-level only. The most straightforward Phase 2 item:
-likely a `ListOptions{Recursive bool}` parameter on `Client.List`, no new
-`Backend` method needed (composed via repeated `ListDir` calls exactly
-like `ports.Dir.List` already does it) — the lowest-risk, most
+`Lister[T]` is single-level only. **Update (this round)**: the
+`WalkingBackend.WalkDir` primitive this round added for `ports.Dir`'s own
+migration now exists and already does exactly this kind of recursive
+walk — Phase 2's own implementation gets easier (reuse `WalkingBackend`
+rather than designing a new mechanism), but `Client.List` itself is
+NOT wired up to it yet. The most straightforward Phase 2 item remains:
+likely a `ListOptions{Recursive bool}` parameter on `Client.List`,
+composed via `WalkingBackend.WalkDir` (or, on a Backend not implementing
+it, falling back to repeated `ListDir` calls) — the lowest-risk, most
 "obviously how it would work" item in this whole section.
 
 ## Phase 3 — adapt examples to the new `api/file` approach
