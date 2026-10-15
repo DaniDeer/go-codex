@@ -789,10 +789,15 @@ value, **the Capability ALWAYS wins** over whatever the per-call option
 says — a declared, attach-time contract (visible to anyone reading the
 `Resource`'s declaration) must not be silently overridable by a
 less-visible per-call option. Concretely: if a role declares
-`Capabilities: []Capability{AccessModeReadOnly}` at attach time, a
-`Create`/`Delete`/`Move`/`Mkdir` call is rejected at the dispatch layer
-regardless of what `WriteOptions`/`DeleteOptions`/`MkdirOptions` says —
-there is no per-call escape hatch around a declared `AccessMode`. The
+`Capabilities: []Capability{AccessModeReadOnly}` at attach time, ANY
+mutating role's call — `Create`/`Patch`/`Delete`/`Copy`/`Move`/`Mkdir`/
+`BatchDelete` (every role whose dispatch calls a Backend write/delete
+method; this list is deliberately EXHAUSTIVE, not illustrative — a
+`deep-dive-bug-hunt` pass found `Patch` silently missing from the
+dispatch-layer enforcement and fixed it, see `history.md` Round 217) —
+is rejected at the dispatch layer regardless of what
+`WriteOptions`/`DeleteOptions`/`MkdirOptions` says — there is no
+per-call escape hatch around a declared `AccessMode`. The
 SAME precedence applies to `NativePOSIXMode`: if BOTH an attach-time
 `NativePOSIXMode` Capability AND a per-call `MkdirOptions.
 NativePOSIXMode` are supplied, the Capability's value is what actually
@@ -1448,6 +1453,23 @@ Phase 1 scope reductions):
   `Create`/`Patch` via the existing `codex.DecodeVars`/`EncodeVars`
   machinery. NOT (yet) integrated into BoundMiddleware's own `In`/`Out`
   — see the new "Open design decisions" bullet above for why.
+  **`deep-dive-bug-hunt` finding (`history.md` Round 219)**: `Copy`/
+  `Move` silently DROPPED a resource's metadata entirely — neither
+  `copyBytesCore`'s native `CopyingBackend` path nor its generic
+  `Read`+`Write` fallback (nor `moveCore`'s own native `MovingBackend`
+  path) ever consulted `MetadataBackend` at all. Fixed: both now read
+  the source's metadata before the copy/move and write it to the
+  destination after a successful one — mirrors S3's real `CopyObject`
+  operation, which has an explicit COPY-vs-REPLACE metadata directive
+  (this package's fix is equivalent to the COPY/default behavior; a
+  REPLACE-style override is not currently exposed and would be a
+  natural Phase 2 addition if ever requested). **Disclosed, NOT fixed**:
+  a `Move`'s SOURCE metadata sidecar is left orphaned after a successful
+  move (no `MetadataBackend.DeleteMetadata` method exists to clean it up)
+  — a disk-hygiene gap, not a data-integrity one (the destination's
+  metadata is correct); tracked as a follow-up for whoever designs Phase
+  2's S3/SMB backends, since a real object-storage backend wouldn't have
+  this exact sidecar-file shape to begin with.
 - **New 5th conformance-test package, `api/file/filetest`** (D-0010
   alignment) — mirrors `resttest`/`eventstest`/`reqreplytest`'s
   established 7-scenario taxonomy, parameterized over a `file.Backend`.

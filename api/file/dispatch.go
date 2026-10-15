@@ -184,7 +184,7 @@ func entryListVars[T any](routing routingInfo, core roleCore[T], vars map[string
 // backend doesn't implement MetadataBackend, OR ReadMetadata reports no
 // stored metadata for path. Mirrors CopyingBackend/MovingBackend's
 // "optionally present, harmless absence" idiom exactly.
-func applyMetadataMergeFields[T any](ctx context.Context, backend Backend, path string, core roleCore[T], v *T) error {
+func applyMetadataMergeFields[T any](ctx context.Context, backend Backend, path string, core roleCore[T], v *T, obs stats.Observer) error {
 	if len(core.resource.metadataMergeFields) == 0 {
 		return nil
 	}
@@ -200,6 +200,7 @@ func applyMetadataMergeFields[T any](ctx context.Context, backend Backend, path 
 		return nil
 	}
 	if err := codex.DecodeVars(v, md, core.resource.metadataMergeFields...); err != nil {
+		stats.ReportErrors(obs, "file", err)
 		return FileDecodeError{Path: path, Err: err}
 	}
 	return nil
@@ -211,12 +212,13 @@ func applyMetadataMergeFields[T any](ctx context.Context, backend Backend, path 
 // passes the result to WriteOptions.Metadata unconditionally; a Backend
 // without MetadataBackend already silently ignores that field (see
 // WriteOptions.Metadata's own doc comment).
-func deriveWriteMetadata[T any](path string, core roleCore[T], v T) (map[string]string, error) {
+func deriveWriteMetadata[T any](path string, core roleCore[T], v T, obs stats.Observer) (map[string]string, error) {
 	if len(core.resource.metadataMergeFields) == 0 {
 		return nil, nil
 	}
 	md, err := codex.EncodeVars(v, core.resource.metadataMergeFields...)
 	if err != nil {
+		stats.ReportErrors(obs, "file", err)
 		return nil, FileEncodeError{Path: path, Err: err}
 	}
 	return md, nil
@@ -279,6 +281,7 @@ func readCore[T any](ctx context.Context, backend Backend, core roleCore[T], rou
 	}
 	v, err := core.resource.format.Unmarshal(data)
 	if err != nil {
+		stats.ReportErrors(obs, "file", err)
 		recordRead(obs, path, false, time.Since(start))
 		return zero, FileDecodeError{Path: path, Err: err}
 	}
@@ -286,7 +289,7 @@ func readCore[T any](ctx context.Context, backend Backend, core roleCore[T], rou
 		recordRead(obs, path, false, time.Since(start))
 		return zero, err
 	}
-	if err := applyMetadataMergeFields(ctx, backend, path, core, &v); err != nil {
+	if err := applyMetadataMergeFields(ctx, backend, path, core, &v, obs); err != nil {
 		recordRead(obs, path, false, time.Since(start))
 		return zero, err
 	}
@@ -338,7 +341,7 @@ func createCore[T any](ctx context.Context, backend Backend, core roleCore[T], r
 	// runBoundMiddleware so an attached BoundCreateMiddleware's
 	// WithMetadataIn can decode it into its own In — see
 	// Middleware's own doc comment for the full rationale.
-	md, err := deriveWriteMetadata(path, core, v)
+	md, err := deriveWriteMetadata(path, core, v, obs)
 	if err != nil {
 		return nil, err
 	}
@@ -351,6 +354,7 @@ func createCore[T any](ctx context.Context, backend Backend, core roleCore[T], r
 	start := time.Now()
 	data, err := core.resource.format.Marshal(v)
 	if err != nil {
+		stats.ReportErrors(obs, "file", err)
 		recordWrite(obs, path, false, time.Since(start))
 		return nil, FileEncodeError{Path: path, Err: err}
 	}
@@ -408,6 +412,20 @@ func patchCore[T, P any](ctx context.Context, backend Backend, core roleCore[T],
 	if !ok {
 		return BackendTypeMismatchError{Expected: typeNameOf[P](), Got: typeName(patch)}
 	}
+	// Patch writes to the Backend (a read-modify-write), so it must
+	// honor a declared AccessModeReadOnly Capability exactly like every
+	// other mutating role (Create/Delete/Copy/Move/Mkdir/BatchDelete) —
+	// this was missing entirely (deep-dive-bug-hunt Round 217: a
+	// Patcher.WithCapabilities(AccessModeReadOnly) declaration was
+	// silently inert, never enforced). Checked BEFORE any Backend call,
+	// matching the established "fail before backend" convention.
+	wire, err := resolveWire(core)
+	if err != nil {
+		return err
+	}
+	if err := checkAccessMode(wire); err != nil {
+		return err
+	}
 	path, err := core.resource.buildPathWithRouting(routing, vars)
 	if err != nil {
 		return err
@@ -433,6 +451,7 @@ func patchCore[T, P any](ctx context.Context, backend Backend, core roleCore[T],
 	start := time.Now()
 	intermediate, err := patchCodec.Encode(p)
 	if err != nil {
+		stats.ReportErrors(obs, "file", err)
 		recordWrite(obs, path, false, time.Since(start))
 		return FileEncodeError{Path: path, Err: err}
 	}
@@ -451,15 +470,17 @@ func patchCore[T, P any](ctx context.Context, backend Backend, core roleCore[T],
 	}
 	merged, err := core.resource.format.PatchInto(data, patchMap)
 	if err != nil {
+		stats.ReportErrors(obs, "file", err)
 		recordWrite(obs, path, false, time.Since(start))
 		return FileDecodeError{Path: path, Err: err}
 	}
 	newData, err := core.resource.format.Marshal(merged)
 	if err != nil {
+		stats.ReportErrors(obs, "file", err)
 		recordWrite(obs, path, false, time.Since(start))
 		return FileEncodeError{Path: path, Err: err}
 	}
-	md, err := deriveWriteMetadata(path, core, merged)
+	md, err := deriveWriteMetadata(path, core, merged, obs)
 	if err != nil {
 		recordWrite(obs, path, false, time.Since(start))
 		return err
@@ -472,6 +493,9 @@ func patchCore[T, P any](ctx context.Context, backend Backend, core roleCore[T],
 	// File.Write — CreateDirs is harmless-but-moot here since Patch
 	// requires the file to already exist (it just Read it above).
 	writeOpts := callerOpts
+	if wire.NativePOSIXMode != nil {
+		writeOpts.Perm = *wire.NativePOSIXMode
+	}
 	writeOpts.Metadata = mergeMetadata(md, boundOutMD)
 	if _, err := backend.WriteBytes(ctx, path, newData, writeOpts); err != nil {
 		recordWrite(obs, path, false, time.Since(start))
@@ -590,6 +614,7 @@ func listCore[T any](ctx context.Context, backend Backend, core roleCore[T], rou
 		}
 		v, err := core.resource.format.Unmarshal(data)
 		if err != nil {
+			stats.ReportErrors(obs, "file", err)
 			recordList(obs, path, false, len(out), time.Since(start))
 			return nil, FileDecodeError{Path: childPath, Err: err}
 		}
@@ -602,7 +627,7 @@ func listCore[T any](ctx context.Context, backend Backend, core roleCore[T], rou
 			recordList(obs, path, false, len(out), time.Since(start))
 			return nil, err
 		}
-		if err := applyMetadataMergeFields(ctx, backend, childPath, core, &v); err != nil {
+		if err := applyMetadataMergeFields(ctx, backend, childPath, core, &v, obs); err != nil {
 			recordList(obs, path, false, len(out), time.Since(start))
 			return nil, err
 		}
@@ -699,9 +724,28 @@ func copyBytesCore[T any](ctx context.Context, backend Backend, core roleCore[T]
 	if err != nil {
 		return "", "", err
 	}
+	// Metadata carry-over (deep-dive-bug-hunt Round 219: Copy silently
+	// lost the resource's metadata entirely — neither the native
+	// CopyingBackend fast path nor the generic Read+Write fallback
+	// below ever consulted MetadataBackend at all). Read src's metadata
+	// BEFORE the copy so it can be written to dst AFTER a successful
+	// copy, uniformly for BOTH paths below.
+	mb, hasMetadata := backend.(MetadataBackend)
+	var srcMD map[string]string
+	if hasMetadata {
+		srcMD, err = mb.ReadMetadata(ctx, srcPath)
+		if err != nil {
+			return srcPath, dstPath, FileReadError{Path: srcPath, Err: err}
+		}
+	}
 	if cb, ok := backend.(CopyingBackend); ok {
 		if err := cb.CopyBytes(ctx, srcPath, dstPath); err != nil {
 			return srcPath, dstPath, FileWriteError{Path: dstPath, Err: err}
+		}
+		if hasMetadata && srcMD != nil {
+			if err := mb.WriteMetadata(ctx, dstPath, srcMD); err != nil {
+				return srcPath, dstPath, FileWriteError{Path: dstPath, Err: err}
+			}
 		}
 		return srcPath, dstPath, nil
 	}
@@ -712,7 +756,11 @@ func copyBytesCore[T any](ctx context.Context, backend Backend, core roleCore[T]
 		}
 		return srcPath, dstPath, FileReadError{Path: srcPath, Err: err}
 	}
-	if _, err := backend.WriteBytes(ctx, dstPath, data, WriteOptions{}); err != nil {
+	writeOpts := WriteOptions{}
+	if hasMetadata && srcMD != nil {
+		writeOpts.Metadata = srcMD
+	}
+	if _, err := backend.WriteBytes(ctx, dstPath, data, writeOpts); err != nil {
 		return srcPath, dstPath, FileWriteError{Path: dstPath, Err: err}
 	}
 	return srcPath, dstPath, nil
@@ -790,12 +838,38 @@ func moveCore[T any](ctx context.Context, backend Backend, core roleCore[T], rou
 	defer func() { endSpan(err) }()
 
 	if mb, ok := backend.(MovingBackend); ok {
+		// Metadata carry-over (deep-dive-bug-hunt Round 219, same gap as
+		// Copy's): os.Rename-style native moves relocate the main file
+		// only — a Backend's metadata sidecar (if any) is left orphaned
+		// at srcPath and missing at dstPath unless explicitly relocated
+		// here. Read BEFORE the move (srcPath still exists), write AFTER
+		// (dstPath now exists) — the source's own now-orphaned sidecar
+		// is a disclosed, separate, lower-priority cleanup gap (no
+		// MetadataBackend.DeleteMetadata method exists to remove it;
+		// tracked as a follow-up, not fixed here).
+		metaBackend, hasMetadata := backend.(MetadataBackend)
+		var srcMD map[string]string
+		if hasMetadata {
+			srcMD, err = metaBackend.ReadMetadata(ctx, srcPath)
+			if err != nil {
+				recordMove(obs, srcPath, dstPath, false, time.Since(start))
+				return FileReadError{Path: srcPath, Err: err}
+			}
+		}
 		err := mb.MoveBytes(ctx, srcPath, dstPath)
 		if err != nil {
 			err = FileWriteError{Path: dstPath, Err: err}
+			recordMove(obs, srcPath, dstPath, false, time.Since(start))
+			return err
 		}
-		recordMove(obs, srcPath, dstPath, err == nil, time.Since(start))
-		return err
+		if hasMetadata && srcMD != nil {
+			if err := metaBackend.WriteMetadata(ctx, dstPath, srcMD); err != nil {
+				recordMove(obs, srcPath, dstPath, false, time.Since(start))
+				return FileWriteError{Path: dstPath, Err: err}
+			}
+		}
+		recordMove(obs, srcPath, dstPath, true, time.Since(start))
+		return nil
 	}
 
 	// Level 2/3: delegate to Copier's own fallback, then Delete.

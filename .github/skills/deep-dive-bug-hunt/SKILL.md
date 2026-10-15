@@ -43,9 +43,14 @@ Round-numbering convention. Read `review-go-codex/SKILL.md` first if unfamiliar 
 1. **Enumerate the layer's concepts/capabilities.** For `api/rest`: path/query/header/cookie
    params, status codes, security schemes, SSE, etc. For `api/events`: topic params, user
    properties, QoS, retained, security schemes, dead-letter, address, spec-endpoint. For
-   `api/reqreply`/`api/mcp`: the equivalent per-package vocabulary. Read the layer's own
-   `builder.go` (and sibling files) to get the REAL list — do not assume REST's shape transfers
-   1:1 to another layer (events has no `ClientHandle`/`Register` split REST has, for example).
+   `api/reqreply`/`api/mcp`: the equivalent per-package vocabulary. For `api/file`: `PathParam`/
+   `MergedPathParam`, `MetadataParam`/`MergedMetadataParam` (the metadata merge-field axis),
+   `Capability` (`AccessMode`/`NativePOSIXMode`), `BoundMiddleware` (one per role), `Router`,
+   `ErrorPattern`, and the 10 roles themselves (Read/Create/Patch/Delete/List/Exists/Copy/Move/
+   Mkdir/BatchDelete). Read the layer's own `builder.go` (and sibling files) to get the REAL
+   list — do not assume REST's shape transfers 1:1 to another layer (events has no
+   `ClientHandle`/`Register` split REST has, for example; `api/file` has no header/cookie/query
+   axis at all — only path vars and its own metadata axis).
 2. **Check `history.md` for already-covered concepts** (e.g. middleware, router/`ServeSpec`
    structural correctness are often reviewed separately already) — exclude those from fresh
    re-review; a concept round only re-derives what's genuinely unexamined.
@@ -74,7 +79,14 @@ Round-numbering convention. Read `review-go-codex/SKILL.md` first if unfamiliar 
    check any PRE/POST logic an adapter still keeps OUTSIDE the shared core (setup, security-gate
    ordering, observer hooks) — consolidation removes duplicate-copy drift risk, but an adapter's
    own wiring around the shared call can still have an adapter-specific bug the core itself
-   can't catch.
+   can't catch. **A layer with only ONE real adapter (e.g. `api/file`'s Phase 1, which has only
+   `adapters/file`) has no N-way parity to check in the usual sense** — the equivalent check
+   becomes "does the one adapter correctly implement every `Backend` method + optional extension
+   interface, including ones a future 2nd adapter would also need to get right." Where a SECOND,
+   same-interface implementation exists for a non-adapter reason (e.g. `ports`'s private
+   `osBackend`, built to satisfy `ports.File`/`ports.Dir` without an import cycle), treat that as
+   the de-facto 2nd parity check instead — it carries the exact same under-scrutinized-new-code
+   risk profile an adapter would.
 5. **Reproduce any suspected bug LIVE, via a failing test, BEFORE fixing it.** This is the
    single highest-value practice in this methodology — a purely static read of the dispatch code
    missed real bugs across MULTIPLE prior review passes until an actual failing test exposed

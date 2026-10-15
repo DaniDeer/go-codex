@@ -4,6 +4,323 @@ Do not re-report any of these findings. They have been implemented and tested.
 
 ---
 
+## Round 223 (`deep-dive-bug-hunt` Phase B — mandatory consolidated design-doc re-review of Rounds 216-222, the FIRST-ever `api/file` deep-dive pass)
+
+Per the skill's Phase B (mandatory, not optional): cross-checked every
+fix from this pass against the governing doc — `docs/roadmap/
+file-api.md` (no `docs/design/d-NNNN` exists yet for `api/file`; Phase 4
+of its own roadmap, "promote to docs/design/", hasn't happened). 3 of
+the 7 rounds (216, 217, 219) changed code; the other 4 (218, 220, 221,
+222) were clean/no-fix, already self-verified during Phase A.
+
+**Verdict table:**
+
+| Round | Fix | Doc(s) cross-checked | Verdict |
+|---|---|---|---|
+| 216 (`stats.ReportErrors` never called in `api/file`'s dispatch core) | Added calls at every decode/encode failure point | `plan-a-new-codex-feature/SKILL.md`'s own mandatory Observer Pattern requirement (§2: `stats.ReportErrors(obs, "location", err)` propagates `ValidationErrors` per-field — a REPO-WIDE convention, not something `file-api.md` itself needed to separately restate) | **ALIGNED.** The fix implements an already-documented, repo-wide requirement `api/file` had simply missed; no reinterpretation, no retired pattern reintroduced. |
+| 217 (`patchCore` never enforced `AccessMode`) | Added `resolveWire`/`checkAccessMode` before any Backend call | `docs/roadmap/file-api.md`'s own "Capability vs. per-call option precedence" section — found the doc's own illustrative sentence enumerated `Create`/`Delete`/`Move`/`Mkdir` as "the mutating roles," OMITTING `Patch`/`Copy`/`BatchDelete` (all 3 of which already correctly called `checkAccessMode` before this round) | **ALIGNED in substance, doc wording was imprecise** — a documentation-clarity issue, not a code/design misalignment (the doc's own stated INTENT, "a declared Capability must not be silently overridable," already demanded exactly what the fix now does; the doc's enumeration was simply incomplete, not an intentional exclusion). Fixed directly per Phase B's own charter: reworded the sentence to be explicitly exhaustive, citing this Round. |
+| 219 (`Copy`/`Move` silently dropped metadata) | Read source metadata before, write to destination after, in both native and fallback paths | `docs/roadmap/file-api.md`'s metadata-axis section — found the doc NEVER discussed the Copy/Move + metadata interaction at all (the metadata axis was designed in a LATER round than Copy/Move's own design, so the gap was never surfaced) | **No misalignment — a genuine doc GAP, now filled.** Added a new paragraph documenting the fix, the S3 `CopyObject` COPY-vs-REPLACE precedent it mirrors, and the disclosed, NOT-fixed orphaned-sidecar-cleanup follow-up. |
+
+`go-codex.instructions.md`'s `api/file` row updated with a short pointer
+to all 3 fixes (behavior changed, even though no new exported symbols
+were added) — no contradiction found with any OLDER note in that file
+about the same mechanisms (this is the FIRST round to touch any of
+these 3 specific behaviors in that file).
+
+This closes the first-ever `deep-dive-bug-hunt` pass applied to
+`api/file` (Rounds 216-223, 8 entries total: 2 clean concept rounds
+combined into one entry [218], 2 real bugs found and fixed [217, 219],
+1 real bug found and fixed in the foundational round [216], 2 clean
+backend-implementation rounds [221, 222], 1 clean conformance-suite
+mutation-test round [220], this Phase B re-review). Scope per the
+user's own choice: `api/file` + `adapters/file` + `ports`'s private
+`osBackend` (treated as the 2nd "adapter" for N-way parity, since
+`api/file` has only one real adapter in Phase 1).
+
+---
+
+## Round 222 (`deep-dive-bug-hunt` applied to `api/file` — `ports.osBackend` vs `adapters/file.Backend` N-way parity check, clean)
+
+Per this skill's own newly-added single-adapter guidance (this round's
+own Step 4 update): since `api/file` has only one real adapter, treated
+`ports`'s private `osBackend` as the de-facto 2nd parity check (per the
+user's explicit scope choice for this deep-dive pass). Direct-diffed
+every method BOTH backends implement (`WriteBytes`, `DeleteBytes`,
+`ListDir`, `Mkdir`, `WalkDir`, `DeleteDir`) — all are BYTE-FOR-BYTE
+IDENTICAL in logic (only the receiver type/doc-comment text differs, as
+expected for 2 independently-maintained copies). Confirmed `osBackend`
+correctly does NOT implement `CopyingBackend`/`MovingBackend`/
+`MetadataBackend` (unlike `adapters/file.Backend`) — INTENTIONAL, not a
+gap: `ports.File` has no `Copy`/`Move` methods in its own public API at
+all, and no metadata-axis consumer, so there is nothing in `ports` that
+would ever call these. This also means Round 219's `Copy`/`Move`
+metadata-carry-over bug fix does NOT affect `ports.File` at all (the
+affected code path — `copyBytesCore`'s native `CopyingBackend` branch —
+can never be reached when the attached Backend is `osBackend`).
+
+No drift found between the two backend implementations — the
+"deliberate, disclosed near-duplication" design (accepted to avoid the
+`ports` → `adapters/file` import cycle) has NOT silently diverged in the
+several rounds since it was introduced.
+
+---
+
+## Round 221 (`deep-dive-bug-hunt` applied to `api/file` — `adapters/file.Backend`'s own implementation, prioritizing the newest `WalkDir`/`DeleteDir`/atomicity code, clean)
+
+Re-reviewed `adapters/file.Backend`'s full method set with fresh,
+adversarial eyes, prioritizing the NEWEST, least-scrutinized additions
+(`WalkDir`/`DeleteDir`/the Strict-write atomicity fix, all added in the
+`ports.Dir` migration round immediately prior to this deep-dive pass).
+Specifically re-traced `WriteBytes`'s `CreateDirs`+`Strict` interaction
+ordering: `CreateDirs`'s `os.MkdirAll` runs UNCONDITIONALLY first (even
+under `Strict`), so a `Strict` write into a brand-new nested directory
+correctly creates the parent dirs before the atomic
+`O_CREATE|O_EXCL` open — confirmed correct via direct code trace.
+
+**One pre-existing (NOT new, NOT a regression) characteristic noted,
+not fixed**: a `Strict` write whose `f.Write(data)`/`f.Close()` call
+fails AFTER `os.OpenFile(O_CREATE|O_EXCL)` already succeeded leaves a
+partial/empty file behind — no cleanup-on-failure — meaning a
+subsequent retry at the same path would see `FileAlreadyExistsError`
+even though the original write technically failed. Confirmed via a
+direct comparison that `ports.File.Write`'s ORIGINAL pre-migration code
+had the IDENTICAL structure (no cleanup on this exact failure path) —
+this is an inherited, longstanding characteristic, not something the
+`ports.Dir`/`osBackend` migration rounds introduced, so it's noted here
+for the record rather than treated as a new finding requiring a fix.
+
+No new bugs found in `adapters/file.Backend` itself this round — the
+Round 219 `Copy`/`Move` metadata-carry-over fix lives entirely at the
+`api/file/dispatch.go` layer (uniform across any Backend), not in this
+Backend's own `CopyBytes`/`MoveBytes`, which correctly do ONLY the raw
+byte-level operation they're documented to do.
+
+---
+
+## Round 220 (`deep-dive-bug-hunt` applied to `api/file` — mutation-testing `api/file/filetest`'s 8 `Assert*` functions, clean)
+
+Per the skill's conformance-package Gotcha: read all 8 `Assert*`
+functions closely (`AssertReadWriteRoundTrip`, `AssertPathParamMergeField`,
+`AssertSecurityGate`, `AssertOrderedMiddlewareChain`,
+`AssertErrorPatternMapping`, `AssertCapabilityRejected`,
+`AssertObservability`, `AssertMetadataIntegration`) — all read genuinely
+tight (checking actual VALUES/ORDER/overrides, not just "no error"):
+`AssertSecurityGate` proves BOTH the gated-Read rejection AND that an
+UNGATED Read for the same resource still succeeds (proving the Backend
+itself never rejected it, the gate did); `AssertMetadataIntegration`
+checks both a plain round-trip AND a `BoundCreateMiddleware`'s
+`WithMetadataOut` override precedence.
+
+Performed ONE live mutation-test proof (per the skill's own
+discipline — not just a static read) on the highest-complexity scenario:
+temporarily reversed `runBoundMiddleware`'s execution-order loop (in a
+scratch, never-committed edit) and ran `adapters/file`'s own
+`TestFiletestConformance` — `AssertOrderedMiddlewareChain` correctly
+FAILED (`want [first second] in order, got [second first]`), while all
+7 other scenarios still passed (confirming the mutation was properly
+isolated to the one capability it should have broken). Reverted
+immediately after confirming; `git diff` showed zero remaining changes
+to `middleware.go`, full suite re-confirmed green.
+
+No conformance-package issues found — `api/file/filetest` is a reliable
+testable surface, consistent with `resttest`/`eventstest`/
+`reqreplytest`'s own prior clean mutation-test results.
+
+---
+
+## Round 219 (`deep-dive-bug-hunt` applied to `api/file` — all 10 per-role dispatch-core functions — REAL BUG FOUND AND FIXED: Copy/Move silently lose the metadata axis)
+
+Traced each role's own dispatch-core function in full: `readCore`/
+`listCore` (clean, already exercised heavily in Rounds 216-218),
+`createCore`/`patchCore` (clean after Round 217's fix),
+`deleteCore`/`existsCore` (both clean — `existsCore` is read-only, no
+`AccessMode` check needed; not-found translation via `backend.Stat`
+correct), `mkdirCore` (clean — `Capability`/per-call-option precedence
+already verified during the `ports.Dir` migration work), and
+`copyCore`/`moveCore`/`copyBytesCore`'s 3-level cascade —
+**REAL BUG FOUND AND FIXED here (live-reproduced first)**.
+
+`copyBytesCore` (BOTH its native `CopyingBackend` fast path AND its
+generic `Read`+`Write` fallback) NEVER consulted `MetadataBackend` at
+all — a `Resource[T]` declaring a metadata axis
+(`MetadataParam`/`MergedMetadataParam`) silently lost that metadata on
+every `Copy`. Reproduced live with
+`TestCopyCore_NativeCopyingBackend_LosesMetadata_BUG` (created a
+resource with a declared `owner` metadata field, confirmed via
+`adapters/file`'s real filesystem backend that a `Copy`'d destination
+came back with `Owner == ""` instead of the source's value) — confirmed
+FAILING against current code before fixing. The SAME gap existed in
+`moveCore`'s native `MovingBackend` fast path (an `os.Rename`-style move
+relocates the main file only, leaving the Backend's metadata sidecar —
+if any — orphaned at the source and missing at the destination);
+`moveCore`'s fallback cascade (Level 2/3, delegating to `copyBytesCore`)
+inherits the SAME fix for free once `copyBytesCore` itself is fixed.
+
+Fixed by reading the source's metadata BEFORE the copy/move (via
+`MetadataBackend.ReadMetadata`, guarded by the established
+type-assertion idiom) and writing it to the destination AFTER a
+successful copy/move (via `MetadataBackend.WriteMetadata`) — uniformly
+in both `copyBytesCore`'s native and fallback paths, and separately in
+`moveCore`'s own native `MovingBackend` branch. Added
+`TestMoveCore_NativeMovingBackend_CarriesMetadataOver` proving the Move
+fix too. Both tests pass post-fix; full `api/file`/`adapters/file`/
+`ports` suites remain green.
+
+**Disclosed, NOT fixed this round** (a separate, lower-priority gap
+found along the way, deliberately not expanded into): a Move's SOURCE
+metadata sidecar is left ORPHANED after a successful move/delete in
+EVERY path (native and fallback) — `MetadataBackend` has no
+`DeleteMetadata` method to clean it up. This is a disk-hygiene leak, not
+a data-integrity/correctness issue (the moved resource's metadata is now
+correctly carried to the new location; only the OLD, now-unreferenced
+sidecar file lingers) — tracked as a named follow-up for whoever designs
+Phase 2's S3/SMB backends (a real object-storage backend wouldn't have
+this exact sidecar-file shape at all, so this may be Phase-1-filesystem-
+specific and worth re-scoping rather than blindly porting forward).
+
+`batchDeleteCore` (clean — matches its own documented non-delegating
+fallback design exactly, correct per-item result aggregation via
+`countResults`).
+
+---
+
+## Round 218 (`deep-dive-bug-hunt` applied to `api/file` — `MetadataParam`, `BoundMiddleware`, `Router`, `ErrorPattern` concepts, all clean)
+
+**`MetadataParam`/`MergedMetadataParam`** (the newest axis, added
+mid-session — highest a priori bug risk of the 4): re-traced
+`deriveWriteMetadata`/`applyMetadataMergeFields`/`mergeMetadata`
+(already fixed for the `stats.ReportErrors` gap in Round 216) and
+confirmed `patchCore`'s metadata derivation correctly uses `merged` (the
+PATCHED final value), not the raw patch struct `p` — the same pattern
+`createCore` uses on its own final `v`. Existing tests
+(`TestClient_Metadata_RoundTripsViaMergeField`/
+`TestClient_Metadata_AbsentSidecar_LeavesFieldZeroValue`) already cover
+the round-trip and absent-sidecar cases. No bug found.
+
+**`BoundMiddleware`** (all 10 roles): confirmed via `grep` that all 10
+dispatch-core functions call `runBoundMiddleware` (the Security/
+GrantedScopes gate) — exactly the kind of "one role quietly missing a
+gate" check that found Round 217's real `Capability` bug, here coming
+back clean. Read `runBoundMiddleware`'s own merge logic directly: when
+no `BoundMiddleware` is attached but Security IS declared, it rejects
+immediately (`CheckScopes(core.security, nil)` — correctly fails, since
+zero scopes are granted); when BoundMiddleware IS attached, each one's
+granted scopes are additively unioned per-scheme
+(`granted[scheme] = append(granted[scheme], scopes...)`) before the
+final `CheckScopes` call — correct, matches the established
+layered-BoundMiddleware convention. No bug found.
+
+**`Router`**: confirmed `applyWithRouterPrefix`'s template/middleware/tag
+composition is pure VALUE-copy mutation — `roleCore[T].resource` is a
+value field (`Resource[T]`, not `*Resource[T]`), and every role type's
+`WithRouterPrefix` method has a value receiver, so mutating
+`core.resource.template` inside `applyWithRouterPrefix` can NEVER alias
+back into an original shared `Resource[T]` declaration (verified by
+reading the struct field type directly, not assuming it). No bug found
+— this is exactly the kind of "multiple roles built from one shared
+Resource, one gets Router-grouped, does it corrupt the others'
+templates" question worth checking explicitly, and it reads correct.
+
+**`ErrorPattern`**: `error_pattern.go`'s `ErrorPattern[E,B]`/
+`ErrorPatterns[B]` shape (`errors.As` match, first-declared-rule-wins,
+direct/mapped modes) is confirmed to mirror
+`rest`/`events`/`reqreply.ErrorPattern`'s identical, ALREADY-REVIEWED
+convention (Rounds 64-65 per this skill's own checklist reference) —
+no new logic to re-derive here, just confirmed the mirroring is exact.
+No bug found.
+
+---
+
+## Round 217 (`deep-dive-bug-hunt` applied to `api/file` — `PathParam`/`MergedPathParam` concept, clean; `Capability` concept — REAL BUG FOUND AND FIXED)
+
+**`PathParam`/`MergedPathParam` (clean)**: traced declare-time source
+(`PathParam`/`NewPathParam` in `builder.go`) through dispatch-time
+matching (`matchFileTemplate` for `List`'s per-entry var extraction) and
+`buildPathWithRouting`/`buildParentDirWithRouting`'s `codex.BuildFromParams`
+delegation. Specifically verified (via a direct read of
+`codex.BuildFromParams`'s implementation, not just trusting the doc
+comment) that `buildParentDirWithRouting`'s claim — "the final segment's
+own var is deliberately NOT required" — is genuinely correct:
+`BuildFromParams` iterates over placeholders found IN THE TEMPLATE
+STRING (`templatematch.ParseVarsInOrder`), never over the full `params`
+list independently, so a param with no corresponding placeholder in the
+(already-`path.Dir`-stripped) parent-dir template is simply never looked
+up or required. No bug found.
+
+**`Capability` (`AccessMode`/`NativePOSIXMode`) — REAL BUG FOUND AND
+FIXED (live-reproduced first)**: `patchCore` NEVER called
+`resolveWire`/`checkAccessMode` at all — confirmed via direct code read,
+then LIVE-reproduced with `TestPatchCore_AccessModeReadOnly_RejectsBeforeBackendCall`
+(declared a `Patcher.WithCapabilities(AccessModeReadOnly)`, confirmed the
+test FAILED against current code — the Patch call silently succeeded and
+wrote to the Backend). Every OTHER mutating role (`Create`/`Delete`/
+`Copy`/`Move`/`Mkdir`/`BatchDelete`) already calls
+`resolveWire`+`checkAccessMode` before its Backend call; `Patch` — also a
+read-modify-WRITE — was the one role missing this entirely, meaning a
+declared `AccessModeReadOnly` Capability silently did NOT protect the
+Patch verb. This is the SAME bug class the skill's own intro cites
+("a publish-side capability-coverage gap across 3 adapters") — a
+capability-enforcement gap on exactly one of several otherwise-parallel
+dispatch paths.
+
+Fixed by adding the SAME `resolveWire`/`checkAccessMode` sequence
+`createCore` already has, inserted before `patchCore`'s path-build step
+(matching the "fail before backend, and before as much else as
+possible" convention). ALSO fixed a second, closely-related gap found
+while fixing the first: `patchCore`'s final `WriteBytes` call never
+applied `wire.NativePOSIXMode` to override `writeOpts.Perm` (every other
+Capability-aware write path does) — fixed in the same pass, since
+`wire` is now actually computed. Test passes post-fix; full `api/file`/
+`adapters/file`/`ports` suites remain green.
+
+---
+
+## Round 216 (`deep-dive-bug-hunt` applied to `api/file` — foundational dispatch.go helpers — FIRST round ever pointed at this layer)
+
+`api/file` was built entirely across many prior rounds THIS session
+(Phase 1 of `docs/roadmap/file-api.md`, now fully done including
+Stage F's `ports.File`/`ports.Dir` migration) but had NEVER been put
+through this skill's live-reproduction methodology — everything so far
+was built-then-unit-tested, not adversarially re-examined the way
+`api/rest`/`api/events`/`api/reqreply` were in Rounds 167-215. Traced
+`dispatch.go`'s shared foundational helpers every later concept
+dispatches through: Observer helpers (`obsFromCtx`/`recordXxx`),
+`startSpan` (TraceObserver), `resolveWire`/`checkAccessMode`
+(Capability), `isNotFound`, `applyPathMergeFields`/`entryListVars`
+(path-var merge), `applyMetadataMergeFields`/`deriveWriteMetadata`/
+`mergeMetadata` (the metadata axis), and `error_pattern.go`'s
+`ErrorPattern`/`ErrorPatterns[B]` shape (confirmed to mirror
+`rest`/`events`/`reqreply`'s identical, already-reviewed convention).
+
+**REAL BUG FOUND AND FIXED (live-reproduced first, per the skill's own
+discipline)**: `api/file`'s dispatch core NEVER called
+`stats.ReportErrors` anywhere — confirmed via `grep` (zero matches in
+`api/file/*.go` before this fix) — unlike `ports.File`'s own
+pre-migration code, which called it on every decode/encode failure.
+Wrote `TestReadCore_DecodeFailure_ReportsValidationErrorsToObserver`
+first, confirmed it FAILED against the current code (a spy
+`ValidationObserver` recorded zero calls on a genuine decode failure),
+then fixed by adding `stats.ReportErrors(obs, "file", err)` calls at
+every decode/encode failure point: `readCore`'s `Unmarshal`,
+`createCore`'s `Marshal`, `patchCore`'s `patchCodec.Encode`/
+`format.PatchInto`/`format.Marshal` (all 3), `listCore`'s per-entry
+`Unmarshal`, and — since they weren't observer-aware at all before —
+threaded a new `obs stats.Observer` parameter through
+`applyMetadataMergeFields`/`deriveWriteMetadata` so the metadata axis's
+own `DecodeVars`/`EncodeVars` failures report too. Added 2 more tests
+(`TestCreateCore_EncodeFailure_...`, `TestListCore_DecodeFailure_...`)
+proving the fix across the write and list dispatch paths too. All 3
+tests pass post-fix; full `api/file`/`adapters/file`/`ports` suites
+remain green.
+
+No other bugs found in this round's scope — `resolveWire`/
+`checkAccessMode`'s Capability-overrides-option precedence,
+`applyPathMergeFields`/`entryListVars`'s merge-field logic, and
+`error_pattern.go`'s match/precedence shape all read correct on close
+inspection and match their own doc comments' claims.
+
+---
+
 ## Round 215 (`deep-dive-bug-hunt` Phase B — mandatory consolidated design-doc re-review of Rounds 207-214)
 
 Per the skill's Phase B (mandatory, not optional): cross-checked every fix

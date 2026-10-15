@@ -13,6 +13,7 @@ import (
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/stats"
+	"github.com/DaniDeer/go-codex/validate"
 )
 
 type record struct {
@@ -1244,4 +1245,203 @@ func TestNewResource_MultipleGlobstars_Panics(t *testing.T) {
 		}
 	}()
 	file.NewResource[record]("a/**/b/**/c", format.JSON(recordCodec()))
+}
+
+// ── Deep-dive-bug-hunt Round 216: foundational dispatch.go helpers ─────
+
+// validationSpy records RecordValidationError calls — used to prove the
+// stats.ReportErrors gap below.
+type validationSpy struct {
+	stats.NoopObserver
+	calls []string // location/constraint/field, joined
+}
+
+func (s *validationSpy) RecordValidationError(location, constraint, field string) {
+	s.calls = append(s.calls, location+"/"+constraint+"/"+field)
+}
+
+func TestReadCore_DecodeFailure_ReportsValidationErrorsToObserver(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "item.json")
+	// Write a raw JSON value that fails recordCodec's "value must be
+	// non-negative"-style constraint is not available here, so instead
+	// write a wrong-typed field to trigger a decode/validation error.
+	if err := os.WriteFile(path, []byte(`{"name":"x","value":"not-an-int"}`), 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	res := file.NewResource[record](path, format.JSON(recordCodec()))
+	backend := adapterfile.NewBackend()
+	client := file.NewClient()
+	if err := client.Attach(backend); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	spy := &validationSpy{}
+	ctx := stats.WithObserver(context.Background(), spy)
+
+	_, err := client.Read(ctx, res.WithRead(file.Read{}), nil)
+	if err == nil {
+		t.Fatal("expected a decode error, got nil")
+	}
+	if len(spy.calls) == 0 {
+		t.Errorf("RecordValidationError was never called on decode failure — dispatch.go's readCore does not call stats.ReportErrors, unlike ports.File.Read's original behavior")
+	}
+}
+
+func TestCreateCore_EncodeFailure_ReportsValidationErrorsToObserver(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "item.json")
+	// A codec with a Refine constraint that the test value will violate.
+	strictCodec := codex.Struct[record](
+		codex.RequiredField("name", codex.String().Refine(validate.NonEmptyString),
+			func(r record) string { return r.Name },
+			func(r *record, v string) { r.Name = v }),
+		codex.RequiredField("value", codex.Int(),
+			func(r record) int { return r.Value },
+			func(r *record, v int) { r.Value = v }),
+	)
+	res := file.NewResource[record](path, format.JSON(strictCodec))
+	backend := adapterfile.NewBackend()
+	client := file.NewClient()
+	if err := client.Attach(backend); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	spy := &validationSpy{}
+	ctx := stats.WithObserver(context.Background(), spy)
+
+	_, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "", Value: 1}, nil)
+	if err == nil {
+		t.Fatal("expected an encode/validation error, got nil")
+	}
+	if len(spy.calls) == 0 {
+		t.Errorf("RecordValidationError was never called on createCore's encode failure")
+	}
+}
+
+func TestListCore_DecodeFailure_ReportsValidationErrorsToObserver(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "bad.json"), []byte(`{"name":"x","value":"not-an-int"}`), 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	res := file.NewResource[record](filepath.Join(dir, "{name}.json"), format.JSON(recordCodec()),
+		file.PathParam{Name: "name"})
+	backend := adapterfile.NewBackend()
+	client := file.NewClient()
+	if err := client.Attach(backend); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	spy := &validationSpy{}
+	ctx := stats.WithObserver(context.Background(), spy)
+
+	_, err := client.List(ctx, res.WithList(file.List{}), nil)
+	if err == nil {
+		t.Fatal("expected a decode error, got nil")
+	}
+	if len(spy.calls) == 0 {
+		t.Errorf("RecordValidationError was never called on listCore's decode failure")
+	}
+}
+
+func TestPatchCore_AccessModeReadOnly_RejectsBeforeBackendCall(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "item.json")
+	res := file.NewResource[record](path, format.JSON(recordCodec()))
+	backend := adapterfile.NewBackend()
+	client := file.NewClient()
+	if err := client.Attach(backend); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+
+	// Seed the file via a Creator WITHOUT the ReadOnly capability.
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "x", Value: 1}, nil); err != nil {
+		t.Fatalf("seed Create: %v", err)
+	}
+
+	type valuePatch struct{ Value int }
+	patchCodec := codex.Struct[valuePatch](
+		codex.RequiredField("value", codex.Int(),
+			func(p valuePatch) int { return p.Value },
+			func(p *valuePatch, v int) { p.Value = v }),
+	)
+	patcher := file.WithPatch(res, patchCodec, file.Patch{}).WithCapabilities(file.AccessModeReadOnly)
+
+	err := client.Patch(ctx, patcher, valuePatch{Value: 99}, nil)
+	if err == nil {
+		t.Fatal("want rejection error for AccessModeReadOnly Patch, got nil (BUG: patchCore never enforces Capability)")
+	}
+
+	// The file must be UNCHANGED (proves the rejection happened BEFORE
+	// any Backend call, not just that Patch happened to fail for some
+	// other reason).
+	gotAny, readErr := client.Read(ctx, res.WithRead(file.Read{}), nil)
+	if readErr != nil {
+		t.Fatalf("Read: %v", readErr)
+	}
+	if gotAny.(record).Value != 1 {
+		t.Fatalf("Value = %d, want 1 (Patch must not have reached the Backend)", gotAny.(record).Value)
+	}
+}
+
+func TestCopyCore_NativeCopyingBackend_LosesMetadata_BUG(t *testing.T) {
+	dir := t.TempDir()
+	res := file.NewResource[recordWithOwner](filepath.Join(dir, "{name}.json"), format.JSON(recordWithOwnerCodec()),
+		file.PathParam{Name: "name"},
+		file.NewMetadataParam("owner", codex.String(),
+			func(r recordWithOwner) string { return r.Owner },
+			func(r *recordWithOwner, v string) { r.Owner = v }),
+	)
+	backend := adapterfile.NewBackend()
+	client := file.NewClient()
+	if err := client.Attach(backend); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), recordWithOwner{Name: "alice", Value: 1, Owner: "team-a"}, map[string]string{"name": "alice"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if err := client.Copy(ctx, res.WithCopy(file.Copy{}), map[string]string{"name": "alice"}, map[string]string{"name": "bob"}); err != nil {
+		t.Fatalf("Copy: %v", err)
+	}
+
+	gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), map[string]string{"name": "bob"})
+	if err != nil {
+		t.Fatalf("Read copied resource: %v", err)
+	}
+	got := gotAny.(recordWithOwner)
+	if got.Owner != "team-a" {
+		t.Fatalf("Owner = %q, want %q — Copy silently lost the resource's metadata (BUG: neither CopyingBackend.CopyBytes nor the generic fallback carry metadata over)", got.Owner, "team-a")
+	}
+}
+
+func TestMoveCore_NativeMovingBackend_CarriesMetadataOver(t *testing.T) {
+	dir := t.TempDir()
+	res := file.NewResource[recordWithOwner](filepath.Join(dir, "{name}.json"), format.JSON(recordWithOwnerCodec()),
+		file.PathParam{Name: "name"},
+		file.NewMetadataParam("owner", codex.String(),
+			func(r recordWithOwner) string { return r.Owner },
+			func(r *recordWithOwner, v string) { r.Owner = v }),
+	)
+	backend := adapterfile.NewBackend()
+	client := file.NewClient()
+	if err := client.Attach(backend); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), recordWithOwner{Name: "alice", Value: 1, Owner: "team-a"}, map[string]string{"name": "alice"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := client.Move(ctx, res.WithMove(file.Move{}), map[string]string{"name": "alice"}, map[string]string{"name": "carol"}); err != nil {
+		t.Fatalf("Move: %v", err)
+	}
+	gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), map[string]string{"name": "carol"})
+	if err != nil {
+		t.Fatalf("Read moved resource: %v", err)
+	}
+	got := gotAny.(recordWithOwner)
+	if got.Owner != "team-a" {
+		t.Fatalf("Owner = %q, want %q — Move (native MovingBackend) must carry metadata over", got.Owner, "team-a")
+	}
 }
