@@ -2,6 +2,8 @@ package ports
 
 import (
 	"context"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -48,24 +50,48 @@ func (osBackend) WriteBytes(_ context.Context, path string, data []byte, opts ap
 			}
 		}
 	}
-	// Strict is checked even under DryRun — DryRun+Strict against an
-	// existing path still reports FileAlreadyExistsError (it just skips
-	// the actual write), matching ports.File.Write's own tested
-	// DryRun+Strict precedence (see
-	// TestWrite_Strict_DryRun_ExistingFile_ReportsWithoutWriting).
-	if opts.Strict {
-		if _, err := os.Stat(path); err == nil {
-			return createdDirs, apifile.FileAlreadyExistsError{Path: path}
-		} else if !os.IsNotExist(err) {
-			return createdDirs, err
-		}
-	}
-	if opts.DryRun {
-		return createdDirs, nil
-	}
 	perm := opts.Perm
 	if perm == 0 {
 		perm = 0644
+	}
+
+	if opts.Strict {
+		// DryRun+Strict: a preview-only existence check (os.Stat) is
+		// correct here since nothing is actually written — matches
+		// ports.File.Write's own tested DryRun+Strict precedence (see
+		// TestWrite_Strict_DryRun_ExistingFile_ReportsWithoutWriting).
+		if opts.DryRun {
+			if _, err := os.Stat(path); err == nil {
+				return createdDirs, apifile.FileAlreadyExistsError{Path: path}
+			} else if !os.IsNotExist(err) {
+				return createdDirs, err
+			}
+			return createdDirs, nil
+		}
+		// Real write: use an ATOMIC O_CREATE|O_EXCL open rather than
+		// stat-then-write, closing the TOCTOU race window a separate
+		// Stat-then-WriteFile sequence would have between the
+		// existence check and the actual write.
+		f, openErr := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+		if openErr != nil {
+			if os.IsExist(openErr) {
+				return createdDirs, apifile.FileAlreadyExistsError{Path: path}
+			}
+			return createdDirs, openErr
+		}
+		_, writeErr := f.Write(data)
+		closeErr := f.Close()
+		if writeErr != nil {
+			return createdDirs, writeErr
+		}
+		if closeErr != nil {
+			return createdDirs, closeErr
+		}
+		return createdDirs, nil
+	}
+
+	if opts.DryRun {
+		return createdDirs, nil
 	}
 	if err := os.WriteFile(path, data, perm); err != nil {
 		return createdDirs, err
@@ -154,4 +180,77 @@ func (osBackend) Mkdir(_ context.Context, path string, opts apifile.MkdirOptions
 	return true, nil
 }
 
+// WalkDir implements [apifile.WalkingBackend] via [filepath.WalkDir] —
+// used internally by [Dir]'s recursive-listing/glob-discovery/
+// recursive-delete-affected-path-collection, a deliberate near-duplicate
+// of adapters/file.Backend.WalkDir (same import-cycle constraint as
+// every other osBackend method).
+func (b osBackend) WalkDir(ctx context.Context, root string, fn apifile.DirWalkFunc) error {
+	return filepath.WalkDir(root, func(p string, de fs.DirEntry, err error) error {
+		if err != nil {
+			return fn(p, apifile.Entry{}, err)
+		}
+		info, infoErr := de.Info()
+		if infoErr != nil {
+			return fn(p, apifile.Entry{}, infoErr)
+		}
+		return fn(p, apifile.Entry{
+			Name:    de.Name(),
+			IsDir:   de.IsDir(),
+			Size:    info.Size(),
+			ModTime: info.ModTime(),
+		}, nil)
+	})
+}
+
+// DeleteDir implements [apifile.DirDeletingBackend] — used internally by
+// [Dir.Delete]. Mirrors Dir.Delete's existing, tested contract exactly
+// (relocated from that method's own inline os.* calls, not redesigned).
+func (b osBackend) DeleteDir(ctx context.Context, path string, recursive, dryRun bool) ([]string, error) {
+	info, statErr := os.Stat(path)
+	if statErr != nil {
+		return nil, statErr
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("%s is not a directory", path)
+	}
+
+	if recursive {
+		var affected []string
+		if err := b.WalkDir(ctx, path, func(p string, _ apifile.Entry, err error) error {
+			if err != nil {
+				return err
+			}
+			affected = append(affected, p)
+			return nil
+		}); err != nil {
+			return nil, err
+		}
+		if dryRun {
+			return affected, nil
+		}
+		if err := os.RemoveAll(path); err != nil {
+			return nil, err
+		}
+		return affected, nil
+	}
+
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(entries) > 0 {
+		return nil, apifile.DirNotEmptyError{Path: path}
+	}
+	if dryRun {
+		return []string{path}, nil
+	}
+	if err := os.Remove(path); err != nil {
+		return nil, err
+	}
+	return []string{path}, nil
+}
+
 var _ apifile.Backend = osBackend{}
+var _ apifile.WalkingBackend = osBackend{}
+var _ apifile.DirDeletingBackend = osBackend{}

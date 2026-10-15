@@ -3,7 +3,9 @@ package file
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -78,24 +80,53 @@ func (b *Backend) WriteBytes(ctx context.Context, path string, data []byte, opts
 			}
 		}
 	}
-	// Strict is checked even under DryRun — DryRun+Strict against an
-	// existing path still reports FileAlreadyExistsError (it just skips
-	// the actual write), matching ports.File.Write's own identical
-	// DryRun+Strict precedence (see docs/roadmap/file-api.md's Stage F
-	// migration notes for the worked example this fixes).
-	if opts.Strict {
-		if _, err := os.Stat(path); err == nil {
-			return createdDirs, apifile.FileAlreadyExistsError{Path: path}
-		} else if !os.IsNotExist(err) {
-			return createdDirs, err
-		}
-	}
-	if opts.DryRun {
-		return createdDirs, nil
-	}
 	perm := opts.Perm
 	if perm == 0 {
 		perm = 0644
+	}
+
+	if opts.Strict {
+		// DryRun+Strict: a preview-only existence check (os.Stat) is
+		// correct here since nothing is actually written — matches
+		// ports.File.Write's own tested DryRun+Strict precedence (see
+		// docs/roadmap/file-api.md's Stage F migration notes).
+		if opts.DryRun {
+			if _, err := os.Stat(path); err == nil {
+				return createdDirs, apifile.FileAlreadyExistsError{Path: path}
+			} else if !os.IsNotExist(err) {
+				return createdDirs, err
+			}
+			return createdDirs, nil
+		}
+		// Real write: use an ATOMIC O_CREATE|O_EXCL open rather than
+		// stat-then-write, closing the TOCTOU race window a separate
+		// Stat-then-WriteFile sequence would have between the
+		// existence check and the actual write.
+		f, openErr := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+		if openErr != nil {
+			if os.IsExist(openErr) {
+				return createdDirs, apifile.FileAlreadyExistsError{Path: path}
+			}
+			return createdDirs, openErr
+		}
+		_, writeErr := f.Write(data)
+		closeErr := f.Close()
+		if writeErr != nil {
+			return createdDirs, writeErr
+		}
+		if closeErr != nil {
+			return createdDirs, closeErr
+		}
+		if opts.Metadata != nil {
+			if err := b.WriteMetadata(ctx, path, opts.Metadata); err != nil {
+				return createdDirs, err
+			}
+		}
+		return createdDirs, nil
+	}
+
+	if opts.DryRun {
+		return createdDirs, nil
 	}
 	if err := os.WriteFile(path, data, perm); err != nil {
 		return createdDirs, err
@@ -251,7 +282,80 @@ func (*Backend) WriteMetadata(_ context.Context, path string, md map[string]stri
 	return os.WriteFile(metadataPath(path), data, 0644)
 }
 
+// WalkDir implements [apifile.WalkingBackend] via [filepath.WalkDir] —
+// the SAME os-level mechanism [ports.Dir]'s own (pre-migration)
+// listRecursive/listGlobDiscovery/collectAllPaths helpers used directly,
+// now exposed through an interface.
+func (b *Backend) WalkDir(ctx context.Context, root string, fn apifile.DirWalkFunc) error {
+	return filepath.WalkDir(root, func(p string, de fs.DirEntry, err error) error {
+		if err != nil {
+			return fn(p, apifile.Entry{}, err)
+		}
+		info, infoErr := de.Info()
+		if infoErr != nil {
+			return fn(p, apifile.Entry{}, infoErr)
+		}
+		return fn(p, apifile.Entry{
+			Name:    de.Name(),
+			IsDir:   de.IsDir(),
+			Size:    info.Size(),
+			ModTime: info.ModTime(),
+		}, nil)
+	})
+}
+
+// DeleteDir implements [apifile.DirDeletingBackend]. Mirrors
+// [ports.Dir.Delete]'s existing, tested contract exactly (relocated
+// from that method's own inline os.* calls, not redesigned).
+func (b *Backend) DeleteDir(ctx context.Context, path string, recursive, dryRun bool) ([]string, error) {
+	info, statErr := os.Stat(path)
+	if statErr != nil {
+		return nil, statErr
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("%s is not a directory", path)
+	}
+
+	if recursive {
+		var affected []string
+		if err := b.WalkDir(ctx, path, func(p string, _ apifile.Entry, err error) error {
+			if err != nil {
+				return err
+			}
+			affected = append(affected, p)
+			return nil
+		}); err != nil {
+			return nil, err
+		}
+		if dryRun {
+			return affected, nil
+		}
+		if err := os.RemoveAll(path); err != nil {
+			return nil, err
+		}
+		return affected, nil
+	}
+
+	// Non-recursive: path must be empty.
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(entries) > 0 {
+		return nil, apifile.DirNotEmptyError{Path: path}
+	}
+	if dryRun {
+		return []string{path}, nil
+	}
+	if err := os.Remove(path); err != nil {
+		return nil, err
+	}
+	return []string{path}, nil
+}
+
 var _ apifile.Backend = (*Backend)(nil)
 var _ apifile.CopyingBackend = (*Backend)(nil)
 var _ apifile.MovingBackend = (*Backend)(nil)
 var _ apifile.MetadataBackend = (*Backend)(nil)
+var _ apifile.WalkingBackend = (*Backend)(nil)
+var _ apifile.DirDeletingBackend = (*Backend)(nil)

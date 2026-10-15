@@ -2,6 +2,8 @@ package file
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 	"os"
 	"time"
 )
@@ -172,6 +174,67 @@ type BatchDeleteResult struct {
 	Path    string
 	Existed bool
 	Err     error
+}
+
+// DirWalkFunc is called once per visited path (files AND directories, root
+// included) during a [WalkingBackend.WalkDir] call. Returning
+// [filepath.SkipDir] from fn skips the rest of the current directory's
+// contents — mirrors [filepath.WalkDir]'s own sentinel exactly (reused,
+// not reinvented, since every Phase 1 WalkingBackend implementation is
+// itself filesystem-backed). Any other non-nil error aborts the walk
+// and is returned by WalkDir unchanged. err, when non-nil, reports a
+// failure reading path itself (mirrors [fs.WalkDirFunc]'s own err
+// parameter) — fn may still return filepath.SkipDir to ignore it.
+type DirWalkFunc func(path string, entry Entry, err error) error
+
+// WalkingBackend is an OPTIONAL Backend extension for a recursive,
+// callback-based directory walk — the primitive behind
+// [github.com/DaniDeer/go-codex/ports.Dir]'s recursive-listing and
+// glob-discovery modes, and its Delete's recursive affected-path
+// collection. A Backend NOT implementing this cannot support those 3
+// ports.Dir capabilities (ports.Dir's own callers consume WalkingBackend
+// directly — this is NOT wired into api/file's own Client.List in Phase
+// 1; see docs/roadmap/file-api.md's "Recursive WithList" Phase 2 outline
+// for the forward-looking connection).
+type WalkingBackend interface {
+	// WalkDir walks the tree rooted at root, calling fn once per visited
+	// path (root included, files AND directories) in the SAME order
+	// [filepath.WalkDir] would (lexical, depth-first). Returns the first
+	// non-nil, non-SkipDir error fn returns, or a walk-level I/O error.
+	WalkDir(ctx context.Context, root string, fn DirWalkFunc) error
+}
+
+// DirDeletingBackend is an OPTIONAL Backend extension for directory
+// deletion with recursive/non-empty-check/dry-run semantics — mirrors
+// [github.com/DaniDeer/go-codex/ports.Dir.Delete]'s existing, tested
+// contract exactly (relocated from inline os.* calls into the Backend,
+// not redesigned).
+type DirDeletingBackend interface {
+	// DeleteDir removes path. recursive=false requires path to be
+	// EMPTY — a non-empty path then returns [DirNotEmptyError] instead
+	// of removing anything. recursive=true removes path and everything
+	// inside it (mirrors os.RemoveAll). dryRun=true reports what WOULD
+	// be removed (affected — root included for a recursive call) WITHOUT
+	// removing anything; errors (e.g. DirNotEmptyError) are still
+	// reported exactly as a real call would.
+	DeleteDir(ctx context.Context, path string, recursive, dryRun bool) (affected []string, err error)
+}
+
+// DirNotEmptyError is returned by [DirDeletingBackend.DeleteDir] when
+// path is non-empty and recursive is false.
+type DirNotEmptyError struct {
+	Path string
+}
+
+func (e DirNotEmptyError) Error() string {
+	return fmt.Sprintf("directory %q is not empty (recursive delete not requested)", e.Path)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e DirNotEmptyError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("path", e.Path),
+	)
 }
 
 // MetadataBackend is an OPTIONAL extension a Backend may implement to
