@@ -379,3 +379,93 @@ func TestPatcher_HandlePatch_AppliesPartialUpdate(t *testing.T) {
 		t.Fatalf("Patch: got %+v, want Value=99 Name=patchme (unchanged)", got)
 	}
 }
+
+// ── Metadata axis (MetadataBackend / MetadataParam) ───────────────────────
+
+type recordWithOwner struct {
+	Name  string
+	Value int
+	Owner string
+}
+
+func recordWithOwnerCodec() codex.Codec[recordWithOwner] {
+	return codex.Struct[recordWithOwner](
+		codex.RequiredField("name", codex.String(),
+			func(r recordWithOwner) string { return r.Name },
+			func(r *recordWithOwner, v string) { r.Name = v }),
+		codex.RequiredField("value", codex.Int(),
+			func(r recordWithOwner) int { return r.Value },
+			func(r *recordWithOwner, v int) { r.Value = v }),
+	)
+}
+
+func TestClient_Metadata_RoundTripsViaMergeField(t *testing.T) {
+	dir := t.TempDir()
+	res := file.NewResource[recordWithOwner](filepath.Join(dir, "{name}.json"), format.JSON(recordWithOwnerCodec()),
+		file.PathParam{Name: "name"},
+		file.NewMetadataParam("owner", codex.String(),
+			func(r recordWithOwner) string { return r.Owner },
+			func(r *recordWithOwner, v string) { r.Owner = v }),
+	)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	vars := map[string]string{"name": "widget"}
+
+	if err := client.Create(ctx, res.WithCreate(file.Create{}), recordWithOwner{Name: "widget", Value: 1, Owner: "alice"}, vars); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// The sidecar metadata file must exist alongside the resource.
+	if _, err := os.Stat(filepath.Join(dir, "widget.json.meta.json")); err != nil {
+		t.Fatalf("expected metadata sidecar file to exist: %v", err)
+	}
+
+	gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	got := gotAny.(recordWithOwner)
+	if got.Owner != "alice" {
+		t.Fatalf("Read: want Owner=alice merged back from metadata, got %+v", got)
+	}
+}
+
+func TestClient_Metadata_AbsentSidecar_LeavesFieldZeroValue(t *testing.T) {
+	dir := t.TempDir()
+	res := file.NewResource[recordWithOwner](filepath.Join(dir, "{name}.json"), format.JSON(recordWithOwnerCodec()),
+		file.PathParam{Name: "name"},
+		file.NewMetadataParam("owner", codex.String(),
+			func(r recordWithOwner) string { return r.Owner },
+			func(r *recordWithOwner, v string) { r.Owner = v }),
+	)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	vars := map[string]string{"name": "noowner"}
+
+	// Create via a resource WITHOUT the metadata merge field declared,
+	// so no sidecar is ever written for this path.
+	plainRes := file.NewResource[recordWithOwner](filepath.Join(dir, "{name}.json"), format.JSON(recordWithOwnerCodec()),
+		file.PathParam{Name: "name"},
+	)
+	if err := client.Create(ctx, plainRes.WithCreate(file.Create{}), recordWithOwner{Name: "noowner", Value: 2}, vars); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "noowner.json.meta.json")); !os.IsNotExist(err) {
+		t.Fatalf("expected NO metadata sidecar file, stat err = %v", err)
+	}
+
+	gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	got := gotAny.(recordWithOwner)
+	if got.Owner != "" {
+		t.Fatalf("Read: want Owner zero-value when no sidecar exists, got %q", got.Owner)
+	}
+}

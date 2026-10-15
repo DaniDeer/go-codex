@@ -17,6 +17,15 @@ type Entry struct {
 	IsDir   bool
 	Size    int64
 	ModTime time.Time
+	// Metadata carries any user-defined key/value metadata the backend
+	// has stored alongside this entry (nil when none, or when the
+	// attached Backend doesn't implement [MetadataBackend] at all) —
+	// populated by [MetadataBackend.ReadMetadata], NEVER by ReadBytes/
+	// ListDir/Stat directly. See [MetadataBackend]'s own doc comment for
+	// the full design (the "file metadata" merge-field axis
+	// BoundMiddleware draws from — api/file's analogue of REST headers/
+	// events User Properties).
+	Metadata map[string]string
 }
 
 // WriteOptions mirrors today's ports.File FileOptions as closely as
@@ -42,6 +51,13 @@ type WriteOptions struct {
 	// DryRun, when true, reports which directories WOULD be created
 	// WITHOUT creating them or writing the file.
 	DryRun bool
+	// Metadata, when non-nil, is user-defined key/value metadata to
+	// persist alongside the write — passed to [MetadataBackend
+	// .WriteMetadata] when the attached Backend implements it; silently
+	// ignored (never an error) otherwise, mirroring every other
+	// optional-extension fallback in this package. See [MetadataBackend]
+	// for the full design.
+	Metadata map[string]string
 }
 
 // DeleteOptions mirrors the backend-agnostic subset of today's
@@ -156,4 +172,42 @@ type BatchDeleteResult struct {
 	Path    string
 	Existed bool
 	Err     error
+}
+
+// MetadataBackend is an OPTIONAL extension a Backend may implement to
+// persist/retrieve USER-DEFINED key/value metadata alongside a
+// resource's own bytes — api/file's analogue of REST's headers or
+// events' MQTT User Properties: the "extra wire data" axis
+// BoundMiddleware's merge-field vocabulary (MetadataParam/
+// MergedMetadataParam[T]) extracts from. Grounded in 3 real, well-known
+// precedents: S3's object metadata (PutObject/GetObject's x-amz-meta-*
+// headers — metadata IS already "out of band" from the object's bytes
+// there), POSIX extended attributes, and SMB's own extended-attribute
+// support.
+//
+// A Backend NOT implementing this (or ReadMetadata reporting the path
+// has no metadata) is NOT an error — every metadata-merge-field caller
+// treats "no MetadataBackend" and "MetadataBackend returned nil" the
+// SAME way: the relevant T field(s) stay at their zero value. This
+// mirrors CopyingBackend/MovingBackend/BatchDeletingBackend's exact
+// "optionally present, harmless absence" idiom — never a NEW required
+// method every Backend must implement.
+//
+// adapters/file's Phase 1 filesystem implementation stores metadata in a
+// JSON SIDECAR file (path+".meta.json"), NOT real OS extended attributes
+// — see adapters/file/backend.go's own doc comment for why (keeps
+// Phase 1's stdlib-only toolchain decision intact, and is arguably a
+// closer analogue to S3's "metadata lives beside the object, not in it"
+// model than real xattrs would be).
+type MetadataBackend interface {
+	// ReadMetadata returns path's stored metadata, or (nil, nil) — NOT
+	// an error — when path has none (including when path itself doesn't
+	// exist; a caller that cares whether path exists at all should use
+	// ReadBytes/Stat's own not-found signal, not infer it from this
+	// method).
+	ReadMetadata(ctx context.Context, path string) (map[string]string, error)
+
+	// WriteMetadata persists md alongside path, overwriting any
+	// previously stored metadata for path entirely (not a merge).
+	WriteMetadata(ctx context.Context, path string, md map[string]string) error
 }

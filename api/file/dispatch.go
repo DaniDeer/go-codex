@@ -102,6 +102,54 @@ func isNotFound(err error) bool {
 	return errors.Is(err, os.ErrNotExist)
 }
 
+// ── Metadata merge (the file-metadata axis — see MetadataBackend's doc
+// comment in backend.go) ───────────────────────────────────────────────
+
+// applyMetadataMergeFields decodes path's stored metadata (via the
+// attached Backend's optional [MetadataBackend] extension) into v's own
+// metadataMergeFields-declared fields — a complete no-op (v unchanged,
+// nil error) when core.resource has no metadataMergeFields declared, OR
+// backend doesn't implement MetadataBackend, OR ReadMetadata reports no
+// stored metadata for path. Mirrors CopyingBackend/MovingBackend's
+// "optionally present, harmless absence" idiom exactly.
+func applyMetadataMergeFields[T any](ctx context.Context, backend Backend, path string, core roleCore[T], v *T) error {
+	if len(core.resource.metadataMergeFields) == 0 {
+		return nil
+	}
+	mb, ok := backend.(MetadataBackend)
+	if !ok {
+		return nil
+	}
+	md, err := mb.ReadMetadata(ctx, path)
+	if err != nil {
+		return FileReadError{Path: path, Err: err}
+	}
+	if md == nil {
+		return nil
+	}
+	if err := codex.DecodeVars(v, md, core.resource.metadataMergeFields...); err != nil {
+		return FileDecodeError{Path: path, Err: err}
+	}
+	return nil
+}
+
+// deriveWriteMetadata encodes v's metadataMergeFields-declared fields
+// into a map[string]string ready for WriteOptions.Metadata — (nil, nil)
+// when core.resource has no metadataMergeFields declared. The caller
+// passes the result to WriteOptions.Metadata unconditionally; a Backend
+// without MetadataBackend already silently ignores that field (see
+// WriteOptions.Metadata's own doc comment).
+func deriveWriteMetadata[T any](path string, core roleCore[T], v T) (map[string]string, error) {
+	if len(core.resource.metadataMergeFields) == 0 {
+		return nil, nil
+	}
+	md, err := codex.EncodeVars(v, core.resource.metadataMergeFields...)
+	if err != nil {
+		return nil, FileEncodeError{Path: path, Err: err}
+	}
+	return md, nil
+}
+
 // ── Read ─────────────────────────────────────────────────────────────────
 
 type readDispatcher interface {
@@ -136,6 +184,10 @@ func readCore[T any](ctx context.Context, backend Backend, core roleCore[T], rou
 	if err != nil {
 		recordRead(obs, path, false, time.Since(start))
 		return zero, FileDecodeError{Path: path, Err: err}
+	}
+	if err := applyMetadataMergeFields(ctx, backend, path, core, &v); err != nil {
+		recordRead(obs, path, false, time.Since(start))
+		return zero, err
 	}
 	recordRead(obs, path, true, time.Since(start))
 	return v, nil
@@ -189,6 +241,12 @@ func createCore[T any](ctx context.Context, backend Backend, core roleCore[T], r
 	if wire.NativePOSIXMode != nil {
 		opts.Perm = *wire.NativePOSIXMode
 	}
+	md, err := deriveWriteMetadata(path, core, v)
+	if err != nil {
+		recordWrite(obs, path, false, time.Since(start))
+		return err
+	}
+	opts.Metadata = md
 	_, err = backend.WriteBytes(ctx, path, data, opts)
 	if err != nil {
 		recordWrite(obs, path, false, time.Since(start))
@@ -261,7 +319,12 @@ func patchCore[T, P any](ctx context.Context, backend Backend, core roleCore[T],
 		recordWrite(obs, path, false, time.Since(start))
 		return FileEncodeError{Path: path, Err: err}
 	}
-	if _, err := backend.WriteBytes(ctx, path, newData, WriteOptions{}); err != nil {
+	md, err := deriveWriteMetadata(path, core, merged)
+	if err != nil {
+		recordWrite(obs, path, false, time.Since(start))
+		return err
+	}
+	if _, err := backend.WriteBytes(ctx, path, newData, WriteOptions{Metadata: md}); err != nil {
 		recordWrite(obs, path, false, time.Since(start))
 		return FileWriteError{Path: path, Err: err}
 	}
@@ -361,6 +424,10 @@ func listCore[T any](ctx context.Context, backend Backend, core roleCore[T], rou
 		if err != nil {
 			recordList(obs, path, false, len(out), time.Since(start))
 			return nil, FileDecodeError{Path: childPath, Err: err}
+		}
+		if err := applyMetadataMergeFields(ctx, backend, childPath, core, &v); err != nil {
+			recordList(obs, path, false, len(out), time.Since(start))
+			return nil, err
 		}
 		out = append(out, v)
 	}

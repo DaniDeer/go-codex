@@ -69,26 +69,71 @@ func (p MergedPathParam[T]) applyResource(rb *resourceBuilder) {
 	rb.mergeFields = append(rb.mergeFields, p.Field)
 }
 
+// MetadataParam mirrors [PathParam]'s shape exactly, but validates a
+// BACKEND-STORED METADATA value instead of a path variable — api/file's
+// analogue of api/rest's HeaderParam/api/events's UserPropertyParam. See
+// [MetadataBackend]'s doc comment for the full axis this draws from.
+type MetadataParam struct {
+	Name        string
+	Description string
+	Required    bool
+	Codec       *codex.Codec[string]
+}
+
+// WithCodec sets the validation codec and returns the updated
+// MetadataParam.
+func (p MetadataParam) WithCodec(c codex.Codec[string]) MetadataParam {
+	p.Codec = &c
+	return p
+}
+
+func (p MetadataParam) applyResource(rb *resourceBuilder) {
+	rb.metadataParams = append(rb.metadataParams, p)
+}
+
+// MergedMetadataParam[T] is MetadataParam's merge-capable sibling —
+// extracted metadata is decoded directly into one of T's own fields.
+// Mirrors [MergedPathParam]'s identical pattern, applied to the
+// metadata axis instead of the path-variable axis.
+type MergedMetadataParam[T any] struct {
+	codex.MergedParam[T]
+}
+
+// NewMetadataParam declares a metadata key that is BOTH validated
+// against c AND merged into T.
+func NewMetadataParam[T, V any](name string, c codex.Codec[V], get func(T) V, set func(*T, V)) MergedMetadataParam[T] {
+	return MergedMetadataParam[T]{MergedParam: codex.NewParam(name, c, get, set)}
+}
+
+func (p MergedMetadataParam[T]) applyResource(rb *resourceBuilder) {
+	rb.metadataParams = append(rb.metadataParams, MetadataParam{Name: p.Name, Description: p.Description, Codec: p.Codec})
+	rb.metadataMergeFields = append(rb.metadataMergeFields, p.Field)
+}
+
 // ResourceOpt is the sealed option interface for [NewResource].
 type ResourceOpt interface{ applyResource(*resourceBuilder) }
 
 type resourceBuilder struct {
-	params      []PathParam
-	mergeFields []any
+	params              []PathParam
+	mergeFields         []any
+	metadataParams      []MetadataParam
+	metadataMergeFields []any
 }
 
 // Resource[T] declares the file shape once: a path template (mirrors
 // api/rest.Path/api/events.Topic) + codec + optional per-variable merge
 // fields. Infallible — validation runs at role-attach time.
 type Resource[T any] struct {
-	template    string
-	format      format.Format[T]
-	params      []PathParam
-	mergeFields []codex.FieldCodec[T]
+	template            string
+	format              format.Format[T]
+	params              []PathParam
+	mergeFields         []codex.FieldCodec[T]
+	metadataParams      []MetadataParam
+	metadataMergeFields []codex.FieldCodec[T]
 }
 
 // NewResource creates a Resource descriptor from a path template, a wire
-// format, and optional [PathParam] values.
+// format, and optional [PathParam]/[MetadataParam] values.
 func NewResource[T any](template string, f format.Format[T], opts ...ResourceOpt) Resource[T] {
 	var rb resourceBuilder
 	for _, opt := range opts {
@@ -102,7 +147,22 @@ func NewResource[T any](template string, f format.Format[T], opts ...ResourceOpt
 		}
 		mergeFields[i] = fc
 	}
-	return Resource[T]{template: template, format: f, params: rb.params, mergeFields: mergeFields}
+	metadataMergeFields := make([]codex.FieldCodec[T], len(rb.metadataMergeFields))
+	for i, mf := range rb.metadataMergeFields {
+		fc, ok := mf.(codex.FieldCodec[T])
+		if !ok {
+			panic(fmt.Sprintf("api/file: NewResource[%T]: metadata merge field %d has the wrong type parameter (got %T)", *new(T), i, mf))
+		}
+		metadataMergeFields[i] = fc
+	}
+	return Resource[T]{
+		template:            template,
+		format:              f,
+		params:              rb.params,
+		mergeFields:         mergeFields,
+		metadataParams:      rb.metadataParams,
+		metadataMergeFields: metadataMergeFields,
+	}
 }
 
 // Template returns the resource's declared path template.
