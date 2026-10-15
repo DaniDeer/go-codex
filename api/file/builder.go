@@ -236,6 +236,11 @@ type roleCore[T any] struct {
 	mws          []RouteMiddleware
 	capabilities []Capability
 	requirements []CapabilityRequirement
+	// tags are ACCEPTED and REPORTED (via RouteTags, see router.go) for
+	// router.Routable conformance, but api/file has no OpenAPI/AsyncAPI-
+	// equivalent spec surface in Phase 1 to consume them — explicitly
+	// inert, not silently dropped. See router.go's doc comment.
+	tags []string
 }
 
 func (c roleCore[T]) withUse(mws []RouteMiddleware) roleCore[T] {
@@ -312,6 +317,7 @@ func (r Reader[T]) Handle(client *Client, opts ...HandleOpt) (*ReadHandle[T], er
 	for _, o := range opts {
 		o.applyHandle(&h.routing)
 	}
+	h.core = h.core.applyRouting(h.routing)
 	return h, nil
 }
 
@@ -358,6 +364,7 @@ func (c Creator[T]) Handle(client *Client, opts ...HandleOpt) (*CreateHandle[T],
 	for _, o := range opts {
 		o.applyHandle(&h.routing)
 	}
+	h.core = h.core.applyRouting(h.routing)
 	return h, nil
 }
 
@@ -405,6 +412,7 @@ func (p Patcher[T, P]) Handle(client *Client, opts ...HandleOpt) (*PatchHandle[T
 	for _, o := range opts {
 		o.applyHandle(&h.routing)
 	}
+	h.core = h.core.applyRouting(h.routing)
 	return h, nil
 }
 
@@ -452,6 +460,7 @@ func (d Deleter[T]) Handle(client *Client, opts ...HandleOpt) (*DeleteHandle[T],
 	for _, o := range opts {
 		o.applyHandle(&h.routing)
 	}
+	h.core = h.core.applyRouting(h.routing)
 	return h, nil
 }
 
@@ -487,6 +496,7 @@ func (l Lister[T]) Handle(client *Client, opts ...HandleOpt) (*ListHandle[T], er
 	for _, o := range opts {
 		o.applyHandle(&h.routing)
 	}
+	h.core = h.core.applyRouting(h.routing)
 	return h, nil
 }
 
@@ -525,6 +535,7 @@ func (e Exister[T]) Handle(client *Client, opts ...HandleOpt) (*ExistsHandle[T],
 	for _, o := range opts {
 		o.applyHandle(&h.routing)
 	}
+	h.core = h.core.applyRouting(h.routing)
 	return h, nil
 }
 
@@ -570,6 +581,7 @@ func (c Copier[T]) Handle(client *Client, opts ...HandleOpt) (*CopyHandle[T], er
 	for _, o := range opts {
 		o.applyHandle(&h.routing)
 	}
+	h.core = h.core.applyRouting(h.routing)
 	return h, nil
 }
 
@@ -616,6 +628,7 @@ func (m Mover[T]) Handle(client *Client, opts ...HandleOpt) (*MoveHandle[T], err
 	for _, o := range opts {
 		o.applyHandle(&h.routing)
 	}
+	h.core = h.core.applyRouting(h.routing)
 	return h, nil
 }
 
@@ -660,6 +673,7 @@ func (m MkdirCreator[T]) Handle(client *Client, opts ...HandleOpt) (*MkdirHandle
 	for _, o := range opts {
 		o.applyHandle(&h.routing)
 	}
+	h.core = h.core.applyRouting(h.routing)
 	return h, nil
 }
 
@@ -701,6 +715,7 @@ func (b BatchDeleter[T]) Handle(client *Client, opts ...HandleOpt) (*BatchDelete
 	for _, o := range opts {
 		o.applyHandle(&h.routing)
 	}
+	h.core = h.core.applyRouting(h.routing)
 	return h, nil
 }
 

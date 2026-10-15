@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	adapterfile "github.com/DaniDeer/go-codex/adapters/file"
@@ -467,5 +468,102 @@ func TestClient_Metadata_AbsentSidecar_LeavesFieldZeroValue(t *testing.T) {
 	got := gotAny.(recordWithOwner)
 	if got.Owner != "" {
 		t.Fatalf("Read: want Owner zero-value when no sidecar exists, got %q", got.Owner)
+	}
+}
+
+// ── Router value type ──────────────────────────────────────────────────
+
+func TestRouter_Group_PrefixesResourcePath(t *testing.T) {
+	dir := t.TempDir()
+	// A relative resource template ("{name}.json", no dir baked in) — the
+	// Router's OWN prefix supplies the absolute temp subdirectory,
+	// exactly mirroring how examples/file-api/main.go replaces its
+	// manual filepath.Join with a Router prefix. A SEPARATE, absolute
+	// "plain" resource (writing directly into dir, never under
+	// "grouped/") proves the Router-grouped Read looks in the RIGHT
+	// place — using it (not a relative-template write, which would
+	// otherwise escape t.TempDir() into the process's real CWD).
+	res := file.NewResource[record]("{name}.json", format.JSON(recordCodec()), file.PathParam{Name: "name"})
+	plainRes := newResource(t, dir)
+	backend := adapterfile.NewBackend()
+	client := file.NewClient()
+	if err := client.Attach(backend); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+
+	rt := file.NewRouter(filepath.Join(dir, "grouped"))
+	reader := res.WithRead(file.Read{})
+	handle, err := reader.Handle(client, file.WithRouter(rt))
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	vars := map[string]string{"name": "prefixed"}
+	// Create directly at the UN-prefixed (plain, dir-rooted) path first,
+	// to prove the Router-grouped Read looks in "grouped/" instead.
+	if err := client.Create(ctx, plainRes.WithCreate(file.Create{}), record{Name: "prefixed", Value: 1}, vars); err != nil {
+		t.Fatalf("Create (unprefixed): %v", err)
+	}
+	if _, err := client.Read(ctx, handle, vars); err == nil {
+		t.Fatalf("Read via Router-grouped handle unexpectedly found the UN-prefixed file")
+	}
+
+	// Now create under the prefix via the SAME Router-grouped mechanism
+	// (a Creator built through the same Router) and confirm Read finds it.
+	if err := os.MkdirAll(filepath.Join(dir, "grouped"), 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	createHandle, err := res.WithCreate(file.Create{}).Handle(client, file.WithRouter(rt))
+	if err != nil {
+		t.Fatalf("Handle (create): %v", err)
+	}
+	if err := client.Create(ctx, createHandle, record{Name: "prefixed", Value: 2}, vars); err != nil {
+		t.Fatalf("Create (grouped): %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "grouped", "prefixed.json")); err != nil {
+		t.Fatalf("expected file under grouped/ prefix: %v", err)
+	}
+	gotAny, err := client.Read(ctx, handle, vars)
+	if err != nil {
+		t.Fatalf("Read via Router-grouped handle: %v", err)
+	}
+	if got := gotAny.(record); got.Value != 2 {
+		t.Fatalf("Read via Router-grouped handle: got Value=%d, want 2", got.Value)
+	}
+}
+
+func TestRouter_Register_RunsFailFastCoverageCheck(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	rt := file.NewRouter("x").
+		Route(res.WithRead(file.Read{})).
+		Route(res.WithCreate(file.Create{}))
+	if err := rt.Register(client); err != nil {
+		t.Fatalf("Register: unexpected error for a Resource with no declared requirements: %v", err)
+	}
+}
+
+func TestRouter_Routes_ReportsPrefixedPathsAndMiddlewareNames(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+
+	rt := file.NewRouter("grouped").
+		Route(res.WithRead(file.Read{})).
+		Route(res.WithCreate(file.Create{}))
+
+	entries := rt.Routes()
+	if len(entries) != 2 {
+		t.Fatalf("Routes: want 2 entries, got %d", len(entries))
+	}
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Path, "grouped/") {
+			t.Fatalf("Routes: entry %+v missing grouped/ prefix", e)
+		}
 	}
 }
