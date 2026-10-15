@@ -320,3 +320,55 @@ func (e BackendTypeMismatchError) LogValue() slog.Value {
 		slog.String("got", e.Got),
 	)
 }
+
+// BoundMiddlewareReqMismatchError is returned (via roleCore.buildErr,
+// surfaced at .Handle() time) when a value passed to a role's own
+// `XxxBoundMW(bm any)` method isn't a Bound<Role>Middleware matching that
+// role's own T type parameter — mirrors
+// [github.com/DaniDeer/go-codex/api/events.BoundMiddlewareReqMismatchError]'s
+// identical rationale and recorded-not-panicked timing.
+type BoundMiddlewareReqMismatchError struct {
+	Path string
+	Got  any
+	Name string
+}
+
+func (e BoundMiddlewareReqMismatchError) Error() string {
+	if e.Name != "" {
+		return fmt.Sprintf("api/file: path %q: middleware %q: not attachable via XxxBoundMW here — either its T type parameter doesn't match this role's own, or it isn't a Bound<Role>Middleware value at all (got %T)", e.Path, e.Name, e.Got)
+	}
+	return fmt.Sprintf("api/file: path %q: XxxBoundMW requires a Bound<Role>Middleware value matching this role's own T (got %T)", e.Path, e.Got)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e BoundMiddlewareReqMismatchError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("path", e.Path),
+		slog.String("got", fmt.Sprintf("%T", e.Got)),
+		slog.String("name", e.Name),
+	)
+}
+
+// SecurityRejectedError is returned when a role's declared Security
+// requirements are not satisfied by its attached BoundMiddleware's
+// collected GrantedScopes — mirrors
+// [github.com/DaniDeer/go-codex/api/events.SecurityError]'s identical
+// rationale (wraps [internal/middleware.CheckScopes]'s own error).
+type SecurityRejectedError struct {
+	Path string
+	Err  error
+}
+
+func (e SecurityRejectedError) Error() string {
+	return fmt.Sprintf("api/file: path %q: security requirements not satisfied: %s", e.Path, e.Err)
+}
+
+func (e SecurityRejectedError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e SecurityRejectedError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("path", e.Path),
+		slog.Any("err", e.Err),
+	)
+}

@@ -567,3 +567,155 @@ func TestRouter_Routes_ReportsPrefixedPathsAndMiddlewareNames(t *testing.T) {
 		}
 	}
 }
+
+// ── BoundMiddleware (Security + GrantedScopes dispatch) ────────────────
+
+type grantedOut struct {
+	GrantedScopes map[string][]string
+}
+
+func TestReader_ReadBoundMW_SecuritySatisfied_Succeeds(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	vars := map[string]string{"name": "secured"}
+	if err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "secured", Value: 1}, vars); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	bm := file.BoundSecurityReadMiddleware[record, struct{}, grantedOut](
+		"apiKey", file.SecurityScheme{}, []string{"read"},
+		func(ctx context.Context, v *record, in struct{}) (grantedOut, error) {
+			return grantedOut{GrantedScopes: map[string][]string{"apiKey": {"read"}}}, nil
+		},
+	)
+	reader := res.WithRead(file.Read{}).ReadBoundMW(bm).WithSecurity(file.SecurityRequirement{"apiKey": {"read"}})
+	gotAny, err := client.Read(ctx, reader, vars)
+	if err != nil {
+		t.Fatalf("Read: unexpected error: %v", err)
+	}
+	if got := gotAny.(record); got.Name != "secured" {
+		t.Fatalf("Read: got %+v", got)
+	}
+}
+
+func TestReader_ReadBoundMW_SecurityUnmet_RejectsBeforeBackendCall(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	vars := map[string]string{"name": "secured2"}
+	if err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "secured2", Value: 1}, vars); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	bm := file.BoundSecurityReadMiddleware[record, struct{}, grantedOut](
+		"apiKey", file.SecurityScheme{}, []string{"read"},
+		func(ctx context.Context, v *record, in struct{}) (grantedOut, error) {
+			// Grants a DIFFERENT scope than required - should fail CheckScopes.
+			return grantedOut{GrantedScopes: map[string][]string{"apiKey": {"wrong-scope"}}}, nil
+		},
+	)
+	reader := res.WithRead(file.Read{}).ReadBoundMW(bm).WithSecurity(file.SecurityRequirement{"apiKey": {"read"}})
+	_, err := client.Read(ctx, reader, vars)
+	var secErr file.SecurityRejectedError
+	if !errors.As(err, &secErr) {
+		t.Fatalf("want SecurityRejectedError, got %v (%T)", err, err)
+	}
+}
+
+func TestReader_ReadBoundMW_WrongTTypeMismatch_RecordedAtHandleTime(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	type otherType struct{ X int }
+	bm := file.NewBoundReadMiddleware[otherType, struct{}, struct{}](
+		file.NewDeclaration("test-mw", codex.Struct[struct{}](), codex.Struct[struct{}]()),
+		func(ctx context.Context, v *otherType, in struct{}) (struct{}, error) { return struct{}{}, nil },
+	)
+	reader := res.WithRead(file.Read{}).ReadBoundMW(bm)
+	_, err := reader.Handle(client)
+	var mismatch file.BoundMiddlewareReqMismatchError
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("want BoundMiddlewareReqMismatchError, got %v (%T)", err, err)
+	}
+}
+
+func TestDeleter_DeleteBoundMW_SecurityUnmet_RejectsBeforeBackendCall(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	vars := map[string]string{"name": "delsecured"}
+	if err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "delsecured", Value: 1}, vars); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	bm := file.BoundSecurityDeleteMiddleware[struct{}, grantedOut](
+		"apiKey", file.SecurityScheme{}, []string{"delete"},
+		func(ctx context.Context, in struct{}) (grantedOut, error) {
+			return grantedOut{GrantedScopes: nil}, nil
+		},
+	)
+	deleter := res.WithDelete(file.Delete{}).DeleteBoundMW(bm).WithSecurity(file.SecurityRequirement{"apiKey": {"delete"}})
+	_, err := client.Delete(ctx, deleter, vars)
+	var secErr file.SecurityRejectedError
+	if !errors.As(err, &secErr) {
+		t.Fatalf("want SecurityRejectedError, got %v (%T)", err, err)
+	}
+	// Confirm the file was NOT deleted (backend call never reached).
+	if _, statErr := os.Stat(filepath.Join(dir, "delsecured.json")); statErr != nil {
+		t.Fatalf("file should still exist (rejected before backend call): %v", statErr)
+	}
+}
+
+func TestReader_ReadBoundMW_MultipleAttachments_RunInOrder(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	vars := map[string]string{"name": "ordered"}
+	if err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "ordered", Value: 1}, vars); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	var order []string
+	first := file.NewBoundReadMiddleware[record, struct{}, struct{}](
+		file.NewDeclaration("first", codex.Struct[struct{}](), codex.Struct[struct{}]()),
+		func(ctx context.Context, v *record, in struct{}) (struct{}, error) {
+			order = append(order, "first")
+			return struct{}{}, nil
+		},
+	)
+	second := file.NewBoundReadMiddleware[record, struct{}, struct{}](
+		file.NewDeclaration("second", codex.Struct[struct{}](), codex.Struct[struct{}]()),
+		func(ctx context.Context, v *record, in struct{}) (struct{}, error) {
+			order = append(order, "second")
+			return struct{}{}, nil
+		},
+	)
+	reader := res.WithRead(file.Read{}).ReadBoundMW(first).ReadBoundMW(second)
+	if _, err := client.Read(ctx, reader, vars); err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(order) != 2 || order[0] != "first" || order[1] != "second" {
+		t.Fatalf("want [first second] in order, got %v", order)
+	}
+}

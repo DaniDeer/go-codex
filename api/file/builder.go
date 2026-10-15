@@ -241,6 +241,17 @@ type roleCore[T any] struct {
 	// equivalent spec surface in Phase 1 to consume them — explicitly
 	// inert, not silently dropped. See router.go's doc comment.
 	tags []string
+	// boundMWs holds every REAL, dispatch-time-executed BoundMiddleware
+	// attached via a role's own XxxBoundMW(bm any) method — see
+	// middleware.go's runBoundMiddleware. Distinct from mws above
+	// (.Use()-attached, declare-time-only metadata, never executed).
+	boundMWs []roleBoundMW
+	// buildErr records a XxxBoundMW(bm any) type-mismatch, checked at the
+	// top of .Handle() — mirrors
+	// github.com/DaniDeer/go-codex/api/events.Subscriber's identical
+	// buildErr field/timing (recorded immediately, surfaced later,
+	// since XxxBoundMW's own signature can't return an error).
+	buildErr error
 }
 
 func (c roleCore[T]) withUse(mws []RouteMiddleware) roleCore[T] {
@@ -310,6 +321,9 @@ func (r Reader[T]) RequireCapabilities(reqs ...CapabilityRequirement) Reader[T] 
 // Router-group composition (see [WithRouter]) — the ONE construction
 // point for a Router-grouped path.
 func (r Reader[T]) Handle(client *Client, opts ...HandleOpt) (*ReadHandle[T], error) {
+	if r.core.buildErr != nil {
+		return nil, r.core.buildErr
+	}
 	if err := r.core.checkCoverage(); err != nil {
 		return nil, err
 	}
@@ -357,6 +371,9 @@ func (c Creator[T]) RequireCapabilities(reqs ...CapabilityRequirement) Creator[T
 }
 
 func (c Creator[T]) Handle(client *Client, opts ...HandleOpt) (*CreateHandle[T], error) {
+	if c.core.buildErr != nil {
+		return nil, c.core.buildErr
+	}
 	if err := c.core.checkCoverage(); err != nil {
 		return nil, err
 	}
@@ -405,6 +422,9 @@ func (p Patcher[T, P]) WithSecurity(reqs ...SecurityRequirement) Patcher[T, P] {
 }
 
 func (p Patcher[T, P]) Handle(client *Client, opts ...HandleOpt) (*PatchHandle[T, P], error) {
+	if p.core.buildErr != nil {
+		return nil, p.core.buildErr
+	}
 	if err := p.core.checkCoverage(); err != nil {
 		return nil, err
 	}
@@ -453,6 +473,9 @@ func (d Deleter[T]) RequireCapabilities(reqs ...CapabilityRequirement) Deleter[T
 }
 
 func (d Deleter[T]) Handle(client *Client, opts ...HandleOpt) (*DeleteHandle[T], error) {
+	if d.core.buildErr != nil {
+		return nil, d.core.buildErr
+	}
 	if err := d.core.checkCoverage(); err != nil {
 		return nil, err
 	}
@@ -492,6 +515,9 @@ func (l Lister[T]) WithSecurity(reqs ...SecurityRequirement) Lister[T] {
 }
 
 func (l Lister[T]) Handle(client *Client, opts ...HandleOpt) (*ListHandle[T], error) {
+	if l.core.buildErr != nil {
+		return nil, l.core.buildErr
+	}
 	h := &ListHandle[T]{resource: l.core.resource, core: l.core, client: client}
 	for _, o := range opts {
 		o.applyHandle(&h.routing)
@@ -531,6 +557,9 @@ func (e Exister[T]) WithSecurity(reqs ...SecurityRequirement) Exister[T] {
 }
 
 func (e Exister[T]) Handle(client *Client, opts ...HandleOpt) (*ExistsHandle[T], error) {
+	if e.core.buildErr != nil {
+		return nil, e.core.buildErr
+	}
 	h := &ExistsHandle[T]{resource: e.core.resource, core: e.core, client: client}
 	for _, o := range opts {
 		o.applyHandle(&h.routing)
@@ -574,6 +603,9 @@ func (c Copier[T]) WithSecurity(reqs ...SecurityRequirement) Copier[T] {
 }
 
 func (c Copier[T]) Handle(client *Client, opts ...HandleOpt) (*CopyHandle[T], error) {
+	if c.core.buildErr != nil {
+		return nil, c.core.buildErr
+	}
 	if err := c.core.checkCoverage(); err != nil {
 		return nil, err
 	}
@@ -621,6 +653,9 @@ func (m Mover[T]) WithSecurity(reqs ...SecurityRequirement) Mover[T] {
 }
 
 func (m Mover[T]) Handle(client *Client, opts ...HandleOpt) (*MoveHandle[T], error) {
+	if m.core.buildErr != nil {
+		return nil, m.core.buildErr
+	}
 	if err := m.core.checkCoverage(); err != nil {
 		return nil, err
 	}
@@ -666,6 +701,9 @@ func (m MkdirCreator[T]) WithSecurity(reqs ...SecurityRequirement) MkdirCreator[
 }
 
 func (m MkdirCreator[T]) Handle(client *Client, opts ...HandleOpt) (*MkdirHandle[T], error) {
+	if m.core.buildErr != nil {
+		return nil, m.core.buildErr
+	}
 	if err := m.core.checkCoverage(); err != nil {
 		return nil, err
 	}
@@ -711,6 +749,9 @@ func (b BatchDeleter[T]) WithSecurity(reqs ...SecurityRequirement) BatchDeleter[
 }
 
 func (b BatchDeleter[T]) Handle(client *Client, opts ...HandleOpt) (*BatchDeleteHandle[T], error) {
+	if b.core.buildErr != nil {
+		return nil, b.core.buildErr
+	}
 	h := &BatchDeleteHandle[T]{resource: b.core.resource, core: b.core, client: client}
 	for _, o := range opts {
 		o.applyHandle(&h.routing)

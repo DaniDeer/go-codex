@@ -170,6 +170,9 @@ func readCore[T any](ctx context.Context, backend Backend, core roleCore[T], rou
 	if err != nil {
 		return zero, err
 	}
+	if err := runBoundMiddleware(ctx, path, core, nil); err != nil {
+		return zero, err
+	}
 	start := time.Now()
 	data, err := backend.ReadBytes(ctx, path)
 	if err != nil {
@@ -231,6 +234,9 @@ func createCore[T any](ctx context.Context, backend Backend, core roleCore[T], r
 	if err != nil {
 		return err
 	}
+	if err := runBoundMiddleware(ctx, path, core, &v); err != nil {
+		return err
+	}
 	start := time.Now()
 	data, err := core.resource.format.Marshal(v)
 	if err != nil {
@@ -289,6 +295,9 @@ func patchCore[T, P any](ctx context.Context, backend Backend, core roleCore[T],
 	}
 	if !core.resource.format.IsPatchable() {
 		return FilePatchNotSupportedError{Path: path}
+	}
+	if err := runBoundMiddleware(ctx, path, core, nil); err != nil {
+		return err
 	}
 	start := time.Now()
 	intermediate, err := patchCodec.Encode(p)
@@ -366,6 +375,9 @@ func deleteCore[T any](ctx context.Context, backend Backend, core roleCore[T], r
 	if err != nil {
 		return false, err
 	}
+	if err := runBoundMiddleware(ctx, path, core, nil); err != nil {
+		return false, err
+	}
 	start := time.Now()
 	existed, err := backend.DeleteBytes(ctx, path, DeleteOptions{})
 	if err != nil {
@@ -401,6 +413,9 @@ func listCore[T any](ctx context.Context, backend Backend, core roleCore[T], rou
 	obs := obsFromCtx(ctx)
 	path, err := core.resource.buildParentDirWithRouting(routing, vars)
 	if err != nil {
+		return nil, err
+	}
+	if err := runBoundMiddleware(ctx, path, core, nil); err != nil {
 		return nil, err
 	}
 	start := time.Now()
@@ -460,6 +475,9 @@ func existsCore[T any](ctx context.Context, backend Backend, core roleCore[T], r
 	obs := obsFromCtx(ctx)
 	path, err := core.resource.buildPathWithRouting(routing, vars)
 	if err != nil {
+		return Entry{}, false, err
+	}
+	if err := runBoundMiddleware(ctx, path, core, nil); err != nil {
 		return Entry{}, false, err
 	}
 	start := time.Now()
@@ -537,6 +555,13 @@ func copyBytesCore[T any](ctx context.Context, backend Backend, core roleCore[T]
 
 func copyCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, srcVars, dstVars map[string]string) error {
 	obs := obsFromCtx(ctx)
+	precheckPath, err := core.resource.buildPathWithRouting(routing, srcVars)
+	if err != nil {
+		return err
+	}
+	if err := runBoundMiddleware(ctx, precheckPath, core, nil); err != nil {
+		return err
+	}
 	start := time.Now()
 	srcPath, dstPath, err := copyBytesCore(ctx, backend, core, routing, srcVars, dstVars)
 	recordCopy(obs, srcPath, dstPath, err == nil, time.Since(start))
@@ -587,6 +612,9 @@ func moveCore[T any](ctx context.Context, backend Backend, core roleCore[T], rou
 	}
 	dstPath, err := core.resource.buildPathWithRouting(routing, dstVars)
 	if err != nil {
+		return err
+	}
+	if err := runBoundMiddleware(ctx, srcPath, core, nil); err != nil {
 		return err
 	}
 
@@ -647,6 +675,9 @@ func mkdirCore[T any](ctx context.Context, backend Backend, core roleCore[T], ro
 	if err != nil {
 		return false, err
 	}
+	if err := runBoundMiddleware(ctx, path, core, nil); err != nil {
+		return false, err
+	}
 	opts := MkdirOptions{}
 	if wire.NativePOSIXMode != nil {
 		opts.NativePOSIXMode = wire.NativePOSIXMode
@@ -703,6 +734,14 @@ func batchDeleteCore[T any](ctx context.Context, backend Backend, core roleCore[
 			return nil, err
 		}
 		paths[i] = path
+	}
+	// BatchDelete has no single path to label the Security gate with
+	// (unlike every other role) — runs ONCE for the whole batch, not
+	// once per path, consistent with this role's own established
+	// "Security checked once per batch, not once per item" design (see
+	// Client.BatchDelete's doc comment).
+	if err := runBoundMiddleware(ctx, "", core, nil); err != nil {
+		return nil, err
 	}
 
 	start := time.Now()
