@@ -52,10 +52,11 @@ NOT meaningfully unifiable beyond a binary read-only/writable distinction
 | Migrating `adapters/file` onto the new `Backend` interface (the ONE Phase 1 backend, proving the abstraction against a REAL adapter, not just a design) — including implementing `CopyingBackend`/`MovingBackend` via `io.Copy`/`os.Rename` to prove the optional-fast-path mechanism, not just the required interface | Any change to `adapters/file`'s OWN existing stream-bridge functions (`ScanAdapter`/`WatchAdapter`/`ReadEachAdapter`/etc.) beyond what's needed to also implement `file.Backend` — those keep their existing signatures |
 | A new `file.Capability` sealed interface (mirrors `d-0006`'s established `mqtt5.Capability`/`Apply`/`CheckCapabilityCoverage` mechanism exactly): `AccessMode` (ReadOnly/ReadWrite — the ONE permission concept genuinely portable across filesystem/S3/SMB) + `NativePOSIXMode` (escape hatch, filesystem/SMB-only) | A full POSIX-mode-bits-to-Windows-ACL or POSIX-to-S3-ACL TRANSLATOR — researched directly and confirmed NOT meaningfully achievable: Windows collapses ALL of `os.FileMode` to one bit via Go's own `os.Chmod` (confirmed via Go's stdlib docs), and S3's ACL/bucket-policy model is grantee+action-based, not bit-based at all — there is no lossless translation to invent, only an honest, portable common denominator |
 | `ports.File[T]` becomes a thin wrapper around an `api/file`-declared `Resource[T]` Handle + an attached `file.Backend` — mirrors `ports.SourcePort`/`SinkPort`/`IOPort` wrapping adapters today; `ports.FilePattern`/`*Port.PluginFilePattern` is the EXISTING slot this plugs into (confirmed via code: `ports/pattern.go`'s `FilePattern`, `ports/io_port.go`'s `PluginFilePattern(pattern FilePattern) (File[Resp], error)`) | `ports.Dir`/`DirEntry` — stays EXACTLY as-is (untyped, metadata-only directory enumeration); `Resource[T].WithList` is a new, complementary, TYPED+decoded sibling, not a replacement |
+| **`file.Client` (NEW this revision)** — the attach-time `Backend` wiring (`Attach`, exclusive) AND call-time dispatch (`Read`/`Create`/`Patch`/`Delete`/`List`/`Exists`/`Copy`/`Move`/`Mkdir`) surface, mirroring `events.Client`/`reqreply.Client`'s established `Attach`+reflective-`any`-dispatch shape exactly — closes the gap the first 2 drafting rounds left open (neither specified HOW a Backend gets attached or what a built role Handle exposes to actually run) | A generic, type-safe `Client.Read[T]`-style free-function wrapper around the `any`-typed dispatch methods — deliberately NOT designed, since `reqreply.Client.Call`'s own established convention is a plain caller-side type assertion (`respAny.(T)`), not a generic wrapper; inventing one here would diverge from the precedent this doc otherwise mirrors |
 | Router groups (`d-0008`'s "one shape, N packages" pattern) — `api/file` becomes the 4th instance | `d-0008`'s core Router mechanism itself — reused unchanged, only a new "Design decisions — resolved for `api/file`" subsection is added to that doc once this ships |
 | Declarative per-role middleware (`ReadMW`/`CreateMW`/`PatchMW`/`DeleteMW`/`ListMW`/`ExistsMW`/`CopyMW`/`MoveMW`/`MkdirMW` — see "Why verb-specific MW names, not `HandleMW`/`ClientMW`" below) + Security schemes | A NEW security-SCHEME TYPE — reuses `route.SecurityScheme`/`route.SecurityRequirement` unchanged, same as `rest`/`events`/`reqreply` |
 | `ErrorPattern` (reusing the established `errors.As` + first-rule-wins + direct/mapped convention) | Inventing a new error-response shape |
-| Observer (`stats.FileObserver`, extended with 2 new methods — see below) | A new top-level `stats.Observer` extension unrelated to file lifecycle |
+| Observer (`stats.FileObserver`, extended with 5 new methods — see below) | A new top-level `stats.Observer` extension unrelated to file lifecycle |
 
 ## Toolchain / dependency decisions
 
@@ -227,6 +228,102 @@ func (r Reader[T]) WithOptions(opts any) Reader[T]
 func (r Reader[T]) Handle(client *Client) (*ReadHandle[T], error)
 ```
 
+### `file.Client` — attach-time `Backend` wiring + call-time dispatch
+
+**Added this revision** — closes a gap the first 2 drafting rounds left
+open: neither round specified HOW a `Backend` actually gets attached, or
+what a built `*ReadHandle[T]` (etc.) exposes to perform the operation.
+Researched the ACTUAL existing pattern first rather than inventing one:
+`events.ChannelHandle[T]`/`reqreply`'s built handles have NO call-time
+method on themselves at all — the real call-time surface lives on
+`*events.Client`/`*reqreply.Client` (the SAME entity `Attach` is called
+on), confirmed directly from `api/events/builder.go`'s
+`Client.Attach(t Transport) error` + `Client.Publish(ctx, pub any, msg
+any, opts ...ClientPublishOptions) error` and
+`api/reqreply/client.go`'s `Client.Call(ctx, route any, req any, opts
+...) (any, error)` — further confirmed via
+`examples/reqreply-api/demo_basic_call_and_serve.go` that the REAL
+calling convention is `respAny, err := client.Call(ctx, route, req)`
+then a plain `resp := respAny.(ComputeResp)` by the caller — Go
+generics cannot add a type parameter to a method, so `Client.Call`/
+`Client.Publish` stay `any`-typed by necessity, and the caller supplies
+the type assertion. `api/file` mirrors this EXACT shape, not a new one:
+
+```go
+// Client mirrors events.Client/reqreply.Client's own role exactly: the
+// ONE entity both Attach and every call-time dispatch method hang off
+// of.
+type Client struct{ /* unexported */ }
+func NewClient(opts ...ClientOpt) *Client
+
+// Attach binds backend to c — EXCLUSIVE, mirrors events.Client.Attach/
+// reqreply.Client.Attach's identical "one Transport per Client" rule
+// exactly: a 2nd Attach call returns BackendAlreadyAttachedError
+// (structurally identical to TransportAlreadyAttachedError). Every
+// call-time method below returns NoBackendAttachedError
+// (structurally identical to NoTransportAttachedError) if called
+// before Attach.
+func (c *Client) Attach(backend Backend) error
+
+// Read performs r's declared Read role against c's attached Backend.
+// r is the role value built via Resource.WithRead(...).Handle(c) (any,
+// reflectively dispatched — SAME shape as Client.Publish's pub
+// parameter); vars supplies the path template's variables (mirrors
+// ports.File[T].Read's own existing vars map[string]string parameter).
+// Returns the decoded T boxed as any — caller asserts it, exactly like
+// reqreply.Call's respAny.(ComputeResp) idiom:
+//
+//	entryAny, err := client.Read(ctx, reader, map[string]string{"id": "42"})
+//	entry := entryAny.(MyRecord)
+func (c *Client) Read(ctx context.Context, r any, vars map[string]string) (any, error)
+
+func (c *Client) Create(ctx context.Context, cr any, val any, vars map[string]string) error
+
+func (c *Client) Patch(ctx context.Context, p any, patch any, vars map[string]string) error
+
+// Delete returns existed=false (nil error) for the idempotent "already
+// absent" case — mirrors ports.File.Delete's existing contract.
+func (c *Client) Delete(ctx context.Context, d any, vars map[string]string) (existed bool, err error)
+
+// List returns the decoded []T boxed as any (caller asserts
+// entriesAny.([]MyRecord)) — vars supplies the PARENT directory's path
+// variables (the same ones WithList's own doc comment describes).
+func (c *Client) List(ctx context.Context, l any, vars map[string]string) (any, error)
+
+// Exists returns (Entry{}, false, nil) for the idempotent "absent" case
+// — never an error — mirrors Delete's existed-bool convention.
+func (c *Client) Exists(ctx context.Context, e any, vars map[string]string) (Entry, bool, error)
+
+// Copy and Move BOTH take TWO var sets — srcVars/dstVars — rather than
+// a second declared path template. Resource[T]'s path template stays
+// SINGULAR; srcVars and dstVars are the SAME template instantiated
+// twice with different values (not two different shapes). Chosen over
+// a 2nd declared destination template because: (a) it requires ZERO
+// change to Resource[T]'s declaration shape or WithCopy/WithMove's
+// already-drafted builder signatures; (b) it mirrors how every OTHER
+// role already takes one vars map[string]string, just twice; (c) a 2nd
+// template would only be needed if source/destination could have
+// STRUCTURALLY different path shapes (different param names/types) —
+// not a requirement anyone has asked for, and inventing it now would be
+// scope creep this doc deliberately avoids (see "Out of scope").
+func (c *Client) Copy(ctx context.Context, cp any, srcVars, dstVars map[string]string) error
+func (c *Client) Move(ctx context.Context, mv any, srcVars, dstVars map[string]string) error
+
+// Mkdir returns created=false (nil error) for the idempotent "already
+// existed" case — mirrors Backend.Mkdir's own contract exactly (this
+// method is a thin pass-through to it).
+func (c *Client) Mkdir(ctx context.Context, m any, vars map[string]string) (created bool, err error)
+```
+
+`BackendAlreadyAttachedError`/`NoBackendAttachedError` are new,
+structurally identical siblings of `events.TransportAlreadyAttachedError`/
+`events.NoTransportAttachedError` (see Structured errors below).
+`TransportTypeMismatchError`'s `api/file` sibling,
+`BackendTypeMismatchError`, is returned when `val`/`patch`'s concrete
+type doesn't match the role's declared `T`/`P` — same narrowly-scoped
+runtime-type-safety cost `events.Client.Publish` already accepts for the
+exact same reason (an `any`-typed call-time parameter).
+
 ### `file.Backend` — the transparency seam
 
 ```go
@@ -312,6 +409,20 @@ type CopyingBackend interface {
 // is the ONLY correct implementation anyway (2 non-atomic calls, exactly
 // matching what a caller would have to do by hand against the raw S3
 // API).
+//
+// Resolved this revision — the fallback's "Copy" half is a full
+// 3-LEVEL cascade, reusing Copier[T]'s OWN dispatch-core function
+// directly rather than re-implementing a 2nd copy of its fallback
+// logic: Move tries, in order, (1) MovingBackend.MoveBytes if
+// implemented — one atomic/native call; (2) otherwise,
+// Copier[T]'s dispatch function (which ITSELF tries CopyingBackend.
+// CopyBytes first, falling back to generic Read+Write) followed by
+// Deleter[T]'s DeleteBytes; (3) which transparently collapses to pure
+// Read+Write+Delete on a Backend implementing neither optional
+// extension. A Backend implementing CopyingBackend but NOT
+// MovingBackend (plausible: cheap server-side copy, no atomic rename)
+// gets the FASTEST available path automatically — Move never
+// reimplements Copy's own fallback decision, it DELEGATES to it.
 type MovingBackend interface {
     MoveBytes(ctx context.Context, srcPath, dstPath string) error
 }
@@ -371,6 +482,17 @@ type Capability interface {
     isFileCapability()
     Apply(wire *WireAttributes) (applied bool, err error)
 }
+
+// CapabilityName is an OPTIONAL interface a Capability may additionally
+// implement for CheckCapabilityCoverage/stats.CapabilityObserver
+// purposes — named explicitly this revision (was previously implied but
+// unnamed). Mirrors events.CapabilityName EXACTLY: deliberately NOT part
+// of the sealed Capability interface itself, since an external
+// implementer of a future adapter-specific Capability should not be
+// FORCED to supply a name — CapabilityNameOf falls back to a %T-derived
+// name when a capability doesn't implement this (same fallback
+// events.CapabilityNameOf already provides).
+type CapabilityName interface{ CapabilityName() string }
 
 // WireAttributes is the ONE intermediate value every Capability.Apply
 // targets — mirrors mqtt5.WireAttributes's exact rationale.
@@ -438,12 +560,23 @@ func (m NativePOSIXMode) Apply(wire *WireAttributes) (bool, error) {
 }
 ```
 
-`CheckCapabilityCoverage`/`RequireReadOnly()`-style declare-time
-requirement enforcement is reused UNCHANGED — a `Resource` role declaring
-`RequireAccessMode(AccessModeReadOnly)` against a `Backend` that hasn't
-been told it's read-only-safe (i.e., no `AccessMode` Capability was
-supplied at attach time) fails loudly at attach time, mirroring
-`events.RequireQoS`'s identical "fail fast, not silently" contract.
+**Correction (this revision)**: `events.CheckCapabilityCoverage(topic
+string, declared []CapabilityRequirement, supplied []any) error` is an
+`api/events`-OWNED function with an events-specific signature (`topic
+string` is baked into it) — `api/file` CANNOT literally call it. What's
+reused is the MECHANISM, not the function: `api/file` gets its OWN
+`file.CheckCapabilityCoverage(path string, declared
+[]CapabilityRequirement, supplied []any) error`, a structural mirror
+(identical first-rule-wins matching logic, identical error shape) but
+its own, separately-owned copy — exactly how `rest.ErrorPattern`/
+`events.ErrorPattern`/`reqreply.ErrorPattern` are already 3 independently
+-owned types sharing one convention, not one shared generic type. A
+`Resource` role declaring `RequireAccessMode(AccessModeReadOnly)` against
+a `Backend` that hasn't been told it's read-only-safe (i.e., no
+`AccessMode` Capability was supplied at attach time) fails loudly at
+attach time via THIS `file`-owned function, mirroring
+`events.RequireQoS`'s identical "fail fast, not silently" contract in
+spirit, not in shared code.
 
 ### Backend semantic differences — documented, not hidden
 
@@ -486,6 +619,22 @@ string}` — returned when a `WriteOptions`/`DeleteOptions`/`MkdirOptions`
 field a backend genuinely cannot honor is set to a non-default value AND
 the backend author chose to fail loudly rather than silently no-op (an
 explicit, per-backend, per-option choice — not a core-dispatch decision).
+
+**Added this revision** (alongside `file.Client` above): 3 NEW error
+types, each a structurally identical sibling of an EXISTING `api/events`
+error — reusing the convention, not the code (same reasoning as the
+`CheckCapabilityCoverage` correction below: each pattern family owns its
+own copy):
+- `BackendAlreadyAttachedError{}` — mirrors
+  `events.TransportAlreadyAttachedError{}`; returned by a 2nd
+  `Client.Attach` call.
+- `NoBackendAttachedError{}` — mirrors
+  `events.NoTransportAttachedError{}`; returned by `Read`/`Create`/
+  `Patch`/`Delete`/`List`/`Exists`/`Copy`/`Move`/`Mkdir` when `Attach`
+  was never called.
+- `BackendTypeMismatchError{Expected, Got string}` — mirrors
+  `events.TransportTypeMismatchError`; returned when `val`/`patch`'s
+  dynamic type doesn't match the role's declared `T`/`P`.
 
 No further NEW error types needed for the 4 added verbs — `Exists`
 reuses `FileNotFoundError`'s ABSENCE of an error (the `(Entry{}, false,
@@ -564,8 +713,11 @@ new observer extension needed for either.
 - **Declarative Middleware**: reuses `middleware.Middleware[In,Out]`/
   `BoundMiddleware`-style codec-backed attachment (`d-0003`/`d-0007`),
   realized here as `ReadBoundMW`/`CreateBoundMW`/`PatchBoundMW`/
-  `DeleteBoundMW`/`ListBoundMW` — one per role, mirroring
-  `SubscribeBoundMW`/`PublishBoundMW`'s existing per-role split. The
+  `DeleteBoundMW`/`ListBoundMW`/`ExistsBoundMW`/`CopyBoundMW`/
+  `MoveBoundMW`/`MkdirBoundMW` (corrected this revision — the original
+  list only named 5 of the 9 roles, missed the 4 added in the
+  verb-expansion round) — one per role, mirroring `SubscribeBoundMW`/
+  `PublishBoundMW`'s existing per-role split. The
   underlying MECHANICS (dispatch, `Satisfies`/`CheckCoverage`,
   `GrantedScopes`) are the SAME shared `internal/middleware` machinery
   every other pattern already uses via its OWN public wrapper — `api/file`
@@ -605,17 +757,26 @@ new observer extension needed for either.
 | `TestNativePOSIXMode_Apply_SetsWireField` | Mirrors `TestMessageExpiry_Apply_SetsWireField`'s own direct-`Apply` proof pattern |
 | `TestNativePOSIXMode_NoOpOnBackendsThatDontHonorIt` | A fake non-POSIX `Backend` receiving a `NativePOSIXMode` capability reports `applied=false`, never an error — proves the "harmless no-op" contract |
 | `TestResourceRequireAccessMode_NoCapabilitySupplied_FailsCoverageAtAttachTime` | Mirrors `events.RequireQoS`'s identical "fail fast, not silently" proof, applied to `AccessMode` |
+| `TestClient_Attach_Exclusive_SecondCallReturnsBackendAlreadyAttachedError` | Mirrors `TestClient_Attach_Exclusive` (events) for `file.Client` |
+| `TestClient_Read_NoBackendAttached_ReturnsNoBackendAttachedError` | Calling any dispatch method before `Attach` fails loudly, not silently |
+| `TestClient_Read_ValDoesNotMatchDeclaredT_ReturnsBackendTypeMismatchError` | `Create`/`Patch`'s `val`/`patch` dynamic-type mismatch is caught, mirrors `TransportTypeMismatchError`'s proof |
+| `TestClient_Copy_SrcVarsDstVarsBuildDifferentPaths` | `Copy`'s `srcVars`/`dstVars` each build a DIFFERENT concrete path from the SAME declared template — proves the "one template, two instantiations" design decision actually works |
+| `TestClient_Move_PrefersMovingBackendOverCopyingBackendFallback` | A fake `Backend` implementing BOTH `MovingBackend` and `CopyingBackend` uses `MoveBytes`, never `CopyBytes`+`DeleteBytes` — proves cascade level 1 wins |
+| `TestClient_Move_FallsBackToCopyingBackendPlusDeleteWhenNoMovingBackend` | A fake `Backend` implementing ONLY `CopyingBackend` (not `MovingBackend`) has `Move` call `CopyBytes` then `DeleteBytes` — proves cascade level 2, delegating to `Copier[T]`'s own fast path rather than reimplementing it |
+| `TestClient_Move_FallsBackToReadWriteDeleteWithNeitherExtension` | A fake `Backend` implementing NEITHER optional extension still succeeds via pure `ReadBytes`+`WriteBytes`+`DeleteBytes` — proves cascade level 3 |
+| `TestFileCheckCapabilityCoverage_MirrorsEventsStructurally` | `file.CheckCapabilityCoverage`'s matching/error-shape behavior is verified independently against its own fixtures — proves it is a genuine, working COPY, not a stale unimplemented reference to `events`'s function |
 | `ExampleResource_read` / `ExampleResource_create` / `ExampleResource_copy` | pkg.go.dev-facing worked examples |
 
 ## Files to create
 
 | File | Responsibility |
 |---|---|
-| `api/file/builder.go` | `Resource[T]`, `PathParam`/`MergedPathParam`, `Reader`/`Creator`/`Patcher`/`Deleter`/`Lister`/`Exister`/`Copier`/`Mover`/`MkdirCreator`, `Read`/`Create`/`Patch`/`Delete`/`List`/`Exists`/`Copy`/`Move`/`Mkdir` metadata structs, `Client`/`Handle` registry (mirrors `events.Client`/`ChannelHandle`) |
+| `api/file/builder.go` | `Resource[T]`, `PathParam`/`MergedPathParam`, `Reader`/`Creator`/`Patcher`/`Deleter`/`Lister`/`Exister`/`Copier`/`Mover`/`MkdirCreator`, `Read`/`Create`/`Patch`/`Delete`/`List`/`Exists`/`Copy`/`Move`/`Mkdir` metadata structs, per-role `*Handle[T]` registry types |
+| `api/file/client.go` (**NEW this revision**) | `Client`/`NewClient`/`ClientOpt`, `Client.Attach(Backend) error` (exclusive attach-time wiring), `Client.Read`/`Create`/`Patch`/`Delete`/`List`/`Exists`/`Copy`/`Move`/`Mkdir` (reflective `any`-typed call-time dispatch) — mirrors `events.Client`/`reqreply.Client`'s established `Attach`+dispatch shape |
 | `api/file/backend.go` | `Backend` interface (incl. `Stat`/`Mkdir`), `CopyingBackend`/`MovingBackend` optional extensions, `Entry`, `WriteOptions`/`DeleteOptions`/`MkdirOptions` |
-| `api/file/capability.go` | `Capability`/`WireAttributes`/`AccessMode`/`NativePOSIXMode` — mirrors `adapters/mqtt5/capability.go`'s exact shape, one boundary over |
-| `api/file/dispatch.go` | The shared dispatch core every `*Handle[T]`'s Read/Create/Patch/Delete/List/Exists/Copy/Move/Mkdir call delegates to — path build/validate, codec encode/decode, merge-field application, `AccessMode` enforcement, `CopyingBackend`/`MovingBackend` type-assertion-guarded fast paths with generic fallback, Observer calls, ErrorPattern dispatch |
-| `api/file/errors.go` | Relocated error types (from `ports/file.go`) + `BackendUnsupportedOptionError` |
+| `api/file/capability.go` | `Capability`/`CapabilityName`/`CheckCapabilityCoverage`/`WireAttributes`/`AccessMode`/`NativePOSIXMode` — mirrors `adapters/mqtt5/capability.go`+`api/events/capability.go`'s combined shape, one boundary over |
+| `api/file/dispatch.go` | The shared dispatch core every `Client` call-time method delegates to — path build/validate, codec encode/decode, merge-field application, `AccessMode` enforcement, `CopyingBackend`/`MovingBackend` type-assertion-guarded fast paths with generic fallback (incl. `Move`'s 3-level cascade delegating to `Copier[T]`'s own fallback), Observer calls, ErrorPattern dispatch |
+| `api/file/errors.go` | Relocated error types (from `ports/file.go`) + `BackendUnsupportedOptionError` + `BackendAlreadyAttachedError`/`NoBackendAttachedError`/`BackendTypeMismatchError` |
 | `api/file/error_pattern.go` | `ErrorPattern[E,B]` — mirrors `rest.ErrorPattern`/`events.ErrorPattern`/`reqreply.ErrorPattern`'s identical shape |
 | `api/file/doc.go` | Package godoc |
 | `adapters/file/backend.go` | `os.*`-backed `file.Backend` implementation, ALSO implementing `CopyingBackend` (`io.Copy`) and `MovingBackend` (`os.Rename`) — new file; existing `binding.go`/`adapter.go` untouched |
@@ -656,8 +817,45 @@ round, flagged rather than silently decided:
   — resolve during Implement mode once the full option-struct shapes are
   drafted together.
 
-Everything else resolved via `ask_user` across both rounds (original +
-this refinement):
+**Resolved this round** (a dedicated critical review pass found these 3
+gaps — none had been designed in either prior round — plus 4 smaller
+inaccuracies/inconsistencies; all 7 are now fixed above, not merely
+flagged):
+
+- **Call-time dispatch API** was completely unspecified before this
+  round — no built role Handle exposed any method to actually perform
+  its operation. Resolved: a `file.Client` type, mirroring
+  `events.Client`/`reqreply.Client`'s real, confirmed `Attach`+reflective
+  `any`-in/`any`-out dispatch shape exactly (researched directly from
+  `api/events/builder.go` and `api/reqreply/client.go`, not invented) —
+  see "`file.Client` — attach-time `Backend` wiring + call-time
+  dispatch" above.
+- **Copy/Move's destination path** was unaddressed — resolved as two
+  `map[string]string` var sets (`srcVars`/`dstVars`) against the SAME
+  singular declared `Resource[T]` template, not a second declared
+  template — zero changes needed to the already-drafted `WithCopy`/
+  `WithMove` builder signatures.
+- **Attach-time `Backend` wiring** was unaddressed — resolved as
+  `Client.Attach(backend Backend) error`, exclusive, mirroring
+  `events.Client.Attach`'s identical one-per-Client rule.
+- **`CheckCapabilityCoverage` "reused unchanged"** was factually wrong
+  (it's an `events`-owned function with an events-specific signature) —
+  corrected to "`api/file` owns a structurally-mirrored copy," consistent
+  with `ErrorPattern`'s own per-pattern-family-owns-its-own-copy
+  precedent.
+- **Router/Middleware's `*BoundMW` list** was stale (named only 5 of 9
+  roles) — corrected to all 9.
+- **`Move`'s fallback cascade ordering** (when a `Backend` implements
+  `CopyingBackend` but not `MovingBackend`) was ambiguous — resolved as
+  an explicit 3-level cascade (`MovingBackend` → delegate to `Copier[T]`'s
+  own `CopyingBackend`-or-generic fallback + `Delete` → pure
+  `Read`+`Write`+`Delete`), with `Move` DELEGATING to `Copier[T]`'s
+  dispatch rather than reimplementing its fallback decision.
+- **An implied `CapabilityName` interface** was never named — now an
+  explicit, documented optional interface mirroring `events.CapabilityName`.
+
+Everything else resolved via `ask_user` across all 3 rounds (original +
+2 refinements):
 
 - Package name: `api/file` (not `api/storage`).
 - `ports.File[T]`'s fate: thin wrapper over the new `Backend` seam, not
