@@ -57,7 +57,7 @@ func AssertReadWriteRoundTrip(t *testing.T, backend file.Backend) {
 	vars := map[string]string{"id": "alice"}
 
 	t.Run("create_then_read_round_trips", func(t *testing.T) {
-		if err := client.Create(ctx, res.WithCreate(file.Create{}), record{ID: "alice", Value: 42}, vars); err != nil {
+		if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{ID: "alice", Value: 42}, vars); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
 		gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
@@ -108,7 +108,7 @@ func AssertPathParamMergeField(t *testing.T, backend file.Backend) {
 	ctx := context.Background()
 	vars := map[string]string{"id": "bob"}
 
-	if err := client.Create(ctx, res.WithCreate(file.Create{}), mergedRecord{ID: "bob", Value: 7}, vars); err != nil {
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), mergedRecord{ID: "bob", Value: 7}, vars); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
@@ -139,7 +139,7 @@ func AssertSecurityGate(t *testing.T, backend file.Backend) {
 	res := file.NewResource[record](filepath.Join(dir, "{id}.json"), format.JSON(recordCodec()), file.PathParam{Name: "id"})
 	ctx := context.Background()
 	vars := map[string]string{"id": "secured"}
-	if err := client.Create(ctx, res.WithCreate(file.Create{}), record{ID: "secured", Value: 1}, vars); err != nil {
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{ID: "secured", Value: 1}, vars); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -172,7 +172,7 @@ func AssertOrderedMiddlewareChain(t *testing.T, backend file.Backend) {
 	res := file.NewResource[record](filepath.Join(dir, "{id}.json"), format.JSON(recordCodec()), file.PathParam{Name: "id"})
 	ctx := context.Background()
 	vars := map[string]string{"id": "ordered"}
-	if err := client.Create(ctx, res.WithCreate(file.Create{}), record{ID: "ordered", Value: 1}, vars); err != nil {
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{ID: "ordered", Value: 1}, vars); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -288,7 +288,7 @@ func AssertObservability(t *testing.T, backend file.Backend, spy *SpyObserver) {
 	ctx := stats.WithObserver(context.Background(), spy)
 	vars := map[string]string{"id": "observed"}
 
-	if err := client.Create(ctx, res.WithCreate(file.Create{}), record{ID: "observed", Value: 1}, vars); err != nil {
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{ID: "observed", Value: 1}, vars); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if len(spy.Writes) != 1 || !spy.Writes[0].Success {
@@ -343,7 +343,7 @@ func AssertMetadataIntegration(t *testing.T, backend file.Backend) {
 
 	t.Run("resource_level_metadata_round_trips", func(t *testing.T) {
 		vars := map[string]string{"id": "plain"}
-		if err := client.Create(ctx, res.WithCreate(file.Create{}), recordWithOwner{ID: "plain", Value: 1, Owner: "alice"}, vars); err != nil {
+		if _, err := client.Create(ctx, res.WithCreate(file.Create{}), recordWithOwner{ID: "plain", Value: 1, Owner: "alice"}, vars); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
 		gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
@@ -366,7 +366,7 @@ func AssertMetadataIntegration(t *testing.T, backend file.Backend) {
 			func(m *metaOut, v string) { m.Owner = v }))
 		vars := map[string]string{"id": "gated"}
 		creator := res.WithCreate(file.Create{}).CreateBoundMW(bm)
-		if err := client.Create(ctx, creator, recordWithOwner{ID: "gated", Value: 1, Owner: "original"}, vars); err != nil {
+		if _, err := client.Create(ctx, creator, recordWithOwner{ID: "gated", Value: 1, Owner: "original"}, vars); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
 		gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), vars)

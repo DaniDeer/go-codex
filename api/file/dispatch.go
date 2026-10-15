@@ -75,6 +75,25 @@ func recordBatchDelete(obs stats.Observer, paths []string, successCount, failure
 	}
 }
 
+// ── TraceObserver spans ─────────────────────────────────────────────────
+
+// startSpan starts a [stats.TraceObserver] span when obs implements it,
+// mirroring ports.File's identical span-name convention ("file.read"/
+// "file.write"/"file.delete", extended here with "file.list"/
+// "file.exists"/"file.copy"/"file.move"/"file.mkdir"/"file.batchdelete"
+// for the roles ports.File never had). Returns ctx unchanged and a no-op
+// end func when obs doesn't implement TraceObserver, so every call site
+// can call this unconditionally, exactly like ports.File's own
+// `if to, ok := obs.(stats.TraceObserver); ok { ... }` guard.
+func startSpan(ctx context.Context, obs stats.Observer, operation, path string) (context.Context, func(err error)) {
+	to, ok := obs.(stats.TraceObserver)
+	if !ok {
+		return ctx, func(error) {}
+	}
+	spanCtx := to.StartSpan(ctx, operation, path)
+	return spanCtx, func(err error) { to.EndSpan(spanCtx, err) }
+}
+
 // ── Capability resolution ───────────────────────────────────────────────
 
 // resolveWire applies core's declared capabilities, returning the
@@ -246,6 +265,8 @@ func readCore[T any](ctx context.Context, backend Backend, core roleCore[T], rou
 	if _, err := runBoundMiddleware(ctx, path, core, nil, nil); err != nil {
 		return zero, err
 	}
+	ctx, endSpan := startSpan(ctx, obs, "file.read", path)
+	defer func() { endSpan(err) }()
 	start := time.Now()
 	data, err := backend.ReadBytes(ctx, path)
 	if err != nil {
@@ -284,33 +305,33 @@ func dispatchRead(ctx context.Context, backend Backend, r any, vars map[string]s
 // ── Create ───────────────────────────────────────────────────────────────
 
 type createDispatcher interface {
-	dispatchCreate(ctx context.Context, backend Backend, val any, vars map[string]string) error
+	dispatchCreate(ctx context.Context, backend Backend, val any, vars map[string]string, opts WriteOptions) (createdDirs []string, err error)
 }
 
-func (c Creator[T]) dispatchCreate(ctx context.Context, backend Backend, val any, vars map[string]string) error {
-	return createCore[T](ctx, backend, c.core, routingInfo{}, val, vars)
+func (c Creator[T]) dispatchCreate(ctx context.Context, backend Backend, val any, vars map[string]string, opts WriteOptions) ([]string, error) {
+	return createCore[T](ctx, backend, c.core, routingInfo{}, val, vars, opts)
 }
-func (h *CreateHandle[T]) dispatchCreate(ctx context.Context, backend Backend, val any, vars map[string]string) error {
-	return createCore[T](ctx, backend, h.core, h.routing, val, vars)
+func (h *CreateHandle[T]) dispatchCreate(ctx context.Context, backend Backend, val any, vars map[string]string, opts WriteOptions) ([]string, error) {
+	return createCore[T](ctx, backend, h.core, h.routing, val, vars, opts)
 }
 
-func createCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, val any, vars map[string]string) (err error) {
+func createCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, val any, vars map[string]string, callerOpts WriteOptions) (createdDirs []string, err error) {
 	defer func() { err = applyErrorPattern(core, err) }()
 	obs := obsFromCtx(ctx)
 	v, ok := val.(T)
 	if !ok {
-		return BackendTypeMismatchError{Expected: typeNameOf[T](), Got: typeName(val)}
+		return nil, BackendTypeMismatchError{Expected: typeNameOf[T](), Got: typeName(val)}
 	}
 	wire, err := resolveWire(core)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := checkAccessMode(wire); err != nil {
-		return err
+		return nil, err
 	}
 	path, err := core.resource.buildPathWithRouting(routing, vars)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	// md (the caller-intended metadata, derived from v's own
 	// metadataMergeFields-tagged fields) is computed BEFORE
@@ -319,19 +340,21 @@ func createCore[T any](ctx context.Context, backend Backend, core roleCore[T], r
 	// Middleware's own doc comment for the full rationale.
 	md, err := deriveWriteMetadata(path, core, v)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	boundOutMD, err := runBoundMiddleware(ctx, path, core, &v, md)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	ctx, endSpan := startSpan(ctx, obs, "file.write", path)
+	defer func() { endSpan(err) }()
 	start := time.Now()
 	data, err := core.resource.format.Marshal(v)
 	if err != nil {
 		recordWrite(obs, path, false, time.Since(start))
-		return FileEncodeError{Path: path, Err: err}
+		return nil, FileEncodeError{Path: path, Err: err}
 	}
-	opts := WriteOptions{}
+	opts := callerOpts
 	if wire.NativePOSIXMode != nil {
 		opts.Perm = *wire.NativePOSIXMode
 	}
@@ -340,37 +363,45 @@ func createCore[T any](ctx context.Context, backend Backend, core roleCore[T], r
 	// collision — it represents a more specific, runtime-computed value
 	// layered on top of the resource's own declared fields.
 	opts.Metadata = mergeMetadata(md, boundOutMD)
-	_, err = backend.WriteBytes(ctx, path, data, opts)
+	createdDirs, err = backend.WriteBytes(ctx, path, data, opts)
 	if err != nil {
 		recordWrite(obs, path, false, time.Since(start))
-		return FileWriteError{Path: path, Err: err}
+		// A Backend already reporting a specific, typed condition (e.g.
+		// Strict + already-exists) is surfaced as-is, not double-wrapped
+		// in FileWriteError — matches ports.File.Write's own Strict
+		// semantics (bare FileAlreadyExistsError, not a wrapped one).
+		var alreadyExists FileAlreadyExistsError
+		if errors.As(err, &alreadyExists) {
+			return createdDirs, alreadyExists
+		}
+		return createdDirs, FileWriteError{Path: path, Err: err}
 	}
 	recordWrite(obs, path, true, time.Since(start))
-	return nil
+	return createdDirs, nil
 }
 
-func dispatchCreate(ctx context.Context, backend Backend, cr any, val any, vars map[string]string) error {
+func dispatchCreate(ctx context.Context, backend Backend, cr any, val any, vars map[string]string, opts WriteOptions) ([]string, error) {
 	v, ok := cr.(createDispatcher)
 	if !ok {
-		return BackendTypeMismatchError{Expected: "file.Creator[T] or *file.CreateHandle[T]", Got: typeName(cr)}
+		return nil, BackendTypeMismatchError{Expected: "file.Creator[T] or *file.CreateHandle[T]", Got: typeName(cr)}
 	}
-	return v.dispatchCreate(ctx, backend, val, vars)
+	return v.dispatchCreate(ctx, backend, val, vars, opts)
 }
 
 // ── Patch ────────────────────────────────────────────────────────────────
 
 type patchDispatcher interface {
-	dispatchPatch(ctx context.Context, backend Backend, patch any, vars map[string]string) error
+	dispatchPatch(ctx context.Context, backend Backend, patch any, vars map[string]string, opts WriteOptions) error
 }
 
-func (p Patcher[T, P]) dispatchPatch(ctx context.Context, backend Backend, patch any, vars map[string]string) error {
-	return patchCore[T, P](ctx, backend, p.core, p.patchCodec, routingInfo{}, patch, vars)
+func (p Patcher[T, P]) dispatchPatch(ctx context.Context, backend Backend, patch any, vars map[string]string, opts WriteOptions) error {
+	return patchCore[T, P](ctx, backend, p.core, p.patchCodec, routingInfo{}, patch, vars, opts)
 }
-func (h *PatchHandle[T, P]) dispatchPatch(ctx context.Context, backend Backend, patch any, vars map[string]string) error {
-	return patchCore[T, P](ctx, backend, h.core, h.patchCodec, h.routing, patch, vars)
+func (h *PatchHandle[T, P]) dispatchPatch(ctx context.Context, backend Backend, patch any, vars map[string]string, opts WriteOptions) error {
+	return patchCore[T, P](ctx, backend, h.core, h.patchCodec, h.routing, patch, vars, opts)
 }
 
-func patchCore[T, P any](ctx context.Context, backend Backend, core roleCore[T], patchCodec codex.Codec[P], routing routingInfo, patch any, vars map[string]string) (err error) {
+func patchCore[T, P any](ctx context.Context, backend Backend, core roleCore[T], patchCodec codex.Codec[P], routing routingInfo, patch any, vars map[string]string, callerOpts WriteOptions) (err error) {
 	defer func() { err = applyErrorPattern(core, err) }()
 	obs := obsFromCtx(ctx)
 	p, ok := patch.(P)
@@ -397,6 +428,8 @@ func patchCore[T, P any](ctx context.Context, backend Backend, core roleCore[T],
 	if err != nil {
 		return err
 	}
+	ctx, endSpan := startSpan(ctx, obs, "file.write", path)
+	defer func() { endSpan(err) }()
 	start := time.Now()
 	intermediate, err := patchCodec.Encode(p)
 	if err != nil {
@@ -434,7 +467,13 @@ func patchCore[T, P any](ctx context.Context, backend Backend, core roleCore[T],
 	// boundOutMD may be non-nil even though In was never populated — a
 	// bound middleware's Fn can still unconditionally compute an Out
 	// value (ignoring In) and declare WithMetadataOut independently.
-	if _, err := backend.WriteBytes(ctx, path, newData, WriteOptions{Metadata: mergeMetadata(md, boundOutMD)}); err != nil {
+	// Patch reuses the caller's own WriteOptions for the write-back step
+	// (Perm/Strict/DryRun) exactly like ports.File.Patch delegating to
+	// File.Write — CreateDirs is harmless-but-moot here since Patch
+	// requires the file to already exist (it just Read it above).
+	writeOpts := callerOpts
+	writeOpts.Metadata = mergeMetadata(md, boundOutMD)
+	if _, err := backend.WriteBytes(ctx, path, newData, writeOpts); err != nil {
 		recordWrite(obs, path, false, time.Since(start))
 		return FileWriteError{Path: path, Err: err}
 	}
@@ -442,28 +481,28 @@ func patchCore[T, P any](ctx context.Context, backend Backend, core roleCore[T],
 	return nil
 }
 
-func dispatchPatch(ctx context.Context, backend Backend, p any, patch any, vars map[string]string) error {
+func dispatchPatch(ctx context.Context, backend Backend, p any, patch any, vars map[string]string, opts WriteOptions) error {
 	v, ok := p.(patchDispatcher)
 	if !ok {
 		return BackendTypeMismatchError{Expected: "file.Patcher[T,P] or *file.PatchHandle[T,P]", Got: typeName(p)}
 	}
-	return v.dispatchPatch(ctx, backend, patch, vars)
+	return v.dispatchPatch(ctx, backend, patch, vars, opts)
 }
 
 // ── Delete ───────────────────────────────────────────────────────────────
 
 type deleteDispatcher interface {
-	dispatchDelete(ctx context.Context, backend Backend, vars map[string]string) (bool, error)
+	dispatchDelete(ctx context.Context, backend Backend, vars map[string]string, opts DeleteOptions) (bool, error)
 }
 
-func (d Deleter[T]) dispatchDelete(ctx context.Context, backend Backend, vars map[string]string) (bool, error) {
-	return deleteCore[T](ctx, backend, d.core, routingInfo{}, vars)
+func (d Deleter[T]) dispatchDelete(ctx context.Context, backend Backend, vars map[string]string, opts DeleteOptions) (bool, error) {
+	return deleteCore[T](ctx, backend, d.core, routingInfo{}, vars, opts)
 }
-func (h *DeleteHandle[T]) dispatchDelete(ctx context.Context, backend Backend, vars map[string]string) (bool, error) {
-	return deleteCore[T](ctx, backend, h.core, h.routing, vars)
+func (h *DeleteHandle[T]) dispatchDelete(ctx context.Context, backend Backend, vars map[string]string, opts DeleteOptions) (bool, error) {
+	return deleteCore[T](ctx, backend, h.core, h.routing, vars, opts)
 }
 
-func deleteCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, vars map[string]string) (existed bool, err error) {
+func deleteCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, vars map[string]string, callerOpts DeleteOptions) (existed bool, err error) {
 	defer func() { err = applyErrorPattern(core, err) }()
 	obs := obsFromCtx(ctx)
 	wire, err := resolveWire(core)
@@ -480,22 +519,31 @@ func deleteCore[T any](ctx context.Context, backend Backend, core roleCore[T], r
 	if _, err := runBoundMiddleware(ctx, path, core, nil, nil); err != nil {
 		return false, err
 	}
+	ctx, endSpan := startSpan(ctx, obs, "file.delete", path)
+	defer func() { endSpan(err) }()
 	start := time.Now()
-	existed, err = backend.DeleteBytes(ctx, path, DeleteOptions{})
+	existed, err = backend.DeleteBytes(ctx, path, callerOpts)
 	if err != nil {
 		recordDelete(obs, path, false, time.Since(start))
+		// callerOpts.Strict + not-found is reported by Backend.DeleteBytes
+		// as its underlying not-found error (not a generic failure) —
+		// surface it as FileNotFoundError, matching ports.File.Delete's
+		// own Strict semantics exactly, not a generic FileDeleteError.
+		if isNotFound(err) {
+			return false, FileNotFoundError{Path: path}
+		}
 		return false, FileDeleteError{Path: path, Err: err}
 	}
 	recordDelete(obs, path, true, time.Since(start))
 	return existed, nil
 }
 
-func dispatchDelete(ctx context.Context, backend Backend, d any, vars map[string]string) (bool, error) {
+func dispatchDelete(ctx context.Context, backend Backend, d any, vars map[string]string, opts DeleteOptions) (bool, error) {
 	v, ok := d.(deleteDispatcher)
 	if !ok {
 		return false, BackendTypeMismatchError{Expected: "file.Deleter[T] or *file.DeleteHandle[T]", Got: typeName(d)}
 	}
-	return v.dispatchDelete(ctx, backend, vars)
+	return v.dispatchDelete(ctx, backend, vars, opts)
 }
 
 // ── List ─────────────────────────────────────────────────────────────────
@@ -521,6 +569,8 @@ func listCore[T any](ctx context.Context, backend Backend, core roleCore[T], rou
 	if _, err := runBoundMiddleware(ctx, path, core, nil, nil); err != nil {
 		return nil, err
 	}
+	ctx, endSpan := startSpan(ctx, obs, "file.list", path)
+	defer func() { endSpan(err) }()
 	start := time.Now()
 	entries, err := backend.ListDir(ctx, path)
 	if err != nil {
@@ -593,6 +643,8 @@ func existsCore[T any](ctx context.Context, backend Backend, core roleCore[T], r
 	if _, err := runBoundMiddleware(ctx, path, core, nil, nil); err != nil {
 		return Entry{}, false, err
 	}
+	ctx, endSpan := startSpan(ctx, obs, "file.exists", path)
+	defer func() { endSpan(err) }()
 	start := time.Now()
 	entry, err = backend.Stat(ctx, path)
 	if err != nil {
@@ -676,6 +728,8 @@ func copyCore[T any](ctx context.Context, backend Backend, core roleCore[T], rou
 	if _, err := runBoundMiddleware(ctx, precheckPath, core, nil, nil); err != nil {
 		return err
 	}
+	ctx, endSpan := startSpan(ctx, obs, "file.copy", precheckPath)
+	defer func() { endSpan(err) }()
 	start := time.Now()
 	srcPath, dstPath, err := copyBytesCore(ctx, backend, core, routing, srcVars, dstVars)
 	recordCopy(obs, srcPath, dstPath, err == nil, time.Since(start))
@@ -732,6 +786,8 @@ func moveCore[T any](ctx context.Context, backend Backend, core roleCore[T], rou
 	if _, err := runBoundMiddleware(ctx, srcPath, core, nil, nil); err != nil {
 		return err
 	}
+	ctx, endSpan := startSpan(ctx, obs, "file.move", srcPath)
+	defer func() { endSpan(err) }()
 
 	if mb, ok := backend.(MovingBackend); ok {
 		err := mb.MoveBytes(ctx, srcPath, dstPath)
@@ -767,17 +823,17 @@ func dispatchMove(ctx context.Context, backend Backend, mv any, srcVars, dstVars
 // ── Mkdir ────────────────────────────────────────────────────────────────
 
 type mkdirDispatcher interface {
-	dispatchMkdir(ctx context.Context, backend Backend, vars map[string]string) (bool, error)
+	dispatchMkdir(ctx context.Context, backend Backend, vars map[string]string, opts MkdirOptions) (bool, error)
 }
 
-func (m MkdirCreator[T]) dispatchMkdir(ctx context.Context, backend Backend, vars map[string]string) (bool, error) {
-	return mkdirCore[T](ctx, backend, m.core, routingInfo{}, vars)
+func (m MkdirCreator[T]) dispatchMkdir(ctx context.Context, backend Backend, vars map[string]string, opts MkdirOptions) (bool, error) {
+	return mkdirCore[T](ctx, backend, m.core, routingInfo{}, vars, opts)
 }
-func (h *MkdirHandle[T]) dispatchMkdir(ctx context.Context, backend Backend, vars map[string]string) (bool, error) {
-	return mkdirCore[T](ctx, backend, h.core, h.routing, vars)
+func (h *MkdirHandle[T]) dispatchMkdir(ctx context.Context, backend Backend, vars map[string]string, opts MkdirOptions) (bool, error) {
+	return mkdirCore[T](ctx, backend, h.core, h.routing, vars, opts)
 }
 
-func mkdirCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, vars map[string]string) (created bool, err error) {
+func mkdirCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, vars map[string]string, callerOpts MkdirOptions) (created bool, err error) {
 	defer func() { err = applyErrorPattern(core, err) }()
 	obs := obsFromCtx(ctx)
 	wire, err := resolveWire(core)
@@ -794,10 +850,12 @@ func mkdirCore[T any](ctx context.Context, backend Backend, core roleCore[T], ro
 	if _, err := runBoundMiddleware(ctx, path, core, nil, nil); err != nil {
 		return false, err
 	}
-	opts := MkdirOptions{}
+	opts := callerOpts
 	if wire.NativePOSIXMode != nil {
 		opts.NativePOSIXMode = wire.NativePOSIXMode
 	}
+	ctx, endSpan := startSpan(ctx, obs, "file.mkdir", path)
+	defer func() { endSpan(err) }()
 	start := time.Now()
 	created, err = backend.Mkdir(ctx, path, opts)
 	if err != nil {
@@ -808,12 +866,12 @@ func mkdirCore[T any](ctx context.Context, backend Backend, core roleCore[T], ro
 	return created, nil
 }
 
-func dispatchMkdir(ctx context.Context, backend Backend, m any, vars map[string]string) (bool, error) {
+func dispatchMkdir(ctx context.Context, backend Backend, m any, vars map[string]string, opts MkdirOptions) (bool, error) {
 	v, ok := m.(mkdirDispatcher)
 	if !ok {
 		return false, BackendTypeMismatchError{Expected: "file.MkdirCreator[T] or *file.MkdirHandle[T]", Got: typeName(m)}
 	}
-	return v.dispatchMkdir(ctx, backend, vars)
+	return v.dispatchMkdir(ctx, backend, vars, opts)
 }
 
 // ── BatchDelete ──────────────────────────────────────────────────────────
@@ -860,6 +918,8 @@ func batchDeleteCore[T any](ctx context.Context, backend Backend, core roleCore[
 	if _, err := runBoundMiddleware(ctx, "", core, nil, nil); err != nil {
 		return nil, err
 	}
+	ctx, endSpan := startSpan(ctx, obs, "file.batchdelete", "")
+	defer func() { endSpan(err) }()
 
 	start := time.Now()
 	if bdb, ok := backend.(BatchDeletingBackend); ok {

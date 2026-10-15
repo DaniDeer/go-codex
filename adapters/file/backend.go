@@ -35,22 +35,59 @@ func (*Backend) ReadBytes(_ context.Context, path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
+// missingParentDirs walks UP from dir, collecting every ancestor
+// directory that does not yet exist, returned in root-to-leaf order —
+// the IDENTICAL multi-level walk [ports.File.Write]'s own
+// (now-unexported, pre-migration) missingParentDirs helper performed,
+// ported here so CreateDirs' createdDirs report EVERY missing level
+// (e.g. 2 entries for a two-level-missing "a/b"), not just the
+// immediate parent.
+func missingParentDirs(dir string) []string {
+	var missing []string
+	cur := dir
+	for {
+		if _, err := os.Stat(cur); err == nil {
+			break // exists already
+		}
+		missing = append(missing, cur)
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			break // reached filesystem root
+		}
+		cur = parent
+	}
+	for i, j := 0, len(missing)-1; i < j; i, j = i+1, j-1 {
+		missing[i], missing[j] = missing[j], missing[i]
+	}
+	return missing
+}
+
 // WriteBytes implements [apifile.Backend].
 func (b *Backend) WriteBytes(ctx context.Context, path string, data []byte, opts apifile.WriteOptions) ([]string, error) {
 	var createdDirs []string
 	if opts.CreateDirs {
 		dir := filepath.Dir(path)
-		if _, err := os.Stat(dir); os.IsNotExist(err) {
+		createdDirs = missingParentDirs(dir)
+		if len(createdDirs) > 0 && !opts.DryRun {
 			perm := opts.DirPerm
 			if perm == 0 {
 				perm = 0755
 			}
-			if !opts.DryRun {
-				if err := os.MkdirAll(dir, perm); err != nil {
-					return nil, err
-				}
+			if err := os.MkdirAll(dir, perm); err != nil {
+				return nil, err
 			}
-			createdDirs = append(createdDirs, dir)
+		}
+	}
+	// Strict is checked even under DryRun — DryRun+Strict against an
+	// existing path still reports FileAlreadyExistsError (it just skips
+	// the actual write), matching ports.File.Write's own identical
+	// DryRun+Strict precedence (see docs/roadmap/file-api.md's Stage F
+	// migration notes for the worked example this fixes).
+	if opts.Strict {
+		if _, err := os.Stat(path); err == nil {
+			return createdDirs, apifile.FileAlreadyExistsError{Path: path}
+		} else if !os.IsNotExist(err) {
+			return createdDirs, err
 		}
 	}
 	if opts.DryRun {
@@ -59,11 +96,6 @@ func (b *Backend) WriteBytes(ctx context.Context, path string, data []byte, opts
 	perm := opts.Perm
 	if perm == 0 {
 		perm = 0644
-	}
-	if opts.Strict {
-		if _, err := os.Stat(path); err == nil {
-			return createdDirs, apifile.FileAlreadyExistsError{Path: path}
-		}
 	}
 	if err := os.WriteFile(path, data, perm); err != nil {
 		return createdDirs, err
@@ -79,11 +111,12 @@ func (b *Backend) WriteBytes(ctx context.Context, path string, data []byte, opts
 // DeleteBytes implements [apifile.Backend].
 func (*Backend) DeleteBytes(_ context.Context, path string, opts apifile.DeleteOptions) (bool, error) {
 	if opts.DryRun {
-		_, err := os.Stat(path)
-		if os.IsNotExist(err) {
-			return false, nil
+		_, statErr := os.Stat(path)
+		existed := statErr == nil
+		if !existed && opts.Strict {
+			return false, os.ErrNotExist
 		}
-		return err == nil, nil
+		return existed, nil
 	}
 	err := os.Remove(path)
 	if err == nil {

@@ -9,6 +9,7 @@ import (
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/internal/middleware"
 	"github.com/DaniDeer/go-codex/internal/route"
+	"github.com/DaniDeer/go-codex/internal/templatematch"
 )
 
 // RouteMiddleware is api/file's public front door onto the shared
@@ -134,7 +135,15 @@ type Resource[T any] struct {
 
 // NewResource creates a Resource descriptor from a path template, a wire
 // format, and optional [PathParam]/[MetadataParam] values.
+//
+// NewResource PANICS if template contains more than one "**" glob
+// segment — see [internal/templatematch.ValidateGlobstarCount] —
+// mirroring [ports.NewFile]'s identical declare-time structural-template
+// safety net.
 func NewResource[T any](template string, f format.Format[T], opts ...ResourceOpt) Resource[T] {
+	if err := templatematch.ValidateGlobstarCount(template); err != nil {
+		panic("api/file: NewResource: " + err.Error())
+	}
 	var rb resourceBuilder
 	for _, opt := range opts {
 		opt.applyResource(&rb)

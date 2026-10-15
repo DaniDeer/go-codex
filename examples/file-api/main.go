@@ -153,10 +153,10 @@ func main() {
 	// 5. Create.
 	alice := map[string]string{"id": "alice"}
 	bob := map[string]string{"id": "bob"}
-	if err := client.Create(ctx, createHandle, Note{Title: "Alice's note", Body: "Hello"}, alice); err != nil {
+	if _, err := client.Create(ctx, createHandle, Note{Title: "Alice's note", Body: "Hello"}, alice); err != nil {
 		log.Fatalf("create alice: %v", err)
 	}
-	if err := client.Create(ctx, createHandle, Note{Title: "Bob's note", Body: "Hi"}, bob); err != nil {
+	if _, err := client.Create(ctx, createHandle, Note{Title: "Bob's note", Body: "Hi"}, bob); err != nil {
 		log.Fatalf("create bob: %v", err)
 	}
 	fmt.Println("created 2 notes")
@@ -182,7 +182,7 @@ func main() {
 
 	// A path variable failing its PathParam.WithCodec constraint never
 	// reaches the backend at all — rejected at path-build time.
-	err = client.Create(ctx, createHandle, Note{Title: "x", Body: "y"}, map[string]string{"id": "Not Valid!"})
+	_, err = client.Create(ctx, createHandle, Note{Title: "x", Body: "y"}, map[string]string{"id": "Not Valid!"})
 	var pathParamErr file.FilePathParamError
 	if errors.As(err, &pathParamErr) {
 		fmt.Println("confirmed: invalid id (\"Not Valid!\") rejected by PathParam.WithCodec(validate.Slug)")

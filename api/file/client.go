@@ -51,6 +51,36 @@ func (c *Client) attachedBackend() (Backend, error) {
 	return c.backend, nil
 }
 
+// ── Variadic per-call options helpers ───────────────────────────────────
+//
+// Create/Patch/Delete/Mkdir accept an OPTIONAL per-call options value
+// (variadic, 0 or 1) rather than a required parameter, so the original
+// zero-opts call shape keeps working unchanged. Only the first value is
+// used; this mirrors the Go stdlib's own "variadic as optional single
+// value" idiom (e.g. [context.WithTimeout]-adjacent patterns) rather
+// than inventing a new convention.
+
+func firstWriteOptions(opts []WriteOptions) WriteOptions {
+	if len(opts) == 0 {
+		return WriteOptions{}
+	}
+	return opts[0]
+}
+
+func firstDeleteOptions(opts []DeleteOptions) DeleteOptions {
+	if len(opts) == 0 {
+		return DeleteOptions{}
+	}
+	return opts[0]
+}
+
+func firstMkdirOptions(opts []MkdirOptions) MkdirOptions {
+	if len(opts) == 0 {
+		return MkdirOptions{}
+	}
+	return opts[0]
+}
+
 // ── Dual-accept dispatch methods ──────────────────────────────────────
 //
 // Every method below is DUAL-ACCEPT: its role parameter accepts EITHER
@@ -74,31 +104,53 @@ func (c *Client) Read(ctx context.Context, r any, vars map[string]string) (any, 
 }
 
 // Create encodes val via the resource's declared codec and writes it.
-func (c *Client) Create(ctx context.Context, cr any, val any, vars map[string]string) error {
+//
+// opts is variadic (0 or 1 value accepted) to stay backward compatible
+// with the original zero-opts signature — pass a [WriteOptions] to
+// control CreateDirs/DirPerm/Strict/DryRun/Perm for this call,
+// exactly like [ports.FileOptions] does for [ports.File.Write]. An
+// attach-time [NativePOSIXMode] Capability, when declared, always wins
+// over opts.Perm (see docs/roadmap/file-api.md's "Capability vs.
+// per-call option precedence").
+//
+// Returns createdDirs — the directories CreateDirs created (or, under
+// DryRun, WOULD create) — mirroring [ports.File.Write]'s identical
+// return shape.
+func (c *Client) Create(ctx context.Context, cr any, val any, vars map[string]string, opts ...WriteOptions) (createdDirs []string, err error) {
 	backend, err := c.attachedBackend()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return dispatchCreate(ctx, backend, cr, val, vars)
+	return dispatchCreate(ctx, backend, cr, val, vars, firstWriteOptions(opts))
 }
 
 // Patch round-trips a partial patch value onto the existing resource.
-func (c *Client) Patch(ctx context.Context, p any, patch any, vars map[string]string) error {
+//
+// opts is variadic (0 or 1 value accepted); its Perm/Strict/DryRun
+// fields are forwarded to the write-back step exactly like
+// [ports.File.Patch] delegating to [ports.File.Write] with the same
+// [ports.FileOptions] — CreateDirs is accepted but has no effect (Patch
+// requires the file to already exist).
+func (c *Client) Patch(ctx context.Context, p any, patch any, vars map[string]string, opts ...WriteOptions) error {
 	backend, err := c.attachedBackend()
 	if err != nil {
 		return err
 	}
-	return dispatchPatch(ctx, backend, p, patch, vars)
+	return dispatchPatch(ctx, backend, p, patch, vars, firstWriteOptions(opts))
 }
 
 // Delete returns existed=false (nil error) for the idempotent "already
 // absent" case.
-func (c *Client) Delete(ctx context.Context, d any, vars map[string]string) (existed bool, err error) {
+//
+// opts is variadic (0 or 1 value accepted) — pass a [DeleteOptions] to
+// set Strict/DryRun for this call, exactly like [ports.FileOptions]
+// does for [ports.File.Delete].
+func (c *Client) Delete(ctx context.Context, d any, vars map[string]string, opts ...DeleteOptions) (existed bool, err error) {
 	backend, err := c.attachedBackend()
 	if err != nil {
 		return false, err
 	}
-	return dispatchDelete(ctx, backend, d, vars)
+	return dispatchDelete(ctx, backend, d, vars, firstDeleteOptions(opts))
 }
 
 // List returns the decoded []T boxed as any.
@@ -140,12 +192,16 @@ func (c *Client) Move(ctx context.Context, mv any, srcVars, dstVars map[string]s
 
 // Mkdir returns created=false (nil error) for the idempotent "already
 // existed" case.
-func (c *Client) Mkdir(ctx context.Context, m any, vars map[string]string) (created bool, err error) {
+//
+// opts is variadic (0 or 1 value accepted) — pass a [MkdirOptions] to
+// set DryRun for this call. An attach-time [NativePOSIXMode] Capability,
+// when declared, always wins over opts.NativePOSIXMode.
+func (c *Client) Mkdir(ctx context.Context, m any, vars map[string]string, opts ...MkdirOptions) (created bool, err error) {
 	backend, err := c.attachedBackend()
 	if err != nil {
 		return false, err
 	}
-	return dispatchMkdir(ctx, backend, m, vars)
+	return dispatchMkdir(ctx, backend, m, vars, firstMkdirOptions(opts))
 }
 
 // BatchDelete mirrors S3's real DeleteObjects — a batch call can

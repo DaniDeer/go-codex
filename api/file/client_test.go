@@ -12,6 +12,7 @@ import (
 	"github.com/DaniDeer/go-codex/api/file"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
+	"github.com/DaniDeer/go-codex/stats"
 )
 
 type record struct {
@@ -49,7 +50,7 @@ func TestClient_ReadCreateDelete_RoundTrip(t *testing.T) {
 	vars := map[string]string{"name": "alice"}
 
 	creator := res.WithCreate(file.Create{})
-	if err := client.Create(ctx, creator, record{Name: "alice", Value: 42}, vars); err != nil {
+	if _, err := client.Create(ctx, creator, record{Name: "alice", Value: 42}, vars); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -110,7 +111,7 @@ func TestClient_List_ReturnsDecodedEntries(t *testing.T) {
 	ctx := context.Background()
 	creator := res.WithCreate(file.Create{})
 	for _, name := range []string{"a", "b"} {
-		if err := client.Create(ctx, creator, record{Name: name, Value: 1}, map[string]string{"name": name}); err != nil {
+		if _, err := client.Create(ctx, creator, record{Name: name, Value: 1}, map[string]string{"name": name}); err != nil {
 			t.Fatalf("Create(%s): %v", name, err)
 		}
 	}
@@ -154,7 +155,7 @@ func TestClient_Exists_PresentReturnsTrue(t *testing.T) {
 	}
 	ctx := context.Background()
 	vars := map[string]string{"name": "bob"}
-	if err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "bob", Value: 1}, vars); err != nil {
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "bob", Value: 1}, vars); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	_, ok, err := client.Exists(ctx, res.WithExists(file.Exists{}), vars)
@@ -176,7 +177,7 @@ func TestClient_Copy_UsesNativeFastPathOnFilesystem(t *testing.T) {
 	ctx := context.Background()
 	srcVars := map[string]string{"name": "src"}
 	dstVars := map[string]string{"name": "dst"}
-	if err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "src", Value: 7}, srcVars); err != nil {
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "src", Value: 7}, srcVars); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if err := client.Copy(ctx, res.WithCopy(file.Copy{}), srcVars, dstVars); err != nil {
@@ -205,7 +206,7 @@ func TestClient_Move_UsesNativeRenameOnFilesystem(t *testing.T) {
 	ctx := context.Background()
 	srcVars := map[string]string{"name": "src2"}
 	dstVars := map[string]string{"name": "dst2"}
-	if err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "src2", Value: 9}, srcVars); err != nil {
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "src2", Value: 9}, srcVars); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if err := client.Move(ctx, res.WithMove(file.Move{}), srcVars, dstVars); err != nil {
@@ -251,7 +252,7 @@ func TestClient_BatchDelete_PartialFailure_ReturnsPerKeyResults(t *testing.T) {
 		t.Fatalf("Attach: %v", err)
 	}
 	ctx := context.Background()
-	if err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "exists", Value: 1}, map[string]string{"name": "exists"}); err != nil {
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "exists", Value: 1}, map[string]string{"name": "exists"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	varsList := []map[string]string{
@@ -282,7 +283,7 @@ func TestClient_Read_AcceptsRawBuilderOrPreBuiltHandle(t *testing.T) {
 	}
 	ctx := context.Background()
 	vars := map[string]string{"name": "dual"}
-	if err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "dual", Value: 5}, vars); err != nil {
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "dual", Value: 5}, vars); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -336,7 +337,7 @@ func TestClient_Create_AccessModeReadOnly_RejectsBeforeBackendCall(t *testing.T)
 		t.Fatalf("Attach: %v", err)
 	}
 	creator := res.WithCreate(file.Create{}).WithCapabilities(file.AccessModeReadOnly)
-	err := client.Create(context.Background(), creator, record{Name: "ro", Value: 1}, map[string]string{"name": "ro"})
+	_, err := client.Create(context.Background(), creator, record{Name: "ro", Value: 1}, map[string]string{"name": "ro"})
 	if err == nil {
 		t.Fatalf("want rejection error for AccessModeReadOnly Create")
 	}
@@ -354,7 +355,7 @@ func TestPatcher_HandlePatch_AppliesPartialUpdate(t *testing.T) {
 	}
 	ctx := context.Background()
 	vars := map[string]string{"name": "patchme"}
-	if err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "patchme", Value: 1}, vars); err != nil {
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "patchme", Value: 1}, vars); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -415,7 +416,7 @@ func TestClient_Metadata_RoundTripsViaMergeField(t *testing.T) {
 	ctx := context.Background()
 	vars := map[string]string{"name": "widget"}
 
-	if err := client.Create(ctx, res.WithCreate(file.Create{}), recordWithOwner{Name: "widget", Value: 1, Owner: "alice"}, vars); err != nil {
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), recordWithOwner{Name: "widget", Value: 1, Owner: "alice"}, vars); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -454,7 +455,7 @@ func TestClient_Metadata_AbsentSidecar_LeavesFieldZeroValue(t *testing.T) {
 	plainRes := file.NewResource[recordWithOwner](filepath.Join(dir, "{name}.json"), format.JSON(recordWithOwnerCodec()),
 		file.PathParam{Name: "name"},
 	)
-	if err := client.Create(ctx, plainRes.WithCreate(file.Create{}), recordWithOwner{Name: "noowner", Value: 2}, vars); err != nil {
+	if _, err := client.Create(ctx, plainRes.WithCreate(file.Create{}), recordWithOwner{Name: "noowner", Value: 2}, vars); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "noowner.json.meta.json")); !os.IsNotExist(err) {
@@ -502,7 +503,7 @@ func TestRouter_Group_PrefixesResourcePath(t *testing.T) {
 	vars := map[string]string{"name": "prefixed"}
 	// Create directly at the UN-prefixed (plain, dir-rooted) path first,
 	// to prove the Router-grouped Read looks in "grouped/" instead.
-	if err := client.Create(ctx, plainRes.WithCreate(file.Create{}), record{Name: "prefixed", Value: 1}, vars); err != nil {
+	if _, err := client.Create(ctx, plainRes.WithCreate(file.Create{}), record{Name: "prefixed", Value: 1}, vars); err != nil {
 		t.Fatalf("Create (unprefixed): %v", err)
 	}
 	if _, err := client.Read(ctx, handle, vars); err == nil {
@@ -518,7 +519,7 @@ func TestRouter_Group_PrefixesResourcePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Handle (create): %v", err)
 	}
-	if err := client.Create(ctx, createHandle, record{Name: "prefixed", Value: 2}, vars); err != nil {
+	if _, err := client.Create(ctx, createHandle, record{Name: "prefixed", Value: 2}, vars); err != nil {
 		t.Fatalf("Create (grouped): %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "grouped", "prefixed.json")); err != nil {
@@ -583,7 +584,7 @@ func TestReader_ReadBoundMW_SecuritySatisfied_Succeeds(t *testing.T) {
 	}
 	ctx := context.Background()
 	vars := map[string]string{"name": "secured"}
-	if err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "secured", Value: 1}, vars); err != nil {
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "secured", Value: 1}, vars); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -612,7 +613,7 @@ func TestReader_ReadBoundMW_SecurityUnmet_RejectsBeforeBackendCall(t *testing.T)
 	}
 	ctx := context.Background()
 	vars := map[string]string{"name": "secured2"}
-	if err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "secured2", Value: 1}, vars); err != nil {
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "secured2", Value: 1}, vars); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -661,7 +662,7 @@ func TestDeleter_DeleteBoundMW_SecurityUnmet_RejectsBeforeBackendCall(t *testing
 	}
 	ctx := context.Background()
 	vars := map[string]string{"name": "delsecured"}
-	if err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "delsecured", Value: 1}, vars); err != nil {
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "delsecured", Value: 1}, vars); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -692,7 +693,7 @@ func TestReader_ReadBoundMW_MultipleAttachments_RunInOrder(t *testing.T) {
 	}
 	ctx := context.Background()
 	vars := map[string]string{"name": "ordered"}
-	if err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "ordered", Value: 1}, vars); err != nil {
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "ordered", Value: 1}, vars); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -805,7 +806,7 @@ func TestLister_MergesPathVarIntoEachEntry(t *testing.T) {
 		// Omit Name from the written JSON body entirely (only Value is
 		// codec-required) - proves the entry's Name comes PURELY from
 		// the merge field, not from the stored bytes.
-		if err := client.Create(ctx, res.WithCreate(file.Create{}), recordWithOwner{Value: 1}, map[string]string{"name": name}); err != nil {
+		if _, err := client.Create(ctx, res.WithCreate(file.Create{}), recordWithOwner{Value: 1}, map[string]string{"name": name}); err != nil {
 			t.Fatalf("Create(%s): %v", name, err)
 		}
 	}
@@ -839,7 +840,7 @@ func TestLister_NonMatchingEntry_ReturnsFilePathMismatchError(t *testing.T) {
 		t.Fatalf("Attach: %v", err)
 	}
 	ctx := context.Background()
-	if err := client.Create(ctx, res.WithCreate(file.Create{}), recordWithOwner{Value: 1}, map[string]string{"name": "ok"}); err != nil {
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), recordWithOwner{Value: 1}, map[string]string{"name": "ok"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	// A stray file with a VALID body (so Unmarshal succeeds first) but an
@@ -866,7 +867,7 @@ func TestLister_NoMergeFieldsDeclared_UnaffectedRegression(t *testing.T) {
 		t.Fatalf("Attach: %v", err)
 	}
 	ctx := context.Background()
-	if err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "plain", Value: 1}, map[string]string{"name": "plain"}); err != nil {
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "plain", Value: 1}, map[string]string{"name": "plain"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	gotAny, err := client.List(ctx, res.WithList(file.List{}), nil)
@@ -913,7 +914,7 @@ func TestBoundCreateMiddleware_MetadataIn_PopulatesInFromIntendedMetadata(t *tes
 		func(m mwMetaIn) string { return m.Owner },
 		func(m *mwMetaIn, v string) { m.Owner = v }))
 	creator := res.WithCreate(file.Create{}).CreateBoundMW(bm)
-	if err := client.Create(ctx, creator, recordWithOwner{Name: "widget", Value: 1, Owner: "alice"}, map[string]string{"name": "widget"}); err != nil {
+	if _, err := client.Create(ctx, creator, recordWithOwner{Name: "widget", Value: 1, Owner: "alice"}, map[string]string{"name": "widget"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	if gotIn.Owner != "alice" {
@@ -946,7 +947,7 @@ func TestBoundCreateMiddleware_MetadataOut_MergesIntoPersistedMetadata(t *testin
 		func(m mwMetaOut) string { return m.Owner },
 		func(m *mwMetaOut, v string) { m.Owner = v }))
 	creator := res.WithCreate(file.Create{}).CreateBoundMW(bm)
-	if err := client.Create(ctx, creator, recordWithOwner{Name: "gadget", Value: 1, Owner: "original-owner"}, map[string]string{"name": "gadget"}); err != nil {
+	if _, err := client.Create(ctx, creator, recordWithOwner{Name: "gadget", Value: 1, Owner: "original-owner"}, map[string]string{"name": "gadget"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -973,7 +974,7 @@ func TestBoundReadMiddleware_MetadataIn_AlwaysZeroValue(t *testing.T) {
 		t.Fatalf("Attach: %v", err)
 	}
 	ctx := context.Background()
-	if err := client.Create(ctx, res.WithCreate(file.Create{}), recordWithOwner{Name: "x", Value: 1, Owner: "bob"}, map[string]string{"name": "x"}); err != nil {
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), recordWithOwner{Name: "x", Value: 1, Owner: "bob"}, map[string]string{"name": "x"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -1016,7 +1017,7 @@ func TestBoundPatchMiddleware_MetadataIn_AlwaysZeroValue(t *testing.T) {
 	}
 	ctx := context.Background()
 	vars := map[string]string{"name": "patchtarget"}
-	if err := client.Create(ctx, res.WithCreate(file.Create{}), recordWithOwner{Name: "patchtarget", Value: 1, Owner: "carol"}, vars); err != nil {
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), recordWithOwner{Name: "patchtarget", Value: 1, Owner: "carol"}, vars); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -1061,7 +1062,7 @@ func TestBoundPatchMiddleware_MetadataOut_MergesIntoPersistedMetadata(t *testing
 	}
 	ctx := context.Background()
 	vars := map[string]string{"name": "patchtarget2"}
-	if err := client.Create(ctx, res.WithCreate(file.Create{}), recordWithOwner{Name: "patchtarget2", Value: 1, Owner: "dave"}, vars); err != nil {
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), recordWithOwner{Name: "patchtarget2", Value: 1, Owner: "dave"}, vars); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -1097,4 +1098,150 @@ func TestBoundPatchMiddleware_MetadataOut_MergesIntoPersistedMetadata(t *testing
 	if got.Value != 42 {
 		t.Fatalf("Value = %d, want 42 (patch itself should still apply normally)", got.Value)
 	}
+}
+
+// ── Stage F0: api/file parity upgrades (TraceObserver, createdDirs,
+// per-call options, error-shape fidelity) ──────────────────────────────
+
+type spanSpy struct {
+	stats.NoopObserver
+	started []string // operation names
+	ended   int
+}
+
+func (s *spanSpy) StartSpan(ctx context.Context, operation, name string) context.Context {
+	s.started = append(s.started, operation)
+	return ctx
+}
+func (s *spanSpy) EndSpan(ctx context.Context, err error) { s.ended++ }
+
+func TestDispatch_TraceObserver_StartsAndEndsSpanPerOperation(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	backend := adapterfile.NewBackend()
+	client := file.NewClient()
+	if err := client.Attach(backend); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	spy := &spanSpy{}
+	ctx := stats.WithObserver(context.Background(), spy)
+	vars := map[string]string{"name": "alice"}
+
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "alice", Value: 1}, vars); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := client.Read(ctx, res.WithRead(file.Read{}), vars); err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if _, err := client.Delete(ctx, res.WithDelete(file.Delete{}), vars); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	wantOps := []string{"file.write", "file.read", "file.delete"}
+	if len(spy.started) != len(wantOps) {
+		t.Fatalf("started spans = %v, want %v", spy.started, wantOps)
+	}
+	for i, op := range wantOps {
+		if spy.started[i] != op {
+			t.Errorf("span[%d] = %q, want %q", i, spy.started[i], op)
+		}
+	}
+	if spy.ended != len(wantOps) {
+		t.Fatalf("ended = %d, want %d", spy.ended, len(wantOps))
+	}
+}
+
+func TestBackend_WriteBytes_CreateDirs_ReportsEveryMissingAncestor(t *testing.T) {
+	dir := t.TempDir()
+	backend := adapterfile.NewBackend()
+	path := filepath.Join(dir, "a", "b", "file.txt")
+	createdDirs, err := backend.WriteBytes(context.Background(), path, []byte("x"), file.WriteOptions{CreateDirs: true})
+	if err != nil {
+		t.Fatalf("WriteBytes: %v", err)
+	}
+	if len(createdDirs) != 2 {
+		t.Fatalf("createdDirs = %v, want 2 entries (a, a/b)", createdDirs)
+	}
+	if createdDirs[0] != filepath.Join(dir, "a") || createdDirs[1] != filepath.Join(dir, "a", "b") {
+		t.Fatalf("createdDirs = %v, want root-to-leaf order", createdDirs)
+	}
+}
+
+func TestClient_Create_PerCallWriteOptions_CreateDirsAndStrict(t *testing.T) {
+	dir := t.TempDir()
+	res := file.NewResource[record](filepath.Join(dir, "sub", "{name}.json"), format.JSON(recordCodec()),
+		file.PathParam{Name: "name"})
+	backend := adapterfile.NewBackend()
+	client := file.NewClient()
+	if err := client.Attach(backend); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	vars := map[string]string{"name": "bob"}
+	creator := res.WithCreate(file.Create{})
+
+	if _, err := client.Create(ctx, creator, record{Name: "bob", Value: 1}, vars, file.WriteOptions{CreateDirs: true}); err != nil {
+		t.Fatalf("Create with CreateDirs: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "sub", "bob.json")); err != nil {
+		t.Fatalf("expected file to exist: %v", err)
+	}
+
+	// Strict: a 2nd Create on the same path must fail with
+	// FileAlreadyExistsError, bare (not wrapped in FileWriteError).
+	_, err := client.Create(ctx, creator, record{Name: "bob", Value: 2}, vars, file.WriteOptions{Strict: true})
+	var existsErr file.FileAlreadyExistsError
+	if !errors.As(err, &existsErr) {
+		t.Fatalf("Create Strict re-create: err = %v, want FileAlreadyExistsError", err)
+	}
+}
+
+func TestClient_Delete_Strict_NotFound_ReturnsFileNotFoundError(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	backend := adapterfile.NewBackend()
+	client := file.NewClient()
+	if err := client.Attach(backend); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	vars := map[string]string{"name": "ghost"}
+
+	_, err := client.Delete(ctx, res.WithDelete(file.Delete{}), vars, file.DeleteOptions{Strict: true})
+	var notFound file.FileNotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("Delete Strict on missing file: err = %v, want FileNotFoundError", err)
+	}
+}
+
+func TestClient_Mkdir_PerCallDryRun(t *testing.T) {
+	dir := t.TempDir()
+	res := file.NewResource[record](filepath.Join(dir, "created"), format.JSON(recordCodec()))
+	backend := adapterfile.NewBackend()
+	client := file.NewClient()
+	if err := client.Attach(backend); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	mkdir := res.WithMkdir(file.Mkdir{})
+
+	created, err := client.Mkdir(ctx, mkdir, nil, file.MkdirOptions{DryRun: true})
+	if err != nil {
+		t.Fatalf("Mkdir DryRun: %v", err)
+	}
+	if !created {
+		t.Fatalf("Mkdir DryRun: created = false, want true (reports what WOULD happen)")
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "created")); !os.IsNotExist(statErr) {
+		t.Fatalf("Mkdir DryRun must NOT actually create the directory")
+	}
+}
+
+func TestNewResource_MultipleGlobstars_Panics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic for multiple ** segments")
+		}
+	}()
+	file.NewResource[record]("a/**/b/**/c", format.JSON(recordCodec()))
 }
