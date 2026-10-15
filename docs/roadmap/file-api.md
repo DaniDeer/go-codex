@@ -1,6 +1,8 @@
 # File API — `api/file`
 
-> **Status:** Design complete — not yet implemented.
+> **Status:** Phase 1 design complete — not yet implemented. Phase 2
+> outlined (full design deferred until Phase 1 ships). Phases 3-4
+> planned. See "Roadmap phases" below for the full picture.
 > [← Back to Roadmap](index.md)
 
 ## Motivation
@@ -31,32 +33,58 @@ SAME declared `Resource[T]` works unchanged whether the concrete storage
 is the local filesystem, S3, or an SMB share, with the backend chosen
 entirely at attach time, never baked into the declaration.
 
-**Refinement round (this revision)**: expanded the verb set by directly
-surveying what Amazon S3's own API provides (`PutObject`/`GetObject`/
-`DeleteObject`/`ListObjectsV2`/`HeadObject`/`CopyObject`), added 4 verbs
-this surfaced that `ports.File` has no equivalent for today (`Exists`/
-`Copy`/`Move`/`Mkdir`), promoted directory creation from an implicit
-`Write` side effect to its own first-class operation, and designed a
-cross-backend permission capability (`AccessMode`) after confirming via
-direct research that POSIX mode bits and Windows/S3 permission models are
-NOT meaningfully unifiable beyond a binary read-only/writable distinction
-— the SAME simplification Go's own `os.Chmod` already makes on Windows.
+**Refinement round 2**: expanded the verb set by directly surveying what
+Amazon S3's own API provides (`PutObject`/`GetObject`/`DeleteObject`/
+`ListObjectsV2`/`HeadObject`/`CopyObject`), added 4 verbs this surfaced
+that `ports.File` has no equivalent for today (`Exists`/`Copy`/`Move`/
+`Mkdir`), promoted directory creation from an implicit `Write` side
+effect to its own first-class operation, and designed a cross-backend
+permission capability (`AccessMode`) after confirming via direct
+research that POSIX mode bits and Windows/S3 permission models are NOT
+meaningfully unifiable beyond a binary read-only/writable distinction —
+the SAME simplification Go's own `os.Chmod` already makes on Windows.
+Refinement round 3 closed 3 major call-time/attach-time API gaps a
+critical review found (see "`file.Client`" below). **Refinement round 4
+(this revision)**: cross-referenced the FULL, authoritative AWS S3 API
+operations list (not just the 6 core ops surveyed in round 2) — found
+one more genuine verb gap (`DeleteObjects`' real batch-delete, closed as
+`BatchDeleter[T]` below) and reorganized the doc's own scope into 4
+explicit phases, tracked in this ONE roadmap doc rather than splitting
+backend-adapter work into separate future docs.
+
+## Roadmap phases
+
+This doc now spans 4 phases — all tracked HERE, not split across
+multiple roadmap docs (a deliberate reversal of round 2's original
+"`adapters/s3`/`adapters/smb` get their own future roadmap doc" call,
+made explicitly this round):
+
+| Phase | Content | Design depth | Status |
+|---|---|---|---|
+| **1** | `api/file` package itself: `Resource[T]` + 10 role builders, `file.Client` (attach+dispatch), `file.Backend` seam, `file.Capability`, Router/Middleware/Observer/ErrorPattern integration, `adapters/file` migration (filesystem backend) | Full Go-signature design (this doc's main body, below) | Design complete — implementation not started |
+| **2** | `adapters/s3`, `adapters/smb` implementations; streaming/chunked I/O; conditional writes (ETag); recursive `WithList` | Outline only (rationale + key design questions per item, NOT full signatures) — full design deliberately deferred until Phase 1 ships and its abstractions are proven against a real implementation | Outlined this round (see "Phase 2" section below) |
+| **3** | Adapt existing examples (`examples/*`) from `ports.File`/`adapters/file` direct usage to the new `api/file.Client` approach | Checklist-level (which examples, what "adapted" means) — necessarily light since Phase 1 isn't implemented yet | Planned (see "Phase 3" section below) |
+| **4** | Promote this roadmap doc to `docs/design/d-NNNN-*.md` (per the `plan-a-new-codex-feature` skill's delete/keep/promote 3-way policy) + sync `.github/instructions/go-codex.instructions.md`, `docs/` pages, and relevant skills | Mechanism named, exact number/content deferred until Phase 1-3 actually ship | Planned (see "Phase 4" section below) |
+
+Phase 1 is this doc's main body (everything through "Open design
+decisions"); Phases 2-4 each get their own dedicated section near the
+end, after "Out of scope."
 
 ## Scope decisions
 
 | In scope (Phase 1) | Out of scope |
 |---|---|
-| New `api/file` package: `Resource[T]` declaration + 9 role builders — Read, Create, Patch, Delete, List, **Exists** (NEW — mirrors S3's `HeadObject`: metadata-only, no body download), **Copy** (NEW — mirrors S3's `CopyObject`: duplicate without a client-side round-trip), **Move**/Rename (NEW — filesystem's atomic `os.Rename`; S3 has no native equivalent, composed from Copy+Delete there), **Mkdir** (NEW — promoted from `WriteOptions.CreateDirs`'s implicit side effect to its own first-class operation) | A genuinely new HTTP-shaped protocol — `api/file` is NOT a network protocol, it has no wire format of its own; "transport" here means storage BACKEND (filesystem/S3/SMB), not a byte-stream protocol |
-| `Update` stays a CLIENT-SIDE-ONLY Read+transform+Write composition (unchanged from the original round) | S3 object versioning, tagging, or fine-grained ACL/grantee modeling — surfaced during the S3 survey but NOT requested; would be inventing API without a driver, flagged only as a possible future extension if a real use case appears |
-| A new `file.Backend` interface — the transparency seam adapters implement, now including `Mkdir`/`Stat`, plus 2 OPTIONAL extension interfaces (`CopyingBackend`/`MovingBackend`) a backend may implement for a native fast path | An actual `adapters/s3`/`adapters/smb` implementation — each gets its OWN future roadmap doc once there's a concrete driver, mirroring `amqp-adapter.md`/`tcp-adapter.md`'s existing precedent; this doc designs the SEAM they will plug into, not the adapters themselves |
-| Migrating `adapters/file` onto the new `Backend` interface (the ONE Phase 1 backend, proving the abstraction against a REAL adapter, not just a design) — including implementing `CopyingBackend`/`MovingBackend` via `io.Copy`/`os.Rename` to prove the optional-fast-path mechanism, not just the required interface | Any change to `adapters/file`'s OWN existing stream-bridge functions (`ScanAdapter`/`WatchAdapter`/`ReadEachAdapter`/etc.) beyond what's needed to also implement `file.Backend` — those keep their existing signatures |
+| New `api/file` package: `Resource[T]` declaration + 10 role builders — Read, Create, Patch, Delete, List, **Exists** (NEW round 2 — mirrors S3's `HeadObject`: metadata-only, no body download), **Copy** (NEW round 2 — mirrors S3's `CopyObject`: duplicate without a client-side round-trip), **Move**/Rename (NEW round 2 — filesystem's atomic `os.Rename`; S3 has no native equivalent for standard buckets, composed from Copy+Delete there — see "Backend semantic differences" for the S3 Express directory-bucket caveat), **Mkdir** (NEW round 2 — promoted from `WriteOptions.CreateDirs`'s implicit side effect to its own first-class operation), **BatchDelete** (NEW round 4 — mirrors S3's real `DeleteObjects`: delete N arbitrary, individually-addressed resources in ONE call, distinct from `ports.Dir.Delete`'s single-directory recursive delete) | A genuinely new HTTP-shaped protocol — `api/file` is NOT a network protocol, it has no wire format of its own; "transport" here means storage BACKEND (filesystem/S3/SMB), not a byte-stream protocol |
+| `Update` stays a CLIENT-SIDE-ONLY Read+transform+Write composition (unchanged from round 1) | `RestoreObject`/`SelectObjectContent`/Object-Lock-Legal-Hold-Retention/Object-Annotations/bucket-level-infra operations — surfaced during the round-4 full-S3-API survey but have NO filesystem/SMB equivalent or operate above the per-Resource level `api/file` targets (see "Out of scope" below for the full breakdown) |
+| A new `file.Backend` interface — the transparency seam adapters implement, now including `Mkdir`/`Stat`, plus 3 OPTIONAL extension interfaces (`CopyingBackend`/`MovingBackend`/`BatchDeletingBackend`, NEW round 4) a backend may implement for a native fast path | Phase 2 (`adapters/s3`/`adapters/smb` implementations, streaming I/O, conditional writes, recursive `WithList`) — tracked in THIS doc's own "Phase 2" section at OUTLINE depth, not designed to the same Go-signature rigor as Phase 1 yet |
+| Migrating `adapters/file` onto the new `Backend` interface (the ONE Phase 1 backend, proving the abstraction against a REAL adapter, not just a design) — including implementing `CopyingBackend`/`MovingBackend` via `io.Copy`/`os.Rename` to prove the optional-fast-path mechanism, not just the required interface. Deliberately NOT implementing `BatchDeletingBackend` on `adapters/file` — a POSIX filesystem has no native batch-delete syscall, so that "implementation" would be the IDENTICAL loop the generic fallback already runs; proven via a fake `Backend` in tests instead, its first REAL implementation arrives with Phase 2's `adapters/s3` | Any change to `adapters/file`'s OWN existing stream-bridge functions (`ScanAdapter`/`WatchAdapter`/`ReadEachAdapter`/etc.) beyond what's needed to also implement `file.Backend` — those keep their existing signatures |
 | A new `file.Capability` sealed interface (mirrors `d-0006`'s established `mqtt5.Capability`/`Apply`/`CheckCapabilityCoverage` mechanism exactly): `AccessMode` (ReadOnly/ReadWrite — the ONE permission concept genuinely portable across filesystem/S3/SMB) + `NativePOSIXMode` (escape hatch, filesystem/SMB-only) | A full POSIX-mode-bits-to-Windows-ACL or POSIX-to-S3-ACL TRANSLATOR — researched directly and confirmed NOT meaningfully achievable: Windows collapses ALL of `os.FileMode` to one bit via Go's own `os.Chmod` (confirmed via Go's stdlib docs), and S3's ACL/bucket-policy model is grantee+action-based, not bit-based at all — there is no lossless translation to invent, only an honest, portable common denominator |
 | `ports.File[T]` becomes a thin wrapper around an `api/file`-declared `Resource[T]` Handle + an attached `file.Backend` — mirrors `ports.SourcePort`/`SinkPort`/`IOPort` wrapping adapters today; `ports.FilePattern`/`*Port.PluginFilePattern` is the EXISTING slot this plugs into (confirmed via code: `ports/pattern.go`'s `FilePattern`, `ports/io_port.go`'s `PluginFilePattern(pattern FilePattern) (File[Resp], error)`) | `ports.Dir`/`DirEntry` — stays EXACTLY as-is (untyped, metadata-only directory enumeration); `Resource[T].WithList` is a new, complementary, TYPED+decoded sibling, not a replacement |
-| **`file.Client` (NEW this revision)** — the attach-time `Backend` wiring (`Attach`, exclusive) AND call-time dispatch (`Read`/`Create`/`Patch`/`Delete`/`List`/`Exists`/`Copy`/`Move`/`Mkdir`) surface, mirroring `events.Client`/`reqreply.Client`'s established `Attach`+reflective-`any`-dispatch shape exactly — closes the gap the first 2 drafting rounds left open (neither specified HOW a Backend gets attached or what a built role Handle exposes to actually run) | A generic, type-safe `Client.Read[T]`-style free-function wrapper around the `any`-typed dispatch methods — deliberately NOT designed, since `reqreply.Client.Call`'s own established convention is a plain caller-side type assertion (`respAny.(T)`), not a generic wrapper; inventing one here would diverge from the precedent this doc otherwise mirrors |
+| `file.Client` — the attach-time `Backend` wiring (`Attach`, exclusive) AND call-time dispatch (`Read`/`Create`/`Patch`/`Delete`/`List`/`Exists`/`Copy`/`Move`/`Mkdir`/`BatchDelete`, the last NEW round 4) surface, mirroring `events.Client`/`reqreply.Client`'s established `Attach`+reflective-`any`-dispatch shape exactly | A generic, type-safe `Client.Read[T]`-style free-function wrapper around the `any`-typed dispatch methods — deliberately NOT designed, since `reqreply.Client.Call`'s own established convention is a plain caller-side type assertion (`respAny.(T)`), not a generic wrapper; inventing one here would diverge from the precedent this doc otherwise mirrors |
 | Router groups (`d-0008`'s "one shape, N packages" pattern) — `api/file` becomes the 4th instance | `d-0008`'s core Router mechanism itself — reused unchanged, only a new "Design decisions — resolved for `api/file`" subsection is added to that doc once this ships |
-| Declarative per-role middleware (`ReadMW`/`CreateMW`/`PatchMW`/`DeleteMW`/`ListMW`/`ExistsMW`/`CopyMW`/`MoveMW`/`MkdirMW` — see "Why verb-specific MW names, not `HandleMW`/`ClientMW`" below) + Security schemes | A NEW security-SCHEME TYPE — reuses `route.SecurityScheme`/`route.SecurityRequirement` unchanged, same as `rest`/`events`/`reqreply` |
+| Declarative per-role middleware (`ReadMW`/`CreateMW`/`PatchMW`/`DeleteMW`/`ListMW`/`ExistsMW`/`CopyMW`/`MoveMW`/`MkdirMW`/`BatchDeleteMW`, the last NEW round 4 — see "Why verb-specific MW names, not `HandleMW`/`ClientMW`" below) + Security schemes | A NEW security-SCHEME TYPE — reuses `route.SecurityScheme`/`route.SecurityRequirement` unchanged, same as `rest`/`events`/`reqreply` |
 | `ErrorPattern` (reusing the established `errors.As` + first-rule-wins + direct/mapped convention) | Inventing a new error-response shape |
-| Observer (`stats.FileObserver`, extended with 5 new methods — see below) | A new top-level `stats.Observer` extension unrelated to file lifecycle |
+| Observer (`stats.FileObserver`, extended with 6 new methods — see below) | A new top-level `stats.Observer` extension unrelated to file lifecycle |
 
 ## Toolchain / dependency decisions
 
@@ -177,25 +205,41 @@ type Move struct{ Summary, Description string }
 // resource's parent directory, mirroring WithList's own derivation.
 func (r Resource[T]) WithMkdir(op Mkdir) MkdirCreator[T]
 type Mkdir struct{ Summary, Description string }
+
+// WithBatchDelete mirrors S3's real DeleteObjects operation (delete up
+// to 1000 individually-addressed keys in ONE request) — added round 4
+// after cross-referencing the FULL S3 API operations list, not just the
+// 6-op core survey. Deliberately DISTINCT from ports.Dir.Delete (which
+// recursively deletes ONE directory's contents matched by ONE path
+// template — unchanged, kept separate): BatchDeleter[T] takes N
+// INDEPENDENTLY addressed path-variable sets, which may not share a
+// common parent directory at all, mirroring DeleteObjects' own
+// arbitrary-key-list shape.
+func (r Resource[T]) WithBatchDelete(op BatchDelete) BatchDeleter[T]
+type BatchDelete struct{ Summary, Description string }
 ```
 
 ### Per-role attachment surface — mirrors `Subscriber[T]`/`Publisher[T]` exactly
 
 Each role type (`Reader[T]`, `Creator[T]`, `Patcher[T,P]`, `Deleter[T]`,
-`Lister[T]`, `Exister[T]`, `Copier[T]`, `Mover[T]`, `MkdirCreator[T]`) is
-independent — a Security requirement on `Deleter` does NOT imply one on
-`Reader`, mirroring how a `Publish.Security` requirement never implies
-one on the SAME channel's `Subscribe` side today. `Mover[T]`'s own
-Security is checked ONCE, covering both the logical read-the-source and
-write-the-destination halves — it does NOT separately re-check
-`Deleter`'s or `Creator`'s own declared Security, since `Move` is its OWN
-declared role with its OWN Security requirement, not a composition of
-two OTHER roles' declarations (a Resource is not required to declare
-`Delete`/`Create` at all to declare `Move`):
+`Lister[T]`, `Exister[T]`, `Copier[T]`, `Mover[T]`, `MkdirCreator[T]`,
+`BatchDeleter[T]`) is independent — a Security requirement on `Deleter`
+does NOT imply one on `Reader`, mirroring how a `Publish.Security`
+requirement never implies one on the SAME channel's `Subscribe` side
+today. `Mover[T]`'s own Security is checked ONCE, covering both the
+logical read-the-source and write-the-destination halves — it does NOT
+separately re-check `Deleter`'s or `Creator`'s own declared Security,
+since `Move` is its OWN declared role with its OWN Security requirement,
+not a composition of two OTHER roles' declarations (a Resource is not
+required to declare `Delete`/`Create` at all to declare `Move`).
+`BatchDeleter[T]`'s own Security is likewise checked ONCE per
+`BatchDelete` call, covering the WHOLE batch — NOT once per individual
+key, since a `BatchDelete` call is one declared role invocation, not N
+separate `Delete` invocations composed together:
 
 ```go
 // Reader[T] — every role type follows this SAME shape; shown once,
-// the other 8 are structurally identical (Patcher[T,P] additionally
+// the other 9 are structurally identical (Patcher[T,P] additionally
 // carries P throughout).
 type Reader[T any] struct{ /* unexported */ }
 
@@ -230,7 +274,7 @@ func (r Reader[T]) Handle(client *Client) (*ReadHandle[T], error)
 
 ### `file.Client` — attach-time `Backend` wiring + call-time dispatch
 
-**Added this revision** — closes a gap the first 2 drafting rounds left
+**Added round 3** — closes a gap the first 2 drafting rounds left
 open: neither round specified HOW a `Backend` actually gets attached, or
 what a built `*ReadHandle[T]` (etc.) exposes to perform the operation.
 Researched the ACTUAL existing pattern first rather than inventing one:
@@ -313,6 +357,27 @@ func (c *Client) Move(ctx context.Context, mv any, srcVars, dstVars map[string]s
 // existed" case — mirrors Backend.Mkdir's own contract exactly (this
 // method is a thin pass-through to it).
 func (c *Client) Mkdir(ctx context.Context, m any, vars map[string]string) (created bool, err error)
+
+// BatchDelete mirrors S3's real DeleteObjects — ADDED round 4 after a
+// full-S3-API-list cross-reference surfaced this gap. UNLIKE every
+// other verb (which is all-or-nothing), a batch call can PARTIALLY
+// fail: BatchDeleteResult carries ONE result per varsList entry,
+// returned IN ORDER, mirroring DeleteObjects' own per-key
+// success/failure response shape. err is non-nil ONLY for a
+// call-level failure (e.g. Security rejection before ANY key is
+// attempted) — a per-key failure lives in its own BatchDeleteResult.Err,
+// never escalated to the call-level err.
+func (c *Client) BatchDelete(ctx context.Context, bd any, varsList []map[string]string) ([]BatchDeleteResult, error)
+
+// BatchDeleteResult is one varsList entry's outcome — Existed mirrors
+// Deleter's own existed-bool idempotent-absence convention; Err is
+// nil for both "deleted" and "already absent," set only for a genuine
+// per-key backend failure.
+type BatchDeleteResult struct {
+    Path    string
+    Existed bool
+    Err     error
+}
 ```
 
 `BackendAlreadyAttachedError`/`NoBackendAttachedError` are new,
@@ -410,7 +475,7 @@ type CopyingBackend interface {
 // matching what a caller would have to do by hand against the raw S3
 // API).
 //
-// Resolved this revision — the fallback's "Copy" half is a full
+// Resolved round 3 — the fallback's "Copy" half is a full
 // 3-LEVEL cascade, reusing Copier[T]'s OWN dispatch-core function
 // directly rather than re-implementing a 2nd copy of its fallback
 // logic: Move tries, in order, (1) MovingBackend.MoveBytes if
@@ -425,6 +490,27 @@ type CopyingBackend interface {
 // reimplements Copy's own fallback decision, it DELEGATES to it.
 type MovingBackend interface {
     MoveBytes(ctx context.Context, srcPath, dstPath string) error
+}
+
+// BatchDeletingBackend is an OPTIONAL extension (ADDED round 4) for a
+// native, single-wire-call batch delete (e.g. S3's real DeleteObjects —
+// up to 1000 keys per request, ONE round trip, with its own per-key
+// success/failure response). Type-asserted by BatchDeleter[T]'s dispatch
+// — mirrors CopyingBackend/MovingBackend's EXACT type-assertion-guard
+// idiom. A Backend NOT implementing this falls back to N SEQUENTIAL
+// DeleteBytes calls (one per varsList entry, each independently
+// collected into its own BatchDeleteResult) — filesystem and (Phase 2)
+// SMB backends both take this fallback, since neither protocol has a
+// genuine batch-delete wire operation; this is the CORRECT, not merely
+// adequate, implementation for them (there is nothing faster to fall
+// back FROM).
+type BatchDeletingBackend interface {
+    // DeleteBytesBatch mirrors DeleteObjects' own per-key result shape
+    // directly — results[i] corresponds to paths[i], IN ORDER. A
+    // non-nil err here is a CALL-LEVEL failure (e.g. the whole request
+    // was rejected) — per-key failures live in results[i].Err, exactly
+    // like Client.BatchDelete's own contract.
+    DeleteBytesBatch(ctx context.Context, paths []string) (results []BatchDeleteResult, err error)
 }
 
 // Entry mirrors ports.DirEntry's existing shape (Name/IsDir/Size/ModTime)
@@ -485,7 +571,7 @@ type Capability interface {
 
 // CapabilityName is an OPTIONAL interface a Capability may additionally
 // implement for CheckCapabilityCoverage/stats.CapabilityObserver
-// purposes — named explicitly this revision (was previously implied but
+// purposes — named explicitly round 3 (was previously implied but
 // unnamed). Mirrors events.CapabilityName EXACTLY: deliberately NOT part
 // of the sealed Capability interface itself, since an external
 // implementer of a future adapter-specific Capability should not be
@@ -560,7 +646,7 @@ func (m NativePOSIXMode) Apply(wire *WireAttributes) (bool, error) {
 }
 ```
 
-**Correction (this revision)**: `events.CheckCapabilityCoverage(topic
+**Correction (round 3)**: `events.CheckCapabilityCoverage(topic
 string, declared []CapabilityRequirement, supplied []any) error` is an
 `api/events`-OWNED function with an events-specific signature (`topic
 string` is baked into it) — `api/file` CANNOT literally call it. What's
@@ -581,14 +667,15 @@ spirit, not in shared code.
 ### Backend semantic differences — documented, not hidden
 
 "Transparent across backends" does NOT mean "identical in every
-respect" — 3 real, acknowledged divergences, each resolved explicitly
+respect" — 4 real, acknowledged divergences, each resolved explicitly
 rather than papered over:
 
 | Operation | Filesystem | S3 | SMB |
 |---|---|---|---|
 | `Mkdir` | Real directory, enforced (`os.MkdirAll`) | NO-OP success — S3 has NO real directories at all; "folders" are a pure key-prefix convention in `ListObjectsV2`'s own delimiter handling, not a backend entity `Mkdir` could meaningfully create | Real directory, enforced (native SMB `MKDIR`) |
-| `Move` | ONE atomic syscall (`os.Rename`) — either fully succeeds or the source is untouched | TWO non-atomic calls (`CopyObject` then `DeleteObject`) — a crash/failure between them can leave BOTH copies present; `api/file`'s dispatch core surfaces this as a DOCUMENTED caveat on `Mover[T]`'s own godoc for any backend lacking `MovingBackend`, never silently | ONE native, typically-atomic protocol operation (SMB2's own rename) |
+| `Move` | ONE atomic syscall (`os.Rename`) — either fully succeeds or the source is untouched | TWO non-atomic calls (`CopyObject` then `DeleteObject`) for STANDARD S3 buckets — a crash/failure between them can leave BOTH copies present; `api/file`'s dispatch core surfaces this as a DOCUMENTED caveat on `Mover[T]`'s own godoc for any backend lacking `MovingBackend`, never silently. **Caveat (found during the round-4 full-API-list cross-reference)**: S3 Express One Zone "directory buckets" (a distinct, less-common bucket type) support a genuinely atomic `RenameObject` operation — Phase 1's `adapters/file`/Phase 2's planned `adapters/s3` do NOT attempt to special-case this rarer bucket type; the blanket "2 non-atomic calls" description remains accurate for the overwhelmingly common STANDARD S3 bucket case this doc targets | ONE native, typically-atomic protocol operation (SMB2's own rename) |
 | Permission granularity | Full POSIX mode bits (`NativePOSIXMode`) honored | `AccessMode` only — enforced at `api/file`'s dispatch level, never translated into an S3 ACL/policy call (explicitly out of scope) | `AccessMode` only in Phase 1 (same reasoning — SMB's native ACL model is as rich as Windows's own, not usefully bit-mappable either) |
+| `BatchDelete` | Generic fallback ONLY — sequential `DeleteBytes` loop; no native batch-delete syscall exists to fall back FROM | NATIVE — S3's real `DeleteObjects` operation deletes up to 1000 keys in ONE wire call, with its own per-key success/failure response (Phase 2's `adapters/s3` is `BatchDeletingBackend`'s first genuine beneficiary) | Generic fallback in Phase 1/2 scope — no native SMB2 batch-delete operation surveyed; same reasoning as filesystem |
 
 `Mkdir`'s S3 no-op in particular means `WriteOptions.CreateDirs=true`
 behaves identically to `CreateDirs=false` on an S3-attached `Resource` —
@@ -620,7 +707,7 @@ field a backend genuinely cannot honor is set to a non-default value AND
 the backend author chose to fail loudly rather than silently no-op (an
 explicit, per-backend, per-option choice — not a core-dispatch decision).
 
-**Added this revision** (alongside `file.Client` above): 3 NEW error
+**Added round 3** (alongside `file.Client` above): 3 NEW error
 types, each a structurally identical sibling of an EXISTING `api/events`
 error — reusing the convention, not the code (same reasoning as the
 `CheckCapabilityCoverage` correction below: each pattern family owns its
@@ -636,23 +723,30 @@ own copy):
   `events.TransportTypeMismatchError`; returned when `val`/`patch`'s
   dynamic type doesn't match the role's declared `T`/`P`.
 
-No further NEW error types needed for the 4 added verbs — `Exists`
+No further NEW error types needed for the 4 round-2 verbs — `Exists`
 reuses `FileNotFoundError`'s ABSENCE of an error (the `(Entry{}, false,
 nil)` case) rather than introducing one; `Copy`/`Move` reuse
 `FileReadError`/`FileWriteError`/`FileDeleteError` for their respective
 halves (whichever actually failed, fast path or fallback); `Mkdir` reuses
 `FileWriteError` (mirrors `ports.File.Write`'s own existing
 `CreateDirs`-failure error type exactly, since `Mkdir` was always
-implicitly part of that error's scope).
+implicitly part of that error's scope). `BatchDelete` (round 4) ALSO
+needs no new type — its CALL-LEVEL `err` reuses whatever role-level
+failure applies (e.g. a Security rejection), and its PER-KEY
+`BatchDeleteResult.Err` reuses `FileDeleteError` exactly like a single
+`Delete` call would, since each batched key is, individually, the same
+operation `Deleter[T]` already performs — only the fan-out/collection
+wrapper (`BatchDeleteResult`) is new, not the underlying failure
+vocabulary.
 
 ## Observer integration
 
 Reuses `stats.FileObserver` (`RecordFileRead`/`RecordFileWrite`/
 `RecordFileDelete`) for Read/Create/Patch/Delete — identical call sites
 to `ports.File`'s existing ones, just now fired from `api/file`'s
-dispatch core instead of inline. The expanded verb set (this revision)
-needs 5 new methods — batched into ONE breaking round rather than 5
-separate ones across future revisions, since `FileObserver` already
+dispatch core instead of inline. The expanded verb set across rounds 2
+and 4 needs 6 new methods total — batched into ONE breaking round rather
+than spread across future revisions, since `FileObserver` already
 accepts this kind of direct, no-separate-extension churn (see
 `RecordFileDelete`'s own precedent):
 
@@ -686,6 +780,13 @@ type FileObserver interface {
     // Backend.Mkdir — success=true for S3's documented no-op case too
     // (a no-op IS the correct, successful outcome there, not a failure).
     RecordFileMkdir(path string, success bool, duration time.Duration)
+    // RecordFileBatchDelete is called ONCE per WithBatchDelete call
+    // (NOT once per key) — mirrors RecordFileList's own
+    // once-per-call-not-once-per-item convention. successCount/
+    // failureCount are derived from the returned []BatchDeleteResult;
+    // a call-level failure (err != nil from Client.BatchDelete) reports
+    // successCount=0, failureCount=len(varsList).
+    RecordFileBatchDelete(paths []string, successCount, failureCount int, duration time.Duration)
 }
 ```
 
@@ -714,10 +815,9 @@ new observer extension needed for either.
   `BoundMiddleware`-style codec-backed attachment (`d-0003`/`d-0007`),
   realized here as `ReadBoundMW`/`CreateBoundMW`/`PatchBoundMW`/
   `DeleteBoundMW`/`ListBoundMW`/`ExistsBoundMW`/`CopyBoundMW`/
-  `MoveBoundMW`/`MkdirBoundMW` (corrected this revision — the original
-  list only named 5 of the 9 roles, missed the 4 added in the
-  verb-expansion round) — one per role, mirroring `SubscribeBoundMW`/
-  `PublishBoundMW`'s existing per-role split. The
+  `MoveBoundMW`/`MkdirBoundMW`/`BatchDeleteBoundMW` (the last added round
+  4, alongside `BatchDeleter[T]`) — one per role, mirroring
+  `SubscribeBoundMW`/`PublishBoundMW`'s existing per-role split. The
   underlying MECHANICS (dispatch, `Satisfies`/`CheckCoverage`,
   `GrantedScopes`) are the SAME shared `internal/middleware` machinery
   every other pattern already uses via its OWN public wrapper — `api/file`
@@ -765,48 +865,184 @@ new observer extension needed for either.
 | `TestClient_Move_FallsBackToCopyingBackendPlusDeleteWhenNoMovingBackend` | A fake `Backend` implementing ONLY `CopyingBackend` (not `MovingBackend`) has `Move` call `CopyBytes` then `DeleteBytes` — proves cascade level 2, delegating to `Copier[T]`'s own fast path rather than reimplementing it |
 | `TestClient_Move_FallsBackToReadWriteDeleteWithNeitherExtension` | A fake `Backend` implementing NEITHER optional extension still succeeds via pure `ReadBytes`+`WriteBytes`+`DeleteBytes` — proves cascade level 3 |
 | `TestFileCheckCapabilityCoverage_MirrorsEventsStructurally` | `file.CheckCapabilityCoverage`'s matching/error-shape behavior is verified independently against its own fixtures — proves it is a genuine, working COPY, not a stale unimplemented reference to `events`'s function |
+| `TestBatchDeleter_Handle_PartialFailure_ReturnsPerKeyResults` | A `varsList` with a mix of existing/absent/permission-denied paths returns ONE `BatchDeleteResult` per entry, IN ORDER, with the call-level `err` staying `nil` |
+| `TestBatchDeleter_UsesNativeBatchDeletingBackendWhenAvailable` | A fake `Backend` ALSO implementing `BatchDeletingBackend` has `DeleteBytesBatch` called ONCE with all paths, never N individual `DeleteBytes` calls |
+| `TestBatchDeleter_FallsBackToSequentialDeleteBytes` | A fake `Backend` NOT implementing `BatchDeletingBackend` gets N individual `DeleteBytes` calls, one per `varsList` entry, each independently collected into its own result |
+| `TestFileObserver_RecordFileBatchDelete_CalledOnceNotPerKey` | `RecordFileBatchDelete` fires exactly once per `BatchDelete` call (mirrors `RecordFileList`'s own once-per-call convention), with correct `successCount`/`failureCount` |
 | `ExampleResource_read` / `ExampleResource_create` / `ExampleResource_copy` | pkg.go.dev-facing worked examples |
 
 ## Files to create
 
 | File | Responsibility |
 |---|---|
-| `api/file/builder.go` | `Resource[T]`, `PathParam`/`MergedPathParam`, `Reader`/`Creator`/`Patcher`/`Deleter`/`Lister`/`Exister`/`Copier`/`Mover`/`MkdirCreator`, `Read`/`Create`/`Patch`/`Delete`/`List`/`Exists`/`Copy`/`Move`/`Mkdir` metadata structs, per-role `*Handle[T]` registry types |
-| `api/file/client.go` (**NEW this revision**) | `Client`/`NewClient`/`ClientOpt`, `Client.Attach(Backend) error` (exclusive attach-time wiring), `Client.Read`/`Create`/`Patch`/`Delete`/`List`/`Exists`/`Copy`/`Move`/`Mkdir` (reflective `any`-typed call-time dispatch) — mirrors `events.Client`/`reqreply.Client`'s established `Attach`+dispatch shape |
-| `api/file/backend.go` | `Backend` interface (incl. `Stat`/`Mkdir`), `CopyingBackend`/`MovingBackend` optional extensions, `Entry`, `WriteOptions`/`DeleteOptions`/`MkdirOptions` |
+| `api/file/builder.go` | `Resource[T]`, `PathParam`/`MergedPathParam`, `Reader`/`Creator`/`Patcher`/`Deleter`/`Lister`/`Exister`/`Copier`/`Mover`/`MkdirCreator`/`BatchDeleter`, `Read`/`Create`/`Patch`/`Delete`/`List`/`Exists`/`Copy`/`Move`/`Mkdir`/`BatchDelete` metadata structs, per-role `*Handle[T]` registry types |
+| `api/file/client.go` | `Client`/`NewClient`/`ClientOpt`, `Client.Attach(Backend) error` (exclusive attach-time wiring), `Client.Read`/`Create`/`Patch`/`Delete`/`List`/`Exists`/`Copy`/`Move`/`Mkdir`/`BatchDelete` (reflective `any`-typed call-time dispatch), `BatchDeleteResult` — mirrors `events.Client`/`reqreply.Client`'s established `Attach`+dispatch shape |
+| `api/file/backend.go` | `Backend` interface (incl. `Stat`/`Mkdir`), `CopyingBackend`/`MovingBackend`/`BatchDeletingBackend` optional extensions, `Entry`, `WriteOptions`/`DeleteOptions`/`MkdirOptions` |
 | `api/file/capability.go` | `Capability`/`CapabilityName`/`CheckCapabilityCoverage`/`WireAttributes`/`AccessMode`/`NativePOSIXMode` — mirrors `adapters/mqtt5/capability.go`+`api/events/capability.go`'s combined shape, one boundary over |
-| `api/file/dispatch.go` | The shared dispatch core every `Client` call-time method delegates to — path build/validate, codec encode/decode, merge-field application, `AccessMode` enforcement, `CopyingBackend`/`MovingBackend` type-assertion-guarded fast paths with generic fallback (incl. `Move`'s 3-level cascade delegating to `Copier[T]`'s own fallback), Observer calls, ErrorPattern dispatch |
+| `api/file/dispatch.go` | The shared dispatch core every `Client` call-time method delegates to — path build/validate, codec encode/decode, merge-field application, `AccessMode` enforcement, `CopyingBackend`/`MovingBackend`/`BatchDeletingBackend` type-assertion-guarded fast paths with generic fallback (incl. `Move`'s 3-level cascade delegating to `Copier[T]`'s own fallback, and `BatchDelete`'s native-vs-sequential-loop fallback), Observer calls, ErrorPattern dispatch |
 | `api/file/errors.go` | Relocated error types (from `ports/file.go`) + `BackendUnsupportedOptionError` + `BackendAlreadyAttachedError`/`NoBackendAttachedError`/`BackendTypeMismatchError` |
 | `api/file/error_pattern.go` | `ErrorPattern[E,B]` — mirrors `rest.ErrorPattern`/`events.ErrorPattern`/`reqreply.ErrorPattern`'s identical shape |
 | `api/file/doc.go` | Package godoc |
-| `adapters/file/backend.go` | `os.*`-backed `file.Backend` implementation, ALSO implementing `CopyingBackend` (`io.Copy`) and `MovingBackend` (`os.Rename`) — new file; existing `binding.go`/`adapter.go` untouched |
+| `adapters/file/backend.go` | `os.*`-backed `file.Backend` implementation, ALSO implementing `CopyingBackend` (`io.Copy`) and `MovingBackend` (`os.Rename`) — a genuine fast path for both. Deliberately does NOT implement `BatchDeletingBackend`: a POSIX filesystem has no native batch-delete syscall, so a filesystem-side "implementation" would be the IDENTICAL sequential loop the generic fallback already runs — pure redundant code with zero benefit. `BatchDeletingBackend`'s interface itself is proven via a fake `Backend` in unit tests (`TestBatchDeleter_UsesNativeBatchDeletingBackendWhenAvailable`); its first REAL implementation arrives with Phase 2's `adapters/s3` (S3's actual `DeleteObjects` wire call) — new file; existing `binding.go`/`adapter.go` untouched |
 | `ports/file.go` | `File[T]`/`Dir` methods rewritten to delegate to an attached `api/file` Handle + `Backend`, instead of calling `os.*` inline; public call signatures UNCHANGED |
 | `ports/pattern.go` | `FilePattern`/`PluginFilePattern` updated to build/bind against the new `api/file.Resource` Handle |
 
-## Out of scope (Phase 2+)
+## Phase 2 — outline (further backends + feature depth)
 
-- `adapters/s3`, `adapters/smb` — each gets its OWN future roadmap doc
-  once there's a concrete driver (mirrors `amqp-adapter.md`/
-  `tcp-adapter.md`'s existing precedent); this doc designs the `Backend`
-  seam they will implement, nothing more.
-- Streaming/chunked reads or writes for very large files — Phase 1's
-  `Backend.ReadBytes`/`WriteBytes` are whole-file, `[]byte`-at-a-time,
-  matching `ports.File`'s own existing all-at-once contract; a future
-  streaming variant (`io.Reader`/`io.Writer`-based) is a separate,
-  larger design question not resolved here.
-- Conditional writes (ETag/If-Match-style optimistic concurrency) — no
-  backend-agnostic concept decided; flagged as a candidate `WriteOptions`
-  field for a future round once a concrete backend (S3 has native ETag
-  support) motivates it.
-- Recursive `WithList` (today's `ports.Dir.List` already supports a
-  recursive mode) — Phase 1's `Lister[T]` is single-level only; recursive
-  listing is a straightforward additive follow-on once Phase 1 ships,
-  deliberately deferred to keep this round's scope bounded.
+**Status: outlined this round, NOT designed to Phase 1's Go-signature
+rigor yet** — per an explicit choice: full design is deferred until
+Phase 1 ships and its abstractions (`Backend`, the 3 optional extension
+interfaces, `Capability`) are proven against a real implementation
+first, rather than designing a 2nd/3rd backend against an UNPROVEN seam.
+This section replaces round 2's original "`adapters/s3`/`adapters/smb`
+get their own future roadmap doc" call — ALL of Phase 2 is now tracked
+in THIS doc, reversed this round.
+
+### `adapters/s3`
+
+The REAL, primary beneficiary of every optional extension interface
+designed in Phase 1: `CopyingBackend.CopyBytes` → `CopyObject` (a true
+server-side copy, zero bytes through the caller — Phase 1's filesystem
+`io.Copy` already avoids a decode/re-encode round-trip but still reads
+every byte through the process; S3's `CopyObject` doesn't even do that);
+`MovingBackend` → deliberately NOT implemented (see "Backend semantic
+differences" — standard S3 buckets have no atomic rename; the 3-level
+`Move` fallback cascade's level 2 output, Copy+Delete, is the CORRECT
+behavior for S3, not a missing feature); `BatchDeletingBackend.
+DeleteBytesBatch` → `DeleteObjects` (the real motivating case for this
+whole interface). Key open design question for the eventual full
+design: how does `AccessMode`'s dispatch-level enforcement (reject
+Write/Delete/Move/Mkdir before any Backend call, per Phase 1's design)
+interact with S3's OWN IAM-level authorization — does a `ReadOnly`
+`AccessMode` additionally verify the attached AWS credentials actually
+lack write permission, or does it trust the declared `Capability`
+unconditionally? Not resolved here.
+
+### `adapters/smb`
+
+Needs its own driver-selection research (Go's SMB client library
+landscape) before a design can begin — not yet investigated. Expected to
+implement `MovingBackend` (SMB2 has a native rename) but NOT
+`BatchDeletingBackend` (no native SMB2 batch-delete surveyed, per
+"Backend semantic differences"). Permission handling is the more
+interesting open question: SMB shares typically inherit the HOST's own
+permission model (Windows ACLs on a Windows-hosted share, POSIX-mapped
+on a Samba-hosted one) — whether `adapters/smb` should attempt BOTH
+`AccessMode` AND a best-effort `NativePOSIXMode` passthrough (for
+Samba-hosted shares specifically) is an open question for the eventual
+full design, not resolved here.
+
+### Streaming/chunked reads and writes
+
+Phase 1's `Backend.ReadBytes`/`WriteBytes` are whole-file, `[]byte`-at-
+a-time, matching `ports.File`'s own existing all-at-once contract — this
+remains correct for Phase 1's target use cases (configuration files,
+small-to-medium records) but doesn't scale to large media/archive
+files. A future `io.Reader`/`io.Writer`-based `Backend` variant (likely
+a SEPARATE optional extension interface, following the SAME
+type-assertion-guard idiom as `CopyingBackend`/`MovingBackend`/
+`BatchDeletingBackend` — a `Backend` not implementing it keeps working
+via whole-file reads) is the likely shape, but the exact interface
+(a single `io.Reader`-returning method vs. a chunked offset/length
+pagination API) is not decided.
+
+### Conditional writes (ETag/If-Match optimistic concurrency)
+
+No backend-agnostic concept decided yet. S3 has native `ETag`/
+`If-Match` support built into `PutObject`/`GetObject`/`CopyObject`;
+filesystem has no native equivalent (would need to be emulated via a
+content hash compared before `WriteBytes`, which is NOT atomic the way
+S3's server-side `If-Match` check is — a real cross-backend semantic
+gap, not just an API-shape question). Likely surfaces as a new
+`WriteOptions.IfMatch *string` field plus a matching optional extension
+interface for backends with a genuine atomic check, but this is a
+bigger design question than the other Phase 2 items and is flagged as
+such, not pre-decided.
+
+### Recursive `WithList`
+
+Today's `ports.Dir.List` already supports a recursive mode — Phase 1's
+`Lister[T]` is single-level only. The most straightforward Phase 2 item:
+likely a `ListOptions{Recursive bool}` parameter on `Client.List`, no new
+`Backend` method needed (composed via repeated `ListDir` calls exactly
+like `ports.Dir.List` already does it) — the lowest-risk, most
+"obviously how it would work" item in this whole section.
+
+## Phase 3 — adapt examples to the new `api/file` approach
+
+**Status: planned, necessarily light since Phase 1 isn't implemented
+yet.** Once Phase 1 ships, every existing example currently using
+`ports.File`/`ports.Dir`/`adapters/file` directly needs review against
+the "Removing an old API" checklist (`plan-a-new-codex-feature` skill) —
+`ports.File[T]`'s public call signatures stay UNCHANGED per this doc's
+own Scope decisions, so most examples should need ZERO changes; any
+example relying on an internal detail (e.g. direct `os.*` error
+matching instead of `errors.As` against `ports.File`'s own typed
+errors) would need updating. A concrete example inventory (which files,
+which patterns) is deferred to when Phase 1 is actually implemented,
+since grepping for `ports.File`/`adapters/file` usage NOW, before any
+code changes, would produce a list that's likely stale by the time
+Phase 3 actually starts.
+
+## Phase 4 — promote to `docs/design/` + sync instructions/skills
+
+**Status: planned, mechanism named, exact content deferred.** Once
+Phases 1-3 ship, this roadmap doc qualifies for the
+`plan-a-new-codex-feature` skill's "Promote to `docs/design/`" outcome
+(not "Delete" — this establishes a pattern `ports`/future adapters are
+expected to follow, the skill's own stated bar for promotion): renumber
+to `docs/design/d-NNNN-file-api-backend-transparency.md` (exact `NNNN`
+assigned at promotion time, per `docs/design/index.md`'s own
+chronological-assignment convention — NOT reserved now, since other
+design docs may be added before this ships), rewrite the `> Status:`
+header to "Implemented — architectural foundation," remove from
+`docs/roadmap/index.md`/`zensical.toml`'s roadmap nav, add to
+`docs/design/index.md` + `zensical.toml`'s `[nav."Design Documents"]`.
+Sync targets: `.github/instructions/go-codex.instructions.md`'s Package
+Structure table (new `api/file` row + `adapters/file`'s updated
+responsibility description), `docs/reference/project-structure.md`,
+`docs/features/`/`docs/guides/` pages for the new package, and a check
+of `add-a-new-adapter`/`plan-a-new-codex-feature` skill cross-references
+for staleness once the pattern has shipped.
+
+## Out of scope (genuinely excluded, not deferred to Phase 2)
+
+Cross-referencing the FULL AWS S3 API operations list (round 4, not just
+the 6-op core survey from round 2) surfaced several object-level
+operations with NO filesystem/SMB equivalent, or that operate ABOVE the
+per-`Resource[T]` level `api/file` targets — these are genuinely
+excluded, not merely deferred:
+
+- `RestoreObject` — a storage-CLASS/tiering concept (restoring from
+  Glacier); no filesystem/SMB equivalent at all.
+- `SelectObjectContent` (S3 Select) — a SQL-like QUERY capability over
+  object content, categorically different from a file I/O verb.
+- Object Lock / Legal Hold / Retention (`Put/GetObjectLegalHold`,
+  `Put/GetObjectRetention`, `Put/GetObjectLockConfiguration`) — a
+  compliance/WORM feature, no filesystem/SMB equivalent.
+- Object Annotations (`Put/Get/DeleteObjectAnnotation`,
+  `ListObjectAnnotations`) — a newer, structured queryable-metadata
+  feature; same exclusion rationale as object tagging (both are
+  metadata-sidecar concepts, not file content/structure operations).
+- Object Tagging (`Put/Get/DeleteObjectTagging`) and fine-grained
+  ACL/grantee modeling (`Put/GetObjectAcl`) — carried over from round 2,
+  unchanged.
+- The entire BUCKET-level configuration family (CORS, lifecycle,
+  replication, encryption-at-rest configuration, logging, notifications,
+  static-website hosting, bucket policy, request-payer, versioning-at-
+  the-bucket-level, analytics/inventory/metrics configuration, S3
+  Express session management, bucket metadata-table configuration) plus
+  S3-infrastructure-specific plumbing (`GetObjectTorrent`,
+  `WriteGetObjectResponse`, `UpdateObjectEncryption`, `CreateSession`) —
+  all operate at the BUCKET or S3-SERVICE level, never the per-Resource
+  level `api/file` is designed around; `api/file` has no concept of "a
+  bucket" at all, by design.
 
 ## Open design decisions
 
-Mostly resolved. One genuinely open item remains from this refinement
-round, flagged rather than silently decided:
+Mostly resolved for Phase 1. Genuinely open items — 1 carried over, plus
+every Phase 2 item is DELIBERATELY left at outline depth (see "Phase 2"
+above for each item's own specific open questions, not repeated here):
 
 - **`MkdirOptions`'s exact field set beyond `NativePOSIXMode`** — e.g.
   whether a `DryRun`-equivalent (mirrors `WriteOptions.DryRun`'s existing
@@ -816,8 +1052,43 @@ round, flagged rather than silently decided:
   for parity with every other verb's option struct, but not pre-decided
   — resolve during Implement mode once the full option-struct shapes are
   drafted together.
+- Phase 2's 5 items each carry their OWN specific open question (S3's
+  `AccessMode`-vs-IAM interaction, `adapters/smb`'s driver/permission
+  choices, the streaming-`Backend`-extension's exact interface shape,
+  conditional-writes' atomicity gap, none for recursive `WithList` which
+  is the lowest-risk item) — see "Phase 2 — outline" above; not resolved
+  here by design, since full Phase 2 design is explicitly deferred until
+  Phase 1 ships.
 
-**Resolved this round** (a dedicated critical review pass found these 3
+**Resolved round 4** (an S3 verb-completeness audit against the FULL,
+authoritative AWS API operations list — not just the round-2 6-op core
+survey):
+
+- **`BatchDeleter[T]`** added as a genuine new Phase 1 verb, mirroring
+  S3's real `DeleteObjects` batch operation — distinct from
+  `ports.Dir.Delete`'s single-directory recursive delete; see
+  "`file.Client`"/"`file.Backend`" above for the full design
+  (`BatchDeletingBackend` optional extension, `BatchDeleteResult`
+  per-key outcome type, 3-level-cascade-shaped Observer method).
+- **Roadmap restructured into 4 phases**, all tracked in this ONE doc —
+  reverses round 2's "`adapters/s3`/`adapters/smb` get their own future
+  roadmap doc" call. Phase 2 (further backends + feature depth) is
+  OUTLINED, not fully designed; Phase 3 (examples) and Phase 4
+  (`docs/design/` promotion + instructions/skills sync) are named and
+  planned, not yet started.
+- **`Move`'s "S3 has no native move" claim caveated**: S3 Express One
+  Zone directory buckets support a genuine atomic `RenameObject` — the
+  blanket claim remains accurate for the overwhelmingly common standard-
+  S3-bucket case this doc targets, but is no longer stated as a
+  universal S3 fact.
+- **"Out of scope" expanded and re-grounded** in the FULL S3 API survey:
+  `RestoreObject`, `SelectObjectContent`, Object Lock/Legal Hold/
+  Retention, and Object Annotations are now named explicitly (previously
+  only a vague "versioning, tagging, ACL" existed), alongside a
+  collective exclusion of the entire bucket-level/S3-infrastructure
+  operation family.
+
+**Resolved round 3** (a dedicated critical review pass found these 3
 gaps — none had been designed in either prior round — plus 4 smaller
 inaccuracies/inconsistencies; all 7 are now fixed above, not merely
 flagged):
@@ -860,7 +1131,7 @@ Everything else resolved via `ask_user` across all 3 rounds (original +
 - Package name: `api/file` (not `api/storage`).
 - `ports.File[T]`'s fate: thin wrapper over the new `Backend` seam, not
   replaced or left untouched.
-- Verb scope (refined this round): Read, Create, Patch, Delete, List,
+- Verb scope (refined round 2, extended round 4 with `BatchDeleter[T]`): Read, Create, Patch, Delete, List,
   Update, Exists, Copy, Move, Mkdir — Update stays a CLIENT-SIDE-ONLY
   Read+transform+Write composition (no new wire verb); Exists/Copy/Move/
   Mkdir are the S3-survey-informed additions, each traced to a specific
