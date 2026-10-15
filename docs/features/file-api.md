@@ -1,6 +1,7 @@
 # File API — `api/file`
 
-> **Status:** Phase 1 partially implemented. The `api/file` package and its
+> **Status:** Phase 1 implemented with full Router + Declarative Middleware
+> parity (matches `api/rest`/`api/events`). The `api/file` package and its
 > `adapters/file.Backend` are fully built, tested, and usable TODAY — but
 > `ports.File`/`ports.Dir` have NOT yet been migrated to delegate onto this
 > stack (that migration remains open; see `docs/roadmap/file-api.md`). Use
@@ -81,6 +82,60 @@ same dual-accept contract `reqreply.Client.Call` uses. Pass a pre-built
 Handle when you need Router-group path composition or extra per-call
 options; pass the bare builder otherwise.
 
+## Router groups
+
+`file.Router` is a genuine value type (mirrors `events.Router`
+method-for-method) composing a path prefix + shared middleware onto any
+number of declared roles:
+
+```go
+rt := file.NewRouter("tenants/acme").
+    Use(authMiddleware).
+    Route(notes.WithRead(file.Read{})).
+    Route(notes.WithCreate(file.Create{}))
+err := rt.Register(client)
+```
+
+Or, when you'd rather build Handles directly (the common case — no
+separate registration step), pass the Router value to `WithRouter` at an
+individual role's own `.Handle` call — the path/middleware composition
+happens at exactly ONE construction point:
+
+```go
+rt := file.NewRouter("tenants/acme")
+readHandle, err := notes.WithRead(file.Read{}).Handle(client, file.WithRouter(rt))
+```
+
+Both are equally valid, coexisting workflows (same precedent as
+`Client.Attach`'s two Attach styles in `adapters/mqtt5`).
+
+## Declarative Middleware
+
+Every role has a `Bound<Role>Middleware` type + `XxxBoundMW(bm any)` attach
+method, genuinely EXECUTED before any Backend call (unlike a plain `.Use()`
+attachment, which is declare-time metadata only). `Read`/`Create`/`Patch`/
+`List` keep a `*T` domain-value parameter; the other 6 roles (no single
+domain value exists for them) drop it:
+
+```go
+type grantedScopes struct {
+    GrantedScopes map[string][]string
+}
+
+bm := file.BoundSecurityReadMiddleware[Note, struct{}, grantedScopes](
+    "apiKey", scheme, []string{"read"},
+    func(ctx context.Context, v *Note, in struct{}) (grantedScopes, error) {
+        return grantedScopes{GrantedScopes: map[string][]string{"apiKey": {"read"}}}, nil
+    },
+)
+reader := notes.WithRead(file.Read{}).ReadBoundMW(bm).WithSecurity(file.SecurityRequirement{"apiKey": {"read"}})
+```
+
+An unmet Security requirement is rejected BEFORE the Backend is ever
+called (`SecurityRejectedError`) — `GrantedScopes` is extracted from the
+bound function's `Out` value via reflection, the same convention
+`api/rest`/`api/events` already use.
+
 ## All 10 verbs
 
 | Verb | Client method | Role builder |
@@ -120,12 +175,59 @@ backend without it falls back to a generic sequential loop automatically).
 A Capability supplied at declare/attach time ALWAYS overrides a conflicting
 per-call `WriteOptions`/`DeleteOptions`/`MkdirOptions` field.
 
+## Declared error responses (ErrorPattern)
+
+`file.ErrorPattern`/`ErrorPatterns[B]` is AUTO-INVOKED on every
+Backend-originated error (the same `errors.As`-matching, first-rule-wins
+convention `api/rest`/`api/events`/`api/reqreply` already use):
+
+```go
+pattern := file.NewMappedErrorPattern(func(e file.FileNotFoundError) (NotFoundResponse, error) {
+    return NotFoundResponse{Code: "NOT_FOUND"}, nil
+})
+patterns := file.Append(file.ErrorPatterns[NotFoundResponse]{}, pattern)
+reader := notes.WithRead(file.Read{}).ErrorPatterns(patterns)
+
+_, err := client.Read(ctx, reader, vars)
+var matched file.ErrorPatternMatchedError
+if errors.As(err, &matched) {
+    resp := matched.Payload.(NotFoundResponse) // {Code: "NOT_FOUND"}
+}
+```
+
+## File metadata (the merge-field axis)
+
+`api/file`'s analogue of REST headers / MQTT User Properties — path vars
+are already fully covered by `PathParam`, so this is the one OTHER "extra
+wire data" axis a `Backend` can carry alongside a resource's own bytes.
+`adapters/file.NewBackend()` implements it via a JSON sidecar file
+(`<path>.meta.json`, stdlib-only):
+
+```go
+notes := file.NewResource[Note]("notes/{id}.json", format.JSON(noteCodec),
+    file.PathParam{Name: "id"},
+    file.NewMetadataParam("owner", codex.String(),
+        func(n Note) string { return n.Owner },
+        func(n *Note, v string) { n.Owner = v }),
+)
+```
+
+`Owner` is decoded from the backend's stored metadata on every `Read`/
+`List`, and encoded back into metadata on every `Create`/`Patch` —
+entirely automatic once declared.
+
 ## Further reading
 
 - `docs/roadmap/file-api.md` — the full design document (Phase 1 design,
   Phase 2 outline, Phase 3/4 plan) and the authoritative source for this
   package's complete API surface.
 - [Protocol-Native Capabilities](capabilities.md)
+- [Declarative Router Groups](router-groups.md)
+- [Codec-Declared Middleware](codec-declared-middleware.md)
 - [Metrics Observer](observer.md) — `stats.FileObserver`'s new
   `RecordFileList`/`RecordFileExists`/`RecordFileCopy`/`RecordFileMove`/
   `RecordFileMkdir`/`RecordFileBatchDelete` methods
+- `api/file/filetest` — the API-defined conformance-test suite (mirrors
+  `api/rest/resttest`/`api/events/eventstest`/`api/reqreply/reqreplytest`)
+  any `file.Backend` implementation can run its 7 canonical scenarios
+  against; see `adapters/file/conformance_test.go` for a worked example.

@@ -1,24 +1,39 @@
 # File API — `api/file`
 
-> **Status:** Phase 1 PARTIALLY IMPLEMENTED. The `api/file` package (all 10
-> roles, `Client`, dual-accept dispatch, `Capability` model, `ErrorPattern`,
-> Observer integration) and `adapters/file.Backend` (the filesystem
-> implementation, including `CopyingBackend`/`MovingBackend` fast paths) are
-> fully built and tested — see `docs/features/file-api.md` and
-> `examples/file-api/main.go`. **NOT yet done**: migrating `ports.File[T]`/
-> `ports.Dir`/`ports/pattern.go`'s existing `os.*`-calling code to delegate
-> onto this new stack — that is a separate, higher-risk follow-up (the
-> existing `ports.File`/`adapters/file` functions continue to work exactly
-> as before, UNCHANGED, in the meantime). Two documented Phase 1 scope
-> reductions vs. the design below: (1) Router-group integration is a
-> SIMPLIFIED plain-prefix mechanism (`router.go`'s `WithRouter(prefix)`),
-> not yet the full `internal/router.Routable[Target]` integration
-> `api/rest`/`api/events`/`api/reqreply` use; (2) `ErrorPattern[E,B]` is
-> implemented but NOT auto-invoked by the dispatch core (unlike
-> `rest`/`events`/`reqreply`'s `ErrorPattern`, which IS auto-consulted).
-> Phase 2 outlined (full design deferred until Phase 1's ports migration
-> ships). Phases 3-4 planned. See "Roadmap phases" below for the full
-> picture.
+> **Status:** Phase 1 IMPLEMENTED WITH FULL ROUTER + DECLARATIVE MIDDLEWARE
+> PARITY (a dedicated round closed both of this doc's own named Phase 1
+> scope reductions). The `api/file` package now has: all 10 roles, `Client`
+> dual-accept dispatch, the `Capability` model, `ErrorPattern` — now
+> **AUTO-INVOKED** by the dispatch core (matches `rest`/`events`/`reqreply`
+> exactly, closing the scope reduction this doc previously noted) —
+> Observer integration, a genuine **`file.Router`** value type (mirrors
+> `events.Router` method-for-method; all 10 roles implement
+> `internal/router.Routable[*Client]`, closing the OTHER previously-noted
+> scope reduction), full **Declarative Middleware** (`Bound<Role>Middleware`
+> per role + `XxxBoundMW` attach methods, genuinely executed via
+> `runBoundMiddleware` before every Backend call, with real
+> Security/GrantedScopes dispatch), and a NEW **file-metadata merge-field
+> axis** (`MetadataBackend`/`MetadataParam`/`MergedMetadataParam[T]` — the
+> "extra wire data" axis BoundMiddleware's `In`/`Out` draws from, since path
+> vars are already fully covered by `PathParam`). `adapters/file.Backend`
+> (the filesystem implementation, including `CopyingBackend`/
+> `MovingBackend`/`MetadataBackend` fast/real paths) is fully built and
+> tested. A new 5th API-defined conformance-test package,
+> `api/file/filetest` (mirrors `resttest`/`eventstest`/`reqreplytest`'s
+> 7-scenario taxonomy), is wired into `adapters/file` and caught 2 real,
+> previously-undetected bugs along the way (see "Open design decisions").
+> See `docs/features/file-api.md` and `examples/file-api/main.go` for the
+> full, updated worked example.
+>
+> **NOT yet done**: migrating `ports.File[T]`/`ports.Dir`/
+> `ports/pattern.go`'s existing `os.*`-calling code to delegate onto this
+> new stack — that remains a separate, higher-risk follow-up (the existing
+> `ports.File`/`adapters/file` functions continue to work exactly as
+> before, UNCHANGED, in the meantime). BoundMiddleware's `In`/`Out` is NOT
+> yet integrated with the new metadata axis (a genuine ordering conflict —
+> see "Open design decisions"). Phase 2 outlined (full design deferred
+> until Phase 1's ports migration ships). Phases 3-4 planned. See "Roadmap
+> phases" below for the full picture.
 > [← Back to Roadmap](index.md)
 
 ## Motivation
@@ -1213,18 +1228,44 @@ excluded, not merely deferred:
 
 ## Open design decisions
 
-Mostly resolved for Phase 1. Genuinely open items — 1 carried over, plus
-every Phase 2 item is DELIBERATELY left at outline depth (see "Phase 2"
-above for each item's own specific open questions, not repeated here):
+Mostly resolved for Phase 1. Genuinely open items — 2 carried over
+(1 pre-existing + 1 new from this round), plus every Phase 2 item is
+DELIBERATELY left at outline depth (see "Phase 2" above for each item's
+own specific open questions, not repeated here):
 
-- **`MkdirOptions`'s exact field set beyond `NativePOSIXMode`** — e.g.
-  whether a `DryRun`-equivalent (mirrors `WriteOptions.DryRun`'s existing
-  "report what would happen" contract) is worth adding to `Mkdir`
-  directly, versus relying on `WithMkdir`'s caller composing their own
-  dry-run check via `WithExists` first. Leaning toward adding `DryRun`
-  for parity with every other verb's option struct, but not pre-decided
-  — resolve during Implement mode once the full option-struct shapes are
-  drafted together.
+- **`MkdirOptions`'s exact field set beyond `NativePOSIXMode`** —
+  RESOLVED during implementation: `DryRun` was added, for parity with
+  every other verb's option struct.
+- **BoundMiddleware's `In`/`Out` has NO metadata-merge-field
+  integration yet** (new this round) — investigated a genuine ordering
+  conflict: `Read`/`List`'s stored metadata is only available AFTER the
+  `Backend` call that decodes the resource, but the Security gate (via
+  `runBoundMiddleware`) must run BEFORE any `Backend` call (the
+  established "fail before backend" convention `Capability` already
+  set). Rather than ship a `WithMetadataIn`/`WithMetadataOut` that
+  silently never actually populates `In` for `Read`/`List`, this was
+  left explicitly unimplemented — `Middleware[In,Out]`'s own doc comment
+  documents the investigation. The metadata axis ITSELF (storage,
+  `MetadataParam`/`MergedPathParam`-style merge into `Resource[T]`
+  directly) is fully shipped and working; only its INTEGRATION into
+  BoundMiddleware is open. A future round could resolve this by, e.g.,
+  restricting metadata-merge-field `In` population to roles where the
+  domain value already exists pre-dispatch (`Create`/`Patch`), while
+  leaving `Read`/`List` BoundMiddleware's `In` always zero-valued (a
+  documented, permanent asymmetry) — or by moving the Security gate for
+  `Read`/`List` to run AFTER decode instead (a bigger, more invasive
+  change to the "fail before backend" convention, not recommended
+  without a concrete driving use case).
+- **`List`'s own path-var merge field support** (new this round) — this
+  round fixed `Read`'s `MergedPathParam` dispatch-wiring gap (it was
+  declared but never actually consumed — see the conformance-suite
+  bullet below), but deliberately scoped the fix to `Read` only. `List`
+  enumerates a PARENT directory using the caller's own vars (which
+  address that directory, not any one discovered entry) — merging a
+  path var into each list entry's own `T` would require MATCHING each
+  discovered child path back against the resource's template (extracting
+  that entry's OWN id/etc.), a genuinely different, not-yet-designed
+  mechanism. Tracked as a named follow-up.
 - Phase 2's 5 items each carry their OWN specific open question (S3's
   `AccessMode`-vs-IAM interaction, `adapters/smb`'s driver/permission
   choices, the streaming-`Backend`-extension's exact interface shape,
@@ -1232,6 +1273,96 @@ above for each item's own specific open questions, not repeated here):
   is the lowest-risk item) — see "Phase 2 — outline" above; not resolved
   here by design, since full Phase 2 design is explicitly deferred until
   Phase 1 ships.
+
+**Resolved round 6** (a dedicated "full Router + Declarative Middleware
+parity" implementation round, closing this doc's own previously-named
+Phase 1 scope reductions):
+
+- **`file.Router`** upgraded from a simplified plain-string-prefix
+  mechanism to a genuine value type (`Router{inner router.Router[*Client]}`),
+  mirroring `events.Router` method-for-method (`NewRouter`/`.Use`/`.Tags`/
+  `.With`/`.Route`/`.Mount`/`.Group`/`.Walk`/`.Routes`/`.Register`). All
+  10 roles implement `internal/router.Routable[*Client]`
+  (`WithRouterPrefix`/`MiddlewareNames`/`RouteTags`/`RegisterAny`) +
+  `router.MethodReporter` (`RouteMethod`). `RegisterAny`'s per-role
+  implementation performs the closest faithful equivalent to REST/events'
+  real spec-registration step (which `api/file` has no analogue of): a
+  fail-fast Capability-coverage check via `.Handle`, discarding the
+  handle. TWO coexisting workflows now exist (mirrors `Client.Attach`'s
+  own "two valid Attach workflows" precedent): `Router.Route(leaf)` N
+  times + `Router.Register(client)` once; or passing a `Router` value to
+  `WithRouter` at an individual role's own `.Handle(client,
+  file.WithRouter(rt))` call. `WithRouter`'s signature changed from
+  `WithRouter(prefix string)` to `WithRouter(rt Router)` — a safe,
+  in-flight break (no external consumers existed yet).
+- **Declarative Middleware** — implemented for real, for all 10 roles:
+  `file.Middleware[In,Out]` (embeds `middleware.Declaration`) +
+  `Declaration[In,Out]`/`NewDeclaration` public aliases (per the "an
+  `internal/*` type needs a per-pattern public alias" mandatory
+  requirement) + 10 `Bound<Role>Middleware[T,In,Out]` types (`Read`/
+  `Create`/`Patch`/`List` keep a `*T` parameter — a natural domain value
+  exists; `Delete`/`Exists`/`Copy`/`Move`/`Mkdir`/`BatchDelete` drop it —
+  no single domain value exists for these 6, a well-justified adaptation)
+  + matching `BoundSecurity<Role>Middleware` constructors (GrantedScopes
+  extracted via reflection, the SAME convention `rest`/`events` already
+  use) + per-role `XxxBoundMW(bm any)` attach methods. Genuinely
+  EXECUTED via a new `runBoundMiddleware` helper, called BEFORE any
+  Backend call by all 10 dispatch-core functions — a declared Security
+  requirement unmet by the collected GrantedScopes now actually rejects
+  the call (`SecurityRejectedError`), proven via a real test asserting
+  the Backend was never invoked. Caught and fixed a real bug along the
+  way: a "witness method" bug class already documented in
+  `internal/middleware/bound.go`'s `BoundContributor` doc comment — the
+  4 T-carrying role-shape interfaces needed a deliberate
+  `boundTWitness(T)` no-op method to make T appear in a method
+  SIGNATURE, otherwise EVERY `Bound<Role>Middleware[X,...]` satisfied
+  the shape for ANY T.
+- **`file.ErrorPattern`/`ErrorPatterns[B]` is now AUTO-INVOKED** by the
+  dispatch core on every Backend-originated error (closing this doc's
+  own previously-named scope reduction) — a match wraps the error in a
+  new `ErrorPatternMatchedError{Payload any, Err error}`, `errors.As`-
+  navigable back to the original (additive, not a replacement). Attached
+  per-role via a new `.ErrorPatterns(patterns any)` method.
+- **A NEW file-metadata merge-field axis** was added — `api/file`'s
+  analogue of REST headers / MQTT User Properties, since path vars are
+  already fully covered by `PathParam`/`MergedPathParam` and file
+  genuinely had no OTHER "extra wire data" axis to extract a
+  BoundMiddleware's `In` from. Grounded choice: a JSON SIDECAR file
+  (`<path>.meta.json`), NOT real OS extended attributes — keeps Phase
+  1's "stdlib only" toolchain decision intact and is arguably a closer
+  analogue to S3's own "metadata lives beside the object, not inside
+  it" model than real xattrs would be. New `MetadataBackend` optional
+  extension interface (`ReadMetadata`/`WriteMetadata`, mirrors
+  `CopyingBackend`/`MovingBackend`'s exact idiom), `MetadataParam`/
+  `MergedMetadataParam[T]`/`NewMetadataParam` (mirrors `PathParam`/
+  `MergedPathParam` exactly), `Entry.Metadata`/`WriteOptions.Metadata`
+  fields, `Resource[T].metadataMergeFields` wired into `Read`/`List`/
+  `Create`/`Patch` via the existing `codex.DecodeVars`/`EncodeVars`
+  machinery. NOT (yet) integrated into BoundMiddleware's own `In`/`Out`
+  — see the new "Open design decisions" bullet above for why.
+- **New 5th conformance-test package, `api/file/filetest`** (D-0010
+  alignment) — mirrors `resttest`/`eventstest`/`reqreplytest`'s
+  established 7-scenario taxonomy, parameterized over a `file.Backend`.
+  Wired into `adapters/file`'s new `conformance_test.go` as the real,
+  independent proof. Writing it caught 2 real, previously-undetected
+  bugs: `MergedPathParam`'s "decode extracted path vars directly into
+  T" promise was declared (`Resource[T].mergeFields` existed, built via
+  `NewPathParam`) but NEVER actually wired into dispatch — fixed via a
+  new `applyPathMergeFields` helper in `readCore` (see the "List's own
+  path-var merge field support" bullet above for the scope boundary);
+  and `CapabilityCoverageError`'s pointer-receiver `Error()` method (a
+  correct, pre-existing design — just an easy-to-get-wrong `errors.As`
+  call-site detail in the new conformance helper itself).
+- **Dispatch-core consolidation** (D-0010's OTHER main theme) was
+  checked and found ALREADY satisfied: `api/file/dispatch.go` is
+  already the one and only dispatch core — only `adapters/file`
+  consumes it today (no N-way per-backend duplication exists yet), so
+  no `restdispatch`-style extraction was needed.
+- `examples/file-api/main.go` rewritten end-to-end: the Router
+  mechanism replaces manual `filepath.Join` entirely, and a genuine
+  Security-gated `BoundReadMiddleware` demo proves the mechanism live
+  (a Note value returned as a properly-typed Go struct, asserted once
+  into a named variable).
 
 **Resolved round 5** (a critical pre-implementation consistency review
 of Phase 1's ENTIRE design, done explicitly BEFORE planning Phase 1's
