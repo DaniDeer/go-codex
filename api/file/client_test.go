@@ -786,3 +786,94 @@ func TestReader_ErrorPatterns_NoMatch_ReturnsOriginalErrorUnchanged(t *testing.T
 		t.Fatalf("want plain FileNotFoundError, got %v (%T)", err, err)
 	}
 }
+
+// ── List path-var merge field ────────────────────────────────────────────
+
+func TestLister_MergesPathVarIntoEachEntry(t *testing.T) {
+	dir := t.TempDir()
+	res := file.NewResource[recordWithOwner](filepath.Join(dir, "{name}.json"), format.JSON(recordWithOwnerCodec()),
+		file.NewPathParam("name", codex.String(),
+			func(r recordWithOwner) string { return r.Name },
+			func(r *recordWithOwner, v string) { r.Name = v }),
+	)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	for _, name := range []string{"first", "second"} {
+		// Omit Name from the written JSON body entirely (only Value is
+		// codec-required) - proves the entry's Name comes PURELY from
+		// the merge field, not from the stored bytes.
+		if err := client.Create(ctx, res.WithCreate(file.Create{}), recordWithOwner{Value: 1}, map[string]string{"name": name}); err != nil {
+			t.Fatalf("Create(%s): %v", name, err)
+		}
+	}
+
+	gotAny, err := client.List(ctx, res.WithList(file.List{}), nil)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	got := gotAny.([]recordWithOwner)
+	if len(got) != 2 {
+		t.Fatalf("List: want 2 entries, got %d", len(got))
+	}
+	names := map[string]bool{}
+	for _, r := range got {
+		names[r.Name] = true
+	}
+	if !names["first"] || !names["second"] {
+		t.Fatalf("List: want Name merged in from each entry's filename, got %+v", got)
+	}
+}
+
+func TestLister_NonMatchingEntry_ReturnsFilePathMismatchError(t *testing.T) {
+	dir := t.TempDir()
+	res := file.NewResource[recordWithOwner](filepath.Join(dir, "{name}.json"), format.JSON(recordWithOwnerCodec()),
+		file.NewPathParam("name", codex.String(),
+			func(r recordWithOwner) string { return r.Name },
+			func(r *recordWithOwner, v string) { r.Name = v }),
+	)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	if err := client.Create(ctx, res.WithCreate(file.Create{}), recordWithOwner{Value: 1}, map[string]string{"name": "ok"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// A stray file with a VALID body (so Unmarshal succeeds first) but an
+	// extension that genuinely does not match the template's literal
+	// ".json" suffix — "{name}.json"'s regex requires a literal ".json"
+	// ending, so "stray.txt" (no .json at all) cannot match under ANY
+	// name value, surfacing the path-mismatch this test proves.
+	if err := os.WriteFile(filepath.Join(dir, "stray.txt"), []byte(`{"name":"x","value":5}`), 0644); err != nil {
+		t.Fatalf("write stray file: %v", err)
+	}
+
+	_, err := client.List(ctx, res.WithList(file.List{}), nil)
+	var mismatch file.FilePathMismatchError
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("want FilePathMismatchError, got %v (%T)", err, err)
+	}
+}
+
+func TestLister_NoMergeFieldsDeclared_UnaffectedRegression(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	if err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "plain", Value: 1}, map[string]string{"name": "plain"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	gotAny, err := client.List(ctx, res.WithList(file.List{}), nil)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(gotAny.([]record)) != 1 {
+		t.Fatalf("List: want 1 entry, got %+v", gotAny)
+	}
+}

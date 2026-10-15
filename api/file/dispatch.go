@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path"
 	"time"
 
 	"github.com/DaniDeer/go-codex/codex"
@@ -120,6 +121,38 @@ func applyPathMergeFields[T any](vars map[string]string, core roleCore[T], v *T)
 		return nil
 	}
 	return codex.DecodeVars(v, vars, core.resource.mergeFields...)
+}
+
+// entryListVars extends vars (the caller's own PARENT-directory vars)
+// with the per-entry vars extracted by matching entryName against the
+// resource's own FINAL path-template segment (e.g. "{id}.json") — the
+// mechanism List needs to resolve MergedPathParam per DISCOVERED entry,
+// since (unlike Read/Create) List's caller-supplied vars address the
+// parent directory, not any one entry. A complete no-op (vars returned
+// unchanged, nil error) when core.resource has no mergeFields declared —
+// the common case today, zero overhead.
+//
+// Entry-specific vars win over the caller's own on a key collision
+// (more specific — mirrors every other "more specific wins" convention
+// already established in this package, e.g. Capability-overrides-option
+// precedence).
+func entryListVars[T any](routing routingInfo, core roleCore[T], vars map[string]string, entryName string) (map[string]string, error) {
+	if len(core.resource.mergeFields) == 0 {
+		return vars, nil
+	}
+	fileTemplate := path.Base(routing.resolvedTemplate(core.resource.template))
+	entryVars, err := matchFileTemplate(fileTemplate, entryName)
+	if err != nil {
+		return nil, err
+	}
+	merged := make(map[string]string, len(vars)+len(entryVars))
+	for k, v := range vars {
+		merged[k] = v
+	}
+	for k, v := range entryVars {
+		merged[k] = v
+	}
+	return merged, nil
 }
 
 // ── Metadata merge (the file-metadata axis — see MetadataBackend's doc
@@ -468,6 +501,15 @@ func listCore[T any](ctx context.Context, backend Backend, core roleCore[T], rou
 		if err != nil {
 			recordList(obs, path, false, len(out), time.Since(start))
 			return nil, FileDecodeError{Path: childPath, Err: err}
+		}
+		entryVars, err := entryListVars(routing, core, vars, e.Name)
+		if err != nil {
+			recordList(obs, path, false, len(out), time.Since(start))
+			return nil, err
+		}
+		if err := applyPathMergeFields(entryVars, core, &v); err != nil {
+			recordList(obs, path, false, len(out), time.Since(start))
+			return nil, err
 		}
 		if err := applyMetadataMergeFields(ctx, backend, childPath, core, &v); err != nil {
 			recordList(obs, path, false, len(out), time.Since(start))
