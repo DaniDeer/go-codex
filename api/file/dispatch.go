@@ -163,7 +163,8 @@ func (h *ReadHandle[T]) dispatchRead(ctx context.Context, backend Backend, vars 
 	return readCore[T](ctx, backend, h.core, h.routing, vars)
 }
 
-func readCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, vars map[string]string) (any, error) {
+func readCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, vars map[string]string) (result any, err error) {
+	defer func() { err = applyErrorPattern(core, err) }()
 	var zero T
 	obs := obsFromCtx(ctx)
 	path, err := core.resource.buildPathWithRouting(routing, vars)
@@ -217,7 +218,8 @@ func (h *CreateHandle[T]) dispatchCreate(ctx context.Context, backend Backend, v
 	return createCore[T](ctx, backend, h.core, h.routing, val, vars)
 }
 
-func createCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, val any, vars map[string]string) error {
+func createCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, val any, vars map[string]string) (err error) {
+	defer func() { err = applyErrorPattern(core, err) }()
 	obs := obsFromCtx(ctx)
 	v, ok := val.(T)
 	if !ok {
@@ -283,7 +285,8 @@ func (h *PatchHandle[T, P]) dispatchPatch(ctx context.Context, backend Backend, 
 	return patchCore[T, P](ctx, backend, h.core, h.patchCodec, h.routing, patch, vars)
 }
 
-func patchCore[T, P any](ctx context.Context, backend Backend, core roleCore[T], patchCodec codex.Codec[P], routing routingInfo, patch any, vars map[string]string) error {
+func patchCore[T, P any](ctx context.Context, backend Backend, core roleCore[T], patchCodec codex.Codec[P], routing routingInfo, patch any, vars map[string]string) (err error) {
+	defer func() { err = applyErrorPattern(core, err) }()
 	obs := obsFromCtx(ctx)
 	p, ok := patch.(P)
 	if !ok {
@@ -362,7 +365,8 @@ func (h *DeleteHandle[T]) dispatchDelete(ctx context.Context, backend Backend, v
 	return deleteCore[T](ctx, backend, h.core, h.routing, vars)
 }
 
-func deleteCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, vars map[string]string) (bool, error) {
+func deleteCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, vars map[string]string) (existed bool, err error) {
+	defer func() { err = applyErrorPattern(core, err) }()
 	obs := obsFromCtx(ctx)
 	wire, err := resolveWire(core)
 	if err != nil {
@@ -379,7 +383,7 @@ func deleteCore[T any](ctx context.Context, backend Backend, core roleCore[T], r
 		return false, err
 	}
 	start := time.Now()
-	existed, err := backend.DeleteBytes(ctx, path, DeleteOptions{})
+	existed, err = backend.DeleteBytes(ctx, path, DeleteOptions{})
 	if err != nil {
 		recordDelete(obs, path, false, time.Since(start))
 		return false, FileDeleteError{Path: path, Err: err}
@@ -409,7 +413,8 @@ func (h *ListHandle[T]) dispatchList(ctx context.Context, backend Backend, vars 
 	return listCore[T](ctx, backend, h.core, h.routing, vars)
 }
 
-func listCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, vars map[string]string) (any, error) {
+func listCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, vars map[string]string) (result any, err error) {
+	defer func() { err = applyErrorPattern(core, err) }()
 	obs := obsFromCtx(ctx)
 	path, err := core.resource.buildParentDirWithRouting(routing, vars)
 	if err != nil {
@@ -471,7 +476,8 @@ func (h *ExistsHandle[T]) dispatchExists(ctx context.Context, backend Backend, v
 	return existsCore[T](ctx, backend, h.core, h.routing, vars)
 }
 
-func existsCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, vars map[string]string) (Entry, bool, error) {
+func existsCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, vars map[string]string) (entry Entry, exists bool, err error) {
+	defer func() { err = applyErrorPattern(core, err) }()
 	obs := obsFromCtx(ctx)
 	path, err := core.resource.buildPathWithRouting(routing, vars)
 	if err != nil {
@@ -481,7 +487,7 @@ func existsCore[T any](ctx context.Context, backend Backend, core roleCore[T], r
 		return Entry{}, false, err
 	}
 	start := time.Now()
-	entry, err := backend.Stat(ctx, path)
+	entry, err = backend.Stat(ctx, path)
 	if err != nil {
 		if isNotFound(err) {
 			recordExists(obs, path, true, time.Since(start))
@@ -553,7 +559,8 @@ func copyBytesCore[T any](ctx context.Context, backend Backend, core roleCore[T]
 	return srcPath, dstPath, nil
 }
 
-func copyCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, srcVars, dstVars map[string]string) error {
+func copyCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, srcVars, dstVars map[string]string) (err error) {
+	defer func() { err = applyErrorPattern(core, err) }()
 	obs := obsFromCtx(ctx)
 	precheckPath, err := core.resource.buildPathWithRouting(routing, srcVars)
 	if err != nil {
@@ -595,7 +602,8 @@ func (h *MoveHandle[T]) dispatchMove(ctx context.Context, backend Backend, srcVa
 // CopyingBackend first) followed by DeleteBytes; (3) which transparently
 // collapses to pure Read+Write+Delete on a Backend implementing neither
 // optional extension.
-func moveCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, srcVars, dstVars map[string]string) error {
+func moveCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, srcVars, dstVars map[string]string) (err error) {
+	defer func() { err = applyErrorPattern(core, err) }()
 	obs := obsFromCtx(ctx)
 	start := time.Now()
 
@@ -662,7 +670,8 @@ func (h *MkdirHandle[T]) dispatchMkdir(ctx context.Context, backend Backend, var
 	return mkdirCore[T](ctx, backend, h.core, h.routing, vars)
 }
 
-func mkdirCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, vars map[string]string) (bool, error) {
+func mkdirCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, vars map[string]string) (created bool, err error) {
+	defer func() { err = applyErrorPattern(core, err) }()
 	obs := obsFromCtx(ctx)
 	wire, err := resolveWire(core)
 	if err != nil {
@@ -683,7 +692,7 @@ func mkdirCore[T any](ctx context.Context, backend Backend, core roleCore[T], ro
 		opts.NativePOSIXMode = wire.NativePOSIXMode
 	}
 	start := time.Now()
-	created, err := backend.Mkdir(ctx, path, opts)
+	created, err = backend.Mkdir(ctx, path, opts)
 	if err != nil {
 		recordMkdir(obs, path, false, time.Since(start))
 		return false, FileWriteError{Path: path, Err: err}
@@ -718,7 +727,8 @@ func (h *BatchDeleteHandle[T]) dispatchBatchDelete(ctx context.Context, backend 
 // Security is checked ONCE per BATCH here, not once per key, so routing
 // each key through Deleter[T]'s full dispatch (which would re-check
 // Security per key) would be incorrect, not just redundant.
-func batchDeleteCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, varsList []map[string]string) ([]BatchDeleteResult, error) {
+func batchDeleteCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, varsList []map[string]string) (result []BatchDeleteResult, err error) {
+	defer func() { err = applyErrorPattern(core, err) }()
 	obs := obsFromCtx(ctx)
 	wire, err := resolveWire(core)
 	if err != nil {
@@ -758,10 +768,10 @@ func batchDeleteCore[T any](ctx context.Context, backend Backend, core roleCore[
 
 	results := make([]BatchDeleteResult, len(paths))
 	for i, path := range paths {
-		existed, err := backend.DeleteBytes(ctx, path, DeleteOptions{})
+		existed, deleteErr := backend.DeleteBytes(ctx, path, DeleteOptions{})
 		results[i] = BatchDeleteResult{Path: path, Existed: existed}
-		if err != nil {
-			results[i].Err = FileDeleteError{Path: path, Err: err}
+		if deleteErr != nil {
+			results[i].Err = FileDeleteError{Path: path, Err: deleteErr}
 		}
 	}
 	success, failure := countResults(results)

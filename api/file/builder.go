@@ -252,6 +252,12 @@ type roleCore[T any] struct {
 	// buildErr field/timing (recorded immediately, surfaced later,
 	// since XxxBoundMW's own signature can't return an error).
 	buildErr error
+	// errorPatterns holds a declared ErrorPatterns[B] (type-erased via
+	// errorPatternMatcher, since B varies per attachment) — see
+	// error_pattern.go's applyErrorPattern, auto-invoked on every
+	// Backend-originated error by all 10 xxxCore functions in
+	// dispatch.go. nil (the common case) is zero overhead.
+	errorPatterns errorPatternMatcher
 }
 
 func (c roleCore[T]) withUse(mws []RouteMiddleware) roleCore[T] {
@@ -271,6 +277,23 @@ func (c roleCore[T]) withSecurity(reqs []SecurityRequirement) roleCore[T] {
 
 func (c roleCore[T]) withRequirements(reqs []CapabilityRequirement) roleCore[T] {
 	c.requirements = append(append([]CapabilityRequirement{}, c.requirements...), reqs...)
+	return c
+}
+
+// withErrorPatterns attaches patterns (a declared ErrorPatterns[B] for
+// whatever B the caller chose) — type-erased via [errorPatternMatcher].
+// A mismatch (patterns isn't an ErrorPatterns[B] at all) records
+// buildErr, mirroring XxxBoundMW's identical "record, don't panic, first
+// error wins" timing.
+func (c roleCore[T]) withErrorPatterns(patterns any) roleCore[T] {
+	m, ok := patterns.(errorPatternMatcher)
+	if !ok {
+		if c.buildErr == nil {
+			c.buildErr = BackendTypeMismatchError{Expected: "file.ErrorPatterns[B]", Got: typeName(patterns)}
+		}
+		return c
+	}
+	c.errorPatterns = m
 	return c
 }
 
@@ -302,6 +325,10 @@ func (r Resource[T]) WithRead(op Read) Reader[T] {
 
 func (r Reader[T]) Use(mws ...RouteMiddleware) Reader[T] {
 	r.core = r.core.withUse(mws)
+	return r
+}
+func (r Reader[T]) ErrorPatterns(patterns any) Reader[T] {
+	r.core = r.core.withErrorPatterns(patterns)
 	return r
 }
 func (r Reader[T]) WithCapabilities(caps ...Capability) Reader[T] {
@@ -355,6 +382,10 @@ func (r Resource[T]) WithCreate(op Create) Creator[T] {
 
 func (c Creator[T]) Use(mws ...RouteMiddleware) Creator[T] {
 	c.core = c.core.withUse(mws)
+	return c
+}
+func (c Creator[T]) ErrorPatterns(patterns any) Creator[T] {
+	c.core = c.core.withErrorPatterns(patterns)
 	return c
 }
 func (c Creator[T]) WithCapabilities(caps ...Capability) Creator[T] {
@@ -412,6 +443,10 @@ func (p Patcher[T, P]) Use(mws ...RouteMiddleware) Patcher[T, P] {
 	p.core = p.core.withUse(mws)
 	return p
 }
+func (p Patcher[T, P]) ErrorPatterns(patterns any) Patcher[T, P] {
+	p.core = p.core.withErrorPatterns(patterns)
+	return p
+}
 func (p Patcher[T, P]) WithCapabilities(caps ...Capability) Patcher[T, P] {
 	p.core = p.core.withCapabilities(caps)
 	return p
@@ -457,6 +492,10 @@ func (r Resource[T]) WithDelete(op Delete) Deleter[T] {
 
 func (d Deleter[T]) Use(mws ...RouteMiddleware) Deleter[T] {
 	d.core = d.core.withUse(mws)
+	return d
+}
+func (d Deleter[T]) ErrorPatterns(patterns any) Deleter[T] {
+	d.core = d.core.withErrorPatterns(patterns)
 	return d
 }
 func (d Deleter[T]) WithCapabilities(caps ...Capability) Deleter[T] {
@@ -509,6 +548,10 @@ func (l Lister[T]) Use(mws ...RouteMiddleware) Lister[T] {
 	l.core = l.core.withUse(mws)
 	return l
 }
+func (l Lister[T]) ErrorPatterns(patterns any) Lister[T] {
+	l.core = l.core.withErrorPatterns(patterns)
+	return l
+}
 func (l Lister[T]) WithSecurity(reqs ...SecurityRequirement) Lister[T] {
 	l.core = l.core.withSecurity(reqs)
 	return l
@@ -551,6 +594,10 @@ func (e Exister[T]) Use(mws ...RouteMiddleware) Exister[T] {
 	e.core = e.core.withUse(mws)
 	return e
 }
+func (e Exister[T]) ErrorPatterns(patterns any) Exister[T] {
+	e.core = e.core.withErrorPatterns(patterns)
+	return e
+}
 func (e Exister[T]) WithSecurity(reqs ...SecurityRequirement) Exister[T] {
 	e.core = e.core.withSecurity(reqs)
 	return e
@@ -591,6 +638,10 @@ func (r Resource[T]) WithCopy(op Copy) Copier[T] {
 
 func (c Copier[T]) Use(mws ...RouteMiddleware) Copier[T] {
 	c.core = c.core.withUse(mws)
+	return c
+}
+func (c Copier[T]) ErrorPatterns(patterns any) Copier[T] {
+	c.core = c.core.withErrorPatterns(patterns)
 	return c
 }
 func (c Copier[T]) WithCapabilities(caps ...Capability) Copier[T] {
@@ -643,6 +694,10 @@ func (m Mover[T]) Use(mws ...RouteMiddleware) Mover[T] {
 	m.core = m.core.withUse(mws)
 	return m
 }
+func (m Mover[T]) ErrorPatterns(patterns any) Mover[T] {
+	m.core = m.core.withErrorPatterns(patterns)
+	return m
+}
 func (m Mover[T]) WithCapabilities(caps ...Capability) Mover[T] {
 	m.core = m.core.withCapabilities(caps)
 	return m
@@ -689,6 +744,10 @@ func (r Resource[T]) WithMkdir(op Mkdir) MkdirCreator[T] {
 
 func (m MkdirCreator[T]) Use(mws ...RouteMiddleware) MkdirCreator[T] {
 	m.core = m.core.withUse(mws)
+	return m
+}
+func (m MkdirCreator[T]) ErrorPatterns(patterns any) MkdirCreator[T] {
+	m.core = m.core.withErrorPatterns(patterns)
 	return m
 }
 func (m MkdirCreator[T]) WithCapabilities(caps ...Capability) MkdirCreator[T] {
@@ -741,6 +800,10 @@ func (r Resource[T]) WithBatchDelete(op BatchDelete) BatchDeleter[T] {
 
 func (b BatchDeleter[T]) Use(mws ...RouteMiddleware) BatchDeleter[T] {
 	b.core = b.core.withUse(mws)
+	return b
+}
+func (b BatchDeleter[T]) ErrorPatterns(patterns any) BatchDeleter[T] {
+	b.core = b.core.withErrorPatterns(patterns)
 	return b
 }
 func (b BatchDeleter[T]) WithSecurity(reqs ...SecurityRequirement) BatchDeleter[T] {

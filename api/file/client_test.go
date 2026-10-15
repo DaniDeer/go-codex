@@ -719,3 +719,70 @@ func TestReader_ReadBoundMW_MultipleAttachments_RunInOrder(t *testing.T) {
 		t.Fatalf("want [first second] in order, got %v", order)
 	}
 }
+
+// ── ErrorPattern auto-invocation ─────────────────────────────────────────
+
+type notFoundResponse struct {
+	Code    string
+	Message string
+}
+
+func TestReader_ErrorPatterns_AutoInvokedOnBackendError(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+
+	pattern := file.NewMappedErrorPattern(func(e file.FileNotFoundError) (notFoundResponse, error) {
+		return notFoundResponse{Code: "NOT_FOUND", Message: "the thing is missing: " + e.Path}, nil
+	})
+	patterns := file.Append(file.ErrorPatterns[notFoundResponse]{}, pattern)
+
+	reader := res.WithRead(file.Read{}).ErrorPatterns(patterns)
+	_, err := client.Read(ctx, reader, map[string]string{"name": "ghost2"})
+	var matched file.ErrorPatternMatchedError
+	if !errors.As(err, &matched) {
+		t.Fatalf("want ErrorPatternMatchedError, got %v (%T)", err, err)
+	}
+	resp, ok := matched.Payload.(notFoundResponse)
+	if !ok {
+		t.Fatalf("Payload type = %T, want notFoundResponse", matched.Payload)
+	}
+	if resp.Code != "NOT_FOUND" {
+		t.Fatalf("resp.Code = %q, want NOT_FOUND", resp.Code)
+	}
+	// errors.As must still reach the ORIGINAL error through Unwrap.
+	var notFound file.FileNotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("want errors.As to still reach the original FileNotFoundError")
+	}
+}
+
+func TestReader_ErrorPatterns_NoMatch_ReturnsOriginalErrorUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+
+	// Pattern declared for a DIFFERENT error type - should never match a
+	// FileNotFoundError, leaving it completely unwrapped.
+	pattern := file.NewErrorPattern[file.FileAlreadyExistsError]()
+	patterns := file.Append(file.ErrorPatterns[file.FileAlreadyExistsError]{}, pattern)
+
+	reader := res.WithRead(file.Read{}).ErrorPatterns(patterns)
+	_, err := client.Read(ctx, reader, map[string]string{"name": "ghost3"})
+	var matched file.ErrorPatternMatchedError
+	if errors.As(err, &matched) {
+		t.Fatalf("want NO ErrorPatternMatchedError wrapping for a non-matching pattern, got %v", err)
+	}
+	var notFound file.FileNotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("want plain FileNotFoundError, got %v (%T)", err, err)
+	}
+}
