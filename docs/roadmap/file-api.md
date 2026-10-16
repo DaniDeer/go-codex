@@ -1174,14 +1174,21 @@ new observer extension needed for either.
 
 ## Phase 2 — outline (further backends + feature depth)
 
-**Status: outlined this round, NOT designed to Phase 1's Go-signature
-rigor yet** — per an explicit choice: full design is deferred until
-Phase 1 ships and its abstractions (`Backend`, the 3 optional extension
-interfaces, `Capability`) are proven against a real implementation
-first, rather than designing a 2nd/3rd backend against an UNPROVEN seam.
-This section replaces round 2's original "`adapters/s3`/`adapters/smb`
-get their own future roadmap doc" call — ALL of Phase 2 is now tracked
-in THIS doc, reversed this round.
+**Status: Phase 1 is done and closed (including a `deep-dive-bug-hunt`
+pass, `history.md` Rounds 216-223 — see `.github/skills/
+review-go-codex/references/history.md`); Phase 2's own 5 items are
+being tackled ONE AT A TIME, in a confirmed order, each designed to
+Phase 1's full Go-signature rigor before implementation starts.
+Confirmed order: Recursive `WithList` → Conditional writes →
+Streaming/chunked I/O → `adapters/s3` → `adapters/smb`.** The first
+item (**Recursive `WithList`**, below) is now fully designed — exact
+signatures, dispatch behavior, a deliberately-scoped-out non-goal, and
+a unit test plan — implementation is a separate, upcoming round. The
+remaining 4 items are still at outline depth only, each noted with its
+own open design question, unchanged from this doc's prior round. This
+section replaces round 2's original "`adapters/s3`/`adapters/smb` get
+their own future roadmap doc" call — ALL of Phase 2 is tracked in THIS
+doc.
 
 ### `adapters/s3`
 
@@ -1246,17 +1253,132 @@ such, not pre-decided.
 
 ### Recursive `WithList`
 
+> **Status: DESIGNED to Phase 1's Go-signature rigor — NOT yet
+> implemented.** The first Phase 2 item to reach this level of detail;
+> see the "Phase 2 implementation order" note at the end of this
+> section for where this sits relative to the other 4 outlined items.
+
 Today's `ports.Dir.List` already supports a recursive mode — Phase 1's
-`Lister[T]` is single-level only. **Update (this round)**: the
-`WalkingBackend.WalkDir` primitive this round added for `ports.Dir`'s own
-migration now exists and already does exactly this kind of recursive
-walk — Phase 2's own implementation gets easier (reuse `WalkingBackend`
-rather than designing a new mechanism), but `Client.List` itself is
-NOT wired up to it yet. The most straightforward Phase 2 item remains:
-likely a `ListOptions{Recursive bool}` parameter on `Client.List`,
-composed via `WalkingBackend.WalkDir` (or, on a Backend not implementing
-it, falling back to repeated `ListDir` calls) — the lowest-risk, most
-"obviously how it would work" item in this whole section.
+`Lister[T]` is single-level only. The `WalkingBackend.WalkDir` primitive
+added for `ports.Dir`'s own Stage F migration (a `deep-dive-bug-hunt`
+round confirmed it byte-for-byte correct against `ports`'s own private
+`osBackend` copy) already does exactly the kind of recursive walk this
+item needs — this design REUSES it rather than inventing a new
+mechanism, exactly as previously outlined.
+
+#### API surface
+
+```go
+// ListOptions configures [Client.List]'s traversal depth. Mirrors the
+// established 0-or-1 trailing variadic convention Create/Patch/Delete/
+// Mkdir already use (api/file/client.go) — backward compatible with
+// every existing List call site (opts omitted = today's single-level
+// behavior, byte-for-byte unchanged).
+type ListOptions struct {
+	// Recursive, when true, descends into every subdirectory under the
+	// resource's parent directory (see Resource.buildParentDirWithRouting),
+	// not just its immediate children. Default false — existing callers
+	// see NO behavior change unless they opt in.
+	Recursive bool
+}
+
+// Client.List gains an optional trailing ListOptions parameter.
+func (c *Client) List(ctx context.Context, l any, vars map[string]string, opts ...ListOptions) (any, error)
+```
+
+`listCore`'s own signature gains a `callerOpts ListOptions` parameter,
+threaded through `dispatchList`/`Lister[T].dispatchList`/
+`ListHandle[T].dispatchList` exactly like `WriteOptions`/`DeleteOptions`/
+`MkdirOptions` already are for Create/Delete/Mkdir — no NEW dispatch
+chain shape to invent, this is the 5th application of an
+already-proven pattern.
+
+#### Dispatch behavior
+
+1. `callerOpts.Recursive == false` (the default): **byte-for-byte
+   identical to today** — `listCore` is unchanged for this path.
+2. `callerOpts.Recursive == true` AND the attached `Backend` implements
+   `WalkingBackend`: walk the ENTIRE subtree rooted at the resource's
+   parent directory via `WalkingBackend.WalkDir`, skipping directory
+   entries (`entry.IsDir`), decoding every FILE entry found at ANY
+   depth through the resource's own codec — the exact same
+   per-entry pipeline today's single-level path already runs
+   (`core.resource.format.Unmarshal` → `entryListVars` →
+   `applyPathMergeFields` → `applyMetadataMergeFields`), just fed by a
+   multi-level walk instead of one `ListDir` call.
+3. `callerOpts.Recursive == true` AND the attached `Backend` does NOT
+   implement `WalkingBackend`: fall back to a manual, EQUIVALENT-POWER
+   recursive composition inside `listCore` itself — call `ListDir` on
+   the parent dir, then recurse into every discovered subdirectory
+   entry via further `ListDir` calls, flattening results as they're
+   found — so `Recursive` keeps working on ANY `Backend`, not just
+   `WalkingBackend`-implementing ones (mirrors `Move`'s own
+   native-then-generic-fallback cascade precedent: a capability degrades
+   gracefully, never hard-fails, when the Backend lacks the optional
+   fast-path extension).
+
+#### Scope limit — deliberately NOT full glob-discovery (flagged, not silently expanded)
+
+`entryListVars`'s existing per-entry `MergedPathParam` matching only
+ever matches an entry's LEAF NAME against the resource's own FINAL
+template segment (e.g. `"{id}.json"` in `"notes/{category}/{id}.json"`)
+— this design keeps that exact behavior UNCHANGED for recursive
+entries too: recursion changes WHICH directories get walked, not how
+an individual entry's vars get extracted. A caller whose template has
+MULTIPLE path segments (like the `{category}` example above) still
+supplies `category` via the caller's own `vars` map, same as
+non-recursive `List` does today — every discovered entry at any depth
+gets the SAME caller-supplied parent vars merged with its own leaf
+match, regardless of which actual subdirectory it was found in.
+
+This means Recursive `WithList` does **NOT** let a caller omit a
+multi-segment template's own parent vars and have them be
+PER-DIRECTORY-DISCOVERED instead (the way `ports.Dir`'s SEPARATE
+glob-discovery mode does, matching `{category}` itself against each
+candidate directory). That is a strictly BIGGER feature — effectively
+porting `ports.Dir.List`'s glob-discovery mode into `api/file` — and is
+explicitly OUT OF SCOPE for this item, flagged here as a possible
+FUTURE Phase 2 candidate of its own rather than silently folded into
+this design.
+
+#### Structured errors
+
+No NEW error types needed — reuses `FileReadError`/`FileDecodeError`/
+`FilePathMismatchError` exactly like today's non-recursive `List` (a
+walk-level I/O error wraps as `FileReadError{Path: <failing dir>}`,
+mirroring `DirReadError`'s own `ports.Dir.List` precedent for a failed
+`filepath.WalkDir`/`WalkingBackend.WalkDir` call).
+
+#### Observer integration
+
+Unchanged — `recordList`/the `"file.list"` `TraceObserver` span fire
+exactly once per `Client.List` call (not once per directory visited),
+identical to today's single-level semantics; `count` in
+`RecordFileList(path, success, count, duration)` reflects the TOTAL
+number of decoded entries across every depth, not a per-directory count.
+
+#### Unit test plan
+
+| Test | Verifies |
+|---|---|
+| `TestListCore_Recursive_DiscoversNestedEntries` | A 2+-level-deep tree of files all get decoded and returned, via `WalkingBackend` |
+| `TestListCore_Recursive_SkipsDirectoryEntries` | Directory entries encountered mid-walk are never passed to the codec |
+| `TestListCore_Recursive_NonWalkingBackend_FallsBackToRepeatedListDir` | A Backend implementing only `ListDir` (not `WalkingBackend`) still returns every nested entry, via the manual fallback composition |
+| `TestListCore_Recursive_MergeFieldAppliesPerEntry_LeafOnly` | `MergedPathParam` still extracts only the LEAF segment's var at any depth; a multi-segment template's parent var comes from the caller's own `vars`, unchanged across every discovered entry |
+| `TestListCore_Recursive_NonMatchingEntry_Excluded` | An entry whose leaf name doesn't match the resource's final template segment is silently excluded at any depth, mirroring non-recursive `List`'s existing behavior |
+| `TestListCore_NonRecursive_RegressionUnchanged` | `ListOptions{}` (or omitted entirely) produces BYTE-FOR-BYTE identical results/erroring to pre-this-feature `List` — the "zero behavior change for existing callers" proof |
+| `TestListCore_Recursive_ObserverRecordsTotalCountAcrossDepths` | `RecordFileList`'s `count` reflects every depth's entries, not just the top level |
+| `TestListCore_Recursive_WalkError_WrapsAsFileReadError` | A walk-level I/O failure (e.g. permission denied on a nested dir) surfaces as `FileReadError`, not a raw/unwrapped error |
+
+#### Phase 2 implementation order (per the user's confirmed sequencing)
+
+This item is first in the confirmed Phase 2 order: Recursive `WithList`
+→ Conditional writes → Streaming/chunked I/O → `adapters/s3` →
+`adapters/smb`. Implementation (writing the actual
+`api/file`/`adapters/file` code, tests, and `ports`-side `osBackend`
+mirror) is a SEPARATE, later round from this design — this section
+itself is the complete, implementation-ready spec for that round to
+execute against.
 
 ## Phase 3 — adapt examples to the new `api/file` approach
 
