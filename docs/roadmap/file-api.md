@@ -1303,12 +1303,17 @@ Conditional writes → Streaming/chunked I/O → `adapters/s3` →
 **Conditional writes**, both above) are fully designed AND IMPLEMENTED
 — the latter's scope grew during implementation planning to also cover
 `ports.FileOptions.IfMatch` + a new `ports.File[T].Stat` method (see
-that section's own "`ports` mirror" subsection). The remaining 3 items
-(Streaming/chunked I/O, `adapters/s3`, `adapters/smb`) are still at
-outline depth only, each noted with its own open design question,
-unchanged from this doc's prior round. This section replaces round 2's
-original "`adapters/s3`/`adapters/smb` get their own future roadmap
-doc" call — ALL of Phase 2 is tracked in THIS doc.
+that section's own "`ports` mirror" subsection). The THIRD item
+(**Streaming/chunked reads and writes**, below) is now fully DESIGNED —
+two parallel mechanisms (automatic format-level write streaming via
+the already-existing `format.IsStreamable`/`MarshalTo`; new
+codec-bypassing `StreamRead`/`StreamWrite` roles for raw byte access +
+byte-range reads) — IMPLEMENTATION is a separate, upcoming round. The
+remaining 2 items (`adapters/s3`, `adapters/smb`) are still at outline
+depth only, each noted with its own open design question, unchanged
+from this doc's prior round. This section replaces round 2's original
+"`adapters/s3`/`adapters/smb` get their own future roadmap doc" call —
+ALL of Phase 2 is tracked in THIS doc.
 
 ### `adapters/s3`
 
@@ -1322,7 +1327,12 @@ differences" — standard S3 buckets have no atomic rename; the 3-level
 `Move` fallback cascade's level 2 output, Copy+Delete, is the CORRECT
 behavior for S3, not a missing feature); `BatchDeletingBackend.
 DeleteBytesBatch` → `DeleteObjects` (the real motivating case for this
-whole interface). Key open design question for the eventual full
+whole interface); `StreamWriteBackend`/`StreamReadBackend` →
+`PutObject`/`GetObject`'s own streaming request/response bodies;
+`RangeReadingBackend` → `GetObject`'s native `Range` header, the
+PRIMARY real-world motivating case that interface exists for at all
+(see "Streaming/chunked reads and writes," above, now fully designed).
+Key open design question for the eventual full
 design: how does `AccessMode`'s dispatch-level enforcement (reject
 Write/Delete/Move/Mkdir before any Backend call, per Phase 1's design)
 interact with S3's OWN IAM-level authorization — does a `ReadOnly`
@@ -1346,17 +1356,274 @@ full design, not resolved here.
 
 ### Streaming/chunked reads and writes
 
+> **Status: DESIGNED to Phase 1's Go-signature rigor — NOT yet
+> implemented.** The third Phase 2 item to reach this level of detail
+> (after Recursive `WithList` and Conditional writes). This design
+> round resolved 3 forks via `ask_user` (write mechanism, read scope,
+> byte-range need), plus one structural clarification ("why does
+> streaming bypass the codec?") the user specifically asked to have
+> justified before proceeding — recorded below, not just asserted.
+
+#### Research grounding this design
+
 Phase 1's `Backend.ReadBytes`/`WriteBytes` are whole-file, `[]byte`-at-
-a-time, matching `ports.File`'s own existing all-at-once contract — this
-remains correct for Phase 1's target use cases (configuration files,
-small-to-medium records) but doesn't scale to large media/archive
-files. A future `io.Reader`/`io.Writer`-based `Backend` variant (likely
-a SEPARATE optional extension interface, following the SAME
-type-assertion-guard idiom as `CopyingBackend`/`MovingBackend`/
-`BatchDeletingBackend` — a `Backend` not implementing it keeps working
-via whole-file reads) is the likely shape, but the exact interface
-(a single `io.Reader`-returning method vs. a chunked offset/length
-pagination API) is not decided.
+a-time, matching `ports.File`'s own existing all-at-once contract —
+correct for Phase 1's target use cases (configuration files, small-to-
+medium records) but not for large media/archive files. Two facts,
+confirmed by reading the actual code rather than assumed, shaped this
+design:
+
+1. **`format.Format[T]` ALREADY has a streaming-WRITE primitive** —
+   `format.NewStreamed(codec, marshalTo func(T, io.Writer) error,
+   unmarshal, contentType)` + `Format[T].IsStreamable()`/`MarshalTo()`
+   — used TODAY only by REST's HTTP response path
+   (`adapters/internal/restdispatch`, writing directly into the
+   `http.ResponseWriter`, no `[]byte` buffering). 100% unused anywhere
+   in `api/file`/`ports` before this design.
+2. **There is NO streaming-DECODE primitive anywhere in `codex`/
+   `format`** — even `format.NewStreamed`'s OWN `unmarshal` parameter
+   is still `func([]byte) (T, error)`. `codex.Codec[T]`'s `Decode`/
+   `Validate` fundamentally require a FULLY MATERIALIZED `T` to run
+   `Refine` constraints against — there is no partial/incremental
+   decode concept in this codebase at all.
+
+#### Why streaming bypasses the codec (structural, not arbitrary — a design clarification the user specifically asked for)
+
+Decode-side streaming isn't a missing convenience this design chose to
+skip — it is impossible to express with `codex.Codec[T]`'s current
+shape without a much larger change. `Decode`/`Validate` need the
+COMPLETE data to populate struct fields and run `Refine` constraints;
+there is no meaningful way to "partially validate" a struct from a
+prefix of its bytes. Building a genuine incremental `StreamingCodec[T]`
+(decode-as-bytes-arrive, with validation necessarily deferred or
+partial) would be a cross-cutting change to `codex`/`format` affecting
+EVERY `api/*` package that uses them (`rest`, `events`, `reqreply`,
+`mcp`), not something scoped to `api/file` — confirmed out of scope for
+this round. For genuinely large/opaque binary content (video,
+archives), a "codec" would often be a no-op anyway — forcing it
+through `Decode`/`Validate` would just be ceremony around a full
+in-memory `[]byte`, defeating streaming's whole purpose. The resolution
+(confirmed): streaming roles DECOUPLE path declaration (which never
+needed full content — just `vars`, already working today) from content
+decode (which does need full content, by the codec's own design) — `T`
+stays useful for the FORMER even when bypassed for the latter.
+
+#### Mechanism 1 — format-level write streaming (automatic, no new role)
+
+Reuses the EXISTING `format.IsStreamable()`/`MarshalTo` mechanism —
+zero `format`-package changes, zero new declare-time API (the format
+itself already signals streamability via how it was constructed):
+
+```go
+// StreamWriteBackend is an OPTIONAL Backend extension for streaming
+// writes — mirrors CopyingBackend/MovingBackend/BatchDeletingBackend/
+// WalkingBackend/DirDeletingBackend/ConditionalWriteBackend's exact
+// type-assertion-guard idiom. A Backend NOT implementing this keeps
+// working via createCore's existing whole-file Marshal+WriteBytes path
+// — just without the memory-usage benefit.
+type StreamWriteBackend interface {
+	// OpenWriter returns a writer whose Close MUST commit the write
+	// atomically (temp-file+rename, mirroring
+	// ConditionalWriteBackend.WriteBytesIfMatch's own commit mechanism
+	// — ONE atomicity story for every streaming write path in this
+	// package) — a reader must never observe a partially-written file.
+	// opts carries the same CreateDirs/DirPerm/Perm/Strict/Metadata
+	// fields WriteBytes already honors.
+	OpenWriter(ctx context.Context, path string, opts WriteOptions) (io.WriteCloser, error)
+}
+```
+
+`createCore`'s dispatch behavior: when `core.resource.format
+.IsStreamable()` AND the attached Backend implements
+`StreamWriteBackend`, stream `format.MarshalTo(v, writer)` instead of
+`format.Marshal(v)` + `backend.WriteBytes(...)`; falls back to today's
+whole-file path otherwise (non-streamable format, OR a Backend without
+`StreamWriteBackend`) — the SAME graceful-degradation idiom every other
+optional extension in this package already uses.
+
+**Caveat, disclosed not hidden**: this only avoids memory buffering if
+`T`'s own `marshalTo` closure itself streams (e.g. `T` holds an
+`io.Reader` field the closure `io.Copy`s from) — if `T` holds the
+payload as an in-memory `[]byte`, this skips one intermediate buffer
+but doesn't fix the underlying memory usage. `format.NewStreamed` was
+designed for streaming OUTPUT generation (e.g. rendering a template),
+not for passing an externally-sourced large blob through unchanged —
+that case is Mechanism 2's job.
+
+**`IfMatch` interaction (resolved, not combined this round)**: when a
+streamable format is ALSO used with `WriteOptions.IfMatch` set,
+dispatch falls back to the NON-streaming path
+(`Marshal`+`WriteBytesIfMatch`) — conditional writes and format-level
+streaming both still WORK independently, just not combined yet;
+combining the lock-file mechanism with a progressive `MarshalTo` write
+is real additional complexity, explicitly deferred, not designed now.
+
+#### Mechanism 2 — raw byte-stream roles (NEW, codec-bypassing)
+
+Two new roles, mirroring S3's own real `GetObject`/`PutObject`
+body-streaming precedent exactly — `T` still declares path
+templating/Security/Capability at declare time; the ACTUAL bytes
+bypass the codec entirely (see "Why streaming bypasses the codec"
+above):
+
+```go
+// StreamRead/StreamWrite are role metadata structs — mirror
+// Read/Create/etc.'s own currently-documentation-only shape.
+type StreamRead struct{ Summary, Description string }
+type StreamWrite struct{ Summary, Description string }
+
+func (r Resource[T]) WithStreamRead(op StreamRead) StreamReader[T]
+func (r Resource[T]) WithStreamWrite(op StreamWrite) StreamWriter[T]
+
+// StreamReader[T]/StreamWriter[T] get the SAME .Use()/.WithCapabilities()/
+// .WithSecurity()/.Handle(client, opts...) surface every other role
+// already has — full parity, not a reduced role.
+
+// StreamReadOptions configures Client.OpenRead's byte-range (Fork 3).
+// Offset/Length == 0 means "whole file" (the default, byte-for-byte
+// today's... well, THIS role's own baseline, since it's brand new).
+// RANGE IS READ-ONLY (resolved): S3 has no native partial-object WRITE
+// at an offset (objects are immutable except full overwrite — the SAME
+// exclusion basis as this doc's existing "no Append" decision), so
+// range semantics apply ONLY to OpenRead, never OpenWrite.
+type StreamReadOptions struct {
+	Offset int64
+	Length int64 // 0 means "to end of file" when Offset is set
+}
+
+// Client gains 2 new dispatch methods — SAME dual-accept contract
+// (bare role builder OR pre-built Handle) every other dispatch method
+// already follows.
+func (c *Client) OpenRead(ctx context.Context, sr any, vars map[string]string, opts ...StreamReadOptions) (io.ReadCloser, error)
+func (c *Client) OpenWrite(ctx context.Context, sw any, vars map[string]string, opts ...WriteOptions) (io.WriteCloser, error)
+```
+
+**`OpenRead`'s 3-level Backend fallback cascade** (mirrors `Move`'s own
+3-level cascade precedent exactly — reused convention, not invented):
+
+```go
+// StreamReadBackend is an OPTIONAL Backend extension for streaming,
+// whole-file reads.
+type StreamReadBackend interface {
+	OpenReader(ctx context.Context, path string) (io.ReadCloser, error)
+}
+
+// RangeReadingBackend is an OPTIONAL Backend extension for a NATIVE
+// byte-range read — mirrors S3's own GetObject Range support, the
+// primary real-world motivating case for this interface.
+type RangeReadingBackend interface {
+	OpenReaderRange(ctx context.Context, path string, offset, length int64) (io.ReadCloser, error)
+}
+```
+
+1. `RangeReadingBackend.OpenReaderRange` — a Backend with a genuine
+   native range read.
+2. `StreamReadBackend.OpenReader` + a generic discard-then-limit
+   wrapper (`io.CopyN` to a discard sink for `offset` bytes, then
+   `io.LimitReader` for `length`) — correct but not a true seek, for a
+   Backend implementing ONLY whole-file streaming.
+3. `Backend.ReadBytes` (today's existing method) + a `bytes.Reader`
+   wrapper sliced to `[offset:offset+length]` — works on EVERY existing
+   Phase 1 Backend unchanged, zero new requirement — the SAME
+   "no false portability, always correct, sometimes slower" idiom this
+   doc's every other optional-extension fallback already uses.
+
+**`OpenWrite`'s commit**: the SAME temp-file+rename atomicity as
+`StreamWriteBackend.OpenWriter` above — ONE atomicity story for every
+streaming write path in this package, not two competing ones. A
+Backend without `StreamWriteBackend` falls back to buffering the FULL
+write into memory, then calling `WriteBytes` on `Close()` — works
+everywhere, just without the memory benefit.
+
+**`OpenWrite` does NOT support `IfMatch` this round** (explicitly
+deferred, same rationale as Mechanism 1's own `IfMatch` exclusion —
+combining the lock-file mechanism with an open-ended streaming write is
+real additional complexity, not designed now).
+
+**Security/Capability**: `StreamRead`/`StreamWrite` get the SAME
+Capability/`AccessMode` gate + Security check BEFORE the reader/writer
+is ever handed back (fail-fast, matches every other mutating role's own
+"fail before Backend call" convention) — since there's no decoded `T`
+value at gate time, `BoundMiddleware` for these 2 roles uses the
+established NO-T shape (`BoundStreamReadMiddleware[In,Out]`/
+`BoundStreamWriteMiddleware[In,Out]`, mirrors `Delete`/`Exists`/`Copy`/
+`Move`/`Mkdir`/`BatchDelete`'s own existing no-T `Bound<Role>
+Middleware[In,Out]` pattern — not a new shape to invent).
+
+#### Structured errors
+
+No NEW structured error types needed — `Open`-time failures surface via
+the EXISTING `FileReadError`/`FileWriteError`/`BackendUnsupportedOptionError`
+(`AccessMode` rejection)/`SecurityRejectedError` exactly as every other
+role's dispatch-level failures already do. A mid-stream read/write
+error (after the `io.ReadCloser`/`io.WriteCloser` has already been
+handed to the caller) is returned DIRECTLY by that `Read`/`Write` call
+on the stream itself — plain Go `error`, NOT wrapped in any `api/file`
+structured type, since it happens entirely outside dispatch's own call
+stack (see "Observer integration" and "scope limits" below for why this
+is structurally necessary, not an oversight).
+
+#### Observer integration
+
+The returned `io.ReadCloser`/`io.WriteCloser` is WRAPPED so
+`RecordFileRead`/`RecordFileWrite` fires on `Close()` — NOT on `Open()`
+— with the real elapsed duration from Open to Close, the natural
+"operation complete" moment for a stream (unlike every other role,
+where Open-call and completion are the same moment). `success` reflects
+whether `Close()` itself returned an error (e.g. a failed final
+`os.Rename` for `OpenWrite`'s commit) — a mid-stream `Read`/`Write`
+error on the stream does NOT by itself flip `success` to false (the
+caller may still choose to call `Close()` cleanly after handling a
+recoverable mid-stream error); only `Close()`'s own return value is
+authoritative, mirroring how a plain `io.Closer`'s contract already
+works in Go generally.
+
+#### Scope limits (disclosed, not silently hidden)
+
+- **`ErrorPattern` only covers `Open`/`Close`-time dispatch-level
+  failures** — a mid-stream read/write error is NOT something dispatch
+  can intercept or map, by construction (it happens after the stream
+  has already left dispatch's own call stack) — mirrors how `Patch`'s
+  conditional-write lock only protects the FINAL commit step, not the
+  whole read-modify-write sequence; the SAME "protects what's
+  structurally possible to protect, discloses what isn't" precedent.
+- **Byte-range is READ-ONLY** (restated from Mechanism 2 above) — no
+  cross-backend semantic exists for partial-offset WRITES.
+- **Neither streaming mechanism combines with `WriteOptions.IfMatch`
+  this round** — both still work independently; combining them is a
+  real, nontrivial follow-up, explicitly deferred rather than
+  half-designed.
+- **`format.NewStreamed`'s memory benefit depends on `T`'s own shape**
+  (restated from Mechanism 1) — this design does not change that; it's
+  an inherent property of how `T`'s `marshalTo` closure is written.
+
+#### Unit test plan
+
+| Test | Verifies |
+|---|---|
+| `TestCreate_StreamableFormat_StreamingBackend_UsesMarshalTo` | A streamable format + `StreamWriteBackend`-implementing Backend writes via `MarshalTo`, not `Marshal`+`WriteBytes` |
+| `TestCreate_StreamableFormat_NonStreamingBackend_FallsBackToWholeFile` | A streamable format against a Backend WITHOUT `StreamWriteBackend` falls back correctly, byte-for-byte identical result |
+| `TestCreate_NonStreamableFormat_UnaffectedRegression` | A plain (non-streamed) format's `Create` behavior is BYTE-FOR-BYTE unchanged — zero overhead, zero behavior change |
+| `TestCreate_StreamableFormat_IfMatchSet_FallsBackToNonStreamingConditionalPath` | `IfMatch` set alongside a streamable format correctly falls back to `Marshal`+`WriteBytesIfMatch`, not an unsupported combination error |
+| `TestStreamReader_OpenRead_WholeFile_RoundTrips` | `Client.OpenRead` with no `StreamReadOptions` returns the full content, byte-for-byte |
+| `TestStreamReader_OpenRead_Range_NativeRangeReadingBackend` | A `RangeReadingBackend`-implementing Backend's `OpenReaderRange` is called directly for a ranged request |
+| `TestStreamReader_OpenRead_Range_StreamReadBackendFallback_DiscardThenLimit` | A Backend implementing ONLY `StreamReadBackend` (not `RangeReadingBackend`) still returns the correct byte range via the discard-then-limit wrapper |
+| `TestStreamReader_OpenRead_Range_ReadBytesFallback_WorksOnEveryBackend` | A Backend implementing NEITHER streaming extension still returns the correct byte range via `ReadBytes`+`bytes.Reader` |
+| `TestStreamWriter_OpenWrite_CommitsAtomically` | A reader concurrently `Stat`-ing the path never observes a partially-written file while `OpenWrite`'s writer is still open |
+| `TestStreamWriter_OpenWrite_NonStreamingBackend_BuffersThenWrites` | A Backend without `StreamWriteBackend` still works correctly (buffered fallback) |
+| `TestStreamRead_SecurityUnmet_RejectsBeforeStreamReturned` | A declared Security requirement rejects BEFORE any `io.ReadCloser` is returned to the caller |
+| `TestStreamWrite_AccessModeReadOnly_RejectsBeforeStreamReturned` | A declared `AccessModeReadOnly` Capability rejects BEFORE any `io.WriteCloser` is returned |
+| `TestStreamRead_Observer_RecordsOnCloseNotOpen` | `RecordFileRead` fires on `Close()`, with duration measured from `Open` to `Close`, not at `Open()` time |
+| `TestStreamWrite_MidStreamError_NotWrappedByErrorPattern` | A mid-stream write error on the returned `io.WriteCloser` is a plain error, NOT an `ErrorPatternMatchedError`, even when the role has `ErrorPatterns` declared |
+
+#### Backend semantic differences (new rows)
+
+| Operation | Filesystem (Phase 1/2) | S3 (Phase 2, future) |
+|---|---|---|
+| Format-level write streaming | `StreamWriteBackend` via `os.CreateTemp`+`os.Rename` (same atomicity pattern as `ConditionalWriteBackend`) | Would implement via `PutObject`'s own streaming body upload |
+| Raw byte-stream read | `StreamReadBackend` via a plain `os.Open` handle | Would implement via `GetObject`'s own streaming response body |
+| Byte-range read | `RangeReadingBackend` NOT implemented by `adapters/file.Backend` in Phase 2 (falls back to the discard-then-limit `StreamReadBackend` wrapper — a real seek via `os.File.Seek` would be a reasonable, cheap future enhancement, not required to ship this design) | `GetObject`'s native `Range` header — the PRIMARY real-world motivating case for `RangeReadingBackend` existing at all |
+| Raw byte-stream write | `StreamWriteBackend` (same as format-level streaming — ONE mechanism serves both) | Would implement via `PutObject`'s own streaming body upload |
 
 ### Conditional writes (ETag/If-Match optimistic concurrency)
 
