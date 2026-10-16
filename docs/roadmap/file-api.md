@@ -1362,7 +1362,14 @@ full design, not resolved here.
 > round resolved 3 forks via `ask_user` (write mechanism, read scope,
 > byte-range need), plus one structural clarification ("why does
 > streaming bypass the codec?") the user specifically asked to have
-> justified before proceeding — recorded below, not just asserted.
+> justified before proceeding — recorded below, not just asserted. A
+> follow-up pre-implementation review pass found and resolved 2 more
+> gaps (a `.tmp-*`-commit-temp-file leak into `List` — the SAME bug
+> class as Conditional writes' own `.lock`/`.meta.json` fix, now
+> retroactively extended to a third suffix; and a missing Router/
+> Declarative-Middleware integration for the 2 new roles, now given
+> full parity) — all folded into the sections below, not tracked
+> separately.
 
 #### Research grounding this design
 
@@ -1545,10 +1552,63 @@ Capability/`AccessMode` gate + Security check BEFORE the reader/writer
 is ever handed back (fail-fast, matches every other mutating role's own
 "fail before Backend call" convention) — since there's no decoded `T`
 value at gate time, `BoundMiddleware` for these 2 roles uses the
-established NO-T shape (`BoundStreamReadMiddleware[In,Out]`/
-`BoundStreamWriteMiddleware[In,Out]`, mirrors `Delete`/`Exists`/`Copy`/
-`Move`/`Mkdir`/`BatchDelete`'s own existing no-T `Bound<Role>
-Middleware[In,Out]` pattern — not a new shape to invent).
+established NO-T shape, named and shaped EXACTLY like
+`BoundDeleteMiddleware`'s own (not a new pattern — confirmed via code,
+not just asserted, during this round's own pre-implementation review):
+
+```go
+type BoundStreamReadMiddleware[In, Out any] struct{ /* same shape as BoundDeleteMiddleware[In,Out] */ }
+func NewBoundStreamReadMiddleware[In, Out any](decl middleware.Declaration[In, Out], fn func(ctx context.Context, in In) (Out, error)) BoundStreamReadMiddleware[In, Out]
+func BoundSecurityStreamReadMiddleware[In, Out any](schemeName string, scheme SecurityScheme, scopes []string, fn func(ctx context.Context, in In) (Out, error)) BoundStreamReadMiddleware[In, Out]
+func (sr StreamReader[T]) StreamReadBoundMW(bm any) StreamReader[T]
+
+type BoundStreamWriteMiddleware[In, Out any] struct{ /* same shape as BoundDeleteMiddleware[In,Out] */ }
+func NewBoundStreamWriteMiddleware[In, Out any](decl middleware.Declaration[In, Out], fn func(ctx context.Context, in In) (Out, error)) BoundStreamWriteMiddleware[In, Out]
+func BoundSecurityStreamWriteMiddleware[In, Out any](schemeName string, scheme SecurityScheme, scopes []string, fn func(ctx context.Context, in In) (Out, error)) BoundStreamWriteMiddleware[In, Out]
+func (sw StreamWriter[T]) StreamWriteBoundMW(bm any) StreamWriter[T]
+```
+
+**Router integration (resolved — full parity, found missing during
+this round's own pre-implementation review, not silently scoped out)**:
+the design's first pass didn't address Router composition for these 2
+roles at all — a real gap, given Phase 1's own "Router/Middleware
+depth: FULL PARITY" commitment. `StreamReader[T]`/`StreamWriter[T]`
+implement `router.Routable[*Client]` exactly like all 10 Phase 1 roles
+already do — named and shaped identically to `Deleter[T]`'s own
+(another no-domain-value role, the closest existing precedent):
+
+```go
+func (sr StreamReader[T]) WithRouterPrefix(prefix string, mws []middleware.RouteMiddleware, tags []string) (routable, string)
+func (sr StreamReader[T]) MiddlewareNames() []string
+func (sr StreamReader[T]) RouteTags() []string
+func (sr StreamReader[T]) RegisterAny(client *Client) error
+func (sr StreamReader[T]) RouteMethod() string { return "stream-read" }
+// StreamWriter[T] gets the identical 5 methods, RouteMethod() == "stream-write".
+```
+
+`file.WithRouter(rt Router) HandleOpt` composes onto a built
+`*StreamReadHandle[T]`/`*StreamWriteHandle[T]` exactly like every other
+role's Handle — no special-casing needed.
+
+**Metadata handling (clarified, found during this round's review)**:
+`OpenWrite`'s `WriteOptions.Metadata` is a DIRECT passthrough of
+whatever the caller explicitly supplies — unlike `Create`/`Patch`,
+there is no decoded (or caller-supplied-as-a-domain-value) `T` for
+`deriveWriteMetadata` to derive metadata FROM (that mechanism reads
+metadata off `v T`'s own `metadataMergeFields`-tagged struct fields,
+and `StreamWrite` has no `v T` at all, by design — see "Why streaming
+bypasses the codec" above). This is a genuinely different
+metadata-handling shape from every other mutating role, stated
+explicitly here rather than left implied.
+
+**`ctx` cancellation is not honored mid-stream (disclosed, not
+silently assumed to work)**: `ctx` is only meaningful at `Open`-time
+dispatch (the Security/Capability gate, and the `OpenReader`/
+`OpenReaderRange`/`OpenWriter` Backend call itself) — once the stream
+is handed back to the caller, Go's stdlib blocking file I/O on a
+regular `*os.File` does NOT honor context cancellation at all; an
+in-progress `Read`/`Write` call on the returned stream runs to
+completion (or its own I/O error) regardless of `ctx`.
 
 #### Structured errors
 
@@ -1597,6 +1657,48 @@ works in Go generally.
   (restated from Mechanism 1) — this design does not change that; it's
   an inherent property of how `T`'s `marshalTo` closure is written.
 
+#### Gap found during this round's own pre-implementation review: `.tmp-*` commit temp files leak into `List`
+
+Re-reviewing this design before planning its implementation surfaced a
+real gap — the SAME bug CLASS Conditional writes' own gap-review round
+already found and fixed for `.lock`/`.meta.json`, now found for a
+THIRD control file: confirmed via code
+(`adapters/file/conditional_write.go:128`, `ports/file_backend.go:386`)
+that `WriteBytesIfMatch`'s commit step already creates its temp file as
+`os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")` — e.g.
+`item.json.tmp-823719035` — in the SAME directory as the final path.
+This temp file is NOT excluded from `ListDir`/`WalkDir` by the existing
+control-file filter (which only knows about `.meta.json`/`.lock`) — a
+concurrent `List` call while the temp file exists sees a spurious
+per-entry error (the random NUMERIC suffix never coincidentally ends in
+`.json`, so this manifests as a decode/mismatch error on that entry,
+not a silent wrong match the way `.meta.json`/`.lock` did — still a
+real, disclosed-worthy exposure, not a cosmetic one).
+
+For `WriteBytesIfMatch` (Conditional writes, already shipped) this
+exposure window is brief — one `tmp.Write` call. `OpenWrite`'s ENTIRE
+purpose is to keep that temp file open for a potentially LONG streaming
+upload, making the SAME exposure far more likely to actually be hit in
+production.
+
+**Resolved: extend the control-file filter to ALSO exclude the
+`.tmp-*` pattern** — in BOTH `adapters/file.Backend` and `ports`'s
+private `osBackend`, in BOTH `ListDir` and `WalkDir` (the SAME
+mechanism the `.lock`/`.meta.json` fix already established, one more
+suffix added to the SAME list). This retroactively improves the
+ALREADY-SHIPPED `WriteBytesIfMatch` commit path too, not just
+`OpenWrite`'s new one — both paths share the identical temp-file
+naming convention and therefore the identical fix.
+
+No new structured error or API surface change — purely a `ListDir`/
+`WalkDir` behavior correction, same class as the Conditional writes
+fix. The eventual implementation round should apply the SAME
+live-reproduction discipline used for the `.meta.json` retroactive fix
+(reproduce the leak against `WriteBytesIfMatch`'s EXISTING temp file
+first, confirm it fails, then apply the fix and confirm it passes) —
+not just add a `OpenWrite`-specific test without ever proving the
+ALREADY-SHIPPED path was actually affected too.
+
 #### Unit test plan
 
 | Test | Verifies |
@@ -1615,6 +1717,8 @@ works in Go generally.
 | `TestStreamWrite_AccessModeReadOnly_RejectsBeforeStreamReturned` | A declared `AccessModeReadOnly` Capability rejects BEFORE any `io.WriteCloser` is returned |
 | `TestStreamRead_Observer_RecordsOnCloseNotOpen` | `RecordFileRead` fires on `Close()`, with duration measured from `Open` to `Close`, not at `Open()` time |
 | `TestStreamWrite_MidStreamError_NotWrappedByErrorPattern` | A mid-stream write error on the returned `io.WriteCloser` is a plain error, NOT an `ErrorPatternMatchedError`, even when the role has `ErrorPatterns` declared |
+| `TestListDir_ExcludesTempFiles` | A `.tmp-*` commit temp file left behind by an in-flight (or crashed) `WriteBytesIfMatch`/`OpenWrite` call is excluded from `List` — proven against BOTH `adapters/file.Backend` and `ports.osBackend`, and against BOTH the already-shipped `WriteBytesIfMatch` path and the new `OpenWrite` path (retroactive regression proof + new-feature proof, same discipline as the `.meta.json` fix) |
+| `TestStreamReader_Router_GroupedResourceComposesPrefix` | A `StreamReader[T]` registered under a `Router.Group(...)` prefix resolves the CORRECT, prefixed path when dispatched via `Client.OpenRead` — proves Router integration genuinely works end-to-end, not just that the methods exist |
 
 #### Backend semantic differences (new rows)
 
@@ -1826,6 +1930,19 @@ modes BOTH consume `WalkDir` directly, with the IDENTICAL exposure a
 `ListDir`-only fix would have left completely unaddressed. A filtered
 entry is NEVER passed to the walk callback at all — fully invisible to
 every `WalkDir` consumer, not just call-but-ignored.
+
+**Extended AGAIN, during the Streaming/chunked I/O design's own
+pre-implementation review (below): the SAME filter also excludes the
+`.tmp-*` commit-temp-file pattern** `WriteBytesIfMatch`'s own commit
+step already creates (`<path>.tmp-<random>`, e.g.
+`item.json.tmp-823719035`) — found while reviewing Streaming's
+`OpenWrite` (which keeps an analogous temp file open far longer, making
+the SAME exposure far more likely to be hit in practice), but it
+retroactively applies to the ALREADY-SHIPPED `WriteBytesIfMatch` too.
+See the "Gap found during this round's pre-implementation review"
+subsection under "Streaming/chunked reads and writes," below, for the
+full finding — not repeated twice here to avoid drift between two
+copies of the same fix description.
 
 No new structured error or API surface change — this is purely a
 `ListDir`/`WalkDir` BEHAVIOR CORRECTION. Because it retroactively fixes
