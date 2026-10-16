@@ -1172,6 +1172,119 @@ new observer extension needed for either.
 | `ports/file.go` | `File[T]`/`Dir` methods rewritten to delegate to an attached `api/file` Handle + `Backend`, instead of calling `os.*` inline; public call signatures UNCHANGED |
 | `ports/pattern.go` | `FilePattern`/`PluginFilePattern` updated to build/bind against the new `api/file.Resource` Handle |
 
+## Phase 1 amendment — `List`/`BatchDelete` per-entry Security (post-ship revision)
+
+> **Status: DESIGNED to Phase 1's Go-signature rigor — NOT yet
+> implemented.** This is a retroactive amendment to ALREADY-SHIPPED
+> Phase 1 behavior (`List` and `BatchDelete`'s Security-gate semantics),
+> surfaced while re-reviewing Recursive `WithList`'s design (below) for
+> gaps — not new Phase 2 scope, tracked here as its own section since it
+> changes existing, tested code and needs its own existing-test review.
+> Recursive `WithList` is DESIGNED ON TOP of this amended model, not the
+> original once-per-call one.
+
+### Motivation
+
+Today, `List`'s Security/`BoundMiddleware` gate (`runBoundMiddleware`)
+runs EXACTLY ONCE per `Client.List` call, against the single resolved
+parent directory's path, with `v=nil` (no entry-specific value — `List`
+has never given `BoundMiddleware`'s `Fn` the actual decoded value for
+any entry). `BatchDelete`'s gate is identical in spirit: once per
+*batch*, not once per path, with `path=""` (no single path to label
+it). Both were deliberate, documented Phase 1 choices (mirroring
+`BatchDelete`'s own "security checked once per batch, not once per
+item" doc comment) — but re-examining them surfaced a real gap:
+`List`/`BatchDelete` are the ONLY 2 roles that touch MULTIPLE,
+independently-addressable resources in one call, yet their Security
+model has no way to express "resource A in this call is fine, resource
+B is not" — a single check covers everything, or nothing.
+
+### `List`'s new per-entry model
+
+- **New public type**: `ListResult[T]{Value T, Err error}` —
+  `Client.List`'s boxed `any` return value is now `[]ListResult[T]`
+  instead of `[]T`. **Breaking change**: every existing caller doing
+  `gotAny.([]T)` must change to `gotAny.([]ListResult[T])` and extract
+  `.Value`/`.Err` per entry.
+- **Security gating moves from once-per-call to once-PER-ENTRY**:
+  `runBoundMiddleware` is invoked once per discovered+decoded entry,
+  passing that entry's ACTUAL DECODED VALUE as `v` (not `nil`) — a
+  genuinely new capability: `BoundMiddleware`'s `Fn` can finally reason
+  about an entry's own decoded content (e.g. a `Sensitive bool` field),
+  not just "is this role allowed to run at all."
+- **ALL per-entry failures become that entry's own `ListResult[T].Err`**
+  — decode errors (`FileDecodeError`), merge-field mismatches
+  (`FilePathMismatchError`/codec errors), metadata-read failures
+  (`FileReadError`/`FileDecodeError`), AND Security rejections
+  (`SecurityRejectedError`) all follow ONE consistent model: `List`
+  NEVER aborts mid-walk for a per-entry problem anymore — it always
+  returns every discovered entry, successes and failures together, in
+  declaration/discovery order. A WALK-LEVEL error (the parent directory
+  itself can't be read/walked at all — `FileReadError` on the top-level
+  `ListDir`/`WalkDir` call) still fails the WHOLE call with a plain
+  `error` return (`nil` for the `[]ListResult[T]` slice) — there is no
+  entry to attach a walk-level failure to.
+- **Observer**: `RecordFileList(path, success, count, duration)`'s
+  `count` now reflects the TOTAL number of `ListResult[T]` entries
+  returned (successes AND failures together, not just successes);
+  `success` reflects whether the WALK itself completed (a call-level
+  concern — `false` only on a walk-level abort, never because one
+  entry's own `Err` is set). `stats.ReportErrors` is called once per
+  per-entry decode/encode-shaped failure (reusing Round 216's fix),
+  keyed to each entry's own path, same as every other per-entry
+  validation-error report in this package.
+- **`ports.Dir` is UNAFFECTED** — it has its own, separate, untyped
+  `List` method and never calls `api/file.Client.List` at all.
+
+### `BatchDelete`'s new per-path model
+
+- Per-PATH Security check (not once-per-batch) — each path in the
+  batch gets its OWN `runBoundMiddleware` invocation (still `v=nil`;
+  `Delete` never decodes a value, so there is nothing richer to pass
+  here, unlike `List`).
+- **NO new type needed** — `BatchDeleteResult{Path, Existed, Err}`
+  already has a per-path `Err` field; a Security rejection for one path
+  becomes `BatchDeleteResult{Path: p, Existed: false, Err:
+  SecurityRejectedError{Path: p, ...}}`, exactly like any other
+  per-path `DeleteBytes` failure already works today — other paths in
+  the same batch proceed independently, unaffected.
+
+### Existing-test impact (explicitly flagged, not silently absorbed)
+
+Both changes are DELIBERATE behavior changes to shipped code, not
+silent regressions — but they DO mean existing tests asserting the OLD
+once-per-call/fail-whole-call semantics need REWRITING, not just
+additive new tests:
+- Any existing `List` test asserting "a single bad entry fails the
+  whole call" must be rewritten to assert that entry's own
+  `ListResult[T].Err` is set while sibling entries still succeed.
+- Any existing `List`/`BatchDelete` Security test asserting "rejected
+  before any Backend call, call-wide" needs re-examining: for `List`,
+  Security rejection is now ONLY observable in that entry's own
+  `ListResult[T].Err` — the Backend's `ListDir`/`WalkDir` call(s)
+  themselves still happen BEFORE any per-entry Security check (an
+  entry must be DISCOVERED AND DECODED before `BoundMiddleware` has a
+  value to evaluate), a real, necessary change from the "security
+  checked before any Backend call" convention every other role still
+  follows — `List` is now the one documented exception, since its own
+  Security check is inherently per-RESULT, not per-REQUEST, the same
+  way `Exists`'s absence-is-not-an-error idiom is `Exists`'s own
+  documented exception to "errors are always typed."
+- `api/file/filetest`'s conformance suite and `examples/file-api/
+  main.go` both call `List` and need updating to the new
+  `[]ListResult[T]` shape.
+
+### Unit test plan (amendment)
+
+| Test | Verifies |
+|---|---|
+| `TestListCore_PerEntrySecurityRejection_OtherEntriesStillSucceed` | One entry's declared `BoundReadMiddleware`-equivalent-for-List rejects it; sibling entries in the same directory still decode and return successfully |
+| `TestListCore_BoundMiddleware_ReceivesActualDecodedValue` | `Fn` observes the entry's real decoded `T`, not a zero value, proving the `v=nil` → `v=&decoded` upgrade |
+| `TestListCore_DecodeFailure_BecomesEntryErr_NotWholeCallFailure` | A single malformed entry's `ListResult[T].Err` is set; the call itself returns `nil` error and every OTHER entry's `Value` is populated |
+| `TestListCore_WalkLevelError_StillFailsWholeCall` | An unreadable parent directory still returns `(nil, error)` — no per-entry partial result is fabricated |
+| `TestBatchDeleteCore_PerPathSecurityRejection_OtherPathsStillProceed` | One path's Security check rejects it (`BatchDeleteResult.Err`); sibling paths in the same batch still delete successfully |
+| `TestListCore_Observer_CountReflectsTotalEntriesIncludingFailures` | `RecordFileList`'s `count` includes failed entries, not just successes |
+
 ## Phase 2 — outline (further backends + feature depth)
 
 **Status: Phase 1 is done and closed (including a `deep-dive-bug-hunt`
@@ -1257,6 +1370,10 @@ such, not pre-decided.
 > implemented.** The first Phase 2 item to reach this level of detail;
 > see the "Phase 2 implementation order" note at the end of this
 > section for where this sits relative to the other 4 outlined items.
+> **Builds ON TOP of the "Phase 1 amendment" above** — Recursive
+> `WithList` is designed against the AMENDED per-entry-Security/
+> `ListResult[T]` model, not the original once-per-call one; the
+> amendment is a prerequisite, not an independent, parallel change.
 
 Today's `ports.Dir.List` already supports a recursive mode — Phase 1's
 `Lister[T]` is single-level only. The `WalkingBackend.WalkDir` primitive
@@ -1295,27 +1412,60 @@ already-proven pattern.
 
 #### Dispatch behavior
 
-1. `callerOpts.Recursive == false` (the default): **byte-for-byte
-   identical to today** — `listCore` is unchanged for this path.
+1. `callerOpts.Recursive == false` (the default): identical DISCOVERY
+   to today (one `ListDir` call, immediate children only) — but now
+   feeds the AMENDED per-entry pipeline above (each entry becomes its
+   own `ListResult[T]`), not the original fail-whole-call one. This is
+   the amendment's own behavior change, not something Recursive itself
+   adds.
 2. `callerOpts.Recursive == true` AND the attached `Backend` implements
    `WalkingBackend`: walk the ENTIRE subtree rooted at the resource's
    parent directory via `WalkingBackend.WalkDir`, skipping directory
-   entries (`entry.IsDir`), decoding every FILE entry found at ANY
+   entries (`entry.IsDir`) AND any entry failing the depth-pruning rule
+   below, decoding every remaining FILE entry found at ANY (permitted)
    depth through the resource's own codec — the exact same
-   per-entry pipeline today's single-level path already runs
+   per-entry pipeline the non-recursive path already runs
    (`core.resource.format.Unmarshal` → `entryListVars` →
-   `applyPathMergeFields` → `applyMetadataMergeFields`), just fed by a
-   multi-level walk instead of one `ListDir` call.
+   `applyPathMergeFields` → `applyMetadataMergeFields` → per-entry
+   `runBoundMiddleware`), just fed by a multi-level walk instead of one
+   `ListDir` call, and collecting a `ListResult[T]` per visited file
+   (pruned/skipped entries are simply never visited — they produce NO
+   `ListResult[T]` at all, not an error one).
 3. `callerOpts.Recursive == true` AND the attached `Backend` does NOT
    implement `WalkingBackend`: fall back to a manual, EQUIVALENT-POWER
    recursive composition inside `listCore` itself — call `ListDir` on
    the parent dir, then recurse into every discovered subdirectory
-   entry via further `ListDir` calls, flattening results as they're
-   found — so `Recursive` keeps working on ANY `Backend`, not just
-   `WalkingBackend`-implementing ones (mirrors `Move`'s own
-   native-then-generic-fallback cascade precedent: a capability degrades
-   gracefully, never hard-fails, when the Backend lacks the optional
-   fast-path extension).
+   entry via further `ListDir` calls (subject to the SAME depth-pruning
+   rule below), flattening results as they're found — so `Recursive`
+   keeps working on ANY `Backend`, not just `WalkingBackend`-
+   implementing ones (mirrors `Move`'s own native-then-generic-fallback
+   cascade precedent: a capability degrades gracefully, never
+   hard-fails, when the Backend lacks the optional fast-path
+   extension). **Disclosed, non-blocking limitation**: this manual
+   fallback inherits the same no-symlink-loop-protection characteristic
+   any recursive filesystem walk has (same as `WalkingBackend.WalkDir`'s
+   own `filepath.WalkDir`-based implementation, which does not follow
+   symlinked directories either) — not a new risk this design
+   introduces, just worth stating plainly rather than leaving implicit.
+
+#### Depth-pruning rule (resolved gap — reuses an existing precedent)
+
+A permissive "match the leaf name at ANY depth" rule would let a
+structurally-inconsistent entry slip through — e.g. for template
+`"notes/{category}/{id}.json"` (2 segments past the resource's parent
+base), a file at `"notes/work/2024/id.json"` (an EXTRA, unexpected
+nesting level) would still match `"{id}.json"` on its leaf name alone,
+even though the template never describes a 3-segment shape. **Resolved:
+recursive discovery is constrained to the template's OWN exact declared
+segment count** — an entry whose depth (relative to the resource's
+parent directory) does not exactly match the final template segment's
+own position is excluded before ever reaching the codec, not silently
+decoded and returned. This reuses `ports.Dir.listGlobDiscovery`'s
+existing, proven pruning convention verbatim ("a template with no `**`
+is pruned: once a candidate directory's depth already equals the
+template's own segment count, does not descend further") rather than
+inventing a new rule — the SAME mechanism, applied here to entry
+matching instead of directory-glob matching.
 
 #### Scope limit — deliberately NOT full glob-discovery (flagged, not silently expanded)
 
@@ -1343,32 +1493,37 @@ this design.
 
 #### Structured errors
 
-No NEW error types needed — reuses `FileReadError`/`FileDecodeError`/
-`FilePathMismatchError` exactly like today's non-recursive `List` (a
-walk-level I/O error wraps as `FileReadError{Path: <failing dir>}`,
-mirroring `DirReadError`'s own `ports.Dir.List` precedent for a failed
-`filepath.WalkDir`/`WalkingBackend.WalkDir` call).
+No NEW error types needed beyond the amendment's own (`ListResult[T].Err`
+carries `FileDecodeError`/`FilePathMismatchError`/`SecurityRejectedError`
+etc., exactly as that section describes) — a walk-level I/O error (the
+parent directory itself, or an intermediate subdirectory, can't be
+read/walked at all) still fails the WHOLE call via the plain `error`
+return, wrapped as `FileReadError{Path: <failing dir>}`, mirroring
+`DirReadError`'s own `ports.Dir.List` precedent for a failed
+`filepath.WalkDir`/`WalkingBackend.WalkDir` call.
 
 #### Observer integration
 
-Unchanged — `recordList`/the `"file.list"` `TraceObserver` span fire
-exactly once per `Client.List` call (not once per directory visited),
-identical to today's single-level semantics; `count` in
-`RecordFileList(path, success, count, duration)` reflects the TOTAL
-number of decoded entries across every depth, not a per-directory count.
+Builds on the amendment's own Observer note (above) — `recordList`/the
+`"file.list"` `TraceObserver` span still fire exactly once per
+`Client.List` call (not once per directory visited), regardless of
+`Recursive`; `count` reflects the TOTAL number of `ListResult[T]`
+entries across every visited (post-pruning) depth, successes and
+failures together, not a per-directory count.
 
 #### Unit test plan
 
 | Test | Verifies |
 |---|---|
-| `TestListCore_Recursive_DiscoversNestedEntries` | A 2+-level-deep tree of files all get decoded and returned, via `WalkingBackend` |
+| `TestListCore_Recursive_DiscoversNestedEntries` | A 2+-level-deep tree of files all get decoded and returned as `ListResult[T]{Value: ...}`, via `WalkingBackend` |
 | `TestListCore_Recursive_SkipsDirectoryEntries` | Directory entries encountered mid-walk are never passed to the codec |
 | `TestListCore_Recursive_NonWalkingBackend_FallsBackToRepeatedListDir` | A Backend implementing only `ListDir` (not `WalkingBackend`) still returns every nested entry, via the manual fallback composition |
 | `TestListCore_Recursive_MergeFieldAppliesPerEntry_LeafOnly` | `MergedPathParam` still extracts only the LEAF segment's var at any depth; a multi-segment template's parent var comes from the caller's own `vars`, unchanged across every discovered entry |
-| `TestListCore_Recursive_NonMatchingEntry_Excluded` | An entry whose leaf name doesn't match the resource's final template segment is silently excluded at any depth, mirroring non-recursive `List`'s existing behavior |
-| `TestListCore_NonRecursive_RegressionUnchanged` | `ListOptions{}` (or omitted entirely) produces BYTE-FOR-BYTE identical results/erroring to pre-this-feature `List` — the "zero behavior change for existing callers" proof |
-| `TestListCore_Recursive_ObserverRecordsTotalCountAcrossDepths` | `RecordFileList`'s `count` reflects every depth's entries, not just the top level |
-| `TestListCore_Recursive_WalkError_WrapsAsFileReadError` | A walk-level I/O failure (e.g. permission denied on a nested dir) surfaces as `FileReadError`, not a raw/unwrapped error |
+| `TestListCore_Recursive_DepthPruning_ExcludesStructurallyTooDeepEntries` | An entry nested DEEPER than the template's own declared segment count (e.g. an extra unexpected directory level) is pruned before reaching the codec — never appears in the result at all, not even as a `ListResult[T].Err` |
+| `TestListCore_Recursive_NonMatchingLeafName_Excluded` | An entry at a structurally-valid depth whose leaf name doesn't match the resource's final template segment is silently excluded, mirroring non-recursive `List`'s existing behavior |
+| `TestListCore_NonRecursive_DiscoveryUnchanged_ResultShapeAmended` | `ListOptions{}` (or omitted entirely) discovers the SAME entries as pre-this-feature `List` (byte-for-byte unchanged discovery), now wrapped in the amended `[]ListResult[T]` shape — the "Recursive adds no NEW discovery behavior when false" proof, distinct from the amendment's OWN regression tests (tracked separately, above) |
+| `TestListCore_Recursive_ObserverRecordsTotalCountAcrossDepths` | `RecordFileList`'s `count` reflects every (post-pruning) depth's entries, not just the top level |
+| `TestListCore_Recursive_WalkLevelError_StillFailsWholeCall` | A walk-level I/O failure (e.g. permission denied on a nested dir) surfaces as `FileReadError` via the call's plain `error` return, not a fabricated per-entry result |
 
 #### Phase 2 implementation order (per the user's confirmed sequencing)
 
@@ -1454,13 +1609,16 @@ excluded, not merely deferred:
 
 **Phase 1 now has ZERO remaining open design decisions.** Every item
 previously listed here is resolved — see "Resolved round 7" below for
-the 2 closed this round. Only Phase 2's own items remain, and those are
-DELIBERATELY left at outline depth (see "Phase 2 — outline" above for
-each item's own specific open questions, not repeated here): S3's
-`AccessMode`-vs-IAM interaction, `adapters/smb`'s driver/permission
-choices, the streaming-`Backend`-extension's exact interface shape,
-conditional-writes' atomicity gap (none for recursive `WithList`, the
-lowest-risk item) — not resolved here by design, since full Phase 2
+the 2 closed this round. The "Phase 1 amendment" section above (`List`/
+`BatchDelete` per-entry Security + `ListResult[T]`) and Recursive
+`WithList` (the first Phase 2 item) are BOTH now fully designed too —
+see their own sections for the complete picture, including their own
+unit test plans. The remaining 4 Phase 2 items are DELIBERATELY left at
+outline depth (see "Phase 2 — outline" above for each item's own
+specific open questions, not repeated here): S3's `AccessMode`-vs-IAM
+interaction, `adapters/smb`'s driver/permission choices, the
+streaming-`Backend`-extension's exact interface shape, conditional-
+writes' atomicity gap — not resolved here by design, since full Phase 2
 design is explicitly deferred until Phase 1 ships.
 
 **Resolved round 7** (closing the 2 items this doc carried from round 6):
