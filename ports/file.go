@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -1024,6 +1025,88 @@ func (fh File[T]) Stat(vars map[string]string, opts FileOptions) (Entry, bool, e
 		return Entry{}, false, err
 	}
 	return entry, exists, nil
+}
+
+// OpenRead returns a codec-BYPASSING raw byte stream — mirrors
+// [file.Client.OpenRead] exactly (Mechanism 2, see
+// docs/roadmap/file-api.md's "Streaming/chunked reads and writes"
+// section). opts.Perm/DirPerm/CreateDirs/Strict/DryRun/IfMatch are
+// ignored (OpenRead has no write-side options); use [OpenReadOptions]
+// for an HTTP-Range-style byte-range read. The caller is responsible
+// for calling Close. Delegates to [file.Client.OpenRead] against a
+// private, internal api/file [Resource]+[Client] built fresh on every
+// call — see Read's identical Stage F migration note.
+func (fh File[T]) OpenRead(vars map[string]string, opts FileOptions, rangeOpts ...OpenReadOptions) (io.ReadCloser, error) {
+	obs := opts.Observer
+	if obs == nil && opts.Context != nil {
+		obs = stats.ObserverFromContext(opts.Context)
+	}
+	if obs == nil {
+		obs = stats.NoopObserver{}
+	}
+
+	path, err := fh.BuildPath(vars)
+	if err != nil {
+		return nil, err
+	}
+
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx = stats.WithObserver(ctx, obs)
+
+	res := file.NewResource[T](path, fh.format)
+	client := file.NewClient()
+	_ = client.Attach(osBackend{}) // fresh Client — Attach never fails here
+	var streamOpts []file.StreamReadOptions
+	if len(rangeOpts) > 0 {
+		streamOpts = []file.StreamReadOptions{{Offset: rangeOpts[0].Offset, Length: rangeOpts[0].Length}}
+	}
+	return client.OpenRead(ctx, res.WithStreamRead(file.StreamRead{}), nil, streamOpts...)
+}
+
+// OpenReadOptions configures [File.OpenRead]'s byte-range behavior —
+// mirrors [file.StreamReadOptions] exactly.
+type OpenReadOptions struct {
+	Offset int64
+	Length int64
+}
+
+// OpenWrite returns a codec-BYPASSING raw byte stream — mirrors
+// [file.Client.OpenWrite] exactly. opts.IfMatch is NOT supported on
+// this method (never consulted, same as [file.Client.OpenWrite]); the
+// caller is responsible for writing content and calling Close — Close
+// MUST be called to commit the write. Delegates to
+// [file.Client.OpenWrite] against a private, internal api/file
+// [Resource]+[Client] built fresh on every call.
+func (fh File[T]) OpenWrite(vars map[string]string, opts FileOptions) (io.WriteCloser, error) {
+	obs := opts.Observer
+	if obs == nil && opts.Context != nil {
+		obs = stats.ObserverFromContext(opts.Context)
+	}
+	if obs == nil {
+		obs = stats.NoopObserver{}
+	}
+
+	path, err := fh.BuildPath(vars)
+	if err != nil {
+		return nil, err
+	}
+
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx = stats.WithObserver(ctx, obs)
+
+	res := file.NewResource[T](path, fh.format)
+	client := file.NewClient()
+	_ = client.Attach(osBackend{}) // fresh Client — Attach never fails here
+	return client.OpenWrite(ctx, res.WithStreamWrite(file.StreamWrite{}), nil, file.WriteOptions{
+		Perm: opts.Perm, CreateDirs: opts.CreateDirs, DirPerm: opts.DirPerm,
+		Strict: opts.Strict, DryRun: opts.DryRun,
+	})
 }
 
 // ── FilePatchNotSupportedError ────────────────────────────────────────────────

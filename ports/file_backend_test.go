@@ -79,6 +79,58 @@ func TestOsBackend_DeleteDir_Recursive_RemovesEverything(t *testing.T) {
 	}
 }
 
+// TestOsBackend_ListDir_ExcludesTempFiles is a RETROACTIVE regression
+// proof (same class as adapters/file's own TestBackend_ListDir_
+// ExcludesTempFiles) — osBackend.WriteBytesIfMatch's ALREADY-SHIPPED
+// commit temp file was NOT excluded from ListDir before this fix.
+func TestOsBackend_ListDir_ExcludesTempFiles(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "item.json"), []byte("{}"), 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "item.json.tmp-823719035"), []byte("partial"), 0600); err != nil {
+		t.Fatalf("setup temp file: %v", err)
+	}
+
+	backend := osBackend{}
+	entries, err := backend.ListDir(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("ListDir: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name != "item.json" {
+		t.Fatalf("want only item.json listed (.tmp-* excluded), got %+v", entries)
+	}
+}
+
+// TestOsBackend_WalkDir_ExcludesTempFiles is WalkDir's own version.
+func TestOsBackend_WalkDir_ExcludesTempFiles(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "item.json"), []byte("{}"), 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "item.json.tmp-823719035"), []byte("partial"), 0600); err != nil {
+		t.Fatalf("setup temp file: %v", err)
+	}
+
+	backend := osBackend{}
+	var visited []string
+	err := backend.WalkDir(context.Background(), dir, func(path string, entry apifile.Entry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir {
+			visited = append(visited, entry.Name)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkDir: %v", err)
+	}
+	if len(visited) != 1 || visited[0] != "item.json" {
+		t.Fatalf("want only item.json visited (.tmp-* excluded), got %+v", visited)
+	}
+}
+
 func TestOsBackend_WriteBytes_Strict_UsesAtomicOpen(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "item.json")

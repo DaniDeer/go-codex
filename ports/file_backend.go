@@ -3,6 +3,7 @@ package ports
 import (
 	"context"
 	"fmt"
+	"io"
 	"io/fs"
 	"math/rand"
 	"os"
@@ -137,13 +138,20 @@ func (osBackend) DeleteBytes(_ context.Context, path string, opts apifile.Delete
 // resource template).
 var osBackendControlFileSuffixes = []string{".meta.json", ".lock"}
 
+// osBackendControlFileInfix mirrors adapters/file.Backend's own
+// controlFileInfix (Streaming's own pre-implementation gap-review found
+// this applies retroactively to WriteBytesIfMatch's ALREADY-SHIPPED
+// temp file too, not just OpenWrite's new one) — a RANDOM numeric
+// suffix follows it, so this is a substring (Contains) check.
+const osBackendControlFileInfix = ".tmp-"
+
 func osBackendIsControlFile(name string) bool {
 	for _, suffix := range osBackendControlFileSuffixes {
 		if strings.HasSuffix(name, suffix) {
 			return true
 		}
 	}
-	return false
+	return strings.Contains(name, osBackendControlFileInfix)
 }
 
 func osBackendEntryETag(isDir bool, modTime time.Time, size int64) string {
@@ -412,3 +420,98 @@ var _ apifile.Backend = osBackend{}
 var _ apifile.WalkingBackend = osBackend{}
 var _ apifile.DirDeletingBackend = osBackend{}
 var _ apifile.ConditionalWriteBackend = osBackend{}
+var _ apifile.StreamReadBackend = osBackend{}
+var _ apifile.StreamWriteBackend = osBackend{}
+
+// OpenReader implements [apifile.StreamReadBackend] — a deliberate
+// near-duplicate of adapters/file.Backend's own OpenReader (same
+// import-cycle constraint as every other osBackend method). osBackend
+// does NOT implement [apifile.RangeReadingBackend], matching
+// adapters/file.Backend's own Phase 2 choice.
+func (osBackend) OpenReader(_ context.Context, path string) (io.ReadCloser, error) {
+	return os.Open(path)
+}
+
+// osBackendStreamWriteCloser is osBackend's own near-duplicate of
+// adapters/file's streamWriteCloser — SAME temp-file-in-same-directory
+// + os.Rename commit mechanism, minus Metadata handling (osBackend
+// implements no [apifile.MetadataBackend] — ports.File never needed
+// metadata support, see this file's own package-level doc comment).
+type osBackendStreamWriteCloser struct {
+	tmp     *os.File
+	tmpPath string
+	path    string
+	perm    os.FileMode
+	strict  bool
+	discard bool
+	closed  bool
+}
+
+func (s *osBackendStreamWriteCloser) Write(p []byte) (int, error) {
+	if s.discard {
+		return len(p), nil
+	}
+	return s.tmp.Write(p)
+}
+
+func (s *osBackendStreamWriteCloser) Close() error {
+	if s.closed {
+		return nil
+	}
+	s.closed = true
+	if s.discard {
+		return nil
+	}
+	if err := s.tmp.Close(); err != nil {
+		_ = os.Remove(s.tmpPath)
+		return err
+	}
+	if err := os.Chmod(s.tmpPath, s.perm); err != nil {
+		_ = os.Remove(s.tmpPath)
+		return err
+	}
+	if s.strict {
+		if _, err := os.Stat(s.path); err == nil {
+			_ = os.Remove(s.tmpPath)
+			return apifile.FileAlreadyExistsError{Path: s.path}
+		} else if !os.IsNotExist(err) {
+			_ = os.Remove(s.tmpPath)
+			return err
+		}
+	}
+	if err := os.Rename(s.tmpPath, s.path); err != nil {
+		_ = os.Remove(s.tmpPath)
+		return err
+	}
+	return nil
+}
+
+// OpenWriter implements [apifile.StreamWriteBackend].
+func (osBackend) OpenWriter(_ context.Context, path string, opts apifile.WriteOptions) (io.WriteCloser, error) {
+	if opts.CreateDirs {
+		dir := filepath.Dir(path)
+		if !opts.DryRun {
+			perm := opts.DirPerm
+			if perm == 0 {
+				perm = 0755
+			}
+			if err := os.MkdirAll(dir, perm); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if opts.DryRun {
+		return &osBackendStreamWriteCloser{discard: true}, nil
+	}
+	perm := opts.Perm
+	if perm == 0 {
+		perm = 0644
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return nil, err
+	}
+	return &osBackendStreamWriteCloser{
+		tmp: tmp, tmpPath: tmp.Name(), path: path, perm: perm, strict: opts.Strict,
+	}, nil
+}

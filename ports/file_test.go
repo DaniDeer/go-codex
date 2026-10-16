@@ -3,8 +3,10 @@ package ports_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -2315,6 +2317,77 @@ func TestFile_Stat_MissingFile_ReturnsFalseNotError(t *testing.T) {
 	if exists {
 		t.Fatalf("want exists=false")
 	}
+}
+
+func TestFile_OpenWrite_OpenRead_RoundTrips(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "item.json")
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
+
+	w, err := f.OpenWrite(nil, ports.FileOptions{})
+	if err != nil {
+		t.Fatalf("OpenWrite: %v", err)
+	}
+	if _, err := w.Write([]byte(`{"name":"streamed","value":5}`)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	r, err := f.OpenRead(nil, ports.FileOptions{})
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	defer r.Close()
+	data, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	var got fileItem
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if got.Name != "streamed" || got.Value != 5 {
+		t.Fatalf("got %+v, want Name=streamed Value=5", got)
+	}
+}
+
+func TestFile_OpenRead_Range_ReturnsCorrectSlice(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "item.json")
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
+	if _, err := f.Write(nil, fileItem{Name: "ranged", Value: 1}, ports.FileOptions{}); err != nil {
+		t.Fatalf("setup Write: %v", err)
+	}
+
+	full, err := io.ReadAll(mustOpenRead(t, f))
+	if err != nil {
+		t.Fatalf("read full: %v", err)
+	}
+
+	r, err := f.OpenRead(nil, ports.FileOptions{}, ports.OpenReadOptions{Offset: 1, Length: 3})
+	if err != nil {
+		t.Fatalf("OpenRead (ranged): %v", err)
+	}
+	defer r.Close()
+	got, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	want := full[1:4]
+	if string(got) != string(want) {
+		t.Fatalf("ranged read got %q, want %q", got, want)
+	}
+}
+
+func mustOpenRead(t *testing.T, f ports.File[fileItem]) io.ReadCloser {
+	t.Helper()
+	r, err := f.OpenRead(nil, ports.FileOptions{})
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	return r
 }
 
 func TestFile_Write_IfMatch_MatchSucceeds(t *testing.T) {
