@@ -1915,3 +1915,257 @@ func TestListCore_Recursive_WalkLevelError_StillFailsWholeCall(t *testing.T) {
 		t.Fatalf("want a whole-call FileReadError (walk-level failure), got %v (%T)", err, err)
 	}
 }
+
+// ── Conditional writes (ETag/If-Match) ───────────────────────────────────
+
+func TestCreate_Overwrite_IfMatch_MatchSucceeds(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	vars := map[string]string{"name": "widget"}
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "widget", Value: 1}, vars); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	current, err := os.ReadFile(filepath.Join(dir, "widget.json"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	etag := file.StrongETag(current)
+
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "widget", Value: 2}, vars, file.WriteOptions{IfMatch: &etag}); err != nil {
+		t.Fatalf("Create (conditional overwrite): %v", err)
+	}
+	gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if got := gotAny.(record); got.Value != 2 {
+		t.Fatalf("want Value=2 after conditional overwrite, got %+v", got)
+	}
+}
+
+func TestCreate_Overwrite_IfMatch_MismatchRejected(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	vars := map[string]string{"name": "widget"}
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "widget", Value: 1}, vars); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	stale := "stale-etag"
+	_, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "widget", Value: 2}, vars, file.WriteOptions{IfMatch: &stale})
+	var mismatch file.ConditionalWriteMismatchError
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("want ConditionalWriteMismatchError, got %v (%T)", err, err)
+	}
+	gotAny, readErr := client.Read(ctx, res.WithRead(file.Read{}), vars)
+	if readErr != nil {
+		t.Fatalf("Read: %v", readErr)
+	}
+	if got := gotAny.(record); got.Value != 1 {
+		t.Fatalf("want content unchanged (Value=1) after rejected conditional write, got %+v", got)
+	}
+}
+
+func TestCreate_Overwrite_IfMatch_NonexistentTargetReturnsConditionalWriteMismatchError(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	any := "any-etag"
+	_, err := client.Create(context.Background(), res.WithCreate(file.Create{}), record{Name: "ghost", Value: 1}, map[string]string{"name": "ghost"}, file.WriteOptions{IfMatch: &any})
+	var mismatch file.ConditionalWriteMismatchError
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("want ConditionalWriteMismatchError, got %v (%T)", err, err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "ghost.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("file should NOT have been created, stat err = %v", statErr)
+	}
+}
+
+func TestCreate_StrictTrueAndIfMatchBothSet_StrictTakesPrecedence(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	vars := map[string]string{"name": "widget"}
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "widget", Value: 1}, vars); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// Any IfMatch value — even an objectively WRONG one — is irrelevant:
+	// Strict's own existence check runs first and unconditionally.
+	wrong := "definitely-wrong-etag"
+	_, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "widget", Value: 2}, vars, file.WriteOptions{Strict: true, IfMatch: &wrong})
+	var alreadyExists file.FileAlreadyExistsError
+	if !errors.As(err, &alreadyExists) {
+		t.Fatalf("want FileAlreadyExistsError (Strict takes precedence), got %v (%T)", err, err)
+	}
+}
+
+func TestPatch_IfMatch_MatchSucceeds(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	vars := map[string]string{"name": "widget"}
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "widget", Value: 1}, vars); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	current, err := os.ReadFile(filepath.Join(dir, "widget.json"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	etag := file.StrongETag(current)
+
+	type valuePatch struct{ Value *int }
+	patchCodec := codex.PartialStruct[valuePatch](
+		codex.PartialField("value", codex.Int(),
+			func(p valuePatch) *int { return p.Value },
+			func(p *valuePatch, v *int) { p.Value = v }),
+	)
+	newValue := 2
+	patcher := file.WithPatch(res, patchCodec, file.Patch{})
+	if err := client.Patch(ctx, patcher, valuePatch{Value: &newValue}, vars, file.WriteOptions{IfMatch: &etag}); err != nil {
+		t.Fatalf("Patch (conditional): %v", err)
+	}
+	gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if got := gotAny.(record); got.Value != 2 {
+		t.Fatalf("want Value=2 after conditional patch, got %+v", got)
+	}
+}
+
+func TestPatch_IfMatch_MismatchRejectsNoWrite(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	vars := map[string]string{"name": "widget"}
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "widget", Value: 1}, vars); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	stale := "stale-etag"
+	type valuePatch struct{ Value *int }
+	patchCodec := codex.PartialStruct[valuePatch](
+		codex.PartialField("value", codex.Int(),
+			func(p valuePatch) *int { return p.Value },
+			func(p *valuePatch, v *int) { p.Value = v }),
+	)
+	newValue := 2
+	patcher := file.WithPatch(res, patchCodec, file.Patch{})
+	err := client.Patch(ctx, patcher, valuePatch{Value: &newValue}, vars, file.WriteOptions{IfMatch: &stale})
+	var mismatch file.ConditionalWriteMismatchError
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("want ConditionalWriteMismatchError, got %v (%T)", err, err)
+	}
+	gotAny, readErr := client.Read(ctx, res.WithRead(file.Read{}), vars)
+	if readErr != nil {
+		t.Fatalf("Read: %v", readErr)
+	}
+	if got := gotAny.(record); got.Value != 1 {
+		t.Fatalf("want content unchanged (Value=1) after rejected conditional patch, got %+v", got)
+	}
+}
+
+func TestConditionalWrite_UnsupportedBackend_RejectsBeforeAnyWrite(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(newNonWalkingBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	vars := map[string]string{"name": "widget"}
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "widget", Value: 1}, vars); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	any := "any-etag"
+	_, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "widget", Value: 2}, vars, file.WriteOptions{IfMatch: &any})
+	var unsupported file.ConditionalWriteUnsupportedError
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("want ConditionalWriteUnsupportedError, got %v (%T)", err, err)
+	}
+	gotAny, readErr := client.Read(ctx, res.WithRead(file.Read{}), vars)
+	if readErr != nil {
+		t.Fatalf("Read: %v", readErr)
+	}
+	if got := gotAny.(record); got.Value != 1 {
+		t.Fatalf("want content unchanged (Value=1), no write attempted, got %+v", got)
+	}
+}
+
+func TestEntry_ETag_ExistsReturnsWeakETag(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	vars := map[string]string{"name": "widget"}
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "widget", Value: 1}, vars); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Exists/Stat deliberately never reads the body — it can only ever
+	// offer a WEAK (ModTime+Size-derived, "W/"-prefixed) ETag, never a
+	// strong content hash. See docs/roadmap/file-api.md's "Conditional
+	// writes" Fork 1.
+	entry, exists, err := client.Exists(ctx, res.WithExists(file.Exists{}), vars)
+	if err != nil {
+		t.Fatalf("Exists: %v", err)
+	}
+	if !exists {
+		t.Fatalf("want exists=true")
+	}
+	if len(entry.ETag) < 2 || entry.ETag[:2] != `W/` {
+		t.Fatalf("want a weak (W/-prefixed) ETag from Stat-derived Exists, got %q", entry.ETag)
+	}
+}
+
+func TestStrongETag_MatchesWriteBytesIfMatchExpectation(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	vars := map[string]string{"name": "widget"}
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "widget", Value: 1}, vars); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	current, err := os.ReadFile(filepath.Join(dir, "widget.json"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	etag := file.StrongETag(current)
+	// A conditional write using the caller's own file.StrongETag(current
+	// bytes) must succeed — confirms the EXACT same hash algorithm
+	// backs both the public helper and WriteBytesIfMatch's own internal
+	// comparison.
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "widget", Value: 2}, vars, file.WriteOptions{IfMatch: &etag}); err != nil {
+		t.Fatalf("Create (conditional, using file.StrongETag directly): %v", err)
+	}
+}

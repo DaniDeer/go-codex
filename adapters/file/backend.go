@@ -8,6 +8,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	apifile "github.com/DaniDeer/go-codex/api/file"
 )
@@ -163,6 +165,42 @@ func (*Backend) DeleteBytes(_ context.Context, path string, opts apifile.DeleteO
 }
 
 // ListDir implements [apifile.Backend].
+// controlFileSuffixes lists this Backend's OWN internal sidecar/lock
+// file naming conventions — ".meta.json" ([MetadataBackend]'s sidecar)
+// and ".lock" (WriteBytesIfMatch's conditional-write lock file). Every
+// entry ending in one of these is excluded from ListDir/WalkDir
+// results: without this, internal/templatematch.MatchNonWildcard's
+// GREEDY {var} capture would otherwise silently match a sidecar/lock
+// file against a resource template like "{name}.json" (e.g.
+// "widget.json.lock" or "widget.json.meta.json" both end in the
+// literal ".json" the template anchors on), producing a bogus List
+// entry with a corrupted captured value — not an error, a silent wrong
+// match. See docs/roadmap/file-api.md's "Conditional writes" section,
+// "Gap found during pre-implementation review," for the full
+// investigation. This is Backend-specific knowledge (a future
+// adapters/s3 has neither sidecar objects nor lock files at all), so
+// the fix lives here, not in the shared dispatch core.
+var controlFileSuffixes = []string{".meta.json", ".lock"}
+
+func isControlFile(name string) bool {
+	for _, suffix := range controlFileSuffixes {
+		if strings.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// entryETag returns "" for directory entries (no content to identify)
+// and a WEAK ([apifile.WeakETag]) ETag otherwise — Stat/ListDir never
+// read the body, so a strong (content-hash) ETag isn't available here.
+func entryETag(isDir bool, modTime time.Time, size int64) string {
+	if isDir {
+		return ""
+	}
+	return apifile.WeakETag(modTime, size)
+}
+
 func (*Backend) ListDir(_ context.Context, path string) ([]apifile.Entry, error) {
 	if path == "" {
 		path = "."
@@ -173,6 +211,9 @@ func (*Backend) ListDir(_ context.Context, path string) ([]apifile.Entry, error)
 	}
 	out := make([]apifile.Entry, 0, len(des))
 	for _, de := range des {
+		if isControlFile(de.Name()) {
+			continue
+		}
 		info, err := de.Info()
 		if err != nil {
 			continue
@@ -182,6 +223,7 @@ func (*Backend) ListDir(_ context.Context, path string) ([]apifile.Entry, error)
 			IsDir:   de.IsDir(),
 			Size:    info.Size(),
 			ModTime: info.ModTime(),
+			ETag:    entryETag(info.IsDir(), info.ModTime(), info.Size()),
 		})
 	}
 	return out, nil
@@ -198,6 +240,7 @@ func (*Backend) Stat(_ context.Context, path string) (apifile.Entry, error) {
 		IsDir:   info.IsDir(),
 		Size:    info.Size(),
 		ModTime: info.ModTime(),
+		ETag:    entryETag(info.IsDir(), info.ModTime(), info.Size()),
 	}, nil
 }
 
@@ -291,6 +334,13 @@ func (b *Backend) WalkDir(ctx context.Context, root string, fn apifile.DirWalkFu
 		if err != nil {
 			return fn(p, apifile.Entry{}, err)
 		}
+		// Control files (".meta.json"/".lock") are NEVER reported to fn
+		// at all — fully invisible to every WalkDir consumer (Recursive
+		// WithList, ports.Dir's recursive/glob-discovery modes), not
+		// just call-but-ignored. See isControlFile's own doc comment.
+		if !de.IsDir() && isControlFile(de.Name()) {
+			return nil
+		}
 		info, infoErr := de.Info()
 		if infoErr != nil {
 			return fn(p, apifile.Entry{}, infoErr)
@@ -300,6 +350,7 @@ func (b *Backend) WalkDir(ctx context.Context, root string, fn apifile.DirWalkFu
 			IsDir:   de.IsDir(),
 			Size:    info.Size(),
 			ModTime: info.ModTime(),
+			ETag:    entryETag(de.IsDir(), info.ModTime(), info.Size()),
 		}, nil)
 	})
 }

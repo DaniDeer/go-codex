@@ -28,6 +28,16 @@ type Entry struct {
 	// BoundMiddleware draws from — api/file's analogue of REST headers/
 	// events User Properties).
 	Metadata map[string]string
+	// ETag is a content-identifying string for optimistic concurrency
+	// (see [WriteOptions.IfMatch] / [ConditionalWriteBackend]) — a
+	// STRONG (content-hash) value when computed from content already in
+	// hand, a WEAK (`W/"..."`, HTTP-style, ModTime+Size-derived)
+	// approximation when only metadata is available (e.g. this Entry
+	// came from [Backend.Stat]/[Backend.ListDir], which never read the
+	// body). Empty for directory entries (IsDir == true — no content to
+	// identify). See docs/roadmap/file-api.md's "Conditional writes"
+	// section for the full strong-vs-weak computation design.
+	ETag string
 }
 
 // WriteOptions mirrors today's ports.File FileOptions as closely as
@@ -60,6 +70,42 @@ type WriteOptions struct {
 	// optional-extension fallback in this package. See [MetadataBackend]
 	// for the full design.
 	Metadata map[string]string
+	// IfMatch, when non-nil, makes this write CONDITIONAL: it only
+	// commits if path's CURRENT strong ETag equals *IfMatch — see the
+	// "Conditional writes" section of docs/roadmap/file-api.md for the
+	// full cross-backend design. nil (the default) means "unconditional
+	// write," byte-for-byte today's existing behavior — zero overhead,
+	// zero behavior change for every existing caller. Only consulted
+	// when Strict is false — Strict's OWN existence check always wins
+	// when both are set on the same call (see that section's Fork 2).
+	// Requires the attached Backend to implement
+	// [ConditionalWriteBackend]; returns [ConditionalWriteUnsupportedError]
+	// otherwise, before any write is attempted.
+	IfMatch *string
+}
+
+// ConditionalWriteBackend is an OPTIONAL Backend extension for an atomic
+// conditional write — mirrors CopyingBackend/MovingBackend/
+// BatchDeletingBackend/WalkingBackend/DirDeletingBackend's exact
+// type-assertion-guard idiom. A Backend NOT implementing this cannot
+// honor [WriteOptions.IfMatch] at all — the dispatch core returns
+// [ConditionalWriteUnsupportedError] rather than emulating a non-atomic
+// check with a real race window. adapters/file.Backend AND ports's
+// private osBackend BOTH implement this (via a lock-file mechanism); a
+// future adapters/s3 would implement it via S3's own native, server-side
+// If-Match. See docs/roadmap/file-api.md's "Conditional writes" section
+// for the full design.
+type ConditionalWriteBackend interface {
+	// WriteBytesIfMatch behaves like WriteBytes, but commits ONLY if
+	// path's CURRENT strong ETag equals ifMatch — atomically with
+	// respect to every OTHER conditional write attempt through this
+	// same Backend (see each implementation's own doc comment for its
+	// exact atomicity scope). Returns
+	// [ConditionalWriteMismatchError]{Path, Expected, Actual} (not a
+	// generic error) on a mismatch, including when path does not exist
+	// at all — no write performed. ifMatch is never "" (dispatch only
+	// calls this when WriteOptions.IfMatch is non-nil).
+	WriteBytesIfMatch(ctx context.Context, path string, data []byte, ifMatch string, opts WriteOptions) (createdDirs []string, err error)
 }
 
 // DeleteOptions mirrors the backend-agnostic subset of today's

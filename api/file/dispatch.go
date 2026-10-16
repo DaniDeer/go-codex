@@ -338,6 +338,19 @@ func createCore[T any](ctx context.Context, backend Backend, core roleCore[T], r
 	if err != nil {
 		return nil, err
 	}
+	// Conditional write is only ever consulted when Strict is false —
+	// Strict's OWN existence check always wins when both are set on the
+	// same call (see docs/roadmap/file-api.md's "Conditional writes"
+	// Fork 2): Strict routes through the existing unconditional
+	// WriteBytes path below regardless of IfMatch. A capability check
+	// happens as EARLY as possible (before Marshal/metadata/
+	// BoundMiddleware) so an unsupported Backend fails loud and fast,
+	// with zero partial work done.
+	if callerOpts.IfMatch != nil && !callerOpts.Strict {
+		if _, ok := backend.(ConditionalWriteBackend); !ok {
+			return nil, ConditionalWriteUnsupportedError{Path: path, Backend: backend.BackendName()}
+		}
+	}
 	// md (the caller-intended metadata, derived from v's own
 	// metadataMergeFields-tagged fields) is computed BEFORE
 	// runBoundMiddleware so an attached BoundCreateMiddleware's
@@ -369,16 +382,30 @@ func createCore[T any](ctx context.Context, backend Backend, core roleCore[T], r
 	// collision — it represents a more specific, runtime-computed value
 	// layered on top of the resource's own declared fields.
 	opts.Metadata = mergeMetadata(md, boundOutMD)
-	createdDirs, err = backend.WriteBytes(ctx, path, data, opts)
+	if opts.IfMatch != nil && !opts.Strict {
+		cwb := backend.(ConditionalWriteBackend) // already confirmed above
+		createdDirs, err = cwb.WriteBytesIfMatch(ctx, path, data, *opts.IfMatch, opts)
+	} else {
+		createdDirs, err = backend.WriteBytes(ctx, path, data, opts)
+	}
 	if err != nil {
 		recordWrite(obs, path, false, time.Since(start))
 		// A Backend already reporting a specific, typed condition (e.g.
-		// Strict + already-exists) is surfaced as-is, not double-wrapped
-		// in FileWriteError — matches ports.File.Write's own Strict
+		// Strict + already-exists, or a conditional-write
+		// mismatch/timeout) is surfaced as-is, not double-wrapped in
+		// FileWriteError — matches ports.File.Write's own Strict
 		// semantics (bare FileAlreadyExistsError, not a wrapped one).
 		var alreadyExists FileAlreadyExistsError
 		if errors.As(err, &alreadyExists) {
 			return createdDirs, alreadyExists
+		}
+		var mismatch ConditionalWriteMismatchError
+		if errors.As(err, &mismatch) {
+			return createdDirs, mismatch
+		}
+		var lockTimeout ConditionalWriteLockTimeoutError
+		if errors.As(err, &lockTimeout) {
+			return createdDirs, lockTimeout
 		}
 		return createdDirs, FileWriteError{Path: path, Err: err}
 	}
@@ -431,6 +458,13 @@ func patchCore[T, P any](ctx context.Context, backend Backend, core roleCore[T],
 	path, err := core.resource.buildPathWithRouting(routing, vars)
 	if err != nil {
 		return err
+	}
+	// Patch has no Strict concept — IfMatch is always consulted when
+	// set. Same early, fail-fast capability check as createCore's own.
+	if callerOpts.IfMatch != nil {
+		if _, ok := backend.(ConditionalWriteBackend); !ok {
+			return ConditionalWriteUnsupportedError{Path: path, Backend: backend.BackendName()}
+		}
 	}
 	if !core.resource.format.IsPatchable() {
 		return FilePatchNotSupportedError{Path: path}
@@ -499,9 +533,24 @@ func patchCore[T, P any](ctx context.Context, backend Backend, core roleCore[T],
 		writeOpts.Perm = *wire.NativePOSIXMode
 	}
 	writeOpts.Metadata = mergeMetadata(md, boundOutMD)
-	if _, err := backend.WriteBytes(ctx, path, newData, writeOpts); err != nil {
+	var writeErr error
+	if writeOpts.IfMatch != nil {
+		cwb := backend.(ConditionalWriteBackend) // already confirmed above
+		_, writeErr = cwb.WriteBytesIfMatch(ctx, path, newData, *writeOpts.IfMatch, writeOpts)
+	} else {
+		_, writeErr = backend.WriteBytes(ctx, path, newData, writeOpts)
+	}
+	if writeErr != nil {
 		recordWrite(obs, path, false, time.Since(start))
-		return FileWriteError{Path: path, Err: err}
+		var mismatch ConditionalWriteMismatchError
+		if errors.As(writeErr, &mismatch) {
+			return mismatch
+		}
+		var lockTimeout ConditionalWriteLockTimeoutError
+		if errors.As(writeErr, &lockTimeout) {
+			return lockTimeout
+		}
+		return FileWriteError{Path: path, Err: writeErr}
 	}
 	recordWrite(obs, path, true, time.Since(start))
 	return nil

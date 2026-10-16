@@ -372,3 +372,78 @@ func (e SecurityRejectedError) LogValue() slog.Value {
 		slog.Any("err", e.Err),
 	)
 }
+
+// ConditionalWriteMismatchError is returned by [ConditionalWriteBackend
+// .WriteBytesIfMatch] (surfaced via [createCore]/[patchCore]'s
+// [WriteOptions.IfMatch] check) when the supplied IfMatch value does
+// not equal path's current ETag — no write was performed. Also returned
+// when path does not exist at all (there is nothing to match, so any
+// non-empty IfMatch necessarily "doesn't match" — mirrors S3's own real
+// If-Match behavior against a nonexistent object).
+type ConditionalWriteMismatchError struct {
+	Path     string
+	Expected string
+	Actual   string
+}
+
+func (e ConditionalWriteMismatchError) Error() string {
+	return fmt.Sprintf("api/file: path %q: If-Match mismatch: expected ETag %q, got %q", e.Path, e.Expected, e.Actual)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e ConditionalWriteMismatchError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("path", e.Path),
+		slog.String("expected", e.Expected),
+		slog.String("actual", e.Actual),
+	)
+}
+
+// ConditionalWriteUnsupportedError is returned when [WriteOptions.IfMatch]
+// is set but the attached Backend does NOT implement
+// [ConditionalWriteBackend] — raised BEFORE any write is attempted
+// (dispatch fails loud and fast rather than emulating a non-atomic
+// check with a real race window).
+type ConditionalWriteUnsupportedError struct {
+	Path    string
+	Backend string
+}
+
+func (e ConditionalWriteUnsupportedError) Error() string {
+	return fmt.Sprintf("api/file: path %q: conditional write (IfMatch) is not supported by backend %q", e.Path, e.Backend)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e ConditionalWriteUnsupportedError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("path", e.Path),
+		slog.String("backend", e.Backend),
+	)
+}
+
+// ConditionalWriteLockTimeoutError is returned by a lock-file-based
+// [ConditionalWriteBackend] implementation (e.g. adapters/file.Backend,
+// ports's private osBackend) when its bounded acquire-retry loop could
+// not obtain path's lock file within its bound (either the caller's own
+// ctx deadline, or the implementation's internal default ceiling,
+// whichever is reached first) — see docs/roadmap/file-api.md's
+// "Conditional writes" section, Fork 3, for the full retry/timeout
+// design.
+type ConditionalWriteLockTimeoutError struct {
+	Path string
+	Err  error
+}
+
+func (e ConditionalWriteLockTimeoutError) Error() string {
+	return fmt.Sprintf("api/file: path %q: timed out acquiring conditional-write lock: %s", e.Path, e.Err)
+}
+
+func (e ConditionalWriteLockTimeoutError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e ConditionalWriteLockTimeoutError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("path", e.Path),
+		slog.Any("err", e.Err),
+	)
+}
