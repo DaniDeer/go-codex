@@ -1299,11 +1299,11 @@ IMPLEMENTED); Phase 2's own 5 items are being tackled ONE AT A TIME, in
 a confirmed order, each designed to Phase 1's full Go-signature rigor
 before implementation starts. Confirmed order: Recursive `WithList` →
 Conditional writes → Streaming/chunked I/O → `adapters/s3` →
-`adapters/smb`.** The first item (**Recursive `WithList`**, below) is
-fully designed AND IMPLEMENTED. The second item (**Conditional
-writes**, above) is now fully designed — exact signatures, 3 resolved
-design forks, structured errors, Observer notes, and a unit test plan —
-IMPLEMENTATION is a separate, upcoming round. The remaining 3 items
+`adapters/smb`.** The first TWO items (**Recursive `WithList`** and
+**Conditional writes**, both above) are fully designed AND IMPLEMENTED
+— the latter's scope grew during implementation planning to also cover
+`ports.FileOptions.IfMatch` + a new `ports.File[T].Stat` method (see
+that section's own "`ports` mirror" subsection). The remaining 3 items
 (Streaming/chunked I/O, `adapters/s3`, `adapters/smb`) are still at
 outline depth only, each noted with its own open design question,
 unchanged from this doc's prior round. This section replaces round 2's
@@ -1360,19 +1360,36 @@ pagination API) is not decided.
 
 ### Conditional writes (ETag/If-Match optimistic concurrency)
 
-> **Status: DESIGNED to Phase 1's Go-signature rigor — NOT yet
-> implemented.** The second Phase 2 item to reach this level of detail
-> (after Recursive `WithList`). This design round resolved 3 forks via
-> `ask_user`, in order: (1) the portable ETag concept, (2) which roles
-> get conditional-write support, (3) filesystem's atomicity model —
-> each is recorded below with its resolution and rationale, not just
-> the final answer, since the reasoning matters for `adapters/s3`'s
-> eventual implementation of the SAME interfaces. A follow-up
-> pre-implementation review pass found and resolved 3 more gaps (a
-> real `.lock`/`.meta.json`-leak-into-`List` bug — see "Gap found
-> during pre-implementation review" below — plus 2 minor clarifications
-> on the lock-acquire timeout and a nonexistent-target edge case) —
-> all folded into the sections below, not tracked separately.
+> **Status: IMPLEMENTED.** The second Phase 2 item to ship (after
+> Recursive `WithList`). This design resolved 3 forks via `ask_user`,
+> in order: (1) the portable ETag concept, (2) which roles get
+> conditional-write support, (3) filesystem's atomicity model — each is
+> recorded below with its resolution and rationale, not just the final
+> answer, since the reasoning matters for `adapters/s3`'s eventual
+> implementation of the SAME interfaces. A pre-implementation review
+> pass found and resolved 3 more gaps (a real `.lock`/`.meta.json`-leak-
+> into-`List` bug — see "Gap found during pre-implementation review"
+> below — plus 2 minor clarifications on the lock-acquire timeout and a
+> nonexistent-target edge case) — all folded into the sections below.
+>
+> **Scope grew further during the implementation-PLANNING round
+> itself** (3 more `ask_user` rounds, each surfacing a real gap when
+> checked against the ACTUAL current code rather than assumed):
+> `ports.FileOptions` gained its own `IfMatch *string` field (so
+> `ports.osBackend`'s `ConditionalWriteBackend` implementation is
+> genuinely reachable, not dead code); the control-file filter was
+> extended to `WalkDir` (not just `ListDir`) in BOTH backends, since
+> Recursive `WithList` and `ports.Dir`'s own recursive modes both
+> consume `WalkDir` directly; and a brand-new `ports.File[T].Stat`
+> method (+ a public `ports.Entry` alias) was added, since
+> `ports.File` had no `Stat`/`Exists` method at all and extending
+> `IfMatch` without a way to RETRIEVE the current ETag would have been
+> unusable. All 3 are IMPLEMENTED — see `ports/file.go`/
+> `ports/file_backend.go`. The design doc's own "Open question" below
+> (does `Client.Read`/`List` expose the ETag it computes in-flight on
+> the decoded `T` itself?) remains DELIBERATELY DEFERRED — not resolved
+> by this implementation, since the feature works end-to-end via
+> `Client.Exists`/`ports.File.Stat` without it.
 
 #### Fork 1 (resolved): a fallback ETag, computed by api/file itself
 
@@ -1535,15 +1552,23 @@ objects NOR lock files at all, per this doc's own "Backend semantic
 differences" disclosures), so the fix lives at the Backend level, not
 in the shared `listCore`/dispatch-core logic.
 
+**Extended during implementation planning: the SAME filter also
+applies to `WalkDir`, not just `ListDir`**, in BOTH backends — Recursive
+`WithList` (shipped) and `ports.Dir`'s own recursive/glob-discovery
+modes BOTH consume `WalkDir` directly, with the IDENTICAL exposure a
+`ListDir`-only fix would have left completely unaddressed. A filtered
+entry is NEVER passed to the walk callback at all — fully invisible to
+every `WalkDir` consumer, not just call-but-ignored.
+
 No new structured error or API surface change — this is purely a
-`ListDir` BEHAVIOR CORRECTION. Because it retroactively fixes
+`ListDir`/`WalkDir` BEHAVIOR CORRECTION. Because it retroactively fixes
 ALREADY-SHIPPED Phase 1 behavior (the `.meta.json` half), the
-eventual IMPLEMENTATION round should apply the SAME discipline this
-session's `deep-dive-bug-hunt` rounds use for any shipped-code fix:
-reproduce the leak live via a FAILING test first, confirm the fix
-makes it pass, THEN also add the `.lock`-specific proof for the new
-feature — not just add tests after the fact without ever seeing them
-fail against the pre-fix code.
+implementation applied the SAME discipline this session's
+`deep-dive-bug-hunt` rounds use for any shipped-code fix: the leak was
+reproduced live via a FAILING test first (confirmed failing against the
+unfixed `ListDir`), THEN the fix was applied and the SAME test
+confirmed passing — not just added after the fact without ever seeing
+it fail.
 
 New unit test plan rows for this fix are listed in the "Unit test
 plan" table below (`TestListDir_ExcludesMetadataSidecarFiles` and
@@ -1693,19 +1718,48 @@ already provides via `errors.As`.
 |---|---|---|
 | Conditional write | `ConditionalWriteBackend` via a `<path>.lock` file — atomic among COOPERATING conditional writers only; no auto-recovery from a crashed holder (manual `.lock` removal required) | `ConditionalWriteBackend` via `PutObject`'s native, server-side `If-Match` — atomic against EVERY writer (not just cooperating ones), no lock file, no stale-lock concept at all |
 
+#### `ports` mirror (scope grown during implementation planning — IMPLEMENTED)
+
+Conditional writes was originally designed as an `api/file.Client`-only
+feature. While PLANNING its implementation, checking the ACTUAL current
+code surfaced that `ports.osBackend` implementing
+`ConditionalWriteBackend` (as the original design already said it
+would) would be unreachable DEAD CODE — `ports.FileOptions` had no
+`IfMatch` field at all. Resolved (via `ask_user`) to extend
+`ports.File`'s own public surface instead of leaving it dead:
+
+- `ports.FileOptions.IfMatch *string` — threaded into `File.Write`'s
+  existing `file.WriteOptions{...}` construction; `File.Patch` gets it
+  "for free" via its own `fh.Write(...)` delegation at the end of its
+  read-modify-write sequence (the SAME final atomic compare-and-swap
+  step protects it, exactly like `api/file.Client.Patch`'s own
+  `patchCore`).
+- A NEW `ports.File[T].Stat(vars, opts) (Entry, bool, error)` method —
+  mirrors `Client.Exists` exactly. Added because extending `IfMatch`
+  without a way to RETRIEVE the current ETag (`ports.File` had no
+  `Stat`/`Exists` method at all before this) would have made the field
+  reachable but practically unusable.
+- A new public `ports.Entry` (alias for `file.Entry`) and 3 new error
+  aliases (`ConditionalWriteMismatchError`/
+  `ConditionalWriteUnsupportedError`/`ConditionalWriteLockTimeoutError`).
+- `ports.osBackend` implements `WriteBytesIfMatch` via the SAME
+  lock-file mechanism as `adapters/file.Backend` — a deliberate
+  near-duplicate (not shared code), the SAME import-cycle-driven
+  precedent every other `osBackend` method already follows.
+
 #### Open question (deliberately NOT resolved this round)
 
 `Entry.ETag` is populated on values returned by `Stat`/`Exists`/`List`
 (which already return/wrap `Entry`), but `Read`'s own return value is
 the decoded `T` itself, with NO `Entry` wrapper at all — so a caller
 wanting the ETag of a value they just `Read` has no way to get it from
-that SAME call today (they'd need a separate `Exists` call just for the
-ETag). Whether `Client.Read` should ALSO somehow expose the ETag it
-computed in-flight (and if so, how — a second return value would
-change `Read`'s signature, a sibling method would add new API surface)
-is left OPEN for the implementation round to resolve, since it's a
-narrower follow-up question than the 3 forks above, not a blocker to
-drafting this section.
+that SAME call today (they'd need a separate `Exists`/`Stat` call just
+for the ETag). Whether `Client.Read`/`File.Read` should ALSO somehow
+expose the ETag computed in-flight (and if so, how — a second return
+value would change `Read`'s signature, a sibling method would add new
+API surface) remains OPEN — implementation deliberately did NOT resolve
+this (the feature works end-to-end via `Client.Exists`/`ports.File.Stat`
+without it), left as a genuine future follow-up, not silently dropped.
 
 ### Recursive `WithList`
 

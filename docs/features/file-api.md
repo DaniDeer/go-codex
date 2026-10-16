@@ -226,6 +226,8 @@ optional `CopyingBackend` (`io.Copy`) and `MovingBackend` (`os.Rename`)
 extensions for a real fast path; it deliberately does NOT implement
 `BatchDeletingBackend` (no native filesystem batch-delete syscall — a
 backend without it falls back to a generic sequential loop automatically).
+It also implements `ConditionalWriteBackend` — see "Conditional writes"
+below.
 
 ## Capabilities
 
@@ -275,6 +277,36 @@ notes := file.NewResource[Note]("notes/{id}.json", format.JSON(noteCodec),
 `Owner` is decoded from the backend's stored metadata on every `Read`/
 `List`, and encoded back into metadata on every `Create`/`Patch` —
 entirely automatic once declared.
+
+## Conditional writes (ETag/If-Match)
+
+`Entry.ETag` identifies a resource's current content — strong (a real
+content hash) when `Read`/`List` already have the bytes in hand, weak
+(an HTTP-style `W/"..."` approximation, derived from mtime+size) when
+only metadata is available (`Exists`/`Stat`). Retrieve the current
+ETag via `Client.Exists`, then supply it as `WriteOptions.IfMatch` on a
+later `Create`/`Patch` call to make the write CONDITIONAL — it only
+commits if the resource's content hasn't changed since:
+
+```go
+entry, exists, err := client.Exists(ctx, notes.WithExists(file.Exists{}), vars)
+// ... entry.ETag is the note's current content hash ...
+
+ifMatch := entry.ETag
+err = client.Patch(ctx, patcher, patch, vars, file.WriteOptions{IfMatch: &ifMatch})
+var mismatch file.ConditionalWriteMismatchError
+if errors.As(err, &mismatch) {
+    // someone else changed the note first — reread and retry
+}
+```
+
+`adapters/file.NewBackend()` implements this via a lock file
+(`<path>.lock`) that serializes the compare-and-commit step — genuinely
+atomic among conditional writers, with a bounded retry (and an internal
+default timeout, so it never blocks forever) if the lock is already
+held. `Strict:true` always wins when both `Strict` and `IfMatch` are
+set on the same `Create` call. `ports.File`'s own `FileOptions.IfMatch`
++ a new `File.Stat` method mirror this exactly.
 
 ## Further reading
 
