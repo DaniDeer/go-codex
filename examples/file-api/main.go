@@ -217,12 +217,22 @@ func main() {
 	}
 	fmt.Printf("secured read (Security satisfied): %+v\n", securedAny.(Note))
 
-	// 9. List — enumerates the resource's parent directory.
+	// 9. List — enumerates the resource's parent directory. Client.List
+	// returns one []file.ListResult[Note] per discovered entry - a
+	// per-entry failure (decode, merge-field, or Security rejection)
+	// never aborts the whole call, it just becomes that entry's own
+	// Err, with siblings still returned.
 	listAny, err := client.List(ctx, listHandle, nil)
 	if err != nil {
 		log.Fatalf("list: %v", err)
 	}
-	fmt.Printf("list: %d notes found\n", len(listAny.([]Note)))
+	listResults := listAny.([]file.ListResult[Note])
+	for _, r := range listResults {
+		if r.Err != nil {
+			log.Fatalf("list: unexpected per-entry error: %v", r.Err)
+		}
+	}
+	fmt.Printf("list: %d notes found\n", len(listResults))
 
 	// 10. Exists.
 	_, exists, err := client.Exists(ctx, existsHandle, alice)

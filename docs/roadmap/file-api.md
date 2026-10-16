@@ -1174,14 +1174,18 @@ new observer extension needed for either.
 
 ## Phase 1 amendment — `List`/`BatchDelete` per-entry Security (post-ship revision)
 
-> **Status: DESIGNED to Phase 1's Go-signature rigor — NOT yet
-> implemented.** This is a retroactive amendment to ALREADY-SHIPPED
-> Phase 1 behavior (`List` and `BatchDelete`'s Security-gate semantics),
-> surfaced while re-reviewing Recursive `WithList`'s design (below) for
-> gaps — not new Phase 2 scope, tracked here as its own section since it
-> changes existing, tested code and needs its own existing-test review.
+> **Status: IMPLEMENTED.** `ListResult[T]`, `listCore`'s per-entry
+> Security gating (passing the actual decoded value), and
+> `batchDeleteCore`'s per-path Security gating all shipped exactly as
+> designed below — see the "Existing-test impact" subsection for the
+> concrete rewrites this required. This was a retroactive amendment to
+> ALREADY-SHIPPED Phase 1 behavior (`List` and `BatchDelete`'s
+> Security-gate semantics), surfaced while re-reviewing Recursive
+> `WithList`'s design (below) for gaps — not new Phase 2 scope, tracked
+> here as its own section since it changed existing, tested code.
 > Recursive `WithList` is DESIGNED ON TOP of this amended model, not the
-> original once-per-call one.
+> original once-per-call one — its own implementation is a separate,
+> later round.
 
 ### Motivation
 

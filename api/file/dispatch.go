@@ -583,57 +583,65 @@ func (h *ListHandle[T]) dispatchList(ctx context.Context, backend Backend, vars 
 	return listCore[T](ctx, backend, h.core, h.routing, vars)
 }
 
+// listEntry decodes+merges one discovered filename into a ListResult,
+// running that entry's OWN per-entry Security gate (passing the
+// decoded value, once available) — see the "Phase 1 amendment" section
+// of docs/roadmap/file-api.md. Every failure (decode, merge-field,
+// metadata-read, OR Security rejection) becomes this entry's own Err;
+// listCore never aborts its loop because of this function's return.
+func listEntry[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, vars map[string]string, dirPath string, obs stats.Observer, name string) ListResult[T] {
+	childPath := joinPath(dirPath, name)
+	data, err := backend.ReadBytes(ctx, childPath)
+	if err != nil {
+		return ListResult[T]{Err: applyErrorPattern(core, FileReadError{Path: childPath, Err: err})}
+	}
+	v, err := core.resource.format.Unmarshal(data)
+	if err != nil {
+		stats.ReportErrors(obs, "file", err)
+		return ListResult[T]{Err: applyErrorPattern(core, FileDecodeError{Path: childPath, Err: err})}
+	}
+	entryVars, err := entryListVars(routing, core, vars, name)
+	if err != nil {
+		return ListResult[T]{Err: applyErrorPattern(core, err)}
+	}
+	if err := applyPathMergeFields(entryVars, core, &v); err != nil {
+		return ListResult[T]{Err: applyErrorPattern(core, err)}
+	}
+	if err := applyMetadataMergeFields(ctx, backend, childPath, core, &v, obs); err != nil {
+		return ListResult[T]{Err: applyErrorPattern(core, err)}
+	}
+	// Per-entry Security gate — passes the ACTUAL decoded value (unlike
+	// every other role's once-per-call gate, which has no single T to
+	// offer yet at gate time).
+	if _, err := runBoundMiddleware(ctx, childPath, core, &v, nil); err != nil {
+		return ListResult[T]{Err: applyErrorPattern(core, err)}
+	}
+	return ListResult[T]{Value: v}
+}
+
 func listCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, vars map[string]string) (result any, err error) {
 	defer func() { err = applyErrorPattern(core, err) }()
 	obs := obsFromCtx(ctx)
-	path, err := core.resource.buildParentDirWithRouting(routing, vars)
+	dirPath, err := core.resource.buildParentDirWithRouting(routing, vars)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := runBoundMiddleware(ctx, path, core, nil, nil); err != nil {
-		return nil, err
-	}
-	ctx, endSpan := startSpan(ctx, obs, "file.list", path)
+	ctx, endSpan := startSpan(ctx, obs, "file.list", dirPath)
 	defer func() { endSpan(err) }()
 	start := time.Now()
-	entries, err := backend.ListDir(ctx, path)
+	entries, err := backend.ListDir(ctx, dirPath)
 	if err != nil {
-		recordList(obs, path, false, 0, time.Since(start))
-		return nil, FileReadError{Path: path, Err: err}
+		recordList(obs, dirPath, false, 0, time.Since(start))
+		return nil, FileReadError{Path: dirPath, Err: err}
 	}
-	out := make([]T, 0, len(entries))
+	out := make([]ListResult[T], 0, len(entries))
 	for _, e := range entries {
 		if e.IsDir {
 			continue
 		}
-		childPath := joinPath(path, e.Name)
-		data, err := backend.ReadBytes(ctx, childPath)
-		if err != nil {
-			recordList(obs, path, false, len(out), time.Since(start))
-			return nil, FileReadError{Path: childPath, Err: err}
-		}
-		v, err := core.resource.format.Unmarshal(data)
-		if err != nil {
-			stats.ReportErrors(obs, "file", err)
-			recordList(obs, path, false, len(out), time.Since(start))
-			return nil, FileDecodeError{Path: childPath, Err: err}
-		}
-		entryVars, err := entryListVars(routing, core, vars, e.Name)
-		if err != nil {
-			recordList(obs, path, false, len(out), time.Since(start))
-			return nil, err
-		}
-		if err := applyPathMergeFields(entryVars, core, &v); err != nil {
-			recordList(obs, path, false, len(out), time.Since(start))
-			return nil, err
-		}
-		if err := applyMetadataMergeFields(ctx, backend, childPath, core, &v, obs); err != nil {
-			recordList(obs, path, false, len(out), time.Since(start))
-			return nil, err
-		}
-		out = append(out, v)
+		out = append(out, listEntry(ctx, backend, core, routing, vars, dirPath, obs, e.Name))
 	}
-	recordList(obs, path, true, len(out), time.Since(start))
+	recordList(obs, dirPath, true, len(out), time.Since(start))
 	return out, nil
 }
 
@@ -963,9 +971,10 @@ func (h *BatchDeleteHandle[T]) dispatchBatchDelete(ctx context.Context, backend 
 
 // batchDeleteCore implements the native-vs-sequential-loop fallback —
 // UNLIKE Move, it does NOT delegate to Deleter[T]'s own dispatch:
-// Security is checked ONCE per BATCH here, not once per key, so routing
-// each key through Deleter[T]'s full dispatch (which would re-check
-// Security per key) would be incorrect, not just redundant.
+// Security is checked per-PATH here directly (not via Deleter[T]'s full
+// dispatch, which would redundantly re-resolve the path/wire/Capability
+// machinery per key). See docs/roadmap/file-api.md's "Phase 1
+// amendment" section for the per-path Security-gating rationale.
 func batchDeleteCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, varsList []map[string]string) (result []BatchDeleteResult, err error) {
 	defer func() { err = applyErrorPattern(core, err) }()
 	obs := obsFromCtx(ctx)
@@ -984,40 +993,54 @@ func batchDeleteCore[T any](ctx context.Context, backend Backend, core roleCore[
 		}
 		paths[i] = path
 	}
-	// BatchDelete has no single path to label the Security gate with
-	// (unlike every other role) — runs ONCE for the whole batch, not
-	// once per path, consistent with this role's own established
-	// "Security checked once per batch, not once per item" design (see
-	// Client.BatchDelete's doc comment).
-	if _, err := runBoundMiddleware(ctx, "", core, nil, nil); err != nil {
-		return nil, err
-	}
 	ctx, endSpan := startSpan(ctx, obs, "file.batchdelete", "")
 	defer func() { endSpan(err) }()
 
+	// Per-PATH Security gate — each path in the batch gets its own
+	// runBoundMiddleware call (no single T to offer, mirrors the other
+	// no-T roles' invoke shape), independent of its siblings. A
+	// rejected path becomes its own BatchDeleteResult.Err up front;
+	// surviving paths proceed to the native/fallback delete call below.
+	// Tracked by ORIGINAL INDEX (not path string) so duplicate paths in
+	// varsList are each handled independently, not collapsed.
 	start := time.Now()
-	if bdb, ok := backend.(BatchDeletingBackend); ok {
-		results, err := bdb.DeleteBytesBatch(ctx, paths)
-		if err != nil {
-			recordBatchDelete(obs, paths, 0, len(paths), time.Since(start))
-			return nil, err
+	merged := make([]BatchDeleteResult, len(paths))
+	survivorIdx := make([]int, 0, len(paths))
+	survivors := make([]string, 0, len(paths))
+	for i, path := range paths {
+		if _, err := runBoundMiddleware(ctx, path, core, nil, nil); err != nil {
+			merged[i] = BatchDeleteResult{Path: path, Err: applyErrorPattern(core, err)}
+			continue
 		}
-		success, failure := countResults(results)
-		recordBatchDelete(obs, paths, success, failure, time.Since(start))
-		return results, nil
+		survivorIdx = append(survivorIdx, i)
+		survivors = append(survivors, path)
 	}
 
-	results := make([]BatchDeleteResult, len(paths))
-	for i, path := range paths {
-		existed, deleteErr := backend.DeleteBytes(ctx, path, DeleteOptions{})
-		results[i] = BatchDeleteResult{Path: path, Existed: existed}
-		if deleteErr != nil {
-			results[i].Err = FileDeleteError{Path: path, Err: deleteErr}
+	if bdb, ok := backend.(BatchDeletingBackend); ok {
+		if len(survivors) > 0 {
+			nativeResults, err := bdb.DeleteBytesBatch(ctx, survivors)
+			if err != nil {
+				recordBatchDelete(obs, paths, 0, len(paths), time.Since(start))
+				return nil, err
+			}
+			for j, r := range nativeResults {
+				merged[survivorIdx[j]] = r
+			}
+		}
+	} else {
+		for j, path := range survivors {
+			existed, deleteErr := backend.DeleteBytes(ctx, path, DeleteOptions{})
+			r := BatchDeleteResult{Path: path, Existed: existed}
+			if deleteErr != nil {
+				r.Err = applyErrorPattern(core, FileDeleteError{Path: path, Err: deleteErr})
+			}
+			merged[survivorIdx[j]] = r
 		}
 	}
-	success, failure := countResults(results)
+
+	success, failure := countResults(merged)
 	recordBatchDelete(obs, paths, success, failure, time.Since(start))
-	return results, nil
+	return merged, nil
 }
 
 func countResults(results []BatchDeleteResult) (success, failure int) {

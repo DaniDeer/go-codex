@@ -121,12 +121,17 @@ func TestClient_List_ReturnsDecodedEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	got, ok := gotAny.([]record)
+	got, ok := gotAny.([]file.ListResult[record])
 	if !ok {
-		t.Fatalf("List: want []record, got %T", gotAny)
+		t.Fatalf("List: want []file.ListResult[record], got %T", gotAny)
 	}
 	if len(got) != 2 {
 		t.Fatalf("List: want 2 entries, got %d", len(got))
+	}
+	for _, r := range got {
+		if r.Err != nil {
+			t.Fatalf("List: unexpected per-entry error %v", r.Err)
+		}
 	}
 }
 
@@ -816,13 +821,16 @@ func TestLister_MergesPathVarIntoEachEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	got := gotAny.([]recordWithOwner)
+	got := gotAny.([]file.ListResult[recordWithOwner])
 	if len(got) != 2 {
 		t.Fatalf("List: want 2 entries, got %d", len(got))
 	}
 	names := map[string]bool{}
 	for _, r := range got {
-		names[r.Name] = true
+		if r.Err != nil {
+			t.Fatalf("List: unexpected per-entry error %v", r.Err)
+		}
+		names[r.Value.Name] = true
 	}
 	if !names["first"] || !names["second"] {
 		t.Fatalf("List: want Name merged in from each entry's filename, got %+v", got)
@@ -853,10 +861,31 @@ func TestLister_NonMatchingEntry_ReturnsFilePathMismatchError(t *testing.T) {
 		t.Fatalf("write stray file: %v", err)
 	}
 
-	_, err := client.List(ctx, res.WithList(file.List{}), nil)
-	var mismatch file.FilePathMismatchError
-	if !errors.As(err, &mismatch) {
-		t.Fatalf("want FilePathMismatchError, got %v (%T)", err, err)
+	// Per the Phase 1 amendment, a per-entry failure (like this
+	// template mismatch) no longer fails the WHOLE call - it becomes
+	// that entry's own ListResult.Err, with siblings (here, "ok")
+	// still returned successfully.
+	gotAny, err := client.List(ctx, res.WithList(file.List{}), nil)
+	if err != nil {
+		t.Fatalf("List: unexpected call-level error %v", err)
+	}
+	got := gotAny.([]file.ListResult[recordWithOwner])
+	var found file.FilePathMismatchError
+	var okCount int
+	for _, r := range got {
+		if r.Err != nil {
+			if !errors.As(r.Err, &found) {
+				t.Fatalf("want FilePathMismatchError, got %v (%T)", r.Err, r.Err)
+			}
+			continue
+		}
+		okCount++
+	}
+	if found.Template == "" {
+		t.Fatalf("List: want one entry's Err to be FilePathMismatchError, got %+v", got)
+	}
+	if okCount != 1 {
+		t.Fatalf("List: want 1 successful sibling entry, got %d (of %+v)", okCount, got)
 	}
 }
 
@@ -875,8 +904,12 @@ func TestLister_NoMergeFieldsDeclared_UnaffectedRegression(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(gotAny.([]record)) != 1 {
-		t.Fatalf("List: want 1 entry, got %+v", gotAny)
+	got := gotAny.([]file.ListResult[record])
+	if len(got) != 1 {
+		t.Fatalf("List: want 1 entry, got %+v", got)
+	}
+	if got[0].Err != nil {
+		t.Fatalf("List: unexpected per-entry error %v", got[0].Err)
 	}
 }
 
@@ -1332,9 +1365,16 @@ func TestListCore_DecodeFailure_ReportsValidationErrorsToObserver(t *testing.T) 
 	spy := &validationSpy{}
 	ctx := stats.WithObserver(context.Background(), spy)
 
-	_, err := client.List(ctx, res.WithList(file.List{}), nil)
-	if err == nil {
-		t.Fatal("expected a decode error, got nil")
+	// Per the Phase 1 amendment, a per-entry decode failure becomes
+	// that entry's own ListResult.Err - it no longer fails the whole
+	// call - but stats.ReportErrors must still fire for it.
+	gotAny, err := client.List(ctx, res.WithList(file.List{}), nil)
+	if err != nil {
+		t.Fatalf("List: unexpected call-level error %v", err)
+	}
+	got := gotAny.([]file.ListResult[record])
+	if len(got) != 1 || got[0].Err == nil {
+		t.Fatalf("expected one entry with a decode error, got %+v", got)
 	}
 	if len(spy.calls) == 0 {
 		t.Errorf("RecordValidationError was never called on listCore's decode failure")
@@ -1443,5 +1483,191 @@ func TestMoveCore_NativeMovingBackend_CarriesMetadataOver(t *testing.T) {
 	got := gotAny.(recordWithOwner)
 	if got.Owner != "team-a" {
 		t.Fatalf("Owner = %q, want %q — Move (native MovingBackend) must carry metadata over", got.Owner, "team-a")
+	}
+}
+
+// ── Phase 1 amendment: List/BatchDelete per-entry Security ───────────────
+
+func TestLister_PerEntrySecurityRejection_SiblingsStillSucceed(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	for _, name := range []string{"allowed", "blocked"} {
+		if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: name, Value: 1}, map[string]string{"name": name}); err != nil {
+			t.Fatalf("Create(%s): %v", name, err)
+		}
+	}
+
+	bm := file.BoundSecurityListMiddleware[record, struct{}, grantedOut](
+		"apiKey", file.SecurityScheme{}, []string{"read"},
+		func(ctx context.Context, v *record, in struct{}) (grantedOut, error) {
+			if v != nil && v.Name == "blocked" {
+				return grantedOut{GrantedScopes: map[string][]string{"apiKey": {"wrong-scope"}}}, nil
+			}
+			return grantedOut{GrantedScopes: map[string][]string{"apiKey": {"read"}}}, nil
+		},
+	)
+	lister := res.WithList(file.List{}).ListBoundMW(bm).WithSecurity(file.SecurityRequirement{"apiKey": {"read"}})
+
+	gotAny, err := client.List(ctx, lister, nil)
+	if err != nil {
+		t.Fatalf("List: unexpected call-level error %v", err)
+	}
+	got := gotAny.([]file.ListResult[record])
+	if len(got) != 2 {
+		t.Fatalf("List: want 2 entries, got %+v", got)
+	}
+	var rejectedCount, okCount int
+	for _, r := range got {
+		if r.Err != nil {
+			var secErr file.SecurityRejectedError
+			if !errors.As(r.Err, &secErr) {
+				t.Fatalf("want SecurityRejectedError, got %v (%T)", r.Err, r.Err)
+			}
+			rejectedCount++
+			continue
+		}
+		okCount++
+	}
+	if rejectedCount != 1 || okCount != 1 {
+		t.Fatalf("want 1 rejected + 1 ok, got rejected=%d ok=%d (%+v)", rejectedCount, okCount, got)
+	}
+}
+
+func TestLister_BoundMiddleware_ReceivesActualDecodedValue(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "item", Value: 42}, map[string]string{"name": "item"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	var sawValue int
+	bm := file.NewBoundListMiddleware[record, struct{}, struct{}](
+		file.NewDeclaration("observe", codex.Struct[struct{}](), codex.Struct[struct{}]()),
+		func(ctx context.Context, v *record, in struct{}) (struct{}, error) {
+			if v != nil {
+				sawValue = v.Value
+			}
+			return struct{}{}, nil
+		},
+	)
+	lister := res.WithList(file.List{}).ListBoundMW(bm)
+	gotAny, err := client.List(ctx, lister, nil)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	got := gotAny.([]file.ListResult[record])
+	if len(got) != 1 || got[0].Err != nil {
+		t.Fatalf("List: want 1 clean entry, got %+v", got)
+	}
+	if sawValue != 42 {
+		t.Fatalf("BoundListMiddleware: want it to observe the decoded value (42), got %d", sawValue)
+	}
+}
+
+func TestListCore_WalkLevelError_StillFailsWholeCall(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "does-not-exist")
+	res := file.NewResource[record](filepath.Join(missing, "{name}.json"), format.JSON(recordCodec()),
+		file.PathParam{Name: "name"})
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	_, err := client.List(context.Background(), res.WithList(file.List{}), nil)
+	var readErr file.FileReadError
+	if err == nil || !errors.As(err, &readErr) {
+		t.Fatalf("want a whole-call FileReadError (walk-level failure), got %v (%T)", err, err)
+	}
+}
+
+func TestListCore_ObserverCount_IncludesFailedEntries(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "good.json"), []byte(`{"name":"good","value":1}`), 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "bad.json"), []byte(`{"name":"bad","value":"not-an-int"}`), 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	res := file.NewResource[record](filepath.Join(dir, "{name}.json"), format.JSON(recordCodec()),
+		file.PathParam{Name: "name"})
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	gotAny, err := client.List(context.Background(), res.WithList(file.List{}), nil)
+	if err != nil {
+		t.Fatalf("List: unexpected call-level error %v", err)
+	}
+	got := gotAny.([]file.ListResult[record])
+	if len(got) != 2 {
+		t.Fatalf("want 2 entries (1 ok + 1 failed) counted, got %d (%+v)", len(got), got)
+	}
+}
+
+// TestBatchDeleter_PerPathSecurityRejection_EachPathGatedIndependently
+// proves the per-path gate runs for EVERY path in the batch
+// independently (not once for the whole batch) — BoundBatchDeleteMiddleware
+// has no *T/path to branch on (the no-T role shape), so this test
+// confirms the gate's effect: every result's own Path is correctly
+// reported, every one is independently rejected, and nothing was
+// actually deleted (both files still exist on disk).
+func TestBatchDeleter_PerPathSecurityRejection_EachPathGatedIndependently(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	for _, name := range []string{"allowed", "blocked"} {
+		if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: name, Value: 1}, map[string]string{"name": name}); err != nil {
+			t.Fatalf("Create(%s): %v", name, err)
+		}
+	}
+
+	bm := file.BoundSecurityBatchDeleteMiddleware[struct{}, grantedOut](
+		"apiKey", file.SecurityScheme{}, []string{"delete"},
+		func(ctx context.Context, in struct{}) (grantedOut, error) {
+			return grantedOut{GrantedScopes: map[string][]string{"apiKey": {"wrong-scope"}}}, nil
+		},
+	)
+	batchDeleter := res.WithBatchDelete(file.BatchDelete{}).BatchDeleteBoundMW(bm).WithSecurity(file.SecurityRequirement{"apiKey": {"delete"}})
+
+	results, err := client.BatchDelete(ctx, batchDeleter, []map[string]string{
+		{"name": "allowed"}, {"name": "blocked"},
+	})
+	if err != nil {
+		t.Fatalf("BatchDelete: unexpected call-level error %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("want 2 results, got %+v", results)
+	}
+	gotPaths := map[string]bool{}
+	for _, r := range results {
+		var secErr file.SecurityRejectedError
+		if !errors.As(r.Err, &secErr) {
+			t.Fatalf("want every path independently rejected, got %+v", r)
+		}
+		gotPaths[r.Path] = true
+	}
+	if len(gotPaths) != 2 {
+		t.Fatalf("want 2 distinct paths each with their own result, got %+v", gotPaths)
+	}
+	for _, name := range []string{"allowed", "blocked"} {
+		if _, err := os.Stat(filepath.Join(dir, name+".json")); err != nil {
+			t.Fatalf("%s.json should NOT have been deleted (rejected by Security): %v", name, err)
+		}
 	}
 }
