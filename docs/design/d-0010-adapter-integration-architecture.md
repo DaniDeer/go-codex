@@ -53,7 +53,7 @@
 > **`api/file` Full-Parity round** (part of `api/file`'s Phase 1 "full
 > Router + Declarative Middleware parity" effort): added a 5th
 > API-defined conformance-test package, `api/file/filetest` — the SAME
-> 7-scenario taxonomy as `resttest`/`eventstest`/`reqreplytest`
+> scenario taxonomy as `resttest`/`eventstest`/`reqreplytest`
 > (round-trip, path-param merge field, security gate, ordered middleware
 > chain, declared ErrorPattern mapping, capability-requirement rejection,
 > observability hook), parameterized over a `file.Backend` instead of an
@@ -76,7 +76,32 @@
 > satisfied (`api/file/dispatch.go` is the one and only dispatch core —
 > no N-way per-backend duplication exists yet, since only
 > `adapters/file` consumes it today — so no `restdispatch`-style
-> extraction was needed).
+> extraction was needed). A LATER round added an 8th scenario,
+> `AssertMetadataIntegration` (the file-metadata merge-field axis) —
+> this entry's own original "7-scenario" count is now stale; corrected
+> here rather than silently left wrong.
+>
+> **`api/file` Phase 2 cross-checks** (`docs/roadmap/file-api.md`'s own
+> Phase 2 items, each designed AFTER this doc graduated, cross-checked
+> against it during their OWN pre-implementation review rounds rather
+> than assumed consistent): Streaming/chunked reads and writes'
+> design round found `filetest`'s 8-scenario taxonomy had never been
+> extended for ANY Phase 2 item (Recursive `WithList`, Conditional
+> writes, or Streaming itself) despite being THIS doc's own established
+> adapter-compliance mechanism — resolved by adding a 9th scenario,
+> `AssertStreamRoundTrip`, as part of Streaming's design (Recursive
+> `WithList`/Conditional writes' own `filetest` gaps remain a separate,
+> explicitly-named follow-up, not retroactively fixed here). That same
+> review also introduced a new `stats.FileObserver.RecordFileRangeRead`
+> method, applying this doc's own "transport-guaranteed vs.
+> adapter-approximated" capability axis (see "Boolean and parameterized
+> capabilities" below) to `api/file`'s optional-Backend-extension
+> fallback tiers — the first time that axis has been applied outside
+> the `file.Capability`/`CheckCapabilityCoverage` mechanism it was
+> originally written for, confirmed as a complementary, not competing,
+> application of the same idea. See `docs/roadmap/file-api.md`'s own
+> "Streaming/chunked reads and writes" section for the full detail —
+> not duplicated here.
 
 ## Status detail (full history, preserved from the roadmap)
 

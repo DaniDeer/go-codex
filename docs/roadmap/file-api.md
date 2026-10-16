@@ -1369,7 +1369,18 @@ full design, not resolved here.
 > retroactively extended to a third suffix; and a missing Router/
 > Declarative-Middleware integration for the 2 new roles, now given
 > full parity) — all folded into the sections below, not tracked
-> separately.
+> separately. A SECOND review pass verified that round's Router/
+> Middleware signatures against the real code (clean, no errors found)
+> and cross-checked the whole design against
+> `docs/design/d-0010-adapter-integration-architecture.md`, finding and
+> resolving 3 more items: a clarifying note distinguishing
+> `file.Capability` from the optional-Backend-extension idiom; a new
+> `stats.FileObserver.RecordFileRangeRead` method (D-0010's
+> "transport-guaranteed vs. adapter-approximated" capability axis,
+> applied here); and a new `filetest.AssertStreamRoundTrip` conformance
+> scenario (D-0010's own established adapter-compliance mechanism,
+> extended for Streaming — Recursive `WithList`/Conditional writes'
+> own `filetest` gaps remain a separate, explicitly-named follow-up).
 
 #### Research grounding this design
 
@@ -1535,6 +1546,24 @@ type RangeReadingBackend interface {
    "no false portability, always correct, sometimes slower" idiom this
    doc's every other optional-extension fallback already uses.
 
+**Relationship to `file.Capability` (clarified, found during this
+round's D-0010 cross-check — not a conflict, a distinct mechanism)**:
+`StreamWriteBackend`/`StreamReadBackend`/`RangeReadingBackend` are
+OPTIONAL BACKEND EXTENSIONS (the SAME `CopyingBackend`/`MovingBackend`/
+`BatchDeletingBackend`/`ConditionalWriteBackend` idiom — type-assertion-
+guarded, ALWAYS works via a universal fallback, never rejected) — a
+DIFFERENT mechanism from `file.Capability`/`CheckCapabilityCoverage`
+(D-0010's "Capabilities are requirements, not transport options"
+section — declare-time, semantic REQUIREMENTS that get REJECTED
+outright when unsupported, e.g. `RequireAccessMode()`). Both are
+legitimate, complementary mechanisms in this package, not competing
+ones: a `Capability` requirement says "this role CANNOT run at all
+without X"; an optional Backend extension says "this role ALWAYS
+works, just faster/more-precisely when X is available." Range reads
+are a graceful-degradation concern (always correct, sometimes slower),
+not a hard requirement — the right fit is the optional-extension
+idiom, not a new `file.Capability`.
+
 **`OpenWrite`'s commit**: the SAME temp-file+rename atomicity as
 `StreamWriteBackend.OpenWriter` above — ONE atomicity story for every
 streaming write path in this package, not two competing ones. A
@@ -1638,6 +1667,33 @@ recoverable mid-stream error); only `Close()`'s own return value is
 authoritative, mirroring how a plain `io.Closer`'s contract already
 works in Go generally.
 
+**`RecordFileRangeRead` — a NEW `stats.FileObserver` method (found
+during this round's D-0010 cross-check)**: D-0010 names an
+"observable-to-application vs. implementation-detail-only" capability
+axis, paired with "transport-guaranteed vs. adapter-approximated" —
+whether a degraded/approximated capability's satisfaction mode should
+be queryable. `OpenRead`'s own 3-level range fallback cascade had NO
+equivalent before this round — a caller had no way to tell whether
+their ranged request was served by a real native seek or one of the
+2 approximated fallback tiers. Resolved by adding:
+
+```go
+// RecordFileRangeRead is called ONCE per range-requesting OpenRead
+// call, at dispatch time (the fallback tier used is an Open-time
+// fact — independent of the overall RecordFileRead-on-Close duration
+// tracking above). native reports whether RangeReadingBackend served
+// the request natively (true) vs. one of the 2 approximated fallback
+// tiers (false) — mirrors D-0010's own "transport-guaranteed vs.
+// adapter-approximated" capability axis, applied here to Backend
+// optional-extension fallback tiers instead of file.Capability.
+RecordFileRangeRead(path string, native bool, offset, length int64, d time.Duration)
+```
+
+Blast radius confirmed bounded (same scope every prior new
+`FileObserver` method addition this session has had): exactly 3
+existing `stats.FileObserver` implementers in this repo
+(`LoggingObserver`/`fanout`/`NoopObserver`).
+
 #### Scope limits (disclosed, not silently hidden)
 
 - **`ErrorPattern` only covers `Open`/`Close`-time dispatch-level
@@ -1699,6 +1755,31 @@ first, confirm it fails, then apply the fix and confirm it passes) —
 not just add a `OpenWrite`-specific test without ever proving the
 ALREADY-SHIPPED path was actually affected too.
 
+#### Conformance suite (`filetest`) — new scenario (found during this round's D-0010 cross-check)
+
+D-0010 (`docs/design/d-0010-adapter-integration-architecture.md`)
+establishes `api/file/filetest`'s own 8-scenario taxonomy as THE
+mechanism FUTURE adapters (`adapters/s3`/`adapters/smb`) are meant to
+prove compliance against — but it has never been extended for ANY of
+Phase 2's 3 designed items so far (Recursive `WithList`, Conditional
+writes, Streaming). **Resolved: Streaming gets a new scenario NOW** —
+`AssertStreamRoundTrip(t *testing.T, backend file.Backend)`: declares a
+resource, builds a `StreamWriter`+`StreamReader`, round-trips content
+via `OpenWrite`→`OpenRead` (whole-file) AND a ranged `OpenRead` (folded
+into the SAME scenario, not a separate one, for scope discipline) —
+proves ROLE-DISPATCH correctness (works on ANY `file.Backend`, via
+whatever fallback tier applies), mirroring `AssertReadWriteRoundTrip`'s
+own universality principle — NOT specifically proving a fast-path
+optional extension is implemented (that's `RecordFileRangeRead`'s own
+job, above, observed separately). Wired into `adapters/file`'s own
+`conformance_test.go` as the real, independent proof, same as every
+other scenario.
+
+**Recursive `WithList`/Conditional writes' own `filetest` gaps remain
+explicitly OUT of scope for this round** — tracked as their own,
+separate, not-yet-scheduled follow-up, not silently folded in here nor
+silently forgotten.
+
 #### Unit test plan
 
 | Test | Verifies |
@@ -1719,6 +1800,9 @@ ALREADY-SHIPPED path was actually affected too.
 | `TestStreamWrite_MidStreamError_NotWrappedByErrorPattern` | A mid-stream write error on the returned `io.WriteCloser` is a plain error, NOT an `ErrorPatternMatchedError`, even when the role has `ErrorPatterns` declared |
 | `TestListDir_ExcludesTempFiles` | A `.tmp-*` commit temp file left behind by an in-flight (or crashed) `WriteBytesIfMatch`/`OpenWrite` call is excluded from `List` — proven against BOTH `adapters/file.Backend` and `ports.osBackend`, and against BOTH the already-shipped `WriteBytesIfMatch` path and the new `OpenWrite` path (retroactive regression proof + new-feature proof, same discipline as the `.meta.json` fix) |
 | `TestStreamReader_Router_GroupedResourceComposesPrefix` | A `StreamReader[T]` registered under a `Router.Group(...)` prefix resolves the CORRECT, prefixed path when dispatched via `Client.OpenRead` — proves Router integration genuinely works end-to-end, not just that the methods exist |
+| `TestStreamReader_OpenRead_Range_ObserverReportsNativeTrueWithRangeReadingBackend` | `RecordFileRangeRead`'s `native` reports `true` when a `RangeReadingBackend`-implementing Backend serves the ranged request |
+| `TestStreamReader_OpenRead_Range_ObserverReportsNativeFalseOnFallback` | `RecordFileRangeRead`'s `native` reports `false` when EITHER fallback tier (discard-then-limit or whole-file-then-slice) serves the ranged request |
+| `TestFiletestConformance_StreamRoundTrip_ProvenAgainstAdaptersFile` | `filetest.AssertStreamRoundTrip` is wired into `adapters/file`'s own `conformance_test.go` and passes — the real, independent proof every other scenario already has |
 
 #### Backend semantic differences (new rows)
 
@@ -1726,7 +1810,7 @@ ALREADY-SHIPPED path was actually affected too.
 |---|---|---|
 | Format-level write streaming | `StreamWriteBackend` via `os.CreateTemp`+`os.Rename` (same atomicity pattern as `ConditionalWriteBackend`) | Would implement via `PutObject`'s own streaming body upload |
 | Raw byte-stream read | `StreamReadBackend` via a plain `os.Open` handle | Would implement via `GetObject`'s own streaming response body |
-| Byte-range read | `RangeReadingBackend` NOT implemented by `adapters/file.Backend` in Phase 2 (falls back to the discard-then-limit `StreamReadBackend` wrapper — a real seek via `os.File.Seek` would be a reasonable, cheap future enhancement, not required to ship this design) | `GetObject`'s native `Range` header — the PRIMARY real-world motivating case for `RangeReadingBackend` existing at all |
+| Byte-range read | `RangeReadingBackend` NOT implemented by `adapters/file.Backend` in Phase 2 (falls back to the discard-then-limit `StreamReadBackend` wrapper — a real seek via `os.File.Seek` would be a reasonable, cheap future enhancement, not required to ship this design); `RecordFileRangeRead`'s `native` is always `false` | `GetObject`'s native `Range` header — the PRIMARY real-world motivating case for `RangeReadingBackend` existing at all; `RecordFileRangeRead`'s `native` is always `true` |
 | Raw byte-stream write | `StreamWriteBackend` (same as format-level streaming — ONE mechanism serves both) | Would implement via `PutObject`'s own streaming body upload |
 
 ### Conditional writes (ETag/If-Match optimistic concurrency)
