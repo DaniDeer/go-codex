@@ -1300,7 +1300,11 @@ a confirmed order, each designed to Phase 1's full Go-signature rigor
 before implementation starts. Confirmed order: Recursive `WithList` →
 Conditional writes → Streaming/chunked I/O → `adapters/s3` →
 `adapters/smb`.** The first item (**Recursive `WithList`**, below) is
-now fully designed AND IMPLEMENTED. The remaining 4 items are still at
+fully designed AND IMPLEMENTED. The second item (**Conditional
+writes**, above) is now fully designed — exact signatures, 3 resolved
+design forks, structured errors, Observer notes, and a unit test plan —
+IMPLEMENTATION is a separate, upcoming round. The remaining 3 items
+(Streaming/chunked I/O, `adapters/s3`, `adapters/smb`) are still at
 outline depth only, each noted with its own open design question,
 unchanged from this doc's prior round. This section replaces round 2's
 original "`adapters/s3`/`adapters/smb` get their own future roadmap
@@ -1356,16 +1360,276 @@ pagination API) is not decided.
 
 ### Conditional writes (ETag/If-Match optimistic concurrency)
 
-No backend-agnostic concept decided yet. S3 has native `ETag`/
-`If-Match` support built into `PutObject`/`GetObject`/`CopyObject`;
-filesystem has no native equivalent (would need to be emulated via a
-content hash compared before `WriteBytes`, which is NOT atomic the way
-S3's server-side `If-Match` check is — a real cross-backend semantic
-gap, not just an API-shape question). Likely surfaces as a new
-`WriteOptions.IfMatch *string` field plus a matching optional extension
-interface for backends with a genuine atomic check, but this is a
-bigger design question than the other Phase 2 items and is flagged as
-such, not pre-decided.
+> **Status: DESIGNED to Phase 1's Go-signature rigor — NOT yet
+> implemented.** The second Phase 2 item to reach this level of detail
+> (after Recursive `WithList`). This design round resolved 3 forks via
+> `ask_user`, in order: (1) the portable ETag concept, (2) which roles
+> get conditional-write support, (3) filesystem's atomicity model —
+> each is recorded below with its resolution and rationale, not just
+> the final answer, since the reasoning matters for `adapters/s3`'s
+> eventual implementation of the SAME interfaces.
+
+#### Fork 1 (resolved): a fallback ETag, computed by api/file itself
+
+S3 has a native `ETag` (a content identifier returned by `PutObject`/
+`GetObject`/`HeadObject` without necessarily re-reading the body).
+Filesystem has no equivalent concept at all. **Resolved: api/file
+computes its OWN ETag for every Backend** (not delegated to the
+Backend, and not Backend-native-only) — this keeps `Entry.ETag`
+populated on Phase 1's filesystem backend today, not just once
+`adapters/s3` ships:
+
+- **Strong ETag** (a real content hash — SHA-256, full hex digest) —
+  computed whenever content is already in hand: after `Read`/`List`'s
+  own `ReadBytes` call, and inside `Patch`'s existing
+  read-before-merge step.
+- **Weak ETag** (HTTP's own `W/"..."` convention — an APPROXIMATION,
+  not a content hash) — computed from `ModTime`+`Size` when only
+  metadata is available: `Stat`/`Exists`/`List`'s own entries (which
+  deliberately never read the body — that is their whole point).
+  Format: `W/"<hex(ModTime.UnixNano())>-<Size>"`, mirroring HTTP's own
+  weak-validator syntax literally (reused, not reinvented).
+- `Entry` gains a new `ETag string` field, populated by every code path
+  that already produces an `Entry` (`Stat`/`ListDir`'s entries) or a
+  decoded `T` (`Read`/`List`'s per-entry pipeline, where the ETag is
+  computed but not currently exposed on the decoded `T` itself — see
+  "Open question" below for where it's actually surfaced to the
+  caller).
+- **Future refinement, explicitly NOT needed now**: a Backend-native
+  ETag override (e.g. a `ETagBackend` optional extension letting S3's
+  `HeadObject` report its REAL stored ETag instead of api/file's own
+  weak approximation) is a reasonable future enhancement once
+  `adapters/s3` exists, but is NOT required to make Fork 2/3's design
+  work today — flagged here as a forward-looking note, not a decision
+  this round needs to make.
+
+#### Fork 2 (resolved): `Patch` + `Create`'s overwrite path
+
+`Create`'s existing `WriteOptions.Strict` already gives
+If-None-Match-style "fail if ALREADY exists" semantics — that part of
+S3's conditional-write story is already covered, unrelated to this
+item. The genuinely missing piece is optimistic concurrency on an
+EXISTING resource:
+
+- **`Patch`** — a real, pre-existing TOCTOU window already exists
+  between `patchCore`'s own `ReadBytes` (reads the current content to
+  merge against) and its final `WriteBytes` (commits the merged
+  result) — exactly where `If-Match` matters most.
+- **`Create`'s OVERWRITE path** (`Strict: false`, i.e. the caller
+  explicitly allows overwriting an existing resource) — conditional
+  "only overwrite if it still matches what I last saw" is a natural,
+  S3-mirroring addition to the SAME overwrite path.
+- **Resolved**: both get `WriteOptions.IfMatch *string` support.
+  **Precedence when BOTH `Strict: true` AND `IfMatch` are set on the
+  same call** (a somewhat contradictory combination — `Strict` means
+  "must NOT already exist," `IfMatch` presumes it DOES): `Strict`'s
+  existence check wins — `FileAlreadyExistsError` is returned
+  regardless of whether `IfMatch` would have matched, since `Strict`'s
+  check runs first and is unconditional. Documented explicitly so this
+  isn't mistaken for an inconsistency.
+
+#### Fork 3 (resolved): filesystem gets a GENUINELY ATOMIC emulation, via the SAME interface S3 will use
+
+The naive "read ETag, compare, then write" sequence is NOT atomic on
+its own (another writer could act in between) — simply emulating it
+that way would be a real, silent race, not a true conditional write.
+**Resolved: filesystem implements the exact SAME
+`ConditionalWriteBackend` interface `adapters/s3` will later implement
+— no API difference between backends** — via a **lock file**
+(`<path>.lock`, created with `os.OpenFile(..., O_CREATE|O_EXCL|O_WRONLY,
+...)` — pure stdlib, no new dependency, consistent with Phase 1's
+"stdlib only" toolchain decision):
+
+1. Acquire `<path>.lock` (bounded retry + backoff, respecting `ctx`
+   cancellation — see "Acquire-retry behavior" below).
+2. Once locked: compute `path`'s CURRENT strong ETag (read existing
+   content if present; absence is handled the same way every other
+   role's not-found case is).
+3. Compare to the caller's `ifMatch` — a mismatch releases the lock and
+   returns `ConditionalWriteMismatchError` immediately, NO write
+   performed.
+4. A match performs the write via the SAME temp-file+rename pattern
+   the existing Strict-write path already established (atomicity with
+   respect to concurrent READERS), then releases the lock (removes
+   `<path>.lock`).
+
+**3 explicitly confirmed tradeoffs (not silently glossed over):**
+
+- **Scope of the guarantee**: this is atomic ONLY among callers going
+  through `WriteBytesIfMatch`/`WriteOptions.IfMatch` — a CONCURRENT
+  PLAIN `WriteBytes`/`Create` call (not using `IfMatch` at all) never
+  touches the lock file and can still race with a conditional writer.
+  This is NOT a hard, OS-enforced guarantee against every possible
+  writer — Go's stdlib has no portable mandatory file locking — it is
+  "atomic among cooperating conditional-write callers," the same
+  general shape every lock-file-based scheme has. Confirmed acceptable.
+- **Stale lock handling: NO auto-recovery.** If a process crashes while
+  holding `<path>.lock`, the lock file persists — that path's
+  conditional-write support is PERMANENTLY stuck until an operator
+  manually removes `<path>.lock`. Chosen over a TTL-based force-steal
+  (which risks incorrectly stealing a legitimately-slow holder's lock)
+  — safer, at the cost of requiring manual intervention after a crash.
+  This operational remedy (delete the `.lock` file) is documented
+  plainly, not left to be discovered.
+- **Acquire-retry behavior: bounded retry + backoff, respecting `ctx`
+  cancellation.** When the lock is already held, the acquirer retries
+  (exponential backoff, capped) until EITHER it acquires the lock OR
+  `ctx` is cancelled/times out, at which point it returns
+  `ConditionalWriteLockTimeoutError{Path, Err}` — never blocks forever,
+  never fails on the very first sign of contention either.
+
+**This closes the race for the FINAL compare-and-swap step** — the
+same step S3's own `PutObject` `If-Match` protects atomically
+server-side. It does **NOT** protect `Patch`'s own EARLIER
+`ReadBytes`-then-merge computation (another writer could still change
+the file between Patch's initial read and its final conditional
+write) — this is NOT a gap specific to this design, it is the
+universally-accepted, expected shape of OPTIMISTIC concurrency
+everywhere, including S3's own real-world usage pattern (`GetObject` →
+compute new value client-side → `PutObject` with `If-Match` derived
+from the `GetObject`'s own ETag) — the lock only ever needs to
+guarantee the FINAL commit step is atomic, exactly matching S3's own
+behavior, not a weaker version of it.
+
+#### API surface
+
+```go
+// Entry gains ETag (see Fork 1 above for strong-vs-weak computation).
+type Entry struct {
+	Name     string
+	IsDir    bool
+	Size     int64
+	ModTime  time.Time
+	Metadata map[string]string
+	ETag     string // NEW
+}
+
+// WriteOptions gains IfMatch.
+type WriteOptions struct {
+	Perm       os.FileMode
+	CreateDirs bool
+	DirPerm    os.FileMode
+	Strict     bool
+	DryRun     bool
+	Metadata   map[string]string
+	// IfMatch, when non-nil, makes this write CONDITIONAL: it only
+	// commits if path's CURRENT strong ETag equals *IfMatch — see the
+	// "Conditional writes" section of docs/roadmap/file-api.md for the
+	// full cross-backend design. nil (the default) means "unconditional
+	// write," byte-for-byte today's existing behavior — zero overhead,
+	// zero behavior change for every existing caller.
+	IfMatch *string // NEW
+}
+
+// ConditionalWriteBackend is an OPTIONAL Backend extension for an
+// atomic conditional write — mirrors CopyingBackend/MovingBackend/
+// BatchDeletingBackend/WalkingBackend/DirDeletingBackend's exact
+// type-assertion-guard idiom. A Backend NOT implementing this cannot
+// honor WriteOptions.IfMatch at all — the dispatch core returns
+// ConditionalWriteUnsupportedError rather than emulating a non-atomic
+// check with a real race window. adapters/file.Backend AND ports's
+// private osBackend BOTH implement this (via the lock-file mechanism
+// in Fork 3 above); a future adapters/s3 implements it via S3's own
+// native, server-side If-Match.
+type ConditionalWriteBackend interface {
+	// WriteBytesIfMatch behaves like WriteBytes, but commits ONLY if
+	// path's CURRENT strong ETag equals ifMatch — atomically with
+	// respect to every OTHER conditional write attempt through this
+	// same Backend (see each implementation's own doc comment for its
+	// exact atomicity scope — e.g. filesystem's "cooperating
+	// conditional writers only" disclosure above). Returns
+	// ConditionalWriteMismatchError{Path, Expected, Actual} (not a
+	// generic error) on a mismatch — no write performed. ifMatch is
+	// never "" (dispatch only calls this when WriteOptions.IfMatch is
+	// non-nil).
+	WriteBytesIfMatch(ctx context.Context, path string, data []byte, ifMatch string, opts WriteOptions) (createdDirs []string, err error)
+}
+```
+
+#### Dispatch behavior
+
+1. `createCore`'s overwrite path (`opts.Strict == false`) and
+   `patchCore`'s final commit both check `callerOpts.IfMatch` BEFORE
+   calling `WriteBytes`:
+   - `callerOpts.IfMatch == nil`: unconditional write, today's
+     existing `WriteBytes` call, BYTE-FOR-BYTE unchanged — zero
+     overhead for every existing caller.
+   - `callerOpts.IfMatch != nil` AND the Backend implements
+     `ConditionalWriteBackend`: call `WriteBytesIfMatch` instead.
+   - `callerOpts.IfMatch != nil` AND the Backend does NOT implement
+     `ConditionalWriteBackend`: return `ConditionalWriteUnsupportedError`
+     immediately — BEFORE any write is attempted, no partial write, no
+     race attempted at all (fails loud and fast, never silently races).
+2. `createCore`'s `Strict: true` path is UNCHANGED — its existence
+   check still runs first and unconditionally; see Fork 2's precedence
+   note above for the `Strict: true` + `IfMatch` combination.
+3. A caller obtains the CURRENT ETag to supply as `IfMatch` via
+   `Client.Exists` (returns `Entry`, which now carries `ETag`) — this
+   is the standard optimistic-concurrency workflow (read the current
+   version, then conditionally write only if it is still unchanged),
+   and requires ZERO new return values on `Create`/`Patch` themselves
+   (both keep their existing signatures — the caller supplies `IfMatch`
+   via `WriteOptions`, same mechanism `Metadata`/`CreateDirs`/`Strict`
+   already use).
+
+#### Structured errors
+
+- `ConditionalWriteMismatchError{Path, Expected, Actual string}` — the
+  supplied `IfMatch` didn't equal `path`'s current ETag; no write was
+  performed.
+- `ConditionalWriteUnsupportedError{Path, Backend string}` — the
+  attached Backend doesn't implement `ConditionalWriteBackend` at all;
+  raised BEFORE any write attempt.
+- `ConditionalWriteLockTimeoutError{Path string, Err error}` —
+  filesystem-specific (both `adapters/file.Backend` and `ports`'s
+  private `osBackend`): the lock-file acquire-retry loop exceeded its
+  bound (or `ctx` was cancelled) without acquiring `<path>.lock`.
+- All 3 are `slog.LogValuer` + `Unwrap()` where applicable, matching
+  every other error in this package.
+
+#### Observer integration
+
+No NEW `FileObserver` method needed — a conditional-write failure
+(mismatch, unsupported Backend, or lock timeout) is recorded via the
+EXISTING `recordWrite(obs, path, false, duration)` call, exactly like
+any other write failure; `stats.Observer` doesn't need granular
+"which reason" detail beyond what the returned structured error type
+already provides via `errors.As`.
+
+#### Unit test plan
+
+| Test | Verifies |
+|---|---|
+| `TestEntry_ETag_StrongWhenContentAvailable_WeakWhenMetadataOnly` | `Read`/`List`'s entries get a strong (content-hash) ETag; `Stat`/`Exists`'s get a weak (`W/`-prefixed, ModTime+Size) one |
+| `TestPatch_IfMatch_Match_Succeeds` | A `Patch` call whose supplied `IfMatch` equals the current ETag commits normally |
+| `TestPatch_IfMatch_Mismatch_RejectsWithConditionalWriteMismatchError_NoWritePerformed` | A stale `IfMatch` is rejected; the file's content is CONFIRMED unchanged afterward (no partial write) |
+| `TestCreate_Overwrite_IfMatch_Match_Succeeds` | `Create` with `Strict:false` + a matching `IfMatch` overwrites normally |
+| `TestCreate_Overwrite_IfMatch_Mismatch_Rejected` | `Create` with `Strict:false` + a stale `IfMatch` is rejected, no write performed |
+| `TestCreate_StrictTrueAndIfMatchBothSet_StrictTakesPrecedence` | `Strict:true` + ANY `IfMatch` value still returns `FileAlreadyExistsError` when the path already exists, regardless of whether `IfMatch` would have matched |
+| `TestConditionalWrite_UnsupportedBackend_ReturnsConditionalWriteUnsupportedError_BeforeAnyWrite` | A fake `Backend` without `ConditionalWriteBackend` rejects immediately; no write attempted |
+| `TestConditionalWriteBackend_LockFile_ConcurrentConditionalWriters_OnlyOneCommits` | Two concurrent conditional writers against the SAME path: exactly one commits, the other gets a (correctly recomputed) mismatch — proves the lock genuinely serializes the compare-and-swap step |
+| `TestConditionalWriteBackend_LockAlreadyHeld_RetriesThenTimesOut` | An artificially-held lock causes the acquirer to retry (observable via elapsed time), then return `ConditionalWriteLockTimeoutError` once its bound is exceeded |
+| `TestConditionalWriteBackend_StaleLock_RequiresManualRemoval` | A lock file left behind by a simulated crash is NOT auto-removed by a later acquirer — documents the accepted "no auto-recovery" behavior explicitly, not just in prose |
+
+#### Backend semantic differences (new row)
+
+| Operation | Filesystem (Phase 1/2) | S3 (Phase 2, future) |
+|---|---|---|
+| Conditional write | `ConditionalWriteBackend` via a `<path>.lock` file — atomic among COOPERATING conditional writers only; no auto-recovery from a crashed holder (manual `.lock` removal required) | `ConditionalWriteBackend` via `PutObject`'s native, server-side `If-Match` — atomic against EVERY writer (not just cooperating ones), no lock file, no stale-lock concept at all |
+
+#### Open question (deliberately NOT resolved this round)
+
+`Entry.ETag` is populated on values returned by `Stat`/`Exists`/`List`
+(which already return/wrap `Entry`), but `Read`'s own return value is
+the decoded `T` itself, with NO `Entry` wrapper at all — so a caller
+wanting the ETag of a value they just `Read` has no way to get it from
+that SAME call today (they'd need a separate `Exists` call just for the
+ETag). Whether `Client.Read` should ALSO somehow expose the ETag it
+computed in-flight (and if so, how — a second return value would
+change `Read`'s signature, a sibling method would add new API surface)
+is left OPEN for the implementation round to resolve, since it's a
+narrower follow-up question than the 3 forks above, not a blocker to
+drafting this section.
 
 ### Recursive `WithList`
 
