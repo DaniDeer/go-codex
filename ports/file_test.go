@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/DaniDeer/go-codex/api/file"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/ports"
@@ -2277,5 +2278,137 @@ func TestNewFileFromPathTemplate_ProducesIdenticalFileToNewFile(t *testing.T) {
 	}
 	if viaTemplate.Template != viaPlain.Template {
 		t.Errorf("Template = %q, want %q", viaTemplate.Template, viaPlain.Template)
+	}
+}
+
+// ── Conditional writes (ETag/If-Match) ───────────────────────────────────
+
+func TestFile_Stat_ExistingFile_ReturnsWeakETag(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "item.json")
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
+	if _, err := f.Write(nil, fileItem{Name: "first", Value: 1}, ports.FileOptions{}); err != nil {
+		t.Fatalf("setup Write: %v", err)
+	}
+
+	entry, exists, err := f.Stat(nil, ports.FileOptions{})
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if !exists {
+		t.Fatalf("want exists=true")
+	}
+	if len(entry.ETag) < 2 || entry.ETag[:2] != `W/` {
+		t.Fatalf("want a weak (W/-prefixed) ETag, got %q", entry.ETag)
+	}
+}
+
+func TestFile_Stat_MissingFile_ReturnsFalseNotError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "missing.json")
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
+
+	_, exists, err := f.Stat(nil, ports.FileOptions{})
+	if err != nil {
+		t.Fatalf("Stat: unexpected error for missing file: %v", err)
+	}
+	if exists {
+		t.Fatalf("want exists=false")
+	}
+}
+
+func TestFile_Write_IfMatch_MatchSucceeds(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "item.json")
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
+	if _, err := f.Write(nil, fileItem{Name: "first", Value: 1}, ports.FileOptions{}); err != nil {
+		t.Fatalf("setup Write: %v", err)
+	}
+	current, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("ReadFile: %v", readErr)
+	}
+	etag := file.StrongETag(current)
+
+	if _, err := f.Write(nil, fileItem{Name: "second", Value: 2}, ports.FileOptions{IfMatch: &etag}); err != nil {
+		t.Fatalf("conditional Write: %v", err)
+	}
+	got, readErr2 := f.Read(nil, ports.FileOptions{})
+	if readErr2 != nil {
+		t.Fatalf("Read: %v", readErr2)
+	}
+	if got.Name != "second" {
+		t.Fatalf("Name = %q, want %q after conditional overwrite", got.Name, "second")
+	}
+}
+
+func TestFile_Write_IfMatch_MismatchRejected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "item.json")
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
+	if _, err := f.Write(nil, fileItem{Name: "first", Value: 1}, ports.FileOptions{}); err != nil {
+		t.Fatalf("setup Write: %v", err)
+	}
+	stale := "stale-etag"
+
+	_, err := f.Write(nil, fileItem{Name: "second", Value: 2}, ports.FileOptions{IfMatch: &stale})
+	var mismatch ports.ConditionalWriteMismatchError
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("want ConditionalWriteMismatchError, got %v (%T)", err, err)
+	}
+	got, readErr := f.Read(nil, ports.FileOptions{})
+	if readErr != nil {
+		t.Fatalf("Read: %v", readErr)
+	}
+	if got.Name != "first" {
+		t.Fatalf("content changed despite mismatch: got %+v, want unchanged Name=first", got)
+	}
+}
+
+func TestFile_Patch_IfMatch_MatchSucceeds(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "item.json")
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
+	if _, err := f.Write(nil, fileItem{Name: "first", Value: 1}, ports.FileOptions{}); err != nil {
+		t.Fatalf("setup Write: %v", err)
+	}
+	current, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("ReadFile: %v", readErr)
+	}
+	etag := file.StrongETag(current)
+
+	if err := f.Patch(nil, map[string]any{"value": 99}, ports.FileOptions{IfMatch: &etag}); err != nil {
+		t.Fatalf("conditional Patch: %v", err)
+	}
+	got, readErr2 := f.Read(nil, ports.FileOptions{})
+	if readErr2 != nil {
+		t.Fatalf("Read: %v", readErr2)
+	}
+	if got.Value != 99 {
+		t.Fatalf("Value = %d, want 99 after conditional patch", got.Value)
+	}
+}
+
+func TestFile_Patch_IfMatch_MismatchRejected(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "item.json")
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
+	if _, err := f.Write(nil, fileItem{Name: "first", Value: 1}, ports.FileOptions{}); err != nil {
+		t.Fatalf("setup Write: %v", err)
+	}
+	stale := "stale-etag"
+
+	err := f.Patch(nil, map[string]any{"value": 99}, ports.FileOptions{IfMatch: &stale})
+	var mismatch ports.ConditionalWriteMismatchError
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("want ConditionalWriteMismatchError, got %v (%T)", err, err)
+	}
+	got, readErr := f.Read(nil, ports.FileOptions{})
+	if readErr != nil {
+		t.Fatalf("Read: %v", readErr)
+	}
+	if got.Value != 1 {
+		t.Fatalf("Value = %d, want unchanged 1 after rejected conditional patch", got.Value)
 	}
 }

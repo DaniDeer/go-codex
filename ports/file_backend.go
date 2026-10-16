@@ -4,8 +4,11 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"math/rand"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	apifile "github.com/DaniDeer/go-codex/api/file"
 )
@@ -122,6 +125,34 @@ func (osBackend) DeleteBytes(_ context.Context, path string, opts apifile.Delete
 	return false, err
 }
 
+// osBackendControlFileSuffixes mirrors adapters/file.Backend's own
+// isControlFile filter (deliberate near-duplicate, same import-cycle
+// constraint as every other osBackend method) — ".lock" is genuinely
+// load-bearing here now that osBackend implements WriteBytesIfMatch
+// below (not just defensive consistency); ".meta.json" is kept for
+// uniformity even though osBackend doesn't implement MetadataBackend
+// today. See adapters/file's isControlFile doc comment for the full
+// rationale (internal/templatematch.MatchNonWildcard's greedy capture
+// would otherwise silently match a sidecar/lock file against a
+// resource template).
+var osBackendControlFileSuffixes = []string{".meta.json", ".lock"}
+
+func osBackendIsControlFile(name string) bool {
+	for _, suffix := range osBackendControlFileSuffixes {
+		if strings.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func osBackendEntryETag(isDir bool, modTime time.Time, size int64) string {
+	if isDir {
+		return ""
+	}
+	return apifile.WeakETag(modTime, size)
+}
+
 // ListDir implements [apifile.Backend]. ports.File never calls List, but
 // the full [apifile.Backend] interface must still be satisfied.
 func (osBackend) ListDir(_ context.Context, path string) ([]apifile.Entry, error) {
@@ -134,6 +165,9 @@ func (osBackend) ListDir(_ context.Context, path string) ([]apifile.Entry, error
 	}
 	out := make([]apifile.Entry, 0, len(des))
 	for _, de := range des {
+		if osBackendIsControlFile(de.Name()) {
+			continue
+		}
 		info, err := de.Info()
 		if err != nil {
 			continue
@@ -143,6 +177,7 @@ func (osBackend) ListDir(_ context.Context, path string) ([]apifile.Entry, error
 			IsDir:   de.IsDir(),
 			Size:    info.Size(),
 			ModTime: info.ModTime(),
+			ETag:    osBackendEntryETag(info.IsDir(), info.ModTime(), info.Size()),
 		})
 	}
 	return out, nil
@@ -159,6 +194,7 @@ func (osBackend) Stat(_ context.Context, path string) (apifile.Entry, error) {
 		IsDir:   info.IsDir(),
 		Size:    info.Size(),
 		ModTime: info.ModTime(),
+		ETag:    osBackendEntryETag(info.IsDir(), info.ModTime(), info.Size()),
 	}, nil
 }
 
@@ -190,6 +226,11 @@ func (b osBackend) WalkDir(ctx context.Context, root string, fn apifile.DirWalkF
 		if err != nil {
 			return fn(p, apifile.Entry{}, err)
 		}
+		// Control files (".meta.json"/".lock") are NEVER reported to fn
+		// at all — see osBackendIsControlFile's own doc comment.
+		if !de.IsDir() && osBackendIsControlFile(de.Name()) {
+			return nil
+		}
 		info, infoErr := de.Info()
 		if infoErr != nil {
 			return fn(p, apifile.Entry{}, infoErr)
@@ -199,6 +240,7 @@ func (b osBackend) WalkDir(ctx context.Context, root string, fn apifile.DirWalkF
 			IsDir:   de.IsDir(),
 			Size:    info.Size(),
 			ModTime: info.ModTime(),
+			ETag:    osBackendEntryETag(de.IsDir(), info.ModTime(), info.Size()),
 		}, nil)
 	})
 }
@@ -251,6 +293,122 @@ func (b osBackend) DeleteDir(ctx context.Context, path string, recursive, dryRun
 	return []string{path}, nil
 }
 
+// Lock-file-based conditional-write mechanism — a DELIBERATE
+// near-duplicate of adapters/file.Backend's own (same import-cycle
+// constraint as every other osBackend method). See
+// docs/roadmap/file-api.md's "Conditional writes" section, Fork 3, for
+// the full design and its 3 explicitly confirmed tradeoffs.
+const (
+	osBackendLockRetryInitial = 10 * time.Millisecond
+	osBackendLockRetryMax     = 200 * time.Millisecond
+	osBackendLockDefaultBound = 5 * time.Second
+)
+
+func osBackendLockPath(path string) string { return path + ".lock" }
+
+func osBackendAcquireConditionalWriteLock(ctx context.Context, path string) (release func(), err error) {
+	lockPath := osBackendLockPath(path)
+	deadline := time.Now().Add(osBackendLockDefaultBound)
+	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
+		deadline = dl
+	}
+	backoff := osBackendLockRetryInitial
+	var lastErr error
+	for {
+		f, openErr := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		if openErr == nil {
+			_ = f.Close()
+			return func() { _ = os.Remove(lockPath) }, nil
+		}
+		if !os.IsExist(openErr) {
+			return nil, openErr
+		}
+		lastErr = openErr
+		if !time.Now().Before(deadline) {
+			return nil, apifile.ConditionalWriteLockTimeoutError{Path: path, Err: lastErr}
+		}
+		// #nosec G404 -- jitter is pure backoff timing, not security-sensitive.
+		jitter := time.Duration(rand.Int63n(int64(backoff/2 + 1)))
+		select {
+		case <-ctx.Done():
+			return nil, apifile.ConditionalWriteLockTimeoutError{Path: path, Err: ctx.Err()}
+		case <-time.After(backoff + jitter):
+		}
+		backoff *= 2
+		if backoff > osBackendLockRetryMax {
+			backoff = osBackendLockRetryMax
+		}
+	}
+}
+
+// WriteBytesIfMatch implements [apifile.ConditionalWriteBackend].
+func (osBackend) WriteBytesIfMatch(ctx context.Context, path string, data []byte, ifMatch string, opts apifile.WriteOptions) ([]string, error) {
+	release, err := osBackendAcquireConditionalWriteLock(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	current, readErr := os.ReadFile(path)
+	if readErr != nil {
+		if os.IsNotExist(readErr) {
+			return nil, apifile.ConditionalWriteMismatchError{Path: path, Expected: ifMatch, Actual: ""}
+		}
+		return nil, readErr
+	}
+	actual := apifile.StrongETag(current)
+	if actual != ifMatch {
+		return nil, apifile.ConditionalWriteMismatchError{Path: path, Expected: ifMatch, Actual: actual}
+	}
+
+	var createdDirs []string
+	if opts.CreateDirs {
+		dir := filepath.Dir(path)
+		createdDirs = missingParentDirs(dir)
+		if len(createdDirs) > 0 && !opts.DryRun {
+			perm := opts.DirPerm
+			if perm == 0 {
+				perm = 0755
+			}
+			if err := os.MkdirAll(dir, perm); err != nil {
+				return createdDirs, err
+			}
+		}
+	}
+	if opts.DryRun {
+		return createdDirs, nil
+	}
+
+	perm := opts.Perm
+	if perm == 0 {
+		perm = 0644
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return createdDirs, err
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return createdDirs, err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return createdDirs, err
+	}
+	if err := os.Chmod(tmpPath, perm); err != nil {
+		_ = os.Remove(tmpPath)
+		return createdDirs, err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return createdDirs, err
+	}
+	return createdDirs, nil
+}
+
 var _ apifile.Backend = osBackend{}
 var _ apifile.WalkingBackend = osBackend{}
 var _ apifile.DirDeletingBackend = osBackend{}
+var _ apifile.ConditionalWriteBackend = osBackend{}

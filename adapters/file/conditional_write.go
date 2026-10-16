@@ -47,7 +47,7 @@ func acquireConditionalWriteLock(ctx context.Context, path string) (release func
 	backoff := conditionalWriteLockRetryInitial
 	var lastErr error
 	for {
-		f, openErr := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+		f, openErr := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 		if openErr == nil {
 			_ = f.Close()
 			return func() { _ = os.Remove(lockPath) }, nil
@@ -59,6 +59,7 @@ func acquireConditionalWriteLock(ctx context.Context, path string) (release func
 		if !time.Now().Before(deadline) {
 			return nil, apifile.ConditionalWriteLockTimeoutError{Path: path, Err: lastErr}
 		}
+		// #nosec G404 -- jitter is pure backoff timing, not security-sensitive.
 		jitter := time.Duration(rand.Int63n(int64(backoff/2 + 1)))
 		select {
 		case <-ctx.Done():

@@ -181,6 +181,21 @@ type FileOptions struct {
 	//     of Delete's Strict). Has no effect on Read/Update/Patch.
 	// Default false — existing callers see no change unless they opt in.
 	Strict bool
+
+	// IfMatch, when non-nil, makes [File.Write] (and, via Write's own
+	// write-back step, [File.Patch]) CONDITIONAL: it only commits if the
+	// file's CURRENT content-hash ETag equals *IfMatch — see
+	// docs/roadmap/file-api.md's "Conditional writes" section for the
+	// full cross-backend design. nil (the default) means "unconditional
+	// write," byte-for-byte today's existing behavior — zero overhead,
+	// zero behavior change for every existing caller. Only consulted
+	// when Strict is false — Strict's OWN existence check always wins
+	// when both are set on the same call. Obtain the current ETag via
+	// [File.Stat]. Returns [ConditionalWriteMismatchError] on a stale
+	// or absent target, [ConditionalWriteUnsupportedError] if the
+	// attached backend doesn't support it (it always does today — only
+	// relevant if that ever changes).
+	IfMatch *string
 }
 
 // ── File ──────────────────────────────────────────────────────────────────────
@@ -629,6 +644,7 @@ func (fh File[T]) Write(vars map[string]string, v T, opts FileOptions) (createdD
 		DirPerm:    opts.DirPerm,
 		Strict:     opts.Strict,
 		DryRun:     opts.DryRun,
+		IfMatch:    opts.IfMatch,
 	})
 	if err != nil {
 		if encErr, ok := err.(FileEncodeError); ok {
@@ -972,6 +988,44 @@ func (fh File[T]) Patch(vars map[string]string, patch map[string]any, opts FileO
 	return err
 }
 
+// Stat returns the built path's metadata WITHOUT reading its content —
+// mirrors [file.Client.Exists] (api/file's own S3-HeadObject-mirroring
+// role) exactly: (Entry{}, false, nil) for the idempotent "absent" case
+// (never an error), so callers obtain the file's current [Entry.ETag]
+// to supply as a later [FileOptions.IfMatch] without ever needing to
+// read the body. Stat delegates to [file.Client.Exists] against a
+// private, internal api/file [Resource]+[Client] built fresh on every
+// call — see Read's identical Stage F migration note.
+func (fh File[T]) Stat(vars map[string]string, opts FileOptions) (Entry, bool, error) {
+	obs := opts.Observer
+	if obs == nil && opts.Context != nil {
+		obs = stats.ObserverFromContext(opts.Context)
+	}
+	if obs == nil {
+		obs = stats.NoopObserver{}
+	}
+
+	path, err := fh.BuildPath(vars)
+	if err != nil {
+		return Entry{}, false, err
+	}
+
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx = stats.WithObserver(ctx, obs)
+
+	res := file.NewResource[T](path, fh.format)
+	client := file.NewClient()
+	_ = client.Attach(osBackend{}) // fresh Client — Attach never fails here
+	entry, exists, err := client.Exists(ctx, res.WithExists(file.Exists{}), nil)
+	if err != nil {
+		return Entry{}, false, err
+	}
+	return entry, exists, nil
+}
+
 // ── FilePatchNotSupportedError ────────────────────────────────────────────────
 
 // FilePatchNotSupportedError is returned by [File.Patch] when the file's format
@@ -990,6 +1044,32 @@ func (fh File[T]) Patch(vars map[string]string, patch map[string]any, opts FileO
 // ports' error types are aliased onto api/file's identically-shaped ones
 // rather than kept as separate duplicate types.
 type FilePatchNotSupportedError = file.FilePatchNotSupportedError
+
+// ── Conditional writes (ETag/If-Match) ────────────────────────────────────
+
+// Entry is an alias for [file.Entry] — [File.Stat]'s return type, mirrors
+// [file.Client.Exists]'s own Entry exactly (Name/IsDir/Size/ModTime/
+// Metadata/ETag). See [FileOptions.IfMatch] for how ETag is used.
+type Entry = file.Entry
+
+// ConditionalWriteMismatchError is an alias for
+// [file.ConditionalWriteMismatchError] — returned by [File.Write]/
+// [File.Patch] when [FileOptions.IfMatch] doesn't match the file's
+// current ETag (or the file doesn't exist at all); no write was
+// performed.
+type ConditionalWriteMismatchError = file.ConditionalWriteMismatchError
+
+// ConditionalWriteUnsupportedError is an alias for
+// [file.ConditionalWriteUnsupportedError] — returned when
+// [FileOptions.IfMatch] is set but the attached backend doesn't support
+// conditional writes (never the case for ports.File today).
+type ConditionalWriteUnsupportedError = file.ConditionalWriteUnsupportedError
+
+// ConditionalWriteLockTimeoutError is an alias for
+// [file.ConditionalWriteLockTimeoutError] — returned when the
+// lock-file-based conditional-write mechanism couldn't acquire its lock
+// within its bound.
+type ConditionalWriteLockTimeoutError = file.ConditionalWriteLockTimeoutError
 
 // ── Observer helpers ──────────────────────────────────────────────────────────
 

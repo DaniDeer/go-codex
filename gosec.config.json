@@ -41,6 +41,14 @@
 			"rules": ["G124", "G705"]
 		},
 		{
+			"path": "adapters/file/conditional_write.go",
+			"rules": ["G404"]
+		},
+		{
+			"path": "ports/file_backend.go",
+			"rules": ["G404"]
+		},
+		{
 			"path": "examples/reqreply-api/demo_cross_api_oauth2_sharing.go",
 			"rules": ["G101"]
 		},
