@@ -1367,7 +1367,12 @@ pagination API) is not decided.
 > get conditional-write support, (3) filesystem's atomicity model —
 > each is recorded below with its resolution and rationale, not just
 > the final answer, since the reasoning matters for `adapters/s3`'s
-> eventual implementation of the SAME interfaces.
+> eventual implementation of the SAME interfaces. A follow-up
+> pre-implementation review pass found and resolved 3 more gaps (a
+> real `.lock`/`.meta.json`-leak-into-`List` bug — see "Gap found
+> during pre-implementation review" below — plus 2 minor clarifications
+> on the lock-acquire timeout and a nonexistent-target edge case) —
+> all folded into the sections below, not tracked separately.
 
 #### Fork 1 (resolved): a fallback ETag, computed by api/file itself
 
@@ -1472,11 +1477,16 @@ that way would be a real, silent race, not a true conditional write.
   This operational remedy (delete the `.lock` file) is documented
   plainly, not left to be discovered.
 - **Acquire-retry behavior: bounded retry + backoff, respecting `ctx`
-  cancellation.** When the lock is already held, the acquirer retries
-  (exponential backoff, capped) until EITHER it acquires the lock OR
-  `ctx` is cancelled/times out, at which point it returns
-  `ConditionalWriteLockTimeoutError{Path, Err}` — never blocks forever,
-  never fails on the very first sign of contention either.
+  cancellation, PLUS an internal default ceiling.** When the lock is
+  already held, the acquirer retries (exponential backoff, capped)
+  until EITHER it acquires the lock, OR `ctx` is cancelled/times out,
+  OR an internal default timeout (~5s) elapses — whichever comes
+  FIRST — returning `ConditionalWriteLockTimeoutError{Path, Err}` on
+  any of the latter two. The internal ~5s ceiling exists so the loop
+  NEVER blocks indefinitely even when the caller supplies a
+  `ctx` with no deadline of its own (e.g. `context.Background()`) — the
+  caller's own ctx can still cut the wait SHORTER than ~5s, never
+  longer. Never fails on the very first sign of contention either.
 
 **This closes the race for the FINAL compare-and-swap step** — the
 same step S3's own `PutObject` `If-Match` protects atomically
@@ -1490,6 +1500,57 @@ compute new value client-side → `PutObject` with `If-Match` derived
 from the `GetObject`'s own ETag) — the lock only ever needs to
 guarantee the FINAL commit step is atomic, exactly matching S3's own
 behavior, not a weaker version of it.
+
+#### Gap found during pre-implementation review: `.lock` files (and the PRE-EXISTING `.meta.json` sidecar) leak into `List`
+
+Re-reviewing this design before planning its implementation surfaced a
+real gap, confirmed by tracing the actual matching code (not
+speculation): `ListDir` has never excluded ANY file by name pattern —
+only directory entries (`e.IsDir`) are skipped. `internal/templatematch
+.MatchNonWildcard`'s `{name}`-to-`([^/]+)` capture is GREEDY and
+crosses `.` freely, stopping only at `/` — so for a template like
+`"{name}.json"`, a sidecar file named `widget.json.lock` (this round's
+NEW lock file) or `widget.json.meta.json` (the metadata-merge-field
+axis's OWN, ALREADY-SHIPPED sidecar file) **silently matches**, since
+BOTH names end in the literal `.json` the template's own pattern
+anchors on. This is not a decode error or a `FilePathMismatchError` —
+it is a SILENT WRONG MATCH, producing a bogus `ListResult[T]` entry
+with a corrupted captured var value (e.g. `name="widget.json.meta"`).
+
+This is confirmed to affect BOTH:
+1. The NEW `.lock` file this Conditional writes design introduces.
+2. The PRE-EXISTING `.meta.json` sidecar file (shipped with the
+   file-metadata merge-field axis, earlier in Phase 1) — unnoticed
+   until now because no existing test calls `List` on a directory
+   containing both a resource file and its metadata sidecar
+   simultaneously.
+
+**Resolved: fix BOTH in this same round**, since they share the
+identical root cause and fix. `adapters/file.Backend.ListDir` AND
+`ports`'s private `osBackend.ListDir` both gain a filter excluding any
+entry whose name ends in a BACKEND-KNOWN control-file suffix —
+`".meta.json"` and `".lock"` — before returning results. This is
+Backend-specific knowledge (a future `adapters/s3` has NEITHER sidecar
+objects NOR lock files at all, per this doc's own "Backend semantic
+differences" disclosures), so the fix lives at the Backend level, not
+in the shared `listCore`/dispatch-core logic.
+
+No new structured error or API surface change — this is purely a
+`ListDir` BEHAVIOR CORRECTION. Because it retroactively fixes
+ALREADY-SHIPPED Phase 1 behavior (the `.meta.json` half), the
+eventual IMPLEMENTATION round should apply the SAME discipline this
+session's `deep-dive-bug-hunt` rounds use for any shipped-code fix:
+reproduce the leak live via a FAILING test first, confirm the fix
+makes it pass, THEN also add the `.lock`-specific proof for the new
+feature — not just add tests after the fact without ever seeing them
+fail against the pre-fix code.
+
+New unit test plan rows for this fix are listed in the "Unit test
+plan" table below (`TestListDir_ExcludesMetadataSidecarFiles` and
+`TestListDir_ExcludesLockFiles`), proven against BOTH
+`adapters/file.Backend` and `ports.osBackend` (N-way parity, same
+convention this session's `deep-dive-bug-hunt` rounds already
+established for every other `Backend` method).
 
 #### API surface
 
@@ -1563,7 +1624,18 @@ type ConditionalWriteBackend interface {
 2. `createCore`'s `Strict: true` path is UNCHANGED — its existence
    check still runs first and unconditionally; see Fork 2's precedence
    note above for the `Strict: true` + `IfMatch` combination.
-3. A caller obtains the CURRENT ETag to supply as `IfMatch` via
+3. **`createCore`'s overwrite path (`Strict: false`) with `IfMatch` set
+   against a path that does NOT currently exist at all**: resolved as
+   `ConditionalWriteMismatchError` (there is nothing to match, so any
+   non-empty `IfMatch` necessarily "doesn't match" — mirrors S3's own
+   real `PutObject`/`If-Match` behavior, which fails the same way
+   against a nonexistent object; the alternative — silently treating
+   "doesn't exist" as satisfying any `IfMatch` — would be a surprising,
+   S3-inconsistent special case). `WriteBytesIfMatch`'s own
+   implementation (both the lock-file-based filesystem one and a
+   future S3 one) is responsible for this check — dispatch itself
+   doesn't need a separate not-found branch before calling it.
+4. A caller obtains the CURRENT ETag to supply as `IfMatch` via
    `Client.Exists` (returns `Entry`, which now carries `ETag`) — this
    is the standard optimistic-concurrency workflow (read the current
    version, then conditionally write only if it is still unchanged),
@@ -1610,6 +1682,10 @@ already provides via `errors.As`.
 | `TestConditionalWriteBackend_LockFile_ConcurrentConditionalWriters_OnlyOneCommits` | Two concurrent conditional writers against the SAME path: exactly one commits, the other gets a (correctly recomputed) mismatch — proves the lock genuinely serializes the compare-and-swap step |
 | `TestConditionalWriteBackend_LockAlreadyHeld_RetriesThenTimesOut` | An artificially-held lock causes the acquirer to retry (observable via elapsed time), then return `ConditionalWriteLockTimeoutError` once its bound is exceeded |
 | `TestConditionalWriteBackend_StaleLock_RequiresManualRemoval` | A lock file left behind by a simulated crash is NOT auto-removed by a later acquirer — documents the accepted "no auto-recovery" behavior explicitly, not just in prose |
+| `TestConditionalWriteBackend_LockAcquire_InternalDefaultTimeout_WhenCtxHasNoDeadline` | With `context.Background()` (no deadline) and the lock already held, the acquirer still times out around the internal ~5s ceiling — never blocks indefinitely |
+| `TestCreate_Overwrite_IfMatch_NonexistentTarget_ReturnsConditionalWriteMismatchError` | `Create` with `Strict:false` + any non-empty `IfMatch` against a path that doesn't exist at all is rejected, not silently treated as an unconditional create |
+| `TestListDir_ExcludesMetadataSidecarFiles` | A retroactive regression proof: a directory containing BOTH a resource file and its `.meta.json` sidecar — `List` returns ONLY the resource entry, never a bogus entry derived from the sidecar's own name (proven against both `adapters/file.Backend` and `ports.osBackend`) |
+| `TestListDir_ExcludesLockFiles` | Same proof for a `.lock` file left behind by an in-flight (or crashed) conditional write — `List` never returns a bogus entry derived from it (proven against both `adapters/file.Backend` and `ports.osBackend`) |
 
 #### Backend semantic differences (new row)
 
