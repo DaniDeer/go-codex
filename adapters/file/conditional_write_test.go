@@ -53,6 +53,41 @@ func TestBackend_WriteBytesIfMatch_MatchCommits(t *testing.T) {
 	}
 }
 
+// TestBackend_WriteBytesIfMatch_WeakETagMatchCommits is a RETROACTIVE
+// regression proof — WriteBytesIfMatch ORIGINALLY compared ifMatch
+// against the STRONG ETag only, but a caller's ONLY practical way to
+// obtain an ETag BEFORE writing (Client.Exists/Stat) never reads
+// content, so it can ONLY ever report a WEAK ETag — making the
+// documented "Exists -> IfMatch -> Patch" workflow (see
+// docs/features/file-api.md's own "Conditional writes" section)
+// impossible to ever satisfy. Found live while building
+// examples/file-api's own Conditional writes demo. Fixed by accepting
+// EITHER the strong OR the weak ETag.
+func TestBackend_WriteBytesIfMatch_WeakETagMatchCommits(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "item.txt")
+	if err := os.WriteFile(path, []byte("v1"), 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	backend := fileadapter.NewBackend()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	weakETag := apifile.WeakETag(info.ModTime(), info.Size())
+
+	if _, err := backend.WriteBytesIfMatch(context.Background(), path, []byte("v2"), weakETag, apifile.WriteOptions{}); err != nil {
+		t.Fatalf("WriteBytesIfMatch (weak ETag): %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != "v2" {
+		t.Fatalf("content = %q, want %q", got, "v2")
+	}
+}
+
 func TestBackend_WriteBytesIfMatch_MismatchRejectsNoWrite(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "item.txt")

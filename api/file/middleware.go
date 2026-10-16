@@ -69,6 +69,17 @@ func (m Middleware[In, Out]) SecurityDeclaration() *middleware.SecurityDeclarati
 	return m.Declaration.Security
 }
 
+// MiddlewareName reports m's declared name — mirrors
+// [github.com/DaniDeer/go-codex/api/rest.Middleware.MiddlewareName]/
+// [github.com/DaniDeer/go-codex/api/events.Middleware.MiddlewareName]/
+// [github.com/DaniDeer/go-codex/api/reqreply.Middleware.MiddlewareName]
+// exactly — internal/router's own middlewareNameOf extraction checks
+// for this method (via a type assertion), falling back to a bare type
+// name for anything else, so this is what makes [Router.Routes]'s own
+// MiddlewareNames report the REAL declared name instead of
+// "file.Middleware[...]".
+func (m Middleware[In, Out]) MiddlewareName() string { return m.Declaration.Name }
+
 // WithMetadataIn declares that p's metadata key should be decoded into
 // In before this middleware's Fn runs — see [Middleware]'s own doc
 // comment for which roles (Create/Patch only) actually populate it.

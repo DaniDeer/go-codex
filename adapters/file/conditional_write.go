@@ -92,9 +92,27 @@ func (b *Backend) WriteBytesIfMatch(ctx context.Context, path string, data []byt
 		}
 		return nil, readErr
 	}
-	actual := apifile.StrongETag(current)
-	if actual != ifMatch {
-		return nil, apifile.ConditionalWriteMismatchError{Path: path, Expected: ifMatch, Actual: actual}
+	// Accept EITHER the strong (content-hash) ETag OR the weak
+	// (ModTime+Size-derived) one: a caller's ONLY practical way to
+	// obtain an ETag BEFORE writing is Client.Exists/Stat, which never
+	// reads content and therefore can only ever report WeakETag (see
+	// Entry.ETag's own doc comment) — if WriteBytesIfMatch compared
+	// against the strong ETag alone, that real, documented
+	// Exists-then-IfMatch workflow could never succeed. Accepting
+	// either preserves S3's own real If-Match semantics (an exact
+	// content match) for a caller who DOES have the bytes in hand,
+	// while making the Exists/Stat-based workflow actually functional.
+	actualStrong := apifile.StrongETag(current)
+	matched := actualStrong == ifMatch
+	actualWeak := actualStrong
+	if !matched {
+		if info, statErr := os.Stat(path); statErr == nil {
+			actualWeak = apifile.WeakETag(info.ModTime(), info.Size())
+			matched = actualWeak == ifMatch
+		}
+	}
+	if !matched {
+		return nil, apifile.ConditionalWriteMismatchError{Path: path, Expected: ifMatch, Actual: actualStrong}
 	}
 
 	var createdDirs []string

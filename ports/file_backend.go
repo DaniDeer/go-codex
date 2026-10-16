@@ -364,9 +364,21 @@ func (osBackend) WriteBytesIfMatch(ctx context.Context, path string, data []byte
 		}
 		return nil, readErr
 	}
-	actual := apifile.StrongETag(current)
-	if actual != ifMatch {
-		return nil, apifile.ConditionalWriteMismatchError{Path: path, Expected: ifMatch, Actual: actual}
+	// Accept EITHER the strong (content-hash) ETag OR the weak
+	// (ModTime+Size-derived) one — mirrors adapters/file.Backend's own
+	// identical fix (see its own doc comment for the full rationale: a
+	// caller's ONLY practical way to obtain an ETag BEFORE writing is
+	// File.Stat, which never reads content and therefore can only ever
+	// report a weak ETag).
+	actualStrong := apifile.StrongETag(current)
+	matched := actualStrong == ifMatch
+	if !matched {
+		if info, statErr := os.Stat(path); statErr == nil {
+			matched = apifile.WeakETag(info.ModTime(), info.Size()) == ifMatch
+		}
+	}
+	if !matched {
+		return nil, apifile.ConditionalWriteMismatchError{Path: path, Expected: ifMatch, Actual: actualStrong}
 	}
 
 	var createdDirs []string

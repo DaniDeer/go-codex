@@ -1111,6 +1111,19 @@ new observer extension needed for either.
   `CheckScopes`/`CheckCoverage` dispatch every other pattern's role-level
   Security already uses.
 
+> **Bug found and fixed while building `examples/file-api`'s own Router
+> groups demo**: `file.Middleware[In,Out]` was MISSING a
+> `MiddlewareName() string` method — `rest.Middleware`/
+> `events.Middleware`/`reqreply.Middleware` ALL have one
+> (`func (m Middleware[In, Out]) MiddlewareName() string { return
+> m.Declaration.Name }`), consumed by `internal/router`'s own
+> `middlewareNameOf` extraction (a type-assertion check, falling back to
+> a bare `%T` type name otherwise). Without it, `Router.Routes()`'s own
+> `MiddlewareNames` reported the Go type name
+> (`"file.Middleware[struct {},struct {}]"`) instead of the middleware's
+> actual declared name — purely a reporting/introspection bug (dispatch
+> behavior itself was unaffected), fixed by adding the missing method.
+
 ## Unit test plan
 
 | Test | Verifies |
@@ -1865,6 +1878,22 @@ silently forgotten.
 > the decoded `T` itself?) remains DELIBERATELY DEFERRED — not resolved
 > by this implementation, since the feature works end-to-end via
 > `Client.Exists`/`ports.File.Stat` without it.
+>
+> **Bug found and fixed while building `examples/file-api`'s own
+> Conditional writes demo**: `WriteBytesIfMatch` (both backends)
+> ORIGINALLY compared `ifMatch` against the current content's STRONG
+> ETag only — but `Client.Exists`/`ports.File.Stat` are the ONLY
+> documented ways to obtain an ETag BEFORE writing, and NEITHER ever
+> reads content, so they can only ever report a WEAK ETag (see
+> `Entry.ETag`'s own doc comment). This made the documented
+> "Exists/Stat → `IfMatch` → write" workflow — the feature's OWN
+> central use case — impossible to ever satisfy. Fixed by accepting
+> EITHER the strong OR the weak ETag (a caller who DOES have the
+> content in hand, e.g. via `StrongETag(data)` directly, still gets an
+> exact match; a caller using Exists/Stat's weak ETag now ALSO
+> succeeds) — live-reproduced first (a failing test confirmed against
+> the unfixed code), then fixed, in BOTH `adapters/file.Backend` and
+> `ports.osBackend`.
 
 #### Fork 1 (resolved): a fallback ETag, computed by api/file itself
 

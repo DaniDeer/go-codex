@@ -2415,6 +2415,43 @@ func TestFile_Write_IfMatch_MatchSucceeds(t *testing.T) {
 	}
 }
 
+// TestFile_Write_IfMatch_StatETagMatchSucceeds is a RETROACTIVE
+// regression proof for the documented "Stat -> IfMatch -> Write"
+// workflow (docs/features/file-api.md's own "Conditional writes"
+// section) — File.Stat NEVER reads content, so it can only ever
+// report a WEAK ETag; WriteBytesIfMatch originally compared ifMatch
+// against the STRONG ETag only, making this documented workflow
+// impossible to ever satisfy. Found live while building
+// examples/file-api's own Conditional writes demo. Fixed by accepting
+// EITHER the strong OR the weak ETag.
+func TestFile_Write_IfMatch_StatETagMatchSucceeds(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "item.json")
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
+	if _, err := f.Write(nil, fileItem{Name: "first", Value: 1}, ports.FileOptions{}); err != nil {
+		t.Fatalf("setup Write: %v", err)
+	}
+	entry, exists, err := f.Stat(nil, ports.FileOptions{})
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if !exists {
+		t.Fatalf("want exists=true")
+	}
+	etag := entry.ETag
+
+	if _, err := f.Write(nil, fileItem{Name: "second", Value: 2}, ports.FileOptions{IfMatch: &etag}); err != nil {
+		t.Fatalf("conditional Write (Stat's own ETag): %v", err)
+	}
+	got, readErr := f.Read(nil, ports.FileOptions{})
+	if readErr != nil {
+		t.Fatalf("Read: %v", readErr)
+	}
+	if got.Name != "second" {
+		t.Fatalf("Name = %q, want %q after conditional overwrite", got.Name, "second")
+	}
+}
+
 func TestFile_Write_IfMatch_MismatchRejected(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "item.json")
