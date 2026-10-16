@@ -1293,19 +1293,18 @@ additive new tests:
 
 **Status: Phase 1 is done and closed (including a `deep-dive-bug-hunt`
 pass, `history.md` Rounds 216-223 — see `.github/skills/
-review-go-codex/references/history.md`); Phase 2's own 5 items are
-being tackled ONE AT A TIME, in a confirmed order, each designed to
-Phase 1's full Go-signature rigor before implementation starts.
-Confirmed order: Recursive `WithList` → Conditional writes →
-Streaming/chunked I/O → `adapters/s3` → `adapters/smb`.** The first
-item (**Recursive `WithList`**, below) is now fully designed — exact
-signatures, dispatch behavior, a deliberately-scoped-out non-goal, and
-a unit test plan — implementation is a separate, upcoming round. The
-remaining 4 items are still at outline depth only, each noted with its
-own open design question, unchanged from this doc's prior round. This
-section replaces round 2's original "`adapters/s3`/`adapters/smb` get
-their own future roadmap doc" call — ALL of Phase 2 is tracked in THIS
-doc.
+review-go-codex/references/history.md`, plus a retroactive "Phase 1
+amendment" for `List`/`BatchDelete` per-entry Security, also now
+IMPLEMENTED); Phase 2's own 5 items are being tackled ONE AT A TIME, in
+a confirmed order, each designed to Phase 1's full Go-signature rigor
+before implementation starts. Confirmed order: Recursive `WithList` →
+Conditional writes → Streaming/chunked I/O → `adapters/s3` →
+`adapters/smb`.** The first item (**Recursive `WithList`**, below) is
+now fully designed AND IMPLEMENTED. The remaining 4 items are still at
+outline depth only, each noted with its own open design question,
+unchanged from this doc's prior round. This section replaces round 2's
+original "`adapters/s3`/`adapters/smb` get their own future roadmap
+doc" call — ALL of Phase 2 is tracked in THIS doc.
 
 ### `adapters/s3`
 
@@ -1370,14 +1369,17 @@ such, not pre-decided.
 
 ### Recursive `WithList`
 
-> **Status: DESIGNED to Phase 1's Go-signature rigor — NOT yet
-> implemented.** The first Phase 2 item to reach this level of detail;
-> see the "Phase 2 implementation order" note at the end of this
-> section for where this sits relative to the other 4 outlined items.
-> **Builds ON TOP of the "Phase 1 amendment" above** — Recursive
-> `WithList` is designed against the AMENDED per-entry-Security/
-> `ListResult[T]` model, not the original once-per-call one; the
-> amendment is a prerequisite, not an independent, parallel change.
+> **Status: IMPLEMENTED.** `ListOptions{Recursive bool}`,
+> `Client.List`'s optional trailing variadic, the `WalkingBackend`-based
+> walk, the manual equivalent-power `ListDir` fallback, and the
+> `recursiveListDepth`-based pruning rule all shipped exactly as
+> designed below — see `api/file/dispatch.go`'s `listRecursiveWalking`/
+> `listRecursiveManual`. The first Phase 2 item to reach this level of
+> detail and the first to actually ship; the remaining 4 outlined items
+> are still at outline depth only. **Builds ON TOP of the "Phase 1
+> amendment" above** — Recursive `WithList` is implemented against the
+> AMENDED per-entry-Security/`ListResult[T]` model, not the original
+> once-per-call one.
 
 Today's `ports.Dir.List` already supports a recursive mode — Phase 1's
 `Lister[T]` is single-level only. The `WalkingBackend.WalkDir` primitive
@@ -1471,6 +1473,23 @@ template's own segment count, does not descend further") rather than
 inventing a new rule — the SAME mechanism, applied here to entry
 matching instead of directory-glob matching.
 
+**Implementation note (resolved during Stage 2 implementation, not a
+new open question)**: `buildParentDirWithRouting` REQUIRES every var in
+the template's dir portion up front (same as non-recursive `List`
+already requires — see the "Scope limit" subsection below), which means
+the resolved parent directory ALWAYS corresponds to the template string
+up to, but not including, its own final segment — i.e. the template's
+"OWN declared segment count" past the resolved parent directory is
+ALWAYS exactly 1 (the final leaf segment), for every `Resource[T]`
+Phase 1's template shape can express. `recursiveListDepth` (in
+`dispatch.go`) encodes this as a named constant rather than a
+recomputed-every-call value, with a doc comment explaining why it's
+always 1 given this shape — this is a faithful, direct implementation
+of the rule above, not a simplification of it; it would only need to
+become a per-call COMPUTED value if `Resource[T]`'s template shape ever
+grows a multi-segment leaf structure (not in Phase 1 or Phase 2's
+current scope).
+
 #### Scope limit — deliberately NOT full glob-discovery (flagged, not silently expanded)
 
 `entryListVars`'s existing per-entry `MergedPathParam` matching only
@@ -1533,11 +1552,16 @@ failures together, not a per-directory count.
 
 This item is first in the confirmed Phase 2 order: Recursive `WithList`
 → Conditional writes → Streaming/chunked I/O → `adapters/s3` →
-`adapters/smb`. Implementation (writing the actual
-`api/file`/`adapters/file` code, tests, and `ports`-side `osBackend`
-mirror) is a SEPARATE, later round from this design — this section
-itself is the complete, implementation-ready spec for that round to
-execute against.
+`adapters/smb`. **IMPLEMENTED** (8 new tests in `api/file/client_test.go`,
+all passing, including the non-`WalkingBackend` manual-fallback proof
+via a test-only Backend wrapper that deliberately does not promote
+`WalkDir`) — `ports`-side `osBackend` was NOT given a parallel
+Recursive-List wiring this round, since `ports.Dir`'s OWN recursive
+mode already exists independently (Stage F) and does not call through
+`api/file.Client.List` at all; only `adapters/file.Backend`'s existing
+`WalkingBackend` implementation is exercised by this feature. The
+remaining 4 Phase 2 items (Conditional writes → Streaming/chunked I/O →
+`adapters/s3` → `adapters/smb`) are still at outline depth only.
 
 ## Phase 3 — adapt examples to the new `api/file` approach
 

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"path"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/DaniDeer/go-codex/codex"
@@ -573,24 +575,24 @@ func dispatchDelete(ctx context.Context, backend Backend, d any, vars map[string
 // ── List ─────────────────────────────────────────────────────────────────
 
 type listDispatcher interface {
-	dispatchList(ctx context.Context, backend Backend, vars map[string]string) (any, error)
+	dispatchList(ctx context.Context, backend Backend, vars map[string]string, opts ListOptions) (any, error)
 }
 
-func (l Lister[T]) dispatchList(ctx context.Context, backend Backend, vars map[string]string) (any, error) {
-	return listCore[T](ctx, backend, l.core, routingInfo{}, vars)
+func (l Lister[T]) dispatchList(ctx context.Context, backend Backend, vars map[string]string, opts ListOptions) (any, error) {
+	return listCore[T](ctx, backend, l.core, routingInfo{}, vars, opts)
 }
-func (h *ListHandle[T]) dispatchList(ctx context.Context, backend Backend, vars map[string]string) (any, error) {
-	return listCore[T](ctx, backend, h.core, h.routing, vars)
+func (h *ListHandle[T]) dispatchList(ctx context.Context, backend Backend, vars map[string]string, opts ListOptions) (any, error) {
+	return listCore[T](ctx, backend, h.core, h.routing, vars, opts)
 }
 
-// listEntry decodes+merges one discovered filename into a ListResult,
-// running that entry's OWN per-entry Security gate (passing the
-// decoded value, once available) — see the "Phase 1 amendment" section
-// of docs/roadmap/file-api.md. Every failure (decode, merge-field,
-// metadata-read, OR Security rejection) becomes this entry's own Err;
-// listCore never aborts its loop because of this function's return.
-func listEntry[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, vars map[string]string, dirPath string, obs stats.Observer, name string) ListResult[T] {
-	childPath := joinPath(dirPath, name)
+// listEntry decodes+merges one discovered file (at childPath, leaf name
+// name) into a ListResult, running that entry's OWN per-entry Security
+// gate (passing the decoded value, once available) — see the "Phase 1
+// amendment" section of docs/roadmap/file-api.md. Every failure
+// (decode, merge-field, metadata-read, OR Security rejection) becomes
+// this entry's own Err; the caller (listCore's single-level/recursive
+// discovery loops) never aborts because of this function's return.
+func listEntry[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, vars map[string]string, childPath, name string, obs stats.Observer) ListResult[T] {
 	data, err := backend.ReadBytes(ctx, childPath)
 	if err != nil {
 		return ListResult[T]{Err: applyErrorPattern(core, FileReadError{Path: childPath, Err: err})}
@@ -619,7 +621,24 @@ func listEntry[T any](ctx context.Context, backend Backend, core roleCore[T], ro
 	return ListResult[T]{Value: v}
 }
 
-func listCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, vars map[string]string) (result any, err error) {
+// recursiveListDepth is the ONLY structurally-valid depth (relative to
+// the resource's resolved parent directory) a Recursive List entry can
+// sit at. A Resource's path template always has the shape
+// "<dir-with-vars>/<final-leaf-segment>" (buildParentDirWithRouting
+// strips exactly the final segment, and every var in the dir portion
+// is REQUIRED up front — see that method's own doc comment) — so,
+// given a fully-resolved parent directory, the template's own
+// declared structure always has EXACTLY ONE remaining segment (the
+// leaf) past it, regardless of how many segments the template has in
+// total. Reuses ports.Dir.listGlobDiscovery's own depth-pruning
+// precedent ("once a candidate directory's depth already equals the
+// template's own segment count, does not descend further"), applied
+// here to this package's always-single-remaining-segment shape.
+const recursiveListDepth = 1
+
+// listCore implements Client.List's single-level (default) and
+// Recursive discovery.
+func listCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, vars map[string]string, opts ListOptions) (result any, err error) {
 	defer func() { err = applyErrorPattern(core, err) }()
 	obs := obsFromCtx(ctx)
 	dirPath, err := core.resource.buildParentDirWithRouting(routing, vars)
@@ -629,9 +648,30 @@ func listCore[T any](ctx context.Context, backend Backend, core roleCore[T], rou
 	ctx, endSpan := startSpan(ctx, obs, "file.list", dirPath)
 	defer func() { endSpan(err) }()
 	start := time.Now()
+
+	var out []ListResult[T]
+	if opts.Recursive {
+		if wb, ok := backend.(WalkingBackend); ok {
+			out, err = listRecursiveWalking(ctx, backend, wb, core, routing, vars, dirPath, obs)
+		} else {
+			out, err = listRecursiveManual(ctx, backend, core, routing, vars, dirPath, 0, obs)
+		}
+	} else {
+		out, err = listSingleLevel(ctx, backend, core, routing, vars, dirPath, obs)
+	}
+	if err != nil {
+		recordList(obs, dirPath, false, len(out), time.Since(start))
+		return nil, err
+	}
+	recordList(obs, dirPath, true, len(out), time.Since(start))
+	return out, nil
+}
+
+// listSingleLevel is today's (pre-Recursive, and Recursive==false)
+// discovery: one ListDir call, immediate children only.
+func listSingleLevel[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, vars map[string]string, dirPath string, obs stats.Observer) ([]ListResult[T], error) {
 	entries, err := backend.ListDir(ctx, dirPath)
 	if err != nil {
-		recordList(obs, dirPath, false, 0, time.Since(start))
 		return nil, FileReadError{Path: dirPath, Err: err}
 	}
 	out := make([]ListResult[T], 0, len(entries))
@@ -639,18 +679,88 @@ func listCore[T any](ctx context.Context, backend Backend, core roleCore[T], rou
 		if e.IsDir {
 			continue
 		}
-		out = append(out, listEntry(ctx, backend, core, routing, vars, dirPath, obs, e.Name))
+		out = append(out, listEntry(ctx, backend, core, routing, vars, joinPath(dirPath, e.Name), e.Name, obs))
 	}
-	recordList(obs, dirPath, true, len(out), time.Since(start))
 	return out, nil
 }
 
-func dispatchList(ctx context.Context, backend Backend, l any, vars map[string]string) (any, error) {
+// listRecursiveWalking implements Recursive List via WalkingBackend.WalkDir
+// — walks dirPath's entire subtree, pruning (via filepath.SkipDir) any
+// directory whose OWN depth already reaches recursiveListDepth (nothing
+// inside it could satisfy a SHALLOWER structurally-valid depth), and
+// feeding every FILE entry found at EXACTLY recursiveListDepth into the
+// same per-entry pipeline listSingleLevel already uses.
+func listRecursiveWalking[T any](ctx context.Context, backend Backend, wb WalkingBackend, core roleCore[T], routing routingInfo, vars map[string]string, dirPath string, obs stats.Observer) ([]ListResult[T], error) {
+	var out []ListResult[T]
+	walkErr := wb.WalkDir(ctx, dirPath, func(p string, e Entry, err error) error {
+		if err != nil {
+			return err
+		}
+		if p == dirPath {
+			return nil // root itself — never a candidate entry, always descend into it
+		}
+		rel, relErr := filepath.Rel(dirPath, p)
+		if relErr != nil {
+			return relErr
+		}
+		depth := len(strings.Split(filepath.ToSlash(rel), "/"))
+		if e.IsDir {
+			if depth >= recursiveListDepth {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if depth != recursiveListDepth {
+			return nil // structurally too deep (or too shallow) — pruned, not an error
+		}
+		out = append(out, listEntry(ctx, backend, core, routing, vars, p, e.Name, obs))
+		return nil
+	})
+	if walkErr != nil {
+		return out, FileReadError{Path: dirPath, Err: walkErr}
+	}
+	return out, nil
+}
+
+// listRecursiveManual is the equivalent-power fallback for a Backend
+// NOT implementing WalkingBackend — composes the SAME recursiveListDepth
+// pruning via repeated ListDir calls instead of one walk. Mirrors
+// listRecursiveWalking's own semantics exactly (byte-for-byte equivalent
+// output), just driven by ListDir instead of WalkDir.
+func listRecursiveManual[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, vars map[string]string, dirPath string, depth int, obs stats.Observer) ([]ListResult[T], error) {
+	entries, err := backend.ListDir(ctx, dirPath)
+	if err != nil {
+		return nil, FileReadError{Path: dirPath, Err: err}
+	}
+	var out []ListResult[T]
+	for _, e := range entries {
+		childDepth := depth + 1
+		childPath := joinPath(dirPath, e.Name)
+		if e.IsDir {
+			if childDepth >= recursiveListDepth {
+				continue // pruned — nothing inside could be shallower
+			}
+			sub, err := listRecursiveManual(ctx, backend, core, routing, vars, childPath, childDepth, obs)
+			if err != nil {
+				return out, err
+			}
+			out = append(out, sub...)
+			continue
+		}
+		if childDepth != recursiveListDepth {
+			continue
+		}
+		out = append(out, listEntry(ctx, backend, core, routing, vars, childPath, e.Name, obs))
+	}
+	return out, nil
+}
+
+func dispatchList(ctx context.Context, backend Backend, l any, vars map[string]string, opts ListOptions) (any, error) {
 	v, ok := l.(listDispatcher)
 	if !ok {
 		return nil, BackendTypeMismatchError{Expected: "file.Lister[T] or *file.ListHandle[T]", Got: typeName(l)}
 	}
-	return v.dispatchList(ctx, backend, vars)
+	return v.dispatchList(ctx, backend, vars, opts)
 }
 
 // ── Exists ───────────────────────────────────────────────────────────────

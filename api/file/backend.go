@@ -89,6 +89,21 @@ type MkdirOptions struct {
 	DryRun bool
 }
 
+// ListOptions configures [Client.List]'s traversal depth. Mirrors the
+// established 0-or-1 trailing variadic convention Create/Patch/Delete/
+// Mkdir already use — backward compatible with every existing List
+// call site (opts omitted = today's single-level behavior, byte-for-
+// byte unchanged).
+type ListOptions struct {
+	// Recursive, when true, descends into every subdirectory under the
+	// resource's parent directory, not just its immediate children.
+	// Default false — existing callers see NO behavior change unless
+	// they opt in. See the "Recursive WithList" section of
+	// docs/roadmap/file-api.md for the full dispatch/depth-pruning
+	// design this field drives.
+	Recursive bool
+}
+
 // Backend is the ONE interface a storage backend must implement to make
 // EVERY declared Resource[T] work against it, regardless of verb. The
 // SHARED mechanics (path templating, codec encode/decode, merge-field

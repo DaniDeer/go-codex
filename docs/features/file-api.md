@@ -182,6 +182,41 @@ template) — no separate declaration needed; the SAME `PathParam`/
 `MergedPathParam` you already use for `Read`/`Create` just works for
 `List` too.
 
+`Client.List`'s boxed return value is `[]file.ListResult[T]` — one
+result PER DISCOVERED ENTRY, success or failure, never a plain `[]T`:
+
+```go
+gotAny, err := client.List(ctx, notes.WithList(file.List{}), nil)
+if err != nil {
+    // A WALK-LEVEL failure (the parent directory itself can't be
+    // read) — there's no entry to attach this to.
+}
+for _, r := range gotAny.([]file.ListResult[Note]) {
+    if r.Err != nil {
+        // THIS entry's own failure (decode error, merge-field
+        // mismatch, or a declared BoundListMiddleware's Security
+        // rejection) — siblings still succeed independently.
+        continue
+    }
+    fmt.Println(r.Value)
+}
+```
+
+`List` also accepts an optional trailing `file.ListOptions{Recursive:
+true}` to descend into every subdirectory under the resource's parent
+directory, not just its immediate children:
+
+```go
+gotAny, err := client.List(ctx, notes.WithList(file.List{}), nil,
+    file.ListOptions{Recursive: true})
+```
+
+`Recursive` walks via the Backend's optional `WalkingBackend` extension
+when available (falling back to an equivalent repeated-`ListDir`
+composition otherwise), pruning any entry nested DEEPER than the
+resource's own declared path template describes — an unexpected extra
+directory level is silently excluded, never decoded.
+
 ## Backends
 
 A `Backend` implements `ReadBytes`/`WriteBytes`/`DeleteBytes`/`ListDir`/

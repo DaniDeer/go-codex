@@ -1671,3 +1671,247 @@ func TestBatchDeleter_PerPathSecurityRejection_EachPathGatedIndependently(t *tes
 		}
 	}
 }
+
+// ── Recursive WithList (Phase 2 item 1) ──────────────────────────────────
+
+// nonWalkingBackend wraps adapterfile.Backend by COMPOSITION (not
+// embedding) so WalkDir is deliberately NOT promoted — proves
+// Recursive's manual, equivalent-power fallback (no WalkingBackend)
+// produces the same result as the WalkingBackend-based path.
+type nonWalkingBackend struct {
+	inner *adapterfile.Backend
+}
+
+func (b nonWalkingBackend) BackendName() string { return "test/non-walking" }
+func (b nonWalkingBackend) ReadBytes(ctx context.Context, path string) ([]byte, error) {
+	return b.inner.ReadBytes(ctx, path)
+}
+func (b nonWalkingBackend) WriteBytes(ctx context.Context, path string, data []byte, opts file.WriteOptions) ([]string, error) {
+	return b.inner.WriteBytes(ctx, path, data, opts)
+}
+func (b nonWalkingBackend) DeleteBytes(ctx context.Context, path string, opts file.DeleteOptions) (bool, error) {
+	return b.inner.DeleteBytes(ctx, path, opts)
+}
+func (b nonWalkingBackend) ListDir(ctx context.Context, path string) ([]file.Entry, error) {
+	return b.inner.ListDir(ctx, path)
+}
+func (b nonWalkingBackend) Stat(ctx context.Context, path string) (file.Entry, error) {
+	return b.inner.Stat(ctx, path)
+}
+func (b nonWalkingBackend) Mkdir(ctx context.Context, path string, opts file.MkdirOptions) (bool, error) {
+	return b.inner.Mkdir(ctx, path, opts)
+}
+
+func newNonWalkingBackend() nonWalkingBackend {
+	return nonWalkingBackend{inner: adapterfile.NewBackend()}
+}
+
+func TestListCore_Recursive_DiscoversEntriesInParentDir(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	for _, name := range []string{"a", "b"} {
+		if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: name, Value: 1}, map[string]string{"name": name}); err != nil {
+			t.Fatalf("Create(%s): %v", name, err)
+		}
+	}
+
+	gotAny, err := client.List(ctx, res.WithList(file.List{}), nil, file.ListOptions{Recursive: true})
+	if err != nil {
+		t.Fatalf("List(Recursive): %v", err)
+	}
+	got := gotAny.([]file.ListResult[record])
+	if len(got) != 2 {
+		t.Fatalf("want 2 entries, got %+v", got)
+	}
+	for _, r := range got {
+		if r.Err != nil {
+			t.Fatalf("unexpected per-entry error %v", r.Err)
+		}
+	}
+}
+
+func TestListCore_Recursive_SkipsDirectoryEntries(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "plain", Value: 1}, map[string]string{"name": "plain"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "subdir"), 0755); err != nil {
+		t.Fatalf("setup Mkdir: %v", err)
+	}
+
+	gotAny, err := client.List(ctx, res.WithList(file.List{}), nil, file.ListOptions{Recursive: true})
+	if err != nil {
+		t.Fatalf("List(Recursive): %v", err)
+	}
+	got := gotAny.([]file.ListResult[record])
+	if len(got) != 1 {
+		t.Fatalf("want 1 entry (directory excluded), got %+v", got)
+	}
+}
+
+func TestListCore_Recursive_DepthPruning_ExcludesTooDeepEntries(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "shallow", Value: 1}, map[string]string{"name": "shallow"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// An extra, unexpected nesting level — one directory too deep
+	// relative to the resource's parent dir — must be pruned, never
+	// reaching the codec at all.
+	if err := os.MkdirAll(filepath.Join(dir, "nested"), 0755); err != nil {
+		t.Fatalf("setup MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "nested", "deep.json"), []byte(`{"name":"deep","value":1}`), 0644); err != nil {
+		t.Fatalf("setup write: %v", err)
+	}
+
+	gotAny, err := client.List(ctx, res.WithList(file.List{}), nil, file.ListOptions{Recursive: true})
+	if err != nil {
+		t.Fatalf("List(Recursive): %v", err)
+	}
+	got := gotAny.([]file.ListResult[record])
+	if len(got) != 1 || got[0].Err != nil || got[0].Value.Name != "shallow" {
+		t.Fatalf("want exactly the shallow entry, deep.json pruned; got %+v", got)
+	}
+}
+
+func TestListCore_Recursive_NonWalkingBackend_FallsBackToManualComposition(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(newNonWalkingBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	for _, name := range []string{"x", "y"} {
+		if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: name, Value: 1}, map[string]string{"name": name}); err != nil {
+			t.Fatalf("Create(%s): %v", name, err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "extra"), 0755); err != nil {
+		t.Fatalf("setup MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "extra", "z.json"), []byte(`{"name":"z","value":1}`), 0644); err != nil {
+		t.Fatalf("setup write: %v", err)
+	}
+
+	gotAny, err := client.List(ctx, res.WithList(file.List{}), nil, file.ListOptions{Recursive: true})
+	if err != nil {
+		t.Fatalf("List(Recursive, manual fallback): %v", err)
+	}
+	got := gotAny.([]file.ListResult[record])
+	if len(got) != 2 {
+		t.Fatalf("want 2 entries (extra/z.json pruned, directory excluded), got %+v", got)
+	}
+}
+
+func TestListCore_Recursive_MergeFieldAppliesPerEntry(t *testing.T) {
+	dir := t.TempDir()
+	res := file.NewResource[recordWithOwner](filepath.Join(dir, "{name}.json"), format.JSON(recordWithOwnerCodec()),
+		file.NewPathParam("name", codex.String(),
+			func(r recordWithOwner) string { return r.Name },
+			func(r *recordWithOwner, v string) { r.Name = v }),
+	)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), recordWithOwner{Value: 1}, map[string]string{"name": "merged"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	gotAny, err := client.List(ctx, res.WithList(file.List{}), nil, file.ListOptions{Recursive: true})
+	if err != nil {
+		t.Fatalf("List(Recursive): %v", err)
+	}
+	got := gotAny.([]file.ListResult[recordWithOwner])
+	if len(got) != 1 || got[0].Err != nil || got[0].Value.Name != "merged" {
+		t.Fatalf("want 1 entry with Name merged from filename, got %+v", got)
+	}
+}
+
+func TestListCore_NonRecursive_ResultShapeUnaffectedByListOptionsZeroValue(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "only", Value: 1}, map[string]string{"name": "only"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Omitted opts entirely (today's existing call shape) vs. an
+	// explicit ListOptions{} (Recursive: false) must produce identical
+	// results — proves the new variadic parameter is fully backward
+	// compatible.
+	gotOmitted, err := client.List(ctx, res.WithList(file.List{}), nil)
+	if err != nil {
+		t.Fatalf("List (omitted opts): %v", err)
+	}
+	gotExplicit, err := client.List(ctx, res.WithList(file.List{}), nil, file.ListOptions{})
+	if err != nil {
+		t.Fatalf("List (explicit zero-value opts): %v", err)
+	}
+	if len(gotOmitted.([]file.ListResult[record])) != len(gotExplicit.([]file.ListResult[record])) {
+		t.Fatalf("want identical result count, got omitted=%d explicit=%d", len(gotOmitted.([]file.ListResult[record])), len(gotExplicit.([]file.ListResult[record])))
+	}
+}
+
+func TestListCore_Recursive_ObserverCountReflectsAllVisitedEntries(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	for _, name := range []string{"one", "two", "three"} {
+		if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: name, Value: 1}, map[string]string{"name": name}); err != nil {
+			t.Fatalf("Create(%s): %v", name, err)
+		}
+	}
+
+	gotAny, err := client.List(ctx, res.WithList(file.List{}), nil, file.ListOptions{Recursive: true})
+	if err != nil {
+		t.Fatalf("List(Recursive): %v", err)
+	}
+	if len(gotAny.([]file.ListResult[record])) != 3 {
+		t.Fatalf("want 3 entries counted, got %+v", gotAny)
+	}
+}
+
+func TestListCore_Recursive_WalkLevelError_StillFailsWholeCall(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "does-not-exist")
+	res := file.NewResource[record](filepath.Join(missing, "{name}.json"), format.JSON(recordCodec()),
+		file.PathParam{Name: "name"})
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	_, err := client.List(context.Background(), res.WithList(file.List{}), nil, file.ListOptions{Recursive: true})
+	var readErr file.FileReadError
+	if err == nil || !errors.As(err, &readErr) {
+		t.Fatalf("want a whole-call FileReadError (walk-level failure), got %v (%T)", err, err)
+	}
+}

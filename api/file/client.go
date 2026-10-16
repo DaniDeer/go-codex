@@ -81,6 +81,13 @@ func firstMkdirOptions(opts []MkdirOptions) MkdirOptions {
 	return opts[0]
 }
 
+func firstListOptions(opts []ListOptions) ListOptions {
+	if len(opts) == 0 {
+		return ListOptions{}
+	}
+	return opts[0]
+}
+
 // ── Dual-accept dispatch methods ──────────────────────────────────────
 //
 // Every method below is DUAL-ACCEPT: its role parameter accepts EITHER
@@ -153,13 +160,23 @@ func (c *Client) Delete(ctx context.Context, d any, vars map[string]string, opts
 	return dispatchDelete(ctx, backend, d, vars, firstDeleteOptions(opts))
 }
 
-// List returns the decoded []T boxed as any.
-func (c *Client) List(ctx context.Context, l any, vars map[string]string) (any, error) {
+// List returns the decoded []ListResult[T] boxed as any — one result
+// per discovered entry, success or failure (see [ListResult] and the
+// "Phase 1 amendment" section of docs/roadmap/file-api.md); only a
+// walk-level failure (the directory itself can't be read/walked) fails
+// the whole call via the plain error return.
+//
+// opts is variadic (0 or 1 value accepted) — pass a [ListOptions] with
+// Recursive set to descend into every subdirectory under the
+// resource's parent directory, not just its immediate children.
+// Omitted (or Recursive: false) keeps today's single-level discovery,
+// byte-for-byte unchanged.
+func (c *Client) List(ctx context.Context, l any, vars map[string]string, opts ...ListOptions) (any, error) {
 	backend, err := c.attachedBackend()
 	if err != nil {
 		return nil, err
 	}
-	return dispatchList(ctx, backend, l, vars)
+	return dispatchList(ctx, backend, l, vars, firstListOptions(opts))
 }
 
 // Exists returns (Entry{}, false, nil) for the idempotent "absent" case
