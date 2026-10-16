@@ -3,6 +3,7 @@ package file
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"time"
@@ -334,4 +335,65 @@ type MetadataBackend interface {
 	// WriteMetadata persists md alongside path, overwriting any
 	// previously stored metadata for path entirely (not a merge).
 	WriteMetadata(ctx context.Context, path string, md map[string]string) error
+}
+
+// StreamReadOptions configures [Client.OpenRead]'s byte-range behavior
+// (HTTP-Range-style). The zero value (Offset == 0 && Length == 0) means
+// "whole file" — byte-for-byte the content ReadBytes would return.
+// Range is READ-ONLY: there is no cross-backend semantic for a
+// partial-offset WRITE (S3 objects, like filesystem files opened via
+// StreamWriteBackend, are only ever written in full — the SAME
+// exclusion basis as this package's "no Append" decision) — see
+// docs/roadmap/file-api.md's "Streaming/chunked reads and writes"
+// section for the full design.
+type StreamReadOptions struct {
+	// Offset is the first byte to read, 0-based. A non-zero Offset with
+	// Length == 0 means "from Offset to end of file."
+	Offset int64
+	// Length is the number of bytes to read starting at Offset. 0 means
+	// "to end of file" when Offset is non-zero, or "whole file" when
+	// Offset is also 0.
+	Length int64
+}
+
+// StreamWriteBackend is an OPTIONAL Backend extension for streaming
+// writes — mirrors CopyingBackend/MovingBackend/BatchDeletingBackend/
+// WalkingBackend/DirDeletingBackend/ConditionalWriteBackend's exact
+// type-assertion-guard idiom. A Backend NOT implementing this keeps
+// working via createCore's existing whole-file Marshal+WriteBytes path
+// (Mechanism 1) and Client.OpenWrite's buffered fallback (Mechanism
+// 2) — just without the memory-usage benefit. See
+// docs/roadmap/file-api.md's "Streaming/chunked reads and writes"
+// section for the full design, including why this is a DIFFERENT
+// mechanism from [Capability] (optional graceful degradation, never
+// rejected — not a declare-time hard requirement).
+type StreamWriteBackend interface {
+	// OpenWriter returns a writer whose Close MUST commit the write
+	// atomically (temp-file-in-the-same-directory + rename, mirroring
+	// [ConditionalWriteBackend.WriteBytesIfMatch]'s own commit
+	// mechanism — ONE atomicity story for every streaming write path in
+	// this package) — a reader must never observe a partially-written
+	// file. opts carries the same CreateDirs/DirPerm/Perm/Strict/
+	// Metadata fields WriteBytes already honors; IfMatch is never set
+	// when this is called (dispatch falls back to the non-streaming
+	// conditional-write path instead — see the design doc's "IfMatch
+	// interaction" note).
+	OpenWriter(ctx context.Context, path string, opts WriteOptions) (io.WriteCloser, error)
+}
+
+// StreamReadBackend is an OPTIONAL Backend extension for streaming,
+// whole-file reads — the 2nd tier of [Client.OpenRead]'s 3-level
+// fallback cascade (see [RangeReadingBackend] for the 1st, native tier).
+type StreamReadBackend interface {
+	OpenReader(ctx context.Context, path string) (io.ReadCloser, error)
+}
+
+// RangeReadingBackend is an OPTIONAL Backend extension for a NATIVE
+// byte-range read — mirrors S3's own GetObject Range support, the
+// primary real-world motivating case for this interface existing at
+// all (adapters/file.Backend deliberately does NOT implement this in
+// Phase 2 — see the Backend semantic differences table). The 1st,
+// fastest tier of [Client.OpenRead]'s 3-level fallback cascade.
+type RangeReadingBackend interface {
+	OpenReaderRange(ctx context.Context, path string, offset, length int64) (io.ReadCloser, error)
 }

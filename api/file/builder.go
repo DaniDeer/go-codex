@@ -233,6 +233,13 @@ type Move struct{ Summary, Description string }
 type Mkdir struct{ Summary, Description string }
 type BatchDelete struct{ Summary, Description string }
 
+// StreamRead/StreamWrite declare the 2 codec-BYPASSING streaming roles
+// (Mechanism 2 — see docs/roadmap/file-api.md's "Streaming/chunked reads
+// and writes" section for the full design, including "Why streaming
+// bypasses the codec").
+type StreamRead struct{ Summary, Description string }
+type StreamWrite struct{ Summary, Description string }
+
 // roleCore is the shared, non-exported state every role builder carries —
 // NOT embedded (Go's method-locality rule means each role type's
 // Use/WithCapabilities/WithSecurity must return ITS OWN type, mirroring
@@ -833,6 +840,123 @@ func (b BatchDeleter[T]) Handle(client *Client, opts ...HandleOpt) (*BatchDelete
 }
 
 type BatchDeleteHandle[T any] struct {
+	resource Resource[T]
+	core     roleCore[T]
+	client   *Client
+	routing  routingInfo
+}
+
+// ── StreamReader[T] ────────────────────────────────────────────────────
+
+// StreamReader[T] is the role value built by Resource[T].WithStreamRead —
+// Mechanism 2's codec-bypassing read role (see docs/roadmap/file-api.md's
+// "Streaming/chunked reads and writes" section). T still declares path
+// templating/Security/Capability at declare time; the ACTUAL bytes
+// returned by Client.OpenRead bypass the codec entirely.
+type StreamReader[T any] struct {
+	core roleCore[T]
+	op   StreamRead
+}
+
+func (r Resource[T]) WithStreamRead(op StreamRead) StreamReader[T] {
+	return StreamReader[T]{core: roleCore[T]{resource: r}, op: op}
+}
+
+func (sr StreamReader[T]) Use(mws ...RouteMiddleware) StreamReader[T] {
+	sr.core = sr.core.withUse(mws)
+	return sr
+}
+func (sr StreamReader[T]) ErrorPatterns(patterns any) StreamReader[T] {
+	sr.core = sr.core.withErrorPatterns(patterns)
+	return sr
+}
+func (sr StreamReader[T]) WithCapabilities(caps ...Capability) StreamReader[T] {
+	sr.core = sr.core.withCapabilities(caps)
+	return sr
+}
+func (sr StreamReader[T]) WithSecurity(reqs ...SecurityRequirement) StreamReader[T] {
+	sr.core = sr.core.withSecurity(reqs)
+	return sr
+}
+func (sr StreamReader[T]) RequireCapabilities(reqs ...CapabilityRequirement) StreamReader[T] {
+	sr.core = sr.core.withRequirements(reqs)
+	return sr
+}
+
+func (sr StreamReader[T]) Handle(client *Client, opts ...HandleOpt) (*StreamReadHandle[T], error) {
+	if sr.core.buildErr != nil {
+		return nil, sr.core.buildErr
+	}
+	if err := sr.core.checkCoverage(); err != nil {
+		return nil, err
+	}
+	h := &StreamReadHandle[T]{resource: sr.core.resource, core: sr.core, client: client}
+	for _, o := range opts {
+		o.applyHandle(&h.routing)
+	}
+	h.core = h.core.applyRouting(h.routing)
+	return h, nil
+}
+
+type StreamReadHandle[T any] struct {
+	resource Resource[T]
+	core     roleCore[T]
+	client   *Client
+	routing  routingInfo
+}
+
+// ── StreamWriter[T] ────────────────────────────────────────────────────
+
+// StreamWriter[T] is the role value built by Resource[T].WithStreamWrite
+// — Mechanism 2's codec-bypassing write role. See StreamReader[T]'s own
+// doc comment and docs/roadmap/file-api.md's "Streaming/chunked reads and
+// writes" section for the full design.
+type StreamWriter[T any] struct {
+	core roleCore[T]
+	op   StreamWrite
+}
+
+func (r Resource[T]) WithStreamWrite(op StreamWrite) StreamWriter[T] {
+	return StreamWriter[T]{core: roleCore[T]{resource: r}, op: op}
+}
+
+func (sw StreamWriter[T]) Use(mws ...RouteMiddleware) StreamWriter[T] {
+	sw.core = sw.core.withUse(mws)
+	return sw
+}
+func (sw StreamWriter[T]) ErrorPatterns(patterns any) StreamWriter[T] {
+	sw.core = sw.core.withErrorPatterns(patterns)
+	return sw
+}
+func (sw StreamWriter[T]) WithCapabilities(caps ...Capability) StreamWriter[T] {
+	sw.core = sw.core.withCapabilities(caps)
+	return sw
+}
+func (sw StreamWriter[T]) WithSecurity(reqs ...SecurityRequirement) StreamWriter[T] {
+	sw.core = sw.core.withSecurity(reqs)
+	return sw
+}
+func (sw StreamWriter[T]) RequireCapabilities(reqs ...CapabilityRequirement) StreamWriter[T] {
+	sw.core = sw.core.withRequirements(reqs)
+	return sw
+}
+
+func (sw StreamWriter[T]) Handle(client *Client, opts ...HandleOpt) (*StreamWriteHandle[T], error) {
+	if sw.core.buildErr != nil {
+		return nil, sw.core.buildErr
+	}
+	if err := sw.core.checkCoverage(); err != nil {
+		return nil, err
+	}
+	h := &StreamWriteHandle[T]{resource: sw.core.resource, core: sw.core, client: client}
+	for _, o := range opts {
+		o.applyHandle(&h.routing)
+	}
+	h.core = h.core.applyRouting(h.routing)
+	return h, nil
+}
+
+type StreamWriteHandle[T any] struct {
 	resource Resource[T]
 	core     roleCore[T]
 	client   *Client

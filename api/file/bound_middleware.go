@@ -676,3 +676,96 @@ func (b BatchDeleter[T]) BatchDeleteBoundMW(bm any) BatchDeleter[T] {
 	})
 	return b
 }
+
+// BoundStreamReadMiddleware is StreamRead's bound middleware (no *T —
+// there is no decoded domain value at gate time, same rationale as
+// Delete/Exists/Copy/Move/Mkdir/BatchDelete's own no-T shapes).
+type BoundStreamReadMiddleware[In, Out any] struct {
+	mw Middleware[In, Out]
+	fn func(ctx context.Context, in In) (Out, error)
+}
+
+func NewBoundStreamReadMiddleware[In, Out any](decl middleware.Declaration[In, Out], fn func(ctx context.Context, in In) (Out, error)) BoundStreamReadMiddleware[In, Out] {
+	return BoundStreamReadMiddleware[In, Out]{mw: NewMiddleware(decl), fn: fn}
+}
+
+func BoundSecurityStreamReadMiddleware[In, Out any](schemeName string, scheme SecurityScheme, scopes []string, fn func(ctx context.Context, in In) (Out, error)) BoundStreamReadMiddleware[In, Out] {
+	return BoundStreamReadMiddleware[In, Out]{
+		mw: NewMiddleware(middleware.Declaration[In, Out]{
+			Name: "declare-security:" + schemeName, InCodec: codex.Struct[In](), OutCodec: codex.Struct[Out](),
+			Security: middleware.NewSecurityDeclaration(schemeName, scheme, scopes, nil),
+		}),
+		fn: fn,
+	}
+}
+
+func (bm BoundStreamReadMiddleware[In, Out]) invoke(ctx context.Context, _ any, _ map[string]string) (map[string]string, map[string][]string, error) {
+	var in In
+	out, err := bm.fn(ctx, in)
+	if err != nil {
+		return nil, nil, err
+	}
+	return nil, grantedScopesOf(out), nil
+}
+func (bm BoundStreamReadMiddleware[In, Out]) boundName() string { return bm.mw.Name }
+func (bm BoundStreamReadMiddleware[In, Out]) boundSecurity() *middleware.SecurityDeclaration {
+	return bm.mw.Security
+}
+
+func (sr StreamReader[T]) StreamReadBoundMW(bm any) StreamReader[T] {
+	v, ok := bm.(noTBoundMWShape)
+	if !ok {
+		sr.core.buildErr = boundMismatchErr(sr.core, bm)
+		return sr
+	}
+	sr.core.boundMWs = append(append([]roleBoundMW{}, sr.core.boundMWs...), roleBoundMW{
+		name: v.boundName(), security: v.boundSecurity(), invoke: v.invoke,
+	})
+	return sr
+}
+
+// BoundStreamWriteMiddleware is StreamWrite's bound middleware (no *T —
+// same rationale as BoundStreamReadMiddleware above).
+type BoundStreamWriteMiddleware[In, Out any] struct {
+	mw Middleware[In, Out]
+	fn func(ctx context.Context, in In) (Out, error)
+}
+
+func NewBoundStreamWriteMiddleware[In, Out any](decl middleware.Declaration[In, Out], fn func(ctx context.Context, in In) (Out, error)) BoundStreamWriteMiddleware[In, Out] {
+	return BoundStreamWriteMiddleware[In, Out]{mw: NewMiddleware(decl), fn: fn}
+}
+
+func BoundSecurityStreamWriteMiddleware[In, Out any](schemeName string, scheme SecurityScheme, scopes []string, fn func(ctx context.Context, in In) (Out, error)) BoundStreamWriteMiddleware[In, Out] {
+	return BoundStreamWriteMiddleware[In, Out]{
+		mw: NewMiddleware(middleware.Declaration[In, Out]{
+			Name: "declare-security:" + schemeName, InCodec: codex.Struct[In](), OutCodec: codex.Struct[Out](),
+			Security: middleware.NewSecurityDeclaration(schemeName, scheme, scopes, nil),
+		}),
+		fn: fn,
+	}
+}
+
+func (bm BoundStreamWriteMiddleware[In, Out]) invoke(ctx context.Context, _ any, _ map[string]string) (map[string]string, map[string][]string, error) {
+	var in In
+	out, err := bm.fn(ctx, in)
+	if err != nil {
+		return nil, nil, err
+	}
+	return nil, grantedScopesOf(out), nil
+}
+func (bm BoundStreamWriteMiddleware[In, Out]) boundName() string { return bm.mw.Name }
+func (bm BoundStreamWriteMiddleware[In, Out]) boundSecurity() *middleware.SecurityDeclaration {
+	return bm.mw.Security
+}
+
+func (sw StreamWriter[T]) StreamWriteBoundMW(bm any) StreamWriter[T] {
+	v, ok := bm.(noTBoundMWShape)
+	if !ok {
+		sw.core.buildErr = boundMismatchErr(sw.core, bm)
+		return sw
+	}
+	sw.core.boundMWs = append(append([]roleBoundMW{}, sw.core.boundMWs...), roleBoundMW{
+		name: v.boundName(), security: v.boundSecurity(), invoke: v.invoke,
+	})
+	return sw
+}

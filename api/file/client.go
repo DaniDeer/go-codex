@@ -2,6 +2,7 @@ package file
 
 import (
 	"context"
+	"io"
 	"sync"
 )
 
@@ -84,6 +85,13 @@ func firstMkdirOptions(opts []MkdirOptions) MkdirOptions {
 func firstListOptions(opts []ListOptions) ListOptions {
 	if len(opts) == 0 {
 		return ListOptions{}
+	}
+	return opts[0]
+}
+
+func firstStreamReadOptions(opts []StreamReadOptions) StreamReadOptions {
+	if len(opts) == 0 {
+		return StreamReadOptions{}
 	}
 	return opts[0]
 }
@@ -231,4 +239,41 @@ func (c *Client) BatchDelete(ctx context.Context, bd any, varsList []map[string]
 		return nil, err
 	}
 	return dispatchBatchDelete(ctx, backend, bd, varsList)
+}
+
+// OpenRead returns a codec-BYPASSING raw byte stream (Mechanism 2 — see
+// docs/roadmap/file-api.md's "Streaming/chunked reads and writes"
+// section). The caller is responsible for calling Close — RecordFileRead
+// fires at Close time, not Open time.
+//
+// opts is variadic (0 or 1 value accepted) — pass a [StreamReadOptions]
+// for an HTTP-Range-style byte-range read; omitted (or the zero value)
+// reads the whole file, served via a 3-level fallback cascade
+// ([RangeReadingBackend] native -> [StreamReadBackend] approximated ->
+// [Backend.ReadBytes] universal).
+func (c *Client) OpenRead(ctx context.Context, sr any, vars map[string]string, opts ...StreamReadOptions) (io.ReadCloser, error) {
+	backend, err := c.attachedBackend()
+	if err != nil {
+		return nil, err
+	}
+	return dispatchOpenRead(ctx, backend, sr, vars, firstStreamReadOptions(opts))
+}
+
+// OpenWrite returns a codec-BYPASSING raw byte stream (Mechanism 2). The
+// caller is responsible for writing content and calling Close — Close
+// MUST commit the write atomically (temp-file+rename, the SAME
+// atomicity story as [ConditionalWriteBackend.WriteBytesIfMatch]);
+// RecordFileWrite fires at Close time, with success reflecting Close's
+// own return value.
+//
+// opts is variadic (0 or 1 value accepted) — WriteOptions.IfMatch is
+// NOT supported on this role this round (never consulted); Metadata is
+// a DIRECT passthrough (there is no decoded T to derive it from, unlike
+// Create/Patch's deriveWriteMetadata).
+func (c *Client) OpenWrite(ctx context.Context, sw any, vars map[string]string, opts ...WriteOptions) (io.WriteCloser, error) {
+	backend, err := c.attachedBackend()
+	if err != nil {
+		return nil, err
+	}
+	return dispatchOpenWrite(ctx, backend, sw, vars, firstWriteOptions(opts))
 }

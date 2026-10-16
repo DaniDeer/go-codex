@@ -18,6 +18,15 @@ import (
 // created with [NewStreamed] and therefore does not support streaming output.
 var ErrNotStreamable = errors.New("format: not streamable — use NewStreamed to create a streaming format")
 
+// ErrNotMarshalable is returned by [Format.Marshal] when the format was
+// created with [NewStreamed] and carries NO non-streaming marshal
+// function at all (NewStreamed formats are frequently write-only/
+// streaming-only — e.g. rendering a template, see NewStreamed's own
+// example) — use [Format.MarshalTo] instead, or construct the format
+// with [New]/[NewTyped] if a non-streaming Marshal is genuinely needed
+// too (e.g. to support a Backend without a streaming-write extension).
+var ErrNotMarshalable = errors.New("format: not marshalable without streaming — use MarshalTo, or construct with New/NewTyped for a non-streaming Marshal")
+
 // Format binds a Codec[T] to a specific serialization format.
 // Use JSON, YAML, TOML, Gob, or Binary to construct one. For formats that operate on the
 // typed value directly (e.g. HTML rendering), use [NewTyped]. For streaming
@@ -203,6 +212,15 @@ func (f Format[T]) Marshal(v T) ([]byte, error) {
 			return nil, err
 		}
 		return f.marshalTyped(v)
+	}
+	if f.marshal == nil {
+		// A format created via NewStreamed carries NEITHER marshalTyped
+		// NOR marshal — only marshalTo. Calling Marshal on it (e.g. a
+		// caller falling back to the whole-file path when a streaming
+		// Backend isn't available — see api/file's "Streaming/chunked
+		// reads and writes" Mechanism 1) must fail gracefully here, not
+		// panic on a nil marshal func.
+		return nil, ErrNotMarshalable
 	}
 	intermediate, err := f.codec.Encode(v)
 	if err != nil {

@@ -449,7 +449,35 @@ func (b BatchDeleter[T]) RegisterAny(client *Client) error {
 }
 func (b BatchDeleter[T]) RouteMethod() string { return "batchdelete" }
 
-// ── compile-time Routable conformance (all 10 roles) ───────────────────
+// StreamReader[T]
+
+func (sr StreamReader[T]) WithRouterPrefix(prefix string, mws []middleware.RouteMiddleware, tags []string) (routable, string) {
+	sr.core = applyWithRouterPrefix(sr.core, prefix, mws, tags)
+	return sr, sr.core.resource.template
+}
+func (sr StreamReader[T]) MiddlewareNames() []string { return sr.core.middlewareNames() }
+func (sr StreamReader[T]) RouteTags() []string       { return sr.core.routeTags() }
+func (sr StreamReader[T]) RegisterAny(client *Client) error {
+	_, err := sr.Handle(client)
+	return err
+}
+func (sr StreamReader[T]) RouteMethod() string { return "stream-read" }
+
+// StreamWriter[T]
+
+func (sw StreamWriter[T]) WithRouterPrefix(prefix string, mws []middleware.RouteMiddleware, tags []string) (routable, string) {
+	sw.core = applyWithRouterPrefix(sw.core, prefix, mws, tags)
+	return sw, sw.core.resource.template
+}
+func (sw StreamWriter[T]) MiddlewareNames() []string { return sw.core.middlewareNames() }
+func (sw StreamWriter[T]) RouteTags() []string       { return sw.core.routeTags() }
+func (sw StreamWriter[T]) RegisterAny(client *Client) error {
+	_, err := sw.Handle(client)
+	return err
+}
+func (sw StreamWriter[T]) RouteMethod() string { return "stream-write" }
+
+// ── compile-time Routable conformance (all 12 roles) ───────────────────
 
 type conformanceRecord struct{}
 
@@ -464,4 +492,6 @@ var (
 	_ routable = Mover[conformanceRecord]{}
 	_ routable = MkdirCreator[conformanceRecord]{}
 	_ routable = BatchDeleter[conformanceRecord]{}
+	_ routable = StreamReader[conformanceRecord]{}
+	_ routable = StreamWriter[conformanceRecord]{}
 )

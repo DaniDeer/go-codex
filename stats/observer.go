@@ -316,6 +316,20 @@ type FileObserver interface {
 	// once-per-call-not-once-per-item convention. successCount/
 	// failureCount are derived from the returned []BatchDeleteResult.
 	RecordFileBatchDelete(paths []string, successCount, failureCount int, duration time.Duration)
+
+	// RecordFileRangeRead is called ONCE per range-requesting api/file
+	// Client.OpenRead call, at DISPATCH time (the fallback tier used is
+	// an Open-time fact — independent of the overall RecordFileRead-on-
+	// Close duration tracking a stream's own lifetime). native reports
+	// whether RangeReadingBackend served the request NATIVELY (true) vs.
+	// one of the 2 approximated fallback tiers — StreamReadBackend's
+	// discard-then-limit wrapper, or ReadBytes+bytes.Reader (false) —
+	// mirrors d-0010-adapter-integration-architecture.md's
+	// "transport-guaranteed vs. adapter-approximated" capability axis,
+	// applied here to Backend optional-extension fallback tiers instead
+	// of file.Capability. Not called for a whole-file (no-range)
+	// OpenRead call.
+	RecordFileRangeRead(path string, native bool, offset, length int64, duration time.Duration)
 }
 
 // SQLObserver is an optional extension to [Observer] for SQL adapter lifecycle
@@ -564,6 +578,10 @@ func (o *LoggingObserver) RecordFileBatchDelete(paths []string, successCount, fa
 	o.logger.Debug("file batch delete", "count", len(paths), "success", successCount, "failure", failureCount, "ms", d.Milliseconds())
 }
 
+func (o *LoggingObserver) RecordFileRangeRead(path string, native bool, offset, length int64, d time.Duration) {
+	o.logger.Debug("file range read", "path", path, "native", native, "offset", offset, "length", length, "ms", d.Milliseconds())
+}
+
 func (o *LoggingObserver) RecordValidation(table, op string, d time.Duration, err error) {
 	o.logger.Debug("sql validate", "table", table, "op", op, "ms", d.Milliseconds(), "err", err)
 }
@@ -728,6 +746,15 @@ func (f *fanout) RecordFileBatchDelete(paths []string, successCount, failureCoun
 	for _, o := range f.observers {
 		if fo, ok := o.(FileObserver); ok {
 			fo.RecordFileBatchDelete(paths, successCount, failureCount, d)
+		}
+	}
+}
+
+// RecordFileRangeRead implements [FileObserver].
+func (f *fanout) RecordFileRangeRead(path string, native bool, offset, length int64, d time.Duration) {
+	for _, o := range f.observers {
+		if fo, ok := o.(FileObserver); ok {
+			fo.RecordFileRangeRead(path, native, offset, length, d)
 		}
 	}
 }
@@ -912,38 +939,39 @@ func (f *fanout) EndSpan(ctx context.Context, err error) {
 // used when no observer is configured.
 type NoopObserver struct{}
 
-func (NoopObserver) RecordValidationError(_, _, _ string)                           {}
-func (NoopObserver) RecordRequest(_, _ string, _ int, _ time.Duration)              {}
-func (NoopObserver) RecordSubscribe(_ string, _ bool, _ time.Duration)              {}
-func (NoopObserver) RecordPublish(_ string, _ bool, _ time.Duration)                {}
-func (NoopObserver) RecordApply(_, _ string, _ bool, _ time.Duration)               {}
-func (NoopObserver) RecordSecurityRejection(_, _ string)                            {}
-func (NoopObserver) RecordCapabilityApplied(_, _ string)                            {}
-func (NoopObserver) RecordDisposition(_ string, _ Disposition)                      {}
-func (NoopObserver) RecordErrorPatternMatch(_, _, _ string)                         {}
-func (NoopObserver) RecordErrorPatternMiss(_ string)                                {}
-func (NoopObserver) TagSpan(_ context.Context, _, _ string)                         {}
-func (NoopObserver) RecordFileRead(_ string, _ bool, _ time.Duration)               {}
-func (NoopObserver) RecordFileWrite(_ string, _ bool, _ time.Duration)              {}
-func (NoopObserver) RecordFileDelete(_ string, _ bool, _ time.Duration)             {}
-func (NoopObserver) RecordFileList(_ string, _ bool, _ int, _ time.Duration)        {}
-func (NoopObserver) RecordFileExists(_ string, _ bool, _ time.Duration)             {}
-func (NoopObserver) RecordFileCopy(_, _ string, _ bool, _ time.Duration)            {}
-func (NoopObserver) RecordFileMove(_, _ string, _ bool, _ time.Duration)            {}
-func (NoopObserver) RecordFileMkdir(_ string, _ bool, _ time.Duration)              {}
-func (NoopObserver) RecordFileBatchDelete(_ []string, _, _ int, _ time.Duration)    {}
-func (NoopObserver) RecordValidation(_, _ string, _ time.Duration, _ error)         {}
-func (NoopObserver) RecordMigration(_, _ string, _ int64, _ time.Duration, _ error) {}
-func (NoopObserver) RecordStreamItem(_ string, _ bool, _ time.Duration)             {}
-func (NoopObserver) RecordCacheHit(_ string, _ time.Duration)                       {}
-func (NoopObserver) RecordCacheMiss(_ string, _ time.Duration)                      {}
-func (NoopObserver) RecordCacheWrite(_, _ string, _ bool, _ time.Duration)          {}
-func (NoopObserver) RecordCredentialCacheHit(_ string, _ time.Duration)             {}
-func (NoopObserver) RecordCredentialCacheRefresh(_ string, _ bool, _ time.Duration) {}
-func (NoopObserver) RecordReload(_ string, _ bool, _ time.Duration)                 {}
-func (NoopObserver) RecordInvalidate(_ string)                                      {}
-func (NoopObserver) StartSpan(ctx context.Context, _, _ string) context.Context     { return ctx }
-func (NoopObserver) EndSpan(_ context.Context, _ error)                             {}
+func (NoopObserver) RecordValidationError(_, _, _ string)                              {}
+func (NoopObserver) RecordRequest(_, _ string, _ int, _ time.Duration)                 {}
+func (NoopObserver) RecordSubscribe(_ string, _ bool, _ time.Duration)                 {}
+func (NoopObserver) RecordPublish(_ string, _ bool, _ time.Duration)                   {}
+func (NoopObserver) RecordApply(_, _ string, _ bool, _ time.Duration)                  {}
+func (NoopObserver) RecordSecurityRejection(_, _ string)                               {}
+func (NoopObserver) RecordCapabilityApplied(_, _ string)                               {}
+func (NoopObserver) RecordDisposition(_ string, _ Disposition)                         {}
+func (NoopObserver) RecordErrorPatternMatch(_, _, _ string)                            {}
+func (NoopObserver) RecordErrorPatternMiss(_ string)                                   {}
+func (NoopObserver) TagSpan(_ context.Context, _, _ string)                            {}
+func (NoopObserver) RecordFileRead(_ string, _ bool, _ time.Duration)                  {}
+func (NoopObserver) RecordFileWrite(_ string, _ bool, _ time.Duration)                 {}
+func (NoopObserver) RecordFileDelete(_ string, _ bool, _ time.Duration)                {}
+func (NoopObserver) RecordFileList(_ string, _ bool, _ int, _ time.Duration)           {}
+func (NoopObserver) RecordFileExists(_ string, _ bool, _ time.Duration)                {}
+func (NoopObserver) RecordFileCopy(_, _ string, _ bool, _ time.Duration)               {}
+func (NoopObserver) RecordFileMove(_, _ string, _ bool, _ time.Duration)               {}
+func (NoopObserver) RecordFileMkdir(_ string, _ bool, _ time.Duration)                 {}
+func (NoopObserver) RecordFileBatchDelete(_ []string, _, _ int, _ time.Duration)       {}
+func (NoopObserver) RecordFileRangeRead(_ string, _ bool, _, _ int64, _ time.Duration) {}
+func (NoopObserver) RecordValidation(_, _ string, _ time.Duration, _ error)            {}
+func (NoopObserver) RecordMigration(_, _ string, _ int64, _ time.Duration, _ error)    {}
+func (NoopObserver) RecordStreamItem(_ string, _ bool, _ time.Duration)                {}
+func (NoopObserver) RecordCacheHit(_ string, _ time.Duration)                          {}
+func (NoopObserver) RecordCacheMiss(_ string, _ time.Duration)                         {}
+func (NoopObserver) RecordCacheWrite(_, _ string, _ bool, _ time.Duration)             {}
+func (NoopObserver) RecordCredentialCacheHit(_ string, _ time.Duration)                {}
+func (NoopObserver) RecordCredentialCacheRefresh(_ string, _ bool, _ time.Duration)    {}
+func (NoopObserver) RecordReload(_ string, _ bool, _ time.Duration)                    {}
+func (NoopObserver) RecordInvalidate(_ string)                                         {}
+func (NoopObserver) StartSpan(ctx context.Context, _, _ string) context.Context        { return ctx }
+func (NoopObserver) EndSpan(_ context.Context, _ error)                                {}
 
 // ReportErrors walks err and calls obs.RecordValidationError for every codec
 // validation failure it finds. location identifies the data source (e.g. "body",

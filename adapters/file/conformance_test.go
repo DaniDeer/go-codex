@@ -54,4 +54,7 @@ func TestFiletestConformance(t *testing.T) {
 	t.Run("MetadataIntegration", func(t *testing.T) {
 		filetest.AssertMetadataIntegration(t, adapterfile.NewBackend())
 	})
+	t.Run("StreamRoundTrip", func(t *testing.T) {
+		filetest.AssertStreamRoundTrip(t, adapterfile.NewBackend())
+	})
 }

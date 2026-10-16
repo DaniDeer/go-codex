@@ -182,13 +182,24 @@ func (*Backend) DeleteBytes(_ context.Context, path string, opts apifile.DeleteO
 // the fix lives here, not in the shared dispatch core.
 var controlFileSuffixes = []string{".meta.json", ".lock"}
 
+// controlFileInfix is the ConditionalWriteBackend/StreamWriteBackend
+// commit temp-file marker (e.g. "item.json.tmp-823719035", from
+// os.CreateTemp(dir, base+".tmp-*")) — a RANDOM numeric suffix follows
+// it, so this is a substring (Contains) check, not a HasSuffix one like
+// controlFileSuffixes above. Found during Streaming's own
+// pre-implementation gap-review (docs/roadmap/file-api.md's
+// "Streaming/chunked reads and writes" section) — retroactively applies
+// to WriteBytesIfMatch's ALREADY-SHIPPED temp file too, not just
+// OpenWrite's new one (both share the identical naming convention).
+const controlFileInfix = ".tmp-"
+
 func isControlFile(name string) bool {
 	for _, suffix := range controlFileSuffixes {
 		if strings.HasSuffix(name, suffix) {
 			return true
 		}
 	}
-	return false
+	return strings.Contains(name, controlFileInfix)
 }
 
 // entryETag returns "" for directory entries (no content to identify)

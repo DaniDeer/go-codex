@@ -1,12 +1,15 @@
 package file
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/DaniDeer/go-codex/codex"
@@ -74,6 +77,12 @@ func recordMkdir(obs stats.Observer, path string, success bool, d time.Duration)
 func recordBatchDelete(obs stats.Observer, paths []string, successCount, failureCount int, d time.Duration) {
 	if fo, ok := obs.(stats.FileObserver); ok {
 		fo.RecordFileBatchDelete(paths, successCount, failureCount, d)
+	}
+}
+
+func recordRangeRead(obs stats.Observer, path string, native bool, offset, length int64, d time.Duration) {
+	if fo, ok := obs.(stats.FileObserver); ok {
+		fo.RecordFileRangeRead(path, native, offset, length, d)
 	}
 }
 
@@ -367,12 +376,6 @@ func createCore[T any](ctx context.Context, backend Backend, core roleCore[T], r
 	ctx, endSpan := startSpan(ctx, obs, "file.write", path)
 	defer func() { endSpan(err) }()
 	start := time.Now()
-	data, err := core.resource.format.Marshal(v)
-	if err != nil {
-		stats.ReportErrors(obs, "file", err)
-		recordWrite(obs, path, false, time.Since(start))
-		return nil, FileEncodeError{Path: path, Err: err}
-	}
 	opts := callerOpts
 	if wire.NativePOSIXMode != nil {
 		opts.Perm = *wire.NativePOSIXMode
@@ -382,6 +385,53 @@ func createCore[T any](ctx context.Context, backend Backend, core roleCore[T], r
 	// collision — it represents a more specific, runtime-computed value
 	// layered on top of the resource's own declared fields.
 	opts.Metadata = mergeMetadata(md, boundOutMD)
+	// Mechanism 1 (automatic format-level write streaming — see
+	// docs/roadmap/file-api.md's "Streaming/chunked reads and writes"
+	// section): a streamable format + a StreamWriteBackend-implementing
+	// Backend streams via MarshalTo instead of Marshal+WriteBytes — NOT
+	// combined with IfMatch this round (falls back to the existing
+	// non-streaming conditional-write path below, unchanged).
+	streamable := core.resource.format.IsStreamable()
+	useAutoStream := streamable && !(opts.IfMatch != nil && !opts.Strict)
+	swb, canStream := backend.(StreamWriteBackend)
+	if useAutoStream && canStream {
+		var w io.WriteCloser
+		w, err = swb.OpenWriter(ctx, path, opts)
+		if err == nil {
+			err = core.resource.format.MarshalTo(v, w)
+			if closeErr := w.Close(); err == nil {
+				err = closeErr
+			}
+		}
+		if err != nil {
+			stats.ReportErrors(obs, "file", err)
+			recordWrite(obs, path, false, time.Since(start))
+			return nil, FileWriteError{Path: path, Err: err}
+		}
+		recordWrite(obs, path, true, time.Since(start))
+		return nil, nil
+	}
+	var data []byte
+	if streamable {
+		// A streamable format's Marshal is OFTEN unsupported (NewStreamed
+		// formats frequently carry no non-streaming marshal func at all
+		// — see format.ErrNotMarshalable's own doc comment) — buffer via
+		// MarshalTo (the format's own, universally-present writable
+		// mechanism) instead of calling Marshal, so a Backend WITHOUT
+		// StreamWriteBackend still works correctly (just without the
+		// memory benefit), rather than failing on a format that
+		// genuinely has no non-streaming Marshal.
+		var buf bytes.Buffer
+		err = core.resource.format.MarshalTo(v, &buf)
+		data = buf.Bytes()
+	} else {
+		data, err = core.resource.format.Marshal(v)
+	}
+	if err != nil {
+		stats.ReportErrors(obs, "file", err)
+		recordWrite(obs, path, false, time.Since(start))
+		return nil, FileEncodeError{Path: path, Err: err}
+	}
 	if opts.IfMatch != nil && !opts.Strict {
 		cwb := backend.(ConditionalWriteBackend) // already confirmed above
 		createdDirs, err = cwb.WriteBytesIfMatch(ctx, path, data, *opts.IfMatch, opts)
@@ -1219,4 +1269,263 @@ func dispatchBatchDelete(ctx context.Context, backend Backend, bd any, varsList 
 		return nil, BackendTypeMismatchError{Expected: "file.BatchDeleter[T] or *file.BatchDeleteHandle[T]", Got: typeName(bd)}
 	}
 	return v.dispatchBatchDelete(ctx, backend, varsList)
+}
+
+// ── Streaming/chunked reads and writes (Mechanism 2) ────────────────────
+//
+// See docs/roadmap/file-api.md's "Streaming/chunked reads and writes"
+// section for the full design — codec-bypassing raw byte-stream roles,
+// distinct from Mechanism 1 (createCore's automatic format-level write
+// streaming, above).
+
+type openReadDispatcher interface {
+	dispatchOpenRead(ctx context.Context, backend Backend, vars map[string]string, opts StreamReadOptions) (io.ReadCloser, error)
+}
+
+func (sr StreamReader[T]) dispatchOpenRead(ctx context.Context, backend Backend, vars map[string]string, opts StreamReadOptions) (io.ReadCloser, error) {
+	return openReadCore[T](ctx, backend, sr.core, routingInfo{}, vars, opts)
+}
+func (h *StreamReadHandle[T]) dispatchOpenRead(ctx context.Context, backend Backend, vars map[string]string, opts StreamReadOptions) (io.ReadCloser, error) {
+	return openReadCore[T](ctx, backend, h.core, h.routing, vars, opts)
+}
+
+// observedReadCloser wraps a Backend-returned io.ReadCloser so
+// RecordFileRead fires on Close() (not Open()) — the natural "operation
+// complete" moment for a stream (see the design doc's own "Observer
+// integration" subsection). Guards against a double Close() reporting
+// twice.
+type observedReadCloser struct {
+	io.ReadCloser
+	obs   stats.Observer
+	path  string
+	start time.Time
+	once  sync.Once
+}
+
+func (o *observedReadCloser) Close() error {
+	err := o.ReadCloser.Close()
+	o.once.Do(func() {
+		recordRead(o.obs, o.path, err == nil, time.Since(o.start))
+	})
+	return err
+}
+
+// limitedReadCloser pairs a size-limited io.Reader with the UNDERLYING
+// stream's own Closer — used by OpenRead's 2nd-tier (StreamReadBackend)
+// fallback, which must still close the raw, un-limited reader.
+type limitedReadCloser struct {
+	io.Reader
+	io.Closer
+}
+
+// bytesReaderSlice slices data to [offset:offset+length] (length == 0
+// meaning "to end"), clamped to data's own bounds — the 3rd, universal
+// OpenRead fallback tier (works on every Phase 1 Backend unchanged).
+func bytesReaderSlice(data []byte, offset, length int64) *bytes.Reader {
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > int64(len(data)) {
+		offset = int64(len(data))
+	}
+	end := int64(len(data))
+	if length > 0 && offset+length < end {
+		end = offset + length
+	}
+	return bytes.NewReader(data[offset:end])
+}
+
+// openReadCore implements Client.OpenRead's dispatch — the Security/
+// Capability gate runs BEFORE any reader is returned (fail-fast,
+// matching every other role's "fail before Backend call" convention),
+// then the 3-level fallback cascade: RangeReadingBackend (native) ->
+// StreamReadBackend + discard-then-limit (approximated) -> ReadBytes +
+// bytes.Reader (universal).
+func openReadCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, vars map[string]string, callerOpts StreamReadOptions) (rc io.ReadCloser, err error) {
+	defer func() { err = applyErrorPattern(core, err) }()
+	obs := obsFromCtx(ctx)
+	path, err := core.resource.buildPathWithRouting(routing, vars)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := runBoundMiddleware(ctx, path, core, nil, nil); err != nil {
+		return nil, err
+	}
+	ctx, endSpan := startSpan(ctx, obs, "file.openread", path)
+	defer func() { endSpan(err) }()
+	ranged := callerOpts.Offset != 0 || callerOpts.Length != 0
+	start := time.Now()
+	var reader io.ReadCloser
+	native := false
+	switch {
+	case ranged:
+		switch b := backend.(type) {
+		case RangeReadingBackend:
+			native = true
+			reader, err = b.OpenReaderRange(ctx, path, callerOpts.Offset, callerOpts.Length)
+		case StreamReadBackend:
+			var raw io.ReadCloser
+			raw, err = b.OpenReader(ctx, path)
+			if err == nil && callerOpts.Offset > 0 {
+				if _, discardErr := io.CopyN(io.Discard, raw, callerOpts.Offset); discardErr != nil {
+					_ = raw.Close()
+					err = discardErr
+				}
+			}
+			if err == nil {
+				if callerOpts.Length > 0 {
+					reader = limitedReadCloser{Reader: io.LimitReader(raw, callerOpts.Length), Closer: raw}
+				} else {
+					reader = raw
+				}
+			}
+		default:
+			var data []byte
+			data, err = backend.ReadBytes(ctx, path)
+			if err == nil {
+				reader = io.NopCloser(bytesReaderSlice(data, callerOpts.Offset, callerOpts.Length))
+			}
+		}
+		if err == nil {
+			recordRangeRead(obs, path, native, callerOpts.Offset, callerOpts.Length, time.Since(start))
+		}
+	default:
+		if srb, ok := backend.(StreamReadBackend); ok {
+			reader, err = srb.OpenReader(ctx, path)
+		} else {
+			var data []byte
+			data, err = backend.ReadBytes(ctx, path)
+			if err == nil {
+				reader = io.NopCloser(bytes.NewReader(data))
+			}
+		}
+	}
+	if err != nil {
+		if isNotFound(err) {
+			return nil, FileNotFoundError{Path: path}
+		}
+		return nil, FileReadError{Path: path, Err: err}
+	}
+	return &observedReadCloser{ReadCloser: reader, obs: obs, path: path, start: start}, nil
+}
+
+func dispatchOpenRead(ctx context.Context, backend Backend, sr any, vars map[string]string, opts StreamReadOptions) (io.ReadCloser, error) {
+	v, ok := sr.(openReadDispatcher)
+	if !ok {
+		return nil, BackendTypeMismatchError{Expected: "file.StreamReader[T] or *file.StreamReadHandle[T]", Got: typeName(sr)}
+	}
+	return v.dispatchOpenRead(ctx, backend, vars, opts)
+}
+
+type openWriteDispatcher interface {
+	dispatchOpenWrite(ctx context.Context, backend Backend, vars map[string]string, opts WriteOptions) (io.WriteCloser, error)
+}
+
+func (sw StreamWriter[T]) dispatchOpenWrite(ctx context.Context, backend Backend, vars map[string]string, opts WriteOptions) (io.WriteCloser, error) {
+	return openWriteCore[T](ctx, backend, sw.core, routingInfo{}, vars, opts)
+}
+func (h *StreamWriteHandle[T]) dispatchOpenWrite(ctx context.Context, backend Backend, vars map[string]string, opts WriteOptions) (io.WriteCloser, error) {
+	return openWriteCore[T](ctx, backend, h.core, h.routing, vars, opts)
+}
+
+// observedWriteCloser wraps a StreamWriteBackend-returned io.WriteCloser
+// so RecordFileWrite fires on Close() (the real commit moment —
+// StreamWriteBackend.OpenWriter's contract requires Close to commit
+// atomically), with success reflecting Close's own return value (a
+// mid-stream Write error does NOT by itself flip success to false; only
+// Close's own outcome is authoritative, mirroring io.Closer's own
+// contract).
+type observedWriteCloser struct {
+	io.WriteCloser
+	obs   stats.Observer
+	path  string
+	start time.Time
+	once  sync.Once
+}
+
+func (o *observedWriteCloser) Close() error {
+	err := o.WriteCloser.Close()
+	o.once.Do(func() {
+		recordWrite(o.obs, o.path, err == nil, time.Since(o.start))
+	})
+	return err
+}
+
+// bufferedWriteCloser is OpenWrite's fallback for a Backend without
+// StreamWriteBackend — works everywhere (buffers the full write in
+// memory, committing via Backend.WriteBytes on Close), just without the
+// memory benefit, mirroring every other optional-extension fallback's
+// "no false portability, always correct, sometimes slower" idiom.
+type bufferedWriteCloser struct {
+	backend Backend
+	ctx     context.Context
+	path    string
+	opts    WriteOptions
+	obs     stats.Observer
+	start   time.Time
+	buf     bytes.Buffer
+	closed  bool
+}
+
+func (b *bufferedWriteCloser) Write(p []byte) (int, error) {
+	return b.buf.Write(p)
+}
+
+func (b *bufferedWriteCloser) Close() error {
+	if b.closed {
+		return nil
+	}
+	b.closed = true
+	_, err := b.backend.WriteBytes(b.ctx, b.path, b.buf.Bytes(), b.opts)
+	recordWrite(b.obs, b.path, err == nil, time.Since(b.start))
+	if err != nil {
+		return FileWriteError{Path: b.path, Err: err}
+	}
+	return nil
+}
+
+// openWriteCore implements Client.OpenWrite's dispatch. IfMatch is NOT
+// supported on this role this round (see the design doc's own
+// disclosure) — callerOpts.IfMatch is simply never consulted here.
+func openWriteCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, vars map[string]string, callerOpts WriteOptions) (wc io.WriteCloser, err error) {
+	defer func() { err = applyErrorPattern(core, err) }()
+	obs := obsFromCtx(ctx)
+	wire, err := resolveWire(core)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkAccessMode(wire); err != nil {
+		return nil, err
+	}
+	path, err := core.resource.buildPathWithRouting(routing, vars)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := runBoundMiddleware(ctx, path, core, nil, nil); err != nil {
+		return nil, err
+	}
+	ctx, endSpan := startSpan(ctx, obs, "file.openwrite", path)
+	defer func() { endSpan(err) }()
+	start := time.Now()
+	opts := callerOpts
+	if wire.NativePOSIXMode != nil {
+		opts.Perm = *wire.NativePOSIXMode
+	}
+	if swb, ok := backend.(StreamWriteBackend); ok {
+		var w io.WriteCloser
+		w, err = swb.OpenWriter(ctx, path, opts)
+		if err != nil {
+			return nil, FileWriteError{Path: path, Err: err}
+		}
+		return &observedWriteCloser{WriteCloser: w, obs: obs, path: path, start: start}, nil
+	}
+	return &bufferedWriteCloser{backend: backend, ctx: ctx, path: path, opts: opts, obs: obs, start: start}, nil
+}
+
+func dispatchOpenWrite(ctx context.Context, backend Backend, sw any, vars map[string]string, opts WriteOptions) (io.WriteCloser, error) {
+	v, ok := sw.(openWriteDispatcher)
+	if !ok {
+		return nil, BackendTypeMismatchError{Expected: "file.StreamWriter[T] or *file.StreamWriteHandle[T]", Got: typeName(sw)}
+	}
+	return v.dispatchOpenWrite(ctx, backend, vars, opts)
 }

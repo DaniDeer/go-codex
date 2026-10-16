@@ -3,6 +3,7 @@ package filetest
 import (
 	"context"
 	"errors"
+	"io"
 	"path/filepath"
 	"testing"
 	"time"
@@ -375,6 +376,68 @@ func AssertMetadataIntegration(t *testing.T, backend file.Backend) {
 		}
 		if got := gotAny.(recordWithOwner); got.Owner != "overridden" {
 			t.Fatalf("Owner = %q, want overridden (BoundCreateMiddleware's WithMetadataOut should win)", got.Owner)
+		}
+	})
+}
+
+// ── Scenario 9: stream round trip ───────────────────────────────────────
+
+// AssertStreamRoundTrip proves ROLE-DISPATCH correctness for Mechanism
+// 2's codec-bypassing StreamReader[T]/StreamWriter[T] roles — works on
+// ANY backend, via whatever OpenRead fallback tier applies (mirrors
+// AssertReadWriteRoundTrip's own universality principle; this is NOT
+// specifically proving a fast-path optional extension is implemented —
+// see stats.FileObserver.RecordFileRangeRead for that, observed
+// separately). Round-trips content via OpenWrite -> OpenRead both
+// whole-file AND ranged (folded into the SAME scenario, for scope
+// discipline).
+func AssertStreamRoundTrip(t *testing.T, backend file.Backend) {
+	t.Helper()
+	client, dir := newClient(t, backend)
+	res := file.NewResource[record](filepath.Join(dir, "{id}.bin"), format.JSON(recordCodec()), file.PathParam{Name: "id"})
+	ctx := context.Background()
+	vars := map[string]string{"id": "blob"}
+	content := []byte("hello, streaming world")
+
+	t.Run("openwrite_then_openread_whole_file_round_trips", func(t *testing.T) {
+		w, err := client.OpenWrite(ctx, res.WithStreamWrite(file.StreamWrite{}), vars)
+		if err != nil {
+			t.Fatalf("OpenWrite: %v", err)
+		}
+		if _, err := w.Write(content); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+		if err := w.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+
+		r, err := client.OpenRead(ctx, res.WithStreamRead(file.StreamRead{}), vars)
+		if err != nil {
+			t.Fatalf("OpenRead: %v", err)
+		}
+		defer r.Close()
+		got := make([]byte, len(content))
+		if _, err := io.ReadFull(r, got); err != nil {
+			t.Fatalf("ReadFull: %v", err)
+		}
+		if string(got) != string(content) {
+			t.Fatalf("got %q, want %q", got, content)
+		}
+	})
+
+	t.Run("openread_range_returns_correct_slice", func(t *testing.T) {
+		r, err := client.OpenRead(ctx, res.WithStreamRead(file.StreamRead{}), vars, file.StreamReadOptions{Offset: 7, Length: 9})
+		if err != nil {
+			t.Fatalf("OpenRead (ranged): %v", err)
+		}
+		defer r.Close()
+		want := content[7:16]
+		got := make([]byte, len(want))
+		if _, err := io.ReadFull(r, got); err != nil {
+			t.Fatalf("ReadFull: %v", err)
+		}
+		if string(got) != string(want) {
+			t.Fatalf("ranged read got %q, want %q", got, want)
 		}
 	})
 }
