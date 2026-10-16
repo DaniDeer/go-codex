@@ -1299,21 +1299,19 @@ IMPLEMENTED); Phase 2's own 5 items are being tackled ONE AT A TIME, in
 a confirmed order, each designed to Phase 1's full Go-signature rigor
 before implementation starts. Confirmed order: Recursive `WithList` →
 Conditional writes → Streaming/chunked I/O → `adapters/s3` →
-`adapters/smb`.** The first TWO items (**Recursive `WithList`** and
-**Conditional writes**, both above) are fully designed AND IMPLEMENTED
-— the latter's scope grew during implementation planning to also cover
+`adapters/smb`.** The first THREE items (**Recursive `WithList`**,
+**Conditional writes**, and **Streaming/chunked reads and writes**, all
+above) are fully designed AND IMPLEMENTED — Conditional writes' scope
+grew during implementation planning to also cover
 `ports.FileOptions.IfMatch` + a new `ports.File[T].Stat` method (see
-that section's own "`ports` mirror" subsection). The THIRD item
-(**Streaming/chunked reads and writes**, below) is now fully DESIGNED —
-two parallel mechanisms (automatic format-level write streaming via
-the already-existing `format.IsStreamable`/`MarshalTo`; new
-codec-bypassing `StreamRead`/`StreamWrite` roles for raw byte access +
-byte-range reads) — IMPLEMENTATION is a separate, upcoming round. The
-remaining 2 items (`adapters/s3`, `adapters/smb`) are still at outline
-depth only, each noted with its own open design question, unchanged
-from this doc's prior round. This section replaces round 2's original
-"`adapters/s3`/`adapters/smb` get their own future roadmap doc" call —
-ALL of Phase 2 is tracked in THIS doc.
+that section's own "`ports` mirror" subsection); Streaming's scope grew
+the same way, also adding `ports.File[T].OpenRead`/`OpenWrite` (see its
+own status note above). The remaining 2 items (`adapters/s3`,
+`adapters/smb`) are still at outline depth only, each noted with its
+own open design question, unchanged from this doc's prior round. This
+section replaces round 2's original "`adapters/s3`/`adapters/smb` get
+their own future roadmap doc" call — ALL of Phase 2 is tracked in THIS
+doc.
 
 ### `adapters/s3`
 
@@ -1381,6 +1379,28 @@ full design, not resolved here.
 > scenario (D-0010's own established adapter-compliance mechanism,
 > extended for Streaming — Recursive `WithList`/Conditional writes'
 > own `filetest` gaps remain a separate, explicitly-named follow-up).
+>
+> **IMPLEMENTED.** Both mechanisms shipped exactly per the design above,
+> with 2 implementation-time findings beyond what the design anticipated:
+> (1) a format created via `format.NewStreamed` structurally carries NO
+> non-streaming `Marshal` (only `MarshalTo`) — `createCore`'s whole-file
+> fallback (when the Backend lacks `StreamWriteBackend`) now buffers via
+> `MarshalTo` into memory instead of calling `Marshal` directly, so a
+> streamable format works correctly on ANY Backend, not just
+> `StreamWriteBackend`-implementing ones; `format.Marshal` itself also
+> gained a graceful `ErrNotMarshalable` instead of panicking on a
+> `NewStreamed` format with no `marshal`/`marshalTyped` func, as a
+> safety net for any other future caller. (2) Scope grew during
+> implementation planning, resolved via `ask_user`: `ports.File[T]` ALSO
+> gained `OpenRead`/`OpenWrite` methods (mirroring `Client.OpenRead`/
+> `OpenWrite`, plus a new `ports.OpenReadOptions` type for the byte-range
+> parameter) — not originally decided in the design rounds above, added
+> for parity with the `Stat`/`IfMatch` precedent from Conditional writes.
+> The `.tmp-*` control-file-filter fix was applied with the same
+> live-reproduction discipline as the `.meta.json` fix (a failing test
+> against the ALREADY-SHIPPED `WriteBytesIfMatch` temp file was written
+> and confirmed failing BEFORE the fix landed, in both
+> `adapters/file.Backend` and `ports`'s `osBackend`).
 
 #### Research grounding this design
 

@@ -155,7 +155,7 @@ same way, but its `In` — like `Read`/`List`'s — stays permanently
 zero-valued, since the base value metadata would derive from isn't
 known until after a Backend call the Security gate must run before.
 
-## All 10 verbs
+## All 12 verbs
 
 | Verb | Client method | Role builder |
 |---|---|---|
@@ -169,6 +169,8 @@ known until after a Backend call the Security gate must run before.
 | Move | `Client.Move` | `Resource.WithMove` |
 | Mkdir | `Client.Mkdir` | `Resource.WithMkdir` |
 | BatchDelete | `Client.BatchDelete` | `Resource.WithBatchDelete` |
+| StreamRead | `Client.OpenRead` | `Resource.WithStreamRead` |
+| StreamWrite | `Client.OpenWrite` | `Resource.WithStreamWrite` |
 
 `Copy`/`Move` take TWO `map[string]string` var sets (source, destination) —
 the SAME declared template instantiated twice, never a second template.
@@ -307,6 +309,63 @@ default timeout, so it never blocks forever) if the lock is already
 held. `Strict:true` always wins when both `Strict` and `IfMatch` are
 set on the same `Create` call. `ports.File`'s own `FileOptions.IfMatch`
 + a new `File.Stat` method mirror this exactly.
+
+## Streaming/chunked reads and writes
+
+`Read`/`Create` decode/encode a full value `T` via the resource's codec
+— correct for small-to-medium records, but it means the whole content
+sits in memory at once. Two mechanisms avoid that:
+
+**Mechanism 1 — automatic format-level write streaming.** If a
+resource's `format.Format[T]` was built via `format.NewStreamed` (i.e.
+`format.IsStreamable()` is true) AND the attached Backend implements the
+optional `StreamWriteBackend` extension, `Client.Create`/`Patch` stream
+the encoded output directly into the Backend's own writer instead of
+buffering a `[]byte` first — zero declare-time changes needed, it just
+happens automatically. A Backend without `StreamWriteBackend` still
+works correctly (buffers via `MarshalTo` into memory first), just
+without the memory benefit.
+
+**Mechanism 2 — raw, codec-bypassing byte streams.** `StreamRead`/
+`StreamWrite` are 2 new roles whose actual BYTES never touch the
+resource's codec at all (only path templating/Security/Capability still
+apply) — mirrors S3's own `GetObject`/`PutObject` body-streaming:
+
+```go
+sr := notes.WithStreamRead(file.StreamRead{})
+sw := notes.WithStreamWrite(file.StreamWrite{})
+
+w, err := client.OpenWrite(ctx, sw, vars)
+// ... w.Write(...) any number of times ...
+err = w.Close() // commits atomically — a reader never sees a partial file
+
+r, err := client.OpenRead(ctx, sr, vars)
+defer r.Close()
+data, err := io.ReadAll(r)
+```
+
+`Client.OpenRead` also accepts an optional trailing
+`file.StreamReadOptions{Offset, Length}` for an HTTP-Range-style partial
+read (read-only — there's no cross-backend concept of a partial-offset
+WRITE):
+
+```go
+r, err := client.OpenRead(ctx, sr, vars, file.StreamReadOptions{Offset: 100, Length: 50})
+```
+
+A ranged read is served by whichever of 3 Backend tiers is available,
+fastest first: a native `RangeReadingBackend` (e.g. a future
+`adapters/s3`'s `GetObject` `Range` header) → a `StreamReadBackend`'s
+whole-file stream with a discard-then-limit wrapper → `ReadBytes` sliced
+in memory (works on every Backend unchanged). `stats.FileObserver
+.RecordFileRangeRead` reports which tier actually served a given
+request. Both `RecordFileRead`/`RecordFileWrite` fire when the returned
+stream is `Close`d, not when it's opened — `Close`'s own return value is
+what determines success.
+
+`ports.File[T]` has its own `OpenRead`/`OpenWrite` methods mirroring
+`Client.OpenRead`/`OpenWrite` exactly (with a `ports.OpenReadOptions`
+type for the byte-range parameter).
 
 ## Further reading
 
