@@ -184,8 +184,8 @@ made explicitly this round):
 
 | Phase | Content | Design depth | Status |
 |---|---|---|---|
-| **1** | `api/file` package itself: `Resource[T]` + 10 role builders, `file.Client` (attach+dispatch), `file.Backend` seam, `file.Capability`, Router/Middleware/Observer/ErrorPattern integration, `adapters/file` migration (filesystem backend) | Full Go-signature design (this doc's main body, below) | Design complete — implementation not started |
-| **2** | `adapters/s3`, `adapters/smb` implementations; streaming/chunked I/O; conditional writes (ETag); recursive `WithList` | Outline only (rationale + key design questions per item, NOT full signatures) — full design deliberately deferred until Phase 1 ships and its abstractions are proven against a real implementation | Outlined this round (see "Phase 2" section below) |
+| **1** | `api/file` package itself: `Resource[T]` + 10 role builders, `file.Client` (attach+dispatch), `file.Backend` seam, `file.Capability`, Router/Middleware/Observer/ErrorPattern integration, `adapters/file` migration (filesystem backend), full `ports.File`/`ports.Dir` migration | Full Go-signature design (this doc's main body, below) | **IMPLEMENTED** (incl. a `deep-dive-bug-hunt` pass and the retroactive List/BatchDelete per-entry Security amendment — see the main body's own status notes) |
+| **2** | `adapters/s3`, `adapters/smb` implementations; streaming/chunked I/O; conditional writes (ETag); recursive `WithList` | Full Go-signature design, per-item (see each item's own section below) | 4 of 5 items IMPLEMENTED (Recursive `WithList`, Conditional writes, Streaming/chunked I/O, `adapters/s3`); `adapters/smb` DESIGNED, implementation pending (see "Phase 2" section below) |
 | **3** | Adapt existing examples (`examples/*`) from `ports.File`/`adapters/file` direct usage to the new `api/file.Client` approach | Checklist-level (which examples, what "adapted" means) — necessarily light since Phase 1 isn't implemented yet | Planned (see "Phase 3" section below) |
 | **4** | Promote this roadmap doc to `docs/design/d-NNNN-*.md` (per the `plan-a-new-codex-feature` skill's delete/keep/promote 3-way policy) + sync `.github/instructions/go-codex.instructions.md`, `docs/` pages, and relevant skills | Mechanism named, exact number/content deferred until Phase 1-3 actually ship | Planned (see "Phase 4" section below) |
 
@@ -1302,7 +1302,7 @@ additive new tests:
 | `TestBatchDeleteCore_PerPathSecurityRejection_OtherPathsStillProceed` | One path's Security check rejects it (`BatchDeleteResult.Err`); sibling paths in the same batch still delete successfully |
 | `TestListCore_Observer_CountReflectsTotalEntriesIncludingFailures` | `RecordFileList`'s `count` includes failed entries, not just successes |
 
-## Phase 2 — outline (further backends + feature depth)
+## Phase 2 — further backends + feature depth (all 5 items designed; 4 implemented)
 
 **Status: Phase 1 is done and closed (including a `deep-dive-bug-hunt`
 pass, `history.md` Rounds 216-223 — see `.github/skills/
@@ -1323,9 +1323,13 @@ own status note above). The FOURTH item (**`adapters/s3`**, below) is
 now fully DESIGNED AND IMPLEMENTED (5 `ask_user`-resolved forks,
 grounded in web-search-verified S3 capabilities; one further
 implementation-time correction to the streaming-write fork, see its own
-status note). The remaining item (`adapters/smb`) is still at
-outline depth only, its own open design question unchanged from this
-doc's prior round. This section replaces round 2's original
+status note). The FIFTH and LAST item (**`adapters/smb`**, below) is
+now fully DESIGNED (5 `ask_user`-resolved forks across 2 rounds,
+grounded in from-scratch Go-SMB-client-library-landscape research —
+including a repo-wide `go 1.27.0` toolchain bump this design depends
+on) — IMPLEMENTATION is a separate, upcoming round. All 5 Phase 2 items
+have now been through at least one full design round. This section
+replaces round 2's original
 "`adapters/s3`/`adapters/smb` get their own future roadmap doc" call —
 ALL of Phase 2 is tracked in THIS doc.
 
@@ -1937,17 +1941,359 @@ against a different backend") concretely.
 
 ### `adapters/smb`
 
-Needs its own driver-selection research (Go's SMB client library
-landscape) before a design can begin — not yet investigated. Expected to
-implement `MovingBackend` (SMB2 has a native rename) but NOT
-`BatchDeletingBackend` (no native SMB2 batch-delete surveyed, per
-"Backend semantic differences"). Permission handling is the more
-interesting open question: SMB shares typically inherit the HOST's own
-permission model (Windows ACLs on a Windows-hosted share, POSIX-mapped
-on a Samba-hosted one) — whether `adapters/smb` should attempt BOTH
-`AccessMode` AND a best-effort `NativePOSIXMode` passthrough (for
-Samba-hosted shares specifically) is an open question for the eventual
-full design, not resolved here.
+> **Status: DESIGNED to Phase 1's Go-signature rigor — NOT yet
+> implemented.** The fifth and LAST Phase 2 item to reach this level of
+> detail. Unlike every other Phase 2 item, this one needed its own
+> from-scratch Go-SMB-client-library-landscape research FIRST (never
+> done before this round) before any design could begin. That research
+> (grounded via real source inspection and live sandbox toolchain
+> probes, not assumption) resolved 5 forks via 2 rounds of `ask_user`:
+> the SMB client library + Go-version choice (the single biggest
+> decision — see below), whether to implement `RangeReadingBackend`,
+> whether to wire `NativePOSIXMode` through despite its
+> server-dependent effect, and the mandatory-runnable-example
+> dependency. Two further, narrower technical questions (does SMB have
+> anything closer to an atomic compare-and-swap than a lock file; does
+> SMB have an extended-attributes-style primitive `MetadataBackend`
+> could use) were resolved by direct reasoning from the chosen
+> library's own capabilities, not a separate `ask_user` round — see
+> their own subsections below. IMPLEMENTATION, including the `go.mod`
+> Go-version bump this design depends on, is a separate, upcoming
+> round.
+
+#### Research grounding this design
+
+- **`hirochachacha/go-smb2` is the de facto standard Go SMB2/3 client**
+  (confirmed via web search) — actively maintained; `CloudSoda/go-smb2`
+  is a smaller, less-active fork of the SAME codebase, not a genuinely
+  different alternative. No other actively-maintained, general-purpose
+  Go SMB2/3 client exists.
+- **Two materially different versions exist**, confirmed via direct
+  source inspection of both (not README skimming):
+  - **v1.1.0** (stable since 2016, `go 1.12` minimum): `Share`/`File`
+    methods do NOT take `ctx` directly — context is bound via
+    `Share.WithContext(ctx) *Share` / `File.WithContext(ctx)`, both
+    returning a CONCRETE type, which breaks the usual narrow-interface
+    testability pattern (an interface method can't be satisfied by a
+    method returning a different concrete type than the interface
+    itself declares). Lean dependency footprint: only
+    `github.com/geoffgarside/ber` + `golang.org/x/crypto`.
+  - **v2** (current `master`): a clean rewrite — EVERY `Share`/`File`
+    method takes `ctx context.Context` as its first parameter directly
+    (no rebinding workaround needed anywhere); `File.WithContext(ctx)`
+    returns a concrete `*boundFile` satisfying `iofs.File +
+    iofs.ReadDirFile + io.Writer + io.Seeker + io.ReaderAt +
+    io.WriterAt + io.ReaderFrom + io.WriterTo` — directly usable as
+    the `io.ReadCloser`/`io.WriteCloser` `StreamReadBackend`/
+    `StreamWriteBackend`/`RangeReadingBackend` need, with ZERO bridging
+    code; `Share.WithContext(ctx)` returns a concrete `*boundShare`
+    satisfying a FULL `io/fs.FS + StatFS + ReadFileFS + ReadDirFS +
+    GlobFS + ReadLinkFS + SubFS` — directly usable with
+    `fs.WalkDir(share.WithContext(ctx), root, fn)` for
+    `WalkingBackend.WalkDir`. `Share.MkdirAll`/`Share.RemoveAll` are
+    NATIVE (recursive parent-dir creation / recursive delete built
+    into the library itself, unlike v1.1.0 which needs manual
+    parent-walking). **Requires `go 1.27.0`** — confirmed via a live
+    sandbox probe: this repo's `go.mod` currently declares `go 1.26.2`
+    and the installed toolchain was `go1.26.8`; the real `go1.27.0`
+    toolchain WAS successfully downloaded (via `golang.org/dl/go1.27.0`)
+    and verified to resolve/build against `go-smb2/v2` cleanly.
+    **Confirmed, real cost**: v2 unconditionally pulls in a much
+    heavier transitive dependency graph than v1.1.0 even for plain
+    NTLM-over-TCP usage — `github.com/quic-go/quic-go` (full QUIC
+    transport), `github.com/go-krb5/krb5` (a complete Kerberos stack),
+    `github.com/pierrec/lz4/v4`, `github.com/go-crypt/x` — all imported
+    at the package root (not behind build tags), so they're pulled in
+    regardless of whether this adapter ever uses QUIC or Kerberos.
+- **Both versions translate NTSTATUS response codes to stdlib sentinel
+  errors INSIDE the library itself** (confirmed via source: a
+  `switch status { case STATUS_OBJECT_NAME_NOT_FOUND, ...: return
+  os.ErrNotExist; case STATUS_OBJECT_NAME_COLLISION: return os.ErrExist;
+  case STATUS_ACCESS_DENIED, ...: return os.ErrPermission }`-shaped
+  helper at the wire-decode layer) — meaning `adapters/smb`'s own
+  not-found/already-exists/permission-denied translation can just do
+  `errors.Is(err, os.ErrNotExist)` / `os.ErrExist` / `os.ErrPermission`
+  directly on whatever the library returns, far simpler than S3's own
+  custom NTSTATUS-equivalent classification work.
+- **`CopyingBackend` is achievable "for free"**: `io.Copy(dstFile,
+  srcFile)` between 2 open file handles triggers the library's own
+  PRIVATE server-side-copy fast path (confirmed: `File.ReadFrom`/
+  `File.WriteTo` are exported in both versions, and Go's `io.Copy`
+  automatically special-cases `io.ReaderFrom`/`io.WriterTo` — no public
+  "CopyFile" call is needed or exists).
+- **`MovingBackend`**: `Share.Rename(ctx, oldpath, newpath) error` is a
+  direct, native SMB2 rename (confirmed in both versions) — matches
+  this doc's already-recorded decision.
+- **`BatchDeletingBackend`**: confirmed NO native SMB2 batch-delete
+  operation exists in either version — matches this doc's
+  already-recorded "not implemented" decision (same reasoning as
+  `adapters/file`: the "implementation" would just be the identical
+  sequential-loop fallback already running generically).
+- **`RangeReadingBackend`**: trivially achievable via the bound file's
+  `io.ReaderAt` (`io.NewSectionReader(boundFile, offset, length)`) — a
+  GENUINE native range read, arguably MORE natural here than it was for
+  S3 (which needed a dedicated wire-level `Range` header this library
+  doesn't need at all — `ReadAt` is a first-class SMB2 operation).
+- **`NativePOSIXMode`**: wirable via `Share.Chmod(ctx, name, mode)` /
+  `Share.Stat(ctx, name)`'s returned `os.FileInfo.Mode()` (confirmed,
+  ctx-first in v2) — but its real EFFECT is entirely dependent on the
+  remote server: meaningful on a Samba-hosted share with Unix
+  extensions enabled (POSIX bits genuinely round-trip), collapsed to a
+  binary read-only bit on a genuine Windows SMB share — the SAME
+  `os.Chmod`-on-Windows precedent Phase 1's `Capability` section
+  already documents, now simply re-confirmed for a THIRD transport
+  (filesystem, S3 N/A, SMB).
+- **No live SMB broker/Samba container is available in CI** (same rule
+  as every adapter's unit tests — see the `add-a-new-adapter` skill's
+  own Gotcha). The only pure-Go, in-process SMB *server* library found
+  (not client — a fundamentally different, much rarer kind of project)
+  is `github.com/sonroyaalmerol/go-smb-server` (MIT license) — a
+  from-scratch SMB2/3 server implementation explicitly tested against
+  `hirochachacha/go-smb2` as its reference client (per its own README).
+  It is young and niche (7 GitHub stars at the time of this research)
+  compared to `gofakes3`'s own maturity for the S3 example, but plays
+  the EXACT same role: an in-process, fully-offline, protocol-speaking
+  fake server for the mandatory runnable example specifically (unit
+  tests still use a hand-written fake of the narrow interface below,
+  never this server).
+
+#### Decisions resolved via `ask_user`
+
+1. **SMB client library + Go version** (the single biggest decision):
+   bump this repo's `go.mod` from `go 1.26.2` to `go 1.27.0` AND use
+   `go-smb2/v2` — accepting the heavier transitive dependency graph in
+   exchange for the materially cleaner, native ctx-per-call API (which
+   ALSO fully eliminates what would otherwise have been a genuinely
+   novel "ctx-bridging via factory closure" design pattern this
+   codebase has never needed before — v1.1.0 would have required it,
+   v2 needs nothing of the kind).
+2. **No existing-adapter retrofit this round**: Go 1.27 ALSO ships
+   generic methods (a method may now declare its own type parameters)
+   — this directly removes a documented limitation the
+   `add-a-new-adapter` skill itself names ("Go generics methods cannot
+   introduce new type params — adapter constructors needing a second
+   type parameter must be free functions"), which several already-
+   shipped adapters (`mqtt5`/`mqtt`/`zeromq`'s `NewPublishTransport[T]`/
+   `NewSubscribeTransport[T]`) work around today with free functions.
+   The user confirmed: do NOT fold a retrofit of those existing
+   workarounds into this round — this Go-version bump is motivated
+   SOLELY by `go-smb2/v2`'s own requirement; a future repo-wide
+   generic-methods retrofit is tracked as its own, separate,
+   not-yet-scheduled idea, not bundled in here.
+3. **`RangeReadingBackend`**: YES, implement it (reporting
+   `native=true` to `stats.FileObserver.RecordFileRangeRead`) — a
+   genuine capability this library makes essentially free, even though
+   `adapters/file.Backend` does NOT implement the same interface for
+   local files today (an observation about the filesystem backend,
+   not a blocker here, and explicitly NOT being retrofitted onto
+   `adapters/file` this round either — out of scope, noted only for
+   transparency).
+4. **`NativePOSIXMode`**: wire it through via `Chmod`, with the
+   Samba-vs-Windows degradation explicitly disclosed in both the
+   Go doc comment and this section (mirrors the Phase 1 `Capability`
+   section's own `os.Chmod` precedent exactly, not a new kind of
+   caveat).
+5. **Mandatory runnable example dependency**: accept
+   `github.com/sonroyaalmerol/go-smb-server` as a NEW, EXAMPLE-ONLY
+   dependency (never imported by `adapters/smb` itself) — mirrors
+   `gofakes3`'s established role for the S3 example exactly.
+
+#### 2 further technical questions, resolved by direct reasoning (not a separate `ask_user` round)
+
+- **Does SMB have anything closer to an atomic compare-and-swap than a
+  lock file, for `ConditionalWriteBackend`?** No — SMB2 has no
+  equivalent to S3's native `If-Match`/`If-None-Match`. But SMB2's own
+  `CREATE` with `FILE_CREATE` disposition (the wire-level operation
+  backing `OpenFile(ctx, name, os.O_CREATE|os.O_EXCL|os.O_WRONLY,
+  perm)`) IS genuinely atomic at the protocol level — the SAME
+  guarantee POSIX `O_CREATE|O_EXCL` provides locally, just server-
+  enforced over the wire instead of kernel-enforced locally. This
+  means `adapters/smb.Backend.WriteBytesIfMatch` can use the EXACT SAME
+  lock-file mechanism `adapters/file`'s own `WriteBytesIfMatch`
+  already uses (a sibling `<path>.lock` file, exclusive-create,
+  bounded retry+backoff, same ~5s internal default ceiling) — reported
+  as `native=false` via the `NativeConditionalWriteBackend` marker,
+  consistent with `adapters/file`'s own `native=false`, NOT a new
+  mechanism to invent. `adapters/smb` therefore does NOT get a truly
+  native conditional write the way `adapters/s3` does — a genuine,
+  disclosed backend-semantic difference (SMB2 itself has no
+  content-hash-based precondition primitive to call, unlike S3's REST
+  API), not an oversight.
+- **Does SMB have an extended-attributes-style primitive
+  `MetadataBackend` could use?** NTFS does support Alternate Data
+  Streams (`"filename:streamname"` path syntax), which SOME SMB
+  server/client combinations expose — but this is an NTFS-specific
+  feature, not guaranteed across every SMB-compatible server (e.g. a
+  Samba share backed by ext4/XFS may not support ADS reliably), and
+  neither `go-smb2` version's own README/tests exercise this path
+  syntax. Given Phase 1's "stdlib only, no exotic backend-specific
+  features" bar and the filesystem adapter's own precedent, `adapters/
+  smb.Backend` implements `MetadataBackend` via the SAME JSON sidecar
+  file (`<path>.meta.json`) mechanism `adapters/file` already uses —
+  universally supported (every SMB server supports ordinary files),
+  consistent cross-backend behavior, NOT dependent on NTFS-specific
+  wire features. Alternate Data Streams remain a possible FUTURE
+  enhancement (not implemented, not designed further here).
+
+#### Narrow interface + construction
+
+Mirrors the `add-a-new-adapter` skill's narrow-interface rule exactly
+(`*smb2.Share`/`*smb2.File` are concrete structs, not interface-shaped):
+
+```go
+// shareOps is the narrow slice of *smb2.Share this package depends on
+// — covers only the operations api/file.Backend (+ its optional
+// extensions) actually needs. Deliberately excludes Symlink/Readlink
+// (no api/file.Backend method concerns symlinks), Lock/Unlock (no
+// byte-range locking concept in api/file), WaitForChange (no watch/
+// notify concept in api/file), and GetSecurityDescriptor/
+// SetSecurityDescriptor (ACL manipulation is out of scope — the
+// Capability model's AccessMode/NativePOSIXMode axis is the sole
+// permission surface, per Phase 1's own established decision).
+type shareOps interface {
+	Open(ctx context.Context, name string) (fileOps, error)
+	Create(ctx context.Context, name string) (fileOps, error)
+	OpenFile(ctx context.Context, name string, flag int, perm os.FileMode) (fileOps, error)
+	Mkdir(ctx context.Context, name string, perm os.FileMode) error
+	MkdirAll(ctx context.Context, path string, perm os.FileMode) error
+	Remove(ctx context.Context, name string) error
+	RemoveAll(ctx context.Context, path string) error
+	Rename(ctx context.Context, oldpath, newpath string) error
+	Stat(ctx context.Context, name string) (os.FileInfo, error)
+	ReadDir(ctx context.Context, dirname string) ([]os.FileInfo, error)
+	Chmod(ctx context.Context, name string, mode os.FileMode) error
+	// WithContext returns an io/fs.FS adapter — used ONLY by WalkDir.
+	WithContext(ctx context.Context) interface {
+		fs.FS
+		fs.StatFS
+		fs.ReadFileFS
+		fs.ReadDirFS
+		fs.ReadLinkFS
+	}
+}
+
+// fileOps is the narrow slice of *smb2.File this package depends on —
+// returned by shareOps.Open/Create/OpenFile above. *smb2.File itself
+// does NOT satisfy this directly (its Read/Write/etc. take ctx as a
+// parameter, not matching io.Reader's signature) — this package calls
+// f.WithContext(ctx) once per open, then uses the result, which DOES
+// satisfy fileOps structurally (confirmed: *boundFile implements
+// io.ReadWriteCloser + io.Seeker + io.ReaderAt + io.WriterAt +
+// io.ReaderFrom + io.WriterTo).
+type fileOps interface {
+	io.ReadWriteCloser
+	io.Seeker
+	io.ReaderAt
+	io.WriterAt
+	io.ReaderFrom
+	io.WriterTo
+	Stat() (fs.FileInfo, error)
+}
+
+// var _ shareOps = (*smb2.Share)(nil) is NOT a literal compile-time
+// assertion in this package (smb2.Share's real Open/Create/OpenFile
+// return *smb2.File, not fileOps) — NewBackend's own caller-supplied
+// adapter closure (below) is where the real *smb2.Share gets narrowed
+// down to shareOps; the compile-time proof lives in that adapter
+// function's own small wrapper type instead.
+
+// BackendOpt configures NewBackend (reserved extension point, mirrors
+// adapters/s3.BackendOpt).
+type BackendOpt interface{ applyBackend(*Backend) }
+
+// NewBackend wraps share (caller-constructed, caller-authenticated —
+// the caller builds *smb2.Dialer{Credentials: ...}, calls Dial/Mount
+// themselves, then passes the resulting *smb2.Share through a small
+// adapter wrapper satisfying shareOps). adapters/smb never owns
+// credential loading or connection establishment — mirrors
+// adapters/s3's identical "narrow-interface-only, caller constructs/
+// authenticates the client" precedent exactly.
+func NewBackend(share shareOps, opts ...BackendOpt) *Backend
+```
+
+#### Backend method mapping
+
+| `api/file.Backend` (+ extensions) method | `go-smb2/v2` operation | Notes |
+|---|---|---|
+| `ReadBytes` | `Share.Open` + read-all via the bound `fileOps` | `os.ErrNotExist` translated by the library itself |
+| `WriteBytes` | `Share.Create`/`OpenFile` + write-all; `Strict:true` uses `OpenFile(..., os.O_CREATE\|os.O_EXCL\|os.O_WRONLY, perm)` | atomic CREATE at the wire level, same guarantee as local `O_EXCL` |
+| `DeleteBytes` | `Share.Remove` | idempotent (SMB2 DELETE on a missing file still needs a pre-check for `existed`, same Strict-only discipline as every other Backend) |
+| `ListDir` | `Share.ReadDir` | single-level, non-recursive — matches Phase 1's contract |
+| `Stat` | `Share.Stat` | `Entry.ETag` left empty (SMB has no server-computed content-hash concept — unlike S3's real ETag, this is a genuine, disclosed capability GAP relative to S3, not an oversight) |
+| `Mkdir` | `Share.Mkdir` (`MkdirOptions.CreateDirs`-equivalent uses `Share.MkdirAll`) | native parent-dir creation, unlike `adapters/file`'s own manual `os.MkdirAll` |
+| `CopyingBackend.CopyBytes` | `Open` src + `Create` dst + `io.Copy(dst, src)` | server-side copy fast path auto-engages via the library's own `ReadFrom`/`WriteTo`; falls back to ordinary reads/writes transparently when offsets/shares don't align (the library's own documented behavior, not this adapter's concern) |
+| `MovingBackend` | `Share.Rename` | native SMB2 rename — `adapters/smb` is the FIRST Phase 1/2 Backend to implement this interface (neither `adapters/file` nor `adapters/s3` do, each for its own disclosed reason — see note below the table) |
+| `ConditionalWriteBackend`+`NativeConditionalWriteBackend` | lock-file mechanism (SAME as `adapters/file`'s own) via `OpenFile(..., O_CREATE\|O_EXCL, ...)` | `native=false` (no SMB2 CAS primitive — see "2 further technical questions" above) |
+| `MetadataBackend` | JSON sidecar file (SAME as `adapters/file`'s own) | NOT Alternate Data Streams (see "2 further technical questions" above) |
+| `BatchDeletingBackend` | **NOT implemented** | no native SMB2 batch-delete; generic sequential-loop fallback applies |
+| `StreamWriteBackend.OpenWriter` | `Share.Create`/`OpenFile` + `.WithContext(ctx)` | genuinely streaming — NO `io.Pipe` bridge needed at all (unlike `adapters/s3`), since the returned `fileOps` already IS an `io.Writer` |
+| `StreamReadBackend.OpenReader` | `Share.Open` + `.WithContext(ctx)` | direct passthrough, genuinely streaming |
+| `RangeReadingBackend.OpenReaderRange` | `Share.Open` + `.WithContext(ctx)` + `io.NewSectionReader(f, offset, length)` | NATIVE (`io.ReaderAt` is a first-class SMB2 operation) — `native=true` |
+| `WalkingBackend.WalkDir` | `fs.WalkDir(share.WithContext(ctx), root, fn)` | the library's own `io/fs.FS` adapter does the heavy lifting; honors `filepath.SkipDir` via `fs.WalkDir`'s own contract |
+| `DirDeletingBackend.DeleteDir` | non-recursive: `Share.ReadDir` + empty-check + `Share.Remove`; recursive: `Share.RemoveAll` | `RemoveAll` is NATIVE to the library (confirmed), not a hand-rolled recursive walk+delete the way `adapters/file`'s own is |
+
+**Note**: `adapters/file` deliberately chose NOT to implement
+`MovingBackend` in Phase 1 despite `os.Rename` being equally available
+there (the SAME kind of observation already made about
+`RangeReadingBackend` above); `adapters/s3` genuinely CANNOT, since
+standard S3 buckets have no atomic rename at all. `adapters/smb` is
+therefore the first Phase 1/2 Backend to actually implement this
+interface.
+
+#### Structured errors
+
+```go
+// SMBError wraps a genuine SMB-specific failure api/file has no typed
+// error for at all (e.g. a protocol-level ResponseError/NTSTATUS this
+// package doesn't already translate to os.ErrNotExist/os.ErrExist/
+// os.ErrPermission, a TransportError, an InvalidResponseError) —
+// mirrors S3Error's own NARROWED scope exactly: every failure api/file
+// ALREADY has a typed error for (not-found, already-exists,
+// conditional-mismatch) is translated DIRECTLY via errors.Is, never
+// double-wrapped in SMBError first.
+type SMBError struct {
+	Operation string // "Open", "Create", "Rename", ...
+	Share     string
+	Path      string
+	Err       error
+}
+func (e SMBError) Error() string
+func (e SMBError) Unwrap() error { return e.Err }
+func (e SMBError) LogValue() slog.Value
+```
+
+#### Example plan
+
+Extends `examples/file-api` (mirrors `demo_s3_backend.go`'s own shape
+exactly — same `resources.Notes` declaration, different Backend):
+starts an in-process `go-smb-server` (`github.com/sonroyaalmerol/
+go-smb-server`) with an in-memory VFS backend and NTLMv2 credentials,
+dials it with a REAL `*smb2.Dialer`/`hirochachacha/go-smb2` client
+(loopback TCP, dummy credentials matching the server's configured
+ones), mounts the configured share, wraps the resulting `*smb2.Share`
+in the small `shareOps`-satisfying adapter type, and runs the SAME
+`resources.Notes` declaration against `adapters/smb.NewBackend(...)` —
+proving the core Phase 1 promise ("the exact same `file.Resource`
+declarations work unchanged against a different backend") for a THIRD
+real Backend.
+
+#### Unit test plan (against a hand-written `shareOps`/`fileOps` fake, NO live Samba/broker)
+
+| Test | Verifies |
+|---|---|
+| `TestBackend_ReadBytes_NotFound_SatisfiesOsErrNotExist` | library's own NTSTATUS translation is consulted directly via `errors.Is` |
+| `TestBackend_WriteBytes_Strict_UsesCreateExcl` | Strict=true uses `O_CREATE\|O_EXCL`; `os.ErrExist` maps to `FileAlreadyExistsError` |
+| `TestBackend_Mkdir_CreateDirs_UsesMkdirAll` | native recursive parent-dir creation, not a manual walk |
+| `TestBackend_CopyBytes_UsesIOCopyServerSideFastPath` | fake asserts `ReadFrom`/`WriteTo` were exercised, not a manual byte loop |
+| `TestBackend_MovingBackend_UsesNativeRename` | |
+| `TestBackend_WriteBytesIfMatch_UsesLockFile_ReportsNativeFalse` | mirrors `adapters/file`'s own equivalent test — same mechanism, same `native=false` |
+| `TestBackend_MetadataBackend_UsesJSONSidecar_NotADS` | |
+| `TestBackend_OpenWriter_StreamsDirectly_NoIOPipeBridge` | confirms no `io.Pipe` goroutine machinery exists in this Backend at all (structural difference from `adapters/s3`) |
+| `TestBackend_OpenReaderRange_UsesSectionReader_ReportsNativeTrue` | |
+| `TestBackend_WalkDir_UsesLibraryIOFSAdapter_HonorsSkipDir` | |
+| `TestBackend_DeleteDir_Recursive_UsesNativeRemoveAll` | |
+| `TestBackend_NativePOSIXMode_WiredViaChmod` | wiring-only proof (the fake can't distinguish Samba-vs-Windows server behavior — that distinction is a real-server runtime fact, not something a unit test can exercise) |
+| `TestFiletestConformance_AllScenarios_ProvenAgainstAdaptersSMB` | every `api/file/filetest` `Assert*` scenario wired into `adapters/smb`'s own `conformance_test.go` |
 
 ### Streaming/chunked reads and writes
 
@@ -3180,17 +3526,14 @@ excluded, not merely deferred:
 
 **Phase 1 now has ZERO remaining open design decisions.** Every item
 previously listed here is resolved — see "Resolved round 7" below for
-the 2 closed this round. The "Phase 1 amendment" section above (`List`/
-`BatchDelete` per-entry Security + `ListResult[T]`) and Recursive
-`WithList` (the first Phase 2 item) are BOTH now fully designed too —
-see their own sections for the complete picture, including their own
-unit test plans. The remaining 4 Phase 2 items are DELIBERATELY left at
-outline depth (see "Phase 2 — outline" above for each item's own
-specific open questions, not repeated here): S3's `AccessMode`-vs-IAM
-interaction, `adapters/smb`'s driver/permission choices, the
-streaming-`Backend`-extension's exact interface shape, conditional-
-writes' atomicity gap — not resolved here by design, since full Phase 2
-design is explicitly deferred until Phase 1 ships.
+the 2 closed this round. **All 5 Phase 2 items have since been through
+at least one full Go-signature design round** (Recursive `WithList`,
+Conditional writes, Streaming/chunked I/O, and `adapters/s3` are also
+IMPLEMENTED; `adapters/smb` is DESIGNED, implementation pending) — see
+each item's own section above for its own resolved decisions and unit
+test plan; nothing from the earlier "4 remaining items deliberately
+left at outline depth" framing is still accurate, superseded by each
+item's own subsequent design round.
 
 **Resolved round 7** (closing the 2 items this doc carried from round 6):
 
