@@ -1728,19 +1728,53 @@ satisfying BOTH `Is(target error) bool` (returns true for
 `errors.Is(err, os.ErrNotExist)` check unchanged, zero dispatch-core
 changes needed) AND `Unwrap() error` back to the original AWS SDK
 error — so a caller doing deeper diagnostics (e.g. distinguishing
-throttling from a genuine not-found) can still reach it.
+throttling from a genuine not-found) can still reach it. **Caveat,
+confirmed during this round's own 2nd gap-review**: dispatch-core's
+`readCore`/`existsCore`/etc. immediately re-wrap an `isNotFound`
+result as a BARE `FileNotFoundError{Path: path}` — a type with NO
+`Err` field/`Unwrap()` at all — so this preserved `Unwrap()` chain has
+no practical effect on the specific not-found path SPECIFICALLY
+(the original AWS error is discarded one level up regardless, a
+PRE-EXISTING, cross-cutting fact true for every Backend, not an
+S3-specific gap). It still has real value elsewhere: a caller
+inspecting the Backend-level error directly (bypassing dispatch, e.g.
+in a unit test) can reach the original AWS error, and a future
+dispatch-core change wanting to preserve more not-found context would
+no longer need any Backend-side change to do so.
+
+**Verified during this round's own 2nd gap-review** (cross-checked
+against `docs/design/d-0010-adapter-integration-architecture.md`):
+`S3Error`'s narrowed scope stays fully `ErrorPattern`/`errors.As`-
+discoverable even when nested — `createCore`/`readCore`'s generic
+fallback wraps an unrecognized Backend error as `FileWriteError{Path,
+Err}`/`FileReadError{Path, Err}`, both of which implement `Unwrap()`,
+so a caller declaring `file.NewErrorPattern[S3Error]()` (or any `B`
+type embedding it) correctly matches a `FileWriteError`-wrapped
+`S3Error`-wrapped raw AWS error 2 levels deep — `errors.As` traverses
+the WHOLE `Unwrap` chain, not just one level. Confirmed by reading the
+actual chain, not assumed.
 
 #### Observer integration
 
-No NEW `stats.FileObserver` method needed — every operation above maps
-onto an EXISTING `RecordFileRead`/`RecordFileWrite`/`RecordFileDelete`/
-`RecordFileList`/`RecordFileCopy`/`RecordFileMkdir`/
-`RecordFileBatchDelete`/`RecordFileRangeRead` call, exactly like
-`adapters/file.Backend` already does — `adapters/s3` is a NEW
-IMPLEMENTER of the SAME dispatch-core-driven Observer calls, not a
-source of new Observer vocabulary (dispatch.go itself calls these, not
-the Backend — `adapters/s3` contributes zero Observer-side code at
-all).
+Every operation above maps onto an EXISTING `RecordFileRead`/
+`RecordFileWrite`/`RecordFileDelete`/`RecordFileList`/`RecordFileCopy`/
+`RecordFileMkdir`/`RecordFileBatchDelete`/`RecordFileRangeRead` call,
+exactly like `adapters/file.Backend` already does — `adapters/s3` is a
+NEW IMPLEMENTER of these dispatch-core-driven Observer calls, not a
+source of new Observer vocabulary for THESE operations (dispatch.go
+itself calls them, not the Backend — `adapters/s3` contributes zero
+Observer-side code for these).
+
+**Revised during this round's own 2nd gap-review pass**: ONE genuine
+exception to "no new vocabulary" was found — `RecordFileConditionalWrite`
+(see the "Conditional writes" section's own Observer-integration
+subsection above, revised in this same round) reports whether a
+conditional write was served NATIVELY (S3's server-side `If-Match`) or
+via an APPROXIMATED emulation (filesystem's lock-file choreography).
+`adapters/s3` always reports `native=true` for this call — the real,
+motivating case this flag exists to distinguish, mirroring
+`RecordFileRangeRead`'s identical `native=true` for S3's own
+`RangeReadingBackend` (see `RangeReadingBackend`'s own entry above).
 
 #### S3-specific options — `WriteOptions.BackendOptions` (gap-review Fork A: `api/file` core addition)
 
@@ -1822,6 +1856,17 @@ Create/Patch/Delete/List/Mkdir); adding one is a BIGGER, SEPARATE
 `api/file` core change (new dispatch chain shape, ripples through
 `Client.Read`/`ReadHandle[T]`/`dispatchRead`) deserving its OWN design
 round, not a rushed side effect of this adapter's own design.
+
+**Cross-checked against D-0010's own "Capabilities are requirements,
+not transport options" distinction** (this round's own 2nd gap-review
+pass): `BackendOptions`/`PutOptions` are squarely ADAPTER
+CONFIGURATION (StorageClass/SSE/ACL/Tags/ContentType are operational
+hints with no coverage-check/requirement semantics — they never gate
+whether a `Resource` can be declared against a given Backend), NOT a
+`file.Capability`-style REQUIREMENT (`AccessMode`/`NativePOSIXMode`
+remain the only declare-time, compatibility-determining mechanism).
+D-0010 explicitly states these two concepts "must remain distinct" —
+confirmed CONSISTENT, not in tension, with no design change needed.
 
 #### Runnable example (gap-review Fork B)
 
@@ -2726,12 +2771,54 @@ type ConditionalWriteBackend interface {
 
 #### Observer integration
 
-No NEW `FileObserver` method needed — a conditional-write failure
-(mismatch, unsupported Backend, or lock timeout) is recorded via the
-EXISTING `recordWrite(obs, path, false, duration)` call, exactly like
-any other write failure; `stats.Observer` doesn't need granular
-"which reason" detail beyond what the returned structured error type
-already provides via `errors.As`.
+**Revised during `adapters/s3`'s own 2nd gap-review round** (cross-
+checked against `docs/design/d-0010-adapter-integration-architecture.md`'s
+capability-axis framework): the original design said "no new
+`FileObserver` method needed," reasoning that a conditional-write
+failure is already recorded via `recordWrite(obs, path, false,
+duration)` like any other write failure. That reasoning is still
+correct for FAILURE reporting — but it missed D-0010's axis 3
+("transport-guaranteed vs. adapter-approximated"), the SAME axis that
+already motivated `RecordFileRangeRead`'s `native bool` flag for
+Streaming's range-read fallback cascade. `ConditionalWriteBackend` is
+implemented via two STRUCTURALLY DIFFERENT mechanisms with different
+guarantees: the filesystem backend's lock-file choreography (atomic
+only among COOPERATING conditional writers — a weaker guarantee,
+already disclosed in prose above) vs. S3's genuinely native,
+server-side `If-Match` (atomic against every writer, no lock file at
+all) — yet both satisfy the exact same `ConditionalWriteBackend`
+interface, indistinguishable to a caller or Observer today.
+
+**New `stats.FileObserver` method** (the 12th), reporting which
+mechanism served a conditional write, on BOTH success and failure:
+
+```go
+// RecordFileConditionalWrite is called once per WriteBytesIfMatch
+// dispatch (createCore's overwrite path, patchCore's final commit) —
+// native reports whether the Backend's ConditionalWriteBackend
+// implementation is a TRANSPORT-GUARANTEED atomic primitive (S3's
+// native If-Match) or an ADAPTER-APPROXIMATED emulation (filesystem's
+// lock-file choreography) — mirrors RecordFileRangeRead's identical
+// native/approximated axis, applied here to the conditional-write
+// mechanism instead of range reads.
+RecordFileConditionalWrite(path string, native bool, ifMatch string, d time.Duration)
+```
+
+Called once per `WriteBytesIfMatch` dispatch, alongside (not instead
+of) the existing `recordWrite` call — `native` is a Backend-level,
+dispatch-known fact (whether the Backend's doc comment/implementation
+declares itself native, surfaced the SAME way `RangeReadingBackend`'s
+presence already is — via a small Backend-reported constant/method, TBD
+at implementation time, e.g. a `ConditionalWriteBackend`-adjacent
+marker or a doc-only convention mirroring how `BatchDeletingBackend`
+vs. the generic fallback is already distinguished structurally).
+`adapters/file.Backend` always reports `native=false` (lock-file
+emulation); `adapters/s3` always reports `native=true` (genuine
+server-side atomicity) — see each backend's own "Backend semantic
+differences" row below. 3 implementers need the new method:
+`stats.NoopObserver`/`stats.LoggingObserver`/the internal `fanout`
+type (mirrors every prior new `FileObserver` method's own blast
+radius).
 
 #### Unit test plan
 
@@ -2751,12 +2838,14 @@ already provides via `errors.As`.
 | `TestCreate_Overwrite_IfMatch_NonexistentTarget_ReturnsConditionalWriteMismatchError` | `Create` with `Strict:false` + any non-empty `IfMatch` against a path that doesn't exist at all is rejected, not silently treated as an unconditional create |
 | `TestListDir_ExcludesMetadataSidecarFiles` | A retroactive regression proof: a directory containing BOTH a resource file and its `.meta.json` sidecar — `List` returns ONLY the resource entry, never a bogus entry derived from the sidecar's own name (proven against both `adapters/file.Backend` and `ports.osBackend`) |
 | `TestListDir_ExcludesLockFiles` | Same proof for a `.lock` file left behind by an in-flight (or crashed) conditional write — `List` never returns a bogus entry derived from it (proven against both `adapters/file.Backend` and `ports.osBackend`) |
+| `TestConditionalWrite_Observer_ReportsNativeFalse_OnFilesystemBackend` | `RecordFileConditionalWrite`'s `native` parameter is `false` for `adapters/file.Backend`/`ports.osBackend`'s lock-file-emulated conditional write (added during `adapters/s3`'s own 2nd gap-review round) |
+| `TestConditionalWrite_Observer_ReportsNativeTrue_OnS3Backend` | Same proof, `native=true`, against `adapters/s3`'s future `ConditionalWriteBackend` implementation (deferred until `adapters/s3` is actually implemented — tracked here so it isn't forgotten) |
 
 #### Backend semantic differences (new row)
 
 | Operation | Filesystem (Phase 1/2) | S3 (Phase 2, future) |
 |---|---|---|
-| Conditional write | `ConditionalWriteBackend` via a `<path>.lock` file — atomic among COOPERATING conditional writers only; no auto-recovery from a crashed holder (manual `.lock` removal required) | `ConditionalWriteBackend` via `PutObject`'s native, server-side `If-Match` — atomic against EVERY writer (not just cooperating ones), no lock file, no stale-lock concept at all |
+| Conditional write | `ConditionalWriteBackend` via a `<path>.lock` file — atomic among COOPERATING conditional writers only; no auto-recovery from a crashed holder (manual `.lock` removal required); `RecordFileConditionalWrite`'s `native` flag is always `false` | `ConditionalWriteBackend` via `PutObject`'s native, server-side `If-Match` — atomic against EVERY writer (not just cooperating ones), no lock file, no stale-lock concept at all; `RecordFileConditionalWrite`'s `native` flag is always `true` |
 
 #### `ports` mirror (scope grown during implementation planning — IMPLEMENTED)
 
