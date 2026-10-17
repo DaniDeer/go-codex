@@ -1340,9 +1340,23 @@ ALL of Phase 2 is tracked in THIS doc.
 > (`If-Match`/`If-None-Match` on `PutObject`, shipped AWS-wide in late
 > 2024), and `HeadObject`/`ListObjectsV2` return a REAL, strong ETag
 > WITHOUT reading the object body — both are genuine CAPABILITY
-> UPGRADES over the filesystem adapter, not just parity. IMPLEMENTATION
-> is a separate, upcoming round (plus at least one gap-review round
-> first, per this doc's established per-item cadence).
+> UPGRADES over the filesystem adapter, not just parity. A follow-up
+> gap-review pass (re-reading this design against the ACTUAL current
+> `api/file` interfaces/doc comments, not just its own prose) found and
+> resolved 8 items: 6 concrete fixes folded directly into the sections
+> below (an `Entry.ETag` doc-comment clarification; `WalkDir`/`DeleteDir`
+> both now correctly honor their "root included" contracts; `S3Error`
+> narrowed to genuinely S3-specific failures only, matching
+> `adapters/file`'s own no-redundant-wrapper precedent; not-found
+> translation now preserves `Unwrap()` back to the original AWS error;
+> `OpenWriter`'s `io.Pipe` bridge now discloses its ctx-cancellation
+> handling and inherent goroutine-leak risk) — plus 2 forks resolved via
+> `ask_user`: a new, MINIMAL `WriteOptions.BackendOptions any` escape
+> hatch (api/file core addition — NOT a literal port of events/mqtt5's
+> heavier, declare-time-shaped Tier 1 Capability mechanism, which
+> doesn't fit api/file's per-call options shape), and a
+> `gofakes3`-backed, fully-offline runnable example. IMPLEMENTATION is a
+> separate, upcoming round.
 
 #### Research grounding this design
 
@@ -1500,6 +1514,19 @@ syntactically-valid but not-independently-recomputable ETag — fine for
 not something a caller should try to recompute locally the way
 `StrongETag(data)` does for the filesystem backend.
 
+**Gap found during gap-review, fixed**: `api/file/backend.go`'s own
+`Entry.ETag` doc comment currently states ETag is weak "when only
+metadata is available (e.g. this Entry came from `Backend.Stat`/
+`Backend.ListDir`, which never read the body)" — written assuming a
+filesystem-shaped limitation (SIZE+MODTIME is all a filesystem `Stat`
+call gets without reading content). `adapters/s3` proves this isn't a
+universal rule — S3 returns a REAL, strong ETag from `Stat`/`ListDir`
+specifically BECAUSE it computed and stored one server-side at write
+time, body-read or not. At `adapters/s3` implementation time, add a
+1-line addendum to that doc comment in `api/file/backend.go` itself
+(not just here) clarifying "weak" is per-Backend, not universal —
+avoids the doc contradicting `adapters/s3`'s own real behavior.
+
 #### Backend method signatures (full Go-signature rigor)
 
 ```go
@@ -1594,6 +1621,19 @@ func (b *Backend) OpenWriter(ctx context.Context, path string, opts apifile.Writ
 // error (if any) from Close(). opts.IfMatch is NOT supported on this
 // path this round (matches Mechanism 1/2's own disclosed exclusion for
 // the filesystem Backend).
+//
+// Fixed/disclosed during gap-review (2 items):
+//  1. ctx-cancellation handling: if ctx is canceled mid-upload, the
+//     goroutine's in-flight PutObject call returns ctx.Err() -- the
+//     goroutine then calls pipeReader.CloseWithError(ctx.Err()) so a
+//     Write() blocked on the writer side ALSO unblocks with that
+//     error, instead of deadlocking forever.
+//  2. Disclosed, not hidden: if the caller never calls Close() on the
+//     returned io.WriteCloser, the upload goroutine blocks forever
+//     waiting for EOF -- an inherent goroutine-leak risk of the
+//     io.Pipe-bridge approach, the SAME "caller must Close()"
+//     discipline every other io.WriteCloser in this package already
+//     requires, now stated explicitly for this specific bridge too.
 
 // StreamReadBackend
 func (b *Backend) OpenReader(ctx context.Context, path string) (io.ReadCloser, error)
@@ -1609,13 +1649,21 @@ func (b *Backend) OpenReaderRange(ctx context.Context, path string, offset, leng
 
 // WalkingBackend
 func (b *Backend) WalkDir(ctx context.Context, root string, fn apifile.DirWalkFunc) error
-// -> ListObjectsV2 with Prefix: root+"/", NO Delimiter (full-prefix
-// listing, auto-paginated) -- synthesizes directory boundaries from
-// each key's OWN path segments (split on "/", emit a directory Entry
-// for each UNSEEN intermediate segment before its contained file
-// Entry, mirroring filepath.WalkDir's own lexical, parent-before-child
-// visiting order) -- honors filepath.SkipDir exactly like
-// adapters/file.Backend's own WalkDir.
+// -> FIRST, visits root itself: fn(root, Entry{IsDir:true, Name:
+// <last segment of root>, ...}, nil) -- a purely LOGICAL/synthetic
+// visit (S3 needs no real object to exist for this), REQUIRED by
+// WalkingBackend's own documented contract ("calling fn once per
+// visited path (root included, ...)") -- gap found during gap-review:
+// the design originally omitted this, found by cross-checking
+// adapters/file.Backend's own filepath.WalkDir-based implementation
+// (which always visits root first too). THEN: ListObjectsV2 with
+// Prefix: root+"/", NO Delimiter (full-prefix listing, auto-paginated)
+// -- synthesizes directory boundaries from each key's OWN path
+// segments (split on "/", emit a directory Entry for each UNSEEN
+// intermediate segment before its contained file Entry, mirroring
+// filepath.WalkDir's own lexical, parent-before-child visiting order)
+// -- honors filepath.SkipDir exactly like adapters/file.Backend's own
+// WalkDir.
 
 // DirDeletingBackend
 func (b *Backend) DeleteDir(ctx context.Context, path string, recursive, dryRun bool) (affected []string, err error)
@@ -1623,19 +1671,40 @@ func (b *Backend) DeleteDir(ctx context.Context, path string, recursive, dryRun 
 // MaxKeys: 1) -- any result means non-empty -> DirNotEmptyError;
 // recursive: full-prefix ListObjectsV2 (no delimiter, auto-paginated)
 // collecting every key, then (unless dryRun) chunked DeleteObjects
-// exactly like DeleteBytesBatch's own chunking.
+// exactly like DeleteBytesBatch's own chunking. affected ALWAYS
+// includes path ITSELF (a synthetic/logical entry, regardless of
+// whether a literal S3 directory-marker object exists for it) --
+// gap found during gap-review: DirDeletingBackend's own documented
+// contract requires "affected -- root included for a recursive call,"
+// which the design originally didn't address for S3's "no real
+// directory object" case.
 ```
 
 #### Structured errors (new, `adapters/s3`-local)
 
+**Narrowed during gap-review**: `adapters/file.Backend`'s OWN core
+methods (`ReadBytes`/`WriteBytes`/etc.) do NOT wrap errors in an
+adapter-local type AT ALL — they return the raw `os.*` error directly,
+relying ENTIRELY on `api/file`'s dispatch-core `FileReadError`/
+`FileWriteError`/etc. wrapping. `S3Error` below is scoped to match
+this precedent exactly: used ONLY for a genuine S3-specific failure
+`api/file` has no typed error for at all (access denied, bucket not
+found, throttling) — every case `api/file` ALREADY has a typed error
+for (not-found, Strict-create conflict, conditional mismatch) returns
+the translated error DIRECTLY instead, letting dispatch-core wrap it
+exactly like `adapters/file` already does, not a redundant parallel
+wrapper.
+
 ```go
-// S3Error wraps any S3 API failure NOT already covered by api/file's
-// own structured errors (FileNotFoundError, FileAlreadyExistsError,
-// ConditionalWriteMismatchError, etc.) -- a genuine S3-specific
-// failure (e.g. access denied, bucket not found, throttling) surfaces
-// as this type, Unwrap()-reachable back to the original AWS SDK error
-// (itself often a smithy-go *smithy.GenericAPIError or a typed
-// *types.NoSuchBucket/etc.).
+// S3Error wraps an S3 API failure api/file has NO existing typed error
+// for (access denied, bucket not found, throttling, ...) — NOT used
+// for the cases api/file already covers (FileNotFoundError,
+// FileAlreadyExistsError, ConditionalWriteMismatchError), which this
+// Backend returns translated-but-unwrapped, letting dispatch-core's
+// own wrapping apply exactly like adapters/file already does.
+// Unwrap()-reachable back to the original AWS SDK error (itself often
+// a smithy-go *smithy.GenericAPIError or a typed *types.NoSuchBucket/
+// etc.).
 type S3Error struct {
 	Operation string // "GetObject", "PutObject", ...
 	Bucket    string
@@ -1650,11 +1719,16 @@ func (e S3Error) LogValue() slog.Value
 Not-found translation: a small internal helper
 `isS3NotFound(err error) bool` type-asserts for `*types.NoSuchKey`/
 `*types.NotFound` (HeadObject's own 404 shape, which the SDK does NOT
-wrap as NoSuchKey) OR a generic smithy API error with HTTP status 404
-— ReadBytes/Stat wrap a not-found result as `fmt.Errorf("%w",
-os.ErrNotExist)` (satisfying dispatch.go's existing
+wrap as NoSuchKey) OR a generic smithy API error with HTTP status 404.
+**Fixed during gap-review**: `ReadBytes`/`Stat` wrap a not-found result
+in a small UNEXPORTED type (not a bare `fmt.Errorf("%w",
+os.ErrNotExist)`, which would discard the original AWS error entirely)
+satisfying BOTH `Is(target error) bool` (returns true for
+`os.ErrNotExist`, preserving `dispatch.go`'s existing
 `errors.Is(err, os.ErrNotExist)` check unchanged, zero dispatch-core
-changes needed).
+changes needed) AND `Unwrap() error` back to the original AWS SDK
+error — so a caller doing deeper diagnostics (e.g. distinguishing
+throttling from a genuine not-found) can still reach it.
 
 #### Observer integration
 
@@ -1667,6 +1741,114 @@ IMPLEMENTER of the SAME dispatch-core-driven Observer calls, not a
 source of new Observer vocabulary (dispatch.go itself calls these, not
 the Backend — `adapters/s3` contributes zero Observer-side code at
 all).
+
+#### S3-specific options — `WriteOptions.BackendOptions` (gap-review Fork A: `api/file` core addition)
+
+The `add-a-new-adapter` skill's Step 5e mandates a sealed per-adapter
+`Capability` mechanism for protocol-specific options with no cross-
+backend meaning (S3's `StorageClass`/`ServerSideEncryption`/`ACL`/
+`Tags`/`Content-Type` — mirrors `adapters/mqtt5`/`adapters/zeromq`'s
+own `capability.go` for events). But `file.Capability` is SEALED TO
+`api/file` ITSELF (`isFileCapability()` is an unexported method only
+`api/file`'s own package can implement) — unlike `events`/`reqreply`'s
+adapter-extensible mechanism, `api/file`'s `Capability`, as shipped in
+Phase 1, has NO adapter-extension story at all (it was designed
+assuming only 2 cross-backend-meaningful capabilities,
+`AccessMode`/`NativePOSIXMode`). Found during gap-review, resolved via
+`ask_user`: generalize NOW, but MINIMALLY — not a literal port of
+events/reqreply's heavier, declare-time/connection-shaped Tier 1
+apparatus (sealed interface + `CapabilityRequirement` +
+`CheckCapabilityCoverage`), which doesn't fit how `api/file`'s own
+options are already shaped (per-CALL, via `WriteOptions`/
+`DeleteOptions`/`MkdirOptions`, not per-role-declare-time).
+
+**New field, `api/file/backend.go`'s `WriteOptions`** (a CORE `api/file`
+change, not `adapters/s3`-local — implemented alongside `adapters/s3`
+since it's the first real consumer, but belongs in Phase 1's own API
+surface):
+
+```go
+type WriteOptions struct {
+	// ... existing fields (Perm, CreateDirs, DirPerm, Strict, DryRun,
+	// Metadata, IfMatch) unchanged ...
+
+	// BackendOptions, when non-nil, is an OPAQUE, Backend-specific
+	// options value passed UNCHANGED to the attached Backend's own
+	// WriteBytes/WriteBytesIfMatch/OpenWriter call — the generalized
+	// adapter-extension escape hatch (mirrors events/reqreply's own
+	// adapter-specific Capability mechanism in SPIRIT, right-sized for
+	// api/file's per-CALL options shape instead of events' per-role-
+	// declare-time shape). A Backend recognizing its own concrete type
+	// (e.g. adapters/s3.PutOptions{StorageClass, ServerSideEncryption,
+	// ACL, Tags, ContentType}) type-asserts it out; every OTHER Backend
+	// simply never reads it — inert, safe, additive, matching every
+	// other optional-extension idiom in this package (no false
+	// portability, no coverage-check machinery — these are non-
+	// semantic storage-class/tagging/encryption HINTS, not behavior-
+	// altering ones, so silent ignoring by an unaware Backend is
+	// correct, not a silent correctness risk). nil (the default) means
+	// "no backend-specific options" — byte-for-byte unchanged behavior
+	// for every existing caller. Zero dispatch.go changes needed at
+	// all: a plain Go struct field, passed through unread by every
+	// dispatch-core function exactly like every other WriteOptions
+	// field already is.
+	BackendOptions any
+}
+```
+
+`adapters/s3`'s own concrete type:
+
+```go
+// PutOptions is adapters/s3's own concrete WriteOptions.BackendOptions
+// type — S3-specific, no cross-backend meaning.
+type PutOptions struct {
+	StorageClass         string // "", "STANDARD_IA", "GLACIER", ... (S3's own enum, passed through verbatim)
+	ServerSideEncryption string
+	ACL                  string
+	Tags                 map[string]string
+	ContentType          string
+}
+```
+
+`WriteBytes`/`WriteBytesIfMatch`/`OpenWriter` each do
+`po, _ := opts.BackendOptions.(PutOptions)` (zero value when absent or
+the wrong type — never an error) and apply `po.StorageClass`/etc. onto
+the corresponding `PutObjectInput` fields when non-empty.
+
+**Explicitly deferred, not silently dropped**: read-side S3 options
+(e.g. `VersionId`, to read a specific object version) — `Client.Read`/
+`Reader[T]` has NO per-call options struct at all today (unlike
+Create/Patch/Delete/List/Mkdir); adding one is a BIGGER, SEPARATE
+`api/file` core change (new dispatch chain shape, ripples through
+`Client.Read`/`ReadHandle[T]`/`dispatchRead`) deserving its OWN design
+round, not a rushed side effect of this adapter's own design.
+
+#### Runnable example (gap-review Fork B)
+
+Both the `add-a-new-adapter` skill's checklist and the "six mandatory
+requirements" (`plan-a-new-codex-feature`) require a runnable example
+that exits 0. S3 needs live credentials/a bucket to run for real —
+resolved via `ask_user`: an in-process FAKE S3 server,
+`github.com/johannesboyne/gofakes3` (confirmed via web search: actively
+maintained, in-memory, speaks the REAL S3 HTTP API so `aws-sdk-go-v2`
+works against it unmodified by pointing `aws.Config`'s `BaseEndpoint`
+at the fake server's local URL) — a fully-offline, always-exits-0
+example, no live AWS account ever needed. `gofakes3` is an
+EXAMPLE-ONLY dependency (never imported by `adapters/s3` itself),
+mirroring this repo's own "test-only dependency, no live broker in CI"
+rule extended to examples.
+
+Shape: `examples/file-api` (leaning toward extending it, per the
+"same declarations, different backend" theme already established
+there — confirmed final placement at implementation time) starts an
+in-process `gofakes3` server via `httptest.NewServer` wrapping its
+handler, points a real `s3.NewFromConfig` client's `BaseEndpoint` at
+it (dummy credentials — `gofakes3` doesn't validate SigV4 signatures
+in its default mode), creates a bucket, and runs the SAME
+`resources.Notes`-style declarations against
+`adapters/s3.NewBackend(client, bucket)` — proving the core Phase 1
+promise ("the exact same `file.Resource` declarations work unchanged
+against a different backend") concretely.
 
 #### Unit test plan (against the hand-written `s3API` fake, NO live AWS/localstack)
 
