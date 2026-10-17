@@ -97,6 +97,7 @@ func main() {
 	demoConditionalWrites(ctx, client, rt)
 	demoRecursiveList(ctx, client, rt, dir)
 	demoStreamingIO(ctx, client, rt)
+	demoS3Backend(ctx)
 
 	fmt.Println()
 	fmt.Println("=== Observer summary ===")
