@@ -1319,37 +1319,378 @@ grew during implementation planning to also cover
 `ports.FileOptions.IfMatch` + a new `ports.File[T].Stat` method (see
 that section's own "`ports` mirror" subsection); Streaming's scope grew
 the same way, also adding `ports.File[T].OpenRead`/`OpenWrite` (see its
-own status note above). The remaining 2 items (`adapters/s3`,
-`adapters/smb`) are still at outline depth only, each noted with its
-own open design question, unchanged from this doc's prior round. This
-section replaces round 2's original "`adapters/s3`/`adapters/smb` get
-their own future roadmap doc" call — ALL of Phase 2 is tracked in THIS
-doc.
+own status note above). The FOURTH item (**`adapters/s3`**, below) is
+now fully DESIGNED (5 `ask_user`-resolved forks, grounded in
+web-search-verified S3 capabilities) — IMPLEMENTATION is a separate,
+upcoming round. The remaining item (`adapters/smb`) is still at
+outline depth only, its own open design question unchanged from this
+doc's prior round. This section replaces round 2's original
+"`adapters/s3`/`adapters/smb` get their own future roadmap doc" call —
+ALL of Phase 2 is tracked in THIS doc.
 
 ### `adapters/s3`
 
-The REAL, primary beneficiary of every optional extension interface
-designed in Phase 1: `CopyingBackend.CopyBytes` → `CopyObject` (a true
-server-side copy, zero bytes through the caller — Phase 1's filesystem
-`io.Copy` already avoids a decode/re-encode round-trip but still reads
-every byte through the process; S3's `CopyObject` doesn't even do that);
-`MovingBackend` → deliberately NOT implemented (see "Backend semantic
-differences" — standard S3 buckets have no atomic rename; the 3-level
-`Move` fallback cascade's level 2 output, Copy+Delete, is the CORRECT
-behavior for S3, not a missing feature); `BatchDeletingBackend.
-DeleteBytesBatch` → `DeleteObjects` (the real motivating case for this
-whole interface); `StreamWriteBackend`/`StreamReadBackend` →
-`PutObject`/`GetObject`'s own streaming request/response bodies;
-`RangeReadingBackend` → `GetObject`'s native `Range` header, the
-PRIMARY real-world motivating case that interface exists for at all
-(see "Streaming/chunked reads and writes," above, now fully designed).
-Key open design question for the eventual full
-design: how does `AccessMode`'s dispatch-level enforcement (reject
-Write/Delete/Move/Mkdir before any Backend call, per Phase 1's design)
-interact with S3's OWN IAM-level authorization — does a `ReadOnly`
-`AccessMode` additionally verify the attached AWS credentials actually
-lack write permission, or does it trust the declared `Capability`
-unconditionally? Not resolved here.
+> **Status: DESIGNED to Phase 1's Go-signature rigor — NOT yet
+> implemented.** The fourth Phase 2 item to reach this level of
+> detail. This design round resolved 5 forks via `ask_user`
+> (AccessMode vs IAM, the `aws-sdk-go-v2` dependency, client
+> construction style, `ListDir` pagination scope, streaming-write
+> implementation), grounded in 2 web-search-verified facts rather than
+> assumption: S3 now supports NATIVE conditional writes
+> (`If-Match`/`If-None-Match` on `PutObject`, shipped AWS-wide in late
+> 2024), and `HeadObject`/`ListObjectsV2` return a REAL, strong ETag
+> WITHOUT reading the object body — both are genuine CAPABILITY
+> UPGRADES over the filesystem adapter, not just parity. IMPLEMENTATION
+> is a separate, upcoming round (plus at least one gap-review round
+> first, per this doc's established per-item cadence).
+
+#### Research grounding this design
+
+- **S3's REST API is a de facto industry standard for object
+  storage** (confirmed via `ask_user`, analogous to Redis's RESP
+  protocol) — no formal standards body, but near-universal
+  "S3-compatible" adoption across MinIO, Ceph (RGW), Cloudflare R2,
+  Backblaze B2, Wasabi, DigitalOcean Spaces, and Google Cloud
+  Storage's own S3 interop mode. Practical consequence: this Backend
+  works against ANY S3-compatible endpoint by pointing `aws.Config`'s
+  `BaseEndpoint` elsewhere — a bonus of building against the
+  standard API, not a new requirement.
+- **S3 now supports NATIVE conditional writes** (launched Aug/Nov
+  2024, available in all regions since): `PutObject`/
+  `CompleteMultipartUpload` accept `If-Match: <etag>` (CAS/optimistic
+  concurrency) and `If-None-Match: "*"` (create-if-absent). This is a
+  REAL upgrade over the filesystem adapter's own lock-file mechanism —
+  `ConditionalWriteBackend.WriteBytesIfMatch` is a true, atomic,
+  server-side S3 call, no client-side locking needed at all.
+- **S3's ETag is RETURNED BY `HeadObject`/`GetObject`/`ListObjectsV2`
+  WITHOUT reading the object body** (S3 computes and stores it
+  server-side at write time) — for a single `PutObject` (no
+  multipart), ETag is the object's content MD5 hex digest, a TRUE
+  strong/content-identifying value. `Stat`/`ListDir` report this REAL
+  STRONG ETag directly, unlike the filesystem adapter (which can only
+  approximate a weak one from mtime+size without reading content).
+- **AWS SDK for Go v2** (`github.com/aws/aws-sdk-go-v2` +
+  `.../service/s3`) is the official, actively maintained client —
+  `s3.Client` is a concrete struct (not interface-shaped), so the
+  `add-a-new-adapter` skill's narrow-interface rule applies: a small
+  adapter-local interface covers only the operations used, unit-tested
+  against a hand-written fake (no moto/localstack in CI, same
+  precedent as MQTT/Redis).
+- `s3.NewListObjectsV2Paginator` handles 1000-keys-per-page pagination
+  transparently; `DeleteObjects` accepts up to 1000 keys per call
+  (`BatchDeletingBackend`'s own contract doesn't cap batch size, so
+  this Backend chunks internally, transparent to the caller).
+- `CopyObject` with `MetadataDirective: REPLACE` is S3's ONLY
+  mechanism for a metadata-only update (a SELF-copy, source ==
+  destination) — S3 has no sidecar-file concept the way the
+  filesystem adapter's `MetadataBackend` does; metadata lives ON the
+  object itself.
+- S3 object keys have no real directory concept — `ListObjectsV2`'s
+  `Delimiter: "/"` + `Prefix: "<dir>/"` combination synthesizes
+  `Contents` (files) and `CommonPrefixes` (directory-like prefixes),
+  matching Phase 1's single-level `ListDir` contract.
+
+#### Decisions resolved via `ask_user`
+
+1. **`AccessMode` vs IAM**: trusts the declared `Capability`
+   UNCONDITIONALLY — NOT verified against the attached AWS
+   credentials' actual IAM permissions. Confirmed consistent with
+   Phase 1's own precedent (the filesystem adapter never checks OS
+   permission bits either) — the user's broader architectural stance:
+   authN/authZ is a MIDDLEWARE/proxy-layer concern (e.g. an OAuth2
+   proxy in front of the application), deliberately kept OUT of
+   route/backend declaration and implementation.
+2. **Dependency**: `aws-sdk-go-v2` + `.../service/s3` APPROVED — the
+   first non-stdlib dependency for an `api/file` Backend.
+3. **Client construction**: narrow-interface-only — the caller loads
+   `aws.Config`/credentials themselves (`config.LoadDefaultConfig` or
+   any other method) and constructs the real `*s3.Client`;
+   `adapters/s3` never owns credential loading (mirrors
+   `adapters/sql` never owning `*sql.DB` construction) — keeps the
+   adapter a pure protocol shim, no second vocabulary for the caller
+   to learn.
+4. **`ListDir` pagination**: auto-paginates through ALL pages
+   (correctness over speed — matches every other Backend's own
+   complete-results contract; `adapters/file.ListDir` never silently
+   truncates either).
+5. **Streaming writes**: an `io.Pipe` bridge to `PutObject` this round
+   — NOT real S3 Multipart Upload (disclosed as a future enhancement
+   opportunity for very large uploads, not designed now).
+
+#### Package layout
+
+```
+adapters/s3/
+├── doc.go            — package overview: S3-as-de-facto-standard,
+│                        Backend interface mapping table, Observer
+│                        story, dependency rationale
+├── errors.go          — structured error types + os.ErrNotExist
+│                        translation helper
+├── backend.go         — Backend + CopyingBackend + MetadataBackend +
+│                        ConditionalWriteBackend implementation
+├── stream.go          — StreamWriteBackend + StreamReadBackend +
+│                        RangeReadingBackend (io.Pipe bridge for
+│                        writes)
+├── walk.go            — WalkingBackend + DirDeletingBackend +
+│                        BatchDeletingBackend (prefix-based directory
+│                        synthesis + chunked DeleteObjects)
+└── *_test.go          — one per source file, against a hand-written
+                         fake narrow S3 interface (no moto/localstack)
+```
+
+#### Narrow client interface (the ONLY S3 surface this package depends on)
+
+```go
+// s3API is the minimal subset of *s3.Client this package calls —
+// narrow-interface rule (non-interface-shaped client lib), accepted
+// by NewBackend so tests run against a hand-written fake, never a
+// live AWS account or localstack/moto.
+type s3API interface {
+	GetObject(ctx context.Context, in *s3.GetObjectInput, opts ...func(*s3.Options)) (*s3.GetObjectOutput, error)
+	PutObject(ctx context.Context, in *s3.PutObjectInput, opts ...func(*s3.Options)) (*s3.PutObjectOutput, error)
+	DeleteObject(ctx context.Context, in *s3.DeleteObjectInput, opts ...func(*s3.Options)) (*s3.DeleteObjectOutput, error)
+	DeleteObjects(ctx context.Context, in *s3.DeleteObjectsInput, opts ...func(*s3.Options)) (*s3.DeleteObjectsOutput, error)
+	HeadObject(ctx context.Context, in *s3.HeadObjectInput, opts ...func(*s3.Options)) (*s3.HeadObjectOutput, error)
+	ListObjectsV2(ctx context.Context, in *s3.ListObjectsV2Input, opts ...func(*s3.Options)) (*s3.ListObjectsV2Output, error)
+	CopyObject(ctx context.Context, in *s3.CopyObjectInput, opts ...func(*s3.Options)) (*s3.CopyObjectOutput, error)
+}
+
+var _ s3API = (*s3.Client)(nil) // compile-time proof *s3.Client satisfies it
+```
+
+#### Backend construction
+
+```go
+// BackendOpt configures NewBackend — reserved extension point (mirrors
+// adapters/file's own RouterOpt-style convention), e.g. a future
+// key-prefix scoping option.
+type BackendOpt interface{ applyBackend(*Backend) }
+
+// KeyPrefix scopes every operation under a fixed key prefix (e.g. a
+// multi-tenant "tenant-123/" namespace within one shared bucket) —
+// transparently joined onto every Resource-declared path, mirroring
+// file.Router's own prefix-composition role but at the BACKEND level
+// instead (api/file's path template stays bucket-root-relative; the
+// Backend silently adds its own prefix on top, invisible to dispatch).
+func KeyPrefix(prefix string) BackendOpt
+
+// NewBackend wraps client (caller-constructed, caller-authenticated —
+// see "Client construction" decision above) scoped to bucket. client is
+// NOT *s3.Client directly but the narrow s3API interface above — pass
+// an actual *s3.Client built via s3.NewFromConfig(awsCfg), or a fake in
+// tests.
+func NewBackend(client s3API, bucket string, opts ...BackendOpt) *Backend
+```
+
+#### `Entry.ETag` — S3's real, strong ETag, not an approximation
+
+`Stat`/`ListDir` return S3's own `ETag` field DIRECTLY (stripped of its
+quote characters, per S3's own wire convention) as `Entry.ETag` — NO
+`WeakETag`/`StrongETag` helper call needed at all, since S3 already
+computed and stored a true content-identifying value server-side.
+**Caveat, disclosed**: for a MULTIPART-uploaded object, S3's ETag is
+NOT a plain content hash (it's `<hash>-<partcount>`, where `<hash>` is
+a hash of the PART hashes, not the object body) — since this round's
+`OpenWriter`/`PutObject` path never uses multipart upload (`io.Pipe`
+bridge, single `PutObject` call), every object THIS Backend writes
+gets a true, directly-comparable content-hash ETag; an object written
+by some OTHER tool via multipart upload would still report a
+syntactically-valid but not-independently-recomputable ETag — fine for
+`IfMatch` round-tripping (S3 validates it internally either way), just
+not something a caller should try to recompute locally the way
+`StrongETag(data)` does for the filesystem backend.
+
+#### Backend method signatures (full Go-signature rigor)
+
+```go
+func (b *Backend) BackendName() string { return "adapters/s3" }
+
+func (b *Backend) ReadBytes(ctx context.Context, path string) ([]byte, error)
+// -> GetObject; NoSuchKey (or a 404 NotFound) translated to an error
+// satisfying errors.Is(err, os.ErrNotExist) via a wrapping sentinel.
+
+func (b *Backend) WriteBytes(ctx context.Context, path string, data []byte, opts apifile.WriteOptions) ([]string, error)
+// -> PutObject. opts.CreateDirs/DirPerm/Perm are no-ops (documented,
+// never an error — S3 has no directory/permission concept).
+// opts.Strict=true -> IfNoneMatch: aws.String("*") (native S3
+// create-if-absent) -> on a 412 Precondition Failed, translate to
+// apifile.FileAlreadyExistsError{Path: path} (matching every other
+// Backend's own Strict contract).
+// createdDirs is ALWAYS nil (nothing was created).
+
+func (b *Backend) DeleteBytes(ctx context.Context, path string, opts apifile.DeleteOptions) (bool, error)
+// -> DeleteObject. S3's own DELETE is already idempotent (succeeds on
+// a missing key) -- existed is determined via a preceding HeadObject
+// ONLY when opts.Strict (to report FileNotFoundError correctly) or
+// opts.DryRun; otherwise a single DeleteObject call suffices (existed
+// reported as best-effort true, mirroring the filesystem backend's
+// own Strict-only existence-check discipline).
+
+func (b *Backend) ListDir(ctx context.Context, path string) ([]apifile.Entry, error)
+// -> s3.NewListObjectsV2Paginator(..., &s3.ListObjectsV2Input{
+//      Bucket: bucket, Prefix: path+"/", Delimiter: aws.String("/"),
+//    }), auto-paginating through ALL pages (confirmed). CommonPrefixes
+// -> Entry{IsDir:true, Name: <last path segment>}; Contents ->
+// Entry{IsDir:false, Name:..., Size:..., ModTime:..., ETag: <real,
+// un-quoted ETag>}. The object representing path+"/" itself (an S3
+// "directory marker" some tools create) is excluded from results,
+// mirroring adapters/file's own control-file-exclusion precedent (a
+// DIFFERENT reason, same shape of fix).
+
+func (b *Backend) Stat(ctx context.Context, path string) (apifile.Entry, error)
+// -> HeadObject; NoSuchKey/404 translated the same way ReadBytes does.
+
+func (b *Backend) Mkdir(ctx context.Context, path string, opts apifile.MkdirOptions) (bool, error)
+// no-op success (created=true, nil error) -- confirmed, S3 has no
+// directory concept; matches this doc's own long-standing decision.
+```
+
+#### Optional extensions
+
+```go
+// CopyingBackend
+func (b *Backend) CopyBytes(ctx context.Context, srcPath, dstPath string) error
+// -> CopyObject(CopySource: bucket+"/"+srcPath, Bucket: bucket, Key: dstPath)
+// true server-side copy, zero bytes through the caller process.
+
+// BatchDeletingBackend
+func (b *Backend) DeleteBytesBatch(ctx context.Context, paths []string) ([]apifile.BatchDeleteResult, error)
+// -> DeleteObjects, chunked at 1000 keys per call (S3's own hard
+// limit) -- transparent to the caller, who sees ONE logical batch
+// result regardless of how many chunk-calls it took.
+
+// ConditionalWriteBackend
+func (b *Backend) WriteBytesIfMatch(ctx context.Context, path string, data []byte, ifMatch string, opts apifile.WriteOptions) ([]string, error)
+// -> PutObject with IfMatch: aws.String(ifMatch) -- TRUE native
+// conditional write, no lock-file mechanism needed at all (S3 handles
+// the atomicity server-side). A 412 Precondition Failed ->
+// apifile.ConditionalWriteMismatchError{Path, Expected: ifMatch,
+// Actual: <HeadObject's current ETag, best-effort>}. A 404 (object
+// doesn't exist) -> the SAME ConditionalWriteMismatchError{Actual: ""}
+// shape every other Backend reports for this case.
+
+// MetadataBackend
+func (b *Backend) ReadMetadata(ctx context.Context, path string) (map[string]string, error)
+// -> HeadObject's own Metadata field (S3 user metadata, x-amz-meta-*)
+// -- direct, free (no extra call beyond the Stat/Read path already
+// needs HeadObject/GetObject anyway).
+func (b *Backend) WriteMetadata(ctx context.Context, path string, md map[string]string) error
+// -> CopyObject(CopySource: bucket+"/"+path, Bucket: bucket, Key:
+// path, MetadataDirective: REPLACE, Metadata: md) -- a SELF-COPY,
+// S3's ONLY mechanism for a metadata-only update. DISCLOSED COST: not
+// free like the filesystem adapter's own sidecar-file write --
+// WriteMetadata here re-transfers the WHOLE object body internally
+// (server-side, so no bytes leave AWS's network, but still a real,
+// billed S3 API call with its own latency) -- a genuine behavioral/
+// cost difference from the filesystem Backend, documented not hidden.
+
+// StreamWriteBackend
+func (b *Backend) OpenWriter(ctx context.Context, path string, opts apifile.WriteOptions) (io.WriteCloser, error)
+// -> an io.Pipe bridge: a goroutine calls PutObject(ctx,
+// &s3.PutObjectInput{Body: pipeReader, ...}) immediately; the
+// returned io.WriteCloser wraps pipeWriter -- every Write() feeds the
+// in-flight PutObject call directly, Close() closes pipeWriter and
+// BLOCKS until the goroutine's PutObject call returns, surfacing its
+// error (if any) from Close(). opts.IfMatch is NOT supported on this
+// path this round (matches Mechanism 1/2's own disclosed exclusion for
+// the filesystem Backend).
+
+// StreamReadBackend
+func (b *Backend) OpenReader(ctx context.Context, path string) (io.ReadCloser, error)
+// -> GetObject's own Body io.ReadCloser, returned DIRECTLY -- genuinely
+// streaming, no buffering at all.
+
+// RangeReadingBackend -- the PRIMARY real-world motivating case
+func (b *Backend) OpenReaderRange(ctx context.Context, path string, offset, length int64) (io.ReadCloser, error)
+// -> GetObject with Range: aws.String(fmt.Sprintf("bytes=%d-%d",
+// offset, offset+length-1)) when length > 0, or
+// fmt.Sprintf("bytes=%d-", offset) when length == 0 (S3's own
+// Range-header convention) -- NATIVE, server-side partial read.
+
+// WalkingBackend
+func (b *Backend) WalkDir(ctx context.Context, root string, fn apifile.DirWalkFunc) error
+// -> ListObjectsV2 with Prefix: root+"/", NO Delimiter (full-prefix
+// listing, auto-paginated) -- synthesizes directory boundaries from
+// each key's OWN path segments (split on "/", emit a directory Entry
+// for each UNSEEN intermediate segment before its contained file
+// Entry, mirroring filepath.WalkDir's own lexical, parent-before-child
+// visiting order) -- honors filepath.SkipDir exactly like
+// adapters/file.Backend's own WalkDir.
+
+// DirDeletingBackend
+func (b *Backend) DeleteDir(ctx context.Context, path string, recursive, dryRun bool) (affected []string, err error)
+// -> non-recursive: ListObjectsV2(Prefix: path+"/", Delimiter: "/",
+// MaxKeys: 1) -- any result means non-empty -> DirNotEmptyError;
+// recursive: full-prefix ListObjectsV2 (no delimiter, auto-paginated)
+// collecting every key, then (unless dryRun) chunked DeleteObjects
+// exactly like DeleteBytesBatch's own chunking.
+```
+
+#### Structured errors (new, `adapters/s3`-local)
+
+```go
+// S3Error wraps any S3 API failure NOT already covered by api/file's
+// own structured errors (FileNotFoundError, FileAlreadyExistsError,
+// ConditionalWriteMismatchError, etc.) -- a genuine S3-specific
+// failure (e.g. access denied, bucket not found, throttling) surfaces
+// as this type, Unwrap()-reachable back to the original AWS SDK error
+// (itself often a smithy-go *smithy.GenericAPIError or a typed
+// *types.NoSuchBucket/etc.).
+type S3Error struct {
+	Operation string // "GetObject", "PutObject", ...
+	Bucket    string
+	Key       string
+	Err       error
+}
+func (e S3Error) Error() string
+func (e S3Error) Unwrap() error { return e.Err }
+func (e S3Error) LogValue() slog.Value
+```
+
+Not-found translation: a small internal helper
+`isS3NotFound(err error) bool` type-asserts for `*types.NoSuchKey`/
+`*types.NotFound` (HeadObject's own 404 shape, which the SDK does NOT
+wrap as NoSuchKey) OR a generic smithy API error with HTTP status 404
+— ReadBytes/Stat wrap a not-found result as `fmt.Errorf("%w",
+os.ErrNotExist)` (satisfying dispatch.go's existing
+`errors.Is(err, os.ErrNotExist)` check unchanged, zero dispatch-core
+changes needed).
+
+#### Observer integration
+
+No NEW `stats.FileObserver` method needed — every operation above maps
+onto an EXISTING `RecordFileRead`/`RecordFileWrite`/`RecordFileDelete`/
+`RecordFileList`/`RecordFileCopy`/`RecordFileMkdir`/
+`RecordFileBatchDelete`/`RecordFileRangeRead` call, exactly like
+`adapters/file.Backend` already does — `adapters/s3` is a NEW
+IMPLEMENTER of the SAME dispatch-core-driven Observer calls, not a
+source of new Observer vocabulary (dispatch.go itself calls these, not
+the Backend — `adapters/s3` contributes zero Observer-side code at
+all).
+
+#### Unit test plan (against the hand-written `s3API` fake, NO live AWS/localstack)
+
+| Test | Verifies |
+|---|---|
+| `TestBackend_ReadBytes_NotFound_SatisfiesOsErrNotExist` | `errors.Is(err, os.ErrNotExist)` for a NoSuchKey/404 |
+| `TestBackend_WriteBytes_Strict_UsesIfNoneMatch` | Strict=true sends `IfNoneMatch: "*"`; a 412 maps to FileAlreadyExistsError |
+| `TestBackend_ListDir_PaginatesAllPages` | >1 page of results all returned, fake asserts multiple ListObjectsV2 calls with correct ContinuationToken chaining |
+| `TestBackend_ListDir_CommonPrefixesAreDirectories` | CommonPrefixes become Entry{IsDir:true} |
+| `TestBackend_Stat_ReturnsRealETagNoBodyRead` | fake asserts HeadObject (not GetObject) was called |
+| `TestBackend_Mkdir_IsNoOpSuccess` | no S3 call made at all |
+| `TestBackend_CopyBytes_UsesCopyObject` | |
+| `TestBackend_DeleteBytesBatch_ChunksAt1000` | >1000 paths triggers >1 DeleteObjects call |
+| `TestBackend_WriteBytesIfMatch_UsesNativeIfMatch_NoLockFile` | confirms NO lock-file/retry mechanism exists in this Backend at all (structural absence, not just behavior) |
+| `TestBackend_WriteBytesIfMatch_PreconditionFailed_MapsToMismatchError` | |
+| `TestBackend_ReadMetadata_FromHeadObject` | |
+| `TestBackend_WriteMetadata_UsesCopyObjectSelfCopy` | fake asserts CopyObject called with CopySource==dest |
+| `TestBackend_OpenWriter_StreamsViaIOPipe_CommitsOnClose` | content isn't materialized as one `[]byte` before PutObject starts |
+| `TestBackend_OpenReader_ReturnsGetObjectBodyDirectly` | |
+| `TestBackend_OpenReaderRange_SetsRangeHeader` | |
+| `TestBackend_WalkDir_SynthesizesDirectoryEntriesFromKeySegments` | |
+| `TestBackend_DeleteDir_NonRecursive_NonEmpty_ReturnsDirNotEmptyError` | |
+| `TestBackend_DeleteDir_Recursive_ChunkedDelete` | |
+| `TestFiletestConformance_AllScenarios_ProvenAgainstAdaptersS3` | every `api/file/filetest` Assert* scenario (9, including `AssertStreamRoundTrip`) wired into `adapters/s3`'s own `conformance_test.go`, proven against the fake |
 
 ### `adapters/smb`
 
@@ -2470,9 +2811,13 @@ via a test-only Backend wrapper that deliberately does not promote
 Recursive-List wiring this round, since `ports.Dir`'s OWN recursive
 mode already exists independently (Stage F) and does not call through
 `api/file.Client.List` at all; only `adapters/file.Backend`'s existing
-`WalkingBackend` implementation is exercised by this feature. The
-remaining 4 Phase 2 items (Conditional writes → Streaming/chunked I/O →
-`adapters/s3` → `adapters/smb`) are still at outline depth only.
+`WalkingBackend` implementation is exercised by this feature. At the
+time of THIS item's own implementation, the remaining 4 Phase 2 items
+were still at outline depth only — since then, Conditional writes and
+Streaming/chunked I/O have ALSO shipped, and `adapters/s3` has reached
+full design status (see each section's own, current status header
+above for the up-to-date picture; only `adapters/smb` remains at
+outline depth as of this doc's latest revision).
 
 ## Phase 3 — adapt examples to the new `api/file` approach
 
