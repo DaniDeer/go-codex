@@ -1320,9 +1320,10 @@ grew during implementation planning to also cover
 that section's own "`ports` mirror" subsection); Streaming's scope grew
 the same way, also adding `ports.File[T].OpenRead`/`OpenWrite` (see its
 own status note above). The FOURTH item (**`adapters/s3`**, below) is
-now fully DESIGNED (5 `ask_user`-resolved forks, grounded in
-web-search-verified S3 capabilities) — IMPLEMENTATION is a separate,
-upcoming round. The remaining item (`adapters/smb`) is still at
+now fully DESIGNED AND IMPLEMENTED (5 `ask_user`-resolved forks,
+grounded in web-search-verified S3 capabilities; one further
+implementation-time correction to the streaming-write fork, see its own
+status note). The remaining item (`adapters/smb`) is still at
 outline depth only, its own open design question unchanged from this
 doc's prior round. This section replaces round 2's original
 "`adapters/s3`/`adapters/smb` get their own future roadmap doc" call —
@@ -1330,9 +1331,24 @@ ALL of Phase 2 is tracked in THIS doc.
 
 ### `adapters/s3`
 
-> **Status: DESIGNED to Phase 1's Go-signature rigor — NOT yet
-> implemented.** The fourth Phase 2 item to reach this level of
-> detail. This design round resolved 5 forks via `ask_user`
+> **Status: IMPLEMENTED.** The fourth Phase 2 item to reach this level
+> of detail, and the fourth to ship. Implementation found one real,
+> confirmed correction to this design's own "streaming writes via
+> `io.Pipe` bridge" fork resolution: a genuinely zero-buffer
+> `PutObject` of an unseekable, length-unknown body is only possible
+> via the AWS SDK's HTTPS-only "aws-chunked" trailing-checksum
+> transfer encoding — this works against real AWS S3, but is NOT
+> understood by this package's own `gofakes3`-backed example server
+> (confirmed via `gofakes3`'s source: it only parses the OLDER,
+> now-SDK-unsupported signed-chunk format). `OpenWriter` was corrected
+> to spool the pipe's read side into an in-memory buffer (still
+> decoupling every `Write()` call from the network) and commit via a
+> SINGLE, ordinary `PutObject` with a seekable, length-known body —
+> works against every S3-compatible server, at the cost of the same
+> disclosed buffering trade-off Mechanism 1 (format-level streaming)
+> already accepted elsewhere in this doc. See `adapters/s3/stream.go`'s
+> own `OpenWriter` doc comment for the full writeup. This design round
+> itself resolved 5 forks via `ask_user`
 > (AccessMode vs IAM, the `aws-sdk-go-v2` dependency, client
 > construction style, `ListDir` pagination scope, streaming-write
 > implementation), grounded in 2 web-search-verified facts rather than

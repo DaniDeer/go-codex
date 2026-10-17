@@ -208,6 +208,16 @@ go-codex/
 │   │                       #   DrainWriteAdapter, DrainWriteFileAdapter,
 │   │                       #   DrainPatchAdapter, DrainPatchEncodedAdapter
 │   │                       #   (ports.SourceAdapter/IOAdapter/SinkAdapter)
+│   ├── s3/                 # api/file.Backend for S3 / any S3-compatible store (aws-sdk-go-v2)
+│   │   ├── doc.go          # package overview — Backend interface mapping, Observer story
+│   │   ├── errors.go       # S3Error, not-found translation, isS3NotFound/isPreconditionFailed
+│   │   ├── options.go      # PutOptions (WriteOptions.BackendOptions — StorageClass/SSE/ACL/Tags/ContentType)
+│   │   ├── backend.go      # narrow s3API interface, Backend, NewBackend, BackendOpt/KeyPrefix,
+│   │   │                   #   core methods + CopyingBackend/MetadataBackend/
+│   │   │                   #   ConditionalWriteBackend/NativeConditionalWriteBackend
+│   │   ├── stream.go       # StreamWriteBackend (io.Pipe-to-buffered-PutObject bridge),
+│   │   │                   #   StreamReadBackend, RangeReadingBackend
+│   │   └── walk.go         # WalkingBackend, DirDeletingBackend, BatchDeletingBackend
 │   ├── sql/                # SQL adapter — goose migrations + codec-level row validation
 │   │   ├── doc.go          # package overview
 │   │   ├── validate.go     # Validate[T], ValidateOptions

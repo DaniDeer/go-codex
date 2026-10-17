@@ -1,19 +1,21 @@
 # File API — `api/file`
 
 > **Status:** Phase 1 implemented with full Router + Declarative Middleware
-> parity (matches `api/rest`/`api/events`). The `api/file` package and its
-> `adapters/file.Backend` are fully built, tested, and usable TODAY — but
-> `ports.File`/`ports.Dir` have NOT yet been migrated to delegate onto this
-> stack (that migration remains open; see `docs/roadmap/file-api.md`). Use
-> `api/file` directly for new code; `ports.File`/`adapters/file`'s existing
-> `os.*`-based functions continue to work unchanged.
+> parity (matches `api/rest`/`api/events`), including the migration of
+> `ports.File`/`ports.Dir` to delegate onto this stack internally (their own
+> public call signatures are unchanged). Phase 2 is well underway: Recursive
+> `WithList`, Conditional writes, Streaming/chunked I/O, and `adapters/s3`
+> are all implemented; `adapters/smb` remains outline-only — see
+> `docs/roadmap/file-api.md`.
 
 `api/file` is a transport-agnostic API layer for file-shaped resources,
 mirroring `api/rest`/`api/events`/`api/reqreply`'s declare → attach → dispatch
 model. A declared `Resource[T]` describes WHAT a file looks like (its path
 template, codec, and path parameters); a `Client` with an attached `Backend`
-describes WHERE it actually lives (local filesystem today; S3/SMB are
-future backends — see `docs/roadmap/file-api.md`'s Phase 2 outline).
+describes WHERE it actually lives — the local filesystem
+(`adapters/file.NewBackend()`) or S3/any S3-compatible store
+(`adapters/s3.NewBackend(...)`) today; SMB is a future backend — see
+`docs/roadmap/file-api.md`'s Phase 2 section.
 
 ## Declaring a resource
 
@@ -230,6 +232,24 @@ extensions for a real fast path; it deliberately does NOT implement
 backend without it falls back to a generic sequential loop automatically).
 It also implements `ConditionalWriteBackend` — see "Conditional writes"
 below.
+
+`adapters/s3.NewBackend(client, bucket, ...)` is the second real Backend
+(Phase 2 item 4, implemented): wraps `github.com/aws/aws-sdk-go-v2/service/s3`
+behind a narrow client interface — the caller constructs/authenticates the
+`*s3.Client` itself, this package never owns credential loading. It proves
+the Backend abstraction's portability concretely: the EXACT SAME declared
+`Resource[T]` works unchanged against it. S3 also delivers genuine
+capability UPGRADES over the filesystem backend — a real, strong,
+server-computed `Entry.ETag` (no body read, via `HeadObject`) and a
+TRULY NATIVE, atomic `ConditionalWriteBackend` (S3's own server-side
+`If-Match`/`If-None-Match`, no lock-file emulation). It implements
+`CopyingBackend`/`BatchDeletingBackend`/`MetadataBackend`/
+`StreamWriteBackend`/`StreamReadBackend`/`RangeReadingBackend`/
+`WalkingBackend`/`DirDeletingBackend`, but deliberately NOT
+`MovingBackend` (S3 has no atomic rename for standard buckets — the
+generic Copy+Delete fallback is the correct behavior). It works against
+any S3-compatible endpoint (MinIO, Ceph, Cloudflare R2, GCS interop
+mode, …), not just AWS itself.
 
 ## Capabilities
 
