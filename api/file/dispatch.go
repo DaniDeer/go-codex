@@ -38,6 +38,22 @@ func recordWrite(obs stats.Observer, path string, success bool, d time.Duration)
 	}
 }
 
+// recordConditionalWrite reports stats.FileObserver.RecordFileConditionalWrite
+// alongside (not instead of) recordWrite's own call. native is derived from
+// backend's optional NativeConditionalWriteBackend extension — a Backend not
+// implementing it is treated as native=false (the conservative default).
+func recordConditionalWrite(obs stats.Observer, backend Backend, path, ifMatch string, d time.Duration) {
+	fo, ok := obs.(stats.FileObserver)
+	if !ok {
+		return
+	}
+	var native bool
+	if ncw, ok := backend.(NativeConditionalWriteBackend); ok {
+		native = ncw.NativeConditionalWrite()
+	}
+	fo.RecordFileConditionalWrite(path, native, ifMatch, d)
+}
+
 func recordDelete(obs stats.Observer, path string, success bool, d time.Duration) {
 	if fo, ok := obs.(stats.FileObserver); ok {
 		fo.RecordFileDelete(path, success, d)
@@ -432,11 +448,15 @@ func createCore[T any](ctx context.Context, backend Backend, core roleCore[T], r
 		recordWrite(obs, path, false, time.Since(start))
 		return nil, FileEncodeError{Path: path, Err: err}
 	}
-	if opts.IfMatch != nil && !opts.Strict {
+	conditional := opts.IfMatch != nil && !opts.Strict
+	if conditional {
 		cwb := backend.(ConditionalWriteBackend) // already confirmed above
 		createdDirs, err = cwb.WriteBytesIfMatch(ctx, path, data, *opts.IfMatch, opts)
 	} else {
 		createdDirs, err = backend.WriteBytes(ctx, path, data, opts)
+	}
+	if conditional {
+		recordConditionalWrite(obs, backend, path, *opts.IfMatch, time.Since(start))
 	}
 	if err != nil {
 		recordWrite(obs, path, false, time.Since(start))
@@ -584,11 +604,15 @@ func patchCore[T, P any](ctx context.Context, backend Backend, core roleCore[T],
 	}
 	writeOpts.Metadata = mergeMetadata(md, boundOutMD)
 	var writeErr error
-	if writeOpts.IfMatch != nil {
+	patchConditional := writeOpts.IfMatch != nil
+	if patchConditional {
 		cwb := backend.(ConditionalWriteBackend) // already confirmed above
 		_, writeErr = cwb.WriteBytesIfMatch(ctx, path, newData, *writeOpts.IfMatch, writeOpts)
 	} else {
 		_, writeErr = backend.WriteBytes(ctx, path, newData, writeOpts)
+	}
+	if patchConditional {
+		recordConditionalWrite(obs, backend, path, *writeOpts.IfMatch, time.Since(start))
 	}
 	if writeErr != nil {
 		recordWrite(obs, path, false, time.Since(start))

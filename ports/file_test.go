@@ -73,14 +73,22 @@ var templateFile = ports.NewFile(
 type fileObserverSpy struct {
 	stats.NoopObserver
 
-	reads   []fileObsCall
-	writes  []fileObsCall
-	deletes []fileObsCall
+	reads             []fileObsCall
+	writes            []fileObsCall
+	deletes           []fileObsCall
+	conditionalWrites []fileCondWriteObsCall
 }
 
 type fileObsCall struct {
 	path    string
 	success bool
+	dur     time.Duration
+}
+
+type fileCondWriteObsCall struct {
+	path    string
+	native  bool
+	ifMatch string
 	dur     time.Duration
 }
 
@@ -94,6 +102,10 @@ func (o *fileObserverSpy) RecordFileWrite(path string, success bool, d time.Dura
 
 func (o *fileObserverSpy) RecordFileDelete(path string, success bool, d time.Duration) {
 	o.deletes = append(o.deletes, fileObsCall{path, success, d})
+}
+
+func (o *fileObserverSpy) RecordFileConditionalWrite(path string, native bool, ifMatch string, d time.Duration) {
+	o.conditionalWrites = append(o.conditionalWrites, fileCondWriteObsCall{path, native, ifMatch, d})
 }
 
 var _ stats.FileObserver = (*fileObserverSpy)(nil)
@@ -2412,6 +2424,38 @@ func TestFile_Write_IfMatch_MatchSucceeds(t *testing.T) {
 	}
 	if got.Name != "second" {
 		t.Fatalf("Name = %q, want %q after conditional overwrite", got.Name, "second")
+	}
+}
+
+// TestFile_Write_IfMatch_Observer_ReportsNativeFalse proves ports's
+// private osBackend (a deliberate near-duplicate of
+// adapters/file.Backend's own lock-file emulation) is reported as
+// native=false by RecordFileConditionalWrite — the conservative
+// default for a Backend not implementing the optional
+// file.NativeConditionalWriteBackend marker — added during
+// adapters/s3's own 2nd gap-review round.
+func TestFile_Write_IfMatch_Observer_ReportsNativeFalse(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "item.json")
+	f := ports.NewFile(path, format.JSON(fileItemCodec))
+	if _, err := f.Write(nil, fileItem{Name: "first", Value: 1}, ports.FileOptions{}); err != nil {
+		t.Fatalf("setup Write: %v", err)
+	}
+	current, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("ReadFile: %v", readErr)
+	}
+	etag := file.StrongETag(current)
+
+	spy := &fileObserverSpy{}
+	if _, err := f.Write(nil, fileItem{Name: "second", Value: 2}, ports.FileOptions{IfMatch: &etag, Observer: spy}); err != nil {
+		t.Fatalf("conditional Write: %v", err)
+	}
+	if len(spy.conditionalWrites) != 1 {
+		t.Fatalf("want exactly 1 RecordFileConditionalWrite call, got %d", len(spy.conditionalWrites))
+	}
+	if spy.conditionalWrites[0].native {
+		t.Fatalf("want native=false for ports's osBackend, got native=true")
 	}
 }
 

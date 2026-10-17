@@ -2115,6 +2115,50 @@ func TestConditionalWrite_UnsupportedBackend_RejectsBeforeAnyWrite(t *testing.T)
 	}
 }
 
+// TestConditionalWrite_Observer_ReportsNativeFalse_OnFilesystemBackend
+// proves adapters/file.Backend's ConditionalWriteBackend implementation
+// (a client-side lock-file emulation) is reported as native=false — the
+// conservative default for a Backend not implementing the optional
+// NativeConditionalWriteBackend marker — mirrors
+// RecordFileRangeRead's own native/approximated axis, added during
+// adapters/s3's own 2nd gap-review round (docs/design/
+// d-0010-adapter-integration-architecture.md's "transport-guaranteed
+// vs. adapter-approximated" axis).
+func TestConditionalWrite_Observer_ReportsNativeFalse_OnFilesystemBackend(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	backend := adapterfile.NewBackend()
+	if _, ok := any(backend).(file.NativeConditionalWriteBackend); ok {
+		t.Fatalf("adapters/file.Backend must NOT implement NativeConditionalWriteBackend (its conditional write is lock-file-emulated, not native)")
+	}
+	if err := client.Attach(backend); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	vars := map[string]string{"name": "widget"}
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "widget", Value: 1}, vars); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	current, err := os.ReadFile(filepath.Join(dir, "widget.json"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	etag := file.StrongETag(current)
+
+	spy := &countingObserver{}
+	ctx2 := stats.WithObserver(ctx, spy)
+	if _, err := client.Create(ctx2, res.WithCreate(file.Create{}), record{Name: "widget", Value: 2}, vars, file.WriteOptions{IfMatch: &etag}); err != nil {
+		t.Fatalf("Create (conditional overwrite): %v", err)
+	}
+	if !spy.sawConditionalWriteApprox {
+		t.Fatalf("want RecordFileConditionalWrite called with native=false")
+	}
+	if spy.sawConditionalWriteNative {
+		t.Fatalf("want RecordFileConditionalWrite never called with native=true for a filesystem Backend")
+	}
+}
+
 func TestEntry_ETag_ExistsReturnsWeakETag(t *testing.T) {
 	dir := t.TempDir()
 	res := newResource(t, dir)

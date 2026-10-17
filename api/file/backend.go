@@ -38,6 +38,15 @@ type Entry struct {
 	// body). Empty for directory entries (IsDir == true — no content to
 	// identify). See docs/roadmap/file-api.md's "Conditional writes"
 	// section for the full strong-vs-weak computation design.
+	//
+	// The weak-vs-strong split above is a FILESYSTEM-BACKEND
+	// LIMITATION, not a universal rule: a Backend whose underlying
+	// store computes and stores a real content identifier server-side
+	// at write time (e.g. S3's own ETag) MAY report a genuinely strong
+	// ETag from Stat/ListDir too, without ever reading the body itself
+	// — a capability upgrade over the filesystem adapter's own
+	// metadata-only approximation, not a contradiction of this field's
+	// contract.
 	ETag string
 }
 
@@ -83,6 +92,29 @@ type WriteOptions struct {
 	// [ConditionalWriteBackend]; returns [ConditionalWriteUnsupportedError]
 	// otherwise, before any write is attempted.
 	IfMatch *string
+	// BackendOptions, when non-nil, is an OPAQUE, Backend-specific
+	// options value passed UNCHANGED to the attached Backend's own
+	// WriteBytes/WriteBytesIfMatch/OpenWriter call — a generalized
+	// adapter-extension escape hatch (mirrors events/mqtt5's own
+	// adapter-specific Capability mechanism in SPIRIT, right-sized for
+	// api/file's per-CALL options shape instead of events' per-role-
+	// declare-time shape). A Backend recognizing its own concrete type
+	// (e.g. adapters/s3.PutOptions{StorageClass, ServerSideEncryption,
+	// ACL, Tags, ContentType}) type-asserts it out; every OTHER Backend
+	// simply never reads it — inert, safe, additive, matching every
+	// other optional-extension idiom in this package (no false
+	// portability, no coverage-check machinery — these are
+	// non-semantic, operational hints, not behavior-altering ones, so
+	// silent ignoring by an unaware Backend is correct, not a silent
+	// correctness risk). nil (the default) means "no backend-specific
+	// options" — byte-for-byte unchanged behavior for every existing
+	// caller. This is adapter CONFIGURATION, not a [Capability]-style
+	// REQUIREMENT — it never gates whether a Resource can be declared
+	// against a given Backend, consistent with
+	// docs/design/d-0010-adapter-integration-architecture.md's
+	// "capabilities are requirements, not transport options"
+	// distinction.
+	BackendOptions any
 }
 
 // ConditionalWriteBackend is an OPTIONAL Backend extension for an atomic
@@ -107,6 +139,31 @@ type ConditionalWriteBackend interface {
 	// at all — no write performed. ifMatch is never "" (dispatch only
 	// calls this when WriteOptions.IfMatch is non-nil).
 	WriteBytesIfMatch(ctx context.Context, path string, data []byte, ifMatch string, opts WriteOptions) (createdDirs []string, err error)
+}
+
+// NativeConditionalWriteBackend is a FURTHER optional extension a
+// [ConditionalWriteBackend] implementer MAY additionally implement to
+// report whether its conditional-write mechanism is TRANSPORT-GUARANTEED
+// atomic (e.g. S3's own native, server-side PutObject If-Match — atomic
+// against every writer, not just cooperating ones) versus
+// ADAPTER-APPROXIMATED (e.g. the filesystem backend's own client-side
+// lock-file choreography — atomic only among COOPERATING conditional
+// writers through the SAME Backend). This mirrors
+// [RangeReadingBackend]'s own native-vs-approximated distinction (see
+// stats.FileObserver.RecordFileRangeRead), applied here to the
+// conditional-write mechanism instead of range reads — the same
+// "transport-guaranteed vs. adapter-approximated" axis
+// docs/design/d-0010-adapter-integration-architecture.md names.
+//
+// A [ConditionalWriteBackend] NOT implementing this optional interface
+// is treated as native=false (the conservative default — reporting the
+// WEAKER guarantee when unknown, never silently overclaiming atomicity).
+type NativeConditionalWriteBackend interface {
+	// NativeConditionalWrite reports true when this Backend's
+	// WriteBytesIfMatch is genuinely, transport-guaranteed atomic
+	// (no client-side coordination of any kind), false when it is an
+	// adapter-approximated emulation.
+	NativeConditionalWrite() bool
 }
 
 // DeleteOptions mirrors the backend-agnostic subset of today's

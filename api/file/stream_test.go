@@ -349,9 +349,11 @@ func TestStreamReader_OpenRead_Range_ReadBytesFallback_WorksOnEveryBackend(t *te
 
 type countingObserver struct {
 	stats.NoopObserver
-	sawNative    bool
-	sawNonNative bool
-	closeRecords int
+	sawNative                 bool
+	sawNonNative              bool
+	closeRecords              int
+	sawConditionalWriteNative bool
+	sawConditionalWriteApprox bool
 }
 
 func (o *countingObserver) RecordFileRangeRead(path string, native bool, offset, length int64, d time.Duration) {
@@ -359,6 +361,14 @@ func (o *countingObserver) RecordFileRangeRead(path string, native bool, offset,
 		o.sawNative = true
 	} else {
 		o.sawNonNative = true
+	}
+}
+
+func (o *countingObserver) RecordFileConditionalWrite(path string, native bool, ifMatch string, d time.Duration) {
+	if native {
+		o.sawConditionalWriteNative = true
+	} else {
+		o.sawConditionalWriteApprox = true
 	}
 }
 
