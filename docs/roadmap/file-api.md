@@ -3624,6 +3624,29 @@ lower-risk than it might appear:
    `ports.EntryParam` is ALREADY a plain `codex.Param` alias with zero
    wrapper boilerplate — `file.EntryParam` mirrors this identically.
 
+### Gap found during this round's own gap-review: `Dir` cannot be ONE `Routable` with 2 verbs
+
+The design's first draft proposed `Dir`/`DirHandle` as a SINGLE value
+implementing `router.Routable[*Client]` with `RouteMethod() == "list-dir"`
+covering BOTH `ListDir`/`DeleteDir`. Re-checked against
+`internal/router.MethodReporter`'s own real interface
+(`RouteMethod() string`) — a `Routable` reports EXACTLY ONE method
+string. A single `Dir` value dispatching 2 different verbs (List AND
+Delete) cannot honestly report one `RouteMethod()` — this is a hard
+interface-shape fact, not a judgment call, and it would have ALSO meant
+a Security requirement on `Delete` leaking onto `List` (or vice versa),
+contradicting the established "a Security requirement on Delete does
+not imply one on Read" principle every one of the 10 existing roles
+already follows.
+
+**Fixed**: `Dir` becomes the PURE DECLARATION (template + opts, mirrors
+`Resource[T]`'s own role exactly), with 2 ROLE-DERIVING methods
+producing 2 INDEPENDENT role values — `ListDirer`/`DeleteDirer` — each
+with its OWN separate Router/Middleware/Capability/ErrorPattern
+attachment surface and its OWN `RouteMethod()`, mirroring
+`Resource[T].WithRead(Read{}) Reader[T]`/`.WithDelete(Delete{}) Deleter[T]`'s
+exact shape, just rooted in `Dir` instead of `Resource[T]`.
+
 ### API surface
 
 ```go
@@ -3668,18 +3691,29 @@ func WithEntryPattern(p EntryPattern) DirOpt
 func WithRecursive(recursive bool) DirOpt
 func WithBaseDir(path string) DirOpt
 
-// Dir is a declarative directory descriptor — mirrors ports.Dir's own
-// role EXACTLY, but carries NO baked-in backend (unlike ports.Dir's
-// private osBackend{}): dispatch happens through an attached file.Client
-// (see "Client dispatch" below), the SAME declare-vs-dispatch split
-// every other api/file role already uses.
+// Dir is a PURE declaration — a directory path template + its own
+// path-param codecs + an optional EntryPattern/Recursive/BaseDir —
+// mirrors Resource[T]'s own role EXACTLY (declare-once, no I/O, no
+// baked-in backend). ListDir/DeleteDir capability is derived via
+// WithList/WithDelete below, NOT methods on Dir itself — see the
+// "gap found" note above for why.
 type Dir struct { /* unexported */ }
 
 func NewDir(template string, opts ...DirOpt) Dir
-func NewDirFromPathTemplate(t PathTemplate, opts ...DirOpt) Dir // mirrors NewDirFromPathTemplate; PathTemplate is api/file's own existing path-template type, reused unchanged
+func NewDirFromPathTemplate(t PathTemplate, opts ...DirOpt) Dir // PathTemplate is api/file's own existing path-template type, reused unchanged
 
 func (d Dir) BuildPath(vars map[string]string) (string, error) // no I/O, mirrors ports.Dir.BuildPath
 func (d Dir) MatchPath(path string) (map[string]string, error) // no I/O, mirrors ports.Dir.MatchPath
+
+// ListDir/DeleteDir are role-metadata structs — mirror Read{Summary,
+// Description string}/Delete{Summary, Description string} exactly.
+type ListDir struct{ Summary, Description string }
+type DeleteDir struct{ Summary, Description string }
+
+// WithList/WithDelete derive 2 INDEPENDENT role values from the SAME
+// Dir declaration — mirrors Resource[T].WithRead/WithDelete exactly.
+func (d Dir) WithList(op ListDir) ListDirer
+func (d Dir) WithDelete(op DeleteDir) DeleteDirer
 
 // DirOptions mirrors ports.DirOptions MINUS Observer/Context (api/file
 // resolves Observer from ctx uniformly via stats.ObserverFromContext,
@@ -3695,49 +3729,60 @@ type DirOptions struct {
 	Strict          bool
 }
 
-// DirHandle is Dir's built-Handle type, produced by Dir.Handle — the
-// Router-grouped/middleware-attached counterpart every other api/file
-// role already has (ReadHandle[T], DeleteHandle, ...). Dir itself gets
-// the SAME .Use()/.ListDirBoundMW()/.DeleteDirBoundMW()/
-// .WithErrorPatterns()/.WithCapabilities()/.RequireCapabilities()/
-// .Handle(client, opts...) surface every other role declares, mirroring
-// Deleter[T]'s own no-T shape method-for-method.
-type DirHandle struct { /* unexported */ }
+// ListDirer/DeleteDirer are Dir's 2 independent role types — EACH gets
+// its OWN full attachment surface (Use/BoundMW/ErrorPatterns/
+// Capabilities/Handle), mirroring Deleter[T]'s own no-T shape
+// method-for-method, just TWICE (once per verb) instead of once:
+type ListDirer struct{ /* unexported */ }
+type DeleteDirer struct{ /* unexported */ }
 
-func (d Dir) Use(mws ...RouteMiddleware) Dir
-func (d Dir) WithErrorPatterns(patterns ...any) Dir // mirrors WithErrorPatterns' existing per-role signature
-func (d Dir) WithCapabilities(caps ...Capability) Dir
-func (d Dir) RequireCapabilities(reqs ...CapabilityRequirement) Dir
-func (d Dir) ListDirBoundMW(bm any) Dir
-func (d Dir) DeleteDirBoundMW(bm any) Dir
-func (d Dir) Handle(client *Client, opts ...HandleOpt) (*DirHandle, error)
+func (l ListDirer) Use(mws ...RouteMiddleware) ListDirer
+func (l ListDirer) WithErrorPatterns(patterns ...any) ListDirer
+func (l ListDirer) WithCapabilities(caps ...Capability) ListDirer
+func (l ListDirer) RequireCapabilities(reqs ...CapabilityRequirement) ListDirer
+func (l ListDirer) ListDirBoundMW(bm any) ListDirer
+func (l ListDirer) Handle(client *Client, opts ...HandleOpt) (*ListDirHandle, error)
+
+func (d DeleteDirer) Use(mws ...RouteMiddleware) DeleteDirer
+func (d DeleteDirer) WithErrorPatterns(patterns ...any) DeleteDirer
+func (d DeleteDirer) WithCapabilities(caps ...Capability) DeleteDirer
+func (d DeleteDirer) RequireCapabilities(reqs ...CapabilityRequirement) DeleteDirer
+func (d DeleteDirer) DeleteDirBoundMW(bm any) DeleteDirer
+func (d DeleteDirer) Handle(client *Client, opts ...HandleOpt) (*DeleteDirHandle, error)
+
+// ListDirHandle/DeleteDirHandle are the built-Handle types, produced by
+// .Handle() — the Router-grouped/middleware-attached counterpart every
+// other api/file role already has (ReadHandle[T], DeleteHandle, ...).
+type ListDirHandle struct{ /* unexported */ }
+type DeleteDirHandle struct{ /* unexported */ }
 ```
 
 ### Client dispatch — dual-accept, mirrors every other role exactly
 
 ```go
-// ListDir dispatches d (a bare Dir OR a pre-built *DirHandle — the SAME
-// dual-accept contract every other Client dispatch method already
-// honors) against c's attached Backend. vars supplies d's OWN directory
-// path template's variables (NOT EntryPattern's — those are populated
-// per-discovered-entry, same split ports.Dir.List already has).
-func (c *Client) ListDir(ctx context.Context, d any, vars map[string]string, opts ...DirOptions) ([]DirEntry, error)
+// ListDir dispatches ld (a bare ListDirer OR a pre-built *ListDirHandle
+// — the SAME dual-accept contract every other Client dispatch method
+// already honors) against c's attached Backend. vars supplies the
+// underlying Dir's OWN directory path template's variables (NOT
+// EntryPattern's — those are populated per-discovered-entry, same split
+// ports.Dir.List already has).
+func (c *Client) ListDir(ctx context.Context, ld any, vars map[string]string, opts ...DirOptions) ([]DirEntry, error)
 
-// DeleteDir mirrors ListDir's dual-accept contract.
-func (c *Client) DeleteDir(ctx context.Context, d any, vars map[string]string, opts ...DirOptions) ([]string, error)
+// DeleteDir mirrors ListDir's dual-accept contract, dispatching dd (a
+// bare DeleteDirer OR a pre-built *DeleteDirHandle).
+func (c *Client) DeleteDir(ctx context.Context, dd any, vars map[string]string, opts ...DirOptions) ([]string, error)
 ```
 
 Internally, `listDirCore`/`deleteDirCore` (new `dispatch.go` functions)
 port `ports/dir.go`'s own `List`/`Delete`/`listSingleLevel`/
 `listRecursive`/`listGlobDiscovery`/`matchDirGlob`/`matchEntry` logic
 VERBATIM, with ONE change: every `osBackend{}` construction is replaced
-by `core.resource` analogue → the Client's OWN attached `Backend` (read
-via the SAME internal accessor `readCore`/`deleteCore`/etc. already use)
-— confirmed via the "Grounding" section above that this is a relocation,
-not a redesign. `CreateIfMissing`'s `Mkdir` call and `DeleteRecursive`'s
-`DeleteDir` call go through the Capability-gated path (see next section)
-before reaching the Backend, exactly like every mutating role already
-does.
+by the Client's OWN attached `Backend` (read via the SAME internal
+accessor `readCore`/`deleteCore`/etc. already use) — confirmed via the
+"Grounding" section above that this is a relocation, not a redesign.
+`CreateIfMissing`'s `Mkdir` call and `DeleteRecursive`'s `DeleteDir`
+call go through the Capability-gated path (see next section) before
+reaching the Backend, exactly like every mutating role already does.
 
 ### Capability integration
 
@@ -3753,12 +3798,12 @@ over the per-call `CreatePerm` option) EXACTLY.
 
 ### Declarative Middleware — no-T shape, mirrors `BoundDeleteMiddleware` exactly
 
-`Dir`'s `List`/`Delete` BOTH use the established no-T `Bound<Role>
+`ListDirer`/`DeleteDirer` BOTH use the established no-T `Bound<Role>
 Middleware[In,Out]` shape (`Delete`/`Exists`/`Copy`/`Move`/`Mkdir`/
 `BatchDelete`'s own precedent) — NOT the T-carrying `BoundListMiddleware
-[T,In,Out]` shape `Lister[T]` uses, since `Dir`'s own `List`/`Delete`
-decode NO single typed value at all (`DirEntry` carries raw
-`Name`/`RelPath`/`Kind`/`Vars`, never a caller-declared `T`):
+[T,In,Out]` shape `Lister[T]` uses, since neither decodes a single typed
+value at all (`DirEntry` carries raw `Name`/`RelPath`/`Kind`/`Vars`,
+never a caller-declared `T`):
 
 ```go
 type BoundListDirMiddleware[In, Out any] struct { /* mirrors BoundDeleteMiddleware field-for-field */ }
@@ -3772,10 +3817,15 @@ func BoundSecurityDeleteDirMiddleware[In, Out any](schemeName string, scheme Sec
 
 Security/`GrantedScopes` dispatch wiring in `listDirCore`/
 `deleteDirCore` mirrors `runBoundMiddleware`'s existing
-Security-check-before-Backend-call ordering exactly — a `Dir` with an
-unmet Security requirement on `DeleteDirBoundMW` rejects before the
-Backend's own `DeleteDir`/`RemoveAll` call, matching every other
-mutating role's own established "fail fast" convention.
+Security-check-before-Backend-call ordering exactly — `DeleteDirer`'s
+own unmet Security requirement rejects before the Backend's own
+`DeleteDir`/`RemoveAll` call, matching every other mutating role's own
+established "fail fast" convention. Because `ListDirer`/`DeleteDirer`
+are now 2 INDEPENDENT role values (per the "gap found" correction
+above), a Security requirement on one never leaks onto the other —
+consistent with the SAME "a Security requirement on Delete does not
+imply one on Read" principle every one of the other 10 roles already
+follows.
 
 **No metadata-merge-field integration** — `Dir` has no attached
 `Resource[T]`/metadata-sidecar axis at all (it enumerates raw entries,
@@ -3787,20 +3837,21 @@ either, for the analogous "not available pre-Backend-call" reason).
 
 ### Router integration
 
-`Dir`/`DirHandle` implement `router.Routable[*Client]`
+`ListDirer`/`DeleteDirer`/`ListDirHandle`/`DeleteDirHandle` EACH
+independently implement `router.Routable[*Client]`
 (`WithRouterPrefix`/`MiddlewareNames`/`RouteTags`/`RegisterAny`/
-`RouteMethod() == "list-dir"` — ONE Routable covering both verbs, since
-`Dir` is a single declared value with 2 dispatch methods, unlike the 10
-`Resource[T]` roles which are each their OWN separately-declared role
-value), mirroring `Deleter[T]`'s own implementation pattern exactly —
-`file.WithRouter(rt Router)` composes `Dir`'s own path-prefix the SAME
-single-construction-point way every other role's Router-group
+`RouteMethod() == "list-dir"`/`"delete-dir"` respectively — 2 SEPARATE
+`Routable` implementations, one per role, per the "gap found" correction
+above), mirroring `Deleter[T]`'s own implementation pattern exactly —
+`file.WithRouter(rt Router)` composes EACH role's own path-prefix the
+SAME single-construction-point way every other role's Router-group
 composition already works.
 
 ### `ErrorPattern` integration
 
-`Dir.WithErrorPatterns(patterns ...any)` mirrors every other role's own
-attachment method exactly — auto-invoked by `listDirCore`/
+`ListDirer.WithErrorPatterns(patterns ...any)`/
+`DeleteDirer.WithErrorPatterns(patterns ...any)` mirror every other
+role's own attachment method exactly — auto-invoked by `listDirCore`/
 `deleteDirCore` on a Backend-error path, consulted via the SAME
 `applyErrorPattern` helper `dispatch.go` already uses for every other
 role (zero new ErrorPattern machinery needed).
