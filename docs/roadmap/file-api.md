@@ -2119,6 +2119,27 @@ against a different backend") concretely.
   disclosed backend-semantic difference (SMB2 itself has no
   content-hash-based precondition primitive to call, unlike S3's REST
   API), not an oversight.
+  **Gap found during a pre-implementation re-review of this design
+  (not originally spelled out — confirmed by reading `adapters/file
+  /conditional_write.go`'s own `WriteBytesIfMatch` directly): the lock
+  only serializes concurrent writers — it does NOT by itself verify
+  `ifMatch`.** After acquiring the lock, the implementation MUST read
+  path's CURRENT content (`Share.Open` + read-all via the bound
+  `fileOps`), compute `apifile.StrongETag(current)`, and compare it
+  against `ifMatch`; on a mismatch it must ALSO retry against
+  `apifile.WeakETag(info.ModTime(), info.Size())` (via `Share.Stat`)
+  before concluding a genuine mismatch — mirrors `adapters/file`'s own
+  "accept EITHER the strong OR the weak ETag" rule EXACTLY (and for
+  the SAME reason: a caller's only realistic way to obtain an ETag
+  BEFORE writing is `Client.Exists`/`ports.File.Stat`, which never
+  reads content and can therefore only ever report a weak one — see
+  that file's own inline rationale comment). Only once this
+  read-compare step confirms a match does the implementation proceed
+  to the actual commit (write via the bound `fileOps`, still inside the
+  held lock). Skipping this step would make `WriteBytesIfMatch`
+  structurally indistinguishable from an UNCONDITIONAL write that
+  merely serializes callers — a silent correctness gap, not a cosmetic
+  omission.
 - **Does SMB have an extended-attributes-style primitive
   `MetadataBackend` could use?** NTFS does support Alternate Data
   Streams (`"filename:streamname"` path syntax), which SOME SMB
@@ -2230,7 +2251,7 @@ func NewBackend(share shareOps, opts ...BackendOpt) *Backend
 | `StreamReadBackend.OpenReader` | `Share.Open` + `.WithContext(ctx)` | direct passthrough, genuinely streaming |
 | `RangeReadingBackend.OpenReaderRange` | `Share.Open` + `.WithContext(ctx)` + `io.NewSectionReader(f, offset, length)` | NATIVE (`io.ReaderAt` is a first-class SMB2 operation) — `native=true` |
 | `WalkingBackend.WalkDir` | `fs.WalkDir(share.WithContext(ctx), root, fn)` | the library's own `io/fs.FS` adapter does the heavy lifting; honors `filepath.SkipDir` via `fs.WalkDir`'s own contract |
-| `DirDeletingBackend.DeleteDir` | non-recursive: `Share.ReadDir` + empty-check + `Share.Remove`; recursive: `Share.RemoveAll` | `RemoveAll` is NATIVE to the library (confirmed), not a hand-rolled recursive walk+delete the way `adapters/file`'s own is |
+| `DirDeletingBackend.DeleteDir` | non-recursive: `Share.ReadDir` + empty-check + `Share.Remove`; recursive (non-DryRun): `Share.RemoveAll`; recursive DryRun: `WalkDir`-based enumeration ONLY, `Share.RemoveAll` NEVER called | **Gap found during a pre-implementation re-review of this design** (confirmed by reading `adapters/file.Backend.DeleteDir` directly): "recursive: `Share.RemoveAll`" alone is incomplete — it does not account for `dryRun`. `affected` for a recursive call must ALWAYS be collected via this Backend's own `WalkingBackend.WalkDir` (root included, per `WalkDir`'s own documented contract); `Share.RemoveAll` is called ONLY when `dryRun == false`, mirroring `adapters/file.DeleteDir`'s own exact shape (walk-to-enumerate, then conditionally remove) rather than literally calling `RemoveAll` unconditionally and merely suppressing it for DryRun |
 
 **Note**: `adapters/file` deliberately chose NOT to implement
 `MovingBackend` in Phase 1 despite `os.Rename` being equally available
@@ -2261,6 +2282,49 @@ func (e SMBError) Error() string
 func (e SMBError) Unwrap() error { return e.Err }
 func (e SMBError) LogValue() slog.Value
 ```
+
+**ErrorPattern discoverability (confirmed, not merely assumed)**:
+`SMBError` implements `Unwrap() error` exactly like `S3Error` — whose
+nested-Unwrap-chain reachability (`FileWriteError`/`FileReadError` →
+`S3Error` → the raw AWS SDK error) was explicitly traced and confirmed
+against `api/file/dispatch.go`/`api/file/errors.go`'s own generic
+fallback wrapping during `adapters/s3`'s own gap-review round — `errors
+.As`/`ErrorPattern.Match` traverse the WHOLE `Unwrap` chain, not just one
+level, so a caller CAN declare `file.NewErrorPattern[SMBError]()` and
+have it match correctly even though `SMBError` sits two levels deep
+(`FileWriteError`/`FileReadError` → `SMBError` → the raw `go-smb2`
+error). Same mechanism, same conclusion — not re-derived from scratch,
+just re-confirmed for this Backend's own error type.
+
+#### Observer integration
+
+No NEW `stats.FileObserver` method needed — mirrors `adapters/s3`'s own
+confirmed finding exactly: every operation in the "Backend method
+mapping" table above maps onto an EXISTING `RecordFileRead`/
+`RecordFileWrite`/`RecordFileDelete`/`RecordFileList`/`RecordFileCopy`/
+`RecordFileMove`/`RecordFileMkdir`/`RecordFileBatchDelete` call, made
+ONCE, by `api/file/dispatch.go` itself — `adapters/smb` contributes ZERO
+Observer-side code for these. The only Backend-CONTRIBUTED Observer-
+adjacent surface is the 2 optional native/approximated markers already
+designed above: `NativeConditionalWriteBackend.NativeConditionalWrite()`
+reporting `false` (feeds `RecordFileConditionalWrite`'s `native`
+parameter) and `RangeReadingBackend`'s own implementation reporting
+`native=true` implicitly via which fallback tier `Client.OpenRead`
+selects (feeds `RecordFileRangeRead`'s `native` parameter) — both
+already specified in the "Backend method mapping" table, nothing further
+to design here.
+
+**`WriteOptions.BackendOptions` — considered, no SMB-specific use
+identified.** Unlike `adapters/s3`'s own `PutOptions{StorageClass,
+ServerSideEncryption, ACL, Tags, ContentType}`, this design's own narrow
+`shareOps` interface (see "Narrow interface + construction" above)
+deliberately does NOT expose protocol-specific SMB2 CREATE-time flags
+(`FileAttributes`/`ShareAccess`/`CreateOptions`) at all — there is
+currently no concrete, requested SMB-specific per-call option to carry
+through `WriteOptions.BackendOptions`. This was checked, not overlooked;
+the escape hatch remains available, unused by `adapters/smb`, should a
+genuine need surface later (mirrors this doc's own "never invent API
+without a request" discipline).
 
 #### Example plan
 

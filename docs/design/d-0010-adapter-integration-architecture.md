@@ -102,6 +102,43 @@
 > application of the same idea. See `docs/roadmap/file-api.md`'s own
 > "Streaming/chunked reads and writes" section for the full detail —
 > not duplicated here.
+>
+> **`adapters/s3` design's own cross-check** (previously missing from
+> this entry entirely — added retroactively, found stale during
+> `adapters/smb`'s own cross-check below): confirmed `WriteOptions
+> .BackendOptions any` (the generalized, per-call adapter-extension
+> escape hatch `adapters/s3.PutOptions` is the first consumer of) is
+> CONFIGURATION, not a REQUIREMENT, consistent with this doc's own
+> "Capabilities are requirements, not transport options" distinction
+> (see "Capabilities are requirements, not configuration" below) — it
+> never gates whether a Resource can be declared against a Backend.
+> Also confirmed `S3Error`'s narrowed scope stays fully discoverable via
+> `ErrorPattern`/`errors.As` despite sitting 2 `Unwrap()` levels deep
+> (`FileWriteError`/`FileReadError` → `S3Error` → the raw AWS SDK
+> error) — traced directly against `api/file/dispatch.go`'s own generic
+> error-wrapping fallback, not assumed. That same gap-review round
+> introduced `stats.FileObserver.RecordFileConditionalWrite(path,
+> native, ifMatch, duration)`, applying this doc's "transport-guaranteed
+> vs. adapter-approximated" axis a SECOND time (after `RecordFileRangeRead`)
+> — `adapters/s3`'s real, server-side `PutObject` `If-Match` reports
+> `native=true`; `adapters/file`'s lock-file emulation reports
+> `native=false`.
+>
+> **`adapters/smb` design's own cross-check** (same discipline, same 2
+> questions re-asked for a 3rd Backend before its implementation round
+> begins): Observer integration confirmed CLEAN with zero new
+> Backend-contributed code — `adapters/smb` populates the SAME 2
+> already-shipped native markers (`NativeConditionalWriteBackend`
+> reporting `false`, since SMB2 has no CAS primitive either;
+> `RangeReadingBackend` implemented and therefore reporting `native=true`,
+> since `io.ReaderAt` is a first-class SMB2 operation). `SMBError`'s own
+> `ErrorPattern` discoverability confirmed via the SAME reasoning as
+> `S3Error`'s (both implement `Unwrap()`, both sit behind the same
+> generic `FileWriteError`/`FileReadError` wrapping). `WriteOptions
+> .BackendOptions` was explicitly considered and found to have no
+> SMB-specific use today (the adapter's own narrow `shareOps` interface
+> doesn't expose protocol-specific CREATE flags) — not overlooked, just
+> genuinely unneeded so far.
 
 ## Status detail (full history, preserved from the roadmap)
 
