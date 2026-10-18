@@ -96,6 +96,13 @@ func firstStreamReadOptions(opts []StreamReadOptions) StreamReadOptions {
 	return opts[0]
 }
 
+func firstDirOptions(opts []DirOptions) DirOptions {
+	if len(opts) == 0 {
+		return DirOptions{}
+	}
+	return opts[0]
+}
+
 // ── Dual-accept dispatch methods ──────────────────────────────────────
 //
 // Every method below is DUAL-ACCEPT: its role parameter accepts EITHER
@@ -276,4 +283,34 @@ func (c *Client) OpenWrite(ctx context.Context, sw any, vars map[string]string, 
 		return nil, err
 	}
 	return dispatchOpenWrite(ctx, backend, sw, vars, firstWriteOptions(opts))
+}
+
+// ListDir dispatches ld (a bare [ListDirer] OR a pre-built
+// [*ListDirHandle] — the SAME dual-accept contract every other Client
+// dispatch method already honors) against c's attached Backend. vars
+// supplies the underlying [Dir]'s OWN directory path template's
+// variables (NOT [EntryPattern]'s — those are populated per-discovered-
+// entry).
+//
+// opts is variadic (0 or 1 value accepted) — pass a [DirOptions] to
+// control CreateIfMissing/CreatePerm/DryRun/Strict for this call.
+func (c *Client) ListDir(ctx context.Context, ld any, vars map[string]string, opts ...DirOptions) ([]DirEntry, error) {
+	backend, err := c.attachedBackend()
+	if err != nil {
+		return nil, err
+	}
+	return dispatchListDir(ctx, backend, ld, vars, firstDirOptions(opts))
+}
+
+// DeleteDir mirrors [Client.ListDir]'s dual-accept contract, dispatching
+// dd (a bare [DeleteDirer] OR a pre-built [*DeleteDirHandle]).
+//
+// opts is variadic (0 or 1 value accepted) — pass a [DirOptions] to
+// control DeleteRecursive/DryRun/Strict for this call.
+func (c *Client) DeleteDir(ctx context.Context, dd any, vars map[string]string, opts ...DirOptions) ([]string, error) {
+	backend, err := c.attachedBackend()
+	if err != nil {
+		return nil, err
+	}
+	return dispatchDeleteDir(ctx, backend, dd, vars, firstDirOptions(opts))
 }
