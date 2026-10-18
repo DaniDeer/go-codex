@@ -185,7 +185,7 @@ made explicitly this round):
 | Phase | Content | Design depth | Status |
 |---|---|---|---|
 | **1** | `api/file` package itself: `Resource[T]` + 10 role builders, `file.Client` (attach+dispatch), `file.Backend` seam, `file.Capability`, Router/Middleware/Observer/ErrorPattern integration, `adapters/file` migration (filesystem backend), full `ports.File`/`ports.Dir` migration | Full Go-signature design (this doc's main body, below) | **IMPLEMENTED** (incl. a `deep-dive-bug-hunt` pass and the retroactive List/BatchDelete per-entry Security amendment — see the main body's own status notes) |
-| **2** | `adapters/s3`, `adapters/smb` implementations; streaming/chunked I/O; conditional writes (ETag); recursive `WithList` | Full Go-signature design, per-item (see each item's own section below) | 4 of 5 items IMPLEMENTED (Recursive `WithList`, Conditional writes, Streaming/chunked I/O, `adapters/s3`); `adapters/smb` DESIGNED, implementation pending (see "Phase 2" section below) |
+| **2** | `adapters/s3`, `adapters/smb` implementations; streaming/chunked I/O; conditional writes (ETag); recursive `WithList` | Full Go-signature design, per-item (see each item's own section below) | ALL 5 of 5 items IMPLEMENTED (Recursive `WithList`, Conditional writes, Streaming/chunked I/O, `adapters/s3`, `adapters/smb`) — Phase 2 is FULLY COMPLETE (see "Phase 2" section below) |
 | **3** | Adapt existing examples (`examples/*`) from `ports.File`/`adapters/file` direct usage to the new `api/file.Client` approach | Checklist-level (which examples, what "adapted" means) — necessarily light since Phase 1 isn't implemented yet | Planned (see "Phase 3" section below) |
 | **4** | Promote this roadmap doc to `docs/design/d-NNNN-*.md` (per the `plan-a-new-codex-feature` skill's delete/keep/promote 3-way policy) + sync `.github/instructions/go-codex.instructions.md`, `docs/` pages, and relevant skills | Mechanism named, exact number/content deferred until Phase 1-3 actually ship | Planned (see "Phase 4" section below) |
 
@@ -1302,36 +1302,36 @@ additive new tests:
 | `TestBatchDeleteCore_PerPathSecurityRejection_OtherPathsStillProceed` | One path's Security check rejects it (`BatchDeleteResult.Err`); sibling paths in the same batch still delete successfully |
 | `TestListCore_Observer_CountReflectsTotalEntriesIncludingFailures` | `RecordFileList`'s `count` includes failed entries, not just successes |
 
-## Phase 2 — further backends + feature depth (all 5 items designed; 4 implemented)
+## Phase 2 — further backends + feature depth (ALL 5 items designed AND implemented — Phase 2 is COMPLETE)
 
 **Status: Phase 1 is done and closed (including a `deep-dive-bug-hunt`
 pass, `history.md` Rounds 216-223 — see `.github/skills/
 review-go-codex/references/history.md`, plus a retroactive "Phase 1
 amendment" for `List`/`BatchDelete` per-entry Security, also now
-IMPLEMENTED); Phase 2's own 5 items are being tackled ONE AT A TIME, in
-a confirmed order, each designed to Phase 1's full Go-signature rigor
-before implementation starts. Confirmed order: Recursive `WithList` →
-Conditional writes → Streaming/chunked I/O → `adapters/s3` →
-`adapters/smb`.** The first THREE items (**Recursive `WithList`**,
-**Conditional writes**, and **Streaming/chunked reads and writes**, all
-above) are fully designed AND IMPLEMENTED — Conditional writes' scope
-grew during implementation planning to also cover
-`ports.FileOptions.IfMatch` + a new `ports.File[T].Stat` method (see
-that section's own "`ports` mirror" subsection); Streaming's scope grew
-the same way, also adding `ports.File[T].OpenRead`/`OpenWrite` (see its
-own status note above). The FOURTH item (**`adapters/s3`**, below) is
-now fully DESIGNED AND IMPLEMENTED (5 `ask_user`-resolved forks,
-grounded in web-search-verified S3 capabilities; one further
-implementation-time correction to the streaming-write fork, see its own
-status note). The FIFTH and LAST item (**`adapters/smb`**, below) is
-now fully DESIGNED (5 `ask_user`-resolved forks across 2 rounds,
-grounded in from-scratch Go-SMB-client-library-landscape research —
-including a repo-wide `go 1.27.0` toolchain bump this design depends
-on) — IMPLEMENTATION is a separate, upcoming round. All 5 Phase 2 items
-have now been through at least one full design round. This section
-replaces round 2's original
+IMPLEMENTED). Phase 2's own 5 items were tackled ONE AT A TIME, in a
+confirmed order, each designed to Phase 1's full Go-signature rigor
+before implementation started: Recursive `WithList` → Conditional
+writes → Streaming/chunked I/O → `adapters/s3` → `adapters/smb`. ALL 5
+are now IMPLEMENTED — Phase 2 itself is COMPLETE.** The first THREE
+items (**Recursive `WithList`**, **Conditional writes**, and
+**Streaming/chunked reads and writes**, all above) are fully designed
+AND IMPLEMENTED — Conditional writes' scope grew during implementation
+planning to also cover `ports.FileOptions.IfMatch` + a new
+`ports.File[T].Stat` method (see that section's own "`ports` mirror"
+subsection); Streaming's scope grew the same way, also adding
+`ports.File[T].OpenRead`/`OpenWrite` (see its own status note above).
+The FOURTH item (**`adapters/s3`**, below) is fully DESIGNED AND
+IMPLEMENTED (5 `ask_user`-resolved forks, grounded in web-search-verified
+S3 capabilities; one further implementation-time correction to the
+streaming-write fork, see its own status note). The FIFTH and LAST item
+(**`adapters/smb`**, below) is ALSO fully DESIGNED AND IMPLEMENTED (5
+`ask_user`-resolved forks across 2 design rounds, grounded in
+from-scratch Go-SMB-client-library-landscape research, a repo-wide
+`go 1.27.0`/`go 1.27.2` toolchain bump, 4 independent pre-implementation
+review rounds, and 2 further implementation-time corrections — see its
+own status note). This section replaces round 2's original
 "`adapters/s3`/`adapters/smb` get their own future roadmap doc" call —
-ALL of Phase 2 is tracked in THIS doc.
+ALL of Phase 2 is tracked in THIS doc, and ALL of it has now shipped.
 
 ### `adapters/s3`
 
@@ -1941,25 +1941,52 @@ against a different backend") concretely.
 
 ### `adapters/smb`
 
-> **Status: DESIGNED to Phase 1's Go-signature rigor — NOT yet
-> implemented.** The fifth and LAST Phase 2 item to reach this level of
-> detail. Unlike every other Phase 2 item, this one needed its own
-> from-scratch Go-SMB-client-library-landscape research FIRST (never
-> done before this round) before any design could begin. That research
-> (grounded via real source inspection and live sandbox toolchain
-> probes, not assumption) resolved 5 forks via 2 rounds of `ask_user`:
-> the SMB client library + Go-version choice (the single biggest
-> decision — see below), whether to implement `RangeReadingBackend`,
-> whether to wire `NativePOSIXMode` through despite its
-> server-dependent effect, and the mandatory-runnable-example
-> dependency. Two further, narrower technical questions (does SMB have
-> anything closer to an atomic compare-and-swap than a lock file; does
-> SMB have an extended-attributes-style primitive `MetadataBackend`
-> could use) were resolved by direct reasoning from the chosen
-> library's own capabilities, not a separate `ask_user` round — see
-> their own subsections below. IMPLEMENTATION, including the `go.mod`
-> Go-version bump this design depends on, is a separate, upcoming
-> round.
+> **Status: IMPLEMENTED.** The fifth and LAST Phase 2 item — Phase 2 is
+> now FULLY complete (all 5 items implemented). The design itself
+> survived 4 independent pre-implementation review rounds (library/
+> version research + 5 `ask_user` forks; a gap review fixing the
+> `ConditionalWriteBackend` ETag-comparison step and `DirDeletingBackend`
+> DryRun handling + Observer/ErrorPattern/D-0010 cross-checks; an
+> untagged-dependency-risk disclosure; and an `OpenWriter`-atomicity
+> fix) before implementation began — every one of those fixes shipped
+> exactly as designed. Implementation itself found and corrected 2
+> FURTHER issues the design rounds didn't catch:
+>
+> - **`Entry.ETag` was designed to be left empty** ("SMB has no
+>   server-computed content-hash concept, a disclosed capability gap
+>   relative to S3") — but writing the Observer-wiring test proved this
+>   would make the standard `Client.Exists`→`WriteOptions.IfMatch`
+>   conditional-write workflow UNCONDITIONALLY fail for every SMB-backed
+>   resource (there would be no non-empty ETag to ever supply). Fixed:
+>   `Stat`/`ListDir` now return a WEAK (ModTime+Size-derived)
+>   approximation, exactly like `adapters/file` already does — SMB has
+>   no server-computed hash, but neither does the filesystem backend,
+>   and `WriteBytesIfMatch` already accepts a weak-ETag match for
+>   precisely this reason.
+> - **`WriteBytes`'s `CreateDirs` was designed as a no-op** ("go-smb2/v2
+>   doesn't auto-create missing parents, this adapter doesn't emulate
+>   that") — but this silently broke the `api/file/filetest`
+>   conformance suite's own canonical scenarios (which rely on a
+>   Backend being able to create a resource under a fresh, multi-level
+>   path). Fixed: `CreateDirs` now uses `Share.MkdirAll` (a NATIVE
+>   recursive-creation call this library already exposes), consistent
+>   with `Mkdir`'s own already-designed behavior — not the "no-op, call
+>   Mkdir yourself first" escape hatch the design originally proposed.
+>
+> One further, known, DISCLOSED limitation (not a bug in this package):
+> the mandatory runnable example's in-process
+> `github.com/sonroyaalmerol/go-smb-server` dependency hits a confirmed
+> SMB2 message-signing interop gap against `go-smb2/v2` — Negotiate/
+> SessionSetup/TreeConnect succeed, but the first real file operation
+> fails signature verification. Confirmed, via that server's OWN
+> integration test suite, to be because it has only ever been validated
+> against the OLDER, differently-shaped `go-smb2` v1.1.0 client API —
+> never against v2. The example dials/mounts successfully, then
+> gracefully skips the rest with a clear, disclosed message (still
+> exits 0) rather than hiding or faking success; `adapters/smb`'s own
+> correctness is proven independently and exhaustively regardless (33
+> unit tests against a hand-written `shareOps`/`fileOps` fake, plus the
+> full 9-scenario `api/file/filetest` conformance suite — all passing).
 
 #### Research grounding this design
 

@@ -3,19 +3,21 @@
 > **Status:** Phase 1 implemented with full Router + Declarative Middleware
 > parity (matches `api/rest`/`api/events`), including the migration of
 > `ports.File`/`ports.Dir` to delegate onto this stack internally (their own
-> public call signatures are unchanged). Phase 2 is well underway: Recursive
-> `WithList`, Conditional writes, Streaming/chunked I/O, and `adapters/s3`
-> are all implemented; `adapters/smb` remains outline-only — see
-> `docs/roadmap/file-api.md`.
+> public call signatures are unchanged). Phase 2's first four items are
+> implemented: Recursive `WithList`, Conditional writes, Streaming/chunked
+> I/O, `adapters/s3`, and `adapters/smb` (a THIRD real Backend, for SMB2/3
+> shares) — see `docs/roadmap/file-api.md`.
 
 `api/file` is a transport-agnostic API layer for file-shaped resources,
 mirroring `api/rest`/`api/events`/`api/reqreply`'s declare → attach → dispatch
 model. A declared `Resource[T]` describes WHAT a file looks like (its path
 template, codec, and path parameters); a `Client` with an attached `Backend`
 describes WHERE it actually lives — the local filesystem
-(`adapters/file.NewBackend()`) or S3/any S3-compatible store
-(`adapters/s3.NewBackend(...)`) today; SMB is a future backend — see
-`docs/roadmap/file-api.md`'s Phase 2 section.
+(`adapters/file.NewBackend()`), S3/any S3-compatible store
+(`adapters/s3.NewBackend(...)`), or an SMB2/3 share
+(`adapters/smb.NewBackend(...)`) — the SAME declared `Resource[T]` works
+UNCHANGED against any of them; see `docs/roadmap/file-api.md`'s Phase 2
+section for each Backend's own capability notes.
 
 ## Declaring a resource
 

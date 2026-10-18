@@ -218,6 +218,20 @@ go-codex/
 │   │   ├── stream.go       # StreamWriteBackend (io.Pipe-to-buffered-PutObject bridge),
 │   │   │                   #   StreamReadBackend, RangeReadingBackend
 │   │   └── walk.go         # WalkingBackend, DirDeletingBackend, BatchDeletingBackend
+│   ├── smb/                # api/file.Backend for SMB2/3 shares (hirochachacha/go-smb2/v2,
+│   │                       #   pinned to an untagged commit — no v2.x.y release exists yet)
+│   │   ├── doc.go          # package overview — Backend interface mapping, untagged-dependency disclosure
+│   │   ├── errors.go       # SMBError (narrowed scope, mirrors S3Error)
+│   │   ├── backend.go      # narrow shareOps/fileOps interfaces, shareAdapter, Backend, NewBackend
+│   │   │                   #   (accepts *smb2.Share directly), BackendOpt, core methods +
+│   │   │                   #   CopyingBackend/MovingBackend (SMB2's native Rename — the FIRST
+│   │   │                   #   Phase 1/2 Backend to implement it)/MetadataBackend (JSON sidecar)
+│   │   ├── conditional_write.go # ConditionalWriteBackend/NativeConditionalWriteBackend —
+│   │   │                   #   lock-file mechanism (native=false) + strong/weak ETag compare
+│   │   ├── stream.go       # StreamWriteBackend (temp-file + native Rename commit, no io.Pipe
+│   │   │                   #   bridge needed), StreamReadBackend, RangeReadingBackend (native=true)
+│   │   └── walk.go         # WalkingBackend (fs.WalkDir bridge), DirDeletingBackend
+│   │                       #   (BatchDeletingBackend NOT implemented — no native SMB2 batch-delete)
 │   ├── sql/                # SQL adapter — goose migrations + codec-level row validation
 │   │   ├── doc.go          # package overview
 │   │   ├── validate.go     # Validate[T], ValidateOptions
