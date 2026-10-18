@@ -2056,6 +2056,27 @@ against a different backend") concretely.
   fake server for the mandatory runnable example specifically (unit
   tests still use a hand-written fake of the narrow interface below,
   never this server).
+- **`go-smb2/v2` has NEVER had a tagged release — a disclosed
+  dependency-risk finding from a final pre-implementation review round,
+  verified directly against the repo's real git tags (only `v1.0.x`/
+  `v1.1.0` exist, nothing at `v2.x.y`).** The ctx-first/`WithContext`
+  API this design depends on exists ONLY on the untagged `master`
+  branch — confirmed accurate byte-for-byte against the actual source
+  at the time of this review (every `Share`/`File` method signature and
+  the `WithContext` return-interface shapes cited throughout this
+  section were fetched and diffed directly, not assumed from
+  documentation), but there is no semver tag to pin to the way
+  `aws-sdk-go-v2` provides for `adapters/s3`. Consequences, decided and
+  accepted (not a reason to reconsider v1.1.0): **implementation MUST
+  pin `go.mod`'s require line to an exact commit SHA (a Go
+  pseudo-version), re-verified/re-confirmed AT implementation time**
+  (never reusing a SHA recorded during a design/review round, since
+  `master` may have moved by then) — the repo's own active feature
+  branches (`feat/dirfs`, `feat/glob`) alongside `master`, plus an
+  `AGENTS.md` at its root, are cited as concrete, observed evidence of
+  ongoing, in-flux development (a real signal the API could still shift
+  without any release-notes/semver signal at all), not a hypothetical
+  concern.
 
 #### Decisions resolved via `ask_user`
 
