@@ -353,3 +353,171 @@ func TestDirObserver_RecordFileList_And_RecordFileDelete_Called(t *testing.T) {
 		t.Fatalf("expected RecordFileDelete to be called")
 	}
 }
+
+// ── Review-round additions: ListDirBoundMW, Route+Register workflow,
+// List's own ErrorPattern coverage, glob-discovery ────────────────────
+
+func TestListDirBoundMiddleware_SecurityGate_RejectsBeforeBackendCall(t *testing.T) {
+	client, dir := newDirClient(t)
+	writeFile(t, filepath.Join(dir, "a.txt"), "x")
+
+	type grantedOut struct {
+		GrantedScopes map[string][]string
+	}
+	bm := file.BoundSecurityListDirMiddleware[struct{}, grantedOut](
+		"apiKey", file.SecurityScheme{}, []string{"list"},
+		func(ctx context.Context, in struct{}) (grantedOut, error) {
+			return grantedOut{GrantedScopes: nil}, nil // never grants "list"
+		},
+	)
+
+	d := file.NewDir(dir)
+	lister := d.WithList(file.ListDir{}).ListDirBoundMW(bm).WithSecurity(file.SecurityRequirement{"apiKey": {"list"}})
+	_, err := client.ListDir(context.Background(), lister, nil)
+	var secErr file.SecurityRejectedError
+	if !errors.As(err, &secErr) {
+		t.Fatalf("want SecurityRejectedError, got %v (%T)", err, err)
+	}
+}
+
+// TestDirRouter_RouteAndRegister_RunsFailFastCoverageCheck mirrors
+// TestRouter_Register_RunsFailFastCoverageCheck's own established scope
+// for the "Route+Register" workflow: Register's own RegisterAny builds
+// and discards an internally-prefixed Handle purely to prove capability
+// coverage — it does NOT hand the caller back a prefixed, dispatchable
+// value (that's what the "build-the-Handle-directly" WithRouter workflow
+// is for, exercised separately by TestDirRouter_GroupedDir_
+// ComposesPrefixOncePerHandle/TestDirListCore_GlobDiscovery_
+// RouterGrouped_ComposesPrefix). This proves BOTH ListDirer and
+// DeleteDirer correctly implement router.Routable[*Client] end to end
+// (WithRouterPrefix + RegisterAny), not just that they compile against
+// the interface.
+func TestDirRouter_RouteAndRegister_RunsFailFastCoverageCheck(t *testing.T) {
+	client, dir := newDirClient(t)
+	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	rt := file.NewRouter(dir)
+	d := file.NewDir("sub")
+	rt = rt.Route(d.WithList(file.ListDir{})).Route(d.WithDelete(file.DeleteDir{}))
+	if err := rt.Register(client); err != nil {
+		t.Fatalf("Register: unexpected error for Dir roles with no declared requirements: %v", err)
+	}
+}
+
+func TestListDirErrorPattern_AutoInvoked_OnBackendError(t *testing.T) {
+	client, dir := newDirClient(t)
+	missing := filepath.Join(dir, "newdir")
+
+	type MappedErr struct{ Msg string }
+	patterns := file.Append(file.ErrorPatterns[MappedErr](nil), file.NewMappedErrorPattern(
+		func(e file.DirAlreadyExistsError) (MappedErr, error) {
+			return MappedErr{Msg: "already exists: " + e.Path}, nil
+		},
+	))
+
+	if err := os.MkdirAll(missing, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	d := file.NewDir(missing)
+	lister := d.WithList(file.ListDir{}).ErrorPatterns(patterns)
+	_, err := client.ListDir(context.Background(), lister, nil, file.DirOptions{CreateIfMissing: true, Strict: true})
+	if err == nil {
+		t.Fatalf("expected an error (dir already exists, Strict set)")
+	}
+	var matched file.ErrorPatternMatchedError
+	if !errors.As(err, &matched) {
+		t.Fatalf("expected ErrorPatternMatchedError, got %v (%T)", err, err)
+	}
+	mapped, ok := matched.Payload.(MappedErr)
+	if !ok {
+		t.Fatalf("expected Payload to be MappedErr, got %T", matched.Payload)
+	}
+	if mapped.Msg == "" {
+		t.Fatalf("expected a populated Msg")
+	}
+}
+
+func TestDirListCore_GlobDiscovery_AggregatesMultipleDirs(t *testing.T) {
+	client, root := newDirClient(t)
+	for _, name := range []string{"app-1", "app-2", "other"} {
+		if err := os.MkdirAll(filepath.Join(root, "logs", name, "errors"), 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+	}
+	writeFile(t, filepath.Join(root, "logs", "app-1", "errors", "a.log"), "x")
+	writeFile(t, filepath.Join(root, "logs", "app-2", "errors", "b.log"), "x")
+	writeFile(t, filepath.Join(root, "logs", "other", "errors", "c.log"), "x")
+
+	tmpl := filepath.Join(root, "logs", "app-*", "errors")
+	d := file.NewDir(tmpl)
+	lister := d.WithList(file.ListDir{})
+	entries, err := client.ListDir(context.Background(), lister, nil)
+	if err != nil {
+		t.Fatalf("ListDir: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries (app-1, app-2 only, not 'other'), got %d: %+v", len(entries), entries)
+	}
+}
+
+func TestDirListCore_GlobDiscovery_PrunesNonGlobstarTemplates(t *testing.T) {
+	client, root := newDirClient(t)
+	// A fixed-depth (no "**") template must not descend past its own
+	// declared segment count — a deeper, unrelated subtree must not be
+	// walked at all (proven indirectly: if pruning failed, a huge or
+	// permission-denied subtree below the match could still break the
+	// walk; here we just prove the shallow match succeeds cleanly and
+	// a too-deep sibling is excluded).
+	if err := os.MkdirAll(filepath.Join(root, "logs", "app-1", "errors", "toodeep"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	writeFile(t, filepath.Join(root, "logs", "app-1", "errors", "a.log"), "x")
+	writeFile(t, filepath.Join(root, "logs", "app-1", "errors", "toodeep", "nested.log"), "x")
+
+	tmpl := filepath.Join(root, "logs", "app-*", "errors")
+	d := file.NewDir(tmpl)
+	lister := d.WithList(file.ListDir{})
+	entries, err := client.ListDir(context.Background(), lister, nil)
+	if err != nil {
+		t.Fatalf("ListDir: %v", err)
+	}
+	// Single-level (non-Recursive) listing of the matched "errors" dir:
+	// a.log plus the "toodeep" directory entry itself, not its content.
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries (a.log + toodeep dir, not nested.log), got %d: %+v", len(entries), entries)
+	}
+}
+
+func TestDirListCore_GlobDiscovery_RouterGrouped_ComposesPrefix(t *testing.T) {
+	client, root := newDirClient(t)
+	for _, name := range []string{"app-1", "app-2"} {
+		if err := os.MkdirAll(filepath.Join(root, "tenant", "logs", name, "errors"), 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		writeFile(t, filepath.Join(root, "tenant", "logs", name, "errors", "a.log"), "x")
+	}
+
+	// The glob-enabled template is declared WITHOUT the "tenant" prefix
+	// — composed in ONLY via the Router, through the WithRouter
+	// HandleOpt ("build-the-Handle-directly") workflow specifically,
+	// proving the Finding-B fix: glob-discovery now resolves the
+	// Router's prefix before computing its own walk root/matching,
+	// instead of silently ignoring it.
+	rt := file.NewRouter(filepath.Join(root, "tenant"))
+	tmpl := filepath.Join("logs", "app-*", "errors")
+	d := file.NewDir(tmpl)
+	lister := d.WithList(file.ListDir{})
+	handle, err := lister.Handle(client, file.WithRouter(rt))
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	entries, err := client.ListDir(context.Background(), handle, nil)
+	if err != nil {
+		t.Fatalf("ListDir via grouped glob-discovery handle: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries (app-1, app-2 under the Router-prefixed tenant dir), got %d: %+v", len(entries), entries)
+	}
+}

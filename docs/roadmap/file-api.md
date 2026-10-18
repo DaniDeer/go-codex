@@ -3683,16 +3683,20 @@ type DirEntry struct {
 
 // DirOpt is the sealed option interface for NewDir — file.PathParam
 // implements this (a 2nd method alongside its existing ResourceOpt
-// satisfaction), as do WithEntryPattern/WithRecursive/WithBaseDir's own
-// return values.
+// satisfaction), as do WithEntryPattern/WithRecursive's own return
+// values. NOTE (post-implementation review round): the originally
+// sketched WithBaseDir option was REMOVED before shipping — see the
+// "Review round — Router/Middleware/Observer/ErrorPattern integration"
+// subsection below for why (the Router's own prefix composition
+// already serves that anchoring purpose, with no second,
+// independently-configured mechanism to keep in sync).
 type DirOpt interface{ applyDir(*dirBuilder) }
 
 func WithEntryPattern(p EntryPattern) DirOpt
 func WithRecursive(recursive bool) DirOpt
-func WithBaseDir(path string) DirOpt
 
 // Dir is a PURE declaration — a directory path template + its own
-// path-param codecs + an optional EntryPattern/Recursive/BaseDir —
+// path-param codecs + an optional EntryPattern/Recursive —
 // mirrors Resource[T]'s own role EXACTLY (declare-once, no I/O, no
 // baked-in backend). ListDir/DeleteDir capability is derived via
 // WithList/WithDelete below, NOT methods on Dir itself — see the
@@ -3921,6 +3925,69 @@ alias (mirroring `ports.File`'s own error-aliasing precedent) EXCEPT
 | `TestDirErrorPattern_AutoInvoked_OnBackendError` | A declared `ErrorPattern` matches a Backend-level `DirReadError`/`DirDeleteError` |
 | `TestDirObserver_RecordFileList_And_RecordFileDelete_Called` | Reuses the existing 2 `FileObserver` methods, no new one |
 | `TestPortsDir_StillWorksViaDelegation_Unmodified` | The FULL existing `ports/dir_test.go` suite passes UNMODIFIED once Stage C's delegation lands (the hard regression gate) |
+
+### Review round — Router/Middleware/Observer/ErrorPattern integration (post-implementation)
+
+A dedicated adversarial review of the just-shipped `file.Dir` (Stage C,
+part 1) found 2 real bugs and several test-coverage gaps — both bugs
+have since been fixed and covered:
+
+- **`NativePOSIXMode` Capability precedence (fixed)**: `listDirCore`'s
+  `CreateIfMissing` branch originally resolved `wire` (for its
+  `AccessMode` check) but never applied `wire.NativePOSIXMode` to
+  override `mkOpts.NativePOSIXMode` — unlike `mkdirCore`'s own
+  established precedent. A declared `NativePOSIXMode` Capability on a
+  `ListDirer` was silently ignored for its own `CreateIfMissing` Mkdir
+  call. Fixed to mirror `mkdirCore`'s exact pattern (Capability always
+  wins over the per-call option).
+- **Router-group prefix ignored for glob-discovery `ListDir` under the
+  `WithRouter` HandleOpt workflow (fixed, `WithBaseDir` REMOVED)**:
+  `file.Router`/role values support 2 coexisting workflows — "build-
+  and-register" (`Router.Route`+`Router.Register`, which mutates the
+  role's own template directly via `WithRouterPrefix`) and "build-the-
+  Handle-directly" (`role.Handle(client, file.WithRouter(rt))`, which
+  stores the prefix on `routingInfo`, applied LATER at dispatch time).
+  The non-glob `ListDir`/`DeleteDir` path correctly resolves
+  `routingInfo`'s prefix via `buildPathWithRouting` in BOTH workflows —
+  but the glob-discovery branch originally read `dir.template`/
+  `dir.baseDir` directly, NEVER consulting `routingInfo` at all, so a
+  glob-enabled `ListDirer` built via the "build-the-Handle-directly"
+  workflow silently ignored the Router group's prefix entirely (no
+  error, no warning). Root cause: `WithBaseDir`'s relationship to
+  Router-group composition was never designed (`ports.Dir`, the
+  precedent this was ported from, has no Router concept at all).
+  **Resolved by removing `WithBaseDir`/`Dir.baseDir` entirely** — the
+  Router's own prefix composition already serves the same anchoring
+  purpose, with no second, independently-configured mechanism to keep
+  in sync. `listDirCore`'s glob branch now resolves
+  `routing.resolvedTemplate(dir.template)` ONCE, upfront, into a
+  `routedDir` value used for every subsequent glob-discovery
+  computation (walk root, matching) — making both Router workflows
+  behave identically. Glob-discovery's own relative-path computation
+  (previously relative to `baseDir`) now branches on whether the
+  (already Router-resolved) template is absolute (match against the
+  concrete path directly — the correct behavior for an absolute,
+  e.g. test-tempdir-rooted, template) or relative (match relative to
+  `"."`, the unconditional default `baseDir` always implied).
+- **Test-coverage gaps (filled)**: `ListDirBoundMW`/
+  `BoundListDirMiddleware` had zero test coverage (only `DeleteDirBoundMW`
+  was exercised); the `Router.Route`+`Router.Register` workflow had zero
+  coverage for Dir roles; `ListDir`'s own `ErrorPattern`
+  auto-invocation had zero coverage (only `DeleteDir`'s was tested);
+  and — most consequentially — **glob-discovery mode itself had zero
+  test coverage in the new `file.Dir` implementation**, which is
+  precisely why the Router-prefix bug above shipped unnoticed. All 4
+  gaps are now covered (6 new tests), including a dedicated
+  Router-grouped glob-discovery regression test proving the fix.
+
+New unit test plan rows (added during this review round):
+
+| Test | Verifies |
+|---|---|
+| `TestListDirBoundMiddleware_SecurityGate_RejectsBeforeBackendCall` | `ListDirBoundMW`'s unmet Security requirement rejects before any Backend call |
+| `TestDirRouter_RouteAndRegister_RunsFailFastCoverageCheck` | The "build-and-register" Router workflow's fail-fast coverage check works for both `ListDirer`/`DeleteDirer` |
+| `TestListDirErrorPattern_AutoInvoked_OnBackendError` | A declared `ErrorPattern` matches a Backend-level error on `ListDir` (not just `DeleteDir`) |
+| `TestDirListCore_GlobDiscovery_RouterGrouped_ComposesPrefix` | A glob-enabled `ListDirer`, Router-grouped via the `WithRouter` HandleOpt workflow, correctly resolves the Router's prefix (the regression proof for the fixed bug) |
 
 ## Phase 3 — adapt examples to the new `api/file` approach
 

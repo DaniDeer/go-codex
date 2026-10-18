@@ -81,20 +81,18 @@ type Dir struct {
 	params    []PathParam
 	entry     EntryPattern
 	recursive bool
-	baseDir   string
 }
 
 type dirBuilder struct {
 	resourceOpts []ResourceOpt
 	entry        EntryPattern
 	recursive    bool
-	baseDir      string
 }
 
 // DirOpt is the sealed option interface for [NewDir] — [PathParam]
 // implements this (a 2nd method alongside its existing [ResourceOpt]
-// satisfaction), as do [WithEntryPattern]/[WithRecursive]/[WithBaseDir]'s
-// own return values.
+// satisfaction), as does [WithEntryPattern]/[WithRecursive]'s own
+// return value.
 type DirOpt interface{ applyDir(*dirBuilder) }
 
 func (p PathParam) applyDir(db *dirBuilder) { db.resourceOpts = append(db.resourceOpts, p) }
@@ -115,15 +113,6 @@ func (o recursiveDirOpt) applyDir(db *dirBuilder) { db.recursive = o.recursive }
 // subdirectories (like "ls -R"/"find") instead of listing only the
 // immediate directory (the default, like plain "ls").
 func WithRecursive(recursive bool) DirOpt { return recursiveDirOpt{recursive: recursive} }
-
-type baseDirOpt struct{ path string }
-
-func (o baseDirOpt) applyDir(db *dirBuilder) { db.baseDir = o.path }
-
-// WithBaseDir sets the filesystem root [Client.ListDir]'s glob-discovery
-// mode (triggered by a glob-enabled template) walks from. Defaults to
-// "." when unset. Has no effect on a non-glob template.
-func WithBaseDir(path string) DirOpt { return baseDirOpt{path: path} }
 
 // NewDir creates a [Dir] descriptor from a path template and optional
 // [DirOpt] values. Infallible — only captures the spec; validation runs
@@ -151,7 +140,7 @@ func NewDir(template string, opts ...DirOpt) Dir {
 			panic(fmt.Sprintf("api/file: NewDir: PathParam and EntryParam share the name %q — rename one to avoid an ambiguous merged Vars map", p.Name))
 		}
 	}
-	return Dir{template: r.template, params: r.params, entry: db.entry, recursive: db.recursive, baseDir: db.baseDir}
+	return Dir{template: r.template, params: r.params, entry: db.entry, recursive: db.recursive}
 }
 
 // resource builds the Resource[dirT] roleCore's path-templating machinery
@@ -487,15 +476,29 @@ func listDirCore(ctx context.Context, backend Backend, core roleCore[dirT], dir 
 	defer func() { err = applyErrorPattern(core, err) }()
 	obs := obsFromCtx(ctx)
 
-	if templatematch.IsGlobEnabled(dir.template) {
-		walkRoot := dirGlobWalkRoot(dir)
+	// routedDir resolves routing's prefix (if any) into the template
+	// ONCE, upfront — the SAME resolvedTemplate mechanism the non-glob
+	// path below already uses via buildPathWithRouting. This is what
+	// makes Router-group composition behave IDENTICALLY across both
+	// coexisting Router workflows: the "Route+Register" workflow
+	// already mutates dir.template directly (routing is the zero value
+	// here, so resolvedTemplate is a no-op); the "build-the-Handle-
+	// directly" workflow stores the prefix on routing instead, and
+	// THIS is the one place glob-discovery mode consults it (a
+	// previously-missing step — see docs/roadmap/file-api.md's
+	// "file.Dir" section's Router-integration gap-review note).
+	routedDir := dir
+	routedDir.template = routing.resolvedTemplate(dir.template)
+
+	if templatematch.IsGlobEnabled(routedDir.template) {
+		walkRoot := dirGlobWalkRoot(routedDir)
 		if _, err := runBoundMiddleware(ctx, walkRoot, core, nil, nil); err != nil {
 			return nil, err
 		}
 		ctx, endSpan := startSpan(ctx, obs, "file.listdir", walkRoot)
 		defer func() { endSpan(err) }()
 		start := time.Now()
-		out, gerr := listDirGlobDiscovery(ctx, backend, dir, vars)
+		out, gerr := listDirGlobDiscovery(ctx, backend, routedDir, vars)
 		if gerr != nil {
 			recordList(obs, walkRoot, false, len(out), time.Since(start))
 			return nil, gerr
@@ -531,6 +534,14 @@ func listDirCore(ctx context.Context, backend Backend, core roleCore[dirT], dir 
 		if opts.CreatePerm != 0 {
 			perm := opts.CreatePerm
 			mkOpts.NativePOSIXMode = &perm
+		}
+		// An attach-time NativePOSIXMode Capability always wins over
+		// the per-call CreatePerm option — mirrors mkdirCore's
+		// identical precedence rule exactly (Capability overrides
+		// per-call option, per docs/roadmap/file-api.md's established
+		// convention).
+		if wire.NativePOSIXMode != nil {
+			mkOpts.NativePOSIXMode = wire.NativePOSIXMode
 		}
 		if opts.Strict {
 			if _, statErr := backend.Stat(ctx, path); statErr == nil {
@@ -665,27 +676,28 @@ func listDirRecursiveManual(ctx context.Context, backend Backend, dir Dir, root 
 }
 
 // dirGlobWalkRoot computes the glob-discovery walk's anchor directory —
-// [WithBaseDir] (default ".") joined with the template's literal prefix
+// the current working directory (".") joined with dir's own (already
+// Router-prefix-resolved, see listDirCore) template's literal prefix
 // (see [internal/templatematch.LiteralPrefix]) — factored out so
 // listDirCore can use the SAME value for Observer/span/BoundMiddleware
 // logging before listDirGlobDiscovery's own walk even starts.
+//
+// There is deliberately no separate, independently-configured base-
+// directory concept (an earlier draft had a WithBaseDir option; it was
+// removed — the Router's own prefix composition already serves that
+// anchoring purpose, with no second mechanism to keep in sync).
 func dirGlobWalkRoot(dir Dir) string {
-	baseDir := dir.baseDir
-	if baseDir == "" {
-		baseDir = "."
-	}
 	prefix := templatematch.LiteralPrefix(dir.template)
-	return joinPath(baseDir, prefix)
+	if prefix == "" {
+		return "."
+	}
+	return prefix
 }
 
 func listDirGlobDiscovery(ctx context.Context, backend Backend, dir Dir, vars map[string]string) ([]DirEntry, error) {
 	wb, ok := backend.(WalkingBackend)
 	if !ok {
 		return nil, BackendUnsupportedOptionError{Backend: backend.BackendName(), Option: "WalkingBackend (glob-discovery ListDir)"}
-	}
-	baseDir := dir.baseDir
-	if baseDir == "" {
-		baseDir = "."
 	}
 	walkRoot := dirGlobWalkRoot(dir)
 
@@ -706,9 +718,20 @@ func listDirGlobDiscovery(ctx context.Context, backend Backend, dir Dir, vars ma
 		if !e.IsDir {
 			return nil
 		}
-		rel, relErr := filepath.Rel(baseDir, p)
-		if relErr != nil {
-			return relErr
+		// rel is computed relative to "." for a RELATIVE template (the
+		// default, cwd-anchored case) — but filepath.Rel requires both
+		// arguments to share the same absoluteness, so an ABSOLUTE
+		// template (e.g. a t.TempDir()-rooted test path) instead
+		// matches against p itself, unmodified: dir.template's own
+		// leading segments are already absolute, so no relativization
+		// is needed or valid.
+		rel := p
+		if !filepath.IsAbs(dir.template) {
+			r, relErr := filepath.Rel(".", p)
+			if relErr != nil {
+				return relErr
+			}
+			rel = r
 		}
 		rel = filepath.ToSlash(rel)
 		if rel == "." {
