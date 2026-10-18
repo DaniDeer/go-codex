@@ -4,10 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
-	"path/filepath"
-	"strings"
 	"time"
 
 	apifile "github.com/DaniDeer/go-codex/api/file"
@@ -139,21 +136,16 @@ func (t DirPathTemplate) MatchPath(path string) (map[string]string, error) {
 // EntryKind distinguishes a listed [DirEntry]'s kind — a file or a
 // directory. Phase 1 makes no further distinction (symlinks, sockets,
 // devices are all reported as EntryFile, matching [os.DirEntry.IsDir]'s
-// own binary distinction).
-type EntryKind int
+// own binary distinction). Aliased to [apifile.EntryKind] (Stage C2's
+// ports.Dir-delegates-to-api/file.Dir migration) — field-for-field,
+// const-for-const identical; apifile.EntryKind already carries the
+// SAME String() method this type used to define locally.
+type EntryKind = apifile.EntryKind
 
 const (
-	EntryFile EntryKind = iota
-	EntryDir
+	EntryFile = apifile.EntryFile
+	EntryDir  = apifile.EntryDir
 )
-
-// String implements [fmt.Stringer].
-func (k EntryKind) String() string {
-	if k == EntryDir {
-		return "dir"
-	}
-	return "file"
-}
 
 // EntryParam describes a {varName} placeholder in an [EntryPattern]'s
 // template — exact mirror of [DirPathParam], scoped to one entry's
@@ -183,26 +175,15 @@ type EntryParam = codex.Param
 // extract + validate each entry's variables, and SILENTLY EXCLUDES any
 // entry whose RelPath does not match the template's shape at all —
 // EntryPattern acts as both a filter AND a parser (e.g. a stray ".gitkeep"
-// alongside "{useCase}.json" files never appears in the result).
-type EntryPattern struct {
-	Template string
-	Params   []EntryParam
-}
+// alongside "{useCase}.json" files never appears in the result). Aliased
+// to [apifile.EntryPattern] (Stage C2) — field-for-field identical.
+type EntryPattern = apifile.EntryPattern
 
 // DirEntry is one listed filesystem entry. When [Dir]'s EntryPattern is
 // set, every DirEntry in a [Dir.List] result has ALREADY matched it —
-// non-matching entries are excluded, never returned.
-type DirEntry struct {
-	// Name is the leaf filename, e.g. "temp-sensor.json".
-	Name string
-	// RelPath is the entry's path relative to the listed directory —
-	// equal to Name unless the Dir is Recursive.
-	RelPath string
-	Kind    EntryKind
-	// Vars holds the variables extracted by EntryPattern, keyed by
-	// EntryParam.Name. Nil when the Dir has no EntryPattern set.
-	Vars map[string]string
-}
+// non-matching entries are excluded, never returned. Aliased to
+// [apifile.DirEntry] (Stage C2) — field-for-field identical.
+type DirEntry = apifile.DirEntry
 
 // ── Dir ───────────────────────────────────────────────────────────────────────
 
@@ -268,21 +249,23 @@ type baseDirOpt struct{ path string }
 
 func (o baseDirOpt) applyDir(db *dirBuilder) { db.baseDir = o.path }
 
-// WithBaseDir sets the filesystem root [Dir.List]'s glob-discovery mode
-// (see [IsGlobEnabled] via the template) walks from, prepended (via
-// [path/filepath.Join]) to the template's own literal prefix (the leading
-// run of segments containing no "{varName}" placeholder or glob
-// metacharacter — see [internal/templatematch.LiteralPrefix]). Defaults
-// to "." (the current working directory) when unset — this keeps
-// existing literal-prefixed templates' behavior completely unchanged
-// (filepath.Join(".", "configs") == "configs"), and gives a
-// wildcard-first template (e.g. "*/errors", "**/secret.json") an
-// explicit, safe anchor instead of an implicit, unbounded scan from cwd.
+// WithBaseDir sets the filesystem root [Dir.List]/[Dir.Delete] anchor
+// to — applied via [apifile.Router]'s own prefix-composition mechanism
+// (Stage C2 of the file-api roadmap's ports.Dir migration: the SAME
+// mechanism [apifile.Dir]'s own glob-discovery mode relies on
+// internally, reused here rather than a separate, ports-local
+// path-joining step). Defaults to "" (a complete no-op prefix,
+// equivalent to "." — the current working directory) when unset — this
+// keeps every existing non-WithBaseDir caller's behavior completely
+// unchanged.
 //
-// Only meaningful for glob-enabled [Dir] templates in [Dir.List]'s
-// glob-discovery mode — has no effect on a non-glob template, or on
-// [Dir.BuildPath]/[Dir.MatchPath] (which already resolve relative to cwd
-// exactly as today).
+// Anchors BOTH glob-enabled [Dir.List] glob-discovery mode AND
+// non-glob [Dir.List]/[Dir.Delete] calls (a disclosed, non-breaking
+// widening versus this option's original, glob-only scope — nothing
+// ever depended on the old restriction, since a non-glob Dir had no
+// reason to ever set [WithBaseDir] under the prior implementation). Has
+// no effect on [Dir.BuildPath]/[Dir.MatchPath] (pure, no-I/O functions
+// that never attach a Backend/Router at all).
 func WithBaseDir(path string) DirOpt { return baseDirOpt{path: path} }
 
 // NewDir creates a [Dir] descriptor from a path template and optional
@@ -457,24 +440,32 @@ type DirOptions struct {
 }
 
 // List builds the concrete directory path from vars (an empty resolved
-// path defaults to "."), reads its entries via [os.ReadDir] (or
-// [filepath.WalkDir] when the Dir is [WithRecursive]), and — if an
-// [EntryPattern] is declared — matches/validates each entry's RelPath via
-// the same core [File.MatchPath] uses, silently excluding non-matching
-// entries.
+// path defaults to "."), and lists its entries — delegating to the
+// attached filesystem [apifile.Backend] (via a fresh, internally-held
+// [apifile.Client]) for the actual I/O, EntryPattern matching, and
+// glob-discovery logic, all of which now live in [apifile.Dir]/
+// [apifile.ListDirer] (Stage C2 of the file-api roadmap's ports.Dir
+// migration — mirrors [File]'s own earlier delegation to [apifile.Client]
+// exactly). d's own [WithBaseDir] is applied via [apifile.Router]'s
+// prefix-composition mechanism (the SAME mechanism [apifile.Dir]'s own
+// glob-discovery mode relies on internally) rather than a separate,
+// ports-local path-joining step — an empty (default) baseDir composes a
+// complete no-op prefix, so every existing non-[WithBaseDir] caller's
+// behavior is unchanged; a non-empty baseDir now anchors BOTH glob and
+// non-glob List calls (previously a no-op for non-glob templates — a
+// disclosed, non-breaking widening, since nothing relied on the old
+// restriction).
 //
 // When d's OWN template is glob-enabled (see
 // [internal/templatematch.IsGlobEnabled]), List switches to
 // glob-discovery mode instead: it discovers EVERY directory matching the
-// glob template (via [filepath.WalkDir], anchored at [WithBaseDir]
-// joined with the template's literal prefix) and aggregates their
-// entries into one result. In this mode vars remains a filter for named
-// "{varName}" segments only (glob segments contribute no vars): a named
-// segment supplied in vars narrows discovery to that literal value; an
-// unsupplied named segment becomes a per-match capture instead of
-// triggering [MissingDirPathVarError]. Each returned [DirEntry]'s Vars
-// merges the directory-level captured vars with any [EntryPattern]-
-// captured vars. See [Dir.listGlobDiscovery] for the implementation.
+// glob template and aggregates their entries into one result. In this
+// mode vars remains a filter for named "{varName}" segments only (glob
+// segments contribute no vars): a named segment supplied in vars narrows
+// discovery to that literal value; an unsupplied named segment becomes a
+// per-match capture instead of triggering [MissingDirPathVarError]. Each
+// returned [DirEntry]'s Vars merges the directory-level captured vars
+// with any [EntryPattern]-captured vars.
 //
 // [DirOptions.CreateIfMissing]/[DirOptions.DryRun]/[DirOptions.Strict]
 // have NO EFFECT in glob-discovery mode — a glob-enabled template
@@ -485,7 +476,7 @@ type DirOptions struct {
 // Errors:
 //   - [DirPathParamError] / [MissingDirPathVarError] — directory path variable validation failure (no I/O; non-glob templates only)
 //   - [DirAlreadyExistsError] — CreateIfMissing and Strict are both set, and the directory already exists (non-glob templates only)
-//   - [DirReadError] — os.MkdirAll (when CreateIfMissing is set) or os.ReadDir/filepath.WalkDir failure
+//   - [DirReadError] — the attached Backend's own Mkdir/ListDir/WalkDir failure
 //   - [DirEntryParamError] — an entry's RelPath matched EntryPattern's template shape but failed a param's codec
 //   - [DirPathParamError] — (glob-discovery mode) a captured named var failed its registered codec
 func (d Dir) List(vars map[string]string, opts DirOptions) ([]DirEntry, error) {
@@ -496,277 +487,71 @@ func (d Dir) List(vars map[string]string, opts DirOptions) ([]DirEntry, error) {
 	if obs == nil {
 		obs = stats.NoopObserver{}
 	}
-
-	if templatematch.IsGlobEnabled(d.template) {
-		return d.listGlobDiscovery(vars, obs)
+	baseCtx := opts.Context
+	if baseCtx == nil {
+		baseCtx = context.Background()
 	}
+	// RecordFileList -> RecordFileRead: ports.Dir.List's own documented,
+	// tested contract reuses File.Read's Observer method (predates
+	// apifile.FileObserver.RecordFileList, which api/file.Client.ListDir
+	// calls internally) — see dirListObserverShim's own doc comment.
+	ctx := stats.WithObserver(baseCtx, dirListObserverShim{Observer: obs})
 
-	path, err := d.BuildPath(vars)
+	client := apifile.NewClient()
+	_ = client.Attach(osBackend{}) // a fresh Client never fails to Attach
+
+	lister := d.toFileDir().WithList(apifile.ListDir{})
+	rt := apifile.NewRouter(d.baseDir)
+	handle, err := lister.Handle(client, apifile.WithRouter(rt))
 	if err != nil {
-		return nil, err // DirPathParamError or MissingDirPathVarError — no I/O
-	}
-	if path == "" {
-		path = "."
-	}
-
-	ctx := context.Background()
-	backend := osBackend{}
-
-	start := time.Now()
-	if opts.CreateIfMissing {
-		perm := opts.CreatePerm
-		if perm == 0 {
-			perm = 0755
-		}
-		if opts.Strict {
-			if _, statErr := backend.Stat(ctx, path); statErr == nil {
-				recordFileRead(obs, path, false, time.Since(start))
-				return nil, DirAlreadyExistsError{Path: path}
-			} else if !os.IsNotExist(statErr) {
-				recordFileRead(obs, path, false, time.Since(start))
-				return nil, DirReadError{Path: path, Err: statErr}
-			}
-		}
-		if !opts.DryRun {
-			if _, err := backend.Mkdir(ctx, path, apifile.MkdirOptions{NativePOSIXMode: &perm}); err != nil {
-				recordFileRead(obs, path, false, time.Since(start))
-				return nil, DirReadError{Path: path, Err: err}
-			}
-		}
-	}
-
-	var entries []DirEntry
-	if d.recursive {
-		entries, err = d.listRecursive(backend, path)
-	} else {
-		entries, err = d.listSingleLevel(backend, path)
-	}
-	if err != nil {
-		recordFileRead(obs, path, false, time.Since(start))
 		return nil, err
 	}
-	recordFileRead(obs, path, true, time.Since(start))
+
+	perm := opts.CreatePerm
+	if perm == 0 {
+		perm = 0755
+	}
+	entries, err := client.ListDir(ctx, handle, vars, apifile.DirOptions{
+		CreateIfMissing: opts.CreateIfMissing,
+		CreatePerm:      perm,
+		DryRun:          opts.DryRun,
+		Strict:          opts.Strict,
+	})
+	if err != nil {
+		return nil, err
+	}
 	return entries, nil
 }
 
-// listSingleLevel delegates to [osBackend.ListDir] — the api/file
-// Backend's own single-level directory read — instead of calling
-// os.ReadDir inline.
-func (d Dir) listSingleLevel(backend osBackend, path string) ([]DirEntry, error) {
-	apiEntries, err := backend.ListDir(context.Background(), path)
-	if err != nil {
-		return nil, DirReadError{Path: path, Err: err}
-	}
-	var out []DirEntry
-	for _, e := range apiEntries {
-		kind := EntryFile
-		if e.IsDir {
-			kind = EntryDir
-		}
-		entryVars, included, merr := d.matchEntry(e.Name)
-		if merr != nil {
-			return nil, merr
-		}
-		if !included {
-			continue
-		}
-		out = append(out, DirEntry{Name: e.Name, RelPath: e.Name, Kind: kind, Vars: entryVars})
-	}
-	return out, nil
+// dirListObserverShim preserves [Dir.List]'s own pre-existing, tested
+// Observer contract (stats.FileObserver.RecordFileRead — the SAME method
+// [File.Read] uses) even though [apifile.Client.ListDir]'s own dispatch
+// core calls RecordFileList internally (a method that didn't exist yet
+// when Dir.List's own convention was established). Embeds
+// [stats.NoopObserver] so it satisfies [stats.FileObserver] in full,
+// overriding ONLY RecordFileList to forward to the wrapped Observer's
+// own RecordFileRead — every other method (including RecordFileDelete,
+// used unchanged by [Dir.Delete]) is simply never called by List's own
+// dispatch path, so no further forwarding is needed here.
+type dirListObserverShim struct {
+	stats.NoopObserver
+	Observer stats.Observer
 }
 
-// listRecursive delegates to [osBackend.WalkDir] (implementing
-// [apifile.WalkingBackend]) instead of calling filepath.WalkDir inline —
-// the matching/filtering logic below is UNCHANGED.
-func (d Dir) listRecursive(backend osBackend, root string) ([]DirEntry, error) {
-	var out []DirEntry
-	walkErr := backend.WalkDir(context.Background(), root, func(p string, e apifile.Entry, err error) error {
-		if err != nil {
-			return err
-		}
-		if p == root {
-			return nil // never list the root directory itself as an entry
-		}
-		rel, relErr := filepath.Rel(root, p)
-		if relErr != nil {
-			return relErr
-		}
-		rel = filepath.ToSlash(rel)
-		kind := EntryFile
-		if e.IsDir {
-			kind = EntryDir
-		}
-		entryVars, included, merr := d.matchEntry(rel)
-		if merr != nil {
-			return merr
-		}
-		if !included {
-			return nil
-		}
-		out = append(out, DirEntry{Name: e.Name, RelPath: rel, Kind: kind, Vars: entryVars})
-		return nil
-	})
-	if walkErr != nil {
-		if paramErr, ok := walkErr.(DirEntryParamError); ok {
-			return nil, paramErr
-		}
-		return nil, DirReadError{Path: root, Err: walkErr}
-	}
-	return out, nil
-}
-
-// dirGlobMismatch is an internal sentinel distinguishing "this candidate
-// directory does not match d's own glob-enabled template at all" (keep
-// walking, not an error) from a real error. Never leaves this file.
-type dirGlobMismatch struct{}
-
-func (dirGlobMismatch) Error() string { return "dir path does not match glob template" }
-
-// matchDirGlob tests a candidate directory's path (relative to the
-// glob-discovery walk's base directory) against d's own glob-enabled
-// template. vars acts as a filter for named "{varName}" segments: a
-// supplied name must match literally, or the candidate is excluded (not
-// an error — the walk continues into/past it). matched == false with a
-// nil error means "does not match, keep walking"; a non-nil error is a
-// real [DirPathParamError] (a captured named var failed its codec) to
-// propagate and abort the walk.
-func (d Dir) matchDirGlob(rel string, vars map[string]string) (captured map[string]string, matched bool, err error) {
-	captured, merr := templatematch.MatchGlob(d.template, rel, func(_, _ string) error {
-		return dirGlobMismatch{}
-	})
-	if merr != nil {
-		if _, ok := merr.(dirGlobMismatch); ok {
-			return nil, false, nil
-		}
-		return nil, false, merr
-	}
-	for name, want := range vars {
-		if got, ok := captured[name]; !ok || got != want {
-			return nil, false, nil
-		}
-	}
-	for i := range d.params {
-		p := &d.params[i]
-		if p.Codec == nil {
-			continue
-		}
-		value := captured[p.Name]
-		if cerr := p.Codec.Validate(value); cerr != nil {
-			return nil, false, DirPathParamError{Name: p.Name, Value: value, Err: cerr}
-		}
-	}
-	return captured, true, nil
-}
-
-// listGlobDiscovery implements [Dir.List]'s glob-discovery mode: it walks
-// from [WithBaseDir] (default ".") joined with the template's literal
-// prefix (see [internal/templatematch.LiteralPrefix]), testing every
-// visited directory against d's own glob-enabled template, and
-// aggregates the matching directories' entries into one result. Each
-// returned [DirEntry]'s Vars merges the directory-level captured vars
-// (from the matched template) with any [EntryPattern]-captured vars.
-//
-// A template with no "**" is pruned: once a candidate directory's depth
-// already equals the template's own segment count, [Dir.listGlobDiscovery]
-// does not descend further (that subtree cannot satisfy a fixed-length
-// template). A template containing "**" disables this pruning by design
-// — its zero-or-more-segments semantics means no fixed maximum depth
-// exists to prune against.
-func (d Dir) listGlobDiscovery(vars map[string]string, obs stats.Observer) ([]DirEntry, error) {
-	start := time.Now()
-	backend := osBackend{}
-
-	baseDir := d.baseDir
-	if baseDir == "" {
-		baseDir = "."
-	}
-	prefix := templatematch.LiteralPrefix(d.template)
-	walkRoot := filepath.Join(baseDir, prefix)
-
-	tmplSegs := strings.Split(d.template, "/")
-	hasGlobstar := false
-	for _, seg := range tmplSegs {
-		if seg == "**" {
-			hasGlobstar = true
-			break
-		}
-	}
-
-	var out []DirEntry
-	walkErr := backend.WalkDir(context.Background(), walkRoot, func(p string, e apifile.Entry, err error) error {
-		if err != nil {
-			return err
-		}
-		if !e.IsDir {
-			return nil // only directories are candidates for d's own template
-		}
-		rel, relErr := filepath.Rel(baseDir, p)
-		if relErr != nil {
-			return relErr
-		}
-		rel = filepath.ToSlash(rel)
-		if rel == "." {
-			rel = ""
-		}
-
-		var relSegLen int
-		if rel != "" {
-			relSegLen = len(strings.Split(rel, "/"))
-		}
-
-		dirVars, matched, merr := d.matchDirGlob(rel, vars)
-		if merr != nil {
-			return merr
-		}
-		if matched {
-			var entries []DirEntry
-			if d.recursive {
-				entries, err = d.listRecursive(backend, p)
-			} else {
-				entries, err = d.listSingleLevel(backend, p)
-			}
-			if err != nil {
-				return err
-			}
-			for i := range entries {
-				if len(dirVars) == 0 {
-					continue
-				}
-				merged := make(map[string]string, len(dirVars)+len(entries[i].Vars))
-				for k, v := range dirVars {
-					merged[k] = v
-				}
-				for k, v := range entries[i].Vars {
-					merged[k] = v
-				}
-				entries[i].Vars = merged
-			}
-			out = append(out, entries...)
-		}
-		if !hasGlobstar && relSegLen >= len(tmplSegs) {
-			return filepath.SkipDir
-		}
-		return nil
-	})
-	if walkErr != nil {
-		recordFileRead(obs, walkRoot, false, time.Since(start))
-		if paramErr, ok := walkErr.(DirPathParamError); ok {
-			return nil, paramErr
-		}
-		return nil, DirReadError{Path: walkRoot, Err: walkErr}
-	}
-	recordFileRead(obs, walkRoot, true, time.Since(start))
-	return out, nil
+func (s dirListObserverShim) RecordFileList(path string, success bool, count int, d time.Duration) {
+	recordFileRead(s.Observer, path, success, d)
 }
 
 // Delete removes the directory at the built path (and, if
-// [DirOptions.DeleteRecursive] is set, everything inside it). By
-// default, Delete is idempotent "ensure absent" semantics: a missing
-// directory is not an error (returns a nil, empty slice). Set
-// [DirOptions.Strict] to require the directory to have existed — a
-// missing directory then returns [DirNotFoundError] instead. A
-// non-empty directory is refused with [DirNotEmptyError] UNLESS
-// DeleteRecursive is true.
+// [DirOptions.DeleteRecursive] is set, everything inside it) —
+// delegating to the attached filesystem [apifile.Backend] (via a fresh,
+// internally-held [apifile.Client]) for the actual I/O, mirroring
+// [Dir.List]'s own Stage C2 delegation. By default, Delete is idempotent
+// "ensure absent" semantics: a missing directory is not an error
+// (returns a nil, empty slice). Set [DirOptions.Strict] to require the
+// directory to have existed — a missing directory then returns
+// [DirNotFoundError] instead. A non-empty directory is refused with
+// [DirNotEmptyError] UNLESS DeleteRecursive is true.
 //
 // deleted is the list of concrete paths removed — or, under
 // [DirOptions.DryRun], the list that WOULD have been removed, with
@@ -776,21 +561,16 @@ func (d Dir) listGlobDiscovery(vars map[string]string, obs stats.Observer) ([]Di
 //
 // Delete has no glob-discovery mode of its own — a glob-enabled template
 // (see [internal/templatematch.IsGlobEnabled]) is rejected outright with
-// [DirWildcardBuildError] (via Delete's internal [Dir.BuildPath] call):
-// deleting MULTIPLE directories matched by one template in a single call
-// is deliberately not supported; discover matches via [Dir.List]'s
-// glob-discovery mode first, then call Delete per discovered path.
+// [DirWildcardBuildError]: deleting MULTIPLE directories matched by one
+// template in a single call is deliberately not supported; discover
+// matches via [Dir.List]'s glob-discovery mode first, then call Delete
+// per discovered path.
 //
 // Errors:
 //   - [DirPathParamError] / [MissingDirPathVarError] / [DirWildcardBuildError] — directory path variable validation failure (no I/O)
 //   - [DirNotFoundError] — directory did not exist AND [DirOptions.Strict] is set
 //   - [DirNotEmptyError] — non-empty directory, DeleteRecursive not set
-//   - [DirDeleteError] — os.ReadDir/os.Remove/os.RemoveAll failure (e.g. permission denied)
-//
-// Delete delegates to [osBackend.DeleteDir] (implementing
-// [apifile.DirDeletingBackend]) instead of calling os.Stat/os.ReadDir/
-// os.Remove/os.RemoveAll inline — the not-found/Strict/error-translation
-// logic below is UNCHANGED, now just driven by DeleteDir's return value.
+//   - [DirDeleteError] — the attached Backend's own DeleteDir failure (e.g. permission denied)
 func (d Dir) Delete(vars map[string]string, opts DirOptions) (deleted []string, err error) {
 	obs := opts.Observer
 	if obs == nil && opts.Context != nil {
@@ -799,76 +579,48 @@ func (d Dir) Delete(vars map[string]string, opts DirOptions) (deleted []string, 
 	if obs == nil {
 		obs = stats.NoopObserver{}
 	}
-
-	path, buildErr := d.BuildPath(vars)
-	if buildErr != nil {
-		return nil, buildErr
+	baseCtx := opts.Context
+	if baseCtx == nil {
+		baseCtx = context.Background()
 	}
-	if path == "" {
-		path = "."
-	}
+	// RecordFileDelete matches on BOTH sides already (Dir.Delete's own
+	// pre-existing convention and apifile.Client.DeleteDir's own
+	// dispatch core both call RecordFileDelete) — no shim needed, unlike
+	// List above.
+	ctx := stats.WithObserver(baseCtx, obs)
 
-	start := time.Now()
-	backend := osBackend{}
+	client := apifile.NewClient()
+	_ = client.Attach(osBackend{}) // a fresh Client never fails to Attach
 
-	affected, delErr := backend.DeleteDir(context.Background(), path, opts.DeleteRecursive, opts.DryRun)
-	if delErr != nil {
-		if os.IsNotExist(delErr) {
-			if opts.Strict {
-				recordFileDelete(obs, path, false, time.Since(start))
-				return nil, DirNotFoundError{Path: path}
-			}
-			recordFileDelete(obs, path, true, time.Since(start))
-			return nil, nil
-		}
-		var notEmpty apifile.DirNotEmptyError
-		if errors.As(delErr, &notEmpty) {
-			recordFileDelete(obs, path, false, time.Since(start))
-			return nil, DirNotEmptyError{Path: path}
-		}
-		recordFileDelete(obs, path, false, time.Since(start))
-		return nil, DirDeleteError{Path: path, Err: delErr}
+	deleter := d.toFileDir().WithDelete(apifile.DeleteDir{})
+	rt := apifile.NewRouter(d.baseDir)
+	handle, err := deleter.Handle(client, apifile.WithRouter(rt))
+	if err != nil {
+		return nil, err
 	}
 
-	recordFileDelete(obs, path, true, time.Since(start))
-	return affected, nil
+	return client.DeleteDir(ctx, handle, vars, apifile.DirOptions{
+		DeleteRecursive: opts.DeleteRecursive,
+		DryRun:          opts.DryRun,
+		Strict:          opts.Strict,
+	})
 }
 
-// dirEntryMismatch is an internal sentinel distinguishing "this entry's
-// RelPath does not match EntryPattern's template shape at all" (silently
-// excluded) from a real error. Never leaves this file.
-type dirEntryMismatch struct{}
-
-func (dirEntryMismatch) Error() string { return "dir entry does not match pattern" }
-
-// matchEntry applies d's EntryPattern (if any) to relPath. included == true
-// means the entry belongs in the List result (with vars populated only if
-// an EntryPattern is set); included == false with a nil err means the
-// entry's RelPath didn't match the pattern's shape and should be silently
-// skipped; a non-nil err is a real [DirEntryParamError] to propagate.
-func (d Dir) matchEntry(relPath string) (vars map[string]string, included bool, err error) {
-	if d.entry.Template == "" {
-		return nil, true, nil
+// toFileDir converts d's own declared shape into an [apifile.Dir] value
+// — the Stage C2 migration target [Dir.List]/[Dir.Delete] now dispatch
+// through. d's own [baseDir] is deliberately NOT folded in here (it is
+// applied later, via [apifile.Router], at each call site above) —
+// toFileDir only carries the template/params/entry/recursive shape.
+func (d Dir) toFileDir() apifile.Dir {
+	opts := make([]apifile.DirOpt, 0, len(d.params)+2)
+	for _, p := range d.params {
+		opts = append(opts, apifile.PathParam{Name: p.Name, Description: p.Description, Codec: p.Codec})
 	}
-	v, merr := templatematch.MatchNonWildcard(d.entry.Template, relPath, func(_, _ string) error {
-		return dirEntryMismatch{}
-	})
-	if merr != nil {
-		if _, ok := merr.(dirEntryMismatch); ok {
-			return nil, false, nil
-		}
-		return nil, false, merr
+	if d.entry.Template != "" {
+		opts = append(opts, apifile.WithEntryPattern(d.entry))
 	}
-	for _, p := range d.entry.Params {
-		if p.Codec == nil {
-			continue
-		}
-		value := v[p.Name]
-		if cerr := p.Codec.Validate(value); cerr != nil {
-			return nil, false, DirEntryParamError{Entry: relPath, Name: p.Name, Value: value, Err: cerr}
-		}
-	}
-	return v, true, nil
+	opts = append(opts, apifile.WithRecursive(d.recursive))
+	return apifile.NewDir(d.template, opts...)
 }
 
 // ── Template engine (Dir's own path template — mirrors file.go's) ───────────
@@ -916,163 +668,52 @@ func matchDirTemplate(template, path string) (map[string]string, error) {
 }
 
 // ── Typed errors ──────────────────────────────────────────────────────────────
+//
+// All 10 Dir error types are aliased to their [apifile] counterparts
+// (Stage C2 of the file-api roadmap's ports.Dir migration) — mirrors
+// [ports/file.go]'s own already-shipped FileXxxError aliasing precedent
+// exactly. apifile's own message text was corrected to match THIS
+// package's pre-existing, already-tested text verbatim before aliasing
+// (ports' contract is the older, already-shipped one; api/file's Dir
+// error types were new this session and not yet depended on elsewhere
+// in a way that made changing their text risky).
 
 // DirPathParamError is returned by [Dir.BuildPath]/[Dir.MatchPath] when a
 // {varName} value fails its [DirPathParam.Codec] validation. Mirrors
 // [FilePathParamError] exactly.
-type DirPathParamError struct {
-	Name  string
-	Value string
-	Err   error
-}
-
-func (e DirPathParamError) Error() string {
-	return fmt.Sprintf("dir path variable {%s}: invalid value %q: %s", e.Name, e.Value, e.Err)
-}
-
-// Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
-func (e DirPathParamError) Unwrap() error { return e.Err }
-
-// LogValue implements [slog.LogValuer] for structured logging.
-func (e DirPathParamError) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("param", e.Name),
-		slog.String("value", e.Value),
-		slog.Any("cause", e.Err),
-	)
-}
+type DirPathParamError = apifile.DirPathParamError
 
 // MissingDirPathVarError is returned by [Dir.BuildPath] when a {varName}
 // placeholder has no corresponding entry in the vars map. Mirrors
 // [MissingFilePathVarError] exactly.
-type MissingDirPathVarError struct {
-	Name string
-}
-
-func (e MissingDirPathVarError) Error() string {
-	return fmt.Sprintf("missing value for dir path variable {%s}", e.Name)
-}
-
-// LogValue implements [slog.LogValuer] for structured logging.
-func (e MissingDirPathVarError) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("param", e.Name),
-	)
-}
+type MissingDirPathVarError = apifile.MissingDirPathVarError
 
 // DirPathMismatchError is returned by [Dir.MatchPath] when a concrete
 // directory path does not match the template's structure. Mirrors
 // [FilePathMismatchError] exactly.
-type DirPathMismatchError struct {
-	Template string
-	Path     string
-}
+type DirPathMismatchError = apifile.DirPathMismatchError
 
-func (e DirPathMismatchError) Error() string {
-	return fmt.Sprintf("dir path %q does not match template %q", e.Path, e.Template)
-}
-
-// LogValue implements [slog.LogValuer] for structured logging.
-func (e DirPathMismatchError) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("template", e.Template),
-		slog.String("path", e.Path),
-	)
-}
-
-// DirReadError is returned by [Dir.List] when [os.ReadDir]/
-// [filepath.WalkDir] fails. Mirrors [FileReadError].
-type DirReadError struct {
-	Path string
-	Err  error
-}
-
-func (e DirReadError) Error() string { return fmt.Sprintf("read dir %q: %s", e.Path, e.Err) }
-
-// Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
-func (e DirReadError) Unwrap() error { return e.Err }
-
-// LogValue implements [slog.LogValuer] for structured logging.
-func (e DirReadError) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("path", e.Path),
-		slog.Any("cause", e.Err),
-	)
-}
+// DirReadError is returned by [Dir.List] on a Backend-level ListDir/
+// WalkDir/Mkdir/Stat failure. Mirrors [FileReadError].
+type DirReadError = apifile.DirReadError
 
 // DirAlreadyExistsError is returned by [Dir.List] (with CreateIfMissing
 // set) when [DirOptions.Strict] is set and the directory already exists
 // — no creation is attempted.
-type DirAlreadyExistsError struct {
-	Path string
-}
+type DirAlreadyExistsError = apifile.DirAlreadyExistsError
 
-func (e DirAlreadyExistsError) Error() string {
-	return fmt.Sprintf("dir %q already exists (Strict)", e.Path)
-}
-
-// LogValue implements [slog.LogValuer] for structured logging.
-func (e DirAlreadyExistsError) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("path", e.Path),
-	)
-}
-
-// DirDeleteError is returned by [Dir.Delete] when os.ReadDir/os.Remove/
-// os.RemoveAll fails for a reason OTHER than "already absent" (e.g.
-// permission denied).
-type DirDeleteError struct {
-	Path string
-	Err  error
-}
-
-func (e DirDeleteError) Error() string { return fmt.Sprintf("delete dir %q: %s", e.Path, e.Err) }
-
-// Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
-func (e DirDeleteError) Unwrap() error { return e.Err }
-
-// LogValue implements [slog.LogValuer] for structured logging.
-func (e DirDeleteError) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("path", e.Path),
-		slog.Any("cause", e.Err),
-	)
-}
+// DirDeleteError is returned by [Dir.Delete] on a genuine Backend-level
+// deletion failure OTHER than "already absent" (e.g. permission denied).
+type DirDeleteError = apifile.DirDeleteError
 
 // DirNotFoundError is returned by [Dir.Delete] when [DirOptions.Strict]
 // is set and the directory did not exist — Delete's default is
 // idempotent "ensure absent" success; Strict opts out of that.
-type DirNotFoundError struct {
-	Path string
-}
-
-func (e DirNotFoundError) Error() string {
-	return fmt.Sprintf("dir %q does not exist (Strict)", e.Path)
-}
-
-// LogValue implements [slog.LogValuer] for structured logging.
-func (e DirNotFoundError) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("path", e.Path),
-	)
-}
+type DirNotFoundError = apifile.DirNotFoundError
 
 // DirNotEmptyError is returned by [Dir.Delete] when the directory
 // contains entries and [DirOptions.DeleteRecursive] is not set.
-type DirNotEmptyError struct {
-	Path string
-}
-
-func (e DirNotEmptyError) Error() string {
-	return fmt.Sprintf("dir %q is not empty (DeleteRecursive not set)", e.Path)
-}
-
-// LogValue implements [slog.LogValuer] for structured logging.
-func (e DirNotEmptyError) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("path", e.Path),
-	)
-}
+type DirNotEmptyError = apifile.DirNotEmptyError
 
 // DirEntryParamError is returned by [Dir.List] when an entry's RelPath
 // matches [EntryPattern.Template]'s shape but a param's codec fails.
@@ -1080,47 +721,12 @@ func (e DirNotEmptyError) LogValue() slog.Value {
 // excluded — this error only fires for a STRUCTURAL match with a bad
 // value, e.g. "{useCase}.json" matching "42.json" but "useCase" failing a
 // NonEmptyString/slug constraint.
-type DirEntryParamError struct {
-	Entry string // the entry's RelPath
-	Name  string // the failing EntryParam name
-	Value string
-	Err   error
-}
+type DirEntryParamError = apifile.DirEntryParamError
 
-func (e DirEntryParamError) Error() string {
-	return fmt.Sprintf("dir entry %q: variable {%s}: invalid value %q: %s", e.Entry, e.Name, e.Value, e.Err)
-}
-
-// Unwrap allows [errors.Is] and [errors.As] to traverse the underlying error.
-func (e DirEntryParamError) Unwrap() error { return e.Err }
-
-// LogValue implements [slog.LogValuer] for structured logging.
-func (e DirEntryParamError) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("entry", e.Entry),
-		slog.String("param", e.Name),
-		slog.String("value", e.Value),
-		slog.Any("cause", e.Err),
-	)
-}
-
-// DirWildcardBuildError is returned by [Dir.BuildPath]/[Dir.MatchPath]
-// when the template contains a glob segment ("**", or a segment with
-// '*'/'?'/'[') — see [internal/templatematch.IsGlobEnabled]. Building or
-// matching a SINGLE concrete path from a template that can match
-// multiple paths is undefined; use [Dir.List]'s glob-discovery mode
-// instead.
-type DirWildcardBuildError struct {
-	Template string
-}
-
-func (e DirWildcardBuildError) Error() string {
-	return fmt.Sprintf("dir path template %q is glob-enabled: BuildPath/MatchPath has no meaning for a template that can match multiple paths", e.Template)
-}
-
-// LogValue implements [slog.LogValuer] for structured logging.
-func (e DirWildcardBuildError) LogValue() slog.Value {
-	return slog.GroupValue(
-		slog.String("template", e.Template),
-	)
-}
+// DirWildcardBuildError is returned by [Dir.BuildPath]/[Dir.MatchPath]/
+// [Dir.Delete] when the template contains a glob segment ("**", or a
+// segment with '*'/'?'/'[') — see [internal/templatematch.IsGlobEnabled].
+// Building, matching, or deleting a SINGLE concrete path from a template
+// that can match multiple paths is undefined; use [Dir.List]'s
+// glob-discovery mode instead.
+type DirWildcardBuildError = apifile.DirWildcardBuildError

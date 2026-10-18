@@ -75,10 +75,18 @@
 > since nothing is actually written under DryRun). A genuine correctness
 > fix, applied to both backends since the race was never ports-specific.
 >
-> **Stage F — DONE for `ports.Dir` too (this round)**. Two NEW optional
-> `api/file.Backend` extensions were designed and implemented to make
-> this possible — `ports.Dir` is UNTYPED (no codec/Resource/Client), so
-> it consumes these DIRECTLY, bypassing `api/file.Client`/dispatch.go
+> **Stage F — DONE for `ports.Dir` too (this round).** [SUPERSEDED by
+> Stage C2, below — `ports.Dir.List`/`Delete` were LATER rewritten
+> again to go through `api/file.Client`/dispatch.go after all, once
+> `file.Dir`/`ListDirer`/`DeleteDirer` existed; `DirNotEmptyError` (and
+> all 9 other Dir error types) ARE now aliases, not converted via
+> `errors.As`. This paragraph is kept as an accurate historical record
+> of the state at THIS round's own time, not the current implementation
+> — see "`ports.Dir` migration plan (Stage C2) — IMPLEMENTED" further
+> down for what shipped instead.] Two NEW optional `api/file.Backend`
+> extensions were designed and implemented to make this possible —
+> `ports.Dir` is UNTYPED (no codec/Resource/Client), so it consumed
+> these DIRECTLY at the time, bypassing `api/file.Client`/dispatch.go
 > entirely (no Capability/BoundMiddleware/Router/ErrorPattern involved,
 > unlike `ports.File`'s migration):
 > - **`WalkingBackend.WalkDir(ctx, root, fn DirWalkFunc) error`** — a
@@ -3567,7 +3575,13 @@ outline depth as of this doc's latest revision).
 
 ## `file.Dir` — directory-listing + deletion capability (NEW, post-Phase-2)
 
-> **Status: DESIGNED to full Go-signature rigor — NOT yet implemented.**
+> **Status: IMPLEMENTED — `file.Dir` itself (Stage C, part 1) AND the
+> `ports.Dir` migration (Stage C2) are both shipped, reviewed, and
+> regression-tested (`ports/dir_test.go`'s full, unmodified suite
+> passes).** Stage D (migrating `examples/dir-io`/`examples/file-io`/
+> `examples/go-edge-models` to the new `api/file` approach directly)
+> remains the one still-pending item.
+>
 > Discovered during Phase 3 planning: fully migrating `examples/dir-io`
 > and `examples/go-edge-models` (both of which use `ports.Dir`'s
 > generic, `EntryPattern`-based directory-listing capability) to
@@ -3893,18 +3907,76 @@ type DirWildcardBuildError struct{ Template string }                  // mirrors
 ALREADY EXISTS (shipped with `DirDeletingBackend` during the earlier
 `ports.Dir` migration stage) and is reused directly, unchanged.
 
-### `ports.Dir` migration plan (Stage C, this design round only names the plan)
+### `ports.Dir` migration plan (Stage C2) — IMPLEMENTED
 
-Once this capability ships and is proven, `ports/dir.go`'s own
-`List`/`Delete`/`BuildPath`/`MatchPath` methods get rewritten to
-delegate to a `file.Dir` + an internally-held `*file.Client` attached to
-the SAME private `osBackend{}` — mirroring `ports.File`'s own Stage F
-delegation pattern exactly. `ports.Dir`'s own public call signatures
-stay UNCHANGED (verified via the FULL, unmodified `ports/dir_test.go`
-suite — the hard regression gate, same discipline as Stage F). Every
-one of `ports.Dir`'s 9 error types becomes a `type XError = file.XError`
-alias (mirroring `ports.File`'s own error-aliasing precedent) EXCEPT
-`DirNotEmptyError`, which is ALREADY an alias today.
+`ports/dir.go`'s own `List`/`Delete` methods now delegate to a
+`file.Dir`/`ListDirer`/`DeleteDirer` + an internally-held, freshly-built
+`*file.Client` attached to the SAME private `osBackend{}` — mirroring
+`ports.File`'s own Stage F delegation pattern exactly. `BuildPath`/
+`MatchPath` stay PURE, no-I/O functions, unchanged in their own
+implementation (they never touch a Backend either way) — only their
+error VOCABULARY changed, via the aliasing below. `ports.Dir`'s own
+public call signatures stay UNCHANGED (verified via the FULL,
+unmodified `ports/dir_test.go` suite — the hard regression gate, same
+discipline as Stage F).
+
+All 10 of `ports.Dir`'s error types (including `DirNotEmptyError`,
+which — contrary to an earlier, now-corrected claim in this doc — was
+NOT already an alias before this round) are now `type X = file.X`
+aliases (mirroring `ports.File`'s own precedent exactly), as are
+`DirEntry`/`EntryKind`/`EntryPattern`. `file`'s own `DirXxxError`
+message TEXT was corrected to match `ports`'s pre-existing, already-
+tested text verbatim BEFORE aliasing (confirmed via grep: no test
+anywhere asserted the old `file`-side text, so this was a safe,
+one-directional correction — `ports` is the older, already-shipped
+contract).
+
+**`WithBaseDir` now composes via `file.Router`, not manual path-joining**:
+`ports.Dir.List`/`Delete` build `rt := file.NewRouter(d.baseDir)` and
+dispatch via `role.Handle(client, file.WithRouter(rt))` — reusing the
+EXACT Router-prefix mechanism `file.Dir`'s own glob-discovery mode
+relies on internally (the one hardened by this session's own prior
+`file.Dir` review round), instead of a separate, `ports`-local
+`filepath.Join` step. An empty `baseDir` (the default) composes a
+complete no-op prefix — identical to every existing non-`WithBaseDir`
+caller's behavior. Disclosed, non-breaking widening: `baseDir` now also
+anchors NON-glob `List`/`Delete` calls (previously a no-op there, since
+only glob-discovery mode ever consulted it) — confirmed via
+`ports/dir_test.go` that no existing test exercises or depends on that
+old restriction.
+
+**CONFIRMED REAL FINDING — Observer-method divergence, resolved via a
+local shim**: `ports.Dir.List`'s own documented, TESTED contract calls
+`stats.FileObserver.RecordFileRead` (reusing `File.Read`'s own Observer
+method — predates `RecordFileList`, which didn't exist when `ports.Dir`
+first shipped). `file.Client.ListDir`'s dispatch core calls
+`RecordFileList` instead. A naive direct-delegation migration would have
+silently broken `ports/dir_test.go`'s own `dirObserverSpy`-based
+assertions. Resolved via a small, `ports`-private `dirListObserverShim`
+(embeds `stats.NoopObserver`, overrides ONLY `RecordFileList` to forward
+to the wrapped Observer's own `RecordFileRead`) — passed to
+`file.Client.ListDir` via `stats.WithObserver`, achieving byte-for-byte
+behavioral preservation with zero changes to the hard-gate test file.
+(`Dir.Delete`'s own `RecordFileDelete` convention already matches
+`file.Client.DeleteDir`'s identically — no shim needed there.)
+
+**A genuine bug found and fixed along the way (not part of the original
+migration plan)**: `file.Dir.BuildPath`/`MatchPath` (and the internal
+`dirBuildPath` helper `listDirCore`/`deleteDirCore` both use) originally
+reused `Resource[T].buildPathWithRouting`'s own error conversion
+(`convertParamErr`), which produces `FilePathParamError`/
+`MissingFilePathVarError` — Resource[T]'s (Read/Create/Patch/...'s) own
+error vocabulary, NOT Dir's `DirPathParamError`/`MissingDirPathVarError`.
+This bug was invisible to `api/file`'s own test suite (zero prior
+coverage of this specific error-type expectation) and only surfaced via
+`ports/dir_test.go`'s regression suite (`TestDir_Delete_PathVarError_NoIO`).
+Fixed by adding a Dir-specific `convertDirParamErr` helper (mirrors
+`convertParamErr`'s shape, produces Dir's own error types) and wiring
+`Dir.BuildPath`/`MatchPath`/`dirBuildPath` to use it instead — 2 new
+regression tests added directly to `api/file/dir_test.go`
+(`TestDirBuildPath_MissingVar_ReturnsDirOwnErrorType`/
+`TestDirMatchPath_CodecFailure_ReturnsDirOwnErrorType`) to close the
+coverage gap permanently.
 
 ### Unit test plan
 

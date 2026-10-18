@@ -1168,12 +1168,6 @@ func recordFileWrite(obs stats.Observer, path string, success bool, d time.Durat
 	}
 }
 
-func recordFileDelete(obs stats.Observer, path string, success bool, d time.Duration) {
-	if fo, ok := obs.(stats.FileObserver); ok {
-		fo.RecordFileDelete(path, success, d)
-	}
-}
-
 // missingParentDirs returns the list of directories, from the outermost
 // missing ancestor down to dir itself, that do not currently exist —
 // exactly the directories os.MkdirAll(dir, ...) would create. Returns nil

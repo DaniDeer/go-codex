@@ -150,6 +150,27 @@ func (d Dir) resource() Resource[dirT] {
 	return Resource[dirT]{template: d.template, params: d.params}
 }
 
+// convertDirParamErr converts a [codex.MissingParamError]/[codex.ParamError]
+// into Dir's OWN [MissingDirPathVarError]/[DirPathParamError] — mirrors
+// [convertParamErr]'s identical shape, but produces Dir's own error
+// vocabulary instead of Resource[T]'s (Read/Create/Patch/...'s)
+// FilePathParamError/MissingFilePathVarError. Dir deliberately does NOT
+// reuse Resource[T].buildPathWithRouting's own (File-shaped) conversion,
+// even though it reuses that method's PATH-BUILDING logic — a Dir path
+// var failure must surface as a Dir error, not a File one. Passes any
+// other error (including nil) through unchanged.
+func convertDirParamErr(err error) error {
+	var me codex.MissingParamError
+	if errors.As(err, &me) {
+		return MissingDirPathVarError{Name: me.Name}
+	}
+	var pe codex.ParamError
+	if errors.As(err, &pe) {
+		return DirPathParamError{Name: pe.Name, Value: pe.Value, Err: pe.Err}
+	}
+	return err
+}
+
 // BuildPath substitutes {varName} placeholders in d's template with vars,
 // validating each against its registered [PathParam.Codec]. Returns
 // [DirWildcardBuildError] if the template is glob-enabled.
@@ -157,7 +178,11 @@ func (d Dir) BuildPath(vars map[string]string) (string, error) {
 	if templatematch.IsGlobEnabled(d.template) {
 		return "", DirWildcardBuildError{Template: d.template}
 	}
-	return d.resource().buildPathWithRouting(routingInfo{}, vars)
+	path, err := codex.BuildFromParams(d.template, toCodexParams(d.params), vars)
+	if err != nil {
+		return "", convertDirParamErr(err)
+	}
+	return path, nil
 }
 
 // MatchPath is the inverse of [Dir.BuildPath] — matches a concrete,
@@ -172,7 +197,7 @@ func (d Dir) MatchPath(path string) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := convertParamErr(codex.ValidateParams(toCodexParams(d.params), vars)); err != nil {
+	if err := convertDirParamErr(codex.ValidateParams(toCodexParams(d.params), vars)); err != nil {
 		return nil, err
 	}
 	return vars, nil
@@ -461,10 +486,10 @@ func dispatchDeleteDir(ctx context.Context, backend Backend, d any, vars map[str
 // ── Dispatch cores ────────────────────────────────────────────────────────
 
 func dirBuildPath(dir Dir, routing routingInfo, vars map[string]string) (string, error) {
-	r := dir.resource()
-	path, err := r.buildPathWithRouting(routing, vars)
+	template := routing.resolvedTemplate(dir.template)
+	path, err := codex.BuildFromParams(template, toCodexParams(dir.params), vars)
 	if err != nil {
-		return "", err
+		return "", convertDirParamErr(err)
 	}
 	if path == "" {
 		return ".", nil

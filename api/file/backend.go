@@ -346,7 +346,7 @@ type DirNotEmptyError struct {
 }
 
 func (e DirNotEmptyError) Error() string {
-	return fmt.Sprintf("directory %q is not empty (recursive delete not requested)", e.Path)
+	return fmt.Sprintf("dir %q is not empty (DeleteRecursive not set)", e.Path)
 }
 
 // LogValue implements [slog.LogValuer] for structured logging.

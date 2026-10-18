@@ -98,7 +98,7 @@ type DirEntryParamError struct {
 }
 
 func (e DirEntryParamError) Error() string {
-	return fmt.Sprintf("dir entry %q variable {%s}: invalid value %q: %s", e.Entry, e.Name, e.Value, e.Err)
+	return fmt.Sprintf("dir entry %q: variable {%s}: invalid value %q: %s", e.Entry, e.Name, e.Value, e.Err)
 }
 
 // Unwrap allows [errors.Is]/[errors.As] to traverse the underlying error.
@@ -122,7 +122,7 @@ type DirAlreadyExistsError struct {
 }
 
 func (e DirAlreadyExistsError) Error() string {
-	return fmt.Sprintf("dir %q already exists", e.Path)
+	return fmt.Sprintf("dir %q already exists (Strict)", e.Path)
 }
 
 // LogValue implements [slog.LogValuer].
@@ -137,7 +137,9 @@ type DirNotFoundError struct {
 	Path string
 }
 
-func (e DirNotFoundError) Error() string { return fmt.Sprintf("dir %q not found", e.Path) }
+func (e DirNotFoundError) Error() string {
+	return fmt.Sprintf("dir %q does not exist (Strict)", e.Path)
+}
 
 // LogValue implements [slog.LogValuer].
 func (e DirNotFoundError) LogValue() slog.Value {
@@ -155,7 +157,7 @@ type DirWildcardBuildError struct {
 }
 
 func (e DirWildcardBuildError) Error() string {
-	return fmt.Sprintf("dir template %q is glob-enabled — build/match/delete a single path is not supported", e.Template)
+	return fmt.Sprintf("dir path template %q is glob-enabled: BuildPath/MatchPath has no meaning for a template that can match multiple paths", e.Template)
 }
 
 // LogValue implements [slog.LogValuer].

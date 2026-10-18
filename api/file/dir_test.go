@@ -521,3 +521,32 @@ func TestDirListCore_GlobDiscovery_RouterGrouped_ComposesPrefix(t *testing.T) {
 		t.Fatalf("expected 2 entries (app-1, app-2 under the Router-prefixed tenant dir), got %d: %+v", len(entries), entries)
 	}
 }
+
+// TestDirBuildPath_MissingVar_ReturnsDirOwnErrorType and
+// TestDirMatchPath_CodecFailure_ReturnsDirOwnErrorType close a
+// confirmed bug found while migrating ports.Dir onto file.Dir
+// (Stage C2): Dir.BuildPath/MatchPath reused Resource[T]'s own
+// buildPathWithRouting, which converts via convertParamErr into
+// FilePathParamError/MissingFilePathVarError (Resource[T]'s own error
+// vocabulary) instead of Dir's own DirPathParamError/
+// MissingDirPathVarError — found via ports/dir_test.go's regression
+// suite (TestDir_Delete_PathVarError_NoIO), since api/file's own tests
+// never previously exercised this specific error-type expectation.
+func TestDirBuildPath_MissingVar_ReturnsDirOwnErrorType(t *testing.T) {
+	d := file.NewDir("configs/{env}")
+	_, err := d.BuildPath(nil)
+	var missingErr file.MissingDirPathVarError
+	if !errors.As(err, &missingErr) {
+		t.Fatalf("BuildPath error = %v (%T), want file.MissingDirPathVarError", err, err)
+	}
+}
+
+func TestDirMatchPath_CodecFailure_ReturnsDirOwnErrorType(t *testing.T) {
+	slugOnly := codex.String().Refine(validate.NonEmptyString, validate.Slug)
+	d := file.NewDir("configs/{env}", file.PathParam{Name: "env"}.WithCodec(slugOnly))
+	_, err := d.MatchPath("configs/Not Valid!")
+	var paramErr file.DirPathParamError
+	if !errors.As(err, &paramErr) {
+		t.Fatalf("MatchPath error = %v (%T), want file.DirPathParamError", err, err)
+	}
+}
