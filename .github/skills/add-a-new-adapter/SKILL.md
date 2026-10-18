@@ -54,14 +54,33 @@ Rules:
 
 - Wrapping an external client lib is normal (paho for MQTT, chi for routing).
   Evaluate: actively maintained? preserves type safety (no `interface{}`
-  boxing at the API surface)? Record accepted AND rejected candidates with
-  rationale in the roadmap doc's "Toolchain decisions" section.
+  boxing at the API surface)? **Tagged, released version available?** If a
+  dependency has no stable tag at all (only an untagged default branch — e.g.
+  `adapters/smb`'s `go-smb2/v2`, which has zero `v2.x.y` tags), this is a
+  materially different risk profile from a normal semver dependency: pin
+  `go.mod` to an exact commit SHA (a Go pseudo-version), explicitly disclose
+  this as an accepted risk in the roadmap doc (don't silently treat it like
+  an ordinary tagged dependency), and re-verify the pinned SHA FRESH at
+  implementation time — don't reuse one recorded during an earlier design/
+  review round, since an untagged branch can move between rounds. Record
+  accepted AND rejected candidates with rationale in the roadmap doc's
+  "Toolchain decisions" section.
 - **Narrow-interface rule**: when the client library's concrete type is not
   interface-shaped (go-redis, database/sql wrappers…), define a small
   unexported-friendly interface in the adapter covering ONLY the commands the
   adapter uses, accept that interface in constructors, and unit-test against
   a hand-written fake. No test-only dependencies (no miniredis, no brokers in
-  CI — same rule as MQTT).
+  CI — same rule as MQTT). If the client's own concrete methods don't
+  structurally satisfy your narrow interface (e.g. differing return types —
+  `adapters/s3`'s `*s3.Client` satisfies its narrow `s3API` directly with
+  zero glue code, but `adapters/smb`'s `*smb2.Share.Open`/`Create`/`OpenFile`
+  return `*smb2.File`, not the narrow interface's own declared `fileOps`
+  return type), don't make every real caller hand-write their own adapter
+  glue to bridge the gap — expose your public constructor accepting the REAL
+  concrete type directly, wrapping it internally via a small unexported
+  adapter type, with a separate unexported, narrow-interface-typed
+  constructor for tests (`adapters/smb.NewBackend(*smb2.Share, ...)` +
+  unexported `newBackendFromOps` is the worked precedent).
 - stdlib-only is preferred when the protocol is simple enough
   (see `docs/roadmap/tcp-adapter.md` for a worked example of that decision).
 - `go.mod` changes happen at implementation time, never during planning.

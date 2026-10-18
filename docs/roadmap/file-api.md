@@ -186,7 +186,7 @@ made explicitly this round):
 |---|---|---|---|
 | **1** | `api/file` package itself: `Resource[T]` + 10 role builders, `file.Client` (attach+dispatch), `file.Backend` seam, `file.Capability`, Router/Middleware/Observer/ErrorPattern integration, `adapters/file` migration (filesystem backend), full `ports.File`/`ports.Dir` migration | Full Go-signature design (this doc's main body, below) | **IMPLEMENTED** (incl. a `deep-dive-bug-hunt` pass and the retroactive List/BatchDelete per-entry Security amendment — see the main body's own status notes) |
 | **2** | `adapters/s3`, `adapters/smb` implementations; streaming/chunked I/O; conditional writes (ETag); recursive `WithList` | Full Go-signature design, per-item (see each item's own section below) | ALL 5 of 5 items IMPLEMENTED (Recursive `WithList`, Conditional writes, Streaming/chunked I/O, `adapters/s3`, `adapters/smb`) — Phase 2 is FULLY COMPLETE (see "Phase 2" section below) |
-| **3** | Adapt existing examples (`examples/*`) from `ports.File`/`adapters/file` direct usage to the new `api/file.Client` approach | Checklist-level (which examples, what "adapted" means) — necessarily light since Phase 1 isn't implemented yet | Planned (see "Phase 3" section below) |
+| **3** | Adapt existing examples (`examples/*`) from `ports.File`/`adapters/file` direct usage to the new `api/file.Client` approach | Checklist-level (which examples, what "adapted" means) — kept light even though Phase 1/2 have since shipped, since `ports.File[T]`'s public call signatures stay unchanged (most examples need zero changes regardless) | Planned (see "Phase 3" section below) |
 | **4** | Promote this roadmap doc to `docs/design/d-NNNN-*.md` (per the `plan-a-new-codex-feature` skill's delete/keep/promote 3-way policy) + sync `.github/instructions/go-codex.instructions.md`, `docs/` pages, and relevant skills | Mechanism named, exact number/content deferred until Phase 1-3 actually ship | Planned (see "Phase 4" section below) |
 
 Phase 1 is this doc's main body (everything through "Open design
@@ -3567,19 +3567,22 @@ outline depth as of this doc's latest revision).
 
 ## Phase 3 — adapt examples to the new `api/file` approach
 
-**Status: planned, necessarily light since Phase 1 isn't implemented
-yet.** Once Phase 1 ships, every existing example currently using
-`ports.File`/`ports.Dir`/`adapters/file` directly needs review against
-the "Removing an old API" checklist (`plan-a-new-codex-feature` skill) —
-`ports.File[T]`'s public call signatures stay UNCHANGED per this doc's
-own Scope decisions, so most examples should need ZERO changes; any
-example relying on an internal detail (e.g. direct `os.*` error
-matching instead of `errors.As` against `ports.File`'s own typed
-errors) would need updating. A concrete example inventory (which files,
-which patterns) is deferred to when Phase 1 is actually implemented,
-since grepping for `ports.File`/`adapters/file` usage NOW, before any
-code changes, would produce a list that's likely stale by the time
-Phase 3 actually starts.
+**Status: planned, not yet started.** Phase 1 and ALL of Phase 2 have
+now shipped (see each phase's own status above) — Phase 3 remains
+deliberately NOT started, not because of any blocker, but because it
+simply hasn't been picked up yet. Every existing example currently
+using `ports.File`/`ports.Dir`/`adapters/file` directly needs review
+against the "Removing an old API" checklist (`plan-a-new-codex-feature`
+skill) — `ports.File[T]`'s public call signatures stay UNCHANGED per
+this doc's own Scope decisions (confirmed true after Stage F's full
+migration — `ports/file_test.go`/`ports/dir_test.go` both passed
+UNMODIFIED), so most examples should need ZERO changes; any example
+relying on an internal detail (e.g. direct `os.*` error matching
+instead of `errors.As` against `ports.File`'s own typed errors) would
+need updating. A concrete example inventory (which files, which
+patterns) is deferred to when Phase 3 actually starts, since grepping
+for `ports.File`/`adapters/file` usage NOW would produce a list that's
+likely stale by the time anyone acts on it.
 
 ## Phase 4 — promote to `docs/design/` + sync instructions/skills
 
@@ -3639,14 +3642,14 @@ excluded, not merely deferred:
 
 **Phase 1 now has ZERO remaining open design decisions.** Every item
 previously listed here is resolved — see "Resolved round 7" below for
-the 2 closed this round. **All 5 Phase 2 items have since been through
-at least one full Go-signature design round** (Recursive `WithList`,
-Conditional writes, Streaming/chunked I/O, and `adapters/s3` are also
-IMPLEMENTED; `adapters/smb` is DESIGNED, implementation pending) — see
-each item's own section above for its own resolved decisions and unit
-test plan; nothing from the earlier "4 remaining items deliberately
-left at outline depth" framing is still accurate, superseded by each
-item's own subsequent design round.
+the 2 closed this round. **ALL 5 Phase 2 items are now fully DESIGNED
+AND IMPLEMENTED** (Recursive `WithList`, Conditional writes,
+Streaming/chunked I/O, `adapters/s3`, and `adapters/smb` — Phase 2 is
+FULLY COMPLETE) — see each item's own section above for its own
+resolved decisions and unit test plan; nothing from the earlier "4
+remaining items deliberately left at outline depth" framing is still
+accurate, superseded by each item's own subsequent design AND
+implementation round.
 
 **Resolved round 7** (closing the 2 items this doc carried from round 6):
 
