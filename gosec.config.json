@@ -49,6 +49,10 @@
 			"rules": ["G404"]
 		},
 		{
+			"path": "adapters/smb/conditional_write.go",
+			"rules": ["G404"]
+		},
+		{
 			"path": "examples/reqreply-api/demo_cross_api_oauth2_sharing.go",
 			"rules": ["G101"]
 		},
