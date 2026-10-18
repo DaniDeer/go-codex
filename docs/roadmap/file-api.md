@@ -3565,6 +3565,312 @@ full design status (see each section's own, current status header
 above for the up-to-date picture; only `adapters/smb` remains at
 outline depth as of this doc's latest revision).
 
+## `file.Dir` — directory-listing + deletion capability (NEW, post-Phase-2)
+
+> **Status: DESIGNED to full Go-signature rigor — NOT yet implemented.**
+> Discovered during Phase 3 planning: fully migrating `examples/dir-io`
+> and `examples/go-edge-models` (both of which use `ports.Dir`'s
+> generic, `EntryPattern`-based directory-listing capability) to
+> `api/file` is impossible today — `api/file` has NO equivalent of
+> `ports.Dir` at all. `Client.List` is bound to ONE declared
+> `Resource[T]`'s own single path template and decodes each match as
+> that `Resource`'s own `T`; `ports.Dir` enumerates ARBITRARY directory
+> entries via a separate, freestanding `EntryPattern`, with no decoded
+> value at all (`DirEntry` carries only `Name`/`RelPath`/`Kind`/`Vars`).
+> User explicitly chose FULL scope: full `ports.Dir` feature parity
+> (recursive listing, shell-glob/globstar discovery, `Delete`, `DryRun`,
+> `CreateIfMissing`), Declarative Middleware/Capability/`ErrorPattern`
+> integration added NOW (not deferred to match `ports.Dir`'s own
+> simpler original scope), AND a follow-up migration of `ports.Dir`
+> itself to delegate to this new capability (mirroring `ports.File`'s
+> own Stage F precedent). This section is Stage A of that plan (design
+> only); Stage B (gap-review), Stage C (implementation +
+> `ports.Dir` migration), and Stage D (example migration) are separate,
+> later rounds.
+
+### Grounding — `ports.Dir`'s existing implementation is HIGHLY reusable, not a from-scratch design
+
+Read `ports/dir.go`'s full implementation (not just its public surface)
+before designing this. Three load-bearing facts make this port far
+lower-risk than it might appear:
+
+1. **`ports.Dir`'s own internals ALREADY delegate to `api/file`'s
+   Backend-level primitives** — `backend.ListDir`/`backend.WalkDir`
+   (`apifile.WalkingBackend`)/`backend.DeleteDir`
+   (`apifile.DirDeletingBackend`)/`backend.Mkdir`, via a private
+   `osBackend{}` value `ports/dir.go` constructs directly. This was a
+   DELIBERATE Stage F decision ("`ports.Dir`'s own callers consume
+   `WalkingBackend` directly — this is NOT wired into `api/file`'s own
+   `Client.List` in Phase 1"). This new capability is the FIRST thing
+   to expose that already-built machinery through `file.Client`'s own
+   public dispatch surface — no new Backend-interface method is needed
+   at all, only a new declarative front-end + dispatch-core wiring.
+2. **The matching/parsing math is ALREADY the SAME engine `api/file`
+   itself uses** — `internal/templatematch.MatchNonWildcard`/
+   `MatchGlob`/`IsGlobEnabled`/`LiteralPrefix`, the identical package
+   `api/file`'s own `matchFileTemplate` helper (added during the
+   List-path-var-merge-field round) already imports. Porting this
+   capability does not require re-deriving any matching logic, only
+   relocating orchestration code that already operates on
+   `apifile.Entry`/`apifile.MkdirOptions`/`apifile.DirNotEmptyError` —
+   types `ports/dir.go` ALREADY imports and uses directly today.
+3. **`DirPathParam`'s shape is field-for-field identical to
+   `file.PathParam`** (`{Name, Description string; Codec
+   *codex.Codec[string]}`) — no new path-param wrapper type is needed;
+   `file.PathParam` itself gains a 2nd sealed-interface method
+   (`applyDir`, alongside its existing `applyResource`) so the SAME
+   `file.PathParam{Name: "env"}.WithCodec(...)` value works for BOTH
+   `Resource[T]` declarations and the new `file.Dir` declarations.
+   `ports.EntryParam` is ALREADY a plain `codex.Param` alias with zero
+   wrapper boilerplate — `file.EntryParam` mirrors this identically.
+
+### API surface
+
+```go
+// EntryKind distinguishes a listed entry's own kind — mirrors
+// ports.EntryKind exactly.
+type EntryKind int
+
+const (
+	EntryFile EntryKind = iota
+	EntryDir
+)
+
+// EntryParam is a plain alias for codex.Param — mirrors ports.EntryParam
+// exactly (no wrapper type needed, see "Grounding" fact 3 above).
+type EntryParam = codex.Param
+
+// EntryPattern optionally declares the expected SHAPE for entries inside
+// a Dir, matched against each entry's RelPath — mirrors ports.EntryPattern
+// field-for-field. See that type's own doc comment for the full
+// matching/filtering semantics (reused verbatim, not redesigned).
+type EntryPattern struct {
+	Template string
+	Params   []EntryParam
+}
+
+// DirEntry is one listed filesystem entry — mirrors ports.DirEntry
+// field-for-field.
+type DirEntry struct {
+	Name    string
+	RelPath string
+	Kind    EntryKind
+	Vars    map[string]string
+}
+
+// DirOpt is the sealed option interface for NewDir — file.PathParam
+// implements this (a 2nd method alongside its existing ResourceOpt
+// satisfaction), as do WithEntryPattern/WithRecursive/WithBaseDir's own
+// return values.
+type DirOpt interface{ applyDir(*dirBuilder) }
+
+func WithEntryPattern(p EntryPattern) DirOpt
+func WithRecursive(recursive bool) DirOpt
+func WithBaseDir(path string) DirOpt
+
+// Dir is a declarative directory descriptor — mirrors ports.Dir's own
+// role EXACTLY, but carries NO baked-in backend (unlike ports.Dir's
+// private osBackend{}): dispatch happens through an attached file.Client
+// (see "Client dispatch" below), the SAME declare-vs-dispatch split
+// every other api/file role already uses.
+type Dir struct { /* unexported */ }
+
+func NewDir(template string, opts ...DirOpt) Dir
+func NewDirFromPathTemplate(t PathTemplate, opts ...DirOpt) Dir // mirrors NewDirFromPathTemplate; PathTemplate is api/file's own existing path-template type, reused unchanged
+
+func (d Dir) BuildPath(vars map[string]string) (string, error) // no I/O, mirrors ports.Dir.BuildPath
+func (d Dir) MatchPath(path string) (map[string]string, error) // no I/O, mirrors ports.Dir.MatchPath
+
+// DirOptions mirrors ports.DirOptions MINUS Observer/Context (api/file
+// resolves Observer from ctx uniformly via stats.ObserverFromContext,
+// unlike ports' own per-call Observer/Context fields — the SAME
+// Capability-vs-per-call-option precedent this doc's own "Capability
+// vs. per-call option precedence" section already established for
+// WriteOptions/DeleteOptions/MkdirOptions).
+type DirOptions struct {
+	CreateIfMissing bool
+	CreatePerm      os.FileMode
+	DeleteRecursive bool
+	DryRun          bool
+	Strict          bool
+}
+
+// DirHandle is Dir's built-Handle type, produced by Dir.Handle — the
+// Router-grouped/middleware-attached counterpart every other api/file
+// role already has (ReadHandle[T], DeleteHandle, ...). Dir itself gets
+// the SAME .Use()/.ListDirBoundMW()/.DeleteDirBoundMW()/
+// .WithErrorPatterns()/.WithCapabilities()/.RequireCapabilities()/
+// .Handle(client, opts...) surface every other role declares, mirroring
+// Deleter[T]'s own no-T shape method-for-method.
+type DirHandle struct { /* unexported */ }
+
+func (d Dir) Use(mws ...RouteMiddleware) Dir
+func (d Dir) WithErrorPatterns(patterns ...any) Dir // mirrors WithErrorPatterns' existing per-role signature
+func (d Dir) WithCapabilities(caps ...Capability) Dir
+func (d Dir) RequireCapabilities(reqs ...CapabilityRequirement) Dir
+func (d Dir) ListDirBoundMW(bm any) Dir
+func (d Dir) DeleteDirBoundMW(bm any) Dir
+func (d Dir) Handle(client *Client, opts ...HandleOpt) (*DirHandle, error)
+```
+
+### Client dispatch — dual-accept, mirrors every other role exactly
+
+```go
+// ListDir dispatches d (a bare Dir OR a pre-built *DirHandle — the SAME
+// dual-accept contract every other Client dispatch method already
+// honors) against c's attached Backend. vars supplies d's OWN directory
+// path template's variables (NOT EntryPattern's — those are populated
+// per-discovered-entry, same split ports.Dir.List already has).
+func (c *Client) ListDir(ctx context.Context, d any, vars map[string]string, opts ...DirOptions) ([]DirEntry, error)
+
+// DeleteDir mirrors ListDir's dual-accept contract.
+func (c *Client) DeleteDir(ctx context.Context, d any, vars map[string]string, opts ...DirOptions) ([]string, error)
+```
+
+Internally, `listDirCore`/`deleteDirCore` (new `dispatch.go` functions)
+port `ports/dir.go`'s own `List`/`Delete`/`listSingleLevel`/
+`listRecursive`/`listGlobDiscovery`/`matchDirGlob`/`matchEntry` logic
+VERBATIM, with ONE change: every `osBackend{}` construction is replaced
+by `core.resource` analogue → the Client's OWN attached `Backend` (read
+via the SAME internal accessor `readCore`/`deleteCore`/etc. already use)
+— confirmed via the "Grounding" section above that this is a relocation,
+not a redesign. `CreateIfMissing`'s `Mkdir` call and `DeleteRecursive`'s
+`DeleteDir` call go through the Capability-gated path (see next section)
+before reaching the Backend, exactly like every mutating role already
+does.
+
+### Capability integration
+
+`AccessMode` gates `DeleteDir` (a `ReadOnly` Capability rejects BEFORE
+any Backend call, mirroring every other mutating role) and
+`CreateIfMissing`'s `Mkdir` call within `ListDir`. `ListDir`'s own
+read-only enumeration (no `CreateIfMissing`) is NOT gated by `AccessMode`
+— listing is inherently non-mutating, mirroring `Reader[T]`'s own
+ungated-by-`AccessMode` precedent. `NativePOSIXMode` wires through
+`CreateIfMissing`'s own `CreatePerm`/`Mkdir` call, mirroring `MkdirOptions
+.NativePOSIXMode`'s existing precedence rule (Capability always wins
+over the per-call `CreatePerm` option) EXACTLY.
+
+### Declarative Middleware — no-T shape, mirrors `BoundDeleteMiddleware` exactly
+
+`Dir`'s `List`/`Delete` BOTH use the established no-T `Bound<Role>
+Middleware[In,Out]` shape (`Delete`/`Exists`/`Copy`/`Move`/`Mkdir`/
+`BatchDelete`'s own precedent) — NOT the T-carrying `BoundListMiddleware
+[T,In,Out]` shape `Lister[T]` uses, since `Dir`'s own `List`/`Delete`
+decode NO single typed value at all (`DirEntry` carries raw
+`Name`/`RelPath`/`Kind`/`Vars`, never a caller-declared `T`):
+
+```go
+type BoundListDirMiddleware[In, Out any] struct { /* mirrors BoundDeleteMiddleware field-for-field */ }
+func NewBoundListDirMiddleware[In, Out any](decl middleware.Declaration[In, Out], fn func(ctx context.Context, in In) (Out, error)) BoundListDirMiddleware[In, Out]
+func BoundSecurityListDirMiddleware[In, Out any](schemeName string, scheme SecurityScheme, scopes []string, fn func(ctx context.Context, in In) (Out, error)) BoundListDirMiddleware[In, Out]
+
+type BoundDeleteDirMiddleware[In, Out any] struct { /* mirrors BoundDeleteMiddleware field-for-field */ }
+func NewBoundDeleteDirMiddleware[In, Out any](decl middleware.Declaration[In, Out], fn func(ctx context.Context, in In) (Out, error)) BoundDeleteDirMiddleware[In, Out]
+func BoundSecurityDeleteDirMiddleware[In, Out any](schemeName string, scheme SecurityScheme, scopes []string, fn func(ctx context.Context, in In) (Out, error)) BoundDeleteDirMiddleware[In, Out]
+```
+
+Security/`GrantedScopes` dispatch wiring in `listDirCore`/
+`deleteDirCore` mirrors `runBoundMiddleware`'s existing
+Security-check-before-Backend-call ordering exactly — a `Dir` with an
+unmet Security requirement on `DeleteDirBoundMW` rejects before the
+Backend's own `DeleteDir`/`RemoveAll` call, matching every other
+mutating role's own established "fail fast" convention.
+
+**No metadata-merge-field integration** — `Dir` has no attached
+`Resource[T]`/metadata-sidecar axis at all (it enumerates raw entries,
+never reads/writes a resource body), so `WithMetadataIn`/
+`WithMetadataOut` are deliberately NOT offered on either `Bound...DirMiddleware`
+type — a structural non-feature, not an oversight (mirrors how
+`Read`/`List`'s OWN `BoundMiddleware` types never got `WithMetadataIn`
+either, for the analogous "not available pre-Backend-call" reason).
+
+### Router integration
+
+`Dir`/`DirHandle` implement `router.Routable[*Client]`
+(`WithRouterPrefix`/`MiddlewareNames`/`RouteTags`/`RegisterAny`/
+`RouteMethod() == "list-dir"` — ONE Routable covering both verbs, since
+`Dir` is a single declared value with 2 dispatch methods, unlike the 10
+`Resource[T]` roles which are each their OWN separately-declared role
+value), mirroring `Deleter[T]`'s own implementation pattern exactly —
+`file.WithRouter(rt Router)` composes `Dir`'s own path-prefix the SAME
+single-construction-point way every other role's Router-group
+composition already works.
+
+### `ErrorPattern` integration
+
+`Dir.WithErrorPatterns(patterns ...any)` mirrors every other role's own
+attachment method exactly — auto-invoked by `listDirCore`/
+`deleteDirCore` on a Backend-error path, consulted via the SAME
+`applyErrorPattern` helper `dispatch.go` already uses for every other
+role (zero new ErrorPattern machinery needed).
+
+### Observer integration
+
+**No new `stats.FileObserver` method needed** — `listDirCore`/
+`deleteDirCore` call the SAME EXISTING `RecordFileList`/`RecordFileDelete`
+methods `Lister[T]`/`Deleter[T]` already call (confirmed sufficient —
+`ports.Dir`'s OWN current implementation already reuses these 2 methods
+directly, via its own `recordFileRead`/`recordFileDelete` helper
+functions in `ports/dir.go`, proving this reuse already works end to
+end today).
+
+### Structured errors
+
+Mirrors `ports.Dir`'s own 9 error types, RELOCATED into `api/file` (not
+duplicated — `ports.Dir`'s own types become aliases once Stage C's
+`ports.Dir` migration lands, mirroring Stage F's own error-aliasing
+precedent for `ports.File`'s types):
+
+```go
+type DirPathParamError struct{ Name, Value string; Err error }      // mirrors ports.DirPathParamError
+type MissingDirPathVarError struct{ Name string }                    // mirrors ports.MissingDirPathVarError
+type DirPathMismatchError struct{ Template, Path string }             // mirrors ports.DirPathMismatchError
+type DirReadError struct{ Path string; Err error }                    // mirrors ports.DirReadError
+type DirAlreadyExistsError struct{ Path string }                      // mirrors ports.DirAlreadyExistsError
+type DirDeleteError struct{ Path string; Err error }                  // mirrors ports.DirDeleteError
+type DirNotFoundError struct{ Path string }                           // mirrors ports.DirNotFoundError
+type DirEntryParamError struct{ Entry, Name, Value string; Err error } // mirrors ports.DirEntryParamError
+type DirWildcardBuildError struct{ Template string }                  // mirrors ports.DirWildcardBuildError
+```
+
+`DirNotEmptyError` is NOT a new type — `api/file.DirNotEmptyError`
+ALREADY EXISTS (shipped with `DirDeletingBackend` during the earlier
+`ports.Dir` migration stage) and is reused directly, unchanged.
+
+### `ports.Dir` migration plan (Stage C, this design round only names the plan)
+
+Once this capability ships and is proven, `ports/dir.go`'s own
+`List`/`Delete`/`BuildPath`/`MatchPath` methods get rewritten to
+delegate to a `file.Dir` + an internally-held `*file.Client` attached to
+the SAME private `osBackend{}` — mirroring `ports.File`'s own Stage F
+delegation pattern exactly. `ports.Dir`'s own public call signatures
+stay UNCHANGED (verified via the FULL, unmodified `ports/dir_test.go`
+suite — the hard regression gate, same discipline as Stage F). Every
+one of `ports.Dir`'s 9 error types becomes a `type XError = file.XError`
+alias (mirroring `ports.File`'s own error-aliasing precedent) EXCEPT
+`DirNotEmptyError`, which is ALREADY an alias today.
+
+### Unit test plan
+
+| Test | Verifies |
+|---|---|
+| `TestDirListCore_SingleLevel_EntryPatternFiltersAndParses` | Non-matching entries silently excluded; matching entries' Vars populated |
+| `TestDirListCore_Recursive_DescendsAndFilters` | `WithRecursive` descends via `WalkingBackend`, same filtering applies at every depth |
+| `TestDirListCore_GlobDiscovery_AggregatesMultipleDirs` | A glob-enabled template discovers every matching directory, merges dir-level + entry-level Vars |
+| `TestDirListCore_GlobDiscovery_PrunesNonGlobstarTemplates` | A template with no `**` stops descending once depth reaches the template's own segment count |
+| `TestDirListCore_CreateIfMissing_UsesMkdir` | `CreateIfMissing` creates a missing directory via the attached Backend's `Mkdir`, honors `DryRun`/`Strict` |
+| `TestDirDeleteCore_Idempotent_MissingIsSuccessNoError` | Default (non-Strict) Delete on a missing directory: no error |
+| `TestDirDeleteCore_Strict_MissingReturnsDirNotFoundError` | `Strict` requires prior existence |
+| `TestDirDeleteCore_NonEmpty_RequiresDeleteRecursive` | `DirNotEmptyError` unless `DeleteRecursive` set |
+| `TestDirDeleteCore_DryRun_ReportsWithoutRemoving` | `DryRun` reports `affected` without removing anything |
+| `TestDirCapability_AccessModeReadOnly_RejectsDeleteDirBeforeBackendCall` | Capability gate fires before any Backend call |
+| `TestDirBoundMiddleware_SecurityGate_RejectsBeforeBackendCall` | `DeleteDirBoundMW`'s unmet Security requirement rejects first |
+| `TestDirRouter_GroupedDir_ComposesPrefixOncePerHandle` | Router-group composition happens at `.Handle()` construction, not per-call |
+| `TestDirErrorPattern_AutoInvoked_OnBackendError` | A declared `ErrorPattern` matches a Backend-level `DirReadError`/`DirDeleteError` |
+| `TestDirObserver_RecordFileList_And_RecordFileDelete_Called` | Reuses the existing 2 `FileObserver` methods, no new one |
+| `TestPortsDir_StillWorksViaDelegation_Unmodified` | The FULL existing `ports/dir_test.go` suite passes UNMODIFIED once Stage C's delegation lands (the hard regression gate) |
+
 ## Phase 3 — adapt examples to the new `api/file` approach
 
 **Status: planned, not yet started.** Phase 1 and ALL of Phase 2 have
