@@ -388,6 +388,72 @@ func TestPatcher_HandlePatch_AppliesPartialUpdate(t *testing.T) {
 	}
 }
 
+// TestPatcher_HandlePatch_PreservesPatchOnlyField is a regression proof
+// for a real bug found while rewriting examples/file-io: patchCore used
+// to stay in TYPED (T) space for its merge+marshal round trip
+// (format.PatchInto returns T, then Marshal(T) re-encodes it) — any
+// field present ONLY in the patch codec (not in the resource's own body
+// codec T) was silently DROPPED from the written file, unlike
+// ports.PatchEncoded's own, established, already-tested contract (which
+// stays in map space via UnmarshalRaw/DeepMerge/MarshalRaw specifically
+// to let patch-codec-only fields survive). Fixed by mirroring
+// ports.PatchEncoded exactly.
+func TestPatcher_HandlePatch_PreservesPatchOnlyField(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	vars := map[string]string{"name": "patchme"}
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "patchme", Value: 1}, vars); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// extraPatch declares a field ("Extra") absent from record's own
+	// codec entirely.
+	type extraPatch struct {
+		Value int
+		Extra string
+	}
+	patchCodec := codex.Struct[extraPatch](
+		codex.RequiredField("value", codex.Int(),
+			func(p extraPatch) int { return p.Value },
+			func(p *extraPatch, v int) { p.Value = v }),
+		codex.RequiredField("extra", codex.String(),
+			func(p extraPatch) string { return p.Extra },
+			func(p *extraPatch, v string) { p.Extra = v }),
+	)
+	patcher := file.WithPatch(res, patchCodec, file.Patch{})
+	if err := client.Patch(ctx, patcher, extraPatch{Value: 42, Extra: "survives"}, vars); err != nil {
+		t.Fatalf("Patch: %v", err)
+	}
+
+	path, err := res.BuildPath(vars)
+	if err != nil {
+		t.Fatalf("BuildPath: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(raw), `"extra":"survives"`) {
+		t.Fatalf("raw file %s does not contain patch-only field \"extra\": %s", path, raw)
+	}
+
+	// record's own codec (no "Extra" field) still decodes cleanly —
+	// unknown fields are ignored on decode, not rejected.
+	gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
+	if err != nil {
+		t.Fatalf("Read after patch: %v", err)
+	}
+	got := gotAny.(record)
+	if got.Value != 42 || got.Name != "patchme" {
+		t.Fatalf("Patch: got %+v, want Value=42 Name=patchme (unchanged)", got)
+	}
+}
+
 // ── Metadata axis (MetadataBackend / MetadataParam) ───────────────────────
 
 type recordWithOwner struct {
@@ -2211,5 +2277,77 @@ func TestStrongETag_MatchesWriteBytesIfMatchExpectation(t *testing.T) {
 	// comparison.
 	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "widget", Value: 2}, vars, file.WriteOptions{IfMatch: &etag}); err != nil {
 		t.Fatalf("Create (conditional, using file.StrongETag directly): %v", err)
+	}
+}
+
+// ── Resource[T].BuildPath/MatchPath (closes the gap found migrating
+// examples/file-io onto api/file directly) ──────────────────────────────
+
+func TestResource_BuildPath_SubstitutesAndValidates(t *testing.T) {
+	res := file.NewResource[record]("readings/{sensorID}/{date}.json", format.JSON(recordCodec()),
+		file.PathParam{Name: "sensorID"}, file.PathParam{Name: "date"})
+	path, err := res.BuildPath(map[string]string{"sensorID": "sensor-42", "date": "2024-01-15"})
+	if err != nil {
+		t.Fatalf("BuildPath: %v", err)
+	}
+	if path != "readings/sensor-42/2024-01-15.json" {
+		t.Fatalf("BuildPath = %q, want readings/sensor-42/2024-01-15.json", path)
+	}
+}
+
+func TestResource_MatchPath_ExtractsVars(t *testing.T) {
+	res := file.NewResource[record]("readings/{sensorID}/{date}.json", format.JSON(recordCodec()))
+	vars, err := res.MatchPath("readings/sensor-42/2024-01-15.json")
+	if err != nil {
+		t.Fatalf("MatchPath: %v", err)
+	}
+	if vars["sensorID"] != "sensor-42" || vars["date"] != "2024-01-15" {
+		t.Fatalf("MatchPath vars = %+v, want sensorID=sensor-42 date=2024-01-15", vars)
+	}
+}
+
+func TestResource_BuildPath_GlobTemplate_ReturnsFileWildcardBuildError(t *testing.T) {
+	res := file.NewResource[record]("logs/*.json", format.JSON(recordCodec()))
+	_, err := res.BuildPath(nil)
+	var wildcardErr file.FileWildcardBuildError
+	if !errors.As(err, &wildcardErr) {
+		t.Fatalf("BuildPath error = %v (%T), want file.FileWildcardBuildError", err, err)
+	}
+}
+
+func TestResource_MergeFields_DecodeVarsFromMatchPath(t *testing.T) {
+	type meta struct {
+		SensorID string
+		Date     string
+	}
+	res := file.NewResource[meta]("readings/{sensorID}/{date}.json", format.JSON(codex.Struct[meta]()),
+		file.NewPathParam("sensorID", codex.String(),
+			func(m meta) string { return m.SensorID },
+			func(m *meta, v string) { m.SensorID = v }),
+		file.NewPathParam("date", codex.String(),
+			func(m meta) string { return m.Date },
+			func(m *meta, v string) { m.Date = v }),
+	)
+	vars, err := res.MatchPath("readings/sensor-42/2024-01-15.json")
+	if err != nil {
+		t.Fatalf("MatchPath: %v", err)
+	}
+	var m meta
+	if err := codex.DecodeVars(&m, vars, res.MergeFields()...); err != nil {
+		t.Fatalf("DecodeVars: %v", err)
+	}
+	if m.SensorID != "sensor-42" || m.Date != "2024-01-15" {
+		t.Fatalf("decoded = %+v, want sensorID=sensor-42 date=2024-01-15", m)
+	}
+}
+
+func TestResource_MatchPath_GlobTemplate_MatchesAnonymously(t *testing.T) {
+	res := file.NewResource[record]("logs/{level}/*.json", format.JSON(recordCodec()))
+	vars, err := res.MatchPath("logs/fatal/anything.json")
+	if err != nil {
+		t.Fatalf("MatchPath: %v", err)
+	}
+	if vars["level"] != "fatal" {
+		t.Fatalf("MatchPath vars = %+v, want level=fatal", vars)
 	}
 }

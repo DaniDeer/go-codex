@@ -194,7 +194,7 @@ made explicitly this round):
 |---|---|---|---|
 | **1** | `api/file` package itself: `Resource[T]` + 10 role builders, `file.Client` (attach+dispatch), `file.Backend` seam, `file.Capability`, Router/Middleware/Observer/ErrorPattern integration, `adapters/file` migration (filesystem backend), full `ports.File`/`ports.Dir` migration | Full Go-signature design (this doc's main body, below) | **IMPLEMENTED** (incl. a `deep-dive-bug-hunt` pass and the retroactive List/BatchDelete per-entry Security amendment — see the main body's own status notes) |
 | **2** | `adapters/s3`, `adapters/smb` implementations; streaming/chunked I/O; conditional writes (ETag); recursive `WithList` | Full Go-signature design, per-item (see each item's own section below) | ALL 5 of 5 items IMPLEMENTED (Recursive `WithList`, Conditional writes, Streaming/chunked I/O, `adapters/s3`, `adapters/smb`) — Phase 2 is FULLY COMPLETE (see "Phase 2" section below) |
-| **3** | Adapt existing examples (`examples/*`) from `ports.File`/`adapters/file` direct usage to the new `api/file.Client` approach | Checklist-level (which examples, what "adapted" means) — kept light even though Phase 1/2 have since shipped, since `ports.File[T]`'s public call signatures stay unchanged (most examples need zero changes regardless) | Planned (see "Phase 3" section below) |
+| **3** | Adapt existing examples (`examples/*`) from `ports.File`/`adapters/file` direct usage to the new `api/file.Client` approach | `examples/dir-io`/`examples/file-io` fully rewritten (Stage D1); `examples/go-edge-models` (Stage D2, receiver-style) remains | Stage D1 IMPLEMENTED; Stage D2 planned (see "Phase 3" section below) |
 | **4** | Promote this roadmap doc to `docs/design/d-NNNN-*.md` (per the `plan-a-new-codex-feature` skill's delete/keep/promote 3-way policy) + sync `.github/instructions/go-codex.instructions.md`, `docs/` pages, and relevant skills | Mechanism named, exact number/content deferred until Phase 1-3 actually ship | Planned (see "Phase 4" section below) |
 
 Phase 1 is this doc's main body (everything through "Open design
@@ -3575,12 +3575,51 @@ outline depth as of this doc's latest revision).
 
 ## `file.Dir` — directory-listing + deletion capability (NEW, post-Phase-2)
 
-> **Status: IMPLEMENTED — `file.Dir` itself (Stage C, part 1) AND the
-> `ports.Dir` migration (Stage C2) are both shipped, reviewed, and
-> regression-tested (`ports/dir_test.go`'s full, unmodified suite
-> passes).** Stage D (migrating `examples/dir-io`/`examples/file-io`/
-> `examples/go-edge-models` to the new `api/file` approach directly)
-> remains the one still-pending item.
+> **Status: IMPLEMENTED — `file.Dir` itself (Stage C, part 1), the
+> `ports.Dir` migration (Stage C2), AND Stage D1 (rewriting
+> `examples/dir-io` + `examples/file-io` to the new `api/file` approach
+> directly) are all shipped, reviewed, and regression-tested**
+> (`ports/dir_test.go`'s full, unmodified suite passes; both rewritten
+> examples build, `gofmt`/`go vet`/`staticcheck`/`gosec` clean, and run
+> to completion with exit 0, preserving every original scenario's
+> narrative). Stage D2 (`examples/go-edge-models`'s receiver-style
+> migration, a separate, larger, higher-regression-risk round per its
+> own 846-line test suite) remains the one still-pending item.
+>
+> **Stage D1 found and fixed one real, confirmed bug in already-shipped
+> `api/file` code, incidental to the example rewrite** (the same
+> "found while building an example" pattern that has recurred several
+> times this session): `patchCore`'s merge/marshal round trip stayed in
+> TYPED (`T`) space (`format.PatchInto` returns `T`, then
+> `Marshal(T)` re-encodes it) — any field declared ONLY in the patch
+> codec `P` (absent from the resource's own body codec `T`) was
+> silently DROPPED from the written file, diverging from
+> `ports.PatchEncoded`'s own, established, already-tested contract
+> (which stays in MAP space via `UnmarshalRaw`/`format.DeepMerge`/
+> `MarshalRaw` specifically so patch-codec-only fields survive). Fixed
+> by mirroring `ports.PatchEncoded` exactly — `patchCore` now decodes
+> into `T` ONLY for Capability validation + metadata derivation, but
+> marshals the MERGED MAP, not a re-encoded `T`. A permanent regression
+> test (`TestPatcher_HandlePatch_PreservesPatchOnlyField`) proves this.
+>
+> Also added, discovered as a genuine (small) API-surface gap while
+> porting `examples/file-io`'s Section 2b (`MatchPath` + merge-field
+> decoding): `Resource[T].MergeFields() []codex.FieldCodec[T]` — a new
+> exported accessor mirroring `ports.File.MergeFields()`'s identical
+> role, letting a caller compose their own `codex.DecodeVars` call
+> against a `MatchPath` result (this was previously reachable only
+> internally, with no public accessor at all).
+>
+> `examples/file-io`'s rewrite reframed 2 scenarios per the plan's own
+> pre-identified gaps, disclosed in the example's own top-level doc
+> comment rather than silently dropped: (1) `ports.FilePathTemplate`'s
+> "reusable template+params shape" demonstration has no `api/file`
+> equivalent (no `PathTemplate` type exists there — an intentional
+> earlier scope-trim, not reintroduced here); (2) the raw,
+> undeclared `map[string]any` convenience `ports.File.Patch` offers has
+> no `api/file` equivalent either — `Resource[T].WithPatch` always
+> requires a DECLARED, typed patch codec (mirrors `ports.PatchEncoded`,
+> not `ports.File.Patch`'s own looser sibling).
 >
 > Discovered during Phase 3 planning: fully migrating `examples/dir-io`
 > and `examples/go-edge-models` (both of which use `ports.Dir`'s
@@ -4063,22 +4102,41 @@ New unit test plan rows (added during this review round):
 
 ## Phase 3 — adapt examples to the new `api/file` approach
 
-**Status: planned, not yet started.** Phase 1 and ALL of Phase 2 have
-now shipped (see each phase's own status above) — Phase 3 remains
-deliberately NOT started, not because of any blocker, but because it
-simply hasn't been picked up yet. Every existing example currently
-using `ports.File`/`ports.Dir`/`adapters/file` directly needs review
-against the "Removing an old API" checklist (`plan-a-new-codex-feature`
-skill) — `ports.File[T]`'s public call signatures stay UNCHANGED per
-this doc's own Scope decisions (confirmed true after Stage F's full
-migration — `ports/file_test.go`/`ports/dir_test.go` both passed
-UNMODIFIED), so most examples should need ZERO changes; any example
-relying on an internal detail (e.g. direct `os.*` error matching
-instead of `errors.As` against `ports.File`'s own typed errors) would
-need updating. A concrete example inventory (which files, which
-patterns) is deferred to when Phase 3 actually starts, since grepping
-for `ports.File`/`adapters/file` usage NOW would produce a list that's
-likely stale by the time anyone acts on it.
+**Status: Stage D1 IMPLEMENTED; Stage D2 planned.** Phase 1, ALL of
+Phase 2, and the standalone `file.Dir` capability (including its own
+Stage C2 `ports.Dir` migration) have all shipped (see each phase's own
+status above). This motivated a 2-stage execution plan for Phase 3,
+confirmed via `ask_user`:
+
+- **Stage D1 (IMPLEMENTED)**: `examples/dir-io` and `examples/file-io`
+  — both free-standing teaching examples with no external callers and
+  no own test suite — fully rewritten onto `api/file.Client`/
+  `Resource[T]`/`Dir`/`Router` directly, demonstrating `api/file`'s own
+  declarative surface rather than `ports`'s thinner wrapper. Every
+  original scenario was preserved (not reframed into new content)
+  except the 2 disclosed exceptions noted in the `file.Dir` status
+  block above (`FilePathTemplate`'s reusable-shape demo; the raw
+  `map[string]any` Patch convenience). Verified: both examples build,
+  `gofmt`/`go vet`/`staticcheck`/`gosec` clean, and run to completion
+  (`exit 0`) with output matching the original narrative. Found and
+  fixed one real, confirmed `patchCore` bug along the way (see the
+  `file.Dir` status block above) and added a new public
+  `Resource[T].MergeFields()` accessor.
+- **Stage D2 (planned, separate round)**: `examples/go-edge-models`'s
+  `models/iotedge/usecase` package — a REAL, exported API surface
+  (`NewDeviceFile`/`NewFile`/`NewBaselineFile`/`NewDeviceDir`/`NewDir`/
+  `ListDeviceIDs`/`ListNames`/`ReadDeviceConfig`/`WriteDeviceConfig`/
+  `ReadEffective`) consumed by other code in the example tree and
+  covered by its own ~846-line test suite — confirmed via `ask_user` to
+  use a RECEIVER-STYLE design: a new `Store` struct holding a
+  `*file.Client` (and whatever `BasePath` context it already threads),
+  with every one of those functions becoming a METHOD on it instead of
+  threading a raw `*file.Client` parameter through each call. Deferred
+  as its own, separately-reviewed round given its real regression risk
+  (unlike `ports/dir_test.go`'s hard-gate role, THIS package's own test
+  files are themselves in-scope for rewriting — the bar is "same
+  behavior, rewritten against the new signatures," not "zero test
+  changes").
 
 ## Phase 4 — promote to `docs/design/` + sync instructions/skills
 

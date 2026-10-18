@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/DaniDeer/go-codex/codex"
+	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/stats"
 )
 
@@ -574,13 +575,36 @@ func patchCore[T, P any](ctx context.Context, backend Backend, core roleCore[T],
 		recordWrite(obs, path, false, time.Since(start))
 		return FileReadError{Path: path, Err: err}
 	}
-	merged, err := core.resource.format.PatchInto(data, patchMap)
+	// Stay in MAP space for the merge/marshal round trip — mirrors
+	// ports.PatchEncoded's own, established, already-tested contract
+	// exactly (confirmed via examples/file-io: using format.PatchInto,
+	// which decodes the merge result into T before marshaling, silently
+	// DROPS any patchCodec-only field absent from T, e.g. a "debug_mode"
+	// field present only in the patch codec — a real, now-fixed bug).
+	// Re-decoding into T below is still done, but ONLY to validate the
+	// file codec's own known fields and to obtain a typed value for
+	// metadata derivation — the bytes actually written come from
+	// MarshalRaw(existingMap), never Marshal(T), so patchCodec-only
+	// fields survive in the written file exactly like ports.PatchEncoded.
+	rawExisting, err := core.resource.format.UnmarshalRaw(data)
 	if err != nil {
 		stats.ReportErrors(obs, "file", err)
 		recordWrite(obs, path, false, time.Since(start))
 		return FileDecodeError{Path: path, Err: err}
 	}
-	newData, err := core.resource.format.Marshal(merged)
+	existingMap, ok := rawExisting.(map[string]any)
+	if !ok {
+		recordWrite(obs, path, false, time.Since(start))
+		return FilePatchNotSupportedError{Path: path}
+	}
+	format.DeepMerge(existingMap, patchMap)
+	merged, err := core.resource.format.Codec().Decode(existingMap)
+	if err != nil {
+		stats.ReportErrors(obs, "file", err)
+		recordWrite(obs, path, false, time.Since(start))
+		return FileDecodeError{Path: path, Err: err}
+	}
+	newData, err := core.resource.format.MarshalRaw(existingMap)
 	if err != nil {
 		stats.ReportErrors(obs, "file", err)
 		recordWrite(obs, path, false, time.Since(start))

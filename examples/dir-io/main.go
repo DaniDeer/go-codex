@@ -1,6 +1,6 @@
-// Package main demonstrates [ports.Dir]: the declarative directory-listing
-// port — a codec-validated "ls", not "cat" — and how it composes into a
-// pipeline via [ports.SourcePort].
+// Package main demonstrates [file.Dir]: the declarative directory-listing
+// capability — a codec-validated "ls", not "cat" — and how it composes
+// into a pipeline via [ports.SourcePort].
 //
 // Scenario: a directory of per-sensor reading files, one JSON file per
 // sensor (the filename IS the sensor ID, mirroring how iotedge's own
@@ -11,41 +11,50 @@
 // naming convention).
 //
 // Key patterns shown:
-//   - [ports.NewDir] + [ports.WithEntryPattern] — declare once, list many:
+//   - [file.NewDir] + [file.WithEntryPattern] — declare once, list many:
 //     each entry's filename is parsed/validated the SAME way
-//     [ports.File.MatchPath] parses a full file path; non-matching entries
-//     (the stray README.md) are silently excluded, not returned as errors
-//   - [ports.Dir.BuildPath] / [ports.Dir.MatchPath] — validate the
+//     [file.Resource.MatchPath] parses a full file path; non-matching
+//     entries (the stray README.md) are silently excluded, not returned
+//     as errors
+//   - [file.Dir.BuildPath] / [file.Dir.MatchPath] — validate the
 //     DIRECTORY's own location (an {year} path segment), independent of
-//     what's found inside it
-//   - [ports.WithRecursive] — descend into the archive/{year}/ subtree,
-//     with an [ports.EntryPattern] spanning subdirectory segments
-//   - Composing [ports.Dir.List]'s one-shot discovery with a
+//     what's found inside it; PURE, no-I/O methods on [file.Dir] itself
+//     (no Client/Backend needed for these two)
+//   - [file.WithRecursive] — descend into the archive/{year}/ subtree,
+//     with an [file.EntryPattern] spanning subdirectory segments
+//   - Composing [file.Dir]'s one-shot [Client.ListDir] discovery with a
 //     [ports.SourcePort] pipeline: List finds WHICH sensors exist, then a
-//     channel-backed source streams that discovery through a pipeline that
-//     reads each sensor's own reading file — Dir has no adapter binding of
-//     its own (by design — a directory listing has no single typed
-//     payload), so it composes via the SAME [ports.ChanSourceAdapter] any
-//     in-memory data source would use
-//   - Typed errors: [ports.DirReadError], [ports.DirEntryParamError],
-//     [ports.DirPathMismatchError] — navigate via [errors.As]
-//   - [ports.DirOptions.CreateIfMissing] — opt-in auto-creation of a
+//     channel-backed source streams that discovery through a pipeline
+//     that reads each sensor's own reading file via [Client.Read] — Dir
+//     has no adapter binding of its own (by design — a directory listing
+//     has no single typed payload), so it composes via the SAME
+//     [ports.ChanSourceAdapter] any in-memory data source would use
+//     (ports.SourcePort/ChanSourceAdapter are generic pipeline
+//     primitives, unrelated to the File/Dir-vs-ports.File/ports.Dir
+//     migration this example otherwise demonstrates)
+//   - Typed errors: [file.DirReadError], [file.DirEntryParamError],
+//     [file.DirPathMismatchError] — navigate via [errors.As]
+//   - [file.DirOptions.CreateIfMissing] — opt-in auto-creation of a
 //     missing directory before listing (default off, matches
-//     [ports.File]'s own "never auto-create" default)
-//   - [ports.Dir.Delete] — idempotent "ensure absent" by default;
-//     [ports.DirOptions.Strict]/[ports.DirOptions.DryRun]/
-//     [ports.DirOptions.DeleteRecursive] opt-ins for both Delete and
+//     [file.Resource]'s own "never auto-create" default)
+//   - [Client.DeleteDir] — idempotent "ensure absent" by default;
+//     [file.DirOptions.Strict]/[file.DirOptions.DryRun]/
+//     [file.DirOptions.DeleteRecursive] opt-ins for both Delete and
 //     List+CreateIfMissing (Strict on Create means the REVERSE
 //     precondition of Strict on Delete: the path must NOT already exist)
 //   - Glob path template segments (shell-glob "*"/"?"/"[...]" plus "**"
-//     globstar, NOT MQTT's "+"/"#") — [ports.Dir.List]'s glob-discovery
+//     globstar, NOT MQTT's "+"/"#") — [Client.ListDir]'s glob-discovery
 //     mode finds EVERY matching directory and aggregates their entries;
 //     a named "{var}" segment combined with a glob segment acts as a
 //     PARTIAL FILTER (supplied narrows, unsupplied is captured per
 //     match, merged with any EntryPattern captures into one Vars map);
-//     [ports.WithBaseDir] anchors the discovery walk (an unanchored
-//     wildcard-first template walks from cwd instead);
-//     [ports.DirWildcardBuildError] rejects BuildPath/MatchPath/Delete on
+//     anchoring the glob-discovery walk is done via [file.Router]/
+//     [file.WithRouter] (file.Dir has NO WithBaseDir of its own — Router
+//     composition is the ONE anchoring mechanism, reused from the same
+//     mechanism every other api/file role already uses for Router-group
+//     path-prefix composition; an unanchored wildcard-first template
+//     walks from cwd instead, exactly as it did before);
+//     [file.DirWildcardBuildError] rejects BuildPath/MatchPath/Delete on
 //     a glob-enabled template
 //
 // Run with: go run ./examples/dir-io
@@ -58,6 +67,8 @@ import (
 	"os"
 	"path/filepath"
 
+	adapterfile "github.com/DaniDeer/go-codex/adapters/file"
+	"github.com/DaniDeer/go-codex/api/file"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/format"
 	"github.com/DaniDeer/go-codex/ports"
@@ -98,6 +109,12 @@ func main() {
 	}
 	defer os.RemoveAll(root)
 
+	ctx := context.Background()
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		panic(err)
+	}
+
 	reportsDir := filepath.Join(root, "reports")
 	archiveDir := filepath.Join(reportsDir, "archive", "2023")
 	if err := os.MkdirAll(archiveDir, 0o755); err != nil {
@@ -131,13 +148,14 @@ func main() {
 	writeReading(filepath.Join(archiveDir, "temp-01.json"), Reading{Value: 18.2, Unit: "celsius"})
 
 	// ── Section 1: List — single-level, EntryPattern filters + parses ────────
-	fmt.Println("── Section 1: Dir.List — discover sensor files (like \"ls\") ──")
+	fmt.Println("── Section 1: Client.ListDir — discover sensor files (like \"ls\") ──")
 
-	sensorFilePattern := ports.EntryPattern{
+	sensorFilePattern := file.EntryPattern{
 		Template: "{sensorID}.json",
-		Params:   []ports.EntryParam{ports.EntryParam{Name: "sensorID"}.WithCodec(sensorIDCodec)},
+		Params:   []file.EntryParam{file.EntryParam{Name: "sensorID"}.WithCodec(sensorIDCodec)},
 	}
-	reportsListing := ports.NewDir(reportsDir, ports.WithEntryPattern(sensorFilePattern))
+	reportsListing := file.NewDir(reportsDir, file.WithEntryPattern(sensorFilePattern))
+	reportsLister := reportsListing.WithList(file.ListDir{})
 
 	// The invalid "ab.json" file is temporarily removed for this first
 	// listing so Section 1 shows only the successful-discovery path;
@@ -146,7 +164,7 @@ func main() {
 		panic(err)
 	}
 
-	entries, err := reportsListing.List(nil, ports.DirOptions{})
+	entries, err := client.ListDir(ctx, reportsLister, nil)
 	if err != nil {
 		panic(err)
 	}
@@ -159,9 +177,9 @@ func main() {
 	fmt.Println("\n── Section 2: Dir.BuildPath/MatchPath — the directory's OWN location ──")
 
 	yearCodec := codex.String().Refine(validate.NonEmptyString)
-	archiveYearDir := ports.NewDir(
+	archiveYearDir := file.NewDir(
 		filepath.Join(reportsDir, "archive", "{year}"),
-		ports.DirPathParam{Name: "year"}.WithCodec(yearCodec),
+		file.PathParam{Name: "year"}.WithCodec(yearCodec),
 	)
 
 	archivePath, err := archiveYearDir.BuildPath(map[string]string{"year": "2023"})
@@ -177,25 +195,26 @@ func main() {
 	fmt.Printf("  MatchPath(%q): year=%q\n", filepath.Base(archivePath), matchedVars["year"])
 
 	_, err = archiveYearDir.MatchPath(filepath.Join(reportsDir, "not-the-archive-shape"))
-	var mismatchErr ports.DirPathMismatchError
+	var mismatchErr file.DirPathMismatchError
 	if errors.As(err, &mismatchErr) {
 		fmt.Printf("  DirPathMismatchError: template=%q path=%q\n", mismatchErr.Template, mismatchErr.Path)
 	}
 
 	// ── Section 3: Recursive listing — EntryPattern spans subdirectories ────
-	fmt.Println("\n── Section 3: Dir.List — recursive, EntryPattern spans subdirectories ──")
+	fmt.Println("\n── Section 3: Client.ListDir — recursive, EntryPattern spans subdirectories ──")
 
-	archiveListing := ports.NewDir(filepath.Join(reportsDir, "archive"),
-		ports.WithRecursive(true),
-		ports.WithEntryPattern(ports.EntryPattern{
+	archiveListing := file.NewDir(filepath.Join(reportsDir, "archive"),
+		file.WithRecursive(true),
+		file.WithEntryPattern(file.EntryPattern{
 			Template: "{year}/{sensorID}.json",
-			Params: []ports.EntryParam{
-				ports.EntryParam{Name: "year"}.WithCodec(yearCodec),
-				ports.EntryParam{Name: "sensorID"}.WithCodec(sensorIDCodec),
+			Params: []file.EntryParam{
+				file.EntryParam{Name: "year"}.WithCodec(yearCodec),
+				file.EntryParam{Name: "sensorID"}.WithCodec(sensorIDCodec),
 			},
 		}),
 	)
-	archiveEntries, err := archiveListing.List(nil, ports.DirOptions{})
+	archiveLister := archiveListing.WithList(file.ListDir{})
+	archiveEntries, err := client.ListDir(ctx, archiveLister, nil)
 	if err != nil {
 		panic(err)
 	}
@@ -206,22 +225,21 @@ func main() {
 	// ── Section 4: Pipeline capability — Dir.List discovery feeds a
 	// SourcePort ───────────────────────────────────────────────────────────
 	//
-	// ports.Dir has NO adapter binding of its own (a directory listing has
-	// no single typed payload the way ports.File's contents do) — but its
-	// ONE-SHOT List result composes with a pipeline exactly like any other
-	// in-memory data source: feed the discovered sensor IDs through
+	// file.Dir has NO adapter binding of its own (a directory listing has
+	// no single typed payload the way a Resource's contents do) — but its
+	// ONE-SHOT ListDir result composes with a pipeline exactly like any
+	// other in-memory data source: feed the discovered sensor IDs through
 	// [ports.ChanSourceAdapter], then a downstream stage reads each
-	// sensor's OWN reading file via [ports.File.Read]. Dir decides WHICH
-	// files exist; File.Read decides WHAT's inside each one — two
-	// declarative surfaces, cleanly composed.
-	fmt.Println("\n── Section 4: Dir.List discovery feeding a SourcePort pipeline ──")
+	// sensor's OWN reading file via [Client.Read]. Dir decides WHICH files
+	// exist; the declared Resource[Reading] decides WHAT's inside each
+	// one — two declarative surfaces, cleanly composed.
+	fmt.Println("\n── Section 4: Client.ListDir discovery feeding a SourcePort pipeline ──")
 
-	discovered, err := reportsListing.List(nil, ports.DirOptions{})
+	discovered, err := client.ListDir(ctx, reportsLister, nil)
 	if err != nil {
 		panic(err)
 	}
 
-	ctx := context.Background()
 	sensors := codex.Must(ports.NewSourcePort[string]("discovered-sensors", codex.String(), ports.PortOptions{Buffer: len(discovered)}))
 
 	ch := make(chan string, len(discovered))
@@ -232,12 +250,15 @@ func main() {
 	sensors.Bind(ctx, ports.ChanSourceAdapter(ch))
 
 	sensorIDs, _ := gstream.Collect(ctx, sensors.Stream(ctx))
+	sensorFile := file.NewResource[Reading](filepath.Join(reportsDir, "{sensorID}.json"), readingFormat,
+		file.PathParam{Name: "sensorID"})
+	sensorReader := sensorFile.WithRead(file.Read{})
 	for _, id := range sensorIDs {
-		readingFile := ports.NewFile(filepath.Join(reportsDir, id+".json"), readingFormat)
-		reading, err := readingFile.Read(nil, ports.FileOptions{})
+		respAny, err := client.Read(ctx, sensorReader, map[string]string{"sensorID": id})
 		if err != nil {
 			panic(err)
 		}
+		reading := respAny.(Reading)
 		fmt.Printf("  pipeline read sensor=%q value=%.1f%s\n", id, reading.Value, reading.Unit)
 	}
 
@@ -245,9 +266,10 @@ func main() {
 	fmt.Println("\n── Section 5: Typed error handling ──")
 
 	// A non-existent directory → DirReadError.
-	missingDir := ports.NewDir(filepath.Join(root, "does-not-exist"))
-	_, err = missingDir.List(nil, ports.DirOptions{})
-	var readErr ports.DirReadError
+	missingDir := file.NewDir(filepath.Join(root, "does-not-exist"))
+	missingLister := missingDir.WithList(file.ListDir{})
+	_, err = client.ListDir(ctx, missingLister, nil)
+	var readErr file.DirReadError
 	if errors.As(err, &readErr) {
 		fmt.Printf("  DirReadError: path=%q\n", readErr.Path)
 	}
@@ -257,83 +279,87 @@ func main() {
 	// acts as BOTH a filter for non-matching shapes AND a validator for
 	// matching-but-invalid ones).
 	writeReading(filepath.Join(reportsDir, "ab.json"), Reading{Value: 0, Unit: "celsius"})
-	_, err = reportsListing.List(nil, ports.DirOptions{})
-	var paramErr ports.DirEntryParamError
+	_, err = client.ListDir(ctx, reportsLister, nil)
+	var paramErr file.DirEntryParamError
 	if errors.As(err, &paramErr) {
 		fmt.Printf("  DirEntryParamError: entry=%q param=%q value=%q\n", paramErr.Entry, paramErr.Name, paramErr.Value)
 	}
 
 	// ── Section 6: CreateIfMissing — auto-creating a missing directory ──────
 	//
-	// By default List on a non-existent directory returns DirReadError
+	// By default ListDir on a non-existent directory returns DirReadError
 	// (shown just above via missingDir) — DirOptions.CreateIfMissing opts
 	// into creating it first, so a first-run "workspace" directory doesn't
 	// need a separate os.MkdirAll call in application code.
 	fmt.Println("\n── Section 6: DirOptions.CreateIfMissing — auto-creating a missing directory ──")
 
-	freshDir := ports.NewDir(filepath.Join(root, "reports", "2024-fresh"))
-	freshEntries, err := freshDir.List(nil, ports.DirOptions{CreateIfMissing: true})
+	freshDir := file.NewDir(filepath.Join(root, "reports", "2024-fresh"))
+	freshLister := freshDir.WithList(file.ListDir{})
+	freshEntries, err := client.ListDir(ctx, freshLister, nil, file.DirOptions{CreateIfMissing: true})
 	if err != nil {
 		panic(err)
 	}
 	fmt.Printf("  freshly-created directory lists %d entries (empty, not an error)\n", len(freshEntries))
 
 	// Strict: refuse to reuse the directory we just created.
-	_, err = freshDir.List(nil, ports.DirOptions{CreateIfMissing: true, Strict: true})
-	var existsErr ports.DirAlreadyExistsError
+	_, err = client.ListDir(ctx, freshLister, nil, file.DirOptions{CreateIfMissing: true, Strict: true})
+	var existsErr file.DirAlreadyExistsError
 	if errors.As(err, &existsErr) {
 		fmt.Printf("  Strict: DirAlreadyExistsError (path=%q), as expected\n", existsErr.Path)
 	}
 
 	// DryRun: preview whether creation WOULD be needed, without creating anything.
-	dryRunDir := ports.NewDir(filepath.Join(root, "reports", "2024-dryrun"))
-	_, err = dryRunDir.List(nil, ports.DirOptions{CreateIfMissing: true, DryRun: true})
-	var dryRunReadErr ports.DirReadError
+	dryRunDir := file.NewDir(filepath.Join(root, "reports", "2024-dryrun"))
+	dryRunLister := dryRunDir.WithList(file.ListDir{})
+	_, err = client.ListDir(ctx, dryRunLister, nil, file.DirOptions{CreateIfMissing: true, DryRun: true})
+	var dryRunReadErr file.DirReadError
 	if errors.As(err, &dryRunReadErr) {
 		fmt.Printf("  DryRun: DirReadError (creation would have been needed), nothing created\n")
 	}
 
-	// ── Section 7: Dir.Delete — idempotent by default, Strict/DeleteRecursive/DryRun opt-ins ──
-	fmt.Println("\n── Section 7: Dir.Delete — idempotent by default ──")
+	// ── Section 7: Client.DeleteDir — idempotent by default, Strict/DeleteRecursive/DryRun opt-ins ──
+	fmt.Println("\n── Section 7: Client.DeleteDir — idempotent by default ──")
+
+	freshDeleter := freshDir.WithDelete(file.DeleteDir{})
 
 	// Delete the empty directory we created above.
-	deleted, err := freshDir.Delete(nil, ports.DirOptions{})
+	deleted, err := client.DeleteDir(ctx, freshDeleter, nil)
 	if err != nil {
 		panic(err)
 	}
 	fmt.Printf("  Delete empty dir: removed %v\n", deleted)
 
 	// Deleting again: idempotent success (no error, empty slice).
-	deleted, err = freshDir.Delete(nil, ports.DirOptions{})
+	deleted, err = client.DeleteDir(ctx, freshDeleter, nil)
 	if err != nil {
 		panic(err)
 	}
 	fmt.Printf("  Delete again: deleted=%v, err=nil (idempotent)\n", deleted)
 
 	// Strict: the directory is already gone — now it's an error.
-	_, err = freshDir.Delete(nil, ports.DirOptions{Strict: true})
-	var notFoundErr ports.DirNotFoundError
+	_, err = client.DeleteDir(ctx, freshDeleter, nil, file.DirOptions{Strict: true})
+	var notFoundErr file.DirNotFoundError
 	if errors.As(err, &notFoundErr) {
 		fmt.Printf("  Strict Delete: DirNotFoundError (already absent), as expected\n")
 	}
 
 	// Non-empty directory without DeleteRecursive: refused.
-	reportsDelete := ports.NewDir(reportsDir)
-	_, err = reportsDelete.Delete(nil, ports.DirOptions{})
-	var notEmptyErr ports.DirNotEmptyError
+	reportsDeleter := file.NewDir(reportsDir).WithDelete(file.DeleteDir{})
+	_, err = client.DeleteDir(ctx, reportsDeleter, nil)
+	var notEmptyErr file.DirNotEmptyError
 	if errors.As(err, &notEmptyErr) {
 		fmt.Printf("  Delete non-empty without DeleteRecursive: DirNotEmptyError, as expected\n")
 	}
 
 	// DryRun + DeleteRecursive: preview every path that WOULD be removed.
-	previewDeleted, err := reportsDelete.Delete(nil, ports.DirOptions{DeleteRecursive: true, DryRun: true})
+	previewDeleted, err := client.DeleteDir(ctx, reportsDeleter, nil, file.DirOptions{DeleteRecursive: true, DryRun: true})
 	if err != nil {
 		panic(err)
 	}
 	fmt.Printf("  DryRun + DeleteRecursive: would remove %d path(s), nothing actually removed\n", len(previewDeleted))
 
 	// DeleteRecursive for real: removes the directory and everything inside it.
-	finalDeleted, err := reportsDelete.Delete(nil, ports.DirOptions{DeleteRecursive: true})
+	finalDeleted, err := client.DeleteDir(ctx, reportsDeleter, nil, file.DirOptions{DeleteRecursive: true})
 	if err != nil {
 		panic(err)
 	}
@@ -345,12 +371,10 @@ func main() {
 	// Unlike Sections 1-3 (one directory, matched exactly), a glob-enabled
 	// template — "*"/"?"/"[...]" via path/filepath.Match, plus "**"
 	// globstar matching zero-or-more WHOLE segments anywhere — makes
-	// Dir.List DISCOVER every directory matching the template and
+	// Client.ListDir DISCOVER every directory matching the template and
 	// aggregate their entries into one result. This mirrors shell glob,
-	// NOT MQTT's topic wildcards (an earlier draft modeled this on MQTT's
-	// "+"/"#"; that direction was rejected — filesystem users already
-	// know shell glob).
-	fmt.Println("\n── Section 8: glob path template segments — Dir.List discovery ──")
+	// NOT MQTT's topic wildcards.
+	fmt.Println("\n── Section 8: glob path template segments — Client.ListDir discovery ──")
 
 	logsRoot := filepath.Join(root, "logs")
 	for _, app := range []string{"web", "api", "other"} {
@@ -364,10 +388,20 @@ func main() {
 	}
 
 	// "*" matches exactly one path segment and may share it with literal
-	// text ("app-*"); WithBaseDir anchors the glob-discovery walk so an
-	// unbounded scan from the current working directory never happens.
-	appErrorLogs := ports.NewDir("logs/app-*/errors", ports.WithBaseDir(root))
-	globEntries, err := appErrorLogs.List(nil, ports.DirOptions{})
+	// text ("app-*"); file.Router/file.WithRouter anchors the
+	// glob-discovery walk — a glob-enabled Dir's own template stays
+	// UNPREFIXED (declared relative), and the Router's prefix is resolved
+	// in ONLY at dispatch time, via .Handle(client, file.WithRouter(rt)) —
+	// so an unanchored wildcard-first template never scans unboundedly
+	// from cwd by accident.
+	appErrorLogs := file.NewDir("logs/app-*/errors")
+	rootRouter := file.NewRouter(root)
+	appErrorLister := appErrorLogs.WithList(file.ListDir{})
+	appErrorHandle, err := appErrorLister.Handle(client, file.WithRouter(rootRouter))
+	if err != nil {
+		panic(err)
+	}
+	globEntries, err := client.ListDir(ctx, appErrorHandle, nil)
 	if err != nil {
 		panic(err)
 	}
@@ -387,8 +421,13 @@ func main() {
 	if err := os.WriteFile(filepath.Join(deepDir, "deep.log"), []byte("deep\n"), 0o644); err != nil {
 		panic(err)
 	}
-	globstarLogs := ports.NewDir("logs/**/errors", ports.WithBaseDir(root))
-	globstarEntries, err := globstarLogs.List(nil, ports.DirOptions{})
+	globstarLogs := file.NewDir("logs/**/errors")
+	globstarLister := globstarLogs.WithList(file.ListDir{})
+	globstarHandle, err := globstarLister.Handle(client, file.WithRouter(rootRouter))
+	if err != nil {
+		panic(err)
+	}
+	globstarEntries, err := client.ListDir(ctx, globstarHandle, nil)
 	if err != nil {
 		panic(err)
 	}
@@ -409,15 +448,25 @@ func main() {
 			panic(err)
 		}
 	}
-	questionMarkLogs := ports.NewDir("logs/app-?", ports.WithBaseDir(root))
-	qEntries, err := questionMarkLogs.List(nil, ports.DirOptions{})
+	questionMarkLogs := file.NewDir("logs/app-?")
+	questionMarkLister := questionMarkLogs.WithList(file.ListDir{})
+	questionMarkHandle, err := questionMarkLister.Handle(client, file.WithRouter(rootRouter))
+	if err != nil {
+		panic(err)
+	}
+	qEntries, err := client.ListDir(ctx, questionMarkHandle, nil)
 	if err != nil {
 		panic(err)
 	}
 	fmt.Printf("  \"logs/app-?\" (single char) discovered %d dirs (app-1, app-2) — not \"app-10\" (two chars)\n", len(qEntries))
 
-	charClassLogs := ports.NewDir("logs/app-[wa]*", ports.WithBaseDir(root))
-	classEntries, err := charClassLogs.List(nil, ports.DirOptions{})
+	charClassLogs := file.NewDir("logs/app-[wa]*")
+	charClassLister := charClassLogs.WithList(file.ListDir{})
+	charClassHandle, err := charClassLister.Handle(client, file.WithRouter(rootRouter))
+	if err != nil {
+		panic(err)
+	}
+	classEntries, err := client.ListDir(ctx, charClassHandle, nil)
 	if err != nil {
 		panic(err)
 	}
@@ -439,16 +488,20 @@ func main() {
 			panic(err)
 		}
 	}
-	envAppLogs := ports.NewDir("env-logs/{env}/app-*",
-		ports.DirPathParam{Name: "env"},
-		ports.WithBaseDir(root),
-		ports.WithEntryPattern(ports.EntryPattern{
+	envAppLogs := file.NewDir("env-logs/{env}/app-*",
+		file.PathParam{Name: "env"},
+		file.WithEntryPattern(file.EntryPattern{
 			Template: "trace-{seq}.log",
-			Params:   []ports.EntryParam{{Name: "seq"}},
+			Params:   []file.EntryParam{{Name: "seq"}},
 		}),
 	)
+	envAppLister := envAppLogs.WithList(file.ListDir{})
+	envAppHandle, err := envAppLister.Handle(client, file.WithRouter(rootRouter))
+	if err != nil {
+		panic(err)
+	}
 	// Supplied "env" filters discovery to ONLY that literal value.
-	prodOnly, err := envAppLogs.List(map[string]string{"env": "prod"}, ports.DirOptions{})
+	prodOnly, err := client.ListDir(ctx, envAppHandle, map[string]string{"env": "prod"})
 	if err != nil {
 		panic(err)
 	}
@@ -456,7 +509,7 @@ func main() {
 
 	// Unsupplied "env" is captured per match — merged with EntryPattern's
 	// own "seq" capture into ONE flat Vars map per entry.
-	allEnvs, err := envAppLogs.List(nil, ports.DirOptions{})
+	allEnvs, err := client.ListDir(ctx, envAppHandle, nil)
 	if err != nil {
 		panic(err)
 	}
@@ -465,9 +518,9 @@ func main() {
 	}
 
 	// A wildcard-first-segment template (no literal prefix at all) has no
-	// safe anchor — WITHOUT WithBaseDir it walks from the current working
-	// directory, which can be slow on a large tree. Chdir here so the
-	// unanchored walk stays scoped to this demo's own temp root.
+	// safe anchor — WITHOUT a Router prefix it walks from the current
+	// working directory, which can be slow on a large tree. Chdir here so
+	// the unanchored walk stays scoped to this demo's own temp root.
 	oldWD, err := os.Getwd()
 	if err != nil {
 		panic(err)
@@ -475,22 +528,23 @@ func main() {
 	if err := os.Chdir(root); err != nil {
 		panic(err)
 	}
-	unanchoredLogs := ports.NewDir("logs/app-*/errors") // no WithBaseDir — walks from cwd
-	unanchoredEntries, err := unanchoredLogs.List(nil, ports.DirOptions{})
+	unanchoredLogs := file.NewDir("logs/app-*/errors") // no Router — walks from cwd
+	unanchoredLister := unanchoredLogs.WithList(file.ListDir{})
+	unanchoredEntries, err := client.ListDir(ctx, unanchoredLister, nil)
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("  \"logs/app-*/errors\" with NO WithBaseDir: %d entries, walked from cwd (%s)\n", len(unanchoredEntries), root)
+	fmt.Printf("  \"logs/app-*/errors\" with NO Router: %d entries, walked from cwd (%s)\n", len(unanchoredEntries), root)
 	if err := os.Chdir(oldWD); err != nil {
 		panic(err)
 	}
 
 	// BuildPath/MatchPath reject a glob-enabled template outright — a
 	// glob-enabled template can match MULTIPLE paths, so building/matching
-	// a SINGLE concrete path is undefined. Use Dir.List's glob-discovery
-	// mode instead.
+	// a SINGLE concrete path is undefined. Use Client.ListDir's
+	// glob-discovery mode instead.
 	_, err = appErrorLogs.BuildPath(nil)
-	var wildcardErr ports.DirWildcardBuildError
+	var wildcardErr file.DirWildcardBuildError
 	if errors.As(err, &wildcardErr) {
 		fmt.Printf("  BuildPath on a glob-enabled template: DirWildcardBuildError (template=%q), as expected\n", wildcardErr.Template)
 	}
@@ -499,10 +553,12 @@ func main() {
 		fmt.Printf("  MatchPath on a glob-enabled template: DirWildcardBuildError (template=%q), as expected\n", wildcardErr.Template)
 	}
 
-	// Dir.Delete ALSO has no glob-discovery mode of its own — deleting
-	// MULTIPLE directories matched by one template in a single call is
-	// deliberately not supported; rejected the same way BuildPath is.
-	_, err = appErrorLogs.Delete(nil, ports.DirOptions{})
+	// Client.DeleteDir ALSO has no glob-discovery mode of its own —
+	// deleting MULTIPLE directories matched by one template in a single
+	// call is deliberately not supported; rejected the same way BuildPath
+	// is.
+	appErrorDeleter := appErrorLogs.WithDelete(file.DeleteDir{})
+	_, err = client.DeleteDir(ctx, appErrorDeleter, nil)
 	if errors.As(err, &wildcardErr) {
 		fmt.Printf("  Delete on a glob-enabled template: DirWildcardBuildError (template=%q), as expected\n", wildcardErr.Template)
 	}

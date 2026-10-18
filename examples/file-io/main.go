@@ -1,31 +1,48 @@
-// Package main demonstrates [ports.File]: the declarative typed file descriptor
-// for reading, writing, and updating files with full codec validation.
+// Package main demonstrates [file.Resource]: the declarative typed file
+// descriptor for reading, writing, and updating files with full codec
+// validation, attached to a [file.Client].
 //
 // Scenario: an IoT sensor data pipeline that:
-//   - Loads a TOML service config on startup using a static [ports.File]
+//   - Loads a TOML service config on startup using a static [file.Resource]
 //   - Applies a single env var override via [config.FromEnvVar]
 //   - Writes and reads per-sensor JSON measurement files using a template path
-//   - Validates path variables (date format) with a [ports.FilePathParam] codec
+//   - Validates path variables (date format) with a [file.PathParam] codec
 //   - Handles all typed file errors with [errors.As]
 //   - Wires a [stats.FileObserver] for per-operation metrics + slog for structured errors
 //   - Writes and reads raw binary (PNG) files using [format.Binary] + [validate.PNG]
 //
 // Key patterns shown:
-//   - [ports.NewFile] — declare once, use anywhere (mirrors rest.Route / events.Channel)
-//   - [ports.File.BuildPath] — pre-flight path validation without any I/O
-//   - [ports.File.MatchPath] + [ports.NewFilePathParam] + [codex.DecodeVars] —
+//   - [file.NewResource] — declare once, use anywhere (mirrors rest.Route / events.Channel)
+//   - [file.Resource.BuildPath] — pre-flight path validation without any I/O
+//   - [file.Resource.MatchPath] + [file.NewPathParam] + [codex.DecodeVars] —
 //     the inverse of BuildPath: extracting filename-encoded metadata
 //     (date, sensor) into a typed struct, merged alongside the body
-//   - [ports.File.Update] — atomic read-modify-write in one call
-//   - [ports.FileOptions] — wiring observer + custom file permission
-//   - [ports.FilePathParamError], [ports.MissingFilePathVarError],
-//     [ports.FileReadError] — navigate via [errors.As]
+//   - Update (read-modify-write) — a CLIENT-SIDE-ONLY composition
+//     (Client.Read + transform + Client.Create), not a wire verb of its
+//     own — mirrors [ports.File.Update]'s identical design
+//   - [file.WriteOptions] — wiring custom file permission/CreateDirs
+//   - [file.FilePathParamError], [file.MissingFilePathVarError],
+//     [file.FileReadError] — navigate via [errors.As]
 //   - [format.Binary] — raw binary file I/O with magic-byte validation
-//   - Glob path template segments ("*"/"**" via [ports.File.MatchPath])
-//     — matching, not building: [ports.File.BuildPath] rejects a
-//     glob-enabled template with [ports.FileWildcardBuildError]; see
-//     examples/dir-io's Section 8 for [ports.Dir.List]'s glob-DISCOVERY
-//     mode, which File itself deliberately does not duplicate
+//   - Glob path template segments ("*"/"**" via [file.Resource.MatchPath])
+//     — matching, not building: [file.Resource.BuildPath] rejects a
+//     glob-enabled template with [file.FileWildcardBuildError]; see
+//     examples/dir-io's Section 8 for [Client.ListDir]'s glob-DISCOVERY
+//     mode, which Resource[T] itself deliberately does not duplicate
+//
+// NOTE — 2 disclosed differences from the equivalent ports.File-based
+// example this replaces:
+//   - api/file has NO FilePathTemplate-equivalent standalone type (a
+//     template+params value reusable across multiple declarations
+//     without inlining them each time) — this capability was
+//     deliberately not carried over when file.Dir dropped its own
+//     analogous WithBaseDir option; the plain-string NewResource form
+//     remains the only (and primary) declaration path.
+//   - file.Resource.WithPatch ALWAYS requires a typed patch codec
+//     (mirrors ports.PatchEncoded) — there is no raw, ad hoc
+//     map[string]any convenience the way ports.File.Patch(vars,
+//     map[string]any, opts) offers; declare a small patch struct instead
+//     (shown below).
 //
 // Run with: go run ./examples/file-io
 package main
@@ -40,10 +57,11 @@ import (
 	"sync"
 	"time"
 
+	adapterfile "github.com/DaniDeer/go-codex/adapters/file"
+	"github.com/DaniDeer/go-codex/api/file"
 	"github.com/DaniDeer/go-codex/codex"
 	"github.com/DaniDeer/go-codex/config"
 	"github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/ports"
 	"github.com/DaniDeer/go-codex/stats"
 	"github.com/DaniDeer/go-codex/validate"
 )
@@ -111,25 +129,20 @@ var measurementCodec = codex.Struct[Measurement](
 	),
 )
 
-// ── File descriptors — declared once, used anywhere ───────────────────────────
+// ── Resource descriptors — declared once, used anywhere ───────────────────────
 
-// configFile is a static-path TOML file descriptor. No template variables.
-// Declare at package level; pass to Read/Write/Update across the whole service.
-var configFile = ports.NewFile(
-	"", // path set at runtime via a wrapper — see loadConfig below
-	format.TOML(configCodec),
-)
-
-// measurementFile is a template-path JSON file descriptor. The {date} variable
-// is validated against the ISO date format; {sensor} has no codec (any string).
-var measurementFile = ports.NewFile(
+// measurementFile is a template-path JSON resource descriptor. The {date}
+// variable is validated against the ISO date format; {sensor} has no
+// codec (any string). Shown as a pure declaration here (no I/O) — the
+// actual temp-dir-rooted resource used for I/O below is sensorFile.
+var measurementFile = file.NewResource[Measurement](
 	"data/{date}/{sensor}.json",
 	format.JSON(measurementCodec),
-	ports.FilePathParam{
+	file.PathParam{
 		Name:        "date",
 		Description: "ISO date (YYYY-MM-DD). Validated against the date format.",
 	}.WithCodec(codex.String().Refine(validate.Date)),
-	ports.FilePathParam{
+	file.PathParam{
 		Name:        "sensor",
 		Description: "Sensor identifier (any non-empty string).",
 	},
@@ -187,16 +200,34 @@ var _ stats.FileObserver = (*CountingObserver)(nil)
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-// loadConfig reads config from the given TOML path using a runtime-pathed File.
-func loadConfig(ctx context.Context, path string) (ServiceConfig, error) {
-	f := ports.NewFile(path, format.TOML(configCodec))
-	return f.Read(nil, ports.FileOptions{Context: ctx}) // observer from ctx
+// loadConfig reads config from the given TOML path using a runtime-pathed Resource.
+func loadConfig(ctx context.Context, client *file.Client, path string) (ServiceConfig, error) {
+	res := file.NewResource[ServiceConfig](path, format.TOML(configCodec))
+	respAny, err := client.Read(ctx, res.WithRead(file.Read{}), nil)
+	if err != nil {
+		return ServiceConfig{}, err
+	}
+	return respAny.(ServiceConfig), nil
 }
 
 // writeConfig writes config to the given path.
-func writeConfig(ctx context.Context, path string, cfg ServiceConfig) error {
-	f := ports.NewFile(path, format.TOML(configCodec))
-	_, err := f.Write(nil, cfg, ports.FileOptions{Context: ctx, Perm: 0600}) // observer from ctx
+func writeConfig(ctx context.Context, client *file.Client, path string, cfg ServiceConfig) error {
+	res := file.NewResource[ServiceConfig](path, format.TOML(configCodec))
+	_, err := client.Create(ctx, res.WithCreate(file.Create{}), cfg, nil, file.WriteOptions{Perm: 0600})
+	return err
+}
+
+// updateConfig is a CLIENT-SIDE-ONLY read-modify-write composition —
+// mirrors ports.File.Update exactly (no new wire verb, no new adapter
+// method; api/file deliberately never shipped an Update role/dispatch
+// method of its own for this reason).
+func updateConfig(ctx context.Context, client *file.Client, path string, fn func(ServiceConfig) ServiceConfig) error {
+	cfg, err := loadConfig(ctx, client, path)
+	if err != nil {
+		return err
+	}
+	res := file.NewResource[ServiceConfig](path, format.TOML(configCodec))
+	_, err = client.Create(ctx, res.WithCreate(file.Create{}), fn(cfg), nil)
 	return err
 }
 
@@ -208,9 +239,14 @@ func main() {
 
 	metrics := &CountingObserver{}
 	obs := stats.NewFanout(metrics, stats.NewLoggingObserver(logger.With("component", "file-io")))
-	// Store obs in a context — ports.File.Read/Write/Update/Patch all resolve it
-	// automatically via FileOptions.Context when FileOptions.Observer is nil.
+	// Store obs in a context — file.Client's dispatch core resolves it
+	// automatically via stats.ObserverFromContext.
 	ctx := stats.WithObserver(context.Background(), obs)
+
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		panic(err)
+	}
 
 	// ── Section 1: Static config file ─────────────────────────────────────────
 
@@ -220,7 +256,7 @@ func main() {
 	cfgPath := writeTempConfig()
 	defer os.Remove(cfgPath)
 
-	cfg, err := loadConfig(ctx, cfgPath)
+	cfg, err := loadConfig(ctx, client, cfgPath)
 	if err != nil {
 		slog.Error("failed to load config", "err", err)
 		os.Exit(1)
@@ -250,20 +286,20 @@ func main() {
 		fmt.Println("  LOG_LEVEL not set — using config value")
 	}
 
-	// Update: bump retention_days by 10 via atomic read-modify-write.
-	f := ports.NewFile(cfgPath, format.TOML(configCodec))
-	if _, err := f.Update(nil, func(c ServiceConfig) ServiceConfig {
+	// Update: bump retention_days by 10 via atomic read-modify-write
+	// (a client-side composition — see updateConfig's own doc comment).
+	if err := updateConfig(ctx, client, cfgPath, func(c ServiceConfig) ServiceConfig {
 		c.RetentionDays += 10
 		return c
-	}, ports.FileOptions{Context: ctx}); err != nil {
+	}); err != nil {
 		slog.Error("config update failed", "err", err)
 	} else {
-		updated, _ := loadConfig(ctx, cfgPath)
+		updated, _ := loadConfig(ctx, client, cfgPath)
 		fmt.Printf("  after Update: retention_days=%d\n", updated.RetentionDays)
 
 		// writeConfig demonstrates writing a config value directly.
 		// It uses the same TOML codec and file path — same contract, different helper.
-		if err := writeConfig(ctx, cfgPath, updated); err != nil {
+		if err := writeConfig(ctx, client, cfgPath, updated); err != nil {
 			slog.Error("writeConfig failed", "err", err)
 		}
 	}
@@ -290,32 +326,16 @@ func main() {
 		fmt.Printf("  template path: %s\n", templatePath)
 	}
 
-	// ports.FilePathTemplate: reusing a template+params shape (opt-in, NOT the
-	// default). The plain-string form above (ports.NewFile("data/{date}/{sensor}.json", ...))
-	// remains the default and primary way to declare a file — nothing about it
-	// changes. FilePathTemplate is a SECOND, additional, opt-in constructor —
-	// reach for it only when the SAME layout would otherwise be copy-pasted
-	// across two or more record types stored under the same directory shape.
-	measurementLayout := ports.NewFilePathTemplate("data/{date}/{sensor}.json",
-		ports.FilePathParam{Name: "date"}.WithCodec(codex.String().Refine(validate.Date)),
-		ports.FilePathParam{Name: "sensor"},
-	)
-	measurementFileViaTemplate := ports.NewFileFromPathTemplate(measurementLayout, format.JSON(measurementCodec))
-	if layoutPath, err := measurementFileViaTemplate.BuildPath(map[string]string{
-		"date": "2024-01-15", "sensor": "temp-42",
-	}); err != nil {
-		slog.Error("FilePathTemplate BuildPath failed", "err", err)
-	} else {
-		fmt.Printf("  same layout via FilePathTemplate: %s\n", layoutPath)
-	}
-
 	// sensorFile uses the temp dir prefix for actual I/O in this example.
-	sensorFile := ports.NewFile(
+	sensorFile := file.NewResource[Measurement](
 		dataDir+"/data/{date}/{sensor}.json",
 		format.JSON(measurementCodec),
-		ports.FilePathParam{Name: "date"}.WithCodec(codex.String().Refine(validate.Date)),
-		ports.FilePathParam{Name: "sensor"},
+		file.PathParam{Name: "date"}.WithCodec(codex.String().Refine(validate.Date)),
+		file.PathParam{Name: "sensor"},
 	)
+	sensorReader := sensorFile.WithRead(file.Read{})
+	sensorCreator := sensorFile.WithCreate(file.Create{})
+	sensorDeleter := sensorFile.WithDelete(file.Delete{})
 
 	vars := map[string]string{
 		"date":   "2024-01-15",
@@ -337,17 +357,19 @@ func main() {
 		Value:     23.7,
 		Unit:      "celsius",
 	}
-	if _, err := sensorFile.Write(vars, m, ports.FileOptions{Context: ctx}); err != nil {
-		slog.Error("Write failed", "err", err)
+	if _, err := client.Create(ctx, sensorCreator, m, vars); err != nil {
+		slog.Error("Create failed", "err", err)
 	} else {
 		fmt.Printf("  written: sensor=%s value=%.1f%s\n", m.SensorID, m.Value, m.Unit)
 	}
 
 	// Read it back.
-	got, err := sensorFile.Read(vars, ports.FileOptions{Context: ctx})
+	gotAny, err := client.Read(ctx, sensorReader, vars)
+	var got Measurement
 	if err != nil {
 		slog.Error("Read failed", "err", err)
 	} else {
+		got = gotAny.(Measurement)
 		fmt.Printf("  read back: sensor=%s value=%.1f%s at %s\n",
 			got.SensorID, got.Value, got.Unit, got.Timestamp.Format(time.RFC3339))
 	}
@@ -358,10 +380,10 @@ func main() {
 	// ENCODED IN THE FILENAME (date, sensor) rather than the file body —
 	// MatchPath is the missing inverse of BuildPath, extracting vars from
 	// an already-discovered path (the caller's own filepath.WalkDir/Glob;
-	// go-codex stays discovery-agnostic). NewFilePathParam declares BOTH
-	// the spec FilePathParam (validation, unchanged) AND a merge field in
-	// ONE call, so codex.DecodeVars can merge the extracted vars straight
-	// into a typed struct alongside the file's own body fields.
+	// go-codex stays discovery-agnostic). file.NewPathParam declares BOTH
+	// the spec PathParam (validation, unchanged) AND a merge field in ONE
+	// call, so codex.DecodeVars can merge the extracted vars straight
+	// into a typed struct alongside the resource's own body fields.
 	fmt.Println("\n── Section 2b: MatchPath — extracting metadata from the filename ──")
 
 	// ReadingMeta mirrors Measurement, but SensorID/Date come from the
@@ -373,21 +395,22 @@ func main() {
 		Value    float64
 	}
 
-	// metaFile is used ONLY for MatchPath/BuildPath in this section (no
-	// Read/Write) — its body codec is a placeholder empty Struct since
-	// MatchPath never touches the format, only the path template.
-	metaFile := ports.NewFile(
+	// metaFile is used ONLY for MatchPath/BuildPath/MergeFields in this
+	// section (no Read/Write) — its body codec is a placeholder empty
+	// Struct since MatchPath never touches the format, only the path
+	// template.
+	metaFile := file.NewResource[ReadingMeta](
 		dataDir+"/data/{date}/{sensor}.json",
 		format.JSON(codex.Struct[ReadingMeta]()),
-		ports.NewFilePathParam("date", codex.String().Refine(validate.Date),
+		file.NewPathParam("date", codex.String().Refine(validate.Date),
 			func(r ReadingMeta) string { return r.Date },
 			func(r *ReadingMeta, v string) { r.Date = v }),
-		ports.NewFilePathParam("sensor", codex.String().Refine(validate.NonEmptyString),
+		file.NewPathParam("sensor", codex.String().Refine(validate.NonEmptyString),
 			func(r ReadingMeta) string { return r.SensorID },
 			func(r *ReadingMeta, v string) { r.SensorID = v }),
 	)
 
-	// path is the concrete path sensorFile.Write already produced above.
+	// path is the concrete path sensorFile's Create already produced above.
 	discoveredVars, err := metaFile.MatchPath(path)
 	if err != nil {
 		slog.Error("MatchPath failed", "err", err)
@@ -403,7 +426,7 @@ func main() {
 	}
 
 	// The body's own field (Value) is read separately and merged manually
-	// — File's body codec and path merge fields are DISTINCT struct
+	// — Resource's body codec and path merge fields are DISTINCT struct
 	// shapes here (Measurement vs. ReadingMeta), so this last step stays
 	// explicit rather than automatic (unlike REST's DecodeMerged, which
 	// merges body+vars into the SAME struct in one call).
@@ -412,24 +435,24 @@ func main() {
 
 	// A path that doesn't match the template's structure → FilePathMismatchError.
 	_, err = metaFile.MatchPath(dataDir + "/data/2024-01-15/extra/segment.json")
-	var mismatchErr ports.FilePathMismatchError
+	var mismatchErr file.FilePathMismatchError
 	if errors.As(err, &mismatchErr) {
 		fmt.Printf("  FilePathMismatchError: template=%q path=%q\n", mismatchErr.Template, mismatchErr.Path)
 	}
 
 	// ── Section 2c: CreateDirs — auto-creating missing parent directories ─────
 	//
-	// By default Write creates the FILE if missing but NOT its parent
+	// By default Create writes the FILE if missing but NOT its parent
 	// directories (matches os.WriteFile exactly) — writing to a brand-new
 	// sensor/date combination whose directory doesn't exist yet would fail
-	// with FileWriteError unless FileOptions.CreateDirs opts in.
+	// with FileWriteError unless WriteOptions.CreateDirs opts in.
 	fmt.Println("\n── Section 2c: CreateDirs — auto-creating missing parent directories ──")
 
 	newVars := map[string]string{"date": "2024-02-01", "sensor": "temp-99"}
 
 	// Without CreateDirs: the "2024-02-01" directory doesn't exist yet.
-	if _, err := sensorFile.Write(newVars, m, ports.FileOptions{Context: ctx}); err != nil {
-		var writeErr ports.FileWriteError
+	if _, err := client.Create(ctx, sensorCreator, m, newVars); err != nil {
+		var writeErr file.FileWriteError
 		if errors.As(err, &writeErr) {
 			fmt.Printf("  without CreateDirs: FileWriteError (missing parent dir), as expected\n")
 		}
@@ -437,7 +460,7 @@ func main() {
 
 	// DryRun + CreateDirs: preview which directories WOULD be created,
 	// without creating them or writing the file.
-	createdDirs, err := sensorFile.Write(newVars, m, ports.FileOptions{Context: ctx, CreateDirs: true, DryRun: true})
+	createdDirs, err := client.Create(ctx, sensorCreator, m, newVars, file.WriteOptions{CreateDirs: true, DryRun: true})
 	if err != nil {
 		slog.Error("DryRun write failed", "err", err)
 	} else {
@@ -445,7 +468,7 @@ func main() {
 	}
 
 	// With CreateDirs: the missing "2024-02-01" directory is created first.
-	createdDirs, err = sensorFile.Write(newVars, m, ports.FileOptions{Context: ctx, CreateDirs: true})
+	createdDirs, err = client.Create(ctx, sensorCreator, m, newVars, file.WriteOptions{CreateDirs: true})
 	if err != nil {
 		slog.Error("Write with CreateDirs failed", "err", err)
 	} else {
@@ -453,8 +476,8 @@ func main() {
 	}
 
 	// Strict: refuse to overwrite the file we just wrote (O_CREATE|O_EXCL).
-	if _, err := sensorFile.Write(newVars, m, ports.FileOptions{Context: ctx, Strict: true}); err != nil {
-		var existsErr ports.FileAlreadyExistsError
+	if _, err := client.Create(ctx, sensorCreator, m, newVars, file.WriteOptions{Strict: true}); err != nil {
+		var existsErr file.FileAlreadyExistsError
 		if errors.As(err, &existsErr) {
 			fmt.Printf("  Strict: FileAlreadyExistsError (file already exists), as expected\n")
 		}
@@ -462,20 +485,20 @@ func main() {
 
 	// ── Section 2d: Delete — idempotent by default, Strict/DryRun opt-ins ────
 	//
-	// File.Delete's default is idempotent "ensure absent": deleting an
-	// already-missing file succeeds. FileOptions.Strict opts OUT of that,
-	// requiring the file to have existed. FileOptions.DryRun previews the
-	// outcome without touching the filesystem.
-	fmt.Println("\n── Section 2d: File.Delete — idempotent by default ──")
+	// Delete's default is idempotent "ensure absent": deleting an
+	// already-missing file succeeds. DeleteOptions.Strict opts OUT of
+	// that, requiring the file to have existed. DeleteOptions.DryRun
+	// previews the outcome without touching the filesystem.
+	fmt.Println("\n── Section 2d: Client.Delete — idempotent by default ──")
 
-	existed, err := sensorFile.Delete(newVars, ports.FileOptions{Context: ctx, DryRun: true})
+	existed, err := client.Delete(ctx, sensorDeleter, newVars, file.DeleteOptions{DryRun: true})
 	if err != nil {
 		slog.Error("DryRun delete failed", "err", err)
 	} else {
 		fmt.Printf("  DryRun: existed=%v (nothing removed)\n", existed)
 	}
 
-	existed, err = sensorFile.Delete(newVars, ports.FileOptions{Context: ctx})
+	existed, err = client.Delete(ctx, sensorDeleter, newVars)
 	if err != nil {
 		slog.Error("Delete failed", "err", err)
 	} else {
@@ -483,7 +506,7 @@ func main() {
 	}
 
 	// Deleting again: idempotent success (no error, existed=false).
-	existed, err = sensorFile.Delete(newVars, ports.FileOptions{Context: ctx})
+	existed, err = client.Delete(ctx, sensorDeleter, newVars)
 	if err != nil {
 		slog.Error("second Delete failed unexpectedly", "err", err)
 	} else {
@@ -491,8 +514,8 @@ func main() {
 	}
 
 	// Strict: the file is already gone — now it's an error.
-	if _, err := sensorFile.Delete(newVars, ports.FileOptions{Context: ctx, Strict: true}); err != nil {
-		var notFoundErr ports.FileNotFoundError
+	if _, err := client.Delete(ctx, sensorDeleter, newVars, file.DeleteOptions{Strict: true}); err != nil {
+		var notFoundErr file.FileNotFoundError
 		if errors.As(err, &notFoundErr) {
 			fmt.Printf("  Strict Delete: FileNotFoundError (already absent), as expected\n")
 		}
@@ -500,15 +523,15 @@ func main() {
 
 	// ── Section 2e: Glob path template segments — matching, not building ─────
 	//
-	// ports.File has NO glob-DISCOVERY method of its own (see
-	// examples/dir-io's Section 8 for that — ports.Dir.List's
-	// glob-discovery mode). File's own role in the glob feature is
-	// narrower: [ports.File.MatchPath] validates/extracts vars from a
-	// path ALREADY discovered by Dir.List (or the caller's own
-	// filepath.WalkDir), while [ports.File.BuildPath] rejects a
+	// file.Resource has NO glob-DISCOVERY method of its own (see
+	// examples/dir-io's Section 8 for that — Client.ListDir's
+	// glob-discovery mode). Resource's own role in the glob feature is
+	// narrower: [file.Resource.MatchPath] validates/extracts vars from a
+	// path ALREADY discovered by ListDir (or the caller's own
+	// filepath.WalkDir), while [file.Resource.BuildPath] rejects a
 	// glob-enabled template outright — building a SINGLE concrete path
 	// from a template that can match MULTIPLE paths is undefined.
-	fmt.Println("\n── Section 2e: glob path template segments — File.MatchPath/BuildPath ──")
+	fmt.Println("\n── Section 2e: glob path template segments — Resource.MatchPath/BuildPath ──")
 
 	// A glob-enabled template: "*" shares a segment with literal text
 	// ("app-*"), "**" matches zero-or-more WHOLE segments anywhere, and
@@ -520,7 +543,7 @@ func main() {
 	// convenience, "{level}.log" would NOT work in a glob-enabled
 	// template. Glob segments themselves never capture — only named
 	// "{varName}" segments do.
-	logGlobFile := ports.NewFile("logs/app-*/**/{level}/trace.log", format.JSON(codex.Struct[struct{}]()))
+	logGlobFile := file.NewResource[struct{}]("logs/app-*/**/{level}/trace.log", format.JSON(codex.Struct[struct{}]()))
 
 	discoveredLogPath := "logs/app-web/a/b/fatal/trace.log"
 	logVars, err := logGlobFile.MatchPath(discoveredLogPath)
@@ -533,7 +556,7 @@ func main() {
 	// BuildPath has no meaning for a glob-enabled template — rejected
 	// with FileWildcardBuildError instead of silently picking one match.
 	_, err = logGlobFile.BuildPath(map[string]string{"level": "fatal"})
-	var fileWildcardErr ports.FileWildcardBuildError
+	var fileWildcardErr file.FileWildcardBuildError
 	if errors.As(err, &fileWildcardErr) {
 		fmt.Printf("  BuildPath on a glob-enabled template: FileWildcardBuildError (template=%q), as expected\n", fileWildcardErr.Template)
 	}
@@ -543,9 +566,9 @@ func main() {
 	fmt.Println("\n── Section 3: Typed error handling ────────────────────────────")
 
 	// Missing path variable → MissingFilePathVarError.
-	_, err = sensorFile.Read(map[string]string{"date": "2024-01-15"}, ports.FileOptions{})
+	_, err = client.Read(ctx, sensorReader, map[string]string{"date": "2024-01-15"})
 	if err != nil {
-		var missingErr ports.MissingFilePathVarError
+		var missingErr file.MissingFilePathVarError
 		if errors.As(err, &missingErr) {
 			fmt.Printf("  MissingFilePathVarError: param=%q\n", missingErr.Name)
 		}
@@ -554,17 +577,17 @@ func main() {
 	// Invalid path variable → FilePathParamError (date codec rejects this).
 	_, err = sensorFile.BuildPath(map[string]string{"date": "not-a-date", "sensor": "s1"})
 	if err != nil {
-		var paramErr ports.FilePathParamError
+		var paramErr file.FilePathParamError
 		if errors.As(err, &paramErr) {
 			fmt.Printf("  FilePathParamError: param=%q value=%q\n", paramErr.Name, paramErr.Value)
 		}
 	}
 
 	// File not found → FileReadError.
-	absent := ports.NewFile("/nonexistent/dir/item.json", format.JSON(measurementCodec))
-	_, err = absent.Read(nil, ports.FileOptions{Context: ctx})
+	absent := file.NewResource[Measurement]("/nonexistent/dir/item.json", format.JSON(measurementCodec))
+	_, err = client.Read(ctx, absent.WithRead(file.Read{}), nil)
 	if err != nil {
-		var readErr ports.FileReadError
+		var readErr file.FileReadError
 		if errors.As(err, &readErr) {
 			fmt.Printf("  FileReadError: path=%q\n", readErr.Path)
 			slog.Warn("file not found", "path", readErr.Path, "cause", readErr.Err)
@@ -575,18 +598,20 @@ func main() {
 
 	fmt.Println("\n── Section 4: Binary (PNG) file I/O ───────────────────────────")
 
-	// pngFile is a typed file descriptor for raw PNG data.
+	// pngFile is a typed resource descriptor for raw PNG data.
 	// format.Binary writes and reads []byte as-is (unlike Gob, which adds framing).
 	// validate.PNG checks the 8-byte PNG magic bytes on every read and write.
-	pngFile := ports.NewFile(
+	pngFile := file.NewResource[[]byte](
 		dataDir+"/images/{name}.png",
 		format.Binary(
 			codex.Bytes().
 				Refine(validate.MaxBytes(10*1024*1024)).
 				Refine(validate.PNG),
 		).WithContentType("image/png"),
-		ports.FilePathParam{Name: "name", Description: "Image name (no extension)."},
+		file.PathParam{Name: "name", Description: "Image name (no extension)."},
 	)
+	pngReader := pngFile.WithRead(file.Read{})
+	pngCreator := pngFile.WithCreate(file.Create{})
 
 	if err := os.MkdirAll(dataDir+"/images", 0755); err != nil {
 		slog.Error("mkdir failed", "err", err)
@@ -608,45 +633,48 @@ func main() {
 
 	pngVars := map[string]string{"name": "chart"}
 
-	// Write — FileObserver.RecordFileWrite is called after the write.
-	if _, err := pngFile.Write(pngVars, validPNG, ports.FileOptions{Context: ctx}); err != nil {
+	// Create — FileObserver.RecordFileWrite is called after the write.
+	if _, err := client.Create(ctx, pngCreator, validPNG, pngVars); err != nil {
 		slog.Error("PNG write failed", "err", err)
 	} else {
 		fmt.Printf("  written PNG: %d bytes\n", len(validPNG))
 	}
 
 	// Read — FileObserver.RecordFileRead is called after the read.
-	data, err := pngFile.Read(pngVars, ports.FileOptions{Context: ctx})
+	dataAny, err := client.Read(ctx, pngReader, pngVars)
 	if err != nil {
 		slog.Error("PNG read failed", "err", err)
 	} else {
+		data := dataAny.([]byte)
 		fmt.Printf("  read PNG: %d bytes, first 4: %X\n", len(data), data[:4])
 	}
 
 	// Write invalid data (missing PNG magic bytes) — constraint failure.
 	notPNG := []byte("this is not a PNG file")
-	if _, err := pngFile.Write(pngVars, notPNG, ports.FileOptions{Context: ctx}); err != nil {
-		var encErr ports.FileEncodeError
+	if _, err := client.Create(ctx, pngCreator, notPNG, pngVars); err != nil {
+		var encErr file.FileEncodeError
 		if errors.As(err, &encErr) {
 			fmt.Printf("  FileEncodeError (constraint): path=%q\n", encErr.Path)
 			slog.Warn("PNG write rejected", "path", encErr.Path, "cause", encErr.Err)
 		}
 	}
 
-	// ── Section 5: Partial file updates — Patch and PatchEncoded ─────────────
+	// ── Section 5: Partial file updates — typed Patch ────────────────────────
 
-	fmt.Println("\n── Section 5: Partial file updates (Patch + PatchEncoded) ─────")
+	fmt.Println("\n── Section 5: Partial file updates (typed Patch) ─────")
 
 	// ── Choosing the right write operation ────────────────────────────────────
 	//
-	//   Write(vars, T, opts)                      — full overwrite, no re-read
-	//   Update(vars, func(T)T, opts)              — read current → transform → write
-	//   Patch(vars, map[string]any, opts)         — explicit partial field update (RFC 7396)
-	//   ports.PatchEncoded(file, vars, Codec[P], P, opts) — typed partial update via patch codec
+	//   Client.Create(ctx, cr, T, vars, opts)         — full overwrite, no re-read
+	//   updateConfig-style composition                — read current → transform → write
+	//   Client.Patch(ctx, p, P, vars, opts)            — typed partial update via patch codec
 	//
-	// If you already have the decoded value and want to write it back: use Write.
-	// Update re-reads the file — only use it when you need the latest file state.
-	// Patch and PatchEncoded preserve fields not in the patch.
+	// If you already have the decoded value and want to write it back: use Create.
+	// A read-modify-write composition re-reads the file — only use it when
+	// you need the latest file state. Patch preserves fields not in the
+	// patch codec's own declared field set (see the field-survival rules
+	// below) — unlike ports.File.Patch, there is no raw, undeclared
+	// map[string]any convenience (see this file's own top-level NOTE).
 
 	type appCfg struct {
 		Port       int    `json:"port"`
@@ -661,30 +689,19 @@ func main() {
 		codex.RequiredField("max_workers", codex.Int().Refine(validate.RangeInt(1, 256)),
 			func(c appCfg) int { return c.MaxWorkers }, func(c *appCfg, v int) { c.MaxWorkers = v }),
 	)
-	appCfgFile := ports.NewFile(dataDir+"/app-config.json", format.JSON(appCfgCodec))
+	appCfgFile := file.NewResource[appCfg](dataDir+"/app-config.json", format.JSON(appCfgCodec))
+	appCfgCreator := appCfgFile.WithCreate(file.Create{})
+	appCfgReader := appCfgFile.WithRead(file.Read{})
 
 	initial := appCfg{Port: 8080, LogLevel: "info", MaxWorkers: 4}
-	if _, err := appCfgFile.Write(nil, initial, ports.FileOptions{Context: ctx}); err != nil {
+	if _, err := client.Create(ctx, appCfgCreator, initial, nil); err != nil {
 		slog.Error("Write initial config failed", "err", err)
 		os.Exit(1)
 	}
 	fmt.Printf("  initial: port=%d log_level=%q max_workers=%d\n",
 		initial.Port, initial.LogLevel, initial.MaxWorkers)
 
-	// ── Patch: explicit map[string]any ────────────────────────────────────────
-	// Only port and log_level change; max_workers is absent from the map and preserved.
-	if err := appCfgFile.Patch(nil, map[string]any{
-		"port":      9090,
-		"log_level": "debug",
-	}, ports.FileOptions{Context: ctx}); err != nil {
-		slog.Error("Patch failed", "err", err)
-	} else {
-		after, _ := appCfgFile.Read(nil, ports.FileOptions{})
-		fmt.Printf("  after Patch: port=%d log_level=%q max_workers=%d (unchanged)\n",
-			after.Port, after.LogLevel, after.MaxWorkers)
-	}
-
-	// ── PatchEncoded: typed patch via a separate patch codec ──────────────────
+	// ── Typed Patch via a separate patch codec ────────────────────────────────
 	// Declare a patch type containing ONLY the fields you want to update.
 	// Fields absent from the patch type are ALWAYS preserved in the file —
 	// this is enforced by the type system, not by runtime checks.
@@ -708,39 +725,38 @@ func main() {
 		codex.RequiredField("debug_mode", codex.Bool(),
 			func(p appCfgPatch) bool { return p.NewDebugMode }, func(p *appCfgPatch, v bool) { p.NewDebugMode = v }),
 	)
+	appCfgPatcher := file.WithPatch(appCfgFile, appCfgPatchCodec, file.Patch{})
 
-	// Reset to initial values.
-	_, _ = appCfgFile.Write(nil, initial, ports.FileOptions{})
-	fmt.Printf("  reset: port=%d log_level=%q max_workers=%d\n",
-		initial.Port, initial.LogLevel, initial.MaxWorkers)
-
-	// PatchEncoded writes all patchCodec fields — including debug_mode which is
-	// not in appCfgCodec. After this call, "debug_mode" will be in the JSON file.
-	if err := ports.PatchEncoded(appCfgFile, nil, appCfgPatchCodec,
-		appCfgPatch{Port: 7777, LogLevel: "warn", NewDebugMode: true},
-		ports.FileOptions{Context: ctx}); err != nil {
-		slog.Error("PatchEncoded failed", "err", err)
+	// PatchEncoded-equivalent: writes all patchCodec fields — including
+	// debug_mode which is not in appCfgCodec. After this call, "debug_mode"
+	// will be in the JSON file.
+	if err := client.Patch(ctx, appCfgPatcher, appCfgPatch{Port: 7777, LogLevel: "warn", NewDebugMode: true}, nil); err != nil {
+		slog.Error("Patch failed", "err", err)
 	} else {
-		after, _ := appCfgFile.Read(nil, ports.FileOptions{})
-		fmt.Printf("  after PatchEncoded: port=%d log_level=%q max_workers=%d (always unchanged)\n",
+		afterAny, _ := client.Read(ctx, appCfgReader, nil)
+		after := afterAny.(appCfg)
+		fmt.Printf("  after Patch: port=%d log_level=%q max_workers=%d (always unchanged)\n",
 			after.Port, after.LogLevel, after.MaxWorkers)
 		// Read raw bytes to show debug_mode was persisted despite not being in appCfgCodec
 		raw, _ := os.ReadFile(dataDir + "/app-config.json")
 		fmt.Printf("  raw JSON includes debug_mode: %v\n", strings.Contains(string(raw), `"debug_mode":true`))
 	}
 
-	// ── Caveat: already decoded struct → use Write ────────────────────────────
-	// If you've already decoded the struct and modified it, Write is the right choice.
-	// Update re-reads unnecessarily if you already have the value in memory.
-	decoded, _ := appCfgFile.Read(nil, ports.FileOptions{})
-	decoded.Port = 5050                                                    // modify in memory
-	_, _ = appCfgFile.Write(nil, decoded, ports.FileOptions{Context: ctx}) // Write directly — no re-read
+	// ── Caveat: already decoded struct → use Create ───────────────────────────
+	// If you've already decoded the struct and modified it, Create is the
+	// right choice. A read-modify-write composition re-reads unnecessarily
+	// if you already have the value in memory.
+	decodedAny, _ := client.Read(ctx, appCfgReader, nil)
+	decoded := decodedAny.(appCfg)
+	decoded.Port = 5050                                    // modify in memory
+	_, _ = client.Create(ctx, appCfgCreator, decoded, nil) // Create directly — no re-read
 	fmt.Printf("  after Write (decoded→modified): port=%d\n", decoded.Port)
 
 	// ── FilePatchNotSupportedError for Gob ────────────────────────────────────
-	gobFile := ports.NewFile("/tmp/example.gob", format.Gob(appCfgCodec))
-	if err := gobFile.Patch(nil, map[string]any{"port": 1234}, ports.FileOptions{}); err != nil {
-		var patchErr ports.FilePatchNotSupportedError
+	gobFile := file.NewResource[appCfg]("/tmp/example.gob", format.Gob(appCfgCodec))
+	gobPatcher := file.WithPatch(gobFile, appCfgPatchCodec, file.Patch{})
+	if err := client.Patch(ctx, gobPatcher, appCfgPatch{Port: 1234}, nil); err != nil {
+		var patchErr file.FilePatchNotSupportedError
 		if errors.As(err, &patchErr) {
 			fmt.Printf("  FilePatchNotSupportedError: %s\n", patchErr.Error())
 			slog.Warn("patch not supported", "error", patchErr) // slog.LogValuer fires
@@ -757,8 +773,6 @@ func main() {
 	fmt.Printf("  failed reads:      %d\n", metrics.readFails)
 	fmt.Printf("  failed writes:     %d\n", metrics.writeFails)
 	fmt.Printf("  validation errors: %d\n", metrics.valErrors)
-
-	_ = configFile // suppress unused warning — configFile is shown as a declaration pattern
 }
 
 // writeTempConfig writes a minimal TOML config to a temp file and returns its path.

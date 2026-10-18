@@ -177,6 +177,69 @@ func NewResource[T any](template string, f format.Format[T], opts ...ResourceOpt
 // Template returns the resource's declared path template.
 func (r Resource[T]) Template() string { return r.template }
 
+// MergeFields returns r's declared path-variable merge fields (populated
+// via [MergedPathParam]) — mirrors [ports.File.MergeFields]'s identical
+// accessor, for a caller composing their own [codex.DecodeVars] call
+// (e.g. decoding a [Resource.MatchPath] result into a merge-field-tagged
+// struct distinct from the resource's own body T).
+func (r Resource[T]) MergeFields() []codex.FieldCodec[T] { return r.mergeFields }
+
+// BuildPath substitutes {varName} placeholders in r's template with vars,
+// validating each against its registered [PathParam.Codec]. Returns the
+// concrete path on success — a PURE, no-I/O method (no Client/Backend
+// needed), mirroring [Dir.BuildPath]'s identical shape.
+//
+// Returns [FileWildcardBuildError] if the template is glob-enabled (see
+// [internal/templatematch.IsGlobEnabled]) — a glob-enabled template does
+// not describe a single concrete path; use [MatchPath] (which DOES
+// support glob-enabled templates, for validating/extracting vars from an
+// already-discovered path) instead.
+func (r Resource[T]) BuildPath(vars map[string]string) (string, error) {
+	if templatematch.IsGlobEnabled(r.template) {
+		return "", FileWildcardBuildError{Template: r.template}
+	}
+	path, err := codex.BuildFromParams(r.template, toCodexParams(r.params), vars)
+	if err != nil {
+		return "", convertParamErr(err)
+	}
+	return path, nil
+}
+
+// MatchPath is the inverse of [Resource.BuildPath] — matches a concrete,
+// already-discovered path (e.g. from the caller's own
+// filepath.WalkDir/[Dir.List]'s glob-discovery mode) against r's own
+// template, returning the extracted variable values validated against
+// each registered [PathParam.Codec]. A PURE, no-I/O method.
+//
+// A {varName} placeholder captures everything up to the next "/" and MAY
+// share a segment with literal text. Unlike [Resource.BuildPath],
+// MatchPath ALSO supports a glob-enabled template — "**"/"*"/"?"/"[...]"
+// segments match anonymously (never captured).
+//
+// Returns [FilePathMismatchError] if path does not match the template's
+// structure. Returns [FilePathParamError] if an extracted variable fails
+// its registered codec.
+func (r Resource[T]) MatchPath(path string) (map[string]string, error) {
+	var vars map[string]string
+	var err error
+	if templatematch.IsGlobEnabled(r.template) {
+		vars, err = templatematch.MatchGlob(r.template, path, func(template, path string) error {
+			return FilePathMismatchError{Template: template, Path: path}
+		})
+	} else {
+		vars, err = templatematch.MatchNonWildcard(r.template, path, func(template, path string) error {
+			return FilePathMismatchError{Template: template, Path: path}
+		})
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := convertParamErr(codex.ValidateParams(toCodexParams(r.params), vars)); err != nil {
+		return nil, err
+	}
+	return vars, nil
+}
+
 // buildPathWithRouting applies routing's prefix (if any — the ONE
 // Router-group composition point, see router.go's routingInfo doc
 // comment) before building the concrete path.
