@@ -37,6 +37,93 @@ func TestBackend_WriteBytes_Strict_UsesIfNoneMatch(t *testing.T) {
 	}
 }
 
+// TestBackend_WriteBytes_BackendOptions_AppliesPutOptions is the
+// regression proof for a real gap found during this session's own
+// "re-evaluate escape hatches" review: WriteOptions.BackendOptions
+// (consumed via applyPutOptions) had ZERO unit test coverage anywhere
+// — the fake's own fakeObject already captured storageClass/sse/acl/
+// contentType/tagging on every PutObject, but nothing ever asserted on
+// them. This proves every PutOptions field actually reaches the real
+// PutObjectInput.
+func TestBackend_WriteBytes_BackendOptions_AppliesPutOptions(t *testing.T) {
+	fake := newFakeS3("bucket")
+	b := adapters3.NewBackend(fake, "bucket")
+	ctx := context.Background()
+
+	opts := apifile.WriteOptions{
+		BackendOptions: adapters3.PutOptions{
+			StorageClass:         "STANDARD_IA",
+			ServerSideEncryption: "AES256",
+			ACL:                  "public-read",
+			ContentType:          "application/pdf",
+			Tags:                 map[string]string{"env": "prod"},
+		},
+	}
+	if _, err := b.WriteBytes(ctx, "doc.pdf", []byte("content"), opts); err != nil {
+		t.Fatalf("WriteBytes: %v", err)
+	}
+	obj, ok := fake.objects["doc.pdf"]
+	if !ok {
+		t.Fatalf("object not found")
+	}
+	if obj.storageClass != "STANDARD_IA" {
+		t.Errorf("storageClass = %q, want STANDARD_IA", obj.storageClass)
+	}
+	if obj.sse != "AES256" {
+		t.Errorf("sse = %q, want AES256", obj.sse)
+	}
+	if obj.acl != "public-read" {
+		t.Errorf("acl = %q, want public-read", obj.acl)
+	}
+	if obj.contentType != "application/pdf" {
+		t.Errorf("contentType = %q, want application/pdf", obj.contentType)
+	}
+	if obj.tagging != "env=prod" {
+		t.Errorf("tagging = %q, want env=prod", obj.tagging)
+	}
+}
+
+// TestBackend_WriteBytes_NoBackendOptions_LeavesPutObjectInputUnset is
+// the zero-value regression proof: a nil BackendOptions (every
+// existing caller, byte-for-byte) must leave every PutOptions-related
+// field at its SDK zero value — no behavior change for callers that
+// never supply BackendOptions at all.
+func TestBackend_WriteBytes_NoBackendOptions_LeavesPutObjectInputUnset(t *testing.T) {
+	fake := newFakeS3("bucket")
+	b := adapters3.NewBackend(fake, "bucket")
+	ctx := context.Background()
+	if _, err := b.WriteBytes(ctx, "plain.json", []byte("x"), apifile.WriteOptions{}); err != nil {
+		t.Fatalf("WriteBytes: %v", err)
+	}
+	obj := fake.objects["plain.json"]
+	if obj.storageClass != "" || obj.sse != "" || obj.acl != "" || obj.contentType != "" || obj.tagging != "" {
+		t.Fatalf("want every PutOptions field unset without BackendOptions, got %+v", obj)
+	}
+}
+
+// TestBackend_WriteBytesIfMatch_BackendOptions_AppliesPutOptions proves
+// the SAME BackendOptions plumbing on the conditional-write call site
+// (WriteBytesIfMatch), not just the plain WriteBytes path.
+func TestBackend_WriteBytesIfMatch_BackendOptions_AppliesPutOptions(t *testing.T) {
+	fake := newFakeS3("bucket")
+	b := adapters3.NewBackend(fake, "bucket")
+	ctx := context.Background()
+	if _, err := b.WriteBytes(ctx, "widget.json", []byte("v1"), apifile.WriteOptions{}); err != nil {
+		t.Fatalf("initial WriteBytes: %v", err)
+	}
+	entry, err := b.Stat(ctx, "widget.json")
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	opts := apifile.WriteOptions{BackendOptions: adapters3.PutOptions{StorageClass: "GLACIER"}}
+	if _, err := b.WriteBytesIfMatch(ctx, "widget.json", []byte("v2"), entry.ETag, opts); err != nil {
+		t.Fatalf("WriteBytesIfMatch: %v", err)
+	}
+	if got := fake.objects["widget.json"].storageClass; got != "GLACIER" {
+		t.Errorf("storageClass = %q, want GLACIER", got)
+	}
+}
+
 func TestBackend_ListDir_PaginatesAllPages(t *testing.T) {
 	fake := newFakeS3("bucket")
 	fake.pageSize = 2

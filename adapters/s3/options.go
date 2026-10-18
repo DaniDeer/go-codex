@@ -4,9 +4,11 @@ package s3
 // [github.com/DaniDeer/go-codex/api/file.WriteOptions.BackendOptions]
 // type — S3-specific operational hints with no cross-backend meaning
 // (storage class, server-side encryption, ACL, tags, content type).
-// Supply it via WriteOptions.BackendOptions on Create/Patch/Mkdir
-// calls (or the equivalent Client.OpenWrite call); every OTHER Backend
-// simply never reads it.
+// Supply it via WriteOptions.BackendOptions on Create/Patch calls (or
+// the equivalent Client.OpenWrite call); every OTHER Backend simply
+// never reads it. NOT consulted by Mkdir — S3's Mkdir is a no-op that
+// doesn't accept WriteOptions at all (Mkdir takes MkdirOptions, which
+// has no BackendOptions field), so PutOptions can never reach it.
 type PutOptions struct {
 	// StorageClass is passed through verbatim to S3's own enum
 	// ("", "STANDARD_IA", "GLACIER", "INTELLIGENT_TIERING", ...). Empty

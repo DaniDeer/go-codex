@@ -1385,6 +1385,48 @@ ALL of Phase 2 is tracked in THIS doc, and ALL of it has now shipped.
 > doesn't fit api/file's per-call options shape), and a
 > `gofakes3`-backed, fully-offline runnable example. IMPLEMENTATION is a
 > separate, upcoming round.
+>
+> **Gap found during a later "re-evaluate escape hatches" review (after
+> implementation shipped)**: `WriteOptions.BackendOptions`/
+> `adapters/s3.PutOptions` had been implemented (3 real call sites —
+> `WriteBytes`/`WriteBytesIfMatch`/`OpenWriter` — all correctly calling
+> `applyPutOptions`) but had ZERO unit test coverage anywhere and ZERO
+> example demonstration, plus `adapters/s3/options.go`'s own doc
+> comment INCORRECTLY claimed it applied to `Mkdir` calls (S3's `Mkdir`
+> is a no-op that doesn't even accept `WriteOptions`). Fixed: corrected
+> the doc comment; added 4 unit tests (`TestBackend_WriteBytes_
+> BackendOptions_AppliesPutOptions` and 3 siblings) proving every
+> `PutOptions` field (`StorageClass`/`ServerSideEncryption`/`ACL`/
+> `ContentType`/`Tags`) reaches the real `PutObjectInput` at all 3 call
+> sites, plus a zero-value regression proof; added an honestly-scoped
+> usage demo to `demo_s3_backend.go` (explicitly disclosing that
+> `gofakes3` doesn't honor these fields server-side — it hardcodes
+> `StorageClass` and ignores `Tagging`/`ContentType`/
+> `ServerSideEncryption` entirely — so the demo proves the plumbing
+> doesn't error, not that `gofakes3` echoes the values back; real
+> field-level verification lives in the new fake-based unit tests). Also
+> closed a smaller, related gap found in the same review:
+> `RangeReadingBackend.OpenReaderRange` was unit-tested but never
+> demonstrated in any example — `demo_s3_backend.go` now performs a
+> ranged read, and the Observer summary confirms `native=true` is
+> reported for S3 specifically (vs. the filesystem backend's own
+> `native=false` in `demo_streaming_io.go`). Fixing the ranged-read demo
+> also surfaced and required a real runtime fix: the AWS SDK's default
+> `ResponseChecksumValidation` setting fails a ranged `GetObject`
+> against `gofakes3` (whose checksum covers the FULL object, not a
+> requested byte range) — resolved by setting
+> `o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired`
+> on the example's own `s3sdk.NewFromConfig` client construction
+> (`adapters/s3` itself is unaffected — this is purely an example-side
+> SDK client-option fix). No design change to `BackendOptions`/
+> `PutOptions` itself — the mechanism's architectural justification
+> (`file.Capability` is sealed to `api/file`, so `adapters/s3` has no
+> other way to expose S3-specific operational hints) was re-confirmed
+> sound; the gap was under-verification, not a wrong design choice. A
+> broader sweep of every OTHER optional `Backend` extension interface
+> across all 3 backends found no second instance of this problem —
+> every other mechanism already had real, non-trivial unit test
+> coverage.
 
 #### Research grounding this design
 

@@ -43,6 +43,32 @@ func TestBackend_OpenWriter_StreamsViaIOPipe_CommitsOnClose(t *testing.T) {
 	}
 }
 
+// TestBackend_OpenWriter_BackendOptions_AppliesPutOptions proves
+// WriteOptions.BackendOptions also reaches the io.Pipe-bridged
+// PutObject call inside OpenWriter — the 3rd and final real call site
+// applyPutOptions is wired into (alongside WriteBytes and
+// WriteBytesIfMatch, both proven in backend_test.go).
+func TestBackend_OpenWriter_BackendOptions_AppliesPutOptions(t *testing.T) {
+	fake := newFakeS3("bucket")
+	b := adapters3.NewBackend(fake, "bucket")
+	ctx := context.Background()
+
+	opts := apifile.WriteOptions{BackendOptions: adapters3.PutOptions{ContentType: "image/png"}}
+	w, err := b.OpenWriter(ctx, "stream-opts.bin", opts)
+	if err != nil {
+		t.Fatalf("OpenWriter: %v", err)
+	}
+	if _, err := w.Write([]byte("data")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := fake.objects["stream-opts.bin"].contentType; got != "image/png" {
+		t.Errorf("contentType = %q, want image/png", got)
+	}
+}
+
 func TestBackend_OpenWriter_CtxCancelled_UnblocksWrite(t *testing.T) {
 	fake := newFakeS3("bucket")
 	b := adapters3.NewBackend(fake, "bucket")

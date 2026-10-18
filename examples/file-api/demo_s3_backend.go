@@ -54,6 +54,14 @@ func demoS3Backend(ctx context.Context) {
 	s3Client := s3sdk.NewFromConfig(cfg, func(o *s3sdk.Options) {
 		o.BaseEndpoint = aws.String(srv.URL)
 		o.UsePathStyle = true // gofakes3 (like most local S3-compatible servers) needs path-style addressing.
+		// gofakes3 computes its ETag/checksum over the FULL object, not
+		// a requested byte range — validating the SDK's default
+		// per-response checksum against a ranged GetObject response
+		// would spuriously fail. WhenRequired (vs. the default
+		// WhenSupported) matches real AWS's own GetObject behavior,
+		// which likewise does not require response checksum validation
+		// unless the caller explicitly opted into it.
+		o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
 	})
 
 	// 3. Create the bucket (bucket lifecycle itself is out of scope for
@@ -102,6 +110,41 @@ func demoS3Backend(ctx context.Context) {
 	}
 	fmt.Println("conditional overwrite committed via S3's own native, server-side If-Match (no lock file, unlike the filesystem backend)")
 
+	// 5b. WriteOptions.BackendOptions — the generalized, per-call
+	// adapter-extension escape hatch (api/file.Capability is sealed to
+	// api/file itself, so adapters/s3 cannot add its own sealed
+	// Capability the way adapters/mqtt5/zeromq do for events; this is
+	// the right-sized alternative for CONFIGURATION, not a REQUIREMENT
+	// — see docs/roadmap/file-api.md's "S3-specific options" section).
+	// adapters/s3.PutOptions carries S3-specific operational hints
+	// (storage class, encryption, ACL, tags, content type) with no
+	// cross-backend meaning; every OTHER Backend simply never reads it.
+	//
+	// NOTE: gofakes3 (this demo's in-process fake S3 server) does NOT
+	// actually honor any of these fields server-side — it hardcodes
+	// StorageClass to "STANDARD" and has no Tagging/ContentType/
+	// ServerSideEncryption handling at all. This call therefore only
+	// proves the CALLER-FACING plumbing works (the option reaches S3's
+	// real wire format without erroring) — it is NOT a demonstration
+	// that gofakes3 echoes the values back. Real field-level
+	// verification (does adapters/s3 actually SET StorageClass/ACL/
+	// Tags/ContentType on the real PutObjectInput?) lives in
+	// adapters/s3's own hand-written-fake unit tests
+	// (TestBackend_WriteBytes_BackendOptions_AppliesPutOptions and
+	// its siblings), which CAN assert on the exact request fields.
+	optsVars := map[string]string{"id": "s3-with-options"}
+	putOpts := file.WriteOptions{
+		BackendOptions: adapters3.PutOptions{
+			StorageClass: "STANDARD_IA",
+			ContentType:  "application/json",
+			Tags:         map[string]string{"example": "file-api"},
+		},
+	}
+	if _, err := s3DemoClient.Create(ctx, resources.Notes.WithCreate(file.Create{}), resources.Note{Title: "With PutOptions", Body: "StorageClass/ContentType/Tags supplied via BackendOptions."}, optsVars, putOpts); err != nil {
+		log.Fatalf("demoS3Backend: Create with BackendOptions: %v", err)
+	}
+	fmt.Println("Create with WriteOptions.BackendOptions (adapters/s3.PutOptions) succeeded — see adapters/s3's own unit tests for field-level verification")
+
 	// 6. A streaming write, round-tripped via the SAME codec-bypassing
 	// StreamWrite/StreamRead roles every other backend already
 	// supports (reusing resources.Notes — Mechanism 2 is raw-byte,
@@ -129,6 +172,28 @@ func demoS3Backend(ctx context.Context) {
 		log.Fatalf("demoS3Backend: ReadFrom: %v", err)
 	}
 	fmt.Printf("streamed content round-tripped through S3: %q\n", buf.String())
+
+	// 7. A RANGED read against S3 specifically — unlike the filesystem
+	// backend (which only ever reports native=false, since
+	// adapters/file.Backend does not implement RangeReadingBackend),
+	// adapters/s3.Backend.OpenReaderRange IS a genuine native range
+	// read (GetObject's own Range header) — the stats.FileObserver's
+	// RecordFileRangeRead(native=true) reporting tier that
+	// demo_streaming_io.go's own ranged-read demo can only ever
+	// exercise the native=false (approximated) tier for. Closes a gap
+	// found during this session's own "re-evaluate escape hatches"
+	// review: OpenReaderRange was unit-tested in adapters/s3 but never
+	// demonstrated in any example.
+	ranged, err := s3DemoClient.OpenRead(ctx, resources.Notes.WithStreamRead(file.StreamRead{}), streamVars, file.StreamReadOptions{Offset: 0, Length: 9})
+	if err != nil {
+		log.Fatalf("demoS3Backend: ranged OpenRead: %v", err)
+	}
+	defer ranged.Close()
+	var rangedBuf bytes.Buffer
+	if _, err := rangedBuf.ReadFrom(ranged); err != nil {
+		log.Fatalf("demoS3Backend: ranged ReadFrom: %v", err)
+	}
+	fmt.Printf("ranged read (offset=0 length=9) via S3's native GetObject Range header: %q (RecordFileRangeRead reports native=true for this backend)\n", rangedBuf.String())
 
 	fmt.Println()
 }
