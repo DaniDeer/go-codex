@@ -1,6 +1,6 @@
 module github.com/DaniDeer/go-codex
 
-go 1.26.2
+go 1.27.2
 
 require (
 	github.com/BurntSushi/toml v1.6.0

@@ -33,15 +33,23 @@ jobs:
       #  uses: actions/cache@v5
       #  with:
       #    path: ~/go/bin
-      #    key: ${{ runner.os }}-go-tools-staticcheck-v0.7.0-gosec-v2.27.1
+      #    key: ${{ runner.os }}-go-tools-staticcheck-v0.8.2-gosec-7b1b5ce
 
       - name: Install staticcheck
         if: steps.tools-cache.outputs.cache-hit != 'true'
-        run: go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
+        run: go install honnef.co/go/tools/cmd/staticcheck@v0.8.2
 
+      # Pinned to a commit, not v2.29.0: Go 1.27.2 bumped its internal gc
+      # export-data format to version 5, which v2.29.0's golang.org/x/tools
+      # v0.49.0 dependency cannot decode (every stdlib/project import
+      # silently fails to type-check -- see
+      # https://github.com/securego/gosec/issues/1774). This commit (merged
+      # to gosec's master, not yet in a tagged release) carries the x/tools
+      # bump that fixes it. Replace with the next tagged gosec release once
+      # one ships containing this fix.
       - name: Install gosec
         if: steps.tools-cache.outputs.cache-hit != 'true'
-        run: go install github.com/securego/gosec/v2/cmd/gosec@v2.27.1
+        run: go install github.com/securego/gosec/v2/cmd/gosec@7b1b5cebe007d62fb58eacb90fc571112939ec30
 
       - name: Test
         run: go test ./...
