@@ -12,7 +12,7 @@
 > **Cross-reference:** "credential rollover" above is listed as one
 > motivating scenario for hot-swap, but it is ALREADY solved for
 > `ports`, today (by design, not yet implemented), by
-> [MCP and Ports Declarative Middleware](mcp-ports-declarative-middleware.md)'s
+> [Declarative Middleware for ports](ports-declarative-middleware.md)'s
 > declare-time `.Use()` middleware attachment — a `ports` security/
 > credential middleware value is never baked into an immutable spec the
 > way a REST route's is, so it can be swapped by rebuilding the

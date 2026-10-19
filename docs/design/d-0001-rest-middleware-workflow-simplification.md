@@ -31,8 +31,9 @@
 > cross-referenced at the bottom of this summary. Started as a factual
 > audit of the SHIPPED workflow (post the now-deleted `declarative-
 > middleware.md`'s "Revision 2 — the declare/
-> implement split", content since absorbed into [MCP and Ports
-> Declarative Middleware](../roadmap/mcp-ports-declarative-middleware.md));
+> implement split", content since absorbed into [MCP Tool Declaration
+> Workflow](../roadmap/mcp-tool-declaration-workflow.md)/[Declarative
+> Middleware for ports](../roadmap/ports-declarative-middleware.md));
 > all 6 open questions raised during that audit have
 > since been worked through collaboratively and resolved into 5 concrete
 > decisions (a 6th confirmed the status quo as correct, no change).
@@ -802,8 +803,9 @@ always did, just also handing back the handle.
   `Channel.HandleMW`/`Channel.Register(builder) error` +
   `mqtt5.Serve(client, builder)`/`mcpgo.Serve(server, builder)`, etc.) —
   only REST is actually being redesigned now; `api/mcp`/`ports` remain
-  Phase 2+, tracked in [MCP and Ports Declarative
-  Middleware](../roadmap/mcp-ports-declarative-middleware.md).
+  Phase 2+, tracked in [MCP Tool Declaration
+  Workflow](../roadmap/mcp-tool-declaration-workflow.md)/[Declarative
+  Middleware for ports](../roadmap/ports-declarative-middleware.md).
 
 ### `HandleMW`-to-`.Use()` pairing validation — RESOLVED, refined across THREE successive critical review passes
 

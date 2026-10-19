@@ -1022,7 +1022,7 @@ channel.Use(events.SecurityMiddleware[BearerCredential, struct{}](
 ```
 
 **MCP/ports — confirmed the same principle applies**:
-`docs/roadmap/mcp-ports-declarative-middleware.md` already designs
+`docs/roadmap/ports-declarative-middleware.md` already designs
 `ports.RequireScopes[T]` to reuse the ALREADY-SHARED
 `middleware.SecurityScheme`/`CheckScopes` directly — the SAME
 Fn-is-a-plain-closure principle applies there: a `ports.File`
@@ -2675,7 +2675,7 @@ re-propose them without seeing why:
 Two sibling roadmap docs explore closely related "does boundary X have a
 declarative middleware mechanism" territory — cross-referenced here for
 discoverability, mirroring this session's established convention (e.g.
-`dynamic-port-rebinding.md` ↔ `mcp-ports-declarative-middleware.md`):
+`dynamic-port-rebinding.md` ↔ `ports-declarative-middleware.md`):
 
 - [WebSocket — should it gain a general-purpose declarative middleware
   mechanism?](../roadmap/websocket-declarative-middleware.md) — confirmed OUT OF
@@ -2687,7 +2687,8 @@ discoverability, mirroring this session's established convention (e.g.
   `EncodeLayer` mechanism is specific to `api/rest`/`api/events`/
   `api/reqreply`'s shared `Middleware[In,Out]` shape, which WebSocket
   does not have.
-- [MCP and Ports Declarative Middleware](../roadmap/mcp-ports-declarative-middleware.md)
+- [MCP Tool Declaration Workflow](../roadmap/mcp-tool-declaration-workflow.md)/
+  [Declarative Middleware for ports](../roadmap/ports-declarative-middleware.md)
   — confirmed OUT OF SCOPE here: MCP/`ports` use a DIFFERENT,
   single-phase attachment model with no spec/two-phase declare-dispatch
   split (see this doc's own "Out of scope" section) — the two doc's
@@ -3103,8 +3104,9 @@ regressed, by Phase 2.
 - Automatic prefix/format derivation from `scheme.Scheme` — Phase 1 keeps
   formatting explicit in the closure, matching the existing merge-field
   convention exactly.
-- `api/mcp`/`ports` — confirmed (per `mcp-ports-declarative-middleware.md`,
-  a sibling roadmap doc) to have a DIFFERENT, single-phase attachment
+- `api/mcp`/`ports` — confirmed (per `mcp-tool-declaration-workflow.md`/
+  `ports-declarative-middleware.md`, sibling roadmap docs) to have a
+  DIFFERENT, single-phase attachment
   model with no spec/two-phase declare-dispatch split; Security is
   already permanently N/A for MCP and not revisited here.
 - **mqtt5's in-payload credential embedding via `*T` mutation on

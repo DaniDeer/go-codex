@@ -1130,7 +1130,8 @@ this declared scheme actually implemented," independent of anything in §2.
 
 ### 5.6 `ports.File` read/write scope-check — a genuinely open case, not forced to fit
 
-`docs/roadmap/mcp-ports-declarative-middleware.md`'s (formerly
+`docs/roadmap/ports-declarative-middleware.md`'s (formerly part of
+`mcp-ports-declarative-middleware.md`, itself formerly
 `declarative-middleware.md`'s) UNSHIPPED `ports.File[T]` sketch
 (kept there, not duplicated here) proposes a `RequireScopes[T]` decorator
 wrapping `Read`/`Write` — a security-shaped `Fn` extracting grants, merged and
@@ -1159,8 +1160,8 @@ cross-cutting-concern mechanism at all is no longer an open question
 without a driver — the driver is the library's UX North Star
 (declarative/simple/consistent workflow), and it is already being
 pursued, as its own design, in
-[MCP and Ports Declarative Middleware](../roadmap/mcp-ports-declarative-middleware.md)'s
-`ports` scope. That doc, not this one, is where `ports.File`/`Cache`/`SQL`/`Dir`'s
+[Declarative Middleware for ports](../roadmap/ports-declarative-middleware.md)'s
+own scope. That doc, not this one, is where `ports.File`/`Cache`/`SQL`/`Dir`'s
 cross-cutting-concern story gets resolved (see §7's Review-7 bullet for
 the cross-reference).
 
@@ -1602,7 +1603,7 @@ one-at-a-time future-round policy as before:**
   mechanism.** The driver is the library's own UX North Star (declarative/
   simple/consistent workflow for the user), not adapter/protocol
   capability mismatch — and it is already being pursued in
-  [MCP and Ports Declarative Middleware](../roadmap/mcp-ports-declarative-middleware.md)'s
+  [Declarative Middleware for ports](../roadmap/ports-declarative-middleware.md)'s
   `ports.File`/`Cache`/`SQL`/`Dir` scope (cross-cutting
   concerns), NOT here. §5.6's structural observation stands unchanged:
   ports has no separate "Attach" binding step to hang a `Capability` off
@@ -6165,8 +6166,9 @@ own "Lessons Learned" section warns is invisible to
   original finding needed to re-evaluate Response Topic/Correlation Data
   against; now shipped, and the re-evaluation DECIDED it stays implicit,
   NOT a declared `Capability`/`Feature` (see §6's own updated entry).
-- [MCP and Ports Declarative Middleware](../roadmap/mcp-ports-declarative-middleware.md)
-  (formerly `declarative-middleware.md`) — its own unshipped
+- [Declarative Middleware for ports](../roadmap/ports-declarative-middleware.md)
+  (formerly part of `mcp-ports-declarative-middleware.md`, itself
+  formerly `declarative-middleware.md`) — its own unshipped
   `ports.File[T]` sketch is the basis for §5.6's worked example.
 - `docs/concepts/api-contracts.md` — the "one struct, one call" principle every
   worked example in §5 is checked against for non-regression.

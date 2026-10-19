@@ -101,7 +101,7 @@ MQTT5/ZeroMQ have no router concept of their own at all).
 
 | In scope | Out of scope (this doc) |
 |---|---|
-| `rest.Router` (path prefixes), `events.Router` (topic prefixes), `reqreply.Router` (topic prefixes) — all 3 patterns designed now, mirroring `d-0007-declarative-middleware-layering.md`'s own all-3-patterns precedent | `api/mcp` — tool names/resource URI templates don't have the same hierarchical-path shape; flagged as an **open item** in [`mcp-ports-declarative-middleware.md`](../roadmap/mcp-ports-declarative-middleware.md)'s "Open design decisions" instead (see that doc's update, not designed here) |
+| `rest.Router` (path prefixes), `events.Router` (topic prefixes), `reqreply.Router` (topic prefixes) — all 3 patterns designed now, mirroring `d-0007-declarative-middleware-layering.md`'s own all-3-patterns precedent | `api/mcp` — tool names/resource URI templates don't have the same hierarchical-path shape; flagged as an **open item** in [`mcp-tool-declaration-workflow.md`](../roadmap/mcp-tool-declaration-workflow.md)'s "Open design decisions" instead (see that doc's update, not designed here) |
 | Nesting — a Router may `Mount` sub-Routers (prefixes compose: parent + child) | Dynamic/runtime router mutation after `Register()` — mirrors the existing "no hot-adding routes to an already-`Serve`'d mux" limitation (`docs/roadmap/dynamic-port-rebinding.md`'s own scope) |
 | STATIC prefixes only (e.g. `"/api/v1"`, `"tenants/eu"`) — no `{var}` placeholders in a Router's own prefix for v1 | Variable prefixes (e.g. `"/tenants/{tenantID}"`) merging into every grouped route's own `Req`/`T` — deferred; see "Out of scope (Phase 2+)" |
 | Reusable-class `Middleware[In,Out]`/`Declaration[In,Out]` attachment at the Router level (`.Use(mw)`-equivalent, group-wide) | Bound-class (`BoundMiddleware[Req,...]`) attachment at the Router level — structurally impossible to express group-wide (a `BoundMiddleware` is tied to ONE concrete `Req`/`T` type; a Router groups routes of DIFFERENT `Req`/`T` types) — bound middlewares stay route-specific, unchanged |
@@ -521,7 +521,7 @@ dispatch) is completely unaware a Router was ever involved.
   need surfaces, confirmed via `ask_user` this round.
 - **`api/mcp` Router** — tool names/resource URIs don't share REST/events/
   reqreply's hierarchical path shape; flagged as an open item in
-  `mcp-ports-declarative-middleware.md` instead (this round's explicit
+  `mcp-tool-declaration-workflow.md` instead (this round's explicit
   direction), not designed here.
 - **Bound-class middleware at the Router level** — structurally impossible
   (a `BoundMiddleware[Req,...]` is tied to ONE `Req`/`T`; a Router groups
@@ -1081,7 +1081,7 @@ decisions below:
    convenience (attach one middleware set to N tools in one declaration,
    no path composition at all) — is a structurally DIFFERENT, simpler
    mechanism than this doc's "Router," and now has a concrete design
-   sketch recorded in `mcp-ports-declarative-middleware.md` instead of
+   sketch recorded in `mcp-tool-declaration-workflow.md` instead of
    this doc (keeps this doc's scope to the 3 patterns sharing the
    hierarchical-path/topic shape).
 3. **Bound-class middleware at the Router level — PERMANENTLY OUT OF
@@ -1191,7 +1191,7 @@ decisions below:
 **Net outcome: all 6 items confirmed correctly deferred — zero new work
 promoted into Phase C.** Item 3 spun off a separate idea-stage roadmap
 doc (`typed-router-groups.md`); item 2's adjacent idea is now sketched in
-`mcp-ports-declarative-middleware.md`; items 4 and 5 now carry concrete
+`mcp-tool-declaration-workflow.md`; items 4 and 5 now carry concrete
 design sketches (including found gotchas/blockers) for a future
 implementer to start from, instead of a bare "deferred." The
 deferred-item review itself is now closed; Phase D (documentation
@@ -1262,7 +1262,7 @@ alternatives) that produced this addendum.
   attachment resolution (unexported interface + receiver-scoped type
   parameters, since Go forbids new type parameters on a method) is the
   direct precedent this doc's `routable` interface reuses.
-- [`mcp-ports-declarative-middleware.md`](../roadmap/mcp-ports-declarative-middleware.md) —
+- [`mcp-tool-declaration-workflow.md`](../roadmap/mcp-tool-declaration-workflow.md) —
   now carries a concrete, prefix-less `ToolGroup` design sketch (spun out
   of this doc's Phase C deferred-item review, item 2) for whether
   `api/mcp` ever wants an equivalent grouping mechanism.

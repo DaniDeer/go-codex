@@ -80,7 +80,8 @@ none evaluated in depth yet:
    design MUST account for whether it should also unlock a
    Security-equivalent, or deliberately stay observability-only forever
    (mirrors MCP's own permanent "no Security" design in
-   [MCP and Ports Declarative Middleware](mcp-ports-declarative-middleware.md)).
+   [MCP Tool Declaration Workflow](mcp-tool-declaration-workflow.md)'s
+   own Section A).
 
 ## Explicitly NOT concluded by this doc
 
@@ -88,7 +89,8 @@ none evaluated in depth yet:
   honest null hypothesis).
 - Any concrete Go signature, type name, or attachment API — all 4
   candidates above are unevaluated sketches, not proposals.
-- Any relationship to [MCP and Ports Declarative Middleware](mcp-ports-declarative-middleware.md)'s
+- Any relationship to [MCP Tool Declaration Workflow](mcp-tool-declaration-workflow.md)/
+  [Declarative Middleware for ports](ports-declarative-middleware.md)'s
   own MCP/`ports.File`/`Cache`/`SQL`/`Dir` scope — WebSocket is
   NOT currently listed in that doc's coverage table at all; if a driver
   is ever confirmed here, reconciling the two docs' scope (one doc vs.
