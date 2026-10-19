@@ -4,6 +4,53 @@ Do not re-report any of these findings. They have been implemented and tested.
 
 ---
 
+## Round 235 (`deep-dive-bug-hunt` applied to `api/file` — `filetest`'s 2 newest `Assert*` functions mutation-tested: `AssertStreamRoundTrip`, `AssertMetadataIntegration` — 2nd `api/file` deep-dive pass, round 12 of 14 — CLEAN, both conformance scenarios proven rigorous via live mutation)
+
+Completed Round 220 (first pass)'s unfinished mutation-testing
+coverage — that round mutation-tested 8 of `filetest`'s `Assert*`
+functions; `AssertStreamRoundTrip` and `AssertMetadataIntegration` were
+added to the suite AFTER that round and had never been mutation-tested.
+
+**`AssertStreamRoundTrip`** (whole-file `OpenWrite`→`OpenRead` round
+trip + a ranged `OpenRead` slice check): mutated `openReadCore`'s
+discard-then-limit tier (used when a Backend implements
+`StreamReadBackend` but not `RangeReadingBackend`, e.g. `adapters/file`)
+by off-by-one-ing the discard length
+(`io.CopyN(io.Discard, raw, callerOpts.Offset)` → `+1`). Confirmed the
+ranged-read subtest FAILED on the mutated code (`got "treaming ", want
+"streaming"`), then reverted via a clean backup and re-confirmed green.
+
+**`AssertMetadataIntegration`** (resource-level `MetadataParam` round
+trip + `BoundCreateMiddleware.WithMetadataOut` override precedence):
+mutated `createCore`'s 3-way metadata merge (the Round 233 fix) back
+down to a 2-way merge, dropping the resource-derived `md` value
+entirely (`mergeMetadata(callerOpts.Metadata, boundOutMD)`, discarding
+`md`). Confirmed `resource_level_metadata_round_trips` FAILED on the
+mutated code (Owner reverted to zero value instead of "alice"), while
+`bound_middleware_metadata_out_overrides` still passed (boundOutMD's
+own precedence is independent of this specific merge layer — expected,
+not a gap in the mutation). Reverted via a clean backup, re-confirmed
+green.
+
+**Noted, not a gap this round**: neither `AssertMetadataIntegration`
+subtest exercises the raw `WriteOptions.Metadata` caller-supplied
+escape hatch directly (both go through the resource-declared
+`MetadataParam`/`BoundMiddleware` axes) — this is why the original
+Round 233 bug (caller's direct `WriteOptions.Metadata` silently
+dropped) was never caught by this conformance suite and had to be
+found via `deep-dive-bug-hunt`'s own live-reproduction methodology
+instead. Not fixed here (conformance suites are deliberately scoped to
+the DECLARED axes a `Resource` exposes, not every possible
+`WriteOptions` field) — flagged for future awareness only.
+
+Both `Assert*` functions confirmed rigorous for what they claim to
+test. `filetest`'s full 9-function suite (8 from Round 220 + these 2)
+is now completely mutation-tested. Full repo `go build`/`go test ./...`
+green throughout (zero code changes — docs-only round, pure
+verification).
+
+---
+
 ## Round 234 (`deep-dive-bug-hunt` applied to `api/file` — 4-way `Backend`/optional-extension parity: `adapters/file` vs `adapters/s3` vs `adapters/smb` vs `ports.osBackend` — 2nd `api/file` deep-dive pass, round 11 of 14 — REAL GAP FOUND AND FIXED: `adapters/file.Backend` had ZERO compile-time interface assertions for 3 extensions it genuinely implements)
 
 Built the full optional-extension implementation matrix via a direct
