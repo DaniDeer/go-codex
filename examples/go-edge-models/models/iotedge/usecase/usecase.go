@@ -15,22 +15,20 @@ import (
 // path pattern, its directory-entry filename shape, its name-validation
 // codec, its file/dir declarations ([baselineFile]/[fileResource]/
 // [dirResource]), and the domain-level composition ([UseCase]/
-// [Store.Read]/[Store.Write]) that pairs a use case with the devices
+// [Scope.Read]/[Scope.Write]) that pairs a use case with the devices
 // nested under it. Mirrors devicefile.go/devicedir.go/deviceconfig.go's
 // device-level model one level down, consolidated into a single file
 // since a use case is the package's primary aggregate root.
 //
-// Stage D2 (receiver-style migration to api/file.Client, see
-// store.go's own doc comment): every former free function taking
-// basePath as its own, per-call parameter (NewFile/NewBaselineFile/
-// NewDir/Read/Write/ListNames) is now a [*Store] METHOD, taking the
-// SAME basePath parameter — the only thing that changed is WHERE the
-// method lives (on Store, dispatching through Store's own attached
-// [file.Client]) and HOW the Router composes (Store.routerFor builds a
-// FRESH [file.Router] from basePath on every call — see store.go). The
-// underlying [file.Resource]/[file.Dir] VALUES below are now
-// PACKAGE-LEVEL vars, declared ONCE with a RELATIVE path (no basePath
-// baked in) — mirrors
+// Store/Scope split (see store.go's own doc comment for the full
+// rationale): every method below is a [*Scope] METHOD, NOT a [*Store]
+// one — basePath is bound ONCE via [Store.For], not threaded through
+// every call. Scope's Handles are EAGERLY built+cached by Store.For
+// (one [file.Router] shared by all of them), so every method below is
+// just one `s.client.Verb(ctx, s.xHandle, vars, opts...)` call, no
+// per-call Handle-building. The underlying [file.Resource]/[file.Dir]
+// VALUES below are PACKAGE-LEVEL vars, declared ONCE with a RELATIVE
+// path (no basePath baked in) — mirrors
 // [github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker/registry]'s
 // own GetTagsRoute/GetManifestRoute package-level-var convention
 // (confirmed during Stage D2 planning as the precedent to mirror).
@@ -105,13 +103,9 @@ var fileResource = file.NewResource[iothub.LayeredDeployment](
 var dirResource = file.NewDir(useCasesDirName, file.WithEntryPattern(DirEntryPattern))
 
 // ReadBaseline reads the SINGLE GLOBAL baseline deployment file under
-// basePath — "{basePath}/baseline/baseline.json".
-func (s *Store) ReadBaseline(ctx context.Context, basePath BasePath) (iothub.BaseDeployment, error) {
-	handle, err := baselineFile.WithRead(file.Read{}).Handle(s.client, file.WithRouter(routerFor(basePath)))
-	if err != nil {
-		return iothub.BaseDeployment{}, err
-	}
-	v, err := s.client.Read(ctx, handle, nil)
+// s's bound basePath — "{basePath}/baseline/baseline.json".
+func (s *Scope) ReadBaseline(ctx context.Context) (iothub.BaseDeployment, error) {
+	v, err := s.client.Read(ctx, s.readBaseline, nil)
 	if err != nil {
 		return iothub.BaseDeployment{}, err
 	}
@@ -119,24 +113,18 @@ func (s *Store) ReadBaseline(ctx context.Context, basePath BasePath) (iothub.Bas
 }
 
 // WriteBaseline writes base as the SINGLE GLOBAL baseline deployment
-// file under basePath.
-func (s *Store) WriteBaseline(ctx context.Context, basePath BasePath, base iothub.BaseDeployment, opts file.WriteOptions) ([]string, error) {
-	handle, err := baselineFile.WithCreate(file.Create{}).Handle(s.client, file.WithRouter(routerFor(basePath)))
-	if err != nil {
-		return nil, err
-	}
-	return s.client.Create(ctx, handle, base, nil, opts)
+// file under s's bound basePath. opts is 0-or-1 — omit it entirely for
+// the zero-value default, mirroring [file.Client.Create]'s own
+// variadic convention.
+func (s *Scope) WriteBaseline(ctx context.Context, base iothub.BaseDeployment, opts ...file.WriteOptions) ([]string, error) {
+	return s.client.Create(ctx, s.createBaseline, base, nil, opts...)
 }
 
-// ReadUseCaseFile reads useCaseName's deployment manifest under
-// basePath — just the manifest, not its nested devices (see
-// Store.Read for that).
-func (s *Store) ReadUseCaseFile(ctx context.Context, basePath BasePath, useCaseName Name) (iothub.LayeredDeployment, error) {
-	handle, err := fileResource.WithRead(file.Read{}).Handle(s.client, file.WithRouter(routerFor(basePath)))
-	if err != nil {
-		return iothub.LayeredDeployment{}, err
-	}
-	v, err := s.client.Read(ctx, handle, map[string]string{useCaseNameVar: string(useCaseName)})
+// ReadUseCaseFile reads useCaseName's deployment manifest under s's
+// bound basePath — just the manifest, not its nested devices (see
+// Scope.Read for that).
+func (s *Scope) ReadUseCaseFile(ctx context.Context, useCaseName Name) (iothub.LayeredDeployment, error) {
+	v, err := s.client.Read(ctx, s.readUseCase, map[string]string{useCaseNameVar: string(useCaseName)})
 	if err != nil {
 		return iothub.LayeredDeployment{}, err
 	}
@@ -144,52 +132,50 @@ func (s *Store) ReadUseCaseFile(ctx context.Context, basePath BasePath, useCaseN
 }
 
 // WriteUseCaseFile writes manifest as useCaseName's deployment
-// manifest under basePath.
-func (s *Store) WriteUseCaseFile(ctx context.Context, basePath BasePath, useCaseName Name, manifest iothub.LayeredDeployment, opts file.WriteOptions) ([]string, error) {
-	handle, err := fileResource.WithCreate(file.Create{}).Handle(s.client, file.WithRouter(routerFor(basePath)))
-	if err != nil {
-		return nil, err
-	}
-	return s.client.Create(ctx, handle, manifest, map[string]string{useCaseNameVar: string(useCaseName)}, opts)
+// manifest under s's bound basePath. opts is 0-or-1, see
+// [Scope.WriteBaseline]'s own doc comment.
+func (s *Scope) WriteUseCaseFile(ctx context.Context, useCaseName Name, manifest iothub.LayeredDeployment, opts ...file.WriteOptions) ([]string, error) {
+	return s.client.Create(ctx, s.createUseCase, manifest, map[string]string{useCaseNameVar: string(useCaseName)}, opts...)
 }
 
 // PatchUseCaseFile applies a typed partial update (via patchCodec) to
-// useCaseName's deployment manifest under basePath — the Stage D2
-// equivalent of the former ports.PatchEncoded(usecase.NewFile(basePath),
-// ...) call external callers (app/iotedge.PatchUseCaseModule) used
-// directly. A FREE FUNCTION, not a *Store method: Go methods cannot
-// introduce a new type parameter (P) beyond the receiver's own — the
-// same reason [file.WithPatch] itself is a free function, not a
-// Resource[T] method (see that function's own doc comment).
-func PatchUseCaseFile[P any](ctx context.Context, s *Store, basePath BasePath, useCaseName Name, patchCodec codex.Codec[P], patch P, opts file.WriteOptions) error {
-	handle, err := file.WithPatch(fileResource, patchCodec, file.Patch{}).Handle(s.client, file.WithRouter(routerFor(basePath)))
+// useCaseName's deployment manifest under s's bound basePath — the
+// Stage D2 equivalent of the former
+// ports.PatchEncoded(usecase.NewFile(basePath), ...) call external
+// callers (app/iotedge.PatchUseCaseModule) used directly. A FREE
+// FUNCTION, not a *Scope method: Go methods cannot introduce a new
+// type parameter (P) beyond the receiver's own — the same reason
+// [file.WithPatch] itself is a free function, not a Resource[T]
+// method (see that function's own doc comment). Unlike every other
+// method in this file, the Patch Handle can't be cached on *Scope
+// ahead of time (its own type parameter P varies per call) — built
+// fresh here, from s's own cached router.
+func PatchUseCaseFile[P any](ctx context.Context, s *Scope, useCaseName Name, patchCodec codex.Codec[P], patch P, opts ...file.WriteOptions) error {
+	handle, err := file.WithPatch(fileResource, patchCodec, file.Patch{}).Handle(s.client, file.WithRouter(s.router))
 	if err != nil {
 		return err
 	}
-	return s.client.Patch(ctx, handle, patch, map[string]string{useCaseNameVar: string(useCaseName)}, opts)
+	return s.client.Patch(ctx, handle, patch, map[string]string{useCaseNameVar: string(useCaseName)}, opts...)
 }
 
 // ListUseCaseEntries returns every discovered directory entry under
-// basePath's "usecases" directory — the low-level, raw [file.DirEntry]
-// access Store.ListNames derives from; exposed directly for a caller
-// needing the raw Name/RelPath/Kind detail (e.g. a demo showing
-// api/file's own Dir-listing mechanism, not just the extracted name).
-func (s *Store) ListUseCaseEntries(ctx context.Context, basePath BasePath, opts file.DirOptions) ([]file.DirEntry, error) {
-	handle, err := dirResource.WithList(file.ListDir{}).Handle(s.client, file.WithRouter(routerFor(basePath)))
-	if err != nil {
-		return nil, err
-	}
-	return s.client.ListDir(ctx, handle, nil, opts)
+// s's bound basePath's "usecases" directory — the low-level, raw
+// [file.DirEntry] access Scope.ListNames derives from; exposed
+// directly for a caller needing the raw Name/RelPath/Kind detail (e.g.
+// a demo showing api/file's own Dir-listing mechanism, not just the
+// extracted name).
+func (s *Scope) ListUseCaseEntries(ctx context.Context, opts ...file.DirOptions) ([]file.DirEntry, error) {
+	return s.client.ListDir(ctx, s.listUseCases, nil, opts...)
 }
 
 // ListNames returns every discovered use case name under
 // "{basePath}/usecases" — a thin convenience wrapping
-// [Store.ListUseCaseEntries], extracting each entry's captured
-// "useCase" var. Pair a returned name with Store.ReadUseCaseFile/
-// Store.Read to read/patch that SPECIFIC discovered use case's
+// [Scope.ListUseCaseEntries], extracting each entry's captured
+// "useCase" var. Pair a returned name with Scope.ReadUseCaseFile/
+// Scope.Read to read/patch that SPECIFIC discovered use case's
 // manifest.
-func (s *Store) ListNames(ctx context.Context, basePath BasePath, opts file.DirOptions) ([]Name, error) {
-	entries, err := s.ListUseCaseEntries(ctx, basePath, opts)
+func (s *Scope) ListNames(ctx context.Context, opts ...file.DirOptions) ([]Name, error) {
+	entries, err := s.ListUseCaseEntries(ctx, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -216,8 +202,8 @@ type UseCase struct {
 
 // Read reads useCaseName's deployment manifest AND every device nested
 // under it, assembling one UseCase value in one call.
-func (s *Store) Read(ctx context.Context, basePath BasePath, useCaseName Name) (UseCase, error) {
-	manifest, err := s.ReadUseCaseFile(ctx, basePath, useCaseName)
+func (s *Scope) Read(ctx context.Context, useCaseName Name) (UseCase, error) {
+	manifest, err := s.ReadUseCaseFile(ctx, useCaseName)
 	if err != nil {
 		return UseCase{}, err
 	}
@@ -225,14 +211,14 @@ func (s *Store) Read(ctx context.Context, basePath BasePath, useCaseName Name) (
 	// CreateIfMissing: a use case with no devices yet has no
 	// "devices/{useCaseName}" directory at all — treated as zero devices,
 	// not a DirReadError, the same "nothing to discover yet" semantics
-	// Store.ListDeviceIDs already gives an empty (but existing) directory.
-	deviceIDs, err := s.ListDeviceIDs(ctx, basePath, useCaseName, file.DirOptions{CreateIfMissing: true})
+	// Scope.ListDeviceIDs already gives an empty (but existing) directory.
+	deviceIDs, err := s.ListDeviceIDs(ctx, useCaseName, file.DirOptions{CreateIfMissing: true})
 	if err != nil {
 		return UseCase{}, err
 	}
 	devices := make([]DeviceConfig, len(deviceIDs))
 	for i, id := range deviceIDs {
-		cfg, err := s.ReadDeviceConfig(ctx, basePath, useCaseName, id)
+		cfg, err := s.ReadDeviceConfig(ctx, useCaseName, id)
 		if err != nil {
 			return UseCase{}, err
 		}
@@ -243,13 +229,14 @@ func (s *Store) Read(ctx context.Context, basePath BasePath, useCaseName Name) (
 }
 
 // Write writes uc.DeploymentManifest AND every uc.Devices entry — the
-// inverse of [Store.Read], one call.
-func (s *Store) Write(ctx context.Context, basePath BasePath, uc UseCase, opts file.WriteOptions) error {
-	if _, err := s.WriteUseCaseFile(ctx, basePath, uc.Name, uc.DeploymentManifest, opts); err != nil {
+// inverse of [Scope.Read], one call. opts is 0-or-1, see
+// [Scope.WriteBaseline]'s own doc comment.
+func (s *Scope) Write(ctx context.Context, uc UseCase, opts ...file.WriteOptions) error {
+	if _, err := s.WriteUseCaseFile(ctx, uc.Name, uc.DeploymentManifest, opts...); err != nil {
 		return err
 	}
 	for _, device := range uc.Devices {
-		if _, err := s.WriteDeviceConfig(ctx, basePath, uc.Name, device, opts); err != nil {
+		if _, err := s.WriteDeviceConfig(ctx, uc.Name, device, opts...); err != nil {
 			return err
 		}
 	}

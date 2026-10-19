@@ -21,62 +21,58 @@ func samplePatch() deviceconfig.Patch {
 
 // ── DeviceFile ────────────────────────────────────────────────────────────────
 
-func TestStore_WriteDeviceConfig_ThenReadDeviceFile(t *testing.T) {
+func TestStore_WriteDeviceConfig_ThenReadDeviceConfig(t *testing.T) {
 	ctx := context.Background()
-	s := newTestStore(t)
-	basePath := BasePath(t.TempDir())
+	s, _ := newTestScope(t)
 
-	if _, err := s.WriteDeviceConfig(ctx, basePath, "usecase1", DeviceConfig{DeviceID: "sensor-42", Patch: samplePatch()}, file.WriteOptions{CreateDirs: true}); err != nil {
+	if _, err := s.WriteDeviceConfig(ctx, "usecase1", DeviceConfig{DeviceID: "sensor-42", Patch: samplePatch()}, file.WriteOptions{CreateDirs: true}); err != nil {
 		t.Fatalf("WriteDeviceConfig: %v", err)
 	}
 
-	got, err := s.ReadDeviceFile(ctx, basePath, "usecase1", "sensor-42")
+	got, err := s.ReadDeviceConfig(ctx, "usecase1", "sensor-42")
 	if err != nil {
-		t.Fatalf("ReadDeviceFile: %v", err)
+		t.Fatalf("ReadDeviceConfig: %v", err)
 	}
-	if got.EdgeAgent["factory-mqtt-gateway-1.status"] != "stopped" {
-		t.Errorf("got = %+v, want EdgeAgent[factory-mqtt-gateway-1.status]=stopped", got)
+	if got.Patch.EdgeAgent["factory-mqtt-gateway-1.status"] != "stopped" {
+		t.Errorf("got = %+v, want EdgeAgent[factory-mqtt-gateway-1.status]=stopped", got.Patch)
 	}
 }
 
 func TestStore_WriteDeviceConfig_DifferentDevicesAreIndependent(t *testing.T) {
 	ctx := context.Background()
-	s := newTestStore(t)
-	basePath := BasePath(t.TempDir())
+	s, _ := newTestScope(t)
 
-	if _, err := s.WriteDeviceConfig(ctx, basePath, "usecase1", DeviceConfig{DeviceID: "sensor-a", Patch: samplePatch()}, file.WriteOptions{CreateDirs: true}); err != nil {
+	if _, err := s.WriteDeviceConfig(ctx, "usecase1", DeviceConfig{DeviceID: "sensor-a", Patch: samplePatch()}, file.WriteOptions{CreateDirs: true}); err != nil {
 		t.Fatalf("WriteDeviceConfig A: %v", err)
 	}
-	if _, err := s.ReadDeviceFile(ctx, basePath, "usecase1", "sensor-b"); err == nil {
-		t.Error("ReadDeviceFile B: want error (sensor-b was never written), got nil")
+	if _, err := s.ReadDeviceConfig(ctx, "usecase1", "sensor-b"); err == nil {
+		t.Error("ReadDeviceConfig B: want error (sensor-b was never written), got nil")
 	}
 }
 
 func TestStore_WriteDeviceConfig_DifferentUseCasesAreIndependent(t *testing.T) {
 	ctx := context.Background()
-	s := newTestStore(t)
-	basePath := BasePath(t.TempDir())
+	s, _ := newTestScope(t)
 
-	if _, err := s.WriteDeviceConfig(ctx, basePath, "usecase-a", DeviceConfig{DeviceID: "sensor-42", Patch: samplePatch()}, file.WriteOptions{CreateDirs: true}); err != nil {
+	if _, err := s.WriteDeviceConfig(ctx, "usecase-a", DeviceConfig{DeviceID: "sensor-42", Patch: samplePatch()}, file.WriteOptions{CreateDirs: true}); err != nil {
 		t.Fatalf("WriteDeviceConfig: %v", err)
 	}
-	if _, err := s.ReadDeviceFile(ctx, basePath, "usecase-b", "sensor-42"); err == nil {
-		t.Error("ReadDeviceFile under a different use case: want error, got nil")
+	if _, err := s.ReadDeviceConfig(ctx, "usecase-b", "sensor-42"); err == nil {
+		t.Error("ReadDeviceConfig under a different use case: want error, got nil")
 	}
 }
 
 // TestDeviceFileResource_MissingDeviceIDVar_ReturnsMissingFilePathVarError
 // is a white-box test against the package-level deviceFileResource var
 // directly (same rationale as fileResource's own white-box missing-var
-// test in usecase_test.go) — Store.ReadDeviceFile's own signature
+// test in usecase_test.go) — Scope.ReadDeviceConfig's own signature
 // always supplies BOTH vars, so a genuinely missing var can only be
 // reproduced by bypassing it.
 func TestDeviceFileResource_MissingDeviceIDVar_ReturnsMissingFilePathVarError(t *testing.T) {
 	ctx := context.Background()
-	s := newTestStore(t)
-	basePath := BasePath(t.TempDir())
+	s, _ := newTestScope(t)
 
-	handle, err := deviceFileResource.WithRead(file.Read{}).Handle(s.client, file.WithRouter(routerFor(basePath)))
+	handle, err := deviceFileResource.WithRead(file.Read{}).Handle(s.client, file.WithRouter(s.router))
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
@@ -91,11 +87,10 @@ func TestDeviceFileResource_MissingDeviceIDVar_ReturnsMissingFilePathVarError(t 
 
 func TestStore_ListDeviceIDs_DiscoversDevicesForGivenUseCase(t *testing.T) {
 	ctx := context.Background()
-	s := newTestStore(t)
-	basePath := BasePath(t.TempDir())
+	s, _ := newTestScope(t)
 
 	writeDevice := func(useCaseName Name, deviceID DeviceID) {
-		if _, err := s.WriteDeviceConfig(ctx, basePath, useCaseName, DeviceConfig{
+		if _, err := s.WriteDeviceConfig(ctx, useCaseName, DeviceConfig{
 			DeviceID: deviceID,
 			Patch:    samplePatch(),
 		}, file.WriteOptions{CreateDirs: true}); err != nil {
@@ -107,7 +102,7 @@ func TestStore_ListDeviceIDs_DiscoversDevicesForGivenUseCase(t *testing.T) {
 	// A different use case's device must NOT be discovered when listing usecase1.
 	writeDevice("usecase2", "sensor-99")
 
-	ids, err := s.ListDeviceIDs(ctx, basePath, "usecase1", file.DirOptions{})
+	ids, err := s.ListDeviceIDs(ctx, "usecase1", file.DirOptions{})
 	if err != nil {
 		t.Fatalf("ListDeviceIDs: %v", err)
 	}
@@ -125,17 +120,16 @@ func TestStore_ListDeviceIDs_DiscoversDevicesForGivenUseCase(t *testing.T) {
 
 func TestStore_ListDeviceIDs(t *testing.T) {
 	ctx := context.Background()
-	s := newTestStore(t)
-	basePath := BasePath(t.TempDir())
+	s, _ := newTestScope(t)
 
-	if _, err := s.WriteDeviceConfig(ctx, basePath, "usecase1", DeviceConfig{DeviceID: "sensor-1", Patch: samplePatch()}, file.WriteOptions{CreateDirs: true}); err != nil {
+	if _, err := s.WriteDeviceConfig(ctx, "usecase1", DeviceConfig{DeviceID: "sensor-1", Patch: samplePatch()}, file.WriteOptions{CreateDirs: true}); err != nil {
 		t.Fatalf("WriteDeviceConfig: %v", err)
 	}
-	if _, err := s.WriteDeviceConfig(ctx, basePath, "usecase1", DeviceConfig{DeviceID: "sensor-2", Patch: samplePatch()}, file.WriteOptions{CreateDirs: true}); err != nil {
+	if _, err := s.WriteDeviceConfig(ctx, "usecase1", DeviceConfig{DeviceID: "sensor-2", Patch: samplePatch()}, file.WriteOptions{CreateDirs: true}); err != nil {
 		t.Fatalf("WriteDeviceConfig: %v", err)
 	}
 
-	ids, err := s.ListDeviceIDs(ctx, basePath, "usecase1", file.DirOptions{})
+	ids, err := s.ListDeviceIDs(ctx, "usecase1", file.DirOptions{})
 	if err != nil {
 		t.Fatalf("ListDeviceIDs: %v", err)
 	}
@@ -150,9 +144,8 @@ func TestStore_ListDeviceIDs(t *testing.T) {
 
 func TestStore_ListDeviceIDs_NoDevicesForUseCase_ReturnsEmpty(t *testing.T) {
 	ctx := context.Background()
-	s := newTestStore(t)
-	basePath := BasePath(t.TempDir())
-	ids, err := s.ListDeviceIDs(ctx, basePath, "nonexistent-usecase", file.DirOptions{CreateIfMissing: true})
+	s, _ := newTestScope(t)
+	ids, err := s.ListDeviceIDs(ctx, "nonexistent-usecase", file.DirOptions{CreateIfMissing: true})
 	if err != nil {
 		t.Fatalf("ListDeviceIDs: %v", err)
 	}
@@ -165,15 +158,14 @@ func TestStore_ListDeviceIDs_NoDevicesForUseCase_ReturnsEmpty(t *testing.T) {
 
 func TestStore_WriteDeviceConfig_ReadDeviceConfig_RoundTrip(t *testing.T) {
 	ctx := context.Background()
-	s := newTestStore(t)
-	basePath := BasePath(t.TempDir())
+	s, _ := newTestScope(t)
 	cfg := DeviceConfig{DeviceID: "sensor-42", Patch: samplePatch()}
 
-	if _, err := s.WriteDeviceConfig(ctx, basePath, "usecase1", cfg, file.WriteOptions{CreateDirs: true}); err != nil {
+	if _, err := s.WriteDeviceConfig(ctx, "usecase1", cfg, file.WriteOptions{CreateDirs: true}); err != nil {
 		t.Fatalf("WriteDeviceConfig: %v", err)
 	}
 
-	got, err := s.ReadDeviceConfig(ctx, basePath, "usecase1", "sensor-42")
+	got, err := s.ReadDeviceConfig(ctx, "usecase1", "sensor-42")
 	if err != nil {
 		t.Fatalf("ReadDeviceConfig: %v", err)
 	}
@@ -187,9 +179,8 @@ func TestStore_WriteDeviceConfig_ReadDeviceConfig_RoundTrip(t *testing.T) {
 
 func TestStore_ReadDeviceConfig_PropagatesMissingFileError(t *testing.T) {
 	ctx := context.Background()
-	s := newTestStore(t)
-	basePath := BasePath(t.TempDir())
-	_, err := s.ReadDeviceConfig(ctx, basePath, "usecase1", "does-not-exist")
+	s, _ := newTestScope(t)
+	_, err := s.ReadDeviceConfig(ctx, "usecase1", "does-not-exist")
 	if err == nil {
 		t.Error("ReadDeviceConfig: want error for nonexistent device, got nil")
 	}
@@ -227,22 +218,21 @@ func TestDeviceConfig_Merge_LayersPatchOntoTemplate(t *testing.T) {
 
 func TestStore_ReadEffective_MergesTemplateAndDeviceConfigFromDisk(t *testing.T) {
 	ctx := context.Background()
-	s := newTestStore(t)
-	basePath := BasePath(t.TempDir())
+	s, _ := newTestScope(t)
 
-	writeSampleBaseline(t, s, basePath)
-	if _, err := s.WriteUseCaseFile(ctx, basePath, "usecase1", sampleManifest(), file.WriteOptions{CreateDirs: true}); err != nil {
+	writeSampleBaseline(t, s)
+	if _, err := s.WriteUseCaseFile(ctx, "usecase1", sampleManifest(), file.WriteOptions{CreateDirs: true}); err != nil {
 		t.Fatalf("WriteUseCaseFile template: %v", err)
 	}
 	cfg := DeviceConfig{
 		DeviceID: "sensor-1",
 		Patch:    deviceconfig.Patch{EdgeAgent: map[string]any{"factory-dashboard.status": "stopped"}},
 	}
-	if _, err := s.WriteDeviceConfig(ctx, basePath, "usecase1", cfg, file.WriteOptions{CreateDirs: true}); err != nil {
+	if _, err := s.WriteDeviceConfig(ctx, "usecase1", cfg, file.WriteOptions{CreateDirs: true}); err != nil {
 		t.Fatalf("WriteDeviceConfig: %v", err)
 	}
 
-	got, err := s.ReadEffective(ctx, basePath, "usecase1", "sensor-1")
+	got, err := s.ReadEffective(ctx, "usecase1", "sensor-1")
 	if err != nil {
 		t.Fatalf("ReadEffective: %v", err)
 	}
@@ -265,10 +255,9 @@ func TestStore_ReadEffective_MergesTemplateAndDeviceConfigFromDisk(t *testing.T)
 
 func TestStore_ReadEffective_PropagatesMissingTemplateError(t *testing.T) {
 	ctx := context.Background()
-	s := newTestStore(t)
-	basePath := BasePath(t.TempDir())
-	writeSampleBaseline(t, s, basePath)
-	_, err := s.ReadEffective(ctx, basePath, "does-not-exist", "sensor-1")
+	s, _ := newTestScope(t)
+	writeSampleBaseline(t, s)
+	_, err := s.ReadEffective(ctx, "does-not-exist", "sensor-1")
 	if err == nil {
 		t.Error("ReadEffective: want error for nonexistent use case, got nil")
 	}
@@ -276,12 +265,11 @@ func TestStore_ReadEffective_PropagatesMissingTemplateError(t *testing.T) {
 
 func TestStore_ReadEffective_PropagatesMissingBaselineError(t *testing.T) {
 	ctx := context.Background()
-	s := newTestStore(t)
-	basePath := BasePath(t.TempDir())
-	if _, err := s.WriteUseCaseFile(ctx, basePath, "usecase1", sampleManifest(), file.WriteOptions{CreateDirs: true}); err != nil {
+	s, _ := newTestScope(t)
+	if _, err := s.WriteUseCaseFile(ctx, "usecase1", sampleManifest(), file.WriteOptions{CreateDirs: true}); err != nil {
 		t.Fatalf("WriteUseCaseFile template: %v", err)
 	}
-	_, err := s.ReadEffective(ctx, basePath, "usecase1", "sensor-1")
+	_, err := s.ReadEffective(ctx, "usecase1", "sensor-1")
 	if err == nil {
 		t.Error("ReadEffective: want error for missing baseline.json, got nil")
 	}
@@ -294,13 +282,12 @@ func TestStore_ReadEffective_NoDeviceConfigYet_ReturnsTemplateUnchanged(t *testi
 	// state (a device connecting for the first time, before any override
 	// has ever been applied).
 	ctx := context.Background()
-	s := newTestStore(t)
-	basePath := BasePath(t.TempDir())
-	writeSampleBaseline(t, s, basePath)
-	if _, err := s.WriteUseCaseFile(ctx, basePath, "usecase1", sampleManifest(), file.WriteOptions{CreateDirs: true}); err != nil {
+	s, _ := newTestScope(t)
+	writeSampleBaseline(t, s)
+	if _, err := s.WriteUseCaseFile(ctx, "usecase1", sampleManifest(), file.WriteOptions{CreateDirs: true}); err != nil {
 		t.Fatalf("WriteUseCaseFile template: %v", err)
 	}
-	got, err := s.ReadEffective(ctx, basePath, "usecase1", "never-configured-device")
+	got, err := s.ReadEffective(ctx, "usecase1", "never-configured-device")
 	if err != nil {
 		t.Fatalf("ReadEffective: %v", err)
 	}

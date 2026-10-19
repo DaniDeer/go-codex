@@ -18,7 +18,7 @@ import (
 // own, separate, un-migrated file port), converts the result into a
 // scaffold iothub.LayeredDeployment via fromcompose.ConvertProject, and
 // writes the result as useCaseName's own use-case template file under
-// basePath via store — reusing [usecase.Store.WriteUseCaseFile], zero
+// basePath via scope — reusing [usecase.Store.WriteUseCaseFile], zero
 // new file-layout code. Returns every [fromcompose.Warning] the
 // conversion produced (so a caller/CLI can print them — see
 // fromcompose's own doc comment for the "scaffold, not full fidelity"
@@ -36,7 +36,7 @@ import (
 // (still ports.FileOptions — that port was not migrated this round);
 // storeOpts configures the usecase.Store write (file.WriteOptions —
 // the api/file equivalent).
-func ImportDockerComposeAsUseCase(ctx context.Context, store *usecase.Store, basePath usecase.BasePath, useCaseName usecase.Name, composeFilePath string, composeOpts ports.FileOptions, storeOpts file.WriteOptions) ([]fromcompose.Warning, error) {
+func ImportDockerComposeAsUseCase(ctx context.Context, scope *usecase.Scope, useCaseName usecase.Name, composeFilePath string, composeOpts ports.FileOptions, storeOpts file.WriteOptions) ([]fromcompose.Warning, error) {
 	project, err := dockercompose.NewFile(composeFilePath).Read(nil, composeOpts)
 	if err != nil {
 		return nil, err
@@ -44,7 +44,7 @@ func ImportDockerComposeAsUseCase(ctx context.Context, store *usecase.Store, bas
 
 	deployment, warnings := fromcompose.ConvertProject(project)
 
-	if _, err := store.WriteUseCaseFile(ctx, basePath, useCaseName, deployment, storeOpts); err != nil {
+	if _, err := scope.WriteUseCaseFile(ctx, useCaseName, deployment, storeOpts); err != nil {
 		return warnings, err
 	}
 
@@ -55,7 +55,7 @@ func ImportDockerComposeAsUseCase(ctx context.Context, store *usecase.Store, bas
 
 // ExportUseCaseAsDockerCompose is the REVERSE of
 // [ImportDockerComposeAsUseCase]: reads useCaseName's own deployment
-// manifest under basePath via store, converts it back into a Compose
+// manifest under basePath via scope, converts it back into a Compose
 // project via fromcompose.ConvertDeployment, and writes the result to
 // composeFilePath via [dockercompose.NewFile] (the same plain,
 // arbitrary-path [ports.File] port [ImportDockerComposeAsUseCase] reads
@@ -69,8 +69,8 @@ func ImportDockerComposeAsUseCase(ctx context.Context, store *usecase.Store, bas
 // compose file is a faithful STARTING POINT, not a byte-for-byte
 // reconstruction of whatever compose file (if any) originally produced
 // this use case.
-func ExportUseCaseAsDockerCompose(ctx context.Context, store *usecase.Store, basePath usecase.BasePath, useCaseName usecase.Name, composeFilePath string, composeOpts ports.FileOptions) ([]fromcompose.Warning, error) {
-	deployment, err := ReadUseCase(ctx, store, basePath, useCaseName)
+func ExportUseCaseAsDockerCompose(ctx context.Context, scope *usecase.Scope, useCaseName usecase.Name, composeFilePath string, composeOpts ports.FileOptions) ([]fromcompose.Warning, error) {
+	deployment, err := ReadUseCase(ctx, scope, useCaseName)
 	if err != nil {
 		return nil, err
 	}

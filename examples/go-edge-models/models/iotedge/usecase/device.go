@@ -26,13 +26,11 @@ import (
 // exactly, consolidated into a single file for the same reason: a
 // device is this package's SECOND aggregate, nested inside a use case.
 //
-// Stage D2 (receiver-style migration to api/file.Client — see
-// usecase.go's own top doc comment and store.go for the full design):
-// every former free function taking basePath as its own, per-call
-// parameter (NewDeviceFile/NewDeviceDir/ListDeviceIDs/ReadDeviceConfig/
-// WriteDeviceConfig/ReadEffective) is now a [*Store] METHOD, same
-// parameters otherwise. [DeviceConfig.Merge] is UNCHANGED — pure data
-// merge, no I/O, nothing to migrate.
+// Store/Scope split (see usecase.go's own top doc comment and
+// store.go for the full design): every method below is a [*Scope]
+// METHOD, NOT a [*Store] one — basePath is bound once via [Store.For],
+// not threaded through every call. [DeviceConfig.Merge] is UNCHANGED —
+// pure data merge, no I/O, nothing to migrate.
 //
 // See config.go for the filesystem-layout constants this file's
 // declarations are built from (deviceFilePathPattern,
@@ -93,52 +91,30 @@ var deviceDirResource = file.NewDir(deviceDirPathPattern.String(),
 	file.WithEntryPattern(DeviceDirEntryPattern),
 )
 
-// ReadDeviceFile reads deviceID's raw config patch under
-// basePath/useCaseName — the low-level access [PatchDeviceFile] builds
-// on; see [Store.ReadDeviceConfig] for the higher-level convenience
-// that wraps the result into a [DeviceConfig].
-func (s *Store) ReadDeviceFile(ctx context.Context, basePath BasePath, useCaseName Name, deviceID DeviceID) (deviceconfig.Patch, error) {
-	handle, err := deviceFileResource.WithRead(file.Read{}).Handle(s.client, file.WithRouter(routerFor(basePath)))
-	if err != nil {
-		return deviceconfig.Patch{}, err
-	}
-	v, err := s.client.Read(ctx, handle, map[string]string{
-		useCaseNameVar: string(useCaseName),
-		deviceIDVar:    string(deviceID),
-	})
-	if err != nil {
-		return deviceconfig.Patch{}, err
-	}
-	return v.(deviceconfig.Patch), nil
-}
-
 // PatchDeviceFile applies a typed partial update (via patchCodec) to
-// deviceID's config file under basePath/useCaseName — the Stage D2
-// equivalent of the former ports.PatchEncoded(usecase.NewDeviceFile(basePath),
-// ...) call external callers (app/iotedge.PatchDeviceModule) used
-// directly. A FREE FUNCTION, not a *Store method — same "Go methods
-// cannot introduce a new type parameter" reason as [PatchUseCaseFile].
-func PatchDeviceFile[P any](ctx context.Context, s *Store, basePath BasePath, useCaseName Name, deviceID DeviceID, patchCodec codex.Codec[P], patch P, opts file.WriteOptions) error {
-	handle, err := file.WithPatch(deviceFileResource, patchCodec, file.Patch{}).Handle(s.client, file.WithRouter(routerFor(basePath)))
+// deviceID's config file under s's bound basePath/useCaseName — the
+// Stage D2 equivalent of the former
+// ports.PatchEncoded(usecase.NewDeviceFile(basePath), ...) call
+// external callers (app/iotedge.PatchDeviceModule) used directly. A
+// FREE FUNCTION, not a *Scope method — same "Go methods cannot
+// introduce a new type parameter" reason as [PatchUseCaseFile].
+func PatchDeviceFile[P any](ctx context.Context, s *Scope, useCaseName Name, deviceID DeviceID, patchCodec codex.Codec[P], patch P, opts ...file.WriteOptions) error {
+	handle, err := file.WithPatch(deviceFileResource, patchCodec, file.Patch{}).Handle(s.client, file.WithRouter(s.router))
 	if err != nil {
 		return err
 	}
 	return s.client.Patch(ctx, handle, patch, map[string]string{
 		useCaseNameVar: string(useCaseName),
 		deviceIDVar:    string(deviceID),
-	}, opts)
+	}, opts...)
 }
 
-// ListDeviceIDs returns every discovered device_id for useCaseName under
-// basePath's devices directory — a thin convenience wrapping
-// [deviceDirResource]'s declared List role, extracting each entry's
-// captured "device_id" var.
-func (s *Store) ListDeviceIDs(ctx context.Context, basePath BasePath, useCaseName Name, opts file.DirOptions) ([]DeviceID, error) {
-	handle, err := deviceDirResource.WithList(file.ListDir{}).Handle(s.client, file.WithRouter(routerFor(basePath)))
-	if err != nil {
-		return nil, err
-	}
-	entries, err := s.client.ListDir(ctx, handle, map[string]string{useCaseNameVar: string(useCaseName)}, opts)
+// ListDeviceIDs returns every discovered device_id for useCaseName
+// under s's bound basePath's devices directory — a thin convenience
+// wrapping [deviceDirResource]'s declared List role, extracting each
+// entry's captured "device_id" var.
+func (s *Scope) ListDeviceIDs(ctx context.Context, useCaseName Name, opts ...file.DirOptions) ([]DeviceID, error) {
+	entries, err := s.client.ListDir(ctx, s.listDevices, map[string]string{useCaseNameVar: string(useCaseName)}, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -160,28 +136,34 @@ type DeviceConfig struct {
 	Patch    deviceconfig.Patch
 }
 
-// ReadDeviceConfig reads deviceID's config under basePath/useCaseName
-// and wraps it into a [DeviceConfig], one call.
-func (s *Store) ReadDeviceConfig(ctx context.Context, basePath BasePath, useCaseName Name, deviceID DeviceID) (DeviceConfig, error) {
-	patch, err := s.ReadDeviceFile(ctx, basePath, useCaseName, deviceID)
+// ReadDeviceConfig reads deviceID's config under s's bound
+// basePath/useCaseName and wraps it into a [DeviceConfig], one call.
+//
+// Inlines the raw file-read directly (no separate "ReadDeviceFile"
+// method — that standalone low-level accessor had zero callers outside
+// this method and PatchDeviceFile has its own independent Patch
+// dispatch, so it was folded in here rather than kept as public
+// surface with no real use).
+func (s *Scope) ReadDeviceConfig(ctx context.Context, useCaseName Name, deviceID DeviceID) (DeviceConfig, error) {
+	v, err := s.client.Read(ctx, s.readDevice, map[string]string{
+		useCaseNameVar: string(useCaseName),
+		deviceIDVar:    string(deviceID),
+	})
 	if err != nil {
 		return DeviceConfig{}, err
 	}
-	return DeviceConfig{DeviceID: deviceID, Patch: patch}, nil
+	return DeviceConfig{DeviceID: deviceID, Patch: v.(deviceconfig.Patch)}, nil
 }
 
 // WriteDeviceConfig writes cfg.Patch at
 // "basePath/devices/{useCaseName}/{cfg.DeviceID}.json" — the inverse of
-// [Store.ReadDeviceConfig], one call.
-func (s *Store) WriteDeviceConfig(ctx context.Context, basePath BasePath, useCaseName Name, cfg DeviceConfig, opts file.WriteOptions) (createdDirs []string, err error) {
-	handle, err := deviceFileResource.WithCreate(file.Create{}).Handle(s.client, file.WithRouter(routerFor(basePath)))
-	if err != nil {
-		return nil, err
-	}
-	return s.client.Create(ctx, handle, cfg.Patch, map[string]string{
+// [Scope.ReadDeviceConfig], one call. opts is 0-or-1, see
+// [Scope.WriteBaseline]'s own doc comment.
+func (s *Scope) WriteDeviceConfig(ctx context.Context, useCaseName Name, cfg DeviceConfig, opts ...file.WriteOptions) (createdDirs []string, err error) {
+	return s.client.Create(ctx, s.createDevice, cfg.Patch, map[string]string{
 		useCaseNameVar: string(useCaseName),
 		deviceIDVar:    string(cfg.DeviceID),
-	}, opts)
+	}, opts...)
 }
 
 // Merge layers base (the GLOBAL baseline deployment) and template (the
@@ -191,7 +173,7 @@ func (s *Store) WriteDeviceConfig(ctx context.Context, basePath BasePath, useCas
 // layered on top". Delegates to the sibling
 // models/iotedge/finaldeviceconfig package's Merge function.
 //
-// UNCHANGED by Stage D2 — pure data merge, no I/O, no *Store needed.
+// Pure data merge, no I/O, no *Scope needed.
 func (cfg DeviceConfig) Merge(base iothub.BaseDeployment, template iothub.LayeredDeployment) (iothub.BaseDeployment, error) {
 	return finaldeviceconfig.Merge(base, template, cfg.Patch)
 }
@@ -199,13 +181,13 @@ func (cfg DeviceConfig) Merge(base iothub.BaseDeployment, template iothub.Layere
 // ReadEffective reads the GLOBAL baseline, useCaseName's template, AND
 // deviceID's config, merging all three into ONE effective
 // iothub.BaseDeployment — "baseline + template + device config, layered on
-// top" — in a single call. Thin composition of Store.ReadBaseline +
-// Store.ReadUseCaseFile + Store.ReadDeviceConfig + DeviceConfig.Merge;
+// top" — in a single call. Thin composition of Scope.ReadBaseline +
+// Scope.ReadUseCaseFile + Scope.ReadDeviceConfig + DeviceConfig.Merge;
 // no new merge logic of its own.
 //
 // A device that has NEVER had a config file written for it (this
 // package's ONLY signal for "does this device exist" — there is no
-// separate device registry, matching [Store.ListDeviceIDs]'s own
+// separate device registry, matching [Scope.ListDeviceIDs]'s own
 // discover-by-file model) is NOT an error here: its effective config is
 // simply baseline+template merged with an EMPTY device patch, since "no
 // overrides yet" IS this device's current, valid state — not a caller
@@ -217,20 +199,20 @@ func (cfg DeviceConfig) Merge(base iothub.BaseDeployment, template iothub.Layere
 // (which has ALWAYS translated a not-found condition into
 // FileReadError{Err: os.ErrNotExist} specifically to make that check
 // work — see ports.File.Read's own doc comment). api/file.Client.Read,
-// which Store.ReadDeviceConfig now dispatches through directly,
+// which Scope.ReadDeviceConfig now dispatches through directly,
 // reports not-found as a bare file.FileNotFoundError with no wrapped
 // cause at all — confirmed via a live failing test during Stage D2's
 // own rewrite; [IsNotFound] encapsulates that detail.
-func (s *Store) ReadEffective(ctx context.Context, basePath BasePath, useCaseName Name, deviceID DeviceID) (iothub.BaseDeployment, error) {
-	base, err := s.ReadBaseline(ctx, basePath)
+func (s *Scope) ReadEffective(ctx context.Context, useCaseName Name, deviceID DeviceID) (iothub.BaseDeployment, error) {
+	base, err := s.ReadBaseline(ctx)
 	if err != nil {
 		return iothub.BaseDeployment{}, err
 	}
-	template, err := s.ReadUseCaseFile(ctx, basePath, useCaseName)
+	template, err := s.ReadUseCaseFile(ctx, useCaseName)
 	if err != nil {
 		return iothub.BaseDeployment{}, err
 	}
-	cfg, err := s.ReadDeviceConfig(ctx, basePath, useCaseName, deviceID)
+	cfg, err := s.ReadDeviceConfig(ctx, useCaseName, deviceID)
 	switch {
 	case err == nil:
 		return cfg.Merge(base, template)

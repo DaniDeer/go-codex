@@ -4210,6 +4210,49 @@ execution plan for Phase 3, confirmed via `ask_user`:
   (rewritten only for the new call shape, never the expected
   behavior); the whole example runs end to end (`exit 0`) with output
   identical to the pre-migration narrative.
+- **Stage D2 refinement — Store/Scope split (IMPLEMENTED)**: a later
+  round simplified `Store`'s own call shape further, in response to
+  the user asking whether `BasePath` could be "configured in one
+  place." `Store` itself stays the long-lived CONNECTION (`*file
+  .Client` only, unchanged `NewStore` signature) — but every method
+  listed above moved from `*Store` onto a NEW `*Scope` type, built via
+  `func (s *Store) For(basePath BasePath) (*Scope, error)`. `Store.For`
+  builds ONE `file.Router` and EAGERLY builds+caches all 8 non-generic
+  `file.Handle`s this package dispatches through (confirmed safe: none
+  of these resources declare any `file.Capability` requirement, so a
+  Handle build can never actually fail in practice) — every method
+  below `*Scope` is now a single `s.client.Verb(ctx, s.xHandle, vars,
+  opts...)` call, with ZERO per-call Handle-building (the earlier
+  shape rebuilt a Router + a fresh Handle on EVERY call). `BasePath` is
+  dropped from every method signature entirely — bound ONCE per
+  `Store.For` call instead of threaded through every parameter list.
+  `PatchUseCaseFile[P]`/`PatchDeviceFile[P]` keep their free-function
+  shape (same generics constraint as before) but now take `*Scope`
+  instead of `*Store`+`BasePath`; their own Patch `Handle` still can't
+  be cached ahead of time (its type parameter `P` varies per call), so
+  they build it fresh from `Scope`'s own cached `router` field. Every
+  method also gained `api/file.Client`'s own variadic-options
+  convention (`opts ...file.WriteOptions`/`...file.DirOptions`) so a
+  call needing only the zero-value default can omit the argument
+  entirely. The push-through was carried all the way to
+  `app/iotedge`'s own 9 exported functions, which moved from
+  `(ctx, store *usecase.Store, basePath usecase.BasePath, ...)` to
+  `(ctx, scope *usecase.Scope, ...)` — ONE parameter instead of two;
+  the 2 MCP tool-handler constructors (`NewReadModuleSummaryToolHandler`/
+  `NewUpdateModuleImageToolHandler`) still capture the long-lived
+  `*usecase.Store` in their closures (unchanged — this is exactly the
+  shape that motivated the split), but now call `store.For(req
+  .BasePath)` ONCE per request before dispatching, since `BasePath`
+  remains a genuine per-request MCP wire field. One method was also
+  trimmed: `ReadDeviceFile` (the raw, ID-less `deviceconfig.Patch`
+  accessor) had ZERO external callers — confirmed via grep — so its
+  body was folded directly into `ReadDeviceConfig`, the only place it
+  was ever called. Verified: all 52 `usecase` + ~30 `app/iotedge` tests
+  pass (rewritten for the new call shape, same behavior proven);
+  whole-repo `gofmt`/`go build`/`go test`/`just check` all clean; the
+  example's own output is behaviorally identical to the pre-refinement
+  run (confirmed via `diff`, modulo expected non-determinism: temp-dir
+  names, timestamps, random ports, map-iteration order).
 
 ## Phase 4 — promote to `docs/design/` + sync instructions/skills
 

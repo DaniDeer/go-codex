@@ -53,17 +53,26 @@ func main() {
 	store, err := usecase.NewStore(adapterfile.NewBackend())
 	must(err, "construct usecase.Store")
 
+	// Two DIFFERENT basePaths are used in this demo (tempBasePath for the
+	// import, existingBase for the export) — each gets its OWN
+	// *usecase.Scope via Store.For, since basePath is bound once per
+	// Scope, not fixed on Store itself.
+	tempScope, err := store.For(mustBasePath(tempBasePath))
+	must(err, "bind usecase.Scope for tempBasePath")
+	existingScope, err := store.For(mustBasePath(existingBase))
+	must(err, "bind usecase.Scope for existingBase")
+
 	// ── 1. docker-compose.yml → IoT Edge deployment manifest ────────────
 	//
 	// ImportDockerComposeAsUseCase reads composeIn via dockercompose.NewFile
 	// (ports.File[dockercompose.Project]), converts it via
 	// fromcompose.ConvertProject, and writes the result as the "factory-stack"
-	// use case under tempBasePath via the Store's own WriteUseCaseFile —
+	// use case under tempBasePath via the Scope's own WriteUseCaseFile —
 	// landing at tempBasePath + "/usecases/factory-stack.json", CreateDirs
 	// makes the new "usecases" subdir.
 	factoryStack := mustName("factory-stack")
 	importWarnings, err := iotedgeapp.ImportDockerComposeAsUseCase(
-		ctx, store, mustBasePath(tempBasePath), factoryStack, composeIn,
+		ctx, tempScope, factoryStack, composeIn,
 		ports.FileOptions{CreateDirs: true}, file.WriteOptions{CreateDirs: true},
 	)
 	must(err, "import docker-compose.yml as use case")
@@ -82,7 +91,7 @@ func main() {
 	// via dockercompose.NewFile — the reverse of step 1.
 	usecase1 := mustName("usecase1")
 	exportWarnings, err := iotedgeapp.ExportUseCaseAsDockerCompose(
-		ctx, store, mustBasePath(existingBase), usecase1, outComposeYAML,
+		ctx, existingScope, usecase1, outComposeYAML,
 		ports.FileOptions{CreateDirs: true},
 	)
 	must(err, "export usecase1 as docker-compose.yml")

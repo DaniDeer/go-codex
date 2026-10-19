@@ -28,10 +28,12 @@ import (
 // only via a LOWER layer (see UpdateUseCaseModuleImage/
 // UpdateUseCaseSystemModuleImage's own doc comments).
 //
-// store is captured in the returned closure (constructed ONCE, e.g. in
-// main.go) — the per-CALL ctx comes from the closure's own ctx
-// parameter; opts configures every file.Client.Create/Patch call this
-// handler's dispatch performs.
+// store (the long-lived connection) is captured in the returned
+// closure (constructed ONCE, e.g. in main.go) — the per-CALL ctx comes
+// from the closure's own ctx parameter; req.BasePath — a genuine
+// per-request wire field — is bound to a fresh [usecase.Scope] via
+// [usecase.Store.For] on EVERY call; opts configures every
+// file.Client.Create/Patch call this handler's dispatch performs.
 //
 // Usage:
 //
@@ -41,6 +43,10 @@ import (
 //	    mcpgo.Options{})
 func NewUpdateModuleImageToolHandler(store *usecase.Store, opts file.WriteOptions) mcpgo.HandlerFunc[updatemoduleimage.Req, modulesummary.Summary] {
 	return func(ctx context.Context, req updatemoduleimage.Req) (modulesummary.Summary, error) {
+		scope, err := store.For(req.BasePath)
+		if err != nil {
+			return modulesummary.Summary{}, err
+		}
 		image, err := docker.ImageCodec.Decode(req.ImageURL)
 		if err != nil {
 			return modulesummary.Summary{}, err
@@ -51,7 +57,7 @@ func NewUpdateModuleImageToolHandler(store *usecase.Store, opts file.WriteOption
 		// ModuleNotFoundError still surfaces for a genuinely unknown name.
 		// Uses the SAME scope (template or device) the update itself will
 		// target, via req.DeviceID.
-		if _, err := readModuleSummary(ctx, store, req.BasePath, req.UseCaseName, req.DeviceID, req.ModuleName); err != nil {
+		if _, err := readModuleSummary(ctx, scope, req.UseCaseName, req.DeviceID, req.ModuleName); err != nil {
 			return modulesummary.Summary{}, err
 		}
 
@@ -60,17 +66,17 @@ func NewUpdateModuleImageToolHandler(store *usecase.Store, opts file.WriteOption
 
 		switch {
 		case req.DeviceID == "" && isSystemModule:
-			err = UpdateUseCaseSystemModuleImage(ctx, store, req.BasePath, req.UseCaseName, systemModuleName, image, opts)
+			err = UpdateUseCaseSystemModuleImage(ctx, scope, req.UseCaseName, systemModuleName, image, opts)
 		case req.DeviceID == "":
-			err = UpdateUseCaseModuleImage(ctx, store, req.BasePath, req.UseCaseName, req.ModuleName, image, opts)
+			err = UpdateUseCaseModuleImage(ctx, scope, req.UseCaseName, req.ModuleName, image, opts)
 		case isSystemModule:
-			err = UpdateDeviceSystemModuleImage(ctx, store, req.BasePath, req.UseCaseName, req.DeviceID, systemModuleName, image, opts)
+			err = UpdateDeviceSystemModuleImage(ctx, scope, req.UseCaseName, req.DeviceID, systemModuleName, image, opts)
 		default:
-			err = UpdateDeviceModuleImage(ctx, store, req.BasePath, req.UseCaseName, req.DeviceID, req.ModuleName, image, opts)
+			err = UpdateDeviceModuleImage(ctx, scope, req.UseCaseName, req.DeviceID, req.ModuleName, image, opts)
 		}
 		if err != nil {
 			return modulesummary.Summary{}, err
 		}
-		return readModuleSummary(ctx, store, req.BasePath, req.UseCaseName, req.DeviceID, req.ModuleName)
+		return readModuleSummary(ctx, scope, req.UseCaseName, req.DeviceID, req.ModuleName)
 	}
 }

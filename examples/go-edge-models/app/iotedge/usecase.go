@@ -17,20 +17,20 @@ import (
 // ── ReadUseCase ───────────────────────────────────────────────────────────────
 
 // ReadUseCase reads useCaseName's deployment manifest under basePath via
-// store — a thin wrapper over models/iotedge/usecase's declared file
+// scope — a thin wrapper over models/iotedge/usecase's declared file
 // resource. Named distinctly from [usecase.Store.Read] (which
 // additionally reads every nested device into one composed
 // usecase.UseCase value) — this function returns just the deployment
 // manifest.
 //
 // Stage D2 (receiver-style migration to api/file.Client — see
-// models/iotedge/usecase/store.go's own doc comment): every function in
-// this file now takes a leading ctx+store pair instead of threading
+// models/iotedge/usecase/scope.go's own doc comment): every function in
+// this file now takes a leading ctx+scope pair instead of threading
 // ports.FileOptions.Context/.Observer implicitly; opts becomes
 // file.WriteOptions (the api/file equivalent, same
 // Perm/CreateDirs/DirPerm/Strict/DryRun/Metadata/IfMatch fields).
-func ReadUseCase(ctx context.Context, store *usecase.Store, basePath usecase.BasePath, useCaseName usecase.Name) (iothub.LayeredDeployment, error) {
-	return store.ReadUseCaseFile(ctx, basePath, useCaseName)
+func ReadUseCase(ctx context.Context, scope *usecase.Scope, useCaseName usecase.Name) (iothub.LayeredDeployment, error) {
+	return scope.ReadUseCaseFile(ctx, useCaseName)
 }
 
 // ── PatchUseCaseModule / UpdateUseCaseModuleImage ────────────────────────────
@@ -39,8 +39,8 @@ func ReadUseCase(ctx context.Context, store *usecase.Store, basePath usecase.Bas
 // (see modulepatch.FieldsPatch's own doc comment) — to useCaseName's
 // deployment manifest under basePath, leaving every other field on that
 // module, and every other module, untouched.
-func PatchUseCaseModule(ctx context.Context, store *usecase.Store, basePath usecase.BasePath, useCaseName usecase.Name, patch modulepatch.FieldsPatch, opts file.WriteOptions) error {
-	return usecase.PatchUseCaseFile(ctx, store, basePath, useCaseName, modulepatch.FieldsPatchCodec, patch, opts)
+func PatchUseCaseModule(ctx context.Context, scope *usecase.Scope, useCaseName usecase.Name, patch modulepatch.FieldsPatch, opts file.WriteOptions) error {
+	return usecase.PatchUseCaseFile(ctx, scope, useCaseName, modulepatch.FieldsPatchCodec, patch, opts)
 }
 
 // UpdateUseCaseModuleImage updates ONE module's image — a thin
@@ -62,8 +62,8 @@ func PatchUseCaseModule(ctx context.Context, store *usecase.Store, basePath usec
 // modulepatch.FieldsPatch via [PatchUseCaseModule] instead — this
 // convenience always assumes an EXISTING config to update, one layer or
 // another).
-func UpdateUseCaseModuleImage(ctx context.Context, store *usecase.Store, basePath usecase.BasePath, useCaseName usecase.Name, moduleName iothub.ModuleName, image docker.Image, opts file.WriteOptions) error {
-	template, err := ReadUseCase(ctx, store, basePath, useCaseName)
+func UpdateUseCaseModuleImage(ctx context.Context, scope *usecase.Scope, useCaseName usecase.Name, moduleName iothub.ModuleName, image docker.Image, opts file.WriteOptions) error {
+	template, err := ReadUseCase(ctx, scope, useCaseName)
 	if err != nil {
 		return err
 	}
@@ -72,10 +72,10 @@ func UpdateUseCaseModuleImage(ctx context.Context, store *usecase.Store, basePat
 		if err != nil {
 			return err
 		}
-		return PatchUseCaseModule(ctx, store, basePath, useCaseName, patch, opts)
+		return PatchUseCaseModule(ctx, scope, useCaseName, patch, opts)
 	}
 
-	base, err := store.ReadBaseline(ctx, basePath)
+	base, err := scope.ReadBaseline(ctx)
 	if err != nil {
 		return err
 	}
@@ -87,7 +87,7 @@ func UpdateUseCaseModuleImage(ctx context.Context, store *usecase.Store, basePat
 	if err != nil {
 		return err
 	}
-	return PatchUseCaseModule(ctx, store, basePath, useCaseName, patch, opts)
+	return PatchUseCaseModule(ctx, scope, useCaseName, patch, opts)
 }
 
 // ── PatchDeviceModule / UpdateDeviceModuleImage ──────────────────────────────
@@ -117,17 +117,17 @@ func UpdateUseCaseModuleImage(ctx context.Context, store *usecase.Store, basePat
 //     instead — detected via [usecase.IsNotFound] on the read attempt.
 //     Any OTHER read error (e.g. an existing-but-malformed device file)
 //     propagates as-is, never silently overwritten.
-func PatchDeviceModule(ctx context.Context, store *usecase.Store, basePath usecase.BasePath, useCaseName usecase.Name, deviceID usecase.DeviceID, patch modulepatch.FieldsPatch, opts file.WriteOptions) error {
+func PatchDeviceModule(ctx context.Context, scope *usecase.Scope, useCaseName usecase.Name, deviceID usecase.DeviceID, patch modulepatch.FieldsPatch, opts file.WriteOptions) error {
 	rawBody, err := modulepatch.FieldsBodyCodec.Encode(patch)
 	if err != nil {
 		return err
 	}
 	delta := deviceconfig.Patch{EdgeAgent: map[string]any{string(patch.ModuleName): rawBody}}
 
-	_, readErr := store.ReadDeviceConfig(ctx, basePath, useCaseName, deviceID)
+	_, readErr := scope.ReadDeviceConfig(ctx, useCaseName, deviceID)
 	switch {
 	case readErr == nil:
-		return usecase.PatchDeviceFile(ctx, store, basePath, useCaseName, deviceID, deviceconfig.PatchCodec, delta, opts)
+		return usecase.PatchDeviceFile(ctx, scope, useCaseName, deviceID, deviceconfig.PatchCodec, delta, opts)
 	case usecase.IsNotFound(readErr):
 		// First-ever override for this device: the "devices/{useCaseName}/"
 		// directory may not exist yet either — force CreateDirs regardless
@@ -136,7 +136,7 @@ func PatchDeviceModule(ctx context.Context, store *usecase.Store, basePath useca
 		// this device already has a config file.
 		firstWriteOpts := opts
 		firstWriteOpts.CreateDirs = true
-		_, writeErr := store.WriteDeviceConfig(ctx, basePath, useCaseName, usecase.DeviceConfig{DeviceID: deviceID, Patch: delta}, firstWriteOpts)
+		_, writeErr := scope.WriteDeviceConfig(ctx, useCaseName, usecase.DeviceConfig{DeviceID: deviceID, Patch: delta}, firstWriteOpts)
 		return writeErr
 	default:
 		return readErr
@@ -150,12 +150,12 @@ func PatchDeviceModule(ctx context.Context, store *usecase.Store, basePath useca
 // and validated by modulepatch.NewUpdateModuleImage (moduleName's slug
 // shape and image's Name/Tag/Digest constraints are both checked there,
 // before this ever touches disk).
-func UpdateDeviceModuleImage(ctx context.Context, store *usecase.Store, basePath usecase.BasePath, useCaseName usecase.Name, deviceID usecase.DeviceID, moduleName iothub.ModuleName, image docker.Image, opts file.WriteOptions) error {
+func UpdateDeviceModuleImage(ctx context.Context, scope *usecase.Scope, useCaseName usecase.Name, deviceID usecase.DeviceID, moduleName iothub.ModuleName, image docker.Image, opts file.WriteOptions) error {
 	patch, err := modulepatch.NewUpdateModuleImage(moduleName, image)
 	if err != nil {
 		return err
 	}
-	return PatchDeviceModule(ctx, store, basePath, useCaseName, deviceID, patch, opts)
+	return PatchDeviceModule(ctx, scope, useCaseName, deviceID, patch, opts)
 }
 
 // ── System-module patching (edgeAgent/edgeHub themselves) ────────────────────
@@ -189,7 +189,7 @@ var systemModulePatchIdentityCodec = codex.Codec[map[string]any]{
 // ("edgeAgent"/"edgeHub") own fields, matching
 // iothub.SystemModuleConfigCodec's own wire shape — to
 // useCaseName's deployment manifest under basePath.
-func PatchUseCaseSystemModule(ctx context.Context, store *usecase.Store, basePath usecase.BasePath, useCaseName usecase.Name, name iothub.SystemModuleName, patchFields map[string]any, opts file.WriteOptions) error {
+func PatchUseCaseSystemModule(ctx context.Context, scope *usecase.Scope, useCaseName usecase.Name, name iothub.SystemModuleName, patchFields map[string]any, opts file.WriteOptions) error {
 	fullKey, err := iothub.SystemModuleNameCodec.Encode(name)
 	if err != nil {
 		return err
@@ -199,7 +199,7 @@ func PatchUseCaseSystemModule(ctx context.Context, store *usecase.Store, basePat
 			iothub.EdgeAgentKey: map[string]any{fullKey.(string): patchFields},
 		},
 	}
-	return usecase.PatchUseCaseFile(ctx, store, basePath, useCaseName, systemModulePatchIdentityCodec, delta, opts)
+	return usecase.PatchUseCaseFile(ctx, scope, useCaseName, systemModulePatchIdentityCodec, delta, opts)
 }
 
 // UpdateUseCaseSystemModuleImage updates ONE system module's image at the
@@ -210,18 +210,18 @@ func PatchUseCaseSystemModule(ctx context.Context, store *usecase.Store, basePat
 // otherwise AUTO-PROMOTES to a FULL iothub.SystemModuleConfig
 // (seeded from baseline's own resolved value, only Image changed) so
 // the newly-written override is immediately valid on its own.
-func UpdateUseCaseSystemModuleImage(ctx context.Context, store *usecase.Store, basePath usecase.BasePath, useCaseName usecase.Name, name iothub.SystemModuleName, image docker.Image, opts file.WriteOptions) error {
-	template, err := ReadUseCase(ctx, store, basePath, useCaseName)
+func UpdateUseCaseSystemModuleImage(ctx context.Context, scope *usecase.Scope, useCaseName usecase.Name, name iothub.SystemModuleName, image docker.Image, opts file.WriteOptions) error {
+	template, err := ReadUseCase(ctx, scope, useCaseName)
 	if err != nil {
 		return err
 	}
 	if _, ok := template.ModulesContent.SystemModules[name]; ok {
-		return PatchUseCaseSystemModule(ctx, store, basePath, useCaseName, name, map[string]any{
+		return PatchUseCaseSystemModule(ctx, scope, useCaseName, name, map[string]any{
 			"settings": map[string]any{"image": image.String()},
 		}, opts)
 	}
 
-	base, err := store.ReadBaseline(ctx, basePath)
+	base, err := scope.ReadBaseline(ctx)
 	if err != nil {
 		return err
 	}
@@ -234,7 +234,7 @@ func UpdateUseCaseSystemModuleImage(ctx context.Context, store *usecase.Store, b
 	if err != nil {
 		return err
 	}
-	return PatchUseCaseSystemModule(ctx, store, basePath, useCaseName, name, raw.(map[string]any), opts)
+	return PatchUseCaseSystemModule(ctx, scope, useCaseName, name, raw.(map[string]any), opts)
 }
 
 // PatchDeviceSystemModule applies patchFields — any subset of name's own
@@ -243,17 +243,17 @@ func UpdateUseCaseSystemModuleImage(ctx context.Context, store *usecase.Store, b
 // [PatchDeviceModule]'s own two-case (existing file / first-ever
 // override) handling exactly, one bucket over
 // (deviceconfig.Patch.SystemModules, not EdgeAgent).
-func PatchDeviceSystemModule(ctx context.Context, store *usecase.Store, basePath usecase.BasePath, useCaseName usecase.Name, deviceID usecase.DeviceID, name iothub.SystemModuleName, patchFields map[string]any, opts file.WriteOptions) error {
+func PatchDeviceSystemModule(ctx context.Context, scope *usecase.Scope, useCaseName usecase.Name, deviceID usecase.DeviceID, name iothub.SystemModuleName, patchFields map[string]any, opts file.WriteOptions) error {
 	delta := deviceconfig.Patch{SystemModules: map[string]any{string(name): patchFields}}
 
-	_, readErr := store.ReadDeviceConfig(ctx, basePath, useCaseName, deviceID)
+	_, readErr := scope.ReadDeviceConfig(ctx, useCaseName, deviceID)
 	switch {
 	case readErr == nil:
-		return usecase.PatchDeviceFile(ctx, store, basePath, useCaseName, deviceID, deviceconfig.PatchCodec, delta, opts)
+		return usecase.PatchDeviceFile(ctx, scope, useCaseName, deviceID, deviceconfig.PatchCodec, delta, opts)
 	case usecase.IsNotFound(readErr):
 		firstWriteOpts := opts
 		firstWriteOpts.CreateDirs = true
-		_, writeErr := store.WriteDeviceConfig(ctx, basePath, useCaseName, usecase.DeviceConfig{DeviceID: deviceID, Patch: delta}, firstWriteOpts)
+		_, writeErr := scope.WriteDeviceConfig(ctx, useCaseName, usecase.DeviceConfig{DeviceID: deviceID, Patch: delta}, firstWriteOpts)
 		return writeErr
 	default:
 		return readErr
@@ -268,8 +268,8 @@ func PatchDeviceSystemModule(ctx context.Context, store *usecase.Store, basePath
 // are mandatory there — see iothub.SystemModules), so a sparse
 // "settings.image" patch always deep-merges onto an already-complete
 // base.
-func UpdateDeviceSystemModuleImage(ctx context.Context, store *usecase.Store, basePath usecase.BasePath, useCaseName usecase.Name, deviceID usecase.DeviceID, name iothub.SystemModuleName, image docker.Image, opts file.WriteOptions) error {
-	return PatchDeviceSystemModule(ctx, store, basePath, useCaseName, deviceID, name, map[string]any{
+func UpdateDeviceSystemModuleImage(ctx context.Context, scope *usecase.Scope, useCaseName usecase.Name, deviceID usecase.DeviceID, name iothub.SystemModuleName, image docker.Image, opts file.WriteOptions) error {
+	return PatchDeviceSystemModule(ctx, scope, useCaseName, deviceID, name, map[string]any{
 		"settings": map[string]any{"image": image.String()},
 	}, opts)
 }

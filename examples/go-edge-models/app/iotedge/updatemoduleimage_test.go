@@ -12,7 +12,7 @@ import (
 func TestNewUpdateModuleImageToolHandler_ReturnsUpdatedSummary(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
-	basePath := writeSampleManifest(t, s)
+	scope, basePath := writeSampleManifest(t, s)
 	handler := NewUpdateModuleImageToolHandler(s, file.WriteOptions{})
 
 	summary, err := handler(ctx, updatemoduleimage.Req{
@@ -36,7 +36,7 @@ func TestNewUpdateModuleImageToolHandler_ReturnsUpdatedSummary(t *testing.T) {
 	}
 
 	// Confirm the change was actually persisted to disk.
-	got, err := ReadUseCase(ctx, s, basePath, sampleUseCaseName)
+	got, err := ReadUseCase(ctx, scope, sampleUseCaseName)
 	if err != nil {
 		t.Fatalf("ReadUseCase: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestNewUpdateModuleImageToolHandler_ReturnsUpdatedSummary(t *testing.T) {
 func TestNewUpdateModuleImageToolHandler_RejectsInvalidImageURL(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
-	basePath := writeSampleManifest(t, s)
+	scope, basePath := writeSampleManifest(t, s)
 	handler := NewUpdateModuleImageToolHandler(s, file.WriteOptions{})
 
 	_, err := handler(ctx, updatemoduleimage.Req{
@@ -62,7 +62,7 @@ func TestNewUpdateModuleImageToolHandler_RejectsInvalidImageURL(t *testing.T) {
 	}
 
 	// The manifest must be untouched by a rejected update.
-	got, readErr := ReadUseCase(ctx, s, basePath, sampleUseCaseName)
+	got, readErr := ReadUseCase(ctx, scope, sampleUseCaseName)
 	if readErr != nil {
 		t.Fatalf("ReadUseCase: %v", readErr)
 	}
@@ -74,7 +74,7 @@ func TestNewUpdateModuleImageToolHandler_RejectsInvalidImageURL(t *testing.T) {
 func TestNewUpdateModuleImageToolHandler_ModuleNotFound(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
-	basePath := writeSampleManifest(t, s)
+	_, basePath := writeSampleManifest(t, s)
 	handler := NewUpdateModuleImageToolHandler(s, file.WriteOptions{})
 
 	_, err := handler(ctx, updatemoduleimage.Req{
@@ -110,7 +110,7 @@ func TestNewUpdateModuleImageToolHandler_PropagatesMissingFileError(t *testing.T
 func TestNewUpdateModuleImageToolHandler_DeviceScoped_WritesOnlyDeviceFile(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
-	basePath := writeSampleManifest(t, s)
+	scope, basePath := writeSampleManifest(t, s)
 	handler := NewUpdateModuleImageToolHandler(s, file.WriteOptions{})
 
 	summary, err := handler(ctx, updatemoduleimage.Req{
@@ -128,7 +128,7 @@ func TestNewUpdateModuleImageToolHandler_DeviceScoped_WritesOnlyDeviceFile(t *te
 	}
 
 	// The TEMPLATE must be completely untouched.
-	template, err := ReadUseCase(ctx, s, basePath, sampleUseCaseName)
+	template, err := ReadUseCase(ctx, scope, sampleUseCaseName)
 	if err != nil {
 		t.Fatalf("ReadUseCase: %v", err)
 	}

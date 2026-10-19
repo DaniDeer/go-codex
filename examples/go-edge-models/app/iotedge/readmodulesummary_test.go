@@ -13,7 +13,7 @@ import (
 func TestNewReadModuleSummaryToolHandler_ReturnsSummary(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
-	basePath := writeSampleManifest(t, s)
+	_, basePath := writeSampleManifest(t, s)
 	handler := NewReadModuleSummaryToolHandler(s)
 
 	summary, err := handler(ctx, modulesummary.ReadReq{
@@ -38,7 +38,7 @@ func TestNewReadModuleSummaryToolHandler_ReturnsSummary(t *testing.T) {
 func TestNewReadModuleSummaryToolHandler_ModuleNotFound(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
-	basePath := writeSampleManifest(t, s)
+	_, basePath := writeSampleManifest(t, s)
 	handler := NewReadModuleSummaryToolHandler(s)
 
 	_, err := handler(ctx, modulesummary.ReadReq{
@@ -75,9 +75,9 @@ func TestNewReadModuleSummaryToolHandler_PropagatesReadError(t *testing.T) {
 func TestNewReadModuleSummaryToolHandler_DeviceScoped_ReturnsEffectiveSummary(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
-	basePath := writeSampleManifest(t, s)
+	scope, basePath := writeSampleManifest(t, s)
 	newImage := docker.Image{Name: "ghcr.io/org/edge-web", Tag: "3.0.0"}
-	if err := UpdateDeviceModuleImage(ctx, s, basePath, sampleUseCaseName, sampleDeviceID, "factory-dashboard", newImage, file.WriteOptions{}); err != nil {
+	if err := UpdateDeviceModuleImage(ctx, scope, sampleUseCaseName, sampleDeviceID, "factory-dashboard", newImage, file.WriteOptions{}); err != nil {
 		t.Fatalf("UpdateDeviceModuleImage: %v", err)
 	}
 	handler := NewReadModuleSummaryToolHandler(s)
@@ -103,9 +103,9 @@ func TestNewReadModuleSummaryToolHandler_DeviceScoped_ReturnsEffectiveSummary(t 
 func TestNewReadModuleSummaryToolHandler_DeviceScoped_TemplateUnaffected(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
-	basePath := writeSampleManifest(t, s)
+	scope, basePath := writeSampleManifest(t, s)
 	newImage := docker.Image{Name: "ghcr.io/org/edge-web", Tag: "3.0.0"}
-	if err := UpdateDeviceModuleImage(ctx, s, basePath, sampleUseCaseName, sampleDeviceID, "factory-dashboard", newImage, file.WriteOptions{}); err != nil {
+	if err := UpdateDeviceModuleImage(ctx, scope, sampleUseCaseName, sampleDeviceID, "factory-dashboard", newImage, file.WriteOptions{}); err != nil {
 		t.Fatalf("UpdateDeviceModuleImage: %v", err)
 	}
 	handler := NewReadModuleSummaryToolHandler(s)
