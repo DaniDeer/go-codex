@@ -4,6 +4,120 @@ Do not re-report any of these findings. They have been implemented and tested.
 
 ---
 
+## Round 225 (`deep-dive-bug-hunt` applied to `api/file` — List/BatchDelete per-entry Security amendment (`ListResult[T]`, per-entry/per-path gating) — 2nd `api/file` deep-dive pass, round 2 of 14 — CLEAN on its own stated scope, but surfaced a SEPARATE, MAJOR, confirmed gap: `ListOptions{Recursive: true}` is a NO-OP for every possible `Resource[T]`)
+
+**Scope**: `listCore`'s per-entry pipeline (`listEntry`, `listSingleLevel`,
+`listRecursiveWalking`/`listRecursiveManual`) and `batchDeleteCore`'s
+per-path pipeline, in `api/file/dispatch.go`.
+
+**Per-entry/per-path Security gating itself: CLEAN.** Traced the full
+path: `listEntry` runs `runBoundMiddleware(ctx, childPath, core, &v,
+nil)` AFTER decode+path-merge+metadata-merge (passing the actual
+decoded value, unlike every other role's once-per-call `nil`-value
+gate); every failure (decode, merge-field, metadata-read, Security
+rejection) uniformly becomes that entry's own `ListResult[T].Err` via
+`applyErrorPattern`, never aborting the loop. `batchDeleteCore` gates
+EVERY path independently BEFORE either the native `BatchDeletingBackend`
+or generic-fallback delete call, tracking survivors by ORIGINAL INDEX
+(not path string, so duplicate paths in one batch are each handled
+independently). Confirmed no double-`ErrorPattern`-wrapping risk (the
+outer `defer applyErrorPattern(core, err)` is a no-op on `nil`, and
+per-entry/per-path failures live inside the RESULT slice, never as the
+function's own `err` return). Existing tests
+(`TestLister_PerEntrySecurityRejection_SiblingsStillSucceed`,
+`TestBatchDeleter_PerPathSecurityRejection_EachPathGatedIndependently`,
+`TestListCore_WalkLevelError_StillFailsWholeCall`,
+`TestListCore_ObserverCount_IncludesFailedEntries`) genuinely assert
+the documented semantics, not just "compiles." One minor, deliberately-
+NOT-fixed observation: `batchDeleteCore`'s native-backend branch trusts
+`BatchDeletingBackend.DeleteBytesBatch`'s own documented
+results[i]-corresponds-to-paths[i] ordering contract without a
+length/order defensive re-check — consistent with how every other
+optional-extension Backend contract in this codebase is trusted
+(`WalkingBackend`'s `SkipDir` honoring, etc.), not a new asymmetric
+gap.
+
+**MAJOR FINDING (confirmed via 2 live-reproduction probes, NOT a
+quick fix — flagged, not fixed, this round)**:
+`Client.List(ctx, resource, vars, file.ListOptions{Recursive: true})`
+is a **complete, confirmed no-op** for every possible `Resource[T]`
+declaration — it NEVER discovers anything beyond what `Recursive:
+false` (the default) already discovers, for 2 independent, compounding
+reasons:
+
+1. **The depth-pruning rule always equals non-recursive's own natural
+   scope.** `recursiveListDepth` is a hardcoded constant `= 1` (not
+   computed per-template) — and because `buildParentDirWithRouting`
+   ALREADY requires every dir-portion var to be supplied up front (a
+   PRE-EXISTING, independently-enforced constraint — confirmed via
+   `codex.BuildFromParams` erroring with `MissingFilePathVarError`
+   otherwise), the resolved parent directory is ALWAYS a single,
+   fully-concrete path with EXACTLY one remaining template segment (the
+   leaf) past it — for literally every `Resource[T]` that could ever be
+   declared. A live probe test (`dirPath` containing both 2 direct
+   files AND a nested `sub/c.json` one level deeper) confirmed
+   `Recursive: true` and `Recursive: false` return BYTE-FOR-BYTE
+   IDENTICAL result sets — `sub/c.json` is pruned under Recursive
+   exactly the same as it's simply never visited at all under
+   non-recursive's single `ListDir` call.
+2. **The feature cannot even be INVOKED for the one scenario where
+   "recursive discovery" would be meaningful.** The design doc's own
+   motivating idea (discovering files across directories whose NAMES
+   aren't known up front — e.g. a `"notes/{category}/{id}.json"`
+   template, walking "notes" to find every `(category, id)` pair
+   without the caller enumerating `category` values) is structurally
+   impossible: a 2nd live probe confirmed calling `List` on such a
+   template WITHOUT supplying `category` in `vars` fails IMMEDIATELY
+   with `MissingFilePathVarError`, before `Recursive` ever gets a
+   chance to matter — `buildParentDirWithRouting` has no
+   Recursive-aware relaxation of its own "every dir-portion var
+   required" rule.
+
+Both probes are consistent with the design doc's own text: "a
+depth-pruning rule... excludes any entry whose actual depth exceeds
+the resource template's own exact declared segment count — found
+necessary during this item's own pre-implementation gap-review (the
+ORIGINAL design was PERMISSIVE, matching only a leaf filename
+regardless of structural depth)." This confirms the ORIGINAL,
+pre-gap-review design DID walk arbitrarily deep (matching any file
+whose leaf name fit the template's own leaf pattern, regardless of
+nesting) — and the depth-pruning fix, while correctly closing a
+real over-permissiveness concern, went far enough to make the
+ENTIRE feature functionally inert for the only use case it could ever
+have mattered for. **TWO separate, dedicated gap-review rounds for
+"Recursive WithList" (this session's own established, usually-
+effective discipline) BOTH missed this** — every existing unit test
+for this feature (`TestListCore_Recursive_DiscoversEntriesInParentDir`,
+`..._SkipsDirectoryEntries`, `..._DepthPruning_ExcludesTooDeepEntries`,
+`..._NonWalkingBackend_FallsBackToManualComposition`,
+`..._MergeFieldAppliesPerEntry`) only ever exercises scenarios where
+Recursive's result is IDENTICAL to non-recursive's own — the test
+suite's own scope never probed "does Recursive discover anything
+non-recursive wouldn't," so this coincidence of 2 independently-
+compounding restrictions went undetected through implementation AND
+2 prior adversarial reviews.
+
+**Deliberately NOT fixed this round** — a genuine, correct fix needs a
+real design decision (likely porting `file.Dir`'s own glob-discovery
+machinery — relaxing `buildParentDirWithRouting`'s "every dir-portion
+var required" rule specifically under `Recursive: true`, treating an
+unresolved segment as a wildcard to walk across, capturing its value
+as a merge-field per entry — mirrors `Dir.matchDirGlob`'s own already-
+proven mechanism) that is far larger in scope than this bug-hunt
+round's own remit, and risks shipping an UNDER-REVIEWED redesign of an
+already-tested, already-shipped feature without the same scrutiny this
+session gave every other `api/file` feature. **Recommended as its own,
+dedicated follow-up design round** — flagged prominently to the user,
+not silently left for a future session to rediscover.
+
+Verified: no repo files left modified by the probe tests (both
+deleted after confirming the finding, never committed) — this round's
+own in-scope work (confirming the per-entry/per-path Security gating
+is clean) required no code changes, so `go build`/`go test` are
+unaffected by this round on their own.
+
+---
+
 ## Round 224 (`deep-dive-bug-hunt` applied to `api/file` — `file.Dir`'s foundational dispatch core (`listDirCore`/`deleteDirCore`) — 2nd `api/file` deep-dive pass, round 1 of 14: everything built since Round 223)
 
 **Arguments**: "perform several deep-dive reviews to hunt down bugs and
