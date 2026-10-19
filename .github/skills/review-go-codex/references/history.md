@@ -4,6 +4,55 @@ Do not re-report any of these findings. They have been implemented and tested.
 
 ---
 
+## Round 226 (`deep-dive-bug-hunt` applied to `api/file` — `file.Dir`'s `BoundListDirMiddleware`/`BoundDeleteDirMiddleware` + Router integration, fresh mutation-test proof of the just-fixed glob/Router interaction — 2nd `api/file` deep-dive pass, round 3 of 14, CLEAN)
+
+**Scope**: `api/file/dir_middleware.go` (`BoundListDirMiddleware`/
+`BoundDeleteDirMiddleware` + their `NewBound*`/`BoundSecurity*`
+constructors + `ListDirBoundMW`/`DeleteDirBoundMW` attach methods) and
+`file.Dir`'s own `WithRouterPrefix`/`MiddlewareNames`/`RouteTags`/
+`RegisterAny`/`RouteMethod` implementations (both roles) in
+`api/file/dir.go`.
+
+**BoundMiddleware**: confirmed `BoundListDirMiddleware`/
+`BoundDeleteDirMiddleware` are byte-for-byte structural mirrors of
+`BoundDeleteMiddleware` (the no-T shape every Delete/Exists/Copy/Move/
+Mkdir/BatchDelete role already uses) — no drift, no divergence.
+
+**Router integration**: `applyDirWithRouterPrefix` (shared by both
+roles) correctly mutates `dir.template` via `joinRouterPath` AND syncs
+`core.resource.template` to match — confirmed this is the SAME
+mechanism the prior review round's `routedDir` fix (Round 224's own
+`listDirCore` foundational trace already re-verified this once) relies
+on for the "Route+Register" workflow specifically.
+
+**Mutation-test proof (per the skill's mandatory discipline, not just
+re-trusting the prior round's own tests)**: temporarily reverted the
+`routedDir.template = routing.resolvedTemplate(dir.template)` fix (in
+a scratch, never-committed edit) back to the pre-fix
+`routedDir.template = dir.template` — confirmed
+`TestDirListCore_GlobDiscovery_RouterGrouped_ComposesPrefix` correctly
+FAILS against the reverted code (`lstat logs: no such file or
+directory` — the un-prefixed path), then reverted the mutation and
+confirmed the test passes again. This proves the fix's own test
+coverage is genuinely load-bearing, not accidentally passing.
+
+Confirmed `ListDirer`/`DeleteDirer` both implement
+`router.Routable[*Client]` + `router.MethodReporter` completely
+(`WithRouterPrefix`/`MiddlewareNames`/`RouteTags`/`RegisterAny`/
+`RouteMethod` — `"list-dir"`/`"delete-dir"`, no collision with any of
+the other 10 roles' own method strings) — existing tests
+(`TestListDirBoundMiddleware_SecurityGate_RejectsBeforeBackendCall`,
+`TestDirRouter_RouteAndRegister_RunsFailFastCoverageCheck`,
+`TestDirRouter_GroupedDir_ComposesPrefixOncePerHandle`) exercise both
+the "Route+Register" and "build-the-Handle-directly" workflows for
+BOTH roles, not just one.
+
+Verified: no code changes this round (clean) — `gofmt`/`go build`/
+`go test ./api/file/...` all confirmed green both before and after the
+temporary mutation (which was never committed).
+
+---
+
 ## Round 225 (`deep-dive-bug-hunt` applied to `api/file` — List/BatchDelete per-entry Security amendment (`ListResult[T]`, per-entry/per-path gating) — 2nd `api/file` deep-dive pass, round 2 of 14 — CLEAN on its own stated scope, but surfaced a SEPARATE, MAJOR, confirmed gap: `ListOptions{Recursive: true}` is a NO-OP for every possible `Resource[T]`)
 
 **Scope**: `listCore`'s per-entry pipeline (`listEntry`, `listSingleLevel`,
