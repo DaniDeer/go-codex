@@ -172,3 +172,5 @@ func (b *Backend) WriteBytesIfMatch(ctx context.Context, path string, data []byt
 	}
 	return createdDirs, nil
 }
+
+var _ apifile.ConditionalWriteBackend = (*Backend)(nil)

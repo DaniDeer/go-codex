@@ -4,6 +4,58 @@ Do not re-report any of these findings. They have been implemented and tested.
 
 ---
 
+## Round 234 (`deep-dive-bug-hunt` applied to `api/file` — 4-way `Backend`/optional-extension parity: `adapters/file` vs `adapters/s3` vs `adapters/smb` vs `ports.osBackend` — 2nd `api/file` deep-dive pass, round 11 of 14 — REAL GAP FOUND AND FIXED: `adapters/file.Backend` had ZERO compile-time interface assertions for 3 extensions it genuinely implements)
+
+Built the full optional-extension implementation matrix via a direct
+grep of every `var _ apifile.Xxx = (*Backend)(nil)`-style compile-time
+assertion across all 4 Backend implementations:
+
+| Interface | `adapters/file` | `adapters/s3` | `adapters/smb` | `ports.osBackend` |
+|---|---|---|---|---|
+| `Backend` | ✓ | ✓ | ✓ | ✓ |
+| `CopyingBackend` | ✓ | ✓ | ✓ | — (not needed, `ports.File`/`Dir` have no Copy) |
+| `MovingBackend` | — (disclosed) | — (disclosed, no atomic rename) | ✓ (FIRST to implement) | — |
+| `MetadataBackend` | ✓ | ✓ | ✓ | — (not needed today) |
+| `ConditionalWriteBackend` | ✓ (missing assertion — FIXED) | ✓ | ✓ | ✓ |
+| `NativeConditionalWriteBackend` | — (correct, native=false via absence) | ✓ (`true`) | ✓ (`false`, asserted) | — (correct, native=false via absence) |
+| `StreamWriteBackend`/`StreamReadBackend` | ✓ (missing assertion — FIXED) | ✓ | ✓ | ✓ |
+| `RangeReadingBackend` | — (disclosed, Phase 2 scope) | ✓ | ✓ (native `ReaderAt`) | — (disclosed) |
+| `WalkingBackend`/`DirDeletingBackend` | ✓ | ✓ | ✓ | ✓ |
+| `BatchDeletingBackend` | — (disclosed) | ✓ (the motivating case) | — (disclosed, no native SMB2 op) | — |
+
+Every "—" cell above is independently DISCLOSED in that Backend's own
+doc comment (confirmed via grep, not assumed) — no undocumented
+asymmetry found in WHICH interfaces each Backend chooses to implement.
+
+**REAL GAP FOUND AND FIXED**: `adapters/file.Backend` (the ORIGINAL
+Phase 1 backend, reviewed the most times of any of the 3) genuinely
+implements `ConditionalWriteBackend` (`conditional_write.go`'s
+`WriteBytesIfMatch`) AND `StreamWriteBackend`/`StreamReadBackend`
+(`stream.go`'s `OpenWriter`/`OpenReader`) — but had **ZERO** compile-
+time `var _ apifile.Xxx = (*Backend)(nil)` assertions for any of these
+3 interfaces anywhere in the package, unlike `adapters/s3`/
+`adapters/smb`/`ports.osBackend`, which ALL have complete assertions
+for every interface they implement. Since Go's optional-extension
+mechanism is pure duck-typing (a `backend.(ConditionalWriteBackend)`
+type-assertion, never a static interface requirement), a future
+refactor that accidentally changed one of these 3 methods' signatures
+on `adapters/file.Backend` would NOT fail to compile — it would
+silently stop being recognized as implementing that extension, with no
+compiler error to catch it, only a runtime behavior change (a
+previously-working `ConditionalWriteBackend` call falling back to
+`ConditionalWriteUnsupportedError`). **Fixed**: added
+`var _ apifile.ConditionalWriteBackend = (*Backend)(nil)` to
+`conditional_write.go` and `var (_ apifile.StreamWriteBackend =
+(*Backend)(nil); _ apifile.StreamReadBackend = (*Backend)(nil))` to
+`stream.go` — mirroring the per-file placement convention `adapters/s3`/
+`adapters/smb` already use.
+
+Verified: `go build ./...` clean, `gofmt` clean, `go test
+./adapters/file/...` green (no behavior change — purely additive
+compile-time safety net).
+
+---
+
 ## Round 233 (`deep-dive-bug-hunt` applied to `api/file`/`adapters/smb` — REAL BUG FOUND AND FIXED: `createCore`/`patchCore` silently discarded the caller's own `WriteOptions.Metadata` whenever the Resource declared no metadata merge fields — 2nd `api/file` deep-dive pass, round 10 of 14)
 
 **Arguments**: continuing the planned round 10 (`adapters/smb`'s

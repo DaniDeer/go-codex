@@ -122,3 +122,8 @@ func (b *Backend) OpenWriter(ctx context.Context, path string, opts apifile.Writ
 		perm: perm, strict: opts.Strict, metadata: opts.Metadata,
 	}, nil
 }
+
+var (
+	_ apifile.StreamWriteBackend = (*Backend)(nil)
+	_ apifile.StreamReadBackend  = (*Backend)(nil)
+)
