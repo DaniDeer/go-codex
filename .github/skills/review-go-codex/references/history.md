@@ -4,6 +4,66 @@ Do not re-report any of these findings. They have been implemented and tested.
 
 ---
 
+## Round 228 (`deep-dive-bug-hunt` applied to `api/file` — Conditional writes: the lock-file mechanism, ETag computation, `createCore`/`patchCore` dispatch wiring — 2nd `api/file` deep-dive pass, round 5 of 14, CLEAN with 1 minor noted gap)
+
+**Scope**: `api/file/etag.go`, `adapters/file/conditional_write.go`,
+`ports/file_backend.go`'s own `osBackend` mirror, and the conditional-
+write wiring in `createCore`/`patchCore` (`api/file/dispatch.go`).
+
+**ETag computation**: `StrongETag`/`WeakETag` are simple, correct
+(SHA-256 full digest / HTTP `W/"..."` weak-validator syntax). No bugs.
+
+**Lock-file mechanism**: traced `acquireConditionalWriteLock`'s full
+retry/backoff/bound logic — confirmed the internal ~5s default ceiling
+is correctly computed as `min(caller's ctx deadline, internal bound)`,
+never blocking indefinitely even under `context.Background()`; the
+critical section (ETag compare → temp-file write → `Chmod` → `Rename`)
+is entirely held under the SAME lock acquired once at function entry,
+released via `defer` only after the commit — no TOCTOU window within
+the cooperating-writers scope (the documented "atomic only among
+cooperating conditional-write callers" tradeoff is the sole, disclosed
+limit, not a gap). `adapters/file.Backend` and `ports.osBackend`'s own
+mirrors are BYTE-FOR-BYTE identical (diffed directly) — N-way parity
+holds.
+
+**Dispatch wiring**: confirmed `createCore`/`patchCore` both run their
+`ConditionalWriteBackend` capability check AS EARLY AS POSSIBLE (before
+any Marshal/metadata/BoundMiddleware work), confirmed `Strict` always
+wins over `IfMatch` when both are set (createCore routes through the
+unconditional path regardless), confirmed Mechanism 1's automatic
+format-streaming correctly falls back to the NON-streaming conditional
+path when `IfMatch` is set (the documented, disclosed exclusion — not
+combined this round, by design). `recordConditionalWrite`'s
+native-vs-approximated reporting correctly derives from the Backend's
+OPTIONAL `NativeConditionalWriteBackend` marker (defaulting to
+`native=false` when absent) and fires unconditionally (both success AND
+mismatch/timeout), which is correct — it reports which MECHANISM
+attempted the write, not the outcome (`recordWrite`'s own
+success/failure call is the separate, correct place for that).
+Confirmed the control-file filter (`.meta.json`/`.lock`/`.tmp-*`) is
+present and identical in BOTH backends' `ListDir`/`WalkDir`.
+
+**1 minor, noted-but-not-fixed gap**: `ports.osBackend`'s own
+`WriteBytesIfMatch` has solid FUNCTIONAL test coverage (match/mismatch/
+weak-ETag workflow, via `ports.File.Write`/`Patch`'s own `IfMatch`-
+option tests), but — unlike `adapters/file.Backend`, which has a
+dedicated `TestBackend_WriteBytesIfMatch_ConcurrentWriters_
+OnlyOneCommits` — `ports.osBackend` has NO direct concurrency
+(2-real-goroutines-racing) test of its own. Given the lock-acquisition
+algorithm is a CONFIRMED byte-for-byte duplicate of `adapters/file`'s
+own (diffed directly, same source), the underlying concurrency
+GUARANTEE is already proven once — but a future independent edit to
+`ports.osBackend` alone (not touching `adapters/file`) wouldn't be
+caught by that existing test. Flagged as a minor, low-priority test-
+coverage gap, not fixed this round (modest value relative to effort,
+given the duplication is intentional/confirmed-identical today).
+
+Verified: no code changes needed this round; `go build`/`go test
+./api/file/... ./adapters/file/... ./ports/...` all green (unaffected,
+no edits made).
+
+---
+
 ## Round 227 (`deep-dive-bug-hunt` applied to `api/file` — Recursive `WithList` mechanics — 2nd `api/file` deep-dive pass, round 4 of 14, SUBSUMED by Round 225's own finding)
 
 Round 225 (immediately prior) already found and documented the
