@@ -159,13 +159,24 @@
 >   NOT a declared `Capability` — see
 >   [D-0004](../design/d-0004-reqreply-workflow-simplification.md)'s own
 >   "Relationship to `protocol-native-features.md`" section.
-> - **MQTT5 Message Expiry Interval / Shared Subscriptions — spun out.**
->   Both genuine, never-implemented `Capability` candidates from this
->   document's own survey (§6) are now designed in their own dedicated
->   doc, [`docs/roadmap/mqtt5-capability-extensions.md`](../roadmap/mqtt5-capability-extensions.md) —
->   Message Expiry is ready to implement; Shared Subscriptions carries a
->   genuine open design decision (topic-filter-string composition, not a
->   `WireAttributes` field) not resolved here.
+> - **MQTT5 Message Expiry Interval / Shared Subscriptions — SHIPPED.**
+>   Both genuine `Capability`/call-time-option candidates from this
+>   document's own survey (§6) were designed in a dedicated roadmap doc
+>   (`mqtt5-capability-extensions.md`, since deleted per this repo's
+>   roadmap-doc-lifecycle policy — single-adapter feature, fully
+>   shipped, no lasting cross-cutting design value) and have since
+>   shipped: Message Expiry as a new sealed `mqtt5.MessageExpiry`
+>   `Capability` (mirrors `Retained`'s shape exactly); Shared
+>   Subscriptions as a plain `SharedSubscriptionGroup string` field on
+>   `SubscribeOptions`/`SubscribeAdapterOptions`, DELIBERATELY NOT a
+>   `Capability` (resolved in favor of this "Option B" after
+>   investigating Option A — widening `WireAttributes` with a mutable
+>   topic — and finding it required reordering router-registration
+>   after capability-application across all 4 Subscribe entry points, a
+>   real behavior-change risk Option B avoids entirely). See
+>   [`docs/features/capabilities.md`](../features/capabilities.md)'s
+>   "Per-adapter capability reference" and "Not yet capability-ified"
+>   sections for the current, living reference.
 >
 > [← Back to Design Documents](index.md)
 

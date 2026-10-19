@@ -214,6 +214,7 @@ from its events/pub-sub usage.
 | `adapters/mqtt` | `Retained` | `bool` | `PublishOptions.Capabilities` |
 | `adapters/mqtt5` | `QoS` | `QoSAtMostOnce` / `QoSAtLeastOnce` / `QoSExactlyOnce` (separate sealed type from `mqtt`'s — MQTT v3 and v5 QoS semantics can diverge independently) | `SubscribeOptions.Capabilities` / `PublishOptions.Capabilities` |
 | `adapters/mqtt5` | `Retained` | `bool` | `PublishOptions.Capabilities` |
+| `adapters/mqtt5` | `MessageExpiry` | `uint32` — seconds, sets MQTT 5's native Message Expiry Interval property (publish-side only, mirrors `Retained`'s shape — no Subscribe-side equivalent) | `PublishOptions.Capabilities` |
 | `adapters/zeromq` | `HWM` | `int` — socket high-water-mark (outstanding-message queue limit) | `SubscribeOptions.Capabilities` / `PublishOptions.Capabilities`, applied via the optional `HWMSetter` extension on `FramedSocket` |
 | `adapters/zeromq` | `Conflate` | `bool` — keep only the latest message per topic (`ZMQ_CONFLATE`), mirrors `ports.LatestPort` semantics | applied via the optional `ConflateSetter` extension on `FramedSocket` |
 
@@ -314,16 +315,24 @@ behaviour works, just via an older path:
   subscribe side. No `mqtt`(v3)/`zeromq` equivalent.
 - **MQTT5 User Properties** (`UserPropertyParam`) — a distinct,
   pre-existing declaration mechanism, not folded into `Capability`.
+- **MQTT 5 Shared Subscriptions** (`SharedSubscriptionGroup string` on
+  `mqtt5.SubscribeOptions`/`SubscribeAdapterOptions`) — a shipped,
+  competing-consumers `$share/group/topic` prefix, DELIBERATELY NOT a
+  `Capability` (a pure client-chosen topic-string shape with no real
+  cross-adapter support-variability question for `Capability`'s
+  coverage-checking mechanism to gate, unlike `QoS`/`Retained`/
+  `MessageExpiry`'s genuine protocol-level semantics).
 
 ## Surveyed but not implemented
 
-The design doc's feature survey (§6) lists further candidates with no
-code yet: MQTT5 Message Expiry Interval, MQTT5 Shared Subscriptions
-(`$share/group/topic`), and AMQP addressing/ack-mode/dead-lettering
-(blocked on a future AMQP adapter — see
-[`docs/roadmap/amqp-adapter.md`](../roadmap/amqp-adapter.md)). None of
-these exist in go-codex today; consult the design doc before assuming
-otherwise.
+The design doc's feature survey (§6) originally listed MQTT5 Message
+Expiry Interval and MQTT5 Shared Subscriptions here — **both have since
+shipped** (Message Expiry as the `mqtt5.MessageExpiry` `Capability`
+above; Shared Subscriptions as the call-time option above) and are
+removed from this list. The one remaining surveyed-but-unimplemented
+candidate is AMQP addressing/ack-mode/dead-lettering, blocked on a
+future AMQP adapter existing at all — see
+[`docs/roadmap/amqp-adapter.md`](../roadmap/amqp-adapter.md).
 
 ## REST's capability mechanism
 
