@@ -475,6 +475,32 @@ per item" precedent) — reconfirmed, not re-opened, by the `List`/
 `BatchDelete` per-entry-Security amendment above, which predates this
 item.
 
+> **Known limitation, confirmed via live reproduction (a 2nd
+> `deep-dive-bug-hunt` pass, not yet fixed):** `Recursive: true` is
+> currently a **complete no-op** for every possible `Resource[T]`
+> declaration — it never discovers anything `Recursive: false` doesn't
+> already discover. Two independently-compounding causes: (1) the
+> depth-pruning rule above always equals non-recursive's own natural
+> scope, because `buildParentDirWithRouting` ALREADY requires every
+> dir-portion path variable to be supplied up front (a separate,
+> pre-existing constraint), making the resolved parent directory always
+> a single, fully-concrete path with exactly one remaining template
+> segment past it, for any `Resource[T]` that could ever be declared;
+> (2) the one scenario where recursive discovery would be meaningful —
+> walking a directory whose own sub-segment NAMES aren't known up front
+> (e.g. `"notes/{category}/{id}.json"`, discovering every `(category,
+> id)` pair without the caller enumerating `category` values) — cannot
+> even be invoked, since `buildParentDirWithRouting` has no
+> Recursive-aware relaxation of its own "every dir-portion var
+> required" rule and fails immediately with `MissingFilePathVarError`
+> before `Recursive` ever gets a chance to matter. A genuine fix needs
+> a real design decision (likely porting `file.Dir`'s own
+> `matchDirGlob`-style glob-discovery machinery into `Resource[T]`'s
+> own dispatch, relaxing the "every dir-portion var required" rule
+> specifically under `Recursive: true`) — out of scope for a bug-hunt
+> pass; tracked as a dedicated future design round, not silently
+> deferred.
+
 ## `adapters/s3`
 
 Wraps `github.com/aws/aws-sdk-go-v2/service/s3` behind a narrow client
@@ -668,6 +694,24 @@ package alongside `resttest`/`eventstest`/`reqreplytest`/`portstest`
 (see `d-0010`) — was mutation-tested (a deliberately reversed
 `BoundMiddleware` ordering confirmed `AssertOrderedMiddlewareChain`
 correctly fails) rather than merely trusted to pass.
+
+A SECOND `deep-dive-bug-hunt` pass, covering everything built after
+the first pass above (`file.Dir`, the `List`/`BatchDelete` per-entry
+Security amendment, Recursive `WithList`, Conditional writes,
+Streaming I/O, `adapters/s3`, `adapters/smb`), found and fixed 2 more
+real issues: `createCore`/`patchCore` silently discarded a caller's own
+directly-supplied `WriteOptions.Metadata` whenever the `Resource`
+declared no metadata merge fields — fixed via a 3-way layered merge
+(caller's value as the base, overridable by the resource's own declared
+fields, overridable again by `BoundMiddleware`'s `WithMetadataOut`
+contribution); and `adapters/file.Backend` had zero compile-time
+interface assertions for 3 extension interfaces it genuinely
+implements (`ConditionalWriteBackend`/`StreamWriteBackend`/
+`StreamReadBackend`), unlike every other backend. This pass also
+mutation-tested `filetest`'s 2 newest scenarios
+(`AssertStreamRoundTrip`/`AssertMetadataIntegration`, both confirmed
+rigorous) and surfaced the Recursive `WithList` no-op finding disclosed
+above.
 
 ## Cross-references
 

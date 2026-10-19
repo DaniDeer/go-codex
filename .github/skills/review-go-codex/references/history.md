@@ -4,6 +4,48 @@ Do not re-report any of these findings. They have been implemented and tested.
 
 ---
 
+## Round 237 (`deep-dive-bug-hunt` Phase B — mandatory consolidated design-doc re-review of Rounds 224-236, the SECOND `api/file` deep-dive pass — round 14 of 14, pass COMPLETE)
+
+Cross-checked every Round 224-236 finding against
+`docs/design/d-0011-file-api-backend-transparency.md` (the now-
+graduated design doc; `docs/roadmap/file-api.md` was deleted/promoted
+to it earlier this session — this pass's own Phase B review target was
+updated accordingly).
+
+| Round(s) | Finding | Doc cross-checked | Verdict |
+|---|---|---|---|
+| 224, 226 | `file.Dir`'s dispatch core + BoundMiddleware/Router integration, incl. the already-committed glob+Router/`NativePOSIXMode` fixes | `## file.Dir` section | Aligned — doc accurately describes the shipped mechanism |
+| 225, 227 | List/BatchDelete per-entry Security clean; Recursive WithList subsumed | `## List/BatchDelete per-entry Security`, `## Recursive WithList` | **MISALIGNED (doc-clarity, now fixed)** — doc presented Recursive `WithList` as a working feature with no disclosure that it's a confirmed, complete no-op for every possible `Resource[T]` (2 independently-compounding causes, live-reproduced, not yet code-fixed). Added a prominent "Known limitation" callout to the design doc, per this skill's own "flag prominently, don't silently leave for rediscovery" directive. |
+| 228, 229, 230 | Conditional writes / Streaming I/O Mechanisms 1+2, all clean with 2 minor noted (not fixed) observations | `## Conditional writes`, `## Streaming/chunked reads and writes` | Aligned — both minor observations (ports.osBackend's own concurrency test gap; `recordRangeRead` not firing on failure) are genuinely minor and don't contradict anything the doc states |
+| 231, 232 | `adapters/s3` Backend core + optional extensions, 1 stale test comment fixed | `## adapters/s3` | Aligned |
+| 233 | REAL BUG FIX: `createCore`/`patchCore`'s 3-way metadata merge | `## Structured errors`, hardening-rounds section | **MISALIGNED (doc-clarity, now fixed)** — the first pass's own hardening-rounds summary never mentioned this SECOND pass's fixes at all. Added a new paragraph to the hardening-rounds section documenting both Round 233's and Round 234's fixes explicitly. |
+| 234 | REAL GAP FIX: missing compile-time interface assertions in `adapters/file.Backend` | hardening-rounds section | Same fix as above — now documented |
+| 235 | `filetest`'s 2 newest `Assert*` functions mutation-tested, clean | hardening-rounds section | Now documented in the same added paragraph |
+| 236 | Light pass over Stage D1/D2 examples, clean | `## Example migration (Phase 3)` | Aligned — no example-specific claims in the doc needed correcting |
+
+**2 documentation fixes applied** (both to
+`docs/design/d-0011-file-api-backend-transparency.md`): (1) the
+Recursive `WithList` no-op disclosure (the single most significant
+output of this whole 2nd pass — a confirmed, major, live-reproduced
+architectural gap that the design doc was previously silent about);
+(2) a new hardening-rounds paragraph documenting this 2nd pass's 2 real
+fixes (Round 233's metadata merge, Round 234's missing assertions) and
+its mutation-testing/example-review coverage. No code changes this
+round (Phase B is docs-only by design) — `go build ./...` confirmed
+unaffected, markdown fence integrity confirmed.
+
+**This closes the 2nd `api/file` deep-dive-bug-hunt pass (14 of 14
+rounds).** Summary of the pass's concrete value: 2 real bugs fixed
+(metadata-merge data loss, missing compile-time assertions), 2
+conformance-suite scenarios rigorously mutation-tested, 11 rounds
+confirmed clean, and — most significantly — the Recursive `WithList`
+no-op gap discovered and now prominently disclosed (not fixed; flagged
+as its own dedicated future design round, consistent with the first
+`Recursive WithList` design round's own 2 prior adversarial reviews
+both having missed it).
+
+---
+
 ## Round 236 (`deep-dive-bug-hunt` applied to `api/file` — light pass over Stage D1/D2 example migrations: `examples/dir-io`, `examples/file-io`, `examples/go-edge-models`'s `usecase` package — 2nd `api/file` deep-dive pass, round 13 of 14 — CLEAN)
 
 Reviewed the 3 example-level migrations onto `api/file` this session
