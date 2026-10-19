@@ -100,6 +100,21 @@ func (osBackend) WriteBytes(_ context.Context, path string, data []byte, opts ap
 	if err := os.WriteFile(path, data, perm); err != nil {
 		return createdDirs, err
 	}
+	// os.WriteFile's own perm argument is ONLY honored when the file is
+	// being CREATED — overwriting an already-existing file silently
+	// preserves its EXISTING mode bits (standard POSIX open()
+	// semantics), which would otherwise silently defeat the documented
+	// "attach-time Capability always wins over a conflicting per-call
+	// option" precedence rule. Mirrors adapters/file.Backend.WriteBytes'
+	// identical fix (found via the same deep-dive-bug-hunt
+	// live-reproduction test) — only chmod when a mode was EXPLICITLY
+	// requested (opts.Perm != 0), preserving today's exact behavior
+	// otherwise.
+	if opts.Perm != 0 {
+		if err := os.Chmod(path, perm); err != nil {
+			return createdDirs, err
+		}
+	}
 	return createdDirs, nil
 }
 

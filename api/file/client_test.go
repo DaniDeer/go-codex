@@ -250,6 +250,38 @@ func TestClient_Mkdir_CreatesMissingParents(t *testing.T) {
 	}
 }
 
+// TestClient_Mkdir_NativePOSIXModeCapability_OverridesCallerPerm proves
+// mkdirCore's documented "attach-time Capability always wins over a
+// conflicting per-call option" precedence rule ACTUALLY holds — see
+// TestClient_Create_NativePOSIXModeCapability_OverridesCallerPerm's doc
+// comment for why this needed a fresh, direct test (zero prior coverage).
+func TestClient_Mkdir_NativePOSIXModeCapability_OverridesCallerPerm(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "capmode")
+	res := file.NewResource[record](target, format.JSON(recordCodec()))
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	capPerm := os.FileMode(0o700)
+	callPerm := os.FileMode(0o755)
+	mk := res.WithMkdir(file.Mkdir{}).WithCapabilities(file.NativePOSIXMode(capPerm))
+	created, err := client.Mkdir(context.Background(), mk, nil, file.MkdirOptions{NativePOSIXMode: &callPerm})
+	if err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	if !created {
+		t.Fatalf("Mkdir: want created=true")
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != capPerm {
+		t.Fatalf("want attach-time NativePOSIXMode capability (%o) to win over per-call MkdirOptions.NativePOSIXMode (%o), got %o", capPerm, callPerm, got)
+	}
+}
+
 func TestClient_BatchDelete_PartialFailure_ReturnsPerKeyResults(t *testing.T) {
 	dir := t.TempDir()
 	res := newResource(t, dir)
@@ -352,6 +384,37 @@ func TestClient_Create_AccessModeReadOnly_RejectsBeforeBackendCall(t *testing.T)
 	}
 }
 
+// TestClient_Create_NativePOSIXModeCapability_OverridesCallerPerm proves
+// createCore's documented "attach-time Capability always wins over a
+// conflicting per-call option" precedence rule ACTUALLY holds — this
+// mechanism (also present in patchCore/mkdirCore/openWriteCore) had ZERO
+// test coverage anywhere in the repo before this round's deep-dive-bug-
+// hunt pass, despite being a load-bearing, explicitly-documented design
+// decision ("Resolved round 5" in the file-api design history).
+func TestClient_Create_NativePOSIXModeCapability_OverridesCallerPerm(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	capPerm := os.FileMode(0o600)
+	callPerm := os.FileMode(0o777)
+	creator := res.WithCreate(file.Create{}).WithCapabilities(file.NativePOSIXMode(capPerm))
+	_, err := client.Create(context.Background(), creator, record{Name: "capmode", Value: 1},
+		map[string]string{"name": "capmode"}, file.WriteOptions{Perm: callPerm})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(dir, "capmode.json"))
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != capPerm {
+		t.Fatalf("want attach-time NativePOSIXMode capability (%o) to win over per-call WriteOptions.Perm (%o), got %o", capPerm, callPerm, got)
+	}
+}
+
 func TestPatcher_HandlePatch_AppliesPartialUpdate(t *testing.T) {
 	dir := t.TempDir()
 	res := newResource(t, dir)
@@ -385,6 +448,49 @@ func TestPatcher_HandlePatch_AppliesPartialUpdate(t *testing.T) {
 	got := gotAny.(record)
 	if got.Value != 99 || got.Name != "patchme" {
 		t.Fatalf("Patch: got %+v, want Value=99 Name=patchme (unchanged)", got)
+	}
+}
+
+// TestPatcher_HandlePatch_NativePOSIXModeCapability_OverridesCallerPerm
+// proves patchCore's write-back step honors the SAME documented
+// "attach-time Capability always wins over a conflicting per-call
+// option" precedence rule createCore/mkdirCore already enforce — see
+// TestClient_Create_NativePOSIXModeCapability_OverridesCallerPerm's doc
+// comment for why this needed a fresh, direct test (zero prior coverage).
+func TestPatcher_HandlePatch_NativePOSIXModeCapability_OverridesCallerPerm(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	vars := map[string]string{"name": "patchmode"}
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "patchmode", Value: 1}, vars); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	type valuePatch struct {
+		Value *int
+	}
+	patchCodec := codex.PartialStruct[valuePatch](
+		codex.PartialField("value", codex.Int(),
+			func(p valuePatch) *int { return p.Value },
+			func(p *valuePatch, v *int) { p.Value = v }),
+	)
+	capPerm := os.FileMode(0o600)
+	callPerm := os.FileMode(0o777)
+	newValue := 2
+	patcher := file.WithPatch(res, patchCodec, file.Patch{}).WithCapabilities(file.NativePOSIXMode(capPerm))
+	if err := client.Patch(ctx, patcher, valuePatch{Value: &newValue}, vars, file.WriteOptions{Perm: callPerm}); err != nil {
+		t.Fatalf("Patch: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(dir, "patchmode.json"))
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != capPerm {
+		t.Fatalf("want attach-time NativePOSIXMode capability (%o) to win over per-call WriteOptions.Perm (%o), got %o", capPerm, callPerm, got)
 	}
 }
 

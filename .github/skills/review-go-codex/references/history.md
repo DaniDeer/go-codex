@@ -4,6 +4,96 @@ Do not re-report any of these findings. They have been implemented and tested.
 
 ---
 
+## Round 224 (`deep-dive-bug-hunt` applied to `api/file` — `file.Dir`'s foundational dispatch core (`listDirCore`/`deleteDirCore`) — 2nd `api/file` deep-dive pass, round 1 of 14: everything built since Round 223)
+
+**Arguments**: "perform several deep-dive reviews to hunt down bugs and
+gaps in the api/file layer" — a second, larger `api/file` deep-dive
+pass covering everything shipped AFTER Round 223's own pass (`file.Dir`,
+the List/BatchDelete per-entry Security amendment, Recursive `WithList`,
+Conditional writes, Streaming I/O, `adapters/s3`, `adapters/smb`), none
+of which this skill had ever examined.
+
+**Scope**: `listDirCore`/`deleteDirCore` in `api/file/dir.go` —
+`file.Dir`'s own dispatch core, foundational for every later `file.Dir`
+concept round in this pass. Also re-verified the `NativePOSIXMode`/
+baseDir-Router fixes committed earlier THIS session (found during a
+prior, separate review round) are genuinely correct, not just
+re-trusted.
+
+**Traced**: the full `listDirCore` path (routed-template resolution for
+BOTH coexisting Router workflows, the glob-discovery branch, the
+non-glob/recursive branch, `CreateIfMissing`'s `Mkdir` call) and
+`deleteDirCore` (glob-template rejection, `AccessMode` gating, the
+`DirDeletingBackend` dispatch). Confirmed `routedDir`'s single-resolution
+discipline is correctly NOT double-applied anywhere (`dirBuildPath`
+resolves routing exactly once per call site; `matchEntry`/`matchDirGlob`
+correctly use different, orthogonal template concepts — `d.entry.Template`
+for per-entry matching, unaffected by Router composition at all; `d.template`
+for glob-discovery, which DOES need the routed value and correctly
+receives it via `routedDir`).
+
+**REAL BUGS FOUND AND FIXED** (via live-reproduction tests, not static
+reading) while proving the `CreateIfMissing` branch's documented
+"attach-time Capability always wins over a conflicting per-call option"
+precedence rule actually holds — this mechanism (shared by
+`createCore`/`patchCore`/`mkdirCore`/`openWriteCore`/`listDirCore`'s
+`CreateIfMissing` branch) had **ZERO test coverage anywhere in the
+repo** before this round, despite being a load-bearing, explicitly-
+documented "Resolved round 5" design decision:
+
+1. **`adapters/file.Backend.WriteBytes` and `ports.osBackend.WriteBytes`**:
+   `os.WriteFile(path, data, perm)`'s own `perm` argument is ONLY
+   honored when the file is being CREATED — standard POSIX `open()`
+   semantics mean overwriting an ALREADY-EXISTING file silently
+   preserves its current mode bits, completely ignoring an explicitly-
+   requested `NativePOSIXMode`/`WriteOptions.Perm` for every ordinary
+   `Patch`/re-`Create` call. Found via
+   `TestPatcher_HandlePatch_NativePOSIXModeCapability_OverridesCallerPerm`
+   failing (got `0644`, wanted `0600`) on the FIRST live-reproduction
+   attempt. Fixed: both backends now `os.Chmod(path, perm)` after a
+   successful write, but ONLY when `opts.Perm != 0` (an explicit
+   request) — preserves today's exact behavior for the overwhelmingly
+   common case (nobody sets `Perm`: new files still default to `0644`,
+   an existing file's mode stays untouched when no mode was asked for).
+2. **`adapters/smb.Backend.WriteBytes`** had an even WORSE version of
+   the same gap: `Share.Create` takes no mode parameter AT ALL (unlike
+   `os.WriteFile`), so an explicitly-requested `Perm` was silently
+   dropped on EVERY write, not just an overwrite — including the very
+   first creation. Fixed the same way: a best-effort `Chmod` call after
+   a successful write, when `opts.Perm != 0` — mirrors `NativePOSIXMode`'s
+   own already-documented degraded-capability precedent for SMB
+   elsewhere in this adapter (best-effort on Samba, a harmless no-op on
+   plain Windows SMB).
+
+5 new regression tests added (`TestListDir_CreateIfMissing_
+NativePOSIXModeCapability_OverridesCreatePerm`,
+`TestClient_Create_NativePOSIXModeCapability_OverridesCallerPerm`,
+`TestClient_Mkdir_NativePOSIXModeCapability_OverridesCallerPerm`,
+`TestPatcher_HandlePatch_NativePOSIXModeCapability_OverridesCallerPerm`,
+`TestStreamWriter_OpenWrite_NativePOSIXModeCapability_OverridesCallerPerm`)
+proving the precedence rule now holds across ALL 5 dispatch-core call
+sites that apply it (`listDirCore`'s `CreateIfMissing`, `createCore`,
+`mkdirCore`, `patchCore`, `openWriteCore`), plus 1 more
+(`TestBackend_WriteBytes_ExplicitPerm_AppliedViaChmod`) proving
+`adapters/smb`'s own fix specifically. `mkdirCore`/`createCore`/
+`listDirCore`'s `CreateIfMissing` branch already passed on the FIRST
+test run (their own `os.MkdirAll`/`os.OpenFile`-with-`O_CREATE` paths
+always create fresh, so the "overwrite ignores perm" bug class never
+applied there) — only the 2 overwrite-capable write paths
+(`patchCore`'s write-back, `createCore`'s non-Strict overwrite,
+`openWriteCore`'s buffered-fallback/streaming-commit paths) were
+exposed. `adapters/s3` is unaffected (S3 has no POSIX-mode concept at
+all; `NativePOSIXMode` is never applied there, confirmed separately in
+the original Phase 2 design).
+
+Verified: `gofmt` clean, `go build ./...` clean (after a disk-space
+exhaustion mid-build — `go clean -cache` freed ~9GB, same recurring
+sandbox condition as earlier in this session — resolved, then
+re-verified clean), `go test ./api/file/... ./adapters/file/...
+./adapters/smb/... ./ports/...` all green.
+
+---
+
 ## Round 223 (`deep-dive-bug-hunt` Phase B — mandatory consolidated design-doc re-review of Rounds 216-222, the FIRST-ever `api/file` deep-dive pass)
 
 Per the skill's Phase B (mandatory, not optional): cross-checked every

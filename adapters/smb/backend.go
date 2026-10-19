@@ -290,6 +290,24 @@ func (b *Backend) WriteBytes(ctx context.Context, path string, data []byte, opts
 	if closeErr != nil {
 		return nil, closeErr
 	}
+	// Share.Create takes no mode parameter at all, and even the Strict
+	// path's OpenFile(..., perm) mode is honored only best-effort (a
+	// plain Windows SMB share with no Unix-extension support ignores it
+	// entirely) — so an explicitly-requested Perm would otherwise be
+	// silently dropped on EVERY write, not just an overwrite of an
+	// existing file (worse than adapters/file's own equivalent bug,
+	// found via the same deep-dive-bug-hunt live-reproduction
+	// discipline). Chmod best-effort applies the requested mode
+	// afterward when one was explicitly asked for (opts.Perm != 0) —
+	// mirrors NativePOSIXMode's own documented degraded-capability
+	// precedent elsewhere in this adapter (Samba-hosted shares honor
+	// it; plain Windows SMB collapses to its own ACL model and the
+	// Chmod call is a harmless best-effort no-op there).
+	if opts.Perm != 0 {
+		if err := b.ops.Chmod(ctx, path, perm); err != nil {
+			return nil, err
+		}
+	}
 	if opts.Metadata != nil {
 		if err := b.WriteMetadata(ctx, path, opts.Metadata); err != nil {
 			return nil, err

@@ -238,6 +238,43 @@ func TestStreamWriter_OpenWrite_NonStreamingBackend_BuffersThenWrites(t *testing
 	}
 }
 
+// TestStreamWriter_OpenWrite_NativePOSIXModeCapability_OverridesCallerPerm
+// proves openWriteCore honors the SAME documented "attach-time
+// Capability always wins over a conflicting per-call option" precedence
+// rule createCore/patchCore/mkdirCore already enforce — see
+// TestClient_Create_NativePOSIXModeCapability_OverridesCallerPerm (in
+// client_test.go) for why this needed a fresh, direct test (zero prior
+// coverage anywhere, including this streaming dispatch path).
+func TestStreamWriter_OpenWrite_NativePOSIXModeCapability_OverridesCallerPerm(t *testing.T) {
+	dir := t.TempDir()
+	res := file.NewResource[record](filepath.Join(dir, "{name}.json"), format.JSON(recordCodec()), file.PathParam{Name: "name"})
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	capPerm := os.FileMode(0o600)
+	callPerm := os.FileMode(0o777)
+	ctx := context.Background()
+	sw := res.WithStreamWrite(file.StreamWrite{}).WithCapabilities(file.NativePOSIXMode(capPerm))
+	w, err := client.OpenWrite(ctx, sw, map[string]string{"name": "streamcapmode"}, file.WriteOptions{Perm: callPerm})
+	if err != nil {
+		t.Fatalf("OpenWrite: %v", err)
+	}
+	if _, err := w.Write([]byte(`{"name":"streamcapmode","value":1}`)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(dir, "streamcapmode.json"))
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != capPerm {
+		t.Fatalf("want attach-time NativePOSIXMode capability (%o) to win over per-call WriteOptions.Perm (%o), got %o", capPerm, callPerm, got)
+	}
+}
+
 func TestStreamReader_OpenRead_WholeFile_RoundTrips(t *testing.T) {
 	dir := t.TempDir()
 	res, backend := newBareResource(t, dir)

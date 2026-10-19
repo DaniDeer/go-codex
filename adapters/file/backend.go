@@ -133,6 +133,25 @@ func (b *Backend) WriteBytes(ctx context.Context, path string, data []byte, opts
 	if err := os.WriteFile(path, data, perm); err != nil {
 		return createdDirs, err
 	}
+	// os.WriteFile's own perm argument is ONLY honored when the file is
+	// being CREATED — overwriting an already-existing file (the common
+	// case for an ordinary Write/Patch call) silently preserves that
+	// file's EXISTING mode bits, standard POSIX open() semantics. This
+	// would silently defeat the documented "attach-time Capability
+	// always wins over a conflicting per-call option" precedence rule
+	// (NativePOSIXMode/opts.Perm) for every overwrite — found via a
+	// live-reproduction test during the api/file deep-dive-bug-hunt
+	// pass (TestPatcher_HandlePatch_NativePOSIXModeCapability_
+	// OverridesCallerPerm). Force the EXPLICITLY-requested mode via
+	// Chmod only when one was actually requested (opts.Perm != 0) —
+	// preserves today's exact behavior for the common case (nobody
+	// sets Perm): new files still get the 0644 default, an existing
+	// file's mode stays untouched when no explicit mode was asked for.
+	if opts.Perm != 0 {
+		if err := os.Chmod(path, perm); err != nil {
+			return createdDirs, err
+		}
+	}
 	if opts.Metadata != nil {
 		if err := b.WriteMetadata(ctx, path, opts.Metadata); err != nil {
 			return createdDirs, err

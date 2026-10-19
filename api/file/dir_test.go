@@ -123,6 +123,37 @@ func TestListDir_CreateIfMissing_UsesMkdir(t *testing.T) {
 	}
 }
 
+// TestListDir_CreateIfMissing_NativePOSIXModeCapability_OverridesCreatePerm
+// proves listDirCore's documented "Capability always wins over a
+// conflicting per-call option" precedence rule (mirrors mkdirCore's own
+// identical rule) ACTUALLY holds — this mechanism had ZERO test coverage
+// anywhere in the repo before this round's deep-dive-bug-hunt pass,
+// despite being a load-bearing, explicitly-documented design decision.
+func TestListDir_CreateIfMissing_NativePOSIXModeCapability_OverridesCreatePerm(t *testing.T) {
+	client, dir := newDirClient(t)
+	missing := filepath.Join(dir, "capmode")
+
+	capPerm := os.FileMode(0o700)
+	callPerm := os.FileMode(0o777)
+	d := file.NewDir(missing)
+	lister := d.WithList(file.ListDir{}).WithCapabilities(file.NativePOSIXMode(capPerm))
+
+	if _, err := client.ListDir(context.Background(), lister, nil, file.DirOptions{
+		CreateIfMissing: true,
+		CreatePerm:      callPerm,
+	}); err != nil {
+		t.Fatalf("ListDir: %v", err)
+	}
+
+	info, err := os.Stat(missing)
+	if err != nil {
+		t.Fatalf("expected dir to be created: %v", err)
+	}
+	if got := info.Mode().Perm(); got != capPerm {
+		t.Fatalf("want attach-time NativePOSIXMode capability (%o) to win over per-call CreatePerm (%o), got %o", capPerm, callPerm, got)
+	}
+}
+
 func TestListDir_CreateIfMissing_DryRun_DoesNotCreate(t *testing.T) {
 	client, dir := newDirClient(t)
 	missing := filepath.Join(dir, "newdir")

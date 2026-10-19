@@ -58,6 +58,34 @@ func TestBackend_WriteBytes_Overwrite_NonStrict(t *testing.T) {
 	}
 }
 
+// TestBackend_WriteBytes_ExplicitPerm_AppliedViaChmod is a regression
+// proof for a real bug found via a deep-dive-bug-hunt live-reproduction
+// test: Share.Create takes no mode parameter at all (unlike
+// os.WriteFile's own perm argument), so an explicitly-requested
+// WriteOptions.Perm (or an attach-time NativePOSIXMode Capability) used
+// to be SILENTLY DROPPED on every ordinary (non-Strict) write — not just
+// on overwrite, like adapters/file's own equivalent bug, but on EVERY
+// write including the very first one. Fixed via a best-effort Chmod
+// call after a successful write, applied only when Perm was explicitly
+// requested (mirrors NativePOSIXMode's own documented degraded-
+// capability precedent elsewhere in this adapter).
+func TestBackend_WriteBytes_ExplicitPerm_AppliedViaChmod(t *testing.T) {
+	fake := newFakeShare()
+	b := newBackendFromOps(fake)
+	ctx := context.Background()
+
+	want := os.FileMode(0o600)
+	if _, err := b.WriteBytes(ctx, "widget.json", []byte("v1"), apifile.WriteOptions{Perm: want}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	fake.mu.Lock()
+	got := fake.nodes["widget.json"].mode
+	fake.mu.Unlock()
+	if got != want {
+		t.Fatalf("want mode %o applied via Chmod, got %o", want, got)
+	}
+}
+
 func TestBackend_DeleteBytes_Idempotent(t *testing.T) {
 	b := newBackendFromOps(newFakeShare())
 	ctx := context.Background()
