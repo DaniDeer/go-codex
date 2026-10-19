@@ -4,6 +4,53 @@ Do not re-report any of these findings. They have been implemented and tested.
 
 ---
 
+## Round 229 (`deep-dive-bug-hunt` applied to `api/file` — Streaming I/O, Mechanism 1 (automatic format-level write streaming) — 2nd `api/file` deep-dive pass, round 6 of 14, CLEAN)
+
+**Scope**: `createCore`'s `IsStreamable()`/`StreamWriteBackend`/
+`MarshalTo` branch in `api/file/dispatch.go`, and
+`adapters/file.Backend.OpenWriter`/`streamWriteCloser` in
+`adapters/file/stream.go`.
+
+Confirmed Mechanism 1 is deliberately `createCore`-only (NOT also
+wired into `patchCore`) — matches the design doc's own explicit
+scoping ("`createCore` streams `MarshalTo(v, writer)`"), not a gap:
+Patch's write-back already has a fully-decoded+merged `T` in hand by
+the time it writes, so there's no memory-buffering benefit Mechanism 1
+could add there that Patch doesn't already get via its own existing
+path.
+
+Confirmed the 3-way interaction (`IfMatch` set → always falls back to
+the non-streaming conditional path; `IsStreamable()` but Backend lacks
+`StreamWriteBackend` → buffers via `MarshalTo` into memory, NOT
+`Marshal`, since a `NewStreamed` format frequently has no non-streaming
+marshal func at all; both conditions false → ordinary `Marshal`+
+`WriteBytes`) is correctly ordered and tested
+(`TestCreate_StreamableFormat_StreamingBackend_UsesMarshalTo`,
+`..._NonStreamingBackend_FallsBackToWholeFile`,
+`..._IfMatchSet_FallsBackToNonStreamingConditionalPath`).
+
+Traced `adapters/file.Backend.OpenWriter`/`streamWriteCloser`'s own
+atomicity: writes stream directly to a temp file in the same
+directory (zero in-memory buffering — the actual memory benefit),
+`Close` commits via `Chmod`+`Rename` — the SAME commit primitive
+`WriteBytesIfMatch` already uses. One pre-existing, ALREADY-DISCLOSED
+limitation re-confirmed (not a new finding): `Strict`'s existence
+check inside `Close()` has an inherent TOCTOU window before the
+`Rename` (the code's own comment already states this explicitly — "not
+fully eliminate... left as a documented limitation"), consistent with
+this feature's own established disclosure discipline, not a silently
+hidden gap.
+
+`opts.Perm`'s `NativePOSIXMode`-override correctness for this path was
+already proven directly by Round 224's own
+`TestStreamWriter_OpenWrite_NativePOSIXModeCapability_
+OverridesCallerPerm` (createCore's own write path reaches `OpenWriter`
+via the SAME `opts` the dispatch core already resolved).
+
+Verified: no code changes needed this round.
+
+---
+
 ## Round 228 (`deep-dive-bug-hunt` applied to `api/file` — Conditional writes: the lock-file mechanism, ETag computation, `createCore`/`patchCore` dispatch wiring — 2nd `api/file` deep-dive pass, round 5 of 14, CLEAN with 1 minor noted gap)
 
 **Scope**: `api/file/etag.go`, `adapters/file/conditional_write.go`,
