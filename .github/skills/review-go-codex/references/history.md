@@ -4,6 +4,43 @@ Do not re-report any of these findings. They have been implemented and tested.
 
 ---
 
+## Round 238 (`review-go-codex` consistency audit — focus: `api/file`, checklist.md sync)
+
+Applied the full `review-go-codex` checklist against `api/file`'s current shipped surface
+(Phase 1 + Phase 2, all 5 items, fully implemented and twice bug-hunted). Found zero new CODE
+issues — the deep-dive-bug-hunt passes already covered that ground exhaustively — but found
+`references/checklist.md` itself had fallen behind the shipped `api/file` surface in 4 places:
+
+- **G1 — §8 Observer Pattern**: the `FileObserver` interface table row listed only 2 of the real
+  11 `stats.FileObserver` methods (`RecordFileRead`/`RecordFileWrite`); fixed to list all 11,
+  including the `native`-reporting `RecordFileRangeRead`/`RecordFileConditionalWrite` pair and
+  their cross-reference to `d-0011`'s transport-guaranteed-vs-approximated framing.
+- **G2 — §13 Error-Path Ergonomics**: the declaration-surface-per-boundary table had no row for
+  `api/file.ErrorPattern[E,B]`/`ErrorPatterns[B]` (a shipped, auto-invoked mechanism, confirmed
+  via `applyErrorPattern`/`ErrorPatternMatchedError` in `error_pattern.go`); added a row mirroring
+  the existing `rest`/`events`/`reqreply`/`mcp`/`websocket` rows' format.
+- **G3 — §2 Param Type Consistency**: no row documented `file.MetadataParam`/
+  `MergedMetadataParam[T]`/`NewMetadataParam` (the metadata merge-field axis, parallel to the
+  already-documented `PropertyParam` row); added a row.
+- **G4 — §9 Unit Test Coverage**: the "Per-package expectations" table had no row for `api/file`/
+  `ports.File`/`ports.Dir`; added 2 rows (one for `api/file` itself, one for `ports`' thin-wrapper
+  delegation).
+
+Confirmed clean (no finding): every `api/file`/`ports` error type's `Error()`/`LogValue()`/
+`Unwrap()` shape matches §7's existing table exactly; `ports.File`/`ports.Dir`'s error-type
+aliases are all present and correctly named; `file.PathParam`/`MetadataParam`'s structural shape
+(no `Required` on `PathParam`, has `Required` on `MetadataParam`) matches checklist convention;
+`adapters/file`'s old stream-bridge error vocabulary (`ScanError`/`WatchError`/`WriteError`/
+`ReadError`) still exists exactly as §11 documents; §3's `file.Client` vs `events.Client`/
+`reqreply.Server` builder-parity section was already accurate.
+
+All 4 fixes are docs-only (`checklist.md` corrections) — no `api/file`/`ports`/`adapters/*` code
+changed. Verified: `gofmt -l .` clean, `go build ./...` clean, `go test ./api/file/... ./ports/...
+./adapters/file/... ./adapters/s3/... ./adapters/smb/...` green, `just check` clean (652 files, 0
+issues).
+
+---
+
 ## Round 237 (`deep-dive-bug-hunt` Phase B — mandatory consolidated design-doc re-review of Rounds 224-236, the SECOND `api/file` deep-dive pass — round 14 of 14, pass COMPLETE)
 
 Cross-checked every Round 224-236 finding against
