@@ -4,6 +4,44 @@ Do not re-report any of these findings. They have been implemented and tested.
 
 ---
 
+## Round 236 (`deep-dive-bug-hunt` applied to `api/file` — light pass over Stage D1/D2 example migrations: `examples/dir-io`, `examples/file-io`, `examples/go-edge-models`'s `usecase` package — 2nd `api/file` deep-dive pass, round 13 of 14 — CLEAN)
+
+Reviewed the 3 example-level migrations onto `api/file` this session
+shipped (Stage D1: `dir-io`/`file-io` rewritten to `api/file` as the
+primary pattern; Stage D2: `go-edge-models`'s `usecase` package's
+`Store`/`Scope` receiver-style split).
+
+**`examples/go-edge-models/models/iotedge/usecase`** (`store.go`/
+`usecase.go`/`device.go`): read in full. Confirmed `Scope.ListUseCaseEntries`/
+`Scope.ListDeviceIDs` correctly use `Client.ListDir` (returning
+`[]file.DirEntry` directly), NOT `Client.List`/`Resource[T].List`
+(which returns `[]file.ListResult[T]` per the earlier List/BatchDelete
+per-entry-Security amendment) — the 2 mechanisms are genuinely
+distinct and this package never conflates them. `ReadEffective`'s
+not-found handling correctly uses the package's own `IsNotFound`
+helper (wrapping `errors.As(err, &file.FileNotFoundError{})`), matching
+`Client.Read`'s own documented bare-`FileNotFoundError`-no-wrapped-
+cause contract. Ran the package's own test suite (26 tests across
+`usecase_test.go`/`device_test.go`, unmodified by this round) — clean.
+
+**`examples/dir-io`**/**`examples/file-io`**: both exclusively use
+`Client.ListDir`/`Client.DeleteDir` (Dir-role dispatch), never
+`Client.List` — unaffected by the `ListResult[T]` amendment. Ran both
+examples end-to-end (`go run`) — both exit 0, output narrative
+accurate (one output section that initially looked like a bug —
+`dir-io`'s "env-logs" demo printing a "1 entries (staging excluded)"
+line immediately followed by 2 "discovered env=..." lines including
+"staging" — traced to source: these are 2 SEPARATE `ListDir` calls, a
+filtered one (`vars={"env":"prod"}`, correctly 1 entry) and an
+unfiltered one (`vars=nil`, correctly 2 entries including staging) —
+not a bug, just visually ambiguous console output). No TODO/FIXME/XXX/
+HACK markers in any of the 6 reviewed files.
+
+No bugs found. Full repo `go build`/`go test ./...`/both examples'
+`go run` all green throughout — zero code changes this round.
+
+---
+
 ## Round 235 (`deep-dive-bug-hunt` applied to `api/file` — `filetest`'s 2 newest `Assert*` functions mutation-tested: `AssertStreamRoundTrip`, `AssertMetadataIntegration` — 2nd `api/file` deep-dive pass, round 12 of 14 — CLEAN, both conformance scenarios proven rigorous via live mutation)
 
 Completed Round 220 (first pass)'s unfinished mutation-testing
