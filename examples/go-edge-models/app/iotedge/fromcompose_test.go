@@ -1,10 +1,12 @@
 package iotedge
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/DaniDeer/go-codex/api/file"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker/dockercompose"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/fromcompose"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/usecase"
@@ -39,7 +41,9 @@ func TestImportDockerComposeAsUseCase_WritesUseCaseFile(t *testing.T) {
 	composeDir := t.TempDir()
 	composePath := writeSampleComposeFile(t, composeDir)
 
-	warnings, err := ImportDockerComposeAsUseCase(basePath, usecase.Name("imported"), composePath, ports.FileOptions{CreateDirs: true})
+	ctx := context.Background()
+	s := newTestStore(t)
+	warnings, err := ImportDockerComposeAsUseCase(ctx, s, basePath, usecase.Name("imported"), composePath, ports.FileOptions{}, file.WriteOptions{CreateDirs: true})
 	if err != nil {
 		t.Fatalf("ImportDockerComposeAsUseCase: unexpected error: %v", err)
 	}
@@ -66,7 +70,7 @@ func TestImportDockerComposeAsUseCase_WritesUseCaseFile(t *testing.T) {
 		t.Error("expected a WarningSanitizedName for Factory_API")
 	}
 
-	deployment, err := usecase.NewFile(basePath).Read(map[string]string{"usecase_name": "imported"}, ports.FileOptions{})
+	deployment, err := s.ReadUseCaseFile(ctx, basePath, "imported")
 	if err != nil {
 		t.Fatalf("read imported use case: %v", err)
 	}
@@ -93,7 +97,9 @@ func TestImportDockerComposeAsUseCase_WritesUseCaseFile(t *testing.T) {
 func TestImportDockerComposeAsUseCase_PropagatesMissingFileError(t *testing.T) {
 	basePathDir := t.TempDir()
 	basePath := usecase.BasePath(basePathDir)
-	_, err := ImportDockerComposeAsUseCase(basePath, usecase.Name("imported"), filepath.Join(basePathDir, "does-not-exist.yaml"), ports.FileOptions{CreateDirs: true})
+	ctx := context.Background()
+	s := newTestStore(t)
+	_, err := ImportDockerComposeAsUseCase(ctx, s, basePath, usecase.Name("imported"), filepath.Join(basePathDir, "does-not-exist.yaml"), ports.FileOptions{}, file.WriteOptions{CreateDirs: true})
 	if err == nil {
 		t.Error("ImportDockerComposeAsUseCase with a missing compose file: want error, got nil")
 	}
@@ -104,12 +110,14 @@ func TestExportUseCaseAsDockerCompose_RoundTripsViaImport(t *testing.T) {
 	composeDir := t.TempDir()
 	composePath := writeSampleComposeFile(t, composeDir)
 
-	if _, err := ImportDockerComposeAsUseCase(basePath, usecase.Name("imported"), composePath, ports.FileOptions{CreateDirs: true}); err != nil {
+	ctx := context.Background()
+	s := newTestStore(t)
+	if _, err := ImportDockerComposeAsUseCase(ctx, s, basePath, usecase.Name("imported"), composePath, ports.FileOptions{}, file.WriteOptions{CreateDirs: true}); err != nil {
 		t.Fatalf("ImportDockerComposeAsUseCase: %v", err)
 	}
 
 	exportPath := filepath.Join(composeDir, "exported-compose.yaml")
-	warnings, err := ExportUseCaseAsDockerCompose(basePath, "imported", exportPath, ports.FileOptions{})
+	warnings, err := ExportUseCaseAsDockerCompose(ctx, s, basePath, "imported", exportPath, ports.FileOptions{})
 	if err != nil {
 		t.Fatalf("ExportUseCaseAsDockerCompose: unexpected error: %v", err)
 	}
@@ -156,7 +164,9 @@ func TestExportUseCaseAsDockerCompose_RoundTripsViaImport(t *testing.T) {
 func TestExportUseCaseAsDockerCompose_PropagatesMissingUseCaseError(t *testing.T) {
 	basePathDir := t.TempDir()
 	basePath := usecase.BasePath(basePathDir)
-	_, err := ExportUseCaseAsDockerCompose(basePath, "does-not-exist", filepath.Join(basePathDir, "out.yaml"), ports.FileOptions{})
+	ctx := context.Background()
+	s := newTestStore(t)
+	_, err := ExportUseCaseAsDockerCompose(ctx, s, basePath, "does-not-exist", filepath.Join(basePathDir, "out.yaml"), ports.FileOptions{})
 	if err == nil {
 		t.Error("ExportUseCaseAsDockerCompose with a missing use case: want error, got nil")
 	}

@@ -1,15 +1,34 @@
 package usecase
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
+	adapterfile "github.com/DaniDeer/go-codex/adapters/file"
+	"github.com/DaniDeer/go-codex/api/file"
 	iothub "github.com/DaniDeer/go-codex/examples/go-edge-models/models/azure/iothub"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker"
 	deviceconfig "github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/deviceconfig"
-	"github.com/DaniDeer/go-codex/ports"
 )
+
+// newTestStore builds a *Store backed by the real filesystem
+// (adapters/file.NewBackend) — the Stage D2 test-setup replacement for
+// the former bare ports.File/ports.Dir constructors, which needed no
+// such setup step at all. Every test below constructs its own Store
+// (cheap — a *file.Client holding one attached Backend), mirroring
+// NewRegistryClient's own per-test-fixture construction convention in
+// app/registry's test suite.
+func newTestStore(t *testing.T) *Store {
+	t.Helper()
+	s, err := NewStore(adapterfile.NewBackend())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	return s
+}
 
 func sampleManifest() iothub.LayeredDeployment {
 	return iothub.LayeredDeployment{
@@ -61,19 +80,21 @@ func sampleBaselineManifest() iothub.BaseDeployment {
 }
 
 // writeSampleBaseline writes sampleBaselineManifest() to
-// "{basePath}/baseline/baseline.json" — a test-only convenience most
-// ReadEffective-exercising tests need, since the baseline file is now a
-// REQUIRED read for every ReadEffective call.
-func writeSampleBaseline(t *testing.T, basePath BasePath) {
+// "{basePath}/baseline/baseline.json" via s — a test-only convenience
+// most ReadEffective-exercising tests need, since the baseline file is
+// now a REQUIRED read for every ReadEffective call.
+func writeSampleBaseline(t *testing.T, s *Store, basePath BasePath) {
 	t.Helper()
-	if _, err := NewBaselineFile(basePath).Write(nil, sampleBaselineManifest(), ports.FileOptions{CreateDirs: true}); err != nil {
+	if _, err := s.WriteBaseline(context.Background(), basePath, sampleBaselineManifest(), file.WriteOptions{CreateDirs: true}); err != nil {
 		t.Fatalf("writeSampleBaseline: %v", err)
 	}
 }
 
-// ── NewFile ───────────────────────────────────────────────────────────────────
+// ── Store.ReadUseCaseFile / Store.WriteUseCaseFile ─────────────────────────────
 
-func TestNewFile_ReadRoundTrip(t *testing.T) {
+func TestStore_ReadUseCaseFile_ReadRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
 	basePath := BasePath(t.TempDir())
 	usecasesDir := filepath.Join(string(basePath), "usecases")
 	if err := os.MkdirAll(usecasesDir, 0o755); err != nil {
@@ -89,10 +110,9 @@ func TestNewFile_ReadRoundTrip(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	fh := NewFile(basePath)
-	got, err := fh.Read(map[string]string{"usecase_name": "usecase1"}, ports.FileOptions{})
+	got, err := s.ReadUseCaseFile(ctx, basePath, "usecase1")
 	if err != nil {
-		t.Fatalf("Read: %v", err)
+		t.Fatalf("ReadUseCaseFile: %v", err)
 	}
 	dashboard := got.ModulesContent.EdgeAgent["factory-dashboard"]
 	if dashboard.Settings.Image.String() != "ghcr.io/org/edge-web:1.0.0" {
@@ -100,37 +120,38 @@ func TestNewFile_ReadRoundTrip(t *testing.T) {
 	}
 }
 
-func TestNewFile_WriteThenRead(t *testing.T) {
+func TestStore_WriteUseCaseFile_ThenRead(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
 	basePath := BasePath(t.TempDir())
 
-	fh := NewFile(basePath)
 	manifest := sampleManifest()
-	vars := map[string]string{"usecase_name": "usecase1"}
-	if _, err := fh.Write(vars, manifest, ports.FileOptions{CreateDirs: true}); err != nil {
-		t.Fatalf("Write: %v", err)
+	if _, err := s.WriteUseCaseFile(ctx, basePath, "usecase1", manifest, file.WriteOptions{CreateDirs: true}); err != nil {
+		t.Fatalf("WriteUseCaseFile: %v", err)
 	}
 
-	got, err := fh.Read(vars, ports.FileOptions{})
+	got, err := s.ReadUseCaseFile(ctx, basePath, "usecase1")
 	if err != nil {
-		t.Fatalf("Read: %v", err)
+		t.Fatalf("ReadUseCaseFile: %v", err)
 	}
 	if len(got.ModulesContent.EdgeAgent) != 1 {
 		t.Errorf("EdgeAgent len = %d, want 1", len(got.ModulesContent.EdgeAgent))
 	}
 }
 
-func TestNewBaselineFile_WriteThenRead(t *testing.T) {
+func TestStore_WriteBaseline_ThenRead(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
 	basePath := BasePath(t.TempDir())
 
-	fh := NewBaselineFile(basePath)
 	bl := sampleBaselineManifest()
-	if _, err := fh.Write(nil, bl, ports.FileOptions{CreateDirs: true}); err != nil {
-		t.Fatalf("Write: %v", err)
+	if _, err := s.WriteBaseline(ctx, basePath, bl, file.WriteOptions{CreateDirs: true}); err != nil {
+		t.Fatalf("WriteBaseline: %v", err)
 	}
 
-	got, err := fh.Read(nil, ports.FileOptions{})
+	got, err := s.ReadBaseline(ctx, basePath)
 	if err != nil {
-		t.Fatalf("Read: %v", err)
+		t.Fatalf("ReadBaseline: %v", err)
 	}
 	if got.ModulesContent.EdgeAgent.SchemaVersion != "1.1" {
 		t.Errorf("SchemaVersion = %q, want 1.1", got.ModulesContent.EdgeAgent.SchemaVersion)
@@ -140,74 +161,95 @@ func TestNewBaselineFile_WriteThenRead(t *testing.T) {
 	}
 }
 
-func TestNewBaselineFile_PathHasNoTemplateVariables(t *testing.T) {
+func TestStore_WriteBaseline_PathHasNoTemplateVariables(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
 	basePath := BasePath(t.TempDir())
 	wantPath := filepath.Join(string(basePath), "baseline", "baseline.json")
 
-	fh := NewBaselineFile(basePath)
-	if _, err := fh.Write(nil, sampleBaselineManifest(), ports.FileOptions{CreateDirs: true}); err != nil {
-		t.Fatalf("Write: %v", err)
+	if _, err := s.WriteBaseline(ctx, basePath, sampleBaselineManifest(), file.WriteOptions{CreateDirs: true}); err != nil {
+		t.Fatalf("WriteBaseline: %v", err)
 	}
 	if _, err := os.Stat(wantPath); err != nil {
 		t.Errorf("expected file at fixed path %q (no template variables): %v", wantPath, err)
 	}
 }
 
-func TestNewFile_DifferentUseCasesAreIndependent(t *testing.T) {
+func TestStore_WriteUseCaseFile_DifferentUseCasesAreIndependent(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
 	basePath := BasePath(t.TempDir())
 
-	fh := NewFile(basePath)
-
-	if _, err := fh.Write(map[string]string{"usecase_name": "usecase-a"}, sampleManifest(), ports.FileOptions{CreateDirs: true}); err != nil {
-		t.Fatalf("Write A: %v", err)
+	if _, err := s.WriteUseCaseFile(ctx, basePath, "usecase-a", sampleManifest(), file.WriteOptions{CreateDirs: true}); err != nil {
+		t.Fatalf("WriteUseCaseFile A: %v", err)
 	}
-	if _, err := fh.Read(map[string]string{"usecase_name": "usecase-b"}, ports.FileOptions{}); err == nil {
-		t.Error("Read B: want error (usecase-b was never written), got nil")
+	if _, err := s.ReadUseCaseFile(ctx, basePath, "usecase-b"); err == nil {
+		t.Error("ReadUseCaseFile B: want error (usecase-b was never written), got nil")
 	}
 }
 
-func TestNewFile_MissingUseCaseNameVar_ReturnsMissingFilePathVarError(t *testing.T) {
+// TestFileResource_MissingUseCaseNameVar_ReturnsMissingFilePathVarError
+// is a white-box test against the package-level fileResource var
+// directly (bypassing Store.ReadUseCaseFile's own signature, which
+// always supplies a usecase_name — even an empty Name still produces a
+// PRESENT, merely invalid, vars entry) — proves the underlying
+// MissingFilePathVarError still fires when vars genuinely lacks the
+// key, the same regression this test proved before Stage D2.
+func TestFileResource_MissingUseCaseNameVar_ReturnsMissingFilePathVarError(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
 	basePath := BasePath(t.TempDir())
-	fh := NewFile(basePath)
-	if _, err := fh.Read(nil, ports.FileOptions{}); err == nil {
-		t.Error("Read: want MissingFilePathVarError for missing usecase_name, got nil")
+
+	handle, err := fileResource.WithRead(file.Read{}).Handle(s.client, file.WithRouter(routerFor(basePath)))
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	_, err = s.client.Read(ctx, handle, nil)
+	var missing file.MissingFilePathVarError
+	if !errors.As(err, &missing) {
+		t.Errorf("Read: want MissingFilePathVarError for missing usecase_name, got %v", err)
 	}
 }
 
-// ── NewDir / ListNames ────────────────────────────────────────────────────────
+// ── Store.ListUseCaseEntries / Store.ListNames ─────────────────────────────────
 
-func TestNewDir_ListDiscoversUseCases(t *testing.T) {
-	dir := t.TempDir()
+func TestStore_ListUseCaseEntries_DiscoversUseCases(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	basePath := BasePath(t.TempDir())
+	usecasesDir := filepath.Join(string(basePath), "usecases")
+	if err := os.MkdirAll(usecasesDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
 
 	manifest := sampleManifest()
 	raw, err := FileFormat.Marshal(manifest)
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "usecase1.json"), raw, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(usecasesDir, "usecase1.json"), raw, 0o600); err != nil {
 		t.Fatalf("WriteFile usecase1: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "usecase2.json"), raw, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(usecasesDir, "usecase2.json"), raw, 0o600); err != nil {
 		t.Fatalf("WriteFile usecase2: %v", err)
 	}
 	// Stray non-conforming file — must be silently excluded.
-	if err := os.WriteFile(filepath.Join(dir, ".gitkeep"), nil, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(usecasesDir, ".gitkeep"), nil, 0o600); err != nil {
 		t.Fatalf("WriteFile .gitkeep: %v", err)
 	}
 
-	useCaseDir := NewDir(dir)
-	entries, err := useCaseDir.List(nil, ports.DirOptions{})
+	entries, err := s.ListUseCaseEntries(ctx, basePath, file.DirOptions{})
 	if err != nil {
-		t.Fatalf("List: %v", err)
+		t.Fatalf("ListUseCaseEntries: %v", err)
 	}
 	if len(entries) != 2 {
-		t.Fatalf("List returned %d entries, want 2 (stray .gitkeep excluded): %+v", len(entries), entries)
+		t.Fatalf("ListUseCaseEntries returned %d entries, want 2 (stray .gitkeep excluded): %+v", len(entries), entries)
 	}
 
 	useCases := map[string]bool{}
 	for _, e := range entries {
 		useCases[e.Vars["useCase"]] = true
-		if e.Kind != ports.EntryFile {
+		if e.Kind != file.EntryFile {
 			t.Errorf("entry %q Kind = %v, want EntryFile", e.Name, e.Kind)
 		}
 	}
@@ -216,7 +258,9 @@ func TestNewDir_ListDiscoversUseCases(t *testing.T) {
 	}
 }
 
-func TestNewDir_ListThenReadDiscoveredManifest(t *testing.T) {
+func TestStore_ListUseCaseEntries_ThenReadDiscoveredManifest(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
 	basePath := BasePath(t.TempDir())
 	usecasesDir := filepath.Join(string(basePath), "usecases")
 	if err := os.MkdirAll(usecasesDir, 0o755); err != nil {
@@ -232,29 +276,30 @@ func TestNewDir_ListThenReadDiscoveredManifest(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	useCaseDir := NewDir(usecasesDir)
-	entries, err := useCaseDir.List(nil, ports.DirOptions{})
+	entries, err := s.ListUseCaseEntries(ctx, basePath, file.DirOptions{})
 	if err != nil {
-		t.Fatalf("List: %v", err)
+		t.Fatalf("ListUseCaseEntries: %v", err)
 	}
 	if len(entries) != 1 {
-		t.Fatalf("List returned %d entries, want 1", len(entries))
+		t.Fatalf("ListUseCaseEntries returned %d entries, want 1", len(entries))
 	}
 
-	// Discovery (List) feeds the discovered use case name directly into
-	// NewFile(basePath)'s own vars — the same declarative flow
-	// app/iotedge would use to read whichever use case a caller picked.
-	fh := NewFile(basePath)
-	got, err := fh.Read(map[string]string{"usecase_name": entries[0].Vars["useCase"]}, ports.FileOptions{})
+	// Discovery (ListUseCaseEntries) feeds the discovered use case name
+	// directly into ReadUseCaseFile's own vars — the same declarative
+	// flow app/iotedge would use to read whichever use case a caller
+	// picked.
+	got, err := s.ReadUseCaseFile(ctx, basePath, Name(entries[0].Vars["useCase"]))
 	if err != nil {
-		t.Fatalf("Read discovered manifest: %v", err)
+		t.Fatalf("ReadUseCaseFile discovered manifest: %v", err)
 	}
 	if got.ModulesContent.EdgeAgent["factory-dashboard"].Status != "running" {
 		t.Errorf("Status = %q, want running", got.ModulesContent.EdgeAgent["factory-dashboard"].Status)
 	}
 }
 
-func TestListNames(t *testing.T) {
+func TestStore_ListNames(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
 	basePath := BasePath(t.TempDir())
 	usecasesDir := filepath.Join(string(basePath), "usecases")
 	if err := os.MkdirAll(usecasesDir, 0o755); err != nil {
@@ -273,7 +318,7 @@ func TestListNames(t *testing.T) {
 		t.Fatalf("WriteFile usecase2: %v", err)
 	}
 
-	names, err := ListNames(basePath, ports.DirOptions{})
+	names, err := s.ListNames(ctx, basePath, file.DirOptions{})
 	if err != nil {
 		t.Fatalf("ListNames: %v", err)
 	}
@@ -286,9 +331,11 @@ func TestListNames(t *testing.T) {
 	}
 }
 
-// ── UseCase / Read / Write ─────────────────────────────────────────────────────
+// ── UseCase / Store.Read / Store.Write ─────────────────────────────────────────
 
-func TestWrite_Read_RoundTrip_WithNestedDevices(t *testing.T) {
+func TestStore_Write_Read_RoundTrip_WithNestedDevices(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
 	basePath := BasePath(t.TempDir())
 
 	uc := UseCase{
@@ -300,11 +347,11 @@ func TestWrite_Read_RoundTrip_WithNestedDevices(t *testing.T) {
 		},
 	}
 
-	if err := Write(basePath, uc, ports.FileOptions{CreateDirs: true}); err != nil {
+	if err := s.Write(ctx, basePath, uc, file.WriteOptions{CreateDirs: true}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 
-	got, err := Read(basePath, "usecase1", ports.FileOptions{})
+	got, err := s.Read(ctx, basePath, "usecase1")
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -329,14 +376,16 @@ func TestWrite_Read_RoundTrip_WithNestedDevices(t *testing.T) {
 	}
 }
 
-func TestRead_NoDevices_ReturnsEmptyDevicesSlice(t *testing.T) {
+func TestStore_Read_NoDevices_ReturnsEmptyDevicesSlice(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
 	basePath := BasePath(t.TempDir())
 	uc := UseCase{Name: "usecase1", DeploymentManifest: sampleManifest()}
-	if err := Write(basePath, uc, ports.FileOptions{CreateDirs: true}); err != nil {
+	if err := s.Write(ctx, basePath, uc, file.WriteOptions{CreateDirs: true}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 
-	got, err := Read(basePath, "usecase1", ports.FileOptions{})
+	got, err := s.Read(ctx, basePath, "usecase1")
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
@@ -345,9 +394,11 @@ func TestRead_NoDevices_ReturnsEmptyDevicesSlice(t *testing.T) {
 	}
 }
 
-func TestRead_PropagatesMissingManifestError(t *testing.T) {
+func TestStore_Read_PropagatesMissingManifestError(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
 	basePath := BasePath(t.TempDir())
-	_, err := Read(basePath, "does-not-exist", ports.FileOptions{})
+	_, err := s.Read(ctx, basePath, "does-not-exist")
 	if err == nil {
 		t.Error("Read: want error for nonexistent use case, got nil")
 	}

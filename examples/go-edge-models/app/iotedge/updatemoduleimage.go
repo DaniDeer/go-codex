@@ -4,11 +4,12 @@ import (
 	"context"
 
 	mcpgo "github.com/DaniDeer/go-codex/adapters/mcpgo"
+	"github.com/DaniDeer/go-codex/api/file"
 	iothub "github.com/DaniDeer/go-codex/examples/go-edge-models/models/azure/iothub"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/modulesummary"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/updatemoduleimage"
-	"github.com/DaniDeer/go-codex/ports"
+	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/usecase"
 )
 
 // ── UpdateModuleImage as an MCP tool ──────────────────────────────────────────
@@ -27,13 +28,18 @@ import (
 // only via a LOWER layer (see UpdateUseCaseModuleImage/
 // UpdateUseCaseSystemModuleImage's own doc comments).
 //
+// store is captured in the returned closure (constructed ONCE, e.g. in
+// main.go) — the per-CALL ctx comes from the closure's own ctx
+// parameter; opts configures every file.Client.Create/Patch call this
+// handler's dispatch performs.
+//
 // Usage:
 //
 //	tool, _ := updatemoduleimage.Tool.Register(mcpBuilder)
 //	_, handlerFn := mcpgo.ToolHandler(tool,
-//	    iotedgeapp.NewUpdateModuleImageToolHandler(ports.FileOptions{}),
+//	    iotedgeapp.NewUpdateModuleImageToolHandler(store, file.WriteOptions{}),
 //	    mcpgo.Options{})
-func NewUpdateModuleImageToolHandler(opts ports.FileOptions) mcpgo.HandlerFunc[updatemoduleimage.Req, modulesummary.Summary] {
+func NewUpdateModuleImageToolHandler(store *usecase.Store, opts file.WriteOptions) mcpgo.HandlerFunc[updatemoduleimage.Req, modulesummary.Summary] {
 	return func(ctx context.Context, req updatemoduleimage.Req) (modulesummary.Summary, error) {
 		image, err := docker.ImageCodec.Decode(req.ImageURL)
 		if err != nil {
@@ -45,7 +51,7 @@ func NewUpdateModuleImageToolHandler(opts ports.FileOptions) mcpgo.HandlerFunc[u
 		// ModuleNotFoundError still surfaces for a genuinely unknown name.
 		// Uses the SAME scope (template or device) the update itself will
 		// target, via req.DeviceID.
-		if _, err := readModuleSummary(req.BasePath, req.UseCaseName, req.DeviceID, req.ModuleName, opts); err != nil {
+		if _, err := readModuleSummary(ctx, store, req.BasePath, req.UseCaseName, req.DeviceID, req.ModuleName); err != nil {
 			return modulesummary.Summary{}, err
 		}
 
@@ -54,17 +60,17 @@ func NewUpdateModuleImageToolHandler(opts ports.FileOptions) mcpgo.HandlerFunc[u
 
 		switch {
 		case req.DeviceID == "" && isSystemModule:
-			err = UpdateUseCaseSystemModuleImage(req.BasePath, req.UseCaseName, systemModuleName, image, opts)
+			err = UpdateUseCaseSystemModuleImage(ctx, store, req.BasePath, req.UseCaseName, systemModuleName, image, opts)
 		case req.DeviceID == "":
-			err = UpdateUseCaseModuleImage(req.BasePath, req.UseCaseName, req.ModuleName, image, opts)
+			err = UpdateUseCaseModuleImage(ctx, store, req.BasePath, req.UseCaseName, req.ModuleName, image, opts)
 		case isSystemModule:
-			err = UpdateDeviceSystemModuleImage(req.BasePath, req.UseCaseName, req.DeviceID, systemModuleName, image, opts)
+			err = UpdateDeviceSystemModuleImage(ctx, store, req.BasePath, req.UseCaseName, req.DeviceID, systemModuleName, image, opts)
 		default:
-			err = UpdateDeviceModuleImage(req.BasePath, req.UseCaseName, req.DeviceID, req.ModuleName, image, opts)
+			err = UpdateDeviceModuleImage(ctx, store, req.BasePath, req.UseCaseName, req.DeviceID, req.ModuleName, image, opts)
 		}
 		if err != nil {
 			return modulesummary.Summary{}, err
 		}
-		return readModuleSummary(req.BasePath, req.UseCaseName, req.DeviceID, req.ModuleName, opts)
+		return readModuleSummary(ctx, store, req.BasePath, req.UseCaseName, req.DeviceID, req.ModuleName)
 	}
 }

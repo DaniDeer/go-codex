@@ -11,7 +11,6 @@ import (
 	finaldeviceconfig "github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/finaldeviceconfig"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/modulesummary"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/usecase"
-	"github.com/DaniDeer/go-codex/ports"
 )
 
 // ── ReadModuleSummary as an MCP tool ─────────────────────────────────────────
@@ -49,8 +48,8 @@ func (e ModuleNotFoundError) LogValue() slog.Value {
 // modulesummary.IsSystemModuleName — looked up in
 // ModulesContent.EdgeAgent.SystemModules instead, via
 // modulesummary.NewSummaryFromSystemModule).
-func readModuleSummary(basePath usecase.BasePath, useCaseName usecase.Name, deviceID usecase.DeviceID, moduleName iothub.ModuleName, opts ports.FileOptions) (modulesummary.Summary, error) {
-	manifest, err := effectiveManifest(basePath, useCaseName, deviceID, opts)
+func readModuleSummary(ctx context.Context, store *usecase.Store, basePath usecase.BasePath, useCaseName usecase.Name, deviceID usecase.DeviceID, moduleName iothub.ModuleName) (modulesummary.Summary, error) {
+	manifest, err := effectiveManifest(ctx, store, basePath, useCaseName, deviceID)
 	if err != nil {
 		return modulesummary.Summary{}, err
 	}
@@ -84,35 +83,37 @@ func summaryFor(manifest iothub.BaseDeployment, moduleName iothub.ModuleName) (m
 // baseline-only modules/system-modules (e.g. "vulnerability-scanner",
 // "edgeAgent"/"edgeHub" themselves) resolve at the USE-CASE-TEMPLATE
 // scope too, not just the device scope.
-func effectiveManifest(basePath usecase.BasePath, useCaseName usecase.Name, deviceID usecase.DeviceID, opts ports.FileOptions) (iothub.BaseDeployment, error) {
-	base, err := usecase.NewBaselineFile(basePath).Read(nil, opts)
+func effectiveManifest(ctx context.Context, store *usecase.Store, basePath usecase.BasePath, useCaseName usecase.Name, deviceID usecase.DeviceID) (iothub.BaseDeployment, error) {
+	base, err := store.ReadBaseline(ctx, basePath)
 	if err != nil {
 		return iothub.BaseDeployment{}, err
 	}
-	template, err := ReadUseCase(basePath, useCaseName, opts)
+	template, err := ReadUseCase(ctx, store, basePath, useCaseName)
 	if err != nil {
 		return iothub.BaseDeployment{}, err
 	}
 	if deviceID == "" {
 		return finaldeviceconfig.Merge(base, template, deviceconfig.Patch{})
 	}
-	return usecase.ReadEffective(basePath, useCaseName, deviceID, opts)
+	return store.ReadEffective(ctx, basePath, useCaseName, deviceID)
 }
 
 // NewReadModuleSummaryToolHandler returns an mcpgo.HandlerFunc that reads
 // req.UseCaseName's EFFECTIVE manifest under req.BasePath — OR, when
 // req.DeviceID is set, that device's ACTUAL configured manifest — looks
 // up req.ModuleName, and maps it to a modulesummary.Summary — binding
-// modulesummary's declared ReadTool to effectiveManifest.
+// modulesummary's declared ReadTool to effectiveManifest. store is
+// captured in the returned closure (constructed ONCE, e.g. in main.go)
+// — the per-CALL ctx comes from the closure's own ctx parameter.
 //
 // Usage:
 //
 //	tool, _ := modulesummary.ReadTool.Register(mcpBuilder)
 //	_, handlerFn := mcpgo.ToolHandler(tool,
-//	    iotedgeapp.NewReadModuleSummaryToolHandler(ports.FileOptions{}),
+//	    iotedgeapp.NewReadModuleSummaryToolHandler(store),
 //	    mcpgo.Options{})
-func NewReadModuleSummaryToolHandler(opts ports.FileOptions) mcpgo.HandlerFunc[modulesummary.ReadReq, modulesummary.Summary] {
+func NewReadModuleSummaryToolHandler(store *usecase.Store) mcpgo.HandlerFunc[modulesummary.ReadReq, modulesummary.Summary] {
 	return func(ctx context.Context, req modulesummary.ReadReq) (modulesummary.Summary, error) {
-		return readModuleSummary(req.BasePath, req.UseCaseName, req.DeviceID, req.ModuleName, opts)
+		return readModuleSummary(ctx, store, req.BasePath, req.UseCaseName, req.DeviceID, req.ModuleName)
 	}
 }

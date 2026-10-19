@@ -1,15 +1,29 @@
 package iotedge
 
 import (
+	"context"
 	"errors"
 	"testing"
 
+	adapterfile "github.com/DaniDeer/go-codex/adapters/file"
+	"github.com/DaniDeer/go-codex/api/file"
 	iothub "github.com/DaniDeer/go-codex/examples/go-edge-models/models/azure/iothub"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/modulepatch"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/usecase"
-	"github.com/DaniDeer/go-codex/ports"
 )
+
+// newTestStore builds a *usecase.Store backed by the real filesystem —
+// the Stage D2 test-setup replacement for the former bare ports.File
+// constructors, which needed no such setup step at all.
+func newTestStore(t *testing.T) *usecase.Store {
+	t.Helper()
+	s, err := usecase.NewStore(adapterfile.NewBackend())
+	if err != nil {
+		t.Fatalf("usecase.NewStore: %v", err)
+	}
+	return s
+}
 
 func sampleManifest() iothub.LayeredDeployment {
 	return iothub.LayeredDeployment{
@@ -73,23 +87,25 @@ func sampleBaselineManifest() iothub.BaseDeployment {
 
 const sampleUseCaseName = "usecase1"
 
-func writeSampleManifest(t *testing.T) usecase.BasePath {
+func writeSampleManifest(t *testing.T, s *usecase.Store) usecase.BasePath {
 	t.Helper()
+	ctx := context.Background()
 	basePath := usecase.BasePath(t.TempDir())
-	if _, err := usecase.NewBaselineFile(basePath).Write(nil, sampleBaselineManifest(), ports.FileOptions{CreateDirs: true}); err != nil {
-		t.Fatalf("Write baseline: %v", err)
+	if _, err := s.WriteBaseline(ctx, basePath, sampleBaselineManifest(), file.WriteOptions{CreateDirs: true}); err != nil {
+		t.Fatalf("WriteBaseline: %v", err)
 	}
-	fh := usecase.NewFile(basePath)
-	if _, err := fh.Write(map[string]string{"usecase_name": sampleUseCaseName}, sampleManifest(), ports.FileOptions{CreateDirs: true}); err != nil {
-		t.Fatalf("Write: %v", err)
+	if _, err := s.WriteUseCaseFile(ctx, basePath, sampleUseCaseName, sampleManifest(), file.WriteOptions{CreateDirs: true}); err != nil {
+		t.Fatalf("WriteUseCaseFile: %v", err)
 	}
 	return basePath
 }
 
 func TestReadUseCase_ReturnsWrittenManifest(t *testing.T) {
-	basePath := writeSampleManifest(t)
+	ctx := context.Background()
+	s := newTestStore(t)
+	basePath := writeSampleManifest(t, s)
 
-	got, err := ReadUseCase(basePath, sampleUseCaseName, ports.FileOptions{})
+	got, err := ReadUseCase(ctx, s, basePath, sampleUseCaseName)
 	if err != nil {
 		t.Fatalf("ReadUseCase: %v", err)
 	}
@@ -100,21 +116,25 @@ func TestReadUseCase_ReturnsWrittenManifest(t *testing.T) {
 }
 
 func TestReadUseCase_PropagatesMissingFileError(t *testing.T) {
-	_, err := ReadUseCase("/nonexistent/path", "nonexistent-usecase", ports.FileOptions{})
+	ctx := context.Background()
+	s := newTestStore(t)
+	_, err := ReadUseCase(ctx, s, "/nonexistent/path", "nonexistent-usecase")
 	if err == nil {
 		t.Error("ReadUseCase: want error for nonexistent file, got nil")
 	}
 }
 
 func TestUpdateUseCaseModuleImage_PatchesOnlyImage(t *testing.T) {
-	basePath := writeSampleManifest(t)
+	ctx := context.Background()
+	s := newTestStore(t)
+	basePath := writeSampleManifest(t, s)
 
 	newImage := docker.Image{Name: "ghcr.io/org/edge-web", Tag: "2.0.0"}
-	if err := UpdateUseCaseModuleImage(basePath, sampleUseCaseName, "factory-dashboard", newImage, ports.FileOptions{}); err != nil {
+	if err := UpdateUseCaseModuleImage(ctx, s, basePath, sampleUseCaseName, "factory-dashboard", newImage, file.WriteOptions{}); err != nil {
 		t.Fatalf("UpdateUseCaseModuleImage: %v", err)
 	}
 
-	got, err := ReadUseCase(basePath, sampleUseCaseName, ports.FileOptions{})
+	got, err := ReadUseCase(ctx, s, basePath, sampleUseCaseName)
 	if err != nil {
 		t.Fatalf("ReadUseCase after update: %v", err)
 	}
@@ -135,17 +155,19 @@ func TestUpdateUseCaseModuleImage_PatchesOnlyImage(t *testing.T) {
 }
 
 func TestUpdateUseCaseModuleImage_RejectsInvalidImage(t *testing.T) {
-	basePath := writeSampleManifest(t)
+	ctx := context.Background()
+	s := newTestStore(t)
+	basePath := writeSampleManifest(t, s)
 
 	// modulepatch.NewUpdateModuleImagePatch validates the image BEFORE any
 	// disk I/O happens — an empty Name must be rejected here, not silently
 	// written to the manifest.
-	err := UpdateUseCaseModuleImage(basePath, sampleUseCaseName, "factory-dashboard", docker.Image{}, ports.FileOptions{})
+	err := UpdateUseCaseModuleImage(ctx, s, basePath, sampleUseCaseName, "factory-dashboard", docker.Image{}, file.WriteOptions{})
 	if err == nil {
 		t.Fatal("UpdateUseCaseModuleImage: want error for invalid image, got nil")
 	}
 
-	got, readErr := ReadUseCase(basePath, sampleUseCaseName, ports.FileOptions{})
+	got, readErr := ReadUseCase(ctx, s, basePath, sampleUseCaseName)
 	if readErr != nil {
 		t.Fatalf("ReadUseCase: %v", readErr)
 	}
@@ -156,18 +178,20 @@ func TestUpdateUseCaseModuleImage_RejectsInvalidImage(t *testing.T) {
 }
 
 func TestUpdateUseCaseModuleImage_PromotesBaselineOnlyModule(t *testing.T) {
-	basePath := writeSampleManifest(t)
+	ctx := context.Background()
+	s := newTestStore(t)
+	basePath := writeSampleManifest(t, s)
 
 	// "vulnerability-scanner" is declared ONLY in sampleBaselineManifest,
 	// never in sampleManifest's own template — updating its image must
 	// AUTO-PROMOTE to a full override in the template, not attempt an
 	// incomplete sparse patch onto nothing.
 	newImage := docker.Image{Name: "ghcr.io/example-org/edge-security-scanner", Tag: "0.0.3"}
-	if err := UpdateUseCaseModuleImage(basePath, sampleUseCaseName, "vulnerability-scanner", newImage, ports.FileOptions{}); err != nil {
+	if err := UpdateUseCaseModuleImage(ctx, s, basePath, sampleUseCaseName, "vulnerability-scanner", newImage, file.WriteOptions{}); err != nil {
 		t.Fatalf("UpdateUseCaseModuleImage: %v", err)
 	}
 
-	template, err := ReadUseCase(basePath, sampleUseCaseName, ports.FileOptions{})
+	template, err := ReadUseCase(ctx, s, basePath, sampleUseCaseName)
 	if err != nil {
 		t.Fatalf("ReadUseCase after update: %v", err)
 	}
@@ -186,7 +210,7 @@ func TestUpdateUseCaseModuleImage_PromotesBaselineOnlyModule(t *testing.T) {
 
 	// Reading it back via the app-level summary helper (baseline-aware)
 	// must reflect the NEW image too.
-	summary, err := readModuleSummary(basePath, sampleUseCaseName, "", "vulnerability-scanner", ports.FileOptions{})
+	summary, err := readModuleSummary(ctx, s, basePath, sampleUseCaseName, "", "vulnerability-scanner")
 	if err != nil {
 		t.Fatalf("readModuleSummary: %v", err)
 	}
@@ -196,8 +220,10 @@ func TestUpdateUseCaseModuleImage_PromotesBaselineOnlyModule(t *testing.T) {
 }
 
 func TestUpdateUseCaseModuleImage_UnknownModule_ReturnsModuleNotFoundError(t *testing.T) {
-	basePath := writeSampleManifest(t)
-	err := UpdateUseCaseModuleImage(basePath, sampleUseCaseName, "totally-unknown-module", docker.Image{Name: "ghcr.io/org/x", Tag: "1.0.0"}, ports.FileOptions{})
+	ctx := context.Background()
+	s := newTestStore(t)
+	basePath := writeSampleManifest(t, s)
+	err := UpdateUseCaseModuleImage(ctx, s, basePath, sampleUseCaseName, "totally-unknown-module", docker.Image{Name: "ghcr.io/org/x", Tag: "1.0.0"}, file.WriteOptions{})
 	var notFound ModuleNotFoundError
 	if !errors.As(err, &notFound) {
 		t.Fatalf("UpdateUseCaseModuleImage error = %v (%T), want ModuleNotFoundError", err, err)
@@ -205,14 +231,16 @@ func TestUpdateUseCaseModuleImage_UnknownModule_ReturnsModuleNotFoundError(t *te
 }
 
 func TestUpdateUseCaseSystemModuleImage_PromotesWhenNoTemplateOverrideYet(t *testing.T) {
-	basePath := writeSampleManifest(t)
+	ctx := context.Background()
+	s := newTestStore(t)
+	basePath := writeSampleManifest(t, s)
 
 	newImage := docker.Image{Name: "mcr.microsoft.com/azureiotedge-agent", Tag: "1.6.0"}
-	if err := UpdateUseCaseSystemModuleImage(basePath, sampleUseCaseName, "edgeAgent", newImage, ports.FileOptions{}); err != nil {
+	if err := UpdateUseCaseSystemModuleImage(ctx, s, basePath, sampleUseCaseName, "edgeAgent", newImage, file.WriteOptions{}); err != nil {
 		t.Fatalf("UpdateUseCaseSystemModuleImage: %v", err)
 	}
 
-	template, err := ReadUseCase(basePath, sampleUseCaseName, ports.FileOptions{})
+	template, err := ReadUseCase(ctx, s, basePath, sampleUseCaseName)
 	if err != nil {
 		t.Fatalf("ReadUseCase after update: %v", err)
 	}
@@ -227,7 +255,7 @@ func TestUpdateUseCaseSystemModuleImage_PromotesWhenNoTemplateOverrideYet(t *tes
 		t.Errorf("Type = %q, want docker (promoted entry must be complete)", smc.Type)
 	}
 
-	summary, err := readModuleSummary(basePath, sampleUseCaseName, "", "edgeAgent", ports.FileOptions{})
+	summary, err := readModuleSummary(ctx, s, basePath, sampleUseCaseName, "", "edgeAgent")
 	if err != nil {
 		t.Fatalf("readModuleSummary: %v", err)
 	}
@@ -237,20 +265,22 @@ func TestUpdateUseCaseSystemModuleImage_PromotesWhenNoTemplateOverrideYet(t *tes
 }
 
 func TestUpdateUseCaseSystemModuleImage_SparseWhenTemplateOverrideAlreadyExists(t *testing.T) {
-	basePath := writeSampleManifest(t)
+	ctx := context.Background()
+	s := newTestStore(t)
+	basePath := writeSampleManifest(t, s)
 
 	// First update promotes a full override.
 	firstImage := docker.Image{Name: "mcr.microsoft.com/azureiotedge-hub", Tag: "1.6.0"}
-	if err := UpdateUseCaseSystemModuleImage(basePath, sampleUseCaseName, "edgeHub", firstImage, ports.FileOptions{}); err != nil {
+	if err := UpdateUseCaseSystemModuleImage(ctx, s, basePath, sampleUseCaseName, "edgeHub", firstImage, file.WriteOptions{}); err != nil {
 		t.Fatalf("first UpdateUseCaseSystemModuleImage: %v", err)
 	}
 	// Second update should sparse-patch the EXISTING override.
 	secondImage := docker.Image{Name: "mcr.microsoft.com/azureiotedge-hub", Tag: "1.6.1"}
-	if err := UpdateUseCaseSystemModuleImage(basePath, sampleUseCaseName, "edgeHub", secondImage, ports.FileOptions{}); err != nil {
+	if err := UpdateUseCaseSystemModuleImage(ctx, s, basePath, sampleUseCaseName, "edgeHub", secondImage, file.WriteOptions{}); err != nil {
 		t.Fatalf("second UpdateUseCaseSystemModuleImage: %v", err)
 	}
 
-	template, err := ReadUseCase(basePath, sampleUseCaseName, ports.FileOptions{})
+	template, err := ReadUseCase(ctx, s, basePath, sampleUseCaseName)
 	if err != nil {
 		t.Fatalf("ReadUseCase after update: %v", err)
 	}
@@ -266,14 +296,16 @@ func TestUpdateUseCaseSystemModuleImage_SparseWhenTemplateOverrideAlreadyExists(
 }
 
 func TestUpdateDeviceSystemModuleImage_FirstOverride_WritesNewDeviceFile(t *testing.T) {
-	basePath := writeSampleManifest(t)
+	ctx := context.Background()
+	s := newTestStore(t)
+	basePath := writeSampleManifest(t, s)
 
 	newImage := docker.Image{Name: "mcr.microsoft.com/azureiotedge-agent", Tag: "1.6.0"}
-	if err := UpdateDeviceSystemModuleImage(basePath, sampleUseCaseName, sampleDeviceID, "edgeAgent", newImage, ports.FileOptions{}); err != nil {
+	if err := UpdateDeviceSystemModuleImage(ctx, s, basePath, sampleUseCaseName, sampleDeviceID, "edgeAgent", newImage, file.WriteOptions{}); err != nil {
 		t.Fatalf("UpdateDeviceSystemModuleImage: %v", err)
 	}
 
-	effective, err := usecase.ReadEffective(basePath, sampleUseCaseName, sampleDeviceID, ports.FileOptions{})
+	effective, err := s.ReadEffective(ctx, basePath, sampleUseCaseName, sampleDeviceID)
 	if err != nil {
 		t.Fatalf("ReadEffective: %v", err)
 	}
@@ -288,17 +320,19 @@ func TestUpdateDeviceSystemModuleImage_FirstOverride_WritesNewDeviceFile(t *test
 }
 
 func TestPatchUseCaseModule_PatchesMultipleFieldsLeavesOthersUntouched(t *testing.T) {
-	basePath := writeSampleManifest(t)
+	ctx := context.Background()
+	s := newTestStore(t)
+	basePath := writeSampleManifest(t, s)
 
 	status := iothub.Status("stopped")
-	if err := PatchUseCaseModule(basePath, sampleUseCaseName, modulepatch.FieldsPatch{
+	if err := PatchUseCaseModule(ctx, s, basePath, sampleUseCaseName, modulepatch.FieldsPatch{
 		ModuleName: "factory-dashboard",
 		Status:     &status,
-	}, ports.FileOptions{}); err != nil {
+	}, file.WriteOptions{}); err != nil {
 		t.Fatalf("PatchUseCaseModule: %v", err)
 	}
 
-	got, err := ReadUseCase(basePath, sampleUseCaseName, ports.FileOptions{})
+	got, err := ReadUseCase(ctx, s, basePath, sampleUseCaseName)
 	if err != nil {
 		t.Fatalf("ReadUseCase after patch: %v", err)
 	}
@@ -315,9 +349,11 @@ func TestPatchUseCaseModule_PatchesMultipleFieldsLeavesOthersUntouched(t *testin
 }
 
 func TestPatchUseCaseModule_PropagatesEmptyPatchError(t *testing.T) {
-	basePath := writeSampleManifest(t)
+	ctx := context.Background()
+	s := newTestStore(t)
+	basePath := writeSampleManifest(t, s)
 
-	err := PatchUseCaseModule(basePath, sampleUseCaseName, modulepatch.FieldsPatch{ModuleName: "factory-dashboard"}, ports.FileOptions{})
+	err := PatchUseCaseModule(ctx, s, basePath, sampleUseCaseName, modulepatch.FieldsPatch{ModuleName: "factory-dashboard"}, file.WriteOptions{})
 	if err == nil {
 		t.Error("PatchUseCaseModule: want error for empty patch, got nil")
 	}
@@ -328,15 +364,17 @@ func TestPatchUseCaseModule_PropagatesEmptyPatchError(t *testing.T) {
 const sampleDeviceID = "sensor-1"
 
 func TestUpdateDeviceModuleImage_FirstOverride_WritesNewDeviceFile(t *testing.T) {
-	basePath := writeSampleManifest(t)
+	ctx := context.Background()
+	s := newTestStore(t)
+	basePath := writeSampleManifest(t, s)
 
 	newImage := docker.Image{Name: "ghcr.io/org/edge-web", Tag: "9.9.9"}
-	if err := UpdateDeviceModuleImage(basePath, sampleUseCaseName, sampleDeviceID, "factory-dashboard", newImage, ports.FileOptions{}); err != nil {
+	if err := UpdateDeviceModuleImage(ctx, s, basePath, sampleUseCaseName, sampleDeviceID, "factory-dashboard", newImage, file.WriteOptions{}); err != nil {
 		t.Fatalf("UpdateDeviceModuleImage: %v", err)
 	}
 
 	// The TEMPLATE must be completely untouched.
-	template, err := ReadUseCase(basePath, sampleUseCaseName, ports.FileOptions{})
+	template, err := ReadUseCase(ctx, s, basePath, sampleUseCaseName)
 	if err != nil {
 		t.Fatalf("ReadUseCase: %v", err)
 	}
@@ -345,7 +383,7 @@ func TestUpdateDeviceModuleImage_FirstOverride_WritesNewDeviceFile(t *testing.T)
 	}
 
 	// The DEVICE's effective config must reflect the override.
-	effective, err := usecase.ReadEffective(basePath, sampleUseCaseName, sampleDeviceID, ports.FileOptions{})
+	effective, err := s.ReadEffective(ctx, basePath, sampleUseCaseName, sampleDeviceID)
 	if err != nil {
 		t.Fatalf("ReadEffective: %v", err)
 	}
@@ -360,24 +398,26 @@ func TestUpdateDeviceModuleImage_FirstOverride_WritesNewDeviceFile(t *testing.T)
 }
 
 func TestPatchDeviceModule_SecondOverride_MergesOntoExistingDeviceFile(t *testing.T) {
-	basePath := writeSampleManifest(t)
+	ctx := context.Background()
+	s := newTestStore(t)
+	basePath := writeSampleManifest(t, s)
 
 	// First override: image.
 	firstImage := docker.Image{Name: "ghcr.io/org/edge-web", Tag: "2.0.0"}
-	if err := UpdateDeviceModuleImage(basePath, sampleUseCaseName, sampleDeviceID, "factory-dashboard", firstImage, ports.FileOptions{}); err != nil {
+	if err := UpdateDeviceModuleImage(ctx, s, basePath, sampleUseCaseName, sampleDeviceID, "factory-dashboard", firstImage, file.WriteOptions{}); err != nil {
 		t.Fatalf("first UpdateDeviceModuleImage: %v", err)
 	}
 
 	// Second override: status, on a DIFFERENT field of the SAME module.
 	status := iothub.Status("stopped")
-	if err := PatchDeviceModule(basePath, sampleUseCaseName, sampleDeviceID, modulepatch.FieldsPatch{
+	if err := PatchDeviceModule(ctx, s, basePath, sampleUseCaseName, sampleDeviceID, modulepatch.FieldsPatch{
 		ModuleName: "factory-dashboard",
 		Status:     &status,
-	}, ports.FileOptions{}); err != nil {
+	}, file.WriteOptions{}); err != nil {
 		t.Fatalf("second PatchDeviceModule: %v", err)
 	}
 
-	effective, err := usecase.ReadEffective(basePath, sampleUseCaseName, sampleDeviceID, ports.FileOptions{})
+	effective, err := s.ReadEffective(ctx, basePath, sampleUseCaseName, sampleDeviceID)
 	if err != nil {
 		t.Fatalf("ReadEffective: %v", err)
 	}
@@ -393,7 +433,9 @@ func TestPatchDeviceModule_SecondOverride_MergesOntoExistingDeviceFile(t *testin
 }
 
 func TestUpdateDeviceModuleImage_IntroducesNewModuleAtDeviceLevel(t *testing.T) {
-	basePath := writeSampleManifest(t)
+	ctx := context.Background()
+	s := newTestStore(t)
+	basePath := writeSampleManifest(t, s)
 
 	newImage := docker.Image{Name: "ghcr.io/org/extra-sensor-agent", Tag: "1.0.0"}
 	patch, err := modulepatch.NewUpdateModuleImage("extra-sensor-agent", newImage)
@@ -411,11 +453,11 @@ func TestUpdateDeviceModuleImage_IntroducesNewModuleAtDeviceLevel(t *testing.T) 
 	patch.RestartPolicy = &restartPolicy
 	patch.Version = &version
 
-	if err := PatchDeviceModule(basePath, sampleUseCaseName, sampleDeviceID, patch, ports.FileOptions{}); err != nil {
+	if err := PatchDeviceModule(ctx, s, basePath, sampleUseCaseName, sampleDeviceID, patch, file.WriteOptions{}); err != nil {
 		t.Fatalf("PatchDeviceModule: %v", err)
 	}
 
-	effective, err := usecase.ReadEffective(basePath, sampleUseCaseName, sampleDeviceID, ports.FileOptions{})
+	effective, err := s.ReadEffective(ctx, basePath, sampleUseCaseName, sampleDeviceID)
 	if err != nil {
 		t.Fatalf("ReadEffective: %v", err)
 	}
@@ -433,16 +475,20 @@ func TestUpdateDeviceModuleImage_IntroducesNewModuleAtDeviceLevel(t *testing.T) 
 }
 
 func TestPatchDeviceModule_RejectsInvalidUseCaseName(t *testing.T) {
-	basePath := writeSampleManifest(t)
-	err := PatchDeviceModule(basePath, "", sampleDeviceID, modulepatch.FieldsPatch{ModuleName: "factory-dashboard"}, ports.FileOptions{})
+	ctx := context.Background()
+	s := newTestStore(t)
+	basePath := writeSampleManifest(t, s)
+	err := PatchDeviceModule(ctx, s, basePath, "", sampleDeviceID, modulepatch.FieldsPatch{ModuleName: "factory-dashboard"}, file.WriteOptions{})
 	if err == nil {
 		t.Error("PatchDeviceModule: want error for empty useCaseName, got nil")
 	}
 }
 
 func TestPatchDeviceModule_RejectsInvalidDeviceID(t *testing.T) {
-	basePath := writeSampleManifest(t)
-	err := PatchDeviceModule(basePath, sampleUseCaseName, "", modulepatch.FieldsPatch{ModuleName: "factory-dashboard"}, ports.FileOptions{})
+	ctx := context.Background()
+	s := newTestStore(t)
+	basePath := writeSampleManifest(t, s)
+	err := PatchDeviceModule(ctx, s, basePath, sampleUseCaseName, "", modulepatch.FieldsPatch{ModuleName: "factory-dashboard"}, file.WriteOptions{})
 	if err == nil {
 		t.Error("PatchDeviceModule: want error for empty deviceID, got nil")
 	}

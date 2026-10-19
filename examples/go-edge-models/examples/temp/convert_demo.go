@@ -11,9 +11,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 
+	adapterfile "github.com/DaniDeer/go-codex/adapters/file"
+	"github.com/DaniDeer/go-codex/api/file"
 	iotedgeapp "github.com/DaniDeer/go-codex/examples/go-edge-models/app/iotedge"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/usecase"
 	"github.com/DaniDeer/go-codex/ports"
@@ -46,18 +49,22 @@ func mustBasePath(s string) usecase.BasePath {
 }
 
 func main() {
+	ctx := context.Background()
+	store, err := usecase.NewStore(adapterfile.NewBackend())
+	must(err, "construct usecase.Store")
+
 	// ── 1. docker-compose.yml → IoT Edge deployment manifest ────────────
 	//
 	// ImportDockerComposeAsUseCase reads composeIn via dockercompose.NewFile
 	// (ports.File[dockercompose.Project]), converts it via
 	// fromcompose.ConvertProject, and writes the result as the "factory-stack"
-	// use case under tempBasePath via usecase.NewFile — landing at
-	// tempBasePath + "/usecases/factory-stack.json" (usecase.NewFile's own
-	// templated path, CreateDirs makes the new "usecases" subdir).
+	// use case under tempBasePath via the Store's own WriteUseCaseFile —
+	// landing at tempBasePath + "/usecases/factory-stack.json", CreateDirs
+	// makes the new "usecases" subdir.
 	factoryStack := mustName("factory-stack")
 	importWarnings, err := iotedgeapp.ImportDockerComposeAsUseCase(
-		mustBasePath(tempBasePath), factoryStack, composeIn,
-		ports.FileOptions{CreateDirs: true},
+		ctx, store, mustBasePath(tempBasePath), factoryStack, composeIn,
+		ports.FileOptions{CreateDirs: true}, file.WriteOptions{CreateDirs: true},
 	)
 	must(err, "import docker-compose.yml as use case")
 	fmt.Printf("=== docker-compose.yml -> deployment manifest (factory-stack) ===\n")
@@ -75,7 +82,7 @@ func main() {
 	// via dockercompose.NewFile — the reverse of step 1.
 	usecase1 := mustName("usecase1")
 	exportWarnings, err := iotedgeapp.ExportUseCaseAsDockerCompose(
-		mustBasePath(existingBase), usecase1, outComposeYAML,
+		ctx, store, mustBasePath(existingBase), usecase1, outComposeYAML,
 		ports.FileOptions{CreateDirs: true},
 	)
 	must(err, "export usecase1 as docker-compose.yml")

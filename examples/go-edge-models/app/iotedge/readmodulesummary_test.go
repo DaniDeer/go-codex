@@ -5,16 +5,18 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/DaniDeer/go-codex/api/file"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/docker"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/modulesummary"
-	"github.com/DaniDeer/go-codex/ports"
 )
 
 func TestNewReadModuleSummaryToolHandler_ReturnsSummary(t *testing.T) {
-	basePath := writeSampleManifest(t)
-	handler := NewReadModuleSummaryToolHandler(ports.FileOptions{})
+	ctx := context.Background()
+	s := newTestStore(t)
+	basePath := writeSampleManifest(t, s)
+	handler := NewReadModuleSummaryToolHandler(s)
 
-	summary, err := handler(context.Background(), modulesummary.ReadReq{
+	summary, err := handler(ctx, modulesummary.ReadReq{
 		BasePath:    basePath,
 		UseCaseName: sampleUseCaseName,
 		ModuleName:  "factory-dashboard",
@@ -34,10 +36,12 @@ func TestNewReadModuleSummaryToolHandler_ReturnsSummary(t *testing.T) {
 }
 
 func TestNewReadModuleSummaryToolHandler_ModuleNotFound(t *testing.T) {
-	basePath := writeSampleManifest(t)
-	handler := NewReadModuleSummaryToolHandler(ports.FileOptions{})
+	ctx := context.Background()
+	s := newTestStore(t)
+	basePath := writeSampleManifest(t, s)
+	handler := NewReadModuleSummaryToolHandler(s)
 
-	_, err := handler(context.Background(), modulesummary.ReadReq{
+	_, err := handler(ctx, modulesummary.ReadReq{
 		BasePath:    basePath,
 		UseCaseName: sampleUseCaseName,
 		ModuleName:  "does-not-exist",
@@ -55,8 +59,10 @@ func TestNewReadModuleSummaryToolHandler_ModuleNotFound(t *testing.T) {
 }
 
 func TestNewReadModuleSummaryToolHandler_PropagatesReadError(t *testing.T) {
-	handler := NewReadModuleSummaryToolHandler(ports.FileOptions{})
-	_, err := handler(context.Background(), modulesummary.ReadReq{
+	ctx := context.Background()
+	s := newTestStore(t)
+	handler := NewReadModuleSummaryToolHandler(s)
+	_, err := handler(ctx, modulesummary.ReadReq{
 		BasePath:    "/nonexistent",
 		UseCaseName: "nonexistent-usecase",
 		ModuleName:  "factory-dashboard",
@@ -67,14 +73,16 @@ func TestNewReadModuleSummaryToolHandler_PropagatesReadError(t *testing.T) {
 }
 
 func TestNewReadModuleSummaryToolHandler_DeviceScoped_ReturnsEffectiveSummary(t *testing.T) {
-	basePath := writeSampleManifest(t)
+	ctx := context.Background()
+	s := newTestStore(t)
+	basePath := writeSampleManifest(t, s)
 	newImage := docker.Image{Name: "ghcr.io/org/edge-web", Tag: "3.0.0"}
-	if err := UpdateDeviceModuleImage(basePath, sampleUseCaseName, sampleDeviceID, "factory-dashboard", newImage, ports.FileOptions{}); err != nil {
+	if err := UpdateDeviceModuleImage(ctx, s, basePath, sampleUseCaseName, sampleDeviceID, "factory-dashboard", newImage, file.WriteOptions{}); err != nil {
 		t.Fatalf("UpdateDeviceModuleImage: %v", err)
 	}
-	handler := NewReadModuleSummaryToolHandler(ports.FileOptions{})
+	handler := NewReadModuleSummaryToolHandler(s)
 
-	summary, err := handler(context.Background(), modulesummary.ReadReq{
+	summary, err := handler(ctx, modulesummary.ReadReq{
 		BasePath:    basePath,
 		UseCaseName: sampleUseCaseName,
 		ModuleName:  "factory-dashboard",
@@ -93,15 +101,17 @@ func TestNewReadModuleSummaryToolHandler_DeviceScoped_ReturnsEffectiveSummary(t 
 }
 
 func TestNewReadModuleSummaryToolHandler_DeviceScoped_TemplateUnaffected(t *testing.T) {
-	basePath := writeSampleManifest(t)
+	ctx := context.Background()
+	s := newTestStore(t)
+	basePath := writeSampleManifest(t, s)
 	newImage := docker.Image{Name: "ghcr.io/org/edge-web", Tag: "3.0.0"}
-	if err := UpdateDeviceModuleImage(basePath, sampleUseCaseName, sampleDeviceID, "factory-dashboard", newImage, ports.FileOptions{}); err != nil {
+	if err := UpdateDeviceModuleImage(ctx, s, basePath, sampleUseCaseName, sampleDeviceID, "factory-dashboard", newImage, file.WriteOptions{}); err != nil {
 		t.Fatalf("UpdateDeviceModuleImage: %v", err)
 	}
-	handler := NewReadModuleSummaryToolHandler(ports.FileOptions{})
+	handler := NewReadModuleSummaryToolHandler(s)
 
 	// Same request WITHOUT DeviceID must still reflect the TEMPLATE.
-	summary, err := handler(context.Background(), modulesummary.ReadReq{
+	summary, err := handler(ctx, modulesummary.ReadReq{
 		BasePath:    basePath,
 		UseCaseName: sampleUseCaseName,
 		ModuleName:  "factory-dashboard",

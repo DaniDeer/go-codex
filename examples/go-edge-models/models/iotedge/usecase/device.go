@@ -1,41 +1,47 @@
 package usecase
 
 import (
-	"errors"
-	"os"
+	"context"
 
+	"github.com/DaniDeer/go-codex/api/file"
+	"github.com/DaniDeer/go-codex/codex"
 	iothub "github.com/DaniDeer/go-codex/examples/go-edge-models/models/azure/iothub"
 	deviceconfig "github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/deviceconfig"
 	finaldeviceconfig "github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/finaldeviceconfig"
 	f "github.com/DaniDeer/go-codex/format"
-	"github.com/DaniDeer/go-codex/ports"
 )
 
 // ── Device model ──────────────────────────────────────────────────────────────
 //
 // This file holds EVERYTHING that describes "what is a device" one
-// level down from a use case: its file/dir port CONSTRUCTORS
-// ([NewDeviceFile]/[NewDeviceDir]/[ListDeviceIDs]), and the domain-level
-// composition ([DeviceConfig]/[ReadDeviceConfig]/[WriteDeviceConfig])
-// that pairs a device with its PURE [deviceconfig.Patch] wire content —
-// a device config file is itself a PATCH over its use case's own
-// template, not a standalone document; see [DeviceConfig.Merge] for
-// producing the FINAL, layered config (delegates to the sibling
-// models/iotedge/finaldeviceconfig package). Mirrors [usecase.go]'s
-// file+dir+composition-in-one-file pattern exactly, consolidated into a
-// single file for the same reason: a device is this package's SECOND
-// aggregate, nested inside a use case.
+// level down from a use case: its file/dir declarations
+// ([deviceFileResource]/[deviceDirResource]), and the domain-level
+// composition ([DeviceConfig]/[Store.ReadDeviceConfig]/
+// [Store.WriteDeviceConfig]) that pairs a device with its PURE
+// [deviceconfig.Patch] wire content — a device config file is itself a
+// patch over its use case's own template, not a standalone document;
+// see [DeviceConfig.Merge] for producing the FINAL, layered config
+// (delegates to the sibling models/iotedge/finaldeviceconfig package).
+// Mirrors [usecase.go]'s file+dir+composition-in-one-file pattern
+// exactly, consolidated into a single file for the same reason: a
+// device is this package's SECOND aggregate, nested inside a use case.
 //
-// See config.go for the filesystem-layout constants this file's port
-// constructors are built from (deviceFilePathPattern,
+// Stage D2 (receiver-style migration to api/file.Client — see
+// usecase.go's own top doc comment and store.go for the full design):
+// every former free function taking basePath as its own, per-call
+// parameter (NewDeviceFile/NewDeviceDir/ListDeviceIDs/ReadDeviceConfig/
+// WriteDeviceConfig/ReadEffective) is now a [*Store] METHOD, same
+// parameters otherwise. [DeviceConfig.Merge] is UNCHANGED — pure data
+// merge, no I/O, nothing to migrate.
+//
+// See config.go for the filesystem-layout constants this file's
+// declarations are built from (deviceFilePathPattern,
 // deviceDirPathPattern, deviceEntryShape, useCaseNameVar, deviceIDVar),
-// the basePath-join helpers (deviceFilePathTemplate/
-// deviceDirPathTemplate) these constructors call instead of joining
-// basePath inline, the raw Codec[string] validators (nameCodec/
-// deviceIDCodec) used below, and the exported [DeviceID] type/
-// [DeviceIDCodec]/[NewDeviceID] this file's Go-level API is typed with.
-// See the sibling models/iotedge/deviceconfig package for the pure WIRE
-// model (deviceconfig.Patch/PatchCodec) [NewDeviceFile] consumes —
+// the raw Codec[string] validators (nameCodec/deviceIDCodec) used
+// below, and the exported [DeviceID] type/[DeviceIDCodec]/
+// [NewDeviceID] this file's Go-level API is typed with. See the
+// sibling models/iotedge/deviceconfig package for the pure WIRE model
+// (deviceconfig.Patch/PatchCodec) [deviceFileResource] consumes —
 // everything here is DERIVED/CONSTRUCTED on top of it.
 
 // ── DeviceFile ────────────────────────────────────────────────────────────────
@@ -44,23 +50,22 @@ import (
 // device config file — mirrors [FileFormat]'s role.
 var DeviceFileFormat = f.JSON(deviceconfig.PatchCodec)
 
-// NewDeviceFile declares the templated file port for ONE device's
-// config under basePath — "{basePath}/devices/{usecase_name}/{device_id}.json"
-// — a thin, pure (no I/O) constructor over ports.NewFile, using
-// DeviceFileFormat. usecase_name AND device_id are both validated via
-// PLAIN (non-merge) [ports.FilePathParam]s — [deviceconfig.Patch] stays
-// pure wire/file content; neither var is merged into it.
+// deviceFileResource is the package-level Resource declaration for ONE
+// device's config — "devices/{usecase_name}/{device_id}.json",
+// relative, no basePath baked in. usecase_name AND device_id are both
+// validated via PLAIN (non-merge) [file.PathParam]s — [deviceconfig.Patch]
+// stays pure wire/file content; neither var is merged into it.
 //
-// The returned port is reused for both reading (File.Read) and writing
-// (File.Write) — see [ReadDeviceConfig]/[WriteDeviceConfig] for the
-// higher-level convenience that pairs a Patch with its DeviceID into
-// one [DeviceConfig] value.
-func NewDeviceFile(basePath BasePath) ports.File[deviceconfig.Patch] {
-	return ports.NewFile[deviceconfig.Patch](deviceFilePathTemplate(basePath), DeviceFileFormat,
-		ports.FilePathParam{Name: useCaseNameVar}.WithCodec(nameCodec),
-		ports.FilePathParam{Name: deviceIDVar}.WithCodec(deviceIDCodec),
-	)
-}
+// The declared roles built from this resource (WithRead/WithCreate/
+// WithPatch) are reused for both reading (Store.ReadDeviceConfig),
+// writing (Store.WriteDeviceConfig), and patching
+// ([PatchDeviceFile]) — see those for the higher-level convenience
+// that pairs a Patch with its DeviceID into one [DeviceConfig] value.
+var deviceFileResource = file.NewResource[deviceconfig.Patch](
+	deviceFilePathPattern.String(), DeviceFileFormat,
+	file.PathParam{Name: useCaseNameVar}.WithCodec(nameCodec),
+	file.PathParam{Name: deviceIDVar}.WithCodec(deviceIDCodec),
+)
 
 // ── DeviceDir ─────────────────────────────────────────────────────────────────
 
@@ -69,36 +74,71 @@ func NewDeviceFile(basePath BasePath) ports.File[deviceconfig.Patch] {
 // device, and the filename (minus ".json") IS that device's ID — e.g.
 // "sensor-42.json" is device "sensor-42"'s manifest. Mirrors
 // [DirEntryPattern]'s role exactly, one level down.
-var DeviceDirEntryPattern = ports.EntryPattern{
+var DeviceDirEntryPattern = file.EntryPattern{
 	Template: deviceEntryShape.String(),
-	Params:   []ports.EntryParam{ports.EntryParam{Name: deviceIDVar}.WithCodec(deviceIDCodec)},
+	Params:   []file.EntryParam{file.EntryParam{Name: deviceIDVar}.WithCodec(deviceIDCodec)},
 }
 
-// NewDeviceDir declares the directory-listing port for ONE use case's
-// devices under basePath — "{basePath}/devices/{usecase_name}" — mirrors
-// [NewDir]'s shape: a thin, pure (no I/O) constructor over
-// [ports.NewDir]. usecase_name is a [ports.DirPathParam] SUPPLIED by the
-// caller at [ports.Dir.List] time (narrowing the listing to that one use
-// case's device directory) — plain named-var substitution, no glob/
-// wildcard needed. [ports.WithEntryPattern] then discovers which
-// devices exist and extracts each one's ID.
-//
-// The returned port is read-only (listing has no write/patch operation)
-// — pair its result with [NewDeviceFile]/[ReadDeviceConfig] to read a
-// SPECIFIC discovered device's manifest; see [ListDeviceIDs].
-func NewDeviceDir(basePath BasePath) ports.Dir {
-	return ports.NewDir(deviceDirPathTemplate(basePath),
-		ports.DirPathParam{Name: useCaseNameVar}.WithCodec(nameCodec),
-		ports.WithEntryPattern(DeviceDirEntryPattern),
-	)
+// deviceDirResource is the package-level Dir declaration for ONE use
+// case's devices — "devices/{usecase_name}", relative, no basePath
+// baked in — mirrors [deviceFileResource]'s shape: a thin, pure (no
+// I/O) declaration over [file.NewDir]. usecase_name is a
+// [file.PathParam] SUPPLIED by the caller at [Store.ListDeviceIDs] time
+// (narrowing the listing to that one use case's device directory) —
+// plain named-var substitution, no glob/wildcard needed.
+// [file.WithEntryPattern] then discovers which devices exist and
+// extracts each one's ID.
+var deviceDirResource = file.NewDir(deviceDirPathPattern.String(),
+	file.PathParam{Name: useCaseNameVar}.WithCodec(nameCodec),
+	file.WithEntryPattern(DeviceDirEntryPattern),
+)
+
+// ReadDeviceFile reads deviceID's raw config patch under
+// basePath/useCaseName — the low-level access [PatchDeviceFile] builds
+// on; see [Store.ReadDeviceConfig] for the higher-level convenience
+// that wraps the result into a [DeviceConfig].
+func (s *Store) ReadDeviceFile(ctx context.Context, basePath BasePath, useCaseName Name, deviceID DeviceID) (deviceconfig.Patch, error) {
+	handle, err := deviceFileResource.WithRead(file.Read{}).Handle(s.client, file.WithRouter(routerFor(basePath)))
+	if err != nil {
+		return deviceconfig.Patch{}, err
+	}
+	v, err := s.client.Read(ctx, handle, map[string]string{
+		useCaseNameVar: string(useCaseName),
+		deviceIDVar:    string(deviceID),
+	})
+	if err != nil {
+		return deviceconfig.Patch{}, err
+	}
+	return v.(deviceconfig.Patch), nil
+}
+
+// PatchDeviceFile applies a typed partial update (via patchCodec) to
+// deviceID's config file under basePath/useCaseName — the Stage D2
+// equivalent of the former ports.PatchEncoded(usecase.NewDeviceFile(basePath),
+// ...) call external callers (app/iotedge.PatchDeviceModule) used
+// directly. A FREE FUNCTION, not a *Store method — same "Go methods
+// cannot introduce a new type parameter" reason as [PatchUseCaseFile].
+func PatchDeviceFile[P any](ctx context.Context, s *Store, basePath BasePath, useCaseName Name, deviceID DeviceID, patchCodec codex.Codec[P], patch P, opts file.WriteOptions) error {
+	handle, err := file.WithPatch(deviceFileResource, patchCodec, file.Patch{}).Handle(s.client, file.WithRouter(routerFor(basePath)))
+	if err != nil {
+		return err
+	}
+	return s.client.Patch(ctx, handle, patch, map[string]string{
+		useCaseNameVar: string(useCaseName),
+		deviceIDVar:    string(deviceID),
+	}, opts)
 }
 
 // ListDeviceIDs returns every discovered device_id for useCaseName under
 // basePath's devices directory — a thin convenience wrapping
-// [NewDeviceDir] + [ports.Dir.List], extracting each entry's captured
-// "device_id" var.
-func ListDeviceIDs(basePath BasePath, useCaseName Name, opts ports.DirOptions) ([]DeviceID, error) {
-	entries, err := NewDeviceDir(basePath).List(map[string]string{useCaseNameVar: string(useCaseName)}, opts)
+// [deviceDirResource]'s declared List role, extracting each entry's
+// captured "device_id" var.
+func (s *Store) ListDeviceIDs(ctx context.Context, basePath BasePath, useCaseName Name, opts file.DirOptions) ([]DeviceID, error) {
+	handle, err := deviceDirResource.WithList(file.ListDir{}).Handle(s.client, file.WithRouter(routerFor(basePath)))
+	if err != nil {
+		return nil, err
+	}
+	entries, err := s.client.ListDir(ctx, handle, map[string]string{useCaseNameVar: string(useCaseName)}, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -122,11 +162,8 @@ type DeviceConfig struct {
 
 // ReadDeviceConfig reads deviceID's config under basePath/useCaseName
 // and wraps it into a [DeviceConfig], one call.
-func ReadDeviceConfig(basePath BasePath, useCaseName Name, deviceID DeviceID, opts ports.FileOptions) (DeviceConfig, error) {
-	patch, err := NewDeviceFile(basePath).Read(map[string]string{
-		useCaseNameVar: string(useCaseName),
-		deviceIDVar:    string(deviceID),
-	}, opts)
+func (s *Store) ReadDeviceConfig(ctx context.Context, basePath BasePath, useCaseName Name, deviceID DeviceID) (DeviceConfig, error) {
+	patch, err := s.ReadDeviceFile(ctx, basePath, useCaseName, deviceID)
 	if err != nil {
 		return DeviceConfig{}, err
 	}
@@ -135,12 +172,16 @@ func ReadDeviceConfig(basePath BasePath, useCaseName Name, deviceID DeviceID, op
 
 // WriteDeviceConfig writes cfg.Patch at
 // "basePath/devices/{useCaseName}/{cfg.DeviceID}.json" — the inverse of
-// [ReadDeviceConfig], one call.
-func WriteDeviceConfig(basePath BasePath, useCaseName Name, cfg DeviceConfig, opts ports.FileOptions) (createdDirs []string, err error) {
-	return NewDeviceFile(basePath).Write(map[string]string{
+// [Store.ReadDeviceConfig], one call.
+func (s *Store) WriteDeviceConfig(ctx context.Context, basePath BasePath, useCaseName Name, cfg DeviceConfig, opts file.WriteOptions) (createdDirs []string, err error) {
+	handle, err := deviceFileResource.WithCreate(file.Create{}).Handle(s.client, file.WithRouter(routerFor(basePath)))
+	if err != nil {
+		return nil, err
+	}
+	return s.client.Create(ctx, handle, cfg.Patch, map[string]string{
 		useCaseNameVar: string(useCaseName),
 		deviceIDVar:    string(cfg.DeviceID),
-	}, cfg.Patch, opts)
+	}, opts)
 }
 
 // Merge layers base (the GLOBAL baseline deployment) and template (the
@@ -149,6 +190,8 @@ func WriteDeviceConfig(basePath BasePath, useCaseName Name, cfg DeviceConfig, op
 // the "one call" convenience for "baseline + template + device config,
 // layered on top". Delegates to the sibling
 // models/iotedge/finaldeviceconfig package's Merge function.
+//
+// UNCHANGED by Stage D2 — pure data merge, no I/O, no *Store needed.
 func (cfg DeviceConfig) Merge(base iothub.BaseDeployment, template iothub.LayeredDeployment) (iothub.BaseDeployment, error) {
 	return finaldeviceconfig.Merge(base, template, cfg.Patch)
 }
@@ -156,32 +199,42 @@ func (cfg DeviceConfig) Merge(base iothub.BaseDeployment, template iothub.Layere
 // ReadEffective reads the GLOBAL baseline, useCaseName's template, AND
 // deviceID's config, merging all three into ONE effective
 // iothub.BaseDeployment — "baseline + template + device config, layered on
-// top" — in a single call. Thin composition of [NewBaselineFile]'s Read
-// + [NewFile]'s Read + [ReadDeviceConfig] + [DeviceConfig.Merge]; no new
-// merge logic of its own.
+// top" — in a single call. Thin composition of Store.ReadBaseline +
+// Store.ReadUseCaseFile + Store.ReadDeviceConfig + DeviceConfig.Merge;
+// no new merge logic of its own.
 //
 // A device that has NEVER had a config file written for it (this
 // package's ONLY signal for "does this device exist" — there is no
-// separate device registry, matching [ListDeviceIDs]'s own
+// separate device registry, matching [Store.ListDeviceIDs]'s own
 // discover-by-file model) is NOT an error here: its effective config is
 // simply baseline+template merged with an EMPTY device patch, since "no
 // overrides yet" IS this device's current, valid state — not a caller
 // mistake. Any OTHER read error (a missing/invalid BASELINE/TEMPLATE, or
 // an existing-but-malformed device file) still propagates as-is.
-func ReadEffective(basePath BasePath, useCaseName Name, deviceID DeviceID, opts ports.FileOptions) (iothub.BaseDeployment, error) {
-	base, err := NewBaselineFile(basePath).Read(nil, opts)
+//
+// Checks via [IsNotFound] — NOT errors.Is(err, os.ErrNotExist), the
+// pre-Stage-D2 check this function used when built on ports.File.Read
+// (which has ALWAYS translated a not-found condition into
+// FileReadError{Err: os.ErrNotExist} specifically to make that check
+// work — see ports.File.Read's own doc comment). api/file.Client.Read,
+// which Store.ReadDeviceConfig now dispatches through directly,
+// reports not-found as a bare file.FileNotFoundError with no wrapped
+// cause at all — confirmed via a live failing test during Stage D2's
+// own rewrite; [IsNotFound] encapsulates that detail.
+func (s *Store) ReadEffective(ctx context.Context, basePath BasePath, useCaseName Name, deviceID DeviceID) (iothub.BaseDeployment, error) {
+	base, err := s.ReadBaseline(ctx, basePath)
 	if err != nil {
 		return iothub.BaseDeployment{}, err
 	}
-	template, err := NewFile(basePath).Read(map[string]string{useCaseNameVar: string(useCaseName)}, opts)
+	template, err := s.ReadUseCaseFile(ctx, basePath, useCaseName)
 	if err != nil {
 		return iothub.BaseDeployment{}, err
 	}
-	cfg, err := ReadDeviceConfig(basePath, useCaseName, deviceID, opts)
+	cfg, err := s.ReadDeviceConfig(ctx, basePath, useCaseName, deviceID)
 	switch {
 	case err == nil:
 		return cfg.Merge(base, template)
-	case errors.Is(err, os.ErrNotExist):
+	case IsNotFound(err):
 		return finaldeviceconfig.Merge(base, template, deviceconfig.Patch{})
 	default:
 		return iothub.BaseDeployment{}, err

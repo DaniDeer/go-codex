@@ -5,15 +5,17 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/DaniDeer/go-codex/api/file"
 	"github.com/DaniDeer/go-codex/examples/go-edge-models/models/iotedge/updatemoduleimage"
-	"github.com/DaniDeer/go-codex/ports"
 )
 
 func TestNewUpdateModuleImageToolHandler_ReturnsUpdatedSummary(t *testing.T) {
-	basePath := writeSampleManifest(t)
-	handler := NewUpdateModuleImageToolHandler(ports.FileOptions{})
+	ctx := context.Background()
+	s := newTestStore(t)
+	basePath := writeSampleManifest(t, s)
+	handler := NewUpdateModuleImageToolHandler(s, file.WriteOptions{})
 
-	summary, err := handler(context.Background(), updatemoduleimage.Req{
+	summary, err := handler(ctx, updatemoduleimage.Req{
 		BasePath:    basePath,
 		UseCaseName: sampleUseCaseName,
 		ModuleName:  "factory-dashboard",
@@ -34,7 +36,7 @@ func TestNewUpdateModuleImageToolHandler_ReturnsUpdatedSummary(t *testing.T) {
 	}
 
 	// Confirm the change was actually persisted to disk.
-	got, err := ReadUseCase(basePath, sampleUseCaseName, ports.FileOptions{})
+	got, err := ReadUseCase(ctx, s, basePath, sampleUseCaseName)
 	if err != nil {
 		t.Fatalf("ReadUseCase: %v", err)
 	}
@@ -44,10 +46,12 @@ func TestNewUpdateModuleImageToolHandler_ReturnsUpdatedSummary(t *testing.T) {
 }
 
 func TestNewUpdateModuleImageToolHandler_RejectsInvalidImageURL(t *testing.T) {
-	basePath := writeSampleManifest(t)
-	handler := NewUpdateModuleImageToolHandler(ports.FileOptions{})
+	ctx := context.Background()
+	s := newTestStore(t)
+	basePath := writeSampleManifest(t, s)
+	handler := NewUpdateModuleImageToolHandler(s, file.WriteOptions{})
 
-	_, err := handler(context.Background(), updatemoduleimage.Req{
+	_, err := handler(ctx, updatemoduleimage.Req{
 		BasePath:    basePath,
 		UseCaseName: sampleUseCaseName,
 		ModuleName:  "factory-dashboard",
@@ -58,7 +62,7 @@ func TestNewUpdateModuleImageToolHandler_RejectsInvalidImageURL(t *testing.T) {
 	}
 
 	// The manifest must be untouched by a rejected update.
-	got, readErr := ReadUseCase(basePath, sampleUseCaseName, ports.FileOptions{})
+	got, readErr := ReadUseCase(ctx, s, basePath, sampleUseCaseName)
 	if readErr != nil {
 		t.Fatalf("ReadUseCase: %v", readErr)
 	}
@@ -68,10 +72,12 @@ func TestNewUpdateModuleImageToolHandler_RejectsInvalidImageURL(t *testing.T) {
 }
 
 func TestNewUpdateModuleImageToolHandler_ModuleNotFound(t *testing.T) {
-	basePath := writeSampleManifest(t)
-	handler := NewUpdateModuleImageToolHandler(ports.FileOptions{})
+	ctx := context.Background()
+	s := newTestStore(t)
+	basePath := writeSampleManifest(t, s)
+	handler := NewUpdateModuleImageToolHandler(s, file.WriteOptions{})
 
-	_, err := handler(context.Background(), updatemoduleimage.Req{
+	_, err := handler(ctx, updatemoduleimage.Req{
 		BasePath:    basePath,
 		UseCaseName: sampleUseCaseName,
 		ModuleName:  "does-not-exist",
@@ -87,8 +93,10 @@ func TestNewUpdateModuleImageToolHandler_ModuleNotFound(t *testing.T) {
 }
 
 func TestNewUpdateModuleImageToolHandler_PropagatesMissingFileError(t *testing.T) {
-	handler := NewUpdateModuleImageToolHandler(ports.FileOptions{})
-	_, err := handler(context.Background(), updatemoduleimage.Req{
+	ctx := context.Background()
+	s := newTestStore(t)
+	handler := NewUpdateModuleImageToolHandler(s, file.WriteOptions{})
+	_, err := handler(ctx, updatemoduleimage.Req{
 		BasePath:    "/nonexistent",
 		UseCaseName: "nonexistent-usecase",
 		ModuleName:  "factory-dashboard",
@@ -100,10 +108,12 @@ func TestNewUpdateModuleImageToolHandler_PropagatesMissingFileError(t *testing.T
 }
 
 func TestNewUpdateModuleImageToolHandler_DeviceScoped_WritesOnlyDeviceFile(t *testing.T) {
-	basePath := writeSampleManifest(t)
-	handler := NewUpdateModuleImageToolHandler(ports.FileOptions{})
+	ctx := context.Background()
+	s := newTestStore(t)
+	basePath := writeSampleManifest(t, s)
+	handler := NewUpdateModuleImageToolHandler(s, file.WriteOptions{})
 
-	summary, err := handler(context.Background(), updatemoduleimage.Req{
+	summary, err := handler(ctx, updatemoduleimage.Req{
 		BasePath:    basePath,
 		UseCaseName: sampleUseCaseName,
 		ModuleName:  "factory-dashboard",
@@ -118,7 +128,7 @@ func TestNewUpdateModuleImageToolHandler_DeviceScoped_WritesOnlyDeviceFile(t *te
 	}
 
 	// The TEMPLATE must be completely untouched.
-	template, err := ReadUseCase(basePath, sampleUseCaseName, ports.FileOptions{})
+	template, err := ReadUseCase(ctx, s, basePath, sampleUseCaseName)
 	if err != nil {
 		t.Fatalf("ReadUseCase: %v", err)
 	}

@@ -194,7 +194,7 @@ made explicitly this round):
 |---|---|---|---|
 | **1** | `api/file` package itself: `Resource[T]` + 10 role builders, `file.Client` (attach+dispatch), `file.Backend` seam, `file.Capability`, Router/Middleware/Observer/ErrorPattern integration, `adapters/file` migration (filesystem backend), full `ports.File`/`ports.Dir` migration | Full Go-signature design (this doc's main body, below) | **IMPLEMENTED** (incl. a `deep-dive-bug-hunt` pass and the retroactive List/BatchDelete per-entry Security amendment — see the main body's own status notes) |
 | **2** | `adapters/s3`, `adapters/smb` implementations; streaming/chunked I/O; conditional writes (ETag); recursive `WithList` | Full Go-signature design, per-item (see each item's own section below) | ALL 5 of 5 items IMPLEMENTED (Recursive `WithList`, Conditional writes, Streaming/chunked I/O, `adapters/s3`, `adapters/smb`) — Phase 2 is FULLY COMPLETE (see "Phase 2" section below) |
-| **3** | Adapt existing examples (`examples/*`) from `ports.File`/`adapters/file` direct usage to the new `api/file.Client` approach | `examples/dir-io`/`examples/file-io` fully rewritten (Stage D1); `examples/go-edge-models` (Stage D2, receiver-style) remains | Stage D1 IMPLEMENTED; Stage D2 planned (see "Phase 3" section below) |
+| **3** | Adapt existing examples (`examples/*`) from `ports.File`/`adapters/file` direct usage to the new `api/file.Client` approach | `examples/dir-io`/`examples/file-io` fully rewritten (Stage D1); `examples/go-edge-models` fully migrated onto a receiver-style `usecase.Store` (Stage D2) | Stage D1 + Stage D2 both IMPLEMENTED — Phase 3 fully complete (see "Phase 3" section below) |
 | **4** | Promote this roadmap doc to `docs/design/d-NNNN-*.md` (per the `plan-a-new-codex-feature` skill's delete/keep/promote 3-way policy) + sync `.github/instructions/go-codex.instructions.md`, `docs/` pages, and relevant skills | Mechanism named, exact number/content deferred until Phase 1-3 actually ship | Planned (see "Phase 4" section below) |
 
 Phase 1 is this doc's main body (everything through "Open design
@@ -4144,11 +4144,11 @@ New unit test plan rows (added during this review round):
 
 ## Phase 3 — adapt examples to the new `api/file` approach
 
-**Status: Stage D1 IMPLEMENTED; Stage D2 planned.** Phase 1, ALL of
-Phase 2, and the standalone `file.Dir` capability (including its own
-Stage C2 `ports.Dir` migration) have all shipped (see each phase's own
-status above). This motivated a 2-stage execution plan for Phase 3,
-confirmed via `ask_user`:
+**Status: Stage D1 + Stage D2 both IMPLEMENTED — Phase 3 fully
+complete.** Phase 1, ALL of Phase 2, and the standalone `file.Dir`
+capability (including its own Stage C2 `ports.Dir` migration) have all
+shipped (see each phase's own status above). This motivated a 2-stage
+execution plan for Phase 3, confirmed via `ask_user`:
 
 - **Stage D1 (IMPLEMENTED)**: `examples/dir-io` and `examples/file-io`
   — both free-standing teaching examples with no external callers and
@@ -4164,21 +4164,52 @@ confirmed via `ask_user`:
   fixed one real, confirmed `patchCore` bug along the way (see the
   `file.Dir` status block above) and added a new public
   `Resource[T].MergeFields()` accessor.
-- **Stage D2 (planned, separate round)**: `examples/go-edge-models`'s
+- **Stage D2 (IMPLEMENTED)**: `examples/go-edge-models`'s
   `models/iotedge/usecase` package — a REAL, exported API surface
   (`NewDeviceFile`/`NewFile`/`NewBaselineFile`/`NewDeviceDir`/`NewDir`/
   `ListDeviceIDs`/`ListNames`/`ReadDeviceConfig`/`WriteDeviceConfig`/
   `ReadEffective`) consumed by other code in the example tree and
-  covered by its own ~846-line test suite — confirmed via `ask_user` to
-  use a RECEIVER-STYLE design: a new `Store` struct holding a
-  `*file.Client` (and whatever `BasePath` context it already threads),
-  with every one of those functions becoming a METHOD on it instead of
-  threading a raw `*file.Client` parameter through each call. Deferred
-  as its own, separately-reviewed round given its real regression risk
-  (unlike `ports/dir_test.go`'s hard-gate role, THIS package's own test
-  files are themselves in-scope for rewriting — the bar is "same
-  behavior, rewritten against the new signatures," not "zero test
-  changes").
+  covered by its own ~846-line test suite — migrated onto a
+  RECEIVER-STYLE design, mirroring `app/registry/internal
+  .NewRegistryClient`'s own precedent exactly: a new `Store` struct
+  (`store.go`) holding a single `*file.Client`, constructed via
+  `NewStore(backend file.Backend) (*Store, error)` (builds the
+  `file.Client` + `Attach`es the backend internally, just like
+  `NewRegistryClient` builds+attaches `rest.Client` internally); every
+  one of the functions above became a `*Store` method
+  (`Store.Read`/`Store.Write`/`Store.ListUseCaseEntries`/
+  `Store.ListNames`/`Store.ReadDeviceConfig`/`Store.WriteDeviceConfig`/
+  `Store.ListDeviceIDs`/`Store.ReadEffective`/`Store.ReadBaseline`/
+  `Store.WriteBaseline`), with `file.Resource[T]`/`file.Dir` values
+  moved to package-level `var`s (relative paths, no `BasePath` baked
+  in — `BasePath` stays a per-call parameter, since it varies per
+  REQUEST not per process, mirroring `ports.Dir`'s own "fresh Router
+  per call" Stage C2 precedent). Two free functions
+  (`PatchUseCaseFile[P]`/`PatchDeviceFile[P]`) cover the 2 external
+  call sites that previously called `ports.PatchEncoded` directly — Go
+  methods cannot introduce a new type parameter beyond the receiver's
+  own, so these stay free functions taking `*Store` explicitly. A real
+  behavioral difference was found and fixed along the way:
+  `ports.File.Read`'s own quirk of translating EVERY read failure
+  (including not-found) into `os.ErrNotExist`-wrapped `FileReadError`
+  does not hold for raw `api/file.Client.Read` (which returns a bare,
+  `Unwrap()`-less `FileNotFoundError`) — fixed by adding an exported
+  `usecase.IsNotFound(err) bool` helper used everywhere the old
+  `errors.Is(err, os.ErrNotExist)` check used to run. All 9 real
+  external call-site files in `app/iotedge` (+ 1 standalone
+  `examples/temp/convert_demo.go` program) were updated to thread
+  `ctx context.Context` + `*usecase.Store` through every call,
+  constructing ONE `Store` per process (via
+  `usecase.NewStore(adapterfile.NewBackend())`) and threading it down
+  through `main()`'s own demo functions and MCP tool-handler
+  constructors (`NewReadModuleSummaryToolHandler`/
+  `NewUpdateModuleImageToolHandler` now capture `*usecase.Store` in
+  their closures instead of a `ports.FileOptions`/`file.WriteOptions`
+  value alone). Verified: the `usecase` package's own 52 tests plus
+  `app/iotedge`'s own ~30 tests all pass unmodified-in-assertion
+  (rewritten only for the new call shape, never the expected
+  behavior); the whole example runs end to end (`exit 0`) with output
+  identical to the pre-migration narrative.
 
 ## Phase 4 — promote to `docs/design/` + sync instructions/skills
 
