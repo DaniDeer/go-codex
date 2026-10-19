@@ -4,6 +4,45 @@ Do not re-report any of these findings. They have been implemented and tested.
 
 ---
 
+## Round 230 (`deep-dive-bug-hunt` applied to `api/file` — Streaming I/O, Mechanism 2 (`StreamReader[T]`/`StreamWriter[T]`, `OpenRead`/`OpenWrite`, the 3-level range cascade) — 2nd `api/file` deep-dive pass, round 7 of 14, CLEAN with 1 minor noted inconsistency)
+
+**Scope**: `openReadCore`/`openWriteCore` in `api/file/dispatch.go`,
+`bytesReaderSlice`/`limitedReadCloser`, `recordRangeRead`.
+
+Confirmed the 3-level `OpenRead` range-fallback cascade
+(`RangeReadingBackend` native → `StreamReadBackend` discard-then-limit
+→ `Backend.ReadBytes`+`bytes.Reader` universal) is correctly ordered
+via a type-switch, each tier's own error path correctly propagates
+(`isNotFound` → `FileNotFoundError`, otherwise `FileReadError`).
+`bytesReaderSlice` correctly clamps out-of-range `offset`/`length`
+(no panic on a negative or over-long range). `limitedReadCloser`
+correctly embeds the RAW reader's own `Closer` (not the `io.LimitReader`
+wrapper, which has none) — `Close()` on the returned stream genuinely
+closes the underlying connection/file, not a no-op.
+
+Confirmed `openReadCore`/`readCore` BOTH deliberately never call
+`checkAccessMode` (Read operations are never gated by `AccessMode` —
+only mutating roles are) — consistent, not a gap. `openWriteCore`
+correctly DOES gate on `AccessMode`, matching every other mutating
+role. `IfMatch` is correctly never consulted on `openWriteCore`'s path
+(the doc's own disclosed Mechanism-2 exclusion).
+
+**1 minor, noted-but-not-fixed inconsistency**: `recordConditionalWrite`
+fires unconditionally (both success AND mismatch/timeout, reporting
+WHICH mechanism was attempted regardless of outcome), but
+`recordRangeRead` only fires `if err == nil` inside `openReadCore`'s
+ranged branch — a FAILED ranged read (e.g. a `RangeReadingBackend`
+erroring) never reports which tier was attempted. The design doc
+doesn't explicitly pin down which behavior is correct, and both are
+individually defensible (report "tier attempted" vs. "tier
+successfully used") — flagged as a debatable, low-impact (telemetry-
+only, doesn't affect the read's own correctness) discrepancy rather
+than fixed unilaterally this round.
+
+Verified: no code changes needed this round.
+
+---
+
 ## Round 229 (`deep-dive-bug-hunt` applied to `api/file` — Streaming I/O, Mechanism 1 (automatic format-level write streaming) — 2nd `api/file` deep-dive pass, round 6 of 14, CLEAN)
 
 **Scope**: `createCore`'s `IsStreamable()`/`StreamWriteBackend`/
