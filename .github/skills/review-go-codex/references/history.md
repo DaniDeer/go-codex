@@ -4,6 +4,44 @@ Do not re-report any of these findings. They have been implemented and tested.
 
 ---
 
+## Round 231 (`deep-dive-bug-hunt` applied to `adapters/s3` — `Backend` core (`ReadBytes`/`WriteBytes`/`DeleteBytes`/`ListDir`/`Stat`/`Mkdir`) — 2nd `api/file` deep-dive pass, round 8 of 14, CLEAN — FIRST time this skill has examined `adapters/s3` at all)
+
+**Scope**: `adapters/s3/backend.go`'s core `Backend` methods + the
+`applyPutOptions`/`currentETagBestEffort`/`WriteBytesIfMatch`/
+`NativeConditionalWrite` helpers.
+
+Traced every method against its own documented contract: `WriteBytes`'s
+`Strict`→`IfNoneMatch: "*"`→412→`FileAlreadyExistsError` mapping;
+`DeleteBytes`'s `Strict`/`DryRun`-conditional `HeadObject` pre-check
+(confirmed all 4 `Strict`×`DryRun` combinations fall through correctly
+— Strict-not-found returns early, DryRun-exists returns `true` without
+deleting, DryRun-not-found returns `false, nil`, the ordinary fast path
+skips the pre-check entirely and reports best-effort `existed=true`,
+EXACTLY as the doc comment discloses, not hidden); `ListDir`'s
+auto-pagination (`s3.NewListObjectsV2Paginator`, confirmed via its own
+existing `TestBackend_ListDir_PaginatesAllPages` test) + the directory-
+marker-object exclusion + a defensive (if `Delimiter="/"` is ever
+violated) nested-key guard; `Stat`'s `HeadObject`-only (no body read)
+correctness; `Mkdir`'s documented no-op-success (S3 has no directory
+concept); `WriteBytesIfMatch`'s native `PutObject` `IfMatch` (confirmed
+`NativeConditionalWrite() bool { return true }` — S3 IS genuinely
+transport-guaranteed atomic here, unlike the other 2 backends'
+lock-file emulation); `currentETagBestEffort`'s own best-effort,
+never-affects-correctness contract (used only to populate
+`ConditionalWriteMismatchError.Actual`, confirmed via its own doc
+comment).
+
+Confirmed all 3 interface-assertion `var _ apifile.Xxx = (*Backend)(nil)`
+blocks are present and complete across all 3 package files
+(`backend.go`/`stream.go`/`walk.go`) — 12 total interfaces asserted,
+matching the design doc's own claimed implementation matrix exactly.
+16 existing tests in `backend_test.go` provide solid, genuine coverage
+(not just "compiles").
+
+No bugs found. Verified: no code changes needed this round.
+
+---
+
 ## Round 230 (`deep-dive-bug-hunt` applied to `api/file` — Streaming I/O, Mechanism 2 (`StreamReader[T]`/`StreamWriter[T]`, `OpenRead`/`OpenWrite`, the 3-level range cascade) — 2nd `api/file` deep-dive pass, round 7 of 14, CLEAN with 1 minor noted inconsistency)
 
 **Scope**: `openReadCore`/`openWriteCore` in `api/file/dispatch.go`,
