@@ -397,11 +397,20 @@ func createCore[T any](ctx context.Context, backend Backend, core roleCore[T], r
 	if wire.NativePOSIXMode != nil {
 		opts.Perm = *wire.NativePOSIXMode
 	}
-	// A bound middleware's own metadata contribution (via
-	// WithMetadataOut) wins over the resource-derived md on a key
-	// collision — it represents a more specific, runtime-computed value
-	// layered on top of the resource's own declared fields.
-	opts.Metadata = mergeMetadata(md, boundOutMD)
+	// 3-way layering, each more specific than the last: the caller's OWN
+	// directly-supplied WriteOptions.Metadata (the plain escape hatch —
+	// works even with no declared MetadataParam at all) is the BASE;
+	// the resource's own derived md (from declared metadataMergeFields)
+	// layers on top; a bound middleware's own contribution (via
+	// WithMetadataOut) wins LAST on any key collision — it represents
+	// the most specific, runtime-computed value. Found via a deep-dive-
+	// bug-hunt live-reproduction test: this used to be a 2-way merge of
+	// ONLY (md, boundOutMD), silently DISCARDING callerOpts.Metadata
+	// entirely whenever the resource declared no metadata merge fields
+	// — directly contradicting WriteOptions.Metadata's own documented,
+	// unconditional "user-defined key/value metadata to persist
+	// alongside the write" contract.
+	opts.Metadata = mergeMetadata(mergeMetadata(callerOpts.Metadata, md), boundOutMD)
 	// Mechanism 1 (automatic format-level write streaming — see
 	// docs/roadmap/file-api.md's "Streaming/chunked reads and writes"
 	// section): a streamable format + a StreamWriteBackend-implementing
@@ -626,7 +635,10 @@ func patchCore[T, P any](ctx context.Context, backend Backend, core roleCore[T],
 	if wire.NativePOSIXMode != nil {
 		writeOpts.Perm = *wire.NativePOSIXMode
 	}
-	writeOpts.Metadata = mergeMetadata(md, boundOutMD)
+	// Same 3-way layering fix as createCore's own (see its doc comment
+	// for the full rationale) — callerOpts.Metadata as the base, md
+	// (resource-derived) next, boundOutMD (bound middleware) wins last.
+	writeOpts.Metadata = mergeMetadata(mergeMetadata(callerOpts.Metadata, md), boundOutMD)
 	var writeErr error
 	patchConditional := writeOpts.IfMatch != nil
 	if patchConditional {

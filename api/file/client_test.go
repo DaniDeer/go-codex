@@ -650,6 +650,82 @@ func TestClient_Metadata_AbsentSidecar_LeavesFieldZeroValue(t *testing.T) {
 	}
 }
 
+// TestClient_Create_WriteOptionsMetadata_DirectEscapeHatch_NotSilentlyDropped
+// is a regression proof for a real bug found via a deep-dive-bug-hunt
+// live-reproduction: WriteOptions.Metadata's own doc comment documents
+// it as a plain, directly caller-settable field ("user-defined key/
+// value metadata to persist alongside the write") with NO mention of
+// requiring a declared MetadataParam/metadataMergeFields — but
+// createCore used to compute `opts.Metadata = mergeMetadata(md,
+// boundOutMD)` where md comes ONLY from deriveWriteMetadata (which
+// returns nil when the Resource declares no metadata merge fields),
+// completely OVERWRITING (not merging with) whatever the caller
+// originally supplied in WriteOptions.Metadata — silently discarding
+// it whenever no MetadataParam was declared, the exact case this test
+// exercises (resource has no metadataMergeFields at all).
+func TestClient_Create_WriteOptionsMetadata_DirectEscapeHatch_NotSilentlyDropped(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir) // no MetadataParam declared at all
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	vars := map[string]string{"name": "widget"}
+
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "widget", Value: 1}, vars,
+		file.WriteOptions{Metadata: map[string]string{"owner": "alice"}}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "widget.json.meta.json"))
+	if err != nil {
+		t.Fatalf("want the directly-supplied WriteOptions.Metadata to be persisted via the sidecar, got stat error: %v", err)
+	}
+	if !strings.Contains(string(data), "alice") {
+		t.Fatalf("want sidecar to contain the caller-supplied metadata, got %q", data)
+	}
+}
+
+// TestPatcher_HandlePatch_WriteOptionsMetadata_DirectEscapeHatch_NotSilentlyDropped
+// is patchCore's own equivalent regression proof — same bug class, same
+// fix (patchCore's write-back step had the identical
+// writeOpts.Metadata = mergeMetadata(md, boundOutMD) overwrite).
+func TestPatcher_HandlePatch_WriteOptionsMetadata_DirectEscapeHatch_NotSilentlyDropped(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	vars := map[string]string{"name": "widget"}
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "widget", Value: 1}, vars); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	type valuePatch struct{ Value *int }
+	patchCodec := codex.PartialStruct[valuePatch](
+		codex.PartialField("value", codex.Int(),
+			func(p valuePatch) *int { return p.Value },
+			func(p *valuePatch, v *int) { p.Value = v }),
+	)
+	newValue := 2
+	patcher := file.WithPatch(res, patchCodec, file.Patch{})
+	if err := client.Patch(ctx, patcher, valuePatch{Value: &newValue}, vars,
+		file.WriteOptions{Metadata: map[string]string{"owner": "bob"}}); err != nil {
+		t.Fatalf("Patch: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "widget.json.meta.json"))
+	if err != nil {
+		t.Fatalf("want the directly-supplied WriteOptions.Metadata to be persisted via the sidecar, got stat error: %v", err)
+	}
+	if !strings.Contains(string(data), "bob") {
+		t.Fatalf("want sidecar to contain the caller-supplied metadata, got %q", data)
+	}
+}
+
 // ── Router value type ──────────────────────────────────────────────────
 
 func TestRouter_Group_PrefixesResourcePath(t *testing.T) {

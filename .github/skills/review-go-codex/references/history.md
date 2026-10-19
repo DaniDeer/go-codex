@@ -4,6 +4,73 @@ Do not re-report any of these findings. They have been implemented and tested.
 
 ---
 
+## Round 233 (`deep-dive-bug-hunt` applied to `api/file`/`adapters/smb` — REAL BUG FOUND AND FIXED: `createCore`/`patchCore` silently discarded the caller's own `WriteOptions.Metadata` whenever the Resource declared no metadata merge fields — 2nd `api/file` deep-dive pass, round 10 of 14)
+
+**Arguments**: continuing the planned round 10 (`adapters/smb`'s
+`Backend` core + optional extensions) — tracing `adapters/smb.Backend`
+against `adapters/file`'s already-reviewed shape surfaced a
+CROSS-CUTTING bug in SHARED `api/file/dispatch.go` code (affecting ALL
+3 backends identically, not smb-specific), found via live reproduction
+before anything in `adapters/smb` itself was confirmed to have its own,
+independent issue.
+
+**REAL BUG FOUND AND FIXED**: `WriteOptions.Metadata`'s own doc comment
+documents it as a plain, directly caller-settable field ("Metadata,
+when non-nil, is user-defined key/value metadata to persist alongside
+the write... passed to `MetadataBackend.WriteMetadata`") with NO
+mention of requiring a declared `MetadataParam`/`metadataMergeFields`.
+But `createCore`/`patchCore` both computed `opts.Metadata =
+mergeMetadata(md, boundOutMD)` — where `md` comes ONLY from
+`deriveWriteMetadata` (which returns `nil` whenever the Resource
+declares NO metadata merge fields) — **completely OVERWRITING, not
+merging with, whatever the caller originally supplied in
+`callerOpts.Metadata`**. A caller passing `WriteOptions{Metadata:
+{...}}` directly, on a Resource with no declared `MetadataParam` (the
+plain escape-hatch use case the field's own doc comment describes),
+had their metadata SILENTLY DROPPED — confirmed via 2 live-reproduction
+tests
+(`TestClient_Create_WriteOptionsMetadata_DirectEscapeHatch_
+NotSilentlyDropped`, `TestPatcher_HandlePatch_WriteOptionsMetadata_
+DirectEscapeHatch_NotSilentlyDropped`), BOTH confirmed FAILING on the
+first run (no sidecar file ever written) before the fix.
+
+**Fix**: changed both call sites to a 3-way layered merge —
+`mergeMetadata(mergeMetadata(callerOpts.Metadata, md), boundOutMD)` —
+the caller's own direct value as the BASE, the resource-derived value
+layered on top, the bound middleware's own `WithMetadataOut`
+contribution still winning LAST on any key collision (unchanged
+precedence for that axis, confirmed by
+`TestBoundCreateMiddleware_MetadataOut_MergesIntoPersistedMetadata`/
+`TestBoundPatchMiddleware_MetadataOut_MergesIntoPersistedMetadata`
+still passing unmodified). This bug affected `adapters/file`,
+`adapters/s3`, AND `adapters/smb` identically (pure `api/file`-side
+dispatch logic, zero Backend-specific code involved) — confirmed via
+the full regression suite across all 4 affected packages (`api/file`,
+`adapters/file`, `adapters/s3`, `adapters/smb`, `ports`) passing clean
+after the fix, with zero other test changes needed.
+
+**`adapters/smb`'s own code, separately**: traced `backend.go`'s
+core methods (`ReadBytes`/`WriteBytes`/`DeleteBytes`/`ListDir`/`Stat`/
+`Mkdir`/`CopyBytes`/`MoveBytes`/`ReadMetadata`/`WriteMetadata`),
+`walk.go` (`WalkDir`/`DeleteDir`), and `stream.go` (`OpenWriter`/
+`OpenReader`/`OpenReaderRange`) — all confirmed clean, consistent with
+`adapters/file`'s already-reviewed shape (Round 222) and `adapters/s3`'s
+(Rounds 231-232), with SMB-specific native mechanisms (`Share.Rename`
+for `MoveBytes`, `ReadFrom`/`WriteTo` auto-engaging a server-side copy
+fast path for `CopyBytes`, `io.ReaderAt`-based native range reads)
+correctly used. `Mkdir`'s Stat-first existence check doesn't
+distinguish NotExist from other Stat failures before attempting
+`MkdirAll` — confirmed this is the SAME characteristic
+`adapters/file.Backend.Mkdir` already has (not an smb-specific gap).
+`WalkDir`/`ListDir` both correctly apply the `isControlFile` filter.
+
+Verified: `go build ./...` clean, `gofmt` clean,
+`go test ./api/file/... ./adapters/file/... ./adapters/s3/...
+./adapters/smb/... ./ports/...` all green (zero regressions across
+every affected package).
+
+---
+
 ## Round 232 (`deep-dive-bug-hunt` applied to `adapters/s3` — optional extensions (`CopyingBackend`/`BatchDeletingBackend`/`ConditionalWriteBackend`/`MetadataBackend`/`StreamWriteBackend`/`StreamReadBackend`/`RangeReadingBackend`/`WalkingBackend`/`DirDeletingBackend`) + `BackendOptions` escape hatch — 2nd `api/file` deep-dive pass, round 9 of 14 — 1 stale test comment found and fixed)
 
 **Scope**: `adapters/s3/walk.go` (`WalkDir`/`DeleteDir`/
