@@ -22,9 +22,19 @@ func TestBackend_OpenWriter_StreamsViaIOPipe_CommitsOnClose(t *testing.T) {
 	if _, err := w.Write([]byte("hello, ")); err != nil {
 		t.Fatalf("Write part 1: %v", err)
 	}
-	// Before Close, the fake must NOT have received the full object yet
-	// — proves content isn't materialized as one []byte before
-	// PutObject starts (the whole point of the io.Pipe bridge).
+	// Before Close, the fake must NOT have received the committed
+	// object yet — proves the SINGLE PutObject call only fires once
+	// Close() signals EOF to the io.Pipe bridge's upload goroutine.
+	// NOTE: as actually implemented, OpenWriter's own goroutine DOES
+	// buffer the full write via io.ReadAll(pr) before that one
+	// PutObject call (see Backend.OpenWriter's own doc comment for the
+	// disclosed rationale — true zero-buffer PutObject streaming needs
+	// AWS's "aws-chunked" transfer encoding, which the in-process
+	// gofakes3 fake this package's own example uses does not support)
+	// — this assertion proves COMMIT TIMING (nothing lands until
+	// Close), not zero in-memory buffering; found stale during a
+	// deep-dive-bug-hunt pass (the comment previously claimed the
+	// opposite of what this test can actually prove).
 	if _, ok := fake.objects["stream.bin"]; ok {
 		t.Fatalf("want object NOT committed before Close()")
 	}

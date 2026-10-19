@@ -4,6 +4,66 @@ Do not re-report any of these findings. They have been implemented and tested.
 
 ---
 
+## Round 232 (`deep-dive-bug-hunt` applied to `adapters/s3` — optional extensions (`CopyingBackend`/`BatchDeletingBackend`/`ConditionalWriteBackend`/`MetadataBackend`/`StreamWriteBackend`/`StreamReadBackend`/`RangeReadingBackend`/`WalkingBackend`/`DirDeletingBackend`) + `BackendOptions` escape hatch — 2nd `api/file` deep-dive pass, round 9 of 14 — 1 stale test comment found and fixed)
+
+**Scope**: `adapters/s3/walk.go` (`WalkDir`/`DeleteDir`/
+`DeleteBytesBatch`) and `adapters/s3/stream.go` (`OpenWriter`/
+`OpenReader`/`OpenReaderRange`).
+
+**`WalkDir`**: manually traced the multi-level `SkipDir`-pruning logic
+(`skipPrefixes`/`isSkipped`/`seenDirs`) for a 2-levels-deep-under-a-
+skipped-directory scenario — confirmed correct (a skipped directory's
+`cur` prefix check via `strings.HasPrefix(p, sp+"/")` correctly
+prevents `fn` from EVER being called again for anything under it,
+regardless of depth) — then confirmed this exact scenario is covered
+by the existing `TestBackend_WalkDir_SkipDir_PrunesSubtree` (3-file,
+2-level-deep fixture) and ran it directly (PASS). Confirmed root-first
+visiting + lexical top-down parent-before-child ordering for a single
+deep object chain.
+
+**`DeleteDir`/`DeleteBytesBatch`**: confirmed the non-recursive
+emptiness check (1-page delimited `ListObjectsV2`, directory-marker-
+object excluded from the "non-empty" determination), the recursive
+path's chunked `deleteKeysChunked` (shared chunking logic with
+`DeleteBytesBatch`, confirmed via direct code read — same
+`chunkStrings`/1000-key-limit helper), and `DeleteBytesBatch`'s own
+`keyToIdx` map correctly handling DUPLICATE paths in one batch
+(`keyToIdx[key] = append(keyToIdx[key], i)` — every matching original
+index gets the result, not just one) — consistent with
+`batchDeleteCore`'s own documented "duplicate paths handled
+independently" contract (Round 225).
+
+**`OpenWriter`'s `io.Pipe` bridge — 1 confirmed, fixed finding (stale
+test comment, not a functional bug)**: the ACTUAL implementation
+buffers the full write via `io.ReadAll(pr)` inside its upload goroutine
+before issuing ONE ordinary `PutObject` call — a deliberate,
+well-disclosed design decision in the Backend's OWN doc comment (true
+zero-buffer streaming needs AWS's "aws-chunked" transfer encoding,
+which the package's own `gofakes3`-based example fixture doesn't
+support, confirmed via that fake's own source). However,
+`TestBackend_OpenWriter_StreamsViaIOPipe_CommitsOnClose`'s own in-test
+comment still claimed the OPPOSITE ("proves content isn't materialized
+as one `[]byte` before PutObject starts... the whole point of the
+`io.Pipe` bridge") — factually contradicted by the Backend's own
+(correct, honest) doc comment one file over. **Fixed**: rewrote the
+test's comment to accurately describe what it actually proves (commit
+TIMING — nothing lands until `Close()` — not zero in-memory
+buffering), cross-referencing `OpenWriter`'s own doc comment for the
+real rationale. No test assertion changed (the test's own check was
+always correct); only the misleading prose was stale. Re-ran — still
+passes.
+
+`BackendOptions`/`PutOptions` escape hatch: re-confirmed solid (already
+hardened with real unit tests + an honestly-scoped example demo in an
+earlier round THIS session) — `TestBackend_OpenWriter_
+BackendOptions_AppliesPutOptions` proves the 3rd and final real call
+site (alongside `WriteBytes`/`WriteBytesIfMatch`) is wired correctly.
+
+Verified: `go build ./adapters/s3/...`/`go test ./adapters/s3/...`
+green after the comment fix (the only code change this round).
+
+---
+
 ## Round 231 (`deep-dive-bug-hunt` applied to `adapters/s3` — `Backend` core (`ReadBytes`/`WriteBytes`/`DeleteBytes`/`ListDir`/`Stat`/`Mkdir`) — 2nd `api/file` deep-dive pass, round 8 of 14, CLEAN — FIRST time this skill has examined `adapters/s3` at all)
 
 **Scope**: `adapters/s3/backend.go`'s core `Backend` methods + the
