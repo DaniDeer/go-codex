@@ -66,6 +66,26 @@ format specified in SKILL.md.
 
 If a method exists on `RouteHandle` and has a natural equivalent on `ChannelHandle`, both should exist.
 
+### file.Client vs events.Client/reqreply.Server (attach+dispatch unification)
+
+`api/file.Client` mirrors `events.Client`/`reqreply.Server`'s "dispatch IS
+on the same value" shape (not `rest.Server`'s spec-accumulation/Attach
+split) — `Client.Attach(Backend) error` (exclusive, mirrors
+`events.Client.Attach`/`reqreply.Server.Attach`'s own
+`TransportAlreadyAttachedError`-style guard) + 15 `any`-typed
+dual-accept dispatch methods (`Read`/`Create`/`Patch`/`Delete`/`List`/
+`Exists`/`Copy`/`Move`/`Mkdir`/`BatchDelete`/`OpenRead`/`OpenWrite`/
+`ListDir`/`DeleteDir`, each accepting EITHER a bare role builder OR a
+pre-built `*XxxHandle[T]`). No `Builder`/`Server` split exists for
+`api/file` at all (no OpenAPI/AsyncAPI-equivalent spec-rendering target
+for file resources) — `file.Router`/`file.WithRouter` is the ONLY
+Router-group mechanism, mirroring `events.Router`'s own role in shape
+(NOT a `rest.Server.AddServer`-style server-entry list). Check: does
+`file.Client` stay consistent with `events.Client`'s own Attach-
+exclusivity/`NoTransportAttachedError`-equivalent error shape
+(`BackendAlreadyAttachedError`/`NoBackendAttachedError`) — confirmed
+present and named analogously at last check.
+
 ### mcp.Builder parity
 
 | Feature | rest/events Builder | mcp.Builder |
@@ -263,17 +283,36 @@ All must be `errors.As`-navigable. Bare `fmt.Errorf` in `client.go` without a ty
 
 ### format package (File I/O)
 
+`ports.FilePathParamError`/`ports.MissingFilePathVarError`/
+`ports.FileReadError`/`ports.FileDecodeError`/`ports.FileEncodeError`/
+`ports.FileWriteError`/`ports.FilePatchNotSupportedError` are now
+LITERAL ALIASES (`type X = file.X`) of `api/file`'s own canonical error
+types, per Stage F of `docs/design/d-0011-file-api-backend-
+transparency.md`'s migration — `ports` no longer independently defines
+these, it just re-exports `api/file`'s types under its historical
+names. All still implement `Unwrap()` **and** `slog.LogValuer`.
+
+### api/file package (the canonical source of the above, plus the rest of its own error vocabulary)
+
 | Error type | When to use |
 |------------|-------------|
-| `ports.FilePathParamError{Name, Value, Err}` | path variable fails its codec constraint in `BuildPath`/`Read`/`Write`/`Update` |
-| `ports.MissingFilePathVarError{Name}` | path variable absent from the `vars` map |
-| `ports.FileReadError{Path, Err}` | `os.ReadFile` fails |
-| `ports.FileDecodeError{Path, Err}` | codec decode or constraint validation fails on read |
-| `ports.FileEncodeError{Path, Err}` | codec encode fails on write |
-| `ports.FileWriteError{Path, Err}` | `os.WriteFile` fails |
-| `ports.FilePatchNotSupportedError{Path}` | `Patch`/`PatchEncoded` called on a Gob or Binary format |
+| `file.FileNotFoundError{Path}` | Backend reports a not-found condition (bare, no wrapped cause) |
+| `file.FileReadError{Path, Err}`, `file.FileWriteError{Path, Err}` | Backend-level read/write failure |
+| `file.FileDecodeError{Path, Err}`, `file.FileEncodeError{Path, Err}` | codec decode/encode failure |
+| `file.FileAlreadyExistsError{Path}` | `Strict` Create against an existing path |
+| `file.FileDeleteError{Path, Err}` | Backend-level delete failure (non-idempotent-absent case) |
+| `file.FilePathParamError{Name, Value, Err}`, `file.MissingFilePathVarError{Name}`, `file.FilePathMismatchError{Template, Path}`, `file.FileWildcardBuildError{...}` | path-template/var-merge failures (mirrors `rest.PathParam`'s own vocabulary) |
+| `file.FilePatchNotSupportedError{Path}` | `Patch` called against a non-patchable format |
+| `file.BackendUnsupportedOptionError{...}` | a caller-supplied option the attached Backend can't honor |
+| `file.BackendAlreadyAttachedError{}`, `file.NoBackendAttachedError{}` | `Client.Attach` exclusivity (mirrors `events.Client`'s `TransportAlreadyAttachedError`/`NoTransportAttachedError`) |
+| `file.BackendTypeMismatchError{...}` | dual-accept dispatch given a value of the wrong concrete type |
+| `file.BoundMiddlewareReqMismatchError{...}`, `file.SecurityRejectedError{...}` | `Bound<Role>Middleware` reflection/Security-gate failures |
+| `file.ConditionalWriteMismatchError{Path, Expected, Actual}`, `file.ConditionalWriteUnsupportedError{Path, Backend}`, `file.ConditionalWriteLockTimeoutError{Path, Err}` | `WriteOptions.IfMatch` conditional-write family |
+| `file.DirNotEmptyError{Path}` | `DirDeletingBackend.DeleteDir` non-recursive on a non-empty directory |
+| `file.DirPathParamError`/`MissingDirPathVarError`/`DirPathMismatchError`/`DirReadError`/`DirEntryParamError`/`DirAlreadyExistsError`/`DirNotFoundError`/`DirWildcardBuildError`/`DirDeleteError` | `file.Dir`'s own, parallel error vocabulary (one level down from the file-level set above) — ALSO aliased by `ports.Dir`'s own identically-named historical error types |
 
-All 7 file error types implement `Unwrap()` **and** `slog.LogValuer`. Callers can pass any file error directly to `slog.Any(...)` for nested structured attributes.
+All implement `Unwrap()` **and** `slog.LogValuer` (confirm this holds
+for any NEW error type added here — a finding if one doesn't).
 
 Also: `config.EnvVarError{Key, Err}` — returned by `config.FromEnvVar[T]` when coercion or constraint fails. `Unwrap()` exposes `codex.ValidationErrors`; also implements `slog.LogValuer`.
 

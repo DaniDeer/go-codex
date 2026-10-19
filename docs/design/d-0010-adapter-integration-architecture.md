@@ -81,9 +81,11 @@
 > this entry's own original "7-scenario" count is now stale; corrected
 > here rather than silently left wrong.
 >
-> **`api/file` Phase 2 cross-checks** (`docs/roadmap/file-api.md`'s own
-> Phase 2 items, each designed AFTER this doc graduated, cross-checked
-> against it during their OWN pre-implementation review rounds rather
+> **`api/file` Phase 2 cross-checks** (the Phase 2 items of what was
+> then `docs/roadmap/file-api.md` — since promoted to
+> `docs/design/d-0011-file-api-backend-transparency.md` — each designed
+> AFTER this doc graduated, cross-checked against it during their OWN
+> pre-implementation review rounds rather
 > than assumed consistent): Streaming/chunked reads and writes'
 > design round found `filetest`'s 8-scenario taxonomy had never been
 > extended for ANY Phase 2 item (Recursive `WithList`, Conditional
@@ -99,7 +101,8 @@
 > fallback tiers — the first time that axis has been applied outside
 > the `file.Capability`/`CheckCapabilityCoverage` mechanism it was
 > originally written for, confirmed as a complementary, not competing,
-> application of the same idea. See `docs/roadmap/file-api.md`'s own
+> application of the same idea. See
+> `docs/design/d-0011-file-api-backend-transparency.md`'s own
 > "Streaming/chunked reads and writes" section for the full detail —
 > not duplicated here.
 >

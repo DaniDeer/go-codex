@@ -92,10 +92,10 @@ repo_name = "DaniDeer/go-codex"
 "— D-0008: Declarative Router Groups" = "design/d-0008-declarative-router-groups.md"
 "— D-0009: Internalizing Shared Cross-Pattern Mechanics" = "design/d-0009-internalize-shared-mechanics.md"
 "— D-0010: Adapter Integration Architecture" = "design/d-0010-adapter-integration-architecture.md"
+"— D-0011: File API Backend Transparency" = "design/d-0011-file-api-backend-transparency.md"
 
 [nav.Roadmap]
 "Overview" = "roadmap/index.md"
-"— File API" = "roadmap/file-api.md"
 "— Stream: FlatMap" = "roadmap/stream-flatmap.md"
 "— ZeroMQ REQ/REP Adapter for api/rest" = "roadmap/zeromq-rest-adapter.md"
 "— AMQP 0.9.1 Adapter" = "roadmap/amqp-adapter.md"

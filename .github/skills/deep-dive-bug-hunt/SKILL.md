@@ -79,14 +79,18 @@ Round-numbering convention. Read `review-go-codex/SKILL.md` first if unfamiliar 
    check any PRE/POST logic an adapter still keeps OUTSIDE the shared core (setup, security-gate
    ordering, observer hooks) — consolidation removes duplicate-copy drift risk, but an adapter's
    own wiring around the shared call can still have an adapter-specific bug the core itself
-   can't catch. **A layer with only ONE real adapter (e.g. `api/file`'s Phase 1, which has only
-   `adapters/file`) has no N-way parity to check in the usual sense** — the equivalent check
-   becomes "does the one adapter correctly implement every `Backend` method + optional extension
-   interface, including ones a future 2nd adapter would also need to get right." Where a SECOND,
-   same-interface implementation exists for a non-adapter reason (e.g. `ports`'s private
-   `osBackend`, built to satisfy `ports.File`/`ports.Dir` without an import cycle), treat that as
-   the de-facto 2nd parity check instead — it carries the exact same under-scrutinized-new-code
-   risk profile an adapter would.
+   can't catch. **A layer with only ONE real adapter has no N-way parity to check in the usual
+   sense** (none remain as of this writing — `api/file` graduated from its own Phase-1-era
+   single-adapter state to 3 real backends, `adapters/file`/`adapters/s3`/`adapters/smb`, plus
+   `ports`'s private `osBackend` as a 4th same-interface implementation built to satisfy
+   `ports.File`/`ports.Dir` without an import cycle — genuine N-way `Backend`-method/optional-
+   extension parity now applies to it normally, the same as REST's `nethttp`/`chi` or events'
+   `mqtt`/`mqtt5`/`zeromq`) — but if a future layer is ever added with only one real adapter, the
+   equivalent check becomes "does the one adapter correctly implement every required interface
+   method + optional extension interface, including ones a future 2nd adapter would also need to
+   get right." Where a SECOND, same-interface implementation exists for a non-adapter reason
+   (mirroring `ports.osBackend`'s own precedent), treat that as the de-facto 2nd parity check
+   instead — it carries the exact same under-scrutinized-new-code risk profile an adapter would.
 5. **Reproduce any suspected bug LIVE, via a failing test, BEFORE fixing it.** This is the
    single highest-value practice in this methodology — a purely static read of the dispatch code
    missed real bugs across MULTIPLE prior review passes until an actual failing test exposed

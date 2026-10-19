@@ -109,6 +109,27 @@ go-codex/
 │   │                       #   see codex/param.go above), DuplicateRouteError, RouteParamError,
 │   │                       #   MissingRouteParamError, InvalidRouteParamError (all type ALIASES over
 │   │                       #   codex.ParamError/MissingParamError/InvalidParamError)
+│   ├── file/                # file-resource API builder: Resource[T] + 11 role builders, Client
+│   │   │                    #   (attach+dispatch), Backend transparency seam — see
+│   │   │                    #   docs/design/d-0011-file-api-backend-transparency.md
+│   │   ├── builder.go       # NewResource[T], Resource[T], PathParam/MergedPathParam[T]/NewPathParam,
+│   │   │                    #   MetadataParam/MergedMetadataParam[T], 11 role builders (WithRead/
+│   │   │                    #   WithCreate/WithPatch (free fn)/WithDelete/WithList/WithExists/WithCopy/
+│   │   │                    #   WithMove/WithMkdir/WithBatchDelete/WithStreamRead/WithStreamWrite)
+│   │   ├── client.go        # Client, NewClient, Attach, Read/Create/Patch/Delete/List/Exists/Copy/
+│   │   │                    #   Move/Mkdir/BatchDelete/OpenRead/OpenWrite (any-typed dual-accept dispatch)
+│   │   ├── backend.go       # Backend (core seam) + 10 optional extension interfaces (CopyingBackend/
+│   │   │                    #   MovingBackend/MetadataBackend/ConditionalWriteBackend/
+│   │   │                    #   BatchDeletingBackend/StreamWriteBackend/StreamReadBackend/
+│   │   │                    #   RangeReadingBackend/WalkingBackend/DirDeletingBackend), Entry
+│   │   ├── capability.go    # Capability, CapabilityName, AccessMode, NativePOSIXMode
+│   │   ├── dispatch.go      # shared dispatch core (the one and only — no restdispatch-style
+│   │   │                    #   extraction needed, serves all 3 real Backends)
+│   │   ├── dir.go           # Dir, NewDir, EntryPattern, ListDirer/DeleteDirer (2-role split)
+│   │   ├── errors.go, dir_errors.go # structured errors — see docs/design/d-0011-...md
+│   │   ├── router.go        # Router, NewRouter, WithRouter (d-0008's Router pattern, 4th implementer)
+│   │   └── filetest/        # API-defined conformance-test suite (5th alongside resttest/eventstest/
+│   │                        #   reqreplytest/portstest — see docs/design/d-0010-...md)
 │   └── llm/                # LLM completion contract: system prompt + input/output codecs
 │       ├── call.go         # Call[Req,Resp], NewCall, CallOpt, SystemPrompt, SystemPromptFile,
 │       │                   #   UserMessage, IncludeRequestSchema, CallMeta

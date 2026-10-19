@@ -1,12 +1,12 @@
 # File API — `api/file`
 
-> **Status:** Phase 1 implemented with full Router + Declarative Middleware
+> **Status:** Implemented, with full Router + Declarative Middleware
 > parity (matches `api/rest`/`api/events`), including the migration of
 > `ports.File`/`ports.Dir` to delegate onto this stack internally (their own
-> public call signatures are unchanged). Phase 2's first four items are
-> implemented: Recursive `WithList`, Conditional writes, Streaming/chunked
-> I/O, `adapters/s3`, and `adapters/smb` (a THIRD real Backend, for SMB2/3
-> shares) — see `docs/roadmap/file-api.md`.
+> public call signatures are unchanged). Also implemented: Recursive
+> `WithList`, Conditional writes, Streaming/chunked I/O, `adapters/s3`, and
+> `adapters/smb` (a THIRD real Backend, for SMB2/3 shares) — see
+> `docs/design/d-0011-file-api-backend-transparency.md`.
 
 `api/file` is a transport-agnostic API layer for file-shaped resources,
 mirroring `api/rest`/`api/events`/`api/reqreply`'s declare → attach → dispatch
@@ -16,8 +16,9 @@ describes WHERE it actually lives — the local filesystem
 (`adapters/file.NewBackend()`), S3/any S3-compatible store
 (`adapters/s3.NewBackend(...)`), or an SMB2/3 share
 (`adapters/smb.NewBackend(...)`) — the SAME declared `Resource[T]` works
-UNCHANGED against any of them; see `docs/roadmap/file-api.md`'s Phase 2
-section for each Backend's own capability notes.
+UNCHANGED against any of them; see
+`docs/design/d-0011-file-api-backend-transparency.md` for each Backend's
+own capability notes.
 
 ## Declaring a resource
 
@@ -391,9 +392,10 @@ type for the byte-range parameter).
 
 ## Further reading
 
-- `docs/roadmap/file-api.md` — the full design document (Phase 1 design,
-  Phase 2 outline, Phase 3/4 plan) and the authoritative source for this
-  package's complete API surface.
+- `docs/design/d-0011-file-api-backend-transparency.md` — the full
+  design document and the authoritative source for this package's
+  complete API surface, the `Backend` transparency seam, and each real
+  backend's own capability notes.
 - [Protocol-Native Capabilities](capabilities.md)
 - [Declarative Router Groups](router-groups.md)
 - [Codec-Declared Middleware](codec-declared-middleware.md)
