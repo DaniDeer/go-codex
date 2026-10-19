@@ -4,6 +4,27 @@ Do not re-report any of these findings. They have been implemented and tested.
 
 ---
 
+## Round 227 (`deep-dive-bug-hunt` applied to `api/file` — Recursive `WithList` mechanics — 2nd `api/file` deep-dive pass, round 4 of 14, SUBSUMED by Round 225's own finding)
+
+Round 225 (immediately prior) already found and documented the
+headline issue for this concept — `ListOptions{Recursive: true}` is a
+confirmed complete no-op for every possible `Resource[T]` — so this
+round's own scope narrows to: does the (functionally inert, but still
+shipped and invokable) `listRecursiveWalking`/`listRecursiveManual`
+MECHANISM itself have any ADDITIONAL bug beyond its headline
+uselessness? Confirmed clean on that narrower question:
+`TestListCore_Recursive_NonWalkingBackend_FallsBackToManualComposition`
+already proves `listRecursiveWalking` (via `WalkingBackend`) and
+`listRecursiveManual` (the equivalent-power fallback) produce
+byte-for-byte identical result sets for the SAME scenario — the 2
+mechanisms are internally consistent with each other, even though
+neither can ever discover anything beyond `Recursive: false`'s own
+scope. No new finding beyond Round 225's own — see that entry for the
+full writeup and the recommendation to treat this as its own dedicated
+follow-up design round before attempting a fix.
+
+---
+
 ## Round 226 (`deep-dive-bug-hunt` applied to `api/file` — `file.Dir`'s `BoundListDirMiddleware`/`BoundDeleteDirMiddleware` + Router integration, fresh mutation-test proof of the just-fixed glob/Router interaction — 2nd `api/file` deep-dive pass, round 3 of 14, CLEAN)
 
 **Scope**: `api/file/dir_middleware.go` (`BoundListDirMiddleware`/
