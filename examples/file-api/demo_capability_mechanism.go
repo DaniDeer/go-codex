@@ -18,7 +18,7 @@ import (
 //     call at all — a declare-time Capability, not a per-call option.
 //   - [file.NativePOSIXMode] ALWAYS wins over a conflicting per-call
 //     WriteOptions.Perm — "Capability overrides per-call option" (see
-//     docs/roadmap/file-api.md's precedence rule).
+//     docs/design/d-0011-file-api-backend-transparency.md's precedence rule).
 func demoCapabilityMechanism(ctx context.Context, client *file.Client, rt file.Router, dir string) {
 	readOnlyCreator := resources.Notes.WithCreate(file.Create{}).WithCapabilities(file.AccessModeReadOnly)
 	readOnlyHandle, err := readOnlyCreator.Handle(client, file.WithRouter(rt))

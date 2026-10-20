@@ -74,7 +74,7 @@ type DirEntry struct {
 // [Dir.WithList]/[Dir.WithDelete] below, NOT methods on Dir itself: a
 // single Dir value cannot honestly report ONE [router.Routable]
 // RouteMethod for two different verbs — see
-// docs/roadmap/file-api.md's "file.Dir" section for the full writeup of
+// docs/design/d-0011-file-api-backend-transparency.md's "file.Dir" section for the full writeup of
 // this correction.
 type Dir struct {
 	template  string
@@ -510,7 +510,7 @@ func listDirCore(ctx context.Context, backend Backend, core roleCore[dirT], dir 
 	// here, so resolvedTemplate is a no-op); the "build-the-Handle-
 	// directly" workflow stores the prefix on routing instead, and
 	// THIS is the one place glob-discovery mode consults it (a
-	// previously-missing step — see docs/roadmap/file-api.md's
+	// previously-missing step — see docs/design/d-0011-file-api-backend-transparency.md's
 	// "file.Dir" section's Router-integration gap-review note).
 	routedDir := dir
 	routedDir.template = routing.resolvedTemplate(dir.template)
@@ -563,7 +563,7 @@ func listDirCore(ctx context.Context, backend Backend, core roleCore[dirT], dir 
 		// An attach-time NativePOSIXMode Capability always wins over
 		// the per-call CreatePerm option — mirrors mkdirCore's
 		// identical precedence rule exactly (Capability overrides
-		// per-call option, per docs/roadmap/file-api.md's established
+		// per-call option, per docs/design/d-0011-file-api-backend-transparency.md's established
 		// convention).
 		if wire.NativePOSIXMode != nil {
 			mkOpts.NativePOSIXMode = wire.NativePOSIXMode

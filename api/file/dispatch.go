@@ -126,7 +126,7 @@ func startSpan(ctx context.Context, obs stats.Observer, operation, path string) 
 
 // resolveWire applies core's declared capabilities, returning the
 // resulting WireAttributes. The Capability-overrides-option precedence
-// rule (see docs/roadmap/file-api.md) is implemented by dispatch
+// rule (see docs/design/d-0011-file-api-backend-transparency.md) is implemented by dispatch
 // call sites: when wire.AccessMode/NativePOSIXMode is set (non-zero/
 // non-nil), it is used INSTEAD OF whatever a per-call Options field
 // says.
@@ -366,7 +366,7 @@ func createCore[T any](ctx context.Context, backend Backend, core roleCore[T], r
 	}
 	// Conditional write is only ever consulted when Strict is false —
 	// Strict's OWN existence check always wins when both are set on the
-	// same call (see docs/roadmap/file-api.md's "Conditional writes"
+	// same call (see docs/design/d-0011-file-api-backend-transparency.md's "Conditional writes"
 	// Fork 2): Strict routes through the existing unconditional
 	// WriteBytes path below regardless of IfMatch. A capability check
 	// happens as EARLY as possible (before Marshal/metadata/
@@ -412,7 +412,7 @@ func createCore[T any](ctx context.Context, backend Backend, core roleCore[T], r
 	// alongside the write" contract.
 	opts.Metadata = mergeMetadata(mergeMetadata(callerOpts.Metadata, md), boundOutMD)
 	// Mechanism 1 (automatic format-level write streaming — see
-	// docs/roadmap/file-api.md's "Streaming/chunked reads and writes"
+	// docs/design/d-0011-file-api-backend-transparency.md's "Streaming/chunked reads and writes"
 	// section): a streamable format + a StreamWriteBackend-implementing
 	// Backend streams via MarshalTo instead of Marshal+WriteBytes — NOT
 	// combined with IfMatch this round (falls back to the existing
@@ -747,7 +747,7 @@ func (h *ListHandle[T]) dispatchList(ctx context.Context, backend Backend, vars 
 // listEntry decodes+merges one discovered file (at childPath, leaf name
 // name) into a ListResult, running that entry's OWN per-entry Security
 // gate (passing the decoded value, once available) — see the "Phase 1
-// amendment" section of docs/roadmap/file-api.md. Every failure
+// amendment" section of docs/design/d-0011-file-api-backend-transparency.md. Every failure
 // (decode, merge-field, metadata-read, OR Security rejection) becomes
 // this entry's own Err; the caller (listCore's single-level/recursive
 // discovery loops) never aborts because of this function's return.
@@ -1083,7 +1083,7 @@ func (h *MoveHandle[T]) dispatchMove(ctx context.Context, backend Backend, srcVa
 }
 
 // moveCore implements the 3-level cascade documented in
-// docs/roadmap/file-api.md: (1) MovingBackend.MoveBytes if implemented;
+// docs/design/d-0011-file-api-backend-transparency.md: (1) MovingBackend.MoveBytes if implemented;
 // (2) otherwise DELEGATE to copyBytesCore (which itself tries
 // CopyingBackend first) followed by DeleteBytes; (3) which transparently
 // collapses to pure Read+Write+Delete on a Backend implementing neither
@@ -1242,7 +1242,7 @@ func (h *BatchDeleteHandle[T]) dispatchBatchDelete(ctx context.Context, backend 
 // UNLIKE Move, it does NOT delegate to Deleter[T]'s own dispatch:
 // Security is checked per-PATH here directly (not via Deleter[T]'s full
 // dispatch, which would redundantly re-resolve the path/wire/Capability
-// machinery per key). See docs/roadmap/file-api.md's "Phase 1
+// machinery per key). See docs/design/d-0011-file-api-backend-transparency.md's "Phase 1
 // amendment" section for the per-path Security-gating rationale.
 func batchDeleteCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, varsList []map[string]string) (result []BatchDeleteResult, err error) {
 	defer func() { err = applyErrorPattern(core, err) }()
@@ -1333,7 +1333,7 @@ func dispatchBatchDelete(ctx context.Context, backend Backend, bd any, varsList 
 
 // ── Streaming/chunked reads and writes (Mechanism 2) ────────────────────
 //
-// See docs/roadmap/file-api.md's "Streaming/chunked reads and writes"
+// See docs/design/d-0011-file-api-backend-transparency.md's "Streaming/chunked reads and writes"
 // section for the full design — codec-bypassing raw byte-stream roles,
 // distinct from Mechanism 1 (createCore's automatic format-level write
 // streaming, above).

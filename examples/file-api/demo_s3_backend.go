@@ -115,7 +115,7 @@ func demoS3Backend(ctx context.Context) {
 	// api/file itself, so adapters/s3 cannot add its own sealed
 	// Capability the way adapters/mqtt5/zeromq do for events; this is
 	// the right-sized alternative for CONFIGURATION, not a REQUIREMENT
-	// — see docs/roadmap/file-api.md's "S3-specific options" section).
+	// — see docs/design/d-0011-file-api-backend-transparency.md's "S3-specific options" section).
 	// adapters/s3.PutOptions carries S3-specific operational hints
 	// (storage class, encryption, ACL, tags, content type) with no
 	// cross-backend meaning; every OTHER Backend simply never reads it.

@@ -358,7 +358,7 @@ func TestBackend_WalkDir_ExcludesControlFiles(t *testing.T) {
 
 // TestBackend_ListDir_ExcludesTempFiles is a RETROACTIVE regression
 // proof for a gap found during Streaming's own pre-implementation
-// gap-review (docs/roadmap/file-api.md's "Streaming/chunked reads and
+// gap-review (docs/design/d-0011-file-api-backend-transparency.md's "Streaming/chunked reads and
 // writes" section): WriteBytesIfMatch's ALREADY-SHIPPED commit temp
 // file (os.CreateTemp(dir, base+".tmp-*")) was NOT excluded from
 // ListDir — simulates a temp file left behind by an in-flight (or

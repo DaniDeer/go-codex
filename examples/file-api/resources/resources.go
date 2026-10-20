@@ -106,7 +106,7 @@ var MetadataNotes = file.NewResource[MetadataNote]("meta/{id}.json", format.JSON
 )
 
 // StreamableNote + StreamableNoteFormat demonstrate Mechanism 1
-// (automatic format-level write streaming, see docs/roadmap/file-api.md's
+// (automatic format-level write streaming, see docs/design/d-0011-file-api-backend-transparency.md's
 // "Streaming/chunked reads and writes" section): a format built via
 // format.NewStreamed writes directly to the Backend's own io.Writer
 // (StreamWriteBackend.OpenWriter), with ZERO declare-time changes needed

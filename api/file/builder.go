@@ -297,7 +297,7 @@ type Mkdir struct{ Summary, Description string }
 type BatchDelete struct{ Summary, Description string }
 
 // StreamRead/StreamWrite declare the 2 codec-BYPASSING streaming roles
-// (Mechanism 2 — see docs/roadmap/file-api.md's "Streaming/chunked reads
+// (Mechanism 2 — see docs/design/d-0011-file-api-backend-transparency.md's "Streaming/chunked reads
 // and writes" section for the full design, including "Why streaming
 // bypasses the codec").
 type StreamRead struct{ Summary, Description string }
@@ -912,7 +912,7 @@ type BatchDeleteHandle[T any] struct {
 // ── StreamReader[T] ────────────────────────────────────────────────────
 
 // StreamReader[T] is the role value built by Resource[T].WithStreamRead —
-// Mechanism 2's codec-bypassing read role (see docs/roadmap/file-api.md's
+// Mechanism 2's codec-bypassing read role (see docs/design/d-0011-file-api-backend-transparency.md's
 // "Streaming/chunked reads and writes" section). T still declares path
 // templating/Security/Capability at declare time; the ACTUAL bytes
 // returned by Client.OpenRead bypass the codec entirely.
@@ -972,7 +972,7 @@ type StreamReadHandle[T any] struct {
 
 // StreamWriter[T] is the role value built by Resource[T].WithStreamWrite
 // — Mechanism 2's codec-bypassing write role. See StreamReader[T]'s own
-// doc comment and docs/roadmap/file-api.md's "Streaming/chunked reads and
+// doc comment and docs/design/d-0011-file-api-backend-transparency.md's "Streaming/chunked reads and
 // writes" section for the full design.
 type StreamWriter[T any] struct {
 	core roleCore[T]

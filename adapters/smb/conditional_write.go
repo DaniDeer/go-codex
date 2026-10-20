@@ -20,7 +20,7 @@ import (
 // OpenFile(ctx, name, O_CREATE|O_EXCL|O_WRONLY, perm)) IS genuinely
 // atomic at the protocol level — the SAME guarantee POSIX O_CREATE|
 // O_EXCL provides locally, just server-enforced over the wire instead
-// of kernel-enforced locally. See docs/roadmap/file-api.md's
+// of kernel-enforced locally. See docs/design/d-0011-file-api-backend-transparency.md's
 // "adapters/smb" section, "2 further technical questions" subsection,
 // for the full rationale. Deliberately DUPLICATED (not shared code)
 // from adapters/file's own mechanism — the SAME import-cycle-driven
@@ -77,7 +77,7 @@ func (b *Backend) acquireConditionalWriteLock(ctx context.Context, path string) 
 // WriteBytesIfMatch implements [apifile.ConditionalWriteBackend]. The
 // lock only serializes concurrent writers — it does NOT by itself
 // verify ifMatch (a gap found during a pre-implementation re-review of
-// this design, see docs/roadmap/file-api.md's own "Gap found" note).
+// this design, see docs/design/d-0011-file-api-backend-transparency.md's own "Gap found" note).
 // After acquiring the lock, this reads path's CURRENT content, computes
 // its STRONG ETag, and compares it against ifMatch; on a mismatch it
 // ALSO retries against the WEAK (ModTime+Size-derived) ETag via Stat

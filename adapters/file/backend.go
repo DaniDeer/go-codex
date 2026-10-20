@@ -24,7 +24,7 @@ import (
 // a POSIX filesystem has no native batch-delete syscall, so a
 // filesystem-side "implementation" would be the IDENTICAL sequential
 // loop the generic fallback already runs — see
-// docs/roadmap/file-api.md's "Files to create" table for the full
+// docs/design/d-0011-file-api-backend-transparency.md's "Files to create" table for the full
 // rationale.
 type Backend struct{}
 
@@ -91,7 +91,7 @@ func (b *Backend) WriteBytes(ctx context.Context, path string, data []byte, opts
 		// DryRun+Strict: a preview-only existence check (os.Stat) is
 		// correct here since nothing is actually written — matches
 		// ports.File.Write's own tested DryRun+Strict precedence (see
-		// docs/roadmap/file-api.md's Stage F migration notes).
+		// docs/design/d-0011-file-api-backend-transparency.md's Stage F migration notes).
 		if opts.DryRun {
 			if _, err := os.Stat(path); err == nil {
 				return createdDirs, apifile.FileAlreadyExistsError{Path: path}
@@ -194,7 +194,7 @@ func (*Backend) DeleteBytes(_ context.Context, path string, opts apifile.DeleteO
 // "widget.json.lock" or "widget.json.meta.json" both end in the
 // literal ".json" the template anchors on), producing a bogus List
 // entry with a corrupted captured value — not an error, a silent wrong
-// match. See docs/roadmap/file-api.md's "Conditional writes" section,
+// match. See docs/design/d-0011-file-api-backend-transparency.md's "Conditional writes" section,
 // "Gap found during pre-implementation review," for the full
 // investigation. This is Backend-specific knowledge (a future
 // adapters/s3 has neither sidecar objects nor lock files at all), so
@@ -206,7 +206,7 @@ var controlFileSuffixes = []string{".meta.json", ".lock"}
 // os.CreateTemp(dir, base+".tmp-*")) — a RANDOM numeric suffix follows
 // it, so this is a substring (Contains) check, not a HasSuffix one like
 // controlFileSuffixes above. Found during Streaming's own
-// pre-implementation gap-review (docs/roadmap/file-api.md's
+// pre-implementation gap-review (docs/design/d-0011-file-api-backend-transparency.md's
 // "Streaming/chunked reads and writes" section) — retroactively applies
 // to WriteBytesIfMatch's ALREADY-SHIPPED temp file too, not just
 // OpenWrite's new one (both share the identical naming convention).

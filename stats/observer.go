@@ -285,7 +285,7 @@ type FileObserver interface {
 	// listing failure, never because the directory was merely empty.
 	// Added alongside the other 5 api/file methods below — the SAME
 	// kind of direct, acknowledged breaking addition RecordFileDelete's
-	// own precedent established (see docs/roadmap/file-api.md).
+	// own precedent established (see docs/design/d-0011-file-api-backend-transparency.md).
 	RecordFileList(path string, success bool, count int, duration time.Duration)
 
 	// RecordFileExists is called once per api/file Exister[T] call —

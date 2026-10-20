@@ -426,7 +426,7 @@ func (e ConditionalWriteUnsupportedError) LogValue() slog.Value {
 // ports's private osBackend) when its bounded acquire-retry loop could
 // not obtain path's lock file within its bound (either the caller's own
 // ctx deadline, or the implementation's internal default ceiling,
-// whichever is reached first) — see docs/roadmap/file-api.md's
+// whichever is reached first) — see docs/design/d-0011-file-api-backend-transparency.md's
 // "Conditional writes" section, Fork 3, for the full retry/timeout
 // design.
 type ConditionalWriteLockTimeoutError struct {

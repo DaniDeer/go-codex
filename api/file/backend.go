@@ -36,7 +36,7 @@ type Entry struct {
 	// approximation when only metadata is available (e.g. this Entry
 	// came from [Backend.Stat]/[Backend.ListDir], which never read the
 	// body). Empty for directory entries (IsDir == true — no content to
-	// identify). See docs/roadmap/file-api.md's "Conditional writes"
+	// identify). See docs/design/d-0011-file-api-backend-transparency.md's "Conditional writes"
 	// section for the full strong-vs-weak computation design.
 	//
 	// The weak-vs-strong split above is a FILESYSTEM-BACKEND
@@ -54,7 +54,7 @@ type Entry struct {
 // possible for Create/Patch. Perm/DirPerm/CreateDirs/Strict/DryRun are
 // kept VERBATIM from FileOptions (NOT replaced by [Capability]) — see
 // "Capability vs. per-call option precedence" in
-// docs/roadmap/file-api.md for how Perm interacts with an attach-time
+// docs/design/d-0011-file-api-backend-transparency.md for how Perm interacts with an attach-time
 // AccessMode/NativePOSIXMode Capability when BOTH are supplied for the
 // same role: the Capability ALWAYS wins.
 type WriteOptions struct {
@@ -82,7 +82,7 @@ type WriteOptions struct {
 	Metadata map[string]string
 	// IfMatch, when non-nil, makes this write CONDITIONAL: it only
 	// commits if path's CURRENT strong ETag equals *IfMatch — see the
-	// "Conditional writes" section of docs/roadmap/file-api.md for the
+	// "Conditional writes" section of docs/design/d-0011-file-api-backend-transparency.md for the
 	// full cross-backend design. nil (the default) means "unconditional
 	// write," byte-for-byte today's existing behavior — zero overhead,
 	// zero behavior change for every existing caller. Only consulted
@@ -126,7 +126,7 @@ type WriteOptions struct {
 // check with a real race window. adapters/file.Backend AND ports's
 // private osBackend BOTH implement this (via a lock-file mechanism); a
 // future adapters/s3 would implement it via S3's own native, server-side
-// If-Match. See docs/roadmap/file-api.md's "Conditional writes" section
+// If-Match. See docs/design/d-0011-file-api-backend-transparency.md's "Conditional writes" section
 // for the full design.
 type ConditionalWriteBackend interface {
 	// WriteBytesIfMatch behaves like WriteBytes, but commits ONLY if
@@ -179,7 +179,7 @@ type DeleteOptions struct {
 
 // MkdirOptions mirrors the backend-agnostic subset of today's
 // FileOptions.DirPerm — see "Capability vs. per-call option precedence"
-// in docs/roadmap/file-api.md for how NativePOSIXMode here interacts
+// in docs/design/d-0011-file-api-backend-transparency.md for how NativePOSIXMode here interacts
 // with an attach-time NativePOSIXMode Capability (the Capability always
 // wins).
 type MkdirOptions struct {
@@ -203,7 +203,7 @@ type ListOptions struct {
 	// resource's parent directory, not just its immediate children.
 	// Default false — existing callers see NO behavior change unless
 	// they opt in. See the "Recursive WithList" section of
-	// docs/roadmap/file-api.md for the full dispatch/depth-pruning
+	// docs/design/d-0011-file-api-backend-transparency.md for the full dispatch/depth-pruning
 	// design this field drives.
 	Recursive bool
 }
@@ -313,7 +313,7 @@ type DirWalkFunc func(path string, entry Entry, err error) error
 // collection. A Backend NOT implementing this cannot support those 3
 // ports.Dir capabilities (ports.Dir's own callers consume WalkingBackend
 // directly — this is NOT wired into api/file's own Client.List in Phase
-// 1; see docs/roadmap/file-api.md's "Recursive WithList" Phase 2 outline
+// 1; see docs/design/d-0011-file-api-backend-transparency.md's "Recursive WithList" Phase 2 outline
 // for the forward-looking connection).
 type WalkingBackend interface {
 	// WalkDir walks the tree rooted at root, calling fn once per visited
@@ -401,7 +401,7 @@ type MetadataBackend interface {
 // partial-offset WRITE (S3 objects, like filesystem files opened via
 // StreamWriteBackend, are only ever written in full — the SAME
 // exclusion basis as this package's "no Append" decision) — see
-// docs/roadmap/file-api.md's "Streaming/chunked reads and writes"
+// docs/design/d-0011-file-api-backend-transparency.md's "Streaming/chunked reads and writes"
 // section for the full design.
 type StreamReadOptions struct {
 	// Offset is the first byte to read, 0-based. A non-zero Offset with
@@ -420,7 +420,7 @@ type StreamReadOptions struct {
 // working via createCore's existing whole-file Marshal+WriteBytes path
 // (Mechanism 1) and Client.OpenWrite's buffered fallback (Mechanism
 // 2) — just without the memory-usage benefit. See
-// docs/roadmap/file-api.md's "Streaming/chunked reads and writes"
+// docs/design/d-0011-file-api-backend-transparency.md's "Streaming/chunked reads and writes"
 // section for the full design, including why this is a DIFFERENT
 // mechanism from [Capability] (optional graceful degradation, never
 // rejected — not a declare-time hard requirement).

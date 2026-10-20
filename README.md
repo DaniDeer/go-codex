@@ -179,19 +179,22 @@ go get github.com/DaniDeer/go-codex@latest
 | Format bridges (JSON, YAML, TOML, Gob, Binary) | `github.com/DaniDeer/go-codex/format` |
 | Env-var config loading (`FromEnv`/`FromEnvVar`) | `github.com/DaniDeer/go-codex/config` |
 | Built-in constraints | `github.com/DaniDeer/go-codex/validate` |
-| Protocol-agnostic IO ports (Source/Sink/IO/Latest/Tool) | `github.com/DaniDeer/go-codex/ports` |
+| Protocol-agnostic IO ports (Source/Sink/IO/Latest/Tool/Duplex) | `github.com/DaniDeer/go-codex/ports` |
 | Application lifecycle (context, supervised goroutines, shutdown) | `github.com/DaniDeer/go-codex/app` |
 | REST API builder | `github.com/DaniDeer/go-codex/api/rest` |
 | Event channel builder | `github.com/DaniDeer/go-codex/api/events` |
 | Request/reply builder (async request-reply over pub/sub transports) | `github.com/DaniDeer/go-codex/api/reqreply` |
 | MCP server builder | `github.com/DaniDeer/go-codex/api/mcp` |
+| File-resource API (transport-agnostic) | `github.com/DaniDeer/go-codex/api/file` |
 | net/http adapter (server + client) | `github.com/DaniDeer/go-codex/adapters/nethttp` |
 | chi adapter | `github.com/DaniDeer/go-codex/adapters/chi` |
 | Paho MQTT 3.1.1 adapter | `github.com/DaniDeer/go-codex/adapters/mqtt` |
 | MQTT 5.0 adapter (paho.golang) | `github.com/DaniDeer/go-codex/adapters/mqtt5` |
 | ZeroMQ adapter (PUB/SUB, REQ/REP, DEALER/ROUTER) | `github.com/DaniDeer/go-codex/adapters/zeromq` |
 | SQL adapter (goose migrations + codec validation) | `github.com/DaniDeer/go-codex/adapters/sql` |
-| File IO adapter (ports bindings) | `github.com/DaniDeer/go-codex/adapters/file` |
+| File IO adapter (local filesystem `api/file.Backend` + `ports` bindings) | `github.com/DaniDeer/go-codex/adapters/file` |
+| S3 `api/file.Backend` (any S3-compatible object store) | `github.com/DaniDeer/go-codex/adapters/s3` |
+| SMB2/3 `api/file.Backend` | `github.com/DaniDeer/go-codex/adapters/smb` |
 | Redis adapter (typed cache) | `github.com/DaniDeer/go-codex/adapters/redis` |
 | WebSocket adapter (server + client, duplex sessions) | `github.com/DaniDeer/go-codex/adapters/websocket` |
 | mark3labs/mcp-go adapter | `github.com/DaniDeer/go-codex/adapters/mcpgo` |
@@ -239,8 +242,8 @@ format/      — format bridges: JSON, YAML, TOML, Gob, Binary, embedded formats
 config/      — standalone env-var config loading (FromEnv, FromEnvVar) — no Pattern, no adapter
 ports/       — protocol-agnostic IO ports: SourcePort, SinkPort, IOPort, LatestPort, ToolPort, DuplexPort
 app/         — application lifecycle: context + observer, supervised goroutines, shutdown hooks
-api/         — transport-agnostic API builders (rest/, events/, reqreply/, mcp/)
-adapters/    — transport adapters (nethttp, chi, mqtt, mqtt5, zeromq, sql, redis, websocket, mcpgo, mcprest, openai, templ, file)
+api/         — transport-agnostic API builders (rest/, events/, reqreply/, mcp/, file/)
+adapters/    — transport adapters (nethttp, chi, mqtt, mqtt5, zeromq, sql, redis, websocket, mcpgo, mcprest, openai, templ, file, s3, smb)
 forge/       — governed KPI computation pipelines (synchronous, batch, signed, spec-generating)
 stream/      — reactive stream pipelines: From, Apply, Filter, Tap, Buffer, Merge, Drain over chan T
 render/      — spec renderers (openapi/, asyncapi/v2, asyncapi/v3, jsonschema/, pipeline/, stream/)

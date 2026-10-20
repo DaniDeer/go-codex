@@ -109,15 +109,16 @@ go-codex/
 │   │                       #   see codex/param.go above), DuplicateRouteError, RouteParamError,
 │   │                       #   MissingRouteParamError, InvalidRouteParamError (all type ALIASES over
 │   │                       #   codex.ParamError/MissingParamError/InvalidParamError)
-│   ├── file/                # file-resource API builder: Resource[T] + 11 role builders, Client
+│   ├── file/                # file-resource API builder: Resource[T] + 12 role builders, Client
 │   │   │                    #   (attach+dispatch), Backend transparency seam — see
 │   │   │                    #   docs/design/d-0011-file-api-backend-transparency.md
 │   │   ├── builder.go       # NewResource[T], Resource[T], PathParam/MergedPathParam[T]/NewPathParam,
-│   │   │                    #   MetadataParam/MergedMetadataParam[T], 11 role builders (WithRead/
+│   │   │                    #   MetadataParam/MergedMetadataParam[T], 12 role builders (WithRead/
 │   │   │                    #   WithCreate/WithPatch (free fn)/WithDelete/WithList/WithExists/WithCopy/
 │   │   │                    #   WithMove/WithMkdir/WithBatchDelete/WithStreamRead/WithStreamWrite)
 │   │   ├── client.go        # Client, NewClient, Attach, Read/Create/Patch/Delete/List/Exists/Copy/
-│   │   │                    #   Move/Mkdir/BatchDelete/OpenRead/OpenWrite (any-typed dual-accept dispatch)
+│   │   │                    #   Move/Mkdir/BatchDelete/OpenRead/OpenWrite/ListDir/DeleteDir
+│   │   │                    #   (any-typed dual-accept dispatch)
 │   │   ├── backend.go       # Backend (core seam) + 10 optional extension interfaces (CopyingBackend/
 │   │   │                    #   MovingBackend/MetadataBackend/ConditionalWriteBackend/
 │   │   │                    #   BatchDeletingBackend/StreamWriteBackend/StreamReadBackend/
@@ -223,11 +224,17 @@ go-codex/
 │   │   ├── stream.go       # AsPipelineFunc, ServeLatest
 │   │   └── binding.go      # SubscribeAdapter, PublishAdapter, CallAdapter, ServeAdapter
 │   │                       #   (ports.SourceAdapter/SinkAdapter/IOAdapter/ToolAdapter)
-│   ├── file/               # stdlib-only file IO adapter (no external dependencies)
+│   ├── file/               # stdlib-only local filesystem api/file.Backend implementation,
+│   │   │                   #   PLUS the original ports IO adapter bindings (no external deps)
+│   │   ├── doc.go          # package overview — Backend + ports-binding dual role
+│   │   ├── backend.go      # Backend, NewBackend (api/file.Backend core methods +
+│   │   │                   #   CopyingBackend/MovingBackend/MetadataBackend/WalkingBackend/
+│   │   │                   #   DirDeletingBackend)
+│   │   ├── conditional_write.go # ConditionalWriteBackend (lock-file mechanism, non-native)
+│   │   ├── stream.go       # StreamWriteBackend/StreamReadBackend (api/file.Backend extensions)
 │   │   ├── errors.go       # ScanError, WatchError, WriteError, ReadError — all slog.LogValuer
-│   │   └── binding.go      # package doc + ScanAdapter, WatchAdapter, ReadEachAdapter,
-│   │                       #   DrainWriteAdapter, DrainWriteFileAdapter,
-│   │                       #   DrainPatchAdapter, DrainPatchEncodedAdapter
+│   │   └── binding.go      # ScanAdapter, WatchAdapter, ReadEachAdapter, DrainWriteAdapter,
+│   │                       #   DrainWriteFileAdapter, DrainPatchAdapter, DrainPatchEncodedAdapter
 │   │                       #   (ports.SourceAdapter/IOAdapter/SinkAdapter)
 │   ├── s3/                 # api/file.Backend for S3 / any S3-compatible store (aws-sdk-go-v2)
 │   │   ├── doc.go          # package overview — Backend interface mapping, Observer story

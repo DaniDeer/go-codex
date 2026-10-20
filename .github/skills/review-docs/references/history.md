@@ -4,6 +4,68 @@ Do not re-report any findings listed here. They have been implemented.
 
 ---
 
+## Round DR15 (api/file ecosystem — dangling godoc refs to a deleted roadmap doc + reference/project-structure/README sync)
+
+Triggered by a general `/review-docs` audit (no specific focus given). The `api/file`
+ecosystem (api/file, adapters/file, adapters/s3, adapters/smb) — this session's most
+actively developed area — had accumulated drift across all 3 surfaces, dominated by one
+large mechanical bug: 62 godoc references across 31 Go files to `docs/roadmap/file-api.md`,
+which was deleted/promoted to `docs/design/d-0011-file-api-backend-transparency.md`
+earlier this session but never swept from the source comments that cited it.
+
+- **D1 [bug] — `docs/reference/index.md`'s `api/file` row was stale**: said "(Phase 1):
+  Resource[T] + 10 verbs", missing `StreamRead`/`StreamWrite` (true count is 12, per
+  `docs/features/file-api.md`'s own "All 12 verbs" heading, confirmed correct and used as
+  the cross-check source). Fixed to "12 verbs", dropped the stale "(Phase 1)" label, in
+  BOTH the Quick-import-reference table and the Adapters-section table.
+- **D2 [bug] — `docs/reference/index.md` had ZERO entries for `adapters/s3`/`adapters/smb`**
+  — 2 real, fully shipped packages missing from the package reference entirely. Added rows
+  to both tables; also updated the `adapters/file` row's description to mention its
+  `Backend` role.
+- **D3 [bug] — 62 dangling godoc references across 31 Go files** (`api/file`, `adapters/file`,
+  `adapters/s3`, `adapters/smb`, `ports`, `stats/observer.go`, `examples/file-api`) to the
+  deleted `docs/roadmap/file-api.md`. Mechanical sweep: replaced every occurrence with
+  `docs/design/d-0011-file-api-backend-transparency.md`. Verified: 0 remaining dangling
+  references repo-wide; `gofmt -l` clean on every touched file.
+- **D4 [small] — `adapters/file/doc.go`'s package comment documented ONLY the old
+  ports-binding adapters**, never mentioning the package's own `Backend`/`NewBackend`
+  (its most significant capability today) at all. Rewrote to add a new "Backend —
+  api/file.Backend implementation" section (interface-mapping table mirroring
+  `adapters/s3/doc.go`'s style, all 6 implemented optional extensions listed with the 2
+  deliberately-not-implemented ones explained), preserving the existing ports-binding
+  content under a relabeled "ports IO adapter bindings" subheading.
+- **D5 [small] — `docs/reference/project-structure.md`'s `adapters/file/` tree entry**
+  listed only `errors.go`/`binding.go`, missing `doc.go`/`backend.go`/
+  `conditional_write.go`/`stream.go` entirely (stale, pre-dates the package's
+  `api/file.Backend` role). Rewrote the entry with accurate per-file descriptions; also
+  fixed the `binding.go` row's stale "package doc +" wording (the package doc now lives in
+  the new `doc.go`, confirmed via direct inspection).
+- **D6 [small] — `docs/reference/project-structure.md`'s `api/file/` entry had an internal
+  contradiction**: heading said "11 role builders" but the very next line enumerated 12
+  names. Fixed to "12 role builders" (confirmed true count via `api/file/builder.go` — 11
+  `Resource[T]` methods + 1 free function `WithPatch`).
+- **D7 [small] — same entry's `client.go` row listed only 12 dispatch methods**, missing
+  `ListDir`/`DeleteDir` (confirmed present via direct grep of `api/file/client.go` — 14
+  total methods). Added them.
+- **D8 [small] — `README.md`'s short Project Structure summary block**: `api/` line
+  missing `file/`; `adapters/` line missing `s3`, `smb`. Added both.
+- **D9 [small] — `README.md`'s Quick import reference table**: `ports` row missing
+  `/Duplex` (inconsistent with the Project Structure codeblock's own correct mention and
+  with `docs/reference/index.md`'s correct wording); `adapters/file` row stale "(ports
+  bindings)"; `api/file`/`adapters/s3`/`adapters/smb` rows missing entirely. Fixed the
+  `ports` row, updated the `adapters/file` row, added 3 new rows.
+- **D10 [small]**: folded into D9 (same table, same commit).
+
+Verified: `zensical.toml` nav ↔ `docs/*.md` already 0 missing either direction (confirmed
+clean, no finding needed); `go-codex.instructions.md`'s Package Structure table already
+correctly listed `api/file`/`adapters/s3`/`adapters/smb` (confirmed clean, no finding
+needed); `go build ./...`/`go test ./...` (zero failures, 70+ packages)/`gofmt -l .`
+(clean)/`just check` (gosec 0 issues across 652 files, staticcheck clean) all green after
+every fix. Markdown fence-pair integrity verified on all 3 touched `.md` files (even
+backtick-fence counts).
+
+---
+
 ## Round DR14 (graduate 3 shipped reqreply roadmap docs into d-0004's Addendum; nav + cross-reference sync)
 
 Triggered by a direct review request to check `reqreply-client-registry.md`/`reqreply-forward-bounce.md`/`reqreply-dead-letter-replay.md` (all 3 phases shipped this session) against the implementation, the `api/reqreply` user-facing docs, and `d-0004`. Corrected mid-review after user feedback: a fulfilled roadmap doc graduates (into a new design doc, or — for a feature building on an existing design, like these 3 — an Addendum section on the existing design doc) and is then DELETED, mirroring the already-established `reqreply-middleware.md`/`zeromq-security.md` → `d-0004` Addendum precedent (confirmed via grep: zero dangling references to those 2 remain anywhere in the repo today).

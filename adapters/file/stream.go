@@ -11,7 +11,7 @@ import (
 
 // OpenReader implements [apifile.StreamReadBackend] — a plain os.Open
 // handle (Backend does NOT implement [apifile.RangeReadingBackend] in
-// Phase 2: see docs/roadmap/file-api.md's "Backend semantic differences"
+// Phase 2: see docs/design/d-0011-file-api-backend-transparency.md's "Backend semantic differences"
 // table — a real os.File.Seek-based range read would be a reasonable,
 // cheap future enhancement, not required to ship this design).
 func (*Backend) OpenReader(_ context.Context, path string) (io.ReadCloser, error) {

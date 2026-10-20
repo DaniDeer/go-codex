@@ -1,5 +1,5 @@
 // Package main demonstrates [file.Client], go-codex's transport-agnostic
-// file-resource API (docs/roadmap/file-api.md), as a small, real,
+// file-resource API (docs/design/d-0011-file-api-backend-transparency.md), as a small, real,
 // multi-package project — not one big file — mirroring
 // examples/rest-api/events-api/reqreply-api's own layout:
 //

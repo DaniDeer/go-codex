@@ -18,7 +18,7 @@ import (
 // dispatch code, not assumed from prose): because every path variable
 // in a Resource's DIRECTORY portion is required up front (same as
 // non-recursive List already requires — see
-// docs/roadmap/file-api.md's "Recursive WithList" section, "Scope
+// docs/design/d-0011-file-api-backend-transparency.md's "Recursive WithList" section, "Scope
 // limit — deliberately NOT full glob-discovery"), a Resource's
 // resolved parent directory always has EXACTLY ONE structurally valid
 // remaining segment (the leaf). Recursive discovery therefore finds

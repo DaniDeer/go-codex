@@ -34,7 +34,7 @@
 // EITHER the bare role builder (the common case) or an explicitly
 // pre-built *XxxHandle[T] (the Router-grouped/extra-options case).
 //
-// See docs/roadmap/file-api.md for the full design rationale, including
+// See docs/design/d-0011-file-api-backend-transparency.md for the full design rationale, including
 // the cross-backend [Capability] permission model (AccessMode,
 // NativePOSIXMode) and documented backend semantic differences.
 package file

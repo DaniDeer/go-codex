@@ -21,6 +21,7 @@ go get github.com/DaniDeer/go-codex@latest
 | Event channel builder | `github.com/DaniDeer/go-codex/api/events` |
 | Request-reply route builder (ZMQ, MQTT 5, …) | `github.com/DaniDeer/go-codex/api/reqreply` |
 | MCP server builder | `github.com/DaniDeer/go-codex/api/mcp` |
+| File-resource API (transport-agnostic) | `github.com/DaniDeer/go-codex/api/file` |
 | net/http adapter (server + client) | `github.com/DaniDeer/go-codex/adapters/nethttp` |
 | chi adapter | `github.com/DaniDeer/go-codex/adapters/chi` |
 | Paho MQTT 3.1.1 adapter | `github.com/DaniDeer/go-codex/adapters/mqtt` |
@@ -29,7 +30,9 @@ go get github.com/DaniDeer/go-codex@latest
 | SQL adapter (goose migrations + codec validation) | `github.com/DaniDeer/go-codex/adapters/sql` |
 | Redis cache adapter (typed) | `github.com/DaniDeer/go-codex/adapters/redis` |
 | WebSocket adapter (server-side, duplex sessions) | `github.com/DaniDeer/go-codex/adapters/websocket` |
-| File IO adapter (ports bindings) | `github.com/DaniDeer/go-codex/adapters/file` |
+| File IO adapter (local filesystem `api/file.Backend` + `ports` bindings) | `github.com/DaniDeer/go-codex/adapters/file` |
+| S3 `api/file.Backend` (any S3-compatible object store) | `github.com/DaniDeer/go-codex/adapters/s3` |
+| SMB2/3 `api/file.Backend` | `github.com/DaniDeer/go-codex/adapters/smb` |
 | mark3labs/mcp-go adapter | `github.com/DaniDeer/go-codex/adapters/mcpgo` |
 | REST-client-to-MCP-tool bridge | `github.com/DaniDeer/go-codex/adapters/mcprest` |
 | OpenAI-compatible Chat Completions adapter | `github.com/DaniDeer/go-codex/adapters/openai` |
@@ -70,7 +73,7 @@ go get github.com/DaniDeer/go-codex@latest
 | `api/events` | Event channel builder (PUB/SUB): typed Decode/Encode + AsyncAPI spec; works for MQTT 3, MQTT 5, ZMQ PUB/SUB | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/events) |
 | `api/reqreply` | Request-reply route builder: `NewRoute[Req,Resp](topic, codecs, ...RouteOpt)` + `Route.RegisterHandle(server) (*RouteHandle, error)`; mirrors `api/rest` for async transports (ZMQ REQ/REP, MQTT 5); generates AsyncAPI 3.0 with request-reply `reply:` block | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/reqreply) |
 | `api/mcp` | MCP server builder: Tools, Resources, Prompts | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/mcp) |
-| `api/file` | Transport-agnostic file-resource API (Phase 1): `Resource[T]` + 10 verbs (Read/Create/Patch/Delete/List/Exists/Copy/Move/Mkdir/BatchDelete), `Client`/`Backend`/`Capability`; see [File API](../features/file-api.md) | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/file) |
+| `api/file` | Transport-agnostic file-resource API: `Resource[T]` + 12 verbs (Read/Create/Patch/Delete/List/Exists/Copy/Move/Mkdir/BatchDelete/StreamRead/StreamWrite), `file.Dir`, `Client`/`Backend`/`Capability`; see [File API](../features/file-api.md) | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/api/file) |
 
 ## Adapters
 
@@ -84,7 +87,9 @@ go get github.com/DaniDeer/go-codex@latest
 | `adapters/sql` | SQL adapter: `Validate[T]` (codec-level row validation, wraps codec encode→decode round trip) + `Migrator` (goose migrations wrapper); `RowValidationError`, `MigrationError` — both `slog.LogValuer` | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/sql) |
 | `adapters/redis` | Typed cache adapter for any Redis-protocol server: `Get`/`Set`/`Seed`, codec-validated round trip | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/redis) |
 | `adapters/websocket` | Server-side WebSocket adapter: typed, codec-validated frame streams over persistent duplex connections | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/websocket) |
-| `adapters/file` | Protocol-agnostic file IO adapter bindings for `ports` (stdlib-only, no CGO/external deps) | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/file) |
+| `adapters/file` | Stdlib-only local filesystem `api/file.Backend` implementation, plus `ports` IO adapter bindings (no CGO/external deps) | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/file) |
+| `adapters/s3` | `api/file.Backend` for Amazon S3 and any S3-compatible object store (MinIO, Ceph RGW, R2, …) via `aws-sdk-go-v2` | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/s3) |
+| `adapters/smb` | `api/file.Backend` for SMB2/3 shares via `hirochachacha/go-smb2` | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/smb) |
 | `adapters/mcpgo` | mark3labs/mcp-go adapter | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mcpgo) |
 | `adapters/mcprest` | Bridges `api/rest` client calls (via `adapters/nethttp`) to MCP tool handlers (via `adapters/mcpgo`) | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/mcprest) |
 | `adapters/openai` | `ports.IOAdapter` against any OpenAI-compatible Chat Completions endpoint (OpenAI, Azure OpenAI, Ollama, vLLM, LM Studio, Groq, …) | [→](https://pkg.go.dev/github.com/DaniDeer/go-codex/adapters/openai) |

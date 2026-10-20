@@ -55,7 +55,7 @@
 // motivating case that flag exists to distinguish from the filesystem
 // backend's own lock-file emulation.
 //
-// See docs/roadmap/file-api.md's "adapters/s3" section for the full
+// See docs/design/d-0011-file-api-backend-transparency.md's "adapters/s3" section for the full
 // design history (research grounding, resolved forks, 2 gap-review
 // rounds).
 package s3

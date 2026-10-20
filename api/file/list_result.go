@@ -7,7 +7,7 @@ package file
 //
 // Client.List's boxed return value is []ListResult[T] (never a plain
 // []T) — see the "Phase 1 amendment" section of
-// docs/roadmap/file-api.md for the full rationale. A per-entry failure
+// docs/design/d-0011-file-api-backend-transparency.md for the full rationale. A per-entry failure
 // (decode error, merge-field mismatch, metadata-read failure, or a
 // declared BoundListMiddleware's Security rejection) is captured in
 // THAT entry's own Err, never aborting the whole call — only a

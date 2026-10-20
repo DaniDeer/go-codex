@@ -11,7 +11,7 @@ import (
 )
 
 // Lock-file-based conditional-write mechanism — see
-// docs/roadmap/file-api.md's "Conditional writes" section, Fork 3, for
+// docs/design/d-0011-file-api-backend-transparency.md's "Conditional writes" section, Fork 3, for
 // the full design and its 3 explicitly confirmed tradeoffs (atomicity
 // scoped to cooperating conditional writers only; no auto-recovery from
 // a crashed lock holder; bounded retry+backoff with an internal default

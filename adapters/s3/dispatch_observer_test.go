@@ -41,7 +41,7 @@ func (s *condWriteSpy) RecordFileConditionalWrite(_ string, native bool, _ strin
 
 // TestConditionalWrite_Observer_ReportsNativeTrue_OnS3Backend closes the
 // test row deferred during api/file's own Stage 1 retrofit (see
-// docs/roadmap/file-api.md's "Conditional writes" Unit test plan) —
+// docs/design/d-0011-file-api-backend-transparency.md's "Conditional writes" Unit test plan) —
 // proves adapters/s3's genuinely-native conditional write is reported
 // via stats.FileObserver.RecordFileConditionalWrite with native=true,
 // completing the native/approximated pair alongside the filesystem

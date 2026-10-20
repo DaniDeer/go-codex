@@ -11,7 +11,7 @@ import (
 )
 
 // demoStreamingIO shows both Streaming/chunked I/O mechanisms (see
-// docs/roadmap/file-api.md's "Streaming/chunked reads and writes"
+// docs/design/d-0011-file-api-backend-transparency.md's "Streaming/chunked reads and writes"
 // section):
 //
 //  1. Mechanism 1 — automatic format-level write streaming: a

@@ -49,7 +49,7 @@ func joinRouterPath(prefix, p string) string {
 //
 //  2. Build-the-Handle-directly: pass a Router value to [WithRouter] at
 //     an individual role's own `.Handle(client, file.WithRouter(rt))`
-//     call — the mechanism docs/roadmap/file-api.md's "Router/Middleware
+//     call — the mechanism docs/design/d-0011-file-api-backend-transparency.md's "Router/Middleware
 //     integration" section documents as api/file's ONE path-construction
 //     point (no later call site can forget to re-apply Router-group
 //     composition, since there is no later construction site at all).

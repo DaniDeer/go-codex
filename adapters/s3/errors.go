@@ -49,7 +49,7 @@ func (e S3Error) LogValue() slog.Value {
 // dispatch-core changes needed) AND errors.Unwrap back to the original
 // AWS SDK error — so a caller doing deeper diagnostics (e.g.
 // distinguishing throttling from a genuine not-found) can still reach
-// it. See docs/roadmap/file-api.md's "adapters/s3" section, Structured
+// it. See docs/design/d-0011-file-api-backend-transparency.md's "adapters/s3" section, Structured
 // errors subsection, for the full rationale (including the documented
 // caveat that dispatch-core's own FileNotFoundError construction
 // discards this Unwrap chain one level up — a pre-existing,

@@ -111,7 +111,7 @@ func firstDirOptions(opts []DirOptions) DirOptions {
 // *XxxHandle[T] (the Router-grouped/extra-options case, built via
 // role.Handle(client, file.WithRouter(...))). This mirrors
 // reqreply.Client.Call's own confirmed dual-acceptance exactly — see
-// docs/roadmap/file-api.md's "file.Client" section for the full research
+// docs/design/d-0011-file-api-backend-transparency.md's "file.Client" section for the full research
 // and rationale.
 
 // Read performs r's declared Read role against c's attached Backend.
@@ -132,7 +132,7 @@ func (c *Client) Read(ctx context.Context, r any, vars map[string]string) (any, 
 // control CreateDirs/DirPerm/Strict/DryRun/Perm for this call,
 // exactly like [ports.FileOptions] does for [ports.File.Write]. An
 // attach-time [NativePOSIXMode] Capability, when declared, always wins
-// over opts.Perm (see docs/roadmap/file-api.md's "Capability vs.
+// over opts.Perm (see docs/design/d-0011-file-api-backend-transparency.md's "Capability vs.
 // per-call option precedence").
 //
 // Returns createdDirs — the directories CreateDirs created (or, under
@@ -177,7 +177,7 @@ func (c *Client) Delete(ctx context.Context, d any, vars map[string]string, opts
 
 // List returns the decoded []ListResult[T] boxed as any — one result
 // per discovered entry, success or failure (see [ListResult] and the
-// "Phase 1 amendment" section of docs/roadmap/file-api.md); only a
+// "Phase 1 amendment" section of docs/design/d-0011-file-api-backend-transparency.md); only a
 // walk-level failure (the directory itself can't be read/walked) fails
 // the whole call via the plain error return.
 //
@@ -249,7 +249,7 @@ func (c *Client) BatchDelete(ctx context.Context, bd any, varsList []map[string]
 }
 
 // OpenRead returns a codec-BYPASSING raw byte stream (Mechanism 2 — see
-// docs/roadmap/file-api.md's "Streaming/chunked reads and writes"
+// docs/design/d-0011-file-api-backend-transparency.md's "Streaming/chunked reads and writes"
 // section). The caller is responsible for calling Close — RecordFileRead
 // fires at Close time, not Open time.
 //

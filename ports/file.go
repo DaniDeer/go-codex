@@ -186,7 +186,7 @@ type FileOptions struct {
 	// IfMatch, when non-nil, makes [File.Write] (and, via Write's own
 	// write-back step, [File.Patch]) CONDITIONAL: it only commits if the
 	// file's CURRENT content-hash ETag equals *IfMatch — see
-	// docs/roadmap/file-api.md's "Conditional writes" section for the
+	// docs/design/d-0011-file-api-backend-transparency.md's "Conditional writes" section for the
 	// full cross-backend design. nil (the default) means "unconditional
 	// write," byte-for-byte today's existing behavior — zero overhead,
 	// zero behavior change for every existing caller. Only consulted
@@ -1029,7 +1029,7 @@ func (fh File[T]) Stat(vars map[string]string, opts FileOptions) (Entry, bool, e
 
 // OpenRead returns a codec-BYPASSING raw byte stream — mirrors
 // [file.Client.OpenRead] exactly (Mechanism 2, see
-// docs/roadmap/file-api.md's "Streaming/chunked reads and writes"
+// docs/design/d-0011-file-api-backend-transparency.md's "Streaming/chunked reads and writes"
 // section). opts.Perm/DirPerm/CreateDirs/Strict/DryRun/IfMatch are
 // ignored (OpenRead has no write-side options); use [OpenReadOptions]
 // for an HTTP-Range-style byte-range read. The caller is responsible

@@ -146,7 +146,7 @@ func demoSMBBackend(ctx context.Context) {
 		// which validates ONLY against the OLDER, differently-shaped
 		// github.com/hirochachacha/go-smb2 v1.1.0 client — never against
 		// the v2 API adapters/smb (deliberately) depends on. This is
-		// exactly the kind of risk docs/roadmap/file-api.md's own
+		// exactly the kind of risk docs/design/d-0011-file-api-backend-transparency.md's own
 		// untagged-dependency disclosure named: go-smb2/v2 is
 		// still-in-flux, and its interop surface with OTHER young SMB
 		// ecosystem libraries hasn't all been proven yet. Skipping
@@ -154,7 +154,7 @@ func demoSMBBackend(ctx context.Context) {
 		// mandatory "exits 0" contract honest about a REAL, externally-
 		// confirmed limitation, rather than hiding or faking success.
 		fmt.Printf("adapters/smb: in-process go-smb-server interop skipped — %v\n", err)
-		fmt.Println("(a confirmed go-smb2/v2 <-> go-smb-server signing interop gap, NOT an adapters/smb bug — see docs/roadmap/file-api.md's \"adapters/smb\" section and adapters/smb/*_test.go's own exhaustive, independently-passing proof via a hand-written fake)")
+		fmt.Println("(a confirmed go-smb2/v2 <-> go-smb-server signing interop gap, NOT an adapters/smb bug — see docs/design/d-0011-file-api-backend-transparency.md's \"adapters/smb\" section and adapters/smb/*_test.go's own exhaustive, independently-passing proof via a hand-written fake)")
 	}
 
 	cancelServe()

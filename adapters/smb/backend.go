@@ -156,7 +156,7 @@ type BackendOpt interface{ applyBackend(*Backend) }
 // streaming, native range reads), and [apifile.WalkingBackend]/
 // [apifile.DirDeletingBackend]. Deliberately does NOT implement
 // [apifile.BatchDeletingBackend]: no native SMB2 batch-delete operation
-// exists — see docs/roadmap/file-api.md's "Backend semantic
+// exists — see docs/design/d-0011-file-api-backend-transparency.md's "Backend semantic
 // differences" table for the full rationale.
 type Backend struct {
 	ops shareOps
@@ -347,7 +347,7 @@ func (b *Backend) DeleteBytes(ctx context.Context, path string, opts apifile.Del
 // identically-named mechanism exactly (same rationale: without this,
 // internal/templatematch.MatchNonWildcard's greedy {var} capture would
 // silently match a sidecar/lock/temp-commit file against a resource
-// template like "{name}.json") — see docs/roadmap/file-api.md's
+// template like "{name}.json") — see docs/design/d-0011-file-api-backend-transparency.md's
 // "Conditional writes"/"Streaming" sections for the full investigation.
 var controlFileSuffixes = []string{".meta.json", ".lock"}
 
@@ -476,7 +476,7 @@ func metadataPath(path string) string { return path + ".meta.json" }
 // ReadMetadata implements [apifile.MetadataBackend] via the SAME JSON
 // sidecar-file mechanism adapters/file uses — NOT NTFS Alternate Data
 // Streams (an NTFS-specific, not-universally-supported feature; see
-// docs/roadmap/file-api.md's "2 further technical questions" subsection
+// docs/design/d-0011-file-api-backend-transparency.md's "2 further technical questions" subsection
 // for the full investigation). Returns (nil, nil) — NOT an error — when
 // path has no sidecar file.
 func (b *Backend) ReadMetadata(ctx context.Context, path string) (map[string]string, error) {

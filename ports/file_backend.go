@@ -24,7 +24,7 @@ import (
 // [File]/[Dir]), so ports -> adapters/file would be an import cycle.
 // Keeping this duplication small and private (unexported, no
 // Copy/Move/Metadata support — ports.File never calls those) is the
-// accepted tradeoff; see docs/roadmap/file-api.md's Stage F notes.
+// accepted tradeoff; see docs/design/d-0011-file-api-backend-transparency.md's Stage F notes.
 type osBackend struct{}
 
 // BackendName implements [apifile.Backend].
@@ -319,7 +319,7 @@ func (b osBackend) DeleteDir(ctx context.Context, path string, recursive, dryRun
 // Lock-file-based conditional-write mechanism — a DELIBERATE
 // near-duplicate of adapters/file.Backend's own (same import-cycle
 // constraint as every other osBackend method). See
-// docs/roadmap/file-api.md's "Conditional writes" section, Fork 3, for
+// docs/design/d-0011-file-api-backend-transparency.md's "Conditional writes" section, Fork 3, for
 // the full design and its 3 explicitly confirmed tradeoffs.
 const (
 	osBackendLockRetryInitial = 10 * time.Millisecond

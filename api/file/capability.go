@@ -53,7 +53,7 @@ type WireAttributes struct {
 // AccessMode is a sealed [Capability] declaring READ-ONLY vs. READ-WRITE
 // access for one Resource role — the ONE permission concept confirmed
 // (via direct research, not assumption) to be genuinely portable across
-// filesystem/S3/SMB backends. See docs/roadmap/file-api.md's
+// filesystem/S3/SMB backends. See docs/design/d-0011-file-api-backend-transparency.md's
 // "file.Capability" section for the full research rationale (Go's own
 // os.Chmod Windows behavior, S3's ACL/policy model).
 type AccessMode int

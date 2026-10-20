@@ -22,7 +22,7 @@
 // context.Context directly, plus the WithContext bridge to stdlib io/fs
 // interfaces) lives ONLY on the untagged master branch. go.mod therefore
 // pins an exact commit SHA (a Go pseudo-version), not a semver tag —
-// re-verified at implementation time per docs/roadmap/file-api.md's own
+// re-verified at implementation time per docs/design/d-0011-file-api-backend-transparency.md's own
 // disclosed risk. The repository shows signs of active, in-flux
 // development (feature branches alongside master, an AGENTS.md at its
 // root) — a real signal this API could still shift without any
@@ -69,7 +69,7 @@
 // hand-write any glue code; this package wraps the concrete type
 // internally to satisfy its own narrow, test-friendly interface.
 //
-// See docs/roadmap/file-api.md's "adapters/smb" section for the full
+// See docs/design/d-0011-file-api-backend-transparency.md's "adapters/smb" section for the full
 // design history (4 review rounds: library/version research, a gap
 // review, an untagged-dependency-risk disclosure, and an
 // OpenWriter-atomicity fix).

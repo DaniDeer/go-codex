@@ -2422,7 +2422,7 @@ func TestEntry_ETag_ExistsReturnsWeakETag(t *testing.T) {
 
 	// Exists/Stat deliberately never reads the body — it can only ever
 	// offer a WEAK (ModTime+Size-derived, "W/"-prefixed) ETag, never a
-	// strong content hash. See docs/roadmap/file-api.md's "Conditional
+	// strong content hash. See docs/design/d-0011-file-api-backend-transparency.md's "Conditional
 	// writes" Fork 1.
 	entry, exists, err := client.Exists(ctx, res.WithExists(file.Exists{}), vars)
 	if err != nil {
