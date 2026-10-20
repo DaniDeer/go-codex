@@ -3,7 +3,15 @@
 > **Status:** Idea / investigation — Explore mode. Scope confirmed with
 > the user (both tiers in scope, old signatures removed outright as a
 > breaking change); full before/after signature design and a
-> blast-radius audit are still open work. No code changes yet.
+> blast-radius audit are still open work. No code changes yet. A
+> follow-up coverage review (see "Additional Tier 1 candidates" and
+> "A second, equally permanent category" below) widened the Tier 1
+> survey, added a new permanent cross-package exclusion, resolved open
+> question #1 via a real `go1.27.2` compile check, and spun off three
+> separate stubs for other Go 1.27 features
+> ([go127-stdlib-uuid.md](go127-stdlib-uuid.md),
+> [go127-synctest-stream-tests.md](go127-synctest-stream-tests.md),
+> [go127-json-v2-evaluation.md](go127-json-v2-evaluation.md)).
 > [← Back to Roadmap](index.md)
 
 ## Motivation
@@ -92,6 +100,46 @@ of the old free function (confirmed user decision: remove outright, no
 deprecated wrapper), and every call site updated
 (`fn(x, ...)` → `x.Method(...)`).
 
+### Additional Tier 1 candidates (found during a follow-up coverage review)
+
+A repo-wide grep for this same doc-comment language turned up several
+more doc-comment-confirmed cases the original survey missed:
+
+| Symbol (today) | File | Sketch (Go 1.27 shape) |
+|---|---|---|
+| `codex.EitherMapLeft[A, B, C](e Either[A, B], fn func(A) C) Either[C, B]` | `codex/either.go` | `func (e Either[A, B]) MapLeft[C any](fn func(A) C) Either[C, B]` |
+| `codex.EitherMapRight[A, B, C](e Either[A, B], fn func(B) C) Either[A, C]` | `codex/either.go` | `func (e Either[A, B]) MapRight[C any](fn func(B) C) Either[A, C]` |
+| `codex.EitherFold[A, B, R](e Either[A, B], onLeft func(A) R, onRight func(B) R) R` | `codex/either.go` | `func (e Either[A, B]) Fold[R any](onLeft func(A) R, onRight func(B) R) R` |
+| `api/llm.NewCall[Req, Resp](...)` | `api/llm/call.go` | Same "needs its own small design decision" flag as `forge.NewFunction` — a top-level constructor, not obviously a method on an existing receiver. |
+| `api/reqreply.NewRoute[Req, Resp](...)` | `api/reqreply/route.go` | Same flag as `api/llm.NewCall`/`forge.NewFunction` — constructor, not a mechanical rename. |
+| `api/reqreply.WithHandleCallback[Req, Resp](fn func(*RouteHandle[Req, Resp])) RouteOpt` | `api/reqreply/router.go` | Doc comment: "Go forbids new type parameters on a method; mirrors `api/rest.WithHandleCallback`'s identical resolution." Needs checking whether this is a true Tier 1 case or, like `internal/middleware`'s `ContextField` setters, a value independent of any receiver. |
+| `api/rest`'s analogous `WithHandleCallback`-shaped helper (tied to `docs/design/d-0007-declarative-middleware-layering.md`) | `api/rest/router.go` | Same flag as the `api/reqreply` twin above. |
+
+`codex/either.go`'s `Swap` method is the existing proof this pattern
+already works today for the NO-new-type-param case (it only reorders
+`Either[A,B]`'s own `A`/`B`); `MapLeft`/`MapRight`/`Fold` are the
+genuinely blocked, new-type-parameter siblings that `MaybeMap` already
+established the precedent for.
+
+### A newly identified Tier 1 candidate outside the original survey: `stream`
+
+`stream.Apply[In, Out]` (`stream/transform.go`) and `stream.WithApply[In,
+Out]` (`stream/topology.go`, operating on `*Topology`) both introduce a
+genuinely new `Out` type parameter not already present on their
+`Stream[In]`/`*Topology` argument — the same shape as the Tier 1 table
+above. Sketch: `func (s Stream[In]) Apply[Out any](fn func(In) (Out,
+error), opts ApplyOptions) Stream[Out]` and `func (t *Topology)
+WithApply[In, Out any](fn *forge.Function[In, Out]) *Topology`.
+
+**Important non-candidates in the same package**, to avoid
+misclassifying them in a future audit: `stream.Buffer`, `.Debounce`,
+`.Throttle`, `.Window`, `.SlidingWindow`, `.Drain`, and `.Collect` are
+all free functions purely by STYLE choice, not necessity — none of them
+introduces a type parameter beyond the `Stream[T]` they already take, so
+they could already be ordinary (non-generic-method) methods on
+`Stream[T]` today, with or without Go 1.27. They are explicitly OUT of
+scope for this retrofit.
+
 ## Tier 2 — the big, foundational finding
 
 `events.Client.Publish`/`.Subscribe`, `reqreply.Client.Call`/
@@ -151,14 +199,15 @@ implication of this whole investigation.
 
 ### What is NOT yet verified (needs confirming during the actual design round, not assumed here)
 
-1. **Does Go 1.27 allow a method with 2 of its OWN type parameters**,
-   e.g. a `Patch[T, P]`-shaped method where `T` is NOT the receiver's
-   own type (since `*Client` isn't itself generic) but `P` is a 2nd,
-   genuinely new type parameter alongside whatever other type
-   parameters the method needs? `api/file.Client.Patch` and
-   `ports.PatchEncoded` both need exactly this shape. Needs a small,
-   real Go file compiled under 1.27 to confirm, not just reasoned
-   about.
+1. **RESOLVED (confirmed during a follow-up coverage review):** yes —
+   Go 1.27 allows a method with its own NEW type parameter on top of a
+   receiver that is itself already generic over a different type.
+   Verified directly by compiling a throwaway `go1.27.2` file with
+   `func (b Box[T]) Map[R any](fn func(T) R) Box[R]` and a second file
+   mirroring `ports.PatchEncoded`'s exact shape — `func (p
+   Patcher[T]) Patch[P any](patch P, fn func(T, P) T) Patcher[T]` —
+   both compiled and ran successfully. `api/file.Client.Patch` and
+   `ports.PatchEncoded` can safely assume this shape works.
 2. **Does `TransportTypeMismatchError`/`BackendTypeMismatchError`
    become genuinely dead code**, or does it stay reachable for some
    edge case the compiler can't catch (e.g. a caller constructing a
@@ -189,6 +238,27 @@ implements (`adapters/nethttp`, `adapters/chi`, `adapters/mqtt5`,
 this retrofit. Interface methods can never gain type parameters in Go,
 1.27 or any future version under the language's current generics
 design. This is a hard, permanent boundary, not a temporary gap.
+
+**A second, equally permanent category, found during a follow-up
+coverage review**: Go only allows defining a method on a type in the
+SAME package where that type is declared — a free function in a
+DIFFERENT package can never become a method on a type it merely
+imports, no matter how many of this restriction's doc comments it
+cites. Two confirmed examples that look like Tier 1 candidates but are
+NOT:
+
+- `adapters/nethttp.ServeOne[Req, Resp](r rest.Route[Req, Resp])
+  (http.Handler, error)` — its own doc comment cites "Go forbids
+  generic methods," but even post-1.27 it can never become a method on
+  `rest.Route[Req, Resp]`, since `rest.Route` is declared in `api/rest`,
+  not `adapters/nethttp`.
+- `adapters/mqtt/caller.go`'s analogous package-level generic function
+  (its own doc comment explicitly says "not a method on `[*caller]`" for
+  the same reason) — same cross-package restriction, independent of the
+  interface-method restriction above.
+
+Any future audit should check EVERY doc-comment hit against this
+cross-package rule before counting it as a true Tier 1 candidate.
 
 ## Scope decisions (confirmed via `ask_user` this session)
 
@@ -242,15 +312,24 @@ in place**, committed during the `adapters/smb` implementation round
 ## Files to create/touch (rough inventory — refine during the real audit)
 
 - `codex/maybe.go` (+ `maybe_test.go`)
+- `codex/either.go` (+ `either_test.go`) — `MapLeft`/`MapRight`/`Fold`
+  (added during coverage review)
 - `api/file/builder.go`, `api/file/dispatch.go`, `api/file/client.go` (+ tests)
 - `api/events/builder.go` (+ tests), every adapter/example calling
   `Client.Publish`/`.Subscribe`
 - `api/reqreply/client.go` (+ tests), every adapter/example calling
   `Client.Call`/`.CallAsync`
+- `api/reqreply/route.go`, `api/reqreply/router.go` (+ tests) —
+  `NewRoute`/`WithHandleCallback` (added during coverage review)
 - `api/rest/builder.go` (+ tests), every adapter/example calling
   `Client.Call`/`.Consume`
+- `api/rest/router.go` (+ tests) — `WithHandleCallback`-shaped D-0007
+  twin (added during coverage review)
+- `api/llm/call.go` (+ tests) — `NewCall` (added during coverage review)
 - `forge/function.go` (+ tests) — pending Tier 1/2 classification
 - `ports/file.go` (+ tests)
+- `stream/transform.go`, `stream/topology.go` (+ tests) — `Apply`/
+  `WithApply` (added during coverage review)
 - `internal/middleware/context_field.go`, `internal/middleware/bound.go`
   (+ tests) — pending re-examination (see Tier 1 table)
 - `examples/go-edge-models/models/iotedge/usecase/*.go` (+ tests)
@@ -263,7 +342,14 @@ in place**, committed during the `adapters/smb` implementation round
   and its ~10 optional extension interfaces) — confirmed permanently
   un-retrofittable, not a future phase of this same doc.
 - Any OTHER Go 1.27 feature unrelated to generic methods — not
-  investigated this round.
+  investigated this round. A follow-up coverage review DID survey this
+  toolchain's actual `api/go1.27.txt` and spun off three separate
+  Explore-depth stubs rather than folding them into this doc: the new
+  stdlib `uuid` package ([go127-stdlib-uuid.md](go127-stdlib-uuid.md)),
+  `testing/synctest` for `stream` package tests
+  ([go127-synctest-stream-tests.md](go127-synctest-stream-tests.md)),
+  and a flag-only note on `encoding/json/v2`
+  ([go127-json-v2-evaluation.md](go127-json-v2-evaluation.md)).
 - A broader "modernize the whole codebase for Go 1.27" sweep — this
   doc is scoped strictly to the specific, doc-comment-confirmed
   workarounds enumerated above.
@@ -299,12 +385,19 @@ in place**, committed during the `adapters/smb` implementation round
 
 1. `go127-audit-tier1-full-inventory` — complete, verified Tier 1
    inventory with before/after signatures (confirm/resolve open
-   decisions 3 and 4 above along the way).
+   decisions 3 and 4 above along the way, and the newly added
+   `codex/either.go`/`api/llm`/`api/reqreply`/`stream` candidates and
+   their own open classification questions from the coverage review).
 2. `go127-audit-tier2-signatures` — verified Tier 2 signature sketches
    for all 4 Client packages, resolving the 3 "not yet verified"
    questions above with real, compiled Go 1.27 code (not just
    reasoning).
 3. `go127-audit-blast-radius` — a real, per-symbol blast-radius audit
    (replacing the rough estimate above).
-4. Draft the full, Go-signature-rigor design once the audit lands —
+4. `go127-audit-cross-package-rule` — apply the newly documented
+   same-package-as-receiver rule (see "Confirmed NOT retrofittable")
+   against every remaining doc-comment hit repo-wide, to rule out any
+   further false positives beyond `adapters/nethttp.ServeOne` and
+   `adapters/mqtt`'s analog.
+5. Draft the full, Go-signature-rigor design once the audit lands —
    this doc, at that point, graduates from Explore to Refine depth.
