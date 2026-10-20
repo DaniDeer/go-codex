@@ -21,7 +21,7 @@ func demoConditionalWrites(ctx context.Context, client *file.Client, rt file.Rou
 	if err != nil {
 		log.Fatalf("handle(exists): %v", err)
 	}
-	patchHandle, err := file.WithPatch(resources.Notes, resources.BodyPatchCodec(), file.Patch{}).Handle(client, file.WithRouter(rt))
+	patchHandle, err := resources.Notes.WithPatch(resources.BodyPatchCodec(), file.Patch{}).Handle(client, file.WithRouter(rt))
 	if err != nil {
 		log.Fatalf("handle(conditional patch): %v", err)
 	}

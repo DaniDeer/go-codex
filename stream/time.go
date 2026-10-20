@@ -12,7 +12,7 @@ import (
 // Use Buffer to integrate item-at-a-time streams with [forge.Map] (which takes []T):
 //
 //	batchStream := stream.Buffer(ctx, sensorStream, 10, 500*time.Millisecond)
-//	batchOEE    := stream.Apply(ctx, batchStream, batchOEECalc, opts)
+//	batchOEE    := batchStream.Apply(ctx, batchOEECalc, opts)
 func Buffer[T any](ctx context.Context, src Stream[T], n int, maxWait time.Duration) Stream[[]T] {
 	values := make(chan []T)
 	errs := make(chan error)

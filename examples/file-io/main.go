@@ -725,7 +725,7 @@ func main() {
 		codex.RequiredField("debug_mode", codex.Bool(),
 			func(p appCfgPatch) bool { return p.NewDebugMode }, func(p *appCfgPatch, v bool) { p.NewDebugMode = v }),
 	)
-	appCfgPatcher := file.WithPatch(appCfgFile, appCfgPatchCodec, file.Patch{})
+	appCfgPatcher := appCfgFile.WithPatch(appCfgPatchCodec, file.Patch{})
 
 	// PatchEncoded-equivalent: writes all patchCodec fields — including
 	// debug_mode which is not in appCfgCodec. After this call, "debug_mode"
@@ -754,7 +754,7 @@ func main() {
 
 	// ── FilePatchNotSupportedError for Gob ────────────────────────────────────
 	gobFile := file.NewResource[appCfg]("/tmp/example.gob", format.Gob(appCfgCodec))
-	gobPatcher := file.WithPatch(gobFile, appCfgPatchCodec, file.Patch{})
+	gobPatcher := gobFile.WithPatch(appCfgPatchCodec, file.Patch{})
 	if err := client.Patch(ctx, gobPatcher, appCfgPatch{Port: 1234}, nil); err != nil {
 		var patchErr file.FilePatchNotSupportedError
 		if errors.As(err, &patchErr) {

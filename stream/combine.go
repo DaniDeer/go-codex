@@ -12,7 +12,7 @@ import "context"
 //
 //	oeeInputs := stream.CombineLatest2(ctx, availStream, perfStream,
 //	    func(a Availability, p Performance) OEEIn { return OEEIn{a, p} })
-//	oeeStream := stream.Apply(ctx, oeeInputs, oeeCalcFn, opts)
+//	oeeStream := oeeInputs.Apply(ctx, oeeCalcFn, opts)
 func CombineLatest2[A, B, Out any](
 	ctx context.Context,
 	a Stream[A],
@@ -100,7 +100,7 @@ func CombineLatest2[A, B, Out any](
 //	    func(a Availability, p Performance, q Quality) OEEIn {
 //	        return OEEIn{Availability: a, Performance: p, Quality: q}
 //	    })
-//	oeeStream := stream.Apply(ctx, oeeInputs, oeeCalcFn, opts)
+//	oeeStream := oeeInputs.Apply(ctx, oeeCalcFn, opts)
 func CombineLatest3[A, B, C, Out any](
 	ctx context.Context,
 	a Stream[A],

@@ -505,16 +505,16 @@ type CreateHandle[T any] struct {
 // ── Patcher[T, P] ──────────────────────────────────────────────────────
 
 // Patcher needs its OWN type parameter P (the partial-patch shape) — Go
-// requires type parameters on free functions, not methods, so WithPatch
-// is a free function taking the Resource, mirroring events/reqreply's
-// own "free function, not a method, because of generics" precedent.
+// generic methods CAN introduce a new type parameter not present on the
+// receiver (toolchain confirmed to support this), so WithPatch is a
+// generic method on Resource[T], matching the other WithXxx builders.
 type Patcher[T, P any] struct {
 	core       roleCore[T]
 	op         Patch
 	patchCodec codex.Codec[P]
 }
 
-func WithPatch[T, P any](r Resource[T], patchCodec codex.Codec[P], op Patch) Patcher[T, P] {
+func (r Resource[T]) WithPatch[P any](patchCodec codex.Codec[P], op Patch) Patcher[T, P] {
 	return Patcher[T, P]{core: roleCore[T]{resource: r}, op: op, patchCodec: patchCodec}
 }
 

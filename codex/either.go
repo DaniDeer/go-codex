@@ -42,46 +42,48 @@ func (e Either[A, B]) IsRight() bool { return e.Right != nil }
 
 // Swap returns a new Either with Left and Right exchanged — a Left value
 // becomes a Right value (same underlying data, new position) and vice
-// versa. Legal as a method (not a free function like [EitherMapLeft]):
-// it reorders the RECEIVER's existing A/B type parameters, introducing no
-// new one.
+// versa. It reorders the RECEIVER's existing A/B type parameters,
+// introducing no new one (contrast with [Either.MapLeft]/
+// [Either.MapRight]/[Either.Fold], which each add their own).
 func (e Either[A, B]) Swap() Either[B, A] {
 	return Either[B, A]{Left: e.Right, Right: e.Left}
 }
 
-// EitherFold reduces e to a single value R by calling onLeft or onRight,
+// Fold reduces e to a single value R by calling onLeft or onRight,
 // whichever branch e actually holds — the "pattern match, must handle
 // both sides" idiom other FP-flavored Go libraries call Match or Fold. A
-// free function, not a method: introduces a new type parameter R the
-// receiver's A/B don't have (same constraint documented on [MaybeMap]).
+// straightforward generic method: R is Fold's own type parameter,
+// distinct from the receiver's A/B, as Go 1.27+ generic methods allow.
 //
 // PANICS (nil-pointer dereference) if e is the zero value Either[A,B]{}
 // — unlike [Either.IsLeft]/[Either.IsRight], which safely report
 // false/false for that same input. Always construct e via [Left]/[Right]/
-// a successful [Either2] decode before calling EitherFold.
-func EitherFold[A, B, R any](e Either[A, B], onLeft func(A) R, onRight func(B) R) R {
+// a successful [Either2] decode before calling Fold.
+func (e Either[A, B]) Fold[R any](onLeft func(A) R, onRight func(B) R) R {
 	if e.Left != nil {
 		return onLeft(*e.Left)
 	}
 	return onRight(*e.Right)
 }
 
-// EitherMapLeft applies fn to e's Left value (if present), producing a
-// new Either[C, B] — a Right value passes through UNTOUCHED (fn is never
-// called). A free function: introduces a new type parameter C for the
-// transformed Left, which a method on Either[A,B] cannot do.
-func EitherMapLeft[A, B, C any](e Either[A, B], fn func(A) C) Either[C, B] {
+// MapLeft applies fn to e's Left value (if present), producing a new
+// Either[C, B] — a Right value passes through UNTOUCHED (fn is never
+// called). A straightforward generic method, same shape as
+// [Either.Fold]: C is MapLeft's own type parameter for the transformed
+// Left.
+func (e Either[A, B]) MapLeft[C any](fn func(A) C) Either[C, B] {
 	if e.Left != nil {
 		return Left[C, B](fn(*e.Left))
 	}
 	return Either[C, B]{Right: e.Right}
 }
 
-// EitherMapRight applies fn to e's Right value (if present), producing a
-// new Either[A, C] — a Left value passes through UNTOUCHED (fn is never
-// called). A free function: introduces a new type parameter C for the
-// transformed Right, which a method on Either[A,B] cannot do.
-func EitherMapRight[A, B, C any](e Either[A, B], fn func(B) C) Either[A, C] {
+// MapRight applies fn to e's Right value (if present), producing a new
+// Either[A, C] — a Left value passes through UNTOUCHED (fn is never
+// called). A straightforward generic method, same shape as
+// [Either.MapLeft]: C is MapRight's own type parameter for the
+// transformed Right.
+func (e Either[A, B]) MapRight[C any](fn func(B) C) Either[A, C] {
 	if e.Right != nil {
 		return Right[A, C](fn(*e.Right))
 	}

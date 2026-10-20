@@ -127,7 +127,7 @@ func (p MergedFilePathParam[T]) applyFile(fb *fileBuilder) {
 // ── FileOptions ───────────────────────────────────────────────────────────────
 
 // FileOptions configures the behaviour of [File.Read], [File.ReadMerged],
-// [File.Write], [File.Update], [File.Delete], [File.Patch], [PatchEncoded],
+// [File.Write], [File.Update], [File.Delete], [File.Patch], [File.PatchEncoded],
 // and [WriteHandle]. Not every field applies to every method — e.g. Perm/
 // CreateDirs/DirPerm only affect Write-family methods, DryRun/Strict apply
 // per-method with a method-specific meaning documented on each field below.
@@ -746,10 +746,9 @@ func (fh File[T]) Update(vars map[string]string, fn func(T) T, opts FileOptions)
 // PatchEncoded encodes patch using patchCodec and merges the result into the
 // existing file, preserving fields not covered by either codec.
 //
-// PatchEncoded is a free function (not a method on File) because Go methods
-// on a generic type cannot introduce additional type parameters. P is the
-// patch type — a struct that contains only the fields you want to update.
-// T is the full file type; it does not need to match P.
+// PatchEncoded is a generic method on File[T] that introduces its own type
+// parameter P — the patch type, a struct that contains only the fields you
+// want to update. T is the full file type; it does not need to match P.
 //
 // # Field survival rules
 //
@@ -787,7 +786,7 @@ func (fh File[T]) Update(vars map[string]string, fn func(T) T, opts FileOptions)
 //	)
 //
 //	// new_feature_flag is not in AppConfig but IS in patchCodec — it will be written
-//	err = ports.PatchEncoded(configFile, nil, configPatchCodec,
+//	err = configFile.PatchEncoded(nil, configPatchCodec,
 //	    AppConfigPatch{Port: 9090, LogLevel: "debug", NewFeatureFlag: true},
 //	    ports.FileOptions{Observer: obs},
 //	)
@@ -803,7 +802,7 @@ func (fh File[T]) Update(vars map[string]string, fn func(T) T, opts FileOptions)
 //   - [FileReadError] — os.ReadFile failure
 //   - [FileDecodeError] — merged result fails fh's codec constraints for known fields
 //   - [FileWriteError] — os.WriteFile failure
-func PatchEncoded[T, P any](fh File[T], vars map[string]string, patchCodec codex.Codec[P], patch P, opts FileOptions) error {
+func (fh File[T]) PatchEncoded[P any](vars map[string]string, patchCodec codex.Codec[P], patch P, opts FileOptions) error {
 	path, err := fh.BuildPath(vars)
 	if err != nil {
 		return err

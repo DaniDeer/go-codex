@@ -13,7 +13,7 @@
 // same role [ports.Cache] plays for adapters/redis. This package still
 // provides [Format.IsPatchable], [Format.PatchInto], [Format.Codec],
 // [Format.UnmarshalRaw], [Format.MarshalRaw], and [DeepMerge] — the
-// lower-level primitives [ports.File.Patch]/[ports.PatchEncoded] are built
+// lower-level primitives [ports.File.Patch]/[ports.File.PatchEncoded] are built
 // on.
 //
 // # Embedded format codecs — JSON/YAML/TOML within a string field

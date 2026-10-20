@@ -60,7 +60,7 @@ func demoCrudVerbs(ctx context.Context, client *file.Client, rt file.Router) {
 
 	// 4. Patch — partial update via a 2nd, smaller codec.
 	newBody := "Updated hello"
-	patchHandle, err := file.WithPatch(resources.Notes, resources.BodyPatchCodec(), file.Patch{}).Handle(client, file.WithRouter(rt))
+	patchHandle, err := resources.Notes.WithPatch(resources.BodyPatchCodec(), file.Patch{}).Handle(client, file.WithRouter(rt))
 	if err != nil {
 		log.Fatalf("handle(patch): %v", err)
 	}

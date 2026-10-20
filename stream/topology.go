@@ -88,7 +88,7 @@ type TopologySpec struct {
 //	    WithSource("mqtt/sensors/+/data", "Decoded sensor readings").
 //	    WithFilter("oee < 0.65").
 //	    WithSink("mqtt/alerts/oee", "Low-OEE alerts")
-//	stream.WithApply(topo, oeeCalcFn) // free function — Go generics cannot add type params to methods
+//	topo.WithApply(oeeCalcFn)
 //
 //	yaml, _ := streamrender.Render(topo.Spec())
 type Topology struct {
@@ -115,7 +115,7 @@ func (t *Topology) WithSource(name, description string) *Topology {
 
 // WithApply records an apply step from a [forge.Function].
 // The function's name, version, hash, and description are captured from its [forge.FunctionSpec].
-func WithApply[In, Out any](t *Topology, fn *forge.Function[In, Out]) *Topology {
+func (t *Topology) WithApply[In, Out any](fn *forge.Function[In, Out]) *Topology {
 	spec := fn.Spec
 	t.steps = append(t.steps, TopologyStep{
 		Kind:        StepKindApply,

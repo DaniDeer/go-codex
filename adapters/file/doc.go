@@ -57,5 +57,5 @@
 //     update (JSON Merge Patch semantics) via [ports.File.Patch]; map-based formats
 //     (JSON/YAML/TOML/[format.New]) only
 //   - [DrainPatchEncodedAdapter] — applies each item as a typed partial update via
-//     [ports.PatchEncoded]; same map-based-format restriction
+//     [ports.File.PatchEncoded]; same map-based-format restriction
 package file

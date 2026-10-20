@@ -40,7 +40,7 @@ func ReadUseCase(ctx context.Context, scope *usecase.Scope, useCaseName usecase.
 // deployment manifest under basePath, leaving every other field on that
 // module, and every other module, untouched.
 func PatchUseCaseModule(ctx context.Context, scope *usecase.Scope, useCaseName usecase.Name, patch modulepatch.FieldsPatch, opts file.WriteOptions) error {
-	return usecase.PatchUseCaseFile(ctx, scope, useCaseName, modulepatch.FieldsPatchCodec, patch, opts)
+	return scope.PatchUseCaseFile(ctx, useCaseName, modulepatch.FieldsPatchCodec, patch, opts)
 }
 
 // UpdateUseCaseModuleImage updates ONE module's image — a thin
@@ -109,9 +109,9 @@ func UpdateUseCaseModuleImage(ctx context.Context, scope *usecase.Scope, useCase
 // Two cases, both ending in the SAME deep-merge guarantee (every OTHER
 // override already on this device's file survives untouched):
 //   - The device already has a config file: deep-merges patch's delta
-//     into it via [usecase.PatchDeviceFile] (same mechanism
+//     into it via [usecase.Scope.PatchDeviceFile] (same mechanism
 //     PatchUseCaseModule uses on the template).
-//   - This is the device's FIRST-EVER override: [usecase.PatchDeviceFile]
+//   - This is the device's FIRST-EVER override: [usecase.Scope.PatchDeviceFile]
 //     requires an EXISTING file to merge into, so this case writes
 //     patch's delta directly via [usecase.Store.WriteDeviceConfig]
 //     instead — detected via [usecase.IsNotFound] on the read attempt.
@@ -127,7 +127,7 @@ func PatchDeviceModule(ctx context.Context, scope *usecase.Scope, useCaseName us
 	_, readErr := scope.ReadDeviceConfig(ctx, useCaseName, deviceID)
 	switch {
 	case readErr == nil:
-		return usecase.PatchDeviceFile(ctx, scope, useCaseName, deviceID, deviceconfig.PatchCodec, delta, opts)
+		return scope.PatchDeviceFile(ctx, useCaseName, deviceID, deviceconfig.PatchCodec, delta, opts)
 	case usecase.IsNotFound(readErr):
 		// First-ever override for this device: the "devices/{useCaseName}/"
 		// directory may not exist yet either — force CreateDirs regardless
@@ -172,7 +172,7 @@ func UpdateDeviceModuleImage(ctx context.Context, scope *usecase.Scope, useCaseN
 
 // systemModulePatchIdentityCodec passes a pre-built raw
 // {"modulesContent": {"$edgeAgent": {...}}} map through unchanged — used
-// by [PatchUseCaseSystemModule]/[usecase.PatchUseCaseFile] since there
+// by [PatchUseCaseSystemModule]/[usecase.Scope.PatchUseCaseFile] since there
 // is no FieldsPatch-style typed patch type for system modules to reuse.
 var systemModulePatchIdentityCodec = codex.Codec[map[string]any]{
 	Encode: func(m map[string]any) (any, error) { return m, nil },
@@ -199,7 +199,7 @@ func PatchUseCaseSystemModule(ctx context.Context, scope *usecase.Scope, useCase
 			iothub.EdgeAgentKey: map[string]any{fullKey.(string): patchFields},
 		},
 	}
-	return usecase.PatchUseCaseFile(ctx, scope, useCaseName, systemModulePatchIdentityCodec, delta, opts)
+	return scope.PatchUseCaseFile(ctx, useCaseName, systemModulePatchIdentityCodec, delta, opts)
 }
 
 // UpdateUseCaseSystemModuleImage updates ONE system module's image at the
@@ -249,7 +249,7 @@ func PatchDeviceSystemModule(ctx context.Context, scope *usecase.Scope, useCaseN
 	_, readErr := scope.ReadDeviceConfig(ctx, useCaseName, deviceID)
 	switch {
 	case readErr == nil:
-		return usecase.PatchDeviceFile(ctx, scope, useCaseName, deviceID, deviceconfig.PatchCodec, delta, opts)
+		return scope.PatchDeviceFile(ctx, useCaseName, deviceID, deviceconfig.PatchCodec, delta, opts)
 	case usecase.IsNotFound(readErr):
 		firstWriteOpts := opts
 		firstWriteOpts.CreateDirs = true

@@ -137,14 +137,14 @@ func Build() (*Built, error) {
 
 	securedRoute := routes.SecuredComputeRoute.
 		WithHandler(handlers.Add).
-		WithOpt(reqreply.WithHandleCallback(func(h *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]) {
+		WithHandleCallback(func(h *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]) {
 			securedHandle = h
-		}))
+		})
 	globalRoute := routes.GlobalOnlyComputeRoute.
 		WithHandler(handlers.Add).
-		WithOpt(reqreply.WithHandleCallback(func(h *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]) {
+		WithHandleCallback(func(h *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]) {
 			globalHandle = h
-		}))
+		})
 	stackedRoute := routes.StackedDemoRoute.
 		HandleBoundMW(auth.NewOAuthMwReqreply(auth.VerifyOAuthComputeZeroMQ)).
 		WithHandler(handlers.AddOAuth)
@@ -158,9 +158,9 @@ func Build() (*Built, error) {
 	headerParamRoute := routes.HeaderParamComputeRoute.
 		Use(headerParamMw).
 		WithHandler(handlers.Add).
-		WithOpt(reqreply.WithHandleCallback(func(h *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]) {
+		WithHandleCallback(func(h *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]) {
 			headerParamHandle = h
-		}))
+		})
 
 	// PropertyAxisComputeRoute demonstrates the property vocabulary axis
 	// (docs/design/d-0003-codec-declared-middlewares.md's Addendum) —
@@ -179,17 +179,17 @@ func Build() (*Built, error) {
 	propertyAxisRoute := routes.PropertyAxisComputeRoute.
 		HandleBoundMW(propertyaxis.NewTenantPropertyMw(propertyaxis.ProcessTenant)).
 		WithHandler(handlers.Add).
-		WithOpt(reqreply.WithHandleCallback(func(h *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]) {
+		WithHandleCallback(func(h *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]) {
 			propertyAxisHandle = h
-		}))
+		})
 
 	// CapabilityRoute demonstrates Phase 2 of docs/design/
 	// d-0006-protocol-native-capabilities.md — see demo_capability_mechanism.go.
 	capabilityRoute := routes.CapabilityRoute.
 		WithHandler(handlers.Add).
-		WithOpt(reqreply.WithHandleCallback(func(h *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]) {
+		WithHandleCallback(func(h *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]) {
 			capabilityHandle = h
-		}))
+		})
 
 	// auth.BearerAuthMw.WithReceive(...) is scoped to ONLY
 	// securedRoute/globalRoute/stackedRoute via a NESTED, empty-prefix

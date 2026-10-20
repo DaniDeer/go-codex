@@ -1111,6 +1111,17 @@ func (r Route[Req, Resp]) WithOpt(opt RouteOpt) Route[Req, Resp] {
 	return r
 }
 
+// WithHandleCallback returns a NEW Route with a handle-callback opt
+// appended, equivalent to r.WithOpt(WithHandleCallback(fn)) — a
+// chainable convenience for the common case of attaching a
+// [WithHandleCallback] closure onto an ALREADY-DECLARED Route value
+// (e.g. ....WithOptions(opts).WithHandleCallback(fn)). The free function
+// [WithHandleCallback] remains unchanged and still required for the
+// inline-opt-to-[NewRoute] call shape, where no Route value exists yet.
+func (r Route[Req, Resp]) WithHandleCallback(fn func(*RouteHandle[Req, Resp])) Route[Req, Resp] {
+	return r.WithOpt(handleCallbackOpt{fn: fn})
+}
+
 // ClientHandle returns a [RouteHandle] for client-side use without registering
 // with a [Builder]. No spec registration occurs.
 //

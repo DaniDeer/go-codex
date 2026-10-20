@@ -83,7 +83,7 @@ func TestTopology_AllStepKindConstants(t *testing.T) {
 
 func TestTopology_WithApply_CapturesFunctionSpec(t *testing.T) {
 	topo := stream.NewTopology("P", "1.0.0")
-	stream.WithApply(topo, topoFn)
+	topo.WithApply(topoFn)
 	spec := topo.Spec()
 	if len(spec.Steps) != 1 {
 		t.Fatalf("want 1 step, got %d", len(spec.Steps))
@@ -126,7 +126,7 @@ func ExampleNewTopology() {
 		WithTap("dashboard observer").
 		WithSink("mqtt/alerts", "OEE alert publisher")
 
-	stream.WithApply(topo, topoFn)
+	topo.WithApply(topoFn)
 
 	spec := topo.Spec()
 	_ = spec // pass spec to render/stream.Render to get YAML

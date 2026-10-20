@@ -191,8 +191,7 @@ func main() {
 	stream.Drain(ctx,
 		stream.Filter(ctx,
 			stream.Tap(ctx,
-				stream.Apply(ctx,
-					stream.From(ctx, temps1),
+				stream.From(ctx, temps1).Apply(ctx,
 					celsiusToFahrenheit,
 					stream.ApplyOptions{},
 				),
@@ -231,8 +230,8 @@ func main() {
 			return HeatIndexInput{Temp: t.Celsius, Humidity: h.Percent}
 		},
 	)
-	stream.WithApply(envMonitorTopo, computeHeatIndex) // record in topology
-	heatStream := stream.Apply(ctx, heatInputs, computeHeatIndex, stream.ApplyOptions{})
+	envMonitorTopo.WithApply(computeHeatIndex) // record in topology
+	heatStream := heatInputs.Apply(ctx, computeHeatIndex, stream.ApplyOptions{})
 	heatVals, _ := stream.Collect(ctx, heatStream)
 	for _, h := range heatVals {
 		fmt.Printf("  heat index: %.1f → %s\n", h.Score, h.Level)
@@ -246,7 +245,7 @@ func main() {
 
 	teeIn := make(chan TempReading, 5)
 	go pumpTemps(teeIn, []float64{22, 28, 35, 41, 25})
-	fahrenheitStream := stream.Apply(ctx, stream.From(ctx, teeIn), celsiusToFahrenheit, stream.ApplyOptions{})
+	fahrenheitStream := stream.From(ctx, teeIn).Apply(ctx, celsiusToFahrenheit, stream.ApplyOptions{})
 
 	archiveBranch, alertBranch := stream.Tee(ctx, fahrenheitStream)
 	archiveDone := make(chan []float64, 1)
@@ -400,16 +399,15 @@ func main() {
 
 	domainEvents := 0
 
-	s9 := stream.Apply(ctx,
+	s9 := stream.Tap(ctx,
 		// A. Tap: domain event observation — typed business values
-		stream.Tap(ctx,
-			stream.From(ctx, temps9),
-			func(r TempReading) {
-				domainEvents++
-				// In production: update a real-time dashboard, publish to an audit log, etc.
-				_ = fmt.Sprintf("domain event: sensor %s = %.1f°C", r.SensorID, r.Celsius)
-			},
-		),
+		stream.From(ctx, temps9),
+		func(r TempReading) {
+			domainEvents++
+			// In production: update a real-time dashboard, publish to an audit log, etc.
+			_ = fmt.Sprintf("domain event: sensor %s = %.1f°C", r.SensorID, r.Celsius)
+		},
+	).Apply(ctx,
 		celsiusToFahrenheit,
 		// B. ApplyOptions.Observer: infrastructure metrics
 		// RecordStreamItem fires for every item; stats.LoggingObserver also logs via slog.

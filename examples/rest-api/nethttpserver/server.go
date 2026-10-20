@@ -96,7 +96,7 @@ func Build(store *handlers.UserStore, obs stats.Observer, logger *slog.Logger, a
 		handlers.WithDomainLogging("user.get", handlers.MakeGetUserHandler(store), domainLogger,
 			func(_ routes.GetUserReq, u routes.User) []slog.Attr { return []slog.Attr{slog.String("id", u.ID)} }),
 	).HandleBoundMW(auth.BoundScopeServerMW[routes.GetUserReq](auth.ProfileScopes, auth.ScopesBoundFn[routes.GetUserReq]("/users/{id}"))).HandleMW(nil, obsFn).HandleMW(nil, timingFn).WithOptions(opts).
-		WithOpt(rest.WithHandleCallback(func(h *rest.RouteHandle[routes.GetUserReq, routes.User]) { getUserHandle = h }))
+		WithHandleCallback(func(h *rest.RouteHandle[routes.GetUserReq, routes.User]) { getUserHandle = h })
 
 	updateUserRoute := routes.UpdateUserRoute.WithHandler(
 		handlers.WithDomainLogging("user.update", handlers.MakeUpdateUserHandler(store), domainLogger,
@@ -104,7 +104,7 @@ func Build(store *handlers.UserStore, obs stats.Observer, logger *slog.Logger, a
 				return []slog.Attr{slog.String("id", req.ID), slog.String("name", u.Name)}
 			}),
 	).HandleBoundMW(auth.BoundScopeServerMW[routes.UpdateUserReq](auth.AdminScopes, auth.ScopesBoundFn[routes.UpdateUserReq]("/users/{id}"))).HandleMW(nil, obsFn).HandleMW(nil, timingFn).WithOptions(opts).
-		WithOpt(rest.WithHandleCallback(func(h *rest.RouteHandle[routes.UpdateUserReq, routes.User]) { updateUserHandle = h }))
+		WithHandleCallback(func(h *rest.RouteHandle[routes.UpdateUserReq, routes.User]) { updateUserHandle = h })
 
 	listUsersRoute := routes.ListUsersRoute.WithHandler(
 		handlers.WithDomainLogging("user.list", handlers.MakeListUsersHandler(), domainLogger,

@@ -141,7 +141,7 @@ type PipelineHandlerFunc[Req, Resp any] func(ctx context.Context, req Req) gstre
 //	        s = stream.Tap(ctx, s, func(v SensorBody) {
 //	            slog.Info("request", "sensor", sensorID, "value", v.Value)
 //	        })
-//	        return stream.Apply(ctx, s, oeeCalcFn, opts)
+//	        return s.Apply(ctx, oeeCalcFn, opts)
 //	    }, opts)
 //
 // # Response headers and cookies inside the pipeline

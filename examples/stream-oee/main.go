@@ -38,7 +38,7 @@
 //
 //	MachineEvent stream (goroutine / MQTT)
 //	    → stream.Window(windowDuration)      → Stream[[]MachineEvent]
-//	    → stream.Apply(computeOEEFromWindow) → Stream[OEEResult]
+//	    → Stream.Apply(computeOEEFromWindow)  → Stream[OEEResult]
 //	         (OEEResult{Availability, Performance, Quality, OEE})
 //	    → stream.Tap: Availability < 80% → maintenance pre-alert
 //	    → stream.Tap: Quality      < 90% → quality team notification
@@ -525,7 +525,7 @@ func main() {
 
 	// Apply: run all six governed forge functions on each window batch.
 	// Returns Stream[OEEResult] — all intermediate values are now observable.
-	results := stream.Apply(ctx, nonEmptyWindows, computeOEEFromWindow,
+	results := nonEmptyWindows.Apply(ctx, computeOEEFromWindow,
 		stream.ApplyOptions{}) // observer from ctx
 
 	// ── Tap into PARTIAL calculations ─────────────────────────────────────
@@ -641,7 +641,7 @@ func main() {
 		WithDescription("Governed OEE from machine event stream; window-based computation with partial Tap observers.").
 		WithSource("machine-control-system", "Machine events (MQTT / ERP / PLC)").
 		WithBuffer("tumbling window — non-empty batches only")
-	stream.WithApply(topo, computeOEEFromWindow) // → OEEResult{Avail, Perf, Qual, OEE}
+	topo.WithApply(computeOEEFromWindow) // → OEEResult{Avail, Perf, Qual, OEE}
 	topo.
 		WithTap(fmt.Sprintf("Availability < %.0f%% → maintenance pre-alert", availabilityTarget*100)).
 		WithTap(fmt.Sprintf("Quality < %.0f%% → quality team notification", qualityTarget*100)).

@@ -293,7 +293,7 @@ func typeName(v any) string {
 // discards the result — validates BOTH moduleName (must be a valid slug,
 // per iothub.ModuleNameCodec) and image (Name/Tag/Digest constraints,
 // per iothub.ImageCodec) before the patch is ever applied to a real
-// manifest via ports.PatchEncoded.
+// manifest via ports.File.PatchEncoded.
 func NewUpdateModuleImage(moduleName iothub.ModuleName, image docker.Image) (FieldsPatch, error) {
 	return FieldsPatchCodec.New(FieldsPatch{
 		ModuleName: moduleName,

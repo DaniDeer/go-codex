@@ -590,7 +590,7 @@ type DrainPatchEncodedAdapterOptions struct {
 
 // DrainPatchEncodedAdapter returns a [ports.SinkAdapter] that applies each
 // item as a typed partial update to an existing typed file via
-// [ports.PatchEncoded]. Unlike [DrainPatchAdapter]'s untyped map[string]any
+// [ports.File.PatchEncoded]. Unlike [DrainPatchAdapter]'s untyped map[string]any
 // patches, patchCodec fields not present in f's own codec are still
 // persisted — the right choice for intentionally adding new fields to a file.
 // f is built by hand (not via [ports.FilePattern]): the stream's item type P
@@ -609,7 +609,7 @@ type DrainPatchEncodedAdapterOptions struct {
 // validated with [ports.ValidateParams] before the patch; a validation
 // failure is reported to Options.OnError as [WriteError] wrapping
 // [codex.ValidationErrors] and the item is otherwise skipped (not patched).
-// A [ports.PatchEncoded] failure (including [ports.FilePatchNotSupportedError])
+// A [ports.File.PatchEncoded] failure (including [ports.FilePatchNotSupportedError])
 // is passed to Options.OnError unchanged, mirroring [DrainWriteFileAdapter]'s
 // treatment of [ports.File.Write] failures.
 func DrainPatchEncodedAdapter[T, P any](
@@ -658,7 +658,7 @@ func (a *fileDrainPatchEncodedAdapter[T, P]) Activate(ctx context.Context, src g
 				}
 				return nil
 			}
-			if err := ports.PatchEncoded(a.f, vars, a.patchCodec, v, fileOpts); err != nil {
+			if err := a.f.PatchEncoded(vars, a.patchCodec, v, fileOpts); err != nil {
 				if onErr != nil {
 					onErr(err)
 				}

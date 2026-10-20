@@ -18,7 +18,7 @@ type observerKey struct{}
 //	route.WithOptions(nethttp.Options{})
 //	transport := mqtt.NewSubscribeTransport[Msg](client, 1, mqtt.SubscribeOptions{})
 //	events.SubscribeHandle(ctx, sub, transport, fn)
-//	stream.Apply(ctx, s, fn, stream.ApplyOptions{})
+//	s.Apply(ctx, fn, stream.ApplyOptions{})
 //
 // The context-provided observer has **lower** priority than an explicitly set
 // opts.Observer — explicit always wins:

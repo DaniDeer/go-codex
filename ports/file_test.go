@@ -1330,10 +1330,10 @@ func TestPatch_PathVarError_NoIO(t *testing.T) {
 	}
 }
 
-// ── ports.PatchEncoded (free function) ──────────────────────────────────────
+// ── File.PatchEncoded (generic method) ──────────────────────────────────────
 //
-// PatchEncoded is a free function because Go methods cannot introduce new type
-// parameters. The patch type P is separate from the file type T.
+// PatchEncoded is a generic method on File[T] that introduces its own type
+// parameter P. The patch type P is separate from the file type T.
 
 func TestPatchEncoded_HappyPath_OnlyPatchCodecFieldsChange(t *testing.T) {
 	dir := t.TempDir()
@@ -1346,7 +1346,7 @@ func TestPatchEncoded_HappyPath_OnlyPatchCodecFieldsChange(t *testing.T) {
 
 	// fileItemPatchCodec only encodes "value" — "name" is NOT in the patch type.
 	// Name must survive unchanged.
-	if err := ports.PatchEncoded(f, nil, fileItemPatchCodec,
+	if err := f.PatchEncoded(nil, fileItemPatchCodec,
 		fileItemPatch{Value: 99}, ports.FileOptions{}); err != nil {
 		t.Fatalf("PatchEncoded: %v", err)
 	}
@@ -1374,7 +1374,7 @@ func TestPatchEncoded_FieldNotInPatchCodec_PreservedInFile(t *testing.T) {
 
 	// Patch with Value=0 via patch codec — 0 is valid (RangeInt(0,1000) passes).
 	// "name" is NOT in fileItemPatchCodec, so it is always preserved.
-	if err := ports.PatchEncoded(f, nil, fileItemPatchCodec,
+	if err := f.PatchEncoded(nil, fileItemPatchCodec,
 		fileItemPatch{Value: 0}, ports.FileOptions{}); err != nil {
 		t.Fatalf("PatchEncoded: %v", err)
 	}
@@ -1398,7 +1398,7 @@ func TestPatchEncoded_EncodeFailure_ReturnsFileEncodeError(t *testing.T) {
 	}
 
 	// Value 9999 violates RangeInt(0, 1000) in the patch codec — encode fails before I/O.
-	err := ports.PatchEncoded(f, nil, fileItemPatchCodec,
+	err := f.PatchEncoded(nil, fileItemPatchCodec,
 		fileItemPatch{Value: 9999}, ports.FileOptions{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -1420,7 +1420,7 @@ func TestPatchEncoded_NonMapIntermediate_ReturnsPatchNotSupportedError(t *testin
 	}
 
 	// Scalar codec — intermediate is int, not map[string]any.
-	err := ports.PatchEncoded(f, nil, codex.Int(), 99, ports.FileOptions{})
+	err := f.PatchEncoded(nil, codex.Int(), 99, ports.FileOptions{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1442,7 +1442,7 @@ func TestPatchEncoded_Observer_ReadAndWriteBothCalled(t *testing.T) {
 	spy.reads = nil
 	spy.writes = nil
 
-	if err := ports.PatchEncoded(f, nil, fileItemPatchCodec,
+	if err := f.PatchEncoded(nil, fileItemPatchCodec,
 		fileItemPatch{Value: 5}, ports.FileOptions{Observer: spy}); err != nil {
 		t.Fatalf("PatchEncoded: %v", err)
 	}
@@ -1457,7 +1457,7 @@ func TestPatchEncoded_Observer_ReadAndWriteBothCalled(t *testing.T) {
 
 func TestPatchEncoded_GobFile_ReturnsPatchNotSupportedError(t *testing.T) {
 	f := ports.NewFile("/tmp/x.gob", format.Gob(fileItemCodec))
-	err := ports.PatchEncoded(f, nil, fileItemPatchCodec,
+	err := f.PatchEncoded(nil, fileItemPatchCodec,
 		fileItemPatch{Value: 1}, ports.FileOptions{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -1502,7 +1502,7 @@ func TestPatchEncoded_PatchCodecFieldNotInFileCodec_WrittenToFile(t *testing.T) 
 
 	// fileItemWithTagCodec has "tag" which is NOT in fileItemCodec.
 	// After PatchEncoded, "tag" must appear in the JSON file.
-	if err := ports.PatchEncoded(f, nil, fileItemWithTagCodec,
+	if err := f.PatchEncoded(nil, fileItemWithTagCodec,
 		fileItemWithTag{Value: 20, Tag: "featured"},
 		ports.FileOptions{}); err != nil {
 		t.Fatalf("PatchEncoded: %v", err)

@@ -21,9 +21,9 @@ import (
 //	reqreply.ServeWithTransport(ctx, transport, oeeHandle,
 //	    mqtt5.AsPipelineFunc(func(ctx context.Context, req SensorReq) gstream.Stream[OEEResult] {
 //	        s  := gstream.Single(ctx, req)
-//	        s   = gstream.Apply(ctx, s, validateFn, gstream.ApplyOptions{Observer: obs})
+//	        s   = s.Apply(ctx, validateFn, gstream.ApplyOptions{Observer: obs})
 //	        s   = gstream.Tap(ctx, s, func(v ValidatedReq) { slog.Info("request", "id", v.ID) })
-//	        out := gstream.Apply(ctx, s, oeeCalcFn, gstream.ApplyOptions{Observer: obs})
+//	        out := s.Apply(ctx, oeeCalcFn, gstream.ApplyOptions{Observer: obs})
 //	        return gstream.Tap(ctx, out, func(r OEEResult) { auditLog.Write(r) })
 //	    }))
 //

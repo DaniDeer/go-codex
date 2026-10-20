@@ -56,30 +56,25 @@ func (m Maybe[T]) IsSet() bool { return m.set }
 // ever set, (zero, false) otherwise. Mirrors [Immutable.TryGet]'s shape.
 func (m Maybe[T]) TryGet() (T, bool) { return m.value, m.set }
 
-// MaybeMap applies fn to the contained value IF set, returning a new
-// Maybe[R] — Nothing in, Nothing out (fn is never called when unset). A
-// free function, not a method: Go generic methods cannot introduce a new
-// type parameter (R, distinct from Maybe[T]'s own T) — the same
-// constraint documented elsewhere in this codebase for
-// forge.NewFunction[In, Out]. Named MaybeMap (not the shorter Map) to
-// avoid colliding with the existing codex.Map[K,V] map-codec
-// constructor.
-func MaybeMap[T, R any](m Maybe[T], fn func(T) R) Maybe[R] {
+// Map applies fn to the contained value IF set, returning a new Maybe[R]
+// — Nothing in, Nothing out (fn is never called when unset). A
+// straightforward generic method: R is Map's own type parameter,
+// distinct from the receiver's T, as Go 1.27+ generic methods allow.
+func (m Maybe[T]) Map[R any](fn func(T) R) Maybe[R] {
 	if !m.IsSet() {
 		return Maybe[R]{}
 	}
 	return Just(fn(m.Get()))
 }
 
-// MaybeFlatMap applies fn to the contained value IF set, returning
-// whatever Maybe[R] fn itself produces — Nothing in, Nothing out; a Just
-// in can still produce Nothing out if fn itself does (the "chain a
-// possibly-failing transformation" case MaybeMap alone can't express,
-// since MaybeMap's fn always returns a plain R, never a Maybe[R]).
-// Haskell's >>=/Rust's and_then. A free function, not a method — same
-// constraint as MaybeMap (Go generic methods cannot introduce a new type
-// parameter R).
-func MaybeFlatMap[T, R any](m Maybe[T], fn func(T) Maybe[R]) Maybe[R] {
+// FlatMap applies fn to the contained value IF set, returning whatever
+// Maybe[R] fn itself produces — Nothing in, Nothing out; a Just in can
+// still produce Nothing out if fn itself does (the "chain a
+// possibly-failing transformation" case Map alone can't express, since
+// Map's fn always returns a plain R, never a Maybe[R]). Haskell's
+// >>=/Rust's and_then. A straightforward generic method, same shape as
+// [Maybe.Map] — R is FlatMap's own type parameter.
+func (m Maybe[T]) FlatMap[R any](fn func(T) Maybe[R]) Maybe[R] {
 	if !m.IsSet() {
 		return Maybe[R]{}
 	}

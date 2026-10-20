@@ -34,9 +34,8 @@ type ApplyOptions struct {
 //
 // The forge function's own observer (set via [forge.Function.Register]) fires
 // independently — both observers can be active simultaneously.
-func Apply[In, Out any](
+func (s Stream[In]) Apply[Out any](
 	ctx context.Context,
-	src Stream[In],
 	fn *forge.Function[In, Out],
 	opts ApplyOptions,
 ) Stream[Out] {
@@ -49,8 +48,8 @@ func Apply[In, Out any](
 	go func() {
 		defer close(values)
 		defer close(errs)
-		valCh := src.Values
-		errCh := src.Errors
+		valCh := s.Values
+		errCh := s.Errors
 		for valCh != nil || errCh != nil {
 			select {
 			case <-ctx.Done():

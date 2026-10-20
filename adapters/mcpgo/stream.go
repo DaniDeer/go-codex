@@ -35,7 +35,7 @@ var errNoLatestValue = errors.New("no value computed yet")
 // Use ToolLatestHandler for "get current OEE", "get latest sensor reading", or any
 // "current state" MCP tool backed by a continuous stream computation:
 //
-//	oeeStream := gstream.Apply(ctx, sensorStream, oeeCalcFn, gstream.ApplyOptions{Observer: obs})
+//	oeeStream := sensorStream.Apply(ctx, oeeCalcFn, gstream.ApplyOptions{Observer: obs})
 //	tool, handler := mcpgo.ToolLatestHandler(getOEEHandle, oeeStream, mcpgo.Options{Observer: obs})
 //	s.AddTool(tool, handler)
 func ToolLatestHandler[In, Out any](
@@ -124,9 +124,9 @@ type ToolPipelineHandlerFunc[In, Out any] func(ctx context.Context, in In) gstre
 //	mcpgo.RegisterToolPipeline(s, getOEEHandle,
 //	    func(ctx context.Context, in OEEQuery) stream.Stream[OEEResult] {
 //	        s  := stream.Single(ctx, in)
-//	        s   = stream.Apply(ctx, s, validateFn, stream.ApplyOptions{Observer: obs})
+//	        s   = s.Apply(ctx, validateFn, stream.ApplyOptions{Observer: obs})
 //	        s   = stream.Tap(ctx, s, func(v ValidatedQuery) { auditLog.Write(v) })
-//	        return stream.Apply(ctx, s, oeeCalcFn, stream.ApplyOptions{Observer: obs})
+//	        return s.Apply(ctx, oeeCalcFn, stream.ApplyOptions{Observer: obs})
 //	    }, mcpgo.Options{Observer: obs})
 func ToolPipelineHandler[In, Out any](
 	handle *apimcp.ToolHandle[In, Out],

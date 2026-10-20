@@ -67,7 +67,7 @@ func Merge[T any](ctx context.Context, srcs ...Stream[T]) Stream[T] {
 //
 //	store, compute := stream.Tee(ctx, sensorStream)
 //	go stream.Drain(ctx, store, saveToDB, logErr, opts)
-//	oeeStream := stream.Apply(ctx, compute, oeeCalcFn, opts)
+//	oeeStream := compute.Apply(ctx, oeeCalcFn, opts)
 func Tee[T any](ctx context.Context, src Stream[T]) (Stream[T], Stream[T]) {
 	values1 := make(chan T)
 	values2 := make(chan T)

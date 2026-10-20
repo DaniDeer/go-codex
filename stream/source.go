@@ -28,7 +28,7 @@ type SourceOptions struct {
 // [AsPipelineFunc], or any time you need a bounded one-shot stream source:
 //
 //	s := stream.Single(ctx, req)
-//	out := stream.Apply(ctx, s, computeFn, stream.ApplyOptions{Observer: obs})
+//	out := s.Apply(ctx, computeFn, stream.ApplyOptions{Observer: obs})
 //	out = stream.Tap(ctx, out, func(v Out) { slog.Info("computed", "v", v) })
 func Single[T any](ctx context.Context, v T) Stream[T] {
 	ch := make(chan T, 1)

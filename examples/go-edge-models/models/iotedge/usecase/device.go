@@ -94,12 +94,11 @@ var deviceDirResource = file.NewDir(deviceDirPathPattern.String(),
 // PatchDeviceFile applies a typed partial update (via patchCodec) to
 // deviceID's config file under s's bound basePath/useCaseName — the
 // Stage D2 equivalent of the former
-// ports.PatchEncoded(usecase.NewDeviceFile(basePath), ...) call
+// usecase.NewDeviceFile(basePath).PatchEncoded(...) call
 // external callers (app/iotedge.PatchDeviceModule) used directly. A
-// FREE FUNCTION, not a *Scope method — same "Go methods cannot
-// introduce a new type parameter" reason as [PatchUseCaseFile].
-func PatchDeviceFile[P any](ctx context.Context, s *Scope, useCaseName Name, deviceID DeviceID, patchCodec codex.Codec[P], patch P, opts ...file.WriteOptions) error {
-	handle, err := file.WithPatch(deviceFileResource, patchCodec, file.Patch{}).Handle(s.client, file.WithRouter(s.router))
+// generic method on *Scope (P introduced fresh on the method itself).
+func (s *Scope) PatchDeviceFile[P any](ctx context.Context, useCaseName Name, deviceID DeviceID, patchCodec codex.Codec[P], patch P, opts ...file.WriteOptions) error {
+	handle, err := deviceFileResource.WithPatch(patchCodec, file.Patch{}).Handle(s.client, file.WithRouter(s.router))
 	if err != nil {
 		return err
 	}

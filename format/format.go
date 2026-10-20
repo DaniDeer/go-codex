@@ -132,14 +132,14 @@ func (f Format[T]) WithContentType(ct string) Format[T] {
 func (f Format[T]) IsStreamable() bool { return f.marshalTo != nil }
 
 // IsPatchable reports whether partial-patch operations (used by
-// [ports.File.Patch]/[ports.PatchEncoded]) are supported for this format.
+// [ports.File.Patch]/[ports.File.PatchEncoded]) are supported for this format.
 // Only map-based formats (JSON, YAML, TOML, and formats created with [New])
 // return true — they use a [map[string]any] intermediate that can be partially
 // overridden. Gob, Binary, [NewTyped], and [NewStreamed] formats return false.
 func (f Format[T]) IsPatchable() bool { return f.unmarshal != nil }
 
 // Codec returns the codec this format validates through. Exposed for
-// callers (like [ports.File]/[ports.PatchEncoded]) that need to
+// callers (like [ports.File]/[ports.File.PatchEncoded]) that need to
 // validate/decode an intermediate value directly, outside a full
 // Marshal/Unmarshal round trip.
 func (f Format[T]) Codec() codex.Codec[T] { return f.codec }
@@ -148,7 +148,7 @@ func (f Format[T]) Codec() codex.Codec[T] { return f.codec }
 // (e.g. map[string]any for JSON/YAML/TOML), WITHOUT running it through the
 // codec's Decode. Only valid when [Format.IsPatchable] is true — exposed
 // for callers that need the raw intermediate to deep-merge a partial patch
-// before validating (see [ports.PatchEncoded]). Prefer [Format.Unmarshal]
+// before validating (see [ports.File.PatchEncoded]). Prefer [Format.Unmarshal]
 // for a normal full decode.
 func (f Format[T]) UnmarshalRaw(data []byte) (any, error) {
 	if f.unmarshal == nil {
@@ -161,7 +161,7 @@ func (f Format[T]) UnmarshalRaw(data []byte) (any, error) {
 // WITHOUT running it through the codec's Encode. Only valid when
 // [Format.IsPatchable] is true — exposed for callers that need to write
 // back a merged intermediate map that may carry fields outside the file's
-// own codec (see [ports.PatchEncoded]). Prefer [Format.Marshal] for a
+// own codec (see [ports.File.PatchEncoded]). Prefer [Format.Marshal] for a
 // normal full encode.
 func (f Format[T]) MarshalRaw(v any) ([]byte, error) {
 	if f.marshal == nil {
@@ -192,7 +192,7 @@ func (f Format[T]) PatchInto(existing []byte, patch map[string]any) (T, error) {
 // DeepMerge applies src over dst in place. Nested maps at the same key are
 // recursively merged. Scalar and array values in src overwrite those in dst.
 // Exposed for callers that need to merge two map[string]any intermediates
-// themselves (see [ports.PatchEncoded]); [Format.PatchInto] uses it internally.
+// themselves (see [ports.File.PatchEncoded]); [Format.PatchInto] uses it internally.
 //
 // Promoted to [codex.DeepMerge] (single source of truth, since this logic is
 // pure map[string]any composition unrelated to any wire format) — this is now

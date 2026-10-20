@@ -90,9 +90,9 @@ func Build(obs stats.Observer) (*Built, error) {
 		HandleBoundMW(auth.NewOAuthMwReqreply(auth.VerifyOAuthComputeZeroMQ)).
 		HandleMW(nil, reqreply.Observability[routes.OAuthComputeReq, routes.OAuthComputeResp](obs)).
 		WithHandler(handlers.AddOAuth).
-		WithOpt(reqreply.WithHandleCallback(func(h *reqreply.RouteHandle[routes.OAuthComputeReq, routes.OAuthComputeResp]) {
+		WithHandleCallback(func(h *reqreply.RouteHandle[routes.OAuthComputeReq, routes.OAuthComputeResp]) {
 			oauthHandle = h
-		}))
+		})
 	// PropertyAxisComputeRoute — the SAME propertyaxis.NewTenantPropertyMw
 	// (declaration) + propertyaxis.ProcessTenant (implementation),
 	// bundled together in the propertyaxis/ package, attached via
@@ -108,9 +108,9 @@ func Build(obs stats.Observer) (*Built, error) {
 		HandleBoundMW(propertyaxis.NewTenantPropertyMw(propertyaxis.ProcessTenant)).
 		HandleMW(nil, reqreply.Observability[routes.ComputeReq, routes.ComputeResp](obs)).
 		WithHandler(handlers.Add).
-		WithOpt(reqreply.WithHandleCallback(func(h *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]) {
+		WithHandleCallback(func(h *reqreply.RouteHandle[routes.ComputeReq, routes.ComputeResp]) {
 			propertyAxisHandle = h
-		}))
+		})
 	// auth.ComputeGSRoute demonstrates the GENERALIZED reqreply.
 	// SecurityMiddleware[In, Out] + GrantedScopes + ContextField
 	// mechanism (docs/design/d-0007-declarative-middleware-layering.md)

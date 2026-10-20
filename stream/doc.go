@@ -16,7 +16,7 @@
 // Pipelines are composed by passing [Stream] values between free functions:
 //
 //	sensors  := stream.FromCodec(ctx, rawCh, format.JSON(sensorCodec), stream.SourceOptions{Observer: obs})
-//	oeeData  := stream.Apply(ctx, sensors, oeeCalcFn, stream.ApplyOptions{Observer: obs})
+//	oeeData  := sensors.Apply(ctx, oeeCalcFn, stream.ApplyOptions{Observer: obs})
 //	oeeData   = stream.Tap(ctx, oeeData, func(oee OEE) { dashboard.Publish(oee) })
 //	alerts   := stream.Filter(ctx, oeeData, func(o OEE) bool { return float64(o) < 0.65 })
 //	stream.Drain(ctx, alerts, publishAlert, logError, stream.DrainOptions{Observer: obs})
@@ -42,7 +42,7 @@
 // Forge functions can be composed before being used in a stream:
 //
 //	composed := forge.Compose("c2k", "1.0.0", celsius2centi, centi2kelvin)
-//	kelvinStream := stream.Apply(ctx, celsiusStream, composed, opts)
+//	kelvinStream := celsiusStream.Apply(ctx, composed, opts)
 //
 // # Two observer kinds
 //

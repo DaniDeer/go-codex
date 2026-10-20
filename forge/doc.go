@@ -111,7 +111,7 @@
 //
 //	func StartPipeline(ctx context.Context) {
 //	    sensors := SensorReadings.Stream(ctx)
-//	    oeeStream := stream.Apply(ctx, sensors, oeeCalcFn, stream.ApplyOptions{})
+//	    oeeStream := sensors.Apply(ctx, oeeCalcFn, stream.ApplyOptions{})
 //	    go OEEResults.Feed(ctx, oeeStream)
 //	}
 //

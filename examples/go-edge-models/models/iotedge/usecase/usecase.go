@@ -141,17 +141,15 @@ func (s *Scope) WriteUseCaseFile(ctx context.Context, useCaseName Name, manifest
 // PatchUseCaseFile applies a typed partial update (via patchCodec) to
 // useCaseName's deployment manifest under s's bound basePath — the
 // Stage D2 equivalent of the former
-// ports.PatchEncoded(usecase.NewFile(basePath), ...) call external
-// callers (app/iotedge.PatchUseCaseModule) used directly. A FREE
-// FUNCTION, not a *Scope method: Go methods cannot introduce a new
-// type parameter (P) beyond the receiver's own — the same reason
-// [file.WithPatch] itself is a free function, not a Resource[T]
-// method (see that function's own doc comment). Unlike every other
+// usecase.NewFile(basePath).PatchEncoded(...) call external
+// callers (app/iotedge.PatchUseCaseModule) used directly. A generic
+// method on *Scope (P introduced fresh on the method itself — see
+// [file.Resource.WithPatch]'s own doc comment). Unlike every other
 // method in this file, the Patch Handle can't be cached on *Scope
 // ahead of time (its own type parameter P varies per call) — built
 // fresh here, from s's own cached router.
-func PatchUseCaseFile[P any](ctx context.Context, s *Scope, useCaseName Name, patchCodec codex.Codec[P], patch P, opts ...file.WriteOptions) error {
-	handle, err := file.WithPatch(fileResource, patchCodec, file.Patch{}).Handle(s.client, file.WithRouter(s.router))
+func (s *Scope) PatchUseCaseFile[P any](ctx context.Context, useCaseName Name, patchCodec codex.Codec[P], patch P, opts ...file.WriteOptions) error {
+	handle, err := fileResource.WithPatch(patchCodec, file.Patch{}).Handle(s.client, file.WithRouter(s.router))
 	if err != nil {
 		return err
 	}

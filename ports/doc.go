@@ -82,7 +82,7 @@
 //   - [File.Write]  — full encode (overwrites file with T); use when you already have the decoded value
 //   - [File.Update] — typed read-modify-write: fn(T) T; use when you need the latest file state first
 //   - [File.Patch]  — partial field update (map[string]any); unknown fields dropped
-//   - [PatchEncoded] — typed partial update via a separate patch codec (free function);
+//   - [File.PatchEncoded] — typed partial update via a separate patch codec;
 //     fields in patchCodec but NOT in the file codec are preserved in the output
 //
 // # Field survival rules for Patch and PatchEncoded
@@ -94,7 +94,7 @@
 //	// → file codec fields updated/re-written; "port" updated; unknown keys dropped
 //
 //	// PatchEncoded: patchCodec fields survive even if not in the file codec
-//	ports.PatchEncoded(configFile, nil, patchCodec, patchValue, opts)
+//	configFile.PatchEncoded(nil, patchCodec, patchValue, opts)
 //	// → file codec fields updated/re-written; patchCodec fields written (even extra ones)
 //
 // Field survival summary:
@@ -104,7 +104,7 @@
 //	Field in patchCodec only (not in file codec)          → written by PatchEncoded ✓
 //	Field in neither codec                                → dropped by both Patch and PatchEncoded
 //
-// Key rule: use [PatchEncoded] to intentionally add new fields to a file by
+// Key rule: use [File.PatchEncoded] to intentionally add new fields to a file by
 // declaring them in the patch codec. Use [File.Patch] with an explicit
 // map[string]any when unknown keys should be silently discarded.
 //

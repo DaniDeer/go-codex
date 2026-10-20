@@ -9,7 +9,7 @@
 //
 //	// examples/sensor-service (forge-pipeline style):
 //	sensors := domain.SensorReadings.Stream(ctx)
-//	oee := stream.Apply(ctx, sensors, oeeCalcFn, stream.ApplyOptions{})
+//	oee := sensors.Apply(ctx, oeeCalcFn, stream.ApplyOptions{})
 //	go domain.OEEResults.Feed(ctx, oee)
 //
 //	// examples/ports-plain-go (plain-Go style, this file):
@@ -311,7 +311,7 @@ func main() {
 		convertPattern("/convert-pipeline/"), ports.PortOptions{RESTBuilder: pipelineBuilder}))
 
 	pipelinePort.SetPipeline(func(ctx context.Context, in ConvertIn) stream.Stream[ConvertOut] {
-		return stream.Apply(ctx, stream.Single(ctx, in), convertFunction, stream.ApplyOptions{})
+		return stream.Single(ctx, in).Apply(ctx, convertFunction, stream.ApplyOptions{})
 	})
 
 	if err := pipelinePort.Bind(ctx, nethttp.PipelineAdapter(mux, pipelineHandle,

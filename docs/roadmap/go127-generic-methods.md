@@ -1,10 +1,11 @@
 # Go 1.27 Generic Methods — retrofitting `any`-typed/free-function workarounds
 
-> **Status:** Idea / investigation — Explore mode. Scope confirmed with
-> the user (both tiers in scope, old signatures removed outright as a
-> breaking change); full before/after signature design and a
-> blast-radius audit are still open work. No code changes yet. A
-> follow-up coverage review (see "Additional Tier 1 candidates" and
+> **Status: Tier 1 IMPLEMENTED and SHIPPED.** Tier 2 (`events`/
+> `reqreply`/`rest`/`api/file` Client dispatch — ~100+ call sites across
+> 4 packages) remains explicitly **deferred to a separate future
+> round** — not attempted this round.
+>
+> A follow-up coverage review (see "Additional Tier 1 candidates" and
 > "A second, equally permanent category" below) widened the Tier 1
 > survey, added a new permanent cross-package exclusion, resolved open
 > question #1 via a real `go1.27.2` compile check, and spun off three
@@ -12,6 +13,29 @@
 > ([go127-stdlib-uuid.md](go127-stdlib-uuid.md),
 > [go127-synctest-stream-tests.md](go127-synctest-stream-tests.md),
 > [go127-json-v2-evaluation.md](go127-json-v2-evaluation.md)).
+>
+> An implementation round then SHIPPED every true Tier 1 candidate as a
+> generic method, removing the old free function outright (breaking
+> change, no deprecated wrapper, per this doc's own scope decision):
+> `codex.Maybe[T].Map`/`.FlatMap`, `codex.Either[A,B].MapLeft`/
+> `.MapRight`/`.Fold`, `api/file.Resource[T].WithPatch`,
+> `ports.File[T].PatchEncoded`, `stream.Stream[In].Apply`,
+> `stream.(*Topology).WithApply`, and the go-edge-models example's
+> `usecase.(*Scope).PatchDeviceFile`/`.PatchUseCaseFile`. `Route[Req,
+> Resp].WithHandleCallback` shipped too, but ADDITIVELY (the free
+> function stays — see "`WithHandleCallback`: resolved fluent-chain
+> design" below).
+>
+> Two design rounds concluded their targets should STAY free functions
+> (no code change): the 4 top-level constructors (`forge.NewFunction`/
+> `api/llm.NewCall`/`api/reqreply.NewRoute`/`api/rest.NewRoute` — see
+> "Resolved: the 4 constructor symbols") and `internal/middleware`'s
+> `ContextField` setters/`BoundNameOf` (see "Resolved:
+> `internal/middleware`'s `ContextField` setters and `bound.go`").
+>
+> Verified after implementation: `go build ./...`, `go vet ./...`,
+> `go test ./...`, `just check` (staticcheck + gosec + gofmt), and
+> `just examples` (full example sweep) all pass with zero failures.
 > [← Back to Roadmap](index.md)
 
 ## Motivation
@@ -41,7 +65,19 @@ just incidental style), confirmed via a repo-wide grep, not assumed:
 - `ports/file.go` (`PatchEncoded`)
 - `internal/middleware/context_field.go` (`ContextFieldSetter`'s own
   doc comment, describing why `Middleware[In,Out].SetContextFieldFromIn`
-  could not simply take a `ContextField[V]` directly)
+  could not simply take a `ContextField[V]` directly) — **RESOLVED, see
+  "Resolved: `internal/middleware`'s `ContextField` setters" below: this
+  is NOT a free-function workaround at all.
+  `SetContextFieldFromIn`/`SetContextFieldFromOut` are already shipped,
+  callable METHODS on `Middleware[In,Out]`
+  (`api/rest`/`api/events`/`api/reqreply/middleware_declaration.go:233`/
+  `264`/`193`, confirmed via real call sites, e.g.
+  `examples/rest-api/auth/middleware.go:121`). The cited doc comment
+  documents why a *naive, rejected* signature
+  (`SetContextFieldFromIn(field ContextField[V], ...)`) doesn't compile
+  — the shipped fix is the `ContextFieldSetter` interface
+  (type-erasing `V`), which keeps the method a method with ZERO new
+  type parameters, not a free function. Go 1.27 changes nothing here.**
 - `api/events/builder.go` (`Client.transport`'s own doc comment, citing
   "Decision 5" of the SHIPPED `docs/design/d-0002-pubsub-workflow-simplification.md`)
 
@@ -90,9 +126,9 @@ the call-site rewrite itself.
 | `codex.MaybeMap[T, R](m Maybe[T], fn func(T) R) Maybe[R]` | `codex/maybe.go` | `func (m Maybe[T]) Map[R any](fn func(T) R) Maybe[R]` |
 | `codex.MaybeFlatMap[T, R](m Maybe[T], fn func(T) Maybe[R]) Maybe[R]` | `codex/maybe.go` | `func (m Maybe[T]) FlatMap[R any](fn func(T) Maybe[R]) Maybe[R]` |
 | `api/file.WithPatch[T, P](r Resource[T], patchCodec codex.Codec[P], op Patch) Patcher[T, P]` | `api/file/builder.go` | `func (r Resource[T]) WithPatch[P any](patchCodec codex.Codec[P], op Patch) Patcher[T, P]` |
-| `forge.NewFunction[In, Out](...)` | `forge/function.go` | Needs its own look — `NewFunction` is a top-level constructor, not clearly "a method on an existing generic receiver" the way the others are; may stay a free function regardless, or may become a method on a yet-to-exist builder type. Flagged as the one Tier 1 candidate needing its own small design decision, not a mechanical rename. |
+| `forge.NewFunction[In, Out](...)` | `forge/function.go` | **RESOLVED — stays a free function.** See "Resolved: the 4 constructor symbols (`forge.NewFunction`/`api/llm.NewCall`/`api/reqreply.NewRoute`/`api/rest.NewRoute`)" below for the full design round and compile-check evidence. |
 | `ports.PatchEncoded[T, P](fh File[T], vars, patchCodec codex.Codec[P], patch P, opts) error` | `ports/file.go` | `func (fh File[T]) PatchEncoded[P any](vars map[string]string, patchCodec codex.Codec[P], patch P, opts ...FileOptions) error` |
-| `internal/middleware`'s `SetContextFieldFromIn`/`SetContextFieldFromOut`-style constructors (`context_field.go`, `bound.go`) | `internal/middleware/` | Needs checking whether these are free functions BECAUSE of a method-type-param limitation, or because they return a `RouteMiddleware`-satisfying value independent of any receiver — may turn out NOT to be a true Tier 1 case once re-examined; flagged for the audit, not pre-judged here. |
+| ~~`internal/middleware`'s `SetContextFieldFromIn`/`SetContextFieldFromOut`-style constructors (`context_field.go`, `bound.go`)~~ | `internal/middleware/` | **RESOLVED — NOT a Tier 1 case, removed from this table.** See "Resolved: `internal/middleware`'s `ContextField` setters and `bound.go`" below for the full re-examination. |
 | `usecase.PatchUseCaseFile[P]`/`PatchDeviceFile[P]` (this session's own code) | `examples/go-edge-models/models/iotedge/usecase/*.go` | `func (s *Scope) PatchUseCaseFile[P any](ctx, useCaseName Name, patchCodec codex.Codec[P], patch P, opts ...file.WriteOptions) error` (same shape, `*Scope` already exists as the natural receiver) |
 
 Each of these would need, at minimum: the new method signature, removal
@@ -110,16 +146,331 @@ more doc-comment-confirmed cases the original survey missed:
 | `codex.EitherMapLeft[A, B, C](e Either[A, B], fn func(A) C) Either[C, B]` | `codex/either.go` | `func (e Either[A, B]) MapLeft[C any](fn func(A) C) Either[C, B]` |
 | `codex.EitherMapRight[A, B, C](e Either[A, B], fn func(B) C) Either[A, C]` | `codex/either.go` | `func (e Either[A, B]) MapRight[C any](fn func(B) C) Either[A, C]` |
 | `codex.EitherFold[A, B, R](e Either[A, B], onLeft func(A) R, onRight func(B) R) R` | `codex/either.go` | `func (e Either[A, B]) Fold[R any](onLeft func(A) R, onRight func(B) R) R` |
-| `api/llm.NewCall[Req, Resp](...)` | `api/llm/call.go` | Same "needs its own small design decision" flag as `forge.NewFunction` — a top-level constructor, not obviously a method on an existing receiver. |
-| `api/reqreply.NewRoute[Req, Resp](...)` | `api/reqreply/route.go` | Same flag as `api/llm.NewCall`/`forge.NewFunction` — constructor, not a mechanical rename. |
-| `api/reqreply.WithHandleCallback[Req, Resp](fn func(*RouteHandle[Req, Resp])) RouteOpt` | `api/reqreply/router.go` | Doc comment: "Go forbids new type parameters on a method; mirrors `api/rest.WithHandleCallback`'s identical resolution." Needs checking whether this is a true Tier 1 case or, like `internal/middleware`'s `ContextField` setters, a value independent of any receiver. |
-| `api/rest`'s analogous `WithHandleCallback`-shaped helper (tied to `docs/design/d-0007-declarative-middleware-layering.md`) | `api/rest/router.go` | Same flag as the `api/reqreply` twin above. |
+| `api/llm.NewCall[Req, Resp](...)` | `api/llm/call.go` | **RESOLVED — stays a free function.** See "Resolved: the 4 constructor symbols" below. |
+| `api/reqreply.NewRoute[Req, Resp](...)` | `api/reqreply/route.go` | **RESOLVED — stays a free function.** See "Resolved: the 4 constructor symbols" below. |
+| `api/rest.NewRoute[Req, Resp](...)` (a second, previously unlisted `NewRoute` twin, found during this round's blast-radius check — `api/rest/builder.go:3712`) | `api/rest/builder.go` | **RESOLVED — stays a free function.** Same design round as `api/reqreply.NewRoute` (the two are structurally identical: `method/topic, path/topic-template, reqCodec, respCodec, opts...`). See "Resolved: the 4 constructor symbols" below. |
+| `api/reqreply.WithHandleCallback[Req, Resp](fn func(*RouteHandle[Req, Resp])) RouteOpt` | `api/reqreply/router.go` | **RESOLVED** (see `design-withhandlecallback` below) — `func (r Route[Req, Resp]) WithHandleCallback(fn func(*RouteHandle[Req, Resp])) Route[Req, Resp] { return r.WithOpt(handleCallbackOpt{fn: fn}) }`. Needs ZERO new type parameters (`Req`/`Resp` are already bound on the receiver) — the doc comment's "Go forbids new type parameters on a method" claim was investigated and found to be the WRONG historical reason (verified: `Req`/`Resp` on `handleCallbackOpt`'s captured closure already match `Route[Req, Resp]`'s own). The REAL reason it was a free function was never stated in the doc comment at all; converting to a method is purely upside. |
+| `api/rest`'s analogous `WithHandleCallback`-shaped helper (tied to `docs/design/d-0007-declarative-middleware-layering.md`) | `api/rest/router.go` | **RESOLVED**, identical to the `api/reqreply` twin — `func (r Route[Req, Resp]) WithHandleCallback(fn func(*RouteHandle[Req, Resp])) Route[Req, Resp] { return r.WithOpt(handleCallbackOpt{fn: fn}) }`. Same investigation, same conclusion, structurally identical signature. |
 
 `codex/either.go`'s `Swap` method is the existing proof this pattern
 already works today for the NO-new-type-param case (it only reorders
 `Either[A,B]`'s own `A`/`B`); `MapLeft`/`MapRight`/`Fold` are the
 genuinely blocked, new-type-parameter siblings that `MaybeMap` already
 established the precedent for.
+
+### Resolved: `internal/middleware`'s `ContextField` setters and `bound.go`
+
+Re-examined per `design-contextfield-setters`: read
+`internal/middleware/context_field.go` and `internal/middleware/bound.go`
+COMPLETE, grepped every real call site across the repo, and traced the
+actual shipped signatures. Conclusion for every symbol previously
+flagged "needs checking": **neither file has a true Tier 1 case.** Both
+symbols are correctly classified as free functions ALREADY, for reasons
+unrelated to Go's "no new type params on a method" restriction — Go
+1.27 changes nothing for either one.
+
+**1. `Middleware[In,Out].SetContextFieldFromIn`/`SetContextFieldFromOut`
+— NOT free functions at all; already shipped METHODS.**
+
+```go
+// api/rest/middleware_declaration.go:233 (events:264, reqreply:193 — identical shape)
+func (m Middleware[In, Out]) SetContextFieldFromIn(field ContextFieldSetter, get func(In) any) Middleware[In, Out]
+func (m Middleware[In, Out]) SetContextFieldFromOut(field ContextFieldSetter, get func(Out) any) Middleware[In, Out]
+```
+
+Confirmed via real call sites, all method-chained on an existing
+`Middleware[In,Out]` value, never called as a bare function:
+
+- `examples/rest-api/auth/middleware.go:121` —
+  `....SetContextFieldFromIn(GrantedScopesUserIDField, func(in AuthIn) any { return in.Token })`
+- `examples/events-api/auth/middleware.go:135` — same pattern
+- `examples/reqreply-api/auth/route.go:67` —
+  `....SetContextFieldFromOut(GrantedScopesUserIDField, func(out GrantedScopesAuthOut) any { return out.Subject })`
+
+The `ContextFieldSetter` doc comment in `context_field.go` (around line
+103) cites "a confirmed, compile-verified design error" — but that
+error describes a *rejected, never-shipped* naive signature,
+`func (m Middleware[In, Out]) SetContextFieldFromIn(field ContextField[V], ...)`,
+which indeed does not compile (`V` undefined on the method). The
+SHIPPED fix is NOT "make it a free function" — it's the
+`ContextFieldSetter` interface (`interface { Set(ctx context.Context, raw any) error }`),
+which every `ContextField[V]` implements REGARDLESS of `V`. Passing a
+`ContextFieldSetter` instead of `ContextField[V]` directly lets
+`SetContextFieldFromIn` stay a genuine method with ZERO new type
+parameters — `V` is erased at the call boundary, never needed in the
+method's own signature. This is actually a BETTER outcome than a Go
+1.27 method-type-param retrofit would produce: a 1.27 signature
+(`func (m Middleware[In, Out]) SetContextFieldFromIn[V any](field ContextField[V], get func(In) any) Middleware[In, Out]`)
+would force every call site to either rely on inference from `field`'s
+own concrete type (works) but would gain nothing in return — the
+existing interface-based method is already exactly as ergonomic, is
+already shipped, already has full test/example coverage, and avoids
+coupling the method's own signature to `V` at all. **Conclusion: stays
+exactly as-is. No code change, now or ever, tracked here.**
+
+**2. `middleware.BoundNameOf(bm any) string` — correctly a free
+function, for a DIFFERENT reason than the method-type-param limitation;
+same "value independent of any receiver" shape as `WithHandleCallback`.**
+
+```go
+// internal/middleware/bound.go:86
+func BoundNameOf(bm any) string {
+	if n, ok := bm.(BoundNamed); ok {
+		return n.MiddlewareName()
+	}
+	return ""
+}
+```
+
+`bm` is deliberately `any` — it's a type-erased bound-middleware value
+whose CONCRETE type varies per call site and per API pattern
+(`rest.BoundMiddleware[Req,In,Out]`, `events.BoundSubscribeMiddleware[T,In,Out]`,
+`reqreply.BoundClientMiddleware[Req,In,Out]`, ...). Confirmed via real
+call sites — both of `internal/middleware`'s own consumers forward it
+unchanged, never adding a type parameter of their own:
+
+```go
+// api/rest/bound_middleware.go:394 (reqreply/bound_middleware.go:370 — identical)
+func boundNameOf(bm any) string { return middleware.BoundNameOf(bm) }
+```
+
+There is no "new type parameter a method can't introduce" here at
+all — `BoundNameOf` introduces zero type parameters, generic or
+otherwise; it operates purely via a runtime interface type-assertion
+against `BoundNamed`. It also has **no natural receiver type in
+`internal/middleware` itself** to hang a method on: the bound
+middleware VALUES (`rest.BoundMiddleware[Req,In,Out]`, etc.) are each
+pattern-specific types declared in `api/rest`/`api/events`/`api/reqreply`,
+never in `internal/middleware` — and per this codebase's own
+cross-package method rule, a method can only be added in the SAME
+package as its receiver type, so `internal/middleware` could not add a
+`.Name()` method to any of them even if it wanted to. This is exactly
+the same shape already identified for `api/rest`/`api/reqreply`'s
+(resolved) `WithHandleCallback`-style helpers above: a value-independent
+free function that was never blocked by the method-type-param
+restriction in the first place. **Conclusion: stays a free function —
+correct today, and Go 1.27 provides no mechanism that would change
+this (it lifts a method-type-param restriction; `BoundNameOf`'s free-
+function shape is driven by "no natural in-package receiver exists",
+an orthogonal constraint 1.27 does not touch).**
+
+**Net outcome for `impl-contextfield-setters`**: no implementation
+work is needed — both files are correctly shaped already. That todo
+should conclude "no change needed" per its own stated fallback.
+
+### Resolved: the 4 constructor symbols (`forge.NewFunction`/`api/llm.NewCall`/`api/reqreply.NewRoute`/`api/rest.NewRoute`)
+
+(`design-builder-constructors`, this session's own design round.) All
+four were flagged above as "needs its own small design decision" because,
+unlike `MaybeMap`/`WithPatch`/`PatchEncoded`/`EitherMapLeft`/etc., they are
+not methods on a pre-existing generic receiver forced into free-function
+form — they are **top-level constructors**: there is no `Function[In,
+?]`/`Call[Req, ?]`/`Route[Req, ?]` value in existence before the second
+type parameter (`Out`/`Resp`) is chosen. The candidate shape investigated
+was a two-stage builder:
+
+```go
+func NewXBuilder[In any](... In-only params ...) *XBuilder[In]
+func (b *XBuilder[In]) Build[Out any](... Out-only params ...) *X[In, Out]
+```
+
+#### 1. Real, current signatures (read directly, not paraphrased)
+
+```go
+// forge/function.go:96
+func NewFunction[In, Out any](
+    name, version string,
+    input codex.Codec[In],
+    output codex.Codec[Out],
+    apply func(In) (Out, error),
+    opts ...FunctionOpt,
+) *Function[In, Out]
+
+// api/llm/call.go:114
+func NewCall[Req, Resp any](
+    name string,
+    reqCodec codex.Codec[Req],
+    respCodec codex.Codec[Resp],
+    opts ...CallOpt,
+) Call[Req, Resp]
+
+// api/reqreply/route.go:1046
+func NewRoute[Req, Resp any](
+    topic string,
+    reqCodec codex.Codec[Req],
+    respCodec codex.Codec[Resp],
+    opts ...RouteOpt,
+) Route[Req, Resp]
+
+// api/rest/builder.go:3712
+func NewRoute[Req, Resp any](
+    method, path string,
+    reqCodec codex.Codec[Req],
+    respCodec codex.Codec[Resp],
+    opts ...RouteOpt,
+) Route[Req, Resp]
+```
+
+#### 2. The `opts` split — real, per-symbol, not assumed
+
+Every `opts` element type was read individually (not just the sealed
+interface declaration) to check whether it references `In`/`Out` (or
+`Req`/`Resp`):
+
+- **`forge.FunctionOpt`** (`forge/options.go`): `FunctionMeta` (plain
+  strings, no type param) and `WithRefinement[In any](fn func(In) error)
+  FunctionOpt` (captures `In` only, stored as `functionOptions.refinement
+  func(any) error`). **Zero `Out`-dependent variants exist.** The whole
+  `opts` list is therefore cleanly In-only — it can move to Stage 1
+  (`NewFunctionBuilder`) with no loss.
+- **`api/llm.CallOpt`** (`api/llm/call.go`): `SystemPromptOpt`/
+  `SystemPromptFileOpt`/`IncludeRequestSchemaOpt`/`CallMeta` (no type
+  param) and `UserMessageOpt[Req any]{fn func(Req) (string, error)}`
+  (captures `Req` only). **Zero `Resp`-dependent variants exist.** Same
+  conclusion: `opts` is cleanly Req-only, movable to Stage 1
+  (`NewCallBuilder`).
+- **`api/reqreply.RouteOpt`** (`api/reqreply/route.go`): `TopicParam`/
+  `RouteMeta`/`securitySchemeOpt`/`ErrorReplyMeta` (no type param),
+  `MergedTopicParam[Req]`/`requestFormatsOpt[Req]` (via
+  `RequestFormats[Req]`, Req-only) — **but also `formatsOpt[Resp]`
+  (via `Formats[Resp any](fmts ...format.Format[Resp]) RouteOpt`,
+  line 164), which is genuinely `Resp`-only.** `RouteOpt` MIXES Req-only
+  and Resp-only variants in one sealed interface — there is no clean
+  split point. Forcing one would mean either splitting `RouteOpt` itself
+  into two sealed interfaces (a much larger, separately-breaking change,
+  out of scope for this retrofit) or accepting that `opts` can only be
+  supplied once both `Req` and `Resp` are concrete — i.e. at Stage 2.
+- **`api/rest.RouteOpt`** (`api/rest/builder.go`): same shape, same
+  conclusion, more pronounced — `PathParam`/`QueryParam`/`CookieParam`/
+  `HeaderParam`/`RouteMeta`/`ResponseMeta` (no type param),
+  `MergedPathParam[Req]`/`RequestFormats[Req]` (Req-only), AND
+  `ResponseHeaderParam`/`ResponseCookieParam`'s `Merged*Param[Resp]`
+  variants plus `Formats[Resp]` (Resp-only). **Same mixed-dependency
+  finding as `api/reqreply.RouteOpt` — no clean split exists.**
+
+This is the one genuinely asymmetric finding of this design round:
+`forge`/`llm`'s option families split cleanly (In/Req-only); `reqreply`/
+`rest`'s do not (both directions represented). Any future implementation
+MUST NOT force a bad split on the latter two — if a two-stage shape is
+ever adopted for them, `opts` stays bundled entirely in Stage 2 (`Build`).
+
+#### 3. Compile-check: does Go 1.27 method-type-param inference actually work here?
+
+A throwaway file (`go1.27.2`, deleted after this check — never
+committed) mirrored all 4 shapes with stand-in `Codec[T]`/opt types,
+built as follows, then run with `go run`:
+
+```go
+type FunctionBuilder[In any] struct{ /* name, version, input, opts */ }
+func NewFunctionBuilder[In any](name, version string, input Codec[In], opts ...FunctionOpt) *FunctionBuilder[In]
+func (b *FunctionBuilder[In]) Build[Out any](output Codec[Out], apply func(In) (Out, error)) *Function[In, Out]
+
+type CallBuilder[Req any] struct{ /* name, reqCodec, opts */ }
+func NewCallBuilder[Req any](name string, reqCodec Codec[Req], opts ...CallOpt) *CallBuilder[Req]
+func (b *CallBuilder[Req]) Build[Resp any](respCodec Codec[Resp]) Call[Req, Resp]
+
+type RouteBuilder[Req any] struct{ /* topic, reqCodec — no opts */ }
+func NewRouteBuilder[Req any](topic string, reqCodec Codec[Req]) *RouteBuilder[Req]
+func (b *RouteBuilder[Req]) Build[Resp any](respCodec Codec[Resp], opts ...RouteOpt) Route[Req, Resp]
+
+// Call sites — ZERO explicit type arguments anywhere, at either stage:
+fb := NewFunctionBuilder("calc", "1.0.0", inputCodec, metaOpt{...})
+fn := fb.Build(outputCodec, func(in SensorData) (Grade, error) { ... })
+
+cb := NewCallBuilder("summarize", inputCodec, sysPrompt{...})
+call := cb.Build(outputCodec)
+
+rb := NewRouteBuilder("compute/add", inputCodec)
+route := rb.Build(outputCodec, topicParam{...})
+```
+
+**Result: compiled and ran successfully on the first try.** `In`/`Req` is
+inferred at `NewXBuilder` from the codec argument's type; `Out`/`Resp` is
+inferred at `Build` from the output-codec/apply-closure argument's type —
+**no call site anywhere needs an explicit `[In]`/`[Out]` type argument at
+either stage.** This confirms Go 1.27's method-type-param inference is a
+complete, no-regression replacement for the free-function form,
+mechanically.
+
+#### 4. But does the free function ALREADY have this same inference property? — yes, confirmed via real repo code
+
+The mechanical compile-check above proves the two-stage shape is *possible*
+and loses no inference ergonomics. It does **not** by itself prove the
+two-stage shape is *better* than today's single-call free function,
+because Go's ordinary argument-type inference already lets a free
+function with two type parameters omit both, in one call, when both
+appear in argument position — exactly `NewFunction[In, Out]`'s/
+`NewRoute[Req, Resp]`'s own shape. This is confirmed by real, already-
+merged, already-compiling repo code, not assumed:
+
+- `examples/sensor-service/ioports/ports.go:236` —
+  `var CreateRoute = rest.NewRoute("POST", "/readings", ...)` — **zero
+  explicit type arguments**, `Req`/`Resp` fully inferred from the codec
+  arguments, compiles today (`go build ./examples/sensor-service/...`
+  passes).
+- Every one of `forge.NewFunction`'s 22 real repo call sites
+  (`grep -rn "forge\.NewFunction\[" | grep -v _test.go` → 0 hits;
+  `grep -rn "= forge\.NewFunction("` → 22 hits) **already omits explicit
+  type arguments** — 100% inference-only, not a theoretical possibility.
+- `api/rest.NewRoute`/`api/reqreply.NewRoute` call sites that DO write
+  `[Req, Resp]` explicitly (the majority — see blast-radius below) do so
+  by convention/clarity, not necessity; the explicit form and the
+  inferred form are both already available today, with zero migration.
+
+**This means the two-stage builder's headline ergonomic benefit —
+"caller never writes an explicit type argument" — is not a NEW
+capability at all for these 4 symbols.** The free-function form already
+has it. The only thing a two-stage split could add is letting a caller
+supply the `In`/`Req`-side arguments once and reuse the resulting builder
+across several different `Out`/`Resp` variants — a real but narrow
+use case with no existing demand found in this repo (every `Function`/
+`Call`/`Route` declaration in the codebase is a single, one-shot package
+`var`, never re-parameterized over a shared In-side builder).
+
+#### 5. Blast-radius correction (the todo's own premise was checked, and found wrong)
+
+The todo's background claimed "~2 real top-level app call sites each" for
+`api/reqreply.NewRoute`/`api/rest.NewRoute`, citing
+`examples/sensor-service/ioports/ports.go` as one of them. A real,
+repo-wide grep (non-test `.go` files, own package excluded) found this
+premise does not hold:
+
+| Symbol | Real non-test call sites outside own package |
+|---|---|
+| `forge.NewFunction` | 22 (100% inference-only, see §4) |
+| `api/llm.NewCall` | 1 (`ports/handle.go`'s own generic dispatch — Req/Resp already in scope there; every other hit is in a `_test.go` file) |
+| `api/reqreply.NewRoute` | 29 (mostly `examples/reqreply-api/routes/*.go`, plus `ports/handle.go`) |
+| `api/rest.NewRoute` | 66 (examples across the repo: `rest-api`, `rest-builder`, `go-edge-models`, `rest-nested-binary`, `typed-params`, `rest-redirect`, …, plus `ports/handle.go`) |
+
+`api/llm.NewCall` genuinely matches the "rare, mostly internal" premise.
+`api/reqreply.NewRoute`/`api/rest.NewRoute` do **not** — both have
+dozens of real, independent call sites, making a breaking signature
+change here carry real migration cost repo-wide, not a small one.
+
+#### 6. Final per-symbol decision
+
+| Symbol | Decision | Reasoning |
+|---|---|---|
+| `forge.NewFunction[In, Out]` | **Stays a free function.** | Top-level constructor, not a receiver retrofit. `opts` splits cleanly (In-only) but the free form already has full argument-type inference (22/22 real call sites already inference-only) — a two-stage builder would only reshape one call into two, for a "reuse the In-side builder across several Outs" use case with zero current demand. |
+| `api/llm.NewCall[Req, Resp]` | **Stays a free function.** | Same reasoning as `forge.NewFunction`; `opts` also splits cleanly (Req-only), and real-world usage is genuinely rare (1 non-test call site), so there is no meaningful blast radius either way — but no positive case for the change either. |
+| `api/reqreply.NewRoute[Req, Resp]` | **Stays a free function.** | `RouteOpt` does NOT split cleanly (`Formats[Resp]` is genuinely Resp-only, alongside Req-only variants) — a two-stage shape would have to bundle ALL opts into Stage 2 anyway, making Stage 1 nearly pointless (topic + reqCodec only). Combined with 29 real call sites and zero inference benefit over today's free function, there is no net win. |
+| `api/rest.NewRoute[Req, Resp]` | **Stays a free function.** | Same `RouteOpt` mixed-dependency finding as `api/reqreply.NewRoute`, and the LARGEST real blast radius of all 4 (66 call sites) — converting this one has the highest cost and, per the inference findings above, no corresponding ergonomic benefit. |
+
+**General finding for this whole investigation**: the original Tier 1
+table's working assumption — "a free function exists today because a
+method couldn't add a new type parameter, so Go 1.27 now lets it become
+a method" — does not apply to any of these 4 symbols. That restriction
+only ever applied to a method on an **already-existing** generic
+receiver (`Maybe[T]`, `Either[A,B]`, `Resource[T]`, `File[T]`) gaining a
+*second* type parameter. A top-level constructor has no pre-existing
+receiver at all — the free-function form was never a workaround for
+these 4; it is the natural, and already fully capable (via argument-type
+inference), shape for "build a brand-new two-type-parameter value from
+scratch." No implementation work follows from this todo for any of the
+4 symbols — `forge/function.go`, `api/llm/call.go`,
+`api/reqreply/route.go`, `api/rest/builder.go` all stay unchanged, and
+the 4 planned implementation todos should be closed as "no change
+needed," mirroring `impl-contextfield-setters`'s own precedent above.
 
 ### A newly identified Tier 1 candidate outside the original survey: `stream`
 
@@ -152,6 +503,121 @@ introduces a type parameter beyond the `Stream[T]` they already take, so
 they could already be ordinary (non-generic-method) methods on
 `Stream[T]` today, with or without Go 1.27. They are explicitly OUT of
 scope for this retrofit.
+
+### `WithHandleCallback`: resolved fluent-chain design (`design-withhandlecallback`)
+
+Investigated per `design-withhandlecallback`'s own framing: does
+`WithHandleCallback` need ZERO new type parameters if converted to a
+method on `Route[Req, Resp]`, and — separately — can that method
+preserve every real call site's one-line fluent-chain style?
+
+**Finding 1 — the doc comment's stated reason is wrong.** Both
+`api/rest/router.go:310-326` and `api/reqreply/router.go:293-305`
+justify the free-function shape with: "A free function (not a method) —
+Go forbids new type parameters on a method; this is the SAME resolution
+docs/design/d-0007-declarative-middleware-layering.md established for
+[BoundMiddleware]'s identical constraint." This is INCORRECT for this
+specific symbol: `handleCallbackOpt{fn: fn}`'s captured `fn
+func(*RouteHandle[Req, Resp])` already uses the SAME `Req`/`Resp` as the
+enclosing `Route[Req, Resp]` it would be attached to as a method
+receiver — converting it to `func (r Route[Req, Resp])
+WithHandleCallback(fn func(*RouteHandle[Req, Resp])) RouteOpt` (or the
+`Route[Req, Resp]`-returning variant below) introduces ZERO new type
+parameters, not even in the Go-1.27-generic-methods sense. The doc
+comment's citation of `d-0007`'s `BoundMiddleware` precedent does not
+apply here — `BoundMiddleware`'s own free-function constructors
+(`NewBoundMiddleware` etc.) genuinely need a fresh `In`/`Out` the
+receiver doesn't have; `WithHandleCallback` never did. The real
+historical reason was never stated and is not reconstructible from the
+code/docs alone — likely simple precedent-copying from the adjacent
+`BoundMiddleware` doc comment, not a distinct technical constraint.
+
+**Finding 2 — every real call site is a one-line fluent chain ending in
+`.WithOpt(pkg.WithHandleCallback(fn))` on a `Route[Req, Resp]` value.**
+Confirmed via a full-repo grep across `examples/reqreply-api/{zeromqserver,mqtt5server}/server.go`,
+`examples/rest-api/{nethttpserver,chiserver}/server.go`, and both
+packages' own `router_test.go`/`route_test.go`. Representative shapes:
+
+```go
+// examples/rest-api/nethttpserver/server.go:106-107
+getUserRoute := routes.GetUserRoute.WithHandler(...).
+    HandleBoundMW(...).HandleMW(nil, obsFn).HandleMW(nil, timingFn).WithOptions(opts).
+    WithOpt(rest.WithHandleCallback(func(h *rest.RouteHandle[routes.GetUserReq, routes.User]) { getUserHandle = h }))
+
+// examples/reqreply-api/zeromqserver/server.go:89-94
+oauthRoute := routes.OAuthComputeRoute.
+    HandleBoundMW(...).HandleMW(nil, ...).WithHandler(handlers.AddOAuth).
+    WithOpt(reqreply.WithHandleCallback(func(h *reqreply.RouteHandle[...]) { oauthHandle = h }))
+```
+
+There is NO call site where `WithHandleCallback` is invoked before a
+`Route[Req, Resp]` value exists (unlike, say, a `RouteOpt` passed inline
+to `NewRoute`'s own variadic opts) — confirmed by also checking
+`api/rest/router_test.go`/`api/reqreply/router_test.go`'s own
+`TestRouter_Register_IndistinguishableFromDirectRegister`-style tests,
+which pass it as one of `NewRoute`'s variadic opts (a genuinely
+route-free call) ALONGSIDE the `WithOpt`-chained form
+(`TestRoute_WithOpt_AttachesHandleCallbackToAlreadyDeclaredRoute`,
+`decorated := declared.WithOpt(rest.WithHandleCallback(...))` at
+`api/rest/router_test.go:507`/`api/reqreply/router_test.go:494`) — i.e.
+BOTH shapes are real, tested usages today.
+
+**Decision: keep `WithHandleCallback` as a free function returning
+`RouteOpt`, AND add a new, separate `Route[Req, Resp]`-returning
+chainable method with the SAME name, mirroring `WithOpt`'s own
+relationship to `RouteOpt`.** Neither "stays a free function" nor "the
+free function is dropped entirely" is correct in isolation — the
+`NewRoute(..., pkg.WithHandleCallback(fn))` inline-opt call site (proven
+real above, no `Route` value exists yet to be a receiver) means the
+`RouteOpt`-returning free function cannot be removed; the dominant
+`.WithOpt(pkg.WithHandleCallback(fn))` chain-ending call site (proven
+real above) means the fluent-chain ergonomics ARE worth capturing as a
+method. The resolved shape adds the method WITHOUT removing the
+function — both coexist, exactly as `WithOptions`/`optionsOpt` and
+`WithOpt`/`RouteOpt` already coexist today:
+
+```go
+// api/rest/router.go — UNCHANGED, stays exactly as today:
+func WithHandleCallback[Req, Resp any](fn func(*RouteHandle[Req, Resp])) RouteOpt {
+    return handleCallbackOpt{fn: fn}
+}
+
+// api/rest/middleware.go — NEW, added alongside WithOpt/Use/HandleMW/HandleBoundMW:
+func (r Route[Req, Resp]) WithHandleCallback(fn func(*RouteHandle[Req, Resp])) Route[Req, Resp] {
+    return r.WithOpt(handleCallbackOpt{fn: fn})
+}
+```
+
+```go
+// api/reqreply/router.go — UNCHANGED, stays exactly as today:
+func WithHandleCallback[Req, Resp any](fn func(*RouteHandle[Req, Resp])) RouteOpt {
+    return handleCallbackOpt{fn: fn}
+}
+
+// api/reqreply/route.go — NEW, added alongside WithOpt/Use/HandleMW/HandleBoundMW:
+func (r Route[Req, Resp]) WithHandleCallback(fn func(*RouteHandle[Req, Resp])) Route[Req, Resp] {
+    return r.WithOpt(handleCallbackOpt{fn: fn})
+}
+```
+
+Both new methods need ZERO new type parameters (not even a "generic
+method" in the Go 1.27 sense — `Req`/`Resp` come entirely from the
+receiver) and are available the moment `go.mod`'s existing `go 1.27.2`
+floor compiles, with no retrofit dependency at all; `impl-withhandlecallback`
+may ship this independently of the rest of this roadmap's Go-1.27-method
+conversions. **No naming collision**: confirmed via `grep -n "^func (r
+Route\[Req, Resp\])"` across `api/rest/*.go`/`api/reqreply/*.go` — no
+existing `WithHandleCallback` method on either `Route[Req, Resp]` type
+today. Every real call site converts mechanically and losslessly:
+`.WithOpt(pkg.WithHandleCallback(fn))` → `.WithHandleCallback(fn)` (the
+chain-ending form) stays available as a strict ergonomic upgrade; call
+sites passing it as a bare `NewRoute`/`Router_Register_Indistinguishable`-
+style inline opt are UNCHANGED, still using the free function. This is
+classified as **Tier 1-adjacent, not a true Tier 1 conversion** — unlike
+the table's other Tier 1 entries (which REMOVE the old free function
+per the project's "no deprecated wrapper" policy), this case keeps BOTH
+forms permanently, since the free function has a second, genuinely
+route-less call shape the method cannot serve.
 
 ## Tier 2 — the big, foundational finding
 
@@ -236,10 +702,14 @@ implication of this whole investigation.
    `any`-typed interface method one layer down — so internal
    simplification, if any, is likely partial at best. Needs confirming
    per-package during the actual design round, not guessed here.
-4. **`forge.NewFunction`'s own Tier 1 classification** (see the table
-   above) — may need to move to Tier 2 or be dropped from this doc
-   entirely once re-examined, since it isn't obviously "a method on an
-   existing generic receiver" the way the other Tier 1 candidates are.
+4. **RESOLVED (`design-builder-constructors`, this session):**
+   `forge.NewFunction`'s own Tier 1 classification — dropped from this
+   doc's Tier 1 table entirely. Confirmed, via a real compile check AND
+   a repo-wide blast-radius grep, to be a top-level constructor (no
+   pre-existing receiver), not a method-retrofit case at all — see
+   "Resolved: the 4 constructor symbols" above. Same resolution applies
+   to its 3 siblings (`api/llm.NewCall`/`api/reqreply.NewRoute`/
+   `api/rest.NewRoute`), all 4 confirmed to stay free functions.
 
 ## Confirmed NOT retrofittable, either way
 
@@ -332,19 +802,32 @@ in place**, committed during the `adapters/smb` implementation round
   `Client.Publish`/`.Subscribe`
 - `api/reqreply/client.go` (+ tests), every adapter/example calling
   `Client.Call`/`.CallAsync`
-- `api/reqreply/route.go`, `api/reqreply/router.go` (+ tests) —
-  `NewRoute`/`WithHandleCallback` (added during coverage review)
+- `api/reqreply/route.go` (+ tests) — ADD `Route[Req,
+  Resp].WithHandleCallback` method (resolved design, see
+  `design-withhandlecallback` above); `api/reqreply/router.go`'s free
+  `WithHandleCallback[Req, Resp]` function stays UNCHANGED (still needed
+  for the route-less `NewRoute(..., WithHandleCallback(fn))` inline-opt
+  call shape) — `NewRoute` itself still flagged separately (added during
+  coverage review)
 - `api/rest/builder.go` (+ tests), every adapter/example calling
   `Client.Call`/`.Consume`
-- `api/rest/router.go` (+ tests) — `WithHandleCallback`-shaped D-0007
-  twin (added during coverage review)
+- `api/rest/middleware.go` (+ tests) — ADD `Route[Req,
+  Resp].WithHandleCallback` method (resolved design, see
+  `design-withhandlecallback` above); `api/rest/router.go`'s free
+  `WithHandleCallback[Req, Resp]` function stays UNCHANGED (same
+  route-less-call-shape rationale as the `api/reqreply` twin)
 - `api/llm/call.go` (+ tests) — `NewCall` (added during coverage review)
 - `forge/function.go` (+ tests) — pending Tier 1/2 classification
 - `ports/file.go` (+ tests)
 - `stream/transform.go`, `stream/topology.go` (+ tests) — `Apply`/
   `WithApply` (added during coverage review)
-- `internal/middleware/context_field.go`, `internal/middleware/bound.go`
-  (+ tests) — pending re-examination (see Tier 1 table)
+- ~~`internal/middleware/context_field.go`, `internal/middleware/bound.go`~~
+  — **RESOLVED, no touch needed.** Re-examination (see "Resolved:
+  `internal/middleware`'s `ContextField` setters and `bound.go`" above)
+  found neither file has a true Tier 1 case: `SetContextFieldFromIn`/
+  `SetContextFieldFromOut` are already shipped methods (not free
+  functions), and `BoundNameOf` is a correctly-shaped free function for
+  a reason unrelated to the method-type-param restriction.
 - `examples/go-edge-models/models/iotedge/usecase/*.go` (+ tests)
 - Every example under `examples/` exercising any Tier 2 method directly
 
@@ -379,12 +862,25 @@ in place**, committed during the `adapters/smb` implementation round
    remove entirely once proven dead code, or keep as a defensive
    fallback? Needs the Tier 2 audit's own verification (see "What is
    NOT yet verified," item 2) before deciding.
-3. **`forge.NewFunction`'s Tier 1/Tier 2 classification** — needs
-   re-examination; flagged, not resolved, in this draft.
-4. **`internal/middleware`'s `ContextField`-setter workaround** —
-   needs confirming whether it's a true Tier 1 case (a method-type-param
-   limitation) or a structurally different situation (a value
-   independent of any receiver); flagged, not resolved.
+3. **`forge.NewFunction`'s Tier 1/Tier 2 classification — RESOLVED**
+   (`design-builder-constructors`). Confirmed a top-level constructor
+   (no pre-existing receiver to retrofit a method onto), not Tier 1 or
+   Tier 2 — dropped from both. Its 3 "same flag" siblings
+   (`api/llm.NewCall`/`api/reqreply.NewRoute`/`api/rest.NewRoute`) got
+   the identical resolution in the same round. See "Resolved: the 4
+   constructor symbols" above for the full compile-checked evidence.
+4. **`internal/middleware`'s `ContextField`-setter workaround —
+   RESOLVED.** Re-examined (`design-contextfield-setters`): NOT a true
+   Tier 1 case. `SetContextFieldFromIn`/`SetContextFieldFromOut` are
+   already shipped methods on `Middleware[In,Out]` (the
+   `ContextFieldSetter` interface erases `V`, so no new type parameter
+   was ever needed); `BoundNameOf` is a correctly-shaped free function
+   for the SAME "value independent of any receiver" reason already
+   established for `WithHandleCallback` (no natural in-package receiver
+   type exists for a type-erased `bm any`). See "Resolved:
+   `internal/middleware`'s `ContextField` setters and `bound.go`" above
+   for the full trace. No code change needed; `impl-contextfield-setters`
+   concludes as a no-op.
 5. **Full Tier 1 inventory** — the table above reflects this session's
    own grep-based survey (doc comments explicitly citing the
    limitation); a dedicated audit pass may find more, structurally
@@ -397,10 +893,11 @@ in place**, committed during the `adapters/smb` implementation round
 ## Next steps
 
 1. `go127-audit-tier1-full-inventory` — complete, verified Tier 1
-   inventory with before/after signatures (confirm/resolve open
-   decisions 3 and 4 above along the way, and the newly added
-   `codex/either.go`/`api/llm`/`api/reqreply`/`stream` candidates and
-   their own open classification questions from the coverage review).
+   inventory with before/after signatures (open decisions 3 and 4 above
+   are now RESOLVED — see "Resolved: the 4 constructor symbols" and
+   "Resolved: `internal/middleware`'s `ContextField` setters"; fold the
+   newly added `codex/either.go`/`stream` candidates' own open
+   classification questions from the coverage review).
 2. `go127-audit-tier2-signatures` — verified Tier 2 signature sketches
    for all 4 Client packages, resolving the 3 "not yet verified"
    questions above with real, compiled Go 1.27 code (not just
@@ -414,3 +911,40 @@ in place**, committed during the `adapters/smb` implementation round
    `adapters/mqtt`'s analog.
 5. Draft the full, Go-signature-rigor design once the audit lands —
    this doc, at that point, graduates from Explore to Refine depth.
+
+## Tier 1 implementation — SHIPPED
+
+Every confirmed true Tier 1 candidate has been implemented, with the
+old free function removed outright (breaking change, no deprecated
+wrapper, per the "Scope decisions" above) and every real call site
+updated:
+
+| Symbol (old) | Symbol (new) | Files changed |
+|---|---|---|
+| `codex.MaybeMap`/`MaybeFlatMap` | `Maybe[T].Map`/`.FlatMap` | `codex/maybe.go`, `codex/maybe_test.go` |
+| `codex.EitherMapLeft`/`MapRight`/`Fold` | `Either[A,B].MapLeft`/`.MapRight`/`.Fold` | `codex/either.go`, `codex/either_test.go` |
+| `api/file.WithPatch` | `Resource[T].WithPatch` | `api/file/builder.go`, `api/file/client_test.go`, `examples/file-api/*`, `examples/file-io/main.go`, `examples/go-edge-models/models/iotedge/usecase/*` |
+| `ports.PatchEncoded` | `File[T].PatchEncoded` | `ports/file.go`, `ports/file_test.go`, `adapters/file/binding.go`, `examples/flat-key-patch/main.go` (+ doc-comment-only mentions across `adapters/file`, `format`, `ports`, `codex`, `api/file`, `examples/go-edge-models`) |
+| `stream.Apply` | `Stream[In].Apply` | `stream/transform.go`, `stream/transform_test.go`, `examples/ports-plain-go/main.go`, `examples/stream-oee/main.go`, `examples/stream-pipeline/main.go` (+ doc-comment-only mentions across `forge`, `stats`, `adapters/mqtt5`, `adapters/nethttp`, `adapters/zeromq`, `adapters/mcpgo`, `ports`, `stream`, `render/stream`) |
+| `stream.WithApply` | `(*Topology).WithApply` | `stream/topology.go`, `stream/topology_test.go`, `examples/stream-oee/main.go`, `examples/stream-pipeline/main.go` |
+| `usecase.PatchDeviceFile`/`PatchUseCaseFile` | `(*Scope).PatchDeviceFile`/`.PatchUseCaseFile` | `examples/go-edge-models/models/iotedge/usecase/device.go`/`usecase.go`, `examples/go-edge-models/app/iotedge/usecase.go` |
+| *(additive, old kept)* `WithHandleCallback` free function (`api/rest`, `api/reqreply`) | NEW `Route[Req,Resp].WithHandleCallback` method | `api/rest/middleware.go`, `api/reqreply/route.go`, + 4 example server files migrated to the chain-friendly method call |
+
+Confirmed resolved as **no code change** (stay free functions):
+`forge.NewFunction`, `api/llm.NewCall`, `api/reqreply.NewRoute`,
+`api/rest.NewRoute` (see "Resolved: the 4 constructor symbols"),
+`internal/middleware`'s `ContextField` setters and `BoundNameOf` (see
+"Resolved: `internal/middleware`'s `ContextField` setters and
+`bound.go`").
+
+**Post-implementation verification** (whole repo, not just touched
+packages): `go build ./...` ✅, `go vet ./...` ✅, `go test ./...` ✅
+(all packages `ok`), `just check` ✅ (staticcheck + gosec: 0 issues;
+gofmt: clean), `just examples` ✅ (full example sweep, all exit 0).
+`.github/instructions/go-codex.instructions.md` updated for every
+renamed symbol.
+
+**Tier 2 remains fully deferred** — no Tier 2 work was attempted this
+round; see "Tier 2 — the big, foundational finding" above and the
+"Next steps" list for the still-open audit work before any Tier 2
+implementation round.

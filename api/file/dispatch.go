@@ -585,7 +585,7 @@ func patchCore[T, P any](ctx context.Context, backend Backend, core roleCore[T],
 		return FileReadError{Path: path, Err: err}
 	}
 	// Stay in MAP space for the merge/marshal round trip — mirrors
-	// ports.PatchEncoded's own, established, already-tested contract
+	// ports.File.PatchEncoded's own, established, already-tested contract
 	// exactly (confirmed via examples/file-io: using format.PatchInto,
 	// which decodes the merge result into T before marshaling, silently
 	// DROPS any patchCodec-only field absent from T, e.g. a "debug_mode"
@@ -594,7 +594,7 @@ func patchCore[T, P any](ctx context.Context, backend Backend, core roleCore[T],
 	// file codec's own known fields and to obtain a typed value for
 	// metadata derivation — the bytes actually written come from
 	// MarshalRaw(existingMap), never Marshal(T), so patchCodec-only
-	// fields survive in the written file exactly like ports.PatchEncoded.
+	// fields survive in the written file exactly like ports.File.PatchEncoded.
 	rawExisting, err := core.resource.format.UnmarshalRaw(data)
 	if err != nil {
 		stats.ReportErrors(obs, "file", err)

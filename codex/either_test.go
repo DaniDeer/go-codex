@@ -191,59 +191,59 @@ func TestEither_Swap(t *testing.T) {
 	}
 }
 
-// ── EitherFold / EitherMapLeft / EitherMapRight ─────────────────────────────
+// ── Fold / MapLeft / MapRight ───────────────────────────────────────────────
 
 func TestEitherFold_CallsOnLeftForLeft(t *testing.T) {
 	e := codex.Left[string, int]("x")
-	got := codex.EitherFold(e,
+	got := e.Fold(
 		func(s string) string { return "left:" + s },
 		func(n int) string { return "right" })
 	if got != "left:x" {
-		t.Errorf("EitherFold = %q, want left:x", got)
+		t.Errorf("Fold = %q, want left:x", got)
 	}
 }
 
 func TestEitherFold_CallsOnRightForRight(t *testing.T) {
 	e := codex.Right[string, int](7)
-	got := codex.EitherFold(e,
+	got := e.Fold(
 		func(s string) string { return "left" },
 		func(n int) string { return fmt.Sprintf("right:%d", n) })
 	if got != "right:7" {
-		t.Errorf("EitherFold = %q, want right:7", got)
+		t.Errorf("Fold = %q, want right:7", got)
 	}
 }
 
 func TestEitherMapLeft_TransformsLeftPassesThroughRight(t *testing.T) {
 	left := codex.Left[string, int]("x")
-	mapped := codex.EitherMapLeft(left, func(s string) int { return len(s) })
+	mapped := left.MapLeft(func(s string) int { return len(s) })
 	if !mapped.IsLeft() || mapped.Left == nil || *mapped.Left != 1 {
-		t.Errorf("EitherMapLeft(Left) = %+v, want Left(1)", mapped)
+		t.Errorf("MapLeft(Left) = %+v, want Left(1)", mapped)
 	}
 
 	right := codex.Right[string, int](5)
-	untouched := codex.EitherMapLeft(right, func(s string) int {
+	untouched := right.MapLeft(func(s string) int {
 		t.Error("fn should not be called for a Right value")
 		return -1
 	})
 	if !untouched.IsRight() || untouched.Right == nil || *untouched.Right != 5 {
-		t.Errorf("EitherMapLeft(Right) = %+v, want Right(5) unchanged", untouched)
+		t.Errorf("MapLeft(Right) = %+v, want Right(5) unchanged", untouched)
 	}
 }
 
 func TestEitherMapRight_TransformsRightPassesThroughLeft(t *testing.T) {
 	right := codex.Right[string, int](5)
-	mapped := codex.EitherMapRight(right, func(n int) string { return fmt.Sprintf("n=%d", n) })
+	mapped := right.MapRight(func(n int) string { return fmt.Sprintf("n=%d", n) })
 	if !mapped.IsRight() || mapped.Right == nil || *mapped.Right != "n=5" {
-		t.Errorf("EitherMapRight(Right) = %+v, want Right(n=5)", mapped)
+		t.Errorf("MapRight(Right) = %+v, want Right(n=5)", mapped)
 	}
 
 	left := codex.Left[string, int]("x")
-	untouched := codex.EitherMapRight(left, func(n int) string {
+	untouched := left.MapRight(func(n int) string {
 		t.Error("fn should not be called for a Left value")
 		return "unreachable"
 	})
 	if !untouched.IsLeft() || untouched.Left == nil || *untouched.Left != "x" {
-		t.Errorf("EitherMapRight(Left) = %+v, want Left(x) unchanged", untouched)
+		t.Errorf("MapRight(Left) = %+v, want Left(x) unchanged", untouched)
 	}
 }
 

@@ -40,7 +40,7 @@
 //     modulepatch.FieldsBodyCodec to bridge the SAME typed FieldsPatch
 //     validation into deviceconfig.Patch.EdgeAgent, handling both
 //     "device already has a config file" (deep-merge via
-//     ports.PatchEncoded) and "device's first-ever override" (direct
+//     ports.File.PatchEncoded) and "device's first-ever override" (direct
 //     write) cases). PatchUseCaseSystemModule/UpdateUseCaseSystemModuleImage
 //     and PatchDeviceSystemModule/UpdateDeviceSystemModuleImage mirror
 //     all of the above exactly, one bucket over, for the two reserved

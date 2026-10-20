@@ -40,7 +40,7 @@ var errorFn = forge.NewFunction("errFn", "1.0.0",
 func TestApply_HappyPath(t *testing.T) {
 	ctx := context.Background()
 	src := chanOf(1.0, 2.0, 3.0)
-	s := stream.Apply(ctx, stream.From(ctx, src), doubleFn, stream.ApplyOptions{})
+	s := stream.From(ctx, src).Apply(ctx, doubleFn, stream.ApplyOptions{})
 	vals, errs := stream.Collect(ctx, s)
 	if len(vals) != 3 {
 		t.Fatalf("want 3 values, got %d", len(vals))
@@ -57,7 +57,7 @@ func TestApply_InputValidationFailure(t *testing.T) {
 	ctx := context.Background()
 	// doubleCodec requires positive float — negative fails codec validation
 	src := chanOf(-1.0, 2.0)
-	s := stream.Apply(ctx, stream.From(ctx, src), doubleFn, stream.ApplyOptions{})
+	s := stream.From(ctx, src).Apply(ctx, doubleFn, stream.ApplyOptions{})
 	vals, errs := stream.Collect(ctx, s)
 	if len(vals) != 1 {
 		t.Errorf("want 1 value (the positive one), got %d", len(vals))
@@ -77,7 +77,7 @@ func TestApply_InputValidationFailure(t *testing.T) {
 func TestApply_ComputeError(t *testing.T) {
 	ctx := context.Background()
 	src := chanOf(-1.0, 5.0)
-	s := stream.Apply(ctx, stream.From(ctx, src), errorFn, stream.ApplyOptions{})
+	s := stream.From(ctx, src).Apply(ctx, errorFn, stream.ApplyOptions{})
 	vals, errs := stream.Collect(ctx, s)
 	if len(vals) != 1 {
 		t.Errorf("want 1 value, got %d", len(vals))
@@ -102,7 +102,7 @@ func TestApply_ErrorsForwardedUnchanged(t *testing.T) {
 	close(valCh)
 	src := stream.Stream[float64]{Values: valCh, Errors: errCh}
 
-	s := stream.Apply(ctx, src, doubleFn, stream.ApplyOptions{})
+	s := src.Apply(ctx, doubleFn, stream.ApplyOptions{})
 	_, errs := stream.Collect(ctx, s)
 	if len(errs) != 1 {
 		t.Fatalf("want 1 forwarded error, got %d", len(errs))
@@ -118,8 +118,7 @@ func TestApply_StreamObserverCalled(t *testing.T) {
 	ctx := context.Background()
 	src := chanOf(1.0, 2.0)
 	spy := &streamItemSpy{}
-	stream.Collect(ctx, stream.Apply(ctx, stream.From(ctx, src), doubleFn,
-		stream.ApplyOptions{Observer: spy}))
+	stream.Collect(ctx, stream.From(ctx, src).Apply(ctx, doubleFn, stream.ApplyOptions{Observer: spy}))
 	if spy.calls != 2 {
 		t.Errorf("RecordStreamItem: want 2 calls, got %d", spy.calls)
 	}
@@ -132,8 +131,7 @@ func TestApply_StreamObserverCalledOnFailure(t *testing.T) {
 	ctx := context.Background()
 	src := chanOf(-1.0) // fails doubleCodec (positive required)
 	spy := &streamItemSpy{}
-	stream.Collect(ctx, stream.Apply(ctx, stream.From(ctx, src), doubleFn,
-		stream.ApplyOptions{Observer: spy}))
+	stream.Collect(ctx, stream.From(ctx, src).Apply(ctx, doubleFn, stream.ApplyOptions{Observer: spy}))
 	if spy.calls != 1 {
 		t.Errorf("RecordStreamItem: want 1 call, got %d", spy.calls)
 	}
@@ -146,16 +144,14 @@ func TestApply_NilObserver(t *testing.T) {
 	ctx := context.Background()
 	src := chanOf(1.0)
 	// Must not panic with nil observer
-	stream.Collect(ctx, stream.Apply(ctx, stream.From(ctx, src), doubleFn,
-		stream.ApplyOptions{Observer: nil}))
+	stream.Collect(ctx, stream.From(ctx, src).Apply(ctx, doubleFn, stream.ApplyOptions{Observer: nil}))
 }
 
 func TestApply_PlainObserver_NoSQLObserverPanic(t *testing.T) {
 	ctx := context.Background()
 	src := chanOf(1.0)
 	plain := &recordingObserver{} // does not implement StreamObserver
-	stream.Collect(ctx, stream.Apply(ctx, stream.From(ctx, src), doubleFn,
-		stream.ApplyOptions{Observer: plain}))
+	stream.Collect(ctx, stream.From(ctx, src).Apply(ctx, doubleFn, stream.ApplyOptions{Observer: plain}))
 	// Must not panic
 }
 
@@ -390,8 +386,7 @@ func TestApply_TraceObserverSpanPerItem(t *testing.T) {
 	ctx := context.Background()
 	src := chanOf(1.0, 2.0)
 	spy := &traceApplySpy{}
-	stream.Collect(ctx, stream.Apply(ctx, stream.From(ctx, src), doubleFn,
-		stream.ApplyOptions{Observer: spy}))
+	stream.Collect(ctx, stream.From(ctx, src).Apply(ctx, doubleFn, stream.ApplyOptions{Observer: spy}))
 	if len(spy.spans) != 2 {
 		t.Errorf("StartSpan: want 2 per-item spans, got %d", len(spy.spans))
 	}
@@ -407,7 +402,7 @@ func TestApply_TraceObserverSpanPerItem(t *testing.T) {
 
 // ── Example functions ─────────────────────────────────────────────────────────
 
-func ExampleApply() {
+func ExampleStream_Apply() {
 	ctx := context.Background()
 	double := forge.NewFunction("double", "1.0.0",
 		codex.Float64().WithTitle("input"),
@@ -420,7 +415,7 @@ func ExampleApply() {
 	ch <- 3
 	close(ch)
 
-	s := stream.Apply(ctx, stream.From(ctx, ch), double, stream.ApplyOptions{})
+	s := stream.From(ctx, ch).Apply(ctx, double, stream.ApplyOptions{})
 	vals, _ := stream.Collect(ctx, s)
 	for _, v := range vals {
 		fmt.Printf("%.0f\n", v)
@@ -515,7 +510,7 @@ func TestApply_ContextObserver_UsedWhenApplyOptsNil(t *testing.T) {
 	ch <- 42
 	close(ch)
 	s := stream.From(ctx, ch)
-	out := stream.Apply(ctx, s, fn, stream.ApplyOptions{}) // no explicit Observer
+	out := s.Apply(ctx, fn, stream.ApplyOptions{}) // no explicit Observer
 
 	vals, errs := stream.Collect(ctx, out)
 	if len(errs) != 0 || len(vals) != 1 || vals[0] != 42 {
@@ -542,7 +537,7 @@ func TestApply_ExplicitObserver_BeatsContextObserver(t *testing.T) {
 	ch <- 1
 	close(ch)
 	s := stream.From(ctx, ch)
-	out := stream.Apply(ctx, s, fn, stream.ApplyOptions{Observer: explicit})
+	out := s.Apply(ctx, fn, stream.ApplyOptions{Observer: explicit})
 
 	stream.Collect(ctx, out)
 

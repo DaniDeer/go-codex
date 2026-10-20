@@ -49,7 +49,7 @@ type ToolAdapter[In, Out any] interface {
 //
 //	func init() {
 //	    OEEToolPort.SetPipeline(func(ctx context.Context, req OEEIn) gstream.Stream[OEEResult] {
-//	        return gstream.Apply(ctx, gstream.Single(ctx, req), oeeCalcFn, gstream.ApplyOptions{})
+//	        return gstream.Single(ctx, req).Apply(ctx, oeeCalcFn, gstream.ApplyOptions{})
 //	    })
 //	}
 //

@@ -8,7 +8,7 @@
 //	    WithSource("mqtt/sensors/+", "Raw sensor readings").
 //	    WithFilter("oee < 0.65").
 //	    WithSink("mqtt/alerts/oee", "Low-OEE alerts")
-//	stream.WithApply(topo, oeeCalcFn) // captures forge function hash for auditability
+//	topo.WithApply(oeeCalcFn) // captures forge function hash for auditability
 //
 //	yamlBytes, err := streamrender.Render(topo.Spec())
 package stream

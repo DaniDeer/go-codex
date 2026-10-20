@@ -437,7 +437,7 @@ func TestPatcher_HandlePatch_AppliesPartialUpdate(t *testing.T) {
 			func(p *valuePatch, v *int) { p.Value = v }),
 	)
 	newValue := 99
-	patcher := file.WithPatch(res, patchCodec, file.Patch{})
+	patcher := res.WithPatch(patchCodec, file.Patch{})
 	if err := client.Patch(ctx, patcher, valuePatch{Value: &newValue}, vars); err != nil {
 		t.Fatalf("Patch: %v", err)
 	}
@@ -481,7 +481,7 @@ func TestPatcher_HandlePatch_NativePOSIXModeCapability_OverridesCallerPerm(t *te
 	capPerm := os.FileMode(0o600)
 	callPerm := os.FileMode(0o777)
 	newValue := 2
-	patcher := file.WithPatch(res, patchCodec, file.Patch{}).WithCapabilities(file.NativePOSIXMode(capPerm))
+	patcher := res.WithPatch(patchCodec, file.Patch{}).WithCapabilities(file.NativePOSIXMode(capPerm))
 	if err := client.Patch(ctx, patcher, valuePatch{Value: &newValue}, vars, file.WriteOptions{Perm: callPerm}); err != nil {
 		t.Fatalf("Patch: %v", err)
 	}
@@ -531,7 +531,7 @@ func TestPatcher_HandlePatch_PreservesPatchOnlyField(t *testing.T) {
 			func(p extraPatch) string { return p.Extra },
 			func(p *extraPatch, v string) { p.Extra = v }),
 	)
-	patcher := file.WithPatch(res, patchCodec, file.Patch{})
+	patcher := res.WithPatch(patchCodec, file.Patch{})
 	if err := client.Patch(ctx, patcher, extraPatch{Value: 42, Extra: "survives"}, vars); err != nil {
 		t.Fatalf("Patch: %v", err)
 	}
@@ -711,7 +711,7 @@ func TestPatcher_HandlePatch_WriteOptionsMetadata_DirectEscapeHatch_NotSilentlyD
 			func(p *valuePatch, v *int) { p.Value = v }),
 	)
 	newValue := 2
-	patcher := file.WithPatch(res, patchCodec, file.Patch{})
+	patcher := res.WithPatch(patchCodec, file.Patch{})
 	if err := client.Patch(ctx, patcher, valuePatch{Value: &newValue}, vars,
 		file.WriteOptions{Metadata: map[string]string{"owner": "bob"}}); err != nil {
 		t.Fatalf("Patch: %v", err)
@@ -1320,7 +1320,7 @@ func TestBoundPatchMiddleware_MetadataIn_AlwaysZeroValue(t *testing.T) {
 	).WithMetadataIn(file.NewMetadataParam("owner", codex.String(),
 		func(m mwMetaIn) string { return m.Owner },
 		func(m *mwMetaIn, v string) { m.Owner = v }))
-	patcher := file.WithPatch(res, patchCodec, file.Patch{}).PatchBoundMW(bm)
+	patcher := res.WithPatch(patchCodec, file.Patch{}).PatchBoundMW(bm)
 	newValue := 99
 	if err := client.Patch(ctx, patcher, valuePatch{Value: &newValue}, vars); err != nil {
 		t.Fatalf("Patch: %v", err)
@@ -1363,7 +1363,7 @@ func TestBoundPatchMiddleware_MetadataOut_MergesIntoPersistedMetadata(t *testing
 	).WithMetadataOut(file.NewMetadataParam("owner", codex.String(),
 		func(m mwMetaOut) string { return m.Owner },
 		func(m *mwMetaOut, v string) { m.Owner = v }))
-	patcher := file.WithPatch(res, patchCodec, file.Patch{}).PatchBoundMW(bm)
+	patcher := res.WithPatch(patchCodec, file.Patch{}).PatchBoundMW(bm)
 	newValue := 42
 	if err := client.Patch(ctx, patcher, valuePatch{Value: &newValue}, vars); err != nil {
 		t.Fatalf("Patch: %v", err)
@@ -1651,7 +1651,7 @@ func TestPatchCore_AccessModeReadOnly_RejectsBeforeBackendCall(t *testing.T) {
 			func(p valuePatch) int { return p.Value },
 			func(p *valuePatch, v int) { p.Value = v }),
 	)
-	patcher := file.WithPatch(res, patchCodec, file.Patch{}).WithCapabilities(file.AccessModeReadOnly)
+	patcher := res.WithPatch(patchCodec, file.Patch{}).WithCapabilities(file.AccessModeReadOnly)
 
 	err := client.Patch(ctx, patcher, valuePatch{Value: 99}, nil)
 	if err == nil {
@@ -2288,7 +2288,7 @@ func TestPatch_IfMatch_MatchSucceeds(t *testing.T) {
 			func(p *valuePatch, v *int) { p.Value = v }),
 	)
 	newValue := 2
-	patcher := file.WithPatch(res, patchCodec, file.Patch{})
+	patcher := res.WithPatch(patchCodec, file.Patch{})
 	if err := client.Patch(ctx, patcher, valuePatch{Value: &newValue}, vars, file.WriteOptions{IfMatch: &etag}); err != nil {
 		t.Fatalf("Patch (conditional): %v", err)
 	}
@@ -2321,7 +2321,7 @@ func TestPatch_IfMatch_MismatchRejectsNoWrite(t *testing.T) {
 			func(p *valuePatch, v *int) { p.Value = v }),
 	)
 	newValue := 2
-	patcher := file.WithPatch(res, patchCodec, file.Patch{})
+	patcher := res.WithPatch(patchCodec, file.Patch{})
 	err := client.Patch(ctx, patcher, valuePatch{Value: &newValue}, vars, file.WriteOptions{IfMatch: &stale})
 	var mismatch file.ConditionalWriteMismatchError
 	if !errors.As(err, &mismatch) {

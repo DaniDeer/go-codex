@@ -85,9 +85,9 @@ func TestMaybe_TryGet_SetReturnsTrue(t *testing.T) {
 
 func TestMaybeMap_AppliesFnWhenSet(t *testing.T) {
 	m := codex.Just(3)
-	r := codex.MaybeMap(m, func(v int) string { return fmt.Sprintf("n=%d", v) })
+	r := m.Map(func(v int) string { return fmt.Sprintf("n=%d", v) })
 	if !r.IsSet() {
-		t.Error("MaybeMap(Just(v), fn) should be set")
+		t.Error("Map(Just(v), fn) should be set")
 	}
 	if r.Get() != "n=3" {
 		t.Errorf("Get() = %q, want n=3", r.Get())
@@ -97,12 +97,12 @@ func TestMaybeMap_AppliesFnWhenSet(t *testing.T) {
 func TestMaybeMap_SkipsFnWhenNothing(t *testing.T) {
 	called := false
 	m := codex.Nothing[int]()
-	r := codex.MaybeMap(m, func(v int) string {
+	r := m.Map(func(v int) string {
 		called = true
 		return "unreachable"
 	})
 	if r.IsSet() {
-		t.Error("MaybeMap(Nothing, fn) should stay unset")
+		t.Error("Map(Nothing, fn) should stay unset")
 	}
 	if called {
 		t.Error("fn should never be called for Nothing")
@@ -111,11 +111,11 @@ func TestMaybeMap_SkipsFnWhenNothing(t *testing.T) {
 
 func TestMaybeFlatMap_AppliesFnWhenSet(t *testing.T) {
 	m := codex.Just(3)
-	r := codex.MaybeFlatMap(m, func(v int) codex.Maybe[string] {
+	r := m.FlatMap(func(v int) codex.Maybe[string] {
 		return codex.Just(fmt.Sprintf("n=%d", v))
 	})
 	if !r.IsSet() {
-		t.Error("MaybeFlatMap(Just(v), fn) should be set")
+		t.Error("FlatMap(Just(v), fn) should be set")
 	}
 	if r.Get() != "n=3" {
 		t.Errorf("Get() = %q, want n=3", r.Get())
@@ -125,12 +125,12 @@ func TestMaybeFlatMap_AppliesFnWhenSet(t *testing.T) {
 func TestMaybeFlatMap_SkipsFnWhenNothing(t *testing.T) {
 	called := false
 	m := codex.Nothing[int]()
-	r := codex.MaybeFlatMap(m, func(v int) codex.Maybe[string] {
+	r := m.FlatMap(func(v int) codex.Maybe[string] {
 		called = true
 		return codex.Just("unreachable")
 	})
 	if r.IsSet() {
-		t.Error("MaybeFlatMap(Nothing, fn) should stay unset")
+		t.Error("FlatMap(Nothing, fn) should stay unset")
 	}
 	if called {
 		t.Error("fn should never be called for Nothing")
@@ -138,15 +138,15 @@ func TestMaybeFlatMap_SkipsFnWhenNothing(t *testing.T) {
 }
 
 func TestMaybeFlatMap_FnCanProduceNothing(t *testing.T) {
-	// The key differentiator vs. MaybeMap: fn itself can turn a Just into
-	// a Nothing (e.g. a possibly-failing parse), which MaybeMap's plain
+	// The key differentiator vs. Map: fn itself can turn a Just into
+	// a Nothing (e.g. a possibly-failing parse), which Map's plain
 	// func(T) R signature cannot express.
 	m := codex.Just("not-a-number")
-	r := codex.MaybeFlatMap(m, func(s string) codex.Maybe[int] {
+	r := m.FlatMap(func(s string) codex.Maybe[int] {
 		return codex.Nothing[int]() // simulate a failed parse
 	})
 	if r.IsSet() {
-		t.Error("MaybeFlatMap should propagate a Nothing produced by fn")
+		t.Error("FlatMap should propagate a Nothing produced by fn")
 	}
 }
 

@@ -15,8 +15,8 @@
 //
 //  1. Fixed dotted key — [codex.RequiredField] with a dotted Name literal.
 //  2. Dynamic key via [File.Patch] — build the key with string concatenation.
-//  3. Typed update via [PatchEncoded] + [codex.StringMap] — validates values.
-//  4. Key + value validation via [PatchEncoded] + [codex.Map] — validates both.
+//  3. Typed update via File.PatchEncoded + [codex.StringMap] — validates values.
+//  4. Key + value validation via File.PatchEncoded + [codex.Map] — validates both.
 //  5. Adding new keys not in the file codec — field survival via patchCodec.
 //  6. Schema rendering — twinCodec, moduleCodec, modulePatchCodec as OpenAPI YAML.
 //  7. Error cases + structured logging — FileEncodeError, FileDecodeError, FileReadError.
@@ -60,7 +60,7 @@ type ModuleConfig struct {
 }
 
 // DeviceTwin holds the known fields of the flat-key device twin document.
-// Fields not declared here are not decoded but can be added via PatchEncoded.
+// Fields not declared here are not decoded but can be added via File.PatchEncoded.
 type DeviceTwin struct {
 	MyContainer    ModuleConfig
 	OtherContainer ModuleConfig
@@ -130,7 +130,7 @@ var moduleKeyConstraint = codex.Constraint[string]{
 
 // modulePatchCodec validates both the key format (must start with the module
 // namespace prefix) and the ModuleConfig value for each entry.
-// Use this with ports.PatchEncoded for strict typed module patching.
+// Use this with File.PatchEncoded for strict typed module patching.
 var modulePatchCodec = codex.Map[string, ModuleConfig](
 	codex.String().Refine(moduleKeyConstraint),
 	moduleCodec,
@@ -445,7 +445,7 @@ func main() {
 
 	// codex.StringMap(moduleCodec) validates each ModuleConfig value;
 	// any string key is accepted (no key format enforcement).
-	if err := ports.PatchEncoded(twinFile, nil, codex.StringMap(moduleCodec),
+	if err := twinFile.PatchEncoded(nil, codex.StringMap(moduleCodec),
 		map[string]ModuleConfig{
 			moduleKeyPrefix + "my-container": {Image: "registry.io/my-app:v3", Status: "running"},
 		}, opts); err != nil {
@@ -462,7 +462,7 @@ func main() {
 	// modulePatchCodec validates:
 	//   key:   must start with moduleKeyPrefix + non-empty module name
 	//   value: full ModuleConfig validation (image non-empty, status oneOf)
-	if err := ports.PatchEncoded(twinFile, nil, modulePatchCodec,
+	if err := twinFile.PatchEncoded(nil, modulePatchCodec,
 		map[string]ModuleConfig{
 			moduleKeyPrefix + "my-container": {Image: "registry.io/my-app:v4", Status: "running"},
 		}, opts); err != nil {
@@ -480,7 +480,7 @@ func main() {
 	// PatchEncoded marshals the MERGED MAP directly (not re-encodes T), so
 	// "new-module" survives in the file. Field survival rule:
 	//   field in patchCodec but not in file codec → WRITTEN.
-	if err := ports.PatchEncoded(twinFile, nil, modulePatchCodec,
+	if err := twinFile.PatchEncoded(nil, modulePatchCodec,
 		map[string]ModuleConfig{
 			moduleKeyPrefix + "new-module": {Image: "registry.io/new:v1", Status: "running"},
 		}, opts); err != nil {
@@ -516,7 +516,7 @@ func main() {
 
 	// 7a. Bad value: status "restarting" not in OneOf("running","stopped").
 	//     FileEncodeError implements slog.LogValuer — slog outputs structured attrs.
-	err = ports.PatchEncoded(twinFile, nil, modulePatchCodec,
+	err = twinFile.PatchEncoded(nil, modulePatchCodec,
 		map[string]ModuleConfig{
 			moduleKeyPrefix + "my-container": {Image: "img:v1", Status: "restarting"},
 		}, opts)
@@ -532,7 +532,7 @@ func main() {
 	}
 
 	// 7b. Bad key: wrong namespace prefix — rejected by modulePatchCodec key codec.
-	err = ports.PatchEncoded(twinFile, nil, modulePatchCodec,
+	err = twinFile.PatchEncoded(nil, modulePatchCodec,
 		map[string]ModuleConfig{
 			"wrong.namespace.my-container": {Image: "img:v1", Status: "running"},
 		}, opts)
