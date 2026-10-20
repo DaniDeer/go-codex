@@ -336,6 +336,103 @@ func TestClient_Read_AcceptsRawBuilderOrPreBuiltHandle(t *testing.T) {
 	}
 }
 
+// TestClient_List_AcceptsRawBuilderOrPreBuiltHandle closes a test-coverage
+// gap (deep-dive-bug-hunt, go127-generic-methods focused round on
+// api/file): Client.List[T]'s dual-accept contract (bare Lister[T] OR
+// pre-built *ListHandle[T]) was previously NEVER exercised with the
+// handle form anywhere in this file — only Client.Read/Create had this
+// coverage. Confirmed via live test (not assumed) that the SAME
+// dispatcher-interface mechanism Read/Create already prove works also
+// works correctly for List.
+func TestClient_List_AcceptsRawBuilderOrPreBuiltHandle(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	vars := map[string]string{"name": "listdual"}
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "listdual", Value: 7}, vars); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	bare, err := client.List(ctx, res.WithList(file.List{}), nil)
+	if err != nil {
+		t.Fatalf("List (bare builder): %v", err)
+	}
+
+	handle, err := res.WithList(file.List{}).Handle(client)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	handleGot, err := client.List(ctx, handle, nil)
+	if err != nil {
+		t.Fatalf("List (pre-built handle): %v", err)
+	}
+
+	if len(bare) != len(handleGot) {
+		t.Fatalf("dual-accept mismatch: bare=%+v handle=%+v", bare, handleGot)
+	}
+}
+
+// TestClient_Patch_AcceptsRawBuilderOrPreBuiltHandle is
+// TestClient_List_AcceptsRawBuilderOrPreBuiltHandle's Patch[T,P]
+// counterpart — same gap, same closing rationale. Patch[T,P] additionally
+// requires explicit [T, P] type arguments at every call site (its
+// dispatcher interface never mentions T in its own method signature, so
+// Go cannot infer it) — exercised identically for both the bare and
+// handle forms here, confirming that requirement doesn't differ between
+// the two dual-accept shapes.
+func TestClient_Patch_AcceptsRawBuilderOrPreBuiltHandle(t *testing.T) {
+	dir := t.TempDir()
+	res := newResource(t, dir)
+	client := file.NewClient()
+	if err := client.Attach(adapterfile.NewBackend()); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	ctx := context.Background()
+	vars := map[string]string{"name": "patchdual"}
+	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "patchdual", Value: 1}, vars); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	type valuePatch struct{ Value *int }
+	patchCodec := codex.PartialStruct[valuePatch](
+		codex.PartialField("value", codex.Int(),
+			func(p valuePatch) *int { return p.Value },
+			func(p *valuePatch, v *int) { p.Value = v }),
+	)
+
+	bareValue := 10
+	if err := client.Patch[record, valuePatch](ctx, res.WithPatch(patchCodec, file.Patch{}), valuePatch{Value: &bareValue}, vars); err != nil {
+		t.Fatalf("Patch (bare builder): %v", err)
+	}
+	got, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
+	if err != nil {
+		t.Fatalf("Read after bare patch: %v", err)
+	}
+	if got.Value != 10 {
+		t.Fatalf("after bare Patch: Value = %d, want 10", got.Value)
+	}
+
+	handle, err := res.WithPatch(patchCodec, file.Patch{}).Handle(client)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	handleValue := 20
+	if err := client.Patch[record, valuePatch](ctx, handle, valuePatch{Value: &handleValue}, vars); err != nil {
+		t.Fatalf("Patch (pre-built handle): %v", err)
+	}
+	got, err = client.Read(ctx, res.WithRead(file.Read{}), vars)
+	if err != nil {
+		t.Fatalf("Read after handle patch: %v", err)
+	}
+	if got.Value != 20 {
+		t.Fatalf("after handle Patch: Value = %d, want 20", got.Value)
+	}
+}
+
 func TestClient_Attach_Exclusive_SecondCallReturnsBackendAlreadyAttachedError(t *testing.T) {
 	client := file.NewClient()
 	if err := client.Attach(adapterfile.NewBackend()); err != nil {

@@ -4,6 +4,101 @@ Do not re-report any of these findings. They have been implemented and tested.
 
 ---
 
+## Round 252 (`deep-dive-bug-hunt` focused round on `api/reqreply`'s go127-generic-methods retrofit (Workstream B) — 1 real test-coverage gap closed in `adapters/mqtt5`: `CallAsync`'s dual-accept handle form had NEVER been exercised, unlike `Call`'s)
+
+Priority 3 round 3 of 4. Traced `callRouteArg[Req,Resp]`'s 2 implementing types (`Route[Req,Resp]`/
+`*RouteHandle[Req,Resp]`) and `Client.Call[Req,Resp]`/`CallAsync[Req,Resp]`'s signatures (both in
+`api/reqreply/client.go`) against the registry-lookup/forward-following/dead-letter-replay logic
+they delegate to (`recoverRegistryEntry`, `registerAutoFromCall`, `followForward`,
+`c.Call`-from-inside-`CallAsync`'s goroutine) — all unchanged `any`-typed helpers, confirmed
+correct for the new generic signatures via direct read (route passed to each is statically
+`callRouteArg[Req,Resp]`, implicitly boxed to the helper's own `any` parameter, same pattern as
+`api/events`' Round 251).
+
+**api/reqreply-level test coverage (no gap):** confirmed BOTH dual-accept shapes already tested for
+BOTH `Call` and `CallAsync` at the `api/reqreply` package level (bare `Route` in
+`client_registry_test.go`'s `TestClient_CallAsync_AutoPopulatesRegistry`, pre-built
+`*RouteHandle` via `.ClientHandle()` in `forward_resolve_test.go`/`server_client_test.go`).
+
+**Test-coverage gap found and closed in `adapters/mqtt5` only (not a functional bug — the dispatch
+mechanism itself was proven correct by the package-level tests above; this closes an adapter-level
+blind spot)**: grepped every `CallAsync` call site in `adapters/mqtt5/reqreply_transport_test.go`
+and `adapters/zeromq/reqreply_transport_test.go`. `adapters/zeromq` already exercises BOTH shapes
+for `CallAsync` (a pre-built handle via `.Register(server2)` at line 387, and a bare `ClientMW`-
+derived `Route` at line 958). `adapters/mqtt5`, however, had EVERY `CallAsync` call site use a bare
+`Route` (`asyncRoute`, `asyncClientRoute`, a `ClientMW`-derived `clientRoute`) — confirmed via grep
+that `ClientHandle()` never appears anywhere near a `CallAsync` call in that file, even though
+`adapters/mqtt5`'s own `Call` (not `CallAsync`) IS already tested with a `Register`-returned handle
+(`TestAttachClient_Call_...` around line 305). Added
+`TestAttachClient_CallAsync_AcceptsPreBuiltRouteHandle` to `adapters/mqtt5/reqreply_transport_test.go`,
+passing a `.Register(server)`-returned `*RouteHandle[computeReq,computeResp]` straight to
+`client.CallAsync` — passes, confirming the mechanism is correct; the gap was purely a missing
+test, not a dispatch bug.
+
+Verified: `go build ./api/reqreply/... ./adapters/mqtt5/... ./adapters/zeromq/...`, `go vet`
+(clean), `go test ./api/reqreply/... ./adapters/mqtt5/... ./adapters/zeromq/...` all pass.
+
+---
+
+## Round 251 (`deep-dive-bug-hunt` focused round on `api/events`'s go127-generic-methods retrofit (Workstream B) — CLEAN, 1 real test-coverage gap closed across all 3 adapters: `Subscribe`'s dual-accept handle form had NEVER been exercised, unlike `Publish`'s)
+
+Priority 3 round 2 of 4. Traced `publishArg[T]`/`subscribeArg[T]`'s 2 implementing types
+(`Publisher[T]`/`Subscriber[T]` and `*ChannelHandle[T]`) and `Client.Publish[T]`/`Subscribe[T]`'s
+signatures against each of the 3 adapters' `recoverHandle` dispatch (unchanged by the retrofit —
+confirmed via direct comparison against the pre-retrofit code this layer's own first deep-dive
+pass, Rounds 175-184, already extensively reviewed).
+
+**Test-coverage gap found and closed (not a functional bug — `Publish`'s dual-accept mechanism was
+already proven correct with a dedicated test in ALL 3 adapters; confirmed, not assumed, that the
+IDENTICAL mechanism also works for `Subscribe`)**: each of `adapters/mqtt`/`adapters/mqtt5`/
+`adapters/zeromq`'s own `transport_test.go` already has
+`TestAttach_ClientPublish_AcceptsPreBuiltHandle_WithRouter` (passing a pre-built
+`*events.ChannelHandle[T]`, not just the bare `Publisher[T]`, straight to `Client.Publish`) — but
+NONE of the 3 had the Subscribe counterpart; `Client.Subscribe`'s identical dual-accept mechanism
+had NEVER been exercised with the handle form anywhere in the whole repo (confirmed via grep
+across all 3 adapter test files AND `api/events/builder_test.go`). Added
+`TestAttach_ClientSubscribe_AcceptsPreBuiltHandle_WithRouter` to all 3 adapters, mirroring each
+one's own existing `Publish` counterpart's structure exactly (all 3 pass, confirming the mechanism
+IS correct for `Subscribe` too — a real verification, not an assumption carried over from
+`Publish`).
+
+Verified: `go build ./...`, `go vet ./...`, `gofmt -l .`,
+`go test ./adapters/mqtt/... ./adapters/mqtt5/... ./adapters/zeromq/...` all clean.
+
+---
+
+## Round 250 (`deep-dive-bug-hunt` focused round on `api/file`'s go127-generic-methods retrofit (Workstream A) — CLEAN, 2 real test-coverage gaps closed: `List[T]`/`Patch[T,P]`'s dual-accept handle form had NEVER been exercised)
+
+Priority 3 round 1 of 4 (focused go127-generic-methods rounds on the 4 already-twice-reviewed
+layers). Traced the retrofit's OWN new code — `readDispatcher[T]`/`createDispatcher[T]`/
+`patchDispatcher[T,P]`/`listDispatcher[T]` interface definitions and `Client.Read[T]`/`Create[T]`/
+`Patch[T,P]`/`List[T]`'s signatures — confirmed each dispatcher's 2 implementing types
+(`Xxx[T]`/`*XxxHandle[T]`) delegate to the IDENTICAL, UNCHANGED `xxxCore[T]` function the
+pre-retrofit `any`-typed dispatch already used and this layer's own 2 prior deep-dive passes
+(Rounds 216-238) already extensively reviewed — the retrofit itself is a pure, behavior-preserving
+mechanical signature change, confirmed by direct comparison, not assumed.
+
+**Test-coverage gap found and closed (not a functional bug — the dual-accept mechanism itself was
+proven correct for `Read`/`Create`; confirmed, not just assumed, that it ALSO works for `List`/
+`Patch`)**: `client_test.go` tests `Client.Read[T]`/`Create[T]`'s dual-accept contract (bare role
+builder OR pre-built `*XxxHandle[T]`) explicitly, side by side
+(`TestClient_Read_AcceptsRawBuilderOrPreBuiltHandle`), but EVERY `Client.List[T]`/`Patch[T,P]` test
+call used ONLY the bare role form — zero tests anywhere exercised `*ListHandle[T]`/
+`*PatchHandle[T,P]`. Added `TestClient_List_AcceptsRawBuilderOrPreBuiltHandle`/
+`TestClient_Patch_AcceptsRawBuilderOrPreBuiltHandle` (both pass, confirming the mechanism IS
+correct for both — a REAL verification, not an assumption carried over from Read/Create).
+
+**Noted, NOT fixed this round (broader than this round's go127-generic-methods scope — a REPO-WIDE
+gap across ALL 14 dispatch methods, not specific to the 4 generic ones)**: the SAME "bare-only,
+never handle-form-tested" pattern also applies to ALL 6 A2 methods (`Delete`/`Exists`/`Copy`/
+`Move`/`Mkdir`/`BatchDelete`) — confirmed via grep, zero hits for any of their `*XxxHandle`
+patterns in `client_test.go`. Flagging for a future, DEDICATED `api/file` test-coverage round
+rather than silently expanding this round's scope to 8 more methods.
+
+Verified: `go build ./...`, `go vet ./...`, `gofmt -l .`, `go test ./api/file/...` all clean.
+
+---
+
 ## Round 249 (`deep-dive-bug-hunt` Phase B — mandatory consolidated design-doc re-review of Rounds 246-248, the FIRST-ever `api/llm` deep-dive pass — REAL GAP FOUND AND FIXED: `docs/design/d-0010-adapter-integration-architecture.md`'s own per-adapter inventory tables went stale the moment the `TraceObserver` fix shipped)
 
 Phase B re-review of `api/llm`'s first-ever deep-dive pass (246 foundational, 247 concepts, 248

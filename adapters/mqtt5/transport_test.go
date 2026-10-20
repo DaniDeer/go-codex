@@ -202,6 +202,58 @@ func TestAttach_ClientSubscribe_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestAttach_ClientSubscribe_AcceptsPreBuiltHandle_WithRouter is
+// TestAttach_ClientPublish_AcceptsPreBuiltHandle_WithRouter's Subscribe
+// counterpart — a gap found via deep-dive-bug-hunt's go127-generic-methods
+// focused round on api/events: Publish's dual-accept was tested with the
+// handle form in all 3 adapters, but Subscribe's identical dual-accept
+// mechanism had NEVER been exercised with the handle form anywhere.
+func TestAttach_ClientSubscribe_AcceptsPreBuiltHandle_WithRouter(t *testing.T) {
+	client := &mockClient{}
+	router := newMockRouter()
+	c := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	if err := c.Attach(NewTransport(TransportOptions{Client: client, Router: router})); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	sub := plainSensorChannel("readings").WithSubscribe(events.Subscribe{})
+	rt := events.NewRouter("sensors")
+	handle, err := sub.Handle(nil, events.WithRouter(rt))
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	received := make(chan sensorReading, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- c.Subscribe(ctx, handle, func(_ context.Context, r sensorReading) error {
+			received <- r
+			return nil
+		})
+	}()
+
+	router.waitHandler("sensors/readings")
+	router.dispatch("sensors/readings", &pahomqtt5.Publish{
+		Topic:   "sensors/readings",
+		Payload: []byte(validSensorJSON),
+	})
+
+	if err := <-done; err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	select {
+	case r := <-received:
+		if r.SensorID == "" {
+			t.Fatal("expected non-empty SensorID")
+		}
+	default:
+		t.Fatal("expected message to be delivered via Client.Subscribe (WithRouter composition not honored)")
+	}
+}
+
 // TestAttach_ClientSubscribe_HonorsDeclaredCapabilities confirms Phase
 // 4c (docs/design/d-0006-protocol-native-capabilities.md): a
 // Capabilities value declared via [events.Subscriber.WithOptions] is

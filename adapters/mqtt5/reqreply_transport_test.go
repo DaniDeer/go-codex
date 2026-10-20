@@ -241,6 +241,56 @@ func TestAttachClient_CallAsync_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestAttachClient_CallAsync_AcceptsPreBuiltRouteHandle(t *testing.T) {
+	server := reqreply.NewServer(reqreply.Info{Title: "Test", Version: "1.0.0"})
+	handler := func(ctx context.Context, req computeReq) (computeResp, error) {
+		return computeResp{Sum: req.X + req.Y}, nil
+	}
+	route := reqreply.NewRoute[computeReq, computeResp](
+		"compute/add-async-handle",
+		computeReqCodec, computeRespCodec,
+		reqreply.RouteMeta{OperationID: "computeAsyncHandle"},
+	)
+	handle, err := route.WithHandler(handler).Register(server)
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	serverClient := &mockClient{}
+	serverRouter := newMockRouter()
+	if err := server.Attach(NewServerTransport(ServerTransportOptions{Client: serverClient, Router: serverRouter})); err != nil {
+		t.Fatalf("AttachServer: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	go func() { _ = server.Serve(ctx) }()
+	serverRouter.waitHandler("compute/add-async-handle")
+
+	client := reqreply.NewClient()
+	clientClient := &mockClient{}
+	clientRouter := newMockRouter()
+	if err := client.Attach(NewClientTransport(ClientTransportOptions{Client: clientClient, Router: clientRouter})); err != nil {
+		t.Fatalf("AttachClient: %v", err)
+	}
+	wireBrokers(t, serverClient, clientRouter)
+	wireBrokers(t, clientClient, serverRouter)
+
+	future, err := client.CallAsync(context.Background(), handle, computeReq{X: 7, Y: 8})
+	if err != nil {
+		t.Fatalf("CallAsync: %v", err)
+	}
+
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer waitCancel()
+	resp, err := future.Wait(waitCtx)
+	if err != nil {
+		t.Fatalf("future.Wait: %v", err)
+	}
+	if resp.Sum != 15 {
+		t.Fatalf("resp.Sum = %d, want 15 (CallAsync accepted a pre-built *RouteHandle)", resp.Sum)
+	}
+}
+
 // ── Phase 0: capability parity between AttachServer/AttachClient and Serve/Call ──
 
 // TestAttachServer_AttachClient_MergeFields_RoundTrip confirms

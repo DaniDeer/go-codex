@@ -193,6 +193,62 @@ func TestAttach_ClientSubscribe_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestAttach_ClientSubscribe_AcceptsPreBuiltHandle_WithRouter is
+// TestAttach_ClientPublish_AcceptsPreBuiltHandle_WithRouter's Subscribe
+// counterpart — a gap found via deep-dive-bug-hunt's go127-generic-methods
+// focused round on api/events: Publish's dual-accept (bare Publisher[T]
+// OR pre-built *ChannelHandle[T]) was tested with the handle form in all
+// 3 adapters, but Subscribe's identical dual-accept mechanism had NEVER
+// been exercised with the handle form anywhere.
+func TestAttach_ClientSubscribe_AcceptsPreBuiltHandle_WithRouter(t *testing.T) {
+	client := &mockClient{token: newCompletedToken(nil)}
+	c := events.NewClient(events.WithInfo(events.Info{Title: "Test", Version: "1.0.0"}))
+	if err := c.Attach(NewTransport(TransportOptions{Client: client})); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	sub := plainSensorChannel("readings").WithSubscribe(events.Subscribe{})
+	rt := events.NewRouter("sensors")
+	handle, err := sub.Handle(nil, events.WithRouter(rt))
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	var mu sync.Mutex
+	var received sensorReading
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- c.Subscribe(ctx, handle, func(_ context.Context, r sensorReading) error {
+			mu.Lock()
+			received = r
+			mu.Unlock()
+			return nil
+		})
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if h := client.subscribedHandlerSnapshot(); h != nil {
+			h(client, &mockMessage{topic: "sensors/readings",
+				payload: []byte(`{"sensorID":"f47ac10b-58cc-4372-a567-0e02b2c3d479","value":22.5}`)})
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if err := <-done; err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if received.SensorID == "" {
+		t.Fatal("expected message to be delivered via Client.Subscribe (WithRouter composition not honored)")
+	}
+}
+
 // TestAttach_ClientSubscribe_HonorsDeclaredCapabilities confirms Phase
 // 4c (docs/design/d-0006-protocol-native-capabilities.md): a
 // Capabilities value declared via [events.Subscriber.WithOptions] is
