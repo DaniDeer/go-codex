@@ -145,8 +145,12 @@ func TestTool_Register_emptyNameFails(t *testing.T) {
 	b := newBuilder()
 	tool := apimcp.NewTool[calcInput, calcOutput]("", calcInputCodec, calcOutputCodec)
 	_, err := tool.Register(b)
-	if err == nil {
-		t.Fatal("expected error for empty name")
+	var ene apimcp.EmptyNameError
+	if !errors.As(err, &ene) {
+		t.Fatalf("expected EmptyNameError, got %v (%T)", err, err)
+	}
+	if ene.Kind != "tool" {
+		t.Errorf("Kind = %q, want %q", ene.Kind, "tool")
 	}
 }
 
@@ -157,8 +161,12 @@ func TestTool_Register_duplicateFails(t *testing.T) {
 		t.Fatalf("first register: %v", err)
 	}
 	_, err = newCalcTool().Register(b)
-	if err == nil {
-		t.Fatal("expected error for duplicate tool name")
+	var dne apimcp.DuplicateNameError
+	if !errors.As(err, &dne) {
+		t.Fatalf("expected DuplicateNameError, got %v (%T)", err, err)
+	}
+	if dne.Kind != "tool" {
+		t.Errorf("Kind = %q, want %q", dne.Kind, "tool")
 	}
 }
 
@@ -289,6 +297,38 @@ func TestResource_Register_happyPath(t *testing.T) {
 	}
 	if handle.URITemplate != "items://{id}" {
 		t.Errorf("URITemplate: got %q", handle.URITemplate)
+	}
+}
+
+// TestResource_Register_duplicateFails is a regression test for a REAL,
+// confirmed bug (deep-dive-bug-hunt, api/mcp foundational round): Register
+// populated b.resNames but NEVER checked it for a duplicate before this
+// fix — registering the SAME URI template twice against one Builder
+// silently produced TWO duplicate entries in MCPSpec.Resources, with no
+// error at all, unlike Tool.Register/Prompt.Register which both already
+// correctly rejected a duplicate name.
+func TestResource_Register_duplicateFails(t *testing.T) {
+	b := newBuilder()
+	tmpl := codex.NewTemplate("items://{id}", codex.PathStyle, idField(uuidCodec))
+	res := apimcp.NewResourceFromTemplate(tmpl, itemCodec, apimcp.ResourceMeta{Name: "Item"})
+
+	if _, err := res.Register(b); err != nil {
+		t.Fatalf("first register: %v", err)
+	}
+	_, err := res.Register(b)
+	var dne apimcp.DuplicateNameError
+	if !errors.As(err, &dne) {
+		t.Fatalf("expected DuplicateNameError, got %v (%T)", err, err)
+	}
+	if dne.Kind != "resource" || dne.Name != "items://{id}" {
+		t.Errorf("DuplicateNameError = %+v, want Kind=resource Name=items://{id}", dne)
+	}
+	spec, err := b.MCPSpec()
+	if err != nil {
+		t.Fatalf("MCPSpec: %v", err)
+	}
+	if len(spec.Resources) != 1 {
+		t.Errorf("MCPSpec.Resources has %d entries, want 1 (duplicate must not be appended)", len(spec.Resources))
 	}
 }
 
@@ -546,6 +586,34 @@ func TestPrompt_Register_happyPath(t *testing.T) {
 	}
 	if len(handle.Args) != 2 {
 		t.Errorf("Args: got %d, want 2", len(handle.Args))
+	}
+}
+
+func TestPrompt_Register_emptyNameFails(t *testing.T) {
+	b := newBuilder()
+	p := apimcp.NewPrompt("")
+	_, err := p.Register(b)
+	var ene apimcp.EmptyNameError
+	if !errors.As(err, &ene) {
+		t.Fatalf("expected EmptyNameError, got %v (%T)", err, err)
+	}
+	if ene.Kind != "prompt" {
+		t.Errorf("Kind = %q, want %q", ene.Kind, "prompt")
+	}
+}
+
+func TestPrompt_Register_duplicateFails(t *testing.T) {
+	b := newBuilder()
+	if _, err := apimcp.NewPrompt("dup").Register(b); err != nil {
+		t.Fatalf("first register: %v", err)
+	}
+	_, err := apimcp.NewPrompt("dup").Register(b)
+	var dne apimcp.DuplicateNameError
+	if !errors.As(err, &dne) {
+		t.Fatalf("expected DuplicateNameError, got %v (%T)", err, err)
+	}
+	if dne.Kind != "prompt" {
+		t.Errorf("Kind = %q, want %q", dne.Kind, "prompt")
 	}
 }
 

@@ -71,6 +71,9 @@ func ToolHandler[In, Out any](
 	if len(handle.InputSchema) > 0 {
 		tool.RawInputSchema = handle.InputSchema
 	}
+	if len(handle.OutputSchema) > 0 {
+		tool.RawOutputSchema = handle.OutputSchema
+	}
 
 	handler := func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		// Resolve observer per-call: explicit opts.Observer beats context observer.
@@ -108,7 +111,7 @@ func ToolHandler[In, Out any](
 			// Consult a declared apimcp.ErrorPattern before falling back to
 			// a bare error string — a matched pattern returns a structured
 			// typed error result (still IsError: true) instead of plain text.
-			if resp, matched, mapErr := handle.ErrorResponseFor(err); matched {
+			if resp, matched, mapErr := handle.ObserveErrorResponseFor(ctx, obs, err); matched {
 				if mapErr != nil {
 					stats.ReportErrors(obs, "error_pattern", mapErr)
 					return mcp.NewToolResultError(err.Error()), nil
@@ -394,8 +397,14 @@ func PromptHandler(
 			return nil, err
 		}
 
+		result, err := buildPromptResult(messages)
+		if err != nil {
+			obs.RecordRequest("prompt", handle.Name, 500, time.Since(start))
+			return nil, err
+		}
+
 		obs.RecordRequest("prompt", handle.Name, 200, time.Since(start))
-		return buildPromptResult(messages), nil
+		return result, nil
 	}
 
 	return prompt, handler
@@ -418,19 +427,27 @@ func RegisterPrompt(
 // ---------------------------------------------------------------------------
 
 // buildPromptResult converts go-codex PromptMessages to an mcp.GetPromptResult.
-func buildPromptResult(msgs []PromptMessage) *mcp.GetPromptResult {
+// Returns [InvalidPromptRoleError] if any message's Role is neither "user"
+// nor "assistant" — see that error's own doc comment for the bug this
+// guards against (a silent, wrong fallback to "user").
+func buildPromptResult(msgs []PromptMessage) (*mcp.GetPromptResult, error) {
 	mcpMsgs := make([]mcp.PromptMessage, len(msgs))
 	for i, m := range msgs {
-		role := mcp.RoleUser
-		if m.Role == "assistant" {
+		var role mcp.Role
+		switch m.Role {
+		case "user":
+			role = mcp.RoleUser
+		case "assistant":
 			role = mcp.RoleAssistant
+		default:
+			return nil, InvalidPromptRoleError{Role: m.Role}
 		}
 		mcpMsgs[i] = mcp.PromptMessage{
 			Role:    role,
 			Content: mcp.NewTextContent(m.Content),
 		}
 	}
-	return &mcp.GetPromptResult{Messages: mcpMsgs}
+	return &mcp.GetPromptResult{Messages: mcpMsgs}, nil
 }
 
 // containsPlaceholder reports whether s contains at least one {varName} placeholder.

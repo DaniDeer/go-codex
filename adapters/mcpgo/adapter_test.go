@@ -214,6 +214,33 @@ func TestToolHandler_ErrorPatternMatch_ReturnsStructuredResult(t *testing.T) {
 	}
 }
 
+// mcpgoErrorPatternObserverSpy confirms ToolHandler calls through to
+// ObserveErrorResponseFor (not the bare ErrorResponseFor) — closing
+// docs/design/d-0005-error-handling.md's Topic 5 cross-reference for
+// api/mcp (deep-dive-bug-hunt Phase B finding).
+type mcpgoErrorPatternObserverSpy struct {
+	stats.NoopObserver
+	matches int
+}
+
+func (s *mcpgoErrorPatternObserverSpy) RecordErrorPatternMatch(_, _, _ string) { s.matches++ }
+func (s *mcpgoErrorPatternObserverSpy) RecordErrorPatternMiss(_ string)        {}
+
+func TestToolHandler_ErrorPatternMatch_RecordsErrorPatternObserver(t *testing.T) {
+	handle := buildErrorPatternHandle(t)
+	fn := func(_ context.Context, _ addInput) (addOutput, error) {
+		return addOutput{}, addConflictErr{msg: "duplicate"}
+	}
+	spy := &mcpgoErrorPatternObserverSpy{}
+	_, err := callTool(t, handle, fn, mcpgo.Options{Observer: spy}, map[string]any{"a": 1.0, "b": 2.0})
+	if err != nil {
+		t.Fatalf("protocol error: %v", err)
+	}
+	if spy.matches != 1 {
+		t.Fatalf("want 1 RecordErrorPatternMatch call, got %d", spy.matches)
+	}
+}
+
 func TestToolHandler_ErrorPatternNoMatch_FallsBackToPlainText(t *testing.T) {
 	handle := buildErrorPatternHandle(t)
 	unrelatedErr := errors.New("unrelated failure")
@@ -309,6 +336,26 @@ func TestToolHandler_toolDescriptor_hasName(t *testing.T) {
 	}
 	if tool.Description != "Add two numbers" {
 		t.Errorf("tool.Description: got %q", tool.Description)
+	}
+}
+
+// TestToolHandler_toolDescriptor_setsRawOutputSchema is a regression test
+// for a REAL, confirmed bug (deep-dive-bug-hunt, api/mcp Tool round):
+// ToolHandler forwarded handle.InputSchema to tool.RawInputSchema but NEVER
+// forwarded handle.OutputSchema to tool.RawOutputSchema (mcp-go's own field
+// for exactly this purpose) — the declared output schema never reached the
+// LLM client's tool descriptor at all.
+func TestToolHandler_toolDescriptor_setsRawOutputSchema(t *testing.T) {
+	handle := buildHandle(addInputCodec, addOutputCodec)
+	tool, _ := mcpgo.ToolHandler(handle, func(_ context.Context, in addInput) (addOutput, error) {
+		return addOutput{}, nil
+	}, mcpgo.Options{})
+
+	if len(handle.OutputSchema) == 0 {
+		t.Fatal("test setup bug: handle.OutputSchema is empty")
+	}
+	if string(tool.RawOutputSchema) != string(handle.OutputSchema) {
+		t.Errorf("tool.RawOutputSchema = %s, want %s", tool.RawOutputSchema, handle.OutputSchema)
 	}
 }
 
@@ -426,6 +473,46 @@ func TestResourceHandler_isNotTemplate_forLiteralURI(t *testing.T) {
 	}, mcpgo.Options{})
 	if isTemplate {
 		t.Error("expected isTemplate=false for literal URI")
+	}
+}
+
+// TestResourceHandler_templateDescriptor_hasNameAndMIMEType verifies (not
+// assumes — mirrors the Tool round's RawOutputSchema finding) that the
+// mcp.ResourceTemplate descriptor returned for a {varName}-templated URI
+// actually carries Name/MIMEType, since no prior test checked the rendered
+// descriptor's own fields for either the template or literal branch.
+func TestResourceHandler_templateDescriptor_hasNameAndMIMEType(t *testing.T) {
+	handle := buildItemHandle("items://{id}")
+	_, tmpl, isTemplate, _ := mcpgo.ResourceHandler(handle, func(_ context.Context, _ string) (itemRes, error) {
+		return itemRes{ID: "1", Name: "x"}, nil
+	}, mcpgo.Options{})
+	if !isTemplate {
+		t.Fatal("expected isTemplate=true")
+	}
+	if tmpl.Name != "Item" {
+		t.Errorf("tmpl.Name = %q, want %q", tmpl.Name, "Item")
+	}
+	if tmpl.MIMEType != "application/json" {
+		t.Errorf("tmpl.MIMEType = %q, want %q", tmpl.MIMEType, "application/json")
+	}
+}
+
+// TestResourceHandler_literalDescriptor_hasNameAndMIMEType is
+// TestResourceHandler_templateDescriptor_hasNameAndMIMEType's literal-URI
+// counterpart.
+func TestResourceHandler_literalDescriptor_hasNameAndMIMEType(t *testing.T) {
+	handle := buildItemHandle("items://featured")
+	res, _, isTemplate, _ := mcpgo.ResourceHandler(handle, func(_ context.Context, _ string) (itemRes, error) {
+		return itemRes{ID: "1", Name: "x"}, nil
+	}, mcpgo.Options{})
+	if isTemplate {
+		t.Fatal("expected isTemplate=false")
+	}
+	if res.Name != "Item" {
+		t.Errorf("res.Name = %q, want %q", res.Name, "Item")
+	}
+	if res.MIMEType != "application/json" {
+		t.Errorf("res.MIMEType = %q, want %q", res.MIMEType, "application/json")
 	}
 }
 
@@ -643,6 +730,40 @@ func TestPromptHandler_promptDescriptor_hasName(t *testing.T) {
 	}, mcpgo.Options{})
 	if prompt.Name != "summarize" {
 		t.Errorf("prompt.Name: got %q, want summarize", prompt.Name)
+	}
+}
+
+func TestPromptHandler_assistantRole_mapsToRoleAssistant(t *testing.T) {
+	handle := buildSummarizeHandle()
+	fn := func(_ context.Context, _ map[string]string) ([]mcpgo.PromptMessage, error) {
+		return []mcpgo.PromptMessage{{Role: "assistant", Content: "ok"}}, nil
+	}
+	result, err := callPrompt(t, handle, fn, mcpgo.Options{}, map[string]string{"content": "hello"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Messages[0].Role != mcp.RoleAssistant {
+		t.Errorf("Role = %v, want RoleAssistant", result.Messages[0].Role)
+	}
+}
+
+// TestPromptHandler_invalidRole_returnsInvalidPromptRoleError is a
+// regression test for a REAL, confirmed bug (deep-dive-bug-hunt, api/mcp
+// Prompt round): buildPromptResult silently mapped ANY Role other than
+// "assistant" to mcp.RoleUser — a typo'd or unsupported role (e.g.
+// "system") was silently sent to the LLM client as "user" with zero error.
+func TestPromptHandler_invalidRole_returnsInvalidPromptRoleError(t *testing.T) {
+	handle := buildSummarizeHandle()
+	fn := func(_ context.Context, _ map[string]string) ([]mcpgo.PromptMessage, error) {
+		return []mcpgo.PromptMessage{{Role: "system", Content: "x"}}, nil
+	}
+	_, err := callPrompt(t, handle, fn, mcpgo.Options{}, map[string]string{"content": "hello"})
+	var ipr mcpgo.InvalidPromptRoleError
+	if !errors.As(err, &ipr) {
+		t.Fatalf("expected InvalidPromptRoleError, got %v (%T)", err, err)
+	}
+	if ipr.Role != "system" {
+		t.Errorf("Role = %q, want %q", ipr.Role, "system")
 	}
 }
 

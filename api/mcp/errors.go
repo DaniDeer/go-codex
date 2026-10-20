@@ -5,6 +5,94 @@ import (
 	"log/slog"
 )
 
+// EmptyNameError is returned by [Tool.Register]/[Tool.ClientHandle]/
+// [Prompt.Register] when the declared name is empty. Kind is "tool" or
+// "prompt" — [Resource.Register] has no equivalent empty-name case, since
+// an empty URI template pattern already panics at [codex.NewTemplate]
+// construction time (a declare-time programmer error, not a Register-time
+// one — see [Resource.Register]'s own doc comment).
+//
+// Use [errors.As] to extract Kind:
+//
+//	var ene mcp.EmptyNameError
+//	if errors.As(err, &ene) {
+//	    log.Printf("%s name must not be empty", ene.Kind)
+//	}
+type EmptyNameError struct {
+	// Kind is "tool" or "prompt".
+	Kind string
+}
+
+func (e EmptyNameError) Error() string {
+	return fmt.Sprintf("mcp: %s name must not be empty", e.Kind)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e EmptyNameError) LogValue() slog.Value {
+	return slog.GroupValue(slog.String("kind", e.Kind))
+}
+
+// DuplicateNameError is returned by [Tool.Register]/[Resource.Register]/
+// [Prompt.Register] when Name (a tool/prompt name, or a resource's URI
+// template) was already registered against the SAME [Builder].
+//
+// Use [errors.As] to extract Kind and Name:
+//
+//	var dne mcp.DuplicateNameError
+//	if errors.As(err, &dne) {
+//	    log.Printf("%s %q already registered", dne.Kind, dne.Name)
+//	}
+type DuplicateNameError struct {
+	// Kind is "tool", "resource", or "prompt".
+	Kind string
+	// Name is the tool/prompt name, or the resource's URI template.
+	Name string
+}
+
+func (e DuplicateNameError) Error() string {
+	return fmt.Sprintf("mcp: %s %q already registered", e.Kind, e.Name)
+}
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e DuplicateNameError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("kind", e.Kind),
+		slog.String("name", e.Name),
+	)
+}
+
+// SchemaRenderError is returned by [Tool.Register]/[Tool.ClientHandle] when
+// rendering a declared input/output codec's JSON Schema fails.
+//
+// Use [errors.As] to extract Kind, Name, and the underlying error:
+//
+//	var sre mcp.SchemaRenderError
+//	if errors.As(err, &sre) {
+//	    log.Printf("tool %q: %s schema render failed: %v", sre.Name, sre.Kind, sre.Err)
+//	}
+type SchemaRenderError struct {
+	// Kind is "input" or "output".
+	Kind string
+	// Name is the tool name.
+	Name string
+	// Err is the underlying render error.
+	Err error
+}
+
+func (e SchemaRenderError) Error() string {
+	return fmt.Sprintf("mcp: tool %q: render %s schema: %s", e.Name, e.Kind, e.Err)
+}
+func (e SchemaRenderError) Unwrap() error { return e.Err }
+
+// LogValue implements [slog.LogValuer] for structured logging.
+func (e SchemaRenderError) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("kind", e.Kind),
+		slog.String("name", e.Name),
+		slog.Any("cause", e.Err),
+	)
+}
+
 // ToolInputError is returned by [ToolHandle.Decode] when the incoming arguments
 // fail codec validation or cannot be decoded into the input type.
 // Use [errors.As] to extract the name and underlying error:

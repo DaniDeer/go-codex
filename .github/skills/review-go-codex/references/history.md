@@ -4,6 +4,252 @@ Do not re-report any of these findings. They have been implemented and tested.
 
 ---
 
+## Round 245 (`deep-dive-bug-hunt` Phase B — mandatory consolidated design-doc re-review of Rounds 239-244, the FIRST-ever `api/mcp` deep-dive pass — REAL GAP FOUND AND FIXED: `docs/design/d-0005-error-handling.md`'s own Topic 5 explicitly cross-referenced a known `adapters/mcpgo` gap, never closed until this Phase B pass)
+
+Phase B re-review of every Round in `api/mcp`'s first-ever deep-dive pass (239 foundational, 240
+Tool, 241 Resource, 242 Prompt, 243 ErrorPattern, 244 adapter parity) against the governing design
+docs mentioning `api/mcp`/`adapters/mcpgo`/`adapters/mcprest`.
+
+**Verdict table:**
+
+| Round | Doc(s) cross-checked | Aligned? |
+|---|---|---|
+| 239 (Resource duplicate-registration fix) | None govern this (pure builder-internals bug, no design doc specifies the duplicate-check behavior explicitly — inferred from `Tool`/`Prompt`'s own existing symmetric behavior) | N/A — no doc to misalign with |
+| 240 (Tool `RawOutputSchema` fix) | None govern this (mcp-go library mechanics, not a go-codex design decision) | N/A |
+| 241 (Resource concept, clean) | None govern this | N/A |
+| 242 (Prompt role fix) | None govern this (adapter-library mapping bug, not a go-codex design decision) | N/A |
+| 243 (ErrorPattern, clean) | **`docs/design/d-0005-error-handling.md`'s Topic 5** | **MISALIGNED — found and fixed in this Phase B pass** (see below) |
+| 244 (adapter parity, clean) | `docs/design/d-0010-adapter-integration-architecture.md` (general shared-dispatch-core principle) | Aligned — `ToolHandler` is the correctly-identified single dispatch core, consistent with D-0010's consolidation principle |
+
+**REAL GAP FOUND AND FIXED** (a genuine code/design misalignment, not just a doc-clarity issue —
+reopened Phase A for the `ErrorPattern` concept per this skill's own Phase B rule): `d-0005`'s
+Topic 5 (`RecordErrorPatternMatch`/`RecordErrorPatternMiss` observability for a successfully
+matched `ErrorPattern`) EXPLICITLY states, in its own text: "the identical mechanism in
+`adapters/mcpgo`... has the same gap... a future MCP-focused round would likely want the same fix
+using the same mechanism designed here." THIS round's own Round 243 (`ErrorPattern`) missed this
+despite being exactly that round — confirmed via `grep` that `stats.ErrorPatternObserver`/
+`HasErrorPatterns`/`ObserveErrorResponseFor` were already fully shipped and wired for `api/rest`/
+`api/events`/`api/reqreply`, but `api/mcp` had none of the three. Fixed by adding the IDENTICAL
+mechanism: `ToolHandle.HasErrorPatterns()`/`ToolHandle.ObserveErrorResponseFor(ctx, obs, err)`
+(new `api/mcp/observability.go`; package gained a NEW `stats` import, confirmed no import cycle
+via a full `go build ./...`), and `adapters/mcpgo.ToolHandler` now calls
+`ObserveErrorResponseFor` instead of the bare `ErrorResponseFor`. Since MCP's
+`ErrorPatternResponse` has no status/topic field (unlike REST's status code or events' error-output
+topic) to use as the observer's "code" parameter, derived it from `fmt.Sprintf("%T", resp.Value)`
+— the matched pattern's own declared payload type, a stable per-pattern distinguishing identifier
+requiring no new field. `action` is always `""` (MCP has no `ErrorAction` concept, mirrors
+reqreply's identical choice for the identical reason). Updated `d-0005`'s own Topic 5 text to
+mark this cross-reference RESOLVED, instead of leaving it as a dangling forward-pointer forever.
+
+Added `api/mcp/observability_test.go` (mirrors `api/reqreply/error_pattern_observability_test.go`'s
+structure exactly — `RecordsMatch`/`RecordsMiss_OnlyWhenPatternsDeclared`/`TagsSpan_OnMatch`/
+`PlainObserver_NoPanic`/`HasErrorPatterns`) and
+`TestToolHandler_ErrorPatternMatch_RecordsErrorPatternObserver` in `adapters/mcpgo/adapter_test.go`
+(confirms the adapter-level wiring itself, not just the `api/mcp` method in isolation).
+
+Updated `.github/instructions/go-codex.instructions.md`'s `api/mcp` package-summary row and the
+"Package import table"'s `api/mcp` row (gained `stats`).
+
+Verified: `go build ./...` (confirms no import cycle), `go vet ./...`, `gofmt -l .`,
+`go test ./api/mcp/... ./adapters/mcpgo/... ./adapters/mcprest/...` all clean.
+
+This completes `api/mcp`'s FIRST-EVER deep-dive-bug-hunt pass: 6 concept rounds + this Phase B
+pass, 4 real confirmed bugs found and fixed (Resource duplicate-registration, Tool
+RawOutputSchema, Prompt invalid-role silent fallback, ErrorPattern observability gap), 2 concept
+rounds clean (Resource, adapter-parity), all with live failing-test reproduction before any fix.
+
+---
+
+## Round 244 (`deep-dive-bug-hunt` applied to `adapters/mcpgo`/`adapters/mcprest` — adapter/dispatch-path parity + conformance-package check — CLEAN, confirmed single shared dispatch core, no `mcptest` package exists)
+
+`api/mcp` deep-dive pass, round 6 of N (adapter parity). Per this skill's own gotcha ("a single
+dispatch path concept can have MULTIPLE independent reflection-based implementations that do NOT
+share code"), searched for every OTHER Tool-dispatch entry point beyond the already-reviewed
+`ToolHandler` (Round 240) and found 4: `ToolLatestHandler`/`ToolPipelineHandler` (`stream.go`,
+ports-stream-bridge handlers) and `ToolPipelineAdapter.Bind`/`LatestAdapter.Serve` (`binding.go`,
+`ports.ToolAdapter`/`ports.LatestAdapter` implementations). Traced all 4 and confirmed — unlike
+events' historical 4-separate-reflection-paths situation — EVERY one of them is a THIN WRAPPER
+that delegates directly to `ToolHandler[In, Out]`/`RegisterToolPipeline` (which itself calls
+`ToolHandler`), not an independent reimplementation. This means Round 240's `RawOutputSchema` fix
+automatically covers all 4 of these paths too — confirmed by re-running the full `mcpgo`/`mcprest`
+test suites (all pass) rather than assuming.
+
+No `mcptest` conformance package exists (confirmed via `find`) — unlike `resttest`/`eventstest`/
+`reqreplytest`, `api/mcp` has no dedicated `Assert*`-function package to mutation-test. Not a
+gap to fix in this round (out of scope — a NEW conformance package is a feature addition, not a
+bug fix), but noting its absence for completeness, mirroring this skill's "even a clean round
+needs a `history.md` entry" convention.
+
+`adapters/mcprest` confirmed to have NO independent adapter surface to drift from `mcpgo`'s own —
+it only ever returns `mcpgo.HandlerFunc` values for the caller to pass INTO `mcpgo.ToolHandler`/
+`RegisterTool` themselves; it never builds its own `mcp.Tool`/`mcp.Resource`/`mcp.Prompt`
+descriptor. There is no genuine N-way parity to check for `api/mcp`'s 2 named adapters in the
+usual REST/events sense — `mcpgo` is the sole real dispatch implementation.
+
+No code change this round — confirmed clean.
+
+---
+
+## Round 243 (`deep-dive-bug-hunt` applied to `api/mcp` — `ErrorPattern` concept — CLEAN, faithfully mirrors `rest`/`events`/`reqreply`'s own `ErrorPattern`/`ErrorChannel` design)
+
+`api/mcp` deep-dive pass, round 5 of N. Traced `ErrorPattern[E,B]`/`ErrorPatternOpt`/
+`errorPatternRule`/`ToolHandle.ErrorResponseFor` — confirmed `ToolHandler` (Round 240) is the ONE
+place that calls `ErrorResponseFor`, so there is no "forgotten second dispatch path" risk the
+events' Round 181 dead-letter gap came from (`api/mcp` has no equivalent of events' 4 separate
+reflection-based dispatch paths — just the one `mcpgo.ToolHandler`/`RegisterTool` function).
+
+`ErrorPattern` direct-mode's `fmt.Errorf("api/mcp: ErrorPattern direct mode: %T not assignable to
+payload", target)` bare-error use is confirmed NOT a gap — grepped and found the IDENTICAL bare
+`fmt.Errorf` pattern in `api/rest`/`api/events`/`api/reqreply`'s own direct-mode checks, word for
+word except the package prefix — a deliberate, consistent cross-package convention (this is a
+defensive, essentially-unreachable-in-practice runtime check backstopping a static-type
+assignability Go's generics can't fully express at the `ErrorPattern[E,B]` call site itself), not
+an isolated mcp-specific omission.
+
+`ClientHandle` (the no-`Builder` registration path) confirmed to carry `errorPatternRules`
+correctly via the existing `TestErrorPattern_ClientHandle_carriesRules` test.
+
+**Noted, not fixed (pre-existing, consistent gap across ALL 4 packages, not introduced or unique
+to `api/mcp`)**: none of `api/mcp`/`api/rest`/`api/events`/`api/reqreply`'s own `ErrorPattern`/
+`ErrorChannel` test suites cover the `jsonCodec.Marshal`/`encErr` failure branch inside the match
+path itself (only the mapper-error branch and the happy-path encode are tested) — flagging for a
+future, SEPARATE cross-package round rather than fixing just one of the four in isolation, which
+would create asymmetry rather than resolve it.
+
+No code change this round — confirmed clean.
+
+---
+
+## Round 242 (`deep-dive-bug-hunt` applied to `adapters/mcpgo` — `Prompt` concept, `PromptHandler`/`buildPromptResult` — REAL BUG FOUND AND FIXED: any `PromptMessage.Role` other than exactly `"assistant"` silently became `mcp.RoleUser`, with zero error)
+
+`api/mcp` deep-dive pass, round 4 of N. Traced `Prompt`/`PromptArg`/`PromptHandle`/`ValidateArgs`
+through `adapters/mcpgo.PromptHandler` (the ONE dispatch path — `mcprest` has no prompt-bridging
+counterpart).
+
+**REAL BUG FOUND AND FIXED (reproduced live via a failing test BEFORE fixing)**:
+`buildPromptResult`'s role-mapping was `role := mcp.RoleUser; if m.Role == "assistant" { role =
+mcp.RoleAssistant }` — this SILENTLY treated ANY value other than the exact string `"assistant"`
+as `"user"`, including a typo (`"Assistant"` miscapitalized) or an unsupported-but-plausible value
+(`"system"`) — directly contradicting `PromptMessage`'s own doc comment ("Role must be \"user\" or
+\"assistant\""), which was never actually enforced anywhere. Confirmed via a live reproduction
+test (`Role: "system"` silently arrived as `mcp.RoleUser`) before fixing. Fixed with an explicit
+`switch` over both valid values, returning a NEW structured `InvalidPromptRoleError{Role}` (first
+error type ever defined in `adapters/mcpgo` — previously had none of its own) on anything else;
+`buildPromptResult`'s signature changed from `(*mcp.GetPromptResult)` to `(*mcp.GetPromptResult,
+error)` (unexported helper, only one internal call site, no external API break) and its
+`PromptHandler` caller now surfaces the error through the SAME `obs.RecordRequest(..., 500, ...)`
+path other failure branches already use.
+
+Added `TestPromptHandler_assistantRole_mapsToRoleAssistant` (the "assistant" branch had ZERO test
+coverage before this round — every existing test used `Role: "user"`) and
+`TestPromptHandler_invalidRole_returnsInvalidPromptRoleError` (the bug's own live reproduction, now
+a permanent regression guard).
+
+Verified: `go build ./...`, `go vet ./...`, `gofmt -l .`, `go test ./adapters/mcpgo/...` all clean.
+
+---
+
+## Round 241 (`deep-dive-bug-hunt` applied to `api/mcp`/`adapters/mcpgo` — `Resource` concept, full path declare → `BuildURI`/`ExtractURIVars` → `mcpgo.ResourceHandler`/`ResourceHandlerWithVars` — CLEAN, 2 new descriptor-field verification tests added)
+
+`api/mcp` deep-dive pass, round 3 of N. Traced `Resource[V,T]`/`ResourceHandle`/`URIParam` from
+`NewResource`/`NewResourceFromTemplate`/`Register` through `adapters/mcpgo.ResourceHandler`/
+`ResourceHandlerWithVars` (the ONE shared dispatch surface — confirmed `adapters/mcprest` has no
+Resource-bridging counterpart at all, Tool-only).
+
+No bug found. `containsPlaceholder`'s naive "any '{' present" heuristic for `isTemplate` detection
+is safe in practice: `codex.NewTemplate`'s own construction-time panic already guarantees any `{`
+present is a legitimate, declared var placeholder — a URI with a literal, non-template `{` could
+never reach this code at all. `ResourceEncodeError` is already a structured type returned straight
+from `api/mcp` itself, so the adapter needs no additional error-wrapping on encode failure (unlike
+`ToolHandler`'s own `ToolOutputError`-specific check, which exists for a different reason — routing
+to a protocol-level vs. tool-level error).
+
+**Verification gap closed (not a bug, but zero prior coverage)**: no existing test checked that the
+rendered `mcp.Resource`/`mcp.ResourceTemplate` descriptor's own `Name`/`MIMEType` fields were
+actually populated from `ResourceMeta` — exactly the class of gap the Tool round's
+`RawOutputSchema` bug came from (an unverified assumption, not a confirmed fact). Added
+`TestResourceHandler_templateDescriptor_hasNameAndMIMEType`/
+`TestResourceHandler_literalDescriptor_hasNameAndMIMEType` — both pass, confirming `mcp.NewResource`/
+`mcp.NewResourceTemplate`'s `WithResourceDescription`/`WithMIMEType`/`WithTemplateDescription`/
+`WithTemplateMIMEType` options ARE wired correctly.
+
+Noted, not fixed (style/maintenance observation, not a current bug): `ResourceHandler`/
+`ResourceHandlerWithVars` are near-identical duplicated implementations (same descriptor-building
+logic, differing only in the vars-extraction step) — a future change to one could silently drift
+from the other; flagging for a future consolidation pass, out of scope for this round.
+
+Verified: `go build ./...`, `go test ./adapters/mcpgo/...` all clean.
+
+---
+
+## Round 240 (`deep-dive-bug-hunt` applied to `api/mcp`/`adapters/mcpgo` — `Tool` concept, full path declare → `MCPSpec` → `mcpgo.ToolHandler`/`mcprest` bridge — REAL BUG FOUND AND FIXED: `handle.OutputSchema` never forwarded to the mcp-go `Tool` descriptor)
+
+`api/mcp` deep-dive pass, round 2 of N (foundational Round 239 done). Traced `Tool[In,Out]`/
+`ToolHandle`/`ToolMeta` from `NewTool`/`Register` through `adapters/mcpgo.ToolHandler` (the ONE
+shared dispatch function building the wire-level `mcp.Tool` descriptor — confirmed via
+`adapters/mcprest`'s `ToolHandler`/`MappedToolHandler`, which return an `mcpgo.HandlerFunc` and
+never build their own `mcp.Tool` descriptor at all, so there is only ONE real dispatch path to
+check here, not N-way).
+
+**REAL BUG FOUND AND FIXED (reproduced live via a failing test BEFORE fixing)**:
+`adapters/mcpgo.ToolHandler` forwarded `handle.InputSchema` to the mcp-go library's
+`tool.RawInputSchema` field, but NEVER forwarded `handle.OutputSchema` to the library's own
+symmetric `tool.RawOutputSchema` field (confirmed present in `mcp-go@v1.0.0`'s `tools.go`,
+alongside a `WithRawOutputSchema` option) — the output schema `api/mcp` already computes from the
+declared output codec (`jsonschema.Schema(t.outputCodec.Schema)`) never reached the LLM client's
+tool descriptor at all, even though the input schema symmetrically did. Fixed with a 3-line
+mirror of the existing `InputSchema` forwarding. Added
+`TestToolHandler_toolDescriptor_setsRawOutputSchema` (previously zero test coverage for
+`RawOutputSchema` at all).
+
+`apimcp.ToolHandle.Tags` (go-codex-level-only `MCPSpec` metadata) confirmed NOT a gap — mcp-go has
+no wire-protocol concept of tool tags at all (grepped its `tools.go`), so there is nothing for the
+adapter to forward.
+
+Verified: `go build ./...`, `go vet ./...`, `go test ./adapters/mcpgo/...` all clean.
+
+---
+
+## Round 239 (`deep-dive-bug-hunt` applied to `api/mcp` — foundational `Builder`/`MCPSpec` substrate — FIRST round EVER pointed at `api/mcp` — REAL BUG FOUND AND FIXED: `Resource.Register` never checked for a duplicate URI template)
+
+`api/mcp` had ZERO deep-dive-bug-hunt rounds across all 238 prior rounds — this is the first-ever
+pass. Traced `Builder`'s shared `MCPSpec()`/`toolSpecs`/`resSpecs`/`promSpecs` substrate and each
+of `Tool.Register`/`Resource.Register`/`Prompt.Register`'s own name-validation logic (the thing
+every later concept round — Tool, Resource, Prompt, ErrorPattern — dispatches through).
+
+**REAL BUG FOUND AND FIXED (reproduced live via a failing test BEFORE fixing, per this skill's
+own mandate)**: `Resource.Register` wrote to `b.resNames[uriTemplate] = struct{}{}` but NEVER
+READ it back to check for a duplicate — `Tool.Register`/`Prompt.Register` both correctly reject
+a second registration of the same name, but `Resource.Register` silently accepted registering the
+IDENTICAL URI template twice against one `Builder`, appending TWO duplicate entries to
+`MCPSpec.Resources` with zero error. The `resNames` map's own existence (declared, initialized,
+written, but never read) was the tell — confirmed via `grep -n resNames` showing exactly one
+read-free write site. The doc comment above `Register` explicitly (and wrongly) claimed "there is
+no remaining declaration-error path here today" without addressing duplicates at all. Fixed:
+`Register` now checks `b.resNames` first and returns `DuplicateNameError{Kind: "resource", Name:
+uriTemplate}` on a match, mirroring `Tool`/`Prompt` exactly.
+
+**Secondary, lower-severity finding fixed in the same round (structured-errors convention,
+checklist §7)**: `Tool.Register`/`Tool.ClientHandle`/`Prompt.Register` used bare `fmt.Errorf("mcp:
+...")` for empty-name, duplicate-name, and schema-render-failure cases — not `errors.As`-navigable,
+no `slog.LogValuer`, unlike every other package's equivalent validation error (`rest.InvalidPathError`,
+`reqreply.DuplicateRouteError`, etc.). Added 3 new structured error types: `EmptyNameError{Kind}`,
+`DuplicateNameError{Kind, Name}`, `SchemaRenderError{Kind, Name, Err}` (all `errors.As`-navigable +
+`slog.LogValuer`; `SchemaRenderError` additionally `Unwrap`-able) — converted every bare `fmt.Errorf`
+call site in `builder.go` to use them.
+
+Added regression tests: `TestResource_Register_duplicateFails` (the bug's own live reproduction,
+now permanently guarding it — also asserts `MCPSpec.Resources` has exactly 1 entry after the
+rejected duplicate, not 2), `TestPrompt_Register_emptyNameFails`/`TestPrompt_Register_duplicateFails`
+(previously untested entirely — only `Tool`'s empty/duplicate cases had any test coverage before
+this round), and updated `TestTool_Register_emptyNameFails`/`TestTool_Register_duplicateFails` to
+assert the new structured types via `errors.As` instead of a bare `err == nil` check.
+
+Verified: `go build ./...`, `go vet ./...`, `gofmt -l .`, `go test ./api/mcp/...` (all pass,
+including the 5 new/updated tests) all clean.
+
+---
+
 ## Round 238 (`review-go-codex` consistency audit — focus: `api/file`, checklist.md sync)
 
 Applied the full `review-go-codex` checklist against `api/file`'s current shipped surface

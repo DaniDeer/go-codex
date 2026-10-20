@@ -213,19 +213,19 @@ type ToolHandle[In, Out any] struct {
 // is empty or already registered with b.
 func (t Tool[In, Out]) Register(b *Builder) (*ToolHandle[In, Out], error) {
 	if t.name == "" {
-		return nil, fmt.Errorf("mcp: tool name must not be empty")
+		return nil, EmptyNameError{Kind: "tool"}
 	}
 	if _, dup := b.toolNames[t.name]; dup {
-		return nil, fmt.Errorf("mcp: tool %q already registered", t.name)
+		return nil, DuplicateNameError{Kind: "tool", Name: t.name}
 	}
 
 	inputSchema, err := jsonschema.Schema(t.inputCodec.Schema)
 	if err != nil {
-		return nil, fmt.Errorf("mcp: tool %q: render input schema: %w", t.name, err)
+		return nil, SchemaRenderError{Kind: "input", Name: t.name, Err: err}
 	}
 	outputSchema, err := jsonschema.Schema(t.outputCodec.Schema)
 	if err != nil {
-		return nil, fmt.Errorf("mcp: tool %q: render output schema: %w", t.name, err)
+		return nil, SchemaRenderError{Kind: "output", Name: t.name, Err: err}
 	}
 
 	name := t.name
@@ -288,16 +288,16 @@ func (t Tool[In, Out]) Register(b *Builder) (*ToolHandle[In, Out], error) {
 // [reqreply.Route.ClientHandle].
 func (t Tool[In, Out]) ClientHandle() (*ToolHandle[In, Out], error) {
 	if t.name == "" {
-		return nil, fmt.Errorf("mcp: tool name must not be empty")
+		return nil, EmptyNameError{Kind: "tool"}
 	}
 
 	inputSchema, err := jsonschema.Schema(t.inputCodec.Schema)
 	if err != nil {
-		return nil, fmt.Errorf("mcp: tool %q: render input schema: %w", t.name, err)
+		return nil, SchemaRenderError{Kind: "input", Name: t.name, Err: err}
 	}
 	outputSchema, err := jsonschema.Schema(t.outputCodec.Schema)
 	if err != nil {
-		return nil, fmt.Errorf("mcp: tool %q: render output schema: %w", t.name, err)
+		return nil, SchemaRenderError{Kind: "output", Name: t.name, Err: err}
 	}
 
 	name := t.name
@@ -502,11 +502,15 @@ type ResourceHandle[V, T any] struct {
 // panic, not a Register-time error — mirrors
 // examples/go-edge-models/models/iotedge/usecase/config.go's
 // [codex.MustConst]-style "panic at package init" convention), so there is
-// no remaining declaration-error path here today. Register still returns an
-// error for signature symmetry with [Tool.Register]/[Prompt.Register] —
-// future validation can use it without a breaking change.
+// no remaining EMPTY-template declaration-error path here today. Register
+// DOES still check for a duplicate URI template already registered
+// against b (mirrors [Tool.Register]/[Prompt.Register] exactly — returns
+// [DuplicateNameError]).
 func (r Resource[V, T]) Register(b *Builder) (*ResourceHandle[V, T], error) {
 	uriTemplate := r.template.String()
+	if _, dup := b.resNames[uriTemplate]; dup {
+		return nil, DuplicateNameError{Kind: "resource", Name: uriTemplate}
+	}
 	codec := r.codec
 	meta := r.rb.meta
 
@@ -686,10 +690,10 @@ type PromptHandle struct {
 // Returns an error if the prompt name is empty or already registered.
 func (p Prompt) Register(b *Builder) (*PromptHandle, error) {
 	if p.name == "" {
-		return nil, fmt.Errorf("mcp: prompt name must not be empty")
+		return nil, EmptyNameError{Kind: "prompt"}
 	}
 	if _, dup := b.promNames[p.name]; dup {
-		return nil, fmt.Errorf("mcp: prompt %q already registered", p.name)
+		return nil, DuplicateNameError{Kind: "prompt", Name: p.name}
 	}
 
 	name := p.name

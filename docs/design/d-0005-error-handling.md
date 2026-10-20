@@ -923,10 +923,15 @@ dispatch (`adapters/nethttp/serve.go`) has ZERO observer calls at either
 of its two `ErrorResponseFor` call sites (middleware-fn error, handler
 error) for the successful-match case — the most glaring instance of this
 gap. The identical mechanism in `adapters/mcpgo` (MCP's own
-`apimcp.ErrorPattern`) has the same gap, though MCP itself stays out of
-this document's scope (see "Scope decisions") — noted here only as a
-cross-reference, since a future MCP-focused round would likely want the
-same fix using the same mechanism designed here.
+`apimcp.ErrorPattern`) had the same gap, though MCP itself stayed out of
+this document's original scope (see "Scope decisions") — noted here only
+as a cross-reference at the time. **RESOLVED**: a `deep-dive-bug-hunt`
+Phase B re-review of `api/mcp`'s `ErrorPattern` round found this
+cross-reference and closed it using the SAME mechanism designed here —
+`api/mcp.ToolHandle.ObserveErrorResponseFor`/`HasErrorPatterns` now exist
+(package gained a new `stats` import for this), and
+`adapters/mcpgo.ToolHandler` calls `ObserveErrorResponseFor` instead of
+the bare `ErrorResponseFor`.
 
 This is a genuine "deep API insight" opportunity: a declared
 `ErrorPattern`/`ErrorChannel` is, by construction, a catalogue of every
