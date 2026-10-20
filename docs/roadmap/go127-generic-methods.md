@@ -3,7 +3,13 @@
 > **Status: Tier 1 IMPLEMENTED and SHIPPED.** Tier 2 (`events`/
 > `reqreply`/`rest`/`api/file` Client dispatch — ~100+ call sites across
 > 4 packages) remains explicitly **deferred to a separate future
-> round** — not attempted this round.
+> round** — not attempted this round. A Tier 2 REVIEW round (no code
+> changes) has since corrected the original "all 14 `api/file` methods,
+> same shape" claim, resolved open questions #2/#3 with real evidence
+> (split per package-family — see "Correction" and the resolved
+> numbered items under Tier 2 below), and recommends splitting Tier 2
+> implementation into 2 independent workstreams, `api/file` first (see
+> "Open design decisions" item 5).
 >
 > A follow-up coverage review (see "Additional Tier 1 candidates" and
 > "A second, equally permanent category" below) widened the Tier 1
@@ -645,12 +651,54 @@ func (c *Client) CallAsync(ctx context.Context, route any, req any, opts ...Clie
 func (c *Client) Call(ctx context.Context, route any, req any, opts ...ClientCallOptions) (any, error)
 func (c *Client) Consume(ctx context.Context, sseRoute any, req any, fn any, opts ...ClientConsumeOptions) error
 
-// api/file/client.go — 14 dispatch methods total (confirmed via grep), e.g.:
+// api/file/client.go — 14 dispatch methods total (confirmed via grep):
 func (c *Client) Read(ctx context.Context, r any, vars map[string]string) (any, error)
 func (c *Client) Create(ctx context.Context, cr any, val any, vars map[string]string, opts ...WriteOptions) (createdDirs []string, err error)
 func (c *Client) Patch(ctx context.Context, p any, patch any, vars map[string]string, opts ...WriteOptions) error
-// ... Delete/List/Exists/Copy/Move/Mkdir/BatchDelete/OpenRead/OpenWrite/ListDir/DeleteDir, same shape
+func (c *Client) Delete(ctx context.Context, d any, vars map[string]string, opts ...DeleteOptions) (existed bool, err error)
+func (c *Client) List(ctx context.Context, l any, vars map[string]string, opts ...ListOptions) (any, error)
+func (c *Client) Exists(ctx context.Context, e any, vars map[string]string) (Entry, bool, error)
+func (c *Client) Copy(ctx context.Context, cp any, srcVars, dstVars map[string]string) error
+func (c *Client) Move(ctx context.Context, mv any, srcVars, dstVars map[string]string) error
+func (c *Client) Mkdir(ctx context.Context, m any, vars map[string]string, opts ...MkdirOptions) (created bool, err error)
+func (c *Client) BatchDelete(ctx context.Context, bd any, varsList []map[string]string) ([]BatchDeleteResult, error)
+func (c *Client) OpenRead(ctx context.Context, sr any, vars map[string]string, opts ...StreamReadOptions) (io.ReadCloser, error)
+func (c *Client) OpenWrite(ctx context.Context, sw any, vars map[string]string, opts ...WriteOptions) (io.WriteCloser, error)
+func (c *Client) ListDir(ctx context.Context, ld any, vars map[string]string, opts ...DirOptions) ([]DirEntry, error)
+func (c *Client) DeleteDir(ctx context.Context, dd any, vars map[string]string, opts ...DirOptions) ([]string, error)
 ```
+
+### Correction (found during a Tier 2 coverage review): these 14 are NOT "the same shape"
+
+A follow-up review read every one of these 14 signatures and their
+role types directly — the original claim above ("same shape") does not
+hold. The real picture:
+
+| Method | Role type | `T` appears in return? | Notes |
+|---|---|---|---|
+| `Read` | `Reader[T]`/`*ReadHandle[T]` | yes — bare `T` | True Tier 1-shaped candidate |
+| `Create` | `Creator[T]`/`*CreateHandle[T]` | no (`val any` is the `T`-shaped input, not the return) | `T` types BOTH the role and `val` |
+| `Patch` | `Patcher[T,P]`/`*PatchHandle[T,P]` | no (`patch any` is `P`-shaped) | 2 type params (`T`, `P`) — the exact shape Round 1 compile-verified |
+| `Delete` | `Deleter[T]`/`*DeleteHandle[T]` | no (`bool`) | `T` only types the role, unused in the body's return |
+| `List` | `Lister[T]`/`*ListHandle[T]` | **no — returns `[]ListResult[T]` boxed as `any`**, per its own doc comment, NOT a bare `T` | Needs its own return-type design, not `(T, error)` |
+| `Exists` | `Exister[T]`/`*ExistsHandle[T]` | no (`Entry, bool`) | `T` only types the role |
+| `Copy` | `Copier[T]`/`*CopyHandle[T]` | no (plain `error`) | `T` only types the role |
+| `Move` | `Mover[T]`/`*MoveHandle[T]` | no (plain `error`) | `T` only types the role |
+| `Mkdir` | `MkdirCreator[T]`/`*MkdirHandle[T]` | no (`bool`) | `T` only types the role |
+| `BatchDelete` | `BatchDeleter[T]`/`*BatchDeleteHandle[T]` | no (`[]BatchDeleteResult`) | `T` only types the role |
+| `OpenRead` | `StreamReader[T]`/`*StreamReadHandle[T]` | no (`io.ReadCloser`) | `T` only types the role (codec-bypassing raw stream, per its own doc comment) |
+| `OpenWrite` | `StreamWriter[T]`/`*StreamWriteHandle[T]` | no (`io.WriteCloser`) | `T` only types the role |
+| `ListDir` | **`ListDirer` — confirmed via grep to be a PLAIN, NON-generic struct, no `[T any]` at all** | n/a | See callout below — does not need Go 1.27 |
+| `DeleteDir` | **`DeleteDirer` — confirmed via grep to be a PLAIN, NON-generic struct, no `[T any]` at all** | n/a | See callout below — does not need Go 1.27 |
+
+**`ListDir`/`DeleteDir` are a separate, lower-tier, Go-version-independent
+fix.** Since their role types (`ListDirer`/`DeleteDirer`, `api/file/dir.go`)
+carry no type parameter whatsoever, `Client.ListDir`/`.DeleteDir` don't
+need a GENERIC method at all — they could become ordinary (non-generic)
+methods simply accepting the concrete `ListDirer`/`DeleteDirer` type
+instead of `any`, at ANY Go version, independent of this whole retrofit.
+Recommend scoping them OUT of "Tier 2" proper and tracking them as their
+own small, separate fix.
 
 ### The sketch
 
@@ -676,7 +724,7 @@ This directly revisits a shipped, documented design decision —
 packages. It is, by a wide margin, the single biggest architectural
 implication of this whole investigation.
 
-### What is NOT yet verified (needs confirming during the actual design round, not assumed here)
+### What was NOT yet verified — now mostly resolved by review rounds, not the original design round
 
 1. **RESOLVED (confirmed during a follow-up coverage review):** yes —
    Go 1.27 allows a method with its own NEW type parameter on top of a
@@ -687,21 +735,60 @@ implication of this whole investigation.
    Patcher[T]) Patch[P any](patch P, fn func(T, P) T) Patcher[T]` —
    both compiled and ran successfully. `api/file.Client.Patch` and
    `ports.PatchEncoded` can safely assume this shape works.
-2. **Does `TransportTypeMismatchError`/`BackendTypeMismatchError`
-   become genuinely dead code**, or does it stay reachable for some
-   edge case the compiler can't catch (e.g. a caller constructing a
-   `Publisher[T]` value via reflection/interface boxing in a way that
-   defeats static type inference)? Each package's own existing tests
-   for this error type would need re-examining.
-3. **Does the INTERNAL reflection-based dispatch core also simplify**,
-   or does it stay exactly as-is underneath a newly type-safe
-   caller-facing signature? Given the governing restriction above
-   (adapter-implemented `Transport`/`Backend` interfaces can never
-   become generic), the expectation is: the caller-facing win is
-   certain, but the dispatch core still has to reach into an
-   `any`-typed interface method one layer down — so internal
-   simplification, if any, is likely partial at best. Needs confirming
-   per-package during the actual design round, not guessed here.
+2. **RESOLVED (Tier 2 coverage review), split per package-family —
+   NOT uniform across all 4 packages as originally framed:**
+   - **`api/file`: `BackendTypeMismatchError` can become FULLY dead
+     code.** Grepped every one of its 16 real construction sites
+     (`BackendTypeMismatchError{...}`) repo-wide: ALL 16 live inside
+     `api/file` itself (`dispatch.go`, `dir.go`, `builder.go`) — ZERO
+     live inside any adapter (`adapters/file`, `adapters/s3`,
+     `adapters/smb`, …). `api/file`'s `Backend` interface operates on
+     raw bytes/paths, not typed values, so there is no per-request
+     reflection happening inside adapters at all for this family.
+   - **`events`/`reqreply`/`rest`: `TransportTypeMismatchError` stays
+     ALIVE permanently — cannot be removed.** Grepped every
+     `TransportTypeMismatchError{...}` construction site repo-wide: the
+     large majority (~26 of ~30) live INSIDE adapters
+     (`adapters/mqtt5`, `adapters/zeromq`, `adapters/nethttp`,
+     `adapters/mqtt`), via reflection, behind the `Transport`/
+     `ClientTransport` interfaces — confirmed permanently non-generic
+     per the governing restriction above. Only a handful of raise
+     sites live client-side in `api/reqreply`/`api/rest` themselves
+     (`client_registry.go`, `handletransport.go`, `route.go`,
+     `dead_letter_replay.go`) — those few MIGHT become unreachable
+     under a Tier 2 retrofit, but the error type itself cannot be
+     deleted, since most of its raise sites are structurally
+     unreachable by ANY caller-facing-only retrofit.
+3. **RESOLVED (Tier 2 coverage review), split per package-family, and
+   confirmed with a real `go1.27.2` compile check, not guessed:**
+   - **`api/file`: full internal simplification is plausible.** Its
+     dual-accept mechanism (bare role builder OR pre-built
+     `*XxxHandle[T]`) is implemented via an unexported per-operation
+     marker interface (e.g. `readDispatcher`) that both already
+     implement, and its internal `xCore[T]` helpers (e.g.
+     `readCore[T]`) already produce a genuinely concrete `T` — today
+     only boxed to `any` at the return type. A throwaway compile check
+     made the interface itself generic —
+     `type readDispatcher[T any] interface { dispatchRead(vars map[string]string) (T, error) }`
+     — with a matching generic method `func (c *Client) Read[T
+     any](r readDispatcher[T], vars map[string]string) (T, error)`:
+     BOTH dual-accept call shapes (`c.Read(bareRoleValue, vars)` and
+     `c.Read(preBuiltHandle, vars)`) compiled and resolved `T` via
+     inference with ZERO explicit type arguments, zero reflection,
+     zero `any` boxing. `api/file`'s internal dispatch core can
+     plausibly become FULLY generic, not just its caller-facing
+     signature.
+   - **`events`/`reqreply`/`rest`: internal simplification stays
+     near-ZERO, as originally expected.** Confirmed via
+     `api/reqreply/client.go`'s real `Call` body: it forwards
+     `route any, req any` straight to `t.Call(ctx, route, req,
+     opts...)` where `t` is the `ClientTransport` INTERFACE — there is
+     no package-local type-assertion/dispatch layer to simplify at all
+     in these 3 packages; all the real reflection-based type recovery
+     happens one layer down, inside each adapter, permanently
+     unreachable by this retrofit (same governing restriction). Only
+     the caller-facing signature gets safer; the dispatch mechanism
+     underneath is untouched.
 4. **RESOLVED (`design-builder-constructors`, this session):**
    `forge.NewFunction`'s own Tier 1 classification — dropped from this
    doc's Tier 1 table entirely. Confirmed, via a real compile check AND
@@ -710,6 +797,28 @@ implication of this whole investigation.
    "Resolved: the 4 constructor symbols" above. Same resolution applies
    to its 3 siblings (`api/llm.NewCall`/`api/reqreply.NewRoute`/
    `api/rest.NewRoute`), all 4 confirmed to stay free functions.
+5. **RECOMMENDED (Tier 2 coverage review): split Tier 2 implementation
+   into 2 independent workstreams, not one combined round**, given
+   points 2 and 3 above show these 2 groups have genuinely different
+   risk/benefit profiles:
+   - **Workstream A — `api/file`'s 12 true-generic dispatch methods**
+     (`Read`/`Create`/`Patch`/`Delete`/`List`/`Exists`/`Copy`/`Move`/
+     `Mkdir`/`BatchDelete`/`OpenRead`/`OpenWrite` — NOT `ListDir`/
+     `DeleteDir`, see the correction table above). Higher value: full
+     internal dispatch-core simplification AND
+     `BackendTypeMismatchError` dead-code removal are both plausible,
+     confirmed via a real compile check. Recommended to go FIRST.
+   - **Workstream B — `events`/`reqreply`/`rest`'s `Publish`/
+     `Subscribe`/`Call`/`CallAsync`/`Call`/`Consume`.** Lower
+     confirmed value: caller-facing compile-time-safety win only,
+     `TransportTypeMismatchError` stays alive permanently, zero
+     internal dispatch simplification (confirmed — the real type
+     recovery lives one layer down, inside each adapter, behind a
+     permanently non-generic interface). Recommended to go SECOND, as
+     its own separate planning round.
+   - **`api/file`'s `ListDir`/`DeleteDir`** are a third, independent,
+     even-smaller fix (see the correction table above) — not tied to
+     Go 1.27 at all, could ship on its own schedule.
 
 ## Confirmed NOT retrofittable, either way
 
@@ -892,24 +1001,34 @@ in place**, committed during the `adapters/smb` implementation round
 
 ## Next steps
 
-1. `go127-audit-tier1-full-inventory` — complete, verified Tier 1
-   inventory with before/after signatures (open decisions 3 and 4 above
-   are now RESOLVED — see "Resolved: the 4 constructor symbols" and
-   "Resolved: `internal/middleware`'s `ContextField` setters"; fold the
-   newly added `codex/either.go`/`stream` candidates' own open
-   classification questions from the coverage review).
-2. `go127-audit-tier2-signatures` — verified Tier 2 signature sketches
-   for all 4 Client packages, resolving the 3 "not yet verified"
-   questions above with real, compiled Go 1.27 code (not just
-   reasoning).
+1. ~~`go127-audit-tier1-full-inventory`~~ — **DONE.** Tier 1 fully
+   implemented and shipped (see "Tier 1 implementation — SHIPPED"
+   below); open decisions 3 and 4 resolved along the way.
+2. ~~`go127-audit-tier2-signatures`~~ — **PARTIALLY DONE** via the Tier
+   2 coverage review above: the per-method return-shape correction
+   table, the `ListDir`/`DeleteDir` non-generic finding, and the
+   package-family split (resolved items 2/3 above) are now backed by
+   real evidence, including a compile-verified generic dual-accept
+   interface shape for `api/file`. STILL OPEN: the complete, final Go
+   signature for each of `api/file`'s 12 true Workstream-A methods
+   (only `Read`'s shape has been compile-checked end-to-end so far) —
+   do this as the FIRST step of the Workstream A implementation round,
+   per the recommended sequencing (Open design decisions item 5).
 3. `go127-audit-blast-radius` — a real, per-symbol blast-radius audit
-   (replacing the rough estimate above).
+   (replacing the rough estimate below) — still fully open; do this at
+   the START of the Workstream A implementation round.
 4. `go127-audit-cross-package-rule` — apply the newly documented
    same-package-as-receiver rule (see "Confirmed NOT retrofittable")
    against every remaining doc-comment hit repo-wide, to rule out any
    further false positives beyond `adapters/nethttp.ServeOne` and
    `adapters/mqtt`'s analog.
-5. Draft the full, Go-signature-rigor design once the audit lands —
+5. **Recommended immediate next round: plan Workstream A
+   (`api/file`'s 12 true-generic dispatch methods) implementation** —
+   higher confirmed value than Workstream B (see Open design decisions
+   item 5), starting with items 2 and 3 above. Workstream B
+   (`events`/`reqreply`/`rest`) and `ListDir`/`DeleteDir`'s own small
+   fix stay separate, later rounds.
+6. Draft the full, Go-signature-rigor design once the audit lands —
    this doc, at that point, graduates from Explore to Refine depth.
 
 ## Tier 1 implementation — SHIPPED
