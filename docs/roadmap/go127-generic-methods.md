@@ -127,9 +127,22 @@ established the precedent for.
 Out]` (`stream/topology.go`, operating on `*Topology`) both introduce a
 genuinely new `Out` type parameter not already present on their
 `Stream[In]`/`*Topology` argument — the same shape as the Tier 1 table
-above. Sketch: `func (s Stream[In]) Apply[Out any](fn func(In) (Out,
-error), opts ApplyOptions) Stream[Out]` and `func (t *Topology)
-WithApply[In, Out any](fn *forge.Function[In, Out]) *Topology`.
+above. Confirmed current signatures:
+
+```go
+// stream/transform.go
+func Apply[In, Out any](ctx context.Context, src Stream[In], fn *forge.Function[In, Out], opts ApplyOptions) Stream[Out]
+
+// stream/topology.go
+func WithApply[In, Out any](t *Topology, fn *forge.Function[In, Out]) *Topology
+```
+
+Sketch: `func (s Stream[In]) Apply[Out any](ctx context.Context, fn
+*forge.Function[In, Out], opts ApplyOptions) Stream[Out]` and `func (t
+*Topology) WithApply[In, Out any](fn *forge.Function[In, Out])
+*Topology`. Note `WithApply`'s `In` is NOT inferable from `*Topology`
+(untyped receiver) but IS inferable from `fn`'s own type — same
+caller-side inference story Tier 2 relies on.
 
 **Important non-candidates in the same package**, to avoid
 misclassifying them in a future audit: `stream.Buffer`, `.Debounce`,
