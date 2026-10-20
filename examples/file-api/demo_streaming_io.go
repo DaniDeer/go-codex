@@ -40,11 +40,11 @@ func demoStreamingIO(ctx context.Context, client *file.Client, rt file.Router) {
 	if _, err := client.Create(ctx, createHandle, resources.StreamableNote{Title: "Streamed", Body: "written via MarshalTo, never buffered as []byte"}, vars, file.WriteOptions{CreateDirs: true}); err != nil {
 		log.Fatalf("create (streamable): %v", err)
 	}
-	gotAny, err := client.Read(ctx, readHandle, vars)
+	got, err := client.Read(ctx, readHandle, vars)
 	if err != nil {
 		log.Fatalf("read (streamable): %v", err)
 	}
-	fmt.Printf("Mechanism 1 (automatic format-level streaming): %+v\n", gotAny.(resources.StreamableNote))
+	fmt.Printf("Mechanism 1 (automatic format-level streaming): %+v\n", got)
 
 	// Mechanism 2 — raw byte streams, whole-file round trip.
 	streamWriteHandle, err := resources.Notes.WithStreamWrite(file.StreamWrite{}).Handle(client, file.WithRouter(rt))

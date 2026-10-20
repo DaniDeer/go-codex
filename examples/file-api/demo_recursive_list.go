@@ -60,11 +60,10 @@ func demoRecursiveList(ctx context.Context, client *file.Client, rt file.Router,
 		log.Fatalf("setup deep file: %v", err)
 	}
 
-	gotAny, err := client.List(ctx, listHandle, catVars, file.ListOptions{Recursive: true})
+	results, err := client.List(ctx, listHandle, catVars, file.ListOptions{Recursive: true})
 	if err != nil {
 		log.Fatalf("list (recursive): %v", err)
 	}
-	results := gotAny.([]file.ListResult[resources.Note])
 	for _, r := range results {
 		if r.Err != nil {
 			log.Fatalf("unexpected per-entry error: %v", r.Err)
@@ -91,12 +90,12 @@ func demoRecursiveList(ctx context.Context, client *file.Client, rt file.Router,
 	if err != nil {
 		log.Fatalf("handle(gated list): %v", err)
 	}
-	gatedAny, err := client.List(ctx, gatedHandle, catVars, file.ListOptions{Recursive: true})
+	gatedResults, err := client.List(ctx, gatedHandle, catVars, file.ListOptions{Recursive: true})
 	if err != nil {
 		log.Fatalf("list (gated): %v", err)
 	}
 	var okCount, errCount int
-	for _, r := range gatedAny.([]file.ListResult[resources.Note]) {
+	for _, r := range gatedResults {
 		if r.Err != nil {
 			errCount++
 			continue

@@ -278,11 +278,10 @@ func TestBackend_ListDir_ExcludesMetadataSidecarFiles(t *testing.T) {
 		t.Fatalf("expected metadata sidecar file to exist: %v", err)
 	}
 
-	gotAny, err := client.List(ctx, res.WithList(apifile.List{}), nil)
+	got, err := client.List(ctx, res.WithList(apifile.List{}), nil)
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	got := gotAny.([]apifile.ListResult[cwRecordWithOwner])
 	if len(got) != 1 {
 		t.Fatalf("want exactly 1 entry (sidecar excluded), got %d: %+v", len(got), got)
 	}
@@ -315,11 +314,10 @@ func TestBackend_ListDir_ExcludesLockFiles(t *testing.T) {
 		t.Fatalf("setup lock file: %v", err)
 	}
 
-	gotAny, err := client.List(ctx, res.WithList(apifile.List{}), nil)
+	got, err := client.List(ctx, res.WithList(apifile.List{}), nil)
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	got := gotAny.([]apifile.ListResult[cwRecordWithOwner])
 	if len(got) != 1 {
 		t.Fatalf("want exactly 1 entry (.lock excluded), got %d: %+v", len(got), got)
 	}

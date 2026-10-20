@@ -254,11 +254,10 @@ func main() {
 		file.PathParam{Name: "sensorID"})
 	sensorReader := sensorFile.WithRead(file.Read{})
 	for _, id := range sensorIDs {
-		respAny, err := client.Read(ctx, sensorReader, map[string]string{"sensorID": id})
+		reading, err := client.Read(ctx, sensorReader, map[string]string{"sensorID": id})
 		if err != nil {
 			panic(err)
 		}
-		reading := respAny.(Reading)
 		fmt.Printf("  pipeline read sensor=%q value=%.1f%s\n", id, reading.Value, reading.Unit)
 	}
 

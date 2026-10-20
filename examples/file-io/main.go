@@ -203,11 +203,11 @@ var _ stats.FileObserver = (*CountingObserver)(nil)
 // loadConfig reads config from the given TOML path using a runtime-pathed Resource.
 func loadConfig(ctx context.Context, client *file.Client, path string) (ServiceConfig, error) {
 	res := file.NewResource[ServiceConfig](path, format.TOML(configCodec))
-	respAny, err := client.Read(ctx, res.WithRead(file.Read{}), nil)
+	resp, err := client.Read(ctx, res.WithRead(file.Read{}), nil)
 	if err != nil {
 		return ServiceConfig{}, err
 	}
-	return respAny.(ServiceConfig), nil
+	return resp, nil
 }
 
 // writeConfig writes config to the given path.
@@ -364,12 +364,10 @@ func main() {
 	}
 
 	// Read it back.
-	gotAny, err := client.Read(ctx, sensorReader, vars)
-	var got Measurement
+	got, err := client.Read(ctx, sensorReader, vars)
 	if err != nil {
 		slog.Error("Read failed", "err", err)
 	} else {
-		got = gotAny.(Measurement)
 		fmt.Printf("  read back: sensor=%s value=%.1f%s at %s\n",
 			got.SensorID, got.Value, got.Unit, got.Timestamp.Format(time.RFC3339))
 	}
@@ -641,11 +639,10 @@ func main() {
 	}
 
 	// Read — FileObserver.RecordFileRead is called after the read.
-	dataAny, err := client.Read(ctx, pngReader, pngVars)
+	data, err := client.Read(ctx, pngReader, pngVars)
 	if err != nil {
 		slog.Error("PNG read failed", "err", err)
 	} else {
-		data := dataAny.([]byte)
 		fmt.Printf("  read PNG: %d bytes, first 4: %X\n", len(data), data[:4])
 	}
 
@@ -730,11 +727,10 @@ func main() {
 	// PatchEncoded-equivalent: writes all patchCodec fields — including
 	// debug_mode which is not in appCfgCodec. After this call, "debug_mode"
 	// will be in the JSON file.
-	if err := client.Patch(ctx, appCfgPatcher, appCfgPatch{Port: 7777, LogLevel: "warn", NewDebugMode: true}, nil); err != nil {
+	if err := client.Patch[appCfg, appCfgPatch](ctx, appCfgPatcher, appCfgPatch{Port: 7777, LogLevel: "warn", NewDebugMode: true}, nil); err != nil {
 		slog.Error("Patch failed", "err", err)
 	} else {
-		afterAny, _ := client.Read(ctx, appCfgReader, nil)
-		after := afterAny.(appCfg)
+		after, _ := client.Read(ctx, appCfgReader, nil)
 		fmt.Printf("  after Patch: port=%d log_level=%q max_workers=%d (always unchanged)\n",
 			after.Port, after.LogLevel, after.MaxWorkers)
 		// Read raw bytes to show debug_mode was persisted despite not being in appCfgCodec
@@ -746,8 +742,7 @@ func main() {
 	// If you've already decoded the struct and modified it, Create is the
 	// right choice. A read-modify-write composition re-reads unnecessarily
 	// if you already have the value in memory.
-	decodedAny, _ := client.Read(ctx, appCfgReader, nil)
-	decoded := decodedAny.(appCfg)
+	decoded, _ := client.Read(ctx, appCfgReader, nil)
 	decoded.Port = 5050                                    // modify in memory
 	_, _ = client.Create(ctx, appCfgCreator, decoded, nil) // Create directly — no re-read
 	fmt.Printf("  after Write (decoded→modified): port=%d\n", decoded.Port)
@@ -755,7 +750,7 @@ func main() {
 	// ── FilePatchNotSupportedError for Gob ────────────────────────────────────
 	gobFile := file.NewResource[appCfg]("/tmp/example.gob", format.Gob(appCfgCodec))
 	gobPatcher := gobFile.WithPatch(appCfgPatchCodec, file.Patch{})
-	if err := client.Patch(ctx, gobPatcher, appCfgPatch{Port: 1234}, nil); err != nil {
+	if err := client.Patch[appCfg, appCfgPatch](ctx, gobPatcher, appCfgPatch{Port: 1234}, nil); err != nil {
 		var patchErr file.FilePatchNotSupportedError
 		if errors.As(err, &patchErr) {
 			fmt.Printf("  FilePatchNotSupportedError: %s\n", patchErr.Error())

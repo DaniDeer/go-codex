@@ -115,14 +115,18 @@ func firstDirOptions(opts []DirOptions) DirOptions {
 // and rationale.
 
 // Read performs r's declared Read role against c's attached Backend.
-// Returns the decoded T boxed as any — caller asserts it, exactly like
-// reqreply.Call's respAny.(ComputeResp) idiom.
-func (c *Client) Read(ctx context.Context, r any, vars map[string]string) (any, error) {
+// T is inferred from r (a [Reader][T] or *[ReadHandle][T]) — Go 1.27's
+// generic-method support lets the concrete decoded T flow straight back
+// to the caller, no runtime type assertion needed (see
+// [readDispatcher]'s own doc comment for why this is a genuine Tier 1
+// candidate, unlike most of this Client's other dispatch methods).
+func (c *Client) Read[T any](ctx context.Context, r readDispatcher[T], vars map[string]string) (T, error) {
 	backend, err := c.attachedBackend()
 	if err != nil {
-		return nil, err
+		var zero T
+		return zero, err
 	}
-	return dispatchRead(ctx, backend, r, vars)
+	return r.dispatchRead(ctx, backend, vars)
 }
 
 // Create encodes val via the resource's declared codec and writes it.
@@ -138,12 +142,16 @@ func (c *Client) Read(ctx context.Context, r any, vars map[string]string) (any, 
 // Returns createdDirs — the directories CreateDirs created (or, under
 // DryRun, WOULD create) — mirroring [ports.File.Write]'s identical
 // return shape.
-func (c *Client) Create(ctx context.Context, cr any, val any, vars map[string]string, opts ...WriteOptions) (createdDirs []string, err error) {
+//
+// T is inferred from cr (a [Creator][T] or *[CreateHandle][T]) — val
+// must be that SAME T, enforced at compile time instead of a runtime
+// [BackendTypeMismatchError].
+func (c *Client) Create[T any](ctx context.Context, cr createDispatcher[T], val T, vars map[string]string, opts ...WriteOptions) (createdDirs []string, err error) {
 	backend, err := c.attachedBackend()
 	if err != nil {
 		return nil, err
 	}
-	return dispatchCreate(ctx, backend, cr, val, vars, firstWriteOptions(opts))
+	return cr.dispatchCreate(ctx, backend, val, vars, firstWriteOptions(opts))
 }
 
 // Patch round-trips a partial patch value onto the existing resource.
@@ -153,12 +161,16 @@ func (c *Client) Create(ctx context.Context, cr any, val any, vars map[string]st
 // [ports.File.Patch] delegating to [ports.File.Write] with the same
 // [ports.FileOptions] — CreateDirs is accepted but has no effect (Patch
 // requires the file to already exist).
-func (c *Client) Patch(ctx context.Context, p any, patch any, vars map[string]string, opts ...WriteOptions) error {
+//
+// T/P are both inferred from p (a [Patcher][T, P] or
+// *[PatchHandle][T, P]) — patch must be that SAME P, enforced at
+// compile time instead of a runtime [BackendTypeMismatchError].
+func (c *Client) Patch[T, P any](ctx context.Context, p patchDispatcher[T, P], patch P, vars map[string]string, opts ...WriteOptions) error {
 	backend, err := c.attachedBackend()
 	if err != nil {
 		return err
 	}
-	return dispatchPatch(ctx, backend, p, patch, vars, firstWriteOptions(opts))
+	return p.dispatchPatch(ctx, backend, patch, vars, firstWriteOptions(opts))
 }
 
 // Delete returns existed=false (nil error) for the idempotent "already
@@ -167,59 +179,61 @@ func (c *Client) Patch(ctx context.Context, p any, patch any, vars map[string]st
 // opts is variadic (0 or 1 value accepted) — pass a [DeleteOptions] to
 // set Strict/DryRun for this call, exactly like [ports.FileOptions]
 // does for [ports.File.Delete].
-func (c *Client) Delete(ctx context.Context, d any, vars map[string]string, opts ...DeleteOptions) (existed bool, err error) {
+func (c *Client) Delete(ctx context.Context, d deleteDispatcher, vars map[string]string, opts ...DeleteOptions) (existed bool, err error) {
 	backend, err := c.attachedBackend()
 	if err != nil {
 		return false, err
 	}
-	return dispatchDelete(ctx, backend, d, vars, firstDeleteOptions(opts))
+	return d.dispatchDelete(ctx, backend, vars, firstDeleteOptions(opts))
 }
 
-// List returns the decoded []ListResult[T] boxed as any — one result
-// per discovered entry, success or failure (see [ListResult] and the
-// "Phase 1 amendment" section of docs/design/d-0011-file-api-backend-transparency.md); only a
+// List returns the decoded []ListResult[T] — one result per discovered
+// entry, success or failure (see [ListResult] and the "Phase 1
+// amendment" section of docs/design/d-0011-file-api-backend-transparency.md); only a
 // walk-level failure (the directory itself can't be read/walked) fails
 // the whole call via the plain error return.
+//
+// T is inferred from l (a [Lister][T] or *[ListHandle][T]).
 //
 // opts is variadic (0 or 1 value accepted) — pass a [ListOptions] with
 // Recursive set to descend into every subdirectory under the
 // resource's parent directory, not just its immediate children.
 // Omitted (or Recursive: false) keeps today's single-level discovery,
 // byte-for-byte unchanged.
-func (c *Client) List(ctx context.Context, l any, vars map[string]string, opts ...ListOptions) (any, error) {
+func (c *Client) List[T any](ctx context.Context, l listDispatcher[T], vars map[string]string, opts ...ListOptions) ([]ListResult[T], error) {
 	backend, err := c.attachedBackend()
 	if err != nil {
 		return nil, err
 	}
-	return dispatchList(ctx, backend, l, vars, firstListOptions(opts))
+	return l.dispatchList(ctx, backend, vars, firstListOptions(opts))
 }
 
 // Exists returns (Entry{}, false, nil) for the idempotent "absent" case
 // — never an error.
-func (c *Client) Exists(ctx context.Context, e any, vars map[string]string) (Entry, bool, error) {
+func (c *Client) Exists(ctx context.Context, e existsDispatcher, vars map[string]string) (Entry, bool, error) {
 	backend, err := c.attachedBackend()
 	if err != nil {
 		return Entry{}, false, err
 	}
-	return dispatchExists(ctx, backend, e, vars)
+	return e.dispatchExists(ctx, backend, vars)
 }
 
 // Copy and Move BOTH take TWO var sets — srcVars/dstVars — the SAME
 // declared template instantiated twice with different values.
-func (c *Client) Copy(ctx context.Context, cp any, srcVars, dstVars map[string]string) error {
+func (c *Client) Copy(ctx context.Context, cp copyDispatcher, srcVars, dstVars map[string]string) error {
 	backend, err := c.attachedBackend()
 	if err != nil {
 		return err
 	}
-	return dispatchCopy(ctx, backend, cp, srcVars, dstVars)
+	return cp.dispatchCopy(ctx, backend, srcVars, dstVars)
 }
 
-func (c *Client) Move(ctx context.Context, mv any, srcVars, dstVars map[string]string) error {
+func (c *Client) Move(ctx context.Context, mv moveDispatcher, srcVars, dstVars map[string]string) error {
 	backend, err := c.attachedBackend()
 	if err != nil {
 		return err
 	}
-	return dispatchMove(ctx, backend, mv, srcVars, dstVars)
+	return mv.dispatchMove(ctx, backend, srcVars, dstVars)
 }
 
 // Mkdir returns created=false (nil error) for the idempotent "already
@@ -228,24 +242,24 @@ func (c *Client) Move(ctx context.Context, mv any, srcVars, dstVars map[string]s
 // opts is variadic (0 or 1 value accepted) — pass a [MkdirOptions] to
 // set DryRun for this call. An attach-time [NativePOSIXMode] Capability,
 // when declared, always wins over opts.NativePOSIXMode.
-func (c *Client) Mkdir(ctx context.Context, m any, vars map[string]string, opts ...MkdirOptions) (created bool, err error) {
+func (c *Client) Mkdir(ctx context.Context, m mkdirDispatcher, vars map[string]string, opts ...MkdirOptions) (created bool, err error) {
 	backend, err := c.attachedBackend()
 	if err != nil {
 		return false, err
 	}
-	return dispatchMkdir(ctx, backend, m, vars, firstMkdirOptions(opts))
+	return m.dispatchMkdir(ctx, backend, vars, firstMkdirOptions(opts))
 }
 
 // BatchDelete mirrors S3's real DeleteObjects — a batch call can
 // PARTIALLY fail: the returned []BatchDeleteResult carries ONE result
 // per varsList entry, IN ORDER. err is non-nil ONLY for a call-level
 // failure.
-func (c *Client) BatchDelete(ctx context.Context, bd any, varsList []map[string]string) ([]BatchDeleteResult, error) {
+func (c *Client) BatchDelete(ctx context.Context, bd batchDeleteDispatcher, varsList []map[string]string) ([]BatchDeleteResult, error) {
 	backend, err := c.attachedBackend()
 	if err != nil {
 		return nil, err
 	}
-	return dispatchBatchDelete(ctx, backend, bd, varsList)
+	return bd.dispatchBatchDelete(ctx, backend, varsList)
 }
 
 // OpenRead returns a codec-BYPASSING raw byte stream (Mechanism 2 — see
@@ -258,12 +272,12 @@ func (c *Client) BatchDelete(ctx context.Context, bd any, varsList []map[string]
 // reads the whole file, served via a 3-level fallback cascade
 // ([RangeReadingBackend] native -> [StreamReadBackend] approximated ->
 // [Backend.ReadBytes] universal).
-func (c *Client) OpenRead(ctx context.Context, sr any, vars map[string]string, opts ...StreamReadOptions) (io.ReadCloser, error) {
+func (c *Client) OpenRead(ctx context.Context, sr openReadDispatcher, vars map[string]string, opts ...StreamReadOptions) (io.ReadCloser, error) {
 	backend, err := c.attachedBackend()
 	if err != nil {
 		return nil, err
 	}
-	return dispatchOpenRead(ctx, backend, sr, vars, firstStreamReadOptions(opts))
+	return sr.dispatchOpenRead(ctx, backend, vars, firstStreamReadOptions(opts))
 }
 
 // OpenWrite returns a codec-BYPASSING raw byte stream (Mechanism 2). The
@@ -277,12 +291,12 @@ func (c *Client) OpenRead(ctx context.Context, sr any, vars map[string]string, o
 // NOT supported on this role this round (never consulted); Metadata is
 // a DIRECT passthrough (there is no decoded T to derive it from, unlike
 // Create/Patch's deriveWriteMetadata).
-func (c *Client) OpenWrite(ctx context.Context, sw any, vars map[string]string, opts ...WriteOptions) (io.WriteCloser, error) {
+func (c *Client) OpenWrite(ctx context.Context, sw openWriteDispatcher, vars map[string]string, opts ...WriteOptions) (io.WriteCloser, error) {
 	backend, err := c.attachedBackend()
 	if err != nil {
 		return nil, err
 	}
-	return dispatchOpenWrite(ctx, backend, sw, vars, firstWriteOptions(opts))
+	return sw.dispatchOpenWrite(ctx, backend, vars, firstWriteOptions(opts))
 }
 
 // ListDir dispatches ld (a bare [ListDirer] OR a pre-built
@@ -294,12 +308,12 @@ func (c *Client) OpenWrite(ctx context.Context, sw any, vars map[string]string, 
 //
 // opts is variadic (0 or 1 value accepted) — pass a [DirOptions] to
 // control CreateIfMissing/CreatePerm/DryRun/Strict for this call.
-func (c *Client) ListDir(ctx context.Context, ld any, vars map[string]string, opts ...DirOptions) ([]DirEntry, error) {
+func (c *Client) ListDir(ctx context.Context, ld listDirDispatcher, vars map[string]string, opts ...DirOptions) ([]DirEntry, error) {
 	backend, err := c.attachedBackend()
 	if err != nil {
 		return nil, err
 	}
-	return dispatchListDir(ctx, backend, ld, vars, firstDirOptions(opts))
+	return ld.dispatchListDir(ctx, backend, vars, firstDirOptions(opts))
 }
 
 // DeleteDir mirrors [Client.ListDir]'s dual-accept contract, dispatching
@@ -307,10 +321,10 @@ func (c *Client) ListDir(ctx context.Context, ld any, vars map[string]string, op
 //
 // opts is variadic (0 or 1 value accepted) — pass a [DirOptions] to
 // control DeleteRecursive/DryRun/Strict for this call.
-func (c *Client) DeleteDir(ctx context.Context, dd any, vars map[string]string, opts ...DirOptions) ([]string, error) {
+func (c *Client) DeleteDir(ctx context.Context, dd deleteDirDispatcher, vars map[string]string, opts ...DirOptions) ([]string, error) {
 	backend, err := c.attachedBackend()
 	if err != nil {
 		return nil, err
 	}
-	return dispatchDeleteDir(ctx, backend, dd, vars, firstDirOptions(opts))
+	return dd.dispatchDeleteDir(ctx, backend, vars, firstDirOptions(opts))
 }

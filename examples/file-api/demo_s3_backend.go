@@ -84,11 +84,10 @@ func demoS3Backend(ctx context.Context) {
 	if _, err := s3DemoClient.Create(ctx, resources.Notes.WithCreate(file.Create{}), resources.Note{Title: "From S3", Body: "Same Resource declaration, different Backend."}, vars); err != nil {
 		log.Fatalf("demoS3Backend: Create: %v", err)
 	}
-	gotAny, err := s3DemoClient.Read(ctx, resources.Notes.WithRead(file.Read{}), vars)
+	note, err := s3DemoClient.Read(ctx, resources.Notes.WithRead(file.Read{}), vars)
 	if err != nil {
 		log.Fatalf("demoS3Backend: Read: %v", err)
 	}
-	note := gotAny.(resources.Note)
 	fmt.Printf("read back from S3 (fake): Title=%q Body=%q\n", note.Title, note.Body)
 
 	// 5. S3's genuine capability upgrades over the filesystem backend,

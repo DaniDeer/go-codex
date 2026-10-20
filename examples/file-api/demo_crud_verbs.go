@@ -39,16 +39,13 @@ func demoCrudVerbs(ctx context.Context, client *file.Client, rt file.Router) {
 	}
 	fmt.Println("created 2 notes")
 
-	// 2. Read — returns a properly-typed Note, not just a raw `any`: the
-	// dual-accept Client.Read always returns `any` by design (mirrors
-	// reqreply.Client.Call — Go generics can't add a type param to a
-	// method), but asserting it ONCE into a named, typed variable right
-	// after the call is the idiomatic way to work with it from here on.
-	aliceAny, err := client.Read(ctx, readHandle, alice)
+	// 2. Read — returns a properly-typed Note directly: Client.Read is
+	// generic over T, inferred here from readHandle's own concrete type,
+	// so no type assertion is needed.
+	aliceNote, err := client.Read(ctx, readHandle, alice)
 	if err != nil {
 		log.Fatalf("read alice: %v", err)
 	}
-	aliceNote := aliceAny.(resources.Note)
 	fmt.Printf("read: %+v\n", aliceNote)
 
 	// 3. Read a missing note — typed FileNotFoundError.
@@ -64,11 +61,11 @@ func demoCrudVerbs(ctx context.Context, client *file.Client, rt file.Router) {
 	if err != nil {
 		log.Fatalf("handle(patch): %v", err)
 	}
-	if err := client.Patch(ctx, patchHandle, resources.BodyPatch{Body: &newBody}, alice); err != nil {
+	if err := client.Patch[resources.Note, resources.BodyPatch](ctx, patchHandle, resources.BodyPatch{Body: &newBody}, alice); err != nil {
 		log.Fatalf("patch: %v", err)
 	}
-	patchedAny, _ := client.Read(ctx, readHandle, alice)
-	fmt.Printf("after patch: %+v\n", patchedAny.(resources.Note))
+	patched, _ := client.Read(ctx, readHandle, alice)
+	fmt.Printf("after patch: %+v\n", patched)
 
 	// 5. Delete — idempotent single-key delete (bob stays, used by later
 	// demos: List/Copy/Move/BatchDelete).

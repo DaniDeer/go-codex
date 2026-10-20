@@ -56,13 +56,9 @@ func TestClient_ReadCreateDelete_RoundTrip(t *testing.T) {
 	}
 
 	reader := res.WithRead(file.Read{})
-	gotAny, err := client.Read(ctx, reader, vars)
+	got, err := client.Read(ctx, reader, vars)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
-	}
-	got, ok := gotAny.(record)
-	if !ok {
-		t.Fatalf("Read: want record, got %T", gotAny)
 	}
 	if got.Name != "alice" || got.Value != 42 {
 		t.Fatalf("Read: got %+v", got)
@@ -117,13 +113,9 @@ func TestClient_List_ReturnsDecodedEntries(t *testing.T) {
 		}
 	}
 	lister := res.WithList(file.List{})
-	gotAny, err := client.List(ctx, lister, nil)
+	got, err := client.List(ctx, lister, nil)
 	if err != nil {
 		t.Fatalf("List: %v", err)
-	}
-	got, ok := gotAny.([]file.ListResult[record])
-	if !ok {
-		t.Fatalf("List: want []file.ListResult[record], got %T", gotAny)
 	}
 	if len(got) != 2 {
 		t.Fatalf("List: want 2 entries, got %d", len(got))
@@ -189,11 +181,11 @@ func TestClient_Copy_UsesNativeFastPathOnFilesystem(t *testing.T) {
 	if err := client.Copy(ctx, res.WithCopy(file.Copy{}), srcVars, dstVars); err != nil {
 		t.Fatalf("Copy: %v", err)
 	}
-	gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), dstVars)
+	got, err := client.Read(ctx, res.WithRead(file.Read{}), dstVars)
 	if err != nil {
 		t.Fatalf("Read dst: %v", err)
 	}
-	if got := gotAny.(record); got.Value != 7 {
+	if got.Value != 7 {
 		t.Fatalf("Copy: dst value = %d, want 7", got.Value)
 	}
 	// Source must still exist after Copy.
@@ -221,11 +213,11 @@ func TestClient_Move_UsesNativeRenameOnFilesystem(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "src2.json")); !os.IsNotExist(err) {
 		t.Fatalf("Move: source should no longer exist, stat err = %v", err)
 	}
-	gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), dstVars)
+	got, err := client.Read(ctx, res.WithRead(file.Read{}), dstVars)
 	if err != nil {
 		t.Fatalf("Read dst: %v", err)
 	}
-	if got := gotAny.(record); got.Value != 9 {
+	if got.Value != 9 {
 		t.Fatalf("Move: dst value = %d, want 9", got.Value)
 	}
 }
@@ -325,7 +317,7 @@ func TestClient_Read_AcceptsRawBuilderOrPreBuiltHandle(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	bareAny, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
+	bare, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
 	if err != nil {
 		t.Fatalf("Read (bare builder): %v", err)
 	}
@@ -334,13 +326,13 @@ func TestClient_Read_AcceptsRawBuilderOrPreBuiltHandle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
-	handleAny, err := client.Read(ctx, handle, vars)
+	handleGot, err := client.Read(ctx, handle, vars)
 	if err != nil {
 		t.Fatalf("Read (pre-built handle): %v", err)
 	}
 
-	if bareAny.(record) != handleAny.(record) {
-		t.Fatalf("dual-accept mismatch: bare=%+v handle=%+v", bareAny, handleAny)
+	if bare != handleGot {
+		t.Fatalf("dual-accept mismatch: bare=%+v handle=%+v", bare, handleGot)
 	}
 }
 
@@ -438,14 +430,13 @@ func TestPatcher_HandlePatch_AppliesPartialUpdate(t *testing.T) {
 	)
 	newValue := 99
 	patcher := res.WithPatch(patchCodec, file.Patch{})
-	if err := client.Patch(ctx, patcher, valuePatch{Value: &newValue}, vars); err != nil {
+	if err := client.Patch[record, valuePatch](ctx, patcher, valuePatch{Value: &newValue}, vars); err != nil {
 		t.Fatalf("Patch: %v", err)
 	}
-	gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
+	got, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
 	if err != nil {
 		t.Fatalf("Read after patch: %v", err)
 	}
-	got := gotAny.(record)
 	if got.Value != 99 || got.Name != "patchme" {
 		t.Fatalf("Patch: got %+v, want Value=99 Name=patchme (unchanged)", got)
 	}
@@ -482,7 +473,7 @@ func TestPatcher_HandlePatch_NativePOSIXModeCapability_OverridesCallerPerm(t *te
 	callPerm := os.FileMode(0o777)
 	newValue := 2
 	patcher := res.WithPatch(patchCodec, file.Patch{}).WithCapabilities(file.NativePOSIXMode(capPerm))
-	if err := client.Patch(ctx, patcher, valuePatch{Value: &newValue}, vars, file.WriteOptions{Perm: callPerm}); err != nil {
+	if err := client.Patch[record, valuePatch](ctx, patcher, valuePatch{Value: &newValue}, vars, file.WriteOptions{Perm: callPerm}); err != nil {
 		t.Fatalf("Patch: %v", err)
 	}
 	info, err := os.Stat(filepath.Join(dir, "patchmode.json"))
@@ -532,7 +523,7 @@ func TestPatcher_HandlePatch_PreservesPatchOnlyField(t *testing.T) {
 			func(p *extraPatch, v string) { p.Extra = v }),
 	)
 	patcher := res.WithPatch(patchCodec, file.Patch{})
-	if err := client.Patch(ctx, patcher, extraPatch{Value: 42, Extra: "survives"}, vars); err != nil {
+	if err := client.Patch[record, extraPatch](ctx, patcher, extraPatch{Value: 42, Extra: "survives"}, vars); err != nil {
 		t.Fatalf("Patch: %v", err)
 	}
 
@@ -550,11 +541,10 @@ func TestPatcher_HandlePatch_PreservesPatchOnlyField(t *testing.T) {
 
 	// record's own codec (no "Extra" field) still decodes cleanly —
 	// unknown fields are ignored on decode, not rejected.
-	gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
+	got, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
 	if err != nil {
 		t.Fatalf("Read after patch: %v", err)
 	}
-	got := gotAny.(record)
 	if got.Value != 42 || got.Name != "patchme" {
 		t.Fatalf("Patch: got %+v, want Value=42 Name=patchme (unchanged)", got)
 	}
@@ -603,11 +593,10 @@ func TestClient_Metadata_RoundTripsViaMergeField(t *testing.T) {
 		t.Fatalf("expected metadata sidecar file to exist: %v", err)
 	}
 
-	gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
+	got, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
-	got := gotAny.(recordWithOwner)
 	if got.Owner != "alice" {
 		t.Fatalf("Read: want Owner=alice merged back from metadata, got %+v", got)
 	}
@@ -640,11 +629,10 @@ func TestClient_Metadata_AbsentSidecar_LeavesFieldZeroValue(t *testing.T) {
 		t.Fatalf("expected NO metadata sidecar file, stat err = %v", err)
 	}
 
-	gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
+	got, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
-	got := gotAny.(recordWithOwner)
 	if got.Owner != "" {
 		t.Fatalf("Read: want Owner zero-value when no sidecar exists, got %q", got.Owner)
 	}
@@ -712,7 +700,7 @@ func TestPatcher_HandlePatch_WriteOptionsMetadata_DirectEscapeHatch_NotSilentlyD
 	)
 	newValue := 2
 	patcher := res.WithPatch(patchCodec, file.Patch{})
-	if err := client.Patch(ctx, patcher, valuePatch{Value: &newValue}, vars,
+	if err := client.Patch[record, valuePatch](ctx, patcher, valuePatch{Value: &newValue}, vars,
 		file.WriteOptions{Metadata: map[string]string{"owner": "bob"}}); err != nil {
 		t.Fatalf("Patch: %v", err)
 	}
@@ -779,11 +767,11 @@ func TestRouter_Group_PrefixesResourcePath(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "grouped", "prefixed.json")); err != nil {
 		t.Fatalf("expected file under grouped/ prefix: %v", err)
 	}
-	gotAny, err := client.Read(ctx, handle, vars)
+	got, err := client.Read(ctx, handle, vars)
 	if err != nil {
 		t.Fatalf("Read via Router-grouped handle: %v", err)
 	}
-	if got := gotAny.(record); got.Value != 2 {
+	if got.Value != 2 {
 		t.Fatalf("Read via Router-grouped handle: got Value=%d, want 2", got.Value)
 	}
 }
@@ -849,11 +837,11 @@ func TestReader_ReadBoundMW_SecuritySatisfied_Succeeds(t *testing.T) {
 		},
 	)
 	reader := res.WithRead(file.Read{}).ReadBoundMW(bm).WithSecurity(file.SecurityRequirement{"apiKey": {"read"}})
-	gotAny, err := client.Read(ctx, reader, vars)
+	got, err := client.Read(ctx, reader, vars)
 	if err != nil {
 		t.Fatalf("Read: unexpected error: %v", err)
 	}
-	if got := gotAny.(record); got.Name != "secured" {
+	if got.Name != "secured" {
 		t.Fatalf("Read: got %+v", got)
 	}
 }
@@ -1065,11 +1053,10 @@ func TestLister_MergesPathVarIntoEachEntry(t *testing.T) {
 		}
 	}
 
-	gotAny, err := client.List(ctx, res.WithList(file.List{}), nil)
+	got, err := client.List(ctx, res.WithList(file.List{}), nil)
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	got := gotAny.([]file.ListResult[recordWithOwner])
 	if len(got) != 2 {
 		t.Fatalf("List: want 2 entries, got %d", len(got))
 	}
@@ -1113,11 +1100,10 @@ func TestLister_NonMatchingEntry_ReturnsFilePathMismatchError(t *testing.T) {
 	// template mismatch) no longer fails the WHOLE call - it becomes
 	// that entry's own ListResult.Err, with siblings (here, "ok")
 	// still returned successfully.
-	gotAny, err := client.List(ctx, res.WithList(file.List{}), nil)
+	got, err := client.List(ctx, res.WithList(file.List{}), nil)
 	if err != nil {
 		t.Fatalf("List: unexpected call-level error %v", err)
 	}
-	got := gotAny.([]file.ListResult[recordWithOwner])
 	var found file.FilePathMismatchError
 	var okCount int
 	for _, r := range got {
@@ -1148,11 +1134,10 @@ func TestLister_NoMergeFieldsDeclared_UnaffectedRegression(t *testing.T) {
 	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "plain", Value: 1}, map[string]string{"name": "plain"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	gotAny, err := client.List(ctx, res.WithList(file.List{}), nil)
+	got, err := client.List(ctx, res.WithList(file.List{}), nil)
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	got := gotAny.([]file.ListResult[record])
 	if len(got) != 1 {
 		t.Fatalf("List: want 1 entry, got %+v", got)
 	}
@@ -1233,11 +1218,10 @@ func TestBoundCreateMiddleware_MetadataOut_MergesIntoPersistedMetadata(t *testin
 		t.Fatalf("Create: %v", err)
 	}
 
-	gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), map[string]string{"name": "gadget"})
+	got, err := client.Read(ctx, res.WithRead(file.Read{}), map[string]string{"name": "gadget"})
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
-	got := gotAny.(recordWithOwner)
 	if got.Owner != "middleware-override" {
 		t.Fatalf("Owner = %q, want %q (middleware's WithMetadataOut contribution should win)", got.Owner, "middleware-override")
 	}
@@ -1322,7 +1306,7 @@ func TestBoundPatchMiddleware_MetadataIn_AlwaysZeroValue(t *testing.T) {
 		func(m *mwMetaIn, v string) { m.Owner = v }))
 	patcher := res.WithPatch(patchCodec, file.Patch{}).PatchBoundMW(bm)
 	newValue := 99
-	if err := client.Patch(ctx, patcher, valuePatch{Value: &newValue}, vars); err != nil {
+	if err := client.Patch[recordWithOwner, valuePatch](ctx, patcher, valuePatch{Value: &newValue}, vars); err != nil {
 		t.Fatalf("Patch: %v", err)
 	}
 	if gotIn.Owner != "" {
@@ -1365,15 +1349,14 @@ func TestBoundPatchMiddleware_MetadataOut_MergesIntoPersistedMetadata(t *testing
 		func(m *mwMetaOut, v string) { m.Owner = v }))
 	patcher := res.WithPatch(patchCodec, file.Patch{}).PatchBoundMW(bm)
 	newValue := 42
-	if err := client.Patch(ctx, patcher, valuePatch{Value: &newValue}, vars); err != nil {
+	if err := client.Patch[recordWithOwner, valuePatch](ctx, patcher, valuePatch{Value: &newValue}, vars); err != nil {
 		t.Fatalf("Patch: %v", err)
 	}
 
-	gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
+	got, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
-	got := gotAny.(recordWithOwner)
 	if got.Owner != "patched-by-middleware" {
 		t.Fatalf("Owner = %q, want %q", got.Owner, "patched-by-middleware")
 	}
@@ -1616,11 +1599,10 @@ func TestListCore_DecodeFailure_ReportsValidationErrorsToObserver(t *testing.T) 
 	// Per the Phase 1 amendment, a per-entry decode failure becomes
 	// that entry's own ListResult.Err - it no longer fails the whole
 	// call - but stats.ReportErrors must still fire for it.
-	gotAny, err := client.List(ctx, res.WithList(file.List{}), nil)
+	got, err := client.List(ctx, res.WithList(file.List{}), nil)
 	if err != nil {
 		t.Fatalf("List: unexpected call-level error %v", err)
 	}
-	got := gotAny.([]file.ListResult[record])
 	if len(got) != 1 || got[0].Err == nil {
 		t.Fatalf("expected one entry with a decode error, got %+v", got)
 	}
@@ -1653,7 +1635,7 @@ func TestPatchCore_AccessModeReadOnly_RejectsBeforeBackendCall(t *testing.T) {
 	)
 	patcher := res.WithPatch(patchCodec, file.Patch{}).WithCapabilities(file.AccessModeReadOnly)
 
-	err := client.Patch(ctx, patcher, valuePatch{Value: 99}, nil)
+	err := client.Patch[record, valuePatch](ctx, patcher, valuePatch{Value: 99}, nil)
 	if err == nil {
 		t.Fatal("want rejection error for AccessModeReadOnly Patch, got nil (BUG: patchCore never enforces Capability)")
 	}
@@ -1661,12 +1643,12 @@ func TestPatchCore_AccessModeReadOnly_RejectsBeforeBackendCall(t *testing.T) {
 	// The file must be UNCHANGED (proves the rejection happened BEFORE
 	// any Backend call, not just that Patch happened to fail for some
 	// other reason).
-	gotAny, readErr := client.Read(ctx, res.WithRead(file.Read{}), nil)
+	got, readErr := client.Read(ctx, res.WithRead(file.Read{}), nil)
 	if readErr != nil {
 		t.Fatalf("Read: %v", readErr)
 	}
-	if gotAny.(record).Value != 1 {
-		t.Fatalf("Value = %d, want 1 (Patch must not have reached the Backend)", gotAny.(record).Value)
+	if got.Value != 1 {
+		t.Fatalf("Value = %d, want 1 (Patch must not have reached the Backend)", got.Value)
 	}
 }
 
@@ -1693,11 +1675,10 @@ func TestCopyCore_NativeCopyingBackend_LosesMetadata_BUG(t *testing.T) {
 		t.Fatalf("Copy: %v", err)
 	}
 
-	gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), map[string]string{"name": "bob"})
+	got, err := client.Read(ctx, res.WithRead(file.Read{}), map[string]string{"name": "bob"})
 	if err != nil {
 		t.Fatalf("Read copied resource: %v", err)
 	}
-	got := gotAny.(recordWithOwner)
 	if got.Owner != "team-a" {
 		t.Fatalf("Owner = %q, want %q — Copy silently lost the resource's metadata (BUG: neither CopyingBackend.CopyBytes nor the generic fallback carry metadata over)", got.Owner, "team-a")
 	}
@@ -1724,11 +1705,10 @@ func TestMoveCore_NativeMovingBackend_CarriesMetadataOver(t *testing.T) {
 	if err := client.Move(ctx, res.WithMove(file.Move{}), map[string]string{"name": "alice"}, map[string]string{"name": "carol"}); err != nil {
 		t.Fatalf("Move: %v", err)
 	}
-	gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), map[string]string{"name": "carol"})
+	got, err := client.Read(ctx, res.WithRead(file.Read{}), map[string]string{"name": "carol"})
 	if err != nil {
 		t.Fatalf("Read moved resource: %v", err)
 	}
-	got := gotAny.(recordWithOwner)
 	if got.Owner != "team-a" {
 		t.Fatalf("Owner = %q, want %q — Move (native MovingBackend) must carry metadata over", got.Owner, "team-a")
 	}
@@ -1761,11 +1741,10 @@ func TestLister_PerEntrySecurityRejection_SiblingsStillSucceed(t *testing.T) {
 	)
 	lister := res.WithList(file.List{}).ListBoundMW(bm).WithSecurity(file.SecurityRequirement{"apiKey": {"read"}})
 
-	gotAny, err := client.List(ctx, lister, nil)
+	got, err := client.List(ctx, lister, nil)
 	if err != nil {
 		t.Fatalf("List: unexpected call-level error %v", err)
 	}
-	got := gotAny.([]file.ListResult[record])
 	if len(got) != 2 {
 		t.Fatalf("List: want 2 entries, got %+v", got)
 	}
@@ -1809,11 +1788,10 @@ func TestLister_BoundMiddleware_ReceivesActualDecodedValue(t *testing.T) {
 		},
 	)
 	lister := res.WithList(file.List{}).ListBoundMW(bm)
-	gotAny, err := client.List(ctx, lister, nil)
+	got, err := client.List(ctx, lister, nil)
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	got := gotAny.([]file.ListResult[record])
 	if len(got) != 1 || got[0].Err != nil {
 		t.Fatalf("List: want 1 clean entry, got %+v", got)
 	}
@@ -1854,11 +1832,10 @@ func TestListCore_ObserverCount_IncludesFailedEntries(t *testing.T) {
 		t.Fatalf("Attach: %v", err)
 	}
 
-	gotAny, err := client.List(context.Background(), res.WithList(file.List{}), nil)
+	got, err := client.List(context.Background(), res.WithList(file.List{}), nil)
 	if err != nil {
 		t.Fatalf("List: unexpected call-level error %v", err)
 	}
-	got := gotAny.([]file.ListResult[record])
 	if len(got) != 2 {
 		t.Fatalf("want 2 entries (1 ok + 1 failed) counted, got %d (%+v)", len(got), got)
 	}
@@ -1968,11 +1945,10 @@ func TestListCore_Recursive_DiscoversEntriesInParentDir(t *testing.T) {
 		}
 	}
 
-	gotAny, err := client.List(ctx, res.WithList(file.List{}), nil, file.ListOptions{Recursive: true})
+	got, err := client.List(ctx, res.WithList(file.List{}), nil, file.ListOptions{Recursive: true})
 	if err != nil {
 		t.Fatalf("List(Recursive): %v", err)
 	}
-	got := gotAny.([]file.ListResult[record])
 	if len(got) != 2 {
 		t.Fatalf("want 2 entries, got %+v", got)
 	}
@@ -1998,11 +1974,10 @@ func TestListCore_Recursive_SkipsDirectoryEntries(t *testing.T) {
 		t.Fatalf("setup Mkdir: %v", err)
 	}
 
-	gotAny, err := client.List(ctx, res.WithList(file.List{}), nil, file.ListOptions{Recursive: true})
+	got, err := client.List(ctx, res.WithList(file.List{}), nil, file.ListOptions{Recursive: true})
 	if err != nil {
 		t.Fatalf("List(Recursive): %v", err)
 	}
-	got := gotAny.([]file.ListResult[record])
 	if len(got) != 1 {
 		t.Fatalf("want 1 entry (directory excluded), got %+v", got)
 	}
@@ -2029,11 +2004,10 @@ func TestListCore_Recursive_DepthPruning_ExcludesTooDeepEntries(t *testing.T) {
 		t.Fatalf("setup write: %v", err)
 	}
 
-	gotAny, err := client.List(ctx, res.WithList(file.List{}), nil, file.ListOptions{Recursive: true})
+	got, err := client.List(ctx, res.WithList(file.List{}), nil, file.ListOptions{Recursive: true})
 	if err != nil {
 		t.Fatalf("List(Recursive): %v", err)
 	}
-	got := gotAny.([]file.ListResult[record])
 	if len(got) != 1 || got[0].Err != nil || got[0].Value.Name != "shallow" {
 		t.Fatalf("want exactly the shallow entry, deep.json pruned; got %+v", got)
 	}
@@ -2059,11 +2033,10 @@ func TestListCore_Recursive_NonWalkingBackend_FallsBackToManualComposition(t *te
 		t.Fatalf("setup write: %v", err)
 	}
 
-	gotAny, err := client.List(ctx, res.WithList(file.List{}), nil, file.ListOptions{Recursive: true})
+	got, err := client.List(ctx, res.WithList(file.List{}), nil, file.ListOptions{Recursive: true})
 	if err != nil {
 		t.Fatalf("List(Recursive, manual fallback): %v", err)
 	}
-	got := gotAny.([]file.ListResult[record])
 	if len(got) != 2 {
 		t.Fatalf("want 2 entries (extra/z.json pruned, directory excluded), got %+v", got)
 	}
@@ -2085,11 +2058,10 @@ func TestListCore_Recursive_MergeFieldAppliesPerEntry(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	gotAny, err := client.List(ctx, res.WithList(file.List{}), nil, file.ListOptions{Recursive: true})
+	got, err := client.List(ctx, res.WithList(file.List{}), nil, file.ListOptions{Recursive: true})
 	if err != nil {
 		t.Fatalf("List(Recursive): %v", err)
 	}
-	got := gotAny.([]file.ListResult[recordWithOwner])
 	if len(got) != 1 || got[0].Err != nil || got[0].Value.Name != "merged" {
 		t.Fatalf("want 1 entry with Name merged from filename, got %+v", got)
 	}
@@ -2119,8 +2091,8 @@ func TestListCore_NonRecursive_ResultShapeUnaffectedByListOptionsZeroValue(t *te
 	if err != nil {
 		t.Fatalf("List (explicit zero-value opts): %v", err)
 	}
-	if len(gotOmitted.([]file.ListResult[record])) != len(gotExplicit.([]file.ListResult[record])) {
-		t.Fatalf("want identical result count, got omitted=%d explicit=%d", len(gotOmitted.([]file.ListResult[record])), len(gotExplicit.([]file.ListResult[record])))
+	if len(gotOmitted) != len(gotExplicit) {
+		t.Fatalf("want identical result count, got omitted=%d explicit=%d", len(gotOmitted), len(gotExplicit))
 	}
 }
 
@@ -2138,12 +2110,12 @@ func TestListCore_Recursive_ObserverCountReflectsAllVisitedEntries(t *testing.T)
 		}
 	}
 
-	gotAny, err := client.List(ctx, res.WithList(file.List{}), nil, file.ListOptions{Recursive: true})
+	got, err := client.List(ctx, res.WithList(file.List{}), nil, file.ListOptions{Recursive: true})
 	if err != nil {
 		t.Fatalf("List(Recursive): %v", err)
 	}
-	if len(gotAny.([]file.ListResult[record])) != 3 {
-		t.Fatalf("want 3 entries counted, got %+v", gotAny)
+	if len(got) != 3 {
+		t.Fatalf("want 3 entries counted, got %+v", got)
 	}
 }
 
@@ -2187,11 +2159,11 @@ func TestCreate_Overwrite_IfMatch_MatchSucceeds(t *testing.T) {
 	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{Name: "widget", Value: 2}, vars, file.WriteOptions{IfMatch: &etag}); err != nil {
 		t.Fatalf("Create (conditional overwrite): %v", err)
 	}
-	gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
+	got, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
-	if got := gotAny.(record); got.Value != 2 {
+	if got.Value != 2 {
 		t.Fatalf("want Value=2 after conditional overwrite, got %+v", got)
 	}
 }
@@ -2214,11 +2186,11 @@ func TestCreate_Overwrite_IfMatch_MismatchRejected(t *testing.T) {
 	if !errors.As(err, &mismatch) {
 		t.Fatalf("want ConditionalWriteMismatchError, got %v (%T)", err, err)
 	}
-	gotAny, readErr := client.Read(ctx, res.WithRead(file.Read{}), vars)
+	got, readErr := client.Read(ctx, res.WithRead(file.Read{}), vars)
 	if readErr != nil {
 		t.Fatalf("Read: %v", readErr)
 	}
-	if got := gotAny.(record); got.Value != 1 {
+	if got.Value != 1 {
 		t.Fatalf("want content unchanged (Value=1) after rejected conditional write, got %+v", got)
 	}
 }
@@ -2289,14 +2261,14 @@ func TestPatch_IfMatch_MatchSucceeds(t *testing.T) {
 	)
 	newValue := 2
 	patcher := res.WithPatch(patchCodec, file.Patch{})
-	if err := client.Patch(ctx, patcher, valuePatch{Value: &newValue}, vars, file.WriteOptions{IfMatch: &etag}); err != nil {
+	if err := client.Patch[record, valuePatch](ctx, patcher, valuePatch{Value: &newValue}, vars, file.WriteOptions{IfMatch: &etag}); err != nil {
 		t.Fatalf("Patch (conditional): %v", err)
 	}
-	gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
+	got, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
-	if got := gotAny.(record); got.Value != 2 {
+	if got.Value != 2 {
 		t.Fatalf("want Value=2 after conditional patch, got %+v", got)
 	}
 }
@@ -2322,16 +2294,16 @@ func TestPatch_IfMatch_MismatchRejectsNoWrite(t *testing.T) {
 	)
 	newValue := 2
 	patcher := res.WithPatch(patchCodec, file.Patch{})
-	err := client.Patch(ctx, patcher, valuePatch{Value: &newValue}, vars, file.WriteOptions{IfMatch: &stale})
+	err := client.Patch[record, valuePatch](ctx, patcher, valuePatch{Value: &newValue}, vars, file.WriteOptions{IfMatch: &stale})
 	var mismatch file.ConditionalWriteMismatchError
 	if !errors.As(err, &mismatch) {
 		t.Fatalf("want ConditionalWriteMismatchError, got %v (%T)", err, err)
 	}
-	gotAny, readErr := client.Read(ctx, res.WithRead(file.Read{}), vars)
+	got, readErr := client.Read(ctx, res.WithRead(file.Read{}), vars)
 	if readErr != nil {
 		t.Fatalf("Read: %v", readErr)
 	}
-	if got := gotAny.(record); got.Value != 1 {
+	if got.Value != 1 {
 		t.Fatalf("want content unchanged (Value=1) after rejected conditional patch, got %+v", got)
 	}
 }
@@ -2354,11 +2326,11 @@ func TestConditionalWrite_UnsupportedBackend_RejectsBeforeAnyWrite(t *testing.T)
 	if !errors.As(err, &unsupported) {
 		t.Fatalf("want ConditionalWriteUnsupportedError, got %v (%T)", err, err)
 	}
-	gotAny, readErr := client.Read(ctx, res.WithRead(file.Read{}), vars)
+	got, readErr := client.Read(ctx, res.WithRead(file.Read{}), vars)
 	if readErr != nil {
 		t.Fatalf("Read: %v", readErr)
 	}
-	if got := gotAny.(record); got.Value != 1 {
+	if got.Value != 1 {
 		t.Fatalf("want content unchanged (Value=1), no write attempted, got %+v", got)
 	}
 }

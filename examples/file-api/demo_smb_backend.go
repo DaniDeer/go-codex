@@ -173,11 +173,10 @@ func exerciseSMBBackend(ctx context.Context, smbDemoClient *file.Client) error {
 	if _, err := smbDemoClient.Create(ctx, resources.Notes.WithCreate(file.Create{}), resources.Note{Title: "From SMB", Body: "Same Resource declaration, different Backend."}, vars); err != nil {
 		return fmt.Errorf("create: %w", err)
 	}
-	gotAny, err := smbDemoClient.Read(ctx, resources.Notes.WithRead(file.Read{}), vars)
+	note, err := smbDemoClient.Read(ctx, resources.Notes.WithRead(file.Read{}), vars)
 	if err != nil {
 		return fmt.Errorf("read: %w", err)
 	}
-	note := gotAny.(resources.Note)
 	fmt.Printf("read back from SMB: Title=%q Body=%q\n", note.Title, note.Body)
 
 	// MovingBackend: adapters/smb is the FIRST Phase 1/2 Backend to

@@ -39,7 +39,7 @@ func demoConditionalWrites(ctx context.Context, client *file.Client, rt file.Rou
 
 	// Matching ETag — the write commits.
 	freshBody := "Conditionally updated"
-	if err := client.Patch(ctx, patchHandle, resources.BodyPatch{Body: &freshBody}, vars, file.WriteOptions{IfMatch: &currentETag}); err != nil {
+	if err := client.Patch[resources.Note, resources.BodyPatch](ctx, patchHandle, resources.BodyPatch{Body: &freshBody}, vars, file.WriteOptions{IfMatch: &currentETag}); err != nil {
 		log.Fatalf("conditional patch (matching ETag): %v", err)
 	}
 	fmt.Println("conditional patch succeeded (ETag matched)")
@@ -47,7 +47,7 @@ func demoConditionalWrites(ctx context.Context, client *file.Client, rt file.Rou
 	// A STALE ETag (the one we captured before the patch above already
 	// committed) is now rejected — someone else changed the note first.
 	staleBody := "Should never commit"
-	err = client.Patch(ctx, patchHandle, resources.BodyPatch{Body: &staleBody}, vars, file.WriteOptions{IfMatch: &currentETag})
+	err = client.Patch[resources.Note, resources.BodyPatch](ctx, patchHandle, resources.BodyPatch{Body: &staleBody}, vars, file.WriteOptions{IfMatch: &currentETag})
 	var mismatch file.ConditionalWriteMismatchError
 	if errors.As(err, &mismatch) {
 		fmt.Println("confirmed: stale ETag rejected with ConditionalWriteMismatchError")

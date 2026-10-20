@@ -36,11 +36,10 @@ func demoMetadataAxis(ctx context.Context, client *file.Client, rt file.Router) 
 	if _, err := client.Create(ctx, createHandle, resources.MetadataNote{Title: "plain", Body: "hi", Owner: "alice"}, vars, file.WriteOptions{CreateDirs: true}); err != nil {
 		log.Fatalf("create (metadata): %v", err)
 	}
-	gotAny, err := client.Read(ctx, readHandle, vars)
+	got, err := client.Read(ctx, readHandle, vars)
 	if err != nil {
 		log.Fatalf("read (metadata): %v", err)
 	}
-	got := gotAny.(resources.MetadataNote)
 	fmt.Printf("resource-level metadata round trip: Owner=%q (never touched the JSON body)\n", got.Owner)
 
 	// BoundCreateMiddleware with WithMetadataOut overrides the
@@ -63,9 +62,9 @@ func demoMetadataAxis(ctx context.Context, client *file.Client, rt file.Router) 
 	if _, err := client.Create(ctx, gatedHandle, resources.MetadataNote{Title: "gated", Body: "hi", Owner: "original"}, gatedVars); err != nil {
 		log.Fatalf("create (gated metadata): %v", err)
 	}
-	gotGatedAny, err := client.Read(ctx, readHandle, gatedVars)
+	gotGated, err := client.Read(ctx, readHandle, gatedVars)
 	if err != nil {
 		log.Fatalf("read (gated metadata): %v", err)
 	}
-	fmt.Printf("BoundCreateMiddleware.WithMetadataOut overrode Owner to %q\n", gotGatedAny.(resources.MetadataNote).Owner)
+	fmt.Printf("BoundCreateMiddleware.WithMetadataOut overrode Owner to %q\n", gotGated.Owner)
 }

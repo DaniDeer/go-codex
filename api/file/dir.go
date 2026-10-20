@@ -467,22 +467,6 @@ func (h *DeleteDirHandle) dispatchDeleteDir(ctx context.Context, backend Backend
 	return deleteDirCore(ctx, backend, h.core, h.dir, h.routing, vars, opts)
 }
 
-func dispatchListDir(ctx context.Context, backend Backend, l any, vars map[string]string, opts DirOptions) ([]DirEntry, error) {
-	v, ok := l.(listDirDispatcher)
-	if !ok {
-		return nil, BackendTypeMismatchError{Expected: "file.ListDirer or *file.ListDirHandle", Got: typeName(l)}
-	}
-	return v.dispatchListDir(ctx, backend, vars, opts)
-}
-
-func dispatchDeleteDir(ctx context.Context, backend Backend, d any, vars map[string]string, opts DirOptions) ([]string, error) {
-	v, ok := d.(deleteDirDispatcher)
-	if !ok {
-		return nil, BackendTypeMismatchError{Expected: "file.DeleteDirer or *file.DeleteDirHandle", Got: typeName(d)}
-	}
-	return v.dispatchDeleteDir(ctx, backend, vars, opts)
-}
-
 // ── Dispatch cores ────────────────────────────────────────────────────────
 
 func dirBuildPath(dir Dir, routing routingInfo, vars map[string]string) (string, error) {

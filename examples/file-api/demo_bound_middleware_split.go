@@ -71,11 +71,11 @@ func demoBoundMiddlewareSplit(ctx context.Context, client *file.Client, rt file.
 	if err != nil {
 		log.Fatalf("handle(secured read): %v", err)
 	}
-	securedAny, err := client.Read(ctx, securedHandle, alice)
+	secured, err := client.Read(ctx, securedHandle, alice)
 	if err != nil {
 		log.Fatalf("secured read: %v", err)
 	}
-	fmt.Printf("secured read (Security satisfied): %+v\n", securedAny.(resources.Note))
+	fmt.Printf("secured read (Security satisfied): %+v\n", secured)
 
 	// STACKED — both attached to the SAME role, in attachment order:
 	// auditLog first, then securityGate. Each Fn's own print statement

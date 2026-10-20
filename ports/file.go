@@ -543,7 +543,7 @@ func (fh File[T]) Read(vars map[string]string, opts FileOptions) (T, error) {
 	res := file.NewResource[T](path, fh.format)
 	client := file.NewClient()
 	_ = client.Attach(osBackend{}) // fresh Client — Attach never fails here
-	gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), nil)
+	got, err := client.Read(ctx, res.WithRead(file.Read{}), nil)
 	if err != nil {
 		// ports.File.Read has always reported ANY read failure — including
 		// "file does not exist" — as FileReadError (never FileNotFoundError,
@@ -559,7 +559,7 @@ func (fh File[T]) Read(vars map[string]string, opts FileOptions) (T, error) {
 		}
 		return zero, err
 	}
-	return gotAny.(T), nil
+	return got, nil
 }
 
 // ReadMerged is the decode-merge convenience: it reads and decodes exactly

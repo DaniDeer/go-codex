@@ -102,7 +102,7 @@ func (s *Scope) PatchDeviceFile[P any](ctx context.Context, useCaseName Name, de
 	if err != nil {
 		return err
 	}
-	return s.client.Patch(ctx, handle, patch, map[string]string{
+	return s.client.Patch[deviceconfig.Patch](ctx, handle, patch, map[string]string{
 		useCaseNameVar: string(useCaseName),
 		deviceIDVar:    string(deviceID),
 	}, opts...)
@@ -151,7 +151,7 @@ func (s *Scope) ReadDeviceConfig(ctx context.Context, useCaseName Name, deviceID
 	if err != nil {
 		return DeviceConfig{}, err
 	}
-	return DeviceConfig{DeviceID: deviceID, Patch: v.(deviceconfig.Patch)}, nil
+	return DeviceConfig{DeviceID: deviceID, Patch: v}, nil
 }
 
 // WriteDeviceConfig writes cfg.Patch at

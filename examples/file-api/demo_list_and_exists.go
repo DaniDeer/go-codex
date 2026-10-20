@@ -36,11 +36,10 @@ func demoListAndExists(ctx context.Context, client *file.Client, rt file.Router,
 		log.Fatalf("setup stray file: %v", err)
 	}
 
-	listAny, err := client.List(ctx, listHandle, nil)
+	results, err := client.List(ctx, listHandle, nil)
 	if err != nil {
 		log.Fatalf("list: %v", err)
 	}
-	results := listAny.([]file.ListResult[resources.Note])
 	var okCount, errCount int
 	for _, r := range results {
 		if r.Err != nil {

@@ -1,15 +1,38 @@
 # Go 1.27 Generic Methods — retrofitting `any`-typed/free-function workarounds
 
-> **Status: Tier 1 IMPLEMENTED and SHIPPED.** Tier 2 (`events`/
-> `reqreply`/`rest`/`api/file` Client dispatch — ~100+ call sites across
-> 4 packages) remains explicitly **deferred to a separate future
-> round** — not attempted this round. A Tier 2 REVIEW round (no code
-> changes) has since corrected the original "all 14 `api/file` methods,
-> same shape" claim, resolved open questions #2/#3 with real evidence
-> (split per package-family — see "Correction" and the resolved
-> numbered items under Tier 2 below), and recommends splitting Tier 2
-> implementation into 2 independent workstreams, `api/file` first (see
-> "Open design decisions" item 5).
+> **Status: Tier 1 AND Workstream A (Tier 2's `api/file` half) BOTH
+> IMPLEMENTED and SHIPPED.** Workstream B (`events`/`reqreply`/`rest`
+> Client dispatch — caller-facing-only win, confirmed lower value, see
+> the Tier 2 review below) remains explicitly **deferred to a separate
+> future round** — not attempted.
+>
+> **Workstream A shipped**: all 14 `api/file.Client` dispatch methods
+> converted off `any`-typed parameters. 4 genuinely needed a real Go
+> 1.27 generic method (return value depends on `T`/`P`): `Read[T
+> any]`, `Create[T any]`, `Patch[T, P any]`, `List[T any]` (returning
+> `[]ListResult[T]` directly, no longer boxed in `any`). The other 10 —
+> `Delete`, `Exists`, `Copy`, `Move`, `Mkdir`, `BatchDelete`,
+> `OpenRead`, `OpenWrite`, `ListDir`, `DeleteDir` — needed NO Go 1.27
+> feature at all, just a concrete (non-generic) dispatcher-interface
+> parameter type instead of `any` (their own interface method never
+> mentions `T`) — a finding made DURING this implementation round, not
+> predicted by the earlier review (see "Workstream A — SHIPPED" below
+> for the full per-method signature table and the `OpenRead`/
+> `OpenWrite` reclassification). `BackendTypeMismatchError` is KEPT
+> (not fully removed) — 15 of its 16 original raise sites are now dead
+> code (a non-conforming type fails to compile instead), but one
+> genuinely different raise site (`builder.go`'s `ErrorPatterns[B]`
+> mismatch, unrelated to dispatch-role matching) stays reachable.
+> Verified: `go build ./...`, `go vet ./...`, `go test ./...`,
+> `just check`, `just examples` all green.
+>
+> A Tier 2 REVIEW round (no code changes) preceded this and corrected
+> the original "all 14 `api/file` methods, same shape" claim, resolved
+> open questions #2/#3 with real evidence (split per package-family —
+> see "Correction" and the resolved numbered items under Tier 2 below),
+> and recommended splitting Tier 2 implementation into 2 independent
+> workstreams, `api/file` first — the recommendation this round
+> followed.
 >
 > A follow-up coverage review (see "Additional Tier 1 candidates" and
 > "A second, equally permanent category" below) widened the Tier 1
@@ -1067,3 +1090,66 @@ renamed symbol.
 round; see "Tier 2 — the big, foundational finding" above and the
 "Next steps" list for the still-open audit work before any Tier 2
 implementation round.
+
+## Workstream A (`api/file`'s Tier 2 half) — SHIPPED
+
+Following the Tier 2 review's recommendation (see "Open design
+decisions" item 5), Workstream A was implemented and shipped in full —
+all 14 `api/file.Client` dispatch methods converted off `any`-typed
+parameters. A finding made DURING implementation (not predicted by the
+review) further split this into 3 groups, confirmed by reading every
+real dispatcher interface in `api/file/dispatch.go`/`dir.go`:
+
+| Method | Group | New signature |
+|---|---|---|
+| `Read` | A1 (real generic method) | `Read[T any](ctx, r readDispatcher[T], vars) (T, error)` |
+| `Create` | A1 | `Create[T any](ctx, cr createDispatcher[T], val T, vars, opts ...WriteOptions) (createdDirs []string, err error)` |
+| `Patch` | A1 | `Patch[T, P any](ctx, p patchDispatcher[T, P], patch P, vars, opts ...WriteOptions) error` — callers MUST supply explicit `[T, P]` type arguments; Go cannot infer `T` through an interface-typed role parameter here (confirmed via real compile errors during implementation, not assumed) |
+| `List` | A1 | `List[T any](ctx, l listDispatcher[T], vars, opts ...ListOptions) ([]ListResult[T], error)` — no longer boxed in `any` |
+| `Delete` | A2 (no Go 1.27 needed) | `Delete(ctx, d deleteDispatcher, vars, opts ...DeleteOptions) (existed bool, err error)` |
+| `Exists` | A2 | `Exists(ctx, e existsDispatcher, vars) (Entry, bool, error)` |
+| `Copy` | A2 | `Copy(ctx, cp copyDispatcher, srcVars, dstVars) error` |
+| `Move` | A2 | `Move(ctx, mv moveDispatcher, srcVars, dstVars) error` |
+| `Mkdir` | A2 | `Mkdir(ctx, m mkdirDispatcher, vars, opts ...MkdirOptions) (created bool, err error)` |
+| `BatchDelete` | A2 | `BatchDelete(ctx, bd batchDeleteDispatcher, varsList) ([]BatchDeleteResult, error)` |
+| `OpenRead` | **Reclassified A1→A2 during implementation** | `OpenRead(ctx, sr openReadDispatcher, vars, opts ...StreamReadOptions) (io.ReadCloser, error)` — `T` never appears in the interface method's own return (`io.ReadCloser`), so genericity added no value |
+| `OpenWrite` | **Reclassified A1→A2 during implementation** | `OpenWrite(ctx, sw openWriteDispatcher, vars, opts ...WriteOptions) (io.WriteCloser, error)` — same reasoning |
+| `ListDir` | A3 (already known non-generic) | `ListDir(ctx, ld listDirDispatcher, vars, opts ...DirOptions) ([]DirEntry, error)` |
+| `DeleteDir` | A3 | `DeleteDir(ctx, dd deleteDirDispatcher, vars, opts ...DirOptions) ([]string, error)` |
+
+Every one of the 14 now-redundant `dispatchXxx` `any`-typed free
+wrapper functions was deleted, folded directly into the `Client`
+method body.
+
+**`BackendTypeMismatchError` final disposition: KEPT, not removed.**
+15 of its 16 original raise sites are now genuinely dead code (a
+non-conforming type fails to COMPILE instead of raising this at
+runtime) — but one raise site, in `api/file/builder.go`'s
+`withErrorPatterns` (an `ErrorPatterns[B]` type mismatch), is a
+genuinely different kind of mismatch unrelated to dispatch-role
+matching and stays reachable. This is a partial deviation from the
+Round 4 review's "can become fully dead code" framing — confirmed
+during implementation, not a guess.
+
+**Files changed**: `api/file/client.go`, `api/file/dispatch.go`,
+`api/file/dir.go` (core conversion); `api/file/client_test.go`,
+`api/file/stream_test.go`, `api/file/filetest/filetest.go`,
+`adapters/file/conditional_write_test.go`, `ports/file.go` (one line)
+(within-module callers); `examples/dir-io/main.go`,
+`examples/file-api/*.go` (9 files), `examples/file-io/main.go`,
+`examples/go-edge-models/models/iotedge/usecase/device.go`/`usecase.go`
+(external call sites — mostly removing now-unnecessary `any`
+type-assertions on the old boxed returns, plus adding explicit `[T,
+P]` type arguments at every `Patch` call site).
+
+**Post-implementation verification** (whole repo): `go build ./...` ✅,
+`go vet ./...` ✅, `go test ./...` ✅ (all packages `ok`), `just check`
+✅ (staticcheck + gosec: 0 issues; gofmt: clean), `just examples` ✅
+(full example sweep, all exit 0).
+`.github/instructions/go-codex.instructions.md` updated for the full
+`api/file.Client` dispatch-method signature table.
+
+**Workstream B (`events`/`reqreply`/`rest`) remains fully deferred** —
+confirmed lower value per the Tier 2 review (caller-facing-only win,
+`TransportTypeMismatchError` stays alive permanently, zero internal
+dispatch simplification) — not attempted this round.

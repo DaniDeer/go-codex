@@ -142,11 +142,11 @@ func TestCreate_StreamableFormat_NonStreamingBackend_FallsBackToWholeFile(t *tes
 	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), streamableRecord{Name: "hello"}, map[string]string{"name": "hello"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), map[string]string{"name": "hello"})
+	got, err := client.Read(ctx, res.WithRead(file.Read{}), map[string]string{"name": "hello"})
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
-	if got := gotAny.(streamableRecord); got.Name != "hello" {
+	if got.Name != "hello" {
 		t.Fatalf("got %+v, want Name=hello (fallback should still work correctly)", got)
 	}
 }
@@ -229,11 +229,11 @@ func TestStreamWriter_OpenWrite_NonStreamingBackend_BuffersThenWrites(t *testing
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), map[string]string{"name": "buffered"})
+	got, err := client.Read(ctx, res.WithRead(file.Read{}), map[string]string{"name": "buffered"})
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
-	if got := gotAny.(record); got.Value != 9 {
+	if got.Value != 9 {
 		t.Fatalf("got %+v, want Value=9", got)
 	}
 }

@@ -273,18 +273,23 @@ func mergeMetadata(base, override map[string]string) map[string]string {
 
 // ── Read ─────────────────────────────────────────────────────────────────
 
-type readDispatcher interface {
-	dispatchRead(ctx context.Context, backend Backend, vars map[string]string) (any, error)
+// readDispatcher is a genuine Go 1.27 generic method candidate — T
+// appears directly in dispatchRead's OWN return type, so making the
+// interface itself generic over T lets Client.Read return the decoded
+// T directly, with zero reflection/boxing (see
+// docs/roadmap/go127-generic-methods.md's Tier 2 section).
+type readDispatcher[T any] interface {
+	dispatchRead(ctx context.Context, backend Backend, vars map[string]string) (T, error)
 }
 
-func (r Reader[T]) dispatchRead(ctx context.Context, backend Backend, vars map[string]string) (any, error) {
+func (r Reader[T]) dispatchRead(ctx context.Context, backend Backend, vars map[string]string) (T, error) {
 	return readCore[T](ctx, backend, r.core, routingInfo{}, vars)
 }
-func (h *ReadHandle[T]) dispatchRead(ctx context.Context, backend Backend, vars map[string]string) (any, error) {
+func (h *ReadHandle[T]) dispatchRead(ctx context.Context, backend Backend, vars map[string]string) (T, error) {
 	return readCore[T](ctx, backend, h.core, h.routing, vars)
 }
 
-func readCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, vars map[string]string) (result any, err error) {
+func readCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, vars map[string]string) (result T, err error) {
 	defer func() { err = applyErrorPattern(core, err) }()
 	var zero T
 	obs := obsFromCtx(ctx)
@@ -325,34 +330,29 @@ func readCore[T any](ctx context.Context, backend Backend, core roleCore[T], rou
 	return v, nil
 }
 
-func dispatchRead(ctx context.Context, backend Backend, r any, vars map[string]string) (any, error) {
-	v, ok := r.(readDispatcher)
-	if !ok {
-		return nil, BackendTypeMismatchError{Expected: "file.Reader[T] or *file.ReadHandle[T]", Got: typeName(r)}
-	}
-	return v.dispatchRead(ctx, backend, vars)
-}
-
 // ── Create ───────────────────────────────────────────────────────────────
 
-type createDispatcher interface {
-	dispatchCreate(ctx context.Context, backend Backend, val any, vars map[string]string, opts WriteOptions) (createdDirs []string, err error)
+// createDispatcher is NOT generic over a return-typed T — Create's
+// return is always []string, regardless of T; T instead types the
+// role AND val's input shape. It still gains a type parameter here so
+// Client.Create[T] can require val to be the SAME T as cr's role at
+// compile time, eliminating the former runtime val.(T) type assertion
+// (and its BackendTypeMismatchError raise site) entirely — see
+// docs/roadmap/go127-generic-methods.md's Tier 2 section.
+type createDispatcher[T any] interface {
+	dispatchCreate(ctx context.Context, backend Backend, val T, vars map[string]string, opts WriteOptions) (createdDirs []string, err error)
 }
 
-func (c Creator[T]) dispatchCreate(ctx context.Context, backend Backend, val any, vars map[string]string, opts WriteOptions) ([]string, error) {
+func (c Creator[T]) dispatchCreate(ctx context.Context, backend Backend, val T, vars map[string]string, opts WriteOptions) ([]string, error) {
 	return createCore[T](ctx, backend, c.core, routingInfo{}, val, vars, opts)
 }
-func (h *CreateHandle[T]) dispatchCreate(ctx context.Context, backend Backend, val any, vars map[string]string, opts WriteOptions) ([]string, error) {
+func (h *CreateHandle[T]) dispatchCreate(ctx context.Context, backend Backend, val T, vars map[string]string, opts WriteOptions) ([]string, error) {
 	return createCore[T](ctx, backend, h.core, h.routing, val, vars, opts)
 }
 
-func createCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, val any, vars map[string]string, callerOpts WriteOptions) (createdDirs []string, err error) {
+func createCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, v T, vars map[string]string, callerOpts WriteOptions) (createdDirs []string, err error) {
 	defer func() { err = applyErrorPattern(core, err) }()
 	obs := obsFromCtx(ctx)
-	v, ok := val.(T)
-	if !ok {
-		return nil, BackendTypeMismatchError{Expected: typeNameOf[T](), Got: typeName(val)}
-	}
 	wire, err := resolveWire(core)
 	if err != nil {
 		return nil, err
@@ -493,34 +493,28 @@ func createCore[T any](ctx context.Context, backend Backend, core roleCore[T], r
 	return createdDirs, nil
 }
 
-func dispatchCreate(ctx context.Context, backend Backend, cr any, val any, vars map[string]string, opts WriteOptions) ([]string, error) {
-	v, ok := cr.(createDispatcher)
-	if !ok {
-		return nil, BackendTypeMismatchError{Expected: "file.Creator[T] or *file.CreateHandle[T]", Got: typeName(cr)}
-	}
-	return v.dispatchCreate(ctx, backend, val, vars, opts)
-}
-
 // ── Patch ────────────────────────────────────────────────────────────────
 
-type patchDispatcher interface {
-	dispatchPatch(ctx context.Context, backend Backend, patch any, vars map[string]string, opts WriteOptions) error
+// patchDispatcher is a 2-type-param dispatcher — T types the base
+// resource's role, P types the patch's own shape; neither appears in
+// dispatchPatch's return (plain error), but making the interface
+// generic over both still eliminates the former runtime patch.(P) type
+// assertion (and its BackendTypeMismatchError raise site) at compile
+// time, mirroring createDispatcher's identical rationale.
+type patchDispatcher[T, P any] interface {
+	dispatchPatch(ctx context.Context, backend Backend, patch P, vars map[string]string, opts WriteOptions) error
 }
 
-func (p Patcher[T, P]) dispatchPatch(ctx context.Context, backend Backend, patch any, vars map[string]string, opts WriteOptions) error {
+func (p Patcher[T, P]) dispatchPatch(ctx context.Context, backend Backend, patch P, vars map[string]string, opts WriteOptions) error {
 	return patchCore[T, P](ctx, backend, p.core, p.patchCodec, routingInfo{}, patch, vars, opts)
 }
-func (h *PatchHandle[T, P]) dispatchPatch(ctx context.Context, backend Backend, patch any, vars map[string]string, opts WriteOptions) error {
+func (h *PatchHandle[T, P]) dispatchPatch(ctx context.Context, backend Backend, patch P, vars map[string]string, opts WriteOptions) error {
 	return patchCore[T, P](ctx, backend, h.core, h.patchCodec, h.routing, patch, vars, opts)
 }
 
-func patchCore[T, P any](ctx context.Context, backend Backend, core roleCore[T], patchCodec codex.Codec[P], routing routingInfo, patch any, vars map[string]string, callerOpts WriteOptions) (err error) {
+func patchCore[T, P any](ctx context.Context, backend Backend, core roleCore[T], patchCodec codex.Codec[P], routing routingInfo, p P, vars map[string]string, callerOpts WriteOptions) (err error) {
 	defer func() { err = applyErrorPattern(core, err) }()
 	obs := obsFromCtx(ctx)
-	p, ok := patch.(P)
-	if !ok {
-		return BackendTypeMismatchError{Expected: typeNameOf[P](), Got: typeName(patch)}
-	}
 	// Patch writes to the Backend (a read-modify-write), so it must
 	// honor a declared AccessModeReadOnly Capability exactly like every
 	// other mutating role (Create/Delete/Copy/Move/Mkdir/BatchDelete) —
@@ -666,14 +660,6 @@ func patchCore[T, P any](ctx context.Context, backend Backend, core roleCore[T],
 	return nil
 }
 
-func dispatchPatch(ctx context.Context, backend Backend, p any, patch any, vars map[string]string, opts WriteOptions) error {
-	v, ok := p.(patchDispatcher)
-	if !ok {
-		return BackendTypeMismatchError{Expected: "file.Patcher[T,P] or *file.PatchHandle[T,P]", Got: typeName(p)}
-	}
-	return v.dispatchPatch(ctx, backend, patch, vars, opts)
-}
-
 // ── Delete ───────────────────────────────────────────────────────────────
 
 type deleteDispatcher interface {
@@ -723,24 +709,20 @@ func deleteCore[T any](ctx context.Context, backend Backend, core roleCore[T], r
 	return existed, nil
 }
 
-func dispatchDelete(ctx context.Context, backend Backend, d any, vars map[string]string, opts DeleteOptions) (bool, error) {
-	v, ok := d.(deleteDispatcher)
-	if !ok {
-		return false, BackendTypeMismatchError{Expected: "file.Deleter[T] or *file.DeleteHandle[T]", Got: typeName(d)}
-	}
-	return v.dispatchDelete(ctx, backend, vars, opts)
-}
-
 // ── List ─────────────────────────────────────────────────────────────────
 
-type listDispatcher interface {
-	dispatchList(ctx context.Context, backend Backend, vars map[string]string, opts ListOptions) (any, error)
+// listDispatcher is a genuine Go 1.27 generic method candidate — per
+// its own doc comment, List decodes a []ListResult[T], NOT a bare T —
+// so the interface's own method returns []ListResult[T] directly
+// rather than boxing it as any.
+type listDispatcher[T any] interface {
+	dispatchList(ctx context.Context, backend Backend, vars map[string]string, opts ListOptions) ([]ListResult[T], error)
 }
 
-func (l Lister[T]) dispatchList(ctx context.Context, backend Backend, vars map[string]string, opts ListOptions) (any, error) {
+func (l Lister[T]) dispatchList(ctx context.Context, backend Backend, vars map[string]string, opts ListOptions) ([]ListResult[T], error) {
 	return listCore[T](ctx, backend, l.core, routingInfo{}, vars, opts)
 }
-func (h *ListHandle[T]) dispatchList(ctx context.Context, backend Backend, vars map[string]string, opts ListOptions) (any, error) {
+func (h *ListHandle[T]) dispatchList(ctx context.Context, backend Backend, vars map[string]string, opts ListOptions) ([]ListResult[T], error) {
 	return listCore[T](ctx, backend, h.core, h.routing, vars, opts)
 }
 
@@ -797,7 +779,7 @@ const recursiveListDepth = 1
 
 // listCore implements Client.List's single-level (default) and
 // Recursive discovery.
-func listCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, vars map[string]string, opts ListOptions) (result any, err error) {
+func listCore[T any](ctx context.Context, backend Backend, core roleCore[T], routing routingInfo, vars map[string]string, opts ListOptions) (result []ListResult[T], err error) {
 	defer func() { err = applyErrorPattern(core, err) }()
 	obs := obsFromCtx(ctx)
 	dirPath, err := core.resource.buildParentDirWithRouting(routing, vars)
@@ -914,14 +896,6 @@ func listRecursiveManual[T any](ctx context.Context, backend Backend, core roleC
 	return out, nil
 }
 
-func dispatchList(ctx context.Context, backend Backend, l any, vars map[string]string, opts ListOptions) (any, error) {
-	v, ok := l.(listDispatcher)
-	if !ok {
-		return nil, BackendTypeMismatchError{Expected: "file.Lister[T] or *file.ListHandle[T]", Got: typeName(l)}
-	}
-	return v.dispatchList(ctx, backend, vars, opts)
-}
-
 // ── Exists ───────────────────────────────────────────────────────────────
 
 type existsDispatcher interface {
@@ -959,14 +933,6 @@ func existsCore[T any](ctx context.Context, backend Backend, core roleCore[T], r
 	}
 	recordExists(obs, path, true, time.Since(start))
 	return entry, true, nil
-}
-
-func dispatchExists(ctx context.Context, backend Backend, e any, vars map[string]string) (Entry, bool, error) {
-	v, ok := e.(existsDispatcher)
-	if !ok {
-		return Entry{}, false, BackendTypeMismatchError{Expected: "file.Exister[T] or *file.ExistsHandle[T]", Got: typeName(e)}
-	}
-	return v.dispatchExists(ctx, backend, vars)
 }
 
 // ── Copy ─────────────────────────────────────────────────────────────────
@@ -1059,14 +1025,6 @@ func copyCore[T any](ctx context.Context, backend Backend, core roleCore[T], rou
 	srcPath, dstPath, err := copyBytesCore(ctx, backend, core, routing, srcVars, dstVars)
 	recordCopy(obs, srcPath, dstPath, err == nil, time.Since(start))
 	return err
-}
-
-func dispatchCopy(ctx context.Context, backend Backend, cp any, srcVars, dstVars map[string]string) error {
-	v, ok := cp.(copyDispatcher)
-	if !ok {
-		return BackendTypeMismatchError{Expected: "file.Copier[T] or *file.CopyHandle[T]", Got: typeName(cp)}
-	}
-	return v.dispatchCopy(ctx, backend, srcVars, dstVars)
 }
 
 // ── Move ─────────────────────────────────────────────────────────────────
@@ -1163,14 +1121,6 @@ func moveCore[T any](ctx context.Context, backend Backend, core roleCore[T], rou
 	return nil
 }
 
-func dispatchMove(ctx context.Context, backend Backend, mv any, srcVars, dstVars map[string]string) error {
-	v, ok := mv.(moveDispatcher)
-	if !ok {
-		return BackendTypeMismatchError{Expected: "file.Mover[T] or *file.MoveHandle[T]", Got: typeName(mv)}
-	}
-	return v.dispatchMove(ctx, backend, srcVars, dstVars)
-}
-
 // ── Mkdir ────────────────────────────────────────────────────────────────
 
 type mkdirDispatcher interface {
@@ -1215,14 +1165,6 @@ func mkdirCore[T any](ctx context.Context, backend Backend, core roleCore[T], ro
 	}
 	recordMkdir(obs, path, true, time.Since(start))
 	return created, nil
-}
-
-func dispatchMkdir(ctx context.Context, backend Backend, m any, vars map[string]string, opts MkdirOptions) (bool, error) {
-	v, ok := m.(mkdirDispatcher)
-	if !ok {
-		return false, BackendTypeMismatchError{Expected: "file.MkdirCreator[T] or *file.MkdirHandle[T]", Got: typeName(m)}
-	}
-	return v.dispatchMkdir(ctx, backend, vars, opts)
 }
 
 // ── BatchDelete ──────────────────────────────────────────────────────────
@@ -1323,14 +1265,6 @@ func countResults(results []BatchDeleteResult) (success, failure int) {
 	return success, failure
 }
 
-func dispatchBatchDelete(ctx context.Context, backend Backend, bd any, varsList []map[string]string) ([]BatchDeleteResult, error) {
-	v, ok := bd.(batchDeleteDispatcher)
-	if !ok {
-		return nil, BackendTypeMismatchError{Expected: "file.BatchDeleter[T] or *file.BatchDeleteHandle[T]", Got: typeName(bd)}
-	}
-	return v.dispatchBatchDelete(ctx, backend, varsList)
-}
-
 // ── Streaming/chunked reads and writes (Mechanism 2) ────────────────────
 //
 // See docs/design/d-0011-file-api-backend-transparency.md's "Streaming/chunked reads and writes"
@@ -1338,6 +1272,16 @@ func dispatchBatchDelete(ctx context.Context, backend Backend, bd any, varsList 
 // distinct from Mechanism 1 (createCore's automatic format-level write
 // streaming, above).
 
+// openReadDispatcher is deliberately NON-generic (Group A2, not a Go
+// 1.27 generic method) — T only types StreamReader[T]/*StreamReadHandle[T]'s
+// own role (which codec-bypassing raw stream to serve), but dispatchOpenRead's
+// own return type (io.ReadCloser) never mentions T anywhere (this role
+// is the codec-bypassing raw-stream mechanism per its own doc comment
+// in client.go, so there is no decoded T to return at all) — making the
+// interface generic over T would add a type parameter purely for show,
+// with zero compile-time-safety benefit over the existing concrete
+// interface type. See docs/roadmap/go127-generic-methods.md's Tier 2
+// section for the full classification rationale.
 type openReadDispatcher interface {
 	dispatchOpenRead(ctx context.Context, backend Backend, vars map[string]string, opts StreamReadOptions) (io.ReadCloser, error)
 }
@@ -1469,14 +1413,9 @@ func openReadCore[T any](ctx context.Context, backend Backend, core roleCore[T],
 	return &observedReadCloser{ReadCloser: reader, obs: obs, path: path, start: start}, nil
 }
 
-func dispatchOpenRead(ctx context.Context, backend Backend, sr any, vars map[string]string, opts StreamReadOptions) (io.ReadCloser, error) {
-	v, ok := sr.(openReadDispatcher)
-	if !ok {
-		return nil, BackendTypeMismatchError{Expected: "file.StreamReader[T] or *file.StreamReadHandle[T]", Got: typeName(sr)}
-	}
-	return v.dispatchOpenRead(ctx, backend, vars, opts)
-}
-
+// openWriteDispatcher is deliberately NON-generic, for the exact same
+// reason as [openReadDispatcher] above — dispatchOpenWrite's own return
+// type (io.WriteCloser) never mentions T.
 type openWriteDispatcher interface {
 	dispatchOpenWrite(ctx context.Context, backend Backend, vars map[string]string, opts WriteOptions) (io.WriteCloser, error)
 }
@@ -1580,12 +1519,4 @@ func openWriteCore[T any](ctx context.Context, backend Backend, core roleCore[T]
 		return &observedWriteCloser{WriteCloser: w, obs: obs, path: path, start: start}, nil
 	}
 	return &bufferedWriteCloser{backend: backend, ctx: ctx, path: path, opts: opts, obs: obs, start: start}, nil
-}
-
-func dispatchOpenWrite(ctx context.Context, backend Backend, sw any, vars map[string]string, opts WriteOptions) (io.WriteCloser, error) {
-	v, ok := sw.(openWriteDispatcher)
-	if !ok {
-		return nil, BackendTypeMismatchError{Expected: "file.StreamWriter[T] or *file.StreamWriteHandle[T]", Got: typeName(sw)}
-	}
-	return v.dispatchOpenWrite(ctx, backend, vars, opts)
 }

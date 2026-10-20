@@ -61,11 +61,11 @@ func AssertReadWriteRoundTrip(t *testing.T, backend file.Backend) {
 		if _, err := client.Create(ctx, res.WithCreate(file.Create{}), record{ID: "alice", Value: 42}, vars); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
-		gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
+		got, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
 		if err != nil {
 			t.Fatalf("Read: %v", err)
 		}
-		if got := gotAny.(record); got.Value != 42 {
+		if got.Value != 42 {
 			t.Fatalf("Read: got Value=%d, want 42", got.Value)
 		}
 	})
@@ -112,11 +112,10 @@ func AssertPathParamMergeField(t *testing.T, backend file.Backend) {
 	if _, err := client.Create(ctx, res.WithCreate(file.Create{}), mergedRecord{ID: "bob", Value: 7}, vars); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
+	got, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}
-	got := gotAny.(mergedRecord)
 	if got.ID != "bob" {
 		t.Fatalf("Read: want ID merged from path var = %q, got %q", "bob", got.ID)
 	}
@@ -347,11 +346,11 @@ func AssertMetadataIntegration(t *testing.T, backend file.Backend) {
 		if _, err := client.Create(ctx, res.WithCreate(file.Create{}), recordWithOwner{ID: "plain", Value: 1, Owner: "alice"}, vars); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
-		gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
+		got, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
 		if err != nil {
 			t.Fatalf("Read: %v", err)
 		}
-		if got := gotAny.(recordWithOwner); got.Owner != "alice" {
+		if got.Owner != "alice" {
 			t.Fatalf("Owner = %q, want alice", got.Owner)
 		}
 	})
@@ -370,11 +369,11 @@ func AssertMetadataIntegration(t *testing.T, backend file.Backend) {
 		if _, err := client.Create(ctx, creator, recordWithOwner{ID: "gated", Value: 1, Owner: "original"}, vars); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
-		gotAny, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
+		got, err := client.Read(ctx, res.WithRead(file.Read{}), vars)
 		if err != nil {
 			t.Fatalf("Read: %v", err)
 		}
-		if got := gotAny.(recordWithOwner); got.Owner != "overridden" {
+		if got.Owner != "overridden" {
 			t.Fatalf("Owner = %q, want overridden (BoundCreateMiddleware's WithMetadataOut should win)", got.Owner)
 		}
 	})

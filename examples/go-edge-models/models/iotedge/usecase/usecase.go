@@ -109,7 +109,7 @@ func (s *Scope) ReadBaseline(ctx context.Context) (iothub.BaseDeployment, error)
 	if err != nil {
 		return iothub.BaseDeployment{}, err
 	}
-	return v.(iothub.BaseDeployment), nil
+	return v, nil
 }
 
 // WriteBaseline writes base as the SINGLE GLOBAL baseline deployment
@@ -128,7 +128,7 @@ func (s *Scope) ReadUseCaseFile(ctx context.Context, useCaseName Name) (iothub.L
 	if err != nil {
 		return iothub.LayeredDeployment{}, err
 	}
-	return v.(iothub.LayeredDeployment), nil
+	return v, nil
 }
 
 // WriteUseCaseFile writes manifest as useCaseName's deployment
@@ -153,7 +153,7 @@ func (s *Scope) PatchUseCaseFile[P any](ctx context.Context, useCaseName Name, p
 	if err != nil {
 		return err
 	}
-	return s.client.Patch(ctx, handle, patch, map[string]string{useCaseNameVar: string(useCaseName)}, opts...)
+	return s.client.Patch[iothub.LayeredDeployment](ctx, handle, patch, map[string]string{useCaseNameVar: string(useCaseName)}, opts...)
 }
 
 // ListUseCaseEntries returns every discovered directory entry under
