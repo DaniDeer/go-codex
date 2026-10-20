@@ -71,8 +71,10 @@ client := rest.NewClient()
 client.Attach(nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: hc, BaseURL: baseURL}))
 client.RegisterRoute(getOrderRoute) // warm the registry — getOrderRoute is never called directly
 
-respAny, err := client.Call(ctx, createOrderRoute, CreateOrderReq{Item: "Widget"})
-order := respAny.(Order) // the TARGET route's response type, decoded transparently
+order, err := client.Call(ctx, createOrderRoute, CreateOrderReq{Item: "Widget"})
+// order is already the TARGET route's response type (Order), decoded
+// transparently — Client.Call is a Go 1.27 generic method, no manual
+// assertion needed.
 ```
 
 On a 3xx:

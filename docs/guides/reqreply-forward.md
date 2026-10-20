@@ -52,11 +52,12 @@ client.Attach(mqtt5.NewClientTransport(mqtt5.ClientTransportOptions{Client: mqtt
 // explicitly so Call(legacyAddRoute, ...) can resolve it.
 client.RegisterRoute(sumRoute)
 
-respAny, err := client.Call(ctx, legacyAddRoute, LegacyAddReq{X: 3, Y: 4})
+sum, err := client.Call(ctx, legacyAddRoute, LegacyAddReq{X: 3, Y: 4})
 if err != nil {
     log.Fatal(err)
 }
-sum := respAny.(SumResp) // sumRoute's own response type
+// sum is already sumRoute's own response type (SumResp) — Client.Call
+// is a Go 1.27 generic method, no manual assertion needed.
 ```
 
 If `sumRoute` IS also called directly elsewhere in the same program, skip step 4's `RegisterRoute` call entirely — the first `client.Call(ctx, sumRoute, ...)` auto-populates the registry.

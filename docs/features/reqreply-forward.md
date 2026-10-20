@@ -60,8 +60,10 @@ client.Attach(mqtt5.NewClientTransport(mqtt5.ClientTransportOptions{Client: mqtt
 // explicitly so Call(legacyAddRoute, ...) can resolve it.
 client.RegisterRoute(sumRoute)
 
-respAny, err := client.Call(ctx, legacyAddRoute, LegacyAddReq{X: 3, Y: 4})
-sum := respAny.(SumResp) // sumRoute's own response type, decoded transparently
+sum, err := client.Call(ctx, legacyAddRoute, LegacyAddReq{X: 3, Y: 4})
+// sum is already sumRoute's own response type (SumResp), decoded
+// transparently — Client.Call is a Go 1.27 generic method, no manual
+// assertion needed.
 ```
 
 On a recognized Forward reply, `Client.Call`'s CENTRALIZED chain-following loop (not the adapter):

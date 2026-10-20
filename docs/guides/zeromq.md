@@ -324,12 +324,10 @@ client := reqreply.NewClient()
 if err := client.Attach(zeromq.NewClientTransport(zeromq.ClientTransportOptions{Sockets: map[string]zeromq.FramedSocket{"compute/add": WrapSocket(req)}})); err != nil {
     log.Fatal(err)
 }
-respAny, err := client.Call(ctx, ComputeRoute, ComputeReq{X: 3, Y: 4})
-resp := respAny.(ComputeResp)
+resp, err := client.Call(ctx, ComputeRoute, ComputeReq{X: 3, Y: 4})
 
 // Async: CallAsync returns a *reqreply.Future[ComputeResp] immediately.
-futureAny, err := client.CallAsync(ctx, ComputeRoute, ComputeReq{X: 10, Y: 20})
-future := futureAny.(*reqreply.Future[ComputeResp])
+future, err := client.CallAsync(ctx, ComputeRoute, ComputeReq{X: 10, Y: 20})
 resp2, err := future.Wait(ctx)
 
 // AsyncAPI 3.0 spec, derived from the route declarations already made.
@@ -390,11 +388,10 @@ clientTransport := zeromq.NewClientTransport(zeromq.ClientTransportOptions{
 if err := client.Attach(clientTransport); err != nil {
     log.Fatal(err)
 }
-respAny, err := client.Call(ctx, ComputeRoute, ComputeReq{X: 3, Y: 4})
+resp, err := client.Call(ctx, ComputeRoute, ComputeReq{X: 3, Y: 4})
 if err != nil {
     log.Fatal(err)
 }
-resp := respAny.(ComputeResp)
 log.Printf("sum: %d", resp.Sum)
 ```
 
@@ -516,7 +513,7 @@ client := reqreply.NewClient()
 if err := client.Attach(zeromq.NewDealerClientTransport(zeromq.DealerClientTransportOptions{Sockets: map[string]zeromq.FramedSocket{"compute/router-add": WrapSocket(dealer)}})); err != nil {
     log.Fatal(err)
 }
-respAny, err := client.Call(ctx, RouterComputeRoute, ComputeReq{X: 3, Y: 4})
+resp, err := client.Call(ctx, RouterComputeRoute, ComputeReq{X: 3, Y: 4})
 ```
 
 ### Concurrent dispatch (ROUTER/DEALER)
@@ -556,7 +553,7 @@ for _, req := range reqs {
     wg.Add(1)
     go func(req ComputeReq) {
         defer wg.Done()
-        respAny, err := client.Call(ctx, RouterComputeRoute, req)
+        resp, err := client.Call(ctx, RouterComputeRoute, req)
         // ...
     }(req)
 }

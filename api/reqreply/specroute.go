@@ -104,8 +104,10 @@ func WithSpecMiddleware(mw RouteMiddleware, fn any) SpecOpt {
 //	}
 //	b.Attach(mqtt5transport.NewServerTransport(...))
 //
-//	// A caller fetches the spec via a normal Call, reusing specHandle:
-//	respAny, err := client.Call(ctx, specHandle, reqreply.SpecReq{Format: "json"})
+//	// A caller fetches the spec via a normal Call, reusing specHandle —
+//	// body is already []byte, no manual assertion needed (Client.Call
+//	// is a Go 1.27 generic method):
+//	body, err := client.Call(ctx, specHandle, reqreply.SpecReq{Format: "json"})
 func (b *Server) ServeSpec(topic string, opts ...SpecOpt) (*RouteHandle[SpecReq, []byte], error) {
 	if topic == "" {
 		return nil, SpecTopicRequiredError{}

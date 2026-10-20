@@ -72,9 +72,9 @@ vars := map[string]string{"id": "123"}
 // Create
 err := client.Create(ctx, notes.WithCreate(file.Create{}), Note{Title: "Hi", Body: "..."}, vars)
 
-// Read
-respAny, err := client.Read(ctx, notes.WithRead(file.Read{}), vars)
-note := respAny.(Note)
+// Read — note is already the declared T (Note); Client.Read is a Go
+// 1.27 generic method, no manual assertion needed.
+note, err := client.Read(ctx, notes.WithRead(file.Read{}), vars)
 
 // Delete
 existed, err := client.Delete(ctx, notes.WithDelete(file.Delete{}), vars)
@@ -189,16 +189,18 @@ template) — no separate declaration needed; the SAME `PathParam`/
 `MergedPathParam` you already use for `Read`/`Create` just works for
 `List` too.
 
-`Client.List`'s boxed return value is `[]file.ListResult[T]` — one
-result PER DISCOVERED ENTRY, success or failure, never a plain `[]T`:
+`Client.List[T any](...) ([]file.ListResult[T], error)` is a Go 1.27
+generic method — its return value is `[]file.ListResult[T]` directly, no
+manual assertion needed — one result PER DISCOVERED ENTRY, success or
+failure, never a plain `[]T`:
 
 ```go
-gotAny, err := client.List(ctx, notes.WithList(file.List{}), nil)
+got, err := client.List(ctx, notes.WithList(file.List{}), nil)
 if err != nil {
     // A WALK-LEVEL failure (the parent directory itself can't be
     // read) — there's no entry to attach this to.
 }
-for _, r := range gotAny.([]file.ListResult[Note]) {
+for _, r := range got {
     if r.Err != nil {
         // THIS entry's own failure (decode error, merge-field
         // mismatch, or a declared BoundListMiddleware's Security
@@ -214,7 +216,7 @@ true}` to descend into every subdirectory under the resource's parent
 directory, not just its immediate children:
 
 ```go
-gotAny, err := client.List(ctx, notes.WithList(file.List{}), nil,
+got, err := client.List(ctx, notes.WithList(file.List{}), nil,
     file.ListOptions{Recursive: true})
 ```
 
@@ -318,7 +320,11 @@ entry, exists, err := client.Exists(ctx, notes.WithExists(file.Exists{}), vars)
 // ... entry.ETag is the note's current content hash ...
 
 ifMatch := entry.ETag
-err = client.Patch(ctx, patcher, patch, vars, file.WriteOptions{IfMatch: &ifMatch})
+// Patch[T, P any] needs explicit type arguments — unlike Read/Create/List,
+// its dispatcher interface never mentions T in its own method signature,
+// so Go cannot infer it (Go 1.27 generic method, see
+// docs/roadmap/go127-generic-methods.md's Workstream A).
+err = client.Patch[Note, NotePatch](ctx, patcher, patch, vars, file.WriteOptions{IfMatch: &ifMatch})
 var mismatch file.ConditionalWriteMismatchError
 if errors.As(err, &mismatch) {
     // someone else changed the note first — reread and retry

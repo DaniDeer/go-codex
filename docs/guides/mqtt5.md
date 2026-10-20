@@ -258,13 +258,11 @@ reqreplyClient := reqreply.NewClient()
 if err := reqreplyClient.Attach(mqtt5adapter.NewClientTransport(mqtt5adapter.ClientTransportOptions{Client: client, Router: router})); err != nil {
     log.Fatal(err)
 }
-respAny, err := reqreplyClient.Call(ctx, ComputeRoute, ComputeReq{X: 3, Y: 4})
-resp := respAny.(ComputeResp)
+resp, err := reqreplyClient.Call(ctx, ComputeRoute, ComputeReq{X: 3, Y: 4})
 
 // Async: CallAsync returns a *reqreply.Future[ComputeResp] immediately;
 // resolve it later, from a different call site if needed.
-futureAny, err := reqreplyClient.CallAsync(ctx, ComputeRoute, ComputeReq{X: 10, Y: 20})
-future := futureAny.(*reqreply.Future[ComputeResp])
+future, err := reqreplyClient.CallAsync(ctx, ComputeRoute, ComputeReq{X: 10, Y: 20})
 // ... do other independent work ...
 resp2, err := future.Wait(ctx)
 ```
@@ -315,19 +313,18 @@ if err := reqreplyClient.Attach(transport); err != nil {
 }
 
 // Static topic — no template vars involved.
-respAny, err := reqreplyClient.Call(ctx, ComputeRoute, ComputeReq{X: 3, Y: 4})
+resp, err := reqreplyClient.Call(ctx, ComputeRoute, ComputeReq{X: 3, Y: 4})
 if err != nil {
     var reqErr mqtt5adapter.CallError
     if errors.As(err, &reqErr) && reqErr.Kind == mqtt5adapter.KindTimeout {
         log.Warn("request timed out")
     }
 }
-resp := respAny.(ComputeResp)
 
 // Template topic — TenantComputeRoute's NewTopicParam merge field derives
 // the topic from the request struct automatically; no separate vars
 // argument needed. Setting req.TenantID is enough:
-respAny, err = reqreplyClient.Call(ctx, TenantComputeRoute, ComputeReq{X: 3, Y: 4, TenantID: "acme"})
+resp, err = reqreplyClient.Call(ctx, TenantComputeRoute, ComputeReq{X: 3, Y: 4, TenantID: "acme"})
 // On validation failure: CallError wrapping reqreply.RouteParamError
 // or reqreply.MissingRouteParamError — both errors.As-navigable.
 ```

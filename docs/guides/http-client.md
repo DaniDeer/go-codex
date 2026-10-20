@@ -280,22 +280,24 @@ once an HTTP connection is attached via `Client.Attach(nethttp.NewClientTranspor
 ```go
 client := rest.NewClient()
 if err := client.Attach(nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClient: httpClient, BaseURL: baseURL})); err != nil { ... }
-respAny, err := client.Call(ctx, getUserRoute, GetUserReq{ID: "f47ac10b"})
-resp := respAny.(GetUserResp) // type-assert the result
+resp, err := client.Call(ctx, getUserRoute, GetUserReq{ID: "f47ac10b"})
 ```
 
-Since `Client.Call` is an ordinary Go method (not generic — Go forbids a method from introducing
-its own type parameters), `route`/`req` are passed as `any` and `Req`/`Resp` are recovered
-internally via reflection (inside the `clientTransport` `NewClientTransport` returns, wrapping an unexported,
-internal `caller`/`call[Req,Resp]` — the package's former public `Caller`/`NewCaller`/
-`Call[Req,Resp]`); a mismatch surfaces as `rest.TransportTypeMismatchError`
-at CALL time, not a compile error. `Client.Call` is FULL-FEATURED: path/query/header/
+`Client.Call[Req, Resp any](ctx, route, req Req, opts ...ClientCallOptions) (Resp, error)` is a
+real Go 1.27 generic method (see `docs/roadmap/go127-generic-methods.md`): `route` accepts EITHER
+a bare `getUserRoute` (`rest.Route[Req,Resp]`) OR an already-registered `*rest.RouteHandle[Req,Resp]`
+— both satisfy an additive, unexported marker interface that lets `Req`/`Resp` be inferred from
+`route`/`req` with no explicit type argument needed. The underlying `ClientTransport.Call` an
+adapter implements is still `any`-typed internally (interface methods can never be generic), so a
+genuine adapter-level mismatch still surfaces as `rest.TransportTypeMismatchError`, but a
+caller passing the wrong route/req shape to `Client.Call` itself is now a compile error, not a
+runtime one. `Client.Call` is FULL-FEATURED: path/query/header/
 cookie params, security/credential `ClientMW`, per-call format override
 (`ClientCallOptions.RequestFormats`/`ResponseFormats`), and error-pattern decoding are all
-supported — there is no remaining "v1 scope" limitation. `rest.CallWithTransport` (the lower-level,
-handle-based primitive built directly on the SAME `ClientTransport` `Client.Attach` wraps) remains fully featured and
-unaffected; use it directly for anything beyond `Client.Call`'s `route`/`req`-as-`any` shape
-(e.g. a pre-built `*rest.RouteHandle` with no `rest.Route` value, or finer per-call control
-`ClientCallOptions` doesn't expose). `Client.Attach` is exclusive —
+supported — there is no remaining "v1 scope" limitation. `rest.CallWithTransport[Req,Resp]` (the
+lower-level, handle-based primitive built directly on the SAME `ClientTransport` `Client.Attach`
+wraps) remains fully featured and unaffected; use it directly for anything beyond `Client.Call`'s
+dual-accept shape (e.g. finer per-call control `ClientCallOptions` doesn't expose). `Client.Attach`
+is exclusive —
 a second `Attach` call returns `rest.ClientTransportAlreadyAttachedError`. See
 `docs/design/d-0001-rest-middleware-workflow-simplification.md`'s Addendum 5 for the full design.

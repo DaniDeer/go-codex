@@ -194,7 +194,7 @@ reqreplyClient.Attach(mqtt5.NewClientTransport(mqtt5.ClientTransportOptions{
     Client: client, Router: router,
     Call:   mqtt5.CallOptions{Capabilities: []mqtt5.Capability{mqtt5.QoSAtLeastOnce, mqtt5.Retained(true)}},
 }))
-respAny, err := reqreplyClient.Call(ctx, route, req)
+resp, err := reqreplyClient.Call(ctx, route, req)
 ```
 
 Coverage is checked once at `Serve`/`Attach` setup (server side

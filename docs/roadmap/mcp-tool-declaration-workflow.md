@@ -291,8 +291,10 @@ RESOLUTION concern, a structurally different axis mcprest's current API has no s
 `api/mcp.Tool` stays hand-declared exactly as today (own Req/Resp shape, own `ToolMeta`,
 free to differ from the domain Route/Resource's wire shape for LLM-friendliness) — but its
 BACKING HANDLER reuses an ALREADY-ATTACHED `*rest.Client` directly, confirmed via
-`rest.ClientTransport.Call(ctx, route any, req any, opts...) (any, error)` (the interface
-`*rest.Client` implements internally):
+`rest.Client.Call[Req, Resp any](ctx, route, req Req, opts...) (Resp, error)` — a Go 1.27
+generic method (see `docs/roadmap/go127-generic-methods.md`'s Workstream B); the underlying
+`rest.ClientTransport.Call(ctx, route any, req any, opts...) (any, error)` interface method
+`*rest.Client` wraps internally stays `any`-typed (adapter-side reflection dispatch, unchanged):
 
 ```go
 // ClientToolHandler — the STATIC case: client is an ALREADY-ATTACHED *rest.Client (the
@@ -306,16 +308,7 @@ func ClientToolHandler[Req, Resp any](
     client *rest.Client, handle *rest.RouteHandle[Req, Resp],
 ) mcpgo.HandlerFunc[Req, Resp] {
     return func(ctx context.Context, req Req) (Resp, error) {
-        var zero Resp
-        respAny, err := client.Call(ctx, handle, req)
-        if err != nil {
-            return zero, err
-        }
-        resp, ok := respAny.(Resp)
-        if !ok {
-            return zero, rest.TransportTypeMismatchError{Expected: fmt.Sprintf("%T", zero), Got: fmt.Sprintf("%T", respAny)}
-        }
-        return resp, nil
+        return client.Call(ctx, handle, req)
     }
 }
 
@@ -338,13 +331,9 @@ func DynamicClientToolHandler[ToolIn, ToolOut, Req, Resp any](
         if err != nil {
             return zero, ToolRequestMapError{Err: err}
         }
-        respAny, err := client.Call(ctx, handle, req)
+        resp, err := client.Call(ctx, handle, req)
         if err != nil {
             return zero, err
-        }
-        resp, ok := respAny.(Resp)
-        if !ok {
-            return zero, rest.TransportTypeMismatchError{Expected: fmt.Sprintf("%T", *new(Resp)), Got: fmt.Sprintf("%T", respAny)}
         }
         out, err := fromResp(resp)
         if err != nil {

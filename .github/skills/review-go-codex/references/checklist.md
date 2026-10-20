@@ -251,7 +251,8 @@ All must be `errors.As`-navigable and implement `slog.LogValuer` (none wrap an i
 
 The public generic `nethttp.Call[Req,Resp]` free function was unexported (now internal `call`)
 by Decision 6 of `docs/design/d-0002-pubsub-workflow-simplification.md` — the modern public surface
-is `rest.Client.Call(ctx, route, req) (any, error)` (via `rest.NewClient()` + `Client.Attach(nethttp.NewClientTransport(...))`,
+is `rest.Client.Call[Req, Resp any](ctx, route callRouteArg[Req, Resp], req Req, opts ...rest.ClientCallOptions) (Resp, error)`
+(Go 1.27 generic method, see `docs/roadmap/go127-generic-methods.md`'s Workstream B) (via `rest.NewClient()` + `Client.Attach(nethttp.NewClientTransport(...))`,
 the preferred workflow) and `rest.CallWithTransport[Req,Resp]` (the handle-based escape hatch for
 callers needing per-call `rest.ClientCallOptions` — REPLACES the former adapter-owned
 `nethttp.CallWithHandle`, deleted as part of `docs/design/d-0006-protocol-native-capabilities.md`'s

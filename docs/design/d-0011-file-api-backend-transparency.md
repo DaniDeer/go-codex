@@ -122,31 +122,39 @@ func NewClient(opts ...ClientOpt) *Client
 // every dispatch method below returns NoBackendAttachedError before it.
 func (c *Client) Attach(backend Backend) error
 
-// Every dispatch method is `any`-typed, dual-accept: the bare role
-// builder (common case, zero ceremony) OR an explicitly pre-built
-// *XxxHandle[T] (Router-grouped/middleware-composed case — path
-// resolution happens ONCE at .Handle() time, never re-derived per
-// call). Mirrors reqreply.Client.Call's own confirmed dual-acceptance.
-func (c *Client) Read(ctx context.Context, r any, vars map[string]string) (any, error)
-func (c *Client) Create(ctx context.Context, cr any, val any, vars map[string]string, opts ...WriteOptions) (createdDirs []string, err error)
-func (c *Client) Patch(ctx context.Context, p any, patch any, vars map[string]string, opts ...WriteOptions) error
-func (c *Client) Delete(ctx context.Context, d any, vars map[string]string, opts ...DeleteOptions) (existed bool, err error)
-func (c *Client) List(ctx context.Context, l any, vars map[string]string, opts ...ListOptions) (any, error) // any is []ListResult[T]
-func (c *Client) Exists(ctx context.Context, e any, vars map[string]string) (Entry, bool, error)
-func (c *Client) Copy(ctx context.Context, cp any, srcVars, dstVars map[string]string) error
-func (c *Client) Move(ctx context.Context, mv any, srcVars, dstVars map[string]string) error
-func (c *Client) Mkdir(ctx context.Context, m any, vars map[string]string, opts ...MkdirOptions) (created bool, err error)
-func (c *Client) BatchDelete(ctx context.Context, bd any, varsList []map[string]string) ([]BatchDeleteResult, error)
-func (c *Client) OpenRead(ctx context.Context, sr any, vars map[string]string, opts ...StreamReadOptions) (io.ReadCloser, error)
-func (c *Client) OpenWrite(ctx context.Context, sw any, vars map[string]string, opts ...WriteOptions) (io.WriteCloser, error)
+// At this design's own implementation time, every dispatch method was
+// `any`-typed, dual-accept: the bare role builder (common case, zero
+// ceremony) OR an explicitly pre-built *XxxHandle[T] (Router-grouped/
+// middleware-composed case — path resolution happens ONCE at .Handle()
+// time, never re-derived per call). Mirrors reqreply.Client.Call's own
+// confirmed dual-acceptance.
+//
+// UPDATE: Go 1.27 shipped generic methods after this design's own
+// implementation rounds — all 14 methods below were retrofitted by
+// docs/roadmap/go127-generic-methods.md's Workstream A. 4 (Read/Create/
+// Patch/List) are real generic methods; the other 10 needed only a
+// concrete non-generic dispatcher-interface parameter instead of `any`
+// (their own interface method never mentioned T). The signatures below
+// are the SHIPPED, current ones:
+func (c *Client) Read[T any](ctx context.Context, r readDispatcher[T], vars map[string]string) (T, error)
+func (c *Client) Create[T any](ctx context.Context, cr createDispatcher[T], val T, vars map[string]string, opts ...WriteOptions) (createdDirs []string, err error)
+func (c *Client) Patch[T, P any](ctx context.Context, p patchDispatcher[T, P], patch P, vars map[string]string, opts ...WriteOptions) error
+func (c *Client) Delete(ctx context.Context, d deleteDispatcher, vars map[string]string, opts ...DeleteOptions) (existed bool, err error)
+func (c *Client) List[T any](ctx context.Context, l listDispatcher[T], vars map[string]string, opts ...ListOptions) ([]ListResult[T], error)
+func (c *Client) Exists(ctx context.Context, e existsDispatcher, vars map[string]string) (Entry, bool, error)
+func (c *Client) Copy(ctx context.Context, cp copyDispatcher, srcVars, dstVars map[string]string) error
+func (c *Client) Move(ctx context.Context, mv moveDispatcher, srcVars, dstVars map[string]string) error
+func (c *Client) Mkdir(ctx context.Context, m mkdirDispatcher, vars map[string]string, opts ...MkdirOptions) (created bool, err error)
+func (c *Client) BatchDelete(ctx context.Context, bd batchDeleteDispatcher, varsList []map[string]string) ([]BatchDeleteResult, error)
+func (c *Client) OpenRead(ctx context.Context, sr openReadDispatcher, vars map[string]string, opts ...StreamReadOptions) (io.ReadCloser, error)
+func (c *Client) OpenWrite(ctx context.Context, sw openWriteDispatcher, vars map[string]string, opts ...WriteOptions) (io.WriteCloser, error)
 ```
 
-A caller does `respAny.(T)`/`respAny.([]ListResult[T])` — the SAME
-plain, manual type-assertion idiom `reqreply.Client.Call` established
-(Go generics can't add a type parameter to a method, so `Client`'s own
-methods stay `any`-typed and the caller supplies the assertion; see the
-"Future work" section for how Go 1.27's generic methods may revisit
-this).
+A caller gets back `T`/`[]ListResult[T]` directly for `Read`/`List` — no
+manual type assertion needed; `Patch[T, P]` needs explicit `[T, P]` type
+arguments (its dispatcher interface never mentions `T`, so Go cannot
+infer it). See the "Future work" section below — this item is now
+RESOLVED.
 
 Copy/Move take TWO var sets (`srcVars`/`dstVars`) rather than a second
 declared destination template — the SAME declared path template,
@@ -740,10 +748,12 @@ above.
 - Whether `Client.Read`/`List` should expose the ETag computed
   in-flight on the decoded `T` (deliberately deferred during
   Conditional writes' own design).
-- Go 1.27 shipped generic methods after this design's own
+- **RESOLVED**: Go 1.27 shipped generic methods after this design's own
   implementation rounds — `Client`'s `any`-typed dispatch methods
   (along with `events.Client.Publish`/`Subscribe` and
   `reqreply.Client.Call`) were all `any`-typed specifically because
-  methods could not previously introduce their own type parameters;
-  revisiting this is tracked as its own, separate roadmap item
-  (`docs/roadmap/go127-generic-methods.md`), not part of this design.
+  methods could not previously introduce their own type parameters.
+  This was tracked as its own, separate roadmap item
+  (`docs/roadmap/go127-generic-methods.md`) and has since been fully
+  implemented and shipped (Tier 1, Workstream A — this package's own
+  retrofit — and Workstream B, covering `events`/`reqreply`/`rest`).

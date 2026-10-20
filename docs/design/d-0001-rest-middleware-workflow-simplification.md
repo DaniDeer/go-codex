@@ -3030,9 +3030,15 @@ via code — chi is server-routing-only, no `Caller`/`Call` exists in
 ```go
 client := rest.NewClient()
 _ = nethttp.Attach(client, httpClient, baseURL)
-respAny, err := client.Call(ctx, getUserRoute, req)
-resp := respAny.(GetUserResp)
+resp, err := client.Call(ctx, getUserRoute, req)
 ```
+
+(`Client.Call` was retrofitted into a real Go 1.27 generic method —
+`resp` is already `GetUserResp`, no manual assertion needed — by
+`docs/roadmap/go127-generic-methods.md`'s Workstream B, after this
+decision shipped; the dual-mode `Route`/`*RouteHandle` acceptance and
+the adapter-level `ClientTransport` reflection dispatch this section
+describes are otherwise unchanged.)
 
 **Both `Server.Attach`/`.Serve(ctx)` and today's existing wire-only
 dispatch were KEPT — this was purely additive, zero regression** at the

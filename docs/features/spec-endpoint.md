@@ -47,8 +47,10 @@ if err != nil {
 }
 b.Attach(mqtt5transport.NewServerTransport(...))
 
-// A caller fetches the spec via a normal Call, reusing specHandle:
-respAny, err := client.Call(ctx, specHandle, reqreply.SpecReq{Format: "json"})
+// A caller fetches the spec via a normal Call, reusing specHandle —
+// body is already []byte (specHandle's declared Resp type), no manual
+// assertion needed (Client.Call is a Go 1.27 generic method):
+body, err := client.Call(ctx, specHandle, reqreply.SpecReq{Format: "json"})
 ```
 
 reqreply has no `Accept`-header equivalent, so format selection travels in

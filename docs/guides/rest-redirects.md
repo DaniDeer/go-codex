@@ -60,11 +60,12 @@ client.Attach(nethttp.NewClientTransport(nethttp.ClientTransportOptions{HTTPClie
 // registry explicitly so Call(createOrderRoute, ...) can resolve it.
 client.RegisterRoute(getOrderRoute)
 
-respAny, err := client.Call(ctx, createOrderRoute, CreateOrderReq{Item: "Widget"})
+order, err := client.Call(ctx, createOrderRoute, CreateOrderReq{Item: "Widget"})
 if err != nil {
     log.Fatal(err)
 }
-order := respAny.(Order) // getOrderRoute's own response type
+// order is already getOrderRoute's own response type (Order) — Client.Call
+// is a Go 1.27 generic method, no manual assertion needed.
 ```
 
 If `getOrderRoute` IS also called directly elsewhere in the same program, skip step 4's `RegisterRoute` call entirely — the first `client.Call(ctx, getOrderRoute, ...)` auto-populates the registry.
