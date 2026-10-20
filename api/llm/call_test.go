@@ -73,8 +73,10 @@ func TestCall_Register_HappyPath(t *testing.T) {
 func TestCall_Register_EmptyName_ReturnsError(t *testing.T) {
 	b := llm.NewBuilder(llm.Info{Name: "test", Version: "1.0.0"})
 	call := llm.NewCall[article, summary]("", articleCodec, summaryCodec)
-	if _, err := call.Register(b); err == nil {
-		t.Fatal("expected error for empty call name, got nil")
+	_, err := call.Register(b)
+	var ene llm.EmptyNameError
+	if !errors.As(err, &ene) {
+		t.Fatalf("expected EmptyNameError, got %v (%T)", err, err)
 	}
 }
 
@@ -86,8 +88,72 @@ func TestCall_Register_DuplicateName_ReturnsError(t *testing.T) {
 	if _, err := call1.Register(b); err != nil {
 		t.Fatalf("first Register: unexpected error: %v", err)
 	}
-	if _, err := call2.Register(b); err == nil {
-		t.Fatal("expected error for duplicate call name, got nil")
+	_, err := call2.Register(b)
+	var dne llm.DuplicateNameError
+	if !errors.As(err, &dne) {
+		t.Fatalf("expected DuplicateNameError, got %v (%T)", err, err)
+	}
+	if dne.Name != "summarize" {
+		t.Errorf("Name = %q, want %q", dne.Name, "summarize")
+	}
+}
+
+// TestCall_Register_ConflictingSystemPrompt_ReturnsError is a regression
+// test for a REAL, confirmed bug (deep-dive-bug-hunt, api/llm concepts
+// round): declaring BOTH SystemPrompt and SystemPromptFile on the same
+// Call previously silently let SystemPromptFile win (applied after
+// SystemPrompt in build()'s resolution order), discarding the
+// SystemPrompt text with zero error or warning — the dead, write-only
+// cb.hasSystemPrompt field (set but never read) was the tell, mirroring
+// api/mcp's Resource.Register duplicate-registration bug's own
+// unread-map discovery pattern.
+func TestCall_Register_ConflictingSystemPrompt_ReturnsError(t *testing.T) {
+	f, err := os.CreateTemp("", "prompt-*.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.WriteString("from file"); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	b := llm.NewBuilder(llm.Info{Name: "test", Version: "1.0.0"})
+	call := llm.NewCall[article, summary]("conflicting", articleCodec, summaryCodec,
+		llm.SystemPrompt("from text"),
+		llm.SystemPromptFile(f.Name()),
+	)
+	_, err = call.Register(b)
+	var cspe llm.ConflictingSystemPromptError
+	if !errors.As(err, &cspe) {
+		t.Fatalf("expected ConflictingSystemPromptError, got %v (%T)", err, err)
+	}
+	if cspe.Name != "conflicting" {
+		t.Errorf("Name = %q, want %q", cspe.Name, "conflicting")
+	}
+}
+
+// TestCall_Register_UserMessageTypeMismatch_ReturnsStructuredError is a
+// regression/coverage test (deep-dive-bug-hunt, api/llm foundational
+// round): UserMessageTypeMismatchError is REACHABLE in practice (unlike
+// some other packages' defensive-only type-assertion checks) — nothing
+// at compile time stops a UserMessage[WrongReq] option from being
+// attached to a Call[Req,Resp] with a DIFFERENT Req, since UserMessageOpt
+// is its own separate generic type. Previously returned a bare,
+// unstructured error with zero test coverage.
+func TestCall_Register_UserMessageTypeMismatch_ReturnsStructuredError(t *testing.T) {
+	type wrongReqType struct{ X int }
+	b := llm.NewBuilder(llm.Info{Name: "test", Version: "1.0.0"})
+	call := llm.NewCall[article, summary]("mismatch", articleCodec, summaryCodec,
+		llm.UserMessage[wrongReqType](func(wrongReqType) (string, error) { return "", nil }),
+	)
+	_, err := call.Register(b)
+	var umte llm.UserMessageTypeMismatchError
+	if !errors.As(err, &umte) {
+		t.Fatalf("expected UserMessageTypeMismatchError, got %v (%T)", err, err)
+	}
+	if umte.Name != "mismatch" {
+		t.Errorf("Name = %q, want %q", umte.Name, "mismatch")
 	}
 }
 

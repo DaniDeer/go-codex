@@ -83,18 +83,29 @@ type chatResponse struct {
 // complete performs the full completion round trip for one request,
 // including the retry-on-invalid-completion loop. It never touches
 // gstream/ports directly — binding.go wraps this per stream item.
+//
+// Named returns (result, err) let the deferred EndSpan below see
+// whichever error (if any) the function ultimately returns, mirroring
+// [adapters/nethttp]'s/[adapters/mcpgo]'s own identical TraceObserver
+// wiring — fixed via deep-dive-bug-hunt's api/llm concepts round: this
+// span was previously missing entirely, the only one of go-codex's
+// client-dispatch families without it.
 func complete[Req, Resp any](
 	ctx context.Context,
 	client *http.Client,
 	handle *llm.CallHandle[Req, Resp],
 	req Req,
 	opts CallAdapterOptions,
-) (Resp, error) {
+) (result Resp, err error) {
 	var zero Resp
 
 	obs := opts.Observer
 	if obs == nil {
 		obs = stats.ObserverFromContext(ctx)
+	}
+	if to, ok := obs.(stats.TraceObserver); ok {
+		ctx = to.StartSpan(ctx, "llm.call", handle.Name)
+		defer func() { to.EndSpan(ctx, err) }()
 	}
 
 	baseURL := opts.BaseURL

@@ -4,6 +4,151 @@ Do not re-report any of these findings. They have been implemented and tested.
 
 ---
 
+## Round 249 (`deep-dive-bug-hunt` Phase B — mandatory consolidated design-doc re-review of Rounds 246-248, the FIRST-ever `api/llm` deep-dive pass — REAL GAP FOUND AND FIXED: `docs/design/d-0010-adapter-integration-architecture.md`'s own per-adapter inventory tables went stale the moment the `TraceObserver` fix shipped)
+
+Phase B re-review of `api/llm`'s first-ever deep-dive pass (246 foundational, 247 concepts, 248
+single-adapter) against the governing design docs mentioning `api/llm`/`adapters/openai`.
+
+**Verdict table:**
+
+| Round | Doc(s) cross-checked | Aligned? |
+|---|---|---|
+| 246 (`EmptyNameError`/`DuplicateNameError`/`SchemaRenderError`/`UserMessageTypeMismatchError`) | None govern this (pure builder-internals structured-errors convention, no design doc specifies it) | N/A |
+| 247 (`ConflictingSystemPromptError`, `TraceObserver` span) | **`docs/design/d-0010-adapter-integration-architecture.md`'s `adapters/openai` inventory tables (2 separate tables: the cross-adapter capability table, and the per-adapter entry-point/observer-reporting table)** | **MISALIGNED — found and fixed in this Phase B pass** (both tables claimed the OLD, pre-fix observer-call-site inventory as current fact) |
+| 248 (single-adapter check, clean) | `docs/design/d-0010-adapter-integration-architecture.md`'s general `ports.IOAdapter` contract discussion | Aligned — no misalignment found |
+
+**REAL GAP FOUND AND FIXED** (a stale historical-fact table, not a code/design behavior
+misalignment — a documentation-clarity fix per this skill's own Phase B disposition, since the
+CODE change (Round 247's `TraceObserver` fix) is correct and the design doc's claim was simply
+overtaken by it): `d-0010`'s cross-adapter capability table and its dedicated `adapters/openai`
+entry-point-inventory table BOTH explicitly enumerated "`obs.RecordRequest`, 9 sites... no
+`TraceObserver`" as a CURRENT FACT about the codebase — true when `d-0010` was written, false the
+moment Round 247 shipped. Updated BOTH table cells to additively note the new span (keeping the
+original 9+1 inventory intact, since those call sites are genuinely unchanged) rather than
+silently overwriting the historical count. Confirmed `d-0006`'s separate `adapters/openai=12`
+`obs.Record*`-call-site count is UNAFFECTED (StartSpan/EndSpan are not `Record*` methods, so that
+specific count stays accurate) — re-read its own counting criterion precisely before concluding
+this, rather than assuming adjacent code may have changed it.
+
+Verified: `go build ./...`, `go test ./api/llm/... ./adapters/openai/...` all clean (no `.go`
+changes this round — documentation-only).
+
+This completes `api/llm`'s FIRST-EVER deep-dive-bug-hunt pass: 3 concept rounds + this Phase B
+pass, 3 real confirmed bugs found and fixed (unstructured-and-untested `UserMessage` type
+mismatch, silent conflicting-system-prompt footgun, completely-missing `TraceObserver` span), 1
+concept round clean (single-adapter completeness), all with live failing-test reproduction before
+any fix.
+
+---
+
+## Round 248 (`deep-dive-bug-hunt` applied to `adapters/openai` — single-adapter completeness check — CLEAN)
+
+`api/llm` deep-dive pass, round 3 of N (single-adapter check — per this skill's own gotcha,
+`api/llm` has only ONE real adapter, `adapters/openai`, so this round checks "does the one adapter
+correctly implement every required interface method/optional extension," not N-way parity).
+
+Confirmed `ports.IOAdapter[Req,Resp]` has exactly 2 methods (`Transform`/`AdapterName`) and NO
+optional extension-interface family (unlike `api/file.Backend`'s rich `CopyingBackend`/
+`BatchDeletingBackend`/etc. set) — `api/llm` has only one verb (`Call`), so there is no analogous
+surface for a hypothetical second adapter to also need. `callAdapter[Req,Resp]` implements both
+methods correctly (`AdapterName()` returns the conventional `"openai.CallAdapter"` string).
+
+Confirmed `adapters/openai/portstest_conformance_test.go` already exists (a `ports`-family
+"API-defined conformance test suite" instance, D-0010) and its `portstest.AssertIOAdapterRoundTrip`
+assertion DOES check exact round-tripped VALUE equality (`slices.Equal(vals, WantReadings)`), not
+just "no error" — confirmed via direct read, not a full mutation-test campaign (that assertion is
+`ports`-family shared infrastructure also used by `adapters/sql`, not `api/llm`-specific — a full
+audit of it belongs to a future `ports`-focused deep-dive round, out of scope here).
+
+All 6 of `adapters/openai`'s own error types (`RequestBuildError`/`RequestError`/
+`UnexpectedStatusError`/`ResponseBodyError`/`NoChoicesError`/`RetriesExhaustedError`) confirmed to
+have `Error()`/`LogValue()`, plus `Unwrap()` on the 3 that actually wrap an inner error — consistent
+with every other package's convention, no gap.
+
+No code change this round — confirmed clean.
+
+---
+
+## Round 247 (`deep-dive-bug-hunt` applied to `api/llm`/`adapters/openai` — `SystemPrompt`/`SystemPromptFile`/`UserMessage`/`IncludeRequestSchema` concepts, full path declare → `CallHandle` → `adapters/openai.complete` — 2 REAL BUGS FOUND AND FIXED: a silent conflicting-declaration footgun, and a completely-missing `TraceObserver` span)
+
+`api/llm` deep-dive pass, round 2 of N. Traced `SystemPrompt`/`SystemPromptFile`/`UserMessage[Req]`/
+`IncludeRequestSchema`/`CallMeta` from `call.go`'s option types through `Call.build()`'s
+resolution logic to `adapters/openai.complete` (the ONE real dispatch path — confirmed via
+`binding.go`'s `CallAdapter.Transform`, the sole caller).
+
+**REAL BUG #1 FOUND AND FIXED (reproduced live via a failing test BEFORE fixing)**: `callBuilder.
+hasSystemPrompt` was WRITTEN (`SystemPromptOpt.applyCall`) but NEVER READ anywhere — the exact
+same "declared-but-unused map/flag" tell that found Round 239's `Resource.Register` bug. Confirmed
+via live reproduction: declaring BOTH `SystemPrompt("...")` AND `SystemPromptFile("...")` on the
+SAME `Call` silently let `SystemPromptFile` win (applied AFTER `SystemPrompt` in `build()`'s
+resolution order), discarding the `SystemPrompt` text with ZERO error or warning — a genuine
+usability footgun (e.g. a caller declares both during a refactor, forgetting to remove the old
+one, and silently loses their first intent). Fixed: new `ConflictingSystemPromptError{Name}`,
+checked before any file read is attempted.
+
+**REAL BUG #2 FOUND AND FIXED**: `adapters/openai.complete`'s entire Chat Completions round trip
+(including the retry-on-invalid-completion loop) had ZERO `stats.TraceObserver` wiring — the ONLY
+one of go-codex's client-dispatch families (`adapters/nethttp`, `adapters/mcpgo`, reqreply's 2
+adapters) missing it entirely (confirmed via grep across all of them). Fixed by converting
+`complete`'s bare `(Resp, error)` return to NAMED returns `(result Resp, err error)` + a deferred
+`EndSpan(ctx, err)` — mirroring `adapters/nethttp.clientTransport.Call`'s own documented
+named-return rationale exactly ("lets this deferred EndSpan see whichever error the function
+ultimately returns"), requiring ZERO changes to the function's many existing `return zero, Xxx{...}`
+statements (Go sets named return values from an explicit `return a, b` before deferred functions
+run).
+
+Converted the REMAINING 2 bare `fmt.Errorf` call sites found in this round's own traced code path
+(`Call.build`'s `UserMessage` type-mismatch — ALREADY structured in Round 246 — and the
+request/response schema-render errors, likewise already structured in Round 246) — no further
+conversion needed here, those were this layer's foundational round's own fixes.
+
+Added `TestCall_Register_ConflictingSystemPrompt_ReturnsError` (api/llm) and
+`TestCallAdapter_Transform_TraceObserver_StartsAndEndsSpan`/
+`TestCallAdapter_Transform_TraceObserver_SeesFinalError` (adapters/openai, mirrors
+`adapters/nethttp`'s own `recordingTraceObserver` spy pattern).
+
+Updated `.github/instructions/go-codex.instructions.md`'s `adapters/openai` row with the new
+`TraceObserver` wiring.
+
+Verified: `go build ./...`, `go vet ./...`, `gofmt -l .`, `go test ./api/llm/...
+./adapters/openai/...` all clean.
+
+---
+
+## Round 246 (`deep-dive-bug-hunt` applied to `api/llm` — foundational `Builder`/`Call.Register` substrate — FIRST round EVER pointed at `api/llm` — REAL, REACHABLE BUG FOUND AND FIXED: `UserMessage[Req]`'s own type-mismatch check was unstructured AND completely untested)
+
+`api/llm` had ZERO deep-dive-bug-hunt rounds (like `api/mcp` before Round 239). First round of
+this layer's first-ever pass. Traced `Builder`'s shared `LLMSpec()`/`calls`/`callNames` substrate
+and `Call.Register`'s own name-validation logic (mirrors `api/mcp`'s `Tool.Register`/
+`Prompt.Register`, checked FIRST this round precisely because the sibling `api/mcp` pass just
+found a duplicate-registration bug from an unchecked name map — confirmed `api/llm.Builder.callNames`
+IS correctly checked, no repeat of that bug here).
+
+**REAL, REACHABLE BUG FOUND (not fixed as a behavior bug — fixed as a structured-errors +
+test-coverage gap, since the underlying behavior was already correct)**: `Call.Register`'s
+`UserMessage[Req]` type-mismatch check (`cb.userMessage.(func(Req) (string, error))`) is
+GENUINELY REACHABLE in normal usage — unlike some other packages' defensive-only "should never
+happen" assignability checks (e.g. `ErrorPattern`'s direct-mode check, confirmed in Round 243),
+nothing at compile time stops `NewCall[OrderReq, OrderResp](..., UserMessage[WrongReq](fn))` from
+type-checking, since `UserMessageOpt[Req]` is a wholly separate generic type from
+`Call[Req,Resp]`. Confirmed via a live reproduction test that this path previously returned a
+BARE, unstructured `*errors.errorString` with ZERO test coverage anywhere. Fixed: added 4 new
+structured, `errors.As`-navigable + `slog.LogValuer` error types mirroring `api/mcp`'s own
+naming convention exactly — `EmptyNameError{}`, `DuplicateNameError{Name}`,
+`SchemaRenderError{Kind, Name, Err}` (Kind: "request"/"response"), and the NEW
+`UserMessageTypeMismatchError{Name, Want, Got}` — converting all 5 bare `fmt.Errorf` call sites in
+`handle.go` (`Call.Register`'s empty-name/duplicate-name/request-schema-render,
+`Call.build`'s UserMessage-mismatch/response-schema-render).
+
+Updated `TestCall_Register_EmptyName_ReturnsError`/`TestCall_Register_DuplicateName_ReturnsError`
+to assert the new structured types via `errors.As` (previously bare `err == nil` checks) and added
+`TestCall_Register_UserMessageTypeMismatch_ReturnsStructuredError` (the reachable path's first
+EVER test, not just a structured-type upgrade).
+
+Verified: `go build ./...`, `go vet ./...`, `gofmt -l .`, `go test ./api/llm/...` all clean.
+
+---
+
 ## Round 245 (`deep-dive-bug-hunt` Phase B — mandatory consolidated design-doc re-review of Rounds 239-244, the FIRST-ever `api/mcp` deep-dive pass — REAL GAP FOUND AND FIXED: `docs/design/d-0005-error-handling.md`'s own Topic 5 explicitly cross-referenced a known `adapters/mcpgo` gap, never closed until this Phase B pass)
 
 Phase B re-review of every Round in `api/mcp`'s first-ever deep-dive pass (239 foundational, 240

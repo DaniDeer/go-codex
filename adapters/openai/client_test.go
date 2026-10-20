@@ -101,6 +101,74 @@ func callOnce[Req, Resp any](t *testing.T, adapter ports.IOAdapter[Req, Resp], r
 	return vals[0], nil
 }
 
+// recordingTraceObserver is a regression test fixture for a REAL, confirmed
+// bug (deep-dive-bug-hunt, api/llm concepts round): `complete`'s Chat
+// Completions round trip had ZERO stats.TraceObserver wiring at all — the
+// ONLY one of go-codex's client-dispatch families (adapters/nethttp,
+// adapters/mcpgo, api/reqreply's 3 adapters) missing it entirely.
+type recordingTraceObserver struct {
+	stats.NoopObserver
+	endCalled  bool
+	endSpanErr error
+}
+
+func (o *recordingTraceObserver) StartSpan(ctx context.Context, _, _ string) context.Context {
+	return ctx
+}
+
+func (o *recordingTraceObserver) EndSpan(_ context.Context, err error) {
+	o.endCalled = true
+	o.endSpanErr = err
+}
+
+func TestCallAdapter_Transform_TraceObserver_StartsAndEndsSpan(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(chatCompletionBody(`{"text":"42"}`))
+	}))
+	defer srv.Close()
+
+	h := testHandle(t)
+	to := &recordingTraceObserver{}
+	adapter := openai.CallAdapter(srv.Client(), h, openai.CallAdapterOptions{
+		BaseURL: srv.URL, Model: "gpt-4o-mini", APIKey: "test-key", Observer: to,
+	})
+
+	if _, err := callOnce[question, answer](t, adapter, question{Text: "What is 6*7?"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !to.endCalled {
+		t.Fatal("TraceObserver.EndSpan was never called")
+	}
+	if to.endSpanErr != nil {
+		t.Errorf("want EndSpan(ctx, nil) on success, got %v", to.endSpanErr)
+	}
+}
+
+func TestCallAdapter_Transform_TraceObserver_SeesFinalError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	h := testHandle(t)
+	to := &recordingTraceObserver{}
+	adapter := openai.CallAdapter(srv.Client(), h, openai.CallAdapterOptions{
+		BaseURL: srv.URL, Model: "gpt-4o-mini", APIKey: "test-key", Observer: to,
+	})
+
+	_, err := callOnce[question, answer](t, adapter, question{Text: "What is 6*7?"})
+	if err == nil {
+		t.Fatal("expected error from 500 response")
+	}
+	if !to.endCalled {
+		t.Fatal("TraceObserver.EndSpan was never called")
+	}
+	if !errors.Is(to.endSpanErr, err) && to.endSpanErr.Error() != err.Error() {
+		t.Errorf("want EndSpan to observe the final error %v, got %v", err, to.endSpanErr)
+	}
+}
+
 // ── happy path ────────────────────────────────────────────────────────────
 
 func TestCallAdapter_Transform_HappyPath(t *testing.T) {

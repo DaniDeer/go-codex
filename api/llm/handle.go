@@ -60,10 +60,10 @@ func (c Call[Req, Resp]) ClientHandle() (*CallHandle[Req, Resp], error) {
 // path cannot be read.
 func (c Call[Req, Resp]) Register(b *Builder) (*CallHandle[Req, Resp], error) {
 	if c.name == "" {
-		return nil, fmt.Errorf("llm: call name must not be empty")
+		return nil, EmptyNameError{}
 	}
 	if _, dup := b.callNames[c.name]; dup {
-		return nil, fmt.Errorf("llm: call %q already registered", c.name)
+		return nil, DuplicateNameError{Name: c.name}
 	}
 
 	h, cb, err := c.build()
@@ -73,7 +73,7 @@ func (c Call[Req, Resp]) Register(b *Builder) (*CallHandle[Req, Resp], error) {
 
 	reqSchema, err := jsonschema.Schema(c.reqCodec.Schema)
 	if err != nil {
-		return nil, fmt.Errorf("llm: call %q: render request schema: %w", c.name, err)
+		return nil, SchemaRenderError{Kind: "request", Name: c.name, Err: err}
 	}
 
 	b.callNames[c.name] = struct{}{}
@@ -96,6 +96,10 @@ func (c Call[Req, Resp]) build() (*CallHandle[Req, Resp], *callBuilder, error) {
 	var cb callBuilder
 	for _, opt := range c.opts {
 		opt.applyCall(&cb)
+	}
+
+	if cb.hasSystemPrompt && cb.hasSystemPromptFile {
+		return nil, nil, ConflictingSystemPromptError{Name: c.name}
 	}
 
 	systemPrompt := cb.systemPrompt
@@ -126,15 +130,18 @@ func (c Call[Req, Resp]) build() (*CallHandle[Req, Resp], *callBuilder, error) {
 	if cb.userMessage != nil {
 		fn, ok := cb.userMessage.(func(Req) (string, error))
 		if !ok {
-			return nil, nil, fmt.Errorf("llm: call %q: UserMessage type mismatch: want func(%T) (string, error), got %T",
-				c.name, *new(Req), cb.userMessage)
+			return nil, nil, UserMessageTypeMismatchError{
+				Name: c.name,
+				Want: fmt.Sprintf("func(%T) (string, error)", *new(Req)),
+				Got:  fmt.Sprintf("%T", cb.userMessage),
+			}
 		}
 		encodeRequest = fn
 	}
 
 	respSchema, err := jsonschema.Schema(c.respCodec.Schema)
 	if err != nil {
-		return nil, nil, fmt.Errorf("llm: call %q: render response schema: %w", c.name, err)
+		return nil, nil, SchemaRenderError{Kind: "response", Name: c.name, Err: err}
 	}
 
 	name := c.name
