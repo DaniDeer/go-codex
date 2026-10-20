@@ -292,7 +292,7 @@ RESOLUTION concern, a structurally different axis mcprest's current API has no s
 free to differ from the domain Route/Resource's wire shape for LLM-friendliness) — but its
 BACKING HANDLER reuses an ALREADY-ATTACHED `*rest.Client` directly, confirmed via
 `rest.Client.Call[Req, Resp any](ctx, route, req Req, opts...) (Resp, error)` — a Go 1.27
-generic method (see `docs/roadmap/go127-generic-methods.md`'s Workstream B); the underlying
+generic method (see `docs/design/d-0012-go127-generic-methods.md`'s Workstream B); the underlying
 `rest.ClientTransport.Call(ctx, route any, req any, opts...) (any, error)` interface method
 `*rest.Client` wraps internally stays `any`-typed (adapter-side reflection dispatch, unchanged):
 

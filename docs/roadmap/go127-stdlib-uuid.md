@@ -4,7 +4,7 @@
 > [← Back to Roadmap](index.md)
 >
 > Spun out of a coverage review of
-> [Go 1.27 Generic Methods](go127-generic-methods.md), which also
+> [Go 1.27 Generic Methods](../design/d-0012-go127-generic-methods.md), which also
 > surveyed this toolchain's actual `api/go1.27.txt` for other relevant
 > stdlib changes beyond generic methods.
 
@@ -50,7 +50,7 @@ from `go.mod` entirely.
    toolchain would need to keep using the external module. Confirm this
    is an acceptable breaking change for this repo's "single
    maintainer/user, breaking changes accepted" policy (same policy
-   `go127-generic-methods.md` cites).
+   `../design/d-0012-go127-generic-methods.md` cites).
 4. Should `github.com/google/uuid` be removed from `go.mod` entirely, or
    kept available for cases the stdlib type can't yet cover?
 

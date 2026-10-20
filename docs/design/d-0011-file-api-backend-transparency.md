@@ -131,7 +131,7 @@ func (c *Client) Attach(backend Backend) error
 //
 // UPDATE: Go 1.27 shipped generic methods after this design's own
 // implementation rounds — all 14 methods below were retrofitted by
-// docs/roadmap/go127-generic-methods.md's Workstream A. 4 (Read/Create/
+// docs/design/d-0012-go127-generic-methods.md's Workstream A. 4 (Read/Create/
 // Patch/List) are real generic methods; the other 10 needed only a
 // concrete non-generic dispatcher-interface parameter instead of `any`
 // (their own interface method never mentioned T). The signatures below
@@ -754,6 +754,6 @@ above.
   `reqreply.Client.Call`) were all `any`-typed specifically because
   methods could not previously introduce their own type parameters.
   This was tracked as its own, separate roadmap item
-  (`docs/roadmap/go127-generic-methods.md`) and has since been fully
+  (`docs/design/d-0012-go127-generic-methods.md`) and has since been fully
   implemented and shipped (Tier 1, Workstream A — this package's own
   retrofit — and Workstream B, covering `events`/`reqreply`/`rest`).

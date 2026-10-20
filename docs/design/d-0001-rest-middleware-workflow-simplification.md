@@ -3035,7 +3035,7 @@ resp, err := client.Call(ctx, getUserRoute, req)
 
 (`Client.Call` was retrofitted into a real Go 1.27 generic method —
 `resp` is already `GetUserResp`, no manual assertion needed — by
-`docs/roadmap/go127-generic-methods.md`'s Workstream B, after this
+`docs/design/d-0012-go127-generic-methods.md`'s Workstream B, after this
 decision shipped; the dual-mode `Route`/`*RouteHandle` acceptance and
 the adapter-level `ClientTransport` reflection dispatch this section
 describes are otherwise unchanged.)

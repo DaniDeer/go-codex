@@ -277,7 +277,7 @@ func mergeMetadata(base, override map[string]string) map[string]string {
 // appears directly in dispatchRead's OWN return type, so making the
 // interface itself generic over T lets Client.Read return the decoded
 // T directly, with zero reflection/boxing (see
-// docs/roadmap/go127-generic-methods.md's Tier 2 section).
+// docs/design/d-0012-go127-generic-methods.md's Tier 2 section).
 type readDispatcher[T any] interface {
 	dispatchRead(ctx context.Context, backend Backend, vars map[string]string) (T, error)
 }
@@ -338,7 +338,7 @@ func readCore[T any](ctx context.Context, backend Backend, core roleCore[T], rou
 // Client.Create[T] can require val to be the SAME T as cr's role at
 // compile time, eliminating the former runtime val.(T) type assertion
 // (and its BackendTypeMismatchError raise site) entirely — see
-// docs/roadmap/go127-generic-methods.md's Tier 2 section.
+// docs/design/d-0012-go127-generic-methods.md's Tier 2 section.
 type createDispatcher[T any] interface {
 	dispatchCreate(ctx context.Context, backend Backend, val T, vars map[string]string, opts WriteOptions) (createdDirs []string, err error)
 }
@@ -1280,7 +1280,7 @@ func countResults(results []BatchDeleteResult) (success, failure int) {
 // in client.go, so there is no decoded T to return at all) — making the
 // interface generic over T would add a type parameter purely for show,
 // with zero compile-time-safety benefit over the existing concrete
-// interface type. See docs/roadmap/go127-generic-methods.md's Tier 2
+// interface type. See docs/design/d-0012-go127-generic-methods.md's Tier 2
 // section for the full classification rationale.
 type openReadDispatcher interface {
 	dispatchOpenRead(ctx context.Context, backend Backend, vars map[string]string, opts StreamReadOptions) (io.ReadCloser, error)

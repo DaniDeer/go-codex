@@ -323,7 +323,7 @@ ifMatch := entry.ETag
 // Patch[T, P any] needs explicit type arguments — unlike Read/Create/List,
 // its dispatcher interface never mentions T in its own method signature,
 // so Go cannot infer it (Go 1.27 generic method, see
-// docs/roadmap/go127-generic-methods.md's Workstream A).
+// docs/design/d-0012-go127-generic-methods.md's Workstream A).
 err = client.Patch[Note, NotePatch](ctx, patcher, patch, vars, file.WriteOptions{IfMatch: &ifMatch})
 var mismatch file.ConditionalWriteMismatchError
 if errors.As(err, &mismatch) {

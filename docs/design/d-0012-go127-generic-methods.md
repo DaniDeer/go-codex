@@ -1,5 +1,22 @@
-# Go 1.27 Generic Methods — retrofitting `any`-typed/free-function workarounds
+# D-0012 — Go 1.27 Generic Methods
 
+> **Promoted from `docs/roadmap/go127-generic-methods.md` to
+> `docs/design/`**: this document is fully shipped (Tier 1, Workstream A
+> — `api/file` — and Workstream B — `events`/`reqreply`/`rest` — are all
+> implemented) AND establishes a cross-cutting pattern (the additive
+> phantom marker-interface technique for generic-method dual-accept
+> dispatch) that FOUR packages (`codex`, `api/file`, `api/events`,
+> `api/reqreply`, `api/rest`, plus `stream`/`forge`) now follow — meeting
+> this directory's "fully shipped AND multi-package pattern" promotion
+> bar (see `docs/design/index.md`'s own criteria). A subsequent
+> `deep-dive-bug-hunt` sweep (Rounds 250–253, see this doc's own
+> "`deep-dive-bug-hunt` verification" section near the end) re-verified
+> every retrofit with live mutation testing and found no code bugs,
+> closing only a handful of missing test-coverage gaps — this document
+> is the canonical, current-state reference for the pattern going
+> forward; the original roadmap investigation is preserved below
+> unchanged as the historical record of how the decision was reached.
+>
 > **Status: Tier 1, Workstream A (Tier 2's `api/file` half), AND
 > Workstream B (Tier 2's `events`/`reqreply`/`rest` half) ALL
 > IMPLEMENTED and SHIPPED.** The entire `go127-generic-methods` roadmap
@@ -1247,3 +1264,48 @@ reruns), `just check` ✅ (staticcheck + gosec: 0 issues; gofmt: clean),
 `just examples` ✅ (full example sweep, all exit 0).
 `.github/instructions/go-codex.instructions.md` updated for every new
 marker interface and converted signature.
+
+## `deep-dive-bug-hunt` verification (Rounds 250–253) — CONFIRMED, no code bugs found
+
+As part of a session-wide `deep-dive-bug-hunt` sweep across every
+`api/*` layer, this retrofit's own 4 packages (`api/file`, `api/events`,
+`api/reqreply`, `api/rest`) each received a dedicated focused round,
+tracing every marker interface and converted signature against its
+real dispatch path, with a live mutation/failing-test reproduction (not
+a static re-read of this doc's own claims):
+
+- **Live mutation check performed this round**: a real scratch program
+  that declares `reqreply.NewRoute[reqA, respA](...)` then calls
+  `c.Call(ctx, route, reqB{...})` (a deliberately mismatched request
+  type) — confirmed it **fails to compile** with
+  `type reqB of reqB{…} does not match inferred type reqA for Req`,
+  exactly as this doc's "compile-time type safety" claim promises. This
+  directly exercises the marker-interface + generic-method-inference
+  mechanism end-to-end, not just a read of the signature table above.
+- **`api/file` (Round 250)**: retrofit itself is a correct, pure
+  mechanical signature change over an already-twice-reviewed dispatch
+  core (no new bug). Found `List[T]`/`Patch[T,P]` had never been
+  exercised with the dual-accept handle form in any test — closed with
+  2 new tests; both pass, confirming the mechanism works as designed.
+- **`api/events` (Round 251)**: retrofit is correct; `Subscribe`'s
+  dual-accept handle form had never been tested in any of the 3
+  adapters (unlike `Publish`'s, which was) — closed with 1 new test per
+  adapter (3 total); all pass.
+- **`api/reqreply` (Round 252)**: retrofit is correct; `CallAsync`'s
+  dual-accept handle form had never been tested in `adapters/mqtt5`
+  specifically (`adapters/zeromq` and the `api/reqreply` package level
+  already covered both shapes) — closed with 1 new test; passes.
+- **`api/rest` (Round 253)**: retrofit is correct; dual-accept handle-
+  form test coverage for both `Call` and `Consume` was already complete
+  — genuinely clean round, no gap found, no changes made.
+
+**Net result**: every gap found across all 4 packages was missing TEST
+COVERAGE for an already-correct mechanism, never a functional dispatch
+bug — the retrofit's own design and implementation hold up under this
+deeper, skill-mandated scrutiny. See
+`.github/skills/review-go-codex/references/history.md` Rounds 250–253
+for the full per-round trace. This doc is now promoted to
+`docs/design/d-0012-go127-generic-methods.md` (see that file's header
+for the promotion rationale) — this roadmap copy is retained here only
+as the original investigation record; the design doc is the canonical,
+current-state reference going forward.

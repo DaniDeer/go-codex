@@ -4,7 +4,7 @@
 > [← Back to Roadmap](index.md)
 >
 > Spun out of a coverage review of
-> [Go 1.27 Generic Methods](go127-generic-methods.md), which also
+> [Go 1.27 Generic Methods](../design/d-0012-go127-generic-methods.md), which also
 > surveyed this toolchain's actual `api/go1.27.txt` for other relevant
 > stdlib changes beyond generic methods.
 

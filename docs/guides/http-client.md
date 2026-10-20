@@ -284,7 +284,7 @@ resp, err := client.Call(ctx, getUserRoute, GetUserReq{ID: "f47ac10b"})
 ```
 
 `Client.Call[Req, Resp any](ctx, route, req Req, opts ...ClientCallOptions) (Resp, error)` is a
-real Go 1.27 generic method (see `docs/roadmap/go127-generic-methods.md`): `route` accepts EITHER
+real Go 1.27 generic method (see `docs/design/d-0012-go127-generic-methods.md`): `route` accepts EITHER
 a bare `getUserRoute` (`rest.Route[Req,Resp]`) OR an already-registered `*rest.RouteHandle[Req,Resp]`
 — both satisfy an additive, unexported marker interface that lets `Req`/`Resp` be inferred from
 `route`/`req` with no explicit type argument needed. The underlying `ClientTransport.Call` an

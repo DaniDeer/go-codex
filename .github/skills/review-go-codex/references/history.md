@@ -4,6 +4,57 @@ Do not re-report any of these findings. They have been implemented and tested.
 
 ---
 
+## Round 254 (shared Phase B for the go127-generic-methods focused rounds 250-253 — live mutation verification, CONFIRMED, no code bugs found)
+
+Mandatory Phase B re-review against `docs/roadmap/go127-generic-methods.md`'s own claims, this
+time with a REAL live mutation/failing-test reproduction (not just the lighter static signature
+comparison Round 7 already did): wrote a scratch program declaring
+`reqreply.NewRoute[reqA, respA](...)` then calling `c.Call(ctx, route, reqB{...})` (deliberately
+mismatched request type) via `go build` — confirmed it fails to compile with `type reqB of
+reqB{…} does not match inferred type reqA for Req`, exactly matching the doc's "compile-time type
+safety" claim. This directly exercises the marker-interface + generic-method-inference mechanism
+end-to-end for the first time this session (previously only verified via throwaway `go1.27.2`
+compile checks during the ORIGINAL implementation rounds, never re-verified independently by this
+skill).
+
+Added a "`deep-dive-bug-hunt` verification (Rounds 250-253)" section to the end of
+`docs/roadmap/go127-generic-methods.md` summarizing all 4 focused rounds' findings (all: retrofit
+itself correct, only test-coverage gaps found/closed except `api/rest` which was fully clean) and
+the live mutation result above, closing out this round's own mandate.
+
+No code changes this round (doc-only). Verified: `go build`/`go vet` unaffected (doc change only).
+
+---
+
+## Round 253 (`deep-dive-bug-hunt` focused round on `api/rest`'s go127-generic-methods retrofit (Workstream B) — CLEAN, no gap found)
+
+Priority 3 round 4 of 4 (last of the 4 focused rounds). Traced `callRouteArg[Req,Resp]`/
+`sseRouteArg[Req,Event]`'s implementing types (`Route`/`*RouteHandle`, `SSERoute`/`*SSERouteHandle`)
+and `Client.Call[Req,Resp]`/`Consume[Req,Event]`'s signatures (`api/rest/builder.go`) against
+`registerAutoFromCall` (unchanged `any`-typed helper, confirmed correct for the new generic
+signatures via direct read) and the redirect-registry auto-population step both methods share.
+
+**Confirmed `api/rest` has only ONE real `ClientTransport` adapter** (`adapters/nethttp`) —
+`adapters/chi` is server-side only (`ServerTransport`, confirmed via grep: zero `ClientTransport`
+references outside its own `contextfield_dispatch_test.go`, which itself doesn't implement one) —
+so there's no N-way adapter parity question here, same single-adapter situation as `api/llm`.
+
+**Dual-accept handle-form test coverage: already complete, no gap (unlike file/events/reqreply's
+focused rounds).** Grepped every `Call`/`Consume` call site in
+`adapters/nethttp/clienttransport_test.go` and sibling test files: `Call` is exercised with both a
+bare `Route` (the large majority) AND a `RegisterHandle`-returned `*RouteHandle` (line ~499);
+`Consume` is exercised with both a bare `SSERoute` (the majority) AND a `RegisterHandle`-returned
+`*SSERouteHandle` (line ~981, confirmed via direct read that `handle, err := sseRoute.
+RegisterHandle(s)` at line 961 is the same `handle` passed to `Consume` at line 981) — both shapes
+were already proven for both methods before this round; nothing to add.
+
+No code or test changes this round — genuinely clean, the retrofit's test coverage was already
+complete for this package. Verified: `go build ./api/rest/... ./adapters/nethttp/... ./adapters/chi/...`,
+`go vet` (clean), `go test` on the same packages all pass (no changes made, re-ran as a sanity
+check only).
+
+---
+
 ## Round 252 (`deep-dive-bug-hunt` focused round on `api/reqreply`'s go127-generic-methods retrofit (Workstream B) — 1 real test-coverage gap closed in `adapters/mqtt5`: `CallAsync`'s dual-accept handle form had NEVER been exercised, unlike `Call`'s)
 
 Priority 3 round 3 of 4. Traced `callRouteArg[Req,Resp]`'s 2 implementing types (`Route[Req,Resp]`/
